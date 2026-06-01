@@ -9,14 +9,16 @@ Emit source/mon_icons.{c,h} with:
   mon_icon_data[N][256]      the 16x16 icons
   mon_icon_index[412]        internal Gen-3 species id -> row in mon_icon_data
                              (0xFFFF if none)
-Run from the repo root:  python3 tools/gen_icons.py
-The generated .c is committed, so the build never needs PIL or the sprite pack.
+Run from the repo root:  python3 tools/gen_icons.py   (needs Pillow)
+The generated source/mon_icons.{c,h} and the sprite pack are git-ignored (ripped
+art, not redistributed), so regenerate locally before building with icons.
 """
 import os, re, sys
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PACK = os.path.join(ROOT, "Gen 3 Sprite Pack V1")
+# Sprite pack lives under assets/sprites/ (git-ignored; not redistributed).
+PACK = os.path.join(ROOT, "assets", "sprites", "Gen 3 Sprite Pack V1")
 ICONS = os.path.join(PACK, "Graphics", "Pokemon", "Icons")
 PBS = os.path.join(PACK, "PBS", "pokemon_metrics.txt")
 OUT_C = os.path.join(ROOT, "source", "mon_icons.c")
