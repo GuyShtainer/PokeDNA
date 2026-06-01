@@ -2,11 +2,11 @@
  * gba-pokeviewer — entry point (milestone M0).
  *
  * Scaffold: bring up tonc + the bitmap UI, detect the flashcart, mount the SD,
- * list the .sav files in the card root, and let the user pick one. On select we
- * parse the save (existing gen3_save.c) and show a basic read-only summary
- * (game, trainer, TID, play time, party preview). This proves the whole pipeline
- * — flashcart -> FatFs -> parse -> UI — end to end before M1 adds the full
- * hidden-data (IV/EV/stat) viewer.
+ * and BROWSE the card (folders + .sav files, navigate with A/B) so saves in
+ * subfolders are reachable. On select we parse the save (existing gen3_save.c)
+ * and show a basic read-only summary (game, trainer, TID, play time, party
+ * preview). This proves the whole pipeline — flashcart -> FatFs -> parse -> UI —
+ * end to end before M1 adds the full hidden-data (IV/EV/stat) viewer.
  *
  * Include order matters: <tonc.h> first so its u8/u16 typedefs are in place
  * before flashcartio.h pulls in sys.h's u8/u16 macros (same pattern as the
@@ -25,18 +25,24 @@
 #include "log.h"
 #include "ui.h"
 
-#define LOG_PATH    "/pokeviewer_log.txt"
-#define PATH_MAX    256
-#define MAX_SAVES   128
-#define NAME_MAX    64
-#define LIST_COLS   28          /* display columns for a list row                 */
-#define VIS_ROWS    16          /* visible rows in the picker                      */
+#define LOG_PATH      "/pokeviewer_log.txt"
+#define PATH_MAX      256
+#define MAX_ENTRIES   256
+#define NAME_MAX      64
+#define LIST_COLS     28          /* display columns for a list row                 */
+#define VIS_ROWS      16          /* visible rows in the browser                     */
+
+typedef struct {
+  char name[NAME_MAX];
+  bool is_dir;
+} BrowseEntry;
 
 /* Big buffers live in EWRAM (.bss), never on the IWRAM stack. */
-static u8   EWRAM_BSS g_save[G3_SAVE_FILE_SIZE];        /* 128 KiB raw image       */
-static u8   EWRAM_BSS g_sb1[G3_SAVEBLOCK1_BYTES];       /* reassembled SaveBlock1  */
-static char EWRAM_BSS g_names[MAX_SAVES][NAME_MAX];     /* .sav filenames in root  */
-static int  g_count = 0;
+static u8          EWRAM_BSS g_save[G3_SAVE_FILE_SIZE];   /* 128 KiB raw image       */
+static u8          EWRAM_BSS g_sb1[G3_SAVEBLOCK1_BYTES];  /* reassembled SaveBlock1  */
+static BrowseEntry EWRAM_BSS g_entries[MAX_ENTRIES];      /* current-dir listing     */
+static int         g_count = 0;
+static char        EWRAM_BSS g_cwd[PATH_MAX];             /* current directory (set in main) */
 
 /* ---- VBlank / input discipline (key_poll exactly once per frame) -------- */
 static void vsync(void) { VBlankIntrWait(); key_poll(); }
@@ -63,8 +69,7 @@ static const char* flashcart_name(void) {
   }
 }
 
-/* Writes (edit mode, later) are Omega-only; surface it from M0 so the user is
- * never surprised. */
+/* Writes (edit mode, later) are Omega-only; surface it from M0. */
 static bool cart_writable(void) { return active_flashcart == EZ_FLASH_OMEGA; }
 
 static void halt_msg(const char* msg) {
@@ -84,60 +89,132 @@ static int has_sav_ext(const char* n) {
          (n[L - 1] == 'v' || n[L - 1] == 'V');
 }
 
-/* Scan the SD root for *.sav files into g_names. */
-static void scan_saves(void) {
+/* ---- path helpers (ported from the record-mixer browser) ---------------- */
+static bool at_root(void) { return g_cwd[0] == '/' && g_cwd[1] == 0; }
+
+static bool path_join(const char* dir, const char* name, char* out) {
+  unsigned dl = (unsigned)strlen(dir), nl = (unsigned)strlen(name);
+  if (dl == 1 && dir[0] == '/') {
+    if (1 + nl + 1 > PATH_MAX) return false;
+    siprintf(out, "/%s", name);
+  } else {
+    if (dl + 1 + nl + 1 > PATH_MAX) return false;
+    siprintf(out, "%s/%s", dir, name);
+  }
+  return true;
+}
+
+static void path_up(void) {
+  int l = (int)strlen(g_cwd);
+  if (l <= 1) return;
+  int i = l - 1;
+  while (i > 0 && g_cwd[i] != '/') i--;
+  if (i == 0) g_cwd[1] = 0; else g_cwd[i] = 0;
+}
+
+static const char* base_name(const char* p) {
+  const char* s = strrchr(p, '/');
+  return s ? s + 1 : p;
+}
+
+/* Scan g_cwd into g_entries: subdirectories + *.sav files (any game). Unlike
+ * the mixer we do NOT parse-filter here, so FRLG and other saves still show. */
+static void scan_dir(void) {
   g_count = 0;
   DIR dir;
   FILINFO fno;
-  if (f_opendir(&dir, "/") != FR_OK) { log_line("opendir / failed"); return; }
-  while (g_count < MAX_SAVES && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
-    if (fno.fattrib & AM_DIR) continue;
-    if (!has_sav_ext(fno.fname)) continue;
-    strncpy(g_names[g_count], fno.fname, NAME_MAX - 1);
-    g_names[g_count][NAME_MAX - 1] = 0;
+  if (f_opendir(&dir, g_cwd) != FR_OK) { log_line("opendir %s failed", g_cwd); return; }
+  while (g_count < MAX_ENTRIES && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
+    bool is_dir = (fno.fattrib & AM_DIR) != 0;
+    if (fno.fattrib & (AM_HID | AM_SYS)) continue;      /* hide hidden/system        */
+    if (!is_dir && !has_sav_ext(fno.fname)) continue;   /* only folders + .sav files */
+    strncpy(g_entries[g_count].name, fno.fname, NAME_MAX - 1);
+    g_entries[g_count].name[NAME_MAX - 1] = 0;
+    g_entries[g_count].is_dir = is_dir;
     g_count++;
   }
   f_closedir(&dir);
-  log_line("scan: %d .sav file(s) in root", g_count);
+
+  /* stable partition: directories first, then files */
+  for (int i = 1; i < g_count; i++) {
+    BrowseEntry tmp = g_entries[i];
+    int j = i - 1;
+    while (j >= 0 && !g_entries[j].is_dir && tmp.is_dir) { g_entries[j + 1] = g_entries[j]; j--; }
+    g_entries[j + 1] = tmp;
+  }
+  log_line("scan %s: %d entries", g_cwd, g_count);
 }
 
-/* Scrolling list picker. Returns the chosen index, or -1 if cancelled (B). */
-static int pick_save(void) {
-  int sel = 0, top = 0;
-  for (;;) {
-    if (sel < top) top = sel;
-    if (sel >= top + VIS_ROWS) top = sel - VIS_ROWS + 1;
+static void render_browser(int sel, int top) {
+  ui_clear();
+  char cwdc[LIST_COLS * 4 + 1];
+  ui_truncate(cwdc, g_cwd, LIST_COLS);
+  char hdr[80];
+  siprintf(hdr, "POKEVIEWER [%s] %s", flashcart_name(), cwdc);
+  ui_text(4, 2, UI_TITLE, hdr);
+  ui_hline(0, 11, UI_SCR_W, UI_BORDER);
 
-    ui_clear();
-    char hdr[48];
-    siprintf(hdr, "POKEVIEWER  [%s]", flashcart_name());
-    ui_text(4, 2, UI_TITLE, hdr);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-
-    if (g_count == 0) {
-      ui_text(6, 40, UI_WARN, "No .sav files in the SD root.");
-      ui_text(6, 52, UI_DIM,  "Copy a Gen-3 save there and press A.");
-    } else {
-      char row[LIST_COLS * 4 + 1];
-      for (int i = 0; i < VIS_ROWS && top + i < g_count; i++) {
-        int idx = top + i;
-        int y = 14 + i * UI_ROW_H;
-        ui_truncate(row, g_names[idx], LIST_COLS);
+  if (g_count == 0) {
+    ui_text(6, 40, UI_WARN, "(no folders or .sav files here)");
+    ui_text(6, 52, UI_DIM,  at_root() ? "Open a folder where your saves live."
+                                      : "B = go up a folder.");
+  } else {
+    char row[LIST_COLS * 4 + 1];
+    char tmp[NAME_MAX + 2];
+    for (int i = 0; i < VIS_ROWS && top + i < g_count; i++) {
+      int idx = top + i;
+      int y = 14 + i * UI_ROW_H;
+      const BrowseEntry* e = &g_entries[idx];
+      if (e->is_dir) {
+        siprintf(tmp, "%s/", e->name);
+        ui_truncate(row, tmp, LIST_COLS);
+        ui_text_sel(4, y, UI_SCR_W - 8, idx == sel, UI_DIRCLR, row);
+      } else {
+        ui_truncate(row, e->name, LIST_COLS);
         ui_text_sel(4, y, UI_SCR_W - 8, idx == sel, UI_SAVECLR, row);
       }
     }
+  }
 
-    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-    ui_text(4, 150, UI_DIM,
-            cart_writable() ? "A=open  U/D=move  R=rescan  (editable cart)"
-                            : "A=open  U/D=move  R=rescan  (read-only cart)");
+  ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+  ui_text(4, 150, UI_DIM,
+          at_root() ? "A=open  U/D=scroll  L/R=top/bot"
+                    : "A=open  B=up  U/D=scroll  L/R=top/bot");
+}
 
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_R);
-    if      (k & KEY_UP)    { if (sel > 0) sel--; }
-    else if (k & KEY_DOWN)  { if (sel < g_count - 1) sel++; }
-    else if (k & KEY_R)     return -1;                 /* caller rescans */
-    else if (k & KEY_B)     return -1;
-    else if ((k & KEY_A) && g_count > 0) return sel;
+/* Browse the SD for a .sav. Writes the chosen full path to out and returns true;
+ * navigation never leaves the browser (A enters a folder, B goes up). */
+static bool browse_pick(char* out, int cap) {
+  scan_dir();
+  int sel = 0, top = 0;
+  for (;;) {
+    if (sel >= g_count) sel = g_count > 0 ? g_count - 1 : 0;
+    if (sel < 0) sel = 0;
+    if (sel < top) top = sel;
+    if (sel >= top + VIS_ROWS) top = sel - VIS_ROWS + 1;
+
+    render_browser(sel, top);
+
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_L | KEY_R);
+    if      (k & KEY_UP)   { if (sel > 0) sel--; }
+    else if (k & KEY_DOWN) { if (sel < g_count - 1) sel++; }
+    else if (k & KEY_L)    { sel = 0; top = 0; }
+    else if (k & KEY_R)    { sel = g_count ? g_count - 1 : 0; }
+    else if (k & KEY_B)    { if (!at_root()) { path_up(); scan_dir(); sel = 0; top = 0; } }
+    else if (k & KEY_A) {
+      if (g_count == 0) continue;
+      const BrowseEntry* e = &g_entries[sel];
+      char np[PATH_MAX];
+      if (!path_join(g_cwd, e->name, np)) continue;
+      if (e->is_dir) {
+        strcpy(g_cwd, np);
+        scan_dir();
+        sel = 0; top = 0;
+      } else if ((int)strlen(np) < cap) {
+        strcpy(out, np);
+        return true;
+      }
+    }
   }
 }
 
@@ -150,17 +227,14 @@ static const char* ver_label(Gen3Version v) {
 }
 
 /* Read-only summary of the picked save (M0 depth; full hidden-data viewer = M1+). */
-static void show_detail(int idx) {
-  char path[PATH_MAX];
-  siprintf(path, "/%s", g_names[idx]);
-
+static void show_detail(const char* path) {
   ui_clear();
   ui_text(4, 2, UI_TITLE, "SAVE DETAIL");
   ui_hline(0, 11, UI_SCR_W, UI_BORDER);
 
   char line[80];
   char namebuf[LIST_COLS * 4 + 1];
-  ui_truncate(namebuf, g_names[idx], LIST_COLS);
+  ui_truncate(namebuf, base_name(path), LIST_COLS);
   ui_text(4, 14, UI_TEXT, namebuf);
 
   uint32_t sz = 0;
@@ -209,7 +283,8 @@ static void show_detail(int idx) {
   }
 
   ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-  ui_text(4, 150, UI_DIM, "B=back   (read-only viewer)");
+  ui_text(4, 150, UI_DIM, cart_writable() ? "B=back   (viewer; edit lands later)"
+                                          : "B=back   (read-only cart)");
   wait_keys(KEY_B);
 }
 
@@ -230,10 +305,10 @@ int main(void) {
   log_line("SD mounted OK");
   log_flush_to_sd(LOG_PATH);
 
+  strcpy(g_cwd, "/");
   for (;;) {
-    scan_saves();
-    int idx = pick_save();
-    if (idx >= 0) show_detail(idx);
+    char path[PATH_MAX];
+    if (browse_pick(path, sizeof(path))) show_detail(path);
   }
   return 0;
 }
