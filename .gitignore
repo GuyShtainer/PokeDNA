@@ -1,0 +1,29 @@
+# --- build artifacts ---
+build/
+*.elf
+*.gba
+*.map
+*.o
+*.d
+*.i
+*.s
+*.log
+
+# --- macOS ---
+.DS_Store
+
+# --- local-only assets (NOT redistributed; see README + tools/gen_icons.py) ---
+# Ripped Gen-3 sprite pack (© Game Freak / The Pokémon Company)
+/assets/sprites/
+# Generated icon art blobs (regenerate with: python3 tools/gen_icons.py)
+/source/mon_icons.c
+/source/mon_icons.h
+/data/icons.*
+/data/*.bin
+
+# --- real save files (personal / copyrighted game data) ---
+*.sav
+*.sav.bak*
+
+# --- pret decompilation excerpts (unlicensed; reference only, not shipped) ---
+/reference/
