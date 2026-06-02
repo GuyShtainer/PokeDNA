@@ -22,9 +22,11 @@
 #include "ff.h"
 #include "gen3_save.h"
 #include "gen3_mon.h"
+#include "gen3_box.h"
 #include "data_tables.h"
 #include "mon_icons.h"
 #include "pkview_summary.h"
+#include "pkview_box.h"
 #include "savefile.h"
 #include "log.h"
 #include "ui.h"
@@ -48,6 +50,7 @@ static BrowseEntry EWRAM_BSS g_entries[MAX_ENTRIES];      /* current-dir listing
 static int         g_count = 0;
 static char        EWRAM_BSS g_cwd[PATH_MAX];             /* current directory (set in main) */
 static PkMon       EWRAM_BSS g_party[6];                  /* decoded party of the open save  */
+static u8          EWRAM_BSS g_pc[G3_PC_BYTES];           /* reassembled PC storage (boxes)  */
 
 /* ---- VBlank / input discipline (key_poll exactly once per frame) -------- */
 static void vsync(void) { VBlankIntrWait(); key_poll(); }
@@ -251,6 +254,8 @@ static void party_screen(const char* path) {
 
   bool frlg = false;
   int n = pk_read_party_auto(g_sb1, g_party, &frlg);
+  for (int i = 0; i < n; i++) pk_resolve(&g_party[i]);   /* fill gender (party stats are plaintext) */
+  bool have_pc = (gen3_read_pc_storage(g_save, info.slot, g_pc) == G3_PC_BYTES);
 
   int sel = 0;
   for (;;) {
@@ -276,12 +281,13 @@ static void party_screen(const char* path) {
     }
 
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, "A view   U/D move   B back");
+    ui_text(4, 152, UI_DIM, have_pc ? "A view  SEL boxes  B back" : "A view  U/D move  B back");
 
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT);
     if      (k & KEY_UP)   { if (sel > 0) sel--; }
     else if (k & KEY_DOWN) { if (sel < n - 1) sel++; }
     else if (k & KEY_B)    return;
+    else if ((k & KEY_SELECT) && have_pc) pkview_box(g_pc);
     else if ((k & KEY_A) && n > 0) sel = pkview_summary(g_party, n, sel);
   }
 }
