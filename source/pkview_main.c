@@ -29,6 +29,8 @@
 #include "pkview_box.h"
 #include "gen3_trainer.h"
 #include "pkview_trainer.h"
+#include "pkview_edit.h"
+#include "pkview_app.h"
 #include "savefile.h"
 #include "log.h"
 #include "ui.h"
@@ -243,6 +245,75 @@ static Gen3SaveInfo g_vinfo;
 static int  g_nparty = 0;
 static bool g_frlg = false, g_have_pc = false;
 static PkGame g_game = PK_EMERALD;
+static char   g_path[PATH_MAX];                           /* path of the open save (for commit) */
+
+/* ===================== edit / commit (V4) =============================== */
+
+bool app_can_edit(void) { return active_flashcart == EZ_FLASH_OMEGA; }
+
+int app_action_menu(bool can_edit) {
+  const char* items[2] = { "View", "Edit" };
+  int n = can_edit ? 2 : 1, sel = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(70, 44, UI_TITLE, "POKEMON");
+    ui_hline(0, 53, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < n; i++)
+      ui_text_sel(70, 64 + i * 14, 110, i == sel, UI_TEXT, items[i]);
+    if (!can_edit) ui_text(34, 110, UI_DIM, "Edit needs EZ-Flash Omega");
+    ui_text(34, 150, UI_DIM, "A select   B cancel");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if      (k & KEY_B)    return -1;
+    else if (k & KEY_A)    return sel;
+    else if (k & KEY_UP)   { if (sel > 0) sel--; }
+    else if (k & KEY_DOWN) { if (sel < n - 1) sel++; }
+  }
+}
+
+static void msg_wait(const char* title, u16 col, const char* l1, const char* l2) {
+  ui_clear();
+  ui_text(20, 60, col, title);
+  if (l1) ui_text(20, 80, UI_TEXT, l1);
+  if (l2) ui_text(20, 92, UI_DIM, l2);
+  ui_text(20, 150, UI_DIM, "Press A");
+  wait_keys(KEY_A);
+}
+
+bool app_edit_commit(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block) {
+  uint8_t out[100];
+  if (!pkview_edit(rec, is_party, out)) return false;        /* cancelled in the editor */
+  memcpy(rec, out, is_party ? 100 : 80);                     /* patch in place (rec is inside block) */
+
+  for (int id = sect_lo; id <= sect_hi; id++)
+    gen3_write_full_section(g_save, g_vinfo.slot, id,
+                            block + (uint32_t)(id - sect_lo) * G3_SECTOR_DATA_SIZE);
+
+  int fail = -1;
+  if (!gen3_verify_full_checksums(g_save, g_vinfo.slot, &fail)) {
+    log_line("edit: checksum FAIL at section %d", fail);
+    msg_wait("CHECKSUM ERROR", UI_WARN, "Edited image failed checks.", "NOT written.");
+    return false;
+  }
+
+  log_line("=== edit commit -> %s ===", g_path);
+  char bak[SF_PATH_MAX];
+  SfStatus st = sf_backup(g_path, bak, sizeof(bak));
+  if (st != SF_OK) {
+    log_line("edit: backup failed (%s)", sf_status_str(st));
+    log_flush_to_sd(LOG_PATH);
+    msg_wait("BACKUP FAILED", UI_WARN, sf_status_str(st), "Save NOT modified.");
+    return false;
+  }
+  st = sf_write_verified(g_path, g_save, G3_SAVE_FILE_SIZE);
+  log_line("edit: write %s (backup %s)", st == SF_OK ? "OK" : sf_status_str(st), bak);
+  log_flush_to_sd(LOG_PATH);
+  if (st != SF_OK) {
+    msg_wait("WRITE FAILED", UI_WARN, sf_status_str(st), "Backup kept; .tmp may remain.");
+    return false;
+  }
+  msg_wait("SAVED", UI_OK, "Edit written + verified.", "Original backed up first.");
+  return true;
+}
 
 /* Party list view. A opens the summary; SELECT switches to PC boxes; B exits.
  * Returns 0 (back to file browser) or 1 (switch to boxes). */
@@ -280,13 +351,28 @@ static int party_list(void) {
     else if (k & KEY_B)    return 0;
     else if (k & KEY_START) return 2;
     else if (k & KEY_SELECT) { if (g_have_pc) return 1; }
-    else if ((k & KEY_A) && g_nparty > 0) sel = pkview_summary(g_party, g_nparty, sel);
+    else if ((k & KEY_A) && g_nparty > 0) {
+      int act = app_action_menu(app_can_edit());
+      if (act == 0) {
+        sel = pkview_summary(g_party, g_nparty, sel);
+      } else if (act == 1) {
+        uint16_t doff = g_frlg ? 0x0038 : 0x0238;
+        uint8_t* rec = g_sb1 + doff + (uint32_t)sel * 100;
+        if (app_edit_commit(rec, true, 1, 4, g_sb1)) {     /* party lives in SaveBlock1 (ids 1..4) */
+          g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
+          for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
+          if (sel >= g_nparty) sel = g_nparty ? g_nparty - 1 : 0;
+        }
+      }
+    }
   }
 }
 
 /* Load the picked save and show it: start in the PC boxes; SELECT toggles to the
  * party list and back; B from either returns to the file browser. */
 static void view_save(const char* path) {
+  strncpy(g_path, path, sizeof(g_path) - 1);
+  g_path[sizeof(g_path) - 1] = 0;
   uint32_t sz = 0;
   SfStatus st = sf_read_full(path, g_save, G3_SAVE_FILE_SIZE, &sz);
   if (st != SF_OK || sz < (uint32_t)G3_SLOT_BYTES ||

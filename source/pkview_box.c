@@ -10,12 +10,14 @@
 #include "sys.h"            /* EWRAM_BSS (after tonc.h so u8 macro doesn't clash) */
 #include "pkview_box.h"
 #include "ui.h"
+#include "gen3_save.h"
 #include "gen3_mon.h"
 #include "gen3_box.h"
 #include "data_tables.h"
 #include "mon_front.h"
 #include "mon_icons.h"
 #include "pkview_summary.h"
+#include "pkview_app.h"
 
 #define COLS 6
 #define ROWS 5
@@ -99,7 +101,7 @@ static void render(const uint8_t* pc, int box, int cur) {
   ui_text(78, 153, UI_DIM, "A L/R:box SEL:party ST:card B");
 }
 
-int pkview_box(const uint8_t* pc) {
+int pkview_box(uint8_t* pc) {
   int box = pk_current_box(pc);
   if (box < 0 || box >= G3_TOTAL_BOXES) box = 0;
   int cur = 0;
@@ -121,10 +123,17 @@ int pkview_box(const uint8_t* pc) {
     else if (k & KEY_DOWN)  cur = (cur >= COLS * (ROWS - 1)) ? cur - COLS * (ROWS - 1) : cur + COLS;
     else if (k & KEY_A) {
       if (g_box[cur].species) {
-        int no = 0, ci = 0;
-        for (int s = 0; s < 30; s++)
-          if (g_box[s].species) { if (s == cur) ci = no; g_occ[no++] = g_box[s]; }
-        pkview_summary(g_occ, no, ci);
+        int act = app_action_menu(app_can_edit());
+        if (act == 0) {
+          int no = 0, ci = 0;
+          for (int s = 0; s < 30; s++)
+            if (g_box[s].species) { if (s == cur) ci = no; g_occ[no++] = g_box[s]; }
+          pkview_summary(g_occ, no, ci);
+        } else if (act == 1) {
+          uint8_t* rec = pc + 0x0004 + ((uint32_t)box * 30 + cur) * 80;  /* PokemonStorage.boxes */
+          if (app_edit_commit(rec, false, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc))
+            pk_read_box(pc, box, g_box);                                  /* refresh after write */
+        }
       }
     }
   }
