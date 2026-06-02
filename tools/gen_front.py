@@ -38,35 +38,25 @@ def norm(s):
     return re.sub(r"[^A-Z0-9]", "", s.upper())
 
 
-def nat_to_internal(n):
-    if 1 <= n <= 251:
-        return n
-    if 252 <= n <= 386:
-        return n + 25
-    return None
-
-
-def parse_pbs():
-    name2nat = {}
-    cur = None
-    with open(PBS, encoding="utf-8-sig") as f:
+def species_map():
+    """norm(species name) -> INTERNAL Gen-3 id, straight from the decomp constants
+    (SPECIES_KYOGRE=404 etc.). This is the EXACT mapping the save uses; the old
+    national+25 shortcut mismapped the displaced legendaries (Kyogre->Registeel)."""
+    path = os.path.join(ROOT, "reference", "pokeemerald_data", "include", "constants", "species.h")
+    m = {}
+    with open(path) as f:
         for line in f:
-            line = line.strip()
-            m = re.match(r"^\[(.+)\]$", line)
-            if m:
-                cur = norm(m.group(1))
-                continue
-            m = re.match(r"^#(\d+)", line)
-            if m and cur:
-                name2nat[cur] = int(m.group(1))
-                cur = None
-    for k, v in {"NIDORANFE": 29, "NIDORANF": 29, "NIDORANMA": 32, "NIDORANM": 32}.items():
-        name2nat.setdefault(k, v)
-    return name2nat
+            mm = re.match(r"\s*#define\s+SPECIES_(\w+)\s+(\d+)", line)
+            if mm:
+                m[norm(mm.group(1))] = int(mm.group(2))
+    if "NIDORANF" in m: m["NIDORANFE"] = m["NIDORANF"]   # PNG NIDORANfE -> SPECIES_NIDORAN_F
+    if "NIDORANM" in m: m["NIDORANMA"] = m["NIDORANM"]   # PNG NIDORANmA -> SPECIES_NIDORAN_M
+    return m
 
 
 def conv(path):
     im = Image.open(path).convert("RGBA").resize((SIZE, SIZE), Image.LANCZOS)
+    im = im.transpose(Image.FLIP_LEFT_RIGHT)    # face left, like the in-game summary sprite
     px = im.load()
     out = bytearray()
     for y in range(SIZE):
@@ -78,7 +68,7 @@ def conv(path):
 
 
 def main():
-    name2nat = parse_pbs()
+    spmap = species_map()
     off = [0xFFFFFFFF] * (MAX_INTERNAL + 1)
     normal = bytearray()
     shiny = bytearray()
@@ -92,10 +82,7 @@ def main():
         if stem == "000":
             continue
         key = norm(re.sub(r"_\d+$", "", stem))
-        nat = name2nat.get(key)
-        if nat is None:
-            continue
-        intl = nat_to_internal(nat)
+        intl = spmap.get(key)
         if intl is None or intl > MAX_INTERNAL or off[intl] != 0xFFFFFFFF:
             continue
         nbytes = conv(os.path.join(FRONT, fn))

@@ -155,6 +155,33 @@ for const, body in iter_blocks(rd("src/data/pokemon/base_stats.h")):
         sp_a0[sid] = ABIL.get(parts[0], 0) if len(parts) > 0 else 0
         sp_a1[sid] = ABIL.get(parts[1], 0) if len(parts) > 1 else 0
 
+# ---- internal -> national dex number (exact; the +25 shortcut mismaps the
+#      displaced legendaries, e.g. Kyogre 404->382 not 379) ----
+PBS_PATH = os.path.join(ROOT, "assets", "sprites", "Gen 3 Sprite Pack V1", "PBS", "pokemon_metrics.txt")
+pbs_nat = {}
+try:
+    cur = None
+    with open(PBS_PATH, encoding="utf-8-sig") as pf:
+        for line in pf:
+            s = line.strip()
+            mm = re.match(r"^\[(.+)\]$", s)
+            if mm:
+                cur = re.sub(r"[^A-Z0-9]", "", mm.group(1).upper())
+                continue
+            mm = re.match(r"^#(\d+)", s)
+            if mm and cur:
+                pbs_nat[cur] = int(mm.group(1))
+                cur = None
+except FileNotFoundError:
+    pass
+pbs_nat.setdefault("NIDORANF", pbs_nat.get("NIDORANFE", 29))
+pbs_nat.setdefault("NIDORANM", pbs_nat.get("NIDORANMA", 32))
+sp_national = [0] * (MAX_SPECIES + 1)
+for cname, iid in SPEC.items():
+    if iid <= MAX_SPECIES:
+        key = re.sub(r"[^A-Z0-9]", "", cname[len("SPECIES_"):].upper())
+        sp_national[iid] = pbs_nat.get(key, (iid if iid <= 251 else 0))
+
 # ---- moves ----
 mv_name = parse_named_array(rd("src/data/text/move_names.h"), MOVE)
 NMOVE = (max(MOVE.values()) + 1) if MOVE else 355
@@ -306,6 +333,10 @@ with open(OUT, "w") as c:
     for i in range(0, SN, 16):
         c.write("  " + ",".join(str(x) for x in sp_a1[i:i + 16]) + ",\n")
     c.write("};\n\n")
+    c.write("static const uint16_t s_national[%d] = {\n" % SN)
+    for i in range(0, SN, 16):
+        c.write("  " + ",".join(str(x) for x in sp_national[i:i + 16]) + ",\n")
+    c.write("};\n\n")
 
     # move numeric data
     emit_u8(c, "s_mvtype", mv_type)
@@ -325,7 +356,7 @@ with open(OUT, "w") as c:
     # getters
     c.write(f"""
 const char* pk_species_name(uint16_t i){{ return i<{SN}?s_species[i]:"?"; }}
-uint16_t pk_national_no(uint16_t i){{ if(i<=251)return i; if(i>=277&&i<=411)return i-25; return 0; }}
+uint16_t pk_national_no(uint16_t i){{ return i<{SN}?s_national[i]:0; }}
 void pk_base_stats(uint16_t i,uint8_t o[6]){{ for(int k=0;k<6;k++)o[k]=(i<{SN})?s_base[i][k]:0; }}
 uint8_t pk_species_type1(uint16_t i){{ return i<{SN}?s_t1[i]:0; }}
 uint8_t pk_species_type2(uint16_t i){{ return i<{SN}?s_t2[i]:0; }}

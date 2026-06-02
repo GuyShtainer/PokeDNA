@@ -101,10 +101,10 @@ static void render(const uint8_t* pc, int box, int cur) {
   }
 
   ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-  ui_text(4, 152, UI_DIM, "A view  L/R box  B back");
+  ui_text(4, 152, UI_DIM, "A view  L/R box  SEL party  B back");
 }
 
-void pkview_box(const uint8_t* pc) {
+int pkview_box(const uint8_t* pc) {
   int box = pk_current_box(pc);
   if (box < 0 || box >= G3_TOTAL_BOXES) box = 0;
   int cur = 0;
@@ -115,7 +115,8 @@ void pkview_box(const uint8_t* pc) {
     u16 k;
     do { s_vsync(); k = key_hit(KEY_FULL); } while (!k);
 
-    if (k & (KEY_B | KEY_SELECT)) return;
+    if (k & KEY_B) return 0;
+    else if (k & KEY_SELECT) return 1;
     else if (k & KEY_L) { box = (box + G3_TOTAL_BOXES - 1) % G3_TOTAL_BOXES; pk_read_box(pc, box, g_box); cur = 0; }
     else if (k & KEY_R) { box = (box + 1) % G3_TOTAL_BOXES; pk_read_box(pc, box, g_box); cur = 0; }
     else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;

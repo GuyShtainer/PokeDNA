@@ -91,14 +91,13 @@ static void draw_left(const PkMon* p) {
   ui_truncate(sp, pk_species_name(p->species), 11);
   ui_text(6, 112, C_KEY, sp);
 
-  /* types */
-  ui_text(6, 124, C_VAL, pk_type_name(pk_species_type1(p->species)));
-  uint8_t t2 = pk_species_type2(p->species);
-  if (t2 != pk_species_type1(p->species))
-    ui_text(48, 124, C_VAL, pk_type_name(t2));
+  /* types (second type on its own line) */
+  uint8_t t1 = pk_species_type1(p->species), t2 = pk_species_type2(p->species);
+  ui_text(6, 122, C_VAL, pk_type_name(t1));
+  if (t2 != t1) ui_text(6, 131, C_VAL, pk_type_name(t2));
 
-  if (p->isEgg)    ui_text(6, 136, C_HOT, "EGG");
-  if (p->isBadEgg) ui_text(6, 136, UI_WARN, "BAD EGG");
+  if (p->isBadEgg)   ui_text(6, 141, UI_WARN, "BAD EGG");
+  else if (p->isEgg) ui_text(6, 141, C_HOT, "EGG");
 }
 
 /* ---------- card 0: INFO ---------- */
@@ -168,10 +167,10 @@ static void card_spread(const PkMon* p, bool ev) {
     int v = ev ? p->evs[s] : p->ivs[s];
     total += v;
     ui_text(x, y, C_KEY, DSHORT[i]);
-    siprintf(buf, "%3d", v); ui_text(x + 28, y, C_VAL, buf);
-    int fill = v * 96 / maxv;
+    siprintf(buf, "%3d", v); ui_text(x + 26, y, C_VAL, buf);
+    int fill = v * 84 / maxv;
     u16 col = (!ev && v == 31) ? UI_OK : (ev && v == 252) ? UI_OK : C_HDR;
-    ui_progress(x + 44, y + 1, 96, 5, fill, col, UI_PANEL, UI_BORDER);
+    ui_progress(x + 54, y + 1, 84, 5, fill, col, UI_PANEL, UI_BORDER);  /* clears the number */
     y += 12;
   }
   y += 2;
@@ -188,18 +187,21 @@ static void card_moves(const PkMon* p, bool contest) {
 
   for (int i = 0; i < 4; i++) {
     uint16_t mv = p->moves[i];
-    if (mv == 0) { ui_text(x, y, UI_DIM, "-"); y += 14; continue; }
-    if (contest) ui_text(x, y, C_KEY, pk_contest_name(pk_move_contest(mv)));
-    else         ui_text(x, y, C_KEY, pk_type_name(pk_move_type(mv)));
-    ui_text(x + 44, y, C_VAL, pk_move_name(mv));
+    if (mv == 0) { ui_text(x, y, UI_DIM, "-"); y += 18; continue; }
+    /* line 1: move name (+ PP on the right for battle moves) */
+    char nm[24];
+    ui_truncate(nm, pk_move_name(mv), contest ? 16 : 9);
+    ui_text(x, y, C_VAL, nm);
     if (!contest) {
-      uint8_t ppup = (p->ppBonuses >> (i * 2)) & 3;
       uint8_t base = pk_move_pp(mv);
-      uint8_t maxpp = (uint8_t)(base + base / 5 * ppup);
-      siprintf(buf, "%u/%u", (unsigned)p->pp[i], (unsigned)maxpp);
-      ui_text(x + 44, y + UI_ROW_H, UI_DIM, buf);
+      uint8_t maxpp = (uint8_t)(base + base / 5 * ((p->ppBonuses >> (i * 2)) & 3));
+      siprintf(buf, "PP%u/%u", (unsigned)p->pp[i], (unsigned)maxpp);
+      ui_text(x + 78, y, UI_DIM, buf);
     }
-    y += 16;
+    /* line 2: type (battle) or contest category (indented) */
+    ui_text(x + 8, y + UI_ROW_H, contest ? C_HOT : C_KEY,
+            contest ? pk_contest_name(pk_move_contest(mv)) : pk_type_name(pk_move_type(mv)));
+    y += 18;
   }
 }
 

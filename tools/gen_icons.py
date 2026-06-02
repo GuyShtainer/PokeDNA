@@ -31,34 +31,20 @@ def norm(s):
     return re.sub(r"[^A-Z0-9]", "", s.upper())
 
 
-def nat_to_internal(n):
-    # Gen 3 internal indices: 1..251 == national; 252..386 (Hoenn) -> +25.
-    if 1 <= n <= 251:
-        return n
-    if 252 <= n <= 386:
-        return n + 25
-    return None
-
-
-def parse_pbs():
-    name2nat = {}
-    cur = None
-    with open(PBS, encoding="utf-8-sig") as f:
+def species_map():
+    """norm(species name) -> INTERNAL Gen-3 id, straight from the decomp constants
+    (SPECIES_KYOGRE=404 etc.) — the exact id the save stores. The old national+25
+    shortcut mismapped the displaced legendaries (Kyogre showed Registeel)."""
+    path = os.path.join(ROOT, "reference", "pokeemerald_data", "include", "constants", "species.h")
+    m = {}
+    with open(path) as f:
         for line in f:
-            line = line.strip()
-            m = re.match(r"^\[(.+)\]$", line)
-            if m:
-                cur = norm(m.group(1))
-                continue
-            m = re.match(r"^#(\d+)", line)
-            if m and cur:
-                name2nat[cur] = int(m.group(1))
-                cur = None
-    # a few aliases the icon filenames use
-    aliases = {"NIDORANFE": 29, "NIDORANF": 29, "NIDORANMA": 32, "NIDORANM": 32}
-    for k, v in aliases.items():
-        name2nat.setdefault(k, v)
-    return name2nat
+            mm = re.match(r"\s*#define\s+SPECIES_(\w+)\s+(\d+)", line)
+            if mm:
+                m[norm(mm.group(1))] = int(mm.group(2))
+    if "NIDORANF" in m: m["NIDORANFE"] = m["NIDORANF"]
+    if "NIDORANM" in m: m["NIDORANMA"] = m["NIDORANM"]
+    return m
 
 
 def rgb15(r, g, b):
@@ -81,7 +67,7 @@ def conv_icon(path):
 
 
 def main():
-    name2nat = parse_pbs()
+    spmap = species_map()
     index = [0xFFFF] * (MAX_INTERNAL + 1)
     data = []                # list of 256-int icons
     matched, skipped = 0, []
@@ -94,12 +80,11 @@ def main():
             continue
         base = re.sub(r"_\d+$", "", stem)   # drop form variants (DEOXYS_1 ...)
         key = norm(base)
-        nat = name2nat.get(key)
-        if nat is None:
+        intl = spmap.get(key)
+        if intl is None:
             skipped.append(stem)
             continue
-        intl = nat_to_internal(nat)
-        if intl is None or intl > MAX_INTERNAL or index[intl] != 0xFFFF:
+        if intl > MAX_INTERNAL or index[intl] != 0xFFFF:
             continue
         index[intl] = len(data)
         data.append(conv_icon(os.path.join(ICONS, fn)))

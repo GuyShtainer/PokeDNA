@@ -235,38 +235,24 @@ static const char* ver_label(Gen3Version v, bool frlg) {
   }
 }
 
-/* Load the picked save, decode the party, and show it as a list; A opens the
- * full 6-card summary for the highlighted mon. */
-static void party_screen(const char* path) {
-  uint32_t sz = 0;
-  SfStatus st = sf_read_full(path, g_save, G3_SAVE_FILE_SIZE, &sz);
-  Gen3SaveInfo info;
-  if (st != SF_OK || sz < (uint32_t)G3_SLOT_BYTES ||
-      !gen3_parse(g_save, sz, &info) || !info.valid || !info.sb1_ok ||
-      gen3_read_saveblock1(g_save, info.slot, g_sb1) != G3_SAVEBLOCK1_BYTES) {
-    ui_clear();
-    ui_text(6, 60, UI_WARN, "Cannot read this save.");
-    ui_text(6, 76, UI_DIM, st != SF_OK ? sf_status_str(st) : "not a valid Gen-3 .sav");
-    ui_text(4, 150, UI_DIM, "B=back");
-    wait_keys(KEY_B);
-    return;
-  }
+/* loaded-save state shared by the party list + box views */
+static Gen3SaveInfo g_vinfo;
+static int  g_nparty = 0;
+static bool g_frlg = false, g_have_pc = false;
 
-  bool frlg = false;
-  int n = pk_read_party_auto(g_sb1, g_party, &frlg);
-  for (int i = 0; i < n; i++) pk_resolve(&g_party[i]);   /* fill gender (party stats are plaintext) */
-  bool have_pc = (gen3_read_pc_storage(g_save, info.slot, g_pc) == G3_PC_BYTES);
-
+/* Party list view. A opens the summary; SELECT switches to PC boxes; B exits.
+ * Returns 0 (back to file browser) or 1 (switch to boxes). */
+static int party_list(void) {
   int sel = 0;
   for (;;) {
     ui_clear();
     char line[48];
-    siprintf(line, "%s  -  %s", info.trainer_name, ver_label(info.version_guess, frlg));
+    siprintf(line, "%s  -  %s", g_vinfo.trainer_name, ver_label(g_vinfo.version_guess, g_frlg));
     ui_text(4, 2, UI_TITLE, line);
     ui_hline(0, 11, UI_SCR_W, UI_BORDER);
 
-    if (n == 0) ui_text(6, 40, UI_WARN, "No Pokemon in party.");
-    for (int i = 0; i < n; i++) {
+    if (g_nparty == 0) ui_text(6, 40, UI_WARN, "No Pokemon in party.");
+    for (int i = 0; i < g_nparty; i++) {
       int y = 16 + i * 22;
       PkMon* p = &g_party[i];
       if (i == sel) ui_panel(2, y - 2, 236, 20, UI_SEL, UI_TITLE);
@@ -281,14 +267,44 @@ static void party_screen(const char* path) {
     }
 
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, have_pc ? "A view  SEL boxes  B back" : "A view  U/D move  B back");
+    ui_text(4, 152, UI_DIM, g_have_pc ? "A view  SEL boxes  B back" : "A view  U/D move  B back");
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT);
     if      (k & KEY_UP)   { if (sel > 0) sel--; }
-    else if (k & KEY_DOWN) { if (sel < n - 1) sel++; }
-    else if (k & KEY_B)    return;
-    else if ((k & KEY_SELECT) && have_pc) pkview_box(g_pc);
-    else if ((k & KEY_A) && n > 0) sel = pkview_summary(g_party, n, sel);
+    else if (k & KEY_DOWN) { if (sel < g_nparty - 1) sel++; }
+    else if (k & KEY_B)    return 0;
+    else if (k & KEY_SELECT) { if (g_have_pc) return 1; }
+    else if ((k & KEY_A) && g_nparty > 0) sel = pkview_summary(g_party, g_nparty, sel);
+  }
+}
+
+/* Load the picked save and show it: start in the PC boxes; SELECT toggles to the
+ * party list and back; B from either returns to the file browser. */
+static void view_save(const char* path) {
+  uint32_t sz = 0;
+  SfStatus st = sf_read_full(path, g_save, G3_SAVE_FILE_SIZE, &sz);
+  if (st != SF_OK || sz < (uint32_t)G3_SLOT_BYTES ||
+      !gen3_parse(g_save, sz, &g_vinfo) || !g_vinfo.valid || !g_vinfo.sb1_ok ||
+      gen3_read_saveblock1(g_save, g_vinfo.slot, g_sb1) != G3_SAVEBLOCK1_BYTES) {
+    ui_clear();
+    ui_text(6, 60, UI_WARN, "Cannot read this save.");
+    ui_text(6, 76, UI_DIM, st != SF_OK ? sf_status_str(st) : "not a valid Gen-3 .sav");
+    ui_text(4, 150, UI_DIM, "B=back");
+    wait_keys(KEY_B);
+    return;
+  }
+
+  g_frlg = false;
+  g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
+  for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
+  g_have_pc = (gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc) == G3_PC_BYTES);
+
+  int mode = g_have_pc ? 0 : 1;          /* start in PC boxes (per request) */
+  for (;;) {
+    int r = (mode == 0) ? pkview_box(g_pc) : party_list();
+    if (r == 0) return;                  /* B -> file browser */
+    if (!g_have_pc) return;              /* nothing to toggle to */
+    mode ^= 1;                           /* SELECT -> toggle box/party */
   }
 }
 
@@ -312,7 +328,7 @@ int main(void) {
   strcpy(g_cwd, "/");
   for (;;) {
     char path[PATH_MAX];
-    if (browse_pick(path, sizeof(path))) party_screen(path);
+    if (browse_pick(path, sizeof(path))) view_save(path);
   }
   return 0;
 }
