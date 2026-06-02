@@ -70,7 +70,7 @@ static void draw_left(const PkMon* p) {
 
   const uint16_t* spr = mon_front_for(p->species, p->isShiny);
   if (spr) ui_sprite(14, 14, MON_FRONT_W, MON_FRONT_H, spr);
-  else     ui_icon16(38, 38, mon_icon_for(p->species));   /* fallback */
+  else     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for(p->species)); /* fallback */
 
   char buf[40];
   uint8_t gr = pk_species_gender_ratio(p->species);

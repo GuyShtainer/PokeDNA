@@ -30,4 +30,5 @@ build/
 # generated front sprites (ripped art) + data tables — regenerate locally
 /source/mon_front.c
 /source/mon_front_data.s
+/source/mon_icons_data.s
 /source/data_tables.c

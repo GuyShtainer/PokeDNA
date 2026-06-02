@@ -69,6 +69,18 @@ void ui_sprite(int x, int y, int w, int h, const u16* data) {
   }
 }
 
+/* Blit a 32x32 RGB15 sprite shrunk to 16x16 (sample every other pixel) — for
+ * compact list rows where the full 32x32 icon won't fit. */
+void ui_icon_sub(int x, int y, const u16* src32) {
+  if (!src32) return;
+  for (int j = 0; j < 16; j++) {
+    for (int i = 0; i < 16; i++) {
+      u16 p = src32[(j * 2) * 32 + i * 2];
+      if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
+    }
+  }
+}
+
 void ui_truncate(char* out, const char* in, int max_cols) {
   if (max_cols < 1) { out[0] = 0; return; }
   int cols = 0, i = 0, o = 0, last_start = 0;

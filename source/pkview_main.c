@@ -256,7 +256,7 @@ static int party_list(void) {
       int y = 16 + i * 22;
       PkMon* p = &g_party[i];
       if (i == sel) ui_panel(2, y - 2, 236, 20, UI_SEL, UI_TITLE);
-      ui_icon16(6, y, mon_icon_for(p->species));
+      ui_icon_sub(6, y, mon_icon_for(p->species));   /* 16x16 from the 32x32 icon */
       char nm[16];
       ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);
       siprintf(line, "%-11s Lv%u", nm, (unsigned)p->level);

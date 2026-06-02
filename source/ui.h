@@ -65,4 +65,7 @@ void ui_progress(int x, int y, int w, int h, int filled, u16 fill, u16 track, u1
 /* Blit a w×h RGB15 sprite (0 transparent, 0x8000|RGB15 opaque) — e.g. 64×64 front sprite. */
 void ui_sprite(int x, int y, int w, int h, const u16* data);
 
+/* Blit a 32×32 RGB15 sprite shrunk to 16×16 (compact list rows). */
+void ui_icon_sub(int x, int y, const u16* src32);
+
 #endif /* UI_H */
