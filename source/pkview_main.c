@@ -21,6 +21,10 @@
 #include "sys.h"           /* EWRAM_BSS (idempotent; guarded)                          */
 #include "ff.h"
 #include "gen3_save.h"
+#include "gen3_mon.h"
+#include "data_tables.h"
+#include "mon_icons.h"
+#include "pkview_summary.h"
 #include "savefile.h"
 #include "log.h"
 #include "ui.h"
@@ -43,6 +47,7 @@ static u8          EWRAM_BSS g_sb1[G3_SAVEBLOCK1_BYTES];  /* reassembled SaveBlo
 static BrowseEntry EWRAM_BSS g_entries[MAX_ENTRIES];      /* current-dir listing     */
 static int         g_count = 0;
 static char        EWRAM_BSS g_cwd[PATH_MAX];             /* current directory (set in main) */
+static PkMon       EWRAM_BSS g_party[6];                  /* decoded party of the open save  */
 
 /* ---- VBlank / input discipline (key_poll exactly once per frame) -------- */
 static void vsync(void) { VBlankIntrWait(); key_poll(); }
@@ -218,74 +223,67 @@ static bool browse_pick(char* out, int cap) {
   }
 }
 
-static const char* ver_label(Gen3Version v) {
+static const char* ver_label(Gen3Version v, bool frlg) {
+  if (frlg) return "FireRed/LeafGreen";
   switch (v) {
     case G3_VER_EMERALD: return "Emerald";
     case G3_VER_RS:      return "Ruby/Sapphire";
-    default:             return "FireRed/LeafGreen or unknown";
+    default:             return "Gen-3";
   }
 }
 
-/* Read-only summary of the picked save (M0 depth; full hidden-data viewer = M1+). */
-static void show_detail(const char* path) {
-  ui_clear();
-  ui_text(4, 2, UI_TITLE, "SAVE DETAIL");
-  ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-
-  char line[80];
-  char namebuf[LIST_COLS * 4 + 1];
-  ui_truncate(namebuf, base_name(path), LIST_COLS);
-  ui_text(4, 14, UI_TEXT, namebuf);
-
+/* Load the picked save, decode the party, and show it as a list; A opens the
+ * full 6-card summary for the highlighted mon. */
+static void party_screen(const char* path) {
   uint32_t sz = 0;
   SfStatus st = sf_read_full(path, g_save, G3_SAVE_FILE_SIZE, &sz);
-  siprintf(line, "size: %u bytes", (unsigned)sz);
-  ui_text(4, 24, UI_DIM, line);
-
-  if (st != SF_OK) {
-    ui_text(4, 42, UI_WARN, sf_status_str(st));
-    ui_text(4, 150, UI_DIM, "B=back");
-    wait_keys(KEY_B);
-    return;
-  }
-
   Gen3SaveInfo info;
-  if (sz < (uint32_t)G3_SLOT_BYTES || !gen3_parse(g_save, sz, &info) || !info.valid) {
-    ui_text(4, 42, UI_WARN, "Not a valid Gen-3 save.");
+  if (st != SF_OK || sz < (uint32_t)G3_SLOT_BYTES ||
+      !gen3_parse(g_save, sz, &info) || !info.valid || !info.sb1_ok ||
+      gen3_read_saveblock1(g_save, info.slot, g_sb1) != G3_SAVEBLOCK1_BYTES) {
+    ui_clear();
+    ui_text(6, 60, UI_WARN, "Cannot read this save.");
+    ui_text(6, 76, UI_DIM, st != SF_OK ? sf_status_str(st) : "not a valid Gen-3 .sav");
     ui_text(4, 150, UI_DIM, "B=back");
     wait_keys(KEY_B);
     return;
   }
 
-  siprintf(line, "game: %s", ver_label(info.version_guess));
-  ui_text(4, 38, UI_OK, line);
-  siprintf(line, "trainer: %s  (%c)", info.trainer_name, info.gender ? 'F' : 'M');
-  ui_text(4, 48, UI_TEXT, line);
-  siprintf(line, "TID: %05u   slot: %d", (unsigned)info.tid_public, info.slot);
-  ui_text(4, 58, UI_TEXT, line);
-  siprintf(line, "playtime: %uh %02um", (unsigned)info.play_h, (unsigned)info.play_m);
-  ui_text(4, 68, UI_TEXT, line);
+  bool frlg = false;
+  int n = pk_read_party_auto(g_sb1, g_party, &frlg);
 
-  if (info.sb1_ok &&
-      gen3_read_saveblock1(g_save, info.slot, g_sb1) == G3_SAVEBLOCK1_BYTES) {
-    Gen3DisplayParty dp;
-    gen3_read_live_party_display(g_sb1, &dp);
-    siprintf(line, "party: %d", dp.count);
-    ui_text(4, 84, UI_TITLE, line);
-    for (int i = 0; i < dp.count; i++) {
+  int sel = 0;
+  for (;;) {
+    ui_clear();
+    char line[48];
+    siprintf(line, "%s  -  %s", info.trainer_name, ver_label(info.version_guess, frlg));
+    ui_text(4, 2, UI_TITLE, line);
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+
+    if (n == 0) ui_text(6, 40, UI_WARN, "No Pokemon in party.");
+    for (int i = 0; i < n; i++) {
+      int y = 16 + i * 22;
+      PkMon* p = &g_party[i];
+      if (i == sel) ui_panel(2, y - 2, 236, 20, UI_SEL, UI_TITLE);
+      ui_icon16(6, y, mon_icon_for(p->species));
       char nm[16];
-      ui_truncate(nm, dp.mon[i].nickname, 10);
-      siprintf(line, "%-10s  Lv%u", nm, (unsigned)dp.mon[i].level);
-      ui_text(10, 94 + i * UI_ROW_H, UI_TEXT, line);
+      ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);
+      siprintf(line, "%-11s Lv%u", nm, (unsigned)p->level);
+      ui_text(26, y, i == sel ? UI_SELTEXT : UI_TEXT, line);
+      siprintf(line, "%s%s%s", pk_species_name(p->species),
+               p->isShiny ? "  *" : "", p->isEgg ? "  EGG" : "");
+      ui_text(26, y + 9, UI_DIM, line);
     }
-  } else {
-    ui_text(4, 84, UI_DIM, "(SaveBlock1 incomplete)");
-  }
 
-  ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-  ui_text(4, 150, UI_DIM, cart_writable() ? "B=back   (viewer; edit lands later)"
-                                          : "B=back   (read-only cart)");
-  wait_keys(KEY_B);
+    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+    ui_text(4, 152, UI_DIM, "A view   U/D move   B back");
+
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if      (k & KEY_UP)   { if (sel > 0) sel--; }
+    else if (k & KEY_DOWN) { if (sel < n - 1) sel++; }
+    else if (k & KEY_B)    return;
+    else if ((k & KEY_A) && n > 0) sel = pkview_summary(g_party, n, sel);
+  }
 }
 
 int main(void) {
@@ -308,7 +306,7 @@ int main(void) {
   strcpy(g_cwd, "/");
   for (;;) {
     char path[PATH_MAX];
-    if (browse_pick(path, sizeof(path))) show_detail(path);
+    if (browse_pick(path, sizeof(path))) party_screen(path);
   }
   return 0;
 }

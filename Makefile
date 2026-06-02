@@ -80,7 +80,7 @@ LIBS        := -ltonc
 
 BUILD       := build
 SRCDIRS     := source lib lib/fatfs lib/ezflashomega lib/everdrivegbax5
-DATADIRS    := data
+DATADIRS    :=          # front-sprite blobs are embedded via .incbin (source/mon_front_data.s), not bin2o
 INCDIRS     := source lib lib/fatfs lib/ezflashomega lib/everdrivegbax5
 LIBDIRS     := $(TONCLIB)
 
