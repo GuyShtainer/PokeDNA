@@ -43,6 +43,32 @@ void ui_icon16(int x, int y, const u16* icon) {
   }
 }
 
+void ui_fill_rect(int x, int y, int w, int h, u16 color) {
+  m3_rect(x, y, x + w, y + h, color);
+}
+
+/* Outlined progress/stat bar: `track` background, `fill` for the first
+ * `filled` pixels (clamped to [0,w]), `border` frame. */
+void ui_progress(int x, int y, int w, int h, int filled, u16 fill, u16 track, u16 border) {
+  if (filled < 0) filled = 0;
+  if (filled > w) filled = w;
+  m3_rect(x, y, x + w, y + h, track);
+  if (filled > 0) m3_rect(x, y, x + filled, y + h, fill);
+  m3_frame(x, y, x + w - 1, y + h - 1, border);
+}
+
+/* Blit a w×h RGB15 sprite (0 = transparent, 0x8000|RGB15 = opaque). Same pixel
+ * format as ui_icon16 and the mon_icons / mon_front generators. */
+void ui_sprite(int x, int y, int w, int h, const u16* data) {
+  if (!data) return;
+  for (int j = 0; j < h; j++) {
+    for (int i = 0; i < w; i++) {
+      u16 p = data[j * w + i];
+      if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
+    }
+  }
+}
+
 void ui_truncate(char* out, const char* in, int max_cols) {
   if (max_cols < 1) { out[0] = 0; return; }
   int cols = 0, i = 0, o = 0, last_start = 0;

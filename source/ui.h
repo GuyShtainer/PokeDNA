@@ -56,4 +56,13 @@ void ui_icon16(int x, int y, const u16* icon);
  * `out` must hold at least max_cols*4 + 1 bytes to be safe. */
 void ui_truncate(char* out, const char* in, int max_cols);
 
+/* Solid filled rectangle (no border) — box wallpaper, stat cells. */
+void ui_fill_rect(int x, int y, int w, int h, u16 color);
+
+/* Outlined bar filled to `filled` px over a `track` background (EXP/IV/EV bars). */
+void ui_progress(int x, int y, int w, int h, int filled, u16 fill, u16 track, u16 border);
+
+/* Blit a w×h RGB15 sprite (0 transparent, 0x8000|RGB15 opaque) — e.g. 64×64 front sprite. */
+void ui_sprite(int x, int y, int w, int h, const u16* data);
+
 #endif /* UI_H */
