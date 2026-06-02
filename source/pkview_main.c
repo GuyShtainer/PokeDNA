@@ -27,6 +27,8 @@
 #include "mon_icons.h"
 #include "pkview_summary.h"
 #include "pkview_box.h"
+#include "gen3_trainer.h"
+#include "pkview_trainer.h"
 #include "savefile.h"
 #include "log.h"
 #include "ui.h"
@@ -51,6 +53,7 @@ static int         g_count = 0;
 static char        EWRAM_BSS g_cwd[PATH_MAX];             /* current directory (set in main) */
 static PkMon       EWRAM_BSS g_party[6];                  /* decoded party of the open save  */
 static u8          EWRAM_BSS g_pc[G3_PC_BYTES];           /* reassembled PC storage (boxes)  */
+static u8          EWRAM_BSS g_sb2[G3_SECTOR_DATA_SIZE];   /* SaveBlock2 (trainer card/stats) */
 
 /* ---- VBlank / input discipline (key_poll exactly once per frame) -------- */
 static void vsync(void) { VBlankIntrWait(); key_poll(); }
@@ -239,6 +242,7 @@ static const char* ver_label(Gen3Version v, bool frlg) {
 static Gen3SaveInfo g_vinfo;
 static int  g_nparty = 0;
 static bool g_frlg = false, g_have_pc = false;
+static PkGame g_game = PK_EMERALD;
 
 /* Party list view. A opens the summary; SELECT switches to PC boxes; B exits.
  * Returns 0 (back to file browser) or 1 (switch to boxes). */
@@ -267,12 +271,14 @@ static int party_list(void) {
     }
 
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, g_have_pc ? "A view  SEL boxes  B back" : "A view  U/D move  B back");
+    ui_text(4, 152, UI_DIM, g_have_pc ? "A view  SEL boxes  START card  B back"
+                                      : "A view  START card  B back");
 
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT);
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT | KEY_START);
     if      (k & KEY_UP)   { if (sel > 0) sel--; }
     else if (k & KEY_DOWN) { if (sel < g_nparty - 1) sel++; }
     else if (k & KEY_B)    return 0;
+    else if (k & KEY_START) return 2;
     else if (k & KEY_SELECT) { if (g_have_pc) return 1; }
     else if ((k & KEY_A) && g_nparty > 0) sel = pkview_summary(g_party, g_nparty, sel);
   }
@@ -299,12 +305,20 @@ static void view_save(const char* path) {
   for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
   g_have_pc = (gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc) == G3_PC_BYTES);
 
+  /* SaveBlock2 (section 0) for the trainer card + per-game layout for stats */
+  int s0 = gen3_find_section(g_save, g_vinfo.slot, 0);
+  if (s0 >= 0)
+    memcpy(g_sb2, g_save + (uint32_t)g_vinfo.slot * G3_SLOT_BYTES + (uint32_t)s0 * G3_SECTOR_SIZE,
+           G3_SECTOR_DATA_SIZE);
+  g_game = g_frlg ? PK_FRLG : (g_vinfo.version_guess == G3_VER_RS ? PK_RS : PK_EMERALD);
+
   int mode = g_have_pc ? 0 : 1;          /* start in PC boxes (per request) */
   for (;;) {
     int r = (mode == 0) ? pkview_box(g_pc) : party_list();
-    if (r == 0) return;                  /* B -> file browser */
-    if (!g_have_pc) return;              /* nothing to toggle to */
-    mode ^= 1;                           /* SELECT -> toggle box/party */
+    if (r == 0) return;                          /* B -> file browser */
+    if (r == 2) { pkview_trainer(g_sb1, g_sb2, &g_vinfo, g_game); continue; }  /* START -> trainer card */
+    if (!g_have_pc) return;                       /* nothing to toggle to */
+    mode ^= 1;                                    /* SELECT -> toggle box/party */
   }
 }
 

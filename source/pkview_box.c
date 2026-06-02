@@ -96,7 +96,7 @@ static void render(const uint8_t* pc, int box, int cur) {
     }
   }
 
-  ui_text(78, 153, UI_DIM, "A view  L/R box  SEL party  B");
+  ui_text(78, 153, UI_DIM, "A L/R:box SEL:party ST:card B");
 }
 
 int pkview_box(const uint8_t* pc) {
@@ -112,6 +112,7 @@ int pkview_box(const uint8_t* pc) {
 
     if (k & KEY_B) return 0;
     else if (k & KEY_SELECT) return 1;
+    else if (k & KEY_START) return 2;
     else if (k & KEY_L) { box = (box + G3_TOTAL_BOXES - 1) % G3_TOTAL_BOXES; pk_read_box(pc, box, g_box); cur = 0; }
     else if (k & KEY_R) { box = (box + 1) % G3_TOTAL_BOXES; pk_read_box(pc, box, g_box); cur = 0; }
     else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
