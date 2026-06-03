@@ -21,11 +21,41 @@
 
 #define COLS 6
 #define ROWS 5
-#define CELL_W 26
-#define CELL_H 27
-#define GRID_X 80
-#define GRID_Y 18
+#define CELL_W 24
+#define CELL_H 24
+#define GRID_X 82
+#define GRID_Y 20
 #define PANEL_W 76
+
+/* Gen-3-style PC hand cursor (16x16): ' '=clear, 'o'=black outline, '#'=white fill. */
+static const char* const HAND[16] = {
+  "     oo         ",
+  "    o##o        ",
+  "    o##o        ",
+  "    o##o        ",
+  "    o##ooo      ",
+  "    o##o##oo    ",
+  "    o##o##o##o  ",
+  "  oo##########o ",
+  " o############o ",
+  " o############o ",
+  " o############o ",
+  "  o##########o  ",
+  "   o#########o  ",
+  "   o########o   ",
+  "    o#######o   ",
+  "     ooooooo    ",
+};
+
+static void draw_hand(int x, int y) {
+  for (int j = 0; j < 16; j++) {
+    const char* r = HAND[j];
+    for (int i = 0; r[i]; i++) {
+      if (r[i] == 'o')      m3_plot(x + i, y + j, RGB15(1, 1, 1));
+      else if (r[i] == '#') m3_plot(x + i, y + j, RGB15(31, 29, 25));
+    }
+  }
+}
 
 static PkMon EWRAM_BSS g_box[30];
 static PkMon EWRAM_BSS g_occ[30];
@@ -94,9 +124,10 @@ static void render(const uint8_t* pc, int box, int cur) {
       int s = r * COLS + cc;
       int x = GRID_X + cc * CELL_W, y = GRID_Y + r * CELL_H;
       if (g_box[s].species) ui_sprite(x, y, MON_ICON_W, MON_ICON_H, mon_icon_for(g_box[s].species));
-      if (s == cur) m3_frame(x - 1, y - 1, x + CELL_W - 1, y + CELL_H - 2, UI_SELTEXT);
     }
   }
+  /* the iconic Gen-3 hand cursor, drawn on top at the selected cell */
+  draw_hand(GRID_X + (cur % COLS) * CELL_W + 8, GRID_Y + (cur / COLS) * CELL_H + 6);
 
   ui_text(78, 153, UI_DIM, "A L/R:box SEL:party ST:card B");
 }
