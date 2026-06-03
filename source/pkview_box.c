@@ -58,7 +58,6 @@ static void draw_hand(int x, int y) {
 }
 
 static PkMon EWRAM_BSS g_box[30];
-static PkMon EWRAM_BSS g_occ[30];
 
 static void s_vsync(void) { VBlankIntrWait(); key_poll(); }
 
@@ -154,16 +153,13 @@ int pkview_box(uint8_t* pc) {
     else if (k & KEY_DOWN)  cur = (cur >= COLS * (ROWS - 1)) ? cur - COLS * (ROWS - 1) : cur + COLS;
     else if (k & KEY_A) {
       if (g_box[cur].species) {
-        int act = app_action_menu(app_can_edit());
-        if (act == 0) {
-          int no = 0, ci = 0;
-          for (int s = 0; s < 30; s++)
-            if (g_box[s].species) { if (s == cur) ci = no; g_occ[no++] = g_box[s]; }
-          pkview_summary(g_occ, no, ci);
-        } else if (act == 1) {
-          uint8_t* rec = pc + 0x0004 + ((uint32_t)box * 30 + cur) * 80;  /* PokemonStorage.boxes */
+        uint8_t* rec = pc + 0x0004 + ((uint32_t)box * 30 + cur) * 80;     /* PokemonStorage.boxes */
+        if (app_can_edit()) {
           if (app_edit_commit(rec, false, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc))
             pk_read_box(pc, box, g_box);                                  /* refresh after write */
+        } else {
+          uint8_t dummy[100];
+          pkview_inspect(rec, false, false, dummy);                       /* read-only view */
         }
       }
     }

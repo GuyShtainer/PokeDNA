@@ -1,11 +1,9 @@
 /*
- * Game-faithful paged Pokémon summary (6 cards) for gba-pokeviewer.
- *
- * Mimics the Gen-3 summary screens: a persistent left panel (front sprite +
- * No./nickname/level/gender) and a per-card right panel. Native order is
- * INFO, SKILLS, BATTLE MOVES, CONTEST MOVES; per the user's request an IV card
- * and an EV card (each with a total) are inserted after SKILLS:
- *   0 INFO   1 SKILLS   2 IVs   3 EVs   4 BATTLE MOVES   5 CONTEST MOVES
+ * Game-faithful paged Pokémon summary (6 cards) for gba-pokeviewer — now an
+ * inline VIEW + EDIT screen. Each editable field registers its on-screen box
+ * during render; in edit mode a cursor highlights one and A / LEFT-RIGHT edit it
+ * in place (reusing the editor's field dispatchers). No separate "edit" mode.
+ *   cards: 0 INFO  1 SKILLS  2 IVs  3 EVs  4 BATTLE MOVES  5 CONTEST MOVES
  */
 #include <tonc.h>
 #include <stdio.h>
@@ -14,26 +12,34 @@
 #include "pkview_summary.h"
 #include "ui.h"
 #include "gen3_mon.h"
+#include "gen3_edit.h"
+#include "gen3_box.h"      /* pk_resolve */
 #include "data_tables.h"
+#include "pkview_edit.h"   /* F_*, em_field_press / em_field_adjust */
 #include "mon_front.h"
 #include "mon_icons.h"
 
 #define NCARDS 6
 
-/* Display order (game shows HP, Atk, Def, SpA, SpD, Spe) vs save-native order
- * (HP, Atk, Def, Spe, SpA, SpD). */
-static const int   DISP[6]  = { PK_HP, PK_ATK, PK_DEF, PK_SPA, PK_SPD, PK_SPE };
-static const char* DLAB[6]  = { "HP", "Attack", "Defense", "Sp.Atk", "Sp.Def", "Speed" };
+static const int   DISP[6]   = { PK_HP, PK_ATK, PK_DEF, PK_SPA, PK_SPD, PK_SPE };
+static const char* DLAB[6]   = { "HP", "Attack", "Defense", "Sp.Atk", "Sp.Def", "Speed" };
 static const char* DSHORT[6] = { "HP", "Atk", "Def", "SpA", "SpD", "Spe" };
 
 #define C_HDR  UI_TITLE
-#define C_KEY  UI_DIRCLR   /* field labels (cyan) */
-#define C_VAL  UI_TEXT     /* values (white) */
-#define C_HOT  UI_WARN     /* nature / highlights (orange) */
+#define C_KEY  UI_DIRCLR
+#define C_VAL  UI_TEXT
+#define C_HOT  UI_WARN
 
 static void s_vsync(void) { VBlankIntrWait(); key_poll(); }
 
-/* page dots at (x,y); `active` filled, others hollow */
+/* ---- editable-field slot registry (filled during render in edit mode) ---- */
+static int g_edit = 0, g_nslot = 0;
+static struct { int field, x, y, w; } g_slot[24];
+static void reg(int field, int x, int y, int w) {
+  if (g_edit && g_nslot < 24) { g_slot[g_nslot].field = field; g_slot[g_nslot].x = x;
+                                g_slot[g_nslot].y = y; g_slot[g_nslot].w = w; g_nslot++; }
+}
+
 static void draw_dots(int x, int y, int n, int active) {
   for (int i = 0; i < n; i++) {
     int cx = x + i * 7;
@@ -42,17 +48,14 @@ static void draw_dots(int x, int y, int n, int active) {
   }
 }
 
-/* word-wrap `s` into lines of <= cols columns starting at (x,y); returns next y. */
 static int text_wrap(int x, int y, int cols, u16 ink, const char* s) {
   char line[64];
   int li = 0;
   while (*s) {
-    /* take a word */
-    const char* w = s;
-    int wl = 0;
+    const char* w = s; int wl = 0;
     while (s[wl] && s[wl] != ' ') wl++;
     int need = (li ? li + 1 : 0) + wl;
-    if (need > cols && li) { line[li] = 0; ui_text(x, y, ink, line); y += UI_ROW_H; li = 0; need = wl; }
+    if (need > cols && li) { line[li] = 0; ui_text(x, y, ink, line); y += UI_ROW_H; li = 0; }
     if (li) line[li++] = ' ';
     for (int i = 0; i < wl && li < (int)sizeof(line) - 1; i++) line[li++] = w[i];
     s += wl;
@@ -64,185 +67,192 @@ static int text_wrap(int x, int y, int cols, u16 ink, const char* s) {
 
 static const char* gender_str(uint8_t g) { return g == 0 ? " M" : g == 1 ? " F" : ""; }
 
-/* ---------- left panel (common to every card) ---------- */
 static void draw_left(const PkMon* p) {
   ui_panel(0, 11, 92, 139, UI_PANEL, UI_BORDER);
-
   const uint16_t* spr = mon_front_for(p->species, p->isShiny);
   if (spr) ui_sprite(14, 14, MON_FRONT_W, MON_FRONT_H, spr);
-  else     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for(p->species)); /* fallback */
+  else     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for(p->species));
 
   char buf[40];
-  uint8_t gr = pk_species_gender_ratio(p->species);
-  uint8_t gender = pk_gender_from(p->personality, gr);
-
   siprintf(buf, "No.%u", (unsigned)pk_national_no(p->species));
   ui_text(6, 82, C_KEY, buf);
   if (p->isShiny) ui_text(64, 82, C_HOT, "*");
-
   char nm[24];
   ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);
   ui_text(6, 92, C_VAL, nm);
-
-  siprintf(buf, "Lv%u%s", (unsigned)p->level, gender_str(gender));
+  siprintf(buf, "Lv%u%s", (unsigned)p->level, gender_str(p->gender));
   ui_text(6, 102, C_VAL, buf);
-
   char sp[24];
   ui_truncate(sp, pk_species_name(p->species), 11);
   ui_text(6, 112, C_KEY, sp);
-
-  /* types (second type on its own line) */
-  uint8_t t1 = pk_species_type1(p->species), t2 = pk_species_type2(p->species);
-  ui_text(6, 122, C_VAL, pk_type_name(t1));
-  if (t2 != t1) ui_text(6, 131, C_VAL, pk_type_name(t2));
-
-  if (p->isBadEgg)   ui_text(6, 141, UI_WARN, "BAD EGG");
-  else if (p->isEgg) ui_text(6, 141, C_HOT, "EGG");
+  if (p->isBadEgg)   ui_text(6, 138, UI_WARN, "BAD EGG");
+  else if (p->isEgg) ui_text(6, 138, C_HOT, "EGG");
 }
 
-/* ---------- card 0: INFO ---------- */
 static void card_info(const PkMon* p) {
-  int x = 98, y = 14;
-  char buf[48];
-  ui_text(x, y, C_HDR, "POKEMON INFO"); y += 11;
+  int x = 98, y = 14; char b[48];
+  ui_text(x, y, C_HDR, "POKEMON INFO"); y += 12;
 
-  siprintf(buf, "OT/%s", p->otName); ui_text(x, y, C_VAL, buf);
-  siprintf(buf, "ID %05u", (unsigned)(p->otId & 0xFFFF)); ui_text(x + 78, y, C_KEY, buf); y += 11;
+  ui_text(x, y, C_KEY, "Species"); reg(F_SPECIES, x + 48, y, 88);
+  ui_text(x + 48, y, C_VAL, pk_species_name(p->species)); y += 9;
 
-  ui_text(x, y, C_KEY, "Ability"); y += UI_ROW_H;
+  ui_text(x, y, C_KEY, "Name"); reg(F_NICK, x + 48, y, 88);
+  { char nm[24]; ui_truncate(nm, p->nickname[0] ? p->nickname : "-", 11); ui_text(x + 48, y, C_VAL, nm); } y += 9;
+
+  ui_text(x, y, C_KEY, "OT"); reg(F_OT, x + 48, y, 52);
+  ui_text(x + 48, y, C_VAL, p->otName);
+  siprintf(b, "ID%05u", (unsigned)(p->otId & 0xFFFF)); ui_text(x + 104, y, UI_DIM, b); y += 9;
+
+  uint8_t t1 = pk_species_type1(p->species), t2 = pk_species_type2(p->species);
+  ui_text(x, y, C_KEY, "Type"); ui_text(x + 48, y, C_VAL, pk_type_name(t1));
+  if (t2 != t1) ui_text(x + 48 + (int)strlen(pk_type_name(t1)) * 8 + 6, y, C_VAL, pk_type_name(t2));
+  y += 10;
+
   uint16_t ab = pk_species_ability(p->species, p->abilityNum);
-  ui_text(x + 4, y, C_VAL, pk_ability_name(ab)); y += UI_ROW_H;
-  y = text_wrap(x + 4, y, 17, UI_DIM, pk_ability_desc(ab)); y += 3;
+  ui_text(x, y, C_KEY, "Ability"); reg(F_ABILITY, x + 48, y, 88);
+  ui_text(x + 48, y, C_VAL, pk_ability_name(ab)); y += 9;
+  y = text_wrap(x + 4, y, 17, UI_DIM, pk_ability_desc(ab)); y += 1;
 
-  ui_text(x, y, C_KEY, "Memo"); y += UI_ROW_H;
-  ui_text(x + 4, y, C_HOT, pk_nature_name(p->nature));
-  ui_text(x + 4 + (int)strlen(pk_nature_name(p->nature)) * 8 + 4, y, C_VAL, "nature"); y += UI_ROW_H;
-  siprintf(buf, "met at Lv%u,", (unsigned)p->metLevel); ui_text(x + 4, y, C_VAL, buf); y += UI_ROW_H;
-  ui_text(x + 4, y, C_HOT, pk_location_name(p->metLocation));
+  ui_text(x, y, C_KEY, "Nature"); reg(F_NATURE, x + 48, y, 60);
+  ui_text(x + 48, y, C_HOT, pk_nature_name(p->nature)); y += 9;
+
+  ui_text(x, y, C_KEY, "Shiny"); reg(F_SHINY, x + 48, y, 26);
+  ui_text(x + 48, y, p->isShiny ? UI_OK : C_VAL, p->isShiny ? "Yes" : "No");
+  ui_text(x + 80, y, C_KEY, "Gen"); reg(F_GENDER, x + 108, y, 22);
+  ui_text(x + 108, y, C_VAL, p->gender == 0 ? "M" : p->gender == 1 ? "F" : "-"); y += 10;
+
+  siprintf(b, "Met Lv%u %s", (unsigned)p->metLevel, pk_location_name(p->metLocation));
+  { char mb[40]; ui_truncate(mb, b, 17); ui_text(x, y, UI_DIM, mb); }
 }
 
-/* ---------- card 1: SKILLS ---------- */
 static void card_skills(const PkMon* p) {
-  int x = 98, y = 14;
-  char buf[48];
-  ui_text(x, y, C_HDR, "SKILLS"); y += 11;
-
-  ui_text(x, y, C_KEY, "Item");
-  ui_text(x + 36, y, C_VAL, p->heldItem ? pk_item_name(p->heldItem) : "none"); y += 11;
-
+  int x = 98, y = 14; char b[48];
+  ui_text(x, y, C_HDR, "SKILLS"); y += 12;
+  ui_text(x, y, C_KEY, "Level"); reg(F_LEVEL, x + 60, y, 40);
+  siprintf(b, "%u", (unsigned)p->level); ui_text(x + 60, y, C_VAL, b); y += 9;
+  ui_text(x, y, C_KEY, "Item"); reg(F_ITEM, x + 60, y, 76);
+  ui_text(x + 60, y, C_VAL, p->heldItem ? pk_item_name(p->heldItem) : "none"); y += 9;
+  ui_text(x, y, C_KEY, "Friend"); reg(F_FRIEND, x + 60, y, 40);
+  siprintf(b, "%u", (unsigned)p->friendship); ui_text(x + 60, y, C_VAL, b); y += 11;
   for (int i = 0; i < 6; i++) {
-    int s = DISP[i];
-    int b = pk_nature_boost(p->nature), h = pk_nature_hinder(p->nature);
-    u16 col = (s == b) ? UI_OK : (s == h) ? UI_WARN : C_VAL;
-    siprintf(buf, "%-7s", DLAB[i]); ui_text(x, y, C_KEY, buf);
-    siprintf(buf, "%5u", (unsigned)p->stats[s]); ui_text(x + 60, y, col, buf);
-    y += UI_ROW_H;
-  }
-  y += 4;
-
-  uint8_t gr = pk_species_growth(p->species);
-  uint32_t cur = pk_exp_for_level(gr, p->level);
-  uint32_t nxt = (p->level < 100) ? pk_exp_for_level(gr, p->level + 1) : p->experience;
-  siprintf(buf, "EXP %u", (unsigned)p->experience); ui_text(x, y, C_KEY, buf); y += UI_ROW_H;
-  if (p->level < 100 && nxt > cur) {
-    uint32_t span = nxt - cur, into = (p->experience > cur) ? p->experience - cur : 0;
-    int fill = (int)((uint64_t)into * 132 / span);
-    ui_progress(x, y, 132, 5, fill, UI_OK, UI_PANEL, UI_BORDER); y += 8;
-    siprintf(buf, "next: %u", (unsigned)(nxt > p->experience ? nxt - p->experience : 0));
-    ui_text(x, y, UI_DIM, buf);
-  } else {
-    ui_text(x, y, UI_DIM, "max level");
+    int s = DISP[i], bo = pk_nature_boost(p->nature), h = pk_nature_hinder(p->nature);
+    u16 col = (s == bo) ? UI_OK : (s == h) ? UI_WARN : C_VAL;
+    siprintf(b, "%-7s", DLAB[i]); ui_text(x, y, C_KEY, b);
+    siprintf(b, "%5u", (unsigned)p->stats[s]); ui_text(x + 60, y, col, b);
+    y += 9;
   }
 }
 
-/* ---------- card 2 / 3: IVs / EVs ---------- */
 static void card_spread(const PkMon* p, bool ev) {
-  int x = 98, y = 14;
-  char buf[48];
+  int x = 98, y = 14; char b[48];
   ui_text(x, y, C_HDR, ev ? "EVs" : "IVs"); y += 12;
-
   int total = 0, maxv = ev ? 255 : 31;
   for (int i = 0; i < 6; i++) {
-    int s = DISP[i];
-    int v = ev ? p->evs[s] : p->ivs[s];
+    int s = DISP[i], v = ev ? p->evs[s] : p->ivs[s];
     total += v;
+    reg(ev ? F_EV0 + s : F_IV0 + s, x, y, 138);
     ui_text(x, y, C_KEY, DSHORT[i]);
-    siprintf(buf, "%3d", v); ui_text(x + 26, y, C_VAL, buf);
+    siprintf(b, "%3d", v); ui_text(x + 26, y, C_VAL, b);
     int fill = v * 84 / maxv;
     u16 col = (!ev && v == 31) ? UI_OK : (ev && v == 252) ? UI_OK : C_HDR;
-    ui_progress(x + 54, y + 1, 84, 5, fill, col, UI_PANEL, UI_BORDER);  /* clears the number */
+    ui_progress(x + 54, y + 1, 84, 5, fill, col, UI_PANEL, UI_BORDER);
     y += 12;
   }
   y += 2;
   ui_text(x, y, C_KEY, "TOTAL");
-  siprintf(buf, "%d / %d", total, ev ? 510 : 186);
-  ui_text(x + 44, y, C_HOT, buf);
+  siprintf(b, "%d / %d", total, ev ? 510 : 186);
+  ui_text(x + 44, y, total > (ev ? 510 : 186) ? UI_WARN : C_HOT, b);
 }
 
-/* ---------- card 4 / 5: BATTLE / CONTEST MOVES ---------- */
 static void card_moves(const PkMon* p, bool contest) {
-  int x = 98, y = 14;
-  char buf[48];
+  int x = 98, y = 14; char b[48];
   ui_text(x, y, C_HDR, contest ? "CONTEST MOVES" : "BATTLE MOVES"); y += 12;
-
   for (int i = 0; i < 4; i++) {
     uint16_t mv = p->moves[i];
+    reg(F_MV0 + i, x, y, 132);
     if (mv == 0) { ui_text(x, y, UI_DIM, "-"); y += 18; continue; }
-    /* line 1: move name (+ PP on the right for battle moves) */
     char nm[24];
     ui_truncate(nm, pk_move_name(mv), contest ? 16 : 9);
     ui_text(x, y, C_VAL, nm);
     if (!contest) {
       uint8_t base = pk_move_pp(mv);
       uint8_t maxpp = (uint8_t)(base + base / 5 * ((p->ppBonuses >> (i * 2)) & 3));
-      siprintf(buf, "PP%u/%u", (unsigned)p->pp[i], (unsigned)maxpp);
-      ui_text(x + 78, y, UI_DIM, buf);
+      siprintf(b, "PP%u/%u", (unsigned)p->pp[i], (unsigned)maxpp);
+      ui_text(x + 78, y, UI_DIM, b);
     }
-    /* line 2: type (battle) or contest category (indented) */
     ui_text(x + 8, y + UI_ROW_H, contest ? C_HOT : C_KEY,
             contest ? pk_contest_name(pk_move_contest(mv)) : pk_type_name(pk_move_type(mv)));
     y += 18;
   }
 }
 
-static void render(const PkMon* p, int idx, int count, int card) {
+static void render_card(const PkMon* p, int card) {
   ui_clear();
-  /* top bar */
-  char hd[32];
-  siprintf(hd, "%d/%d", idx + 1, count);
-  ui_text(4, 2, UI_DIM, hd);
+  g_nslot = 0;
+  ui_text(4, 2, UI_DIM, g_edit ? "EDIT" : "VIEW");
   draw_dots(150, 2, NCARDS, card);
   ui_hline(0, 10, UI_SCR_W, UI_BORDER);
-
   draw_left(p);
   switch (card) {
-    case 0: card_info(p);        break;
-    case 1: card_skills(p);      break;
+    case 0: card_info(p);          break;
+    case 1: card_skills(p);        break;
     case 2: card_spread(p, false); break;
     case 3: card_spread(p, true);  break;
     case 4: card_moves(p, false);  break;
     case 5: card_moves(p, true);   break;
   }
-
-  ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-  ui_text(4, 152, UI_DIM, "L/R card  U/D mon  B back");
 }
 
-int pkview_summary(const PkMon* party, int count, int idx) {
-  int card = 0;
-  if (count <= 0) return 0;
-  if (idx < 0) idx = 0;
-  if (idx >= count) idx = count - 1;
+static bool confirm(void) {
+  ui_clear();
+  ui_text(20, 50, UI_TITLE, "Save changes?");
+  ui_text(20, 70, UI_TEXT, "A = write  (backup made first)");
+  ui_text(20, 82, UI_WARN, "B = discard");
+  u16 k; do { s_vsync(); k = key_hit(KEY_A | KEY_B); } while (!k);
+  return (k & KEY_A) != 0;
+}
+
+bool pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec) {
+  EditMon e;
+  gen3_edit_load(rec, is_party, &e);
+  PkMon cur;
+  em_preview(&e, &cur); pk_resolve(&cur);
+
+  int card = 0, fsel = 0;
+  bool dirty = false;
+  if (can_edit) key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
 
   for (;;) {
-    render(&party[idx], idx, count, card);
+    g_edit = can_edit;
+    render_card(&cur, card);
+    if (can_edit && g_nslot) {
+      if (fsel >= g_nslot) fsel = g_nslot - 1;
+      int sx = g_slot[fsel].x, sy = g_slot[fsel].y, sw = g_slot[fsel].w;
+      m3_frame(sx - 2, sy - 1, sx + sw, sy + UI_ROW_H, UI_SELTEXT);
+    }
+    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+    ui_text(4, 152, UI_DIM, can_edit ? "U/D field  A/<> edit  L/R card  B" : "L/R card  B back");
+
     u16 k;
     do { s_vsync(); k = key_hit(KEY_FULL); } while (!k);
 
-    if (k & KEY_B) return idx;
-    else if (k & (KEY_LEFT | KEY_L))  card = (card + NCARDS - 1) % NCARDS;
-    else if (k & (KEY_RIGHT | KEY_R)) card = (card + 1) % NCARDS;
-    else if (k & KEY_UP)   idx = (idx + count - 1) % count;
-    else if (k & KEY_DOWN) idx = (idx + 1) % count;
+    if (k & KEY_B) {
+      bool ret = false;
+      if (can_edit && dirty && confirm()) { gen3_edit_commit(&e, out_rec); ret = true; }
+      if (can_edit) key_repeat_mask(KEY_UP | KEY_DOWN);
+      return ret;
+    }
+    else if (k & (KEY_L | KEY_R)) { card = (card + (k & KEY_R ? 1 : NCARDS - 1)) % NCARDS; fsel = 0; }
+    else if (can_edit && g_nslot && (k & KEY_A)) {
+      em_field_press(g_slot[fsel].field, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true;
+    }
+    else if (can_edit && g_nslot && (k & KEY_LEFT)) {
+      em_field_adjust(g_slot[fsel].field, -1, false, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true;
+    }
+    else if (can_edit && g_nslot && (k & KEY_RIGHT)) {
+      em_field_adjust(g_slot[fsel].field, +1, false, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true;
+    }
+    else if (k & KEY_UP)   { if (can_edit && g_nslot) fsel = (fsel > 0) ? fsel - 1 : g_nslot - 1; }
+    else if (k & KEY_DOWN) { if (can_edit && g_nslot) fsel = (fsel + 1) % g_nslot; }
   }
 }

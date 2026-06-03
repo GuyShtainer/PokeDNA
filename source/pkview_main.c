@@ -251,25 +251,6 @@ static char   g_path[PATH_MAX];                           /* path of the open sa
 
 bool app_can_edit(void) { return active_flashcart == EZ_FLASH_OMEGA; }
 
-int app_action_menu(bool can_edit) {
-  const char* items[2] = { "View", "Edit" };
-  int n = can_edit ? 2 : 1, sel = 0;
-  for (;;) {
-    ui_clear();
-    ui_text(70, 44, UI_TITLE, "POKEMON");
-    ui_hline(0, 53, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < n; i++)
-      ui_text_sel(70, 64 + i * 14, 110, i == sel, UI_TEXT, items[i]);
-    if (!can_edit) ui_text(34, 110, UI_DIM, "Edit needs EZ-Flash Omega");
-    ui_text(34, 150, UI_DIM, "A select   B cancel");
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if      (k & KEY_B)    return -1;
-    else if (k & KEY_A)    return sel;
-    else if (k & KEY_UP)   { if (sel > 0) sel--; }
-    else if (k & KEY_DOWN) { if (sel < n - 1) sel++; }
-  }
-}
-
 static void msg_wait(const char* title, u16 col, const char* l1, const char* l2) {
   ui_clear();
   ui_text(20, 60, col, title);
@@ -281,7 +262,7 @@ static void msg_wait(const char* title, u16 col, const char* l1, const char* l2)
 
 bool app_edit_commit(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block) {
   uint8_t out[100];
-  if (!pkview_edit(rec, is_party, out)) return false;        /* cancelled in the editor */
+  if (!pkview_inspect(rec, is_party, true, out)) return false; /* viewed only / discarded */
   memcpy(rec, out, is_party ? 100 : 80);                     /* patch in place (rec is inside block) */
 
   for (int id = sect_lo; id <= sect_hi; id++)
@@ -352,17 +333,17 @@ static int party_list(void) {
     else if (k & KEY_START) return 2;
     else if (k & KEY_SELECT) { if (g_have_pc) return 1; }
     else if ((k & KEY_A) && g_nparty > 0) {
-      int act = app_action_menu(app_can_edit());
-      if (act == 0) {
-        sel = pkview_summary(g_party, g_nparty, sel);
-      } else if (act == 1) {
-        uint16_t doff = g_frlg ? 0x0038 : 0x0238;
-        uint8_t* rec = g_sb1 + doff + (uint32_t)sel * 100;
-        if (app_edit_commit(rec, true, 1, 4, g_sb1)) {     /* party lives in SaveBlock1 (ids 1..4) */
+      uint16_t doff = g_frlg ? 0x0038 : 0x0238;
+      uint8_t* rec = g_sb1 + doff + (uint32_t)sel * 100;     /* party lives in SaveBlock1 (ids 1..4) */
+      if (app_can_edit()) {
+        if (app_edit_commit(rec, true, 1, 4, g_sb1)) {       /* inline view+edit -> commit */
           g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
           for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
           if (sel >= g_nparty) sel = g_nparty ? g_nparty - 1 : 0;
         }
+      } else {
+        uint8_t dummy[100];
+        pkview_inspect(rec, true, false, dummy);             /* read-only view (Everdrive) */
       }
     }
   }

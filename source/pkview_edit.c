@@ -20,16 +20,6 @@
 #include "osk.h"
 #include "pkview_pick.h"
 
-enum {
-  F_SPECIES, F_NICK, F_LEVEL, F_NATURE, F_ABILITY, F_SHINY, F_GENDER,
-  F_ITEM, F_FRIEND,
-  F_IV0, F_IV1, F_IV2, F_IV3, F_IV4, F_IV5,
-  F_EV0, F_EV1, F_EV2, F_EV3, F_EV4, F_EV5,
-  F_MV0, F_MV1, F_MV2, F_MV3,
-  F_OT,
-  F_NUM
-};
-
 static const char* const FLABEL[F_NUM] = {
   "Species", "Nickname", "Level", "Nature", "Ability", "Shiny", "Gender",
   "Item", "Friendship",
@@ -112,7 +102,7 @@ static void reroll_to(EditMon* e, const PkMon* c, int nat, int shiny, int gender
   em_reroll(e, nat, -1, -1, ratio);
 }
 
-static void adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
+void em_field_adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
   int s = big ? 10 : 1;
   switch (f) {
     case F_SPECIES: em_set_species(e, clampi(c->species + dir * (big ? 10 : 1), 1, 411)); break;
@@ -134,7 +124,7 @@ static void adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
   }
 }
 
-static void press_a(int f, EditMon* e, const PkMon* c) {
+void em_field_press(int f, EditMon* e, const PkMon* c) {
   char buf[20];
   switch (f) {
     case F_SPECIES: { uint16_t id = pick_species(c->species); if (id != 0xFFFF) em_set_species(e, id); break; }
@@ -147,6 +137,14 @@ static void press_a(int f, EditMon* e, const PkMon* c) {
     case F_ABILITY: em_set_ability(e, c->abilityNum ^ 1); break;
     case F_SHINY:   reroll_to(e, c, c->nature, c->isShiny ? 0 : 1, c->gender < 2 ? c->gender : -1); break;
     case F_GENDER:  if (c->gender < 2) reroll_to(e, c, c->nature, c->isShiny ? 1 : 0, c->gender ^ 1); break;
+    case F_FRIEND:  em_set_friendship(e, c->friendship == 255 ? 0 : 255); break;   /* quick toggle */
+    case F_IV0: case F_IV1: case F_IV2: case F_IV3: case F_IV4: case F_IV5:
+      em_set_iv(e, f - F_IV0, c->ivs[f - F_IV0] == 31 ? 0 : 31); break;             /* 0 <-> max */
+    case F_EV0: case F_EV1: case F_EV2: case F_EV3: case F_EV4: case F_EV5: {
+      uint8_t v = c->evs[f - F_EV0];                                                /* cycle 0/4/252/255 */
+      em_set_ev(e, f - F_EV0, v < 4 ? 4 : v < 252 ? 252 : v < 255 ? 255 : 0);
+      break;
+    }
     default: break;
   }
 }
@@ -181,11 +179,11 @@ bool pkview_edit(const uint8_t* rec, bool is_party, uint8_t* out_rec) {
     else if (k & KEY_START) { if (confirm()) { gen3_edit_commit(&e, out_rec); committed = true; break; } }
     else if (k & KEY_UP)   sel = (sel == 0) ? F_NUM - 1 : sel - 1;
     else if (k & KEY_DOWN) sel = (sel + 1) % F_NUM;
-    else if (k & KEY_A)    { press_a(sel, &e, &cur); refresh(&e, &cur); }
-    else if (k & KEY_LEFT)  { adjust(sel, -1, false, &e, &cur); refresh(&e, &cur); }
-    else if (k & KEY_RIGHT) { adjust(sel, +1, false, &e, &cur); refresh(&e, &cur); }
-    else if (k & KEY_L)     { adjust(sel, -1, true,  &e, &cur); refresh(&e, &cur); }
-    else if (k & KEY_R)     { adjust(sel, +1, true,  &e, &cur); refresh(&e, &cur); }
+    else if (k & KEY_A)    { em_field_press(sel, &e, &cur); refresh(&e, &cur); }
+    else if (k & KEY_LEFT)  { em_field_adjust(sel, -1, false, &e, &cur); refresh(&e, &cur); }
+    else if (k & KEY_RIGHT) { em_field_adjust(sel, +1, false, &e, &cur); refresh(&e, &cur); }
+    else if (k & KEY_L)     { em_field_adjust(sel, -1, true,  &e, &cur); refresh(&e, &cur); }
+    else if (k & KEY_R)     { em_field_adjust(sel, +1, true,  &e, &cur); refresh(&e, &cur); }
   }
   key_repeat_mask(KEY_UP | KEY_DOWN);    /* restore the global repeat set */
   return committed;

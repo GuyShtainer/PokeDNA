@@ -10,10 +10,6 @@
 /* Writes are EZ-Flash-Omega-only. */
 bool app_can_edit(void);
 
-/* Small "View / Edit" action menu. Returns 0 = view, 1 = edit, -1 = cancel.
- * Edit is offered only when can_edit. */
-int  app_action_menu(bool can_edit);
-
 /* Edit the record `rec` (which lives inside `block`, the reassembled save-block
  * sections [sect_lo..sect_hi] of the loaded save). Runs the field editor; on
  * commit it rewrites those sections into the in-RAM save image (recomputing each
