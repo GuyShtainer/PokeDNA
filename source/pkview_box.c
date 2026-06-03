@@ -106,7 +106,9 @@ static void render(const uint8_t* pc, int box, int cur) {
     }
   }
   /* the iconic Gen-3 hand cursor, drawn on top at the selected cell */
-  draw_hand(GRID_X + (cur % COLS) * CELL_W + 8, GRID_Y + (cur / COLS) * CELL_H + 6);
+  /* hand sits just ABOVE the selected mon (white glove pointing down at it),
+   * rather than covering the sprite. */
+  draw_hand(GRID_X + (cur % COLS) * CELL_W + 3, GRID_Y + (cur / COLS) * CELL_H - 16);
 
   ui_text(78, 153, UI_DIM, "A L/R:box SEL:party ST:card B");
 }
@@ -134,13 +136,8 @@ int pkview_box(uint8_t* pc) {
     else if (k & KEY_A) {
       if (g_box[cur].species) {
         uint8_t* rec = pc + 0x0004 + ((uint32_t)box * 30 + cur) * 80;     /* PokemonStorage.boxes */
-        if (app_can_edit()) {
-          if (app_edit_commit(rec, false, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc))
-            pk_read_box(pc, box, g_box);                                  /* refresh after write */
-        } else {
-          uint8_t dummy[100];
-          pkview_inspect(rec, false, false, dummy);                       /* read-only view */
-        }
+        if (app_mon_menu(rec, false, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc))
+          pk_read_box(pc, box, g_box);                                    /* refresh after write */
       }
     }
   }

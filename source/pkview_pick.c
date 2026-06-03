@@ -12,6 +12,7 @@
 #include "ui.h"
 #include "data_tables.h"
 #include "mon_icons.h"
+#include "type_icons.h"
 #include "osk.h"
 
 #define CANCEL 0xFFFF
@@ -65,6 +66,12 @@ static void type_chip(int x, int y, uint8_t t) {
   if (t >= 18) return;
   ui_fill_rect(x, y, 26, 9, type_color(t));
   ui_text(x + 2, y, RGB15(31, 31, 31), TYPE_ABBR[t]);
+}
+/* The real Gen-3 type badge (32x14, generated). Use where a row is tall enough;
+ * the compact text type_chip() stays for 8-9px list rows. */
+static void type_icon(int x, int y, uint8_t t) {
+  if (t >= 18) return;
+  ui_sprite(x, y, TYPE_ICON_W, TYPE_ICON_H, type_icon_for(t));
 }
 
 /* ===================== species grid ==================================== */
@@ -181,9 +188,10 @@ uint16_t pick_species(uint16_t current) {
     uint16_t cs = g_n ? g_list[sel] : 0;
     if (cs) {
       siprintf(hdr, "No.%u  %s", (unsigned)pk_national_no(cs), pk_species_name(cs));
-      ui_text(4, 1, UI_TITLE, hdr);
-      type_chip(178, 1, pk_species_type1(cs));
-      if (pk_species_type2(cs) != pk_species_type1(cs)) type_chip(206, 1, pk_species_type2(cs));
+      ui_text(4, 2, UI_TITLE, hdr);
+      uint8_t t1 = pk_species_type1(cs), t2 = pk_species_type2(cs);
+      if (t1 == t2) type_icon(204, 4, t1);
+      else { type_icon(172, 4, t1); type_icon(205, 4, t2); }
     }
     siprintf(hdr, "[%s] sort:%s  %d", filter_name(filter), sort ? "A-Z" : "No.", g_n);
     ui_text(4, 11, UI_DIM, hdr);
@@ -222,7 +230,25 @@ uint16_t pick_species(uint16_t current) {
 static u16 EWRAM_BSS g_mv[NMOVE];
 static int g_mvn;
 
-static void build_moves(int type_filter, const char* search) {
+/* sort modes for the move list */
+#define NMVSORT 6
+static const char* const MV_SORT[NMVSORT] = { "No.", "Name", "Power", "Acc", "PP", "Type" };
+
+/* true if move a should be ordered AFTER move b under the given sort. Numeric keys
+ * sort high-first (descending) since "strongest move first" is what you want; Name
+ * and Type sort ascending. Insertion sort is stable, so ties keep ascending id. */
+static bool move_gt(uint16_t a, uint16_t b, int sort) {
+  switch (sort) {
+    case 1: return strcmp(pk_move_name(a), pk_move_name(b)) > 0;   /* A-Z */
+    case 2: return pk_move_power(a)    < pk_move_power(b);          /* power, high first */
+    case 3: return pk_move_accuracy(a) < pk_move_accuracy(b);      /* acc,   high first */
+    case 4: return pk_move_pp(a)       < pk_move_pp(b);            /* PP,    high first */
+    case 5: return pk_move_type(a)     > pk_move_type(b);          /* group by type */
+    default: return a > b;                                         /* by No. (id) */
+  }
+}
+
+static void build_moves(int type_filter, int sort, const char* search) {
   g_mvn = 0;
   for (uint16_t m = 1; m < NMOVE; m++) {
     const char* nm = pk_move_name(m);
@@ -230,6 +256,12 @@ static void build_moves(int type_filter, const char* search) {
     if (type_filter >= 0 && pk_move_type(m) != type_filter) continue;
     if (search[0] && !ci_contains(nm, search)) continue;
     g_mv[g_mvn++] = m;
+  }
+  for (int i = 1; i < g_mvn; i++) {
+    uint16_t v = g_mv[i];
+    int j = i - 1;
+    while (j >= 0 && move_gt(g_mv[j], v, sort)) { g_mv[j + 1] = g_mv[j]; j--; }
+    g_mv[j + 1] = v;
   }
 }
 
@@ -248,9 +280,9 @@ static void text_wrap(int x, int y, int cols, u16 ink, const char* s) {
 }
 
 uint16_t pick_move(uint16_t current) {
-  int tf = -1;
+  int tf = -1, sort = 0;
   char search[16] = "";
-  build_moves(tf, search);
+  build_moves(tf, sort, search);
   int sel = 0;
   for (int i = 0; i < g_mvn; i++) if (g_mv[i] == current) { sel = i; break; }
 
@@ -262,7 +294,8 @@ uint16_t pick_move(uint16_t current) {
 
     ui_clear();
     char h[48];
-    siprintf(h, "MOVES  [%s]  %d", tf < 0 ? "All" : pk_type_name((uint8_t)tf), g_mvn);
+    siprintf(h, "MOVES [%s] sort:%s  %d", tf < 0 ? "All" : pk_type_name((uint8_t)tf),
+             MV_SORT[sort], g_mvn);
     ui_text(4, 1, UI_TITLE, h);
     ui_hline(0, 11, UI_SCR_W, UI_BORDER);
 
@@ -276,27 +309,29 @@ uint16_t pick_move(uint16_t current) {
       type_chip(120, y, pk_move_type(m));
     }
 
-    /* detail panel for the selected move */
+    /* detail panel for the selected move: fixed-width stat columns so the real
+     * type badge gets its own column top-right and never sits on the numbers. */
     if (g_mvn) {
       uint16_t m = g_mv[sel];
       ui_panel(0, 92, UI_SCR_W, 58, UI_PANEL, UI_BORDER);
+      type_icon(202, 95, pk_move_type(m));
       char num[48];
-      siprintf(num, "Pow %u   Acc %u   PP %u",
+      siprintf(num, "Pow %3u  Acc %3u  PP %2u",
                (unsigned)pk_move_power(m), (unsigned)pk_move_accuracy(m), (unsigned)pk_move_pp(m));
-      ui_text(6, 95, UI_DIRCLR, num);
-      type_chip(186, 95, pk_move_type(m));
-      text_wrap(6, 106, 28, UI_TEXT, pk_move_desc(m));
+      ui_text(6, 96, UI_DIRCLR, num);
+      text_wrap(6, 110, 28, UI_TEXT, pk_move_desc(m));
     }
 
-    ui_text(4, 152, UI_DIM, "A pick  L/R type  SEL search  B");
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT);
+    ui_text(4, 152, UI_DIM, "A pick  L/R type  ST sort  SEL find  B");
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
     if (k & KEY_B) return CANCEL;
     else if (k & KEY_A) return g_mvn ? g_mv[sel] : CANCEL;
     else if (k & KEY_UP)   sel = clampi(sel - 1, 0, g_mvn ? g_mvn - 1 : 0);
     else if (k & KEY_DOWN) sel = clampi(sel + 1, 0, g_mvn ? g_mvn - 1 : 0);
-    else if (k & KEY_L) { do { tf = (tf <= -1) ? 17 : tf - 1; } while (tf == 9); build_moves(tf, search); sel = 0; top = 0; }
-    else if (k & KEY_R) { do { tf = (tf >= 17) ? -1 : tf + 1; } while (tf == 9); build_moves(tf, search); sel = 0; top = 0; }
-    else if (k & KEY_SELECT) { char q[16]; if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); build_moves(tf, search); sel = 0; top = 0; } }
+    else if (k & KEY_L) { do { tf = (tf <= -1) ? 17 : tf - 1; } while (tf == 9); build_moves(tf, sort, search); sel = 0; top = 0; }
+    else if (k & KEY_R) { do { tf = (tf >= 17) ? -1 : tf + 1; } while (tf == 9); build_moves(tf, sort, search); sel = 0; top = 0; }
+    else if (k & KEY_START) { sort = (sort + 1) % NMVSORT; build_moves(tf, sort, search); sel = 0; top = 0; }
+    else if (k & KEY_SELECT) { char q[16]; if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); build_moves(tf, sort, search); sel = 0; top = 0; } }
   }
 }
 

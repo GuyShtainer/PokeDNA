@@ -18,8 +18,14 @@
 #include "pkview_edit.h"   /* F_*, em_field_press / em_field_adjust */
 #include "mon_front.h"
 #include "mon_icons.h"
+#include "type_icons.h"
 
 #define NCARDS 6
+
+/* real Gen-3 type badge (32x14); ui_sprite honours the 0x8000 opacity bit. */
+static void type_badge(int x, int y, uint8_t t) {
+  if (t < 18) ui_sprite(x, y, TYPE_ICON_W, TYPE_ICON_H, type_icon_for(t));
+}
 
 static const int   DISP[6]   = { PK_HP, PK_ATK, PK_DEF, PK_SPA, PK_SPD, PK_SPE };
 static const char* DLAB[6]   = { "HP", "Attack", "Defense", "Sp.Atk", "Sp.Def", "Speed" };
@@ -104,9 +110,10 @@ static void card_info(const PkMon* p) {
   siprintf(b, "ID%05u", (unsigned)(p->otId & 0xFFFF)); ui_text(x + 104, y, UI_DIM, b); y += 9;
 
   uint8_t t1 = pk_species_type1(p->species), t2 = pk_species_type2(p->species);
-  ui_text(x, y, C_KEY, "Type"); ui_text(x + 48, y, C_VAL, pk_type_name(t1));
-  if (t2 != t1) ui_text(x + 48 + (int)strlen(pk_type_name(t1)) * 8 + 6, y, C_VAL, pk_type_name(t2));
-  y += 10;
+  ui_text(x, y, C_KEY, "Type");
+  if (t1 == t2) type_badge(x + 46, y - 2, t1);
+  else { type_badge(x + 46, y - 2, t1); type_badge(x + 80, y - 2, t2); }
+  y += 16;
 
   uint16_t ab = pk_species_ability(p->species, p->abilityNum);
   ui_text(x, y, C_KEY, "Ability"); reg(F_ABILITY, x + 48, y, 88);
@@ -134,13 +141,19 @@ static void card_skills(const PkMon* p) {
   ui_text(x + 60, y, C_VAL, p->heldItem ? pk_item_name(p->heldItem) : "none"); y += 9;
   ui_text(x, y, C_KEY, "Friend"); reg(F_FRIEND, x + 60, y, 40);
   siprintf(b, "%u", (unsigned)p->friendship); ui_text(x + 60, y, C_VAL, b); y += 11;
+  /* Each stat row edits that stat's EV — the only persistent, lossless stat lever
+   * in Gen-3 (final stats are derived from base+IV+EV+level+nature). The number
+   * updates live; full IV/EV grids remain on the IV/EV cards. */
   for (int i = 0; i < 6; i++) {
     int s = DISP[i], bo = pk_nature_boost(p->nature), h = pk_nature_hinder(p->nature);
     u16 col = (s == bo) ? UI_OK : (s == h) ? UI_WARN : C_VAL;
+    reg(F_EV0 + s, x, y, 138);
     siprintf(b, "%-7s", DLAB[i]); ui_text(x, y, C_KEY, b);
-    siprintf(b, "%5u", (unsigned)p->stats[s]); ui_text(x + 60, y, col, b);
+    siprintf(b, "%4u", (unsigned)p->stats[s]); ui_text(x + 54, y, col, b);
+    siprintf(b, "EV%u", (unsigned)p->evs[s]);  ui_text(x + 94, y, UI_DIM, b);
     y += 9;
   }
+  ui_text(x, y + 1, UI_DIM, "<>: train EVs");
 }
 
 static void card_spread(const PkMon* p, bool ev) {
@@ -166,11 +179,12 @@ static void card_spread(const PkMon* p, bool ev) {
 
 static void card_moves(const PkMon* p, bool contest) {
   int x = 98, y = 14; char b[48];
+  int step = contest ? 18 : 22;          /* battle rows are taller to fit the type badge */
   ui_text(x, y, C_HDR, contest ? "CONTEST MOVES" : "BATTLE MOVES"); y += 12;
   for (int i = 0; i < 4; i++) {
     uint16_t mv = p->moves[i];
     reg(F_MV0 + i, x, y, 132);
-    if (mv == 0) { ui_text(x, y, UI_DIM, "-"); y += 18; continue; }
+    if (mv == 0) { ui_text(x, y, UI_DIM, "-"); y += step; continue; }
     char nm[24];
     ui_truncate(nm, pk_move_name(mv), contest ? 16 : 9);
     ui_text(x, y, C_VAL, nm);
@@ -179,10 +193,11 @@ static void card_moves(const PkMon* p, bool contest) {
       uint8_t maxpp = (uint8_t)(base + base / 5 * ((p->ppBonuses >> (i * 2)) & 3));
       siprintf(b, "PP%u/%u", (unsigned)p->pp[i], (unsigned)maxpp);
       ui_text(x + 78, y, UI_DIM, b);
+      type_badge(x + 4, y + 8, pk_move_type(mv));            /* real type badge under the name */
+    } else {
+      ui_text(x + 8, y + UI_ROW_H, C_HOT, pk_contest_name(pk_move_contest(mv)));
     }
-    ui_text(x + 8, y + UI_ROW_H, contest ? C_HOT : C_KEY,
-            contest ? pk_contest_name(pk_move_contest(mv)) : pk_type_name(pk_move_type(mv)));
-    y += 18;
+    y += step;
   }
 }
 

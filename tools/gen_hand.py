@@ -32,6 +32,14 @@ def main():
     FRAME = 32                      # the sheet is 32-wide, 32-tall frames stacked
     px0 = [[px[x, y] for x in range(FRAME)] for y in range(FRAME)]
 
+    # WHITE glove: the source is a yellow/orange glove (fill indices 3, 11, 12)
+    # with a dark/light outline (indices 1, 2). Remap only the fill to white so
+    # we keep the outline — pokeemerald ships no white cursor frame.
+    WHITE = True
+    if WHITE:
+        for i in (3, 11, 12):
+            pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2] = 255, 255, 255
+
     # tight bounding box of the non-transparent (index != 0) pixels of frame 0
     xs = [x for y in range(FRAME) for x in range(FRAME) if px0[y][x] != 0]
     ys = [y for y in range(FRAME) for x in range(FRAME) if px0[y][x] != 0]

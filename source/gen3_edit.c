@@ -130,6 +130,9 @@ void em_set_item(EditMon* e, uint16_t item) { wr16(e->sub[0] + 2, item); }
 void em_set_move(EditMon* e, int i, uint16_t move) {
   wr16(e->sub[1] + i * 2, move);
   e->sub[1][8 + i] = pk_move_pp(move);          /* reset PP to base */
+  e->sub[0][8] &= ~(0x3u << (i * 2));           /* PP Ups bind to the move, not the slot:
+                                                 * clear this slot's PP-Up bonus (Growth byte 8),
+                                                 * mirroring the game's RemoveMonPPBonus. */
 }
 
 void em_set_pp(EditMon* e, int i, uint8_t pp) { e->sub[1][8 + i] = pp; }

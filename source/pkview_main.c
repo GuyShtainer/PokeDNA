@@ -30,6 +30,8 @@
 #include "gen3_trainer.h"
 #include "pkview_trainer.h"
 #include "pkview_edit.h"
+#include "gen3_edit.h"     /* EditMon, gen3_edit_load/commit, em_set_*, em_preview */
+#include "pkview_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
 #include "pkview_app.h"
 #include "savefile.h"
 #include "log.h"
@@ -260,11 +262,10 @@ static void msg_wait(const char* title, u16 col, const char* l1, const char* l2)
   wait_keys(KEY_A);
 }
 
-bool app_edit_commit(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block) {
-  uint8_t out[100];
-  if (!pkview_inspect(rec, is_party, true, out)) return false; /* viewed only / discarded */
-  memcpy(rec, out, is_party ? 100 : 80);                     /* patch in place (rec is inside block) */
-
+/* Persist `block` (already-patched save-block sections [lo..hi]) into the in-RAM
+ * image with fresh checksums, an immutable backup, and a verified write. The
+ * single safe write path shared by the full editor and the PC-menu quick edits. */
+static bool app_commit_block(int sect_lo, int sect_hi, uint8_t* block) {
   for (int id = sect_lo; id <= sect_hi; id++)
     gen3_write_full_section(g_save, g_vinfo.slot, id,
                             block + (uint32_t)(id - sect_lo) * G3_SECTOR_DATA_SIZE);
@@ -294,6 +295,97 @@ bool app_edit_commit(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint
   }
   msg_wait("SAVED", UI_OK, "Edit written + verified.", "Original backed up first.");
   return true;
+}
+
+bool app_edit_commit(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block) {
+  uint8_t out[100];
+  if (!pkview_inspect(rec, is_party, true, out)) return false; /* viewed only / discarded */
+  memcpy(rec, out, is_party ? 100 : 80);                     /* patch in place (rec is inside block) */
+  return app_commit_block(sect_lo, sect_hi, block);
+}
+
+/* PC-menu quick editors: load -> mutate one field -> losslessly re-encode -> patch
+ * in place -> commit. Each returns true iff the save was written. */
+static bool app_quick_item(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block) {
+  EditMon e; gen3_edit_load(rec, is_party, &e);
+  PkMon cur; em_preview(&e, &cur); pk_resolve(&cur);
+  uint16_t id = pick_item(cur.heldItem);             /* 0xFFFF = cancel; 0 = no item */
+  if (id == 0xFFFF) return false;
+  em_set_item(&e, id);
+  uint8_t out[100]; gen3_edit_commit(&e, out);
+  memcpy(rec, out, is_party ? 100 : 80);
+  return app_commit_block(lo, hi, block);
+}
+
+static bool app_quick_moves(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block) {
+  EditMon e; gen3_edit_load(rec, is_party, &e);
+  PkMon cur; em_preview(&e, &cur); pk_resolve(&cur);
+  int sel = 0;
+  for (;;) {                                          /* choose which of the 4 slots */
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "EDIT WHICH MOVE?");
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < 4; i++) {
+      int y = 22 + i * 16; bool s = (i == sel);
+      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
+      uint16_t mv = cur.moves[i];
+      char row[28]; siprintf(row, "%d. %s", i + 1, mv ? pk_move_name(mv) : "-");
+      ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, row);
+    }
+    ui_text(4, 152, UI_DIM, "A edit slot  B back");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return false;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
+    else if (k & KEY_A)    break;
+  }
+  uint16_t id = pick_move(cur.moves[sel]);            /* 0xFFFF = cancel */
+  if (id == 0xFFFF) return false;
+  em_set_move(&e, sel, id);
+  uint8_t out[100]; gen3_edit_commit(&e, out);
+  memcpy(rec, out, is_party ? 100 : 80);
+  return app_commit_block(lo, hi, block);
+}
+
+/* Gen-3-PC-style action menu on A. Omega: overlay SUMMARY/ITEM/MOVES/CANCEL and
+ * run the chosen editor. Everdrive (read-only): jump straight to the summary.
+ * Returns true iff the save was modified (caller should refresh its view). */
+bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block) {
+  if (!app_can_edit()) {
+    uint8_t dummy[100];
+    pkview_inspect(rec, is_party, false, dummy);
+    return false;
+  }
+  EditMon e0; gen3_edit_load(rec, is_party, &e0);
+  PkMon m0; em_preview(&e0, &m0); pk_resolve(&m0);
+  char title[16];
+  ui_truncate(title, m0.nickname[0] ? m0.nickname : pk_species_name(m0.species), 11);
+
+  static const char* const ITEMS[4] = { "SUMMARY", "ITEM", "MOVES", "CANCEL" };
+  const int mx = 148, my = 34, mw = 88, mh = 18 + 4 * 13;
+  int sel = 0;
+  for (;;) {
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);   /* overlay (box stays behind) */
+    ui_text(mx + 6, my + 4, UI_TITLE, title);
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < 4; i++) {
+      int y = my + 18 + i * 13; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, 12, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, ITEMS[i]);
+    }
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return false;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
+    else if (k & KEY_A) {
+      switch (sel) {
+        case 0: return app_edit_commit(rec, is_party, sect_lo, sect_hi, block);
+        case 1: return app_quick_item (rec, is_party, sect_lo, sect_hi, block);
+        case 2: return app_quick_moves(rec, is_party, sect_lo, sect_hi, block);
+        default: return false;                       /* CANCEL */
+      }
+    }
+  }
 }
 
 /* Party list view. A opens the summary; SELECT switches to PC boxes; B exits.
@@ -335,15 +427,10 @@ static int party_list(void) {
     else if ((k & KEY_A) && g_nparty > 0) {
       uint16_t doff = g_frlg ? 0x0038 : 0x0238;
       uint8_t* rec = g_sb1 + doff + (uint32_t)sel * 100;     /* party lives in SaveBlock1 (ids 1..4) */
-      if (app_can_edit()) {
-        if (app_edit_commit(rec, true, 1, 4, g_sb1)) {       /* inline view+edit -> commit */
-          g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
-          for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
-          if (sel >= g_nparty) sel = g_nparty ? g_nparty - 1 : 0;
-        }
-      } else {
-        uint8_t dummy[100];
-        pkview_inspect(rec, true, false, dummy);             /* read-only view (Everdrive) */
+      if (app_mon_menu(rec, true, 1, 4, g_sb1)) {            /* PC-style menu -> chosen editor -> commit */
+        g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
+        for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
+        if (sel >= g_nparty) sel = g_nparty ? g_nparty - 1 : 0;
       }
     }
   }
