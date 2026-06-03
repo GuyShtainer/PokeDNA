@@ -36,6 +36,7 @@ const char* pk_move_desc(uint16_t move_id);            /* in-game move descripti
 
 /* ---- items / abilities / natures / types / locations ---- */
 const char* pk_item_name(uint16_t item_id);
+const char* pk_item_desc(uint16_t item_id);             /* short item flavor text */
 const char* pk_ability_name(uint16_t ability_id);
 const char* pk_ability_desc(uint16_t ability_id);       /* short flavor text */
 const char* pk_nature_name(uint8_t nature);             /* 0..24 */

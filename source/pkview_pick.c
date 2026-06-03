@@ -457,7 +457,123 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
   }
 }
 
-uint16_t pick_item(uint16_t current) { return list_pick("ITEM", 377, pk_item_name, item_icon_for, current, true, true); }
+/* ---- item picker with view modes ---- */
+#define IV_LIST 0
+#define IV_ICONS 1
+#define IV_GRID 2
+#define IV_SPLIT 3
+#define IV_N 4
+static const char* const IV_NAME[IV_N] = { "list", "icons", "grid", "split" };
+#define IITEM 24                                  /* item icon size */
+
+/* geometry per view: columns, cell w/h, origin, visible rows */
+static void iv_geom(int v, int* cols, int* cw, int* ch, int* x0, int* y0, int* vrows) {
+  switch (v) {
+    case IV_ICONS: *cols = 8; *cw = 29;  *ch = 27; *x0 = 6; *y0 = 22; *vrows = 4;  break;
+    case IV_GRID:  *cols = 3; *cw = 78;  *ch = 40; *x0 = 6; *y0 = 22; *vrows = 3;  break;
+    case IV_SPLIT: *cols = 1; *cw = 116; *ch = 26; *x0 = 2; *y0 = 22; *vrows = 4;  break;
+    default:       *cols = 1; *cw = 232; *ch = 9;  *x0 = 4; *y0 = 14; *vrows = 13; break;
+  }
+}
+
+/* draw one cell's content (icon at the cell origin, no selection chrome). */
+static void iv_cell(int v, int x, int y, int id) {
+  const uint16_t* ic = item_icon_for((uint16_t)id);
+  if (v == IV_LIST) {
+    char row[40], rt[40];
+    siprintf(row, "%3d %s", id, pk_item_name((uint16_t)id));
+    ui_truncate(rt, row, 28);
+    ui_text(x + 2, y, UI_TEXT, rt);
+  } else if (v == IV_ICONS) {
+    if (ic) ui_sprite(x, y, IITEM, IITEM, ic);
+  } else if (v == IV_GRID) {
+    if (ic) ui_sprite(x, y, IITEM, IITEM, ic);
+    char nm[16]; ui_truncate(nm, pk_item_name((uint16_t)id), 9);
+    ui_text(x, y + 25, UI_DIM, nm);
+  } else {                                          /* IV_SPLIT left row: icon + name */
+    if (ic) ui_sprite(x, y, IITEM, IITEM, ic);
+    char nm[16]; ui_truncate(nm, pk_item_name((uint16_t)id), 11);
+    ui_text(x + 28, y + 8, UI_TEXT, nm);
+  }
+}
+
+uint16_t pick_item(uint16_t current) {
+  static u16 EWRAM_BSS idx[NITEM];
+  char search[16] = "";
+  int sort = 0, view = IV_SPLIT;
+  int n = list_build(idx, 377, pk_item_name, search, sort);
+  int sel = 0;
+  for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
+
+  int prev_sel = -1, prev_top = -1, prev_view = -1;
+  bool relist = true;
+
+  for (;;) {
+    int cols, cw, ch, x0, y0, vrows;
+    iv_geom(view, &cols, &cw, &ch, &x0, &y0, &vrows);
+    int vis = cols * vrows;
+    if (sel >= n) sel = n ? n - 1 : 0;
+    int toprow = (sel / cols) - (vrows - 1); if (toprow < 0) toprow = 0;
+    int top = toprow * cols;
+    bool grid = (view == IV_ICONS || view == IV_GRID);
+
+    bool full = relist || view != prev_view || top != prev_top;
+    relist = false;
+
+    if (full) {
+      ui_clear();
+      char h[40]; siprintf(h, "ITEM  %s  %s  %d", IV_NAME[view], sort ? "A-Z" : "No.", n);
+      ui_text(4, 2, UI_TITLE, h);
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, "A pick  L/R view  ST sort  SEL find  B");
+      if (view == IV_SPLIT) ui_panel(122, 20, 116, 124, UI_PANEL, UI_BORDER);
+      for (int i = 0; i < vis && top + i < n; i++)
+        iv_cell(view, x0 + (i % cols) * cw, y0 + (i / cols) * ch, idx[top + i]);
+    } else if (prev_sel >= top && prev_sel < top + vis) {
+      int pi = prev_sel - top, px = x0 + (pi % cols) * cw, py = y0 + (pi / cols) * ch;
+      if (grid) m3_frame(px - 1, py - 1, px + IITEM, py + IITEM, UI_BG);   /* erase old frame */
+      else { ui_fill_rect(px, py - 1, cw, ch, UI_BG); iv_cell(view, px, py, idx[prev_sel]); }
+    }
+
+    if (n) {                                        /* draw current selection chrome */
+      int si = sel - top, sx = x0 + (si % cols) * cw, sy = y0 + (si / cols) * ch;
+      if (grid) m3_frame(sx - 1, sy - 1, sx + IITEM, sy + IITEM, UI_SELTEXT);
+      else { ui_fill_rect(sx, sy - 1, cw, ch, UI_SEL); iv_cell(view, sx, sy, idx[sel]); }
+    }
+
+    /* description: split -> right panel; other modes -> one line above the footer */
+    uint16_t cur = n ? idx[sel] : 0;
+    if (view == IV_SPLIT) {
+      ui_fill_rect(124, 22, 112, 120, UI_PANEL);
+      ui_text(126, 24, UI_TITLE, pk_item_name(cur));
+      text_wrap(126, 36, 13, UI_TEXT, pk_item_desc(cur));
+    } else {
+      ui_fill_rect(0, 138, UI_SCR_W, 8, UI_BG);
+      char d[80], dt[40];
+      siprintf(d, "%s  %s", pk_item_name(cur), pk_item_desc(cur));
+      ui_truncate(dt, d, 29);
+      ui_text(4, 139, UI_DIM, dt);
+    }
+
+    prev_sel = sel; prev_top = top; prev_view = view;
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
+    if (k & KEY_B) return CANCEL;
+    else if (k & KEY_A) return n ? idx[sel] : CANCEL;
+    else if (k & KEY_UP)    sel = clampi(sel - cols, 0, n ? n - 1 : 0);
+    else if (k & KEY_DOWN)  sel = clampi(sel + cols, 0, n ? n - 1 : 0);
+    else if (k & KEY_LEFT)  { if (cols > 1) sel = clampi(sel - 1, 0, n ? n - 1 : 0); }
+    else if (k & KEY_RIGHT) { if (cols > 1) sel = clampi(sel + 1, 0, n ? n - 1 : 0); }
+    else if (k & KEY_L) { view = (view + IV_N - 1) % IV_N; relist = true; }
+    else if (k & KEY_R) { view = (view + 1) % IV_N; relist = true; }
+    else if (k & KEY_START) { sort ^= 1; n = list_build(idx, 377, pk_item_name, search, sort); sel = 0; relist = true; }
+    else if (k & KEY_SELECT) {
+      char q[16];
+      if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); n = list_build(idx, 377, pk_item_name, search, sort); sel = 0; relist = true; }
+    }
+  }
+}
 static const char* nature16(uint16_t n) { return pk_nature_name((uint8_t)n); }
 uint8_t  pick_nature(uint8_t current)  { uint16_t r = list_pick("NATURE", 25, nature16, 0, current, false, false); return r == CANCEL ? current : (uint8_t)r; }
 

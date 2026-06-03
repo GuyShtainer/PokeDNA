@@ -221,8 +221,14 @@ for _m in re.finditer(r"\[MOVE_(\w+)\s*-\s*1\]\s*=\s*(\w+)", _dsrc):
     if _mid is not None and _mid < NMOVE:
         mv_desc[_mid] = _dtext.get(_m.group(2), "")
 
-# ---- items ----
+# ---- items (names + descriptions) ----
 it_name = {}
+it_desc = {}
+_idsrc = rd("src/data/text/item_descriptions.h")
+_idtext = {}
+for _m in re.finditer(r"static const u8 (\w+)\[\]\s*=\s*_\((.*?)\);", _idsrc, re.S):
+    _parts = re.findall(r'"([^"]*)"', _m.group(2))
+    _idtext[_m.group(1)] = "".join(_parts).replace("\\n", " ").replace("\\p", " ").replace("\\l", " ").strip()
 for const, body in iter_blocks(rd("src/data/items.h")):
     iid = ITEM.get(const)
     if iid is None:
@@ -230,6 +236,9 @@ for const, body in iter_blocks(rd("src/data/items.h")):
     m = re.search(r'\.name\s*=\s*_\("((?:[^"\\]|\\.)*)"\)', body)
     if m:
         it_name[iid] = m.group(1)
+    dm = re.search(r"\.description\s*=\s*(\w+)", body)
+    if dm and dm.group(1) in _idtext:
+        it_desc[iid] = _idtext[dm.group(1)]
 NITEM = (max(ITEM.values()) + 1) if ITEM else 400
 
 # ---- abilities (names + descriptions) ----
@@ -318,6 +327,7 @@ with open(OUT, "w") as c:
     emit_strtab(c, "s_species", sp_name, SN)
     emit_strtab(c, "s_move", mv_name, NMOVE, "-")
     emit_strtab(c, "s_item", it_name, NITEM, "????????")
+    emit_strtab(c, "s_itemdesc", it_desc, NITEM, "")
     emit_strtab(c, "s_ability", ab_name, NABIL, "-")
     emit_strtab(c, "s_abilitydesc", ab_desc, NABIL, "")
     emit_strtab(c, "s_location", loc_name, NLOC, "FARAWAY PLACE")
@@ -392,6 +402,7 @@ uint8_t pk_move_power(uint16_t i){{ return i<{NMOVE}?s_mvpower[i]:0; }}
 uint8_t pk_move_accuracy(uint16_t i){{ return i<{NMOVE}?s_mvacc[i]:0; }}
 const char* pk_move_desc(uint16_t i){{ return i<{NMOVE}?s_mvdesc[i]:""; }}
 const char* pk_item_name(uint16_t i){{ return i<{NITEM}?s_item[i]:"????????"; }}
+const char* pk_item_desc(uint16_t i){{ return i<{NITEM}?s_itemdesc[i]:""; }}
 const char* pk_ability_name(uint16_t i){{ return i<{NABIL}?s_ability[i]:"-"; }}
 const char* pk_ability_desc(uint16_t i){{ return i<{NABIL}?s_abilitydesc[i]:""; }}
 const char* pk_nature_name(uint8_t i){{ return i<25?s_nature[i]:"?"; }}
