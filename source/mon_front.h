@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* 64x64 front battle sprites for the summary / box data panel (normal only;
+/* 64x64 front battle sprites (normal + shiny, LZ77-compressed in ROM,
  * Pixel format matches mon_icons: u16 per pixel, 0 = transparent, 0x8000|RGB15 =
  * opaque. Keyed by INTERNAL Gen-3 species id (same as mon_icon_for).
  *

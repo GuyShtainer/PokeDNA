@@ -1,40 +1,37 @@
 #!/usr/bin/env python3
-"""Convert the Gen-3 sprite-pack FRONT sprites (normal + shiny) into a 64x64
-RGB15 blob for the summary / box data panel.
+"""Convert the Gen-3 sprite-pack FRONT sprites (normal + shiny) into LZ77-compressed
+64x64 RGB15 blobs for the summary / box data panel.
 
-For each species PNG (Graphics/Pokemon/Front/<NAME>.png and Front shiny/<NAME>.png)
-downscale to 64x64 and store each pixel as a u16:
-  0x0000          -> transparent
-  0x8000 | RGB15  -> opaque
-Both blobs share one index (same species at the same byte offset), so a single
-offset table works for normal and shiny.
+Each 64x64 sprite (8 KiB raw) is compressed individually with devkitPro's gbalzss
+(GBA BIOS LZ77, WRAM variant) and decompressed on demand at render time via
+LZ77UnCompWram() into a single EWRAM scratch buffer. This keeps BOTH the normal
+and shiny full-size sprites while halving the ROM (the EZ-Flash loads the image
+into limited PSRAM for the OS-mode SD path, so the uncompressed 6+MB blob would
+not fit). Pixel format per u16: 0x0000 transparent / 0x8000|RGB15 opaque.
 
-Emits (all git-ignored — ripped art, generate locally):
-  data/mon_front.bin            normal sprites, concatenated
-  data/mon_front_shiny.bin      shiny sprites, concatenated
+Emits (all git-ignored — ripped art, regenerate locally):
+  data/mon_front.bin            compressed normal sprites, concatenated (4-aligned)
+  data/mon_front_shiny.bin      compressed shiny  sprites, concatenated (4-aligned)
   source/mon_front_data.s       .incbin the two blobs into .rodata
-  source/mon_front.c            offset table + mon_front_for()
+  source/mon_front.c            offset tables + mon_front_for() (decompresses)
 
-Run from the repo root:  python3 tools/gen_front.py   (needs Pillow)
+Run from the repo root:  python3 tools/gen_front.py   (needs Pillow + gbalzss)
 """
-import os, re
+import os, re, subprocess, tempfile
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACK = os.path.join(ROOT, "assets", "sprites", "Gen 3 Sprite Pack V1")
 FRONT = os.path.join(PACK, "Graphics", "Pokemon", "Front")
 SHINY = os.path.join(PACK, "Graphics", "Pokemon", "Front shiny")
-PBS = os.path.join(PACK, "PBS", "pokemon_metrics.txt")
 OUT_BIN = os.path.join(ROOT, "data", "mon_front.bin")
 OUT_BIN_S = os.path.join(ROOT, "data", "mon_front_shiny.bin")
 OUT_S = os.path.join(ROOT, "source", "mon_front_data.s")
 OUT_C = os.path.join(ROOT, "source", "mon_front.c")
+GBALZSS = "/opt/devkitpro/tools/bin/gbalzss"
 
-SIZE = 64          # full-size front sprite
+SIZE = 64
 MAX_INTERNAL = 411
-# Only the NORMAL sprite blob is shipped: a second 64x64 shiny blob (~3MB) would
-# push the ROM past the EZ-Flash PSRAM ceiling. Shiny mons show the normal sprite
-# (plus the shiny * marker); mon_front_for() ignores the `shiny` arg.
 
 
 def norm(s):
@@ -42,9 +39,6 @@ def norm(s):
 
 
 def species_map():
-    """norm(species name) -> INTERNAL Gen-3 id, straight from the decomp constants
-    (SPECIES_KYOGRE=404 etc.). This is the EXACT mapping the save uses; the old
-    national+25 shortcut mismapped the displaced legendaries (Kyogre->Registeel)."""
     path = os.path.join(ROOT, "reference", "pokeemerald_data", "include", "constants", "species.h")
     m = {}
     with open(path) as f:
@@ -52,14 +46,14 @@ def species_map():
             mm = re.match(r"\s*#define\s+SPECIES_(\w+)\s+(\d+)", line)
             if mm:
                 m[norm(mm.group(1))] = int(mm.group(2))
-    if "NIDORANF" in m: m["NIDORANFE"] = m["NIDORANF"]   # PNG NIDORANfE -> SPECIES_NIDORAN_F
-    if "NIDORANM" in m: m["NIDORANMA"] = m["NIDORANM"]   # PNG NIDORANmA -> SPECIES_NIDORAN_M
+    if "NIDORANF" in m: m["NIDORANFE"] = m["NIDORANF"]
+    if "NIDORANM" in m: m["NIDORANMA"] = m["NIDORANM"]
     return m
 
 
 def conv(path):
     im = Image.open(path).convert("RGBA").resize((SIZE, SIZE), Image.LANCZOS)
-    im = im.transpose(Image.FLIP_LEFT_RIGHT)    # face left, like the in-game summary sprite
+    im = im.transpose(Image.FLIP_LEFT_RIGHT)        # face left, like the in-game summary
     px = im.load()
     out = bytearray()
     for y in range(SIZE):
@@ -70,11 +64,27 @@ def conv(path):
     return bytes(out)
 
 
+def lz77(raw, tmp_in, tmp_out):
+    with open(tmp_in, "wb") as f:
+        f.write(raw)
+    subprocess.run([GBALZSS, "e", tmp_in, tmp_out], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(tmp_out, "rb") as f:
+        c = f.read()
+    if len(c) % 4:                                   # pad so the next entry stays word-aligned
+        c += b"\x00" * (4 - len(c) % 4)
+    return c
+
+
 def main():
     spmap = species_map()
-    off = [0xFFFFFFFF] * (MAX_INTERNAL + 1)
+    off_n = [0xFFFFFFFF] * (MAX_INTERNAL + 1)
+    off_s = [0xFFFFFFFF] * (MAX_INTERNAL + 1)
     normal = bytearray()
-    slot = 0
+    shiny = bytearray()
+    td = tempfile.mkdtemp()
+    ti, to = os.path.join(td, "i.bin"), os.path.join(td, "o.bin")
+    count = 0
 
     for fn in sorted(os.listdir(FRONT)):
         if not fn.lower().endswith(".png"):
@@ -82,45 +92,56 @@ def main():
         stem = fn[:-4]
         if stem == "000":
             continue
-        key = norm(re.sub(r"_\d+$", "", stem))
-        intl = spmap.get(key)
-        if intl is None or intl > MAX_INTERNAL or off[intl] != 0xFFFFFFFF:
+        intl = spmap.get(norm(re.sub(r"_\d+$", "", stem)))
+        if intl is None or intl > MAX_INTERNAL or off_n[intl] != 0xFFFFFFFF:
             continue
-        off[intl] = slot * SIZE * SIZE * 2
-        normal += conv(os.path.join(FRONT, fn))
-        slot += 1
+        nraw = conv(os.path.join(FRONT, fn))
+        spath = os.path.join(SHINY, fn)
+        sraw = conv(spath) if os.path.exists(spath) else nraw
+        off_n[intl] = len(normal); normal += lz77(nraw, ti, to)
+        off_s[intl] = len(shiny);  shiny += lz77(sraw, ti, to)
+        count += 1
 
     os.makedirs(os.path.dirname(OUT_BIN), exist_ok=True)
     with open(OUT_BIN, "wb") as f:
         f.write(normal)
+    with open(OUT_BIN_S, "wb") as f:
+        f.write(shiny)
 
     with open(OUT_S, "w") as s:
         s.write("/* GENERATED by tools/gen_front.py - do not edit. */\n")
-        s.write("\t.section .rodata\n\t.align 2\n")
-        # absolute path: the assembler runs from build/, and this .s is git-ignored / regenerated locally
-        s.write("\t.global mon_front_blob\nmon_front_blob:\n\t.incbin \"%s\"\n" % OUT_BIN)
+        s.write("\t.section .rodata\n\t.balign 4\n")        # LZ77UnCompWram needs a word-aligned src
+        s.write('\t.global mon_front_blob\nmon_front_blob:\n\t.incbin "%s"\n' % OUT_BIN)
+        s.write("\t.balign 4\n")
+        s.write('\t.global mon_front_shiny_blob\nmon_front_shiny_blob:\n\t.incbin "%s"\n' % OUT_BIN_S)
+
+    def emit_tbl(c, name, off):
+        c.write("static const uint32_t %s[%d] = {\n" % (name, MAX_INTERNAL + 1))
+        for i in range(0, MAX_INTERNAL + 1, 8):
+            c.write("  " + ",".join("0x%08x" % off[j] for j in range(i, min(i + 8, MAX_INTERNAL + 1))) + ",\n")
+        c.write("};\n\n")
 
     with open(OUT_C, "w") as c:
         c.write("/* GENERATED by tools/gen_front.py - do not edit. */\n")
-        c.write('#include "mon_front.h"\n\n')
-        c.write("extern const uint8_t mon_front_blob[];\n\n")
-        c.write("static const uint32_t off_tbl[%d] = {\n" % (MAX_INTERNAL + 1))
-        for i in range(0, MAX_INTERNAL + 1, 8):
-            row = ",".join("0x%08x" % off[j] for j in range(i, min(i + 8, MAX_INTERNAL + 1)))
-            c.write("  " + row + ",\n")
-        c.write("};\n\n")
-        c.write("/* shiny arg ignored — only the normal blob is shipped (ROM/PSRAM budget). */\n")
+        c.write('#include "mon_front.h"\n#include <tonc.h>\n#include "sys.h"\n\n')
+        c.write("extern const uint8_t mon_front_blob[];\n")
+        c.write("extern const uint8_t mon_front_shiny_blob[];\n\n")
+        emit_tbl(c, "off_n", off_n)
+        emit_tbl(c, "off_s", off_s)
+        c.write("/* one shared EWRAM scratch buffer; the caller blits it immediately. */\n")
+        c.write("static EWRAM_BSS uint16_t s_decomp[MON_FRONT_W * MON_FRONT_H];\n\n")
         c.write("const uint16_t* mon_front_for(uint16_t species, bool shiny) {\n")
-        c.write("  (void)shiny;\n")
         c.write("  if (species > %d) return 0;\n" % MAX_INTERNAL)
-        c.write("  uint32_t o = off_tbl[species];\n")
+        c.write("  uint32_t o = (shiny ? off_s : off_n)[species];\n")
         c.write("  if (o == 0xFFFFFFFFu) return 0;\n")
-        c.write("  return (const uint16_t*)(mon_front_blob + o);\n")
+        c.write("  const void* src = (shiny ? mon_front_shiny_blob : mon_front_blob) + o;\n")
+        c.write("  LZ77UnCompWram(src, s_decomp);\n")
+        c.write("  return s_decomp;\n")
         c.write("}\n")
 
-    kb = len(normal) / 1024.0
-    print("front sprites: %d species, %.2f MiB ROM (normal only, %dx%d)"
-          % (slot, kb / 1024.0, SIZE, SIZE))
+    print("front sprites: %d species, normal %.2f MiB + shiny %.2f MiB = %.2f MiB ROM (LZ77 %dx%d)"
+          % (count, len(normal) / 1048576.0, len(shiny) / 1048576.0,
+             (len(normal) + len(shiny)) / 1048576.0, SIZE, SIZE))
 
 
 if __name__ == "__main__":
