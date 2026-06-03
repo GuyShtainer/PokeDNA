@@ -135,13 +135,13 @@ static void build_species(int filter, int sort, const char* search) {
   }
 }
 
-#define GCOLS 8           /* bigger icons (24x24) -> fewer, larger cells */
-#define GVROWS 4
-#define GCELLX 27
-#define GCELLY 28
-#define GX 12
-#define GY 26
-#define GICON 24
+#define GCOLS 7           /* full-size 32x32 icons in a 7-wide grid */
+#define GVROWS 3
+#define GCELLX 33
+#define GCELLY 34
+#define GX 8
+#define GY 22
+#define GICON 32
 
 /* the filter ids selectable in the menu / by L-R (All, Gen1-3, Legendary, types
  * except the unused MYSTERY type 9). */
@@ -194,14 +194,47 @@ uint16_t pick_species(uint16_t current) {
   int sel = 0;
   for (int i = 0; i < g_n; i++) if (g_list[i] == current) { sel = i; break; }
 
+  char hdr[48];
+  int prev_sel = -1, prev_top = -1;
+  bool relist = true;                 /* force a full redraw initially + after any list change */
+
   for (;;) {
     if (sel >= g_n) sel = g_n ? g_n - 1 : 0;
     int top = (sel / GCOLS) - (GVROWS - 1);
     if (top < 0) top = 0;
     int top_idx = top * GCOLS;
 
-    ui_clear();
-    char hdr[48];
+    /* Only a page scroll or a list change needs a full repaint; moving the cursor
+     * within the page just swaps the selection frame + repaints the header strip
+     * (the slow per-pixel grid blit no longer runs on every keypress). */
+    bool full = relist || top_idx != prev_top;
+    relist = false;
+
+    if (full) {
+      ui_clear();
+      ui_hline(0, 21, UI_SCR_W, UI_BORDER);
+      ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, "A pick  L/R filter  ST menu  SEL find  B");
+      for (int i = 0; i < GCOLS * GVROWS; i++) {
+        int idx = top_idx + i;
+        if (idx >= g_n) break;
+        int x = GX + (i % GCOLS) * GCELLX, y = GY + (i / GCOLS) * GCELLY;
+        ui_icon_scaled(x, y, GICON, GICON, mon_icon_for(g_list[idx]));
+      }
+    } else if (prev_sel >= top_idx && prev_sel < top_idx + GCOLS * GVROWS) {
+      int pi = prev_sel - top_idx;                 /* erase the old selection frame */
+      int px = GX + (pi % GCOLS) * GCELLX, py = GY + (pi / GCOLS) * GCELLY;
+      m3_frame(px - 1, py - 1, px + GICON, py + GICON, UI_BG);
+    }
+
+    if (g_n) {                                      /* draw the current selection frame */
+      int si = sel - top_idx;
+      int sx = GX + (si % GCOLS) * GCELLX, sy = GY + (si / GCOLS) * GCELLY;
+      m3_frame(sx - 1, sy - 1, sx + GICON, sy + GICON, UI_SELTEXT);
+    }
+
+    /* header strip (No./name + type badges + filter line) — repaint just this band */
+    ui_fill_rect(0, 0, UI_SCR_W, 21, UI_BG);
     uint16_t cs = g_n ? g_list[sel] : 0;
     if (cs) {
       siprintf(hdr, "No.%u  %s", (unsigned)pk_national_no(cs), pk_species_name(cs));
@@ -212,18 +245,8 @@ uint16_t pick_species(uint16_t current) {
     }
     siprintf(hdr, "[%s] sort:%s  %d", filter_name(filter), sort ? "A-Z" : "No.", g_n);
     ui_text(4, 11, UI_DIM, hdr);
-    ui_hline(0, 21, UI_SCR_W, UI_BORDER);
 
-    for (int i = 0; i < GCOLS * GVROWS; i++) {
-      int idx = top_idx + i;
-      if (idx >= g_n) break;
-      int x = GX + (i % GCOLS) * GCELLX, y = GY + (i / GCOLS) * GCELLY;
-      ui_icon_scaled(x, y, GICON, GICON, mon_icon_for(g_list[idx]));
-      if (idx == sel) m3_frame(x - 1, y - 1, x + GICON, y + GICON, UI_SELTEXT);
-    }
-
-    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, "A pick  L/R filter  ST menu  SEL find  B");
+    prev_sel = sel; prev_top = top_idx;
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
     if (k & KEY_B) return CANCEL;
@@ -232,12 +255,12 @@ uint16_t pick_species(uint16_t current) {
     else if (k & KEY_RIGHT) sel = (sel < g_n - 1) ? sel + 1 : sel;
     else if (k & KEY_UP)    { if (sel >= GCOLS) sel -= GCOLS; }
     else if (k & KEY_DOWN)  { if (sel + GCOLS < g_n) sel += GCOLS; }
-    else if (k & KEY_L) { do { filter = (filter + NFILTER - 1) % NFILTER; } while (filter == 5 + 9); build_species(filter, sort, search); sel = 0; }
-    else if (k & KEY_R) { do { filter = (filter + 1) % NFILTER; } while (filter == 5 + 9); build_species(filter, sort, search); sel = 0; }
-    else if (k & KEY_START) { filter_menu(&filter, &sort); build_species(filter, sort, search); sel = 0; }
+    else if (k & KEY_L) { do { filter = (filter + NFILTER - 1) % NFILTER; } while (filter == 5 + 9); build_species(filter, sort, search); sel = 0; relist = true; }
+    else if (k & KEY_R) { do { filter = (filter + 1) % NFILTER; } while (filter == 5 + 9); build_species(filter, sort, search); sel = 0; relist = true; }
+    else if (k & KEY_START) { filter_menu(&filter, &sort); build_species(filter, sort, search); sel = 0; relist = true; }
     else if (k & KEY_SELECT) {
       char q[16];
-      if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); build_species(filter, sort, search); sel = 0; }
+      if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); build_species(filter, sort, search); sel = 0; relist = true; }
     }
   }
 }
@@ -437,3 +460,30 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
 uint16_t pick_item(uint16_t current) { return list_pick("ITEM", 377, pk_item_name, item_icon_for, current, true, true); }
 static const char* nature16(uint16_t n) { return pk_nature_name((uint8_t)n); }
 uint8_t  pick_nature(uint8_t current)  { uint16_t r = list_pick("NATURE", 25, nature16, 0, current, false, false); return r == CANCEL ? current : (uint8_t)r; }
+
+uint8_t pick_ability(uint16_t species, uint8_t cur) {
+  uint16_t a0 = pk_species_ability(species, 0), a1 = pk_species_ability(species, 1);
+  int n = (a1 && a1 != a0) ? 2 : 1;            /* most species have 2 distinct abilities */
+  int sel = (cur && n == 2) ? 1 : 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "ABILITY");
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < n; i++) {
+      uint16_t aid = i ? a1 : a0;
+      int y = 18 + i * 56;
+      bool s = (i == sel);
+      ui_panel(2, y - 2, 236, 52, s ? UI_SEL : UI_PANEL, s ? UI_TITLE : UI_BORDER);
+      char h[24]; siprintf(h, "%d. %s", i + 1, pk_ability_name(aid));
+      ui_text(8, y + 2, s ? UI_SELTEXT : UI_TEXT, h);
+      text_wrap(8, y + 14, 28, UI_DIM, pk_ability_desc(aid));
+    }
+    ui_text(4, 140, UI_DIM, "Gen-3 stores only the species' abilities");
+    ui_text(4, 152, UI_DIM, "A pick  U/D move  B cancel");
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return cur;
+    else if (k & KEY_A) return (uint8_t)sel;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % n;
+  }
+}

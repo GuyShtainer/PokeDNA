@@ -16,4 +16,9 @@ uint16_t pick_move(uint16_t current_move);
 uint16_t pick_item(uint16_t current_item);
 uint8_t  pick_nature(uint8_t current_nature);
 
+/* Ability picker. Gen-3 stores only a 1-bit ability SLOT, so the choices are the
+ * species' two abilities (shown by name + description). Returns the chosen slot
+ * (0 or 1), or `current` on cancel. */
+uint8_t  pick_ability(uint16_t species_internal, uint8_t current_slot);
+
 #endif /* PKVIEW_PICK_H */

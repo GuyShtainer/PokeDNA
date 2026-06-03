@@ -135,7 +135,7 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
       { uint16_t id = pick_move(c->moves[f - F_MV0]); if (id != 0xFFFF) em_set_move(e, f - F_MV0, id); break; }
     case F_NICK: if (osk_input("NICKNAME", c->nickname, buf, 11)) em_set_nickname(e, buf); break;
     case F_OT:   if (osk_input("OT NAME", c->otName, buf, 8))    em_set_otname(e, buf); break;
-    case F_ABILITY: em_set_ability(e, c->abilityNum ^ 1); break;
+    case F_ABILITY: em_set_ability(e, pick_ability(c->species, c->abilityNum)); break;
     case F_SHINY:   reroll_to(e, c, c->nature, c->isShiny ? 0 : 1, c->gender < 2 ? c->gender : -1); break;
     case F_GENDER: { uint8_t r = pk_species_gender_ratio(c->species);
                      if (r >= 1 && r <= 253) reroll_to(e, c, c->nature, c->isShiny ? 1 : 0, c->gender ^ 1); break; }
