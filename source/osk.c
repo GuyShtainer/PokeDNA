@@ -91,14 +91,14 @@ static bool osk_core(const char* prompt, const char* initial, char* out, int cap
     dirty = true;
     warn = NULL;
 
-    if (k & KEY_SELECT) { key_repeat_mask(KEY_UP | KEY_DOWN); return false; }
+    if (k & KEY_SELECT) { key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); return false; }
     else if (k & KEY_START) {
       if (len < 1 && !allow_empty) { warn = "Name cannot be empty"; }
       else {
         int i = 0;
         for (; i < cap - 1 && buf[i]; i++) out[i] = buf[i];
         out[i] = 0;
-        key_repeat_mask(KEY_UP | KEY_DOWN);
+        key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
         return true;
       }
     }

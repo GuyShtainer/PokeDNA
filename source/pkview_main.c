@@ -42,11 +42,12 @@
 #define MAX_ENTRIES   256
 #define NAME_MAX      64
 #define LIST_COLS     28          /* display columns for a list row                 */
-#define VIS_ROWS      16          /* visible rows in the browser                     */
+#define VIS_ROWS      12          /* visible rows in the framed browser panel        */
 
 typedef struct {
-  char name[NAME_MAX];
-  bool is_dir;
+  char     name[NAME_MAX];
+  uint32_t size;                  /* file size in bytes (0 for folders)              */
+  bool     is_dir;
 } BrowseEntry;
 
 /* Big buffers live in EWRAM (.bss), never on the IWRAM stack. */
@@ -72,8 +73,8 @@ static void init_system(void) {
   irq_init(NULL);
   irq_add(II_VBLANK, NULL);
   ui_init();                               /* Mode 3 + bitmap TTE */
-  key_repeat_mask(KEY_UP | KEY_DOWN);
-  key_repeat_limits(16, 4);                /* hold ~0.27s, then ~15/s */
+  key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);  /* hold any d-pad dir to keep scrolling */
+  key_repeat_limits(14, 3);                /* hold ~0.23s, then ~20/s */
 }
 
 static const char* flashcart_name(void) {
@@ -145,6 +146,7 @@ static void scan_dir(void) {
     if (!is_dir && !has_sav_ext(fno.fname)) continue;   /* only folders + .sav files */
     strncpy(g_entries[g_count].name, fno.fname, NAME_MAX - 1);
     g_entries[g_count].name[NAME_MAX - 1] = 0;
+    g_entries[g_count].size = is_dir ? 0 : (uint32_t)fno.fsize;
     g_entries[g_count].is_dir = is_dir;
     g_count++;
   }
@@ -160,41 +162,65 @@ static void scan_dir(void) {
   log_line("scan %s: %d entries", g_cwd, g_count);
 }
 
+/* short human-readable byte size (saves are 128 KiB) into out[] */
+static const char* human_size(uint32_t b, char* out) {
+  if (b >= 1024u * 1024u) siprintf(out, "%u.%uMB", (unsigned)(b >> 20), (unsigned)(((b >> 10) & 1023u) * 10u / 1024u));
+  else if (b >= 1024u)    siprintf(out, "%uKB", (unsigned)(b >> 10));
+  else                    siprintf(out, "%uB", (unsigned)b);
+  return out;
+}
+
+/* sd-browser-style listing: cwd header, framed panel, (DIR) tags + right-aligned
+ * size column, a per-selection detail block, and a green status line. */
 static void render_browser(int sel, int top) {
   ui_clear();
   char cwdc[LIST_COLS * 4 + 1];
-  ui_truncate(cwdc, g_cwd, LIST_COLS);
-  char hdr[80];
-  siprintf(hdr, "POKEVIEWER [%s] %s", flashcart_name(), cwdc);
-  ui_text(4, 2, UI_TITLE, hdr);
-  ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+  ui_truncate(cwdc, g_cwd, 29);
+  ui_text(2, 2, UI_TITLE, cwdc);
+  ui_panel(0, 11, UI_SCR_W, 104, UI_PANEL, UI_BORDER);
 
   if (g_count == 0) {
     ui_text(6, 40, UI_WARN, "(no folders or .sav files here)");
     ui_text(6, 52, UI_DIM,  at_root() ? "Open a folder where your saves live."
                                       : "B = go up a folder.");
   } else {
-    char row[LIST_COLS * 4 + 1];
-    char tmp[NAME_MAX + 2];
+    char row[LIST_COLS * 4 + 1], nm[NAME_MAX + 2], sz[12];
     for (int i = 0; i < VIS_ROWS && top + i < g_count; i++) {
       int idx = top + i;
       int y = 14 + i * UI_ROW_H;
       const BrowseEntry* e = &g_entries[idx];
       if (e->is_dir) {
-        siprintf(tmp, "%s/", e->name);
-        ui_truncate(row, tmp, LIST_COLS);
-        ui_text_sel(4, y, UI_SCR_W - 8, idx == sel, UI_DIRCLR, row);
+        ui_truncate(nm, e->name, 21);
+        siprintf(row, "%-21s (DIR)", nm);
+        ui_text_sel(3, y, UI_SCR_W - 6, idx == sel, UI_DIRCLR, row);
       } else {
-        ui_truncate(row, e->name, LIST_COLS);
-        ui_text_sel(4, y, UI_SCR_W - 8, idx == sel, UI_SAVECLR, row);
+        ui_truncate(nm, e->name, 18);
+        human_size(e->size, sz);
+        siprintf(row, "%-18s %8s", nm, sz);
+        ui_text_sel(3, y, UI_SCR_W - 6, idx == sel, UI_SAVECLR, row);
       }
     }
   }
 
+  if (g_count > 0) {                          /* per-selection detail block */
+    const BrowseEntry* e = &g_entries[sel];
+    char dn[40]; ui_truncate(dn, e->name, 29);
+    ui_text(2, 118, UI_SELTEXT, dn);
+    char meta[40];
+    if (e->is_dir) siprintf(meta, "folder");
+    else { char sz[12]; human_size(e->size, sz); siprintf(meta, "save file   %s", sz); }
+    ui_text(2, 128, UI_DIM, meta);
+  }
+
+  char status[48], stc[40];
+  siprintf(status, "[%s]  %d/%d", flashcart_name(), g_count ? sel + 1 : 0, g_count);
+  ui_truncate(stc, status, 29);
+  ui_text(2, 138, UI_OK, stc);
+
   ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-  ui_text(4, 150, UI_DIM,
-          at_root() ? "A=open  U/D=scroll  L/R=top/bot"
-                    : "A=open  B=up  U/D=scroll  L/R=top/bot");
+  ui_text(2, 150, UI_DIM,
+          at_root() ? "A open  U/D scroll  L/R top/bot"
+                    : "A open  B up  U/D scroll  L/R top/bot");
 }
 
 /* Browse the SD for a .sav. Writes the chosen full path to out and returns true;

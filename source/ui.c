@@ -81,6 +81,20 @@ void ui_icon_sub(int x, int y, const u16* src32) {
   }
 }
 
+/* Nearest-neighbour blit of a 32x32 (0x8000-keyed) icon at an arbitrary dst size
+ * — for grids that want icons bigger than the 16x16 sub but not the full 32. */
+void ui_icon_scaled(int x, int y, int dw, int dh, const u16* src32) {
+  if (!src32) return;
+  for (int j = 0; j < dh; j++) {
+    int sj = j * 32 / dh;
+    for (int i = 0; i < dw; i++) {
+      int si = i * 32 / dw;
+      u16 p = src32[sj * 32 + si];
+      if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
+    }
+  }
+}
+
 void ui_truncate(char* out, const char* in, int max_cols) {
   if (max_cols < 1) { out[0] = 0; return; }
   int cols = 0, i = 0, o = 0, last_start = 0;

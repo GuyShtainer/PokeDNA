@@ -254,7 +254,7 @@ bool pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec
     if (k & KEY_B) {
       bool ret = false;
       if (can_edit && dirty && confirm()) { gen3_edit_commit(&e, out_rec); ret = true; }
-      if (can_edit) key_repeat_mask(KEY_UP | KEY_DOWN);
+      if (can_edit) key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
       return ret;
     }
     else if (k & (KEY_L | KEY_R)) { card = (card + (k & KEY_R ? 1 : NCARDS - 1)) % NCARDS; fsel = 0; }

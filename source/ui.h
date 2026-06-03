@@ -68,4 +68,7 @@ void ui_sprite(int x, int y, int w, int h, const u16* data);
 /* Blit a 32×32 RGB15 sprite shrunk to 16×16 (compact list rows). */
 void ui_icon_sub(int x, int y, const u16* src32);
 
+/* Nearest-neighbour blit of a 32×32 (0x8000-keyed) icon at an arbitrary dst size. */
+void ui_icon_scaled(int x, int y, int dw, int dh, const u16* src32);
+
 #endif /* UI_H */

@@ -13,6 +13,7 @@
 #include "data_tables.h"
 #include "mon_icons.h"
 #include "type_icons.h"
+#include "item_icons.h"
 #include "osk.h"
 
 #define CANCEL 0xFFFF
@@ -36,6 +37,17 @@ static bool ci_contains(const char* hay, const char* ndl) {
     if (!*b) return true;
   }
   return false;
+}
+
+static bool all_digits(const char* s) {
+  if (!*s) return false;
+  for (; *s; s++) if (*s < '0' || *s > '9') return false;
+  return true;
+}
+/* true if the decimal of `val` starts with the digit string `q` (incremental no. match) */
+static bool num_prefix(unsigned val, const char* q) {
+  char b[8]; siprintf(b, "%u", val);
+  return strncmp(b, q, strlen(q)) == 0;
 }
 
 static bool is_legendary(uint16_t n) {
@@ -90,6 +102,7 @@ static const char* filter_name(int f) {
 
 static void build_species(int filter, int sort, const char* search) {
   g_n = 0;
+  bool by_num = all_digits(search);                      /* digits -> match dex number, else name */
   for (uint16_t in = 1; in <= 411; in++) {
     uint16_t nat = pk_national_no(in);
     if (!nat) continue;                                  /* skip non-species slots */
@@ -101,7 +114,10 @@ static void build_species(int filter, int sort, const char* search) {
       uint8_t t = (uint8_t)(filter - 5);
       if (pk_species_type1(in) != t && pk_species_type2(in) != t) continue;
     }
-    if (search[0] && !ci_contains(pk_species_name(in), search)) continue;
+    if (search[0]) {
+      if (by_num) { if (!num_prefix(nat, search)) continue; }
+      else        { if (!ci_contains(pk_species_name(in), search)) continue; }
+    }
     g_list[g_n++] = in;
   }
   /* insertion sort: by national no. (0) or name (1) */
@@ -119,12 +135,13 @@ static void build_species(int filter, int sort, const char* search) {
   }
 }
 
-#define GCOLS 10
-#define GVROWS 6
-#define GCELLX 21
-#define GCELLY 18
-#define GX 14
+#define GCOLS 8           /* bigger icons (24x24) -> fewer, larger cells */
+#define GVROWS 4
+#define GCELLX 27
+#define GCELLY 28
+#define GX 12
 #define GY 26
+#define GICON 24
 
 /* the filter ids selectable in the menu / by L-R (All, Gen1-3, Legendary, types
  * except the unused MYSTERY type 9). */
@@ -201,8 +218,8 @@ uint16_t pick_species(uint16_t current) {
       int idx = top_idx + i;
       if (idx >= g_n) break;
       int x = GX + (i % GCOLS) * GCELLX, y = GY + (i / GCOLS) * GCELLY;
-      ui_icon_sub(x, y, mon_icon_for(g_list[idx]));
-      if (idx == sel) m3_frame(x - 1, y - 1, x + 16, y + 16, UI_SELTEXT);
+      ui_icon_scaled(x, y, GICON, GICON, mon_icon_for(g_list[idx]));
+      if (idx == sel) m3_frame(x - 1, y - 1, x + GICON, y + GICON, UI_SELTEXT);
     }
 
     ui_hline(0, 147, UI_SCR_W, UI_BORDER);
@@ -337,50 +354,86 @@ uint16_t pick_move(uint16_t current) {
 
 /* ===================== generic searchable list (item / nature) ========= */
 
+/* filter by `search` then optionally sort A-Z by name; returns the count. */
+static int list_build(u16* idx, int count, const char* (*name_fn)(uint16_t),
+                      const char* search, int sort) {
+  int n = 0;
+  for (int i = 0; i < count; i++)
+    if (!search[0] || ci_contains(name_fn((uint16_t)i), search)) idx[n++] = (u16)i;
+  if (sort) {                                       /* insertion sort by name (No. = id order) */
+    for (int i = 1; i < n; i++) {
+      u16 v = idx[i]; int j = i - 1;
+      while (j >= 0 && strcmp(name_fn(idx[j]), name_fn(v)) > 0) { idx[j + 1] = idx[j]; j--; }
+      idx[j + 1] = v;
+    }
+  }
+  return n;
+}
+
 static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(uint16_t),
-                          int current, bool searchable) {
+                          const uint16_t* (*icon_fn)(uint16_t), int current,
+                          bool searchable, bool sortable) {
   static u16 EWRAM_BSS idx[NITEM];
   char search[16] = "";
-  int n = 0, sel = 0;
-  for (int i = 0; i < count; i++) idx[n++] = (u16)i;       /* (rebuilt on search below) */
+  int sort = 0;
+  int n = list_build(idx, count, name_fn, search, sort);
+  int sel = 0;
   for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
+
+  const int rowh = icon_fn ? 26 : 8;                /* taller rows when showing 24x24 icons */
+  const int vis  = icon_fn ? 5 : 16;
+  const int page = icon_fn ? 5 : 10;
 
   for (;;) {
     if (sel >= n) sel = n ? n - 1 : 0;
-    int top = sel - 7; if (top < 0) top = 0;
+    int top = sel - vis / 2;
+    if (top > n - vis) top = n - vis;
+    if (top < 0) top = 0;
+
     ui_clear();
-    char h[40]; siprintf(h, "%s  %d", title, n);
+    char h[40]; siprintf(h, "%s  %s  %d", title, sortable ? (sort ? "A-Z" : "No.") : "", n);
     ui_text(4, 2, UI_TITLE, h);
     ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    char row[40];
-    for (int i = 0; i < 16 && top + i < n; i++) {
-      int id = idx[top + i], y = 14 + i * 8;
+    char row[40], rt[40];
+    for (int i = 0; i < vis && top + i < n; i++) {
+      int id = idx[top + i], y = 14 + i * rowh;
       bool s = (top + i == sel);
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
       siprintf(row, "%3d %s", id, name_fn((uint16_t)id));
-      char rt[40]; ui_truncate(rt, row, 28);
-      ui_text(6, y, s ? UI_SELTEXT : UI_TEXT, rt);
+      if (icon_fn) {
+        if (s) ui_panel(2, y - 1, 236, rowh - 1, UI_SEL, UI_TITLE);
+        const uint16_t* ic = icon_fn((uint16_t)id);
+        if (ic) ui_sprite(4, y, ITEM_ICON_W, ITEM_ICON_H, ic);
+        ui_truncate(rt, row, 24);
+        ui_text(32, y + 8, s ? UI_SELTEXT : UI_TEXT, rt);
+      } else {
+        if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+        ui_truncate(rt, row, 28);
+        ui_text(6, y, s ? UI_SELTEXT : UI_TEXT, rt);
+      }
     }
-    ui_text(4, 152, UI_DIM, searchable ? "A pick  L/R +-10  SEL search  B" : "A pick  L/R +-10  B back");
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B | (searchable ? KEY_SELECT : 0));
+    char foot[48];
+    siprintf(foot, "A pick  L/R +-%d  %s%sB", page,
+             searchable ? "SEL find  " : "", sortable ? "ST sort  " : "");
+    ui_text(4, 152, UI_DIM, foot);
+
+    u16 mask = KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B;
+    if (searchable) mask |= KEY_SELECT;
+    if (sortable)   mask |= KEY_START;
+    u16 k = s_wait(mask);
     if (k & KEY_B) return CANCEL;
     else if (k & KEY_A) return n ? idx[sel] : CANCEL;
     else if (k & KEY_UP)   sel = clampi(sel - 1, 0, n ? n - 1 : 0);
     else if (k & KEY_DOWN) sel = clampi(sel + 1, 0, n ? n - 1 : 0);
-    else if (k & KEY_L)    sel = clampi(sel - 10, 0, n ? n - 1 : 0);
-    else if (k & KEY_R)    sel = clampi(sel + 10, 0, n ? n - 1 : 0);
+    else if (k & KEY_L)    sel = clampi(sel - page, 0, n ? n - 1 : 0);
+    else if (k & KEY_R)    sel = clampi(sel + page, 0, n ? n - 1 : 0);
+    else if (sortable && (k & KEY_START)) { sort ^= 1; n = list_build(idx, count, name_fn, search, sort); sel = 0; }
     else if (searchable && (k & KEY_SELECT)) {
       char q[16];
-      if (osk_search("SEARCH", search, q, sizeof(q))) {
-        strcpy(search, q);
-        n = 0;
-        for (int i = 0; i < count; i++) if (ci_contains(name_fn((uint16_t)i), search)) idx[n++] = (u16)i;
-        sel = 0;
-      }
+      if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); n = list_build(idx, count, name_fn, search, sort); sel = 0; }
     }
   }
 }
 
-uint16_t pick_item(uint16_t current)   { return list_pick("ITEM", NITEM, pk_item_name, current, true); }
+uint16_t pick_item(uint16_t current) { return list_pick("ITEM", 377, pk_item_name, item_icon_for, current, true, true); }
 static const char* nature16(uint16_t n) { return pk_nature_name((uint8_t)n); }
-uint8_t  pick_nature(uint8_t current)  { uint16_t r = list_pick("NATURE", 25, nature16, current, false); return r == CANCEL ? current : (uint8_t)r; }
+uint8_t  pick_nature(uint8_t current)  { uint16_t r = list_pick("NATURE", 25, nature16, 0, current, false, false); return r == CANCEL ? current : (uint8_t)r; }

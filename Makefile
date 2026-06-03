@@ -26,7 +26,7 @@ export OBJCOPY := $(PREFIX)objcopy
 %.gba : %.elf
 	@$(OBJCOPY) -O binary $< $@
 	@echo built ... $(notdir $@)
-	@gbafix $@ -t$(TITLE)
+	@gbafix $@ -t$(TITLE) -p          # -p pads to the next power-of-2 size (real-cart sizing; EZ-Flash loader needs it)
 
 %.mb.elf :
 	@echo Linking multiboot

@@ -23,6 +23,11 @@ build/
 /assets/types/
 /source/type_icons.c
 /source/type_icons.h
+# Ripped Gen-3 item icons (regenerate with: python3 tools/gen_items.py)
+/assets/items/
+/source/item_icons.c
+/source/item_icons.h
+/source/item_icons_data.s
 # Generated icon art blobs (regenerate with: python3 tools/gen_icons.py)
 /source/mon_icons.c
 /source/mon_icons.h
