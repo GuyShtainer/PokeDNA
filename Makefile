@@ -26,7 +26,7 @@ export OBJCOPY := $(PREFIX)objcopy
 %.gba : %.elf
 	@$(OBJCOPY) -O binary $< $@
 	@echo built ... $(notdir $@)
-	@gbafix $@ -t$(TITLE) -p          # -p pads to the next power-of-2 size (real-cart sizing; EZ-Flash loader needs it)
+	@gbafix $@ -t$(TITLE)             # NOTE: do NOT -p pad — EZ-Flash loads the ROM into PSRAM; keep the image small/unpadded
 
 %.mb.elf :
 	@echo Linking multiboot

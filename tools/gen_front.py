@@ -30,7 +30,7 @@ OUT_BIN_S = os.path.join(ROOT, "data", "mon_front_shiny.bin")
 OUT_S = os.path.join(ROOT, "source", "mon_front_data.s")
 OUT_C = os.path.join(ROOT, "source", "mon_front.c")
 
-SIZE = 64
+SIZE = 48          # 48x48 (was 64) — keeps the ROM small enough to load into EZ-Flash PSRAM
 MAX_INTERNAL = 411
 
 
