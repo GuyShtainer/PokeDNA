@@ -15,6 +15,10 @@ build/
 # --- local-only assets (NOT redistributed; see README + tools/gen_icons.py) ---
 # Ripped Gen-3 sprite pack (© Game Freak / The Pokémon Company)
 /assets/sprites/
+# Ripped Gen-3 PC-storage hand cursor (regenerate with: python3 tools/gen_hand.py)
+/assets/storage/
+/source/hand_cursor.c
+/source/hand_cursor.h
 # Generated icon art blobs (regenerate with: python3 tools/gen_icons.py)
 /source/mon_icons.c
 /source/mon_icons.h

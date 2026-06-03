@@ -16,6 +16,7 @@
 #include "data_tables.h"
 #include "mon_front.h"
 #include "mon_icons.h"
+#include "hand_cursor.h"
 #include "pkview_summary.h"
 #include "pkview_app.h"
 
@@ -27,34 +28,13 @@
 #define GRID_Y 20
 #define PANEL_W 76
 
-/* Gen-3-style PC hand cursor (16x16): ' '=clear, 'o'=black outline, '#'=white fill. */
-static const char* const HAND[16] = {
-  "     oo         ",
-  "    o##o        ",
-  "    o##o        ",
-  "    o##o        ",
-  "    o##ooo      ",
-  "    o##o##oo    ",
-  "    o##o##o##o  ",
-  "  oo##########o ",
-  " o############o ",
-  " o############o ",
-  " o############o ",
-  "  o##########o  ",
-  "   o#########o  ",
-  "   o########o   ",
-  "    o#######o   ",
-  "     ooooooo    ",
-};
-
+/* The real Gen-3 PC-storage hand cursor (generated RGB15 blob, git-ignored). */
 static void draw_hand(int x, int y) {
-  for (int j = 0; j < 16; j++) {
-    const char* r = HAND[j];
-    for (int i = 0; r[i]; i++) {
-      if (r[i] == 'o')      m3_plot(x + i, y + j, RGB15(1, 1, 1));
-      else if (r[i] == '#') m3_plot(x + i, y + j, RGB15(31, 29, 25));
+  for (int j = 0; j < HAND_H; j++)
+    for (int i = 0; i < HAND_W; i++) {
+      uint16_t p = hand_cursor[j * HAND_W + i];
+      if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
     }
-  }
 }
 
 static PkMon EWRAM_BSS g_box[30];

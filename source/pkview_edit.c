@@ -113,7 +113,8 @@ void em_field_adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
     case F_NATURE:  reroll_to(e, c, (c->nature + (dir > 0 ? 1 : 24)) % 25,
                               c->isShiny ? 1 : 0, c->gender < 2 ? c->gender : -1); break;
     case F_SHINY:   reroll_to(e, c, c->nature, c->isShiny ? 0 : 1, c->gender < 2 ? c->gender : -1); break;
-    case F_GENDER:  if (c->gender < 2) reroll_to(e, c, c->nature, c->isShiny ? 1 : 0, c->gender ^ 1); break;
+    case F_GENDER: { uint8_t r = pk_species_gender_ratio(c->species);
+                     if (r >= 1 && r <= 253) reroll_to(e, c, c->nature, c->isShiny ? 1 : 0, c->gender ^ 1); break; }
     case F_IV0: case F_IV1: case F_IV2: case F_IV3: case F_IV4: case F_IV5:
       em_set_iv(e, f - F_IV0, (uint8_t)(big ? (dir > 0 ? 31 : 0) : clampi(c->ivs[f - F_IV0] + dir, 0, 31))); break;
     case F_EV0: case F_EV1: case F_EV2: case F_EV3: case F_EV4: case F_EV5:
@@ -136,7 +137,8 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
     case F_OT:   if (osk_input("OT NAME", c->otName, buf, 8))    em_set_otname(e, buf); break;
     case F_ABILITY: em_set_ability(e, c->abilityNum ^ 1); break;
     case F_SHINY:   reroll_to(e, c, c->nature, c->isShiny ? 0 : 1, c->gender < 2 ? c->gender : -1); break;
-    case F_GENDER:  if (c->gender < 2) reroll_to(e, c, c->nature, c->isShiny ? 1 : 0, c->gender ^ 1); break;
+    case F_GENDER: { uint8_t r = pk_species_gender_ratio(c->species);
+                     if (r >= 1 && r <= 253) reroll_to(e, c, c->nature, c->isShiny ? 1 : 0, c->gender ^ 1); break; }
     case F_FRIEND:  em_set_friendship(e, c->friendship == 255 ? 0 : 255); break;   /* quick toggle */
     case F_IV0: case F_IV1: case F_IV2: case F_IV3: case F_IV4: case F_IV5:
       em_set_iv(e, f - F_IV0, c->ivs[f - F_IV0] == 31 ? 0 : 31); break;             /* 0 <-> max */

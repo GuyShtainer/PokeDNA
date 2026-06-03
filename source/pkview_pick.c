@@ -119,6 +119,50 @@ static void build_species(int filter, int sort, const char* search) {
 #define GX 14
 #define GY 26
 
+/* the filter ids selectable in the menu / by L-R (All, Gen1-3, Legendary, types
+ * except the unused MYSTERY type 9). */
+static int filter_ids(int* out) {
+  int n = 0;
+  for (int f = 0; f <= 4; f++) out[n++] = f;
+  for (int t = 0; t < 18; t++) if (t != 9) out[n++] = 5 + t;
+  return n;
+}
+
+/* a nice list to jump to any filter (type rows show a colored chip) + sort toggle. */
+static void filter_menu(int* filter, int* sort) {
+  int fids[24];
+  int nf = filter_ids(fids);
+  int rows = 1 + nf, sel = 0, top = 0;
+  for (;;) {
+    if (sel < top) top = sel;
+    if (sel >= top + 16) top = sel - 15;
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "FILTER / SORT");
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < 16 && top + i < rows; i++) {
+      int r = top + i, y = 14 + i * 8;
+      bool s = (r == sel);
+      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+      if (r == 0) {
+        char b[32]; siprintf(b, "Sort: %s", *sort ? "A-Z (name)" : "No. (dex)");
+        ui_text(8, y, s ? UI_SELTEXT : UI_DIRCLR, b);
+      } else {
+        int fid = fids[r - 1];
+        if (fid >= 5) { type_chip(8, y, (uint8_t)(fid - 5)); ui_text(40, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
+        else ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid));
+      }
+    }
+    ui_text(4, 152, UI_DIM, "A select  U/D move  L/R page  B back");
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
+    if (k & KEY_B) return;
+    else if (k & KEY_A) { if (sel == 0) *sort ^= 1; else { *filter = fids[sel - 1]; return; } }
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : rows - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % rows;
+    else if (k & KEY_L)    sel = clampi(sel - 8, 0, rows - 1);
+    else if (k & KEY_R)    sel = clampi(sel + 8, 0, rows - 1);
+  }
+}
+
 uint16_t pick_species(uint16_t current) {
   int filter = 0, sort = 0;
   char search[16] = "";
@@ -154,20 +198,21 @@ uint16_t pick_species(uint16_t current) {
     }
 
     ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, "A pick  L filter  R sort  SEL search  B");
+    ui_text(4, 152, UI_DIM, "A pick  L/R filter  ST menu  SEL find  B");
 
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT);
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
     if (k & KEY_B) return CANCEL;
     else if (k & KEY_A) return g_n ? g_list[sel] : CANCEL;
     else if (k & KEY_LEFT)  sel = (sel > 0) ? sel - 1 : 0;
     else if (k & KEY_RIGHT) sel = (sel < g_n - 1) ? sel + 1 : sel;
     else if (k & KEY_UP)    { if (sel >= GCOLS) sel -= GCOLS; }
     else if (k & KEY_DOWN)  { if (sel + GCOLS < g_n) sel += GCOLS; }
-    else if (k & KEY_L) { filter = (filter + 1) % NFILTER; if (filter == 5 + 9) filter++; build_species(filter, sort, search); sel = 0; }
-    else if (k & KEY_R) { sort ^= 1; build_species(filter, sort, search); sel = 0; }
+    else if (k & KEY_L) { do { filter = (filter + NFILTER - 1) % NFILTER; } while (filter == 5 + 9); build_species(filter, sort, search); sel = 0; }
+    else if (k & KEY_R) { do { filter = (filter + 1) % NFILTER; } while (filter == 5 + 9); build_species(filter, sort, search); sel = 0; }
+    else if (k & KEY_START) { filter_menu(&filter, &sort); build_species(filter, sort, search); sel = 0; }
     else if (k & KEY_SELECT) {
       char q[16];
-      if (osk_input("SEARCH", search, q, sizeof(q))) { strcpy(search, q); build_species(filter, sort, search); sel = 0; }
+      if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); build_species(filter, sort, search); sel = 0; }
     }
   }
 }
@@ -192,6 +237,7 @@ static void text_wrap(int x, int y, int cols, u16 ink, const char* s) {
   char line[40];
   int n = (int)strlen(s), i = 0;
   while (i < n) {
+    if (y > 144) return;                 /* never write past the panel into the footer */
     int take = (n - i > cols) ? cols : (n - i);
     if (n - i > cols) { int b = take; while (b > 0 && s[i + b] != ' ') b--; if (b > 0) take = b; }
     int j = 0; for (; j < take; j++) line[j] = s[i + j];
@@ -208,17 +254,19 @@ uint16_t pick_move(uint16_t current) {
   int sel = 0;
   for (int i = 0; i < g_mvn; i++) if (g_mv[i] == current) { sel = i; break; }
 
+  int top = 0;
   for (;;) {
     if (sel >= g_mvn) sel = g_mvn ? g_mvn - 1 : 0;
-    int top = sel - 6; if (top < 0) top = 0;
+    if (sel < top) top = sel;
+    if (sel >= top + 9) top = sel - 8;
 
     ui_clear();
     char h[48];
-    siprintf(h, "MOVES  [%s]  %d", tf < 0 ? "All types" : pk_type_name((uint8_t)tf), g_mvn);
+    siprintf(h, "MOVES  [%s]  %d", tf < 0 ? "All" : pk_type_name((uint8_t)tf), g_mvn);
     ui_text(4, 1, UI_TITLE, h);
     ui_hline(0, 11, UI_SCR_W, UI_BORDER);
 
-    for (int i = 0; i < 11 && top + i < g_mvn; i++) {
+    for (int i = 0; i < 9 && top + i < g_mvn; i++) {
       uint16_t m = g_mv[top + i];
       int y = 14 + i * 9;
       bool s = (top + i == sel);
@@ -231,22 +279,24 @@ uint16_t pick_move(uint16_t current) {
     /* detail panel for the selected move */
     if (g_mvn) {
       uint16_t m = g_mv[sel];
-      ui_panel(0, 116, UI_SCR_W, 33, UI_PANEL, UI_BORDER);
+      ui_panel(0, 92, UI_SCR_W, 58, UI_PANEL, UI_BORDER);
       char num[48];
       siprintf(num, "Pow %u   Acc %u   PP %u",
                (unsigned)pk_move_power(m), (unsigned)pk_move_accuracy(m), (unsigned)pk_move_pp(m));
-      ui_text(6, 118, UI_DIRCLR, num);
-      text_wrap(6, 128, 38, UI_TEXT, pk_move_desc(m));
+      ui_text(6, 95, UI_DIRCLR, num);
+      type_chip(186, 95, pk_move_type(m));
+      text_wrap(6, 106, 28, UI_TEXT, pk_move_desc(m));
     }
 
-    ui_text(4, 152, UI_DIM, "A pick  L type  SEL search  B back");
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_L | KEY_SELECT);
+    ui_text(4, 152, UI_DIM, "A pick  L/R type  SEL search  B");
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT);
     if (k & KEY_B) return CANCEL;
     else if (k & KEY_A) return g_mvn ? g_mv[sel] : CANCEL;
     else if (k & KEY_UP)   sel = clampi(sel - 1, 0, g_mvn ? g_mvn - 1 : 0);
     else if (k & KEY_DOWN) sel = clampi(sel + 1, 0, g_mvn ? g_mvn - 1 : 0);
-    else if (k & KEY_L) { do { tf = (tf + 1); if (tf >= 18) tf = -1; } while (tf == 9); build_moves(tf, search); sel = 0; }
-    else if (k & KEY_SELECT) { char q[16]; if (osk_input("SEARCH", search, q, sizeof(q))) { strcpy(search, q); build_moves(tf, search); sel = 0; } }
+    else if (k & KEY_L) { do { tf = (tf <= -1) ? 17 : tf - 1; } while (tf == 9); build_moves(tf, search); sel = 0; top = 0; }
+    else if (k & KEY_R) { do { tf = (tf >= 17) ? -1 : tf + 1; } while (tf == 9); build_moves(tf, search); sel = 0; top = 0; }
+    else if (k & KEY_SELECT) { char q[16]; if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); build_moves(tf, search); sel = 0; top = 0; } }
   }
 }
 
@@ -286,7 +336,7 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
     else if (k & KEY_R)    sel = clampi(sel + 10, 0, n ? n - 1 : 0);
     else if (searchable && (k & KEY_SELECT)) {
       char q[16];
-      if (osk_input("SEARCH", search, q, sizeof(q))) {
+      if (osk_search("SEARCH", search, q, sizeof(q))) {
         strcpy(search, q);
         n = 0;
         for (int i = 0; i < count; i++) if (ci_contains(name_fn((uint16_t)i), search)) idx[n++] = (u16)i;

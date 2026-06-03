@@ -162,20 +162,42 @@ static void encode_name(uint8_t* dst, int cap, const char* s) {
 void em_set_nickname(EditMon* e, const char* s) { encode_name(e->raw + 0x08, 10, s); }
 void em_set_otname(EditMon* e, const char* s)   { encode_name(e->raw + 0x14, 7, s); }
 
+static void apply_pid(EditMon* e, uint32_t pid) {
+  e->personality = pid;
+  wr32(e->raw + 0x00, pid);
+  recompute_party_stats(e);                      /* nature may have changed -> stats shift */
+}
+
 bool em_reroll(EditMon* e, int want_nature, int want_shiny, int want_gender, uint8_t gender_ratio) {
   uint16_t tid = (uint16_t)(e->otId & 0xFFFF), sid = (uint16_t)(e->otId >> 16);
+
+  if (want_shiny == 1) {
+    /* CONSTRUCT shiny PIDs (bounded): for each low half, the high half is forced
+     * so (tid^sid^lo^hi) < 8 — far faster than brute force. */
+    for (uint32_t lo = 0; lo < 0x10000u; lo++) {
+      for (int k = 0; k < 8; k++) {
+        uint16_t hi = (uint16_t)(tid ^ sid ^ (uint16_t)lo ^ k);
+        uint32_t pid = ((uint32_t)hi << 16) | lo;
+        if (want_nature >= 0 && (int)(pid % 25) != want_nature) continue;
+        if (want_gender >= 0 && pk_gender_from(pid, gender_ratio) != want_gender) continue;
+        apply_pid(e, pid);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /* non-shiny / don't-care: short capped sequential search (~a frame or two) */
   uint32_t pid = e->personality;
-  for (uint32_t i = 0; i < 4000000u; i++) {
-    pid = pid * 1103515245u + 12345u;            /* LCG walk */
-    int nat = (int)(pid % 25);
-    int shiny = ((uint16_t)(tid ^ sid ^ (uint16_t)(pid & 0xFFFF) ^ (uint16_t)(pid >> 16)) < 8) ? 1 : 0;
-    int gen = pk_gender_from(pid, gender_ratio);
-    if (want_nature >= 0 && nat != want_nature) continue;
-    if (want_shiny  >= 0 && shiny != want_shiny) continue;
-    if (want_gender >= 0 && gen != want_gender) continue;
-    e->personality = pid;
-    wr32(e->raw + 0x00, pid);
-    recompute_party_stats(e);                    /* nature may have changed -> stats shift */
+  for (uint32_t i = 0; i < 400000u; i++) {
+    pid = pid * 1103515245u + 12345u;
+    if (want_nature >= 0 && (int)(pid % 25) != want_nature) continue;
+    if (want_shiny == 0) {
+      int shiny = ((uint16_t)(tid ^ sid ^ (uint16_t)(pid & 0xFFFF) ^ (uint16_t)(pid >> 16)) < 8);
+      if (shiny) continue;
+    }
+    if (want_gender >= 0 && pk_gender_from(pid, gender_ratio) != want_gender) continue;
+    apply_pid(e, pid);
     return true;
   }
   return false;
