@@ -18,6 +18,7 @@
 #include "gen3_box.h"      /* pk_resolve */
 #include "data_tables.h"
 #include "osk.h"
+#include "pkview_pick.h"
 
 enum {
   F_SPECIES, F_NICK, F_LEVEL, F_NATURE, F_ABILITY, F_SHINY, F_GENDER,
@@ -43,7 +44,6 @@ static void s_vsync(void) { VBlankIntrWait(); key_poll(); }
 static u16  s_wait(u16 mask) { u16 k; do { s_vsync(); k = key_hit(mask); } while (!k); return k; }
 static int  clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-static const char* nature_name16(uint16_t n) { return pk_nature_name((uint8_t)n); }
 static const char* GEN[3] = { "Male", "Female", "-" };
 
 static void refresh(EditMon* e, PkMon* cur) {
@@ -104,36 +104,6 @@ static void render(const PkMon* c, int sel, int top) {
   ui_text(4, 152, UI_DIM, "L/R+- A:pick B:exit START:save");
 }
 
-/* generic scrollable id picker; returns chosen id or -1 (B). */
-static int pick_id(const char* title, int count, const char* (*name_fn)(uint16_t), int current) {
-  int sel = clampi(current, 0, count - 1), top = 0;
-  for (;;) {
-    if (sel < top) top = sel;
-    if (sel >= top + VIS_ROWS) top = sel - VIS_ROWS + 1;
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, title);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    char row[40];
-    for (int i = 0; i < VIS_ROWS && top + i < count; i++) {
-      int id = top + i, y = 14 + i * 8;
-      bool s = (id == sel);
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-      siprintf(row, "%3d  %s", id, name_fn((uint16_t)id));
-      char rt[40]; ui_truncate(rt, row, 28);
-      ui_text(6, y, s ? UI_SELTEXT : UI_TEXT, rt);
-    }
-    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, "U/D move  L/R +-10  A pick  B back");
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
-    if (k & KEY_B) return -1;
-    else if (k & KEY_A) return sel;
-    else if (k & KEY_UP)   sel = clampi(sel - 1, 0, count - 1);
-    else if (k & KEY_DOWN) sel = clampi(sel + 1, 0, count - 1);
-    else if (k & KEY_L)    sel = clampi(sel - 10, 0, count - 1);
-    else if (k & KEY_R)    sel = clampi(sel + 10, 0, count - 1);
-  }
-}
-
 /* re-roll PID for a (nature, shiny, gender) combo, relaxing gender then shiny. */
 static void reroll_to(EditMon* e, const PkMon* c, int nat, int shiny, int gender) {
   uint8_t ratio = pk_species_gender_ratio(c->species);
@@ -167,11 +137,11 @@ static void adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
 static void press_a(int f, EditMon* e, const PkMon* c) {
   char buf[20];
   switch (f) {
-    case F_SPECIES: { int id = pick_id("SPECIES", 412, pk_species_name, c->species); if (id > 0) em_set_species(e, (uint16_t)id); break; }
-    case F_ITEM:    { int id = pick_id("ITEM", 400, pk_item_name, c->heldItem); if (id >= 0) em_set_item(e, (uint16_t)id); break; }
-    case F_NATURE:  { int id = pick_id("NATURE", 25, nature_name16, c->nature); if (id >= 0) reroll_to(e, c, id, c->isShiny ? 1 : 0, c->gender < 2 ? c->gender : -1); break; }
+    case F_SPECIES: { uint16_t id = pick_species(c->species); if (id != 0xFFFF) em_set_species(e, id); break; }
+    case F_ITEM:    { uint16_t id = pick_item(c->heldItem);   if (id != 0xFFFF) em_set_item(e, id); break; }
+    case F_NATURE:  { uint8_t nt = pick_nature(c->nature); reroll_to(e, c, nt, c->isShiny ? 1 : 0, c->gender < 2 ? c->gender : -1); break; }
     case F_MV0: case F_MV1: case F_MV2: case F_MV3:
-      { int id = pick_id("MOVE", 355, pk_move_name, c->moves[f - F_MV0]); if (id >= 0) em_set_move(e, f - F_MV0, (uint16_t)id); break; }
+      { uint16_t id = pick_move(c->moves[f - F_MV0]); if (id != 0xFFFF) em_set_move(e, f - F_MV0, id); break; }
     case F_NICK: if (osk_input("NICKNAME", c->nickname, buf, 11)) em_set_nickname(e, buf); break;
     case F_OT:   if (osk_input("OT NAME", c->otName, buf, 8))    em_set_otname(e, buf); break;
     case F_ABILITY: em_set_ability(e, c->abilityNum ^ 1); break;
