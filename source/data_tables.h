@@ -30,6 +30,9 @@ const char* pk_move_name(uint16_t move_id);
 uint8_t     pk_move_type(uint16_t move_id);
 uint8_t     pk_move_pp(uint16_t move_id);               /* base PP (before PP-ups) */
 uint8_t     pk_move_contest(uint16_t move_id);          /* contest category 0..4 (see pk_contest_name) */
+uint8_t     pk_move_power(uint16_t move_id);            /* base power (0 = status/no power) */
+uint8_t     pk_move_accuracy(uint16_t move_id);        /* accuracy % (0 = never misses) */
+const char* pk_move_desc(uint16_t move_id);            /* in-game move description */
 
 /* ---- items / abilities / natures / types / locations ---- */
 const char* pk_item_name(uint16_t item_id);

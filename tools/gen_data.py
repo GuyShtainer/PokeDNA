@@ -187,6 +187,8 @@ mv_name = parse_named_array(rd("src/data/text/move_names.h"), MOVE)
 NMOVE = (max(MOVE.values()) + 1) if MOVE else 355
 mv_type = [0] * NMOVE
 mv_pp = [0] * NMOVE
+mv_power = [0] * NMOVE
+mv_acc = [0] * NMOVE
 for const, body in iter_blocks(rd("src/data/battle_moves.h")):
     mid = MOVE.get(const)
     if mid is None or mid >= NMOVE:
@@ -194,6 +196,10 @@ for const, body in iter_blocks(rd("src/data/battle_moves.h")):
     mv_type[mid] = TYPE.get((field(body, "type") or "TYPE_NORMAL").strip(), 0)
     pp = field(body, "pp")
     mv_pp[mid] = int(pp, 0) if pp else 0
+    pw = field(body, "power")
+    mv_power[mid] = int(pw, 0) if pw else 0
+    ac = field(body, "accuracy")
+    mv_acc[mid] = int(ac, 0) if ac else 0
 mv_contest = [0] * NMOVE
 for const, body in iter_blocks(rd("src/data/contest_moves.h")):
     mid = MOVE.get(const)
@@ -202,6 +208,18 @@ for const, body in iter_blocks(rd("src/data/contest_moves.h")):
     cc = field(body, "contestCategory")
     if cc:
         mv_contest[mid] = CONTEST.get(cc.strip(), 0)
+
+# ---- move descriptions (text -> var -> move id via the pointer table) ----
+mv_desc = {}
+_dsrc = rd("src/data/text/move_descriptions.h")
+_dtext = {}
+for _m in re.finditer(r"static const u8 (\w+)\[\]\s*=\s*_\((.*?)\);", _dsrc, re.S):
+    _parts = re.findall(r'"([^"]*)"', _m.group(2))
+    _dtext[_m.group(1)] = "".join(_parts).replace("\\n", " ").replace("\\p", " ").replace("\\l", " ").strip()
+for _m in re.finditer(r"\[MOVE_(\w+)\s*-\s*1\]\s*=\s*(\w+)", _dsrc):
+    _mid = MOVE.get("MOVE_" + _m.group(1))
+    if _mid is not None and _mid < NMOVE:
+        mv_desc[_mid] = _dtext.get(_m.group(2), "")
 
 # ---- items ----
 it_name = {}
@@ -342,6 +360,9 @@ with open(OUT, "w") as c:
     emit_u8(c, "s_mvtype", mv_type)
     emit_u8(c, "s_mvpp", mv_pp)
     emit_u8(c, "s_mvcontest", mv_contest)
+    emit_u8(c, "s_mvpower", mv_power)
+    emit_u8(c, "s_mvacc", mv_acc)
+    emit_strtab(c, "s_mvdesc", mv_desc, NMOVE, "")
 
     # nature mods
     c.write("static const signed char s_natboost[25] = {%s};\n" % ",".join(str(x) for x in nat_boost))
@@ -367,6 +388,9 @@ const char* pk_move_name(uint16_t i){{ return i<{NMOVE}?s_move[i]:"-"; }}
 uint8_t pk_move_type(uint16_t i){{ return i<{NMOVE}?s_mvtype[i]:0; }}
 uint8_t pk_move_pp(uint16_t i){{ return i<{NMOVE}?s_mvpp[i]:0; }}
 uint8_t pk_move_contest(uint16_t i){{ return i<{NMOVE}?s_mvcontest[i]:0; }}
+uint8_t pk_move_power(uint16_t i){{ return i<{NMOVE}?s_mvpower[i]:0; }}
+uint8_t pk_move_accuracy(uint16_t i){{ return i<{NMOVE}?s_mvacc[i]:0; }}
+const char* pk_move_desc(uint16_t i){{ return i<{NMOVE}?s_mvdesc[i]:""; }}
 const char* pk_item_name(uint16_t i){{ return i<{NITEM}?s_item[i]:"????????"; }}
 const char* pk_ability_name(uint16_t i){{ return i<{NABIL}?s_ability[i]:"-"; }}
 const char* pk_ability_desc(uint16_t i){{ return i<{NABIL}?s_abilitydesc[i]:""; }}
