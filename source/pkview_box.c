@@ -188,7 +188,7 @@ int pkview_box(uint8_t* pc) {
   for (;;) {
     render(pc, box, cur);
     u16 k;
-    do { s_vsync(); k = key_hit(KEY_FULL); } while (!k);
+    do { s_vsync(); k = key_hit(KEY_FULL) | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
 
     if (k & KEY_B) return 0;
     else if (k & KEY_SELECT) return 1;

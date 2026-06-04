@@ -249,7 +249,7 @@ bool pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec
     ui_text(4, 152, UI_DIM, can_edit ? "U/D field  A/<> edit  L/R card  B" : "L/R card  B back");
 
     u16 k;
-    do { s_vsync(); k = key_hit(KEY_FULL); } while (!k);
+    do { s_vsync(); k = key_hit(KEY_FULL) | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
 
     if (k & KEY_B) {
       bool ret = false;

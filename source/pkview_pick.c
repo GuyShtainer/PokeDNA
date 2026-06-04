@@ -25,7 +25,14 @@ static u16 EWRAM_BSS g_list[NSPECIES];   /* internal species ids in display orde
 static int g_n;
 
 static void s_vsync(void) { VBlankIntrWait(); key_poll(); }
-static u16  s_wait(u16 m) { u16 k; do { s_vsync(); k = key_hit(m); } while (!k); return k; }
+/* fresh presses for all keys + auto-repeat for the held d-pad (tonc key_repeat,
+ * configured globally in init_system) so holding a direction keeps scrolling. */
+static u16  s_wait(u16 m) {
+  const u16 dpad = KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT;
+  u16 k;
+  do { s_vsync(); k = key_hit(m) | key_repeat(m & dpad); } while (!k);
+  return k;
+}
 static int  clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
 static char up1(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
@@ -195,14 +202,16 @@ uint16_t pick_species(uint16_t current) {
   for (int i = 0; i < g_n; i++) if (g_list[i] == current) { sel = i; break; }
 
   char hdr[48];
-  int prev_sel = -1, prev_top = -1;
+  int prev_sel = -1, prev_top = -1, toprow = 0;
   bool relist = true;                 /* force a full redraw initially + after any list change */
 
   for (;;) {
     if (sel >= g_n) sel = g_n ? g_n - 1 : 0;
-    int top = (sel / GCOLS) - (GVROWS - 1);
-    if (top < 0) top = 0;
-    int top_idx = top * GCOLS;
+    int srow = sel / GCOLS;           /* edge scroll: cursor roams the page, list moves only at the edges */
+    if (srow < toprow) toprow = srow;
+    if (srow >= toprow + GVROWS) toprow = srow - GVROWS + 1;
+    if (toprow < 0) toprow = 0;
+    int top_idx = toprow * GCOLS;
 
     /* Only a page scroll or a list change needs a full repaint; moving the cursor
      * within the page just swaps the selection frame + repaints the header strip
@@ -406,11 +415,12 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
   const int rowh = icon_fn ? 26 : 8;                /* taller rows when showing 24x24 icons */
   const int vis  = icon_fn ? 5 : 16;
   const int page = icon_fn ? 5 : 10;
+  int top = 0;
 
   for (;;) {
     if (sel >= n) sel = n ? n - 1 : 0;
-    int top = sel - vis / 2;
-    if (top > n - vis) top = n - vis;
+    if (sel < top) top = sel;                       /* edge scroll: cursor roams, list moves only at edges */
+    if (sel >= top + vis) top = sel - vis + 1;
     if (top < 0) top = 0;
 
     ui_clear();
@@ -505,7 +515,7 @@ uint16_t pick_item(uint16_t current) {
   int sel = 0;
   for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
 
-  int prev_sel = -1, prev_top = -1, prev_view = -1;
+  int prev_sel = -1, prev_top = -1, prev_view = -1, toprow = 0;
   bool relist = true;
 
   for (;;) {
@@ -513,7 +523,10 @@ uint16_t pick_item(uint16_t current) {
     iv_geom(view, &cols, &cw, &ch, &x0, &y0, &vrows);
     int vis = cols * vrows;
     if (sel >= n) sel = n ? n - 1 : 0;
-    int toprow = (sel / cols) - (vrows - 1); if (toprow < 0) toprow = 0;
+    int srow = sel / cols;            /* edge scroll: cursor roams the page, list moves only at the edges */
+    if (srow < toprow) toprow = srow;
+    if (srow >= toprow + vrows) toprow = srow - vrows + 1;
+    if (toprow < 0) toprow = 0;
     int top = toprow * cols;
     bool grid = (view == IV_ICONS || view == IV_GRID);
 

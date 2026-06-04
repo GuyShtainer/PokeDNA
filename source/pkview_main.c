@@ -65,7 +65,7 @@ static void vsync(void) { VBlankIntrWait(); key_poll(); }
 
 static u16 wait_keys(u16 mask) {
   u16 hit;
-  do { vsync(); hit = key_hit(mask); } while (!hit);
+  do { vsync(); hit = key_hit(mask) | key_repeat(mask & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)); } while (!hit);
   return hit;
 }
 
