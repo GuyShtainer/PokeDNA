@@ -33,6 +33,7 @@
 #include "gen3_edit.h"     /* EditMon, gen3_edit_load/commit, em_set_*, em_preview */
 #include "gen3_clip.h"     /* ClipMon, slot ops (copy/paste/dup/release) */
 #include "pkview_legality.h" /* pkview_legality_show */
+#include "pkview_pk.h"     /* pkview_pk_export (.pk3) */
 #include "pkview_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
 #include "pkview_app.h"
 #include "savefile.h"
@@ -582,8 +583,8 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
     return false;
   }
 
-  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_COPY, A_PASTE, A_DUP, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CANCEL };
-  int act[14]; const char* lab[14]; int n = 0;
+  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CANCEL };
+  int act[16]; const char* lab[16]; int n = 0;
   if (occupied) {
     lab[n]="SUMMARY"; act[n++]=A_SUMMARY;
     lab[n]="ITEM";    act[n++]=A_ITEM;
@@ -592,6 +593,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
     lab[n]="COPY";    act[n++]=A_COPY;
     if (g_clip.occupied) { lab[n]="PASTE"; act[n++]=A_PASTE; }
     lab[n]="DUPLICATE"; act[n++]=A_DUP;
+    lab[n]="EXPORT .pk"; act[n++]=A_EXPORT;
     if (m0.heldItem && !g_item_held) { lab[n]="TAKE ITEM"; act[n++]=A_TAKEITEM; }
     if (g_item_held)                 { lab[n]="GIVE ITEM"; act[n++]=A_GIVEITEM; }
     lab[n]="RELEASE";   act[n++]=A_RELEASE;
@@ -628,6 +630,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
         case A_ITEM:    return app_quick_item (rec, is_party, sect_lo, sect_hi, block);
         case A_MOVES:   return app_quick_moves(rec, is_party, sect_lo, sect_hi, block);
         case A_LEGAL:   pkview_legality_show(&m0); return false;
+        case A_EXPORT:  pkview_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
         case A_COPY:    return app_copy(rec, is_party);
         case A_PASTE:   return app_paste(rec, is_party, sect_lo, sect_hi, block, occupied);
         case A_DUP:     return app_duplicate(rec, is_party, sect_lo, sect_hi, block, box);
