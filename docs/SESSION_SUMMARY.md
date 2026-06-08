@@ -4,7 +4,8 @@
 > `CLAUDE.md` (toolkit root) for the shared hardware/safety rules. This file is
 > kept current at the end of each working session.
 
-**Last updated:** 2026-06 (after the advanced-editing batch — transfer/bank/data-editor/legality, commit `66c4f17`).
+**Last updated:** 2026-06 (advanced-editing batch `66c4f17`, then **legality V2 move-source**
+— 3-game learnset union + `learnsets.{c,h}` + `gen_legality.py`, adversarially reviewed; not yet committed).
 
 ---
 
@@ -50,6 +51,14 @@ The lossless gate: a no-op load→commit must be **byte-identical** for every pa
 mon (host test asserts 0 diffs across Emerald/FireRed/Ruby). Run this after ANY change
 to `gen3_edit.c` / `gen3_mon.c` / `gen3_save.c` / `data_tables`.
 
+Legality gate (after any `gen3_legality.c` / `learnsets` / `gen_legality.py` change — first
+re-run `python3 tools/gen_legality.py`):
+```
+cc -std=c11 -I source tests/host_legality_test.c source/gen3_save.c source/gen3_mon.c \
+   source/gen3_box.c source/gen3_legality.c source/learnsets.c source/data_tables.c -o /tmp/hl
+/tmp/hl tests/fixtures/POKEMON_EMER_BPEE00.sav   # asserts 0 false-positive move warnings
+```
+
 **Commit pattern** (verify no git-ignored generated/art file leaks first):
 ```
 git -c user.name="Guy Shtainer" -c user.email="293649481+GuyShtainer@users.noreply.github.com" commit -q ...
@@ -78,8 +87,20 @@ doesn't tally — this is normal and has always been the case.
   `pk3_validate`, box-slot write/clear, and **count-aware** party append/release (the
   gap-free party invariant — append refuses at 6, release shifts-down + decrements).
 - `gen3_legality.{c,h}` — `pk_check_legality(PkMon)` → `PkLegality` (V1 structural checks:
-  bad-egg, EV>510, level/EXP mismatch, bad moves/PP, ability slot, met-level, ball, …).
-  V2 (encounter/move) deferred.
+  bad-egg, EV>510, level/EXP mismatch, bad moves/PP, ability slot, met-level, ball, …)
+  **plus V2 move-source** (warn-only, sev 0): flags a move the species *line* can't learn by
+  any Gen-3 method. Independent of the PP check (a doubly-tampered move fails both). V2
+  encounter/"Skitty on Route 101" still deferred.
+- `learnsets.{c,h}` — `pk_can_learn(species, move)` over a generated per-species bitset
+  (`learnsets.c` git-ignored, 45 B/mon, ~18.5 KB ROM `.rodata`). Built by
+  `tools/gen_legality.py` as the **union across all three Gen-3 decomps** (pokeemerald +
+  pokefirered + pokeruby) of level-up + egg moves over the *whole pre-evolution chain*, PLUS
+  all TM/HM + tutor moves accepted **globally** (per-species TM/tutor parse is fragile;
+  over-accepting them = zero false positives), PLUS code-taught specials no data file lists
+  (Blast Burn/Frenzy Plant/Hydro Cannon FRLG ultimate tutor; **Volt Tackle** Light-Ball egg
+  move). Conservative by design: a wrong-TM-combo hack is missed on purpose so a legit mon is
+  never flagged. **Cross-game union is mandatory** — Emerald-only data false-flags legit FRLG/RS
+  mons (Mr. Mime/Magical Leaf, Charizard/Blast Burn, Togetic/AncientPower, Dugtrio/Fury Swipes).
 - `gen3_flags.{c,h}` — event-flag get/set (plaintext bit array, per-game base offset).
 - `gen3_items.{c,h}` — item-bag pockets (per-game offsets; quantity XOR'd with the SB2 key
   on E/FRLG, plaintext on RS).
@@ -140,6 +161,7 @@ and `data/*.bin`.
 | `gen_items.py` | `assets/items/{icons,icon_palettes,meta}/` | `data/item_icons.bin` + `source/item_icons.{c,h}` + `_data.s` — 24×24 item icons (resolves the decomp's decoupled id→pic + id→palette tables; deduped) |
 | `gen_hand.py` | `assets/storage/hand_cursor.png` | `source/hand_cursor.{c,h}` — Gen-3 PC hand, recolored WHITE |
 | `gen_data.py` | `reference/pokeemerald_data/` (trimmed decomp) | `source/data_tables.c` — all name/desc/stat tables |
+| `gen_legality.py` | `reference/{pokeemerald,pokefirered,pokeruby}_data/` (level-up + egg + tutor + tms_hms + evolution) | `source/learnsets.c` — per-species learnable-move bitset for `pk_can_learn` (3-game **union**; see §3 `learnsets`) |
 
 - Species are keyed by **INTERNAL Gen-3 id** (from `reference/.../constants/species.h`),
   NOT the national+25 shortcut (that mismapped legendaries — Kyogre→Registeel).
@@ -214,7 +236,11 @@ commit). Species mapping fix (internal ids). Editing confirmed working on real O
 **Advanced editing batch (`7ed5725`..`66c4f17`), build-clean + 4 host gates green (edit/clip/legality/data):**
 - **Copy / Paste / Duplicate / Release** + **move held item** (take/give) in the PC `A` menu;
   empty box slots offer PASTE HERE. All ride the one `app_commit_block` write path.
-- **Legality V1** card (`LEGALITY` action) — structural hacked-mon flags.
+- **Legality V1+V2-moves** card (`LEGALITY` action) — structural hacked-mon flags plus a
+  warn-only "move not learnable by species" check (see `learnsets.{c,h}`). Read-only; **no SD
+  write**, so it needs no hardware sign-off. Host-verified: 0 false positives across 651 valid
+  mons in all 3 fixtures; survived a 4-dimension adversarial review (the one real FP it found —
+  Volt Tackle on the Pichu line — is fixed + regression-guarded).
 - **Export `.pk3`** (`EXPORT .pk`) to `/pokeviewer/bank/`.
 - **External bank** (START → MENU → Bank): a grid of stored `.pk3`; inject into the loaded
   game's first free box slot (record is byte-identical across all 5 games) / delete. Also the
@@ -228,9 +254,10 @@ commit). Species mapping fix (internal ids). Editing confirmed working on real O
   export, bank inject/delete, and counter/bag/flag writes are all new SD-write paths.
 - Re-confirm any SD-write path after big changes.
 
-**Next (deferred):** legality V2 (encounter + learnset tables, the "Skitty on Route 101" check —
-needs LZ77-compressed generated data); named flag categories (badges etc. need per-game
-`SYSTEM_FLAGS` resolution in `gen_data.py`).
+**Next (deferred):** legality V2 **encounter** half (the "Skitty on Route 101" check — needs
+generated wild-encounter + met-location tables, the messy per-game part; move-source half is
+already done); named flag categories (badges etc. need per-game `SYSTEM_FLAGS` resolution in
+`gen_data.py`).
 
 ---
 

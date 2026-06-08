@@ -1,5 +1,6 @@
 #include "gen3_legality.h"
 #include "data_tables.h"
+#include "learnsets.h"
 
 /* fixed-string messages only (keeps this module pure C — no siprintf/stdio). */
 static void add(PkLegality* L, uint8_t sev, const char* t) {
@@ -47,14 +48,21 @@ PkLegality pk_check_legality(const PkMon* m) {
     uint8_t ups = (uint8_t)((m->ppBonuses >> (i * 2)) & 3);
     uint8_t maxpp = (uint8_t)(base + base / 5 * ups);
     if (m->pp[i] > maxpp) add(&L, 1, "PP above maximum");
+    /* move-source legality (V2): warn-only, and independent of the PP check
+     * above (a doubly-tampered move can fail both). pk_can_learn over-accepts
+     * every TM/HM/tutor move, so this never false-flags a legit mon; a hit means
+     * no Gen-3 level-up/egg/TM/tutor method teaches this move to the species line
+     * (e.g. a signature move on the wrong species, or a later-gen move). */
+    if (!m->isEgg && !pk_can_learn(m->species, mv))
+      add(&L, 0, "Move not learnable by species");
   }
 
   if (m->heldItem > 376) add(&L, 1, "Held item id invalid");
   if (m->metLevel > m->level) add(&L, 1, "Met level above current level");
   if (m->pokeball < 1 || m->pokeball > 12) add(&L, 0, "Unusual Poke Ball id");
 
-  /* V2 (needs encounter + learnset tables) would add: species-vs-met-location
-   * validity ("Skitty can't appear on Route 101"), met-level plausibility, and
-   * move-source legality. Not checked here. */
+  /* V2 move-source legality is checked above (warn-only). Still TODO for a later
+   * milestone: species-vs-met-location validity ("Skitty can't appear on Route
+   * 101") and met-level plausibility — both need the wild-encounter tables. */
   return L;
 }

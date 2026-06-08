@@ -45,3 +45,4 @@ build/
 /source/mon_front_data.s
 /source/mon_icons_data.s
 /source/data_tables.c
+/source/learnsets.c
