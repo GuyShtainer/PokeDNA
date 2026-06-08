@@ -738,25 +738,29 @@ static bool pc_first_free(const uint8_t* pc, int* box, int* slot) {
   return false;
 }
 
-/* small 3-option chooser (INJECT / DELETE / CANCEL) */
-static int bank_action_menu(void) {
-  static const char* const L[3] = { "INJECT to game", "DELETE file", "CANCEL" };
-  const int mx = 60, my = 50, mw = 120, mh = 18 + 3 * 14;
+enum { BA_BOX = 0, BA_PARTY, BA_DELETE, BA_CANCEL };
+static int bank_action_menu(bool party_room) {
+  const char* L[4]; int code[4]; int n = 0;
+  L[n] = "Inject to box";   code[n++] = BA_BOX;
+  if (party_room) { L[n] = "Inject to party"; code[n++] = BA_PARTY; }
+  L[n] = "Delete file";     code[n++] = BA_DELETE;
+  L[n] = "Cancel";          code[n++] = BA_CANCEL;
+  const int mx = 58, mw = 124, mh = 18 + n * 14, my = 80 - mh / 2;
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "BANK MON");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < n; i++) {
       int y = my + 18 + i * 14; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
     }
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return 2;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 2;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 3;
-    else if (k & KEY_A)    return sel;
+    if (k & KEY_B) return BA_CANCEL;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % n;
+    else if (k & KEY_A)    return code[sel];
   }
 }
 
@@ -813,21 +817,31 @@ static bool bank_screen(void) {
     else if (k & KEY_DOWN)  { if (cur + 6 < on) cur += 6; }
     else if ((k & KEY_A) && on && app_can_edit()) {
       int idx = page * 30 + cur;
-      int a = bank_action_menu();
-      if (a == 0) {                                    /* INJECT */
-        uint8_t raw[80]; int b, s;
+      char path[SF_PATH_MAX]; siprintf(path, PKVIEW_BANK_DIR "/%s", g_bank_names[idx]);
+      int a = bank_action_menu(party_count(g_sb1, g_frlg) < 6);
+      if (a == BA_BOX || a == BA_PARTY) {
+        uint8_t raw[80];
         if (!bank_read(idx, raw)) { msg_wait("BAD FILE", UI_WARN, "Could not read this .pk3.", 0); }
-        else if (!pc_first_free(g_pc, &b, &s)) { msg_wait("PC FULL", UI_WARN, "No empty box slot.", 0); }
         else {
-          memcpy(pk_box_slot(g_pc, b, s), raw, 80);
-          if (app_commit_block(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc)) changed = true;
+          bool ok = false;
+          if (a == BA_BOX) {
+            int b, s;
+            if (!pc_first_free(g_pc, &b, &s)) msg_wait("PC FULL", UI_WARN, "No empty box slot.", 0);
+            else { memcpy(pk_box_slot(g_pc, b, s), raw, 80);
+                   ok = app_commit_block(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc); }
+          } else {                                     /* inject to party (append) */
+            ClipMon t; clip_copy_from(&t, raw, false);
+            uint8_t r100[100]; clip_to_record(&t, true, r100);
+            if (party_append(g_sb1, g_frlg, r100)) ok = app_commit_block(1, 4, g_sb1);
+            else msg_wait("PARTY FULL", UI_WARN, "Release a mon first.", 0);
+          }
+          if (ok) {                                    /* offer to WITHDRAW (move, not copy) */
+            changed = true;
+            if (app_confirm("Remove from bank?", "Withdraw = move out of the bank.")) { f_unlink(path); bank_scan(); }
+          }
         }
-      } else if (a == 1) {                             /* DELETE */
-        if (app_confirm("Delete this .pk3 file?", "The stored mon is removed.")) {
-          char path[SF_PATH_MAX]; siprintf(path, PKVIEW_BANK_DIR "/%s", g_bank_names[idx]);
-          f_unlink(path);
-          bank_scan();
-        }
+      } else if (a == BA_DELETE) {
+        if (app_confirm("Delete this .pk3 file?", "The stored mon is removed.")) { f_unlink(path); bank_scan(); }
       }
     }
   }
@@ -862,14 +876,15 @@ static bool data_editor(void) {
     }
     ui_hline(0, 13, UI_SCR_W, UI_BORDER);
 
-    if (tab == 0) {                              /* ---- counters ---- */
-      int N = pk_game_stat_count(g_game);
+    if (tab == 0) {                              /* ---- counters (row 0 = Money) ---- */
+      int N = pk_game_stat_count(g_game) + 1;
       if (sel >= N) sel = N - 1;
       if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
       char row[44];
       for (int i = 0; i < 14 && top + i < N; i++) {
-        int st = top + i, y = 16 + i * 9; bool s = (st == sel);
-        siprintf(row, "%-20s %lu", pk_game_stat_name(st), (unsigned long)pk_game_stat(g_sb1, g_sb2, g_game, st));
+        int r = top + i, y = 16 + i * 9; bool s = (r == sel);
+        if (r == 0) siprintf(row, "%-20s %lu", "Money", (unsigned long)pk_money(g_sb1, g_sb2, g_game));
+        else        siprintf(row, "%-20s %lu", pk_game_stat_name(r - 1), (unsigned long)pk_game_stat(g_sb1, g_sb2, g_game, r - 1));
         char rt[44]; ui_truncate(rt, row, 29);
         if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
         ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
@@ -924,9 +939,15 @@ static bool data_editor(void) {
     else if (k & KEY_DOWN)   sel++;
     else if (tab == 1 && (k & KEY_SELECT)) { pocket = (pocket + 1) % POCKET_COUNT; sel = top = 0; }
     else if (k & KEY_A) {
-      if (tab == 0) {                            /* edit a counter */
-        uint32_t v = osk_number("STAT VALUE", pk_game_stat(g_sb1, g_sb2, g_game, sel), 0xFFFFFFFFu);
-        pk_set_game_stat(g_sb1, g_sb2, g_game, sel, v); dirty = true;
+      if (tab == 0) {                            /* edit money (row 0) or a counter */
+        if (sel == 0) {
+          uint32_t v = osk_number("MONEY", pk_money(g_sb1, g_sb2, g_game), 999999);
+          pk_set_money(g_sb1, g_sb2, g_game, v); dirty = true;
+        } else {
+          int st = sel - 1;
+          uint32_t v = osk_number("STAT VALUE", pk_game_stat(g_sb1, g_sb2, g_game, st), 0xFFFFFFFFu);
+          pk_set_game_stat(g_sb1, g_sb2, g_game, st, v); dirty = true;
+        }
       } else if (tab == 1) {                     /* edit a bag slot */
         uint16_t cur = pk_bag_item(g_sb1, g_game, pocket, sel);
         uint16_t id = pick_item(cur);
@@ -1002,7 +1023,12 @@ static void view_save(const char* path) {
     if (r == 2) {                                /* START -> nav menu */
       int dest = nav_menu();
       if (dest == 0) pkview_trainer(g_sb1, g_sb2, &g_vinfo, g_game);
-      else if (dest == 1) bank_screen();         /* inject changes g_pc; box re-reads on re-entry */
+      else if (dest == 1) {                       /* bank: inject can change g_pc and/or party */
+        if (bank_screen()) {
+          g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
+          for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
+        }
+      }
       else if (dest == 2) {                      /* data editor (edits the save) */
         if (app_can_edit()) data_editor();
         else msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0);
