@@ -32,6 +32,7 @@
 #include "pkview_edit.h"
 #include "gen3_edit.h"     /* EditMon, gen3_edit_load/commit, em_set_*, em_preview */
 #include "gen3_clip.h"     /* ClipMon, slot ops (copy/paste/dup/release) */
+#include "pkview_legality.h" /* pkview_legality_show */
 #include "pkview_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
 #include "pkview_app.h"
 #include "savefile.h"
@@ -581,12 +582,13 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
     return false;
   }
 
-  enum { A_SUMMARY, A_ITEM, A_MOVES, A_COPY, A_PASTE, A_DUP, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CANCEL };
-  int act[12]; const char* lab[12]; int n = 0;
+  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_COPY, A_PASTE, A_DUP, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CANCEL };
+  int act[14]; const char* lab[14]; int n = 0;
   if (occupied) {
     lab[n]="SUMMARY"; act[n++]=A_SUMMARY;
     lab[n]="ITEM";    act[n++]=A_ITEM;
     lab[n]="MOVES";   act[n++]=A_MOVES;
+    lab[n]="LEGALITY"; act[n++]=A_LEGAL;
     lab[n]="COPY";    act[n++]=A_COPY;
     if (g_clip.occupied) { lab[n]="PASTE"; act[n++]=A_PASTE; }
     lab[n]="DUPLICATE"; act[n++]=A_DUP;
@@ -602,16 +604,19 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
 
   char title[16];
   ui_truncate(title, occupied ? (m0.nickname[0] ? m0.nickname : pk_species_name(m0.species)) : "EMPTY", 11);
-  const int mx = 138, mw = 100, mh = 18 + n * 13, my = 80 - mh / 2;
-  int sel = 0;
+  const int vis = n < 9 ? n : 9;                    /* scroll if more actions than fit */
+  const int mx = 138, mw = 100, mh = 18 + vis * 13, my = 80 - mh / 2;
+  int sel = 0, top = 0;
   for (;;) {
+    if (sel < top) top = sel;
+    if (sel >= top + vis) top = sel - vis + 1;
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, title);
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < n; i++) {
-      int y = my + 18 + i * 13; bool s = (i == sel);
+    for (int i = 0; i < vis && top + i < n; i++) {
+      int y = my + 18 + i * 13; bool s = (top + i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 12, UI_SEL, UI_TITLE);
-      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, lab[i]);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, lab[top + i]);
     }
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return false;
@@ -622,6 +627,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
         case A_SUMMARY: return app_edit_commit(rec, is_party, sect_lo, sect_hi, block);
         case A_ITEM:    return app_quick_item (rec, is_party, sect_lo, sect_hi, block);
         case A_MOVES:   return app_quick_moves(rec, is_party, sect_lo, sect_hi, block);
+        case A_LEGAL:   pkview_legality_show(&m0); return false;
         case A_COPY:    return app_copy(rec, is_party);
         case A_PASTE:   return app_paste(rec, is_party, sect_lo, sect_hi, block, occupied);
         case A_DUP:     return app_duplicate(rec, is_party, sect_lo, sect_hi, block, box);
