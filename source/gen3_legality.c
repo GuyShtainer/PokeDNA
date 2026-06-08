@@ -59,10 +59,21 @@ PkLegality pk_check_legality(const PkMon* m) {
 
   if (m->heldItem > 376) add(&L, 1, "Held item id invalid");
   if (m->metLevel > m->level) add(&L, 1, "Met level above current level");
+  if (m->metLevel > 100) add(&L, 1, "Met level above 100");      /* impossible */
   if (m->pokeball < 1 || m->pokeball > 12) add(&L, 0, "Unusual Poke Ball id");
 
-  /* V2 move-source legality is checked above (warn-only). Still TODO for a later
-   * milestone: species-vs-met-location validity ("Skitty can't appear on Route
-   * 101") and met-level plausibility — both need the wild-encounter tables. */
+  /* Origin game (the 4-bit "game of origin"): 1 Sapphire, 2 Ruby, 3 Emerald,
+   * 4 FireRed, 5 LeafGreen, 15 Colosseum/XD. Anything else can't occur on a legit
+   * Gen-3 mon. Warn-only (conservative): a non-egg with a 0 origin is the common
+   * crude-hack tell, but we never hard-fail on it. Eggs carry their breed game. */
+  if (m->metGame == 0 || (m->metGame > 5 && m->metGame != 15))
+    add(&L, 0, "Unusual origin game");
+
+  /* V1 + V2 move-source done above. The species-vs-met-LOCATION check ("Skitty
+   * can't appear on Route 101") is intentionally NOT done: reliably (zero false
+   * positives) it needs per-game MAPSEC tables, MAP->MAPSEC aggregation across
+   * ~480 maps/game, wild tables, evolved-mon skipping, and a curated special-
+   * source (starter/fossil/gift/static/legendary/trade) exclusion set — a
+   * PKHeX-scale dataset. Left as a dedicated milestone. */
   return L;
 }

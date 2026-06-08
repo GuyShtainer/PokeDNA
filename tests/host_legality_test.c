@@ -42,16 +42,19 @@ int main(int argc, char** argv) {
    *     fixtures also hold a few garbage box slots (species id out of range) that
    *     the checker must correctly flag as illegal. */
   int valid_tested = 0, valid_flagged = 0, garbage_total = 0, garbage_caught = 0;
-  int move_warns = 0;
+  int move_warns = 0, origin_warns = 0;
   #define VISIT(m) do { \
     pk_resolve(&(m)); \
     PkLegality L = pk_check_legality(&(m)); \
     if ((m).species >= 1 && (m).species <= 411) { \
       valid_tested++; \
       if (!L.ok) { valid_flagged++; printf("  VALID flagged %s: %d illegal\n", pk_species_name((m).species), illegal_count(&L)); } \
-      for (int _i = 0; _i < L.n; _i++) \
+      for (int _i = 0; _i < L.n; _i++) { \
         if (!strncmp(L.issue[_i].text, "Move not learnable", 18)) { \
           move_warns++; printf("  move-warn on %s (legit?)\n", pk_species_name((m).species)); } \
+        if (!strncmp(L.issue[_i].text, "Unusual origin", 14)) { \
+          origin_warns++; printf("  origin-warn on %s (legit?)\n", pk_species_name((m).species)); } \
+      } \
     } else { garbage_total++; if (!L.ok) garbage_caught++; } \
   } while (0)
   for (int i = 0; i < np; i++) VISIT(party[i]);
@@ -65,6 +68,8 @@ int main(int argc, char** argv) {
   CHECK(garbage_caught == garbage_total, "all garbage-species slots are flagged illegal");
   printf("(1b) move-source warnings on valid mons: %d (expect 0 — no false positives)\n", move_warns);
   CHECK(move_warns == 0, "no false-positive move-source warnings on legit mons");
+  printf("(1d) origin-game warnings on valid mons: %d (expect 0)\n", origin_warns);
+  CHECK(origin_warns == 0, "no false-positive origin-game warnings on legit mons");
 
   /* (1c) regression guard for known code-taught moves that no data file lists and
    *      must be accepted explicitly: Volt Tackle (Light Ball egg move) on the
@@ -105,6 +110,22 @@ int main(int argc, char** argv) {
              pk_species_name(m.species), pk_move_name(bad), warns);
       CHECK(warns >= 1, "unlearnable move raises a move-source warning");
     }
+  }
+
+  /* (4) origin/met sanity: a 0 origin game warns; a met level over 100 is illegal. */
+  if (np > 0) {
+    PkMon m = party[0];
+    m.metGame = 0;
+    PkLegality L = pk_check_legality(&m);
+    int ow = 0; for (int i = 0; i < L.n; i++) if (!strncmp(L.issue[i].text, "Unusual origin", 14)) ow++;
+    CHECK(ow >= 1, "origin game 0 raises an origin warning");
+
+    PkMon m2 = party[0];
+    m2.metLevel = 120; m2.level = 100;
+    PkLegality L2 = pk_check_legality(&m2);
+    int ml = 0; for (int i = 0; i < L2.n; i++) if (!strncmp(L2.issue[i].text, "Met level above 100", 19)) ml++;
+    printf("(4) origin0 warns=%d, metLevel120 illegal-hit=%d\n", ow, ml);
+    CHECK(ml >= 1 && !L2.ok, "met level above 100 is flagged illegal");
   }
 
   printf("\n%s: %d failure(s)\n", g_fail ? "FAIL" : "OK", g_fail);
