@@ -253,6 +253,16 @@ for m in re.finditer(r"\[(ABILITY_\w+)\]\s*=\s*(\w+)", abtext):
         ab_desc[aid] = desc_vars[m.group(2)]
 NABIL = (max(ABIL.values()) + 1) if ABIL else 78
 
+# ---- game stats (counter names) ----
+GS = parse_defines(rd("include/constants/game_stat.h"), "GAME_STAT_")
+gs_name = {}
+for k, idx in GS.items():
+    if not isinstance(idx, int) or idx < 0 or idx >= 64:
+        continue
+    nm = k[len("GAME_STAT_"):].replace("_", " ").lower()
+    gs_name[idx] = nm[:1].upper() + nm[1:]
+NGS = 64
+
 # ---- natures ----
 nat_names = re.findall(r'_\("((?:[^"\\]|\\.)*)"\)', rd("src/data/text/nature_names.h"))
 nat_boost = [-1] * 25
@@ -373,6 +383,7 @@ with open(OUT, "w") as c:
     emit_u8(c, "s_mvpower", mv_power)
     emit_u8(c, "s_mvacc", mv_acc)
     emit_strtab(c, "s_mvdesc", mv_desc, NMOVE, "")
+    emit_strtab(c, "s_gamestat", gs_name, NGS, "")
 
     # nature mods
     c.write("static const signed char s_natboost[25] = {%s};\n" % ",".join(str(x) for x in nat_boost))
@@ -401,6 +412,7 @@ uint8_t pk_move_contest(uint16_t i){{ return i<{NMOVE}?s_mvcontest[i]:0; }}
 uint8_t pk_move_power(uint16_t i){{ return i<{NMOVE}?s_mvpower[i]:0; }}
 uint8_t pk_move_accuracy(uint16_t i){{ return i<{NMOVE}?s_mvacc[i]:0; }}
 const char* pk_move_desc(uint16_t i){{ return i<{NMOVE}?s_mvdesc[i]:""; }}
+const char* pk_game_stat_name(int i){{ return (i>=0&&i<{NGS}&&s_gamestat[i][0])?s_gamestat[i]:"(stat)"; }}
 const char* pk_item_name(uint16_t i){{ return i<{NITEM}?s_item[i]:"????????"; }}
 const char* pk_item_desc(uint16_t i){{ return i<{NITEM}?s_itemdesc[i]:""; }}
 const char* pk_ability_name(uint16_t i){{ return i<{NABIL}?s_ability[i]:"-"; }}

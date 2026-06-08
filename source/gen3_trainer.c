@@ -23,6 +23,22 @@ uint32_t pk_game_stat(const uint8_t* sb1, const uint8_t* sb2, PkGame g, int stat
   return rd32(sb1 + stats_off(g) + (uint32_t)stat * 4) ^ sec_key(sb2, g);
 }
 
+static void wr32(uint8_t* p, uint32_t v) {
+  p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+int pk_game_stat_count(PkGame g) { return g == PK_RS ? 50 : 64; }
+
+void pk_set_game_stat(uint8_t* sb1, const uint8_t* sb2, PkGame g, int stat, uint32_t value) {
+  if (stat < 0 || stat >= pk_game_stat_count(g)) return;
+  wr32(sb1 + stats_off(g) + (uint32_t)stat * 4, value ^ sec_key(sb2, g));
+}
+
+void pk_set_money(uint8_t* sb1, const uint8_t* sb2, PkGame g, uint32_t money) {
+  if (money > 999999) money = 999999;
+  wr32(sb1 + money_off(g), money ^ sec_key(sb2, g));
+}
+
 bool pk_hof_time(const uint8_t* sb1, const uint8_t* sb2, PkGame g,
                  uint16_t* h, uint8_t* m, uint8_t* s) {
   if (pk_game_stat(sb1, sb2, g, PK_STAT_ENTERED_HOF) == 0) return false;

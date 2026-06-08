@@ -34,6 +34,9 @@
 #include "gen3_clip.h"     /* ClipMon, slot ops (copy/paste/dup/release) */
 #include "pkview_legality.h" /* pkview_legality_show */
 #include "pkview_pk.h"     /* pkview_pk_export (.pk3) */
+#include "gen3_flags.h"    /* event flags */
+#include "gen3_items.h"    /* item bags */
+#include "osk.h"           /* osk_search (numeric entry) */
 #include "pkview_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
 #include "pkview_app.h"
 #include "savefile.h"
@@ -830,24 +833,134 @@ static bool bank_screen(void) {
   }
 }
 
+/* ===================== data editor: counters / bag / flags ============= */
+
+/* numeric entry via the on-screen keyboard; returns `cur` on cancel. */
+static uint32_t osk_number(const char* prompt, uint32_t cur, uint32_t maxv) {
+  char init[12], out[12];
+  siprintf(init, "%lu", (unsigned long)cur);
+  if (!osk_search(prompt, init, out, sizeof(out))) return cur;
+  uint32_t v = 0;
+  for (const char* p = out; *p >= '0' && *p <= '9'; p++) v = v * 10 + (uint32_t)(*p - '0');
+  return v > maxv ? maxv : v;
+}
+
+/* COUNTERS / BAG / FLAGS editor over the loaded save's SaveBlock1. Edits are made
+ * in RAM and committed ONCE on exit (B). Returns true if the save was written. */
+static bool data_editor(void) {
+  int tab = 0;                                   /* 0=counters 1=bag 2=flags */
+  int sel = 0, top = 0, pocket = 0, flagn = 0;
+  bool dirty = false, flag_warned = false;
+
+  for (;;) {
+    ui_clear();
+    static const char* const TAB[3] = { "COUNTERS", "BAG", "FLAGS" };
+    for (int t = 0; t < 3; t++) {
+      int x = 4 + t * 80; bool s = (t == tab);
+      if (s) ui_panel(x, 0, 76, 12, UI_SEL, UI_TITLE);
+      ui_text(x + 6, 2, s ? UI_SELTEXT : UI_DIM, TAB[t]);
+    }
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+
+    if (tab == 0) {                              /* ---- counters ---- */
+      int N = pk_game_stat_count(g_game);
+      if (sel >= N) sel = N - 1;
+      if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
+      char row[44];
+      for (int i = 0; i < 14 && top + i < N; i++) {
+        int st = top + i, y = 16 + i * 9; bool s = (st == sel);
+        siprintf(row, "%-20s %lu", pk_game_stat_name(st), (unsigned long)pk_game_stat(g_sb1, g_sb2, g_game, st));
+        char rt[44]; ui_truncate(rt, row, 29);
+        if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+        ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
+      }
+      ui_text(4, 152, UI_DIM, "A edit  U/D  L/R tab  B save+exit");
+    } else if (tab == 1) {                       /* ---- bag ---- */
+      int cap = pk_pocket_cap(g_game, pocket);
+      if (sel >= cap) sel = cap - 1;
+      if (sel < top) top = sel; if (sel >= top + 13) top = sel - 12;
+      char hh[40]; siprintf(hh, "%s  (%d)", pk_pocket_name(pocket), cap);
+      ui_text(6, 15, UI_DIRCLR, hh);
+      char row[44];
+      for (int i = 0; i < 12 && top + i < cap; i++) {
+        int sl = top + i, y = 26 + i * 9; bool s = (sl == sel);
+        uint16_t id = pk_bag_item(g_sb1, g_game, pocket, sl);
+        uint16_t q  = pk_bag_qty(g_sb1, g_sb2, g_game, pocket, sl);
+        if (id) siprintf(row, "%-16s x%u", pk_item_name(id), q);
+        else    strcpy(row, "-");
+        char rt[44]; ui_truncate(rt, row, 29);
+        if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+        ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
+      }
+      ui_text(4, 152, UI_DIM, "A edit  SEL pocket  L/R tab  B save");
+    } else {                                     /* ---- flags (raw, guarded) ---- */
+      int N = pk_flags_count(g_game);
+      if (flagn >= N) flagn = N - 1; if (flagn < 0) flagn = 0;
+      ui_text(6, 16, UI_WARN, "RAW FLAGS - editing can break a save");
+      char row[40];
+      for (int i = -6; i <= 6; i++) {
+        int fn = flagn + i; if (fn < 0 || fn >= N) continue;
+        int y = 70 + i * 9; bool s = (i == 0);
+        siprintf(row, "Flag 0x%03X (%d)  %s", fn, fn, pk_flag_get(g_sb1, g_game, fn) ? "ON" : "off");
+        if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+        ui_text(8, y, s ? UI_SELTEXT : (pk_flag_get(g_sb1, g_game, fn) ? UI_OK : UI_DIM), row);
+      }
+      ui_text(4, 152, UI_DIM, "A toggle  U/D  SEL jump#  L/R tab  B");
+    }
+
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B | KEY_SELECT);
+    if (k & KEY_B) break;
+    else if (k & KEY_L) { tab = (tab + 2) % 3; sel = top = 0; }
+    else if (k & KEY_R) { tab = (tab + 1) % 3; sel = top = 0; }
+    else if (tab == 2) {                         /* flags nav/toggle */
+      if (k & KEY_UP)   { if (flagn > 0) flagn--; }
+      else if (k & KEY_DOWN) flagn++;
+      else if (k & KEY_SELECT) flagn = (int)osk_number("FLAG #", flagn, pk_flags_count(g_game) - 1);
+      else if (k & KEY_A) {
+        if (!flag_warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); flag_warned = true; }
+        pk_flag_set(g_sb1, g_game, flagn, !pk_flag_get(g_sb1, g_game, flagn)); dirty = true;
+      }
+    } else if (k & KEY_UP)   { if (sel > 0) sel--; }
+    else if (k & KEY_DOWN)   sel++;
+    else if (tab == 1 && (k & KEY_SELECT)) { pocket = (pocket + 1) % POCKET_COUNT; sel = top = 0; }
+    else if (k & KEY_A) {
+      if (tab == 0) {                            /* edit a counter */
+        uint32_t v = osk_number("STAT VALUE", pk_game_stat(g_sb1, g_sb2, g_game, sel), 0xFFFFFFFFu);
+        pk_set_game_stat(g_sb1, g_sb2, g_game, sel, v); dirty = true;
+      } else if (tab == 1) {                     /* edit a bag slot */
+        uint16_t cur = pk_bag_item(g_sb1, g_game, pocket, sel);
+        uint16_t id = pick_item(cur);
+        if (id != 0xFFFF) {
+          uint16_t q = 0;
+          if (id != 0) q = (uint16_t)osk_number("QUANTITY", pk_bag_qty(g_sb1, g_sb2, g_game, pocket, sel) ? pk_bag_qty(g_sb1, g_sb2, g_game, pocket, sel) : 1, 999);
+          pk_bag_set(g_sb1, g_sb2, g_game, pocket, sel, id, q); dirty = true;
+        }
+      }
+    }
+  }
+
+  if (dirty) return app_commit_block(1, 4, g_sb1);   /* one verified write on exit */
+  return false;
+}
+
 /* START menu from the box/party: pick a destination screen. */
-static int nav_menu(void) {                            /* 0=card 1=bank 2=back (3=data: later) */
-  static const char* const L[3] = { "Trainer card", "Bank", "Back" };
-  const int mx = 64, my = 52, mw = 112, mh = 18 + 3 * 14;
+static int nav_menu(void) {                            /* 0=card 1=bank 2=data 3=back */
+  static const char* const L[4] = { "Trainer card", "Bank", "Data editor", "Back" };
+  const int mx = 60, my = 48, mw = 120, mh = 18 + 4 * 14;
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "MENU");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
       int y = my + 18 + i * 14; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
     }
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return 2;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 2;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 3;
+    if (k & KEY_B) return 3;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
     else if (k & KEY_A)    return sel;
   }
 }
@@ -889,7 +1002,11 @@ static void view_save(const char* path) {
     if (r == 2) {                                /* START -> nav menu */
       int dest = nav_menu();
       if (dest == 0) pkview_trainer(g_sb1, g_sb2, &g_vinfo, g_game);
-      else if (dest == 1) { if (bank_screen()) { /* a bank inject changed the PC; nothing else to refresh here */ } }
+      else if (dest == 1) bank_screen();         /* inject changes g_pc; box re-reads on re-entry */
+      else if (dest == 2) {                      /* data editor (edits the save) */
+        if (app_can_edit()) data_editor();
+        else msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0);
+      }
       continue;
     }
     if (!g_have_pc) return;                       /* nothing to toggle to */

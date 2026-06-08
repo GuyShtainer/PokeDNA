@@ -25,6 +25,13 @@ enum {
 uint32_t pk_money(const uint8_t* sb1, const uint8_t* sb2, PkGame g);
 uint32_t pk_game_stat(const uint8_t* sb1, const uint8_t* sb2, PkGame g, int stat);
 
+/* Game-Record (counter) editing. The stats array + money live in SaveBlock1,
+ * XOR'd with the SaveBlock2 key (Emerald/FRLG; RS plaintext). */
+int  pk_game_stat_count(PkGame g);                   /* RS 50, E/FRLG 64 */
+void pk_set_game_stat(uint8_t* sb1, const uint8_t* sb2, PkGame g, int stat, uint32_t value);
+void pk_set_money(uint8_t* sb1, const uint8_t* sb2, PkGame g, uint32_t money);
+const char* pk_game_stat_name(int stat);             /* generated (data_tables.c) */
+
 /* First Hall-of-Fame (Elite Four) clear time. Returns false if never entered. */
 bool pk_hof_time(const uint8_t* sb1, const uint8_t* sb2, PkGame g,
                  uint16_t* h, uint8_t* m, uint8_t* s);
