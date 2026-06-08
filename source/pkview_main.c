@@ -31,6 +31,7 @@
 #include "pkview_trainer.h"
 #include "pkview_edit.h"
 #include "gen3_edit.h"     /* EditMon, gen3_edit_load/commit, em_set_*, em_preview */
+#include "gen3_clip.h"     /* ClipMon, slot ops (copy/paste/dup/release) */
 #include "pkview_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
 #include "pkview_app.h"
 #include "savefile.h"
@@ -67,6 +68,7 @@ static char        EWRAM_BSS g_cwd[PATH_MAX];             /* current directory (
 static PkMon       EWRAM_BSS g_party[6];                  /* decoded party of the open save  */
 static u8          EWRAM_BSS g_pc[G3_PC_BYTES];           /* reassembled PC storage (boxes)  */
 static u8          EWRAM_BSS g_sb2[G3_SECTOR_DATA_SIZE];   /* SaveBlock2 (trainer card/stats) */
+static ClipMon     EWRAM_BSS g_clip;                       /* one-slot mon clipboard          */
 
 /* ---- VBlank / input discipline (key_poll exactly once per frame) -------- */
 static void vsync(void) { VBlankIntrWait(); key_poll(); }
@@ -377,6 +379,8 @@ static int  g_nparty = 0;
 static bool g_frlg = false, g_have_pc = false;
 static PkGame g_game = PK_EMERALD;
 static char   g_path[PATH_MAX];                           /* path of the open save (for commit) */
+static uint16_t g_item_clip = 0;                          /* held-item move clipboard            */
+static bool     g_item_held = false;
 
 /* ===================== edit / commit (V4) =============================== */
 
@@ -476,42 +480,155 @@ static bool app_quick_moves(uint8_t* rec, bool is_party, int lo, int hi, uint8_t
   return app_commit_block(lo, hi, block);
 }
 
-/* Gen-3-PC-style action menu on A. Omega: overlay SUMMARY/ITEM/MOVES/CANCEL and
- * run the chosen editor. Everdrive (read-only): jump straight to the summary.
- * Returns true iff the save was modified (caller should refresh its view). */
-bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block) {
-  if (!app_can_edit()) {
-    uint8_t dummy[100];
-    pkview_inspect(rec, is_party, false, dummy);
+bool app_clip_occupied(void) { return g_clip.occupied; }
+
+static bool app_confirm(const char* title, const char* l1) {
+  ui_clear();
+  ui_text(20, 56, UI_WARN, title);
+  if (l1) ui_text(20, 78, UI_TEXT, l1);
+  ui_text(20, 102, UI_TEXT, "A = yes");
+  ui_text(20, 114, UI_DIM, "B = no");
+  u16 k; do { vsync(); k = key_hit(KEY_A | KEY_B); } while (!k);
+  return (k & KEY_A) != 0;
+}
+
+/* first empty (decodes-as-empty) slot in a box, or -1 if the box is full */
+static int box_free_slot(const uint8_t* pc, int box) {
+  for (int s = 0; s < G3_IN_BOX; s++) {
+    PkMon m;
+    if (!pk_decode_mon(pk_box_slot((uint8_t*)pc, box, s), false, &m)) return s;
+  }
+  return -1;
+}
+
+static bool app_copy(uint8_t* rec, bool is_party) {
+  clip_copy_from(&g_clip, rec, is_party);
+  msg_wait("COPIED", UI_OK, "PASTE places it in a slot.", "(it survives until overwritten)");
+  return false;                                          /* no save change */
+}
+
+static bool app_paste(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block, bool occupied) {
+  if (!g_clip.occupied) return false;
+  if (occupied && !app_confirm("Overwrite this Pokemon?", "Paste the copied mon here?")) return false;
+  uint8_t out[100];
+  if (!clip_to_record(&g_clip, is_party, out)) return false;
+  memcpy(rec, out, is_party ? 100 : 80);
+  return app_commit_block(lo, hi, block);
+}
+
+static bool app_duplicate(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block, int box) {
+  if (is_party) {
+    if (party_count(block, g_frlg) >= 6) { msg_wait("PARTY FULL", UI_WARN, "Release a mon first.", 0); return false; }
+    uint8_t out[100]; memcpy(out, rec, 100);
+    party_append(block, g_frlg, out);
+  } else {
+    int fs = box_free_slot(block, box);
+    if (fs < 0) { msg_wait("BOX FULL", UI_WARN, "No empty slot in this box.", 0); return false; }
+    memcpy(pk_box_slot(block, box, fs), rec, 80);
+  }
+  return app_commit_block(lo, hi, block);
+}
+
+static bool app_release(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block, int box, int slot) {
+  (void)rec;
+  if (is_party && party_count(block, g_frlg) <= 1) {
+    msg_wait("CAN'T RELEASE", UI_WARN, "The party can't be empty.", 0);
     return false;
   }
-  EditMon e0; gen3_edit_load(rec, is_party, &e0);
-  PkMon m0; em_preview(&e0, &m0); pk_resolve(&m0);
-  char title[16];
-  ui_truncate(title, m0.nickname[0] ? m0.nickname : pk_species_name(m0.species), 11);
+  if (!app_confirm("Release this Pokemon?", "It is permanently deleted.")) return false;
+  if (is_party) party_release(block, g_frlg, slot);
+  else          clip_clear_box_slot(block, box, slot);
+  return app_commit_block(lo, hi, block);
+}
 
-  static const char* const ITEMS[4] = { "SUMMARY", "ITEM", "MOVES", "CANCEL" };
-  const int mx = 148, my = 34, mw = 88, mh = 18 + 4 * 13;
+/* Held-item move (take/give). TAKE stashes this mon's item and clears it; GIVE
+ * puts the stashed item on a mon, swapping in that mon's old item so nothing is
+ * ever lost (the stash empties when the swapped-out item is none). */
+static bool app_take_item(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block) {
+  EditMon e; gen3_edit_load(rec, is_party, &e);
+  PkMon cur; em_preview(&e, &cur);
+  if (!cur.heldItem) return false;
+  g_item_clip = cur.heldItem; g_item_held = true;
+  em_set_item(&e, 0);
+  uint8_t out[100]; gen3_edit_commit(&e, out);
+  memcpy(rec, out, is_party ? 100 : 80);
+  return app_commit_block(lo, hi, block);
+}
+static bool app_give_item(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block) {
+  if (!g_item_held) return false;
+  EditMon e; gen3_edit_load(rec, is_party, &e);
+  PkMon cur; em_preview(&e, &cur);
+  uint16_t dst_old = cur.heldItem;
+  em_set_item(&e, g_item_clip);
+  uint8_t out[100]; gen3_edit_commit(&e, out);
+  memcpy(rec, out, is_party ? 100 : 80);
+  g_item_clip = dst_old; g_item_held = (dst_old != 0);   /* swap: keep dst's old item to re-home */
+  return app_commit_block(lo, hi, block);
+}
+
+/* Gen-3-PC-style action menu on A. Omega: a navigable overlay of SUMMARY / ITEM /
+ * MOVES / COPY / PASTE / DUPLICATE / RELEASE (the slot-aware ones use box/slot;
+ * party ops use g_frlg). On an EMPTY slot it offers PASTE only. Everdrive
+ * (read-only): jump to the summary. Returns true iff the save was modified.
+ * For party callers pass box = -1, slot = party index. */
+bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block, int box, int slot) {
+  PkMon m0;
+  bool occupied = pk_decode_mon(rec, is_party, &m0);
+  if (occupied) pk_resolve(&m0);
+
+  if (!app_can_edit()) {                                 /* read-only carts: view only */
+    if (occupied) { uint8_t d[100]; pkview_inspect(rec, is_party, false, d); }
+    return false;
+  }
+
+  enum { A_SUMMARY, A_ITEM, A_MOVES, A_COPY, A_PASTE, A_DUP, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CANCEL };
+  int act[12]; const char* lab[12]; int n = 0;
+  if (occupied) {
+    lab[n]="SUMMARY"; act[n++]=A_SUMMARY;
+    lab[n]="ITEM";    act[n++]=A_ITEM;
+    lab[n]="MOVES";   act[n++]=A_MOVES;
+    lab[n]="COPY";    act[n++]=A_COPY;
+    if (g_clip.occupied) { lab[n]="PASTE"; act[n++]=A_PASTE; }
+    lab[n]="DUPLICATE"; act[n++]=A_DUP;
+    if (m0.heldItem && !g_item_held) { lab[n]="TAKE ITEM"; act[n++]=A_TAKEITEM; }
+    if (g_item_held)                 { lab[n]="GIVE ITEM"; act[n++]=A_GIVEITEM; }
+    lab[n]="RELEASE";   act[n++]=A_RELEASE;
+  } else if (g_clip.occupied) {
+    lab[n]="PASTE HERE"; act[n++]=A_PASTE;
+  } else {
+    return false;                                        /* empty + nothing to paste */
+  }
+  lab[n]="CANCEL"; act[n++]=A_CANCEL;
+
+  char title[16];
+  ui_truncate(title, occupied ? (m0.nickname[0] ? m0.nickname : pk_species_name(m0.species)) : "EMPTY", 11);
+  const int mx = 138, mw = 100, mh = 18 + n * 13, my = 80 - mh / 2;
   int sel = 0;
   for (;;) {
-    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);   /* overlay (box stays behind) */
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, title);
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < n; i++) {
       int y = my + 18 + i * 13; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 12, UI_SEL, UI_TITLE);
-      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, ITEMS[i]);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, lab[i]);
     }
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return false;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
-      switch (sel) {
-        case 0: return app_edit_commit(rec, is_party, sect_lo, sect_hi, block);
-        case 1: return app_quick_item (rec, is_party, sect_lo, sect_hi, block);
-        case 2: return app_quick_moves(rec, is_party, sect_lo, sect_hi, block);
-        default: return false;                       /* CANCEL */
+      switch (act[sel]) {
+        case A_SUMMARY: return app_edit_commit(rec, is_party, sect_lo, sect_hi, block);
+        case A_ITEM:    return app_quick_item (rec, is_party, sect_lo, sect_hi, block);
+        case A_MOVES:   return app_quick_moves(rec, is_party, sect_lo, sect_hi, block);
+        case A_COPY:    return app_copy(rec, is_party);
+        case A_PASTE:   return app_paste(rec, is_party, sect_lo, sect_hi, block, occupied);
+        case A_DUP:     return app_duplicate(rec, is_party, sect_lo, sect_hi, block, box);
+        case A_RELEASE: return app_release(rec, is_party, sect_lo, sect_hi, block, box, slot);
+        case A_TAKEITEM:return app_take_item(rec, is_party, sect_lo, sect_hi, block);
+        case A_GIVEITEM:return app_give_item(rec, is_party, sect_lo, sect_hi, block);
+        default:        return false;                    /* CANCEL */
       }
     }
   }
@@ -556,7 +673,7 @@ static int party_list(void) {
     else if ((k & KEY_A) && g_nparty > 0) {
       uint16_t doff = g_frlg ? 0x0038 : 0x0238;
       uint8_t* rec = g_sb1 + doff + (uint32_t)sel * 100;     /* party lives in SaveBlock1 (ids 1..4) */
-      if (app_mon_menu(rec, true, 1, 4, g_sb1)) {            /* PC-style menu -> chosen editor -> commit */
+      if (app_mon_menu(rec, true, 1, 4, g_sb1, -1, sel)) {   /* PC-style menu -> chosen editor -> commit */
         g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
         for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
         if (sel >= g_nparty) sel = g_nparty ? g_nparty - 1 : 0;

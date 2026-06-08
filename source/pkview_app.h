@@ -17,10 +17,15 @@ bool app_can_edit(void);
  * result and returns true iff a write actually happened. Gated to Omega. */
 bool app_edit_commit(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block);
 
-/* Gen-3-PC-style action menu shown on A (SUMMARY / ITEM / MOVES / CANCEL on Omega;
- * straight to the read-only summary on Everdrive). Runs the chosen editor through
- * the same safe commit path as app_edit_commit. Returns true iff a write happened
- * (the caller should refresh its list/grid). */
-bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block);
+/* Gen-3-PC-style action menu shown on A: SUMMARY / ITEM / MOVES / COPY / PASTE /
+ * DUPLICATE / RELEASE on Omega (an empty slot offers PASTE only); straight to the
+ * read-only summary on Everdrive. Slot-aware ops use box+slot; party callers pass
+ * box = -1 and slot = the party index. Returns true iff a write happened (the
+ * caller should refresh its list/grid). */
+bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block, int box, int slot);
+
+/* true if the one-slot mon clipboard holds a copied mon (for the box grid to
+ * allow PASTE onto an empty slot). */
+bool app_clip_occupied(void);
 
 #endif /* PKVIEW_APP_H */

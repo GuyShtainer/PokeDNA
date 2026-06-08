@@ -200,9 +200,11 @@ int pkview_box(uint8_t* pc) {
     else if (k & KEY_UP)    cur = (cur < COLS) ? cur + COLS * (ROWS - 1) : cur - COLS;
     else if (k & KEY_DOWN)  cur = (cur >= COLS * (ROWS - 1)) ? cur - COLS * (ROWS - 1) : cur + COLS;
     else if (k & KEY_A) {
-      if (g_box[cur].species) {
+      /* open the action menu on an occupied slot, OR on an empty slot when the
+       * clipboard holds a mon to PASTE here. */
+      if (g_box[cur].species || (app_can_edit() && app_clip_occupied())) {
         uint8_t* rec = pc + 0x0004 + ((uint32_t)box * 30 + cur) * 80;     /* PokemonStorage.boxes */
-        if (app_mon_menu(rec, false, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc))
+        if (app_mon_menu(rec, false, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc, box, cur))
           pk_read_box(pc, box, g_box);                                    /* refresh after write */
       }
     }
