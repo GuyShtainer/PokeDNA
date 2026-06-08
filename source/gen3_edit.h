@@ -39,6 +39,7 @@ void em_set_pp(EditMon* e, int i, uint8_t pp);
 void em_set_friendship(EditMon* e, uint8_t f);
 void em_set_ability(EditMon* e, uint8_t n);                  /* 0 or 1 */
 void em_set_level(EditMon* e, uint8_t level);                /* sets exp (+ party level + stats) */
+void em_set_party_flag(EditMon* e, bool is_party);          /* box<->party kind (derives/drops plaintext stats) */
 void em_set_nickname(EditMon* e, const char* s);            /* <=10 chars */
 void em_set_otname(EditMon* e, const char* s);              /* <=7 chars  */
 

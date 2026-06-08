@@ -156,6 +156,20 @@ void em_set_level(EditMon* e, uint8_t level) {
   }
 }
 
+/* Switch a loaded record between box(80) and party(100) kinds. Converting a box
+ * record TO party derives the plaintext level (from exp) + battle stats; commit
+ * then writes 100 bytes. Converting party->box just drops the plaintext block
+ * (commit writes 80). Used by the clipboard to paste across containers. */
+void em_set_party_flag(EditMon* e, bool is_party) {
+  e->is_party = is_party;
+  if (is_party) {
+    uint16_t species = rd16(e->sub[0] + 0);
+    uint32_t exp = rd32(e->sub[0] + 4);
+    e->raw[0x54] = pk_level_from_exp(pk_species_growth(species), exp);
+    recompute_party_stats(e);
+  }
+}
+
 static void encode_name(uint8_t* dst, int cap, const char* s) {
   int i = 0;
   for (; i < cap && s[i]; i++) dst[i] = gen3_encode_char(s[i]);
