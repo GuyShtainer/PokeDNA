@@ -220,3 +220,21 @@ bool EWRAM_CODE _EZFO_writeSectors(u32 address, u32 count, const void* buffer) {
 #endif
   return result == 0;
 }
+
+// Quiesce the system (IRQs/DMA/timers off), map the EZ-Flash kernel at the ROM
+// window, then SoftReset into it. Runs from EWRAM (the gamepak window is unmapped
+// once BOOTLOADER is paged in). No return.
+void EWRAM_CODE _EZFO_reboot(void) {
+  REG_IME = 0;
+  *(vu16*)(REG_BASE_ + 0x0200) = 0;       // REG_IE  : disable all IRQ sources
+  *(vu16*)(REG_BASE_ + 0x0202) = 0xFFFF;  // REG_IF  : acknowledge any pending
+  REG_DMA0CNT = 0; REG_DMA1CNT = 0;       // stop all DMA channels
+  REG_DMA2CNT = 0; REG_DMA3CNT = 0;
+  *(vu16*)(REG_BASE_ + 0x0102) = 0;       // TM0..TM3 control: disable timers
+  *(vu16*)(REG_BASE_ + 0x0106) = 0;
+  *(vu16*)(REG_BASE_ + 0x010A) = 0;
+  *(vu16*)(REG_BASE_ + 0x010E) = 0;
+  SetRompage(ROMPAGE_BOOTLOADER);             // map the kernel at 0x08000000
+  asm volatile("swi 0x00" ::: "memory");      // SoftReset -> 0x08000000 (kernel/menu)
+  for (;;) {}                                 // unreachable
+}

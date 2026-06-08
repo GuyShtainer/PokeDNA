@@ -47,8 +47,16 @@
 typedef struct {
   char     name[NAME_MAX];
   uint32_t size;                  /* file size in bytes (0 for folders)              */
+  uint32_t dosdt;                 /* (fdate<<16)|ftime, for the date sort            */
   bool     is_dir;
 } BrowseEntry;
+
+/* file-browser sort + filter state (sd-browser style) */
+typedef enum { SORT_NAME = 0, SORT_SIZE = 1, SORT_DATE = 2 } BrSortKey;
+static BrSortKey g_sort = SORT_NAME;
+static bool      g_sortrev = false;
+static bool      g_show_all = false;     /* false = folders + .sav only; true = all files */
+static bool      g_show_hidden = false;
 
 /* Big buffers live in EWRAM (.bss), never on the IWRAM stack. */
 static u8          EWRAM_BSS g_save[G3_SAVE_FILE_SIZE];   /* 128 KiB raw image       */
@@ -133,8 +141,42 @@ static const char* base_name(const char* p) {
   return s ? s + 1 : p;
 }
 
-/* Scan g_cwd into g_entries: subdirectories + *.sav files (any game). Unlike
- * the mixer we do NOT parse-filter here, so FRLG and other saves still show. */
+/* case-insensitive ASCII name compare (locale-free) */
+static int name_ci(const char* a, const char* b) {
+  for (;;) {
+    unsigned char x = (unsigned char)*a++, y = (unsigned char)*b++;
+    if (x >= 'a' && x <= 'z') x -= 32;
+    if (y >= 'a' && y <= 'z') y -= 32;
+    if (x != y) return (int)x - (int)y;
+    if (!x) return 0;
+  }
+}
+
+/* directories always first (not reversible); then by the active key, name as the
+ * tiebreaker, negated for descending. */
+static int entry_cmp(const BrowseEntry* x, const BrowseEntry* y) {
+  if (x->is_dir != y->is_dir) return x->is_dir ? -1 : 1;
+  int c;
+  switch (g_sort) {
+    case SORT_SIZE: c = (x->size < y->size) ? -1 : (x->size > y->size) ? 1 : 0; break;
+    case SORT_DATE: c = (x->dosdt < y->dosdt) ? -1 : (x->dosdt > y->dosdt) ? 1 : 0; break;
+    default:        c = name_ci(x->name, y->name); break;
+  }
+  if (c == 0) c = name_ci(x->name, y->name);
+  return g_sortrev ? -c : c;
+}
+
+static void sort_entries(void) {                  /* stable insertion sort, never mid-transfer */
+  for (int i = 1; i < g_count; i++) {
+    BrowseEntry tmp = g_entries[i];
+    int j = i - 1;
+    while (j >= 0 && entry_cmp(&g_entries[j], &tmp) > 0) { g_entries[j + 1] = g_entries[j]; j--; }
+    g_entries[j + 1] = tmp;
+  }
+}
+
+/* Scan g_cwd into g_entries: subdirectories + (by default) *.sav files. The
+ * filter (g_show_all / g_show_hidden) and the sort are sd-browser-style. */
 static void scan_dir(void) {
   g_count = 0;
   DIR dir;
@@ -142,24 +184,26 @@ static void scan_dir(void) {
   if (f_opendir(&dir, g_cwd) != FR_OK) { log_line("opendir %s failed", g_cwd); return; }
   while (g_count < MAX_ENTRIES && f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
     bool is_dir = (fno.fattrib & AM_DIR) != 0;
-    if (fno.fattrib & (AM_HID | AM_SYS)) continue;      /* hide hidden/system        */
-    if (!is_dir && !has_sav_ext(fno.fname)) continue;   /* only folders + .sav files */
+    if (!g_show_hidden && (fno.fattrib & (AM_HID | AM_SYS))) continue;
+    if (!is_dir && !g_show_all && !has_sav_ext(fno.fname)) continue;  /* folders + .sav unless show-all */
     strncpy(g_entries[g_count].name, fno.fname, NAME_MAX - 1);
     g_entries[g_count].name[NAME_MAX - 1] = 0;
     g_entries[g_count].size = is_dir ? 0 : (uint32_t)fno.fsize;
+    g_entries[g_count].dosdt = ((uint32_t)fno.fdate << 16) | (uint32_t)fno.ftime;
     g_entries[g_count].is_dir = is_dir;
     g_count++;
   }
   f_closedir(&dir);
-
-  /* stable partition: directories first, then files */
-  for (int i = 1; i < g_count; i++) {
-    BrowseEntry tmp = g_entries[i];
-    int j = i - 1;
-    while (j >= 0 && !g_entries[j].is_dir && tmp.is_dir) { g_entries[j + 1] = g_entries[j]; j--; }
-    g_entries[j + 1] = tmp;
-  }
+  sort_entries();
   log_line("scan %s: %d entries", g_cwd, g_count);
+}
+
+static const char* sort_label(void) {
+  switch (g_sort) {
+    case SORT_SIZE: return g_sortrev ? "Size big-small" : "Size small-big";
+    case SORT_DATE: return g_sortrev ? "Date new-old"   : "Date old-new";
+    default:        return g_sortrev ? "Name Z-A"       : "Name A-Z";
+  }
 }
 
 /* short human-readable byte size (saves are 128 KiB) into out[] */
@@ -212,15 +256,68 @@ static void render_browser(int sel, int top) {
     ui_text(2, 128, UI_DIM, meta);
   }
 
-  char status[48], stc[40];
-  siprintf(status, "[%s]  %d/%d", flashcart_name(), g_count ? sel + 1 : 0, g_count);
+  char status[64], stc[40];
+  siprintf(status, "%d/%d  %s  %s", g_count ? sel + 1 : 0, g_count,
+           sort_label(), g_show_all ? "all" : ".sav");
   ui_truncate(stc, status, 29);
   ui_text(2, 138, UI_OK, stc);
 
   ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-  ui_text(2, 150, UI_DIM,
-          at_root() ? "A open  U/D scroll  L/R top/bot"
-                    : "A open  B up  U/D scroll  L/R top/bot");
+  ui_text(2, 150, UI_DIM, "A open  B up  SE sort  ST menu");
+}
+
+/* Reboot back into the flashcart loader menu (no return on confirm). */
+static void do_reboot(void) {
+  ui_clear();
+  ui_text(16, 56, UI_TITLE, "Reboot to flashcart menu?");
+  ui_text(16, 78, UI_TEXT, "A = reboot to loader");
+  ui_text(16, 90, UI_WARN, "B = cancel");
+  u16 k; do { vsync(); k = key_hit(KEY_A | KEY_B); } while (!k);
+  if (k & KEY_B) return;
+  ui_clear();
+  ui_text(16, 72, UI_TITLE, "Rebooting...");
+  log_flush_to_sd(LOG_PATH);
+  VBlankIntrWait();
+  flashcartio_reboot();                 /* never returns */
+}
+
+/* START menu over the browser: sort key/order, file filter, show-hidden, reboot.
+ * Returns true if a setting changed that needs a re-scan. */
+static bool browse_menu(void) {
+  int sel = 0;
+  bool changed = false;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, "FILE MENU");
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    char rows[6][40];
+    siprintf(rows[0], "Sort key:  %s", g_sort == SORT_NAME ? "Name" : g_sort == SORT_SIZE ? "Size" : "Date");
+    siprintf(rows[1], "Order:     %s", g_sortrev ? "descending" : "ascending");
+    siprintf(rows[2], "Files:     %s", g_show_all ? "all files" : ".sav only");
+    siprintf(rows[3], "Hidden:    %s", g_show_hidden ? "shown" : "hidden");
+    strcpy(rows[4], "Reboot to flashcart menu...");
+    strcpy(rows[5], "Close");
+    for (int i = 0; i < 6; i++) {
+      int y = 26 + i * 16; bool s = (i == sel);
+      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
+      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
+    }
+    ui_text(4, 152, UI_DIM, "A change  U/D move  B back");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return changed;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 5;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 6;
+    else if (k & KEY_A) {
+      switch (sel) {
+        case 0: g_sort = (BrSortKey)((g_sort + 1) % 3); changed = true; break;
+        case 1: g_sortrev = !g_sortrev; changed = true; break;
+        case 2: g_show_all = !g_show_all; changed = true; break;
+        case 3: g_show_hidden = !g_show_hidden; changed = true; break;
+        case 4: do_reboot(); break;            /* returns only if cancelled */
+        case 5: return changed;
+      }
+    }
+  }
 }
 
 /* Browse the SD for a .sav. Writes the chosen full path to out and returns true;
@@ -236,11 +333,17 @@ static bool browse_pick(char* out, int cap) {
 
     render_browser(sel, top);
 
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_L | KEY_R);
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
     if      (k & KEY_UP)   { if (sel > 0) sel--; }
     else if (k & KEY_DOWN) { if (sel < g_count - 1) sel++; }
     else if (k & KEY_L)    { sel = 0; top = 0; }
     else if (k & KEY_R)    { sel = g_count ? g_count - 1 : 0; }
+    else if (k & KEY_SELECT) {           /* cycle the 6 sort states (key x order) */
+      int s = ((int)g_sort * 2 + (g_sortrev ? 1 : 0) + 1) % 6;
+      g_sort = (BrSortKey)(s / 2); g_sortrev = (s & 1) != 0;
+      sort_entries(); sel = 0; top = 0;
+    }
+    else if (k & KEY_START) { if (browse_menu()) { scan_dir(); sel = 0; top = 0; } }
     else if (k & KEY_B)    { if (!at_root()) { path_up(); scan_dir(); sel = 0; top = 0; } }
     else if (k & KEY_A) {
       if (g_count == 0) continue;

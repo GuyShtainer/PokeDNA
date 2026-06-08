@@ -91,3 +91,27 @@ bool flashcartio_read_sector(u32 sector, u8* destination, u16 count) {
       return false;
   }
 }
+
+// Reboot back into the flashcart's loader/kernel menu. Never returns. Safe on
+// both carts (read-only). Refuses mid-transfer; keeps IRQs off through the reset.
+void flashcartio_reboot(void) {
+  if (flashcartio_is_reading) return;  // never reset mid-transfer (rule #1)
+  REG_IME = 0;                         // we are not coming back; keep IRQs off
+  switch (active_flashcart) {
+#if FLASHCARTIO_EZFO_ENABLE != 0
+    case EZ_FLASH_OMEGA:
+      _EZFO_reboot();                  // SetRompage(BOOTLOADER) + SoftReset -> kernel
+      return;
+#endif
+#if FLASHCARTIO_ED_ENABLE != 0
+    case EVERDRIVE_GBA_X5:
+      ed_unlock_regs();                // locked REG_CFG write is a no-op, so unlock first
+      ed_reboot(0);                    // quick_boot=0 -> HardReset toward EverDrive OS
+      return;
+#endif
+    default:
+      break;
+  }
+  asm volatile("swi 0x00" ::: "memory");  // no/unknown cart: plain BIOS SoftReset
+  for (;;) {}                             // unreachable
+}

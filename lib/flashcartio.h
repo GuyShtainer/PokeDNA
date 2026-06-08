@@ -14,4 +14,8 @@ bool flashcartio_read_sector(unsigned int sector,
                              unsigned char* destination,
                              unsigned short count);
 
+/* Reboot back into the flashcart loader/kernel menu. Never returns. Refuses
+ * while an SD transfer is in flight; keeps IRQs off through the reset. */
+void flashcartio_reboot(void);
+
 #endif  // FLASHCARTIO_H
