@@ -69,11 +69,21 @@ PkLegality pk_check_legality(const PkMon* m) {
   if (m->metGame == 0 || (m->metGame > 5 && m->metGame != 15))
     add(&L, 0, "Unusual origin game");
 
-  /* V1 + V2 move-source done above. The species-vs-met-LOCATION check ("Skitty
-   * can't appear on Route 101") is intentionally NOT done: reliably (zero false
-   * positives) it needs per-game MAPSEC tables, MAP->MAPSEC aggregation across
-   * ~480 maps/game, wild tables, evolved-mon skipping, and a curated special-
-   * source (starter/fossil/gift/static/legendary/trade) exclusion set — a
-   * PKHeX-scale dataset. Left as a dedicated milestone. */
+  /* Met location — SIMPLE validity (not the species-at-location check). Real
+   * MAPSEC ids run 0x00..0xD5 (incl. MAPSEC_NONE 0xD5) and the three specials
+   * SPECIAL_EGG 0xFD / IN_GAME_TRADE 0xFE / FATEFUL 0xFF. The 0xD6..0xFC gap is
+   * used by NO Gen-3 game, so a value there is a garbage/hacked met location.
+   * 0xD5 is the largest real id across the games (FRLG's range is a subset), so a
+   * single ceiling never false-flags a FireRed location. Warn-only, and skipped
+   * for Colosseum/XD (origin 15), whose met data is nonstandard. */
+  if (m->metGame != 15 && m->metLocation > 0xD5 && m->metLocation < 0xFD)
+    add(&L, 0, "Invalid met location");
+
+  /* The full species-vs-met-LOCATION check ("Skitty can't appear on Route 101")
+   * is intentionally NOT done: to stay zero-false-positive it needs per-game
+   * MAPSEC tables, MAP->MAPSEC aggregation across ~480 maps/game, wild tables,
+   * evolved-mon skipping, and a curated special-source (starter/fossil/gift/
+   * static/legendary/trade) exclusion set — a PKHeX-scale dataset, left as a
+   * dedicated milestone. The checks above are the lightweight validity subset. */
   return L;
 }

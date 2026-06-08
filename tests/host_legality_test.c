@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
    *     fixtures also hold a few garbage box slots (species id out of range) that
    *     the checker must correctly flag as illegal. */
   int valid_tested = 0, valid_flagged = 0, garbage_total = 0, garbage_caught = 0;
-  int move_warns = 0, origin_warns = 0;
+  int move_warns = 0, origin_warns = 0, loc_warns = 0;
   #define VISIT(m) do { \
     pk_resolve(&(m)); \
     PkLegality L = pk_check_legality(&(m)); \
@@ -54,6 +54,8 @@ int main(int argc, char** argv) {
           move_warns++; printf("  move-warn on %s (legit?)\n", pk_species_name((m).species)); } \
         if (!strncmp(L.issue[_i].text, "Unusual origin", 14)) { \
           origin_warns++; printf("  origin-warn on %s (legit?)\n", pk_species_name((m).species)); } \
+        if (!strncmp(L.issue[_i].text, "Invalid met location", 20)) { \
+          loc_warns++; printf("  loc-warn on %s (legit?)\n", pk_species_name((m).species)); } \
       } \
     } else { garbage_total++; if (!L.ok) garbage_caught++; } \
   } while (0)
@@ -70,6 +72,8 @@ int main(int argc, char** argv) {
   CHECK(move_warns == 0, "no false-positive move-source warnings on legit mons");
   printf("(1d) origin-game warnings on valid mons: %d (expect 0)\n", origin_warns);
   CHECK(origin_warns == 0, "no false-positive origin-game warnings on legit mons");
+  printf("(1e) met-location warnings on valid mons: %d (expect 0)\n", loc_warns);
+  CHECK(loc_warns == 0, "no false-positive met-location warnings on legit mons");
 
   /* (1c) regression guard for known code-taught moves that no data file lists and
    *      must be accepted explicitly: Volt Tackle (Light Ball egg move) on the
@@ -126,6 +130,17 @@ int main(int argc, char** argv) {
     int ml = 0; for (int i = 0; i < L2.n; i++) if (!strncmp(L2.issue[i].text, "Met level above 100", 19)) ml++;
     printf("(4) origin0 warns=%d, metLevel120 illegal-hit=%d\n", ow, ml);
     CHECK(ml >= 1 && !L2.ok, "met level above 100 is flagged illegal");
+
+    PkMon m3 = party[0];
+    m3.metGame = 3; m3.metLocation = 0xE0;     /* dead-zone (0xD6..0xFC) on a non-Colosseum mon */
+    PkLegality L3 = pk_check_legality(&m3);
+    int lw = 0; for (int i = 0; i < L3.n; i++) if (!strncmp(L3.issue[i].text, "Invalid met location", 20)) lw++;
+    m3.metLocation = 0xFF;                       /* fateful special must NOT warn */
+    PkLegality L4 = pk_check_legality(&m3);
+    int lw2 = 0; for (int i = 0; i < L4.n; i++) if (!strncmp(L4.issue[i].text, "Invalid met location", 20)) lw2++;
+    printf("(5) deadzone-loc warns=%d, fateful-loc warns=%d (want 1, 0)\n", lw, lw2);
+    CHECK(lw >= 1, "a dead-zone met location warns");
+    CHECK(lw2 == 0, "the fateful special met location does not warn");
   }
 
   printf("\n%s: %d failure(s)\n", g_fail ? "FAIL" : "OK", g_fail);
