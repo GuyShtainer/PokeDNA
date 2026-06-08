@@ -71,6 +71,10 @@ static PkMon       EWRAM_BSS g_party[6];                  /* decoded party of th
 static u8          EWRAM_BSS g_pc[G3_PC_BYTES];           /* reassembled PC storage (boxes)  */
 static u8          EWRAM_BSS g_sb2[G3_SECTOR_DATA_SIZE];   /* SaveBlock2 (trainer card/stats) */
 static ClipMon     EWRAM_BSS g_clip;                       /* one-slot mon clipboard          */
+#define BANK_MAX 150
+static char        EWRAM_BSS g_bank_names[BANK_MAX][40];   /* .pk3 filenames in the bank dir  */
+static int         g_bank_n = 0;
+static PkMon       EWRAM_BSS g_bank_mon[30];               /* decoded current bank page       */
 
 /* ---- VBlank / input discipline (key_poll exactly once per frame) -------- */
 static void vsync(void) { VBlankIntrWait(); key_poll(); }
@@ -691,6 +695,163 @@ static int party_list(void) {
   }
 }
 
+/* ===================== external bank (/pokeviewer/bank/*.pk3) =========== */
+
+static bool has_pk_ext(const char* n) {
+  int L = (int)strlen(n);
+  if (L >= 4 && n[L-4]=='.' && (n[L-3]=='p'||n[L-3]=='P') && (n[L-2]=='k'||n[L-2]=='K') && n[L-1]=='3') return true;
+  if (L >= 3 && n[L-3]=='.' && (n[L-2]=='p'||n[L-2]=='P') && (n[L-1]=='k'||n[L-1]=='K')) return true;
+  return false;
+}
+
+static void bank_scan(void) {
+  g_bank_n = 0;
+  DIR d; FILINFO fno;
+  if (f_opendir(&d, PKVIEW_BANK_DIR) != FR_OK) return;
+  while (g_bank_n < BANK_MAX && f_readdir(&d, &fno) == FR_OK && fno.fname[0]) {
+    if (fno.fattrib & AM_DIR) continue;
+    if (!has_pk_ext(fno.fname)) continue;
+    strncpy(g_bank_names[g_bank_n], fno.fname, 39);
+    g_bank_names[g_bank_n][39] = 0;
+    g_bank_n++;
+  }
+  f_closedir(&d);
+}
+
+static bool bank_read(int idx, uint8_t out[80]) {
+  char path[SF_PATH_MAX];
+  siprintf(path, PKVIEW_BANK_DIR "/%s", g_bank_names[idx]);
+  uint32_t sz = 0;
+  return sf_read_full(path, out, 80, &sz) == SF_OK && sz >= 80 && pk3_validate(out);
+}
+
+/* first empty PC box slot of the loaded game, or false if the whole PC is full */
+static bool pc_first_free(const uint8_t* pc, int* box, int* slot) {
+  for (int b = 0; b < G3_TOTAL_BOXES; b++)
+    for (int s = 0; s < G3_IN_BOX; s++) {
+      PkMon m;
+      if (!pk_decode_mon(pk_box_slot((uint8_t*)pc, b, s), false, &m)) { *box = b; *slot = s; return true; }
+    }
+  return false;
+}
+
+/* small 3-option chooser (INJECT / DELETE / CANCEL) */
+static int bank_action_menu(void) {
+  static const char* const L[3] = { "INJECT to game", "DELETE file", "CANCEL" };
+  const int mx = 60, my = 50, mw = 120, mh = 18 + 3 * 14;
+  int sel = 0;
+  for (;;) {
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, "BANK MON");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < 3; i++) {
+      int y = my + 18 + i * 14; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
+    }
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return 2;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 2;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 3;
+    else if (k & KEY_A)    return sel;
+  }
+}
+
+/* The bank: a grid of stored .pk3 mons. A injects into the loaded game's first
+ * free PC box slot (the record is byte-identical across all 5 games) or deletes
+ * the file. Returns true iff the loaded save was modified (caller refreshes). */
+static bool bank_screen(void) {
+  bool changed = false;
+  bank_scan();
+  int cur = 0, page = 0;
+  for (;;) {
+    int pages = (g_bank_n + 29) / 30; if (pages < 1) pages = 1;
+    if (page >= pages) page = pages - 1;
+    int on = g_bank_n - page * 30; if (on > 30) on = 30; if (on < 0) on = 0;
+    for (int i = 0; i < 30; i++) {
+      uint8_t raw[80];
+      if (i < on && bank_read(page * 30 + i, raw)) { pk_decode_mon(raw, false, &g_bank_mon[i]); pk_resolve(&g_bank_mon[i]); }
+      else g_bank_mon[i].species = 0;
+    }
+    if (cur >= on) cur = on ? on - 1 : 0;
+
+    ui_clear();
+    char h[48]; siprintf(h, "BANK  %d stored  pg %d/%d", g_bank_n, page + 1, pages);
+    ui_text(4, 2, UI_TITLE, h);
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    if (g_bank_n == 0) {
+      ui_text(8, 40, UI_DIM, "No stored Pokemon.");
+      ui_text(8, 54, UI_DIM, "EXPORT a mon, or copy .pk3 files");
+      ui_text(8, 64, UI_DIM, "into /pokeviewer/bank/ on your PC.");
+    }
+    for (int i = 0; i < 30; i++) {
+      int x = 18 + (i % 6) * 34, y = 20 + (i / 6) * 24;
+      if (g_bank_mon[i].species) ui_icon_scaled(x, y, 24, 24, mon_icon_for(g_bank_mon[i].species));
+      if (i == cur && on) m3_frame(x - 1, y - 1, x + 24, y + 24, UI_SELTEXT);
+    }
+    if (on) {
+      PkMon* p = &g_bank_mon[cur];
+      char info[48], it[48];
+      siprintf(info, "No.%u %s Lv%u", (unsigned)pk_national_no(p->species),
+               p->nickname[0] ? p->nickname : pk_species_name(p->species), (unsigned)p->level);
+      ui_truncate(it, info, 29);
+      ui_text(4, 142, UI_OK, it);
+    }
+    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+    ui_text(4, 152, UI_DIM, app_can_edit() ? "A inject/del  L/R page  B back" : "L/R page  B back  (read-only)");
+
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B);
+    if (k & KEY_B) return changed;
+    else if (k & KEY_L) { page = (page + pages - 1) % pages; cur = 0; }
+    else if (k & KEY_R) { page = (page + 1) % pages; cur = 0; }
+    else if (k & KEY_LEFT)  { if (cur % 6) cur--; }
+    else if (k & KEY_RIGHT) { if (cur % 6 != 5 && cur + 1 < on) cur++; }
+    else if (k & KEY_UP)    { if (cur >= 6) cur -= 6; }
+    else if (k & KEY_DOWN)  { if (cur + 6 < on) cur += 6; }
+    else if ((k & KEY_A) && on && app_can_edit()) {
+      int idx = page * 30 + cur;
+      int a = bank_action_menu();
+      if (a == 0) {                                    /* INJECT */
+        uint8_t raw[80]; int b, s;
+        if (!bank_read(idx, raw)) { msg_wait("BAD FILE", UI_WARN, "Could not read this .pk3.", 0); }
+        else if (!pc_first_free(g_pc, &b, &s)) { msg_wait("PC FULL", UI_WARN, "No empty box slot.", 0); }
+        else {
+          memcpy(pk_box_slot(g_pc, b, s), raw, 80);
+          if (app_commit_block(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc)) changed = true;
+        }
+      } else if (a == 1) {                             /* DELETE */
+        if (app_confirm("Delete this .pk3 file?", "The stored mon is removed.")) {
+          char path[SF_PATH_MAX]; siprintf(path, PKVIEW_BANK_DIR "/%s", g_bank_names[idx]);
+          f_unlink(path);
+          bank_scan();
+        }
+      }
+    }
+  }
+}
+
+/* START menu from the box/party: pick a destination screen. */
+static int nav_menu(void) {                            /* 0=card 1=bank 2=back (3=data: later) */
+  static const char* const L[3] = { "Trainer card", "Bank", "Back" };
+  const int mx = 64, my = 52, mw = 112, mh = 18 + 3 * 14;
+  int sel = 0;
+  for (;;) {
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, "MENU");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < 3; i++) {
+      int y = my + 18 + i * 14; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
+    }
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return 2;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 2;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 3;
+    else if (k & KEY_A)    return sel;
+  }
+}
+
 /* Load the picked save and show it: start in the PC boxes; SELECT toggles to the
  * party list and back; B from either returns to the file browser. */
 static void view_save(const char* path) {
@@ -725,7 +886,12 @@ static void view_save(const char* path) {
   for (;;) {
     int r = (mode == 0) ? pkview_box(g_pc) : party_list();
     if (r == 0) return;                          /* B -> file browser */
-    if (r == 2) { pkview_trainer(g_sb1, g_sb2, &g_vinfo, g_game); continue; }  /* START -> trainer card */
+    if (r == 2) {                                /* START -> nav menu */
+      int dest = nav_menu();
+      if (dest == 0) pkview_trainer(g_sb1, g_sb2, &g_vinfo, g_game);
+      else if (dest == 1) { if (bank_screen()) { /* a bank inject changed the PC; nothing else to refresh here */ } }
+      continue;
+    }
     if (!g_have_pc) return;                       /* nothing to toggle to */
     mode ^= 1;                                    /* SELECT -> toggle box/party */
   }
