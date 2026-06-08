@@ -4,7 +4,7 @@
 > `CLAUDE.md` (toolkit root) for the shared hardware/safety rules. This file is
 > kept current at the end of each working session.
 
-**Last updated:** 2026-06 (after the file-browser sort/filter/reboot batch, commit `741dc7d`).
+**Last updated:** 2026-06 (after the advanced-editing batch — transfer/bank/data-editor/legality, commit `66c4f17`).
 
 ---
 
@@ -73,6 +73,16 @@ doesn't tally — this is normal and has always been the case.
   validity — FRLG party at SB1+0x034/0x038 vs R/S/E 0x234/0x238). Stat order
   HP,Atk,Def,**Spe,SpA,SpD** (PK_HP..PK_SPD; note Spe before SpA internally).
 - `gen3_box.{c,h}` — PC storage read (`pk_read_box`, `pk_resolve`, box names/wallpaper).
+- `gen3_clip.{c,h}` — **mon clipboard + slot ops** (copy/paste/dup/release foundation):
+  `clip_copy_from`/`clip_to_record` (box↔party kind conversion via `em_set_party_flag`),
+  `pk3_validate`, box-slot write/clear, and **count-aware** party append/release (the
+  gap-free party invariant — append refuses at 6, release shifts-down + decrements).
+- `gen3_legality.{c,h}` — `pk_check_legality(PkMon)` → `PkLegality` (V1 structural checks:
+  bad-egg, EV>510, level/EXP mismatch, bad moves/PP, ability slot, met-level, ball, …).
+  V2 (encounter/move) deferred.
+- `gen3_flags.{c,h}` — event-flag get/set (plaintext bit array, per-game base offset).
+- `gen3_items.{c,h}` — item-bag pockets (per-game offsets; quantity XOR'd with the SB2 key
+  on E/FRLG, plaintext on RS).
 - `gen3_edit.{c,h}` — **the lossless edit core.** `EditMon{raw[100], sub[4][12] canonical
   G/A/E/M, personality, otId}`. `gen3_edit_load`/`gen3_edit_commit` (patch-in-place +
   re-encrypt; no-op = byte-identical). `em_set_*` mutators, `em_reroll` (bounded shiny-PID
@@ -201,9 +211,26 @@ commit). Species mapping fix (internal ids). Editing confirmed working on real O
 - **SAV file browser**: sd-browser look + SELECT=sort (Name/Size/Date ×asc/desc),
   START=FILE MENU (sort key/order, .sav-only⇄all, show-hidden, **Reboot to flashcart menu**).
 
+**Advanced editing batch (`7ed5725`..`66c4f17`), build-clean + 4 host gates green (edit/clip/legality/data):**
+- **Copy / Paste / Duplicate / Release** + **move held item** (take/give) in the PC `A` menu;
+  empty box slots offer PASTE HERE. All ride the one `app_commit_block` write path.
+- **Legality V1** card (`LEGALITY` action) — structural hacked-mon flags.
+- **Export `.pk3`** (`EXPORT .pk`) to `/pokeviewer/bank/`.
+- **External bank** (START → MENU → Bank): a grid of stored `.pk3`; inject into the loaded
+  game's first free box slot (record is byte-identical across all 5 games) / delete. Also the
+  **import** path — drop PKHeX `.pk3` files into `/pokeviewer/bank/`.
+- **Data editor** (START → MENU → Data editor, Omega-only): COUNTERS (named game stats) / BAG
+  (all 5 pockets) / FLAGS (guarded raw `#N` browser). Edited in RAM, committed once on exit.
+
 **Pending hardware sign-off (not emulatable):**
 - The **reboot-to-loader** path (START → Reboot → A should land in the EZ-Flash game list).
-- Any SD-write edit path is already gated + verified, but re-confirm after big changes.
+- **The whole advanced-editing batch** — copy/paste/release (mutates party structure), `.pk3`
+  export, bank inject/delete, and counter/bag/flag writes are all new SD-write paths.
+- Re-confirm any SD-write path after big changes.
+
+**Next (deferred):** legality V2 (encounter + learnset tables, the "Skitty on Route 101" check —
+needs LZ77-compressed generated data); named flag categories (badges etc. need per-game
+`SYSTEM_FLAGS` resolution in `gen_data.py`).
 
 ---
 
