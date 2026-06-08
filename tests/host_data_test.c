@@ -68,6 +68,34 @@ int main(int argc, char** argv) {
     printf("(3) GAME_STAT[%d] '%s' = %u\n", stat, pk_game_stat_name(stat), was);
   }
 
+  /* (4) named flags table: well-formed, in range, badge1 matches the known value,
+   *     and a real named flag round-trips (restore after). */
+  {
+    const NamedFlag* nf; int nc = pk_named_flags(g, &nf);
+    int N = pk_flags_count(g), reals = 0, headers = 0, first_real = -1;
+    uint16_t exp_b1 = (g == PK_EMERALD) ? 0x867 : (g == PK_FRLG) ? 0x820 : 0x807;
+    uint16_t got_b1 = 0;
+    for (int i = 0; i < nc; i++) {
+      if (nf[i].num == NAMED_FLAG_HEADER) { headers++; continue; }
+      reals++;
+      if (first_real < 0) first_real = i;
+      CHECK(nf[i].num < N, "named flag number is in range");
+      CHECK(nf[i].name && nf[i].name[0], "named flag has a label");
+      if (got_b1 == 0) got_b1 = nf[i].num;          /* first real row == badge 1 */
+    }
+    printf("(4) named flags: %d rows (%d named, %d headers); badge1=0x%03X\n", nc, reals, headers, got_b1);
+    CHECK(nc >= 10 && reals >= 8 && headers >= 1, "named-flag table is populated with categories");
+    CHECK(got_b1 == exp_b1, "badge-1 flag number matches the known per-game value");
+    if (first_real >= 0) {
+      int fn = nf[first_real].num;
+      bool was = pk_flag_get(sb1, g, fn);
+      pk_flag_set(sb1, g, fn, !was);
+      CHECK(pk_flag_get(sb1, g, fn) == !was, "named flag toggles");
+      pk_flag_set(sb1, g, fn, was);
+      CHECK(pk_flag_get(sb1, g, fn) == was, "named flag restores");
+    }
+  }
+
   printf("\n%s: %d failure(s)\n", g_fail ? "FAIL" : "OK", g_fail);
   return g_fail ? 1 : 0;
 }

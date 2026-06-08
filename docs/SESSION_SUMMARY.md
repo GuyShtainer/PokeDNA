@@ -4,8 +4,8 @@
 > `CLAUDE.md` (toolkit root) for the shared hardware/safety rules. This file is
 > kept current at the end of each working session.
 
-**Last updated:** 2026-06 (advanced-editing batch `66c4f17`, then **legality V2 move-source**
-— 3-game learnset union, adversarially reviewed, commit `1aeafe1`; host-verified but NOT yet hardware-tested).
+**Last updated:** 2026-06 (advanced-editing batch `66c4f17`; **legality V2 move-source** `1aeafe1`;
+then **named-flag editor** — badges + system flags in the FLAGS tab. Both host-verified but NOT yet hardware-tested).
 
 ---
 
@@ -101,7 +101,12 @@ doesn't tally — this is normal and has always been the case.
   move). Conservative by design: a wrong-TM-combo hack is missed on purpose so a legit mon is
   never flagged. **Cross-game union is mandatory** — Emerald-only data false-flags legit FRLG/RS
   mons (Mr. Mime/Magical Leaf, Charizard/Blast Burn, Togetic/AncientPower, Dugtrio/Fury Swipes).
-- `gen3_flags.{c,h}` — event-flag get/set (plaintext bit array, per-game base offset).
+- `gen3_flags.{c,h}` — event-flag get/set (plaintext bit array, per-game base offset) +
+  `pk_named_flags(g, &nf)` → a generated **per-game curated** NamedFlag list (badges with the
+  right Hoenn/Kanto names + key system flags: Pokédex, National Dex, PokéNav (RSE), Game-clear,
+  Running Shoes, …). Flag numbers differ per game, so the table is resolved per game (verified
+  against known values — E badge1 0x867, FRLG 0x820, RS 0x807). `num == NAMED_FLAG_HEADER` rows
+  are category headers. Emitted into `data_tables.c` by `gen_data.py`.
 - `gen3_items.{c,h}` — item-bag pockets (per-game offsets; quantity XOR'd with the SB2 key
   on E/FRLG, plaintext on RS).
 - `gen3_edit.{c,h}` — **the lossless edit core.** `EditMon{raw[100], sub[4][12] canonical
@@ -160,7 +165,7 @@ and `data/*.bin`.
 | `gen_types.py` | `assets/types/*.png` (pokeemerald) | `source/type_icons.{c,h}` — 18 real 32×14 type badges |
 | `gen_items.py` | `assets/items/{icons,icon_palettes,meta}/` | `data/item_icons.bin` + `source/item_icons.{c,h}` + `_data.s` — 24×24 item icons (resolves the decomp's decoupled id→pic + id→palette tables; deduped) |
 | `gen_hand.py` | `assets/storage/hand_cursor.png` | `source/hand_cursor.{c,h}` — Gen-3 PC hand, recolored WHITE |
-| `gen_data.py` | `reference/pokeemerald_data/` (trimmed decomp) | `source/data_tables.c` — all name/desc/stat tables |
+| `gen_data.py` | `reference/{pokeemerald,pokefirered,pokeruby}_data/` (trimmed decomp; flags.h from all 3) | `source/data_tables.c` — all name/desc/stat tables + per-game **named-flag** tables (`pk_named_flags`) |
 | `gen_legality.py` | `reference/{pokeemerald,pokefirered,pokeruby}_data/` (level-up + egg + tutor + tms_hms + evolution) | `source/learnsets.c` — per-species learnable-move bitset for `pk_can_learn` (3-game **union**; see §3 `learnsets`) |
 
 - Species are keyed by **INTERNAL Gen-3 id** (from `reference/.../constants/species.h`),
@@ -246,7 +251,9 @@ commit). Species mapping fix (internal ids). Editing confirmed working on real O
   game's first free box slot (record is byte-identical across all 5 games) / delete. Also the
   **import** path — drop PKHeX `.pk3` files into `/pokeviewer/bank/`.
 - **Data editor** (START → MENU → Data editor, Omega-only): COUNTERS (named game stats) / BAG
-  (all 5 pockets) / FLAGS (guarded raw `#N` browser). Edited in RAM, committed once on exit.
+  (all 5 pockets) / FLAGS. The FLAGS tab now opens on a **named list** (badges + key system
+  flags, ON/off, A toggles with a one-time soft-lock caution) with a drill-in to the guarded
+  raw `#N` browser (`flags_raw_view`, B returns). Edited in RAM, committed once on exit.
 
 **Pending hardware sign-off (not emulatable):**
 - The **reboot-to-loader** path (START → Reboot → A should land in the EZ-Flash game list).
@@ -256,8 +263,8 @@ commit). Species mapping fix (internal ids). Editing confirmed working on real O
 
 **Next (deferred):** legality V2 **encounter** half (the "Skitty on Route 101" check — needs
 generated wild-encounter + met-location tables, the messy per-game part; move-source half is
-already done); named flag categories (badges etc. need per-game `SYSTEM_FLAGS` resolution in
-`gen_data.py`).
+already done). The named-flag editor could be widened later (trainers-defeated, hidden-items)
+by adding more curated symbols to `NFLAG_SYSTEM`/category lists in `gen_data.py`.
 
 ---
 

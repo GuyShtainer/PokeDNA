@@ -859,11 +859,44 @@ static uint32_t osk_number(const char* prompt, uint32_t cur, uint32_t maxv) {
   return v > maxv ? maxv : v;
 }
 
+/* Raw guarded "flag #N" browser — drilled into from the named FLAGS view. Its own
+ * loop; B returns up to the named list. Toggles set *dirty; the soft-lock caution
+ * fires once per editor session via the shared *warned flag. */
+static void flags_raw_view(bool* dirty, bool* warned) {
+  int N = pk_flags_count(g_game), flagn = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "RAW FLAGS");
+    ui_text(6, 14, UI_WARN, "Editing raw flags can break a save");
+    ui_hline(0, 24, UI_SCR_W, UI_BORDER);
+    if (flagn >= N) flagn = N - 1; if (flagn < 0) flagn = 0;
+    char row[40];
+    for (int i = -6; i <= 6; i++) {
+      int fn = flagn + i; if (fn < 0 || fn >= N) continue;
+      int y = 84 + i * 9; bool s = (i == 0);
+      siprintf(row, "Flag 0x%03X (%d)  %s", fn, fn, pk_flag_get(g_sb1, g_game, fn) ? "ON" : "off");
+      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+      ui_text(8, y, s ? UI_SELTEXT : (pk_flag_get(g_sb1, g_game, fn) ? UI_OK : UI_DIM), row);
+    }
+    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+    ui_text(4, 152, UI_DIM, "A toggle  U/D  SEL jump#  B back");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT);
+    if (k & KEY_B) return;
+    else if (k & KEY_UP)   { if (flagn > 0) flagn--; }
+    else if (k & KEY_DOWN) flagn++;
+    else if (k & KEY_SELECT) flagn = (int)osk_number("FLAG #", flagn, N - 1);
+    else if (k & KEY_A) {
+      if (!*warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); *warned = true; }
+      pk_flag_set(g_sb1, g_game, flagn, !pk_flag_get(g_sb1, g_game, flagn)); *dirty = true;
+    }
+  }
+}
+
 /* COUNTERS / BAG / FLAGS editor over the loaded save's SaveBlock1. Edits are made
  * in RAM and committed ONCE on exit (B). Returns true if the save was written. */
 static bool data_editor(void) {
   int tab = 0;                                   /* 0=counters 1=bag 2=flags */
-  int sel = 0, top = 0, pocket = 0, flagn = 0;
+  int sel = 0, top = 0, pocket = 0;
   bool dirty = false, flag_warned = false;
 
   for (;;) {
@@ -908,32 +941,47 @@ static bool data_editor(void) {
         ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
       }
       ui_text(4, 152, UI_DIM, "A edit  SEL pocket  L/R tab  B save");
-    } else {                                     /* ---- flags (raw, guarded) ---- */
-      int N = pk_flags_count(g_game);
-      if (flagn >= N) flagn = N - 1; if (flagn < 0) flagn = 0;
-      ui_text(6, 16, UI_WARN, "RAW FLAGS - editing can break a save");
+    } else {                                     /* ---- flags (named list) ---- */
+      const NamedFlag* nf; int nc = pk_named_flags(g_game, &nf);
+      int total = nc + 1;                         /* + trailing raw-browser row */
+      while (sel < nc && nf[sel].num == NAMED_FLAG_HEADER && sel < total - 1) sel++;
+      if (sel >= total) sel = total - 1; if (sel < 0) sel = 0;
+      if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
+      ui_text(6, 15, UI_DIRCLR, "Named flags");
       char row[40];
-      for (int i = -6; i <= 6; i++) {
-        int fn = flagn + i; if (fn < 0 || fn >= N) continue;
-        int y = 70 + i * 9; bool s = (i == 0);
-        siprintf(row, "Flag 0x%03X (%d)  %s", fn, fn, pk_flag_get(g_sb1, g_game, fn) ? "ON" : "off");
-        if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-        ui_text(8, y, s ? UI_SELTEXT : (pk_flag_get(g_sb1, g_game, fn) ? UI_OK : UI_DIM), row);
+      for (int i = 0; i < 14 && top + i < total; i++) {
+        int r = top + i, y = 26 + i * 9; bool s = (r == sel);
+        if (r == nc) {                            /* trailing: drill to raw view */
+          if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+          ui_text(8, y, s ? UI_SELTEXT : UI_DIM, "Raw flag browser (#N)...");
+        } else if (nf[r].num == NAMED_FLAG_HEADER) {
+          ui_text(4, y, UI_DIRCLR, nf[r].name);   /* category header */
+        } else {
+          bool on = pk_flag_get(g_sb1, g_game, nf[r].num);
+          siprintf(row, "%-22s %s", nf[r].name, on ? "ON" : "off");
+          char rt[40]; ui_truncate(rt, row, 29);
+          if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+          ui_text(8, y, s ? UI_SELTEXT : (on ? UI_OK : UI_DIM), rt);
+        }
       }
-      ui_text(4, 152, UI_DIM, "A toggle  U/D  SEL jump#  L/R tab  B");
+      ui_text(4, 152, UI_DIM, "A toggle/open  U/D  L/R tab  B save");
     }
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B | KEY_SELECT);
     if (k & KEY_B) break;
-    else if (k & KEY_L) { tab = (tab + 2) % 3; sel = top = 0; }
-    else if (k & KEY_R) { tab = (tab + 1) % 3; sel = top = 0; }
-    else if (tab == 2) {                         /* flags nav/toggle */
-      if (k & KEY_UP)   { if (flagn > 0) flagn--; }
-      else if (k & KEY_DOWN) flagn++;
-      else if (k & KEY_SELECT) flagn = (int)osk_number("FLAG #", flagn, pk_flags_count(g_game) - 1);
+    else if (k & KEY_L) { tab = (tab + 2) % 3; sel = (tab == 2) ? 1 : 0; top = 0; }
+    else if (k & KEY_R) { tab = (tab + 1) % 3; sel = (tab == 2) ? 1 : 0; top = 0; }
+    else if (tab == 2) {                         /* named flags nav/toggle */
+      const NamedFlag* nf; int nc = pk_named_flags(g_game, &nf);
+      int total = nc + 1;
+      if (k & KEY_UP)   { do { if (sel > 0) sel--; else break; } while (sel < nc && nf[sel].num == NAMED_FLAG_HEADER); }
+      else if (k & KEY_DOWN) { do { if (sel < total - 1) sel++; else break; } while (sel < nc && nf[sel].num == NAMED_FLAG_HEADER); }
       else if (k & KEY_A) {
-        if (!flag_warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); flag_warned = true; }
-        pk_flag_set(g_sb1, g_game, flagn, !pk_flag_get(g_sb1, g_game, flagn)); dirty = true;
+        if (sel == nc) flags_raw_view(&dirty, &flag_warned);   /* drill into raw */
+        else if (nf[sel].num != NAMED_FLAG_HEADER) {
+          if (!flag_warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); flag_warned = true; }
+          pk_flag_set(g_sb1, g_game, nf[sel].num, !pk_flag_get(g_sb1, g_game, nf[sel].num)); dirty = true;
+        }
       }
     } else if (k & KEY_UP)   { if (sel > 0) sel--; }
     else if (k & KEY_DOWN)   sel++;
