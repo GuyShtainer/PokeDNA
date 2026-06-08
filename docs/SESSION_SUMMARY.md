@@ -5,7 +5,7 @@
 > kept current at the end of each working session.
 
 **Last updated:** 2026-06 (advanced-editing batch `66c4f17`, then **legality V2 move-source**
-— 3-game learnset union + `learnsets.{c,h}` + `gen_legality.py`, adversarially reviewed; not yet committed).
+— 3-game learnset union, adversarially reviewed, commit `1aeafe1`; host-verified but NOT yet hardware-tested).
 
 ---
 
