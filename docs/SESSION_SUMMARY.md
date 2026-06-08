@@ -87,10 +87,12 @@ doesn't tally — this is normal and has always been the case.
   `pk3_validate`, box-slot write/clear, and **count-aware** party append/release (the
   gap-free party invariant — append refuses at 6, release shifts-down + decrements).
 - `gen3_legality.{c,h}` — `pk_check_legality(PkMon)` → `PkLegality` (V1 structural checks:
-  bad-egg, EV>510, level/EXP mismatch, bad moves/PP, ability slot, met-level, ball, …)
-  **plus V2 move-source** (warn-only, sev 0): flags a move the species *line* can't learn by
-  any Gen-3 method. Independent of the PP check (a doubly-tampered move fails both). V2
-  encounter/"Skitty on Route 101" still deferred.
+  bad-egg, EV>510, level/EXP mismatch, bad moves/PP, ability slot, met-level, met-level>100,
+  **origin-game validity**, ball, …) **plus V2 move-source** (warn-only, sev 0): flags a move
+  the species *line* can't learn by any Gen-3 method. Independent of the PP check (a
+  doubly-tampered move fails both). The species-vs-met-**LOCATION** check ("Skitty on Route
+  101") is intentionally deferred — see the comment in `gen3_legality.c` (needs a PKHeX-scale
+  per-game MAPSEC + wild-table + special-source-exclusion dataset to stay zero-false-positive).
 - `learnsets.{c,h}` — `pk_can_learn(species, move)` over a generated per-species bitset
   (`learnsets.c` git-ignored, 45 B/mon, ~18.5 KB ROM `.rodata`). Built by
   `tools/gen_legality.py` as the **union across all three Gen-3 decomps** (pokeemerald +
