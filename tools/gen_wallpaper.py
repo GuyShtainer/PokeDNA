@@ -28,8 +28,18 @@ RD = os.path.join(ROOT, "reference", "wallpapers")
 OUT = os.path.join(ROOT, "source", "wallpapers.c")
 
 # id order == sWallpapers[] in the decomp (forest=0 .. plain=15)
-NAMES = ["forest", "city", "desert", "savanna", "crag", "volcano", "snow", "cave",
-         "beach", "seafloor", "river", "sky", "polkadot", "pokecenter", "machine", "plain"]
+# (dir, frame.png path relative to RD). ids 0..15 = the standard wallpapers (own
+# frame); ids 16..31 = the Emerald "Walda"/secret wallpapers, which share one of
+# two frame tilesets (friends_frame1/2) instead of a per-wallpaper frame.
+STD = ["forest", "city", "desert", "savanna", "crag", "volcano", "snow", "cave",
+       "beach", "seafloor", "river", "sky", "polkadot", "pokecenter", "machine", "plain"]
+WALDA = [("zigzagoon", 1), ("screen", 1), ("horizontal", 1), ("diagonal", 1),
+         ("block", 1), ("ribbon", 1), ("pokecenter2", 1), ("frame", 1),
+         ("blank", 1), ("circles", 1), ("azumarill", 2), ("pikachu", 2),
+         ("legendary", 2), ("dusclops", 2), ("ludicolo", 2), ("whiscash", 2)]
+ENTRIES = [(n, "%s/frame.png" % n) for n in STD] + \
+          [(n, "friends_frame%d.png" % fr) for n, fr in WALDA]
+NAMES = [e[0] for e in ENTRIES]
 WP_W, WP_H = 160, 144            # 20x18 tiles
 
 
@@ -48,10 +58,12 @@ def load_tiles(path):
     return tiles, rgb15, cols, rows
 
 
-def assemble(name):
-    """-> a WP_H x WP_W list of RGB15 pixels for wallpaper `name`."""
+def assemble(name, frame_rel):
+    """-> a WP_H x WP_W list of RGB15 pixels for wallpaper `name`.
+    `frame_rel` is the frame.png path relative to RD (a per-wallpaper frame for the
+    standard set, or the shared friends_frameN for the Walda set)."""
     d = os.path.join(RD, name)
-    frame_t, frame_pal, _, _ = load_tiles(os.path.join(d, "frame.png"))
+    frame_t, frame_pal, _, _ = load_tiles(os.path.join(RD, frame_rel))
     bg_t, bg_pal, bgc, bgr = load_tiles(os.path.join(d, "bg.png"))
     tiles = frame_t + bg_t
     pals = [frame_pal, frame_pal, bg_pal]   # tilemap bank 0,1 -> frame, bank 2 -> bg
@@ -95,14 +107,15 @@ def tile_dedupe(img):
 
 
 def main():
+    N = len(ENTRIES)
     sheet = None
     if "--sheet" in sys.argv:
         sheet = sys.argv[sys.argv.index("--sheet") + 1]
-        contact = Image.new("RGB", (WP_W * 4, WP_H * 4))
+        contact = Image.new("RGB", (WP_W * 4, WP_H * ((N + 3) // 4)))
 
     data = []   # (name, uniq_tiles, map)
-    for i, name in enumerate(NAMES):
-        img = assemble(name)
+    for i, (name, frame_rel) in enumerate(ENTRIES):
+        img = assemble(name, frame_rel)
         uniq, mp = tile_dedupe(img)
         data.append((name, uniq, mp))
         if sheet:
@@ -131,17 +144,18 @@ def main():
             for r in range(0, 360, 20):
                 c.write("  " + ",".join(str(v) for v in mp[r:r + 20]) + ",\n")
             c.write("};\n\n")
-        c.write("static const uint16_t* const s_wt[16] = {%s};\n" % ",".join("wt_" + n for n in NAMES))
-        c.write("static const uint16_t* const s_wm[16] = {%s};\n" % ",".join("wm_" + n for n in NAMES))
-        c.write("static const uint16_t s_nt[16] = {%s};\n\n" % ",".join(str(len(u)) for _, u, _ in data))
+        c.write("static const uint16_t* const s_wt[%d] = {%s};\n" % (N, ",".join("wt_" + n for n in NAMES)))
+        c.write("static const uint16_t* const s_wm[%d] = {%s};\n" % (N, ",".join("wm_" + n for n in NAMES)))
+        c.write("static const uint16_t s_nt[%d] = {%s};\n\n" % (N, ",".join(str(len(u)) for _, u, _ in data)))
         c.write("""const uint16_t* wallpaper_tile_data(int wp, int* ntiles){
-  if (wp < 0 || wp > 15) return 0;
+  if (wp < 0 || wp >= %d) return 0;
   if (ntiles) *ntiles = s_nt[wp];
   return s_wt[wp];
 }
-const uint16_t* wallpaper_tilemap(int wp){ return (wp >= 0 && wp <= 15) ? s_wm[wp] : 0; }
-""")
-    print("wallpapers.c: 16 wallpapers, %d unique tiles total (avg %.1f/wp)" % (total, total / 16))
+const uint16_t* wallpaper_tilemap(int wp){ return (wp >= 0 && wp < %d) ? s_wm[wp] : 0; }
+""" % (N, N))
+    print("wallpapers.c: %d wallpapers (16 standard + %d Walda), %d unique tiles total (avg %.1f/wp)"
+          % (N, N - 16, total, total / N))
     print("written:", OUT)
 
 
