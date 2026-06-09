@@ -174,49 +174,115 @@ static void draw_wallpaper(int wp, int x, int y, int w, int h) {
     }
 }
 
-static void render(const uint8_t* pc, int box, int cur, bool on_title) {
+/* Repaint just the wallpaper pixels inside [cx,cy,cw,ch] (clipped to the box
+ * region) — used to erase the floating hand without a full redraw. */
+static void wallpaper_patch(int wp, int cx, int cy, int cw, int ch) {
+  int nt; const uint16_t* tiles = wallpaper_tile_data(wp, &nt);
+  const uint16_t* map = wallpaper_tilemap(wp);
+  int x0 = cx < WP_X ? WP_X : cx, y0 = cy < WP_Y ? WP_Y : cy;
+  int x1 = cx + cw, y1 = cy + ch;
+  if (x1 > WP_X + WP_W) x1 = WP_X + WP_W;
+  if (y1 > WP_Y + WP_H) y1 = WP_Y + WP_H;
+  for (int py = y0; py < y1; py++)
+    for (int px = x0; px < x1; px++) {
+      int lx = px - WP_X, ly = py - WP_Y;
+      u16 c = 0;
+      if (tiles && map && lx < 160 && ly < 144) {
+        const uint16_t* t = tiles + (uint32_t)map[(ly / 8) * 20 + (lx / 8)] * 64;
+        c = t[(ly % 8) * 8 + (lx % 8)] & 0x7FFF;
+      } else c = RGB15(19, 25, 12);   /* grass-ish fallback tone */
+      m3_plot(px, py, c);
+    }
+}
+
+/* 32x32 box icon, blitted HORIZONTALLY MIRRORED so the mons face the other way
+ * (matches the real Gen-3 PC). 0x8000 = opaque. */
+static void blit_icon(int x, int y, const u16* icon) {
+  if (!icon) return;
+  for (int j = 0; j < MON_ICON_H; j++)
+    for (int i = 0; i < MON_ICON_W; i++) {
+      u16 p = icon[j * MON_ICON_W + (MON_ICON_W - 1 - i)];
+      if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
+    }
+}
+
+static void hand_xy(int cur, int* hx, int* hy) {
+  *hx = GRID_X + (cur % COLS) * CELL_W + 3;
+  *hy = GRID_Y + (cur / COLS) * CELL_H - 16;
+  if (*hy < 28) *hy = 28;
+}
+
+static void grid_icons(void) {
+  for (int s = 0; s < 30; s++)
+    if (g_box[s].species)
+      blit_icon(GRID_X + (s % COLS) * CELL_W, GRID_Y + (s / COLS) * CELL_H, mon_icon_for(g_box[s].species));
+}
+
+static void draw_footer(bool on_title, bool moving) {
+  const char* f = moving ? "Move: D-pad place  A drop  B cancel"
+                : on_title ? "A rename/wallpaper  DOWN grid  L/R box  B close"
+                           : "A menu  UP title  SEL party  L/R box  B close";
+  /* clear the footer strip first (it changes between modes) */
+  ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);
+  ui_text(WP_X + 2, 152, RGB15(31, 31, 31), f);
+}
+
+static void draw_cursor_hand(int cur, bool on_title) {
+  if (on_title) draw_hand(WP_X + WP_W / 2 - 4, 14);
+  else { int hx, hy; hand_xy(cur, &hx, &hy); draw_hand(hx, hy); }
+}
+
+/* Full repaint — on entry, box change, after a menu/edit, or a mode change. */
+static void render_full(const uint8_t* pc, int box, int cur, bool on_title, bool moving) {
   ui_clear();
-
-  /* top tab bar: PKMN DATA (active) | PARTY | CLOSE */
   draw_tab(0, PANEL_W + 1, "PKMN DATA", true);
-  draw_tab(PANEL_W + 1, 92, "PARTY SEL", false);     /* label the trigger key */
+  draw_tab(PANEL_W + 1, 92, "PARTY SEL", false);
   draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "CLOSE B", false);
-
   draw_left(on_title ? 0 : &g_box[cur]);
 
-  /* the box's real wallpaper (or procedural grass) behind the banner + grid */
-  int wp = pk_box_wallpaper(pc, box);
-  draw_wallpaper(wp, WP_X, WP_Y, WP_W, WP_H);
+  draw_wallpaper(pk_box_wallpaper(pc, box), WP_X, WP_Y, WP_W, WP_H);
 
   char bn[12], bnocc[24];
   pk_box_name(pc, box, bn);
   int occ = 0;
   for (int s = 0; s < 30; s++) if (g_box[s].species) occ++;
-  siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);   /* occupancy in the banner */
+  siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);
   draw_banner(WP_X + 2, 13, WP_W - 4, bnocc);
-  if (on_title) m3_frame(WP_X, 12, WP_X + WP_W - 1, 27, UI_SELTEXT);   /* highlight title */
+  if (on_title) m3_frame(WP_X, 12, WP_X + WP_W - 1, 27, UI_SELTEXT);
 
-  /* 32x32 icon grid (tightly packed, like the game) */
-  for (int r = 0; r < ROWS; r++) {
-    for (int cc = 0; cc < COLS; cc++) {
-      int s = r * COLS + cc;
-      int x = GRID_X + cc * CELL_W, y = GRID_Y + r * CELL_H;
-      if (g_box[s].species) ui_sprite(x, y, MON_ICON_W, MON_ICON_H, mon_icon_for(g_box[s].species));
+  grid_icons();
+  draw_cursor_hand(cur, on_title);
+  draw_footer(on_title, moving);
+}
+
+/* Light update on cursor move — repaint only the old hand area + the new hand +
+ * the left PKMN-DATA panel, so browsing the PC never re-renders the whole box. */
+static void move_cursor(const uint8_t* pc, int box, int old_cur, bool old_title,
+                        int cur, bool on_title) {
+  int wp = pk_box_wallpaper(pc, box);
+  /* erase the old hand */
+  if (old_title) {
+    wallpaper_patch(wp, WP_X, WP_Y, WP_W, 16);          /* banner area top strip */
+    char bn[12], bnocc[24]; pk_box_name(pc, box, bn);
+    int occ = 0; for (int s = 0; s < 30; s++) if (g_box[s].species) occ++;
+    siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);
+    draw_banner(WP_X + 2, 13, WP_W - 4, bnocc);
+  } else {
+    int hx, hy; hand_xy(old_cur, &hx, &hy);
+    wallpaper_patch(wp, hx - 1, hy - 1, HAND_W + 3, HAND_H + 3);
+    /* any icons overlapping the erased rect */
+    for (int s = 0; s < 30; s++) {
+      if (!g_box[s].species) continue;
+      int ix = GRID_X + (s % COLS) * CELL_W, iy = GRID_Y + (s / COLS) * CELL_H;
+      if (ix < hx + HAND_W + 2 && ix + MON_ICON_W > hx - 1 &&
+          iy < hy + HAND_H + 2 && iy + MON_ICON_H > hy - 1)
+        blit_icon(ix, iy, mon_icon_for(g_box[s].species));
     }
   }
-
-  /* white Gen-3 hand: on the banner when the title is selected, else above the
-   * selected mon (clamped so the top row doesn't poke into the banner). */
-  if (on_title) {
-    draw_hand(WP_X + WP_W / 2 - 4, 14);
-    ui_text(WP_X + 2, 152, RGB15(31, 31, 31), "A rename/wallpaper  DOWN grid  L/R box  B close");
-  } else {
-    int hx = GRID_X + (cur % COLS) * CELL_W + 3;
-    int hy = GRID_Y + (cur / COLS) * CELL_H - 16;
-    if (hy < 28) hy = 28;
-    draw_hand(hx, hy);
-    ui_text(WP_X + 2, 152, RGB15(31, 31, 31), "A menu  UP title  SEL party  L/R box  B close");
-  }
+  if (on_title) m3_frame(WP_X, 12, WP_X + WP_W - 1, 27, UI_SELTEXT);
+  draw_cursor_hand(cur, on_title);
+  draw_left(on_title ? 0 : &g_box[cur]);              /* the selected mon changed */
+  if (on_title != old_title) draw_footer(on_title, false);
 }
 
 /* Wallpaper chooser: live-previews each wallpaper behind the box's icons.
@@ -226,11 +292,7 @@ static int wallpaper_pick(const uint8_t* pc, int box, int cur_wp) {
   for (;;) {
     ui_clear();
     draw_wallpaper(wp, WP_X, WP_Y, WP_W, WP_H);
-    for (int s = 0; s < 30; s++) {                 /* the box's icons, for context */
-      if (!g_box[s].species) continue;
-      int x = GRID_X + (s % COLS) * CELL_W, y = GRID_Y + (s / COLS) * CELL_H;
-      ui_sprite(x, y, MON_ICON_W, MON_ICON_H, mon_icon_for(g_box[s].species));
-    }
+    grid_icons();                                  /* the box's icons, for context */
     char b[40]; siprintf(b, "%d/%d  %s", wp + 1, G3_BOX_WALLPAPER_COUNT, WP_NAME[wp]);
     ui_panel(60, 0, 120, 13, UI_PANEL, UI_BORDER);
     ui_text(66, 2, UI_TITLE, b);
@@ -287,10 +349,11 @@ int pkview_box(uint8_t* pc) {
   if (box < 0 || box >= G3_TOTAL_BOXES) box = 0;
   int cur = 0;
   bool on_title = false;
+  bool need_full = true;
   pk_read_box(pc, box, g_box);
 
   for (;;) {
-    render(pc, box, cur, on_title);
+    if (need_full) { render_full(pc, box, cur, on_title, false); need_full = false; }
     u16 k, fresh;
     do { s_vsync(); fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
@@ -300,14 +363,16 @@ int pkview_box(uint8_t* pc) {
     else if (fresh & (KEY_A | KEY_START))                        snd_ok();
     else if (fresh & KEY_B)                                      snd_back();
 
+    int old_cur = cur; bool old_title = on_title;
+
     if (k & KEY_B) return 0;
     else if (k & KEY_START) return 2;
-    else if (k & KEY_L) { box = (box + G3_TOTAL_BOXES - 1) % G3_TOTAL_BOXES; pk_read_box(pc, box, g_box); cur = 0; }
-    else if (k & KEY_R) { box = (box + 1) % G3_TOTAL_BOXES; pk_read_box(pc, box, g_box); cur = 0; }
+    else if (k & KEY_L) { box = (box + G3_TOTAL_BOXES - 1) % G3_TOTAL_BOXES; pk_read_box(pc, box, g_box); cur = 0; need_full = true; }
+    else if (k & KEY_R) { box = (box + 1) % G3_TOTAL_BOXES; pk_read_box(pc, box, g_box); cur = 0; need_full = true; }
     else if (on_title) {                           /* TITLE row: limited controls */
       if (k & KEY_DOWN) on_title = false;
       else if (k & KEY_A) {
-        if (app_can_edit()) box_options_menu(pc, box);
+        if (app_can_edit()) { box_options_menu(pc, box); need_full = true; }
         else { snd_deny(); }
       }
     }
@@ -321,9 +386,14 @@ int pkview_box(uint8_t* pc) {
        * clipboard holds a mon to PASTE here. */
       if (g_box[cur].species || (app_can_edit() && app_clip_occupied())) {
         uint8_t* rec = pc + 0x0004 + ((uint32_t)box * 30 + cur) * 80;     /* PokemonStorage.boxes */
-        if (app_mon_menu(rec, false, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc, box, cur))
-          pk_read_box(pc, box, g_box);                                    /* refresh after write */
+        app_mon_menu(rec, false, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc, box, cur);
+        pk_read_box(pc, box, g_box);                                      /* refresh after possible write */
+        need_full = true;
       }
     }
+
+    /* cursor-only change -> light partial repaint; everything else did a full one */
+    if (!need_full && (cur != old_cur || on_title != old_title))
+      move_cursor(pc, box, old_cur, old_title, cur, on_title);
   }
 }
