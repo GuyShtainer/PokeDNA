@@ -220,6 +220,27 @@ bool em_reroll(EditMon* e, int want_nature, int want_shiny, int want_gender, uin
   return false;
 }
 
+/* Set the Unown letter (0..27) by finding a PID that yields it while preserving
+ * the current nature + shininess (Unown is genderless, so gender is fixed). */
+bool em_set_unown_form(EditMon* e, int form) {
+  if (form < 0 || form > 27) return false;
+  uint16_t tid = (uint16_t)(e->otId & 0xFFFF), sid = (uint16_t)(e->otId >> 16);
+  int cur_nat = (int)(e->personality % 25);
+  int cur_shiny = ((uint16_t)(tid ^ sid ^ (uint16_t)(e->personality & 0xFFFF) ^ (uint16_t)(e->personality >> 16)) < 8);
+  if (pk_unown_form(e->personality) == form) return true;
+  uint32_t pid = e->personality;
+  for (uint32_t i = 0; i < 4000000u; i++) {
+    pid = pid * 1103515245u + 12345u;
+    if (pk_unown_form(pid) != form) continue;
+    if ((int)(pid % 25) != cur_nat) continue;
+    int shiny = ((uint16_t)(tid ^ sid ^ (uint16_t)(pid & 0xFFFF) ^ (uint16_t)(pid >> 16)) < 8);
+    if (shiny != cur_shiny) continue;
+    apply_pid(e, pid);
+    return true;
+  }
+  return false;
+}
+
 void em_preview(const EditMon* e, PkMon* out) {
   uint8_t scratch[100];
   gen3_edit_commit(e, scratch);

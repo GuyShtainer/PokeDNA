@@ -15,6 +15,7 @@ uint16_t pick_species(uint16_t current_internal);
 uint16_t pick_move(uint16_t current_move);
 uint16_t pick_item(uint16_t current_item);
 uint8_t  pick_nature(uint8_t current_nature);
+int      pick_unown_form(int current_form);     /* 0..27 = A..?, -1 cancel */
 
 /* Ability picker. Gen-3 stores only a 1-bit ability SLOT, so the choices are the
  * species' two abilities (shown by name + description). Returns the chosen slot

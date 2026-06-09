@@ -48,6 +48,8 @@ void em_set_otname(EditMon* e, const char* s);              /* <=7 chars  */
  * gender_ratio is the species' ratio (data_tables). Returns false if no PID found
  * within the search budget (caller may relax constraints). */
 bool em_reroll(EditMon* e, int want_nature, int want_shiny, int want_gender, uint8_t gender_ratio);
+/* Set the Unown letter (0..27 = A..?) by adjusting the PID; keeps nature + shiny. */
+bool em_set_unown_form(EditMon* e, int form);
 
 /* Decode the current edit state into a PkMon for live preview (party stats are
  * plaintext; box stats need pk_resolve by the caller). */

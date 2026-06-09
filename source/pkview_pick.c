@@ -622,3 +622,31 @@ uint8_t pick_ability(uint16_t species, uint8_t cur) {
     else if (k & KEY_DOWN) sel = (sel + 1) % n;
   }
 }
+
+/* Choose an Unown letter (0..27 = A..Z ! ?). Shows all 28 forms as a grid of the
+ * real letter icons. Returns the chosen form, or -1 on cancel. */
+int pick_unown_form(int cur) {
+  static const char* const LET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ!?";
+  const int uc = 7, uw = 30, ux0 = 22, uy0 = 22;
+  int sel = (cur >= 0 && cur < 28) ? cur : 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "CHOOSE UNOWN LETTER");
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < 28; i++) {
+      int x = ux0 + (i % uc) * uw, y = uy0 + (i / uc) * uw;
+      if (i == sel) m3_frame(x - 2, y - 2, x + 25, y + 25, UI_SELTEXT);
+      ui_icon_scaled(x, y, 24, 24, mon_icon_for_form(201, (uint8_t)i));
+      char ch[2] = { LET[i], 0 };
+      ui_text(x + 8, y + 25, i == sel ? UI_SELTEXT : UI_DIM, ch);
+    }
+    ui_text(4, 152, UI_DIM, "Move  A pick  B cancel");
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
+    if (k & KEY_B) return -1;
+    else if (k & KEY_A) return sel;
+    else if (k & KEY_LEFT)  sel = (sel > 0) ? sel - 1 : 27;
+    else if (k & KEY_RIGHT) sel = (sel + 1) % 28;
+    else if (k & KEY_UP)    { if (sel >= uc) sel -= uc; }
+    else if (k & KEY_DOWN)  { if (sel + uc < 28) sel += uc; }
+  }
+}

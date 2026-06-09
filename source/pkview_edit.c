@@ -136,7 +136,15 @@ void em_field_adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
 void em_field_press(int f, EditMon* e, const PkMon* c) {
   char buf[20];
   switch (f) {
-    case F_SPECIES: { uint16_t id = pick_species(c->species); if (id != 0xFFFF) em_set_species(e, id); break; }
+    case F_SPECIES: { uint16_t id = pick_species(c->species);
+                      if (id != 0xFFFF) {
+                        em_set_species(e, id);
+                        if (id == 201) {                       /* Unown -> also pick the letter */
+                          int form = pick_unown_form(pk_unown_form(e->personality));
+                          if (form >= 0) em_set_unown_form(e, form);
+                        }
+                      }
+                      break; }
     case F_ITEM:    { uint16_t id = pick_item(c->heldItem);   if (id != 0xFFFF) em_set_item(e, id); break; }
     case F_NATURE:  { uint8_t nt = pick_nature(c->nature); reroll_to(e, c, nt, c->isShiny ? 1 : 0, c->gender < 2 ? c->gender : -1); break; }
     case F_MV0: case F_MV1: case F_MV2: case F_MV3:
