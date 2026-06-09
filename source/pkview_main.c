@@ -496,10 +496,32 @@ bool app_commit_pc(void)  { return app_commit_block(G3_SID_PKMN_STORAGE_START,
                                                     G3_SID_PKMN_STORAGE_END, g_pc); }
 
 bool app_edit_commit(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block) {
-  uint8_t out[100];
-  if (!pkview_inspect(rec, is_party, true, out)) return false; /* viewed only / discarded */
+  uint8_t out[100]; bool saved = false;
+  pkview_inspect(rec, is_party, true, out, &saved);          /* party: nav ignored */
+  if (!saved) return false;                                  /* viewed only / discarded */
   memcpy(rec, out, is_party ? 100 : 80);                     /* patch in place (rec is inside block) */
   return app_commit_block(sect_lo, sect_hi, block);
+}
+
+/* Box summary BROWSER: VIEW/EDIT a box slot, then U/D scroll to the prev/next
+ * occupied slot (real-PC style). Edits are saved per-mon (prompted on leave/change)
+ * via the PC-storage commit. Returns true if any write happened. */
+static bool app_box_browse(uint8_t* pc, int box, int start) {
+  int idx = start; bool any = false;
+  for (;;) {
+    uint8_t* rec = pc + 0x0004 + ((uint32_t)box * 30 + idx) * 80;
+    uint8_t out[100]; bool saved = false;
+    int nav = pkview_inspect(rec, false, app_can_edit(), out, &saved);
+    if (saved) { memcpy(rec, out, 80); if (app_commit_pc()) any = true; }
+    if (nav == 0) break;
+    for (int step = 0; step < G3_IN_BOX; step++) {           /* next occupied slot in dir nav */
+      idx = (idx + nav + G3_IN_BOX) % G3_IN_BOX;
+      PkMon t;
+      if (pk_decode_mon(pc + 0x0004 + ((uint32_t)box * 30 + idx) * 80, false, &t) &&
+          t.species >= 1 && t.species <= 411) break;
+    }
+  }
+  return any;
 }
 
 /* PC-menu quick editors: load -> mutate one field -> losslessly re-encode -> patch
@@ -650,7 +672,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
   if (occupied) pk_resolve(&m0);
 
   if (!app_can_edit()) {                                 /* read-only carts: view only */
-    if (occupied) { uint8_t d[100]; pkview_inspect(rec, is_party, false, d); }
+    if (occupied) { uint8_t d[100]; pkview_inspect(rec, is_party, false, d, 0); }
     return false;
   }
 
@@ -699,7 +721,8 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
     else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
       switch (act[sel]) {
-        case A_SUMMARY: return app_edit_commit(rec, is_party, sect_lo, sect_hi, block);
+        case A_SUMMARY: return is_party ? app_edit_commit(rec, is_party, sect_lo, sect_hi, block)
+                                        : app_box_browse(block, box, slot);   /* box: scroll mons */
         case A_ITEM:    return app_quick_item (rec, is_party, sect_lo, sect_hi, block);
         case A_MOVES:   return app_quick_moves(rec, is_party, sect_lo, sect_hi, block);
         case A_LEGAL:   pkview_legality_show(&m0); return false;

@@ -232,26 +232,37 @@ static bool confirm(void) {
   return yes;
 }
 
-bool pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec) {
+/* Inline summary with two sub-modes:
+ *   VIEW  (default): A enters EDIT; U/D scroll to the prev/next mon (real-PC style);
+ *                    L/R flip card; B leaves. The save prompt appears HERE — only
+ *                    when you try to leave or change mon with unsaved edits.
+ *   EDIT  (after A): U/D pick a field, A opens its picker, <> nudge, L/R flip card,
+ *                    B returns to VIEW (edits stay pending). The EDIT banner shows.
+ * Returns 0 to exit, +1 for "next mon", -1 for "prev mon" (the caller loads it and
+ * calls again). *saved is set true (and out_rec filled) if the user kept the edits. */
+int pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec, bool* saved) {
+  if (saved) *saved = false;
   EditMon e;
   gen3_edit_load(rec, is_party, &e);
   PkMon cur;
   em_preview(&e, &cur); pk_resolve(&cur);
 
   int card = 0, fsel = 0;
-  bool dirty = false;
-  if (can_edit) key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
+  bool dirty = false, editing = false;
+  key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
 
   for (;;) {
-    g_edit = can_edit;
+    g_edit = editing;
     render_card(&cur, card);
-    if (can_edit && g_nslot) {
+    if (editing && g_nslot) {
       if (fsel >= g_nslot) fsel = g_nslot - 1;
       int sx = g_slot[fsel].x, sy = g_slot[fsel].y, sw = g_slot[fsel].w;
       m3_frame(sx - 2, sy - 1, sx + sw, sy + UI_ROW_H, UI_SELTEXT);
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, can_edit ? "U/D field  A list  <> +/-  L/R card  B" : "L/R card  B back");
+    ui_text(4, 152, UI_DIM, editing ? "A list  <> +/-  U/D field  L/R card  B view"
+                          : can_edit ? "A edit  U/D mon  L/R card  B back"
+                                     : "U/D mon  L/R card  B back");
 
     u16 k, fresh;
     do { s_vsync(); fresh = key_hit(KEY_FULL);
@@ -259,26 +270,28 @@ bool pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec
     if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
     else if (fresh & (KEY_L | KEY_R))     snd_tab();
     else if (fresh & KEY_A)               snd_ok();
-    else if (fresh & (KEY_LEFT | KEY_RIGHT)) { if (can_edit) snd_edit(); }
+    else if (fresh & (KEY_LEFT | KEY_RIGHT)) { if (editing) snd_edit(); }
     else if (fresh & KEY_B)               snd_back();
 
-    if (k & KEY_B) {
-      bool ret = false;
-      if (can_edit && dirty && confirm()) { gen3_edit_commit(&e, out_rec); ret = true; }
-      if (can_edit) key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
-      return ret;
+    if (editing) {
+      /* ---- EDIT MODE ---- */
+      if (k & KEY_B) editing = false;              /* back to VIEW, keep pending edits */
+      else if (k & (KEY_L | KEY_R)) { card = (card + (k & KEY_R ? 1 : NCARDS - 1)) % NCARDS; fsel = 0; }
+      else if (g_nslot && (k & KEY_A))    { em_field_press(g_slot[fsel].field, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true; }
+      else if (g_nslot && (k & KEY_LEFT)) { em_field_adjust(g_slot[fsel].field, -1, false, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true; }
+      else if (g_nslot && (k & KEY_RIGHT)){ em_field_adjust(g_slot[fsel].field, +1, false, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true; }
+      else if (k & KEY_UP)   { if (g_nslot) fsel = (fsel > 0) ? fsel - 1 : g_nslot - 1; }
+      else if (k & KEY_DOWN) { if (g_nslot) fsel = (fsel + 1) % g_nslot; }
+    } else {
+      /* ---- VIEW MODE ---- */
+      if (k & KEY_A) { if (can_edit) editing = true; }
+      else if (k & (KEY_L | KEY_R)) { card = (card + (k & KEY_R ? 1 : NCARDS - 1)) % NCARDS; fsel = 0; }
+      else if (k & (KEY_UP | KEY_DOWN | KEY_B)) {    /* leaving this mon: prompt-save if dirty */
+        if (dirty && confirm()) { gen3_edit_commit(&e, out_rec); if (saved) *saved = true; }
+        key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
+        if (k & KEY_B) return 0;
+        return (k & KEY_DOWN) ? +1 : -1;
+      }
     }
-    else if (k & (KEY_L | KEY_R)) { card = (card + (k & KEY_R ? 1 : NCARDS - 1)) % NCARDS; fsel = 0; }
-    else if (can_edit && g_nslot && (k & KEY_A)) {
-      em_field_press(g_slot[fsel].field, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true;
-    }
-    else if (can_edit && g_nslot && (k & KEY_LEFT)) {
-      em_field_adjust(g_slot[fsel].field, -1, false, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true;
-    }
-    else if (can_edit && g_nslot && (k & KEY_RIGHT)) {
-      em_field_adjust(g_slot[fsel].field, +1, false, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true;
-    }
-    else if (k & KEY_UP)   { if (can_edit && g_nslot) fsel = (fsel > 0) ? fsel - 1 : g_nslot - 1; }
-    else if (k & KEY_DOWN) { if (can_edit && g_nslot) fsel = (fsel + 1) % g_nslot; }
   }
 }
