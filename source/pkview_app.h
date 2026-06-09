@@ -28,6 +28,10 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
  * allow PASTE onto an empty slot). */
 bool app_clip_occupied(void);
 
+/* The A-menu's MOVE action sets a one-shot flag; the box grid consumes it to
+ * enter "pick up + reposition" mode. Returns true once per MOVE pick. */
+bool app_take_move_request(void);
+
 /* Commit the loaded save's SaveBlock2 (section 0 — the trainer block) or
  * SaveBlock1 (sections 1..4 — where money lives) after an in-place edit of the
  * shared g_sb2 / g_sb1 buffers. Same verified-write+backup path as the editors.

@@ -44,6 +44,15 @@ static void draw_hand(int x, int y) {
 }
 
 static PkMon EWRAM_BSS g_box[30];
+static int s_move_from = -1;          /* slot being repositioned in move-mode, or -1 */
+
+static void swap_box_slots(uint8_t* pc, int box, int a, int b) {
+  if (a == b) return;
+  uint8_t* ra = pc + 0x0004 + ((uint32_t)box * 30 + a) * 80;
+  uint8_t* rb = pc + 0x0004 + ((uint32_t)box * 30 + b) * 80;
+  uint8_t tmp[80];
+  memcpy(tmp, ra, 80); memcpy(ra, rb, 80); memcpy(rb, tmp, 80);
+}
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
@@ -251,6 +260,10 @@ static void render_full(const uint8_t* pc, int box, int cur, bool on_title, bool
   if (on_title) m3_frame(WP_X, 12, WP_X + WP_W - 1, 27, UI_SELTEXT);
 
   grid_icons();
+  if (moving && s_move_from >= 0) {                 /* frame the slot being moved */
+    int sx = GRID_X + (s_move_from % COLS) * CELL_W, sy = GRID_Y + (s_move_from / COLS) * CELL_H;
+    m3_frame(sx - 1, sy - 1, sx + MON_ICON_W, sy + MON_ICON_H, UI_WARN);
+  }
   draw_cursor_hand(cur, on_title);
   draw_footer(on_title, moving);
 }
@@ -350,10 +363,11 @@ int pkview_box(uint8_t* pc) {
   int cur = 0;
   bool on_title = false;
   bool need_full = true;
+  s_move_from = -1;
   pk_read_box(pc, box, g_box);
 
   for (;;) {
-    if (need_full) { render_full(pc, box, cur, on_title, false); need_full = false; }
+    if (need_full) { render_full(pc, box, cur, on_title, s_move_from >= 0); need_full = false; }
     u16 k, fresh;
     do { s_vsync(); fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
@@ -364,6 +378,22 @@ int pkview_box(uint8_t* pc) {
     else if (fresh & KEY_B)                                      snd_back();
 
     int old_cur = cur; bool old_title = on_title;
+
+    /* ---- MOVE MODE: holding a mon; reposition it within the box ---- */
+    if (s_move_from >= 0) {
+      if (k & KEY_B) { snd_back(); s_move_from = -1; need_full = true; }
+      else if (k & KEY_A) {                          /* drop -> swap source <-> cursor */
+        swap_box_slots(pc, box, s_move_from, cur);
+        pk_read_box(pc, box, g_box);
+        app_commit_pc();
+        s_move_from = -1; need_full = true;
+      }
+      else if (k & KEY_LEFT)  { cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1; need_full = true; }
+      else if (k & KEY_RIGHT) { cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1; need_full = true; }
+      else if (k & KEY_UP)    { if (cur >= COLS) { cur -= COLS; need_full = true; } }
+      else if (k & KEY_DOWN)  { if (cur < COLS * (ROWS - 1)) { cur += COLS; need_full = true; } }
+      continue;                                      /* move-mode swallows all other keys */
+    }
 
     if (k & KEY_B) return 0;
     else if (k & KEY_START) return 2;
@@ -388,6 +418,7 @@ int pkview_box(uint8_t* pc) {
         uint8_t* rec = pc + 0x0004 + ((uint32_t)box * 30 + cur) * 80;     /* PokemonStorage.boxes */
         app_mon_menu(rec, false, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc, box, cur);
         pk_read_box(pc, box, g_box);                                      /* refresh after possible write */
+        if (app_take_move_request()) s_move_from = cur;                  /* picked MOVE -> hold this slot */
         need_full = true;
       }
     }
