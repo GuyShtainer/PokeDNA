@@ -322,6 +322,15 @@ NFLAG_ELITE = [
     ("FLAG_DEFEATED_LANCE",          "E4 Lance"),
     ("FLAG_DEFEATED_CHAMP",          "Champion"),
 ]
+NFLAG_FRONTIER = [   # Emerald Battle Frontier silver/gold symbols (absent in RS/FRLG)
+    ("FLAG_SYS_TOWER_SILVER",   "Tower Silver"),   ("FLAG_SYS_TOWER_GOLD",   "Tower Gold"),
+    ("FLAG_SYS_DOME_SILVER",    "Dome Silver"),     ("FLAG_SYS_DOME_GOLD",    "Dome Gold"),
+    ("FLAG_SYS_PALACE_SILVER",  "Palace Silver"),   ("FLAG_SYS_PALACE_GOLD",  "Palace Gold"),
+    ("FLAG_SYS_ARENA_SILVER",   "Arena Silver"),    ("FLAG_SYS_ARENA_GOLD",   "Arena Gold"),
+    ("FLAG_SYS_FACTORY_SILVER", "Factory Silver"),  ("FLAG_SYS_FACTORY_GOLD", "Factory Gold"),
+    ("FLAG_SYS_PIKE_SILVER",    "Pike Silver"),      ("FLAG_SYS_PIKE_GOLD",    "Pike Gold"),
+    ("FLAG_SYS_PYRAMID_SILVER", "Pyramid Silver"),  ("FLAG_SYS_PYRAMID_GOLD", "Pyramid Gold"),
+]
 NFLAG_LEGENDS = [
     ("FLAG_DEFEATED_GROUDON",         "Groudon"),
     ("FLAG_DEFEATED_KYOGRE",          "Kyogre"),
@@ -383,6 +392,7 @@ def build_named_flags(game_dir):
     add_category("System", NFLAG_SYSTEM)
     add_category("Gyms", NFLAG_GYMS)
     add_category("Elite Four", NFLAG_ELITE)
+    add_category("Battle Frontier", NFLAG_FRONTIER)
     add_category("Legends", NFLAG_LEGENDS)
     return out
 

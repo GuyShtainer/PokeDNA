@@ -12,6 +12,12 @@ int  pk_flags_count(PkGame g);                       /* E 6496, RS/FRLG 6400 */
 bool pk_flag_get(const uint8_t* sb1, PkGame g, int n);
 void pk_flag_set(uint8_t* sb1, PkGame g, int n, bool v);
 
+/* Gym badge i (0..7) -> its FLAG_BADGExx_GET number (per game). */
+int  pk_badge_flag(PkGame g, int badge);
+/* Emerald Battle-Frontier symbol i (0..13 = Tower S/G, Dome S/G, … Pyramid S/G)
+ * -> flag number; -1 on RS/FRLG. */
+int  pk_frontier_flag(PkGame g, int sym);
+
 /* Curated, per-game NAMED flags for the data editor's FLAGS tab (badges + key
  * system flags). The list is ordered with category-header rows where
  * `num == NAMED_FLAG_HEADER`; real rows carry the absolute flag number for

@@ -12,6 +12,7 @@
 #include "snd.h"
 #include "osk.h"
 #include "pkview_app.h"
+#include "gen3_flags.h"   /* badge / frontier flag toggles */
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 static u16  s_wait(u16 mask) {
@@ -32,7 +33,49 @@ static uint32_t num_entry(const char* prompt, uint32_t cur, uint32_t maxv) {
   return v > maxv ? maxv : v;
 }
 
-enum { TF_NAME, TF_SEX, TF_TID, TF_SID, TF_MONEY, TF_TIME, TF_NUM };
+/* badges (0..7) then the Emerald Battle-Frontier symbols (8..21). */
+static const char* const BADGEFRONT_LBL[22] = {
+  "Badge 1", "Badge 2", "Badge 3", "Badge 4", "Badge 5", "Badge 6", "Badge 7", "Badge 8",
+  "Tower Silver", "Tower Gold", "Dome Silver", "Dome Gold", "Palace Silver", "Palace Gold",
+  "Arena Silver", "Arena Gold", "Factory Silver", "Factory Gold", "Pike Silver", "Pike Gold",
+  "Pyramid Silver", "Pyramid Gold",
+};
+static int badge_or_frontier_flag(PkGame g, int i) {
+  return i < 8 ? pk_badge_flag(g, i) : pk_frontier_flag(g, i - 8);   /* -1 if absent */
+}
+
+/* On/off toggler for a set of flags (badges / frontier symbols). Returns true if
+ * anything changed. Edits SaveBlock1 flags in place; the caller commits SB1. */
+static bool flag_set_editor(uint8_t* sb1, PkGame game, const char* title,
+                            int (*flagnum)(PkGame, int), const char* const* names, int count) {
+  int sel = 0, top = 0; bool changed = false;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, title);
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    const int vis = 15;
+    if (sel < top) top = sel; if (sel >= top + vis) top = sel - vis + 1;
+    for (int i = 0; i < vis && top + i < count; i++) {
+      int idx = top + i, y = 16 + i * 9; bool s = (idx == sel);
+      int fn = flagnum(game, idx);
+      bool on = fn >= 0 && pk_flag_get(sb1, game, fn);
+      char row[40]; siprintf(row, "%-15s %s", names[idx], on ? "ON" : "off");
+      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+      ui_text(8, y, s ? UI_SELTEXT : (on ? UI_OK : UI_DIM), row);
+    }
+    ui_text(4, 152, UI_DIM, "A toggle  U/D  B back");
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return changed;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : count - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % count;
+    else if (k & KEY_A) {
+      int fn = flagnum(game, sel);
+      if (fn >= 0) { pk_flag_set(sb1, game, fn, !pk_flag_get(sb1, game, fn)); changed = true; }
+    }
+  }
+}
+
+enum { TF_NAME, TF_SEX, TF_TID, TF_SID, TF_MONEY, TF_TIME, TF_BADGES, TF_NUM };
 
 void pkview_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame game) {
   const bool edit = app_can_edit();
@@ -57,6 +100,9 @@ void pkview_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame
     lbl[TF_SID]   = "SID";   siprintf(val[TF_SID],   "%05u", (unsigned)sid);
     lbl[TF_MONEY] = "MONEY"; siprintf(val[TF_MONEY], "$%lu", (unsigned long)money);
     lbl[TF_TIME]  = "TIME";  siprintf(val[TF_TIME],  "%uh %02um", (unsigned)ph, (unsigned)pm);
+    int nb = 0; for (int i = 0; i < 8; i++) if (pk_flag_get(sb1, game, pk_badge_flag(game, i))) nb++;
+    lbl[TF_BADGES] = "BADGE"; siprintf(val[TF_BADGES], "%d/8%s  (A edit)", nb,
+                                       game == PK_EMERALD ? " +frontier" : "");
     for (int i = 0; i < TF_NUM; i++) {
       int y = 14 + i * 9; bool s = edit && (i == sel);
       if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
@@ -120,6 +166,10 @@ void pkview_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame
         case TF_TIME:  ph = (uint16_t)num_entry("PLAY HOURS", ph, 999);
                        pm = (uint8_t)num_entry("PLAY MINUTES", pm, 59);
                        pk_set_playtime(sb2, ph, pm, 0); d2 = true; break;
+        case TF_BADGES: if (flag_set_editor(sb1, game,
+                              game == PK_EMERALD ? "BADGES + FRONTIER" : "BADGES",
+                              badge_or_frontier_flag, BADGEFRONT_LBL,
+                              game == PK_EMERALD ? 22 : 8)) d1 = true; break;   /* SB1 flags */
       }
     }
   }
