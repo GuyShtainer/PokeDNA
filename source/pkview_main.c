@@ -486,6 +486,11 @@ static bool app_commit_block(int sect_lo, int sect_hi, uint8_t* block) {
   return true;
 }
 
+/* Commit the trainer block (SaveBlock2 = section 0) / the money block (SaveBlock1
+ * = sections 1..4) after the trainer card edits g_sb2 / g_sb1 in place. */
+bool app_commit_sb2(void) { return app_commit_block(0, 0, g_sb2); }
+bool app_commit_sb1(void) { return app_commit_block(1, 4, g_sb1); }
+
 bool app_edit_commit(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block) {
   uint8_t out[100];
   if (!pkview_inspect(rec, is_party, true, out)) return false; /* viewed only / discarded */
@@ -538,7 +543,7 @@ static bool app_quick_moves(uint8_t* rec, bool is_party, int lo, int hi, uint8_t
 
 bool app_clip_occupied(void) { return g_clip.occupied; }
 
-static bool app_confirm(const char* title, const char* l1) {
+bool app_confirm(const char* title, const char* l1) {
   ui_clear();
   ui_panel(16, 44, 208, 74, UI_PANEL, UI_WARN);    /* framed destructive-confirm */
   ui_text(28, 54, UI_WARN, title);

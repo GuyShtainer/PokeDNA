@@ -30,6 +30,12 @@ uint32_t pk_game_stat(const uint8_t* sb1, const uint8_t* sb2, PkGame g, int stat
 int  pk_game_stat_count(PkGame g);                   /* RS 50, E/FRLG 64 */
 void pk_set_game_stat(uint8_t* sb1, const uint8_t* sb2, PkGame g, int stat, uint32_t value);
 void pk_set_money(uint8_t* sb1, const uint8_t* sb2, PkGame g, uint32_t money);
+
+/* SaveBlock2 trainer identity (plaintext). Commit via section 0. */
+void pk_set_trainer_name(uint8_t* sb2, const char* s);          /* <=7 ASCII chars */
+void pk_set_gender(uint8_t* sb2, uint8_t g);                    /* 0 male, 1 female */
+void pk_set_trainer_id(uint8_t* sb2, uint16_t tid, uint16_t sid);
+void pk_set_playtime(uint8_t* sb2, uint16_t h, uint8_t m, uint8_t s);
 const char* pk_game_stat_name(int stat);             /* generated (data_tables.c) */
 
 /* First Hall-of-Fame (Elite Four) clear time. Returns false if never entered. */

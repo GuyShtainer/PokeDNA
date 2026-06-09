@@ -1,7 +1,7 @@
 /* Host test for the flags / counters / item-bag data layer.
  *   cc -std=c11 -I source tests/host_data_test.c source/gen3_save.c source/gen3_mon.c \
  *      source/gen3_box.c source/gen3_trainer.c source/gen3_items.c source/gen3_flags.c \
- *      source/data_tables.c -o /tmp/hd
+ *      source/gen3_edit.c source/data_tables.c -o /tmp/hd
  *   /tmp/hd tests/fixtures/POKEMON_EMER_BPEE00.sav
  */
 #include <stdio.h>

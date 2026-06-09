@@ -1,4 +1,5 @@
 #include "gen3_trainer.h"
+#include "gen3_edit.h"     /* gen3_encode_char (Gen-3 string encoder) */
 
 static uint32_t rd32(const uint8_t* p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -37,6 +38,23 @@ void pk_set_game_stat(uint8_t* sb1, const uint8_t* sb2, PkGame g, int stat, uint
 void pk_set_money(uint8_t* sb1, const uint8_t* sb2, PkGame g, uint32_t money) {
   if (money > 999999) money = 999999;
   wr32(sb1 + money_off(g), money ^ sec_key(sb2, g));
+}
+
+/* ---- SaveBlock2 trainer identity setters (plaintext; not key-encrypted) ---- */
+static void wr16(uint8_t* p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+
+void pk_set_trainer_name(uint8_t* sb2, const char* s) {
+  int i = 0;
+  for (; i < 7 && s[i]; i++) sb2[i] = gen3_encode_char(s[i]);
+  for (; i < 8; i++) sb2[i] = 0xFF;          /* 0xFF = EOS + pad (Gen-3 name field) */
+}
+void pk_set_gender(uint8_t* sb2, uint8_t g) { sb2[0x08] = g ? 1 : 0; }
+void pk_set_trainer_id(uint8_t* sb2, uint16_t tid, uint16_t sid) {
+  wr16(sb2 + 0x0A, tid); wr16(sb2 + 0x0C, sid);   /* TID lo16, SID hi16 */
+}
+void pk_set_playtime(uint8_t* sb2, uint16_t h, uint8_t m, uint8_t s) {
+  if (h > 999) h = 999; if (m > 59) m = 59; if (s > 59) s = 59;
+  wr16(sb2 + 0x0E, h); sb2[0x10] = m; sb2[0x11] = s;
 }
 
 bool pk_hof_time(const uint8_t* sb1, const uint8_t* sb2, PkGame g,
