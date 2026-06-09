@@ -40,6 +40,12 @@ bool app_commit_sb2(void);
 bool app_commit_sb1(void);
 bool app_commit_pc(void);                 /* PC storage (sections 5..13): box name/wallpaper */
 
+/* Emerald "Walda" secret wallpaper: the graphic shown by box wallpaper 16. Pattern
+ * is 0..15 (sWaldaWallpapers index) in SaveBlock1. app_walda_pattern returns -1 on
+ * non-Emerald; app_set_walda edits g_sb1 in place (commit via app_commit_sb1). */
+int  app_walda_pattern(void);
+bool app_set_walda(uint8_t pattern);
+
 /* Shared framed yes/no confirm (A = yes, B = no). */
 bool app_confirm(const char* title, const char* l1);
 

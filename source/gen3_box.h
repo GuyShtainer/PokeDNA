@@ -16,6 +16,8 @@
 #define G3_TOTAL_BOXES   14
 #define G3_IN_BOX        30           /* 6 cols x 5 rows */
 #define G3_BOX_WALLPAPER_COUNT 16     /* 12 scenery + 4 special, ids 0..15 */
+#define G3_BOX_WALLPAPER_FRIENDS 16   /* Emerald "Walda"/secret slot (graphic from waldaPattern) */
+#define G3_WALDA_COUNT 16             /* sWaldaWallpapers[] entries */
 
 /* Reassemble PC storage into dst (>= G3_PC_BYTES). Returns bytes written, 0 on failure. */
 uint32_t gen3_read_pc_storage(const uint8_t* save, int slot, uint8_t* dst);
@@ -28,6 +30,10 @@ uint8_t  pk_box_wallpaper(const uint8_t* pc, int box);
  * Commit via sections 5..13 (the PC-storage block). */
 void     pk_set_box_name(uint8_t* pc, int box, const char* s);
 void     pk_set_box_wallpaper(uint8_t* pc, int box, uint8_t wp);
+
+/* Emerald "Walda" secret-wallpaper pattern (0..15) in SaveBlock1. EMERALD ONLY. */
+uint8_t  pk_walda_pattern(const uint8_t* sb1);
+void     pk_set_walda_pattern(uint8_t* sb1, uint8_t pattern);   /* also sets patternUnlocked */
 
 /* Decode all 30 slots of `box` into out[30]; empty slots get species 0. Box mons
  * are 80 bytes (no runtime stats) so level/stats are COMPUTED (pk_resolve).

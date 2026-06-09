@@ -495,6 +495,15 @@ bool app_commit_sb1(void) { return app_commit_block(1, 4, g_sb1); }
 bool app_commit_pc(void)  { return app_commit_block(G3_SID_PKMN_STORAGE_START,
                                                     G3_SID_PKMN_STORAGE_END, g_pc); }
 
+/* Emerald "Walda" secret-wallpaper pattern (the graphic shown by box wallpaper 16),
+ * stored in SaveBlock1. -1 / no-op on the other games. */
+int  app_walda_pattern(void) { return (g_game == PK_EMERALD) ? (int)pk_walda_pattern(g_sb1) : -1; }
+bool app_set_walda(uint8_t pattern) {
+  if (g_game != PK_EMERALD) return false;
+  pk_set_walda_pattern(g_sb1, pattern);
+  return true;
+}
+
 bool app_edit_commit(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block) {
   uint8_t out[100]; bool saved = false;
   pkview_inspect(rec, is_party, true, out, &saved);          /* party: nav ignored */

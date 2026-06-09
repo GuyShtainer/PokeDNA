@@ -41,8 +41,21 @@ void pk_set_box_name(uint8_t* pc, int box, const char* s) {
 }
 
 void pk_set_box_wallpaper(uint8_t* pc, int box, uint8_t wp) {
-  if (wp >= G3_BOX_WALLPAPER_COUNT) wp = G3_BOX_WALLPAPER_COUNT - 1;
+  if (wp > G3_BOX_WALLPAPER_FRIENDS) wp = G3_BOX_WALLPAPER_FRIENDS;
   pc[PC_OFF_WALLPAPER + box] = wp;
+}
+
+/* Emerald "Walda"/secret wallpaper config lives in SaveBlock1's WaldaPhrase
+ * struct (EMERALD ONLY): colors[2] @ +0, text[16] @ +4, iconId @ +20,
+ * patternId @ +21, patternUnlocked @ +22. A box whose wallpaper byte is
+ * G3_BOX_WALLPAPER_FRIENDS (16) shows sWaldaWallpapers[patternId]. Caller must
+ * gate on Emerald — the offset differs on R/S/FR/LG. */
+#define WALDA_OFF 0x3D70
+uint8_t pk_walda_pattern(const uint8_t* sb1) { return sb1[WALDA_OFF + 21] & 0x0F; }
+void pk_set_walda_pattern(uint8_t* sb1, uint8_t pattern) {
+  if (pattern > 15) pattern = 15;
+  sb1[WALDA_OFF + 21] = pattern;
+  sb1[WALDA_OFF + 22] = 1;                  /* patternUnlocked */
 }
 
 void pk_resolve(PkMon* m) {

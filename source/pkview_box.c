@@ -82,6 +82,21 @@ static const char* const WP_NAME[G3_BOX_WALLPAPER_COUNT] = {
   "Forest", "City", "Desert", "Savanna", "Crag", "Volcano", "Snow", "Cave",
   "Beach", "Seafloor", "River", "Sky", "Polkadot", "Pokecenter", "Machine", "Plain",
 };
+/* Emerald "Walda"/secret wallpapers (chooser ids 16..31). */
+static const char* const WALDA_NAME[G3_WALDA_COUNT] = {
+  "Zigzagoon", "Screen", "Horizontal", "Diagonal", "Block", "Ribbon", "Pokecenter2", "Frame",
+  "Blank", "Circles", "Azumarill", "Pikachu", "Legendary", "Dusclops", "Ludicolo", "Whiscash",
+};
+static const char* wp_name(int id) { return id < 16 ? WP_NAME[id] : WALDA_NAME[id - 16]; }
+
+/* Generated-wallpaper render id for a box: byte 0..15 = that wallpaper; byte 16
+ * (Friends) = 16 + the Emerald Walda pattern. */
+static int box_wp_render(const uint8_t* pc, int box) {
+  int b = pk_box_wallpaper(pc, box);
+  if (b < G3_BOX_WALLPAPER_FRIENDS) return b;
+  int wp = app_walda_pattern();          /* -1 on non-Emerald */
+  return (wp >= 0) ? G3_BOX_WALLPAPER_FRIENDS + wp : 0;
+}
 
 /* Draw box wallpaper `wp` into the region. Falls back to the procedural grass for
  * any wallpaper without a real generated bitmap (see wallpaper_bmp). */
@@ -249,7 +264,7 @@ static void render_full(const uint8_t* pc, int box, int cur, bool on_title, bool
   draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "CLOSE B", false);
   draw_left(on_title ? 0 : &g_box[cur]);
 
-  draw_wallpaper(pk_box_wallpaper(pc, box), WP_X, WP_Y, WP_W, WP_H);
+  draw_wallpaper(box_wp_render(pc, box), WP_X, WP_Y, WP_W, WP_H);
 
   char bn[12], bnocc[24];
   pk_box_name(pc, box, bn);
@@ -272,7 +287,7 @@ static void render_full(const uint8_t* pc, int box, int cur, bool on_title, bool
  * the left PKMN-DATA panel, so browsing the PC never re-renders the whole box. */
 static void move_cursor(const uint8_t* pc, int box, int old_cur, bool old_title,
                         int cur, bool on_title) {
-  int wp = pk_box_wallpaper(pc, box);
+  int wp = box_wp_render(pc, box);
   /* erase the old hand */
   if (old_title) {
     wallpaper_patch(wp, WP_X, WP_Y, WP_W, 16);          /* banner area top strip */
@@ -299,22 +314,24 @@ static void move_cursor(const uint8_t* pc, int box, int old_cur, bool old_title,
 }
 
 /* Wallpaper chooser: live-previews each wallpaper behind the box's icons.
- * LEFT/RIGHT cycles 0..15, A confirms (returns the id), B cancels (-1). */
+ * 16 standard ids, plus the 16 Emerald "Walda"/secret wallpapers (ids 16..31) when
+ * the save is Emerald. LEFT/RIGHT cycle, A confirms (returns the id), B cancels. */
 static int wallpaper_pick(const uint8_t* pc, int box, int cur_wp) {
-  int wp = cur_wp;
+  int count = (app_walda_pattern() >= 0) ? 32 : G3_BOX_WALLPAPER_COUNT;   /* Emerald = +Walda */
+  int wp = (cur_wp >= 0 && cur_wp < count) ? cur_wp : 0;
   for (;;) {
     ui_clear();
     draw_wallpaper(wp, WP_X, WP_Y, WP_W, WP_H);
     grid_icons();                                  /* the box's icons, for context */
-    char b[40]; siprintf(b, "%d/%d  %s", wp + 1, G3_BOX_WALLPAPER_COUNT, WP_NAME[wp]);
-    ui_panel(60, 0, 120, 13, UI_PANEL, UI_BORDER);
-    ui_text(66, 2, UI_TITLE, b);
+    char b[40]; siprintf(b, "%d/%d  %s%s", wp + 1, count, wp_name(wp), wp >= 16 ? " (secret)" : "");
+    ui_panel(50, 0, 140, 13, UI_PANEL, UI_BORDER);
+    ui_text(56, 2, UI_TITLE, b);
     ui_text(2, 152, RGB15(31, 31, 31), "L/R wallpaper   A set   B cancel");
     u16 k; do { s_vsync(); k = key_hit(KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B); } while (!k);
     if (k & KEY_B) { snd_back(); return -1; }
     if (k & KEY_A) { snd_ok(); return wp; }
-    if (k & (KEY_LEFT | KEY_L))  { snd_move(); wp = (wp > 0) ? wp - 1 : G3_BOX_WALLPAPER_COUNT - 1; }
-    if (k & (KEY_RIGHT | KEY_R)) { snd_move(); wp = (wp + 1) % G3_BOX_WALLPAPER_COUNT; }
+    if (k & (KEY_LEFT | KEY_L))  { snd_move(); wp = (wp > 0) ? wp - 1 : count - 1; }
+    if (k & (KEY_RIGHT | KEY_R)) { snd_move(); wp = (wp + 1) % count; }
   }
 }
 
@@ -349,8 +366,17 @@ static void box_options_menu(uint8_t* pc, int box) {
         }
         return;
       } else if (sel == 1) {                       /* wallpaper */
-        int wp = wallpaper_pick(pc, box, pk_box_wallpaper(pc, box));
-        if (wp >= 0) { pk_set_box_wallpaper(pc, box, (uint8_t)wp); app_commit_pc(); }
+        int wp = wallpaper_pick(pc, box, box_wp_render(pc, box));
+        if (wp >= 0) {
+          if (wp < G3_BOX_WALLPAPER_FRIENDS) {            /* standard wallpaper */
+            pk_set_box_wallpaper(pc, box, (uint8_t)wp);
+            app_commit_pc();
+          } else {                                        /* Emerald Walda secret wallpaper */
+            pk_set_box_wallpaper(pc, box, G3_BOX_WALLPAPER_FRIENDS);
+            app_set_walda((uint8_t)(wp - G3_BOX_WALLPAPER_FRIENDS));
+            if (app_commit_pc()) app_commit_sb1();        /* box byte + the Walda config */
+          }
+        }
         return;
       } else return;                               /* cancel */
     }
