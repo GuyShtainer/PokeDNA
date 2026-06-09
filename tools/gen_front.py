@@ -78,13 +78,24 @@ def lz77(raw, tmp_in, tmp_out):
 
 def main():
     spmap = species_map()
+    UNOWN_ID = spmap.get("UNOWN")
     off_n = [0xFFFFFFFF] * (MAX_INTERNAL + 1)
     off_s = [0xFFFFFFFF] * (MAX_INTERNAL + 1)
+    uform_n = [0xFFFFFFFF] * 28          # Unown letters A..? (forms 0..27)
+    uform_s = [0xFFFFFFFF] * 28
     normal = bytearray()
     shiny = bytearray()
     td = tempfile.mkdtemp()
     ti, to = os.path.join(td, "i.bin"), os.path.join(td, "o.bin")
     count = 0
+
+    def add(fn):                          # compress one sprite (normal+shiny) -> (off_n, off_s)
+        nraw = conv(os.path.join(FRONT, fn))
+        spath = os.path.join(SHINY, fn)
+        sraw = conv(spath) if os.path.exists(spath) else nraw
+        on = len(normal); normal.extend(lz77(nraw, ti, to))
+        os_ = len(shiny); shiny.extend(lz77(sraw, ti, to))
+        return on, os_
 
     for fn in sorted(os.listdir(FRONT)):
         if not fn.lower().endswith(".png"):
@@ -93,13 +104,19 @@ def main():
         if stem == "000":
             continue
         intl = spmap.get(norm(re.sub(r"_\d+$", "", stem)))
+        if intl == UNOWN_ID and UNOWN_ID is not None:        # Unown form sprite (one per letter)
+            mf = re.search(r"_(\d+)$", stem)
+            form = int(mf.group(1)) if mf else 0
+            if not (0 <= form < 28) or uform_n[form] != 0xFFFFFFFF:
+                continue
+            uform_n[form], uform_s[form] = add(fn)
+            if form == 0:                                    # letter A = the default Unown sprite
+                off_n[UNOWN_ID], off_s[UNOWN_ID] = uform_n[0], uform_s[0]
+            count += 1
+            continue
         if intl is None or intl > MAX_INTERNAL or off_n[intl] != 0xFFFFFFFF:
             continue
-        nraw = conv(os.path.join(FRONT, fn))
-        spath = os.path.join(SHINY, fn)
-        sraw = conv(spath) if os.path.exists(spath) else nraw
-        off_n[intl] = len(normal); normal += lz77(nraw, ti, to)
-        off_s[intl] = len(shiny);  shiny += lz77(sraw, ti, to)
+        off_n[intl], off_s[intl] = add(fn)
         count += 1
 
     os.makedirs(os.path.dirname(OUT_BIN), exist_ok=True)
@@ -137,6 +154,19 @@ def main():
         c.write("  const void* src = (shiny ? mon_front_shiny_blob : mon_front_blob) + o;\n")
         c.write("  LZ77UnCompWram(src, s_decomp);\n")
         c.write("  return s_decomp;\n")
+        c.write("}\n\n")
+        c.write("static const uint32_t uform_n[28] = {%s};\n" % ",".join("0x%08x" % v for v in uform_n))
+        c.write("static const uint32_t uform_s[28] = {%s};\n" % ",".join("0x%08x" % v for v in uform_s))
+        c.write("const uint16_t* mon_front_for_form(uint16_t species, bool shiny, uint8_t form) {\n")
+        c.write("  if (species == 201 && form < 28) {            /* Unown letter A..? */\n")
+        c.write("    uint32_t o = (shiny ? uform_s : uform_n)[form];\n")
+        c.write("    if (o == 0xFFFFFFFFu) o = (shiny ? uform_s : uform_n)[0];\n")
+        c.write("    if (o == 0xFFFFFFFFu) return 0;\n")
+        c.write("    const void* src = (shiny ? mon_front_shiny_blob : mon_front_blob) + o;\n")
+        c.write("    LZ77UnCompWram(src, s_decomp);\n")
+        c.write("    return s_decomp;\n")
+        c.write("  }\n")
+        c.write("  return mon_front_for(species, shiny);\n")
         c.write("}\n")
 
     print("front sprites: %d species, normal %.2f MiB + shiny %.2f MiB = %.2f MiB ROM (LZ77 %dx%d)"

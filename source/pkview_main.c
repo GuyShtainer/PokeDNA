@@ -756,7 +756,7 @@ static int party_list(void) {
       int y = 16 + i * 22;
       PkMon* p = &g_party[i];
       if (i == sel) ui_panel(2, y - 2, 236, 20, UI_SEL, UI_TITLE);
-      ui_icon_sub(6, y, mon_icon_for(p->species));   /* 16x16 from the 32x32 icon */
+      ui_icon_sub(6, y, mon_icon_for_form(p->species, p->form));   /* 16x16 from the 32x32 icon */
       char nm[16];
       ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);
       siprintf(line, "%-11s Lv%u", nm, (unsigned)p->level);
@@ -883,7 +883,7 @@ static bool bank_screen(void) {
     }
     for (int i = 0; i < 30; i++) {
       int x = 18 + (i % 6) * 34, y = 20 + (i / 6) * 24;
-      if (g_bank_mon[i].species) ui_icon_scaled(x, y, 24, 24, mon_icon_for(g_bank_mon[i].species));
+      if (g_bank_mon[i].species) ui_icon_scaled(x, y, 24, 24, mon_icon_for_form(g_bank_mon[i].species, g_bank_mon[i].form));
       if (i == cur && on) m3_frame(x - 1, y - 1, x + 24, y + 24, UI_SELTEXT);
     }
     if (on) {

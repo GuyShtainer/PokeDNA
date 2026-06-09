@@ -18,4 +18,8 @@
 /* Front sprite for an internal species id (normal or shiny), or NULL if none. */
 const uint16_t* mon_front_for(uint16_t species, bool shiny);
 
+/* Like mon_front_for, but picks the Unown letter sprite for species 201 using
+ * `form` (0..27 = A..?); for every other species `form` is ignored. */
+const uint16_t* mon_front_for_form(uint16_t species, bool shiny, uint8_t form);
+
 #endif /* MON_FRONT_INCLUDED */

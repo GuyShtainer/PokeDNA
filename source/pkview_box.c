@@ -138,9 +138,9 @@ static void draw_left(const PkMon* p) {
   m3_frame(4, 14, 71, 81, UI_BORDER);
   if (!p || p->species == 0) { ui_text(16, 92, UI_DIM, "(empty)"); return; }
 
-  const uint16_t* spr = mon_front_for(p->species, p->isShiny);
+  const uint16_t* spr = mon_front_for_form(p->species, p->isShiny, p->form);
   if (spr) ui_sprite(6, 16, MON_FRONT_W, MON_FRONT_H, spr);
-  else     ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_for(p->species));
+  else     ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
 
   char buf[40];
   siprintf(buf, "No.%u", (unsigned)pk_national_no(p->species));
@@ -224,7 +224,7 @@ static void hand_xy(int cur, int* hx, int* hy) {
 static void grid_icons(void) {
   for (int s = 0; s < 30; s++)
     if (g_box[s].species)
-      blit_icon(GRID_X + (s % COLS) * CELL_W, GRID_Y + (s / COLS) * CELL_H, mon_icon_for(g_box[s].species));
+      blit_icon(GRID_X + (s % COLS) * CELL_W, GRID_Y + (s / COLS) * CELL_H, mon_icon_for_form(g_box[s].species, g_box[s].form));
 }
 
 static void draw_footer(bool on_title, bool moving) {
@@ -289,7 +289,7 @@ static void move_cursor(const uint8_t* pc, int box, int old_cur, bool old_title,
       int ix = GRID_X + (s % COLS) * CELL_W, iy = GRID_Y + (s / COLS) * CELL_H;
       if (ix < hx + HAND_W + 2 && ix + MON_ICON_W > hx - 1 &&
           iy < hy + HAND_H + 2 && iy + MON_ICON_H > hy - 1)
-        blit_icon(ix, iy, mon_icon_for(g_box[s].species));
+        blit_icon(ix, iy, mon_icon_for_form(g_box[s].species, g_box[s].form));
     }
   }
   if (on_title) m3_frame(WP_X, 12, WP_X + WP_W - 1, 27, UI_SELTEXT);

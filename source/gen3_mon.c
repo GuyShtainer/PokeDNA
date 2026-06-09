@@ -30,6 +30,13 @@ static void decode_name(char* out, const uint8_t* src, int maxlen) {
 
 uint8_t pk_nature(uint32_t personality) { return (uint8_t)(personality % 25); }
 
+/* Unown letter index 0..27 (A..Z, !, ?) — 2 bits from each PID byte, mod 28. */
+uint8_t pk_unown_form(uint32_t personality) {
+  uint32_t v = ((personality & 0x03000000u) >> 18) | ((personality & 0x00030000u) >> 12)
+             | ((personality & 0x00000300u) >> 6)  | (personality & 0x00000003u);
+  return (uint8_t)(v % 28u);
+}
+
 bool pk_is_shiny(uint32_t personality, uint16_t tid, uint16_t sid) {
   uint16_t lo = (uint16_t)(personality & 0xFFFF);
   uint16_t hi = (uint16_t)(personality >> 16);
@@ -102,6 +109,7 @@ bool pk_decode_mon(const uint8_t* mon, bool is_party, PkMon* out) {
   if (!checksum_ok) out->isBadEgg = true;
 
   out->species     = sp;
+  out->form        = (sp == 201) ? pk_unown_form(pers) : 0;   /* Unown letter (A..?) */
   out->heldItem    = rd16(g + 0x02);
   out->experience  = rd32(g + 0x04);
   out->ppBonuses   = g[0x08];

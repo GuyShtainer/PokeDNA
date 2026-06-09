@@ -76,9 +76,9 @@ static const char* gender_str(uint8_t g) { return g == 0 ? " M" : g == 1 ? " F" 
 
 static void draw_left(const PkMon* p) {
   ui_panel(0, 11, 92, 139, UI_PANEL, UI_BORDER);
-  const uint16_t* spr = mon_front_for(p->species, p->isShiny);
+  const uint16_t* spr = mon_front_for_form(p->species, p->isShiny, p->form);
   if (spr) ui_sprite(14, 14, MON_FRONT_W, MON_FRONT_H, spr);
-  else     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for(p->species));
+  else     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
 
   char buf[40];
   siprintf(buf, "No.%u", (unsigned)pk_national_no(p->species));
