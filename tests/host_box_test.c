@@ -1,7 +1,7 @@
 /* Host test for PC box reading. Reassembles PC storage, decodes a couple of
  * boxes, and prints species/computed-level for occupied slots.
- *   cc -std=c11 -I source tests/host_box_test.c source/gen3_save.c \
- *      source/gen3_mon.c source/gen3_box.c source/data_tables.c -o /tmp/hb
+ *   cc -std=c11 -I source tests/host_box_test.c source/gen3_save.c source/gen3_mon.c \
+ *      source/gen3_box.c source/gen3_edit.c source/data_tables.c -o /tmp/hb
  *   /tmp/hb tests/fixtures/POKEMON_EMER_BPEE00.sav
  */
 #include <stdio.h>

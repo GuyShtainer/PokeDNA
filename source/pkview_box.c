@@ -20,6 +20,7 @@
 #include "pkview_summary.h"
 #include "pkview_app.h"
 #include "snd.h"
+#include "osk.h"
 
 #define COLS 6
 #define ROWS 5
@@ -67,6 +68,15 @@ static void draw_grass(int x, int y, int w, int h) {
     for (int i = off; i + 4 < w; i += 16) draw_leaf(x + i + 2, y + j + 3, dk, lt);
   }
 }
+
+static const char* const WP_NAME[G3_BOX_WALLPAPER_COUNT] = {
+  "Forest", "City", "Desert", "Savanna", "Crag", "Volcano", "Snow", "Cave",
+  "Beach", "Seafloor", "River", "Sky", "Polkadot", "Pokecenter", "Machine", "Plain",
+};
+
+/* Draw box wallpaper `wp` into the region. Falls back to the procedural grass for
+ * any wallpaper without a real generated bitmap (see wallpaper_bmp). */
+static void draw_wallpaper(int wp, int x, int y, int w, int h);
 
 /* light checkerboard behind the front sprite (the PKMN DATA "monitor") */
 static void draw_checker(int x, int y, int w, int h, u16 a, u16 b) {
@@ -141,7 +151,22 @@ static void draw_left(const PkMon* p) {
   ui_text(4, 139, UI_TEXT, it);
 }
 
-static void render(const uint8_t* pc, int box, int cur) {
+/* Box wallpaper: blit the real generated bitmap for `wp` if present, else fall
+ * back to the procedural grass. The strong wallpaper_bmp() is provided by the
+ * generated wallpapers.c (git-ignored); this weak fallback returns NULL so the
+ * build works before the bitmaps are generated. */
+__attribute__((weak)) const uint16_t* wallpaper_bmp(int wp) { (void)wp; return 0; }
+
+static void draw_wallpaper(int wp, int x, int y, int w, int h) {
+  const uint16_t* bmp = wallpaper_bmp(wp);
+  if (!bmp) { draw_grass(x, y, w, h); return; }
+  /* generated bitmaps are 160x144; the box region is 162x141 — center + clip */
+  for (int j = 0; j < h && j < 144; j++)
+    for (int i = 0; i < w && i < 160; i++)
+      m3_plot(x + i, y + j, bmp[j * 160 + i] & 0x7FFF);
+}
+
+static void render(const uint8_t* pc, int box, int cur, bool on_title) {
   ui_clear();
 
   /* top tab bar: PKMN DATA (active) | PARTY | CLOSE */
@@ -149,10 +174,11 @@ static void render(const uint8_t* pc, int box, int cur) {
   draw_tab(PANEL_W + 1, 92, "PARTY SEL", false);     /* label the trigger key */
   draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "CLOSE B", false);
 
-  draw_left(&g_box[cur]);
+  draw_left(on_title ? 0 : &g_box[cur]);
 
-  /* grass wallpaper behind the banner + grid */
-  draw_grass(WP_X, WP_Y, WP_W, WP_H);
+  /* the box's real wallpaper (or procedural grass) behind the banner + grid */
+  int wp = pk_box_wallpaper(pc, box);
+  draw_wallpaper(wp, WP_X, WP_Y, WP_W, WP_H);
 
   char bn[12], bnocc[24];
   pk_box_name(pc, box, bn);
@@ -160,6 +186,7 @@ static void render(const uint8_t* pc, int box, int cur) {
   for (int s = 0; s < 30; s++) if (g_box[s].species) occ++;
   siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);   /* occupancy in the banner */
   draw_banner(WP_X + 2, 13, WP_W - 4, bnocc);
+  if (on_title) m3_frame(WP_X, 12, WP_X + WP_W - 1, 27, UI_SELTEXT);   /* highlight title */
 
   /* 32x32 icon grid (tightly packed, like the game) */
   for (int r = 0; r < ROWS; r++) {
@@ -170,24 +197,92 @@ static void render(const uint8_t* pc, int box, int cur) {
     }
   }
 
-  /* white Gen-3 hand floats just above the selected mon; clamp so the top row
-   * doesn't poke into the banner. */
-  int hx = GRID_X + (cur % COLS) * CELL_W + 3;
-  int hy = GRID_Y + (cur / COLS) * CELL_H - 16;
-  if (hy < 28) hy = 28;
-  draw_hand(hx, hy);
+  /* white Gen-3 hand: on the banner when the title is selected, else above the
+   * selected mon (clamped so the top row doesn't poke into the banner). */
+  if (on_title) {
+    draw_hand(WP_X + WP_W / 2 - 4, 14);
+    ui_text(WP_X + 2, 152, RGB15(31, 31, 31), "A rename/wallpaper  DOWN grid  L/R box  B close");
+  } else {
+    int hx = GRID_X + (cur % COLS) * CELL_W + 3;
+    int hy = GRID_Y + (cur / COLS) * CELL_H - 16;
+    if (hy < 28) hy = 28;
+    draw_hand(hx, hy);
+    ui_text(WP_X + 2, 152, RGB15(31, 31, 31), "A menu  UP title  SEL party  L/R box  B close");
+  }
+}
 
-  ui_text(WP_X + 2, 152, RGB15(31, 31, 31), "A menu  SEL party  L/R box  ST card  B close");
+/* Wallpaper chooser: live-previews each wallpaper behind the box's icons.
+ * LEFT/RIGHT cycles 0..15, A confirms (returns the id), B cancels (-1). */
+static int wallpaper_pick(const uint8_t* pc, int box, int cur_wp) {
+  int wp = cur_wp;
+  for (;;) {
+    ui_clear();
+    draw_wallpaper(wp, WP_X, WP_Y, WP_W, WP_H);
+    for (int s = 0; s < 30; s++) {                 /* the box's icons, for context */
+      if (!g_box[s].species) continue;
+      int x = GRID_X + (s % COLS) * CELL_W, y = GRID_Y + (s / COLS) * CELL_H;
+      ui_sprite(x, y, MON_ICON_W, MON_ICON_H, mon_icon_for(g_box[s].species));
+    }
+    char b[40]; siprintf(b, "%d/%d  %s", wp + 1, G3_BOX_WALLPAPER_COUNT, WP_NAME[wp]);
+    ui_panel(60, 0, 120, 13, UI_PANEL, UI_BORDER);
+    ui_text(66, 2, UI_TITLE, b);
+    ui_text(2, 152, RGB15(31, 31, 31), "L/R wallpaper   A set   B cancel");
+    u16 k; do { s_vsync(); k = key_hit(KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B); } while (!k);
+    if (k & KEY_B) { snd_back(); return -1; }
+    if (k & KEY_A) { snd_ok(); return wp; }
+    if (k & (KEY_LEFT | KEY_L))  { snd_move(); wp = (wp > 0) ? wp - 1 : G3_BOX_WALLPAPER_COUNT - 1; }
+    if (k & (KEY_RIGHT | KEY_R)) { snd_move(); wp = (wp + 1) % G3_BOX_WALLPAPER_COUNT; }
+  }
+}
+
+/* Overlay menu when the box TITLE is selected: rename / change wallpaper. Each
+ * edit writes PC storage and commits via the verified-write path. */
+static void box_options_menu(uint8_t* pc, int box) {
+  static const char* const OPT[3] = { "Rename box", "Wallpaper", "Cancel" };
+  int sel = 0;
+  for (;;) {
+    const int mx = 70, my = 54, mw = 100, mh = 18 + 3 * 14 + 11;
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, "BOX");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < 3; i++) {
+      int y = my + 18 + i * 14; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, OPT[i]);
+    }
+    ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
+    u16 k; do { s_vsync(); k = key_hit(KEY_UP | KEY_DOWN | KEY_A | KEY_B); } while (!k);
+    if (k & KEY_B) { snd_back(); return; }
+    else if (k & KEY_UP)   { snd_move(); sel = (sel > 0) ? sel - 1 : 2; }
+    else if (k & KEY_DOWN) { snd_move(); sel = (sel + 1) % 3; }
+    else if (k & KEY_A) {
+      snd_ok();
+      if (sel == 0) {                              /* rename */
+        char cur[12]; pk_box_name(pc, box, cur);
+        char buf[12];
+        if (osk_input("BOX NAME", cur[0] ? cur : "BOX", buf, 9)) {
+          pk_set_box_name(pc, box, buf);
+          app_commit_pc();
+        }
+        return;
+      } else if (sel == 1) {                       /* wallpaper */
+        int wp = wallpaper_pick(pc, box, pk_box_wallpaper(pc, box));
+        if (wp >= 0) { pk_set_box_wallpaper(pc, box, (uint8_t)wp); app_commit_pc(); }
+        return;
+      } else return;                               /* cancel */
+    }
+  }
 }
 
 int pkview_box(uint8_t* pc) {
   int box = pk_current_box(pc);
   if (box < 0 || box >= G3_TOTAL_BOXES) box = 0;
   int cur = 0;
+  bool on_title = false;
   pk_read_box(pc, box, g_box);
 
   for (;;) {
-    render(pc, box, cur);
+    render(pc, box, cur, on_title);
     u16 k, fresh;
     do { s_vsync(); fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
@@ -198,13 +293,20 @@ int pkview_box(uint8_t* pc) {
     else if (fresh & KEY_B)                                      snd_back();
 
     if (k & KEY_B) return 0;
-    else if (k & KEY_SELECT) return 1;
     else if (k & KEY_START) return 2;
     else if (k & KEY_L) { box = (box + G3_TOTAL_BOXES - 1) % G3_TOTAL_BOXES; pk_read_box(pc, box, g_box); cur = 0; }
     else if (k & KEY_R) { box = (box + 1) % G3_TOTAL_BOXES; pk_read_box(pc, box, g_box); cur = 0; }
+    else if (on_title) {                           /* TITLE row: limited controls */
+      if (k & KEY_DOWN) on_title = false;
+      else if (k & KEY_A) {
+        if (app_can_edit()) box_options_menu(pc, box);
+        else { snd_deny(); }
+      }
+    }
+    else if (k & KEY_SELECT) return 1;
     else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
     else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
-    else if (k & KEY_UP)    cur = (cur < COLS) ? cur + COLS * (ROWS - 1) : cur - COLS;
+    else if (k & KEY_UP)    { if (cur < COLS) on_title = true; else cur -= COLS; }
     else if (k & KEY_DOWN)  cur = (cur >= COLS * (ROWS - 1)) ? cur - COLS * (ROWS - 1) : cur + COLS;
     else if (k & KEY_A) {
       /* open the action menu on an occupied slot, OR on an empty slot when the

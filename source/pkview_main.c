@@ -490,6 +490,8 @@ static bool app_commit_block(int sect_lo, int sect_hi, uint8_t* block) {
  * = sections 1..4) after the trainer card edits g_sb2 / g_sb1 in place. */
 bool app_commit_sb2(void) { return app_commit_block(0, 0, g_sb2); }
 bool app_commit_sb1(void) { return app_commit_block(1, 4, g_sb1); }
+bool app_commit_pc(void)  { return app_commit_block(G3_SID_PKMN_STORAGE_START,
+                                                    G3_SID_PKMN_STORAGE_END, g_pc); }
 
 bool app_edit_commit(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block) {
   uint8_t out[100];

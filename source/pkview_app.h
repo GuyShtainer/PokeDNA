@@ -34,6 +34,7 @@ bool app_clip_occupied(void);
  * Returns true iff a write happened. Used by the editable trainer card. */
 bool app_commit_sb2(void);
 bool app_commit_sb1(void);
+bool app_commit_pc(void);                 /* PC storage (sections 5..13): box name/wallpaper */
 
 /* Shared framed yes/no confirm (A = yes, B = no). */
 bool app_confirm(const char* title, const char* l1);

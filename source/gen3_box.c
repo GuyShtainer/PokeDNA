@@ -31,6 +31,20 @@ void pk_box_name(const uint8_t* pc, int box, char out[12]) {
 
 uint8_t pk_box_wallpaper(const uint8_t* pc, int box) { return pc[PC_OFF_WALLPAPER + box]; }
 
+uint8_t gen3_encode_char(char c);   /* from gen3_edit.c (Gen-3 string encoder) */
+
+void pk_set_box_name(uint8_t* pc, int box, const char* s) {
+  uint8_t* dst = pc + PC_OFF_NAMES + (uint32_t)box * 9;
+  int i = 0;
+  for (; i < 8 && s[i]; i++) dst[i] = gen3_encode_char(s[i]);
+  for (; i < 9; i++) dst[i] = 0xFF;     /* 0xFF = EOS + pad (box-name field is 9 bytes) */
+}
+
+void pk_set_box_wallpaper(uint8_t* pc, int box, uint8_t wp) {
+  if (wp >= G3_BOX_WALLPAPER_COUNT) wp = G3_BOX_WALLPAPER_COUNT - 1;
+  pc[PC_OFF_WALLPAPER + box] = wp;
+}
+
 void pk_resolve(PkMon* m) {
   if (m->species == 0) return;
   m->gender = pk_gender_from(m->personality, pk_species_gender_ratio(m->species));
