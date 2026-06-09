@@ -151,19 +151,27 @@ static void draw_left(const PkMon* p) {
   ui_text(4, 139, UI_TEXT, it);
 }
 
-/* Box wallpaper: blit the real generated bitmap for `wp` if present, else fall
- * back to the procedural grass. The strong wallpaper_bmp() is provided by the
- * generated wallpapers.c (git-ignored); this weak fallback returns NULL so the
- * build works before the bitmaps are generated. */
-__attribute__((weak)) const uint16_t* wallpaper_bmp(int wp) { (void)wp; return 0; }
+/* Box wallpaper: blit the real wallpaper for `wp` (deduped 8x8 RGB15 tiles +
+ * a 20x18 tilemap) if present, else fall back to the procedural grass. The strong
+ * accessors come from the generated wallpapers.c (git-ignored); these weak
+ * fallbacks return NULL so the build works before the wallpapers are generated. */
+const uint16_t* wallpaper_tile_data(int wp, int* ntiles);
+const uint16_t* wallpaper_tilemap(int wp);
+__attribute__((weak)) const uint16_t* wallpaper_tile_data(int wp, int* n) { (void)wp; if (n) *n = 0; return 0; }
+__attribute__((weak)) const uint16_t* wallpaper_tilemap(int wp) { (void)wp; return 0; }
 
 static void draw_wallpaper(int wp, int x, int y, int w, int h) {
-  const uint16_t* bmp = wallpaper_bmp(wp);
-  if (!bmp) { draw_grass(x, y, w, h); return; }
-  /* generated bitmaps are 160x144; the box region is 162x141 — center + clip */
-  for (int j = 0; j < h && j < 144; j++)
-    for (int i = 0; i < w && i < 160; i++)
-      m3_plot(x + i, y + j, bmp[j * 160 + i] & 0x7FFF);
+  int nt; const uint16_t* tiles = wallpaper_tile_data(wp, &nt);
+  const uint16_t* map = wallpaper_tilemap(wp);
+  if (!tiles || !map) { draw_grass(x, y, w, h); return; }
+  for (int ty = 0; ty < 18; ty++)
+    for (int tx = 0; tx < 20; tx++) {
+      const uint16_t* t = tiles + (uint32_t)map[ty * 20 + tx] * 64;
+      int bx = x + tx * 8, by = y + ty * 8;
+      for (int j = 0; j < 8 && by + j < y + h; j++)
+        for (int i = 0; i < 8 && bx + i < x + w; i++)
+          m3_plot(bx + i, by + j, t[j * 8 + i] & 0x7FFF);
+    }
 }
 
 static void render(const uint8_t* pc, int box, int cur, bool on_title) {
