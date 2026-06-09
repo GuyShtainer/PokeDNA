@@ -19,6 +19,7 @@
 #include "hand_cursor.h"
 #include "pkview_summary.h"
 #include "pkview_app.h"
+#include "snd.h"
 
 #define COLS 6
 #define ROWS 5
@@ -43,7 +44,7 @@ static void draw_hand(int x, int y) {
 
 static PkMon EWRAM_BSS g_box[30];
 
-static void s_vsync(void) { VBlankIntrWait(); key_poll(); }
+static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
 /* ---- procedural Emerald-PC chrome (colors decoded from the real wallpapers) ---- */
 
@@ -145,19 +146,20 @@ static void render(const uint8_t* pc, int box, int cur) {
 
   /* top tab bar: PKMN DATA (active) | PARTY | CLOSE */
   draw_tab(0, PANEL_W + 1, "PKMN DATA", true);
-  draw_tab(PANEL_W + 1, 92, "PARTY", false);
-  draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "CLOSE", false);
+  draw_tab(PANEL_W + 1, 92, "PARTY SEL", false);     /* label the trigger key */
+  draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "CLOSE B", false);
 
   draw_left(&g_box[cur]);
 
   /* grass wallpaper behind the banner + grid */
   draw_grass(WP_X, WP_Y, WP_W, WP_H);
 
-  char bn[12];
+  char bn[12], bnocc[24];
   pk_box_name(pc, box, bn);
   int occ = 0;
   for (int s = 0; s < 30; s++) if (g_box[s].species) occ++;
-  draw_banner(WP_X + 2, 13, WP_W - 4, bn[0] ? bn : "BOX");
+  siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);   /* occupancy in the banner */
+  draw_banner(WP_X + 2, 13, WP_W - 4, bnocc);
 
   /* 32x32 icon grid (tightly packed, like the game) */
   for (int r = 0; r < ROWS; r++) {
@@ -175,8 +177,7 @@ static void render(const uint8_t* pc, int box, int cur) {
   if (hy < 28) hy = 28;
   draw_hand(hx, hy);
 
-  char hl[40]; siprintf(hl, "A:menu L/R:box ST:card  %d/30", occ);
-  ui_text(WP_X + 2, 152, RGB15(31, 31, 31), hl);
+  ui_text(WP_X + 2, 152, RGB15(31, 31, 31), "A menu  SEL party  L/R box  ST card  B close");
 }
 
 int pkview_box(uint8_t* pc) {
@@ -187,8 +188,14 @@ int pkview_box(uint8_t* pc) {
 
   for (;;) {
     render(pc, box, cur);
-    u16 k;
-    do { s_vsync(); k = key_hit(KEY_FULL) | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
+    u16 k, fresh;
+    do { s_vsync(); fresh = key_hit(KEY_FULL);
+         k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
+    /* fresh-press earcons (held d-pad repeats stay silent) */
+    if      (fresh & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) snd_move();
+    else if (fresh & (KEY_L | KEY_R | KEY_SELECT))               snd_tab();
+    else if (fresh & (KEY_A | KEY_START))                        snd_ok();
+    else if (fresh & KEY_B)                                      snd_back();
 
     if (k & KEY_B) return 0;
     else if (k & KEY_SELECT) return 1;

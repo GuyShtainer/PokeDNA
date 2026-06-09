@@ -19,6 +19,7 @@
 #include "mon_front.h"
 #include "mon_icons.h"
 #include "type_icons.h"
+#include "snd.h"
 
 #define NCARDS 6
 
@@ -29,14 +30,14 @@ static void type_badge(int x, int y, uint8_t t) {
 
 static const int   DISP[6]   = { PK_HP, PK_ATK, PK_DEF, PK_SPA, PK_SPD, PK_SPE };
 static const char* DLAB[6]   = { "HP", "Attack", "Defense", "Sp.Atk", "Sp.Def", "Speed" };
-static const char* DSHORT[6] = { "HP", "Atk", "Def", "SpA", "SpD", "Spe" };
+static const char* DSHORT[6] = { "HP", "Atk", "Def", "SpA", "SpD", "Spd" };
 
 #define C_HDR  UI_TITLE
 #define C_KEY  UI_DIRCLR
 #define C_VAL  UI_TEXT
 #define C_HOT  UI_WARN
 
-static void s_vsync(void) { VBlankIntrWait(); key_poll(); }
+static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
 /* ---- editable-field slot registry (filled during render in edit mode) ---- */
 static int g_edit = 0, g_nslot = 0;
@@ -107,7 +108,7 @@ static void card_info(const PkMon* p) {
 
   ui_text(x, y, C_KEY, "OT"); reg(F_OT, x + 48, y, 52);
   ui_text(x + 48, y, C_VAL, p->otName);
-  siprintf(b, "ID%05u", (unsigned)(p->otId & 0xFFFF)); ui_text(x + 104, y, UI_DIM, b); y += 9;
+  siprintf(b, "TID %05u", (unsigned)(p->otId & 0xFFFF)); ui_text(x + 104, y, UI_DIM, b); y += 9;
 
   uint8_t t1 = pk_species_type1(p->species), t2 = pk_species_type2(p->species);
   ui_text(x, y, C_KEY, "Type");
@@ -125,7 +126,7 @@ static void card_info(const PkMon* p) {
 
   ui_text(x, y, C_KEY, "Shiny"); reg(F_SHINY, x + 48, y, 26);
   ui_text(x + 48, y, p->isShiny ? UI_OK : C_VAL, p->isShiny ? "Yes" : "No");
-  ui_text(x + 80, y, C_KEY, "Gen"); reg(F_GENDER, x + 108, y, 22);
+  ui_text(x + 80, y, C_KEY, "Sex"); reg(F_GENDER, x + 108, y, 22);
   ui_text(x + 108, y, C_VAL, p->gender == 0 ? "M" : p->gender == 1 ? "F" : "-"); y += 10;
 
   siprintf(b, "Met Lv%u %s", (unsigned)p->metLevel, pk_location_name(p->metLocation));
@@ -204,7 +205,8 @@ static void card_moves(const PkMon* p, bool contest) {
 static void render_card(const PkMon* p, int card) {
   ui_clear();
   g_nslot = 0;
-  ui_text(4, 2, UI_DIM, g_edit ? "EDIT" : "VIEW");
+  if (g_edit) { ui_fill_rect(0, 0, 50, 9, UI_WARN); ui_text(8, 1, UI_PANEL, "EDIT"); } /* unmissable */
+  else        ui_text(4, 2, UI_DIM, "VIEW");
   draw_dots(150, 2, NCARDS, card);
   ui_hline(0, 10, UI_SCR_W, UI_BORDER);
   draw_left(p);
@@ -220,11 +222,14 @@ static void render_card(const PkMon* p, int card) {
 
 static bool confirm(void) {
   ui_clear();
-  ui_text(20, 50, UI_TITLE, "Save changes?");
-  ui_text(20, 70, UI_TEXT, "A = write  (backup made first)");
-  ui_text(20, 82, UI_WARN, "B = discard");
+  ui_panel(16, 44, 208, 60, UI_PANEL, UI_WARN);
+  ui_text(28, 52, UI_TITLE, "Save changes?");
+  ui_text(28, 72, UI_TEXT, "A = write  (backup made first)");
+  ui_text(28, 86, UI_DIM,  "B = discard");
   u16 k; do { s_vsync(); k = key_hit(KEY_A | KEY_B); } while (!k);
-  return (k & KEY_A) != 0;
+  bool yes = (k & KEY_A) != 0;
+  if (yes) snd_ok(); else snd_back();
+  return yes;
 }
 
 bool pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec) {
@@ -246,10 +251,16 @@ bool pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec
       m3_frame(sx - 2, sy - 1, sx + sw, sy + UI_ROW_H, UI_SELTEXT);
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, can_edit ? "U/D field  A/<> edit  L/R card  B" : "L/R card  B back");
+    ui_text(4, 152, UI_DIM, can_edit ? "U/D field  A list  <> +/-  L/R card  B" : "L/R card  B back");
 
-    u16 k;
-    do { s_vsync(); k = key_hit(KEY_FULL) | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
+    u16 k, fresh;
+    do { s_vsync(); fresh = key_hit(KEY_FULL);
+         k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
+    if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
+    else if (fresh & (KEY_L | KEY_R))     snd_tab();
+    else if (fresh & KEY_A)               snd_ok();
+    else if (fresh & (KEY_LEFT | KEY_RIGHT)) { if (can_edit) snd_edit(); }
+    else if (fresh & KEY_B)               snd_back();
 
     if (k & KEY_B) {
       bool ret = false;

@@ -8,8 +8,9 @@
 
 #include "pkview_trainer.h"
 #include "ui.h"
+#include "snd.h"
 
-static void s_vsync(void) { VBlankIntrWait(); key_poll(); }
+static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
 void pkview_trainer(const uint8_t* sb1, const uint8_t* sb2, const Gen3SaveInfo* info, PkGame game) {
   ui_clear();
@@ -75,5 +76,6 @@ void pkview_trainer(const uint8_t* sb1, const uint8_t* sb2, const Gen3SaveInfo* 
   ui_text(4, 152, UI_DIM, "B back");
 
   u16 k;
-  do { s_vsync(); k = key_hit(KEY_B | KEY_START); } while (!k);
+  do { s_vsync(); k = key_hit(KEY_B); } while (!k);   /* B only — START stays the menu key */
+  snd_back();
 }

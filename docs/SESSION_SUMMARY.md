@@ -5,7 +5,9 @@
 > kept current at the end of each working session.
 
 **Last updated:** 2026-06 (advanced-editing batch `66c4f17`; **legality V2 move-source** `1aeafe1`;
-then **named-flag editor** — badges + system flags in the FLAGS tab. Both host-verified but NOT yet hardware-tested).
+**named-flag editor** `50632ac`; origin/met-level + simple met-location checks; then a **UX polish
+pass** — `snd.{c,h}` PSG sound effects app-wide, framed dialogs, "Saving" panel, clarity labels,
+overlay legends, save-success flourish. All host-verified but NOT yet hardware-tested).
 
 ---
 
@@ -129,6 +131,12 @@ doesn't tally — this is normal and has always been the case.
   WARN/DIRCLR/SAVECLR/SEL/SELTEXT/TEXT`.
 - `osk.{c,h}` — on-screen keyboard, QWERTY ASCII (no shift). `osk_input` (names, no empty)
   / `osk_search` (allows empty so you can clear a query). Hold B clears fast.
+- `snd.{c,h}` — tiny PSG UI sound effects (no samples/maxmod/EWRAM): `snd_move/ok/back/tab/
+  deny/edit/save/error/boot`, an envelope so notes auto-decay, a 4-note queue ticked by
+  `snd_vblank()` (called from every screen's vsync) for the save/boot jingles, and a
+  `snd_set_enabled` mute. Hooked at the input chokepoints (`wait_keys` + each file's `s_wait`,
+  fresh presses only so held scroll stays silent) + explicit save/error/deny sites. `snd_init()`
+  runs once in `init_system()`.
 - `pkview_pick.{c,h}` — the rich editor pickers: `pick_species` (icon grid, name+number
   search, filter L/R + START menu, sort, partial redraw), `pick_move` (list + real type
   badge + power/acc/PP + desc, sort, type filter), `pick_item` (4 view modes — see §6),

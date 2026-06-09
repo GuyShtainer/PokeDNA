@@ -38,6 +38,7 @@
 #include "gen3_items.h"    /* item bags */
 #include "osk.h"           /* osk_search (numeric entry) */
 #include "pkview_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
+#include "snd.h"           /* UI sound effects */
 #include "pkview_app.h"
 #include "savefile.h"
 #include "log.h"
@@ -80,11 +81,21 @@ static int         g_bank_n = 0;
 static PkMon       EWRAM_BSS g_bank_mon[30];               /* decoded current bank page       */
 
 /* ---- VBlank / input discipline (key_poll exactly once per frame) -------- */
-static void vsync(void) { VBlankIntrWait(); key_poll(); }
+static void vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
+/* Central input wait — also the app-wide UI-sound chokepoint. A FRESH d-pad press
+ * ticks snd_move (NOT key_repeat, so a held scroll doesn't machine-gun); A/B play
+ * the confirm/back earcons. Nearly every screen funnels through here. */
 static u16 wait_keys(u16 mask) {
-  u16 hit;
-  do { vsync(); hit = key_hit(mask) | key_repeat(mask & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)); } while (!hit);
+  u16 hit, fresh;
+  do {
+    vsync();
+    fresh = key_hit(mask);
+    hit = fresh | key_repeat(mask & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT));
+  } while (!hit);
+  if (fresh & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) snd_move();
+  if (fresh & KEY_A) snd_ok();
+  else if (fresh & KEY_B) snd_back();
   return hit;
 }
 
@@ -92,6 +103,7 @@ static void init_system(void) {
   irq_init(NULL);
   irq_add(II_VBLANK, NULL);
   ui_init();                               /* Mode 3 + bitmap TTE */
+  snd_init();                              /* PSG UI sound effects */
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);  /* hold any d-pad dir to keep scrolling */
   key_repeat_limits(14, 3);                /* hold ~0.23s, then ~20/s */
 }
@@ -111,8 +123,10 @@ static void halt_msg(const char* msg) {
   log_line("HALT: %s", msg);
   log_flush_to_sd(LOG_PATH);
   ui_clear();
-  ui_text(6, 60, UI_WARN, "HALT");
-  ui_text(6, 76, UI_TEXT, msg);
+  ui_panel(8, 48, 224, 44, UI_PANEL, UI_WARN);
+  ui_text(20, 58, UI_WARN, "HALT");
+  ui_text(20, 74, UI_TEXT, msg);
+  snd_error();
   while (1) vsync();
 }
 
@@ -229,8 +243,9 @@ static const char* human_size(uint32_t b, char* out) {
  * size column, a per-selection detail block, and a green status line. */
 static void render_browser(int sel, int top) {
   ui_clear();
-  char cwdc[LIST_COLS * 4 + 1];
-  ui_truncate(cwdc, g_cwd, 29);
+  char title[80], cwdc[LIST_COLS * 4 + 1];
+  siprintf(title, "Pick .sav: %s", g_cwd);      /* state the goal every frame */
+  ui_truncate(cwdc, title, 29);
   ui_text(2, 2, UI_TITLE, cwdc);
   ui_panel(0, 11, UI_SCR_W, 104, UI_PANEL, UI_BORDER);
 
@@ -274,17 +289,19 @@ static void render_browser(int sel, int top) {
   ui_text(2, 138, UI_OK, stc);
 
   ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-  ui_text(2, 150, UI_DIM, "A open  B up  SE sort  ST menu");
+  ui_text(2, 150, UI_DIM, "A pick  B up  SEL sort  ST menu");
 }
 
 /* Reboot back into the flashcart loader menu (no return on confirm). */
 static void do_reboot(void) {
   ui_clear();
-  ui_text(16, 56, UI_TITLE, "Reboot to flashcart menu?");
-  ui_text(16, 78, UI_TEXT, "A = reboot to loader");
-  ui_text(16, 90, UI_WARN, "B = cancel");
+  ui_panel(8, 44, 224, 60, UI_PANEL, UI_WARN);
+  ui_text(16, 52, UI_TITLE, "Reboot to flashcart menu?");
+  ui_text(16, 74, UI_WARN, "A = reboot to loader");      /* destructive = WARN */
+  ui_text(16, 88, UI_DIM,  "B = cancel");
   u16 k; do { vsync(); k = key_hit(KEY_A | KEY_B); } while (!k);
-  if (k & KEY_B) return;
+  if (k & KEY_B) { snd_back(); return; }
+  snd_ok();
   ui_clear();
   ui_text(16, 72, UI_TITLE, "Rebooting...");
   log_flush_to_sd(LOG_PATH);
@@ -397,11 +414,34 @@ bool app_can_edit(void) { return active_flashcart == EZ_FLASH_OMEGA; }
 
 static void msg_wait(const char* title, u16 col, const char* l1, const char* l2) {
   ui_clear();
-  ui_text(20, 60, col, title);
-  if (l1) ui_text(20, 80, UI_TEXT, l1);
-  if (l2) ui_text(20, 92, UI_DIM, l2);
-  ui_text(20, 150, UI_DIM, "Press A");
+  ui_panel(16, 48, 208, 70, UI_PANEL, col);        /* framed so it reads as a dialog */
+  ui_text(28, 58, col, title);
+  if (l1) ui_text(28, 80, UI_TEXT, l1);
+  if (l2) ui_text(28, 92, UI_DIM, l2);
+  ui_text(28, 104, UI_DIM, "Press A");
   wait_keys(KEY_A);
+}
+
+/* A static "busy" panel painted at a SAFE point (between SD ops, never during a
+ * transfer) so the multi-second verified write doesn't read as a hang on hardware. */
+static void busy_panel(const char* line) {
+  ui_clear();
+  ui_panel(16, 60, 208, 48, UI_PANEL, UI_WARN);
+  ui_text(28, 70, UI_WARN, "Saving - do not power off");
+  ui_text(28, 88, UI_TEXT, line);
+}
+
+/* A short, deliberate one-shot flourish — a green frame that grows outward — shown
+ * the moment a verified write succeeds. Safe on the single Mode-3 buffer: nothing
+ * else is on screen and each frame is one clean clear + outline at vblank. */
+static void grow_in(u16 col) {
+  for (int s = 5; s >= 0; s--) {
+    ui_clear();
+    int m = 16 + s * 10;                         /* margin shrinks -> frame grows */
+    m3_frame(m, m, UI_SCR_W - 1 - m, UI_SCR_H - 1 - m, col);
+    if (s == 0) ui_text(98, 76, col, "SAVED!");
+    vsync(); vsync();
+  }
 }
 
 /* Persist `block` (already-patched save-block sections [lo..hi]) into the in-RAM
@@ -415,26 +455,33 @@ static bool app_commit_block(int sect_lo, int sect_hi, uint8_t* block) {
   int fail = -1;
   if (!gen3_verify_full_checksums(g_save, g_vinfo.slot, &fail)) {
     log_line("edit: checksum FAIL at section %d", fail);
+    snd_error();
     msg_wait("CHECKSUM ERROR", UI_WARN, "Edited image failed checks.", "NOT written.");
     return false;
   }
 
   log_line("=== edit commit -> %s ===", g_path);
+  busy_panel("Backing up original...");           /* safe point: before SD copy */
   char bak[SF_PATH_MAX];
   SfStatus st = sf_backup(g_path, bak, sizeof(bak));
   if (st != SF_OK) {
     log_line("edit: backup failed (%s)", sf_status_str(st));
     log_flush_to_sd(LOG_PATH);
+    snd_error();
     msg_wait("BACKUP FAILED", UI_WARN, sf_status_str(st), "Save NOT modified.");
     return false;
   }
+  busy_panel("Writing + verifying...");            /* safe point: before SD write */
   st = sf_write_verified(g_path, g_save, G3_SAVE_FILE_SIZE);
   log_line("edit: write %s (backup %s)", st == SF_OK ? "OK" : sf_status_str(st), bak);
   log_flush_to_sd(LOG_PATH);
   if (st != SF_OK) {
+    snd_error();
     msg_wait("WRITE FAILED", UI_WARN, sf_status_str(st), "Backup kept; .tmp may remain.");
     return false;
   }
+  snd_save();
+  grow_in(UI_OK);                                  /* brief success flourish */
   msg_wait("SAVED", UI_OK, "Edit written + verified.", "Original backed up first.");
   return true;
 }
@@ -493,12 +540,15 @@ bool app_clip_occupied(void) { return g_clip.occupied; }
 
 static bool app_confirm(const char* title, const char* l1) {
   ui_clear();
-  ui_text(20, 56, UI_WARN, title);
-  if (l1) ui_text(20, 78, UI_TEXT, l1);
-  ui_text(20, 102, UI_TEXT, "A = yes");
-  ui_text(20, 114, UI_DIM, "B = no");
+  ui_panel(16, 44, 208, 74, UI_PANEL, UI_WARN);    /* framed destructive-confirm */
+  ui_text(28, 54, UI_WARN, title);
+  if (l1) ui_text(28, 76, UI_TEXT, l1);
+  ui_text(28, 98, UI_TEXT, "A = yes");
+  ui_text(28, 110, UI_DIM, "B = no");
   u16 k; do { vsync(); k = key_hit(KEY_A | KEY_B); } while (!k);
-  return (k & KEY_A) != 0;
+  bool yes = (k & KEY_A) != 0;
+  if (yes) snd_ok(); else snd_back();
+  return yes;
 }
 
 /* first empty (decodes-as-empty) slot in a box, or -1 if the box is full */
@@ -527,12 +577,12 @@ static bool app_paste(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* bloc
 
 static bool app_duplicate(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block, int box) {
   if (is_party) {
-    if (party_count(block, g_frlg) >= 6) { msg_wait("PARTY FULL", UI_WARN, "Release a mon first.", 0); return false; }
+    if (party_count(block, g_frlg) >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Release a mon first.", 0); return false; }
     uint8_t out[100]; memcpy(out, rec, 100);
     party_append(block, g_frlg, out);
   } else {
     int fs = box_free_slot(block, box);
-    if (fs < 0) { msg_wait("BOX FULL", UI_WARN, "No empty slot in this box.", 0); return false; }
+    if (fs < 0) { snd_deny(); msg_wait("BOX FULL", UI_WARN, "No empty slot in this box.", 0); return false; }
     memcpy(pk_box_slot(block, box, fs), rec, 80);
   }
   return app_commit_block(lo, hi, block);
@@ -541,6 +591,7 @@ static bool app_duplicate(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* 
 static bool app_release(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block, int box, int slot) {
   (void)rec;
   if (is_party && party_count(block, g_frlg) <= 1) {
+    snd_deny();
     msg_wait("CAN'T RELEASE", UI_WARN, "The party can't be empty.", 0);
     return false;
   }
@@ -593,7 +644,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
   enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CANCEL };
   int act[16]; const char* lab[16]; int n = 0;
   if (occupied) {
-    lab[n]="SUMMARY"; act[n++]=A_SUMMARY;
+    lab[n]="VIEW / EDIT"; act[n++]=A_SUMMARY;     /* opens the editable summary */
     lab[n]="ITEM";    act[n++]=A_ITEM;
     lab[n]="MOVES";   act[n++]=A_MOVES;
     lab[n]="LEGALITY"; act[n++]=A_LEGAL;
@@ -614,7 +665,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
   char title[16];
   ui_truncate(title, occupied ? (m0.nickname[0] ? m0.nickname : pk_species_name(m0.species)) : "EMPTY", 11);
   const int vis = n < 9 ? n : 9;                    /* scroll if more actions than fit */
-  const int mx = 138, mw = 100, mh = 18 + vis * 13, my = 80 - mh / 2;
+  const int mx = 138, mw = 100, mh = 18 + vis * 13 + 11, my = 80 - mh / 2;
   int sel = 0, top = 0;
   for (;;) {
     if (sel < top) top = sel;
@@ -627,6 +678,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 12, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, lab[top + i]);
     }
+    ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return false;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
@@ -677,8 +729,8 @@ static int party_list(void) {
     }
 
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, g_have_pc ? "A view  SEL boxes  START card  B back"
-                                      : "A view  START card  B back");
+    ui_text(4, 152, UI_DIM, g_have_pc ? "A actions  SEL boxes  START card  B back"
+                                      : "A actions  START card  B back");
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT | KEY_START);
     if      (k & KEY_UP)   { if (sel > 0) sel--; }
@@ -809,8 +861,8 @@ static bool bank_screen(void) {
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B);
     if (k & KEY_B) return changed;
-    else if (k & KEY_L) { page = (page + pages - 1) % pages; cur = 0; }
-    else if (k & KEY_R) { page = (page + 1) % pages; cur = 0; }
+    else if (k & KEY_L) { snd_tab(); page = (page + pages - 1) % pages; cur = 0; }
+    else if (k & KEY_R) { snd_tab(); page = (page + 1) % pages; cur = 0; }
     else if (k & KEY_LEFT)  { if (cur % 6) cur--; }
     else if (k & KEY_RIGHT) { if (cur % 6 != 5 && cur + 1 < on) cur++; }
     else if (k & KEY_UP)    { if (cur >= 6) cur -= 6; }
@@ -821,19 +873,19 @@ static bool bank_screen(void) {
       int a = bank_action_menu(party_count(g_sb1, g_frlg) < 6);
       if (a == BA_BOX || a == BA_PARTY) {
         uint8_t raw[80];
-        if (!bank_read(idx, raw)) { msg_wait("BAD FILE", UI_WARN, "Could not read this .pk3.", 0); }
+        if (!bank_read(idx, raw)) { snd_deny(); msg_wait("BAD FILE", UI_WARN, "Could not read this .pk3.", 0); }
         else {
           bool ok = false;
           if (a == BA_BOX) {
             int b, s;
-            if (!pc_first_free(g_pc, &b, &s)) msg_wait("PC FULL", UI_WARN, "No empty box slot.", 0);
+            if (!pc_first_free(g_pc, &b, &s)) { snd_deny(); msg_wait("PC FULL", UI_WARN, "No empty box slot.", 0); }
             else { memcpy(pk_box_slot(g_pc, b, s), raw, 80);
                    ok = app_commit_block(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc); }
           } else {                                     /* inject to party (append) */
             ClipMon t; clip_copy_from(&t, raw, false);
             uint8_t r100[100]; clip_to_record(&t, true, r100);
             if (party_append(g_sb1, g_frlg, r100)) ok = app_commit_block(1, 4, g_sb1);
-            else msg_wait("PARTY FULL", UI_WARN, "Release a mon first.", 0);
+            else { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Release a mon first.", 0); }
           }
           if (ok) {                                    /* offer to WITHDRAW (move, not copy) */
             changed = true;
@@ -922,7 +974,7 @@ static bool data_editor(void) {
         if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
         ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
       }
-      ui_text(4, 152, UI_DIM, "A edit  U/D  L/R tab  B save+exit");
+      ui_text(4, 152, UI_DIM, "A edit  U/D  L/R tab  B done");
     } else if (tab == 1) {                       /* ---- bag ---- */
       int cap = pk_pocket_cap(g_game, pocket);
       if (sel >= cap) sel = cap - 1;
@@ -940,7 +992,7 @@ static bool data_editor(void) {
         if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
         ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
       }
-      ui_text(4, 152, UI_DIM, "A edit  SEL pocket  L/R tab  B save");
+      ui_text(4, 152, UI_DIM, "A edit  SEL pocket  L/R tab  B done");
     } else {                                     /* ---- flags (named list) ---- */
       const NamedFlag* nf; int nc = pk_named_flags(g_game, &nf);
       int total = nc + 1;                         /* + trailing raw-browser row */
@@ -964,13 +1016,13 @@ static bool data_editor(void) {
           ui_text(8, y, s ? UI_SELTEXT : (on ? UI_OK : UI_DIM), rt);
         }
       }
-      ui_text(4, 152, UI_DIM, "A toggle/open  U/D  L/R tab  B save");
+      ui_text(4, 152, UI_DIM, "A toggle/open  U/D  L/R tab  B done");
     }
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B | KEY_SELECT);
     if (k & KEY_B) break;
-    else if (k & KEY_L) { tab = (tab + 2) % 3; sel = (tab == 2) ? 1 : 0; top = 0; }
-    else if (k & KEY_R) { tab = (tab + 1) % 3; sel = (tab == 2) ? 1 : 0; top = 0; }
+    else if (k & KEY_L) { snd_tab(); tab = (tab + 2) % 3; sel = (tab == 2) ? 1 : 0; top = 0; }
+    else if (k & KEY_R) { snd_tab(); tab = (tab + 1) % 3; sel = (tab == 2) ? 1 : 0; top = 0; }
     else if (tab == 2) {                         /* named flags nav/toggle */
       const NamedFlag* nf; int nc = pk_named_flags(g_game, &nf);
       int total = nc + 1;
@@ -985,7 +1037,7 @@ static bool data_editor(void) {
       }
     } else if (k & KEY_UP)   { if (sel > 0) sel--; }
     else if (k & KEY_DOWN)   sel++;
-    else if (tab == 1 && (k & KEY_SELECT)) { pocket = (pocket + 1) % POCKET_COUNT; sel = top = 0; }
+    else if (tab == 1 && (k & KEY_SELECT)) { snd_tab(); pocket = (pocket + 1) % POCKET_COUNT; sel = top = 0; }
     else if (k & KEY_A) {
       if (tab == 0) {                            /* edit money (row 0) or a counter */
         if (sel == 0) {
@@ -1008,14 +1060,18 @@ static bool data_editor(void) {
     }
   }
 
-  if (dirty) return app_commit_block(1, 4, g_sb1);   /* one verified write on exit */
+  if (dirty) {                                       /* confirm before the silent write */
+    if (!app_confirm("Save data changes?", "Money, bag and flag edits write now."))
+      return false;
+    return app_commit_block(1, 4, g_sb1);            /* one verified write on exit */
+  }
   return false;
 }
 
 /* START menu from the box/party: pick a destination screen. */
 static int nav_menu(void) {                            /* 0=card 1=bank 2=data 3=back */
   static const char* const L[4] = { "Trainer card", "Bank", "Data editor", "Back" };
-  const int mx = 60, my = 48, mw = 120, mh = 18 + 4 * 14;
+  const int mx = 60, my = 48, mw = 120, mh = 18 + 4 * 14 + 11;
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
@@ -1026,6 +1082,7 @@ static int nav_menu(void) {                            /* 0=card 1=bank 2=data 3
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
     }
+    ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return 3;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
@@ -1079,7 +1136,7 @@ static void view_save(const char* path) {
       }
       else if (dest == 2) {                      /* data editor (edits the save) */
         if (app_can_edit()) data_editor();
-        else msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0);
+        else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); }
       }
       continue;
     }
@@ -1104,6 +1161,7 @@ int main(void) {
   if (fr != FR_OK) { log_line("f_mount failed (fr=%d)", fr); halt_msg("SD mount failed!"); }
   log_line("SD mounted OK");
   log_flush_to_sd(LOG_PATH);
+  snd_boot();                                /* welcome chime = audio self-test */
 
   strcpy(g_cwd, "/");
   for (;;) {

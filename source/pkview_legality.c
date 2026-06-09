@@ -4,6 +4,7 @@
 #include <tonc.h>
 #include <stdio.h>
 #include "ui.h"
+#include "snd.h"
 
 #define VIS 13
 
@@ -38,9 +39,9 @@ void pkview_legality_show(const PkMon* m) {
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     ui_text(4, 152, UI_DIM, L.n > VIS ? "U/D scroll  B back" : "B back");
 
-    u16 k; do { VBlankIntrWait(); key_poll(); k = key_hit(KEY_B | KEY_UP | KEY_DOWN); } while (!k);
-    if (k & KEY_B) return;
-    else if ((k & KEY_UP) && top > 0) top--;
-    else if ((k & KEY_DOWN) && top < L.n - VIS) top++;
+    u16 k; do { VBlankIntrWait(); snd_vblank(); key_poll(); k = key_hit(KEY_B | KEY_UP | KEY_DOWN); } while (!k);
+    if (k & KEY_B) { snd_back(); return; }
+    else if ((k & KEY_UP) && top > 0) { snd_move(); top--; }
+    else if ((k & KEY_DOWN) && top < L.n - VIS) { snd_move(); top++; }
   }
 }

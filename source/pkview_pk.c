@@ -7,6 +7,7 @@
 #include "savefile.h"
 #include "data_tables.h"
 #include "ui.h"
+#include "snd.h"
 
 /* keep only [A-Za-z0-9] from `in`; collapse runs of other chars to one '_'. */
 static void sanitize(char* out, const char* in, int cap) {
@@ -21,12 +22,14 @@ static void sanitize(char* out, const char* in, int cap) {
   if (o == 0) { out[0] = 'M'; out[1] = 'O'; out[2] = 'N'; out[3] = 0; }
 }
 
-static void msg(const char* l1, const char* l2, u16 col) {
+static void msg(const char* l1, const char* l2, const char* l3, u16 col) {
   ui_clear();
-  ui_text(20, 60, col, l1);
-  if (l2) ui_text(20, 80, UI_DIM, l2);
-  ui_text(20, 150, UI_DIM, "Press A");
-  u16 k; do { VBlankIntrWait(); key_poll(); k = key_hit(KEY_A); } while (!k);
+  ui_panel(16, 48, 208, 74, UI_PANEL, col);
+  ui_text(28, 58, col, l1);
+  if (l2) ui_text(28, 80, UI_TEXT, l2);
+  if (l3) ui_text(28, 92, UI_DIM, l3);
+  ui_text(28, 108, UI_DIM, "Press A");
+  u16 k; do { VBlankIntrWait(); snd_vblank(); key_poll(); k = key_hit(KEY_A); } while (!k);
 }
 
 bool pkview_pk_export(const uint8_t* rec, const PkMon* m) {
@@ -41,9 +44,11 @@ bool pkview_pk_export(const uint8_t* rec, const PkMon* m) {
   SfStatus st = sf_write_verified(path, rec, 80);   /* first 80 bytes = the box record */
   if (st == SF_OK) {
     char p2[40]; ui_truncate(p2, path, 29);
-    msg("EXPORTED", p2, UI_OK);
+    snd_save();
+    msg("EXPORTED", p2, "Open it from START > Bank.", UI_OK);
     return true;
   }
-  msg("EXPORT FAILED", sf_status_str(st), UI_WARN);
+  snd_error();
+  msg("EXPORT FAILED", sf_status_str(st), 0, UI_WARN);
   return false;
 }

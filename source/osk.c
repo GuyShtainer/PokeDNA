@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "ui.h"
+#include "snd.h"
 
 #define OSK_ROWS   8
 #define OSK_MAXLEN 16
@@ -22,7 +23,7 @@ static const char* const KB[OSK_ROWS] = {
 };
 
 static int rowlen(int r) { return (int)strlen(KB[r]); }
-static void osk_vsync(void) { VBlankIntrWait(); key_poll(); }
+static void osk_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
 static void osk_field(const char* buf, int len, int cpos) {
   ui_panel(4, 16, 232, 14, UI_PANEL, UI_BORDER);
@@ -90,11 +91,14 @@ static bool osk_core(const char* prompt, const char* initial, char* out, int cap
     if (!k) continue;
     dirty = true;
     warn = NULL;
+    if (k & (KEY_A | KEY_B | KEY_L | KEY_R | KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT))
+      snd_move();                                /* light typing/caret tick */
 
-    if (k & KEY_SELECT) { key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); return false; }
+    if (k & KEY_SELECT) { snd_back(); key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); return false; }
     else if (k & KEY_START) {
-      if (len < 1 && !allow_empty) { warn = "Name cannot be empty"; }
+      if (len < 1 && !allow_empty) { snd_deny(); warn = "Name cannot be empty"; }
       else {
+        snd_ok();
         int i = 0;
         for (; i < cap - 1 && buf[i]; i++) out[i] = buf[i];
         out[i] = 0;

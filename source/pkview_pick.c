@@ -15,6 +15,7 @@
 #include "type_icons.h"
 #include "item_icons.h"
 #include "osk.h"
+#include "snd.h"
 
 #define CANCEL 0xFFFF
 #define NSPECIES 412
@@ -24,13 +25,18 @@
 static u16 EWRAM_BSS g_list[NSPECIES];   /* internal species ids in display order */
 static int g_n;
 
-static void s_vsync(void) { VBlankIntrWait(); key_poll(); }
+static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 /* fresh presses for all keys + auto-repeat for the held d-pad (tonc key_repeat,
- * configured globally in init_system) so holding a direction keeps scrolling. */
+ * configured globally in init_system) so holding a direction keeps scrolling.
+ * Also the per-file UI-sound chokepoint (fresh presses only). */
 static u16  s_wait(u16 m) {
   const u16 dpad = KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT;
-  u16 k;
-  do { s_vsync(); k = key_hit(m) | key_repeat(m & dpad); } while (!k);
+  u16 k, fresh;
+  do { s_vsync(); fresh = key_hit(m); k = fresh | key_repeat(m & dpad); } while (!k);
+  if      (fresh & dpad)              snd_move();
+  else if (fresh & (KEY_L | KEY_R))   snd_tab();
+  else if (fresh & KEY_A)             snd_ok();
+  else if (fresh & KEY_B)             snd_back();
   return k;
 }
 static int  clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }

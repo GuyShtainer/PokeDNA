@@ -19,6 +19,7 @@
 #include "data_tables.h"
 #include "osk.h"
 #include "pkview_pick.h"
+#include "snd.h"
 
 static const char* const FLABEL[F_NUM] = {
   "Species", "Nickname", "Level", "Nature", "Ability", "Shiny", "Gender",
@@ -30,8 +31,15 @@ static const char* const FLABEL[F_NUM] = {
 
 #define VIS_ROWS 16
 
-static void s_vsync(void) { VBlankIntrWait(); key_poll(); }
-static u16  s_wait(u16 mask) { u16 k; do { s_vsync(); k = key_hit(mask); } while (!k); return k; }
+static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
+static u16  s_wait(u16 mask) {
+  u16 k; do { s_vsync(); k = key_hit(mask); } while (!k);
+  if      (k & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) snd_move();
+  else if (k & (KEY_L | KEY_R)) snd_tab();
+  else if (k & KEY_A) snd_ok();
+  else if (k & KEY_B) snd_back();
+  return k;
+}
 static int  clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
 static const char* GEN[3] = { "Male", "Female", "-" };
