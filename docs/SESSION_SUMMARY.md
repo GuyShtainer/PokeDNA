@@ -5,9 +5,13 @@
 > kept current at the end of each working session.
 
 **Last updated:** 2026-06 (advanced-editing `66c4f17`; legality V2 `1aeafe1`; named flags `50632ac`;
-origin/met checks; **UX polish pass** `28b4216` — app-wide PSG sound, framed dialogs, clarity; then
-**editable trainer card** `3c706b9`, **more named flags** `a17fb21`, **editable box name+wallpaper**
-`bf66a75`, and the **real 16 box wallpapers** `048eb71`. All host-verified but NOT yet hardware-tested).
+UX polish `28b4216`; editable trainer card `3c706b9`; box name/wallpaper + real 16 wallpapers
+`bf66a75`/`048eb71`; then a **big feature batch**: browser LEFT/RIGHT fast-jump `fef2104`; box
+**partial redraw + mirrored icons** `91d8de6` + **move-mode** `4bc8608`; **trainer badge/frontier
+toggles** `5897463`; **summary VIEW/EDIT modes + scroll-through-box** `f871bf7`; **Unown real
+letters** `18d2df0` + **form choice** `b0d0077`; **Emerald secret/Walda wallpapers** `d944573`/
+`1fab267`. All host-verified but NOT yet hardware-tested. Browser conventions doc lives in the
+toolkit repo: `docs/kb/file-browser-conventions.md`).
 
 ---
 
@@ -270,9 +274,17 @@ commit). Species mapping fix (internal ids). Editing confirmed working on real O
   MONEY, play TIME. Commits SaveBlock2 (section 0, `app_commit_sb2`) + money to SaveBlock1
   (`app_commit_sb1`). Dex/HoF/records stay read-only.
 - **Editable box** (Omega): move the hand UP onto the box title → Rename / Wallpaper. Rename
-  writes the box-name field; the wallpaper chooser previews + sets the id. Both commit PC
-  storage (`app_commit_pc`). The box screen renders the **real Gen-3 wallpapers** (all 16) via
-  the generated `wallpapers.c` (`draw_wallpaper`).
+  writes the box-name field; the wallpaper chooser previews + sets the id (32 ids on Emerald —
+  16 standard + 16 **Walda/secret** wallpapers, byte 16 + `pk_set_walda_pattern`). Both commit
+  PC storage (`app_commit_pc`; Walda also `app_commit_sb1`). The box screen renders the **real
+  Gen-3 wallpapers** via the generated `wallpapers.c` (`box_wp_render` maps byte 16 → 16+pattern).
+- **Box browsing UX:** partial redraw (no full reload on cursor move — `render_full`+`move_cursor`),
+  mirrored icons (`blit_icon`), and **MOVE mode** (A-menu MOVE → `s_move_from`, A swaps slots).
+- **Summary** is VIEW/EDIT (`pkview_inspect` returns nav 0/±1 + `*saved`): A enters edit, B exits
+  edit, U/D in VIEW scrolls box mons (`app_box_browse`), save prompt only on leave/change.
+- **Unown** show the real letter everywhere (`pk_unown_form` + `PkMon.form` + `mon_*_for_form`,
+  28 generated forms); setting species to Unown opens `pick_unown_form` → `em_set_unown_form`
+  (PID search keeping nature/shiny).
 
 **Pending hardware sign-off (not emulatable):**
 - The **reboot-to-loader** path (START → Reboot → A should land in the EZ-Flash game list).
