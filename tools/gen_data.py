@@ -279,7 +279,8 @@ BADGES_HOENN = ["Stone Badge", "Knuckle Badge", "Dynamo Badge", "Heat Badge",
                 "Balance Badge", "Feather Badge", "Mind Badge", "Rain Badge"]
 BADGES_KANTO = ["Boulder Badge", "Cascade Badge", "Thunder Badge", "Rainbow Badge",
                 "Soul Badge", "Marsh Badge", "Volcano Badge", "Earth Badge"]
-# (symbol, display) — resolved per game, silently skipped where the flag is absent.
+# (symbol, display) lists per category — each resolved per game, silently skipped
+# where the flag is absent (so the Hoenn-only / Kanto-only names just drop out).
 NFLAG_SYSTEM = [
     ("FLAG_SYS_POKEDEX_GET",  "Pokedex obtained"),
     ("FLAG_SYS_NATIONAL_DEX", "National Dex"),
@@ -288,6 +289,52 @@ NFLAG_SYSTEM = [
     ("FLAG_SYS_B_DASH",       "Running Shoes"),
     ("FLAG_SYS_POKEMON_GET",  "First Pokemon"),
     ("FLAG_SYS_RIBBON_GET",   "First Ribbon"),
+]
+NFLAG_GYMS = [
+    # Hoenn (R/S/E) gyms are keyed by location...
+    ("FLAG_DEFEATED_RUSTBORO_GYM",   "Rustboro Gym"),
+    ("FLAG_DEFEATED_DEWFORD_GYM",    "Dewford Gym"),
+    ("FLAG_DEFEATED_MAUVILLE_GYM",   "Mauville Gym"),
+    ("FLAG_DEFEATED_LAVARIDGE_GYM",  "Lavaridge Gym"),
+    ("FLAG_DEFEATED_PETALBURG_GYM",  "Petalburg Gym"),
+    ("FLAG_DEFEATED_FORTREE_GYM",    "Fortree Gym"),
+    ("FLAG_DEFEATED_MOSSDEEP_GYM",   "Mossdeep Gym"),
+    ("FLAG_DEFEATED_SOOTOPOLIS_GYM", "Sootopolis Gym"),
+    # ...Kanto (FR/LG) gyms are keyed by leader.
+    ("FLAG_DEFEATED_BROCK",          "Brock"),
+    ("FLAG_DEFEATED_MISTY",          "Misty"),
+    ("FLAG_DEFEATED_LT_SURGE",       "Lt. Surge"),
+    ("FLAG_DEFEATED_ERIKA",          "Erika"),
+    ("FLAG_DEFEATED_KOGA",           "Koga"),
+    ("FLAG_DEFEATED_SABRINA",        "Sabrina"),
+    ("FLAG_DEFEATED_BLAINE",         "Blaine"),
+    ("FLAG_DEFEATED_LEADER_GIOVANNI","Giovanni"),
+]
+NFLAG_ELITE = [
+    ("FLAG_DEFEATED_ELITE_4_SIDNEY", "E4 Sidney"),
+    ("FLAG_DEFEATED_ELITE_4_SYDNEY", "E4 Sidney"),     # Ruby spelling
+    ("FLAG_DEFEATED_ELITE_4_PHOEBE", "E4 Phoebe"),
+    ("FLAG_DEFEATED_ELITE_4_GLACIA", "E4 Glacia"),
+    ("FLAG_DEFEATED_ELITE_4_DRAKE",  "E4 Drake"),
+    ("FLAG_DEFEATED_LORELEI",        "E4 Lorelei"),
+    ("FLAG_DEFEATED_BRUNO",          "E4 Bruno"),
+    ("FLAG_DEFEATED_AGATHA",         "E4 Agatha"),
+    ("FLAG_DEFEATED_LANCE",          "E4 Lance"),
+    ("FLAG_DEFEATED_CHAMP",          "Champion"),
+]
+NFLAG_LEGENDS = [
+    ("FLAG_DEFEATED_GROUDON",         "Groudon"),
+    ("FLAG_DEFEATED_KYOGRE",          "Kyogre"),
+    ("FLAG_DEFEATED_RAYQUAZA",        "Rayquaza"),
+    ("FLAG_DEFEATED_REGIROCK",        "Regirock"),
+    ("FLAG_DEFEATED_REGICE",          "Regice"),
+    ("FLAG_DEFEATED_REGISTEEL",       "Registeel"),
+    ("FLAG_DEFEATED_LATIAS_OR_LATIOS","Latias/Latios"),
+    ("FLAG_DEFEATED_SUDOWOODO",       "Sudowoodo"),
+    ("FLAG_DEFEATED_MEW",             "Mew"),
+    ("FLAG_DEFEATED_DEOXYS",          "Deoxys"),
+    ("FLAG_DEFEATED_HO_OH",           "Ho-Oh"),
+    ("FLAG_DEFEATED_LUGIA",           "Lugia"),
 ]
 
 
@@ -321,11 +368,22 @@ def build_named_flags(game_dir):
         n = env.get("FLAG_BADGE0%d_GET" % (i + 1))
         if n is not None and n < 0xFFFF:
             out.append((n, badges[i]))
-    sys_rows = [(env[sym], disp) for sym, disp in NFLAG_SYSTEM
-                if sym in env and env[sym] is not None and env[sym] < 0xFFFF]
-    if sys_rows:
-        out.append((0xFFFF, "System"))
-        out.extend(sys_rows)
+
+    def add_category(title, rows):
+        seen, resolved = set(), []
+        for sym, disp in rows:
+            v = env.get(sym)
+            if v is not None and 0 <= v < 0xFFFF and v not in seen:
+                seen.add(v)
+                resolved.append((v, disp))
+        if resolved:
+            out.append((0xFFFF, title))
+            out.extend(resolved)
+
+    add_category("System", NFLAG_SYSTEM)
+    add_category("Gyms", NFLAG_GYMS)
+    add_category("Elite Four", NFLAG_ELITE)
+    add_category("Legends", NFLAG_LEGENDS)
     return out
 
 
