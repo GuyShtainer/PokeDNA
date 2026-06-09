@@ -361,9 +361,11 @@ static bool browse_pick(char* out, int cap) {
 
     render_browser(sel, top);
 
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
     if      (k & KEY_UP)   { if (sel > 0) sel--; }
     else if (k & KEY_DOWN) { if (sel < g_count - 1) sel++; }
+    else if (k & KEY_LEFT)  { sel -= 11; if (sel < 0) sel = 0; }                       /* fast jump, like sd-browser */
+    else if (k & KEY_RIGHT) { sel += 11; if (sel > g_count - 1) sel = g_count ? g_count - 1 : 0; }
     else if (k & KEY_L)    { sel = 0; top = 0; }
     else if (k & KEY_R)    { sel = g_count ? g_count - 1 : 0; }
     else if (k & KEY_SELECT) {           /* cycle the 6 sort states (key x order) */
