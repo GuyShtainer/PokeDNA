@@ -4,10 +4,10 @@
 > `CLAUDE.md` (toolkit root) for the shared hardware/safety rules. This file is
 > kept current at the end of each working session.
 
-**Last updated:** 2026-06 (advanced-editing batch `66c4f17`; **legality V2 move-source** `1aeafe1`;
-**named-flag editor** `50632ac`; origin/met-level + simple met-location checks; then a **UX polish
-pass** — `snd.{c,h}` PSG sound effects app-wide, framed dialogs, "Saving" panel, clarity labels,
-overlay legends, save-success flourish. All host-verified but NOT yet hardware-tested).
+**Last updated:** 2026-06 (advanced-editing `66c4f17`; legality V2 `1aeafe1`; named flags `50632ac`;
+origin/met checks; **UX polish pass** `28b4216` — app-wide PSG sound, framed dialogs, clarity; then
+**editable trainer card** `3c706b9`, **more named flags** `a17fb21`, **editable box name+wallpaper**
+`bf66a75`, and the **real 16 box wallpapers** `048eb71`. All host-verified but NOT yet hardware-tested).
 
 ---
 
@@ -176,7 +176,8 @@ and `data/*.bin`.
 | `gen_types.py` | `assets/types/*.png` (pokeemerald) | `source/type_icons.{c,h}` — 18 real 32×14 type badges |
 | `gen_items.py` | `assets/items/{icons,icon_palettes,meta}/` | `data/item_icons.bin` + `source/item_icons.{c,h}` + `_data.s` — 24×24 item icons (resolves the decomp's decoupled id→pic + id→palette tables; deduped) |
 | `gen_hand.py` | `assets/storage/hand_cursor.png` | `source/hand_cursor.{c,h}` — Gen-3 PC hand, recolored WHITE |
-| `gen_data.py` | `reference/{pokeemerald,pokefirered,pokeruby}_data/` (trimmed decomp; flags.h from all 3) | `source/data_tables.c` — all name/desc/stat tables + per-game **named-flag** tables (`pk_named_flags`) |
+| `gen_data.py` | `reference/{pokeemerald,pokefirered,pokeruby}_data/` (trimmed decomp; flags.h from all 3) | `source/data_tables.c` — all name/desc/stat tables + per-game **named-flag** tables (`pk_named_flags`: badges, system, gyms, Elite Four, legendaries) |
+| `gen_wallpaper.py` | `reference/wallpapers/<name>/{bg,frame}.png + tilemap.bin` (decomp) | `source/wallpapers.c` — the 16 PC box wallpapers as deduped 8×8 RGB15 tiles + a 20×18 tilemap each (`wallpaper_tile_data`/`wallpaper_tilemap`). Reconstructed exactly as the game composites them (verified vs all 16). ~164 KB ROM, no EWRAM. |
 | `gen_legality.py` | `reference/{pokeemerald,pokefirered,pokeruby}_data/` (level-up + egg + tutor + tms_hms + evolution) | `source/learnsets.c` — per-species learnable-move bitset for `pk_can_learn` (3-game **union**; see §3 `learnsets`) |
 
 - Species are keyed by **INTERNAL Gen-3 id** (from `reference/.../constants/species.h`),
@@ -262,9 +263,16 @@ commit). Species mapping fix (internal ids). Editing confirmed working on real O
   game's first free box slot (record is byte-identical across all 5 games) / delete. Also the
   **import** path — drop PKHeX `.pk3` files into `/pokeviewer/bank/`.
 - **Data editor** (START → MENU → Data editor, Omega-only): COUNTERS (named game stats) / BAG
-  (all 5 pockets) / FLAGS. The FLAGS tab now opens on a **named list** (badges + key system
-  flags, ON/off, A toggles with a one-time soft-lock caution) with a drill-in to the guarded
-  raw `#N` browser (`flags_raw_view`, B returns). Edited in RAM, committed once on exit.
+  (all 5 pockets) / FLAGS. The FLAGS tab now opens on a **named list** (badges + system flags +
+  **gyms, Elite Four, legendaries**, ON/off, A toggles with a one-time soft-lock caution) with a
+  drill-in to the guarded raw `#N` browser (`flags_raw_view`, B returns). Edited in RAM, committed once on exit.
+- **Editable trainer card** (Omega): U/D pick a field, A edits — NAME (OSK), SEX, ID No, SID,
+  MONEY, play TIME. Commits SaveBlock2 (section 0, `app_commit_sb2`) + money to SaveBlock1
+  (`app_commit_sb1`). Dex/HoF/records stay read-only.
+- **Editable box** (Omega): move the hand UP onto the box title → Rename / Wallpaper. Rename
+  writes the box-name field; the wallpaper chooser previews + sets the id. Both commit PC
+  storage (`app_commit_pc`). The box screen renders the **real Gen-3 wallpapers** (all 16) via
+  the generated `wallpapers.c` (`draw_wallpaper`).
 
 **Pending hardware sign-off (not emulatable):**
 - The **reboot-to-loader** path (START → Reboot → A should land in the EZ-Flash game list).
