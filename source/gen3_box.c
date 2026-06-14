@@ -74,10 +74,10 @@ void pk_resolve(PkMon* m) {
   }
 }
 
-int pk_read_box(const uint8_t* pc, int box, PkMon out[30]) {
+int pk_decode_box_raw(const uint8_t* recs, PkMon out[30]) {
   int n = 0;
   for (int slot = 0; slot < G3_IN_BOX; slot++) {
-    const uint8_t* mon = pc + PC_OFF_BOXES + ((uint32_t)box * G3_IN_BOX + slot) * BOX_MON_SIZE;
+    const uint8_t* mon = recs + (uint32_t)slot * BOX_MON_SIZE;
     if (pk_decode_mon(mon, false, &out[slot])) {  /* false => 80-byte box record */
       pk_resolve(&out[slot]);
       n++;
@@ -86,4 +86,8 @@ int pk_read_box(const uint8_t* pc, int box, PkMon out[30]) {
     }
   }
   return n;
+}
+
+int pk_read_box(const uint8_t* pc, int box, PkMon out[30]) {
+  return pk_decode_box_raw(pc + PC_OFF_BOXES + (uint32_t)box * G3_IN_BOX * BOX_MON_SIZE, out);
 }

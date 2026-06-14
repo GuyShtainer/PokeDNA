@@ -40,6 +40,11 @@ void     pk_set_walda_pattern(uint8_t* sb1, uint8_t pattern);   /* also sets pat
  * Returns the count of occupied slots. */
 int      pk_read_box(const uint8_t* pc, int box, PkMon out[30]);
 
+/* Same, but decode from a flat 30*80 = 2400-byte records block (no 0x0004 header).
+ * Lets a box screen render any source laid out as raw box records (e.g. the bank),
+ * not just the PokemonStorage blob. */
+int      pk_decode_box_raw(const uint8_t* recs, PkMon out[30]);
+
 /* Fill computed level + stats (box mons) and gender (any mon) using the data
  * tables. No-op stats for party mons (they carry plaintext stats already). */
 void     pk_resolve(PkMon* m);
