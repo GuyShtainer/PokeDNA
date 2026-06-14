@@ -34,22 +34,26 @@
 #define WP_W 162
 #define WP_H 141          /* 12..153 */
 
-/* The real Gen-3 PC-storage hand cursor (generated RGB15 blob, git-ignored). */
-static void draw_hand(int x, int y) {
-  for (int j = 0; j < HAND_H; j++)
-    for (int i = 0; i < HAND_W; i++) {
-      uint16_t p = hand_cursor[j * HAND_W + i];
+/* The real Gen-3 PC-storage hand cursor (generated RGB15 blobs, git-ignored):
+ * hand_cursor = open pointing hand, hand_reach = mid grab, hand_grab = closed fist. */
+static void blit_frame(int x, int y, const uint16_t* f, int fw, int fh) {
+  for (int j = 0; j < fh; j++)
+    for (int i = 0; i < fw; i++) {
+      uint16_t p = f[j * fw + i];
       if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
     }
 }
+static void draw_hand(int x, int y) { blit_frame(x, y, hand_cursor, HAND_W, HAND_H); }
+static void draw_grab(int x, int y) { blit_frame(x, y, hand_grab,   HAND_GRAB_W, HAND_GRAB_H); }
 
 static PkMon EWRAM_BSS g_box[30];
 static int s_move_from = -1;          /* slot being repositioned in move-mode, or -1 */
 
-static void swap_box_slots(uint8_t* pc, int box, int a, int b) {
+/* Swap two 80-byte records inside a 30-record block (the current box's records). */
+static void swap_records(uint8_t* recs, int a, int b) {
   if (a == b) return;
-  uint8_t* ra = pc + 0x0004 + ((uint32_t)box * 30 + a) * 80;
-  uint8_t* rb = pc + 0x0004 + ((uint32_t)box * 30 + b) * 80;
+  uint8_t* ra = recs + (uint32_t)a * 80;
+  uint8_t* rb = recs + (uint32_t)b * 80;
   uint8_t tmp[80];
   memcpy(tmp, ra, 80); memcpy(ra, rb, 80); memcpy(rb, tmp, 80);
 }
@@ -88,15 +92,6 @@ static const char* const WALDA_NAME[G3_WALDA_COUNT] = {
   "Blank", "Circles", "Azumarill", "Pikachu", "Legendary", "Dusclops", "Ludicolo", "Whiscash",
 };
 static const char* wp_name(int id) { return id < 16 ? WP_NAME[id] : WALDA_NAME[id - 16]; }
-
-/* Generated-wallpaper render id for a box: byte 0..15 = that wallpaper; byte 16
- * (Friends) = 16 + the Emerald Walda pattern. */
-static int box_wp_render(const uint8_t* pc, int box) {
-  int b = pk_box_wallpaper(pc, box);
-  if (b < G3_BOX_WALLPAPER_FRIENDS) return b;
-  int wp = app_walda_pattern();          /* -1 on non-Emerald */
-  return (wp >= 0) ? G3_BOX_WALLPAPER_FRIENDS + wp : 0;
-}
 
 /* Draw box wallpaper `wp` into the region. Falls back to the procedural grass for
  * any wallpaper without a real generated bitmap (see wallpaper_bmp). */
@@ -219,13 +214,13 @@ static void wallpaper_patch(int wp, int cx, int cy, int cw, int ch) {
     }
 }
 
-/* 32x32 box icon, blitted HORIZONTALLY MIRRORED so the mons face the other way
- * (matches the real Gen-3 PC). 0x8000 = opaque. */
+/* 32x32 box icon, blitted in the icons' natural facing (the front sprite, party
+ * list and bank all draw un-mirrored, so the PC grid matches them). 0x8000 = opaque. */
 static void blit_icon(int x, int y, const u16* icon) {
   if (!icon) return;
   for (int j = 0; j < MON_ICON_H; j++)
     for (int i = 0; i < MON_ICON_W; i++) {
-      u16 p = icon[j * MON_ICON_W + (MON_ICON_W - 1 - i)];
+      u16 p = icon[j * MON_ICON_W + i];
       if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
     }
 }
@@ -236,15 +231,31 @@ static void hand_xy(int cur, int* hx, int* hy) {
   if (*hy < 28) *hy = 28;
 }
 
-static void grid_icons(void) {
+/* Draw all 30 box icons, optionally skipping one slot (the one held in-hand during
+ * move-mode, which is drawn riding the cursor instead). */
+static void grid_icons_skip(int skip) {
   for (int s = 0; s < 30; s++)
-    if (g_box[s].species)
+    if (s != skip && g_box[s].species)
       blit_icon(GRID_X + (s % COLS) * CELL_W, GRID_Y + (s / COLS) * CELL_H, mon_icon_for_form(g_box[s].species, g_box[s].form));
 }
+static void grid_icons(void) { grid_icons_skip(-1); }
 
-static void draw_footer(bool on_title, bool moving) {
+/* Repaint a rect: wallpaper pixels + any box icons overlapping it (skipping the
+ * held slot). Used to erase a moving hand without a full redraw. */
+static void redraw_region(int wp, int x, int y, int w, int h, int skip) {
+  wallpaper_patch(wp, x, y, w, h);
+  for (int s = 0; s < 30; s++) {
+    if (s == skip || !g_box[s].species) continue;
+    int ix = GRID_X + (s % COLS) * CELL_W, iy = GRID_Y + (s / COLS) * CELL_H;
+    if (ix < x + w && ix + MON_ICON_W > x && iy < y + h && iy + MON_ICON_H > y)
+      blit_icon(ix, iy, mon_icon_for_form(g_box[s].species, g_box[s].form));
+  }
+}
+
+static void draw_footer(bool is_bank, bool on_title, bool moving) {
   const char* f = moving ? "Move: D-pad place  A drop  B cancel"
                 : on_title ? "A rename/wallpaper  DOWN grid  L/R box  B close"
+                : is_bank  ? "A menu  UP title  L/R box  B close"
                            : "A menu  UP title  SEL party  L/R box  B close";
   /* clear the footer strip first (it changes between modes) */
   ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);
@@ -257,41 +268,70 @@ static void draw_cursor_hand(int cur, bool on_title) {
 }
 
 /* Full repaint — on entry, box change, after a menu/edit, or a mode change. */
-static void render_full(const uint8_t* pc, int box, int cur, bool on_title, bool moving) {
+static void render_full(BoxSource* src, int box, int cur, bool on_title, bool moving) {
   ui_clear();
   draw_tab(0, PANEL_W + 1, "PKMN DATA", true);
-  draw_tab(PANEL_W + 1, 92, "PARTY SEL", false);
+  draw_tab(PANEL_W + 1, 92, src->is_bank ? "(BANK)" : "PARTY SEL", false);
   draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "CLOSE B", false);
   draw_left(on_title ? 0 : &g_box[cur]);
 
-  draw_wallpaper(box_wp_render(pc, box), WP_X, WP_Y, WP_W, WP_H);
+  draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
 
   char bn[12], bnocc[24];
-  pk_box_name(pc, box, bn);
+  src->get_name(box, bn);
   int occ = 0;
   for (int s = 0; s < 30; s++) if (g_box[s].species) occ++;
   siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);
   draw_banner(WP_X + 2, 13, WP_W - 4, bnocc);
   if (on_title) m3_frame(WP_X, 12, WP_X + WP_W - 1, 27, UI_SELTEXT);
 
-  grid_icons();
-  if (moving && s_move_from >= 0) {                 /* frame the slot being moved */
-    int sx = GRID_X + (s_move_from % COLS) * CELL_W, sy = GRID_Y + (s_move_from / COLS) * CELL_H;
-    m3_frame(sx - 1, sy - 1, sx + MON_ICON_W, sy + MON_ICON_H, UI_WARN);
+  if (moving && s_move_from >= 0) {                 /* carry: held mon rides the cursor */
+    grid_icons_skip(s_move_from);                   /* its source slot reads empty */
+    int ix = GRID_X + (cur % COLS) * CELL_W;
+    int iy = GRID_Y + (cur / COLS) * CELL_H - 4;    /* lifted a few px = "picked up" */
+    if (iy < WP_Y) iy = WP_Y;
+    blit_icon(ix, iy, mon_icon_for_form(g_box[s_move_from].species, g_box[s_move_from].form));
+    int hx, hy; hand_xy(cur, &hx, &hy);
+    draw_grab(hx, hy);                               /* closed fist gripping it */
+  } else {
+    grid_icons();
+    draw_cursor_hand(cur, on_title);
   }
-  draw_cursor_hand(cur, on_title);
-  draw_footer(on_title, moving);
+  draw_footer(src->is_bank, on_title, moving);
+}
+
+/* Pick-up grab animation: at the source cell the open hand descends, spreads
+ * (reach) and closes (grab) onto the mon, then lifts. A one-shot played the moment
+ * MOVE is chosen, before the carry state takes over. */
+static void play_grab_anim(BoxSource* src, int box, int slot) {
+  int wp = src->get_wp(box);
+  int cx = GRID_X + (slot % COLS) * CELL_W;
+  int cy = GRID_Y + (slot / COLS) * CELL_H;
+  /* (frame, w, h, x-nudge, y from cell top) — descend, close, then lift */
+  const struct { const uint16_t* f; int w, h, dx, dy; } seq[] = {
+    { hand_cursor, HAND_W,      HAND_H,      3, -18 },
+    { hand_reach,  HAND_REACH_W, HAND_REACH_H, 0, -12 },
+    { hand_grab,   HAND_GRAB_W,  HAND_GRAB_H,  3,  -4 },
+    { hand_grab,   HAND_GRAB_W,  HAND_GRAB_H,  3, -12 },
+  };
+  for (unsigned i = 0; i < sizeof(seq) / sizeof(seq[0]); i++) {
+    /* erase the whole descent column + the mon, then redraw the mon and this frame */
+    redraw_region(wp, cx - 4, cy - 20, MON_ICON_W + 8, MON_ICON_H + 24, -1);
+    int hy = cy + seq[i].dy; if (hy < WP_Y) hy = WP_Y;
+    blit_frame(cx + seq[i].dx, hy, seq[i].f, seq[i].w, seq[i].h);
+    for (int v = 0; v < 3; v++) s_vsync();
+  }
 }
 
 /* Light update on cursor move — repaint only the old hand area + the new hand +
  * the left PKMN-DATA panel, so browsing the PC never re-renders the whole box. */
-static void move_cursor(const uint8_t* pc, int box, int old_cur, bool old_title,
+static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
                         int cur, bool on_title) {
-  int wp = box_wp_render(pc, box);
+  int wp = src->get_wp(box);
   /* erase the old hand */
   if (old_title) {
     wallpaper_patch(wp, WP_X, WP_Y, WP_W, 16);          /* banner area top strip */
-    char bn[12], bnocc[24]; pk_box_name(pc, box, bn);
+    char bn[12], bnocc[24]; src->get_name(box, bn);
     int occ = 0; for (int s = 0; s < 30; s++) if (g_box[s].species) occ++;
     siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);
     draw_banner(WP_X + 2, 13, WP_W - 4, bnocc);
@@ -310,14 +350,14 @@ static void move_cursor(const uint8_t* pc, int box, int old_cur, bool old_title,
   if (on_title) m3_frame(WP_X, 12, WP_X + WP_W - 1, 27, UI_SELTEXT);
   draw_cursor_hand(cur, on_title);
   draw_left(on_title ? 0 : &g_box[cur]);              /* the selected mon changed */
-  if (on_title != old_title) draw_footer(on_title, false);
+  if (on_title != old_title) draw_footer(src->is_bank, on_title, false);
 }
 
 /* Wallpaper chooser: live-previews each wallpaper behind the box's icons.
  * 16 standard ids, plus the 16 Emerald "Walda"/secret wallpapers (ids 16..31) when
- * the save is Emerald. LEFT/RIGHT cycle, A confirms (returns the id), B cancels. */
-static int wallpaper_pick(const uint8_t* pc, int box, int cur_wp) {
-  int count = (app_walda_pattern() >= 0) ? 32 : G3_BOX_WALLPAPER_COUNT;   /* Emerald = +Walda */
+ * the source allows (PC Emerald, wp_count==32). LEFT/RIGHT cycle, A confirms, B cancels. */
+static int wallpaper_pick(BoxSource* src, int cur_wp) {
+  int count = src->wp_count > 0 ? src->wp_count : G3_BOX_WALLPAPER_COUNT;
   int wp = (cur_wp >= 0 && cur_wp < count) ? cur_wp : 0;
   for (;;) {
     ui_clear();
@@ -336,8 +376,8 @@ static int wallpaper_pick(const uint8_t* pc, int box, int cur_wp) {
 }
 
 /* Overlay menu when the box TITLE is selected: rename / change wallpaper. Each
- * edit writes PC storage and commits via the verified-write path. */
-static void box_options_menu(uint8_t* pc, int box) {
+ * edit mutates the source and commits via its verified-write path. */
+static void box_options_menu(BoxSource* src, int box) {
   static const char* const OPT[3] = { "Rename box", "Wallpaper", "Cancel" };
   int sel = 0;
   for (;;) {
@@ -358,23 +398,23 @@ static void box_options_menu(uint8_t* pc, int box) {
     else if (k & KEY_A) {
       snd_ok();
       if (sel == 0) {                              /* rename */
-        char cur[12]; pk_box_name(pc, box, cur);
+        char cur[12]; src->get_name(box, cur);
         char buf[12];
         if (osk_input("BOX NAME", cur[0] ? cur : "BOX", buf, 9)) {
-          pk_set_box_name(pc, box, buf);
-          app_commit_pc();
+          src->set_name(box, buf);
+          src->commit();
         }
         return;
       } else if (sel == 1) {                       /* wallpaper */
-        int wp = wallpaper_pick(pc, box, box_wp_render(pc, box));
+        int wp = wallpaper_pick(src, src->get_wp(box));
         if (wp >= 0) {
-          if (wp < G3_BOX_WALLPAPER_FRIENDS) {            /* standard wallpaper */
-            pk_set_box_wallpaper(pc, box, (uint8_t)wp);
-            app_commit_pc();
-          } else {                                        /* Emerald Walda secret wallpaper */
-            pk_set_box_wallpaper(pc, box, G3_BOX_WALLPAPER_FRIENDS);
+          if (src->is_bank || wp < G3_BOX_WALLPAPER_FRIENDS) {  /* standard wallpaper */
+            src->set_wp(box, wp);
+            src->commit();
+          } else {                                        /* Emerald Walda secret wallpaper (PC) */
+            src->set_wp(box, G3_BOX_WALLPAPER_FRIENDS);
             app_set_walda((uint8_t)(wp - G3_BOX_WALLPAPER_FRIENDS));
-            if (app_commit_pc()) app_commit_sb1();        /* box byte + the Walda config */
+            if (src->commit()) app_commit_sb1();          /* box byte + the Walda config */
           }
         }
         return;
@@ -383,17 +423,21 @@ static void box_options_menu(uint8_t* pc, int box) {
   }
 }
 
-int pkview_box(uint8_t* pc) {
-  int box = pk_current_box(pc);
-  if (box < 0 || box >= G3_TOTAL_BOXES) box = 0;
+int pkview_box(BoxSource* src) {
+  int nb = src->nboxes; if (nb < 1) nb = 1;
+  int box = src->start_box; if (box < 0 || box >= nb) box = 0;
   int cur = 0;
   bool on_title = false;
   bool need_full = true;
   s_move_from = -1;
-  pk_read_box(pc, box, g_box);
+  uint8_t* recs = src->records(box);          /* current box's 30*80 records */
+  pk_decode_box_raw(recs, g_box);
+  /* switch to box `nbx` (wrapping), reload + redraw */
+  #define SWITCH_BOX(nbx) do { box = (nbx); recs = src->records(box); \
+                               pk_decode_box_raw(recs, g_box); cur = 0; need_full = true; } while (0)
 
   for (;;) {
-    if (need_full) { render_full(pc, box, cur, on_title, s_move_from >= 0); need_full = false; }
+    if (need_full) { render_full(src, box, cur, on_title, s_move_from >= 0); need_full = false; }
     u16 k, fresh;
     do { s_vsync(); fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
@@ -409,9 +453,9 @@ int pkview_box(uint8_t* pc) {
     if (s_move_from >= 0) {
       if (k & KEY_B) { snd_back(); s_move_from = -1; need_full = true; }
       else if (k & KEY_A) {                          /* drop -> swap source <-> cursor */
-        swap_box_slots(pc, box, s_move_from, cur);
-        pk_read_box(pc, box, g_box);
-        app_commit_pc();
+        swap_records(recs, s_move_from, cur);
+        pk_decode_box_raw(recs, g_box);
+        src->mark_dirty();                           /* PC: deferred to exit; bank: quiet write now */
         s_move_from = -1; need_full = true;
       }
       else if (k & KEY_LEFT)  { cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1; need_full = true; }
@@ -422,17 +466,21 @@ int pkview_box(uint8_t* pc) {
     }
 
     if (k & KEY_B) return 0;
-    else if (k & KEY_START) return 2;
-    else if (k & KEY_L) { box = (box + G3_TOTAL_BOXES - 1) % G3_TOTAL_BOXES; pk_read_box(pc, box, g_box); cur = 0; need_full = true; }
-    else if (k & KEY_R) { box = (box + 1) % G3_TOTAL_BOXES; pk_read_box(pc, box, g_box); cur = 0; need_full = true; }
+    else if ((k & KEY_START) && !src->is_bank) return 2;
+    else if (k & KEY_L) { SWITCH_BOX((box + nb - 1) % nb); }
+    else if (k & KEY_R) { SWITCH_BOX((box + 1) % nb); }
     else if (on_title) {                           /* TITLE row: limited controls */
       if (k & KEY_DOWN) on_title = false;
+      /* LEFT/RIGHT on the box name flips boxes, like the real Gen-3 PC (fresh
+       * presses only, so holding doesn't machine-gun through boxes). */
+      else if (fresh & KEY_LEFT)  { SWITCH_BOX((box + nb - 1) % nb); on_title = true; }
+      else if (fresh & KEY_RIGHT) { SWITCH_BOX((box + 1) % nb); on_title = true; }
       else if (k & KEY_A) {
-        if (app_can_edit()) { box_options_menu(pc, box); need_full = true; }
+        if (src->can_edit()) { box_options_menu(src, box); need_full = true; }
         else { snd_deny(); }
       }
     }
-    else if (k & KEY_SELECT) return 1;
+    else if ((k & KEY_SELECT) && !src->is_bank) return 1;
     else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
     else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
     else if (k & KEY_UP)    { if (cur < COLS) on_title = true; else cur -= COLS; }
@@ -440,17 +488,24 @@ int pkview_box(uint8_t* pc) {
     else if (k & KEY_A) {
       /* open the action menu on an occupied slot, OR on an empty slot when the
        * clipboard holds a mon to PASTE here. */
-      if (g_box[cur].species || (app_can_edit() && app_clip_occupied())) {
-        uint8_t* rec = pc + 0x0004 + ((uint32_t)box * 30 + cur) * 80;     /* PokemonStorage.boxes */
-        app_mon_menu(rec, false, G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, pc, box, cur);
-        pk_read_box(pc, box, g_box);                                      /* refresh after possible write */
-        if (app_take_move_request()) s_move_from = cur;                  /* picked MOVE -> hold this slot */
+      if (g_box[cur].species || (src->can_edit() && app_clip_occupied())) {
+        uint8_t* rec = recs + (uint32_t)cur * 80;
+        int mbox = src->is_bank ? 0 : box;                               /* box index within menu_block */
+        app_mon_menu(rec, false, src->commit, src->menu_block, mbox, cur);
+        recs = src->records(box);                                        /* menu may have edited it */
+        pk_decode_box_raw(recs, g_box);                                  /* refresh after possible write */
+        if (app_take_move_request()) {                                   /* picked MOVE -> hold this slot */
+          s_move_from = cur;
+          render_full(src, box, cur, false, false);                      /* clean scene under the menu */
+          play_grab_anim(src, box, cur);                                 /* real-PC grab animation */
+        }
         need_full = true;
       }
     }
 
     /* cursor-only change -> light partial repaint; everything else did a full one */
     if (!need_full && (cur != old_cur || on_title != old_title))
-      move_cursor(pc, box, old_cur, old_title, cur, on_title);
+      move_cursor(src, box, old_cur, old_title, cur, on_title);
   }
+  #undef SWITCH_BOX
 }

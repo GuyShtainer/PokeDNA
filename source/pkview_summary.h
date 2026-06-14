@@ -9,7 +9,13 @@
  * B leaves. The "save changes?" prompt appears only when leaving or changing mon
  * with unsaved edits — on save it writes the edited 100/80-byte record to out_rec
  * and sets *saved. Returns 0 (exit), +1 (next mon) or -1 (prev mon); the caller
- * loads that mon and calls again. `saved` may be NULL. */
-int pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec, bool* saved);
+ * loads that mon and calls again. `saved` may be NULL.
+ *
+ * `card` carries the current summary card (0..5) in and out, so scrolling U/D to
+ * the next mon stays on the same card (real-PC behaviour) instead of resetting to
+ * card 0. Pass a caller-owned int that persists across the scroll loop; may be NULL
+ * (treated as card 0, not written back). */
+int pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
+                   bool* saved, int* card);
 
 #endif /* PKVIEW_SUMMARY_H */

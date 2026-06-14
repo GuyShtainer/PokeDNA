@@ -240,14 +240,16 @@ static bool confirm(void) {
  *                    B returns to VIEW (edits stay pending). The EDIT banner shows.
  * Returns 0 to exit, +1 for "next mon", -1 for "prev mon" (the caller loads it and
  * calls again). *saved is set true (and out_rec filled) if the user kept the edits. */
-int pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec, bool* saved) {
+int pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
+                   bool* saved, int* card_io) {
   if (saved) *saved = false;
   EditMon e;
   gen3_edit_load(rec, is_party, &e);
   PkMon cur;
   em_preview(&e, &cur); pk_resolve(&cur);
 
-  int card = 0, fsel = 0;
+  int card = (card_io && *card_io >= 0 && *card_io < NCARDS) ? *card_io : 0;
+  int fsel = 0;
   bool dirty = false, editing = false;
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
 
@@ -289,6 +291,7 @@ int pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
       else if (k & (KEY_UP | KEY_DOWN | KEY_B)) {    /* leaving this mon: prompt-save if dirty */
         if (dirty && confirm()) { gen3_edit_commit(&e, out_rec); if (saved) *saved = true; }
         key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
+        if (card_io) *card_io = card;                /* keep the card sticky across mon-scroll */
         if (k & KEY_B) return 0;
         return (k & KEY_DOWN) ? +1 : -1;
       }

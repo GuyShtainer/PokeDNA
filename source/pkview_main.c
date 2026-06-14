@@ -34,6 +34,7 @@
 #include "gen3_clip.h"     /* ClipMon, slot ops (copy/paste/dup/release) */
 #include "pkview_legality.h" /* pkview_legality_show */
 #include "pkview_pk.h"     /* pkview_pk_export (.pk3) */
+#include "pkview_bank.h"   /* pkview_bank_show (bank = parallel boxes) */
 #include "gen3_flags.h"    /* event flags */
 #include "gen3_items.h"    /* item bags */
 #include "osk.h"           /* osk_search (numeric entry) */
@@ -75,10 +76,6 @@ static PkMon       EWRAM_BSS g_party[6];                  /* decoded party of th
 static u8          EWRAM_BSS g_pc[G3_PC_BYTES];           /* reassembled PC storage (boxes)  */
 static u8          EWRAM_BSS g_sb2[G3_SECTOR_DATA_SIZE];   /* SaveBlock2 (trainer card/stats) */
 static ClipMon     EWRAM_BSS g_clip;                       /* one-slot mon clipboard          */
-#define BANK_MAX 150
-static char        EWRAM_BSS g_bank_names[BANK_MAX][40];   /* .pk3 filenames in the bank dir  */
-static int         g_bank_n = 0;
-static PkMon       EWRAM_BSS g_bank_mon[30];               /* decoded current bank page       */
 
 /* ---- VBlank / input discipline (key_poll exactly once per frame) -------- */
 static void vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
@@ -492,8 +489,18 @@ static bool app_commit_block(int sect_lo, int sect_hi, uint8_t* block) {
  * = sections 1..4) after the trainer card edits g_sb2 / g_sb1 in place. */
 bool app_commit_sb2(void) { return app_commit_block(0, 0, g_sb2); }
 bool app_commit_sb1(void) { return app_commit_block(1, 4, g_sb1); }
-bool app_commit_pc(void)  { return app_commit_block(G3_SID_PKMN_STORAGE_START,
-                                                    G3_SID_PKMN_STORAGE_END, g_pc); }
+
+/* PC-storage dirty flag: set by deferred move-mode swaps, cleared by any successful
+ * PC write (which flushes the whole g_pc) or an explicit revert. */
+static bool g_pc_dirty = false;
+void app_mark_pc_dirty(void) { g_pc_dirty = true; }
+bool app_pc_dirty(void)      { return g_pc_dirty; }
+
+bool app_commit_pc(void)  {
+  bool ok = app_commit_block(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc);
+  if (ok) g_pc_dirty = false;                       /* the write persisted everything */
+  return ok;
+}
 
 /* Emerald "Walda" secret-wallpaper pattern (the graphic shown by box wallpaper 16),
  * stored in SaveBlock1. -1 / no-op on the other games. */
@@ -504,29 +511,31 @@ bool app_set_walda(uint8_t pattern) {
   return true;
 }
 
-bool app_edit_commit(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block) {
-  uint8_t out[100]; bool saved = false;
-  pkview_inspect(rec, is_party, true, out, &saved);          /* party: nav ignored */
+bool app_edit_commit(uint8_t* rec, bool is_party, AppCommitFn commit) {
+  uint8_t out[100]; bool saved = false; int card = 0;
+  pkview_inspect(rec, is_party, true, out, &saved, &card);   /* party: nav ignored */
   if (!saved) return false;                                  /* viewed only / discarded */
   memcpy(rec, out, is_party ? 100 : 80);                     /* patch in place (rec is inside block) */
-  return app_commit_block(sect_lo, sect_hi, block);
+  return commit ? commit() : false;
 }
 
 /* Box summary BROWSER: VIEW/EDIT a box slot, then U/D scroll to the prev/next
  * occupied slot (real-PC style). Edits are saved per-mon (prompted on leave/change)
- * via the PC-storage commit. Returns true if any write happened. */
-static bool app_box_browse(uint8_t* pc, int box, int start) {
+ * via the owning block's commit. `block` is the pc-layout buffer (box `box`'s 30
+ * records); for the bank box buffer pass box = 0. Returns true if any write. */
+static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commit) {
   int idx = start; bool any = false;
+  int card = 0;                                            /* sticky across mon-scroll */
   for (;;) {
-    uint8_t* rec = pc + 0x0004 + ((uint32_t)box * 30 + idx) * 80;
+    uint8_t* rec = block + 0x0004 + ((uint32_t)box * 30 + idx) * 80;
     uint8_t out[100]; bool saved = false;
-    int nav = pkview_inspect(rec, false, app_can_edit(), out, &saved);
-    if (saved) { memcpy(rec, out, 80); if (app_commit_pc()) any = true; }
+    int nav = pkview_inspect(rec, false, app_can_edit(), out, &saved, &card);
+    if (saved) { memcpy(rec, out, 80); if (commit && commit()) any = true; }
     if (nav == 0) break;
     for (int step = 0; step < G3_IN_BOX; step++) {           /* next occupied slot in dir nav */
       idx = (idx + nav + G3_IN_BOX) % G3_IN_BOX;
       PkMon t;
-      if (pk_decode_mon(pc + 0x0004 + ((uint32_t)box * 30 + idx) * 80, false, &t) &&
+      if (pk_decode_mon(block + 0x0004 + ((uint32_t)box * 30 + idx) * 80, false, &t) &&
           t.species >= 1 && t.species <= 411) break;
     }
   }
@@ -535,7 +544,7 @@ static bool app_box_browse(uint8_t* pc, int box, int start) {
 
 /* PC-menu quick editors: load -> mutate one field -> losslessly re-encode -> patch
  * in place -> commit. Each returns true iff the save was written. */
-static bool app_quick_item(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block) {
+static bool app_quick_item(uint8_t* rec, bool is_party, AppCommitFn commit) {
   EditMon e; gen3_edit_load(rec, is_party, &e);
   PkMon cur; em_preview(&e, &cur); pk_resolve(&cur);
   uint16_t id = pick_item(cur.heldItem);             /* 0xFFFF = cancel; 0 = no item */
@@ -543,10 +552,10 @@ static bool app_quick_item(uint8_t* rec, bool is_party, int lo, int hi, uint8_t*
   em_set_item(&e, id);
   uint8_t out[100]; gen3_edit_commit(&e, out);
   memcpy(rec, out, is_party ? 100 : 80);
-  return app_commit_block(lo, hi, block);
+  return commit ? commit() : false;
 }
 
-static bool app_quick_moves(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block) {
+static bool app_quick_moves(uint8_t* rec, bool is_party, AppCommitFn commit) {
   EditMon e; gen3_edit_load(rec, is_party, &e);
   PkMon cur; em_preview(&e, &cur); pk_resolve(&cur);
   int sel = 0;
@@ -573,7 +582,7 @@ static bool app_quick_moves(uint8_t* rec, bool is_party, int lo, int hi, uint8_t
   em_set_move(&e, sel, id);
   uint8_t out[100]; gen3_edit_commit(&e, out);
   memcpy(rec, out, is_party ? 100 : 80);
-  return app_commit_block(lo, hi, block);
+  return commit ? commit() : false;
 }
 
 bool app_clip_occupied(void) { return g_clip.occupied; }
@@ -610,16 +619,16 @@ static bool app_copy(uint8_t* rec, bool is_party) {
   return false;                                          /* no save change */
 }
 
-static bool app_paste(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block, bool occupied) {
+static bool app_paste(uint8_t* rec, bool is_party, AppCommitFn commit, bool occupied) {
   if (!g_clip.occupied) return false;
   if (occupied && !app_confirm("Overwrite this Pokemon?", "Paste the copied mon here?")) return false;
   uint8_t out[100];
   if (!clip_to_record(&g_clip, is_party, out)) return false;
   memcpy(rec, out, is_party ? 100 : 80);
-  return app_commit_block(lo, hi, block);
+  return commit ? commit() : false;
 }
 
-static bool app_duplicate(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block, int box) {
+static bool app_duplicate(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, int box) {
   if (is_party) {
     if (party_count(block, g_frlg) >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Release a mon first.", 0); return false; }
     uint8_t out[100]; memcpy(out, rec, 100);
@@ -629,10 +638,10 @@ static bool app_duplicate(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* 
     if (fs < 0) { snd_deny(); msg_wait("BOX FULL", UI_WARN, "No empty slot in this box.", 0); return false; }
     memcpy(pk_box_slot(block, box, fs), rec, 80);
   }
-  return app_commit_block(lo, hi, block);
+  return commit ? commit() : false;
 }
 
-static bool app_release(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block, int box, int slot) {
+static bool app_release(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, int box, int slot) {
   (void)rec;
   if (is_party && party_count(block, g_frlg) <= 1) {
     snd_deny();
@@ -642,13 +651,13 @@ static bool app_release(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* bl
   if (!app_confirm("Release this Pokemon?", "It is permanently deleted.")) return false;
   if (is_party) party_release(block, g_frlg, slot);
   else          clip_clear_box_slot(block, box, slot);
-  return app_commit_block(lo, hi, block);
+  return commit ? commit() : false;
 }
 
 /* Held-item move (take/give). TAKE stashes this mon's item and clears it; GIVE
  * puts the stashed item on a mon, swapping in that mon's old item so nothing is
  * ever lost (the stash empties when the swapped-out item is none). */
-static bool app_take_item(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block) {
+static bool app_take_item(uint8_t* rec, bool is_party, AppCommitFn commit) {
   EditMon e; gen3_edit_load(rec, is_party, &e);
   PkMon cur; em_preview(&e, &cur);
   if (!cur.heldItem) return false;
@@ -656,9 +665,9 @@ static bool app_take_item(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* 
   em_set_item(&e, 0);
   uint8_t out[100]; gen3_edit_commit(&e, out);
   memcpy(rec, out, is_party ? 100 : 80);
-  return app_commit_block(lo, hi, block);
+  return commit ? commit() : false;
 }
-static bool app_give_item(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* block) {
+static bool app_give_item(uint8_t* rec, bool is_party, AppCommitFn commit) {
   if (!g_item_held) return false;
   EditMon e; gen3_edit_load(rec, is_party, &e);
   PkMon cur; em_preview(&e, &cur);
@@ -667,21 +676,22 @@ static bool app_give_item(uint8_t* rec, bool is_party, int lo, int hi, uint8_t* 
   uint8_t out[100]; gen3_edit_commit(&e, out);
   memcpy(rec, out, is_party ? 100 : 80);
   g_item_clip = dst_old; g_item_held = (dst_old != 0);   /* swap: keep dst's old item to re-home */
-  return app_commit_block(lo, hi, block);
+  return commit ? commit() : false;
 }
 
 /* Gen-3-PC-style action menu on A. Omega: a navigable overlay of SUMMARY / ITEM /
  * MOVES / COPY / PASTE / DUPLICATE / RELEASE (the slot-aware ones use box/slot;
  * party ops use g_frlg). On an EMPTY slot it offers PASTE only. Everdrive
  * (read-only): jump to the summary. Returns true iff the save was modified.
+ * `commit` persists `block` (PC storage, SaveBlock1, or a bank box file).
  * For party callers pass box = -1, slot = party index. */
-bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block, int box, int slot) {
+bool app_mon_menu(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, int box, int slot) {
   PkMon m0;
   bool occupied = pk_decode_mon(rec, is_party, &m0);
   if (occupied) pk_resolve(&m0);
 
   if (!app_can_edit()) {                                 /* read-only carts: view only */
-    if (occupied) { uint8_t d[100]; pkview_inspect(rec, is_party, false, d, 0); }
+    if (occupied) { uint8_t d[100]; int card = 0; pkview_inspect(rec, is_party, false, d, 0, &card); }
     return false;
   }
 
@@ -730,19 +740,19 @@ bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t
     else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
       switch (act[sel]) {
-        case A_SUMMARY: return is_party ? app_edit_commit(rec, is_party, sect_lo, sect_hi, block)
-                                        : app_box_browse(block, box, slot);   /* box: scroll mons */
-        case A_ITEM:    return app_quick_item (rec, is_party, sect_lo, sect_hi, block);
-        case A_MOVES:   return app_quick_moves(rec, is_party, sect_lo, sect_hi, block);
+        case A_SUMMARY: return is_party ? app_edit_commit(rec, is_party, commit)
+                                        : app_box_browse(block, box, slot, commit);   /* box: scroll mons */
+        case A_ITEM:    return app_quick_item (rec, is_party, commit);
+        case A_MOVES:   return app_quick_moves(rec, is_party, commit);
         case A_LEGAL:   pkview_legality_show(&m0); return false;
         case A_MOVE:    g_move_req = true; return false;            /* box loop handles the move */
         case A_EXPORT:  pkview_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
         case A_COPY:    return app_copy(rec, is_party);
-        case A_PASTE:   return app_paste(rec, is_party, sect_lo, sect_hi, block, occupied);
-        case A_DUP:     return app_duplicate(rec, is_party, sect_lo, sect_hi, block, box);
-        case A_RELEASE: return app_release(rec, is_party, sect_lo, sect_hi, block, box, slot);
-        case A_TAKEITEM:return app_take_item(rec, is_party, sect_lo, sect_hi, block);
-        case A_GIVEITEM:return app_give_item(rec, is_party, sect_lo, sect_hi, block);
+        case A_PASTE:   return app_paste(rec, is_party, commit, occupied);
+        case A_DUP:     return app_duplicate(rec, is_party, commit, block, box);
+        case A_RELEASE: return app_release(rec, is_party, commit, block, box, slot);
+        case A_TAKEITEM:return app_take_item(rec, is_party, commit);
+        case A_GIVEITEM:return app_give_item(rec, is_party, commit);
         default:        return false;                    /* CANCEL */
       }
     }
@@ -788,159 +798,10 @@ static int party_list(void) {
     else if ((k & KEY_A) && g_nparty > 0) {
       uint16_t doff = g_frlg ? 0x0038 : 0x0238;
       uint8_t* rec = g_sb1 + doff + (uint32_t)sel * 100;     /* party lives in SaveBlock1 (ids 1..4) */
-      if (app_mon_menu(rec, true, 1, 4, g_sb1, -1, sel)) {   /* PC-style menu -> chosen editor -> commit */
+      if (app_mon_menu(rec, true, app_commit_sb1, g_sb1, -1, sel)) {   /* PC-style menu -> editor -> commit */
         g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
         for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
         if (sel >= g_nparty) sel = g_nparty ? g_nparty - 1 : 0;
-      }
-    }
-  }
-}
-
-/* ===================== external bank (/pokeviewer/bank/*.pk3) =========== */
-
-static bool has_pk_ext(const char* n) {
-  int L = (int)strlen(n);
-  if (L >= 4 && n[L-4]=='.' && (n[L-3]=='p'||n[L-3]=='P') && (n[L-2]=='k'||n[L-2]=='K') && n[L-1]=='3') return true;
-  if (L >= 3 && n[L-3]=='.' && (n[L-2]=='p'||n[L-2]=='P') && (n[L-1]=='k'||n[L-1]=='K')) return true;
-  return false;
-}
-
-static void bank_scan(void) {
-  g_bank_n = 0;
-  DIR d; FILINFO fno;
-  if (f_opendir(&d, PKVIEW_BANK_DIR) != FR_OK) return;
-  while (g_bank_n < BANK_MAX && f_readdir(&d, &fno) == FR_OK && fno.fname[0]) {
-    if (fno.fattrib & AM_DIR) continue;
-    if (!has_pk_ext(fno.fname)) continue;
-    strncpy(g_bank_names[g_bank_n], fno.fname, 39);
-    g_bank_names[g_bank_n][39] = 0;
-    g_bank_n++;
-  }
-  f_closedir(&d);
-}
-
-static bool bank_read(int idx, uint8_t out[80]) {
-  char path[SF_PATH_MAX];
-  siprintf(path, PKVIEW_BANK_DIR "/%s", g_bank_names[idx]);
-  uint32_t sz = 0;
-  return sf_read_full(path, out, 80, &sz) == SF_OK && sz >= 80 && pk3_validate(out);
-}
-
-/* first empty PC box slot of the loaded game, or false if the whole PC is full */
-static bool pc_first_free(const uint8_t* pc, int* box, int* slot) {
-  for (int b = 0; b < G3_TOTAL_BOXES; b++)
-    for (int s = 0; s < G3_IN_BOX; s++) {
-      PkMon m;
-      if (!pk_decode_mon(pk_box_slot((uint8_t*)pc, b, s), false, &m)) { *box = b; *slot = s; return true; }
-    }
-  return false;
-}
-
-enum { BA_BOX = 0, BA_PARTY, BA_DELETE, BA_CANCEL };
-static int bank_action_menu(bool party_room) {
-  const char* L[4]; int code[4]; int n = 0;
-  L[n] = "Inject to box";   code[n++] = BA_BOX;
-  if (party_room) { L[n] = "Inject to party"; code[n++] = BA_PARTY; }
-  L[n] = "Delete file";     code[n++] = BA_DELETE;
-  L[n] = "Cancel";          code[n++] = BA_CANCEL;
-  const int mx = 58, mw = 124, mh = 18 + n * 14, my = 80 - mh / 2;
-  int sel = 0;
-  for (;;) {
-    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
-    ui_text(mx + 6, my + 4, UI_TITLE, "BANK MON");
-    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < n; i++) {
-      int y = my + 18 + i * 14; bool s = (i == sel);
-      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
-      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
-    }
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return BA_CANCEL;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
-    else if (k & KEY_DOWN) sel = (sel + 1) % n;
-    else if (k & KEY_A)    return code[sel];
-  }
-}
-
-/* The bank: a grid of stored .pk3 mons. A injects into the loaded game's first
- * free PC box slot (the record is byte-identical across all 5 games) or deletes
- * the file. Returns true iff the loaded save was modified (caller refreshes). */
-static bool bank_screen(void) {
-  bool changed = false;
-  bank_scan();
-  int cur = 0, page = 0;
-  for (;;) {
-    int pages = (g_bank_n + 29) / 30; if (pages < 1) pages = 1;
-    if (page >= pages) page = pages - 1;
-    int on = g_bank_n - page * 30; if (on > 30) on = 30; if (on < 0) on = 0;
-    for (int i = 0; i < 30; i++) {
-      uint8_t raw[80];
-      if (i < on && bank_read(page * 30 + i, raw)) { pk_decode_mon(raw, false, &g_bank_mon[i]); pk_resolve(&g_bank_mon[i]); }
-      else g_bank_mon[i].species = 0;
-    }
-    if (cur >= on) cur = on ? on - 1 : 0;
-
-    ui_clear();
-    char h[48]; siprintf(h, "BANK  %d stored  pg %d/%d", g_bank_n, page + 1, pages);
-    ui_text(4, 2, UI_TITLE, h);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    if (g_bank_n == 0) {
-      ui_text(8, 40, UI_DIM, "No stored Pokemon.");
-      ui_text(8, 54, UI_DIM, "EXPORT a mon, or copy .pk3 files");
-      ui_text(8, 64, UI_DIM, "into /pokeviewer/bank/ on your PC.");
-    }
-    for (int i = 0; i < 30; i++) {
-      int x = 18 + (i % 6) * 34, y = 20 + (i / 6) * 24;
-      if (g_bank_mon[i].species) ui_icon_scaled(x, y, 24, 24, mon_icon_for_form(g_bank_mon[i].species, g_bank_mon[i].form));
-      if (i == cur && on) m3_frame(x - 1, y - 1, x + 24, y + 24, UI_SELTEXT);
-    }
-    if (on) {
-      PkMon* p = &g_bank_mon[cur];
-      char info[48], it[48];
-      siprintf(info, "No.%u %s Lv%u", (unsigned)pk_national_no(p->species),
-               p->nickname[0] ? p->nickname : pk_species_name(p->species), (unsigned)p->level);
-      ui_truncate(it, info, 29);
-      ui_text(4, 142, UI_OK, it);
-    }
-    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, app_can_edit() ? "A inject/del  L/R page  B back" : "L/R page  B back  (read-only)");
-
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B);
-    if (k & KEY_B) return changed;
-    else if (k & KEY_L) { snd_tab(); page = (page + pages - 1) % pages; cur = 0; }
-    else if (k & KEY_R) { snd_tab(); page = (page + 1) % pages; cur = 0; }
-    else if (k & KEY_LEFT)  { if (cur % 6) cur--; }
-    else if (k & KEY_RIGHT) { if (cur % 6 != 5 && cur + 1 < on) cur++; }
-    else if (k & KEY_UP)    { if (cur >= 6) cur -= 6; }
-    else if (k & KEY_DOWN)  { if (cur + 6 < on) cur += 6; }
-    else if ((k & KEY_A) && on && app_can_edit()) {
-      int idx = page * 30 + cur;
-      char path[SF_PATH_MAX]; siprintf(path, PKVIEW_BANK_DIR "/%s", g_bank_names[idx]);
-      int a = bank_action_menu(party_count(g_sb1, g_frlg) < 6);
-      if (a == BA_BOX || a == BA_PARTY) {
-        uint8_t raw[80];
-        if (!bank_read(idx, raw)) { snd_deny(); msg_wait("BAD FILE", UI_WARN, "Could not read this .pk3.", 0); }
-        else {
-          bool ok = false;
-          if (a == BA_BOX) {
-            int b, s;
-            if (!pc_first_free(g_pc, &b, &s)) { snd_deny(); msg_wait("PC FULL", UI_WARN, "No empty box slot.", 0); }
-            else { memcpy(pk_box_slot(g_pc, b, s), raw, 80);
-                   ok = app_commit_block(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc); }
-          } else {                                     /* inject to party (append) */
-            ClipMon t; clip_copy_from(&t, raw, false);
-            uint8_t r100[100]; clip_to_record(&t, true, r100);
-            if (party_append(g_sb1, g_frlg, r100)) ok = app_commit_block(1, 4, g_sb1);
-            else { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Release a mon first.", 0); }
-          }
-          if (ok) {                                    /* offer to WITHDRAW (move, not copy) */
-            changed = true;
-            if (app_confirm("Remove from bank?", "Withdraw = move out of the bank.")) { f_unlink(path); bank_scan(); }
-          }
-        }
-      } else if (a == BA_DELETE) {
-        if (app_confirm("Delete this .pk3 file?", "The stored mon is removed.")) { f_unlink(path); bank_scan(); }
       }
     }
   }
@@ -1063,7 +924,7 @@ static bool data_editor(void) {
           ui_text(8, y, s ? UI_SELTEXT : (on ? UI_OK : UI_DIM), rt);
         }
       }
-      ui_text(4, 152, UI_DIM, "A toggle/open  U/D  L/R tab  B done");
+      ui_text(4, 152, UI_DIM, "A toggle  SEL jump cat  L/R tab  B done");
     }
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B | KEY_SELECT);
@@ -1075,6 +936,16 @@ static bool data_editor(void) {
       int total = nc + 1;
       if (k & KEY_UP)   { do { if (sel > 0) sel--; else break; } while (sel < nc && nf[sel].num == NAMED_FLAG_HEADER); }
       else if (k & KEY_DOWN) { do { if (sel < total - 1) sel++; else break; } while (sel < nc && nf[sel].num == NAMED_FLAG_HEADER); }
+      else if (k & KEY_SELECT) {                  /* jump to the next category header's first flag */
+        snd_tab();
+        int s = sel;
+        for (int step = 0; step < total; step++) {
+          s = (s + 1) % total;
+          if (s < nc && nf[s].num == NAMED_FLAG_HEADER) { sel = (s + 1 < nc) ? s + 1 : s; break; }
+          if (s == nc) { sel = nc; break; }       /* wrapped to the raw-browser row */
+        }
+        top = 0;
+      }
       else if (k & KEY_A) {
         if (sel == nc) flags_raw_view(&dirty, &flag_warned);   /* drill into raw */
         else if (nf[sel].num != NAMED_FLAG_HEADER) {
@@ -1138,9 +1009,54 @@ static int nav_menu(void) {                            /* 0=card 1=bank 2=data 3
   }
 }
 
+/* ---- PC-storage BoxSource: the in-save boxes, rendered by the shared box screen.
+ * Accessors operate on g_pc (+ g_sb1 for the Emerald Walda wallpaper). ---- */
+static uint8_t* pcsrc_records(int box) { return g_pc + 0x0004 + (uint32_t)box * 30 * 80; }
+static void pcsrc_get_name(int box, char out[12]) { pk_box_name(g_pc, box, out); }
+static void pcsrc_set_name(int box, const char* s) { pk_set_box_name(g_pc, box, s); }
+static int  pcsrc_get_wp(int box) {                  /* byte 0..15 = wallpaper; 16 = Walda pattern */
+  int b = pk_box_wallpaper(g_pc, box);
+  if (b < G3_BOX_WALLPAPER_FRIENDS) return b;
+  int wp = app_walda_pattern();                      /* -1 on non-Emerald */
+  return (wp >= 0) ? G3_BOX_WALLPAPER_FRIENDS + wp : 0;
+}
+static void pcsrc_set_wp(int box, int wp) { pk_set_box_wallpaper(g_pc, box, (uint8_t)wp); }
+
+static BoxSource pc_box_source(void) {
+  BoxSource s; memset(&s, 0, sizeof s);
+  s.nboxes     = G3_TOTAL_BOXES;
+  s.start_box  = pk_current_box(g_pc);
+  s.is_bank    = false;
+  s.wp_count   = (app_walda_pattern() >= 0) ? 32 : G3_BOX_WALLPAPER_COUNT;  /* Emerald = +Walda */
+  s.records    = pcsrc_records;
+  s.menu_block = g_pc;
+  s.get_name   = pcsrc_get_name;
+  s.set_name   = pcsrc_set_name;
+  s.get_wp     = pcsrc_get_wp;
+  s.set_wp     = pcsrc_set_wp;
+  s.can_edit   = app_can_edit;
+  s.commit     = app_commit_pc;
+  s.mark_dirty = app_mark_pc_dirty;
+  return s;
+}
+
+/* Leaving the open save: if move-mode left unsaved repositions, ask once. A writes
+ * them (the verified PC commit); B discards by reloading g_pc from the untouched
+ * in-RAM save image (we never wrote those moves to g_save). */
+static void flush_pc_on_exit(void) {
+  if (!app_pc_dirty()) return;
+  if (app_confirm("Save box changes?", "Save the Pokemon you moved?")) {
+    app_commit_pc();
+  } else {
+    gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);   /* revert uncommitted moves */
+    g_pc_dirty = false;
+  }
+}
+
 /* Load the picked save and show it: start in the PC boxes; SELECT toggles to the
  * party list and back; B from either returns to the file browser. */
 static void view_save(const char* path) {
+  g_pc_dirty = false;                          /* fresh save: no pending moves */
   strncpy(g_path, path, sizeof(g_path) - 1);
   g_path[sizeof(g_path) - 1] = 0;
   uint32_t sz = 0;
@@ -1169,17 +1085,17 @@ static void view_save(const char* path) {
   g_game = g_frlg ? PK_FRLG : (g_vinfo.version_guess == G3_VER_RS ? PK_RS : PK_EMERALD);
 
   int mode = g_have_pc ? 0 : 1;          /* start in PC boxes (per request) */
+  BoxSource pcs = pc_box_source();
   for (;;) {
-    int r = (mode == 0) ? pkview_box(g_pc) : party_list();
-    if (r == 0) return;                          /* B -> file browser */
+    int r = (mode == 0) ? pkview_box(&pcs) : party_list();
+    if (r == 0) { flush_pc_on_exit(); return; }  /* B -> file browser (prompt deferred moves) */
     if (r == 2) {                                /* START -> nav menu */
       int dest = nav_menu();
       if (dest == 0) pkview_trainer(g_sb1, g_sb2, &g_vinfo, g_game);
-      else if (dest == 1) {                       /* bank: inject can change g_pc and/or party */
-        if (bank_screen()) {
-          g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
-          for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
-        }
+      else if (dest == 1) {                       /* bank: parallel boxes; copy/paste moves mons */
+        pkview_bank_show();
+        g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);   /* a paste may have hit the party */
+        for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
       }
       else if (dest == 2) {                      /* data editor (edits the save) */
         if (app_can_edit()) data_editor();
@@ -1187,7 +1103,7 @@ static void view_save(const char* path) {
       }
       continue;
     }
-    if (!g_have_pc) return;                       /* nothing to toggle to */
+    if (!g_have_pc) { flush_pc_on_exit(); return; }   /* nothing to toggle to */
     mode ^= 1;                                    /* SELECT -> toggle box/party */
   }
 }

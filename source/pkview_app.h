@@ -10,19 +10,23 @@
 /* Writes are EZ-Flash-Omega-only. */
 bool app_can_edit(void);
 
-/* Edit the record `rec` (which lives inside `block`, the reassembled save-block
- * sections [sect_lo..sect_hi] of the loaded save). Runs the field editor; on
- * commit it rewrites those sections into the in-RAM save image (recomputing each
- * checksum), makes an immutable backup, and does a verified write. Shows the
- * result and returns true iff a write actually happened. Gated to Omega. */
-bool app_edit_commit(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block);
+/* How an edited in-RAM `block` is persisted. Each kind of block (PC storage,
+ * SaveBlock1, SaveBlock2, a bank box file) supplies its own verified-write
+ * function; the mon menu / editors mutate `block` in RAM then call this to save.
+ * Returns true iff a write happened. */
+typedef bool (*AppCommitFn)(void);
+
+/* Edit the record `rec` (which lives inside some in-RAM block). Runs the field
+ * editor; on commit it patches `rec` in place and calls `commit` (the owning
+ * block's verified-write path). Returns true iff a write happened. Gated to Omega. */
+bool app_edit_commit(uint8_t* rec, bool is_party, AppCommitFn commit);
 
 /* Gen-3-PC-style action menu shown on A: SUMMARY / ITEM / MOVES / COPY / PASTE /
  * DUPLICATE / RELEASE on Omega (an empty slot offers PASTE only); straight to the
- * read-only summary on Everdrive. Slot-aware ops use box+slot; party callers pass
- * box = -1 and slot = the party index. Returns true iff a write happened (the
- * caller should refresh its list/grid). */
-bool app_mon_menu(uint8_t* rec, bool is_party, int sect_lo, int sect_hi, uint8_t* block, int box, int slot);
+ * read-only summary on Everdrive. `block` is the pc-layout buffer the slot lives in
+ * and `box`/`slot` locate the record within it (box = -1, slot = party index for
+ * party callers). `commit` persists `block`. Returns true iff a write happened. */
+bool app_mon_menu(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, int box, int slot);
 
 /* true if the one-slot mon clipboard holds a copied mon (for the box grid to
  * allow PASTE onto an empty slot). */
@@ -39,6 +43,15 @@ bool app_take_move_request(void);
 bool app_commit_sb2(void);
 bool app_commit_sb1(void);
 bool app_commit_pc(void);                 /* PC storage (sections 5..13): box name/wallpaper */
+
+/* Deferred-save for PC box MOVES. Repositioning mons in move-mode mutates g_pc in
+ * RAM but does NOT write immediately (no per-drop "Saving" dialog); it marks the PC
+ * dirty instead. The single "save the Pokemon you moved?" prompt fires when the
+ * user leaves the open save (B out of the box/party screen). All OTHER PC edits
+ * still commit immediately — and any such commit clears the dirty flag, since the
+ * verified write flushes the whole g_pc (pending moves included). */
+void app_mark_pc_dirty(void);
+bool app_pc_dirty(void);
 
 /* Emerald "Walda" secret wallpaper: the graphic shown by box wallpaper 16. Pattern
  * is 0..15 (sWaldaWallpapers index) in SaveBlock1. app_walda_pattern returns -1 on
