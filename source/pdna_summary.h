@@ -1,5 +1,5 @@
-#ifndef PKVIEW_SUMMARY_H
-#define PKVIEW_SUMMARY_H
+#ifndef PDNA_SUMMARY_H
+#define PDNA_SUMMARY_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -15,7 +15,7 @@
  * the next mon stays on the same card (real-PC behaviour) instead of resetting to
  * card 0. Pass a caller-owned int that persists across the scroll loop; may be NULL
  * (treated as card 0, not written back). */
-int pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
+int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
                    bool* saved, int* card);
 
-#endif /* PKVIEW_SUMMARY_H */
+#endif /* PDNA_SUMMARY_H */

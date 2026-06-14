@@ -1,5 +1,5 @@
 /*
- * Game-faithful paged Pokémon summary (6 cards) for gba-pokeviewer — now an
+ * Game-faithful paged Pokémon summary (6 cards) for pokedna — now an
  * inline VIEW + EDIT screen. Each editable field registers its on-screen box
  * during render; in edit mode a cursor highlights one and A / LEFT-RIGHT edit it
  * in place (reusing the editor's field dispatchers). No separate "edit" mode.
@@ -9,13 +9,13 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "pkview_summary.h"
+#include "pdna_summary.h"
 #include "ui.h"
 #include "gen3_mon.h"
 #include "gen3_edit.h"
 #include "gen3_box.h"      /* pk_resolve */
 #include "data_tables.h"
-#include "pkview_edit.h"   /* F_*, em_field_press / em_field_adjust */
+#include "pdna_edit.h"   /* F_*, em_field_press / em_field_adjust */
 #include "mon_front.h"
 #include "mon_icons.h"
 #include "type_icons.h"
@@ -240,7 +240,7 @@ static bool confirm(void) {
  *                    B returns to VIEW (edits stay pending). The EDIT banner shows.
  * Returns 0 to exit, +1 for "next mon", -1 for "prev mon" (the caller loads it and
  * calls again). *saved is set true (and out_rec filled) if the user kept the edits. */
-int pkview_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
+int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
                    bool* saved, int* card_io) {
   if (saved) *saved = false;
   EditMon e;

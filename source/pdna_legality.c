@@ -1,4 +1,4 @@
-#include "pkview_legality.h"
+#include "pdna_legality.h"
 #include "gen3_legality.h"
 
 #include <tonc.h>
@@ -8,7 +8,7 @@
 
 #define VIS 13
 
-void pkview_legality_show(const PkMon* m) {
+void pdna_legality_show(const PkMon* m) {
   PkLegality L = pk_check_legality(m);
   int illegal = 0;
   for (int i = 0; i < L.n; i++) if (L.issue[i].sev) illegal++;

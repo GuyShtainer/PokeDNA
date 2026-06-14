@@ -1,5 +1,5 @@
 /*
- * Field-edit screen for gba-pokeviewer (PKHeX-style, in-RAM).
+ * Field-edit screen for pokedna (PKHeX-style, in-RAM).
  * UP/DOWN pick a field; LEFT/RIGHT adjust by 1, L/R shoulders by a bigger step;
  * A opens a list picker (species/item/move/nature) or the on-screen keyboard
  * (nickname/OT) or toggles (ability/shiny/gender); B cancels; START -> commit
@@ -11,14 +11,14 @@
 #include <string.h>
 
 #include "sys.h"
-#include "pkview_edit.h"
+#include "pdna_edit.h"
 #include "ui.h"
 #include "gen3_mon.h"
 #include "gen3_edit.h"
 #include "gen3_box.h"      /* pk_resolve */
 #include "data_tables.h"
 #include "osk.h"
-#include "pkview_pick.h"
+#include "pdna_pick.h"
 #include "snd.h"
 
 static const char* const FLABEL[F_NUM] = {
@@ -178,7 +178,7 @@ static bool confirm(void) {
   return (k & KEY_A) != 0;
 }
 
-bool pkview_edit(const uint8_t* rec, bool is_party, uint8_t* out_rec) {
+bool pdna_edit(const uint8_t* rec, bool is_party, uint8_t* out_rec) {
   EditMon e;
   gen3_edit_load(rec, is_party, &e);
   PkMon cur;

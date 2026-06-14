@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "sys.h"
-#include "pkview_pick.h"
+#include "pdna_pick.h"
 #include "ui.h"
 #include "data_tables.h"
 #include "mon_icons.h"

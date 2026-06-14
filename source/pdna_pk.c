@@ -1,4 +1,4 @@
-#include "pkview_pk.h"
+#include "pdna_pk.h"
 
 #include <tonc.h>
 #include <stdio.h>
@@ -32,14 +32,14 @@ static void msg(const char* l1, const char* l2, const char* l3, u16 col) {
   u16 k; do { VBlankIntrWait(); snd_vblank(); key_poll(); k = key_hit(KEY_A); } while (!k);
 }
 
-bool pkview_pk_export(const uint8_t* rec, const PkMon* m) {
-  f_mkdir("/pokeviewer");                 /* ignore FR_EXIST */
-  f_mkdir(PKVIEW_BANK_DIR);
+bool pdna_pk_export(const uint8_t* rec, const PkMon* m) {
+  f_mkdir("/pokedna");                 /* ignore FR_EXIST */
+  f_mkdir(PDNA_BANK_DIR);
 
   char base[16];
   sanitize(base, m->nickname[0] ? m->nickname : pk_species_name(m->species), sizeof(base));
   char path[SF_PATH_MAX];
-  siprintf(path, PKVIEW_BANK_DIR "/%s_%08lX.pk3", base, (unsigned long)m->personality);
+  siprintf(path, PDNA_BANK_DIR "/%s_%08lX.pk3", base, (unsigned long)m->personality);
 
   SfStatus st = sf_write_verified(path, rec, 80);   /* first 80 bytes = the box record */
   if (st == SF_OK) {

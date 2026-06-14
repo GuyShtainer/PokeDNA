@@ -1,4 +1,4 @@
-/* Host test for the bank's box layout contract (pkview_bank.c stores each bank box
+/* Host test for the bank's box layout contract (pdna_bank.c stores each bank box
  * as a 4-byte header + 30 raw records, "pc-mini-layout", so the shared box screen
  * and app_mon_menu's pk_box_slot() both address it correctly).
  *

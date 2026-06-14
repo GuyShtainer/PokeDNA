@@ -1,9 +1,9 @@
-#ifndef PKVIEW_BOX_H
-#define PKVIEW_BOX_H
+#ifndef PDNA_BOX_H
+#define PDNA_BOX_H
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "pkview_app.h"      /* AppCommitFn */
+#include "pdna_app.h"      /* AppCommitFn */
 
 /* A box "container" the box screen renders/edits, abstracted so the same screen
  * drives both the in-save PC storage and the external bank. Each source supplies:
@@ -37,6 +37,6 @@ typedef struct {
  * RIGHT on the title) change box, A opens the action menu / 6-card summary.
  * Returns 0 if the user backed out (B), 1 to switch to party (SELECT), or 2 for the
  * trainer/menu (START). */
-int pkview_box(BoxSource* src);
+int pdna_box(BoxSource* src);
 
-#endif /* PKVIEW_BOX_H */
+#endif /* PDNA_BOX_H */

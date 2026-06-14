@@ -1,4 +1,4 @@
-# gba-pokeviewer — Handoff
+# pokedna — Handoff
 
 > Living resume doc maintained by the `handoff` skill. The **Current status** and **Next steps**
 > sections are always kept current — start there to resume. The **Session log** grows downward,
@@ -7,7 +7,7 @@
 
 ## Current status
 
-- **Repo / branch:** `projects/gba-pokeviewer` (own git repo, under the git-ignored
+- **Repo / branch:** `projects/pokedna` (own git repo, under the git-ignored
   `gba-toolkit/projects/`) / `main` — pushed: **no** (all local).
 - **Goal:** an on-cartridge "PKHeX for the GBA" — a Gen-3 Pokémon save **viewer + editor** that
   runs on EZ-Flash Omega DE / Everdrive GBA X5, reads the flashcart microSD via FatFs, loads any
@@ -22,19 +22,19 @@
   SD-write path (incl. the new bank box files + deferred move-save) is **untested on a real cart**;
   the user **batches all hardware testing for a later session** ("we will test all later").
 - **7-fix batch — DONE this session (uncommitted, plan: `~/.claude/plans/glistening-drifting-willow.md`):**
-  1. **Un-mirrored PC box icons** — `pkview_box.c:blit_icon` reads forward again (was mirrored in `91d8de6`).
-  2. **Sticky summary card** — `pkview_inspect` gained an in/out `int* card`; `app_box_browse` keeps it across mon-scroll.
-  3. **LEFT/RIGHT on the box title flips boxes** — added to the `on_title` branch in `pkview_box.c` (fresh-press only).
+  1. **Un-mirrored PC box icons** — `pdna_box.c:blit_icon` reads forward again (was mirrored in `91d8de6`).
+  2. **Sticky summary card** — `pdna_inspect` gained an in/out `int* card`; `app_box_browse` keeps it across mon-scroll.
+  3. **LEFT/RIGHT on the box title flips boxes** — added to the `on_title` branch in `pdna_box.c` (fresh-press only).
   4. **Real-PC grab animation** — `gen_hand.py` now emits 3 frames (open/reach/grab); move-mode plays a pickup
      animation and the held mon **rides the closed-fist cursor** (`play_grab_anim`, carry render in `render_full`).
-  5. **Bank = parallel set of 16 boxes** — big refactor: `pkview_box` now drives a **`BoxSource`** vtable; new
-     `source/pkview_bank.c` stores the bank as per-box files (`/pokeviewer/bank/boxNN.box`) + `bank.meta`
+  5. **Bank = parallel set of 16 boxes** — big refactor: `pdna_box` now drives a **`BoxSource`** vtable; new
+     `source/pdna_bank.c` stores the bank as per-box files (`/pokedna/bank/boxNN.box`) + `bank.meta`
      (names+wallpapers), paged one box at a time (EWRAM-safe), migrates old flat `.pk3` on first open. Mons move
      in/out via the **universal copy/paste clipboard** (old inject/withdraw menu retired). `app_mon_menu` /
      `app_box_browse` / quick-editors now take an `AppCommitFn commit` instead of `(sect_lo,sect_hi)`.
   6. **Deferred save for moves only** — move-mode drop calls `src->mark_dirty` (PC: `app_mark_pc_dirty`, no write);
      `flush_pc_on_exit` (in `view_save`) asks **once** on B-exit; A=`app_commit_pc`, B=revert `g_pc` from `g_save`.
-     The bank mirrors this (`pkview_bank_show` prompts on bank-exit). All other edits keep their immediate prompt.
+     The bank mirrors this (`pdna_bank_show` prompts on bank-exit). All other edits keep their immediate prompt.
   7. **Comprehensive flags** — `gen_data.py` auto-scans every meaningful `FLAG_*` (hidden items, item balls, got/
      received, trainers, system) excluding TEMP/HIDE/UNUSED noise: **E=491 F=304 R=395** named flags (+~22 KB ROM).
      Flags tab gained a **SELECT = jump-to-next-category** control.
@@ -60,12 +60,12 @@
 
 1. **Commit the 7-fix batch** (working tree is dirty; nothing committed yet). Suggested grouping —
    small UX fixes (1-3), grab animation (4, incl. regenerated `hand_cursor.{c,h}` are git-ignored —
-   commit `gen_hand.py` only), the bank rework + deferred-save (5-6, incl. new `source/pkview_bank.*`
+   commit `gen_hand.py` only), the bank rework + deferred-save (5-6, incl. new `source/pdna_bank.*`
    and `tests/host_bank_test.c`), flags (7, commit `gen_data.py` — `data_tables.c` is git-ignored).
    Flag each SD-write path commit "NOT hardware-tested" per convention. Use the `git-commit` skill.
 2. **Hardware-validate on a real EZ-Flash Omega DE** (the user batches this). New things this batch
    added that the emulator cannot prove — exercise on disposable copies:
-   - **Bank as boxes:** first-open **migration** of any old `/pokeviewer/bank/*.pk3` into `boxNN.box`
+   - **Bank as boxes:** first-open **migration** of any old `/pokedna/bank/*.pk3` into `boxNN.box`
      + `bank.meta`; rename a bank box, change its wallpaper; **copy a mon PC→bank and bank→PC** (and
      bank→party) via the clipboard; move/swap within a bank box; confirm each `boxNN.box` re-reads
      intact and an interrupted write leaves the original recoverable (`.tmp`/rename).
@@ -88,8 +88,8 @@
 
 ```
 # Build the ROM (local devkitPro; ./build.sh uses Docker if preferred):
-DEVKITPRO=/opt/devkitpro DEVKITARM=/opt/devkitpro/devkitARM make -C projects/gba-pokeviewer rebuild
-#   -> projects/gba-pokeviewer/pokeviewer.gba   (TITLE=PKVIEW; do NOT gbafix -p pad — PSRAM ceiling)
+DEVKITPRO=/opt/devkitpro DEVKITARM=/opt/devkitpro/devkitARM make -C projects/pokedna rebuild
+#   -> projects/pokedna/pokedna.gba   (TITLE=PokeDNA; do NOT gbafix -p pad — PSRAM ceiling)
 
 # Regenerate the git-ignored data after editing a generator (run from the project root):
 python3 tools/gen_data.py        # data_tables.c (names/stats + comprehensive per-game named flags: E491/F304/R395)
@@ -130,25 +130,25 @@ cc -std=c11 -I source tests/host_bank_test.c source/gen3_save.c source/gen3_mon.
 - **Clean-room / generated art is git-ignored.** `data_tables.c`, `learnsets.c`, `wallpapers.c`,
   `mon_*.c/.s`, `hand_cursor.{c,h}`, and everything under `reference/` are generated locally and
   never committed — commit the **generators** (`tools/gen_*.py`), not their output.
-- **One box screen, two sources (`BoxSource` vtable in `pkview_box.h`).** The PC and the bank share
-  `pkview_box`; each supplies `records(box)`/name/wallpaper/`commit`/`mark_dirty`. The bank is
+- **One box screen, two sources (`BoxSource` vtable in `pdna_box.h`).** The PC and the bank share
+  `pdna_box`; each supplies `records(box)`/name/wallpaper/`commit`/`mark_dirty`. The bank is
   **paged** (one 2400-byte box in RAM) because EWRAM has no room for a second full PC blob.
 - **Bank moves mons via the universal clipboard, not a bespoke menu.** Copy in one place, paste in
   another (PC↔bank↔party) — so the bank really is "just more boxes". The old inject/withdraw is gone.
 
 ## Where things live
 
-- `source/pkview_box.c` — the **shared box screen** over a `BoxSource`: `render_full`/`move_cursor`
+- `source/pdna_box.c` — the **shared box screen** over a `BoxSource`: `render_full`/`move_cursor`
   (partial redraw), `blit_icon` (un-mirrored now), the **carry render + `play_grab_anim`** (move-mode
   grab), `box_options_menu`+`wallpaper_pick` (rename/wallpaper), title LEFT/RIGHT box-flip. `BoxSource`
-  is defined in `pkview_box.h`.
-- `source/pkview_bank.c` — the **bank as 16 parallel boxes**: per-box files `boxNN.box` + `bank.meta`,
-  paged via `banksrc_records`, `migrate_flat_pk3` (one-time `.pk3` import), `pkview_bank_show` (builds
-  the bank `BoxSource`, runs `pkview_box`, prompts deferred-move save on exit).
-- `source/pkview_summary.c:pkview_inspect` — VIEW/EDIT modes; returns nav 0/±1 + `*saved`, and now
-  threads an in/out `int* card` (sticky card across mon-scroll). Driven by `pkview_main.c:app_box_browse`.
-- `source/pkview_trainer.c` — editable trainer card + `flag_set_editor` (badges/frontier).
-- `source/pkview_main.c` — the one safe write path `app_commit_block` + wrappers `app_commit_pc/
+  is defined in `pdna_box.h`.
+- `source/pdna_bank.c` — the **bank as 16 parallel boxes**: per-box files `boxNN.box` + `bank.meta`,
+  paged via `banksrc_records`, `migrate_flat_pk3` (one-time `.pk3` import), `pdna_bank_show` (builds
+  the bank `BoxSource`, runs `pdna_box`, prompts deferred-move save on exit).
+- `source/pdna_summary.c:pdna_inspect` — VIEW/EDIT modes; returns nav 0/±1 + `*saved`, and now
+  threads an in/out `int* card` (sticky card across mon-scroll). Driven by `pdna_main.c:app_box_browse`.
+- `source/pdna_trainer.c` — editable trainer card + `flag_set_editor` (badges/frontier).
+- `source/pdna_main.c` — the one safe write path `app_commit_block` + wrappers `app_commit_pc/
   _sb1/_sb2`, `app_walda_pattern/app_set_walda`, `app_box_browse`, `app_mon_menu` (the A-menu).
 - `source/snd.{c,h}` — PSG UI sound; hooked at `wait_keys` + each file's `s_wait` (fresh presses).
 - `source/gen3_*.{c,h}` — pure-C save cores (parse/decrypt/edit/box/clip/legality/flags/items/
@@ -187,14 +187,14 @@ cc -std=c11 -I source tests/host_bank_test.c source/gen3_save.c source/gen3_mon.
 - **Did:** recon (manual + a 5-reader workflow) → wrote/approved a phased plan
   (`~/.claude/plans/glistening-drifting-willow.md`) → implemented all 7 in 5 phases, building clean
   after each:
-  - **A** fixes 1-3 (3 small edits in `pkview_box.c`/`pkview_summary.*`/`pkview_main.c`).
+  - **A** fixes 1-3 (3 small edits in `pdna_box.c`/`pdna_summary.*`/`pdna_main.c`).
   - **B** fix 4 — `gen_hand.py` now extracts 3 frames (open/reach/grab); move-mode plays a pickup
     grab animation and the held mon rides the closed-fist cursor.
   - **C** fix 6 — PC dirty flag (`app_mark_pc_dirty`/`app_pc_dirty`), `flush_pc_on_exit` prompts once
     on save-file exit (A=commit, B=revert from `g_save`); other edits unchanged.
-  - **D** fix 5 — **big refactor**: `pkview_box(BoxSource*)` vtable + `pk_decode_box_raw`; commit path
+  - **D** fix 5 — **big refactor**: `pdna_box(BoxSource*)` vtable + `pk_decode_box_raw`; commit path
     generalized to `AppCommitFn` across `app_mon_menu`/`app_box_browse`/quick-editors; new
-    `source/pkview_bank.{c,h}` (per-box files + `bank.meta`, paged, `.pk3` migration); old
+    `source/pdna_bank.{c,h}` (per-box files + `bank.meta`, paged, `.pk3` migration); old
     `bank_screen`/inject/withdraw deleted; bank wired into `view_save`. **EWRAM went DOWN** 248.3→241.6 KB.
   - **E** fix 7 — `gen_data.py` auto-scans all meaningful `FLAG_*` (E491/F304/R395, +~22 KB ROM);
     flags tab SELECT = jump-to-category.
@@ -212,7 +212,7 @@ cc -std=c11 -I source tests/host_bank_test.c source/gen3_save.c source/gen3_mon.
   summary card, LEFT/RIGHT box-switch on box title, grab-hand move animation, bank-as-parallel-
   boxes with names/wallpapers, deferred save-on-B-exit for move-mode only, full flag discovery).
 - **Did:** resumed + briefed from the handoff; quick inline scout only — confirmed the bank is a
-  flat `.pk3` list (`pkview_main.c` `BANK_MAX 150`, `PKVIEW_BANK_DIR`), `hand_cursor.{c,h}` +
+  flat `.pk3` list (`pdna_main.c` `BANK_MAX 150`, `PDNA_BANK_DIR`), `hand_cursor.{c,h}` +
   `tools/gen_hand.py` already exist, and the named-flag allowlist lives in `tools/gen_data.py`
   (~L266-410) resolving against the local `reference/*/include/constants/flags.h` checkouts.
   Launched a 5-reader recon Workflow, then the user stopped the session before it returned.
@@ -229,7 +229,7 @@ cc -std=c11 -I source tests/host_bank_test.c source/gen3_save.c source/gen3_mon.
   full-screen reload when browsing the PC; flip the box sprite facing; summary A=edit/B=exit +
   scroll-through-box + save-on-leave; fix Unown showing only "A" + choose the form when setting
   species. (User paused mid-way for tokens, then "go on" to finish all of it.)
-- **Did:** shipped all of the above across 13 pokeviewer commits (`fef2104`→`1fab267`, + docs
+- **Did:** shipped all of the above across 13 pokedna commits (`fef2104`→`1fab267`, + docs
   `acdc1bd`). Reverse-engineered the Walda secret-wallpaper system and the box-wallpaper tile/
   palette format; reconstructed + visually verified all 32 wallpapers. Added 28 Unown form sprites
   (front+icon) + PID-form decode + a PID-search form setter. Reworked the summary into VIEW/EDIT

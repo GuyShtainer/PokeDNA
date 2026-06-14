@@ -1,5 +1,5 @@
 /*
- * Game-faithful PC box screen for gba-pokeviewer (mimics the Gen-3 PC).
+ * Game-faithful PC box screen for pokedna (mimics the Gen-3 PC).
  * Left "PKMN DATA" panel (front sprite + name/No/Lv/gender/item) + a 6x5 grid of
  * 32x32 box-icon sprites on a colored wallpaper, with a ◄ box-name ► banner.
  */
@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "sys.h"            /* EWRAM_BSS (after tonc.h so u8 macro doesn't clash) */
-#include "pkview_box.h"
+#include "pdna_box.h"
 #include "ui.h"
 #include "gen3_save.h"
 #include "gen3_mon.h"
@@ -17,8 +17,8 @@
 #include "mon_front.h"
 #include "mon_icons.h"
 #include "hand_cursor.h"
-#include "pkview_summary.h"
-#include "pkview_app.h"
+#include "pdna_summary.h"
+#include "pdna_app.h"
 #include "snd.h"
 #include "osk.h"
 
@@ -423,7 +423,7 @@ static void box_options_menu(BoxSource* src, int box) {
   }
 }
 
-int pkview_box(BoxSource* src) {
+int pdna_box(BoxSource* src) {
   int nb = src->nboxes; if (nb < 1) nb = 1;
   int box = src->start_box; if (box < 0 || box >= nb) box = 0;
   int cur = 0;

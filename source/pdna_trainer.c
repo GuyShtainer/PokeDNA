@@ -1,5 +1,5 @@
 /*
- * Trainer card / stats screen for gba-pokeviewer. Shows the trainer identity,
+ * Trainer card / stats screen for pokedna. Shows the trainer identity,
  * money, play time, Pokédex counts, the designated Elite-Four / Hall-of-Fame
  * first-clear time, and the Game Records.
  */
@@ -7,11 +7,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "pkview_trainer.h"
+#include "pdna_trainer.h"
 #include "ui.h"
 #include "snd.h"
 #include "osk.h"
-#include "pkview_app.h"
+#include "pdna_app.h"
 #include "gen3_flags.h"   /* badge / frontier flag toggles */
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
@@ -77,7 +77,7 @@ static bool flag_set_editor(uint8_t* sb1, PkGame game, const char* title,
 
 enum { TF_NAME, TF_SEX, TF_TID, TF_SID, TF_MONEY, TF_TIME, TF_BADGES, TF_NUM };
 
-void pkview_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame game) {
+void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame game) {
   const bool edit = app_can_edit();
   char     name[8];  strncpy(name, info->trainer_name, 7); name[7] = 0;
   uint8_t  gender = info->gender;

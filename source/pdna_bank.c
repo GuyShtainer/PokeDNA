@@ -1,13 +1,13 @@
 /*
- * pkview_bank — the external bank as a parallel set of 16 PC-style boxes.
+ * pdna_bank — the external bank as a parallel set of 16 PC-style boxes.
  *
- * Storage on the SD card under /pokeviewer/bank/:
+ * Storage on the SD card under /pokedna/bank/:
  *   boxNN.box   one file per box = 30 * 80 = 2400 raw box-mon records (NN = 00..15)
  *   bank.meta   16-byte header + 16 * (9-byte ASCII name + 1 wallpaper byte)
  *
  * Only ONE box (2400 B) is held in RAM at a time (EWRAM is tight — the in-save PC
  * already costs 35 KB), so boxes page in/out of the box files. The shared box screen
- * (pkview_box) drives it through a BoxSource; mons move in/out of the save via the
+ * (pdna_box) drives it through a BoxSource; mons move in/out of the save via the
  * universal copy/paste clipboard. Writes are verified (.tmp -> re-read -> rename) and
  * EZ-Flash-Omega-only; read-only carts browse + copy but never write.
  */
@@ -21,10 +21,10 @@
 #include "gen3_box.h"       /* G3_IN_BOX, G3_BOX_WALLPAPER_COUNT */
 #include "gen3_clip.h"      /* pk3_validate */
 #include "gen3_mon.h"
-#include "pkview_box.h"     /* BoxSource */
-#include "pkview_app.h"     /* app_can_edit, app_confirm */
-#include "pkview_pk.h"      /* PKVIEW_BANK_DIR */
-#include "pkview_bank.h"
+#include "pdna_box.h"     /* BoxSource */
+#include "pdna_app.h"     /* app_can_edit, app_confirm */
+#include "pdna_pk.h"      /* PDNA_BANK_DIR */
+#include "pdna_bank.h"
 #include "ui.h"
 #include "snd.h"
 
@@ -47,8 +47,8 @@ static struct { uint8_t name[9]; uint8_t wp; } g_meta[BANK_BOXES];
 static uint8_t* box_recs(void) { return g_bankbuf + 0x0004; }
 
 /* ---- paths ---- */
-static void box_path(int box, char* out) { siprintf(out, PKVIEW_BANK_DIR "/box%02d.box", box); }
-static const char* meta_path(void) { return PKVIEW_BANK_DIR "/bank.meta"; }
+static void box_path(int box, char* out) { siprintf(out, PDNA_BANK_DIR "/box%02d.box", box); }
+static const char* meta_path(void) { return PDNA_BANK_DIR "/bank.meta"; }
 
 /* ---- metadata ---- */
 static void meta_defaults(void) {
@@ -101,7 +101,7 @@ static bool box_save(void) {                    /* write the loaded box's record
   return ok;
 }
 
-/* ---- one-time migration from the old flat /pokeviewer/bank/*.pk3 layout ---- */
+/* ---- one-time migration from the old flat /pokedna/bank/*.pk3 layout ---- */
 static bool has_pk_ext(const char* n) {
   int L = (int)strlen(n);
   if (L >= 4 && n[L-4]=='.' && (n[L-3]=='p'||n[L-3]=='P') && (n[L-2]=='k'||n[L-2]=='K') && n[L-1]=='3') return true;
@@ -119,10 +119,10 @@ static void migrate_flat_pk3(void) {
   g_loaded = 0;
 
   DIR d; FILINFO fno;
-  if (f_opendir(&d, PKVIEW_BANK_DIR) == FR_OK) {
+  if (f_opendir(&d, PDNA_BANK_DIR) == FR_OK) {
     while (box < BANK_BOXES && f_readdir(&d, &fno) == FR_OK && fno.fname[0]) {
       if ((fno.fattrib & AM_DIR) || !has_pk_ext(fno.fname)) continue;
-      char path[SF_PATH_MAX]; siprintf(path, PKVIEW_BANK_DIR "/%s", fno.fname);
+      char path[SF_PATH_MAX]; siprintf(path, PDNA_BANK_DIR "/%s", fno.fname);
       uint8_t rec[REC_BYTES]; uint32_t sz = 0;
       if (sf_read_full(path, rec, REC_BYTES, &sz) != SF_OK || sz < REC_BYTES || !pk3_validate(rec)) continue;
       memcpy(box_recs() + slot * REC_BYTES, rec, REC_BYTES);
@@ -176,9 +176,9 @@ static bool banksrc_commit(void) {               /* immediate edits: persist box
 }
 static void banksrc_mark_dirty(void) { g_dirty = true; }   /* moves: deferred to box-switch/exit */
 
-bool pkview_bank_show(void) {
-  f_mkdir("/pokeviewer");
-  f_mkdir(PKVIEW_BANK_DIR);
+bool pdna_bank_show(void) {
+  f_mkdir("/pokedna");
+  f_mkdir(PDNA_BANK_DIR);
 
   if (app_can_edit() && !layout_exists()) migrate_flat_pk3();   /* first run: import old .pk3 */
   meta_load();
@@ -199,7 +199,7 @@ bool pkview_bank_show(void) {
   s.commit     = banksrc_commit;
   s.mark_dirty = banksrc_mark_dirty;
 
-  pkview_box(&s);
+  pdna_box(&s);
 
   /* deferred moves: ask once on leaving the bank (mirrors the PC's save-on-exit). */
   if (g_dirty) {

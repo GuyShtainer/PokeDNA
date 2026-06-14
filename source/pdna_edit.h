@@ -1,5 +1,5 @@
-#ifndef PKVIEW_EDIT_H
-#define PKVIEW_EDIT_H
+#ifndef PDNA_EDIT_H
+#define PDNA_EDIT_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -27,6 +27,6 @@ void em_field_adjust(int field, int dir, bool big, EditMon* e, const PkMon* cur)
  * On START + confirm it writes the edited record (100/80 bytes) to out_rec and
  * returns true; B cancels and returns false. It does NOT touch the SD — the
  * caller persists out_rec via the gated verified-write path. */
-bool pkview_edit(const uint8_t* rec, bool is_party, uint8_t* out_rec);
+bool pdna_edit(const uint8_t* rec, bool is_party, uint8_t* out_rec);
 
-#endif /* PKVIEW_EDIT_H */
+#endif /* PDNA_EDIT_H */

@@ -1,4 +1,4 @@
-# gba-pokeviewer — developer context / resume guide
+# pokedna — developer context / resume guide
 
 > One-stop context for picking this project back up. Read this first, then
 > `CLAUDE.md` (toolkit root) for the shared hardware/safety rules. This file is
@@ -23,7 +23,7 @@ loads any of the 5 Gen-3 saves (Ruby/Sapphire/Emerald/FireRed/LeafGreen), and sh
 party + PC boxes + trainer/stats with the game's pixel-accurate UI **plus** the hidden
 data (IVs, full EVs, computed stats, nature, ability, shininess) — with full editing.
 
-Lives at `gba-toolkit/projects/gba-pokeviewer/` (own git repo, MIT). It vendors the
+Lives at `gba-toolkit/projects/pokedna/` (own git repo, MIT). It vendors the
 toolkit's `lib/` (flashcartio, FatFs, ezfo, everdrive, sys.h) so it's a standalone
 public repo. **Ripped art is never committed** — see §4.
 
@@ -43,7 +43,7 @@ public repo. **Ripped art is never committed** — see §4.
 ```
 DEVKITPRO=/opt/devkitpro DEVKITARM=/opt/devkitpro/devkitARM make -C <proj> rebuild
 ```
-or `./build.sh` (Docker). Output: `pokeviewer.gba` (Makefile `TITLE := PKVIEW`,
+or `./build.sh` (Docker). Output: `pokedna.gba` (Makefile `TITLE := PokeDNA`,
 `gbafix -t`; **do NOT `-p` pad** — see §5 PSRAM). The Makefile auto-globs `source/*.c`
 and `source/*.s`, so new files need no Makefile edit.
 
@@ -141,26 +141,26 @@ doesn't tally — this is normal and has always been the case.
   `snd_set_enabled` mute. Hooked at the input chokepoints (`wait_keys` + each file's `s_wait`,
   fresh presses only so held scroll stays silent) + explicit save/error/deny sites. `snd_init()`
   runs once in `init_system()`.
-- `pkview_pick.{c,h}` — the rich editor pickers: `pick_species` (icon grid, name+number
+- `pdna_pick.{c,h}` — the rich editor pickers: `pick_species` (icon grid, name+number
   search, filter L/R + START menu, sort, partial redraw), `pick_move` (list + real type
   badge + power/acc/PP + desc, sort, type filter), `pick_item` (4 view modes — see §6),
   `pick_nature` (list), `pick_ability` (species' two abilities by name+desc), `type_chip`
   (text) / `type_icon` (real 32×14 badge).
-- `pkview_edit.{c,h}` — `F_*` field enum + `em_field_press`/`em_field_adjust` dispatchers
+- `pdna_edit.{c,h}` — `F_*` field enum + `em_field_press`/`em_field_adjust` dispatchers
   (the inline editor's per-field behavior).
-- `pkview_summary.{c,h}` — `pkview_inspect(rec, is_party, can_edit, out_rec)`: the 6-card
+- `pdna_summary.{c,h}` — `pdna_inspect(rec, is_party, can_edit, out_rec)`: the 6-card
   view+EDIT screen (INFO / SKILLS / IVs / EVs / BATTLE MOVES / CONTEST MOVES). Cards
   register editable fields via `reg(field,x,y,w)`; U/D moves the field cursor, A / LEFT-
   RIGHT edit in place. SKILLS stat rows edit that stat's **EV** (the only persistent lever).
-- `pkview_box.{c,h}` — Emerald-style PC: tab bar, grass wallpaper + leaf motif, tan banner,
+- `pdna_box.{c,h}` — Emerald-style PC: tab bar, grass wallpaper + leaf motif, tan banner,
   checkered front-sprite monitor, 32×32 icon grid, white Gen-3 hand cursor.
-- `pkview_trainer.{c,h}` — trainer/stats screen.
-- `pkview_main.c` — entry point: `init_system` (tonc + key repeat) → `flashcartio_activate`
+- `pdna_trainer.{c,h}` — trainer/stats screen.
+- `pdna_main.c` — entry point: `init_system` (tonc + key repeat) → `flashcartio_activate`
   → `f_mount` → `browse_pick` (file browser w/ sort/filter/menu/reboot) → `view_save` →
   party_list / box loop. Owns `app_can_edit`, `app_commit_block` (the one safe write path:
   section re-checksum → `sf_backup` → `sf_write_verified`), `app_edit_commit`,
   `app_quick_item`/`app_quick_moves`, `app_mon_menu` (the PC-style A menu).
-- `pkview_app.h` — shared app glue (`app_can_edit`, `app_edit_commit`, `app_mon_menu`).
+- `pdna_app.h` — shared app glue (`app_can_edit`, `app_edit_commit`, `app_mon_menu`).
 - `savefile.{c,h}` — `sf_read_full`, `sf_backup`, `sf_write_verified` (.tmp → byte-compare
   re-read → unlink → rename), `sf_status_str`.
 - `log.{c,h}`, `gba_rtc.{c,h}` — vendored logger + RTC.
@@ -227,7 +227,7 @@ To regenerate everything after pulling the repo fresh you need the local-only as
   edit IVs/EVs. The SKILLS card routes stat-row edits to that stat's EV.
 - **m3_plot does NOT clip** — any x≥240 or y≥160 corrupts memory. Trace every new coordinate.
   TTE text is 8px tall/8px per char from its top-left.
-- **Reboot-to-loader** lives in the vendored lib now (the pokeviewer's `lib/` was older than
+- **Reboot-to-loader** lives in the vendored lib now (the pokedna's `lib/` was older than
   the toolkit's and lacked it). `flashcartio_reboot` gates per cart, refuses mid-transfer,
   IRQs off; Omega → `_EZFO_reboot` (SetRompage BOOTLOADER + SoftReset). **Not emulatable —
   needs hardware sign-off.**
@@ -262,10 +262,10 @@ commit). Species mapping fix (internal ids). Editing confirmed working on real O
   write**, so it needs no hardware sign-off. Host-verified: 0 false positives across 651 valid
   mons in all 3 fixtures; survived a 4-dimension adversarial review (the one real FP it found —
   Volt Tackle on the Pichu line — is fixed + regression-guarded).
-- **Export `.pk3`** (`EXPORT .pk`) to `/pokeviewer/bank/`.
+- **Export `.pk3`** (`EXPORT .pk`) to `/pokedna/bank/`.
 - **External bank** (START → MENU → Bank): a grid of stored `.pk3`; inject into the loaded
   game's first free box slot (record is byte-identical across all 5 games) / delete. Also the
-  **import** path — drop PKHeX `.pk3` files into `/pokeviewer/bank/`.
+  **import** path — drop PKHeX `.pk3` files into `/pokedna/bank/`.
 - **Data editor** (START → MENU → Data editor, Omega-only): COUNTERS (named game stats) / BAG
   (all 5 pockets) / FLAGS. The FLAGS tab now opens on a **named list** (badges + system flags +
   **gyms, Elite Four, legendaries**, ON/off, A toggles with a one-time soft-lock caution) with a
@@ -280,7 +280,7 @@ commit). Species mapping fix (internal ids). Editing confirmed working on real O
   Gen-3 wallpapers** via the generated `wallpapers.c` (`box_wp_render` maps byte 16 → 16+pattern).
 - **Box browsing UX:** partial redraw (no full reload on cursor move — `render_full`+`move_cursor`),
   mirrored icons (`blit_icon`), and **MOVE mode** (A-menu MOVE → `s_move_from`, A swaps slots).
-- **Summary** is VIEW/EDIT (`pkview_inspect` returns nav 0/±1 + `*saved`): A enters edit, B exits
+- **Summary** is VIEW/EDIT (`pdna_inspect` returns nav 0/±1 + `*saved`): A enters edit, B exits
   edit, U/D in VIEW scrolls box mons (`app_box_browse`), save prompt only on leave/change.
 - **Unown** show the real letter everywhere (`pk_unown_form` + `PkMon.form` + `mon_*_for_form`,
   28 generated forms); setting species to Unown opens `pick_unown_form` → `em_set_unown_form`

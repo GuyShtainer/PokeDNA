@@ -1,5 +1,5 @@
-#ifndef PKVIEW_PICK_H
-#define PKVIEW_PICK_H
+#ifndef PDNA_PICK_H
+#define PDNA_PICK_H
 
 #include <stdint.h>
 
@@ -22,4 +22,4 @@ int      pick_unown_form(int current_form);     /* 0..27 = A..?, -1 cancel */
  * (0 or 1), or `current` on cancel. */
 uint8_t  pick_ability(uint16_t species_internal, uint8_t current_slot);
 
-#endif /* PKVIEW_PICK_H */
+#endif /* PDNA_PICK_H */

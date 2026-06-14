@@ -1,5 +1,5 @@
 /*
- * gba-pokeviewer — entry point (milestone M0).
+ * pokedna — entry point (milestone M0).
  *
  * Scaffold: bring up tonc + the bitmap UI, detect the flashcart, mount the SD,
  * and BROWSE the card (folders + .sav files, navigate with A/B) so saves in
@@ -25,27 +25,27 @@
 #include "gen3_box.h"
 #include "data_tables.h"
 #include "mon_icons.h"
-#include "pkview_summary.h"
-#include "pkview_box.h"
+#include "pdna_summary.h"
+#include "pdna_box.h"
 #include "gen3_trainer.h"
-#include "pkview_trainer.h"
-#include "pkview_edit.h"
+#include "pdna_trainer.h"
+#include "pdna_edit.h"
 #include "gen3_edit.h"     /* EditMon, gen3_edit_load/commit, em_set_*, em_preview */
 #include "gen3_clip.h"     /* ClipMon, slot ops (copy/paste/dup/release) */
-#include "pkview_legality.h" /* pkview_legality_show */
-#include "pkview_pk.h"     /* pkview_pk_export (.pk3) */
-#include "pkview_bank.h"   /* pkview_bank_show (bank = parallel boxes) */
+#include "pdna_legality.h" /* pdna_legality_show */
+#include "pdna_pk.h"     /* pdna_pk_export (.pk3) */
+#include "pdna_bank.h"   /* pdna_bank_show (bank = parallel boxes) */
 #include "gen3_flags.h"    /* event flags */
 #include "gen3_items.h"    /* item bags */
 #include "osk.h"           /* osk_search (numeric entry) */
-#include "pkview_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
+#include "pdna_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
 #include "snd.h"           /* UI sound effects */
-#include "pkview_app.h"
+#include "pdna_app.h"
 #include "savefile.h"
 #include "log.h"
 #include "ui.h"
 
-#define LOG_PATH      "/pokeviewer_log.txt"
+#define LOG_PATH      "/pokedna_log.txt"
 #define PATH_MAX      256
 #define MAX_ENTRIES   256
 #define NAME_MAX      64
@@ -513,7 +513,7 @@ bool app_set_walda(uint8_t pattern) {
 
 bool app_edit_commit(uint8_t* rec, bool is_party, AppCommitFn commit) {
   uint8_t out[100]; bool saved = false; int card = 0;
-  pkview_inspect(rec, is_party, true, out, &saved, &card);   /* party: nav ignored */
+  pdna_inspect(rec, is_party, true, out, &saved, &card);   /* party: nav ignored */
   if (!saved) return false;                                  /* viewed only / discarded */
   memcpy(rec, out, is_party ? 100 : 80);                     /* patch in place (rec is inside block) */
   return commit ? commit() : false;
@@ -529,7 +529,7 @@ static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commi
   for (;;) {
     uint8_t* rec = block + 0x0004 + ((uint32_t)box * 30 + idx) * 80;
     uint8_t out[100]; bool saved = false;
-    int nav = pkview_inspect(rec, false, app_can_edit(), out, &saved, &card);
+    int nav = pdna_inspect(rec, false, app_can_edit(), out, &saved, &card);
     if (saved) { memcpy(rec, out, 80); if (commit && commit()) any = true; }
     if (nav == 0) break;
     for (int step = 0; step < G3_IN_BOX; step++) {           /* next occupied slot in dir nav */
@@ -691,7 +691,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* bloc
   if (occupied) pk_resolve(&m0);
 
   if (!app_can_edit()) {                                 /* read-only carts: view only */
-    if (occupied) { uint8_t d[100]; int card = 0; pkview_inspect(rec, is_party, false, d, 0, &card); }
+    if (occupied) { uint8_t d[100]; int card = 0; pdna_inspect(rec, is_party, false, d, 0, &card); }
     return false;
   }
 
@@ -744,9 +744,9 @@ bool app_mon_menu(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* bloc
                                         : app_box_browse(block, box, slot, commit);   /* box: scroll mons */
         case A_ITEM:    return app_quick_item (rec, is_party, commit);
         case A_MOVES:   return app_quick_moves(rec, is_party, commit);
-        case A_LEGAL:   pkview_legality_show(&m0); return false;
+        case A_LEGAL:   pdna_legality_show(&m0); return false;
         case A_MOVE:    g_move_req = true; return false;            /* box loop handles the move */
-        case A_EXPORT:  pkview_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
+        case A_EXPORT:  pdna_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
         case A_COPY:    return app_copy(rec, is_party);
         case A_PASTE:   return app_paste(rec, is_party, commit, occupied);
         case A_DUP:     return app_duplicate(rec, is_party, commit, block, box);
@@ -1087,13 +1087,13 @@ static void view_save(const char* path) {
   int mode = g_have_pc ? 0 : 1;          /* start in PC boxes (per request) */
   BoxSource pcs = pc_box_source();
   for (;;) {
-    int r = (mode == 0) ? pkview_box(&pcs) : party_list();
+    int r = (mode == 0) ? pdna_box(&pcs) : party_list();
     if (r == 0) { flush_pc_on_exit(); return; }  /* B -> file browser (prompt deferred moves) */
     if (r == 2) {                                /* START -> nav menu */
       int dest = nav_menu();
-      if (dest == 0) pkview_trainer(g_sb1, g_sb2, &g_vinfo, g_game);
+      if (dest == 0) pdna_trainer(g_sb1, g_sb2, &g_vinfo, g_game);
       else if (dest == 1) {                       /* bank: parallel boxes; copy/paste moves mons */
-        pkview_bank_show();
+        pdna_bank_show();
         g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);   /* a paste may have hit the party */
         for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
       }
@@ -1111,7 +1111,7 @@ static void view_save(const char* path) {
 int main(void) {
   init_system();
   log_init();
-  log_line("=== gba-pokeviewer (M0) ===");
+  log_line("=== pokedna (M0) ===");
   log_line("mGBA debug log: %s", log_under_mgba() ? "active" : "absent");
 
   ui_clear();

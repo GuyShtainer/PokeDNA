@@ -1,11 +1,11 @@
-#ifndef PKVIEW_APP_H
-#define PKVIEW_APP_H
+#ifndef PDNA_APP_H
+#define PDNA_APP_H
 
 #include <stdint.h>
 #include <stdbool.h>
 
 /* Shared app glue so the party list and box grid can open the editor and persist
- * safely. Implemented in pkview_main.c (which owns the loaded save + path). */
+ * safely. Implemented in pdna_main.c (which owns the loaded save + path). */
 
 /* Writes are EZ-Flash-Omega-only. */
 bool app_can_edit(void);
@@ -62,4 +62,4 @@ bool app_set_walda(uint8_t pattern);
 /* Shared framed yes/no confirm (A = yes, B = no). */
 bool app_confirm(const char* title, const char* l1);
 
-#endif /* PKVIEW_APP_H */
+#endif /* PDNA_APP_H */
