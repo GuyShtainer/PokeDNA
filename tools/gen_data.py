@@ -394,6 +394,44 @@ def build_named_flags(game_dir):
     add_category("Elite Four", NFLAG_ELITE)
     add_category("Battle Frontier", NFLAG_FRONTIER)
     add_category("Legends", NFLAG_LEGENDS)
+
+    # ---- comprehensive auto-scan: every meaningful flag, named from its symbol.
+    # Story/progress + collectible-pickup flags are the useful ones for an editor;
+    # script-local (TEMP), NPC-visibility (HIDE) and unused/sentinel flags are noise.
+    flag_count = 6496 if game_dir == "pokeemerald_data" else 6400
+    used = set(v for (v, _) in out if v != 0xFFFF)
+
+    def prettify(sym, prefix):
+        s = sym[len(prefix):] if sym.startswith(prefix) else sym
+        s = s.strip("_").replace("_", " ").title()
+        return s[:22] if s else sym
+
+    def add_auto(title, prefix, want=None):
+        rows = []
+        for sym, val in env.items():
+            if not sym.startswith(prefix):                continue
+            if not isinstance(val, int):                  continue
+            if val < 0 or val >= flag_count or val in used: continue
+            if "UNUSED" in sym or "UNKNOWN" in sym or "NEVER" in sym: continue
+            if sym.startswith("FLAG_TEMP") or sym.startswith("FLAG_HIDE"): continue
+            if sym.endswith("_START") or sym.endswith("_END"): continue
+            if want and not want(sym):                    continue
+            rows.append((val, prettify(sym, prefix)))
+        seen, uniq = set(), []
+        for v, d in sorted(rows):
+            if v in seen:
+                continue
+            seen.add(v); used.add(v); uniq.append((v, d))
+        if uniq:
+            out.append((0xFFFF, title))
+            out.extend(uniq)
+
+    add_auto("Hidden Items", "FLAG_HIDDEN_ITEM")
+    add_auto("Item Balls",   "FLAG_ITEM_")
+    add_auto("Got Items",    "FLAG_GOT_")
+    add_auto("Received",     "FLAG_RECEIVED_")
+    add_auto("Trainers",     "FLAG_DEFEATED_")
+    add_auto("System (more)", "FLAG_SYS_")
     return out
 
 
