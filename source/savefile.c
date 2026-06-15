@@ -122,6 +122,33 @@ SfStatus sf_backup(const char* src_path, char* out_bak, unsigned out_bak_cap) {
   return SF_OK;
 }
 
+/* Single ROLLING backup: overwrite "<src>.bak" (delete + copy + verify) so backups
+ * don't pile up. */
+SfStatus sf_backup_rolling(const char* src_path, char* out_bak, unsigned out_bak_cap) {
+  char bak[SF_PATH_MAX];
+  siprintf(bak, "%s.bak", src_path);
+  f_unlink(bak);                                 /* ignore if absent */
+  SfStatus st = copy_file(src_path, bak);
+  if (st != SF_OK) { log_line("rolling backup: copy failed (%s)", sf_status_str(st)); return SF_ERR_BACKUP; }
+  bool eq = false;
+  st = files_equal(src_path, bak, &eq);
+  if (st != SF_OK || !eq) { log_line("rolling backup: verify failed"); return SF_ERR_BACKUP; }
+  if (out_bak && out_bak_cap) { strncpy(out_bak, bak, out_bak_cap - 1); out_bak[out_bak_cap - 1] = 0; }
+  log_line("rolling backup OK -> %s", bak);
+  return SF_OK;
+}
+
+/* Delete every "<src>.bak" / ".bakN" file. Returns the count removed. */
+int sf_clear_backups(const char* src_path) {
+  char bak[SF_PATH_MAX]; int removed = 0;
+  for (int n = 0; n <= 20; n++) {
+    if (n == 0) siprintf(bak, "%s.bak", src_path);
+    else        siprintf(bak, "%s.bak%d", src_path, n);
+    if (f_unlink(bak) == FR_OK) removed++;
+  }
+  return removed;
+}
+
 SfStatus sf_write_verified(const char* path, const uint8_t* buf, uint32_t len) {
   char tmp[SF_PATH_MAX];
   siprintf(tmp, "%s.tmp", path);

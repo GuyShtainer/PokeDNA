@@ -40,6 +40,12 @@ SfStatus sf_read_full(const char* path, uint8_t* buf, uint32_t cap,
  * the copy byte-for-byte. The chosen path is written to out_bak. */
 SfStatus sf_backup(const char* src_path, char* out_bak, unsigned out_bak_cap);
 
+/* Single ROLLING backup: overwrite "<src>.bak" each time (so backups don't pile up). */
+SfStatus sf_backup_rolling(const char* src_path, char* out_bak, unsigned out_bak_cap);
+
+/* Delete every "<src>.bak" / ".bakN" file for a save; returns the count removed. */
+int sf_clear_backups(const char* src_path);
+
 /* Write buf(len) to path safely:
  *   write "<path>.tmp" -> re-read & byte-compare to buf -> unlink(path)
  *   -> rename(tmp -> path). The original is untouched unless verification
