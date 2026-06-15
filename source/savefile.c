@@ -122,17 +122,22 @@ SfStatus sf_backup(const char* src_path, char* out_bak, unsigned out_bak_cap) {
   return SF_OK;
 }
 
-/* Single ROLLING backup: overwrite "<src>.bak" (delete + copy + verify) so backups
- * don't pile up. */
+/* Single ROLLING backup: keep one "<src>.bak" without it piling up. Build the new
+ * copy in a scratch "<src>.baktmp", verify it byte-for-byte, and only THEN swap it
+ * into place (unlink + rename). This mirrors sf_write_verified's invariant: the
+ * previous good "<src>.bak" survives until a verified replacement exists, so a
+ * mid-copy SD failure never leaves the user with a truncated/missing backup. */
 SfStatus sf_backup_rolling(const char* src_path, char* out_bak, unsigned out_bak_cap) {
-  char bak[SF_PATH_MAX];
+  char bak[SF_PATH_MAX], tmp[SF_PATH_MAX];
   siprintf(bak, "%s.bak", src_path);
-  f_unlink(bak);                                 /* ignore if absent */
-  SfStatus st = copy_file(src_path, bak);
-  if (st != SF_OK) { log_line("rolling backup: copy failed (%s)", sf_status_str(st)); return SF_ERR_BACKUP; }
+  siprintf(tmp, "%s.baktmp", src_path);
+  SfStatus st = copy_file(src_path, tmp);
+  if (st != SF_OK) { f_unlink(tmp); log_line("rolling backup: copy failed (%s)", sf_status_str(st)); return SF_ERR_BACKUP; }
   bool eq = false;
-  st = files_equal(src_path, bak, &eq);
-  if (st != SF_OK || !eq) { log_line("rolling backup: verify failed"); return SF_ERR_BACKUP; }
+  st = files_equal(src_path, tmp, &eq);
+  if (st != SF_OK || !eq) { f_unlink(tmp); log_line("rolling backup: verify failed"); return SF_ERR_BACKUP; }
+  f_unlink(bak);                                 /* safe now: a verified replacement exists */
+  if (f_rename(tmp, bak) != FR_OK) { f_unlink(tmp); log_line("rolling backup: rename failed"); return SF_ERR_BACKUP; }
   if (out_bak && out_bak_cap) { strncpy(out_bak, bak, out_bak_cap - 1); out_bak[out_bak_cap - 1] = 0; }
   log_line("rolling backup OK -> %s", bak);
   return SF_OK;
