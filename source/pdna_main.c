@@ -1119,24 +1119,53 @@ static bool pdna_dex_edit(void) {
   return false;
 }
 
-static int nav_menu(void) {                            /* 0=card 1=bank 2=data 3=dex 4=back */
-  static const char* const L[5] = { "Trainer card", "Bank", "Data editor", "Pokedex", "Back" };
-  const int mx = 60, my = 44, mw = 120, mh = 18 + 5 * 14 + 11;
+/* ===================== Daycare viewer (#9) ============================= */
+
+/* Read-only viewer of the 1-2 Pokemon in the Daycare (each is an 80-byte BoxPokemon
+ * at the start of a 140-byte DaycareMon). U/D scrolls between them via the summary;
+ * notes when an egg is ready (offspringPersonality != 0). */
+static void pdna_daycare(void) {
+  uint32_t base = (g_game == PK_EMERALD) ? 0x3030 : (g_game == PK_FRLG) ? 0x2F80 : 0x2F9C;
+  uint8_t* recs[2]; int n = 0;
+  for (int i = 0; i < 2; i++) {
+    uint8_t* rec = g_sb1 + base + (uint32_t)i * 140;     /* mons[i].mon (BoxPokemon @ +0) */
+    PkMon m;
+    if (pk_decode_mon(rec, false, &m) && m.species >= 1 && m.species <= 411) recs[n++] = rec;
+  }
+  const uint8_t* op = g_sb1 + base + 2 * 140;             /* offspringPersonality (egg ready if != 0) */
+  bool off = (op[0] | op[1] | op[2] | op[3]) != 0;
+  if (n == 0) {
+    msg_wait("DAYCARE", off ? UI_OK : UI_DIM, off ? "No mon, but an EGG is ready!" : "No Pokemon in the Daycare.", 0);
+    return;
+  }
+  int idx = 0;
+  for (;;) {
+    uint8_t out[100]; int card = 0;
+    int nav = pdna_inspect(recs[idx], false, false, out, 0, &card);   /* read-only */
+    if (nav == 0) break;
+    idx = (idx + nav + n) % n;
+  }
+  if (off) msg_wait("DAYCARE", UI_OK, "An EGG is ready to collect!", 0);
+}
+
+static int nav_menu(void) {                            /* 0=card 1=bank 2=data 3=dex 4=daycare 5=back */
+  static const char* const L[6] = { "Trainer card", "Bank", "Data editor", "Pokedex", "Daycare", "Back" };
+  const int mx = 60, my = 40, mw = 120, mh = 18 + 6 * 14 + 11;
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "MENU");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
       int y = my + 18 + i * 14; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
     }
     ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return 4;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 4;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 5;
+    if (k & KEY_B) return 5;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 5;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 6;
     else if (k & KEY_A)    return sel;
   }
 }
@@ -1234,6 +1263,7 @@ static void view_save(const char* path) {
         else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); }
       }
       else if (dest == 3) pdna_dex_edit();        /* full Pokedex editor */
+      else if (dest == 4) pdna_daycare();         /* daycare viewer (read-only) */
       continue;
     }
     if (!g_have_pc) { flush_pc_on_exit(); return; }   /* nothing to toggle to */
