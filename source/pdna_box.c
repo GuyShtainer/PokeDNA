@@ -48,6 +48,7 @@ static void draw_grab(int x, int y) { blit_frame(x, y, hand_grab,   HAND_GRAB_W,
 
 static PkMon EWRAM_BSS g_box[30];
 static int s_move_from = -1;          /* slot being repositioned in move-mode, or -1 */
+static int g_iconf = 0;               /* current box-icon animation frame (0/1), the Gen-3 bob */
 
 /* Swap two 80-byte records inside a 30-record block (the current box's records). */
 static void swap_records(uint8_t* recs, int a, int b) {
@@ -225,6 +226,11 @@ static void blit_icon(int x, int y, const u16* icon) {
     }
 }
 
+/* Box-grid icon at the current animation frame (the two-frame Gen-3 bob). */
+static const u16* box_icon(uint16_t species, uint8_t form) {
+  return mon_icon_for_form_frame(species, form, (uint8_t)g_iconf);
+}
+
 static void hand_xy(int cur, int* hx, int* hy) {
   *hx = GRID_X + (cur % COLS) * CELL_W + 3;
   *hy = GRID_Y + (cur / COLS) * CELL_H - 16;
@@ -236,7 +242,7 @@ static void hand_xy(int cur, int* hx, int* hy) {
 static void grid_icons_skip(int skip) {
   for (int s = 0; s < 30; s++)
     if (s != skip && g_box[s].species)
-      blit_icon(GRID_X + (s % COLS) * CELL_W, GRID_Y + (s / COLS) * CELL_H, mon_icon_for_form(g_box[s].species, g_box[s].form));
+      blit_icon(GRID_X + (s % COLS) * CELL_W, GRID_Y + (s / COLS) * CELL_H, box_icon(g_box[s].species, g_box[s].form));
 }
 static void grid_icons(void) { grid_icons_skip(-1); }
 
@@ -248,7 +254,7 @@ static void redraw_region(int wp, int x, int y, int w, int h, int skip) {
     if (s == skip || !g_box[s].species) continue;
     int ix = GRID_X + (s % COLS) * CELL_W, iy = GRID_Y + (s / COLS) * CELL_H;
     if (ix < x + w && ix + MON_ICON_W > x && iy < y + h && iy + MON_ICON_H > y)
-      blit_icon(ix, iy, mon_icon_for_form(g_box[s].species, g_box[s].form));
+      blit_icon(ix, iy, box_icon(g_box[s].species, g_box[s].form));
   }
 }
 
@@ -309,7 +315,7 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
   if (moving && s_move_from >= 0) {                 /* carry: held mon rides the cursor */
     grid_icons_skip(s_move_from);                   /* its source slot reads empty */
     int ix, iy, fx, fy; carry_xy(cur, &ix, &iy, &fx, &fy);
-    blit_icon(ix, iy, mon_icon_for_form(g_box[s_move_from].species, g_box[s_move_from].form));
+    blit_icon(ix, iy, box_icon(g_box[s_move_from].species, g_box[s_move_from].form));
     draw_grab(fx, fy);                               /* closed fist gripping it */
   } else {
     grid_icons();
@@ -362,7 +368,7 @@ static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
       int ix = GRID_X + (s % COLS) * CELL_W, iy = GRID_Y + (s / COLS) * CELL_H;
       if (ix < hx + HAND_W + 2 && ix + MON_ICON_W > hx - 1 &&
           iy < hy + HAND_H + 2 && iy + MON_ICON_H > hy - 1)
-        blit_icon(ix, iy, mon_icon_for_form(g_box[s].species, g_box[s].form));
+        blit_icon(ix, iy, box_icon(g_box[s].species, g_box[s].form));
     }
   }
   if (on_title) m3_frame(WP_X, 12, WP_X + WP_W - 1, 27, UI_SELTEXT);
@@ -387,7 +393,7 @@ static void carry_move(BoxSource* src, int box, int old_cur, int cur) {
     draw_banner(WP_X + 2, 13, WP_W - 4, bnocc);
   }
   carry_xy(cur, &ix, &iy, &fx, &fy);
-  blit_icon(ix, iy, mon_icon_for_form(g_box[s_move_from].species, g_box[s_move_from].form));
+  blit_icon(ix, iy, box_icon(g_box[s_move_from].species, g_box[s_move_from].form));
   draw_grab(fx, fy);
   draw_left(&g_box[cur]);                             /* panel follows the destination cell */
 }
@@ -462,12 +468,26 @@ static void box_options_menu(BoxSource* src, int box) {
   }
 }
 
+/* One animation tick (idle browse only): repaint the grid's wallpaper once, redraw
+ * all icons at the current frame (correct overlap order), then the cursor hand on
+ * top. Same partial-redraw discipline as move_cursor — no full clear, so no flicker. */
+#define ANIM_PERIOD 30                    /* vblanks per icon frame (~0.5s, the Gen-3 cadence) */
+static void animate_grid(BoxSource* src, int box, int cur, bool on_title) {
+  int wp = src->get_wp(box);
+  wallpaper_patch(wp, GRID_X, GRID_Y,
+                  COLS * CELL_W + (MON_ICON_W - CELL_W),
+                  ROWS * CELL_H + (MON_ICON_H - CELL_H));
+  grid_icons();                           /* uses box_icon -> current g_iconf frame */
+  draw_cursor_hand(cur, on_title);
+}
+
 int pdna_box(BoxSource* src) {
   int nb = src->nboxes; if (nb < 1) nb = 1;
   int box = src->start_box; if (box < 0 || box >= nb) box = 0;
   int cur = 0;
   bool on_title = false;
   bool need_full = true;
+  int anim_ctr = 0;
   s_move_from = -1;
   uint8_t* recs = src->records(box);          /* current box's 30*80 records */
   pk_decode_box_raw(recs, g_box);
@@ -478,7 +498,12 @@ int pdna_box(BoxSource* src) {
   for (;;) {
     if (need_full) { render_full(src, box, cur, on_title, s_move_from >= 0, true); need_full = false; }
     u16 k, fresh;
-    do { s_vsync(); fresh = key_hit(KEY_FULL);
+    do { s_vsync();
+         /* idle icon bob: while not carrying a mon, flip the frame every ~0.5s */
+         if (s_move_from < 0 && ++anim_ctr >= ANIM_PERIOD) {
+           anim_ctr = 0; g_iconf ^= 1; animate_grid(src, box, cur, on_title);
+         }
+         fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
     /* fresh-press earcons (held d-pad repeats stay silent) */
     if      (fresh & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) snd_move();
