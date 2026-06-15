@@ -901,15 +901,16 @@ static bool data_editor(void) {
     }
     ui_hline(0, 13, UI_SCR_W, UI_BORDER);
 
-    if (tab == 0) {                              /* ---- counters (row 0 = Money) ---- */
-      int N = pk_game_stat_count(g_game) + 1;
+    if (tab == 0) {                              /* ---- counters (row 0 = Money, 1 = Coins) ---- */
+      int N = pk_game_stat_count(g_game) + 2;
       if (sel >= N) sel = N - 1;
       if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
       char row[44];
       for (int i = 0; i < 14 && top + i < N; i++) {
         int r = top + i, y = 16 + i * 9; bool s = (r == sel);
-        if (r == 0) siprintf(row, "%-20s %lu", "Money", (unsigned long)pk_money(g_sb1, g_sb2, g_game));
-        else        siprintf(row, "%-20s %lu", pk_game_stat_name(r - 1), (unsigned long)pk_game_stat(g_sb1, g_sb2, g_game, r - 1));
+        if (r == 0)      siprintf(row, "%-20s %lu", "Money", (unsigned long)pk_money(g_sb1, g_sb2, g_game));
+        else if (r == 1) siprintf(row, "%-20s %u",  "Coins", (unsigned)pk_coins(g_sb1, g_sb2, g_game));
+        else             siprintf(row, "%-20s %lu", pk_game_stat_name(r - 2), (unsigned long)pk_game_stat(g_sb1, g_sb2, g_game, r - 2));
         char rt[44]; ui_truncate(rt, row, 29);
         if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
         ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
@@ -989,12 +990,15 @@ static bool data_editor(void) {
     else if (k & KEY_DOWN)   sel++;
     else if (tab == 1 && (k & KEY_SELECT)) { snd_tab(); pocket = (pocket + 1) % POCKET_COUNT; sel = top = 0; }
     else if (k & KEY_A) {
-      if (tab == 0) {                            /* edit money (row 0) or a counter */
+      if (tab == 0) {                            /* edit money (0) / coins (1) / a counter */
         if (sel == 0) {
           uint32_t v = osk_number("MONEY", pk_money(g_sb1, g_sb2, g_game), 999999);
           pk_set_money(g_sb1, g_sb2, g_game, v); dirty = true;
+        } else if (sel == 1) {
+          uint32_t v = osk_number("COINS", pk_coins(g_sb1, g_sb2, g_game), 9999);
+          pk_set_coins(g_sb1, g_sb2, g_game, (uint16_t)v); dirty = true;
         } else {
-          int st = sel - 1;
+          int st = sel - 2;
           uint32_t v = osk_number("STAT VALUE", pk_game_stat(g_sb1, g_sb2, g_game, st), 0xFFFFFFFFu);
           pk_set_game_stat(g_sb1, g_sb2, g_game, st, v); dirty = true;
         }

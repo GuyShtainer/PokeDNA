@@ -42,6 +42,17 @@ void pk_set_money(uint8_t* sb1, const uint8_t* sb2, PkGame g, uint32_t money) {
 
 /* ---- SaveBlock2 trainer identity setters (plaintext; not key-encrypted) ---- */
 static void wr16(uint8_t* p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | ((uint16_t)p[1] << 8)); }
+
+/* Game-Corner coins: SaveBlock1, right after money (money_off + 4), XOR'd with the
+ * low 16 bits of the security key (plaintext on Ruby/Sapphire). Max 9999. */
+uint16_t pk_coins(const uint8_t* sb1, const uint8_t* sb2, PkGame g) {
+  return (uint16_t)(rd16(sb1 + money_off(g) + 4) ^ (uint16_t)sec_key(sb2, g));
+}
+void pk_set_coins(uint8_t* sb1, const uint8_t* sb2, PkGame g, uint16_t coins) {
+  if (coins > 9999) coins = 9999;
+  wr16(sb1 + money_off(g) + 4, (uint16_t)(coins ^ (uint16_t)sec_key(sb2, g)));
+}
 
 void pk_set_trainer_name(uint8_t* sb2, const char* s) {
   int i = 0;

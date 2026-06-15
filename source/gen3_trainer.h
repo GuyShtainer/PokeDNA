@@ -31,6 +31,10 @@ int  pk_game_stat_count(PkGame g);                   /* RS 50, E/FRLG 64 */
 void pk_set_game_stat(uint8_t* sb1, const uint8_t* sb2, PkGame g, int stat, uint32_t value);
 void pk_set_money(uint8_t* sb1, const uint8_t* sb2, PkGame g, uint32_t money);
 
+/* Game-Corner coins (SaveBlock1, key-XOR'd like money; max 9999). */
+uint16_t pk_coins(const uint8_t* sb1, const uint8_t* sb2, PkGame g);
+void     pk_set_coins(uint8_t* sb1, const uint8_t* sb2, PkGame g, uint16_t coins);
+
 /* SaveBlock2 trainer identity (plaintext). Commit via section 0. */
 void pk_set_trainer_name(uint8_t* sb2, const char* s);          /* <=7 ASCII chars */
 void pk_set_gender(uint8_t* sb2, uint8_t g);                    /* 0 male, 1 female */
