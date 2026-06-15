@@ -107,10 +107,14 @@ Each `tests/host_*_test.c` lists its exact compile line in a header comment.
 
 ## Credits & legality
 
-- **Clean-room save format.** All Gen-3 save parsing/encryption logic here is original. Where
-  reverse-engineered facts were used (struct offsets, RAM maps, flag numbers) they are *facts and
-  addresses only* — no third-party game code is bundled. PKHeX and the pret decomps were used as
-  **reference for facts**, not as a source of code.
+- **Clean-room, original code.** Every byte of the Gen-3 save parsing / encryption / editing here is
+  original C, written from scratch. **PokeDNA drew inspiration from [PKHeX](https://github.com/kwsch/PKHeX)**
+  — the idea of a friendly Gen-3 save viewer/editor — but **none of PKHeX's code was used or ported**
+  (PKHeX is C#/.NET and GPLv3, and can't run on a GBA). The reverse-engineered *facts* PokeDNA relies
+  on (struct offsets, RAM maps, flag numbers) come from the **pret decompilations**
+  ([pokeemerald](https://github.com/pret/pokeemerald) / pokeruby / pokefirered) and are *facts and
+  addresses only* — no third-party game code is bundled. The single-Pokémon `.pk3` export uses the
+  community interchange format (PKHeX-compatible).
 - **Bundled sprites are Nintendo's — not mine, not GPLv3.** The downloadable `.gba` includes
   Generation-III box/front sprites, box wallpapers and UI icons that are
   **© Nintendo / Creatures Inc. / GAME FREAK Inc.** They are not licensed for redistribution and
