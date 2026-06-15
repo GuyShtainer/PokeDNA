@@ -36,6 +36,7 @@
 #include "pdna_pk.h"     /* pdna_pk_export (.pk3) */
 #include "pdna_bank.h"   /* pdna_bank_show (bank = parallel boxes) */
 #include "gen3_flags.h"    /* event flags */
+#include "gen3_dex.h"      /* Pokedex seen/owned flags */
 #include "gen3_items.h"    /* item bags */
 #include "osk.h"           /* osk_search (numeric entry) */
 #include "pdna_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
@@ -443,14 +444,13 @@ static void grow_in(u16 col) {
   }
 }
 
-/* Persist `block` (already-patched save-block sections [lo..hi]) into the in-RAM
- * image with fresh checksums, an immutable backup, and a verified write. The
- * single safe write path shared by the full editor and the PC-menu quick edits. */
-static bool app_commit_block(int sect_lo, int sect_hi, uint8_t* block) {
-  for (int id = sect_lo; id <= sect_hi; id++)
-    gen3_write_full_section(g_save, g_vinfo.slot, id,
-                            block + (uint32_t)(id - sect_lo) * G3_SECTOR_DATA_SIZE);
+/* PC-storage dirty flag: set by deferred move-mode swaps, cleared by any successful
+ * PC write (which flushes the whole g_pc) or an explicit revert. */
+static bool g_pc_dirty = false;
 
+/* Verify checksums, back up the original, and do the verified whole-file write —
+ * the shared tail of every commit (the changed section bytes are already in g_save). */
+static bool app_save_finalize(void) {
   int fail = -1;
   if (!gen3_verify_full_checksums(g_save, g_vinfo.slot, &fail)) {
     log_line("edit: checksum FAIL at section %d", fail);
@@ -485,14 +485,35 @@ static bool app_commit_block(int sect_lo, int sect_hi, uint8_t* block) {
   return true;
 }
 
+/* Persist `block` (sections [lo..hi]) into the in-RAM image, then finalize. The
+ * single safe write path shared by the full editor and the PC-menu quick edits. */
+static bool app_commit_block(int sect_lo, int sect_hi, uint8_t* block) {
+  for (int id = sect_lo; id <= sect_hi; id++)
+    gen3_write_full_section(g_save, g_vinfo.slot, id,
+                            block + (uint32_t)(id - sect_lo) * G3_SECTOR_DATA_SIZE);
+  return app_save_finalize();
+}
+
+/* Commit EVERYTHING — SaveBlock2 (sec 0) + SaveBlock1 (sec 1..4) + PC storage
+ * (sec 5..13) — in one verified write. Used when an edit also touches the Pokédex,
+ * which spans SB1+SB2; the single whole-file write costs the same as committing one
+ * section, so this just folds the dex sections in. */
+static bool app_commit_all(void) {
+  gen3_write_full_section(g_save, g_vinfo.slot, 0, g_sb2);
+  for (int id = 1; id <= 4; id++)
+    gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
+  for (int id = G3_SID_PKMN_STORAGE_START; id <= G3_SID_PKMN_STORAGE_END; id++)
+    gen3_write_full_section(g_save, g_vinfo.slot, id,
+                            g_pc + (uint32_t)(id - G3_SID_PKMN_STORAGE_START) * G3_SECTOR_DATA_SIZE);
+  g_pc_dirty = false;
+  return app_save_finalize();
+}
+
 /* Commit the trainer block (SaveBlock2 = section 0) / the money block (SaveBlock1
  * = sections 1..4) after the trainer card edits g_sb2 / g_sb1 in place. */
 bool app_commit_sb2(void) { return app_commit_block(0, 0, g_sb2); }
 bool app_commit_sb1(void) { return app_commit_block(1, 4, g_sb1); }
 
-/* PC-storage dirty flag: set by deferred move-mode swaps, cleared by any successful
- * PC write (which flushes the whole g_pc) or an explicit revert. */
-static bool g_pc_dirty = false;
 void app_mark_pc_dirty(void) { g_pc_dirty = true; }
 bool app_pc_dirty(void)      { return g_pc_dirty; }
 
@@ -500,6 +521,29 @@ bool app_commit_pc(void)  {
   bool ok = app_commit_block(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc);
   if (ok) g_pc_dirty = false;                       /* the write persisted everything */
   return ok;
+}
+
+/* Register a record's species in the loaded save's Pokédex (seen + owned), in
+ * g_sb1/g_sb2 RAM only. Returns true iff it set a NEW flag (so the caller knows the
+ * dex changed and must commit it). Skips eggs and already-known species. */
+static bool app_dex_register_rec(const uint8_t* rec, bool is_party) {
+  PkMon m;
+  if (!pk_decode_mon(rec, is_party, &m) || m.isEgg || m.isBadEgg) return false;
+  uint16_t nat = pk_national_no(m.species);
+  if (nat < 1 || nat > G3_DEX_NAT_MAX) return false;
+  if (pk_dex_owned(g_sb2, nat) && pk_dex_seen(g_sb2, nat)) return false;   /* already registered */
+  pk_dex_set_seen(g_sb1, g_sb2, g_game, nat, true);
+  pk_dex_set_owned(g_sb2, nat, true);
+  return true;
+}
+
+/* Commit for an edit/inject that may need dex registration. If `block` is the loaded
+ * save's PC or party (NOT the bank) and the mon's species is new to the dex, register
+ * it and commit everything in one write; otherwise run the block's normal commit. */
+static bool app_commit_with_dex(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block) {
+  if ((block == g_pc || block == g_sb1) && app_dex_register_rec(rec, is_party))
+    return app_commit_all();
+  return commit ? commit() : false;
 }
 
 /* Emerald "Walda" secret-wallpaper pattern (the graphic shown by box wallpaper 16),
@@ -516,7 +560,7 @@ bool app_edit_commit(uint8_t* rec, bool is_party, AppCommitFn commit) {
   pdna_inspect(rec, is_party, true, out, &saved, &card);   /* party: nav ignored */
   if (!saved) return false;                                  /* viewed only / discarded */
   memcpy(rec, out, is_party ? 100 : 80);                     /* patch in place (rec is inside block) */
-  return commit ? commit() : false;
+  return app_commit_with_dex(rec, is_party, commit, g_sb1);  /* party lives in SaveBlock1; auto-register dex */
 }
 
 /* Box summary BROWSER: VIEW/EDIT a box slot, then U/D scroll to the prev/next
@@ -530,7 +574,7 @@ static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commi
     uint8_t* rec = block + 0x0004 + ((uint32_t)box * 30 + idx) * 80;
     uint8_t out[100]; bool saved = false;
     int nav = pdna_inspect(rec, false, app_can_edit(), out, &saved, &card);
-    if (saved) { memcpy(rec, out, 80); if (commit && commit()) any = true; }
+    if (saved) { memcpy(rec, out, 80); if (app_commit_with_dex(rec, false, commit, block)) any = true; }
     if (nav == 0) break;
     for (int step = 0; step < G3_IN_BOX; step++) {           /* next occupied slot in dir nav */
       idx = (idx + nav + G3_IN_BOX) % G3_IN_BOX;
@@ -590,7 +634,11 @@ bool app_inject_to_game(const uint8_t* rec80) {
   if (!app_can_edit()) return false;
   for (int b = 0; b < G3_TOTAL_BOXES; b++) {
     int s = box_free_slot(g_pc, b);
-    if (s >= 0) { memcpy(pk_box_slot(g_pc, b, s), rec80, 80); return app_commit_pc(); }
+    if (s >= 0) {
+      memcpy(pk_box_slot(g_pc, b, s), rec80, 80);
+      if (app_dex_register_rec(rec80, false)) return app_commit_all();   /* + register in dex */
+      return app_commit_pc();
+    }
   }
   snd_deny();
   msg_wait("PC FULL", UI_WARN, "No empty PC box slot in the", "loaded game.");
@@ -603,13 +651,13 @@ static bool app_copy(uint8_t* rec, bool is_party) {
   return false;                                          /* no save change */
 }
 
-static bool app_paste(uint8_t* rec, bool is_party, AppCommitFn commit, bool occupied) {
+static bool app_paste(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, bool occupied) {
   if (!g_clip.occupied) return false;
   if (occupied && !app_confirm("Overwrite this Pokemon?", "Paste the copied mon here?")) return false;
   uint8_t out[100];
   if (!clip_to_record(&g_clip, is_party, out)) return false;
   memcpy(rec, out, is_party ? 100 : 80);
-  return commit ? commit() : false;
+  return app_commit_with_dex(rec, is_party, commit, block);   /* auto-register the pasted species */
 }
 
 static bool app_duplicate(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, int box) {
@@ -622,7 +670,7 @@ static bool app_duplicate(uint8_t* rec, bool is_party, AppCommitFn commit, uint8
     if (fs < 0) { snd_deny(); msg_wait("BOX FULL", UI_WARN, "No empty slot in this box.", 0); return false; }
     memcpy(pk_box_slot(block, box, fs), rec, 80);
   }
-  return commit ? commit() : false;
+  return app_commit_with_dex(rec, is_party, commit, block);   /* auto-register the duplicated species */
 }
 
 static bool app_release(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, int box, int slot) {
@@ -732,7 +780,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
         case A_EXPORT:  pdna_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
         case A_TOGAME:  return app_inject_to_game(rec);           /* bank -> loaded save's PC */
         case A_COPY:    return app_copy(rec, is_party);
-        case A_PASTE:   return app_paste(rec, is_party, commit, occupied);
+        case A_PASTE:   return app_paste(rec, is_party, commit, block, occupied);
         case A_DUP:     return app_duplicate(rec, is_party, commit, block, box);
         case A_RELEASE: return app_release(rec, is_party, commit, block, box, slot);
         case A_TAKEITEM:return app_take_item(rec, is_party, commit);
