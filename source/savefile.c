@@ -138,6 +138,16 @@ SfStatus sf_backup_rolling(const char* src_path, char* out_bak, unsigned out_bak
   return SF_OK;
 }
 
+SfStatus sf_copy(const char* src_path, const char* dst_path) {
+  SfStatus st = copy_file(src_path, dst_path);
+  if (st != SF_OK) { log_line("copy: failed (%s)", sf_status_str(st)); return st; }
+  bool eq = false;
+  st = files_equal(src_path, dst_path, &eq);
+  if (st != SF_OK || !eq) { log_line("copy: verify failed"); return SF_ERR_VERIFY; }
+  log_line("copy OK %s -> %s", src_path, dst_path);
+  return SF_OK;
+}
+
 /* Delete every "<src>.bak" / ".bakN" file. Returns the count removed. */
 int sf_clear_backups(const char* src_path) {
   char bak[SF_PATH_MAX]; int removed = 0;

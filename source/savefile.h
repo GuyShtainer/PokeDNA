@@ -46,6 +46,10 @@ SfStatus sf_backup_rolling(const char* src_path, char* out_bak, unsigned out_bak
 /* Delete every "<src>.bak" / ".bakN" file for a save; returns the count removed. */
 int sf_clear_backups(const char* src_path);
 
+/* Verified copy: copy src -> dst (4 KiB chunks) then byte-compare the two. dst is
+ * overwritten if it exists, so callers that must not clobber choose a free name. */
+SfStatus sf_copy(const char* src_path, const char* dst_path);
+
 /* Write buf(len) to path safely:
  *   write "<path>.tmp" -> re-read & byte-compare to buf -> unlink(path)
  *   -> rename(tmp -> path). The original is untouched unless verification
