@@ -654,9 +654,11 @@ static bool dup_name(const char* name, char* out, int cap) {
     memcpy(base, name, bl); base[bl] = 0; ext = dot;            /* ext keeps the '.' */
   } else { strncpy(base, name, sizeof(base) - 1); base[sizeof(base) - 1] = 0; }
   for (int n = 1; n <= 99; n++) {
-    if (n == 1) siprintf(out, "%s copy%s", base, ext);
-    else        siprintf(out, "%s copy%d%s", base, n, ext);
-    if ((int)strlen(out) >= cap) return false;
+    /* bound the format up-front (sniprintf never overflows `out`); treat a
+     * would-be-truncated name as "no room" rather than writing past the buffer. */
+    int w = (n == 1) ? sniprintf(out, cap, "%s copy%s", base, ext)
+                     : sniprintf(out, cap, "%s copy%d%s", base, n, ext);
+    if (w < 0 || w >= cap) return false;
     char full[PATH_MAX]; FILINFO fno;
     if (!path_join(g_cwd, out, full)) return false;
     if (f_stat(full, &fno) != FR_OK) return true;              /* name is free */
@@ -717,6 +719,7 @@ static bool file_actions(const BrowseEntry* e) {
           snd_ok(); msg_wait("RENAMED", UI_OK, "Now named:", nn); return true;   /* src path stale: re-scan */
         } else { snd_error(); msg_wait("RENAME FAILED", UI_WARN, "Could not rename.", 0); }
       } else if (sel == 2) {                            /* Delete backups */
+        if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "File writes need EZ-Flash Omega.", 0); continue; }
         if (app_confirm("Delete ALL backups?", "Removes .bak files for this save.")) {
           int rm = sf_clear_backups(src);
           char m[40]; siprintf(m, "Removed %d backup file(s).", rm);
@@ -1236,14 +1239,21 @@ static bool pdna_dex_edit(void) {
  * notes when an egg is ready (offspringPersonality != 0). */
 static void pdna_daycare(void) {
   uint32_t base = (g_game == PK_EMERALD) ? 0x3030 : (g_game == PK_FRLG) ? 0x2F80 : 0x2F9C;
+  /* Ruby/Sapphire store the two daycare BoxPokemon CONTIGUOUSLY (stride 80) then
+   * the mail/step block; Emerald/FRLG interleave each mon with its mail+steps
+   * (DaycareMon stride 140). The egg-personality word lands at base+280 either way,
+   * but it's a u32 (offspringPersonality) on E/FRLG and a u16 (pendingEggPersonality,
+   * with the step counter right after) on RS — so read only 2 bytes on RS. */
+  uint32_t stride = (g_game == PK_RS) ? 80 : 140;
   uint8_t* recs[2]; int n = 0;
   for (int i = 0; i < 2; i++) {
-    uint8_t* rec = g_sb1 + base + (uint32_t)i * 140;     /* mons[i].mon (BoxPokemon @ +0) */
+    uint8_t* rec = g_sb1 + base + (uint32_t)i * stride;   /* mons[i] (BoxPokemon @ +0) */
     PkMon m;
     if (pk_decode_mon(rec, false, &m) && m.species >= 1 && m.species <= 411) recs[n++] = rec;
   }
-  const uint8_t* op = g_sb1 + base + 2 * 140;             /* offspringPersonality (egg ready if != 0) */
-  bool off = (op[0] | op[1] | op[2] | op[3]) != 0;
+  const uint8_t* op = g_sb1 + base + 280;                 /* egg-personality word (egg ready if != 0) */
+  bool off = (g_game == PK_RS) ? ((op[0] | op[1]) != 0)
+                               : ((op[0] | op[1] | op[2] | op[3]) != 0);
   if (n == 0) {
     msg_wait("DAYCARE", off ? UI_OK : UI_DIM, off ? "No mon, but an EGG is ready!" : "No Pokemon in the Daycare.", 0);
     return;
@@ -1286,13 +1296,13 @@ static void sb_detail(const SbRecord* b) {
 
     for (int i = 0; i < SB_PARTY; i++) {
       int col = i % 3, row = i / 3;
-      int cx = 6 + col * 78, cy = 44 + row * 54;
+      int cx = 6 + col * 78, cy = 40 + row * 50;     /* row 1 item line ends at 138, clear of the 151 divider */
       uint16_t sp = b->party.species[i];
       if (!sp) { ui_text(cx + 28, cy + 12, UI_DIM, "-"); continue; }
       ui_sprite(cx + 23, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form(sp, 0));
-      char nm[16]; ui_truncate(nm, pk_species_name(sp), 9); ui_text(cx, cy + 33, UI_TEXT, nm);
-      siprintf(line, "Lv%u", (unsigned)b->party.level[i]); ui_text(cx, cy + 42, UI_DIRCLR, line);
-      if (b->party.heldItem[i]) { char it[16]; ui_truncate(it, pk_item_name(b->party.heldItem[i]), 9); ui_text(cx, cy + 51, UI_DIM, it); }
+      char nm[16]; ui_truncate(nm, pk_species_name(sp), 9); ui_text(cx, cy + 32, UI_TEXT, nm);
+      siprintf(line, "Lv%u", (unsigned)b->party.level[i]); ui_text(cx, cy + 40, UI_DIRCLR, line);
+      if (b->party.heldItem[i]) { char it[16]; ui_truncate(it, pk_item_name(b->party.heldItem[i]), 9); ui_text(cx, cy + 48, UI_DIM, it); }
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     ui_text(4, 152, UI_DIM, "B back");
@@ -1314,7 +1324,7 @@ static void pdna_secretbase(void) {
     if (sel < top) top = sel; if (sel >= top + VIS) top = sel - VIS + 1;
     ui_clear();
     ui_text(4, 3, UI_TITLE, "SECRET BASES");
-    char cnt[16]; siprintf(cnt, "%d/19", n); ui_text(196, 3, UI_DIM, cnt);
+    char cnt[16]; siprintf(cnt, "%d/%d", n, SB_COUNT); ui_text(196, 3, UI_DIM, cnt);
     ui_hline(0, 13, UI_SCR_W, UI_BORDER);
     for (int i = 0; i < VIS && top + i < n; i++) {
       const SbRecord* b = &g_sb_recs[top + i];
@@ -1378,6 +1388,7 @@ static void pdna_settings(void) {
     else if (k & KEY_A) {
       if (sel == 0) g_backup_mode = (g_backup_mode + 1) % 3;
       else if (sel == 1) {
+        if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "File writes need EZ-Flash Omega.", 0); continue; }
         if (app_confirm("Delete ALL backups?", "For the loaded save only.")) {
           int rm = sf_clear_backups(g_path);
           char m[44]; siprintf(m, "Removed %d backup file(s).", rm);
@@ -1391,7 +1402,7 @@ static void pdna_settings(void) {
 static int nav_menu(void) {                /* 0=card 1=bank 2=data 3=dex 4=daycare 5=secret 6=settings 7=back */
   static const char* const L[8] = { "Trainer card", "Bank", "Data editor", "Pokedex", "Daycare",
                                     "Secret Bases", "Settings", "Back" };
-  const int mx = 60, my = 26, mw = 120, mh = 18 + 8 * 14 + 11;
+  const int mx = 60, my = 19, mw = 120, mh = 18 + 8 * 14 + 11;  /* my+mh=160: fits the screen */
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
