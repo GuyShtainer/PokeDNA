@@ -468,17 +468,20 @@ static void box_options_menu(BoxSource* src, int box) {
   }
 }
 
-/* One animation tick (idle browse only): repaint the grid's wallpaper once, redraw
- * all icons at the current frame (correct overlap order), then the cursor hand on
- * top. Same partial-redraw discipline as move_cursor — no full clear, so no flicker. */
+/* One animation tick (idle browse only): repaint the icons at the current frame.
+ * Done PER CELL via redraw_region (patch that cell's wallpaper + redraw it and any
+ * overlapping neighbours, in slot order) so the erased window is one cell wide and
+ * closes immediately — the whole grid is never blank at once, avoiding the #3-class
+ * blink a full erase-then-redraw would cause on the single-buffered framebuffer. */
 #define ANIM_PERIOD 30                    /* vblanks per icon frame (~0.5s, the Gen-3 cadence) */
 static void animate_grid(BoxSource* src, int box, int cur, bool on_title) {
   int wp = src->get_wp(box);
-  wallpaper_patch(wp, GRID_X, GRID_Y,
-                  COLS * CELL_W + (MON_ICON_W - CELL_W),
-                  ROWS * CELL_H + (MON_ICON_H - CELL_H));
-  grid_icons();                           /* uses box_icon -> current g_iconf frame */
-  draw_cursor_hand(cur, on_title);
+  for (int s = 0; s < 30; s++) {
+    if (!g_box[s].species) continue;
+    int ix = GRID_X + (s % COLS) * CELL_W, iy = GRID_Y + (s / COLS) * CELL_H;
+    redraw_region(wp, ix, iy, MON_ICON_W, MON_ICON_H, -1);  /* patch + redraw this cell's icons at g_iconf */
+  }
+  draw_cursor_hand(cur, on_title);        /* hand rides on top of the cells it overlaps */
 }
 
 int pdna_box(BoxSource* src) {
