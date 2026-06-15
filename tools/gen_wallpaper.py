@@ -70,13 +70,20 @@ def assemble(name, frame_rel):
     tm = struct.unpack("<360H", open(os.path.join(d, "tilemap.bin"), "rb").read())
     fill = bg_pal[1]                        # interior tone replacing bg index-0 (white)
 
-    img = [0] * (WP_W * WP_H)
-    # base: bg pattern tiled, transparent index-0 -> interior tone
-    for py in range(WP_H):
-        for px_ in range(WP_W):
-            bt = bg_t[((py // 8) % bgr) * bgc + ((px_ // 8) % bgc)]
-            ci = bt[(py % 8) * 8 + (px_ % 8)]
-            img[py * WP_W + px_] = bg_pal[ci] if ci else fill
+    img = [fill] * (WP_W * WP_H)
+    # base layer differs by wallpaper kind:
+    #  - standard: bg.png is a small (4x2) repeating SCENERY pattern, tiled across
+    #    the area; the tilemap overlays frame tiles (index-0 transparent shows it).
+    #  - Walda/secret: bg.png is a 22x1 STRIP of icon/pattern tiles that the tilemap
+    #    references directly at idx >= 64 — it is NOT a tileable background. So the
+    #    interior is just the solid fill; the tilemap draws frame + icon over it.
+    #    (Tiling the strip here is what produced the garbled bands.)
+    if not frame_rel.startswith("friends_frame"):
+        for py in range(WP_H):
+            for px_ in range(WP_W):
+                bt = bg_t[((py // 8) % bgr) * bgc + ((px_ // 8) % bgc)]
+                ci = bt[(py % 8) * 8 + (px_ % 8)]
+                img[py * WP_W + px_] = bg_pal[ci] if ci else fill
     # tilemap overlay, color index 0 transparent
     for ty in range(18):
         for tx in range(20):
