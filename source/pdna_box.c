@@ -267,6 +267,24 @@ static void draw_cursor_hand(int cur, bool on_title) {
   else { int hx, hy; hand_xy(cur, &hx, &hy); draw_hand(hx, hy); }
 }
 
+/* Carry positions while move-mode holds a mon: the held icon (lifted) and the
+ * closed grab fist GRIPPING it (sat on the icon's top, not hovering above it). */
+static void carry_xy(int cur, int* ix, int* iy, int* fx, int* fy) {
+  *ix = GRID_X + (cur % COLS) * CELL_W;
+  *iy = GRID_Y + (cur / COLS) * CELL_H - 4;          /* lifted = "picked up" */
+  if (*iy < WP_Y) *iy = WP_Y;
+  *fx = *ix + (MON_ICON_W - HAND_GRAB_W) / 2;         /* fist centered over the icon */
+  *fy = *iy - 6;                                      /* and gripping its top */
+  if (*fy < WP_Y) *fy = WP_Y;
+}
+/* Bounding box covering both the carried icon and the grab fist (for partial erase). */
+static void carry_bbox(int ix, int iy, int fx, int fy, int* x, int* y, int* w, int* h) {
+  int x0 = ix < fx ? ix : fx, y0 = iy < fy ? iy : fy;
+  int x1 = ix + MON_ICON_W; if (fx + HAND_GRAB_W > x1) x1 = fx + HAND_GRAB_W;
+  int y1 = iy + MON_ICON_H; if (fy + HAND_GRAB_H > y1) y1 = fy + HAND_GRAB_H;
+  *x = x0 - 1; *y = y0 - 1; *w = x1 - x0 + 2; *h = y1 - y0 + 2;
+}
+
 /* Full repaint — on entry, box change, after a menu/edit, or a mode change. */
 static void render_full(BoxSource* src, int box, int cur, bool on_title, bool moving) {
   ui_clear();
@@ -287,12 +305,9 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
 
   if (moving && s_move_from >= 0) {                 /* carry: held mon rides the cursor */
     grid_icons_skip(s_move_from);                   /* its source slot reads empty */
-    int ix = GRID_X + (cur % COLS) * CELL_W;
-    int iy = GRID_Y + (cur / COLS) * CELL_H - 4;    /* lifted a few px = "picked up" */
-    if (iy < WP_Y) iy = WP_Y;
+    int ix, iy, fx, fy; carry_xy(cur, &ix, &iy, &fx, &fy);
     blit_icon(ix, iy, mon_icon_for_form(g_box[s_move_from].species, g_box[s_move_from].form));
-    int hx, hy; hand_xy(cur, &hx, &hy);
-    draw_grab(hx, hy);                               /* closed fist gripping it */
+    draw_grab(fx, fy);                               /* closed fist gripping it */
   } else {
     grid_icons();
     draw_cursor_hand(cur, on_title);
@@ -351,6 +366,27 @@ static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
   draw_cursor_hand(cur, on_title);
   draw_left(on_title ? 0 : &g_box[cur]);              /* the selected mon changed */
   if (on_title != old_title) draw_footer(src->is_bank, on_title, false);
+}
+
+/* Partial update while CARRYING a mon (move-mode): erase the old icon+fist and
+ * draw them at the new cell — no ui_clear / full repaint, so move-mode doesn't
+ * flicker. Mirrors move_cursor for the carry state. */
+static void carry_move(BoxSource* src, int box, int old_cur, int cur) {
+  int wp = src->get_wp(box);
+  int ix, iy, fx, fy, bx, by, bw, bh;
+  carry_xy(old_cur, &ix, &iy, &fx, &fy);
+  carry_bbox(ix, iy, fx, fy, &bx, &by, &bw, &bh);
+  redraw_region(wp, bx, by, bw, bh, s_move_from);     /* restore wallpaper + other icons */
+  if (by < 28) {                                      /* erase reached the box-name banner -> repaint it */
+    char bn[12], bnocc[24]; src->get_name(box, bn);
+    int occ = 0; for (int s = 0; s < 30; s++) if (g_box[s].species) occ++;
+    siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);
+    draw_banner(WP_X + 2, 13, WP_W - 4, bnocc);
+  }
+  carry_xy(cur, &ix, &iy, &fx, &fy);
+  blit_icon(ix, iy, mon_icon_for_form(g_box[s_move_from].species, g_box[s_move_from].form));
+  draw_grab(fx, fy);
+  draw_left(&g_box[cur]);                             /* panel follows the destination cell */
 }
 
 /* Wallpaper chooser: live-previews each wallpaper behind the box's icons.
@@ -451,17 +487,19 @@ int pdna_box(BoxSource* src) {
 
     /* ---- MOVE MODE: holding a mon; reposition it within the box ---- */
     if (s_move_from >= 0) {
-      if (k & KEY_B) { snd_back(); s_move_from = -1; need_full = true; }
+      if (k & KEY_B) { snd_back(); s_move_from = -1; need_full = true; }   /* cancel -> full redraw */
       else if (k & KEY_A) {                          /* drop -> swap source <-> cursor */
         swap_records(recs, s_move_from, cur);
         pk_decode_box_raw(recs, g_box);
         src->mark_dirty();                           /* PC: deferred to exit; bank: quiet write now */
-        s_move_from = -1; need_full = true;
+        s_move_from = -1; need_full = true;          /* settled -> full redraw */
       }
-      else if (k & KEY_LEFT)  { cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1; need_full = true; }
-      else if (k & KEY_RIGHT) { cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1; need_full = true; }
-      else if (k & KEY_UP)    { if (cur >= COLS) { cur -= COLS; need_full = true; } }
-      else if (k & KEY_DOWN)  { if (cur < COLS * (ROWS - 1)) { cur += COLS; need_full = true; } }
+      else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
+      else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
+      else if (k & KEY_UP)    { if (cur >= COLS) cur -= COLS; }
+      else if (k & KEY_DOWN)  { if (cur < COLS * (ROWS - 1)) cur += COLS; }
+      /* cursor move while carrying -> partial redraw (no ui_clear), so it doesn't flicker */
+      if (!need_full && cur != old_cur) carry_move(src, box, old_cur, cur);
       continue;                                      /* move-mode swallows all other keys */
     }
 
@@ -496,10 +534,13 @@ int pdna_box(BoxSource* src) {
         pk_decode_box_raw(recs, g_box);                                  /* refresh after possible write */
         if (app_take_move_request()) {                                   /* picked MOVE -> hold this slot */
           s_move_from = cur;
-          render_full(src, box, cur, false, false);                      /* clean scene under the menu */
+          render_full(src, box, cur, false, false);                      /* one clear: wipe the menu */
           play_grab_anim(src, box, cur);                                 /* real-PC grab animation */
+          carry_move(src, box, cur, cur);                                /* lift into carry (no 2nd clear) */
+          draw_footer(src->is_bank, false, true);                        /* move-mode footer */
+        } else {
+          need_full = true;                                              /* menu may have edited -> redraw */
         }
-        need_full = true;
       }
     }
 
