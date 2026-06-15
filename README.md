@@ -41,9 +41,9 @@ What it does:
   when you leave the save.
 
 Known limitations / planned: edited or injected Pokémon are **not** registered in the Pokédex
-(seen/caught), and the **Poké Ball** and **met / caught location** can't be edited yet — both
-planned for a later release. A deeper "encounter legality" check is also on the roadmap. See
-`docs/HANDOFF.md` for the current state.
+(seen/caught), and the **Poké Ball** and **met / caught location** can't be edited yet. Some box
+wallpapers also render incorrectly. See **[ROADMAP.md](ROADMAP.md)** for the full backlog and known
+issues, and `docs/HANDOFF.md` for the development state.
 
 ## Download
 
