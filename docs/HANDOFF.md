@@ -81,9 +81,24 @@
   - ROM now **~5.99 MB** (17.8 % of 32 MB; back sprites +1.5 MiB, 2nd icon frame +0.85 MiB). EWRAM is
     **tight: ~4 KB free** (back-sprite scratch +8 KB, `g_sb_recs` +2.9 KB) — watch this before adding
     more big EWRAM buffers.
+- **Adversarial review of the batch (2026-06-15, multi-agent workflow `pokedna-batch-review`, 34 agents):**
+  10 reviewers (one per changed area) → 2 independent skeptics per finding. **9 confirmed defects, 0
+  disputed; all fixed + committed (3 fix commits: `7a6e5cd` savefile, `aaee372` box, `f47f4b7` pdna_main).**
+  - **HIGH:** `dup_name()` (#15 Duplicate) `siprintf`'d into a `NAME_MAX` buffer **before** its length
+    guard → a 63-char filename overflowed the stack. Now bounded `sniprintf`.
+  - `sf_backup_rolling` truncated the only `.bak` before the new copy was verified → fixed with the
+    `.baktmp`→verify→swap invariant.
+  - Box icon animation erased the whole grid each tick (flicker risk) → per-cell `redraw_region`.
+  - **Pre-existing bug found:** `pdna_daycare` used stride 140 for **all** games, but Ruby/Sapphire
+    store the 2 daycare mons contiguously (stride 80) and the egg word is a u16 → RS missed mon[1] and
+    showed a false "egg ready". Fixed + **validated against the Ruby fixture**.
+  - nav-menu panel overflowed the 160 px screen; secret-base detail overlapped the footer; "clear
+    backups" wasn't Omega-gated; secret-base count label `/19`→`/20`. All fixed.
+  - Host suite still green; ROM ~5.99 MB; build clean.
 - **Blocked / needs the user:**
-  1. **`git push` is held** — the standing publish preference (no push unless asked) blocked it; the
-     11 commits are local on `main`. Say the word to push + close issues #4/#5/#6/#7/#8/#9/#10/#11/#12/#13/#14/#15.
+  1. **`git push` is held** — the standing publish preference (no push unless asked) blocked it; **15
+     commits** are local on `main` (12 feature + handoff + 3 review fixes). Say the word to push + close
+     issues #4/#5/#6/#7/#8/#9/#10/#11/#12/#13/#14/#15.
   2. **Hardware sign-off** of this batch's SD-write + visual paths (the user's task, deferred — see Next steps).
 
 ## Next steps (resume here)
