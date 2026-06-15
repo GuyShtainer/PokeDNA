@@ -1,12 +1,14 @@
 # Changelog
 
-All notable changes to PokeDNA. Versions follow `MAJOR.MINOR.PATCH`; pre-1.0 means the editor
-is still experimental.
+All notable changes to PokeDNA. Versions follow semantic versioning (`MAJOR.MINOR.PATCH`).
 
-## v0.1.0 — first public release (2026-06-15)
+## v1.0.0 — first public release (2026-06-15)
 
-First downloadable build. **Reading is solid; the editing / SD-write features work in emulator and
-host tests but are NOT yet validated on real hardware — back up your saves before using write mode.**
+First downloadable build, **validated on real hardware (EZ-Flash Omega DE).** Editing was exercised
+end-to-end on a real cart: flags/counters, copy/duplicate/move, the SD bank (byte-identical
+round-trips that survive a power-cycle), and a full from-scratch Pokémon edit (species + stats +
+moveset) that loads and **battles correctly in the actual game** with no corruption or crashes.
+Every write still keeps an immutable backup first — keep your backups regardless.
 
 ### Added
 - **Viewer:** party + all PC boxes on a game-faithful screen (real box wallpapers incl. the Emerald
@@ -22,8 +24,9 @@ host tests but are NOT yet validated on real hardware — back up your saves bef
 - **Safety:** verified-write pipeline (`.tmp` → byte-compare re-read → rename) behind an immutable
   backup; box moves are batched and saved on one prompt when you leave the save.
 
-### Known limitations
-- **Not hardware-validated yet** — write mode is experimental; keep backups.
+### Known limitations / planned
+- Edited or injected Pokémon are **not** registered in the Pokédex (seen/caught).
+- The **Poké Ball** and **met / caught location** can't be edited yet.
 - A deeper "encounter legality" check and minor cosmetic polish are still to come.
 
 ### How to run

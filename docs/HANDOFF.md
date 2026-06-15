@@ -8,19 +8,24 @@
 ## Current status
 
 - **Repo / branch:** `projects/PokeDNA` (own git repo, under the git-ignored
-  `gba-toolkit/projects/`) / `main` — pushed: **no** (all local).
-- **Goal:** an on-cartridge "PKHeX for the GBA" — a Gen-3 Pokémon save **viewer + editor** that
-  runs on EZ-Flash Omega DE / Everdrive GBA X5, reads the flashcart microSD via FatFs, loads any
-  of the 5 Gen-3 saves (R/S/E/FR/LG), and shows party + PC boxes + trainer/stats with the game's
-  pixel-accurate UI plus the hidden data — with full editing (writes are **EZ-Flash-Omega-only**).
-- **State right now:** Feature-complete viewer **and** editor. The **7-fix UX batch is code-complete
-  and builds clean** (devkitARM) but is **NOT yet committed** — the whole batch sits in the working
-  tree (`git status` dirty). ROM **~3.59 MB** (well under the ~7.5 MB PSRAM ceiling); EWRAM **241.6 KB
-  / 256 KB** — the bank rework *freed* ~6.7 KB. Host gates green (edit/clip/data/legality + new
-  **bank** layout test; box test still fails only on the 2 pre-existing garbage fixture slots, 216
-  mons / 2 fails — unchanged baseline). The one remaining item is **hardware validation** — every
-  SD-write path (incl. the new bank box files + deferred move-save) is **untested on a real cart**;
-  the user **batches all hardware testing for a later session** ("we will test all later").
+  `gba-toolkit/projects/`) / `main`. Public: **`github.com/GuyShtainer/PokeDNA`** (GPLv3). History
+  scrubbed to the no-reply identity. Pushed through the rebrand; the **v1.0.0** release commits +
+  tag may still be local — check `git log origin/main..HEAD`.
+- **Goal:** an on-cartridge original Gen-3 Pokémon save **viewer + editor** (do **not** brand it
+  "PKHeX for GBA" — it's the user's own work) that runs on EZ-Flash Omega DE / Everdrive GBA X5,
+  reads the flashcart microSD via FatFs, loads any of the 5 Gen-3 saves (R/S/E/FR/LG), and shows
+  party + PC boxes + trainer/stats with the game's pixel-accurate UI plus the hidden data — with
+  full editing (writes are **EZ-Flash-Omega-only**).
+- **State right now: `v1.0.0` — hardware-validated, released-grade.** Feature-complete viewer **and**
+  editor, all committed on `main`. ROM **~3.6 MB** (under the ~7.5 MB PSRAM ceiling); EWRAM **~242 KB
+  / 256 KB**. Host gates green (box test's 216/2 is the known garbage-fixture baseline).
+  **Validated on a real EZ-Flash Omega DE (2026-06-15):** flags/counters, copy/duplicate/move, the
+  new per-box SD **bank** (byte-identical round-trips that survive a power-cycle), and a **full
+  from-scratch mon edit** (species+stats+moveset) that loads and **battles correctly in-game** — no
+  corruption, no crashes. The release `PokeDNA.gba` **bundles Gen-3 sprites** (© Nintendo/Creatures/
+  Game Freak), PKHeX-style — source repo ships none (git-ignored). **Known gaps (→ v1.1):** edited/
+  injected mons aren't registered in the Pokédex, and the Poké Ball + met/caught location aren't
+  editable yet.
 - **7-fix batch — DONE this session (uncommitted, plan: `~/.claude/plans/glistening-drifting-willow.md`):**
   1. **Un-mirrored PC box icons** — `pdna_box.c:blit_icon` reads forward again (was mirrored in `91d8de6`).
   2. **Sticky summary card** — `pdna_inspect` gained an in/out `int* card`; `app_box_browse` keeps it across mon-scroll.

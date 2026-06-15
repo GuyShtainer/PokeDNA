@@ -16,14 +16,16 @@ on real hardware with no PC in the loop.
 It is **entirely original work**. It is not a port of, fork of, or front-end for any other save
 editor — the save-format logic is clean-room (see *Credits & legality*).
 
-## Status — honest
+## Status
 
-Builds clean and runs in emulator; the pure-C save-format core is covered by host tests. **The
-editing / SD-write features are implemented but have NOT yet been validated on real hardware** —
-treat write mode as experimental until that's done, and always keep your own backups. Reading is
-the safe, well-exercised path.
+**v1.0.0 — validated on real hardware.** Editing has been exercised end-to-end on an EZ-Flash
+Omega DE: event flags and game counters, copy / duplicate / move, the SD **bank** (byte-identical
+round-trips that survive a power-cycle), and a **full from-scratch Pokémon edit** (species + stats
++ moveset) that loads, displays, and **battles correctly in the actual game** — no corruption, no
+crashes. The pure-C save core is also covered by host tests. Every write still keeps an immutable
+backup first; hold onto it until you're happy.
 
-What works (in code / emulator / host tests):
+What it does:
 
 - **View** — party + all PC boxes on a game-faithful screen (real box wallpapers, including the
   Emerald "secret"/Walda ones; box names), a 6-card Pokémon summary (info / skills / IVs / EVs /
@@ -38,8 +40,10 @@ What works (in code / emulator / host tests):
   rename) behind an immutable backup of the original; moves are batched and saved on one prompt
   when you leave the save.
 
-Roadmap / not done: real-hardware validation of all SD-write paths; a deeper "encounter legality"
-check; minor cosmetic polish. See `docs/HANDOFF.md` for the current state.
+Known limitations / planned: edited or injected Pokémon are **not** registered in the Pokédex
+(seen/caught), and the **Poké Ball** and **met / caught location** can't be edited yet — both
+planned for a later release. A deeper "encounter legality" check is also on the roadmap. See
+`docs/HANDOFF.md` for the current state.
 
 ## Download
 
