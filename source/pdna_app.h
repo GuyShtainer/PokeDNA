@@ -25,8 +25,13 @@ bool app_edit_commit(uint8_t* rec, bool is_party, AppCommitFn commit);
  * DUPLICATE / RELEASE on Omega (an empty slot offers PASTE only); straight to the
  * read-only summary on Everdrive. `block` is the pc-layout buffer the slot lives in
  * and `box`/`slot` locate the record within it (box = -1, slot = party index for
- * party callers). `commit` persists `block`. Returns true iff a write happened. */
-bool app_mon_menu(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, int box, int slot);
+ * party callers). `commit` persists `block`. `is_bank` swaps the EXPORT action for
+ * "TO GAME" (inject into the loaded save). Returns true iff a write happened. */
+bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot);
+
+/* Bank "Copy to game": inject a stored 80-byte box record into the loaded save's
+ * first free PC box slot (and commit). Returns true iff written. Omega-only. */
+bool app_inject_to_game(const uint8_t* rec80);
 
 /* true if the one-slot mon clipboard holds a copied mon (for the box grid to
  * allow PASTE onto an empty slot). */

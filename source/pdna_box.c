@@ -532,7 +532,7 @@ int pdna_box(BoxSource* src) {
       if (g_box[cur].species || (src->can_edit() && app_clip_occupied())) {
         uint8_t* rec = recs + (uint32_t)cur * 80;
         int mbox = src->is_bank ? 0 : box;                               /* box index within menu_block */
-        app_mon_menu(rec, false, src->commit, src->menu_block, mbox, cur);
+        app_mon_menu(rec, false, src->is_bank, src->commit, src->menu_block, mbox, cur);
         recs = src->records(box);                                        /* menu may have edited it */
         pk_decode_box_raw(recs, g_box);                                  /* refresh after possible write */
         if (app_take_move_request()) {                                   /* picked MOVE -> hold this slot */

@@ -583,6 +583,20 @@ static int box_free_slot(const uint8_t* pc, int box) {
   return -1;
 }
 
+/* Bank "Copy to game": drop a stored 80-byte box record into the loaded save's
+ * first free PC box slot and commit. The bank keeps its copy (it's a copy, not a
+ * move). Returns true iff written. */
+bool app_inject_to_game(const uint8_t* rec80) {
+  if (!app_can_edit()) return false;
+  for (int b = 0; b < G3_TOTAL_BOXES; b++) {
+    int s = box_free_slot(g_pc, b);
+    if (s >= 0) { memcpy(pk_box_slot(g_pc, b, s), rec80, 80); return app_commit_pc(); }
+  }
+  snd_deny();
+  msg_wait("PC FULL", UI_WARN, "No empty PC box slot in the", "loaded game.");
+  return false;
+}
+
 static bool app_copy(uint8_t* rec, bool is_party) {
   clip_copy_from(&g_clip, rec, is_party);
   msg_wait("COPIED", UI_OK, "PASTE places it in a slot.", "(it survives until overwritten)");
@@ -655,7 +669,7 @@ static bool app_give_item(uint8_t* rec, bool is_party, AppCommitFn commit) {
  * (read-only): jump to the summary. Returns true iff the save was modified.
  * `commit` persists `block` (PC storage, SaveBlock1, or a bank box file).
  * For party callers pass box = -1, slot = party index. */
-bool app_mon_menu(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, int box, int slot) {
+bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot) {
   PkMon m0;
   bool occupied = pk_decode_mon(rec, is_party, &m0);
   if (occupied) pk_resolve(&m0);
@@ -665,7 +679,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* bloc
     return false;
   }
 
-  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CANCEL };
+  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CANCEL };
   int act[16]; const char* lab[16]; int n = 0;
   if (occupied) {
     lab[n]="VIEW / EDIT"; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
@@ -675,7 +689,8 @@ bool app_mon_menu(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* bloc
     lab[n]="COPY";    act[n++]=A_COPY;
     if (g_clip.occupied) { lab[n]="PASTE"; act[n++]=A_PASTE; }
     lab[n]="DUPLICATE"; act[n++]=A_DUP;
-    lab[n]="EXPORT .pk"; act[n++]=A_EXPORT;
+    if (is_bank) { lab[n]="TO GAME"; act[n++]=A_TOGAME; }   /* bank: inject into the loaded save */
+    else         { lab[n]="EXPORT .pk"; act[n++]=A_EXPORT; }/* PC/party: write a .pk3 to the bank dir */
     if (m0.heldItem && !g_item_held) { lab[n]="TAKE ITEM"; act[n++]=A_TAKEITEM; }
     if (g_item_held)                 { lab[n]="GIVE ITEM"; act[n++]=A_GIVEITEM; }
     lab[n]="RELEASE";   act[n++]=A_RELEASE;
@@ -715,6 +730,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* bloc
         case A_LEGAL:   pdna_legality_show(&m0); return false;
         case A_MOVE:    g_move_req = true; return false;            /* box loop handles the move */
         case A_EXPORT:  pdna_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
+        case A_TOGAME:  return app_inject_to_game(rec);           /* bank -> loaded save's PC */
         case A_COPY:    return app_copy(rec, is_party);
         case A_PASTE:   return app_paste(rec, is_party, commit, occupied);
         case A_DUP:     return app_duplicate(rec, is_party, commit, block, box);
@@ -766,7 +782,7 @@ static int party_list(void) {
     else if ((k & KEY_A) && g_nparty > 0) {
       uint16_t doff = g_frlg ? 0x0038 : 0x0238;
       uint8_t* rec = g_sb1 + doff + (uint32_t)sel * 100;     /* party lives in SaveBlock1 (ids 1..4) */
-      if (app_mon_menu(rec, true, app_commit_sb1, g_sb1, -1, sel)) {   /* PC-style menu -> editor -> commit */
+      if (app_mon_menu(rec, true, false, app_commit_sb1, g_sb1, -1, sel)) {   /* party -> editor -> commit */
         g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
         for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
         if (sel >= g_nparty) sel = g_nparty ? g_nparty - 1 : 0;
