@@ -1019,24 +1019,120 @@ static bool data_editor(void) {
 }
 
 /* START menu from the box/party: pick a destination screen. */
-static int nav_menu(void) {                            /* 0=card 1=bank 2=data 3=back */
-  static const char* const L[4] = { "Trainer card", "Bank", "Data editor", "Back" };
-  const int mx = 60, my = 48, mw = 120, mh = 18 + 4 * 14 + 11;
+/* ===================== Pokedex editor (#6) ============================= */
+
+/* Commit just the dex: SaveBlock2 (sec 0) + SaveBlock1 (sec 1..4). Doesn't touch
+ * PC storage or its dirty flag (unlike app_commit_all). */
+static bool app_commit_dex(void) {
+  gen3_write_full_section(g_save, g_vinfo.slot, 0, g_sb2);
+  for (int id = 1; id <= 4; id++)
+    gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
+  return app_save_finalize();
+}
+
+static uint16_t EWRAM_BSS s_nat2spc[G3_DEX_NAT_MAX + 1];   /* national dex # -> internal species */
+
+static int  dex_state(int nat) {                            /* 0 none, 1 seen, 2 caught */
+  if (pk_dex_owned(g_sb2, (uint16_t)nat)) return 2;
+  return pk_dex_seen(g_sb2, (uint16_t)nat) ? 1 : 0;
+}
+static void dex_set_state(int nat, int state) {
+  pk_dex_set_owned(g_sb2, (uint16_t)nat, state >= 2);
+  pk_dex_set_seen(g_sb1, g_sb2, g_game, (uint16_t)nat, state >= 1);
+}
+
+/* SELECT overlay: catch / see / wipe ALL 386. Returns true if it changed anything. */
+static bool dex_bulk_menu(void) {
+  static const char* const L[4] = { "Catch ALL", "See ALL", "Wipe ALL", "Cancel" };
+  int sel = 0;
+  for (;;) {
+    const int mx = 60, my = 50, mw = 120, mh = 18 + 4 * 14 + 11;
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, "DEX: ALL");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < 4; i++) { int y = my + 18 + i * 14; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]); }
+    ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return false;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
+    else if (k & KEY_A) {
+      if (sel == 3) return false;
+      if (!app_confirm(sel == 0 ? "Catch every species?" : sel == 1 ? "See every species?" : "Wipe the whole dex?",
+                       "Applies to all 386.")) return false;
+      for (int nat = 1; nat <= G3_DEX_NAT_MAX; nat++) dex_set_state(nat, sel == 0 ? 2 : sel == 1 ? 1 : 0);
+      return true;
+    }
+  }
+}
+
+/* Full dex editor: list the 386 national species; A cycles none->seen->caught->none;
+ * SELECT = bulk ops; B exits (prompts to save if changed). */
+static bool pdna_dex_edit(void) {
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); return false; }
+  for (int i = 0; i <= G3_DEX_NAT_MAX; i++) s_nat2spc[i] = 0;
+  for (uint16_t spc = 1; spc <= 411; spc++) {
+    uint16_t nat = pk_national_no(spc);
+    if (nat >= 1 && nat <= G3_DEX_NAT_MAX && !s_nat2spc[nat]) s_nat2spc[nat] = spc;
+  }
+  int sel = 1, top = 1; bool dirty = false;
+  key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
+  for (;;) {
+    if (sel < top) top = sel;
+    if (sel >= top + 14) top = sel - 13;
+    if (top < 1) top = 1;
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "POKEDEX");
+    char h[40]; siprintf(h, "S%d C%d", pk_dex_count(g_sb2, false), pk_dex_count(g_sb2, true));
+    ui_text(168, 2, UI_DIM, h);
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    char row[44];
+    for (int i = 0; i < 14; i++) {
+      int nat = top + i; if (nat > G3_DEX_NAT_MAX) break;
+      int y = 14 + i * 9; bool s = (nat == sel);
+      uint16_t spc = s_nat2spc[nat]; int st = dex_state(nat);
+      siprintf(row, "%03d %-11s %s", nat, spc ? pk_species_name(spc) : "?",
+               st == 2 ? "CAUGHT" : st == 1 ? "seen" : "-");
+      char rt[44]; ui_truncate(rt, row, 29);
+      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+      ui_text(6, y, s ? UI_SELTEXT : st == 2 ? UI_OK : st == 1 ? UI_TEXT : UI_DIM, rt);
+    }
+    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+    ui_text(4, 152, UI_DIM, "A cycle  SEL all  L/R page  B done");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_SELECT);
+    if (k & KEY_B) break;
+    else if (k & KEY_UP)    { if (sel > 1) sel--; }
+    else if (k & KEY_DOWN)  { if (sel < G3_DEX_NAT_MAX) sel++; }
+    else if (k & KEY_LEFT)  { sel -= 14; if (sel < 1) sel = 1; }
+    else if (k & KEY_RIGHT) { sel += 14; if (sel > G3_DEX_NAT_MAX) sel = G3_DEX_NAT_MAX; }
+    else if (k & KEY_A)      { dex_set_state(sel, (dex_state(sel) + 1) % 3); dirty = true; }
+    else if (k & KEY_SELECT) { if (dex_bulk_menu()) dirty = true; }
+  }
+  key_repeat_mask(KEY_UP | KEY_DOWN);
+  if (dirty && app_confirm("Save Pokedex changes?", "Writes the dex now.")) return app_commit_dex();
+  return false;
+}
+
+static int nav_menu(void) {                            /* 0=card 1=bank 2=data 3=dex 4=back */
+  static const char* const L[5] = { "Trainer card", "Bank", "Data editor", "Pokedex", "Back" };
+  const int mx = 60, my = 44, mw = 120, mh = 18 + 5 * 14 + 11;
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "MENU");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
       int y = my + 18 + i * 14; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
     }
     ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return 3;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
+    if (k & KEY_B) return 4;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 4;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 5;
     else if (k & KEY_A)    return sel;
   }
 }
@@ -1133,6 +1229,7 @@ static void view_save(const char* path) {
         if (app_can_edit()) data_editor();
         else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); }
       }
+      else if (dest == 3) pdna_dex_edit();        /* full Pokedex editor */
       continue;
     }
     if (!g_have_pc) { flush_pc_on_exit(); return; }   /* nothing to toggle to */
