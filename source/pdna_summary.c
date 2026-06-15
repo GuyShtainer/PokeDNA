@@ -17,6 +17,7 @@
 #include "data_tables.h"
 #include "pdna_edit.h"   /* F_*, em_field_press / em_field_adjust */
 #include "mon_front.h"
+#include "mon_back.h"
 #include "mon_icons.h"
 #include "type_icons.h"
 #include "snd.h"
@@ -38,6 +39,10 @@ static const char* DSHORT[6] = { "HP", "Atk", "Def", "SpA", "SpD", "Spd" };
 #define C_HOT  UI_WARN
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
+
+/* SELECT flips the portrait between front and back sprite (issue #12); persists
+ * across mon-scroll within a summary session. */
+static bool g_back = false;
 
 /* ---- editable-field slot registry (filled during render in edit mode) ---- */
 static int g_edit = 0, g_nslot = 0;
@@ -80,7 +85,8 @@ static const char* gender_sym(uint8_t g) { return g == 0 ? "M" : g == 1 ? "F" : 
 static void draw_left(const PkMon* p) {
   ui_panel(0, 11, 92, 139, UI_PANEL, UI_BORDER);
   m3_frame(11, 13, 80, 78, UI_BORDER);                     /* sprite sub-frame */
-  const uint16_t* spr = mon_front_for_form(p->species, p->isShiny, p->form);
+  const uint16_t* spr = g_back ? mon_back_for_form(p->species, p->isShiny, p->form) : 0;
+  if (!spr) spr = mon_front_for_form(p->species, p->isShiny, p->form);   /* fall back to front */
   if (spr) ui_sprite(14, 14, MON_FRONT_W, MON_FRONT_H, spr);
   else     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
   if (p->isShiny) ui_text(70, 16, C_HOT, "*");             /* gold shiny mark on the portrait */
@@ -89,6 +95,7 @@ static void draw_left(const PkMon* p) {
   ui_hline(4, 81, 84, UI_BORDER);
   siprintf(buf, "#%03u", (unsigned)pk_national_no(p->species));
   ui_text(6, 84, C_KEY, buf);
+  if (g_back) ui_text(44, 84, UI_DIM, "back");             /* current portrait side */
 
   char nm[24];
   ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);
@@ -304,17 +311,19 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     ui_text(4, 152, UI_DIM, editing ? "A list  <> +/-  U/D field  L/R card  B view"
-                          : can_edit ? "A edit  U/D mon  L/R card  B back"
-                                     : "U/D mon  L/R card  B back");
+                          : can_edit ? "A edit  U/D mon  L/R card  SEL flip  B back"
+                                     : "U/D mon  L/R card  SEL flip  B back");
 
     u16 k, fresh;
     do { s_vsync(); fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
     if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
-    else if (fresh & (KEY_L | KEY_R))     snd_tab();
+    else if (fresh & (KEY_L | KEY_R | KEY_SELECT)) snd_tab();
     else if (fresh & KEY_A)               snd_ok();
     else if (fresh & (KEY_LEFT | KEY_RIGHT)) { if (editing) snd_edit(); }
     else if (fresh & KEY_B)               snd_back();
+
+    if (fresh & KEY_SELECT) { g_back = !g_back; continue; }   /* flip front/back portrait */
 
     if (editing) {
       /* ---- EDIT MODE ---- */
