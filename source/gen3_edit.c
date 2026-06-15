@@ -145,6 +145,22 @@ void em_set_ability(EditMon* e, uint8_t n) {
   wr32(e->sub[3] + 4, iv);
 }
 
+/* Misc substruct (sub[3]): [1] = metLocation; [2..3] = origins u16
+ * (bits 0-6 metLevel, 7-10 originGame, 11-14 pokeBall, 15 otGender). */
+void em_set_metloc(EditMon* e, uint8_t loc) { e->sub[3][1] = loc; }
+void em_set_ball(EditMon* e, uint8_t ball) {
+  uint16_t o = rd16(e->sub[3] + 2);
+  wr16(e->sub[3] + 2, (uint16_t)((o & ~(0xFu << 11)) | (((uint16_t)ball & 0xF) << 11)));
+}
+void em_set_metlevel(EditMon* e, uint8_t lvl) {
+  uint16_t o = rd16(e->sub[3] + 2);
+  wr16(e->sub[3] + 2, (uint16_t)((o & ~0x7Fu) | (lvl & 0x7F)));
+}
+void em_set_metgame(EditMon* e, uint8_t game) {
+  uint16_t o = rd16(e->sub[3] + 2);
+  wr16(e->sub[3] + 2, (uint16_t)((o & ~(0xFu << 7)) | (((uint16_t)game & 0xF) << 7)));
+}
+
 void em_set_level(EditMon* e, uint8_t level) {
   if (level < 1) level = 1;
   if (level > 100) level = 100;

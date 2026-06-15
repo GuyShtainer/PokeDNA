@@ -14,6 +14,7 @@ enum {
   F_EV0, F_EV1, F_EV2, F_EV3, F_EV4, F_EV5,
   F_MV0, F_MV1, F_MV2, F_MV3,
   F_OT,
+  F_BALL, F_METLOC, F_METLEVEL, F_METGAME,
   F_NUM
 };
 
@@ -21,6 +22,9 @@ enum {
  * (dir -1/+1, big = L/R shoulders). Shared by the field list and the inline summary. */
 void em_field_press(int field, EditMon* e, const PkMon* cur);
 void em_field_adjust(int field, int dir, bool big, EditMon* e, const PkMon* cur);
+
+/* Gen-3 origin-game id (1..15) -> short name ("Emerald", "FireRed", "Colo/XD"…). */
+const char* pk_metgame_name(uint8_t g);
 
 /* Field-edit screen for ONE Pokémon (PKHeX-style). is_party => 100-byte record,
  * else 80-byte box record. Edits an in-RAM working copy with a live preview.

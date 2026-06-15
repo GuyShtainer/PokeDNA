@@ -21,7 +21,7 @@
 #include "type_icons.h"
 #include "snd.h"
 
-#define NCARDS 6
+#define NCARDS 7
 
 /* real Gen-3 type badge (32x14); ui_sprite honours the 0x8000 opacity bit. */
 static void type_badge(int x, int y, uint8_t t) {
@@ -202,6 +202,30 @@ static void card_moves(const PkMon* p, bool contest) {
   }
 }
 
+/* ORIGIN / MET card — the caught info: Poké Ball, met level + location, origin game
+ * (all editable), plus read-only OT / TID / SID and a Pokérus tag. */
+static void card_origin(const PkMon* p) {
+  int x = 98, y = 14; char b[48];
+  ui_text(x, y, C_HDR, "ORIGIN / MET"); y += 13;
+
+  ui_text(x, y, C_KEY, "Ball"); reg(F_BALL, x + 60, y, 76);
+  { char bl[24]; ui_truncate(bl, pk_item_name(p->pokeball), 13); ui_text(x + 60, y, C_VAL, bl); } y += 11;
+
+  ui_text(x, y, C_KEY, "Met at Lv"); reg(F_METLEVEL, x + 60, y, 30);
+  siprintf(b, "%u", (unsigned)p->metLevel); ui_text(x + 60, y, C_VAL, b); y += 11;
+
+  ui_text(x, y, C_KEY, "Location"); reg(F_METLOC, x + 60, y, 76);
+  { char lb[24]; ui_truncate(lb, pk_location_name(p->metLocation), 13); ui_text(x + 60, y, C_VAL, lb); } y += 11;
+
+  ui_text(x, y, C_KEY, "Origin"); reg(F_METGAME, x + 60, y, 76);
+  ui_text(x + 60, y, C_HOT, pk_metgame_name(p->metGame)); y += 14;
+
+  siprintf(b, "OT %s", p->otName); { char ob[40]; ui_truncate(ob, b, 17); ui_text(x, y, UI_DIM, ob); } y += 9;
+  siprintf(b, "TID %05u SID %05u", (unsigned)(p->otId & 0xFFFF), (unsigned)(p->otId >> 16));
+  { char tb[40]; ui_truncate(tb, b, 17); ui_text(x, y, UI_DIM, tb); } y += 9;
+  if (p->pokerus) ui_text(x, y, UI_WARN, "Pokerus");
+}
+
 static void render_card(const PkMon* p, int card) {
   ui_clear();
   g_nslot = 0;
@@ -217,6 +241,7 @@ static void render_card(const PkMon* p, int card) {
     case 3: card_spread(p, true);  break;
     case 4: card_moves(p, false);  break;
     case 5: card_moves(p, true);   break;
+    case 6: card_origin(p);        break;
   }
 }
 

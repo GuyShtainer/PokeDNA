@@ -42,6 +42,10 @@ void em_set_level(EditMon* e, uint8_t level);                /* sets exp (+ part
 void em_set_party_flag(EditMon* e, bool is_party);          /* box<->party kind (derives/drops plaintext stats) */
 void em_set_nickname(EditMon* e, const char* s);            /* <=10 chars */
 void em_set_otname(EditMon* e, const char* s);              /* <=7 chars  */
+void em_set_metloc(EditMon* e, uint8_t loc);                /* caught/met location id      */
+void em_set_ball(EditMon* e, uint8_t ball);                 /* Poke Ball 1..12             */
+void em_set_metlevel(EditMon* e, uint8_t lvl);              /* level it was met at (0..100)*/
+void em_set_metgame(EditMon* e, uint8_t game);              /* origin game 1..15           */
 
 /* nature / shininess / gender are all derived from the personality value, so set
  * them by rerolling the PID to match the chosen combo (want_*<0 = don't care).

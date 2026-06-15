@@ -27,7 +27,17 @@ static const char* const FLABEL[F_NUM] = {
   "IV HP", "IV Atk", "IV Def", "IV Spe", "IV SpA", "IV SpD",
   "EV HP", "EV Atk", "EV Def", "EV Spe", "EV SpA", "EV SpD",
   "Move 1", "Move 2", "Move 3", "Move 4", "OT Name",
+  "Ball", "Met Loc", "Met Lv", "Met Game",
 };
+
+/* Gen-3 origin-game id -> name. */
+const char* pk_metgame_name(uint8_t g) {
+  switch (g) {
+    case 1: return "Sapphire"; case 2: return "Ruby";   case 3: return "Emerald";
+    case 4: return "FireRed";  case 5: return "LeafGreen"; case 15: return "Colo/XD";
+    default: return "?";
+  }
+}
 
 #define VIS_ROWS 16
 
@@ -70,6 +80,10 @@ static void field_value(int f, const PkMon* c, char* buf) {
       siprintf(buf, "%s", mv ? pk_move_name(mv) : "-"); break;
     }
     case F_OT:      siprintf(buf, "%s", c->otName); break;
+    case F_BALL:    siprintf(buf, "%s", pk_item_name(c->pokeball)); break;
+    case F_METLOC:  siprintf(buf, "%s", pk_location_name(c->metLocation)); break;
+    case F_METLEVEL:siprintf(buf, "%u", (unsigned)c->metLevel); break;
+    case F_METGAME: siprintf(buf, "%s", pk_metgame_name(c->metGame)); break;
     default:        buf[0] = 0;
   }
 }
@@ -129,6 +143,10 @@ void em_field_adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
       em_set_ev(e, f - F_EV0, (uint8_t)clampi(c->evs[f - F_EV0] + dir * s, 0, 255)); break;
     case F_MV0: case F_MV1: case F_MV2: case F_MV3:
       em_set_move(e, f - F_MV0, clampi(c->moves[f - F_MV0] + dir * (big ? 10 : 1), 0, 65535)); break;
+    case F_BALL:     { int v = c->pokeball + dir; if (v < 1) v = 12; if (v > 12) v = 1; em_set_ball(e, (uint8_t)v); break; }
+    case F_METLOC:   em_set_metloc(e, (uint8_t)clampi(c->metLocation + dir * (big ? 10 : 1), 0, 255)); break;
+    case F_METLEVEL: em_set_metlevel(e, (uint8_t)clampi(c->metLevel + dir * s, 0, 100)); break;
+    case F_METGAME:  { int v = c->metGame + dir; if (v < 0) v = 15; if (v > 15) v = 0; em_set_metgame(e, (uint8_t)v); break; }
     default: break;   /* names: use A */
   }
 }
@@ -163,6 +181,10 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
       em_set_ev(e, f - F_EV0, v < 4 ? 4 : v < 252 ? 252 : v < 255 ? 255 : 0);
       break;
     }
+    case F_BALL:     { int v = c->pokeball + 1; if (v > 12) v = 1; em_set_ball(e, (uint8_t)v); break; }   /* next ball */
+    case F_METGAME:  { int v = c->metGame + 1;  if (v > 15) v = 0; em_set_metgame(e, (uint8_t)v); break; }/* next game */
+    case F_METLOC:   em_set_metloc(e, (uint8_t)clampi(c->metLocation + 10, 0, 255)); break;               /* +10 jump  */
+    case F_METLEVEL: em_set_metlevel(e, (uint8_t)(c->metLevel >= 100 ? 1 : 100)); break;                  /* 1 <-> 100 */
     default: break;
   }
 }
