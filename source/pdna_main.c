@@ -448,6 +448,12 @@ static void grow_in(u16 col) {
  * PC write (which flushes the whole g_pc) or an explicit revert. */
 static bool g_pc_dirty = false;
 
+/* Backup policy for the verified write: 0 = new .bak/.bak1… each time (default),
+ * 1 = single rolling .bak (overwrite), 2 = skip backup. Session-only (resets each
+ * launch). The verified-write itself (.tmp → re-read → rename) always protects the
+ * original mid-write; the backup is the extra undo layer. */
+static int g_backup_mode = 0;
+
 /* Verify checksums, back up the original, and do the verified whole-file write —
  * the shared tail of every commit (the changed section bytes are already in g_save). */
 static bool app_save_finalize(void) {
@@ -459,17 +465,21 @@ static bool app_save_finalize(void) {
     return false;
   }
 
-  log_line("=== edit commit -> %s ===", g_path);
-  busy_panel("Backing up original...");           /* safe point: before SD copy */
-  char bak[SF_PATH_MAX];
-  SfStatus st = sf_backup(g_path, bak, sizeof(bak));
-  if (st != SF_OK) {
-    log_line("edit: backup failed (%s)", sf_status_str(st));
-    log_flush_to_sd(LOG_PATH);
-    snd_error();
-    msg_wait("BACKUP FAILED", UI_WARN, sf_status_str(st), "Save NOT modified.");
-    return false;
+  log_line("=== edit commit -> %s (backup mode %d) ===", g_path, g_backup_mode);
+  char bak[SF_PATH_MAX]; bak[0] = 0;
+  if (g_backup_mode != 2) {                        /* 2 = skip backup */
+    busy_panel("Backing up original...");          /* safe point: before SD copy */
+    SfStatus bst = (g_backup_mode == 1) ? sf_backup_rolling(g_path, bak, sizeof(bak))
+                                        : sf_backup(g_path, bak, sizeof(bak));
+    if (bst != SF_OK) {
+      log_line("edit: backup failed (%s)", sf_status_str(bst));
+      log_flush_to_sd(LOG_PATH);
+      snd_error();
+      msg_wait("BACKUP FAILED", UI_WARN, sf_status_str(bst), "Save NOT modified.");
+      return false;
+    }
   }
+  SfStatus st;
   busy_panel("Writing + verifying...");            /* safe point: before SD write */
   st = sf_write_verified(g_path, g_save, G3_SAVE_FILE_SIZE);
   log_line("edit: write %s (backup %s)", st == SF_OK ? "OK" : sf_status_str(st), bak);
@@ -1148,24 +1158,60 @@ static void pdna_daycare(void) {
   if (off) msg_wait("DAYCARE", UI_OK, "An EGG is ready to collect!", 0);
 }
 
-static int nav_menu(void) {                            /* 0=card 1=bank 2=data 3=dex 4=daycare 5=back */
-  static const char* const L[6] = { "Trainer card", "Bank", "Data editor", "Pokedex", "Daycare", "Back" };
-  const int mx = 60, my = 40, mw = 120, mh = 18 + 6 * 14 + 11;
+/* ===================== Settings (#14: backups) ========================= */
+
+static void pdna_settings(void) {
+  static const char* const MODE[3] = { "New each time", "Single (rolling)", "Skip (none)" };
+  int sel = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, "SETTINGS");
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    char r0[44]; siprintf(r0, "Backups:  %s", MODE[g_backup_mode]);
+    const char* rows[3] = { r0, "Clear backups (this save)", "Close" };
+    for (int i = 0; i < 3; i++) {
+      int y = 30 + i * 16; bool s = (i == sel);
+      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
+      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
+    }
+    ui_text(8, 96, UI_DIM, g_backup_mode == 2 ? "Skip = no .bak undo (verified write" : "Backup is the extra undo layer;");
+    ui_text(8, 106, UI_DIM, g_backup_mode == 2 ? "still protects the original)." : "the write itself is always safe.");
+    ui_text(4, 152, UI_DIM, "A change/do  U/D move  B back");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 2;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 3;
+    else if (k & KEY_A) {
+      if (sel == 0) g_backup_mode = (g_backup_mode + 1) % 3;
+      else if (sel == 1) {
+        if (app_confirm("Delete ALL backups?", "For the loaded save only.")) {
+          int rm = sf_clear_backups(g_path);
+          char m[44]; siprintf(m, "Removed %d backup file(s).", rm);
+          snd_ok(); msg_wait("CLEARED", UI_OK, m, 0);
+        }
+      } else return;
+    }
+  }
+}
+
+static int nav_menu(void) {                            /* 0=card 1=bank 2=data 3=dex 4=daycare 5=settings 6=back */
+  static const char* const L[7] = { "Trainer card", "Bank", "Data editor", "Pokedex", "Daycare", "Settings", "Back" };
+  const int mx = 60, my = 34, mw = 120, mh = 18 + 7 * 14 + 11;
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "MENU");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 7; i++) {
       int y = my + 18 + i * 14; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
     }
     ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return 5;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 5;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 6;
+    if (k & KEY_B) return 6;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 6;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 7;
     else if (k & KEY_A)    return sel;
   }
 }
@@ -1264,6 +1310,7 @@ static void view_save(const char* path) {
       }
       else if (dest == 3) pdna_dex_edit();        /* full Pokedex editor */
       else if (dest == 4) pdna_daycare();         /* daycare viewer (read-only) */
+      else if (dest == 5) pdna_settings();        /* backups / app settings (dest 6 = Back) */
       continue;
     }
     if (!g_have_pc) { flush_pc_on_exit(); return; }   /* nothing to toggle to */
