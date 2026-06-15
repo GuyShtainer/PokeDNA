@@ -33,7 +33,7 @@ static void msg(const char* l1, const char* l2, const char* l3, u16 col) {
 }
 
 bool pdna_pk_export(const uint8_t* rec, const PkMon* m) {
-  f_mkdir("/pokedna");                 /* ignore FR_EXIST */
+  f_mkdir("/PokeDNA");                 /* ignore FR_EXIST */
   f_mkdir(PDNA_BANK_DIR);
 
   char base[16];

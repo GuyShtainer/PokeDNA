@@ -1,4 +1,4 @@
-# pokedna — developer context / resume guide
+# PokeDNA — developer context / resume guide
 
 > One-stop context for picking this project back up. Read this first, then
 > `CLAUDE.md` (toolkit root) for the shared hardware/safety rules. This file is
@@ -23,7 +23,7 @@ loads any of the 5 Gen-3 saves (Ruby/Sapphire/Emerald/FireRed/LeafGreen), and sh
 party + PC boxes + trainer/stats with the game's pixel-accurate UI **plus** the hidden
 data (IVs, full EVs, computed stats, nature, ability, shininess) — with full editing.
 
-Lives at `gba-toolkit/projects/pokedna/` (own git repo, MIT). It vendors the
+Lives at `gba-toolkit/projects/PokeDNA/` (own git repo, GPLv3). It vendors the
 toolkit's `lib/` (flashcartio, FatFs, ezfo, everdrive, sys.h) so it's a standalone
 public repo. **Ripped art is never committed** — see §4.
 
@@ -43,7 +43,7 @@ public repo. **Ripped art is never committed** — see §4.
 ```
 DEVKITPRO=/opt/devkitpro DEVKITARM=/opt/devkitpro/devkitARM make -C <proj> rebuild
 ```
-or `./build.sh` (Docker). Output: `pokedna.gba` (Makefile `TITLE := PokeDNA`,
+or `./build.sh` (Docker). Output: `PokeDNA.gba` (Makefile `TITLE := PokeDNA`,
 `gbafix -t`; **do NOT `-p` pad** — see §5 PSRAM). The Makefile auto-globs `source/*.c`
 and `source/*.s`, so new files need no Makefile edit.
 
@@ -227,7 +227,7 @@ To regenerate everything after pulling the repo fresh you need the local-only as
   edit IVs/EVs. The SKILLS card routes stat-row edits to that stat's EV.
 - **m3_plot does NOT clip** — any x≥240 or y≥160 corrupts memory. Trace every new coordinate.
   TTE text is 8px tall/8px per char from its top-left.
-- **Reboot-to-loader** lives in the vendored lib now (the pokedna's `lib/` was older than
+- **Reboot-to-loader** lives in the vendored lib now (the PokeDNA's `lib/` was older than
   the toolkit's and lacked it). `flashcartio_reboot` gates per cart, refuses mid-transfer,
   IRQs off; Omega → `_EZFO_reboot` (SetRompage BOOTLOADER + SoftReset). **Not emulatable —
   needs hardware sign-off.**
@@ -262,10 +262,10 @@ commit). Species mapping fix (internal ids). Editing confirmed working on real O
   write**, so it needs no hardware sign-off. Host-verified: 0 false positives across 651 valid
   mons in all 3 fixtures; survived a 4-dimension adversarial review (the one real FP it found —
   Volt Tackle on the Pichu line — is fixed + regression-guarded).
-- **Export `.pk3`** (`EXPORT .pk`) to `/pokedna/bank/`.
+- **Export `.pk3`** (`EXPORT .pk`) to `/PokeDNA/bank/`.
 - **External bank** (START → MENU → Bank): a grid of stored `.pk3`; inject into the loaded
   game's first free box slot (record is byte-identical across all 5 games) / delete. Also the
-  **import** path — drop PKHeX `.pk3` files into `/pokedna/bank/`.
+  **import** path — drop PKHeX `.pk3` files into `/PokeDNA/bank/`.
 - **Data editor** (START → MENU → Data editor, Omega-only): COUNTERS (named game stats) / BAG
   (all 5 pockets) / FLAGS. The FLAGS tab now opens on a **named list** (badges + system flags +
   **gyms, Elite Four, legendaries**, ON/off, A toggles with a one-time soft-lock caution) with a

@@ -9,7 +9,7 @@
  * Mons move between the bank and the save through the universal copy/paste
  * clipboard, so the bank behaves exactly like another set of PC boxes.
  *
- * On first use it migrates any existing flat /pokedna/bank/*.pk3 files into the
+ * On first use it migrates any existing flat /PokeDNA/bank/*.pk3 files into the
  * new box files (non-destructively — the .pk3 files are left in place).
  *
  * Shows the bank screen; returns when the user backs out. Omega-only for writes;

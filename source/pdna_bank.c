@@ -1,7 +1,7 @@
 /*
  * pdna_bank — the external bank as a parallel set of 16 PC-style boxes.
  *
- * Storage on the SD card under /pokedna/bank/:
+ * Storage on the SD card under /PokeDNA/bank/:
  *   boxNN.box   one file per box = 30 * 80 = 2400 raw box-mon records (NN = 00..15)
  *   bank.meta   16-byte header + 16 * (9-byte ASCII name + 1 wallpaper byte)
  *
@@ -101,7 +101,7 @@ static bool box_save(void) {                    /* write the loaded box's record
   return ok;
 }
 
-/* ---- one-time migration from the old flat /pokedna/bank/*.pk3 layout ---- */
+/* ---- one-time migration from the old flat /PokeDNA/bank/*.pk3 layout ---- */
 static bool has_pk_ext(const char* n) {
   int L = (int)strlen(n);
   if (L >= 4 && n[L-4]=='.' && (n[L-3]=='p'||n[L-3]=='P') && (n[L-2]=='k'||n[L-2]=='K') && n[L-1]=='3') return true;
@@ -177,7 +177,7 @@ static bool banksrc_commit(void) {               /* immediate edits: persist box
 static void banksrc_mark_dirty(void) { g_dirty = true; }   /* moves: deferred to box-switch/exit */
 
 bool pdna_bank_show(void) {
-  f_mkdir("/pokedna");
+  f_mkdir("/PokeDNA");
   f_mkdir(PDNA_BANK_DIR);
 
   if (app_can_edit() && !layout_exists()) migrate_flat_pk3();   /* first run: import old .pk3 */

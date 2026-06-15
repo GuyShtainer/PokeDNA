@@ -1,5 +1,5 @@
 /*
- * pokedna — entry point (milestone M0).
+ * PokeDNA — entry point (milestone M0).
  *
  * Scaffold: bring up tonc + the bitmap UI, detect the flashcart, mount the SD,
  * and BROWSE the card (folders + .sav files, navigate with A/B) so saves in
@@ -45,7 +45,7 @@
 #include "log.h"
 #include "ui.h"
 
-#define LOG_PATH      "/pokedna_log.txt"
+#define LOG_PATH      "/PokeDNA_log.txt"
 #define PATH_MAX      256
 #define MAX_ENTRIES   256
 #define NAME_MAX      64
@@ -1111,7 +1111,7 @@ static void view_save(const char* path) {
 int main(void) {
   init_system();
   log_init();
-  log_line("=== pokedna (M0) ===");
+  log_line("=== PokeDNA (M0) ===");
   log_line("mGBA debug log: %s", log_under_mgba() ? "active" : "absent");
 
   ui_clear();

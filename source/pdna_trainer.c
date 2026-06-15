@@ -1,5 +1,5 @@
 /*
- * Trainer card / stats screen for pokedna. Shows the trainer identity,
+ * Trainer card / stats screen for PokeDNA. Shows the trainer identity,
  * money, play time, Pokédex counts, the designated Elite-Four / Hall-of-Fame
  * first-clear time, and the Game Records.
  */

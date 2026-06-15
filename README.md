@@ -57,7 +57,7 @@ Requires devkitPro `gba-dev` (libtonc), or just Docker:
 make rebuild      # local devkitPro
 ```
 
-Output: `pokedna.gba`. Copy it to the flashcart SD next to your `.sav` files and run it.
+Output: `PokeDNA.gba`. Copy it to the flashcart SD next to your `.sav` files and run it.
 
 ### Art is not in the repo (bring your own / regenerate)
 

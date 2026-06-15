@@ -1,4 +1,4 @@
-# pokedna — Handoff
+# PokeDNA — Handoff
 
 > Living resume doc maintained by the `handoff` skill. The **Current status** and **Next steps**
 > sections are always kept current — start there to resume. The **Session log** grows downward,
@@ -7,7 +7,7 @@
 
 ## Current status
 
-- **Repo / branch:** `projects/pokedna` (own git repo, under the git-ignored
+- **Repo / branch:** `projects/PokeDNA` (own git repo, under the git-ignored
   `gba-toolkit/projects/`) / `main` — pushed: **no** (all local).
 - **Goal:** an on-cartridge "PKHeX for the GBA" — a Gen-3 Pokémon save **viewer + editor** that
   runs on EZ-Flash Omega DE / Everdrive GBA X5, reads the flashcart microSD via FatFs, loads any
@@ -28,7 +28,7 @@
   4. **Real-PC grab animation** — `gen_hand.py` now emits 3 frames (open/reach/grab); move-mode plays a pickup
      animation and the held mon **rides the closed-fist cursor** (`play_grab_anim`, carry render in `render_full`).
   5. **Bank = parallel set of 16 boxes** — big refactor: `pdna_box` now drives a **`BoxSource`** vtable; new
-     `source/pdna_bank.c` stores the bank as per-box files (`/pokedna/bank/boxNN.box`) + `bank.meta`
+     `source/pdna_bank.c` stores the bank as per-box files (`/PokeDNA/bank/boxNN.box`) + `bank.meta`
      (names+wallpapers), paged one box at a time (EWRAM-safe), migrates old flat `.pk3` on first open. Mons move
      in/out via the **universal copy/paste clipboard** (old inject/withdraw menu retired). `app_mon_menu` /
      `app_box_browse` / quick-editors now take an `AppCommitFn commit` instead of `(sect_lo,sect_hi)`.
@@ -65,7 +65,7 @@
    Flag each SD-write path commit "NOT hardware-tested" per convention. Use the `git-commit` skill.
 2. **Hardware-validate on a real EZ-Flash Omega DE** (the user batches this). New things this batch
    added that the emulator cannot prove — exercise on disposable copies:
-   - **Bank as boxes:** first-open **migration** of any old `/pokedna/bank/*.pk3` into `boxNN.box`
+   - **Bank as boxes:** first-open **migration** of any old `/PokeDNA/bank/*.pk3` into `boxNN.box`
      + `bank.meta`; rename a bank box, change its wallpaper; **copy a mon PC→bank and bank→PC** (and
      bank→party) via the clipboard; move/swap within a bank box; confirm each `boxNN.box` re-reads
      intact and an interrupted write leaves the original recoverable (`.tmp`/rename).
@@ -88,8 +88,8 @@
 
 ```
 # Build the ROM (local devkitPro; ./build.sh uses Docker if preferred):
-DEVKITPRO=/opt/devkitpro DEVKITARM=/opt/devkitpro/devkitARM make -C projects/pokedna rebuild
-#   -> projects/pokedna/pokedna.gba   (TITLE=PokeDNA; do NOT gbafix -p pad — PSRAM ceiling)
+DEVKITPRO=/opt/devkitpro DEVKITARM=/opt/devkitpro/devkitARM make -C projects/PokeDNA rebuild
+#   -> projects/PokeDNA/PokeDNA.gba   (TITLE=PokeDNA; do NOT gbafix -p pad — PSRAM ceiling)
 
 # Regenerate the git-ignored data after editing a generator (run from the project root):
 python3 tools/gen_data.py        # data_tables.c (names/stats + comprehensive per-game named flags: E491/F304/R395)
@@ -229,7 +229,7 @@ cc -std=c11 -I source tests/host_bank_test.c source/gen3_save.c source/gen3_mon.
   full-screen reload when browsing the PC; flip the box sprite facing; summary A=edit/B=exit +
   scroll-through-box + save-on-leave; fix Unown showing only "A" + choose the form when setting
   species. (User paused mid-way for tokens, then "go on" to finish all of it.)
-- **Did:** shipped all of the above across 13 pokedna commits (`fef2104`→`1fab267`, + docs
+- **Did:** shipped all of the above across 13 PokeDNA commits (`fef2104`→`1fab267`, + docs
   `acdc1bd`). Reverse-engineered the Walda secret-wallpaper system and the box-wallpaper tile/
   palette format; reconstructed + visually verified all 32 wallpapers. Added 28 Unown form sprites
   (front+icon) + PID-form decode + a PID-search form setter. Reworked the summary into VIEW/EDIT

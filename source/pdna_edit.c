@@ -1,5 +1,5 @@
 /*
- * Field-edit screen for pokedna (PKHeX-style, in-RAM).
+ * Field-edit screen for PokeDNA (PKHeX-style, in-RAM).
  * UP/DOWN pick a field; LEFT/RIGHT adjust by 1, L/R shoulders by a bigger step;
  * A opens a list picker (species/item/move/nature) or the on-screen keyboard
  * (nickname/OT) or toggles (ability/shiny/gender); B cancels; START -> commit

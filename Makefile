@@ -73,7 +73,7 @@ export PATH := $(DEVKITARM)/bin:$(PATH)
 
 # === PROJECT DETAILS =================================================
 
-export PROJ := pokedna
+export PROJ := PokeDNA
 TITLE       := PokeDNA
 
 LIBS        := -ltonc

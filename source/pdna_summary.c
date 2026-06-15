@@ -1,5 +1,5 @@
 /*
- * Game-faithful paged Pokémon summary (6 cards) for pokedna — now an
+ * Game-faithful paged Pokémon summary (6 cards) for PokeDNA — now an
  * inline VIEW + EDIT screen. Each editable field registers its on-screen box
  * during render; in edit mode a cursor highlights one and A / LEFT-RIGHT edit it
  * in place (reusing the editor's field dispatchers). No separate "edit" mode.

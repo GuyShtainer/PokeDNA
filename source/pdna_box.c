@@ -1,5 +1,5 @@
 /*
- * Game-faithful PC box screen for pokedna (mimics the Gen-3 PC).
+ * Game-faithful PC box screen for PokeDNA (mimics the Gen-3 PC).
  * Left "PKMN DATA" panel (front sprite + name/No/Lv/gender/item) + a 6x5 grid of
  * 32x32 box-icon sprites on a colored wallpaper, with a ◄ box-name ► banner.
  */
