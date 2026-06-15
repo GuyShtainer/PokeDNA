@@ -72,28 +72,43 @@ static int text_wrap(int x, int y, int cols, u16 ink, const char* s) {
   return y;
 }
 
-static const char* gender_str(uint8_t g) { return g == 0 ? " M" : g == 1 ? " F" : ""; }
+static u16  gender_col(uint8_t g) { return g == 0 ? RGB15(12, 18, 31) : g == 1 ? RGB15(31, 13, 19) : UI_DIM; }
+static const char* gender_sym(uint8_t g) { return g == 0 ? "M" : g == 1 ? "F" : "-"; }
 
+/* Shared portrait column (all 7 cards): framed sprite, dex no, name, Lv + colored
+ * sex, species, type badges, and an egg/shiny tag. No editable fields here. */
 static void draw_left(const PkMon* p) {
   ui_panel(0, 11, 92, 139, UI_PANEL, UI_BORDER);
+  m3_frame(11, 13, 80, 78, UI_BORDER);                     /* sprite sub-frame */
   const uint16_t* spr = mon_front_for_form(p->species, p->isShiny, p->form);
   if (spr) ui_sprite(14, 14, MON_FRONT_W, MON_FRONT_H, spr);
   else     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
+  if (p->isShiny) ui_text(70, 16, C_HOT, "*");             /* gold shiny mark on the portrait */
 
   char buf[40];
-  siprintf(buf, "No.%u", (unsigned)pk_national_no(p->species));
-  ui_text(6, 82, C_KEY, buf);
-  if (p->isShiny) ui_text(64, 82, C_HOT, "*");
+  ui_hline(4, 81, 84, UI_BORDER);
+  siprintf(buf, "#%03u", (unsigned)pk_national_no(p->species));
+  ui_text(6, 84, C_KEY, buf);
+
   char nm[24];
   ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);
-  ui_text(6, 92, C_VAL, nm);
-  siprintf(buf, "Lv%u%s", (unsigned)p->level, gender_str(p->gender));
-  ui_text(6, 102, C_VAL, buf);
+  ui_text(6, 94, C_VAL, nm);
+
+  siprintf(buf, "Lv%u", (unsigned)p->level);
+  ui_text(6, 104, C_VAL, buf);
+  ui_text(6 + (int)strlen(buf) * 8 + 4, 104, gender_col(p->gender), gender_sym(p->gender));
+
   char sp[24];
   ui_truncate(sp, pk_species_name(p->species), 11);
-  ui_text(6, 112, C_KEY, sp);
-  if (p->isBadEgg)   ui_text(6, 138, UI_WARN, "BAD EGG");
-  else if (p->isEgg) ui_text(6, 138, C_HOT, "EGG");
+  ui_text(6, 114, C_KEY, sp);
+
+  uint8_t t1 = pk_species_type1(p->species), t2 = pk_species_type2(p->species);
+  type_badge(6, 126, t1);
+  if (t2 != t1) type_badge(42, 126, t2);
+
+  if (p->isBadEgg)   ui_text(6, 142, UI_WARN, "BAD EGG");
+  else if (p->isEgg) ui_text(6, 142, C_HOT, "EGG");
+  else if (p->pokerus) ui_text(6, 142, UI_WARN, "Pokerus");
 }
 
 static void card_info(const PkMon* p) {
@@ -127,7 +142,7 @@ static void card_info(const PkMon* p) {
   ui_text(x, y, C_KEY, "Shiny"); reg(F_SHINY, x + 48, y, 26);
   ui_text(x + 48, y, p->isShiny ? UI_OK : C_VAL, p->isShiny ? "Yes" : "No");
   ui_text(x + 80, y, C_KEY, "Sex"); reg(F_GENDER, x + 108, y, 22);
-  ui_text(x + 108, y, C_VAL, p->gender == 0 ? "M" : p->gender == 1 ? "F" : "-"); y += 10;
+  ui_text(x + 108, y, gender_col(p->gender), p->gender == 0 ? "M" : p->gender == 1 ? "F" : "-"); y += 10;
 
   siprintf(b, "Met Lv%u %s", (unsigned)p->metLevel, pk_location_name(p->metLocation));
   { char mb[40]; ui_truncate(mb, b, 17); ui_text(x, y, UI_DIM, mb); }
@@ -234,6 +249,7 @@ static void render_card(const PkMon* p, int card) {
   draw_dots(150, 2, NCARDS, card);
   ui_hline(0, 10, UI_SCR_W, UI_BORDER);
   draw_left(p);
+  ui_hline(98, 24, 100, UI_TITLE);          /* header accent rule under each card title */
   switch (card) {
     case 0: card_info(p);          break;
     case 1: card_skills(p);        break;
