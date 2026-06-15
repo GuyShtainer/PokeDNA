@@ -307,23 +307,37 @@ static void do_reboot(void) {
   flashcartio_reboot();                 /* never returns */
 }
 
-/* START menu over the browser: sort key/order, file filter, show-hidden, reboot.
- * Returns true if a setting changed that needs a re-scan. */
-static bool browse_menu(void) {
+/* Per-file SD operations (duplicate / rename / delete backups). Defined after the
+ * write helpers it uses (msg_wait/busy_panel/app_confirm); returns true if the
+ * directory contents changed and the browser must re-scan. */
+static bool file_actions(const BrowseEntry* e);
+
+/* START menu over the browser: file actions on the selection, then sort key/order,
+ * file filter, show-hidden, reboot. Returns true if something changed that needs a
+ * re-scan. `fe` is the selected entry (NULL or a folder => no file-ops row). */
+static bool browse_menu(const BrowseEntry* fe) {
   int sel = 0;
   bool changed = false;
+  bool can_fileops = (fe && !fe->is_dir);
   for (;;) {
     ui_clear();
     ui_text(4, 4, UI_TITLE, "FILE MENU");
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    char rows[6][40];
-    siprintf(rows[0], "Sort key:  %s", g_sort == SORT_NAME ? "Name" : g_sort == SORT_SIZE ? "Size" : "Date");
-    siprintf(rows[1], "Order:     %s", g_sortrev ? "descending" : "ascending");
-    siprintf(rows[2], "Files:     %s", g_show_all ? "all files" : ".sav only");
-    siprintf(rows[3], "Hidden:    %s", g_show_hidden ? "shown" : "hidden");
-    strcpy(rows[4], "Reboot to flashcart menu...");
-    strcpy(rows[5], "Close");
-    for (int i = 0; i < 6; i++) {
+    char rows[7][40];
+    int  act[7];
+    int  n = 0;
+    enum { A_FILEOPS, A_SORTKEY, A_ORDER, A_FILES, A_HIDDEN, A_REBOOT, A_CLOSE };
+    if (can_fileops) {
+      char nm[24]; ui_truncate(nm, fe->name, 16);
+      siprintf(rows[n], "File: %s...", nm); act[n++] = A_FILEOPS;
+    }
+    siprintf(rows[n], "Sort key:  %s", g_sort == SORT_NAME ? "Name" : g_sort == SORT_SIZE ? "Size" : "Date"); act[n++] = A_SORTKEY;
+    siprintf(rows[n], "Order:     %s", g_sortrev ? "descending" : "ascending"); act[n++] = A_ORDER;
+    siprintf(rows[n], "Files:     %s", g_show_all ? "all files" : ".sav only"); act[n++] = A_FILES;
+    siprintf(rows[n], "Hidden:    %s", g_show_hidden ? "shown" : "hidden"); act[n++] = A_HIDDEN;
+    strcpy(rows[n], "Reboot to flashcart menu..."); act[n++] = A_REBOOT;
+    strcpy(rows[n], "Close"); act[n++] = A_CLOSE;
+    for (int i = 0; i < n; i++) {
       int y = 26 + i * 16; bool s = (i == sel);
       if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
       ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
@@ -331,16 +345,17 @@ static bool browse_menu(void) {
     ui_text(4, 152, UI_DIM, "A change  U/D move  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return changed;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 5;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 6;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
-      switch (sel) {
-        case 0: g_sort = (BrSortKey)((g_sort + 1) % 3); changed = true; break;
-        case 1: g_sortrev = !g_sortrev; changed = true; break;
-        case 2: g_show_all = !g_show_all; changed = true; break;
-        case 3: g_show_hidden = !g_show_hidden; changed = true; break;
-        case 4: do_reboot(); break;            /* returns only if cancelled */
-        case 5: return changed;
+      switch (act[sel]) {
+        case A_FILEOPS: if (file_actions(fe)) return true; break;   /* re-scan after a file op */
+        case A_SORTKEY: g_sort = (BrSortKey)((g_sort + 1) % 3); changed = true; break;
+        case A_ORDER:   g_sortrev = !g_sortrev; changed = true; break;
+        case A_FILES:   g_show_all = !g_show_all; changed = true; break;
+        case A_HIDDEN:  g_show_hidden = !g_show_hidden; changed = true; break;
+        case A_REBOOT:  do_reboot(); break;            /* returns only if cancelled */
+        case A_CLOSE:   return changed;
       }
     }
   }
@@ -371,7 +386,7 @@ static bool browse_pick(char* out, int cap) {
       g_sort = (BrSortKey)(s / 2); g_sortrev = (s & 1) != 0;
       sort_entries(); sel = 0; top = 0;
     }
-    else if (k & KEY_START) { if (browse_menu()) { scan_dir(); sel = 0; top = 0; } }
+    else if (k & KEY_START) { if (browse_menu(g_count ? &g_entries[sel] : 0)) { scan_dir(); sel = 0; top = 0; } }
     else if (k & KEY_B)    { if (!at_root()) { path_up(); scan_dir(); sel = 0; top = 0; } }
     else if (k & KEY_A) {
       if (g_count == 0) continue;
@@ -626,6 +641,90 @@ bool app_confirm(const char* title, const char* l1) {
   bool yes = (k & KEY_A) != 0;
   if (yes) snd_ok(); else snd_back();
   return yes;
+}
+
+/* Build "<base> copy[.N].<ext>" in out (must not already exist on SD). The picked
+ * dst is a sibling in g_cwd. Returns false if no free slot in 99 tries. */
+static bool dup_name(const char* name, char* out, int cap) {
+  char base[NAME_MAX]; const char* ext = "";
+  const char* dot = strrchr(name, '.');
+  if (dot && dot != name) {
+    int bl = (int)(dot - name); if (bl >= (int)sizeof(base)) bl = sizeof(base) - 1;
+    memcpy(base, name, bl); base[bl] = 0; ext = dot;            /* ext keeps the '.' */
+  } else { strncpy(base, name, sizeof(base) - 1); base[sizeof(base) - 1] = 0; }
+  for (int n = 1; n <= 99; n++) {
+    if (n == 1) siprintf(out, "%s copy%s", base, ext);
+    else        siprintf(out, "%s copy%d%s", base, n, ext);
+    if ((int)strlen(out) >= cap) return false;
+    char full[PATH_MAX]; FILINFO fno;
+    if (!path_join(g_cwd, out, full)) return false;
+    if (f_stat(full, &fno) != FR_OK) return true;              /* name is free */
+  }
+  return false;
+}
+
+/* Per-file SD ops menu (duplicate / rename / delete backups). All writes are
+ * Omega-only and go through the verified copy / rename. Returns true if the
+ * directory contents changed (caller re-scans). */
+static bool file_actions(const BrowseEntry* e) {
+  if (!e || e->is_dir) return false;
+  char src[PATH_MAX];
+  if (!path_join(g_cwd, e->name, src)) return false;
+  int sel = 0; bool changed = false;
+  static const char* const L[4] = { "Duplicate", "Rename", "Delete backups", "Close" };
+  for (;;) {
+    ui_clear();
+    char hdr[40]; ui_truncate(hdr, e->name, 29);
+    ui_text(4, 4, UI_TITLE, "FILE");
+    ui_text(4, 16, UI_SELTEXT, hdr);
+    ui_hline(0, 28, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < 4; i++) {
+      int y = 40 + i * 16; bool s = (i == sel);
+      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
+      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
+    }
+    if (!cart_writable()) ui_text(8, 122, UI_DIM, "Read-only: writes need Omega.");
+    ui_text(4, 152, UI_DIM, "A do  U/D move  B back");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return changed;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
+    else if (k & KEY_A) {
+      if (sel == 3) return changed;
+      if ((sel == 0 || sel == 1) && !cart_writable()) {
+        snd_deny(); msg_wait("READ-ONLY", UI_WARN, "File writes need EZ-Flash Omega.", 0);
+        continue;
+      }
+      if (sel == 0) {                                  /* Duplicate */
+        char dname[NAME_MAX], dst[PATH_MAX];
+        if (!dup_name(e->name, dname, sizeof(dname)) || !path_join(g_cwd, dname, dst)) {
+          snd_error(); msg_wait("DUPLICATE", UI_WARN, "Could not pick a free name.", 0); continue;
+        }
+        busy_panel("Duplicating...");
+        SfStatus st = sf_copy(src, dst);
+        if (st == SF_OK) { char m[40]; ui_truncate(m, dname, 29); snd_ok(); msg_wait("DUPLICATED", UI_OK, "Created:", m); changed = true; }
+        else { snd_error(); msg_wait("DUPLICATE FAILED", UI_WARN, sf_status_str(st), "File unchanged."); }
+      } else if (sel == 1) {                           /* Rename */
+        char nn[NAME_MAX];
+        if (!osk_input("RENAME", e->name, nn, sizeof(nn))) continue;
+        if (!strcmp(nn, e->name)) continue;
+        char dst[PATH_MAX]; FILINFO fno;
+        if (!path_join(g_cwd, nn, dst)) { snd_error(); msg_wait("RENAME", UI_WARN, "Name too long.", 0); continue; }
+        if (f_stat(dst, &fno) == FR_OK) { snd_error(); msg_wait("RENAME", UI_WARN, "A file by that name exists.", 0); continue; }
+        if (f_rename(src, dst) == FR_OK) {
+          log_line("rename %s -> %s", src, dst);
+          snd_ok(); msg_wait("RENAMED", UI_OK, "Now named:", nn); return true;   /* src path stale: re-scan */
+        } else { snd_error(); msg_wait("RENAME FAILED", UI_WARN, "Could not rename.", 0); }
+      } else if (sel == 2) {                            /* Delete backups */
+        if (app_confirm("Delete ALL backups?", "Removes .bak files for this save.")) {
+          int rm = sf_clear_backups(src);
+          char m[40]; siprintf(m, "Removed %d backup file(s).", rm);
+          snd_ok(); msg_wait("CLEARED", UI_OK, m, 0);
+          if (rm > 0) changed = true;
+        }
+      }
+    }
+  }
 }
 
 /* first empty (decodes-as-empty) slot in a box, or -1 if the box is full */
