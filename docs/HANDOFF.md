@@ -3,7 +3,7 @@
 > Living resume doc maintained by the `handoff` skill. The **Current status** and **Next steps**
 > sections are always kept current — start there to resume. The **Session log** grows downward,
 > newest first, and is never pruned.
-> Last updated: 2026-06-12
+> Last updated: 2026-06-15
 
 ## Current status
 
@@ -58,18 +58,54 @@
   - Browser LEFT/RIGHT fast-jump `fef2104`.
   - Toolkit repo (separate): `docs/kb/file-browser-conventions.md` (`7a12a6e`) + `learn`-skill
     lessons (`3042841`) + the `handoff` skill itself.
-- **Blocked / needs the user:** **Hardware sign-off** of the untested SD-write batch (the user's
-  task, deliberately deferred). Nothing is half-built.
+- **Post-v1.0.0 GitHub-issue batch — DONE this session (2026-06-15), committed LOCALLY only (11 commits, `origin/main..HEAD`), NOT pushed, issues NOT closed:**
+  Worked the issue list in priority order; each built clean + host-gates green. Items #13/#7/#4/#6/#5/#9
+  were done earlier; this session added:
+  - **#14 Backup management** — `sf_backup_rolling`/`sf_clear_backups` (savefile) + a **MENU > Settings**
+    screen: backup policy (new-each-time / single rolling `.bak` / skip) honoured by `app_save_finalize`
+    via `g_backup_mode`, plus "clear all backups for this save". Session-only setting.
+  - **#15 Built-in SD file ops** — `sf_copy` (verified) + a **FILE MENU (START)** entry in the save
+    browser: **Duplicate** (→ free `"<name> copy.sav"`), **Rename** (OSK + collision check), **Delete
+    backups**. Write ops Omega-gated; browser re-scans after.
+  - **#10 Summary polish** — redesigned the shared portrait column (framed sprite, `#001` dex no, colour-
+    coded sex M/F, type badges by the portrait, egg/Pokerus tag) + cyan header accent rule.
+  - **#12 Back-sprite view** — new `tools/gen_back.py` pipeline (`mon_back.*`, git-ignored like front);
+    **SELECT** in the summary flips front/back portrait (falls back to front if a back is missing).
+  - **#11 Animated icons** — `gen_icons.py` now keeps **both** icon frames (frame-aware
+    `mon_icon_for_frame`); the box grid does the **Gen-3 two-frame bob** every ~0.5s via the existing
+    partial-redraw path (paused during move-mode; no flicker). Icon blob ~1.65 MiB.
+  - **#8 Secret Bases** — pure `gen3_secretbase.*` parser (+ host test) for the 20-record SB1 array; a
+    **MENU > Secret Bases** viewer (own + friends': name/sex/level/party/decor + a 6-mon party detail)
+    and **SELECT = clear a base** (Omega-only, confirm + verified SB1 write). FR/LG → "no Secret Bases".
+    Party-mon **editing** intentionally deferred (issue's "read/display first").
+  - ROM now **~5.99 MB** (17.8 % of 32 MB; back sprites +1.5 MiB, 2nd icon frame +0.85 MiB). EWRAM is
+    **tight: ~4 KB free** (back-sprite scratch +8 KB, `g_sb_recs` +2.9 KB) — watch this before adding
+    more big EWRAM buffers.
+- **Blocked / needs the user:**
+  1. **`git push` is held** — the standing publish preference (no push unless asked) blocked it; the
+     11 commits are local on `main`. Say the word to push + close issues #4/#5/#6/#7/#8/#9/#10/#11/#12/#13/#14/#15.
+  2. **Hardware sign-off** of this batch's SD-write + visual paths (the user's task, deferred — see Next steps).
 
 ## Next steps (resume here)
 
-1. **Commit the 7-fix batch** (working tree is dirty; nothing committed yet). Suggested grouping —
-   small UX fixes (1-3), grab animation (4, incl. regenerated `hand_cursor.{c,h}` are git-ignored —
-   commit `gen_hand.py` only), the bank rework + deferred-save (5-6, incl. new `source/pdna_bank.*`
-   and `tests/host_bank_test.c`), flags (7, commit `gen_data.py` — `data_tables.c` is git-ignored).
-   Flag each SD-write path commit "NOT hardware-tested" per convention. Use the `git-commit` skill.
-2. **Hardware-validate on a real EZ-Flash Omega DE** (the user batches this). New things this batch
-   added that the emulator cannot prove — exercise on disposable copies:
+1. **Push + close issues (when the user OKs the push).** `git push origin main` (11 local commits),
+   then `gh issue close 4 5 6 7 8 9 10 11 12 13 14 15` with a one-line note each. Push is currently
+   **held** by the standing no-push-without-asking preference.
+2. **Hardware-validate the 2026-06-15 batch on a real EZ-Flash Omega DE** (disposable save copies).
+   Emulator can't prove these — run the `hardware-testing-protocol` agent:
+   - **#14 backups:** each policy (new/rolling/skip) produces the right `.bak` set; "clear backups"
+     removes them; a write still verifies the original mid-write regardless of policy.
+   - **#15 file ops:** Duplicate makes a byte-identical `"<name> copy.sav"`; Rename works + refuses an
+     existing name; Delete backups clears `.bak*`.
+   - **#8 Secret Bases:** viewer shows your own + mixed-in friends' bases with correct party/level;
+     **SELECT clear** zeroes the chosen base and the write round-trips (re-open shows it gone) without
+     corrupting the rest of SB1.
+   - **#11 icon bob / #12 back sprite / #10 polish:** visually confirm on hardware — icons animate
+     without flicker in PC **and** bank boxes; SELECT flips front/back in the summary; portrait/header
+     polish renders correctly.
+3. **(Earlier batch, still pending HW sign-off)** the move-mode/bank/deferred-save items below.
+4. **Hardware-validate on a real EZ-Flash Omega DE** (the user batches this). Earlier-batch things the
+   emulator cannot prove — exercise on disposable copies:
    - **Bank as boxes:** first-open **migration** of any old `/PokeDNA/bank/*.pk3` into `boxNN.box`
      + `bank.meta`; rename a bank box, change its wallpaper; **copy a mon PC→bank and bank→PC** (and
      bank→party) via the clipboard; move/swap within a bank box; confirm each `boxNN.box` re-reads
@@ -183,6 +219,25 @@ cc -std=c11 -I source tests/host_bank_test.c source/gen3_save.c source/gen3_mon.
 ---
 
 ## Session log
+
+### Session — 2026-06-15 (post-v1.0.0 GitHub-issue batch — code-complete, local commits, push held)
+
+- **Intent (user):** *"tackle the rest of the list one by one, you set the priority"* + *"Go on, I'll
+  test later."* Work autonomously through the open GitHub issues, build + commit each, defer hardware
+  testing to the user.
+- **Done:** finished the list — #14 backup management, #15 SD file ops, #10 summary polish, #12 back
+  sprites, #11 animated box icons, #8 Secret Bases (viewer + clear) — on top of the earlier
+  #13/#7/#4/#6/#5/#9. 11 commits this session, all clean builds; full host-test suite green (added
+  `tests/host_secretbase_test.c`). See **Current status** for the per-issue detail and the new
+  files/functions.
+- **Key decisions:** back sprites use a `gen_back.py` mirror of `gen_front.py` (no L/R flip — backs
+  already face away); icon animation reuses the box screen's existing partial-redraw discipline (paused
+  during move-mode) to avoid re-introducing the #3 flicker; Secret Bases shipped **read/display + clear**
+  only (party-mon editing deferred per the issue); secret-base offset derived from `g_game` (not the
+  possibly-mis-defaulted `version_guess`) so an FR/LG save can't parse garbage.
+- **Watch:** EWRAM headroom is now ~4 KB (back-sprite scratch +8 KB, `g_sb_recs` +2.9 KB). ROM ~5.99 MB.
+- **Blocked:** `git push` held by the standing publish preference — 11 commits local on `main`; issues
+  still open on GitHub. Hardware sign-off of this batch's SD-write + visual paths pending (user's task).
 
 ### Session — 2026-06-12 (7-fix UX batch — code-complete, uncommitted)
 
