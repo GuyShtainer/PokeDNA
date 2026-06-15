@@ -555,36 +555,6 @@ static bool app_quick_item(uint8_t* rec, bool is_party, AppCommitFn commit) {
   return commit ? commit() : false;
 }
 
-static bool app_quick_moves(uint8_t* rec, bool is_party, AppCommitFn commit) {
-  EditMon e; gen3_edit_load(rec, is_party, &e);
-  PkMon cur; em_preview(&e, &cur); pk_resolve(&cur);
-  int sel = 0;
-  for (;;) {                                          /* choose which of the 4 slots */
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, "EDIT WHICH MOVE?");
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < 4; i++) {
-      int y = 22 + i * 16; bool s = (i == sel);
-      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
-      uint16_t mv = cur.moves[i];
-      char row[28]; siprintf(row, "%d. %s", i + 1, mv ? pk_move_name(mv) : "-");
-      ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, row);
-    }
-    ui_text(4, 152, UI_DIM, "A edit slot  B back");
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return false;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
-    else if (k & KEY_A)    break;
-  }
-  uint16_t id = pick_move(cur.moves[sel]);            /* 0xFFFF = cancel */
-  if (id == 0xFFFF) return false;
-  em_set_move(&e, sel, id);
-  uint8_t out[100]; gen3_edit_commit(&e, out);
-  memcpy(rec, out, is_party ? 100 : 80);
-  return commit ? commit() : false;
-}
-
 bool app_clip_occupied(void) { return g_clip.occupied; }
 
 /* MOVE (box reposition) request: the A-menu sets this; the box loop consumes it. */
@@ -698,9 +668,8 @@ bool app_mon_menu(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* bloc
   enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CANCEL };
   int act[16]; const char* lab[16]; int n = 0;
   if (occupied) {
-    lab[n]="VIEW / EDIT"; act[n++]=A_SUMMARY;     /* opens the editable summary */
+    lab[n]="VIEW / EDIT"; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
     lab[n]="ITEM";    act[n++]=A_ITEM;
-    lab[n]="MOVES";   act[n++]=A_MOVES;
     lab[n]="LEGALITY"; act[n++]=A_LEGAL;
     if (!is_party) { lab[n]="MOVE"; act[n++]=A_MOVE; }   /* box: pick up + reposition */
     lab[n]="COPY";    act[n++]=A_COPY;
@@ -743,7 +712,6 @@ bool app_mon_menu(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* bloc
         case A_SUMMARY: return is_party ? app_edit_commit(rec, is_party, commit)
                                         : app_box_browse(block, box, slot, commit);   /* box: scroll mons */
         case A_ITEM:    return app_quick_item (rec, is_party, commit);
-        case A_MOVES:   return app_quick_moves(rec, is_party, commit);
         case A_LEGAL:   pdna_legality_show(&m0); return false;
         case A_MOVE:    g_move_req = true; return false;            /* box loop handles the move */
         case A_EXPORT:  pdna_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */

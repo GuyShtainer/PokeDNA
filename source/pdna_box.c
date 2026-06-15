@@ -285,9 +285,12 @@ static void carry_bbox(int ix, int iy, int fx, int fy, int* x, int* y, int* w, i
   *x = x0 - 1; *y = y0 - 1; *w = x1 - x0 + 2; *h = y1 - y0 + 2;
 }
 
-/* Full repaint — on entry, box change, after a menu/edit, or a mode change. */
-static void render_full(BoxSource* src, int box, int cur, bool on_title, bool moving) {
-  ui_clear();
+/* Full repaint — on entry, box change, after a menu/edit, or a mode change. With
+ * clear=false it repaints OVER the current screen (no black flash) — used when the
+ * box underneath is already correct and we only need to wipe a modal overlay; the
+ * full content paint (tabs + left panel + wallpaper + grid + footer) covers it. */
+static void render_full(BoxSource* src, int box, int cur, bool on_title, bool moving, bool clear) {
+  if (clear) ui_clear();
   draw_tab(0, PANEL_W + 1, "PKMN DATA", true);
   draw_tab(PANEL_W + 1, 92, src->is_bank ? "(BANK)" : "PARTY SEL", false);
   draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "CLOSE B", false);
@@ -473,7 +476,7 @@ int pdna_box(BoxSource* src) {
                                pk_decode_box_raw(recs, g_box); cur = 0; need_full = true; } while (0)
 
   for (;;) {
-    if (need_full) { render_full(src, box, cur, on_title, s_move_from >= 0); need_full = false; }
+    if (need_full) { render_full(src, box, cur, on_title, s_move_from >= 0, true); need_full = false; }
     u16 k, fresh;
     do { s_vsync(); fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
@@ -534,9 +537,9 @@ int pdna_box(BoxSource* src) {
         pk_decode_box_raw(recs, g_box);                                  /* refresh after possible write */
         if (app_take_move_request()) {                                   /* picked MOVE -> hold this slot */
           s_move_from = cur;
-          render_full(src, box, cur, false, false);                      /* one clear: wipe the menu */
+          render_full(src, box, cur, false, false, false);               /* repaint OVER the menu, no black flash */
           play_grab_anim(src, box, cur);                                 /* real-PC grab animation */
-          carry_move(src, box, cur, cur);                                /* lift into carry (no 2nd clear) */
+          carry_move(src, box, cur, cur);                                /* lift into carry */
           draw_footer(src->is_bank, false, true);                        /* move-mode footer */
         } else {
           need_full = true;                                              /* menu may have edited -> redraw */
