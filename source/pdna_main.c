@@ -38,6 +38,7 @@
 #include "gen3_flags.h"    /* event flags */
 #include "gen3_dex.h"      /* Pokedex seen/owned flags */
 #include "gen3_items.h"    /* item bags */
+#include "gen3_secretbase.h" /* Secret Base records (RS/Emerald) */
 #include "osk.h"           /* osk_search (numeric entry) */
 #include "pdna_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
 #include "snd.h"           /* UI sound effects */
@@ -1257,6 +1258,100 @@ static void pdna_daycare(void) {
   if (off) msg_wait("DAYCARE", UI_OK, "An EGG is ready to collect!", 0);
 }
 
+/* ===================== Secret Bases (#8) =============================== */
+
+static EWRAM_BSS SbRecord g_sb_recs[SB_COUNT];
+
+static int sb_party_maxlevel(const SbRecord* b) {
+  int mx = 0;
+  for (int i = 0; i < SB_PARTY; i++) if (b->party.species[i] && b->party.level[i] > mx) mx = b->party.level[i];
+  return mx;
+}
+
+/* Detail view for one base: trainer line + a 3x2 party grid (icon, name, Lv). */
+static void sb_detail(const SbRecord* b) {
+  for (;;) {
+    ui_clear();
+    char hdr[40]; ui_truncate(hdr, b->trainerName[0] ? b->trainerName : "?", 14);
+    ui_text(4, 3, UI_TITLE, hdr);
+    if (b->own) ui_text(140, 3, UI_OK, "YOUR BASE");
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+
+    char line[40];
+    ui_text(6, 18, UI_DIRCLR, b->gender ? "Trainer: Female" : "Trainer: Male");
+    siprintf(line, "TID %05u", (unsigned)b->trainerId); ui_text(150, 18, UI_DIM, line);
+    siprintf(line, "Visits %u   Decorations %d/16", (unsigned)b->numEntered, b->decorCount);
+    ui_text(6, 28, UI_DIM, line);
+    if (b->battledToday) ui_text(150, 28, UI_WARN, "Battled today");
+
+    for (int i = 0; i < SB_PARTY; i++) {
+      int col = i % 3, row = i / 3;
+      int cx = 6 + col * 78, cy = 44 + row * 54;
+      uint16_t sp = b->party.species[i];
+      if (!sp) { ui_text(cx + 28, cy + 12, UI_DIM, "-"); continue; }
+      ui_sprite(cx + 23, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form(sp, 0));
+      char nm[16]; ui_truncate(nm, pk_species_name(sp), 9); ui_text(cx, cy + 33, UI_TEXT, nm);
+      siprintf(line, "Lv%u", (unsigned)b->party.level[i]); ui_text(cx, cy + 42, UI_DIRCLR, line);
+      if (b->party.heldItem[i]) { char it[16]; ui_truncate(it, pk_item_name(b->party.heldItem[i]), 9); ui_text(cx, cy + 51, UI_DIM, it); }
+    }
+    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+    ui_text(4, 152, UI_DIM, "B back");
+    if (wait_keys(KEY_B | KEY_A) & (KEY_B | KEY_A)) return;
+  }
+}
+
+static void pdna_secretbase(void) {
+  Gen3Version v = (g_game == PK_RS) ? G3_VER_RS : (g_game == PK_EMERALD) ? G3_VER_EMERALD : G3_VER_UNKNOWN;
+  uint32_t off = gen3_secret_base_offset(v);
+  if (off == 0) { msg_wait("SECRET BASES", UI_DIM, "FireRed/LeafGreen has no", "Secret Bases."); return; }
+  int n = sb_read_all(g_sb1, off, g_sb_recs);
+  if (n == 0) { msg_wait("SECRET BASES", UI_DIM, "None registered yet.", "Set one up or mix records."); return; }
+
+  int sel = 0, top = 0;
+  const int VIS = 8;
+  for (;;) {
+    if (sel < 0) sel = 0; if (sel >= n) sel = n - 1;
+    if (sel < top) top = sel; if (sel >= top + VIS) top = sel - VIS + 1;
+    ui_clear();
+    ui_text(4, 3, UI_TITLE, "SECRET BASES");
+    char cnt[16]; siprintf(cnt, "%d/19", n); ui_text(196, 3, UI_DIM, cnt);
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < VIS && top + i < n; i++) {
+      const SbRecord* b = &g_sb_recs[top + i];
+      int y = 18 + i * 15; bool s = (top + i == sel);
+      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
+      char nm[12]; ui_truncate(nm, b->trainerName[0] ? b->trainerName : "?", 8);
+      char row[44];
+      siprintf(row, "%-8s %s  Lv%-3d  %dmon", nm, b->own ? "YOU" : (b->gender ? "(F)" : "(M)"),
+               sb_party_maxlevel(b), b->partyCount);
+      ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, row);
+      if (b->battledToday) ui_text(228, y, UI_WARN, "*");
+    }
+    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+    ui_text(4, 152, UI_DIM, app_can_edit() ? "A view  U/D move  SEL clear  B back"
+                                            : "A view  U/D move  B back");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT);
+    if (k & KEY_B) return;
+    else if (k & KEY_UP)   { if (sel > 0) sel--; }
+    else if (k & KEY_DOWN) { if (sel < n - 1) sel++; }
+    else if (k & KEY_A)    sb_detail(&g_sb_recs[sel]);
+    else if (k & KEY_SELECT) {                          /* clear a base (Omega-only, verified write) */
+      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); continue; }
+      const SbRecord* b = &g_sb_recs[sel];
+      char l2[40]; siprintf(l2, "%s%s", b->trainerName[0] ? b->trainerName : "?", b->own ? "  (YOUR base)" : "'s base");
+      if (app_confirm("Clear this Secret Base?", l2)) {
+        sb_clear(g_sb1, off, b->slot);
+        if (app_commit_sb1()) {
+          snd_ok(); msg_wait("CLEARED", UI_OK, "Secret Base removed.", 0);
+          n = sb_read_all(g_sb1, off, g_sb_recs);       /* re-scan after the write */
+          if (n == 0) return;
+          if (sel >= n) sel = n - 1;
+        } else { msg_wait("CLEAR FAILED", UI_WARN, "Save not modified.", 0); }
+      }
+    }
+  }
+}
+
 /* ===================== Settings (#14: backups) ========================= */
 
 static void pdna_settings(void) {
@@ -1293,24 +1388,25 @@ static void pdna_settings(void) {
   }
 }
 
-static int nav_menu(void) {                            /* 0=card 1=bank 2=data 3=dex 4=daycare 5=settings 6=back */
-  static const char* const L[7] = { "Trainer card", "Bank", "Data editor", "Pokedex", "Daycare", "Settings", "Back" };
-  const int mx = 60, my = 34, mw = 120, mh = 18 + 7 * 14 + 11;
+static int nav_menu(void) {                /* 0=card 1=bank 2=data 3=dex 4=daycare 5=secret 6=settings 7=back */
+  static const char* const L[8] = { "Trainer card", "Bank", "Data editor", "Pokedex", "Daycare",
+                                    "Secret Bases", "Settings", "Back" };
+  const int mx = 60, my = 26, mw = 120, mh = 18 + 8 * 14 + 11;
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "MENU");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 8; i++) {
       int y = my + 18 + i * 14; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
     }
     ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return 6;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 6;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 7;
+    if (k & KEY_B) return 7;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 7;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 8;
     else if (k & KEY_A)    return sel;
   }
 }
@@ -1409,7 +1505,8 @@ static void view_save(const char* path) {
       }
       else if (dest == 3) pdna_dex_edit();        /* full Pokedex editor */
       else if (dest == 4) pdna_daycare();         /* daycare viewer (read-only) */
-      else if (dest == 5) pdna_settings();        /* backups / app settings (dest 6 = Back) */
+      else if (dest == 5) pdna_secretbase();      /* secret base viewer + clear */
+      else if (dest == 6) pdna_settings();        /* backups / app settings (dest 7 = Back) */
       continue;
     }
     if (!g_have_pc) { flush_pc_on_exit(); return; }   /* nothing to toggle to */
