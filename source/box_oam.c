@@ -191,13 +191,19 @@ void boxoam_enter(void) {
 
   /* hide every overlay entry up front */
   for (int i = OE_HAND; i < OE_COUNT; i++) hide(i);
+  oam_copy(oam_mem, s_shadow, 128);                /* clear ALL hw OAM (64..127 unused -> no garbage) */
 
+  /* Mode-3 BG2 (the wallpaper) defaults to priority 0, which would sit IN FRONT of
+   * the prio-1/2 icon/carry sprites and hide the whole grid. Drop it to priority 3
+   * so every sprite (hand 0 > carry 1 > icons 2 > BG2 3) composites above it. */
+  REG_BG2CNT = (REG_BG2CNT & ~3) | 3;
   REG_DISPCNT |= DCNT_OBJ | DCNT_OBJ_1D;           /* enable OBJ, 1D tile mapping  */
 }
 
 void boxoam_exit(void) {
   REG_DISPCNT &= ~DCNT_OBJ;                         /* OBJ off for every other screen */
   REG_BLDCNT = 0;                                   /* drop any ITEM-mode blend     */
+  REG_BG2CNT &= ~3;                                 /* restore BG2 priority 0       */
   oam_init(s_shadow, 128);
   oam_copy(oam_mem, s_shadow, 128);                 /* clear hardware OAM           */
 }
