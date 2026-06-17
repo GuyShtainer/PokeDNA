@@ -33,6 +33,13 @@ build/
 /source/mon_icons.h
 /data/icons.*
 /data/*.bin
+# Generated hardware-OAM box-icon art (regenerate: python3 tools/gen_icons_oam.py)
+/source/mon_icons_oam.c
+/source/mon_icons_oam.h
+/source/mon_icons_oam_data.s
+# Generated hardware-OAM hand cursor (regenerate: python3 tools/gen_hand_oam.py)
+/source/hand_oam.c
+/source/hand_oam.h
 
 # --- real save files (personal / copyrighted game data) ---
 *.sav
