@@ -22,4 +22,19 @@ int      pick_unown_form(int current_form);     /* 0..27 = A..?, -1 cancel */
  * (0 or 1), or `current` on cancel. */
 uint8_t  pick_ability(uint16_t species_internal, uint8_t current_slot);
 
+/* ---- Pokedex viewer / editor ---------------------------------------------
+ * HGSS-style Pokedex built on the same species grid + filters. The dex flags
+ * live in the loaded save (pdna_main owns the buffers), so the screen reaches
+ * them through these callbacks. State: 0 = unseen, 1 = seen, 2 = caught. */
+typedef int  (*DexGetState)(int nat);          /* National no. (1..386) -> 0/1/2 */
+typedef void (*DexSetState)(int nat, int state);
+
+/* Run the Pokedex screen. Three views (Grid / List / by-Type), the species-grid
+ * filters (Gen/type/legendary) + a caught/seen/unseen status filter + name search,
+ * and per-state sprite rendering (greyscale unseen, colour seen, colour+bob caught
+ * with a Poke-Ball marker). When `can_edit`, A cycles a species unseen->seen->caught
+ * and a "Mark all" bulk op is offered. Returns true iff any dex state changed (so
+ * the caller can offer to save). */
+bool pdna_dex_screen(DexGetState get, DexSetState set, bool can_edit);
+
 #endif /* PDNA_PICK_H */

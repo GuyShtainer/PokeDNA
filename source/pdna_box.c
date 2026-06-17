@@ -13,9 +13,11 @@
 #include "gen3_save.h"
 #include "gen3_mon.h"
 #include "gen3_box.h"
+#include "gen3_edit.h"      /* em_set_item: held-item moves in ITEM cursor mode */
 #include "data_tables.h"
 #include "mon_front.h"
 #include "mon_icons.h"
+#include "item_icons.h"     /* item_icon_for: held-item markers in ITEM mode */
 #include "hand_cursor.h"
 #include "pdna_summary.h"
 #include "pdna_app.h"
@@ -43,7 +45,39 @@ static void blit_frame(int x, int y, const uint16_t* f, int fw, int fh) {
       if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
     }
 }
-static void draw_hand(int x, int y) { blit_frame(x, y, hand_cursor, HAND_W, HAND_H); }
+/* SELECT cursor modes: 0 normal hand, 1 MOVE (orange hand, A grabs a mon directly),
+ * 2 ITEM (transparent hand, mons show held items, A picks one up / drops / swaps). */
+#define CM_NORMAL 0
+#define CM_MOVE   1
+#define CM_ITEM   2
+static int s_cur_mode = CM_NORMAL;
+static int s_item_held = 0;           /* item id carried in ITEM mode (0 = none) */
+static int s_item_from = -1;          /* slot the carried item was taken from */
+
+/* Tint a 15-bit colour toward orange (keep brightness, push hue) for the MOVE hand. */
+static u16 tint_orange(u16 c) {
+  u32 r = c & 0x1F, g = (c >> 5) & 0x1F, b = (c >> 10) & 0x1F;
+  u32 lum = (r * 2 + g * 5 + b) >> 3;            /* 0..31 */
+  u32 nr = lum + 6; if (nr > 31) nr = 31;
+  return (u16)(nr | (((lum * 5) >> 3) << 5) | ((lum >> 2) << 10));
+}
+static u16 blend50(u16 a, u16 b) { return (u16)(((a >> 1) & 0x3DEF) + ((b >> 1) & 0x3DEF)); }
+
+/* Blit the hand cursor with the current mode's look: normal, orange (MOVE), or
+ * 50%-transparent over the framebuffer (ITEM). */
+static void blit_hand_mode(int x, int y, const uint16_t* f, int fw, int fh) {
+  for (int j = 0; j < fh; j++)
+    for (int i = 0; i < fw; i++) {
+      uint16_t p = f[j * fw + i];
+      if (!(p & 0x8000)) continue;
+      u16 c = (u16)(p & 0x7FFF);
+      if (s_cur_mode == CM_MOVE) c = tint_orange(c);
+      else if (s_cur_mode == CM_ITEM) c = blend50(c, (u16)(vid_mem[(y + j) * 240 + (x + i)] & 0x7FFF));
+      m3_plot(x + i, y + j, c);
+    }
+}
+
+static void draw_hand(int x, int y) { blit_hand_mode(x, y, hand_cursor, HAND_W, HAND_H); }
 static void draw_grab(int x, int y) { blit_frame(x, y, hand_grab,   HAND_GRAB_W, HAND_GRAB_H); }
 
 static PkMon EWRAM_BSS g_box[30];
@@ -259,10 +293,14 @@ static void redraw_region(int wp, int x, int y, int w, int h, int skip) {
 }
 
 static void draw_footer(bool is_bank, bool on_title, bool moving) {
-  const char* f = moving ? "Move: D-pad place  A drop  B cancel"
-                : on_title ? "A rename/wallpaper  DOWN grid  L/R box  B close"
-                : is_bank  ? "A menu  UP title  L/R box  B close"
-                           : "A menu  UP title  SEL party  L/R box  B close";
+  const char* f;
+  if (moving)              f = "Move  A drop  B cancel";
+  else if (s_item_held)    f = "Item  A give  B putback";
+  else if (on_title)       f = "A edit  DOWN grid  L/R box  B";
+  else if (s_cur_mode == CM_MOVE) f = "MOVE  A grab  SEL mode  B";
+  else if (s_cur_mode == CM_ITEM) f = "ITEM  A take  SEL mode  B";
+  else                     f = is_bank ? "A menu  SEL mode  L/R box  B"
+                                       : "A menu  UP title  SEL mode  B";
   /* clear the footer strip first (it changes between modes) */
   ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);
   ui_text(WP_X + 2, 152, RGB15(31, 31, 31), f);
@@ -289,6 +327,60 @@ static void carry_bbox(int ix, int iy, int fx, int fy, int* x, int* y, int* w, i
   int x1 = ix + MON_ICON_W; if (fx + HAND_GRAB_W > x1) x1 = fx + HAND_GRAB_W;
   int y1 = iy + MON_ICON_H; if (fy + HAND_GRAB_H > y1) y1 = fy + HAND_GRAB_H;
   *x = x0 - 1; *y = y0 - 1; *w = x1 - x0 + 2; *h = y1 - y0 + 2;
+}
+
+/* ITEM mode: a small (12x12) marker of each held item, bottom-right of its cell. */
+/* generic "holds an item" glyph when an item has no generated icon */
+static void item_dot(int x, int y, int sz) {
+  ui_fill_rect(x, y, sz, sz, RGB15(28, 24, 6));
+  m3_frame(x, y, x + sz - 1, y + sz - 1, RGB15(8, 6, 1));
+}
+
+static void draw_item_markers(void) {
+  if (s_cur_mode != CM_ITEM) return;
+  for (int s = 0; s < 30; s++) {
+    if (!g_box[s].species || !g_box[s].heldItem) continue;
+    int ix = GRID_X + (s % COLS) * CELL_W + CELL_W - 12;
+    int iy = GRID_Y + (s / COLS) * CELL_H + CELL_H - 13;
+    const uint16_t* ic = item_icon_for(g_box[s].heldItem);
+    if (!ic) { item_dot(ix + 2, iy + 2, 8); continue; }
+    for (int j = 0; j < 12; j++)
+      for (int i = 0; i < 12; i++) {
+        uint16_t p = ic[(j * 2) * ITEM_ICON_W + i * 2];     /* 24x24 -> 12x12 nearest */
+        if (p & 0x8000) m3_plot(ix + i, iy + j, (u16)(p & 0x7FFF));
+      }
+  }
+}
+
+/* The carried item (ITEM mode), drawn riding just above-right of the cursor cell. */
+static void draw_carry_item(int cur) {
+  if (!s_item_held) return;
+  int ix = GRID_X + (cur % COLS) * CELL_W + 10;
+  int iy = GRID_Y + (cur / COLS) * CELL_H - 14; if (iy < WP_Y) iy = WP_Y;
+  const uint16_t* ic = item_icon_for((uint16_t)s_item_held);
+  if (!ic) { item_dot(ix + 3, iy + 3, 10); return; }
+  for (int j = 0; j < 16; j++)
+    for (int i = 0; i < 16; i++) {
+      uint16_t p = ic[(j * 24 / 16) * ITEM_ICON_W + (i * 24 / 16)];   /* 24 -> 16 */
+      if (p & 0x8000) m3_plot(ix + i, iy + j, (u16)(p & 0x7FFF));
+    }
+}
+
+/* Set a box mon's held item (decrypt -> set -> re-encode + checksum, in place). */
+static void box_set_held(uint8_t* recs, int slot, uint16_t item) {
+  uint8_t* rec = recs + (uint32_t)slot * 80;
+  EditMon e; gen3_edit_load(rec, false, &e);
+  em_set_item(&e, item);
+  uint8_t out[100]; gen3_edit_commit(&e, out);
+  memcpy(rec, out, 80);
+}
+
+/* A safe home slot to deposit the carried item: its source slot if still empty-
+ * handed, else the first occupied mon with no item; -1 if nowhere (never lose it). */
+static int item_home(void) {
+  if (s_item_from >= 0 && g_box[s_item_from].species && !g_box[s_item_from].heldItem) return s_item_from;
+  for (int s = 0; s < 30; s++) if (g_box[s].species && !g_box[s].heldItem) return s;
+  return -1;
 }
 
 /* Full repaint — on entry, box change, after a menu/edit, or a mode change. With
@@ -319,7 +411,9 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
     draw_grab(fx, fy);                               /* closed fist gripping it */
   } else {
     grid_icons();
+    draw_item_markers();                              /* ITEM mode: show held items */
     draw_cursor_hand(cur, on_title);
+    draw_carry_item(cur);                             /* ITEM mode: carried item rides the cursor */
   }
   draw_footer(src->is_bank, on_title, moving);
 }
@@ -468,20 +562,74 @@ static void box_options_menu(BoxSource* src, int box) {
   }
 }
 
-/* One animation tick (idle browse only): repaint the icons at the current frame.
- * Done PER CELL via redraw_region (patch that cell's wallpaper + redraw it and any
- * overlapping neighbours, in slot order) so the erased window is one cell wide and
- * closes immediately — the whole grid is never blank at once, avoiding the #3-class
- * blink a full erase-then-redraw would cause on the single-buffered framebuffer. */
-#define ANIM_PERIOD 30                    /* vblanks per icon frame (~0.5s, the Gen-3 cadence) */
-static void animate_grid(BoxSource* src, int box, int cur, bool on_title) {
+/* Idle icon bob without the top-left->bottom-right sweep AND without the brief
+ * whole-grid "refresh" flash.
+ *
+ * The bob recomposes the icon region one scanline at a time into a small line buffer
+ * (wallpaper row, then every occupied icon's opaque pixels overlaid in slot order)
+ * and DMAs each line straight to VRAM — each pixel written once, never blanked. But
+ * recomposing the WHOLE 152x120 region in a single tick overruns the "invisible
+ * write window" (vblank + the active lines before the beam reaches the region), so
+ * the lower part is rewritten while the beam scans it -> a visible one-frame refresh.
+ *
+ * Fix: split the region into BOB_SLICES horizontal bands and draw ONE band per frame
+ * (all at the already-flipped g_iconf). Each band is small enough to finish inside
+ * the invisible window, so no band is ever caught mid-scanout. The whole switch
+ * completes over BOB_SLICES frames (~50 ms) with no flash and no sweep. The hand is
+ * repainted after every band so it never blinks. */
+#define ANIM_PERIOD 30                    /* vblanks between icon frames (~0.5s, the Gen-3 cadence) */
+#define BOB_SLICES  6                     /* bands the repaint is spread over; each must fit in one vblank */
+
+/* Icon-grid extent (clamped to the wallpaper region). x0 is kept even so each VRAM
+ * row start is word-aligned for the DMA. */
+#define GRID_PX0 GRID_X                                   /* 82 (even) */
+#define GRID_PX1 (GRID_X + (COLS - 1) * CELL_W + MON_ICON_W) /* 234 */
+#define GRID_PY0 GRID_Y                                   /* 30 */
+#define GRID_PY1 (GRID_Y + (ROWS - 1) * CELL_H + MON_ICON_H) /* 150 */
+#define GRID_PW  (GRID_PX1 - GRID_PX0)                    /* 152 (even) */
+
+/* One-scanline composite buffer. WP_W (162) u16 = 324 B, lives in IWRAM .bss (a plain
+ * static lands in .bss -> iwram here), NOT EWRAM and NOT on the stack — keeps the EWRAM
+ * headroom intact. */
+static u16 s_line[WP_W];
+
+/* Recompose icon-region scanlines [py0,py1) at the current g_iconf and DMA them. */
+static void animate_band(BoxSource* src, int box, int py0, int py1) {
   int wp = src->get_wp(box);
-  for (int s = 0; s < 30; s++) {
-    if (!g_box[s].species) continue;
-    int ix = GRID_X + (s % COLS) * CELL_W, iy = GRID_Y + (s / COLS) * CELL_H;
-    redraw_region(wp, ix, iy, MON_ICON_W, MON_ICON_H, -1);  /* patch + redraw this cell's icons at g_iconf */
+  int nt; const uint16_t* tiles = wallpaper_tile_data(wp, &nt);
+  const uint16_t* map = wallpaper_tilemap(wp);
+  const u16 grass = RGB15(19, 25, 12);            /* fallback tone (matches wallpaper_patch) */
+
+  for (int py = py0; py < py1; py++) {
+    /* 1) wallpaper row for this scanline (same tile lookup as draw_wallpaper/_patch) */
+    int ly = py - WP_Y;
+    for (int dx = 0; dx < GRID_PW; dx++) {
+      int lx = (GRID_PX0 + dx) - WP_X;
+      if (tiles && map && lx < 160 && ly < 144) {
+        const uint16_t* t = tiles + (uint32_t)map[(ly / 8) * 20 + (lx / 8)] * 64;
+        s_line[dx] = t[(ly % 8) * 8 + (lx % 8)] & 0x7FFF;
+      } else s_line[dx] = grass;
+    }
+    /* 2) overlay each occupied icon that crosses this scanline (slot order, opaque only) */
+    for (int s = 0; s < 30; s++) {
+      if (!g_box[s].species) continue;
+      int iy = GRID_Y + (s / COLS) * CELL_H;
+      int row = py - iy;
+      if (row < 0 || row >= MON_ICON_H) continue;
+      const u16* icon = box_icon(g_box[s].species, g_box[s].form);
+      if (!icon) continue;
+      int ix = GRID_X + (s % COLS) * CELL_W;
+      const u16* irow = icon + row * MON_ICON_W;
+      for (int i = 0; i < MON_ICON_W; i++) {
+        u16 p = irow[i];
+        if (!(p & 0x8000)) continue;
+        int dx = (ix + i) - GRID_PX0;
+        if (dx >= 0 && dx < GRID_PW) s_line[dx] = p & 0x7FFF;
+      }
+    }
+    /* 3) push the composited row to VRAM in one DMA (word-aligned: x0 & width even) */
+    dma3_cpy(&vid_mem[py * 240 + GRID_PX0], s_line, GRID_PW * 2);
   }
-  draw_cursor_hand(cur, on_title);        /* hand rides on top of the cells it overlaps */
 }
 
 int pdna_box(BoxSource* src) {
@@ -490,8 +638,9 @@ int pdna_box(BoxSource* src) {
   int cur = 0;
   bool on_title = false;
   bool need_full = true;
-  int anim_ctr = 0;
+  int anim_ctr = 0, bob_slice = 0;             /* bob_slice 0=idle, 1..BOB_SLICES=band in progress */
   s_move_from = -1;
+  s_cur_mode = CM_NORMAL; s_item_held = 0; s_item_from = -1;   /* fresh cursor mode each open */
   uint8_t* recs = src->records(box);          /* current box's 30*80 records */
   pk_decode_box_raw(recs, g_box);
   /* switch to box `nbx` (wrapping), reload + redraw */
@@ -499,12 +648,24 @@ int pdna_box(BoxSource* src) {
                                pk_decode_box_raw(recs, g_box); cur = 0; need_full = true; } while (0)
 
   for (;;) {
-    if (need_full) { render_full(src, box, cur, on_title, s_move_from >= 0, true); need_full = false; }
+    if (need_full) { render_full(src, box, cur, on_title, s_move_from >= 0, true); need_full = false; bob_slice = 0; }
     u16 k, fresh;
     do { s_vsync();
-         /* idle icon bob: while not carrying a mon, flip the frame every ~0.5s */
-         if (s_move_from < 0 && ++anim_ctr >= ANIM_PERIOD) {
-           anim_ctr = 0; g_iconf ^= 1; animate_grid(src, box, cur, on_title);
+         /* idle icon bob (not while carrying or in ITEM mode), gated on the "moving
+          * sprites" setting. When off, g_iconf stays 0 (icons static). The frame flip
+          * is painted ONE band per frame (BOB_SLICES, each within vblank) so it never
+          * flashes — see animate_band. ITEM mode stays static so held-item markers
+          * (which the bob doesn't recompose) are never wiped. */
+         if (app_anim_enabled() && s_move_from < 0 && s_cur_mode != CM_ITEM) {
+           if (bob_slice == 0 && ++anim_ctr >= ANIM_PERIOD) { anim_ctr = 0; g_iconf ^= 1; bob_slice = 1; }
+           if (bob_slice) {
+             int h = (GRID_PY1 - GRID_PY0 + BOB_SLICES - 1) / BOB_SLICES;
+             int py0 = GRID_PY0 + (bob_slice - 1) * h;
+             int py1 = py0 + h; if (py1 > GRID_PY1) py1 = GRID_PY1;
+             animate_band(src, box, py0, py1);
+             draw_cursor_hand(cur, on_title);        /* keep the hand on top of every band */
+             bob_slice = (py1 >= GRID_PY1) ? 0 : bob_slice + 1;
+           }
          }
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
@@ -534,10 +695,40 @@ int pdna_box(BoxSource* src) {
       continue;                                      /* move-mode swallows all other keys */
     }
 
-    if (k & KEY_B) return 0;
+    /* ---- ITEM CARRY: holding a held item; place it / swap onto another mon ---- */
+    if (s_item_held > 0) {
+      if (k & KEY_B) {                               /* put it back (never lose it) */
+        int home = item_home();
+        if (home >= 0) { box_set_held(recs, home, (uint16_t)s_item_held); pk_decode_box_raw(recs, g_box);
+                         src->mark_dirty(); s_item_held = 0; s_item_from = -1; need_full = true; }
+        else snd_deny();
+      }
+      else if (k & KEY_A) {                          /* give / swap onto the cursor mon */
+        if (g_box[cur].species) {
+          uint16_t old = g_box[cur].heldItem;        /* swap: take this mon's old item */
+          box_set_held(recs, cur, (uint16_t)s_item_held);
+          pk_decode_box_raw(recs, g_box);
+          src->mark_dirty();
+          s_item_held = old; s_item_from = old ? cur : -1;   /* keep holding the swapped-out item */
+          need_full = true;
+        } else snd_deny();
+      }
+      else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
+      else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
+      else if (k & KEY_UP)    { if (cur >= COLS) cur -= COLS; }
+      else if (k & KEY_DOWN)  { if (cur < COLS * (ROWS - 1)) cur += COLS; }
+      if (!need_full && cur != old_cur) render_full(src, box, cur, false, false, false);
+      continue;                                      /* item-carry swallows all other keys */
+    }
+
+    if (k & KEY_B) { if (s_cur_mode != CM_NORMAL && !on_title) { s_cur_mode = CM_NORMAL; need_full = true; } else return 0; }
     else if ((k & KEY_START) && !src->is_bank) return 2;
     else if (k & KEY_L) { SWITCH_BOX((box + nb - 1) % nb); }
     else if (k & KEY_R) { SWITCH_BOX((box + 1) % nb); }
+    else if (k & KEY_SELECT) {                       /* cycle cursor mode (Omega-only edit modes) */
+      if (!on_title && src->can_edit()) { s_cur_mode = (s_cur_mode + 1) % 3; need_full = true; }
+      else snd_deny();
+    }
     else if (on_title) {                           /* TITLE row: limited controls */
       if (k & KEY_DOWN) on_title = false;
       /* LEFT/RIGHT on the box name flips boxes, like the real Gen-3 PC (fresh
@@ -549,14 +740,33 @@ int pdna_box(BoxSource* src) {
         else { snd_deny(); }
       }
     }
-    else if ((k & KEY_SELECT) && !src->is_bank) return 1;
     else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
     else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
     else if (k & KEY_UP)    { if (cur < COLS) on_title = true; else cur -= COLS; }
     else if (k & KEY_DOWN)  cur = (cur >= COLS * (ROWS - 1)) ? cur - COLS * (ROWS - 1) : cur + COLS;
+    else if ((k & KEY_A) && s_cur_mode == CM_MOVE) {     /* orange hand: grab the mon directly */
+      if (!src->can_edit() || !g_box[cur].species) snd_deny();
+      else {
+        s_move_from = cur;
+        render_full(src, box, cur, false, false, false);
+        play_grab_anim(src, box, cur);
+        carry_move(src, box, cur, cur);
+        draw_footer(src->is_bank, false, true);
+      }
+    }
+    else if ((k & KEY_A) && s_cur_mode == CM_ITEM) {     /* transparent hand: pick up the held item */
+      if (!src->can_edit()) snd_deny();
+      else if (g_box[cur].species && g_box[cur].heldItem) {
+        s_item_held = g_box[cur].heldItem; s_item_from = cur;
+        box_set_held(recs, cur, 0);
+        pk_decode_box_raw(recs, g_box);
+        src->mark_dirty();
+        need_full = true;
+      } else snd_deny();                                 /* empty slot or no item */
+    }
     else if (k & KEY_A) {
-      /* open the action menu on an occupied slot, OR on an empty slot when the
-       * clipboard holds a mon to PASTE here. */
+      /* NORMAL: open the action menu on an occupied slot, OR on an empty slot when
+       * the clipboard holds a mon to PASTE here. */
       if (g_box[cur].species || (src->can_edit() && app_clip_occupied())) {
         uint8_t* rec = recs + (uint32_t)cur * 80;
         int mbox = src->is_bank ? 0 : box;                               /* box index within menu_block */
@@ -575,9 +785,13 @@ int pdna_box(BoxSource* src) {
       }
     }
 
-    /* cursor-only change -> light partial repaint; everything else did a full one */
-    if (!need_full && (cur != old_cur || on_title != old_title))
-      move_cursor(src, box, old_cur, old_title, cur, on_title);
+    /* cursor-only change -> light partial repaint; everything else did a full one.
+     * ITEM mode repaints in full (clear=false) so the per-cell held-item markers are
+     * preserved (move_cursor only restores wallpaper + icons under the old hand). */
+    if (!need_full && (cur != old_cur || on_title != old_title)) {
+      if (s_cur_mode == CM_ITEM) render_full(src, box, cur, on_title, false, false);
+      else move_cursor(src, box, old_cur, old_title, cur, on_title);
+    }
   }
   #undef SWITCH_BOX
 }

@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "pdna_summary.h"
+#include "pdna_app.h"     /* app_anim_enabled (portrait animation) */
 #include "ui.h"
 #include "gen3_mon.h"
 #include "gen3_edit.h"
@@ -19,6 +20,7 @@
 #include "mon_front.h"
 #include "mon_back.h"
 #include "mon_icons.h"
+#include "mon_anim.h"     /* per-species Emerald front-animation family */
 #include "type_icons.h"
 #include "snd.h"
 
@@ -80,11 +82,26 @@ static int text_wrap(int x, int y, int cols, u16 ink, const char* s) {
 static u16  gender_col(uint8_t g) { return g == 0 ? RGB15(12, 18, 31) : g == 1 ? RGB15(31, 13, 19) : UI_DIM; }
 static const char* gender_sym(uint8_t g) { return g == 0 ? "M" : g == 1 ? "F" : "-"; }
 
+/* ---- Emerald-style blue gradient backdrops ---- */
+/* The sprite "screen" behind the portrait (yy in 14..77): a light-blue vertical
+ * gradient, like the real summary. Used by draw_left AND portrait_redraw so the
+ * static and animated sprite sit on the same backdrop. */
+static u16 portrait_bg(int yy) {
+  int t = yy - 14; if (t < 0) t = 0; if (t > 63) t = 63;
+  return RGB15(16 - t * 6 / 63, 22 - t * 6 / 63, 30 - t * 4 / 63);
+}
+/* Whole-screen blue gradient (medium-dark so the light card text stays readable). */
+static void summary_bg(void) {
+  for (int b = 0; b < 16; b++)
+    ui_fill_rect(0, b * 10, UI_SCR_W, 10, RGB15(6 - b / 5, 11 - b / 3, 22 - b / 2));
+}
+
 /* Shared portrait column (all 7 cards): framed sprite, dex no, name, Lv + colored
  * sex, species, type badges, and an egg/shiny tag. No editable fields here. */
 static void draw_left(const PkMon* p) {
-  ui_panel(0, 11, 92, 139, UI_PANEL, UI_BORDER);
+  ui_panel(0, 11, 92, 139, RGB15(4, 7, 16), UI_BORDER);    /* dark-blue info column */
   m3_frame(11, 13, 80, 78, UI_BORDER);                     /* sprite sub-frame */
+  for (int yy = 14; yy <= 77; yy++) ui_fill_rect(12, yy, 68, 1, portrait_bg(yy));   /* blue "screen" */
   const uint16_t* spr = g_back ? mon_back_for_form(p->species, p->isShiny, p->form) : 0;
   if (!spr) spr = mon_front_for_form(p->species, p->isShiny, p->form);   /* fall back to front */
   if (spr) ui_sprite(14, 14, MON_FRONT_W, MON_FRONT_H, spr);
@@ -121,6 +138,13 @@ static void draw_left(const PkMon* p) {
 static void card_info(const PkMon* p) {
   int x = 98, y = 14; char b[48];
   ui_text(x, y, C_HDR, "POKEMON INFO"); y += 12;
+
+  if (p->isEgg && !p->isBadEgg) {        /* an egg stores its hatch counter in friendship */
+    siprintf(b, "Hatch ~%u steps", (unsigned)(p->friendship * 256));
+    ui_text(x, y, C_HOT, b); y += 10;
+    siprintf(b, "%u egg cycle%s left", (unsigned)p->friendship, p->friendship == 1 ? "" : "s");
+    ui_text(x, y, UI_DIM, b); y += 11;
+  }
 
   ui_text(x, y, C_KEY, "Species"); reg(F_SPECIES, x + 48, y, 88);
   ui_text(x + 48, y, C_VAL, pk_species_name(p->species)); y += 9;
@@ -249,7 +273,7 @@ static void card_origin(const PkMon* p) {
 }
 
 static void render_card(const PkMon* p, int card) {
-  ui_clear();
+  summary_bg();                             /* Emerald-style blue gradient backdrop */
   g_nslot = 0;
   if (g_edit) { ui_fill_rect(0, 0, 50, 9, UI_WARN); ui_text(8, 1, UI_PANEL, "EDIT"); } /* unmissable */
   else        ui_text(4, 2, UI_DIM, "VIEW");
@@ -280,6 +304,82 @@ static bool confirm(void) {
   return yes;
 }
 
+/* ---- portrait animation (Emerald-style entrance bounce + gentle idle bob) ----
+ * A single 64x64 frame re-blitted at a vertical offset — no second asset, no extra
+ * EWRAM. Plays a one-shot rise+overshoot on open / mon-change, then a slow idle
+ * bob. Gated on app_anim_enabled() by the caller. */
+
+/* the portrait sprite draw_left would pick (front/back, else the icon fallback) */
+static const uint16_t* portrait_sprite(const PkMon* p, bool* is_icon) {
+  const uint16_t* spr = g_back ? mon_back_for_form(p->species, p->isShiny, p->form) : 0;
+  if (!spr) spr = mon_front_for_form(p->species, p->isShiny, p->form);
+  if (spr) { *is_icon = false; return spr; }
+  *is_icon = true; return mon_icon_for_form(p->species, p->form);
+}
+
+/* Emerald-style intro: a squish-and-bounce of the single frame (vertical squash +
+ * horizontal widen, anchored at the feet) that plays once, THEN a gentle idle
+ * float. wx/sy are the drawn width/height in px (64 = natural); dy floats the rest
+ * pose. This is the procedural affine intro the real Gen-3 summary uses (the front
+ * "frames" are transforms of one sprite, not a flipbook). */
+/* sine LUT scaled to +/-64 over a 16-step period */
+static const signed char SIN16[16] = { 0, 24, 45, 59, 64, 59, 45, 24, 0, -24, -45, -59, -64, -59, -45, -24 };
+static int isin(int i) { return SIN16[i & 15]; }
+
+#define ENT 24                          /* entrance length (frames); after it, a gentle float */
+/* The species' Emerald front-animation family as a procedural pose over frame t:
+ * wx/sy = drawn width/height (64 = natural), dx/dy = pixel offset. Plays once, then
+ * settles to a uniform idle float — matching the real game's intro-then-static. */
+static void portrait_params(int fam, int t, int* wx, int* sy, int* dx, int* dy) {
+  *wx = 64; *sy = 64; *dx = 0; *dy = 0;
+  if (t >= ENT) { *dy = isin((t - ENT) >> 1) / 32; return; }      /* idle float ~ +/-2 px */
+  int dk = (ENT - t) * 64 / ENT;                                   /* decay 64..~2 */
+  switch (fam) {
+    case 0: { int s = (isin(t * 2 + 12) * 12 * dk) >> 12; *sy = 64 + s; *wx = 64 - s / 2; } break;   /* squish & bounce */
+    case 1: { int s = (isin(t * 2 + 12) * 14 * dk) >> 12; *sy = 64 - s; *wx = 64 + s / 2; } break;   /* stretch (tall first) */
+    case 2: { *dy = (isin(t * 3) * 5 * dk) >> 12; } break;                                            /* v-shake */
+    case 3: { *dx = (isin(t * 3) * 6 * dk) >> 12; } break;                                            /* h-shake */
+    case 4: { int g = (dk * 18) >> 6; *wx = 64 - g; *sy = 64 - g; *dx = (isin(t * 3) * 3) >> 6; } break; /* grow + vibrate */
+    case 5: { int s = (isin(t * 2) * 14 * dk) >> 12; *wx = 64 - s; *sy = 64 - s; } break;             /* shrink-grow pulse */
+    case 6: { *dy = -((dk * 14) >> 6); } break;                                                       /* v-slide (down into place) */
+    case 7: { *dx = -((dk * 16) >> 6); } break;                                                       /* h-slide in */
+    case 8: { int h = (isin(t * 4) * 10 * dk) >> 12; *dy = -(h < 0 ? -h : h); } break;                /* jumps (hops up) */
+    default:{ *dx = (isin(t * 2) * 8 * dk) >> 12; int s = (isin(t * 2 + 4) * 5 * dk) >> 12; *sy = 64 + s; } break; /* wobble (rotate approx) */
+  }
+}
+
+/* Redraw the portrait at pose (wx,sy,dy) iff it changed. Composes each scanline of
+ * the sprite sub-frame interior (x 12..79, y 14..77) — panel background plus the
+ * 64x64 frame squashed to `sy` / widened to `wx`, anchored at the feet (y 78),
+ * centred at x 46 — into a line buffer and DMAs it to VRAM in one pass. No separate
+ * erase, so the animation never flickers (call site runs it in vblank). */
+static u16 s_pline[68];
+static void portrait_redraw(const PkMon* p, int wx, int sy, int dx, int dy, int* lastkey) {
+  int key = (wx & 0xFF) | ((sy & 0xFF) << 8) | (((dx + 64) & 0xFF) << 16) | (((dy + 64) & 0xFF) << 24);
+  if (key == *lastkey) return;
+  *lastkey = key;
+  bool icon; const uint16_t* spr = portrait_sprite(p, &icon);
+  int x0, baseline, top, iw, ih;
+  if (!icon) { x0 = 46 - wx / 2 + dx; baseline = 78 + dy; top = baseline - sy; iw = wx; ih = sy; }
+  else       { x0 = 30 + dx; top = 30 + dy; if (top < 14) top = 14; if (top > 45) top = 45;
+               baseline = top + 32; iw = 32; ih = 32; }
+  for (int yy = 14; yy <= 77; yy++) {
+    u16 bg = portrait_bg(yy);
+    for (int dx = 0; dx < 68; dx++) {
+      int x = 12 + dx; u16 c = bg;
+      if (yy >= top && yy < baseline && x >= x0 && x < x0 + iw) {
+        int sj = icon ? (yy - top) : ((yy - top) * 64 / ih);
+        int si = icon ? (x - x0)   : ((x - x0)   * 64 / iw);
+        u16 px = icon ? spr[sj * 32 + si] : spr[sj * 64 + si];
+        if (px & 0x8000) c = (u16)(px & 0x7FFF);
+      }
+      s_pline[dx] = c;
+    }
+    dma3_cpy(&vid_mem[yy * 240 + 12], s_pline, 68 * 2);
+  }
+  if (p->isShiny) ui_text(70, 16, C_HOT, "*");
+}
+
 /* Inline summary with two sub-modes:
  *   VIEW  (default): A enters EDIT; U/D scroll to the prev/next mon (real-PC style);
  *                    L/R flip card; B leaves. The save prompt appears HERE — only
@@ -299,6 +399,7 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
   int card = (card_io && *card_io >= 0 && *card_io < NCARDS) ? *card_io : 0;
   int fsel = 0;
   bool dirty = false, editing = false;
+  int anim_t = 0, lastkey = -1;                /* portrait pose key (entrance anim + idle float) */
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
 
   for (;;) {
@@ -311,16 +412,22 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     ui_text(4, 152, UI_DIM, editing ? "A list  <> +/-  U/D field  L/R card  B view"
-                          : can_edit ? "A edit  U/D mon  L/R card  SEL flip  B back"
-                                     : "U/D mon  L/R card  SEL flip  B back");
+                          : can_edit ? "A edit  U/D mon  <>/LR card  SEL flip  B"
+                                     : "U/D mon  <>/LR card  SEL flip  B back");
+    lastkey = 64 | (64 << 8) | (64 << 16) | (64 << 24);   /* render_card drew the rest pose (64,64,0,0) */
+    if (app_anim_enabled()) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
+                              portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, wx, sy, dx, dy, &lastkey); }
 
     u16 k, fresh;
-    do { s_vsync(); fresh = key_hit(KEY_FULL);
+    do { s_vsync();
+         if (app_anim_enabled()) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
+                                   portrait_params(fam, ++anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, wx, sy, dx, dy, &lastkey); }
+         fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
     if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
     else if (fresh & (KEY_L | KEY_R | KEY_SELECT)) snd_tab();
     else if (fresh & KEY_A)               snd_ok();
-    else if (fresh & (KEY_LEFT | KEY_RIGHT)) { if (editing) snd_edit(); }
+    else if (fresh & (KEY_LEFT | KEY_RIGHT)) { if (editing) snd_edit(); else snd_tab(); }
     else if (fresh & KEY_B)               snd_back();
 
     if (fresh & KEY_SELECT) { g_back = !g_back; continue; }   /* flip front/back portrait */
@@ -337,7 +444,10 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
     } else {
       /* ---- VIEW MODE ---- */
       if (k & KEY_A) { if (can_edit) editing = true; }
-      else if (k & (KEY_L | KEY_R)) { card = (card + (k & KEY_R ? 1 : NCARDS - 1)) % NCARDS; fsel = 0; }
+      else if ((k & (KEY_L | KEY_R)) || (fresh & (KEY_LEFT | KEY_RIGHT))) {   /* L/R shoulder OR d-pad LEFT/RIGHT flip cards */
+        int fwd = (k & KEY_R) || (fresh & KEY_RIGHT);
+        card = (card + (fwd ? 1 : NCARDS - 1)) % NCARDS; fsel = 0;
+      }
       else if (k & (KEY_UP | KEY_DOWN | KEY_B)) {    /* leaving this mon: prompt-save if dirty */
         if (dirty && confirm()) { gen3_edit_commit(&e, out_rec); if (saved) *saved = true; }
         key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);

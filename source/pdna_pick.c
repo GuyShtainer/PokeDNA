@@ -9,6 +9,7 @@
 
 #include "sys.h"
 #include "pdna_pick.h"
+#include "pdna_app.h"      /* app_confirm, app_anim_enabled (Pokedex screen) */
 #include "ui.h"
 #include "data_tables.h"
 #include "mon_icons.h"
@@ -278,6 +279,290 @@ uint16_t pick_species(uint16_t current) {
       if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); build_species(filter, sort, search); sel = 0; relist = true; }
     }
   }
+}
+
+/* ===================== Pokedex viewer / editor ========================= */
+/* HGSS-style Pokedex on top of the same species grid + filters. Per-state render:
+ * UNSEEN greyscale, SEEN full-colour static, CAUGHT full-colour + a 2-frame bob
+ * (all caught cells share one frame counter so they bob in unison) and a Poke-Ball
+ * corner marker. A cycles a species unseen->seen->caught (Omega-only edit). Three
+ * views (L/R), the gen/type/legendary filter + caught-status filter + name search
+ * (START / SELECT). Reuses g_list + build_species: no new EWRAM. */
+
+#define DEX_NAT_MAX     386
+#define DEX_ANIM_PERIOD 30          /* vblanks per bob frame (~0.5s, the Gen-3 cadence) */
+
+#define DV_GRID 0
+#define DV_LIST 1
+#define DV_TYPE 2
+#define DV_N    3
+static const char* const DV_NAME[DV_N] = { "Grid", "List", "Type" };
+
+#define DS_ALL    0
+#define DS_CAUGHT 1
+#define DS_SEEN   2
+#define DS_UNSEEN 3
+#define DS_N      4
+static const char* const DS_NAME[DS_N] = { "All", "Caught", "Seen", "Unseen" };
+
+static DexGetState s_dget;
+static DexSetState s_dset;
+
+static int dstate(uint16_t internal) { return s_dget((int)pk_national_no(internal)); }
+
+/* Build g_list for the dex: species filter (build_species) -> caught-status filter
+ * -> (Type view only) a stable sort by primary type. */
+static void dex_build(int filter, int sort, const char* search, int status, int view) {
+  build_species(filter, sort, search);                 /* g_list/g_n by No. or A-Z */
+  if (status != DS_ALL) {                              /* keep only the matching states */
+    int w = 0;
+    for (int i = 0; i < g_n; i++) {
+      int st = dstate(g_list[i]);
+      bool keep = (status == DS_CAUGHT) ? (st == 2)
+                : (status == DS_SEEN)   ? (st == 1)
+                                        : (st == 0);   /* DS_UNSEEN */
+      if (keep) g_list[w++] = g_list[i];
+    }
+    g_n = w;
+  }
+  if (view == DV_TYPE) {                                /* stable insertion sort by type1 */
+    for (int i = 1; i < g_n; i++) {
+      uint16_t v = g_list[i]; uint8_t tv = pk_species_type1(v); int j = i - 1;
+      while (j >= 0 && pk_species_type1(g_list[j]) > tv) { g_list[j + 1] = g_list[j]; j--; }
+      g_list[j + 1] = v;
+    }
+  }
+}
+
+static void dex_counts(int* seen, int* caught) {
+  int s = 0, c = 0;
+  for (int nat = 1; nat <= DEX_NAT_MAX; nat++) { int st = s_dget(nat); if (st >= 1) s++; if (st >= 2) c++; }
+  *seen = s; *caught = c;
+}
+
+static void dex_geom(int view, int* cols, int* cw, int* ch, int* x0, int* y0, int* vrows) {
+  if (view == DV_LIST) { *cols = 1; *cw = 232; *ch = 9;  *x0 = 4; *y0 = 24; *vrows = 13; }
+  else                 { *cols = 7; *cw = 33;  *ch = 34; *x0 = 8; *y0 = 24; *vrows = 3;  }
+}
+
+/* one grid/type cell at the icon origin: greyscale unseen, colour seen,
+ * colour-at-frame-`bob` + Poke-Ball caught. */
+static void dex_cell_grid(int x, int y, uint16_t in, int bob) {
+  int st = dstate(in);
+  if (st == 0)      ui_icon_scaled_grey(x, y, 32, 32, mon_icon_for(in));
+  else if (st == 1) ui_icon_scaled(x, y, 32, 32, mon_icon_for(in));
+  else { ui_icon_scaled(x, y, 32, 32, mon_icon_for_frame(in, (uint8_t)bob)); ui_pokeball(x + 21, y + 21); }
+}
+
+/* one list row text, coloured by state (or the selection colour) */
+static void dex_cell_list(int x, int y, uint16_t in, bool sel) {
+  int nat = pk_national_no(in), st = s_dget(nat);
+  char row[44], rt[44];
+  siprintf(row, "%03d %-11s %s", nat, pk_species_name(in), st == 2 ? "CAUGHT" : st == 1 ? "seen" : "-");
+  ui_truncate(rt, row, 28);
+  ui_text(x + 2, y, sel ? UI_SELTEXT : st == 2 ? UI_OK : st == 1 ? UI_TEXT : UI_DIM, rt);
+}
+
+static void dex_header(int view, int filter, int status, uint16_t sel_in, int seen, int caught) {
+  ui_fill_rect(0, 0, UI_SCR_W, 22, UI_BG);
+  char h[64], ht[40];
+  if (sel_in) siprintf(h, "No.%u %s", (unsigned)pk_national_no(sel_in), pk_species_name(sel_in));
+  else        strcpy(h, "POKEDEX");
+  ui_truncate(ht, h, 19);
+  ui_text(4, 2, UI_TITLE, ht);
+  siprintf(h, "S%d C%d", seen, caught);
+  ui_text(168, 2, UI_DIM, h);
+  if (sel_in) {
+    uint8_t t1 = pk_species_type1(sel_in), t2 = pk_species_type2(sel_in);
+    if (t1 == t2) siprintf(h, "%s  %s  %s   %s", DV_NAME[view], filter_name(filter), DS_NAME[status], pk_type_name(t1));
+    else          siprintf(h, "%s  %s  %s   %s/%s", DV_NAME[view], filter_name(filter), DS_NAME[status], pk_type_name(t1), pk_type_name(t2));
+  } else siprintf(h, "%s  %s  %s", DV_NAME[view], filter_name(filter), DS_NAME[status]);
+  ui_truncate(ht, h, 29);
+  ui_text(4, 12, UI_DIM, ht);
+  ui_hline(0, 22, UI_SCR_W, UI_BORDER);
+}
+
+/* SELECT-all overlay: catch / see / wipe every species. Returns true if changed. */
+static bool dex_bulk(void) {
+  static const char* const L[4] = { "Catch ALL", "See ALL", "Wipe ALL", "Cancel" };
+  int sel = 0;
+  for (;;) {
+    const int mx = 60, my = 50, mw = 120, mh = 18 + 4 * 14 + 11;
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, "DEX: ALL");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < 4; i++) { int y = my + 18 + i * 14; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]); }
+    ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return false;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
+    else if (k & KEY_A) {
+      if (sel == 3) return false;
+      if (!app_confirm(sel == 0 ? "Catch every species?" : sel == 1 ? "See every species?" : "Wipe the whole dex?",
+                       "Applies to all 386.")) return false;
+      for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dset(nat, sel == 0 ? 2 : sel == 1 ? 1 : 0);
+      return true;
+    }
+  }
+}
+
+/* START menu: sort toggle, status cycle, optional "Mark all", then the
+ * gen/type/legendary filter list. Returns 0 nothing, 1 rebuild needed, 2 the dex
+ * was bulk-changed (rebuild + mark dirty). */
+static int dex_menu(int* filter, int* sort, int* status, bool can_edit) {
+  int fids[24]; int nf = filter_ids(fids);
+  int base = can_edit ? 3 : 2;                          /* rows before the filter list */
+  int rows = base + nf, sel = 0, top = 0;
+  bool changed = false, bulked = false;
+  for (;;) {
+    if (sel < top) top = sel;
+    if (sel >= top + 16) top = sel - 15;
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "FILTER / SORT / FIND");
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < 16 && top + i < rows; i++) {
+      int r = top + i, y = 14 + i * 8; bool s = (r == sel);
+      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+      if (r == 0) { char b[32]; siprintf(b, "Sort: %s", *sort ? "A-Z (name)" : "No. (dex)");
+                    ui_text(8, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
+      else if (r == 1) { char b[32]; siprintf(b, "Status: %s", DS_NAME[*status]);
+                         ui_text(8, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
+      else if (can_edit && r == 2) ui_text(8, y, s ? UI_SELTEXT : UI_WARN, "Mark all...");
+      else { int fid = fids[r - base];
+             if (fid >= 5) { type_chip(8, y, (uint8_t)(fid - 5)); ui_text(40, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
+             else ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
+    }
+    ui_text(4, 152, UI_DIM, "A select  U/D move  L/R page  B back");
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
+    if (k & KEY_B) return bulked ? 2 : (changed ? 1 : 0);
+    else if (k & KEY_A) {
+      if (sel == 0)       { *sort ^= 1; changed = true; }
+      else if (sel == 1)  { *status = (*status + 1) % DS_N; changed = true; }
+      else if (can_edit && sel == 2) { if (dex_bulk()) bulked = true; }   /* stay open */
+      else { *filter = fids[sel - base]; return bulked ? 2 : 1; }         /* pick -> close */
+    }
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : rows - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % rows;
+    else if (k & KEY_L)    sel = clampi(sel - 8, 0, rows - 1);
+    else if (k & KEY_R)    sel = clampi(sel + 8, 0, rows - 1);
+  }
+}
+
+bool pdna_dex_screen(DexGetState get, DexSetState set, bool can_edit) {
+  s_dget = get; s_dset = set;
+  int filter = 0, sort = 0, status = DS_ALL, view = DV_GRID;
+  char search[16] = "";
+  dex_build(filter, sort, search, status, view);
+  int seen, caught; dex_counts(&seen, &caught);
+  bool dirty = false;
+
+  int sel = 0, toprow = 0;
+  int prev_sel = -1, prev_top = -1, prev_view = -1;
+  bool relist = true;
+  int bob = 0, anim_ctr = 0;
+
+  for (;;) {
+    int cols, cw, ch, x0, y0, vrows;
+    dex_geom(view, &cols, &cw, &ch, &x0, &y0, &vrows);
+    int vis = cols * vrows;
+    if (sel >= g_n) sel = g_n ? g_n - 1 : 0;
+    int srow = sel / cols;                              /* edge scroll */
+    if (srow < toprow) toprow = srow;
+    if (srow >= toprow + vrows) toprow = srow - vrows + 1;
+    if (toprow < 0) toprow = 0;
+    int top = toprow * cols;
+    bool grid = (view != DV_LIST);
+
+    bool full = relist || view != prev_view || top != prev_top;
+    relist = false;
+
+    if (full) {
+      ui_clear();
+      ui_hline(0, 22, UI_SCR_W, UI_BORDER);
+      ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, can_edit ? "A cycle  L/R view  ST opts  SEL find  B"
+                                        : "L/R view  ST opts  SEL find  B back");
+      for (int i = 0; i < vis && top + i < g_n; i++) {
+        int x = x0 + (i % cols) * cw, y = y0 + (i / cols) * ch;
+        if (grid) dex_cell_grid(x, y, g_list[top + i], bob);
+        else dex_cell_list(x, y, g_list[top + i], (top + i == sel));
+      }
+    } else if (prev_sel >= top && prev_sel < top + vis) {   /* erase old selection chrome */
+      int pi = prev_sel - top, px = x0 + (pi % cols) * cw, py = y0 + (pi / cols) * ch;
+      if (grid) m3_frame(px - 1, py - 1, px + 32, py + 32, UI_BG);
+      else { ui_fill_rect(px, py - 1, cw, ch, UI_BG); dex_cell_list(px, py, g_list[prev_sel], false); }
+    }
+
+    if (g_n) {                                          /* draw current selection chrome */
+      int si = sel - top, sx = x0 + (si % cols) * cw, sy = y0 + (si / cols) * ch;
+      if (grid) m3_frame(sx - 1, sy - 1, sx + 32, sy + 32, UI_SELTEXT);
+      else { ui_fill_rect(sx, sy - 1, cw, ch, UI_SEL); dex_cell_list(sx, sy, g_list[sel], true); }
+    }
+
+    dex_header(view, filter, status, g_n ? g_list[sel] : 0, seen, caught);
+
+    prev_sel = sel; prev_top = top; prev_view = view;
+
+    /* wait for input; meanwhile bob the caught cells (grid/type, anim enabled) */
+    u16 k, fresh;
+    const u16 dpad = KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT;
+    do {
+      s_vsync();
+      if (grid && app_anim_enabled() && ++anim_ctr >= DEX_ANIM_PERIOD) {
+        anim_ctr = 0; bob ^= 1;
+        for (int i = 0; i < vis && top + i < g_n; i++) {     /* repaint just the caught cells */
+          uint16_t in = g_list[top + i];
+          if (dstate(in) != 2) continue;
+          int x = x0 + (i % cols) * cw, y = y0 + (i / cols) * ch;
+          ui_fill_rect(x, y, 32, 32, UI_BG);
+          dex_cell_grid(x, y, in, bob);
+          if (top + i == sel) m3_frame(x - 1, y - 1, x + 32, y + 32, UI_SELTEXT);
+        }
+      }
+      fresh = key_hit(KEY_FULL);
+      k = fresh | key_repeat(dpad);
+    } while (!k);
+    if      (fresh & dpad)                          snd_move();
+    else if (fresh & (KEY_L | KEY_R | KEY_SELECT))  snd_tab();
+    else if (fresh & (KEY_A | KEY_START))           snd_ok();
+    else if (fresh & KEY_B)                         snd_back();
+
+    if (k & KEY_B) break;
+    else if (k & KEY_A) {
+      if (can_edit && g_n) {
+        uint16_t in = g_list[sel]; int nat = pk_national_no(in);
+        s_dset(nat, (s_dget(nat) + 1) % 3);
+        dirty = true; dex_counts(&seen, &caught);
+        if (status != DS_ALL) { dex_build(filter, sort, search, status, view); relist = true; }  /* may drop out */
+        else if (grid) {                               /* repaint this cell's new state */
+          int si = sel - top, sx = x0 + (si % cols) * cw, sy = y0 + (si / cols) * ch;
+          ui_fill_rect(sx, sy, 32, 32, UI_BG);
+          dex_cell_grid(sx, sy, in, bob);
+          m3_frame(sx - 1, sy - 1, sx + 32, sy + 32, UI_SELTEXT);
+        }
+        /* list state is reflected by the selection-chrome redraw next iteration */
+      } else if (!can_edit) snd_deny();
+    }
+    else if (k & KEY_UP)    { if (cols == 1) { if (sel > 0) sel--; } else if (sel >= cols) sel -= cols; }
+    else if (k & KEY_DOWN)  { if (cols == 1) { if (sel < g_n - 1) sel++; } else if (sel + cols < g_n) sel += cols; }
+    else if (k & KEY_LEFT)  { if (cols == 1) sel = clampi(sel - vrows, 0, g_n ? g_n - 1 : 0); else if (sel > 0) sel--; }
+    else if (k & KEY_RIGHT) { if (cols == 1) sel = clampi(sel + vrows, 0, g_n ? g_n - 1 : 0); else if (sel < g_n - 1) sel++; }
+    else if (k & KEY_L) { view = (view + DV_N - 1) % DV_N; dex_build(filter, sort, search, status, view); sel = 0; toprow = 0; relist = true; }
+    else if (k & KEY_R) { view = (view + 1) % DV_N;       dex_build(filter, sort, search, status, view); sel = 0; toprow = 0; relist = true; }
+    else if (k & KEY_START) {
+      int r = dex_menu(&filter, &sort, &status, can_edit);
+      if (r >= 1) { dex_build(filter, sort, search, status, view); sel = 0; toprow = 0; relist = true;
+                    if (r == 2) { dirty = true; dex_counts(&seen, &caught); } }
+    }
+    else if (k & KEY_SELECT) {
+      char q[16];
+      if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); dex_build(filter, sort, search, status, view); sel = 0; toprow = 0; relist = true; }
+    }
+  }
+  return dirty;
 }
 
 /* ===================== move picker ===================================== */

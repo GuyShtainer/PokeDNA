@@ -37,6 +37,7 @@
 #include "pdna_bank.h"   /* pdna_bank_show (bank = parallel boxes) */
 #include "gen3_flags.h"    /* event flags */
 #include "gen3_dex.h"      /* Pokedex seen/owned flags */
+#include "gen3_daycare.h"  /* daycare breeding compatibility (the man's verdict) */
 #include "gen3_items.h"    /* item bags */
 #include "gen3_secretbase.h" /* Secret Base records (RS/Emerald) */
 #include "osk.h"           /* osk_search (numeric entry) */
@@ -469,6 +470,11 @@ static bool g_pc_dirty = false;
  * launch). The verified-write itself (.tmp → re-read → rename) always protects the
  * original mid-write; the backup is the extra undo layer. */
 static int g_backup_mode = 0;
+
+/* Master "moving sprites" switch (Settings). ON by default; session-only. Gates the
+ * PC/bank box-icon bob, the Pokedex caught-cell bob, and the summary-card animation. */
+static bool g_anim_on = true;
+bool app_anim_enabled(void) { return g_anim_on; }
 
 /* Verify checksums, back up the original, and do the verified whole-file write —
  * the shared tail of every commit (the changed section bytes are already in g_save). */
@@ -931,15 +937,13 @@ static int party_list(void) {
     }
 
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, g_have_pc ? "A actions  SEL boxes  START card  B back"
-                                      : "A actions  START card  B back");
+    ui_text(4, 152, UI_DIM, "A actions  START menu  B back");
 
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT | KEY_START);
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_START);
     if      (k & KEY_UP)   { if (sel > 0) sel--; }
     else if (k & KEY_DOWN) { if (sel < g_nparty - 1) sel++; }
     else if (k & KEY_B)    return 0;
     else if (k & KEY_START) return 2;
-    else if (k & KEY_SELECT) { if (g_have_pc) return 1; }
     else if ((k & KEY_A) && g_nparty > 0) {
       uint16_t doff = g_frlg ? 0x0038 : 0x0238;
       uint8_t* rec = g_sb1 + doff + (uint32_t)sel * 100;     /* party lives in SaveBlock1 (ids 1..4) */
@@ -1147,8 +1151,6 @@ static bool app_commit_dex(void) {
   return app_save_finalize();
 }
 
-static uint16_t EWRAM_BSS s_nat2spc[G3_DEX_NAT_MAX + 1];   /* national dex # -> internal species */
-
 static int  dex_state(int nat) {                            /* 0 none, 1 seen, 2 caught */
   if (pk_dex_owned(g_sb2, (uint16_t)nat)) return 2;
   return pk_dex_seen(g_sb2, (uint16_t)nat) ? 1 : 0;
@@ -1158,76 +1160,13 @@ static void dex_set_state(int nat, int state) {
   pk_dex_set_seen(g_sb1, g_sb2, g_game, (uint16_t)nat, state >= 1);
 }
 
-/* SELECT overlay: catch / see / wipe ALL 386. Returns true if it changed anything. */
-static bool dex_bulk_menu(void) {
-  static const char* const L[4] = { "Catch ALL", "See ALL", "Wipe ALL", "Cancel" };
-  int sel = 0;
-  for (;;) {
-    const int mx = 60, my = 50, mw = 120, mh = 18 + 4 * 14 + 11;
-    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
-    ui_text(mx + 6, my + 4, UI_TITLE, "DEX: ALL");
-    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 4; i++) { int y = my + 18 + i * 14; bool s = (i == sel);
-      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
-      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]); }
-    ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return false;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
-    else if (k & KEY_A) {
-      if (sel == 3) return false;
-      if (!app_confirm(sel == 0 ? "Catch every species?" : sel == 1 ? "See every species?" : "Wipe the whole dex?",
-                       "Applies to all 386.")) return false;
-      for (int nat = 1; nat <= G3_DEX_NAT_MAX; nat++) dex_set_state(nat, sel == 0 ? 2 : sel == 1 ? 1 : 0);
-      return true;
-    }
-  }
-}
-
-/* Full dex editor: list the 386 national species; A cycles none->seen->caught->none;
- * SELECT = bulk ops; B exits (prompts to save if changed). */
+/* Full Pokedex: the HGSS-style grid/list/by-type viewer in pdna_pick.c. Browsable
+ * read-only on any cart; A cycles a species' state (Omega-only edit). The screen
+ * reads/writes the dex flags through dex_state / dex_set_state and returns whether
+ * anything changed; we then offer the verified dex write. */
 static bool pdna_dex_edit(void) {
-  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); return false; }
-  for (int i = 0; i <= G3_DEX_NAT_MAX; i++) s_nat2spc[i] = 0;
-  for (uint16_t spc = 1; spc <= 411; spc++) {
-    uint16_t nat = pk_national_no(spc);
-    if (nat >= 1 && nat <= G3_DEX_NAT_MAX && !s_nat2spc[nat]) s_nat2spc[nat] = spc;
-  }
-  int sel = 1, top = 1; bool dirty = false;
-  key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
-  for (;;) {
-    if (sel < top) top = sel;
-    if (sel >= top + 14) top = sel - 13;
-    if (top < 1) top = 1;
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, "POKEDEX");
-    char h[40]; siprintf(h, "S%d C%d", pk_dex_count(g_sb2, false), pk_dex_count(g_sb2, true));
-    ui_text(168, 2, UI_DIM, h);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    char row[44];
-    for (int i = 0; i < 14; i++) {
-      int nat = top + i; if (nat > G3_DEX_NAT_MAX) break;
-      int y = 14 + i * 9; bool s = (nat == sel);
-      uint16_t spc = s_nat2spc[nat]; int st = dex_state(nat);
-      siprintf(row, "%03d %-11s %s", nat, spc ? pk_species_name(spc) : "?",
-               st == 2 ? "CAUGHT" : st == 1 ? "seen" : "-");
-      char rt[44]; ui_truncate(rt, row, 29);
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-      ui_text(6, y, s ? UI_SELTEXT : st == 2 ? UI_OK : st == 1 ? UI_TEXT : UI_DIM, rt);
-    }
-    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, "A cycle  SEL all  L/R page  B done");
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_SELECT);
-    if (k & KEY_B) break;
-    else if (k & KEY_UP)    { if (sel > 1) sel--; }
-    else if (k & KEY_DOWN)  { if (sel < G3_DEX_NAT_MAX) sel++; }
-    else if (k & KEY_LEFT)  { sel -= 14; if (sel < 1) sel = 1; }
-    else if (k & KEY_RIGHT) { sel += 14; if (sel > G3_DEX_NAT_MAX) sel = G3_DEX_NAT_MAX; }
-    else if (k & KEY_A)      { dex_set_state(sel, (dex_state(sel) + 1) % 3); dirty = true; }
-    else if (k & KEY_SELECT) { if (dex_bulk_menu()) dirty = true; }
-  }
-  key_repeat_mask(KEY_UP | KEY_DOWN);
+  key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);   /* grid needs L/R repeat; leave this default set */
+  bool dirty = pdna_dex_screen(dex_state, dex_set_state, app_can_edit());
   if (dirty && app_confirm("Save Pokedex changes?", "Writes the dex now.")) return app_commit_dex();
   return false;
 }
@@ -1237,35 +1176,139 @@ static bool pdna_dex_edit(void) {
 /* Read-only viewer of the 1-2 Pokemon in the Daycare (each is an 80-byte BoxPokemon
  * at the start of a 140-byte DaycareMon). U/D scrolls between them via the summary;
  * notes when an egg is ready (offspringPersonality != 0). */
+/* ---- cute procedural Day-Care scene ---- */
+
+static void dc_tri_roof(int cx, int top, int halfBase, int h, u16 fill, u16 edge) {
+  for (int j = 0; j <= h; j++) { int w = halfBase * j / h; m3_line(cx - w, top + j, cx + w, top + j, fill); }
+  m3_line(cx, top, cx - halfBase, top + h, edge);
+  m3_line(cx, top, cx + halfBase, top + h, edge);
+}
+
+static void dc_house(void) {
+  const int hx = 166, ww = 60, wallTop = 50, wallBot = 90, cx = hx + ww / 2;
+  dc_tri_roof(cx, 34, ww / 2 + 4, 16, RGB15(26, 7, 5), RGB15(16, 3, 2));        /* red roof */
+  ui_fill_rect(hx, wallTop, ww, wallBot - wallTop, RGB15(27, 22, 15));           /* tan walls */
+  m3_frame(hx, wallTop, hx + ww - 1, wallBot - 1, RGB15(14, 10, 4));
+  ui_fill_rect(cx - 8, wallBot - 20, 16, 20, RGB15(15, 9, 3));                   /* door */
+  m3_frame(cx - 8, wallBot - 20, cx + 7, wallBot - 1, RGB15(9, 5, 1));
+  m3_plot(cx + 4, wallBot - 10, RGB15(31, 28, 8));                               /* knob */
+  ui_fill_rect(hx + 6, wallTop + 6, 13, 13, RGB15(16, 26, 31));                  /* window */
+  m3_frame(hx + 6, wallTop + 6, hx + 18, wallTop + 18, RGB15(9, 5, 1));
+  m3_line(hx + 12, wallTop + 6, hx + 12, wallTop + 18, RGB15(9, 5, 1));
+  m3_line(hx + 6, wallTop + 12, hx + 18, wallTop + 12, RGB15(9, 5, 1));
+  ui_fill_rect(hx + 6, wallTop + 23, 48, 11, RGB15(30, 27, 14));                 /* sign */
+  m3_frame(hx + 6, wallTop + 23, hx + 53, wallTop + 33, RGB15(14, 9, 0));
+  ui_text(hx + 9, wallTop + 25, RGB15(8, 5, 0), "DAYCARE");
+}
+
+static void dc_fence(int x0, int x1, int y) {
+  const u16 w = RGB15(30, 30, 28), d = RGB15(18, 18, 16);
+  m3_line(x0, y + 3, x1, y + 3, w);
+  m3_line(x0, y + 6, x1, y + 6, d);
+  for (int x = x0; x < x1; x += 10) { ui_fill_rect(x, y, 3, 9, w); m3_plot(x, y, d); m3_plot(x + 2, y, d); }
+}
+
+static void dc_pointer(int cx, int y) {           /* small downward arrow over the picked mon */
+  const u16 c = RGB15(31, 28, 8);
+  for (int j = 0; j < 5; j++) { int w = 4 - j; m3_line(cx - w, y + j, cx + w, y + j, c); }
+}
+
+static void dc_scene(void) {
+  ui_fill_rect(0, 12, UI_SCR_W, 78, RGB15(16, 25, 31));        /* sky */
+  for (int j = -5; j <= 5; j++) for (int i = -5; i <= 5; i++)  /* sun */
+    if (i * i + j * j <= 25) m3_plot(22 + i, 26 + j, RGB15(31, 30, 14));
+  ui_fill_rect(150, 20, 28, 6, RGB15(30, 31, 31)); ui_fill_rect(158, 16, 14, 5, RGB15(30, 31, 31));
+  ui_fill_rect(58, 28, 24, 6, RGB15(30, 31, 31));
+  ui_fill_rect(0, 90, UI_SCR_W, 70, RGB15(13, 22, 9));         /* grass (uniform: the bob erases to this) */
+  dc_house();
+  dc_fence(6, 150, 82);
+}
+
+/* Day-Care viewer: a cute yard with the boarding Pokemon as bobbing icons (A opens
+ * the summary, L/R pick), plus the Day-Care man's get-along verdict for the pair. */
 static void pdna_daycare(void) {
   uint32_t base = (g_game == PK_EMERALD) ? 0x3030 : (g_game == PK_FRLG) ? 0x2F80 : 0x2F9C;
-  /* Ruby/Sapphire store the two daycare BoxPokemon CONTIGUOUSLY (stride 80) then
-   * the mail/step block; Emerald/FRLG interleave each mon with its mail+steps
-   * (DaycareMon stride 140). The egg-personality word lands at base+280 either way,
-   * but it's a u32 (offspringPersonality) on E/FRLG and a u16 (pendingEggPersonality,
-   * with the step counter right after) on RS — so read only 2 bytes on RS. */
+  /* RS store the two BoxPokemon contiguously (stride 80); E/FRLG interleave each with
+   * its mail+steps (stride 140). The egg-personality word is at base+280 (u32 on
+   * E/FRLG, u16 on RS). */
   uint32_t stride = (g_game == PK_RS) ? 80 : 140;
-  uint8_t* recs[2]; int n = 0;
+  uint8_t* recs[2]; PkMon dc[2]; int n = 0;
   for (int i = 0; i < 2; i++) {
-    uint8_t* rec = g_sb1 + base + (uint32_t)i * stride;   /* mons[i] (BoxPokemon @ +0) */
+    uint8_t* rec = g_sb1 + base + (uint32_t)i * stride;
     PkMon m;
-    if (pk_decode_mon(rec, false, &m) && m.species >= 1 && m.species <= 411) recs[n++] = rec;
+    if (pk_decode_mon(rec, false, &m) && m.species >= 1 && m.species <= 411 && !m.isBadEgg) { pk_resolve(&m); dc[n] = m; recs[n] = rec; n++; }
   }
-  const uint8_t* op = g_sb1 + base + 280;                 /* egg-personality word (egg ready if != 0) */
-  bool off = (g_game == PK_RS) ? ((op[0] | op[1]) != 0)
-                               : ((op[0] | op[1] | op[2] | op[3]) != 0);
-  if (n == 0) {
-    msg_wait("DAYCARE", off ? UI_OK : UI_DIM, off ? "No mon, but an EGG is ready!" : "No Pokemon in the Daycare.", 0);
-    return;
-  }
-  int idx = 0;
+  /* Egg-ready word: RS pendingEggPersonality is a u16 at base+276 (the struct is
+   * mons[2]=160 + mail+steps); E/FRLG offspringPersonality is at base+280 — a u32 on
+   * Emerald (mons[2]=280) but a u16 on FRLG (stepCounter follows). Read the right
+   * width/offset per game so RS reports eggs and FRLG doesn't false-trigger on steps. */
+  uint32_t eggoff = (g_game == PK_RS) ? 276 : 280;
+  const uint8_t* op = g_sb1 + base + eggoff;
+  bool off = (g_game == PK_EMERALD) ? ((op[0] | op[1] | op[2] | op[3]) != 0)
+                                    : ((op[0] | op[1]) != 0);   /* RS + FRLG: u16 */
+  /* Egg-check cycle: the game rolls for an Egg every 256 steps (chance = the
+   * compatibility score), so there's no fixed countdown — only the next-check timer.
+   * Emerald/FRLG store steps elapsed (stepCounter); RS stores steps remaining. */
+  int stepc   = (g_game == PK_EMERALD) ? g_sb1[base + 284]
+              : (g_game == PK_FRLG)    ? g_sb1[base + 282]
+                                       : g_sb1[base + 278];     /* RS eggCycleStepsRemaining */
+  int to_check = (g_game == PK_RS) ? stepc : (256 - stepc);
+  if (to_check < 1 || to_check > 256) to_check = 256;
+  static const int EGG_CHANCE[4] = { 0, 20, 50, 70 };           /* INCOMPATIBLE/LOW/MED/HIGH */
+
+  const int MX[2] = { 70, 108 };
+  const u16 GRASS = RGB15(13, 22, 9);
+  int sel = 0, frame = 0, ctr = 0;
+  bool redraw = true;
   for (;;) {
-    uint8_t out[100]; int card = 0;
-    int nav = pdna_inspect(recs[idx], false, false, out, 0, &card);   /* read-only */
-    if (nav == 0) break;
-    idx = (idx + nav + n) % n;
+    if (redraw) {
+      redraw = false;
+      dc_scene();                                              /* overdraws the whole screen */
+      ui_fill_rect(0, 0, UI_SCR_W, 11, UI_BG);
+      ui_text(4, 2, UI_TITLE, "DAY CARE");
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      for (int i = 0; i < n; i++)
+        ui_sprite(MX[i], 90, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1)));
+      if (n == 0) ui_text(64, 58, RGB15(8, 5, 0), "It's quiet here.");
+      if (n) dc_pointer(MX[sel] + 16, 82);
+      ui_panel(2, 124, 236, 28, UI_PANEL, UI_BORDER);
+      if (n == 2) {
+        DcCompat c = pk_daycare_compat(dc[0].species, dc[0].otId, dc[1].species, dc[1].otId);
+        ui_text(6, 127, UI_TITLE, pk_daycare_compat_msg(c));
+        if (!pk_daycare_can_breed(dc[0].species, dc[0].gender, dc[1].species, dc[1].gender))
+          ui_text(6, 138, UI_DIM, "(no Egg: not a compatible pair)");
+        else if (off) ui_text(6, 138, UI_OK, "An EGG is ready to collect!");
+        else { char l[44]; siprintf(l, "Next Egg check ~%d steps (%d%%)", to_check, EGG_CHANCE[c]);
+               ui_text(6, 138, UI_DIM, l); }
+      } else if (n == 1) {
+        char l[40]; ui_truncate(l, dc[0].nickname[0] ? dc[0].nickname : pk_species_name(dc[0].species), 16);
+        ui_text(6, 127, UI_TEXT, l);
+        ui_text(6, 138, off ? UI_OK : UI_DIM, off ? "An EGG is ready!" : "Just one Pokemon boarding.");
+      } else {
+        ui_text(6, 127, off ? UI_OK : UI_DIM, off ? "An EGG is ready to collect!" : "No Pokemon are boarding.");
+      }
+      ui_fill_rect(0, 152, UI_SCR_W, 8, UI_BG);
+      ui_text(4, 152, UI_DIM, n ? "A view  L/R pick  B back" : "B back");
+    }
+    u16 k, fresh;
+    do { VBlankIntrWait(); snd_vblank(); key_poll();
+         if (app_anim_enabled() && n && ++ctr >= 30) {        /* idle bob (gated, flicker-free) */
+           ctr = 0; frame ^= 1;
+           for (int i = 0; i < n; i++)                          /* compose icon over grass + DMA (no erase) */
+             ui_blit_over(MX[i], 90, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1)), GRASS);
+         }
+         fresh = key_hit(KEY_FULL); k = fresh; } while (!k);
+    if      (fresh & KEY_B) snd_back();
+    else if (fresh & KEY_A) snd_ok();
+    else if (fresh & (KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R)) snd_move();
+    if (k & KEY_B) break;
+    else if ((k & (KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R)) && n == 2) { sel ^= 1; redraw = true; }
+    else if ((k & KEY_A) && n) {
+      uint8_t out[100]; int card = 0;
+      pdna_inspect(recs[sel], false, false, out, 0, &card);   /* read-only summary */
+      redraw = true;                                          /* repaint the scene after */
+    }
   }
-  if (off) msg_wait("DAYCARE", UI_OK, "An EGG is ready to collect!", 0);
 }
 
 /* ===================== Secret Bases (#8) =============================== */
@@ -1372,22 +1415,24 @@ static void pdna_settings(void) {
     ui_text(4, 4, UI_TITLE, "SETTINGS");
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
     char r0[44]; siprintf(r0, "Backups:  %s", MODE[g_backup_mode]);
-    const char* rows[3] = { r0, "Clear backups (this save)", "Close" };
-    for (int i = 0; i < 3; i++) {
+    char r1[44]; siprintf(r1, "Animations:  %s", g_anim_on ? "On" : "Off");
+    const char* rows[4] = { r0, r1, "Clear backups (this save)", "Close" };
+    for (int i = 0; i < 4; i++) {
       int y = 30 + i * 16; bool s = (i == sel);
       if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
       ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
     }
-    ui_text(8, 96, UI_DIM, g_backup_mode == 2 ? "Skip = no .bak undo (verified write" : "Backup is the extra undo layer;");
-    ui_text(8, 106, UI_DIM, g_backup_mode == 2 ? "still protects the original)." : "the write itself is always safe.");
+    ui_text(8, 104, UI_DIM, "Animations Off = no moving sprites");
+    ui_text(8, 114, UI_DIM, "(box icons, Pokedex, summary).");
     ui_text(4, 152, UI_DIM, "A change/do  U/D move  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 2;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 3;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
     else if (k & KEY_A) {
       if (sel == 0) g_backup_mode = (g_backup_mode + 1) % 3;
-      else if (sel == 1) {
+      else if (sel == 1) g_anim_on = !g_anim_on;
+      else if (sel == 2) {
         if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "File writes need EZ-Flash Omega.", 0); continue; }
         if (app_confirm("Delete ALL backups?", "For the loaded save only.")) {
           int rm = sf_clear_backups(g_path);
@@ -1399,25 +1444,28 @@ static void pdna_settings(void) {
   }
 }
 
-static int nav_menu(void) {                /* 0=card 1=bank 2=data 3=dex 4=daycare 5=secret 6=settings 7=back */
-  static const char* const L[8] = { "Trainer card", "Bank", "Data editor", "Pokedex", "Daycare",
-                                    "Secret Bases", "Settings", "Back" };
-  const int mx = 60, my = 19, mw = 120, mh = 18 + 8 * 14 + 11;  /* my+mh=160: fits the screen */
+/* START-menu destinations over the box (Party + Bank + Daycare are the storage
+ * screens; SELECT no longer toggles the party — it cycles the box cursor mode). */
+enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_DEX, NV_DATA, NV_SECRET, NV_SETTINGS, NV_BACK, NV_COUNT };
+static int nav_menu(void) {
+  static const char* const L[NV_COUNT] = { "Party", "Bank", "Daycare", "Trainer card", "Pokedex",
+                                           "Data editor", "Secret Bases", "Settings", "Back" };
+  const int mx = 56, my = 8, rh = 13, mw = 128, mh = 18 + NV_COUNT * rh + 11;  /* my+mh=154: fits 9 */
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "MENU");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 8; i++) {
-      int y = my + 18 + i * 14; bool s = (i == sel);
-      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+    for (int i = 0; i < NV_COUNT; i++) {
+      int y = my + 18 + i * rh; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, rh - 1, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
     }
     ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return 7;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 7;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 8;
+    if (k & KEY_B) return NV_BACK;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : NV_COUNT - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % NV_COUNT;
     else if (k & KEY_A)    return sel;
   }
 }
@@ -1497,31 +1545,32 @@ static void view_save(const char* path) {
            G3_SECTOR_DATA_SIZE);
   g_game = g_frlg ? PK_FRLG : (g_vinfo.version_guess == G3_VER_RS ? PK_RS : PK_EMERALD);
 
-  int mode = g_have_pc ? 0 : 1;          /* start in PC boxes (per request) */
   BoxSource pcs = pc_box_source();
+  /* The PC box is "home"; Party / Bank / Daycare / etc. all hang off the START menu.
+   * (Saves with no PC fall back to the party list as home.) */
   for (;;) {
-    int r = (mode == 0) ? pdna_box(&pcs) : party_list();
+    int r = g_have_pc ? pdna_box(&pcs) : party_list();
     if (r == 0) { flush_pc_on_exit(); return; }  /* B -> file browser (prompt deferred moves) */
     if (r == 2) {                                /* START -> nav menu */
-      int dest = nav_menu();
-      if (dest == 0) pdna_trainer(g_sb1, g_sb2, &g_vinfo, g_game);
-      else if (dest == 1) {                       /* bank: parallel boxes; copy/paste moves mons */
-        pdna_bank_show();
-        g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);   /* a paste may have hit the party */
+      int refresh_party = 0;
+      switch (nav_menu()) {
+        case NV_PARTY:   party_list(); refresh_party = 1; break;
+        case NV_BANK:    pdna_bank_show(); refresh_party = 1; break;   /* a paste may hit the party */
+        case NV_DAYCARE: pdna_daycare(); break;
+        case NV_TRAINER: pdna_trainer(g_sb1, g_sb2, &g_vinfo, g_game); break;
+        case NV_DEX:     pdna_dex_edit(); break;
+        case NV_DATA:    if (app_can_edit()) data_editor();
+                         else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); } break;
+        case NV_SECRET:  pdna_secretbase(); break;
+        case NV_SETTINGS: pdna_settings(); break;
+        default: break;                          /* NV_BACK */
+      }
+      if (refresh_party) {
+        g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
         for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
       }
-      else if (dest == 2) {                      /* data editor (edits the save) */
-        if (app_can_edit()) data_editor();
-        else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); }
-      }
-      else if (dest == 3) pdna_dex_edit();        /* full Pokedex editor */
-      else if (dest == 4) pdna_daycare();         /* daycare viewer (read-only) */
-      else if (dest == 5) pdna_secretbase();      /* secret base viewer + clear */
-      else if (dest == 6) pdna_settings();        /* backups / app settings (dest 7 = Back) */
-      continue;
     }
-    if (!g_have_pc) { flush_pc_on_exit(); return; }   /* nothing to toggle to */
-    mode ^= 1;                                    /* SELECT -> toggle box/party */
+    /* r == 1 no longer used (SELECT now cycles the box cursor mode, not box<->party) */
   }
 }
 

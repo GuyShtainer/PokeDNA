@@ -71,4 +71,20 @@ void ui_icon_sub(int x, int y, const u16* src32);
 /* Nearest-neighbour blit of a 32×32 (0x8000-keyed) icon at an arbitrary dst size. */
 void ui_icon_scaled(int x, int y, int dw, int dh, const u16* src32);
 
+/* Like ui_icon_scaled, but each opaque pixel is rendered in greyscale (luma) —
+ * the Pokedex "not seen yet" state. No second asset: the grey is derived at blit
+ * time from the colour icon (cheap shift-only luma). */
+void ui_icon_scaled_grey(int x, int y, int dw, int dh, const u16* src32);
+
+/* Tiny ~9×9 Poké Ball glyph (the Pokedex "caught" marker) with top-left at (x,y).
+ * Procedural — no asset, one shared draw reused on every caught cell. */
+void ui_pokeball(int x, int y);
+
+/* Flicker-free sprite blit: composes each row (sprite over a SOLID `bg` colour) in
+ * a buffer and DMA-copies it to VRAM in one pass — no separate erase step, so an
+ * animating/moving sprite never blinks on the single-buffered Mode-3 display. Call
+ * it right after VBlankIntrWait for small regions so the write lands in vblank.
+ * Requires x and w to be EVEN (word-aligned DMA). NULL data is a no-op. */
+void ui_blit_over(int x, int y, int w, int h, const u16* data, u16 bg);
+
 #endif /* UI_H */

@@ -67,4 +67,9 @@ bool app_set_walda(uint8_t pattern);
 /* Shared framed yes/no confirm (A = yes, B = no). */
 bool app_confirm(const char* title, const char* l1);
 
+/* Master "moving sprites" switch (Settings). When false, the PC/bank box-icon bob,
+ * the Pokedex caught-cell bob, and the summary-card sprite animation all hold
+ * static. Default ON. Read by pdna_box / pdna_pick (dex) / pdna_summary. */
+bool app_anim_enabled(void);
+
 #endif /* PDNA_APP_H */
