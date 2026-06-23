@@ -31,6 +31,21 @@ uint8_t  pk_box_wallpaper(const uint8_t* pc, int box);
 void     pk_set_box_name(uint8_t* pc, int box, const char* s);
 void     pk_set_box_wallpaper(uint8_t* pc, int box, uint8_t wp);
 
+/* Raw box-name access (payload / ACE use). Bypasses the Gen-3 text encoder so ALL
+ * byte values 0x00..0xFF can be stored, and — unlike pk_set_box_name — does NOT
+ * append a 0xFF terminator (a terminator at byte 8 would corrupt a payload that
+ * spans the 9-byte field boundary). The box-name region is boxNames[14][9] = 126
+ * contiguous bytes; a payload may cross field boundaries, so use the blob writer.
+ * See docs/kb/pokemon/ (gen3-text-encoding.md, walk-through-walls.md). */
+#define G3_BOX_NAME_BYTES   9
+#define G3_BOX_NAMES_BYTES  (G3_TOTAL_BOXES * G3_BOX_NAME_BYTES)   /* 14*9 = 126 */
+void     pk_get_box_name_raw(const uint8_t* pc, int box, uint8_t out[9]);
+void     pk_set_box_name_raw(uint8_t* pc, int box, const uint8_t* bytes, int len);
+/* Write a contiguous blob into the 126-byte box-name region starting `off` bytes
+ * from box 0's first name byte (crossing 9-byte field boundaries). Clamps to the
+ * region; returns bytes actually written. */
+int      pk_set_box_names_blob(uint8_t* pc, int off, const uint8_t* bytes, int len);
+
 /* Emerald "Walda" secret-wallpaper pattern (0..15) in SaveBlock1. EMERALD ONLY. */
 uint8_t  pk_walda_pattern(const uint8_t* sb1);
 void     pk_set_walda_pattern(uint8_t* sb1, uint8_t pattern);   /* also sets patternUnlocked */

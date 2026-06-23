@@ -56,3 +56,8 @@ build/
 /source/data_tables.c
 /source/learnsets.c
 /source/wallpapers.c
+/source/daycare_bg_data.h
+
+# Local daycare-map working folder: pokeemerald decomp (reference-only/unlicensed),
+# porymap, and a real ROM/save. Never commit any of it.
+daycare map/

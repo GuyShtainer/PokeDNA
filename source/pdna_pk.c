@@ -8,6 +8,7 @@
 #include "data_tables.h"
 #include "ui.h"
 #include "snd.h"
+#include "rmbl.h"          /* rumble must not toggle the cart bus during an SD write */
 
 /* keep only [A-Za-z0-9] from `in`; collapse runs of other chars to one '_'. */
 static void sanitize(char* out, const char* in, int cap) {
@@ -41,7 +42,9 @@ bool pdna_pk_export(const uint8_t* rec, const PkMon* m) {
   char path[SF_PATH_MAX];
   siprintf(path, PDNA_BANK_DIR "/%s_%08lX.pk3", base, (unsigned long)m->personality);
 
+  rmbl_pause();
   SfStatus st = sf_write_verified(path, rec, 80);   /* first 80 bytes = the box record */
+  rmbl_resume();
   if (st == SF_OK) {
     char p2[40]; ui_truncate(p2, path, 29);
     snd_save();

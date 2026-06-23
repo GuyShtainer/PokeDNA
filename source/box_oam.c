@@ -58,6 +58,9 @@
 static OBJ_ATTR s_shadow[128];          /* OAM shadow; flushed in vblank          */
 static uint8_t  s_iconbank[30];         /* palette bank per grid slot (0=empty)   */
 static uint8_t  s_occupied[30];         /* 1 if slot has an icon                  */
+static uint16_t s_species[30];          /* species per slot (for the frame swap)  */
+static uint8_t  s_form[30];             /* form per slot                          */
+static int      s_frame = 0;            /* current bob frame (0/1) in OBJ VRAM     */
 static int      s_bob = 0;              /* current unison Y-bob offset (0/1)      */
 static int      s_regb = -1;            /* what region B holds: 0=grab 1=item -1=none */
 static int      s_carry_from = -1;      /* grid slot lifted out during move-carry, or -1 */
@@ -223,18 +226,36 @@ static void place_grid_slot(int s) {
 }
 
 void boxoam_load_box(const PkMon box[30]) {
+  s_frame = 0;                                       /* a fresh box always shows frame 0 */
   for (int s = 0; s < 30; s++) {
     const uint8_t* tiles; int bank;
     if (box[s].species &&
-        mon_icon_oam_for_form(box[s].species, box[s].form, &tiles, &bank)) {
+        mon_icon_oam_for_form_frame(box[s].species, box[s].form, 0, &tiles, &bank)) {
       upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles,
                    MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
       s_occupied[s] = 1; s_iconbank[s] = (uint8_t)bank;
+      s_species[s] = box[s].species; s_form[s] = box[s].form;
       place_grid_slot(s);
     } else {
       s_occupied[s] = 0;
       hide(OE_ICON0 + s);
     }
+  }
+}
+
+/* The real Gen-3 box "bob" — a 2-frame pose swap. DMA the chosen frame's tiles for every
+ * occupied icon into the SAME OBJ VRAM window (the two frames can't both fit, so we swap).
+ * ~15 KiB for a full box; call in the vblank window. */
+void boxoam_set_frame(int frame) {
+  frame &= 1;
+  if (frame == s_frame) return;
+  s_frame = frame;
+  for (int s = 0; s < 30; s++) {
+    if (!s_occupied[s]) continue;
+    const uint8_t* tiles; int bank;
+    if (mon_icon_oam_for_form_frame(s_species[s], s_form[s], (uint8_t)frame, &tiles, &bank))
+      upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles,
+                   MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
   }
 }
 
@@ -249,9 +270,12 @@ void boxoam_set_bob(int dy) {
 }
 
 static void hand_xy(int cur, int* hx, int* hy) {
-  *hx = GRID_X + (cur % COLS) * CELL_W + 3 - 7;     /* 32px sprite vs 18px art: nudge left */
-  *hy = GRID_Y + (cur / COLS) * CELL_H - 16;
-  if (*hy < 28) *hy = 28;
+  /* The glove art's pointing fingertip sits at sprite-local (13,0). Put it on the
+   * icon's top-centre (cell_x+16, cell_y) so the cursor rests OVER the mon, not to
+   * its left: hx+13 = cell_x+16 -> hx = cell_x+3; tip a touch above the icon top. */
+  *hx = GRID_X + (cur % COLS) * CELL_W + 3;
+  *hy = GRID_Y + (cur / COLS) * CELL_H - 2;
+  if (*hy < WP_Y) *hy = WP_Y;
 }
 
 void boxoam_cursor(int cur, bool on_title, int mode) {
@@ -262,9 +286,12 @@ void boxoam_cursor(int cur, bool on_title, int mode) {
   int bank = (mode == BOXOAM_HAND_MOVE) ? PB_HANDORG : PB_HAND;
   u16 a0 = ATTR0_SQUARE | ATTR0_4BPP | (hy & ATTR0_Y_MASK);
   if (mode == BOXOAM_HAND_ITEM) {
-    a0 |= ATTR0_BLEND;                               /* translucent (BLDCNT set below) */
-    REG_BLDCNT = BLD_OBJ | BLD_BG2 | BLD_STD;        /* obj over BG2 bitmap, alpha    */
-    REG_BLDALPHA = (10) | (8 << 8);                  /* ~10/16 obj + ~8/16 bg          */
+    a0 |= ATTR0_BLEND;                               /* semi-transparent obj           */
+    /* The hand is the 1st (top) blend target (forced by ATTR0_BLEND); the 2nd (bottom)
+     * target lives in bits 8-13 and MUST be set or the blend no-ops to opaque. Blend
+     * over BOTH the wallpaper (BG2) and the mon icons (OBJ) underneath. */
+    REG_BLDCNT = BLD_OBJ | ((BLD_BG2 | BLD_OBJ) << 8) | BLD_STD;
+    REG_BLDALPHA = (10) | (8 << 8);                  /* ~10/16 obj + ~8/16 below       */
   } else {
     REG_BLDCNT = 0;
   }
@@ -298,12 +325,13 @@ void boxoam_carry(int cur, int from) {
                  ATTR2_PALBANK(s_iconbank[from]));
   } else hide(OE_CARRY);
 
-  /* grab fist centered over the icon top (matches carry_xy fist position) */
-  int fx = ix + (32 - 32) / 2;                       /* fist sprite is 32 wide        */
+  /* grab fist over the icon — same horizontal offset as the resting cursor (cell_x+3)
+   * so the hand doesn't jump left when you pick a mon up. */
+  int fx = ix + 3;
   int fy = iy - 6; if (fy < WP_Y) fy = WP_Y;
   obj_set_attr(oe(OE_GRAB),
                ATTR0_SQUARE | ATTR0_4BPP | (fy & ATTR0_Y_MASK),
-               ATTR1_SIZE_32 | ((fx - 7) & ATTR1_X_MASK),  /* 18px art in 32px box: nudge */
+               ATTR1_SIZE_32 | (fx & ATTR1_X_MASK),
                ATTR2_ID(TID_GRAB) | ATTR2_PRIO(0) | ATTR2_PALBANK(PB_HAND));
   hide(OE_HAND);                                     /* hand hidden while carrying    */
 }

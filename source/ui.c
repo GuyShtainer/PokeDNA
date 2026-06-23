@@ -144,13 +144,20 @@ void ui_pokeball(int x, int y) {
     }
 }
 
-static u16 s_ovl_line[240];          /* IWRAM compose buffer for ui_blit_over */
+static u16 __attribute__((aligned(4))) s_ovl_line[240];   /* compose buffer; aligned for 32-bit DMA */
 void ui_blit_over(int x, int y, int w, int h, const u16* data, u16 bg) {
   if (!data || w > 240) return;
+  /* 32-bit DMA needs a word-aligned destination (even x AND even w); otherwise fall
+   * back to a u16 CPU copy, which is valid at any halfword address. Either way each
+   * row is composed (sprite over bg) and written in ONE pass — no separate erase, so
+   * an animating sprite never blinks even at an odd x (e.g. the Pokedex grid, cw=33). */
+  bool dma = ((x & 1) == 0) && ((w & 1) == 0);
   for (int j = 0; j < h; j++) {
     const u16* srow = data + (uint32_t)j * w;
     for (int i = 0; i < w; i++) { u16 p = srow[i]; s_ovl_line[i] = (p & 0x8000) ? (u16)(p & 0x7FFF) : bg; }
-    dma3_cpy(&vid_mem[(y + j) * 240 + x], s_ovl_line, (u32)w * 2);
+    u16* dst = &vid_mem[(y + j) * 240 + x];
+    if (dma) dma3_cpy(dst, s_ovl_line, (u32)w * 2);
+    else     for (int i = 0; i < w; i++) dst[i] = s_ovl_line[i];
   }
 }
 

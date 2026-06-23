@@ -27,6 +27,7 @@
 #include "pdna_bank.h"
 #include "ui.h"
 #include "snd.h"
+#include "rmbl.h"          /* rumble must not toggle the cart bus during an SD write */
 
 #define BANK_BOXES   16
 #define BOX_RECS     G3_IN_BOX            /* 30 */
@@ -80,7 +81,10 @@ static bool meta_save(void) {
     memcpy(p, g_meta[b].name, 9);
     p[9] = g_meta[b].wp;
   }
-  return sf_write_verified(meta_path(), buf, META_BYTES) == SF_OK;
+  rmbl_pause();
+  bool ok = sf_write_verified(meta_path(), buf, META_BYTES) == SF_OK;
+  rmbl_resume();
+  return ok;
 }
 
 /* ---- box files ---- */
@@ -96,7 +100,9 @@ static void box_load(int box) {                 /* read box file -> g_bankbuf (e
 static bool box_save(void) {                    /* write the loaded box's records */
   if (g_loaded < 0) return false;
   char path[SF_PATH_MAX]; box_path(g_loaded, path);
+  rmbl_pause();
   bool ok = sf_write_verified(path, box_recs(), BOX_BYTES) == SF_OK;
+  rmbl_resume();
   if (ok) g_dirty = false;
   return ok;
 }

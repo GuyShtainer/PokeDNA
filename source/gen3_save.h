@@ -126,10 +126,15 @@ typedef struct {
   Gen3DisplayMon mon[G3_PARTY_SIZE];
 } Gen3DisplayParty;
 
-/* SaveBlock2 RTC bookkeeping (same offsets for RS and Emerald). struct Time is
- * {s16 days; s8 hours,minutes,seconds;}. */
-#define SB2_OFF_LOCAL_TIME_OFFSET 0x98   /* days at +0x00 (s16)                 */
-#define SB2_OFF_LAST_BERRY_UPDATE 0xA0   /* days at +0x00 (s16)                 */
+/* SaveBlock2 RTC bookkeeping. Offsets are identical for Ruby/Sapphire and Emerald
+ * (verified byte-exact vs the pret decomps in reference/), and the fields are stored
+ * PLAINTEXT — they are NOT obfuscated by Emerald's security key, so write plain
+ * little-endian integers, no XOR. struct Time = { s16 days @+0x00; s8 hours @+0x02;
+ * s8 minutes @+0x03; s8 seconds @+0x04 } but occupies an 8-byte slot in SaveBlock2
+ * (bytes +0x05..+0x07 are padding — leave them untouched). FRLG has these fields but
+ * no time-based events, so the fix is RSE-only. */
+#define SB2_OFF_LOCAL_TIME_OFFSET 0x98   /* localTimeOffset:   days s16 @+0, h/m/s s8 @+2/+3/+4 */
+#define SB2_OFF_LAST_BERRY_UPDATE 0xA0   /* lastBerryTreeUpdate: same layout                    */
 
 /* ---- read-side ---------------------------------------------------------- */
 
@@ -170,6 +175,41 @@ int      gen3_rtc_days(int year, int month, int day);
  * stored time bookkeeping and the current RTC day count (from gen3_rtc_days).
  * `sb2` points at the start of SaveBlock2 data. Heuristic — see notes. */
 bool     gen3_day_passed(const uint8_t* sb2, int rtc_now_days);
+
+/* ---- RTC clock check & fix (RSE only; pure C, host-testable) -------------
+ * The game never stores an absolute clock — it derives in-game local time as
+ * (liveCartRTC - localTimeOffset) and tracks event progress in lastBerryTreeUpdate.
+ * A flashcart whose RTC was reset makes the derived time run in the PAST, tripping
+ * the game's "time went backwards" guards so berries / Shoal tides / Lottery /
+ * Mirage Island freeze. We fix it by rewriting those two SaveBlock2 fields. */
+
+/* Inverse of gen3_rtc_days: a days-since-2000-01-01 count -> calendar date. */
+void gen3_days_to_date(int days, int* year, int* month, int* day);
+
+/* A read-only diagnosis of the save's clock vs the live cart RTC day count. */
+typedef struct {
+  int has_rtc;            /* 1 if rtc_now_days came from a real reading           */
+  int off_days, off_h, off_m, off_s;   /* localTimeOffset as stored (signed)      */
+  int berry_days;         /* lastBerryTreeUpdate.days as stored (game convention)  */
+  int local_days;         /* derived in-game day (epoch-0) = rtc_now - off_days    */
+  int ly, lm, ld;         /* derived in-game calendar date                        */
+  int delta;              /* elapsed days since last berry update (<0 == frozen)   */
+  int verdict;            /* 0 ok, 1 large-jump, 2 backwards/frozen, 3 corrupt, 4 no-RTC */
+} Gen3ClockInfo;
+void gen3_clock_read(const uint8_t* sb2, int rtc_now_days, int rtc_now_sec, int has_rtc, Gen3ClockInfo* out);
+
+/* Fix writers — edit g_sb2 in RAM (plaintext, little-endian); the caller commits via
+ * the verified SaveBlock2 write. Both re-anchor lastBerryTreeUpdate so events resume
+ * with no negative/giant elapsed jump.
+ *   autosync: make the in-game clock equal the live cart RTC right now (offset -> 0).
+ *   manual:   make the game believe `desired` is "now" (offset = liveRTC - desired). */
+/* Both return false (and write nothing) if the resulting day counts would not fit
+ * the game's s16 Time.days — e.g. a battery-dead cart reporting an implausible year. */
+bool gen3_clock_autosync(uint8_t* sb2, int y, int mo, int d, int h, int mi, int s);
+bool gen3_clock_manual(uint8_t* sb2,
+                       int ly, int lmo, int ld, int lh, int lmi, int ls,   /* live cart RTC */
+                       int dy, int dmo, int dd, int dh, int dmi, int ds);  /* desired local */
+
 char     gen3_decode_char(uint8_t c);
 uint16_t gen3_checksum(const void* data, uint16_t size);
 

@@ -63,4 +63,31 @@ bool sb_slot_empty(const uint8_t* sb1, uint32_t base_off, int slot);
 /* Zero the 160-byte record for `slot` (clears that base). The caller commits SB1. */
 void sb_clear(uint8_t* sb1, uint32_t base_off, int slot);
 
+/* One secret-base party mon — the REDUCED format the record actually stores. A secret
+ * base does NOT keep IVs, nickname, OT, friendship, met data, or per-stat EVs: the game
+ * rebuilds the enemy mon from exactly these fields (nature/gender/ability all derive from
+ * `personality`; the single `ev` byte is applied to every stat). Edit only what's here. */
+typedef struct {
+  uint16_t species;
+  uint8_t  level;
+  uint16_t heldItem;
+  uint16_t moves[4];
+  uint32_t personality;
+  uint8_t  ev;
+} SbPartyMon;
+
+/* Write one party mon (idx 0..5) back into the 160-byte record for `slot`. The caller
+ * commits SaveBlock1 (sections 1..4) via the verified-write path. */
+void sb_write_mon(uint8_t* sb1, uint32_t base_off, int slot, int idx, const SbPartyMon* m);
+
+/* Secret-base OWNER overworld sprite + battle trainer CLASS are DERIVED, not stored:
+ *   class index 0..9 = gender*5 + (trainerId[0] % 5)   (5 male presets, then 5 female)
+ * sb_owner_class returns that index for a record (-1 if the slot is empty/invalid).
+ * sb_set_owner_class writes the gender bit (flags @0x01 bit4) and trainerId[0] (@0x09)
+ * so the derived class becomes `cls` (0..9), changing trainerId[0] as little as possible.
+ * NEVER call on slot 0 (your own base is regenerated from the trainer card). Caller
+ * commits SB1. There are only these 10 presets — not a free choice of any NPC. */
+int  sb_owner_class(const uint8_t* sb1, uint32_t base_off, int slot);
+void sb_set_owner_class(uint8_t* sb1, uint32_t base_off, int slot, int cls);
+
 #endif /* GEN3_SECRETBASE_H */

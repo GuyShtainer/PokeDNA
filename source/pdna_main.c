@@ -43,12 +43,15 @@
 #include "osk.h"           /* osk_search (numeric entry) */
 #include "pdna_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
 #include "snd.h"           /* UI sound effects */
+#include "rmbl.h"          /* haptic rumble cues (per-cue toggles) */
+#include "gba_rtc.h"       /* live cartridge RTC reader (clock check & fix) */
 #include "pdna_app.h"
 #include "savefile.h"
 #include "log.h"
 #include "ui.h"
 
-#define LOG_PATH      "/PokeDNA_log.txt"
+#define PDNA_DIR      "/PokeDNA"            /* all of PokeDNA's on-card files live here (not the SD root) */
+#define LOG_PATH      "/PokeDNA/log.txt"
 #define PATH_MAX      256
 #define MAX_ENTRIES   256
 #define NAME_MAX      64
@@ -68,6 +71,13 @@ static BrSortKey g_sort = SORT_NAME;
 static bool      g_sortrev = false;
 static bool      g_show_all = false;     /* false = folders + .sav only; true = all files */
 static bool      g_show_hidden = false;
+
+/* Per-place "moving sprites" toggles (Settings > Animations, persisted in config.cfg).
+ * One bit per ANIM_* place. Box / Party / Dex / Daycare default ON; the summary
+ * portrait wiggle defaults OFF (kept calm unless the user opts in). Defined up here so
+ * cfg_save/cfg_load (above app_anim_enabled) can persist it. */
+static unsigned  g_anim_mask = (1u << ANIM_BOX) | (1u << ANIM_PARTY) |
+                               (1u << ANIM_DEX) | (1u << ANIM_DAYCARE);
 
 /* Big buffers live in EWRAM (.bss), never on the IWRAM stack. */
 static u8          EWRAM_BSS g_save[G3_SAVE_FILE_SIZE];   /* 128 KiB raw image       */
@@ -223,6 +233,56 @@ static void scan_dir(void) {
   log_line("scan %s: %d entries", g_cwd, g_count);
 }
 
+/* ---- persistent browser prefs: last folder + sort/filter (#6) ------------ */
+#define CFG_PATH PDNA_DIR "/config.cfg"
+
+/* Persist the browser state so the next launch reopens the same folder with the
+ * same sort/filter. Writes are EZ-Flash-Omega-only (EverDrive write isn't wired),
+ * so this is a no-op on a read-only cart; best-effort, any failure is ignored. */
+static void cfg_save(void) {
+  if (!app_can_edit()) return;
+  char buf[PATH_MAX + 96];
+  int n = siprintf(buf, "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\n",
+                   g_cwd, (int)g_sort, g_sortrev ? 1 : 0, g_show_all ? 1 : 0, g_show_hidden ? 1 : 0,
+                   g_anim_mask, rmbl_get_mask(), rmbl_get_strength(), rmbl_get_duration());
+  FIL f;
+  rmbl_pause();                                  /* no motor toggling during the SD write */
+  if (f_open(&f, CFG_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) { rmbl_resume(); return; }
+  UINT bw = 0; f_write(&f, buf, (UINT)n, &bw); f_close(&f);
+  rmbl_resume();
+}
+
+/* Restore prefs saved by cfg_save (best-effort): a missing/unparsable file just
+ * leaves the compiled defaults. The saved folder is adopted only if it still
+ * exists, else we fall back to root — a moved SD card can't strand the browser. */
+static void cfg_load(void) {
+  FIL f;
+  if (f_open(&f, CFG_PATH, FA_READ) != FR_OK) return;
+  char buf[PATH_MAX + 96]; UINT br = 0;
+  FRESULT fr = f_read(&f, buf, sizeof(buf) - 1, &br); f_close(&f);
+  if (fr != FR_OK || br == 0) return;
+  buf[br] = 0;
+  for (char* p = buf; *p; ) {
+    char* eol = p; while (*eol && *eol != '\n' && *eol != '\r') eol++;
+    char term = *eol; *eol = 0;
+    char* eq = strchr(p, '=');
+    if (eq) {
+      *eq = 0; const char* k = p; const char* v = eq + 1;
+      if      (!strcmp(k, "dir") && v[0]) { strncpy(g_cwd, v, PATH_MAX - 1); g_cwd[PATH_MAX - 1] = 0; }
+      else if (!strcmp(k, "sort"))   { int s = v[0] - '0'; if (s >= 0 && s <= 2) g_sort = (BrSortKey)s; }
+      else if (!strcmp(k, "rev"))    g_sortrev     = (v[0] == '1');
+      else if (!strcmp(k, "all"))    g_show_all    = (v[0] == '1');
+      else if (!strcmp(k, "hidden")) g_show_hidden = (v[0] == '1');
+      else if (!strcmp(k, "anim"))   { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); g_anim_mask = m & ((1u << ANIM_COUNT) - 1u); }
+      else if (!strcmp(k, "rumble")) { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); rmbl_set_mask(m); }
+    }
+    p = term ? eol + 1 : eol;
+  }
+  DIR d;                                    /* validate the restored folder still exists */
+  if (g_cwd[0] != '/' || f_opendir(&d, g_cwd) != FR_OK) strcpy(g_cwd, "/");
+  else f_closedir(&d);
+}
+
 static const char* sort_label(void) {
   switch (g_sort) {
     case SORT_SIZE: return g_sortrev ? "Size big-small" : "Size small-big";
@@ -304,6 +364,7 @@ static void do_reboot(void) {
   snd_ok();
   ui_clear();
   ui_text(16, 72, UI_TITLE, "Rebooting...");
+  cfg_save();                           /* persist last folder + sort before leaving */
   log_flush_to_sd(LOG_PATH);
   VBlankIntrWait();
   flashcartio_reboot();                 /* never returns */
@@ -386,10 +447,10 @@ static bool browse_pick(char* out, int cap) {
     else if (k & KEY_SELECT) {           /* cycle the 6 sort states (key x order) */
       int s = ((int)g_sort * 2 + (g_sortrev ? 1 : 0) + 1) % 6;
       g_sort = (BrSortKey)(s / 2); g_sortrev = (s & 1) != 0;
-      sort_entries(); sel = 0; top = 0;
+      sort_entries(); sel = 0; top = 0; cfg_save();           /* remember the sort */
     }
-    else if (k & KEY_START) { if (browse_menu(g_count ? &g_entries[sel] : 0)) { scan_dir(); sel = 0; top = 0; } }
-    else if (k & KEY_B)    { if (!at_root()) { path_up(); scan_dir(); sel = 0; top = 0; } }
+    else if (k & KEY_START) { if (browse_menu(g_count ? &g_entries[sel] : 0)) { scan_dir(); sel = 0; top = 0; cfg_save(); } }
+    else if (k & KEY_B)    { if (!at_root()) { path_up(); scan_dir(); sel = 0; top = 0; cfg_save(); } }   /* remember the folder */
     else if (k & KEY_A) {
       if (g_count == 0) continue;
       const BrowseEntry* e = &g_entries[sel];
@@ -398,8 +459,9 @@ static bool browse_pick(char* out, int cap) {
       if (e->is_dir) {
         strcpy(g_cwd, np);
         scan_dir();
-        sel = 0; top = 0;
+        sel = 0; top = 0; cfg_save();                         /* remember the folder */
       } else if ((int)strlen(np) < cap) {
+        cfg_save();                                           /* remember where this save was picked from */
         strcpy(out, np);
         return true;
       }
@@ -464,6 +526,7 @@ static void grow_in(u16 col) {
 /* PC-storage dirty flag: set by deferred move-mode swaps, cleared by any successful
  * PC write (which flushes the whole g_pc) or an explicit revert. */
 static bool g_pc_dirty = false;
+static bool g_sb1_deferred = false;   /* g_save holds staged SaveBlock1 (Day-Care) edits not yet on disk */
 
 /* Backup policy for the verified write: 0 = new .bak/.bak1… each time (default),
  * 1 = single rolling .bak (overwrite), 2 = skip backup. Session-only (resets each
@@ -471,10 +534,9 @@ static bool g_pc_dirty = false;
  * original mid-write; the backup is the extra undo layer. */
 static int g_backup_mode = 0;
 
-/* Master "moving sprites" switch (Settings). ON by default; session-only. Gates the
- * PC/bank box-icon bob, the Pokedex caught-cell bob, and the summary-card animation. */
-static bool g_anim_on = true;
-bool app_anim_enabled(void) { return g_anim_on; }
+/* g_anim_mask is defined near the top (with the other persisted prefs) so cfg_save /
+ * cfg_load can reach it; this is just the accessor the screens call. */
+bool app_anim_enabled(int kind) { return kind >= 0 && kind < ANIM_COUNT && ((g_anim_mask >> kind) & 1u); }
 
 /* Verify checksums, back up the original, and do the verified whole-file write —
  * the shared tail of every commit (the changed section bytes are already in g_save). */
@@ -491,8 +553,10 @@ static bool app_save_finalize(void) {
   char bak[SF_PATH_MAX]; bak[0] = 0;
   if (g_backup_mode != 2) {                        /* 2 = skip backup */
     busy_panel("Backing up original...");          /* safe point: before SD copy */
+    rmbl_pause();                                  /* no motor on the cart bus mid-transfer */
     SfStatus bst = (g_backup_mode == 1) ? sf_backup_rolling(g_path, bak, sizeof(bak))
                                         : sf_backup(g_path, bak, sizeof(bak));
+    rmbl_resume();
     if (bst != SF_OK) {
       log_line("edit: backup failed (%s)", sf_status_str(bst));
       log_flush_to_sd(LOG_PATH);
@@ -503,7 +567,9 @@ static bool app_save_finalize(void) {
   }
   SfStatus st;
   busy_panel("Writing + verifying...");            /* safe point: before SD write */
+  rmbl_pause();                                    /* no motor on the cart bus mid-transfer */
   st = sf_write_verified(g_path, g_save, G3_SAVE_FILE_SIZE);
+  rmbl_resume();
   log_line("edit: write %s (backup %s)", st == SF_OK ? "OK" : sf_status_str(st), bak);
   log_flush_to_sd(LOG_PATH);
   if (st != SF_OK) {
@@ -514,6 +580,7 @@ static bool app_save_finalize(void) {
   snd_save();
   grow_in(UI_OK);                                  /* brief success flourish */
   msg_wait("SAVED", UI_OK, "Edit written + verified.", "Original backed up first.");
+  g_sb1_deferred = false;                           /* a full write flushes any staged daycare edits */
   return true;
 }
 
@@ -548,6 +615,18 @@ bool app_commit_sb1(void) { return app_commit_block(1, 4, g_sb1); }
 
 void app_mark_pc_dirty(void) { g_pc_dirty = true; }
 bool app_pc_dirty(void)      { return g_pc_dirty; }
+
+/* Stage SaveBlock1 (sections 1..4) into the in-RAM image WITHOUT an SD write, so
+ * moving Pokemon in/out of the Day-Care batches into a single save at true exit
+ * instead of a write per move. reload_saveblocks reads g_sb1 back from g_save, so
+ * staged edits survive screen changes; any real commit (or the exit flush) writes
+ * the whole image, flushing them. Returns true (staging cannot fail). */
+static bool app_stage_sb1(void) {
+  for (int id = 1; id <= 4; id++)
+    gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
+  g_sb1_deferred = true;
+  return true;
+}
 
 bool app_commit_pc(void)  {
   bool ok = app_commit_block(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc);
@@ -618,6 +697,25 @@ static bool app_box_browse(uint8_t* block, int box, int start, AppCommitFn commi
   return any;
 }
 
+/* Party summary BROWSER: VIEW/EDIT a party slot, then U/D scroll to the prev/next party
+ * mon staying on the SAME card (real-PC style) instead of dropping back to the party list.
+ * The party is gap-free, so every index 0..g_nparty-1 is a real mon — just wrap. */
+static bool party_browse(int start, AppCommitFn commit) {
+  int count = g_nparty; if (count < 1) return false;
+  int idx = start; if (idx < 0) idx = 0; if (idx >= count) idx = count - 1;
+  uint16_t doff = g_frlg ? 0x0038 : 0x0238;
+  int card = 0; bool any = false;                          /* card sticky across mon-scroll */
+  for (;;) {
+    uint8_t* rec = g_sb1 + doff + (uint32_t)idx * 100;
+    uint8_t out[100]; bool saved = false;
+    int nav = pdna_inspect(rec, true, app_can_edit(), out, &saved, &card);
+    if (saved) { memcpy(rec, out, 100); if (app_commit_with_dex(rec, true, commit, g_sb1)) any = true; }
+    if (nav == 0) break;
+    idx = (idx + nav + count) % count;                     /* U/D = prev/next party mon */
+  }
+  return any;
+}
+
 /* PC-menu quick editors: load -> mutate one field -> losslessly re-encode -> patch
  * in place -> commit. Each returns true iff the save was written. */
 static bool app_quick_item(uint8_t* rec, bool is_party, AppCommitFn commit) {
@@ -636,6 +734,8 @@ bool app_clip_occupied(void) { return g_clip.occupied; }
 /* MOVE (box reposition) request: the A-menu sets this; the box loop consumes it. */
 static bool g_move_req = false;
 bool app_take_move_request(void) { bool r = g_move_req; g_move_req = false; return r; }
+static bool g_dup_req = false;
+bool app_take_dup_request(void)  { bool r = g_dup_req;  g_dup_req  = false; return r; }
 
 bool app_confirm(const char* title, const char* l1) {
   ui_clear();
@@ -764,6 +864,21 @@ bool app_inject_to_game(const uint8_t* rec80) {
   return false;
 }
 
+/* Deferred variant: place in the first free PC slot and mark PC dirty (NO write), so a
+ * Day-Care withdraw-to-PC saves with everything else when you leave the save. Returns
+ * false (+ PC FULL) if there's no room. Dex registration is skipped (a deferred PC
+ * commit doesn't write the dex sections; the species is in the player's hands anyway). */
+static bool app_inject_to_game_deferred(const uint8_t* rec80) {
+  if (!app_can_edit()) return false;
+  for (int b = 0; b < G3_TOTAL_BOXES; b++) {
+    int s = box_free_slot(g_pc, b);
+    if (s >= 0) { memcpy(pk_box_slot(g_pc, b, s), rec80, 80); app_mark_pc_dirty(); return true; }
+  }
+  snd_deny();
+  msg_wait("PC FULL", UI_WARN, "No empty PC box slot in the", "loaded game.");
+  return false;
+}
+
 static bool app_copy(uint8_t* rec, bool is_party) {
   clip_copy_from(&g_clip, rec, is_party);
   msg_wait("COPIED", UI_OK, "PASTE places it in a slot.", "(it survives until overwritten)");
@@ -836,6 +951,40 @@ static bool app_give_item(uint8_t* rec, bool is_party, AppCommitFn commit) {
  * (read-only): jump to the summary. Returns true iff the save was modified.
  * `commit` persists `block` (PC storage, SaveBlock1, or a bank box file).
  * For party callers pass box = -1, slot = party index. */
+/* daycare slot/egg clearing helpers live near pdna_daycare; forward-declared for the
+ * "To Day-Care" action below. */
+static void dc_clear_slot_aux(uint32_t base, uint32_t stride, int i);
+static void dc_clear_egg(uint32_t base);
+
+/* "To Day-Care" from a mon's action menu: MOVE this mon into a free daycare slot
+ * (deposit its 80-byte box form, then remove it from the source). Omega-only; RS/Emerald
+ * only (FireRed/LeafGreen has no Day-Care here). The deposit + the source removal are
+ * committed together (party source: both in SB1; PC source: PC then SB1). */
+static bool app_to_daycare(uint8_t* rec, bool is_party, uint8_t* block, int box, int slot) {
+  if (g_game == PK_FRLG) { snd_deny(); msg_wait("NO DAY-CARE", UI_DIM, "Not available in this game.", 0); return false; }
+  uint32_t base = (g_game == PK_EMERALD) ? 0x3030 : 0x2F9C;     /* RS otherwise */
+  uint32_t stride = (g_game == PK_RS) ? 80 : 140;
+  int fi = -1;
+  for (int i = 0; i < 2; i++) { PkMon m; if (!pk_decode_mon(g_sb1 + base + (uint32_t)i * stride, false, &m)) { fi = i; break; } }
+  if (fi < 0) { snd_deny(); msg_wait("DAY-CARE FULL", UI_WARN, "Take a Pokemon out first.", 0); return false; }
+  if (is_party && party_count(block, g_frlg) <= 1) { snd_deny(); msg_wait("CAN'T", UI_WARN, "The party can't be empty.", 0); return false; }
+  if (!app_confirm("Send to Day-Care?", "Moves this Pokemon there.")) return false;
+  memcpy(g_sb1 + base + (uint32_t)fi * stride, rec, 80);        /* deposit (first 80 bytes = box form) */
+  dc_clear_slot_aux(base, stride, fi);
+  dc_clear_egg(base);
+  if (is_party) {                                              /* party + deposit both in SB1 -> deferred to exit */
+    party_release(block, g_frlg, slot);
+    app_stage_sb1();
+    snd_ok(); msg_wait("SENT", UI_OK, "Now boarding in the Day-Care.", "Saved when you leave.");
+  } else {                                                     /* PC source: deferred (both buffers) */
+    clip_clear_box_slot(block, box, slot);                     /* remove from the PC box (g_pc) */
+    app_mark_pc_dirty();
+    app_stage_sb1();                                           /* daycare deposit staged in g_save */
+    snd_ok(); msg_wait("SENT", UI_OK, "Now boarding in the Day-Care.", "Saved when you leave.");
+  }
+  return true;
+}
+
 bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot) {
   PkMon m0;
   bool occupied = pk_decode_mon(rec, is_party, &m0);
@@ -846,7 +995,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     return false;
   }
 
-  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CANCEL };
+  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CANCEL };
   int act[16]; const char* lab[16]; int n = 0;
   if (occupied) {
     lab[n]="VIEW / EDIT"; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
@@ -856,6 +1005,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     lab[n]="COPY";    act[n++]=A_COPY;
     if (g_clip.occupied) { lab[n]="PASTE"; act[n++]=A_PASTE; }
     lab[n]="DUPLICATE"; act[n++]=A_DUP;
+    if (!is_bank && g_game != PK_FRLG) { lab[n]="TO DAY-CARE"; act[n++]=A_DAYCARE; }  /* deposit into the daycare */
     if (is_bank) { lab[n]="TO GAME"; act[n++]=A_TOGAME; }   /* bank: inject into the loaded save */
     else         { lab[n]="EXPORT .pk"; act[n++]=A_EXPORT; }/* PC/party: write a .pk3 to the bank dir */
     if (m0.heldItem && !g_item_held) { lab[n]="TAKE ITEM"; act[n++]=A_TAKEITEM; }
@@ -891,16 +1041,20 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
       switch (act[sel]) {
-        case A_SUMMARY: return is_party ? app_edit_commit(rec, is_party, commit)
+        case A_SUMMARY: return is_party ? party_browse(slot, commit)                  /* party: scroll mons */
                                         : app_box_browse(block, box, slot, commit);   /* box: scroll mons */
         case A_ITEM:    return app_quick_item (rec, is_party, commit);
         case A_LEGAL:   pdna_legality_show(&m0); return false;
         case A_MOVE:    g_move_req = true; return false;            /* box loop handles the move */
         case A_EXPORT:  pdna_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
         case A_TOGAME:  return app_inject_to_game(rec);           /* bank -> loaded save's PC */
+        case A_DAYCARE: return app_to_daycare(rec, is_party, block, box, slot);   /* -> day-care */
         case A_COPY:    return app_copy(rec, is_party);
         case A_PASTE:   return app_paste(rec, is_party, commit, block, occupied);
-        case A_DUP:     return app_duplicate(rec, is_party, commit, block, box);
+        case A_DUP:
+          if (is_party) return app_duplicate(rec, is_party, commit, block, box);   /* party: append + commit */
+          if (box_free_slot(block, box) < 0) { snd_deny(); msg_wait("BOX FULL", UI_WARN, "No empty slot in this box.", 0); return false; }
+          g_dup_req = true; return false;                                            /* box/bank: pick the copy up in the glove */
         case A_RELEASE: return app_release(rec, is_party, commit, block, box, slot);
         case A_TAKEITEM:return app_take_item(rec, is_party, commit);
         case A_GIVEITEM:return app_give_item(rec, is_party, commit);
@@ -912,8 +1066,37 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
 
 /* Party list view. A opens the summary; SELECT switches to PC boxes; B exits.
  * Returns 0 (back to file browser) or 1 (switch to boxes). */
+/* draw one party row's icon (full 32x32) at its in-band y; shared by the full render
+ * and the idle bob so they stay pixel-identical. */
+static void party_icon_y(int i, int* ry, int* iy) {
+  *ry = 17 + i * 21;                          /* ROW_TOP 17, pitch 21 (fits 6 rows, 12..149) */
+  *iy = *ry - 5; if (*iy < 12) *iy = 12; else if (*iy > 118) *iy = 118;
+}
+
+/* Recompose the whole party icon COLUMN (x 2..35) for the current bob frame, one
+ * scanline at a time: fill each line with that row's background (the selection bar is
+ * UI_SEL, others UI_BG), then overlay every icon that crosses the line IN ORDER so the
+ * row overlap layers exactly like the static transparent draw — no solid bg square, no
+ * cut-off feet. compose-then-DMA (no erase) => flicker-free; runs only on idle frames. */
+static u16 __attribute__((aligned(4))) s_pcol[34];
+static void party_bob_recompose(int n, int sel, int frame) {
+  int sry = (n && sel >= 0 && sel < n) ? 17 + sel * 21 : -100;   /* selected panel y..y+20 */
+  for (int y = 12; y <= 150; y++) {
+    u16 bg = (y >= sry && y <= sry + 20) ? UI_SEL : UI_BG;
+    for (int dx = 0; dx < 34; dx++) s_pcol[dx] = bg;
+    for (int i = 0; i < n; i++) {
+      int ry, iy; party_icon_y(i, &ry, &iy);
+      if (y < iy || y >= iy + MON_ICON_H) continue;
+      const u16* row = mon_icon_for_form_frame(g_party[i].species, g_party[i].form, (uint8_t)frame)
+                       + (y - iy) * MON_ICON_W;
+      for (int dx = 0; dx < MON_ICON_W; dx++) { u16 p = row[dx]; if (p & 0x8000) s_pcol[1 + dx] = (u16)(p & 0x7FFF); }
+    }
+    dma3_cpy(&vid_mem[y * 240 + 2], s_pcol, 34 * 2);   /* x=2 even, 68 bytes -> word-aligned */
+  }
+}
+
 static int party_list(void) {
-  int sel = 0;
+  int sel = 0, anim_ctr = 0, frame = 0;
   for (;;) {
     ui_clear();
     char line[48];
@@ -922,24 +1105,46 @@ static int party_list(void) {
     ui_hline(0, 11, UI_SCR_W, UI_BORDER);
 
     if (g_nparty == 0) ui_text(6, 40, UI_WARN, "No Pokemon in party.");
+    /* One full-size 32x32 icon per row, vertically CENTRED on its two-line name block so
+     * each mon reads as directly left of its name. ROW_TOP 17 puts row 0's icon just below
+     * the header WITHOUT a clamp (the old clamp pushed the top mon too low). Draw the
+     * selection bar first so an overhanging icon above it isn't clipped. */
+    if (g_nparty) { int ry = 17 + sel * 21; ui_panel(2, ry, 236, 20, UI_SEL, UI_TITLE); }
     for (int i = 0; i < g_nparty; i++) {
-      int y = 16 + i * 22;
+      int ry, iy; party_icon_y(i, &ry, &iy);
       PkMon* p = &g_party[i];
-      if (i == sel) ui_panel(2, y - 2, 236, 20, UI_SEL, UI_TITLE);
-      ui_icon_sub(6, y, mon_icon_for_form(p->species, p->form));   /* 16x16 from the 32x32 icon */
+      ui_sprite(3, iy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, (uint8_t)frame));
       char nm[16];
       ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);
       siprintf(line, "%-11s Lv%u", nm, (unsigned)p->level);
-      ui_text(26, y, i == sel ? UI_SELTEXT : UI_TEXT, line);
+      ui_text(40, ry + 3, i == sel ? UI_SELTEXT : UI_TEXT, line);
       siprintf(line, "%s%s%s", pk_species_name(p->species),
                p->isShiny ? "  *" : "", p->isEgg ? "  EGG" : "");
-      ui_text(26, y + 9, UI_DIM, line);
+      ui_text(40, ry + 12, UI_DIM, line);
     }
 
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     ui_text(4, 152, UI_DIM, "A actions  START menu  B back");
 
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_START);
+    /* idle 2-frame bob (compose-over-DMA, no erase). Animate only on frames with NO key
+     * pending so navigation never stutters; recompose every icon in order so the row
+     * overlap layers exactly like the static draw (each over its own row's background). */
+    u16 k, fresh;
+    const u16 mask = KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_START;
+    do {
+      vsync();
+      fresh = key_hit(mask);
+      k = fresh | key_repeat(KEY_UP | KEY_DOWN);
+      if (!k && app_anim_enabled(ANIM_PARTY) && g_nparty && ++anim_ctr >= 30) {
+        anim_ctr = 0; frame ^= 1;
+        party_bob_recompose(g_nparty, sel, frame);
+      }
+    } while (!k);
+    if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
+    else if (fresh & KEY_A)               snd_ok();
+    else if (fresh & KEY_B)               snd_back();
+    else if (fresh & KEY_START)           snd_tab();
+
     if      (k & KEY_UP)   { if (sel > 0) sel--; }
     else if (k & KEY_DOWN) { if (sel < g_nparty - 1) sel++; }
     else if (k & KEY_B)    return 0;
@@ -1178,6 +1383,15 @@ static bool pdna_dex_edit(void) {
  * notes when an egg is ready (offspringPersonality != 0). */
 /* ---- cute procedural Day-Care scene ---- */
 
+/* Optional generated yard background (tools/gen_daycare_bg.py): a Gen-3-style yard
+ * with lava / ponds / a rocky hill / a power line / the day-care house. Git-ignored;
+ * when absent the daycare falls back to the procedural scene helpers below. */
+#if defined(__has_include) && __has_include("daycare_bg_data.h")
+#  include "daycare_bg_data.h"
+#  define HAVE_DAYCARE_BG 1
+#endif
+
+#ifndef HAVE_DAYCARE_BG    /* procedural-scene helpers — only built without a yard bg */
 static void dc_tri_roof(int cx, int top, int halfBase, int h, u16 fill, u16 edge) {
   for (int j = 0; j <= h; j++) { int w = halfBase * j / h; m3_line(cx - w, top + j, cx + w, top + j, fill); }
   m3_line(cx, top, cx - halfBase, top + h, edge);
@@ -1207,13 +1421,103 @@ static void dc_fence(int x0, int x1, int y) {
   m3_line(x0, y + 6, x1, y + 6, d);
   for (int x = x0; x < x1; x += 10) { ui_fill_rect(x, y, 3, 9, w); m3_plot(x, y, d); m3_plot(x + 2, y, d); }
 }
+#endif /* !HAVE_DAYCARE_BG */
 
 static void dc_pointer(int cx, int y) {           /* small downward arrow over the picked mon */
   const u16 c = RGB15(31, 28, 8);
   for (int j = 0; j < 5; j++) { int w = 4 - j; m3_line(cx - w, y + j, cx + w, y + j, c); }
 }
 
+#ifdef HAVE_DAYCARE_BG
+/* Areas on the daycare map bg (icon-CENTRE SCREEN coords; bg blitted at screen y 12),
+ * TWO mon slots each so two mons in the same area don't overlap. Mirrors the SLOTS in
+ * tools/gen_daycare_img.py (aligned to the lava/water/trees/yellow/flowers in the map). */
+enum { DR_LAVA, DR_WATER, DR_SKY, DR_ELEC, DR_GRASS, DR_EMPTY, DR_COUNT };
+static const struct { int cx, cy; } DC_SPOT[DR_COUNT][2] = {
+  { { 32, 34}, { 52, 44} },    /* LAVA  - rock/ground/fire (red area)      */
+  { {158, 86}, {210, 92} },    /* WATER - water (below the waterfall)      */
+  { {160, 30}, {205, 34} },    /* SKY   - flying (the trees, top-right)    */
+  { { 94, 38}, {120, 46} },    /* ELEC  - electric (yellow diamond area)   */
+  { { 28, 98}, { 64,106} },    /* GRASS - grass/bug (the flower beds)      */
+  { {100, 90}, {128,104} },    /* EMPTY - everyone else (plain grass)      */
+};
+#define DC_MAXDECO 5
+static int      s_deco_x[DC_MAXDECO], s_deco_y[DC_MAXDECO];
+static uint16_t s_deco_sp[DC_MAXDECO];
+static int      s_ndeco = 0;                  /* decoration mons actually placed       */
+static uint16_t s_deco_roll[DC_MAXDECO];      /* the 2..5 random species this visit     */
+static int      s_ndeco_roll = 0;
+/* Area for a species by the user's type rules: FIRE -> lava (so a rock/ground mon is
+ * only in the lava if it's also fire); water -> water; flying -> trees; electric ->
+ * yellow; grass/bug -> grass; everyone else (incl. non-fire rock/ground) -> empty. */
+static int dc_region_for_species(uint16_t species) {
+  uint8_t a = pk_species_type1(species), b = pk_species_type2(species);
+  int fire=(a==10||b==10), water=(a==11||b==11), flying=(a==2||b==2),
+      elec=(a==13||b==13), grass=(a==12||b==12), bug=(a==6||b==6);
+  if (fire)         return DR_LAVA;
+  if (water)        return DR_WATER;
+  if (flying)       return DR_SKY;
+  if (elec)         return DR_ELEC;
+  if (grass || bug) return DR_GRASS;
+  return DR_EMPTY;
+}
+static int dc_region_for(const PkMon* p) { return dc_region_for_species(p->species); }
+/* Reserve a slot in area `rg` (2 per area); if full, fall back to the EMPTY area.
+ * Returns rg*2+slot, or -1 if even EMPTY is full. */
+static int dc_take_slot(int used[DR_COUNT][2], int rg) {
+  if (!used[rg][0]) { used[rg][0] = 1; return rg * 2 + 0; }
+  if (!used[rg][1]) { used[rg][1] = 1; return rg * 2 + 1; }
+  if (!used[DR_EMPTY][0]) { used[DR_EMPTY][0] = 1; return DR_EMPTY * 2 + 0; }
+  if (!used[DR_EMPTY][1]) { used[DR_EMPTY][1] = 1; return DR_EMPTY * 2 + 1; }
+  return -1;
+}
+/* Per-visit RNG seed: a session counter + the cart RTC (if present) so the random
+ * decoration mons differ each time the Day-Care is opened. */
+static uint32_t dc_seed(void) {
+  static uint32_t ctr = 0;
+  ctr += 0x9E3779B9u;
+  uint32_t e = ctr ^ ((uint32_t)g_vinfo.tid_public << 13);
+  GbaRtcTime t;
+  if (gba_rtc_get(&t)) e ^= (uint32_t)(t.second + t.minute * 60 + t.hour * 3600) * 2654435761u;
+  return e | 1u;
+}
+/* Roll the 2..5 random decoration species for this visit (called once on entry). */
+static void dc_roll_decos(void) {
+  uint32_t rng = dc_seed();
+  rng = rng * 1103515245u + 12345u;
+  s_ndeco_roll = 2 + (int)((rng >> 16) % 4);            /* 2..5 */
+  for (int i = 0; i < s_ndeco_roll; i++) {
+    rng = rng * 1103515245u + 12345u;
+    s_deco_roll[i] = (uint16_t)(1 + (rng >> 9) % 251);   /* internal species 1..251 */
+  }
+}
+/* Compose a 32x32 icon over the bg image at screen (x,y) and DMA each scanline (no
+ * separate erase => no flicker on the single Mode-3 buffer). x is forced even for
+ * the word-aligned DMA. */
+static u16 __attribute__((aligned(4))) s_dcline[MON_ICON_W];   /* 32-bit DMA needs word align */
+static void dc_icon_over_bg(int x, int y, const u16* icon) {
+  if (!icon) return;
+  x &= ~1;
+  for (int j = 0; j < MON_ICON_H; j++) {
+    int yy = y + j;
+    if (yy < 12 || yy >= 12 + DAYCARE_BG_H) continue;
+    const u16* bg = &daycare_bg[(yy - 12) * DAYCARE_BG_W];
+    for (int i = 0; i < MON_ICON_W; i++) {
+      int xx = x + i;
+      u16 c = (xx >= 0 && xx < DAYCARE_BG_W) ? bg[xx] : 0;
+      u16 pxl = icon[j * MON_ICON_W + i];
+      if (pxl & 0x8000) c = (u16)(pxl & 0x7FFF);
+      s_dcline[i] = c;
+    }
+    dma3_cpy(&vid_mem[yy * 240 + x], s_dcline, MON_ICON_W * 2);
+  }
+}
+#endif /* HAVE_DAYCARE_BG */
+
 static void dc_scene(void) {
+#ifdef HAVE_DAYCARE_BG
+  dma3_cpy(&vid_mem[12 * 240], daycare_bg, DAYCARE_BG_W * DAYCARE_BG_H * 2);  /* yard bg -> scene region */
+#else
   ui_fill_rect(0, 12, UI_SCR_W, 78, RGB15(16, 25, 31));        /* sky */
   for (int j = -5; j <= 5; j++) for (int i = -5; i <= 5; i++)  /* sun */
     if (i * i + j * j <= 25) m3_plot(22 + i, 26 + j, RGB15(31, 30, 14));
@@ -1222,55 +1526,206 @@ static void dc_scene(void) {
   ui_fill_rect(0, 90, UI_SCR_W, 70, RGB15(13, 22, 9));         /* grass (uniform: the bob erases to this) */
   dc_house();
   dc_fence(6, 150, 82);
+#endif
 }
 
-/* Day-Care viewer: a cute yard with the boarding Pokemon as bobbing icons (A opens
- * the summary, L/R pick), plus the Day-Care man's get-along verdict for the pair. */
+/* (Re)scan the daycare: fill recs[]/dc[]/phys[] for the up to 2 boarders, place each by
+ * terrain, and read the shared egg/step state. Used on entry and after a put/take so the
+ * scene always matches g_sb1. Returns the boarder count. phys[k] = physical slot 0/1. */
+static int dc_rescan(uint32_t base, uint32_t stride, uint8_t* recs[2], PkMon dc[2], int phys[2],
+                     int dcx[2], int dcy[2], bool* egg, int* to_check) {
+  int n = 0;
+  for (int i = 0; i < 2; i++) {
+    uint8_t* rec = g_sb1 + base + (uint32_t)i * stride; PkMon m;
+    if (pk_decode_mon(rec, false, &m) && m.species >= 1 && m.species <= 411 && !m.isBadEgg) {
+      pk_resolve(&m); dc[n] = m; recs[n] = rec; phys[n] = i; n++;
+    }
+  }
+  uint32_t eggoff = (g_game == PK_RS) ? 276 : 280;
+  const uint8_t* op = g_sb1 + base + eggoff;
+  *egg = (g_game == PK_EMERALD) ? ((op[0] | op[1] | op[2] | op[3]) != 0) : ((op[0] | op[1]) != 0);
+  int stepc = (g_game == PK_EMERALD) ? g_sb1[base + 284] : (g_game == PK_FRLG) ? g_sb1[base + 282] : g_sb1[base + 278];
+  int tc = (g_game == PK_RS) ? stepc : (256 - stepc); if (tc < 1 || tc > 256) tc = 256; *to_check = tc;
+#ifdef HAVE_DAYCARE_BG
+  int used[DR_COUNT][2] = {{0}};
+  for (int i = 0; i < n; i++) {                  /* each boarder -> a slot in its type area */
+    int slot = dc_take_slot(used, dc_region_for(&dc[i]));
+    int rg = (slot < 0) ? DR_EMPTY : slot / 2, sp = (slot < 0) ? 0 : slot % 2;
+    int cx = DC_SPOT[rg][sp].cx - 16, cy = DC_SPOT[rg][sp].cy - 16;
+    cx &= ~1; if (cx < 2) cx = 2; else if (cx > UI_SCR_W - 34) cx = UI_SCR_W - 34;
+    if (cy < 12) cy = 12; else if (cy > 12 + DAYCARE_BG_H - MON_ICON_H) cy = 12 + DAYCARE_BG_H - MON_ICON_H;
+    dcx[i] = cx; dcy[i] = cy;
+  }
+  /* the 2..5 random decoration mons (rolled once per visit) -> their type areas */
+  s_ndeco = 0;
+  for (int d = 0; d < s_ndeco_roll && s_ndeco < DC_MAXDECO; d++) {
+    int slot = dc_take_slot(used, dc_region_for_species(s_deco_roll[d]));
+    if (slot < 0) continue;                      /* every slot full -> drop this deco */
+    int rg = slot / 2, sp = slot % 2;
+    int cx = DC_SPOT[rg][sp].cx - 16, cy = DC_SPOT[rg][sp].cy - 16;
+    cx &= ~1; if (cx < 2) cx = 2; else if (cx > UI_SCR_W - 34) cx = UI_SCR_W - 34;
+    if (cy < 12) cy = 12; else if (cy > 12 + DAYCARE_BG_H - MON_ICON_H) cy = 12 + DAYCARE_BG_H - MON_ICON_H;
+    s_deco_sp[s_ndeco] = s_deco_roll[d]; s_deco_x[s_ndeco] = cx; s_deco_y[s_ndeco] = cy; s_ndeco++;
+  }
+#else
+  for (int i = 0; i < n; i++) { dcx[i] = (i == 0) ? 70 : 108; dcy[i] = 90; }
+#endif
+  return n;
+}
+
+/* Clear a daycare physical slot's per-mon mail + step counter (per-game layout), so a
+ * deposited/withdrawn mon doesn't inherit stale boarding state. */
+static void dc_clear_slot_aux(uint32_t base, uint32_t stride, int i) {
+  if (g_game == PK_RS) {
+    memset(g_sb1 + base + 160 + (uint32_t)i * 54, 0, 54);            /* DayCareMail[i] (54) */
+    memset(g_sb1 + base + 268 + (uint32_t)i * 4, 0, 4);             /* steps[i] u32 */
+  } else {
+    memset(g_sb1 + base + (uint32_t)i * stride + 80, 0, 54);        /* DaycareMon[i].mail */
+    memset(g_sb1 + base + (uint32_t)i * stride + 136, 0, 4);        /* DaycareMon[i].steps u32 */
+  }
+}
+
+/* Clear the shared pending-egg + egg-check timer (the pair changed). Per-game width. */
+static void dc_clear_egg(uint32_t base) {
+  if (g_game == PK_EMERALD)      { memset(g_sb1 + base + 280, 0, 4); g_sb1[base + 284] = 0; }
+  else if (g_game == PK_FRLG)    { memset(g_sb1 + base + 280, 0, 2); g_sb1[base + 282] = 0; }
+  else                           { memset(g_sb1 + base + 276, 0, 2); g_sb1[base + 278] = 0; }  /* RS */
+}
+
+/* Small daycare action menu. Returns 0=view/edit, 1=take out, 2=put in, -1=cancel. */
+static int dc_menu(bool can_take, bool can_put) {
+  const char* rows[4]; int act[4], nr = 0;
+  rows[nr] = "View / Edit"; act[nr++] = 0;
+  if (can_take) { rows[nr] = "Take out (Party / PC)"; act[nr++] = 1; }
+  if (can_put)  { rows[nr] = "Put in (from clipboard)"; act[nr++] = 2; }
+  rows[nr] = "Cancel"; act[nr++] = -1;
+  int sel = 0;
+  for (;;) {
+    const int mx = 40, my = 40, mw = 160, mh = 18 + nr * 14 + 8;
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, "DAY-CARE");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < nr; i++) {
+      int y = my + 18 + i * 14; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
+    }
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return -1;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : nr - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % nr;
+    else if (k & KEY_A)    return act[sel];
+  }
+}
+
+/* Deposit the clipboard mon into the first free daycare slot (Put in). The user COPIES
+ * a mon in the Party/PC first (universal clipboard), then puts it in here — a paste, so
+ * the source keeps its copy (release it separately for a true move, like the PC). */
+static bool dc_deposit(uint32_t base, uint32_t stride) {
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); return false; }
+  if (!g_clip.occupied) { snd_deny(); msg_wait("NOTHING COPIED", UI_DIM, "Copy a Pokemon in the PC or", "Party first, then Put in here."); return false; }
+  int fi = -1;
+  for (int i = 0; i < 2; i++) { PkMon m; if (!pk_decode_mon(g_sb1 + base + (uint32_t)i * stride, false, &m)) { fi = i; break; } }
+  if (fi < 0) { snd_deny(); msg_wait("DAY-CARE FULL", UI_WARN, "Take a Pokemon out first.", 0); return false; }
+  uint8_t out[100];
+  if (!clip_to_record(&g_clip, false, out)) return false;
+  memcpy(g_sb1 + base + (uint32_t)fi * stride, out, 80);
+  dc_clear_slot_aux(base, stride, fi);                /* fresh boarder: no inherited mail/steps */
+  dc_clear_egg(base);                                 /* pair changed: drop any pending egg */
+  app_stage_sb1();                                    /* deferred: saved when you leave the save */
+  snd_ok();
+  return true;
+}
+
+/* Take the selected daycare mon OUT, to a chosen destination (the mon moves AS-IS — we
+ * don't replay the game's withdraw-time EXP-from-steps gain):
+ *   To Party - append directly, refused with a message if the party is already full.
+ *   To PC    - place on the clipboard so the user PASTEs it onto any free PC slot
+ *              (a "grab"-style placement of their choice). */
+static bool dc_withdraw(uint32_t base, uint32_t stride, uint8_t* rec, int physi) {
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); return false; }
+  static const char* const D[3] = { "To Party", "To PC", "Cancel" };
+  int sel = 0;
+  for (;;) {
+    const int mx = 56, my = 52, mw = 128, mh = 18 + 3 * 14 + 8;
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, "TAKE OUT");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < 3; i++) { int y = my + 18 + i * 14; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, D[i]); }
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return false;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 2;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 3;
+    else if (k & KEY_A) break;
+  }
+  if (sel == 2) return false;
+  if (sel == 0) {                                /* To Party — append (atomic, full-checked) */
+    if (party_count(g_sb1, g_frlg) >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Make room in your party first.", 0); return false; }
+    EditMon e; gen3_edit_load(rec, false, &e); em_set_party_flag(&e, true);   /* box -> party form */
+    uint8_t out[100]; gen3_edit_commit(&e, out);
+    party_append(g_sb1, g_frlg, out);
+    memset(rec, 0, 80); dc_clear_slot_aux(base, stride, physi); dc_clear_egg(base);
+    app_stage_sb1();                                           /* party + daycare both in SB1; deferred to exit */
+    snd_ok(); msg_wait("TO PARTY", UI_OK, "Added to your party.", "Saved when you leave.");
+  } else {                                       /* To PC — placed in a free PC slot, DEFERRED */
+    if (!app_inject_to_game_deferred(rec)) return false;       /* PC full: daycare kept */
+    memset(rec, 0, 80); dc_clear_slot_aux(base, stride, physi); dc_clear_egg(base);   /* PC has it now -> clear daycare */
+    app_stage_sb1();
+    snd_ok(); msg_wait("TO PC", UI_OK, "Moved to your PC boxes.", "Saved when you leave.");
+  }
+  return true;
+}
+
+/* Day-Care viewer: a cute yard with the boarding Pokemon as bobbing icons (A opens a
+ * menu: view/edit, take out, put in), plus the Day-Care man's get-along verdict. */
 static void pdna_daycare(void) {
   uint32_t base = (g_game == PK_EMERALD) ? 0x3030 : (g_game == PK_FRLG) ? 0x2F80 : 0x2F9C;
   /* RS store the two BoxPokemon contiguously (stride 80); E/FRLG interleave each with
    * its mail+steps (stride 140). The egg-personality word is at base+280 (u32 on
    * E/FRLG, u16 on RS). */
   uint32_t stride = (g_game == PK_RS) ? 80 : 140;
-  uint8_t* recs[2]; PkMon dc[2]; int n = 0;
-  for (int i = 0; i < 2; i++) {
-    uint8_t* rec = g_sb1 + base + (uint32_t)i * stride;
-    PkMon m;
-    if (pk_decode_mon(rec, false, &m) && m.species >= 1 && m.species <= 411 && !m.isBadEgg) { pk_resolve(&m); dc[n] = m; recs[n] = rec; n++; }
-  }
-  /* Egg-ready word: RS pendingEggPersonality is a u16 at base+276 (the struct is
-   * mons[2]=160 + mail+steps); E/FRLG offspringPersonality is at base+280 — a u32 on
-   * Emerald (mons[2]=280) but a u16 on FRLG (stepCounter follows). Read the right
-   * width/offset per game so RS reports eggs and FRLG doesn't false-trigger on steps. */
-  uint32_t eggoff = (g_game == PK_RS) ? 276 : 280;
-  const uint8_t* op = g_sb1 + base + eggoff;
-  bool off = (g_game == PK_EMERALD) ? ((op[0] | op[1] | op[2] | op[3]) != 0)
-                                    : ((op[0] | op[1]) != 0);   /* RS + FRLG: u16 */
-  /* Egg-check cycle: the game rolls for an Egg every 256 steps (chance = the
-   * compatibility score), so there's no fixed countdown — only the next-check timer.
-   * Emerald/FRLG store steps elapsed (stepCounter); RS stores steps remaining. */
-  int stepc   = (g_game == PK_EMERALD) ? g_sb1[base + 284]
-              : (g_game == PK_FRLG)    ? g_sb1[base + 282]
-                                       : g_sb1[base + 278];     /* RS eggCycleStepsRemaining */
-  int to_check = (g_game == PK_RS) ? stepc : (256 - stepc);
-  if (to_check < 1 || to_check > 256) to_check = 256;
+  uint8_t* recs[2]; PkMon dc[2]; int phys[2], dcx[2], dcy[2];
+  bool off; int to_check;
   static const int EGG_CHANCE[4] = { 0, 20, 50, 70 };           /* INCOMPATIBLE/LOW/MED/HIGH */
-
-  const int MX[2] = { 70, 108 };
+#ifndef HAVE_DAYCARE_BG
   const u16 GRASS = RGB15(13, 22, 9);
+#endif
+#ifdef HAVE_DAYCARE_BG
+  dc_roll_decos();                              /* fresh 2..5 random decoration mons each visit */
+#endif
+  int n = dc_rescan(base, stride, recs, dc, phys, dcx, dcy, &off, &to_check);
   int sel = 0, frame = 0, ctr = 0;
-  bool redraw = true;
+  bool redraw = true, rescan = false;
   for (;;) {
+    if (rescan) {                                /* after a put/take: re-read the daycare */
+      n = dc_rescan(base, stride, recs, dc, phys, dcx, dcy, &off, &to_check);
+      if (sel >= n) sel = n ? n - 1 : 0;
+      rescan = false; redraw = true;
+    }
     if (redraw) {
       redraw = false;
       dc_scene();                                              /* overdraws the whole screen */
       ui_fill_rect(0, 0, UI_SCR_W, 11, UI_BG);
       ui_text(4, 2, UI_TITLE, "DAY CARE");
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-      for (int i = 0; i < n; i++)
-        ui_sprite(MX[i], 90, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1)));
-      if (n == 0) ui_text(64, 58, RGB15(8, 5, 0), "It's quiet here.");
-      if (n) dc_pointer(MX[sel] + 16, 82);
+      for (int i = 0; i < n; i++) {
+        const u16* ic = mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1));
+#ifdef HAVE_DAYCARE_BG
+        dc_icon_over_bg(dcx[i], dcy[i], ic);
+#else
+        ui_sprite(dcx[i], dcy[i], MON_ICON_W, MON_ICON_H, ic);
+#endif
+      }
+      int nshow = n;
+#ifdef HAVE_DAYCARE_BG
+      for (int i = 0; i < s_ndeco; i++)                       /* random decoration mons (visual only) */
+        dc_icon_over_bg(s_deco_x[i], s_deco_y[i], mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)));
+      nshow += s_ndeco;
+#endif
+      if (nshow == 0) ui_text(64, 58, RGB15(8, 5, 0), "It's quiet here.");
+      if (n) { int py = dcy[sel] - 7; if (py < 12) py = 12; dc_pointer(dcx[sel] + 16, py); }
       ui_panel(2, 124, 236, 28, UI_PANEL, UI_BORDER);
       if (n == 2) {
         DcCompat c = pk_daycare_compat(dc[0].species, dc[0].otId, dc[1].species, dc[1].otId);
@@ -1288,14 +1743,30 @@ static void pdna_daycare(void) {
         ui_text(6, 127, off ? UI_OK : UI_DIM, off ? "An EGG is ready to collect!" : "No Pokemon are boarding.");
       }
       ui_fill_rect(0, 152, UI_SCR_W, 8, UI_BG);
-      ui_text(4, 152, UI_DIM, n ? "A view  L/R pick  B back" : "B back");
+      ui_text(4, 152, UI_DIM, n ? "A menu  L/R pick  B back"
+                                : (g_clip.occupied ? "A put-in  B back" : "B back"));
     }
     u16 k, fresh;
     do { VBlankIntrWait(); snd_vblank(); key_poll();
-         if (app_anim_enabled() && n && ++ctr >= 30) {        /* idle bob (gated, flicker-free) */
+         int anim_any = n;
+#ifdef HAVE_DAYCARE_BG
+         if (s_ndeco) anim_any = 1;
+#endif
+         if (app_anim_enabled(ANIM_DAYCARE) && anim_any && ++ctr >= 30) { /* idle 2-frame bob (flicker-free) */
            ctr = 0; frame ^= 1;
-           for (int i = 0; i < n; i++)                          /* compose icon over grass + DMA (no erase) */
-             ui_blit_over(MX[i], 90, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1)), GRASS);
+           for (int i = 0; i < n; i++) {                        /* compose icon over the bg + DMA (no erase) */
+             const u16* ic = mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1));
+#ifdef HAVE_DAYCARE_BG
+             dc_icon_over_bg(dcx[i], dcy[i], ic);
+#else
+             ui_blit_over(dcx[i], dcy[i], MON_ICON_W, MON_ICON_H, ic, GRASS);
+#endif
+           }
+#ifdef HAVE_DAYCARE_BG
+           for (int i = 0; i < s_ndeco; i++)
+             dc_icon_over_bg(s_deco_x[i], s_deco_y[i], mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)));
+#endif
+           if (n) { int py = dcy[sel] - 7; if (py < 12) py = 12; dc_pointer(dcx[sel] + 16, py); }  /* selection arrow */
          }
          fresh = key_hit(KEY_FULL); k = fresh; } while (!k);
     if      (fresh & KEY_B) snd_back();
@@ -1303,10 +1774,31 @@ static void pdna_daycare(void) {
     else if (fresh & (KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R)) snd_move();
     if (k & KEY_B) break;
     else if ((k & (KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R)) && n == 2) { sel ^= 1; redraw = true; }
-    else if ((k & KEY_A) && n) {
-      uint8_t out[100]; int card = 0;
-      pdna_inspect(recs[sel], false, false, out, 0, &card);   /* read-only summary */
-      redraw = true;                                          /* repaint the scene after */
+    else if (k & KEY_A) {
+      if (n == 0) {                              /* empty day-care: A = put a copied mon in */
+        if (dc_deposit(base, stride)) rescan = true; else redraw = true;
+      } else {
+        bool can_put = app_can_edit() && g_clip.occupied && n < 2;
+        int a = dc_menu(app_can_edit(), can_put);
+        if (a == 1)      { if (dc_withdraw(base, stride, recs[sel], phys[sel])) rescan = true; else redraw = true; }
+        else if (a == 2) { if (dc_deposit(base, stride)) rescan = true; else redraw = true; }
+        else if (a == 0) {
+          /* Editable summary, exactly like the box/party: a kept edit is written back into
+           * the daycare BoxPokemon and SB1 is verified-written. U/D scrolls the pair. */
+          uint8_t out[100]; int card = 0; bool saved; int nav;
+          do {
+            saved = false;
+            nav = pdna_inspect(recs[sel], false, app_can_edit(), out, &saved, &card);
+            if (saved) {
+              memcpy(recs[sel], out, 80);                      /* daycare mons are 80-byte BoxPokemon in SB1 */
+              app_stage_sb1();                                 /* deferred: saved when you leave the save */
+              if (pk_decode_mon(recs[sel], false, &dc[sel])) pk_resolve(&dc[sel]);  /* refresh the scene copy */
+            }
+            if (n > 1) { if (nav > 0) sel = (sel + 1) % n; else if (nav < 0) sel = (sel + n - 1) % n; }
+          } while (nav != 0 && n > 1);
+          redraw = true;
+        } else redraw = true;                    /* cancel */
+      }
     }
   }
 }
@@ -1322,34 +1814,150 @@ static int sb_party_maxlevel(const SbRecord* b) {
 }
 
 /* Detail view for one base: trainer line + a 3x2 party grid (icon, name, Lv). */
-static void sb_detail(const SbRecord* b) {
+/* Secret-base owner trainer-class presets. The overworld sprite + battle class are
+ * DERIVED (index 0..9 = gender*5 + trainerId[0]%5): 5 male, then 5 female. Short class
+ * names (clean-room — labelled by class, which is identical across RS/Emerald). */
+static const char* const SB_CLASS_NAME[10] = {
+  "Youngster", "Bug Catcher", "Rich Boy", "Camper", "Cooltrainer M",
+  "Lass", "School Kid", "Lady", "Picnicker", "Cooltrainer F",
+};
+
+/* Change a friend's base owner to one of the 10 NPC presets (writes gender + trainerId[0]
+ * into g_sb1; sets *dirty). Omega + non-own only — gated by the caller. */
+static void sb_owner_pick(SbRecord* b, uint32_t off, bool* dirty) {
+  int cur = sb_owner_class(g_sb1, off, b->slot);
+  int sel = (cur >= 0 && cur < 10) ? cur : 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 3, UI_TITLE, "OWNER APPEARANCE");
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    ui_text(6, 17, UI_DIM, "Overworld look + battle class");
+    ui_text(6, 26, UI_DIM, "(one of 10 presets).");
+    for (int i = 0; i < 10; i++) {
+      int y = 40 + i * 11; bool s = (i == sel);
+      if (s) ui_panel(2, y - 1, 236, 11, UI_SEL, UI_TITLE);
+      char r[32]; siprintf(r, "%-13s %s", SB_CLASS_NAME[i], i < 5 ? "(M)" : "(F)");
+      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, r);
+    }
+    ui_text(4, 152, UI_DIM, "A set  U/D move  B cancel");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 9;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 10;
+    else if (k & KEY_A) {
+      sb_set_owner_class(g_sb1, off, b->slot, sel);
+      b->gender = sel / 5;                              /* keep the parsed "Trainer: M/F" line in sync */
+      /* sb_set_owner_class rewrote trainerId[0] (record offset 0x09) — refresh the cached
+       * low byte so the detail screen's "TID" line isn't stale this session. */
+      b->trainerId = (uint16_t)((b->trainerId & 0xFF00) | g_sb1[off + (uint32_t)b->slot * SB_RECORD + 0x09]);
+      *dirty = true; snd_ok();
+      return;
+    }
+  }
+}
+
+/* View + edit ONE secret-base party mon with the SAME rich summary cards as a normal
+ * mon. SB stores a REDUCED format (species/level/item/moves/PID + ONE EV byte), so we
+ * SYNTHESIZE a full 80-byte BoxPokemon — IVs = the game's fixed 15, the EV byte applied
+ * to every stat — hand it to pdna_inspect, then write back only the storable subset (the
+ * 6 EVs averaged to one byte, the way the game itself stores a base). pdna_inspect's U/D
+ * "next/prev mon" maps to scrolling the boarders. Caller commits SB1 once on exit.
+ * NOTE: IVs (forced 15), the EV spread, nickname/OT/friendship/met/ball/ribbons/PP do
+ * NOT persist to a secret base — only species/level/item/4 moves/PID + the avg EV byte. */
+static void sb_mon_edit(SbRecord* b, uint32_t off, int start, bool* dirty) {
+  int count = b->partyCount; if (count < 1) return;
+  int idx = start; if (idx < 0) idx = 0; if (idx >= count) idx = count - 1;
+  int card = 0;
+  for (;;) {
+    SbParty* P = &b->party;
+    uint32_t pid = P->personality[idx];
+    /* synthesize an 80-byte box record from the reduced fields (PID into the raw bytes
+     * BEFORE load so nature/gender/ability derive from it, as the game does). */
+    uint8_t rec[80]; memset(rec, 0, 80);
+    rec[0] = (uint8_t)pid; rec[1] = (uint8_t)(pid >> 8); rec[2] = (uint8_t)(pid >> 16); rec[3] = (uint8_t)(pid >> 24);
+    EditMon e; gen3_edit_load(rec, false, &e);
+    em_set_species(&e, P->species[idx]);
+    em_set_item(&e, P->heldItem[idx]);
+    for (int z = 0; z < 4; z++) em_set_move(&e, z, P->moves[idx * 4 + z]);
+    for (int s = PK_HP; s <= PK_SPD; s++) em_set_iv(&e, s, 15);         /* the game's fixedIV in SB battles */
+    for (int s = PK_HP; s <= PK_SPD; s++) em_set_ev(&e, s, P->ev[idx]); /* one byte -> all 6 stats */
+    em_set_level(&e, P->level[idx]);
+    gen3_edit_commit(&e, rec);
+    /* full rich view/edit — identical 7-card UI as any other mon */
+    uint8_t out[100]; bool saved = false;
+    int nav = pdna_inspect(rec, false, app_can_edit(), out, &saved, &card);
+    if (saved) {                                          /* write back only the SB-storable subset */
+      PkMon p; pk_decode_mon(out, false, &p); pk_resolve(&p);
+      SbPartyMon m;
+      m.species = p.species; m.personality = p.personality; m.heldItem = p.heldItem;
+      for (int z = 0; z < 4; z++) m.moves[z] = p.moves[z];
+      m.level = p.level ? p.level : P->level[idx];
+      uint16_t evt = (uint16_t)(p.evs[0] + p.evs[1] + p.evs[2] + p.evs[3] + p.evs[4] + p.evs[5]);
+      m.ev = (uint8_t)(evt / 6);                          /* GetAverageEVs — how the game stores a base */
+      sb_write_mon(g_sb1, off, b->slot, idx, &m);         /* RAM write; committed on exit */
+      P->species[idx] = m.species; P->level[idx] = m.level; P->heldItem[idx] = m.heldItem;
+      P->ev[idx] = m.ev; P->personality[idx] = m.personality;
+      for (int z = 0; z < 4; z++) P->moves[idx * 4 + z] = m.moves[z];
+      *dirty = true;
+    }
+    if (nav == 0) return;                                 /* B -> leave */
+    if (count > 1) idx = (nav > 0) ? (idx + 1) % count : (idx > 0 ? idx - 1 : count - 1);
+  }
+}
+
+/* Secret-base detail: owner info + the boarding party, with a cursor to view/edit each
+ * mon (A) and change the owner's overworld look (SELECT). Returns true if g_sb1 was
+ * edited (the caller commits or reverts SB1). */
+static bool sb_detail(SbRecord* b, uint32_t off) {
+  bool dirty = false, can = app_can_edit();
+  int psel = 0;
   for (;;) {
     ui_clear();
     char hdr[40]; ui_truncate(hdr, b->trainerName[0] ? b->trainerName : "?", 14);
     ui_text(4, 3, UI_TITLE, hdr);
-    if (b->own) ui_text(140, 3, UI_OK, "YOUR BASE");
+    if (b->own) ui_text(150, 3, UI_OK, "YOUR BASE");
     ui_hline(0, 13, UI_SCR_W, UI_BORDER);
 
     char line[40];
-    ui_text(6, 18, UI_DIRCLR, b->gender ? "Trainer: Female" : "Trainer: Male");
-    siprintf(line, "TID %05u", (unsigned)b->trainerId); ui_text(150, 18, UI_DIM, line);
+    ui_text(6, 17, UI_DIRCLR, b->gender ? "Trainer: Female" : "Trainer: Male");
+    siprintf(line, "TID %05u", (unsigned)b->trainerId); ui_text(150, 17, UI_DIM, line);
+    int cls = sb_owner_class(g_sb1, off, b->slot);
+    siprintf(line, "Looks like: %s", (cls >= 0 && cls < 10) ? SB_CLASS_NAME[cls] : "?");
+    ui_text(6, 27, UI_TEXT, line);
     siprintf(line, "Visits %u   Decorations %d/16", (unsigned)b->numEntered, b->decorCount);
-    ui_text(6, 28, UI_DIM, line);
-    if (b->battledToday) ui_text(150, 28, UI_WARN, "Battled today");
+    ui_text(6, 37, UI_DIM, line);
+    if (b->battledToday) ui_text(6, 46, UI_WARN, "Battled today");     /* #6: its own line */
 
     for (int i = 0; i < SB_PARTY; i++) {
       int col = i % 3, row = i / 3;
-      int cx = 6 + col * 78, cy = 40 + row * 50;     /* row 1 item line ends at 138, clear of the 151 divider */
+      int cx = 4 + col * 78, cy = 56 + row * 46;
       uint16_t sp = b->party.species[i];
-      if (!sp) { ui_text(cx + 28, cy + 12, UI_DIM, "-"); continue; }
-      ui_sprite(cx + 23, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form(sp, 0));
-      char nm[16]; ui_truncate(nm, pk_species_name(sp), 9); ui_text(cx, cy + 32, UI_TEXT, nm);
+      bool s = (i == psel) && (i < b->partyCount);
+      if (s) ui_panel(cx - 2, cy - 2, 76, 45, UI_SEL, UI_TITLE);
+      if (!sp) { ui_text(cx + 26, cy + 14, UI_DIM, "-"); continue; }
+      ui_sprite(cx + 22, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form(sp, 0));
+      char nm[16]; ui_truncate(nm, pk_species_name(sp), 9); ui_text(cx, cy + 32, s ? UI_SELTEXT : UI_TEXT, nm);
       siprintf(line, "Lv%u", (unsigned)b->party.level[i]); ui_text(cx, cy + 40, UI_DIRCLR, line);
-      if (b->party.heldItem[i]) { char it[16]; ui_truncate(it, pk_item_name(b->party.heldItem[i]), 9); ui_text(cx, cy + 48, UI_DIM, it); }
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, "B back");
-    if (wait_keys(KEY_B | KEY_A) & (KEY_B | KEY_A)) return;
+    ui_text(4, 152, UI_DIM, (can && !b->own) ? "A edit mon  SEL owner  B back"
+                          : can               ? "A edit mon  B back"
+                                              : "A view mon  B back");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_SELECT);
+    if (k & KEY_B) return dirty;
+    else if (k & KEY_A) { if (b->partyCount > 0) sb_mon_edit(b, off, psel, &dirty); }
+    else if (k & KEY_SELECT) {
+      if (!can)        { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); }
+      else if (b->own) { snd_deny(); msg_wait("OWN BASE", UI_DIM, "Your base's look comes from", "your trainer card."); }
+      else sb_owner_pick(b, off, &dirty);
+    }
+    else if (b->partyCount > 0) {
+      int pc = b->partyCount;
+      if      (k & KEY_LEFT)  psel = (psel > 0) ? psel - 1 : pc - 1;
+      else if (k & KEY_RIGHT) psel = (psel + 1) % pc;
+      else if (k & KEY_UP)    { if (psel >= 3) psel -= 3; }
+      else if (k & KEY_DOWN)  { if (psel + 3 < pc) psel += 3; }
+    }
   }
 }
 
@@ -1387,7 +1995,19 @@ static void pdna_secretbase(void) {
     if (k & KEY_B) return;
     else if (k & KEY_UP)   { if (sel > 0) sel--; }
     else if (k & KEY_DOWN) { if (sel < n - 1) sel++; }
-    else if (k & KEY_A)    sb_detail(&g_sb_recs[sel]);
+    else if (k & KEY_A) {                               /* view/scroll/edit the base's party + owner */
+      if (sb_detail(&g_sb_recs[sel], off)) {            /* edits live in g_sb1 (RAM) — commit or revert */
+        if (app_confirm("Save Secret-Base edits?", "Writes this save now.")) {
+          busy_panel("Secret base");
+          if (!app_commit_sb1()) msg_wait("SAVE FAILED", UI_WARN, "Save not modified.", 0);
+        } else {
+          gen3_read_saveblock1(g_save, g_vinfo.slot, g_sb1);   /* discard: restore SB1 from the image */
+        }
+        n = sb_read_all(g_sb1, off, g_sb_recs);         /* re-parse either way */
+        if (n == 0) return;
+        if (sel >= n) sel = n - 1;
+      }
+    }
     else if (k & KEY_SELECT) {                          /* clear a base (Omega-only, verified write) */
       if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); continue; }
       const SbRecord* b = &g_sb_recs[sel];
@@ -1407,50 +2027,261 @@ static void pdna_secretbase(void) {
 
 /* ===================== Settings (#14: backups) ========================= */
 
+/* ---- RTC / save-clock check & fix (RSE only) -----------------------------
+ * Reads the live cartridge RTC, diagnoses whether the save's stored clock has
+ * drifted/reset (which freezes berries, Shoal tides, the Lottery and Mirage Island),
+ * and offers Auto-sync (in-game clock = cart clock) or a manual date/time set. The
+ * RTC fields live in SaveBlock2 (plaintext); the fix commits through the same verified
+ * write path the trainer card uses (app_commit_sb2). Writes are Omega-only; an
+ * EverDrive / no-RTC cart gets a read-only diagnosis. */
+static int days_in_month_ui(int y, int m) {
+  static const int md[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  bool leap = (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0);
+  if (m < 1 || m > 12) return 30;
+  return md[m - 1] + ((m == 2 && leap) ? 1 : 0);
+}
+
+/* Dial in the date/time the game should believe is "now"; on A, write + commit. */
+static void clock_manual_entry(GbaRtcTime live) {
+  enum { F_Y, F_MO, F_D, F_H, F_MI, F_N };
+  static const char* const LBL[F_N] = { "Year", "Month", "Day", "Hour", "Minute" };
+  int y = live.year, mo = live.month, d = live.day, h = live.hour, mi = live.minute, f = 0;
+  for (;;) {
+    int dim = days_in_month_ui(y, mo); if (d > dim) d = dim; if (d < 1) d = 1;
+    int v[F_N] = { y, mo, d, h, mi };
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, "SET IN-GAME CLOCK");
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < F_N; i++) {
+      char r[40]; siprintf(r, "%-7s %0*d", LBL[i], i == F_Y ? 4 : 2, v[i]);
+      int yy = 30 + i * 16; bool s = (i == f);
+      if (s) ui_panel(2, yy - 2, 150, 13, UI_SEL, UI_TITLE);
+      ui_text(10, yy, s ? UI_SELTEXT : UI_TEXT, r);
+    }
+    ui_text(6, 120, UI_DIM, "Becomes the game's current");
+    ui_text(6, 130, UI_DIM, "date/time; resumes events.");
+    ui_text(4, 152, UI_DIM, "U/D change  L/R field  A set  B");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
+    if (k & KEY_B) return;
+    else if (k & KEY_LEFT)  f = (f > 0) ? f - 1 : F_N - 1;
+    else if (k & KEY_RIGHT) f = (f + 1) % F_N;
+    else if (k & (KEY_UP | KEY_DOWN)) {
+      int dir = (k & KEY_UP) ? 1 : -1;
+      switch (f) {
+        case F_Y:  y += dir; if (y < 2000) y = 2079; if (y > 2079) y = 2000; break;  /* keep day-count in s16 */
+        case F_MO: mo += dir; if (mo < 1) mo = 12; if (mo > 12) mo = 1; break;
+        case F_D:  { int dm = days_in_month_ui(y, mo); d += dir; if (d < 1) d = dm; if (d > dm) d = 1; } break;
+        case F_H:  h = (h + dir + 24) % 24; break;
+        case F_MI: mi = (mi + dir + 60) % 60; break;
+      }
+    } else if (k & KEY_A) {
+      char l1[40]; siprintf(l1, "%04d-%02d-%02d  %02d:%02d", y, mo, d, h, mi);
+      if (app_confirm("Set in-game clock?", l1)) {
+        if (gen3_clock_manual(g_sb2, live.year, live.month, live.day, live.hour, live.minute, live.second,
+                              y, mo, d, h, mi, 0))
+          app_commit_sb2();           /* verified write; shows SAVED / WRITE FAILED + backs up */
+        else
+          msg_wait("OUT OF RANGE", UI_WARN, "Cart clock year too far off.", "Fix the cart's TIME first.");
+        return;
+      }
+    }
+  }
+}
+
+static void pdna_clock(void) {
+  bool can = app_can_edit();
+  for (;;) {
+    if (g_game == PK_FRLG) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "SAVE CLOCK / RTC");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+      ui_text(6, 44, UI_DIM, "FireRed / LeafGreen have no");
+      ui_text(6, 56, UI_DIM, "real-time clock or berry/tide");
+      ui_text(6, 68, UI_DIM, "events. Nothing to fix here.");
+      ui_text(4, 152, UI_DIM, "B back");
+      wait_keys(KEY_B);
+      return;
+    }
+    GbaRtcTime live; bool have = gba_rtc_get(&live);
+    int rtc_days = have ? gen3_rtc_days(live.year, live.month, live.day) : 0;
+    int rtc_sec  = have ? (live.hour * 3600 + live.minute * 60 + live.second) : 0;
+    Gen3ClockInfo ci; gen3_clock_read(g_sb2, rtc_days, rtc_sec, have, &ci);
+
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, "SAVE CLOCK / RTC");
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    char b[44];
+    if (have) { siprintf(b, "Cart clock  %04u-%02u-%02u %02u:%02u",
+                         live.year, live.month, live.day, live.hour, live.minute); ui_text(6, 22, UI_TEXT, b); }
+    else ui_text(6, 22, UI_WARN, "Cart clock not available.");
+    if (have) { siprintf(b, "Save clock  %04d-%02d-%02d  (in-game)", ci.ly, ci.lm, ci.ld); ui_text(6, 34, UI_TEXT, b); }
+    else        ui_text(6, 34, UI_DIM, "Save clock  --");
+
+    /* Verdict + plain-language detail. A POSITIVE gap is normal — it just means that
+     * many in-game days will process next time you play (berries grow, etc.). Only a
+     * clock that runs BEHIND the save freezes those events. */
+    const char* vmsg; u16 vcol;
+    switch (ci.verdict) {
+      case 0: vmsg = (ci.delta == 0) ? "Clock is in sync." : "Clock is healthy."; vcol = UI_OK;   break;
+      case 1: vmsg = "Large gap - is the cart clock right?";                       vcol = UI_WARN; break;
+      case 2: vmsg = "Cart clock is BEHIND the save.";                             vcol = UI_WARN; break;
+      case 3: vmsg = "Clock data looks wrong.";                                    vcol = UI_WARN; break;
+      default: vmsg = "Enable GAME RTC on the cart.";                              vcol = UI_DIM;  break;
+    }
+    ui_text(6, 50, vcol, vmsg);
+    if (have) {
+      if      (ci.verdict == 2) siprintf(b, "Behind by %d day(s): events frozen.", -ci.delta);
+      else if (ci.verdict == 3) siprintf(b, "Offset %dd, berry day %d.", ci.off_days, ci.berry_days);
+      else if (ci.delta > 0)    siprintf(b, "%d day(s) will pass when you play.", ci.delta);
+      else                      strcpy(b, "Up to date - nothing pending.");
+      ui_text(6, 64, UI_DIM, b);
+      ui_text(6, 78, UI_DIM, "(Save clock is the in-game time");
+      ui_text(6, 88, UI_DIM, " you set - it need not match today.)");
+    }
+
+    if (!have) {
+      ui_text(6, 102, UI_DIM, "On the EZ-Flash: System >");
+      ui_text(6, 112, UI_DIM, "GAME RTC = on, then set TIME.");
+      ui_text(4, 152, UI_DIM, "B back");
+      wait_keys(KEY_B);
+      return;
+    }
+    if (!can) {
+      ui_text(6, 102, UI_DIM, "Read-only cart - fixing needs");
+      ui_text(6, 112, UI_DIM, "an EZ-Flash Omega.");
+      ui_text(4, 152, UI_DIM, "B back");
+      wait_keys(KEY_B);
+      return;
+    }
+    ui_text(6, 102, UI_DIM, "Set the cart clock correctly");
+    ui_text(6, 112, UI_DIM, "first, then sync.");
+    ui_text(4, 152, UI_DIM, "A sync to cart  SEL set  B back");
+    u16 k = wait_keys(KEY_A | KEY_SELECT | KEY_B);
+    if (k & KEY_B) return;
+    else if (k & KEY_A) {
+      if (app_confirm("Sync to cart clock?", "In-game time = cart time now.")) {
+        if (gen3_clock_autosync(g_sb2, live.year, live.month, live.day, live.hour, live.minute, live.second))
+          app_commit_sb2();
+        else
+          msg_wait("CAN'T SYNC", UI_WARN, "Cart clock year out of range.", "Set the cart's TIME first.");
+      }
+    } else if (k & KEY_SELECT) {
+      clock_manual_entry(live);
+    }
+  }
+}
+
+/* Settings > Animations: a per-place On/Off list (the 2-frame bobs + the summary
+ * portrait wiggle), each its own toggle. Persists on exit. */
+static void anim_settings(void) {
+  static const char* const NM[ANIM_COUNT] = { "Box icons", "Party", "Pokedex", "Daycare", "Summary" };
+  int sel = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, "ANIMATIONS");
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < ANIM_COUNT; i++) {
+      char r[40]; siprintf(r, "%-10s %s", NM[i], app_anim_enabled(i) ? "On" : "Off");
+      int y = 30 + i * 16; bool s = (i == sel);
+      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
+      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, r);
+    }
+    ui_text(8, 124, UI_DIM, "Moving sprites, per screen.");
+    ui_text(4, 152, UI_DIM, "A toggle  U/D move  B back");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) { cfg_save(); return; }
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : ANIM_COUNT - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % ANIM_COUNT;
+    else if (k & KEY_A)    g_anim_mask ^= (1u << sel);
+  }
+}
+
+/* Settings > Rumble: global Strength + Duration steppers (the motor can read as
+ * "nothing" on a weak unit, so these are tunable), then a per-cue On/Off list. <>
+ * adjust strength/duration (with a live buzz preview); A toggles a cue (+preview).
+ * Persists on exit. */
+static void rumble_settings(void) {
+  enum { R_STR, R_DUR, R_CUE0 };
+  const int NROW = R_CUE0 + RCUE_COUNT;
+  int sel = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, "RUMBLE");
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < NROW; i++) {
+      char r[40];
+      if      (i == R_STR) siprintf(r, "Strength    %d/5  < >", rmbl_get_strength());
+      else if (i == R_DUR) siprintf(r, "Duration    %d/5  < >", rmbl_get_duration());
+      else { int c = i - R_CUE0; siprintf(r, "%-12s %s", rmbl_cue_name(c), rmbl_cue_enabled(c) ? "On" : "Off"); }
+      int y = 24 + i * 14; bool s = (i == sel);
+      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
+      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, r);
+    }
+    ui_text(8, 140, UI_DIM, "Needs an EZ-Flash Omega with");
+    ui_text(8, 150, UI_DIM, "GAME RTC on. <>adj A toggle B");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
+    if (k & KEY_B) { cfg_save(); return; }
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : NROW - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % NROW;
+    else if (k & (KEY_LEFT | KEY_RIGHT)) {
+      int d = (k & KEY_RIGHT) ? 1 : -1;
+      if      (sel == R_STR) { rmbl_set_strength(rmbl_get_strength() + d); rmbl_demo(); }
+      else if (sel == R_DUR) { rmbl_set_duration(rmbl_get_duration() + d); rmbl_demo(); }
+    }
+    else if (k & KEY_A) {
+      if (sel >= R_CUE0) { int c = sel - R_CUE0; bool now = !rmbl_cue_enabled(c); rmbl_cue_set(c, now); if (now) rmbl_fire(c); }
+      else rmbl_demo();        /* strength/duration row: just feel it */
+    }
+  }
+}
+
 static void pdna_settings(void) {
   static const char* const MODE[3] = { "New each time", "Single (rolling)", "Skip (none)" };
+  enum { S_BACKUP, S_ANIM, S_RUMBLE, S_CLEAR, S_CLOSE, S_N };
   int sel = 0;
   for (;;) {
     ui_clear();
     ui_text(4, 4, UI_TITLE, "SETTINGS");
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
     char r0[44]; siprintf(r0, "Backups:  %s", MODE[g_backup_mode]);
-    char r1[44]; siprintf(r1, "Animations:  %s", g_anim_on ? "On" : "Off");
-    const char* rows[4] = { r0, r1, "Clear backups (this save)", "Close" };
-    for (int i = 0; i < 4; i++) {
+    const char* rows[S_N] = { r0, "Animations  >", "Rumble  >", "Clear backups (this save)", "Close" };
+    for (int i = 0; i < S_N; i++) {
       int y = 30 + i * 16; bool s = (i == sel);
       if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
       ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
     }
-    ui_text(8, 104, UI_DIM, "Animations Off = no moving sprites");
-    ui_text(8, 114, UI_DIM, "(box icons, Pokedex, summary).");
+    ui_text(8, 120, UI_DIM, "Animations + Rumble: per-item");
+    ui_text(8, 130, UI_DIM, "on/off inside each submenu.");
     ui_text(4, 152, UI_DIM, "A change/do  U/D move  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
+    if (k & KEY_B) { cfg_save(); return; }
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : S_N - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % S_N;
     else if (k & KEY_A) {
-      if (sel == 0) g_backup_mode = (g_backup_mode + 1) % 3;
-      else if (sel == 1) g_anim_on = !g_anim_on;
-      else if (sel == 2) {
+      if (sel == S_BACKUP) g_backup_mode = (g_backup_mode + 1) % 3;
+      else if (sel == S_ANIM)   anim_settings();
+      else if (sel == S_RUMBLE) rumble_settings();
+      else if (sel == S_CLEAR) {
         if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "File writes need EZ-Flash Omega.", 0); continue; }
         if (app_confirm("Delete ALL backups?", "For the loaded save only.")) {
+          rmbl_pause();
           int rm = sf_clear_backups(g_path);
+          rmbl_resume();
           char m[44]; siprintf(m, "Removed %d backup file(s).", rm);
           snd_ok(); msg_wait("CLEARED", UI_OK, m, 0);
         }
-      } else return;
+      } else return;   /* S_CLOSE */
     }
   }
 }
 
 /* START-menu destinations over the box (Party + Bank + Daycare are the storage
  * screens; SELECT no longer toggles the party — it cycles the box cursor mode). */
-enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_DEX, NV_DATA, NV_SECRET, NV_SETTINGS, NV_BACK, NV_COUNT };
+enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_DEX, NV_DATA, NV_SECRET, NV_SETTINGS, NV_BACK, NV_COUNT };
 static int nav_menu(void) {
-  static const char* const L[NV_COUNT] = { "Party", "Bank", "Daycare", "Trainer card", "Pokedex",
+  static const char* const L[NV_COUNT] = { "Party", "Bank", "Daycare", "Trainer card", "Clock fix", "Pokedex",
                                            "Data editor", "Secret Bases", "Settings", "Back" };
-  const int mx = 56, my = 8, rh = 13, mw = 128, mh = 18 + NV_COUNT * rh + 11;  /* my+mh=154: fits 9 */
+  const int mx = 56, my = 6, rh = 12, mw = 128, mh = 18 + NV_COUNT * rh + 11;  /* my+mh=155: fits 10 */
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
@@ -1501,17 +2332,33 @@ static BoxSource pc_box_source(void) {
   return s;
 }
 
-/* Leaving the open save: if move-mode left unsaved repositions, ask once. A writes
- * them (the verified PC commit); B discards by reloading g_pc from the untouched
- * in-RAM save image (we never wrote those moves to g_save). */
-static void flush_pc_on_exit(void) {
-  if (!app_pc_dirty()) return;
-  if (app_confirm("Save box changes?", "Save the Pokemon you moved?")) {
-    app_commit_pc();
+/* Leaving the open save: if ANY deferred edits are pending — box moves (g_pc) and/or
+ * Day-Care moves (staged into g_save) — ask ONCE and save or discard them together, so
+ * a cross-storage move (Day-Care<->PC) can never be half-saved. A writes the whole image
+ * in one verified pass (app_commit_pc folds in the staged Day-Care sections); B discards
+ * everything — the on-disk save was never touched and we're returning to the browser. */
+static void flush_on_exit(void) {
+  if (!app_pc_dirty() && !g_sb1_deferred) return;
+  if (app_confirm("Save changes?", "Save the Pokemon you moved?")) {
+    app_commit_pc();              /* writes g_pc + the staged Day-Care sections; clears both flags */
   } else {
-    gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);   /* revert uncommitted moves */
-    g_pc_dirty = false;
+    gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);   /* revert PC moves */
+    g_pc_dirty = false; g_sb1_deferred = false;          /* drop staged Day-Care (disk untouched) */
   }
+}
+
+/* Re-sync the shared SaveBlock1/2 working buffers from the (committed) in-RAM save
+ * image. Several editors edit g_sb1/g_sb2 IN PLACE and commit ALL of SaveBlock1, but
+ * some decline paths don't revert their edits — so before handing control to the next
+ * screen we restore the buffers to the on-disk state. This guarantees a later "save"
+ * can never persist a change the user previously declined, and a decline can't strand a
+ * stale edit. (The PC-box deferred moves live in a separate buffer, g_pc, untouched.) */
+static void reload_saveblocks(void) {
+  gen3_read_saveblock1(g_save, g_vinfo.slot, g_sb1);
+  int s0 = gen3_find_section(g_save, g_vinfo.slot, 0);
+  if (s0 >= 0)
+    memcpy(g_sb2, g_save + (uint32_t)g_vinfo.slot * G3_SLOT_BYTES + (uint32_t)s0 * G3_SECTOR_SIZE,
+           G3_SECTOR_DATA_SIZE);
 }
 
 /* Load the picked save and show it: start in the PC boxes; SELECT toggles to the
@@ -1546,22 +2393,30 @@ static void view_save(const char* path) {
   g_game = g_frlg ? PK_FRLG : (g_vinfo.version_guess == G3_VER_RS ? PK_RS : PK_EMERALD);
 
   BoxSource pcs = pc_box_source();
+  rmbl_fire(RCUE_ROOM);                            /* entering the save's home "room" */
   /* The PC box is "home"; Party / Bank / Daycare / etc. all hang off the START menu.
    * (Saves with no PC fall back to the party list as home.) */
   for (;;) {
+    reload_saveblocks();                         /* editors share g_sb1/g_sb2 + commit all SB1 — keep them == the saved image so a declined edit can't ride along */
     int r = g_have_pc ? pdna_box(&pcs) : party_list();
-    if (r == 0) { flush_pc_on_exit(); return; }  /* B -> file browser (prompt deferred moves) */
+    if (r == 0) { flush_on_exit(); return; }  /* B / SAVE tab -> file browser (one prompt for all deferred moves) */
+    if (r == 3) {                                /* PARTY SEL tab -> party list */
+      rmbl_fire(RCUE_ROOM); party_list();
+      g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
+      for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
+    }
     if (r == 2) {                                /* START -> nav menu */
       int refresh_party = 0;
       switch (nav_menu()) {
-        case NV_PARTY:   party_list(); refresh_party = 1; break;
-        case NV_BANK:    pdna_bank_show(); refresh_party = 1; break;   /* a paste may hit the party */
+        case NV_PARTY:   rmbl_fire(RCUE_ROOM); party_list(); refresh_party = 1; break;
+        case NV_BANK:    rmbl_fire(RCUE_ROOM); pdna_bank_show(); refresh_party = 1; break;   /* a paste may hit the party */
         case NV_DAYCARE: pdna_daycare(); break;
         case NV_TRAINER: pdna_trainer(g_sb1, g_sb2, &g_vinfo, g_game); break;
+        case NV_CLOCK:   pdna_clock(); break;
         case NV_DEX:     pdna_dex_edit(); break;
         case NV_DATA:    if (app_can_edit()) data_editor();
                          else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); } break;
-        case NV_SECRET:  pdna_secretbase(); break;
+        case NV_SECRET:  rmbl_fire(RCUE_ROOM); pdna_secretbase(); break;
         case NV_SETTINGS: pdna_settings(); break;
         default: break;                          /* NV_BACK */
       }
@@ -1584,15 +2439,18 @@ int main(void) {
   ui_text(6, 70, UI_TITLE, "Detecting flashcart...");
   if (!flashcartio_activate()) halt_msg("No flashcart detected!");
   log_line("flashcart: %s", flashcart_name());
+  rmbl_init();                               /* rumble driver (Omega motor; no-op elsewhere) */
 
   FATFS fs;                                  /* lives forever (main never returns) */
   FRESULT fr = f_mount(&fs, "", 1);
   if (fr != FR_OK) { log_line("f_mount failed (fr=%d)", fr); halt_msg("SD mount failed!"); }
   log_line("SD mounted OK");
+  f_mkdir(PDNA_DIR);                          /* all PokeDNA files live in /PokeDNA, not the SD root */
   log_flush_to_sd(LOG_PATH);
   snd_boot();                                /* welcome chime = audio self-test */
 
   strcpy(g_cwd, "/");
+  cfg_load();                                /* restore last folder + sort/filter (#6) */
   for (;;) {
     char path[PATH_MAX];
     if (browse_pick(path, sizeof(path))) view_save(path);

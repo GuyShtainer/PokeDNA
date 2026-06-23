@@ -511,19 +511,23 @@ bool pdna_dex_screen(DexGetState get, DexSetState set, bool can_edit) {
     const u16 dpad = KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT;
     do {
       s_vsync();
-      if (grid && app_anim_enabled() && ++anim_ctr >= DEX_ANIM_PERIOD) {
+      fresh = key_hit(KEY_FULL);
+      k = fresh | key_repeat(dpad);
+      /* Animate ONLY on idle frames (no key pending) so a press/repeat is never delayed
+       * by the multi-cell repaint — this kills the occasional cursor "stick". Recompose
+       * EVERY visible caught cell at once (shared `bob`) via compose-over-DMA, no erase,
+       * so there's never a frame where a sprite is blanked. */
+      if (!k && grid && app_anim_enabled(ANIM_DEX) && ++anim_ctr >= DEX_ANIM_PERIOD) {
         anim_ctr = 0; bob ^= 1;
-        for (int i = 0; i < vis && top + i < g_n; i++) {     /* repaint just the caught cells */
+        for (int i = 0; i < vis && top + i < g_n; i++) {
           uint16_t in = g_list[top + i];
           if (dstate(in) != 2) continue;
           int x = x0 + (i % cols) * cw, y = y0 + (i / cols) * ch;
-          ui_fill_rect(x, y, 32, 32, UI_BG);
-          dex_cell_grid(x, y, in, bob);
+          ui_blit_over(x, y, 32, 32, mon_icon_for_frame(in, (uint8_t)bob), UI_BG);
+          ui_pokeball(x + 21, y + 21);
           if (top + i == sel) m3_frame(x - 1, y - 1, x + 32, y + 32, UI_SELTEXT);
         }
       }
-      fresh = key_hit(KEY_FULL);
-      k = fresh | key_repeat(dpad);
     } while (!k);
     if      (fresh & dpad)                          snd_move();
     else if (fresh & (KEY_L | KEY_R | KEY_SELECT))  snd_tab();

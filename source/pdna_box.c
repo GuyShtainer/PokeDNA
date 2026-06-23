@@ -46,6 +46,7 @@
 #define CM_ITEM   2
 static int s_cur_mode = CM_NORMAL;
 static int s_item_held = 0;           /* item id carried in ITEM mode (0 = none) */
+static int s_tab_focus = -1;          /* top-tab cursor: -1 none, 0 PKMN DATA, 1 PARTY SEL, 2 SAVE */
 static int s_item_from = -1;          /* slot the carried item was taken from */
 
 static PkMon EWRAM_BSS g_box[30];
@@ -168,8 +169,13 @@ static void draw_left(const PkMon* p) {
   ui_text(4, 116, UI_DIM, sp);
   ui_text(4, 130, UI_DIRCLR, "Item");
   char it[24];
-  ui_truncate(it, p->heldItem ? pk_item_name(p->heldItem) : "-", 9);
+  /* shorter name when an item icon is shown so the 24x24 icon (right) doesn't clip it */
+  ui_truncate(it, p->heldItem ? pk_item_name(p->heldItem) : "-", p->heldItem ? 5 : 9);
   ui_text(4, 139, UI_TEXT, it);
+  if (p->heldItem) {                                  /* the real item icon (already in ROM) */
+    const uint16_t* iic = item_icon_for(p->heldItem);
+    if (iic) ui_sprite(PANEL_W - 26, 126, ITEM_ICON_W, ITEM_ICON_H, iic);
+  }
 }
 
 /* Box wallpaper: blit the real wallpaper for `wp` (deduped 8x8 RGB15 tiles +
@@ -231,9 +237,10 @@ static void oam_sync(int cur, bool on_title) {
 
 static void draw_footer(bool is_bank, bool on_title, bool moving) {
   const char* f;
-  if (moving)              f = "Move  A drop  B cancel";
+  if (s_tab_focus >= 0)    f = "L/R tab  A pick  DOWN back";
+  else if (moving)         f = "Move  A drop  B cancel";
   else if (s_item_held)    f = "Item  A give  B putback";
-  else if (on_title)       f = "A edit  DOWN grid  L/R box  B";
+  else if (on_title)       f = "A edit  UP tabs  DOWN grid  L/R box";
   else if (s_cur_mode == CM_MOVE) f = "MOVE  A grab  SEL mode  B";
   else if (s_cur_mode == CM_ITEM) f = "ITEM  A take  SEL mode  B";
   else                     f = is_bank ? "A menu  SEL mode  L/R box  B"
@@ -277,9 +284,9 @@ static void draw_box_banner(BoxSource* src, int box, bool on_title) {
  * clear=false it repaints OVER the current screen (no black flash) to wipe a modal. */
 static void render_full(BoxSource* src, int box, int cur, bool on_title, bool moving, bool clear) {
   if (clear) ui_clear();
-  draw_tab(0, PANEL_W + 1, "PKMN DATA", true);
-  draw_tab(PANEL_W + 1, 92, src->is_bank ? "(BANK)" : "PARTY SEL", false);
-  draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "CLOSE B", false);
+  draw_tab(0, PANEL_W + 1, "PKMN DATA", s_tab_focus < 0 || s_tab_focus == 0);
+  draw_tab(PANEL_W + 1, 92, src->is_bank ? "(BANK)" : "PARTY SEL", s_tab_focus == 1);
+  draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "SAVE", s_tab_focus == 2);
   draw_left(on_title ? 0 : &g_box[cur]);
 
   draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
@@ -393,11 +400,11 @@ static void box_options_menu(BoxSource* src, int box) {
   }
 }
 
-/* Idle icon bob — now FREE and flicker-free: every ANIM_PERIOD frames, toggle a 1px
- * unison Y-offset on ALL icon sprites in a single in-vblank OAM write (boxoam_set_bob).
- * Every icon moves together; the GPU composites the rest; ~0 CPU; the cursor never
- * blocks. Gated on app_anim_enabled() (Settings -> Animations Off => static, bob=0).
- * Suspended during move-carry (the carried icon rides the cursor, not the grid). */
+/* Idle icon bob: every ANIM_PERIOD frames toggle a 1px unison Y-offset on ALL icon
+ * sprites in a single in-vblank OAM write (boxoam_set_bob). Every icon moves together,
+ * the GPU composites the rest, ~0 CPU, and the cursor never blocks — so this is free and
+ * flicker-free (the hardware-OBJ path, now that the BG2-priority bug is fixed). Gated on
+ * app_anim_enabled(); suspended while move-carrying and in ITEM mode (markers stay put). */
 #define ANIM_PERIOD 30                    /* vblanks per bob toggle (~0.5s, Gen-3 cadence) */
 
 int pdna_box(BoxSource* src) {
@@ -409,6 +416,7 @@ int pdna_box(BoxSource* src) {
   int anim_ctr = 0, bob = 0;                   /* current unison Y-bob offset (0/1) */
   s_move_from = -1;
   s_cur_mode = CM_NORMAL; s_item_held = 0; s_item_from = -1;   /* fresh cursor mode each open */
+  s_tab_focus = -1;
   boxoam_enter();                             /* enable OBJ; upload hand/grab + palettes */
   s_oam_reload = true;                        /* first paint uploads the box's icon tiles */
   uint8_t* recs = src->records(box);          /* current box's 30*80 records */
@@ -416,20 +424,19 @@ int pdna_box(BoxSource* src) {
   /* switch to box `nbx` (wrapping), reload + redraw */
   #define SWITCH_BOX(nbx) do { box = (nbx); recs = src->records(box); \
                                pk_decode_box_raw(recs, g_box); cur = 0; \
+                               bob = 0; anim_ctr = 0; \
                                s_oam_reload = true; need_full = true; } while (0)
 
   for (;;) {
     if (need_full) { render_full(src, box, cur, on_title, s_move_from >= 0, true); need_full = false; }
     u16 k, fresh;
     do { s_vsync();
-         /* idle unison Y-bob, gated on the "moving sprites" setting. A single OAM
-          * nudge of all icons — no flash, no sweep, no CPU. Suspended while carrying
-          * (the held mon rides the cursor) and in ITEM mode (icons + the fixed-cell
-          * held-item markers stay static, as in the real PC's item view). */
-         if (app_anim_enabled() && s_move_from < 0 && s_cur_mode != CM_ITEM) {
-           if (++anim_ctr >= ANIM_PERIOD) { anim_ctr = 0; bob ^= 1; boxoam_set_bob(bob); }
-         } else if (bob) { bob = 0; boxoam_set_bob(0); }
-         boxoam_commit();                       /* flush OAM shadow in the vblank window */
+         /* real 2-frame pose bob: DMA-swap all icons' tiles between frame 0/1 in vblank;
+          * paused while carrying or in ITEM mode (icons + markers stay static). */
+         if (app_anim_enabled(ANIM_BOX) && s_move_from < 0 && s_cur_mode != CM_ITEM) {
+           if (++anim_ctr >= ANIM_PERIOD) { anim_ctr = 0; bob ^= 1; boxoam_set_frame(bob); }
+         } else if (bob) { bob = 0; boxoam_set_frame(0); }
+         boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
     /* fresh-press earcons (held d-pad repeats stay silent) */
@@ -485,6 +492,20 @@ int pdna_box(BoxSource* src) {
       continue;                                      /* item-carry swallows all other keys */
     }
 
+    /* ---- TOP-TAB cursor (reached by pressing UP on the box name): pick a tab ---- */
+    if (s_tab_focus >= 0) {
+      if      (k & (KEY_B | KEY_DOWN)) { s_tab_focus = -1; need_full = true; }              /* back to box name */
+      else if (k & KEY_LEFT)  { s_tab_focus = (s_tab_focus > 0) ? s_tab_focus - 1 : 2; need_full = true; }
+      else if (k & KEY_RIGHT) { s_tab_focus = (s_tab_focus + 1) % 3; need_full = true; }
+      else if (k & KEY_A) {
+        if (s_tab_focus == 0) { s_tab_focus = -1; on_title = false; need_full = true; }      /* PKMN DATA -> grid */
+        else if (s_tab_focus == 1) { if (src->is_bank) snd_deny();                            /* PARTY SEL */
+                                     else { s_tab_focus = -1; boxoam_exit(); return 3; } }
+        else { s_tab_focus = -1; boxoam_exit(); return 0; }                                   /* SAVE -> exit (save prompt) */
+      }
+      continue;
+    }
+
     if (k & KEY_B) { if (s_cur_mode != CM_NORMAL && !on_title) { s_cur_mode = CM_NORMAL; need_full = true; } else { boxoam_exit(); return 0; } }
     else if ((k & KEY_START) && !src->is_bank) { boxoam_exit(); return 2; }
     else if (k & KEY_L) { SWITCH_BOX((box + nb - 1) % nb); }
@@ -495,6 +516,7 @@ int pdna_box(BoxSource* src) {
     }
     else if (on_title) {                           /* TITLE row: limited controls */
       if (k & KEY_DOWN) on_title = false;
+      else if (k & KEY_UP) { s_tab_focus = src->is_bank ? 2 : 1; need_full = true; }   /* up into the top tabs */
       /* LEFT/RIGHT on the box name flips boxes, like the real Gen-3 PC (fresh
        * presses only, so holding doesn't machine-gun through boxes). */
       else if (fresh & KEY_LEFT)  { SWITCH_BOX((box + nb - 1) % nb); on_title = true; }
@@ -546,6 +568,19 @@ int pdna_box(BoxSource* src) {
           play_grab_anim(src, box, cur);                                 /* grab cue (OAM lift) */
           carry_move(src, box, cur, cur);                                /* lift into carry */
           draw_footer(src->is_bank, false, true);                        /* move-mode footer */
+        } else if (app_take_dup_request()) {                            /* picked DUPLICATE -> copy into the glove */
+          int fs = -1;                                                   /* first free slot (box guaranteed non-full by the menu) */
+          for (int s = 0; s < COLS * ROWS; s++) { PkMon m; if (!pk_decode_mon(recs + (uint32_t)s * 80, false, &m)) { fs = s; break; } }
+          if (fs >= 0) {
+            memcpy(recs + (uint32_t)fs * 80, recs + (uint32_t)cur * 80, 80);  /* copy the selected mon into the free slot */
+            pk_decode_box_raw(recs, g_box);                             /* the copy now exists in g_box */
+            src->mark_dirty();                                          /* PC: deferred to exit; bank: quiet write */
+            cur = fs; s_move_from = fs;                                 /* carry the COPY; user positions it, B keeps it put */
+            render_full(src, box, cur, false, false, false);           /* reloads OAM (s_oam_reload set above) */
+            play_grab_anim(src, box, cur);
+            carry_move(src, box, cur, cur);
+            draw_footer(src->is_bank, false, true);
+          } else need_full = true;
         } else {
           need_full = true;                                              /* menu may have edited -> redraw */
         }

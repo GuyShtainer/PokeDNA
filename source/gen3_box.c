@@ -40,6 +40,27 @@ void pk_set_box_name(uint8_t* pc, int box, const char* s) {
   for (; i < 9; i++) dst[i] = 0xFF;     /* 0xFF = EOS + pad (box-name field is 9 bytes) */
 }
 
+/* ---- Raw / ACE box-name access (no encoder, no 0xFF terminator) ---------- */
+
+void pk_get_box_name_raw(const uint8_t* pc, int box, uint8_t out[9]) {
+  if (box < 0 || box >= G3_TOTAL_BOXES) { memset(out, 0, G3_BOX_NAME_BYTES); return; }
+  memcpy(out, pc + PC_OFF_NAMES + (uint32_t)box * G3_BOX_NAME_BYTES, G3_BOX_NAME_BYTES);
+}
+
+void pk_set_box_name_raw(uint8_t* pc, int box, const uint8_t* bytes, int len) {
+  if (box < 0 || box >= G3_TOTAL_BOXES) return;
+  if (len < 0) len = 0;
+  if (len > G3_BOX_NAME_BYTES) len = G3_BOX_NAME_BYTES;
+  memcpy(pc + PC_OFF_NAMES + (uint32_t)box * G3_BOX_NAME_BYTES, bytes, (size_t)len);
+}
+
+int pk_set_box_names_blob(uint8_t* pc, int off, const uint8_t* bytes, int len) {
+  if (off < 0 || off >= G3_BOX_NAMES_BYTES || len <= 0) return 0;
+  if (off + len > G3_BOX_NAMES_BYTES) len = G3_BOX_NAMES_BYTES - off;
+  memcpy(pc + PC_OFF_NAMES + off, bytes, (size_t)len);
+  return len;
+}
+
 void pk_set_box_wallpaper(uint8_t* pc, int box, uint8_t wp) {
   if (wp > G3_BOX_WALLPAPER_FRIENDS) wp = G3_BOX_WALLPAPER_FRIENDS;
   pc[PC_OFF_WALLPAPER + box] = wp;

@@ -53,6 +53,10 @@ void boxoam_load_box(const PkMon box[30]);
  * sprites. Pure OAM write — call from the vblank tick. */
 void boxoam_set_bob(int dy);
 
+/* Swap the box icons to bob frame 0/1 (the real Gen-3 2-frame pose animation) by
+ * DMA-uploading that frame's tiles for every occupied icon. Call from the vblank tick. */
+void boxoam_set_frame(int frame);
+
 /* Position/show the cursor hand. on_title -> parked over the banner. mode picks the
  * normal/orange(MOVE)/translucent(ITEM) look. cur is the 0..29 grid cell. */
 void boxoam_cursor(int cur, bool on_title, int mode);

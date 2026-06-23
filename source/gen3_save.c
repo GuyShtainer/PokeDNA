@@ -214,6 +214,92 @@ bool gen3_day_passed(const uint8_t* sb2, int rtc_now_days) {
   return current_local > last_berry;
 }
 
+/* ---- RTC clock check & fix ---------------------------------------------- */
+
+static int days_in_month(int year, int month) {
+  static const int md[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if (month < 1 || month > 12) return 30;
+  return md[month - 1] + ((month == 2 && is_leap(year)) ? 1 : 0);
+}
+
+void gen3_days_to_date(int days, int* year, int* month, int* day) {
+  int y = 2000, m = 1;
+  if (days < 0) days = 0;                         /* clamp; corrupt input only */
+  for (;;) { int yd = is_leap(y) ? 366 : 365; if (days < yd) break; days -= yd; y++; if (y > 2099) break; }
+  for (m = 1; m <= 12; m++) { int dm = days_in_month(y, m); if (days < dm) break; days -= dm; }
+  if (m > 12) m = 12;
+  if (year)  *year  = y;
+  if (month) *month = m;
+  if (day)   *day   = days + 1;
+}
+
+void gen3_clock_read(const uint8_t* sb2, int rtc_now_days, int rtc_now_sec, int has_rtc, Gen3ClockInfo* out) {
+  out->has_rtc    = has_rtc;
+  out->off_days   = (int16_t)rd16(sb2 + SB2_OFF_LOCAL_TIME_OFFSET);
+  out->off_h      = (int8_t)sb2[SB2_OFF_LOCAL_TIME_OFFSET + 2];
+  out->off_m      = (int8_t)sb2[SB2_OFF_LOCAL_TIME_OFFSET + 3];
+  out->off_s      = (int8_t)sb2[SB2_OFF_LOCAL_TIME_OFFSET + 4];
+  out->berry_days = (int16_t)rd16(sb2 + SB2_OFF_LAST_BERRY_UPDATE);
+  /* In-game day = liveRTC - localTimeOffset with the game's borrow: if the live
+   * time-of-day is earlier than the offset's, one day is borrowed (matches
+   * RtcCalcTimeDifference). Without this the derived date is off by a day. */
+  out->local_days = rtc_now_days - out->off_days;            /* epoch-0 in-game day */
+  { int off_sec = out->off_h * 3600 + out->off_m * 60 + out->off_s;
+    int local_sec = rtc_now_sec - off_sec;
+    if (local_sec < 0)       out->local_days -= 1;
+    else if (local_sec >= 86400) out->local_days += 1; }
+  gen3_days_to_date(out->local_days, &out->ly, &out->lm, &out->ld);
+  /* berry_days is stored in the game's day convention (epoch-0 + 1); compare in epoch-0. */
+  out->delta = out->local_days - (out->berry_days - 1);
+  if (!has_rtc) { out->verdict = 4; return; }
+  if (out->local_days < 0 || out->ly < 2000 || out->ly > 2099 ||
+      out->delta > 36500 || out->delta < -36500) out->verdict = 3;   /* corrupt   */
+  else if (out->delta < 0)   out->verdict = 2;                       /* backwards */
+  else if (out->delta > 365) out->verdict = 1;                       /* big jump  */
+  else                       out->verdict = 0;                       /* ok        */
+}
+
+/* Write localTimeOffset + lastBerryTreeUpdate (plaintext, little-endian). Padding
+ * bytes +0x05..+0x07 of each struct Time are left untouched. */
+static void clock_set(uint8_t* sb2, int off_days, int off_h, int off_m, int off_s,
+                      int berry_days, int berry_h, int berry_m, int berry_s) {
+  wr16(sb2 + SB2_OFF_LOCAL_TIME_OFFSET, (uint16_t)(int16_t)off_days);
+  sb2[SB2_OFF_LOCAL_TIME_OFFSET + 2] = (uint8_t)(int8_t)off_h;
+  sb2[SB2_OFF_LOCAL_TIME_OFFSET + 3] = (uint8_t)(int8_t)off_m;
+  sb2[SB2_OFF_LOCAL_TIME_OFFSET + 4] = (uint8_t)(int8_t)off_s;
+  wr16(sb2 + SB2_OFF_LAST_BERRY_UPDATE, (uint16_t)(int16_t)berry_days);
+  sb2[SB2_OFF_LAST_BERRY_UPDATE + 2] = (uint8_t)(int8_t)berry_h;
+  sb2[SB2_OFF_LAST_BERRY_UPDATE + 3] = (uint8_t)(int8_t)berry_m;
+  sb2[SB2_OFF_LAST_BERRY_UPDATE + 4] = (uint8_t)(int8_t)berry_s;
+}
+
+bool gen3_clock_manual(uint8_t* sb2,
+                       int ly, int lmo, int ld, int lh, int lmi, int ls,
+                       int dy, int dmo, int dd, int dh, int dmi, int ds) {
+  int live_days = gen3_rtc_days(ly, lmo, ld);
+  int des_days  = gen3_rtc_days(dy, dmo, dd);
+  /* localTimeOffset = liveRTC - desired, as a signed total split into days + h/m/s.
+   * Day counts stay small (<2^16) so day*86400 would overflow int32 — keep days and
+   * seconds separate to avoid that, and floor toward -inf so h/m/s land in range. */
+  int off_days = live_days - des_days;
+  int off_secs = (lh * 3600 + lmi * 60 + ls) - (dh * 3600 + dmi * 60 + ds);
+  if (off_secs < 0) { off_secs += 86400; off_days -= 1; }
+  int off_h = off_secs / 3600, off_m = (off_secs % 3600) / 60, off_s = off_secs % 60;
+  int berry_days = des_days + 1;   /* game day convention = epoch-0 + 1 */
+  /* The game stores Time.days as s16. Refuse rather than silently wrap if a date
+   * (or a battery-dead cart's implausible year) pushes a count out of range. */
+  if (off_days < -32000 || off_days > 32000 || berry_days < 0 || berry_days > 32000)
+    return false;
+  /* re-anchor lastBerryTreeUpdate = desired local so the next per-minute update sees
+   * zero elapsed (no berry over-advance / freeze). */
+  clock_set(sb2, off_days, off_h, off_m, off_s, berry_days, dh, dmi, ds);
+  return true;
+}
+
+bool gen3_clock_autosync(uint8_t* sb2, int y, int mo, int d, int h, int mi, int s) {
+  return gen3_clock_manual(sb2, y, mo, d, h, mi, s, y, mo, d, h, mi, s);  /* desired == live -> offset 0 */
+}
+
 uint32_t gen3_secret_base_offset(Gen3Version version) {
   switch (version) {
     case G3_VER_EMERALD: return SB1_OFF_SECRET_BASES_EMERALD;
@@ -288,6 +374,10 @@ void gen3_sb1_touch_sections(Gen3Version version, int* first_id, int* last_id) {
   *last_id  = G3_SID_SAVEBLOCK1_START + (int)(last / G3_SECTOR_DATA_SIZE);
 }
 
+/* NOTE: this checksums the whole 3968-byte data region. For partial sections (e.g.
+ * SaveBlock2 = id 0, whose struct is < 3968) that equals the game's per-size checksum
+ * ONLY because the unused tail bytes are zero — true for real saves, and proven by the
+ * HW-validated trainer-card editor which writes id 0 through this same path. */
 uint32_t gen3_write_full_section(uint8_t* save, int slot, int section_id,
                                  const uint8_t* data) {
   int s = gen3_find_section(save, slot, section_id);

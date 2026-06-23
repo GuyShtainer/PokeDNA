@@ -26,6 +26,12 @@
 
 #define NCARDS 7
 
+/* Summary portrait animation (the Emerald entrance/idle wiggle). Compiled in, but
+ * gated at runtime on the ANIM_SUMMARY toggle (Settings > Animations > Summary),
+ * which defaults OFF — the static portrait from draw_left stands in until the user
+ * opts in. Set to 0 to compile it out entirely. */
+#define SUMMARY_ANIM 1
+
 /* real Gen-3 type badge (32x14); ui_sprite honours the 0x8000 opacity bit. */
 static void type_badge(int x, int y, uint8_t t) {
   if (t < 18) ui_sprite(x, y, TYPE_ICON_W, TYPE_ICON_H, type_icon_for(t));
@@ -152,9 +158,9 @@ static void card_info(const PkMon* p) {
   ui_text(x, y, C_KEY, "Name"); reg(F_NICK, x + 48, y, 88);
   { char nm[24]; ui_truncate(nm, p->nickname[0] ? p->nickname : "-", 11); ui_text(x + 48, y, C_VAL, nm); } y += 9;
 
-  ui_text(x, y, C_KEY, "OT"); reg(F_OT, x + 48, y, 52);
-  ui_text(x + 48, y, C_VAL, p->otName);
-  siprintf(b, "TID %05u", (unsigned)(p->otId & 0xFFFF)); ui_text(x + 104, y, UI_DIM, b); y += 9;
+  ui_text(x, y, C_KEY, "OT"); reg(F_OT, x + 48, y, 88);
+  ui_text(x + 48, y, C_VAL, p->otName); y += 9;               /* TID on its own row (was off-screen) */
+  siprintf(b, "TID %05u", (unsigned)(p->otId & 0xFFFF)); ui_text(x, y, UI_DIM, b); y += 9;
 
   uint8_t t1 = pk_species_type1(p->species), t2 = pk_species_type2(p->species);
   ui_text(x, y, C_KEY, "Type");
@@ -181,13 +187,13 @@ static void card_info(const PkMon* p) {
 
 static void card_skills(const PkMon* p) {
   int x = 98, y = 14; char b[48];
-  ui_text(x, y, C_HDR, "SKILLS"); y += 12;
+  ui_text(x, y, C_HDR, "SKILLS"); y += 11;
   ui_text(x, y, C_KEY, "Level"); reg(F_LEVEL, x + 60, y, 40);
   siprintf(b, "%u", (unsigned)p->level); ui_text(x + 60, y, C_VAL, b); y += 9;
   ui_text(x, y, C_KEY, "Item"); reg(F_ITEM, x + 60, y, 76);
   ui_text(x + 60, y, C_VAL, p->heldItem ? pk_item_name(p->heldItem) : "none"); y += 9;
   ui_text(x, y, C_KEY, "Friend"); reg(F_FRIEND, x + 60, y, 40);
-  siprintf(b, "%u", (unsigned)p->friendship); ui_text(x + 60, y, C_VAL, b); y += 11;
+  siprintf(b, "%u", (unsigned)p->friendship); ui_text(x + 60, y, C_VAL, b); y += 10;
   /* Each stat row edits that stat's EV — the only persistent, lossless stat lever
    * in Gen-3 (final stats are derived from base+IV+EV+level+nature). The number
    * updates live; full IV/EV grids remain on the IV/EV cards. */
@@ -195,12 +201,30 @@ static void card_skills(const PkMon* p) {
     int s = DISP[i], bo = pk_nature_boost(p->nature), h = pk_nature_hinder(p->nature);
     u16 col = (s == bo) ? UI_OK : (s == h) ? UI_WARN : C_VAL;
     reg(F_EV0 + s, x, y, 138);
-    siprintf(b, "%-7s", DLAB[i]); ui_text(x, y, C_KEY, b);
-    siprintf(b, "%4u", (unsigned)p->stats[s]); ui_text(x + 54, y, col, b);
-    siprintf(b, "EV%u", (unsigned)p->evs[s]);  ui_text(x + 94, y, UI_DIM, b);
-    y += 9;
+    siprintf(b, "%-3s", DSHORT[i]); ui_text(x, y, C_KEY, b);   /* 3-char label clears the value column */
+    siprintf(b, "%4u", (unsigned)p->stats[s]); ui_text(x + 30, y, col, b);
+    siprintf(b, "EV%u", (unsigned)p->evs[s]);  ui_text(x + 72, y, UI_DIM, b);
+    y += 10;                                                   /* 10px stride: edit-frames don't share a scanline */
   }
-  ui_text(x, y + 1, UI_DIM, "<>: train EVs");
+  ui_text(x, y, UI_DIM, "<>: train EVs"); y += 9;
+
+  /* EXP: current total + how much remains for the next level and for Lv100.
+   * Box mons store EXP (Growth +4) even though level/stats are computed; the
+   * curve comes from the species' growth-rate table (pk_exp_for_level). */
+  ui_hline(x, y - 2, 138, UI_BORDER);
+  uint8_t gr = pk_species_growth(p->species);
+  uint32_t exp = p->experience;
+  siprintf(b, "EXP %lu", (unsigned long)exp); ui_text(x, y, C_KEY, b); y += 9;
+  if (p->level >= 100) {
+    ui_text(x, y, C_VAL, "At Lv100 (max)");
+  } else {
+    uint32_t nxt = pk_exp_for_level(gr, (uint8_t)(p->level + 1));
+    uint32_t t100 = pk_exp_for_level(gr, 100);
+    siprintf(b, "Lv%u +%lu", (unsigned)(p->level + 1), (unsigned long)(nxt > exp ? nxt - exp : 0));
+    ui_text(x, y, C_VAL, b); y += 9;
+    siprintf(b, "Lv100 +%lu", (unsigned long)(t100 > exp ? t100 - exp : 0));
+    ui_text(x, y, UI_DIM, b);
+  }
 }
 
 static void card_spread(const PkMon* p, bool ev) {
@@ -255,13 +279,13 @@ static void card_origin(const PkMon* p) {
   ui_text(x, y, C_HDR, "ORIGIN / MET"); y += 13;
 
   ui_text(x, y, C_KEY, "Ball"); reg(F_BALL, x + 60, y, 76);
-  { char bl[24]; ui_truncate(bl, pk_item_name(p->pokeball), 13); ui_text(x + 60, y, C_VAL, bl); } y += 11;
+  { char bl[24]; ui_truncate(bl, pk_item_name(p->pokeball), 10); ui_text(x + 60, y, C_VAL, bl); } y += 11;   /* 10 cols fit x158..238 */
 
-  ui_text(x, y, C_KEY, "Met at Lv"); reg(F_METLEVEL, x + 60, y, 30);
+  ui_text(x, y, C_KEY, "Met Lv"); reg(F_METLEVEL, x + 60, y, 30);            /* shortened: was "Met at Lv" (overlapped value) */
   siprintf(b, "%u", (unsigned)p->metLevel); ui_text(x + 60, y, C_VAL, b); y += 11;
 
-  ui_text(x, y, C_KEY, "Location"); reg(F_METLOC, x + 60, y, 76);
-  { char lb[24]; ui_truncate(lb, pk_location_name(p->metLocation), 13); ui_text(x + 60, y, C_VAL, lb); } y += 11;
+  ui_text(x, y, C_KEY, "Loc"); reg(F_METLOC, x + 60, y, 76);                 /* shortened: was "Location" (overlapped value) */
+  { char lb[24]; ui_truncate(lb, pk_location_name(p->metLocation), 10); ui_text(x + 60, y, C_VAL, lb); } y += 11;
 
   ui_text(x, y, C_KEY, "Origin"); reg(F_METGAME, x + 60, y, 76);
   ui_text(x + 60, y, C_HOT, pk_metgame_name(p->metGame)); y += 14;
@@ -415,12 +439,12 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
                           : can_edit ? "A edit  U/D mon  <>/LR card  SEL flip  B"
                                      : "U/D mon  <>/LR card  SEL flip  B back");
     lastkey = 64 | (64 << 8) | (64 << 16) | (64 << 24);   /* render_card drew the rest pose (64,64,0,0) */
-    if (app_anim_enabled()) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
+    if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY)) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
                               portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, wx, sy, dx, dy, &lastkey); }
 
     u16 k, fresh;
     do { s_vsync();
-         if (app_anim_enabled()) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
+         if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY)) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
                                    portrait_params(fam, ++anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, wx, sy, dx, dy, &lastkey); }
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);

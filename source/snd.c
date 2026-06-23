@@ -1,4 +1,5 @@
 #include "snd.h"
+#include "rmbl.h"          /* haptic cues ride the same UI-event chokepoints */
 #include <tonc.h>
 
 /* ---- GBA PSG beeps -------------------------------------------------------
@@ -49,13 +50,15 @@ void snd_init(void) {
 void snd_set_enabled(bool on) { s_on = on; if (!on) { s_qn = s_qi = 0; } }
 bool snd_is_enabled(void)     { return s_on; }
 
-/* ---- effects (kept short + fairly quiet; cursor move is the quietest) ---- */
-void snd_move(void) { sq(1760, 5, 1, 2); }              /* high, faint, fast decay */
+/* ---- effects (kept short + fairly quiet; cursor move is the quietest) ----
+ * Each also fires its haptic cue (rmbl_fire is a no-op when that cue is toggled off,
+ * independent of the sound mute), so rumble piggybacks the existing event points. */
+void snd_move(void) { rmbl_fire(RCUE_SCROLL); sq(1760, 5, 1, 2); }  /* high, faint, fast decay */
 void snd_ok(void)   { sq(1320, 9, 3, 2); }
 void snd_back(void) { sq( 660, 7, 3, 1); }
 void snd_tab(void)  { sq( 990, 7, 2, 2); }
-void snd_edit(void) { sq(1480, 8, 2, 2); }
-void snd_deny(void) { noise(9, 4, 0x0006); }            /* low gritty buzz         */
+void snd_edit(void) { rmbl_fire(RCUE_EDIT); sq(1480, 8, 2, 2); }
+void snd_deny(void) { rmbl_fire(RCUE_ERROR); noise(9, 4, 0x0006); } /* low gritty buzz + heartbeat */
 
 static void queue(u8 wait, u16 hz, u8 vol, u8 env) {
     if (s_qn >= 4) return;
@@ -63,6 +66,7 @@ static void queue(u8 wait, u16 hz, u8 vol, u8 env) {
 }
 
 void snd_save(void) {                                   /* rising two-note "ta-da" */
+    rmbl_fire(RCUE_SAVE);                               /* strong confirm buzz (even if muted) */
     if (!s_on) return;
     s_qn = s_qi = 0;
     sq(1047, 9, 3, 2);                                  /* C6 now                  */
@@ -71,6 +75,7 @@ void snd_save(void) {                                   /* rising two-note "ta-d
 }
 
 void snd_error(void) {                                  /* descending two-note buzz */
+    rmbl_fire(RCUE_ERROR);                              /* error heartbeat (even if muted) */
     if (!s_on) return;
     s_qn = s_qi = 0;
     sq(392, 9, 4, 1);
@@ -87,6 +92,7 @@ void snd_boot(void) {                                   /* soft rising welcome  
 }
 
 void snd_vblank(void) {
+    rmbl_vblank();                                      /* tick the haptic cue every frame */
     if (s_qi >= s_qn) return;
     if (s_delay) { s_delay--; return; }
     sq(s_q[s_qi].hz, s_q[s_qi].vol, s_q[s_qi].env, 2);

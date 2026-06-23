@@ -41,6 +41,11 @@ bool app_clip_occupied(void);
  * enter "pick up + reposition" mode. Returns true once per MOVE pick. */
 bool app_take_move_request(void);
 
+/* The A-menu's DUPLICATE action (box/bank only) sets a one-shot flag; the box grid
+ * consumes it to copy the selected mon into a free slot and pick that copy up in the
+ * glove, so the user positions it. Returns true once per DUPLICATE pick. */
+bool app_take_dup_request(void);
+
 /* Commit the loaded save's SaveBlock2 (section 0 — the trainer block) or
  * SaveBlock1 (sections 1..4 — where money lives) after an in-place edit of the
  * shared g_sb2 / g_sb1 buffers. Same verified-write+backup path as the editors.
@@ -67,9 +72,17 @@ bool app_set_walda(uint8_t pattern);
 /* Shared framed yes/no confirm (A = yes, B = no). */
 bool app_confirm(const char* title, const char* l1);
 
-/* Master "moving sprites" switch (Settings). When false, the PC/bank box-icon bob,
- * the Pokedex caught-cell bob, and the summary-card sprite animation all hold
- * static. Default ON. Read by pdna_box / pdna_pick (dex) / pdna_summary. */
-bool app_anim_enabled(void);
+/* Per-place "moving sprites" toggles (Settings, persisted in config.cfg). Each
+ * screen's idle bob/wiggle is gated on its own flag, so the user can calm one place
+ * without killing the rest. Box/Party/Dex/Daycare default ON; the summary portrait
+ * wiggle defaults OFF. Read by pdna_box / pdna_main (party + daycare) / pdna_pick
+ * (dex) / pdna_summary. */
+enum { ANIM_BOX,        /* PC + bank box-icon 2-frame bob   */
+       ANIM_PARTY,      /* party list sprite bob            */
+       ANIM_DEX,        /* Pokedex caught-cell bob          */
+       ANIM_DAYCARE,    /* daycare scene mon bob            */
+       ANIM_SUMMARY,    /* summary-card portrait wiggle     */
+       ANIM_COUNT };
+bool app_anim_enabled(int kind);   /* true iff animations are on for ANIM_<kind> */
 
 #endif /* PDNA_APP_H */

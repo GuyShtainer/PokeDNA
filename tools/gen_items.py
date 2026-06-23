@@ -137,9 +137,9 @@ def main():
             c.write("  " + ",".join("0x%08x" % off[j] for j in range(i, min(i + 8, MAX_ID + 1))) + ",\n")
         c.write("};\n\n")
         c.write("const uint16_t* item_icon_for(uint16_t item_id) {\n")
-        c.write("  if (item_id > %d) return 0;\n" % MAX_ID)
+        c.write("  if (item_id == 0 || item_id > %d) return 0;  /* id 0 = no item */\n" % MAX_ID)
         c.write("  uint32_t o = off_tbl[item_id];\n")
-        c.write("  if (o == 0xFFFFFFFFu) return 0;\n")
+        c.write("  if (o == 0xFFFFFFFFu || o == 0) return 0;    /* 0 = unmapped (stale-table safe) */\n")
         c.write("  return (const uint16_t*)(item_icon_blob + o);\n}\n")
 
     print("items: %d ids, %d unique icons, %dx%d, %.1f KiB ROM" %

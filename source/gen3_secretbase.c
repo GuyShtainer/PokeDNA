@@ -7,6 +7,10 @@ static uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | ((uint16_t)p[1
 static uint32_t rd32(const uint8_t* p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
+static void wr16(uint8_t* p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void wr32(uint8_t* p, uint32_t v) {
+  p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
 
 /* within-record field offsets (RS == Emerald) */
 #define O_ID      0x00
@@ -74,4 +78,33 @@ int sb_read_all(const uint8_t* sb1, uint32_t base_off, SbRecord* out) {
 void sb_clear(uint8_t* sb1, uint32_t base_off, int slot) {
   if (base_off == 0 || slot < 0 || slot >= SB_COUNT) return;
   memset(sb1 + base_off + (uint32_t)slot * SB_RECORD, 0, SB_RECORD);
+}
+
+void sb_write_mon(uint8_t* sb1, uint32_t base_off, int slot, int idx, const SbPartyMon* m) {
+  if (base_off == 0 || slot < 0 || slot >= SB_COUNT || idx < 0 || idx >= SB_PARTY || !m) return;
+  uint8_t* r = sb1 + base_off + (uint32_t)slot * SB_RECORD;
+  wr16(r + O_P_SPEC + idx * 2, m->species);
+  wr16(r + O_P_ITEM + idx * 2, m->heldItem);
+  r[O_P_LVL + idx] = m->level;
+  r[O_P_EV  + idx] = m->ev;
+  wr32(r + O_P_PERS + idx * 4, m->personality);
+  for (int k = 0; k < 4; k++) wr16(r + O_P_MOVE + (idx * 4 + k) * 2, m->moves[k]);
+}
+
+int sb_owner_class(const uint8_t* sb1, uint32_t base_off, int slot) {
+  if (base_off == 0 || slot < 0 || slot >= SB_COUNT) return -1;
+  const uint8_t* r = sb1 + base_off + (uint32_t)slot * SB_RECORD;
+  if (rec_empty(r)) return -1;
+  int gender = (r[O_FLAGS] >> 4) & 1;
+  return gender * 5 + (r[O_TID] % 5);                  /* trainerId[0] is the low byte at O_TID */
+}
+
+void sb_set_owner_class(uint8_t* sb1, uint32_t base_off, int slot, int cls) {
+  if (base_off == 0 || slot <= 0 || slot >= SB_COUNT || cls < 0 || cls > 9) return;  /* never slot 0 */
+  uint8_t* r = sb1 + base_off + (uint32_t)slot * SB_RECORD;
+  int gender = cls / 5, col = cls % 5;
+  r[O_FLAGS] = (uint8_t)((r[O_FLAGS] & ~0x10) | (gender ? 0x10 : 0));   /* flags bit4 = gender */
+  int base5 = r[O_TID] - (r[O_TID] % 5);              /* keep trainerId[0] close, set residue=col */
+  if (base5 + col > 255) base5 -= 5;
+  r[O_TID] = (uint8_t)(base5 + col);
 }
