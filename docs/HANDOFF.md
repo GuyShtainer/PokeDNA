@@ -7,6 +7,23 @@
 
 ## Current status
 
+- **SESSION 2026-06-23 — feedback batch 3 (committed). builds clean (ROM 6.50 MB), host tests PASS.**
+  1. **Daycare dual-type random:** `dc_region_pick(species, *rng)` collects ALL areas a mon qualifies for
+     (fire->lava, water, flying->trees, electric->yellow, grass/bug->grass; non-fire rock/ground->empty) and
+     randomly picks one per visit (per-visit RNG `s_dc_visit_rng`, stable within a visit). Fire rule kept.
+  2. **Item-mode transparency per-object:** removed BLD_OBJ from the BLDCNT 1st-target (only ATTR0_BLEND
+     objects fade now). `boxoam_item_markers` sets a per-icon `s_icon_blend[]` = non-holders; `place_grid_slot`
+     applies ATTR0_BLEND. Result: glove + non-holder icons translucent; item HOLDERS, item badges, and the
+     carried item stay OPAQUE (fixes the Magikarp "glitch blob" = the now-opaque carried item).
+  3a. **Backup = session original:** new `g_session_backed_up` (reset per `view_save`) — back up ONLY on the
+     first save of a session, so the `.bak` is always the file you chose, never an intermediate save state.
+  3b. **Daycare flow:** "TO DAY-CARE" now opens the Day-Care page after depositing (forward-decl + call
+     `pdna_daycare`). Withdraw-to-PC parks the mon in a free PC slot and sets a pending pickup
+     (`g_pickup_box/slot` + `app_take_pickup`); `pdna_daycare` returns, and `pdna_box` (entry + post-menu)
+     opens that box with the mon lifted in the move glove so you place it. All still deferred.
+  4. Top-tab nav (PARTY SEL / SAVE) — confirmed working.
+  - Commits: `454d979` (the big batch) + this refinement batch. Files: pdna_main.c, pdna_box.c, box_oam.c.
+
 - **SESSION 2026-06-22 (part 5) — feedback batch 2. UNCOMMITTED, builds clean (ROM 6.50 MB), host tests PASS.**
   1. **Daycare type rule:** `dc_region_for_species` now sends a mon to the lava ONLY if it's FIRE; non-fire
      rock/ground fall through to grass (if grass/bug-typed) or the empty area.

@@ -527,6 +527,7 @@ static void grow_in(u16 col) {
  * PC write (which flushes the whole g_pc) or an explicit revert. */
 static bool g_pc_dirty = false;
 static bool g_sb1_deferred = false;   /* g_save holds staged SaveBlock1 (Day-Care) edits not yet on disk */
+static bool g_session_backed_up = false;  /* once true, the original is already backed up this session */
 
 /* Backup policy for the verified write: 0 = new .bak/.bak1… each time (default),
  * 1 = single rolling .bak (overwrite), 2 = skip backup. Session-only (resets each
@@ -551,7 +552,10 @@ static bool app_save_finalize(void) {
 
   log_line("=== edit commit -> %s (backup mode %d) ===", g_path, g_backup_mode);
   char bak[SF_PATH_MAX]; bak[0] = 0;
-  if (g_backup_mode != 2) {                        /* 2 = skip backup */
+  /* Back up ONCE per session: the backup is the file as it was when you opened it (the
+   * original you chose), not an intermediate state from a later save. Skip if already
+   * done this session, or if backups are off (mode 2). */
+  if (g_backup_mode != 2 && !g_session_backed_up) {
     busy_panel("Backing up original...");          /* safe point: before SD copy */
     rmbl_pause();                                  /* no motor on the cart bus mid-transfer */
     SfStatus bst = (g_backup_mode == 1) ? sf_backup_rolling(g_path, bak, sizeof(bak))
@@ -564,6 +568,7 @@ static bool app_save_finalize(void) {
       msg_wait("BACKUP FAILED", UI_WARN, sf_status_str(bst), "Save NOT modified.");
       return false;
     }
+    g_session_backed_up = true;                    /* original preserved; don't re-backup updated states */
   }
   SfStatus st;
   busy_panel("Writing + verifying...");            /* safe point: before SD write */
@@ -736,6 +741,14 @@ static bool g_move_req = false;
 bool app_take_move_request(void) { bool r = g_move_req; g_move_req = false; return r; }
 static bool g_dup_req = false;
 bool app_take_dup_request(void)  { bool r = g_dup_req;  g_dup_req  = false; return r; }
+/* A daycare withdraw-to-PC parks the mon in a free PC slot and asks the box grid to
+ * open that box carrying it (the "glove" hand-off). -1 = none. */
+static int g_pickup_box = -1, g_pickup_slot = -1;
+bool app_take_pickup(int* box, int* slot) {
+  if (g_pickup_slot < 0) return false;
+  *box = g_pickup_box; *slot = g_pickup_slot; g_pickup_box = g_pickup_slot = -1; return true;
+}
+static void pdna_daycare(void);   /* forward: app_to_daycare opens it after a deposit */
 
 bool app_confirm(const char* title, const char* l1) {
   ui_clear();
@@ -868,11 +881,15 @@ bool app_inject_to_game(const uint8_t* rec80) {
  * Day-Care withdraw-to-PC saves with everything else when you leave the save. Returns
  * false (+ PC FULL) if there's no room. Dex registration is skipped (a deferred PC
  * commit doesn't write the dex sections; the species is in the player's hands anyway). */
-static bool app_inject_to_game_deferred(const uint8_t* rec80) {
+static bool app_inject_to_game_deferred(const uint8_t* rec80, int* out_box, int* out_slot) {
   if (!app_can_edit()) return false;
   for (int b = 0; b < G3_TOTAL_BOXES; b++) {
     int s = box_free_slot(g_pc, b);
-    if (s >= 0) { memcpy(pk_box_slot(g_pc, b, s), rec80, 80); app_mark_pc_dirty(); return true; }
+    if (s >= 0) {
+      memcpy(pk_box_slot(g_pc, b, s), rec80, 80); app_mark_pc_dirty();
+      if (out_box) *out_box = b; if (out_slot) *out_slot = s;
+      return true;
+    }
   }
   snd_deny();
   msg_wait("PC FULL", UI_WARN, "No empty PC box slot in the", "loaded game.");
@@ -982,6 +999,7 @@ static bool app_to_daycare(uint8_t* rec, bool is_party, uint8_t* block, int box,
     app_stage_sb1();                                           /* daycare deposit staged in g_save */
     snd_ok(); msg_wait("SENT", UI_OK, "Now boarding in the Day-Care.", "Saved when you leave.");
   }
+  pdna_daycare();          /* take the user to the Day-Care page to see the new boarder */
   return true;
 }
 
@@ -1447,21 +1465,25 @@ static uint16_t s_deco_sp[DC_MAXDECO];
 static int      s_ndeco = 0;                  /* decoration mons actually placed       */
 static uint16_t s_deco_roll[DC_MAXDECO];      /* the 2..5 random species this visit     */
 static int      s_ndeco_roll = 0;
-/* Area for a species by the user's type rules: FIRE -> lava (so a rock/ground mon is
- * only in the lava if it's also fire); water -> water; flying -> trees; electric ->
- * yellow; grass/bug -> grass; everyone else (incl. non-fire rock/ground) -> empty. */
-static int dc_region_for_species(uint16_t species) {
+static uint32_t s_dc_visit_rng = 1;           /* per-visit stream for dual-type area picks */
+/* Areas a species may live in, by the user's type rules: FIRE -> lava (so a rock/
+ * ground mon is only in the lava if it's also fire); water -> water; flying -> trees;
+ * electric -> yellow; grass/bug -> grass. A dual-type with two qualifying types gets
+ * BOTH areas and *rng picks one (so e.g. a Water/Flying mon randomly sits in the water
+ * or the trees each visit). No qualifying type (incl. non-fire rock/ground) -> empty. */
+static int dc_region_pick(uint16_t species, uint32_t* rng) {
   uint8_t a = pk_species_type1(species), b = pk_species_type2(species);
-  int fire=(a==10||b==10), water=(a==11||b==11), flying=(a==2||b==2),
-      elec=(a==13||b==13), grass=(a==12||b==12), bug=(a==6||b==6);
-  if (fire)         return DR_LAVA;
-  if (water)        return DR_WATER;
-  if (flying)       return DR_SKY;
-  if (elec)         return DR_ELEC;
-  if (grass || bug) return DR_GRASS;
-  return DR_EMPTY;
+  int cand[5], nc = 0;
+  if (a == 10 || b == 10) cand[nc++] = DR_LAVA;                 /* fire    */
+  if (a == 11 || b == 11) cand[nc++] = DR_WATER;                /* water   */
+  if (a == 2  || b == 2)  cand[nc++] = DR_SKY;                  /* flying  */
+  if (a == 13 || b == 13) cand[nc++] = DR_ELEC;                 /* electric*/
+  if (a == 12 || b == 12 || a == 6 || b == 6) cand[nc++] = DR_GRASS; /* grass/bug */
+  if (nc == 0) return DR_EMPTY;
+  if (nc == 1) return cand[0];
+  *rng = *rng * 1103515245u + 12345u;
+  return cand[(*rng >> 16) % (uint32_t)nc];
 }
-static int dc_region_for(const PkMon* p) { return dc_region_for_species(p->species); }
 /* Reserve a slot in area `rg` (2 per area); if full, fall back to the EMPTY area.
  * Returns rg*2+slot, or -1 if even EMPTY is full. */
 static int dc_take_slot(int used[DR_COUNT][2], int rg) {
@@ -1490,6 +1512,7 @@ static void dc_roll_decos(void) {
     rng = rng * 1103515245u + 12345u;
     s_deco_roll[i] = (uint16_t)(1 + (rng >> 9) % 251);   /* internal species 1..251 */
   }
+  s_dc_visit_rng = rng | 1u;                              /* seed the area-pick stream for this visit */
 }
 /* Compose a 32x32 icon over the bg image at screen (x,y) and DMA each scanline (no
  * separate erase => no flicker on the single Mode-3 buffer). x is forced even for
@@ -1548,8 +1571,9 @@ static int dc_rescan(uint32_t base, uint32_t stride, uint8_t* recs[2], PkMon dc[
   int tc = (g_game == PK_RS) ? stepc : (256 - stepc); if (tc < 1 || tc > 256) tc = 256; *to_check = tc;
 #ifdef HAVE_DAYCARE_BG
   int used[DR_COUNT][2] = {{0}};
-  for (int i = 0; i < n; i++) {                  /* each boarder -> a slot in its type area */
-    int slot = dc_take_slot(used, dc_region_for(&dc[i]));
+  uint32_t arng = s_dc_visit_rng;               /* per-visit stream: stable within a visit, varies across */
+  for (int i = 0; i < n; i++) {                  /* each boarder -> a slot in its type area (random for dual-type) */
+    int slot = dc_take_slot(used, dc_region_pick(dc[i].species, &arng));
     int rg = (slot < 0) ? DR_EMPTY : slot / 2, sp = (slot < 0) ? 0 : slot % 2;
     int cx = DC_SPOT[rg][sp].cx - 16, cy = DC_SPOT[rg][sp].cy - 16;
     cx &= ~1; if (cx < 2) cx = 2; else if (cx > UI_SCR_W - 34) cx = UI_SCR_W - 34;
@@ -1559,7 +1583,7 @@ static int dc_rescan(uint32_t base, uint32_t stride, uint8_t* recs[2], PkMon dc[
   /* the 2..5 random decoration mons (rolled once per visit) -> their type areas */
   s_ndeco = 0;
   for (int d = 0; d < s_ndeco_roll && s_ndeco < DC_MAXDECO; d++) {
-    int slot = dc_take_slot(used, dc_region_for_species(s_deco_roll[d]));
+    int slot = dc_take_slot(used, dc_region_pick(s_deco_roll[d], &arng));
     if (slot < 0) continue;                      /* every slot full -> drop this deco */
     int rg = slot / 2, sp = slot % 2;
     int cx = DC_SPOT[rg][sp].cx - 16, cy = DC_SPOT[rg][sp].cy - 16;
@@ -1669,11 +1693,13 @@ static bool dc_withdraw(uint32_t base, uint32_t stride, uint8_t* rec, int physi)
     memset(rec, 0, 80); dc_clear_slot_aux(base, stride, physi); dc_clear_egg(base);
     app_stage_sb1();                                           /* party + daycare both in SB1; deferred to exit */
     snd_ok(); msg_wait("TO PARTY", UI_OK, "Added to your party.", "Saved when you leave.");
-  } else {                                       /* To PC — placed in a free PC slot, DEFERRED */
-    if (!app_inject_to_game_deferred(rec)) return false;       /* PC full: daycare kept */
+  } else {                                       /* To PC — park in a free slot, then carry it in the glove */
+    int pb = -1, ps = -1;
+    if (!app_inject_to_game_deferred(rec, &pb, &ps)) return false;   /* PC full: daycare kept */
     memset(rec, 0, 80); dc_clear_slot_aux(base, stride, physi); dc_clear_egg(base);   /* PC has it now -> clear daycare */
     app_stage_sb1();
-    snd_ok(); msg_wait("TO PC", UI_OK, "Moved to your PC boxes.", "Saved when you leave.");
+    g_pickup_box = pb; g_pickup_slot = ps;                      /* box grid opens here carrying it */
+    snd_ok();
   }
   return true;
 }
@@ -1780,7 +1806,7 @@ static void pdna_daycare(void) {
       } else {
         bool can_put = app_can_edit() && g_clip.occupied && n < 2;
         int a = dc_menu(app_can_edit(), can_put);
-        if (a == 1)      { if (dc_withdraw(base, stride, recs[sel], phys[sel])) rescan = true; else redraw = true; }
+        if (a == 1)      { if (dc_withdraw(base, stride, recs[sel], phys[sel])) { if (g_pickup_slot >= 0) return; rescan = true; } else redraw = true; }   /* withdraw->PC sets a pickup: close so the box carries it */
         else if (a == 2) { if (dc_deposit(base, stride)) rescan = true; else redraw = true; }
         else if (a == 0) {
           /* Editable summary, exactly like the box/party: a kept edit is written back into
@@ -2365,6 +2391,8 @@ static void reload_saveblocks(void) {
  * party list and back; B from either returns to the file browser. */
 static void view_save(const char* path) {
   g_pc_dirty = false;                          /* fresh save: no pending moves */
+  g_sb1_deferred = false;
+  g_session_backed_up = false;                 /* new session: back up the original on first save */
   strncpy(g_path, path, sizeof(g_path) - 1);
   g_path[sizeof(g_path) - 1] = 0;
   uint32_t sz = 0;

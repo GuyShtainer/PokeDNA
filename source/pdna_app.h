@@ -46,6 +46,11 @@ bool app_take_move_request(void);
  * glove, so the user positions it. Returns true once per DUPLICATE pick. */
 bool app_take_dup_request(void);
 
+/* A Day-Care withdraw-to-PC parks the mon in a free PC slot and sets a pending pickup;
+ * the box grid consumes it on entry to open that box carrying the mon in the glove.
+ * Returns true once and fills *box/*slot. */
+bool app_take_pickup(int* box, int* slot);
+
 /* Commit the loaded save's SaveBlock2 (section 0 — the trainer block) or
  * SaveBlock1 (sections 1..4 — where money lives) after an in-place edit of the
  * shared g_sb2 / g_sb1 buffers. Same verified-write+backup path as the editors.

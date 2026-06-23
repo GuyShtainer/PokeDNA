@@ -60,6 +60,7 @@ static uint8_t  s_iconbank[30];         /* palette bank per grid slot (0=empty) 
 static uint8_t  s_occupied[30];         /* 1 if slot has an icon                  */
 static uint16_t s_species[30];          /* species per slot (for the frame swap)  */
 static uint8_t  s_form[30];             /* form per slot                          */
+static uint8_t  s_icon_blend[30];       /* 1 = draw this icon semi-transparent (ITEM mode, non-holders) */
 static int      s_frame = 0;            /* current bob frame (0/1) in OBJ VRAM     */
 static int      s_bob = 0;              /* current unison Y-bob offset (0/1)      */
 static int      s_regb = -1;            /* what region B holds: 0=grab 1=item -1=none */
@@ -218,8 +219,9 @@ void boxoam_resume(void)  { REG_DISPCNT |= DCNT_OBJ | DCNT_OBJ_1D; }
 static void place_grid_slot(int s) {
   int x = GRID_X + (s % COLS) * CELL_W;
   int y = GRID_Y + (s / COLS) * CELL_H + s_bob;
-  obj_set_attr(oe(OE_ICON0 + s),
-               ATTR0_SQUARE | ATTR0_4BPP | (y & ATTR0_Y_MASK),
+  u16 a0 = ATTR0_SQUARE | ATTR0_4BPP | (y & ATTR0_Y_MASK);
+  if (s_icon_blend[s]) a0 |= ATTR0_BLEND;             /* ITEM mode: non-holders fade out */
+  obj_set_attr(oe(OE_ICON0 + s), a0,
                ATTR1_SIZE_32 | (x & ATTR1_X_MASK),
                ATTR2_ID(TID_ICON0 + s * MON_ICON_OAM_TILES) | ATTR2_PRIO(2) |
                ATTR2_PALBANK(s_iconbank[s]));
@@ -287,10 +289,11 @@ void boxoam_cursor(int cur, bool on_title, int mode) {
   u16 a0 = ATTR0_SQUARE | ATTR0_4BPP | (hy & ATTR0_Y_MASK);
   if (mode == BOXOAM_HAND_ITEM) {
     a0 |= ATTR0_BLEND;                               /* semi-transparent obj           */
-    /* The hand is the 1st (top) blend target (forced by ATTR0_BLEND); the 2nd (bottom)
-     * target lives in bits 8-13 and MUST be set or the blend no-ops to opaque. Blend
-     * over BOTH the wallpaper (BG2) and the mon icons (OBJ) underneath. */
-    REG_BLDCNT = BLD_OBJ | ((BLD_BG2 | BLD_OBJ) << 8) | BLD_STD;
+    /* Only objects with ATTR0_BLEND fade (the glove + the non-holder icons); item
+     * holders, item badges and the carried item have no blend bit -> opaque. The 2nd
+     * (bottom) blend target (bits 8-13) MUST be set — blend over BG2 + the OBJ below.
+     * NOTE: do NOT put BLD_OBJ in the 1st-target mask, or EVERY object would fade. */
+    REG_BLDCNT = ((BLD_BG2 | BLD_OBJ) << 8) | BLD_STD;
     REG_BLDALPHA = (10) | (8 << 8);                  /* ~10/16 obj + ~8/16 below       */
   } else {
     REG_BLDCNT = 0;
@@ -337,6 +340,13 @@ void boxoam_carry(int cur, int from) {
 }
 
 void boxoam_item_markers(const PkMon box[30], bool show) {
+  /* ITEM mode fades the icons so the cursor + item badges read clearly — but a mon
+   * that HOLDS an item stays opaque (and its item badge/the carried item are opaque),
+   * so you can see who has what. Update the per-icon blend bit + re-place any changed. */
+  for (int s = 0; s < 30; s++) {
+    uint8_t b = (show && box[s].species && !box[s].heldItem) ? 1 : 0;
+    if (b != s_icon_blend[s]) { s_icon_blend[s] = b; if (s_occupied[s]) place_grid_slot(s); }
+  }
   if (!show) { for (int m = 0; m < 30; m++) hide(OE_MARK0 + m); return; }
   load_iglyph();                                     /* ensure the marker tile exists */
   s_regb = 1;                                        /* region B is now in ITEM use    */

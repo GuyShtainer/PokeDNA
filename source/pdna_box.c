@@ -417,6 +417,13 @@ int pdna_box(BoxSource* src) {
   s_move_from = -1;
   s_cur_mode = CM_NORMAL; s_item_held = 0; s_item_from = -1;   /* fresh cursor mode each open */
   s_tab_focus = -1;
+  /* A Day-Care withdraw-to-PC parked a mon in a free slot and asked us to carry it:
+   * open that box with the mon already lifted in the glove so the user places it. */
+  { int pb, ps;
+    if (app_take_pickup(&pb, &ps) && pb >= 0 && pb < nb && ps >= 0 && ps < 30) {
+      box = pb; cur = ps; s_move_from = ps;
+    }
+  }
   boxoam_enter();                             /* enable OBJ; upload hand/grab + palettes */
   s_oam_reload = true;                        /* first paint uploads the box's icon tiles */
   uint8_t* recs = src->records(box);          /* current box's 30*80 records */
@@ -582,7 +589,17 @@ int pdna_box(BoxSource* src) {
             draw_footer(src->is_bank, false, true);
           } else need_full = true;
         } else {
-          need_full = true;                                              /* menu may have edited -> redraw */
+          int pb, ps;
+          if (app_take_pickup(&pb, &ps) && pb >= 0 && pb < nb && ps >= 0 && ps < 30) {
+            box = pb; recs = src->records(box); pk_decode_box_raw(recs, g_box);   /* TO DAY-CARE->PC: carry the parked mon */
+            cur = ps; s_move_from = ps; s_oam_reload = true;
+            render_full(src, box, cur, false, false, false);
+            play_grab_anim(src, box, cur);
+            carry_move(src, box, cur, cur);
+            draw_footer(src->is_bank, false, true);
+          } else {
+            need_full = true;                                            /* menu may have edited -> redraw */
+          }
         }
       }
     }
