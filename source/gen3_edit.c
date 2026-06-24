@@ -120,6 +120,13 @@ void em_set_ev(EditMon* e, int stat, uint8_t v) {
   recompute_party_stats(e);
 }
 
+/* Contest condition (cool/beauty/cute/smart/tough/sheen) — bytes 6..11 of the EVs
+ * substruct; cosmetic (no effect on battle stats), so no stat recompute. i = 0..5. */
+void em_set_contest(EditMon* e, int i, uint8_t v) {
+  if (i < 0 || i > 5) return;
+  e->sub[2][6 + i] = v;
+}
+
 void em_set_species(EditMon* e, uint16_t species) {
   wr16(e->sub[0] + 0, species);
   recompute_party_stats(e);

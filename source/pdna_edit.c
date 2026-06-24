@@ -28,6 +28,7 @@ static const char* const FLABEL[F_NUM] = {
   "EV HP", "EV Atk", "EV Def", "EV Spe", "EV SpA", "EV SpD",
   "Move 1", "Move 2", "Move 3", "Move 4", "OT Name",
   "Ball", "Met Loc", "Met Lv", "Met Game",
+  "Cool", "Beauty", "Cute", "Smart", "Tough", "Sheen",
 };
 
 /* Gen-3 origin-game id -> name. */
@@ -84,6 +85,8 @@ static void field_value(int f, const PkMon* c, char* buf) {
     case F_METLOC:  siprintf(buf, "%s", pk_location_name(c->metLocation)); break;
     case F_METLEVEL:siprintf(buf, "%u", (unsigned)c->metLevel); break;
     case F_METGAME: siprintf(buf, "%s", pk_metgame_name(c->metGame)); break;
+    case F_CT0: case F_CT1: case F_CT2: case F_CT3: case F_CT4: case F_CT5:
+      siprintf(buf, "%u", (unsigned)c->contest[f - F_CT0]); break;
     default:        buf[0] = 0;
   }
 }
@@ -147,6 +150,8 @@ void em_field_adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
     case F_METLOC:   em_set_metloc(e, (uint8_t)clampi(c->metLocation + dir * (big ? 10 : 1), 0, 255)); break;
     case F_METLEVEL: em_set_metlevel(e, (uint8_t)clampi(c->metLevel + dir * s, 0, 100)); break;
     case F_METGAME:  { int v = c->metGame + dir; if (v < 0) v = 15; if (v > 15) v = 0; em_set_metgame(e, (uint8_t)v); break; }
+    case F_CT0: case F_CT1: case F_CT2: case F_CT3: case F_CT4: case F_CT5:
+      em_set_contest(e, f - F_CT0, (uint8_t)clampi(c->contest[f - F_CT0] + dir * s, 0, 255)); break;
     default: break;   /* names: use A */
   }
 }
@@ -185,6 +190,11 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
     case F_METGAME:  { int v = c->metGame + 1;  if (v > 15) v = 0; em_set_metgame(e, (uint8_t)v); break; }/* next game */
     case F_METLOC:   em_set_metloc(e, (uint8_t)clampi(c->metLocation + 10, 0, 255)); break;               /* +10 jump  */
     case F_METLEVEL: em_set_metlevel(e, (uint8_t)(c->metLevel >= 100 ? 1 : 100)); break;                  /* 1 <-> 100 */
+    case F_CT0: case F_CT1: case F_CT2: case F_CT3: case F_CT4: case F_CT5: {    /* cycle 0/128/255 */
+      uint8_t v = c->contest[f - F_CT0];
+      em_set_contest(e, f - F_CT0, v < 128 ? 128 : v < 255 ? 255 : 0);
+      break;
+    }
     default: break;
   }
 }

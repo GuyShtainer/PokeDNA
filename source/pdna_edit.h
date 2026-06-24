@@ -15,6 +15,7 @@ enum {
   F_MV0, F_MV1, F_MV2, F_MV3,
   F_OT,
   F_BALL, F_METLOC, F_METLEVEL, F_METGAME,
+  F_CT0, F_CT1, F_CT2, F_CT3, F_CT4, F_CT5,   /* contest condition: cool/beauty/cute/smart/tough/sheen */
   F_NUM
 };
 

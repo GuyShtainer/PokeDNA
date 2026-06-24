@@ -4,6 +4,7 @@
  * during render; in edit mode a cursor highlights one and A / LEFT-RIGHT edit it
  * in place (reusing the editor's field dispatchers). No separate "edit" mode.
  *   cards: 0 INFO  1 SKILLS  2 IVs  3 EVs  4 BATTLE MOVES  5 CONTEST MOVES
+ *          6 ORIGIN  7 CONDITION (cool/beauty/cute/smart/tough/sheen, editable)
  */
 #include <tonc.h>
 #include <stdio.h>
@@ -24,7 +25,7 @@
 #include "type_icons.h"
 #include "snd.h"
 
-#define NCARDS 7
+#define NCARDS 8
 
 /* Summary portrait animation (the Emerald entrance/idle wiggle). Compiled in, but
  * gated at runtime on the ANIM_SUMMARY toggle (Settings > Animations > Summary),
@@ -296,6 +297,25 @@ static void card_origin(const PkMon* p) {
   if (p->pokerus) ui_text(x, y, UI_WARN, "Pokerus");
 }
 
+/* CONTEST CONDITION card — cool/beauty/cute/smart/tough (raised by Pokéblocks) + sheen
+ * (how "full" the mon is = how many Pokéblocks it's been fed). All editable (0..255). */
+static void card_condition(const PkMon* p) {
+  static const char* const CTL[6] = { "Cool", "Beauty", "Cute", "Smart", "Tough", "Sheen" };
+  int x = 98, y = 14; char b[16];
+  ui_text(x, y, C_HDR, "CONDITION"); y += 12;
+  for (int i = 0; i < 6; i++) {
+    int v = p->contest[i];
+    reg(F_CT0 + i, x, y, 138);
+    ui_text(x, y, C_KEY, CTL[i]);
+    siprintf(b, "%3d", v); ui_text(x + 44, y, C_VAL, b);
+    int fill = v * 64 / 255;
+    ui_progress(x + 72, y + 1, 64, 5, fill, i == 5 ? C_HOT : C_HDR, UI_PANEL, UI_BORDER);
+    y += 12;
+  }
+  y += 2;
+  ui_text(x, y, UI_DIM, "Sheen = Pokeblocks fed");
+}
+
 static void render_card(const PkMon* p, int card) {
   summary_bg();                             /* Emerald-style blue gradient backdrop */
   g_nslot = 0;
@@ -313,6 +333,7 @@ static void render_card(const PkMon* p, int card) {
     case 4: card_moves(p, false);  break;
     case 5: card_moves(p, true);   break;
     case 6: card_origin(p);        break;
+    case 7: card_condition(p);     break;
   }
 }
 

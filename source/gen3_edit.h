@@ -32,6 +32,7 @@ void gen3_edit_commit(const EditMon* e, uint8_t* rec_out);   /* lossless re-enco
 /* field mutators (clamped). order args use PK_HP..PK_SPD (gen3_mon.h). */
 void em_set_iv(EditMon* e, int stat, uint8_t v);             /* 0..31  */
 void em_set_ev(EditMon* e, int stat, uint8_t v);             /* 0..255 */
+void em_set_contest(EditMon* e, int i, uint8_t v);          /* condition i=0..5: cool/beauty/cute/smart/tough/sheen */
 void em_set_species(EditMon* e, uint16_t species);           /* re-derive stats; caller re-checks gender/ability */
 void em_set_item(EditMon* e, uint16_t item);
 void em_set_move(EditMon* e, int i, uint16_t move);          /* also sets PP to the move's base PP */
