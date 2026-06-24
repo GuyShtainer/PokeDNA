@@ -53,14 +53,17 @@ static int s_item_from_box = -1;      /* box the carried item came from (for put
 static PkMon EWRAM_BSS g_box[30];
 /* Mon-in-hand carry (move mode). The carried mon lives in s_held (a copy); its ORIGIN
  * cell keeps the real record (lift-don't-clear) and is only cleared on a successful drop,
- * so an interrupted carry never loses the mon. s_orig_slot<0 means "no origin" (a fresh
- * duplicate) -> cancel just discards it. Statics persist across pdna_box runs so a carry
- * survives the PC<->Bank screen hand-off; pdna_box_clear_carry() resets it per save. */
+ * so an interrupted carry never loses the mon. s_orig_slot<0 means "no origin": either a
+ * fresh DUPLICATE (s_held_dup -> cancel discards it) or a real mon displaced by a swap
+ * (s_held_dup=false -> cancel must place it in a free slot; can't cross save scopes).
+ * Statics persist across pdna_box runs so a carry survives the PC<->Bank screen hand-off;
+ * pdna_box_clear_carry() resets it per save. */
 static bool s_holding = false;
 static uint8_t s_held[80];
 static int  s_orig_box = -1, s_orig_slot = -1;
 static bool s_orig_bank = false;
-void pdna_box_clear_carry(void) { s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; }
+static bool s_held_dup = false;   /* the held mon is a fresh, discardable duplicate */
+void pdna_box_clear_carry(void) { s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; }
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
@@ -223,6 +226,7 @@ static int cursor_look(void) {
 static void start_carry(BoxSource* src, const uint8_t* recs, int box, int slot) {
   memcpy(s_held, recs + (uint32_t)slot * 80, 80);            /* lift-don't-clear: copy, origin stays */
   s_holding = true; s_orig_box = box; s_orig_slot = slot; s_orig_bank = src->is_bank;
+  s_held_dup = false;                                         /* a real mon (origin keeps it) */
 }
 
 /* Clear the origin cell after a within-scope drop; handles bank paging and returns the
@@ -264,20 +268,17 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     recs = clear_origin(src, box);
     s_holding = false; *done = true; return recs;
   }
-  if (s_orig_slot < 0) { snd_deny(); return recs; }          /* a fresh dup can't swap -> empty only */
-  if (s_orig_box == box) {                                   /* within-box swap (one buffer, atomic) */
-    uint8_t occ[80]; memcpy(occ, recs + (uint32_t)cur * 80, 80);
-    memcpy(recs + (uint32_t)cur * 80, s_held, 80);
-    memcpy(recs + (uint32_t)s_orig_slot * 80, occ, 80);
-    src->mark_dirty(); s_holding = false; *done = true; return recs;
-  }
-  if (src->is_bank) { snd_deny(); return recs; }             /* cross-box swap unsafe in the paged bank */
-  { uint8_t occ[80]; memcpy(occ, recs + (uint32_t)cur * 80, 80);   /* PC cross-box swap (RAM-atomic) */
-    memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
-    uint8_t* o = src->records(s_orig_box);
-    memcpy(o + (uint32_t)s_orig_slot * 80, occ, 80); src->mark_dirty();
-    s_holding = false; *done = true; return src->records(box);
-  }
+  /* occupied within scope -> SWAP, then KEEP HOLDING the displaced occupant (place it
+   * yourself next; we don't auto-throw it into the held mon's old cell). */
+  if (s_orig_slot < 0 && s_held_dup) { snd_deny(); return recs; }          /* a fresh dup can't swap */
+  if (s_orig_slot >= 0 && s_orig_box != box && src->is_bank) { snd_deny(); return recs; }  /* bank cross-box swap unsafe */
+  uint8_t occ[80]; memcpy(occ, recs + (uint32_t)cur * 80, 80);             /* save the occupant */
+  memcpy(recs + (uint32_t)cur * 80, s_held, 80);                           /* place the held mon at the cursor */
+  src->mark_dirty();
+  recs = clear_origin(src, box);                                           /* free the held mon's old cell */
+  memcpy(s_held, occ, 80);                                                  /* now carry the displaced occupant */
+  s_orig_slot = -1; s_held_dup = false;            /* RAM-only real mon: place it; never crosses save scopes */
+  return recs;                                      /* *done stays false: still holding */
 }
 
 /* Push the full sprite state for the current frame: icons (reloaded if needed),
@@ -536,9 +537,18 @@ int pdna_box(BoxSource* src) {
 
     /* ---- MOVE MODE (mon-in-hand): the carried mon floats; place it anywhere ---- */
     if (s_holding) {
-      if (k & KEY_B) {                               /* cancel: origin still holds it (a fresh dup is discarded) */
-        snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false;
-        s_oam_reload = true; need_full = true;
+      bool homeless = (s_orig_slot < 0 && !s_held_dup);   /* a real mon displaced by a swap (RAM-only) */
+      if (k & KEY_B) {                               /* cancel */
+        if (homeless) {                              /* must place it somewhere -> first free in this box */
+          int fs = -1; for (int s = 0; s < COLS * ROWS; s++) if (!g_box[s].species) { fs = s; break; }
+          if (fs < 0) { snd_deny(); }                /* box full: keep holding */
+          else { memcpy(recs + (uint32_t)fs * 80, s_held, 80); src->mark_dirty();
+                 snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false;
+                 pk_decode_box_raw(recs, g_box); s_oam_reload = true; need_full = true; }
+        } else {                                     /* origin keeps it / a dup is discarded */
+          snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false;
+          s_oam_reload = true; need_full = true;
+        }
       }
       else if (k & KEY_A) {                          /* drop / swap onto the cursor cell */
         bool done; recs = drop_held(src, box, cur, recs, &done);
@@ -553,11 +563,13 @@ int pdna_box(BoxSource* src) {
       else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
       else if (k & KEY_UP)    {
         if (cur >= COLS) cur -= COLS;
-        else if (!src->is_bank) { boxoam_exit(); return 4; }   /* off PC top -> Bank, still holding */
+        else if (homeless) snd_deny();                          /* place the swapped mon before leaving */
+        else if (!src->is_bank) { boxoam_exit(); return 4; }    /* off PC top -> Bank, still holding */
       }
       else if (k & KEY_DOWN)  {
         if (cur < COLS * (ROWS - 1)) cur += COLS;
-        else if (src->is_bank) { boxoam_exit(); return 5; }    /* off Bank bottom -> PC, still holding */
+        else if (homeless) snd_deny();                          /* place the swapped mon before leaving */
+        else if (src->is_bank) { boxoam_exit(); return 5; }     /* off Bank bottom -> PC, still holding */
       }
 
       /* cursor move while carrying -> partial redraw (no ui_clear), so it doesn't flicker */
@@ -676,7 +688,7 @@ int pdna_box(BoxSource* src) {
           draw_footer(src->is_bank, false, true);                        /* move-mode footer */
         } else if (app_take_dup_request()) {                            /* picked DUPLICATE -> a fresh COPY in the glove */
           memcpy(s_held, recs + (uint32_t)cur * 80, 80);                /* copy floats in-hand; no origin (cancel discards it) */
-          s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_bank = src->is_bank;
+          s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_bank = src->is_bank; s_held_dup = true;
           render_full(src, box, cur, false, false, false);
           play_grab_anim(src, box, cur);
           carry_move(src, box, cur, cur);
