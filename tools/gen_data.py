@@ -478,7 +478,8 @@ def exp_at(growth, n):
         if n <= 36:  return (n + 14) * n**3 // 50
         return ((n // 2) + 32) * n**3 // 50
     if growth == GROWTH["GROWTH_MEDIUM_SLOW"]:
-        return 6 * n**3 // 5 - 15 * n**2 + 100 * n - 140
+        # raw formula is NEGATIVE at level 1 (-54); clamp so it doesn't wrap in uint32
+        return max(0, 6 * n**3 // 5 - 15 * n**2 + 100 * n - 140)
     if growth == GROWTH["GROWTH_FAST"]:
         return 4 * n**3 // 5
     if growth == GROWTH["GROWTH_SLOW"]:
@@ -598,7 +599,7 @@ int pk_nature_hinder(uint8_t i){{ return i<25?s_nathinder[i]:-1; }}
 const char* pk_type_name(uint8_t i){{ return i<{TYPES}?s_type[i]:"?"; }}
 const char* pk_contest_name(uint8_t i){{ return i<{CC}?s_contest[i]:"?"; }}
 const char* pk_location_name(uint16_t i){{ return i<{NLOC}?s_location[i]:"FARAWAY PLACE"; }}
-uint32_t pk_exp_for_level(uint8_t g,uint8_t l){{ if(g>={NGROWTH}||l>100)return 0; return s_exp[g][l]; }}
+uint32_t pk_exp_for_level(uint8_t g,uint8_t l){{ if(g>={NGROWTH}||l>100)return 0; if(l<=1)return 0; return s_exp[g][l]; }}
 uint8_t pk_level_from_exp(uint8_t g,uint32_t e){{
   if(g>={NGROWTH})return 1; int l=1; while(l<100&&e>=s_exp[g][l+1])l++; return (uint8_t)l;
 }}
