@@ -1425,12 +1425,6 @@ static bool pdna_dex_edit(void) {
 
 /* ===================== Pokéblock case editor ========================== */
 
-static bool app_commit_pokeblocks(void) {                  /* the case lives in SaveBlock1 (sections 1-4) */
-  for (int id = 1; id <= 4; id++)
-    gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
-  return app_save_finalize();
-}
-
 /* Edit one Pokéblock's fields (or delete it). Returns true if anything changed. */
 static bool pokeblock_edit(int idx) {
   static const char* const FN[7] = { "Color", "Spicy", "Dry", "Sweet", "Bitter", "Sour", "Feel" };
@@ -1497,7 +1491,75 @@ static void pdna_pokeblock(void) {
     else if (k & KEY_DOWN) sel = (sel + 1) % PK_POKEBLOCK_COUNT;
     else if (k & KEY_A)    { if (pokeblock_edit(sel)) dirty = true; }
   }
-  if (dirty && app_confirm("Save Pokeblocks?", "Writes the case now.")) app_commit_pokeblocks();
+  if (dirty && app_confirm("Save Pokeblocks?", "Writes the case now.")) app_commit_sb1();
+}
+
+/* ===================== Event tickets ================================== */
+
+/* Grant an event "ticket": give the key item + set the ferry-enable flag the game
+ * checks (CheckBagHasItem(ticket) && FlagGet(FLAG_ENABLE_SHIP_*)) so the captain sails
+ * to the island. Emerald flags verified from the decomp; RS/FRLG not yet mapped. */
+typedef struct { const char* name; const char* mon; uint16_t item; int flag; } EventTicket;
+
+static int event_tickets(const EventTicket** out) {
+  static const EventTicket EM[] = {
+    { "Eon Ticket",    "Latios / Latias", 275, 0x8B3 },  /* Southern Island */
+    { "Aurora Ticket", "Deoxys",          371, 0x8D5 },  /* Birth Island    */
+    { "Mystic Ticket", "Lugia + Ho-Oh",   370, 0x8E0 },  /* Navel Rock      */
+    { "Old Sea Map",   "Mew",             376, 0x8D6 },  /* Faraway Island  */
+  };
+  if (g_game == PK_EMERALD) { *out = EM; return (int)(sizeof EM / sizeof EM[0]); }
+  *out = 0; return 0;                                   /* RS/FRLG flags not yet mapped */
+}
+
+static bool ticket_granted(const EventTicket* t) {
+  if (!pk_flag_get(g_sb1, g_game, t->flag)) return false;
+  int cap = pk_pocket_cap(g_game, POCKET_KEY);
+  for (int s = 0; s < cap; s++) if (pk_bag_item(g_sb1, g_game, POCKET_KEY, s) == t->item) return true;
+  return false;
+}
+
+static bool grant_key_item(uint16_t item) {              /* add to the Key Items pocket (idempotent) */
+  int cap = pk_pocket_cap(g_game, POCKET_KEY);
+  for (int s = 0; s < cap; s++) if (pk_bag_item(g_sb1, g_game, POCKET_KEY, s) == item) return true;
+  for (int s = 0; s < cap; s++) if (pk_bag_item(g_sb1, g_game, POCKET_KEY, s) == 0) {
+    pk_bag_set(g_sb1, g_sb2, g_game, POCKET_KEY, s, item, 1); return true; }
+  return false;                                          /* pocket full (very unlikely) */
+}
+
+static void pdna_events(void) {
+  const EventTicket* T; int n = event_tickets(&T);
+  if (n == 0) { msg_wait("EVENT TICKETS", UI_DIM, "Supported on Emerald for now.", "(RS/FRLG flags TBD.)"); return; }
+  bool dirty = false; int sel = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "EVENT TICKETS");
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < n; i++) {
+      int y = 20 + i * 17; bool s = (i == sel), on = ticket_granted(&T[i]);
+      if (s) ui_panel(2, y - 1, 236, 16, UI_SEL, UI_TITLE);
+      ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, T[i].name);
+      ui_text(150, y, on ? UI_OK : UI_DIM, on ? "READY" : "-");
+      char sub[40]; siprintf(sub, "-> %s", T[i].mon);
+      ui_text(12, y + 8, s ? UI_SELTEXT : UI_DIM, sub);
+    }
+    ui_text(4, 152, UI_DIM, "A grant  U/D  B done");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) break;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % n;
+    else if (k & KEY_A) {
+      if (app_confirm(T[sel].name, "Grant this event ticket?")) {
+        bool ok = grant_key_item(T[sel].item);
+        pk_flag_set(g_sb1, g_game, T[sel].flag, true);    /* ferry-enable flag */
+        dirty = true;
+        msg_wait(ok ? "GRANTED" : "NO ROOM", ok ? UI_OK : UI_WARN,
+                 ok ? "Ticket + boat access set." : "Key Items pocket is full.",
+                 "Sail from the harbor.");
+      }
+    }
+  }
+  if (dirty && app_confirm("Save events?", "Writes the save now.")) app_commit_sb1();
 }
 
 /* ===================== Daycare viewer (#9) ============================= */
@@ -2434,11 +2496,11 @@ static void pdna_settings(void) {
 
 /* START-menu destinations over the box (Party + Bank + Daycare are the storage
  * screens; SELECT no longer toggles the party — it cycles the box cursor mode). */
-enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_DEX, NV_DATA, NV_SECRET, NV_POKEBLOCK, NV_SETTINGS, NV_BACK, NV_COUNT };
+enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_DEX, NV_DATA, NV_SECRET, NV_POKEBLOCK, NV_EVENTS, NV_SETTINGS, NV_BACK, NV_COUNT };
 static int nav_menu(void) {
   static const char* const L[NV_COUNT] = { "Party", "Bank", "Daycare", "Trainer card", "Clock fix", "Pokedex",
-                                           "Data editor", "Secret Bases", "Pokeblocks", "Settings", "Back" };
-  const int mx = 56, my = 4, rh = 11, mw = 128, mh = 18 + NV_COUNT * rh + 11;  /* my+mh=154: fits 11 */
+                                           "Data editor", "Secret Bases", "Pokeblocks", "Event tickets", "Settings", "Back" };
+  const int mx = 56, my = 3, rh = 10, mw = 132, mh = 18 + NV_COUNT * rh + 11;  /* my+mh=152: fits 12 */
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
@@ -2588,6 +2650,8 @@ static void view_save(const char* path) {
                          else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); } break;
         case NV_SECRET:  rmbl_fire(RCUE_ROOM); pdna_secretbase(); break;
         case NV_POKEBLOCK: if (app_can_edit()) pdna_pokeblock();
+                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); } break;
+        case NV_EVENTS:   if (app_can_edit()) pdna_events();
                            else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); } break;
         case NV_SETTINGS: pdna_settings(); break;
         default: break;                          /* NV_BACK */
