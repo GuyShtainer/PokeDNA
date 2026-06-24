@@ -51,16 +51,16 @@ static int s_item_from = -1;          /* slot the carried item was taken from */
 static int s_item_from_box = -1;      /* box the carried item came from (for put-back across boxes) */
 
 static PkMon EWRAM_BSS g_box[30];
-static int s_move_from = -1;          /* slot being repositioned in move-mode, or -1 */
-
-/* Swap two 80-byte records inside a 30-record block (the current box's records). */
-static void swap_records(uint8_t* recs, int a, int b) {
-  if (a == b) return;
-  uint8_t* ra = recs + (uint32_t)a * 80;
-  uint8_t* rb = recs + (uint32_t)b * 80;
-  uint8_t tmp[80];
-  memcpy(tmp, ra, 80); memcpy(ra, rb, 80); memcpy(rb, tmp, 80);
-}
+/* Mon-in-hand carry (move mode). The carried mon lives in s_held (a copy); its ORIGIN
+ * cell keeps the real record (lift-don't-clear) and is only cleared on a successful drop,
+ * so an interrupted carry never loses the mon. s_orig_slot<0 means "no origin" (a fresh
+ * duplicate) -> cancel just discards it. Statics persist across pdna_box runs so a carry
+ * survives the PC<->Bank screen hand-off; pdna_box_clear_carry() resets it per save. */
+static bool s_holding = false;
+static uint8_t s_held[80];
+static int  s_orig_box = -1, s_orig_slot = -1;
+static bool s_orig_bank = false;
+void pdna_box_clear_carry(void) { s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; }
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
@@ -219,27 +219,90 @@ static int cursor_look(void) {
                                : BOXOAM_HAND_NORMAL;
 }
 
+/* ---- mon-in-hand carry helpers (data-safety notes on the s_held declaration) ---- */
+static void start_carry(BoxSource* src, const uint8_t* recs, int box, int slot) {
+  memcpy(s_held, recs + (uint32_t)slot * 80, 80);            /* lift-don't-clear: copy, origin stays */
+  s_holding = true; s_orig_box = box; s_orig_slot = slot; s_orig_bank = src->is_bank;
+}
+
+/* Clear the origin cell after a within-scope drop; handles bank paging and returns the
+ * CURRENT box reloaded into recs. Call AFTER placing the held mon at the dest (dest-first
+ * ordering -> a mid-op power loss duplicates, never loses). */
+static uint8_t* clear_origin(BoxSource* src, int box) {
+  if (s_orig_slot < 0 || s_orig_bank != src->is_bank) { s_orig_slot = -1; return src->records(box); }
+  uint8_t* o = src->records(s_orig_box);                     /* bank: flushes the current (dest) box first */
+  memset(o + (uint32_t)s_orig_slot * 80, 0, 80);
+  src->mark_dirty(); s_orig_slot = -1;
+  return src->records(box);                                  /* reload the current box */
+}
+
+/* Drop the held mon onto cursor cell `cur`. Within the origin's scope: true move (place +
+ * clear origin; swap if occupied). Across the PC<->Bank boundary: COPY onto an empty cell
+ * only (origin kept) so a mon can't be lost between two save scopes. *done=true when the
+ * hand is empty afterwards. Returns the (maybe reloaded) recs. */
+static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
+  *done = false;
+  if (s_orig_slot >= 0 && s_orig_bank == src->is_bank && s_orig_box == box && cur == s_orig_slot) {
+    s_holding = false; *done = true; return recs;            /* dropped back on its own cell */
+  }
+  bool occupied = g_box[cur].species != 0;
+  if (s_orig_bank != src->is_bank) {                         /* cross-scope -> COPY (never lose) */
+    if (occupied) { snd_deny(); return recs; }
+    /* Across the PC<->Bank boundary a true move can't be made loss-proof (two save
+     * scopes, two prompts), so this is a COPY — confirm it so the user isn't surprised
+     * by a duplicate (they delete the original to finish a move). */
+    boxoam_suspend();
+    bool ok = app_confirm(src->is_bank ? "Copy to Bank?" : "Copy to PC?",
+                          src->is_bank ? "The PC keeps the original." : "The Bank keeps the original.");
+    boxoam_resume();
+    if (!ok) return recs;                                    /* keep holding */
+    memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
+    s_holding = false; *done = true; return recs;
+  }
+  if (!occupied) {                                           /* empty -> place, clear origin */
+    memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
+    recs = clear_origin(src, box);
+    s_holding = false; *done = true; return recs;
+  }
+  if (s_orig_slot < 0) { snd_deny(); return recs; }          /* a fresh dup can't swap -> empty only */
+  if (s_orig_box == box) {                                   /* within-box swap (one buffer, atomic) */
+    uint8_t occ[80]; memcpy(occ, recs + (uint32_t)cur * 80, 80);
+    memcpy(recs + (uint32_t)cur * 80, s_held, 80);
+    memcpy(recs + (uint32_t)s_orig_slot * 80, occ, 80);
+    src->mark_dirty(); s_holding = false; *done = true; return recs;
+  }
+  if (src->is_bank) { snd_deny(); return recs; }             /* cross-box swap unsafe in the paged bank */
+  { uint8_t occ[80]; memcpy(occ, recs + (uint32_t)cur * 80, 80);   /* PC cross-box swap (RAM-atomic) */
+    memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
+    uint8_t* o = src->records(s_orig_box);
+    memcpy(o + (uint32_t)s_orig_slot * 80, occ, 80); src->mark_dirty();
+    s_holding = false; *done = true; return src->records(box);
+  }
+}
+
 /* Push the full sprite state for the current frame: icons (reloaded if needed),
- * cursor / carry, and ITEM markers + carried item. Mirrors what render_full used to
- * blit, but as OAM. */
-static void oam_sync(int cur, bool on_title) {
+ * cursor / carry, and ITEM markers + carried item. */
+static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
   if (s_oam_reload) { boxoam_load_box(g_box); s_oam_reload = false; }
-  if (s_move_from >= 0) {
-    boxoam_carry(cur, s_move_from);                 /* held icon + grab fist ride cursor */
+  if (s_holding) {
+    PkMon hm; pk_decode_mon(s_held, false, &hm);
+    boxoam_carry_held(cur, hm.species, hm.form);             /* held mon front-most + orange fist */
+    if (s_orig_slot >= 0 && s_orig_bank == is_bank && s_orig_box == box)
+      boxoam_hide_slot(s_orig_slot);                         /* lift-hide the origin cell */
     boxoam_item_markers(g_box, false);
     boxoam_carry_item(cur, 0, false);
+  } else if (s_cur_mode == CM_ITEM && s_item_held) {
+    boxoam_carry_end();                                      /* ITEM GRAB: full item + orange fist */
+    boxoam_item_markers(g_box, true);
+    boxoam_carry_item(cur, (uint16_t)s_item_held, true);
   } else {
-    boxoam_carry(cur, -1);                          /* clear carry sprites */
+    boxoam_carry_end();
     boxoam_item_markers(g_box, s_cur_mode == CM_ITEM);
-    /* ITEM mode: GRAB shows the full item over the mon; HOVER shows a small item icon at
-     * the cursor mon's bottom-left (clear of the hand) so its real item is visible. */
-    if (s_cur_mode == CM_ITEM && s_item_held)
-      boxoam_carry_item(cur, (uint16_t)s_item_held, true);          /* grabbing: full size */
-    else if (s_cur_mode == CM_ITEM && g_box[cur].heldItem)
-      boxoam_carry_item(cur, g_box[cur].heldItem, false);           /* hovering a holder: small */
+    if (s_cur_mode == CM_ITEM && g_box[cur].heldItem)
+      boxoam_carry_item(cur, g_box[cur].heldItem, false);    /* HOVER: small item bottom-left */
     else
-      boxoam_carry_item(cur, 0, false);                             /* nothing to show */
-    boxoam_cursor(cur, on_title, cursor_look());    /* cursor hand last (top) */
+      boxoam_carry_item(cur, 0, false);
+    boxoam_cursor(cur, on_title, cursor_look());             /* cursor hand last; restores region A */
   }
 }
 
@@ -301,7 +364,7 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
   draw_box_banner(src, box, on_title);
   draw_footer(src->is_bank, on_title, moving);
 
-  oam_sync(cur, on_title);                           /* icons + cursor + carry + markers */
+  oam_sync(cur, on_title, box, src->is_bank);        /* icons + cursor + carry + markers */
 }
 
 /* Pick-up grab cue when MOVE is chosen: the carried icon + grab fist lift over a few
@@ -320,22 +383,22 @@ static void play_grab_anim(BoxSource* src, int box, int slot) {
  * software icon repaint, no erase — the GPU handles overlap. */
 static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
                         int cur, bool on_title) {
-  (void)box; (void)old_cur;
+  (void)old_cur;
   if (on_title != old_title) {                        /* entering/leaving the title row */
     draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);  /* clear stale title frame */
     draw_box_banner(src, box, on_title);
     draw_footer(src->is_bank, on_title, false);
   }
   draw_left(on_title ? 0 : &g_box[cur]);              /* the selected mon changed */
-  oam_sync(cur, on_title);                            /* reposition cursor sprite */
+  oam_sync(cur, on_title, box, src->is_bank);         /* reposition cursor sprite */
 }
 
 /* Update while CARRYING a mon (move-mode): just reposition the carry sprites and the
  * left panel. The GPU composites; nothing to erase. */
 static void carry_move(BoxSource* src, int box, int old_cur, int cur) {
-  (void)box; (void)old_cur;
+  (void)old_cur;
   draw_left(&g_box[cur]);                             /* panel follows the destination cell */
-  oam_sync(cur, false);                              /* moves OE_CARRY + OE_GRAB sprites */
+  oam_sync(cur, false, box, src->is_bank);           /* moves OE_CARRY + OE_GRAB sprites */
 }
 
 /* Wallpaper chooser: live-previews each wallpaper behind the box's icons.
@@ -422,33 +485,27 @@ int pdna_box(BoxSource* src) {
   bool on_title = false;
   bool need_full = true;
   int anim_ctr = 0, bob = 0;                   /* current unison Y-bob offset (0/1) */
-  s_move_from = -1;
+  /* s_holding persists across pdna_box runs so a carried mon survives the PC<->Bank
+   * hand-off (the receiving screen just keeps drawing it). It's reset per-save by
+   * pdna_box_clear_carry() — do NOT reset it here. */
   s_cur_mode = CM_NORMAL; s_item_held = 0; s_item_from = -1; s_item_from_box = -1;   /* fresh cursor mode each open */
   s_tab_focus = -1;
   /* A Day-Care withdraw-to-PC parked a mon in a free slot and asked us to carry it:
-   * open that box with the mon already lifted in the glove so the user places it. */
-  { int pb, ps;
-    if (app_take_pickup(&pb, &ps) && pb >= 0 && pb < nb && ps >= 0 && ps < 30) {
-      box = pb; cur = ps; s_move_from = ps;
-    }
+   * open that box and lift the parked mon into the glove so the user places it. */
+  int pickup_ps = -1;
+  if (!s_holding) { int pb, ps;
+    if (app_take_pickup(&pb, &ps) && pb >= 0 && pb < nb && ps >= 0 && ps < 30) { box = pb; cur = ps; pickup_ps = ps; }
   }
   boxoam_enter();                             /* enable OBJ; upload hand/grab + palettes */
   s_oam_reload = true;                        /* first paint uploads the box's icon tiles */
   uint8_t* recs = src->records(box);          /* current box's 30*80 records */
   pk_decode_box_raw(recs, g_box);
-  /* Cross-screen hand-off (PC<->Bank): a transferred mon to carry, or where to put the
-   * cursor (top tabs / bottom row) when arriving via the up/down edge. */
-  { int st = app_box_start_take();            /* always consume so it can't leak to a later entry */
-    uint8_t xr[80];
-    if (s_move_from >= 0) { /* already carrying (daycare pickup) */ }
-    else if (app_xfer_take(xr)) {             /* carry a mon transferred from the other screen */
-      int fs = -1;
-      for (int s = 0; s < COLS * ROWS; s++) { PkMon m; if (!pk_decode_mon(recs + (uint32_t)s * 80, false, &m)) { fs = s; break; } }
-      if (fs >= 0) { memcpy(recs + (uint32_t)fs * 80, xr, 80); pk_decode_box_raw(recs, g_box);
-                     src->mark_dirty(); cur = fs; s_move_from = fs; }
-    }
-    else if (st == 1) s_tab_focus = src->is_bank ? 2 : 1;   /* arrive on the top tabs   */
-    else if (st == 2) cur = COLS * (ROWS - 1);              /* arrive at the bottom row */
+  if (pickup_ps >= 0) start_carry(src, recs, box, pickup_ps);   /* lift the parked mon */
+  /* Cursor-arrival hint when crossing the PC<->Bank edge: bottom row (carrying up into the
+   * bank) or the top tabs (only when NOT carrying — you can't rest a held mon on a tab). */
+  { int st = app_box_start_take();
+    if (st == 1 && !s_holding) s_tab_focus = src->is_bank ? 2 : 1;
+    else if (st == 2) cur = COLS * (ROWS - 1);
   }
   /* switch to box `nbx` (wrapping), reload + redraw */
   #define SWITCH_BOX(nbx) do { box = (nbx); recs = src->records(box); \
@@ -458,12 +515,12 @@ int pdna_box(BoxSource* src) {
                                s_oam_reload = true; need_full = true; } while (0)
 
   for (;;) {
-    if (need_full) { render_full(src, box, cur, on_title, s_move_from >= 0, true); need_full = false; }
+    if (need_full) { render_full(src, box, cur, on_title, s_holding, true); need_full = false; }
     u16 k, fresh;
     do { s_vsync();
          /* real 2-frame pose bob: DMA-swap all icons' tiles between frame 0/1 in vblank;
           * paused while carrying or in ITEM mode (icons + markers stay static). */
-         if (app_anim_enabled(ANIM_BOX) && s_move_from < 0 && s_cur_mode != CM_ITEM) {
+         if (app_anim_enabled(ANIM_BOX) && !s_holding && s_cur_mode != CM_ITEM) {
            if (++anim_ctr >= ANIM_PERIOD) { anim_ctr = 0; bob ^= 1; boxoam_set_frame(bob); }
          } else if (bob) { bob = 0; boxoam_set_frame(0); }
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
@@ -477,60 +534,30 @@ int pdna_box(BoxSource* src) {
 
     int old_cur = cur; bool old_title = on_title;
 
-    /* ---- MOVE MODE: holding a mon; reposition it within the box ---- */
-    if (s_move_from >= 0) {
-      if (k & KEY_B) { snd_back(); s_move_from = -1; need_full = true; }   /* cancel -> full redraw */
-      else if (k & KEY_A) {                          /* drop -> swap source <-> cursor */
-        swap_records(recs, s_move_from, cur);
-        pk_decode_box_raw(recs, g_box);
-        src->mark_dirty();                           /* PC: deferred to exit; bank: quiet write now */
-        s_move_from = -1; s_oam_reload = true; need_full = true;   /* slots swapped -> reload icons */
+    /* ---- MOVE MODE (mon-in-hand): the carried mon floats; place it anywhere ---- */
+    if (s_holding) {
+      if (k & KEY_B) {                               /* cancel: origin still holds it (a fresh dup is discarded) */
+        snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false;
+        s_oam_reload = true; need_full = true;
       }
-      else if ((k & (KEY_L | KEY_R)) && nb > 1) {    /* carry the held mon to the next/prev box */
+      else if (k & KEY_A) {                          /* drop / swap onto the cursor cell */
+        bool done; recs = drop_held(src, box, cur, recs, &done);
+        (void)done;                                  /* a cross-scope copy may have shown a confirm dialog */
+        pk_decode_box_raw(recs, g_box); s_oam_reload = true; need_full = true;
+      }
+      else if ((k & (KEY_L | KEY_R)) && nb > 1) {    /* carry to the next/prev box (even a FULL one) */
         int nbx = (k & KEY_R) ? (box + 1) % nb : (box + nb - 1) % nb;
-        /* The bank pages every box through ONE shared buffer, so src->records(nbx) can
-         * invalidate `recs`. Snapshot the mon BEFORE paging, then place it in the dest
-         * box FIRST and clear the source LAST — a power loss mid-carry duplicates the
-         * mon (recoverable) rather than losing it. The PC (distinct per-box buffers)
-         * runs the same path entirely in RAM (commit deferred to exit). */
-        uint8_t carried[80];
-        memcpy(carried, recs + (uint32_t)s_move_from * 80, 80);
-        uint8_t* nrecs = src->records(nbx);          /* may page out/in: `recs` now stale */
-        int fs = -1;
-        for (int s = 0; s < COLS * ROWS; s++) { PkMon m; if (!pk_decode_mon(nrecs + (uint32_t)s * 80, false, &m)) { fs = s; break; } }
-        if (fs < 0) { snd_deny(); recs = src->records(box); }   /* dest full: restore source view, no writes */
-        else {
-          memcpy(nrecs + (uint32_t)fs * 80, carried, 80);       /* 1) place in the dest box */
-          src->mark_dirty();
-          uint8_t* orecs = src->records(box);                   /* back to source (flushes dest-with-mon) */
-          memset(orecs + (uint32_t)s_move_from * 80, 0, 80);    /* 2) clear the old slot last */
-          src->mark_dirty();
-          recs = src->records(nbx);                             /* land on the dest box */
-          box = nbx; pk_decode_box_raw(recs, g_box);
-          s_move_from = fs; cur = fs; bob = 0; anim_ctr = 0;
-          s_oam_reload = true; need_full = true;
-        }
+        SWITCH_BOX(nbx);                             /* held mon floats along; no slot needed */
       }
       else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
       else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
       else if (k & KEY_UP)    {
         if (cur >= COLS) cur -= COLS;
-        else if (!src->is_bank) {                    /* off the PC top while carrying -> Bank (COPY across) */
-          /* Crossing the PC<->Bank boundary spans two independent save scopes (the PC
-           * commits with the rest of the save; the bank commits per box file), each with
-           * its own prompt. Clearing the source here would let a "save one, decline the
-           * other" sequence LOSE the mon. So carry a COPY: the original stays put, and at
-           * worst the user ends with a duplicate (delete the original to finish a move). */
-          app_xfer_put(recs + (uint32_t)s_move_from * 80);
-          s_move_from = -1; boxoam_exit(); return 4;
-        }
+        else if (!src->is_bank) { boxoam_exit(); return 4; }   /* off PC top -> Bank, still holding */
       }
       else if (k & KEY_DOWN)  {
         if (cur < COLS * (ROWS - 1)) cur += COLS;
-        else if (src->is_bank) {                     /* off the Bank bottom while carrying -> PC (COPY across) */
-          app_xfer_put(recs + (uint32_t)s_move_from * 80);   /* copy, not move (see PC-top note above) */
-          s_move_from = -1; boxoam_exit(); return 5;
-        }
+        else if (src->is_bank) { boxoam_exit(); return 5; }    /* off Bank bottom -> PC, still holding */
       }
 
       /* cursor move while carrying -> partial redraw (no ui_clear), so it doesn't flicker */
@@ -565,7 +592,7 @@ int pdna_box(BoxSource* src) {
       else if (k & KEY_UP)    { if (cur >= COLS) cur -= COLS; }
       else if (k & KEY_DOWN)  { if (cur < COLS * (ROWS - 1)) cur += COLS; }
       /* carried item + cursor are sprites: just reposition them (no BG repaint) */
-      if (!need_full && cur != old_cur) { draw_left(&g_box[cur]); oam_sync(cur, false); }
+      if (!need_full && cur != old_cur) { draw_left(&g_box[cur]); oam_sync(cur, false, box, src->is_bank); }
       continue;                                      /* item-carry swallows all other keys */
     }
 
@@ -612,7 +639,7 @@ int pdna_box(BoxSource* src) {
     else if ((k & KEY_A) && s_cur_mode == CM_MOVE) {     /* orange hand: grab the mon directly */
       if (!src->can_edit() || !g_box[cur].species) snd_deny();
       else {
-        s_move_from = cur;
+        start_carry(src, recs, box, cur);
         render_full(src, box, cur, false, false, false);
         play_grab_anim(src, box, cur);
         carry_move(src, box, cur, cur);
@@ -641,30 +668,24 @@ int pdna_box(BoxSource* src) {
         recs = src->records(box);                                        /* menu may have edited it */
         pk_decode_box_raw(recs, g_box);                                  /* refresh after possible write */
         s_oam_reload = true;                                             /* contents may have changed */
-        if (app_take_move_request()) {                                   /* picked MOVE -> hold this slot */
-          s_move_from = cur;
+        if (app_take_move_request()) {                                   /* picked MOVE -> into the glove */
+          start_carry(src, recs, box, cur);
           render_full(src, box, cur, false, false, false);               /* repaint OVER the menu, no black flash */
           play_grab_anim(src, box, cur);                                 /* grab cue (OAM lift) */
           carry_move(src, box, cur, cur);                                /* lift into carry */
           draw_footer(src->is_bank, false, true);                        /* move-mode footer */
-        } else if (app_take_dup_request()) {                            /* picked DUPLICATE -> copy into the glove */
-          int fs = -1;                                                   /* first free slot (box guaranteed non-full by the menu) */
-          for (int s = 0; s < COLS * ROWS; s++) { PkMon m; if (!pk_decode_mon(recs + (uint32_t)s * 80, false, &m)) { fs = s; break; } }
-          if (fs >= 0) {
-            memcpy(recs + (uint32_t)fs * 80, recs + (uint32_t)cur * 80, 80);  /* copy the selected mon into the free slot */
-            pk_decode_box_raw(recs, g_box);                             /* the copy now exists in g_box */
-            src->mark_dirty();                                          /* PC: deferred to exit; bank: quiet write */
-            cur = fs; s_move_from = fs;                                 /* carry the COPY; user positions it, B keeps it put */
-            render_full(src, box, cur, false, false, false);           /* reloads OAM (s_oam_reload set above) */
-            play_grab_anim(src, box, cur);
-            carry_move(src, box, cur, cur);
-            draw_footer(src->is_bank, false, true);
-          } else need_full = true;
+        } else if (app_take_dup_request()) {                            /* picked DUPLICATE -> a fresh COPY in the glove */
+          memcpy(s_held, recs + (uint32_t)cur * 80, 80);                /* copy floats in-hand; no origin (cancel discards it) */
+          s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_bank = src->is_bank;
+          render_full(src, box, cur, false, false, false);
+          play_grab_anim(src, box, cur);
+          carry_move(src, box, cur, cur);
+          draw_footer(src->is_bank, false, true);
         } else {
           int pb, ps;
           if (app_take_pickup(&pb, &ps) && pb >= 0 && pb < nb && ps >= 0 && ps < 30) {
             box = pb; recs = src->records(box); pk_decode_box_raw(recs, g_box);   /* TO DAY-CARE->PC: carry the parked mon */
-            cur = ps; s_move_from = ps; s_oam_reload = true;
+            cur = ps; start_carry(src, recs, box, ps); s_oam_reload = true;
             render_full(src, box, cur, false, false, false);
             play_grab_anim(src, box, cur);
             carry_move(src, box, cur, cur);

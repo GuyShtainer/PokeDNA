@@ -2456,6 +2456,7 @@ static void view_save(const char* path) {
   g_game = g_frlg ? PK_FRLG : (g_vinfo.version_guess == G3_VER_RS ? PK_RS : PK_EMERALD);
 
   BoxSource pcs = pc_box_source();
+  pdna_box_clear_carry();                          /* no mon in hand when a save opens */
   rmbl_fire(RCUE_ROOM);                            /* entering the save's home "room" */
   /* The PC box is "home"; Party / Bank / Daycare / etc. all hang off the START menu.
    * (Saves with no PC fall back to the party list as home.) */

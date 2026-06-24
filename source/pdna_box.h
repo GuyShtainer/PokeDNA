@@ -39,4 +39,8 @@ typedef struct {
  * trainer/menu (START). */
 int pdna_box(BoxSource* src);
 
+/* Reset the mon-in-hand carry state — call once when a save is (re)opened, since the
+ * carry persists across pdna_box runs to survive the PC<->Bank hand-off. */
+void pdna_box_clear_carry(void);
+
 #endif /* PDNA_BOX_H */

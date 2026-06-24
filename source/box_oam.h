@@ -61,9 +61,12 @@ void boxoam_set_frame(int frame);
  * normal/orange(MOVE)/translucent(ITEM) look. cur is the 0..29 grid cell. */
 void boxoam_cursor(int cur, bool on_title, int mode);
 
-/* MOVE-mode carry: show the held icon (from grid slot `from`) and the grab fist
- * riding cursor cell `cur`; hides the cursor hand. Pass from<0 to clear carry. */
-void boxoam_carry(int cur, int from);
+/* MOVE-mode carry (mon-in-hand): the held mon's icon (species/form) rides cursor cell
+ * `cur` front-most in region A, an orange grab fist behind it; the cursor hand is hidden.
+ * boxoam_carry_end() stops carrying; boxoam_hide_slot() lift-hides the origin cell. */
+void boxoam_carry_held(int cur, uint16_t species, uint8_t form);
+void boxoam_carry_end(void);
+void boxoam_hide_slot(int s);
 
 /* ITEM mode: show a small held-item marker on every occupied cell that holds an
  * item (uses `box` for occupancy/heldItem). Call when entering ITEM mode / after an

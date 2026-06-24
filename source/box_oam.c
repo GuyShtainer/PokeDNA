@@ -62,8 +62,8 @@ static uint8_t  s_form[30];             /* form per slot                        
 static uint8_t  s_icon_blend[30];       /* 1 = draw this icon semi-transparent (ITEM mode, non-holders) */
 static int      s_frame = 0;            /* current bob frame (0/1) in OBJ VRAM     */
 static int      s_bob = 0;              /* current unison Y-bob offset (0/1)      */
-static int      s_regb = -1;            /* what region B holds: 0=grab 1=item -1=none */
-static int      s_carry_from = -1;      /* grid slot lifted out during move-carry, or -1 */
+static int      s_regb = -1;            /* what region B holds: 0=grab fist 1=item -1=none */
+static int      s_rega = -1;            /* what region A holds: 0=hand 1=full item 2=held mon -1 */
 
 static inline OBJ_ATTR* oe(int i) { return &s_shadow[i]; }
 
@@ -77,11 +77,20 @@ static void upload_tiles(int tid, const void* src, int bytes) {
   dma3_cpy(dst, src, bytes);
 }
 
-/* ------- region B (time-shared between move grab-fist and ITEM glyphs) ------- */
+/* ------- region B (time-shared between move/item grab-fist and the small item) ------- */
 static void load_regb_grab(void) {
   if (s_regb == 0) return;
   upload_tiles(TID_GRAB, hand_oam_grab_tiles, HAND_OAM_TILES * HAND_OAM_TILE_BYTES);
   s_regb = 0;
+}
+
+/* ------- region A (time-shared: cursor hand / held-mon icon / full grab item) -------
+ * the cursor hand is hidden whenever we carry a mon or grab an item, so its 16 tiles
+ * are free for the held mon's icon or the full-size item; restore the hand on the way back. */
+static void load_rega_hand(void) {
+  if (s_rega == 0) return;
+  upload_tiles(TID_HAND, hand_oam_cursor_tiles, HAND_OAM_TILES * HAND_OAM_TILE_BYTES);
+  s_rega = 0;
 }
 
 /* Render the FULL 24x24 RGB15 icon for `item` at native size, centred in a 16-tile
@@ -111,8 +120,9 @@ static uint8_t citem_index(const uint16_t* ic, const uint16_t* cpal, int ncol, i
   return (uint8_t)best;
 }
 
-static void load_regb_item(uint16_t carried_item, bool full) {
-  /* full = 32x32 (16 tiles) carried/grab item; !full = 16x16 (4 tiles) hover preview. */
+static void load_regb_item(uint16_t carried_item, bool full, int tid) {
+  /* full = 32x32 (16 tiles) carried/grab item; !full = 16x16 (4 tiles) hover preview.
+   * tid = where the tiles go (TID_CITEM in region B for hover, TID_HAND in region A for grab). */
   uint16_t cpal[16]; for (int i = 0; i < 16; i++) cpal[i] = 0;
   uint8_t ctiles[16 * 32];                           /* up to 16 tonc tiles, 4bpp */
   for (unsigned b = 0; b < sizeof ctiles; b++) ctiles[b] = 0;
@@ -153,14 +163,13 @@ static void load_regb_item(uint16_t carried_item, bool full) {
           }
   }
   for (int i = 0; i < 16; i++) pal_obj_mem[PB_CITEM * 16 + i] = cpal[i];
-  upload_tiles(TID_CITEM, ctiles, across * across * 32);
-  s_regb = 1;
+  upload_tiles(tid, ctiles, across * across * 32);
 }
 
 void boxoam_enter(void) {
   oam_init(s_shadow, 128);                         /* clears shadow to hidden     */
   for (int i = 0; i < 30; i++) { s_occupied[i] = 0; s_iconbank[i] = 0; }
-  s_bob = 0; s_regb = -1; s_carry_from = -1;
+  s_bob = 0; s_regb = -1; s_rega = -1;
 
   /* shared icon palettes -> banks 0..12 (416 bytes) */
   for (int i = 0; i < MON_ICON_OAM_BANKS * MON_ICON_OAM_PALLEN; i++)
@@ -183,8 +192,8 @@ void boxoam_enter(void) {
   pal_obj_mem[PB_HAND * 16 + 5] = RGB15(8, 6, 1);
 
   /* hand tiles -> region A (id 992) */
-  upload_tiles(TID_HAND, hand_oam_cursor_tiles, HAND_OAM_TILES * HAND_OAM_TILE_BYTES);
-  load_regb_grab();                                /* default region B = grab fist */
+  load_rega_hand();                               /* region A = cursor hand        */
+  load_regb_grab();                               /* default region B = grab fist  */
 
   /* hide every overlay entry up front */
   for (int i = OE_HAND; i < OE_COUNT; i++) hide(i);
@@ -274,6 +283,7 @@ static void hand_xy(int cur, int* hx, int* hy) {
 }
 
 void boxoam_cursor(int cur, bool on_title, int mode) {
+  load_rega_hand();                                  /* region A back to the hand (a grab/carry may have borrowed it) */
   int hx, hy;
   if (on_title) { hx = WP_X + WP_W / 2 - 4 - 7; hy = 14; }
   else hand_xy(cur, &hx, &hy);
@@ -298,39 +308,35 @@ void boxoam_cursor(int cur, bool on_title, int mode) {
   hide(OE_GRAB); hide(OE_CARRY);
 }
 
-void boxoam_carry(int cur, int from) {
-  if (from < 0) {                                    /* end carry: restore the lifted slot */
-    hide(OE_GRAB); hide(OE_CARRY);
-    if (s_carry_from >= 0 && s_occupied[s_carry_from]) place_grid_slot(s_carry_from);
-    s_carry_from = -1;
-    return;
-  }
-  load_regb_grab();                                  /* region B back to the fist     */
-  REG_BLDCNT = 0;                                    /* carry is opaque               */
-  s_carry_from = from;
-  hide(OE_ICON0 + from);                             /* source cell reads empty while lifted */
-
-  /* carried icon rides the cursor cell, lifted 4px (matches the software carry_xy) */
-  int ix = GRID_X + (cur % COLS) * CELL_W;
-  int iy = GRID_Y + (cur / COLS) * CELL_H - 4; if (iy < WP_Y) iy = WP_Y;
-  if (s_occupied[from]) {
-    obj_set_attr(oe(OE_CARRY),
+/* Carry a HELD mon (move mode), mon-in-hand model. The held mon's icon is decoded into
+ * region A (the cursor hand's 16 tiles, free while carrying) so it survives box reloads,
+ * and rides FRONT-MOST (PRIO 0) above every box icon (PRIO 2). An orange, semi-transparent
+ * grab fist sits BEHIND it (region B, PRIO 1). The cursor hand is hidden. species 0 -> just
+ * the fist (empty hand). The caller hides the origin slot via boxoam_hide_slot(). */
+void boxoam_carry_held(int cur, uint16_t species, uint8_t form) {
+  int cx = GRID_X + (cur % COLS) * CELL_W, cy = GRID_Y + (cur / COLS) * CELL_H;
+  int ix = cx, iy = cy - 4; if (iy < WP_Y) iy = WP_Y;
+  load_regb_grab();                                  /* fist tiles -> region B */
+  REG_BLDCNT = 0;                                    /* carried mon is opaque  */
+  const uint8_t* tiles; int bank = 0;
+  if (species && mon_icon_oam_for_form_frame(species, form, 0, &tiles, &bank)) {
+    upload_tiles(TID_HAND, tiles, MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
+    s_rega = 2;                                      /* region A now holds the held mon */
+    obj_set_attr(oe(OE_CARRY),                       /* front-most */
                  ATTR0_SQUARE | ATTR0_4BPP | (iy & ATTR0_Y_MASK),
                  ATTR1_SIZE_32 | (ix & ATTR1_X_MASK),
-                 ATTR2_ID(TID_ICON0 + from * MON_ICON_OAM_TILES) | ATTR2_PRIO(0) |   /* front-most: above all box icons */
-                 ATTR2_PALBANK(s_iconbank[from]));
+                 ATTR2_ID(TID_HAND) | ATTR2_PRIO(0) | ATTR2_PALBANK(bank));
   } else hide(OE_CARRY);
-
-  /* grab fist over the icon — same horizontal offset as the resting cursor (cell_x+3)
-   * so the hand doesn't jump left when you pick a mon up. */
-  int fx = ix + 3;
-  int fy = iy - 6; if (fy < WP_Y) fy = WP_Y;
-  obj_set_attr(oe(OE_GRAB),
+  int fx = cx + 3, fy = cy - 6; if (fy < WP_Y) fy = WP_Y;
+  obj_set_attr(oe(OE_GRAB),                          /* orange grab fist, behind the mon */
                ATTR0_SQUARE | ATTR0_4BPP | (fy & ATTR0_Y_MASK),
                ATTR1_SIZE_32 | (fx & ATTR1_X_MASK),
-               ATTR2_ID(TID_GRAB) | ATTR2_PRIO(0) | ATTR2_PALBANK(PB_HAND));
-  hide(OE_HAND);                                     /* hand hidden while carrying    */
+               ATTR2_ID(TID_GRAB) | ATTR2_PRIO(1) | ATTR2_PALBANK(PB_HANDORG));
+  hide(OE_HAND);                                     /* hand hidden while carrying */
 }
+
+void boxoam_carry_end(void) { hide(OE_CARRY); hide(OE_GRAB); }   /* stop carrying */
+void boxoam_hide_slot(int s) { if (s >= 0 && s < 30) hide(OE_ICON0 + s); }  /* lift-hide the origin */
 
 void boxoam_item_markers(const PkMon box[30], bool show) {
   /* ITEM mode fades the icons so the cursor + item badges read clearly — but a mon
@@ -347,23 +353,38 @@ void boxoam_item_markers(const PkMon box[30], bool show) {
 }
 
 void boxoam_carry_item(int cur, uint16_t item, bool full) {
-  if (!item) { hide(OE_CITEM); return; }
-  load_regb_item(item, full);
-  int ix, iy, size;
-  if (full) {                                        /* GRAB: full 32x32 over the mon, lifted */
-    ix = GRID_X + (cur % COLS) * CELL_W - (CITEM_OFF + 1);
-    iy = GRID_Y + (cur / COLS) * CELL_H - (CITEM_OFF + 6);
-    size = ATTR1_SIZE_32;
-  } else {                                           /* HOVER: small 16x16 at the cell's bottom-left */
-    ix = GRID_X + (cur % COLS) * CELL_W - 3;
-    iy = GRID_Y + (cur / COLS) * CELL_H + CELL_H - 14;
-    size = ATTR1_SIZE_16;
+  int cx = GRID_X + (cur % COLS) * CELL_W, cy = GRID_Y + (cur / COLS) * CELL_H;
+  if (!item) {                                       /* nothing held/hovered -> clear item sprites */
+    hide(OE_CITEM); if (full) hide(OE_GRAB);
+    return;
   }
-  if (iy < WP_Y) iy = WP_Y;
-  obj_set_attr(oe(OE_CITEM),
-               ATTR0_SQUARE | ATTR0_4BPP | (iy & ATTR0_Y_MASK),
-               size | (ix & ATTR1_X_MASK),
-               ATTR2_ID(TID_CITEM) | ATTR2_PRIO(0) | ATTR2_PALBANK(PB_CITEM));
+  if (full) {
+    /* GRAB: the FULL 32x32 item rides in front of EVERYTHING (region A, PRIO 0), held by an
+     * orange, semi-transparent grab fist behind it (region B, PRIO 1). Hand hidden. */
+    load_regb_item(item, true, TID_HAND); s_rega = 1;
+    load_regb_grab();                                /* fist tiles -> region B */
+    int ix = cx - (CITEM_OFF + 1), iy = cy - (CITEM_OFF - 1); if (iy < WP_Y) iy = WP_Y;
+    int fx = cx + 3, fy = cy - 6; if (fy < WP_Y) fy = WP_Y;
+    REG_BLDCNT = ((BLD_BG2 | BLD_OBJ) << 8) | BLD_STD;   /* blend the fist over what's below */
+    REG_BLDALPHA = (10) | (8 << 8);
+    obj_set_attr(oe(OE_GRAB),                        /* orange transparent grab fist, behind the item */
+                 ATTR0_SQUARE | ATTR0_4BPP | ATTR0_BLEND | (fy & ATTR0_Y_MASK),
+                 ATTR1_SIZE_32 | (fx & ATTR1_X_MASK),
+                 ATTR2_ID(TID_GRAB) | ATTR2_PRIO(1) | ATTR2_PALBANK(PB_HANDORG));
+    obj_set_attr(oe(OE_CITEM),                       /* the full item, opaque, front-most */
+                 ATTR0_SQUARE | ATTR0_4BPP | (iy & ATTR0_Y_MASK),
+                 ATTR1_SIZE_32 | (ix & ATTR1_X_MASK),
+                 ATTR2_ID(TID_HAND) | ATTR2_PRIO(0) | ATTR2_PALBANK(PB_CITEM));
+    hide(OE_HAND);
+  } else {
+    /* HOVER: small 16x16 item low in the cell's bottom-left, on top of the mon (PRIO 0). */
+    load_regb_item(item, false, TID_CITEM); s_regb = 1;
+    int ix = cx - 3, iy = cy + CELL_H - 8; if (iy < WP_Y) iy = WP_Y;
+    obj_set_attr(oe(OE_CITEM),
+                 ATTR0_SQUARE | ATTR0_4BPP | (iy & ATTR0_Y_MASK),
+                 ATTR1_SIZE_16 | (ix & ATTR1_X_MASK),
+                 ATTR2_ID(TID_CITEM) | ATTR2_PRIO(0) | ATTR2_PALBANK(PB_CITEM));
+  }
 }
 
 void boxoam_commit(void) {
