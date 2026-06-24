@@ -308,6 +308,12 @@ static const char* const DS_NAME[DS_N] = { "All", "Caught", "Seen", "Unseen" };
 static DexGetState s_dget;
 static DexSetState s_dset;
 
+/* Snapshot of every species' dex state before the last bulk op, so a mistaken
+ * "Catch/See/Wipe ALL" can be undone in one step (the changes aren't written to the
+ * SD until the user confirms the dex save, so this RAM revert fully restores it). */
+static int8_t s_dex_snap[DEX_NAT_MAX];
+static bool   s_dex_snap_valid = false;
+
 static int dstate(uint16_t internal) { return s_dget((int)pk_national_no(internal)); }
 
 /* Build g_list for the dex: species filter (build_species) -> caught-status filter
@@ -384,26 +390,41 @@ static void dex_header(int view, int filter, int status, uint16_t sel_in, int se
 
 /* SELECT-all overlay: catch / see / wipe every species. Returns true if changed. */
 static bool dex_bulk(void) {
-  static const char* const L[4] = { "Catch ALL", "See ALL", "Wipe ALL", "Cancel" };
   int sel = 0;
   for (;;) {
-    const int mx = 60, my = 50, mw = 120, mh = 18 + 4 * 14 + 11;
+    /* options: Catch/See/Wipe ALL (state 2/1/0), an Undo (-1) when a snapshot exists, Cancel (-2) */
+    const char* L[5]; int act[5], n = 0;
+    L[n] = "Catch ALL"; act[n++] = 2;
+    L[n] = "See ALL";   act[n++] = 1;
+    L[n] = "Wipe ALL";  act[n++] = 0;
+    if (s_dex_snap_valid) { L[n] = "Undo last"; act[n++] = -1; }
+    L[n] = "Cancel"; act[n++] = -2;
+    if (sel >= n) sel = n - 1;
+    const int mx = 60, my = 46, mw = 120, mh = 18 + n * 14 + 11;
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "DEX: ALL");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 4; i++) { int y = my + 18 + i * 14; bool s = (i == sel);
+    for (int i = 0; i < n; i++) { int y = my + 18 + i * 14; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
-      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]); }
+      ui_text(mx + 10, y, s ? UI_SELTEXT : (act[i] == -1 ? UI_OK : UI_TEXT), L[i]); }
     ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return false;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 4;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
-      if (sel == 3) return false;
-      if (!app_confirm(sel == 0 ? "Catch every species?" : sel == 1 ? "See every species?" : "Wipe the whole dex?",
-                       "Applies to all 386.")) return false;
-      for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dset(nat, sel == 0 ? 2 : sel == 1 ? 1 : 0);
+      int a = act[sel];
+      if (a == -2) return false;                                  /* Cancel */
+      if (a == -1) {                                              /* Undo the last bulk op */
+        for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dset(nat, s_dex_snap[nat - 1]);
+        s_dex_snap_valid = false;
+        return true;
+      }
+      if (!app_confirm(a == 2 ? "Catch every species?" : a == 1 ? "See every species?" : "Wipe the whole dex?",
+                       "All 386. (Undo available.)")) return false;
+      for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dex_snap[nat - 1] = (int8_t)s_dget(nat);   /* snapshot first */
+      s_dex_snap_valid = true;
+      for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dset(nat, a);
       return true;
     }
   }
@@ -453,6 +474,7 @@ static int dex_menu(int* filter, int* sort, int* status, bool can_edit) {
 
 bool pdna_dex_screen(DexGetState get, DexSetState set, bool can_edit) {
   s_dget = get; s_dset = set;
+  s_dex_snap_valid = false;        /* fresh session: no bulk op to undo yet */
   int filter = 0, sort = 0, status = DS_ALL, view = DV_GRID;
   char search[16] = "";
   dex_build(filter, sort, search, status, view);
