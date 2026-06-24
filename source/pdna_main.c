@@ -37,6 +37,7 @@
 #include "pdna_bank.h"   /* pdna_bank_show (bank = parallel boxes) */
 #include "gen3_flags.h"    /* event flags */
 #include "gen3_dex.h"      /* Pokedex seen/owned flags */
+#include "gen3_pokeblock.h" /* Pokeblock case (RS/Emerald) */
 #include "gen3_daycare.h"  /* daycare breeding compatibility (the man's verdict) */
 #include "gen3_items.h"    /* item bags */
 #include "gen3_secretbase.h" /* Secret Base records (RS/Emerald) */
@@ -1422,6 +1423,83 @@ static bool pdna_dex_edit(void) {
   return false;
 }
 
+/* ===================== Pokéblock case editor ========================== */
+
+static bool app_commit_pokeblocks(void) {                  /* the case lives in SaveBlock1 (sections 1-4) */
+  for (int id = 1; id <= 4; id++)
+    gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
+  return app_save_finalize();
+}
+
+/* Edit one Pokéblock's fields (or delete it). Returns true if anything changed. */
+static bool pokeblock_edit(int idx) {
+  static const char* const FN[7] = { "Color", "Spicy", "Dry", "Sweet", "Bitter", "Sour", "Feel" };
+  PkPokeblock pb; pk_pokeblock_get(g_sb1, g_game, idx, &pb);
+  uint8_t* v[7] = { &pb.color, &pb.spicy, &pb.dry, &pb.sweet, &pb.bitter, &pb.sour, &pb.feel };
+  int sel = 0; bool changed = false;
+  for (;;) {
+    ui_clear();
+    char t[24]; siprintf(t, "POKEBLOCK %d", idx + 1); ui_text(4, 2, UI_TITLE, t);
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < 7; i++) {
+      int y = 20 + i * 12; bool s = (i == sel);
+      if (s) ui_panel(2, y - 1, 236, 11, UI_SEL, UI_TITLE);
+      ui_text(8, y, s ? UI_SELTEXT : UI_DIM, FN[i]);
+      char b[16];
+      if (i == 0) siprintf(b, "%s", pk_pokeblock_color_name(pb.color));
+      else        siprintf(b, "%u", (unsigned)*v[i]);
+      ui_text(110, y, s ? UI_SELTEXT : UI_TEXT, b);
+    }
+    int dy = 20 + 7 * 12 + 4; bool sd = (sel == 7);
+    if (sd) ui_panel(2, dy - 1, 236, 11, UI_SEL, UI_TITLE);
+    ui_text(8, dy, sd ? UI_SELTEXT : UI_WARN, "Delete this block");
+    ui_text(4, 152, UI_DIM, "A edit  <> +/-  U/D  B done");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
+    if (k & KEY_B) break;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 7;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 8;
+    else if (sel == 7) { if (k & KEY_A) { pk_pokeblock_clear(g_sb1, g_game, idx); return true; } }  /* delete */
+    else {
+      int maxv = (sel == 0) ? 14 : 99;                     /* colour 0..14; flavours/feel 0..99 */
+      if (k & (KEY_LEFT | KEY_RIGHT)) { int d = (k & KEY_RIGHT) ? 1 : -1; int nv = *v[sel] + d;
+                                        if (nv < 0) nv = maxv; if (nv > maxv) nv = 0; *v[sel] = (uint8_t)nv; changed = true; }
+      else if (k & KEY_A) { uint32_t nv = osk_number(FN[sel], *v[sel], (uint32_t)maxv); *v[sel] = (uint8_t)nv; changed = true; }
+    }
+  }
+  if (changed) pk_pokeblock_set(g_sb1, g_game, idx, &pb);
+  return changed;
+}
+
+/* Pokéblock case: 40 slots; A edits/creates a block, "Delete" inside clears one. RS/
+ * Emerald only (FRLG has no contests). Edits g_sb1; one verified write on the way out. */
+static void pdna_pokeblock(void) {
+  if (pk_pokeblock_offset(g_game) == 0) { msg_wait("NO POKEBLOCKS", UI_DIM, "This game has no contests.", 0); return; }
+  bool dirty = false; int sel = 0, top = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "POKEBLOCK CASE");
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
+    for (int i = 0; i < 14 && top + i < PK_POKEBLOCK_COUNT; i++) {
+      int idx = top + i, y = 16 + i * 9; bool s = (idx == sel);
+      PkPokeblock pb; pk_pokeblock_get(g_sb1, g_game, idx, &pb);
+      bool occ = pk_pokeblock_occupied(&pb);
+      char row[40];
+      if (occ) siprintf(row, "%2d %-8s  feel %u", idx + 1, pk_pokeblock_color_name(pb.color), (unsigned)pb.feel);
+      else     siprintf(row, "%2d -", idx + 1);
+      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+      ui_text(4, y, s ? UI_SELTEXT : (occ ? UI_TEXT : UI_DIM), row);
+    }
+    ui_text(4, 152, UI_DIM, "A edit/create  U/D  B done");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) break;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : PK_POKEBLOCK_COUNT - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % PK_POKEBLOCK_COUNT;
+    else if (k & KEY_A)    { if (pokeblock_edit(sel)) dirty = true; }
+  }
+  if (dirty && app_confirm("Save Pokeblocks?", "Writes the case now.")) app_commit_pokeblocks();
+}
+
 /* ===================== Daycare viewer (#9) ============================= */
 
 /* Read-only viewer of the 1-2 Pokemon in the Daycare (each is an 80-byte BoxPokemon
@@ -2356,11 +2434,11 @@ static void pdna_settings(void) {
 
 /* START-menu destinations over the box (Party + Bank + Daycare are the storage
  * screens; SELECT no longer toggles the party — it cycles the box cursor mode). */
-enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_DEX, NV_DATA, NV_SECRET, NV_SETTINGS, NV_BACK, NV_COUNT };
+enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_DEX, NV_DATA, NV_SECRET, NV_POKEBLOCK, NV_SETTINGS, NV_BACK, NV_COUNT };
 static int nav_menu(void) {
   static const char* const L[NV_COUNT] = { "Party", "Bank", "Daycare", "Trainer card", "Clock fix", "Pokedex",
-                                           "Data editor", "Secret Bases", "Settings", "Back" };
-  const int mx = 56, my = 6, rh = 12, mw = 128, mh = 18 + NV_COUNT * rh + 11;  /* my+mh=155: fits 10 */
+                                           "Data editor", "Secret Bases", "Pokeblocks", "Settings", "Back" };
+  const int mx = 56, my = 4, rh = 11, mw = 128, mh = 18 + NV_COUNT * rh + 11;  /* my+mh=154: fits 11 */
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
@@ -2509,6 +2587,8 @@ static void view_save(const char* path) {
         case NV_DATA:    if (app_can_edit()) data_editor();
                          else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); } break;
         case NV_SECRET:  rmbl_fire(RCUE_ROOM); pdna_secretbase(); break;
+        case NV_POKEBLOCK: if (app_can_edit()) pdna_pokeblock();
+                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); } break;
         case NV_SETTINGS: pdna_settings(); break;
         default: break;                          /* NV_BACK */
       }
