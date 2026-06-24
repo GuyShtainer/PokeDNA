@@ -48,6 +48,7 @@ static int s_cur_mode = CM_NORMAL;
 static int s_item_held = 0;           /* item id carried in ITEM mode (0 = none) */
 static int s_tab_focus = -1;          /* top-tab cursor: -1 none, 0 PKMN DATA, 1 PARTY SEL, 2 SAVE */
 static int s_item_from = -1;          /* slot the carried item was taken from */
+static int s_item_from_box = -1;      /* box the carried item came from (for put-back across boxes) */
 
 static PkMon EWRAM_BSS g_box[30];
 static int s_move_from = -1;          /* slot being repositioned in move-mode, or -1 */
@@ -226,11 +227,18 @@ static void oam_sync(int cur, bool on_title) {
   if (s_move_from >= 0) {
     boxoam_carry(cur, s_move_from);                 /* held icon + grab fist ride cursor */
     boxoam_item_markers(g_box, false);
-    boxoam_carry_item(cur, 0);
+    boxoam_carry_item(cur, 0, false);
   } else {
     boxoam_carry(cur, -1);                          /* clear carry sprites */
     boxoam_item_markers(g_box, s_cur_mode == CM_ITEM);
-    boxoam_carry_item(cur, (uint16_t)(s_cur_mode == CM_ITEM ? s_item_held : 0));
+    /* ITEM mode: GRAB shows the full item over the mon; HOVER shows a small item icon at
+     * the cursor mon's bottom-left (clear of the hand) so its real item is visible. */
+    if (s_cur_mode == CM_ITEM && s_item_held)
+      boxoam_carry_item(cur, (uint16_t)s_item_held, true);          /* grabbing: full size */
+    else if (s_cur_mode == CM_ITEM && g_box[cur].heldItem)
+      boxoam_carry_item(cur, g_box[cur].heldItem, false);           /* hovering a holder: small */
+    else
+      boxoam_carry_item(cur, 0, false);                             /* nothing to show */
     boxoam_cursor(cur, on_title, cursor_look());    /* cursor hand last (top) */
   }
 }
@@ -415,7 +423,7 @@ int pdna_box(BoxSource* src) {
   bool need_full = true;
   int anim_ctr = 0, bob = 0;                   /* current unison Y-bob offset (0/1) */
   s_move_from = -1;
-  s_cur_mode = CM_NORMAL; s_item_held = 0; s_item_from = -1;   /* fresh cursor mode each open */
+  s_cur_mode = CM_NORMAL; s_item_held = 0; s_item_from = -1; s_item_from_box = -1;   /* fresh cursor mode each open */
   s_tab_focus = -1;
   /* A Day-Care withdraw-to-PC parked a mon in a free slot and asked us to carry it:
    * open that box with the mon already lifted in the glove so the user places it. */
@@ -428,10 +436,25 @@ int pdna_box(BoxSource* src) {
   s_oam_reload = true;                        /* first paint uploads the box's icon tiles */
   uint8_t* recs = src->records(box);          /* current box's 30*80 records */
   pk_decode_box_raw(recs, g_box);
+  /* Cross-screen hand-off (PC<->Bank): a transferred mon to carry, or where to put the
+   * cursor (top tabs / bottom row) when arriving via the up/down edge. */
+  { int st = app_box_start_take();            /* always consume so it can't leak to a later entry */
+    uint8_t xr[80];
+    if (s_move_from >= 0) { /* already carrying (daycare pickup) */ }
+    else if (app_xfer_take(xr)) {             /* carry a mon transferred from the other screen */
+      int fs = -1;
+      for (int s = 0; s < COLS * ROWS; s++) { PkMon m; if (!pk_decode_mon(recs + (uint32_t)s * 80, false, &m)) { fs = s; break; } }
+      if (fs >= 0) { memcpy(recs + (uint32_t)fs * 80, xr, 80); pk_decode_box_raw(recs, g_box);
+                     src->mark_dirty(); cur = fs; s_move_from = fs; }
+    }
+    else if (st == 1) s_tab_focus = src->is_bank ? 2 : 1;   /* arrive on the top tabs   */
+    else if (st == 2) cur = COLS * (ROWS - 1);              /* arrive at the bottom row */
+  }
   /* switch to box `nbx` (wrapping), reload + redraw */
   #define SWITCH_BOX(nbx) do { box = (nbx); recs = src->records(box); \
                                pk_decode_box_raw(recs, g_box); cur = 0; \
                                bob = 0; anim_ctr = 0; \
+                               if (!src->is_bank) app_note_pc_box(box); \
                                s_oam_reload = true; need_full = true; } while (0)
 
   for (;;) {
@@ -463,10 +486,53 @@ int pdna_box(BoxSource* src) {
         src->mark_dirty();                           /* PC: deferred to exit; bank: quiet write now */
         s_move_from = -1; s_oam_reload = true; need_full = true;   /* slots swapped -> reload icons */
       }
+      else if ((k & (KEY_L | KEY_R)) && nb > 1) {    /* carry the held mon to the next/prev box */
+        int nbx = (k & KEY_R) ? (box + 1) % nb : (box + nb - 1) % nb;
+        /* The bank pages every box through ONE shared buffer, so src->records(nbx) can
+         * invalidate `recs`. Snapshot the mon BEFORE paging, then place it in the dest
+         * box FIRST and clear the source LAST — a power loss mid-carry duplicates the
+         * mon (recoverable) rather than losing it. The PC (distinct per-box buffers)
+         * runs the same path entirely in RAM (commit deferred to exit). */
+        uint8_t carried[80];
+        memcpy(carried, recs + (uint32_t)s_move_from * 80, 80);
+        uint8_t* nrecs = src->records(nbx);          /* may page out/in: `recs` now stale */
+        int fs = -1;
+        for (int s = 0; s < COLS * ROWS; s++) { PkMon m; if (!pk_decode_mon(nrecs + (uint32_t)s * 80, false, &m)) { fs = s; break; } }
+        if (fs < 0) { snd_deny(); recs = src->records(box); }   /* dest full: restore source view, no writes */
+        else {
+          memcpy(nrecs + (uint32_t)fs * 80, carried, 80);       /* 1) place in the dest box */
+          src->mark_dirty();
+          uint8_t* orecs = src->records(box);                   /* back to source (flushes dest-with-mon) */
+          memset(orecs + (uint32_t)s_move_from * 80, 0, 80);    /* 2) clear the old slot last */
+          src->mark_dirty();
+          recs = src->records(nbx);                             /* land on the dest box */
+          box = nbx; pk_decode_box_raw(recs, g_box);
+          s_move_from = fs; cur = fs; bob = 0; anim_ctr = 0;
+          s_oam_reload = true; need_full = true;
+        }
+      }
       else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
       else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
-      else if (k & KEY_UP)    { if (cur >= COLS) cur -= COLS; }
-      else if (k & KEY_DOWN)  { if (cur < COLS * (ROWS - 1)) cur += COLS; }
+      else if (k & KEY_UP)    {
+        if (cur >= COLS) cur -= COLS;
+        else if (!src->is_bank) {                    /* off the PC top while carrying -> Bank (COPY across) */
+          /* Crossing the PC<->Bank boundary spans two independent save scopes (the PC
+           * commits with the rest of the save; the bank commits per box file), each with
+           * its own prompt. Clearing the source here would let a "save one, decline the
+           * other" sequence LOSE the mon. So carry a COPY: the original stays put, and at
+           * worst the user ends with a duplicate (delete the original to finish a move). */
+          app_xfer_put(recs + (uint32_t)s_move_from * 80);
+          s_move_from = -1; boxoam_exit(); return 4;
+        }
+      }
+      else if (k & KEY_DOWN)  {
+        if (cur < COLS * (ROWS - 1)) cur += COLS;
+        else if (src->is_bank) {                     /* off the Bank bottom while carrying -> PC (COPY across) */
+          app_xfer_put(recs + (uint32_t)s_move_from * 80);   /* copy, not move (see PC-top note above) */
+          s_move_from = -1; boxoam_exit(); return 5;
+        }
+      }
+
       /* cursor move while carrying -> partial redraw (no ui_clear), so it doesn't flicker */
       if (!need_full && cur != old_cur) carry_move(src, box, old_cur, cur);
       continue;                                      /* move-mode swallows all other keys */
@@ -475,9 +541,10 @@ int pdna_box(BoxSource* src) {
     /* ---- ITEM CARRY: holding a held item; place it / swap onto another mon ---- */
     if (s_item_held > 0) {
       if (k & KEY_B) {                               /* put it back (never lose it) */
+        if (s_item_from_box >= 0 && s_item_from_box != box) SWITCH_BOX(s_item_from_box);  /* back to its box */
         int home = item_home();
         if (home >= 0) { box_set_held(recs, home, (uint16_t)s_item_held); pk_decode_box_raw(recs, g_box);
-                         src->mark_dirty(); s_item_held = 0; s_item_from = -1; need_full = true; }
+                         src->mark_dirty(); s_item_held = 0; s_item_from = -1; s_item_from_box = -1; need_full = true; }
         else snd_deny();
       }
       else if (k & KEY_A) {                          /* give / swap onto the cursor mon */
@@ -487,9 +554,12 @@ int pdna_box(BoxSource* src) {
           pk_decode_box_raw(recs, g_box);
           src->mark_dirty();
           s_item_held = old; s_item_from = old ? cur : -1;   /* keep holding the swapped-out item */
+          s_item_from_box = old ? box : -1;
           need_full = true;
         } else snd_deny();
       }
+      else if ((k & KEY_L) && nb > 1) { SWITCH_BOX((box + nb - 1) % nb); }   /* flip boxes while carrying */
+      else if ((k & KEY_R) && nb > 1) { SWITCH_BOX((box + 1) % nb); }
       else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
       else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
       else if (k & KEY_UP)    { if (cur >= COLS) cur -= COLS; }
@@ -501,7 +571,8 @@ int pdna_box(BoxSource* src) {
 
     /* ---- TOP-TAB cursor (reached by pressing UP on the box name): pick a tab ---- */
     if (s_tab_focus >= 0) {
-      if      (k & (KEY_B | KEY_DOWN)) { s_tab_focus = -1; need_full = true; }              /* back to box name */
+      if      (k & KEY_UP) { if (!src->is_bank) { s_tab_focus = -1; boxoam_exit(); return 4; } }   /* up past the PC tabs -> Bank */
+      else if (k & (KEY_B | KEY_DOWN)) { s_tab_focus = -1; need_full = true; }              /* back to box name */
       else if (k & KEY_LEFT)  { s_tab_focus = (s_tab_focus > 0) ? s_tab_focus - 1 : 2; need_full = true; }
       else if (k & KEY_RIGHT) { s_tab_focus = (s_tab_focus + 1) % 3; need_full = true; }
       else if (k & KEY_A) {
@@ -536,7 +607,8 @@ int pdna_box(BoxSource* src) {
     else if (k & KEY_LEFT)  cur = (cur % COLS == 0) ? cur + COLS - 1 : cur - 1;
     else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
     else if (k & KEY_UP)    { if (cur < COLS) on_title = true; else cur -= COLS; }
-    else if (k & KEY_DOWN)  cur = (cur >= COLS * (ROWS - 1)) ? cur - COLS * (ROWS - 1) : cur + COLS;
+    else if (k & KEY_DOWN)  { if (src->is_bank && cur >= COLS * (ROWS - 1)) { boxoam_exit(); return 5; }   /* off the bank bottom -> PC tabs */
+                              else cur = (cur >= COLS * (ROWS - 1)) ? cur - COLS * (ROWS - 1) : cur + COLS; }
     else if ((k & KEY_A) && s_cur_mode == CM_MOVE) {     /* orange hand: grab the mon directly */
       if (!src->can_edit() || !g_box[cur].species) snd_deny();
       else {
@@ -550,7 +622,7 @@ int pdna_box(BoxSource* src) {
     else if ((k & KEY_A) && s_cur_mode == CM_ITEM) {     /* transparent hand: pick up the held item */
       if (!src->can_edit()) snd_deny();
       else if (g_box[cur].species && g_box[cur].heldItem) {
-        s_item_held = g_box[cur].heldItem; s_item_from = cur;
+        s_item_held = g_box[cur].heldItem; s_item_from = cur; s_item_from_box = box;
         box_set_held(recs, cur, 0);
         pk_decode_box_raw(recs, g_box);
         src->mark_dirty();

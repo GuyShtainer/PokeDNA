@@ -51,6 +51,18 @@ bool app_take_dup_request(void);
  * Returns true once and fills *box/*slot. */
 bool app_take_pickup(int* box, int* slot);
 
+/* Cross-screen carry (PC <-> Bank). The source screen stows the held 80-byte record and
+ * returns 4 (->Bank) / 5 (->PC); the destination box grid takes it on entry, places it
+ * in a free slot and carries it in the glove. */
+void app_xfer_put(const uint8_t* rec80);
+bool app_xfer_take(uint8_t* rec80);
+
+/* Entry-cursor hint for the next box grid: 0 default, 1 = start on the top tabs,
+ * 2 = start at the bottom row (used by the PC<->Bank up/down hand-off). */
+void app_box_start_set(int s);
+int  app_box_start_take(void);
+void app_note_pc_box(int b);              /* PC box screen reports its current box so the app remembers it */
+
 /* Commit the loaded save's SaveBlock2 (section 0 — the trainer block) or
  * SaveBlock1 (sections 1..4 — where money lives) after an in-place edit of the
  * shared g_sb2 / g_sb1 buffers. Same verified-write+backup path as the editors.

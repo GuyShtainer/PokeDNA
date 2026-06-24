@@ -182,7 +182,7 @@ static bool banksrc_commit(void) {               /* immediate edits: persist box
 }
 static void banksrc_mark_dirty(void) { g_dirty = true; }   /* moves: deferred to box-switch/exit */
 
-bool pdna_bank_show(void) {
+int pdna_bank_show(void) {
   f_mkdir("/PokeDNA");
   f_mkdir(PDNA_BANK_DIR);
 
@@ -205,7 +205,7 @@ bool pdna_bank_show(void) {
   s.commit     = banksrc_commit;
   s.mark_dirty = banksrc_mark_dirty;
 
-  pdna_box(&s);
+  int r = pdna_box(&s);
 
   /* deferred moves: ask once on leaving the bank (mirrors the PC's save-on-exit). */
   if (g_dirty) {
@@ -215,5 +215,5 @@ bool pdna_bank_show(void) {
       box_load(g_loaded);                          /* discard: reload the box from its file */
     g_dirty = false;
   }
-  return true;
+  return r;        /* 5 = the user dropped off the bottom -> caller reopens the PC on its tabs */
 }

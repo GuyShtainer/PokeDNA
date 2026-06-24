@@ -73,7 +73,7 @@ void boxoam_item_markers(const PkMon box[30], bool show);
 /* ITEM mode carry: show/hide the carried item icon riding cursor cell `cur`.
  * item != 0 shows that item's icon (falls back to a generic glyph if it has none);
  * item == 0 hides the carried-item sprite. */
-void boxoam_carry_item(int cur, uint16_t item);
+void boxoam_carry_item(int cur, uint16_t item, bool full);   /* full=grab (32x32 over the mon); !full=hover (16x16 bottom-left) */
 
 /* Flush the OAM shadow to hardware OAM. Call once per frame in the vblank window
  * (after VBlankIntrWait, before the beam starts) so updates never tear. */

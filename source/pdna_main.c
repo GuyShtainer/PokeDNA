@@ -78,6 +78,7 @@ static bool      g_show_hidden = false;
  * cfg_save/cfg_load (above app_anim_enabled) can persist it. */
 static unsigned  g_anim_mask = (1u << ANIM_BOX) | (1u << ANIM_PARTY) |
                                (1u << ANIM_DEX) | (1u << ANIM_DAYCARE);
+static int       g_pc_last_box = 0;        /* PC box to open on (NOT the save's in-game box); app remembers it */
 
 /* Big buffers live in EWRAM (.bss), never on the IWRAM stack. */
 static u8          EWRAM_BSS g_save[G3_SAVE_FILE_SIZE];   /* 128 KiB raw image       */
@@ -140,12 +141,14 @@ static void halt_msg(const char* msg) {
   while (1) vsync();
 }
 
+/* Match save files AND their backups so the .bak copies are visible to pick/restore:
+ * any name CONTAINING ".sav" (case-insensitive) -> x.sav, x.sav.bak, x.sav.bak3, ... */
 static int has_sav_ext(const char* n) {
-  unsigned L = (unsigned)strlen(n);
-  if (L < 4 || n[L - 4] != '.') return 0;
-  return (n[L - 3] == 's' || n[L - 3] == 'S') &&
-         (n[L - 2] == 'a' || n[L - 2] == 'A') &&
-         (n[L - 1] == 'v' || n[L - 1] == 'V');
+  for (const char* p = n; p[0] && p[1] && p[2] && p[3]; p++)
+    if (p[0] == '.' &&
+        (p[1] == 's' || p[1] == 'S') && (p[2] == 'a' || p[2] == 'A') && (p[3] == 'v' || p[3] == 'V'))
+      return 1;
+  return 0;
 }
 
 /* ---- path helpers (ported from the record-mixer browser) ---------------- */
@@ -242,9 +245,9 @@ static void scan_dir(void) {
 static void cfg_save(void) {
   if (!app_can_edit()) return;
   char buf[PATH_MAX + 96];
-  int n = siprintf(buf, "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\n",
+  int n = siprintf(buf, "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\n",
                    g_cwd, (int)g_sort, g_sortrev ? 1 : 0, g_show_all ? 1 : 0, g_show_hidden ? 1 : 0,
-                   g_anim_mask, rmbl_get_mask(), rmbl_get_strength(), rmbl_get_duration());
+                   g_anim_mask, rmbl_get_mask(), rmbl_get_strength(), rmbl_get_duration(), g_pc_last_box);
   FIL f;
   rmbl_pause();                                  /* no motor toggling during the SD write */
   if (f_open(&f, CFG_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) { rmbl_resume(); return; }
@@ -275,6 +278,7 @@ static void cfg_load(void) {
       else if (!strcmp(k, "hidden")) g_show_hidden = (v[0] == '1');
       else if (!strcmp(k, "anim"))   { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); g_anim_mask = m & ((1u << ANIM_COUNT) - 1u); }
       else if (!strcmp(k, "rumble")) { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); rmbl_set_mask(m); }
+      else if (!strcmp(k, "pcbox"))  { int m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (*d - '0'); g_pc_last_box = m; }
     }
     p = term ? eol + 1 : eol;
   }
@@ -527,7 +531,6 @@ static void grow_in(u16 col) {
  * PC write (which flushes the whole g_pc) or an explicit revert. */
 static bool g_pc_dirty = false;
 static bool g_sb1_deferred = false;   /* g_save holds staged SaveBlock1 (Day-Care) edits not yet on disk */
-static bool g_session_backed_up = false;  /* once true, the original is already backed up this session */
 
 /* Backup policy for the verified write: 0 = new .bak/.bak1… each time (default),
  * 1 = single rolling .bak (overwrite), 2 = skip backup. Session-only (resets each
@@ -552,10 +555,7 @@ static bool app_save_finalize(void) {
 
   log_line("=== edit commit -> %s (backup mode %d) ===", g_path, g_backup_mode);
   char bak[SF_PATH_MAX]; bak[0] = 0;
-  /* Back up ONCE per session: the backup is the file as it was when you opened it (the
-   * original you chose), not an intermediate state from a later save. Skip if already
-   * done this session, or if backups are off (mode 2). */
-  if (g_backup_mode != 2 && !g_session_backed_up) {
+  if (g_backup_mode != 2) {                        /* 2 = skip backup; else back up the pre-save file */
     busy_panel("Backing up original...");          /* safe point: before SD copy */
     rmbl_pause();                                  /* no motor on the cart bus mid-transfer */
     SfStatus bst = (g_backup_mode == 1) ? sf_backup_rolling(g_path, bak, sizeof(bak))
@@ -568,7 +568,6 @@ static bool app_save_finalize(void) {
       msg_wait("BACKUP FAILED", UI_WARN, sf_status_str(bst), "Save NOT modified.");
       return false;
     }
-    g_session_backed_up = true;                    /* original preserved; don't re-backup updated states */
   }
   SfStatus st;
   busy_panel("Writing + verifying...");            /* safe point: before SD write */
@@ -749,6 +748,15 @@ bool app_take_pickup(int* box, int* slot) {
   *box = g_pickup_box; *slot = g_pickup_slot; g_pickup_box = g_pickup_slot = -1; return true;
 }
 static void pdna_daycare(void);   /* forward: app_to_daycare opens it after a deposit */
+
+/* Cross-screen carry (PC <-> Bank): the held record travels here between pdna_box runs. */
+static uint8_t g_xfer_rec[80]; static bool g_xfer_set = false;
+void app_xfer_put(const uint8_t* rec80) { memcpy(g_xfer_rec, rec80, 80); g_xfer_set = true; }
+bool app_xfer_take(uint8_t* rec80) { if (!g_xfer_set) return false; memcpy(rec80, g_xfer_rec, 80); g_xfer_set = false; return true; }
+static int g_box_start = 0;
+void app_box_start_set(int s) { g_box_start = s; }
+int  app_box_start_take(void) { int s = g_box_start; g_box_start = 0; return s; }
+void app_note_pc_box(int b) { if (b >= 0 && b < G3_TOTAL_BOXES) g_pc_last_box = b; }   /* remember the PC box the user is on */
 
 bool app_confirm(const char* title, const char* l1) {
   ui_clear();
@@ -1451,13 +1459,16 @@ static void dc_pointer(int cx, int y) {           /* small downward arrow over t
  * TWO mon slots each so two mons in the same area don't overlap. Mirrors the SLOTS in
  * tools/gen_daycare_img.py (aligned to the lava/water/trees/yellow/flowers in the map). */
 enum { DR_LAVA, DR_WATER, DR_SKY, DR_ELEC, DR_GRASS, DR_EMPTY, DR_COUNT };
+/* Two slots per area, spaced so the 32x32 icons don't overlap (>=32px apart in one
+ * axis) — the lava pit is tall so its two slots stack vertically, the others spread
+ * horizontally. cx/cy are CENTERS; the icon is drawn at (cx-16, cy-16). */
 static const struct { int cx, cy; } DC_SPOT[DR_COUNT][2] = {
-  { { 32, 34}, { 52, 44} },    /* LAVA  - rock/ground/fire (red area)      */
-  { {158, 86}, {210, 92} },    /* WATER - water (below the waterfall)      */
-  { {160, 30}, {205, 34} },    /* SKY   - flying (the trees, top-right)    */
-  { { 94, 38}, {120, 46} },    /* ELEC  - electric (yellow diamond area)   */
-  { { 28, 98}, { 64,106} },    /* GRASS - grass/bug (the flower beds)      */
-  { {100, 90}, {128,104} },    /* EMPTY - everyone else (plain grass)      */
+  { { 34, 28}, { 52, 64} },    /* LAVA  - rock/ground/fire (red area; stacked) */
+  { {154, 82}, {208, 96} },    /* WATER - water (below the waterfall)      */
+  { {156, 28}, {206, 36} },    /* SKY   - flying (the trees, top-right)    */
+  { { 88, 34}, {124, 52} },    /* ELEC  - electric (yellow diamond area)   */
+  { { 26, 94}, { 66,108} },    /* GRASS - grass/bug (the flower beds)      */
+  { { 96, 84}, {134,104} },    /* EMPTY - everyone else (plain grass)      */
 };
 #define DC_MAXDECO 5
 static int      s_deco_x[DC_MAXDECO], s_deco_y[DC_MAXDECO];
@@ -1472,13 +1483,33 @@ static uint32_t s_dc_visit_rng = 1;           /* per-visit stream for dual-type 
  * BOTH areas and *rng picks one (so e.g. a Water/Flying mon randomly sits in the water
  * or the trees each visit). No qualifying type (incl. non-fire rock/ground) -> empty. */
 static int dc_region_pick(uint16_t species, uint32_t* rng) {
-  uint8_t a = pk_species_type1(species), b = pk_species_type2(species);
-  int cand[5], nc = 0;
-  if (a == 10 || b == 10) cand[nc++] = DR_LAVA;                 /* fire    */
-  if (a == 11 || b == 11) cand[nc++] = DR_WATER;                /* water   */
-  if (a == 2  || b == 2)  cand[nc++] = DR_SKY;                  /* flying  */
-  if (a == 13 || b == 13) cand[nc++] = DR_ELEC;                 /* electric*/
-  if (a == 12 || b == 12 || a == 6 || b == 6) cand[nc++] = DR_GRASS; /* grass/bug */
+  /* Each of the mon's TWO types can place it: fire->lava, water->water, flying->sky,
+   * electric->elec, grass/bug->grass. A type with no dedicated area (dragon, normal,
+   * rock/ground when not also fire, ...) instead allows the fallback spots: grass + empty.
+   * So e.g. Dragonite (dragon+flying) can be in the sky OR the grass/empty, and a plain
+   * rock/ground mon stays in grass/empty (only fire puts a rock/ground mon in the lava). */
+  uint8_t t[2] = { pk_species_type1(species), pk_species_type2(species) };
+  int cand[DR_COUNT], nc = 0;
+  bool fallback = false;
+  for (int i = 0; i < 2; i++) {
+    if (i == 1 && t[1] == t[0]) break;                          /* mono-type: count once */
+    int area;
+    switch (t[i]) {
+      case 10: area = DR_LAVA;  break;                          /* fire    */
+      case 11: area = DR_WATER; break;                          /* water   */
+      case 2:  area = DR_SKY;   break;                          /* flying  */
+      case 13: area = DR_ELEC;  break;                          /* electric*/
+      case 12: case 6: area = DR_GRASS; break;                  /* grass/bug */
+      default: fallback = true; continue;                       /* no area -> grass + empty */
+    }
+    int dup = 0; for (int k = 0; k < nc; k++) if (cand[k] == area) dup = 1;
+    if (!dup) cand[nc++] = area;
+  }
+  if (fallback) {
+    int g = 0, e = 0; for (int k = 0; k < nc; k++) { if (cand[k] == DR_GRASS) g = 1; if (cand[k] == DR_EMPTY) e = 1; }
+    if (!g) cand[nc++] = DR_GRASS;
+    if (!e) cand[nc++] = DR_EMPTY;
+  }
   if (nc == 0) return DR_EMPTY;
   if (nc == 1) return cand[0];
   *rng = *rng * 1103515245u + 12345u;
@@ -1486,9 +1517,11 @@ static int dc_region_pick(uint16_t species, uint32_t* rng) {
 }
 /* Reserve a slot in area `rg` (2 per area); if full, fall back to the EMPTY area.
  * Returns rg*2+slot, or -1 if even EMPTY is full. */
-static int dc_take_slot(int used[DR_COUNT][2], int rg) {
-  if (!used[rg][0]) { used[rg][0] = 1; return rg * 2 + 0; }
-  if (!used[rg][1]) { used[rg][1] = 1; return rg * 2 + 1; }
+static int dc_take_slot(int used[DR_COUNT][2], int rg, uint32_t* rng) {
+  int s0 = 0;                                  /* when both slots free, pick one at random */
+  if (!used[rg][0] && !used[rg][1]) { *rng = *rng * 1103515245u + 12345u; s0 = (int)((*rng >> 16) & 1u); }
+  if (!used[rg][s0])     { used[rg][s0] = 1;     return rg * 2 + s0; }
+  if (!used[rg][1 - s0]) { used[rg][1 - s0] = 1; return rg * 2 + (1 - s0); }
   if (!used[DR_EMPTY][0]) { used[DR_EMPTY][0] = 1; return DR_EMPTY * 2 + 0; }
   if (!used[DR_EMPTY][1]) { used[DR_EMPTY][1] = 1; return DR_EMPTY * 2 + 1; }
   return -1;
@@ -1573,7 +1606,7 @@ static int dc_rescan(uint32_t base, uint32_t stride, uint8_t* recs[2], PkMon dc[
   int used[DR_COUNT][2] = {{0}};
   uint32_t arng = s_dc_visit_rng;               /* per-visit stream: stable within a visit, varies across */
   for (int i = 0; i < n; i++) {                  /* each boarder -> a slot in its type area (random for dual-type) */
-    int slot = dc_take_slot(used, dc_region_pick(dc[i].species, &arng));
+    int slot = dc_take_slot(used, dc_region_pick(dc[i].species, &arng), &arng);
     int rg = (slot < 0) ? DR_EMPTY : slot / 2, sp = (slot < 0) ? 0 : slot % 2;
     int cx = DC_SPOT[rg][sp].cx - 16, cy = DC_SPOT[rg][sp].cy - 16;
     cx &= ~1; if (cx < 2) cx = 2; else if (cx > UI_SCR_W - 34) cx = UI_SCR_W - 34;
@@ -1583,7 +1616,7 @@ static int dc_rescan(uint32_t base, uint32_t stride, uint8_t* recs[2], PkMon dc[
   /* the 2..5 random decoration mons (rolled once per visit) -> their type areas */
   s_ndeco = 0;
   for (int d = 0; d < s_ndeco_roll && s_ndeco < DC_MAXDECO; d++) {
-    int slot = dc_take_slot(used, dc_region_pick(s_deco_roll[d], &arng));
+    int slot = dc_take_slot(used, dc_region_pick(s_deco_roll[d], &arng), &arng);
     if (slot < 0) continue;                      /* every slot full -> drop this deco */
     int rg = slot / 2, sp = slot % 2;
     int cx = DC_SPOT[rg][sp].cx - 16, cy = DC_SPOT[rg][sp].cy - 16;
@@ -2343,7 +2376,10 @@ static void pcsrc_set_wp(int box, int wp) { pk_set_box_wallpaper(g_pc, box, (uin
 static BoxSource pc_box_source(void) {
   BoxSource s; memset(&s, 0, sizeof s);
   s.nboxes     = G3_TOTAL_BOXES;
-  s.start_box  = pk_current_box(g_pc);
+  /* Open on the box the APP last used (default box 1), NOT the save's in-game current
+   * box — opening on box 6 just because that's where the game left off is confusing. */
+  if (g_pc_last_box < 0 || g_pc_last_box >= G3_TOTAL_BOXES) g_pc_last_box = 0;
+  s.start_box  = g_pc_last_box;
   s.is_bank    = false;
   s.wp_count   = (app_walda_pattern() >= 0) ? 32 : G3_BOX_WALLPAPER_COUNT;  /* Emerald = +Walda */
   s.records    = pcsrc_records;
@@ -2392,7 +2428,6 @@ static void reload_saveblocks(void) {
 static void view_save(const char* path) {
   g_pc_dirty = false;                          /* fresh save: no pending moves */
   g_sb1_deferred = false;
-  g_session_backed_up = false;                 /* new session: back up the original on first save */
   strncpy(g_path, path, sizeof(g_path) - 1);
   g_path[sizeof(g_path) - 1] = 0;
   uint32_t sz = 0;
@@ -2427,9 +2462,17 @@ static void view_save(const char* path) {
   for (;;) {
     reload_saveblocks();                         /* editors share g_sb1/g_sb2 + commit all SB1 — keep them == the saved image so a declined edit can't ride along */
     int r = g_have_pc ? pdna_box(&pcs) : party_list();
-    if (r == 0) { flush_on_exit(); return; }  /* B / SAVE tab -> file browser (one prompt for all deferred moves) */
+    if (r == 0) { flush_on_exit(); cfg_save(); return; }  /* B / SAVE tab -> file browser (one prompt for all deferred moves; persist last PC box) */
     if (r == 3) {                                /* PARTY SEL tab -> party list */
       rmbl_fire(RCUE_ROOM); party_list();
+      g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
+      for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
+    }
+    if (r == 4) {                                /* up past the PC tabs -> Bank (cursor from below) */
+      rmbl_fire(RCUE_ROOM);
+      app_box_start_set(2);                       /* bank opens at the bottom row (unless carrying) */
+      int br = pdna_bank_show();
+      if (br == 5) app_box_start_set(1);          /* bank dropped off the bottom -> PC opens on its tabs */
       g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
       for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
     }
@@ -2437,7 +2480,7 @@ static void view_save(const char* path) {
       int refresh_party = 0;
       switch (nav_menu()) {
         case NV_PARTY:   rmbl_fire(RCUE_ROOM); party_list(); refresh_party = 1; break;
-        case NV_BANK:    rmbl_fire(RCUE_ROOM); pdna_bank_show(); refresh_party = 1; break;   /* a paste may hit the party */
+        case NV_BANK:    rmbl_fire(RCUE_ROOM); if (pdna_bank_show() == 5) app_box_start_set(1); refresh_party = 1; break;   /* bottom-out -> PC tabs; a paste may hit the party */
         case NV_DAYCARE: pdna_daycare(); break;
         case NV_TRAINER: pdna_trainer(g_sb1, g_sb2, &g_vinfo, g_game); break;
         case NV_CLOCK:   pdna_clock(); break;

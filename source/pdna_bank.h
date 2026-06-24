@@ -14,6 +14,6 @@
  *
  * Shows the bank screen; returns when the user backs out. Omega-only for writes;
  * read-only carts can browse + copy but not edit. */
-bool pdna_bank_show(void);
+int pdna_bank_show(void);   /* returns the box exit code (5 = dropped off the bottom -> back to PC) */
 
 #endif /* PDNA_BANK_H */

@@ -35,10 +35,9 @@
 /* OBJ tile ids (charblock-4-relative 4bpp indices; only 512..1023 valid in bitmap modes) */
 #define TID_ICON0   512                 /* slot s -> TID_ICON0 + s*16            */
 #define TID_HAND    992                 /* region A: cursor hand (16 tiles)      */
-#define TID_REGB    1008                /* region B: grab fist / item glyphs     */
+#define TID_REGB    1008                /* region B: grab fist OR full-size item  */
 #define TID_GRAB    TID_REGB            /* 32x32 grab fist (16 tiles)            */
-#define TID_CITEM   TID_REGB            /* 16x16 carried item (4 tiles)          */
-#define TID_IGLYPH  (TID_REGB + 4)      /* 8x8 generic item marker (1 tile)      */
+#define TID_CITEM   TID_REGB            /* 32x32 full-size item, real icon (16 tiles) */
 
 /* OBJ palette banks */
 #define PB_ICON_MAX 12                  /* icon banks 0..12                       */
@@ -85,82 +84,76 @@ static void load_regb_grab(void) {
   s_regb = 0;
 }
 
-/* Upload the generic 8x8 "holds item" marker glyph into region B (it never changes,
- * uploaded once when region B first switches to ITEM use). Pixel index 4 = fill,
- * 5 = border; bank 13 (PB_HAND) slots 4/5 carry those colours (set in enter()).
- * Hand art only uses bank-13 slots 1..3, so 4/5 don't collide. */
-static void load_iglyph(void) {
-  uint8_t glyph[32];
-  for (int j = 0; j < 8; j++)
-    for (int i = 0; i < 4; i++) {            /* 2 px/byte */
-      int x0 = i * 2, x1 = i * 2 + 1;
-      int e0 = (j == 0 || j == 7 || x0 == 0 || x0 == 7) ? 5 : 4;
-      int e1 = (j == 0 || j == 7 || x1 == 0 || x1 == 7) ? 5 : 4;
-      glyph[j * 4 + i] = (uint8_t)((e0 & 0xF) | ((e1 & 0xF) << 4));
-    }
-  upload_tiles(TID_IGLYPH, glyph, sizeof glyph);
+/* Render the FULL 24x24 RGB15 icon for `item` at native size, centred in a 16-tile
+ * (32x32) 4bpp sprite at TID_CITEM with a private 16-colour palette in bank 15.
+ * Used both for the carried item (grab) and the hovered holder's item preview, so it
+ * reads as the real, full-size sprite. Switches region B to ITEM use. item 0 / unknown
+ * icon -> a simple filled box. The 24x24 art sits at offset (+4,+4) inside the 32x32. */
+#define CITEM_OFF 4   /* centre the 24x24 art in the 32x32 sprite */
+
+/* map a pixel of the sprite to a palette index (0 = transparent).
+ * full -> 24x24 art centred (+4) in a 32x32 sprite; !full -> 24x24 down-scaled to 16x16. */
+static uint8_t citem_index(const uint16_t* ic, const uint16_t* cpal, int ncol, int px, int py, bool full) {
+  int sx, sy;
+  if (full) { sx = px - CITEM_OFF; sy = py - CITEM_OFF;
+              if (sx < 0 || sx >= ITEM_ICON_W || sy < 0 || sy >= ITEM_ICON_H) return 0; }
+  else      { sx = px * ITEM_ICON_W / 16; sy = py * ITEM_ICON_H / 16; }   /* down-scale 24->16 */
+  uint16_t p = ic[sy * ITEM_ICON_W + sx];
+  if (!(p & 0x8000)) return 0;                       /* transparent pixel */
+  uint16_t c = p & 0x7FFF;
+  for (int k = 1; k < ncol; k++) if (cpal[k] == c) return (uint8_t)k;
+  int best = 1, bd = 0x7fffffff, pr = c & 31, pg = (c >> 5) & 31, pb = (c >> 10) & 31;
+  for (int k = 1; k < ncol; k++) {                   /* palette full: nearest match */
+    int dr = pr - (cpal[k] & 31), dg = pg - ((cpal[k] >> 5) & 31), db = pb - ((cpal[k] >> 10) & 31);
+    int dd = dr * dr + dg * dg + db * db;
+    if (dd < bd) { bd = dd; best = k; }
+  }
+  return (uint8_t)best;
 }
 
-/* Rescale the 24x24 RGB15 icon for `item` into a 4-tile (16x16) 4bpp sprite at
- * TID_CITEM with a private palette in bank 15. item 0 / no icon -> a filled glyph
- * (the generic marker recoloured into bank 15). Switches region B to ITEM use. */
-static void load_regb_item(uint16_t carried_item) {
-  load_iglyph();
+static void load_regb_item(uint16_t carried_item, bool full) {
+  /* full = 32x32 (16 tiles) carried/grab item; !full = 16x16 (4 tiles) hover preview. */
   uint16_t cpal[16]; for (int i = 0; i < 16; i++) cpal[i] = 0;
-  cpal[4] = RGB15(28, 24, 6); cpal[5] = RGB15(8, 6, 1);   /* glyph fallback colours */
-  uint8_t ctiles[4 * 32];
+  uint8_t ctiles[16 * 32];                           /* up to 16 tonc tiles, 4bpp */
   for (unsigned b = 0; b < sizeof ctiles; b++) ctiles[b] = 0;
+  int across = full ? 4 : 2;                          /* tiles per row -> 32x32 or 16x16 */
   const uint16_t* ic = carried_item ? item_icon_for(carried_item) : 0;
   if (ic) {
-    int ncol = 6;                                  /* keep 4/5 as the glyph spares */
-    uint8_t idx16[16 * 16];
-    for (int y = 0; y < 16; y++)
-      for (int x = 0; x < 16; x++) {
-        uint16_t p = ic[(y * 24 / 16) * ITEM_ICON_W + (x * 24 / 16)];
-        if (!(p & 0x8000)) { idx16[y * 16 + x] = 0; continue; }
+    int ncol = 1;                                    /* build the 16-colour palette */
+    for (int y = 0; y < ITEM_ICON_H; y++)
+      for (int x = 0; x < ITEM_ICON_W; x++) {
+        uint16_t p = ic[y * ITEM_ICON_W + x];
+        if (!(p & 0x8000)) continue;
         uint16_t c = p & 0x7FFF; int found = 0;
-        for (int k = 1; k < ncol; k++) if (cpal[k] == c) { idx16[y * 16 + x] = k; found = 1; break; }
-        if (!found) {
-          if (ncol < 16) { cpal[ncol] = c; idx16[y * 16 + x] = ncol; ncol++; }
-          else {                                   /* palette full: nearest match */
-            int best = 1, bd = 0x7fffffff;
-            int pr = c & 31, pg = (c >> 5) & 31, pb = (c >> 10) & 31;
-            for (int k = 1; k < 16; k++) {
-              int dr = pr - (cpal[k] & 31), dg = pg - ((cpal[k] >> 5) & 31), db = pb - ((cpal[k] >> 10) & 31);
-              int dd = dr * dr + dg * dg + db * db;
-              if (dd < bd) { bd = dd; best = k; }
-            }
-            idx16[y * 16 + x] = best;
-          }
-        }
+        for (int k = 1; k < ncol; k++) if (cpal[k] == c) { found = 1; break; }
+        if (!found && ncol < 16) cpal[ncol++] = c;
       }
-    int bi = 0;                                    /* pack 4 tonc tiles (2x2) */
-    for (int ty = 0; ty < 2; ty++)
-      for (int tx = 0; tx < 2; tx++)
+    int bi = 0;                                      /* pack across*across tonc tiles */
+    for (int ty = 0; ty < across; ty++)
+      for (int tx = 0; tx < across; tx++)
         for (int ry = 0; ry < 8; ry++)
           for (int rx = 0; rx < 8; rx += 2) {
             int px = tx * 8 + rx, py = ty * 8 + ry;
-            uint8_t lo = idx16[py * 16 + px], hi = idx16[py * 16 + px + 1];
+            uint8_t lo = citem_index(ic, cpal, ncol, px, py, full);
+            uint8_t hi = citem_index(ic, cpal, ncol, px + 1, py, full);
             ctiles[bi++] = (uint8_t)((lo & 0xF) | ((hi & 0xF) << 4));
           }
   } else {
-    /* no item icon: draw the generic filled glyph (indices 4/5) into the 16x16 */
-    uint8_t idx16[16 * 16];
-    for (int y = 0; y < 16; y++)
-      for (int x = 0; x < 16; x++)
-        idx16[y * 16 + x] = (y == 0 || y == 15 || x == 0 || x == 15) ? 5 : 4;
-    int bi = 0;
-    for (int ty = 0; ty < 2; ty++)
-      for (int tx = 0; tx < 2; tx++)
+    /* unknown item: a simple filled box (index 2 fill, 1 border) over the whole sprite */
+    cpal[1] = RGB15(8, 6, 1); cpal[2] = RGB15(28, 24, 6);
+    int dim = across * 8, bi = 0;
+    for (int ty = 0; ty < across; ty++)
+      for (int tx = 0; tx < across; tx++)
         for (int ry = 0; ry < 8; ry++)
           for (int rx = 0; rx < 8; rx += 2) {
             int px = tx * 8 + rx, py = ty * 8 + ry;
-            uint8_t lo = idx16[py * 16 + px], hi = idx16[py * 16 + px + 1];
-            ctiles[bi++] = (uint8_t)((lo & 0xF) | ((hi & 0xF) << 4));
+            uint8_t v0 = (px == 0 || px == dim - 1 || py == 0 || py == dim - 1) ? 1 : 2;
+            uint8_t v1 = (px + 1 == dim - 1 || py == 0 || py == dim - 1) ? 1 : 2;
+            ctiles[bi++] = (uint8_t)((v0 & 0xF) | ((v1 & 0xF) << 4));
           }
   }
   for (int i = 0; i < 16; i++) pal_obj_mem[PB_CITEM * 16 + i] = cpal[i];
-  upload_tiles(TID_CITEM, ctiles, sizeof ctiles);
+  upload_tiles(TID_CITEM, ctiles, across * across * 32);
   s_regb = 1;
 }
 
@@ -324,7 +317,7 @@ void boxoam_carry(int cur, int from) {
     obj_set_attr(oe(OE_CARRY),
                  ATTR0_SQUARE | ATTR0_4BPP | (iy & ATTR0_Y_MASK),
                  ATTR1_SIZE_32 | (ix & ATTR1_X_MASK),
-                 ATTR2_ID(TID_ICON0 + from * MON_ICON_OAM_TILES) | ATTR2_PRIO(1) |
+                 ATTR2_ID(TID_ICON0 + from * MON_ICON_OAM_TILES) | ATTR2_PRIO(0) |   /* front-most: above all box icons */
                  ATTR2_PALBANK(s_iconbank[from]));
   } else hide(OE_CARRY);
 
@@ -347,31 +340,29 @@ void boxoam_item_markers(const PkMon box[30], bool show) {
     uint8_t b = (show && box[s].species && !box[s].heldItem) ? 1 : 0;
     if (b != s_icon_blend[s]) { s_icon_blend[s] = b; if (s_occupied[s]) place_grid_slot(s); }
   }
-  if (!show) { for (int m = 0; m < 30; m++) hide(OE_MARK0 + m); return; }
-  load_iglyph();                                     /* ensure the marker tile exists */
-  s_regb = 1;                                        /* region B is now in ITEM use    */
-  int m = 0;
-  for (int s = 0; s < 30 && m < 30; s++) {
-    if (!box[s].species || !box[s].heldItem) continue;
-    int ix = GRID_X + (s % COLS) * CELL_W + CELL_W - 8;   /* fixed-cell badge (no bob) */
-    int iy = GRID_Y + (s / COLS) * CELL_H + CELL_H - 9;
-    obj_set_attr(oe(OE_MARK0 + m),
-                 ATTR0_SQUARE | ATTR0_4BPP | (iy & ATTR0_Y_MASK),
-                 ATTR1_SIZE_8 | (ix & ATTR1_X_MASK),
-                 ATTR2_ID(TID_IGLYPH) | ATTR2_PRIO(0) | ATTR2_PALBANK(PB_HAND));
-    m++;
-  }
-  for (; m < 30; m++) hide(OE_MARK0 + m);
+  /* No per-holder glyph badges: region B now holds the FULL-SIZE item icon, and a mon
+   * that holds an item is shown opaque (above) while the rest fade — so the cursor's
+   * holder reveals its real item via the full-size preview (boxoam_carry_item). */
+  for (int m = 0; m < 30; m++) hide(OE_MARK0 + m);
 }
 
-void boxoam_carry_item(int cur, uint16_t item) {
+void boxoam_carry_item(int cur, uint16_t item, bool full) {
   if (!item) { hide(OE_CITEM); return; }
-  load_regb_item(item);                              /* upload this item's 16x16 icon */
-  int ix = GRID_X + (cur % COLS) * CELL_W + 10;
-  int iy = GRID_Y + (cur / COLS) * CELL_H - 14; if (iy < WP_Y) iy = WP_Y;
+  load_regb_item(item, full);
+  int ix, iy, size;
+  if (full) {                                        /* GRAB: full 32x32 over the mon, lifted */
+    ix = GRID_X + (cur % COLS) * CELL_W - (CITEM_OFF + 1);
+    iy = GRID_Y + (cur / COLS) * CELL_H - (CITEM_OFF + 6);
+    size = ATTR1_SIZE_32;
+  } else {                                           /* HOVER: small 16x16 at the cell's bottom-left */
+    ix = GRID_X + (cur % COLS) * CELL_W - 3;
+    iy = GRID_Y + (cur / COLS) * CELL_H + CELL_H - 14;
+    size = ATTR1_SIZE_16;
+  }
+  if (iy < WP_Y) iy = WP_Y;
   obj_set_attr(oe(OE_CITEM),
                ATTR0_SQUARE | ATTR0_4BPP | (iy & ATTR0_Y_MASK),
-               ATTR1_SIZE_16 | (ix & ATTR1_X_MASK),
+               size | (ix & ATTR1_X_MASK),
                ATTR2_ID(TID_CITEM) | ATTR2_PRIO(0) | ATTR2_PALBANK(PB_CITEM));
 }
 
