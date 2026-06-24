@@ -33,6 +33,11 @@ void gen3_edit_commit(const EditMon* e, uint8_t* rec_out);   /* lossless re-enco
 void em_set_iv(EditMon* e, int stat, uint8_t v);             /* 0..31  */
 void em_set_ev(EditMon* e, int stat, uint8_t v);             /* 0..255 */
 void em_set_contest(EditMon* e, int i, uint8_t v);          /* condition i=0..5: cool/beauty/cute/smart/tough/sheen */
+
+/* Build a default VALID 80-byte box record for `species` at `lvl` from scratch (the
+ * "create a Pokémon" flow). Pure / host-testable. otName <=7 chars; metgame 1..15. */
+void gen3_build_mon(uint16_t species, uint8_t lvl, uint32_t pid, uint32_t otId,
+                    const char* otName, uint8_t metgame, uint8_t out[80]);
 void em_set_species(EditMon* e, uint16_t species);           /* re-derive stats; caller re-checks gender/ability */
 void em_set_item(EditMon* e, uint16_t item);
 void em_set_move(EditMon* e, int i, uint16_t move);          /* also sets PP to the move's base PP */

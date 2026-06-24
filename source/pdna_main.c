@@ -1011,6 +1011,25 @@ static bool app_to_daycare(uint8_t* rec, bool is_party, uint8_t* block, int box,
   return true;
 }
 
+static uint32_t dc_seed(void);   /* PID entropy (RTC + counter); defined below */
+
+/* CREATE a Pokémon from nothing into the empty slot `rec`: pick a species, build a
+ * default valid record (Lv5, the save's OT/TID, Poké Ball), open the editor to
+ * customise, then write + commit. Returns true if the user kept it. Omega-only. */
+static bool app_create_mon(uint8_t* rec, AppCommitFn commit) {
+  uint16_t sp = pick_species(1);
+  if (sp == 0xFFFF || sp == 0) return false;
+  uint32_t otId = (uint32_t)g_vinfo.tid_public | ((uint32_t)g_vinfo.tid_secret << 16);
+  uint8_t  mg   = (g_game == PK_EMERALD) ? 3 : (g_game == PK_FRLG) ? 4 : 2;   /* origin game (editable) */
+  uint8_t tmp[80];
+  gen3_build_mon(sp, 5, dc_seed(), otId, g_vinfo.trainer_name, mg, tmp);
+  uint8_t out[80];
+  if (!pdna_edit(tmp, false, out)) return false;     /* customise; B cancels -> slot stays empty */
+  memcpy(rec, out, 80);
+  if (commit) commit();                              /* gated verified write (backup first) */
+  return true;
+}
+
 bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot) {
   PkMon m0;
   bool occupied = pk_decode_mon(rec, is_party, &m0);
@@ -1021,7 +1040,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     return false;
   }
 
-  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CANCEL };
+  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CREATE, A_CANCEL };
   int act[16]; const char* lab[16]; int n = 0;
   if (occupied) {
     lab[n]="VIEW / EDIT"; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
@@ -1037,10 +1056,10 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     if (m0.heldItem && !g_item_held) { lab[n]="TAKE ITEM"; act[n++]=A_TAKEITEM; }
     if (g_item_held)                 { lab[n]="GIVE ITEM"; act[n++]=A_GIVEITEM; }
     lab[n]="RELEASE";   act[n++]=A_RELEASE;
-  } else if (g_clip.occupied) {
-    lab[n]="PASTE HERE"; act[n++]=A_PASTE;
-  } else {
-    return false;                                        /* empty + nothing to paste */
+  } else {                                              /* empty slot */
+    if (!is_party) { lab[n]="CREATE"; act[n++]=A_CREATE; }   /* build a mon from nothing (box/bank) */
+    if (g_clip.occupied) { lab[n]="PASTE HERE"; act[n++]=A_PASTE; }
+    if (n == 0) return false;                            /* empty party slot, nothing to paste */
   }
   lab[n]="CANCEL"; act[n++]=A_CANCEL;
 
@@ -1084,6 +1103,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
         case A_RELEASE: return app_release(rec, is_party, commit, block, box, slot);
         case A_TAKEITEM:return app_take_item(rec, is_party, commit);
         case A_GIVEITEM:return app_give_item(rec, is_party, commit);
+        case A_CREATE:  return app_create_mon(rec, commit);   /* build a new mon into this empty slot */
         default:        return false;                    /* CANCEL */
       }
     }

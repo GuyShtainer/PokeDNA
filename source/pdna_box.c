@@ -657,9 +657,9 @@ int pdna_box(BoxSource* src) {
       } else snd_deny();                                 /* empty slot or no item */
     }
     else if (k & KEY_A) {
-      /* NORMAL: open the action menu on an occupied slot, OR on an empty slot when
-       * the clipboard holds a mon to PASTE here. */
-      if (g_box[cur].species || (src->can_edit() && app_clip_occupied())) {
+      /* NORMAL: open the action menu on an occupied slot, or on an empty slot when
+       * editable (CREATE a mon, or PASTE if the clipboard holds one). */
+      if (g_box[cur].species || src->can_edit()) {
         uint8_t* rec = recs + (uint32_t)cur * 80;
         int mbox = src->is_bank ? 0 : box;                               /* box index within menu_block */
         boxoam_suspend();                                                /* sprites off while the menu/summary is up */

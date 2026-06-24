@@ -127,6 +127,35 @@ void em_set_contest(EditMon* e, int i, uint8_t v) {
   e->sub[2][6 + i] = v;
 }
 
+/* Build a default, VALID 80-byte box record for `species` at `lvl` from nothing — for
+ * the "create a Pokémon" flow (caller then opens the editor to customise + commit). The
+ * record is a real present mon: species set, exp matching the level, hasSpecies flag set
+ * (raw[0x13] bit1), not an egg, checksum written by commit. IVs/EVs/condition default 0,
+ * friendship 70, a Poké Ball, one placeholder move (Tackle) so it isn't move-less. Pure
+ * (no globals/UI) so it's host-testable. otName <= 7 chars; metgame 1..15 (0 -> Emerald). */
+void gen3_build_mon(uint16_t species, uint8_t lvl, uint32_t pid, uint32_t otId,
+                    const char* otName, uint8_t metgame, uint8_t out[80]) {
+  if (lvl < 1) lvl = 5; if (lvl > 100) lvl = 100;
+  EditMon e; memset(&e, 0, sizeof e);
+  e.is_party = false;
+  e.personality = pid ? pid : 0x1234ABCDu;
+  e.otId = otId;
+  e.raw[0x12] = 2;                              /* language: English */
+  e.raw[0x13] = 0x02;                           /* flags: hasSpecies (present; not egg/bad-egg) */
+  e.sub[0][0] = (uint8_t)species;               /* Growth substruct: species (LE) */
+  e.sub[0][1] = (uint8_t)(species >> 8);
+  em_set_friendship(&e, 70);                    /* base-ish friendship */
+  em_set_level(&e, lvl);                        /* exp for the level (uses species growth rate) */
+  em_set_nickname(&e, pk_species_name(species));
+  em_set_otname(&e, otName ? otName : "");
+  em_set_ball(&e, 4);                           /* Poké Ball */
+  em_set_metlevel(&e, lvl);
+  em_set_metgame(&e, metgame ? metgame : 3);    /* default Emerald */
+  em_set_metloc(&e, 255);                       /* "a faraway place" (gift-ish) */
+  em_set_move(&e, 0, 33);                       /* Tackle placeholder (user edits moves) */
+  gen3_edit_commit(&e, out);
+}
+
 void em_set_species(EditMon* e, uint16_t species) {
   wr16(e->sub[0] + 0, species);
   recompute_party_stats(e);
