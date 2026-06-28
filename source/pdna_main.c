@@ -677,7 +677,7 @@ static void app_register_dex_deferred(const uint8_t* rec, bool is_party) {
 static void pcsrc_note_add(const uint8_t* rec) { app_register_dex_deferred(rec, false); }
 
 /* Bank->PC carry records the bank source for deletion at the save phase (see pdna_bank). */
-void app_bank_defer_delete(int box, int slot) { pdna_bank_defer_delete(box, slot); }
+void app_bank_defer_delete(int box, int slot, const uint8_t* rec80) { pdna_bank_defer_delete(box, slot, rec80); }
 
 /* Emerald "Walda" secret-wallpaper pattern (the graphic shown by box wallpaper 16),
  * stored in SaveBlock1. -1 / no-op on the other games. */
@@ -1046,8 +1046,9 @@ static void party_to_box(const uint8_t* party100, uint8_t out80[80]) {
  * (orig_box,orig_slot) its PC origin; can_swap = it has a clean PC origin to receive a
  * swapped-out party mon. Records convert box<->party. Party + PC edits are staged and
  * committed together at exit (one save). Returns true if consumed (end the carry). */
-bool app_carry_to_party(const uint8_t* held80, int orig_box, int orig_slot, bool can_swap) {
+bool app_carry_to_party(const uint8_t* held80, int orig_box, int orig_slot, bool orig_bank, bool can_swap) {
   if (!app_can_edit()) { snd_deny(); return false; }
+  if (orig_bank) can_swap = false;   /* a bank origin can't receive a swapped-out party mon */
   int sel = 0;
   for (;;) {
     int n = party_count(g_sb1, g_frlg);
@@ -1075,7 +1076,13 @@ bool app_carry_to_party(const uint8_t* held80, int orig_box, int orig_slot, bool
         if (n >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Swap with a member instead.", 0); continue; }
         uint8_t p100[100]; box_to_party(held80, p100);
         if (!party_append(g_sb1, g_frlg, p100)) { snd_deny(); continue; }
-        if (orig_slot >= 0) memset(pk_box_slot(g_pc, orig_box, orig_slot), 0, 80);  /* it left the PC */
+        /* Remove the origin (it left for the party). A BANK origin is a bank slot, NOT a g_pc
+         * slot — clearing g_pc there would zero an untouched PC mon (or write OOB for the top
+         * bank boxes); defer-delete the bank source instead (flushed AFTER the party commits). */
+        if (orig_slot >= 0) {
+          if (orig_bank) app_bank_defer_delete(orig_box, orig_slot, held80);
+          else           memset(pk_box_slot(g_pc, orig_box, orig_slot), 0, 80);
+        }
         app_mark_pc_dirty(); app_register_dex_deferred(p100, true); app_stage_sb1();
         snd_ok(); return true;
       }

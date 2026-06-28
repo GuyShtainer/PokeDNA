@@ -107,23 +107,33 @@ static bool box_save(void) {                    /* write the loaded box's record
   return ok;
 }
 
-/* Deferred cross-screen deletions: a mon carried Bank->PC is removed from the bank only at
- * the overall save phase (AFTER the PC is written), so the move needs no prompt and can't
- * lose the mon — worst case a duplicate if interrupted between the two writes. */
+/* Deferred cross-screen deletions: a mon carried Bank->PC (or Bank->party) is removed from
+ * the bank only at the overall save phase (AFTER the PC is written), so the move needs no
+ * prompt and can't lose the mon — worst case a duplicate if interrupted between the two
+ * writes. We remember the carried mon's FULL 80-byte record (not just its slot index): the
+ * user may re-arrange the bank before saving, so at flush time we delete the slot ONLY if it
+ * still holds that exact mon. If a different mon now occupies the slot we skip it (leaving a
+ * harmless duplicate) rather than deleting an untouched bystander (a loss). */
 #define BANK_DEL_MAX 64
-static struct { uint8_t box, slot; } g_bank_del[BANK_DEL_MAX];
+typedef struct { uint8_t box, slot; uint8_t rec[REC_BYTES]; } BankDel;
+static BankDel EWRAM_BSS g_bank_del[BANK_DEL_MAX];   /* 5 KB -> EWRAM, not the IWRAM stack */
 static int g_bank_ndel = 0;
 
-void pdna_bank_defer_delete(int box, int slot) {
+void pdna_bank_defer_delete(int box, int slot, const uint8_t* rec80) {
   if (box < 0 || box >= BANK_BOXES || slot < 0 || slot >= BOX_RECS || g_bank_ndel >= BANK_DEL_MAX) return;
-  g_bank_del[g_bank_ndel].box = (uint8_t)box; g_bank_del[g_bank_ndel].slot = (uint8_t)slot; g_bank_ndel++;
+  g_bank_del[g_bank_ndel].box = (uint8_t)box; g_bank_del[g_bank_ndel].slot = (uint8_t)slot;
+  if (rec80) memcpy(g_bank_del[g_bank_ndel].rec, rec80, REC_BYTES);
+  else       memset(g_bank_del[g_bank_ndel].rec, 0, REC_BYTES);   /* no record => never matches => never deletes */
+  g_bank_ndel++;
 }
 void pdna_bank_clear_deletions(void) { g_bank_ndel = 0; }
 void pdna_bank_flush_deletions(void) {
   for (int i = 0; i < g_bank_ndel; i++) {
     int box = g_bank_del[i].box, slot = g_bank_del[i].slot;
     if (g_loaded != box) { if (g_dirty) box_save(); box_load(box); }   /* page the box in (reads its file) */
-    memset(box_recs() + (uint32_t)slot * REC_BYTES, 0, REC_BYTES);
+    uint8_t* p = box_recs() + (uint32_t)slot * REC_BYTES;
+    if (memcmp(p, g_bank_del[i].rec, REC_BYTES) != 0) continue;        /* slot no longer holds OUR mon -> don't delete */
+    memset(p, 0, REC_BYTES);
     g_dirty = true; box_save();                                        /* write the box without that mon */
   }
   g_bank_ndel = 0;

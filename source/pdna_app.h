@@ -63,10 +63,13 @@ void app_box_start_set(int s);
 int  app_box_start_take(void);
 void app_note_pc_box(int b);              /* PC box screen reports its current box so the app remembers it */
 /* Carry a held box mon onto the PARTY tab: add to a free party slot or swap with a member
- * (which takes the held mon's PC origin). Returns true if consumed (end the carry). */
-bool app_carry_to_party(const uint8_t* held80, int orig_box, int orig_slot, bool can_swap);
-/* Bank->PC carry: record the bank source slot to delete at the save phase (true move). */
-void app_bank_defer_delete(int box, int slot);
+ * (which takes the held mon's PC origin). `orig_bank` = the held mon came from the Bank (its
+ * origin is a bank slot, NOT a g_pc slot — so ADD defer-deletes the bank source instead of
+ * clearing g_pc, and SWAP is disallowed). Returns true if consumed (end the carry). */
+bool app_carry_to_party(const uint8_t* held80, int orig_box, int orig_slot, bool orig_bank, bool can_swap);
+/* Bank->PC / Bank->party carry: record the bank source slot AND the carried 80-byte record to
+ * delete at the save phase (true move; matched by record so a re-arrange can't delete the wrong mon). */
+void app_bank_defer_delete(int box, int slot, const uint8_t* rec80);
 
 /* Commit the loaded save's SaveBlock2 (section 0 — the trainer block) or
  * SaveBlock1 (sections 1..4 — where money lives) after an in-place edit of the

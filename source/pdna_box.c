@@ -257,7 +257,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
        * AFTER the PC is written, so it can't be lost (worst case a duplicate). */
       if (src->note_add) src->note_add(s_held);
       memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
-      app_bank_defer_delete(s_orig_box, s_orig_slot);
+      app_bank_defer_delete(s_orig_box, s_orig_slot, s_held);
       s_holding = false; *done = true; return recs;
     }
     /* PC -> Bank (two separate save prompts): keep the safe confirmed COPY. */
@@ -556,7 +556,7 @@ int pdna_box(BoxSource* src) {
         else if (k & KEY_A) {
           if (s_tab_focus == 1 && !src->is_bank) {   /* PARTY tab: place/swap the held mon into the party */
             bool can_swap = (!s_orig_bank && s_orig_slot >= 0);
-            if (app_carry_to_party(s_held, s_orig_box, s_orig_slot, can_swap)) {
+            if (app_carry_to_party(s_held, s_orig_box, s_orig_slot, s_orig_bank, can_swap)) {
               s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false;
               s_tab_focus = -1; recs = src->records(box); pk_decode_box_raw(recs, g_box);
             }
