@@ -1553,24 +1553,45 @@ static void pdna_pokeblock(void) {
 
 /* ===================== Event tickets ================================== */
 
-/* Grant an event "ticket": give the key item + set the ferry-enable flag the game
- * checks (CheckBagHasItem(ticket) && FlagGet(FLAG_ENABLE_SHIP_*)) so the captain sails
- * to the island. Emerald flags verified from the decomp; RS/FRLG not yet mapped. */
-typedef struct { const char* name; const char* mon; uint16_t item; int flag; } EventTicket;
+/* Grant an event "ticket" into the legitimately-received state: give the key ITEM, set the
+ * ferry-enable flag the game checks (CheckBagHasItem(ticket) && FlagGet(FLAG_ENABLE_SHIP_*)),
+ * and the "received" flag so it reads as already collected. Flags re-derived per game from
+ * the decomps:
+ *   RS    Eon -> FLAG_SYS_HAS_EON_TICKET 0x853
+ *   Em    Eon 0x8B3, Aurora 0x8D5, Mystic 0x8E0, Old Sea Map 0x8D6; received 0x13A/13B/13C
+ *   FRLG  Aurora 0x84B, Mystic 0x84A;            received 0x2A7/0x2A8
+ * The in-game Mystery-Gift deliveryman hands tickets out from a Wonder Card (separate save
+ * data we don't synthesise), so we grant directly to the bag — the same working result. */
+typedef struct { const char* name; const char* mon; uint16_t item; int enable_flag; int recv_flag; } EventTicket;
 
 static int event_tickets(const EventTicket** out) {
   static const EventTicket EM[] = {
-    { "Eon Ticket",    "Latios / Latias", 275, 0x8B3 },  /* Southern Island */
-    { "Aurora Ticket", "Deoxys",          371, 0x8D5 },  /* Birth Island    */
-    { "Mystic Ticket", "Lugia + Ho-Oh",   370, 0x8E0 },  /* Navel Rock      */
-    { "Old Sea Map",   "Mew",             376, 0x8D6 },  /* Faraway Island  */
+    { "Eon Ticket",    "Latios / Latias", 275, 0x8B3, -1    },  /* Southern Island */
+    { "Aurora Ticket", "Deoxys",          371, 0x8D5, 0x13A },  /* Birth Island    */
+    { "Mystic Ticket", "Lugia + Ho-Oh",   370, 0x8E0, 0x13B },  /* Navel Rock      */
+    { "Old Sea Map",   "Mew",             376, 0x8D6, 0x13C },  /* Faraway Island  */
   };
-  if (g_game == PK_EMERALD) { *out = EM; return (int)(sizeof EM / sizeof EM[0]); }
-  *out = 0; return 0;                                   /* RS/FRLG flags not yet mapped */
+  static const EventTicket FR[] = {
+    { "Aurora Ticket", "Deoxys",          371, 0x84B, 0x2A7 },  /* Birth Island */
+    { "Mystic Ticket", "Lugia + Ho-Oh",   370, 0x84A, 0x2A8 },  /* Navel Rock   */
+  };
+  static const EventTicket RB[] = {
+    { "Eon Ticket",    "Latios / Latias", 275, 0x853, -1 },     /* Southern Island */
+  };
+  switch (g_game) {
+    case PK_EMERALD: *out = EM; return (int)(sizeof EM / sizeof EM[0]);
+    case PK_FRLG:    *out = FR; return (int)(sizeof FR / sizeof FR[0]);
+    default:         *out = RB; return (int)(sizeof RB / sizeof RB[0]);   /* RS */
+  }
 }
 
-static bool ticket_granted(const EventTicket* t) {
-  if (!pk_flag_get(g_sb1, g_game, t->flag)) return false;
+/* Mystery-Gift enable flag (-1 = N/A, e.g. RS Mystery Event). */
+static int mg_enable_flag(void) {
+  switch (g_game) { case PK_EMERALD: return 0x8DB; case PK_FRLG: return 0x839; default: return -1; }
+}
+
+static bool ticket_granted(const EventTicket* t) {        /* READY = boat enabled + item in bag */
+  if (!pk_flag_get(g_sb1, g_game, t->enable_flag)) return false;
   int cap = pk_pocket_cap(g_game, POCKET_KEY);
   for (int s = 0; s < cap; s++) if (pk_bag_item(g_sb1, g_game, POCKET_KEY, s) == t->item) return true;
   return false;
@@ -1586,15 +1607,17 @@ static bool grant_key_item(uint16_t item) {              /* add to the Key Items
 
 static void pdna_events(void) {
   const EventTicket* T; int n = event_tickets(&T);
-  if (n == 0) { msg_wait("EVENT TICKETS", UI_DIM, "Supported on Emerald for now.", "(RS/FRLG flags TBD.)"); return; }
+  int mgf = mg_enable_flag();
   bool dirty = false; int sel = 0;
   for (;;) {
     ui_clear();
     ui_text(4, 2, UI_TITLE, "EVENT TICKETS");
+    bool mg = (mgf >= 0) && pk_flag_get(g_sb1, g_game, mgf);
+    if (mgf >= 0) ui_text(150, 2, mg ? UI_OK : UI_DIM, mg ? "MG: on" : "MG: off");
     ui_hline(0, 13, UI_SCR_W, UI_BORDER);
     for (int i = 0; i < n; i++) {
-      int y = 20 + i * 17; bool s = (i == sel), on = ticket_granted(&T[i]);
-      if (s) ui_panel(2, y - 1, 236, 16, UI_SEL, UI_TITLE);
+      int y = 20 + i * 18; bool s = (i == sel), on = ticket_granted(&T[i]);
+      if (s) ui_panel(2, y - 1, 236, 17, UI_SEL, UI_TITLE);
       ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, T[i].name);
       ui_text(150, y, on ? UI_OK : UI_DIM, on ? "READY" : "-");
       char sub[40]; siprintf(sub, "-> %s", T[i].mon);
@@ -1606,13 +1629,18 @@ static void pdna_events(void) {
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
     else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
-      if (app_confirm(T[sel].name, "Grant this event ticket?")) {
-        bool ok = grant_key_item(T[sel].item);
-        pk_flag_set(g_sb1, g_game, T[sel].flag, true);    /* ferry-enable flag */
-        dirty = true;
-        msg_wait(ok ? "GRANTED" : "NO ROOM", ok ? UI_OK : UI_WARN,
-                 ok ? "Ticket + boat access set." : "Key Items pocket is full.",
-                 "Sail from the harbor.");
+      const EventTicket* t = &T[sel];
+      if (app_confirm(t->name, "Grant this event ticket?")) {
+        if (!grant_key_item(t->item)) { msg_wait("NO ROOM", UI_WARN, "Key Items pocket is full.", 0); }
+        else {
+          pk_flag_set(g_sb1, g_game, t->enable_flag, true);          /* boat access */
+          if (t->recv_flag >= 0) pk_flag_set(g_sb1, g_game, t->recv_flag, true);  /* mark received */
+          dirty = true;
+          bool mgnow = (mgf >= 0) && pk_flag_get(g_sb1, g_game, mgf);
+          msg_wait("GRANTED", UI_OK,
+                   (mgf >= 0 && !mgnow) ? "Mystery Gift is off, so it" : "In your bag + boat enabled.",
+                   (mgf >= 0 && !mgnow) ? "went to your bag. Sail!"    : "Sail from the harbor.");
+        }
       }
     }
   }
