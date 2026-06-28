@@ -26,7 +26,8 @@ static const char* const FLABEL[F_NUM] = {
   "Item", "Friendship",
   "IV HP", "IV Atk", "IV Def", "IV Spe", "IV SpA", "IV SpD",
   "EV HP", "EV Atk", "EV Def", "EV Spe", "EV SpA", "EV SpD",
-  "Move 1", "Move 2", "Move 3", "Move 4", "OT Name",
+  "Move 1", "Move 2", "Move 3", "Move 4",
+  "PP 1", "PP 2", "PP 3", "PP 4", "OT Name",
   "Ball", "Met Loc", "Met Lv", "Met Game",
   "Cool", "Beauty", "Cute", "Smart", "Tough", "Sheen",
 };
@@ -60,6 +61,12 @@ static void refresh(EditMon* e, PkMon* cur) {
   pk_resolve(cur);                 /* fills gender (+ box level/stats) */
 }
 
+/* a move's max PP for slot i = base PP + PP-Up bonus (3 ups = +base*3/5). */
+static uint8_t pp_max(const PkMon* c, int i) {
+  uint8_t base = pk_move_pp(c->moves[i]);
+  return (uint8_t)(base + base / 5 * ((c->ppBonuses >> (i * 2)) & 3));
+}
+
 /* format a field's current value into buf */
 static void field_value(int f, const PkMon* c, char* buf) {
   switch (f) {
@@ -80,6 +87,8 @@ static void field_value(int f, const PkMon* c, char* buf) {
       uint16_t mv = c->moves[f - F_MV0];
       siprintf(buf, "%s", mv ? pk_move_name(mv) : "-"); break;
     }
+    case F_PP0: case F_PP1: case F_PP2: case F_PP3:
+      siprintf(buf, "%u/%u", (unsigned)c->pp[f - F_PP0], (unsigned)pp_max(c, f - F_PP0)); break;
     case F_OT:      siprintf(buf, "%s", c->otName); break;
     case F_BALL:    siprintf(buf, "%s", pk_item_name(c->pokeball)); break;
     case F_METLOC:  siprintf(buf, "%s", pk_location_name(c->metLocation)); break;
@@ -146,6 +155,8 @@ void em_field_adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
       em_set_ev(e, f - F_EV0, (uint8_t)clampi(c->evs[f - F_EV0] + dir * s, 0, 255)); break;
     case F_MV0: case F_MV1: case F_MV2: case F_MV3:
       em_set_move(e, f - F_MV0, clampi(c->moves[f - F_MV0] + dir * (big ? 10 : 1), 0, 65535)); break;
+    case F_PP0: case F_PP1: case F_PP2: case F_PP3:
+      em_set_pp(e, f - F_PP0, (uint8_t)clampi(c->pp[f - F_PP0] + dir * s, 0, pp_max(c, f - F_PP0))); break;
     case F_BALL:     { int v = c->pokeball + dir; if (v < 1) v = 12; if (v > 12) v = 1; em_set_ball(e, (uint8_t)v); break; }
     case F_METLOC:   em_set_metloc(e, (uint8_t)clampi(c->metLocation + dir * (big ? 10 : 1), 0, 255)); break;
     case F_METLEVEL: em_set_metlevel(e, (uint8_t)clampi(c->metLevel + dir * s, 0, 100)); break;
@@ -172,6 +183,8 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
     case F_NATURE:  { uint8_t nt = pick_nature(c->nature); reroll_to(e, c, nt, c->isShiny ? 1 : 0, c->gender < 2 ? c->gender : -1); break; }
     case F_MV0: case F_MV1: case F_MV2: case F_MV3:
       { uint16_t id = pick_move(c->moves[f - F_MV0]); if (id != 0xFFFF) em_set_move(e, f - F_MV0, id); break; }
+    case F_PP0: case F_PP1: case F_PP2: case F_PP3:                          /* A = restore to max PP */
+      em_set_pp(e, f - F_PP0, pp_max(c, f - F_PP0)); break;
     case F_NICK: if (osk_input("NICKNAME", c->nickname, buf, 11)) em_set_nickname(e, buf); break;
     case F_OT:   if (osk_input("OT NAME", c->otName, buf, 8))    em_set_otname(e, buf); break;
     case F_ABILITY: em_set_ability(e, pick_ability(c->species, c->abilityNum)); break;

@@ -255,7 +255,7 @@ static void card_moves(const PkMon* p, bool contest) {
   ui_text(x, y, C_HDR, contest ? "CONTEST MOVES" : "BATTLE MOVES"); y += 12;
   for (int i = 0; i < 4; i++) {
     uint16_t mv = p->moves[i];
-    reg(F_MV0 + i, x, y, 132);
+    reg(F_MV0 + i, x, y, contest ? 132 : 74);
     if (mv == 0) { ui_text(x, y, UI_DIM, "-"); y += step; continue; }
     char nm[24];
     ui_truncate(nm, pk_move_name(mv), contest ? 16 : 9);
@@ -263,6 +263,7 @@ static void card_moves(const PkMon* p, bool contest) {
     if (!contest) {
       uint8_t base = pk_move_pp(mv);
       uint8_t maxpp = (uint8_t)(base + base / 5 * ((p->ppBonuses >> (i * 2)) & 3));
+      reg(F_PP0 + i, x + 76, y, 60);                         /* editable current PP */
       siprintf(b, "PP%u/%u", (unsigned)p->pp[i], (unsigned)maxpp);
       ui_text(x + 78, y, UI_DIM, b);
       type_badge(x + 4, y + 8, pk_move_type(mv));            /* real type badge under the name */
