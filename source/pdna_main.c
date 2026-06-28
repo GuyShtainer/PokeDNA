@@ -1425,64 +1425,121 @@ static bool pdna_dex_edit(void) {
 
 /* ===================== Pokéblock case editor ========================== */
 
-/* Edit one Pokéblock's fields (or delete it). Returns true if anything changed. */
+/* Pokéblock colour -> a representative RGB15 swatch (None = dim grey "empty"). */
+static uint16_t pokeblock_rgb(uint8_t c) {
+  const uint16_t C[15] = {                                    /* RGB15 isn't const-foldable here -> runtime */
+    RGB15( 9,  9, 11), RGB15(28,  5,  5), RGB15( 6, 11, 28), RGB15(31, 17, 22), RGB15( 6, 22,  9),
+    RGB15(30, 28,  6), RGB15(18,  6, 24), RGB15( 8,  7, 22), RGB15(18, 11,  5), RGB15(15, 25, 31),
+    RGB15(16, 17,  6), RGB15(17, 17, 19), RGB15( 4,  4,  6), RGB15(30, 30, 31), RGB15(31, 25,  7),
+  };
+  return (c < 15) ? C[c] : RGB15(9, 9, 11);
+}
+static void pokeblock_swatch(int x, int y, int sz, uint8_t color) {
+  ui_fill_rect(x, y, sz, sz, RGB15(2, 6, 9));                 /* frame */
+  ui_fill_rect(x + 1, y + 1, sz - 2, sz - 2, pokeblock_rgb(color));
+}
+
+/* Preset colour picker: the 15 named Pokéblock colours with swatches (no free text). */
+static int pick_pokeblock_color(uint8_t cur) {
+  int sel = cur < 15 ? cur : 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "BLOCK COLOR");
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < 15; i++) {
+      int col = i / 8, row = i % 8, x = 6 + col * 118, y = 18 + row * 16; bool s = (i == sel);
+      if (s) ui_panel(x - 2, y - 1, 114, 15, UI_SEL, UI_TITLE);
+      pokeblock_swatch(x, y, 12, (uint8_t)i);
+      ui_text(x + 18, y + 2, s ? UI_SELTEXT : UI_TEXT, pk_pokeblock_color_name((uint8_t)i));
+    }
+    ui_text(4, 152, UI_DIM, "A pick  U/D/L/R  B cancel");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
+    if (k & KEY_B) return -1;
+    else if (k & KEY_A) return sel;
+    else if (k & KEY_UP)    sel = (sel > 0) ? sel - 1 : 14;
+    else if (k & KEY_DOWN)  sel = (sel + 1) % 15;
+    else if (k & KEY_LEFT)  { if (sel >= 8) sel -= 8; }
+    else if (k & KEY_RIGHT) { if (sel + 8 <= 14) sel += 8; }
+  }
+}
+
+/* Edit one Pokéblock, game-like: a colour swatch (A = preset picker) + flavour bars +
+ * feel, plus "Delete this block". Returns true if anything changed. */
 static bool pokeblock_edit(int idx) {
-  static const char* const FN[7] = { "Color", "Spicy", "Dry", "Sweet", "Bitter", "Sour", "Feel" };
+  static const char* const FL[5] = { "Spicy", "Dry", "Sweet", "Bitter", "Sour" };
   PkPokeblock pb; pk_pokeblock_get(g_sb1, g_game, idx, &pb);
-  uint8_t* v[7] = { &pb.color, &pb.spicy, &pb.dry, &pb.sweet, &pb.bitter, &pb.sour, &pb.feel };
-  int sel = 0; bool changed = false;
+  uint8_t* fv[5] = { &pb.spicy, &pb.dry, &pb.sweet, &pb.bitter, &pb.sour };
+  int sel = 0; bool changed = false;                          /* rows: 0 colour, 1..5 flavours, 6 feel, 7 delete */
   for (;;) {
     ui_clear();
     char t[24]; siprintf(t, "POKEBLOCK %d", idx + 1); ui_text(4, 2, UI_TITLE, t);
     ui_hline(0, 13, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < 7; i++) {
-      int y = 20 + i * 12; bool s = (i == sel);
-      if (s) ui_panel(2, y - 1, 236, 11, UI_SEL, UI_TITLE);
-      ui_text(8, y, s ? UI_SELTEXT : UI_DIM, FN[i]);
-      char b[16];
-      if (i == 0) siprintf(b, "%s", pk_pokeblock_color_name(pb.color));
-      else        siprintf(b, "%u", (unsigned)*v[i]);
-      ui_text(110, y, s ? UI_SELTEXT : UI_TEXT, b);
+    bool s0 = (sel == 0);
+    if (s0) ui_panel(2, 17, 236, 20, UI_SEL, UI_TITLE);
+    pokeblock_swatch(8, 19, 16, pb.color);
+    ui_text(30, 23, s0 ? UI_SELTEXT : UI_TEXT, pk_pokeblock_color_name(pb.color));
+    ui_text(150, 23, s0 ? UI_SELTEXT : UI_DIM, "A: pick");
+    for (int i = 0; i < 5; i++) {
+      int y = 42 + i * 13; bool s = (sel == 1 + i); int fb = *fv[i]; if (fb > 99) fb = 99;
+      if (s) ui_panel(2, y - 1, 236, 12, UI_SEL, UI_TITLE);
+      ui_text(8, y, s ? UI_SELTEXT : UI_DIM, FL[i]);
+      char b[8]; siprintf(b, "%3u", (unsigned)*fv[i]); ui_text(56, y, s ? UI_SELTEXT : UI_TEXT, b);
+      ui_progress(84, y + 1, 150, 6, fb * 150 / 99, UI_OK, UI_PANEL, UI_BORDER);
     }
-    int dy = 20 + 7 * 12 + 4; bool sd = (sel == 7);
-    if (sd) ui_panel(2, dy - 1, 236, 11, UI_SEL, UI_TITLE);
-    ui_text(8, dy, sd ? UI_SELTEXT : UI_WARN, "Delete this block");
-    ui_text(4, 152, UI_DIM, "A edit  <> +/-  U/D  B done");
+    { int y = 42 + 5 * 13; bool s = (sel == 6); int fb = pb.feel; if (fb > 99) fb = 99;
+      if (s) ui_panel(2, y - 1, 236, 12, UI_SEL, UI_TITLE);
+      ui_text(8, y, s ? UI_SELTEXT : UI_DIM, "Feel");
+      char b[8]; siprintf(b, "%3u", (unsigned)pb.feel); ui_text(56, y, s ? UI_SELTEXT : UI_TEXT, b);
+      ui_progress(84, y + 1, 150, 6, fb * 150 / 99, UI_DIRCLR, UI_PANEL, UI_BORDER); }
+    { int y = 42 + 6 * 13 + 4; bool s = (sel == 7);
+      if (s) ui_panel(2, y - 1, 236, 11, UI_SEL, UI_TITLE);
+      ui_text(8, y, s ? UI_SELTEXT : UI_WARN, "Delete this block"); }
+    ui_text(4, 152, UI_DIM, "A edit/pick  <> +/-  U/D  B done");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) break;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 7;
     else if (k & KEY_DOWN) sel = (sel + 1) % 8;
+    else if (sel == 0) {                                       /* colour: presets only */
+      if (k & KEY_A) { int c = pick_pokeblock_color(pb.color); if (c >= 0) { pb.color = (uint8_t)c; changed = true; } }
+      else if (k & (KEY_LEFT | KEY_RIGHT)) { int d = (k & KEY_RIGHT) ? 1 : -1, nv = pb.color + d;
+                                             if (nv < 0) nv = 14; if (nv > 14) nv = 0; pb.color = (uint8_t)nv; changed = true; }
+    }
     else if (sel == 7) { if (k & KEY_A) { pk_pokeblock_clear(g_sb1, g_game, idx); return true; } }  /* delete */
-    else {
-      int maxv = (sel == 0) ? 14 : 99;                     /* colour 0..14; flavours/feel 0..99 */
-      if (k & (KEY_LEFT | KEY_RIGHT)) { int d = (k & KEY_RIGHT) ? 1 : -1; int nv = *v[sel] + d;
-                                        if (nv < 0) nv = maxv; if (nv > maxv) nv = 0; *v[sel] = (uint8_t)nv; changed = true; }
-      else if (k & KEY_A) { uint32_t nv = osk_number(FN[sel], *v[sel], (uint32_t)maxv); *v[sel] = (uint8_t)nv; changed = true; }
+    else {                                                     /* a flavour (1..5) or feel (6) */
+      uint8_t* p = (sel <= 5) ? fv[sel - 1] : &pb.feel;
+      if (k & (KEY_LEFT | KEY_RIGHT)) { int d = (k & KEY_RIGHT) ? 1 : -1, nv = *p + d;
+                                        if (nv < 0) nv = 99; if (nv > 99) nv = 0; *p = (uint8_t)nv; changed = true; }
+      else if (k & KEY_A) { uint32_t nv = osk_number(sel <= 5 ? FL[sel - 1] : "Feel", *p, 99); *p = (uint8_t)nv; changed = true; }
     }
   }
   if (changed) pk_pokeblock_set(g_sb1, g_game, idx, &pb);
   return changed;
 }
 
-/* Pokéblock case: 40 slots; A edits/creates a block, "Delete" inside clears one. RS/
- * Emerald only (FRLG has no contests). Edits g_sb1; one verified write on the way out. */
+/* Pokéblock case (game-like list: colour swatches + count). A edits/creates a block,
+ * "Delete" inside clears one. RS/Emerald only. Edits g_sb1; one verified write on exit. */
 static void pdna_pokeblock(void) {
   if (pk_pokeblock_offset(g_game) == 0) { msg_wait("NO POKEBLOCKS", UI_DIM, "This game has no contests.", 0); return; }
   bool dirty = false; int sel = 0, top = 0;
   for (;;) {
     ui_clear();
-    ui_text(4, 2, UI_TITLE, "POKEBLOCK CASE");
+    int have = 0;
+    for (int i = 0; i < PK_POKEBLOCK_COUNT; i++) { PkPokeblock p; pk_pokeblock_get(g_sb1, g_game, i, &p); if (pk_pokeblock_occupied(&p)) have++; }
+    char ti[28]; siprintf(ti, "POKEBLOCK CASE  %d/40", have); ui_text(4, 2, UI_TITLE, ti);
     ui_hline(0, 13, UI_SCR_W, UI_BORDER);
-    if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
-    for (int i = 0; i < 14 && top + i < PK_POKEBLOCK_COUNT; i++) {
-      int idx = top + i, y = 16 + i * 9; bool s = (idx == sel);
+    const int VIS = 13;
+    if (sel < top) top = sel; if (sel >= top + VIS) top = sel - VIS + 1;
+    for (int i = 0; i < VIS && top + i < PK_POKEBLOCK_COUNT; i++) {
+      int idx = top + i, y = 16 + i * 10; bool s = (idx == sel);
       PkPokeblock pb; pk_pokeblock_get(g_sb1, g_game, idx, &pb);
       bool occ = pk_pokeblock_occupied(&pb);
-      char row[40];
-      if (occ) siprintf(row, "%2d %-8s  feel %u", idx + 1, pk_pokeblock_color_name(pb.color), (unsigned)pb.feel);
-      else     siprintf(row, "%2d -", idx + 1);
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-      ui_text(4, y, s ? UI_SELTEXT : (occ ? UI_TEXT : UI_DIM), row);
+      if (s) ui_panel(2, y - 1, 236, 10, UI_SEL, UI_TITLE);
+      char num[6]; siprintf(num, "%2d", idx + 1); ui_text(6, y + 1, s ? UI_SELTEXT : UI_DIM, num);
+      if (occ) {
+        pokeblock_swatch(28, y, 8, pb.color);
+        char row[40]; siprintf(row, "%-8s  feel %u", pk_pokeblock_color_name(pb.color), (unsigned)pb.feel);
+        ui_text(42, y + 1, s ? UI_SELTEXT : UI_TEXT, row);
+      } else ui_text(28, y + 1, s ? UI_SELTEXT : UI_DIM, "(empty)");
     }
     ui_text(4, 152, UI_DIM, "A edit/create  U/D  B done");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
