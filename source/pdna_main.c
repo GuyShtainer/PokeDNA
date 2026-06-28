@@ -45,6 +45,7 @@
 #include "pdna_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
 #include "snd.h"           /* UI sound effects */
 #include "rmbl.h"          /* haptic rumble cues (per-cue toggles) */
+#include "rumble.h"        /* rumble_io_suspend/resume: mute the motor while a blit reads ROM */
 #include "gba_rtc.h"       /* live cartridge RTC reader (clock check & fix) */
 #include "pdna_app.h"
 #include "savefile.h"
@@ -1211,6 +1212,7 @@ static void party_icon_y(int i, int* ry, int* iy) {
  * cut-off feet. compose-then-DMA (no erase) => flicker-free; runs only on idle frames. */
 static u16 __attribute__((aligned(4))) s_pcol[34];
 static void party_bob_recompose(int n, int sel, int frame) {
+  rumble_io_suspend();   /* composes from mon_icon ROM data; mute the cart-bus motor toggle */
   int sry = (n && sel >= 0 && sel < n) ? 17 + sel * 21 : -100;   /* selected panel y..y+20 */
   for (int y = 12; y <= 150; y++) {
     u16 bg = (y >= sry && y <= sry + 20) ? UI_SEL : UI_BG;
@@ -1224,6 +1226,7 @@ static void party_bob_recompose(int n, int sel, int frame) {
     }
     dma3_cpy(&vid_mem[y * 240 + 2], s_pcol, 34 * 2);   /* x=2 even, 68 bytes -> word-aligned */
   }
+  rumble_io_resume();
 }
 
 static int party_list(void) {
@@ -1897,6 +1900,7 @@ static void dc_roll_decos(void) {
 static u16 __attribute__((aligned(4))) s_dcline[MON_ICON_W];   /* 32-bit DMA needs word align */
 static void dc_icon_over_bg(int x, int y, const u16* icon) {
   if (!icon) return;
+  rumble_io_suspend();   /* reads icon + daycare_bg from ROM per pixel; mute the motor toggle */
   x &= ~1;
   for (int j = 0; j < MON_ICON_H; j++) {
     int yy = y + j;
@@ -1911,12 +1915,15 @@ static void dc_icon_over_bg(int x, int y, const u16* icon) {
     }
     dma3_cpy(&vid_mem[yy * 240 + x], s_dcline, MON_ICON_W * 2);
   }
+  rumble_io_resume();
 }
 #endif /* HAVE_DAYCARE_BG */
 
 static void dc_scene(void) {
 #ifdef HAVE_DAYCARE_BG
+  rumble_io_suspend();   /* ~37 KB daycare_bg ROM->VRAM DMA; mute the cart-bus motor toggle */
   dma3_cpy(&vid_mem[12 * 240], daycare_bg, DAYCARE_BG_W * DAYCARE_BG_H * 2);  /* yard bg -> scene region */
+  rumble_io_resume();
 #else
   ui_fill_rect(0, 12, UI_SCR_W, 78, RGB15(16, 25, 31));        /* sky */
   for (int j = -5; j <= 5; j++) for (int i = -5; i <= 5; i++)  /* sun */

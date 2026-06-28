@@ -1,5 +1,6 @@
 #include "ui.h"
 #include <string.h>
+#include "rumble.h"   /* rumble_io_suspend/resume: mute the cart-bus motor toggle while a blit reads ROM */
 
 void ui_init(void) {
   REG_DISPCNT = DCNT_MODE3 | DCNT_BG2;
@@ -61,12 +62,14 @@ void ui_progress(int x, int y, int w, int h, int filled, u16 fill, u16 track, u1
  * format as ui_icon16 and the mon_icons / mon_front generators. */
 void ui_sprite(int x, int y, int w, int h, const u16* data) {
   if (!data) return;
+  rumble_io_suspend();                       /* data may be in ROM: don't let the motor toggle mid-read */
   for (int j = 0; j < h; j++) {
     for (int i = 0; i < w; i++) {
       u16 p = data[j * w + i];
       if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
     }
   }
+  rumble_io_resume();
 }
 
 /* Blit a 32x32 RGB15 sprite shrunk to 16x16 (sample every other pixel) — for
@@ -85,6 +88,7 @@ void ui_icon_sub(int x, int y, const u16* src32) {
  * — for grids that want icons bigger than the 16x16 sub but not the full 32. */
 void ui_icon_scaled(int x, int y, int dw, int dh, const u16* src32) {
   if (!src32) return;
+  rumble_io_suspend();                       /* src32 may be a raw ROM icon pointer */
   for (int j = 0; j < dh; j++) {
     int sj = j * 32 / dh;
     for (int i = 0; i < dw; i++) {
@@ -93,6 +97,7 @@ void ui_icon_scaled(int x, int y, int dw, int dh, const u16* src32) {
       if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
     }
   }
+  rumble_io_resume();
 }
 
 /* Cheap greyscale of a 15-bit BGR555 colour: luma = (2R+5G+B)/8, written R=G=B. */
@@ -105,6 +110,7 @@ static u16 ui_grey15(u16 c) {
 
 void ui_icon_scaled_grey(int x, int y, int dw, int dh, const u16* src32) {
   if (!src32) return;
+  rumble_io_suspend();                       /* src32 may be a raw ROM icon pointer */
   for (int j = 0; j < dh; j++) {
     int sj = j * 32 / dh;
     for (int i = 0; i < dw; i++) {
@@ -113,6 +119,7 @@ void ui_icon_scaled_grey(int x, int y, int dw, int dh, const u16* src32) {
       if (p & 0x8000) m3_plot(x + i, y + j, ui_grey15((u16)(p & 0x7FFF)));
     }
   }
+  rumble_io_resume();
 }
 
 /* 11×11 Poké Ball (region codes: 0 transparent, 1 black outline/band, 2 red top,
@@ -152,6 +159,7 @@ void ui_blit_over(int x, int y, int w, int h, const u16* data, u16 bg) {
    * row is composed (sprite over bg) and written in ONE pass — no separate erase, so
    * an animating sprite never blinks even at an odd x (e.g. the Pokedex grid, cw=33). */
   bool dma = ((x & 1) == 0) && ((w & 1) == 0);
+  rumble_io_suspend();                        /* data may be in ROM (compose reads it per pixel) */
   for (int j = 0; j < h; j++) {
     const u16* srow = data + (uint32_t)j * w;
     for (int i = 0; i < w; i++) { u16 p = srow[i]; s_ovl_line[i] = (p & 0x8000) ? (u16)(p & 0x7FFF) : bg; }
@@ -159,6 +167,7 @@ void ui_blit_over(int x, int y, int w, int h, const u16* data, u16 bg) {
     if (dma) dma3_cpy(dst, s_ovl_line, (u32)w * 2);
     else     for (int i = 0; i < w; i++) dst[i] = s_ovl_line[i];
   }
+  rumble_io_resume();
 }
 
 void ui_truncate(char* out, const char* in, int max_cols) {

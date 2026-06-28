@@ -24,6 +24,7 @@
 #include "mon_anim.h"     /* per-species Emerald front-animation family */
 #include "type_icons.h"
 #include "snd.h"
+#include "rumble.h"       /* rumble_io_suspend/resume around the ROM-read portrait LZ77 */
 
 #define NCARDS 8
 
@@ -109,8 +110,10 @@ static void draw_left(const PkMon* p) {
   ui_panel(0, 11, 92, 139, RGB15(4, 7, 16), UI_BORDER);    /* dark-blue info column */
   m3_frame(11, 13, 80, 78, UI_BORDER);                     /* sprite sub-frame */
   for (int yy = 14; yy <= 77; yy++) ui_fill_rect(12, yy, 68, 1, portrait_bg(yy));   /* blue "screen" */
+  rumble_io_suspend();   /* portrait fetch LZ77-decompresses from ROM */
   const uint16_t* spr = g_back ? mon_back_for_form(p->species, p->isShiny, p->form) : 0;
   if (!spr) spr = mon_front_for_form(p->species, p->isShiny, p->form);   /* fall back to front */
+  rumble_io_resume();
   if (spr) ui_sprite(14, 14, MON_FRONT_W, MON_FRONT_H, spr);
   else     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
   if (p->isShiny) ui_text(70, 16, C_HOT, "*");             /* gold shiny mark on the portrait */
@@ -357,8 +360,10 @@ static bool confirm(void) {
 
 /* the portrait sprite draw_left would pick (front/back, else the icon fallback) */
 static const uint16_t* portrait_sprite(const PkMon* p, bool* is_icon) {
+  rumble_io_suspend();   /* portrait fetch LZ77-decompresses from ROM */
   const uint16_t* spr = g_back ? mon_back_for_form(p->species, p->isShiny, p->form) : 0;
   if (!spr) spr = mon_front_for_form(p->species, p->isShiny, p->form);
+  rumble_io_resume();
   if (spr) { *is_icon = false; return spr; }
   *is_icon = true; return mon_icon_for_form(p->species, p->form);
 }

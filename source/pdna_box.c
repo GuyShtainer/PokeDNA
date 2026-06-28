@@ -24,6 +24,7 @@
 #include "pdna_app.h"
 #include "snd.h"
 #include "osk.h"
+#include "rumble.h"         /* rumble_io_suspend/resume: mute the motor while the wallpaper blit reads ROM */
 
 #define COLS 6
 #define ROWS 5
@@ -155,7 +156,9 @@ static void draw_left(const PkMon* p) {
   m3_frame(4, 14, 71, 81, UI_BORDER);
   if (!p || p->species == 0) { ui_text(16, 92, UI_DIM, "(empty)"); return; }
 
+  rumble_io_suspend();   /* the fetch LZ77-decompresses the portrait from ROM */
   const uint16_t* spr = mon_front_for_form(p->species, p->isShiny, p->form);
+  rumble_io_resume();
   if (spr) ui_sprite(6, 16, MON_FRONT_W, MON_FRONT_H, spr);
   else     ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
 
@@ -194,7 +197,8 @@ __attribute__((weak)) const uint16_t* wallpaper_tilemap(int wp) { (void)wp; retu
 static void draw_wallpaper(int wp, int x, int y, int w, int h) {
   int nt; const uint16_t* tiles = wallpaper_tile_data(wp, &nt);
   const uint16_t* map = wallpaper_tilemap(wp);
-  if (!tiles || !map) { draw_grass(x, y, w, h); return; }
+  if (!tiles || !map) { draw_grass(x, y, w, h); return; }   /* procedural fallback: no ROM read, no guard */
+  rumble_io_suspend();   /* HW: a rumble GPIO toggle mid-blit corrupts these ROM reads on the EZ-Flash -> garbled wallpaper */
   for (int ty = 0; ty < 18; ty++)
     for (int tx = 0; tx < 20; tx++) {
       const uint16_t* t = tiles + (uint32_t)map[ty * 20 + tx] * 64;
@@ -203,6 +207,7 @@ static void draw_wallpaper(int wp, int x, int y, int w, int h) {
         for (int i = 0; i < 8 && bx + i < x + w; i++)
           m3_plot(bx + i, by + j, t[j * 8 + i] & 0x7FFF);
     }
+  rumble_io_resume();
 }
 
 /* --- Icons, cursor, carry, and item markers are HARDWARE OBJ sprites (box_oam.c).

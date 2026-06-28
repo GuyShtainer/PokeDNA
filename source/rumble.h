@@ -39,4 +39,12 @@ void rumble_raw_off(void);         /* force the motor off right now             
 void rumble_pause(void);
 void rumble_resume(void);
 
+/* Render safety: freeze the cart-bus GPIO writes around long ROM-reading software
+ * blits (the box wallpaper, mon sprites/icons, dex grids, …) so a motor toggle can't
+ * corrupt an in-flight ROM read on the EZ-Flash (the garbled-wallpaper bug). Keeps the
+ * cue running (only the physical output is muted); nesting-counted. Distinct from
+ * rumble_pause(): bracket a ROM-read blit, not an SD write. */
+void rumble_io_suspend(void);
+void rumble_io_resume(void);
+
 #endif /* RUMBLE_H */
