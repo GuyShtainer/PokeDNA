@@ -62,6 +62,9 @@ bool app_xfer_take(uint8_t* rec80);
 void app_box_start_set(int s);
 int  app_box_start_take(void);
 void app_note_pc_box(int b);              /* PC box screen reports its current box so the app remembers it */
+/* Carry a held box mon onto the PARTY tab: add to a free party slot or swap with a member
+ * (which takes the held mon's PC origin). Returns true if consumed (end the carry). */
+bool app_carry_to_party(const uint8_t* held80, int orig_box, int orig_slot, bool can_swap);
 
 /* Commit the loaded save's SaveBlock2 (section 0 — the trainer block) or
  * SaveBlock1 (sections 1..4 — where money lives) after an in-place edit of the

@@ -541,6 +541,25 @@ int pdna_box(BoxSource* src) {
     /* ---- MOVE MODE (mon-in-hand): the carried mon floats; place it anywhere ---- */
     if (s_holding) {
       bool homeless = (s_orig_slot < 0 && !s_held_dup);   /* a real mon displaced by a swap (RAM-only) */
+      if (s_tab_focus >= 0) {                        /* carrying with the cursor up on the top tabs */
+        if (k & KEY_LEFT)       { s_tab_focus = (s_tab_focus > 0) ? s_tab_focus - 1 : 2; need_full = true; }
+        else if (k & KEY_RIGHT) { s_tab_focus = (s_tab_focus + 1) % 3; need_full = true; }
+        else if (k & (KEY_B | KEY_DOWN)) { s_tab_focus = -1; need_full = true; }   /* back to the grid, still holding */
+        else if (k & KEY_UP) {                       /* up past the PC tabs -> Bank, still holding */
+          if (!src->is_bank) { if (homeless) snd_deny(); else { s_tab_focus = -1; boxoam_exit(); return 4; } }
+        }
+        else if (k & KEY_A) {
+          if (s_tab_focus == 1 && !src->is_bank) {   /* PARTY tab: place/swap the held mon into the party */
+            bool can_swap = (!s_orig_bank && s_orig_slot >= 0);
+            if (app_carry_to_party(s_held, s_orig_box, s_orig_slot, can_swap)) {
+              s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false;
+              s_tab_focus = -1; recs = src->records(box); pk_decode_box_raw(recs, g_box);
+            }
+            s_oam_reload = true; need_full = true;   /* redraw over the party picker */
+          } else snd_deny();                         /* can't use PKMN DATA / SAVE while carrying */
+        }
+        continue;
+      }
       if (k & KEY_B) {                               /* cancel */
         if (homeless) {                              /* must place it somewhere -> first free in this box */
           int fs = -1; for (int s = 0; s < COLS * ROWS; s++) if (!g_box[s].species) { fs = s; break; }
@@ -566,8 +585,7 @@ int pdna_box(BoxSource* src) {
       else if (k & KEY_RIGHT) cur = (cur % COLS == COLS - 1) ? cur - COLS + 1 : cur + 1;
       else if (k & KEY_UP)    {
         if (cur >= COLS) cur -= COLS;
-        else if (homeless) snd_deny();                          /* place the swapped mon before leaving */
-        else if (!src->is_bank) { boxoam_exit(); return 4; }    /* off PC top -> Bank, still holding */
+        else if (!src->is_bank) { s_tab_focus = 1; need_full = true; }  /* off PC top -> top tabs (PARTY), still holding */
       }
       else if (k & KEY_DOWN)  {
         if (cur < COLS * (ROWS - 1)) cur += COLS;

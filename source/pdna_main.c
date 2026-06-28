@@ -1029,6 +1029,66 @@ static bool app_to_daycare(uint8_t* rec, bool is_party, uint8_t* block, int box,
 
 static uint32_t dc_seed(void);   /* PID entropy (RTC + counter); defined below */
 
+/* box (80b) <-> party (100b) record conversion via the editor (derives/drops the
+ * plaintext level + battle stats). */
+static void box_to_party(const uint8_t* box80, uint8_t out100[100]) {
+  EditMon e; gen3_edit_load(box80, false, &e); em_set_party_flag(&e, true);  gen3_edit_commit(&e, out100);
+}
+static void party_to_box(const uint8_t* party100, uint8_t out80[80]) {
+  EditMon e; gen3_edit_load(party100, true, &e); em_set_party_flag(&e, false); gen3_edit_commit(&e, out80);
+}
+
+/* Carry a box mon onto the PARTY tab: pick a slot to ADD it (free slot) or SWAP with a
+ * party mon (which then takes the held mon's PC origin slot). held80 = the carried record;
+ * (orig_box,orig_slot) its PC origin; can_swap = it has a clean PC origin to receive a
+ * swapped-out party mon. Records convert box<->party. Party + PC edits are staged and
+ * committed together at exit (one save). Returns true if consumed (end the carry). */
+bool app_carry_to_party(const uint8_t* held80, int orig_box, int orig_slot, bool can_swap) {
+  if (!app_can_edit()) { snd_deny(); return false; }
+  int sel = 0;
+  for (;;) {
+    int n = party_count(g_sb1, g_frlg);
+    PkMon pm[6]; pk_read_party_auto(g_sb1, pm, &g_frlg);
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "TO PARTY");
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < 6; i++) {
+      int y = 20 + i * 18; bool s = (i == sel);
+      if (s) ui_panel(2, y - 1, 236, 16, UI_SEL, UI_TITLE);
+      char row[44];
+      if (i < n)       siprintf(row, "%d  %-10s Lv%u", i + 1, pm[i].nickname[0] ? pm[i].nickname : pk_species_name(pm[i].species), (unsigned)pm[i].level);
+      else if (i == n) strcpy(row, "+  Add to party");
+      else             strcpy(row, "-");
+      ui_text(8, y, s ? UI_SELTEXT : (i <= n ? UI_TEXT : UI_DIM), row);
+    }
+    ui_text(4, 152, UI_DIM, "A place/swap  U/D  B cancel");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return false;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 5;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 6;
+    else if (k & KEY_A) {
+      if (sel > n) { snd_deny(); continue; }                    /* past the add slot */
+      if (sel == n) {                                           /* ADD to a free party slot */
+        if (n >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Swap with a member instead.", 0); continue; }
+        uint8_t p100[100]; box_to_party(held80, p100);
+        if (!party_append(g_sb1, g_frlg, p100)) { snd_deny(); continue; }
+        if (orig_slot >= 0) memset(pk_box_slot(g_pc, orig_box, orig_slot), 0, 80);  /* it left the PC */
+        app_mark_pc_dirty(); app_register_dex_deferred(p100, true); app_stage_sb1();
+        snd_ok(); return true;
+      }
+      /* SWAP with party[sel]: the party mon takes the held mon's PC origin */
+      if (!can_swap) { snd_deny(); msg_wait("CAN'T SWAP", UI_WARN, "This held mon has no PC", "slot to receive the swap."); continue; }
+      uint8_t* pslot = g_sb1 + (g_frlg ? 0x038 : 0x238) + (uint32_t)sel * 100;
+      uint8_t y80[80];  party_to_box(pslot, y80);               /* party mon -> 80b box */
+      uint8_t x100[100]; box_to_party(held80, x100);            /* held box mon -> 100b party */
+      memcpy(pk_box_slot(g_pc, orig_box, orig_slot), y80, 80);  /* party mon -> the PC origin */
+      memcpy(pslot, x100, 100);                                 /* held mon -> the party slot */
+      app_mark_pc_dirty(); app_register_dex_deferred(x100, true); app_stage_sb1();
+      snd_ok(); return true;
+    }
+  }
+}
+
 /* CREATE a Pokémon from nothing into the empty slot `rec`: pick a species, build a
  * default valid record (Lv5, the save's OT/TID, Poké Ball), open the editor to
  * customise, then write + commit. Returns true if the user kept it. Omega-only. */
