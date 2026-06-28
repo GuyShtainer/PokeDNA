@@ -307,6 +307,8 @@ static const char* const DS_NAME[DS_N] = { "All", "Caught", "Seen", "Unseen" };
 
 static DexGetState s_dget;
 static DexSetState s_dset;
+static DexGetNat   s_getnat;   /* national-dex live? (may be NULL) */
+static DexSetNat   s_setnat;   /* enable/disable national dex (may be NULL) */
 
 /* Snapshot of every species' dex state before the last bulk op, so a mistaken
  * "Catch/See/Wipe ALL" can be undone in one step (the changes aren't written to the
@@ -388,25 +390,30 @@ static void dex_header(int view, int filter, int status, uint16_t sel_in, int se
   ui_hline(0, 22, UI_SCR_W, UI_BORDER);
 }
 
-/* SELECT-all overlay: catch / see / wipe every species. Returns true if changed. */
+/* SELECT-all overlay: catch / see / wipe every species, plus the National Dex
+ * toggle (the flag/var/magic trio that actually reveals #152..386 in-game).
+ * Returns true if anything changed. */
 static bool dex_bulk(void) {
   int sel = 0;
   for (;;) {
-    /* options: Catch/See/Wipe ALL (state 2/1/0), an Undo (-1) when a snapshot exists, Cancel (-2) */
-    const char* L[5]; int act[5], n = 0;
+    /* options: Catch/See/Wipe ALL (state 2/1/0), National-Dex toggle (3), Undo (-1), Cancel (-2) */
+    const char* L[6]; int act[6], n = 0;
+    bool natl = (s_getnat && s_getnat());
     L[n] = "Catch ALL"; act[n++] = 2;
     L[n] = "See ALL";   act[n++] = 1;
     L[n] = "Wipe ALL";  act[n++] = 0;
+    if (s_setnat) { L[n] = natl ? "Natl Dex: ON" : "Natl Dex: OFF"; act[n++] = 3; }
     if (s_dex_snap_valid) { L[n] = "Undo last"; act[n++] = -1; }
     L[n] = "Cancel"; act[n++] = -2;
     if (sel >= n) sel = n - 1;
-    const int mx = 60, my = 46, mw = 120, mh = 18 + n * 14 + 11;
+    const int mx = 56, my = 42, mw = 128, mh = 18 + n * 14 + 11;
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "DEX: ALL");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
     for (int i = 0; i < n; i++) { int y = my + 18 + i * 14; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
-      ui_text(mx + 10, y, s ? UI_SELTEXT : (act[i] == -1 ? UI_OK : UI_TEXT), L[i]); }
+      uint16_t col = s ? UI_SELTEXT : (act[i] == -1 ? UI_OK : act[i] == 3 ? (natl ? UI_OK : UI_WARN) : UI_TEXT);
+      ui_text(mx + 10, y, col, L[i]); }
     ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return false;
@@ -415,6 +422,14 @@ static bool dex_bulk(void) {
     else if (k & KEY_A) {
       int a = act[sel];
       if (a == -2) return false;                                  /* Cancel */
+      if (a == 3) {                                               /* toggle National Dex */
+        bool now = !natl;
+        if (!app_confirm(now ? "Enable National Dex?" : "Disable National Dex?",
+                         now ? "Reveals #152-386 in-game." : "Hides #152-386 in-game."))
+          return false;
+        s_setnat(now);
+        return true;
+      }
       if (a == -1) {                                              /* Undo the last bulk op */
         for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dset(nat, s_dex_snap[nat - 1]);
         s_dex_snap_valid = false;
@@ -425,6 +440,9 @@ static bool dex_bulk(void) {
       for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dex_snap[nat - 1] = (int8_t)s_dget(nat);   /* snapshot first */
       s_dex_snap_valid = true;
       for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dset(nat, a);
+      /* Catching every species is meaningless without National mode (the dex caps at the
+       * regional list otherwise), so unlock it too — matches the user's expectation. */
+      if (a == 2 && s_setnat) s_setnat(true);
       return true;
     }
   }
@@ -472,8 +490,10 @@ static int dex_menu(int* filter, int* sort, int* status, bool can_edit) {
   }
 }
 
-bool pdna_dex_screen(DexGetState get, DexSetState set, bool can_edit) {
+bool pdna_dex_screen(DexGetState get, DexSetState set,
+                     DexGetNat getnat, DexSetNat setnat, bool can_edit) {
   s_dget = get; s_dset = set;
+  s_getnat = getnat; s_setnat = can_edit ? setnat : NULL;   /* read-only carts can't toggle it */
   s_dex_snap_valid = false;        /* fresh session: no bulk op to undo yet */
   int filter = 0, sort = 0, status = DS_ALL, view = DV_GRID;
   char search[16] = "";

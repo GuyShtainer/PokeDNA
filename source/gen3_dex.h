@@ -25,4 +25,16 @@ bool pk_dex_owned(const uint8_t* sb2, uint16_t natDex);
 /* Count of species seen (owned=false) or owned (owned=true), 1..386. */
 int  pk_dex_count(const uint8_t* sb2, bool owned);
 
+/* National Dex unlock. Marking species #152..386 owned does NOT make the in-game
+ * dex show them: the game gates "National mode" on THREE values set together by
+ * EnableNationalPokedex — a magic byte in SB2.pokedex, VAR_NATIONAL_DEX in SB1, and
+ * FLAG_SYS_NATIONAL_DEX. All three (offsets + values) differ per game family:
+ *   RS/Emerald: magic @ pokedex+0x02 = 0xDA ; FRLG: magic @ pokedex+0x03 = 0xB9
+ *   VAR_NATIONAL_DEX = 0x302 (RS/E) / 0x6258 (FRLG) ; flag E 0x896 / RS 0x836 / FRLG 0x840
+ * pk_dex_national_on reports whether all three currently match (i.e. national is live);
+ * pk_dex_set_national writes/clears all three (Emerald also flips the dex view to
+ * National). Edits SB2 + SB1 in place — commit both (SB2 sec0 + SB1 sec1..4). */
+bool pk_dex_national_on (const uint8_t* sb1, const uint8_t* sb2, PkGame g);
+void pk_dex_set_national(uint8_t* sb1, uint8_t* sb2, PkGame g, bool on);
+
 #endif /* GEN3_DEX_H */

@@ -82,7 +82,9 @@ void pk_pokedex(const uint8_t* sb2, int* seen, int* caught, bool* national) {
   const uint8_t* dex   = sb2 + 0x18;       /* struct Pokedex */
   const uint8_t* owned = dex + 0x10;
   const uint8_t* seenA = dex + 0x44;
-  if (national) *national = (dex[0x03] == 0xB9);
+  /* National magic differs per game family: RS/Emerald at pokedex+0x02 (0xDA),
+   * FRLG at pokedex+0x03 (0xB9). Accept either so the indicator is right on all. */
+  if (national) *national = (dex[0x02] == 0xDA) || (dex[0x03] == 0xB9);
   int sc = 0, cc = 0;
   for (int i = 0; i < 386; i++) {           /* national #1..386 -> bit i */
     if (owned[i >> 3] & (1u << (i & 7))) cc++;

@@ -28,6 +28,12 @@ uint8_t  pick_ability(uint16_t species_internal, uint8_t current_slot);
  * them through these callbacks. State: 0 = unseen, 1 = seen, 2 = caught. */
 typedef int  (*DexGetState)(int nat);          /* National no. (1..386) -> 0/1/2 */
 typedef void (*DexSetState)(int nat, int state);
+/* National Dex unlock hooks: reading/writing the magic+var+flag trio so the in-game
+ * dex actually shows #152..386. getnat returns whether national is currently live;
+ * setnat turns it on/off. The DEX:ALL menu shows a toggle and auto-enables on Catch ALL.
+ * Both may be NULL (then the toggle is hidden). */
+typedef bool (*DexGetNat)(void);
+typedef void (*DexSetNat)(bool on);
 
 /* Run the Pokedex screen. Three views (Grid / List / by-Type), the species-grid
  * filters (Gen/type/legendary) + a caught/seen/unseen status filter + name search,
@@ -35,6 +41,7 @@ typedef void (*DexSetState)(int nat, int state);
  * with a Poke-Ball marker). When `can_edit`, A cycles a species unseen->seen->caught
  * and a "Mark all" bulk op is offered. Returns true iff any dex state changed (so
  * the caller can offer to save). */
-bool pdna_dex_screen(DexGetState get, DexSetState set, bool can_edit);
+bool pdna_dex_screen(DexGetState get, DexSetState set,
+                     DexGetNat getnat, DexSetNat setnat, bool can_edit);
 
 #endif /* PDNA_PICK_H */
