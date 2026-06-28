@@ -2878,7 +2878,6 @@ int main(void) {
     for (int v = 0; v < 8; v++) vsync();    /* ~130 ms settle, then re-detect */
   if (!active) halt_msg("No flashcart detected! Reseat cart & reboot.");
   log_line("flashcart: %s", flashcart_name());
-  rmbl_init();                               /* rumble driver (Omega motor; no-op elsewhere) */
 
   FATFS fs;                                  /* lives forever (main never returns) */
   FRESULT fr = FR_NOT_READY;
@@ -2893,8 +2892,22 @@ int main(void) {
     for (int v = 0; v < 12; v++) vsync();    /* ~200 ms settle */
     flashcartio_activate();                  /* re-init the cart's SD interface, then retry */
   }
-  if (fr != FR_OK) halt_msg("SD mount failed! Reseat SD/cart & reboot.");
+  if (fr != FR_OK) {
+    log_line("f_mount FAILED fr=%d after retries", fr);
+    log_flush_to_sd(LOG_PATH);                 /* best-effort (SD is down, so likely a no-op) */
+    ui_clear();
+    ui_panel(8, 40, 224, 72, UI_PANEL, UI_WARN);
+    ui_text(20, 48, UI_WARN, "HALT");
+    char m[32]; siprintf(m, "SD mount failed (fr=%d)", (int)fr);
+    ui_text(20, 64, UI_TEXT, m);
+    ui_text(20, 80, UI_DIM, "EZ-Flash: set RTC = OFF");
+    ui_text(20, 90, UI_DIM, "for this ROM, then reboot.");
+    ui_text(20, 100, UI_DIM, "(else reseat SD/cart.)");
+    snd_error();
+    while (1) vsync();
+  }
   log_line("SD mounted OK");
+  rmbl_init();   /* rumble AFTER the SD is mounted: its cart-GPIO writes must never touch the bus before SD is up */
   f_mkdir(PDNA_DIR);                          /* all PokeDNA files live in /PokeDNA, not the SD root */
   log_flush_to_sd(LOG_PATH);
   snd_boot();                                /* welcome chime = audio self-test */
