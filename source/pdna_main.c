@@ -2893,29 +2893,10 @@ int main(void) {
     flashcartio_activate();                  /* re-init the cart's SD interface, then retry */
   }
   if (fr != FR_OK) {
-    /* Diagnostic: read raw sector 0 and show what the card returns, so we can tell a
-     * dead/garbage read from a valid-but-unmountable filesystem. A real boot sector ends
-     * in 0x55AA; a FAT VBR starts EB..90 / E9, an MBR has a partition table @ +0x1BE. */
-    static uint8_t EWRAM_BSS s0[512];
-    for (int i = 0; i < 512; i++) s0[i] = 0;
-    bool rd = flashcartio_read_sector(0, s0, 1);
-    log_line("f_mount FAILED fr=%d; sec0 rd=%d sig=%02X%02X", fr, rd, s0[510], s0[511]);
-    ui_clear();
-    ui_panel(6, 24, 228, 116, UI_PANEL, UI_WARN);
-    ui_text(14, 30, UI_WARN, "HALT: SD mount failed");
-    char m[48];
-    siprintf(m, "fr=%d  cart=%s", (int)fr, flashcart_name());
-    ui_text(14, 46, UI_TEXT, m);
-    siprintf(m, "sec0: read=%d  sig=%02X%02X", rd ? 1 : 0, s0[510], s0[511]);
-    ui_text(14, 60, UI_TEXT, m);
-    siprintf(m, "b0-7 %02X %02X %02X %02X %02X %02X %02X %02X",
-             s0[0], s0[1], s0[2], s0[3], s0[4], s0[5], s0[6], s0[7]);
-    ui_text(14, 74, UI_DIM, m);
-    siprintf(m, "@1BE %02X %02X %02X %02X %02X", s0[446], s0[450], s0[454], s0[458], s0[462]);
-    ui_text(14, 88, UI_DIM, m);
-    ui_text(14, 104, UI_TEXT, "Photograph this & send it.");
-    snd_error();
-    while (1) vsync();
+    log_line("f_mount FAILED fr=%d after retries", fr);
+    log_flush_to_sd(LOG_PATH);                 /* best-effort (SD is down, so likely a no-op) */
+    char m[40]; siprintf(m, "SD mount failed (fr=%d)", (int)fr);
+    halt_msg(m);
   }
   log_line("SD mounted OK");
   rmbl_init();   /* rumble AFTER the SD is mounted: its cart-GPIO writes must never touch the bus before SD is up */
