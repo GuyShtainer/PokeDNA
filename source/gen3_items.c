@@ -30,6 +30,18 @@ const char* pk_pocket_name(int p) {
   }
 }
 
+/* An item's home pocket, by id range (shared across RS/E/FRLG for ids 1..348; the
+ * 349+ range is the later key items — tickets, etc.). Mirrors the decomp item table's
+ * .pocket field, which is contiguous in id order. */
+int pk_item_pocket(uint16_t id) {
+  if (id == 0) return POCKET_ITEMS;
+  if (id <= 12) return POCKET_BALLS;                 /* 1..12  Master..Premier Ball     */
+  if (id >= 133 && id <= 175) return POCKET_BERRIES; /* 133..175 berries                */
+  if (id >= 289 && id <= 346) return POCKET_TMHM;    /* 289..346 TM01..HM08             */
+  if ((id >= 259 && id <= 288) || id >= 349) return POCKET_KEY;  /* key items (bikes, tickets, ...) */
+  return POCKET_ITEMS;
+}
+
 int pk_pocket_cap(PkGame g, int p) {
   if (p < 0 || p >= POCKET_COUNT) return 0;
   return POCKETS[g][p].cap;

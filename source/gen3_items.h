@@ -11,6 +11,9 @@ typedef enum { POCKET_ITEMS = 0, POCKET_KEY, POCKET_BALLS, POCKET_TMHM, POCKET_B
 
 const char* pk_pocket_name(int pocket);
 int      pk_pocket_cap(PkGame g, int pocket);
+/* Which pocket an item BELONGS in (so an added item lands in the right pocket). Gen-3
+ * item ids 1..348 are shared across RS/E/FRLG, so the ranges are game-independent. */
+int      pk_item_pocket(uint16_t item_id);
 uint16_t pk_bag_item(const uint8_t* sb1, PkGame g, int pocket, int slot);
 uint16_t pk_bag_qty(const uint8_t* sb1, const uint8_t* sb2, PkGame g, int pocket, int slot);
 void     pk_bag_set(uint8_t* sb1, const uint8_t* sb2, PkGame g, int pocket, int slot,

@@ -1388,10 +1388,19 @@ static bool data_editor(void) {
       } else if (tab == 1) {                     /* edit a bag slot */
         uint16_t cur = pk_bag_item(g_sb1, g_game, pocket, sel);
         uint16_t id = pick_item(cur);
-        if (id != 0xFFFF) {
-          uint16_t q = 0;
-          if (id != 0) q = (uint16_t)osk_number("QUANTITY", pk_bag_qty(g_sb1, g_sb2, g_game, pocket, sel) ? pk_bag_qty(g_sb1, g_sb2, g_game, pocket, sel) : 1, 999);
-          pk_bag_set(g_sb1, g_sb2, g_game, pocket, sel, id, q); dirty = true;
+        if (id == 0) { pk_bag_set(g_sb1, g_sb2, g_game, pocket, sel, 0, 0); dirty = true; }   /* clear slot */
+        else if (id != 0xFFFF) {
+          uint16_t q = (uint16_t)osk_number("QUANTITY", pk_bag_qty(g_sb1, g_sb2, g_game, pocket, sel) ? pk_bag_qty(g_sb1, g_sb2, g_game, pocket, sel) : 1, 999);
+          int dp = pk_item_pocket(id);
+          if (dp == pocket) { pk_bag_set(g_sb1, g_sb2, g_game, pocket, sel, id, q); dirty = true; }
+          else {                                  /* wrong pocket: route to the item's real pocket */
+            int cap = pk_pocket_cap(g_game, dp), dest = -1;
+            for (int s = 0; s < cap; s++) { uint16_t it = pk_bag_item(g_sb1, g_game, dp, s);
+                                            if (it == id) { dest = s; break; } if (it == 0 && dest < 0) dest = s; }
+            if (dest < 0) { snd_deny(); msg_wait("POCKET FULL", UI_WARN, pk_pocket_name(dp), "is full."); }
+            else { pk_bag_set(g_sb1, g_sb2, g_game, dp, dest, id, q); dirty = true;
+                   char m[40]; siprintf(m, "Put in %s.", pk_pocket_name(dp)); msg_wait("RIGHT POCKET", UI_OK, m, 0); }
+          }
         }
       }
     }
