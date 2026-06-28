@@ -30,6 +30,7 @@ typedef struct {
   bool (*can_edit)(void);
   AppCommitFn commit;                       /* persist the current box now                   */
   void (*mark_dirty)(void);                 /* deferred persist (move-mode drop)             */
+  void (*note_add)(const uint8_t* rec);     /* opt: a mon landed here -> register its dex (PC only; NULL on bank) */
 } BoxSource;
 
 /* Game-faithful box screen over `src`: a left PKMN DATA panel + a 6x5 icon grid on

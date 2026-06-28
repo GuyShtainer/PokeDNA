@@ -662,6 +662,20 @@ static bool app_commit_with_dex(uint8_t* rec, bool is_party, AppCommitFn commit,
   return commit ? commit() : false;
 }
 
+/* Register a mon's species for a DEFERRED add (Day-Care withdraw, a carried/copied mon
+ * dropped into the PC) — no SD write now. Stages the dex sections (SB2 + SB1) into the
+ * in-RAM save image like app_stage_sb1, so the exit flush's finalize (which writes the
+ * whole image) persists the dex alongside the PC moves. Idempotent / egg-safe. */
+static void app_register_dex_deferred(const uint8_t* rec, bool is_party) {
+  if (!app_dex_register_rec(rec, is_party)) return;          /* unchanged / egg / already known */
+  gen3_write_full_section(g_save, g_vinfo.slot, 0, g_sb2);
+  for (int id = 1; id <= 4; id++)
+    gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
+  g_sb1_deferred = true;                                     /* flush_on_exit will commit */
+}
+/* BoxSource hook for the PC: a mon just landed in the in-save PC -> auto-register its dex. */
+static void pcsrc_note_add(const uint8_t* rec) { app_register_dex_deferred(rec, false); }
+
 /* Emerald "Walda" secret-wallpaper pattern (the graphic shown by box wallpaper 16),
  * stored in SaveBlock1. -1 / no-op on the other games. */
 int  app_walda_pattern(void) { return (g_game == PK_EMERALD) ? (int)pk_walda_pattern(g_sb1) : -1; }
@@ -896,6 +910,7 @@ static bool app_inject_to_game_deferred(const uint8_t* rec80, int* out_box, int*
     int s = box_free_slot(g_pc, b);
     if (s >= 0) {
       memcpy(pk_box_slot(g_pc, b, s), rec80, 80); app_mark_pc_dirty();
+      app_register_dex_deferred(rec80, false);                  /* withdrawn mon -> dex */
       if (out_box) *out_box = b; if (out_slot) *out_slot = s;
       return true;
     }
@@ -1017,7 +1032,7 @@ static uint32_t dc_seed(void);   /* PID entropy (RTC + counter); defined below *
 /* CREATE a Pokémon from nothing into the empty slot `rec`: pick a species, build a
  * default valid record (Lv5, the save's OT/TID, Poké Ball), open the editor to
  * customise, then write + commit. Returns true if the user kept it. Omega-only. */
-static bool app_create_mon(uint8_t* rec, AppCommitFn commit) {
+static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
   uint16_t sp = pick_species(1);
   if (sp == 0xFFFF || sp == 0) return false;
   uint32_t otId = (uint32_t)g_vinfo.tid_public | ((uint32_t)g_vinfo.tid_secret << 16);
@@ -1027,8 +1042,7 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit) {
   uint8_t out[80];
   if (!pdna_edit(tmp, false, out)) return false;     /* customise; B cancels -> slot stays empty */
   memcpy(rec, out, 80);
-  if (commit) commit();                              /* gated verified write (backup first) */
-  return true;
+  return app_commit_with_dex(rec, false, commit, block);   /* gated write + auto-register dex (PC only) */
 }
 
 bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot) {
@@ -1104,7 +1118,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
         case A_RELEASE: return app_release(rec, is_party, commit, block, box, slot);
         case A_TAKEITEM:return app_take_item(rec, is_party, commit);
         case A_GIVEITEM:return app_give_item(rec, is_party, commit);
-        case A_CREATE:  return app_create_mon(rec, commit);   /* build a new mon into this empty slot */
+        case A_CREATE:  return app_create_mon(rec, commit, block);   /* build a new mon into this empty slot */
         default:        return false;                    /* CANCEL */
       }
     }
@@ -2636,6 +2650,7 @@ static BoxSource pc_box_source(void) {
   s.can_edit   = app_can_edit;
   s.commit     = app_commit_pc;
   s.mark_dirty = app_mark_pc_dirty;
+  s.note_add   = pcsrc_note_add;            /* a mon dropped into the PC auto-registers in the dex */
   return s;
 }
 

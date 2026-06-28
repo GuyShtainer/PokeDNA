@@ -260,10 +260,12 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
                           src->is_bank ? "The PC keeps the original." : "The Bank keeps the original.");
     boxoam_resume();
     if (!ok) return recs;                                    /* keep holding */
+    if (src->note_add) src->note_add(s_held);                /* mon enters this scope -> dex */
     memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
     s_holding = false; *done = true; return recs;
   }
   if (!occupied) {                                           /* empty -> place, clear origin */
+    if (src->note_add) src->note_add(s_held);
     memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
     recs = clear_origin(src, box);
     s_holding = false; *done = true; return recs;
@@ -272,6 +274,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
    * yourself next; we don't auto-throw it into the held mon's old cell). */
   if (s_orig_slot < 0 && s_held_dup) { snd_deny(); return recs; }          /* a fresh dup can't swap */
   if (s_orig_slot >= 0 && s_orig_box != box && src->is_bank) { snd_deny(); return recs; }  /* bank cross-box swap unsafe */
+  if (src->note_add) src->note_add(s_held);                                /* placed mon enters this scope -> dex */
   uint8_t occ[80]; memcpy(occ, recs + (uint32_t)cur * 80, 80);             /* save the occupant */
   memcpy(recs + (uint32_t)cur * 80, s_held, 80);                           /* place the held mon at the cursor */
   src->mark_dirty();
