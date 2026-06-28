@@ -676,6 +676,9 @@ static void app_register_dex_deferred(const uint8_t* rec, bool is_party) {
 /* BoxSource hook for the PC: a mon just landed in the in-save PC -> auto-register its dex. */
 static void pcsrc_note_add(const uint8_t* rec) { app_register_dex_deferred(rec, false); }
 
+/* Bank->PC carry records the bank source for deletion at the save phase (see pdna_bank). */
+void app_bank_defer_delete(int box, int slot) { pdna_bank_defer_delete(box, slot); }
+
 /* Emerald "Walda" secret-wallpaper pattern (the graphic shown by box wallpaper 16),
  * stored in SaveBlock1. -1 / no-op on the other games. */
 int  app_walda_pattern(void) { return (g_game == PK_EMERALD) ? (int)pk_walda_pattern(g_sb1) : -1; }
@@ -2729,12 +2732,14 @@ static BoxSource pc_box_source(void) {
  * in one verified pass (app_commit_pc folds in the staged Day-Care sections); B discards
  * everything — the on-disk save was never touched and we're returning to the browser. */
 static void flush_on_exit(void) {
-  if (!app_pc_dirty() && !g_sb1_deferred) return;
+  if (!app_pc_dirty() && !g_sb1_deferred) { pdna_bank_flush_deletions(); return; }  /* PC already saved; still delete carried bank originals */
   if (app_confirm("Save changes?", "Save the Pokemon you moved?")) {
     app_commit_pc();              /* writes g_pc + the staged Day-Care sections; clears both flags */
+    pdna_bank_flush_deletions();  /* delete the Bank originals of carried mons AFTER the PC is written (fail-toward-dup) */
   } else {
     gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);   /* revert PC moves */
     g_pc_dirty = false; g_sb1_deferred = false;          /* drop staged Day-Care (disk untouched) */
+    pdna_bank_clear_deletions();                         /* move cancelled -> keep the Bank originals */
   }
 }
 
@@ -2786,6 +2791,7 @@ static void view_save(const char* path) {
 
   BoxSource pcs = pc_box_source();
   pdna_box_clear_carry();                          /* no mon in hand when a save opens */
+  pdna_bank_clear_deletions();                     /* no stale Bank->PC deletions from a prior save */
   rmbl_fire(RCUE_ROOM);                            /* entering the save's home "room" */
   /* The PC box is "home"; Party / Bank / Daycare / etc. all hang off the START menu.
    * (Saves with no PC fall back to the party list as home.) */

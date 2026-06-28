@@ -16,4 +16,10 @@
  * read-only carts can browse + copy but not edit. */
 int pdna_bank_show(void);   /* returns the box exit code (5 = dropped off the bottom -> back to PC) */
 
+/* Bank->PC carry is a deferred MOVE: record the bank source to delete, then apply the
+ * deletions at the save phase (after the PC commit) or drop them on discard. */
+void pdna_bank_defer_delete(int box, int slot);
+void pdna_bank_flush_deletions(void);   /* apply pending deletions (call AFTER the PC is written) */
+void pdna_bank_clear_deletions(void);   /* drop pending deletions (discard / fresh save) */
+
 #endif /* PDNA_BANK_H */

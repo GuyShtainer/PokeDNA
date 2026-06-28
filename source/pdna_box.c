@@ -250,14 +250,19 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     s_holding = false; *done = true; return recs;            /* dropped back on its own cell */
   }
   bool occupied = g_box[cur].species != 0;
-  if (s_orig_bank != src->is_bank) {                         /* cross-scope -> COPY (never lose) */
+  if (s_orig_bank != src->is_bank) {                         /* cross-scope drop */
     if (occupied) { snd_deny(); return recs; }
-    /* Across the PC<->Bank boundary a true move can't be made loss-proof (two save
-     * scopes, two prompts), so this is a COPY — confirm it so the user isn't surprised
-     * by a duplicate (they delete the original to finish a move). */
+    if (!src->is_bank && s_orig_bank && s_orig_slot >= 0) {  /* BANK -> PC: a true MOVE, no prompt */
+      /* place in the PC now (deferred); the bank original is deleted at the save phase,
+       * AFTER the PC is written, so it can't be lost (worst case a duplicate). */
+      if (src->note_add) src->note_add(s_held);
+      memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
+      app_bank_defer_delete(s_orig_box, s_orig_slot);
+      s_holding = false; *done = true; return recs;
+    }
+    /* PC -> Bank (two separate save prompts): keep the safe confirmed COPY. */
     boxoam_suspend();
-    bool ok = app_confirm(src->is_bank ? "Copy to Bank?" : "Copy to PC?",
-                          src->is_bank ? "The PC keeps the original." : "The Bank keeps the original.");
+    bool ok = app_confirm("Copy to Bank?", "The PC keeps the original.");
     boxoam_resume();
     if (!ok) return recs;                                    /* keep holding */
     if (src->note_add) src->note_add(s_held);                /* mon enters this scope -> dex */

@@ -65,6 +65,8 @@ void app_note_pc_box(int b);              /* PC box screen reports its current b
 /* Carry a held box mon onto the PARTY tab: add to a free party slot or swap with a member
  * (which takes the held mon's PC origin). Returns true if consumed (end the carry). */
 bool app_carry_to_party(const uint8_t* held80, int orig_box, int orig_slot, bool can_swap);
+/* Bank->PC carry: record the bank source slot to delete at the save phase (true move). */
+void app_bank_defer_delete(int box, int slot);
 
 /* Commit the loaded save's SaveBlock2 (section 0 — the trainer block) or
  * SaveBlock1 (sections 1..4 — where money lives) after an in-place edit of the
