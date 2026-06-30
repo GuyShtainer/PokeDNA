@@ -771,6 +771,10 @@ static bool g_move_req = false;
 bool app_take_move_request(void) { bool r = g_move_req; g_move_req = false; return r; }
 static bool g_dup_req = false;
 bool app_take_dup_request(void)  { bool r = g_dup_req;  g_dup_req  = false; return r; }
+/* The party popup's "MOVE TO BOX" action (app_mon_menu) sets g_party_tobox_req; the overlay
+ * consumes it to start a party-origin carry. g_party_tobox_allowed gates whether the action is
+ * even offered (only when the popup was opened from the box, so there's a box to carry into). */
+static bool g_party_tobox_req = false, g_party_tobox_allowed = false;
 /* A daycare withdraw-to-PC parks the mon in a free PC slot and asks the box grid to
  * open that box carrying it (the "glove" hand-off). -1 = none. */
 static int g_pickup_box = -1, g_pickup_slot = -1;
@@ -1127,48 +1131,63 @@ void app_party_remove_at(int idx) {
   for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
 }
 
-/* ---- Party overlay: a Gen-4/5-style "move to/from party" popup over the box screen
- * (the box OBJ sprites are suspended by the caller; this draws software over the box BG).
- * Two modes:
- *   PLACE (held != NULL): the user is carrying a box mon -> A on a slot ADDS/SWAPS it into
- *         the party (party_place_held). Returns 1 (placed -> caller ends the carry) or 0.
- *   GRAB  (held == NULL): the user is empty-handed -> A on a party mon picks it UP to move
- *         it to a box: fills grab80 (its 80-byte box form) + *grab_slot (party index) and
- *         returns 2 (caller starts a party-origin carry). 0 = closed with nothing taken.
- * 6 party slots in a 2x3 cluster + a Back row, like the move-mockup. */
+/* ---- Party screen: the single party UI (Gen-4/5-style), replacing the old full-screen
+ * list. The 6 party mons as a 2x3 icon cluster on the right + the selected mon's summary on
+ * the left. Two modes:
+ *   PLACE (held != NULL): carrying a box mon -> A on a slot ADDS/SWAPS it in (party_place_held);
+ *         returns 1 (placed -> caller ends the carry) or 0.
+ *   BROWSE (held == NULL): A on a party mon opens the FULL action menu (View/Edit, Item,
+ *         Legality, Copy, Paste, Duplicate, To Day-Care, Export, Take/Give item, Release) — and
+ *         "Move to box" when allow_move_to_box (opened from the box, so there's a box to carry
+ *         into); choosing that fills grab80 + *grab_slot and returns 2. 0 = closed.
+ * Self-contained (clears + repaints each frame) so the action menu's full-screen sub-views
+ * can't leave artifacts; the caller repaints its own screen on return. */
 int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
-                      bool can_swap, uint8_t grab80[80], int* grab_slot) {
+                      bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
   if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); return 0; }
-  const int px = 80, py = 14, pw = 156, ph = 140;
-  const int gx0 = px + 16, gy0 = py + 30, dx = 46, dy = 42;
+  const int gx0 = 100, gy0 = 26, dx = 46, dy = 42;   /* 2x3 cluster, right side */
   const int BACK = 6;
   int sel = 0;
   for (;;) {
     int n = party_count(g_sb1, g_frlg);
+    if (n < 1) return 0;                              /* shouldn't happen (party never empties) */
+    int addslot = (held && n < 6) ? n : -1;          /* PLACE: cell n is the "+ add" target */
+    if (sel != BACK && sel >= n && sel != addslot) sel = n - 1;   /* clamp after a release */
     PkMon pm[6]; pk_read_party_auto(g_sb1, pm, &g_frlg);
     for (int i = 0; i < n; i++) pk_resolve(&pm[i]);
-    int addslot = (held && n < 6) ? n : -1;          /* PLACE: cell n is the "+ add" target */
 
-    ui_panel(px, py, pw, ph, UI_PANEL, UI_BORDER);
-    ui_text(px + 8, py + 4, UI_TITLE, held ? "TO PARTY" : "PARTY");
-    ui_hline(px + 3, py + 15, pw - 6, UI_BORDER);
+    ui_clear();
+    ui_text(4, 3, UI_TITLE, held ? "MOVE TO PARTY" : "PARTY");
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    /* left: the selected mon's summary */
+    if (sel != BACK && sel < n) {
+      PkMon* p = &pm[sel];
+      ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, 0));
+      char b[24];
+      ui_truncate(b, p->nickname[0] ? p->nickname : pk_species_name(p->species), 10);
+      ui_text(6, 66, UI_TEXT, b);
+      siprintf(b, "Lv%u%s", (unsigned)p->level, p->gender == 0 ? " M" : p->gender == 1 ? " F" : "");
+      ui_text(6, 80, UI_TEXT, b);
+      ui_truncate(b, pk_species_name(p->species), 10);
+      ui_text(6, 94, UI_DIM, b);
+      ui_text(6, 112, UI_DIRCLR, "Item");
+      ui_truncate(b, p->heldItem ? pk_item_name(p->heldItem) : "-", 10);
+      ui_text(6, 124, UI_TEXT, b);
+    } else if (sel == addslot) ui_text(6, 66, UI_OK, "Add here");
+    /* right: the 2x3 cluster */
     for (int i = 0; i < 6; i++) {
       int cx = gx0 + (i % 3) * dx, cy = gy0 + (i / 3) * dy;
-      if (i == sel) ui_panel(cx - 3, cy - 3, 38, 38, UI_SEL, UI_TITLE);   /* selection cell */
-      if (i < n)           ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(pm[i].species, pm[i].form, 0));
-      else if (i == addslot) ui_text(cx + 12, cy + 10, UI_OK,  "+");      /* add-here target */
-      else                   ui_text(cx + 13, cy + 10, UI_DIM, "-");      /* empty slot */
+      if (i == sel) ui_panel(cx - 4, cy - 4, 40, 40, UI_SEL, UI_TITLE);
+      if (i < n)             ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(pm[i].species, pm[i].form, 0));
+      else if (i == addslot) ui_text(cx + 12, cy + 10, UI_OK,  "+");
+      else                   ui_text(cx + 13, cy + 10, UI_DIM, "-");
     }
-    char info[40];
-    if      (sel == BACK)      info[0] = 0;
-    else if (sel < n)          siprintf(info, "%s  Lv%u", pm[sel].nickname[0] ? pm[sel].nickname : pk_species_name(pm[sel].species), (unsigned)pm[sel].level);
-    else if (sel == addslot)   strcpy(info, "Add here");
-    else                       strcpy(info, "Empty");
-    ui_fill_rect(px + 4, py + ph - 30, pw - 8, 10, UI_PANEL);
-    ui_text(px + 8, py + ph - 30, UI_TEXT, info);
     bool bsel = (sel == BACK);
-    if (bsel) ui_panel(px + 4, py + ph - 17, pw - 8, 14, UI_SEL, UI_TITLE);
-    ui_text(px + (pw - 32) / 2, py + ph - 14, bsel ? UI_SELTEXT : UI_TEXT, "Back");
+    if (bsel) ui_panel(gx0 - 4, gy0 + 2 * dy + 2, 3 * dx - 8, 14, UI_SEL, UI_TITLE);
+    ui_text(gx0 + 4, gy0 + 2 * dy + 4, bsel ? UI_SELTEXT : UI_TEXT, "Back");
+
+    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+    ui_text(4, 150, UI_DIM, held ? "A place/swap   U/D/L/R   B cancel" : "A actions   U/D/L/R   B back");
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if      (k & KEY_B)     { snd_back(); return 0; }
@@ -1178,16 +1197,19 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     else if (k & KEY_DOWN)  { snd_move(); if (sel < 3) sel += 3; else if (sel < 6) sel = BACK; }
     else if (k & KEY_A) {
       if (sel == BACK) { snd_back(); return 0; }
-      if (held) {                                    /* PLACE mode: drop/swap into the party */
+      if (held) {                                    /* PLACE: drop/swap into the party */
         if (party_place_held(held, sel, orig_box, orig_slot, orig_bank, can_swap)) return 1;
-        /* else: a deny/msg was shown -> stay in the overlay (loop redraws) */
-      } else if (sel < n) {                          /* GRAB mode: pick this party mon up for a box */
-        if (n <= 1) { snd_deny(); msg_wait("CAN'T", UI_WARN, "The party can't be empty.", "Move another mon in first."); }
-        else {                                       /* copy as 80b box form; party keeps it until the drop */
-          party_to_box(g_sb1 + (g_frlg ? 0x038 : 0x238) + (uint32_t)sel * 100, grab80);
-          if (grab_slot) *grab_slot = sel;
-          snd_ok(); return 2;
+      } else if (sel < n) {                          /* BROWSE: the full action menu on this mon */
+        uint8_t* rec = g_sb1 + (g_frlg ? 0x038 : 0x238) + (uint32_t)sel * 100;
+        g_party_tobox_allowed = allow_move_to_box;
+        app_mon_menu(rec, true, false, app_commit_sb1, g_sb1, -1, sel);
+        g_party_tobox_allowed = false;
+        if (g_party_tobox_req) {                      /* user chose "MOVE TO BOX" */
+          g_party_tobox_req = false;
+          if (party_count(g_sb1, g_frlg) <= 1) { snd_deny(); msg_wait("CAN'T", UI_WARN, "The party can't be empty.", "Move another mon in first."); }
+          else { party_to_box(rec, grab80); if (grab_slot) *grab_slot = sel; return 2; }
         }
+        /* else: edit/release/etc. ran -> loop re-reads the party + clamps sel, then redraws */
       } else snd_deny();                             /* empty cell */
     }
   }
@@ -1219,13 +1241,14 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     return false;
   }
 
-  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CREATE, A_CANCEL };
-  int act[16]; const char* lab[16]; int n = 0;
+  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_TOBOX, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CREATE, A_CANCEL };
+  int act[18]; const char* lab[18]; int n = 0;
   if (occupied) {
     lab[n]="VIEW / EDIT"; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
     lab[n]="ITEM";    act[n++]=A_ITEM;
     lab[n]="LEGALITY"; act[n++]=A_LEGAL;
-    if (!is_party) { lab[n]="MOVE"; act[n++]=A_MOVE; }   /* box: pick up + reposition */
+    if (!is_party) { lab[n]="MOVE"; act[n++]=A_MOVE; }                    /* box: pick up + reposition */
+    else if (g_party_tobox_allowed) { lab[n]="MOVE TO BOX"; act[n++]=A_TOBOX; }  /* party popup: carry out to a box */
     lab[n]="COPY";    act[n++]=A_COPY;
     if (g_clip.occupied) { lab[n]="PASTE"; act[n++]=A_PASTE; }
     lab[n]="DUPLICATE"; act[n++]=A_DUP;
@@ -1270,6 +1293,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
         case A_ITEM:    return app_quick_item (rec, is_party, commit);
         case A_LEGAL:   pdna_legality_show(&m0); return false;
         case A_MOVE:    g_move_req = true; return false;            /* box loop handles the move */
+        case A_TOBOX:   g_party_tobox_req = true; return false;     /* party popup grabs it for a box */
         case A_EXPORT:  pdna_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
         case A_TOGAME:  return app_inject_to_game(rec);           /* bank -> loaded save's PC */
         case A_DAYCARE: return app_to_daycare(rec, is_party, block, box, slot);   /* -> day-care */
@@ -2910,11 +2934,6 @@ static void view_save(const char* path) {
     reload_saveblocks();                         /* editors share g_sb1/g_sb2 + commit all SB1 — keep them == the saved image so a declined edit can't ride along */
     int r = g_have_pc ? pdna_box(&pcs) : party_list();
     if (r == 0) { flush_on_exit(); cfg_save(); return; }  /* B / SAVE tab -> file browser (one prompt for all deferred moves; persist last PC box) */
-    if (r == 3) {                                /* PARTY SEL tab -> party list */
-      rmbl_fire(RCUE_ROOM); party_list();
-      g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
-      for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
-    }
     if (r == 4) {                                /* up past the PC tabs -> Bank (cursor from below) */
       rmbl_fire(RCUE_ROOM);
       app_box_start_set(2);                       /* bank opens at the bottom row (unless carrying) */
@@ -2926,7 +2945,8 @@ static void view_save(const char* path) {
     if (r == 2) {                                /* START -> nav menu */
       int refresh_party = 0;
       switch (nav_menu()) {
-        case NV_PARTY:   rmbl_fire(RCUE_ROOM); party_list(); refresh_party = 1; break;
+        case NV_PARTY:   { rmbl_fire(RCUE_ROOM); uint8_t dmy[80];   /* the same party popup (no box carry from here) */
+                           app_party_overlay(0, 0, 0, false, false, dmy, 0, false); refresh_party = 1; } break;
         case NV_BANK:    rmbl_fire(RCUE_ROOM); if (pdna_bank_show() == 5) app_box_start_set(1); refresh_party = 1; break;   /* bottom-out -> PC tabs; a paste may hit the party */
         case NV_DAYCARE: pdna_daycare(); break;
         case NV_TRAINER: pdna_trainer(g_sb1, g_sb2, &g_vinfo, g_game); break;

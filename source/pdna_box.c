@@ -584,7 +584,7 @@ int pdna_box(BoxSource* src) {
           if (s_tab_focus == 1 && !src->is_bank && !s_orig_party) {  /* PARTY tab: place/swap the held box mon into the party */
             bool can_swap = (!s_orig_bank && s_orig_slot >= 0);
             boxoam_suspend();
-            int rr = app_party_overlay(s_held, s_orig_box, s_orig_slot, s_orig_bank, can_swap, 0, 0);
+            int rr = app_party_overlay(s_held, s_orig_box, s_orig_slot, s_orig_bank, can_swap, 0, 0, false);
             boxoam_resume();
             if (rr == 1) {                            /* placed -> end the carry */
               s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
@@ -677,7 +677,7 @@ int pdna_box(BoxSource* src) {
           else {
             uint8_t grab[80]; int gslot = -1;
             boxoam_suspend();
-            int rr = app_party_overlay(0, 0, 0, false, false, grab, &gslot);   /* empty-handed: grab to move out */
+            int rr = app_party_overlay(0, 0, 0, false, false, grab, &gslot, true);   /* empty-handed: A opens the action menu (Move to box -> grab) */
             boxoam_resume();
             if (rr == 2 && gslot >= 0) {                  /* grabbed a party mon -> carry it (party origin) */
               memcpy(s_held, grab, 80);

@@ -69,7 +69,7 @@ void app_note_pc_box(int b);              /* PC box screen reports its current b
  * GRAB mode (held == NULL): empty-handed -> A on a party mon picks it UP to move to a box:
  * fills grab80 (80-byte box form) + *grab_slot (party index) and returns 2; 0 = closed. */
 int  app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
-                       bool can_swap, uint8_t grab80[80], int* grab_slot);
+                       bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box);
 /* Remove party slot `idx` (gap-free) as a DEFERRED move (party -> box): stage SB1 + mark PC
  * dirty so it folds into the one exit save, and refresh the cached party. Called by the box
  * grid only when a carried party mon is successfully DROPPED into a box (lift-don't-clear). */
