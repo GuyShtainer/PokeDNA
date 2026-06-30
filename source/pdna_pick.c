@@ -592,8 +592,10 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
         /* list state is reflected by the selection-chrome redraw next iteration */
       } else if (!can_edit) snd_deny();
     }
-    else if (k & KEY_UP)    { if (cols == 1) { if (sel > 0) sel--; } else if (sel >= cols) sel -= cols; }
-    else if (k & KEY_DOWN)  { if (cols == 1) { if (sel < g_n - 1) sel++; } else if (sel + cols < g_n) sel += cols; }
+    else if (k & KEY_UP)    { if (cols == 1) sel = (sel > 0) ? sel - 1 : (g_n ? g_n - 1 : 0);          /* top -> wrap to last */
+                              else if (sel >= cols) sel -= cols; else sel = g_n ? g_n - 1 : 0; }
+    else if (k & KEY_DOWN)  { if (cols == 1) sel = (g_n && sel < g_n - 1) ? sel + 1 : 0;               /* bottom -> wrap to first */
+                              else if (sel + cols < g_n) sel += cols; else sel = 0; }
     else if (k & KEY_LEFT)  { if (cols == 1) sel = clampi(sel - vrows, 0, g_n ? g_n - 1 : 0); else if (sel > 0) sel--; }
     else if (k & KEY_RIGHT) { if (cols == 1) sel = clampi(sel + vrows, 0, g_n ? g_n - 1 : 0); else if (sel < g_n - 1) sel++; }
     else if (k & KEY_L) { view = (view + DV_N - 1) % DV_N; dex_build(filter, sort, search, status, view); sel = 0; toprow = 0; relist = true; }
