@@ -547,6 +547,17 @@ bool app_anim_enabled(int kind) { return kind >= 0 && kind < ANIM_COUNT && ((g_a
 /* Verify checksums, back up the original, and do the verified whole-file write —
  * the shared tail of every commit (the changed section bytes are already in g_save). */
 static bool app_save_finalize(void) {
+  /* Fold any pending deferred PC-box edits into the image FIRST, so EVERY whole-file write
+   * is internally consistent. A cross-buffer move (party<->box, PC<->Day-Care) stages its
+   * SaveBlock1 half into g_save (app_stage_sb1) while its PC half lives only in g_pc; without
+   * this fold an intervening SB1/SB2/dex commit would persist the SB1 half WITHOUT the PC half
+   * -> a half-saved move (a lost or duplicated Pokemon). g_pc is the current intended PC state
+   * whenever it's dirty, so any write must carry it. (g_pc_dirty is cleared only on success,
+   * below — a failed write leaves it set so flush_on_exit still prompts.) */
+  if (g_pc_dirty)
+    for (int id = G3_SID_PKMN_STORAGE_START; id <= G3_SID_PKMN_STORAGE_END; id++)
+      gen3_write_full_section(g_save, g_vinfo.slot, id,
+                              g_pc + (uint32_t)(id - G3_SID_PKMN_STORAGE_START) * G3_SECTOR_DATA_SIZE);
   int fail = -1;
   if (!gen3_verify_full_checksums(g_save, g_vinfo.slot, &fail)) {
     log_line("edit: checksum FAIL at section %d", fail);
@@ -587,6 +598,7 @@ static bool app_save_finalize(void) {
   grow_in(UI_OK);                                  /* brief success flourish */
   msg_wait("SAVED", UI_OK, "Edit written + verified.", "Original backed up first.");
   g_sb1_deferred = false;                           /* a full write flushes any staged daycare edits */
+  g_pc_dirty = false;                               /* and the folded-in PC edits are now on disk */
   return true;
 }
 
@@ -1065,60 +1077,118 @@ static void party_to_box(const uint8_t* party100, uint8_t out80[80]) {
   EditMon e; gen3_edit_load(party100, true, &e); em_set_party_flag(&e, false); gen3_edit_commit(&e, out80);
 }
 
-/* Carry a box mon onto the PARTY tab: pick a slot to ADD it (free slot) or SWAP with a
- * party mon (which then takes the held mon's PC origin slot). held80 = the carried record;
- * (orig_box,orig_slot) its PC origin; can_swap = it has a clean PC origin to receive a
- * swapped-out party mon. Records convert box<->party. Party + PC edits are staged and
- * committed together at exit (one save). Returns true if consumed (end the carry). */
-bool app_carry_to_party(const uint8_t* held80, int orig_box, int orig_slot, bool orig_bank, bool can_swap) {
-  if (!app_can_edit()) { snd_deny(); return false; }
-  if (orig_bank) can_swap = false;   /* a bank origin can't receive a swapped-out party mon */
+/* Place a HELD box mon into the party: ADD it to a free slot (target == party count) or
+ * SWAP with party[target] (the displaced party mon takes the held mon's PC origin). The one
+ * proven add/swap core, shared by the party overlay below. (orig_box,orig_slot) = the held
+ * mon's origin; orig_bank = it came from the Bank (origin is a bank slot, NOT a g_pc slot —
+ * ADD defer-deletes the bank source, SWAP is disallowed). Party + PC edits are staged and
+ * committed together at the one exit save. Returns true iff the mon was placed. */
+static bool party_place_held(const uint8_t* held80, int target, int orig_box, int orig_slot,
+                             bool orig_bank, bool can_swap) {
+  int n = party_count(g_sb1, g_frlg);
+  if (target < 0 || target > n) { snd_deny(); return false; }   /* past the add slot */
+  if (orig_bank) can_swap = false;                              /* a bank origin can't receive a swap */
+  if (target == n) {                                            /* ADD to a free party slot */
+    if (n >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Swap with a member instead.", 0); return false; }
+    uint8_t p100[100]; box_to_party(held80, p100);
+    if (!party_append(g_sb1, g_frlg, p100)) { snd_deny(); return false; }
+    /* Remove the origin (it left for the party). A BANK origin is a bank slot, NOT a g_pc
+     * slot — clearing g_pc there would zero an untouched PC mon (or write OOB for the top
+     * bank boxes); defer-delete the bank source instead (flushed AFTER the party commits). */
+    if (orig_slot >= 0) {
+      if (orig_bank) app_bank_defer_delete(orig_box, orig_slot, held80);
+      else           memset(pk_box_slot(g_pc, orig_box, orig_slot), 0, 80);
+    }
+    app_mark_pc_dirty(); app_register_dex_deferred(p100, true); app_stage_sb1();
+    snd_ok(); return true;
+  }
+  /* SWAP with party[target]: the party mon takes the held mon's PC origin */
+  if (!can_swap) { snd_deny(); msg_wait("CAN'T SWAP", UI_WARN, "This held mon has no PC", "slot to receive the swap."); return false; }
+  uint8_t* pslot = g_sb1 + (g_frlg ? 0x038 : 0x238) + (uint32_t)target * 100;
+  uint8_t y80[80];  party_to_box(pslot, y80);               /* party mon -> 80b box */
+  uint8_t x100[100]; box_to_party(held80, x100);            /* held box mon -> 100b party */
+  memcpy(pk_box_slot(g_pc, orig_box, orig_slot), y80, 80);  /* party mon -> the PC origin */
+  memcpy(pslot, x100, 100);                                 /* held mon -> the party slot */
+  app_mark_pc_dirty(); app_register_dex_deferred(x100, true); app_stage_sb1();
+  snd_ok(); return true;
+}
+
+/* Remove party slot `idx` (gap-free shift) as a DEFERRED move: stage SB1 + mark PC dirty so
+ * it folds into the single exit save, and refresh the cached party. Used when a party mon is
+ * carried OUT to a box (party -> box). The caller does this only on a successful DROP
+ * (lift-don't-clear: until then the party keeps the mon, so a cancelled carry loses nothing). */
+void app_party_remove_at(int idx) {
+  int n = party_count(g_sb1, g_frlg);
+  if (idx < 0 || idx >= n) return;
+  party_release(g_sb1, g_frlg, idx);
+  app_mark_pc_dirty();        /* a party->box move also changed g_pc; both staged, one save */
+  app_stage_sb1();            /* party lives in SaveBlock1 */
+  g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
+  for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
+}
+
+/* ---- Party overlay: a Gen-4/5-style "move to/from party" popup over the box screen
+ * (the box OBJ sprites are suspended by the caller; this draws software over the box BG).
+ * Two modes:
+ *   PLACE (held != NULL): the user is carrying a box mon -> A on a slot ADDS/SWAPS it into
+ *         the party (party_place_held). Returns 1 (placed -> caller ends the carry) or 0.
+ *   GRAB  (held == NULL): the user is empty-handed -> A on a party mon picks it UP to move
+ *         it to a box: fills grab80 (its 80-byte box form) + *grab_slot (party index) and
+ *         returns 2 (caller starts a party-origin carry). 0 = closed with nothing taken.
+ * 6 party slots in a 2x3 cluster + a Back row, like the move-mockup. */
+int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
+                      bool can_swap, uint8_t grab80[80], int* grab_slot) {
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); return 0; }
+  const int px = 80, py = 14, pw = 156, ph = 140;
+  const int gx0 = px + 16, gy0 = py + 30, dx = 46, dy = 42;
+  const int BACK = 6;
   int sel = 0;
   for (;;) {
     int n = party_count(g_sb1, g_frlg);
     PkMon pm[6]; pk_read_party_auto(g_sb1, pm, &g_frlg);
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, "TO PARTY");
-    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < n; i++) pk_resolve(&pm[i]);
+    int addslot = (held && n < 6) ? n : -1;          /* PLACE: cell n is the "+ add" target */
+
+    ui_panel(px, py, pw, ph, UI_PANEL, UI_BORDER);
+    ui_text(px + 8, py + 4, UI_TITLE, held ? "TO PARTY" : "PARTY");
+    ui_hline(px + 3, py + 15, pw - 6, UI_BORDER);
     for (int i = 0; i < 6; i++) {
-      int y = 20 + i * 18; bool s = (i == sel);
-      if (s) ui_panel(2, y - 1, 236, 16, UI_SEL, UI_TITLE);
-      char row[44];
-      if (i < n)       siprintf(row, "%d  %-10s Lv%u", i + 1, pm[i].nickname[0] ? pm[i].nickname : pk_species_name(pm[i].species), (unsigned)pm[i].level);
-      else if (i == n) strcpy(row, "+  Add to party");
-      else             strcpy(row, "-");
-      ui_text(8, y, s ? UI_SELTEXT : (i <= n ? UI_TEXT : UI_DIM), row);
+      int cx = gx0 + (i % 3) * dx, cy = gy0 + (i / 3) * dy;
+      if (i == sel) ui_panel(cx - 3, cy - 3, 38, 38, UI_SEL, UI_TITLE);   /* selection cell */
+      if (i < n)           ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(pm[i].species, pm[i].form, 0));
+      else if (i == addslot) ui_text(cx + 12, cy + 10, UI_OK,  "+");      /* add-here target */
+      else                   ui_text(cx + 13, cy + 10, UI_DIM, "-");      /* empty slot */
     }
-    ui_text(4, 152, UI_DIM, "A place/swap  U/D  B cancel");
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return false;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 5;
-    else if (k & KEY_DOWN) sel = (sel + 1) % 6;
+    char info[40];
+    if      (sel == BACK)      info[0] = 0;
+    else if (sel < n)          siprintf(info, "%s  Lv%u", pm[sel].nickname[0] ? pm[sel].nickname : pk_species_name(pm[sel].species), (unsigned)pm[sel].level);
+    else if (sel == addslot)   strcpy(info, "Add here");
+    else                       strcpy(info, "Empty");
+    ui_fill_rect(px + 4, py + ph - 30, pw - 8, 10, UI_PANEL);
+    ui_text(px + 8, py + ph - 30, UI_TEXT, info);
+    bool bsel = (sel == BACK);
+    if (bsel) ui_panel(px + 4, py + ph - 17, pw - 8, 14, UI_SEL, UI_TITLE);
+    ui_text(px + (pw - 32) / 2, py + ph - 14, bsel ? UI_SELTEXT : UI_TEXT, "Back");
+
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
+    if      (k & KEY_B)     { snd_back(); return 0; }
+    else if (k & KEY_LEFT)  { if (sel < 6 && sel % 3 > 0) { snd_move(); sel--; } }
+    else if (k & KEY_RIGHT) { if (sel < 6 && sel % 3 < 2) { snd_move(); sel++; } }
+    else if (k & KEY_UP)    { snd_move(); if (sel == BACK) sel = 3; else if (sel >= 3) sel -= 3; }
+    else if (k & KEY_DOWN)  { snd_move(); if (sel < 3) sel += 3; else if (sel < 6) sel = BACK; }
     else if (k & KEY_A) {
-      if (sel > n) { snd_deny(); continue; }                    /* past the add slot */
-      if (sel == n) {                                           /* ADD to a free party slot */
-        if (n >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Swap with a member instead.", 0); continue; }
-        uint8_t p100[100]; box_to_party(held80, p100);
-        if (!party_append(g_sb1, g_frlg, p100)) { snd_deny(); continue; }
-        /* Remove the origin (it left for the party). A BANK origin is a bank slot, NOT a g_pc
-         * slot — clearing g_pc there would zero an untouched PC mon (or write OOB for the top
-         * bank boxes); defer-delete the bank source instead (flushed AFTER the party commits). */
-        if (orig_slot >= 0) {
-          if (orig_bank) app_bank_defer_delete(orig_box, orig_slot, held80);
-          else           memset(pk_box_slot(g_pc, orig_box, orig_slot), 0, 80);
+      if (sel == BACK) { snd_back(); return 0; }
+      if (held) {                                    /* PLACE mode: drop/swap into the party */
+        if (party_place_held(held, sel, orig_box, orig_slot, orig_bank, can_swap)) return 1;
+        /* else: a deny/msg was shown -> stay in the overlay (loop redraws) */
+      } else if (sel < n) {                          /* GRAB mode: pick this party mon up for a box */
+        if (n <= 1) { snd_deny(); msg_wait("CAN'T", UI_WARN, "The party can't be empty.", "Move another mon in first."); }
+        else {                                       /* copy as 80b box form; party keeps it until the drop */
+          party_to_box(g_sb1 + (g_frlg ? 0x038 : 0x238) + (uint32_t)sel * 100, grab80);
+          if (grab_slot) *grab_slot = sel;
+          snd_ok(); return 2;
         }
-        app_mark_pc_dirty(); app_register_dex_deferred(p100, true); app_stage_sb1();
-        snd_ok(); return true;
-      }
-      /* SWAP with party[sel]: the party mon takes the held mon's PC origin */
-      if (!can_swap) { snd_deny(); msg_wait("CAN'T SWAP", UI_WARN, "This held mon has no PC", "slot to receive the swap."); continue; }
-      uint8_t* pslot = g_sb1 + (g_frlg ? 0x038 : 0x238) + (uint32_t)sel * 100;
-      uint8_t y80[80];  party_to_box(pslot, y80);               /* party mon -> 80b box */
-      uint8_t x100[100]; box_to_party(held80, x100);            /* held box mon -> 100b party */
-      memcpy(pk_box_slot(g_pc, orig_box, orig_slot), y80, 80);  /* party mon -> the PC origin */
-      memcpy(pslot, x100, 100);                                 /* held mon -> the party slot */
-      app_mark_pc_dirty(); app_register_dex_deferred(x100, true); app_stage_sb1();
-      snd_ok(); return true;
+      } else snd_deny();                             /* empty cell */
     }
   }
 }

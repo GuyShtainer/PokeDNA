@@ -62,11 +62,18 @@ bool app_xfer_take(uint8_t* rec80);
 void app_box_start_set(int s);
 int  app_box_start_take(void);
 void app_note_pc_box(int b);              /* PC box screen reports its current box so the app remembers it */
-/* Carry a held box mon onto the PARTY tab: add to a free party slot or swap with a member
- * (which takes the held mon's PC origin). `orig_bank` = the held mon came from the Bank (its
- * origin is a bank slot, NOT a g_pc slot — so ADD defer-deletes the bank source instead of
- * clearing g_pc, and SWAP is disallowed). Returns true if consumed (end the carry). */
-bool app_carry_to_party(const uint8_t* held80, int orig_box, int orig_slot, bool orig_bank, bool can_swap);
+/* Party overlay popped from the box screen's PARTY tab (Gen-4/5-style "move to/from party").
+ * PLACE mode (held != NULL): carrying a box mon -> A on a slot ADDS/SWAPS it into the party
+ * (orig_box/orig_slot/orig_bank = the held mon's origin; can_swap = it has a clean PC origin
+ * to receive a swapped-out member). Returns 1 (placed -> caller ends the carry) or 0.
+ * GRAB mode (held == NULL): empty-handed -> A on a party mon picks it UP to move to a box:
+ * fills grab80 (80-byte box form) + *grab_slot (party index) and returns 2; 0 = closed. */
+int  app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
+                       bool can_swap, uint8_t grab80[80], int* grab_slot);
+/* Remove party slot `idx` (gap-free) as a DEFERRED move (party -> box): stage SB1 + mark PC
+ * dirty so it folds into the one exit save, and refresh the cached party. Called by the box
+ * grid only when a carried party mon is successfully DROPPED into a box (lift-don't-clear). */
+void app_party_remove_at(int idx);
 /* Bank->PC / Bank->party carry: record the bank source slot AND the carried 80-byte record to
  * delete at the save phase (true move; matched by record so a re-arrange can't delete the wrong mon). */
 void app_bank_defer_delete(int box, int slot, const uint8_t* rec80);

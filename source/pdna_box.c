@@ -64,7 +64,10 @@ static uint8_t s_held[80];
 static int  s_orig_box = -1, s_orig_slot = -1;
 static bool s_orig_bank = false;
 static bool s_held_dup = false;   /* the held mon is a fresh, discardable duplicate */
-void pdna_box_clear_carry(void) { s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; }
+static bool s_orig_party = false; /* the held mon was carried OUT of the party (origin = a party slot,
+                                   * s_orig_slot = party index): on a within-PC drop, clear_origin()
+                                   * removes it from the party (deferred); cancel returns it (untouched). */
+void pdna_box_clear_carry(void) { s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false; }
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
@@ -232,12 +235,17 @@ static void start_carry(BoxSource* src, const uint8_t* recs, int box, int slot) 
   memcpy(s_held, recs + (uint32_t)slot * 80, 80);            /* lift-don't-clear: copy, origin stays */
   s_holding = true; s_orig_box = box; s_orig_slot = slot; s_orig_bank = src->is_bank;
   s_held_dup = false;                                         /* a real mon (origin keeps it) */
+  s_orig_party = false;                                       /* a box/bank origin, not the party */
 }
 
 /* Clear the origin cell after a within-scope drop; handles bank paging and returns the
  * CURRENT box reloaded into recs. Call AFTER placing the held mon at the dest (dest-first
  * ordering -> a mid-op power loss duplicates, never loses). */
 static uint8_t* clear_origin(BoxSource* src, int box) {
+  if (s_orig_party) {                                         /* carried OUT of the party -> remove it there */
+    app_party_remove_at(s_orig_slot);                         /* deferred (staged SB1); fail-toward-dup */
+    s_orig_party = false; s_orig_slot = -1; return src->records(box);
+  }
   if (s_orig_slot < 0 || s_orig_bank != src->is_bank) { s_orig_slot = -1; return src->records(box); }
   uint8_t* o = src->records(s_orig_box);                     /* bank: flushes the current (dest) box first */
   memset(o + (uint32_t)s_orig_slot * 80, 0, 80);
@@ -370,7 +378,7 @@ static void draw_box_banner(BoxSource* src, int box, bool on_title) {
 static void render_full(BoxSource* src, int box, int cur, bool on_title, bool moving, bool clear) {
   if (clear) ui_clear();
   draw_tab(0, PANEL_W + 1, "PKMN DATA", s_tab_focus < 0 || s_tab_focus == 0);
-  draw_tab(PANEL_W + 1, 92, src->is_bank ? "(BANK)" : "PARTY SEL", s_tab_focus == 1);
+  draw_tab(PANEL_W + 1, 92, src->is_bank ? "(BANK)" : "PARTY", s_tab_focus == 1);
   draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "SAVE", s_tab_focus == 2);
   draw_left(on_title ? 0 : &g_box[cur]);
 
@@ -556,17 +564,21 @@ int pdna_box(BoxSource* src) {
         else if (k & KEY_RIGHT) { s_tab_focus = (s_tab_focus + 1) % 3; need_full = true; }
         else if (k & (KEY_B | KEY_DOWN)) { s_tab_focus = -1; need_full = true; }   /* back to the grid, still holding */
         else if (k & KEY_UP) {                       /* up past the PC tabs -> Bank, still holding */
-          if (!src->is_bank) { if (homeless) snd_deny(); else { s_tab_focus = -1; boxoam_exit(); return 4; } }
+          /* a party-origin carry stays in the PC (its undo = drop it / B returns it to the party) */
+          if (!src->is_bank) { if (homeless || s_orig_party) snd_deny(); else { s_tab_focus = -1; boxoam_exit(); return 4; } }
         }
         else if (k & KEY_A) {
-          if (s_tab_focus == 1 && !src->is_bank) {   /* PARTY tab: place/swap the held mon into the party */
+          if (s_tab_focus == 1 && !src->is_bank && !s_orig_party) {  /* PARTY tab: place/swap the held box mon into the party */
             bool can_swap = (!s_orig_bank && s_orig_slot >= 0);
-            if (app_carry_to_party(s_held, s_orig_box, s_orig_slot, s_orig_bank, can_swap)) {
-              s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false;
+            boxoam_suspend();
+            int rr = app_party_overlay(s_held, s_orig_box, s_orig_slot, s_orig_bank, can_swap, 0, 0);
+            boxoam_resume();
+            if (rr == 1) {                            /* placed -> end the carry */
+              s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
               s_tab_focus = -1; recs = src->records(box); pk_decode_box_raw(recs, g_box);
             }
-            s_oam_reload = true; need_full = true;   /* redraw over the party picker */
-          } else snd_deny();                         /* can't use PKMN DATA / SAVE while carrying */
+            s_oam_reload = true; need_full = true;    /* redraw over the popup */
+          } else snd_deny();                          /* party-origin mon can't go back; PKMN DATA / SAVE locked while carrying */
         }
         continue;
       }
@@ -575,10 +587,10 @@ int pdna_box(BoxSource* src) {
           int fs = -1; for (int s = 0; s < COLS * ROWS; s++) if (!g_box[s].species) { fs = s; break; }
           if (fs < 0) { snd_deny(); }                /* box full: keep holding */
           else { memcpy(recs + (uint32_t)fs * 80, s_held, 80); src->mark_dirty();
-                 snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false;
+                 snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
                  pk_decode_box_raw(recs, g_box); s_oam_reload = true; need_full = true; }
-        } else {                                     /* origin keeps it / a dup is discarded */
-          snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false;
+        } else {                                     /* origin keeps it (party / box / dup) -> nothing to place */
+          snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
           s_oam_reload = true; need_full = true;
         }
       }
@@ -647,8 +659,24 @@ int pdna_box(BoxSource* src) {
       else if (k & KEY_RIGHT) { s_tab_focus = (s_tab_focus + 1) % 3; need_full = true; }
       else if (k & KEY_A) {
         if (s_tab_focus == 0) { s_tab_focus = -1; on_title = false; need_full = true; }      /* PKMN DATA -> grid */
-        else if (s_tab_focus == 1) { if (src->is_bank) snd_deny();                            /* PARTY SEL */
-                                     else { s_tab_focus = -1; boxoam_exit(); return 3; } }
+        else if (s_tab_focus == 1) {                                                          /* PARTY -> overlay popup */
+          if (src->is_bank) snd_deny();
+          else {
+            uint8_t grab[80]; int gslot = -1;
+            boxoam_suspend();
+            int rr = app_party_overlay(0, 0, 0, false, false, grab, &gslot);   /* empty-handed: grab to move out */
+            boxoam_resume();
+            if (rr == 2 && gslot >= 0) {                  /* grabbed a party mon -> carry it (party origin) */
+              memcpy(s_held, grab, 80);
+              s_holding = true; s_orig_party = true; s_orig_slot = gslot;
+              s_orig_box = -1; s_orig_bank = false; s_held_dup = false;
+              s_tab_focus = -1; s_oam_reload = true;
+              render_full(src, box, cur, false, false, true);                  /* repaint box over the popup */
+              play_grab_anim(src, box, cur); carry_move(src, box, cur, cur);
+              draw_footer(src->is_bank, false, true);
+            } else { s_tab_focus = -1; s_oam_reload = true; need_full = true; } /* closed -> back to the grid */
+          }
+        }
         else { s_tab_focus = -1; boxoam_exit(); return 0; }                                   /* SAVE -> exit (save prompt) */
       }
       continue;
@@ -719,7 +747,7 @@ int pdna_box(BoxSource* src) {
           draw_footer(src->is_bank, false, true);                        /* move-mode footer */
         } else if (app_take_dup_request()) {                            /* picked DUPLICATE -> a fresh COPY in the glove */
           memcpy(s_held, recs + (uint32_t)cur * 80, 80);                /* copy floats in-hand; no origin (cancel discards it) */
-          s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_bank = src->is_bank; s_held_dup = true;
+          s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_bank = src->is_bank; s_held_dup = true; s_orig_party = false;
           render_full(src, box, cur, false, false, false);
           play_grab_anim(src, box, cur);
           carry_move(src, box, cur, cur);
