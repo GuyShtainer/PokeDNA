@@ -200,15 +200,28 @@ __attribute__((weak)) const uint16_t* wallpaper_tilemap(int wp) { (void)wp; retu
 static void draw_wallpaper(int wp, int x, int y, int w, int h) {
   int nt; const uint16_t* tiles = wallpaper_tile_data(wp, &nt);
   const uint16_t* map = wallpaper_tilemap(wp);
-  if (!tiles || !map) { draw_grass(x, y, w, h); return; }   /* procedural fallback: no ROM read, no guard */
-  rumble_io_suspend();   /* HW: a rumble GPIO toggle mid-blit corrupts these ROM reads on the EZ-Flash -> garbled wallpaper */
+  if (!tiles || !map) { draw_grass(x, y, w, h); return; }   /* procedural fallback: no ROM read */
+  /* HW-ROBUST render. The wallpaper was the ONLY box graphic that read ROM per-pixel with
+   * the CPU, interleaved with VRAM writes and jumping randomly between the map[] and tiles[]
+   * arrays — and uniquely among the box graphics it rendered a garbled "jumble of tiles" on
+   * real EZ-Flash hardware (always; clean in emulators; NOT rumble-related). The box icons
+   * (DMA tiles out of ROM) and the front sprite (blit from a decompressed RAM buffer) never
+   * showed it. That random CPU-from-ROM access pattern thrashes the GamePak prefetch on the
+   * flashcart's PSRAM. Fix: stage the tilemap + each tile into RAM with SEQUENTIAL reads
+   * first (the same "copy to RAM, then draw" shape the working paths use), then blit from
+   * RAM — so no per-pixel ROM read is interleaved with a VRAM write. */
+  static uint16_t s_wp_map[20 * 18];   /* tilemap copy   (720 B, IWRAM .bss) */
+  static uint16_t s_wp_tile[64];       /* one 8x8 tile   (128 B)            */
+  rumble_io_suspend();
+  for (int m = 0; m < 20 * 18; m++) s_wp_map[m] = map[m];           /* tilemap ROM -> RAM (sequential) */
   for (int ty = 0; ty < 18; ty++)
     for (int tx = 0; tx < 20; tx++) {
-      const uint16_t* t = tiles + (uint32_t)map[ty * 20 + tx] * 64;
+      const uint16_t* t = tiles + (uint32_t)s_wp_map[ty * 20 + tx] * 64;
+      for (int k = 0; k < 64; k++) s_wp_tile[k] = t[k];            /* one tile ROM -> RAM (64 sequential reads) */
       int bx = x + tx * 8, by = y + ty * 8;
       for (int j = 0; j < 8 && by + j < y + h; j++)
         for (int i = 0; i < 8 && bx + i < x + w; i++)
-          m3_plot(bx + i, by + j, t[j * 8 + i] & 0x7FFF);
+          m3_plot(bx + i, by + j, s_wp_tile[j * 8 + i] & 0x7FFF);  /* VRAM write, source is RAM */
     }
   rumble_io_resume();
 }
