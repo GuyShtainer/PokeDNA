@@ -1001,16 +1001,39 @@ static bool app_give_item(uint8_t* rec, bool is_party, AppCommitFn commit) {
 static void dc_clear_slot_aux(uint32_t base, uint32_t stride, int i);
 static void dc_clear_egg(uint32_t base);
 
+/* Day-Care SaveBlock1 layout for the loaded game. RS store the 2 box-mons contiguously
+ * (stride 80); Emerald AND FireRed/LeafGreen interleave each box-mon with its mail+steps
+ * (stride 140). FR/LG has a real 2-mon breeding Day-Care too (Four Island, SB1 0x2F80 —
+ * verified vs pret/pokefirered), so it is NOT excluded. Single source of truth used by the
+ * viewer and every deposit path so they can't drift. */
+static void dc_layout(uint32_t* base, uint32_t* stride) {
+  *base   = (g_game == PK_EMERALD) ? 0x3030 : (g_game == PK_FRLG) ? 0x2F80 : 0x2F9C;
+  *stride = (g_game == PK_RS) ? 80 : 140;
+}
+
+/* First FREE physical Day-Care slot (0 or 1), or -1 if full. A slot is OCCUPIED iff it
+ * holds a real species (1..411, not a bad egg) — matching the game (CountPokemonInDaycare
+ * tests species != 0) and the viewer (dc_rescan). The old check treated any slot that
+ * pk_decode_mon() didn't flag as the zeroed-empty sentinel as occupied, so a dirty-but-
+ * empty slot (species 0 but a stray non-zero checksum byte, common on real saves) wrongly
+ * read as "full" and blocked deposits. */
+static int dc_first_free(uint32_t base, uint32_t stride) {
+  for (int i = 0; i < 2; i++) {
+    PkMon m;
+    bool used = pk_decode_mon(g_sb1 + base + (uint32_t)i * stride, false, &m)
+                && m.species >= 1 && m.species <= 411 && !m.isBadEgg;
+    if (!used) return i;
+  }
+  return -1;
+}
+
 /* "To Day-Care" from a mon's action menu: MOVE this mon into a free daycare slot
  * (deposit its 80-byte box form, then remove it from the source). Omega-only; RS/Emerald
  * only (FireRed/LeafGreen has no Day-Care here). The deposit + the source removal are
  * committed together (party source: both in SB1; PC source: PC then SB1). */
 static bool app_to_daycare(uint8_t* rec, bool is_party, uint8_t* block, int box, int slot) {
-  if (g_game == PK_FRLG) { snd_deny(); msg_wait("NO DAY-CARE", UI_DIM, "Not available in this game.", 0); return false; }
-  uint32_t base = (g_game == PK_EMERALD) ? 0x3030 : 0x2F9C;     /* RS otherwise */
-  uint32_t stride = (g_game == PK_RS) ? 80 : 140;
-  int fi = -1;
-  for (int i = 0; i < 2; i++) { PkMon m; if (!pk_decode_mon(g_sb1 + base + (uint32_t)i * stride, false, &m)) { fi = i; break; } }
+  uint32_t base, stride; dc_layout(&base, &stride);            /* RS / E / FR-LG all have a Day-Care */
+  int fi = dc_first_free(base, stride);
   if (fi < 0) { snd_deny(); msg_wait("DAY-CARE FULL", UI_WARN, "Take a Pokemon out first.", 0); return false; }
   if (is_party && party_count(block, g_frlg) <= 1) { snd_deny(); msg_wait("CAN'T", UI_WARN, "The party can't be empty.", 0); return false; }
   if (!app_confirm("Send to Day-Care?", "Moves this Pokemon there.")) return false;
@@ -1136,7 +1159,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     lab[n]="COPY";    act[n++]=A_COPY;
     if (g_clip.occupied) { lab[n]="PASTE"; act[n++]=A_PASTE; }
     lab[n]="DUPLICATE"; act[n++]=A_DUP;
-    if (!is_bank && g_game != PK_FRLG) { lab[n]="TO DAY-CARE"; act[n++]=A_DAYCARE; }  /* deposit into the daycare */
+    if (!is_bank) { lab[n]="TO DAY-CARE"; act[n++]=A_DAYCARE; }  /* deposit into the daycare (all games incl. FR/LG) */
     if (is_bank) { lab[n]="TO GAME"; act[n++]=A_TOGAME; }   /* bank: inject into the loaded save */
     else         { lab[n]="EXPORT .pk"; act[n++]=A_EXPORT; }/* PC/party: write a .pk3 to the bank dir */
     if (m0.heldItem && !g_item_held) { lab[n]="TAKE ITEM"; act[n++]=A_TAKEITEM; }
@@ -2032,8 +2055,7 @@ static int dc_menu(bool can_take, bool can_put) {
 static bool dc_deposit(uint32_t base, uint32_t stride) {
   if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); return false; }
   if (!g_clip.occupied) { snd_deny(); msg_wait("NOTHING COPIED", UI_DIM, "Copy a Pokemon in the PC or", "Party first, then Put in here."); return false; }
-  int fi = -1;
-  for (int i = 0; i < 2; i++) { PkMon m; if (!pk_decode_mon(g_sb1 + base + (uint32_t)i * stride, false, &m)) { fi = i; break; } }
+  int fi = dc_first_free(base, stride);
   if (fi < 0) { snd_deny(); msg_wait("DAY-CARE FULL", UI_WARN, "Take a Pokemon out first.", 0); return false; }
   uint8_t out[100];
   if (!clip_to_record(&g_clip, false, out)) return false;
@@ -2091,11 +2113,10 @@ static bool dc_withdraw(uint32_t base, uint32_t stride, uint8_t* rec, int physi)
 /* Day-Care viewer: a cute yard with the boarding Pokemon as bobbing icons (A opens a
  * menu: view/edit, take out, put in), plus the Day-Care man's get-along verdict. */
 static void pdna_daycare(void) {
-  uint32_t base = (g_game == PK_EMERALD) ? 0x3030 : (g_game == PK_FRLG) ? 0x2F80 : 0x2F9C;
   /* RS store the two BoxPokemon contiguously (stride 80); E/FRLG interleave each with
    * its mail+steps (stride 140). The egg-personality word is at base+280 (u32 on
-   * E/FRLG, u16 on RS). */
-  uint32_t stride = (g_game == PK_RS) ? 80 : 140;
+   * E/FRLG, u16 on RS). dc_layout() is the single source shared with the deposit paths. */
+  uint32_t base, stride; dc_layout(&base, &stride);
   uint8_t* recs[2]; PkMon dc[2]; int phys[2], dcx[2], dcy[2];
   bool off; int to_check;
   static const int EGG_CHANCE[4] = { 0, 20, 50, 70 };           /* INCOMPATIBLE/LOW/MED/HIGH */
