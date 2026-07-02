@@ -1162,7 +1162,8 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     /* left: the selected mon's summary */
     if (sel != BACK && sel < n) {
       PkMon* p = &pm[sel];
-      ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, 0));
+      if (p->isEgg && !p->isBadEgg) ui_egg(24, 24, MON_ICON_W, MON_ICON_H);
+      else ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, 0));
       char b[24];
       ui_truncate(b, p->nickname[0] ? p->nickname : pk_species_name(p->species), 10);
       ui_text(6, 66, UI_TEXT, b);
@@ -1178,7 +1179,8 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     for (int i = 0; i < 6; i++) {
       int cx = gx0 + (i % 3) * dx, cy = gy0 + (i / 3) * dy;
       if (i == sel) ui_panel(cx - 4, cy - 4, 40, 40, UI_SEL, UI_TITLE);
-      if (i < n)             ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(pm[i].species, pm[i].form, 0));
+      if (i < n && pm[i].isEgg && !pm[i].isBadEgg) ui_egg(cx, cy, MON_ICON_W, MON_ICON_H);
+      else if (i < n)        ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(pm[i].species, pm[i].form, 0));
       else if (i == addslot) ui_text(cx + 12, cy + 10, UI_OK,  "+");
       else                   ui_text(cx + 13, cy + 10, UI_DIM, "-");
     }
@@ -1231,6 +1233,17 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
   return app_commit_with_dex(rec, false, commit, block);   /* gated write + auto-register dex (PC only) */
 }
 
+/* Hatch an Egg: reveal the Pokemon inside (clear the egg flag, base friendship, level 5) and
+ * commit. The species/IVs/moves are already in the egg; the revealed mon registers in the dex. */
+static bool app_hatch(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block) {
+  if (!app_confirm("Hatch this Egg?", "Reveals the Pokemon inside.")) return false;
+  EditMon e; gen3_edit_load(rec, is_party, &e);
+  em_hatch(&e);
+  uint8_t out[100]; gen3_edit_commit(&e, out);
+  memcpy(rec, out, is_party ? 100 : 80);
+  return app_commit_with_dex(rec, is_party, commit, block);   /* verified write + auto-register dex */
+}
+
 bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot) {
   PkMon m0;
   bool occupied = pk_decode_mon(rec, is_party, &m0);
@@ -1241,12 +1254,13 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     return false;
   }
 
-  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_TOBOX, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CREATE, A_CANCEL };
+  enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_TOBOX, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CREATE, A_HATCH, A_CANCEL };
   int act[18]; const char* lab[18]; int n = 0;
   if (occupied) {
     lab[n]="VIEW / EDIT"; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
     lab[n]="ITEM";    act[n++]=A_ITEM;
     lab[n]="LEGALITY"; act[n++]=A_LEGAL;
+    if (m0.isEgg && !m0.isBadEgg) { lab[n]="HATCH"; act[n++]=A_HATCH; }   /* eggs only: reveal + level 5 */
     if (!is_party) { lab[n]="MOVE"; act[n++]=A_MOVE; }                    /* box: pick up + reposition */
     else if (g_party_tobox_allowed) { lab[n]="MOVE TO BOX"; act[n++]=A_TOBOX; }  /* party popup: carry out to a box */
     lab[n]="COPY";    act[n++]=A_COPY;
@@ -1292,6 +1306,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
                                         : app_box_browse(block, box, slot, commit);   /* box: scroll mons */
         case A_ITEM:    return app_quick_item (rec, is_party, commit);
         case A_LEGAL:   pdna_legality_show(&m0); return false;
+        case A_HATCH:   return app_hatch(rec, is_party, commit, block);   /* egg -> revealed Pokemon */
         case A_MOVE:    g_move_req = true; return false;            /* box loop handles the move */
         case A_TOBOX:   g_party_tobox_req = true; return false;     /* party popup grabs it for a box */
         case A_EXPORT:  pdna_pk_export(rec, &m0); return false;   /* writes a .pk3, not the save */
@@ -1364,7 +1379,8 @@ static int party_list(void) {
     for (int i = 0; i < g_nparty; i++) {
       int ry, iy; party_icon_y(i, &ry, &iy);
       PkMon* p = &g_party[i];
-      ui_sprite(3, iy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, (uint8_t)frame));
+      if (p->isEgg && !p->isBadEgg) ui_egg(3, iy, MON_ICON_W, MON_ICON_H);
+      else ui_sprite(3, iy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, (uint8_t)frame));
       char nm[16];
       ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);
       siprintf(line, "%-11s Lv%u", nm, (unsigned)p->level);

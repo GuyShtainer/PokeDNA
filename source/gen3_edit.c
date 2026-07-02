@@ -175,6 +175,23 @@ void em_set_pp(EditMon* e, int i, uint8_t pp) { e->sub[1][8 + i] = pp; }
 
 void em_set_friendship(EditMon* e, uint8_t f) { e->sub[0][9] = f; }
 
+/* The egg flag lives in TWO places: the record flags byte (raw[0x13] bit2) and the Misc
+ * substruct's IV/egg word (bit 30 == Misc byte 7 bit 6). Set/clear both together. */
+void em_set_egg(EditMon* e, bool egg) {
+  if (egg) { e->raw[0x13] |= 0x04; e->sub[3][7] |= 0x40; }
+  else     { e->raw[0x13] &= (uint8_t)~0x04; e->sub[3][7] &= (uint8_t)~0x40; }
+}
+
+/* Hatch an egg: clear the egg flag, replace the stored hatch-cycle counter (which lives in
+ * the friendship byte) with a real base-ish friendship, and set level 5 — Gen-3 eggs hatch at
+ * level 5, and em_set_level recomputes exp + the party plaintext stats. The species/IVs/moves/
+ * nature inside the egg are already present, so the revealed Pokemon is complete. */
+void em_hatch(EditMon* e) {
+  em_set_egg(e, false);
+  em_set_friendship(e, 70);
+  em_set_level(e, 5);
+}
+
 void em_set_ability(EditMon* e, uint8_t n) {
   uint32_t iv = rd32(e->sub[3] + 4);
   iv = (iv & ~(1u << 31)) | (((uint32_t)(n & 1)) << 31);
