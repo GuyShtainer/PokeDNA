@@ -81,7 +81,7 @@ def parse_off_tables(path):
             raise SystemExit("could not find %s in %s" % (name, path))
         return [int(x, 0) for x in re.findall(r"0x[0-9a-fA-F]+", m.group(1))]
 
-    return grab("off_tbl"), grab("uform_tbl")
+    return grab("off_tbl"), grab("uform_tbl"), grab("dform_tbl")
 
 
 def kmeans(weighted, K, iters=10):
@@ -189,10 +189,11 @@ def pack_tiles(frame0, pal15):
 
 
 def main():
-    off_tbl, uform_tbl = parse_off_tables(IN_C)
+    off_tbl, uform_tbl, dform_tbl = parse_off_tables(IN_C)
     blob = open(IN_BIN, "rb").read()
 
-    offsets = sorted({o for o in off_tbl if o != NULL} | {o for o in uform_tbl if o != NULL})
+    offsets = sorted({o for o in off_tbl if o != NULL} | {o for o in uform_tbl if o != NULL}
+                     | {o for o in dform_tbl if o != NULL})
     slot_of = {o: i for i, o in enumerate(offsets)}
 
     # frame-0 pixel histograms per distinct icon
@@ -295,6 +296,14 @@ def main():
                 slot = slot_of[o]; uform.append((bank_of[slot] << 12) | (slot & 0x0FFF))
         c.write("static const uint16_t uform_slot[28] = {%s};\n\n" %
                 ",".join("0x%04x" % v for v in uform))
+        dform = []
+        for o in dform_tbl:
+            if o == NULL:
+                dform.append(0xFFFF)
+            else:
+                slot = slot_of[o]; dform.append((bank_of[slot] << 12) | (slot & 0x0FFF))
+        c.write("static const uint16_t dform_slot[4] = {%s};\n\n" %
+                ",".join("0x%04x" % v for v in dform))
         c.write("#define TILE_RUN (MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES)\n\n")
         c.write("static int unpack_f(uint16_t e, uint8_t frame, const uint8_t** tiles, int* bank) {\n")
         c.write("  if (e == 0xFFFF) return 0;\n")
@@ -310,6 +319,11 @@ def main():
         c.write("  if (species == 201 && form < 28) {\n")
         c.write("    uint16_t e = uform_slot[form];\n")
         c.write("    if (e == 0xFFFF) e = uform_slot[0];\n")
+        c.write("    return unpack_f(e, frame, tiles, bank);\n")
+        c.write("  }\n")
+        c.write("  if (species == 386 && form < 4) {\n")
+        c.write("    uint16_t e = dform_slot[form];\n")
+        c.write("    if (e == 0xFFFF) e = dform_slot[0];\n")
         c.write("    return unpack_f(e, frame, tiles, bank);\n")
         c.write("  }\n")
         c.write("  if (species > %d) return 0;\n" % max_species)

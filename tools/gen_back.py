@@ -79,10 +79,13 @@ def lz77(raw, tmp_in, tmp_out):
 def main():
     spmap = species_map()
     UNOWN_ID = spmap.get("UNOWN")
+    DEOXYS_ID = spmap.get("DEOXYS")
     off_n = [0xFFFFFFFF] * (MAX_INTERNAL + 1)
     off_s = [0xFFFFFFFF] * (MAX_INTERNAL + 1)
     uform_n = [0xFFFFFFFF] * 28          # Unown letters A..? (forms 0..27)
     uform_s = [0xFFFFFFFF] * 28
+    dform_n = [0xFFFFFFFF] * 4           # Deoxys formes 0..3 (Normal/Attack/Defense/Speed)
+    dform_s = [0xFFFFFFFF] * 4
     normal = bytearray()
     shiny = bytearray()
     td = tempfile.mkdtemp()
@@ -112,6 +115,16 @@ def main():
             uform_n[form], uform_s[form] = add(fn)
             if form == 0:                                    # letter A = the default Unown sprite
                 off_n[UNOWN_ID], off_s[UNOWN_ID] = uform_n[0], uform_s[0]
+            count += 1
+            continue
+        if intl == DEOXYS_ID and DEOXYS_ID is not None:      # Deoxys forme sprite (Normal/Attack/Defense/Speed)
+            mf = re.search(r"_(\d+)$", stem)
+            form = int(mf.group(1)) if mf else 0             # DEOXYS.png=0 Normal, _1=Attack, _2=Defense, _3=Speed
+            if not (0 <= form < 4) or dform_n[form] != 0xFFFFFFFF:
+                continue
+            dform_n[form], dform_s[form] = add(fn)
+            if form == 0:
+                off_n[DEOXYS_ID], off_s[DEOXYS_ID] = dform_n[0], dform_s[0]
             count += 1
             continue
         if intl is None or intl > MAX_INTERNAL or off_n[intl] != 0xFFFFFFFF:
@@ -157,10 +170,20 @@ def main():
         c.write("}\n\n")
         c.write("static const uint32_t uform_n[28] = {%s};\n" % ",".join("0x%08x" % v for v in uform_n))
         c.write("static const uint32_t uform_s[28] = {%s};\n" % ",".join("0x%08x" % v for v in uform_s))
+        c.write("static const uint32_t dform_n[4] = {%s};\n" % ",".join("0x%08x" % v for v in dform_n))
+        c.write("static const uint32_t dform_s[4] = {%s};\n" % ",".join("0x%08x" % v for v in dform_s))
         c.write("const uint16_t* mon_back_for_form(uint16_t species, bool shiny, uint8_t form) {\n")
         c.write("  if (species == 201 && form < 28) {            /* Unown letter A..? */\n")
         c.write("    uint32_t o = (shiny ? uform_s : uform_n)[form];\n")
         c.write("    if (o == 0xFFFFFFFFu) o = (shiny ? uform_s : uform_n)[0];\n")
+        c.write("    if (o == 0xFFFFFFFFu) return 0;\n")
+        c.write("    const void* src = (shiny ? mon_back_shiny_blob : mon_back_blob) + o;\n")
+        c.write("    LZ77UnCompWram(src, s_decomp);\n")
+        c.write("    return s_decomp;\n")
+        c.write("  }\n")
+        c.write("  if (species == 386 && form < 4) {             /* Deoxys forme (0 Normal/1 Attack/2 Defense/3 Speed) */\n")
+        c.write("    uint32_t o = (shiny ? dform_s : dform_n)[form];\n")
+        c.write("    if (o == 0xFFFFFFFFu) o = (shiny ? dform_s : dform_n)[0];\n")
         c.write("    if (o == 0xFFFFFFFFu) return 0;\n")
         c.write("    const void* src = (shiny ? mon_back_shiny_blob : mon_back_blob) + o;\n")
         c.write("    LZ77UnCompWram(src, s_decomp);\n")

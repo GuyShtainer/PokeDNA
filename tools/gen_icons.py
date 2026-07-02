@@ -77,8 +77,10 @@ def conv(path):                              # -> frame0 || frame1 (each 32x32 R
 def main():
     spmap = species_map()
     UNOWN_ID = spmap.get("UNOWN")
+    DEOXYS_ID = spmap.get("DEOXYS")
     off = [0xFFFFFFFF] * (MAX_INTERNAL + 1)
     uform = [0xFFFFFFFF] * 28               # Unown letters A..? (forms 0..27)
+    dform = [0xFFFFFFFF] * 4                # Deoxys formes 0..3 (Normal/Attack/Defense/Speed)
     blob = bytearray()
     slot = 0
     for fn in sorted(os.listdir(ICONS)):
@@ -97,6 +99,16 @@ def main():
             blob += conv(os.path.join(ICONS, fn)); slot += 1
             if form == 0:
                 off[UNOWN_ID] = uform[0]                      # letter A = default Unown icon
+            continue
+        if intl == DEOXYS_ID and DEOXYS_ID is not None:      # Deoxys forme icon (Normal/Attack/Defense/Speed)
+            mf = re.search(r"_(\d+)$", stem)
+            form = int(mf.group(1)) if mf else 0
+            if not (0 <= form < 4) or dform[form] != 0xFFFFFFFF:
+                continue
+            dform[form] = len(blob)
+            blob += conv(os.path.join(ICONS, fn)); slot += 1
+            if form == 0:
+                off[DEOXYS_ID] = dform[0]                     # Normal forme = default Deoxys icon
             continue
         if intl is None or intl > MAX_INTERNAL or off[intl] != 0xFFFFFFFF:
             continue
@@ -144,10 +156,17 @@ def main():
         c.write("  return (const uint16_t*)(mon_icon_blob + o + (frame & 1) * FRAME_BYTES);\n}\n\n")
         c.write("const uint16_t* mon_icon_for(uint16_t species) { return mon_icon_for_frame(species, 0); }\n\n")
         c.write("static const uint32_t uform_tbl[28] = {%s};\n" % ",".join("0x%08x" % v for v in uform))
+        c.write("static const uint32_t dform_tbl[4] = {%s};\n" % ",".join("0x%08x" % v for v in dform))
         c.write("const uint16_t* mon_icon_for_form_frame(uint16_t species, uint8_t form, uint8_t frame) {\n")
         c.write("  if (species == 201 && form < 28) {\n")
         c.write("    uint32_t o = uform_tbl[form];\n")
         c.write("    if (o == 0xFFFFFFFFu) o = uform_tbl[0];\n")
+        c.write("    if (o == 0xFFFFFFFFu) return 0;\n")
+        c.write("    return (const uint16_t*)(mon_icon_blob + o + (frame & 1) * FRAME_BYTES);\n")
+        c.write("  }\n")
+        c.write("  if (species == 386 && form < 4) {\n")
+        c.write("    uint32_t o = dform_tbl[form];\n")
+        c.write("    if (o == 0xFFFFFFFFu) o = dform_tbl[0];\n")
         c.write("    if (o == 0xFFFFFFFFu) return 0;\n")
         c.write("    return (const uint16_t*)(mon_icon_blob + o + (frame & 1) * FRAME_BYTES);\n")
         c.write("  }\n")

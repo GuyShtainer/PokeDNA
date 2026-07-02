@@ -63,6 +63,10 @@ uint8_t pk_nature(uint32_t personality);
 bool    pk_is_shiny(uint32_t personality, uint16_t tid, uint16_t sid);
 uint8_t pk_gender_from(uint32_t personality, uint8_t gender_ratio); /* 0xFF genderless, 0xFE F, 0x00 M */
 uint8_t pk_unown_form(uint32_t personality);                       /* 0..27 = A..Z ! ? */
+/* Deoxys forme is version-based, not stored per-mon. The app sets the display forme for the
+ * loaded save (0 Normal / 1 Attack / 2 Defense / 3 Speed); pk_decode_mon tags Deoxys with it. */
+void pk_set_deoxys_form(int f);
+int  pk_get_deoxys_form(void);
 
 /* Gen-3 stat formulas (for box mons + cross-checking party plaintext).
  * nature_mod: +1 boosted (×1.1), -1 hindered (×0.9), 0 neutral. */

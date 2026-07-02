@@ -2923,6 +2923,12 @@ static void view_save(const char* path) {
     memcpy(g_sb2, g_save + (uint32_t)g_vinfo.slot * G3_SLOT_BYTES + (uint32_t)s0 * G3_SECTOR_SIZE,
            G3_SECTOR_DATA_SIZE);
   g_game = g_frlg ? PK_FRLG : (g_vinfo.version_guess == G3_VER_RS ? PK_RS : PK_EMERALD);
+  /* Deoxys forme follows the game version (RS Normal / Emerald Speed / FR-LG Attack). FR vs LG
+   * can't be told apart from the save, so FR/LG defaults to Attack (FireRed); the summary lets
+   * the user cycle to any forme. Re-decode the party so a Deoxys picks up its forme sprite. */
+  pk_set_deoxys_form(g_game == PK_RS ? 0 : g_game == PK_EMERALD ? 3 : 1);
+  g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
+  for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
 
   BoxSource pcs = pc_box_source();
   pdna_box_clear_carry();                          /* no mon in hand when a save opens */

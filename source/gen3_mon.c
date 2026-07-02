@@ -30,6 +30,15 @@ static void decode_name(char* out, const uint8_t* src, int maxlen) {
 
 uint8_t pk_nature(uint32_t personality) { return (uint8_t)(personality % 25); }
 
+/* Deoxys forme is NOT stored per-mon in Gen 3 — it's decided by the game version
+ * (RS Normal / Emerald Speed / FireRed Attack / LeafGreen Defense). The app sets the
+ * display forme for the loaded save here; pk_decode_mon then tags every Deoxys with it
+ * so all display paths (box/party/summary/daycare) show the right forme. 0..3 =
+ * Normal/Attack/Defense/Speed. Defaults to 0 (Normal) — the host tests never set it. */
+static uint8_t s_deoxys_form = 0;
+void pk_set_deoxys_form(int f) { s_deoxys_form = (f >= 0 && f < 4) ? (uint8_t)f : 0; }
+int  pk_get_deoxys_form(void) { return s_deoxys_form; }
+
 /* Unown letter index 0..27 (A..Z, !, ?) — 2 bits from each PID byte, mod 28. */
 uint8_t pk_unown_form(uint32_t personality) {
   uint32_t v = ((personality & 0x03000000u) >> 18) | ((personality & 0x00030000u) >> 12)
@@ -109,7 +118,8 @@ bool pk_decode_mon(const uint8_t* mon, bool is_party, PkMon* out) {
   if (!checksum_ok) out->isBadEgg = true;
 
   out->species     = sp;
-  out->form        = (sp == 201) ? pk_unown_form(pers) : 0;   /* Unown letter (A..?) */
+  out->form        = (sp == 201) ? pk_unown_form(pers)        /* Unown letter (A..?) */
+                   : (sp == 386) ? s_deoxys_form : 0;         /* Deoxys forme (set from the game version) */
   out->heldItem    = rd16(g + 0x02);
   out->experience  = rd32(g + 0x04);
   out->ppBonuses   = g[0x08];
