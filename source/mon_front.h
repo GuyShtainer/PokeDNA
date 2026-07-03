@@ -22,4 +22,7 @@ const uint16_t* mon_front_for(uint16_t species, bool shiny);
  * `form` (0..27 = A..?); for every other species `form` is ignored. */
 const uint16_t* mon_front_for_form(uint16_t species, bool shiny, uint8_t form);
 
+/* The real Gen-3 Egg front sprite (64x64), or NULL if it wasn't generated. */
+const uint16_t* mon_front_egg(void);
+
 #endif /* MON_FRONT_INCLUDED */

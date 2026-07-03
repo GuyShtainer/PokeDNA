@@ -132,6 +132,14 @@ def main():
         off_n[intl], off_s[intl] = add(fn)
         count += 1
 
+    # The real Gen-3 EGG front sprite (not a species) from the decomp graphics. Ripped art like
+    # everything else (blob is git-ignored, regenerated locally). index-0/tRNS -> transparent
+    # via convert(RGBA), so conv() handles it directly.
+    egg_off = 0xFFFFFFFF
+    EGG_FRONT = os.path.join(ROOT, "daycare map", "pokeemerald", "graphics", "pokemon", "egg", "front.png")
+    if os.path.exists(EGG_FRONT):
+        egg_off = len(normal); normal.extend(lz77(conv(EGG_FRONT), ti, to)); count += 1
+
     os.makedirs(os.path.dirname(OUT_BIN), exist_ok=True)
     with open(OUT_BIN, "wb") as f:
         f.write(normal)
@@ -191,6 +199,10 @@ def main():
         c.write("  }\n")
         c.write("  return mon_front_for(species, shiny);\n")
         c.write("}\n")
+        c.write("const uint16_t* mon_front_egg(void) {\n")   # the real Gen-3 Egg front sprite
+        c.write("  if (0x%08xu == 0xFFFFFFFFu) return 0;\n" % egg_off)
+        c.write("  LZ77UnCompWram(mon_front_blob + 0x%08xu, s_decomp);\n" % egg_off)
+        c.write("  return s_decomp;\n}\n")
 
     print("front sprites: %d species, normal %.2f MiB + shiny %.2f MiB = %.2f MiB ROM (LZ77 %dx%d)"
           % (count, len(normal) / 1048576.0, len(shiny) / 1048576.0,

@@ -1162,7 +1162,7 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     /* left: the selected mon's summary */
     if (sel != BACK && sel < n) {
       PkMon* p = &pm[sel];
-      if (p->isEgg && !p->isBadEgg) ui_egg(24, 24, MON_ICON_W, MON_ICON_H);
+      if (p->isEgg && !p->isBadEgg) ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_egg());
       else ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, 0));
       char b[24];
       ui_truncate(b, p->nickname[0] ? p->nickname : pk_species_name(p->species), 10);
@@ -1179,7 +1179,7 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     for (int i = 0; i < 6; i++) {
       int cx = gx0 + (i % 3) * dx, cy = gy0 + (i / 3) * dy;
       if (i == sel) ui_panel(cx - 4, cy - 4, 40, 40, UI_SEL, UI_TITLE);
-      if (i < n && pm[i].isEgg && !pm[i].isBadEgg) ui_egg(cx, cy, MON_ICON_W, MON_ICON_H);
+      if (i < n && pm[i].isEgg && !pm[i].isBadEgg) ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_egg());
       else if (i < n)        ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(pm[i].species, pm[i].form, 0));
       else if (i == addslot) ui_text(cx + 12, cy + 10, UI_OK,  "+");
       else                   ui_text(cx + 13, cy + 10, UI_DIM, "-");
@@ -1379,7 +1379,7 @@ static int party_list(void) {
     for (int i = 0; i < g_nparty; i++) {
       int ry, iy; party_icon_y(i, &ry, &iy);
       PkMon* p = &g_party[i];
-      if (p->isEgg && !p->isBadEgg) ui_egg(3, iy, MON_ICON_W, MON_ICON_H);
+      if (p->isEgg && !p->isBadEgg) ui_sprite(3, iy, MON_ICON_W, MON_ICON_H, mon_icon_egg_frame((uint8_t)frame));
       else ui_sprite(3, iy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, (uint8_t)frame));
       char nm[16];
       ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);

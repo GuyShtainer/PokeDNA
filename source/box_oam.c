@@ -59,6 +59,7 @@ static uint8_t  s_iconbank[30];         /* palette bank per grid slot (0=empty) 
 static uint8_t  s_occupied[30];         /* 1 if slot has an icon                  */
 static uint16_t s_species[30];          /* species per slot (for the frame swap)  */
 static uint8_t  s_form[30];             /* form per slot                          */
+static uint8_t  s_isegg[30];            /* 1 = this slot shows the Egg icon (no bob)  */
 static uint8_t  s_icon_blend[30];       /* 1 = draw this icon semi-transparent (ITEM mode, non-holders) */
 static int      s_frame = 0;            /* current bob frame (0/1) in OBJ VRAM     */
 static int      s_bob = 0;              /* current unison Y-bob offset (0/1)      */
@@ -233,15 +234,22 @@ void boxoam_load_box(const PkMon box[30]) {
   s_frame = 0;                                       /* a fresh box always shows frame 0 */
   for (int s = 0; s < 30; s++) {
     const uint8_t* tiles; int bank;
-    if (box[s].species &&
+    bool egg = box[s].isEgg && !box[s].isBadEgg;
+    if (egg && mon_icon_oam_egg(&tiles, &bank)) {          /* an Egg reads as the real Egg icon */
+      upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles,
+                   MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
+      s_occupied[s] = 1; s_isegg[s] = 1; s_iconbank[s] = (uint8_t)bank;
+      s_species[s] = box[s].species; s_form[s] = box[s].form;
+      place_grid_slot(s);
+    } else if (box[s].species &&
         mon_icon_oam_for_form_frame(box[s].species, box[s].form, 0, &tiles, &bank)) {
       upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles,
                    MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
-      s_occupied[s] = 1; s_iconbank[s] = (uint8_t)bank;
+      s_occupied[s] = 1; s_isegg[s] = 0; s_iconbank[s] = (uint8_t)bank;
       s_species[s] = box[s].species; s_form[s] = box[s].form;
       place_grid_slot(s);
     } else {
-      s_occupied[s] = 0;
+      s_occupied[s] = 0; s_isegg[s] = 0;
       hide(OE_ICON0 + s);
     }
   }
@@ -255,7 +263,7 @@ void boxoam_set_frame(int frame) {
   if (frame == s_frame) return;
   s_frame = frame;
   for (int s = 0; s < 30; s++) {
-    if (!s_occupied[s]) continue;
+    if (!s_occupied[s] || s_isegg[s]) continue;           /* eggs keep their single Egg frame */
     const uint8_t* tiles; int bank;
     if (mon_icon_oam_for_form_frame(s_species[s], s_form[s], (uint8_t)frame, &tiles, &bank))
       upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles,

@@ -184,35 +184,3 @@ void ui_truncate(char* out, const char* in, int max_cols) {
   }
   out[o] = 0;
 }
-
-/* A generic Pokemon Egg — a cream, egg-shaped shell (pointier top) with a teal spot band,
- * drawn to fill a wxh box at (x,y). Used wherever an egg should READ as an egg instead of
- * the hidden species' art. Pure Mode-3 primitives (no ROM art). */
-void ui_egg(int x, int y, int w, int h) {
-  int cx = x + w / 2, cy = y + h / 2;
-  int rx = (w * 38) / 100, ry = (h * 46) / 100;
-  const u16 shell = RGB15(31, 30, 26), shade = RGB15(27, 25, 19),
-            rim = RGB15(15, 12, 6), spot = RGB15(10, 23, 15);
-  for (int j = -ry; j <= ry; j++) {
-    int rry = (j < 0) ? (ry * 10) / 9 : ry;              /* pointier top, rounder bottom */
-    for (int i = -rx; i <= rx; i++) {
-      long e = (long)i * i * rry * rry + (long)j * j * rx * rx;
-      long R = (long)rx * rx * rry * rry;
-      if (e > R) continue;
-      u16 c = (e > (R * 84) / 100) ? rim : (((i - j) > rx / 2) ? shade : shell);
-      m3_plot(cx + i, cy + j, c);
-    }
-  }
-  static const int SP[4][2] = { { -4, -3 }, { 4, 1 }, { -2, 5 }, { 3, -6 } };
-  int sr = (w >= 48) ? 4 : 2;                             /* spot radius scales with sprite size */
-  for (int s = 0; s < 4; s++) {
-    int px = cx + SP[s][0] * rx / 10, py = cy + SP[s][1] * ry / 10;
-    for (int j = -sr; j <= sr; j++)
-      for (int i = -sr; i <= sr; i++)
-        if (i * i + j * j <= sr * sr) {
-          long e = (long)(px + i - cx) * (px + i - cx) * ry * ry
-                 + (long)(py + j - cy) * (py + j - cy) * rx * rx;
-          if (e <= (long)rx * rx * ry * ry * 78 / 100) m3_plot(px + i, py + j, spot);
-        }
-  }
-}

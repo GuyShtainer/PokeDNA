@@ -110,10 +110,13 @@ static void draw_left(const PkMon* p) {
   ui_panel(0, 11, 92, 139, RGB15(4, 7, 16), UI_BORDER);    /* dark-blue info column */
   m3_frame(11, 13, 80, 78, UI_BORDER);                     /* sprite sub-frame */
   for (int yy = 14; yy <= 77; yy++) ui_fill_rect(12, yy, 68, 1, portrait_bg(yy));   /* blue "screen" */
-  if (p->isEgg && !p->isBadEgg) {
-    ui_egg(14, 14, MON_FRONT_W, MON_FRONT_H);              /* an Egg reads as an Egg (its species shows below) */
+  rumble_io_suspend();   /* portrait fetch LZ77-decompresses from ROM */
+  if (p->isEgg && !p->isBadEgg) {                          /* an Egg reads as an Egg (its species shows below) */
+    const uint16_t* eg = mon_front_egg();
+    rumble_io_resume();
+    if (eg) ui_sprite(14, 14, MON_FRONT_W, MON_FRONT_H, eg);
+    else    ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_egg());
   } else {
-    rumble_io_suspend();   /* portrait fetch LZ77-decompresses from ROM */
     const uint16_t* spr = g_back ? mon_back_for_form(p->species, p->isShiny, p->form) : 0;
     if (!spr) spr = mon_front_for_form(p->species, p->isShiny, p->form);   /* fall back to front */
     rumble_io_resume();
