@@ -159,10 +159,17 @@ static void draw_left(const PkMon* p) {
   if (!p || p->species == 0) { ui_text(16, 92, UI_DIM, "(empty)"); return; }
 
   rumble_io_suspend();   /* the fetch LZ77-decompresses the portrait from ROM */
-  const uint16_t* spr = mon_front_for_form(p->species, p->isShiny, p->form);
-  rumble_io_resume();
-  if (spr) ui_sprite(6, 16, MON_FRONT_W, MON_FRONT_H, spr);
-  else     ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
+  if (p->isEgg && !p->isBadEgg) {                        /* an Egg reads as the Egg sprite */
+    const uint16_t* eg = mon_front_egg();
+    rumble_io_resume();
+    if (eg) ui_sprite(6, 16, MON_FRONT_W, MON_FRONT_H, eg);
+    else    ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_egg());
+  } else {
+    const uint16_t* spr = mon_front_for_form(p->species, p->isShiny, p->form);
+    rumble_io_resume();
+    if (spr) ui_sprite(6, 16, MON_FRONT_W, MON_FRONT_H, spr);
+    else     ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
+  }
 
   char buf[40];
   siprintf(buf, "No.%u", (unsigned)pk_national_no(p->species));

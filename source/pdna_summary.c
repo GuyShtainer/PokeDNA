@@ -370,7 +370,13 @@ static bool confirm(void) {
 /* the portrait sprite draw_left would pick (front/back, else the icon fallback) */
 static const uint16_t* portrait_sprite(const PkMon* p, bool* is_icon) {
   rumble_io_suspend();   /* portrait fetch LZ77-decompresses from ROM */
-  const uint16_t* spr = g_back ? mon_back_for_form(p->species, p->isShiny, p->form) : 0;
+  const uint16_t* spr;
+  if (p->isEgg && !p->isBadEgg) {                          /* an Egg reads as the Egg sprite */
+    spr = mon_front_egg(); rumble_io_resume();
+    if (spr) { *is_icon = false; return spr; }
+    *is_icon = true; return mon_icon_egg();
+  }
+  spr = g_back ? mon_back_for_form(p->species, p->isShiny, p->form) : 0;
   if (!spr) spr = mon_front_for_form(p->species, p->isShiny, p->form);
   rumble_io_resume();
   if (spr) { *is_icon = false; return spr; }
@@ -475,12 +481,12 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
                           : can_edit ? "A edit  U/D mon  <>/LR card  SEL flip  B"
                                      : "U/D mon  <>/LR card  SEL flip  B back");
     lastkey = 64 | (64 << 8) | (64 << 16) | (64 << 24);   /* render_card drew the rest pose (64,64,0,0) */
-    if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY)) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
+    if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY) && !cur.isEgg) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
                               portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, wx, sy, dx, dy, &lastkey); }
 
     u16 k, fresh;
     do { s_vsync();
-         if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY)) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
+         if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY) && !cur.isEgg) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
                                    portrait_params(fam, ++anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, wx, sy, dx, dy, &lastkey); }
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
