@@ -40,7 +40,6 @@ static void type_badge(int x, int y, uint8_t t) {
 }
 
 static const int   DISP[6]   = { PK_HP, PK_ATK, PK_DEF, PK_SPA, PK_SPD, PK_SPE };
-static const char* DLAB[6]   = { "HP", "Attack", "Defense", "Sp.Atk", "Sp.Def", "Speed" };
 static const char* DSHORT[6] = { "HP", "Atk", "Def", "SpA", "SpD", "Spd" };
 
 #define C_HDR  UI_TITLE
@@ -184,7 +183,7 @@ static void card_info(const PkMon* p) {
 
   uint16_t ab = pk_species_ability(p->species, p->abilityNum);
   ui_text(x, y, C_KEY, "Ability"); reg(F_ABILITY, x + 48, y, 88);
-  ui_text(x + 48, y, C_VAL, pk_ability_name(ab)); y += 9;
+  { char ab_[16]; ui_truncate(ab_, pk_ability_name(ab), 11); ui_text(x + 48, y, C_VAL, ab_); } y += 9;
   y = text_wrap(x + 4, y, 17, UI_DIM, pk_ability_desc(ab)); y += 1;
 
   ui_text(x, y, C_KEY, "Nature"); reg(F_NATURE, x + 48, y, 60);
@@ -205,7 +204,7 @@ static void card_skills(const PkMon* p) {
   ui_text(x, y, C_KEY, "Level"); reg(F_LEVEL, x + 60, y, 40);
   siprintf(b, "%u", (unsigned)p->level); ui_text(x + 60, y, C_VAL, b); y += 9;
   ui_text(x, y, C_KEY, "Item"); reg(F_ITEM, x + 60, y, 76);
-  ui_text(x + 60, y, C_VAL, p->heldItem ? pk_item_name(p->heldItem) : "none"); y += 9;
+  { char it_[16]; ui_truncate(it_, p->heldItem ? pk_item_name(p->heldItem) : "none", 10); ui_text(x + 60, y, C_VAL, it_); } y += 9;
   ui_text(x, y, C_KEY, "Friend"); reg(F_FRIEND, x + 60, y, 40);
   siprintf(b, "%u", (unsigned)p->friendship); ui_text(x + 60, y, C_VAL, b); y += 10;
   /* Each stat row edits that stat's EV — the only persistent, lossless stat lever

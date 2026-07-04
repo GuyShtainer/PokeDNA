@@ -78,8 +78,8 @@ static bool      g_show_hidden = false;
  * One bit per ANIM_* place. Box / Party / Dex / Daycare default ON; the summary
  * portrait wiggle defaults OFF (kept calm unless the user opts in). Defined up here so
  * cfg_save/cfg_load (above app_anim_enabled) can persist it. */
-static unsigned  g_anim_mask = (1u << ANIM_BOX) | (1u << ANIM_PARTY) |
-                               (1u << ANIM_DEX) | (1u << ANIM_DAYCARE);
+static unsigned  g_anim_mask = (1u << ANIM_BOX) | (1u << ANIM_PARTY) | (1u << ANIM_DEX) |
+                               (1u << ANIM_DAYCARE) | (1u << ANIM_SUMMARY);   /* summary wiggle ON by default (Emerald feel) */
 static int       g_pc_last_box = 0;        /* PC box to open on (NOT the save's in-game box); app remembers it */
 
 /* Big buffers live in EWRAM (.bss), never on the IWRAM stack. */
@@ -174,11 +174,6 @@ static void path_up(void) {
   int i = l - 1;
   while (i > 0 && g_cwd[i] != '/') i--;
   if (i == 0) g_cwd[1] = 0; else g_cwd[i] = 0;
-}
-
-static const char* base_name(const char* p) {
-  const char* s = strrchr(p, '/');
-  return s ? s + 1 : p;
 }
 
 /* case-insensitive ASCII name compare (locale-free) */
@@ -1522,7 +1517,7 @@ static bool data_editor(void) {
         if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
         ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
       }
-      ui_text(4, 152, UI_DIM, "A edit  SEL pocket  L/R tab  B done");
+      ui_text(4, 152, UI_DIM, "A edit  SEL pocket  L/R tab");
     } else {                                     /* ---- flags (named list) ---- */
       const NamedFlag* nf; int nc = pk_named_flags(g_game, &nf);
       int total = nc + 1;                         /* + trailing raw-browser row */
@@ -1546,7 +1541,7 @@ static bool data_editor(void) {
           ui_text(8, y, s ? UI_SELTEXT : (on ? UI_OK : UI_DIM), rt);
         }
       }
-      ui_text(4, 152, UI_DIM, "A toggle  SEL jump cat  L/R tab  B done");
+      ui_text(4, 152, UI_DIM, "A toggle  SEL jump  L/R tab");
     }
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B | KEY_SELECT);
@@ -2272,9 +2267,9 @@ static void pdna_daycare(void) {
         DcCompat c = pk_daycare_compat(dc[0].species, dc[0].otId, dc[1].species, dc[1].otId);
         ui_text(6, 127, UI_TITLE, pk_daycare_compat_msg(c));
         if (!pk_daycare_can_breed(dc[0].species, dc[0].gender, dc[1].species, dc[1].gender))
-          ui_text(6, 138, UI_DIM, "(no Egg: not a compatible pair)");
+          ui_text(6, 138, UI_DIM, "(no Egg: incompatible pair)");
         else if (off) ui_text(6, 138, UI_OK, "An EGG is ready to collect!");
-        else { char l[44]; siprintf(l, "Next Egg check ~%d steps (%d%%)", to_check, EGG_CHANCE[c]);
+        else { char l[44]; siprintf(l, "Egg check ~%d steps (%d%%)", to_check, EGG_CHANCE[c]);
                ui_text(6, 138, UI_DIM, l); }
       } else if (n == 1) {
         char l[40]; ui_truncate(l, dc[0].nickname[0] ? dc[0].nickname : pk_species_name(dc[0].species), 16);

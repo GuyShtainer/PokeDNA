@@ -190,7 +190,7 @@ static void filter_menu(int* filter, int* sort) {
         else ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid));
       }
     }
-    ui_text(4, 152, UI_DIM, "A select  U/D move  L/R page  B back");
+    ui_text(4, 152, UI_DIM, "A pick  U/D/L/R move  B back");
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
     if (k & KEY_B) return;
     else if (k & KEY_A) { if (sel == 0) *sort ^= 1; else { *filter = fids[sel - 1]; return; } }
@@ -230,7 +230,7 @@ uint16_t pick_species(uint16_t current) {
       ui_clear();
       ui_hline(0, 21, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-      ui_text(4, 152, UI_DIM, "A pick  L/R filter  ST menu  SEL find  B");
+      ui_text(4, 152, UI_DIM, "A pick  L/R filter  SEL find");
       for (int i = 0; i < GCOLS * GVROWS; i++) {
         int idx = top_idx + i;
         if (idx >= g_n) break;
@@ -474,7 +474,7 @@ static int dex_menu(int* filter, int* sort, int* status, bool can_edit) {
              if (fid >= 5) { type_chip(8, y, (uint8_t)(fid - 5)); ui_text(40, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
              else ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
     }
-    ui_text(4, 152, UI_DIM, "A select  U/D move  L/R page  B back");
+    ui_text(4, 152, UI_DIM, "A pick  U/D/L/R move  B back");
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
     if (k & KEY_B) return bulked ? 2 : (changed ? 1 : 0);
     else if (k & KEY_A) {
@@ -710,7 +710,7 @@ uint16_t pick_move(uint16_t current) {
       text_wrap(6, 110, 28, UI_TEXT, pk_move_desc(m));
     }
 
-    ui_text(4, 152, UI_DIM, "A pick  L/R type  ST sort  SEL find  B");
+    ui_text(4, 152, UI_DIM, "A pick  L/R type  SEL find");
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
     if (k & KEY_B) return CANCEL;
     else if (k & KEY_A) return g_mvn ? g_mv[sel] : CANCEL;
@@ -878,7 +878,7 @@ uint16_t pick_item(uint16_t current) {
       ui_text(4, 2, UI_TITLE, h);
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-      ui_text(4, 152, UI_DIM, "A pick  L/R view  ST sort  SEL find  B");
+      ui_text(4, 152, UI_DIM, "A pick  L/R view  SEL find");
       if (view == IV_SPLIT) ui_panel(122, 20, 116, 124, UI_PANEL, UI_BORDER);
       for (int i = 0; i < vis && top + i < n; i++)
         iv_cell(view, x0 + (i % cols) * cw, y0 + (i / cols) * ch, idx[top + i]);

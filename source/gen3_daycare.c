@@ -61,10 +61,10 @@ DcCompat pk_daycare_compat(uint16_t spA, uint32_t otA, uint16_t spB, uint32_t ot
 
 const char* pk_daycare_compat_msg(DcCompat c) {
   switch (c) {
-    case DC_HIGH: return "They seem to get along very well!";
-    case DC_MED:  return "The two seem to get along.";
-    case DC_LOW:  return "They don't seem to like each other.";
-    default:      return "They'd rather play with others.";
+    case DC_HIGH: return "They get along very well!";      /* <=29 chars: fits the day-care panel */
+    case DC_MED:  return "The two get along.";
+    case DC_LOW:  return "They don't like each other.";
+    default:      return "They'd rather be elsewhere.";
   }
 }
 

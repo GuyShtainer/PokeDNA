@@ -18,7 +18,6 @@
 #include "mon_front.h"
 #include "mon_icons.h"
 #include "item_icons.h"     /* item_icon_for: held-item markers in ITEM mode */
-#include "hand_cursor.h"
 #include "box_oam.h"        /* hardware-OAM icon/cursor/carry/marker rendering */
 #include "pdna_summary.h"
 #include "pdna_app.h"
