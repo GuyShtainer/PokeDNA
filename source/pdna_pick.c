@@ -315,6 +315,7 @@ static DexSetNat   s_setnat;   /* enable/disable national dex (may be NULL) */
  * SD until the user confirms the dex save, so this RAM revert fully restores it). */
 static int8_t s_dex_snap[DEX_NAT_MAX];
 static bool   s_dex_snap_valid = false;
+static bool   s_dex_snap_natl = false;   /* National-Dex state at snapshot time (Catch ALL flips it) */
 
 static int dstate(uint16_t internal) { return s_dget((int)pk_national_no(internal)); }
 
@@ -432,12 +433,15 @@ static bool dex_bulk(void) {
       }
       if (a == -1) {                                              /* Undo the last bulk op */
         for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dset(nat, s_dex_snap[nat - 1]);
+        if (s_setnat && s_getnat && s_getnat() != s_dex_snap_natl)
+          s_setnat(s_dex_snap_natl);                              /* Catch ALL auto-unlocked natl -> revert too */
         s_dex_snap_valid = false;
         return true;
       }
       if (!app_confirm(a == 2 ? "Catch every species?" : a == 1 ? "See every species?" : "Wipe the whole dex?",
                        "All 386. (Undo available.)")) return false;
       for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dex_snap[nat - 1] = (int8_t)s_dget(nat);   /* snapshot first */
+      s_dex_snap_natl = (s_getnat && s_getnat());                 /* incl. the National-Dex state */
       s_dex_snap_valid = true;
       for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dset(nat, a);
       /* Catching every species is meaningless without National mode (the dex caps at the

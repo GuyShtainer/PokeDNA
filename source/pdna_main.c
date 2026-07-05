@@ -625,6 +625,14 @@ static bool app_commit_all(void) {
  * = sections 1..4) after the trainer card edits g_sb2 / g_sb1 in place. */
 bool app_commit_sb2(void) { return app_commit_block(0, 0, g_sb2); }
 bool app_commit_sb1(void) { return app_commit_block(1, 4, g_sb1); }
+/* SaveBlock2 + SaveBlock1 (sections 0..4) in ONE verified write — for edits spanning both
+ * (trainer card identity+money, the dex). One backup + one write instead of two. */
+bool app_commit_sb12(void) {
+  gen3_write_full_section(g_save, g_vinfo.slot, 0, g_sb2);
+  for (int id = 1; id <= 4; id++)
+    gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
+  return app_save_finalize();
+}
 
 void app_mark_pc_dirty(void) { g_pc_dirty = true; }
 bool app_pc_dirty(void)      { return g_pc_dirty; }
@@ -686,6 +694,7 @@ static void pcsrc_note_add(const uint8_t* rec) { app_register_dex_deferred(rec, 
 
 /* Bank->PC carry records the bank source for deletion at the save phase (see pdna_bank). */
 void app_bank_defer_delete(int box, int slot, const uint8_t* rec80) { pdna_bank_defer_delete(box, slot, rec80); }
+bool app_bank_defer_full(void) { return pdna_bank_defer_full(); }
 
 /* Emerald "Walda" secret-wallpaper pattern (the graphic shown by box wallpaper 16),
  * stored in SaveBlock1. -1 / no-op on the other games. */
@@ -1089,6 +1098,9 @@ static bool party_place_held(const uint8_t* held80, int target, int orig_box, in
   if (orig_bank) can_swap = false;                              /* a bank origin can't receive a swap */
   if (target == n) {                                            /* ADD to a free party slot */
     if (n >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Swap with a member instead.", 0); return false; }
+    if (orig_bank && orig_slot >= 0 && app_bank_defer_full()) { /* a full defer queue would silently DUP */
+      snd_deny(); msg_wait("TOO MANY MOVES", UI_WARN, "Save first, then continue.", 0); return false;
+    }
     uint8_t p100[100]; box_to_party(held80, p100);
     if (!party_append(g_sb1, g_frlg, p100)) { snd_deny(); return false; }
     /* Remove the origin (it left for the party). A BANK origin is a bank slot, NOT a g_pc
@@ -1620,12 +1632,7 @@ static bool data_editor(void) {
 
 /* Commit just the dex: SaveBlock2 (sec 0) + SaveBlock1 (sec 1..4). Doesn't touch
  * PC storage or its dirty flag (unlike app_commit_all). */
-static bool app_commit_dex(void) {
-  gen3_write_full_section(g_save, g_vinfo.slot, 0, g_sb2);
-  for (int id = 1; id <= 4; id++)
-    gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
-  return app_save_finalize();
-}
+static bool app_commit_dex(void) { return app_commit_sb12(); }
 
 static int  dex_state(int nat) {                            /* 0 none, 1 seen, 2 caught */
   if (pk_dex_owned(g_sb2, (uint16_t)nat)) return 2;
@@ -2253,7 +2260,8 @@ static void pdna_daycare(void) {
       ui_text(4, 2, UI_TITLE, "DAY CARE");
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
       for (int i = 0; i < n; i++) {
-        const u16* ic = mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1));
+        const u16* ic = (dc[i].isEgg && !dc[i].isBadEgg) ? mon_icon_egg_frame((uint8_t)(frame & 1))
+                                : mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1));
 #ifdef HAVE_DAYCARE_BG
         dc_icon_over_bg(dcx[i], dcy[i], ic);
 #else
@@ -2297,7 +2305,8 @@ static void pdna_daycare(void) {
          if (app_anim_enabled(ANIM_DAYCARE) && anim_any && ++ctr >= 30) { /* idle 2-frame bob (flicker-free) */
            ctr = 0; frame ^= 1;
            for (int i = 0; i < n; i++) {                        /* compose icon over the bg + DMA (no erase) */
-             const u16* ic = mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1));
+             const u16* ic = (dc[i].isEgg && !dc[i].isBadEgg) ? mon_icon_egg_frame((uint8_t)(frame & 1))
+                                : mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1));
 #ifdef HAVE_DAYCARE_BG
              dc_icon_over_bg(dcx[i], dcy[i], ic);
 #else

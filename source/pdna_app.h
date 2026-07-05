@@ -77,6 +77,7 @@ void app_party_remove_at(int idx);
 /* Bank->PC / Bank->party carry: record the bank source slot AND the carried 80-byte record to
  * delete at the save phase (true move; matched by record so a re-arrange can't delete the wrong mon). */
 void app_bank_defer_delete(int box, int slot, const uint8_t* rec80);
+bool app_bank_defer_full(void);   /* 64-move queue full -> refuse the move (a silent drop would DUP) */
 
 /* Commit the loaded save's SaveBlock2 (section 0 — the trainer block) or
  * SaveBlock1 (sections 1..4 — where money lives) after an in-place edit of the
@@ -84,6 +85,7 @@ void app_bank_defer_delete(int box, int slot, const uint8_t* rec80);
  * Returns true iff a write happened. Used by the editable trainer card. */
 bool app_commit_sb2(void);
 bool app_commit_sb1(void);
+bool app_commit_sb12(void);               /* SB2 + SB1 (sections 0..4) in one verified write */
 bool app_commit_pc(void);                 /* PC storage (sections 5..13): box name/wallpaper */
 
 /* Deferred-save for PC box MOVES. Repositioning mons in move-mode mutates g_pc in

@@ -145,9 +145,10 @@ void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame g
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) {
-      if ((d1 || d2) && app_confirm("Save trainer changes?", "Identity / money are written.")) {
-        if (d2) app_commit_sb2();              /* trainer block (section 0)     */
-        if (d1) app_commit_sb1();              /* money (sections 1..4)         */
+      if ((d1 || d2) && app_confirm("Save trainer changes?", "Writes ID & money now.")) {
+        if (d1 && d2)  app_commit_sb12();      /* both blocks: ONE backup + write */
+        else if (d2)   app_commit_sb2();       /* trainer block (section 0)     */
+        else           app_commit_sb1();       /* money (sections 1..4)         */
       }
       return;
     } else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : TF_NUM - 1;

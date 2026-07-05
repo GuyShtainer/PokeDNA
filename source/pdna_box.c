@@ -284,9 +284,20 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   bool occupied = g_box[cur].species != 0;
   if (s_orig_bank != src->is_bank) {                         /* cross-scope drop */
     if (occupied) { snd_deny(); return recs; }
+    if (s_held_dup && s_orig_slot < 0) {                     /* a fresh DUPLICATE: placing it is loss-proof
+                                                                 in either direction -> no confirm needed
+                                                                 (also fixes the reversed "Copy to Bank?"
+                                                                 text when a bank dup lands in the PC). */
+      if (src->note_add) src->note_add(s_held);
+      memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
+      s_holding = false; s_held_dup = false; *done = true; return recs;
+    }
     if (!src->is_bank && s_orig_bank && s_orig_slot >= 0) {  /* BANK -> PC: a true MOVE, no prompt */
       /* place in the PC now (deferred); the bank original is deleted at the save phase,
-       * AFTER the PC is written, so it can't be lost (worst case a duplicate). */
+       * AFTER the PC is written, so it can't be lost (worst case a duplicate). The defer
+       * queue holds 64: when FULL, refuse the drop (a silent un-queued move would leave a
+       * duplicate behind) — save + re-enter to flush the queue. */
+      if (app_bank_defer_full()) { snd_deny(); return recs; }
       if (src->note_add) src->note_add(s_held);
       memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
       app_bank_defer_delete(s_orig_box, s_orig_slot, s_held);
@@ -327,7 +338,7 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
   if (s_oam_reload) { boxoam_load_box(g_box); s_oam_reload = false; }
   if (s_holding) {
     PkMon hm; pk_decode_mon(s_held, false, &hm);
-    boxoam_carry_held(cur, hm.species, hm.form);             /* held mon front-most + orange fist */
+    boxoam_carry_held(cur, hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
     if (s_orig_slot >= 0 && s_orig_bank == is_bank && s_orig_box == box)
       boxoam_hide_slot(s_orig_slot);                         /* lift-hide the origin cell */
     boxoam_item_markers(g_box, false);

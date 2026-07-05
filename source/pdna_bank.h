@@ -21,6 +21,7 @@ int pdna_bank_show(void);   /* returns the box exit code (5 = dropped off the bo
  * drop them on discard. The record is matched at flush time so a re-arrange of the bank can't
  * delete the wrong mon (a mismatch is skipped, leaving a harmless duplicate). */
 void pdna_bank_defer_delete(int box, int slot, const uint8_t* rec80);
+bool pdna_bank_defer_full(void);        /* deletion queue full -> refuse further Bank->PC MOVEs */
 void pdna_bank_flush_deletions(void);   /* apply pending deletions (call AFTER the PC is written) */
 void pdna_bank_clear_deletions(void);   /* drop pending deletions (discard / fresh save) */
 

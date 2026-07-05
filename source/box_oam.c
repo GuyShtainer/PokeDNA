@@ -321,13 +321,14 @@ void boxoam_cursor(int cur, bool on_title, int mode) {
  * and rides FRONT-MOST (PRIO 0) above every box icon (PRIO 2). An orange, semi-transparent
  * grab fist sits BEHIND it (region B, PRIO 1). The cursor hand is hidden. species 0 -> just
  * the fist (empty hand). The caller hides the origin slot via boxoam_hide_slot(). */
-void boxoam_carry_held(int cur, uint16_t species, uint8_t form) {
+void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg) {
   int cx = GRID_X + (cur % COLS) * CELL_W, cy = GRID_Y + (cur / COLS) * CELL_H;
   int ix = cx, iy = cy - 4; if (iy < WP_Y) iy = WP_Y;
   load_regb_grab();                                  /* fist tiles -> region B */
   REG_BLDCNT = 0;                                    /* carried mon is opaque  */
   const uint8_t* tiles; int bank = 0;
-  if (species && mon_icon_oam_for_form_frame(species, form, 0, &tiles, &bank)) {
+  if (egg ? mon_icon_oam_egg(&tiles, &bank)                     /* an Egg rides the glove AS an Egg */
+          : (species && mon_icon_oam_for_form_frame(species, form, 0, &tiles, &bank))) {
     upload_tiles(TID_HAND, tiles, MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
     s_rega = 2;                                      /* region A now holds the held mon */
     obj_set_attr(oe(OE_CARRY),                       /* front-most */

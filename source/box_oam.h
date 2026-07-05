@@ -64,7 +64,7 @@ void boxoam_cursor(int cur, bool on_title, int mode);
 /* MOVE-mode carry (mon-in-hand): the held mon's icon (species/form) rides cursor cell
  * `cur` front-most in region A, an orange grab fist behind it; the cursor hand is hidden.
  * boxoam_carry_end() stops carrying; boxoam_hide_slot() lift-hides the origin cell. */
-void boxoam_carry_held(int cur, uint16_t species, uint8_t form);
+void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg);   /* egg=1 -> the Egg icon rides the glove */
 void boxoam_carry_end(void);
 void boxoam_hide_slot(int s);
 

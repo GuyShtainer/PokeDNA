@@ -122,6 +122,7 @@ typedef struct { uint8_t box, slot; uint8_t id[BANK_DEL_IDLEN]; } BankDel;
 static BankDel g_bank_del[BANK_DEL_MAX];   /* 640 B -> plain BSS (keeps EWRAM free for the save image) */
 static int g_bank_ndel = 0;
 
+bool pdna_bank_defer_full(void) { return g_bank_ndel >= BANK_DEL_MAX; }   /* callers refuse the move when full */
 void pdna_bank_defer_delete(int box, int slot, const uint8_t* rec80) {
   if (box < 0 || box >= BANK_BOXES || slot < 0 || slot >= BOX_RECS || g_bank_ndel >= BANK_DEL_MAX) return;
   g_bank_del[g_bank_ndel].box = (uint8_t)box; g_bank_del[g_bank_ndel].slot = (uint8_t)slot;
@@ -242,9 +243,11 @@ int pdna_bank_show(void) {
 
   int r = pdna_box(&s);
 
-  /* deferred moves: ask once on leaving the bank (mirrors the PC's save-on-exit). */
+  /* deferred moves: ask on leaving the bank. HONEST SCOPE: paging to another box
+   * auto-saves the box being left (banksrc_records -> box_save; one shared buffer),
+   * so this prompt only covers the CURRENT box — say exactly that. */
   if (g_dirty) {
-    if (app_can_edit() && app_confirm("Save bank changes?", "Save the Pokemon you moved?"))
+    if (app_can_edit() && app_confirm("Save this bank box?", "Prior boxes auto-saved."))
       box_save();
     else if (g_loaded >= 0)
       box_load(g_loaded);                          /* discard: reload the box from its file */
