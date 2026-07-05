@@ -2474,7 +2474,9 @@ static bool sb_detail(SbRecord* b, uint32_t off) {
       bool s = (i == psel) && (i < b->partyCount);
       if (s) ui_panel(cx - 2, cy - 2, 76, 45, UI_SEL, UI_TITLE);
       if (!sp) { ui_text(cx + 26, cy + 14, UI_DIM, "-"); continue; }
-      ui_sprite(cx + 22, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form(sp, 0));
+      { uint8_t fo = (sp == 201) ? pk_unown_form(b->party.personality[i])
+                   : (sp == 386) ? (uint8_t)pk_get_deoxys_form() : 0;   /* letter/forme, not form 0 */
+        ui_sprite(cx + 22, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form(sp, fo)); }
       char nm[16]; ui_truncate(nm, pk_species_name(sp), 9); ui_text(cx, cy + 32, s ? UI_SELTEXT : UI_TEXT, nm);
       siprintf(line, "Lv%u", (unsigned)b->party.level[i]); ui_text(cx, cy + 40, UI_DIRCLR, line);
     }

@@ -3,7 +3,10 @@
 /* SaveBlock1 flags[] base offset per game family. */
 static uint16_t flags_off(PkGame g) { return g == PK_FRLG ? 0x0EE0 : g == PK_EMERALD ? 0x1270 : 0x1220; }
 
-int pk_flags_count(PkGame g) { return g == PK_EMERALD ? 812 * 8 : 800 * 8; }
+/* Size of the REAL flags[] array (pret): E 0x1270..0x139B = 300 B; RS 0x1220..0x133F and
+ * FRLG 0x0EE0..0x0FFF = 288 B. The old 812/800-byte figures ran ~2.7x past the array,
+ * letting the raw flag browser silently poke the vars[] block and beyond. */
+int pk_flags_count(PkGame g) { return g == PK_EMERALD ? 300 * 8 : 288 * 8; }
 
 bool pk_flag_get(const uint8_t* sb1, PkGame g, int n) {
   if (n < 0 || n >= pk_flags_count(g)) return false;
