@@ -2076,10 +2076,13 @@ static int dc_rescan(uint32_t base, uint32_t stride, uint8_t* recs[2], PkMon dc[
       pk_resolve(&m); dc[n] = m; recs[n] = rec; phys[n] = i; n++;
     }
   }
-  uint32_t eggoff = (g_game == PK_RS) ? 276 : 280;
-  const uint8_t* op = g_sb1 + base + eggoff;
+  /* Egg word @ base+280 in ALL games (u32 on E; u16 on FRLG AND RS), counter @282 (E @284).
+   * Verified vs pret/pokeruby: DayCareMail.names @ +0x24 => MailStruct=36 => mail=56 B each;
+   * sizeof(DayCare)=0x30B8-0x2F9C=284 => RS: mons 160 + mail 112 + steps@272 + egg@280.
+   * (The old RS 276/278 came from a wrong 54-byte-mail assumption.) */
+  const uint8_t* op = g_sb1 + base + 280;
   *egg = (g_game == PK_EMERALD) ? ((op[0] | op[1] | op[2] | op[3]) != 0) : ((op[0] | op[1]) != 0);
-  int stepc = (g_game == PK_EMERALD) ? g_sb1[base + 284] : (g_game == PK_FRLG) ? g_sb1[base + 282] : g_sb1[base + 278];
+  int stepc = (g_game == PK_EMERALD) ? g_sb1[base + 284] : g_sb1[base + 282];
   int tc = (g_game == PK_RS) ? stepc : (256 - stepc); if (tc < 1 || tc > 256) tc = 256; *to_check = tc;
 #ifdef HAVE_DAYCARE_BG
   int used[DR_COUNT][2] = {{0}};
@@ -2112,20 +2115,22 @@ static int dc_rescan(uint32_t base, uint32_t stride, uint8_t* recs[2], PkMon dc[
 /* Clear a daycare physical slot's per-mon mail + step counter (per-game layout), so a
  * deposited/withdrawn mon doesn't inherit stale boarding state. */
 static void dc_clear_slot_aux(uint32_t base, uint32_t stride, int i) {
+  /* DayCareMail is 56 bytes in ALL games (MailStruct 36 + names 19 + pad; pret-verified —
+   * clearing only 54 left 2 stale bytes). RS packs mons[2] then mail[2] then steps[2]@272. */
   if (g_game == PK_RS) {
-    memset(g_sb1 + base + 160 + (uint32_t)i * 54, 0, 54);            /* DayCareMail[i] (54) */
-    memset(g_sb1 + base + 268 + (uint32_t)i * 4, 0, 4);             /* steps[i] u32 */
+    memset(g_sb1 + base + 160 + (uint32_t)i * 56, 0, 56);           /* DayCareMail[i] (56) */
+    memset(g_sb1 + base + 272 + (uint32_t)i * 4, 0, 4);             /* steps[i] u32 @272   */
   } else {
-    memset(g_sb1 + base + (uint32_t)i * stride + 80, 0, 54);        /* DaycareMon[i].mail */
+    memset(g_sb1 + base + (uint32_t)i * stride + 80, 0, 56);        /* DaycareMon[i].mail (56) */
     memset(g_sb1 + base + (uint32_t)i * stride + 136, 0, 4);        /* DaycareMon[i].steps u32 */
   }
 }
 
-/* Clear the shared pending-egg + egg-check timer (the pair changed). Per-game width. */
+/* Clear the shared pending-egg + egg-check timer (the pair changed). Egg word @280 in all
+ * games (E u32 + counter @284; FRLG AND RS u16 + counter @282 — pret-verified). */
 static void dc_clear_egg(uint32_t base) {
-  if (g_game == PK_EMERALD)      { memset(g_sb1 + base + 280, 0, 4); g_sb1[base + 284] = 0; }
-  else if (g_game == PK_FRLG)    { memset(g_sb1 + base + 280, 0, 2); g_sb1[base + 282] = 0; }
-  else                           { memset(g_sb1 + base + 276, 0, 2); g_sb1[base + 278] = 0; }  /* RS */
+  if (g_game == PK_EMERALD) { memset(g_sb1 + base + 280, 0, 4); g_sb1[base + 284] = 0; }
+  else                      { memset(g_sb1 + base + 280, 0, 2); g_sb1[base + 282] = 0; }  /* FRLG + RS */
 }
 
 /* Small daycare action menu. Returns 0=view/edit, 1=take out, 2=put in, -1=cancel. */
@@ -2219,8 +2224,9 @@ static bool dc_withdraw(uint32_t base, uint32_t stride, uint8_t* rec, int physi)
  * menu: view/edit, take out, put in), plus the Day-Care man's get-along verdict. */
 static void pdna_daycare(void) {
   /* RS store the two BoxPokemon contiguously (stride 80); E/FRLG interleave each with
-   * its mail+steps (stride 140). The egg-personality word is at base+280 (u32 on
-   * E/FRLG, u16 on RS). dc_layout() is the single source shared with the deposit paths. */
+   * its mail+steps (stride 140). The egg-personality word is at base+280 in all games
+   * (u32 on E; u16 on FRLG and RS). dc_layout() is the single source shared with the
+   * deposit paths. */
   uint32_t base, stride; dc_layout(&base, &stride);
   uint8_t* recs[2]; PkMon dc[2]; int phys[2], dcx[2], dcy[2];
   bool off; int to_check;
