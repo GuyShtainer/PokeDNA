@@ -106,11 +106,11 @@ static void render(const PkMon* c, int sel, int top) {
   int evtot = c->evs[0] + c->evs[1] + c->evs[2] + c->evs[3] + c->evs[4] + c->evs[5];
   ui_text(4, 0, UI_TITLE, "EDIT POKEMON");
   siprintf(line, "EV %d/510", evtot);
-  ui_text(168, 0, evtot > 510 ? UI_WARN : UI_DIM, line);
+  ui_text(160, 0, evtot > 510 ? UI_WARN : UI_DIM, line);   /* x=160: 10 cols fits "EV 510/510" */
   siprintf(line, "%s  Lv%u  %s%s%s", pk_species_name(c->species), (unsigned)c->level,
            pk_nature_name(c->nature), c->isShiny ? "  SHINY" : "",
            c->gender == 1 ? "  F" : c->gender == 0 ? "  M" : "");
-  ui_text(4, 10, UI_DIRCLR, line);
+  { char lt[40]; ui_truncate(lt, line, 29); ui_text(4, 10, UI_DIRCLR, lt); }
   ui_hline(0, 19, UI_SCR_W, UI_BORDER);
 
   char val[40];
@@ -121,11 +121,11 @@ static void render(const PkMon* c, int sel, int top) {
     ui_text(6, y, s ? UI_SELTEXT : UI_DIM, FLABEL[f]);
     field_value(f, c, val);
     char vt[40];
-    ui_truncate(vt, val, 16);
+    ui_truncate(vt, val, 15);   /* (240-118)/8 = 15 cols */
     ui_text(118, y, s ? UI_SELTEXT : UI_TEXT, vt);
   }
   ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-  ui_text(4, 152, UI_DIM, "L/R+- A:pick B:exit START:save");
+  ui_text(4, 152, UI_DIM, "L/R+- A:pick B:exit ST:save");
 }
 
 /* re-roll PID for a (nature, shiny, gender) combo, relaxing gender then shiny. */
@@ -215,10 +215,10 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
 static bool confirm(void) {
   ui_clear();
   ui_text(20, 50, UI_TITLE, "Commit changes to the save?");
-  ui_text(20, 66, UI_TEXT, "A = write (backup made first)");
+  ui_text(20, 66, UI_TEXT, "A = write (backs up first)");
   ui_text(20, 78, UI_WARN, "B = cancel");
-  ui_text(20, 100, UI_DIM, "The original is backed up to .bak,");
-  ui_text(20, 110, UI_DIM, "then the new save is verified on write.");
+  ui_text(20, 100, UI_DIM, "Original backed up to .bak,");
+  ui_text(20, 110, UI_DIM, "new save verified on write.");
   u16 k = s_wait(KEY_A | KEY_B);
   return (k & KEY_A) != 0;
 }

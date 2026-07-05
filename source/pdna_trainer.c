@@ -101,8 +101,8 @@ void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame g
     lbl[TF_MONEY] = "MONEY"; siprintf(val[TF_MONEY], "$%lu", (unsigned long)money);
     lbl[TF_TIME]  = "TIME";  siprintf(val[TF_TIME],  "%uh %02um", (unsigned)ph, (unsigned)pm);
     int nb = 0; for (int i = 0; i < 8; i++) if (pk_flag_get(sb1, game, pk_badge_flag(game, i))) nb++;
-    lbl[TF_BADGES] = "BADGE"; siprintf(val[TF_BADGES], "%d/8%s  (A edit)", nb,
-                                       game == PK_EMERALD ? " +frontier" : "");
+    lbl[TF_BADGES] = "BADGE"; siprintf(val[TF_BADGES], "%d/8%s (A)", nb,
+                                       game == PK_EMERALD ? " +front" : "");   /* row budget 29 cols */
     for (int i = 0; i < TF_NUM; i++) {
       int y = 14 + i * 9; bool s = edit && (i == sel);
       if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
@@ -112,8 +112,8 @@ void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame g
 
     int y = 14 + TF_NUM * 9 + 3;
     int seen, caught; bool nat; pk_pokedex(sb2, &seen, &caught, &nat);
-    siprintf(line, "DEX   seen %d  caught %d%s", seen, caught, nat ? " (Nat)" : "");
-    ui_text(6, y, UI_TEXT, line); y += 12;
+    siprintf(line, "DEX  seen %d  caught %d%s", seen, caught, nat ? " Nat" : "");
+    { char lt[40]; ui_truncate(lt, line, 29); ui_text(6, y, UI_TEXT, lt); } y += 12;
 
     ui_hline(4, y, 232, UI_BORDER); y += 3;
     ui_text(6, y, UI_TITLE, "ELITE FOUR / HALL OF FAME"); y += 10;
@@ -132,14 +132,14 @@ void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame g
              (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_TOTAL_BATTLES),
              (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_WILD_BATTLES),
              (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_TRAINER_BATTLES));
-    ui_text(10, y, UI_TEXT, line); y += 9;
+    { char lt[40]; ui_truncate(lt, line, 28); ui_text(10, y, UI_TEXT, lt); } y += 9;
     siprintf(line, "Captures %u  Eggs %u",
              (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_POKEMON_CAPTURES),
              (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_HATCHED_EGGS));
-    ui_text(10, y, UI_TEXT, line);
+    { char lt[40]; ui_truncate(lt, line, 28); ui_text(10, y, UI_TEXT, lt); }
 
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, edit ? "U/D field  A edit  B save+exit" : "B back");
+    ui_text(4, 152, UI_DIM, edit ? "U/D field  A edit  B save" : "B back");
 
     if (!edit) { do { s_vsync(); } while (!key_hit(KEY_B)); snd_back(); return; }
 

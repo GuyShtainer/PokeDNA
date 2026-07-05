@@ -312,7 +312,7 @@ static void render_browser(int sel, int top) {
 
   if (g_count == 0) {
     ui_text(6, 40, UI_WARN, "(no folders or .sav files here)");
-    ui_text(6, 52, UI_DIM,  at_root() ? "Open a folder where your saves live."
+    ui_text(6, 52, UI_DIM,  at_root() ? "Open the folder with your saves."
                                       : "B = go up a folder.");
   } else {
     char row[LIST_COLS * 4 + 1], nm[NAME_MAX + 2], sz[12];
@@ -557,7 +557,7 @@ static bool app_save_finalize(void) {
   if (!gen3_verify_full_checksums(g_save, g_vinfo.slot, &fail)) {
     log_line("edit: checksum FAIL at section %d", fail);
     snd_error();
-    msg_wait("CHECKSUM ERROR", UI_WARN, "Edited image failed checks.", "NOT written.");
+    msg_wait("CHECKSUM ERROR", UI_WARN, "Image failed checksums.", "NOT written.");
     return false;
   }
 
@@ -861,17 +861,17 @@ static bool file_actions(const BrowseEntry* e) {
     else if (k & KEY_A) {
       if (sel == 3) return changed;
       if ((sel == 0 || sel == 1) && !cart_writable()) {
-        snd_deny(); msg_wait("READ-ONLY", UI_WARN, "File writes need EZ-Flash Omega.", 0);
+        snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0);
         continue;
       }
       if (sel == 0) {                                  /* Duplicate */
         char dname[NAME_MAX], dst[PATH_MAX];
         if (!dup_name(e->name, dname, sizeof(dname)) || !path_join(g_cwd, dname, dst)) {
-          snd_error(); msg_wait("DUPLICATE", UI_WARN, "Could not pick a free name.", 0); continue;
+          snd_error(); msg_wait("DUPLICATE", UI_WARN, "No free name available.", 0); continue;
         }
         busy_panel("Duplicating...");
         SfStatus st = sf_copy(src, dst);
-        if (st == SF_OK) { char m[40]; ui_truncate(m, dname, 29); snd_ok(); msg_wait("DUPLICATED", UI_OK, "Created:", m); changed = true; }
+        if (st == SF_OK) { char m[40]; ui_truncate(m, dname, 24); snd_ok(); msg_wait("DUPLICATED", UI_OK, "Created:", m); changed = true; }
         else { snd_error(); msg_wait("DUPLICATE FAILED", UI_WARN, sf_status_str(st), "File unchanged."); }
       } else if (sel == 1) {                           /* Rename */
         char nn[NAME_MAX];
@@ -879,16 +879,16 @@ static bool file_actions(const BrowseEntry* e) {
         if (!strcmp(nn, e->name)) continue;
         char dst[PATH_MAX]; FILINFO fno;
         if (!path_join(g_cwd, nn, dst)) { snd_error(); msg_wait("RENAME", UI_WARN, "Name too long.", 0); continue; }
-        if (f_stat(dst, &fno) == FR_OK) { snd_error(); msg_wait("RENAME", UI_WARN, "A file by that name exists.", 0); continue; }
+        if (f_stat(dst, &fno) == FR_OK) { snd_error(); msg_wait("RENAME", UI_WARN, "Name already exists.", 0); continue; }
         if (f_rename(src, dst) == FR_OK) {
           log_line("rename %s -> %s", src, dst);
           snd_ok(); msg_wait("RENAMED", UI_OK, "Now named:", nn); return true;   /* src path stale: re-scan */
         } else { snd_error(); msg_wait("RENAME FAILED", UI_WARN, "Could not rename.", 0); }
       } else if (sel == 2) {                            /* Delete backups */
-        if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "File writes need EZ-Flash Omega.", 0); continue; }
-        if (app_confirm("Delete ALL backups?", "Removes .bak files for this save.")) {
+        if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+        if (app_confirm("Delete ALL backups?", "Deletes its .bak files.")) {
           int rm = sf_clear_backups(src);
-          char m[40]; siprintf(m, "Removed %d backup file(s).", rm);
+          char m[40]; siprintf(m, "%d backup(s) removed.", rm);
           snd_ok(); msg_wait("CLEARED", UI_OK, m, 0);
           if (rm > 0) changed = true;
         }
@@ -920,7 +920,7 @@ bool app_inject_to_game(const uint8_t* rec80) {
     }
   }
   snd_deny();
-  msg_wait("PC FULL", UI_WARN, "No empty PC box slot in the", "loaded game.");
+  msg_wait("PC FULL", UI_WARN, "No free PC slot in the", "loaded game.");
   return false;
 }
 
@@ -940,13 +940,13 @@ static bool app_inject_to_game_deferred(const uint8_t* rec80, int* out_box, int*
     }
   }
   snd_deny();
-  msg_wait("PC FULL", UI_WARN, "No empty PC box slot in the", "loaded game.");
+  msg_wait("PC FULL", UI_WARN, "No free PC slot in the", "loaded game.");
   return false;
 }
 
 static bool app_copy(uint8_t* rec, bool is_party) {
   clip_copy_from(&g_clip, rec, is_party);
-  msg_wait("COPIED", UI_OK, "PASTE places it in a slot.", "(it survives until overwritten)");
+  msg_wait("COPIED", UI_OK, "PASTE places it in a slot.", "(kept until overwritten)");
   return false;                                          /* no save change */
 }
 
@@ -966,7 +966,7 @@ static bool app_duplicate(uint8_t* rec, bool is_party, AppCommitFn commit, uint8
     party_append(block, g_frlg, out);
   } else {
     int fs = box_free_slot(block, box);
-    if (fs < 0) { snd_deny(); msg_wait("BOX FULL", UI_WARN, "No empty slot in this box.", 0); return false; }
+    if (fs < 0) { snd_deny(); msg_wait("BOX FULL", UI_WARN, "No empty slot here.", 0); return false; }
     memcpy(pk_box_slot(block, box, fs), rec, 80);
   }
   return app_commit_with_dex(rec, is_party, commit, block);   /* auto-register the duplicated species */
@@ -979,7 +979,7 @@ static bool app_release(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t
     msg_wait("CAN'T RELEASE", UI_WARN, "The party can't be empty.", 0);
     return false;
   }
-  if (!app_confirm("Release this Pokemon?", "It is permanently deleted.")) return false;
+  if (!app_confirm("Release this Pokemon?", "Deleted permanently.")) return false;
   if (is_party) party_release(block, g_frlg, slot);
   else          clip_clear_box_slot(block, box, slot);
   return commit ? commit() : false;
@@ -1063,12 +1063,12 @@ static bool app_to_daycare(uint8_t* rec, bool is_party, uint8_t* block, int box,
   if (is_party) {                                              /* party + deposit both in SB1 -> deferred to exit */
     party_release(block, g_frlg, slot);
     app_stage_sb1();
-    snd_ok(); msg_wait("SENT", UI_OK, "Now boarding in the Day-Care.", "Saved when you leave.");
+    snd_ok(); msg_wait("SENT", UI_OK, "Now at the Day-Care.", "Saved when you leave.");
   } else {                                                     /* PC source: deferred (both buffers) */
     clip_clear_box_slot(block, box, slot);                     /* remove from the PC box (g_pc) */
     app_mark_pc_dirty();
     app_stage_sb1();                                           /* daycare deposit staged in g_save */
-    snd_ok(); msg_wait("SENT", UI_OK, "Now boarding in the Day-Care.", "Saved when you leave.");
+    snd_ok(); msg_wait("SENT", UI_OK, "Now at the Day-Care.", "Saved when you leave.");
   }
   pdna_daycare();          /* take the user to the Day-Care page to see the new boarder */
   return true;
@@ -1097,7 +1097,7 @@ static bool party_place_held(const uint8_t* held80, int target, int orig_box, in
   if (target < 0 || target > n) { snd_deny(); return false; }   /* past the add slot */
   if (orig_bank) can_swap = false;                              /* a bank origin can't receive a swap */
   if (target == n) {                                            /* ADD to a free party slot */
-    if (n >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Swap with a member instead.", 0); return false; }
+    if (n >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Swap with a member.", 0); return false; }
     if (orig_bank && orig_slot >= 0 && app_bank_defer_full()) { /* a full defer queue would silently DUP */
       snd_deny(); msg_wait("TOO MANY MOVES", UI_WARN, "Save first, then continue.", 0); return false;
     }
@@ -1151,7 +1151,7 @@ void app_party_remove_at(int idx) {
  * can't leave artifacts; the caller repaints its own screen on return. */
 int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
                       bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
-  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); return 0; }
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return 0; }
   const int gx0 = 100, gy0 = 26, dx = 46, dy = 42;   /* 2x3 cluster, right side */
   const int BACK = 6;
   int sel = 0;
@@ -1196,7 +1196,7 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     ui_text(gx0 + 4, gy0 + 2 * dy + 4, bsel ? UI_SELTEXT : UI_TEXT, "Back");
 
     ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-    ui_text(4, 150, UI_DIM, held ? "A place/swap   U/D/L/R   B cancel" : "A actions   U/D/L/R   B back");
+    ui_text(4, 150, UI_DIM, held ? "A place/swap  U/D/L/R  B" : "A actions  U/D/L/R  B");
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if      (k & KEY_B)     { snd_back(); return 0; }
@@ -1243,7 +1243,7 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
 /* Hatch an Egg: reveal the Pokemon inside (clear the egg flag, base friendship, level 5) and
  * commit. The species/IVs/moves are already in the egg; the revealed mon registers in the dex. */
 static bool app_hatch(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block) {
-  if (!app_confirm("Hatch this Egg?", "Reveals the Pokemon inside.")) return false;
+  if (!app_confirm("Hatch this Egg?", "Reveals what is inside.")) return false;
   EditMon e; gen3_edit_load(rec, is_party, &e);
   em_hatch(&e);
   uint8_t out[100]; gen3_edit_commit(&e, out);
@@ -1302,7 +1302,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 12, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, lab[top + i]);
     }
-    ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
+    ui_text(mx + 6, my + mh - 9, UI_DIM, "A ok B back");   /* popup is 100px wide: 12 cols max */
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return false;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
@@ -1323,7 +1323,7 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
         case A_PASTE:   return app_paste(rec, is_party, commit, block, occupied);
         case A_DUP:
           if (is_party) return app_duplicate(rec, is_party, commit, block, box);   /* party: append + commit */
-          if (box_free_slot(block, box) < 0) { snd_deny(); msg_wait("BOX FULL", UI_WARN, "No empty slot in this box.", 0); return false; }
+          if (box_free_slot(block, box) < 0) { snd_deny(); msg_wait("BOX FULL", UI_WARN, "No empty slot here.", 0); return false; }
           g_dup_req = true; return false;                                            /* box/bank: pick the copy up in the glove */
         case A_RELEASE: return app_release(rec, is_party, commit, block, box, slot);
         case A_TAKEITEM:return app_take_item(rec, is_party, commit);
@@ -1455,7 +1455,7 @@ static void flags_raw_view(bool* dirty, bool* warned) {
   for (;;) {
     ui_clear();
     ui_text(4, 2, UI_TITLE, "RAW FLAGS");
-    ui_text(6, 14, UI_WARN, "Editing raw flags can break a save");
+    ui_text(6, 14, UI_WARN, "Raw flags can break a save!");
     ui_hline(0, 24, UI_SCR_W, UI_BORDER);
     if (flagn >= N) flagn = N - 1; if (flagn < 0) flagn = 0;
     char row[40];
@@ -1620,7 +1620,7 @@ static bool data_editor(void) {
   }
 
   if (dirty) {                                       /* confirm before the silent write */
-    if (!app_confirm("Save data changes?", "Money, bag and flag edits write now."))
+    if (!app_confirm("Save data changes?", "Edits write immediately."))
       return false;
     return app_commit_block(1, 4, g_sb1);            /* one verified write on exit */
   }
@@ -1756,7 +1756,7 @@ static bool pokeblock_edit(int idx) {
 /* Pokéblock case (game-like list: colour swatches + count). A edits/creates a block,
  * "Delete" inside clears one. RS/Emerald only. Edits g_sb1; one verified write on exit. */
 static void pdna_pokeblock(void) {
-  if (pk_pokeblock_offset(g_game) == 0) { msg_wait("NO POKEBLOCKS", UI_DIM, "This game has no contests.", 0); return; }
+  if (pk_pokeblock_offset(g_game) == 0) { msg_wait("NO POKEBLOCKS", UI_DIM, "This game lacks contests.", 0); return; }
   bool dirty = false; int sel = 0, top = 0;
   for (;;) {
     ui_clear();
@@ -2144,8 +2144,8 @@ static void dc_clear_egg(uint32_t base) {
 static int dc_menu(bool can_take, bool can_put) {
   const char* rows[4]; int act[4], nr = 0;
   rows[nr] = "View / Edit"; act[nr++] = 0;
-  if (can_take) { rows[nr] = "Take out (Party / PC)"; act[nr++] = 1; }
-  if (can_put)  { rows[nr] = "Put in (from clipboard)"; act[nr++] = 2; }
+  if (can_take) { rows[nr] = "Take out"; act[nr++] = 1; }
+  if (can_put)  { rows[nr] = "Put in (clipboard)"; act[nr++] = 2; }
   rows[nr] = "Cancel"; act[nr++] = -1;
   int sel = 0;
   for (;;) {
@@ -2170,8 +2170,8 @@ static int dc_menu(bool can_take, bool can_put) {
  * a mon in the Party/PC first (universal clipboard), then puts it in here — a paste, so
  * the source keeps its copy (release it separately for a true move, like the PC). */
 static bool dc_deposit(uint32_t base, uint32_t stride) {
-  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); return false; }
-  if (!g_clip.occupied) { snd_deny(); msg_wait("NOTHING COPIED", UI_DIM, "Copy a Pokemon in the PC or", "Party first, then Put in here."); return false; }
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return false; }
+  if (!g_clip.occupied) { snd_deny(); msg_wait("NOTHING COPIED", UI_DIM, "Copy a mon in PC/Party,", "then Put in here."); return false; }
   int fi = dc_first_free(base, stride);
   if (fi < 0) { snd_deny(); msg_wait("DAY-CARE FULL", UI_WARN, "Take a Pokemon out first.", 0); return false; }
   uint8_t out[100];
@@ -2190,7 +2190,7 @@ static bool dc_deposit(uint32_t base, uint32_t stride) {
  *   To PC    - place on the clipboard so the user PASTEs it onto any free PC slot
  *              (a "grab"-style placement of their choice). */
 static bool dc_withdraw(uint32_t base, uint32_t stride, uint8_t* rec, int physi) {
-  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); return false; }
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return false; }
   static const char* const D[3] = { "To Party", "To PC", "Cancel" };
   int sel = 0;
   for (;;) {
@@ -2209,7 +2209,7 @@ static bool dc_withdraw(uint32_t base, uint32_t stride, uint8_t* rec, int physi)
   }
   if (sel == 2) return false;
   if (sel == 0) {                                /* To Party — append (atomic, full-checked) */
-    if (party_count(g_sb1, g_frlg) >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Make room in your party first.", 0); return false; }
+    if (party_count(g_sb1, g_frlg) >= 6) { snd_deny(); msg_wait("PARTY FULL", UI_WARN, "Free a party slot first.", 0); return false; }
     EditMon e; gen3_edit_load(rec, false, &e); em_set_party_flag(&e, true);   /* box -> party form */
     uint8_t out[100]; gen3_edit_commit(&e, out);
     party_append(g_sb1, g_frlg, out);
@@ -2475,7 +2475,7 @@ static bool sb_detail(SbRecord* b, uint32_t off) {
     int cls = sb_owner_class(g_sb1, off, b->slot);
     siprintf(line, "Looks like: %s", (cls >= 0 && cls < 10) ? SB_CLASS_NAME[cls] : "?");
     ui_text(6, 27, UI_TEXT, line);
-    siprintf(line, "Visits %u   Decorations %d/16", (unsigned)b->numEntered, b->decorCount);
+    siprintf(line, "Visits %u  Deco %d/16", (unsigned)(b->numEntered > 9999 ? 9999 : b->numEntered), b->decorCount);
     ui_text(6, 37, UI_DIM, line);
     if (b->battledToday) ui_text(6, 46, UI_WARN, "Battled today");     /* #6: its own line */
 
@@ -2498,8 +2498,8 @@ static bool sb_detail(SbRecord* b, uint32_t off) {
     if (k & KEY_B) return dirty;
     else if (k & KEY_A) { if (b->partyCount > 0) sb_mon_edit(b, off, psel, &dirty); }
     else if (k & KEY_SELECT) {
-      if (!can)        { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); }
-      else if (b->own) { snd_deny(); msg_wait("OWN BASE", UI_DIM, "Your base's look comes from", "your trainer card."); }
+      if (!can)        { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); }
+      else if (b->own) { snd_deny(); msg_wait("OWN BASE", UI_DIM, "Its look comes from your", "trainer card."); }
       else sb_owner_pick(b, off, &dirty);
     }
     else if (b->partyCount > 0) {
@@ -2517,7 +2517,7 @@ static void pdna_secretbase(void) {
   uint32_t off = gen3_secret_base_offset(v);
   if (off == 0) { msg_wait("SECRET BASES", UI_DIM, "FireRed/LeafGreen has no", "Secret Bases."); return; }
   int n = sb_read_all(g_sb1, off, g_sb_recs);
-  if (n == 0) { msg_wait("SECRET BASES", UI_DIM, "None registered yet.", "Set one up or mix records."); return; }
+  if (n == 0) { msg_wait("SECRET BASES", UI_DIM, "None registered yet.", "Set one up or mix first."); return; }
 
   int sel = 0, top = 0;
   const int VIS = 8;
@@ -2560,7 +2560,7 @@ static void pdna_secretbase(void) {
       }
     }
     else if (k & KEY_SELECT) {                          /* clear a base (Omega-only, verified write) */
-      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); continue; }
+      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
       const SbRecord* b = &g_sb_recs[sel];
       char l2[40]; siprintf(l2, "%s%s", b->trainerName[0] ? b->trainerName : "?", b->own ? "  (YOUR base)" : "'s base");
       if (app_confirm("Clear this Secret Base?", l2)) {
@@ -2632,7 +2632,7 @@ static void clock_manual_entry(GbaRtcTime live) {
                               y, mo, d, h, mi, 0))
           app_commit_sb2();           /* verified write; shows SAVED / WRITE FAILED + backs up */
         else
-          msg_wait("OUT OF RANGE", UI_WARN, "Cart clock year too far off.", "Fix the cart's TIME first.");
+          msg_wait("OUT OF RANGE", UI_WARN, "Cart year is way off.", "Fix the cart TIME first.");
         return;
       }
     }
@@ -2686,8 +2686,8 @@ static void pdna_clock(void) {
       else if (ci.delta > 0)    siprintf(b, "%d day(s) will pass when you play.", ci.delta);
       else                      strcpy(b, "Up to date - nothing pending.");
       ui_text(6, 64, UI_DIM, b);
-      ui_text(6, 78, UI_DIM, "(Save clock is the in-game time");
-      ui_text(6, 88, UI_DIM, " you set - it need not match today.)");
+      ui_text(6, 78, UI_DIM, "(Save clock = in-game time;");
+      ui_text(6, 88, UI_DIM, " it need not match today.)");
     }
 
     if (!have) {
@@ -2710,11 +2710,11 @@ static void pdna_clock(void) {
     u16 k = wait_keys(KEY_A | KEY_SELECT | KEY_B);
     if (k & KEY_B) return;
     else if (k & KEY_A) {
-      if (app_confirm("Sync to cart clock?", "In-game time = cart time now.")) {
+      if (app_confirm("Sync to cart clock?", "Game clock = cart clock.")) {
         if (gen3_clock_autosync(g_sb2, live.year, live.month, live.day, live.hour, live.minute, live.second))
           app_commit_sb2();
         else
-          msg_wait("CAN'T SYNC", UI_WARN, "Cart clock year out of range.", "Set the cart's TIME first.");
+          msg_wait("CAN'T SYNC", UI_WARN, "Cart year out of range.", "Set the cart TIME first.");
       }
     } else if (k & KEY_SELECT) {
       clock_manual_entry(live);
@@ -2813,12 +2813,12 @@ static void pdna_settings(void) {
       else if (sel == S_ANIM)   anim_settings();
       else if (sel == S_RUMBLE) rumble_settings();
       else if (sel == S_CLEAR) {
-        if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "File writes need EZ-Flash Omega.", 0); continue; }
+        if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
         if (app_confirm("Delete ALL backups?", "For the loaded save only.")) {
           rmbl_pause();
           int rm = sf_clear_backups(g_path);
           rmbl_resume();
-          char m[44]; siprintf(m, "Removed %d backup file(s).", rm);
+          char m[44]; siprintf(m, "%d backup(s) removed.", rm);
           snd_ok(); msg_wait("CLEARED", UI_OK, m, 0);
         }
       } else return;   /* S_CLOSE */
@@ -2894,7 +2894,7 @@ static BoxSource pc_box_source(void) {
  * everything — the on-disk save was never touched and we're returning to the browser. */
 static void flush_on_exit(void) {
   if (!app_pc_dirty() && !g_sb1_deferred) { pdna_bank_flush_deletions(); return; }  /* PC already saved; still delete carried bank originals */
-  if (app_confirm("Save changes?", "Save the Pokemon you moved?")) {
+  if (app_confirm("Save changes?", "Save the moved Pokemon?")) {
     app_commit_pc();              /* writes g_pc + the staged Day-Care sections; clears both flags */
     pdna_bank_flush_deletions();  /* delete the Bank originals of carried mons AFTER the PC is written (fail-toward-dup) */
   } else {
@@ -2985,12 +2985,12 @@ static void view_save(const char* path) {
         case NV_CLOCK:   pdna_clock(); break;
         case NV_DEX:     pdna_dex_edit(); break;
         case NV_DATA:    if (app_can_edit()) data_editor();
-                         else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); } break;
+                         else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
         case NV_SECRET:  rmbl_fire(RCUE_ROOM); pdna_secretbase(); break;
         case NV_POKEBLOCK: if (app_can_edit()) pdna_pokeblock();
-                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); } break;
+                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
         case NV_EVENTS:   if (app_can_edit()) pdna_events();
-                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Editing needs EZ-Flash Omega.", 0); } break;
+                           else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
         case NV_SETTINGS: pdna_settings(); break;
         default: break;                          /* NV_BACK */
       }

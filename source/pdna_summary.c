@@ -160,9 +160,9 @@ static void card_info(const PkMon* p) {
 
   if (p->isEgg && !p->isBadEgg) {        /* an egg stores its hatch counter in friendship */
     siprintf(b, "Hatch ~%u steps", (unsigned)(p->friendship * 256));
-    ui_text(x, y, C_HOT, b); y += 10;
+    { char hb[24]; ui_truncate(hb, b, 17); ui_text(x, y, C_HOT, hb); } y += 10;
     siprintf(b, "%u egg cycle%s left", (unsigned)p->friendship, p->friendship == 1 ? "" : "s");
-    ui_text(x, y, UI_DIM, b); y += 11;
+    { char hb[24]; ui_truncate(hb, b, 17); ui_text(x, y, UI_DIM, hb); } y += 11;
   }
 
   ui_text(x, y, C_KEY, "Species"); reg(F_SPECIES, x + 48, y, 88);
@@ -477,9 +477,9 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
       m3_frame(sx - 2, sy - 1, sx + sw, sy + UI_ROW_H, UI_SELTEXT);
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, editing ? "A list  <> +/-  U/D field  L/R card  B view"
-                          : can_edit ? "A edit  U/D mon  <>/LR card  SEL flip  B"
-                                     : "U/D mon  <>/LR card  SEL flip  B back");
+    ui_text(4, 152, UI_DIM, editing ? "A list  <>edit  U/D  L/R  B"
+                          : can_edit ? "A edit  U/D mon  L/R  SEL  B"
+                                     : "U/D mon  L/R card  SEL  B");
     lastkey = 64 | (64 << 8) | (64 << 16) | (64 << 24);   /* render_card drew the rest pose (64,64,0,0) */
     if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY) && !cur.isEgg) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
                               portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, wx, sy, dx, dy, &lastkey); }

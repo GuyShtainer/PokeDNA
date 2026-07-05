@@ -21,8 +21,8 @@ void pdna_legality_show(const PkMon* m) {
 
     if (L.n == 0) {
       ui_text(10, 32, UI_OK, "Legal");
-      ui_text(10, 50, UI_DIM, "No impossible/tampered values.");
-      ui_text(10, 62, UI_DIM, "Moves learnable. Encounter: later.");
+      ui_text(10, 50, UI_DIM, "No tampered values found.");
+      ui_text(10, 62, UI_DIM, "All moves learnable.");
     } else {
       char hdr[40];
       siprintf(hdr, "%d illegal, %d warning(s)", illegal, L.n - illegal);

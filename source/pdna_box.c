@@ -305,7 +305,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
     }
     /* PC -> Bank (two separate save prompts): keep the safe confirmed COPY. */
     boxoam_suspend();
-    bool ok = app_confirm("Copy to Bank?", "The PC keeps the original.");
+    bool ok = app_confirm("Copy to Bank?", "PC keeps the original.");
     boxoam_resume();
     if (!ok) return recs;                                    /* keep holding */
     if (src->note_add) src->note_add(s_held);                /* mon enters this scope -> dex */
@@ -360,14 +360,14 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
 
 static void draw_footer(bool is_bank, bool on_title, bool moving) {
   const char* f;
-  if (s_tab_focus >= 0)    f = "L/R tab  A pick  DOWN back";
-  else if (moving)         f = "Move  A drop  B cancel";
-  else if (s_item_held)    f = "Item  A give  B putback";
-  else if (on_title)       f = "A edit  UP tabs  DOWN grid  L/R box";
-  else if (s_cur_mode == CM_MOVE) f = "MOVE  A grab  SEL mode  B";
-  else if (s_cur_mode == CM_ITEM) f = "ITEM  A take  SEL mode  B";
-  else                     f = is_bank ? "A menu  SEL mode  L/R box  B"
-                                       : "A menu  UP title  SEL mode  B";
+  if (s_tab_focus >= 0)    f = "L/R tab  A pick  DN";
+  else if (moving)         f = "A drop  B cancel";
+  else if (s_item_held)    f = "A give  B put back";
+  else if (on_title)       f = "L/R box  A edit  DN";
+  else if (s_cur_mode == CM_MOVE) f = "MOVE  A grab  SEL B";
+  else if (s_cur_mode == CM_ITEM) f = "ITEM  A take  SEL B";
+  else                     f = is_bank ? "A menu  SEL  L/R  B"
+                                       : "A menu  UP  SEL  B";
   /* clear the footer strip first (it changes between modes) */
   ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);
   ui_text(WP_X + 2, 152, RGB15(31, 31, 31), f);
@@ -463,10 +463,10 @@ static int wallpaper_pick(BoxSource* src, int cur_wp) {
     ui_clear();
     draw_wallpaper(wp, WP_X, WP_Y, WP_W, WP_H);
     /* the box's icons stay composited as OBJ sprites above this preview BG */
-    char b[40]; siprintf(b, "%d/%d  %s%s", wp + 1, count, wp_name(wp), wp >= 16 ? " (secret)" : "");
+    char b[40]; siprintf(b, "%d/%d %s%s", wp + 1, count, wp_name(wp), wp >= 16 ? " *" : "");   /* * = Walda secret; " (secret)" overflowed */
     ui_panel(50, 0, 140, 13, UI_PANEL, UI_BORDER);
     ui_text(56, 2, UI_TITLE, b);
-    ui_text(2, 152, RGB15(31, 31, 31), "L/R wallpaper   A set   B cancel");
+    ui_text(2, 152, RGB15(31, 31, 31), "L/R pick  A set  B cancel");
     u16 k; do { s_vsync(); k = key_hit(KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B); } while (!k);
     if (k & KEY_B) { snd_back(); return -1; }
     if (k & KEY_A) { snd_ok(); return wp; }
@@ -490,7 +490,7 @@ static void box_options_menu(BoxSource* src, int box) {
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, OPT[i]);
     }
-    ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
+    ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick B back");
     u16 k; do { s_vsync(); k = key_hit(KEY_UP | KEY_DOWN | KEY_A | KEY_B); } while (!k);
     if (k & KEY_B) { snd_back(); return; }
     else if (k & KEY_UP)   { snd_move(); sel = (sel > 0) ? sel - 1 : 2; }

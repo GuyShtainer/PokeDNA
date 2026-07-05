@@ -529,8 +529,8 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
       ui_clear();
       ui_hline(0, 22, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-      ui_text(4, 152, UI_DIM, can_edit ? "A cycle  L/R view  ST opts  SEL find  B"
-                                        : "L/R view  ST opts  SEL find  B back");
+      ui_text(4, 152, UI_DIM, can_edit ? "A cyc  L/R view  ST  SEL  B"
+                                        : "L/R view  ST opts  SEL  B");
       for (int i = 0; i < vis && top + i < g_n; i++) {
         int x = x0 + (i % cols) * cw, y = y0 + (i / cols) * ch;
         if (grid) dex_cell_grid(x, y, g_list[top + i], bob);
@@ -686,7 +686,7 @@ uint16_t pick_move(uint16_t current) {
 
     ui_clear();
     char h[48];
-    siprintf(h, "MOVES [%s] sort:%s  %d", tf < 0 ? "All" : pk_type_name((uint8_t)tf),
+    siprintf(h, "MOVES [%.3s] %s %d", tf < 0 ? "All" : pk_type_name((uint8_t)tf),
              MV_SORT[sort], g_mvn);
     ui_text(4, 1, UI_TITLE, h);
     ui_hline(0, 11, UI_SCR_W, UI_BORDER);
@@ -902,7 +902,7 @@ uint16_t pick_item(uint16_t current) {
     uint16_t cur = n ? idx[sel] : 0;
     if (view == IV_SPLIT) {
       ui_fill_rect(124, 22, 112, 120, UI_PANEL);
-      ui_text(126, 24, UI_TITLE, pk_item_name(cur));
+      { char inm[24]; ui_truncate(inm, pk_item_name(cur), 13); ui_text(126, 24, UI_TITLE, inm); }
       text_wrap(126, 36, 13, UI_TEXT, pk_item_desc(cur));
     } else {
       ui_fill_rect(0, 138, UI_SCR_W, 8, UI_BG);
