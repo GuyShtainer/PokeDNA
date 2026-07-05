@@ -14,7 +14,6 @@ int  log_under_mgba(void);            /* 1 if running under mGBA, else 0      */
 void log_line(const char* fmt, ...);  /* append a line (RAM buffer + mGBA)    */
 void log_clear(void);
 
-const char* log_text(void);           /* the accumulated buffer (for the UI)  */
 
 /* Write the buffer to `path` (FA_CREATE_ALWAYS). Returns 0 on success,
  * otherwise the FRESULT from FatFs. Call this after the SD is mounted. */

@@ -140,33 +140,13 @@ typedef struct {
 
 bool     gen3_parse(const uint8_t* save, uint32_t size, Gen3SaveInfo* out);
 
-/* Identify a MIXABLE game from a reassembled SaveBlock1: returns G3_VER_EMERALD
- * or G3_VER_RS only if a valid (all-sane, non-empty) secret-base array exists at
- * that game's offset; otherwise G3_VER_UNKNOWN. This cleanly excludes
- * FireRed/LeafGreen (no secret bases) and saves with no base to share — neither
- * of which can be record-mixed. (Emerald vs FRLG cannot be told apart by save
- * size, but only RSE has secret bases, so this is the reliable test.) */
-Gen3Version gen3_detect_game(const uint8_t* sb1);
 
-/* Read the player's live party from a reassembled SaveBlock1, decrypt each mon
- * (Gen 3 substructure XOR + ordering), validate its checksum, skip eggs /
- * bad-eggs / empty / corrupt slots, and fill `out` with the kept mons compacted
- * to the front. `omit_mask` drops any kept mon whose RAW party slot bit is set
- * (bit i => slot i); pass 0 to keep all. Returns the number of kept mons.
- * Layout is identical for RS and Emerald, so no version argument is needed. */
-int      gen3_read_live_party(const uint8_t* sb1, uint8_t omit_mask,
-                              Gen3LiveParty* out);
 
 /* Display read for the UI: same keep-rules as gen3_read_live_party (no omit),
  * additionally decoding each kept mon's nickname + plaintext stats + the raw
  * party slot it came from. Read-only. Returns the number of kept mons. */
 int      gen3_read_live_party_display(const uint8_t* sb1, Gen3DisplayParty* out);
 
-/* Count this save's friend secret bases (records 1..19, secretBaseId != 0) and,
- * via *out_total, how many exist; the return value is how many are battleable
- * right now (battledOwnerToday == 0). Reads the reassembled SaveBlock1. */
-int      gen3_count_battleable(const uint8_t* sb1, Gen3Version version,
-                               int* out_total);
 
 /* Days since 2000-01-01 for a Gregorian date (matches the RTC epoch). Pure. */
 int      gen3_rtc_days(int year, int month, int day);

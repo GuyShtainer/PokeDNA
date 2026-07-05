@@ -16,11 +16,6 @@ bool app_can_edit(void);
  * Returns true iff a write happened. */
 typedef bool (*AppCommitFn)(void);
 
-/* Edit the record `rec` (which lives inside some in-RAM block). Runs the field
- * editor; on commit it patches `rec` in place and calls `commit` (the owning
- * block's verified-write path). Returns true iff a write happened. Gated to Omega. */
-bool app_edit_commit(uint8_t* rec, bool is_party, AppCommitFn commit);
-
 /* Gen-3-PC-style action menu shown on A: SUMMARY / ITEM / MOVES / COPY / PASTE /
  * DUPLICATE / RELEASE on Omega (an empty slot offers PASTE only); straight to the
  * read-only summary on Everdrive. `block` is the pc-layout buffer the slot lives in
@@ -32,10 +27,6 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
 /* Bank "Copy to game": inject a stored 80-byte box record into the loaded save's
  * first free PC box slot (and commit). Returns true iff written. Omega-only. */
 bool app_inject_to_game(const uint8_t* rec80);
-
-/* true if the one-slot mon clipboard holds a copied mon (for the box grid to
- * allow PASTE onto an empty slot). */
-bool app_clip_occupied(void);
 
 /* The A-menu's MOVE action sets a one-shot flag; the box grid consumes it to
  * enter "pick up + reposition" mode. Returns true once per MOVE pick. */
@@ -50,12 +41,6 @@ bool app_take_dup_request(void);
  * the box grid consumes it on entry to open that box carrying the mon in the glove.
  * Returns true once and fills *box/*slot. */
 bool app_take_pickup(int* box, int* slot);
-
-/* Cross-screen carry (PC <-> Bank). The source screen stows the held 80-byte record and
- * returns 4 (->Bank) / 5 (->PC); the destination box grid takes it on entry, places it
- * in a free slot and carries it in the glove. */
-void app_xfer_put(const uint8_t* rec80);
-bool app_xfer_take(uint8_t* rec80);
 
 /* Entry-cursor hint for the next box grid: 0 default, 1 = start on the top tabs,
  * 2 = start at the bottom row (used by the PC<->Bank up/down hand-off). */

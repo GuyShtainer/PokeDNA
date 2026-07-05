@@ -33,7 +33,6 @@ bool pk3_validate(const uint8_t rec80[80]);
 
 /* ---- PC box slots (fixed 14x30 array; an all-zero record == empty) ---- */
 uint8_t* pk_box_slot(uint8_t* pc, int box, int slot);   /* pc + 0x0004 + (box*30+slot)*80 */
-void clip_write_box_slot(uint8_t* pc, int box, int slot, const uint8_t rec80[80]);
 void clip_clear_box_slot(uint8_t* pc, int box, int slot);
 
 /* ---- live party (count-tracked, gap-free — order matters!) ---- */
@@ -41,6 +40,5 @@ int      party_count(const uint8_t* sb1, bool frlg);
 uint8_t* pk_party_slot(uint8_t* sb1, bool frlg, int idx);
 bool     party_append (uint8_t* sb1, bool frlg, const uint8_t rec100[100]); /* false if full (6) */
 void     party_release(uint8_t* sb1, bool frlg, int idx);  /* shift the rest down + count-- */
-void     party_write  (uint8_t* sb1, bool frlg, int idx, const uint8_t rec100[100]);
 
 #endif /* GEN3_CLIP_H */

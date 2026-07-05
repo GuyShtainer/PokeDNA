@@ -145,7 +145,7 @@ bool pk_decode_mon(const uint8_t* mon, bool is_party, PkMon* out) {
   out->abilityNum  = (uint8_t)((ivword >> 31) & 1);
   out->ribbons     = rd32(m + 0x08);
 
-  out->nature  = (uint8_t)(pers % 25);
+  out->nature  = pk_nature(pers);
   out->isShiny = pk_is_shiny(pers, (uint16_t)(otid & 0xFFFF), (uint16_t)(otid >> 16));
 
   decode_name(out->nickname, mon + 0x08, 10);

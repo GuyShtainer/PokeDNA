@@ -142,25 +142,6 @@ static bool decode_party_mon(const uint8_t* mon,
   return true;
 }
 
-int gen3_read_live_party(const uint8_t* sb1, uint8_t omit_mask, Gen3LiveParty* out) {
-  memset(out, 0, sizeof(*out));
-  uint8_t count = sb1[SB1_OFF_PARTY_COUNT];
-  if (count > G3_PARTY_SIZE) count = G3_PARTY_SIZE;   /* defensive clamp */
-
-  int kept = 0;
-  for (int i = 0; i < count; i++) {
-    const uint8_t* mon = sb1 + SB1_OFF_PARTY + (uint32_t)i * G3_MON_SIZE;
-    Gen3PartyMon m;
-    if (!decode_party_mon(mon, &m.species, &m.heldItem, m.moves,
-                          &m.level, &m.avgEV, &m.personality, NULL, NULL, NULL, NULL))
-      continue;
-    if (omit_mask & (1u << i)) continue;             /* user-omitted slot */
-    out->mon[kept++] = m;
-  }
-  out->count = kept;
-  return kept;
-}
-
 int gen3_read_live_party_display(const uint8_t* sb1, Gen3DisplayParty* out) {
   memset(out, 0, sizeof(*out));
   uint8_t count = sb1[SB1_OFF_PARTY_COUNT];
@@ -178,21 +159,6 @@ int gen3_read_live_party_display(const uint8_t* sb1, Gen3DisplayParty* out) {
   }
   out->count = kept;
   return kept;
-}
-
-int gen3_count_battleable(const uint8_t* sb1, Gen3Version version, int* out_total) {
-  uint32_t off = gen3_secret_base_offset(version);
-  int total = 0, battleable = 0;
-  if (off != 0) {
-    for (int i = 1; i < G3_SECRET_BASES_COUNT; i++) {   /* skip 0 = own base */
-      const uint8_t* rec = sb1 + off + (uint32_t)i * G3_SECRET_BASE_SIZE;
-      if (rec[0x00] == 0) continue;                     /* empty slot */
-      total++;
-      if (((rec[0x01] >> 5) & 1u) == 0) battleable++;   /* battledOwnerToday == 0 */
-    }
-  }
-  if (out_total) *out_total = total;
-  return battleable;
 }
 
 static bool is_leap(int y) { return (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0); }
@@ -392,18 +358,6 @@ uint32_t gen3_write_full_section(uint8_t* save, int slot, int section_id,
   uint16_t cs = gen3_checksum(sec, G3_SECTOR_DATA_SIZE);
   wr16(sec + G3_OFF_CHECKSUM, cs);
   return secoff;
-}
-
-Gen3Version gen3_detect_game(const uint8_t* sb1) {
-  /* Only Ruby/Sapphire/Emerald have secret bases. A valid, non-empty secret-base
-   * array (all 20 records sane, >=1 used) exists at the Emerald offset for an
-   * Emerald save and at the RS offset for a Ruby/Sapphire save; FireRed/LeafGreen
-   * (and bases-less saves) have neither, so they're correctly excluded. */
-  int em = gen3_count_secret_bases(sb1, G3_VER_EMERALD);
-  int rs = gen3_count_secret_bases(sb1, G3_VER_RS);
-  if (em > 0 && em >= rs) return G3_VER_EMERALD;
-  if (rs > 0)             return G3_VER_RS;
-  return G3_VER_UNKNOWN;   /* FRLG / no secret bases -> not mixable */
 }
 
 bool gen3_parse(const uint8_t* save, uint32_t size, Gen3SaveInfo* out) {

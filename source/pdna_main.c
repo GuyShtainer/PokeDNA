@@ -705,13 +705,6 @@ bool app_set_walda(uint8_t pattern) {
   return true;
 }
 
-bool app_edit_commit(uint8_t* rec, bool is_party, AppCommitFn commit) {
-  uint8_t out[100]; bool saved = false; int card = 0;
-  pdna_inspect(rec, is_party, true, out, &saved, &card);   /* party: nav ignored */
-  if (!saved) return false;                                  /* viewed only / discarded */
-  memcpy(rec, out, is_party ? 100 : 80);                     /* patch in place (rec is inside block) */
-  return app_commit_with_dex(rec, is_party, commit, g_sb1);  /* party lives in SaveBlock1; auto-register dex */
-}
 
 /* Box summary BROWSER: VIEW/EDIT a box slot, then U/D scroll to the prev/next
  * occupied slot (real-PC style). Edits are saved per-mon (prompted on leave/change)
@@ -768,7 +761,6 @@ static bool app_quick_item(uint8_t* rec, bool is_party, AppCommitFn commit) {
   return commit ? commit() : false;
 }
 
-bool app_clip_occupied(void) { return g_clip.occupied; }
 
 /* MOVE (box reposition) request: the A-menu sets this; the box loop consumes it. */
 static bool g_move_req = false;
@@ -788,10 +780,6 @@ bool app_take_pickup(int* box, int* slot) {
 }
 static void pdna_daycare(void);   /* forward: app_to_daycare opens it after a deposit */
 
-/* Cross-screen carry (PC <-> Bank): the held record travels here between pdna_box runs. */
-static uint8_t g_xfer_rec[80]; static bool g_xfer_set = false;
-void app_xfer_put(const uint8_t* rec80) { memcpy(g_xfer_rec, rec80, 80); g_xfer_set = true; }
-bool app_xfer_take(uint8_t* rec80) { if (!g_xfer_set) return false; memcpy(rec80, g_xfer_rec, 80); g_xfer_set = false; return true; }
 static int g_box_start = 0;
 void app_box_start_set(int s) { g_box_start = s; }
 int  app_box_start_take(void) { int s = g_box_start; g_box_start = 0; return s; }

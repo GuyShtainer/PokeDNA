@@ -40,7 +40,6 @@
 #define TID_CITEM   TID_REGB            /* 32x32 full-size item, real icon (16 tiles) */
 
 /* OBJ palette banks */
-#define PB_ICON_MAX 12                  /* icon banks 0..12                       */
 #define PB_HAND     13                  /* hand(normal)+grab+item glyph           */
 #define PB_HANDORG  14                  /* hand orange (MOVE)                     */
 #define PB_CITEM    15                  /* carried item icon                      */

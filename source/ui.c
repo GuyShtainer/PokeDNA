@@ -74,16 +74,6 @@ void ui_sprite(int x, int y, int w, int h, const u16* data) {
 
 /* Blit a 32x32 RGB15 sprite shrunk to 16x16 (sample every other pixel) — for
  * compact list rows where the full 32x32 icon won't fit. */
-void ui_icon_sub(int x, int y, const u16* src32) {
-  if (!src32) return;
-  for (int j = 0; j < 16; j++) {
-    for (int i = 0; i < 16; i++) {
-      u16 p = src32[(j * 2) * 32 + i * 2];
-      if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
-    }
-  }
-}
-
 /* Nearest-neighbour blit of a 32x32 (0x8000-keyed) icon at an arbitrary dst size
  * — for grids that want icons bigger than the 16x16 sub but not the full 32. */
 void ui_icon_scaled(int x, int y, int dw, int dh, const u16* src32) {

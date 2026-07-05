@@ -34,8 +34,6 @@ void log_clear(void) {
   s_buf[0] = 0;
 }
 
-const char* log_text(void) { return s_buf; }
-
 static void mgba_emit(const char* line) {
   if (!s_mgba) return;
   int i = 0;

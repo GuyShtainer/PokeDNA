@@ -42,9 +42,6 @@ bool pk3_validate(const uint8_t rec80[80]) {
 uint8_t* pk_box_slot(uint8_t* pc, int box, int slot) {
   return pc + PC_OFF_BOXES + ((uint32_t)(box * G3_IN_BOX + slot)) * BOX_MON;
 }
-void clip_write_box_slot(uint8_t* pc, int box, int slot, const uint8_t rec80[80]) {
-  memcpy(pk_box_slot(pc, box, slot), rec80, BOX_MON);
-}
 void clip_clear_box_slot(uint8_t* pc, int box, int slot) {
   memset(pk_box_slot(pc, box, slot), 0, BOX_MON);
 }
@@ -62,11 +59,6 @@ bool party_append(uint8_t* sb1, bool frlg, const uint8_t rec100[100]) {
   memcpy(pk_party_slot(sb1, frlg, n), rec100, PARTY_MON);
   sb1[party_count_off(frlg)] = (uint8_t)(n + 1);
   return true;
-}
-void party_write(uint8_t* sb1, bool frlg, int idx, const uint8_t rec100[100]) {
-  int n = party_count(sb1, frlg);
-  if (idx < 0 || idx >= n) return;
-  memcpy(pk_party_slot(sb1, frlg, idx), rec100, PARTY_MON);
 }
 void party_release(uint8_t* sb1, bool frlg, int idx) {
   int n = party_count(sb1, frlg);
