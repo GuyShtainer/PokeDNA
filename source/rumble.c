@@ -18,16 +18,6 @@
 
 #define TICK_HZ 8192                 /* PWM update IRQ rate */
 
-/* HW KILL SWITCH: when true, rumble touches ZERO cart hardware — no GPIO writes at
- * boot, during rendering, or on a cue, and the PWM timer/ISR are never armed. Rumble
- * is new since the last hardware-good build (v1.0.0) and drives the cart GPIO port
- * (0x080000C4-C8), the SAME bus window the EZ-Flash Omega DE emulates for RTC/GPIO;
- * an untested interaction there can stop the ROM booting on real hardware. Disabled
- * until the motor path is validated on HW; flip to false (with the deferred-GPIO setup
- * below already in place) to re-enable. Every function that writes GPIO_CTRL/DIR/DATA
- * or arms TIMER2 checks this first. */
-static const bool    s_hw_kill = true;
-
 static bool          s_omega  = false;
 static volatile bool s_pwm    = false;   /* PWM mode running          */
 static volatile bool s_paused = false;   /* true around SD transfers  */
@@ -41,7 +31,6 @@ static volatile u16 s_ctr    = 0;
 
 IWRAM_CODE static void motor_set(int on) {
   s_motor = (u8)(on != 0);
-  if (s_hw_kill) return;                   /* rumble hardware disabled */
   if (s_io_depth) return;                 /* bus frozen for a ROM-read blit: don't toggle the cart */
   GPIO_DATA = on ? RUMBLE_BIT : 0;
 }
@@ -56,17 +45,16 @@ IWRAM_CODE static void pwm_isr(void) {
 
 void rumble_init(void) {
   s_omega = (active_flashcart == EZ_FLASH_OMEGA);
-  s_pwm = false; s_paused = false; s_motor = 0;
-  if (s_hw_kill) return;    /* leave the cart GPIO bus untouched at boot */
   GPIO_CTRL = 1;            /* allow GPIO read/write           */
   GPIO_DIR  = RUMBLE_BIT;   /* bit3 output, RTC bits as input  */
   GPIO_DATA = 0;           /* motor off                       */
+  s_pwm = false; s_paused = false; s_motor = 0;
 }
 
 bool rumble_omega(void)      { return s_omega; }
 bool rumble_pwm_active(void) { return s_pwm; }
 
-void rumble_raw_off(void) { s_motor = 0; if (s_hw_kill || s_io_depth) return; GPIO_DATA = 0; }
+void rumble_raw_off(void) { s_motor = 0; if (s_io_depth) return; GPIO_DATA = 0; }
 
 /* Render guard: while a long software blit reads pixel data from ROM, a rumble GPIO
  * write to the cart bus (0x080000C4) can corrupt those in-flight ROM reads on the
@@ -77,8 +65,7 @@ void rumble_raw_off(void) { s_motor = 0; if (s_hw_kill || s_io_depth) return; GP
  * resumes seamlessly afterwards. Nesting-counted (blit primitives nest). DISTINCT from
  * rumble_pause() (the SD-write guard) — do not share the s_paused flag. */
 void rumble_io_suspend(void) { s_io_depth++; }
-void rumble_io_resume(void)  { if (s_hw_kill) { if (s_io_depth > 0) s_io_depth--; return; }
-                               if (s_io_depth > 0 && --s_io_depth == 0 && !s_pwm) { GPIO_DATA = 0; s_motor = 0; } }
+void rumble_io_resume(void)  { if (s_io_depth > 0 && --s_io_depth == 0 && !s_pwm) { GPIO_DATA = 0; s_motor = 0; } }
 
 void rumble_pwm_set(int freq_hz, int duty) {
   if (freq_hz < 1) freq_hz = 1;
@@ -102,7 +89,6 @@ void rumble_pwm_set(int freq_hz, int duty) {
 }
 
 void rumble_pwm_start(int freq_hz, int duty) {
-  if (s_hw_kill) return;                    /* never arm the motor timer / touch GPIO */
   rumble_pwm_set(freq_hz, duty);
   GPIO_DIR = RUMBLE_BIT;
   s_ctr = 0; s_pwm = true;
@@ -126,7 +112,6 @@ void rumble_pause(void) {
 
 void rumble_resume(void) {
   s_paused = false;
-  if (s_hw_kill) return;
   if (s_pwm) {
     GPIO_DIR = RUMBLE_BIT;
     s_ctr = 0;
