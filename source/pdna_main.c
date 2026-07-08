@@ -2415,11 +2415,22 @@ static void sb_mon_edit(SbRecord* b, uint32_t off, int start, bool* dirty) {
     uint8_t rec[80]; memset(rec, 0, 80);
     rec[0] = (uint8_t)pid; rec[1] = (uint8_t)(pid >> 8); rec[2] = (uint8_t)(pid >> 16); rec[3] = (uint8_t)(pid >> 24);
     EditMon e; gen3_edit_load(rec, false, &e);
+    /* The zero-ciphertext record decrypts (key = PID ^ otId=0) to PID-FILLED substructs, so
+     * every field not set below inherits PID garbage — including the Misc IV-word's egg bit
+     * (bit30 = PID bit30), which made ~half of secret-base mons show up as EGGS, plus garbage
+     * ability/friendship/met/contest. Start from clean substructs, mark it a present mon, then
+     * populate exactly the reduced SB fields the game rebuilds from. */
+    memset(e.sub, 0, sizeof(e.sub));
+    e.raw[0x13] = 0x02;                                 /* hasSpecies (present), not egg / not bad-egg */
     em_set_species(&e, P->species[idx]);
     em_set_item(&e, P->heldItem[idx]);
     for (int z = 0; z < 4; z++) em_set_move(&e, z, P->moves[idx * 4 + z]);
-    for (int s = PK_HP; s <= PK_SPD; s++) em_set_iv(&e, s, 15);         /* the game's fixedIV in SB battles */
-    for (int s = PK_HP; s <= PK_SPD; s++) em_set_ev(&e, s, P->ev[idx]); /* one byte -> all 6 stats */
+    /* Exact SB battle stats: CreateMon(..., fixedIV=15, ..., personality, OT_ID_RANDOM_NO_SHINY):
+     * every IV forced to 15, the stored average-EV byte written to every stat, nature/gender/
+     * ability derived from the personality. (Verified vs pokeemerald CreateSecretBaseEnemyParty.) */
+    for (int s = PK_HP; s <= PK_SPD; s++) em_set_iv(&e, s, 15);
+    for (int s = PK_HP; s <= PK_SPD; s++) em_set_ev(&e, s, P->ev[idx]);
+    em_set_ability(&e, (uint8_t)(pid & 1));             /* ability slot = personality bit0 */
     em_set_level(&e, P->level[idx]);
     gen3_edit_commit(&e, rec);
     /* full rich view/edit — identical 7-card UI as any other mon */

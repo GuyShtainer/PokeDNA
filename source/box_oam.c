@@ -296,13 +296,17 @@ void boxoam_cursor(int cur, bool on_title, int mode) {
   else hand_xy(cur, &hx, &hy);
 
   int bank = (mode == BOXOAM_HAND_MOVE) ? PB_HANDORG : PB_HAND;
+  int prio = 0;
   u16 a0 = ATTR0_SQUARE | ATTR0_4BPP | (hy & ATTR0_Y_MASK);
   if (mode == BOXOAM_HAND_ITEM) {
-    a0 |= ATTR0_BLEND;                               /* semi-transparent obj           */
-    /* Only objects with ATTR0_BLEND fade (the glove + the non-holder icons); item
-     * holders, item badges and the carried item have no blend bit -> opaque. The 2nd
-     * (bottom) blend target (bits 8-13) MUST be set — blend over BG2 + the OBJ below.
-     * NOTE: do NOT put BLD_OBJ in the 1st-target mask, or EVERY object would fade. */
+    /* ITEM mode: the hand stays OPAQUE. It used to carry ATTR0_BLEND (semi-transparent),
+     * which dimmed the mon it hovered — but a mon that HOLDS an item must read normally
+     * (Guy). Only the NON-holder icons fade (their own ATTR0_BLEND set in place_grid_slot);
+     * keep BLDCNT configured for THEM. And drop the hand to priority 1 so the prio-0
+     * held-item preview (boxoam_carry_item hover) pops IN FRONT of the hand, not behind it.
+     * (BLD_OBJ stays in the 2nd/bottom target only, so overlapping faded icons blend
+     * uniformly; never put it in the 1st-target mask or every object would fade.) */
+    prio = 1;
     REG_BLDCNT = ((BLD_BG2 | BLD_OBJ) << 8) | BLD_STD;
     REG_BLDALPHA = (10) | (8 << 8);                  /* ~10/16 obj + ~8/16 below       */
   } else {
@@ -310,7 +314,7 @@ void boxoam_cursor(int cur, bool on_title, int mode) {
   }
   obj_set_attr(oe(OE_HAND), a0,
                ATTR1_SIZE_32 | (hx & ATTR1_X_MASK),
-               ATTR2_ID(TID_HAND) | ATTR2_PRIO(0) | ATTR2_PALBANK(bank));
+               ATTR2_ID(TID_HAND) | ATTR2_PRIO(prio) | ATTR2_PALBANK(bank));
   /* showing the hand means we're not move-carrying: hide carry sprites */
   hide(OE_GRAB); hide(OE_CARRY);
 }
