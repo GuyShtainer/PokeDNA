@@ -389,9 +389,11 @@ void boxoam_carry_item(int cur, uint16_t item, bool full) {
                  ATTR2_ID(TID_HAND) | ATTR2_PRIO(0) | ATTR2_PALBANK(PB_CITEM));
     hide(OE_HAND);
   } else {
-    /* HOVER: small 16x16 item low in the cell's bottom-left, on top of the mon (PRIO 0). */
+    /* HOVER: small 16x16 item at the cell's bottom-CENTRE, ON the mon (PRIO 0). Was at the
+     * bottom-LEFT (cx-3), which spilled into the left-neighbour cell and read as "behind the
+     * left neighbour" — centre it on the holder so it clearly belongs to THIS mon. */
     load_regb_item(item, false, TID_CITEM); s_regb = 1;
-    int ix = cx - 3, iy = cy + CELL_H - 8; if (iy < WP_Y) iy = WP_Y;
+    int ix = cx + 6, iy = cy + CELL_H - 6; if (iy < WP_Y) iy = WP_Y;
     obj_set_attr(oe(OE_CITEM),
                  ATTR0_SQUARE | ATTR0_4BPP | (iy & ATTR0_Y_MASK),
                  ATTR1_SIZE_16 | (ix & ATTR1_X_MASK),
