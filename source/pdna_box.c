@@ -344,9 +344,12 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
     boxoam_item_markers(g_box, false);
     boxoam_carry_item(cur, 0, false);
   } else if (s_cur_mode == CM_ITEM && s_item_held) {
-    boxoam_carry_end();                                      /* ITEM GRAB: full item + orange fist */
+    boxoam_carry_end();                                      /* ITEM GRAB: carried item rides the cursor */
     boxoam_item_markers(g_box, true);
-    boxoam_carry_item(cur, (uint16_t)s_item_held, true);
+    /* Small item (bottom-centre), NOT the full 32x32 that covered the mon — so the source
+     * mon you just took from is visibly FADED (it no longer holds an item), instead of
+     * looking opaque behind the carried item (Guy). The footer says you're carrying it. */
+    boxoam_carry_item(cur, (uint16_t)s_item_held, false);
   } else {
     boxoam_carry_end();
     boxoam_item_markers(g_box, s_cur_mode == CM_ITEM);
