@@ -80,6 +80,12 @@ LIBS        := -ltonc
 
 BUILD       := build
 SRCDIRS     := source lib lib/fatfs lib/ezflashomega lib/everdrivegbax5
+# Build target: 'nor' (default) embeds every sprite (~6.25 MB, run from NOR); 'sd' streams the
+# shiny+back blobs from /PokeDNA/sprites.pak so the ROM fits the EZ-Flash SD-mode budget (~<=4 MB).
+PDNA_TARGET ?= nor
+ifneq ($(PDNA_TARGET),sd)
+SRCDIRS     += source/embed          # NOR: embed the shiny-front + back blobs
+endif
 DATADIRS    :=          # front-sprite blobs are embedded via .incbin (source/mon_front_data.s), not bin2o
 INCDIRS     := source lib lib/fatfs lib/ezflashomega lib/everdrivegbax5
 LIBDIRS     := $(TONCLIB)
@@ -100,6 +106,9 @@ CFLAGS := -mcpu=arm7tdmi -mtune=arm7tdmi -O2 -DFLASHCARTIO_ED_ENABLE=1 -DFLASHCA
 CFLAGS += -Wall
 CFLAGS += $(INCLUDE)
 CFLAGS += -ffast-math -fno-strict-aliasing
+ifeq ($(PDNA_TARGET),sd)
+CFLAGS += -DPDNA_STREAM_SPRITES      # SD build: mon_front/mon_back stream shiny+back from the card
+endif
 
 CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions
 
@@ -181,7 +190,10 @@ $(OUTPUT).elf : $(OFILES)
 
 endif
 
-.PHONY: clean rebuild
+.PHONY: clean rebuild sd
 rebuild: clean $(BUILD)
+
+sd:                    # trimmed build that streams shiny/back sprites from /PokeDNA/sprites.pak
+	@$(MAKE) PDNA_TARGET=sd rebuild
 
 # EOF
