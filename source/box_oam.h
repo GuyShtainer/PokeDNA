@@ -68,6 +68,33 @@ void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg);   /* 
 void boxoam_carry_end(void);
 void boxoam_hide_slot(int s);
 
+/* Rubber-band selection highlight (Emerald whitens the chosen; no rectangle). Every
+ * OCCUPIED slot with sel[s]!=0 gets ATTR0_BLEND + the ITEM-mode alpha registers, so
+ * ONLY the chosen icons go ghost-translucent against the wallpaper — the "picked up"
+ * cue. (The Emerald-exact brightness whiten renders no effect on the real Omega/SP
+ * display — proven on HW 2026-07-18.) Pure OAM attrs + 2 registers; zero VRAM. */
+void boxoam_select_mark(const uint8_t sel[30]);
+void boxoam_select_cursor(void);   /* hide the glove while rubber-banding (it would
+                                    * mask the corner mon's ghost — obj can't blend
+                                    * over obj); the ghosted block IS the cursor  */
+void boxoam_select_clear(void);
+
+/* Chunk carry (Emerald multi-move): render the WHOLE lifted group, not a
+ * representative. Carried mon i floats at grid cell (tr+rr, tc+cc), lifted `lift` px
+ * (8 = carry height; the grab/place beats animate 0..8),
+ * priority 1, SOLID when `fit` (ghost-translucent = blocked), on OAM entry 34+i,
+ * BORROWING the 16-tile VRAM region of the grid slot it covers (that slot's own
+ * icon is occluded by the block, so its grid entry is hidden and its region holds
+ * the carried art; uncovered slots are restored from the per-slot bookkeeping).
+ * The orange grab fist rides cell (fist_r,fist_c) — the cell A was released on.
+ * Re-call after every anchor move and after boxoam_load_box (a reload invalidates
+ * the borrowed regions). boxoam_chunk_end() restores everything. */
+typedef struct { uint8_t rr, cc;            /* footprint-relative row/col          */
+                 uint16_t species; uint8_t form; uint8_t egg; } BoxOamChunkMon;
+void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
+                        const BoxOamChunkMon* mons, int n, bool fit, int lift);
+void boxoam_chunk_end(void);
+
 /* ITEM mode: show a small held-item marker on every occupied cell that holds an
  * item (uses `box` for occupancy/heldItem). Call when entering ITEM mode / after an
  * item edit. show=false hides all markers. */

@@ -24,6 +24,10 @@
 #include "snd.h"
 #include "osk.h"
 #include "rumble.h"         /* rumble_io_suspend/resume: mute the motor while the wallpaper blit reads ROM */
+#include "log.h"            /* log_line: wallpaper self-verify diagnostics */
+#include "gen3_chunk.h"     /* Chunk: Emerald-style rubber-band multi-select geometry */
+#include "pdna_progress.h"  /* pdna_progress_frame: batch sprite + N/total bar */
+#include "pdna_pk.h"        /* pdna_pk_export_silent: "Export all" from the box title */
 
 #define COLS 6
 #define ROWS 5
@@ -51,6 +55,25 @@ static int s_item_from = -1;          /* slot the carried item was taken from */
 static int s_item_from_box = -1;      /* box the carried item came from (for put-back across boxes) */
 
 static PkMon EWRAM_BSS g_box[30];
+
+/* Decode a box's raw records for DISPLAY. For the bank, a mon the user already carried out to the
+ * PC is deleted from the card only at the save prompt — but it must LOOK gone right away (Guy), so
+ * blank those slots here. This is display-only: the raw buffer keeps the record (it's the mon's only
+ * on-card copy until the PC is written), so box_save can never persist a half-done move. */
+static void box_decode_to(BoxSource* src, const uint8_t* recs, int box, PkMon out[G3_BOX_SLOTS]) {
+  pk_decode_box_raw(recs, out);
+  if (src->is_bank) app_bank_hide_pending(box, out);
+}
+static void box_decode(BoxSource* src, const uint8_t* recs, int box) { box_decode_to(src, recs, box, g_box); }
+
+/* Occupancy for DROP targeting. A bank slot pending a Bank->PC deletion looks empty (box_decode
+ * hides it) but still physically holds the mon's ONLY on-card copy, so it counts as OCCUPIED —
+ * nothing may overwrite it until the PC destination is saved (after that the slot frees for real). */
+static void box_occupancy(BoxSource* src, int box, uint8_t occ[G3_BOX_SLOTS]) {
+  for (int s = 0; s < G3_BOX_SLOTS; s++)
+    occ[s] = (g_box[s].species || (src->is_bank && app_bank_slot_pending(box, s))) ? 1 : 0;
+}
+
 /* Mon-in-hand carry (move mode). The carried mon lives in s_held (a copy); its ORIGIN
  * cell keeps the real record (lift-don't-clear) and is only cleared on a successful drop,
  * so an interrupted carry never loses the mon. s_orig_slot<0 means "no origin": either a
@@ -66,7 +89,30 @@ static bool s_held_dup = false;   /* the held mon is a fresh, discardable duplic
 static bool s_orig_party = false; /* the held mon was carried OUT of the party (origin = a party slot,
                                    * s_orig_slot = party index): on a within-PC drop, clear_origin()
                                    * removes it from the party (deferred); cancel returns it (untouched). */
-void pdna_box_clear_carry(void) { s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false; }
+/* ---- Multi-select chunk carry (Emerald rubber-band multi-move) --------------------
+ * A chunk is a rectangular selection of one box, lifted as a GROUP. The held 80-byte
+ * records live in EWRAM (2400 B); s_ch holds the footprint geometry + each mon's source
+ * slot. Like the single-mon carry, the SOURCE cells keep their records (lift-don't-clear)
+ * until a successful drop, so a cancelled/interrupted carry loses nothing. Statics persist
+ * across pdna_box runs so the chunk survives the PC<->Bank hand-off. s_holding (single) and
+ * s_ch_hold (chunk) are mutually exclusive — only one carry is ever active. */
+static bool s_ch_hold = false;
+static uint8_t EWRAM_BSS s_ch_rec[G3_BOX_SLOTS][80];   /* held records (2400 B) */
+static Chunk s_ch;                                      /* footprint + per-mon src slots */
+static int  s_ch_box  = -1;                             /* source box index */
+static bool s_ch_bank = false;                          /* source scope (bank vs PC) */
+static int  s_ch_tr = 0, s_ch_tc = 0;                   /* current carry anchor (top-left) */
+static int  s_ch_fr = 0, s_ch_fc = 0;                   /* grab fist's footprint-relative cell
+                                                         * (where A was released, Emerald-style) */
+static int  s_ch_lift = 8;                              /* block float height in px: 8 = carrying;
+                                                         * the grab/place beats animate it 0..8 */
+static BoxOamChunkMon EWRAM_BSS s_ch_cells[G3_BOX_SLOTS]; /* per-mon display info, decoded ONCE at
+                                                           * grab so anchor moves don't re-decode */
+
+void pdna_box_clear_carry(void) {
+  s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
+  s_ch_hold = false; s_ch_box = -1; s_ch_bank = false;
+}
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
@@ -200,36 +246,210 @@ static void draw_left(const PkMon* p) {
  * fallbacks return NULL so the build works before the wallpapers are generated. */
 const uint16_t* wallpaper_tile_data(int wp, int* ntiles);
 const uint16_t* wallpaper_tilemap(int wp);
+uint32_t wallpaper_map_sum(int wp);    /* build-time FNV-1a goldens (generated wallpapers.c) */
+uint32_t wallpaper_tile_sum(int wp);
 __attribute__((weak)) const uint16_t* wallpaper_tile_data(int wp, int* n) { (void)wp; if (n) *n = 0; return 0; }
 __attribute__((weak)) const uint16_t* wallpaper_tilemap(int wp) { (void)wp; return 0; }
+__attribute__((weak)) uint32_t wallpaper_map_sum(int wp) { (void)wp; return 0; }   /* 0 = no golden, skip */
+__attribute__((weak)) uint32_t wallpaper_tile_sum(int wp) { (void)wp; return 0; }
+
+/* Copy n u16s ROM -> RAM, then RE-READ the ROM and byte-compare; retry on mismatch.
+ * A transient cart-bus glitch during either pass makes the passes disagree, so a
+ * verified copy is trustworthy on any single-glitch theory. Returns the number of
+ * retries burned (0 = clean first try), or -1 if still dirty after 4 attempts.
+ * IWRAM_CODE: while this runs, the cart bus carries PURE data reads — no ROM opcode
+ * fetches interleaved (the one traffic shape the never-garbled paths — DMA icon
+ * uploads, BIOS LZ77 — never produce). volatile source: without it the compiler may
+ * legally fold "copy then compare-to-source" into always-equal and delete the verify. */
+static uint16_t s_wp_map[20 * 18];     /* verified tilemap copy (720 B, IWRAM .bss) */
+static uint16_t s_wp_tile[64];         /* one verified 8x8 tile (128 B) — shared by
+                                        * draw_wallpaper and the START+SELECT audit */
+
+IWRAM_CODE __attribute__((noinline))
+static int wp_copy_verified(uint16_t* dst, const uint16_t* src, int n) {
+  volatile const uint16_t* vsrc = src;
+  for (int a = 0; a < 4; a++) {
+    for (int i = 0; i < n; i++) dst[i] = vsrc[i];
+    int ok = 1;
+    for (int i = 0; i < n; i++) if (dst[i] != vsrc[i]) { ok = 0; break; }
+    if (ok) return a;
+  }
+  return -1;
+}
 
 static void draw_wallpaper(int wp, int x, int y, int w, int h) {
   int nt; const uint16_t* tiles = wallpaper_tile_data(wp, &nt);
   const uint16_t* map = wallpaper_tilemap(wp);
   if (!tiles || !map) { draw_grass(x, y, w, h); return; }   /* procedural fallback: no ROM read */
-  /* HW-ROBUST render. The wallpaper was the ONLY box graphic that read ROM per-pixel with
-   * the CPU, interleaved with VRAM writes and jumping randomly between the map[] and tiles[]
-   * arrays — and uniquely among the box graphics it rendered a garbled "jumble of tiles" on
-   * real EZ-Flash hardware (always; clean in emulators; NOT rumble-related). The box icons
-   * (DMA tiles out of ROM) and the front sprite (blit from a decompressed RAM buffer) never
-   * showed it. That random CPU-from-ROM access pattern thrashes the GamePak prefetch on the
-   * flashcart's PSRAM. Fix: stage the tilemap + each tile into RAM with SEQUENTIAL reads
-   * first (the same "copy to RAM, then draw" shape the working paths use), then blit from
-   * RAM — so no per-pixel ROM read is interleaved with a VRAM write. */
-  static uint16_t s_wp_map[20 * 18];   /* tilemap copy   (720 B, IWRAM .bss) */
-  static uint16_t s_wp_tile[64];       /* one 8x8 tile   (128 B)            */
+  /* HW-ROBUST + SELF-VERIFYING render. History: the wallpaper garbled into a "jumble of
+   * tiles" on the real EZ-Flash (never in emulators) and survived two fix theories — the
+   * rumble-GPIO render guard (cba40e7; Guy later proved zero rumble correlation) and the
+   * sequential RAM-staging rewrite (a2eb21e; kept below). The data itself host-renders
+   * clean (all 32), so if the jumble persists the corruption happens on this cartridge
+   * read path at draw time. So this draw no longer TRUSTS any ROM read: every staged
+   * block is re-read and compared (retry on mismatch), every staged map index is
+   * bounds-checked against nt (a corrupt index IS the jumble symptom), and a block that
+   * stays dirty after 4 attempts abandons the art for the procedural grass instead of
+   * baking garbage into VRAM. Every anomaly is counted + logged, so a hardware session
+   * yields a diagnosis either way:
+   *   "wp N: R rom re-reads"     -> transient cart-bus read corruption, caught + healed
+   *   "wp N: map changed ..."    -> same wallpaper staged DIFFERENTLY across draws
+   *   "wp N: unstable ..."       -> persistent read corruption; grass fallback shown
+   *   none of the above yet still garbled on screen -> the fault is NOT in ROM reads
+   *                                 (VRAM write / display path — a different hunt). */
+  static uint32_t s_wp_sum[32];        /* per-id checksum of the last staged map */
+  static uint8_t  s_wp_seen[32];
+  static uint8_t s_wp_tchk[32];        /* tile-array golden verified this session   */
+  int retries = 0, dirty = 0, anom = 0;
+  uint32_t mgold = wallpaper_map_sum(wp);
   rumble_io_suspend();
-  for (int m = 0; m < 20 * 18; m++) s_wp_map[m] = map[m];           /* tilemap ROM -> RAM (sequential) */
+  /* stage + verify the tilemap, then validate it TWICE over: every index in range
+   * (an out-of-range index IS the jumble) and, when the build carries goldens, the
+   * staged map's FNV must equal the build-time value — this catches DETERMINISTIC
+   * mis-reads that a copy+re-read can never see (both passes read the same wrong data) */
+  for (int a = 0; ; a++) {
+    int r = wp_copy_verified(s_wp_map, map, 20 * 18);
+    if (r < 0) { dirty = 1; break; }
+    retries += r;
+    int bad = 0;
+    for (int m = 0; m < 20 * 18 && !bad; m++) if (s_wp_map[m] >= (uint16_t)nt) bad = 1;
+    uint32_t sum = 2166136261u;
+    for (int m = 0; m < 20 * 18; m++) { sum ^= s_wp_map[m]; sum *= 16777619u; }
+    if (!bad && mgold && sum != mgold) bad = 2;
+    if (!bad) {
+      /* cross-draw stability: the same id must stage the same map every time
+       * (matters for the no-golden build, where mgold==0) */
+      if (wp >= 0 && wp < 32) {
+        if (s_wp_seen[wp] && s_wp_sum[wp] != sum) {
+          log_line("wp %d: map changed between draws (%lx != %lx)",
+                   wp, (unsigned long)s_wp_sum[wp], (unsigned long)sum);
+          anom = 1;
+        }
+        s_wp_seen[wp] = 1; s_wp_sum[wp] = sum;
+      }
+      break;
+    }
+    if (a >= 5) {
+      if (bad == 2) log_line("wp %d: map sum != golden (%lx != %lx)",
+                             wp, (unsigned long)sum, (unsigned long)mgold);
+      dirty = 1; break;
+    }
+    retries++;
+  }
+  /* once per id per session: stream the WHOLE tile array (verified) and FNV it
+   * against the build-time golden — the deterministic-mis-read check for the tiles */
+  if (!dirty && wp >= 0 && wp < 32 && !s_wp_tchk[wp]) {
+    uint32_t tgold = wallpaper_tile_sum(wp);
+    if (tgold) {
+      uint32_t tsum = 2166136261u; int bad = 0;
+      for (int off = 0; off < nt * 64 && !bad; off += 64) {
+        if (wp_copy_verified(s_wp_tile, tiles + off, 64) < 0) bad = 1;
+        else for (int k = 0; k < 64; k++) { tsum ^= s_wp_tile[k]; tsum *= 16777619u; }
+      }
+      if (bad || tsum != tgold) {
+        log_line("wp %d: tile sum != golden (%lx != %lx)",
+                 wp, (unsigned long)tsum, (unsigned long)tgold);
+        dirty = 1;
+      } else s_wp_tchk[wp] = 1;
+    }
+  }
+  if (!dirty) {
+    int last_idx = -1;                 /* consecutive same-tile cells skip the re-stage */
+    for (int ty = 0; ty < 18 && !dirty; ty++)
+      for (int tx = 0; tx < 20; tx++) {
+        int idx = s_wp_map[ty * 20 + tx];
+        if (idx != last_idx) {
+          int r = wp_copy_verified(s_wp_tile, tiles + (uint32_t)idx * 64, 64);
+          if (r < 0) { dirty = 1; break; }
+          retries += r;
+          last_idx = idx;
+        }
+        int bx = x + tx * 8, by = y + ty * 8;
+        for (int j = 0; j < 8 && by + j < y + h; j++)
+          for (int i = 0; i < 8 && bx + i < x + w; i++)
+            m3_plot(bx + i, by + j, s_wp_tile[j * 8 + i] & 0x7FFF);  /* VRAM write, source is RAM */
+      }
+  }
+  rumble_io_resume();
+  if (dirty) {
+    log_line("wp %d: unstable rom reads, grass fallback (%d re-reads)", wp, retries);
+    anom = 1;
+    draw_grass(x, y, w, h);
+  } else if (retries) {
+    log_line("wp %d: %d rom re-reads", wp, retries);
+    anom = 1;
+  }
+  /* an anomaly must survive a power-off: flush the RAM log to SD now (capped so a
+   * chooser sweep over a bad cart can't thrash the card) */
+  static int s_wp_flushes = 0;
+  if (anom && s_wp_flushes < 3) { s_wp_flushes++; app_log_flush(); }
+}
+
+/* ---- WP AUDIT (START+SELECT): the on-hardware wallpaper experiment ------------------
+ * Fold the audit region — the art rows clear of the banner/footer overdraw — in tile
+ * order. src_vram folds the LIVE bitmap; otherwise the verified-staged art (the
+ * expected image). IDENTICAL traversal for both, so the sums compare directly.
+ * Uses the s_wp_map staged by the caller. Returns 0 only on a staging failure. */
+#define AUD_Y0 28    /* below the banner strip (12..27)  */
+#define AUD_Y1 151   /* above the footer strip (152..)   */
+static uint32_t wp_fold_region(const uint16_t* tiles, int nt, bool src_vram) {
+  uint32_t sum = 2166136261u;
+  int last_idx = -1;
   for (int ty = 0; ty < 18; ty++)
     for (int tx = 0; tx < 20; tx++) {
-      const uint16_t* t = tiles + (uint32_t)s_wp_map[ty * 20 + tx] * 64;
-      for (int k = 0; k < 64; k++) s_wp_tile[k] = t[k];            /* one tile ROM -> RAM (64 sequential reads) */
-      int bx = x + tx * 8, by = y + ty * 8;
-      for (int j = 0; j < 8 && by + j < y + h; j++)
-        for (int i = 0; i < 8 && bx + i < x + w; i++)
-          m3_plot(bx + i, by + j, s_wp_tile[j * 8 + i] & 0x7FFF);  /* VRAM write, source is RAM */
+      int idx = s_wp_map[ty * 20 + tx];
+      if (!src_vram && idx != last_idx) {
+        if (idx >= nt || wp_copy_verified(s_wp_tile, tiles + (uint32_t)idx * 64, 64) < 0) return 0;
+        last_idx = idx;
+      }
+      for (int j = 0; j < 8; j++) {
+        int y = WP_Y + ty * 8 + j;
+        if (y < AUD_Y0 || y > AUD_Y1) continue;
+        for (int i = 0; i < 8; i++) {
+          uint16_t v = src_vram ? vid_mem[y * 240 + (WP_X + tx * 8 + i)]
+                                : (uint16_t)(s_wp_tile[j * 8 + i] & 0x7FFF);
+          sum ^= v; sum *= 16777619u;
+        }
+      }
     }
-  rumble_io_resume();
+  return sum ? sum : 1;
+}
+
+/* Run WHILE the garble is visible. Three verdicts, shown on the footer + logged +
+ * flushed to /PokeDNA/log.txt:
+ *   SHOWN  — does the bitmap ON SCREEN RIGHT NOW match the verified art? BAD here
+ *            with an OK REDRAW = something corrupted VRAM after the original draw.
+ *   REDRAW — after painting again on the spot. BAD = the write path itself is broken.
+ *   OBJ blink — 3 s with all sprites OFF: if the garble vanishes, it lives on the
+ *            OBJ layer (garbled sprites over a clean wallpaper look identical). */
+static void wp_audit(BoxSource* src, int box) {
+  int wp = src->get_wp(box);
+  int nt; const uint16_t* tiles = wallpaper_tile_data(wp, &nt);
+  const uint16_t* map = wallpaper_tilemap(wp);
+  uint32_t esum = 0, va = 0, vb = 0;
+  bool staged = tiles && map && wp_copy_verified(s_wp_map, map, 20 * 18) >= 0;
+  if (staged) {
+    va   = wp_fold_region(tiles, nt, true);              /* as displayed now */
+    esum = wp_fold_region(tiles, nt, false);             /* the expected art */
+    draw_wallpaper(wp, WP_X, WP_Y, WP_W, WP_H);          /* fresh paint      */
+    if (wp_copy_verified(s_wp_map, map, 20 * 18) >= 0)   /* re-stage (draw shares the buffer) */
+      vb = wp_fold_region(tiles, nt, true);              /* audited again    */
+  }
+  bool okA = staged && esum && va == esum, okB = staged && esum && vb == esum;
+  log_line("wpaudit wp=%d shown=%s redraw=%s e=%lx a=%lx b=%lx", wp,
+           okA ? "OK" : "BAD", okB ? "OK" : "BAD",
+           (unsigned long)esum, (unsigned long)va, (unsigned long)vb);
+  char l[32];
+  siprintf(l, "SHOWN:%s REDRAW:%s", okA ? "OK" : "BAD", okB ? "OK" : "BAD");
+  ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);
+  ui_text(WP_X + 2, 152, (okA && okB) ? UI_OK : UI_WARN, l);
+  boxoam_commit();
+  for (int v = 0; v < 90; v++) s_vsync();                /* time to read the verdict */
+  REG_DISPCNT &= ~DCNT_OBJ;                              /* sprites OFF: which layer is it on? */
+  for (int v = 0; v < 180; v++) s_vsync();
+  REG_DISPCNT |= DCNT_OBJ | DCNT_OBJ_1D;
+  log_line("wpaudit objblink done");
+  app_log_flush();
 }
 
 /* --- Icons, cursor, carry, and item markers are HARDWARE OBJ sprites (box_oam.c).
@@ -281,7 +501,9 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   if (s_orig_slot >= 0 && s_orig_bank == src->is_bank && s_orig_box == box && cur == s_orig_slot) {
     s_holding = false; *done = true; return recs;            /* dropped back on its own cell */
   }
-  bool occupied = g_box[cur].species != 0;
+  /* A bank slot whose mon is moving out to the PC looks empty but still holds that mon's only
+   * on-card copy until the PC is saved — treat it as OCCUPIED so nothing overwrites it. */
+  bool occupied = g_box[cur].species != 0 || (src->is_bank && app_bank_slot_pending(box, cur));
   if (s_orig_bank != src->is_bank) {                         /* cross-scope drop */
     if (occupied) { snd_deny(); return recs; }
     if (s_held_dup && s_orig_slot < 0) {                     /* a fresh DUPLICATE: placing it is loss-proof
@@ -303,13 +525,18 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
       app_bank_defer_delete(s_orig_box, s_orig_slot, s_held);
       s_holding = false; *done = true; return recs;
     }
-    /* PC -> Bank (two separate save prompts): keep the safe confirmed COPY. */
+    /* PC -> Bank: an always-RELEASE move (no autoduplication — Guy's decision). Write the
+     * mon into the (empty) bank cell, VERIFY the bank box on SD, and only then release the PC
+     * source. On a write failure, revert the cell and keep holding so nothing is lost (learn:
+     * commit the destination before clearing the source -> worst case a duplicate, never a
+     * loss; the PC clear is deferred to the one exit save, backed by the immutable backup). */
+    memcpy(recs + (uint32_t)cur * 80, s_held, 80);
     boxoam_suspend();
-    bool ok = app_confirm("Copy to Bank?", "PC keeps the original.");
+    bool ok = src->commit();                                 /* verified bank box_save (banksrc_commit) */
     boxoam_resume();
-    if (!ok) return recs;                                    /* keep holding */
-    if (src->note_add) src->note_add(s_held);                /* mon enters this scope -> dex */
-    memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
+    if (!ok) { memset(recs + (uint32_t)cur * 80, 0, 80); snd_error(); return recs; }   /* keep holding */
+    if (s_orig_slot >= 0) app_pc_release_slot(s_orig_box, s_orig_slot, s_held);
+    snd_save();
     s_holding = false; *done = true; return recs;
   }
   if (!occupied) {                                           /* empty -> place, clear origin */
@@ -367,7 +594,7 @@ static void draw_footer(bool is_bank, bool on_title, bool moving) {
   else if (moving)         f = "A drop  B cancel";
   else if (s_item_held)    f = "A give  B put back";
   else if (on_title)       f = "L/R box  A edit  DN";
-  else if (s_cur_mode == CM_MOVE) f = "MOVE  A grab  SEL B";
+  else if (s_cur_mode == CM_MOVE) f = "MOVE A grab hold=set";
   else if (s_cur_mode == CM_ITEM) f = "ITEM  A take  SEL B";
   else                     f = is_bank ? "A menu  SEL  L/R  B"
                                        : "A menu  UP  SEL  B";
@@ -427,7 +654,7 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
  * no flicker. The cursor hand is already hidden (carry state). */
 static void play_grab_anim(BoxSource* src, int box, int slot) {
   (void)src; (void)box;
-  /* boxoam_carry already lifts the icon 4px; nudge a touch more for a "grab" beat */
+  /* boxoam_carry already lifts the icon 8px; nudge a touch more for a "grab" beat */
   for (int v = 0; v < 6; v++) { boxoam_commit(); s_vsync(); }
   (void)slot;
 }
@@ -456,6 +683,318 @@ static void carry_move(BoxSource* src, int box, int old_cur, int cur) {
   oam_sync(cur, false, box, src->is_bank);           /* moves OE_CARRY + OE_GRAB sprites */
 }
 
+/* ======================= Multi-select chunk carry (Emerald multi-move) ======================= */
+
+/* OAM for chunk carry: the box icons (reloaded if needed), then the WHOLE lifted block
+ * floating at the anchor (whitened = fits, darkened = blocked) with the fist riding the
+ * grab cell, and — while viewing the SOURCE box — the lifted source cells hidden LAST
+ * (a block move may restore a just-uncovered source cell; re-hide it). Order matters:
+ * item_markers/carry_item hide OAM entries 34..63/CITEM, so they run BEFORE the block. */
+static void chunk_oam_sync(int box, bool is_bank, bool fit) {
+  if (s_oam_reload) { boxoam_load_box(g_box); s_oam_reload = false; }
+  boxoam_item_markers(g_box, false);
+  boxoam_carry_item(g3_slot(s_ch_tr, s_ch_tc), 0, false);
+  boxoam_chunk_carry(s_ch_tr, s_ch_tc, s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc,
+                     s_ch_cells, s_ch.n, fit, s_ch_lift);
+  if (box == s_ch_box && is_bank == s_ch_bank)
+    for (int i = 0; i < s_ch.n; i++) boxoam_hide_slot(s_ch.src[i]);   /* lift-hide the sources */
+}
+
+/* Footprint fit test vs the CURRENT box (own sources count as vacating on the source box). */
+static bool chunk_fit(BoxSource* src, int box) {
+  uint8_t dest[G3_BOX_SLOTS], vac[G3_BOX_SLOTS], tgt[G3_BOX_SLOTS];
+  bool same = (box == s_ch_box && src->is_bank == s_ch_bank);
+  box_occupancy(src, box, dest);                /* moving-out bank mons still count as occupied */
+  if (same) { memset(vac, 0, sizeof vac); for (int i = 0; i < s_ch.n; i++) vac[s_ch.src[i]] = 1; }
+  return chunk_can_drop(&s_ch, s_ch_tr, s_ch_tc, dest, same ? vac : 0, tgt);
+}
+
+/* Light anchor-move update: the block, its fit tint, and the fist are pure OAM — no
+ * bitmap touches at all (the old code re-blitted the whole wallpaper per step). */
+static void chunk_move(BoxSource* src, int box) {
+  chunk_oam_sync(box, src->is_bank, chunk_fit(src, box));
+}
+
+/* Full repaint while carrying a chunk: BG chrome + the floating block (whitened = fits here,
+ * darkened = blocked) at the anchor. clear=false repaints OVER the current screen (no black
+ * flash) so a box switch doesn't flicker; plain anchor moves use chunk_move (OAM-only). */
+static void chunk_draw(BoxSource* src, int box, bool clear) {
+  if (clear) ui_clear();
+  draw_tab(0, PANEL_W + 1, "PKMN DATA", true);
+  draw_tab(PANEL_W + 1, 92, src->is_bank ? "(BANK)" : "PARTY", false);
+  draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "SAVE", false);
+  PkMon rep; pk_decode_mon(s_ch_rec[0], false, &rep); pk_resolve(&rep);
+  draw_left(&rep);                                    /* the panel shows what you're carrying */
+
+  draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
+  draw_box_banner(src, box, false);
+
+  /* no footprint frame — the block itself carries the fit cue (whitened/darkened) */
+  char f[28]; siprintf(f, "x%d  A drop  B cancel", s_ch.n);
+  ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);
+  ui_text(WP_X + 2, 152, RGB15(31, 31, 31), f);
+
+  chunk_oam_sync(box, src->is_bank, chunk_fit(src, box));
+}
+
+/* Footer line for the rubber-band selection (count of occupied cells inside). */
+static void draw_select_footer(int cnt) {
+  char f[28]; siprintf(f, "SELECT %d  A+DPAD", cnt);   /* short: must end < x=240 */
+  ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);
+  ui_text(WP_X + 2, 152, RGB15(31, 31, 31), f);
+}
+
+/* Emerald-style selection: whiten the OCCUPIED icons inside [a..b] — the highlight
+ * IS the icons, so nothing can misalign. No rectangle, no wallpaper repaint. */
+static void update_select(int a, int b) {
+  int ar = g3_row(a), ac = g3_col(a), br = g3_row(b), bc = g3_col(b);
+  int r0 = ar < br ? ar : br, r1 = ar < br ? br : ar;
+  int c0 = ac < bc ? ac : bc, c1 = ac < bc ? bc : ac;
+  uint8_t sel[G3_BOX_SLOTS]; int cnt = 0;
+  for (int s = 0; s < G3_BOX_SLOTS; s++) sel[s] = 0;
+  for (int r = r0; r <= r1; r++) for (int c = c0; c <= c1; c++)
+    if (g_box[g3_slot(r, c)].species) { sel[g3_slot(r, c)] = 1; cnt++; }
+  boxoam_select_mark(sel);
+  draw_select_footer(cnt);
+}
+
+/* PC -> Bank chunk drop: an always-RELEASE batch move. Copy each held mon into the bank box
+ * (per-mon progress sprite), VERIFY the bank box on SD once, and only on success release the
+ * PC sources (deferred to the one exit save). On failure, revert the (empty) target cells and
+ * keep holding — nothing is lost. `tgt` was verified all-empty by the caller. */
+static uint8_t* drop_chunk_pc_to_bank(BoxSource* src, int box, uint8_t* recs, const uint8_t* tgt) {
+  (void)box;
+  boxoam_suspend();
+  for (int i = 0; i < s_ch.n; i++) {
+    PkMon m; pk_decode_mon(s_ch_rec[i], false, &m); pk_resolve(&m);
+    pdna_progress_frame("SEND TO BANK", &m, i, s_ch.n, "Copying...");
+    memcpy(recs + (uint32_t)tgt[i] * 80, s_ch_rec[i], 80);
+    for (int v = 0; v < 5; v++) s_vsync();             /* let each sprite show */
+  }
+  PkMon last; pk_decode_mon(s_ch_rec[s_ch.n - 1], false, &last); pk_resolve(&last);
+  pdna_progress_frame("SEND TO BANK", &last, s_ch.n, s_ch.n, "Saving to card...");
+  bool ok = src->commit();                             /* verified bank box_save (banksrc_commit) */
+  if (ok) {
+    for (int i = 0; i < s_ch.n; i++) app_pc_release_slot(s_ch_box, s_ch.src[i], s_ch_rec[i]);
+    snd_save();
+    pdna_progress_frame("SENT TO BANK", &last, s_ch.n, s_ch.n, "Released from save");
+    for (int v = 0; v < 45; v++) s_vsync();             /* brief hold on "done" */
+    s_ch_hold = false;
+  } else {
+    for (int i = 0; i < s_ch.n; i++) memset(recs + (uint32_t)tgt[i] * 80, 0, 80);   /* revert (were empty) */
+    snd_error();
+    ui_clear();
+    ui_panel(20, 60, 200, 44, UI_PANEL, UI_WARN);
+    ui_text(30, 70, UI_WARN, "BANK WRITE FAILED");
+    ui_text(30, 86, UI_DIM, "Kept in the save. Press A");
+    u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);   /* keep holding the chunk */
+  }
+  boxoam_resume();
+  box_decode(src, recs, box); s_oam_reload = true;
+  return recs;
+}
+
+/* Drop the carried chunk into the current box with its top-left at (s_ch_tr,s_ch_tc). Picks the
+ * right semantics by scope. *pfull is always set (a redraw is due). Returns (maybe reloaded) recs. */
+/* Bank->bank cross-box MOVE (multi-select into a clean/free region of another bank box). The bank
+ * pages ONE box at a time, so: write the chunk into the DEST box (current) and COMMIT it (verified)
+ * FIRST, THEN page in the SOURCE box, clear the moved slots and commit it. Dest-before-source: a
+ * failure after the dest commit leaves a recoverable duplicate, never a loss. Both are small bank
+ * box files -> immediate (no deferral): the mons really leave the source box. `tgt` = verified-empty
+ * destination slots. */
+static uint8_t* drop_chunk_bank_cross(BoxSource* src, int box, const uint8_t* tgt) {
+  uint8_t* recs = src->records(box);                 /* dest box (current, already loaded) */
+  boxoam_suspend();
+  for (int i = 0; i < s_ch.n; i++) {
+    PkMon m; pk_decode_mon(s_ch_rec[i], false, &m); pk_resolve(&m);
+    pdna_progress_frame("MOVE IN BANK", &m, i, s_ch.n, "Writing...");
+    memcpy(recs + (uint32_t)tgt[i] * 80, s_ch_rec[i], 80);
+    for (int v = 0; v < 4; v++) s_vsync();
+  }
+  PkMon last; pk_decode_mon(s_ch_rec[s_ch.n - 1], false, &last); pk_resolve(&last);
+  pdna_progress_frame("MOVE IN BANK", &last, s_ch.n, s_ch.n, "Saving...");
+  if (!src->commit()) {                              /* persist the DEST box (verified) */
+    for (int i = 0; i < s_ch.n; i++) memset(recs + (uint32_t)tgt[i] * 80, 0, 80);   /* revert (were empty) */
+    snd_error();
+    ui_clear(); ui_panel(20, 60, 200, 44, UI_PANEL, UI_WARN);
+    ui_text(30, 70, UI_WARN, "BANK WRITE FAILED");
+    ui_text(30, 86, UI_DIM, "Kept in place. Press A");
+    u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+    boxoam_resume();
+    recs = src->records(box); box_decode(src, recs, box); s_oam_reload = true;
+    return recs;                                     /* keep holding */
+  }
+  /* Dest committed -> clear the moved slots in the SOURCE box. app_bank_clear_slots pages that box
+   * in and REFUSES to rewrite it if the page-in read was incomplete or nothing matched: committing a
+   * zeroed/partial buffer would wipe the source box's untouched BYSTANDER mons, and bank box files
+   * take no backup. If it refuses, the move simply degrades to a safe duplicate (the mons live in
+   * both boxes) — never a loss. */
+  app_bank_clear_slots(s_ch_box, s_ch.src, (const uint8_t (*)[80])s_ch_rec, s_ch.n);
+  recs = src->records(box);                          /* page the dest box back for display */
+  boxoam_resume();
+  snd_save();
+  s_ch_hold = false; box_decode(src, recs, box); s_oam_reload = true;
+  return recs;
+}
+
+/* Does the footprint at the current anchor cover a bank cell that still holds a moving-out mon?
+ * Those read as EMPTY (box_decode hides them) but can't be overwritten until the PC is saved — so
+ * a refused drop there needs explaining rather than a bare deny beep. */
+static bool footprint_hits_pending(BoxSource* src, int box) {
+  if (!src->is_bank) return false;
+  if (s_ch_tr + s_ch.h > G3_BOX_ROWS || s_ch_tc + s_ch.w > G3_BOX_COLS) return false;
+  for (int r = 0; r < s_ch.h; r++)
+    for (int c = 0; c < s_ch.w; c++)
+      if (app_bank_slot_pending(box, g3_slot(s_ch_tr + r, s_ch_tc + c))) return true;
+  return false;
+}
+
+/* Drop the carried chunk into the current box with its top-left at (s_ch_tr,s_ch_tc). Picks the
+ * right semantics by scope. *pfull is always set (a redraw is due). Returns (maybe reloaded) recs. */
+static uint8_t* drop_chunk(BoxSource* src, int box, uint8_t* recs, bool* pfull) {
+  *pfull = true;
+
+  uint8_t dest[G3_BOX_SLOTS], vac[G3_BOX_SLOTS], tgt[G3_BOX_SLOTS];
+  bool same = (box == s_ch_box && src->is_bank == s_ch_bank);
+  box_occupancy(src, box, dest);                 /* moving-out bank mons still count as occupied */
+  if (same) { memset(vac, 0, sizeof vac); for (int i = 0; i < s_ch.n; i++) vac[s_ch.src[i]] = 1; }
+  if (!chunk_can_drop(&s_ch, s_ch_tr, s_ch_tc, dest, same ? vac : 0, tgt)) {
+    snd_deny();
+    if (footprint_hits_pending(src, box)) {      /* the one non-obvious block: cells that LOOK empty */
+      boxoam_suspend(); ui_clear();
+      ui_panel(20, 56, 200, 52, UI_PANEL, UI_WARN);
+      ui_text(30, 66, UI_WARN, "CELLS NOT FREE YET");
+      ui_text(30, 82, UI_DIM, "They hold mons you moved");
+      ui_text(30, 92, UI_DIM, "out. Save first. Press A");
+      u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+      boxoam_resume();
+    } else *pfull = false;                       /* bare refusal: beep only — Emerald repaints nothing
+                                                  * (kills the ui_clear flash on every blocked A) */
+    return recs;
+  }
+
+  /* Emerald place beat (mirror of the grab): block + fist descend together onto the
+   * cells and hold a beat; the repaint after the data move swaps the real icons in at
+   * touch-down. (The rare TOO-MANY-MOVES refusal below re-lifts afterwards — fine.) */
+  for (int v = 7; v >= 0; v--) { s_ch_lift = v; chunk_oam_sync(box, src->is_bank, true);
+                                 boxoam_commit(); s_vsync(); }
+  for (int v = 0; v < 4; v++) { boxoam_commit(); s_vsync(); }
+  s_ch_lift = 8;                                        /* carry height again for whoever keeps holding */
+
+  /* ---- Bank -> Bank, different box: immediate paging-aware move (commit dest, then clear source) ---- */
+  if (src->is_bank && s_ch_bank && box != s_ch_box)
+    return drop_chunk_bank_cross(src, box, tgt);
+
+  /* ---- same scope, same box (bank rearrange) OR PC<->PC (any box): a plain deferred move ---- */
+  if (src->is_bank == s_ch_bank) {
+    uint8_t* srcp = (box == s_ch_box) ? recs : src->records(s_ch_box);   /* PC: g_pc box (no paging); bank is same-box here */
+    for (int i = 0; i < s_ch.n; i++) memset(srcp + (uint32_t)s_ch.src[i] * 80, 0, 80);   /* clear sources first */
+    for (int i = 0; i < s_ch.n; i++) {
+      memcpy(recs + (uint32_t)tgt[i] * 80, s_ch_rec[i], 80);
+      if (src->note_add) src->note_add(s_ch_rec[i]);
+    }
+    src->mark_dirty();
+    snd_ok(); s_ch_hold = false; box_decode(src, recs, box); s_oam_reload = true;
+    return recs;
+  }
+
+  /* ---- PC -> Bank: always-release batch (verified bank write, then release the PC sources) ---- */
+  if (src->is_bank && !s_ch_bank)
+    return drop_chunk_pc_to_bank(src, box, recs, tgt);
+
+  /* ---- Bank -> PC: a DEFERRED move that LOOKS immediate. No disk write here — the user has a SAVE
+   * tab and the exit "Save changes?" prompt for that (Guy), so the real write batches later. The mons
+   * are placed into g_pc and their bank sources queued for deletion; box_decode hides those slots so
+   * the bank reads as if they really left, while the record stays in the box file (their only on-card
+   * copy) until the PC is committed — then flush_on_exit deletes them, gated on that commit
+   * succeeding. Nothing may overwrite a hidden slot meanwhile (box_occupancy keeps it occupied). ---- */
+  if (!app_bank_defer_room(s_ch.n)) {
+    snd_deny();
+    boxoam_suspend(); ui_clear();
+    ui_panel(20, 60, 200, 44, UI_PANEL, UI_WARN);
+    ui_text(30, 70, UI_WARN, "TOO MANY MOVES");
+    ui_text(30, 86, UI_DIM, "Save first, then continue.");
+    u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+    boxoam_resume();
+    return recs;
+  }
+  for (int i = 0; i < s_ch.n; i++) {
+    memcpy(recs + (uint32_t)tgt[i] * 80, s_ch_rec[i], 80);
+    if (src->note_add) src->note_add(s_ch_rec[i]);
+    app_bank_defer_delete(s_ch_box, s_ch.src[i], s_ch_rec[i]);
+  }
+  src->mark_dirty();
+  snd_ok(); s_ch_hold = false; box_decode(src, recs, box); s_oam_reload = true;
+  return recs;
+}
+
+/* CM_MOVE + A: rubber-band multi-select. While A is held, the D-pad grows/shrinks a rectangle
+ * from the anchor (cur); releasing A lifts every mon inside as a chunk. A plain tap (no drag)
+ * over an occupied cell grabs just that mon (the classic single carry). Sets *pfull. */
+static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bool* pfull) {
+  *pfull = true;
+  int anchor = cur, corner = cur;
+  update_select(anchor, corner);                        /* ghost-highlight the selection */
+  boxoam_select_cursor();                               /* glove away: it would mask the corner mon's ghost */
+  boxoam_commit();
+  for (;;) {
+    s_vsync();                                          /* polls keys */
+    boxoam_commit();
+    if (!key_is_down(KEY_A)) break;                     /* A released -> finalize */
+    u16 kk = key_hit(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)
+           | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
+    if (!kk) continue;
+    int r = g3_row(corner), c = g3_col(corner);
+    if ((kk & KEY_LEFT)  && c > 0)        c--;
+    if ((kk & KEY_RIGHT) && c < COLS - 1) c++;
+    if ((kk & KEY_UP)    && r > 0)        r--;
+    if ((kk & KEY_DOWN)  && r < ROWS - 1) r++;
+    int nc = g3_slot(r, c);
+    if (nc != corner) { corner = nc; snd_move(); update_select(anchor, corner);
+                        boxoam_select_cursor(); }
+  }
+  /* --- finalize --- */
+  boxoam_select_clear();                                /* un-whiten; grab/deny takes over */
+  if (anchor == corner) {                               /* no drag: the classic single-mon grab */
+    if (g_box[anchor].species) {
+      start_carry(src, recs, box, anchor);
+      render_full(src, box, anchor, false, false, false);
+      play_grab_anim(src, box, anchor);
+      carry_move(src, box, anchor, anchor);
+      draw_footer(src->is_bank, false, true);
+      *pfull = false;
+    } else snd_deny();
+    return recs;
+  }
+  /* build the chunk from the OCCUPIED cells inside the rectangle */
+  uint8_t occ[G3_BOX_SLOTS];
+  for (int s = 0; s < G3_BOX_SLOTS; s++) occ[s] = g_box[s].species ? 1 : 0;
+  if (chunk_build(&s_ch, occ, anchor, corner) == 0) { snd_deny(); return recs; }
+  for (int i = 0; i < s_ch.n; i++) memcpy(s_ch_rec[i], recs + (uint32_t)s_ch.src[i] * 80, 80);
+  for (int i = 0; i < s_ch.n; i++) {                    /* decode ONCE for the block display */
+    PkMon m; pk_decode_mon(s_ch_rec[i], false, &m);
+    s_ch_cells[i].rr = s_ch.rr[i];  s_ch_cells[i].cc = s_ch.cc[i];
+    s_ch_cells[i].species = m.species;  s_ch_cells[i].form = m.form;
+    s_ch_cells[i].egg = (m.isEgg && !m.isBadEgg) ? 1 : 0;
+  }
+  s_ch_hold = true; s_ch_box = box; s_ch_bank = src->is_bank;
+  s_ch_tr = g3_row(s_ch.src[0]) - s_ch.rr[0];           /* footprint top-left in the source box */
+  s_ch_tc = g3_col(s_ch.src[0]) - s_ch.cc[0];
+  s_ch_fr = g3_row(corner) - s_ch_tr;                   /* fist rides the cell A was released on */
+  s_ch_fc = g3_col(corner) - s_ch_tc;
+  s_oam_reload = true;                                  /* Emerald's grab itself is SILENT (the A-press
+                                                         * earcon at select START already matched) */
+  /* Emerald grab beat (MultiMove_GrabSelection): the fist closes on the block in
+   * place, holds a moment, then block + fist rise together 1px/frame to the 8px carry
+   * height. After the first draw the anchor is unmoved, so every rise frame is pure OAM. */
+  s_ch_lift = 0;
+  chunk_draw(src, box, false);
+  for (int v = 0; v < 8; v++) { boxoam_commit(); s_vsync(); }
+  for (int v = 1; v <= 8; v++) { s_ch_lift = v; chunk_move(src, box); boxoam_commit(); s_vsync(); }
+  *pfull = false;
+  return recs;
+}
+
 /* Wallpaper chooser: live-previews each wallpaper behind the box's icons.
  * 16 standard ids, plus the 16 Emerald "Walda"/secret wallpapers (ids 16..31) when
  * the source allows (PC Emerald, wp_count==32). LEFT/RIGHT cycle, A confirms, B cancels. */
@@ -478,17 +1017,92 @@ static int wallpaper_pick(BoxSource* src, int cur_wp) {
   }
 }
 
-/* Overlay menu when the box TITLE is selected: rename / change wallpaper. Each
- * edit mutates the source and commits via its verified-write path. */
+/* "Export all to .pk": write every occupied mon in `box` to a PKHeX .pk3 in the bank folder,
+ * with a per-mon progress sprite + N/total bar (the slow batch the user asked to see). PC and
+ * bank both; Omega-only (SD writes — the caller gates on can_edit). */
+static void export_box_all(BoxSource* src, int box) {
+  uint8_t* recs = src->records(box);
+  PkMon list[G3_BOX_SLOTS];
+  box_decode_to(src, recs, box, list);
+  int total = 0;
+  for (int s = 0; s < G3_BOX_SLOTS; s++) if (list[s].species) total++;
+  if (total == 0) {
+    snd_deny();
+    ui_clear();
+    ui_panel(20, 60, 200, 44, UI_PANEL, UI_BORDER);
+    ui_text(30, 70, UI_WARN, "BOX IS EMPTY");
+    ui_text(30, 86, UI_DIM, "Nothing to export. Press A");
+    u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+    return;
+  }
+  boxoam_suspend();
+  int done = 0, failed = 0;
+  for (int s = 0; s < G3_BOX_SLOTS; s++) {
+    if (!list[s].species) continue;
+    pdna_progress_frame("EXPORT TO .pk", &list[s], done, total, "Writing...");
+    if (pdna_pk_export_silent(recs + (uint32_t)s * 80, &list[s], 0, 0) != SF_OK) failed++;
+    done++;
+    for (int v = 0; v < 3; v++) s_vsync();
+  }
+  if (failed) snd_error(); else snd_save();
+  ui_clear();
+  ui_panel(20, 54, 200, 58, UI_PANEL, failed ? UI_WARN : UI_OK);
+  char l[40]; siprintf(l, "EXPORTED %d / %d", total - failed, total);
+  ui_text(30, 64, failed ? UI_WARN : UI_OK, l);
+  ui_text(30, 82, UI_DIM, "Saved to /PokeDNA/bank/");
+  ui_text(30, 96, UI_DIM, "Press A");
+  u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+  boxoam_resume();
+}
+
+/* "Release all": permanently delete every mon in `box` (PC = removed from the save; bank = removed
+ * from the bank box). Confirms first (destructive), then clears + commits via the box's verified-
+ * write path (an immutable backup is taken before the .sav/box write). Omega-only. */
+static void release_box_all(BoxSource* src, int box) {
+  uint8_t* recs = src->records(box);
+  PkMon list[G3_BOX_SLOTS];
+  box_decode_to(src, recs, box, list);
+  int total = 0;
+  for (int s = 0; s < G3_BOX_SLOTS; s++) if (list[s].species) total++;
+  if (total == 0) {
+    snd_deny();
+    ui_clear();
+    ui_panel(20, 60, 200, 44, UI_PANEL, UI_BORDER);
+    ui_text(30, 70, UI_WARN, "BOX IS EMPTY");
+    ui_text(30, 86, UI_DIM, "Nothing to release. Press A");
+    u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+    return;
+  }
+  char q[40]; siprintf(q, "Release all %d Pokemon?", total);
+  if (!app_confirm(q, "Deleted permanently!")) { snd_back(); return; }
+  static uint8_t EWRAM_BSS bak[G3_BOX_SLOTS][80];     /* pre-clear snapshot: a failed commit must
+                                                       * leave RAM matching the card ("Nothing changed.") */
+  memcpy(bak, recs, sizeof bak);
+  for (int s = 0; s < G3_BOX_SLOTS; s++) if (list[s].species) memset(recs + (uint32_t)s * 80, 0, 80);
+  bool ok = src->commit();                            /* PC: verified g_pc write (+ backup); bank: box file */
+  if (!ok) memcpy(recs, bak, sizeof bak);             /* revert: EZ writes have no retry — never leave the
+                                                       * zeroed box live for a later save to persist */
+  if (ok) snd_save(); else snd_error();
+  ui_clear();
+  ui_panel(20, 54, 200, 56, UI_PANEL, ok ? UI_OK : UI_WARN);
+  ui_text(30, 64, ok ? UI_OK : UI_WARN, ok ? "RELEASED" : "RELEASE FAILED");
+  if (ok) { char l[40]; siprintf(l, "Freed %d slots.", total); ui_text(30, 82, UI_DIM, l); }
+  else ui_text(30, 82, UI_DIM, "Nothing changed.");
+  ui_text(30, 96, UI_DIM, "Press A");
+  u16 kk; do { s_vsync(); kk = key_hit(KEY_A); } while (!kk);
+}
+
+/* Overlay menu when the box TITLE is selected: rename / wallpaper / export all / release all. Each
+ * action mutates the source and commits via its verified-write path. */
 static void box_options_menu(BoxSource* src, int box) {
-  static const char* const OPT[3] = { "Rename box", "Wallpaper", "Cancel" };
+  static const char* const OPT[5] = { "Rename box", "Wallpaper", "Export all .pk", "Release all", "Cancel" };
   int sel = 0;
   for (;;) {
-    const int mx = 70, my = 54, mw = 100, mh = 18 + 3 * 14 + 11;
+    const int mx = 50, my = 42, mw = 140, mh = 18 + 5 * 14 + 11;
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "BOX");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 5; i++) {
       int y = my + 18 + i * 14; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, OPT[i]);
@@ -496,8 +1110,8 @@ static void box_options_menu(BoxSource* src, int box) {
     ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick B back");
     u16 k; do { s_vsync(); k = key_hit(KEY_UP | KEY_DOWN | KEY_A | KEY_B); } while (!k);
     if (k & KEY_B) { snd_back(); return; }
-    else if (k & KEY_UP)   { snd_move(); sel = (sel > 0) ? sel - 1 : 2; }
-    else if (k & KEY_DOWN) { snd_move(); sel = (sel + 1) % 3; }
+    else if (k & KEY_UP)   { snd_move(); sel = (sel > 0) ? sel - 1 : 4; }
+    else if (k & KEY_DOWN) { snd_move(); sel = (sel + 1) % 5; }
     else if (k & KEY_A) {
       snd_ok();
       if (sel == 0) {                              /* rename */
@@ -520,6 +1134,12 @@ static void box_options_menu(BoxSource* src, int box) {
             if (src->commit()) app_commit_sb1();          /* box byte + the Walda config */
           }
         }
+        return;
+      } else if (sel == 2) {                       /* export all to .pk */
+        export_box_all(src, box);
+        return;
+      } else if (sel == 3) {                       /* release all (destructive; confirms) */
+        release_box_all(src, box);
         return;
       } else return;                               /* cancel */
     }
@@ -548,34 +1168,43 @@ int pdna_box(BoxSource* src) {
   /* A Day-Care withdraw-to-PC parked a mon in a free slot and asked us to carry it:
    * open that box and lift the parked mon into the glove so the user places it. */
   int pickup_ps = -1;
-  if (!s_holding) { int pb, ps;
+  if (!s_holding && !s_ch_hold) { int pb, ps;
     if (app_take_pickup(&pb, &ps) && pb >= 0 && pb < nb && ps >= 0 && ps < 30) { box = pb; cur = ps; pickup_ps = ps; }
   }
   boxoam_enter();                             /* enable OBJ; upload hand/grab + palettes */
   s_oam_reload = true;                        /* first paint uploads the box's icon tiles */
   uint8_t* recs = src->records(box);          /* current box's 30*80 records */
-  pk_decode_box_raw(recs, g_box);
+  box_decode(src, recs, box);
   if (pickup_ps >= 0) start_carry(src, recs, box, pickup_ps);   /* lift the parked mon */
   /* Cursor-arrival hint when crossing the PC<->Bank edge: bottom row (carrying up into the
    * bank) or the top tabs (only when NOT carrying — you can't rest a held mon on a tab). */
   { int st = app_box_start_take();
-    if (st == 1 && !s_holding) s_tab_focus = src->is_bank ? 2 : 1;
+    if (s_ch_hold) {                                    /* carrying a chunk across the PC<->Bank edge */
+      if (s_ch_tc > chunk_anchor_cmax(&s_ch)) s_ch_tc = chunk_anchor_cmax(&s_ch);
+      if (st == 2)      s_ch_tr = chunk_anchor_rmax(&s_ch);   /* arrived from below -> bottom of grid */
+      else if (st == 1) s_ch_tr = 0;                          /* arrived from above -> top of grid */
+      else if (s_ch_tr > chunk_anchor_rmax(&s_ch)) s_ch_tr = chunk_anchor_rmax(&s_ch);
+    } else if (st == 1 && !s_holding) s_tab_focus = src->is_bank ? 2 : 1;
     else if (st == 2) cur = COLS * (ROWS - 1);
   }
   /* switch to box `nbx` (wrapping), reload + redraw */
   #define SWITCH_BOX(nbx) do { box = (nbx); recs = src->records(box); \
-                               pk_decode_box_raw(recs, g_box); cur = 0; \
+                               box_decode(src, recs, box); cur = 0; \
                                bob = 0; anim_ctr = 0; \
                                if (!src->is_bank) app_note_pc_box(box); \
                                s_oam_reload = true; need_full = true; } while (0)
 
   for (;;) {
-    if (need_full) { render_full(src, box, cur, on_title, s_holding, true); need_full = false; }
+    if (need_full) {
+      if (s_ch_hold) chunk_draw(src, box, true);
+      else           render_full(src, box, cur, on_title, s_holding, true);
+      need_full = false;
+    }
     u16 k, fresh;
     do { s_vsync();
          /* real 2-frame pose bob: DMA-swap all icons' tiles between frame 0/1 in vblank;
           * paused while carrying or in ITEM mode (icons + markers stay static). */
-         if (app_anim_enabled(ANIM_BOX) && !s_holding && s_cur_mode != CM_ITEM) {
+         if (app_anim_enabled(ANIM_BOX) && !s_holding && !s_ch_hold && s_cur_mode != CM_ITEM) {
            if (++anim_ctr >= ANIM_PERIOD) { anim_ctr = 0; bob ^= 1; boxoam_set_frame(bob); }
          } else if (bob) { bob = 0; boxoam_set_frame(0); }
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
@@ -588,6 +1217,37 @@ int pdna_box(BoxSource* src) {
     else if (fresh & KEY_B)                                      snd_back();
 
     int old_cur = cur; bool old_title = on_title;
+
+    /* WP AUDIT hotkey (hold START+SELECT together): the on-hardware discrimination
+     * for the garbled-wallpaper hunt — run it WHILE the garble is on screen. */
+    if (key_is_down(KEY_START) && key_is_down(KEY_SELECT) && !s_ch_hold && !s_holding) {
+      wp_audit(src, box);
+      need_full = true;
+      continue;
+    }
+
+    /* ---- CHUNK CARRY (multi-select group in hand): move the footprint; drop places it ---- */
+    if (s_ch_hold) {
+      if (k & KEY_B) {                               /* cancel: sources kept in place, nothing lost */
+        s_ch_hold = false; s_oam_reload = true; need_full = true;
+      }
+      else if (k & KEY_A) { recs = drop_chunk(src, box, recs, &need_full); }
+      else if ((k & (KEY_L | KEY_R)) && nb > 1) {    /* carry to prev/next box */
+        int nbx = (k & KEY_R) ? (box + 1) % nb : (box + nb - 1) % nb; SWITCH_BOX(nbx);
+      }
+      else if (k & KEY_LEFT)  { if (s_ch_tc > 0) s_ch_tc--; else if (nb > 1) SWITCH_BOX((box + nb - 1) % nb); }
+      else if (k & KEY_RIGHT) { if (s_ch_tc < chunk_anchor_cmax(&s_ch)) s_ch_tc++; else if (nb > 1) SWITCH_BOX((box + 1) % nb); }
+      else if (k & KEY_UP)    { if (s_ch_tr > 0) s_ch_tr--;
+                                else if (!src->is_bank) { boxoam_exit(); return 4; }    /* up past PC top -> Bank */
+                                else snd_deny(); }
+      else if (k & KEY_DOWN)  { if (s_ch_tr < chunk_anchor_rmax(&s_ch)) s_ch_tr++;
+                                else if (src->is_bank) { boxoam_exit(); return 5; }     /* off Bank bottom -> PC */
+                                else snd_deny(); }
+      if (!s_ch_hold) boxoam_chunk_end();            /* B-cancel / successful drop: restore the
+                                                      * borrowed regions before the full repaint */
+      if (s_ch_hold && !need_full) chunk_move(src, box);   /* anchor move: pure OAM, no bitmap */
+      continue;                                      /* chunk carry swallows all other keys */
+    }
 
     /* ---- MOVE MODE (mon-in-hand): the carried mon floats; place it anywhere ---- */
     if (s_holding) {
@@ -608,7 +1268,7 @@ int pdna_box(BoxSource* src) {
             boxoam_resume();
             if (rr == 1) {                            /* placed -> end the carry */
               s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
-              s_tab_focus = -1; recs = src->records(box); pk_decode_box_raw(recs, g_box);
+              s_tab_focus = -1; recs = src->records(box); box_decode(src, recs, box);
             }
             s_oam_reload = true; need_full = true;    /* redraw over the popup */
           } else snd_deny();                          /* party-origin mon can't go back; PKMN DATA / SAVE locked while carrying */
@@ -621,7 +1281,7 @@ int pdna_box(BoxSource* src) {
           if (fs < 0) { snd_deny(); }                /* box full: keep holding */
           else { memcpy(recs + (uint32_t)fs * 80, s_held, 80); src->mark_dirty();
                  snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
-                 pk_decode_box_raw(recs, g_box); s_oam_reload = true; need_full = true; }
+                 box_decode(src, recs, box); s_oam_reload = true; need_full = true; }
         } else {                                     /* origin keeps it (party / box / dup) -> nothing to place */
           snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
           s_oam_reload = true; need_full = true;
@@ -630,7 +1290,7 @@ int pdna_box(BoxSource* src) {
       else if (k & KEY_A) {                          /* drop / swap onto the cursor cell */
         bool done; recs = drop_held(src, box, cur, recs, &done);
         (void)done;                                  /* a cross-scope copy may have shown a confirm dialog */
-        pk_decode_box_raw(recs, g_box); s_oam_reload = true; need_full = true;
+        box_decode(src, recs, box); s_oam_reload = true; need_full = true;
       }
       else if ((k & (KEY_L | KEY_R)) && nb > 1) {    /* carry to the next/prev box (even a FULL one) */
         int nbx = (k & KEY_R) ? (box + 1) % nb : (box + nb - 1) % nb;
@@ -658,7 +1318,7 @@ int pdna_box(BoxSource* src) {
       if (k & KEY_B) {                               /* put it back (never lose it) */
         if (s_item_from_box >= 0 && s_item_from_box != box) SWITCH_BOX(s_item_from_box);  /* back to its box */
         int home = item_home();
-        if (home >= 0) { box_set_held(recs, home, (uint16_t)s_item_held); pk_decode_box_raw(recs, g_box);
+        if (home >= 0) { box_set_held(recs, home, (uint16_t)s_item_held); box_decode(src, recs, box);
                          src->mark_dirty(); s_item_held = 0; s_item_from = -1; s_item_from_box = -1; need_full = true; }
         else snd_deny();
       }
@@ -666,7 +1326,7 @@ int pdna_box(BoxSource* src) {
         if (g_box[cur].species) {
           uint16_t old = g_box[cur].heldItem;        /* swap: take this mon's old item */
           box_set_held(recs, cur, (uint16_t)s_item_held);
-          pk_decode_box_raw(recs, g_box);
+          box_decode(src, recs, box);
           src->mark_dirty();
           s_item_held = old; s_item_from = old ? cur : -1;   /* keep holding the swapped-out item */
           s_item_from_box = old ? box : -1;
@@ -731,7 +1391,9 @@ int pdna_box(BoxSource* src) {
       else if (fresh & KEY_LEFT)  { SWITCH_BOX((box + nb - 1) % nb); on_title = true; }
       else if (fresh & KEY_RIGHT) { SWITCH_BOX((box + 1) % nb); on_title = true; }
       else if (k & KEY_A) {
-        if (src->can_edit()) { boxoam_suspend(); box_options_menu(src, box); boxoam_resume(); need_full = true; }
+        if (src->can_edit()) { boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
+                               recs = src->records(box); box_decode(src, recs, box);  /* Release all mutates records */
+                               s_oam_reload = true; need_full = true; }
         else { snd_deny(); }
       }
     }
@@ -740,22 +1402,16 @@ int pdna_box(BoxSource* src) {
     else if (k & KEY_UP)    { if (cur < COLS) on_title = true; else cur -= COLS; }
     else if (k & KEY_DOWN)  { if (src->is_bank && cur >= COLS * (ROWS - 1)) { boxoam_exit(); return 5; }   /* off the bank bottom -> PC tabs */
                               else cur = (cur >= COLS * (ROWS - 1)) ? cur - COLS * (ROWS - 1) : cur + COLS; }
-    else if ((k & KEY_A) && s_cur_mode == CM_MOVE) {     /* orange hand: grab the mon directly */
-      if (!src->can_edit() || !g_box[cur].species) snd_deny();
-      else {
-        start_carry(src, recs, box, cur);
-        render_full(src, box, cur, false, false, false);
-        play_grab_anim(src, box, cur);
-        carry_move(src, box, cur, cur);
-        draw_footer(src->is_bank, false, true);
-      }
+    else if ((k & KEY_A) && s_cur_mode == CM_MOVE) {     /* orange hand: TAP = grab one; HOLD+DPAD = rubber-band multi-select */
+      if (!src->can_edit()) snd_deny();
+      else recs = begin_select(src, box, recs, cur, &need_full);
     }
     else if ((k & KEY_A) && s_cur_mode == CM_ITEM) {     /* transparent hand: pick up the held item */
       if (!src->can_edit()) snd_deny();
       else if (g_box[cur].species && g_box[cur].heldItem) {
         s_item_held = g_box[cur].heldItem; s_item_from = cur; s_item_from_box = box;
         box_set_held(recs, cur, 0);
-        pk_decode_box_raw(recs, g_box);
+        box_decode(src, recs, box);
         src->mark_dirty();
         need_full = true;
       } else snd_deny();                                 /* empty slot or no item */
@@ -770,7 +1426,7 @@ int pdna_box(BoxSource* src) {
         app_mon_menu(rec, false, src->is_bank, src->commit, src->menu_block, mbox, cur);
         boxoam_resume();
         recs = src->records(box);                                        /* menu may have edited it */
-        pk_decode_box_raw(recs, g_box);                                  /* refresh after possible write */
+        box_decode(src, recs, box);                                  /* refresh after possible write */
         s_oam_reload = true;                                             /* contents may have changed */
         if (app_take_move_request()) {                                   /* picked MOVE -> into the glove */
           start_carry(src, recs, box, cur);
@@ -788,7 +1444,7 @@ int pdna_box(BoxSource* src) {
         } else {
           int pb, ps;
           if (app_take_pickup(&pb, &ps) && pb >= 0 && pb < nb && ps >= 0 && ps < 30) {
-            box = pb; recs = src->records(box); pk_decode_box_raw(recs, g_box);   /* TO DAY-CARE->PC: carry the parked mon */
+            box = pb; recs = src->records(box); box_decode(src, recs, box);   /* TO DAY-CARE->PC: carry the parked mon */
             cur = ps; start_carry(src, recs, box, ps); s_oam_reload = true;
             render_full(src, box, cur, false, false, false);
             play_grab_anim(src, box, cur);
