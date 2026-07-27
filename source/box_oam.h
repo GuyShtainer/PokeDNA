@@ -95,6 +95,17 @@ void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
                         const BoxOamChunkMon* mons, int n, bool fit, int lift);
 void boxoam_chunk_end(void);
 
+/* "Bitmap understudy" hooks (§12b) — box_oam.c owns the covered-cell bookkeeping and
+ * fires these exactly on cover/uncover TRANSITIONS of the chunk block (<= a footprint
+ * of cells per keypress): under_show when the block newly covers an OCCUPIED cell
+ * (its OBJ is hidden — the box screen blits that mon's icon INTO the Mode-3 bitmap so
+ * the ATTR0_BLEND block alpha-blends over it, Emerald's see-through look), under_hide
+ * when the block leaves it (the box screen restores just that cell's wallpaper rect).
+ * Strong impls live in pdna_box.c (they need the decoded box + the verified wallpaper
+ * staging); box_oam.c carries weak no-ops so it links standalone. */
+void boxoam_under_show(int slot);
+void boxoam_under_hide(int slot);
+
 /* ITEM mode: show a small held-item marker on every occupied cell that holds an
  * item (uses `box` for occupancy/heldItem). Call when entering ITEM mode / after an
  * item edit. show=false hides all markers. */

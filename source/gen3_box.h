@@ -49,6 +49,10 @@ int      pk_set_box_names_blob(uint8_t* pc, int off, const uint8_t* bytes, int l
 /* Emerald "Walda" secret-wallpaper pattern (0..15) in SaveBlock1. EMERALD ONLY. */
 uint8_t  pk_walda_pattern(const uint8_t* sb1);
 void     pk_set_walda_pattern(uint8_t* sb1, uint8_t pattern);   /* also sets patternUnlocked */
+/* The save's two Walda wallpaper colors (RGB15: [0] background, [1] foreground) —
+ * the game paints the Friends patterns IN these (palette entries 1..2 of both
+ * wallpaper banks are overwritten at load). EMERALD ONLY. */
+void     pk_walda_colors(const uint8_t* sb1, uint16_t out[2]);
 
 /* Decode all 30 slots of `box` into out[30]; empty slots get species 0. Box mons
  * are 80 bytes (no runtime stats) so level/stats are COMPUTED (pk_resolve).

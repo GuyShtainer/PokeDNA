@@ -248,10 +248,44 @@ const uint16_t* wallpaper_tile_data(int wp, int* ntiles);
 const uint16_t* wallpaper_tilemap(int wp);
 uint32_t wallpaper_map_sum(int wp);    /* build-time FNV-1a goldens (generated wallpapers.c) */
 uint32_t wallpaper_tile_sum(int wp);
+const uint16_t* wallpaper_walda_sentinels(void);   /* the 2 sentinel RGB15s baked into the Walda tiles */
 __attribute__((weak)) const uint16_t* wallpaper_tile_data(int wp, int* n) { (void)wp; if (n) *n = 0; return 0; }
 __attribute__((weak)) const uint16_t* wallpaper_tilemap(int wp) { (void)wp; return 0; }
 __attribute__((weak)) uint32_t wallpaper_map_sum(int wp) { (void)wp; return 0; }   /* 0 = no golden, skip */
 __attribute__((weak)) uint32_t wallpaper_tile_sum(int wp) { (void)wp; return 0; }
+__attribute__((weak)) const uint16_t* wallpaper_walda_sentinels(void) { return 0; }
+
+/* pdna_main.c: the save's two Walda wallpaper colors ([0] background, [1] foreground),
+ * or the game's contrasting defaults when unreadable (non-Emerald). Declared here like
+ * the wallpaper accessors above (pdna_app.h is owned by concurrent work). */
+bool app_walda_colors(uint16_t out[2]);
+
+/* ---- §12a Walda color substitution -------------------------------------------------
+ * The Friends/Walda wallpapers (ids 16..31) are pre-rendered with two SENTINEL colors
+ * standing in for palette entries 1..2 — the entries Emerald overwrites at load with
+ * the SAVE'S chosen Walda colors (pokemon_storage_system.c:5391-5397 LoadWallpaperGfx
+ * copies GetWaldaWallpaperColorsPtr() over palette entries [1..2]/[17..18]). The
+ * substitution happens AFTER a tile's verified ROM staging and BEFORE its blit, so
+ * every golden/checksum keeps operating on the sentinel data unchanged. */
+static const uint16_t* s_wp_sent;       /* active sentinels (NULL = standard wp, no sub) */
+static uint16_t s_wp_wcol[2];           /* the save's (or default) Walda colors          */
+static void wp_walda_setup(int wp) {
+  s_wp_sent = (wp >= G3_BOX_WALLPAPER_COUNT) ? wallpaper_walda_sentinels() : 0;
+  if (s_wp_sent) app_walda_colors(s_wp_wcol);
+}
+static void wp_sub_walda(uint16_t* t64) {
+  if (!s_wp_sent) return;
+  for (int k = 0; k < 64; k++) {
+    if      (t64[k] == s_wp_sent[0]) t64[k] = (uint16_t)(s_wp_wcol[0] & 0x7FFF);
+    else if (t64[k] == s_wp_sent[1]) t64[k] = (uint16_t)(s_wp_wcol[1] & 0x7FFF);
+  }
+}
+
+/* §12b state: which wallpaper's ART currently fills the region (-1 = grass fallback or
+ * none — wp_restore_rect then repaints the aligned grass patch instead), and which grid
+ * cells carry a software-blitted "understudy" icon in the bitmap (see the hooks below). */
+static int s_wp_drawn = -1;
+static uint8_t s_under[G3_BOX_SLOTS];
 
 /* Copy n u16s ROM -> RAM, then RE-READ the ROM and byte-compare; retry on mismatch.
  * A transient cart-bus glitch during either pass makes the passes disagree, so a
@@ -280,7 +314,11 @@ static int wp_copy_verified(uint16_t* dst, const uint16_t* src, int n) {
 static void draw_wallpaper(int wp, int x, int y, int w, int h) {
   int nt; const uint16_t* tiles = wallpaper_tile_data(wp, &nt);
   const uint16_t* map = wallpaper_tilemap(wp);
+  /* any full-region repaint wipes the §12b understudy blits with it */
+  for (int s = 0; s < G3_BOX_SLOTS; s++) s_under[s] = 0;
+  s_wp_drawn = -1;
   if (!tiles || !map) { draw_grass(x, y, w, h); return; }   /* procedural fallback: no ROM read */
+  wp_walda_setup(wp);                  /* Walda (16..31): substitute the save's colors at blit */
   /* HW-ROBUST + SELF-VERIFYING render. History: the wallpaper garbled into a "jumble of
    * tiles" on the real EZ-Flash (never in emulators) and survived two fix theories — the
    * rumble-GPIO render guard (cba40e7; Guy later proved zero rumble correlation) and the
@@ -363,6 +401,7 @@ static void draw_wallpaper(int wp, int x, int y, int w, int h) {
           if (r < 0) { dirty = 1; break; }
           retries += r;
           last_idx = idx;
+          wp_sub_walda(s_wp_tile);     /* AFTER the verify, BEFORE the blit (§12a) */
         }
         int bx = x + tx * 8, by = y + ty * 8;
         for (int j = 0; j < 8 && by + j < y + h; j++)
@@ -371,6 +410,7 @@ static void draw_wallpaper(int wp, int x, int y, int w, int h) {
       }
   }
   rumble_io_resume();
+  if (!dirty) s_wp_drawn = wp;         /* the art is on screen: rect restores may re-use it */
   if (dirty) {
     log_line("wp %d: unstable rom reads, grass fallback (%d re-reads)", wp, retries);
     anom = 1;
@@ -383,6 +423,93 @@ static void draw_wallpaper(int wp, int x, int y, int w, int h) {
    * chooser sweep over a bad cart can't thrash the card) */
   static int s_wp_flushes = 0;
   if (anom && s_wp_flushes < 3) { s_wp_flushes++; app_log_flush(); }
+}
+
+/* ---- §12b rect-limited wallpaper restore + the "bitmap understudy" ------------------
+ * While the floating chunk block covers an OCCUPIED cell, that cell's OBJ is hidden and
+ * its icon is software-blitted INTO the Mode-3 bitmap instead — the ghost block
+ * (ATTR0_BLEND, 2nd target BG2) then alpha-blends OVER it, Emerald's see-through look
+ * (OBJ can't blend over OBJ on this hardware, so the mon must live on the BG layer).
+ * On uncover, only the touched cell's wallpaper rect is re-staged and repainted. */
+
+static void plot_clip(int x, int y, u16 c, int x0, int y0, int x1, int y1) {
+  if (x >= x0 && x < x1 && y >= y0 && y < y1) m3_plot(x, y, c);
+}
+
+/* Repaint the wallpaper inside [x0,x0+w)x[y0,y0+h) only. Art path: re-uses the staged
+ * s_wp_map (verified + golden-checked by the last full draw of s_wp_drawn) and the
+ * same verified per-tile staging + Walda substitution as draw_wallpaper. Grass path
+ * (s_wp_drawn < 0): repaint base + leaves with the FULL-REGION phase so the patch
+ * can't seam against the surrounding fallback. A tile that stays dirty is skipped —
+ * a stale 8x8 beats baking garbage, and the next full repaint heals it. */
+static void wp_restore_rect(int x0, int y0, int w, int h) {
+  int x1 = x0 + w, y1 = y0 + h;
+  if (x0 < WP_X) x0 = WP_X;
+  if (y0 < WP_Y) y0 = WP_Y;
+  if (x1 > WP_X + WP_W) x1 = WP_X + WP_W;
+  if (y1 > WP_Y + WP_H) y1 = WP_Y + WP_H;
+  if (x0 >= x1 || y0 >= y1) return;
+  int nt = 0;
+  const uint16_t* tiles = (s_wp_drawn >= 0) ? wallpaper_tile_data(s_wp_drawn, &nt) : 0;
+  if (!tiles) {                                   /* the grass fallback is on screen */
+    const u16 base = RGB15(19, 25, 12), dk = RGB15(13, 19, 6), lt = RGB15(22, 28, 15);
+    ui_fill_rect(x0, y0, x1 - x0, y1 - y0, base);
+    for (int j = 0; j + 6 < WP_H; j += 12) {
+      int off = ((j / 12) & 1) ? 8 : 0;
+      for (int i = off; i + 4 < WP_W; i += 16) {
+        int lx = WP_X + i + 2, ly = WP_Y + j + 3;     /* same placement as draw_grass */
+        plot_clip(lx + 1, ly,     dk, x0, y0, x1, y1);
+        plot_clip(lx + 2, ly,     lt, x0, y0, x1, y1);
+        plot_clip(lx,     ly + 1, dk, x0, y0, x1, y1);
+        plot_clip(lx + 1, ly + 1, lt, x0, y0, x1, y1);
+        plot_clip(lx + 2, ly + 1, dk, x0, y0, x1, y1);
+        plot_clip(lx + 1, ly + 2, dk, x0, y0, x1, y1);
+      }
+    }
+    return;
+  }
+  wp_walda_setup(s_wp_drawn);
+  rumble_io_suspend();
+  int tx0 = (x0 - WP_X) / 8, tx1 = (x1 - 1 - WP_X) / 8;
+  int ty0 = (y0 - WP_Y) / 8, ty1 = (y1 - 1 - WP_Y) / 8;
+  for (int ty = ty0; ty <= ty1; ty++)
+    for (int tx = tx0; tx <= tx1; tx++) {
+      int idx = s_wp_map[ty * 20 + tx];
+      if (idx >= nt || wp_copy_verified(s_wp_tile, tiles + (uint32_t)idx * 64, 64) < 0) continue;
+      wp_sub_walda(s_wp_tile);
+      int bx = WP_X + tx * 8, by = WP_Y + ty * 8;
+      for (int j = 0; j < 8; j++)
+        for (int i = 0; i < 8; i++)
+          plot_clip(bx + i, by + j, s_wp_tile[j * 8 + i] & 0x7FFF, x0, y0, x1, y1);
+    }
+  rumble_io_resume();
+}
+
+/* the chunk block currently floats over its own SOURCE box (set by chunk_oam_sync) */
+static bool s_ch_on_src = false;
+
+/* Strong impls of the box_oam.h cover/uncover hooks (box_oam.c owns the covered-cell
+ * bookkeeping and fires these exactly on transitions; the bitmap work needs g_box +
+ * the wallpaper staging, both private to this file — hence the hook seam). */
+void boxoam_under_show(int slot) {
+  if (slot < 0 || slot >= G3_BOX_SLOTS || s_under[slot] || !g_box[slot].species) return;
+  if (s_ch_hold && s_ch_on_src)                   /* a lifted SOURCE cell is vacating: it is
+                                                   * carried IN the block, nothing lives under */
+    for (int i = 0; i < s_ch.n; i++) if (s_ch.src[i] == slot) return;
+  const uint16_t* ic = (g_box[slot].isEgg && !g_box[slot].isBadEgg)
+                     ? mon_icon_egg()
+                     : mon_icon_for_form(g_box[slot].species, g_box[slot].form);
+  if (!ic) return;                                /* art-free build: nothing to blit */
+  ui_sprite(GRID_X + (slot % COLS) * CELL_W, GRID_Y + (slot / COLS) * CELL_H,
+            MON_ICON_W, MON_ICON_H, ic);          /* RGB15 ROM->VRAM blit (0x8000-keyed) */
+  s_under[slot] = 1;
+}
+
+void boxoam_under_hide(int slot) {
+  if (slot < 0 || slot >= G3_BOX_SLOTS || !s_under[slot]) return;
+  s_under[slot] = 0;
+  wp_restore_rect(GRID_X + (slot % COLS) * CELL_W, GRID_Y + (slot / COLS) * CELL_H,
+                  MON_ICON_W, MON_ICON_H);
 }
 
 /* ---- WP AUDIT (START+SELECT): the on-hardware wallpaper experiment ------------------
@@ -401,6 +528,8 @@ static uint32_t wp_fold_region(const uint16_t* tiles, int nt, bool src_vram) {
       if (!src_vram && idx != last_idx) {
         if (idx >= nt || wp_copy_verified(s_wp_tile, tiles + (uint32_t)idx * 64, 64) < 0) return 0;
         last_idx = idx;
+        wp_sub_walda(s_wp_tile);       /* the SCREEN carries the substituted Walda colors —
+                                        * the expected fold must match (caller ran wp_walda_setup) */
       }
       for (int j = 0; j < 8; j++) {
         int y = WP_Y + ty * 8 + j;
@@ -427,6 +556,7 @@ static void wp_audit(BoxSource* src, int box) {
   int nt; const uint16_t* tiles = wallpaper_tile_data(wp, &nt);
   const uint16_t* map = wallpaper_tilemap(wp);
   uint32_t esum = 0, va = 0, vb = 0;
+  wp_walda_setup(wp);                                    /* folds must use the Walda-substituted look */
   bool staged = tiles && map && wp_copy_verified(s_wp_map, map, 20 * 18) >= 0;
   if (staged) {
     va   = wp_fold_region(tiles, nt, true);              /* as displayed now */
@@ -573,6 +703,9 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
   } else if (s_cur_mode == CM_ITEM && s_item_held) {
     boxoam_carry_end();                                      /* ITEM GRAB: carried item rides the cursor */
     boxoam_item_markers(g_box, true);
+    boxoam_cursor(cur, on_title, BOXOAM_HAND_ITEM);          /* the HAND follows too — it used to stay
+                                                              * frozen on the source mon (only the item
+                                                              * sprite moved with the cursor) */
     /* Small item (bottom-centre), NOT the full 32x32 that covered the mon — so the source
      * mon you just took from is visibly FADED (it no longer holds an item), instead of
      * looking opaque behind the carried item (Guy). The footer says you're carrying it. */
@@ -692,6 +825,7 @@ static void carry_move(BoxSource* src, int box, int old_cur, int cur) {
  * item_markers/carry_item hide OAM entries 34..63/CITEM, so they run BEFORE the block. */
 static void chunk_oam_sync(int box, bool is_bank, bool fit) {
   if (s_oam_reload) { boxoam_load_box(g_box); s_oam_reload = false; }
+  s_ch_on_src = (box == s_ch_box && is_bank == s_ch_bank);   /* §12b: source cells vacate, no understudy */
   boxoam_item_markers(g_box, false);
   boxoam_carry_item(g3_slot(s_ch_tr, s_ch_tc), 0, false);
   boxoam_chunk_carry(s_ch_tr, s_ch_tc, s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc,
@@ -735,6 +869,13 @@ static void chunk_draw(BoxSource* src, int box, bool clear) {
   ui_text(WP_X + 2, 152, RGB15(31, 31, 31), f);
 
   chunk_oam_sync(box, src->is_bank, chunk_fit(src, box));
+
+  /* §12b: draw_wallpaper above WIPED every understudy blit, but a full repaint with
+   * an UNMOVED anchor (refused-drop popups etc.) fires no cover transitions in
+   * box_oam — re-blit the covered occupied cells ourselves (under_show no-ops on
+   * cells that still carry their blit / are empty / are lifted sources). */
+  for (int i = 0; i < s_ch.n; i++)
+    boxoam_under_show((s_ch_tr + s_ch_cells[i].rr) * COLS + (s_ch_tc + s_ch_cells[i].cc));
 }
 
 /* Footer line for the rubber-band selection (count of occupied cells inside). */
@@ -995,25 +1136,64 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
   return recs;
 }
 
-/* Wallpaper chooser: live-previews each wallpaper behind the box's icons.
- * 16 standard ids, plus the 16 Emerald "Walda"/secret wallpapers (ids 16..31) when
- * the source allows (PC Emerald, wp_count==32). LEFT/RIGHT cycle, A confirms, B cancels. */
+/* §14 wallpaper chooser: FIRST the game's own wallpaper-set menu, THEN the existing
+ * live-preview cycle within the chosen set. Groups verified against Emerald's
+ * AddWallpaperSetsMenu/AddWallpapersMenu (pokemon_storage_system.c:4327-4370):
+ *   SCENERY 1 = forest/city/desert/savanna (0..3), SCENERY 2 = crag/volcano/snow/cave
+ *   (4..7), SCENERY 3 = beach/seafloor/river/sky (8..11), ETCETERA = polkadot/
+ *   pokecenter/machine/plain ("SIMPLE") (12..15), FRIENDS = the 16 Walda patterns
+ *   (chooser ids 16..31, Emerald PC only — wp_count==32). RS/FRLG/bank: 4 groups. */
+static const char* const WP_GROUP[5] = { "Scenery 1", "Scenery 2", "Scenery 3", "Etcetera", "Friends" };
+
+/* the little set menu, drawn over whatever is on screen (box_options_menu style).
+ * Returns the picked group index or -1 on B. */
+static int wallpaper_group_menu(int ngroups, int gsel) {
+  for (;;) {
+    const int mx = 60, my = 46, mw = 120, mh = 18 + ngroups * 14 + 11;
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, "WALLPAPER");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < ngroups; i++) {
+      int y = my + 18 + i * 14; bool s = (i == gsel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, WP_GROUP[i]);
+    }
+    ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick B back");
+    u16 k; do { s_vsync(); k = key_hit(KEY_UP | KEY_DOWN | KEY_A | KEY_B); } while (!k);
+    if (k & KEY_B)         { snd_back(); return -1; }
+    else if (k & KEY_UP)   { snd_move(); gsel = (gsel > 0) ? gsel - 1 : ngroups - 1; }
+    else if (k & KEY_DOWN) { snd_move(); gsel = (gsel + 1) % ngroups; }
+    else if (k & KEY_A)    { snd_ok(); return gsel; }
+  }
+}
+
 static int wallpaper_pick(BoxSource* src, int cur_wp) {
   int count = src->wp_count > 0 ? src->wp_count : G3_BOX_WALLPAPER_COUNT;
+  int ngroups = (count > G3_BOX_WALLPAPER_COUNT) ? 5 : 4;    /* Friends set: Emerald PC only */
   int wp = (cur_wp >= 0 && cur_wp < count) ? cur_wp : 0;
+  int gsel = (wp >= G3_BOX_WALLPAPER_COUNT) ? 4 : wp / 4;    /* open on the current wp's set */
   for (;;) {
-    ui_clear();
-    draw_wallpaper(wp, WP_X, WP_Y, WP_W, WP_H);
-    /* the box's icons stay composited as OBJ sprites above this preview BG */
-    char b[40]; siprintf(b, "%d/%d %s%s", wp + 1, count, wp_name(wp), wp >= 16 ? " *" : "");   /* * = Walda secret; " (secret)" overflowed */
-    ui_panel(50, 0, 140, 13, UI_PANEL, UI_BORDER);
-    ui_text(56, 2, UI_TITLE, b);
-    ui_text(2, 152, RGB15(31, 31, 31), "L/R pick  A set  B cancel");
-    u16 k; do { s_vsync(); k = key_hit(KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B); } while (!k);
-    if (k & KEY_B) { snd_back(); return -1; }
-    if (k & KEY_A) { snd_ok(); return wp; }
-    if (k & (KEY_LEFT | KEY_L))  { snd_move(); wp = (wp > 0) ? wp - 1 : count - 1; }
-    if (k & (KEY_RIGHT | KEY_R)) { snd_move(); wp = (wp + 1) % count; }
+    int g = wallpaper_group_menu(ngroups, gsel);
+    if (g < 0) return -1;
+    gsel = g;
+    int base = (g < 4) ? g * 4 : G3_BOX_WALLPAPER_COUNT;     /* the set's id range */
+    int glen = (g < 4) ? 4 : G3_WALDA_COUNT;
+    if (wp < base || wp >= base + glen) wp = base;           /* keep wp when re-entering its set */
+    bool back = false;
+    while (!back) {
+      ui_clear();
+      draw_wallpaper(wp, WP_X, WP_Y, WP_W, WP_H);
+      /* the box's icons stay composited as OBJ sprites above this preview BG */
+      char b[40]; siprintf(b, "%d/%d %s%s", wp - base + 1, glen, wp_name(wp), wp >= 16 ? " *" : "");   /* * = Walda secret */
+      ui_panel(50, 0, 140, 13, UI_PANEL, UI_BORDER);
+      ui_text(56, 2, UI_TITLE, b);
+      ui_text(2, 152, RGB15(31, 31, 31), "L/R pick  A set  B sets");
+      u16 k; do { s_vsync(); k = key_hit(KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B); } while (!k);
+      if (k & KEY_B) { snd_back(); back = true; }            /* back to the set menu, like the game */
+      else if (k & KEY_A) { snd_ok(); return wp; }
+      else if (k & (KEY_LEFT | KEY_L))  { snd_move(); wp = (wp > base) ? wp - 1 : base + glen - 1; }
+      else if (k & (KEY_RIGHT | KEY_R)) { snd_move(); wp = (wp - base + 1) % glen + base; }
+    }
   }
 }
 

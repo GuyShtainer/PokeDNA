@@ -463,6 +463,11 @@ void boxoam_select_clear(void) {
   REG_BLDCNT = 0;
 }
 
+/* §12b bitmap-understudy hooks: weak no-ops so box_oam links standalone; the box
+ * screen (pdna_box.c) provides the real bitmap blit/restore. See box_oam.h. */
+__attribute__((weak)) void boxoam_under_show(int slot) { (void)slot; }
+__attribute__((weak)) void boxoam_under_hide(int slot) { (void)slot; }
+
 void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
                         const BoxOamChunkMon* mons, int n, bool fit, int lift) {
   uint8_t newcov[30];
@@ -473,7 +478,7 @@ void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
   bool full = !s_chunk_valid || tr != s_chunk_tr || tc != s_chunk_tc;
 
   for (int s = 0; s < 30; s++)                       /* uncovered cells get their mon back */
-    if (s_covered[s] && !newcov[s]) { s_covered[s] = 0; restore_slot(s); }
+    if (s_covered[s] && !newcov[s]) { s_covered[s] = 0; restore_slot(s); boxoam_under_hide(s); }
 
   for (int i = 0; i < n && i < 30; i++) {
     int r = tr + mons[i].rr, c = tc + mons[i].cc, s = r * COLS + c;
@@ -482,7 +487,11 @@ void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
               ? mon_icon_oam_egg(&tiles, &bank)
               : (mons[i].species &&
                  mon_icon_oam_for_form_frame(mons[i].species, mons[i].form, 0, &tiles, &bank));
-    s_covered[s] = 1;
+    if (!s_covered[s]) {                             /* cover TRANSITION: put the occupant into
+                                                      * the bitmap so the ghost blends over it */
+      s_covered[s] = 1;
+      if (s_occupied[s]) boxoam_under_show(s);
+    }
     hide(OE_ICON0 + s);                              /* the block occludes this cell anyway */
     if (!have) { hide(OE_MARK0 + i); continue; }     /* no icon data -> same degrade as load_box */
     if (full) upload_tiles_verified(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles,
@@ -519,7 +528,7 @@ void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
 
 void boxoam_chunk_end(void) {
   for (int s = 0; s < 30; s++)
-    if (s_covered[s]) { s_covered[s] = 0; restore_slot(s); }
+    if (s_covered[s]) { s_covered[s] = 0; restore_slot(s); boxoam_under_hide(s); }
   for (int i = 0; i < 30; i++) hide(OE_MARK0 + i);
   hide(OE_GRAB);
   s_chunk_on = 0; s_chunk_valid = 0;

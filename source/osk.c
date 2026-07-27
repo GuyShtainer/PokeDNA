@@ -7,7 +7,11 @@
 #include "snd.h"
 
 #define OSK_ROWS   8
-#define OSK_MAXLEN 16
+/* §15: sized for real FAT long names (the browser's NAME_MAX is 64), NOT the 8-16
+ * chars of the Gen-3 fields — seeding a long file name must never truncate-on-open
+ * (the field view scrolls; callers with short save-format fields still clamp via
+ * their own `cap`). The edit buffer lives on the stack: 64 B is nothing. */
+#define OSK_MAXLEN 63
 
 /* QWERTY layout (same as the sd-browser keyboard); both cases shown so there is
  * no shift mode. Bottom row is the Gen-3-encodable punctuation. */

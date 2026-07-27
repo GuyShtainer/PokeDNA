@@ -742,6 +742,19 @@ bool app_set_walda(uint8_t pattern) {
   return true;
 }
 
+/* The save's two chosen Walda wallpaper colors ([0] background, [1] foreground) —
+ * the Friends patterns are pre-rendered with sentinel colors and the box screen
+ * substitutes these at draw time (wallpapers.c / pdna_box.c). Non-Emerald (no
+ * waldaPhrase at this offset): the game's own ResetWaldaWallpaper defaults
+ * (pokemon_storage_system.c:9661-9669 — RGB(21,25,30) bg, RGB(6,12,24) fg), a
+ * contrasting pair so the pattern still SHOWS. Returns true when read from the save. */
+bool app_walda_colors(uint16_t out[2]) {
+  if (g_game == PK_EMERALD) { pk_walda_colors(g_sb1, out); return true; }
+  out[0] = (uint16_t)(21 | (25 << 5) | (30 << 10));
+  out[1] = (uint16_t)(6 | (12 << 5) | (24 << 10));
+  return false;
+}
+
 
 /* Box summary BROWSER: VIEW/EDIT a box slot, then U/D scroll to the prev/next
  * occupied slot (real-PC style). Edits are saved per-mon (prompted on leave/change)
@@ -1518,15 +1531,27 @@ static void flags_raw_view(bool* dirty, bool* warned) {
  * headers per game table, so a u16 mask covers all of them. */
 static uint16_t s_flags_folded = 0xFFFF;
 
-static int nf_hdr_ord(const NamedFlag* nf, int r) {    /* ordinal of row r's owning header */
+/* Owning-header ordinal per row, cached once per table — the naive rescan made
+ * nf_visible O(row) and cursor moves near the bottom of the ~490-row Emerald
+ * table O(n^2) per keypress (Guy: "really slow toward the bottom"). */
+static const NamedFlag* s_nf_for = 0;
+static uint8_t s_nf_ord[512];
+static void nf_cache(const NamedFlag* nf, int nc) {
+  if (s_nf_for == nf) return;
   int o = -1;
-  for (int i = 0; i <= r; i++) if (nf[i].num == NAMED_FLAG_HEADER) o++;
-  return o;
+  for (int i = 0; i < nc && i < 512; i++) {
+    if (nf[i].num == NAMED_FLAG_HEADER) o++;
+    s_nf_ord[i] = (uint8_t)(o < 0 ? 0 : o);
+  }
+  s_nf_for = nf;
+}
+static int nf_hdr_ord(const NamedFlag* nf, int r) {    /* ordinal of row r's owning header */
+  (void)nf;
+  return (r >= 0 && r < 512) ? s_nf_ord[r] : 0;
 }
 static bool nf_visible(const NamedFlag* nf, int nc, int r) {
   if (r >= nc || nf[r].num == NAMED_FLAG_HEADER) return true;   /* raw row + headers always */
-  int o = nf_hdr_ord(nf, r);
-  return o < 0 || !((s_flags_folded >> o) & 1u);
+  return !((s_flags_folded >> nf_hdr_ord(nf, r)) & 1u);
 }
 static int nf_step(const NamedFlag* nf, int nc, int total, int r, int dir) {
   for (int i = r + dir; i >= 0 && i < total; i += dir)
@@ -1592,6 +1617,7 @@ static bool data_editor(void) {
     int nc = 0, total = 0; bool part = false;
     if (tab == 2) {
       nc = pk_named_flags(g_game, &f_nf); total = nc + 1;
+      nf_cache(f_nf, nc);
       if (sel >= total) sel = total - 1; if (sel < 0) sel = 0;
       while (sel > 0 && !nf_visible(f_nf, nc, sel)) sel--;   /* land on the owning header */
       if (sel < top) top = sel;
@@ -1672,6 +1698,7 @@ static bool data_editor(void) {
     else if (tab == 2) {                         /* named flags nav/fold/toggle */
       const NamedFlag* nf; int nc = pk_named_flags(g_game, &nf);
       int total = nc + 1;
+      nf_cache(nf, nc);
       if (k & KEY_UP)        sel = nf_step(nf, nc, total, sel, -1);
       else if (k & KEY_DOWN) sel = nf_step(nf, nc, total, sel, +1);
       else if (k & KEY_SELECT) {                  /* jump to the next section header (or raw row) */

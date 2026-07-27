@@ -73,6 +73,16 @@ void pk_set_box_wallpaper(uint8_t* pc, int box, uint8_t wp) {
  * gate on Emerald — the offset differs on R/S/FR/LG. */
 #define WALDA_OFF 0x3D70
 uint8_t pk_walda_pattern(const uint8_t* sb1) { return sb1[WALDA_OFF + 21] & 0x0F; }
+
+/* The save's two chosen Walda colors (u16 RGB15 little-endian: colors[0] =
+ * background, colors[1] = foreground). The game overwrites palette entries
+ * [1..2]/[17..18] with them when it loads a Friends wallpaper (pokemon_storage_
+ * system.c:5391-5397 LoadWallpaperGfx; struct WaldaPhrase colors[2] @ +0,
+ * global.h:849-857, waldaPhrase @ SaveBlock1+0x3D70, global.h:1077). */
+void pk_walda_colors(const uint8_t* sb1, uint16_t out[2]) {
+  out[0] = (uint16_t)(sb1[WALDA_OFF + 0] | ((uint16_t)sb1[WALDA_OFF + 1] << 8));
+  out[1] = (uint16_t)(sb1[WALDA_OFF + 2] | ((uint16_t)sb1[WALDA_OFF + 3] << 8));
+}
 void pk_set_walda_pattern(uint8_t* sb1, uint8_t pattern) {
   if (pattern > 15) pattern = 15;
   sb1[WALDA_OFF + 21] = pattern;

@@ -58,6 +58,23 @@ FRAME_TILES = {"forest": 55, "city": 52, "savanna": 45, "crag": 49, "volcano": 5
 BG_TILES = {"savanna": 23, "beach": 23, "river": 11}         # others: full grid
 WALDA_ICON_BASE = 64             # icon strip lands at tile 64 (byte 0x800), always
 
+# THE 2026-07-27 WALDA-COLOR FIX. The game does NOT show the Walda wallpapers with
+# their PNG palettes as-is: LoadWallpaperGfx (pokemon_storage_system.c:5391-5397)
+# copies wallpaper->palettes (both 16-color banks, 0x40 bytes) and then OVERWRITES
+# entries [1..2] AND [17..18] — i.e. entries 1,2 of BOTH banks — with
+# GetWaldaWallpaperColorsPtr(): the SAVE'S two chosen colors (SaveBlock1.waldaPhrase
+# .colors[2] @ 0x3D70, global.h:849-857 + :1077; colors[0]=background,
+# colors[1]=foreground). The pattern art is drawn in exactly those entries, so a
+# static pre-render using the PNG palette paints it wrong/invisible (the 2026-07-27
+# cart photo: sparse orange body, icon fragments only). Fix: emit the Walda tiles
+# with two SENTINEL RGB15 values in those slots (chosen so no real tile pixel of any
+# of the 32 wallpapers uses them — asserted below); the on-cart draw substitutes the
+# save's actual colors AFTER its verified re-read (goldens stay computed on the
+# sentinel data, so the verify semantics are untouched).
+# Default colors for the --sheet preview = the game's ResetWaldaWallpaper defaults
+# (pokemon_storage_system.c:9661-9669): RGB(21,25,30) bg, RGB(6,12,24) fg.
+WALDA_DEFAULT_COLORS = (21 | (25 << 5) | (30 << 10), 6 | (12 << 5) | (24 << 10))
+
 
 def load_tiles(path):
     """indexed PNG -> (list of 8x8 tiles as 4-bit indices, 16-color RGB15 palette)."""
@@ -74,13 +91,21 @@ def load_tiles(path):
     return tiles, rgb15, cols, rows
 
 
-def assemble(name, frame_rel):
+def assemble(name, frame_rel, sent=None):
     """-> a WP_H x WP_W list of RGB15 pixels for wallpaper `name`.
     `frame_rel` is the frame.png path relative to RD (a per-wallpaper frame for the
-    standard set, or the shared friends_frameN for the Walda set)."""
+    standard set, or the shared friends_frameN for the Walda set).
+    `sent` (Walda only) = (bg_sentinel, fg_sentinel): palette entries 1,2 of BOTH
+    banks are replaced with the sentinels, mirroring the game's runtime overwrite of
+    palette entries [1..2]/[17..18] with the save's Walda colors (see the
+    WALDA-COLOR FIX note above)."""
     d = os.path.join(RD, name)
     frame_t, frame_pal, _, _ = load_tiles(os.path.join(RD, frame_rel))
     bg_t, bg_pal, bgc, bgr = load_tiles(os.path.join(d, "bg.png"))
+    if sent is not None:
+        frame_pal = list(frame_pal); bg_pal = list(bg_pal)
+        frame_pal[1] = bg_pal[1] = sent[0]     # entry 1 = waldaPhrase.colors[0] (background)
+        frame_pal[2] = bg_pal[2] = sent[1]     # entry 2 = waldaPhrase.colors[1] (foreground)
     # truncate to the game's -num_tiles counts (see FRAME_TILES above); Walda pads
     # the shared frame to the fixed icon base of 64 tiles
     fkey = os.path.splitext(os.path.basename(frame_rel))[0]
@@ -138,6 +163,19 @@ def tile_dedupe(img):
     return uniq, mp
 
 
+def pick_sentinels(used):
+    """Two RGB15 values used by NO real tile pixel of ANY wallpaper (so the on-cart
+    substitution can never touch a legitimate pixel): the first two free values
+    scanning up from 1 (never 0)."""
+    picked = []
+    for v in range(1, 0x8000):
+        if v not in used:
+            picked.append(v)
+            if len(picked) == 2:
+                return tuple(picked)
+    raise AssertionError("no free RGB15 values for the Walda sentinels")
+
+
 def main():
     N = len(ENTRIES)
     sheet = None
@@ -145,18 +183,47 @@ def main():
         sheet = sys.argv[sys.argv.index("--sheet") + 1]
         contact = Image.new("RGB", (WP_W * 4, WP_H * ((N + 3) // 4)))
 
+    # pass 1: assemble everything WITHOUT sentinels to learn every RGB15 value any
+    # tile pixel can take, then pick two sentinel values outside that set.
+    imgs = [assemble(name, frame_rel) for name, frame_rel in ENTRIES]
+    used = set()
+    for img in imgs:
+        used.update(img)
+    SENT = pick_sentinels(used)
+
+    # pass 2: re-assemble the 16 Walda wallpapers with the sentinel palette slots.
+    # The 16 standard wallpapers keep their pass-1 pixels (byte-identical output).
+    for i, (name, frame_rel) in enumerate(ENTRIES):
+        if i >= 16:
+            imgs[i] = assemble(name, frame_rel, sent=SENT)
+            assert all(v in used or v in SENT for v in imgs[i]), \
+                "walda %s produced pixels outside used+sentinels" % name
+
     data = []   # (name, uniq_tiles, map)
     for i, (name, frame_rel) in enumerate(ENTRIES):
-        img = assemble(name, frame_rel)
+        img = imgs[i]
         uniq, mp = tile_dedupe(img)
         data.append((name, uniq, mp))
         if sheet:
+            # preview substitutes the sentinels with the game's DEFAULT Walda colors
+            # (what a fresh Emerald save shows) so the patterns are visible.
+            subst = {SENT[0]: WALDA_DEFAULT_COLORS[0], SENT[1]: WALDA_DEFAULT_COLORS[1]}
             sub = Image.new("RGB", (WP_W, WP_H)); sp = sub.load()
             for y in range(WP_H):
                 for x in range(WP_W):
-                    c = img[y * WP_W + x]
+                    c = subst.get(img[y * WP_W + x], img[y * WP_W + x])
                     sp[x, y] = ((c & 31) * 255 // 31, ((c >> 5) & 31) * 255 // 31, ((c >> 10) & 31) * 255 // 31)
             contact.paste(sub, ((i % 4) * WP_W, (i // 4) * WP_H))
+
+    # the sentinels must appear ONLY in Walda tiles (never in the standard 16), and
+    # every Walda wallpaper must actually contain them (a pattern-less emit would
+    # mean the palette patch missed the drawn entries).
+    for i, (name, uniq, mp) in enumerate(data):
+        hit = any(v in SENT for t in uniq for v in t)
+        if i < 16:
+            assert not hit, "sentinel leaked into standard wallpaper %s" % name
+        else:
+            assert hit, "walda %s emitted no sentinel pixels (palette patch missed)" % name
 
     if sheet:
         contact.save(sheet)
@@ -192,6 +259,9 @@ def main():
         tsums = [fnv16([px for t in uniq for px in t]) for _, uniq, _ in data]
         c.write("static const uint32_t s_msum[%d] = {%s};\n" % (N, ",".join("0x%08xu" % v for v in msums)))
         c.write("static const uint32_t s_tsum[%d] = {%s};\n\n" % (N, ",".join("0x%08xu" % v for v in tsums)))
+        # the two Walda sentinel colors: the draw path replaces them with the save's
+        # waldaPhrase.colors AFTER its verified staging (see the WALDA-COLOR FIX note)
+        c.write("static const uint16_t s_walda_sent[2] = {0x%04x,0x%04x};\n\n" % SENT)
         c.write("""const uint16_t* wallpaper_tile_data(int wp, int* ntiles){
   if (wp < 0 || wp >= %d) return 0;
   if (ntiles) *ntiles = s_nt[wp];
@@ -200,6 +270,7 @@ def main():
 const uint16_t* wallpaper_tilemap(int wp){ return (wp >= 0 && wp < %d) ? s_wm[wp] : 0; }
 uint32_t wallpaper_map_sum(int wp){ return (wp >= 0 && wp < %d) ? s_msum[wp] : 0; }
 uint32_t wallpaper_tile_sum(int wp){ return (wp >= 0 && wp < %d) ? s_tsum[wp] : 0; }
+const uint16_t* wallpaper_walda_sentinels(void){ return s_walda_sent; }
 """ % (N, N, N, N))
     print("wallpapers.c: %d wallpapers (16 standard + %d Walda), %d unique tiles total (avg %.1f/wp)"
           % (N, N - 16, total, total / N))
