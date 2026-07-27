@@ -20,7 +20,8 @@
 typedef struct {
   uint8_t list_x0, list_y0, list_x1, list_y1;   /* item-list pane            */
   uint8_t desc_x0, desc_y0, desc_x1, desc_y1;   /* description text region   */
-  uint8_t icon_x, icon_y;                       /* 24x24 item icon corner    */
+  uint8_t icon_x, icon_y;                       /* the game's 24x24 item-icon
+                                                 * slot, or (0,0) = no icon  */
   uint8_t pkt_rx, pkt_ry, pkt_rw, pkt_rh;       /* pocket banner restore rect*/
   uint8_t pkt_tx, pkt_ty;                       /* pocket-name text corner   */
   uint8_t dot_x, dot_y;                         /* 5 switch dots, or (0,0)   */
@@ -37,16 +38,29 @@ typedef struct {
  * a footer line; fall = -4 px at 1 px per 2 frames (pokeruby sub_80A79EC).
  * Emerald: sDefaultBagWindows values (unchanged from the phase-1 rects).
  * FRLG: list.bin panel at tile (11,1) 18x12; description = white text on the
- * blue bottom bar (window (5,14)), item icon in the baked white square at
- * (7,122); pocket name in the tan header (window (1,1)); no dots/footer. */
+ * blue bottom bar (window (5,14)); pocket name in the tan header (window
+ * (1,1)); no dots/footer.
+ *
+ * icon_xy = each game's OWN 24x24 item-icon slot, always OUTSIDE the desc
+ * text region (the desc pane is pure text; the wrap never flows around it):
+ *   RS      (0,0) = NO icon — pokeruby's bag draws no item icon at all
+ *           (src/item_menu.c has no icon path; item icons are FRLG+ art).
+ *   Emerald (8,72) = the baked white square left of the bag: sprite center
+ *           (24,88) [pokeemerald src/item_menu_icons.c AddBagItemIconSprite
+ *           x2=24/y2=88] - centerToCornerVec(16,16) = canvas TL (8,72); the
+ *           24x24 pic sits at the 32x32 canvas's TL (item_icon.c
+ *           CopyItemIconPicTo4x4Buffer). Square inner = (5,71)-(34,96).
+ *   FRLG    (8,124) = the baked white square bottom-left: center (24,140)
+ *           [pokefirered src/item_menu_icons.c CreateItemMenuIcon
+ *           x2=24/y2=140] - (16,16) = (8,124). Square inner = (7,123)-(33,149). */
 static const BagLayout BAG_LAYOUTS[3] = {
-  /* PK_RS      */ { 112, 16, 232, 144,   4, 102, 106, 152,   6, 104,
+  /* PK_RS      */ { 112, 16, 232, 144,   4, 102, 106, 152,   0,   0,
                        8, 80, 104, 16,   26, 84,   0, 0,   0, 0,
                       26,  4, 4, 2, 0x1CA5 },
-  /* PK_EMERALD */ { 112, 16, 232, 144,   0, 104, 112, 152,   4, 106,
+  /* PK_EMERALD */ { 112, 16, 232, 144,   0, 104, 112, 152,   8,  72,
                       32,  8, 120, 24,   36, 12,  43, 28,   4, 152,
                       36, 29, 5, 1, 0x1CA5 },
-  /* PK_FRLG    */ {  88,  8, 232, 104,  40, 115, 236, 157,   9, 125,
+  /* PK_FRLG    */ {  88,  8, 232, 104,  40, 115, 236, 157,   8, 124,
                        4,  4,  80, 24,   10, 11,   0, 0,   0, 0,
                        8, 31, 5, 1, 0x7FFF },
 };

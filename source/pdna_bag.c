@@ -3,7 +3,8 @@
  * chrome of the LOADED game (RS / Emerald / FRLG, per-gender art). One
  * ROM->VRAM blit of the pre-composited 240x160 background (see
  * tools/gen_bag_bg.py) with the pocket's item list in the game's list pane,
- * the selected item's 24x24 icon + description in its desc region, and the
+ * the selected item's 24x24 icon in the chrome's own icon square (Emerald /
+ * FRLG; RS's bag has none), its description in the desc region, and the
  * pocket name in its banner — all geometry from BAG_LAYOUTS[game] in
  * bag_bg.h, zero magic pixels here. FRLG keeps its 3-pocket chrome but
  * browses all 5 PokeDNA pockets (its TM Case / Berry Pouch have no bag
@@ -165,23 +166,21 @@ static void draw_list(const uint16_t* bg, const BagLayout* L, const uint8_t* sb1
 /* ---- description pane: word-wrap + AUTO-PAGING (BACKLOG 12d) --------------
  * The 8px fixed font fits less than the game's variable-width font, so long
  * flavor text overflows the pane. Instead of dropping it, split it into pages
- * that share the pane's exact row geometry (rows still flow AROUND the 24x24
- * item icon where it sits inside the region — Emerald/RS; FRLG's icon square
- * is left of the text) and flip pages every BAG_DESC_FLIP idle frames. */
+ * that share the pane's exact row geometry and flip pages every BAG_DESC_FLIP
+ * idle frames. The pane is PURE TEXT (full width, no icon flow-around): the
+ * 24x24 item icon lives in the game's own icon slot (L->icon_xy — the baked
+ * white square each game reserves for it, outside this region; see bag_bg.h). */
 #define BAG_DESC_FLIP 90                         /* ~1.5 s per page */
 static int s_desc_pages = 1;                     /* pages of the CURRENT desc (set by draw_desc) */
 
 /* Lay out ONE page starting at text offset *pi, advancing *pi past what it
- * consumed; draws only when `draw`. Every page uses the same row slots, so the
- * icon flow-around stays correct on later pages. When `multi`, the LAST row is
- * shortened 4 cols to leave room for the "n/m" page chip. Returns true while
- * text remains after this page. */
+ * consumed; draws only when `draw`. Every page uses the same full-width row
+ * slots. When `multi`, the LAST row is shortened 4 cols to leave room for the
+ * "n/m" page chip. Returns true while text remains after this page. */
 static bool desc_flow(const BagLayout* L, const char* s, int* pi, bool draw, bool multi) {
   int n = (int)strlen(s), i = *pi;
   for (int y = L->desc_y0 + 2; y + 8 <= L->desc_y1 - 2 && i < n; y += 9) {
     int x = L->desc_x0 + 6;
-    if (L->icon_x + 28 > x && y < L->icon_y + 24 && y + 8 > L->icon_y)
-      x = L->icon_x + 28;                        /* row is beside the icon */
     int cols = (L->desc_x1 - x - 2) / 8;
     if (multi && y + 9 + 8 > L->desc_y1 - 2) cols -= 4;   /* last row: room for "n/m" */
     if (cols > 30) cols = 30;                    /* line[] bound */
@@ -202,19 +201,23 @@ static bool desc_flow(const BagLayout* L, const char* s, int* pi, bool draw, boo
   return i < n;
 }
 
-/* Repaints ONLY the desc pane rect (ui_bg_restore) — no flicker anywhere else.
- * Draws page `pg` (0-based, clamped) and the "n/m" chip when it overflows;
- * stores the page count in s_desc_pages for the idle auto-flip. */
+/* Repaints ONLY the desc pane rect + the game's icon slot (ui_bg_restore) —
+ * no flicker anywhere else. The icon goes in the chrome's own baked square
+ * (L->icon_xy, outside the pane; (0,0) = this game shows no icon — RS), the
+ * pane itself is pure text. Draws page `pg` (0-based, clamped) and the "n/m"
+ * chip when it overflows; stores the page count in s_desc_pages for the idle
+ * auto-flip. */
 static void draw_desc(const uint16_t* bg, const BagLayout* L, const uint8_t* sb1,
                       PkGame g, int pocket, int sel, int pg) {
   ui_bg_restore(bg, L->desc_x0, L->desc_y0,
                 L->desc_x1 - L->desc_x0, L->desc_y1 - L->desc_y0);
-  if (L->icon_x < L->desc_x0)                    /* FRLG: icon square is outside */
+  if (L->icon_x | L->icon_y)                     /* the game's icon slot */
     ui_bg_restore(bg, L->icon_x, L->icon_y, ITEM_ICON_W, ITEM_ICON_H);
   s_desc_pages = 1;
   uint16_t id = pk_bag_item(sb1, g, pocket, sel);
   if (!id) { ui_text(L->desc_x0 + 6, L->desc_y0 + 18, BDIM, "(empty slot)"); return; }
-  ui_sprite(L->icon_x, L->icon_y, ITEM_ICON_W, ITEM_ICON_H, item_icon_for(id));  /* NULL = no-op */
+  if (L->icon_x | L->icon_y)                     /* NULL icon data = no-op */
+    ui_sprite(L->icon_x, L->icon_y, ITEM_ICON_W, ITEM_ICON_H, item_icon_for(id));
   const char* s = pk_item_desc(id);
   int i = 0;
   bool multi = desc_flow(L, s, &i, false, false); /* single page? then the plain layout */

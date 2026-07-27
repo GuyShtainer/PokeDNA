@@ -344,7 +344,7 @@ static int stars_editor(uint8_t* sb1, uint8_t* sb2, PkGame game) {
 
 /* the one exit-save prompt; commits through the usual verified paths. */
 static void trainer_commit(bool d1, bool d2) {
-  if ((d1 || d2) && app_confirm("Save trainer changes?", "Writes ID & money now.")) {
+  if ((d1 || d2) && app_confirm("Save trainer changes?", "Writes the card edits now.")) {
     if (d1 && d2)  app_commit_sb12();        /* both blocks: ONE backup + write */
     else if (d2)   app_commit_sb2();         /* trainer block (section 0)     */
     else           app_commit_sb1();         /* money (sections 1..4)         */
@@ -482,11 +482,31 @@ enum { TF_NAME, TF_SEX, TF_TID, TF_SID, TF_MONEY, TF_TIME, TF_BADGES, TF_STARS, 
 
 void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame game) {
   const bool edit = app_can_edit();
-  char     name[8];  strncpy(name, info->trainer_name, 7); name[7] = 0;
-  uint8_t  gender = info->gender;
-  uint16_t tid = info->tid_public, sid = info->tid_secret;
+  /* Seed EVERY identity field from the LIVE SaveBlock2 buffer, never from the
+   * `info` snapshot: Gen3SaveInfo is parsed ONCE when the save is opened and
+   * never re-parsed after a commit, while sb2 is re-read from the committed
+   * image each nav-loop pass. Seeding from the stale snapshot was the "SEX
+   * won't save" bug — the flip DID commit (d2 -> app_commit_sb2), but every
+   * re-entry re-showed the at-load sex, and A then wrote stale^1 (usually the
+   * value already on disk = a no-op), so the card could never visibly change.
+   * TID/SID and PLAYTIME were worse: pk_set_trainer_id / pk_set_playtime
+   * write BOTH halves, so editing one after a saved edit of the other
+   * silently reverted it to the stale co-seed. Offsets: gen3_save.h SB2_OFF_*
+   * (same decode as gen3_parse). */
+  char name[8]; int ni;
+  for (ni = 0; ni < G3_PLAYER_NAME_LEN; ni++) {
+    char ch = gen3_decode_char(sb2[SB2_OFF_PLAYER_NAME + ni]);
+    if (ch == 0) break;
+    name[ni] = ch;
+  }
+  name[ni] = 0;
+  uint8_t  gender = sb2[SB2_OFF_GENDER] ? 1 : 0;
+  uint16_t tid = (uint16_t)(sb2[SB2_OFF_TRAINER_ID]     | (sb2[SB2_OFF_TRAINER_ID + 1] << 8));
+  uint16_t sid = (uint16_t)(sb2[SB2_OFF_TRAINER_ID + 2] | (sb2[SB2_OFF_TRAINER_ID + 3] << 8));
   uint32_t money = pk_money(sb1, sb2, game);
-  uint16_t ph = info->play_h; uint8_t pm = info->play_m;
+  uint16_t ph = (uint16_t)(sb2[SB2_OFF_PLAYTIME_H] | (sb2[SB2_OFF_PLAYTIME_H + 1] << 8));
+  uint8_t  pm = sb2[SB2_OFF_PLAYTIME_M];
+  (void)info;                        /* kept for the call signature only */
   int  sel = 0;
   bool d1 = false, d2 = false;       /* dirty: sb1 (money) / sb2 (identity) */
 
