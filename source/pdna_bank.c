@@ -88,13 +88,18 @@ static bool meta_save(void) {
 }
 
 /* ---- box files ---- */
-static void box_load(int box) {                 /* read box file -> g_bankbuf (empty if absent) */
+/* Read a box file -> g_bankbuf (absent/short/failed -> zeroed = an empty box, which is what
+ * BROWSING wants). Returns whether the file was read IN FULL: any caller that intends to WRITE the
+ * box back must gate on this — committing a zeroed buffer after a failed page-in would silently wipe
+ * that box's untouched mons, and bank box files take NO immutable backup. */
+static bool box_load(int box) {
   char path[SF_PATH_MAX]; box_path(box, path);
   uint32_t sz = 0;
   memset(g_bankbuf, 0, sizeof g_bankbuf);
-  sf_read_full(path, box_recs(), BOX_BYTES, &sz);  /* short/absent -> zeroed (empty box) */
+  SfStatus st = sf_read_full(path, box_recs(), BOX_BYTES, &sz);
   g_loaded = box;
   g_dirty = false;
+  return st == SF_OK && sz >= BOX_BYTES;
 }
 
 static bool box_save(void) {                    /* write the loaded box's records */
@@ -123,6 +128,8 @@ static BankDel g_bank_del[BANK_DEL_MAX];   /* 640 B -> plain BSS (keeps EWRAM fr
 static int g_bank_ndel = 0;
 
 bool pdna_bank_defer_full(void) { return g_bank_ndel >= BANK_DEL_MAX; }   /* callers refuse the move when full */
+bool pdna_bank_defer_room(int n) { return n >= 0 && g_bank_ndel + n <= BANK_DEL_MAX; }   /* room for a whole chunk? */
+void pdna_bank_defer_pop(int n) { g_bank_ndel -= n; if (g_bank_ndel < 0) g_bank_ndel = 0; }   /* undo the last n queued deletions */
 void pdna_bank_defer_delete(int box, int slot, const uint8_t* rec80) {
   if (box < 0 || box >= BANK_BOXES || slot < 0 || slot >= BOX_RECS || g_bank_ndel >= BANK_DEL_MAX) return;
   g_bank_del[g_bank_ndel].box = (uint8_t)box; g_bank_del[g_bank_ndel].slot = (uint8_t)slot;
@@ -131,6 +138,44 @@ void pdna_bank_defer_delete(int box, int slot, const uint8_t* rec80) {
   g_bank_ndel++;
 }
 void pdna_bank_clear_deletions(void) { g_bank_ndel = 0; }
+
+/* Is this bank slot's mon pending a deferred Bank->PC deletion? It still PHYSICALLY occupies the box
+ * file (that's the mon's only on-card copy until the PC is saved), even though the display hides it. */
+bool pdna_bank_slot_pending(int box, int slot) {
+  for (int i = 0; i < g_bank_ndel; i++)
+    if (g_bank_del[i].box == box && g_bank_del[i].slot == slot) return true;
+  return false;
+}
+
+/* Display-only: blank the DECODED entries of slots pending a Bank->PC deletion, so a mon the user
+ * already moved out reads as GONE from the bank immediately (the real delete lands at the save
+ * prompt). Only touches the caller's PkMon array — never g_bankbuf, which box_save persists. */
+void pdna_bank_hide_pending(int box, PkMon g[BOX_RECS]) {
+  for (int i = 0; i < g_bank_ndel; i++)
+    if (g_bank_del[i].box == box && g_bank_del[i].slot < BOX_RECS)
+      g[g_bank_del[i].slot].species = 0;
+}
+
+/* Clear identity-matched `slots` in bank `box` and persist it (verified). For the cross-box MOVE —
+ * called ONLY after the destination box is already committed. Pages the box in FIRST and REFUSES to
+ * write when that read did not fully succeed, or when nothing matched: committing a zeroed/partial
+ * buffer would wipe the box's untouched bystander mons, and bank box files take NO immutable backup.
+ * Returning false leaves the file untouched => the move degrades to a safe, recoverable DUPLICATE. */
+bool pdna_bank_clear_slots(int box, const uint8_t* slots, const uint8_t (*recs80)[80], int n) {
+  if (box < 0 || box >= BANK_BOXES || n <= 0) return false;
+  if (g_loaded != box) { if (g_dirty) box_save(); if (!box_load(box)) return false; }   /* page-in must be COMPLETE */
+  int cleared = 0;
+  for (int i = 0; i < n; i++) {
+    if (slots[i] >= BOX_RECS) continue;
+    uint8_t* p = box_recs() + (uint32_t)slots[i] * REC_BYTES;
+    if (memcmp(p, recs80[i], BANK_DEL_IDLEN) != 0) continue;   /* not our mon any more -> leave it alone */
+    memset(p, 0, REC_BYTES);
+    cleared++;
+  }
+  if (!cleared) return false;                                  /* nothing matched -> do NOT rewrite the box */
+  g_dirty = true;
+  return box_save();
+}
 void pdna_bank_flush_deletions(void) {
   for (int i = 0; i < g_bank_ndel; i++) {
     int box = g_bank_del[i].box, slot = g_bank_del[i].slot;

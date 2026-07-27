@@ -3,12 +3,17 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "gen3_mon.h"      /* PkMon (app_bank_hide_pending) */
 
 /* Shared app glue so the party list and box grid can open the editor and persist
  * safely. Implemented in pdna_main.c (which owns the loaded save + path). */
 
 /* Writes are EZ-Flash-Omega-only. */
 bool app_can_edit(void);
+
+/* Flush the RAM log to SD immediately (rmbl-paused). For anomaly evidence that must
+ * survive a power-off; main-loop-synchronous callers only. */
+void app_log_flush(void);
 
 /* How an edited in-RAM `block` is persisted. Each kind of block (PC storage,
  * SaveBlock1, SaveBlock2, a bank box file) supplies its own verified-write
@@ -63,6 +68,17 @@ void app_party_remove_at(int idx);
  * delete at the save phase (true move; matched by record so a re-arrange can't delete the wrong mon). */
 void app_bank_defer_delete(int box, int slot, const uint8_t* rec80);
 bool app_bank_defer_full(void);   /* 64-move queue full -> refuse the move (a silent drop would DUP) */
+bool app_bank_defer_room(int n);  /* room for a whole chunk of n deferred deletions? (Bank->PC multi-move) */
+void app_bank_defer_pop(int n);   /* undo the last n queued deletions (revert a Bank->PC move on write failure) */
+void app_bank_flush_deletions(void);  /* delete the queued Bank sources NOW — call ONLY after the PC destination is verified on disk */
+
+/* A mon carried Bank->PC is deleted from the bank only at the save, but must LOOK gone at once.
+ * hide_pending blanks those slots in a DECODED box (display only); slot_pending says a slot still
+ * physically holds a moving-out mon (its only on-card copy) so nothing may overwrite it yet.
+ * clear_slots does the cross-box MOVE's source clear+commit, refusing on an incomplete page-in. */
+void app_bank_hide_pending(int box, PkMon g[30]);
+bool app_bank_slot_pending(int box, int slot);
+bool app_bank_clear_slots(int box, const uint8_t* slots, const uint8_t (*recs80)[80], int n);
 
 /* Commit the loaded save's SaveBlock2 (section 0 — the trainer block) or
  * SaveBlock1 (sections 1..4 — where money lives) after an in-place edit of the
@@ -81,6 +97,12 @@ bool app_commit_pc(void);                 /* PC storage (sections 5..13): box na
  * verified write flushes the whole g_pc (pending moves included). */
 void app_mark_pc_dirty(void);
 bool app_pc_dirty(void);
+
+/* PC->Bank MOVE support: clear a PC box slot (release from the save) after the destination
+ * bank box has been verified on SD, matched by the mon's 8-byte identity so a bystander is
+ * never zeroed. Marks the PC dirty (committed at the one exit save). Omega-only in effect
+ * (the caller gates on can_edit + only reaches this after a successful bank write). */
+void app_pc_release_slot(int box, int slot, const uint8_t* id8);
 
 /* Emerald "Walda" secret wallpaper: the graphic shown by box wallpaper 16. Pattern
  * is 0..15 (sWaldaWallpapers index) in SaveBlock1. app_walda_pattern returns -1 on
