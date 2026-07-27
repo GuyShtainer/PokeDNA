@@ -89,3 +89,13 @@ pocket-switch bag animation (item 4 fix round) to the new games' sprite sheets.
 (ui_clear) on every cursor move; Guy: slow + ugly; apply the pick_species pattern (full
 repaint only on scroll/fold change; cursor move = erase + redraw the two affected rows).
 Deferred only to avoid racing wf_5ce72e7e-561 in pdna_main.c.
+
+## 11. Deeper Pokémon validation (Guy 2026-07-27: "the validation check is very basic")
+Strengthen gen3_legality/pdna_legality beyond the current basics. Candidate checks (scope
+next session, decomp-verify each rule): move legality vs learnsets.c (level-up/TM/HM/egg/
+tutor per species + origin game), IV/EV bounds + EV-sum 510, PID consistency (nature/gender
+ratio/shiny vs TID-SID, Unown letter), met-location/met-level/origin-game plausibility +
+ball legality, species-vs-evolution stage at met level, language/OT sanity, held-item
+validity, egg-flag coherence, ability index vs species. UI: per-mon "legality report" list
+(warnings vs hard-illegal), maybe a box-wide sweep. Pure-C core + host tests against the
+fixture saves; read-only analysis (no auto-fix without explicit action).
