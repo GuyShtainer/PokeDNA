@@ -160,6 +160,21 @@ void ui_blit_over(int x, int y, int w, int h, const u16* data, u16 bg) {
   rumble_io_resume();
 }
 
+/* Restore a rect from a full-screen ROM background (same 240-px stride as VRAM).
+ * Word-aligned rows go through 32-bit DMA; odd x/w falls back to a u16 CPU copy. */
+void ui_bg_restore(const u16* bg, int x, int y, int w, int h) {
+  if (!bg) return;
+  bool dma = ((x & 1) == 0) && ((w & 1) == 0);
+  rumble_io_suspend();                        /* bg lives in ROM: no motor toggle mid-read */
+  for (int j = 0; j < h; j++) {
+    const u16* src = bg + (uint32_t)(y + j) * 240 + x;
+    u16* dst = &vid_mem[(y + j) * 240 + x];
+    if (dma) dma3_cpy(dst, src, (u32)w * 2);
+    else     for (int i = 0; i < w; i++) dst[i] = src[i];
+  }
+  rumble_io_resume();
+}
+
 void ui_truncate(char* out, const char* in, int max_cols) {
   if (max_cols < 1) { out[0] = 0; return; }
   int cols = 0, i = 0, o = 0, last_start = 0;

@@ -83,4 +83,10 @@ void ui_pokeball(int x, int y);
  * Requires x and w to be EVEN (word-aligned DMA). NULL data is a no-op. */
 void ui_blit_over(int x, int y, int w, int h, const u16* data, u16 bg);
 
+/* Re-copy a rect of a full-screen 240x160 ROM background bitmap into the Mode-3
+ * frame — erases text/selection painted over a bitmap bg (e.g. the bag screen)
+ * without repainting the whole frame. `bg` is the same-stride ROM image the
+ * screen was blitted from; NULL is a no-op. */
+void ui_bg_restore(const u16* bg, int x, int y, int w, int h);
+
 #endif /* UI_H */
