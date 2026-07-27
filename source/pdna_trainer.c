@@ -1,13 +1,17 @@
 /*
  * Trainer card / stats screen for PokeDNA. With the vendored card art the
- * REAL in-game card front of the loaded save's own game (RS / Emerald / FRLG,
+ * REAL in-game card of the loaded save's own game (RS / Emerald / FRLG,
  * per-game layout tables in card_bg.h) IS the editor: a red selection frame
- * moves with U/D across the fields drawn on the card (IDNo, name, stars,
- * money, play time, gender photo, badge row) and A edits the field in place
- * with the same editors/validation the plain page always used; B exits with
- * the one save prompt. Art-free builds keep the plain details/edit page
- * (trainer identity, money, play time, Pokédex counts, HoF first-clear time,
- * Game Records, star achievements — the latter toggled honestly via gen3_stars).
+ * moves with U/D across the fields drawn on the card front (IDNo, name,
+ * stars, money, play time, gender photo, badge row) and A edits the field in
+ * place — SEX flips instantly (the card art swap is the feedback) and A on
+ * the badge row toggles the badge under the LEFT/RIGHT badge cursor. L or R
+ * flips to the real card BACK (HoF debut, link W/L, trades, and the game's
+ * own extra rows), all editable even at 0; B on the back returns to the
+ * front, B on the front exits with the one save prompt. Art-free builds keep
+ * the plain details/edit page (trainer identity, money, play time, Pokédex
+ * counts, HoF first-clear time, Game Records, star achievements — the latter
+ * toggled honestly via gen3_stars).
  */
 #include <tonc.h>
 #include <stdio.h>
@@ -26,7 +30,7 @@
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 static u16  s_wait(u16 mask) {
   u16 k; do { s_vsync(); k = key_hit(mask); } while (!k);
-  if      (k & (KEY_UP | KEY_DOWN)) snd_move();
+  if      (k & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R)) snd_move();
   else if (k & KEY_A) snd_ok();
   else if (k & KEY_B) snd_back();
   return k;
@@ -91,6 +95,7 @@ static bool flag_set_editor(uint8_t* sb1, PkGame game, const char* title,
  * building — the screen then opens straight on the plain page (same pattern
  * as the bag-screen fallback in pdna_bag.c). */
 __attribute__((weak)) const uint16_t* card_bg(int game, int tier, int female) { (void)game; (void)tier; (void)female; return 0; }
+__attribute__((weak)) const uint16_t* card_bg_back(int game, int tier, int female) { (void)game; (void)tier; (void)female; return 0; }
 __attribute__((weak)) const uint16_t* card_badge16(int game, int i) { (void)game; (void)i; return 0; }
 __attribute__((weak)) const uint16_t* card_hoenn_dex(void) { return 0; }
 
@@ -168,10 +173,17 @@ static void card_field(int f, PkGame game, const uint8_t* sb1, const char* name,
   }
 }
 
-/* 2 px red selection frame on a field's rect edge (over the card art). */
-static void card_sel_frame(PkGame game, int f) {
+/* A field's cursor rect. On the badge row the cursor owns ONE 16x16 badge
+ * cell (bsel 0..7) — A toggles exactly that badge, so the frame hugs it. */
+static void card_rect(PkGame game, int f, int bsel, int* x, int* y, int* w, int* h) {
   const CardLayout* L = &CARD_LAYOUTS[game];
-  int x = L->rect[f].x, y = L->rect[f].y, w = L->rect[f].w, h = L->rect[f].h;
+  if (f == CARDF_BADGES) { CARD_BADGE_RECT(L, bsel, *x, *y, *w, *h); return; }
+  *x = L->rect[f].x; *y = L->rect[f].y; *w = L->rect[f].w; *h = L->rect[f].h;
+}
+
+/* 2 px red selection frame on a field's rect edge (over the card art). */
+static void card_sel_frame(PkGame game, int f, int bsel) {
+  int x, y, w, h; card_rect(game, f, bsel, &x, &y, &w, &h);
   m3_frame(x, y, x + w, y + h, CSEL);
   m3_frame(x + 1, y + 1, x + w - 1, y + h - 1, CSEL);
 }
@@ -179,12 +191,116 @@ static void card_sel_frame(PkGame game, int f) {
 /* restore a field's rect from the ROM bg and repaint its overlay (no smear).
  * +1 px right/bottom so the selection frame is erased whichever edge
  * convention m3_frame uses (all rects stay on-screen with the margin). */
-static void card_restore(const uint16_t* bg, int f, PkGame game, const uint8_t* sb1,
-                         const char* name, uint16_t tid, uint32_t money,
-                         uint16_t ph, uint8_t pm) {
-  const CardLayout* L = &CARD_LAYOUTS[game];
-  ui_bg_restore(bg, L->rect[f].x, L->rect[f].y, L->rect[f].w + 1, L->rect[f].h + 1);
+static void card_restore(const uint16_t* bg, int f, int bsel, PkGame game,
+                         const uint8_t* sb1, const char* name, uint16_t tid,
+                         uint32_t money, uint16_t ph, uint8_t pm) {
+  int x, y, w, h; card_rect(game, f, bsel, &x, &y, &w, &h);
+  ui_bg_restore(bg, x, y, w + 1, h + 1);
   card_field(f, game, sb1, name, tid, money, ph, pm);
+}
+
+/* ---- the card BACK (L/R flips; geometry + row model in card_bg.h) ---- */
+
+static uint32_t back_stat(const uint8_t* sb1, const uint8_t* sb2, PkGame game, int stat) {
+  return pk_game_stat(sb1, sb2, game, stat);
+}
+
+static void back_row_value(const CardBackRow* r, PkGame game, const uint8_t* sb1,
+                           const uint8_t* sb2, char* out) {
+  switch (r->kind) {
+    case CBK_HOF: {                          /* shown 0:00:00 when never entered */
+      uint16_t h = 0; uint8_t m = 0, s = 0;
+      pk_hof_time(sb1, sb2, game, &h, &m, &s);
+      siprintf(out, "%u:%02u:%02u", (unsigned)h, (unsigned)m, (unsigned)s);
+    } break;
+    case CBK_WL:
+      siprintf(out, "W%lu L%lu",
+               (unsigned long)back_stat(sb1, sb2, game, r->stat),
+               (unsigned long)back_stat(sb1, sb2, game, r->stat + 1));
+      break;
+    case CBK_STAT:
+      siprintf(out, "%lu", (unsigned long)back_stat(sb1, sb2, game, r->stat));
+      break;
+    case CBK_TOWER_RS:
+      siprintf(out, "W%u S%u", (unsigned)pk_rs_tower(sb2, 0), (unsigned)pk_rs_tower(sb2, 1));
+      break;
+    case CBK_BP_E:
+      siprintf(out, "%u BP", (unsigned)pk_e_card_bp(sb2));
+      break;
+  }
+}
+
+static void back_rect(PkGame game, int row, int* x, int* y, int* w, int* h) {
+  const CardBackLayout* B = &CARD_BACK_LAYOUTS[game];
+  *x = B->lbl_x - 3; *y = B->rows[row].y - 3;
+  *w = B->val_xr - B->lbl_x + 6; *h = 14;
+}
+
+static void back_sel_frame(PkGame game, int row) {
+  int x, y, w, h; back_rect(game, row, &x, &y, &w, &h);
+  m3_frame(x, y, x + w, y + h, CSEL);
+  m3_frame(x + 1, y + 1, x + w - 1, y + h - 1, CSEL);
+}
+
+static void back_row_draw(int row, PkGame game, const uint8_t* sb1, const uint8_t* sb2) {
+  const CardBackLayout* B = &CARD_BACK_LAYOUTS[game];
+  char v[24];
+  ui_text(B->lbl_x, B->rows[row].y, CINK, B->rows[row].label);
+  back_row_value(&B->rows[row], game, sb1, sb2, v);
+  ui_text(B->val_xr - 8 * (int)strlen(v), B->rows[row].y, CINK, v);
+}
+
+static void back_restore(const uint16_t* bg, int row, PkGame game,
+                         const uint8_t* sb1, const uint8_t* sb2) {
+  int x, y, w, h; back_rect(game, row, &x, &y, &w, &h);
+  ui_bg_restore(bg, x, y, w + 1, h + 1);
+  back_row_draw(row, game, sb1, sb2);
+}
+
+/* Edit one back row (the front editors' exact prompt style; RAM-only until
+ * the caller's single exit commit). Sets *d1 (gameStats, SB1) / *d2 (SB2). */
+static void back_row_edit(const CardBackRow* r, PkGame game, uint8_t* sb1,
+                          uint8_t* sb2, bool* d1, bool* d2) {
+  switch (r->kind) {
+    case CBK_HOF: {
+      uint16_t h = 0; uint8_t m = 0, s = 0;
+      pk_hof_time(sb1, sb2, game, &h, &m, &s);
+      h = (uint16_t)num_entry("HOF DEBUT HOURS", h, 999);
+      m = (uint8_t)num_entry("HOF DEBUT MINUTES", m, 59);
+      s = (uint8_t)num_entry("HOF DEBUT SECONDS", s, 59);
+      uint32_t packed = ((uint32_t)h << 16) | ((uint32_t)m << 8) | s;
+      pk_set_game_stat(sb1, sb2, game, PK_STAT_FIRST_HOF_PLAY_TIME, packed);
+      /* the games gate the row (and the HoF star) on ENTERED_HOF: a nonzero
+       * debut time needs at least one entry, 0:00:00 = honestly never entered */
+      uint32_t entered = pk_game_stat(sb1, sb2, game, PK_STAT_ENTERED_HOF);
+      if (packed && !entered)      pk_set_game_stat(sb1, sb2, game, PK_STAT_ENTERED_HOF, 1);
+      else if (!packed && entered) pk_set_game_stat(sb1, sb2, game, PK_STAT_ENTERED_HOF, 0);
+      *d1 = true;
+    } break;
+    case CBK_WL: {
+      uint32_t w = num_entry("LINK WINS", back_stat(sb1, sb2, game, r->stat), r->cap);
+      uint32_t l = num_entry("LINK LOSSES", back_stat(sb1, sb2, game, r->stat + 1), r->cap);
+      pk_set_game_stat(sb1, sb2, game, r->stat, w);
+      pk_set_game_stat(sb1, sb2, game, r->stat + 1, l);
+      *d1 = true;
+    } break;
+    case CBK_STAT:
+      pk_set_game_stat(sb1, sb2, game, r->stat,
+                       num_entry(r->label, back_stat(sb1, sb2, game, r->stat), r->cap));
+      *d1 = true;
+      break;
+    case CBK_TOWER_RS: {
+      uint16_t w = (uint16_t)num_entry("TOWER WINS", pk_rs_tower(sb2, 0), r->cap);
+      uint16_t s = (uint16_t)num_entry("TOWER STREAK", pk_rs_tower(sb2, 1), r->cap);
+      pk_set_rs_tower(sb2, 0, w);
+      pk_set_rs_tower(sb2, 1, s);
+      *d2 = true;
+    } break;
+    case CBK_BP_E:
+      pk_set_e_card_bp(sb2, (uint16_t)num_entry("BATTLE POINTS", pk_e_card_bp(sb2), r->cap));
+      *d2 = true;
+      break;
+  }
 }
 
 /* The STARS row's sub-editor: this game's 4 star achievements (each ONE card
@@ -235,43 +351,96 @@ static void trainer_commit(bool d1, bool d2) {
   }
 }
 
-/* The card-front editor (any game with art): the selection frame walks the
- * fields ON the card and A edits in place with the plain page's exact editors
- * and validation; every editor runs on its own full screen, so returning from
- * one always re-blits the frame (gender/star edits swap the frame itself). B
- * returns to the caller, which owns the one trainer_commit prompt. */
+/* The card editor (any game with art): the selection frame walks the fields
+ * ON the card and A edits in place with the plain page's exact editors and
+ * validation; every full-screen editor forces a re-blit on return (gender/
+ * star edits swap the frame itself). SEX and single badges toggle INSTANTLY
+ * (the art swap / badge appearing is the feedback). L/R flips to the card
+ * BACK (per-game stat rows, editable even at 0); B there returns to the
+ * front, B on the front returns to the caller, which owns the one
+ * trainer_commit prompt. */
 static void card_editor(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
                         char* name, uint8_t* gender, uint16_t* tid, uint16_t* sid,
                         uint32_t* money, uint16_t* ph, uint8_t* pm,
                         bool* d1, bool* d2) {
   const CardLayout* L = &CARD_LAYOUTS[game];
-  int sel = CARDF_NAME;
-  bool full = true;
+  const int nback = CARD_BACK_LAYOUTS[game].nrows;
+  int sel = CARDF_NAME, bsel = 0, brow = 0;
+  bool back = false, full = true;
   const uint16_t* bg = 0;
   for (;;) {
     if (full) {                              /* (re)blit + all overlays */
-      bg = card_bg(game, pk_star_count(sb1, sb2, game, card_hoenn_dex()), *gender);
-      card_blit(bg);
-      for (int f = 0; f < CARDF_NUM; f++)
-        card_field(f, game, sb1, name, *tid, *money, *ph, *pm);
-      if (pk_flag_get(sb1, game, L->dex_flag)) {   /* dex row: display-only */
-        char line[16]; int seen, caught; bool nat; pk_pokedex(sb2, &seen, &caught, &nat);
-        if (L->labels) ui_text(L->lbl_x, L->dex_y, CINK, "POKeDEX");
-        siprintf(line, "%d", caught);
-        ui_text(L->val_xr - 8 * (int)strlen(line), L->dex_y, CINK, line);
+      int tier = pk_star_count(sb1, sb2, game, card_hoenn_dex());
+      if (!back) {
+        bg = card_bg(game, tier, *gender);
+        card_blit(bg);
+        for (int f = 0; f < CARDF_NUM; f++)
+          card_field(f, game, sb1, name, *tid, *money, *ph, *pm);
+        if (pk_flag_get(sb1, game, L->dex_flag)) {   /* dex row: display-only */
+          char line[16]; int seen, caught; bool nat; pk_pokedex(sb2, &seen, &caught, &nat);
+          if (L->labels) ui_text(L->lbl_x, L->dex_y, CINK, "POKeDEX");
+          siprintf(line, "%d", caught);
+          ui_text(L->val_xr - 8 * (int)strlen(line), L->dex_y, CINK, line);
+        }
+        ui_text(4, 152, CFOOT, edit ? "U/D A edit  L/R flip  B save"
+                                    : "L/R flip  B back");
+        if (edit) card_sel_frame(game, sel, bsel);
+      } else {                               /* the card back */
+        const CardBackLayout* B = &CARD_BACK_LAYOUTS[game];
+        bg = card_bg_back(game, tier, *gender);
+        card_blit(bg);
+        char line[32];
+        /* RS/E append "'s TRAINER CARD" (gText_Var1sTrainerCard); FRLG's own
+         * back prints ONLY the name after its baked "TRAINER:" (pokefirered
+         * trainer_card.c:1254-1261 BufferNameForCardBack: the suffix is
+         * RSE-cards-only). */
+        siprintf(line, game == PK_FRLG ? "%s" : "%s's TRAINER CARD", name);
+        ui_text(B->name_right ? B->name_x - 8 * (int)strlen(line) : B->name_x,
+                B->name_y, CINK, line);
+        for (int r = 0; r < nback; r++)
+          back_row_draw(r, game, sb1, sb2);
+        ui_text(4, 152, CFOOT, edit ? "U/D A edit  B front" : "B front");
+        if (edit) back_sel_frame(game, brow);
       }
-      ui_text(4, 152, CFOOT, edit ? "U/D field  A edit  B save" : "B back");
-      if (edit) card_sel_frame(game, sel);
       full = false;
     }
 
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return;
-    if (!edit) continue;                     /* read-only: card view, B exits */
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT |
+                   KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT);
+    if (k & (KEY_L | KEY_R)) { back = !back; full = true; continue; }
+    if (k & KEY_B) {
+      if (back) { back = false; full = true; continue; }
+      return;                                /* front: exit to the save prompt */
+    }
+    if (!edit) continue;                     /* read-only: flip/view only */
+
+    if (back) {                              /* ---- back page input ---- */
+      if (k & (KEY_UP | KEY_DOWN)) {
+        back_restore(bg, brow, game, sb1, sb2);
+        brow = (k & KEY_UP) ? (brow > 0 ? brow - 1 : nback - 1) : (brow + 1) % nback;
+        back_sel_frame(game, brow);
+      } else if (k & KEY_A) {
+        back_row_edit(&CARD_BACK_LAYOUTS[game].rows[brow], game, sb1, sb2, d1, d2);
+        full = true;                         /* num_entry used the whole screen */
+      }
+      continue;
+    }
+
     if (k & (KEY_UP | KEY_DOWN)) {           /* move the frame: restore + repaint */
-      card_restore(bg, sel, game, sb1, name, *tid, *money, *ph, *pm);
+      card_restore(bg, sel, bsel, game, sb1, name, *tid, *money, *ph, *pm);
       sel = (k & KEY_UP) ? (sel > 0 ? sel - 1 : CARDF_NUM - 1) : (sel + 1) % CARDF_NUM;
-      card_sel_frame(game, sel);
+      card_sel_frame(game, sel, bsel);
+    } else if ((k & (KEY_LEFT | KEY_RIGHT)) && sel == CARDF_BADGES) {
+      card_restore(bg, sel, bsel, game, sb1, name, *tid, *money, *ph, *pm);
+      bsel = (bsel + ((k & KEY_RIGHT) ? 1 : 7)) & 7;   /* badge cursor 0..7 */
+      card_sel_frame(game, sel, bsel);
+    } else if ((k & KEY_SELECT) && sel == CARDF_BADGES && game == PK_EMERALD) {
+      /* the Frontier symbols aren't drawn on the card: keep the full list
+       * reachable on Emerald behind SELECT (badges themselves = instant A) */
+      if (flag_set_editor(sb1, game, "BADGES + FRONTIER",
+                          badge_or_frontier_flag, BADGEFRONT_LBL, 22))
+        *d1 = true;
+      full = true;
     } else if (k & KEY_A) {                  /* edit in place (plain page's editors) */
       switch (sel) {
         case CARDF_NAME: { char b[8]; if (osk_input("TRAINER NAME", name, b, 8)) {
@@ -284,26 +453,27 @@ static void card_editor(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
         case CARDF_TIME: *ph = (uint16_t)num_entry("PLAY HOURS", *ph, 999);
                        *pm = (uint8_t)num_entry("PLAY MINUTES", *pm, 59);
                        pk_set_playtime(sb2, *ph, *pm, 0); *d2 = true; break;
-        case CARDF_SEX: /* confirmed flip (a stray A must not silently change it);
-                        * the full redraw swaps the card art + photo */
-                       if (app_confirm("Change trainer SEX?",
-                                       *gender ? "Female -> Male" : "Male -> Female")) {
-                         *gender ^= 1; pk_set_gender(sb2, *gender); *d2 = true;
-                       } break;
-        case CARDF_BADGES:
-          if (flag_set_editor(sb1, game,
-                              game == PK_EMERALD ? "BADGES + FRONTIER" : "BADGES",
-                              badge_or_frontier_flag, BADGEFRONT_LBL,
-                              game == PK_EMERALD ? 22 : 8))
-            *d1 = true;
-          break;
+        case CARDF_SEX:  /* instant flip — the card art + photo swap IS the
+                          * feedback (and it stays RAM-only until B-save) */
+                       *gender ^= 1; pk_set_gender(sb2, *gender); *d2 = true;
+                       break;
+        case CARDF_BADGES: {                 /* instant toggle of the badge under
+                                              * the cursor; repaint its cell only */
+          int fn = pk_badge_flag(game, bsel);
+          if (fn >= 0) {
+            pk_flag_set(sb1, game, fn, !pk_flag_get(sb1, game, fn)); *d1 = true;
+            card_restore(bg, sel, bsel, game, sb1, name, *tid, *money, *ph, *pm);
+            card_sel_frame(game, sel, bsel);
+          }
+        } break;
         case CARDF_STARS: if (pk_star_ach_count(game)) {
                          int m2 = stars_editor(sb1, sb2, game);
                          if (m2 & 1) *d1 = true;
                          if (m2 & 2) *d2 = true;
                        } break;
       }
-      full = true;                           /* every editor used the whole screen */
+      if (sel != CARDF_BADGES) full = true;  /* those editors used the whole
+                                              * screen (SEX: art swap redraw) */
     }
   }
 }

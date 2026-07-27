@@ -68,6 +68,20 @@ void pk_set_playtime(uint8_t* sb2, uint16_t h, uint8_t m, uint8_t s) {
   wr16(sb2 + 0x0E, h); sb2[0x10] = m; sb2[0x11] = s;
 }
 
+/* ---- trainer-card back facility records (plaintext SB2 u16s) ----
+ * RS: battleTower.totalBattleTowerWins @0x0570 / bestBattleTowerWinStreak
+ * @0x0572 (pokeruby include/global.h:834-835; battleTower @0xA8 :862).
+ * Emerald: frontier.cardBattlePoints @0xEBA (pokeemerald include/global.h:450;
+ * frontier @0x64C :541). Callers gate on the game. */
+uint16_t pk_rs_tower(const uint8_t* sb2, int streak) {
+  return rd16(sb2 + (streak ? 0x0572 : 0x0570));
+}
+void pk_set_rs_tower(uint8_t* sb2, int streak, uint16_t v) {
+  wr16(sb2 + (streak ? 0x0572 : 0x0570), v);
+}
+uint16_t pk_e_card_bp(const uint8_t* sb2)          { return rd16(sb2 + 0xEBA); }
+void     pk_set_e_card_bp(uint8_t* sb2, uint16_t v){ wr16(sb2 + 0xEBA, v); }
+
 bool pk_hof_time(const uint8_t* sb1, const uint8_t* sb2, PkGame g,
                  uint16_t* h, uint8_t* m, uint8_t* s) {
   if (pk_game_stat(sb1, sb2, g, PK_STAT_ENTERED_HOF) == 0) return false;
