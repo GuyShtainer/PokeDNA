@@ -62,7 +62,7 @@ exportable; optional round-trip write-back with checksum recompute (verified-wri
 discipline). **Emerald-only** — RS predate the Frontier, FRLG have none (so no porting).
 One record at a time (sector is overwritten per recording).
 
-## 8. On-cart .rec IMPORT (QUEUED 2026-07-27 — implement after the bag/card fix agents land)
+## 8. ✅ On-cart .rec IMPORT — DONE + HW-TESTED (Guy, 2026-07-27: "it seems to work!")
 Guy: import an old .rec into the save "as if it's the last one I recorded". FEASIBILITY
 PROVEN: the game gates the Frontier Pass Battle Record purely on sector 31's own validity
 (pokeemerald recorded_battle.c CanCopyRecordedBattleSaveData -> read + sentinel/flags/
@@ -99,3 +99,66 @@ ball legality, species-vs-evolution stage at met level, language/OT sanity, held
 validity, egg-flag coherence, ability index vs species. UI: per-mon "legality report" list
 (warnings vs hard-illegal), maybe a box-wide sweep. Pure-C core + host tests against the
 fixture saves; read-only analysis (no auto-fix without explicit action).
+
+## 12. HW round 2026-07-27 polish batch (Guy's feedback; designs ready, NEXT SESSION)
+a) **Walda wallpapers still corrupt (photo IMG_1121: sparse orange body, only icon
+   fragments; box name "OoTzCs" = expected ACE payload, not a bug).** DIAGNOSIS: audit +
+   renders agree with the cart -> data bug again, Walda-only. Root cause (verify first in
+   pokemon_storage_system.c LoadWallpaperGfx): the game OVERWRITES palette entries [1] and
+   [17] with the SAVE'S Walda colors (GetWaldaWallpaperColorsPtr) — the pattern is drawn in
+   those entries; our static-palette pre-render paints pattern-on-fill invisibly. FIX:
+   generator marks the two Walda-color slots with sentinel RGB15 values in the emitted
+   tiles; box_wp_render/draw_wallpaper substitutes the save's actual Walda colors at draw
+   time (pdna already reads the Walda pattern id; add the colors read, RSE SB1). Fallback
+   if colors unreadable: contrasting defaults so the pattern at least SHOWS.
+b) **Grabber: mons under the floating block must stay visible** (Emerald-authentic;
+   currently the borrowed slot hides them). DESIGN (the "bitmap understudy"): a covered
+   OCCUPIED cell keeps its OBJ hidden but gets its icon software-blitted INTO the Mode-3
+   bitmap at its cell (mon_icon_for_form RGB15 via ui_sprite path) — the ghost block
+   (ATTR0_BLEND, 2nd target BG2) then alpha-blends OVER it exactly like the game; on
+   uncover, restore the wallpaper rect (new wp_restore_rect helper reusing the verified
+   staging + s_wp_map). Cell-quantized moves touch <=12 cells/keypress — cheap. Holes
+   already show the OBJ below (keep).
+c) **Trainer card**: (i) slight cursor-frame alignment; (ii) A on SEX/BADGES = instant
+   toggle, no prompt/list (drop the SEX confirm — the card art flipping IS the feedback);
+   (iii) L/R flips to the CARD BACK per game (back.bin art staged for all 3 games;
+   extend gen_card_bg.py to render back frames + per-game back overlay coords from each
+   trainer_card.c) with EDITABLE back stats incl. zero ones — enumerate per game from the
+   decomp (HoF time, link battles W/L, trades, contests/pokeblocks, union room etc.) and
+   verify each SB1/SB2 offset before exposing.
+d) **Bag**: d-pad LEFT/RIGHT pocket switch DONE (2026-07-27, in ROM). Remaining: FULL item
+   descriptions — the 8px fixed font truncates what the game's variable-width font fits;
+   fix by auto-paging the description in the desc pane (page flip every ~90 frames, or
+   SELECT to cycle pages) so every word is readable.
+
+## 13. Item picker: START filter menu like the pokedex (Guy 2026-07-27)
+Filters: (a) CATEGORY — key items / berries / TMs-HMs / balls / general (short list, from
+pk_item_pocket); (b) GAME — RS / Emerald / FRLG availability, combinable with (a) ("only
+FRLG key items", deliberately off-region items for experiments). Needs a per-item game
+mask (bit0 RS, bit1 E, bit2 FRLG) generated into data_tables by gen_data.py from the three
+decomps' item constants (pokeruby+pokefirered includes already vendored under
+assets/upstream/). UI mirrors pick_species' START filter_menu.
+
+## 14. Wallpaper chooser: group list first (Guy 2026-07-27)
+Before cycling, a short group menu: Scenery 1 / Scenery 2 / Scenery 3 / Etcetera (the
+game's own 4x4 grouping of the 16 standard) / Friends-Walda (Emerald PC only) — then
+pick within the group. RS/FRLG: standard groups only.
+
+## 15. Rename OSK seeds truncated text (Guy 2026-07-27: "truncates it and the rest is
+lost, instead of letting me edit from the end"). Find every rename flow (box rename,
+any file rename), seed the OSK with the FULL current name with the cursor at the END,
+and size buffers for FAT LFN lengths, not 8-12 chars. Audit osk_text callers.
+
+## 16. ⚠️ SD "Load game" boot REGRESSION at 9.88 MB (Guy 2026-07-27) — NOR boots fine.
+History: the old "SD size limit" was a MYTH at 6.25 MB (hangs were bad SD copies).
+Now consistent: SD-load fails, NOR works, first size past ~6.6 MB. PROTOCOL:
+(1) fresh re-copy of PokeDNA.gba + byte-verify on the card (the known confound);
+(2) if a verified copy still fails -> treat as a real kernel SD-load threshold between
+6.6 and 9.9 MB: bisect with padded dummies (7/8/9 MB) to find it; (3) mitigation
+either way: make the SD-boot variant smaller — extend the existing sprite-streaming
+build (make sd) to also stream the NEW art blobs (bag_bg/card_bg/anim rects) from
+/PokeDNA/sprites.pak-style files, target < the found threshold; NOR keeps the full build.
+
+## 17. DONE 2026-07-27 (this round, in ROM): flags-list O(n^2) slowdown fixed (owning-
+header ordinal cache — bottom-of-list cursor moves were ~240k ops/keypress); ITEM-grab
+hand no longer freezes on the source mon (oam_sync now repositions the hand each move).
