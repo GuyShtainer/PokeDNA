@@ -200,11 +200,16 @@ To regenerate everything after pulling the repo fresh you need the local-only as
 
 ## 5. Hard-won lessons / gotchas (READ before changing these)
 
-- **EZ-Flash PSRAM ceiling (~7.5 MB), NOT the 32 MB cart limit.** Our tool needs the ROM
-  PSRAM-resident for the OS-mode SD path, and that pool is ~7.5 MB. A 7.63 MB build hung
-  at the EZ-Flash "LOADING GAME" kernel screen (before our code runs); a 7.32 MB build
-  loaded. **Do not let the ROM grow toward 7 MB.** Power-of-2 padding (`gbafix -p`) was a
-  wrong fix — it re-inflates and the tiny sibling tools load unpadded; it's reverted.
+- **⚠️ EZ-Flash "PSRAM ceiling" was a MYTH — corrected 2026-07-13. There is NO few-MB size wall.**
+  Guy loaded the **6.25 MB** full build via the Omega DE's normal SD "Load game." The "ceiling"
+  was invented from **non-monotonic** hangs (7.32 MB loaded but 6.56 MB hung; 4.73 MB loaded but
+  4.72 MB hung; 6.25 MB loads) — a real size limit is monotonic, so the pattern *disproves* size.
+  The very "NON-monotonic/unreliable" wording here should have been the tell that it wasn't size.
+  **Real cause: intermittent bad/incomplete SD copies** (truncated write / unflushed card / FAT
+  flakiness). **Rule: a hang at "Load game" ⇒ re-copy the `.gba` and eject safely (suspect the
+  copy/card), NOT the ROM size.** Don't `gbafix -p` pad (bloat, no benefit). LZ77-compressing art
+  is still fine for smaller/faster builds, but never load-required. (Superseded ceiling text
+  removed; see learn `flashcart-sd-io.md` for the full corrected note.)
   Front sprites are the big lever, so they are **LZ77-compressed** (`gbalzss`) and
   decompressed one-at-a-time at render via BIOS `LZ77UnCompWram` into a single 8 KB EWRAM
   scratch buffer (`mon_front_for`). Both 64×64 blobs total 1.7 MB; ROM is 2.97 MB. This

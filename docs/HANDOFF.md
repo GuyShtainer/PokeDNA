@@ -3,9 +3,550 @@
 > Living resume doc maintained by the `handoff` skill. The **Current status** and **Next steps**
 > sections are always kept current — start there to resume. The **Session log** grows downward,
 > newest first, and is never pruned.
-> Last updated: 2026-06-22
+> Last updated: 2026-07-16
 
 ## Current status
+
+**ACTIVE THREAD (2026-07-16): multi-select move + bank moves + batch export — code-complete,
+UNCOMMITTED, builds clean (ROM ~6.56 MB), host gates green, awaiting Guy's ROUND-2 hardware test.**
+
+- **What it adds (Guy's asks):** (1) **Emerald rubber-band multi-select** — in the orange MOVE hand,
+  **hold A + D-pad** grows a rectangle; release lifts every mon inside as a **chunk**; carry it across
+  boxes (edge-push L/R), UP→Bank / DOWN→PC. A plain A *tap* is still the classic single grab.
+  (2) **PC→Bank = always RELEASE, no prompt** (no more auto-duplication; the old single-mon path was a
+  confirmed COPY). (3) **"Export all .pk"** + (4) **"Release all"** on the box-name menu (PC *and*
+  bank). (5) A shared **progress screen** (live 64×64 front sprite + N/total bar).
+- **Guy's HW round-1 verdict:** PC→Bank release "works like i want"; chunk moves within the PC work.
+  Round-2 fixes since: bank↔bank cross-box chunk move (was denied), Bank→PC now *looks* moved at once,
+  Release-all added.
+- **⚠️ THE RULE Guy set (I got it backwards once — do not re-litigate):** a move must **NOT** force an
+  immediate disk write — *"there is a save button for that and also ... a promt asking if i wanna save
+  changes. so make it look visually as if they really moved, the real save will happen later as a
+  chunk."* → Bank→PC (single **and** chunk) stays **deferred**; the bank *display* hides moved-out mons.
+- **Two adversarial-review workflows each found + fixed a real DATA-LOSS bug** (details in the session
+  log): `flush_on_exit` deleted bank sources even when the PC write FAILED; and my
+  `drop_chunk_bank_cross` committed a source box it had paged in **without checking the read
+  succeeded** (a failed read → zeroed buffer → would wipe that box's bystander mons; bank box files
+  have **no backup**).
+- **Files:** new `source/gen3_chunk.{c,h}` (pure-C footprint math + `tests/host_chunk_test.c`), new
+  `source/pdna_progress.{c,h}`; modified `pdna_box.c` (the bulk), `pdna_main.c`, `pdna_bank.{c,h}`,
+  `pdna_pk.{c,h}`, `pdna_app.h`.
+- **Also uncommitted, in the TOOLKIT repo** (`gba-toolkit`, separate repo): 3 lessons appended to the
+  learn skill — `references/fatfs-and-safe-writes.md` (deferred-vs-immediate store asymmetry;
+  gate-the-source-clear-on-commit-success; read-modify-write-back must verify the read),
+  `references/gba-ui-input-sound.md` (a group-carry can't float a 2nd set of icons),
+  `references/gen3-pokemon-saves-and-licensing.md` (the Emerald PC multi-select gesture).
+
+---
+
+PokeDNA is a **feature-complete** on-cartridge Gen-3 save viewer/editor (RSE + FRLG). Two shipping
+builds from one codebase:
+- **`PokeDNA-NOR.gba`** (~6.25 MB) — every sprite embedded (normal+shiny front, normal+shiny back,
+  icons). Build: `make`. **Loads from NOR *and* from the normal EZ-Flash SD "Load game"** (Guy
+  confirmed on the Omega DE — there is NO ROM-size load limit; see the 2026-07-13 entry).
+- **`PokeDNA.gba`** (~3.83 MB) — trimmed; streams shiny fronts + all back sprites from a companion
+  **`/PokeDNA/sprites.pak`** (2.42 MB, ship alongside). Build: `make sd`. **Now OPTIONAL** — only a
+  smaller/faster variant, since the full build loads from SD too.
+- **Committed on `main`** (not pushed): 4 Guy-reported bug fixes (`816fdb6`), ITEM-mode fixes
+  (`8ded10f`, `ba92c29`), SD-stream engine (`75d787a`, `e89659b`). **Uncommitted:** `docs/HANDOFF.md`,
+  `docs/SESSION_SUMMARY.md`, `docs/IDEAS.md` (new).
+- **Research parked:** Emerald **Recorded Battle export** — sector 31 (`0x1F000`) holds a
+  deterministic battle (seed + both teams + input stream), exportable. See `docs/IDEAS.md`.
+
+## Next steps
+
+1. **HW test ROUND 2 on the Omega DE** (the blocker for the multi-select batch — none of it is
+   emulatable). On disposable save copies, check:
+   a. **Bank↔bank chunk move** — lift a whole box (hold A + D-pad over a full box, release) and drop
+      it into a *clean* bank box. This is the fix for "it doesn't let me".
+   b. **Bank→PC empties the bank on sight** — after dropping a chunk (and a *single* mon) into the PC,
+      go back to the bank: the source cells must read as GONE *before* any save prompt.
+   c. **The vacated cells refuse a drop until you save** — expect "CELLS NOT FREE YET"; that is
+      deliberate (their mons are still the only on-card copy until the PC is written).
+   d. **Release all** on a PC box *and* a bank box (confirm → gone; check a `.bak` was made).
+   e. **PC→Bank release + Export all .pk** still good (round-1 said yes; re-confirm after the churn).
+2. **Then commit** the batch (don't `git push` unless Guy asks) — see "Uncommitted" above; the
+   toolkit-repo learn edits are a **separate repo/commit**.
+3. *(Deferred, Guy's call)* single-mon Bank→PC currently shares the chunk's deferred+hide behaviour —
+   no change expected, but confirm it feels right.
+4. **HW-verify** with a *fresh* flash of `PokeDNA-NOR.gba`: the 4 bug fixes
+   (`816fdb6`) + ITEM-mode fixes — secret-base mons no longer show as eggs / correct stats;
+   ITEM-mode held-item marker draws in front; carried-item source mon fades. (Earlier "still broken"
+   reports were a **stale flash**, not a code regression.)
+2. **Decide the build strategy** (open question to Guy): retire the streaming/trimmed path (drop
+   `make sd`, `source/sprite_stream.c`, the `source/embed/` split, `-DPDNA_STREAM_SPRITES`) now that
+   the full build loads from SD — **or** keep it as the optional smaller/faster variant.
+3. *(Optional feature)* **"Battle Record → export"**: read/validate `.sav` sector 31, dump the
+   `RecordedBattleSave` as JSON + both teams as PKM (reuses the existing mon parser). Details in
+   `docs/IDEAS.md` and the learn `gen3-pokemon-saves-and-licensing.md` reference.
+4. Commit the uncommitted docs when ready (don't `git push` unless Guy asks).
+
+**Blocker:** hardware sign-off on the Omega DE for the bug-fix batch (SD/save path is not emulated).
+
+## Session log
+
+### Session — 2026-07-16 (multi-select move + bank moves + batch export; 2 rounds, 2 loss bugs fixed)
+
+- **Intent:** Guy: *"I wanna be able to do multiple selection of pokemon and move just like in the
+  emerald game"* + move a chunk into the bank **without auto-duplicating** (*"i expect them to get
+  released from the save"*) + a **progress bar + sprite** during the export. Mid-session he added
+  *"i also wanna be able to 'release all' from the menu of clicking the box name"*.
+- **Design answers Guy gave (locked — don't re-litigate):**
+  - **Multi-select is a REAL Emerald mechanic** (I wrongly claimed it wasn't): *"when hand is orange
+    (quick grab mode) if i hold A button and use arrows, this expends the pickup to a rectengle i can
+    shrink and enlarg, all pokemon within it are chosen, and by pushing edge of box when moving the
+    chunk left and right, it goes to left or right box"*. Implemented exactly that (now also captured
+    in the learn skill's Gen-3 reference).
+  - **Bank storage = the existing 16 bank boxes**, *"simply into the bank"* — **not** loose `.pk3`.
+    Instead, `.pk3` export became an **"Export all"** action on the box-name menu (bank **and** PC).
+  - **PC→Bank = "Always release, no prompt".**
+  - **Moves must NOT force an immediate disk write** — *"there is a save button for that and also ...
+    a promt asking if i wanna save changes. so make it look visually as if they really moved, the real
+    save will happen later as a chunk."* (I first built Bank→PC as an immediate `app_commit_pc` and
+    **reverted** it to deferred + display-hide.)
+- **Did — round 1 (build):** new pure-C `gen3_chunk.{c,h}` (rectangle → footprint, `chunk_can_drop`,
+  host-tested by `tests/host_chunk_test.c`, 6 cases); `pdna_box.c` gained `begin_select` (hold-A
+  rubber-band; a tap still routes to the well-tested single grab), `chunk_draw` (green/orange
+  fit-preview), `drop_chunk`, `drop_chunk_pc_to_bank`, `s_ch_*` carry state (2.4 KB `EWRAM_BSS`,
+  survives the PC↔Bank hand-off); new `pdna_progress.{c,h}` (front sprite + N/total bar);
+  `pdna_pk_export_silent` + `export_box_all`; `app_pc_release_slot` (identity-matched PC release).
+  **PC→Bank release ordering:** write bank box → `src->commit()` **verified** → only then clear the PC
+  slots (deferred to the one exit save). This also fixed the *single-mon* PC→Bank, which was a
+  confirmed **COPY** = exactly the auto-duplication Guy complained about.
+- **⚠️ Round-1 adversarial review (4 dims) → 1 CONFIRMED loss bug, fixed:** `flush_on_exit`
+  (`pdna_main.c`) called `app_commit_pc()` and **discarded its bool**, then ran
+  `pdna_bank_flush_deletions()` **unconditionally** — so a *failed* PC write still deleted a Bank→PC
+  move's bank sources ⇒ mons gone from the bank, never in the `.sav`. **Pre-existing**, but the chunk
+  amplified it to a whole box. Now `if (app_commit_pc()) pdna_bank_flush_deletions();`.
+- **Guy's HW round-1 result:** PC→Bank *"seems to work like i want!"*; PC-internal chunk moves work.
+  Two problems: **(a)** couldn't move a chunk **within the bank** (whole box → clean box); **(b)**
+  Bank→PC *"looks as if they duped"* until the exit prompt.
+- **Did — round 2 (fixes):**
+  - **(a)** `drop_chunk_bank_cross` — the bank pages ONE box at a time, so: commit the **dest** box
+    (verified) → then clear+commit the **source** box. (My original blanket deny was copied from the
+    single-mon restriction; a move into *empty* cells doesn't need the source box resident.)
+  - **(b)** Bank→PC stays **deferred**; the bank **display** hides moved-out mons:
+    `pdna_bank_hide_pending` blanks them in the **decoded PkMon array only** — never `g_bankbuf`, which
+    `box_save` persists, so the record stays as the mon's only on-card copy until the PC commits.
+    All 17 `pk_decode_box_raw` sites now go through `box_decode`/`box_decode_to`. `box_occupancy` +
+    `app_bank_slot_pending` keep a hidden slot **OCCUPIED** so nothing can overwrite it (a refused drop
+    explains *"CELLS NOT FREE YET"*). Export-all/Release-all skip hidden mons via the same decode.
+  - **Release all** on the box-name menu (PC + bank): confirm → clear → verified commit (+ backup).
+- **⚠️ Round-2 adversarial review (3 dims) → 1 CONFIRMED loss bug in MY new code, fixed:**
+  `drop_chunk_bank_cross` committed the **source** box right after paging it in — but `box_load`
+  **discarded the read status**, and it `memset`s the buffer to zero first. A failed/short SD read ⇒
+  all-zero buffer ⇒ the unconditional commit would **wipe that box's untouched bystander mons**, and
+  **bank box files take NO immutable backup** (unlike `app_commit_pc`) ⇒ unrecoverable. Fix: `box_load`
+  now returns read-completeness; new `pdna_bank_clear_slots` refuses to rewrite on an incomplete
+  page-in **or** when nothing identity-matched (mirroring `pdna_bank_flush_deletions`, which was
+  already safe) ⇒ degrades to a recoverable duplicate.
+- **Left off:** everything code-complete + **uncommitted**; `make rebuild` clean (ROM ~6.56 MB, ewram
+  `.sbss` fine), `host_chunk_test` green, lossless edit gate green on all 3 fixtures. **Guy: "ill test
+  later."**
+- **Open threads:** round-2 HW test (Next steps #1); commit both repos; single-mon Bank→PC shares the
+  deferred+hide path (unverified on HW).
+- **Lesson captured** in the toolkit's learn skill (uncommitted, separate repo): deferred-vs-immediate
+  store asymmetry + *gate the source-clear on the destination commit **succeeding***; **a
+  read-modify-write-back must verify the read**; a group-carry can't float a 2nd set of OBJ icons; and
+  the Emerald PC multi-select gesture.
+
+### Session — 2026-07-15
+- **Delivered two clearly-named builds:** `PokeDNA-NOR.gba` (6.25 MB, full, `make`) and `PokeDNA.gba`
+  (3.83 MB, trimmed, `make sd`, needs `/PokeDNA/sprites.pak`). Verified the NOR build embeds the
+  complete sprite set (`source/embed/mon_back_data.s` incbins both `mon_back.bin` **and**
+  `mon_back_shiny.bin`; `mon_front_shiny` embedded) — nothing streamed, no companion file needed.
+- **Disproved the "SD-load size wall."** Guy loaded the 6.25 MB build via the Omega DE's normal SD
+  "Load game." The earlier hangs were **non-monotonic in size** (4.73 MB loaded / 4.72 hung; 6.56
+  hung / 6.25 loads) → **bad/incomplete SD copies, not a PSRAM ceiling.** Corrected the diagnosis
+  everywhere: this HANDOFF, `SESSION_SUMMARY.md`, learn `flashcart-sd-io.md` (+ r36s-toolkit copy),
+  and auto-memory. New rule: *hang at "Load game" ⇒ re-copy the `.gba` / suspect the card, not the ROM.*
+- **Battle-recorder research → `docs/IDEAS.md` rewritten (was "probably not possible").** Emerald's
+  Frontier Pass **Battle Record IS a deterministic, exportable battle**: `struct RecordedBattleSave`
+  at sector 31 (`0x1F000`, fills the 3968-byte data area) = `rngSeed` + both 6-mon parties (same
+  100-byte encrypted format we parse) + `battleRecord[4][664]` turn-by-turn inputs. Verified vs
+  pret/pokeemerald (reference-only). Export is easy (reuse the mon parser); PC-side video render is a
+  separate project (trivial route: screen-record the in-game replay in an emulator). Captured in the
+  learn gen3 reference too.
+- Ran `/learn` (captured the size-wall correction + the recorded-battle finding into the learn skill,
+  both gba-toolkit and r36s-toolkit copies) and this `/handoff`.
+
+### ⚠️ 2026-07-13 CORRECTION — the "won't load = ROM SIZE" diagnosis was WRONG
+- **There is no ROM-size ceiling.** Guy loaded the **6.25 MB** full build (`PokeDNA-NOR.gba`) via
+  the EZ-Flash Omega DE's **normal SD "Load game."** Size was never the gate. The load hangs were
+  **non-monotonic in size** (7.32 MB loaded but 6.56 MB hung; 4.73 MB loaded but 4.72 MB hung;
+  6.25 MB loads) — a real size ceiling would be monotonic, so this rules size out. (The old notes
+  even recorded the 7.32-loads-6.56-hangs contradiction and I still blamed size — my error.)
+- **Real cause:** almost certainly an **intermittent bad/incomplete copy to the microSD**
+  (truncated write, unflushed FS cache from pulling the card early, or FAT/card flakiness): the
+  flashcart reads a bad image and hangs at "Load game." **Re-copy the `.gba` and eject safely — it
+  loads.** Rule going forward: **hang at "Load game" ⇒ suspect the copy/card first, not the ROM.**
+- **Consequence:** the back-sprite cut and the trimmed-SD + `sprites.pak` streaming were **not
+  necessary**. The full build (all sprites incl. back-view + shiny) is the shipped `PokeDNA-NOR.gba`;
+  `mon_back.c`/`gen_back.py` and `sprite_stream.c` are intact and used by the full build. The
+  streamed SD build (`make sd`) remains only as an optional smaller/faster variant.
+- (Below: the superseded 2026-07-07 "ROM SIZE" writeup, kept for history — do NOT act on it.)
+  ~~Symptom: EZ-Flash "Load game" hangs = OS-mode SD PSRAM ceiling; cut back-view sprites → 4.73 MiB
+  loads.~~ The sprite files (`mon_front.*`, `mon_back.*`, `data/*.bin`) are still **git-ignored**
+  (ripped art, regenerated by `tools/gen_*.py`).
+- If the ROM ever needs to grow again while keeping art: **paletted sprites** (store 4bpp + a
+  normal & shiny palette; shiny = palette swap) → whole front set ~0.48 MB incl. shiny, ~1.5 MB
+  smaller. A ready `gen_front.py` paletted rewrite was drafted then reverted (Guy wanted "as
+  before"); the approach is validated (sprites are clean ≤15-colour, shiny is a 1:1 palette swap).
+
+### Guy-reported bugs — FIXED 2026-07-08 (commit `816fdb6`, HW-verify pending)
+- **[1] Secret-base mons shown as EGGS** — root cause: `sb_mon_edit` synthesized the display record
+  with ciphertext=0, so `gen3_edit_load` decrypted key=PID^0=PID → PID-filled substructs; egg
+  bit30 = PID bit30 (~half the mons). Fixed: `memset(e.sub,0,...)` + `raw[0x13]=0x02` + ability=PID&1.
+- **[2] Secret-base stats** — confirmed EXACT vs pokeemerald `CreateSecretBaseEnemyParty` (fixedIV=15,
+  stored avg-EV → every stat, nature/gender from personality). Were already right; now clean inputs.
+- **[3] ITEM-mode held-item preview behind the hand** — dropped the ITEM hand to OBJ priority 1 so the
+  priority-0 preview pops in front.
+- **[4] ITEM-mode hand dimmed the holder** — hand was `ATTR0_BLEND`; now opaque (only non-holder icons fade).
+- box_oam.c changes are UI-only (no host test) → **need HW check** (ITEM-mode look). Cores host-tested green.
+
+### Known bugs — Guy-reported 2026-07-07 (FIXED — see above)
+1. **Secret base: some party mons show as EGGS in the summary.** Secret-base mons are SYNTHESIZED
+   into a PkMon (from SbParty species/level/moves/EVs/personality), not decoded from a real
+   BoxPokemon — so `isEgg` is defaulting/garbage. Fix where the SB summary PkMon is built
+   (`pdna_main.c` sb_detail/sb_mon_edit ~2406-2487 + `gen3_secretbase.c`): force `isEgg=false`,
+   `isBadEgg=false`.
+2. **Secret base: mon stats must mimic the EXACT game calc.** Feed `pk_calc_hp`/`pk_calc_stat`
+   (`gen3_mon.c`) the exact IV/EV/nature/level the game uses for a secret-base opponent — research
+   pokeemerald `CreateSecretBaseEnemyParty` (fixed IV + EV spread); the formula itself is already
+   correct, only the inputs need to match.
+3. **ITEM-move mode: the small held-item marker draws BEHIND the mon icon.** In `box_oam.c` the
+   item markers (`OE_MARK0`=34+) sit at a higher OAM index than the icons (`OE_ICON0`=0..29), so
+   at equal OBJ priority they render behind. Fix: give the markers a LOWER OBJ priority (ATTR2
+   priority bits) than the icons so they "pop forward."
+
+
+
+- **SESSION 2026-07-05 (resumed) — ALL confirmed audit findings FIXED + COMMITTED. 17 commits on
+  `main` (top `6cdcf2f`), NOT pushed. Builds clean (ROM ~6.56 MB), EWRAM .sbss headroom ~4.8 KB,
+  host suite green. READY FOR GUY'S HW TEST → then push + tag v2.0.0 + GitHub release.**
+  - Audit-fix commits: `f586d3e` **RS daycare offsets** (pret-verified: mail 56 B, steps@272, egg
+    u16@280, cnt@282; E/FRLG mail clear 56; KB corrected in the toolkit repo — CRITICAL, was a save
+    corruptor); `3664233` 7 feature bugs (dex-undo reverts Natl unlock; egg icon in daycare yard +
+    carry glove; honest bank exit prompt; dup skips the reversed cross-scope confirm; defer-queue-full
+    refuses the move in drop_held + party ADD; trainer card single sections-0..4 commit via new
+    app_commit_sb12); `3d67d45` 30+ more text overflows (all 8 box footers, 11 Omega dialogs,
+    wallpaper picker, clock/secret-base/browser lines, editor header/footers, trainer rows, dex
+    footers, dc_menu labels…); `fcb7866` dead-code purge (app_edit_commit, xfer trio, clip/party
+    writers, log_text [8KB buffer KEPT — SD flush uses it], ui_icon_sub, macros, pk_nature dedup,
+    uncompilable tests/host_test.c + the 3 gen3_save.c PokeLinkSim leftovers it referenced);
+    `3a85e5f` raw-flags bound fixed to the REAL flags[] (E 2400/RS-FRLG 2304, was ~2.7x over —
+    could poke vars[]) + secret-base party Unown letter/Deoxys forme; `6cdcf2f` dex partial-row wrap.
+  - **Audit leftovers (LOW value, optional):** 2 finder areas never ran (feat:events+backup,
+    feat:summaryanim — resume recipe below still valid, ~7 agents); PkMon write-only fields
+    (evSum/otGender/ribbons) kept; ~15 -Wmisleading-indentation warnings; party_list fallback kept.
+  - **HW TEST CHECKLIST for Guy:** wallpaper A/B (`a2eb21e`); RS daycare deposit/withdraw on a
+    disposable RS save (new offsets); FRLG "TO DAY-CARE"; party<->box both directions + the
+    save-something-else-then-decline loss repro; egg shows as Egg everywhere (box grid/panel/party/
+    daycare yard/carry glove/summary) + HATCH; Deoxys forme per game + SELECT-cycle; summary anim
+    (now default ON) incl. static eggs; dex UP/DOWN wrap; text no longer wraps in daycare/box
+    footers/dialogs/trainer card. Then: push + tag v2.0.0 + release WITH ROM (Guy's informed call).
+
+- **SESSION 2026-07-05 PAUSE (Guy needs tokens). Release-audit v2 RAN (22/31 agents) — full findings
+  SAVED to `docs/audit-findings-v2.json` (+ `docs/audit-journal-v2.jsonl`, both untracked — parse the
+  JSON's `.result`). Resumable: `Workflow({scriptPath: ~/.claude/projects/-Users-guyshtainer-VSCodeProjects-gba-toolkit/b6a21bde-*/workflows/scripts/pokedna-release-audit-v2-wf_3f77ebd4-9f7.js, resumeFromRunId: "wf_3f77ebd4-9f7"})`
+  — only the 9 session-limit-failed agents re-run (finders feat:events+backup + feat:summaryanim, and
+  skeptics for pokedex/daycare/dataeditor/sprites unverified items). NOTHING from the audit is fixed yet.**
+  - **#1 FIX FIRST — RS DAY-CARE OFFSETS ARE WRONG (confirmed vs pret/pokeruby primary source, could
+    corrupt RS saves on deposit/withdraw):** DayCareMail.names @+0x24 ⇒ MailStruct=36 ⇒ **RS mail=56 B**
+    (not 54); sizeof(DayCare)=0x30B8-0x2F9C=**284**. Correct RS layout: mail@base+160+i*56 (clear 56),
+    steps u32 @**272**+i*4, egg u16 @**280**, counter u8 @**282** (RS==FRLG for the egg block!). Our code
+    (pdna_main.c dc_clear_slot_aux/dc_clear_egg/dc_rescan) uses 54/268/276/278 — fix all three fns; ALSO
+    E/FRLG mail clear should be **56** not 54 (140=80+56+4). ALSO fix the learn-skill KB
+    (`.claude/skills/learn/references/gen3-pokemon-saves-and-licensing.md` daycare bullet, toolkit repo)
+    which has the same wrong RS numbers. The June "Ruby fixture validation" passed only because the
+    fixture had no pending egg.
+  - **Other CONFIRMED feature bugs (from `features_confirmed` in the JSON):** dex bulk "Undo last"
+    doesn't revert the Natl-Dex unlock (snapshot it); egg shows SPECIES icon in the daycare yard
+    (pdna_main.c ~2250/2260/2294/2303) and in the carry GLOVE (pdna_box.c oam_sync ~330 →
+    boxoam_carry_held — use the egg OAM icon); bank exit "discard" over-promises (page-out auto-saves
+    earlier boxes — make prompt honest or track+reload); bank-DUP dropped into PC shows reversed
+    "Copy to Bank?" text (dup ⇒ skip confirm); 65th Bank→PC defer-delete silently dups (queue full ⇒
+    refuse the drop); trainer card double full-file write when money+identity both dirty (single
+    sections-0..4 commit).
+  - **32 TEXT-OVERFLOW findings** (all in the JSON `text_overflow`, sonnet-verified arithmetic): worst
+    = box/bank draw_footer (all 8 strings 2-15 cols over), the Omega read-only msg_wait lines (11 call
+    sites), summary/edit confirm dialogs, wallpaper-picker header/footer, trainer-card DEX+badges rows,
+    clock lines, dc_menu labels, pdna_dex_screen footer, legality lines. msg_wait/app_confirm budget =
+    24 cols inside panel (26 to screen); consider clamping INSIDE msg_wait/app_confirm so callers can't
+    regress.
+  - **DEAD-CODE list (10 items, `dead_code` in the JSON):** app_edit_commit, app_clip_occupied +
+    app_xfer_put/take + g_xfer_*, clip_write_box_slot, party_write, pk_current_box, pk_read_box, 7
+    PokeLinkSim leftovers in gen3_save.c (gen3_detect_game/read_live_party/count_battleable/...),
+    pk_nature (or use it at gen3_mon.c decode), log_text+8KB EWRAM_BSS buffer (!), ui_icon_sub,
+    PB_ICON_MAX, UI_COLS, gen3_box.c stale fwd-decl, write-only PkMon fields (evSum/otGender/ribbons).
+    Keep: party_list (no-PC fallback), ACE raw box-name helpers (documented groundwork).
+  - Prior manual pass already committed: `f41602e` (first overflow batch + hand_cursor/base_name/DLAB
+    removed + summary anim default ON) and `0f04004` (egg sprite in box panel + animated portrait,
+    eggs don't animate). 10 commits on `main` (top `0f04004`), NOT pushed. Guy's locked decisions:
+    anim ON ✓ done; endgame = push + tag + GitHub release WITH ROM after HW test.
+
+- **SESSION 2026-06-30..07-04 — feature batch COMMITTED (8 commits on `main`, top `5376fa0`, NOT pushed);
+  release-audit STOPPED mid-run by Guy (token budget).** Builds clean, ROM ~6.56 MB, EWRAM .sbss headroom ~4.8 KB.
+  - **Committed this span:** `beb5259` daycare FR/LG + false-"full" fix (+`tests/host_daycare_slot_test.c`);
+    `29aa019` party<->box overlay + **atomic cross-buffer saves (finalize folds g_pc — fixed a review-confirmed
+    CRITICAL loss + HIGH dup)**; `a2eb21e` HW-robust wallpaper render (RAM-staged; rumble theory DISPROVEN —
+    needs HW confirm); `8f7f5c5` party popup = the full party menu (old list retired to the no-PC fallback only);
+    `149569c` dex cursor wrap; `9956069` Deoxys formes (4 sprites in all 4 generators, auto per game RS=Normal/
+    E=Speed/FRLG=Attack default, SELECT cycles in summary; forme is version-baked — unforceable in-game);
+    `c3e23e3` egg HATCH action (+`tests/host_hatch_test.c`) ; `5376fa0` eggs show the REAL decomp egg sprite
+    (front/icon/OAM incl. the box grid; `graphics/pokemon/egg/` from the vendored decomp; drawn ui_egg removed).
+  - **DEFINITIVE-RELEASE AUDIT (Guy's ask): text-overflow sweep + full feature audit + dead-code purge.**
+    A 14-agent workflow was launched then STOPPED early: run `wf_b40f1ea0-82c`, script
+    `~/.claude/projects/-Users-guyshtainer-VSCodeProjects-gba-toolkit-projects-PokeDNA/b6a21bde-.../workflows/scripts/pokedna-release-audit-wf_b40f1ea0-82c.js`,
+    partial agent results harvestable from that workflow's transcript dir `journal.jsonl` (same-session resume
+    won't work in a new chat — re-run the script or harvest the journal). KEY AUDIT FACTS already established:
+    `ui_text` (tonc TTE, default margins) WRAPS past x=240 to the next line = the overlap Guy sees; font 8px/char;
+    `ui_truncate` exists — un-truncated dynamic strings are the bug. Known dead code: `base_name()`
+    pdna_main.c:179, `DLAB` pdna_summary.c:43, `party_list()` (only the no-PC fallback ~pdna_main.c:2957 —
+    delete + replace fallback with the party popup), `hand_cursor.c/h` (include exists in pdna_box.c but cursor
+    moved to OAM — verify zero call sites), gen3_box.c ACE helpers partially unused. Also a strncpy warning
+    pdna_main.c:229 + ~15 misleading-indentation warnings to eyeball.
+  - **GUY'S DECISIONS (locked in):** summary portrait animation must **default ON** (flip `g_anim_mask` init
+    at pdna_main.c:81 to include `1u << ANIM_SUMMARY`; note a saved config.cfg `anim=` line overrides the
+    default — existing users keep their setting). Release endgame = **push + tag + GitHub release WITH the ROM
+    asset** (bundled-art posture like v1.0.0, Guy chose informed) — only AFTER the audit fixes + his HW test.
+  - **NEXT STEPS (in order):** (1) re-run/harvest the audit workflow; (2) fix confirmed text overflows;
+    (3) fix confirmed feature bugs; (4) delete dead code; (5) anim default ON; (6) rebuild + host tests +
+    small commits; (7) Guy HW-tests (incl. wallpaper A/B on `a2eb21e`); (8) push + tag + release.
+
+- **SESSION 2026-06-29 — Day-Care fixes (FR/LG + RSE "full" bug) + a PARTY-overlay popup (move mons
+  to/from the party). UNCOMMITTED on `main`, builds clean (ROM ~6.50 MB), EWRAM `.sbss` ends 0x0203ECEC
+  (4884 B headroom), host tests PASS. Adversarial multi-agent review caught + we FIXED a CRITICAL save bug;
+  fix re-verified sound. AWAITING Guy's HW test.**
+  - **Day-Care bug 1 (FR/LG "TO DAY-CARE" missing) FIXED:** the per-mon action + `app_to_daycare` were
+    gated off for FRLG. FRLG has a real 2-mon breeding Day-Care (Four Island, **SB1 0x2F80** — verified vs
+    pret/pokefirered; RS 0x2F9C verified vs pokeruby; Emerald 0x3030 vs vendored decomp). New single-source
+    `dc_layout(base,stride)` (E 0x3030 / FR-LG 0x2F80 / RS 0x2F9C; stride RS?80:140) shared by the viewer +
+    all deposit paths. Menu un-gated (`if (!is_bank)`).
+  - **Day-Care bug 2 (RSE "DAY-CARE FULL" when not full) FIXED:** deposit decided occupancy by whether
+    `pk_decode_mon()` returned true, which is true for a species-0 slot whose stored checksum != 0 (a
+    "dirty-but-empty" slot, common on real saves). Now `dc_first_free()` matches the game
+    (CountPokemonInDaycare: species != 0) and the viewer (`dc_rescan`): occupied = species 1..411 &&
+    !isBadEgg. Used by `app_to_daycare` + `dc_deposit`. Regression test `tests/host_daycare_slot_test.c`
+    reproduces the bug + proves the fix (PASS).
+  - **PARTY overlay popup (feature #2)** — a Gen-4/5-style "move to/from party" popup over the box screen,
+    opened from the box top **PARTY** tab (renamed from "PARTY SEL"). `app_party_overlay()` in pdna_main.c
+    (2x3 icon cluster + Back), 2 modes: PLACE (carrying a box mon -> A adds/swaps into the party via the new
+    shared `party_place_held()`, refactored from the old reviewed `app_carry_to_party` which is now removed)
+    and GRAB (empty-handed -> A picks a party mon up to carry into a box). pdna_box.c gained a **party-origin
+    carry** (`s_orig_party`): lift-don't-clear, removal deferred to a successful drop via `app_party_remove_at()`;
+    cancel returns it untouched; blocked from leaving the PC to the Bank or being re-added to the party; the
+    last party mon can't be grabbed (party can't be empty). Editing the full party is still START -> Party.
+  - **⚠️ ADVERSARIAL REVIEW (workflow `pokedna-party-daycare-review`, 6 agents) found + we FIXED a
+    CRITICAL data-loss + a HIGH dup**, both one root cause: a cross-buffer deferred move stages its SB1 half
+    into `g_save` (app_stage_sb1) while its PC half lives only in `g_pc`; any intervening SB1/SB2/dex commit
+    calls `app_save_finalize` which writes the WHOLE `g_save` but never folded `g_pc` -> half-saved move
+    (party->box = LOSS; PC->Day-Care = DUP). **FIX:** `app_save_finalize` now folds pending `g_pc` into
+    `g_save` (sections 5..13) whenever `g_pc_dirty`, clearing the flag only on success — so every whole-image
+    write is self-consistent. Re-verified sound by an independent gen3-save-format agent (closes both, no new
+    loss/dup, idempotent, deferred-move decline still works). This also fixes the SAME latent split-buffer
+    hazard in the pre-existing Day-Care/withdraw paths.
+  - **Files:** `source/pdna_main.c` (dc_layout/dc_first_free, party_place_held/app_party_overlay/
+    app_party_remove_at, finalize fold), `source/pdna_box.c` (party-origin carry + PARTY-tab wiring),
+    `source/pdna_app.h`, new `tests/host_daycare_slot_test.c`. Nothing committed (offer to commit).
+  - **GARBLED BOX WALLPAPER — rumble theory DISPROVEN, re-fixed (uncommitted, needs HW test).** Guy
+    confirmed the garble has **ZERO correlation with rumble** and predates rumble entirely, so `cba40e7`'s
+    rumble-suspend theory was WRONG. Re-investigated: the data + blit are verified correct (host-render to
+    PNG), icons correctly use OBJ tile ids 512..1023 (no Mode-3 framebuffer overlap), mode is Mode 3. The
+    real outlier: `draw_wallpaper` was the ONLY box graphic reading ROM **per-pixel with the CPU, interleaved
+    with VRAM writes, jumping randomly between map[] and tiles[]** — that access pattern thrashes the GamePak
+    prefetch on the flashcart PSRAM (HW-only). The working paths avoid it (icons DMA tiles from ROM; the
+    front sprite blits from a decompressed RAM buffer). **FIX:** `draw_wallpaper` now stages the tilemap +
+    each tile into RAM with sequential reads, then blits from RAM (same shape as the working paths). +848 B
+    IWRAM. **Unverified on HW** (can't repro in emulator). If still garbled: add a "Simple wallpaper" toggle
+    (procedural grass, zero ROM tile reads) as a guaranteed fallback; a photo of the garble would confirm the
+    failure mode.
+  - **HW TODO (Guy):** on disposable save copies, per game: FR/LG "TO DAY-CARE" deposits + appears in the
+    Day-Care; RSE deposit on a daycare that was wrongly "full"; party<->box moves both directions (grab a
+    party mon -> drop in a box; carry a box mon up to PARTY -> add/swap), incl. the loss/dup repro = do a
+    party->box move then SAVE something else (party edit / trainer card) WITHOUT exiting, then exit & decline
+    -> the moved mon must be intact (not lost, not duplicated).
+
+- **SESSION 2026-06-28 (part 2) — big feature batch + a CRITICAL save/mount bug, all committed on `main` (NOT pushed). Builds clean (ROM ~6.50 MB), host tests PASS. AWAITING Guy's HW test (he'll test 2026-06-29) that SAVING works again on `e3a350c`.**
+  - **THE headline bug — EWRAM overflow corrupted the in-EWRAM SD driver** (`e3a350c`). Symptoms Guy hit: "save failed" (first time ever) + intermittent "SD mount failed" (8 retries exhausted). Root cause: part-2's data-safety fix (`045cdca`) stored the FULL 80-byte record per pending bank deletion (64×82 ≈ 5 KB) in `EWRAM_BSS`, pushing total EWRAM data to ~257 KB — past the 256 KB chip. **The devkitARM GBA linker does NOT bound `.sbss` to the ewram region**, so it linked clean ("ewram 0.57%") but on HW the overflow wraps (EWRAM mirrored at `0x02040000`) and overwrote the START of EWRAM = the `.ewram` `EWRAM_CODE` = the `io_ezfo` SD driver (runs from EWRAM while ROM is paged out). Corrupt driver → garbage reads (flaky mount) + failed write-verify (save fails). **The microSD was always fine** (Guy confirmed: mounts on his Mac, other carts launch). RTC was a RED HERRING (Guy: EZ-Flash RTC is GLOBAL, no per-game settings; toggling it off didn't help). FIX: store only the 8-byte identity (personality 0-3 + OT-ID 4-7) in a 640 B IWRAM table; `.sbss` now ends `0x0203ECEC`, **4884 B under** `0x02040000`. **ALWAYS** verify `arm-none-eabi-size -A` `.sbss` end ≤ `0x02040000` after any buffer change — a clean link does NOT prove EWRAM fits.
+  - **National Dex unlock fixed** (`7599b8a`): marking #152-386 caught did nothing in-game; national mode needs a per-game magic+var+flag trio. `pk_dex_set_national`/`pk_dex_national_on` in `gen3_dex.c` (RS/E magic `0xDA`@pokedex+0x02, var `0x302`; **FRLG magic `0xB9`@pokedex+0x03, var `0x6258`**; flag E `0x896`/RS `0x836`/FRLG `0x840`). "Natl Dex ON/OFF" in the DEX:ALL menu + auto-enable on Catch ALL. Host-tested all 3 games (`tests/host_dex_test.c`). Also fixed `pk_pokedex()`'s national indicator (was FRLG-offset-only).
+  - **Two data-loss bugs fixed** (`045cdca`, found by an adversarial gen3-save-format review): (a) carry-a-BANK-mon onto the PARTY tab zeroed the wrong (PC) slot / wrote OOB → now bank-origin defer-deletes; (b) deferred bank deletion matched a bare slot index → a re-arrange before save deleted the wrong mon → now matches the mon's identity. (The full-record match here is what overflowed EWRAM; `e3a350c` shrank it to the 8-byte id.)
+  - **Garbled box wallpaper on HW fixed** (`cba40e7`) — rumble GPIO ISR (0x080000C4, cart bus) corrupts the >1-frame ROM-read wallpaper blit on the EZ-Flash. `rumble_io_suspend/resume` (a nesting-counted render guard in `rumble.c`) brackets `draw_wallpaper`, the `ui.c` blit primitives, the portrait LZ77 fetch, and the daycare/party DMA paths. Data proven correct (all 32 wallpapers host-rendered clean to PNG). Diagnosed via a multi-agent workflow. **Still wants HW A/B confirm** (cue-on garbled before / clean after).
+  - **Boot hardening** (`28d8abd`, `0e7993d`): SD mount retries 8× with cart re-init + settle instead of single-try-halt; `rmbl_init` moved AFTER the mount (no cart-bus writes before SD is up); mount-fail halt shows the FatFs `fr` code.
+  - Other part-2 features committed: auto-register Pokédex on every add path (`1d639ea`), edit a move's current PP (`c284937`), added bag items land in the correct pocket all games (`97e58c7`), carry a box mon onto the PARTY tab to add/swap (`afe3efd`), Bank→PC carry is a prompt-free MOVE (`36c4c52`).
+  - **Guy's queued asks (deferred until he confirms saving works):** (1) make **PC→bank a deferred MOVE** (delete from PC at save, like Bank→PC) — use a tiny 8-byte-ID **IWRAM** table, NOT EWRAM; (2) add a **linker/Makefile guard** so an over-budget EWRAM fails the build (`ASSERT(__sbss_end__ <= 0x02040000)`).
+
+- **SESSION 2026-06-28 — Pokéblock UI polish + events for all 3 games. committed; builds clean (ROM 6.50 MB), host tests PASS.**
+  - Commits: `1e89137` (game-like Pokéblock UI + preset colour picker), `009f685` (RS/FRLG event tickets + legit state).
+  - **Pokéblock UI (#1)**: case list shows a colour SWATCH per block + a count (N/40); per-block editor shows a
+    big swatch + flavour/feel BARS. **Colour preset picker (#2)**: 15-colour swatch picker (no free number); A on
+    the colour row opens it. `pokeblock_rgb()` colour table (runtime — RGB15 isn't const-foldable).
+  - **Event tickets RS + FRLG + legit state**: per-game tables (RS Eon `FLAG_SYS_HAS_EON_TICKET` 0x853; FRLG
+    Aurora 0x84B/Mystic 0x84A, received 0x2A7/0x2A8; Emerald unchanged), flags pulled from the pret decomp
+    headers via WebFetch (SYSTEM_FLAGS 0x800 for RS/FRLG, 0x860 for Em). Grant now sets item + ship-enable +
+    RECEIVED flag; MG indicator + MG-off message. **Deliveryman path NOT done** (needs a Wonder Card = separate
+    save data) — granted directly to the bag, identical working result. HW-EXPERIMENTAL (confirm boats appear).
+  - **#3 contest condition** is ALREADY editable on all games via the mon summary CONDITION card (commit
+    d29008d) — RSE meaningfully; FRLG has the 6 bytes but no contests. No new work unless the user wants ribbons.
+  - **#4 wallpapers**: still the unreproduced HW-only "jumble"; data+blit verified correct (20x18 tilemap into
+    66 8x8 tiles via m3_plot). Open: get a photo to diagnose, or add a "Simple/solid wallpaper" fallback toggle.
+
+- **SESSION 2026-06-24 (part 5) — Pokéblock case editor done + events researched. committed; builds clean (ROM 6.50 MB), host tests PASS (clock + build + pokeblock).**
+  - Commit: `f86db9e` (Pokéblock case editor).
+  - **Pokéblock case editor** — MENU -> Pokeblocks: 40 slots; A edits/creates (colour + 5 flavours + feel),
+    "Delete this block" clears one. RS/Emerald only (FRLG has no contests). New `gen3_pokeblock.{c,h}` pure core
+    (offsets RS 0x7F8 / Emerald 0x848, 40 × 8-byte stride, pad byte preserved), host-tested
+    (`tests/host_pokeblock_test.c`). Offset verified vs the decomp (byte-exact) + the codebase's HW-validated
+    dex seen1 (0x848+40*8=0x988). Writes SaveBlock1 sections 1-4 via `app_commit_pokeblocks`.
+  - Note: the `daycare map/POKEMON_EMER_BPEE00.sav` is BLANK (all 0xFF, no section signatures) — not usable for
+    real-save host checks; the synthetic round-trip + dual offset cross-check is the validation.
+
+  ### Events (event-ticket grants) — DONE for Emerald (commit `ba58c72`)
+  MENU -> Event tickets grants Eon/Aurora/Mystic/Old Sea Map: gives the key item + sets the verified
+  ferry-enable flag (Eon 0x8B3, Aurora 0x8D5, Mystic 0x8E0, Old Sea Map 0x8D6 = SYSTEM_FLAGS+0x53/0x75/0x80/0x76)
+  the game checks (`CheckBagHasItem && FlagGet(FLAG_ENABLE_SHIP_*)`). Idempotent; READY tag when already set;
+  writes via `app_commit_sb1`. **Emerald only** (RS/FRLG flag numbers not in the local refs — reference/pokeruby
+  is a partial decomp, pokefirered lacks the constants; pull RS Eon + FRLG Aurora/Mystic from a full decomp/web,
+  add to `event_tickets()`). **HW-EXPERIMENTAL**: confirm the boat actually appears on a real Emerald save.
+
+  ### Original research notes (kept for RS/FRLG follow-up)
+  Goal: a one-tap "enable event" that gives the key ITEM + sets the access FLAG(s) per game, so the user can
+  reach the event islands/legendaries. Emerald data (from the local decomp, clean-room):
+  - **Eon Ticket** (item 275) -> Southern Island (Latios/Latias): FLAG_SHOWN_EON_TICKET 0x1AE (+ unhide
+    FLAG_HIDE_SOUTHERN_ISLAND_EON_STONE 0x38E).
+  - **Aurora Ticket** (item 371) -> Birth Island (Deoxys): FLAG_RECEIVED_AURORA_TICKET 0x13A,
+    FLAG_SHOWN_AURORA_TICKET 0x1AF (+ FLAG_HIDE_DEOXYS 0x2FB / triangle 0x2FC).
+  - **Mystic Ticket** (item 370) -> Navel Rock (Lugia 0x1DD-area + Ho-Oh): FLAG_RECEIVED_MYSTIC_TICKET 0x13B,
+    FLAG_SHOWN_MYSTIC_TICKET 0x1DB.
+  - **Old Sea Map** (item 376) -> Faraway Island (Mew): FLAG_RECEIVED_OLD_SEA_MAP 0x13C,
+    FLAG_SHOWN_OLD_SEA_MAP 0x1B0 (+ FLAG_HIDE_MEW 0x2CE).
+  RS + FRLG have DIFFERENT item ids / flag numbers (FRLG: Mystic Ticket + Aurora Ticket via the FRLG decomp;
+  RS: Eon Ticket only). TODO: pull the RS/FRLG ids+flags from reference/pokeruby + reference/pokefirered,
+  build a small per-game table, add a "Events" screen (list tickets -> grant = add item + set flags via
+  pk_bag_* + pk_flag_set), and HW-validate that each event actually triggers in-game. The data_editor already
+  exposes raw flags + the bag, so this is a convenience layer over existing safe writes.
+
+- **SESSION 2026-06-24 (part 4) — more backlog + a carry fix. committed; builds clean (ROM 6.50 MB), host tests PASS.**
+  - Commits: `50c9929` (swap-and-hold), `2aedc35` (dex bulk undo).
+  - **Box swap keeps the displaced mon in hand** (user report): dropping a carried mon onto an occupied cell
+    now places it and HOLDS the previous occupant (you place it yourself), instead of auto-throwing it into the
+    carried mon's old cell. New `s_held_dup` distinguishes a discardable fresh duplicate from a real swapped-out
+    mon (cancel places the latter in the first free slot; a RAM-only displaced mon can't cross the PC<->Bank
+    boundary, so it can never be lost across two save scopes). Within-box / PC cross-box swaps atomic; bank
+    cross-box swap still denied.
+  - **1-click Pokédex bulk + UNDO**: `dex_bulk` (START -> Mark all) already had Catch/See/Wipe ALL with a
+    confirm; added a snapshot-based "Undo last" so an accidental bulk change reverts in one step (RAM revert;
+    the bulk isn't written until the dex-save confirm). Snapshot resets per dex-screen open.
+  - **BACKLOG REMAINING (research-first, next batch):** Pokéblock case editor (SaveBlock1 add/change/delete —
+    need the per-game Pokéblock-case offset + 8-byte struct, clean-room) and Events (#7, Gen-3 event flags /
+    Mystery Gift). Still TODO: HW-validate everything from parts 2-4 (carry/item, contest, create-a-mon, dex undo).
+
+- **SESSION 2026-06-24 (part 3) — feature backlog STARTED. 2 features + a data bugfix, committed. builds clean (ROM 6.50 MB), host tests PASS (clock + new build test).**
+  - Commits: `d29008d` (contest condition), `db5ae55` (create-a-mon), `c411775` (gen_data exp fix).
+  - **Contest condition editing** — new CONDITION summary card (card 7, NCARDS 8) edits cool/beauty/cute/
+    smart/tough/sheen (sheen = Pokéblocks fed). `em_set_contest` patches bytes 6..11 of the EVs substruct
+    (cosmetic, lossless round-trip preserved); F_CT0..F_CT5 fields in pdna_edit.
+  - **Create a mon from scratch** — empty box/bank slot -> A -> CREATE: pick species, `gen3_build_mon`
+    (pure, host-tested in `tests/host_build_test.c`) makes a valid Lv5 record (species/exp/hasSpecies/checksum,
+    OT=save's, Poké Ball, Tackle placeholder), then the editor opens to customise; write via the gated path.
+    `app_create_mon` + A_CREATE in app_mon_menu; box opens the menu on an empty slot when editable.
+  - **DATA BUGFIX** (found by the new host test): `pk_exp_for_level(Medium-Slow, L1)` underflowed (-54 ->
+    ~4.29e9) corrupting a level-1 Bulbasaur-line mon. Fixed in the tracked generator `tools/gen_data.py`
+    (clamp the formula + guard L<=1=0); the generated `source/data_tables.c` (git-ignored) carries the same guard.
+  - **HW TODO**: contest edit + save; create-a-mon (pick/build/edit/place, then check it loads + battles in-game).
+  - **BACKLOG REMAINING (next batch):** Pokéblock case editor (SaveBlock1 add/change/delete — needs offset
+    research), 1-click Pokédex fill (seen/caught) with warning + snapshot-revert, Events (#7, research event
+    flags / Mystery Gift). Also still TODO: HW-validate the part-2 carry/item rework.
+
+- **SESSION 2026-06-24 (part 2) — carry/item rework DONE + committed. builds clean (ROM 6.50 MB), host tests PASS.**
+  - Commits this session: `c23db74` (batch 4-5: data-safety + daycare/PC-box), `5404022` (mon-in-hand carry + item).
+  - **Mon-in-hand carry (replaces swap-in-place)** — `s_held`/`s_holding`/`s_orig_*` in pdna_box.c; helpers
+    `start_carry`/`clear_origin`/`drop_held`; `boxoam_carry_held`/`boxoam_carry_end`/`boxoam_hide_slot` +
+    region-A management (`s_rega`, `load_rega_hand`) in box_oam.c. **Lift-don't-clear** (origin kept until a
+    successful drop → never loses a mon). Held mon decoded into region A (front-most PRIO 0; orange fist PRIO 1
+    behind) → carry z-order fixed (#1a). **Carry into a FULL box** (L/R floats it; A drops/swaps) (#1b). Within
+    a scope = move; across PC↔Bank = COPY with a confirm prompt (#1 cross-screen, loss-proof). Carry survives
+    the PC↔Bank hand-off (state persists across pdna_box runs; `pdna_box_clear_carry()` per save). Bank entry
+    while carrying → bottom row (#3a); pass-through never dirties the bank → no spurious save prompt (#3b).
+  - **Item mode**: HOVER = small real item bottom-left on top (#2a); GRAB = full item front-most (region A) +
+    orange transparent grab fist (region B) (#2b).
+  - **Adversarially reviewed** (gen3-save-format): NO loss path; fixed A1 (cross-scope drop now confirms so it's
+    not a silent dup) + B1 (reset s_orig_box/bank fail-closed). Remaining note E1 (species-0 carry shows only the
+    fist) = cosmetic, can't occur in practice.
+  - **HW TODO**: validate carry (grab/drop/swap, into full boxes, PC↔Bank copy-confirm), item hover/grab visuals,
+    daycare spacing (#4), PC-opens-box-1 (#6). BACKLOG below unchanged (#7/#8/contest/pokeblock/1-click-dex).
+
+- **SESSION 2026-06-24 — feedback batch 5. PARTIAL: #4/#5/#6 done + built clean; #1/#2/#3 = the carry/item rework (designed below, NOT yet built); #7/#8 + extras = backlog.**
+  - **#5 daycare secondary-type areas (DONE):** `dc_region_pick` now walks BOTH types; a type with a dedicated
+    area adds it (fire->lava, water, flying->sky, electric, grass/bug->grass), a type with NO area (dragon,
+    normal, rock/ground-not-fire, ...) adds the fallback GRASS+EMPTY. e.g. Dragonite(dragon+flying)∈{sky,grass,empty}.
+  - **#6 PC opens on box 1, app-remembered (DONE):** new `g_pc_last_box` (config key `pcbox=`), `pc_box_source`
+    uses it instead of `pk_current_box(g_pc)`; `app_note_pc_box()` is called from `SWITCH_BOX` (PC only) and
+    persisted via `cfg_save()` on PC-screen exit. First run = box 0; afterwards remembers the app's last box.
+  - **#4 daycare slot spacing (DONE, HW-verify):** spread `DC_SPOT` so the two 32x32 icons per area don't
+    overlap (lava stacks vertically dy~36; others spread horizontally dx>=34). Tune on HW if a mon lands off-region.
+
+  ### NEXT: carry/item OAM rework (#1,#2,#3) — design to implement as ONE reviewed pass
+  Root cause: move-carry is swap-in-place (mon stays in its slot, `OE_CARRY` shows a lifted copy reusing the
+  source slot's tiles). That breaks across boxes (can't enter a FULL box; tiles clobbered on box reload) and
+  dirties the bank on pass-through. Fix = a real **mon-in-hand** model:
+  - **Held buffer:** `s_held_rec[80]` + `s_holding`; origin `(scope,box,slot)`. **Lift-don't-clear**: on grab,
+    copy to the buffer and VISUALLY hide the origin icon (track origin; hide `OE_ICON0+slot` when rendering the
+    origin box, even after paging) — do NOT clear the record. Drop within the SAME scope = true move (place +
+    clear origin; swap lifts the occupant). Drop in the OTHER scope (PC<->bank) = COPY (origin kept) — keeps the
+    two-save-scope case loss-proof. Cancel (B) = just stop holding (origin never cleared). This also makes
+    cross-screen carry a real move within a scope while staying safe across scopes.
+  - **Dedicated tiles (fixes 1a z-order for real):** during a mon carry the cursor hand is hidden, so region A
+    (`TID_HAND`,16 tiles) is FREE — decode the held mon's icon there; `OE_CARRY` uses region A (survives box
+    reloads). Single top sprite at PRIO 0 above all PRIO-2 box icons.
+  - **1b full-box carry:** with the mon in hand (no slot needed) L/R just switches boxes; A swaps onto the
+    cursor mon. No more "destination full -> denied".
+  - **3a:** entering the bank while carrying -> cursor at the BOTTOM row (held mon floats there).
+  - **3b:** pass-through never touches a bank slot -> bank not dirtied -> no "Save bank changes?" prompt;
+    return lands on the same PC box.
+  - **#2 item display:** [2a DONE] HOVER now shows a small 16x16 item in region B at the cell's BOTTOM-LEFT,
+    PRIO 0, clear of the hand (`load_regb_item(item, full)` + `boxoam_carry_item(cur, item, full)` parameterized
+    by size; `citem_index(..., full)` down-scales 24->16 for !full). [2b TODO] GRAB = FULL 32x32 item in region A
+    (TID_HAND, free while the hand is hidden) + the ORANGE grab fist (`PB_HANDORG`, blended) in region B.
+  - Verify with the gen3-save-format agent again (held-buffer loss/dup + tile packing) before calling done.
+
+  ### BACKLOG (user "for later"/"start thinking" — NOT started)
+  - **#7 Events:** add Mystery-Gift / event flags or event mons (needs research: Gen-3 event flag offsets, Wonder
+    Card, distribution-mon templates). Design first.
+  - **#8 Create a mon from nothing:** build a legal mon from scratch (species/level/IVs/EVs/nature/moves/OT/PID);
+    reuse `gen3_mon` encode + the data editor; legality + PID/nature/shiny consistency.
+  - **Contest stats:** edit coolness/beauty/cuteness/smartness/toughness + sheen; Pokeblock feed count; add/
+    change/delete Pokeblocks (SaveBlock1 pokeblock case + the mon's contest-stat bytes).
+  - **1-click Pokedex fill** (+ other bulk sorts): fill all seen/caught with a WARNING prompt + easy REVERT
+    (snapshot the dex flag region before the bulk op so it can be undone in one step).
+  - All blobs/ROM/decomp stay OUT of git (`daycare map/` gitignored).
+
+- **SESSION 2026-06-23 (part 2) — feedback batch 4. UNCOMMITTED, builds clean (ROM 6.50 MB), host tests PASS.**
+  - **Carry z-order:** OE_CARRY now ATTR2_PRIO(0) (front-most), so a carried mon draws above all box icons.
+  - **#1 dual-type:** added slot randomization in `dc_take_slot` (random slot when both free) on top of the
+    per-visit area pick, so mons visibly move between visits even within one area.
+  - **#3a backups:** the picker now lists `.bak` files (`has_sav_ext` matches any name containing ".sav");
+    reverted the session-once backup -> back to per-save backup of the pre-save file.
+  - **#3b carry across boxes:** L/R (shoulders) while holding moves the mon to the next/prev box's first free
+    slot (carry continues there).
+  - **#2 real item sprite (FULL SIZE):** dropped the per-holder glyph markers; `load_regb_item` now renders the
+    real 24x24 item icon centred in a 32x32 (16-tile) OBJ in region B (`citem_index` packer, palette bank 15).
+    Holders stay OPAQUE while non-holders fade (blend in `boxoam_item_markers`); hovering a holder shows its real
+    item full-size on top, and grabbing carries it full-size. L/R flips boxes while carrying an item;
+    `s_item_from_box` lets B (put back) return the item to its source box across box switches.
+    Adversarially reviewed (gen3-save-format agent): tile packing + item-carry state = no loss/dup.
+  - **#4 PC<->Bank cursor flow + carry:** PC top tabs + UP -> Bank (cursor at bottom row); Bank bottom row +
+    DOWN -> PC (cursor on tabs). `pdna_bank_show` returns the box code; `app_box_start_set/take` is the
+    entry-cursor hint (1=tabs, 2=bottom). Cross-screen carry COPIES (see safety fix below).
+  - **DATA-SAFETY FIX #1 (found by the review):** the MOVE-mode cross-BOX carry (L/R) was buggy in the BANK only —
+    the bank pages all boxes through ONE shared buffer, so `records(nbx)` invalidated the old `recs` and the
+    carry duplicated one mon + destroyed another. Fixed: snapshot the mon before paging, place in dest FIRST,
+    clear source LAST (fail toward duplicate, never loss). PC path was always fine (distinct per-box buffers).
+  - **DATA-SAFETY FIX #2 (cross-SCREEN carry):** carrying a mon across the PC<->Bank boundary spans two
+    independent save scopes (PC = whole-save prompt; bank = per-box-file prompt). Clearing the source there could
+    LOSE a mon on "save one / decline the other". Now cross-screen carry COPIES (original stays put) — at worst a
+    duplicate; the user deletes the original to finish a move. Within-screen cross-box carry remains a true move.
+  - Files: box_oam.c, pdna_box.c, pdna_main.c, pdna_bank.c/.h, pdna_app.h. NOT committed (offer to commit).
 
 - **SESSION 2026-06-23 — feedback batch 3 (committed). builds clean (ROM 6.50 MB), host tests PASS.**
   1. **Daycare dual-type random:** `dc_region_pick(species, *rng)` collects ALL areas a mon qualifies for
@@ -282,44 +823,47 @@
 
 ## Next steps (resume here)
 
-1. **HARDWARE-TEST this whole session's batch on the EZ-Flash Omega DE — the user's task, 2026-06-22.**
-   Flash `PokeDNA.gba`. **Save-write paths are the priority** (not emulable, all go through the
-   verified-write + `.bak`): **daycare deposit/withdraw + "TO DAY-CARE" move + "Take out → To Party/To PC"**
-   (re-verify the #2 fix: a mon taken out to PC actually lands in a free PC box, never lost), and the
-   secret-base edits (party-mon rich-card edits + owner-class change). Test on **disposable save copies**.
-   Visual: the daycare scene (lava/water/hill/grass/house + decoration mons + 2-spots), party full-size
-   bob, Pokedex (no stutter), item icons in the box panel, secret-base summary cards. The box bob is
-   already user-confirmed perfect.
-2. **Then COMMIT this session's work** (the user said "I'll test tomorrow" — commit after they're happy,
-   or when they OK it). 16 working-tree files + 2 new tools (see `git status`). Group sensibly: animation
-   (box 2-frame/dex/party), daycare rebuild + put/take, secret-base rich cards + write-back, item-icon
-   fix, the data-loss fix, the earlier round-1/2 fixes. Pre-existing uncommitted `gen3_box.c/.h` (ACE
-   box-name WIP) predates this session — **leave it out** of the commits.
-3. **Optional: adversarial review of the SD-write paths** before relying on them — the #2 data-loss bug
-   slipped through because the new daycare write paths weren't reviewed. Focus: `app_to_daycare`,
-   `dc_deposit`/`dc_withdraw`, the secret-base `sb_write_mon`/`sb_mon_edit` commit ordering, and the
-   `reload_saveblocks()` interaction.
-4. **RTC clock check & fix — IMPLEMENTED 2026-06-22; now needs HARDWARE TEST.** "Clock fix" nav
-   screen (Auto-sync / Manual set). HW-test on the Omega with GAME RTC enabled for the ROM: confirm the
-   live clock reads sane, run Auto-sync on a DISPOSABLE save copy, diff vs `.bak`, **boot the patched
-   save in-game** (proves the SaveBlock2 checksum size) and confirm berries/Shoal/Lottery/Mirage resume.
-   Optional future "complete fix": also set VAR_DAYS in SaveBlock1 so per-day events resume instantly
-   (the current SB2-only fix resumes berries immediately, dailies once real time passes the old
-   VAR_DAYS). (See the `pokedna-rtc-fix-feature` memory.)
-5. **Deferred / optional (older):** the queued **multi-select move** (Gen-4 rectangle on the OAM box);
-   bank-as-boxes + the prior SD-write checklist HW sign-off; Legality V2 encounter half; Sky-wallpaper
-   1-px strip. **Push + close GitHub issues** only when the user OKs (nothing pushed; ~17 commits + this
-   session's pending commits are local on `main`).
-6. **Watch (IP):** the daycare scene is clean-room procedural (safe). But item icons + mon sprites are
-   ripped art already in the ROM; PokeDNA's released v1.0.0 ROM still has the unresolved sprite
-   infringement (deferred). Don't add NEW ripped art to a public build without Guy's OK.
+1. **WAIT for Guy's HW test (2026-06-29) of the EWRAM-overflow fix `e3a350c`.** Decisive check: make an
+   edit, SAVE → it must succeed (no "WRITE FAILED"); reboot a few times → must mount reliably. This is the
+   gate — everything below is blocked on saving being solid again. If saving STILL fails on `e3a350c`,
+   re-open the EWRAM angle first (re-check `arm-none-eabi-size -A` `.sbss` end ≤ `0x02040000`), then the
+   mount-fail halt now prints the FatFs `fr` code — get that number; `fr=13` = NO_FILESYSTEM (read returns
+   garbage), and remember the EZ read returns success-on-timeout so a hard fault surfaces here, not as a
+   read error.
+2. **Once saving is confirmed, implement Guy's two queued asks:**
+   - **PC→bank = a deferred MOVE** (currently a confirmed COPY that keeps the PC original). Mirror the
+     Bank→PC path: on the PC→bank drop, place into the bank + queue a PC-slot deletion applied at the save
+     phase (after the PC commit, fail-toward-dup). **Keep the deletion table tiny (8-byte id) and in IWRAM
+     `.bss`, NOT EWRAM** — EWRAM has only ~4.9 KB headroom. Touch points: `drop_held` PC→bank branch
+     (`source/pdna_box.c`), a new PC-side defer-delete list in `pdna_main.c`, applied in `flush_on_exit`.
+   - **Linker/Makefile EWRAM-overflow guard:** add `ASSERT(__sbss_end__ <= 0x02040000, "EWRAM overflow")`
+     to the linker script (or a post-link `arm-none-eabi-size` check in the Makefile) so an over-budget
+     EWRAM **fails the build** instead of silently corrupting the SD driver on hardware. This is the
+     footgun that caused this whole saga.
+3. **Still-pending HW A/B confirms from this batch** (not blocking, but unverified on HW):
+   - **Wallpaper fix** (`cba40e7`): rumble ON at full strength → box wallpaper clean; also check the dex
+     grid, party list, summary, secret base, daycare render clean with rumble on. Haptics should still fire
+     (maybe a hair delayed on big paints), and a save (RCUE_SAVE) still verifies.
+   - **National Dex** (`7599b8a`): enable it + Catch ALL → in-game dex shows 386, not 151 (esp. LeafGreen).
+   - **The two data-loss fixes** (`045cdca`) on disposable saves: bank-mon→party ADD; re-arrange a bank box
+     after queuing a Bank→PC move, then save (must not delete the wrong mon).
+4. **Then push when Guy OKs** — nothing pushed; this session is ~14 commits local on `main` (top = `e3a350c`).
+   Public repo `github.com/GuyShtainer/PokeDNA`, GPLv3, no-reply identity. Don't `git push` until asked.
+5. **Deferred / optional (older):** RTC "Clock fix" screen still needs its HW test (see
+   `pokedna-rtc-fix-feature` memory); multi-select move; Legality V2 encounter half; Sky-wallpaper 1-px strip.
+6. **Watch (IP):** item icons + mon sprites are ripped art already in the ROM; the released v1.0.0 ROM still
+   has the unresolved sprite infringement (deferred). Don't add NEW ripped art to a public build without Guy's OK.
+   Also: the sibling **File-Browser-GBA** has the same single-try SD-mount pattern → port the retry there.
 
 ## How to build / test / run
 
 ```
 # Build the ROM (local devkitPro; ./build.sh uses Docker if preferred):
 DEVKITPRO=/opt/devkitpro DEVKITARM=/opt/devkitpro/devkitARM make -C projects/PokeDNA rebuild
-#   -> projects/PokeDNA/PokeDNA.gba   (TITLE=PokeDNA; do NOT gbafix -p pad — PSRAM ceiling)
+#   -> projects/PokeDNA/PokeDNA.gba   (TITLE=PokeDNA; do NOT gbafix -p pad — just bloat, no benefit)
+#   `make` = full build (all sprites embedded); `make sd` = optional trimmed build (streams from
+#   /PokeDNA/sprites.pak). No ROM-size load limit — the full ~6.25 MB build loads from SD fine.
+#   If a build hangs at the flashcart "Load game": re-copy the .gba + eject safely (bad SD copy).
 
 # Regenerate the git-ignored data after editing a generator (run from the project root):
 python3 tools/gen_data.py        # data_tables.c (names/stats + comprehensive per-game named flags: E491/F304/R395)
@@ -389,8 +933,10 @@ cc -std=c11 -I source tests/host_bank_test.c source/gen3_save.c source/gen3_mon.
 
 ## Gotchas / constraints
 
-- **EZ-Flash PSRAM ceiling ~7.5 MB** (NOT the 32 MB cart limit) — the load-game kernel hangs above
-  it. Don't `gbafix -p` pad; LZ77-compress big art. ROM now ~3.57 MB.
+- **~~EZ-Flash PSRAM ceiling~~ — MYTH, corrected 2026-07-13.** There is no few-MB SD-load size
+  ceiling: the 6.25 MB build loads via normal SD "Load game." A hang at "Load game" = a bad/
+  incomplete SD copy → re-copy the `.gba`, eject safely. Don't `gbafix -p` pad (just bloats the
+  file, no benefit). LZ77-compressing big art is still fine for size, but not load-required.
 - **OS-mode rule:** never render/sound/IRQ during an SD transfer; wrap them around the write.
 - **Verified-write always:** `.tmp`→re-read compare→rename, immutable backup first; never corrupt
   user data.
@@ -408,6 +954,35 @@ cc -std=c11 -I source tests/host_bank_test.c source/gen3_save.c source/gen3_mon.
 ---
 
 ## Session log
+
+### Session — 2026-06-28 (part 2) (feature batch + a critical save/mount bug — all committed, builds clean, HW test 6-29)
+
+- **Intent:** Continue Guy's rapid HW-feedback batches. Then chase two "critical bug" reports he hit on
+  hardware: (a) garbled box wallpaper, (b) "SD mount failed" HALT on launch, then (c) "save failed (first
+  time ever)". Guy: *"stop focusing on the RTC, its not it, look for the real cause"* and *"the issue is in
+  your code"* — both correct.
+- **Did:**
+  - National Dex unlock (`7599b8a`), PP edit (`c284937`), item-pocket fix (`97e58c7`), carry-to-party
+    (`afe3efd`), Bank→PC prompt-free move (`36c4c52`), dex auto-register (`1d639ea`).
+  - Adversarial gen3-save-format review of the cross-storage moves → fixed 2 data-loss bugs (`045cdca`).
+  - Wallpaper garble = rumble GPIO ISR corrupting the ROM-read blit on HW; multi-agent workflow confirmed
+    it (host-rendered all 32 wallpapers clean to prove the data was fine) → `rumble_io_suspend/resume`
+    render guard (`cba40e7`).
+  - SD mount: added retry (`28d8abd`), moved rumble init after mount + fr-code halt (`0e7993d`), then a
+    sector-0 diagnostic (`29b73e8`).
+  - **Found THE root cause via `arm-none-eabi-size -A`:** EWRAM `.sbss` had overflowed past `0x02040000`
+    (the 5 KB full-record bank-deletion table from `045cdca`), wrapping over the `EWRAM_CODE` SD driver →
+    flaky reads + failed save-verifies. Fix `e3a350c`: 8-byte identity in a 640 B IWRAM table; EWRAM now
+    4884 B under the ceiling. Removed the diagnostic; clean halt keeps the `fr` code.
+  - `/learn`: updated `rumble-haptics.md` (rumble↔ROM-render corruption), `gba-build-and-memory.md`
+    (corrected "clean link proves EWRAM fits" → it doesn't; EWRAM-overflow-corrupts-EWRAM_CODE), and
+    `flashcart-sd-io.md` (EZ read returns success-on-timeout; robust mount; init cart bus after mount).
+- **Left off:** All committed on `main` (top `e3a350c`), nothing pushed. Delivered the fixed ROM. Guy will
+  HW-test saving tomorrow (2026-06-29). The save fix is the gate for the two queued asks (PC→bank move +
+  linker EWRAM guard).
+- **Open threads:** HW confirm saving works on `e3a350c`; the wallpaper/national-dex/data-loss A/B HW
+  checks; PC→bank deferred move; linker `ASSERT(__sbss_end__ <= 0x02040000)`; port the SD-mount retry to
+  sibling File-Browser-GBA.
 
 ### Session — 2026-06-21 (three rounds of fixes from live HW testing — all uncommitted, builds clean, HW test 6-22)
 

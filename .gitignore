@@ -28,6 +28,16 @@ build/
 /source/item_icons.c
 /source/item_icons.h
 /source/item_icons_data.s
+# Sparse clones of pret/pokeruby + pret/pokefirered (reference/art staging only)
+/assets/upstream/
+# Ripped Emerald bag-screen art (regenerate with: python3 tools/gen_bag_bg.py)
+/assets/bag/
+/source/bag_bg.c
+/source/bag_bg_data.s
+# Ripped Emerald trainer-card art (regenerate with: python3 tools/gen_card_bg.py)
+/assets/card/
+/source/card_bg.c
+/source/card_bg_data.s
 # Generated icon art blobs (regenerate with: python3 tools/gen_icons.py)
 /source/mon_icons.c
 /source/mon_icons.h
@@ -61,3 +71,15 @@ build/
 # Local daycare-map working folder: pokeemerald decomp (reference-only/unlicensed),
 # porymap, and a real ROM/save. Never commit any of it.
 daycare map/
+
+# on-hardware /PokeDNA/log.txt drops (local evidence, not shipped)
+logs/
+
+# internal session/analysis notes (local-only; never published)
+docs/analysis-*/
+docs/audit-*
+docs/*CONTINUATION-PROMPT.md
+docs/HANDOFF.md
+docs/SESSION_SUMMARY.md
+/data/
+tools/__pycache__/
