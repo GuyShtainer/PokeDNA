@@ -326,7 +326,7 @@ def main():
         c.write("    if (e == 0xFFFF) e = uform_slot[0];\n")
         c.write("    return unpack_f(e, frame, tiles, bank);\n")
         c.write("  }\n")
-        c.write("  if (species == 386 && form < 4) {\n")
+        c.write("  if (species == 410 && form < 4) {   /* Deoxys internal id (nat 386) */\n")
         c.write("    uint16_t e = dform_slot[form];\n")
         c.write("    if (e == 0xFFFF) e = dform_slot[0];\n")
         c.write("    return unpack_f(e, frame, tiles, bank);\n")

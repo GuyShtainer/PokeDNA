@@ -128,7 +128,7 @@ static void draw_left(const PkMon* p) {
   ui_hline(4, 81, 84, UI_BORDER);
   siprintf(buf, "#%03u", (unsigned)pk_national_no(p->species));
   ui_text(6, 84, C_KEY, buf);
-  if (p->species == 386) {                                 /* Deoxys: show the current forme (SELECT cycles it) */
+  if (p->species == 410) {                                 /* Deoxys (internal 410): show the current forme (SELECT cycles it) */
     static const char* const DF[4] = { "Normal", "Attack", "Defense", "Speed" };
     ui_text(40, 84, C_HOT, DF[p->form < 4 ? p->form : 0]);
   } else if (g_back) ui_text(44, 84, UI_DIM, "back");      /* current portrait side */
@@ -497,7 +497,7 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
     else if (fresh & KEY_B)               snd_back();
 
     if (fresh & KEY_SELECT) {                                 /* SELECT changes the portrait */
-      if (cur.species == 386) {                               /* Deoxys: cycle the forme (view-only; version-baked in Gen 3) */
+      if (cur.species == 410) {                               /* Deoxys (internal 410): cycle the forme (view-only; version-baked in Gen 3) */
         pk_set_deoxys_form((pk_get_deoxys_form() + 1) % 4);
         cur.form = (uint8_t)pk_get_deoxys_form();
       } else g_back = !g_back;                                /* every other mon: flip front/back */

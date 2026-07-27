@@ -119,7 +119,7 @@ bool pk_decode_mon(const uint8_t* mon, bool is_party, PkMon* out) {
 
   out->species     = sp;
   out->form        = (sp == 201) ? pk_unown_form(pers)        /* Unown letter (A..?) */
-                   : (sp == 386) ? s_deoxys_form : 0;         /* Deoxys forme (set from the game version) */
+                   : (sp == 410) ? s_deoxys_form : 0;         /* Deoxys (internal 410; nat 386) forme, set from the game version */
   out->heldItem    = rd16(g + 0x02);
   out->experience  = rd32(g + 0x04);
   out->ppBonuses   = g[0x08];

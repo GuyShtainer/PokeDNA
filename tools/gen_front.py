@@ -201,7 +201,7 @@ def main():
         c.write("    uint32_t o = (shiny ? uform_s : uform_n)[form];\n")
         c.write("    if (o == 0xFFFFFFFFu) o = (shiny ? uform_s : uform_n)[0];\n")
         c.write("    return front_at(o, shiny);\n  }\n")
-        c.write("  if (species == 386 && form < 4) {             /* Deoxys forme (0 Normal/1 Attack/2 Defense/3 Speed) */\n")
+        c.write("  if (species == 410 && form < 4) {             /* Deoxys forme (0 Normal/1 Attack/2 Defense/3 Speed) */\n")
         c.write("    uint32_t o = (shiny ? dform_s : dform_n)[form];\n")
         c.write("    if (o == 0xFFFFFFFFu) o = (shiny ? dform_s : dform_n)[0];\n")
         c.write("    return front_at(o, shiny);\n  }\n")

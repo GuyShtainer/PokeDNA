@@ -176,7 +176,7 @@ def main():
         c.write("    if (o == 0xFFFFFFFFu) return 0;\n")
         c.write("    return (const uint16_t*)(mon_icon_blob + o + (frame & 1) * FRAME_BYTES);\n")
         c.write("  }\n")
-        c.write("  if (species == 386 && form < 4) {\n")
+        c.write("  if (species == 410 && form < 4) {   /* Deoxys internal id (nat 386) */\n")
         c.write("    uint32_t o = dform_tbl[form];\n")
         c.write("    if (o == 0xFFFFFFFFu) o = dform_tbl[0];\n")
         c.write("    if (o == 0xFFFFFFFFu) return 0;\n")
