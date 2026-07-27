@@ -28,6 +28,7 @@
 #include "pdna_summary.h"
 #include "pdna_box.h"
 #include "gen3_trainer.h"
+#include "gen3_record.h"    /* Emerald Battle Record (save sector 31) info + export */
 #include "pdna_trainer.h"
 #include "pdna_edit.h"
 #include "gen3_edit.h"     /* EditMon, gen3_edit_load/commit, em_set_*, em_preview */
@@ -40,6 +41,8 @@
 #include "gen3_pokeblock.h" /* Pokeblock case (RS/Emerald) */
 #include "gen3_daycare.h"  /* daycare breeding compatibility (the man's verdict) */
 #include "gen3_items.h"    /* item bags */
+#include "pdna_bag.h"      /* real Emerald bag screen (data-editor bag tab) */
+#include "bag_bg.h"        /* bag_bg() availability gate (weak NULL when art-free) */
 #include "gen3_secretbase.h" /* Secret Base records (RS/Emerald) */
 #include "osk.h"           /* osk_search (numeric entry) */
 #include "pdna_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
@@ -84,6 +87,8 @@ static int       g_pc_last_box = 0;        /* PC box to open on (NOT the save's 
 
 /* Big buffers live in EWRAM (.bss), never on the IWRAM stack. */
 static u8          EWRAM_BSS g_save[G3_SAVE_FILE_SIZE];   /* 128 KiB raw image       */
+static uint32_t    g_save_size = 0;                       /* actual loaded byte count (64 KiB
+                                                           * dumps have no sector 31)        */
 static u8          EWRAM_BSS g_sb1[G3_SAVEBLOCK1_BYTES];  /* reassembled SaveBlock1  */
 static BrowseEntry EWRAM_BSS g_entries[MAX_ENTRIES];      /* current-dir listing     */
 static int         g_count = 0;
@@ -492,6 +497,15 @@ static bool     g_item_held = false;
 
 bool app_can_edit(void) { return active_flashcart == EZ_FLASH_OMEGA; }
 
+/* Flush the RAM log to SD now — for anomaly sites (wallpaper/icon self-verify) whose
+ * evidence must survive a "see glitch -> power off". Same rmbl discipline as the
+ * commit sites: no motor on the cart bus mid-transfer. Main-loop-synchronous only. */
+void app_log_flush(void) {
+  rmbl_pause();
+  log_flush_to_sd(LOG_PATH);
+  rmbl_resume();
+}
+
 static void msg_wait(const char* title, u16 col, const char* l1, const char* l2) {
   ui_clear();
   ui_panel(16, 48, 208, 70, UI_PANEL, col);        /* framed so it reads as a dialog */
@@ -637,6 +651,21 @@ bool app_commit_sb12(void) {
 void app_mark_pc_dirty(void) { g_pc_dirty = true; }
 bool app_pc_dirty(void)      { return g_pc_dirty; }
 
+/* Release a PC box slot as part of a PC->Bank MOVE (multi-select "send to bank" + the
+ * single-mon carry): clear g_pc[box][slot] IFF it still holds the mon whose 8-byte identity
+ * (personality 0-3 + OT id 4-7, both plaintext at the record start) is `id8`, then mark the PC
+ * dirty (folded into the one exit save). Call ONLY after the destination bank box is VERIFIED on
+ * SD (banksrc commit), so an interruption between the two leaves a harmless DUPLICATE, never a
+ * loss (learn: "commit the destination before clearing the source"). The identity match is
+ * belt-and-braces so a bystander is never zeroed if the slot somehow changed underneath us. */
+void app_pc_release_slot(int box, int slot, const uint8_t* id8) {
+  if (box < 0 || box >= G3_TOTAL_BOXES || slot < 0 || slot >= G3_IN_BOX) return;
+  uint8_t* p = pk_box_slot(g_pc, box, slot);
+  if (id8 && memcmp(p, id8, 8) != 0) return;   /* slot no longer holds our mon -> skip (no loss) */
+  memset(p, 0, 80);
+  app_mark_pc_dirty();
+}
+
 /* Stage SaveBlock1 (sections 1..4) into the in-RAM image WITHOUT an SD write, so
  * moving Pokemon in/out of the Day-Care batches into a single save at true exit
  * instead of a write per move. reload_saveblocks reads g_sb1 back from g_save, so
@@ -695,6 +724,14 @@ static void pcsrc_note_add(const uint8_t* rec) { app_register_dex_deferred(rec, 
 /* Bank->PC carry records the bank source for deletion at the save phase (see pdna_bank). */
 void app_bank_defer_delete(int box, int slot, const uint8_t* rec80) { pdna_bank_defer_delete(box, slot, rec80); }
 bool app_bank_defer_full(void) { return pdna_bank_defer_full(); }
+bool app_bank_defer_room(int n) { return pdna_bank_defer_room(n); }
+void app_bank_defer_pop(int n) { pdna_bank_defer_pop(n); }
+void app_bank_flush_deletions(void) { pdna_bank_flush_deletions(); }   /* delete queued Bank sources NOW (after the PC dest is committed) */
+void app_bank_hide_pending(int box, PkMon g[30]) { pdna_bank_hide_pending(box, g); }
+bool app_bank_slot_pending(int box, int slot) { return pdna_bank_slot_pending(box, slot); }
+bool app_bank_clear_slots(int box, const uint8_t* slots, const uint8_t (*recs80)[80], int n) {
+  return pdna_bank_clear_slots(box, slots, recs80, n);
+}
 
 /* Emerald "Walda" secret-wallpaper pattern (the graphic shown by box wallpaper 16),
  * stored in SaveBlock1. -1 / no-op on the other games. */
@@ -1222,6 +1259,11 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
   uint8_t  mg   = (g_game == PK_EMERALD) ? 3 : (g_game == PK_FRLG) ? 4 : 2;   /* origin game (editable) */
   uint8_t tmp[80];
   gen3_build_mon(sp, 5, dc_seed(), otId, g_vinfo.trainer_name, mg, tmp);
+  if (sp == 201) {                                   /* Unown -> also pick the letter, dex-grid style */
+    EditMon e; gen3_edit_load(tmp, false, &e);
+    int form = pick_unown_form(pk_unown_form(e.personality));
+    if (form >= 0 && em_set_unown_form(&e, form)) gen3_edit_commit(&e, tmp);
+  }
   uint8_t out[80];
   if (!pdna_edit(tmp, false, out)) return false;     /* customise; B cancels -> slot stays empty */
   memcpy(rec, out, 80);
@@ -1470,20 +1512,108 @@ static void flags_raw_view(bool* dirty, bool* warned) {
 
 /* COUNTERS / BAG / FLAGS editor over the loaded save's SaveBlock1. Edits are made
  * in RAM and committed ONCE on exit (B). Returns true if the save was written. */
+/* Collapsible flag sections: bit k of s_flags_folded = the k-th header row (flat
+ * order) is folded. Session-only by design — a fresh app run starts all-collapsed,
+ * the state then persists across editor visits until power-off (Guy). Max 12
+ * headers per game table, so a u16 mask covers all of them. */
+static uint16_t s_flags_folded = 0xFFFF;
+
+static int nf_hdr_ord(const NamedFlag* nf, int r) {    /* ordinal of row r's owning header */
+  int o = -1;
+  for (int i = 0; i <= r; i++) if (nf[i].num == NAMED_FLAG_HEADER) o++;
+  return o;
+}
+static bool nf_visible(const NamedFlag* nf, int nc, int r) {
+  if (r >= nc || nf[r].num == NAMED_FLAG_HEADER) return true;   /* raw row + headers always */
+  int o = nf_hdr_ord(nf, r);
+  return o < 0 || !((s_flags_folded >> o) & 1u);
+}
+static int nf_step(const NamedFlag* nf, int nc, int total, int r, int dir) {
+  for (int i = r + dir; i >= 0 && i < total; i += dir)
+    if (nf_visible(nf, nc, i)) return i;
+  return r;                                             /* top/bottom stop */
+}
+
+/* Draw one flags-list row (raw-browser / section header / flag) at screen y. */
+static void nf_draw_row(const NamedFlag* nf, int nc, int r, int y, bool s) {
+  char row[40];
+  if (r == nc) {                                        /* trailing: drill to raw view */
+    if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+    ui_text(8, y, s ? UI_SELTEXT : UI_DIM, "Raw flag browser (#N)...");
+  } else if (nf[r].num == NAMED_FLAG_HEADER) {
+    siprintf(row, "%c %s",                              /* header row: selectable, folds on A */
+             ((s_flags_folded >> nf_hdr_ord(nf, r)) & 1u) ? '+' : '-', nf[r].name);
+    if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+    ui_text(4, y, s ? UI_SELTEXT : UI_DIRCLR, row);
+  } else {
+    bool on = pk_flag_get(g_sb1, g_game, nf[r].num);
+    siprintf(row, "%-22s %s", nf[r].name, on ? "ON" : "off");
+    char rt[40]; ui_truncate(rt, row, 29);
+    if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+    ui_text(8, y, s ? UI_SELTEXT : (on ? UI_OK : UI_DIM), rt);
+  }
+}
+
+/* Repaint just row r in place (erase its 9-px band + redraw) — the pick_species
+ * partial-redraw idea, so a cursor move no longer flashes the whole list (Guy). */
+static void nf_row_repaint(const NamedFlag* nf, int nc, int top, int r, int sel) {
+  if (r < top || !nf_visible(nf, nc, r)) return;
+  int drawn = 0;
+  for (int i = top; i < r; i++) if (nf_visible(nf, nc, i)) drawn++;
+  if (drawn >= 14) return;                              /* below the window */
+  int y = 26 + drawn * 9;
+  ui_fill_rect(0, y - 1, UI_SCR_W, 9, UI_BG);
+  nf_draw_row(nf, nc, r, y, r == sel);
+}
+
+/* Real bag screen (pdna_bag.c) in the loaded game's own chrome. Runs iff that
+ * game's generated art is present; returns true when it handled the tab (so
+ * data_editor skips the plain one — art-free builds fall through to it).
+ * Gender is re-read from SaveBlock2 on every entry: the trainer card can flip
+ * it in the same session. */
+static bool bag_screen_try(bool* dirty) {
+  int female = (g_sb2[SB2_OFF_GENDER] == 1);
+  if (!bag_bg(g_game, female)) return false;     /* art-free build: weak NULL fallback */
+  if (bag_screen(g_sb1, g_sb2, g_game, female)) *dirty = true;
+  return true;
+}
+
 static bool data_editor(void) {
   int tab = 0;                                   /* 0=counters 1=bag 2=flags */
   int sel = 0, top = 0, pocket = 0;
   bool dirty = false, flag_warned = false;
 
+  const NamedFlag* f_nf = 0; int f_top = -1, f_sel = -1;   /* flags-tab partial-redraw state */
+  uint16_t f_fold = 0; bool f_valid = false;
   for (;;) {
-    ui_clear();
-    static const char* const TAB[3] = { "COUNTERS", "BAG", "FLAGS" };
-    for (int t = 0; t < 3; t++) {
-      int x = 4 + t * 80; bool s = (t == tab);
-      if (s) ui_panel(x, 0, 76, 12, UI_SEL, UI_TITLE);
-      ui_text(x + 6, 2, s ? UI_SELTEXT : UI_DIM, TAB[t]);
+    /* Flags tab computes its layout FIRST: when only the cursor moved (same window,
+     * same folds) we repaint just the two affected rows instead of the whole screen
+     * (the full-refresh flicker Guy flagged; same idea as pick_species). */
+    int nc = 0, total = 0; bool part = false;
+    if (tab == 2) {
+      nc = pk_named_flags(g_game, &f_nf); total = nc + 1;
+      if (sel >= total) sel = total - 1; if (sel < 0) sel = 0;
+      while (sel > 0 && !nf_visible(f_nf, nc, sel)) sel--;   /* land on the owning header */
+      if (sel < top) top = sel;
+      else {                                      /* scroll counts only VISIBLE rows */
+        int cnt = 0;
+        for (int r = top; r <= sel; r++) if (nf_visible(f_nf, nc, r)) cnt++;
+        while (cnt > 14) { int nt = nf_step(f_nf, nc, total, top, +1); if (nt == top) break; top = nt; cnt--; }
+      }
+      if (!nf_visible(f_nf, nc, top)) top = nf_step(f_nf, nc, total, top, +1);
+      part = f_valid && top == f_top && s_flags_folded == f_fold;
+    } else f_valid = false;
+
+    if (!part) {
+      ui_clear();
+      static const char* const TAB[3] = { "COUNTERS", "BAG", "FLAGS" };
+      for (int t = 0; t < 3; t++) {
+        int x = 4 + t * 80; bool s = (t == tab);
+        if (s) ui_panel(x, 0, 76, 12, UI_SEL, UI_TITLE);
+        ui_text(x + 6, 2, s ? UI_SELTEXT : UI_DIM, TAB[t]);
+      }
+      ui_hline(0, 13, UI_SCR_W, UI_BORDER);
     }
-    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
 
     if (tab == 0) {                              /* ---- counters (row 0 = Money, 1 = Coins) ---- */
       int N = pk_game_stat_count(g_game) + 2;
@@ -1518,55 +1648,49 @@ static bool data_editor(void) {
         ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
       }
       ui_text(4, 152, UI_DIM, "A edit  SEL pocket  L/R tab");
-    } else {                                     /* ---- flags (named list) ---- */
-      const NamedFlag* nf; int nc = pk_named_flags(g_game, &nf);
-      int total = nc + 1;                         /* + trailing raw-browser row */
-      while (sel < nc && nf[sel].num == NAMED_FLAG_HEADER && sel < total - 1) sel++;
-      if (sel >= total) sel = total - 1; if (sel < 0) sel = 0;
-      if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
-      ui_text(6, 15, UI_DIRCLR, "Named flags");
-      char row[40];
-      for (int i = 0; i < 14 && top + i < total; i++) {
-        int r = top + i, y = 26 + i * 9; bool s = (r == sel);
-        if (r == nc) {                            /* trailing: drill to raw view */
-          if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-          ui_text(8, y, s ? UI_SELTEXT : UI_DIM, "Raw flag browser (#N)...");
-        } else if (nf[r].num == NAMED_FLAG_HEADER) {
-          ui_text(4, y, UI_DIRCLR, nf[r].name);   /* category header */
-        } else {
-          bool on = pk_flag_get(g_sb1, g_game, nf[r].num);
-          siprintf(row, "%-22s %s", nf[r].name, on ? "ON" : "off");
-          char rt[40]; ui_truncate(rt, row, 29);
-          if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-          ui_text(8, y, s ? UI_SELTEXT : (on ? UI_OK : UI_DIM), rt);
+    } else {                                     /* ---- flags (named list, foldable sections) ---- */
+      if (part) {                                 /* cursor-only change: repaint two rows */
+        if (f_sel != sel) nf_row_repaint(f_nf, nc, top, f_sel, sel);
+        nf_row_repaint(f_nf, nc, top, sel, sel);
+      } else {
+        ui_text(6, 15, UI_DIRCLR, "Named flags");
+        for (int drawn = 0, r = top; drawn < 14 && r < total; r++) {
+          if (!nf_visible(f_nf, nc, r)) continue;
+          nf_draw_row(f_nf, nc, r, 26 + drawn * 9, r == sel); drawn++;
         }
+        ui_text(4, 152, UI_DIM, "A toggle/fold  SEL jump  L/R");
       }
-      ui_text(4, 152, UI_DIM, "A toggle  SEL jump  L/R tab");
+      f_valid = true; f_top = top; f_fold = s_flags_folded; f_sel = sel;
     }
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B | KEY_SELECT);
     if (k & KEY_B) break;
-    else if (k & KEY_L) { snd_tab(); tab = (tab + 2) % 3; sel = (tab == 2) ? 1 : 0; top = 0; }
-    else if (k & KEY_R) { snd_tab(); tab = (tab + 1) % 3; sel = (tab == 2) ? 1 : 0; top = 0; }
-    else if (tab == 2) {                         /* named flags nav/toggle */
+    else if (k & KEY_L) { snd_tab(); tab = (tab + 2) % 3; sel = 0; top = 0;
+                          if (tab == 1 && bag_screen_try(&dirty)) tab = 0; }   /* real bag ran (B) -> keep moving left */
+    else if (k & KEY_R) { snd_tab(); tab = (tab + 1) % 3; sel = 0; top = 0;
+                          if (tab == 1 && bag_screen_try(&dirty)) tab = 2; }   /* real bag ran (B) -> keep moving right */
+    else if (tab == 2) {                         /* named flags nav/fold/toggle */
       const NamedFlag* nf; int nc = pk_named_flags(g_game, &nf);
       int total = nc + 1;
-      if (k & KEY_UP)   { do { if (sel > 0) sel--; else break; } while (sel < nc && nf[sel].num == NAMED_FLAG_HEADER); }
-      else if (k & KEY_DOWN) { do { if (sel < total - 1) sel++; else break; } while (sel < nc && nf[sel].num == NAMED_FLAG_HEADER); }
-      else if (k & KEY_SELECT) {                  /* jump to the next category header's first flag */
+      if (k & KEY_UP)        sel = nf_step(nf, nc, total, sel, -1);
+      else if (k & KEY_DOWN) sel = nf_step(nf, nc, total, sel, +1);
+      else if (k & KEY_SELECT) {                  /* jump to the next section header (or raw row) */
         snd_tab();
         int s = sel;
         for (int step = 0; step < total; step++) {
           s = (s + 1) % total;
-          if (s < nc && nf[s].num == NAMED_FLAG_HEADER) { sel = (s + 1 < nc) ? s + 1 : s; break; }
-          if (s == nc) { sel = nc; break; }       /* wrapped to the raw-browser row */
+          if (s == nc || (s < nc && nf[s].num == NAMED_FLAG_HEADER)) { sel = s; break; }
         }
         top = 0;
       }
       else if (k & KEY_A) {
-        if (sel == nc) flags_raw_view(&dirty, &flag_warned);   /* drill into raw */
-        else if (nf[sel].num != NAMED_FLAG_HEADER) {
-          if (!flag_warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); flag_warned = true; }
+        if (sel == nc) { flags_raw_view(&dirty, &flag_warned); f_valid = false; }   /* raw view repaints */
+        else if (nf[sel].num == NAMED_FLAG_HEADER) {
+          snd_tab();                              /* fold/unfold this section */
+          s_flags_folded ^= 1u << nf_hdr_ord(nf, sel);
+        } else {
+          if (!flag_warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save.");
+                              flag_warned = true; f_valid = false; }   /* popup overlaid the list */
           pk_flag_set(g_sb1, g_game, nf[sel].num, !pk_flag_get(g_sb1, g_game, nf[sel].num)); dirty = true;
         }
       }
@@ -2486,7 +2610,7 @@ static bool sb_detail(SbRecord* b, uint32_t off) {
       if (s) ui_panel(cx - 2, cy - 2, 76, 45, UI_SEL, UI_TITLE);
       if (!sp) { ui_text(cx + 26, cy + 14, UI_DIM, "-"); continue; }
       { uint8_t fo = (sp == 201) ? pk_unown_form(b->party.personality[i])
-                   : (sp == 386) ? (uint8_t)pk_get_deoxys_form() : 0;   /* letter/forme, not form 0 */
+                   : (sp == 410) ? (uint8_t)pk_get_deoxys_form() : 0;   /* letter/forme, not form 0 (Deoxys internal 410) */
         ui_sprite(cx + 22, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form(sp, fo)); }
       char nm[16]; ui_truncate(nm, pk_species_name(sp), 9); ui_text(cx, cy + 32, s ? UI_SELTEXT : UI_TEXT, nm);
       siprintf(line, "Lv%u", (unsigned)b->party.level[i]); ui_text(cx, cy + 40, UI_DIRCLR, line);
@@ -2827,13 +2951,242 @@ static void pdna_settings(void) {
   }
 }
 
+/* ---- Import a .rec from /PokeDNA/battles back into the save (sector 31) -----------
+ * The game gates the Frontier Pass "BATTLE RECORD" purely on the sector's own validity
+ * (sentinel + battleFlags + byte-sum checksum — pokeemerald CanCopyRecordedBattleSaveData;
+ * no other flag), so a valid imported record replays exactly like one just recorded.
+ * The save's current record is overwritten (confirmed first); persistence rides the
+ * standard backup + verified full-save commit (the whole g_save image is written, and
+ * sector 31 is part of it). Omega-only (it is a save edit). */
+static bool rec_import(void) {
+  static char names[24][40];
+  int n = 0;
+  { DIR d; FILINFO fi;                                  /* list /PokeDNA/battles/*.rec */
+    if (f_opendir(&d, PDNA_DIR "/battles") == FR_OK) {
+      while (n < 24 && f_readdir(&d, &fi) == FR_OK && fi.fname[0]) {
+        int L = (int)strlen(fi.fname);
+        if ((fi.fattrib & AM_DIR) || L < 5 || L >= (int)sizeof names[0]) continue;
+        const char* e = fi.fname + L - 4;
+        if (e[0] != '.' || (e[1] | 32) != 'r' || (e[2] | 32) != 'e' || (e[3] | 32) != 'c') continue;
+        strcpy(names[n++], fi.fname);
+      }
+      f_closedir(&d);
+    } }
+  if (!n) { snd_deny(); msg_wait("IMPORT RECORD", UI_DIM, "No .rec files in", "/PokeDNA/battles."); return false; }
+
+  int sel = 0, top = 0;                                 /* pick one */
+  for (;;) {
+    if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, "IMPORT RECORD");
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < 14 && top + i < n; i++) {
+      int r = top + i, y = 20 + i * 9; bool s = (r == sel);
+      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+      char rt[40]; ui_truncate(rt, names[r], 29);
+      ui_text(6, y, s ? UI_SELTEXT : UI_TEXT, rt);
+    }
+    ui_text(4, 152, UI_DIM, "A import  B cancel");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return false;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % n;
+    else if (k & KEY_A) break;
+  }
+  char path[64];
+  sniprintf(path, sizeof path, PDNA_DIR "/battles/%s", names[sel]);
+
+  /* validate by STREAMING (512-B chunks, no big buffer): size, sentinel, checksum */
+  FIL f; UINT br;
+  if (f_open(&f, path, FA_READ) != FR_OK) {
+    snd_error(); msg_wait("IMPORT FAILED", UI_WARN, "Cannot open the file.", 0); return false;
+  }
+  bool ok = (f_size(&f) == G3_SECTOR_SIZE);
+  uint32_t sum = 0, stored = 0;
+  uint8_t buf[512];
+  for (uint32_t off = 0; ok && off < G3_SECTOR_SIZE; off += sizeof buf) {
+    if (f_read(&f, buf, sizeof buf, &br) != FR_OK || br != sizeof buf) { ok = false; break; }
+    if (off == 0 && !(buf[0] == 0x9D && buf[1] == 0xB3 && buf[2] == 0 && buf[3] == 0)) ok = false;
+    for (uint32_t i = 0; ok && i < sizeof buf; i++) {
+      uint32_t a = off + i;
+      if (a >= 4 && a < 4 + 3964) sum += buf[i];        /* struct byte-sum          */
+      else if (a >= 4 + 3964 && a < 4 + 3968)           /* trailing u32 checksum    */
+        stored |= (uint32_t)buf[i] << ((a - (4 + 3964)) * 8);
+    }
+  }
+  if (ok && sum != stored) ok = false;
+  if (!ok) {
+    f_close(&f); snd_error();
+    msg_wait("IMPORT FAILED", UI_WARN, "Not a valid battle", "record file."); return false;
+  }
+  if (!app_confirm("Import this record?", "Replaces the save's one.")) { f_close(&f); snd_back(); return false; }
+
+  f_lseek(&f, 0);
+  FRESULT fr = f_read(&f, g_save + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE, &br);
+  f_close(&f);
+  if (fr != FR_OK || br != G3_SECTOR_SIZE) {
+    /* the in-RAM sector may be half-written — restore it from the .sav on disk */
+    FIL s2; UINT br2 = 0;
+    if (f_open(&s2, g_path, FA_READ) == FR_OK) {
+      f_lseek(&s2, G3_REC_SECTOR_OFF);
+      f_read(&s2, g_save + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE, &br2);
+      f_close(&s2);
+    }
+    snd_error();
+    msg_wait("IMPORT FAILED", UI_WARN, "Read error;",
+             br2 == G3_SECTOR_SIZE ? "old record restored." : "re-open the save!");
+    return false;
+  }
+  log_line("record: import %s", names[sel]);
+  /* persist: re-committing the (unchanged) SB2 runs the standard backup + verified
+   * full-save write, which carries the new sector 31 with it */
+  if (!app_commit_sb2()) {
+    snd_error(); msg_wait("IMPORT", UI_WARN, "Imported in RAM only —", "save write failed/declined.");
+    return true;                                        /* screen still shows it (RAM) */
+  }
+  snd_save(); msg_wait("IMPORTED", UI_OK, "This is now the save's", "last recorded battle.");
+  return true;
+}
+
+/* ---- Emerald Battle Record (save sector 31): info + export ------------------------
+ * The Frontier Pass Battle Record is a full deterministic replay (RNG seed + both
+ * teams + per-battler input streams) at a fixed, non-rotating sector. This screen
+ * shows what's recorded and exports the raw 4 KiB sector to the SD for the PC-side
+ * replay pipeline (see docs/IDEAS.md). Emerald-only; export needs the Omega. */
+static void pdna_battle_record(void) {
+  if (g_game != PK_EMERALD) {
+    msg_wait("BATTLE RECORD", UI_DIM, "Only Emerald stores a", "Battle Record.");
+    return;
+  }
+  if (g_save_size < (uint32_t)G3_SAVE_FILE_SIZE) {     /* 64 KiB dump: no sector 31 at all */
+    msg_wait("BATTLE RECORD", UI_DIM, "Save has no sector 31", "(64 KiB dump).");
+    return;
+  }
+  G3RecordInfo ri;
+  while (!g3_record_scan(g_save, g_save_size, &ri)) {  /* none yet -> still offer import */
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, "BATTLE RECORD");
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    ui_text(4, 24, UI_DIM, "No recorded battle yet.");
+    ui_text(4, 34, UI_DIM, "Record one via the Frontier");
+    ui_text(4, 44, UI_DIM, "Pass, or import a .rec.");
+    ui_text(4, 152, UI_DIM, "SEL import  B back");
+    u16 k = wait_keys(KEY_SELECT | KEY_B);
+    if (k & KEY_B) { snd_back(); return; }
+    if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+    rec_import();                                      /* success -> the rescan shows it */
+  }
+  rmbl_fire(RCUE_ROOM);
+  for (;;) {
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, "BATTLE RECORD");
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    char l[40];
+    siprintf(l, "%s  %s", g3_record_facility_name(ri.facility),
+             ri.lvl_mode ? "Open Level" : "Level 50");
+    ui_text(4, 20, UI_TEXT, l);
+    const char* who = ri.names[ri.multiplayer_id][0] ? ri.names[ri.multiplayer_id] : "?";
+    siprintf(l, "Recorded by %s (%s)", who, ri.genders[ri.multiplayer_id] ? "F" : "M");
+    ui_text(4, 30, UI_TEXT, l);
+    siprintf(l, "Seed %08lx  Opp #%u", (unsigned long)ri.rng_seed, ri.opponent_a);
+    ui_text(4, 40, UI_DIM, l);
+    if (!ri.checksum_ok) ui_text(130, 40, UI_WARN, "CHECKSUM BAD");
+
+    ui_text(4, 54, UI_TITLE, "YOUR TEAM");
+    ui_text(124, 54, UI_TITLE, "OPPONENT");
+    for (int side = 0; side < 2; side++) {
+      const uint8_t* party = g3_record_party(g_save, side);
+      int y = 64;
+      for (int i = 0; i < 6; i++) {
+        PkMon m;
+        if (!pk_decode_mon(party + (uint32_t)i * G3_REC_MON_SIZE, false, &m) || !m.species) continue;
+        uint8_t lvl = party[(uint32_t)i * G3_REC_MON_SIZE + 84];   /* plaintext battle level */
+        siprintf(l, "%s %u", pk_species_name(m.species), lvl);
+        ui_text(side ? 124 : 4, y, UI_TEXT, l);
+        y += 10;
+      }
+    }
+    ui_text(4, 152, UI_DIM, "A export  SEL import  B back");
+    u16 k = wait_keys(KEY_A | KEY_B | KEY_SELECT);
+    if (k & KEY_B) { snd_back(); return; }
+    if (k & KEY_SELECT) {                              /* import an older .rec over this one */
+      if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+      if (rec_import()) g3_record_scan(g_save, g_save_size, &ri);   /* show the imported battle */
+      continue;
+    }
+    /* ---- A: export the raw 4 KiB sector (verified write, Omega-only) ---- */
+    if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+    char base[8]; int o = 0;
+    for (int i = 0; who[i] && o < 7; i++) {              /* sanitize the trainer name for FAT */
+      char c = who[i];
+      if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) base[o++] = c;
+    }
+    if (!o) { base[0] = 'R'; base[1] = 'E'; base[2] = 'C'; o = 3; }
+    base[o] = 0;
+    /* Facility + level-mode + CURRENT win-streak tag, e.g. "_Dome-O-21"
+     * (O = Open Level, 50 = Level 50). The streak lives ONLY in SaveBlock2 at
+     * export time — sector 31 never stores it — so it would be lost the moment
+     * the file is written. Unreadable streak -> empty tag, old naming: the tag
+     * never blocks an export. All tag characters are FAT-LFN-safe. */
+    char tag[20]; tag[0] = 0;
+    int streak = g3_record_win_streak(g_sb2, &ri);       /* Emerald-only screen: g_sb2 is Emerald layout */
+    if (streak >= 0)
+      sniprintf(tag, sizeof tag, "_%s-%s-%d", g3_record_facility_short(ri.facility),
+                ri.lvl_mode ? "O" : "50", streak);
+    /* Timestamped filename (DD-MM-YYYY + 24h HH-MM; '/'|':' are illegal in FAT names)
+     * so repeated exports never overwrite each other. The RTC transaction rides the
+     * same cart GPIO bus as rumble, so it shares the rmbl_pause window with the write.
+     * No RTC exposed -> fall back to the seed name (a re-export then only ever
+     * overwrites the identical battle). Worst case fits: "/PokeDNA/battles/" 17
+     * + base 7 + tag 16 ("_Factory-50-9999") + "_DD-MM-YYYY_HH-MM.rec" 21 = 61. */
+    char path[72];
+    GbaRtcTime t;
+    busy_panel("Writing + verifying...");
+    rmbl_pause();                                        /* quiet the cart bus: RTC read + SD write */
+    bool rtc_ok = gba_rtc_get(&t);
+    if (rtc_ok)
+      sniprintf(path, sizeof path, PDNA_DIR "/battles/%s%s_%02u-%02u-%04u_%02u-%02u.rec",
+                base, tag, t.day, t.month, t.year, t.hour, t.minute);
+    else
+      sniprintf(path, sizeof path, PDNA_DIR "/battles/%s%s_%08lx.rec", base, tag, (unsigned long)ri.rng_seed);
+    f_mkdir(PDNA_DIR); f_mkdir(PDNA_DIR "/battles");     /* FR_EXIST is fine (hard rule 9) */
+    SfStatus st = sf_write_verified(path, g_save + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE);
+    if (st == SF_OK) {
+      /* Best-effort SIDECAR (<basename>.txt): the export-time context the .rec
+       * itself cannot carry — all facilities' current streaks, player identity,
+       * timestamp, teams. A failed sidecar never fails the export. */
+      static char EWRAM_BSS sc[2048];
+      char stamp[24]; stamp[0] = 0;
+      if (rtc_ok) sniprintf(stamp, sizeof stamp, "%02u-%02u-%04u %02u:%02u",
+                            t.day, t.month, t.year, t.hour, t.minute);
+      int sn = g3_record_sidecar(sc, sizeof sc, &ri, g_save, g_sb2,
+                                 g_vinfo.tid_public, rtc_ok ? stamp : 0);
+      int pl = (int)strlen(path);                        /* ".rec" -> ".txt" */
+      char sp[72]; memcpy(sp, path, (size_t)pl + 1);
+      sp[pl - 3] = 't'; sp[pl - 2] = 'x'; sp[pl - 1] = 't';
+      SfStatus s2 = sf_write_verified(sp, sc, (uint32_t)sn);
+      log_line("record: sidecar %s -> %s", sp, s2 == SF_OK ? "OK" : sf_status_str(s2));
+    }
+    rmbl_resume();
+    log_line("record: export %s -> %s", path, st == SF_OK ? "OK" : sf_status_str(st));
+    if (st == SF_OK) {
+      snd_save();
+      char p2[32]; ui_truncate(p2, path, 29);
+      msg_wait("EXPORTED", UI_OK, p2, "Replay it on PC (see docs).");
+    } else {
+      snd_error();
+      msg_wait("EXPORT FAILED", UI_WARN, sf_status_str(st), 0);
+    }
+  }
+}
+
 /* START-menu destinations over the box (Party + Bank + Daycare are the storage
  * screens; SELECT no longer toggles the party — it cycles the box cursor mode). */
-enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_DEX, NV_DATA, NV_SECRET, NV_POKEBLOCK, NV_EVENTS, NV_SETTINGS, NV_BACK, NV_COUNT };
+enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_DEX, NV_DATA, NV_SECRET, NV_POKEBLOCK, NV_EVENTS, NV_BATTLEREC, NV_SETTINGS, NV_BACK, NV_COUNT };
 static int nav_menu(void) {
   static const char* const L[NV_COUNT] = { "Party", "Bank", "Daycare", "Trainer card", "Clock fix", "Pokedex",
-                                           "Data editor", "Secret Bases", "Pokeblocks", "Event tickets", "Settings", "Back" };
-  const int mx = 56, my = 3, rh = 10, mw = 132, mh = 18 + NV_COUNT * rh + 11;  /* my+mh=152: fits 12 */
+                                           "Data editor", "Secret Bases", "Pokeblocks", "Event tickets", "Battle record", "Settings", "Back" };
+  const int mx = 56, my = 3, rh = 9, mw = 132, mh = 18 + NV_COUNT * rh + 11;  /* my+mh<=152: rh 9 fits 13 */
   int sel = 0;
   for (;;) {
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
@@ -2896,8 +3249,14 @@ static BoxSource pc_box_source(void) {
 static void flush_on_exit(void) {
   if (!app_pc_dirty() && !g_sb1_deferred) { pdna_bank_flush_deletions(); return; }  /* PC already saved; still delete carried bank originals */
   if (app_confirm("Save changes?", "Save the moved Pokemon?")) {
-    app_commit_pc();              /* writes g_pc + the staged Day-Care sections; clears both flags */
-    pdna_bank_flush_deletions();  /* delete the Bank originals of carried mons AFTER the PC is written (fail-toward-dup) */
+    /* GATE the Bank-source deletion on the PC write SUCCEEDING. app_commit_pc() can fail (EZ
+     * writes have no retry / verify mismatch / backup-full); on failure the moved mons live only
+     * in volatile g_pc and are NOT on the .sav, so deleting their Bank originals would LOSE them
+     * (a Bank->PC move — the multi-select chunk amplifies this to a whole box at once). Flush the
+     * deletions ONLY after the destination (PC) is verified on disk -> worst case a recoverable
+     * duplicate (mons kept in the Bank), never a loss. g_pc_dirty stays set on failure, so the
+     * moves are still pending and can be retried. */
+    if (app_commit_pc()) pdna_bank_flush_deletions();
   } else {
     gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);   /* revert PC moves */
     g_pc_dirty = false; g_sb1_deferred = false;          /* drop staged Day-Care (disk untouched) */
@@ -2928,6 +3287,7 @@ static void view_save(const char* path) {
   g_path[sizeof(g_path) - 1] = 0;
   uint32_t sz = 0;
   SfStatus st = sf_read_full(path, g_save, G3_SAVE_FILE_SIZE, &sz);
+  g_save_size = sz;
   if (st != SF_OK || sz < (uint32_t)G3_SLOT_BYTES ||
       !gen3_parse(g_save, sz, &g_vinfo) || !g_vinfo.valid || !g_vinfo.sb1_ok ||
       gen3_read_saveblock1(g_save, g_vinfo.slot, g_sb1) != G3_SAVEBLOCK1_BYTES) {
@@ -2992,6 +3352,7 @@ static void view_save(const char* path) {
                            else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
         case NV_EVENTS:   if (app_can_edit()) pdna_events();
                            else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
+        case NV_BATTLEREC: pdna_battle_record(); break;  /* viewing is free; export gates on Omega inside */
         case NV_SETTINGS: pdna_settings(); break;
         default: break;                          /* NV_BACK */
       }
@@ -3008,10 +3369,15 @@ int main(void) {
   init_system();
   log_init();
   log_line("=== PokeDNA (M0) ===");
+  log_line("build " __DATE__ " " __TIME__);   /* stamp: proves WHICH binary produced this log
+                                               * (stale flashes have faked "still broken" before) */
+  log_line("waitcnt=%04x dispcnt=%04x",       /* inherited cart timing — never written by the app */
+           *(volatile uint16_t*)0x04000204, REG_DISPCNT);
   log_line("mGBA debug log: %s", log_under_mgba() ? "active" : "absent");
 
   ui_clear();
   ui_text(6, 70, UI_TITLE, "Detecting flashcart...");
+  ui_text(6, 150, UI_DIM, "build " __DATE__ " " __TIME__);
   /* Cart detection AND the SD init/mount can fail transiently right after the loader
    * hands off (the EZ-Flash SD interface sometimes needs a moment, or a re-init, before
    * the first read succeeds). Retry both a few times with a short settle before giving
