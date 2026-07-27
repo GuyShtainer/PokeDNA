@@ -162,47 +162,84 @@ static void draw_list(const uint16_t* bg, const BagLayout* L, const uint8_t* sb1
   ui_text(L->list_x0 + 2, L->list_y0 + 1 + (sel - top) * 9, BCUR, ">");
 }
 
-/* Word-wrap the description into the game's desc region, flowing AROUND the
- * 24x24 item icon when it sits inside the region (Emerald/RS; FRLG's icon
- * square is left of the text). Long flavor text past the region is dropped
- * (text_wrap's clip discipline). */
-static void desc_wrap(const BagLayout* L, const char* s) {
-  int n = (int)strlen(s), i = 0;
+/* ---- description pane: word-wrap + AUTO-PAGING (BACKLOG 12d) --------------
+ * The 8px fixed font fits less than the game's variable-width font, so long
+ * flavor text overflows the pane. Instead of dropping it, split it into pages
+ * that share the pane's exact row geometry (rows still flow AROUND the 24x24
+ * item icon where it sits inside the region — Emerald/RS; FRLG's icon square
+ * is left of the text) and flip pages every BAG_DESC_FLIP idle frames. */
+#define BAG_DESC_FLIP 90                         /* ~1.5 s per page */
+static int s_desc_pages = 1;                     /* pages of the CURRENT desc (set by draw_desc) */
+
+/* Lay out ONE page starting at text offset *pi, advancing *pi past what it
+ * consumed; draws only when `draw`. Every page uses the same row slots, so the
+ * icon flow-around stays correct on later pages. When `multi`, the LAST row is
+ * shortened 4 cols to leave room for the "n/m" page chip. Returns true while
+ * text remains after this page. */
+static bool desc_flow(const BagLayout* L, const char* s, int* pi, bool draw, bool multi) {
+  int n = (int)strlen(s), i = *pi;
   for (int y = L->desc_y0 + 2; y + 8 <= L->desc_y1 - 2 && i < n; y += 9) {
     int x = L->desc_x0 + 6;
     if (L->icon_x + 28 > x && y < L->icon_y + 24 && y + 8 > L->icon_y)
       x = L->icon_x + 28;                        /* row is beside the icon */
     int cols = (L->desc_x1 - x - 2) / 8;
+    if (multi && y + 9 + 8 > L->desc_y1 - 2) cols -= 4;   /* last row: room for "n/m" */
     if (cols > 30) cols = 30;                    /* line[] bound */
+    if (cols < 1) continue;
     int take = (n - i > cols) ? cols : (n - i);
     if (n - i > cols) {                          /* break at the last space that fits */
       int b = take; while (b > 0 && s[i + b] != ' ') b--;
       if (b > 0) take = b;
     }
-    char line[32];
-    memcpy(line, s + i, take); line[take] = 0;
-    ui_text(x, y, L->desc_ink, line);
+    if (draw) {
+      char line[32];
+      memcpy(line, s + i, take); line[take] = 0;
+      ui_text(x, y, L->desc_ink, line);
+    }
     i += take; while (i < n && s[i] == ' ') i++;
   }
+  *pi = i;
+  return i < n;
 }
 
+/* Repaints ONLY the desc pane rect (ui_bg_restore) — no flicker anywhere else.
+ * Draws page `pg` (0-based, clamped) and the "n/m" chip when it overflows;
+ * stores the page count in s_desc_pages for the idle auto-flip. */
 static void draw_desc(const uint16_t* bg, const BagLayout* L, const uint8_t* sb1,
-                      PkGame g, int pocket, int sel) {
+                      PkGame g, int pocket, int sel, int pg) {
   ui_bg_restore(bg, L->desc_x0, L->desc_y0,
                 L->desc_x1 - L->desc_x0, L->desc_y1 - L->desc_y0);
   if (L->icon_x < L->desc_x0)                    /* FRLG: icon square is outside */
     ui_bg_restore(bg, L->icon_x, L->icon_y, ITEM_ICON_W, ITEM_ICON_H);
+  s_desc_pages = 1;
   uint16_t id = pk_bag_item(sb1, g, pocket, sel);
   if (!id) { ui_text(L->desc_x0 + 6, L->desc_y0 + 18, BDIM, "(empty slot)"); return; }
   ui_sprite(L->icon_x, L->icon_y, ITEM_ICON_W, ITEM_ICON_H, item_icon_for(id));  /* NULL = no-op */
-  desc_wrap(L, pk_item_desc(id));
+  const char* s = pk_item_desc(id);
+  int i = 0;
+  bool multi = desc_flow(L, s, &i, false, false); /* single page? then the plain layout */
+  if (multi) {                                    /* count pages with the shortened last row */
+    int total = 1; i = 0;
+    while (desc_flow(L, s, &i, false, true)) total++;
+    s_desc_pages = total;
+  }
+  if (pg >= s_desc_pages) pg = 0;
+  i = 0;                                          /* skip to the page, then draw it */
+  for (int p = 0; p < pg; p++) desc_flow(L, s, &i, false, multi);
+  desc_flow(L, s, &i, true, multi);
+  if (multi) {                                    /* "n/m" chip, bottom-right of the pane */
+    int ylast = L->desc_y0 + 2;
+    while (ylast + 9 + 8 <= L->desc_y1 - 2) ylast += 9;
+    char b[8]; siprintf(b, "%d/%d", pg + 1, s_desc_pages);
+    ui_text(L->desc_x1 - 8 * (int)strlen(b) - 2, ylast, L->desc_ink, b);
+  }
 }
 
 bool bag_screen(uint8_t* sb1, const uint8_t* sb2, PkGame game, int female) {
   const uint16_t* bg = bag_bg(game, female);
   if (!bg || game < 0 || game > 2) return false; /* defensive: callers gate on bag_bg() */
   const BagLayout* L = &BAG_LAYOUTS[game];
-  int pocket = 0, sel = 0, top = 0, prev_sel = -1;
+  int pocket = 0, sel = 0, top = 0, prev_sel = -1, desc_pg = 0;
   bool dirty = false, full = true, list = true, desc = true;
 
   for (;;) {
@@ -223,16 +260,36 @@ bool bag_screen(uint8_t* sb1, const uint8_t* sb2, PkGame game, int female) {
     }
     if (list) { draw_list(bg, L, sb1, sb2, game, pocket, top, sel); list = false; desc = true; }
     else if (sel != prev_sel) { draw_cursor(bg, L, top, sel); desc = true; }
-    if (desc) { draw_desc(bg, L, sb1, game, pocket, sel); desc = false; }
+    if (desc) { desc_pg = 0; draw_desc(bg, L, sb1, game, pocket, sel, desc_pg); desc = false; }
     prev_sel = sel;
 
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
+    /* s_wait, inlined so idle frames can AUTO-PAGE an overflowing description
+     * (12d): every BAG_DESC_FLIP frames without input, show the next page —
+     * only the desc pane rect repaints, nothing else flickers. */
+    u16 k, fresh;
+    {
+      const u16 mask = KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B;
+      int idle = 0;
+      do {
+        s_vsync();
+        fresh = key_hit(mask);
+        k = fresh | key_repeat(mask & (KEY_UP | KEY_DOWN));
+        if (!k && s_desc_pages > 1 && ++idle >= BAG_DESC_FLIP) {
+          idle = 0;
+          desc_pg = (desc_pg + 1) % s_desc_pages;
+          draw_desc(bg, L, sb1, game, pocket, sel, desc_pg);
+        }
+      } while (!k);
+      if (fresh & (KEY_UP | KEY_DOWN)) snd_move();
+      if (fresh & KEY_A) snd_ok();
+      else if (fresh & KEY_B) snd_back();
+    }
     if (k & KEY_B) return dirty;
     else if (k & KEY_UP)   { if (sel > 0) sel--; }
     else if (k & KEY_DOWN) sel++;                /* clamped to cap-1 above */
-    else if (k & (KEY_L | KEY_R)) {              /* switch POCKET (game behavior) */
+    else if (k & (KEY_L | KEY_R | KEY_LEFT | KEY_RIGHT)) {   /* switch POCKET (game: d-pad too) */
       snd_tab();
-      pocket = (pocket + ((k & KEY_R) ? 1 : POCKET_COUNT - 1)) % POCKET_COUNT;
+      pocket = (pocket + ((k & (KEY_R | KEY_RIGHT)) ? 1 : POCKET_COUNT - 1)) % POCKET_COUNT;
       sel = top = 0; prev_sel = -1; list = true;
       pocket_anim(bg, L, game, female, pocket);  /* closed bag pops + the pocket opens */
       draw_header(bg, L, pocket);

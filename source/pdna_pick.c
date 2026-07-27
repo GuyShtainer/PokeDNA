@@ -12,6 +12,7 @@
 #include "pdna_app.h"      /* app_confirm, app_anim_enabled (Pokedex screen) */
 #include "ui.h"
 #include "data_tables.h"
+#include "gen3_items.h"    /* pk_item_pocket / PkPocket (item-picker category filter) */
 #include "mon_icons.h"
 #include "type_icons.h"
 #include "item_icons.h"
@@ -812,6 +813,71 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
   }
 }
 
+/* ---- item picker filters (BACKLOG #13, "like the pokedex"): two combinable
+ * axes — CATEGORY (via pk_item_pocket) and GAME availability (via the
+ * generated pk_item_games mask: bit0 RS, bit1 Emerald, bit2 FRLG). ---- */
+#define NICAT 6
+static const char* const ICAT_NAME[NICAT] = { "All", "Items", "Key items", "Poke Balls", "TMs-HMs", "Berries" };
+static const int8_t ICAT_POCKET[NICAT]    = { -1, POCKET_ITEMS, POCKET_KEY, POCKET_BALLS, POCKET_TMHM, POCKET_BERRIES };
+#define NIGAME 4
+static const char* const IGAME_NAME[NIGAME] = { "All", "RS", "Emerald", "FRLG" };  /* mask bit = 1<<(g-1) */
+
+/* filter by category + game + search, then optionally sort A-Z (same insertion
+ * sort as list_build); returns the count. */
+static int item_build(u16* idx, const char* search, int sort, int cat, int gamef) {
+  int n = 0;
+  for (int i = 0; i < 377; i++) {
+    if (cat && pk_item_pocket((uint16_t)i) != ICAT_POCKET[cat]) continue;
+    if (gamef && !(pk_item_games((uint16_t)i) & (1 << (gamef - 1)))) continue;
+    if (search[0] && !ci_contains(pk_item_name((uint16_t)i), search)) continue;
+    idx[n++] = (u16)i;
+  }
+  if (sort) {
+    for (int i = 1; i < n; i++) {
+      u16 v = idx[i]; int j = i - 1;
+      while (j >= 0 && strcmp(pk_item_name(idx[j]), pk_item_name(v)) > 0) { idx[j + 1] = idx[j]; j--; }
+      idx[j + 1] = v;
+    }
+  }
+  return n;
+}
+
+/* START filter menu, the species picker's filter_menu idiom: Sort and Game
+ * rows toggle in place (A / d-pad LEFT-RIGHT), a CATEGORY row picks + closes. */
+static void item_filter_menu(int* cat, int* gamef, int* sort) {
+  const int rows = 2 + NICAT;
+  int sel = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "FILTER / SORT");
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    for (int r = 0; r < rows; r++) {
+      int y = 14 + r * 10;
+      bool s = (r == sel);
+      if (s) ui_panel(2, y - 1, 236, 10, UI_SEL, UI_TITLE);
+      char b[36];
+      if (r == 0)      { siprintf(b, "Sort: %s", *sort ? "A-Z (name)" : "No. (id)");
+                         ui_text(8, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
+      else if (r == 1) { siprintf(b, "Game: %s", IGAME_NAME[*gamef]);
+                         ui_text(8, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
+      else             { siprintf(b, "%s%s", ICAT_NAME[r - 2], (*cat == r - 2) ? "  <" : "");
+                         ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, b); }
+    }
+    ui_text(4, 152, UI_DIM, "A pick  U/D move  B back");
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
+    if (k & KEY_B) return;
+    else if (k & KEY_A) {
+      if (sel == 0)      *sort ^= 1;
+      else if (sel == 1) *gamef = (*gamef + 1) % NIGAME;
+      else { *cat = sel - 2; return; }             /* category picks + closes, like the species list */
+    }
+    else if (k & KEY_UP)    sel = (sel > 0) ? sel - 1 : rows - 1;
+    else if (k & KEY_DOWN)  sel = (sel + 1) % rows;
+    else if ((k & KEY_LEFT)  && sel == 1) *gamef = (*gamef + NIGAME - 1) % NIGAME;
+    else if ((k & KEY_RIGHT) && sel == 1) *gamef = (*gamef + 1) % NIGAME;
+  }
+}
+
 /* ---- item picker with view modes ---- */
 #define IV_LIST 0
 #define IV_ICONS 1
@@ -855,8 +921,8 @@ static void iv_cell(int v, int x, int y, int id) {
 uint16_t pick_item(uint16_t current) {
   static u16 EWRAM_BSS idx[NITEM];
   char search[16] = "";
-  int sort = 0, view = IV_SPLIT;
-  int n = list_build(idx, 377, pk_item_name, search, sort);
+  int sort = 0, view = IV_SPLIT, cat = 0, gamef = 0;
+  int n = item_build(idx, search, sort, cat, gamef);
   int sel = 0;
   for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
 
@@ -880,11 +946,14 @@ uint16_t pick_item(uint16_t current) {
 
     if (full) {
       ui_clear();
-      char h[40]; siprintf(h, "ITEM  %s  %s  %d", IV_NAME[view], sort ? "A-Z" : "No.", n);
-      ui_text(4, 2, UI_TITLE, h);
+      char h[64], ht[40];                          /* active filters live in the header */
+      siprintf(h, "ITEM %s [%s|%s] %s %d", IV_NAME[view], ICAT_NAME[cat], IGAME_NAME[gamef],
+               sort ? "A-Z" : "No.", n);
+      ui_truncate(ht, h, 29);
+      ui_text(4, 2, UI_TITLE, ht);
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-      ui_text(4, 152, UI_DIM, "A pick  L/R view  SEL find");
+      ui_text(4, 152, UI_DIM, "A pick  L/R view  ST  SEL  B");
       if (view == IV_SPLIT) ui_panel(122, 20, 116, 124, UI_PANEL, UI_BORDER);
       for (int i = 0; i < vis && top + i < n; i++)
         iv_cell(view, x0 + (i % cols) * cw, y0 + (i / cols) * ch, idx[top + i]);
@@ -925,10 +994,13 @@ uint16_t pick_item(uint16_t current) {
     else if (k & KEY_RIGHT) { if (cols > 1) sel = clampi(sel + 1, 0, n ? n - 1 : 0); }
     else if (k & KEY_L) { view = (view + IV_N - 1) % IV_N; relist = true; }
     else if (k & KEY_R) { view = (view + 1) % IV_N; relist = true; }
-    else if (k & KEY_START) { sort ^= 1; n = list_build(idx, 377, pk_item_name, search, sort); sel = 0; relist = true; }
+    else if (k & KEY_START) {                     /* filter menu, like the species picker */
+      item_filter_menu(&cat, &gamef, &sort);
+      n = item_build(idx, search, sort, cat, gamef); sel = 0; toprow = 0; relist = true;
+    }
     else if (k & KEY_SELECT) {
       char q[16];
-      if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); n = list_build(idx, 377, pk_item_name, search, sort); sel = 0; relist = true; }
+      if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); n = item_build(idx, search, sort, cat, gamef); sel = 0; toprow = 0; relist = true; }
     }
   }
 }

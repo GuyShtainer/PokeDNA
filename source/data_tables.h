@@ -37,6 +37,13 @@ const char* pk_move_desc(uint16_t move_id);            /* in-game move descripti
 /* ---- items / abilities / natures / types / locations ---- */
 const char* pk_item_name(uint16_t item_id);
 const char* pk_item_desc(uint16_t item_id);             /* short item flavor text */
+/* Which Gen-3 carts the item actually EXISTS in (0 for the table's empty
+ * placeholder slots), from each decomp's own item constants — see the
+ * game-mask block in tools/gen_data.py. Bit0 RS, bit1 Emerald, bit2 FRLG. */
+#define PK_ITEM_IN_RS    0x01
+#define PK_ITEM_IN_E     0x02
+#define PK_ITEM_IN_FRLG  0x04
+uint8_t     pk_item_games(uint16_t item_id);
 const char* pk_ability_name(uint16_t ability_id);
 const char* pk_ability_desc(uint16_t ability_id);       /* short flavor text */
 const char* pk_nature_name(uint8_t nature);             /* 0..24 */

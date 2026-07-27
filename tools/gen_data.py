@@ -241,6 +241,88 @@ for const, body in iter_blocks(rd("src/data/items.h")):
         it_desc[iid] = _idtext[dm.group(1)]
 NITEM = (max(ITEM.values()) + 1) if ITEM else 400
 
+# ---- per-item game-availability mask (bit0 RS, bit1 Emerald, bit2 FRLG) ----
+# Sources: each game's OWN include/constants/items.h — Emerald from the
+# reference data set, Ruby + FireRed from the vendored decomps under
+# assets/upstream/. The Gen-3 item-id space is SHARED across all five carts,
+# so ids never need remapping: RS's table simply ends at 348 (ITEMS_COUNT 349,
+# pokeruby include/constants/items.h — no FRLG key items/teas), FRLG's at 374
+# (ITEMS_COUNT 375 — no Emerald-only Magma Emblem 375 / Old Sea Map 376).
+# An id counts as PRESENT when the game gives it a real constant name; the
+# decomps name every empty table slot with a hex placeholder (ITEM_034 /
+# ITEM_10B / ITEM_15B style), which we drop.
+# CAVEAT: pokefirered's constants still NAME the Hoenn-era items FRLG's table
+# inherited from RS (pokefirered include/constants/items.h:50 ITEM_SHOAL_SALT
+# .. :311 ITEM_DEVON_SCOPE all keep real names), but those items do not exist
+# in FRLG — curated exclusion list below (Shoal salt/shell, contest scarves,
+# Pokeblock Case + the Hoenn key items, HM08 Dive).
+UPSTREAM = os.path.join(ROOT, "assets", "upstream")
+
+
+def rd_abs(path):
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+ITEM_R = parse_defines(rd_abs(os.path.join(UPSTREAM, "pokeruby", "include", "constants", "items.h")), "ITEM_")
+ITEM_F = parse_defines(rd_abs(os.path.join(UPSTREAM, "pokefirered", "include", "constants", "items.h")), "ITEM_")
+
+_ITEM_PLACEHOLDER = re.compile(r"ITEM_[0-9A-F]{1,3}$")   # empty-slot names: ITEM_034 / ITEM_10B / ITEM_15B
+
+
+def real_item_ids(defs, maxid):
+    return set(v for k, v in defs.items()
+               if isinstance(v, int) and 0 < v <= maxid
+               and not _ITEM_PLACEHOLDER.match(k)
+               and k not in ("ITEMS_COUNT", "ITEM_FIELD_ARROW"))
+
+
+# Hoenn-only items whose ids pokefirered's shared table still names but which
+# don't exist in FRLG (each verified present in pokeruby's constants at the
+# same id — pokeruby include/constants/items.h:54-55 Shoal, :264-268 scarves,
+# :271-311 the RS key-item block 259..288, :349 ITEM_HM08 346 = Dive, FRLG
+# has HM01-07 only).
+FRLG_HOENN_ONLY = [
+    "ITEM_SHOAL_SALT", "ITEM_SHOAL_SHELL",
+    "ITEM_RED_SCARF", "ITEM_BLUE_SCARF", "ITEM_PINK_SCARF",
+    "ITEM_GREEN_SCARF", "ITEM_YELLOW_SCARF",
+    "ITEM_MACH_BIKE", "ITEM_CONTEST_PASS", "ITEM_WAILMER_PAIL",
+    "ITEM_DEVON_GOODS", "ITEM_SOOT_SACK", "ITEM_BASEMENT_KEY",
+    "ITEM_ACRO_BIKE", "ITEM_POKEBLOCK_CASE", "ITEM_LETTER",
+    "ITEM_EON_TICKET", "ITEM_RED_ORB", "ITEM_BLUE_ORB", "ITEM_SCANNER",
+    "ITEM_GO_GOGGLES", "ITEM_METEORITE", "ITEM_ROOM_1_KEY",
+    "ITEM_ROOM_2_KEY", "ITEM_ROOM_4_KEY", "ITEM_ROOM_6_KEY",
+    "ITEM_STORAGE_KEY", "ITEM_ROOT_FOSSIL", "ITEM_CLAW_FOSSIL",
+    "ITEM_DEVON_SCOPE", "ITEM_HM08",
+]
+
+rs_ids = real_item_ids(ITEM_R, 348)         # pokeruby ITEMS_COUNT 349
+e_ids = real_item_ids(ITEM, 376)            # pokeemerald ITEMS_COUNT 377
+f_ids = real_item_ids(ITEM_F, 374)          # pokefirered ITEMS_COUNT 375
+for _sym in FRLG_HOENN_ONLY:
+    f_ids.discard(ITEM_F.get(_sym))
+
+it_games = [(1 if i in rs_ids else 0) | (2 if i in e_ids else 0) | (4 if i in f_ids else 0)
+            for i in range(NITEM)]
+
+# sanity: the era differences BACKLOG #13 calls out must hold
+assert it_games[ITEM["ITEM_POTION"]] == 7, "Potion should be in all games"
+assert it_games[ITEM["ITEM_MASTER_BALL"]] == 7
+assert it_games[ITEM["ITEM_TEA"]] == 6, "Tea = FRLG (+Emerald table), not RS"
+assert it_games[ITEM["ITEM_OAKS_PARCEL"]] == 6, "FRLG key item, not RS"
+assert it_games[ITEM["ITEM_VS_SEEKER"]] == 6
+assert it_games[ITEM["ITEM_POKEBLOCK_CASE"]] == 3, "contest/pokeblock = RS+E, not FRLG"
+assert it_games[ITEM["ITEM_RED_SCARF"]] == 3
+assert it_games[ITEM["ITEM_SHOAL_SALT"]] == 3
+assert it_games[ITEM["ITEM_ACRO_BIKE"]] == 3
+assert it_games[ITEM["ITEM_MAGMA_EMBLEM"]] == 2, "Emerald-only"
+assert it_games[ITEM["ITEM_OLD_SEA_MAP"]] == 2, "Emerald-only"
+assert it_games[ITEM["ITEM_HM08"]] == 3, "Dive: RS+E, FRLG has HM01-07 only"
+assert it_games[ITEM["ITEM_HM07"]] == 7
+assert it_games[ITEM["ITEM_CHERI_BERRY"]] == 7
+assert it_games[ITEM["ITEM_034"]] == 0, "placeholder slot in every game"
+assert it_games[0] == 0, "ITEM_NONE"
+
 # ---- abilities (names + descriptions) ----
 abtext = rd("src/data/text/abilities.h")
 ab_name = parse_named_array(abtext, ABIL)
@@ -539,6 +621,7 @@ with open(OUT, "w") as c:
     emit_strtab(c, "s_move", mv_name, NMOVE, "-")
     emit_strtab(c, "s_item", it_name, NITEM, "????????")
     emit_strtab(c, "s_itemdesc", it_desc, NITEM, "")
+    emit_u8(c, "s_itemgames", it_games)
     emit_strtab(c, "s_ability", ab_name, NABIL, "-")
     emit_strtab(c, "s_abilitydesc", ab_desc, NABIL, "")
     emit_strtab(c, "s_location", loc_name, NLOC, "FARAWAY PLACE")
@@ -616,6 +699,7 @@ const char* pk_move_desc(uint16_t i){{ return i<{NMOVE}?s_mvdesc[i]:""; }}
 const char* pk_game_stat_name(int i){{ return (i>=0&&i<{NGS}&&s_gamestat[i][0])?s_gamestat[i]:"(stat)"; }}
 const char* pk_item_name(uint16_t i){{ return i<{NITEM}?s_item[i]:"????????"; }}
 const char* pk_item_desc(uint16_t i){{ return i<{NITEM}?s_itemdesc[i]:""; }}
+uint8_t pk_item_games(uint16_t i){{ return i<{NITEM}?s_itemgames[i]:0; }}
 const char* pk_ability_name(uint16_t i){{ return i<{NABIL}?s_ability[i]:"-"; }}
 const char* pk_ability_desc(uint16_t i){{ return i<{NABIL}?s_abilitydesc[i]:""; }}
 const char* pk_nature_name(uint8_t i){{ return i<25?s_nature[i]:"?"; }}
@@ -648,6 +732,8 @@ uint8_t pk_level_from_exp(uint8_t g,uint32_t e){{
 
 print("data_tables.c: species=%d names, moves=%d, items=%d, abilities=%d, locations~%d, growth=%d"
       % (len(sp_name), len(mv_name), len(it_name), len(ab_name), len(loc_name), NGROWTH))
+print("item game masks: RS=%d E=%d FRLG=%d ids (bit0 RS, bit1 E, bit2 FRLG)"
+      % (len(rs_ids), len(e_ids), len(f_ids)))
 print("named flags: E=%d F=%d R=%d (incl. category headers)"
       % (len(named_flags["pokeemerald_data"]), len(named_flags["pokefirered_data"]), len(named_flags["pokeruby_data"])))
 print("written:", OUT)
