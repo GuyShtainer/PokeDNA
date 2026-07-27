@@ -48,15 +48,28 @@ WP_W, WP_H = 160, 144            # 20x18 tiles
 # tileset — so a wallpaper's bg tiles start at index N (55 for forest, 45 for
 # savanna, 56 for volcano ...), NOT at the PNG grid's tile count. Concatenating
 # the full grids shifted every bg reference and scrambled the bodies of exactly
-# the wallpapers whose grid != N (uniform-pattern bodies hid it). Walda is
-# different again: LoadWallpaperGfx copies the icon strip to tiles + 0x800 =
-# tile 64 FIXED, so the shared friends frame (57 tiles) is padded to 64 first.
+# the wallpapers whose grid != N (uniform-pattern bodies hid it).
+#
+# THE 2026-07 WALDA-LAYOUT FIX (the "ALL friends wallpapers corrupt" cart bug).
+# Walda tilesets follow the SAME cat rule — friends_frameN is truncated to 57
+# tiles and bg.4bpp is cat'ed DIRECTLY after it (graphics_file_rules.mk:281-334),
+# so a Walda pattern's bg tiles start at index 57 like any other. There is NO
+# padding to 64: what lands at tile 64 (byte 0x800) is a RUNTIME overlay —
+# LoadWallpaperGfx (pokemon_storage_system.c:5404-5406) decompresses the 16x16
+# (= 4-tile) icon glyph sWaldaWallpaperIcons[GetWaldaWallpaperIconId()] and
+# CpuCopy32's it over tiles 64..67 only; bg tiles 68+ survive underneath. The
+# old "pad the frame to 64" model shifted EVERY bg reference by 7 tiles (57..63
+# drew blank padding, >=64 drew the wrong strip tile), garbling all 16 Friends
+# bodies while the standard 16 stayed correct. We bake the DEFAULT glyph
+# (iconId 0 = aqua — a fresh save's value; waldaPhrase.iconId isn't otherwise
+# representable in a static pre-render).
 FRAME_TILES = {"forest": 55, "city": 52, "savanna": 45, "crag": 49, "volcano": 56,
                "snow": 57, "cave": 55, "beach": 46, "seafloor": 54, "river": 51,
                "sky": 45, "polkadot": 54, "pokecenter": 35, "machine": 33, "plain": 18,
                "friends_frame1": 57, "friends_frame2": 57}   # desert: no rule = full grid
 BG_TILES = {"savanna": 23, "beach": 23, "river": 11}         # others: full grid
-WALDA_ICON_BASE = 64             # icon strip lands at tile 64 (byte 0x800), always
+WALDA_ICON_BASE = 64             # the 4 icon-glyph tiles land at tile 64 (byte 0x800)
+WALDA_ICON = "icons/aqua.png"    # sWaldaWallpaperIcons[0] (default iconId)
 
 # THE 2026-07-27 WALDA-COLOR FIX. The game does NOT show the Walda wallpapers with
 # their PNG palettes as-is: LoadWallpaperGfx (pokemon_storage_system.c:5391-5397)
@@ -91,6 +104,18 @@ def load_tiles(path):
     return tiles, rgb15, cols, rows
 
 
+def load_icon_tiles(path):
+    """Walda icon glyph (16x16 GRAYSCALE png; gbagfx maps gray g -> index g//17,
+    e.g. aqua.png's 221/238 -> indices 13/14) -> 4 8x8 tiles of 4-bit indices."""
+    im = Image.open(path)
+    px = im.load()
+    def idx(v):
+        v = v[0] if isinstance(v, tuple) else v
+        return (v // 17) & 0x0F if im.mode in ("L", "LA") else v & 0x0F
+    return [[idx(px[tx * 8 + x, ty * 8 + y]) for y in range(8) for x in range(8)]
+            for ty in range(2) for tx in range(2)]
+
+
 def assemble(name, frame_rel, sent=None):
     """-> a WP_H x WP_W list of RGB15 pixels for wallpaper `name`.
     `frame_rel` is the frame.png path relative to RD (a per-wallpaper frame for the
@@ -112,9 +137,14 @@ def assemble(name, frame_rel, sent=None):
     fname = fkey if fkey.startswith("friends_frame") else name
     frame_t = frame_t[:FRAME_TILES.get(fname, len(frame_t))]
     bg_t = bg_t[:BG_TILES.get(name, len(bg_t))]
+    tiles = frame_t + bg_t            # the build's `cat frame bg`: bg starts at len(frame)
     if fkey.startswith("friends_frame"):
-        frame_t = frame_t + [[0] * 64] * (WALDA_ICON_BASE - len(frame_t))
-    tiles = frame_t + bg_t
+        # Walda: the game then CpuCopy32's the 4-tile icon glyph OVER tiles 64..67
+        # (LoadWallpaperGfx; see the WALDA-LAYOUT FIX note) — bg tiles 68+ survive.
+        icon_t = load_icon_tiles(os.path.join(RD, WALDA_ICON))
+        while len(tiles) < WALDA_ICON_BASE + len(icon_t):
+            tiles.append([0] * 64)
+        tiles[WALDA_ICON_BASE:WALDA_ICON_BASE + len(icon_t)] = icon_t
     pals = [frame_pal, frame_pal, bg_pal]   # tilemap bank 0,1 -> frame, bank 2 -> bg
     tm = struct.unpack("<360H", open(os.path.join(d, "tilemap.bin"), "rb").read())
     fill = bg_pal[1]                        # interior tone replacing bg index-0 (white)

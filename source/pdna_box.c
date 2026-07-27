@@ -488,6 +488,31 @@ static void wp_restore_rect(int x0, int y0, int w, int h) {
 /* the chunk block currently floats over its own SOURCE box (set by chunk_oam_sync) */
 static bool s_ch_on_src = false;
 
+/* Blit `slot`'s icon into the Mode-3 bitmap at its cell, skipping transparent pixels
+ * (the 0x8000 key, like ui_sprite) — but from a VERIFIED staging: this cartridge
+ * demonstrably garbles raw CPU ROM reads (the whole wallpaper history above), and a
+ * garbled understudy would sit UNDER the ghost block looking exactly like the old
+ * jumble. Each 64-pixel chunk re-uses s_wp_tile + wp_copy_verified; a chunk that
+ * stays dirty is skipped (a hole beats baked garbage; the next repaint heals it). */
+static void under_blit(int slot) {
+  const uint16_t* ic = (g_box[slot].isEgg && !g_box[slot].isBadEgg)
+                     ? mon_icon_egg()
+                     : mon_icon_for_form(g_box[slot].species, g_box[slot].form);
+  if (!ic) return;                                /* art-free build: nothing to blit */
+  int x0 = GRID_X + (slot % COLS) * CELL_W, y0 = GRID_Y + (slot / COLS) * CELL_H;
+  rumble_io_suspend();
+  for (int off = 0; off < MON_ICON_W * MON_ICON_H; off += 64) {
+    if (wp_copy_verified(s_wp_tile, ic + off, 64) < 0) continue;
+    for (int k = 0; k < 64; k++) {
+      uint16_t p = s_wp_tile[k];
+      if (p & 0x8000)
+        m3_plot(x0 + (off + k) % MON_ICON_W, y0 + (off + k) / MON_ICON_W,
+                (u16)(p & 0x7FFF));
+    }
+  }
+  rumble_io_resume();
+}
+
 /* Strong impls of the box_oam.h cover/uncover hooks (box_oam.c owns the covered-cell
  * bookkeeping and fires these exactly on transitions; the bitmap work needs g_box +
  * the wallpaper staging, both private to this file — hence the hook seam). */
@@ -496,20 +521,29 @@ void boxoam_under_show(int slot) {
   if (s_ch_hold && s_ch_on_src)                   /* a lifted SOURCE cell is vacating: it is
                                                    * carried IN the block, nothing lives under */
     for (int i = 0; i < s_ch.n; i++) if (s_ch.src[i] == slot) return;
-  const uint16_t* ic = (g_box[slot].isEgg && !g_box[slot].isBadEgg)
-                     ? mon_icon_egg()
-                     : mon_icon_for_form(g_box[slot].species, g_box[slot].form);
-  if (!ic) return;                                /* art-free build: nothing to blit */
-  ui_sprite(GRID_X + (slot % COLS) * CELL_W, GRID_Y + (slot / COLS) * CELL_H,
-            MON_ICON_W, MON_ICON_H, ic);          /* RGB15 ROM->VRAM blit (0x8000-keyed) */
   s_under[slot] = 1;
+  under_blit(slot);
 }
 
 void boxoam_under_hide(int slot) {
   if (slot < 0 || slot >= G3_BOX_SLOTS || !s_under[slot]) return;
   s_under[slot] = 0;
-  wp_restore_rect(GRID_X + (slot % COLS) * CELL_W, GRID_Y + (slot / COLS) * CELL_H,
-                  MON_ICON_W, MON_ICON_H);
+  int x = GRID_X + (slot % COLS) * CELL_W, y = GRID_Y + (slot / COLS) * CELL_H;
+  wp_restore_rect(x, y, MON_ICON_W, MON_ICON_H);
+  /* THE "transparent BOX" ARTIFACT (Guy's HW round): the 32x32 icons live on a 24x22
+   * cell pitch, so this 32x32 restore rect overlaps the neighbouring cells — chopping
+   * up to 8-px-wide / 10-px-tall wallpaper-coloured RECTANGLES out of the blits of
+   * cells still covered by the block (their s_under stays set, so nothing repainted
+   * them). Every anchor move carved fresh notches that showed through the translucent
+   * block as a moving rectangular hole. Repair: re-blit every still-understudied cell
+   * whose icon rect intersects the restored rect (idempotent — repaints exactly what
+   * that cell's own blit painted, transparent pixels skipped). */
+  for (int s = 0; s < G3_BOX_SLOTS; s++) if (s_under[s]) {
+    int sx = GRID_X + (s % COLS) * CELL_W, sy = GRID_Y + (s / COLS) * CELL_H;
+    if (sx < x + MON_ICON_W && sx + MON_ICON_W > x &&
+        sy < y + MON_ICON_H && sy + MON_ICON_H > y)
+      under_blit(s);
+  }
 }
 
 /* ---- WP AUDIT (START+SELECT): the on-hardware wallpaper experiment ------------------
@@ -790,6 +824,16 @@ static void play_grab_anim(BoxSource* src, int box, int slot) {
   /* boxoam_carry already lifts the icon 8px; nudge a touch more for a "grab" beat */
   for (int v = 0; v < 6; v++) { boxoam_commit(); s_vsync(); }
   (void)slot;
+}
+
+/* ITEM-take grab cue (the mon single-grab's play_grab_anim beat, mirrored for items —
+ * taking an item used to snap with no animation at all): the orange grab fist closes
+ * over the holder with the taken item popping full-size in front (boxoam_carry_item's
+ * full-grab look, the existing fist/hand OAM machinery), holds a beat, then the normal
+ * repaint swaps in the small carried-item ride. Pure OAM, keypress-cadence only. */
+static void play_item_grab_anim(int cur, uint16_t item) {
+  boxoam_carry_item(cur, item, true);              /* fist + full item over the mon */
+  for (int v = 0; v < 10; v++) { boxoam_commit(); s_vsync(); }
 }
 
 /* Light update on cursor move: with hardware sprites the icons composite themselves,
@@ -1593,6 +1637,7 @@ int pdna_box(BoxSource* src) {
         box_set_held(recs, cur, 0);
         box_decode(src, recs, box);
         src->mark_dirty();
+        play_item_grab_anim(cur, (uint16_t)s_item_held);   /* fist closes over the mon (grab beat) */
         need_full = true;
       } else snd_deny();                                 /* empty slot or no item */
     }
