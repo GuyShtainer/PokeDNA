@@ -42,6 +42,22 @@ ENTRIES = [(n, "%s/frame.png" % n) for n in STD] + \
 NAMES = [e[0] for e in ENTRIES]
 WP_W, WP_H = 160, 144            # 20x18 tiles
 
+# THE 2026-07 GARBLE FIX. The game does NOT use every tile in the frame/bg PNG
+# grids: the decomp build TRUNCATES each sheet with an explicit `-num_tiles N`
+# (pokeemerald graphics_file_rules.mk:179-285) and then `cat`s frame+bg into one
+# tileset — so a wallpaper's bg tiles start at index N (55 for forest, 45 for
+# savanna, 56 for volcano ...), NOT at the PNG grid's tile count. Concatenating
+# the full grids shifted every bg reference and scrambled the bodies of exactly
+# the wallpapers whose grid != N (uniform-pattern bodies hid it). Walda is
+# different again: LoadWallpaperGfx copies the icon strip to tiles + 0x800 =
+# tile 64 FIXED, so the shared friends frame (57 tiles) is padded to 64 first.
+FRAME_TILES = {"forest": 55, "city": 52, "savanna": 45, "crag": 49, "volcano": 56,
+               "snow": 57, "cave": 55, "beach": 46, "seafloor": 54, "river": 51,
+               "sky": 45, "polkadot": 54, "pokecenter": 35, "machine": 33, "plain": 18,
+               "friends_frame1": 57, "friends_frame2": 57}   # desert: no rule = full grid
+BG_TILES = {"savanna": 23, "beach": 23, "river": 11}         # others: full grid
+WALDA_ICON_BASE = 64             # icon strip lands at tile 64 (byte 0x800), always
+
 
 def load_tiles(path):
     """indexed PNG -> (list of 8x8 tiles as 4-bit indices, 16-color RGB15 palette)."""
@@ -65,6 +81,14 @@ def assemble(name, frame_rel):
     d = os.path.join(RD, name)
     frame_t, frame_pal, _, _ = load_tiles(os.path.join(RD, frame_rel))
     bg_t, bg_pal, bgc, bgr = load_tiles(os.path.join(d, "bg.png"))
+    # truncate to the game's -num_tiles counts (see FRAME_TILES above); Walda pads
+    # the shared frame to the fixed icon base of 64 tiles
+    fkey = os.path.splitext(os.path.basename(frame_rel))[0]
+    fname = fkey if fkey.startswith("friends_frame") else name
+    frame_t = frame_t[:FRAME_TILES.get(fname, len(frame_t))]
+    bg_t = bg_t[:BG_TILES.get(name, len(bg_t))]
+    if fkey.startswith("friends_frame"):
+        frame_t = frame_t + [[0] * 64] * (WALDA_ICON_BASE - len(frame_t))
     tiles = frame_t + bg_t
     pals = [frame_pal, frame_pal, bg_pal]   # tilemap bank 0,1 -> frame, bank 2 -> bg
     tm = struct.unpack("<360H", open(os.path.join(d, "tilemap.bin"), "rb").read())
@@ -81,8 +105,9 @@ def assemble(name, frame_rel):
     if not frame_rel.startswith("friends_frame"):
         for py in range(WP_H):
             for px_ in range(WP_W):
-                bt = bg_t[((py // 8) % bgr) * bgc + ((px_ // 8) % bgc)]
-                ci = bt[(py % 8) * 8 + (px_ % 8)]
+                bi = ((py // 8) % bgr) * bgc + ((px_ // 8) % bgc)
+                if bi >= len(bg_t): continue      # truncated padding tile: keep the fill
+                ci = bg_t[bi][(py % 8) * 8 + (px_ % 8)]
                 img[py * WP_W + px_] = bg_pal[ci] if ci else fill
     # tilemap overlay, color index 0 transparent
     for ty in range(18):
@@ -154,13 +179,28 @@ def main():
         c.write("static const uint16_t* const s_wt[%d] = {%s};\n" % (N, ",".join("wt_" + n for n in NAMES)))
         c.write("static const uint16_t* const s_wm[%d] = {%s};\n" % (N, ",".join("wm_" + n for n in NAMES)))
         c.write("static const uint16_t s_nt[%d] = {%s};\n\n" % (N, ",".join(str(len(u)) for _, u, _ in data)))
+
+        # build-time FNV-1a goldens over each map + tile array (u16 stream), so the
+        # on-cart draw can detect DETERMINISTIC mis-reads (a repeatable wrong read
+        # passes any copy+re-read verify; only a golden catches it).
+        def fnv16(vals):
+            s = 2166136261
+            for v in vals:
+                s = ((s ^ v) * 16777619) & 0xFFFFFFFF
+            return s
+        msums = [fnv16(mp) for _, _, mp in data]
+        tsums = [fnv16([px for t in uniq for px in t]) for _, uniq, _ in data]
+        c.write("static const uint32_t s_msum[%d] = {%s};\n" % (N, ",".join("0x%08xu" % v for v in msums)))
+        c.write("static const uint32_t s_tsum[%d] = {%s};\n\n" % (N, ",".join("0x%08xu" % v for v in tsums)))
         c.write("""const uint16_t* wallpaper_tile_data(int wp, int* ntiles){
   if (wp < 0 || wp >= %d) return 0;
   if (ntiles) *ntiles = s_nt[wp];
   return s_wt[wp];
 }
 const uint16_t* wallpaper_tilemap(int wp){ return (wp >= 0 && wp < %d) ? s_wm[wp] : 0; }
-""" % (N, N))
+uint32_t wallpaper_map_sum(int wp){ return (wp >= 0 && wp < %d) ? s_msum[wp] : 0; }
+uint32_t wallpaper_tile_sum(int wp){ return (wp >= 0 && wp < %d) ? s_tsum[wp] : 0; }
+""" % (N, N, N, N))
     print("wallpapers.c: %d wallpapers (16 standard + %d Walda), %d unique tiles total (avg %.1f/wp)"
           % (N, N - 16, total, total / N))
     print("written:", OUT)
