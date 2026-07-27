@@ -311,6 +311,11 @@ NFLAG_GYMS = [
     ("FLAG_DEFEATED_LEADER_GIOVANNI","Giovanni"),
 ]
 NFLAG_ELITE = [
+    # The per-member E4 flags are GAME-TRUTH "off" after beating the league: the Hall
+    # of Fame script clears all four so the E4 can be rechallenged (pokeemerald
+    # hall_of_fame.inc ResetEliteFour; pokeruby identical). The row that reliably says
+    # "beat the league" is FLAG_SYS_GAME_CLEAR — surfaced here next to them.
+    ("FLAG_SYS_GAME_CLEAR",          "League beaten (HoF)"),
     ("FLAG_DEFEATED_ELITE_4_SIDNEY", "E4 Sidney"),
     ("FLAG_DEFEATED_ELITE_4_SYDNEY", "E4 Sidney"),     # Ruby spelling
     ("FLAG_DEFEATED_ELITE_4_PHOEBE", "E4 Phoebe"),
@@ -391,7 +396,7 @@ def build_named_flags(game_dir):
 
     add_category("System", NFLAG_SYSTEM)
     add_category("Gyms", NFLAG_GYMS)
-    add_category("Elite Four", NFLAG_ELITE)
+    add_category("Elite Four (reset @HoF)", NFLAG_ELITE)
     add_category("Battle Frontier", NFLAG_FRONTIER)
     add_category("Legends", NFLAG_LEGENDS)
 
@@ -406,6 +411,22 @@ def build_named_flags(game_dir):
         s = s.strip("_").replace("_", " ").title()
         return s[:22] if s else sym
 
+    # pret/pokeruby names most hidden-item flags with hex placeholders
+    # (FLAG_HIDDEN_ITEM_1 .. _61), which prettify into bare numbers. The RS
+    # hidden-item range (base 0x258) is a verified 1:1 offset match with Emerald's
+    # (base 0x1F4; same items in the same order — E only APPENDS E-only ones past
+    # RS's end), so borrow Emerald's real names by offset for the placeholders.
+    ruby_hidden = {}
+    if game_dir == "pokeruby_data":
+        epath = os.path.join(ROOT, "reference", "pokeemerald_data", "include", "constants", "flags.h")
+        with open(epath, encoding="utf-8", errors="replace") as f:
+            eenv = parse_all_defines(f.read(), NFLAG_BASE.get("pokeemerald_data", {}))
+        ebase = eenv.get("FLAG_HIDDEN_ITEMS_START", 0x1F4)
+        for esym, ev in eenv.items():
+            if (esym.startswith("FLAG_HIDDEN_ITEM_") and isinstance(ev, int)
+                    and not esym.endswith(("_START", "_END"))):
+                ruby_hidden[ev - ebase] = prettify(esym, "FLAG_HIDDEN_ITEM_")
+
     def add_auto(title, prefix, want=None):
         rows = []
         for sym, val in env.items():
@@ -416,7 +437,11 @@ def build_named_flags(game_dir):
             if sym.startswith("FLAG_TEMP") or sym.startswith("FLAG_HIDE"): continue
             if sym.endswith("_START") or sym.endswith("_END"): continue
             if want and not want(sym):                    continue
-            rows.append((val, prettify(sym, prefix)))
+            disp = prettify(sym, prefix)
+            if ruby_hidden and re.fullmatch(r"FLAG_HIDDEN_ITEM_[0-9A-F]{1,2}", sym):
+                rbase = env.get("FLAG_HIDDEN_ITEMS_START", 0x258)
+                disp = ruby_hidden.get(val - rbase, disp)
+            rows.append((val, disp))
         seen, uniq = set(), []
         for v, d in sorted(rows):
             if v in seen:
