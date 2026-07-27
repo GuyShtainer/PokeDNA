@@ -962,30 +962,61 @@ uint8_t pick_ability(uint16_t species, uint8_t cur) {
   }
 }
 
-/* Choose an Unown letter (0..27 = A..Z ! ?). Shows all 28 forms as a grid of the
- * real letter icons. Returns the chosen form, or -1 on cancel. */
+/* Choose an Unown letter (0..27 = A..Z ! ?) with THE SAME layout/chrome as the
+ * dex-style species picker (7x3 grid of 32x32 icons, edge scroll, header strip) —
+ * picking the species then its letter reads as one continuous flow (Guy). Returns
+ * the chosen form, or -1 on cancel. */
 int pick_unown_form(int cur) {
   static const char* const LET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ!?";
-  const int uc = 7, uw = 30, ux0 = 22, uy0 = 22;
-  int sel = (cur >= 0 && cur < 28) ? cur : 0;
+  const int N = 28;
+  int sel = (cur >= 0 && cur < N) ? cur : 0;
+  char hdr[48];
+  int prev_sel = -1, prev_top = -1, toprow = 0;
+  bool relist = true;
   for (;;) {
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, "CHOOSE UNOWN LETTER");
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < 28; i++) {
-      int x = ux0 + (i % uc) * uw, y = uy0 + (i / uc) * uw;
-      if (i == sel) m3_frame(x - 2, y - 2, x + 25, y + 25, UI_SELTEXT);
-      ui_icon_scaled(x, y, 24, 24, mon_icon_for_form(201, (uint8_t)i));
-      char ch[2] = { LET[i], 0 };
-      ui_text(x + 8, y + 25, i == sel ? UI_SELTEXT : UI_DIM, ch);
+    int srow = sel / GCOLS;           /* edge scroll, exactly like pick_species */
+    if (srow < toprow) toprow = srow;
+    if (srow >= toprow + GVROWS) toprow = srow - GVROWS + 1;
+    if (toprow < 0) toprow = 0;
+    int top_idx = toprow * GCOLS;
+
+    bool full = relist || top_idx != prev_top;
+    relist = false;
+    if (full) {
+      ui_clear();
+      ui_hline(0, 21, UI_SCR_W, UI_BORDER);
+      ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, "A pick  B cancel");
+      for (int i = 0; i < GCOLS * GVROWS; i++) {
+        int idx = top_idx + i;
+        if (idx >= N) break;
+        int x = GX + (i % GCOLS) * GCELLX, y = GY + (i / GCOLS) * GCELLY;
+        ui_icon_scaled(x, y, GICON, GICON, mon_icon_for_form(201, (uint8_t)idx));
+      }
+    } else if (prev_sel >= top_idx && prev_sel < top_idx + GCOLS * GVROWS) {
+      int pi = prev_sel - top_idx;                 /* erase the old selection frame */
+      int px = GX + (pi % GCOLS) * GCELLX, py = GY + (pi / GCOLS) * GCELLY;
+      m3_frame(px - 1, py - 1, px + GICON, py + GICON, UI_BG);
     }
-    ui_text(4, 152, UI_DIM, "Move  A pick  B cancel");
+    { int si = sel - top_idx;                      /* current selection frame */
+      int sx = GX + (si % GCOLS) * GCELLX, sy = GY + (si / GCOLS) * GCELLY;
+      m3_frame(sx - 1, sy - 1, sx + GICON, sy + GICON, UI_SELTEXT); }
+
+    /* header strip: mirror the species picker's band (Unown is mono-Psychic) */
+    ui_fill_rect(0, 0, UI_SCR_W, 21, UI_BG);
+    siprintf(hdr, "No.201  UNOWN %c", LET[sel]);
+    ui_text(4, 2, UI_TITLE, hdr);
+    type_icon(204, 4, pk_species_type1(201));
+    siprintf(hdr, "[Unown letter]  %d", N);
+    ui_text(4, 11, UI_DIM, hdr);
+
+    prev_sel = sel; prev_top = top_idx;
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) return -1;
     else if (k & KEY_A) return sel;
-    else if (k & KEY_LEFT)  sel = (sel > 0) ? sel - 1 : 27;
-    else if (k & KEY_RIGHT) sel = (sel + 1) % 28;
-    else if (k & KEY_UP)    { if (sel >= uc) sel -= uc; }
-    else if (k & KEY_DOWN)  { if (sel + uc < 28) sel += uc; }
+    else if (k & KEY_LEFT)  sel = (sel > 0) ? sel - 1 : 0;
+    else if (k & KEY_RIGHT) sel = (sel < N - 1) ? sel + 1 : sel;
+    else if (k & KEY_UP)    { if (sel >= GCOLS) sel -= GCOLS; }
+    else if (k & KEY_DOWN)  { if (sel + GCOLS < N) sel += GCOLS; }
   }
 }
