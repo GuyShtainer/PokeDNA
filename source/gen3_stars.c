@@ -2,6 +2,7 @@
 #include "gen3_flags.h"    /* frontier symbol flags */
 #include "gen3_dex.h"      /* seen/owned setters (all mirrors) */
 #include "gen3_edit.h"     /* gen3_encode_char (museum plaque strings) */
+#include "gen3_frontier.h" /* RS Battle Tower record pair (0x572 is a derived cache) */
 #include <string.h>
 
 static uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | ((uint16_t)p[1] << 8)); }
@@ -21,7 +22,8 @@ static const uint8_t FRLG_ACH[4] = { ACH_HOF, ACH_KANTO, ACH_NATDEX, ACH_MINIGAM
  * species u16 @ +8): Emerald contestWinners[8] = 0x2E90 + 8*0x20; RS has a
  * dedicated museumPortraits[5] array. FRLG has no museum. */
 static uint16_t museum_off(PkGame g) { return g == PK_EMERALD ? 0x2F90 : 0x2EFC; }
-#define RS_TOWER_STREAK 0x0572     /* SB2 u16 bestBattleTowerWinStreak (RS only) */
+/* (bestBattleTowerWinStreak @ SB2 0x572 is now reached via gen3_frontier's
+ * g3f_rs_* helpers — it is a cache the game recomputes, not a settable field.) */
 /* FRLG minigame records (SB2, plaintext; pokefirered include/global.h):
  * pokeJump @ 0xB00 (u16 jumpsInRow first), berryPick @ 0xB10 (u32 bestScore,
  * then u16 berriesPicked @ +4). */
@@ -91,7 +93,11 @@ bool pk_star_ach_done(const uint8_t* sb1, const uint8_t* sb2, PkGame g, int i,
         if (!pk_flag_get(sb1, g, pk_frontier_flag(g, k))) return false;
       return true;
     case ACH_TOWER:
-      return rd16(sb2 + RS_TOWER_STREAK) > 49;
+      /* READ the same field the console's trainer card reads (0x572), so PokeDNA's
+       * star display never disagrees with the cartridge. The WRITE path (below) is
+       * the one that must touch the record pair, because the game recomputes 0x572
+       * from it — writing 0x572 alone does not stick. */
+      return g3f_u16_get(sb2, G3F_RS_BEST_STREAK_OFF) > 49;
     case ACH_KANTO:
       return frlg_ranges_owned(sb2, 1);
     case ACH_NATDEX:
@@ -165,7 +171,20 @@ int pk_star_ach_set(uint8_t* sb1, uint8_t* sb2, PkGame g, int i, bool on,
       for (int k = 0; k < 14; k++) pk_flag_set(sb1, g, pk_frontier_flag(g, k), on);
       return 1;
     case ACH_TOWER:                          /* OFF: 49 = just under the bar        */
-      wr16(sb2 + RS_TOWER_STREAK, on ? 50 : 49);
+      /* Writing bestBattleTowerWinStreak (0x572) ALONE does not stick: the game
+       * recomputes it from recordWinStreaks[] on the next tower battle, silently
+       * undoing the star. Write the record pair — g3f_rs_set_record refreshes the
+       * 0x572 cache too, so the card reads right immediately.
+       * ON: only raise if neither lane already clears the bar (don't stomp a real
+       * record). OFF: BOTH lanes must come down, or the survivor keeps the star. */
+      if (on) {
+        if (g3f_rs_record(sb2, 0) <= 49 && g3f_rs_record(sb2, 1) <= 49)
+          g3f_rs_set_record(sb2, 0, 50);
+      } else {
+        for (int lv = 0; lv < 2; lv++)
+          if (g3f_rs_record(sb2, lv) > 49) g3f_rs_set_record(sb2, lv, 49);
+        g3f_rs_set_record(sb2, 0, g3f_rs_record(sb2, 0));   /* refresh the derived cache */
+      }
       return 2;
     case ACH_KANTO:                          /* OFF keeps seen (like ACH_DEX)       */
     case ACH_NATDEX: {

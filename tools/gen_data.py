@@ -372,6 +372,65 @@ NFLAG_SYSTEM = [
     ("FLAG_SYS_POKEMON_GET",  "First Pokemon"),
     ("FLAG_SYS_RIBBON_GET",   "First Ribbon"),
 ]
+# Fly destinations. ONE bit per town unlocks it on the region map's Fly cursor —
+# there is no heal-location record or derived state involved. Hoenn (RSE) uses
+# FLAG_VISITED_*, laid out as a contiguous run parallel to the MAPSEC ids; Kanto
+# (FRLG) uses a COMPLETELY DIFFERENT family, FLAG_WORLD_MAP_*, so this is not
+# "Emerald minus 0x60". add_category drops symbols a game doesn't have, so the
+# combined Hoenn+Kanto list resolves correctly per game with no branching.
+# Traps encoded here:
+#  - Emerald's 17th destination (Battle Frontier) is a LANDMARK flag, far from the
+#    contiguous visited run — a "16 towns" list silently misses it;
+#  - FRLG lists SEVEN ISLAND *before* SIX ISLAND, in both the flags and the MAPSECs;
+#  - FRLG's FLAG_WORLD_MAP_* run STOPS at ROUTE10 (0xA3). 0xA4+ are dungeon
+#    map-preview flags, not Fly destinations — listing them yields ~30 dead rows;
+#  - the Sevii world-map flags are inert unless the two SEVII_MAP prereqs are set.
+NFLAG_FLY = [
+    # --- Hoenn (Emerald + Ruby/Sapphire), in MAPSEC order 0x00..0x0F ---
+    ("FLAG_VISITED_LITTLEROOT_TOWN", "Littleroot Town"),
+    ("FLAG_VISITED_OLDALE_TOWN",     "Oldale Town"),
+    ("FLAG_VISITED_DEWFORD_TOWN",    "Dewford Town"),
+    ("FLAG_VISITED_LAVARIDGE_TOWN",  "Lavaridge Town"),
+    ("FLAG_VISITED_FALLARBOR_TOWN",  "Fallarbor Town"),
+    ("FLAG_VISITED_VERDANTURF_TOWN", "Verdanturf Town"),
+    ("FLAG_VISITED_PACIFIDLOG_TOWN", "Pacifidlog Town"),
+    ("FLAG_VISITED_PETALBURG_CITY",  "Petalburg City"),
+    ("FLAG_VISITED_SLATEPORT_CITY",  "Slateport City"),
+    ("FLAG_VISITED_MAUVILLE_CITY",   "Mauville City"),
+    ("FLAG_VISITED_RUSTBORO_CITY",   "Rustboro City"),
+    ("FLAG_VISITED_FORTREE_CITY",    "Fortree City"),
+    ("FLAG_VISITED_LILYCOVE_CITY",   "Lilycove City"),
+    ("FLAG_VISITED_MOSSDEEP_CITY",   "Mossdeep City"),
+    ("FLAG_VISITED_SOOTOPOLIS_CITY", "Sootopolis City"),
+    ("FLAG_VISITED_EVER_GRANDE_CITY", "Ever Grande City"),
+    ("FLAG_LANDMARK_BATTLE_FRONTIER", "Battle Frontier"),      # Emerald: 17th fly dest
+    ("FLAG_LANDMARK_BATTLE_TOWER",    "Battle Tower"),         # R/S equivalent
+    ("FLAG_LANDMARK_POKEMON_LEAGUE",  "Pokemon League"),       # Emerald: cursor only
+    ("FLAG_SYS_POKEMON_LEAGUE_FLY",   "Pokemon League"),       # R/S: cursor only
+    # --- Kanto + Sevii (FireRed/LeafGreen), in flag order 0x90..0xA3 ---
+    ("FLAG_WORLD_MAP_PALLET_TOWN",              "Pallet Town"),
+    ("FLAG_WORLD_MAP_VIRIDIAN_CITY",            "Viridian City"),
+    ("FLAG_WORLD_MAP_PEWTER_CITY",              "Pewter City"),
+    ("FLAG_WORLD_MAP_CERULEAN_CITY",            "Cerulean City"),
+    ("FLAG_WORLD_MAP_LAVENDER_TOWN",            "Lavender Town"),
+    ("FLAG_WORLD_MAP_VERMILION_CITY",           "Vermilion City"),
+    ("FLAG_WORLD_MAP_CELADON_CITY",             "Celadon City"),
+    ("FLAG_WORLD_MAP_FUCHSIA_CITY",             "Fuchsia City"),
+    ("FLAG_WORLD_MAP_CINNABAR_ISLAND",          "Cinnabar Island"),
+    ("FLAG_WORLD_MAP_INDIGO_PLATEAU_EXTERIOR",  "Indigo Plateau"),
+    ("FLAG_WORLD_MAP_SAFFRON_CITY",             "Saffron City"),
+    ("FLAG_WORLD_MAP_ONE_ISLAND",               "One Island"),
+    ("FLAG_WORLD_MAP_TWO_ISLAND",               "Two Island"),
+    ("FLAG_WORLD_MAP_THREE_ISLAND",             "Three Island"),
+    ("FLAG_WORLD_MAP_FOUR_ISLAND",              "Four Island"),
+    ("FLAG_WORLD_MAP_FIVE_ISLAND",              "Five Island"),
+    ("FLAG_WORLD_MAP_SEVEN_ISLAND",             "Seven Island"),   # NOTE: before Six
+    ("FLAG_WORLD_MAP_SIX_ISLAND",               "Six Island"),
+    ("FLAG_WORLD_MAP_ROUTE4_POKEMON_CENTER_1F", "Route 4 Center"),
+    ("FLAG_WORLD_MAP_ROUTE10_POKEMON_CENTER_1F", "Route 10 Center"),
+    ("FLAG_SYS_SEVII_MAP_123",  "Sevii map 1-2-3 *"),   # * = prereq for the islands
+    ("FLAG_SYS_SEVII_MAP_4567", "Sevii map 4-5-6-7 *"),
+]
 NFLAG_GYMS = [
     # Hoenn (R/S/E) gyms are keyed by location...
     ("FLAG_DEFEATED_RUSTBORO_GYM",   "Rustboro Gym"),
@@ -476,6 +535,7 @@ def build_named_flags(game_dir):
             out.append((0xFFFF, title))
             out.extend(resolved)
 
+    add_category("Fly destinations", NFLAG_FLY)
     add_category("System", NFLAG_SYSTEM)
     add_category("Gyms", NFLAG_GYMS)
     add_category("Elite Four (reset @HoF)", NFLAG_ELITE)

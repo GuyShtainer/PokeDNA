@@ -7,12 +7,15 @@
  *      post-game cart dump): gen3_parse picks the current slot, section 0 is
  *      located, and every facility's stored streaks read back in 0..9999.
  * Build + run (from the repo root):
- *   cc -I source tests/host_streak_test.c source/gen3_record.c source/gen3_save.c \
- *      source/gen3_mon.c -o /tmp/hs && /tmp/hs [path/to/emerald.sav]
+ *   cc -I source tests/host_streak_test.c source/gen3_record.c source/gen3_frontier.c \
+ *      source/gen3_save.c source/gen3_mon.c -o /tmp/hs && /tmp/hs [path/to/emerald.sav]
+ * (gen3_record now delegates its lane offsets to gen3_frontier — one table in the tree.)
  */
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
+#include "gen3_trainer.h"   /* PkGame */
 #include "gen3_record.h"
 #include "gen3_save.h"
 
@@ -109,6 +112,9 @@ int main(int argc, char** argv) {
     if (s0 >= 0) {
       const uint8_t* save_sb2 =
           g_buf + (uint32_t)info.slot * G3_SLOT_BYTES + (uint32_t)s0 * G3_SECTOR_SIZE;
+      /* SaveBlock1 too: the sidecar's symbol field reads event flags, which live there. */
+      static uint8_t g_sb1[G3_SAVEBLOCK1_BYTES];
+      CHECK(gen3_read_saveblock1(g_buf, info.slot, g_sb1), "SaveBlock1 reassembled");
 
       /* every facility's stored streaks must be plausible on a genuine save */
       for (int f = 0; f < 7; f++) {
@@ -135,8 +141,8 @@ int main(int argc, char** argv) {
 
         /* ---- 3) the export sidecar builder on the same real record ---- */
         static char sc[2048];
-        int sn = g3_record_sidecar(sc, sizeof sc, &ri, g_buf, save_sb2,
-                                   12345, "27-07-2026 12:00");
+        int sn = g3_record_sidecar(sc, sizeof sc, &ri, g_buf, save_sb2, g_sb1,
+                                   PK_EMERALD, 12345, "27-07-2026 12:00");
         CHECK(sn > 200 && sn < (int)sizeof sc, "sidecar length sane");
         CHECK(sc[sn] == 0 && (int)strlen(sc) == sn, "sidecar NUL-terminated, length == strlen");
         CHECK(strstr(sc, "PokeDNA battle record export") == sc, "sidecar header first");
@@ -146,11 +152,29 @@ int main(int argc, char** argv) {
         CHECK(strstr(sc, "player team:") && strstr(sc, "opponent team:"), "sidecar lists both teams");
         CHECK(strstr(sc, "current streaks") != NULL, "sidecar carries the streak table");
         CHECK(strstr(sc, "Pyramid") != NULL, "streak table covers all facilities");
+        /* ---- the save-state block rec2mp4 consumes (docs/REC-SIDECAR.md) ---- */
+        CHECK(strstr(sc, "state.playtime: ")     != NULL, "sidecar carries play time");
+        CHECK(strstr(sc, "state.dex_seen: ")     != NULL, "sidecar carries dex seen");
+        CHECK(strstr(sc, "state.dex_caught: ")   != NULL, "sidecar carries dex caught");
+        CHECK(strstr(sc, "state.bp: ")           != NULL, "sidecar carries BP");
+        CHECK(strstr(sc, "state.symbols: ")      != NULL, "sidecar carries the symbol string");
+        { const char* sy = strstr(sc, "state.symbols: ");
+          int ok = 1;
+          for (int i = 0; i < 7; i++) {
+            char ch = sy[15 + i];
+            if (ch != '-' && ch != 's' && ch != 'G') ok = 0;
+          }
+          CHECK(ok && sy[22] == '\n', "symbol field is exactly 7 chars of -/s/G");
+          /* seen >= caught is an invariant of the two bit arrays, not a coincidence */
+          int seen = atoi(strstr(sc, "state.dex_seen: ") + 16);
+          int caught = atoi(strstr(sc, "state.dex_caught: ") + 18);
+          CHECK(seen >= caught, "dex seen >= caught"); }
         /* truncation safety: a tiny cap must not overflow or lose the NUL */
         char tiny[64];
-        int tn = g3_record_sidecar(tiny, sizeof tiny, &ri, g_buf, save_sb2, 1, 0);
+        int tn = g3_record_sidecar(tiny, sizeof tiny, &ri, g_buf, save_sb2, g_sb1,
+                                   PK_EMERALD, 1, 0);
         CHECK(tn < (int)sizeof tiny && tiny[tn] == 0, "sidecar truncates safely");
-        printf("sidecar: %d bytes\n%.200s...\n", sn, sc);
+        printf("sidecar: %d bytes\n%s\n", sn, strstr(sc, "state.playtime") ? strstr(sc, "state.playtime") : "(no state block)");
       } else {
         printf("record: none stored in this save (streak lookup not exercised)\n");
       }

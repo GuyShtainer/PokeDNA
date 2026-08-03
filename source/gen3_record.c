@@ -2,6 +2,9 @@
 #include "gen3_record.h"
 #include "gen3_save.h"     /* gen3_decode_char, G3_SAVE_FILE_SIZE */
 #include "gen3_mon.h"      /* pk_decode_mon, pk_is_shiny (sidecar team summary) */
+#include "gen3_frontier.h" /* the one frontier streak offset table */
+#include "gen3_dex.h"      /* pk_dex_count — the sidecar's save-state block */
+#include "gen3_flags.h"    /* pk_frontier_flag, pk_flag_get                 */
 
 /* little-endian readers (file-local, like every gen3_* core) */
 static uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
@@ -104,21 +107,14 @@ const char* g3_record_facility_short(int facility) {
  * mode is recovered from the record's battleFlags (include/constants/battle.h:
  * 59 DOUBLE 1<<0, 65 MULTI 1<<6, 82 TOWER_LINK_MULTI 1<<23). All streak fields
  * are plaintext u16 — NOT obfuscated by Emerald's security key. */
-static const struct { uint16_t off; uint8_t modes; } k_lane[7] = {
-  { 0xCE0, 4 },   /* Tower:   singles/doubles/multis/link-multis */
-  { 0xD0C, 2 },   /* Dome:    singles/doubles                    */
-  { 0xDC8, 2 },   /* Palace:  singles/doubles                    */
-  { 0xDDA, 1 },   /* Arena                                       */
-  { 0xDE2, 2 },   /* Factory: singles/doubles                    */
-  { 0xE04, 1 },   /* Pike                                        */
-  { 0xE1A, 1 },   /* Pyramid                                     */
-};
-
+/* The offset table itself now lives in gen3_frontier.c — this delegates so the tree
+ * has exactly ONE copy of it. Kept as a thin wrapper because the export sidecar's
+ * contract differs from the viewer's: it returns -1 for an implausible value
+ * (a sidecar should print nothing rather than a corrupt number), whereas
+ * g3f_streak_get deliberately surfaces whatever is stored. */
 int g3_facility_streak(const uint8_t* sb2, int facility, int mode, int lvl) {
-  if (!sb2 || facility < 0 || facility >= 7 || lvl < 0 || lvl > 1) return -1;
-  if (mode < 0 || mode >= k_lane[facility].modes) return -1;
-  uint32_t v = rd16(sb2 + k_lane[facility].off + ((uint32_t)mode * 2u + (uint32_t)lvl) * 2u);
-  return (v <= (uint32_t)G3_REC_MAX_STREAK) ? (int)v : -1;
+  int v = g3f_streak_get(sb2, facility, mode, lvl, G3F_CURRENT);
+  return (v >= 0 && v <= G3_REC_MAX_STREAK) ? v : -1;
 }
 
 /* The record's own battle mode, recovered from its battleFlags. */
@@ -158,8 +154,8 @@ static void sc_hex8(char* out, int cap, int* n, uint32_t v) {
 }
 
 int g3_record_sidecar(char* out, int cap, const G3RecordInfo* ri,
-                      const uint8_t* save, const uint8_t* sb2,
-                      uint16_t tid_public, const char* stamp) {
+                      const uint8_t* save, const uint8_t* sb2, const uint8_t* sb1,
+                      int game, uint16_t tid_public, const char* stamp) {
   static const char* const k_mode[4] = { "singles", "doubles", "multis", "link" };
   int n = 0;
   if (cap < 2) return 0;
@@ -206,6 +202,53 @@ int g3_record_sidecar(char* out, int cap, const G3RecordInfo* ri,
       sc_put(out, cap, &n, " "); sc_num(out, cap, &n, a);
       sc_put(out, cap, &n, "/"); sc_num(out, cap, &n, b < 0 ? 0 : b);
     }
+    sc_put(out, cap, &n, "\n");
+  }
+
+  /* ---- SAVE STATE ----------------------------------------------------------
+   * The state of the save the recording came OUT of, so a rendered video can open on who
+   * this actually is rather than on an anonymous battle. Everything here is read at export
+   * time: none of it is in sector 31, so if it is not written now it is gone.
+   *
+   * Machine-readable on purpose — one `key: value` per line, stable key names, no prose —
+   * because rec2mp4 parses it. The block is skipped entirely rather than guessed when the
+   * inputs are missing. */
+  if (sb2) {
+    sc_put(out, cap, &n, "state.playtime: ");
+    sc_num(out, cap, &n, (unsigned)(sb2[SB2_OFF_PLAYTIME_H] | (sb2[SB2_OFF_PLAYTIME_H + 1] << 8)));
+    sc_put(out, cap, &n, "h ");
+    sc_num(out, cap, &n, sb2[SB2_OFF_PLAYTIME_M]);
+    sc_put(out, cap, &n, "m ");
+    sc_num(out, cap, &n, sb2[SB2_OFF_PLAYTIME_S]);
+    sc_put(out, cap, &n, "s\n");
+
+    /* Seen and owned are two separate bit arrays; a mon can be seen without being caught,
+     * never the reverse. Counted over the national range so the number does not change
+     * meaning when the national dex is unlocked. */
+    sc_put(out, cap, &n, "state.dex_seen: ");  sc_num(out, cap, &n, pk_dex_count(sb2, false));
+    sc_put(out, cap, &n, "\nstate.dex_caught: "); sc_num(out, cap, &n, pk_dex_count(sb2, true));
+    sc_put(out, cap, &n, "\nstate.bp: ");      sc_num(out, cap, &n, g3f_u16_get(sb2, G3F_BATTLE_POINTS_OFF));
+    sc_put(out, cap, &n, "\nstate.bp_card: "); sc_num(out, cap, &n, g3f_u16_get(sb2, G3F_CARD_BP_OFF));
+    sc_put(out, cap, &n, "\n");
+  }
+  /* The seven Frontier symbols, silver and gold. Flags live in SaveBlock1, so this needs
+   * both blocks; emitted as a fixed 7-character field in facility order, one of
+   * '-' none / 's' silver / 'G' gold, plus the totals. */
+  if (sb1 && game == PK_EMERALD) {
+    char sym[8];
+    int silver = 0, gold = 0;
+    for (int f = 0; f < 7; f++) {
+      int fs = pk_frontier_flag(PK_EMERALD, f * 2);       /* silver lane */
+      int fg = pk_frontier_flag(PK_EMERALD, f * 2 + 1);   /* gold lane   */
+      bool hs = (fs >= 0) && pk_flag_get(sb1, PK_EMERALD, fs);
+      bool hg = (fg >= 0) && pk_flag_get(sb1, PK_EMERALD, fg);
+      sym[f] = hg ? 'G' : hs ? 's' : '-';
+      if (hg) gold++; else if (hs) silver++;
+    }
+    sym[7] = 0;
+    sc_put(out, cap, &n, "state.symbols: "); sc_put(out, cap, &n, sym);
+    sc_put(out, cap, &n, "\nstate.symbols_silver: "); sc_num(out, cap, &n, silver);
+    sc_put(out, cap, &n, "\nstate.symbols_gold: ");   sc_num(out, cap, &n, gold);
     sc_put(out, cap, &n, "\n");
   }
   return n;

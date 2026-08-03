@@ -81,8 +81,11 @@ int g3_facility_streak(const uint8_t* sb2, int facility, int mode, int lvl);
  * NUL-terminated). Everything platform-specific comes in as arguments; pure C so
  * the host tests exercise it. `stamp` = RTC string or NULL. Returns the length
  * written (always < cap; the builder truncates safely). */
+/* `sb1`/`game` may be NULL/anything when unavailable — the SAVE STATE block is then
+ * omitted rather than guessed. See docs/REC-SIDECAR.md in the rec2mp4 project for the
+ * consumer's contract. */
 int g3_record_sidecar(char* out, int cap, const G3RecordInfo* ri,
-                      const uint8_t* save, const uint8_t* sb2,
-                      uint16_t tid_public, const char* stamp);
+                      const uint8_t* save, const uint8_t* sb2, const uint8_t* sb1,
+                      int game, uint16_t tid_public, const char* stamp);
 
 #endif /* GEN3_RECORD_H */

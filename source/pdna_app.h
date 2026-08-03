@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "gen3_mon.h"      /* PkMon (app_bank_hide_pending) */
+#include "gen3_trainer.h"  /* PkGame (app_rom_path)         */
 
 /* Shared app glue so the party list and box grid can open the editor and persist
  * safely. Implemented in pdna_main.c (which owns the loaded save + path). */
@@ -125,5 +126,33 @@ enum { ANIM_BOX,        /* PC + bank box-icon 2-frame bob   */
        ANIM_SUMMARY,    /* summary-card portrait wiggle     */
        ANIM_COUNT };
 bool app_anim_enabled(int kind);   /* true iff animations are on for ANIM_<kind> */
+
+/* ---- borrowed EWRAM arena (the map screen) ---------------------------------
+ * EWRAM has only ~6 KB genuinely free, and the map viewer needs ~33 KB for a
+ * decompressed tileset. Rather than adding a buffer that would not link, the map
+ * screen BORROWS `g_pc` — the reassembled PC storage. That buffer is the right
+ * donor for three reasons: it is a single CONTIGUOUS 35,712-byte block (the other
+ * candidates are scattered across translation units and cannot form one arena), it
+ * is *derived* from g_save so it can be rebuilt byte-exactly on release, and the
+ * map screen has no use for PC boxes.
+ *
+ * Deliberately NOT donors: g_save / g_sb1 / g_sb2 — the map screen must read g_sb1
+ * for the player's position and write through g_save to commit a teleport, so
+ * aliasing those is exactly the hard-rule-3 failure mode.
+ *
+ * app_arena_acquire() FAILS (returns NULL) when the PC is dirty, because unsaved box
+ * moves live only in g_pc and would be destroyed. Callers must handle NULL by telling
+ * the user to save first — never by proceeding.
+ * app_arena_release() re-derives g_pc from g_save. */
+#define APP_ARENA_BYTES (9 * 3968)          /* == G3_PC_BYTES, 35712 */
+uint8_t* app_arena_acquire(uint32_t need);  /* NULL: too big, already held, or PC dirty */
+void     app_arena_release(void);
+bool     app_arena_held(void);
+
+/* Path of the Pokemon ROM the map screen reads map data from, remembered per game
+ * (RS / Emerald / FRLG) because their map data differs and each needs its own ROM.
+ * Returns "" when none has been picked yet. Set persists via config.cfg. */
+const char* app_rom_path(PkGame game);
+void        app_rom_path_set(PkGame game, const char* path);
 
 #endif /* PDNA_APP_H */

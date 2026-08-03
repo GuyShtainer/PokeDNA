@@ -8,7 +8,10 @@
 #include "sys.h"   /* EWRAM_BSS */
 
 /* Shared 4 KiB compare/copy chunk in EWRAM (.bss), never on the IWRAM stack. */
-static uint8_t EWRAM_BSS s_cmp[4096];
+/* 2 KiB, not 4: EWRAM is genuinely full since the map feature landed, and this only
+ * affects copy/compare throughput on a 128 KiB file. Must stay >= 512 and 4-byte aligned
+ * so copy_file keeps hitting disk_write's DIRECT path instead of the bounce buffer. */
+static uint8_t EWRAM_BSS s_cmp[2048];
 
 const char* sf_status_str(SfStatus s) {
   switch (s) {
@@ -45,7 +48,7 @@ static SfStatus files_equal(const char* a, const char* b, bool* equal) {
   if (f_open(&fa, a, FA_READ) != FR_OK) return SF_ERR_OPEN;
   if (f_open(&fb, b, FA_READ) != FR_OK) { f_close(&fa); return SF_ERR_OPEN; }
 
-  static uint8_t EWRAM_BSS bufb[4096];
+  static uint8_t EWRAM_BSS bufb[2048];   /* see the note on s_cmp */
   SfStatus st = SF_OK;
   bool same = true;
   if (f_size(&fa) != f_size(&fb)) same = false;

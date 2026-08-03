@@ -18,9 +18,13 @@
 #include <string.h>
 
 #include "flashcartio.h"   /* active_flashcart, flashcartio_activate (pulls in sys.h) */
+#ifdef PDNA_DELTA
+#include "flashsave.h"     /* emulator build: the save IS this ROM's own 128 KiB flash */
+#endif
 #include "sys.h"           /* EWRAM_BSS (idempotent; guarded)                          */
 #include "ff.h"
 #include "gen3_save.h"
+#include "gen3_mirage.h"
 #include "gen3_mon.h"
 #include "gen3_box.h"
 #include "data_tables.h"
@@ -29,6 +33,9 @@
 #include "pdna_box.h"
 #include "gen3_trainer.h"
 #include "gen3_record.h"    /* Emerald Battle Record (save sector 31) info + export */
+#include "pdna_frontier.h"  /* Battle Frontier win-streak viewer/editor (SaveBlock2) */
+#include "pdna_fly.h"       /* Fly-destination (visited-town) flags (SaveBlock1)     */
+#include "pdna_map.h"       /* overworld map, read from the user's own Pokemon ROM   */
 #include "pdna_trainer.h"
 #include "pdna_edit.h"
 #include "gen3_edit.h"     /* EditMon, gen3_edit_load/commit, em_set_*, em_preview */
@@ -93,6 +100,10 @@ static u8          EWRAM_BSS g_sb1[G3_SAVEBLOCK1_BYTES];  /* reassembled SaveBlo
 static BrowseEntry EWRAM_BSS g_entries[MAX_ENTRIES];      /* current-dir listing     */
 static int         g_count = 0;
 static char        EWRAM_BSS g_cwd[PATH_MAX];             /* current directory (set in main) */
+/* Pokemon ROM path per game (PkGame index: RS / Emerald / FRLG). The map screen reads
+ * map data out of the user's OWN ROM, and RS/E/FRLG map data differs, so each game
+ * remembers its own file. Persisted by cfg_save. */
+static char        EWRAM_BSS g_rom_path[3][PATH_MAX];
 static PkMon       EWRAM_BSS g_party[6];                  /* decoded party of the open save  */
 static u8          EWRAM_BSS g_pc[G3_PC_BYTES];           /* reassembled PC storage (boxes)  */
 static u8          EWRAM_BSS g_sb2[G3_SECTOR_DATA_SIZE];   /* SaveBlock2 (trainer card/stats) */
@@ -246,10 +257,16 @@ static void scan_dir(void) {
  * so this is a no-op on a read-only cart; best-effort, any failure is ignored. */
 static void cfg_save(void) {
   if (!app_can_edit()) return;
-  char buf[PATH_MAX + 96];
+  char buf[PATH_MAX * 4 + 128];
   int n = siprintf(buf, "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\n",
                    g_cwd, (int)g_sort, g_sortrev ? 1 : 0, g_show_all ? 1 : 0, g_show_hidden ? 1 : 0,
                    g_anim_mask, rmbl_get_mask(), rmbl_get_strength(), rmbl_get_duration(), g_pc_last_box);
+  /* One ROM path per game — RS/Emerald/FRLG map data differs, so each needs its own
+   * ROM file (Guy's requirement). Only non-empty entries are written. */
+  static const char* const k_romkey[3] = { "romrs", "romem", "romfr" };
+  for (int i = 0; i < 3; i++)
+    if (g_rom_path[i][0])
+      n += siprintf(buf + n, "%s=%s\n", k_romkey[i], g_rom_path[i]);
   FIL f;
   rmbl_pause();                                  /* no motor toggling during the SD write */
   if (f_open(&f, CFG_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) { rmbl_resume(); return; }
@@ -263,7 +280,7 @@ static void cfg_save(void) {
 static void cfg_load(void) {
   FIL f;
   if (f_open(&f, CFG_PATH, FA_READ) != FR_OK) return;
-  char buf[PATH_MAX + 96]; UINT br = 0;
+  char buf[PATH_MAX * 4 + 128]; UINT br = 0;
   FRESULT fr = f_read(&f, buf, sizeof(buf) - 1, &br); f_close(&f);
   if (fr != FR_OK || br == 0) return;
   buf[br] = 0;
@@ -281,6 +298,9 @@ static void cfg_load(void) {
       else if (!strcmp(k, "anim"))   { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); g_anim_mask = m & ((1u << ANIM_COUNT) - 1u); }
       else if (!strcmp(k, "rumble")) { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); rmbl_set_mask(m); }
       else if (!strcmp(k, "pcbox"))  { int m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (*d - '0'); g_pc_last_box = m; }
+      else if (!strcmp(k, "romrs") && v[0]) { strncpy(g_rom_path[PK_RS], v, PATH_MAX - 1);      g_rom_path[PK_RS][PATH_MAX - 1] = 0; }
+      else if (!strcmp(k, "romem") && v[0]) { strncpy(g_rom_path[PK_EMERALD], v, PATH_MAX - 1); g_rom_path[PK_EMERALD][PATH_MAX - 1] = 0; }
+      else if (!strcmp(k, "romfr") && v[0]) { strncpy(g_rom_path[PK_FRLG], v, PATH_MAX - 1);    g_rom_path[PK_FRLG][PATH_MAX - 1] = 0; }
     }
     p = term ? eol + 1 : eol;
   }
@@ -495,7 +515,13 @@ static bool     g_item_held = false;
 
 /* ===================== edit / commit (V4) =============================== */
 
+#ifdef PDNA_DELTA
+/* Emulator build: there is no flashcart to gate on — the save is our own flash chip,
+ * which is always writable. */
+bool app_can_edit(void) { return true; }
+#else
 bool app_can_edit(void) { return active_flashcart == EZ_FLASH_OMEGA; }
+#endif
 
 /* Flush the RAM log to SD now — for anomaly sites (wallpaper/icon self-verify) whose
  * evidence must survive a "see glitch -> power off". Same rmbl discipline as the
@@ -555,6 +581,19 @@ bool app_anim_enabled(int kind) { return kind >= 0 && kind < ANIM_COUNT && ((g_a
 
 /* Verify checksums, back up the original, and do the verified whole-file write —
  * the shared tail of every commit (the changed section bytes are already in g_save). */
+/* Was the loaded image already failing checksums BEFORE this session edited anything?
+ * Set once, right after the save is read. Without it a "CHECKSUM ERROR" at write time is
+ * ambiguous between "the edit broke it" and "it arrived broken", and on an emulator build
+ * there is no SD log to consult. -1 = not checked yet, -2 = clean, >=0 = failing section. */
+int g_boot_csum = -1;
+
+void app_note_boot_checksums(void) {
+  int fail = -1;
+  g_boot_csum = gen3_verify_full_checksums(g_save, g_vinfo.slot, &fail) ? -2 : fail;
+  log_line("boot: image checksums %s (slot %d, section %d)",
+           g_boot_csum == -2 ? "OK" : "BAD", g_vinfo.slot, fail);
+}
+
 static bool app_save_finalize(void) {
   /* Fold any pending deferred PC-box edits into the image FIRST, so EVERY whole-file write
    * is internally consistent. A cross-buffer move (party<->box, PC<->Day-Care) stages its
@@ -569,12 +608,41 @@ static bool app_save_finalize(void) {
                               g_pc + (uint32_t)(id - G3_SID_PKMN_STORAGE_START) * G3_SECTOR_DATA_SIZE);
   int fail = -1;
   if (!gen3_verify_full_checksums(g_save, g_vinfo.slot, &fail)) {
-    log_line("edit: checksum FAIL at section %d", fail);
+    /* SAY WHICH SECTION. "Image failed checksums" is unactionable: sections 0..4 are the
+     * trainer/SaveBlock1 half this edit just rewrote, 5..13 are PC storage that it never
+     * touches. Which side fails tells you instantly whether the edit is at fault or the
+     * loaded image already was — and on an emulator build there is no SD log to read. */
+    char l2[40];
+    siprintf(l2, "slot %d sect %d %s", g_vinfo.slot, fail,
+             (g_boot_csum == fail) ? "(bad on load)" : "(new)");
+    log_line("edit: checksum FAIL at section %d (slot %d)", fail, g_vinfo.slot);
     snd_error();
-    msg_wait("CHECKSUM ERROR", UI_WARN, "Image failed checksums.", "NOT written.");
+    msg_wait("CHECKSUM ERROR", UI_WARN, l2, "NOT written.");
     return false;
   }
 
+#ifdef PDNA_DELTA
+  /* Emulator build: the save is this ROM's own 128 KiB flash chip. There is no
+   * sibling file, so no .tmp/.bak pipeline is possible — flashsave_write erases,
+   * programs and then byte-compares the whole image, and a failure leaves the chip
+   * in an UNKNOWN state. That is exactly why the failure message tells the user to
+   * restore their own copy: their .sav on the phone IS the backup. */
+  busy_panel("Writing flash save...");
+  bool fok = flashsave_write(g_save, G3_SAVE_FILE_SIZE);
+  log_line("edit: flash write %s", fok ? "OK" : "FAILED");
+  if (!fok) {
+    snd_error();
+    msg_wait("FLASH WRITE FAILED", UI_WARN, "Save may be damaged.", "Restore your .sav copy.");
+    return false;
+  }
+  snd_save();
+  rmbl_fire(RCUE_SAVE);
+  grow_in(UI_OK);
+  msg_wait("SAVED", UI_OK, "Flash written + verified.", "No backup in this build.");
+  g_sb1_deferred = false;      /* same bookkeeping as the SD path: a full write */
+  g_pc_dirty     = false;      /* flushes staged daycare + PC edits */
+  return true;
+#else
   log_line("=== edit commit -> %s (backup mode %d) ===", g_path, g_backup_mode);
   char bak[SF_PATH_MAX]; bak[0] = 0;
   if (g_backup_mode != 2) {                        /* 2 = skip backup; else back up the pre-save file */
@@ -609,6 +677,7 @@ static bool app_save_finalize(void) {
   g_sb1_deferred = false;                           /* a full write flushes any staged daycare edits */
   g_pc_dirty = false;                               /* and the folded-in PC edits are now on disk */
   return true;
+#endif /* PDNA_DELTA */
 }
 
 /* Persist `block` (sections [lo..hi]) into the in-RAM image, then finalize. The
@@ -650,6 +719,40 @@ bool app_commit_sb12(void) {
 
 void app_mark_pc_dirty(void) { g_pc_dirty = true; }
 bool app_pc_dirty(void)      { return g_pc_dirty; }
+
+/* ---- borrowed EWRAM arena (see pdna_app.h for why g_pc is the donor) -------- */
+static bool g_arena_held = false;
+bool app_arena_held(void) { return g_arena_held; }
+
+uint8_t* app_arena_acquire(uint32_t need) {
+  if (g_arena_held || need > (uint32_t)G3_PC_BYTES) return NULL;
+  /* Unsaved box moves live ONLY in g_pc — handing it out would destroy them. The
+   * caller must tell the user to save first; it must not "helpfully" commit here,
+   * because a PC write is a user-visible destructive action. */
+  if (g_pc_dirty) return NULL;
+  g_arena_held = true;
+  return g_pc;
+}
+
+void app_arena_release(void) {
+  if (!g_arena_held) return;
+  g_arena_held = false;
+  /* Rebuild the PC exactly as it was: g_pc is pure derived state, and g_save (which
+   * the arena never touches) is still authoritative. */
+  gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);
+}
+
+/* ---- per-game ROM path (the map screen reads map data from the user's own ROM) */
+const char* app_rom_path(PkGame game) {
+  int i = (int)game;
+  return (i >= 0 && i < 3) ? g_rom_path[i] : "";
+}
+void app_rom_path_set(PkGame game, const char* path) {
+  int i = (int)game;
+  if (i < 0 || i >= 3 || !path) return;
+  strncpy(g_rom_path[i], path, PATH_MAX - 1);
+  g_rom_path[i][PATH_MAX - 1] = 0;
+}
 
 /* Release a PC box slot as part of a PC->Bank MOVE (multi-select "send to bank" + the
  * single-mon carry): clear g_pc[box][slot] IFF it still holds the mon whose 8-byte identity
@@ -1527,27 +1630,34 @@ static void flags_raw_view(bool* dirty, bool* warned) {
  * in RAM and committed ONCE on exit (B). Returns true if the save was written. */
 /* Collapsible flag sections: bit k of s_flags_folded = the k-th header row (flat
  * order) is folded. Session-only by design — a fresh app run starts all-collapsed,
- * the state then persists across editor visits until power-off (Guy). Max 12
- * headers per game table, so a u16 mask covers all of them. */
-static uint16_t s_flags_folded = 0xFFFF;
+ * the state then persists across editor visits until power-off (Guy). Emerald is at
+ * 13 headers once "Fly destinations" lands; a u32 mask keeps the ceiling far away
+ * (a fold bit past the mask width silently un-folds that section). */
+static uint32_t s_flags_folded = 0xFFFFFFFFu;
+#define NF_MAX_HDRS 32                       /* bits available in s_flags_folded */
 
 /* Owning-header ordinal per row, cached once per table — the naive rescan made
  * nf_visible O(row) and cursor moves near the bottom of the ~490-row Emerald
- * table O(n^2) per keypress (Guy: "really slow toward the bottom"). */
+ * table O(n^2) per keypress (Guy: "really slow toward the bottom").
+ * SIZE RULE: NF_ORD_MAX must stay >= the largest per-game NamedFlag row count in
+ * data_tables.c (Emerald ~492 before "Fly destinations", ~530 after). A row past
+ * the cap gets ordinal 0, folds under the FIRST header and renders in the wrong
+ * section — silently, with no assert. Grow this when a table grows. */
+#define NF_ORD_MAX 768
 static const NamedFlag* s_nf_for = 0;
-static uint8_t s_nf_ord[512];
+static uint8_t s_nf_ord[NF_ORD_MAX];
 static void nf_cache(const NamedFlag* nf, int nc) {
   if (s_nf_for == nf) return;
   int o = -1;
-  for (int i = 0; i < nc && i < 512; i++) {
+  for (int i = 0; i < nc && i < NF_ORD_MAX; i++) {
     if (nf[i].num == NAMED_FLAG_HEADER) o++;
-    s_nf_ord[i] = (uint8_t)(o < 0 ? 0 : o);
+    s_nf_ord[i] = (uint8_t)(o < 0 ? 0 : (o >= NF_MAX_HDRS ? NF_MAX_HDRS - 1 : o));
   }
   s_nf_for = nf;
 }
 static int nf_hdr_ord(const NamedFlag* nf, int r) {    /* ordinal of row r's owning header */
   (void)nf;
-  return (r >= 0 && r < 512) ? s_nf_ord[r] : 0;
+  return (r >= 0 && r < NF_ORD_MAX) ? s_nf_ord[r] : 0;
 }
 static bool nf_visible(const NamedFlag* nf, int nc, int r) {
   if (r >= nc || nf[r].num == NAMED_FLAG_HEADER) return true;   /* raw row + headers always */
@@ -1609,7 +1719,7 @@ static bool data_editor(void) {
   bool dirty = false, flag_warned = false;
 
   const NamedFlag* f_nf = 0; int f_top = -1, f_sel = -1;   /* flags-tab partial-redraw state */
-  uint16_t f_fold = 0; bool f_valid = false;
+  uint32_t f_fold = 0; bool f_valid = false;   /* must match s_flags_folded's width */
   for (;;) {
     /* Flags tab computes its layout FIRST: when only the cursor moved (same window,
      * same folds) we repaint just the two affected rows instead of the whole screen
@@ -2791,6 +2901,106 @@ static void clock_manual_entry(GbaRtcTime live) {
   }
 }
 
+/* ---- Mirage Island ----------------------------------------------------------
+ * Route 130, RSE only. The full mechanic and every measurement behind this screen live in
+ * gba-toolkit/docs/kb/pokemon/mirage-island.md; the arithmetic is gen3_mirage.c, host-tested.
+ *
+ * Two things drive the whole design:
+ *  - There is NO flag. The island is a live comparison between one saved u16 and the
+ *    personality low half of any of the six party slots, so this screen lists the party and
+ *    asks WHICH Pokemon should be the key.
+ *  - Writing that u16 directly does NOT work. The save owes a day-rollover catch-up that runs
+ *    before the map script on load and would overwrite it (MEASURED: 5 days on Guy's Emerald,
+ *    68 on Ruby). So we write the LCG PRE-IMAGE and let the game's own catch-up land on the
+ *    target. That is why this screen needs the cart RTC. */
+static void pdna_mirage(void) {
+  int sel = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, "MIRAGE ISLAND");
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+
+    if (g_game == PK_FRLG) {
+      ui_text(6, 44, UI_DIM, "FireRed / LeafGreen have no");
+      ui_text(6, 56, UI_DIM, "Mirage Island.");
+      ui_text(4, 152, UI_DIM, "B back");
+      wait_keys(KEY_B);
+      return;
+    }
+
+    uint16_t hi = 0, lo = 0;
+    mirage_get(g_sb1, g_game, &hi, &lo);
+    uint16_t key[MIRAGE_PARTY_SLOTS]; uint8_t slot[MIRAGE_PARTY_SLOTS];
+    int n = mirage_party_keys(g_sb1, key, slot);
+    bool showing = mirage_present(g_sb1, g_game);
+
+    GbaRtcTime live; bool have = gba_rtc_get(&live);
+    Gen3ClockInfo ci;
+    gen3_clock_read(g_sb2, have ? gen3_rtc_days(live.year, live.month, live.day) : 0,
+                    have ? (live.hour * 3600 + live.minute * 60 + live.second) : 0, have, &ci);
+    /* VAR_DAYS is stored in the game's 1-BASED day count; local_days is epoch-0. */
+    int owed = have ? mirage_days_owed(g_sb1, g_game, ci.local_days + 1) : -1;
+
+    /* 240 px / 8 px per char = 30 columns, and text starts at x=6 — so 29. Every line here is
+     * counted against that; the first draft wrapped and overlapped itself. */
+    char b[44];
+    siprintf(b, "Dice now %04X  %s", hi, showing ? "SHOWING" : "hidden");
+    ui_text(6, 22, showing ? UI_OK : UI_TEXT, b);
+    if (owed < 0) {
+      ui_text(6, 34, UI_WARN, "Cart clock off.");
+      ui_text(6, 44, UI_DIM,  "Set GAME RTC to use this.");
+    } else if (owed == 0) {
+      ui_text(6, 34, UI_DIM, "Nothing owed - writes as-is.");
+    } else {
+      siprintf(b, "Owed %d day(s): writes a seed", owed);
+      ui_text(6, 34, UI_DIM, b);
+      ui_text(6, 44, UI_DIM, "the game rolls into place.");
+    }
+
+    /* WORDING MATTERS HERE. Guy read the first draft ("Make it match:" over a list of his
+     * Pokemon) as editing the Pokemon. It never does: the only bytes written are the two u16s
+     * of the dice. The list exists because the dice has to land on SOME party member's key and
+     * he has six to choose from. Say that on screen. */
+    ui_text(6, 60, UI_TEXT, n ? "Point the dice at:" : "No Pokemon in the party.");
+    for (int i = 0; i < n; i++) {
+      PkMon m;
+      const uint8_t* mon = g_sb1 + 0x238u + (uint32_t)slot[i] * 100u;
+      bool ok = pk_decode_mon(mon, true, &m);
+      siprintf(b, "%c %-11.11s %04X", (i == sel) ? '>' : ' ',
+               ok && m.nickname[0] ? m.nickname : "?", key[i]);
+      ui_text(6, 72 + i * 9, (i == sel) ? UI_TEXT : UI_DIM, b);  /* 9 px: six rows must clear y=128 */
+    }
+
+    ui_text(6, 128, UI_DIM, "Dice only; no Pokemon edited.");
+    ui_text(6, 138, UI_DIM, "Lasts one in-game day.");
+    ui_text(4, 152, UI_DIM, n ? "A appear  U/D pick  B back" : "B back");
+
+    u16 k = wait_keys(KEY_A | KEY_UP | KEY_DOWN | KEY_B);
+    if (k & KEY_B) return;
+    if (!n) continue;
+    if (k & KEY_UP)   { sel = (sel > 0) ? sel - 1 : n - 1; continue; }
+    if (k & KEY_DOWN) { sel = (sel + 1) % n;               continue; }
+
+    if (!app_can_edit()) { msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+    /* app_confirm's panel is the same narrow one. */
+    if (!have) {
+      /* msg_wait's panel is narrower than the screen: ~22 chars a line, not 29. */
+      msg_wait("NO CART CLOCK", UI_WARN, "Turn on GAME RTC and", "set the cart TIME.");
+      continue;
+    }
+    if (!app_confirm("Set the dice?", "Lasts one in-game day.")) continue;
+
+    uint16_t wh, wl;
+    mirage_solve(key[sel], lo, owed > 0 ? owed : 0, &wh, &wl);
+    mirage_set(g_sb1, g_game, wh, wl);
+    bool w = app_commit_sb1();
+    log_line("mirage: key %04X owed %d -> wrote %04X/%04X %s",
+             key[sel], owed, wh, wl, w ? "OK" : "FAILED");
+    if (w) msg_wait("DONE", UI_OK, "Go to Route 130, or ask", "the man in Pacifidlog.");
+    else   msg_wait("WRITE FAILED", UI_WARN, "Nothing was changed.", 0);
+  }
+}
+
 static void pdna_clock(void) {
   bool can = app_can_edit();
   for (;;) {
@@ -3186,8 +3396,8 @@ static void pdna_battle_record(void) {
       char stamp[24]; stamp[0] = 0;
       if (rtc_ok) sniprintf(stamp, sizeof stamp, "%02u-%02u-%04u %02u:%02u",
                             t.day, t.month, t.year, t.hour, t.minute);
-      int sn = g3_record_sidecar(sc, sizeof sc, &ri, g_save, g_sb2,
-                                 g_vinfo.tid_public, rtc_ok ? stamp : 0);
+      int sn = g3_record_sidecar(sc, sizeof sc, &ri, g_save, g_sb2, g_sb1,
+                                 (int)g_game, g_vinfo.tid_public, rtc_ok ? stamp : 0);
       int pl = (int)strlen(path);                        /* ".rec" -> ".txt" */
       char sp[72]; memcpy(sp, path, (size_t)pl + 1);
       sp[pl - 3] = 't'; sp[pl - 2] = 'x'; sp[pl - 1] = 't';
@@ -3209,21 +3419,51 @@ static void pdna_battle_record(void) {
 
 /* START-menu destinations over the box (Party + Bank + Daycare are the storage
  * screens; SELECT no longer toggles the party — it cycles the box cursor mode). */
-enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_DEX, NV_DATA, NV_SECRET, NV_POKEBLOCK, NV_EVENTS, NV_BATTLEREC, NV_SETTINGS, NV_BACK, NV_COUNT };
+enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_MIRAGE, NV_DEX, NV_DATA, NV_SECRET, NV_POKEBLOCK, NV_EVENTS,
+       NV_BATTLEREC, NV_FRONTIER, NV_FLY,
+       /* Present in the emulator build too: when a Pokemon ROM has been fused into this
+        * image (tools/fuse_rom.py) the map reads it from cartridge space, no SD needed.
+        * An unfused emulator build shows the screen's own "no ROM" message. */
+       NV_MAP,
+       NV_SETTINGS, NV_BACK, NV_COUNT };
+
+/* The menu is WINDOWED, not fixed-height: at rh 9 only 13 rows fit the 152-px budget
+ * (my + 18 + n*rh + 11 <= 152), and the list passed that with the Frontier/Fly screens.
+ * Previously each new entry paid for itself by shrinking rh (10 -> 9 for Battle record);
+ * one more step would put a 7-px selection bar under an 8-px font. Scrolling instead
+ * keeps rh 9 forever and makes the next screen free. */
+#define NV_VIS 13
 static int nav_menu(void) {
-  static const char* const L[NV_COUNT] = { "Party", "Bank", "Daycare", "Trainer card", "Clock fix", "Pokedex",
-                                           "Data editor", "Secret Bases", "Pokeblocks", "Event tickets", "Battle record", "Settings", "Back" };
-  const int mx = 56, my = 3, rh = 9, mw = 132, mh = 18 + NV_COUNT * rh + 11;  /* my+mh<=152: rh 9 fits 13 */
-  int sel = 0;
+  static const char* const L[NV_COUNT] = { "Party", "Bank", "Daycare", "Trainer card", "Clock fix", "Mirage Island", "Pokedex",
+                                           "Data editor", "Secret Bases", "Pokeblocks", "Event tickets", "Battle record",
+                                           "Frontier streaks", "Fly destinations",
+                                           "Map / teleport",
+                                           "Settings", "Back" };
+  const int vis = (NV_COUNT < NV_VIS) ? NV_COUNT : NV_VIS;
+  /* mw 152 (was 132): the widest label is 16 chars = 128 px, and text starts at
+   * mx+10, so 132 clipped "Frontier streaks" / "Fly destinations" into the border. */
+  const int mx = 44, my = 3, rh = 9, mw = 152, mh = 18 + vis * rh + 11;
+  int sel = 0, top = 0;                    /* opens on Party, as before */
   for (;;) {
+    if (sel < top) top = sel;                        /* keep the cursor inside the window */
+    else if (sel >= top + vis) top = sel - vis + 1;
+    if (top > NV_COUNT - vis) top = NV_COUNT - vis;
+    if (top < 0) top = 0;
+
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "MENU");
-    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < NV_COUNT; i++) {
-      int y = my + 18 + i * rh; bool s = (i == sel);
-      if (s) ui_panel(mx + 2, y - 1, mw - 4, rh - 1, UI_SEL, UI_TITLE);
-      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
+    if (NV_COUNT > vis) {                            /* scroll affordance in the title row */
+      char pos[12]; siprintf(pos, "%d/%d", sel + 1, NV_COUNT);
+      ui_text(mx + mw - 40, my + 4, UI_DIM, pos);
     }
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < vis; i++) {
+      int r = top + i, y = my + 18 + i * rh; bool s = (r == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, rh - 1, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[r]);
+    }
+    if (top > 0)                ui_text(mx + mw - 12, my + 18, UI_DIM, "^");
+    if (top + vis < NV_COUNT)   ui_text(mx + mw - 12, my + 18 + (vis - 1) * rh, UI_DIM, "v");
     ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return NV_BACK;
@@ -3313,14 +3553,32 @@ static void view_save(const char* path) {
   strncpy(g_path, path, sizeof(g_path) - 1);
   g_path[sizeof(g_path) - 1] = 0;
   uint32_t sz = 0;
+  const char* err = 0;
+#ifdef PDNA_DELTA
+  /* Emulator build: `path` is ignored — the save is this ROM's own flash chip. */
+  (void)path;
+  sz = flashsave_read(g_save, G3_SAVE_FILE_SIZE) ? (uint32_t)G3_SAVE_FILE_SIZE : 0;
+  if (!sz) err = "flash save unreadable";
+#else
   SfStatus st = sf_read_full(path, g_save, G3_SAVE_FILE_SIZE, &sz);
+  if (st != SF_OK) err = sf_status_str(st);
+#endif
   g_save_size = sz;
-  if (st != SF_OK || sz < (uint32_t)G3_SLOT_BYTES ||
+  if (!err && sz >= (uint32_t)G3_SLOT_BYTES && gen3_parse(g_save, sz, &g_vinfo) && g_vinfo.valid)
+    app_note_boot_checksums();          /* BEFORE anything can edit it */
+  if (err || sz < (uint32_t)G3_SLOT_BYTES ||
       !gen3_parse(g_save, sz, &g_vinfo) || !g_vinfo.valid || !g_vinfo.sb1_ok ||
       gen3_read_saveblock1(g_save, g_vinfo.slot, g_sb1) != G3_SAVEBLOCK1_BYTES) {
     ui_clear();
     ui_text(6, 60, UI_WARN, "Cannot read this save.");
-    ui_text(6, 76, UI_DIM, st != SF_OK ? sf_status_str(st) : "not a valid Gen-3 .sav");
+    ui_text(6, 76, UI_DIM, err ? err : "not a valid Gen-3 .sav");
+#ifdef PDNA_DELTA
+    /* The overwhelmingly likely cause in an emulator: the user has not copied their
+     * Pokemon .sav in as this ROM's save yet, so the flash is blank. */
+    ui_text(6, 92,  UI_TEXT, "Copy your Pokemon .sav");
+    ui_text(6, 102, UI_TEXT, "over pokedna-delta.sav,");
+    ui_text(6, 112, UI_TEXT, "then relaunch.");
+#endif
     ui_text(4, 150, UI_DIM, "B=back");
     wait_keys(KEY_B);
     return;
@@ -3371,6 +3629,7 @@ static void view_save(const char* path) {
         case NV_DAYCARE: pdna_daycare(); break;
         case NV_TRAINER: pdna_trainer(g_sb1, g_sb2, &g_vinfo, g_game); break;
         case NV_CLOCK:   pdna_clock(); break;
+        case NV_MIRAGE:  pdna_mirage(); break;
         case NV_DEX:     pdna_dex_edit(); break;
         case NV_DATA:    if (app_can_edit()) data_editor();
                          else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
@@ -3380,6 +3639,9 @@ static void view_save(const char* path) {
         case NV_EVENTS:   if (app_can_edit()) pdna_events();
                            else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
         case NV_BATTLEREC: pdna_battle_record(); break;  /* viewing is free; export gates on Omega inside */
+        case NV_FRONTIER: pdna_frontier(g_sb1, g_sb2, g_game); break;   /* viewing free; editing gates on Omega inside */
+        case NV_FLY:      pdna_fly(g_sb1, g_game); break;        /* viewing free; editing gates on Omega inside */
+        case NV_MAP:      pdna_map(g_sb1, g_sb2, g_game); break;  /* the user's own ROM: SD file, or fused into this image */
         case NV_SETTINGS: pdna_settings(); break;
         default: break;                          /* NV_BACK */
       }
@@ -3402,6 +3664,24 @@ int main(void) {
            *(volatile uint16_t*)0x04000204, REG_DISPCNT);
   log_line("mGBA debug log: %s", log_under_mgba() ? "active" : "absent");
 
+#ifdef PDNA_DELTA
+  /* ---- emulator build: no flashcart, no microSD, no file browser. -------------
+   * The save is this ROM's own 128 KiB flash chip, so boot straight into it. If the
+   * emulator did not allocate a flash save at all, the FLASH1M_V signature is missing
+   * from the image (see flashsave.c) — say so instead of showing an empty tool. */
+  ui_clear();
+  ui_text(6, 60, UI_TITLE, "PokeDNA (emulator build)");
+  ui_text(6, 150, UI_DIM, "build " __DATE__ " " __TIME__);
+  uint16_t fid = 0;
+  if (!flashsave_probe(&fid)) {
+    ui_text(6, 84, UI_WARN, "No 128K flash save found.");
+    ui_text(6, 100, UI_DIM, "Emulator save type wrong?");
+    ui_text(6, 116, UI_DIM, "Set it to Flash 1Mbit.");
+  }
+  snd_boot();
+  for (;;) view_save("");                    /* B just re-enters: there is nowhere to go back to */
+  return 0;
+#else
   ui_clear();
   ui_text(6, 70, UI_TITLE, "Detecting flashcart...");
   ui_text(6, 150, UI_DIM, "build " __DATE__ " " __TIME__);
@@ -3448,4 +3728,5 @@ int main(void) {
     if (browse_pick(path, sizeof(path))) view_save(path);
   }
   return 0;
+#endif /* PDNA_DELTA */
 }

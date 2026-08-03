@@ -423,8 +423,24 @@ bool gen3_parse(const uint8_t* save, uint32_t size, Gen3SaveInfo* out) {
       out->version_guess = G3_VER_EMERALD;
     else if (out->bases_rs > out->bases_em)
       out->version_guess = G3_VER_RS;
-    else /* tie (often both 0/empty): lean on the Emerald encryption key */
-      out->version_guess = (key != 0) ? G3_VER_EMERALD : G3_VER_UNKNOWN;
+    else if (key != 0)
+      out->version_guess = G3_VER_EMERALD;
+    else
+      /* Tie AND no encryption key => Ruby/Sapphire, not "unknown".
+       *
+       * Emerald generates encryptionKey at new-game and never clears it, so ANY real
+       * Emerald save has a nonzero word here; Ruby/Sapphire have no key field at this
+       * offset at all. Returning UNKNOWN made pdna_main.c:3496 fall back to PK_EMERALD,
+       * which broke every RS save with no secret bases: MEASURED on Guy's own cartridges,
+       * his Sapphire save has 0 bases and key 0x00000000 and was mis-detected as Emerald,
+       * so the map screen refused his own Sapphire ROM with "WRONG GAME". (His Ruby save
+       * survived only because it HAS secret bases — its 0xAC happens to hold 0xFFD3CFC1,
+       * which would have mis-detected it too on a tie.)
+       *
+       * Residual risk unchanged: an RS save with tied base counts AND nonzero junk at
+       * 0xAC still reads as Emerald. Distinguishing those needs a stronger discriminator
+       * than this function has. */
+      out->version_guess = G3_VER_RS;
   }
 
   out->valid = true;
