@@ -3,87 +3,245 @@
 > Living resume doc maintained by the `handoff` skill. The **Current status** and **Next steps**
 > sections are always kept current — start there to resume. The **Session log** grows downward,
 > newest first, and is never pruned.
-> Last updated: 2026-07-16
+> Last updated: 2026-07-30
 
 ## Current status
 
-**ACTIVE THREAD (2026-07-16): multi-select move + bank moves + batch export — code-complete,
-UNCOMMITTED, builds clean (ROM ~6.56 MB), host gates green, awaiting Guy's ROUND-2 hardware test.**
+**Features 1 & 2 (Battle Frontier streaks, Fly destinations) are DONE and host-tested.
+Feature 3 (overworld map) RENDERS AND SCROLLS ON REAL HARDWARE at 1:1 in Emerald, Ruby AND
+LeafGreen. The L/R zoom-out level is built and on its 3rd fix round — untested since the last
+fix. ⚠️ EVERYTHING IS STILL UNCOMMITTED and Guy's SD-load problem is unresolved (he is
+reinstalling to NOR every test cycle, which he calls "a major time waster").**
 
-- **What it adds (Guy's asks):** (1) **Emerald rubber-band multi-select** — in the orange MOVE hand,
-  **hold A + D-pad** grows a rectangle; release lifts every mon inside as a **chunk**; carry it across
-  boxes (edge-push L/R), UP→Bank / DOWN→PC. A plain A *tap* is still the classic single grab.
-  (2) **PC→Bank = always RELEASE, no prompt** (no more auto-duplication; the old single-mon path was a
-  confirmed COPY). (3) **"Export all .pk"** + (4) **"Release all"** on the box-name menu (PC *and*
-  bank). (5) A shared **progress screen** (live 64×64 front sprite + N/total bar).
-- **Guy's HW round-1 verdict:** PC→Bank release "works like i want"; chunk moves within the PC work.
-  Round-2 fixes since: bank↔bank cross-box chunk move (was denied), Bank→PC now *looks* moved at once,
-  Release-all added.
-- **⚠️ THE RULE Guy set (I got it backwards once — do not re-litigate):** a move must **NOT** force an
-  immediate disk write — *"there is a save button for that and also ... a promt asking if i wanna save
-  changes. so make it look visually as if they really moved, the real save will happen later as a
-  chunk."* → Bank→PC (single **and** chunk) stays **deferred**; the bank *display* hides moved-out mons.
-- **Two adversarial-review workflows each found + fixed a real DATA-LOSS bug** (details in the session
-  log): `flush_on_exit` deleted bank sources even when the PC write FAILED; and my
-  `drop_chunk_bank_cross` committed a source box it had paged in **without checking the read
-  succeeded** (a failed read → zeroed buffer → would wipe that box's bystander mons; bank box files
-  have **no backup**).
-- **Files:** new `source/gen3_chunk.{c,h}` (pure-C footprint math + `tests/host_chunk_test.c`), new
-  `source/pdna_progress.{c,h}`; modified `pdna_box.c` (the bulk), `pdna_main.c`, `pdna_bank.{c,h}`,
-  `pdna_pk.{c,h}`, `pdna_app.h`.
-- **Also uncommitted, in the TOOLKIT repo** (`gba-toolkit`, separate repo): 3 lessons appended to the
-  learn skill — `references/fatfs-and-safe-writes.md` (deferred-vs-immediate store asymmetry;
-  gate-the-source-clear-on-commit-success; read-modify-write-back must verify the read),
-  `references/gba-ui-input-sound.md` (a group-carry can't float a 2nd set of icons),
-  `references/gen3-pokemon-saves-and-licensing.md` (the Emerald PC multi-select gesture).
-
----
-
-PokeDNA is a **feature-complete** on-cartridge Gen-3 save viewer/editor (RSE + FRLG). Two shipping
-builds from one codebase:
-- **`PokeDNA-NOR.gba`** (~6.25 MB) — every sprite embedded (normal+shiny front, normal+shiny back,
-  icons). Build: `make`. **Loads from NOR *and* from the normal EZ-Flash SD "Load game"** (Guy
-  confirmed on the Omega DE — there is NO ROM-size load limit; see the 2026-07-13 entry).
-- **`PokeDNA.gba`** (~3.83 MB) — trimmed; streams shiny fronts + all back sprites from a companion
-  **`/PokeDNA/sprites.pak`** (2.42 MB, ship alongside). Build: `make sd`. **Now OPTIONAL** — only a
-  smaller/faster variant, since the full build loads from SD too.
-- **Committed on `main`** (not pushed): 4 Guy-reported bug fixes (`816fdb6`), ITEM-mode fixes
-  (`8ded10f`, `ba92c29`), SD-stream engine (`75d787a`, `e89659b`). **Uncommitted:** `docs/HANDOFF.md`,
-  `docs/SESSION_SUMMARY.md`, `docs/IDEAS.md` (new).
-- **Research parked:** Emerald **Recorded Battle export** — sector 31 (`0x1F000`) holds a
-  deterministic battle (seed + both teams + input stream), exportable. See `docs/IDEAS.md`.
+- **✅ HW-CONFIRMED working:** the whole ROM-off-microSD pipeline (identify ROM, read the
+  player's map/position/tile) and the 1:1 map view — renders the real overworld from the user's
+  own ROM and scrolls smoothly, diagonals included, on **Emerald, Ruby and LeafGreen**. LeafGreen
+  working proves the FRLG structural divergences are right on silicon.
+- **🚧 Zoom (L = out, R = in):** Z1 (8x8 px per metatile, affine BG + per-metatile mip
+  dictionary) is implemented. Three fix rounds so far; the latest fix (re-anchor the affine
+  window every step + persistent dictionary) is **NOT yet hardware-tested**.
+- **❌ Z2 (1/4) deliberately NOT shipped.** An affine BG has 1-byte tilemap entries = a hard
+  256-tile cap. MEASURED distinct metatiles per viewport: Z1 30x20 -> 186/192 (fits exactly),
+  Z2 60x40 -> **428/303 (does not fit)**. Z2 needs a frequency-ranked dictionary with an
+  average-colour fallback for the overflow. `MGFX_ZOOM_MAX` caps the ladder honestly.
+- **⚠️ SD LOAD STILL FAILS at ~12.2 MB.** Guy correctly reasons it is NOT corruption: NOR
+  install+launch works from the same file, and NOR never builds the FAT run table. So it is
+  fragmentation (see `rom-load-lab`: unbounded cluster-run list overruns the FPGA control words
+  at buffer offset 0x1F0; predicate `8 + 8*runs` vs `0x1F0`). Guy also cannot eject the card
+  from macOS without forcing — SAME root cause (Spotlight/fseventsd hold the volume open AND
+  scatter files that fragment it).
+- **Attempted and REVERTED:** an art-free `make maptest` build to get a small SD-loadable ROM.
+  It does not link — the `.incbin` art blobs are referenced **strongly**, so filtering them out
+  leaves 6 modules with dangling symbols. A real slim variant needs weak-guarded accessors in
+  `bag_bg.c`, `card_bg.c`, `mon_front.c`, `mon_icons.c`, `item_icons.c`, `box_oam.c`.
+  `make sd` was renamed to output **PokeDNA-SD.gba** (so it can't clobber the NOR build) but is
+  still 9.69 MB — the bulk is `data/card_bg.bin` **4.39 MB** + `mon_icons.bin` 1.63 + `bag_bg.bin`
+  0.93, none of which the map needs.
+- **Budgets:** ROM 12,238,724 B. IWRAM 16,872 B (51.5%) -> **stack 15,640 B**, deliberately
+  *below* the pre-session figure after the regression below. EWRAM free 2,252 B. Arena peak
+  budgeted 32,768 of 35,712 and logged on every map load.
+- **Standing:** run `release-legal-audit` before ANY push/release (v1.0.0 release ROM is a
+  standing RED). rec2mp4 consumes /PokeDNA/battles — keep the export format stable.
 
 ## Next steps
 
-1. **HW test ROUND 2 on the Omega DE** (the blocker for the multi-select batch — none of it is
-   emulatable). On disposable save copies, check:
-   a. **Bank↔bank chunk move** — lift a whole box (hold A + D-pad over a full box, release) and drop
-      it into a *clean* bank box. This is the fix for "it doesn't let me".
-   b. **Bank→PC empties the bank on sight** — after dropping a chunk (and a *single* mon) into the PC,
-      go back to the bank: the source cells must read as GONE *before* any save prompt.
-   c. **The vacated cells refuse a drop until you save** — expect "CELLS NOT FREE YET"; that is
-      deliberate (their mons are still the only on-card copy until the PC is written).
-   d. **Release all** on a PC box *and* a bank box (confirm → gone; check a `.bak` was made).
-   e. **PC→Bank release + Export all .pk** still good (round-1 said yes; re-confirm after the churn).
-2. **Then commit** the batch (don't `git push` unless Guy asks) — see "Uncommitted" above; the
-   toolkit-repo learn edits are a **separate repo/commit**.
-3. *(Deferred, Guy's call)* single-mon Bank→PC currently shares the chunk's deferred+hide behaviour —
-   no change expected, but confirm it feels right.
-4. **HW-verify** with a *fresh* flash of `PokeDNA-NOR.gba`: the 4 bug fixes
-   (`816fdb6`) + ITEM-mode fixes — secret-base mons no longer show as eggs / correct stats;
-   ITEM-mode held-item marker draws in front; carried-item source mon fades. (Earlier "still broken"
-   reports were a **stale flash**, not a code regression.)
-2. **Decide the build strategy** (open question to Guy): retire the streaming/trimmed path (drop
-   `make sd`, `source/sprite_stream.c`, the `source/embed/` split, `-DPDNA_STREAM_SPRITES`) now that
-   the full build loads from SD — **or** keep it as the optional smaller/faster variant.
-3. *(Optional feature)* **"Battle Record → export"**: read/validate `.sav` sector 31, dump the
-   `RecordedBattleSave` as JSON + both teams as PKM (reuses the existing mon parser). Details in
-   `docs/IDEAS.md` and the learn `gen3-pokemon-saves-and-licensing.md` reference.
-4. Commit the uncommitted docs when ready (don't `git push` unless Guy asks).
+Guy's call on order (asked at end of session, unanswered):
+1. **(a) Small map-test ROM** — add weak-guarded art accessors to the 6 modules so the blobs can
+   be dropped; target ~3 MB, which would end the NOR round-trips entirely. Highest impact on
+   Guy's time.
+2. **(b) Stitching + warps** — map connections and `START` on a warp tile, so he can cross map
+   boundaries and enter rooms. He explicitly asked for this: *"perhaps try to stitch everything
+   is this phase, and let me go in and out of room so i can explore more and better test in all
+   games"*.
+3. **(c) Retest the current zoom fix** first.
+Then: Z2 approximation, NPC overlay (Stage C), region map + the game's own built-in zoom
+(Stage D — Guy's idea, gives a 4th level free), grab & place (Stage E).
 
-**Blocker:** hardware sign-off on the Omega DE for the bug-fix batch (SD/save path is not emulated).
+**Before any hardware test:** delete the old `.gba` from the card, eject, remount, copy fresh
+(so it lands contiguous). See `docs/analysis-2026-07-29/F3-CONTINUATION.md` and the learn skill's
+`flashcart-sd-io.md` for the macOS eject/fragmentation recipe.
+
+## Pending decisions / notes from Guy (2026-07-29)
+
+- Map data is **ripped from his own ROM at runtime**, per-game ROM picker ("sapphire and ruby
+  maps are a little different, so different rom. same for leaf green and firered").
+- He wants the **seamless whole-region atlas** (so `world.pak`, P3.8, is in scope).
+- **Emerald first**, then RS, then FRLG.
+- **Do not rebuild `pokedna-delta.gba` unless he asks.**
+- He rejects agent-generated human-day estimates ("i know your pace and its much faster") —
+  don't quote them back.
+- Nice-to-have parked in BACKLOG §18: cute "distressed player" animation while carrying the
+  character on the map, dust puff on drop.
+
+---
 
 ## Session log
+
+### Session — 2026-07-30 (the map RENDERS on hardware; zoom built; one nasty regression)
+
+**Headline: the overworld map renders and scrolls on real hardware, from Guy's own ROM, in
+Emerald, Ruby and LeafGreen.** LeafGreen working is the strong result — it proves the FRLG
+structural divergences are correct on silicon, not just in host tests.
+
+**Built:**
+- `map_render.{c,h}` extended: 8bpp **index** compositing (`mr_metatile_idx8`,
+  `mr_metatile_mip_idx`) for the affine zoom BG, whose tiles hold palette bytes not colours.
+  The merged 256-entry palette is a pure identity map, `byte = (slot<<4)|index`, so there is no
+  conversion or quantisation.
+- `map_gfx.{c,h}` (NEW): Mode 0, two BG layers, HUD on BG0. The LZ77 path is
+  **SD -> 12 KB EWRAM stage -> decompress in EWRAM -> DMA to VRAM**, because `mr_lz77` writes
+  bytes and VRAM drops 8-bit writes — and it reads back its own output, so one dropped byte
+  would compound into noise. Wrapped in a memory-backed `RomCtx` shim so the decoder never
+  touches the SD mid-decode and needed zero changes.
+- Z0 scrolling costs ~1.6% of a VBlank (the screenblock's 256-px wrap equals the 16-metatile
+  ring, so the index is a plain mask) and does **zero** SD access — the whole map's blockdata is
+  cached.
+- Z1 zoom: affine BG + 256-slot per-metatile mip dictionary in CBB2, L/R wired.
+- The mip builder reads tile data **back out of VRAM** (8-bit reads are legal) — there is no
+  room for a second copy in EWRAM.
+
+**Design decision reversed by measurement.** I proposed Mode 3 software rendering; measuring
+showed a map's tiles+metatiles reach 49-51 KB against a 35,712 B arena, so tiles MUST live in
+VRAM -> Mode 0. Later I considered Mode 3 again for the zoom levels; that fails too because a
+bitmap framebuffer starts at 0x06000000, exactly where the tiles are. Affine is the only design
+that keeps tiles resident, which is why the spec chose it.
+
+**⚠️ REGRESSION I CAUSED AND FIXED — worth remembering.** Adding ~3 KB of screen-local `static`
+buffers (MapRender 1,104 B; frontier row table 768 B; FatFs `FIL` 600 B; two path buffers) put
+them in **IWRAM `.bss`**, cutting the stack 14,888 -> 12,616 B. The stack grows down into
+`.data`, where FatFs's `handles` (4,096 B) and the box screen's `s_shadow` (1,024 B) live — so
+the symptom was **the box screen drawing nothing and hanging**, nowhere near the new code. Fixed
+by moving all of it to `EWRAM_BSS`; IWRAM is now *below* the pre-session figure. Lesson captured
+in the learn skill: measure `__sp_usr - __data_end__`, not the section total.
+
+**Guy's hardware findings, all real, all fixed:**
+1. Random tiles outside the map (all 3 games) — I wrote tilemap entry 0 for off-map cells, which
+   means tileset **tile 0**, an arbitrary real tile. The game shows `MapLayout.border` there;
+   now cached and used. Verified: Littleroot's border is its tree pattern, his Frontier room's
+   is metatile 1 = the black void he expected.
+2. LeafGreen miscoloured on zoom — `NUM_PALS_IN_PRIMARY` is **6 on RSE but 7 on FRLG**, and I'd
+   hardcoded 6. A *third* FRLG divergence beyond the two usually cited.
+3. L/R swapped (L = out, R = in).
+4. **Screen offset after exiting the map** — his best catch. In Mode 3 the bitmap *is* BG2, and
+   BG2's **affine** registers still apply to it. I reset the BG control registers but left the
+   zoom transform in `BG2PA/PD` + `BG2X/Y`, so the UI came back scaled and shifted. They are
+   write-only, so they must be set to identity, not "restored".
+5. (2nd round) Zoom still corrupting — my affine window was `base..base+31` but the visible area
+   is `cursor ±15`, so the cursor could only roam ~4 columns before the view left the filled
+   region; my rebuild trigger allowed 30. Now re-anchored **every step** with a **persistent**
+   mip dictionary (a refill is ~700 byte writes; building mips is the expensive part). Also
+   fixed the caller ignoring the builder's return value, which displayed half-filled maps.
+
+**Two earlier bugs found by the design workflow, in already-green code:** FRLG metatile layer
+type is in bits **29-30** not 12-15 (my u16 truncation reported NORMAL for all 10,155 FireRed
+metatiles); and colour 0 is transparent on the **bottom** layer too. The second is instructive —
+the differential test against the Python reference could not catch it because **both
+implementations shared the same wrong rule**.
+
+**Workflow notes:** the 5-subsystem Mode-0 design workflow succeeded but its verify + integrate
+agents failed 3x on server-side 529s, so the consolidated memory map in
+`docs/analysis-2026-07-29/MODE0-IMPLEMENTATION-PLAN.md` was done **by hand** and is flagged as
+lacking an independent check. Doing it surfaced the arena's most dangerous property: the naive
+allocation is 62,736 B vs 35,712, and it only fits because the LZ77 buffers are transient.
+
+**Unresolved:** SD load at 12.2 MB, and the macOS force-eject (same root cause). See Current
+status for the attempted-and-reverted slim build.
+
+### Session — 2026-07-29 (three new features: frontier streaks, fly flags, and the map foundations)
+
+Guy: *"I wanna implament 3 new ideas: 1) view and edit the winning strikes in the battle
+frontier. 2) flag the cities ive been in (for fly to work) 3) change the location of my
+character … fly over the whole map and see all the NPCs … grab it and place everywhere i want
+(also unstepable places lol, but be warned) … We will use the real real map!"*
+
+**Research first.** 14-agent workflow (2.17 M tokens, ~49 min): 7 parallel deep-dives + an
+adversarial pass that re-derived 48 factual claims from the decomps and **overturned 7**. All
+evidence in `docs/analysis-2026-07-29/` (`PLAN-3-features.md` + 7 docs + `F3-CONTINUATION.md`).
+Corrections that mattered: FRLG diverges from Emerald in **four** map structs; Emerald has **17**
+Fly destinations not 16; PokeDNA already reads SB1 < 0x234 (FRLG party at 0x34/0x38); one SB2
+field *is* key-XORed; the frontier RECORD lanes were unread.
+
+**Architecture decision (Guy's).** Map data is **read from his own ROM on the SD at runtime** —
+ships nothing, ~0 ROM growth, IP-clean. Rejected embedding: measured ~552 KiB for the Hoenn
+overworld (so never really a *size* problem) but a straight policy RED, and this repo already has
+a standing RED on its v1.0.0 release ROM.
+
+**Built (all uncommitted):**
+- Prep: nav menu made **scrollable** (was 13 rows at the 152 px ceiling); `s_nf_ord` 512→768 and
+  `s_flags_folded`/`f_fold` u16→u32 — **load-bearing, not precautionary**: Emerald's flag table
+  went 492 → **511** rows against a hard cap of 512.
+- F1 `gen3_frontier.{c,h}` + `pdna_frontier.{c,h}` + `tests/host_frontier_test.c`;
+  `gen3_record.c` refactored to delegate so ONE offset table exists in the tree.
+- F2 `gen3_fly.{c,h}` + `pdna_fly.{c,h}` + `tests/host_fly_test.c` + `tools/gen_data.py`
+  "Fly destinations" category (E 492→511, R 396→414, F 305→326 rows).
+- `gen3_stars.c` `ACH_TOWER` bug fix (see Current status).
+- F3 `rom_map.{c,h}` + `tests/host_rommap_test.c`, `gen3_warp.{c,h}` + `tests/host_warp_test.c`,
+  the EWRAM arena (`app_arena_acquire/release`, donor = `g_pc`), `pdna_map.{c,h}`.
+- `flashsave.{c,h}` + `make delta` → `pokedna-delta.gba`; `docs/DELTA-BUILD.md`.
+
+**Adversarial review of F1/F2 found 14 confirmed bugs — all fixed.** Three were real logic bugs:
+the Meet-Brain preset picked the tier from the button instead of the save's symbol count (so one
+button was always a silent no-op that still inflated the record board); cancelling a number entry
+still wrote to the save; `cardBattlePoints` was capped at 9999 instead of 0xFFFF. The other 11
+were text overflowing the 29-column screen.
+
+**Two bugs I caught myself, both silent:**
+- The `FLASH1M_V103` marker was **missing from the first `pokedna-delta.gba`** —
+  `static volatile const char*` is a pointer-to-volatile, so the anchoring store was optimised
+  away and `--gc-sections` dropped it. That build would have had no save at all. Now
+  `static const char* volatile`, verified present at 0x3EF08.
+- My own `host_rommap_test` assertion "object events lie inside their map" was **wrong about the
+  data**: MapEvents tables are SHARED between maps and group 25's 1×1 placeholder maps put an NPC
+  at (6,4). The parser was right; the renderer must cull.
+
+**Verified against real artifacts, not just docs:** the ROM parser walks Guy's actual
+Emerald/Ruby/FireRed dumps (518/394/425 maps, matching the decomp exactly) and refuses Glazed;
+the FRLG divergence was proven experimentally (Emerald field order reads
+`metatileAttributes = 0x00000000` on FireRed); Guy's save confirmed the Fly numbering (16/16) and
+the scrambled `winStreakActiveFlags` bit map (bits 8 + 18 set, exactly matching Factory-singles-50
+= his streak of 7, and Tower link-multis).
+
+**Budget:** `PokeDNA.gba` 12,222,692 B (F1+F2 cost +10 KB; the map pipeline +6.9 KB). IWRAM 57%.
+**EWRAM free 5,280 B** — the map screen borrows `g_pc` rather than allocating. Host suite: 6/6 green.
+
+**Hardware:** ⚠️ **Guy reported the newest build did NOT load from SD** ("the newest copy didnt
+load normally, for next time"), after an earlier build the same day loaded fine. Now understood as
+FAT fragmentation (see Current status). Nothing from this session has been HW-tested.
+
+**Knowledge captured** into the toolkit's `learn` skill (separate repo, `gba-toolkit`):
+`flashcart-sd-io.md` (the fragmentation mechanism + the two kernel traps),
+`gba-build-and-memory.md` (emulator build variant + the `--gc-sections` marker trap),
+`gen3-pokemon-saves-and-licensing.md` (teleport via `continueGameWarp`, frontier streak
+semantics, reading map data from the user's ROM).
+
+### Session — 2026-07-27 (the marathon: species fix → Emerald visuals → wallpapers solved → all-games art → battle record e2e → legal system)
+Multi-session arc, all landed + committed (15 commits 96be6ce..fe879cf, then 66ee8b0,
+7e7d3f0, 1fc28d3, 78673db, 9bb9cab, e42ecfc). Headlines:
+- **Volbeat-as-Deoxys** = internal-vs-national species id (386 internal = Volbeat; Deoxys
+  = 410); 12 verified edits incl. 4 generators. HW-confirmed.
+- **Wallpaper saga SOLVED after a month**: never hardware — three generator data bugs
+  (standard -num_tiles truncation; Walda bg-at-57 + icon glyph; Walda save-color recolor).
+  Diagnosed by the on-cart WP-AUDIT (START+SELECT: VRAM-vs-expected CRC + OBJ blink) +
+  render-the-data-and-LOOK. The self-verifying draw + verified icon uploads STAY (they fixed
+  real cart ROM-read corruption — orange icon quirk — and instrument everything).
+- **Emerald multi-select visuals**: ghost selection (alpha only — the semi-transparent-OBJ
+  brightness trick is NOT honored by real Omega/SP), whole-block carry via slot borrowing,
+  see-through via bitmap understudy (obj can't blend over obj), grab/place beats.
+- **All-games art**: bag + trainer card (front+back, editable back stats) for RS/E/FRLG
+  x both genders, vendored from pret decomps (assets/upstream sparse clones, git-ignored).
+- **Battle Record end-to-end HW-proven**: sector-31 parser (sentinel 0xB39D @0x1F000,
+  struct @+4, byte-sum checksum — NO footer), streak-tagged export + sidecar, on-cart
+  import, PC read/inject (tools/read_rec.py). rec2mp4 project born from our prompt.
+- **Trainer card SEX bug** = stale g_vinfo seeding (writes landed; display lied; second A
+  reverted) — card now seeds from live sb2; latent TID/SID + playtime co-seed reversion
+  fixed too.
+- **Perf**: flags list O(n^2)→O(1) ordinal cache. **Process**: 2 user-global legal agents +
+  policy + deep-research doctrine; repo hygiene (HANDOFF/session notes untracked, 96be6ce).
+- **SD-boot**: 9.88 MB fail → fresh copy worked at 12.19 → failed again 12.2 → intermittent;
+  NOR reliable. §16 sketch = slim streaming SD variant.
+Full narrative + all agent reports: docs/analysis-2026-07-17/ (CONTINUATION.md is the
+blow-by-blow), BACKLOG.md is the live queue.
+
 
 ### Session — 2026-07-16 (multi-select move + bank moves + batch export; 2 rounds, 2 loss bugs fixed)
 

@@ -162,3 +162,26 @@ build (make sd) to also stream the NEW art blobs (bag_bg/card_bg/anim rects) fro
 ## 17. DONE 2026-07-27 (this round, in ROM): flags-list O(n^2) slowdown fixed (owning-
 header ordinal cache — bottom-of-list cursor moves were ~240k ops/keypress); ITEM-grab
 hand no longer freezes on the source mon (oam_sync now repositions the hand each move).
+
+## 18. Map mode: cute "distressed player" grab/drop animations (Guy 2026-07-29) — POLISH,
+explicitly "not important", do it after the map-teleport mode itself works.
+When the player character is grabbed in the overworld map/teleport mode (feature 3, the
+L/R-zoomable real-map viewer where A grabs and places the character):
+- **While held**: the character sprite animates in *distress* — arms/hands waving, sweat
+  drops popping off. Sells "you have picked up a tiny person against their will", which is
+  the whole joke of the mode.
+- **On drop/place**: a small **dust puff** animation at the landing tile.
+- Optional extra beat if it's free: a slightly different (more alarmed) reaction when
+  placing onto an **unwalkable / illegal** tile, reusing the same warning path that already
+  has to exist for "also unsteppable places lol, but be warned".
+Reuse, don't reinvent: PokeDNA already has (a) the Emerald-authentic **grab/place beats**
+and the carried-block/hand OAM from the PC box multi-select (`source/box_oam.c`,
+`source/hand_oam.c`, `source/mon_icons_oam.c`), (b) a frame-driven animation layer
+(`source/mon_anim.c`), and (c) the **per-place animation toggle** convention
+(`app_anim_enabled(kind)`, config-persisted) — so this becomes one more animation "place"
+the user can switch off, consistent with Box/Party/Dex/Daycare/Summary. Pair with a rumble
+cue via the existing 5-cue toggle set (`source/rumble.c`) if it feels good on hardware.
+IP note: the distress/dust animations must be **original art** drawn for PokeDNA — do NOT
+lift Game Freak's overworld emote sprites (the exclamation-mark bubble etc.) from a ROM or
+decomp for this; the player sprite itself is only ever rendered transiently from the user's
+own ROM (see the map-mode design in `docs/analysis-2026-07-29/`).
