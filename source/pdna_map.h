@@ -1,0 +1,15 @@
+#ifndef PDNA_MAP_H
+#define PDNA_MAP_H
+
+#include <stdint.h>
+#include "gen3_trainer.h"   /* PkGame */
+
+/* Overworld map screen. Reads map data live out of the user's OWN Pokemon ROM on the
+ * microSD (PokeDNA ships no Nintendo map data), cross-referenced with the open save
+ * for the player's position and NPC visibility flags.
+ *
+ * `sb1`/`sb2` are the open save's blocks (sb1 for the player position and event
+ * flags; sb2 for the teleport's specialSaveWarpFlags). B returns. */
+void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game);
+
+#endif /* PDNA_MAP_H */
