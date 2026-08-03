@@ -86,3 +86,9 @@ tools/__pycache__/
 
 # compiler stack-usage reports (-fstack-usage build output)
 *.su
+
+# Engineering / process notes — local only, not part of the shipped tool.
+# (Guy 2026-08-03: "the engineering are also local only, they are not related
+#  to the end product".) They stay on disk; git just stops carrying them.
+docs/
+.claude/
