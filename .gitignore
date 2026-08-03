@@ -83,3 +83,6 @@ docs/HANDOFF.md
 docs/SESSION_SUMMARY.md
 /data/
 tools/__pycache__/
+
+# compiler stack-usage reports (-fstack-usage build output)
+*.su

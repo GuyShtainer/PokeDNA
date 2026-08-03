@@ -19,8 +19,9 @@
 
 #define ALIGNED __attribute__((aligned(4)))
 
-/* The EZ-Flash DMA path wants a word-aligned buffer; mirror disk_read. */
-static u8 EWRAM_BSS w_aligned_buff[512 * 4] ALIGNED;
+/* Shared with disk_read — see the long note on fc_bounce in diskio.c. Do NOT reintroduce
+ * a second 2 KiB buffer here; that is what overflowed EWRAM onto the flashcart driver. */
+extern u8 fc_bounce[512 * 4];
 
 /*-----------------------------------------------------------------------*/
 /* Write Sector(s)                                                       */
@@ -29,12 +30,16 @@ static u8 EWRAM_BSS w_aligned_buff[512 * 4] ALIGNED;
 DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
   (void)pdrv;
 
-  if ((u32)buff & 0x1) {
+  /* WORD alignment, not halfword -- see the long note in disk_read(). The EZ-Flash write
+   * path is the same DMA32 copy in the opposite direction, so a 2-mod-4 SOURCE reads two
+   * bytes early and writes shifted data to the card. On the write side that is a
+   * data-loss bug, not just a display one. */
+  if ((u32)buff & 0x3) {
     /* Unaligned source: stage through the aligned buffer, 4 sectors at a time. */
     for (UINT i = 0; i < count; i += 4) {
       const u16 blocks = (count - i > 4) ? 4 : (u16)(count - i);
-      memcpy(w_aligned_buff, buff + i * 512, (size_t)blocks * 512);
-      if (!flashcartio_write_sector((u32)sector + i, w_aligned_buff, blocks))
+      memcpy(fc_bounce, buff + i * 512, (size_t)blocks * 512);
+      if (!flashcartio_write_sector((u32)sector + i, fc_bounce, blocks))
         return RES_ERROR;
     }
     return RES_OK;
