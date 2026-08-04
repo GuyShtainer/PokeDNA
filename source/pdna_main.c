@@ -535,9 +535,10 @@ void app_log_flush(void) {
 static void msg_wait(const char* title, u16 col, const char* l1, const char* l2) {
   ui_clear();
   ui_panel(16, 48, 208, 70, UI_PANEL, col);        /* framed so it reads as a dialog */
-  ui_text(28, 58, col, title);
-  if (l1) ui_text(28, 80, UI_TEXT, l1);
-  if (l2) ui_text(28, 92, UI_DIM, l2);
+  /* Same reason as app_confirm: clamp INSIDE the dialog so no caller can overflow it. */
+  ui_ptext_fit(28, 58, 184, col, title);
+  if (l1) ui_ptext_fit(28, 80, 184, UI_TEXT, l1);
+  if (l2) ui_ptext_fit(28, 92, 184, UI_DIM, l2);
   ui_text(28, 104, UI_DIM, "Press A");
   wait_keys(KEY_A);
 }
@@ -941,10 +942,16 @@ void app_note_pc_box(int b) { if (b >= 0 && b < G3_TOTAL_BOXES) g_pc_last_box = 
 bool app_confirm(const char* title, const char* l1) {
   ui_clear();
   ui_panel(16, 44, 208, 74, UI_PANEL, UI_WARN);    /* framed destructive-confirm */
-  ui_text(28, 54, UI_WARN, title);
-  if (l1) ui_text(28, 76, UI_TEXT, l1);
-  ui_text(28, 98, UI_TEXT, "A = yes");
-  ui_text(28, 110, UI_DIM, "B = no");
+  /* Proportional and WRAPPED. At 8 px/glyph this panel was a 24-column budget that every
+   * caller had to guess at, and the audit found dozens that guessed wrong — a confirm
+   * prompt whose question is cut in half is worse than useless. The message now wraps to
+   * two lines inside the frame instead of running off it. */
+  ui_ptext_fit(28, 54, 184, UI_WARN, title);
+  if (l1) ui_ptext_wrap(28, 74, 184, UI_ROW_H + 2, 2, UI_TEXT, l1);
+  /* 96/106, not 98/110: the panel's bottom border is at y=117 and an 8 px row at 110 ran
+   * into it — the "B = no" line was drawn half inside the frame. */
+  ui_text(28, 96, UI_TEXT, "A = yes");
+  ui_text(28, 106, UI_DIM, "B = no");
   u16 k; do { vsync(); k = key_hit(KEY_A | KEY_B); } while (!k);
   bool yes = (k & KEY_A) != 0;
   if (yes) snd_ok(); else snd_back();
@@ -1312,16 +1319,19 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
       PkMon* p = &pm[sel];
       if (p->isEgg && !p->isBadEgg) ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_egg());
       else ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, 0));
-      char b[24];
-      ui_truncate(b, p->nickname[0] ? p->nickname : pk_species_name(p->species), 10);
-      ui_text(6, 66, UI_TEXT, b);
+      /* Same fields, same proportional face as the PC panel (pdna_box.c draw_left) —
+       * the two screens used to disagree about the same mon: 10 columns here, 9 and 5
+       * there. Budget is the left column, up to the icon cluster at x=88. */
+      char b[48];
+      ui_ptext_fit(6, 66, 78, UI_TEXT,
+                   p->nickname[0] ? p->nickname : pk_species_name(p->species));
       siprintf(b, "Lv%u%s", (unsigned)p->level, p->gender == 0 ? " M" : p->gender == 1 ? " F" : "");
       ui_text(6, 80, UI_TEXT, b);
-      ui_truncate(b, pk_species_name(p->species), 10);
-      ui_text(6, 94, UI_DIM, b);
+      ui_ptext_fit(6, 94, 78, UI_DIM, pk_species_name(p->species));
       ui_text(6, 112, UI_DIRCLR, "Item");
-      ui_truncate(b, p->heldItem ? pk_item_name(p->heldItem) : "-", 10);
-      ui_text(6, 124, UI_TEXT, b);
+      if (p->heldItem) pk_item_label(p->heldItem, b, sizeof b);
+      else             strcpy(b, "-");
+      ui_ptext_fit(6, 124, 78, UI_TEXT, b);
     } else if (sel == addslot) ui_text(6, 66, UI_OK, "Add here");
     /* right: the 2x3 cluster */
     for (int i = 0; i < 6; i++) {

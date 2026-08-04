@@ -699,7 +699,7 @@ uint16_t pick_move(uint16_t current) {
       int y = 14 + i * 9;
       bool s = (top + i == sel);
       if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-      char nm[20]; ui_truncate(nm, pk_move_name(m), 14);
+      char nm[20]; ui_truncate(nm, pk_move_name(m), 14);   /* fixed-width column: PP/type align */
       ui_text(6, y, s ? UI_SELTEXT : UI_TEXT, nm);
       type_chip(120, y, pk_move_type(m));
     }
@@ -900,21 +900,20 @@ static void iv_geom(int v, int* cols, int* cw, int* ch, int* x0, int* y0, int* v
 /* draw one cell's content (icon at the cell origin, no selection chrome). */
 static void iv_cell(int v, int x, int y, int id) {
   const uint16_t* ic = item_icon_for((uint16_t)id);
+  char lbl[48];
+  pk_item_label((uint16_t)id, lbl, sizeof lbl);      /* "No26 EARTHQUAKE" for a TM */
   if (v == IV_LIST) {
-    char row[40], rt[40];
-    siprintf(row, "%3d %s", id, pk_item_name((uint16_t)id));
-    ui_truncate(rt, row, 28);
-    ui_text(x + 2, y, UI_TEXT, rt);
+    char row[64];
+    siprintf(row, "%3d %s", id, lbl);
+    ui_ptext_fit(x + 2, y, UI_SCR_W - (x + 4), UI_TEXT, row);
   } else if (v == IV_ICONS) {
     if (ic) ui_sprite(x, y, IITEM, IITEM, ic);
   } else if (v == IV_GRID) {
     if (ic) ui_sprite(x, y, IITEM, IITEM, ic);
-    char nm[16]; ui_truncate(nm, pk_item_name((uint16_t)id), 9);
-    ui_text(x, y + 25, UI_DIM, nm);
+    ui_ptext_fit(x, y + 25, IITEM + 6, UI_DIM, lbl);
   } else {                                          /* IV_SPLIT left row: icon + name */
     if (ic) ui_sprite(x, y, IITEM, IITEM, ic);
-    char nm[16]; ui_truncate(nm, pk_item_name((uint16_t)id), 11);
-    ui_text(x + 28, y + 8, UI_TEXT, nm);
+    ui_ptext_fit(x + 28, y + 8, 92, UI_TEXT, lbl);
   }
 }
 
@@ -973,14 +972,15 @@ uint16_t pick_item(uint16_t current) {
     uint16_t cur = n ? idx[sel] : 0;
     if (view == IV_SPLIT) {
       ui_fill_rect(124, 22, 112, 120, UI_PANEL);
-      { char inm[24]; ui_truncate(inm, pk_item_name(cur), 13); ui_text(126, 24, UI_TITLE, inm); }
-      text_wrap(126, 36, 13, UI_TEXT, pk_item_desc(cur));
+      { char inm[48]; pk_item_label(cur, inm, sizeof inm);
+        ui_ptext_fit(126, 24, 108, UI_TITLE, inm); }
+      ui_ptext_wrap(126, 36, 108, UI_ROW_H, 12, UI_TEXT, pk_item_desc(cur));
     } else {
       ui_fill_rect(0, 138, UI_SCR_W, 8, UI_BG);
-      char d[80], dt[40];
-      siprintf(d, "%s  %s", pk_item_name(cur), pk_item_desc(cur));
-      ui_truncate(dt, d, 29);
-      ui_text(4, 139, UI_DIM, dt);
+      char d[96], nm[48];
+      pk_item_label(cur, nm, sizeof nm);
+      siprintf(d, "%s  %s", nm, pk_item_desc(cur));
+      ui_ptext_fit(4, 139, UI_SCR_W - 8, UI_DIM, d);
     }
 
     prev_sel = sel; prev_top = top; prev_view = view;
