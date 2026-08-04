@@ -1,6 +1,7 @@
 #include "ui.h"
 #include <string.h>
 #include "rumble.h"   /* rumble_io_suspend/resume: mute the cart-bus motor toggle while a blit reads ROM */
+#include "ui_font.h"  /* our proportional 5x7 face (generated) — see ui_ptext below */
 
 void ui_init(void) {
   REG_DISPCNT = DCNT_MODE3 | DCNT_BG2;
@@ -215,4 +216,144 @@ void ui_truncate(char* out, const char* in, int max_cols) {
     out[o++] = '~';
   }
   out[o] = 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Proportional text.
+ *
+ * TTE is not used here. tonc can carry a `widths` table on a TFont, but going
+ * through TTE means saving/restoring font+ink+cursor state around every call, and
+ * the glyph procs are a black box for clipping. A 1bpp blit into the Mode 3
+ * framebuffer is twenty lines, clips exactly, and lets a caller MEASURE first —
+ * which is the whole point: the bag and the box panel need to ask "does the real
+ * name fit?" before deciding to shorten it.
+ *
+ * Font data: source/ui_font.c (ours, generated). Bit 0 of a row byte is the
+ * leftmost pixel; rows 0..6 are the body, row 7 carries descenders.
+ * ------------------------------------------------------------------------- */
+
+#define PGLYPH(c) (&ui_font_bits[((unsigned)(c) - 32) * 8])
+#define PADV(c)   (ui_font_w[(unsigned)(c) - 32])
+
+/* Map any byte onto a drawable glyph. Gen-3 name tables are plain ASCII once
+ * decoded, but a corrupt save can hand us anything, and drawing a random 8 KB
+ * past the table would be a lot worse than printing '?'. */
+static inline unsigned pchar(unsigned char c) {
+  return (c >= 32 && c <= 127) ? c : (unsigned)'?';
+}
+
+/* Next glyph, advancing `*ps` past the bytes it consumed. The only non-ASCII the data
+ * tables contain is 'e'-acute, because the games spell it "POKeMON" with an accent — that
+ * arrives as the two-byte UTF-8 sequence C3 A9 and gets the glyph parked at code 127.
+ * Any other non-ASCII collapses to '?' with its continuation bytes skipped, so a corrupt
+ * string can never desynchronise the walk. */
+static unsigned pnext(const char** ps) {
+  const unsigned char* p = (const unsigned char*)*ps;
+  unsigned c = *p++;
+  if (c == 0xC3u && *p == 0xA9u) { c = 127u; p++; }
+  else if (c >= 0x80u) {
+    while ((*p & 0xC0u) == 0x80u) p++;
+    c = (unsigned)'?';
+  }
+  *ps = (const char*)p;
+  return c;
+}
+
+int ui_ptext_w(const char* s) {
+  int w = 0;
+  while (*s) w += PADV(pnext(&s));
+  return w;
+}
+
+int ui_ptext(int x, int y, u16 ink, const char* s) {
+  while (*s) {
+    unsigned c = pnext(&s);
+    const unsigned char* gl = PGLYPH(c);
+    for (int r = 0; r < 8; r++) {
+      int py = y + r;
+      if ((unsigned)py >= (unsigned)UI_SCR_H) continue;
+      unsigned bits = gl[r];
+      u16* row = &vid_mem[py * UI_SCR_W];
+      while (bits) {
+        int col = 0;
+        while (!((bits >> col) & 1u)) col++;      /* lowest set bit = leftmost ink */
+        bits &= ~(1u << col);
+        int px = x + col;
+        if ((unsigned)px < (unsigned)UI_SCR_W) row[px] = ink;
+      }
+    }
+    x += PADV(c);
+  }
+  return x;
+}
+
+int ui_ptext_fit(int x, int y, int maxw, u16 ink, const char* s) {
+  int full = ui_ptext_w(s);
+  if (full <= maxw) return ui_ptext(x, y, ink, s) - x;
+
+  /* Does not fit: keep as many glyphs as leave room for the '~' marker. Byte offsets are
+   * taken BEFORE each glyph so a two-byte sequence is never cut in half. */
+  int tw = PADV((unsigned)'~');
+  const char* p = s;
+  int w = 0;
+  while (*p) {
+    const char* q = p;
+    int a = PADV(pnext(&p));
+    if (w + a + tw > maxw) { p = q; break; }
+    w += a;
+  }
+  int n = (int)(p - s);
+  char buf[64];
+  if (n > (int)sizeof buf - 2) n = (int)sizeof buf - 2;
+  for (int i = 0; i < n; i++) buf[i] = s[i];
+  buf[n] = '~';
+  buf[n + 1] = 0;
+  return ui_ptext(x, y, ink, buf) - x;
+}
+
+int ui_ptext_right(int right, int y, u16 ink, const char* s) {
+  return ui_ptext(right - ui_ptext_w(s), y, ink, s);
+}
+
+int ui_pchar_w(char c) { return PADV(pchar((unsigned char)c)); }
+
+/* One wrap step: how many bytes of `s` fit in `maxw`, and how many to skip after.
+ * Returns the byte count to DRAW; *skip receives the count to advance past
+ * (the same plus a consumed space). */
+int ui_ptext_break(const char* s, int maxw, int* skip) {
+  const char* p = s;
+  int w = 0, last_space = -1;
+  while (*p) {
+    if (*p == ' ') last_space = (int)(p - s);
+    const char* q = p;
+    int a = PADV(pnext(&p));
+    if (w + a > maxw) { p = q; break; }
+    w += a;
+  }
+  int i = (int)(p - s);
+  if (!s[i]) { *skip = i; return i; }             /* the rest fits */
+  if (last_space > 0) { *skip = last_space + 1; return last_space; }
+  *skip = i ? i : 1;                              /* one word wider than the line */
+  return *skip;
+}
+
+int ui_ptext_wrap(int x, int y, int maxw, int line_h, int max_lines, u16 ink, const char* s) {
+  int lines = 0;
+  char buf[64];
+  while (*s && (max_lines <= 0 || lines < max_lines)) {
+    int skip, n = ui_ptext_break(s, maxw, &skip);
+    if (n > (int)sizeof buf - 1) n = (int)sizeof buf - 1;
+    for (int i = 0; i < n; i++) buf[i] = s[i];
+    buf[n] = 0;
+    ui_ptext(x, y + lines * line_h, ink, buf);
+    s += skip;
+    lines++;
+  }
+  return lines;
+}
+
+int ui_ptext_wrap_lines(int maxw, const char* s) {
+  int lines = 0;
+  while (*s) { int skip; ui_ptext_break(s, maxw, &skip); s += skip; lines++; }
+  return lines;
 }
