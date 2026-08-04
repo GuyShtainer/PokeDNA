@@ -3459,7 +3459,12 @@ static int nav_menu(void) {
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
     for (int i = 0; i < vis; i++) {
       int r = top + i, y = my + 18 + i * rh; bool s = (r == sel);
-      if (s) ui_panel(mx + 2, y - 1, mw - 4, rh - 1, UI_SEL, UI_TITLE);
+      /* Height rh, not rh-1. The glyph box is 8 px tall starting at y, so a bar of height 8
+       * placed at y-1 ends at y+6 and the last pixel row of every letter fell OUTSIDE the
+       * highlight — the bar visibly cut through the bottom of the text. Height 9 spans
+       * y-1..y+7, containing the glyph with a pixel of lead above it, and rows are rh=9
+       * apart so it still cannot touch the row below. */
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, rh, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[r]);
     }
     if (top > 0)                ui_text(mx + mw - 12, my + 18, UI_DIM, "^");

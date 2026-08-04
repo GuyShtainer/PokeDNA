@@ -159,13 +159,13 @@ static void card_info(const PkMon* p) {
   ui_text(x, y, C_HDR, "POKEMON INFO"); y += 12;
 
   if (p->isEgg && !p->isBadEgg) {        /* an egg stores its hatch counter in friendship */
-    siprintf(b, "Hatch ~%u steps", (unsigned)(p->friendship * 256));
+    siprintf(b, "~%u steps", (unsigned)(p->friendship * 256));
     { char hb[24]; ui_truncate(hb, b, 17); ui_text(x, y, C_HOT, hb); } y += 10;
-    siprintf(b, "%u egg cycle%s left", (unsigned)p->friendship, p->friendship == 1 ? "" : "s");
+    siprintf(b, "%u cycle%s left", (unsigned)p->friendship, p->friendship == 1 ? "" : "s");
     { char hb[24]; ui_truncate(hb, b, 17); ui_text(x, y, UI_DIM, hb); } y += 11;
   }
 
-  ui_text(x, y, C_KEY, "Species"); reg(F_SPECIES, x + 48, y, 88);
+  ui_text(x, y, C_KEY, "Spec."); reg(F_SPECIES, x + 48, y, 88);
   ui_text(x + 48, y, C_VAL, pk_species_name(p->species)); y += 9;
 
   ui_text(x, y, C_KEY, "Name"); reg(F_NICK, x + 48, y, 88);
@@ -182,11 +182,11 @@ static void card_info(const PkMon* p) {
   y += 16;
 
   uint16_t ab = pk_species_ability(p->species, p->abilityNum);
-  ui_text(x, y, C_KEY, "Ability"); reg(F_ABILITY, x + 48, y, 88);
+  ui_text(x, y, C_KEY, "Abil."); reg(F_ABILITY, x + 48, y, 88);
   { char ab_[16]; ui_truncate(ab_, pk_ability_name(ab), 11); ui_text(x + 48, y, C_VAL, ab_); } y += 9;
   y = text_wrap(x + 4, y, 17, UI_DIM, pk_ability_desc(ab)); y += 1;
 
-  ui_text(x, y, C_KEY, "Nature"); reg(F_NATURE, x + 48, y, 60);
+  ui_text(x, y, C_KEY, "Nat."); reg(F_NATURE, x + 48, y, 60);
   ui_text(x + 48, y, C_HOT, pk_nature_name(p->nature)); y += 9;
 
   ui_text(x, y, C_KEY, "Shiny"); reg(F_SHINY, x + 48, y, 26);
@@ -194,8 +194,13 @@ static void card_info(const PkMon* p) {
   ui_text(x + 80, y, C_KEY, "Sex"); reg(F_GENDER, x + 108, y, 22);
   ui_text(x + 108, y, gender_col(p->gender), p->gender == 0 ? "M" : p->gender == 1 ? "F" : "-"); y += 10;
 
-  siprintf(b, "Met Lv%u %s", (unsigned)p->metLevel, pk_location_name(p->metLocation));
-  { char mb[40]; ui_truncate(mb, b, 17); ui_text(x, y, UI_DIM, mb); }
+  /* The footer lives at y=152. `y` is a running cursor and the egg rows above add 21 px, so
+   * this row could land on top of it — two strings superimposed, neither readable. Clamp
+   * rather than reflow: the ORIGIN card carries the same information in full. */
+  if (y <= 140) {
+    siprintf(b, "Met Lv%u %s", (unsigned)p->metLevel, pk_location_name(p->metLocation));
+    { char mb[40]; ui_truncate(mb, b, 17); ui_text(x, y, UI_DIM, mb); }
+  }
 }
 
 static void card_skills(const PkMon* p) {
@@ -305,8 +310,12 @@ static void card_origin(const PkMon* p) {
   ui_text(x + 60, y, C_HOT, pk_metgame_name(p->metGame)); y += 14;
 
   siprintf(b, "OT %s", p->otName); { char ob[40]; ui_truncate(ob, b, 17); ui_text(x, y, UI_DIM, ob); } y += 9;
-  siprintf(b, "TID %05u SID %05u", (unsigned)(p->otId & 0xFFFF), (unsigned)(p->otId >> 16));
-  { char tb[40]; ui_truncate(tb, b, 17); ui_text(x, y, UI_DIM, tb); } y += 9;
+  /* One row cannot hold both: "TID 38800 SID 15243" is 19 glyphs and the column is 17, so
+   * truncating it dropped three of the five SID digits without saying so. */
+  siprintf(b, "TID %05u", (unsigned)(p->otId & 0xFFFF));
+  ui_text(x, y, UI_DIM, b); y += 9;
+  siprintf(b, "SID %05u", (unsigned)(p->otId >> 16));
+  ui_text(x, y, UI_DIM, b); y += 9;
   if (p->pokerus) ui_text(x, y, UI_WARN, "Pokerus");
 }
 
@@ -320,13 +329,13 @@ static void card_condition(const PkMon* p) {
     int v = p->contest[i];
     reg(F_CT0 + i, x, y, 138);
     ui_text(x, y, C_KEY, CTL[i]);
-    siprintf(b, "%3d", v); ui_text(x + 44, y, C_VAL, b);
+    siprintf(b, "%3d", v); ui_text(x + 52, y, C_VAL, b);   /* +44 collided with "Beauty" */
     int fill = v * 64 / 255;
-    ui_progress(x + 72, y + 1, 64, 5, fill, i == 5 ? C_HOT : C_HDR, UI_PANEL, UI_BORDER);
+    ui_progress(x + 80, y + 1, 58, 5, fill, i == 5 ? C_HOT : C_HDR, UI_PANEL, UI_BORDER);
     y += 12;
   }
   y += 2;
-  ui_text(x, y, UI_DIM, "Sheen = Pokeblocks fed");
+  ui_text(x, y, UI_DIM, "Sheen: blocks fed");   /* 17 cols; the full phrase wrapped onto the portrait */
 }
 
 static void render_card(const PkMon* p, int card) {

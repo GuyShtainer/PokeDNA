@@ -795,7 +795,18 @@ static void draw_box_banner(BoxSource* src, int box, bool on_title) {
   for (int s = 0; s < 30; s++) if (g_box[s].species) occ++;
   siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);
   draw_banner(WP_X + 2, 13, WP_W - 4, bnocc);
-  if (on_title) m3_frame(WP_X, 12, WP_X + WP_W - 1, 27, UI_SELTEXT);
+  /* Only when the cursor is ACTUALLY on the box name. `on_title` stays true while the cursor
+   * is further up on the top tabs, so keying off it alone drew the identical frame in two
+   * different focus states — a pixel diff of the banner band between "on box name" and "on
+   * SAVE tab" showed ZERO changed pixels, which is exactly why it read as confusing.
+   *
+   * And the cue itself is doubled: a 1 px UI_SELTEXT hairline is indistinguishable from the
+   * banner's own gold body, so the frame is drawn in the menu's selection colour (which
+   * contrasts against gold) and two pixels thick. */
+  if (on_title && s_tab_focus < 0) {
+    m3_frame(WP_X,     12,     WP_X + WP_W - 1, 27,     UI_SEL);
+    m3_frame(WP_X + 1, 13,     WP_X + WP_W - 2, 26,     UI_SEL);
+  }
 }
 
 /* Full BG repaint (tabs + left panel + wallpaper + banner + footer). The icons,
@@ -807,7 +818,7 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
   draw_tab(0, PANEL_W + 1, "PKMN DATA", s_tab_focus < 0 || s_tab_focus == 0);
   draw_tab(PANEL_W + 1, 92, src->is_bank ? "(BANK)" : "PARTY", s_tab_focus == 1);
   draw_tab(PANEL_W + 93, UI_SCR_W - (PANEL_W + 93), "SAVE", s_tab_focus == 2);
-  draw_left(on_title ? 0 : &g_box[cur]);
+  draw_left((on_title && s_tab_focus < 0) ? 0 : &g_box[cur]);   /* see draw_box_banner */
 
   draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
   draw_box_banner(src, box, on_title);
