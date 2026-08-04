@@ -1723,8 +1723,13 @@ static bool bag_screen_try(bool* dirty) {
   return true;
 }
 
-static bool data_editor(void) {
-  int tab = 0;                                   /* 0=counters 1=bag 2=flags */
+/* `only` >= 0 locks the screen to that ONE tab. The Bag has its own menu entry now, so it is
+ * entered directly instead of hiding two L/R presses deep inside this screen; the plain
+ * (art-free) bag list still lives here as tab 1 and is what a build with no bag art falls
+ * back to. With `only` < 0 this is the flags-and-counters editor and L/R toggles those two. */
+static bool data_editor_tab(int only) {
+  const bool lock = (only >= 0);
+  int tab = lock ? only : 0;                     /* 0=counters 1=bag 2=flags */
   int sel = 0, top = 0, pocket = 0;
   bool dirty = false, flag_warned = false;
 
@@ -1753,10 +1758,16 @@ static bool data_editor(void) {
     if (!part) {
       ui_clear();
       static const char* const TAB[3] = { "COUNTERS", "BAG", "FLAGS" };
-      for (int t = 0; t < 3; t++) {
-        int x = 4 + t * 80; bool s = (t == tab);
-        if (s) ui_panel(x, 0, 76, 12, UI_SEL, UI_TITLE);
-        ui_text(x + 6, 2, s ? UI_SELTEXT : UI_DIM, TAB[t]);
+      if (lock) {                                /* one screen, one heading */
+        ui_panel(4, 0, 76, 12, UI_SEL, UI_TITLE);
+        ui_text(10, 2, UI_SELTEXT, TAB[tab]);
+      } else {
+        static const int PAIR[2] = { 0, 2 };     /* COUNTERS | FLAGS — the bag is a menu entry */
+        for (int t = 0; t < 2; t++) {
+          int x = 4 + t * 80; bool s = (PAIR[t] == tab);
+          if (s) ui_panel(x, 0, 76, 12, UI_SEL, UI_TITLE);
+          ui_text(x + 6, 2, s ? UI_SELTEXT : UI_DIM, TAB[PAIR[t]]);
+        }
       }
       ui_hline(0, 13, UI_SCR_W, UI_BORDER);
     }
@@ -1775,7 +1786,7 @@ static bool data_editor(void) {
         if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
         ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
       }
-      ui_text(4, 152, UI_DIM, "A edit  U/D  L/R tab  B done");
+      ui_text(4, 152, UI_DIM, lock ? "A edit  U/D  B done" : "A edit  U/D  L/R tab  B done");
     } else if (tab == 1) {                       /* ---- bag ---- */
       int cap = pk_pocket_cap(g_game, pocket);
       if (sel >= cap) sel = cap - 1;
@@ -1793,7 +1804,7 @@ static bool data_editor(void) {
         if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
         ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
       }
-      ui_text(4, 152, UI_DIM, "A edit  SEL pocket  L/R tab");
+      ui_text(4, 152, UI_DIM, "A edit  SEL pocket  B done");
     } else {                                     /* ---- flags (named list, foldable sections) ---- */
       if (part) {                                 /* cursor-only change: repaint two rows */
         if (f_sel != sel) nf_row_repaint(f_nf, nc, top, f_sel, sel);
@@ -1811,10 +1822,9 @@ static bool data_editor(void) {
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B | KEY_SELECT);
     if (k & KEY_B) break;
-    else if (k & KEY_L) { snd_tab(); tab = (tab + 2) % 3; sel = 0; top = 0;
-                          if (tab == 1 && bag_screen_try(&dirty)) tab = 0; }   /* real bag ran (B) -> keep moving left */
-    else if (k & KEY_R) { snd_tab(); tab = (tab + 1) % 3; sel = 0; top = 0;
-                          if (tab == 1 && bag_screen_try(&dirty)) tab = 2; }   /* real bag ran (B) -> keep moving right */
+    else if (!lock && (k & (KEY_L | KEY_R))) {   /* two tabs now: COUNTERS <-> FLAGS */
+      snd_tab(); tab = (tab == 0) ? 2 : 0; sel = 0; top = 0; f_valid = false;
+    }
     else if (tab == 2) {                         /* named flags nav/fold/toggle */
       const NamedFlag* nf; int nc = pk_named_flags(g_game, &nf);
       int total = nc + 1;
@@ -1884,6 +1894,18 @@ static bool data_editor(void) {
     return app_commit_block(1, 4, g_sb1);            /* one verified write on exit */
   }
   return false;
+}
+
+static bool data_editor(void) { return data_editor_tab(-1); }
+
+/* Bag menu entry: the game's own bag screen when its art is present, otherwise the plain
+ * list. Either way the commit is the same one data_editor_tab does on exit. */
+static bool bag_entry(void) {
+  bool dirty = false;
+  if (!bag_screen_try(&dirty)) return data_editor_tab(1);
+  if (!dirty) return false;
+  if (!app_confirm("Save bag changes?", "Edits write immediately.")) return false;
+  return app_commit_block(1, 4, g_sb1);
 }
 
 /* START menu from the box/party: pick a destination screen. */
@@ -3429,7 +3451,7 @@ static void pdna_battle_record(void) {
 
 /* START-menu destinations over the box (Party + Bank + Daycare are the storage
  * screens; SELECT no longer toggles the party — it cycles the box cursor mode). */
-enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_MIRAGE, NV_DEX, NV_DATA, NV_SECRET, NV_POKEBLOCK, NV_EVENTS,
+enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_MIRAGE, NV_DEX, NV_BAG, NV_DATA, NV_SECRET, NV_POKEBLOCK, NV_EVENTS,
        NV_BATTLEREC, NV_FRONTIER, NV_FLY,
        /* Present in the emulator build too: when a Pokemon ROM has been fused into this
         * image (tools/fuse_rom.py) the map reads it from cartridge space, no SD needed.
@@ -3437,53 +3459,76 @@ enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_MIRAGE, NV_DEX, N
        NV_MAP,
        NV_SETTINGS, NV_BACK, NV_COUNT };
 
+/* Menu geometry. The column is wide enough for "Flags & counters" (85 px in the
+ * proportional face) and two of them plus the gutter still clear the 240 px screen. */
+#define NAV_COL_W   98
+#define NAV_BAND_W  (NAV_COL_W - 4)
+#define NAV_BAND_H  12
+
 /* The menu is WINDOWED, not fixed-height: at rh 9 only 13 rows fit the 152-px budget
  * (my + 18 + n*rh + 11 <= 152), and the list passed that with the Frontier/Fly screens.
  * Previously each new entry paid for itself by shrinking rh (10 -> 9 for Battle record);
  * one more step would put a 7-px selection bar under an 8-px font. Scrolling instead
  * keeps rh 9 forever and makes the next screen free. */
 #define NV_VIS 13
+/* Pixels under the selection bar, so it can be lifted off a row without repainting the
+ * translucent panel. 2,256 B of EWRAM buys a menu that is drawn exactly ONCE. */
+static u16 EWRAM_BSS s_nav_band[NAV_BAND_W * NAV_BAND_H];
+
 static int nav_menu(void) {
-  /* TWO COLUMNS. Seventeen entries in one column needed a scrolling window (NV_VIS 13) and a
-   * 9 px row pitch, which is what made the list feel full and forced the selection bar to hug
-   * the glyphs. Two columns of nine hold all 17 outright — no scroll, no position counter, no
-   * up/down arrows — and buy back enough vertical room for a 13 px pitch.
+  /* TWO COLUMNS, eighteen entries, nine rows each — no scroll, no position counter.
    *
-   * Labels are shortened to fit: two columns of 16-character labels would need 256 px and the
-   * screen is 240. Nine characters each is the widest that fits with a gutter. */
+   * DRAWN ONCE. ui_panel_alpha BLENDS with what is already on screen, and this used to
+   * repaint the whole menu on every keypress: each scroll blended the panel over its own
+   * previous blend, so the menu visibly darkened and stacked, exactly as if a new panel had
+   * popped on top of the last. Now the panel is composited once on entry and a cursor move
+   * only lifts the selection bar off the old row (restoring the pixels it covered) and lays
+   * it on the new one. Labels use the proportional face, which is what makes room for
+   * "Flags & counters" where nine fixed-width glyphs used to be the ceiling. */
   static const char* const L[NV_COUNT] = {
     "Party", "Bank", "Daycare", "Trainer", "Clock fix", "Mirage", "Pokedex",
-    "Data edit", "Bases", "Blocks", "Tickets", "Records",
+    "Bag", "Flags & counters",
+    "Bases", "Blocks", "Tickets", "Records",
     "Frontier", "Fly", "Map",
     "Settings", "Back" };
-  const int rows = (NV_COUNT + 1) / 2;              /* 9 rows, right column holds 8 */
-  const int cw = 84, rh = 13;                       /* 9 glyphs = 72 px + padding   */
-  /* Height must clear the LAST row's glyph box AND leave the footer its own band: rows start
-   * at my+20 and the 9th ends at my+20+8*rh+8 = my+132, so the footer at my+mh-10 needs
-   * mh >= 151. The first attempt used +6 and "Bases" was drawn on top of "A pick  B back" —
-   * the same footer collision this sweep already found twice elsewhere. */
+  const int rows = (NV_COUNT + 1) / 2;              /* 9 rows per column */
+  const int cw = NAV_COL_W, rh = 13;
   const int mw = cw * 2 + 12, mh = 20 + rows * rh + 14;
   const int mx = (UI_SCR_W - mw) / 2, my = (UI_SCR_H - mh) / 2;
-  int sel = 0;
+  const int bw = NAV_BAND_W;                        /* selection bar width */
+
+  /* Compose the panel and every label ONE time. */
+  ui_panel_alpha(mx, my, mw, mh, UI_PANEL, UI_BORDER, 5);
+  ui_text(mx + 6, my + 4, UI_TITLE, "MENU");
+  ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+  for (int i = 0; i < NV_COUNT; i++) {
+    int col = i / rows, row = i % rows;
+    ui_ptext(mx + 6 + col * cw, my + 20 + row * rh, UI_TEXT, L[i]);
+  }
+  ui_text(mx + 6, my + mh - 10, UI_DIM, "A pick  B back");
+
+  int sel = 0, drawn = -1;
   for (;;) {
-    /* Translucent: the box/party screen underneath stays visible through the menu. 5/8 keeps
-     * the panel readable — at half it fought the artwork behind it. */
-    ui_panel_alpha(mx, my, mw, mh, UI_PANEL, UI_BORDER, 5);
-    ui_text(mx + 6, my + 4, UI_TITLE, "MENU");
-    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < NV_COUNT; i++) {
-      int col = i / rows, row = i % rows;
-      int x = mx + 6 + col * cw, y = my + 20 + row * rh;
-      if (i == sel) {
-        /* The bar must CONTAIN the glyph box, not clip it. Text sits at y and is 8 px tall,
-         * so the bar spans y-2 .. y+9 — two pixels of lead above and below — and with a 13 px
-         * pitch there is still a clear pixel between rows. Blended so the selection reads as
-         * a highlight rather than a solid slab. */
-        ui_panel_alpha(x - 4, y - 2, cw - 4, 12, UI_SEL, UI_TITLE, 6);
+    if (drawn != sel) {
+      if (drawn >= 0) {                             /* lift the bar off the old row */
+        int c = drawn / rows, r = drawn % rows;
+        int bx = mx + 6 + c * cw - 4, by = my + 20 + r * rh - 2;
+        for (int j = 0; j < NAV_BAND_H; j++)
+          for (int i = 0; i < bw; i++)
+            vid_mem[(by + j) * UI_SCR_W + bx + i] = s_nav_band[j * bw + i];
       }
-      ui_text(x, y, (i == sel) ? UI_SELTEXT : UI_TEXT, L[i]);
+      { int c = sel / rows, r = sel % rows;
+        int bx = mx + 6 + c * cw - 4, by = my + 20 + r * rh - 2;
+        for (int j = 0; j < NAV_BAND_H; j++)        /* remember what it covers */
+          for (int i = 0; i < bw; i++)
+            s_nav_band[j * bw + i] = vid_mem[(by + j) * UI_SCR_W + bx + i];
+        /* The bar must CONTAIN the glyph box, not clip it: text sits at by+2 and is 8 px
+         * tall, so the bar spans by .. by+11 with two pixels of lead above and below. */
+        ui_panel_alpha(bx, by, bw, NAV_BAND_H, UI_SEL, UI_TITLE, 6);
+        ui_ptext(bx + 4, by + 2, UI_SELTEXT, L[sel]);
+      }
+      drawn = sel;
     }
-    ui_text(mx + 6, my + mh - 10, UI_DIM, "A pick  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) return NV_BACK;
     /* Up/down walks the column and wraps into the next one, so holding DOWN still reaches
@@ -3654,6 +3699,9 @@ static void view_save(const char* path) {
         case NV_CLOCK:   pdna_clock(); break;
         case NV_MIRAGE:  pdna_mirage(); break;
         case NV_DEX:     pdna_dex_edit(); break;
+        case NV_BAG:     if (app_can_edit()) bag_entry();
+                         else msg_wait("BAG", UI_WARN, "Read-only cart.", "Writes need an Omega.");
+                         break;
         case NV_DATA:    if (app_can_edit()) data_editor();
                          else { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); } break;
         case NV_SECRET:  rmbl_fire(RCUE_ROOM); pdna_secretbase(); break;
