@@ -2,6 +2,55 @@
 
 All notable changes to PokeDNA. Versions follow semantic versioning (`MAJOR.MINOR.PATCH`).
 
+## v2.0.0-rc1 — everything since the first release (2026-08-04)
+
+**Release candidate, not a final release.** Everything below runs in an emulator against real
+Generation-III saves and the pure-C cores are covered by the host test suite, but **none of it
+has been validated on real hardware yet**, and this release carries **no ROM download** (see
+*Why there is no binary here* below).
+
+### Added
+- **Overworld map viewer** — reads *your own* Pokémon ROM off the SD card at runtime and renders
+  the real world: a five-step zoom ladder, map-edge crossing, warps in and out of buildings,
+  dive/emerge, secret-base entrances and interiors (the owner's decorations, correct collision),
+  NPCs walked from the ROM's own script bytecode, item balls, and a region map. Grab your
+  character and put them anywhere — including places you should not be able to stand.
+- **PLACES list** (L on the widest region view) for the spots the region map cannot point at:
+  the Sky Pillar and its top floor on Hoenn, Navel Rock and Birth Island on Kanto/Sevii.
+- **The real bag screen** for Ruby/Sapphire, Emerald and FireRed/LeafGreen, both genders, with
+  full item descriptions and per-pocket browsing.
+- **Real trainer cards** for all three games — front and back pages, five star tiers, both
+  genders — with the underlying achievements editable.
+- **Battle Record** (Emerald): read the recorded battle out of the save, export it to the card,
+  and import an old one back as if it were the last battle you fought.
+- **Battle Frontier** win streaks, **Fly** destination flags, **Mirage Island**, **Pokéblocks**,
+  event tickets, egg hatching, Deoxys formes, a Pokédex undo, and an in-game **clock fix**.
+- **Emerald-style multi-select** in the PC: hold A and drag a rectangle, carry the block between
+  boxes, drop it whole.
+- A **proportional font** of our own, so item and Pokémon names print in full — `SUPER POTION`
+  and `No01 FOCUS PUNCH` where nine characters used to be the ceiling.
+- TMs and HMs now show the move they teach, the way the games do.
+
+### Fixed
+- The SD driver returned **success** after exhausting its read retries, handing back stale bytes
+  that FatFs then reported as `FR_OK`. Failure is now reported as failure.
+- FatFs bounced unaligned buffers on the wrong mask, so half of Emerald's metatile tables were
+  read two bytes early — the cause of the corrupted map rooms.
+- The nav menu recomposited itself on every keypress and visibly stacked; it is drawn once now.
+- Dozens of truncated strings across the box panel, summary, bag, pickers and dialogs.
+
+### Why there is no binary here
+The built ROM currently embeds Generation-III art and text extracted from the games, and
+publishing that as a release asset is not something this project is willing to do. A build that
+loads those assets from **your own cartridge dump at run time** — the same way the map viewer
+already reads your ROM — is the planned fix; until then the source is the release.
+
+### Known limitations
+- **Not hardware-validated.** Flash writes, every SD path and the map corruption case are
+  emulator-only in this build.
+- Writing is EZ-Flash Omega DE only; EverDrive GBA X5 runs read-only by design.
+- Deeper encounter/move legality checking is still basic.
+
 ## v1.0.0 — first public release (2026-06-15)
 
 First downloadable build, **validated on real hardware (EZ-Flash Omega DE).** Editing was exercised
