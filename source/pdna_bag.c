@@ -147,55 +147,61 @@ static void draw_list(const uint16_t* bg, const BagLayout* L, const uint8_t* sb1
                       const uint8_t* sb2, PkGame g, int pocket, int top, int sel) {
   ui_bg_restore(bg, L->list_x0, L->list_y0,
                 L->list_x1 - L->list_x0, L->list_y1 - L->list_y0);
-  int cap = pk_pocket_cap(g, pocket), ncols = (L->list_x1 - L->list_x0) / 8 - 6;
+  int cap = pk_pocket_cap(g, pocket);
+  int nx = L->list_x0 + 9;                       /* name column, just past the '>' */
   for (int i = 0; i < BROWS(L) && top + i < cap; i++) {
     int sl = top + i, y = L->list_y0 + 1 + i * 9;
     uint16_t id = pk_bag_item(sb1, g, pocket, sl);
     if (id) {
-      char nm[40]; ui_truncate(nm, pk_item_name(id), ncols);
-      ui_text(L->list_x0 + 10, y, BINK, nm);
+      /* The quantity is right-aligned and measured FIRST, so the name gets every
+       * pixel the number does not need. Retail does the same, which is how a row
+       * fits "No01 FOCUS PUNCH x 1". A fixed "x999" gutter would have cost 12 px
+       * on every row for a width almost nothing uses. */
+      int right = L->list_x1 - 3;
       if (pocket != POCKET_KEY) {
         char q[8]; siprintf(q, "x%u", (unsigned)pk_bag_qty(sb1, sb2, g, pocket, sl));
-        ui_text(L->list_x1 - 8 * (int)strlen(q) - 2, y, BINK, q);
+        right = ui_ptext_right(right, y, BINK, q) - 4;
       }
-    } else ui_text(L->list_x0 + 10, y, BDIM, "-");
+      char nm[48];
+      pk_item_label(id, nm, sizeof nm);          /* TMs/HMs carry their move here */
+      ui_ptext_fit(nx, y, right - nx, BINK, nm);
+    } else ui_ptext(nx, y, BDIM, "-");
   }
   ui_text(L->list_x0 + 2, L->list_y0 + 1 + (sel - top) * 9, BCUR, ">");
 }
 
 /* ---- description pane: word-wrap + AUTO-PAGING (BACKLOG 12d) --------------
- * The 8px fixed font fits less than the game's variable-width font, so long
- * flavor text overflows the pane. Instead of dropping it, split it into pages
- * that share the pane's exact row geometry and flip pages every BAG_DESC_FLIP
- * idle frames. The pane is PURE TEXT (full width, no icon flow-around): the
- * 24x24 item icon lives in the game's own icon slot (L->icon_xy — the baked
- * white square each game reserves for it, outside this region; see bag_bg.h). */
+ * Laid out in PIXELS with the proportional face (ui_ptext), the same way the
+ * games do it — which is why retail fits "Powerful, but makes the user flinch if
+ * hit by the foe." in four short lines and our 8 px font could not. Most
+ * descriptions now land on a single page; the pager stays for the few that don't
+ * and flips every BAG_DESC_FLIP idle frames. The pane is PURE TEXT (full width,
+ * no icon flow-around): the 24x24 item icon lives in the game's own icon slot
+ * (L->icon_xy — the baked white square each game reserves for it, outside this
+ * region; see bag_bg.h). */
 #define BAG_DESC_FLIP 90                         /* ~1.5 s per page */
 static int s_desc_pages = 1;                     /* pages of the CURRENT desc (set by draw_desc) */
 
 /* Lay out ONE page starting at text offset *pi, advancing *pi past what it
- * consumed; draws only when `draw`. Every page uses the same full-width row
- * slots. When `multi`, the LAST row is shortened 4 cols to leave room for the
- * "n/m" page chip. Returns true while text remains after this page. */
+ * consumed; draws only when `draw`. Every page uses the same row slots, measured
+ * in pixels. When `multi`, the LAST row gives up ~22 px for the "n/m" page chip.
+ * Returns true while text remains after this page. */
 static bool desc_flow(const BagLayout* L, const char* s, int* pi, bool draw, bool multi) {
   int n = (int)strlen(s), i = *pi;
   for (int y = L->desc_y0 + 2; y + 8 <= L->desc_y1 - 2 && i < n; y += 9) {
     int x = L->desc_x0 + 6;
-    int cols = (L->desc_x1 - x - 2) / 8;
-    if (multi && y + 9 + 8 > L->desc_y1 - 2) cols -= 4;   /* last row: room for "n/m" */
-    if (cols > 30) cols = 30;                    /* line[] bound */
-    if (cols < 1) continue;
-    int take = (n - i > cols) ? cols : (n - i);
-    if (n - i > cols) {                          /* break at the last space that fits */
-      int b = take; while (b > 0 && s[i + b] != ' ') b--;
-      if (b > 0) take = b;
-    }
+    int maxw = L->desc_x1 - x - 2;
+    if (multi && y + 9 + 8 > L->desc_y1 - 2) maxw -= 22;   /* last row: room for "n/m" */
+    if (maxw < 8) continue;
+    int skip, take = ui_ptext_break(s + i, maxw, &skip);
     if (draw) {
-      char line[32];
+      char line[48];
+      if (take > (int)sizeof line - 1) take = (int)sizeof line - 1;
       memcpy(line, s + i, take); line[take] = 0;
-      ui_text(x, y, L->desc_ink, line);
+      ui_ptext(x, y, L->desc_ink, line);
     }
-    i += take; while (i < n && s[i] == ' ') i++;
+    i += skip;
+    while (i < n && s[i] == ' ') i++;
   }
   *pi = i;
   return i < n;
@@ -234,7 +240,7 @@ static void draw_desc(const uint16_t* bg, const BagLayout* L, const uint8_t* sb1
     int ylast = L->desc_y0 + 2;
     while (ylast + 9 + 8 <= L->desc_y1 - 2) ylast += 9;
     char b[8]; siprintf(b, "%d/%d", pg + 1, s_desc_pages);
-    ui_text(L->desc_x1 - 8 * (int)strlen(b) - 2, ylast, L->desc_ink, b);
+    ui_ptext_right(L->desc_x1 - 2, ylast, L->desc_ink, b);
   }
 }
 
