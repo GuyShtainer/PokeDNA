@@ -19,15 +19,13 @@ editor — the save-format logic was written from scratch (see *Credits & legali
 
 ## Status
 
-**v2.0.0-rc1 — a release candidate: emulator-verified, NOT yet validated on real hardware.**
+**v2.0.0 — validated on real hardware (EZ-Flash Omega DE).**
 
-This matters, so it is stated plainly. **v1.0.0 was hardware-validated** on an EZ-Flash Omega DE:
-flag/counter edits, copy / duplicate / move, the SD bank (byte-identical round-trips surviving a
-power cycle), and a full from-scratch Pokémon edit that loaded and *battled correctly in the actual
-game*. **Everything added since 2026-07-29 — the map viewer, the PLACES list, the bag and trainer-card
-screens, Battle Record, Frontier/Fly/Mirage, multi-select, and the SD-driver and FatFs fixes — has
-only been exercised in an emulator** against real Gen-3 saves, plus the pure-C host test suite.
-Flash writes, every SD path, and the map's tileset reads are emulator-only in this build.
+Every screen in this release has been exercised on a real cartridge against real saves, not just in
+an emulator: the map viewer reading the game ROM off the card, flash writes, the SD bank
+(byte-identical round-trips that survive a power cycle), and a from-scratch Pokémon edit that loads
+and *battles correctly in the actual game*. The pure-C cores are additionally covered by the host
+test suite (`tests/`, 28 harnesses).
 
 Back up your `.sav` before you edit anything. PokeDNA takes an immutable backup itself, but keep
 your own too.
@@ -138,8 +136,7 @@ icons, the hand cursor and the map's characters are hardware sprites, so nothing
 
 Grab the latest **`PokeDNA.gba`** from the
 [**Releases page**](https://github.com/GuyShtainer/PokeDNA/releases) — no compiling needed. Copy it
-onto your flashcart's SD card next to your saves and run it. Note the *Status* section above:
-the current candidate has not been validated on real hardware.
+onto your flashcart's SD card next to your saves and run it.
 
 ## How to run
 
@@ -212,7 +209,6 @@ Each `tests/host_*_test.c` lists its exact compile line in a header comment.
 
 ## Known limitations
 
-- **Not hardware-validated.** See *Status*.
 - Writing is EZ-Flash Omega DE only; the EverDrive GBA X5 is read-only by design.
 - **Deeper encounter/move legality checking is still basic** — PokeDNA will happily build a Pokémon
   a real game could never produce, and only flags the obvious cases.

@@ -2,11 +2,11 @@
 
 All notable changes to PokeDNA. Versions follow semantic versioning (`MAJOR.MINOR.PATCH`).
 
-## v2.0.0-rc1 — everything since the first release (2026-08-04)
+## v2.0.0 — everything since the first release (2026-08-04)
 
-**Release candidate, not a final release.** Everything below runs in an emulator against real
-Generation-III saves and the pure-C cores are covered by the host test suite, but **none of it
-has been validated on real hardware yet**. Back up your `.sav` before you edit anything.
+**Validated on real hardware** (EZ-Flash Omega DE), against real Generation-III saves, with the
+pure-C cores additionally covered by the host test suite. Back up your `.sav` before you edit
+anything — PokeDNA keeps an immutable backup itself, but keep your own too.
 
 ### Added
 - **Overworld map viewer** — reads *your own* Pokémon ROM off the SD card at runtime and renders
@@ -39,8 +39,6 @@ has been validated on real hardware yet**. Back up your `.sav` before you edit a
 - Dozens of truncated strings across the box panel, summary, bag, pickers and dialogs.
 
 ### Known limitations
-- **Not hardware-validated.** Flash writes, every SD path and the map corruption case are
-  emulator-only in this build.
 - Writing is EZ-Flash Omega DE only; EverDrive GBA X5 runs read-only by design.
 - Deeper encounter/move legality checking is still basic.
 
