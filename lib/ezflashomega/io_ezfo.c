@@ -65,9 +65,13 @@ static u32 EWRAM_CODE Read_SD_sectors(u32 address, u16 count, u8* SDbuffer) {
   u16 i;
   u16 blocks;
   u32 res;
-  u32 times = 2;
   for (i = 0; i < count; i += 4) {
     blocks = (count - i > 4) ? 4 : (count - i);
+
+    /* The retry budget is PER CHUNK. Upstream declared it once outside this loop, so a
+     * multi-chunk transfer shared two attempts across every chunk: one timeout early on
+     * left the rest of the transfer with no retries at all. */
+    u32 times = 3;
 
   read_again:
     *(vu16*)0x9fe0000 = 0xd200;
@@ -82,11 +86,18 @@ static u32 EWRAM_CODE Read_SD_sectors(u32 address, u16 count, u8* SDbuffer) {
     res = Wait_SD_Response();
     SD_Enable();
     if (res == 1) {
-      times--;
-      if (times) {
+      if (--times) {
         delay(5000);
         goto read_again;
       }
+      /* Retries exhausted. Upstream FELL THROUGH to the dmaCopy and returned 0 = success,
+       * so the caller got the FPGA window's stale contents and FatFs reported FR_OK over
+       * them: ff.c's ABORT(fs, FR_DISK_ERR) was dead code on this cart, and every layer
+       * above — including the verified-write compare — was reasoning about bytes the card
+       * never delivered. Fail instead: a loud error beats a silent wrong render, and on
+       * the write path it beats silent data loss. */
+      SD_Disable();
+      return 1;
     }
 
     dmaCopy((void*)0x9E00000, SDbuffer + i * 512, blocks * 512);
