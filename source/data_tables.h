@@ -44,6 +44,21 @@ const char* pk_item_desc(uint16_t item_id);             /* short item flavor tex
 #define PK_ITEM_IN_E     0x02
 #define PK_ITEM_IN_FRLG  0x04
 uint8_t     pk_item_games(uint16_t item_id);
+
+/* ---- TMs and HMs ----------------------------------------------------------
+ * Items 289..346 are literally named "TM01".."HM08" — that is the item's own name
+ * in every Gen-3 ROM, and it tells the player nothing. The games append the move at
+ * DISPLAY time: retail Emerald's bag prints "No01 FOCUS PUNCH", FireRed's TM case
+ * does the same (src/tm_case.c:696). These four give us the same information.
+ * The move table is generated from two independent decomp sources that must agree
+ * (tools/gen_data.py) — never hand-write it. */
+uint16_t pk_tmhm_move(uint16_t item_id);    /* move taught, or 0 if not a TM/HM */
+int      pk_tmhm_number(uint16_t item_id);  /* 1..50 for a TM, 1..8 for an HM, else 0 */
+int      pk_item_is_hm(uint16_t item_id);
+/* Display label: "No01 FOCUS PUNCH" / "HM03 SURF" for TMs and HMs, the plain item
+ * name for everything else. `cap` includes the terminator. */
+void     pk_item_label(uint16_t item_id, char* out, int cap);
+
 const char* pk_ability_name(uint16_t ability_id);
 const char* pk_ability_desc(uint16_t ability_id);       /* short flavor text */
 const char* pk_nature_name(uint8_t nature);             /* 0..24 */
