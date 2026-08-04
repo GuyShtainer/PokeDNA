@@ -182,6 +182,23 @@ static void card_rect(PkGame game, int f, int bsel, int* x, int* y, int* w, int*
 }
 
 /* 2 px red selection frame on a field's rect edge (over the card art). */
+/* ---- identity edits and record mixing -------------------------------------
+ * Record mixing does NOT match a secret base by the base's own id. It matches on the
+ * owner's GENDER, the 4-byte trainer ID (public + secret) and the trainer NAME. Change
+ * any of those and every cart that has already mixed with you keeps a base it can no
+ * longer match to you: your base is stranded there under the old identity, and the copy
+ * you mixed back stops tracking. Nothing in the save warns about it, so we do — ONCE per
+ * visit, before the first such edit. After that the edits stay instant, which is how the
+ * card page is meant to feel. */
+static bool s_id_warned;
+
+static bool id_edit_ok(void) {
+  if (s_id_warned) return true;
+  s_id_warned = true;
+  return app_confirm("Changes your MIXING identity",
+                     "Bases you already mixed get orphaned.");
+}
+
 static void card_sel_frame(PkGame game, int f, int bsel) {
   int x, y, w, h; card_rect(game, f, bsel, &x, &y, &w, &h);
   m3_frame(x, y, x + w, y + h, CSEL);
@@ -443,9 +460,11 @@ static void card_editor(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
       full = true;
     } else if (k & KEY_A) {                  /* edit in place (plain page's editors) */
       switch (sel) {
-        case CARDF_NAME: { char b[8]; if (osk_input("TRAINER NAME", name, b, 8)) {
+        case CARDF_NAME: { char b[8];
+                          if (id_edit_ok() && osk_input("TRAINER NAME", name, b, 8)) {
                           strcpy(name, b); pk_set_trainer_name(sb2, name); *d2 = true; } } break;
-        case CARDF_ID: *tid = (uint16_t)num_entry("ID No", *tid, 65535);
+        case CARDF_ID: if (!id_edit_ok()) break;
+                       *tid = (uint16_t)num_entry("ID No", *tid, 65535);
                        *sid = (uint16_t)num_entry("SID", *sid, 65535);   /* SID rides the ID field */
                        pk_set_trainer_id(sb2, *tid, *sid); *d2 = true; break;
         case CARDF_MONEY: *money = num_entry("MONEY", *money, 999999);
@@ -455,6 +474,7 @@ static void card_editor(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
                        pk_set_playtime(sb2, *ph, *pm, 0); *d2 = true; break;
         case CARDF_SEX:  /* instant flip — the card art + photo swap IS the
                           * feedback (and it stays RAM-only until B-save) */
+                       if (!id_edit_ok()) break;
                        *gender ^= 1; pk_set_gender(sb2, *gender); *d2 = true;
                        break;
         case CARDF_BADGES: {                 /* instant toggle of the badge under
@@ -482,6 +502,7 @@ enum { TF_NAME, TF_SEX, TF_TID, TF_SID, TF_MONEY, TF_TIME, TF_BADGES, TF_STARS, 
 
 void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame game) {
   const bool edit = app_can_edit();
+  s_id_warned = false;                 /* the mixing-identity warning is once per VISIT */
   /* Seed EVERY identity field from the LIVE SaveBlock2 buffer, never from the
    * `info` snapshot: Gen3SaveInfo is parsed ONCE when the save is opened and
    * never re-parsed after a commit, while sb2 is re-read from the committed
@@ -588,17 +609,21 @@ void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame g
     else if (k & KEY_DOWN)   sel = (sel + 1) % TF_NUM;
     else if (k & KEY_A) {
       switch (sel) {
-        case TF_NAME: { char b[8]; if (osk_input("TRAINER NAME", name, b, 8)) {
+        case TF_NAME: { char b[8];
+                        if (id_edit_ok() && osk_input("TRAINER NAME", name, b, 8)) {
                           strcpy(name, b); pk_set_trainer_name(sb2, name); d2 = true; } } break;
         case TF_SEX:   /* confirmed toggle: a single stray A here used to flip the
                         * live save's gender silently (male bag/card ever after). */
-                       if (app_confirm("Change trainer SEX?",
+                       if (id_edit_ok() &&
+                           app_confirm("Change trainer SEX?",
                                        gender ? "Female -> Male" : "Male -> Female")) {
                          gender ^= 1; pk_set_gender(sb2, gender); d2 = true;
                        } break;
-        case TF_TID:   tid = (uint16_t)num_entry("ID No", tid, 65535);
+        case TF_TID:   if (!id_edit_ok()) break;
+                       tid = (uint16_t)num_entry("ID No", tid, 65535);
                        pk_set_trainer_id(sb2, tid, sid); d2 = true; break;
-        case TF_SID:   sid = (uint16_t)num_entry("SID", sid, 65535);
+        case TF_SID:   if (!id_edit_ok()) break;
+                       sid = (uint16_t)num_entry("SID", sid, 65535);
                        pk_set_trainer_id(sb2, tid, sid); d2 = true; break;
         case TF_MONEY: money = num_entry("MONEY", money, 999999);
                        pk_set_money(sb1, sb2, game, money); d1 = true; break;
