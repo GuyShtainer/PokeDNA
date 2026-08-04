@@ -384,8 +384,14 @@ typedef struct {
 /* Hoenn (Ruby / Sapphire / Emerald). Sky Pillar's maps are 24.77..24.85; 24.83 is NOT one of
  * them (it is Shoal Cave). Rayquaza stands on the TOP floor, 24.85. */
 static const OffMapPlace PLACES_RSE[] = {
-  { "SKY PILLAR",     "entrance, from Route 131", 24, 77, 0xFF, 46 },
-  { "SKY PILLAR TOP", "Rayquaza is here",         24, 85, 0xFF, 46 },
+  { "SKY PILLAR",         "entrance, from Route 131",  24, 77, 0xFF, 46 },
+  { "SKY PILLAR TOP",     "Rayquaza is here",          24, 85, 0xFF, 46 },
+  { "SEALED CHAMBER",     "the braille room",          24, 71, 0xFF, 49 },
+  { "SEALED CHAMBER 2",   "inner room",                24, 72, 0xFF, 49 },
+  { "UNDERWATER SEALED",  "the dive room above it",    24, 70, 0xFF, 49 },
+  { "DESERT RUINS",       "Regirock",                  24,  6, 0xFF, 27 },
+  { "ISLAND CAVE",        "Regice",                    24, 67, 0xFF, 20 },
+  { "ANCIENT TOMB",       "Registeel",                 24, 68, 0xFF, 35 },
 };
 /* Kanto + Sevii. Both of these have real region cells, just on views the player has to
  * switch to: Navel Rock on SEVII 4-5, Birth Island on SEVII 6-7. */
@@ -402,23 +408,27 @@ static const OffMapPlace PLACES_FRLG[] = {
  * data, so a ui_panel here draws confetti over the tiles AND destroys them. Map layers off,
  * BG0's tte draws, nothing in VRAM is harmed, no reload needed on the way back. */
 static int places_menu(const OffMapPlace* pl, int n, int views, const char* viewlbl) {
-  int sel = 0, total = n + (views > 1 ? 1 : 0);
+  enum { VIS = 8, ROW_H = 12, TOP_Y = 34 };      /* 8 rows is what fits above the note line */
+  int sel = 0, top = 0, total = n + (views > 1 ? 1 : 0);
   char l[48];
   for (;;) {
+    if (sel < top) top = sel;
+    if (sel >= top + VIS) top = sel - VIS + 1;
     REG_DISPCNT = DCNT_MODE0 | DCNT_BG0;
     tte_erase_screen();
-    tte_set_pos(8, 8);  tte_write("PLACES");
-    tte_set_pos(8, 20); tte_write("Not reachable by pointing");
-    for (int i = 0; i < total; i++) {
-      int y = 40 + i * 24;   /* 24: the note sits at y+10, so this keeps a clear gap */
+    tte_set_pos(8, 6);  tte_write("PLACES");
+    tte_set_pos(8, 18); tte_write("Not reachable by pointing");
+    for (int i = top; i < total && i < top + VIS; i++) {
       const char* nm = (i < n) ? pl[i].name : "SWITCH MAP VIEW";
-      const char* nt = (i < n) ? pl[i].note : (viewlbl ? viewlbl : "next region view");
       siprintf(l, "%c %s", (i == sel) ? '>' : ' ', nm);
-      tte_set_pos(8, y);      tte_write(l);
-      siprintf(l, "   %s", nt);
-      tte_set_pos(8, y + 10); tte_write(l);
+      tte_set_pos(8, TOP_Y + (i - top) * ROW_H); tte_write(l);
     }
-    tte_set_pos(8, 140); tte_write("A go   B back");
+    /* The note belongs to the SELECTED row and lives on its own line: eight entries do not
+     * fit two lines each, and a caption that moves with the cursor reads better anyway. */
+    const char* nt = (sel < n) ? pl[sel].note : (viewlbl ? viewlbl : "next region view");
+    siprintf(l, "  %s", nt);
+    tte_set_pos(8, 134); tte_write(l);
+    tte_set_pos(8, 146); tte_write("A go   B back");
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     s_flush_keys();
     if (k & KEY_B) return -1;
