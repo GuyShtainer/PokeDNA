@@ -1272,12 +1272,20 @@ static void map_view(const RomCtx* rc, uint8_t* arena, PkGame game,
       } else {
         /* Leaving the region view DESTROYS the arena (hard rule 0), so the jump has to go
          * through the same reload path a zoom-down uses — map_switch is that path. A
-         * negative coordinate means "centre me on the map". */
+         * negative coordinate means "centre me on the map".
+         *
+         * ORDER MATTERS, and getting it wrong cost two visible bugs. map_switch ends with
+         * camera_refresh() + the Z0 show, both keyed off v->zoom, so the zoom has to be its
+         * FINAL value BEFORE the switch: setting it afterwards built the view for one zoom
+         * level and then displayed another, leaving a stale Z0 ring on screen — the wrong
+         * tiles, which only a later zoom round trip rebuilt. And the region view runs
+         * moam_shutdown(), so without sprites_rearm() the OAM stays dead: no cursor glove,
+         * no NPCs, and a screen where nothing appears to respond. */
         mr_region_exit(&gfx, &mr);
-        v->zoom = MGFX_ZOOM_TILE_MAX;
-        if (map_switch(pl[pick].group, pl[pick].num, -1, -1)) {
-          v->zoom = 0; camera_refresh(); snd_ok();
-        } else { v->zoom = MGFX_ZOOM_MAX; snd_deny(); }
+        v->zoom = 0;                               /* the list names a place to LOOK at */
+        rmbl_pause(); sprites_rearm(); rmbl_resume();
+        if (map_switch(pl[pick].group, pl[pick].num, -1, -1)) snd_ok();
+        else { v->zoom = MGFX_ZOOM_MAX; snd_deny(); }
       }
       v->hud_dirty = true;
       zdir = 0;
