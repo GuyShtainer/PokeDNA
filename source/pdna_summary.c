@@ -133,17 +133,13 @@ static void draw_left(const PkMon* p) {
     ui_text(40, 84, C_HOT, DF[p->form < 4 ? p->form : 0]);
   } else if (g_back) ui_text(44, 84, UI_DIM, "back");      /* current portrait side */
 
-  char nm[24];
-  ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);
-  ui_text(6, 94, C_VAL, nm);
+  ui_ptext_fit(6, 94, 86, C_VAL, p->nickname[0] ? p->nickname : pk_species_name(p->species));
 
   siprintf(buf, "Lv%u", (unsigned)p->level);
   ui_text(6, 104, C_VAL, buf);
   ui_text(6 + (int)strlen(buf) * 8 + 4, 104, gender_col(p->gender), gender_sym(p->gender));
 
-  char sp[24];
-  ui_truncate(sp, pk_species_name(p->species), 11);
-  ui_text(6, 114, C_KEY, sp);
+  ui_ptext_fit(6, 114, 86, C_KEY, pk_species_name(p->species));
 
   uint8_t t1 = pk_species_type1(p->species), t2 = pk_species_type2(p->species);
   type_badge(6, 126, t1);
@@ -154,22 +150,27 @@ static void draw_left(const PkMon* p) {
   else if (p->pokerus) ui_text(6, 142, UI_WARN, "Pokerus");
 }
 
+/* Right-hand card column: x=98, so 138 px to the screen edge with a 4 px margin.
+ * Everything here is drawn with the proportional face — at 8 px/glyph the column was
+ * 17 characters, which cut "Hatch ~10240 ste~" and "40 egg cycles le~" mid-word. */
+#define INFO_W 138
+
 static void card_info(const PkMon* p) {
   int x = 98, y = 14; char b[48];
   ui_text(x, y, C_HDR, "POKEMON INFO"); y += 12;
 
   if (p->isEgg && !p->isBadEgg) {        /* an egg stores its hatch counter in friendship */
-    siprintf(b, "~%u steps", (unsigned)(p->friendship * 256));
-    { char hb[24]; ui_truncate(hb, b, 17); ui_text(x, y, C_HOT, hb); } y += 10;
-    siprintf(b, "%u cycle%s left", (unsigned)p->friendship, p->friendship == 1 ? "" : "s");
-    { char hb[24]; ui_truncate(hb, b, 17); ui_text(x, y, UI_DIM, hb); } y += 11;
+    siprintf(b, "~%u steps to hatch", (unsigned)(p->friendship * 256));
+    ui_ptext_fit(x, y, INFO_W, C_HOT, b); y += 10;
+    siprintf(b, "%u egg cycle%s left", (unsigned)p->friendship, p->friendship == 1 ? "" : "s");
+    ui_ptext_fit(x, y, INFO_W, UI_DIM, b); y += 11;
   }
 
   ui_text(x, y, C_KEY, "Spec."); reg(F_SPECIES, x + 48, y, 88);
   ui_text(x + 48, y, C_VAL, pk_species_name(p->species)); y += 9;
 
   ui_text(x, y, C_KEY, "Name"); reg(F_NICK, x + 48, y, 88);
-  { char nm[24]; ui_truncate(nm, p->nickname[0] ? p->nickname : "-", 11); ui_text(x + 48, y, C_VAL, nm); } y += 9;
+  ui_ptext_fit(x + 48, y, INFO_W - 48, C_VAL, p->nickname[0] ? p->nickname : "-"); y += 9;
 
   ui_text(x, y, C_KEY, "OT"); reg(F_OT, x + 48, y, 88);
   ui_text(x + 48, y, C_VAL, p->otName); y += 9;               /* TID on its own row (was off-screen) */
@@ -183,8 +184,9 @@ static void card_info(const PkMon* p) {
 
   uint16_t ab = pk_species_ability(p->species, p->abilityNum);
   ui_text(x, y, C_KEY, "Abil."); reg(F_ABILITY, x + 48, y, 88);
-  { char ab_[16]; ui_truncate(ab_, pk_ability_name(ab), 11); ui_text(x + 48, y, C_VAL, ab_); } y += 9;
-  y = text_wrap(x + 4, y, 17, UI_DIM, pk_ability_desc(ab)); y += 1;
+  ui_ptext_fit(x + 48, y, INFO_W - 48, C_VAL, pk_ability_name(ab)); y += 9;
+  y += UI_ROW_H * ui_ptext_wrap(x + 4, y, INFO_W - 4, UI_ROW_H, 0, UI_DIM, pk_ability_desc(ab));
+  y += 1;
 
   ui_text(x, y, C_KEY, "Nat."); reg(F_NATURE, x + 48, y, 60);
   ui_text(x + 48, y, C_HOT, pk_nature_name(p->nature)); y += 9;
@@ -194,13 +196,14 @@ static void card_info(const PkMon* p) {
   ui_text(x + 80, y, C_KEY, "Sex"); reg(F_GENDER, x + 108, y, 22);
   ui_text(x + 108, y, gender_col(p->gender), p->gender == 0 ? "M" : p->gender == 1 ? "F" : "-"); y += 10;
 
-  /* The footer lives at y=152. `y` is a running cursor and the egg rows above add 21 px, so
-   * this row could land on top of it — two strings superimposed, neither readable. Clamp
-   * rather than reflow: the ORIGIN card carries the same information in full. */
-  if (y <= 140) {
-    siprintf(b, "Met Lv%u %s", (unsigned)p->metLevel, pk_location_name(p->metLocation));
-    { char mb[40]; ui_truncate(mb, b, 17); ui_text(x, y, UI_DIM, mb); }
-  }
+  /* The footer lives at y=152 and `y` is a running cursor: the egg rows above push it down
+   * 21 px, which is how this row once landed ON TOP of the footer. It was then dropped
+   * entirely when it collided — leaving an obviously empty line, which Guy asked to use.
+   * So clamp the POSITION instead of skipping the row: at y=142 it ends at 150, two pixels
+   * clear of the footer, and the proportional face fits the whole location name. */
+  if (y > 142) y = 142;
+  siprintf(b, "Met Lv%u %s", (unsigned)p->metLevel, pk_location_name(p->metLocation));
+  ui_ptext_fit(x, y, INFO_W, UI_DIM, b);
 }
 
 static void card_skills(const PkMon* p) {
@@ -209,7 +212,9 @@ static void card_skills(const PkMon* p) {
   ui_text(x, y, C_KEY, "Level"); reg(F_LEVEL, x + 60, y, 40);
   siprintf(b, "%u", (unsigned)p->level); ui_text(x + 60, y, C_VAL, b); y += 9;
   ui_text(x, y, C_KEY, "Item"); reg(F_ITEM, x + 60, y, 76);
-  { char it_[16]; ui_truncate(it_, p->heldItem ? pk_item_name(p->heldItem) : "none", 10); ui_text(x + 60, y, C_VAL, it_); } y += 9;
+  { char it_[48];
+    if (p->heldItem) pk_item_label(p->heldItem, it_, sizeof it_); else strcpy(it_, "none");
+    ui_ptext_fit(x + 60, y, 238 - (x + 60), C_VAL, it_); } y += 9;
   ui_text(x, y, C_KEY, "Friend"); reg(F_FRIEND, x + 60, y, 40);
   siprintf(b, "%u", (unsigned)p->friendship); ui_text(x + 60, y, C_VAL, b); y += 10;
   /* Each stat row edits that stat's EV — the only persistent, lossless stat lever
@@ -274,9 +279,7 @@ static void card_moves(const PkMon* p, bool contest) {
     uint16_t mv = p->moves[i];
     reg(F_MV0 + i, x, y, contest ? 132 : 74);
     if (mv == 0) { ui_text(x, y, UI_DIM, "-"); y += step; continue; }
-    char nm[24];
-    ui_truncate(nm, pk_move_name(mv), contest ? 16 : 9);
-    ui_text(x, y, C_VAL, nm);
+    ui_ptext_fit(x, y, contest ? 132 : 74, C_VAL, pk_move_name(mv));
     if (!contest) {
       uint8_t base = pk_move_pp(mv);
       uint8_t maxpp = (uint8_t)(base + base / 5 * ((p->ppBonuses >> (i * 2)) & 3));
@@ -298,18 +301,18 @@ static void card_origin(const PkMon* p) {
   ui_text(x, y, C_HDR, "ORIGIN / MET"); y += 13;
 
   ui_text(x, y, C_KEY, "Ball"); reg(F_BALL, x + 60, y, 76);
-  { char bl[24]; ui_truncate(bl, pk_item_name(p->pokeball), 10); ui_text(x + 60, y, C_VAL, bl); } y += 11;   /* 10 cols fit x158..238 */
+  ui_ptext_fit(x + 60, y, 238 - (x + 60), C_VAL, pk_item_name(p->pokeball)); y += 11;
 
   ui_text(x, y, C_KEY, "Met Lv"); reg(F_METLEVEL, x + 60, y, 30);            /* shortened: was "Met at Lv" (overlapped value) */
   siprintf(b, "%u", (unsigned)p->metLevel); ui_text(x + 60, y, C_VAL, b); y += 11;
 
   ui_text(x, y, C_KEY, "Loc"); reg(F_METLOC, x + 60, y, 76);                 /* shortened: was "Location" (overlapped value) */
-  { char lb[24]; ui_truncate(lb, pk_location_name(p->metLocation), 10); ui_text(x + 60, y, C_VAL, lb); } y += 11;
+  ui_ptext_fit(x + 60, y, 238 - (x + 60), C_VAL, pk_location_name(p->metLocation)); y += 11;
 
   ui_text(x, y, C_KEY, "Origin"); reg(F_METGAME, x + 60, y, 76);
   ui_text(x + 60, y, C_HOT, pk_metgame_name(p->metGame)); y += 14;
 
-  siprintf(b, "OT %s", p->otName); { char ob[40]; ui_truncate(ob, b, 17); ui_text(x, y, UI_DIM, ob); } y += 9;
+  siprintf(b, "OT %s", p->otName); ui_ptext_fit(x, y, 238 - x, UI_DIM, b); y += 9;
   /* One row cannot hold both: "TID 38800 SID 15243" is 19 glyphs and the column is 17, so
    * truncating it dropped three of the five SID digits without saying so. */
   siprintf(b, "TID %05u", (unsigned)(p->otId & 0xFFFF));
