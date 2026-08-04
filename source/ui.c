@@ -17,6 +17,33 @@ void ui_panel(int x, int y, int w, int h, u16 fill, u16 border) {
   m3_frame(x, y, x + w - 1, y + h - 1, border);
 }
 
+/* Same as ui_panel, but the fill is BLENDED with whatever is already on screen instead of
+ * replacing it. Mode 3 is a direct-colour framebuffer with no hardware BG blending available
+ * to a software-drawn panel, so the mix is done per pixel: each BGR555 channel is averaged
+ * with weight `num`/8 toward `fill`. num=8 is opaque, num=4 is half.
+ *
+ * Cost is one read-modify-write per pixel — about 26k pixels for a full menu panel, well
+ * under a frame, and it only runs on a redraw rather than every frame. */
+void ui_panel_alpha(int x, int y, int w, int h, u16 fill, u16 border, int num) {
+  if (num < 0) num = 0;
+  if (num > 8) num = 8;
+  int fr = fill & 31, fg = (fill >> 5) & 31, fb = (fill >> 10) & 31;
+  for (int py = y; py < y + h; py++) {
+    if ((unsigned)py >= 160u) continue;
+    u16* row = (u16*)MEM_VRAM + py * 240;
+    for (int px = x; px < x + w; px++) {
+      if ((unsigned)px >= 240u) continue;
+      u16 c = row[px];
+      int r = c & 31, g = (c >> 5) & 31, b = (c >> 10) & 31;
+      r += ((fr - r) * num) >> 3;
+      g += ((fg - g) * num) >> 3;
+      b += ((fb - b) * num) >> 3;
+      row[px] = (u16)(r | (g << 5) | (b << 10));
+    }
+  }
+  m3_frame(x, y, x + w - 1, y + h - 1, border);
+}
+
 void ui_hline(int x, int y, int w, u16 color) {
   m3_line(x, y, x + w - 1, y, color);
 }

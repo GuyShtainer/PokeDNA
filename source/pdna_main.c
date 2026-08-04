@@ -3434,46 +3434,54 @@ enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_MIRAGE, NV_DEX, N
  * keeps rh 9 forever and makes the next screen free. */
 #define NV_VIS 13
 static int nav_menu(void) {
-  static const char* const L[NV_COUNT] = { "Party", "Bank", "Daycare", "Trainer card", "Clock fix", "Mirage Island", "Pokedex",
-                                           "Data editor", "Secret Bases", "Pokeblocks", "Event tickets", "Battle record",
-                                           "Frontier streaks", "Fly destinations",
-                                           "Map / teleport",
-                                           "Settings", "Back" };
-  const int vis = (NV_COUNT < NV_VIS) ? NV_COUNT : NV_VIS;
-  /* mw 152 (was 132): the widest label is 16 chars = 128 px, and text starts at
-   * mx+10, so 132 clipped "Frontier streaks" / "Fly destinations" into the border. */
-  const int mx = 44, my = 3, rh = 9, mw = 152, mh = 18 + vis * rh + 11;
-  int sel = 0, top = 0;                    /* opens on Party, as before */
+  /* TWO COLUMNS. Seventeen entries in one column needed a scrolling window (NV_VIS 13) and a
+   * 9 px row pitch, which is what made the list feel full and forced the selection bar to hug
+   * the glyphs. Two columns of nine hold all 17 outright — no scroll, no position counter, no
+   * up/down arrows — and buy back enough vertical room for a 13 px pitch.
+   *
+   * Labels are shortened to fit: two columns of 16-character labels would need 256 px and the
+   * screen is 240. Nine characters each is the widest that fits with a gutter. */
+  static const char* const L[NV_COUNT] = {
+    "Party", "Bank", "Daycare", "Trainer", "Clock fix", "Mirage", "Pokedex",
+    "Data edit", "Bases", "Blocks", "Tickets", "Records",
+    "Frontier", "Fly", "Map",
+    "Settings", "Back" };
+  const int rows = (NV_COUNT + 1) / 2;              /* 9 rows, right column holds 8 */
+  const int cw = 84, rh = 13;                       /* 9 glyphs = 72 px + padding   */
+  /* Height must clear the LAST row's glyph box AND leave the footer its own band: rows start
+   * at my+20 and the 9th ends at my+20+8*rh+8 = my+132, so the footer at my+mh-10 needs
+   * mh >= 151. The first attempt used +6 and "Bases" was drawn on top of "A pick  B back" —
+   * the same footer collision this sweep already found twice elsewhere. */
+  const int mw = cw * 2 + 12, mh = 20 + rows * rh + 14;
+  const int mx = (UI_SCR_W - mw) / 2, my = (UI_SCR_H - mh) / 2;
+  int sel = 0;
   for (;;) {
-    if (sel < top) top = sel;                        /* keep the cursor inside the window */
-    else if (sel >= top + vis) top = sel - vis + 1;
-    if (top > NV_COUNT - vis) top = NV_COUNT - vis;
-    if (top < 0) top = 0;
-
-    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    /* Translucent: the box/party screen underneath stays visible through the menu. 5/8 keeps
+     * the panel readable — at half it fought the artwork behind it. */
+    ui_panel_alpha(mx, my, mw, mh, UI_PANEL, UI_BORDER, 5);
     ui_text(mx + 6, my + 4, UI_TITLE, "MENU");
-    if (NV_COUNT > vis) {                            /* scroll affordance in the title row */
-      char pos[12]; siprintf(pos, "%d/%d", sel + 1, NV_COUNT);
-      ui_text(mx + mw - 40, my + 4, UI_DIM, pos);
-    }
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < vis; i++) {
-      int r = top + i, y = my + 18 + i * rh; bool s = (r == sel);
-      /* Height rh, not rh-1. The glyph box is 8 px tall starting at y, so a bar of height 8
-       * placed at y-1 ends at y+6 and the last pixel row of every letter fell OUTSIDE the
-       * highlight — the bar visibly cut through the bottom of the text. Height 9 spans
-       * y-1..y+7, containing the glyph with a pixel of lead above it, and rows are rh=9
-       * apart so it still cannot touch the row below. */
-      if (s) ui_panel(mx + 2, y - 1, mw - 4, rh, UI_SEL, UI_TITLE);
-      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, L[r]);
+    for (int i = 0; i < NV_COUNT; i++) {
+      int col = i / rows, row = i % rows;
+      int x = mx + 6 + col * cw, y = my + 20 + row * rh;
+      if (i == sel) {
+        /* The bar must CONTAIN the glyph box, not clip it. Text sits at y and is 8 px tall,
+         * so the bar spans y-2 .. y+9 — two pixels of lead above and below — and with a 13 px
+         * pitch there is still a clear pixel between rows. Blended so the selection reads as
+         * a highlight rather than a solid slab. */
+        ui_panel_alpha(x - 4, y - 2, cw - 4, 12, UI_SEL, UI_TITLE, 6);
+      }
+      ui_text(x, y, (i == sel) ? UI_SELTEXT : UI_TEXT, L[i]);
     }
-    if (top > 0)                ui_text(mx + mw - 12, my + 18, UI_DIM, "^");
-    if (top + vis < NV_COUNT)   ui_text(mx + mw - 12, my + 18 + (vis - 1) * rh, UI_DIM, "v");
-    ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    ui_text(mx + 6, my + mh - 10, UI_DIM, "A pick  B back");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) return NV_BACK;
-    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : NV_COUNT - 1;
-    else if (k & KEY_DOWN) sel = (sel + 1) % NV_COUNT;
+    /* Up/down walks the column and wraps into the next one, so holding DOWN still reaches
+     * every entry in order exactly as it did when the list was single-column. */
+    else if (k & KEY_UP)    sel = (sel > 0) ? sel - 1 : NV_COUNT - 1;
+    else if (k & KEY_DOWN)  sel = (sel + 1) % NV_COUNT;
+    else if (k & KEY_LEFT)  { if (sel >= rows) sel -= rows; }
+    else if (k & KEY_RIGHT) { if (sel + rows < NV_COUNT) sel += rows; }
     else if (k & KEY_A)    return sel;
   }
 }

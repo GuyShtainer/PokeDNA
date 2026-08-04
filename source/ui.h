@@ -37,6 +37,11 @@ void ui_clear(void);
 void ui_panel(int x, int y, int w, int h, u16 fill, u16 border);
 
 /* A horizontal divider line at pixel row y, from x..x+w. */
+/* A panel whose fill is blended with what is already on screen: `num`/8 toward `fill`
+ * (8 = opaque, 4 = half). Mode 3 has no hardware blend for a software-drawn panel, so this
+ * mixes per pixel. */
+void ui_panel_alpha(int x, int y, int w, int h, u16 fill, u16 border, int num);
+
 void ui_hline(int x, int y, int w, u16 color);
 
 /* Draw text at pixel (x,y) in colour `ink`. */
