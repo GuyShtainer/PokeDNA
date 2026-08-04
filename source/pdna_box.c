@@ -178,9 +178,12 @@ static void draw_banner(int x, int y, int w, const char* name) {
   m3_frame(x, y, x + w - 1, y + 13, bd);
   tri_left(x + 5, y + 4, ink);
   tri_right(x + w - 9, y + 4, ink);
-  int tw = (int)strlen(name) * 8;
-  int tx = x + (w - tw) / 2; if (tx < x + 12) tx = x + 12;
-  ui_text(tx, y + 3, ink, name);
+  /* Proportional, and centred on its MEASURED width: the cursor hand parks in the left
+   * gutter of this banner when the box name is selected, so the text has to stay clear of
+   * it even for an 8-character box name plus "  30/30". */
+  int tw = ui_ptext_w(name);
+  int tx = x + (w - tw) / 2; if (tx < x + 24) tx = x + 24;
+  ui_ptext(tx, y + 3, ink, name);
 }
 
 /* a top-bar tab (PKMN DATA / PARTY / CLOSE); active reads bright, inactive dim */
@@ -217,26 +220,39 @@ static void draw_left(const PkMon* p) {
     else     ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
   }
 
+  /* Names are drawn with the PROPORTIONAL face. At 8 px/glyph this panel held nine
+   * characters, so `JIGGLYPUFF` printed as `JIGGLYPU~` and every berry collapsed to
+   * `CHES~`/`LUM ~` — you could not tell which berry a mon was holding. Retail fits
+   * the same strings in a NARROWER panel because its font is variable-width; this is
+   * the same fix, and it also makes this panel agree with the party overlay, which
+   * had been showing the same two fields at a different width. */
   char buf[40];
   siprintf(buf, "No.%u", (unsigned)pk_national_no(p->species));
   ui_text(4, 86, UI_DIRCLR, buf);
   if (p->isShiny) ui_text(56, 86, UI_WARN, "*");
-  char nm[24];
-  ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 9);
-  ui_text(4, 96, UI_TEXT, nm);
+  const int TW = PANEL_W - 8;                         /* text budget: x=4 .. panel edge */
+  ui_ptext_fit(4, 96, TW, UI_TEXT,
+               p->nickname[0] ? p->nickname : pk_species_name(p->species));
   siprintf(buf, "Lv%u%s", (unsigned)p->level, gender_str(p->gender));
   ui_text(4, 106, UI_TEXT, buf);
-  char sp[24];
-  ui_truncate(sp, pk_species_name(p->species), 9);
-  ui_text(4, 116, UI_DIM, sp);
-  ui_text(4, 130, UI_DIRCLR, "Item");
-  char it[24];
-  /* shorter name when an item icon is shown so the 24x24 icon (right) doesn't clip it */
-  ui_truncate(it, p->heldItem ? pk_item_name(p->heldItem) : "-", p->heldItem ? 5 : 9);
-  ui_text(4, 139, UI_TEXT, it);
-  if (p->heldItem) {                                  /* the real item icon (already in ROM) */
+  ui_ptext_fit(4, 116, TW, UI_DIM, pk_species_name(p->species));
+
+  /* The item icon moved UP beside its label so the NAME gets a full-width line of
+   * its own: the old layout stopped the name at the icon's left edge (x=50), which
+   * is the five columns that produced `LUM ~`. */
+  ui_text(4, 128, UI_DIRCLR, "Item");
+  if (p->heldItem) {
     const uint16_t* iic = item_icon_for(p->heldItem);
-    if (iic) ui_sprite(PANEL_W - 26, 126, ITEM_ICON_W, ITEM_ICON_H, iic);
+    if (iic) ui_sprite(PANEL_W - 28, 124, ITEM_ICON_W, ITEM_ICON_H, iic);
+    char it[48];
+    pk_item_label(p->heldItem, it, sizeof it);        /* a TM carries its move */
+    /* x=2 and the full panel width, not the x=4/TW the rows above use: the longest real
+     * item names land within a pixel or two of the panel edge ("CHESTO BERRY" is 69 px,
+     * "DEEPSEATOOTH" 72) and losing the last letter to a 4 px indent is the whole defect
+     * this is fixing. */
+    ui_ptext_fit(2, 150, PANEL_W - 4, UI_TEXT, it);
+  } else {
+    ui_ptext(4, 150, UI_DIM, "-");
   }
 }
 

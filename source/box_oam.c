@@ -359,7 +359,11 @@ static void hand_xy(int cur, int* hx, int* hy) {
 void boxoam_cursor(int cur, bool on_title, int mode) {
   load_rega_hand();                                  /* region A back to the hand (a grab/carry may have borrowed it) */
   int hx, hy;
-  if (on_title) { hx = WP_X + WP_W / 2 - 4 - 7; hy = 14; }
+  /* On the box name the hand used to park mid-banner — dead centre of "NAME  n/30", so it
+   * covered the count on the Bank and the tail of the name on a PC box. The banner's own
+   * left arrow is decoration (the right one says the same thing), so the hand goes there
+   * instead: it still points at the banner, and no data is ever underneath it. */
+  if (on_title) { hx = WP_X + 1; hy = 13; }
   else hand_xy(cur, &hx, &hy);
 
   int bank = (mode == BOXOAM_HAND_MOVE) ? PB_HANDORG : PB_HAND;
