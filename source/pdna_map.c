@@ -357,6 +357,77 @@ static void camera_refresh(void) {
 
 /* Load a different map in place. Returns false WITHOUT disturbing the current map when the
  * destination fails validation; sets v->fatal only when the old map is already gone. */
+/* ---- off-map places -------------------------------------------------------
+ * Places the region map cannot take you to by pointing at them. Three separate reasons,
+ * all measured (docs/MAP-FEATURE-CONTINUATION.md Round-7):
+ *
+ *  - SKY PILLAR is mapsec 85 with a rect at grid (19,10) — but that cell is OWNED by
+ *    mapsec 46, ROUTE 131, so `rgn_find_mapsec` can never return it and the HUD names the
+ *    host section instead. Retail does the same on purpose: sRegionMap_SpecialPlaceLocations
+ *    remaps SKY_PILLAR to ROUTE_131, so the Pokenav never says "SKY PILLAR" either. No
+ *    tower is drawn there — the three cells around it are byte-identical open sea.
+ *  - FRLG's islands ARE selectable, just on a view the player has to know to switch to.
+ *  - Neither is gated by a story flag in the ROM data we read, so this list shows them
+ *    whatever the save has done. That makes PokeDNA MORE revealing than retail, which
+ *    hides them behind FLAG_WORLD_MAP_* — fine for a save viewer.
+ *
+ * `mapsec` = 0xFF when the place has no selectable region cell (Sky Pillar); then `host`
+ * names the section whose cell it sits inside so the cursor can still be parked on it. */
+typedef struct {
+  const char* name;
+  const char* note;
+  uint8_t     group, num;      /* the map to open in the tile view */
+  uint8_t     mapsec;          /* region cell to park the cursor on, or 0xFF */
+  uint8_t     host;            /* section that owns the cell when mapsec is 0xFF */
+} OffMapPlace;
+
+/* Hoenn (Ruby / Sapphire / Emerald). Sky Pillar's maps are 24.77..24.85; 24.83 is NOT one of
+ * them (it is Shoal Cave). Rayquaza stands on the TOP floor, 24.85. */
+static const OffMapPlace PLACES_RSE[] = {
+  { "SKY PILLAR",     "entrance, from Route 131", 24, 77, 0xFF, 46 },
+  { "SKY PILLAR TOP", "Rayquaza is here",         24, 85, 0xFF, 46 },
+};
+/* Kanto + Sevii. Both of these have real region cells, just on views the player has to
+ * switch to: Navel Rock on SEVII 4-5, Birth Island on SEVII 6-7. */
+static const OffMapPlace PLACES_FRLG[] = {
+  { "NAVEL ROCK",   "Lugia and Ho-Oh",  2,  0, 174, 174 },
+  { "BIRTH ISLAND", "Deoxys",           2, 56, 187, 187 },
+};
+
+/* A short list on L from the widest region view. On FRLG that key already switches the
+ * region VIEW (the game's own SWITCH MAP button) so the view rows are folded into the same
+ * list — picking an island switches the view for you, which beats cycling blind.
+ *
+ * MODE 0 ONLY, like map_dialog: in Mode 3 the bitmap framebuffer IS the map's tileset char
+ * data, so a ui_panel here draws confetti over the tiles AND destroys them. Map layers off,
+ * BG0's tte draws, nothing in VRAM is harmed, no reload needed on the way back. */
+static int places_menu(const OffMapPlace* pl, int n, int views, const char* viewlbl) {
+  int sel = 0, total = n + (views > 1 ? 1 : 0);
+  char l[48];
+  for (;;) {
+    REG_DISPCNT = DCNT_MODE0 | DCNT_BG0;
+    tte_erase_screen();
+    tte_set_pos(8, 8);  tte_write("PLACES");
+    tte_set_pos(8, 20); tte_write("Not reachable by pointing");
+    for (int i = 0; i < total; i++) {
+      int y = 40 + i * 24;   /* 24: the note sits at y+10, so this keeps a clear gap */
+      const char* nm = (i < n) ? pl[i].name : "SWITCH MAP VIEW";
+      const char* nt = (i < n) ? pl[i].note : (viewlbl ? viewlbl : "next region view");
+      siprintf(l, "%c %s", (i == sel) ? '>' : ' ', nm);
+      tte_set_pos(8, y);      tte_write(l);
+      siprintf(l, "   %s", nt);
+      tte_set_pos(8, y + 10); tte_write(l);
+    }
+    tte_set_pos(8, 140); tte_write("A go   B back");
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    s_flush_keys();
+    if (k & KEY_B) return -1;
+    if (k & KEY_A) return sel;
+    if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : total - 1;
+    if (k & KEY_DOWN) sel = (sel + 1) % total;
+  }
+}
+
 static bool map_switch(uint8_t ng, uint8_t nn, int nx, int ny) {
   MapViewState* v = &s_mv;
   RomMapHeader nh; RomLayout nl;
@@ -1170,15 +1241,34 @@ static void map_view(const RomCtx* rc, uint8_t* arena, PkGame game,
      * than zooming; L is already a DEAD key there because the zoom clamps at the top of the
      * ladder, so it costs nothing to give it this job. Handled before the zoom block so it
      * consumes the press. */
-    if (zdir > 0 && in_region && s_rgn_ok && v->zoom >= MGFX_ZOOM_MAX &&
-        mr_region_view_count(&s_rgn) > 1) {
-      rmbl_pause();
-      bool sw = mr_region_next_view(&s_rgn, v->arena, APP_ARENA_BYTES);
-      rmbl_resume();
-      if (sw) {
+    if (zdir > 0 && in_region && s_rgn_ok && v->zoom >= MGFX_ZOOM_MAX) {
+      /* L at the widest view = PLACES. On RS/Emerald this key was DEAD (one Hoenn view, and
+       * the zoom is already clamped) — pressing it did nothing at all, which is exactly what
+       * you would do looking for the Sky Pillar. */
+      const bool frlg = (v->game == PK_FRLG);
+      const OffMapPlace* pl = frlg ? PLACES_FRLG : PLACES_RSE;
+      const int npl = frlg ? (int)(sizeof PLACES_FRLG / sizeof PLACES_FRLG[0])
+                           : (int)(sizeof PLACES_RSE  / sizeof PLACES_RSE[0]);
+      int views = mr_region_view_count(&s_rgn);
+      int pick = places_menu(pl, npl, views, mr_region_view_label(&s_rgn));
+      if (pick < 0) {                              /* cancelled: repaint the region view */
         mr_region_show(&s_rgn, v->zoom, v->hdr.mapsec);
-        snd_tab();
-      } else snd_deny();
+      } else if (pick >= npl) {                    /* the folded "switch view" row */
+        rmbl_pause();
+        bool sw = mr_region_next_view(&s_rgn, v->arena, APP_ARENA_BYTES);
+        rmbl_resume();
+        mr_region_show(&s_rgn, v->zoom, v->hdr.mapsec);
+        if (sw) snd_tab(); else snd_deny();
+      } else {
+        /* Leaving the region view DESTROYS the arena (hard rule 0), so the jump has to go
+         * through the same reload path a zoom-down uses — map_switch is that path. A
+         * negative coordinate means "centre me on the map". */
+        mr_region_exit(&gfx, &mr);
+        v->zoom = MGFX_ZOOM_TILE_MAX;
+        if (map_switch(pl[pick].group, pl[pick].num, -1, -1)) {
+          v->zoom = 0; camera_refresh(); snd_ok();
+        } else { v->zoom = MGFX_ZOOM_MAX; snd_deny(); }
+      }
       v->hud_dirty = true;
       zdir = 0;
     }
