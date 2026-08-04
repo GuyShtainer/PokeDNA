@@ -47,6 +47,10 @@ uint32_t mgfx_arena_peak(void) { return s_peak; }
  * logged after a load so a hardware run leaves evidence instead of a silent glitch. */
 static uint32_t s_mt_misses;
 uint32_t mgfx_mt_misses(void) { return s_mt_misses; }
+/* bit0 = mip slot 0 not transparent, bit1 = a flat-band slot holds the wrong byte.
+ * Non-zero means VRAM does not contain what mgfx_load just wrote into it. */
+static uint32_t s_cbb2_bad;
+uint32_t mgfx_cbb2_bad(void) { return s_cbb2_bad; }
 
 /* Arena bytes still held AFTER a load (caches, strips, warps). mgfx_arena_peak() is
  * dominated by phase 1's transient 32,768 B and would hide this number entirely. */
@@ -399,6 +403,10 @@ bool mgfx_load(MapGfx* g, MapRender* mr, const RomCtx* rom, const RomLayout* lay
   if (!g || !mr || !rom || !lay || !arena) return false;
   memset(g, 0, sizeof *g);
   s_peak = 0; s_phase2 = 0;
+  /* Per LOAD, not per session. This was never reset and was logged only on the very first
+   * load, so "mt-miss == 0" was an artifact of never sampling it while anything was wrong. */
+  s_mt_misses = 0;
+  s_cbb2_bad = 0;
 
   if (!mr_init(mr, rom, lay)) return false;
 
@@ -503,6 +511,11 @@ bool mgfx_load(MapGfx* g, MapRender* mr, const RomCtx* rom, const RomLayout* lay
    * real out-of-line call, so there is nothing for dead-store elimination to remove. */
   memset32((void*)0x06008000u, 0, 16);             /* 16 words = 64 B = one 8bpp tile */
   build_flat_tiles();               /* the Z2 approximation's fallback palette */
+  /* Read CBB2 back. This is the region the deleted stores corrupted, and the region the
+   * fingerprint could not see; 14 volatile word reads say whether what we asked for is
+   * actually in VRAM. Slot 0 must be transparent, flat slot b must be (b<<4)|8 repeated. */
+  if (*(const volatile uint32_t*)0x06008000u != 0u) s_cbb2_bad |= 1u;
+  /* the flat band checks itself inside build_flat_tiles, where its constants live */
 
   /* Whole-map blockdata: the biggest map is 6,400 cells = 12,800 B, so it always fits and
    * scrolling then needs no SD access at all. */
@@ -710,6 +723,15 @@ static void build_flat_tiles(void) {
     uint8_t px = (uint8_t)((b << 4) | 8);
     memset32((void*)(VRAM_MIP_CHAR + (uint32_t)(MGFX_FLAT_BASE + b) * 64u),
              (uint32_t)px * 0x01010101u, 16);
+  }
+  /* Read one word back per flat slot. This band is where the confirmed miscompile put
+   * uninitialised stack, and CBB2 was outside the frame fingerprint entirely, so the one
+   * defect we have proven on this screen lived in the only region nothing could see.
+   * 13 volatile loads once per map load says whether the fix is holding on silicon. */
+  for (int b = 0; b < MGFX_FLAT_BANKS; b++) {
+    uint32_t want = (uint32_t)(((b << 4) | 8) & 0xFF) * 0x01010101u;
+    if (*(const volatile uint32_t*)(VRAM_MIP_CHAR + (uint32_t)(MGFX_FLAT_BASE + b) * 64u) != want)
+      s_cbb2_bad |= 2u;
   }
 }
 
@@ -1001,7 +1023,18 @@ static uint32_t fp_slice(const MapGfx* g, const MapRender* mr, const uint8_t* ar
       return fp_stride((uint32_t)(arena + 1024), held - 1024u);
     }
     case 3:  return fp_stride((uint32_t)pal_bg_mem, 15u * 16u * 2u);  /* banks 0..14 */
-    default: return 1u;
+    case 4: {
+      /* CBB2's INVARIANT band only. Slots 1..242 are the exact-mip dictionary, built on
+       * demand and grown as the cursor pans — hashing those would report a "corruption"
+       * every time the zoom did its job. What must never change after a load is slot 0
+       * (all-transparent) and the 13 flat fallback slots at 243..255, which is precisely
+       * where the confirmed dead-store miscompile landed. 896 bytes. */
+      uint32_t h = fp_stride(VRAM_MIP_CHAR, 64u);
+      return (h ^ fp_stride(VRAM_MIP_CHAR + 243u * 64u, 13u * 64u)) | 1u;
+    }
+    /* The affine tilemap at 0x0600D000 is deliberately NOT fingerprinted: the zoom rewrites
+     * it every step and it keeps the previous view's bytes across a zoom round trip. */
+    default: return 1u;                                              /* 5..7 spare: SLICES stays a power of two */
   }
   (void)g;
 }
@@ -1036,5 +1069,6 @@ const char* mgfx_fp_name(uint32_t bits) {
   if (bits & MGFX_FP_CHAR)   return "tiles";
   if (bits & MGFX_FP_ARENA)  return "arena";
   if (bits & MGFX_FP_PAL)    return "palette";
+  if (bits & MGFX_FP_MIP)    return "mipfix";
   return "?";
 }

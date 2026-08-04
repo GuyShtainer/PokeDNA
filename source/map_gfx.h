@@ -241,6 +241,12 @@ uint32_t mgfx_arena_peak(void);
  * cannot be the safety net. That is what the fingerprints below are for. */
 uint32_t mgfx_mt_misses(void);
 
+/* CBB2 read-back result from the last mgfx_load: 0 = the mip dictionary's fixed slots are
+ * in VRAM as written, bit0 = slot 0 is not transparent, bit1 = a flat-band slot is wrong.
+ * The confirmed miscompile put uninitialised stack in exactly these bytes, so this is the
+ * cheapest direct evidence that the fix is holding on real hardware. */
+uint32_t mgfx_cbb2_bad(void);
+
 /* ---- render integrity -------------------------------------------------------
  * Cheap tamper detection over the state a map load produces and NOTHING should touch
  * afterwards. Deliberately excludes SBB29/30, the affine tilemap, the CBB2 mips, slot_of
@@ -258,7 +264,12 @@ uint32_t mgfx_mt_misses(void);
 #define MGFX_FP_CHAR   0x04   /* the tileset char data, CBB0+CBB1                 */
 #define MGFX_FP_ARENA  0x08   /* the borrowed arena beyond slot_of (it IS g_pc)   */
 #define MGFX_FP_PAL    0x10   /* BG palette banks 0..14                           */
-#define MGFX_FP_SLICES 4      /* check one slice per frame; canary checked always */
+#define MGFX_FP_MIP    0x20   /* CBB2's fixed band: mip slot 0 + the 13 flat slots */
+/* 8, not 4: CBB2 held the one defect we have CONFIRMED on this screen (the dead-store DMAs
+ * blitted stack into mip slot 0 and the flat band) and nothing was watching it. Only the
+ * INVARIANT part is hashed — the exact-mip slots and the affine map are rewritten by the
+ * zoom itself. Must stay a power of two: mgfx_fp_check masks the slice with SLICES-1. */
+#define MGFX_FP_SLICES 8      /* check one slice per frame; canary checked always */
 
 void        mgfx_fp_capture(const MapGfx* g, const MapRender* mr, const uint8_t* arena);
 uint32_t    mgfx_fp_check(const MapGfx* g, const MapRender* mr, const uint8_t* arena, int slice);

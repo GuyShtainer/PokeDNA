@@ -107,7 +107,12 @@ static bool rom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   RomFile* r = (RomFile*)ctx;
   if (!r || !r->open) return false;
   UINT br = 0;
-  if (f_lseek(&r->f, off) != FR_OK) return false;
+  /* Seek ONLY when the file is not already there. FF_USE_FASTSEEK is 0, so every f_lseek
+   * walks the cluster chain from the start — on a fragmented card that is a long chain,
+   * and the LZ77 and blockdata paths read strictly sequentially, so the seek they were
+   * paying for was almost always a no-op. Fewer SD transactions is also less exposure to
+   * the driver's silent-failure path. */
+  if (off != r->f.fptr && f_lseek(&r->f, off) != FR_OK) return false;
   if (f_read(&r->f, dst, (UINT)len, &br) != FR_OK) return false;
   /* Short read is the ONLY failure FatFs can still report to us here — see the
    * header note about Read_SD_sectors always returning RES_OK. */
@@ -373,9 +378,10 @@ static bool map_switch(uint8_t ng, uint8_t nn, int nx, int ny) {
   rmbl_pause();
   ok = mgfx_load(&gfx, &mr, v->rc, &nl, nh.connections, nh.events, v->arena, APP_ARENA_BYTES);
   rmbl_resume();
-  log_line("map: -> %u.%u @(%d,%d) ts%c arena2 %lu/%lu %s",
+  log_line("map: -> %u.%u @(%d,%d) ts%c arena2 %lu/%lu mt-miss %lu cbb2 %lu %s",
            ng, nn, nx, ny, same_ts ? '=' : '!',
            (unsigned long)mgfx_arena_phase2(), (unsigned long)APP_ARENA_BYTES,
+           (unsigned long)mgfx_mt_misses(), (unsigned long)mgfx_cbb2_bad(),
            ok ? "OK" : "FAILED");
   if (!ok) { v->fatal = true; return false; }   /* previous map is gone; leave the view */
 
@@ -852,7 +858,11 @@ static bool restore_item_ball(const RomObjectEvent* o) {
   }
   if (!o->flag_id || !v->sb1) { snd_deny(); return false; }
 
+  /* SD I/O: the motor is a cart-bus write and this read walks the ROM off the card.
+   * These two call sites were the only ROM reads on this screen outside the bracket. */
+  rmbl_pause();
   uint16_t it = rom_script_item_ball(v->rc, o->script);
+  rmbl_resume();
   const char* nm = it ? pk_item_name(it) : 0;
   siprintf(l1, "%.20s", nm ? nm : "This item");
   u16 k = map_dialog("PUT IT BACK?", l1, "It can be picked up again.",
@@ -926,11 +936,11 @@ static void map_view(const RomCtx* rc, uint8_t* arena, PkGame game,
                       arena, APP_ARENA_BYTES);
   rmbl_resume();
 
-  log_line("map: load %s  peak %lu  phase2 %lu / %lu  %ldx%ld  conn %u warp %u  mt-miss %lu",
+  log_line("map: load %s  peak %lu  phase2 %lu / %lu  %ldx%ld  conn %u warp %u  mt-miss %lu  cbb2 %lu",
            ok ? "OK" : "FAILED", (unsigned long)mgfx_arena_peak(),
            (unsigned long)mgfx_arena_phase2(), (unsigned long)APP_ARENA_BYTES,
            (long)v->lay.width, (long)v->lay.height, gfx.conn_n, gfx.warp_n,
-           (unsigned long)mgfx_mt_misses());
+           (unsigned long)mgfx_mt_misses(), (unsigned long)mgfx_cbb2_bad());
 
   if (!ok) {
     mgfx_exit();
@@ -1000,6 +1010,11 @@ static void map_view(const RomCtx* rc, uint8_t* arena, PkGame game,
         log_line("map: CORRUPT %s bits=%02lX at %u.%u zoom %d  repair %d/%d %s",
                  mgfx_fp_name(bad), (unsigned long)bad, v->group, v->num, v->zoom,
                  v->repairs_map, v->repairs, may ? "yes" : "NO");
+        /* Straight to the card. Until now NOTHING in this file flushed, so every map
+         * diagnostic died at power-off — which is how the corruption stayed a photograph
+         * instead of a log line. The user sees a glitch and pulls the plug; that is the
+         * one moment the evidence has to already be on the SD. */
+        app_log_flush();
         v->repairs++; v->repairs_map++; v->last_repair = (int)v->frame;
         v->hud_dirty = true;
         if (may) {
@@ -1486,7 +1501,10 @@ static void map_view(const RomCtx* rc, uint8_t* arena, PkGame game,
         /* Which item, straight from the ball's own script. rom_script_item_ball returns 0
          * for the handful of balls whose script is not the plain finditem shape (hidden
          * items behind a `special`, mostly) — say so rather than printing "item 0". */
+        rmbl_pause();                       /* per-frame HUD block: this is the exact frame a
+                                             * cursor step can arm the 8192 Hz PWM ISR */
         uint16_t it = rom_script_item_ball(v->rc, oe->script);
+        rmbl_resume();
         const char* nm = it ? pk_item_name(it) : 0;
         bool taken = ball_taken(oe);
         siprintf(l, "%-12s %s", nm ? nm : "ITEM?", taken ? "TAKEN" : "here");
@@ -1743,6 +1761,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
     u16 k = s_wait(KEY_A | KEY_B | KEY_SELECT);
     if ((k & KEY_A) && hdr_ok && lay_ok) {
       map_view(&rc, arena, game, cur.group, cur.num, &cur, sb1, sb2);
+      app_log_flush();                             /* one write per visit, off the render path */
       continue;                                    /* map_view restored the Mode-3 UI */
     }
     if (k & KEY_SELECT) {
