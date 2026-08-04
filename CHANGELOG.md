@@ -6,8 +6,7 @@ All notable changes to PokeDNA. Versions follow semantic versioning (`MAJOR.MINO
 
 **Release candidate, not a final release.** Everything below runs in an emulator against real
 Generation-III saves and the pure-C cores are covered by the host test suite, but **none of it
-has been validated on real hardware yet**, and this release carries **no ROM download** (see
-*Why there is no binary here* below).
+has been validated on real hardware yet**. Back up your `.sav` before you edit anything.
 
 ### Added
 - **Overworld map viewer** — reads *your own* Pokémon ROM off the SD card at runtime and renders
@@ -38,12 +37,6 @@ has been validated on real hardware yet**, and this release carries **no ROM dow
   read two bytes early — the cause of the corrupted map rooms.
 - The nav menu recomposited itself on every keypress and visibly stacked; it is drawn once now.
 - Dozens of truncated strings across the box panel, summary, bag, pickers and dialogs.
-
-### Why there is no binary here
-The built ROM currently embeds Generation-III art and text extracted from the games, and
-publishing that as a release asset is not something this project is willing to do. A build that
-loads those assets from **your own cartridge dump at run time** — the same way the map viewer
-already reads your ROM — is the planned fix; until then the source is the release.
 
 ### Known limitations
 - **Not hardware-validated.** Flash writes, every SD path and the map corruption case are
