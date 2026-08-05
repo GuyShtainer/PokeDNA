@@ -185,9 +185,22 @@ void em_set_egg(EditMon* e, bool egg) {
 /* Hatch an egg: clear the egg flag, replace the stored hatch-cycle counter (which lives in
  * the friendship byte) with a real base-ish friendship, and set level 5 — Gen-3 eggs hatch at
  * level 5, and em_set_level recomputes exp + the party plaintext stats. The species/IVs/moves/
- * nature inside the egg are already present, so the revealed Pokemon is complete. */
+ * nature inside the egg are already present, so the revealed Pokemon is complete.
+ *
+ * ALSO renames it to its species. A Gen-3 egg is not "unnamed": it carries the Japanese
+ * nickname タマゴ (bytes 60 6F 8B FF) with language=1, on every egg in every one of Guy's
+ * saves — and gen3_decode_char has no case for 60/6F/8B, so the viewer honestly rendered
+ * three '?'. That is where "???" came from. Gen 3 has no "is nicknamed" bit: an unnicknamed
+ * mon simply has its species name sitting in the nickname field, so hatching must write it,
+ * and must move the language byte to English to match (the retail game renders a
+ * language=Japanese mon's name through a different, 5-character path). */
 void em_hatch(EditMon* e) {
   em_set_egg(e, false);
+  uint16_t sp = rd16(e->sub[0] + 0);                  /* Growth substruct: species */
+  if (sp >= 1 && sp <= G3_MAX_SPECIES) {              /* corrupt/bad egg: keep what it had */
+    em_set_nickname(e, pk_species_name(sp));
+    e->raw[0x12] = 2;                                 /* language: English, as gen3_build_mon */
+  }
   em_set_friendship(e, 70);
   em_set_level(e, 5);
 }
@@ -239,9 +252,31 @@ void em_set_party_flag(EditMon* e, bool is_party) {
   }
 }
 
+/* Encode an ASCII/UTF-8 string into the Gen-3 charset.
+ *
+ * UTF-8 aware because two species names are NOT ASCII: the table stores NIDORAN♀ and
+ * NIDORAN♂ as "NIDORAN" + U+2640 / U+2642 (three UTF-8 bytes each). Byte-wise
+ * encoding sent each of those bytes through gen3_encode_char's `default: 0x00`, i.e.
+ * three trailing SPACES instead of the single charset byte. Retail stores the symbol:
+ * a NIDORAN♂ caught in FireRed reads C8 C3 BE C9 CC BB C8 B5 FF — "NIDORAN" then 0xB5.
+ * (0xB5 = ♂, 0xB6 = ♀.) */
 static void encode_name(uint8_t* dst, int cap, const char* s) {
+  const unsigned char* p = (const unsigned char*)s;
   int i = 0;
-  for (; i < cap && s[i]; i++) dst[i] = gen3_encode_char(s[i]);
+  while (i < cap && *p) {
+    uint8_t b;
+    /* && short-circuits, so a string ending in a bare 0xE2 never reads past the NUL. */
+    if (p[0] == 0xE2u && p[1] == 0x99u && (p[2] == 0x80u || p[2] == 0x82u)) {
+      b = (p[2] == 0x80u) ? 0xB6u : 0xB5u;       /* U+2640 ♀ / U+2642 ♂ */
+      p += 3;
+    } else if (p[0] >= 0x80u) {                  /* any other non-ASCII -> space */
+      b = 0x00u; p++;
+      while ((*p & 0xC0u) == 0x80u) p++;         /* skip its continuation bytes */
+    } else {
+      b = gen3_encode_char((char)*p++);
+    }
+    dst[i++] = b;
+  }
   for (; i < cap; i++) dst[i] = 0xFF;            /* terminator + padding */
 }
 

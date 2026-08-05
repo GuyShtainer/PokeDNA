@@ -44,7 +44,7 @@ void em_set_move(EditMon* e, int i, uint16_t move);          /* also sets PP to 
 void em_set_pp(EditMon* e, int i, uint8_t pp);
 void em_set_friendship(EditMon* e, uint8_t f);
 void em_set_egg(EditMon* e, bool egg);                      /* flags byte bit2 + Misc IV-word bit30 */
-void em_hatch(EditMon* e);                                  /* clear egg + base friendship + level 5 */
+void em_hatch(EditMon* e);   /* clear egg + nickname:=species + language:=English + friendship 70 + level 5 */
 void em_set_ability(EditMon* e, uint8_t n);                  /* 0 or 1 */
 void em_set_level(EditMon* e, uint8_t level);                /* sets exp (+ party level + stats) */
 void em_set_party_flag(EditMon* e, bool is_party);          /* box<->party kind (derives/drops plaintext stats) */
