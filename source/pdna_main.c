@@ -1376,8 +1376,10 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
 }
 
 /* CREATE a Pokémon from nothing into the empty slot `rec`: pick a species, build a
- * default valid record (Lv5, the save's OT/TID, Poké Ball), open the editor to
- * customise, then write + commit. Returns true if the user kept it. Omega-only. */
+ * default valid record (Lv5, the save's OT/TID, Poké Ball), open the SIX-CARD SUMMARY
+ * to customise, then write + commit. Returns true if the user kept it. Omega-only.
+ * The summary — not the flat field list — is deliberate: making a Pokémon should look
+ * like inspecting one, and the summary reaches all 40 editable fields anyway. */
 static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
   uint16_t sp = pick_species(1);
   if (sp == 0xFFFF || sp == 0) return false;
@@ -1390,8 +1392,11 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
     int form = pick_unown_form(pk_unown_form(e.personality));
     if (form >= 0 && em_set_unown_form(&e, form)) gen3_edit_commit(&e, tmp);
   }
-  uint8_t out[80];
-  if (!pdna_edit(tmp, false, out)) return false;     /* customise; B cancels -> slot stays empty */
+  uint8_t out[100];                                  /* 100 to match the other pdna_inspect call
+                                                      * sites; a box record only fills 80 */
+  bool saved = false; int card = 0;                  /* open on card 0 = POKEMON INFO */
+  pdna_inspect_create(tmp, out, &saved, &card);
+  if (!saved) return false;                          /* discarded -> the slot stays empty */
   memcpy(rec, out, 80);
   return app_commit_with_dex(rec, false, commit, block);   /* gated write + auto-register dex (PC only) */
 }
@@ -3321,7 +3326,10 @@ static bool rec_import(void) {
  * The Frontier Pass Battle Record is a full deterministic replay (RNG seed + both
  * teams + per-battler input streams) at a fixed, non-rotating sector. This screen
  * shows what's recorded and exports the raw 4 KiB sector to the SD for the PC-side
- * replay pipeline (see docs/IDEAS.md). Emerald-only; export needs the Omega. */
+ * replay pipeline — that PC tool is rec2mp4 (gba-toolkit/projects/rec2mp4), which
+ * injects the .rec back into a save, replays it in a headless mGBA and encodes an
+ * MP4. It is not published yet, so no screen here prints a URL.
+ * Emerald-only; export needs the Omega. */
 static void pdna_battle_record(void) {
   if (g_game != PK_EMERALD) {
     msg_wait("BATTLE RECORD", UI_DIM, "Only Emerald stores a", "Battle Record.");
@@ -3339,6 +3347,10 @@ static void pdna_battle_record(void) {
     ui_text(4, 24, UI_DIM, "No recorded battle yet.");
     ui_text(4, 34, UI_DIM, "Record one via the Frontier");
     ui_text(4, 44, UI_DIM, "Pass, or import a .rec.");
+    /* Say what a .rec IS and what opens it — the proportional face is mandatory:
+     * these run 198/208 px at 5x7 but would be 320+ px at sys8's fixed 8 px/glyph. */
+    ui_ptext(4, 60, UI_DIM, "A .rec is a battle exported here or by a");
+    ui_ptext(4, 70, UI_DIM, "friend; rec2mp4 (PC) turns one into video.");
     ui_text(4, 152, UI_DIM, "SEL import  B back");
     u16 k = wait_keys(KEY_SELECT | KEY_B);
     if (k & KEY_B) { snd_back(); return; }
@@ -3375,6 +3387,13 @@ static void pdna_battle_record(void) {
         y += 10;
       }
     }
+    /* What the exported pair IS, and what opens it on a PC. The band y=122..151 is
+     * free even for a full 6-mon column (rows start at y=64, pitch 10 -> ink ends at
+     * y=121). Proportional face: line 1 is 226 px here, 360 px at sys8. rec2mp4 is
+     * not published yet, so it is named, not linked. */
+    ui_hline(0, 124, UI_SCR_W, UI_BORDER);
+    ui_ptext(4, 128, UI_DIM, "A exports a .rec + .txt to /PokeDNA/battles/.");
+    ui_ptext(4, 138, UI_DIM, "On a PC, rec2mp4 replays it into a video.");
     ui_text(4, 152, UI_DIM, "A export  SEL import  B back");
     u16 k = wait_keys(KEY_A | KEY_B | KEY_SELECT);
     if (k & KEY_B) { snd_back(); return; }
@@ -3441,7 +3460,9 @@ static void pdna_battle_record(void) {
     if (st == SF_OK) {
       snd_save();
       char p2[32]; ui_truncate(p2, path, 29);
-      msg_wait("EXPORTED", UI_OK, p2, "Replay it on PC (see docs).");
+      /* Name the tool, not "see docs": docs/ is git-ignored, so a downloader has no
+       * docs to see. 157 px, inside msg_wait's 184 px ui_ptext_fit clamp. */
+      msg_wait("EXPORTED", UI_OK, p2, "rec2mp4 (PC) renders it to MP4.");
     } else {
       snd_error();
       msg_wait("EXPORT FAILED", UI_WARN, sf_status_str(st), 0);
