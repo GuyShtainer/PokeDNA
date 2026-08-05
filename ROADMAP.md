@@ -1,56 +1,74 @@
 # PokeDNA — Roadmap & Known Issues
 
-The running list of what's planned and what's currently rough. PokeDNA is at **v1.0** and actively
-developed; this is an honest backlog, not a promise of dates or order. If something here matters to
-you, feel free to open an issue or a PR.
+The running list of what's planned and what's currently rough. PokeDNA is at **v2.0.0** and
+actively developed; this is an honest backlog, not a promise of dates or order. If something here
+matters to you, feel free to open an issue or a PR.
 
 ## Known issues / current bugs
 
-- **Box wallpapers mostly don't render correctly.** Several PC box wallpapers display wrong or
-  broken; only some work. Needs a pass over the wallpaper tile/palette decode.
-- **The "move Pokémon" grab animation isn't quite right.** The pick-up / carry animation in the PC
-  is rough and needs polish to match the real games.
-- **Full-screen redraws cause flicker.** Several screens repaint everything on each change; moving
-  more of them to partial redraws would make the whole app noticeably smoother (see *Smoother
-  rendering* below).
+- **A fresh clone doesn't build until you run the art generators.** Some modules have weak
+  fallbacks and degrade to text layouts, but `box_oam.c` and the icon/type/item modules `#include`
+  a generated header unconditionally, so a clean checkout stops at `mon_icons_oam.h: No such file
+  or directory`. See *Graphics assets* in the [README](README.md#graphics-assets-are-generated-locally-not-committed).
+  Making every art module optional the way the bag already is would be a welcome contribution.
+- **The map viewer can't zoom out past the affine tile budget.** A full-region zoom would need 428
+  distinct tiles where the hardware affine mode allows 256, so the widest zoom is capped.
+- **Big builds can fail to load from SD on some cards.** This is a *copy* problem, not a size
+  ceiling — the "ROM too big" theory was investigated and disproved. If the flashcart hangs at
+  "Load game", re-copy the `.gba` and eject the card safely; a NOR-loaded build is unaffected.
+- **The map screen's undo is dead code.** The snapshot is taken but nothing outside the host tests
+  ever restores it.
+- **NIDORAN♀/♂ display as `NIDORAN?`.** The Gen-3 gender symbols have no glyph in the 5×7 face, so
+  they decode to `?`. The bytes written to the save are correct; only the on-screen rendering is
+  affected, and it matches what a Pokémon caught in the real game already looked like here.
 
 ## Planned — editor coverage
 
-- **More editable flags & counters.** There are likely additional meaningful event flags / game
-  counters not yet surfaced in the editor — keep expanding the curated set.
-- **Full Pokédex editor**, plus **register edited/injected Pokémon in the Pokédex** (seen/caught) —
-  right now an edited mon is not added to the dex.
-- **Editable Poké Ball and met / caught location** (carried over from the v1.0 known gaps).
-- **Secret Base editing** *(big one)* — edit your own base (location + contents/decorations) and,
-  most importantly, **view other trainers' / "friends'" Secret Bases and edit the Pokémon teams
-  inside them.**
-- **Daycare viewer** — see the Pokémon currently in the Daycare.
+- **The full legitimacy check.** The current legality pass is explicitly structural only. The
+  remaining work is move legality against per-origin-game learnsets, PID↔nature/gender/shininess
+  consistency, met location/level/ball plausibility, evolution stage at met level, ability index,
+  and EV/IV bounds including the 510 total.
+- **Gen 1 / Gen 2 support via the boxes**, for the Pokémon that can legitimately travel forward.
+  Needs its own research pass: which species and moves actually transfer, what the RBY/GSC save
+  layout requires (different checksums, no personality value, different name encoding), and whether
+  "transfer" means converting to a real Gen-3 record or viewing only.
+- **More editable flags & counters** — keep expanding the curated set.
+- **Off-map places** (Sky Pillar and friends) are rect-only today, so the map cursor can't select
+  them; Mirage Island needs an RNG pre-image write rather than a direct one.
 
 ## Planned — graphics & UI
 
-- **Polish the Pokémon summary cards' UI/layout.**
-- **Animated Pokémon sprites** — the per-species idle animation that plays on the summary card and
-  in battle.
-- **Back-sprite view** — show the rear view of a Pokémon in the summary.
-- **Smoother rendering** — reduce full-screen refreshes app-wide in favour of partial redraws.
+- **Pokéblock case chrome**, the same treatment the bag and trainer card already got: the game's own
+  screen art, per game, generated locally from the decomps.
+- **Match Emerald's real pickup animation.** Retail flags the individual icons semi-transparent
+  rather than driving a global blend, and item holders stay opaque; ours differs.
+- **A two-column PC box view.**
+- **Smoother rendering** — keep moving screens off full-screen repaints. (The PC box flip is done:
+  it used to wipe the screen to black on every L/R.)
 
-## Planned — file & save management
+## Planned — companion tooling
 
-- **Bank → "Copy to game".** In the bank, replace the redundant *Export .pk* action with a
-  **Copy-to-game** option — the mon there is already exported, so what you actually want is to send
-  it into the loaded save.
-- **Backup management.** Option to **skip backups** or **overwrite a single rolling backup** so they
-  don't pile up, and/or a **"Clear backups"** action to delete all backups once you've confirmed a
-  save is good.
-- **Built-in file operations.** There's no OS file browser on the cartridge, so duplicating a save,
-  renaming it, or deleting backups currently means switching to a separate SD browser. Fold the
-  essential file ops in (at minimum: duplicate save, rename, delete backups). TBD whether to bring
-  the *full* file-browser feature set or just the essentials.
+- **rec2mp4 link-up.** The Records screen exports a `.rec` + `.txt` pair that the companion PC tool
+  **rec2mp4** replays into an MP4. The on-cart text and the README now name it; a link lands here
+  once that project is published.
 
 ## Testing / validation
 
-- **Cross-game bank only tested Emerald → Emerald.** Verify the bank and cross-game transfers with
-  **Ruby/Sapphire** and **FireRed/LeafGreen**, including moving Pokémon **between** different games.
+- **Cross-game bank is best-tested Emerald → Emerald.** Keep exercising the bank and cross-game
+  transfers with Ruby/Sapphire and FireRed/LeafGreen, including moving Pokémon *between* games.
+- Anything touching the SD card, the RTC, or a destructive save operation is not done until it has
+  been run on real hardware. The emulator does not model the flashcart's SD path.
+
+## Shipped since v1.0.0
+
+Kept here so the backlog above reads as what's left, not as the whole story. v2.0.0 added: the
+overworld **map viewer** reading your own ROM off the card; the real **bag** and **trainer card**
+screens; **Secret Bases** including other trainers'; the **Day-Care** viewer; the Battle **Frontier**
+streaks and **Fly** flags; **Battle Record** export *and* import; a **Pokédex** editor with automatic
+registration of edited mons; **animated summary portraits** and back-sprite view; **rumble haptics**
+and per-screen animation toggles; backup modes and *Clear backups*; **Copy-to-game** from the bank;
+the **Clock fix** screen; and PokeDNA's own **proportional 5×7 font**, which retired the truncated
+`JIGGLYPU~` class of layout bug across every screen.
 
 ---
 

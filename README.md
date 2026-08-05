@@ -14,8 +14,11 @@ The name says what it does: like reading **DNA** you can inspect the traits a Po
 with — and because DNA is **mutable**, PokeDNA can *edit* it too (and the rest of the save), all
 on real hardware with no PC in the loop.
 
-It is **entirely original work**. It is not a port of, fork of, or front-end for any other save
-editor — the save-format logic was written from scratch (see *Credits & legality*).
+**The code is entirely original.** It is not a port of, fork of, or front-end for any other save
+editor — the save-format logic was written from scratch. The *data* it draws on (species and item
+names, move tables, flag names) is extracted from the pret decompilations by the generators in
+`tools/`, and the release binary additionally embeds game-extracted artwork. See
+*Credits & legality* — that section is specific about what ships and what does not.
 
 ## Status
 
@@ -99,11 +102,27 @@ The `START` menu is the map of the tool:
 | Bases | Secret Base viewer — the registry, its parties, and a clear action |
 | Blocks | Pokéblock case editor (add / change / delete) with a game-style colour picker |
 | Tickets | event tickets — Eon, Aurora, Mystic, Old Sea Map — granted in the legitimate "received" state |
-| Records | **Battle Record** (Emerald): read the recorded battle out of sector 31, **export it to the card** as a `.rec` under `/PokeDNA/battles/` with a plain-text sidecar (facility, streak, teams, seed), and **import an old one back** as if it were the last battle you fought |
+| Records | **Battle Record** (Emerald): read the recorded battle out of sector 31, **export it to the card** as a `.rec` under `/PokeDNA/battles/` with a plain-text sidecar (facility, streak, teams, seed), and **import an old one back** as if it were the last battle you fought — the exported `.rec` is what **rec2mp4** turns into a video on a PC (see below) |
 | Frontier | Battle Frontier win streaks — every lane (7 facilities × modes × Lv50/Open), current and best, the records board, and presets that write the exact value the Frontier Brain test expects |
 | Fly | Fly destination flags, on their own screen because these bits are among the safest in the save (marking a town still doesn't grant Fly without the badge and the move) |
 | Map | the overworld map viewer, above |
 | Settings | backup mode, clear backups, **rumble haptics** (per-cue toggles) and **per-screen animation** toggles, all persisted in `/PokeDNA/config.cfg` |
+
+#### From a recorded battle to a video
+
+Each export from the **Records** screen writes two files into `/PokeDNA/battles/`: the `.rec` — a
+byte-exact copy of the save's sector 31, which *is* the battle (the RNG seed, both teams, and every
+button both players pressed) — and a plain-text `.txt` sidecar carrying what sector 31 cannot hold
+(facility, level mode, the current streaks, both teams, the export timestamp).
+
+That pair is a **replayable battle, not a video**. Closing the loop is **rec2mp4**, a companion PC
+tool from the same toolkit: it injects the `.rec` back into a save image, boots *your own* Emerald
+ROM in a headless mGBA, lets the game replay the battle itself, and encodes the result to MP4 with
+an info panel built from the sidecar. Export on the cart, render on the PC — and the `.rec` still
+imports back into any save as "the last battle you fought".
+
+> **rec2mp4 is not published yet.** A link will land here when it is; until then the `.rec`/`.txt`
+> pair is the durable artefact — nothing about the export changes when the tool ships.
 
 ### Interface
 
@@ -127,7 +146,9 @@ icons, the hand cursor and the map's characters are hardware sprites, so nothing
 
 - A flashcart with SD sector access: **EZ-Flash Omega DE** (read **and** write) or **EverDrive
   GBA X5** (read-only).
-- Your own Gen-3 `.sav` files on the SD card. **PokeDNA ships no save or game data — bring your own.**
+- Your own Gen-3 `.sav` files on the SD card. **PokeDNA ships no saves and no ROM — bring your own.**
+  (The release binary does embed game-extracted artwork and text so the download works out of the
+  box; see *Credits & legality*. It never contains anyone's save or a playable ROM.)
 - For the map viewer only: your own `.gba` dump of the game the save belongs to, on the same card.
   A Ruby ROM cannot describe an Emerald save's maps, and PokeDNA refuses the mismatch rather than
   drawing garbage.
@@ -174,8 +195,15 @@ python3 tools/fuse_rom.py PokeDNA.gba YOUR_GAME.gba -o fused.gba
 
 The image assets (Pokémon sprites, box wallpapers, type badges, item icons, the bag and
 trainer-card chrome, the PC hand) are **not part of this repository** — they are git-ignored and
-generated on your machine from asset packs you place under `assets/`. The source builds fine without
-them: every art module has a weak fallback and the affected screens degrade to their text layouts.
+generated on your machine from asset packs you place under `assets/`.
+
+**A fresh clone does not build until you run the generators.** Some modules (the bag and
+trainer-card chrome, box wallpapers) do have weak fallbacks and degrade to their text layouts, but
+others — `box_oam.c`, and the icon/type/item modules — `#include` a generated header
+unconditionally, so the build stops at `mon_icons_oam.h: No such file or directory`. Run the
+generators below first. (Making every art module optional the way the bag already is would be a
+welcome contribution.)
+
 To generate them:
 
 ```sh
@@ -224,16 +252,23 @@ backlog.
   — the idea of a friendly Gen-3 save viewer/editor — but **none of PKHeX's code was used or ported**
   (PKHeX is C#/.NET and GPLv3, and can't run on a GBA). The reverse-engineered *facts* PokeDNA relies
   on (struct offsets, RAM maps, flag numbers, script opcodes) come from the **pret decompilations**
-  ([pokeemerald](https://github.com/pret/pokeemerald) / pokeruby / pokefirered) and are *facts and
-  addresses only* — no third-party game code is bundled. The single-Pokémon `.pk3` export uses the
-  community interchange format (PKHeX-compatible).
+  ([pokeemerald](https://github.com/pret/pokeemerald) / pokeruby / pokefirered). No third-party
+  *code* is bundled — but be clear that more than addresses crosses over: the generators in `tools/`
+  extract the games' **name and text tables** from those decompilations (species, items, moves,
+  locations, the TM→move mapping, event-flag names, and the item/move description strings), and
+  those tables ship in the binary. The single-Pokémon `.pk3` export uses the community interchange
+  format (PKHeX-compatible).
 - **Your saves and your ROM stay yours.** PokeDNA never copies either anywhere; the map viewer reads
   your ROM off your own card transiently, while the screen is open.
-- **The repository carries no game art.** The generated graphics (sprites, wallpapers, badges, item
-  icons, the bag and trainer-card chrome) are git-ignored and built locally from asset packs you
-  supply; the release binary carries them so the download works out of the box, the way community
-  tools like PKHeX ship sprites. The source builds without them — every art module has a weak
-  fallback and those screens fall back to their text layouts.
+- **The repository carries no game art — the release binary does.** The generated graphics
+  (sprites, wallpapers, badges, item icons, the bag and trainer-card chrome) are git-ignored and
+  built locally from asset packs you supply, so nothing derived from the games is in git. The
+  released `PokeDNA.gba` **does** embed them, so the download works out of the box the way community
+  tools like PKHeX ship sprites. Being plain about it: that binary contains several megabytes of
+  Game Freak / Nintendo artwork and the games' own item and move description text. If you would
+  rather run a build with none of that in it, clone the repo, skip the art generators, and build —
+  the screens fall back to their text layouts (see the build note above for which modules currently
+  still require their generated header).
 - **Vendored libraries keep their own licenses:** the flashcart I/O layer (MIT), the EZ-Flash
   `io_ezfo` driver (Apache-2.0), FatFs (BSD-1-Clause), and libtonc. Their notices are retained.
 - PokeDNA's own source is **GPLv3** (see `LICENSE`) — it stays free and open; you may use, study,
