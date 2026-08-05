@@ -1410,6 +1410,10 @@ int pdna_box(BoxSource* src) {
   int cur = 0;
   bool on_title = false;
   bool need_full = true;
+  /* The next full paint goes OVER the current screen instead of ui_clear()-ing to
+   * black first. Set by SWITCH_BOX; starts false so the FIRST paint still clears
+   * (boxoam_enter does not touch the bitmap, so the previous screen would show). */
+  bool paint_over = false;
   int anim_ctr = 0, bob = 0;                   /* current unison Y-bob offset (0/1) */
   /* s_holding persists across pdna_box runs so a carried mon survives the PC<->Bank
    * hand-off (the receiving screen just keeps drawing it). It's reset per-save by
@@ -1438,18 +1442,37 @@ int pdna_box(BoxSource* src) {
     } else if (st == 1 && !s_holding) s_tab_focus = src->is_bank ? 2 : 1;
     else if (st == 2) cur = COLS * (ROWS - 1);
   }
-  /* switch to box `nbx` (wrapping), reload + redraw */
+  /* Switch to box `nbx` (wrapping), reload + redraw. Two things this gets right that
+   * it used to get wrong, both visible on every single L/R:
+   *
+   * 1. THE CURSOR STAYS PUT. Retail's PC scrolls the box *underneath* a stationary
+   *    hand: every INPUT_SCROLL_LEFT/RIGHT path in pokeemerald's
+   *    pokemon_storage_system.c returns before the handler's SetCursorPosition(), and
+   *    the scroll state machine only re-reads the panel for the new box. This used to
+   *    do `cur = 0`, so every flip teleported the glove to the top-left cell and lost
+   *    your place. `cur` is 0..29 by construction everywhere it is assigned; the clamp
+   *    is belt-and-braces because the macro has eight call sites.
+   *
+   * 2. NO BLACK FLASH. `need_full` used to imply render_full(clear=true), i.e. a
+   *    full-screen ui_clear() followed by a multi-frame rebuild — measured at ~12
+   *    frames with the wallpaper and banner absent for most of them. render_full
+   *    repaints tabs + panel + wallpaper + banner + footer, which is the whole screen,
+   *    so on a box switch the clear buys nothing and costs a wipe. The menu-return
+   *    paths already knew this and passed clear=false; `paint_over` plumbs the same
+   *    thing into the need_full path. */
   #define SWITCH_BOX(nbx) do { box = (nbx); recs = src->records(box); \
-                               box_decode(src, recs, box); cur = 0; \
+                               box_decode(src, recs, box); \
+                               if (cur < 0 || cur >= COLS * ROWS) cur = 0; \
                                bob = 0; anim_ctr = 0; \
                                if (!src->is_bank) app_note_pc_box(box); \
-                               s_oam_reload = true; need_full = true; } while (0)
+                               s_oam_reload = true; need_full = true; paint_over = true; } while (0)
 
   for (;;) {
     if (need_full) {
-      if (s_ch_hold) chunk_draw(src, box, true);
-      else           render_full(src, box, cur, on_title, s_holding, true);
-      need_full = false;
+      bool clr = !paint_over;                  /* a box switch repaints over, no wipe */
+      if (s_ch_hold) chunk_draw(src, box, clr);
+      else           render_full(src, box, cur, on_title, s_holding, clr);
+      need_full = false; paint_over = false;
     }
     u16 k, fresh;
     do { s_vsync();
@@ -1569,7 +1592,11 @@ int pdna_box(BoxSource* src) {
       if (k & KEY_B) {                               /* put it back (never lose it) */
         if (s_item_from_box >= 0 && s_item_from_box != box) SWITCH_BOX(s_item_from_box);  /* back to its box */
         int home = item_home();
-        if (home >= 0) { box_set_held(recs, home, (uint16_t)s_item_held); box_decode(src, recs, box);
+        /* Park the cursor on the mon that just got the item back, so the left panel
+         * shows where it went. (SWITCH_BOX now PRESERVES the cursor cell, so without
+         * this a cross-box put-back would leave the glove on an unrelated slot.) */
+        if (home >= 0) { cur = home;
+                         box_set_held(recs, home, (uint16_t)s_item_held); box_decode(src, recs, box);
                          src->mark_dirty(); s_item_held = 0; s_item_from = -1; s_item_from_box = -1; need_full = true; }
         else snd_deny();
       }
@@ -1637,10 +1664,14 @@ int pdna_box(BoxSource* src) {
     else if (on_title) {                           /* TITLE row: limited controls */
       if (k & KEY_DOWN) on_title = false;
       else if (k & KEY_UP) { s_tab_focus = src->is_bank ? 2 : 1; need_full = true; }   /* up into the top tabs */
-      /* LEFT/RIGHT on the box name flips boxes, like the real Gen-3 PC (fresh
-       * presses only, so holding doesn't machine-gun through boxes). */
-      else if (fresh & KEY_LEFT)  { SWITCH_BOX((box + nb - 1) % nb); on_title = true; }
-      else if (fresh & KEY_RIGHT) { SWITCH_BOX((box + 1) % nb); on_title = true; }
+      /* LEFT/RIGHT on the box name flips boxes, like the real Gen-3 PC. FRESH presses
+       * only: retail reads JOY_HELD here but is rate-limited by its 32-frame scroll
+       * animation, whereas the Bank pages boxes off the SD card on every switch
+       * (banksrc_records saves the dirty box then loads the next), so a held flip
+       * would hammer the card. `on_title` stays true by construction — SWITCH_BOX
+       * does not touch it — so it is not re-asserted here. */
+      else if (fresh & KEY_LEFT)  { SWITCH_BOX((box + nb - 1) % nb); }
+      else if (fresh & KEY_RIGHT) { SWITCH_BOX((box + 1) % nb); }
       else if (k & KEY_A) {
         if (src->can_edit()) { boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
                                recs = src->records(box); box_decode(src, recs, box);  /* Release all mutates records */
