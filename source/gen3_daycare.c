@@ -68,6 +68,12 @@ const char* pk_daycare_compat_msg(DcCompat c) {
   }
 }
 
+const char* pk_daycare_yard_note(int boarders, int visitors) {
+  if (visitors > 0) return "Others are just visiting.";
+  return (boarders >= 2) ? "Both Day-Care slots are full."
+                         : "The Day-Care holds 2 Pokemon.";
+}
+
 bool pk_daycare_can_breed(uint16_t spA, uint8_t genA, uint16_t spB, uint8_t genB) {
   if (!spA || !spB) return false;
   if (pk_egg_group(spA, 0) == EGG_UNDISCOVERED || pk_egg_group(spB, 0) == EGG_UNDISCOVERED) return false;

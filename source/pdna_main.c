@@ -88,6 +88,10 @@ static bool      g_show_hidden = false;
  * One bit per ANIM_* place. Box / Party / Dex / Daycare default ON; the summary
  * portrait wiggle defaults OFF (kept calm unless the user opts in). Defined up here so
  * cfg_save/cfg_load (above app_anim_enabled) can persist it. */
+/* Day-Care yard visitors: the invented scenery mons (see dc_roll_decos). ON by
+ * default -- they make the yard look alive -- but the user can switch them off and
+ * see only the two Pokemon that are really boarding. Persisted in config.cfg. */
+static bool      g_yard_visitors = true;
 static unsigned  g_anim_mask = (1u << ANIM_BOX) | (1u << ANIM_PARTY) | (1u << ANIM_DEX) |
                                (1u << ANIM_DAYCARE) | (1u << ANIM_SUMMARY);   /* summary wiggle ON by default (Emerald feel) */
 static int       g_pc_last_box = 0;        /* PC box to open on (NOT the save's in-game box); app remembers it */
@@ -258,9 +262,10 @@ static void scan_dir(void) {
 static void cfg_save(void) {
   if (!app_can_edit()) return;
   char buf[PATH_MAX * 4 + 128];
-  int n = siprintf(buf, "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\n",
+  int n = siprintf(buf, "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\nyard=%d\n",
                    g_cwd, (int)g_sort, g_sortrev ? 1 : 0, g_show_all ? 1 : 0, g_show_hidden ? 1 : 0,
-                   g_anim_mask, rmbl_get_mask(), rmbl_get_strength(), rmbl_get_duration(), g_pc_last_box);
+                   g_anim_mask, rmbl_get_mask(), rmbl_get_strength(), rmbl_get_duration(), g_pc_last_box,
+                   g_yard_visitors ? 1 : 0);
   /* One ROM path per game — RS/Emerald/FRLG map data differs, so each needs its own
    * ROM file (Guy's requirement). Only non-empty entries are written. */
   static const char* const k_romkey[3] = { "romrs", "romem", "romfr" };
@@ -295,6 +300,7 @@ static void cfg_load(void) {
       else if (!strcmp(k, "rev"))    g_sortrev     = (v[0] == '1');
       else if (!strcmp(k, "all"))    g_show_all    = (v[0] == '1');
       else if (!strcmp(k, "hidden")) g_show_hidden = (v[0] == '1');
+      else if (!strcmp(k, "yard"))   g_yard_visitors = (v[0] == '1');
       else if (!strcmp(k, "anim"))   { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); g_anim_mask = m & ((1u << ANIM_COUNT) - 1u); }
       else if (!strcmp(k, "rumble")) { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); rmbl_set_mask(m); }
       else if (!strcmp(k, "pcbox"))  { int m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (*d - '0'); g_pc_last_box = m; }
@@ -2304,7 +2310,20 @@ static uint32_t dc_seed(void) {
   if (gba_rtc_get(&t)) e ^= (uint32_t)(t.second + t.minute * 60 + t.hour * 3600) * 2654435761u;
   return e | 1u;
 }
-/* Roll the 2..5 random decoration species for this visit (called once on entry). */
+/* Roll this visit's YARD VISITORS (called once on entry).
+ *
+ * READ THIS BEFORE BELIEVING THE YARD. The Gen-3 Day-Care holds EXACTLY TWO
+ * Pokemon: dc_rescan reads slots 0 and 1 at `g_sb1 + base + i*stride` and nothing
+ * else. Every other mon on this screen is scenery THIS VIEWER INVENTS for the
+ * picture — 2..5 random species, re-rolled on every entry, seeded from a session
+ * counter and the cart RTC. They are never read from or written to the save, they
+ * occupy no slot, and they can never be selected (`sel` only indexes the boarders,
+ * L/R only swaps when n == 2, and the A-menu acts on recs[sel]).
+ *
+ * They are always internal species 1..251, i.e. Kanto/Johto only — never a Hoenn
+ * mon — which is itself the tell that they are not save data. The screen now says
+ * so out loud (pk_daycare_yard_note), draws them hazed and behind the real pair,
+ * and Settings > Yard visitors turns them off. */
 static void dc_roll_decos(void) {
   uint32_t rng = dc_seed();
   rng = rng * 1103515245u + 12345u;
@@ -2318,8 +2337,13 @@ static void dc_roll_decos(void) {
 /* Compose a 32x32 icon over the bg image at screen (x,y) and DMA each scanline (no
  * separate erase => no flicker on the single Mode-3 buffer). x is forced even for
  * the word-aligned DMA. */
+/* `num` is the icon's weight out of 8 when it is blended with the yard behind it:
+ * 8 = fully opaque (the player's own boarders), lower = hazed into the background
+ * (the invented yard visitors, so they read as scenery). Same blend as
+ * ui_panel_alpha. Deliberately NOT greyscale — grey already means "not seen yet"
+ * in the Pokedex and would say the wrong thing here. */
 static u16 __attribute__((aligned(4))) s_dcline[MON_ICON_W];   /* 32-bit DMA needs word align */
-static void dc_icon_over_bg(int x, int y, const u16* icon) {
+static void dc_icon_over_bg(int x, int y, const u16* icon, int num) {
   if (!icon) return;
   rumble_io_suspend();   /* reads icon + daycare_bg from ROM per pixel; mute the motor toggle */
   x &= ~1;
@@ -2331,7 +2355,17 @@ static void dc_icon_over_bg(int x, int y, const u16* icon) {
       int xx = x + i;
       u16 c = (xx >= 0 && xx < DAYCARE_BG_W) ? bg[xx] : 0;
       u16 pxl = icon[j * MON_ICON_W + i];
-      if (pxl & 0x8000) c = (u16)(pxl & 0x7FFF);
+      if (pxl & 0x8000) {
+        u16 s = (u16)(pxl & 0x7FFF);
+        if (num >= 8) c = s;
+        else {
+          int r = c & 31, g = (c >> 5) & 31, b = (c >> 10) & 31;
+          r += ((( s        & 31) - r) * num) >> 3;
+          g += ((((s >>  5) & 31) - g) * num) >> 3;
+          b += ((((s >> 10) & 31) - b) * num) >> 3;
+          c = (u16)(r | (g << 5) | (b << 10));
+        }
+      }
       s_dcline[i] = c;
     }
     dma3_cpy(&vid_mem[yy * 240 + x], s_dcline, MON_ICON_W * 2);
@@ -2528,7 +2562,12 @@ static void pdna_daycare(void) {
   const u16 GRASS = RGB15(13, 22, 9);
 #endif
 #ifdef HAVE_DAYCARE_BG
-  dc_roll_decos();                              /* fresh 2..5 random decoration mons each visit */
+  /* Fresh yard visitors each visit — or none, if the user turned them off. BOTH
+   * counters must be zeroed: they are file-scope statics that survive the previous
+   * visit (dc_rescan places from s_ndeco_roll, the draw loops read s_ndeco), so
+   * zeroing one would leave ghosts from last time. */
+  if (g_yard_visitors) dc_roll_decos();
+  else { s_ndeco_roll = 0; s_ndeco = 0; s_dc_visit_rng = dc_seed(); }
 #endif
   int n = dc_rescan(base, stride, recs, dc, phys, dcx, dcy, &off, &to_check);
   int sel = 0, frame = 0, ctr = 0;
@@ -2544,43 +2583,53 @@ static void pdna_daycare(void) {
       dc_scene();                                              /* overdraws the whole screen */
       ui_fill_rect(0, 0, UI_SCR_W, 11, UI_BG);
       ui_text(4, 2, UI_TITLE, "DAY CARE");
+      { char sl[16]; siprintf(sl, "Boarding %d/2", n);        /* the slot count, always visible */
+        ui_ptext_right(236, 2, UI_DIM, sl); }
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      int nshow = n;
+#ifdef HAVE_DAYCARE_BG
+      /* Visitors FIRST and hazed, so a piece of scenery can never paint over one of
+       * the player's own Pokemon (four of the slot pairs overlap). */
+      for (int i = 0; i < s_ndeco; i++)
+        dc_icon_over_bg(s_deco_x[i], s_deco_y[i],
+                        mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)), 6);
+      nshow += s_ndeco;
+#endif
       for (int i = 0; i < n; i++) {
         const u16* ic = (dc[i].isEgg && !dc[i].isBadEgg) ? mon_icon_egg_frame((uint8_t)(frame & 1))
                                 : mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1));
 #ifdef HAVE_DAYCARE_BG
-        dc_icon_over_bg(dcx[i], dcy[i], ic);
+        dc_icon_over_bg(dcx[i], dcy[i], ic, 8);               /* the real pair: fully opaque */
 #else
         ui_sprite(dcx[i], dcy[i], MON_ICON_W, MON_ICON_H, ic);
 #endif
       }
-      int nshow = n;
-#ifdef HAVE_DAYCARE_BG
-      for (int i = 0; i < s_ndeco; i++)                       /* random decoration mons (visual only) */
-        dc_icon_over_bg(s_deco_x[i], s_deco_y[i], mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)));
-      nshow += s_ndeco;
-#endif
       if (nshow == 0) ui_text(64, 58, RGB15(8, 5, 0), "It's quiet here.");
       if (n) { int py = dcy[sel] - 7; if (py < 12) py = 12; dc_pointer(dcx[sel] + 16, py); }
+      /* THREE proportional rows at y=125/134/143 inside the y=124..151 panel. Row 2
+       * is always drawn and is the one that says which mons are actually yours. */
       ui_panel(2, 124, 236, 28, UI_PANEL, UI_BORDER);
       if (n == 2) {
         DcCompat c = pk_daycare_compat(dc[0].species, dc[0].otId, dc[1].species, dc[1].otId);
-        ui_text(6, 127, UI_TITLE, pk_daycare_compat_msg(c));
+        ui_ptext(6, 125, UI_TITLE, pk_daycare_compat_msg(c));
         if (!pk_daycare_can_breed(dc[0].species, dc[0].gender, dc[1].species, dc[1].gender))
-          ui_text(6, 138, UI_DIM, "(no Egg: incompatible pair)");
-        else if (off) ui_text(6, 138, UI_OK, "An EGG is ready to collect!");
+          ui_ptext(6, 134, UI_DIM, "(no Egg: incompatible pair)");
+        else if (off) ui_ptext(6, 134, UI_OK, "An EGG is ready to collect!");
         else { char l[44]; siprintf(l, "Egg check ~%d steps (%d%%)", to_check, EGG_CHANCE[c]);
-               ui_text(6, 138, UI_DIM, l); }
+               ui_ptext(6, 134, UI_DIM, l); }
       } else if (n == 1) {
-        char l[40]; ui_truncate(l, dc[0].nickname[0] ? dc[0].nickname : pk_species_name(dc[0].species), 16);
-        ui_text(6, 127, UI_TEXT, l);
-        ui_text(6, 138, off ? UI_OK : UI_DIM, off ? "An EGG is ready!" : "Just one Pokemon boarding.");
+        /* a NAME -> proportional + pixel clamp, not ui_truncate's character count */
+        ui_ptext_fit(6, 125, 228, UI_TEXT,
+                     dc[0].nickname[0] ? dc[0].nickname : pk_species_name(dc[0].species));
+        ui_ptext(6, 134, off ? UI_OK : UI_DIM, off ? "An EGG is ready!" : "One Pokemon is boarding.");
       } else {
-        ui_text(6, 127, off ? UI_OK : UI_DIM, off ? "An EGG is ready to collect!" : "No Pokemon are boarding.");
+        ui_ptext(6, 125, off ? UI_OK : UI_DIM, off ? "An EGG is ready to collect!" : "No Pokemon are boarding.");
       }
+      ui_ptext(6, 143, UI_DIM, pk_daycare_yard_note(n, s_ndeco));
       ui_fill_rect(0, 152, UI_SCR_W, 8, UI_BG);
-      ui_text(4, 152, UI_DIM, n ? "A menu  L/R pick  B back"
-                                : (g_clip.occupied ? "A put-in  B back" : "B back"));
+      /* "your 2" is doing the disambiguating work: only the boarders are pickable. */
+      ui_ptext(4, 152, UI_DIM, n ? "A menu  L/R your 2  B back"
+                                 : (g_clip.occupied ? "A put in  B back" : "B back"));
     }
     u16 k, fresh;
     do { VBlankIntrWait(); snd_vblank(); key_poll();
@@ -2590,19 +2639,20 @@ static void pdna_daycare(void) {
 #endif
          if (app_anim_enabled(ANIM_DAYCARE) && anim_any && ++ctr >= 30) { /* idle 2-frame bob (flicker-free) */
            ctr = 0; frame ^= 1;
+#ifdef HAVE_DAYCARE_BG
+           for (int i = 0; i < s_ndeco; i++)                    /* visitors first + hazed, as on redraw */
+             dc_icon_over_bg(s_deco_x[i], s_deco_y[i],
+                             mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)), 6);
+#endif
            for (int i = 0; i < n; i++) {                        /* compose icon over the bg + DMA (no erase) */
              const u16* ic = (dc[i].isEgg && !dc[i].isBadEgg) ? mon_icon_egg_frame((uint8_t)(frame & 1))
                                 : mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1));
 #ifdef HAVE_DAYCARE_BG
-             dc_icon_over_bg(dcx[i], dcy[i], ic);
+             dc_icon_over_bg(dcx[i], dcy[i], ic, 8);
 #else
              ui_blit_over(dcx[i], dcy[i], MON_ICON_W, MON_ICON_H, ic, GRASS);
 #endif
            }
-#ifdef HAVE_DAYCARE_BG
-           for (int i = 0; i < s_ndeco; i++)
-             dc_icon_over_bg(s_deco_x[i], s_deco_y[i], mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)));
-#endif
            if (n) { int py = dcy[sel] - 7; if (py < 12) py = 12; dc_pointer(dcx[sel] + 16, py); }  /* selection arrow */
          }
          fresh = key_hit(KEY_FULL); k = fresh; } while (!k);
@@ -3187,14 +3237,15 @@ static void rumble_settings(void) {
 
 static void pdna_settings(void) {
   static const char* const MODE[3] = { "New each time", "Single (rolling)", "Skip (none)" };
-  enum { S_BACKUP, S_ANIM, S_RUMBLE, S_CLEAR, S_CLOSE, S_N };
+  enum { S_BACKUP, S_ANIM, S_YARD, S_RUMBLE, S_CLEAR, S_CLOSE, S_N };
   int sel = 0;
   for (;;) {
     ui_clear();
     ui_text(4, 4, UI_TITLE, "SETTINGS");
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
     char r0[44]; siprintf(r0, "Backups:  %s", MODE[g_backup_mode]);
-    const char* rows[S_N] = { r0, "Animations  >", "Rumble  >", "Clear backups (this save)", "Close" };
+    char r1[44]; siprintf(r1, "Yard visitors:  %s", g_yard_visitors ? "On" : "Off");
+    const char* rows[S_N] = { r0, "Animations  >", r1, "Rumble  >", "Clear backups (this save)", "Close" };
     for (int i = 0; i < S_N; i++) {
       int y = 30 + i * 16; bool s = (i == sel);
       if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
@@ -3202,6 +3253,7 @@ static void pdna_settings(void) {
     }
     ui_text(8, 120, UI_DIM, "Animations + Rumble: per-item");
     ui_text(8, 130, UI_DIM, "on/off inside each submenu.");
+    ui_ptext(8, 140, UI_DIM, "Yard visitors are scenery, not your Pokemon.");
     ui_text(4, 152, UI_DIM, "A change/do  U/D move  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) { cfg_save(); return; }
@@ -3210,6 +3262,7 @@ static void pdna_settings(void) {
     else if (k & KEY_A) {
       if (sel == S_BACKUP) g_backup_mode = (g_backup_mode + 1) % 3;
       else if (sel == S_ANIM)   anim_settings();
+      else if (sel == S_YARD)   g_yard_visitors = !g_yard_visitors;
       else if (sel == S_RUMBLE) rumble_settings();
       else if (sel == S_CLEAR) {
         if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }

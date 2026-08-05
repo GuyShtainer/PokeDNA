@@ -96,6 +96,31 @@ int main(void) {
   chk("confirm panel", 28, PANEL_R - 28, (int)strlen("B = discard") * SYS8_W, "B = discard");
   chk("confirm panel", 28, PANEL_R - 28, (int)strlen("B = discard it") * SYS8_W, "B = discard it");
 
+  printf("\n== day-care yard (#21) ==\n");
+  /* The three-row panel is ui_panel(2,124,236,28), text at x=6 -> 230 px of room.
+   * Rows sit at y=125/134/143; ui_ptext inks 8 rows, so row 2 ends at y=150 with the
+   * panel border at 151 — a descender is legal but there is no slack, so anything
+   * added here has to fit the WIDTH exactly. */
+#define DC_PANEL_W 230
+  chk("daycare panel", 6, DC_PANEL_W, pwidth("They get along very well!"), "They get along very well!");
+  chk("daycare panel", 6, DC_PANEL_W, pwidth("They'd rather be elsewhere."), "They'd rather be elsewhere.");
+  chk("daycare panel", 6, DC_PANEL_W, pwidth("(no Egg: incompatible pair)"), "(no Egg: incompatible pair)");
+  chk("daycare panel", 6, DC_PANEL_W, pwidth("An EGG is ready to collect!"), "An EGG is ready to collect!");
+  chk("daycare panel", 6, DC_PANEL_W, pwidth("Egg check ~9999 steps (70%)"), "Egg check ~9999 steps (70%)");
+  chk("daycare panel", 6, DC_PANEL_W, pwidth("One Pokemon is boarding."), "One Pokemon is boarding.");
+  chk("daycare panel", 6, DC_PANEL_W, pwidth("No Pokemon are boarding."), "No Pokemon are boarding.");
+  /* pk_daycare_yard_note's three returns — the lines that say what is actually yours */
+  chk("yard note", 6, DC_PANEL_W, pwidth("Others are just visiting."), "Others are just visiting.");
+  chk("yard note", 6, DC_PANEL_W, pwidth("Both Day-Care slots are full."), "Both Day-Care slots are full.");
+  chk("yard note", 6, DC_PANEL_W, pwidth("The Day-Care holds 2 Pokemon."), "The Day-Care holds 2 Pokemon.");
+  P("A menu  L/R your 2  B back", 4);
+  P("A put in  B back", 4);
+  P("Yard visitors are scenery, not your Pokemon.", 8);
+  /* the title-bar slot counter is right-aligned to x=236, so it must not reach the
+   * "DAY CARE" title, which ends at 4 + 8*8 = 68 px */
+  chk("daycare title bar", 236 - pwidth("Boarding 2/2"), 236 - 68,
+      pwidth("Boarding 2/2"), "Boarding 2/2");
+
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }

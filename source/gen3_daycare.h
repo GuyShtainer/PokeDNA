@@ -27,4 +27,13 @@ const char* pk_daycare_compat_msg(DcCompat c);
  * paired with a non-Ditto breedable mon. Genderless (2) only breeds as Ditto. */
 bool pk_daycare_can_breed(uint16_t spA, uint8_t genA, uint16_t spB, uint8_t genB);
 
+/* The line the yard screen prints under the Day-Care man's verdict, to say which
+ * Pokemon in the yard are actually the player's.
+ *
+ * The Gen-3 Day-Care holds EXACTLY TWO Pokemon. Any other mon the yard shows is
+ * scenery this viewer invents for the picture; it is never read from or written to
+ * the save and can never be selected. `boarders` is 0..2, `visitors` is that
+ * scenery count (>= 0). Pure C, so tests/host_daycare_test.c pins the wording. */
+const char* pk_daycare_yard_note(int boarders, int visitors);
+
 #endif /* GEN3_DAYCARE_H */
