@@ -55,6 +55,7 @@ static bool g_back = false;
 
 /* ---- editable-field slot registry (filled during render in edit mode) ---- */
 static int g_edit = 0, g_nslot = 0;
+static int g_create = 0;          /* CREATE mode: render the NEW chip, not VIEW/EDIT */
 static struct { int field, x, y, w; } g_slot[24];
 static void reg(int field, int x, int y, int w) {
   if (g_edit && g_nslot < 24) { g_slot[g_nslot].field = field; g_slot[g_nslot].x = x;
@@ -344,8 +345,9 @@ static void card_condition(const PkMon* p) {
 static void render_card(const PkMon* p, int card) {
   summary_bg();                             /* Emerald-style blue gradient backdrop */
   g_nslot = 0;
-  if (g_edit) { ui_fill_rect(0, 0, 50, 9, UI_WARN); ui_text(8, 1, UI_PANEL, "EDIT"); } /* unmissable */
-  else        ui_text(4, 2, UI_DIM, "VIEW");
+  if (g_edit)        { ui_fill_rect(0, 0, 50, 9, UI_WARN); ui_text(8, 1, UI_PANEL, "EDIT"); } /* unmissable */
+  else if (g_create) { ui_fill_rect(0, 0, 50, 9, UI_OK);   ui_text(12, 1, UI_PANEL, "NEW"); } /* not saved yet */
+  else               ui_text(4, 2, UI_DIM, "VIEW");
   draw_dots(150, 2, NCARDS, card);
   ui_hline(0, 10, UI_SCR_W, UI_BORDER);
   draw_left(p);
@@ -362,16 +364,30 @@ static void render_card(const PkMon* p, int card) {
   }
 }
 
-static bool confirm(void) {
+static bool confirm_q(const char* title, const char* a_line, const char* b_line) {
   ui_clear();
   ui_panel(16, 44, 208, 60, UI_PANEL, UI_WARN);
-  ui_text(28, 52, UI_TITLE, "Save changes?");
-  ui_text(28, 72, UI_TEXT, "A = write  (backup made first)");
-  ui_text(28, 86, UI_DIM,  "B = discard");
+  ui_text(28, 52, UI_TITLE, title);
+  ui_text(28, 72, UI_TEXT, a_line);
+  ui_text(28, 86, UI_DIM,  b_line);
   u16 k; do { s_vsync(); k = key_hit(KEY_A | KEY_B); } while (!k);
   bool yes = (k & KEY_A) != 0;
   if (yes) snd_ok(); else snd_back();
   return yes;
+}
+
+/* NOTE the A-line length. It used to read "A = write  (backup made first)": 30 glyphs
+ * at sys8's fixed 8 px = 240 px drawn at x=28, i.e. 44 px past the panel's right edge
+ * (16+208=224) and 28 px off the 240 px screen, so the tail wrapped to the far left as
+ * loose "rst)". tests/host_textfit_test.c now pins every string on this panel. */
+static bool confirm(void) {
+  return confirm_q("Save changes?", "A = write (backup first)", "B = discard");
+}
+
+/* CREATE mode's keep/discard prompt. Deliberately worded so "discard" reads as
+ * "the slot stays empty", not "your edits are lost". */
+static bool confirm_keep(void) {
+  return confirm_q("Keep this Pokemon?", "A = write (backup first)", "B = discard it");
 }
 
 /* ---- portrait animation (Emerald-style entrance bounce + gentle idle bob) ----
@@ -466,8 +482,8 @@ static void portrait_redraw(const PkMon* p, int wx, int sy, int dx, int dy, int*
  *                    B returns to VIEW (edits stay pending). The EDIT banner shows.
  * Returns 0 to exit, +1 for "next mon", -1 for "prev mon" (the caller loads it and
  * calls again). *saved is set true (and out_rec filled) if the user kept the edits. */
-int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
-                   bool* saved, int* card_io) {
+static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
+                       bool* saved, int* card_io, bool create) {
   if (saved) *saved = false;
   EditMon e;
   gen3_edit_load(rec, is_party, &e);
@@ -479,9 +495,13 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
   bool dirty = false, editing = false;
   int anim_t = 0, lastkey = -1;                /* portrait pose key (entrance anim + idle float) */
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
+  /* g_back is file-static and survives between calls: a create opened after someone
+   * flipped a previous mon to its back sprite would otherwise open on the back. */
+  if (create) g_back = false;
 
   for (;;) {
     g_edit = editing;
+    g_create = create && !editing;
     render_card(&cur, card);
     if (editing && g_nslot) {
       if (fsel >= g_nslot) fsel = g_nslot - 1;
@@ -489,7 +509,9 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
       m3_frame(sx - 2, sy - 1, sx + sw, sy + UI_ROW_H, UI_SELTEXT);
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, editing ? "A list  <>edit  U/D  L/R  B"
+    ui_text(4, 152, UI_DIM, editing ? (create ? "A list  <>edit  L/R  START"
+                                              : "A list  <>edit  U/D  L/R  B")
+                          : create   ? "A edit  L/R card  START keep"
                           : can_edit ? "A edit  U/D mon  L/R  SEL  B"
                                      : "U/D mon  L/R card  SEL  B");
     lastkey = 64 | (64 << 8) | (64 << 16) | (64 << 24);   /* render_card drew the rest pose (64,64,0,0) */
@@ -504,7 +526,7 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
     if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
     else if (fresh & (KEY_L | KEY_R | KEY_SELECT)) snd_tab();
-    else if (fresh & KEY_A)               snd_ok();
+    else if (fresh & (KEY_A | KEY_START)) snd_ok();
     else if (fresh & (KEY_LEFT | KEY_RIGHT)) { if (editing) snd_edit(); else snd_tab(); }
     else if (fresh & KEY_B)               snd_back();
 
@@ -514,6 +536,20 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
         cur.form = (uint8_t)pk_get_deoxys_form();
       } else g_back = !g_back;                                /* every other mon: flip front/back */
       continue;
+    }
+
+    /* ---- CREATE: START keeps the new mon, from EITHER sub-mode. Never gated on
+     * `dirty` — the record IS the new thing, so a create with zero edits must still
+     * be writable (gen3_edit_commit is lossless, so it reproduces gen3_build_mon). */
+    if (create && (fresh & KEY_START)) {
+      if (confirm_keep()) {
+        gen3_edit_commit(&e, out_rec); if (saved) *saved = true;
+        key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
+        if (card_io) *card_io = card;
+        g_create = 0;
+        return 0;
+      }
+      continue;                                    /* B in the prompt = carry on editing */
     }
 
     if (editing) {
@@ -532,6 +568,18 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
         int fwd = (k & KEY_R) || (fresh & KEY_RIGHT);
         card = (card + (fwd ? 1 : NCARDS - 1)) % NCARDS; fsel = 0;
       }
+      else if (create) {
+        /* No prev/next mon exists to scroll to, so U/D do nothing; B is the other way
+         * out and asks the same keep/discard question START does. */
+        if (k & KEY_B) {
+          bool keep = confirm_keep();
+          if (keep) { gen3_edit_commit(&e, out_rec); if (saved) *saved = true; }
+          key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
+          if (card_io) *card_io = card;
+          g_create = 0;
+          return 0;                                  /* discarded -> *saved stays false */
+        }
+      }
       else if (k & (KEY_UP | KEY_DOWN | KEY_B)) {    /* leaving this mon: prompt-save if dirty */
         if (dirty && confirm()) { gen3_edit_commit(&e, out_rec); if (saved) *saved = true; }
         key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
@@ -541,4 +589,18 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
       }
     }
   }
+}
+
+/* ---- public entry points -------------------------------------------------
+ * Two names over one body, so the five existing call sites keep their exact
+ * signature and CREATE mode is a flag rather than a forked screen. */
+int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
+                 bool* saved, int* card_io) {
+  return summary_run(rec, is_party, can_edit, out_rec, saved, card_io, false);
+}
+
+int pdna_inspect_create(uint8_t* rec, uint8_t* out_rec, bool* saved, int* card) {
+  /* A brand-new record is never a party mon and editing is always on: the caller
+   * (app_create_mon) is already Omega-gated. */
+  return summary_run(rec, false, true, out_rec, saved, card, true);
 }

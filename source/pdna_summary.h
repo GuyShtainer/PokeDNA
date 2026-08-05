@@ -18,4 +18,16 @@
 int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
                    bool* saved, int* card);
 
+/* CREATE mode: the same six cards over a brand-new record that is NOT in a save slot
+ * yet (one that gen3_build_mon just made), so making a Pokémon looks like inspecting
+ * one instead of dropping into a flat field list. Differences from pdna_inspect:
+ *   - U/D never scroll to a prev/next mon — there isn't one.
+ *   - START, or B, raises "Keep this Pokémon?"; A keeps, B discards.
+ *   - the keep path fills out_rec and sets *saved EVEN IF nothing was edited, because
+ *     the record itself is the new thing (gen3_edit_commit is lossless, so a no-edit
+ *     keep reproduces gen3_build_mon's bytes exactly).
+ * A green NEW chip replaces the VIEW/EDIT banner so it is obvious the mon is not
+ * saved yet. Always returns 0. Editing is always allowed (the caller is Omega-gated). */
+int pdna_inspect_create(uint8_t* rec, uint8_t* out_rec, bool* saved, int* card);
+
 #endif /* PDNA_SUMMARY_H */
