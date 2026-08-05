@@ -38,6 +38,10 @@ build/
 /assets/card/
 /source/card_bg.c
 /source/card_bg_data.s
+# Ripped RS/Emerald Pokeblock-case art (regenerate: python3 tools/gen_pokeblock_bg.py)
+/assets/pokeblock/
+/source/pokeblock_bg.c
+/source/pokeblock_bg_data.s
 # Generated icon art blobs (regenerate with: python3 tools/gen_icons.py)
 /source/mon_icons.c
 /source/mon_icons.h

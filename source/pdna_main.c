@@ -50,6 +50,7 @@
 #include "gen3_items.h"    /* item bags */
 #include "pdna_bag.h"      /* real Emerald bag screen (data-editor bag tab) */
 #include "bag_bg.h"        /* bag_bg() availability gate (weak NULL when art-free) */
+#include "pokeblock_bg.h" /* Pokeblock case chrome (weak NULL when art-free) */
 #include "gen3_secretbase.h" /* Secret Base records (RS/Emerald) */
 #include "osk.h"           /* osk_search (numeric entry) */
 #include "pdna_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
@@ -2047,30 +2048,81 @@ static bool pokeblock_edit(int idx) {
 
 /* Pokéblock case (game-like list: colour swatches + count). A edits/creates a block,
  * "Delete" inside clears one. RS/Emerald only. Edits g_sb1; one verified write on exit. */
+/* Strong pokeblock_bg()/_hl()/_flavor_icon() come from the GENERATED pokeblock_bg.c
+ * (git-ignored ripped art); these weak NULLs keep an art-free clone building, and
+ * pdna_pokeblock then keeps its plain list. Same pattern as the bag and the
+ * trainer card. FRLG returns NULL from the strong version too - no Pokeblocks. */
+__attribute__((weak)) const uint16_t* pokeblock_bg(int game) { (void)game; return 0; }
+__attribute__((weak)) const uint16_t* pokeblock_hl(int game, int state) {
+  (void)game; (void)state; return 0;
+}
+__attribute__((weak)) const uint16_t* pokeblock_flavor_icon(int game, int flavor) {
+  (void)game; (void)flavor; return 0;
+}
+
 static void pdna_pokeblock(void) {
   if (pk_pokeblock_offset(g_game) == 0) { msg_wait("NO POKEBLOCKS", UI_DIM, "This game lacks contests.", 0); return; }
   bool dirty = false; int sel = 0, top = 0;
+  /* The real case chrome, if the art was generated. NULL -> the plain list below,
+   * unchanged, exactly as an art-free clone has always drawn it. */
+  const uint16_t* chrome = pokeblock_bg((int)g_game);
+  const int VIS = chrome ? PB_ROWS : 13;               /* retail's panel holds 9 rows */
   for (;;) {
-    ui_clear();
+    if (chrome) {
+      rumble_io_suspend();                             /* ROM -> VRAM blit */
+      dma3_cpy(vid_mem, chrome, PB_BG_W * PB_BG_H * 2);
+      rumble_io_resume();
+    } else ui_clear();
     int have = 0;
     for (int i = 0; i < PK_POKEBLOCK_COUNT; i++) { PkPokeblock p; pk_pokeblock_get(g_sb1, g_game, i, &p); if (pk_pokeblock_occupied(&p)) have++; }
-    char ti[28]; siprintf(ti, "POKEBLOCK CASE  %d/40", have); ui_text(4, 2, UI_TITLE, ti);
-    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
-    const int VIS = 13;
+    char ti[28]; siprintf(ti, "POKEBLOCK CASE  %d/40", have);
+    if (chrome) {
+      /* The case's own title box is 72 px of light chrome, so: dark ink, and the
+       * label has to be "POKEBLOCKS" (measured 60 px, budget 64). "POKEBLOCK CASE"
+       * is 81 px and "POKEBLOCKS 3" is 69 px -- both would clip to "POKEBLOCK~".
+       * The count goes on the wall just under the box, where there is nothing. */
+      ui_ptext(PB_TITLE_X + 4, PB_TITLE_Y + 4, UI_PANEL, "POKEBLOCKS");
+      char ct[12]; siprintf(ct, "%d/40", have);
+      ui_ptext(PB_TITLE_X + 4, PB_TITLE_Y + 20, UI_TEXT, ct);
+    } else {
+      ui_text(4, 2, UI_TITLE, ti);
+      ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    }
     if (sel < top) top = sel; if (sel >= top + VIS) top = sel - VIS + 1;
     for (int i = 0; i < VIS && top + i < PK_POKEBLOCK_COUNT; i++) {
-      int idx = top + i, y = 16 + i * 10; bool s = (idx == sel);
+      int idx = top + i, y = chrome ? (PB_LIST_Y + i * PB_ROW_H) : (16 + i * 10);
+      bool s = (idx == sel);
       PkPokeblock pb; pk_pokeblock_get(g_sb1, g_game, idx, &pb);
       bool occ = pk_pokeblock_occupied(&pb);
-      if (s) ui_panel(2, y - 1, 236, 10, UI_SEL, UI_TITLE);
-      char num[6]; siprintf(num, "%2d", idx + 1); ui_text(6, y + 1, s ? UI_SELTEXT : UI_DIM, num);
-      if (occ) {
-        pokeblock_swatch(28, y, 8, pb.color);
-        char row[40]; siprintf(row, "%-8s  feel %u", pk_pokeblock_color_name(pb.color), (unsigned)pb.feel);
-        ui_text(42, y + 1, s ? UI_SELTEXT : UI_TEXT, row);
-      } else ui_text(28, y + 1, s ? UI_SELTEXT : UI_DIM, "(empty)");
+      if (chrome) {
+        /* Inside the case's list panel: number, colour swatch, name. The panel is
+         * 112 px wide, which the 5x7 face fits and sys8 would not. */
+        if (s) ui_panel(PB_LIST_X + 2, y + 1, PB_LIST_W - 4, PB_ROW_H - 2, UI_SEL, UI_TITLE);
+        char num[6]; siprintf(num, "%2d", idx + 1);
+        ui_ptext(PB_LIST_X + 5, y + 5, s ? UI_SELTEXT : UI_DIM, num);
+        if (occ) {
+          pokeblock_swatch(PB_LIST_X + 20, y + 4, 8, pb.color);
+          ui_ptext_fit(PB_LIST_X + 32, y + 5, PB_LIST_W - 36, s ? UI_SELTEXT : UI_TEXT,
+                       pk_pokeblock_color_name(pb.color));
+        } else ui_ptext(PB_LIST_X + 20, y + 5, s ? UI_SELTEXT : UI_DIM, "(empty)");
+        if (s && occ) {                                /* FEEL, where the game prints it */
+          char fl[8]; siprintf(fl, "%2u", (unsigned)pb.feel);
+          ui_ptext(PB_FEEL_X, PB_FEEL_Y, UI_TEXT, fl);
+        }
+      } else {
+        if (s) ui_panel(2, y - 1, 236, 10, UI_SEL, UI_TITLE);
+        char num[6]; siprintf(num, "%2d", idx + 1); ui_text(6, y + 1, s ? UI_SELTEXT : UI_DIM, num);
+        if (occ) {
+          pokeblock_swatch(28, y, 8, pb.color);
+          char row[40]; siprintf(row, "%-8s  feel %u", pk_pokeblock_color_name(pb.color), (unsigned)pb.feel);
+          ui_text(42, y + 1, s ? UI_SELTEXT : UI_TEXT, row);
+        } else ui_text(28, y + 1, s ? UI_SELTEXT : UI_DIM, "(empty)");
+      }
     }
-    ui_text(4, 152, UI_DIM, "A edit/create  U/D  B done");
+    /* On the chrome the bottom strip is the game's light FEEL panel, so a DIM ink
+     * is invisible there — the hint goes dark. */
+    if (chrome) ui_ptext(4, 152, UI_PANEL, "A edit/create  U/D  B done");
+    else        ui_text(4, 152, UI_DIM, "A edit/create  U/D  B done");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) break;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : PK_POKEBLOCK_COUNT - 1;
