@@ -47,6 +47,21 @@
 #define PB_HANDORG  14                  /* hand orange (MOVE)                     */
 #define PB_CITEM    15                  /* carried item icon                      */
 
+/* Retail Emerald's PC transparency, taken from the decomp rather than eyeballed:
+ * SetMonIconTransparency (pokemon_storage_system.c) writes BLDCNT = BLDCNT_TGT2_ALL
+ * (0x3F00) and BLDALPHA = BLDALPHA_BLEND(7, 11) (0x0B07), and it fires ONLY in the
+ * MOVE-ITEMS mode, where item-less icons get objMode = ST_OAM_OBJ_BLEND and the mons
+ * that DO hold an item stay opaque.
+ *
+ * Two things this gets right that the old (10, 8) constants did not: the second-target
+ * mask is ALL layers, not just BG2+OBJ, so a faded icon blends the same over the
+ * wallpaper, the banner and another icon; and the effect bits are deliberately NONE,
+ * because a semi-transparent OBJ blends against the 2nd-target mask regardless of
+ * BLDCNT's effect field — retail never switches on a global effect, which is what made
+ * ours look like a screen-wide dimmer instead of per-icon transparency. */
+#define PSS_BLDCNT   ((u16)((BLD_BG0 | BLD_BG1 | BLD_BG2 | BLD_BG3 | BLD_OBJ | BLD_BACKDROP) << 8))
+#define PSS_BLDALPHA ((u16)(7 | (11 << 8)))
+
 /* OAM entry assignment */
 #define OE_ICON0    0                   /* 0..29 grid icons                       */
 #define OE_HAND     30                  /* cursor hand                            */
@@ -378,8 +393,8 @@ void boxoam_cursor(int cur, bool on_title, int mode) {
      * (BLD_OBJ stays in the 2nd/bottom target only, so overlapping faded icons blend
      * uniformly; never put it in the 1st-target mask or every object would fade.) */
     prio = 1;
-    REG_BLDCNT = ((BLD_BG2 | BLD_OBJ) << 8) | BLD_STD;
-    REG_BLDALPHA = (10) | (8 << 8);                  /* ~10/16 obj + ~8/16 below       */
+    REG_BLDCNT = PSS_BLDCNT;
+    REG_BLDALPHA = PSS_BLDALPHA;                     /* retail: 7/16 obj + 11/16 below */
   } else if (!s_select_on && !s_chunk_on) {
     /* don't kill the selection/chunk brightness blend — the select loop repositions
      * the cursor every step and would otherwise un-whiten the marked icons */
@@ -449,8 +464,8 @@ void boxoam_select_mark(const uint8_t sel[30]) {
    * demonstrably honored (ITEM mode, same registers): alpha-blend the CHOSEN icons
    * against the wallpaper below — they go ghost-translucent while the rest stay
    * solid. (Emerald whitens; translucent is the nearest look the HW gives us.) */
-  REG_BLDCNT = ((BLD_BG2 | BLD_OBJ) << 8) | BLD_STD;
-  REG_BLDALPHA = (10) | (8 << 8);                    /* ~10/16 icon + ~8/16 below */
+  REG_BLDCNT = PSS_BLDCNT;
+  REG_BLDALPHA = PSS_BLDALPHA;                       /* retail: 7/16 icon + 11/16 below */
   s_select_on = 1;
 }
 
@@ -521,11 +536,13 @@ void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
                ATTR1_SIZE_32 | (fx & ATTR1_X_MASK),
                ATTR2_ID(TID_GRAB) | ATTR2_PRIO(1) | ATTR2_PALBANK(PB_HANDORG));
   hide(OE_HAND); hide(OE_CARRY);
-  /* block cue: LIGHT ghost = carrying (fits here); HEAVY ghost = blocked. The
-   * carried block never goes solid until it is placed (HW round 2026-07-27). */
-  REG_BLDCNT = ((BLD_BG2 | BLD_OBJ) << 8) | BLD_STD;
-  REG_BLDALPHA = fit ? ((10) | (8 << 8))             /* light: "in hand"          */
-                     : ((6)  | (12 << 8));           /* heavy: "can't drop here"  */
+  /* ONE transparency, not two. This used to ghost the carried block HARDER when it
+   * could not be dropped here; retail has no such state — an impossible multi-move
+   * just plays a failure sound and leaves the look alone, and drop_chunk already
+   * calls snd_deny. The carried block still never goes solid until it is placed. */
+  (void)fit;
+  REG_BLDCNT = PSS_BLDCNT;
+  REG_BLDALPHA = PSS_BLDALPHA;
   s_chunk_tr = tr; s_chunk_tc = tc;
   s_chunk_on = 1; s_chunk_valid = 1;
 }
@@ -561,15 +578,20 @@ void boxoam_carry_item(int cur, uint16_t item, bool full) {
   }
   if (full) {
     /* GRAB: the FULL 32x32 item rides in front of EVERYTHING (region A, PRIO 0), held by an
-     * orange, semi-transparent grab fist behind it (region B, PRIO 1). Hand hidden. */
+     * orange grab fist behind it (region B, PRIO 1). Hand hidden.
+     *
+     * The fist is OPAQUE. Retail's cursor and the thing in its hand are both plain
+     * ST_OAM_OBJ_NORMAL — the storage system's only alpha is on the item-less GRID
+     * icons in MOVE-ITEMS mode. A see-through hand was ours, and it read as the hand
+     * being the ghost rather than the icons it was hovering over. This also stops
+     * boxoam_carry_item owning the blend registers at all: boxoam_cursor's ITEM branch
+     * already set them on the frame before (oam_sync runs it first). */
     load_regb_item(item, true, TID_HAND); s_rega = 1;
     load_regb_grab();                                /* fist tiles -> region B */
     int ix = cx - (CITEM_OFF + 1), iy = cy - (CITEM_OFF - 1); if (iy < WP_Y) iy = WP_Y;
     int fx = cx + 3, fy = cy - 6; if (fy < WP_Y) fy = WP_Y;
-    REG_BLDCNT = ((BLD_BG2 | BLD_OBJ) << 8) | BLD_STD;   /* blend the fist over what's below */
-    REG_BLDALPHA = (10) | (8 << 8);
-    obj_set_attr(oe(OE_GRAB),                        /* orange transparent grab fist, behind the item */
-                 ATTR0_SQUARE | ATTR0_4BPP | ATTR0_BLEND | (fy & ATTR0_Y_MASK),
+    obj_set_attr(oe(OE_GRAB),                        /* orange grab fist, opaque, behind the item */
+                 ATTR0_SQUARE | ATTR0_4BPP | (fy & ATTR0_Y_MASK),
                  ATTR1_SIZE_32 | (fx & ATTR1_X_MASK),
                  ATTR2_ID(TID_GRAB) | ATTR2_PRIO(1) | ATTR2_PALBANK(PB_HANDORG));
     obj_set_attr(oe(OE_CITEM),                       /* the full item, opaque, front-most */

@@ -40,8 +40,12 @@ matters to you, feel free to open an issue or a PR.
 
 - **Pokéblock case chrome**, the same treatment the bag and trainer card already got: the game's own
   screen art, per game, generated locally from the decomps.
-- **Match Emerald's real pickup animation.** Retail flags the individual icons semi-transparent
-  rather than driving a global blend, and item holders stay opaque; ours differs.
+- **The rest of Emerald's real pickup animation.** The *transparency* now matches retail exactly
+  (per-icon `BLDALPHA_BLEND(7, 11)` against all layers, holders opaque, hand solid). The *motion*
+  does not: retail's grab is 17 frames of pure movement — the hand descends 8 px at 1 px/frame in
+  an OPEN pose, switches to a FIST at the bottom where the Pokémon detaches and starts riding the
+  cursor, then both rise 8 px together. Ours is still a static hold. Needs two extra hand poses
+  (open, reach) added to `tools/gen_hand.py`, which is why it did not land with the rest.
 - **A two-column PC box view.**
 - **Smoother rendering** — keep moving screens off full-screen repaints. (The PC box flip is done:
   it used to wipe the screen to black on every L/R.)
