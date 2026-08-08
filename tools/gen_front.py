@@ -54,7 +54,11 @@ def species_map():
 
 def conv(path):
     im = Image.open(path).convert("RGBA").resize((SIZE, SIZE), Image.LANCZOS)
-    im = im.transpose(Image.FLIP_LEFT_RIGHT)        # face left, like the in-game summary
+    # NO transpose. This used to FLIP_LEFT_RIGHT "to face left, like the in-game
+    # summary" — but retail never mirrors the front sprite anywhere; the authored art
+    # already faces the way the game shows it. The mirror survived unnoticed for the
+    # whole project because most mons are near-symmetric — until Guy opened an Unown
+    # on real hardware and read a q where the p should be (2026-08-08).
     px = im.load()
     out = bytearray()
     for y in range(SIZE):
