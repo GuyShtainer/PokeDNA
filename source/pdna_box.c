@@ -1191,6 +1191,18 @@ static uint8_t* drop_chunk(BoxSource* src, int box, uint8_t* recs, bool* pfull) 
   for (int v = 7; v >= 0; v--) { s_ch_lift = v; chunk_oam_sync(box, src->is_bank, true);
                                  boxoam_commit(); s_vsync(); }
   for (int v = 0; v < 4; v++) { boxoam_commit(); s_vsync(); }
+  /* ...then the OPEN hand rises off the placed block, mirroring the lift's descent
+   * (capture doc §4.6). The block itself stays down — only the hand leaves. */
+  if (app_anim_enabled(ANIM_BOX)) {
+    boxoam_hand_pose(BOXOAM_POSE_REACH);
+    for (int d = 8; d >= 0; d--) {
+      boxoam_cursor_dy(d);
+      boxoam_cursor(g3_slot(s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc), false, cursor_look());
+      boxoam_commit(); s_vsync();
+    }
+    boxoam_cursor_dy(0);
+    boxoam_hand_pose(BOXOAM_POSE_NORMAL);
+  }
   s_ch_lift = 8;                                        /* carry height again for whoever keeps holding */
 
   /* ---- Bank -> Bank, different box: immediate paging-aware move (commit dest, then clear source) ---- */
@@ -1313,6 +1325,21 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
    * height. After the first draw the anchor is unmoved, so every rise frame is pure OAM. */
   s_ch_lift = 0;
   chunk_draw(src, box, false);
+  /* Retail descends the OPEN hand onto the block before the fist closes on it — the
+   * same beat as the single-mon grab (capture doc §4.6). chunk_draw has already put
+   * the fist sprite up, so the descent runs on the cursor's own dy driver and the
+   * fist is re-placed by chunk_move at the end. */
+  if (app_anim_enabled(ANIM_BOX)) {
+    boxoam_hand_pose(BOXOAM_POSE_REACH);
+    for (int d = 0; d <= 8; d++) {
+      boxoam_cursor_dy(d);
+      boxoam_cursor(g3_slot(s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc), false, cursor_look());
+      boxoam_commit(); s_vsync();
+    }
+    boxoam_cursor_dy(0);
+    boxoam_hand_pose(BOXOAM_POSE_NORMAL);
+    chunk_draw(src, box, false);                        /* fist look back, hand hidden */
+  }
   for (int v = 0; v < 8; v++) { boxoam_commit(); s_vsync(); }
   for (int v = 1; v <= 8; v++) { s_ch_lift = v; chunk_move(src, box); boxoam_commit(); s_vsync(); }
   *pfull = false;
