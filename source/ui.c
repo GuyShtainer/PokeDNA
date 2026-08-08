@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "data_tables.h"   /* pk_type_name for the artless type chip */
 #include <string.h>
 #include "rumble.h"   /* rumble_io_suspend/resume: mute the cart-bus motor toggle while a blit reads ROM */
 #include "ui_font.h"  /* our proportional 5x7 face (generated) — see ui_ptext below */
@@ -356,4 +357,46 @@ int ui_ptext_wrap_lines(int maxw, const char* s) {
   int lines = 0;
   while (*s) { int skip; ui_ptext_break(s, maxw, &skip); s += skip; lines++; }
   return lines;
+}
+
+/* ---- artless fallbacks (see ui.h) ---------------------------------------- */
+/* Clip a label to `maxw` px WITHOUT ui_ptext_fit's '~' marker: on a 22 px chip the
+ * marker would eat a third of the label ("MA~"); a clean prefix ("MAG") reads better. */
+static void chip_label(char t[12], const char* name, int maxw) {
+  int n = 0;
+  while (name[n] && n < 11) {
+    t[n] = name[n]; t[n + 1] = 0;
+    if (ui_ptext_w(t) > maxw) { t[n] = 0; break; }
+    n++;
+  }
+}
+
+void ui_name_chip(int x, int y, int w, int h, u16 bg, u16 ink, const char* name) {
+  ui_fill_rect(x, y, w, h, bg);
+  m3_frame(x, y, x + w - 1, y + h - 1, UI_BORDER);
+  char t[12]; t[0] = 0; chip_label(t, name, w - 4);
+  ui_ptext(x + 2, y + (h - 8) / 2 + 1, ink, t);
+}
+
+/* Original per-type colours (Gen-3 internal type ids 0..17; 9 is the unused slot).
+ * Our own picks — the CHIP is the fallback for the ripped badge art. */
+static const u16 k_type_col[18] = {   /* literal RGB15 (RGB15() is not a constant expr here) */
+  0x4EB5, /* Normal   */ 0x1D38, /* Fighting */
+  0x7271, /* Flying   */ 0x5134, /* Poison   */
+  0x2A78, /* Ground   */ 0x3676, /* Rock     */
+  0x22D4, /* Bug      */ 0x494E, /* Ghost    */
+  0x5652, /* Steel    */ 0x39CE, /* ???      */
+  0x199E, /* Fire     */ 0x75C8, /* Water    */
+  0x2ACA, /* Grass    */ 0x1B5E, /* Electric */
+  0x417E, /* Psychic  */ 0x732D, /* Ice      */
+  0x714D, /* Dragon   */ 0x210A, /* Dark     */
+};
+
+void ui_type_chip(int x, int y, int w, int h, uint8_t type_id) {
+  if (type_id >= 18) return;
+  ui_fill_rect(x, y, w, h, k_type_col[type_id]);
+  m3_frame(x, y, x + w - 1, y + h - 1, UI_BORDER);
+  char t[12]; t[0] = 0; chip_label(t, pk_type_name(type_id), w - 4);
+  int tw = ui_ptext_w(t);
+  ui_ptext(x + (w - tw) / 2, y + (h - 8) / 2 + 1, 0x7FFF, t);
 }

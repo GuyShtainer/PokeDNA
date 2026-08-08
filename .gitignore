@@ -22,11 +22,9 @@ build/
 # Ripped Gen-3 type-label badges (regenerate with: python3 tools/gen_types.py)
 /assets/types/
 /source/type_icons.c
-/source/type_icons.h
 # Ripped Gen-3 item icons (regenerate with: python3 tools/gen_items.py)
 /assets/items/
 /source/item_icons.c
-/source/item_icons.h
 /source/item_icons_data.s
 # Sparse clones of pret/pokeruby + pret/pokefirered (reference/art staging only)
 /assets/upstream/
@@ -44,16 +42,15 @@ build/
 /source/pokeblock_bg_data.s
 # Generated icon art blobs (regenerate with: python3 tools/gen_icons.py)
 /source/mon_icons.c
-/source/mon_icons.h
 /data/icons.*
 /data/*.bin
 # Generated hardware-OAM box-icon art (regenerate: python3 tools/gen_icons_oam.py)
 /source/mon_icons_oam.c
-/source/mon_icons_oam.h
 /source/mon_icons_oam_data.s
 # Generated hardware-OAM hand cursor (regenerate: python3 tools/gen_hand_oam.py)
+# NOTE: the art *.h headers are COMMITTED now (canonical API; the artless build
+# relies on them + source/art_fallbacks.c). Only the generated DATA (.c/.s) stays ignored.
 /source/hand_oam.c
-/source/hand_oam.h
 
 # --- real save files (personal / copyrighted game data) ---
 *.sav

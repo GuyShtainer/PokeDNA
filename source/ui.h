@@ -110,6 +110,14 @@ void ui_progress(int x, int y, int w, int h, int filled, u16 fill, u16 track, u1
 /* Blit a w×h RGB15 sprite (0 transparent, 0x8000|RGB15 opaque) — e.g. 64×64 front sprite. */
 void ui_sprite(int x, int y, int w, int h, const u16* data);
 
+/* ---- artless fallbacks (original art only) --------------------------------
+ * When the generated icon/badge art is absent (the zero-art build, or later the
+ * no-ROM state of the ROM-gated build), screens draw these ORIGINAL chips instead
+ * of leaving holes: a name chip where a mon icon would sit, and a coloured type
+ * chip where a type badge would. Pure font + rects — nothing game-derived. */
+void ui_name_chip(int x, int y, int w, int h, u16 bg, u16 ink, const char* name);
+void ui_type_chip(int x, int y, int w, int h, uint8_t type_id);
+
 /* Nearest-neighbour blit of a 32×32 (0x8000-keyed) icon at an arbitrary dst size. */
 void ui_icon_scaled(int x, int y, int dw, int dh, const u16* src32);
 

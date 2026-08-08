@@ -98,7 +98,9 @@ static void type_chip(int x, int y, uint8_t t) {
  * the compact text type_chip() stays for 8-9px list rows. */
 static void type_icon(int x, int y, uint8_t t) {
   if (t >= 18) return;
-  ui_sprite(x, y, TYPE_ICON_W, TYPE_ICON_H, type_icon_for(t));
+  const uint16_t* ic = type_icon_for(t);
+  if (ic) ui_sprite(x, y, TYPE_ICON_W, TYPE_ICON_H, ic);
+  else    ui_type_chip(x, y, TYPE_ICON_W, TYPE_ICON_H, t);   /* art-free: original chip */
 }
 
 /* ===================== species grid ==================================== */
@@ -202,6 +204,15 @@ static void filter_menu(int* filter, int* sort) {
   }
 }
 
+/* One art-free species-picker row (9 px pitch, list mode): selection = a filled bar. */
+static void sp_row(int y, uint16_t in, bool sel) {
+  ui_fill_rect(2, y - 1, 236, 9, sel ? UI_SEL : UI_BG);
+  char row[40];
+  siprintf(row, "No.%03u", (unsigned)pk_national_no(in));
+  ui_text(6, y, sel ? UI_SELTEXT : UI_DIM, row);
+  ui_ptext_fit(66, y, 130, sel ? UI_SELTEXT : UI_TEXT, pk_species_name(in));
+}
+
 uint16_t pick_species(uint16_t current) {
   int filter = 0, sort = 0;
   char search[16] = "";
@@ -212,14 +223,18 @@ uint16_t pick_species(uint16_t current) {
   char hdr[48];
   int prev_sel = -1, prev_top = -1, toprow = 0;
   bool relist = true;                 /* force a full redraw initially + after any list change */
+  /* Art-free build: one text row per species instead of the icon grid (Guy's call).
+   * Same machinery — the grid just collapses to 1 column of 9 px rows. */
+  const bool lst = (mon_icon_for(1) == 0);
+  const int cols = lst ? 1 : GCOLS, vrows = lst ? 13 : GVROWS;
 
   for (;;) {
     if (sel >= g_n) sel = g_n ? g_n - 1 : 0;
-    int srow = sel / GCOLS;           /* edge scroll: cursor roams the page, list moves only at the edges */
+    int srow = sel / cols;            /* edge scroll: cursor roams the page, list moves only at the edges */
     if (srow < toprow) toprow = srow;
-    if (srow >= toprow + GVROWS) toprow = srow - GVROWS + 1;
+    if (srow >= toprow + vrows) toprow = srow - vrows + 1;
     if (toprow < 0) toprow = 0;
-    int top_idx = toprow * GCOLS;
+    int top_idx = toprow * cols;
 
     /* Only a page scroll or a list change needs a full repaint; moving the cursor
      * within the page just swaps the selection frame + repaints the header strip
@@ -232,22 +247,31 @@ uint16_t pick_species(uint16_t current) {
       ui_hline(0, 21, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
       ui_text(4, 152, UI_DIM, "A pick  L/R filter  SEL find");
-      for (int i = 0; i < GCOLS * GVROWS; i++) {
+      for (int i = 0; i < cols * vrows; i++) {
         int idx = top_idx + i;
         if (idx >= g_n) break;
-        int x = GX + (i % GCOLS) * GCELLX, y = GY + (i / GCOLS) * GCELLY;
-        ui_icon_scaled(x, y, GICON, GICON, mon_icon_for(g_list[idx]));
+        if (lst) sp_row(24 + i * 9, g_list[idx], idx == sel);
+        else {
+          int x = GX + (i % GCOLS) * GCELLX, y = GY + (i / GCOLS) * GCELLY;
+          ui_icon_scaled(x, y, GICON, GICON, mon_icon_for(g_list[idx]));
+        }
       }
-    } else if (prev_sel >= top_idx && prev_sel < top_idx + GCOLS * GVROWS) {
-      int pi = prev_sel - top_idx;                 /* erase the old selection frame */
-      int px = GX + (pi % GCOLS) * GCELLX, py = GY + (pi / GCOLS) * GCELLY;
-      m3_frame(px - 1, py - 1, px + GICON, py + GICON, UI_BG);
+    } else if (prev_sel >= top_idx && prev_sel < top_idx + cols * vrows) {
+      int pi = prev_sel - top_idx;                 /* erase the old selection */
+      if (lst) sp_row(24 + pi * 9, g_list[prev_sel], false);
+      else {
+        int px = GX + (pi % GCOLS) * GCELLX, py = GY + (pi / GCOLS) * GCELLY;
+        m3_frame(px - 1, py - 1, px + GICON, py + GICON, UI_BG);
+      }
     }
 
-    if (g_n) {                                      /* draw the current selection frame */
+    if (g_n) {                                      /* draw the current selection */
       int si = sel - top_idx;
-      int sx = GX + (si % GCOLS) * GCELLX, sy = GY + (si / GCOLS) * GCELLY;
-      m3_frame(sx - 1, sy - 1, sx + GICON, sy + GICON, UI_SELTEXT);
+      if (lst) { if (!full) sp_row(24 + si * 9, g_list[sel], true); }
+      else {
+        int sx = GX + (si % GCOLS) * GCELLX, sy = GY + (si / GCOLS) * GCELLY;
+        m3_frame(sx - 1, sy - 1, sx + GICON, sy + GICON, UI_SELTEXT);
+      }
     }
 
     /* header strip (No./name + type badges + filter line) — repaint just this band */
@@ -270,8 +294,8 @@ uint16_t pick_species(uint16_t current) {
     else if (k & KEY_A) return g_n ? g_list[sel] : CANCEL;
     else if (k & KEY_LEFT)  sel = (sel > 0) ? sel - 1 : 0;
     else if (k & KEY_RIGHT) sel = (sel < g_n - 1) ? sel + 1 : sel;
-    else if (k & KEY_UP)    { if (sel >= GCOLS) sel -= GCOLS; }
-    else if (k & KEY_DOWN)  { if (sel + GCOLS < g_n) sel += GCOLS; }
+    else if (k & KEY_UP)    { if (sel >= cols) sel -= cols; }
+    else if (k & KEY_DOWN)  { if (sel + cols < g_n) sel += cols; }
     else if (k & KEY_L) { do { filter = (filter + NFILTER - 1) % NFILTER; } while (filter == 5 + 9); build_species(filter, sort, search); sel = 0; relist = true; }
     else if (k & KEY_R) { do { filter = (filter + 1) % NFILTER; } while (filter == 5 + 9); build_species(filter, sort, search); sel = 0; relist = true; }
     else if (k & KEY_START) { filter_menu(&filter, &sort); build_species(filter, sort, search); sel = 0; relist = true; }
@@ -359,6 +383,12 @@ static void dex_geom(int view, int* cols, int* cw, int* ch, int* x0, int* y0, in
  * colour-at-frame-`bob` + Poke-Ball caught. */
 static void dex_cell_grid(int x, int y, uint16_t in, int bob) {
   int st = dstate(in);
+  if (!mon_icon_for(in)) {                                   /* art-free build */
+    ui_name_chip(x, y + 9, 32, 13, UI_PANEL, st == 0 ? UI_DIM : UI_TEXT,
+                 st == 0 ? "?" : pk_species_name(in));
+    if (st == 2) ui_pokeball(x + 21, y + 21);
+    return;
+  }
   if (st == 0)      ui_icon_scaled_grey(x, y, 32, 32, mon_icon_for(in));
   else if (st == 1) ui_icon_scaled(x, y, 32, 32, mon_icon_for(in));
   else { ui_icon_scaled(x, y, 32, 32, mon_icon_for_frame(in, (uint8_t)bob)); ui_pokeball(x + 21, y + 21); }
@@ -500,7 +530,9 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
   s_dget = get; s_dset = set;
   s_getnat = getnat; s_setnat = can_edit ? setnat : NULL;   /* read-only carts can't toggle it */
   s_dex_snap_valid = false;        /* fresh session: no bulk op to undo yet */
-  int filter = 0, sort = 0, status = DS_ALL, view = DV_GRID;
+  /* Art-free build: no icons -> the LIST is the primary view (Guy's call: grids of
+   * icons become lists until the art exists; L/R still reaches the chip grid). */
+  int filter = 0, sort = 0, status = DS_ALL, view = mon_icon_for(1) ? DV_GRID : DV_LIST;
   char search[16] = "";
   dex_build(filter, sort, search, status, view);
   int seen, caught; dex_counts(&seen, &caught);
@@ -570,7 +602,8 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
           uint16_t in = g_list[top + i];
           if (dstate(in) != 2) continue;
           int x = x0 + (i % cols) * cw, y = y0 + (i / cols) * ch;
-          ui_blit_over(x, y, 32, 32, mon_icon_for_frame(in, (uint8_t)bob), UI_BG);
+          { const uint16_t* ic = mon_icon_for_frame(in, (uint8_t)bob);
+            if (ic) ui_blit_over(x, y, 32, 32, ic, UI_BG); }   /* art-free: static cell stays */
           ui_pokeball(x + 21, y + 21);
           if (top + i == sel) m3_frame(x - 1, y - 1, x + 32, y + 32, UI_SELTEXT);
         }
@@ -920,7 +953,7 @@ static void iv_cell(int v, int x, int y, int id) {
 uint16_t pick_item(uint16_t current) {
   static u16 EWRAM_BSS idx[NITEM];
   char search[16] = "";
-  int sort = 0, view = IV_SPLIT, cat = 0, gamef = 0;
+  int sort = 0, view = item_icon_for(13) ? IV_SPLIT : IV_LIST, cat = 0, gamef = 0;   /* art-free -> text list (13 = Potion) */
   int n = item_build(idx, search, sort, cat, gamef);
   int sel = 0;
   for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
@@ -1063,7 +1096,10 @@ int pick_unown_form(int cur) {
         int idx = top_idx + i;
         if (idx >= N) break;
         int x = GX + (i % GCOLS) * GCELLX, y = GY + (i / GCOLS) * GCELLY;
-        ui_icon_scaled(x, y, GICON, GICON, mon_icon_for_form(201, (uint8_t)idx));
+        { const uint16_t* ic = mon_icon_for_form(201, (uint8_t)idx);
+          if (ic) ui_icon_scaled(x, y, GICON, GICON, ic);
+          else { char l[2] = { "ABCDEFGHIJKLMNOPQRSTUVWXYZ!?"[idx], 0 };   /* art-free: the letter IS the icon */
+                 ui_name_chip(x, y + 6, GICON, 18, UI_PANEL, UI_TEXT, l); } }
       }
     } else if (prev_sel >= top_idx && prev_sel < top_idx + GCOLS * GVROWS) {
       int pi = prev_sel - top_idx;                 /* erase the old selection frame */

@@ -2280,6 +2280,19 @@ static void dc_pointer(int cx, int y) {           /* small downward arrow over t
   for (int j = 0; j < 5; j++) { int w = 4 - j; m3_line(cx - w, y + j, cx + w, y + j, c); }
 }
 
+/* Session RNG (a counter + the cart RTC when present). Used for created-mon PIDs
+ * (app_create_mon) and, when the yard art is compiled in, the Day-Care visitors —
+ * so it must live OUTSIDE the HAVE_DAYCARE_BG block: the artless build still
+ * creates Pokemon. */
+static uint32_t dc_seed(void) {
+  static uint32_t ctr = 0;
+  ctr += 0x9E3779B9u;
+  uint32_t e = ctr ^ ((uint32_t)g_vinfo.tid_public << 13);
+  GbaRtcTime t;
+  if (gba_rtc_get(&t)) e ^= (uint32_t)(t.second + t.minute * 60 + t.hour * 3600) * 2654435761u;
+  return e | 1u;
+}
+
 #ifdef HAVE_DAYCARE_BG
 /* Areas on the daycare map bg (icon-CENTRE SCREEN coords; bg blitted at screen y 12),
  * TWO mon slots each so two mons in the same area don't overlap. Mirrors the SLOTS in
@@ -2351,16 +2364,6 @@ static int dc_take_slot(int used[DR_COUNT][2], int rg, uint32_t* rng) {
   if (!used[DR_EMPTY][0]) { used[DR_EMPTY][0] = 1; return DR_EMPTY * 2 + 0; }
   if (!used[DR_EMPTY][1]) { used[DR_EMPTY][1] = 1; return DR_EMPTY * 2 + 1; }
   return -1;
-}
-/* Per-visit RNG seed: a session counter + the cart RTC (if present) so the random
- * decoration mons differ each time the Day-Care is opened. */
-static uint32_t dc_seed(void) {
-  static uint32_t ctr = 0;
-  ctr += 0x9E3779B9u;
-  uint32_t e = ctr ^ ((uint32_t)g_vinfo.tid_public << 13);
-  GbaRtcTime t;
-  if (gba_rtc_get(&t)) e ^= (uint32_t)(t.second + t.minute * 60 + t.hour * 3600) * 2654435761u;
-  return e | 1u;
 }
 /* Roll this visit's YARD VISITORS (called once on entry).
  *
@@ -2677,7 +2680,12 @@ static void pdna_daycare(void) {
       } else {
         ui_ptext(6, 125, off ? UI_OK : UI_DIM, off ? "An EGG is ready to collect!" : "No Pokemon are boarding.");
       }
+#ifdef HAVE_DAYCARE_BG
       ui_ptext(6, 143, UI_DIM, pk_daycare_yard_note(n, s_ndeco));
+#else
+      /* no yard art -> no invented visitors, so the note only states the slot count */
+      ui_ptext(6, 143, UI_DIM, pk_daycare_yard_note(n, 0));
+#endif
       ui_fill_rect(0, 152, UI_SCR_W, 8, UI_BG);
       /* "your 2" is doing the disambiguating work: only the boarders are pickable. */
       ui_ptext(4, 152, UI_DIM, n ? "A menu  L/R your 2  B back"

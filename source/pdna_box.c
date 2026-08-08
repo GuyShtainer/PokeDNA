@@ -17,6 +17,7 @@
 #include "data_tables.h"
 #include "mon_front.h"
 #include "mon_icons.h"
+#include "mon_icons_oam.h"   /* artless probe: are the OAM icons compiled in? */
 #include "item_icons.h"     /* item_icon_for: held-item markers in ITEM mode */
 #include "box_oam.h"        /* hardware-OAM icon/cursor/carry/marker rendering */
 #include "pdna_summary.h"
@@ -819,6 +820,26 @@ static int item_home(void) {
   return -1;
 }
 
+/* Art-free build: the 30 icon sprites don't exist, so an occupied cell would be an
+ * empty patch of wallpaper. Draw an ORIGINAL name chip per occupied cell instead
+ * (our font, our colours) so the PC stays a usable grid; the icon art or a
+ * registered ROM upgrades it back to real sprites. Painted with the wallpaper, so
+ * every full-region repaint carries the labels for free. */
+static void artless_cells(void) {
+  static int have = -1;
+  if (have < 0) { const uint8_t* t; int b; have = mon_icon_oam_for(1, &t, &b); }
+  if (have) return;
+  for (int i = 0; i < 30; i++) {
+    if (!g_box[i].species) continue;
+    int cx = GRID_X + (i % COLS) * CELL_W, cy = GRID_Y + (i / COLS) * CELL_H;
+    if (g_box[i].isEgg && !g_box[i].isBadEgg)
+      ui_name_chip(cx, cy + 5, CELL_W - 2, 12, 0x2A7A, 0x0000, "EGG");
+    else
+      ui_name_chip(cx, cy + 5, CELL_W - 2, 12, UI_PANEL, UI_TEXT,
+                   pk_species_name(g_box[i].species));
+  }
+}
+
 /* Repaint the box-name banner + occupancy + the on-title selection frame (BG, software). */
 static void draw_box_banner(BoxSource* src, int box, bool on_title) {
   char bn[12], bnocc[24];
@@ -853,6 +874,7 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
   draw_left((on_title && s_tab_focus < 0) ? 0 : &g_box[cur]);   /* see draw_box_banner */
 
   draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
+  artless_cells();
   draw_box_banner(src, box, on_title);
   draw_footer(src->is_bank, on_title, moving);
 
@@ -906,7 +928,8 @@ static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
                         int cur, bool on_title) {
   (void)old_cur;
   if (on_title != old_title) {                        /* entering/leaving the title row */
-    draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);  /* clear stale title frame */
+    draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
+  artless_cells();  /* clear stale title frame */
     draw_box_banner(src, box, on_title);
     draw_footer(src->is_bank, on_title, false);
   }
@@ -967,6 +990,7 @@ static void chunk_draw(BoxSource* src, int box, bool clear) {
   draw_left(&rep);                                    /* the panel shows what you're carrying */
 
   draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
+  artless_cells();
   draw_box_banner(src, box, false);
 
   /* no footprint frame — the block itself carries the fit cue (whitened/darkened) */

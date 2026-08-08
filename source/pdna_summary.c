@@ -34,9 +34,13 @@
  * opts in. Set to 0 to compile it out entirely. */
 #define SUMMARY_ANIM 1
 
-/* real Gen-3 type badge (32x14); ui_sprite honours the 0x8000 opacity bit. */
+/* real Gen-3 type badge (32x14); ui_sprite honours the 0x8000 opacity bit.
+ * Art-free build: the original coloured type chip stands in. */
 static void type_badge(int x, int y, uint8_t t) {
-  if (t < 18) ui_sprite(x, y, TYPE_ICON_W, TYPE_ICON_H, type_icon_for(t));
+  if (t >= 18) return;
+  const uint16_t* ic = type_icon_for(t);
+  if (ic) ui_sprite(x, y, TYPE_ICON_W, TYPE_ICON_H, ic);
+  else    ui_type_chip(x, y, TYPE_ICON_W, TYPE_ICON_H, t);
 }
 
 static const int   DISP[6]   = { PK_HP, PK_ATK, PK_DEF, PK_SPA, PK_SPD, PK_SPE };
@@ -453,8 +457,12 @@ static void portrait_redraw(const PkMon* p, int wx, int sy, int dx, int dy, int*
   if (key == *lastkey) return;
   *lastkey = key;
   bool icon; const uint16_t* spr = portrait_sprite(p, &icon);
+  /* Art-free build: no sprite exists at all. Without this check the loop below
+   * sampled address 0 (open bus) and painted garbage stripes into the portrait —
+   * paint the plain gradient instead (which also erases any previous pose). */
   int x0, baseline, top, iw, ih;
-  if (!icon) { x0 = 46 - wx / 2 + dx; baseline = 78 + dy; top = baseline - sy; iw = wx; ih = sy; }
+  if (!spr) { x0 = 0; baseline = -1; top = -1; iw = 0; ih = 1; }
+  else if (!icon) { x0 = 46 - wx / 2 + dx; baseline = 78 + dy; top = baseline - sy; iw = wx; ih = sy; }
   else       { x0 = 30 + dx; top = 30 + dy; if (top < 14) top = 14; if (top > 45) top = 45;
                baseline = top + 32; iw = 32; ih = 32; }
   for (int yy = 14; yy <= 77; yy++) {
