@@ -233,15 +233,17 @@ static void load_regb_grab(void) {
  * change simply invalidates the region so the next load uploads the right tiles. */
 static int s_hand_pose = BOXOAM_POSE_NORMAL;
 static int s_cur_dy = 0;                /* grab/place dip offset (0 = rest) */
-void boxoam_hand_pose(int pose) { s_hand_pose = pose ? BOXOAM_POSE_REACH : BOXOAM_POSE_NORMAL; }
+static int s_cur_dx = 0;                /* cursor-slide X offset (retail fix #4) */
+void boxoam_hand_pose(int pose) { s_hand_pose = (pose >= 0 && pose <= 2) ? pose : BOXOAM_POSE_NORMAL; }
 void boxoam_cursor_dy(int dy)   { s_cur_dy = dy; }
+void boxoam_cursor_dxy(int dx, int dy) { s_cur_dx = dx; s_cur_dy = dy; }
 static void load_rega_hand(void) {
   int want = 10 + s_hand_pose;
   if (s_rega == want) return;
-  upload_tiles_verified(TID_HAND,
-                        s_hand_pose == BOXOAM_POSE_REACH ? hand_oam_reach_tiles
-                                                         : hand_oam_cursor_tiles,
-                        HAND_OAM_TILES * HAND_OAM_TILE_BYTES);
+  const uint8_t* t = s_hand_pose == BOXOAM_POSE_REACH  ? hand_oam_reach_tiles
+                   : s_hand_pose == BOXOAM_POSE_BOUNCE ? hand_oam_bounce_tiles
+                                                       : hand_oam_cursor_tiles;
+  upload_tiles_verified(TID_HAND, t, HAND_OAM_TILES * HAND_OAM_TILE_BYTES);
   s_rega = want;
 }
 
@@ -455,11 +457,14 @@ void boxoam_set_bob(int dy) {
 }
 
 static void hand_xy(int cur, int* hx, int* hy) {
-  /* The glove art's pointing fingertip sits at sprite-local (13,0). Put it on the
-   * icon's top-centre (cell_x+16, cell_y) so the cursor rests OVER the mon, not to
-   * its left: hx+13 = cell_x+16 -> hx = cell_x+3; tip a touch above the icon top. */
+  /* The glove art's pointing fingertip sits at sprite-local (13,0): hx+13 =
+   * cell_x+16 -> hx = cell_x+3. The REST HEIGHT is retail's (hand at cellY-12,
+   * docs/retail-pickup-capture.md §1d): high enough that the grab dip (+8) puts the
+   * fingers ON the mon, the fist closes at that exact spot, and the carried mon
+   * rides 4 px under the fist -> floating at cellY-8, all with one anchor and no
+   * pop at any pose swap. */
   *hx = GRID_X + (cur % COLS) * CELL_W + 3;
-  *hy = GRID_Y + (cur / COLS) * CELL_H - 2;
+  *hy = GRID_Y + (cur / COLS) * CELL_H - 12;
   if (*hy < WP_Y) *hy = WP_Y;
 }
 
@@ -471,7 +476,7 @@ void boxoam_cursor(int cur, bool on_title, int mode) {
    * left arrow is decoration (the right one says the same thing), so the hand goes there
    * instead: it still points at the banner, and no data is ever underneath it. */
   if (on_title) { hx = WP_X + 1; hy = 13; }
-  else { hand_xy(cur, &hx, &hy); hy += s_cur_dy; }   /* the grab/place dip rides the hand */
+  else { hand_xy(cur, &hx, &hy); hx += s_cur_dx; hy += s_cur_dy; }   /* dip + slide ride the hand */
 
   int bank = (mode == BOXOAM_HAND_MOVE) ? PB_HANDORG : PB_HAND;
   int prio = 0;
@@ -505,10 +510,13 @@ void boxoam_cursor(int cur, bool on_title, int mode) {
  * grab fist sits BEHIND it (region B, PRIO 1). The cursor hand is hidden. species 0 -> just
  * the fist (empty hand). The caller hides the origin slot via boxoam_hide_slot(). */
 void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg) {
-  int cx = GRID_X + (cur % COLS) * CELL_W, cy = GRID_Y + (cur / COLS) * CELL_H;
-  /* the carry floats 8px above the cell; +s_cur_dy lets the grab beat raise it FROM the
-   * cell (dy=8 -> exactly on the cell, dy=0 -> the float) with one animation driver */
-  int ix = cx, iy = cy - 8 + s_cur_dy; if (iy < WP_Y) iy = WP_Y;
+  /* RETAIL GEOMETRY (measured + decomp §1d of docs/retail-pickup-capture.md): the
+   * fist is the HAND at its rest anchor with swapped tiles — same position, so the
+   * open->fist swap never pops — drawn IN FRONT, with the carried mon riding 4 px
+   * BELOW it. +s_cur_dy is the grab/place dip driver as before. */
+  int hx, hy; hand_xy(cur, &hx, &hy);
+  int fx = hx + s_cur_dx, fy = hy + s_cur_dy; if (fy < WP_Y) fy = WP_Y;
+  int ix = fx - 3 + 0, iy = fy + 4;              /* mon: centred under the fist */
   load_regb_grab();                                  /* fist tiles -> region B */
   REG_BLDCNT = 0;                                    /* carried mon is opaque  */
   int bank = 0, from_rom = 0;
@@ -516,16 +524,16 @@ void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg) {
   if (tiles) {                                       /* the held mon (or Egg) rides the glove */
     upload_icon(TID_HAND, tiles, from_rom);
     s_rega = 2;                                      /* region A now holds the held mon */
-    obj_set_attr(oe(OE_CARRY),                       /* front-most */
+    obj_set_attr(oe(OE_CARRY),                       /* the mon, BEHIND the fist */
                  ATTR0_SQUARE | ATTR0_4BPP | (iy & ATTR0_Y_MASK),
                  ATTR1_SIZE_32 | (ix & ATTR1_X_MASK),
-                 ATTR2_ID(TID_HAND) | ATTR2_PRIO(0) | ATTR2_PALBANK(bank));
+                 ATTR2_ID(TID_HAND) | ATTR2_PRIO(1) | ATTR2_PALBANK(bank));
   } else hide(OE_CARRY);
-  int fx = cx + 3, fy = cy - 10 + s_cur_dy; if (fy < WP_Y) fy = WP_Y;
-  obj_set_attr(oe(OE_GRAB),                          /* orange grab fist, behind the mon */
+  /* the closed hand IN FRONT, white like retail's, at the hand's own anchor */
+  obj_set_attr(oe(OE_GRAB),
                ATTR0_SQUARE | ATTR0_4BPP | (fy & ATTR0_Y_MASK),
                ATTR1_SIZE_32 | (fx & ATTR1_X_MASK),
-               ATTR2_ID(TID_GRAB) | ATTR2_PRIO(1) | ATTR2_PALBANK(PB_HANDORG));
+               ATTR2_ID(TID_GRAB) | ATTR2_PRIO(0) | ATTR2_PALBANK(PB_HAND));
   hide(OE_HAND);                                     /* hand hidden while carrying */
 }
 

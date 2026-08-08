@@ -879,6 +879,31 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
   oam_sync(cur, on_title, box, src->is_bank);        /* icons + cursor + carry + markers */
 }
 
+/* The PLACE beat — retail's mirror of the grab (capture doc §1e): fist + mon descend
+ * together onto the cell, the mon detaches exactly at grid rest, the open hand rises.
+ * Split in two so the data commit (drop_held, which may also SWAP) sits between the
+ * halves; the up-half draws the rising cursor if the hand is empty now, or the risen
+ * carry if a swap put another mon in it. */
+static void play_place_anim_down(BoxSource* src, int box, int slot) {
+  if (!app_anim_enabled(ANIM_BOX)) return;
+  for (int d = 0; d <= 8; d++) {
+    boxoam_cursor_dy(d);
+    oam_sync(slot, false, box, src->is_bank);
+    boxoam_commit(); s_vsync();
+  }
+}
+static void play_place_anim_up(BoxSource* src, int box, int slot) {
+  if (!app_anim_enabled(ANIM_BOX)) { boxoam_cursor_dy(0); return; }
+  if (!s_holding) boxoam_hand_pose(BOXOAM_POSE_REACH);  /* the letting-go open hand */
+  for (int d = 8; d >= 0; d--) {
+    boxoam_cursor_dy(d);
+    oam_sync(slot, false, box, src->is_bank);
+    boxoam_commit(); s_vsync();
+  }
+  boxoam_hand_pose(BOXOAM_POSE_NORMAL);
+  boxoam_cursor_dy(0);
+}
+
 /* Pick-up grab cue when MOVE is chosen — retail's beat, not a hold. Emerald's
  * MonPlaceChange_Grab is pure pose + motion: the hand dips 8 px at 1 px/frame in the
  * wide-OPEN pose while the mon stays in its cell, the fist closes at the bottom, then
@@ -922,9 +947,26 @@ static void play_item_grab_anim(int cur, uint16_t item) {
  * so this only repositions the cursor sprite (in oam_sync), refreshes the left PKMN-
  * DATA panel (the selected mon changed) and the on-title banner/footer/frame. No
  * software icon repaint, no erase — the GPU handles overlap. */
+/* Retail slides the cursor cell-to-cell at 4 px/frame (6 frames per cell, 12 on a
+ * wrap) instead of snapping (capture doc §1b). One shared slider: offset the hand
+ * (and carry pair) from the DESTINATION back toward the old cell and walk it in. */
+static void cursor_slide(BoxSource* src, int box, int old_cur, int cur, bool carrying) {
+  if (!app_anim_enabled(ANIM_BOX) || old_cur == cur) return;
+  int dx = ((old_cur % COLS) - (cur % COLS)) * CELL_W;
+  int dy = ((old_cur / COLS) - (cur / COLS)) * CELL_H;
+  int steps = (dx < 0 ? -dx : dx) > (dy < 0 ? -dy : dy) ? (dx < 0 ? -dx : dx) : (dy < 0 ? -dy : dy);
+  steps /= 4; if (steps < 1) steps = 1; if (steps > 12) steps = 12;
+  for (int f = steps - 1; f >= 1; f--) {
+    boxoam_cursor_dxy(dx * f / steps, dy * f / steps);
+    oam_sync(cur, false, box, src->is_bank);
+    boxoam_commit(); s_vsync();
+  }
+  boxoam_cursor_dxy(0, 0);
+  (void)carrying;
+}
+
 static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
                         int cur, bool on_title) {
-  (void)old_cur;
   if (on_title != old_title) {                        /* entering/leaving the title row */
     draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
   artless_cells();  /* clear stale title frame */
@@ -932,14 +974,15 @@ static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
     draw_footer(src->is_bank, on_title, false);
   }
   draw_left(on_title ? 0 : &g_box[cur]);              /* the selected mon changed */
+  if (!on_title && !old_title) cursor_slide(src, box, old_cur, cur, false);
   oam_sync(cur, on_title, box, src->is_bank);         /* reposition cursor sprite */
 }
 
 /* Update while CARRYING a mon (move-mode): just reposition the carry sprites and the
  * left panel. The GPU composites; nothing to erase. */
 static void carry_move(BoxSource* src, int box, int old_cur, int cur) {
-  (void)old_cur;
   draw_left(&g_box[cur]);                             /* panel follows the destination cell */
+  cursor_slide(src, box, old_cur, cur, true);
   oam_sync(cur, false, box, src->is_bank);           /* moves OE_CARRY + OE_GRAB sprites */
 }
 
@@ -1201,10 +1244,15 @@ static uint8_t* drop_chunk(BoxSource* src, int box, uint8_t* recs, bool* pfull) 
  * from the anchor (cur); releasing A lifts every mon inside as a chunk. A plain tap (no drag)
  * over an occupied cell grabs just that mon (the classic single carry). Sets *pfull. */
 static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bool* pfull) {
-  *pfull = true;
+  /* Retail (§1g of the capture doc): A-DOWN alone shows the OPEN hand over the mon —
+   * the multi-select theme appears only when a drag actually starts. Theming on the
+   * press was divergence #1: a plain tap flashed the whole re-themed box (with
+   * Mode-3 repaint tearing) for ~16 frames before the grab beat. */
+  *pfull = false;
   int anchor = cur, corner = cur;
-  update_select(anchor, corner);                        /* ghost-highlight the selection */
-  boxoam_select_cursor();                               /* glove away: it would mask the corner mon's ghost */
+  bool themed = false;
+  boxoam_hand_pose(BOXOAM_POSE_REACH);
+  boxoam_cursor(cur, false, cursor_look());
   boxoam_commit();
   for (;;) {
     s_vsync();                                          /* polls keys */
@@ -1213,6 +1261,12 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
     u16 kk = key_hit(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)
            | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
     if (!kk) continue;
+    if (!themed) {                                      /* the drag begins NOW */
+      themed = true; *pfull = true;
+      boxoam_hand_pose(BOXOAM_POSE_NORMAL);
+      update_select(anchor, corner);
+      boxoam_select_cursor();
+    }
     int r = g3_row(corner), c = g3_col(corner);
     if ((kk & KEY_LEFT)  && c > 0)        c--;
     if ((kk & KEY_RIGHT) && c < COLS - 1) c++;
@@ -1223,12 +1277,13 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
                         boxoam_select_cursor(); }
   }
   /* --- finalize --- */
-  boxoam_select_clear();                                /* un-whiten; grab/deny takes over */
+  if (themed) boxoam_select_clear();                    /* un-whiten; grab/deny takes over */
+  boxoam_hand_pose(BOXOAM_POSE_NORMAL);
   if (anchor == corner) {                               /* no drag: the classic single-mon grab */
     if (g_box[anchor].species) {
       start_carry(src, recs, box, anchor);
-      render_full(src, box, anchor, false, false, false);
-      play_grab_anim(src, box, anchor);
+      if (themed) render_full(src, box, anchor, false, false, false);   /* only to undo the theme */
+      play_grab_anim(src, box, anchor);                 /* hand stays on screen throughout */
       carry_move(src, box, anchor, anchor);
       draw_footer(src->is_bank, false, true);
       *pfull = false;
@@ -1533,11 +1588,18 @@ int pdna_box(BoxSource* src) {
     }
     u16 k, fresh;
     do { s_vsync();
-         /* real 2-frame pose bob: DMA-swap all icons' tiles between frame 0/1 in vblank;
-          * paused while carrying or in ITEM mode (icons + markers stay static). */
+         /* Retail's idle is INVERTED from what we shipped (capture doc §1a): the HAND
+          * bounces on a 30/30 cadence and the grid icons stay static. Swap the hand
+          * pose on the tick (512 B upload + a cursor re-place, well inside vblank);
+          * paused while carrying / dragging / ITEM mode, exactly like retail. */
          if (app_anim_enabled(ANIM_BOX) && !s_holding && !s_ch_hold && s_cur_mode != CM_ITEM) {
-           if (++anim_ctr >= ANIM_PERIOD) { anim_ctr = 0; bob ^= 1; boxoam_set_frame(bob); }
-         } else if (bob) { bob = 0; boxoam_set_frame(0); }
+           if (++anim_ctr >= ANIM_PERIOD) {
+             anim_ctr = 0; bob ^= 1;
+             boxoam_hand_pose(bob ? BOXOAM_POSE_BOUNCE : BOXOAM_POSE_NORMAL);
+             boxoam_cursor(cur, on_title, cursor_look());
+           }
+         } else if (bob) { bob = 0; boxoam_hand_pose(BOXOAM_POSE_NORMAL);
+                           boxoam_cursor(cur, on_title, cursor_look()); }
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
@@ -1619,9 +1681,12 @@ int pdna_box(BoxSource* src) {
         }
       }
       else if (k & KEY_A) {                          /* drop / swap onto the cursor cell */
+        play_place_anim_down(src, box, cur);         /* fist + mon settle onto the cell */
         bool done; recs = drop_held(src, box, cur, recs, &done);
         (void)done;                                  /* a cross-scope copy may have shown a confirm dialog */
-        box_decode(src, recs, box); s_oam_reload = true; need_full = true;
+        box_decode(src, recs, box); s_oam_reload = true;
+        play_place_anim_up(src, box, cur);           /* open hand (or swapped mon) rises */
+        need_full = true; paint_over = true;         /* repaint OVER: no black flash */
       }
       else if ((k & (KEY_L | KEY_R)) && nb > 1) {    /* carry to the next/prev box (even a FULL one) */
         int nbx = (k & KEY_R) ? (box + 1) % nb : (box + nb - 1) % nb;

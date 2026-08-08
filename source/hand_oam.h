@@ -10,6 +10,7 @@
 
 extern const uint8_t  hand_oam_cursor_tiles[HAND_OAM_TILES * HAND_OAM_TILE_BYTES];
 extern const uint8_t  hand_oam_reach_tiles[HAND_OAM_TILES * HAND_OAM_TILE_BYTES];
+extern const uint8_t  hand_oam_bounce_tiles[HAND_OAM_TILES * HAND_OAM_TILE_BYTES];
 extern const uint8_t  hand_oam_grab_tiles[HAND_OAM_TILES * HAND_OAM_TILE_BYTES];
 extern const uint16_t hand_oam_pal[16];  /* slot 0 transparent */
 

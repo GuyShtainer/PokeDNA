@@ -77,9 +77,10 @@ void boxoam_cursor(int cur, bool on_title, int mode);
  * (the closed fist already exists as the carry sprite), and dy shifts the hand AND the
  * carry sprites vertically so one driver animates both phases. Both reset on
  * boxoam_enter so a stray mid-beat state can never leak across screens. */
-enum { BOXOAM_POSE_NORMAL = 0, BOXOAM_POSE_REACH = 1 };
+enum { BOXOAM_POSE_NORMAL = 0, BOXOAM_POSE_REACH = 1, BOXOAM_POSE_BOUNCE = 2 };
 void boxoam_hand_pose(int pose);
 void boxoam_cursor_dy(int dy);          /* 0 = rest; +8 = dipped onto the cell */
+void boxoam_cursor_dxy(int dx, int dy); /* the 6-frame cursor slide (retail #4)  */
 
 /* MOVE-mode carry (mon-in-hand): the held mon's icon (species/form) rides cursor cell
  * `cur` front-most in region A, an orange grab fist behind it; the cursor hand is hidden.

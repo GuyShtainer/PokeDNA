@@ -27,6 +27,7 @@ OUTH = os.path.join(ROOT, "source", "hand_cursor.h")
 FRAME = 32
 # (frame index in the sheet, C identifier, H-macro prefix)
 WANT = [(0, "hand_cursor", "HAND"),
+        (1, "hand_bounce", "HAND_BOUNCE"),   # the idle-bounce second pose (retail 30/30)
         (2, "hand_reach",  "HAND_REACH"),
         (3, "hand_grab",   "HAND_GRAB")]
 

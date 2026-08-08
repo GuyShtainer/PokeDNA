@@ -47,6 +47,7 @@ def main():
     dims = parse_dims(IN_H)
     frames = [
         ("hand_cursor", dims["HAND_W"], dims["HAND_H"]),
+        ("hand_bounce", dims["HAND_BOUNCE_W"], dims["HAND_BOUNCE_H"]),
         ("hand_reach",  dims["HAND_REACH_W"], dims["HAND_REACH_H"]),
         ("hand_grab",   dims["HAND_GRAB_W"], dims["HAND_GRAB_H"]),
     ]
