@@ -1888,3 +1888,15 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
   app_arena_release();
   (void)ents_bytes;
 }
+
+
+/* Public wrapper for Settings > Game ROM: same picker, arena-backed buffers. */
+bool app_pick_rom(char* out, int out_cap) {
+  uint8_t* mem = app_arena_acquire(PICK_MAX * (uint32_t)sizeof(PickEnt));
+  if (!mem) return false;                    /* PC dirty or arena held: caller explains */
+  char cwd[PATH_MAX];
+  strcpy(cwd, "/");
+  bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, (PickEnt*)mem);
+  app_arena_release();
+  return ok;
+}

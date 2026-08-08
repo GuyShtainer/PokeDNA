@@ -971,6 +971,119 @@ bool app_confirm(const char* title, const char* l1) {
   return yes;
 }
 
+/* ---- phase-1 ROM-gated icons: the fused ROM as the box's icon source ---------
+ * When the compiled icon art is absent (the artless build), a ROM fused into this
+ * image lights the real box icons back up: rom_open() identifies it, rom_mon_open()
+ * parses the GF header's icon tables, and box_oam streams 512 B frames from it at
+ * box load. Any Pokemon ROM works for icons (the art is per-species, not per-save);
+ * Ruby/Sapphire have no GF header yet, so rom_mon fails closed there and the box
+ * keeps its artless name chips. Plain statics in IWRAM .bss — the hardware build's
+ * EWRAM headroom (2,116 B) is not touched. The registered-SD-file path is the next
+ * phase (it needs the P0 verified reader + a FIL lifetime plan).
+ * Deliberately NOT static-in-function: cleared per save load. */
+static RomCtx s_iconrom_ctx;
+static RomMon s_iconrom;
+
+#ifndef PDNA_DELTA
+/* The SD-file icon source: the user's registered .gba, held open read-only for the
+ * whole session (FF_FS_LOCK is 0, so the map opening the same file is fine). The
+ * FIL's ~600 B sector buffer lives in EWRAM like the map's. Every read brackets
+ * rmbl_pause per the SD-transfer convention. */
+static FIL EWRAM_BSS s_iconrom_fil;
+static bool s_iconrom_fil_open = false;
+
+static bool iconrom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
+  (void)ctx;
+  if (!s_iconrom_fil_open) return false;
+  bool ok = true;
+  UINT br = 0;
+  rmbl_pause();
+  if (off != s_iconrom_fil.fptr && f_lseek(&s_iconrom_fil, off) != FR_OK) ok = false;
+  if (ok && (f_read(&s_iconrom_fil, dst, (UINT)len, &br) != FR_OK || br != len)) ok = false;
+  rmbl_resume();
+  return ok;
+}
+#endif
+
+/* Open the best available icon source and register it with the box:
+ * 1) a ROM fused into this image (emulator or a fused NOR build);
+ * 2) the registered SD .gba for the loaded save's game, then any other game's —
+ *    icons are per-species art, so any Pokemon ROM serves them (Deoxys' forme is
+ *    the only per-game difference). Ruby/Sapphire have no GF header yet and fail
+ *    closed inside rom_mon_open. Call whenever the registration may have changed. */
+static void app_icon_rom_open(void) {
+  boxoam_rom_icons(0);
+  uint32_t fsz = 0;
+  if (fused_rom_present(&fsz) && rom_open(&s_iconrom_ctx, fused_rom_read, 0, fsz)) {
+    if (rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
+      boxoam_rom_icons(&s_iconrom);
+      log_line("icons: streaming from fused %s rev%u", rom_kind_name(s_iconrom_ctx.kind),
+               s_iconrom_ctx.version);
+      return;
+    }
+    log_line("icons: fused %s has no GF header (R/S) - trying SD", rom_kind_name(s_iconrom_ctx.kind));
+  }
+#ifndef PDNA_DELTA
+  if (s_iconrom_fil_open) { f_close(&s_iconrom_fil); s_iconrom_fil_open = false; }
+  static const PkGame k_try[3] = { PK_EMERALD, PK_FRLG, PK_RS };
+  PkGame order[3] = { g_game, PK_EMERALD, PK_FRLG };      /* save's game first, then the rest */
+  int no = 1;
+  for (int i = 0; i < 3; i++) { PkGame c = k_try[i]; if (c != g_game && no < 3) order[no++] = c; }
+  for (int i = 0; i < 3; i++) {
+    const char* path = app_rom_path(order[i]);
+    if (!path || !path[0]) continue;
+    if (f_open(&s_iconrom_fil, path, FA_READ) != FR_OK) continue;
+    s_iconrom_fil_open = true;
+    uint32_t sz = (uint32_t)f_size(&s_iconrom_fil);
+    if (rom_open(&s_iconrom_ctx, iconrom_fatfs_read, 0, sz) &&
+        rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
+      boxoam_rom_icons(&s_iconrom);
+      log_line("icons: streaming from SD %s (%s)", path, rom_kind_name(s_iconrom_ctx.kind));
+      return;
+    }
+    f_close(&s_iconrom_fil); s_iconrom_fil_open = false;
+  }
+#endif
+}
+
+#ifndef PDNA_DELTA
+/* Settings > Game ROM / the first-run offer: browse for a .gba, identify it, and
+ * remember it under ITS OWN game's slot (the same romrs/romem/romfr keys the map
+ * uses, so registering here lights the map up too, and vice versa). */
+static void app_register_rom(void) {
+  char path[PATH_MAX];
+  if (!app_pick_rom(path, sizeof path)) {
+    if (g_pc_dirty) msg_wait("SAVE FIRST", UI_WARN, "Unsaved box moves pending.", "Commit, then retry.");
+    return;
+  }
+  FIL f;
+  if (f_open(&f, path, FA_READ) != FR_OK) { msg_wait("CAN'T OPEN", UI_WARN, "File unreadable.", 0); return; }
+  /* identify via a throwaway ctx on a temporary reader-less path: reuse the icon FIL */
+  if (s_iconrom_fil_open) { f_close(&s_iconrom_fil); s_iconrom_fil_open = false; }
+  f_close(&f);
+  if (f_open(&s_iconrom_fil, path, FA_READ) != FR_OK) { msg_wait("CAN'T OPEN", UI_WARN, "File unreadable.", 0); return; }
+  s_iconrom_fil_open = true;
+  uint32_t sz = (uint32_t)f_size(&s_iconrom_fil);
+  RomCtx rc;
+  if (!rom_open(&rc, iconrom_fatfs_read, 0, sz)) {
+    f_close(&s_iconrom_fil); s_iconrom_fil_open = false;
+    msg_wait("NOT A POKEMON ROM", UI_WARN, "Retail R/S/E/FR/LG only.", 0);
+    return;
+  }
+  PkGame rg = (rc.kind == ROM_EMERALD) ? PK_EMERALD
+            : (rc.kind == ROM_RUBY || rc.kind == ROM_SAPPHIRE) ? PK_RS : PK_FRLG;
+  app_rom_path_set(rg, path);
+  cfg_save();
+  app_icon_rom_open();                           /* light it up now */
+  char l1[40]; siprintf(l1, "%s registered.", rom_kind_name(rc.kind));
+  msg_wait("GAME ROM", UI_OK, l1,
+           boxoam_icons_available() ? "Real art is ON." : "R/S icons come later; map works.");
+}
+#endif
+
+
+
+
 /* Build "<base> copy[.N].<ext>" in out (must not already exist on SD). The picked
  * dst is a sibling in g_cwd. Returns false if no free slot in 99 tries. */
 static bool dup_name(const char* name, char* out, int cap) {
@@ -3327,7 +3440,7 @@ static void rumble_settings(void) {
 
 static void pdna_settings(void) {
   static const char* const MODE[3] = { "New each time", "Single (rolling)", "Skip (none)" };
-  enum { S_BACKUP, S_ANIM, S_YARD, S_RUMBLE, S_CLEAR, S_CLOSE, S_N };
+  enum { S_BACKUP, S_ANIM, S_YARD, S_ROM, S_RUMBLE, S_CLEAR, S_CLOSE, S_N };
   int sel = 0;
   for (;;) {
     ui_clear();
@@ -3335,15 +3448,17 @@ static void pdna_settings(void) {
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
     char r0[44]; siprintf(r0, "Backups:  %s", MODE[g_backup_mode]);
     char r1[44]; siprintf(r1, "Yard visitors:  %s", g_yard_visitors ? "On" : "Off");
-    const char* rows[S_N] = { r0, "Animations  >", r1, "Rumble  >", "Clear backups (this save)", "Close" };
+    char r2[44]; siprintf(r2, "Game ROM:  %s",
+                          s_iconrom.ok ? rom_kind_name(s_iconrom_ctx.kind) : "not set");
+    const char* rows[S_N] = { r0, "Animations  >", r1, r2, "Rumble  >", "Clear backups (this save)", "Close" };
     for (int i = 0; i < S_N; i++) {
-      int y = 30 + i * 16; bool s = (i == sel);
+      int y = 24 + i * 14; bool s = (i == sel);   /* 7 rows @14px: last band 106..119, clear of the help text */
       if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
       ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
     }
-    ui_text(8, 120, UI_DIM, "Animations + Rumble: per-item");
-    ui_text(8, 130, UI_DIM, "on/off inside each submenu.");
-    ui_ptext(8, 140, UI_DIM, "Yard visitors are scenery, not your Pokemon.");
+    ui_text(8, 124, UI_DIM, "Animations + Rumble: per-item");
+    ui_text(8, 133, UI_DIM, "on/off inside each submenu.");
+    ui_ptext(8, 142, UI_DIM, "Yard visitors are scenery, not your Pokemon.");
     ui_text(4, 152, UI_DIM, "A change/do  U/D move  B back");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) { cfg_save(); return; }
@@ -3353,6 +3468,13 @@ static void pdna_settings(void) {
       if (sel == S_BACKUP) g_backup_mode = (g_backup_mode + 1) % 3;
       else if (sel == S_ANIM)   anim_settings();
       else if (sel == S_YARD)   g_yard_visitors = !g_yard_visitors;
+      else if (sel == S_ROM) {
+#ifdef PDNA_DELTA
+        snd_deny(); msg_wait("NO SD HERE", UI_DIM, "Fuse a ROM into this build", "with tools/fuse_rom.py.");
+#else
+        app_register_rom();
+#endif
+      }
       else if (sel == S_RUMBLE) rumble_settings();
       else if (sel == S_CLEAR) {
         if (!cart_writable()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
@@ -3779,35 +3901,7 @@ static void reload_saveblocks(void) {
 
 /* Load the picked save and show it: start in the PC boxes; SELECT toggles to the
  * party list and back; B from either returns to the file browser. */
-/* ---- phase-1 ROM-gated icons: the fused ROM as the box's icon source ---------
- * When the compiled icon art is absent (the artless build), a ROM fused into this
- * image lights the real box icons back up: rom_open() identifies it, rom_mon_open()
- * parses the GF header's icon tables, and box_oam streams 512 B frames from it at
- * box load. Any Pokemon ROM works for icons (the art is per-species, not per-save);
- * Ruby/Sapphire have no GF header yet, so rom_mon fails closed there and the box
- * keeps its artless name chips. Plain statics in IWRAM .bss — the hardware build's
- * EWRAM headroom (2,116 B) is not touched. The registered-SD-file path is the next
- * phase (it needs the P0 verified reader + a FIL lifetime plan).
- * Deliberately NOT static-in-function: cleared per save load. */
-static RomCtx s_iconrom_ctx;
-static RomMon s_iconrom;
-
-static void app_icon_rom_open(void) {
-  boxoam_rom_icons(0);
-  uint32_t fsz = 0;
-  if (!fused_rom_present(&fsz)) return;
-  if (!rom_open(&s_iconrom_ctx, fused_rom_read, 0, fsz)) return;
-  if (!rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
-    log_line("icons: fused %s has no GF header (R/S) - chips stay", rom_kind_name(s_iconrom_ctx.kind));
-    return;
-  }
-  boxoam_rom_icons(&s_iconrom);
-  log_line("icons: streaming from fused %s rev%u", rom_kind_name(s_iconrom_ctx.kind),
-           s_iconrom_ctx.version);
-}
-
 static void view_save(const char* path) {
-  app_icon_rom_open();
   g_pc_dirty = false;                          /* fresh save: no pending moves */
   g_sb1_deferred = false;
   strncpy(g_path, path, sizeof(g_path) - 1);
@@ -3855,6 +3949,17 @@ static void view_save(const char* path) {
     memcpy(g_sb2, g_save + (uint32_t)g_vinfo.slot * G3_SLOT_BYTES + (uint32_t)s0 * G3_SECTOR_SIZE,
            G3_SECTOR_DATA_SIZE);
   g_game = g_frlg ? PK_FRLG : (g_vinfo.version_guess == G3_VER_RS ? PK_RS : PK_EMERALD);
+  app_icon_rom_open();                           /* fused or registered-SD icon source */
+#ifndef PDNA_DELTA
+  /* The artless first run: offer the ROM registration ONCE per session, right where
+   * its effect is about to be visible. B declines and the name chips carry on. */
+  { static bool offered = false;
+    if (!offered && !boxoam_icons_available() && app_can_edit()) {
+      offered = true;
+      if (app_confirm("ADD YOUR GAME ROM?", "Unlocks the real art. B = later"))
+        app_register_rom();
+    } }
+#endif
   /* Deoxys forme follows the game version (RS Normal / Emerald Speed / FR-LG Attack). FR vs LG
    * can't be told apart from the save, so FR/LG defaults to Attack (FireRed); the summary lets
    * the user cycle to any forme. Re-decode the party so a Deoxys picks up its forme sprite. */
