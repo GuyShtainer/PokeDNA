@@ -197,12 +197,11 @@ The image assets (Pokémon sprites, box wallpapers, type badges, item icons, the
 trainer-card chrome, the PC hand) are **not part of this repository** — they are git-ignored and
 generated on your machine from asset packs you place under `assets/`.
 
-**A fresh clone does not build until you run the generators.** Some modules (the bag and
-trainer-card chrome, box wallpapers) do have weak fallbacks and degrade to their text layouts, but
-others — `box_oam.c`, and the icon/type/item modules — `#include` a generated header
-unconditionally, so the build stops at `mon_icons_oam.h: No such file or directory`. Run the
-generators below first. (Making every art module optional the way the bag already is would be a
-welcome contribution.)
+**A fresh clone builds an art-free PokeDNA out of the box.** Every art module has a weak
+fallback (`source/art_fallbacks.c`): with no generated art present you get a fully working build
+with original stand-ins — name chips in the PC grid, text lists for the Pokédex and pickers,
+coloured type chips, an original arrow cursor — at about 0.4 MB. Running the generators below
+upgrades it to the full visuals.
 
 To generate them:
 
@@ -267,8 +266,7 @@ backlog.
   tools like PKHeX ship sprites. Being plain about it: that binary contains several megabytes of
   Game Freak / Nintendo artwork and the games' own item and move description text. If you would
   rather run a build with none of that in it, clone the repo, skip the art generators, and build —
-  the screens fall back to their text layouts (see the build note above for which modules currently
-  still require their generated header).
+  you get the art-free build described above, with every screen usable on original stand-ins.
 - **Vendored libraries keep their own licenses:** the flashcart I/O layer (MIT), the EZ-Flash
   `io_ezfo` driver (Apache-2.0), FatFs (BSD-1-Clause), and libtonc. Their notices are retained.
 - PokeDNA's own source is **GPLv3** (see `LICENSE`) — it stays free and open; you may use, study,

@@ -6,11 +6,9 @@ matters to you, feel free to open an issue or a PR.
 
 ## Known issues / current bugs
 
-- **A fresh clone doesn't build until you run the art generators.** Some modules have weak
-  fallbacks and degrade to text layouts, but `box_oam.c` and the icon/type/item modules `#include`
-  a generated header unconditionally, so a clean checkout stops at `mon_icons_oam.h: No such file
-  or directory`. See *Graphics assets* in the [README](README.md#graphics-assets-are-generated-locally-not-committed).
-  Making every art module optional the way the bag already is would be a welcome contribution.
+- ~~A fresh clone doesn't build until you run the art generators~~ — fixed: every art module now
+  has a weak fallback (`source/art_fallbacks.c`), so a clean checkout builds a fully usable
+  **art-free** PokeDNA (~0.4 MB) with original stand-ins; the generators upgrade it to full art.
 - **The map viewer can't zoom out past the affine tile budget.** A full-region zoom would need 428
   distinct tiles where the hardware affine mode allows 256, so the widest zoom is capped.
 - **Big builds can fail to load from SD on some cards.** This is a *copy* problem, not a size
