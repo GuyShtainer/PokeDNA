@@ -102,6 +102,32 @@ typedef struct {
 /* Run the catalogue. `flags` is a bitmask; 0 = the fast set used by the box-wide
  * sweep (OVERNIGHT-DECISIONS.md §3: no PIDIV in the sweep — 30 x a 65,536-iteration
  * LCRNG search is a visible stall). */
+/* ---- P5: the severity calibration, and the evidence behind it ---------------
+ * Run 2026-08-09 over Guy's five cartridge saves: 647 legitimate Pokemon, ZERO INVALID
+ * rows, 12 SUSPECT (1.9%). That gate is what decides which checks are allowed to say
+ * ILLEGAL, and the answer is deliberately conservative — the rule this project holds
+ * itself to is that PokeDNA must never call a legitimate Pokemon illegal.
+ *
+ *   C2 (a level-up-only move below its learn level)  -> INVALID.
+ *     Zero hits on 647 real mons, and it is a genuine impossibility given correct
+ *     tables, guarded by five exemptions (bred/egg, fateful, met 0xFD-0xFF,
+ *     Colosseum/XD origin, Smeargle). The residual risk is an undocumented event
+ *     distribution carrying neither the fateful bit nor met 0xFF; no such mon exists
+ *     in the corpus, so that risk is UNMEASURED rather than measured-zero.
+ *
+ *   E2 (encounter matching)  -> SUSPECT, deliberately NOT promoted.
+ *     The gate PROVED it produces false positives: 6 Kecleon (a scripted L30 battle
+ *     while the ROM's own wild row for those routes says L25-25) and 2 of the FireRed
+ *     Dragonite line (a Game Corner prize met at Celadon). Both are the missing
+ *     static/gift/trade table, not tuning noise, and both disappear the day it ships.
+ *
+ *   B1 (PIDIV)  -> SUSPECT at most, on demand only.
+ *     Method 3 is deliberately not searched, so a genuinely wild mon can fail. Every
+ *     no-match across the five saves is explained: in-game trades, the two roaming
+ *     Latios/Latias, and five plainly injected mons on the LeafGreen editor bench.
+ *
+ * Promoting E2 or B1 requires the static table first. Do not raise a severity without
+ * re-running the gate — tests/host_legality_hooks_test.c prints the distribution. */
 #define PK2_RUN_PIDIV  0x01
 
 void pk_check_legality2_ex(const PkMon* m, Pk2Report* out, uint8_t flags);

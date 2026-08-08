@@ -747,7 +747,7 @@ uint16_t pick_move(uint16_t current) {
       siprintf(num, "Pow %3u  Acc %3u  PP %2u",
                (unsigned)pk_move_power(m), (unsigned)pk_move_accuracy(m), (unsigned)pk_move_pp(m));
       ui_text(6, 96, UI_DIRCLR, num);
-      text_wrap(6, 110, 28, UI_TEXT, pk_move_desc(m));
+      text_wrap(6, 110, 28, UI_TEXT, app_move_desc(m));
     }
 
     ui_text(4, 152, UI_DIM, "A pick  L/R type  SEL find");
@@ -1007,12 +1007,12 @@ uint16_t pick_item(uint16_t current) {
       ui_fill_rect(124, 22, 112, 120, UI_PANEL);
       { char inm[48]; pk_item_label(cur, inm, sizeof inm);
         ui_ptext_fit(126, 24, 108, UI_TITLE, inm); }
-      ui_ptext_wrap(126, 36, 108, UI_ROW_H, 12, UI_TEXT, pk_item_desc(cur));
+      ui_ptext_wrap(126, 36, 108, UI_ROW_H, 12, UI_TEXT, app_item_desc(cur));
     } else {
       ui_fill_rect(0, 138, UI_SCR_W, 8, UI_BG);
       char d[96], nm[48];
       pk_item_label(cur, nm, sizeof nm);
-      siprintf(d, "%s  %s", nm, pk_item_desc(cur));
+      siprintf(d, "%s  %s", nm, app_item_desc(cur));
       ui_ptext_fit(4, 139, UI_SCR_W - 8, UI_DIM, d);
     }
 
@@ -1055,7 +1055,7 @@ uint8_t pick_ability(uint16_t species, uint8_t cur) {
       ui_panel(2, y - 2, 236, 52, s ? UI_SEL : UI_PANEL, s ? UI_TITLE : UI_BORDER);
       char h[24]; siprintf(h, "%d. %s", i + 1, pk_ability_name(aid));
       ui_text(8, y + 2, s ? UI_SELTEXT : UI_TEXT, h);
-      text_wrap(8, y + 14, 28, UI_DIM, pk_ability_desc(aid));
+      text_wrap(8, y + 14, 28, UI_DIM, app_ability_desc(aid));
     }
     ui_text(4, 140, UI_DIM, "Gen-3 stores only the species' abilities");
     ui_text(4, 152, UI_DIM, "A pick  U/D move  B cancel");

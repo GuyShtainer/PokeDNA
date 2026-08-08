@@ -190,7 +190,7 @@ static void card_info(const PkMon* p) {
   uint16_t ab = pk_species_ability(p->species, p->abilityNum);
   ui_text(x, y, C_KEY, "Abil."); reg(F_ABILITY, x + 48, y, 88);
   ui_ptext_fit(x + 48, y, INFO_W - 48, C_VAL, pk_ability_name(ab)); y += 9;
-  y += UI_ROW_H * ui_ptext_wrap(x + 4, y, INFO_W - 4, UI_ROW_H, 0, UI_DIM, pk_ability_desc(ab));
+  y += UI_ROW_H * ui_ptext_wrap(x + 4, y, INFO_W - 4, UI_ROW_H, 0, UI_DIM, app_ability_desc(ab));
   y += 1;
 
   ui_text(x, y, C_KEY, "Nat."); reg(F_NATURE, x + 48, y, 60);

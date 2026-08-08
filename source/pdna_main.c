@@ -53,6 +53,7 @@
 #include "bag_bg.h"        /* bag_bg() availability gate (weak NULL when art-free) */
 #include "pokeblock_bg.h" /* Pokeblock case chrome (weak NULL when art-free) */
 #include "rom_mon.h"       /* phase-1 ROM-gated icons (fused ROM -> real box icons) */
+#include "rom_text.h"      /* phase-2: descriptions out of the user's own ROM */
 #include "box_oam.h"       /* boxoam_rom_icons registration */
 #include "fused_rom.h"
 #include "gen3_secretbase.h" /* Secret Base records (RS/Emerald) */
@@ -988,6 +989,9 @@ bool app_confirm(const char* title, const char* l1) {
  * Deliberately NOT static-in-function: cleared per save load. */
 static RomCtx s_iconrom_ctx;
 static RomMon s_iconrom;
+/* Phase 2: the same open ROM also serves the games' description text. Kept beside the
+ * icon source because they share a lifetime — one registration lights both up. */
+static RomText s_romtext;
 
 #ifndef PDNA_DELTA
 /* The SD-file icon source: the user's registered .gba, held open read-only for the
@@ -1018,10 +1022,12 @@ static bool iconrom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len)
  *    closed inside rom_mon_open. Call whenever the registration may have changed. */
 static void app_icon_rom_open(void) {
   boxoam_rom_icons(0);
+  memset(&s_romtext, 0, sizeof s_romtext);
   uint32_t fsz = 0;
   if (fused_rom_present(&fsz) && rom_open(&s_iconrom_ctx, fused_rom_read, 0, fsz)) {
     if (rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
       boxoam_rom_icons(&s_iconrom);
+      rom_text_open(&s_romtext, &s_iconrom_ctx);
       log_line("icons: streaming from fused %s rev%u", rom_kind_name(s_iconrom_ctx.kind),
                s_iconrom_ctx.version);
       return;
@@ -1043,12 +1049,37 @@ static void app_icon_rom_open(void) {
     if (rom_open(&s_iconrom_ctx, iconrom_fatfs_read, 0, sz) &&
         rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
       boxoam_rom_icons(&s_iconrom);
+      rom_text_open(&s_romtext, &s_iconrom_ctx);
       log_line("icons: streaming from SD %s (%s)", path, rom_kind_name(s_iconrom_ctx.kind));
       return;
     }
     f_close(&s_iconrom_fil); s_iconrom_fil_open = false;
   }
 #endif
+}
+
+/* ---- descriptions: ROM first, embedded table second (see pdna_app.h) ------
+ * Each keeps ONE small static buffer, documented in the header as valid until the next
+ * call of that same function. 128 bytes covers every Gen-3 description (the longest in
+ * the embedded tables is well under it) and three of them is 384 B of .bss — the one
+ * place this file can afford it, versus the ~50 KB the embedded strings cost in ROM. */
+static const char* desc_or_fallback(RomTextKind kind, uint16_t id, char* buf, uint32_t cap,
+                                    const char* embedded) {
+  if (rom_text_have(&s_romtext, kind) && rom_text_get(&s_romtext, kind, id, buf, cap))
+    return buf;
+  return embedded ? embedded : "";
+}
+const char* app_item_desc(uint16_t id) {
+  static char b[128];
+  return desc_or_fallback(ROM_TEXT_ITEM, id, b, sizeof b, pk_item_desc(id));
+}
+const char* app_move_desc(uint16_t id) {
+  static char b[128];
+  return desc_or_fallback(ROM_TEXT_MOVE, id, b, sizeof b, pk_move_desc(id));
+}
+const char* app_ability_desc(uint16_t id) {
+  static char b[128];
+  return desc_or_fallback(ROM_TEXT_ABILITY, id, b, sizeof b, pk_ability_desc(id));
 }
 
 #ifndef PDNA_DELTA

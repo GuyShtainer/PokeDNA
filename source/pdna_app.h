@@ -180,6 +180,19 @@ bool     app_arena_held(void);
 /* Path of the Pokemon ROM the map screen reads map data from, remembered per game
  * (RS / Emerald / FRLG) because their map data differs and each needs its own ROM.
  * Returns "" when none has been picked yet. Set persists via config.cfg. */
+/* ---- descriptions: the user's ROM first, the embedded table only as a fallback ----
+ * Item/move/ability description TEXT is the games' own prose, and shipping it verbatim
+ * is the largest remaining legal liability in the binary (741 strings). These three
+ * read it from the registered/fused ROM when one is available, and fall back to
+ * whatever the build has otherwise — so a ROM-gated build can drop the embedded copy
+ * entirely without any screen losing its layout.
+ *
+ * The returned pointer is valid until the NEXT call of the same function (each keeps
+ * one small static buffer). Copy it if you need to hold it. Never NULL. */
+const char* app_item_desc(uint16_t item_id);
+const char* app_move_desc(uint16_t move_id);
+const char* app_ability_desc(uint16_t ability_id);
+
 const char* app_rom_path(PkGame game);
 void        app_rom_path_set(PkGame game, const char* path);
 
