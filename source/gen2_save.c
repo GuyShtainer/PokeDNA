@@ -190,7 +190,16 @@ bool g2_scan_finish(const G2Scan* s, uint32_t total, G2Save* out) {
   out->version    = cand[best].v;
   out->primary_ok = (best_score & 2) != 0;
   out->backup_ok  = (best_score & 1) != 0;
-  out->supported  = (out->version == G2_VER_GS || out->version == G2_VER_CRYSTAL);
+  /* PRIMARY-ONLY, DELIBERATELY. Every read path below (g2_read_header, g2_offsets,
+   * g2_box_*_at) addresses the PRIMARY copy, so a save whose primary block is corrupt
+   * but whose backup survives must NOT be reported as usable: it would be parsed out
+   * of the damaged copy while looking healthy. Gen 2 keeps that backup precisely
+   * because the primary can be torn mid-write, and this is a READ-ONLY importer — the
+   * honest move is to refuse and say why, not to quietly read rubbish. (Reading FROM
+   * the backup is a legitimate future feature; it needs its own offset set, so it is
+   * not something to bolt on here.) */
+  out->supported  = (out->version == G2_VER_GS || out->version == G2_VER_CRYSTAL)
+                 && out->primary_ok;
   return out->supported;
 }
 
@@ -232,6 +241,8 @@ const char* g2_reject_reason(const G2Save* sv) {
   if (sv->short_file) return "file is smaller than a 32 KiB Gen-2 save";
   if (sv->version == G2_VER_JP_GS || sv->version == G2_VER_JP_CRYSTAL)
     return "Japanese Gen-2 saves are not supported yet";
+  if (sv->backup_ok && !sv->primary_ok)
+    return "main save block is damaged (only the backup copy is intact)";
   return "not a Gen-2 save (no checksum matched)";
 }
 

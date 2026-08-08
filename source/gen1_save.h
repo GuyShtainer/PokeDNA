@@ -121,6 +121,10 @@ typedef struct {
   int      current_box;                 /* 0..11 */
   uint8_t  party_count;                 /* 0..6  */
   uint8_t  box_count[GEN1_NUM_BOXES];   /* 0..20 */
+  /* bit b set = box b's count byte was out of range, i.e. that banked box has
+   * never been initialised by CHANGE BOX and holds power-up SRAM noise. Such a
+   * box reads as EMPTY rather than as garbage Pokemon or as a rejected save. */
+  uint16_t box_uninit;
   bool     bank_ok[2];                  /* filled by gen1_check_banks(), else false */
   bool     banks_checked;
 } Gen1Save;

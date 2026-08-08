@@ -313,12 +313,32 @@ Gen1Status gen1_open_ranged(Gen1ReadFn rd, void* ctx, uint32_t len, Gen1Save* ou
   if (!rd(ctx, GEN1_OFF_PARTY, buf, 1)) return GEN1_ERR_READ;
   out->party_count = buf[0];
 
+  /* THE BOX COUNTS ARE NOT TRUSTWORTHY. pokered never initialises the eleven BANKED box
+   * lists: EmptyAllSRAMBoxes runs only when the player first uses CHANGE BOX, so until
+   * then those count bytes hold whatever the cartridge's SRAM powered up with — usually
+   * 0xFF, sometimes anything. Two failure modes came out of trusting them:
+   *   - a count of, say, 0x37 makes this parser hand the importer 55 "Pokemon" decoded
+   *     from un-erased SRAM. Inventing Pokemon out of noise is the worst thing a save
+   *     tool can do;
+   *   - conversely, gating the whole save on "every count <= 20" REFUSED a perfectly
+   *     legitimate save whose boxes were simply still virgin.
+   * So an out-of-range count is neither trusted nor fatal: that box reads as EMPTY and
+   * is flagged uninitialised. The CURRENT box lives in the main checksummed block and
+   * IS trustworthy, which is why it still gates. */
   bool counts_ok = (out->current_box < GEN1_NUM_BOXES) && (out->party_count <= GEN1_PARTY_CAPACITY);
   if (counts_ok) {
     for (int b = 0; b < GEN1_NUM_BOXES; b++) {
       if (!rd(ctx, gen1_list_offset(out, b), buf, 1)) return GEN1_ERR_READ;
-      out->box_count[b] = buf[0];
-      if (buf[0] > GEN1_BOX_CAPACITY) counts_ok = false;
+      if (b == out->current_box) {
+        /* the open box's live copy sits in the checksummed main block */
+        out->box_count[b] = buf[0];
+        if (buf[0] > GEN1_BOX_CAPACITY) counts_ok = false;
+      } else if (buf[0] > GEN1_BOX_CAPACITY) {
+        out->box_count[b] = 0;
+        out->box_uninit |= (uint16_t)(1u << b);
+      } else {
+        out->box_count[b] = buf[0];
+      }
     }
   }
 
