@@ -96,6 +96,8 @@ static bool      g_show_hidden = false;
  * default -- they make the yard look alive -- but the user can switch them off and
  * see only the two Pokemon that are really boarding. Persisted in config.cfg. */
 static bool      g_yard_visitors = true;
+/* Backup mode: 0 = new file each save, 1 = single rolling .bak, 2 = skip. Persisted. */
+static int       g_backup_mode = 0;
 static unsigned  g_anim_mask = (1u << ANIM_BOX) | (1u << ANIM_PARTY) | (1u << ANIM_DEX) |
                                (1u << ANIM_DAYCARE) | (1u << ANIM_SUMMARY);   /* summary wiggle ON by default (Emerald feel) */
 static int       g_pc_last_box = 0;        /* PC box to open on (NOT the save's in-game box); app remembers it */
@@ -266,10 +268,10 @@ static void scan_dir(void) {
 static void cfg_save(void) {
   if (!app_can_edit()) return;
   char buf[PATH_MAX * 4 + 128];
-  int n = siprintf(buf, "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\nyard=%d\n",
+  int n = siprintf(buf, "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\nyard=%d\nbak=%d\n",
                    g_cwd, (int)g_sort, g_sortrev ? 1 : 0, g_show_all ? 1 : 0, g_show_hidden ? 1 : 0,
                    g_anim_mask, rmbl_get_mask(), rmbl_get_strength(), rmbl_get_duration(), g_pc_last_box,
-                   g_yard_visitors ? 1 : 0);
+                   g_yard_visitors ? 1 : 0, g_backup_mode);
   /* One ROM path per game — RS/Emerald/FRLG map data differs, so each needs its own
    * ROM file (Guy's requirement). Only non-empty entries are written. */
   static const char* const k_romkey[3] = { "romrs", "romem", "romfr" };
@@ -305,6 +307,7 @@ static void cfg_load(void) {
       else if (!strcmp(k, "all"))    g_show_all    = (v[0] == '1');
       else if (!strcmp(k, "hidden")) g_show_hidden = (v[0] == '1');
       else if (!strcmp(k, "yard"))   g_yard_visitors = (v[0] == '1');
+      else if (!strcmp(k, "bak"))    { int m = v[0] - '0'; if (m >= 0 && m <= 2) g_backup_mode = m; }
       else if (!strcmp(k, "anim"))   { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); g_anim_mask = m & ((1u << ANIM_COUNT) - 1u); }
       else if (!strcmp(k, "rumble")) { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); rmbl_set_mask(m); }
       else if (!strcmp(k, "pcbox"))  { int m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (*d - '0'); g_pc_last_box = m; }
@@ -584,7 +587,7 @@ static bool g_sb1_deferred = false;   /* g_save holds staged SaveBlock1 (Day-Car
  * 1 = single rolling .bak (overwrite), 2 = skip backup. Session-only (resets each
  * launch). The verified-write itself (.tmp → re-read → rename) always protects the
  * original mid-write; the backup is the extra undo layer. */
-static int g_backup_mode = 0;
+/* (moved up beside the other persisted prefs so cfg_save/cfg_load can reach it) */
 
 /* g_anim_mask is defined near the top (with the other persisted prefs) so cfg_save /
  * cfg_load can reach it; this is just the accessor the screens call. */

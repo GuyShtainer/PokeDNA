@@ -102,8 +102,13 @@ SfStatus sf_backup(const char* src_path, char* out_bak, unsigned out_bak_cap) {
     if (!file_exists(bak)) chosen = true; /* never overwrite an existing backup */
   }
   if (!chosen) {
-    log_line("backup: no free .bak slot (kept existing backups)");
-    return SF_ERR_BACKUP;
+    /* All 21 slots taken. This used to FAIL — which blocked EVERY save with
+     * "BACKUP FAILED - Save NOT modified" until the user found Clear backups.
+     * A full shelf must never stop a save: overwrite the HIGHEST slot instead
+     * (the 20 older backups survive) and say so in the log. */
+    siprintf(bak, "%s.bak20", src_path);
+    log_line("backup: all slots full - replacing %s", bak);
+    f_unlink(bak);
   }
 
   SfStatus st = copy_file(src_path, bak);
@@ -156,14 +161,27 @@ SfStatus sf_copy(const char* src_path, const char* dst_path) {
   return SF_OK;
 }
 
-/* Delete every "<src>.bak" / ".bakN" file. Returns the count removed. */
+/* Delete every "<src>.bak" / ".bakN" file (and a leftover ".baktmp"). Returns the
+ * count removed. Guy reported this "broken" on hardware, so it is self-diagnosing
+ * now: every candidate's FRESULT is logged (a mismatch between what the writer
+ * named and what we sweep shows up in /PokeDNA's log instead of as a silent 0),
+ * the sweep runs past the writer's 21-slot ceiling in case older builds left more,
+ * and it only stops after several consecutive holes (the writer names densely). */
 int sf_clear_backups(const char* src_path) {
-  char bak[SF_PATH_MAX]; int removed = 0;
-  for (int n = 0; n <= 20; n++) {
+  char bak[SF_PATH_MAX]; int removed = 0, misses = 0;
+  for (int n = 0; n <= 99 && misses < 5; n++) {
     if (n == 0) siprintf(bak, "%s.bak", src_path);
     else        siprintf(bak, "%s.bak%d", src_path, n);
-    if (f_unlink(bak) == FR_OK) removed++;
+    FRESULT fr = f_unlink(bak);
+    if (fr == FR_OK) { removed++; misses = 0; log_line("clear: removed %s", bak); }
+    else {
+      if (fr != FR_NO_FILE) log_line("clear: %s -> fr=%d", bak, (int)fr);
+      misses++;
+    }
   }
+  siprintf(bak, "%s.baktmp", src_path);            /* a crashed rolling backup's scratch */
+  if (f_unlink(bak) == FR_OK) { removed++; log_line("clear: removed %s", bak); }
+  log_line("clear: %d removed for %s", removed, src_path);
   return removed;
 }
 
