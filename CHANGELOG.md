@@ -2,6 +2,38 @@
 
 All notable changes to PokeDNA. Versions follow semantic versioning (`MAJOR.MINOR.PATCH`).
 
+## Unreleased (2026-08-08) — ⚠️ not yet validated on hardware
+
+Emulator-verified against real saves + the host test suite; the hardware pass is still
+outstanding for everything below (per-item state in the commit messages).
+
+### Features
+- **The art-free build is a real product**: a clean clone builds a ~0.45 MB PokeDNA with zero
+  game-derived art — original name chips in the PC grid, text lists for the Pokédex and the
+  species/item pickers, coloured type chips, an original arrow cursor.
+- **Game ROM registration**: Settings → *Game ROM* (plus a first-run offer on the art-free
+  build) browses the SD for your own `.gba`, remembers it per game (shared with the map), and
+  the PC box then streams the **real box icons out of your ROM at runtime** — fused or SD file
+  (Emerald/FireRed/LeafGreen; Ruby/Sapphire fail closed for now).
+- **Retail pickup, measured from the real game**: the exact PC transparency, the 17-frame grab
+  dip, a real PLACE beat, the hand idle bounce (icons static, as retail), the 6-frame cursor
+  slide, and retail's carry look (big white fist in front, no pop).
+- **Pokéblock case**: the game's own screen chrome (RS + Emerald) with the FLAVOR/FEEL board
+  filled for the selected block.
+- Create-from-scratch opens the six-card summary; hatching names the Pokémon; the Day-Care
+  explains its two real slots and its scenery visitors (with a toggle); the Records screen
+  says what a `.rec` is for.
+
+### Fixes
+- **Every front sprite was horizontally mirrored** (visible as Unown p↔q) — generator fixed,
+  all fronts regenerated.
+- The PC box cursor survives L/R box flips, and a flip no longer wipes the screen to black.
+- A full backup shelf (21 files) no longer blocks every save; the backup mode (new-each-time /
+  single rolling / none) finally **persists**; *Clear backups* logs exactly what it removed
+  or why it could not.
+- The summary's confirm dialog no longer overflows the panel; the artless summary no longer
+  paints open-bus garbage in the portrait.
+
 ## v2.0.0 — everything since the first release (2026-08-04)
 
 **Validated on real hardware** (EZ-Flash Omega DE), against real Generation-III saves, with the
