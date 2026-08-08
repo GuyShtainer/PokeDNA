@@ -135,6 +135,9 @@ def composite_device(img, path):
 
 def tile_rgb(tiles, idx, pal, bank, w=8, h=8, idx2=None):
     """One (or two stacked) tiles as a flat RGB15 list, in palette `bank`."""
+    # SPRITE format (ui_sprite's contract), not raw bg RGB15: opaque pixels carry
+    # 0x8000, colour-0 pixels are 0x0000 = transparent - without the bit ui_sprite
+    # skips every pixel and the icon is invisible (shipped that way once).
     out = []
     ids = [idx] if idx2 is None else [idx, idx2]
     for tid in ids:
@@ -142,7 +145,7 @@ def tile_rgb(tiles, idx, pal, bank, w=8, h=8, idx2=None):
         for y in range(8):
             for x in range(8):
                 ci = t[y * 8 + x]
-                out.append(pal[bank * 16 + ci] if ci else pal[0])
+                out.append((0x8000 | pal[bank * 16 + ci]) if ci else 0)
     return out
 
 

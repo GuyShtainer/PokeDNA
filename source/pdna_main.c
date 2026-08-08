@@ -2125,9 +2125,33 @@ static void pdna_pokeblock(void) {
         } else ui_text(28, y + 1, s ? UI_SELTEXT : UI_DIM, "(empty)");
       }
     }
-    /* On the chrome the bottom strip is the game's light FEEL panel, so a DIM ink
-     * is invisible there — the hint goes dark. */
-    if (chrome) ui_ptext(4, 152, UI_PANEL, "A edit/create  U/D  B done");
+    if (chrome) {
+      /* The bottom-left white panel is the game's FLAVOR/FEEL board — retail fills
+       * it for the selected block and ours sat blank (Guy, HW round 2). Same
+       * geometry as retail (labels at (16/64, 104/120/136), the has-flavor icon one
+       * tile left of each label, FEEL's value right-aligned at (88,136)) — but as
+       * an editor we also print each flavor's VALUE after its label. Dark ink: the
+       * panel is white. The chrome re-blits every pass, so no erase bookkeeping. */
+      PkPokeblock sb; pk_pokeblock_get(g_sb1, g_game, sel, &sb);
+      bool occ2 = pk_pokeblock_occupied(&sb);
+      static const int FLX[5] = { 16, 16, 16, 64, 64 };
+      static const int FLY[5] = { 104, 120, 136, 104, 120 };
+      static const int FIX[5] = { 8, 8, 8, 56, 56 };
+      static const char* const FLN[5] = { "Spicy", "Dry", "Sweet", "Bitter", "Sour" };
+      const uint8_t flv[5] = { sb.spicy, sb.dry, sb.sweet, sb.bitter, sb.sour };
+      for (int i = 0; i < 5; i++) {
+        ui_ptext(FLX[i], FLY[i], UI_PANEL, FLN[i]);
+        if (occ2) {
+          char v[6]; siprintf(v, "%u", (unsigned)flv[i]);
+          ui_ptext(FLX[i], FLY[i] + 8, flv[i] ? 0x0000 : UI_PANEL, v);
+          const uint16_t* ic = pokeblock_flavor_icon((int)g_game, i);
+          if (flv[i] && ic) ui_sprite(FIX[i], FLY[i], 8, 16, ic);
+        }
+      }
+      if (occ2) { char fv[6]; siprintf(fv, "%u", (unsigned)sb.feel);
+                  ui_ptext_right(102, 137, 0x0000, fv); }
+      ui_ptext(4, 152, UI_PANEL, "A edit/create  U/D  B done");
+    }
     else        ui_text(4, 152, UI_DIM, "A edit/create  U/D  B done");
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) break;
