@@ -49,6 +49,15 @@ void boxoam_resume(void);
  * box contents. */
 void boxoam_load_box(const PkMon box[30]);
 
+/* Phase-1 ROM-gated icons: the app registers an open RomMon on the user's own ROM
+ * (fused today; a registered SD file later) and the box streams the real 32x32
+ * icons from it whenever the compiled icon art is absent. NULL clears. */
+struct RomMon;
+void boxoam_rom_icons(const struct RomMon* rm);
+/* 1 if the grid can show real icons (compiled art OR a registered ROM) — the
+ * artless name-chip fallback asks this before painting chips. */
+int  boxoam_icons_available(void);
+
 /* Set the idle-bob vertical offset (0 or 1 px) applied uniformly to all 30 icon
  * sprites. Pure OAM write — call from the vblank tick. */
 void boxoam_set_bob(int dy);

@@ -51,6 +51,9 @@
 #include "pdna_bag.h"      /* real Emerald bag screen (data-editor bag tab) */
 #include "bag_bg.h"        /* bag_bg() availability gate (weak NULL when art-free) */
 #include "pokeblock_bg.h" /* Pokeblock case chrome (weak NULL when art-free) */
+#include "rom_mon.h"       /* phase-1 ROM-gated icons (fused ROM -> real box icons) */
+#include "box_oam.h"       /* boxoam_rom_icons registration */
+#include "fused_rom.h"
 #include "gen3_secretbase.h" /* Secret Base records (RS/Emerald) */
 #include "osk.h"           /* osk_search (numeric entry) */
 #include "pdna_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
@@ -3749,7 +3752,35 @@ static void reload_saveblocks(void) {
 
 /* Load the picked save and show it: start in the PC boxes; SELECT toggles to the
  * party list and back; B from either returns to the file browser. */
+/* ---- phase-1 ROM-gated icons: the fused ROM as the box's icon source ---------
+ * When the compiled icon art is absent (the artless build), a ROM fused into this
+ * image lights the real box icons back up: rom_open() identifies it, rom_mon_open()
+ * parses the GF header's icon tables, and box_oam streams 512 B frames from it at
+ * box load. Any Pokemon ROM works for icons (the art is per-species, not per-save);
+ * Ruby/Sapphire have no GF header yet, so rom_mon fails closed there and the box
+ * keeps its artless name chips. Plain statics in IWRAM .bss — the hardware build's
+ * EWRAM headroom (2,116 B) is not touched. The registered-SD-file path is the next
+ * phase (it needs the P0 verified reader + a FIL lifetime plan).
+ * Deliberately NOT static-in-function: cleared per save load. */
+static RomCtx s_iconrom_ctx;
+static RomMon s_iconrom;
+
+static void app_icon_rom_open(void) {
+  boxoam_rom_icons(0);
+  uint32_t fsz = 0;
+  if (!fused_rom_present(&fsz)) return;
+  if (!rom_open(&s_iconrom_ctx, fused_rom_read, 0, fsz)) return;
+  if (!rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
+    log_line("icons: fused %s has no GF header (R/S) - chips stay", rom_kind_name(s_iconrom_ctx.kind));
+    return;
+  }
+  boxoam_rom_icons(&s_iconrom);
+  log_line("icons: streaming from fused %s rev%u", rom_kind_name(s_iconrom_ctx.kind),
+           s_iconrom_ctx.version);
+}
+
 static void view_save(const char* path) {
+  app_icon_rom_open();
   g_pc_dirty = false;                          /* fresh save: no pending moves */
   g_sb1_deferred = false;
   strncpy(g_path, path, sizeof(g_path) - 1);

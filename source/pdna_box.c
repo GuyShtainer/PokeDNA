@@ -826,9 +826,7 @@ static int item_home(void) {
  * registered ROM upgrades it back to real sprites. Painted with the wallpaper, so
  * every full-region repaint carries the labels for free. */
 static void artless_cells(void) {
-  static int have = -1;
-  if (have < 0) { const uint8_t* t; int b; have = mon_icon_oam_for(1, &t, &b); }
-  if (have) return;
+  if (boxoam_icons_available()) return;   /* compiled art OR the user's registered ROM */
   for (int i = 0; i < 30; i++) {
     if (!g_box[i].species) continue;
     int cx = GRID_X + (i % COLS) * CELL_W, cy = GRID_Y + (i / COLS) * CELL_H;

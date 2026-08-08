@@ -20,6 +20,7 @@
 #include "mon_icons_oam.h"
 #include "hand_oam.h"
 #include "item_icons.h"
+#include "rom_mon.h"      /* phase-1 ROM-streamed icons (artless + the user's own ROM) */
 #include "rumble.h"         /* rumble_io_suspend: freeze GPIO during verified CPU ROM reads */
 #include "log.h"            /* icon-upload self-verify diagnostics */
 #include "pdna_app.h"       /* app_log_flush: anomaly evidence must survive a power-off */
@@ -119,6 +120,78 @@ static int icopy_verified(uint16_t* dst, const uint16_t* src, int n) {
 }
 
 static uint16_t s_stage[256];        /* one 512 B verify chunk (IWRAM .bss — EWRAM is full) */
+
+/* ---- ROM-streamed icons (phase 1 of the ROM-gated build) --------------------
+ * When the compiled icon art is absent (the artless build) and the app has an open
+ * RomMon on the user's own ROM, the box streams the real icons from it: 512 B raw
+ * 4bpp per slot, staged into s_stage and read TWICE (the EZ-Flash read path can
+ * return success holding garbage, and a fused read shares the compiled-art risk
+ * class the verified uploads already treat). The 2-frame pose swap stays OFF on
+ * this path — re-streaming 15 KiB per bob tick is not vblank material — but the
+ * 1 px OAM bob still runs, so the grid keeps its life. */
+static const RomMon* s_rommon = 0;
+static int           s_rom_icons = 0;            /* this box was loaded from the ROM */
+void boxoam_rom_icons(const struct RomMon* rm) { s_rommon = (rm && rm->ok) ? rm : 0; }
+int  boxoam_icons_available(void) {
+  const uint8_t* t; int b;
+  return mon_icon_oam_for(1, &t, &b) || s_rommon != 0;
+}
+
+static uint32_t stage_sum(void) {
+  uint32_t v = 0;
+  for (int i = 0; i < 256; i++) v += s_stage[i];
+  return v;
+}
+
+/* Read one icon frame into s_stage, TWICE, and accept only when both passes sum the
+ * same (with one buffer a full byte-compare needs a second read anyway; two whole
+ * reads agreeing catches the transient-garbage failure the EZ driver can produce).
+ * Retries like icopy_verified; on give-up the last read still stands (a maybe-garbled
+ * icon beats a hole) and the anomaly is logged. */
+static int rom_icon_read_verified(uint16_t species, uint8_t form, int egg, int* bank) {
+  if (!s_rommon) return 0;
+  uint16_t sp = egg ? 412 : species;
+  uint8_t f  = egg ? 0 : form;
+  uint8_t pal = 0;
+  rumble_io_suspend();
+  int ok = 0;
+  for (int a = 0; a < 4 && !ok; a++) {
+    if (!rom_mon_icon(s_rommon, sp, f, 0, (uint8_t*)s_stage, &pal)) { rumble_io_resume(); return 0; }
+    uint32_t s1 = stage_sum();
+    if (!rom_mon_icon(s_rommon, sp, f, 0, (uint8_t*)s_stage, &pal)) { rumble_io_resume(); return 0; }
+    ok = (stage_sum() == s1);
+  }
+  rumble_io_resume();
+  if (!ok) { log_line("icons: rom read unstable sp=%u", sp); app_log_flush(); }
+  *bank = pal;                                    /* ROM pals live in OBJ banks 0..2 */
+  return 1;
+}
+
+/* compiled art first, else the user's ROM (staged into s_stage). Returns the tile
+ * source or NULL; *from_rom tells the uploader the bytes are already verified RAM. */
+static const uint8_t* icon_tiles(uint16_t species, uint8_t form, uint8_t frame,
+                                 int egg, int* bank, int* from_rom) {
+  const uint8_t* t; int b;
+  *from_rom = 0;
+  if (egg ? mon_icon_oam_egg(&t, &b)
+          : (species && mon_icon_oam_for_form_frame(species, form, frame, &t, &b))) {
+    *bank = b; return t;
+  }
+  if (frame == 0 && rom_icon_read_verified(species, form, egg, bank)) {
+    *from_rom = 1; return (const uint8_t*)s_stage;
+  }
+  return 0;
+}
+
+/* forward: upload_tiles_verified is defined below */
+static void upload_tiles_verified(int tid, const void* src, int bytes);
+
+/* Upload one icon: staged ROM bytes are already verified RAM (plain DMA); compiled
+ * art goes through the staged-verify path as always. */
+static void upload_icon(int tid, const uint8_t* tiles, int from_rom) {
+  if (from_rom) upload_tiles(tid, tiles, MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
+  else upload_tiles_verified(tid, tiles, MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
+}
 
 /* upload_tiles with staged verify: ROM -> RAM (verified, retried) -> DMA to VRAM
  * (RAM->VRAM cannot glitch). On give-up, the raw upload still runs (a maybe-garbled
@@ -259,6 +332,17 @@ void boxoam_enter(void) {
     if (icopy_verified(s_stage, mon_icon_oam_pal, n) < 0)
       log_line("icons: palette unstable rom reads");        /* best-effort: last attempt still lands */
     for (int i = 0; i < n; i++) pal_obj_mem[i] = s_stage[i]; }
+  /* Artless + the user's ROM: the compiled palettes above were weak zeros, so pull
+   * the game's own 3 shared icon palettes into banks 0..2 — the banks the streamed
+   * icons' palette ids (0..2) address. Compiled art present -> compiled wins. */
+  { const uint8_t* t; int b;
+    s_rom_icons = 0;
+    if (s_rommon && !mon_icon_oam_for(1, &t, &b)) {
+      uint16_t pd[16];
+      for (int pnum = 0; pnum < ROM_MON_PALS; pnum++)
+        if (rom_mon_icon_pal(s_rommon, pnum, pd))
+          for (int i = 0; i < 16; i++) pal_obj_mem[pnum * 16 + i] = pd[i];
+    } }
 
   /* hand palette -> bank 13 (normal) and an orange-tinted copy -> bank 14 (MOVE) */
   for (int i = 0; i < 16; i++) {
@@ -321,21 +405,16 @@ void boxoam_load_box(const PkMon box[30]) {
    * chunk regions / selection marks are void — the caller re-applies the chunk after */
   s_chunk_valid = 0;
   for (int s = 0; s < 30; s++) { s_covered[s] = 0; s_selmark[s] = 0; }
+  s_rom_icons = 0;
   for (int s = 0; s < 30; s++) {
-    const uint8_t* tiles; int bank;
+    int bank, from_rom;
     bool egg = box[s].isEgg && !box[s].isBadEgg;
-    if (egg && mon_icon_oam_egg(&tiles, &bank)) {          /* an Egg reads as the real Egg icon */
-      upload_tiles_verified(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles,
-                   MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
-      s_occupied[s] = 1; s_isegg[s] = 1; s_iconbank[s] = (uint8_t)bank;
+    const uint8_t* tiles = icon_tiles(box[s].species, box[s].form, 0, egg, &bank, &from_rom);
+    if ((egg || box[s].species) && tiles) {
+      upload_icon(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles, from_rom);
+      s_occupied[s] = 1; s_isegg[s] = egg ? 1 : 0; s_iconbank[s] = (uint8_t)bank;
       s_species[s] = box[s].species; s_form[s] = box[s].form;
-      place_grid_slot(s);
-    } else if (box[s].species &&
-        mon_icon_oam_for_form_frame(box[s].species, box[s].form, 0, &tiles, &bank)) {
-      upload_tiles_verified(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles,
-                   MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
-      s_occupied[s] = 1; s_isegg[s] = 0; s_iconbank[s] = (uint8_t)bank;
-      s_species[s] = box[s].species; s_form[s] = box[s].form;
+      if (from_rom) s_rom_icons = 1;
       place_grid_slot(s);
     } else {
       s_occupied[s] = 0; s_isegg[s] = 0;
@@ -350,6 +429,7 @@ void boxoam_load_box(const PkMon box[30]) {
 void boxoam_set_frame(int frame) {
   frame &= 1;
   if (frame == s_frame) return;
+  if (s_rom_icons) return;                      /* streamed icons: no frame-1 source in RAM */
   s_frame = frame;
   for (int s = 0; s < 30; s++) {
     /* eggs keep their single Egg frame; covered regions hold the carried block's art
@@ -431,10 +511,10 @@ void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg) {
   int ix = cx, iy = cy - 8 + s_cur_dy; if (iy < WP_Y) iy = WP_Y;
   load_regb_grab();                                  /* fist tiles -> region B */
   REG_BLDCNT = 0;                                    /* carried mon is opaque  */
-  const uint8_t* tiles; int bank = 0;
-  if (egg ? mon_icon_oam_egg(&tiles, &bank)                     /* an Egg rides the glove AS an Egg */
-          : (species && mon_icon_oam_for_form_frame(species, form, 0, &tiles, &bank))) {
-    upload_tiles_verified(TID_HAND, tiles, MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
+  int bank = 0, from_rom = 0;
+  const uint8_t* tiles = icon_tiles(species, form, 0, egg, &bank, &from_rom);
+  if (tiles) {                                       /* the held mon (or Egg) rides the glove */
+    upload_icon(TID_HAND, tiles, from_rom);
     s_rega = 2;                                      /* region A now holds the held mon */
     obj_set_attr(oe(OE_CARRY),                       /* front-most */
                  ATTR0_SQUARE | ATTR0_4BPP | (iy & ATTR0_Y_MASK),
@@ -460,12 +540,11 @@ void boxoam_show_slot(int s) { if (s >= 0 && s < 30 && s_occupied[s]) place_grid
  * and re-show/hide it — undoes a chunk borrow of that slot's tile region. */
 static void restore_slot(int s) {
   if (!s_occupied[s]) { hide(OE_ICON0 + s); return; }
-  const uint8_t* tiles; int bank;
-  if (s_isegg[s] ? mon_icon_oam_egg(&tiles, &bank)
-                 : mon_icon_oam_for_form_frame(s_species[s], s_form[s], (uint8_t)s_frame,
-                                               &tiles, &bank)) {
-    upload_tiles_verified(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles,
-                 MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
+  int bank, from_rom;
+  const uint8_t* tiles = icon_tiles(s_species[s], s_form[s], (uint8_t)s_frame,
+                                    s_isegg[s], &bank, &from_rom);
+  if (tiles) {
+    upload_icon(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles, from_rom);
     s_iconbank[s] = (uint8_t)bank;
     place_grid_slot(s);
   } else hide(OE_ICON0 + s);
@@ -519,11 +598,10 @@ void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
 
   for (int i = 0; i < n && i < 30; i++) {
     int r = tr + mons[i].rr, c = tc + mons[i].cc, s = r * COLS + c;
-    const uint8_t* tiles; int bank = 0;
-    bool have = mons[i].egg
-              ? mon_icon_oam_egg(&tiles, &bank)
-              : (mons[i].species &&
-                 mon_icon_oam_for_form_frame(mons[i].species, mons[i].form, 0, &tiles, &bank));
+    int bank = 0, from_rom = 0;
+    const uint8_t* tiles = icon_tiles(mons[i].species, mons[i].form, 0, mons[i].egg,
+                                      &bank, &from_rom);
+    bool have = (tiles != 0);
     if (!s_covered[s]) {                             /* cover TRANSITION: put the occupant into
                                                       * the bitmap so the ghost blends over it */
       s_covered[s] = 1;
@@ -531,8 +609,7 @@ void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
     }
     hide(OE_ICON0 + s);                              /* the block occludes this cell anyway */
     if (!have) { hide(OE_MARK0 + i); continue; }     /* no icon data -> same degrade as load_box */
-    if (full) upload_tiles_verified(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles,
-                           MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
+    if (full) upload_icon(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles, from_rom);
     int x = GRID_X + c * CELL_W, y = GRID_Y + r * CELL_H - lift;   /* Emerald carries the block 8px up */
     if (y < WP_Y) y = WP_Y;
     u16 a0 = ATTR0_SQUARE | ATTR0_4BPP | ATTR0_BLEND | (y & ATTR0_Y_MASK);
