@@ -36,6 +36,7 @@ typedef struct {
   uint8_t  pp[4];             /* current PP                                      */
   uint16_t heldItem;
   uint8_t  pokerus, metLocation, metLevel, metGame, pokeball, otGender;
+  uint8_t  language;          /* record byte 0x12: 1 JP, 2 EN, 3 FR, 4 IT, 5 DE, 7 ES */
   uint8_t  contest[6];        /* cool, beauty, cute, smart, tough, sheen         */
   uint32_t ribbons;
   uint16_t stats[PK_NSTATS];  /* party: plaintext; box: computed                 */

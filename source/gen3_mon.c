@@ -79,6 +79,13 @@ bool pk_decode_mon(const uint8_t* mon, bool is_party, PkMon* out) {
   uint8_t flags = mon[0x13];                     /* BoxPokemon flags byte */
   out->isBadEgg = (flags & 0x01) != 0;
 
+  /* Language is a PLAINTEXT byte at 0x12 (struct BoxPokemon: nickname[10] @0x08,
+   * then u8 language, then the flags byte at 0x13 we just read). It is not part of
+   * the encrypted substructs, so it needs no key. Eggs carry LANGUAGE_JAPANESE
+   * regardless of cart language (daycare.c CreateEgg / SetInitialEggData), which is
+   * what makes it a legality signal — see gen3_legality2.c. */
+  out->language = mon[0x12];
+
   uint32_t pers = rd32(mon + 0x00);
   uint32_t otid = rd32(mon + 0x04);
   out->personality = pers;

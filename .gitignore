@@ -66,6 +66,10 @@ build/
 /source/mon_icons_data.s
 /source/data_tables.c
 /source/learnsets.c
+# wild-encounter tables read out of the user's own cart dumps (tools/gen_encounters.py)
+/source/encounters.c
+# per-game move-source tables extracted from the pret decomps (tools/gen_learnsets2.py)
+/source/learnsets2.c
 /source/wallpapers.c
 /source/daycare_bg_data.h
 
@@ -93,3 +97,4 @@ tools/__pycache__/
 #  to the end product".) They stay on disk; git just stops carrying them.
 docs/
 .claude/
+__pycache__/
