@@ -183,31 +183,27 @@ static const char* mon_label(const PkMon* m) {
  * rows, so the two paths look identical on screen. */
 static void run_checks(const PkMon* m, bool want_rng, Pk2Report* R) {
   pk_check_legality2_ex(m, R, want_rng ? PK2_RUN_PIDIV : 0);
-  if (!want_rng || !(R->hooks_absent & PK2_HOOK_PIDIV)) return;
+  /* pidiv_ran (not the hooks_absent bit) is the signal, because there are TWO ways
+   * to come back without an answer: the hook is a weak no-op, or the core
+   * short-circuited before reaching it (bad egg / species out of range). The user
+   * pressed a button either way and is owed a line. */
+  if (!want_rng || R->pidiv_ran) return;
 
-  PkPidiv pv;
-  pk_pidiv_check(m, &pv);
-  char t[64];
-  uint8_t sev = PK2_INFO;
-  if (pv.exempt) {
-    /* Exempt is not a failure: eggs/events/GC mons have no single-stream PID-IV
-     * link to test, so "skipped" is the honest word (gen3_pidiv.h, eggs section). */
-    siprintf(t, "RNG check skipped: %s", pk_pidiv_exempt_name(pv.exempt));
-  } else if (pv.method) {
-    siprintf(t, "RNG: %s, seed %08X", pk_pidiv_method_name(pv.method), (unsigned)pv.seed);
-  } else {
-    /* A non-match is evidence, never a verdict (gen3_pidiv.h): SUSPECT only. */
-    siprintf(t, "RNG: no method makes this PID+IVs");
-    sev = PK2_SUSPECT;
+  /* Re-run the CORE with PK2_RUN_PIDIV rather than reimplementing the check here.
+   * This used to be a private copy of the PIDIV logic, and it silently dropped the
+   * in-game-trade exemption that gen3_legality_hooks.c added *because it was
+   * measured*: four of the five mons across Guy's five saves that fail the RNG
+   * search are NPC trades, whose PID is fixed in the trade template and has no
+   * relation to any RNG stream. So the same Pokemon was judged differently depending
+   * on whether you reached it through this button or through the box sweep. One
+   * implementation, one answer — and the hook stays weak-linked, so a build without
+   * gen3_legality_hooks.o simply leaves pidiv_ran clear and we say so. */
+  pk_check_legality2_ex(m, R, PK2_RUN_PIDIV);
+  if (!R->pidiv_ran) {
+    pk2_add(R, PK2_CAT_PID, PK2_INFO, "RNG check unavailable in this build");
+    R->pidiv_ran = 1;
+    R->grade = R->n_invalid ? PK2_ILLEGAL : R->n_suspect ? PK2_QUESTIONABLE : PK2_LEGAL;
   }
-  pk2_add(R, PK2_CAT_PID, sev, t);         /* pk2_add truncates to PK2_TEXT_LEN */
-  R->pidiv_ran    = 1;
-  R->pidiv_method = pv.method;
-  R->pidiv_seed   = pv.seed;
-  R->hooks_absent &= (uint8_t)~PK2_HOOK_PIDIV;   /* we answered it ourselves */
-  /* pk2_add updates the counters but not the grade — pk_check_legality2_ex finalises
-   * that, and it has already returned. Re-derive it with the same expression. */
-  R->grade = R->n_invalid ? PK2_ILLEGAL : R->n_suspect ? PK2_QUESTIONABLE : PK2_LEGAL;
 }
 
 /* ---- help ------------------------------------------------------------------ */
@@ -325,18 +321,22 @@ static int sweep_screen(const uint8_t* block, int box, int here, Pk2Report* R) {
         int y = 20 + i * 12;
         bool s = (top + i == sel);
         if (s) ui_fill_rect(2, y - 2, 236, 12, UI_SEL);
+        /* Fixed columns, each one width-CLAMPED, so a 10-glyph nickname can never
+         * push the verdict word off the right edge:
+         *   4 marker | 12 slot no. | 32..132 name | 138..216 verdict | 234 count */
+        if (h->slot == here) ui_ptext(4, y, UI_DIM, ">");
         PkMon mm;
         char num[8];
         siprintf(num, "%2d", h->slot + 1);
-        ui_text(6, y, s ? UI_SELTEXT : UI_DIM, num);
+        ui_text(12, y, s ? UI_SELTEXT : UI_DIM, num);
         if (pk_decode_mon(box_rec(block, box, h->slot), false, &mm)) {
           pk_resolve(&mm);
-          ui_ptext_fit(28, y, 108, s ? UI_SELTEXT : UI_TEXT, mon_label(&mm));
+          ui_ptext_fit(32, y, 100, s ? UI_SELTEXT : UI_TEXT, mon_label(&mm));
         }
-        if (h->slot == here) ui_ptext(140, y, UI_DIM, "here");
-        char tag[24];
-        siprintf(tag, "%s %d", grade_word(h->grade), h->ninv + h->nsus);
-        ui_ptext_right(234, y, grade_ink(h->grade), tag);
+        char cnt[8];
+        siprintf(cnt, "x%d", h->ninv + h->nsus);
+        ui_ptext_right(234, y, grade_ink(h->grade), cnt);
+        ui_ptext_fit(138, y, 78, grade_ink(h->grade), grade_word(h->grade));
       }
       if (nhit > SW_VIS) {
         int trk = SW_VIS * 12, bh = trk * SW_VIS / nhit;
@@ -347,9 +347,11 @@ static int sweep_screen(const uint8_t* block, int box, int here, Pk2Report* R) {
       }
     }
 
-    ui_hline(0, 142, UI_SCR_W, UI_BORDER);
-    ui_ptext(4, 145, UI_DIM, "Worst first. Only flagged cells listed.");
-    ui_ptext(4, 154, UI_DIM, nhit ? "U/D   A open that Pokemon   B back" : "B back");
+    /* Second footer row at y=152: the 5x7 cell is 8 rows, so anything below this
+     * loses its descenders off the bottom of the 160 px screen. */
+    ui_hline(0, 140, UI_SCR_W, UI_BORDER);
+    ui_ptext(4, 143, UI_DIM, "Worst first. Only flagged cells listed.");
+    ui_ptext(4, 152, UI_DIM, nhit ? "U/D   A open that Pokemon   B back" : "B back");
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return -1;
@@ -455,9 +457,16 @@ int pdna_legality_show_box(const PkMon* m, const uint8_t* block, int box, int sl
     else if ((k & KEY_R) && has_box) {
       int pick = sweep_screen(block, box, cur_slot, &R);   /* R is scratch in there */
       rmbl_fire(RCUE_ROOM);
-      if (pick >= 0 && pk_decode_mon(box_rec(block, box, pick), false, &cur)) {
-        pk_resolve(&cur);
-        cur_slot = pick;
+      if (pick >= 0) {
+        /* Decode into a TEMPORARY: pk_decode_mon memsets its output before it can
+         * return false, so decoding straight into `cur` would blank the Pokemon on
+         * screen if the slot ever came back empty. */
+        PkMon nm;
+        if (pk_decode_mon(box_rec(block, box, pick), false, &nm)) {
+          pk_resolve(&nm);
+          cur = nm;
+          cur_slot = pick;
+        }
       }
       rng_ran = false;                 /* a different Pokemon: its RNG is unchecked */
       run_checks(&cur, false, &R);     /* rebuild what the sweep overwrote */

@@ -54,6 +54,44 @@ static void PF(const char* s, int x, int maxw) { chk("ptext_fit", x, maxw, pwidt
 /* fixed-width sys8 string drawn at x */
 static void T(const char* s, int x) { chk("text", x, SCR_W - x, (int)strlen(s) * SYS8_W, s); }
 
+/* ---- ADDED for the legality report screen (source/pdna_legality.c) --------
+ * Its help pages are the first fixed text in PokeDNA that is WRAPPED rather than
+ * clamped: ui_ptext_wrap guarantees the width but nothing guarantees the page still
+ * ends above the footer rule. So mirror ui_ptext_break (source/ui.c:324) to count
+ * lines, and check the resulting page HEIGHT. */
+static int wrap_lines(const char* s, int maxw) {
+  int n = 0;
+  while (*s) {
+    const char* p = s;
+    int w = 0, last_space = -1;
+    while (*p) {
+      if (*p == ' ') last_space = (int)(p - s);
+      unsigned c = (unsigned char)*p;
+      if (c < 32u || c > 127u) c = '?';
+      int a = ui_font_w[c - 32];
+      if (w + a > maxw) break;
+      w += a; p++;
+    }
+    int i = (int)(p - s), skip;
+    if (!s[i]) skip = i;                       /* the rest fits */
+    else if (last_space > 0) skip = last_space + 1;
+    else skip = i ? i : 1;
+    s += skip; n++;
+  }
+  return n;
+}
+/* Pixels one help_para() consumes: wrapped lines at 9 px pitch, then 5 px of gap. */
+static int WRAPH(const char* s) { return wrap_lines(s, 228) * 9 + 5; }
+/* Non-string check: a laid-out value must stay within a limit. */
+static void chkv(const char* what, int value, int limit) {
+  checks++;
+  int ok = (value <= limit);
+  if (!ok) fails++;
+  printf("  %-4s %-46.46s          y=%-4d limit=%-4d %s\n",
+         ok ? "ok" : "FAIL", "(laid-out height)", value, limit, what);
+}
+/* ---- end of the added helpers -------------------------------------------- */
+
 int main(void) {
   printf("== Battle Record screen (#20) ==\n");
   /* pdna_main.c — populated screen, the free band under the team columns */
@@ -120,6 +158,173 @@ int main(void) {
    * "DAY CARE" title, which ends at 4 + 8*8 = 68 px */
   chk("daycare title bar", 236 - pwidth("Boarding 2/2"), 236 - 68,
       pwidth("Boarding 2/2"), "Boarding 2/2");
+
+  /* ======================================================================== */
+  /* ==== BEGIN: legality report screen (source/pdna_legality.c) ============ */
+  /* ======================================================================== */
+  printf("\n== legality report: banner ==\n");
+  /* The banner word is fixed-width at x=4; the mon's NAME is drawn from x=104, so
+   * the widest verdict must stop before that or the two collide. */
+  chk("banner word", 4, 100, (int)strlen("QUESTIONABLE") * SYS8_W, "QUESTIONABLE");
+  chk("banner word", 4, 100, (int)strlen("ILLEGAL") * SYS8_W, "ILLEGAL");
+  /* subtitles: ui_ptext_fit(4, 12, 232, ...) */
+  PF("Values the games cannot produce.", 4, 232);
+  PF("Worth a look, not an accusation.", 4, 232);
+  PF("Nothing unusual in what we check.", 4, 232);
+
+  printf("\n== legality report: category headers + rows ==\n");
+  /* pk2_cat_name() drawn with ui_text at x=4; the divider rule starts after it. */
+  T("STRUCTURE", 4); T("MOVES", 4); T("PID/RNG", 4);
+  T("MET", 4); T("EGG", 4); T("FLAGS", 4);
+  /* every row and note: ui_ptext_fit(14, y, 218, ...) */
+  PF("No impossible or odd values found.", 14, 218);
+  PF("More findings than fit; list cut off.", 14, 218);
+  PF("Move-source checks: not in this build.", 14, 218);
+  PF("Encounter checks: not in this build.", 14, 218);
+  PF("Press A for the PID/IV RNG check.", 14, 218);
+  /* the PIDIV-fallback rows this screen appends itself (worst case of each shape) */
+  PF("RNG: no method makes this PID+IVs", 14, 218);
+  PF("RNG: Method 4 (Unown), seed 89ABCDEF", 14, 218);
+  /* widest of pk_pidiv_exempt_name()'s eight strings; the "seed" line above is the
+   * widest of pk_pidiv_method_name()'s seven */
+  PF("RNG check skipped: unknown origin", 14, 218);
+  /* the longest strings gen3_legality2.c can hand this screen — a Pk2Row is 39
+   * chars and they render HERE, so their fit is this screen's problem */
+  PF("Ability slot does not match the PID", 14, 218);
+  PF("Name too long for a JP-language mon", 14, 218);
+  PF("Pokerus strain 8 cannot be rolled", 14, 218);
+  PF("Mew/Deoxys lacks the event flag", 14, 218);
+
+  printf("\n== legality report: footers + busy panels ==\n");
+  P("PokeDNA only reads here. Nothing is changed.", 4);
+  P("U/D  A RNG  R sweep  START help  B back", 4);
+  P("U/D  A RNG  START help  B back", 4);
+  /* RNG busy panel: ui_panel(40, 62, 160, 38) -> ink must stop by x=198 */
+  chk("rng panel", 48, 198 - 48, (int)strlen("RNG CHECK") * SYS8_W, "RNG CHECK");
+  PF("Searching 65,536 seeds...", 48, 150);
+
+  printf("\n== legality report: box sweep ==\n");
+  /* sweep progress panel: ui_panel(24, 58, 192, 46) -> ink must stop by x=214 */
+  chk("sweep panel", 32, 214 - 32, (int)strlen("BOX SWEEP") * SYS8_W, "BOX SWEEP");
+  PF("Fast checks, no RNG search.", 32, 182);
+  PF("Checking 30 of 30...", 32, 176);   /* erased/redrawn in a 176 px band */
+  /* list header: "BOX SWEEP" (sys8, ends at 76) plus a right-aligned counter */
+  chk("sweep counter", 236 - pwidth("30 of 30 flagged"), 236 - 76,
+      pwidth("30 of 30 flagged"), "30 of 30 flagged");
+  /* one row = marker | slot no. | name (32..132) | verdict (138..216) | count.
+   * The verdict column is the tight one: QUESTIONABLE has to fit 78 px. */
+  PF("QUESTIONABLE", 138, 78);
+  PF("ILLEGAL", 138, 78);
+  PF("x30", 234 - 18, 18);
+  /* empty-box state, drawn at x=8 */
+  P("Nothing questionable in this box.", 8);
+  P("All 30 cells passed the fast checks.", 8);
+  P("The RNG check is per Pokemon (A).", 8);
+  P("Worst first. Only flagged cells listed.", 4);
+  P("U/D   A open that Pokemon   B back", 4);
+  P("B back", 4);
+
+  printf("\n== legality report: help pages ==\n");
+  T("WHAT THE VERDICTS MEAN", 4);
+  T("WHAT THIS SCREEN DOES", 4);
+  T("QUESTIONABLE", 6);
+  P("A more   B back", 4);
+  /* The help prose is ui_ptext_wrap'd, so WIDTH is guaranteed — HEIGHT is not.
+   * Each page lays paragraphs out top-down and must finish above the footer rule
+   * at y=148, so count the wrapped lines the same way ui_ptext_break does. */
+  {
+    /* page 0: y=18, a 10 px heading before each of three paragraphs */
+    int y = 18;
+    y += 10; y += WRAPH("Every check this build can run passed. It is not proof of "
+                        "anything: PokeDNA cannot see every rule of the games.");
+    y += 10; y += WRAPH("A value with no path we know of. Event Pokemon, Colosseum/XD "
+                        "Pokemon and in-game trades land here too, so read it as worth "
+                        "a look, not as an accusation.");
+    y += 10; y += WRAPH("A value the retail games cannot produce at all, such as an EV "
+                        "total above 510.");
+    chkv("help page 1 height", y, 148);
+    /* page 1: y=18, three paragraphs, no headings */
+    y = 18;
+    y += WRAPH("This screen only READS. PokeDNA never edits, fixes or releases "
+               "anything because of these checks.");
+    y += WRAPH("A runs the PID/IV RNG check on this Pokemon: it searches 65,536 seeds "
+               "for one that makes both its PID and its IVs. Eggs, event and "
+               "Colosseum/XD Pokemon are exempt, because no such link exists for them.");
+    y += WRAPH("R sweeps all 30 cells of this box with the fast checks only. Run the "
+               "RNG check per Pokemon from here.");
+    chkv("help page 2 height", y, 148);
+  }
+  /* ==== END: legality report screen ====================================== */
+
+  /* ======================================================================== */
+  /* ==== BEGIN: Game Boy import (source/pdna_gen12.c + the read-only mon  == */
+  /* ====        menu in source/pdna_main.c)                              === */
+  /* ======================================================================== */
+  printf("\n== GB import: info page ==\n");
+  /* Header line: ui_ptext_fit(4, 18, 232, ...). Worst case is the longest version
+   * name + a 7-glyph player + a 5-digit id. */
+  PF("Red/Blue/Yellow  -  MMMMMMM  ID 65535", 4, 232);
+  /* The honest line is WRAPPED at 232 px into at most 2 lines starting at y=30; the
+   * divider under it is at y=50, so 2 lines at 9 px pitch is the whole budget. */
+  chkv("honest line fits 2 wrapped lines",
+       wrap_lines("Converted copy - not a native Gen 3 Pokemon.", 232), 2);
+  PF("Pokemon in this save: 999", 4, 232);
+  PF("Ready to copy: 999", 4, 232);
+  PF("Shown but locked: 999", 4, 232);
+  PF("Slots we cannot read: 999", 4, 232);
+  /* The closing paragraph is wrapped at 232 px from y=105 with a 9 px pitch, and the
+   * footer rule is at y=147 -> at most 4 lines. */
+  chkv("info paragraph fits above the footer",
+       105 + wrap_lines("Copy a Pokemon here, then paste it into your Gen 3 boxes or the Bank. "
+                        "This Game Boy save is only ever read.", 232) * 9, 147);
+  T("A browse  SEL list  B back", 4);
+
+  printf("\n== GB import: not-transferable list ==\n");
+  T("NOT TRANSFERABLE", 4);
+  PF("Where they are, and why they stay:", 4, 232);
+  PF("Every Pokemon here can be copied.", 4, 232);
+  PF("More than fit; the rest are in the boxes.", 4, 232);
+  /* Three columns per row: where (x=4, 60 px), species (x=66, 74 px), reason
+   * (x=142, 94 px). The widest of each. */
+  PF("BOX 14 #20", 4, 60);
+  PF("PARTY #6", 4, 60);
+  PF("BELLSPROUT", 66, 74);          /* a 10-glyph Gen-1/2 species name */
+  PF("NIDORAN?", 66, 74);
+  T("B back", 4);
+
+  printf("\n== GB import: read-only mon menu (pdna_main.c) ==\n");
+  /* ui_panel(138, .., 100, ..) -> prose is ui_ptext_fit(144, y, 88, ..) and the
+   * fixed-width rows are ui_text at x=148 inside a panel whose right edge is 238. */
+#define RO_PROSE_W 88
+  PF("Converted copy", 144, RO_PROSE_W);
+  PF("Egg: can't move", 144, RO_PROSE_W);
+  PF("Holding an item", 144, RO_PROSE_W);
+  PF("Glitch Pokemon", 144, RO_PROSE_W);
+  PF("Bad move data", 144, RO_PROSE_W);
+  PF("Bad level data", 144, RO_PROSE_W);
+  PF("No ID could fit", 144, RO_PROSE_W);
+  PF("Can't convert", 144, RO_PROSE_W);
+  chk("ro menu row", 148, 238 - 148, (int)strlen("LEGALITY") * SYS8_W, "LEGALITY");
+  chk("ro menu row", 148, 238 - 148, (int)strlen("CANCEL") * SYS8_W, "CANCEL");
+  chk("ro menu foot", 144, 238 - 144, (int)strlen("A ok B back") * SYS8_W, "A ok B back");
+
+  printf("\n== GB import: message panels ==\n");
+  /* s_msg: ui_text title at x=20, body via ui_ptext_fit(20, .., 200, ..); the panel
+   * is ui_panel(12, 50, 216, ..) so ink must stop by x=228. */
+  chk("gb msg title", 20, 228 - 20, (int)strlen("NOT A GB SAVE") * SYS8_W, "NOT A GB SAVE");
+  chk("gb msg title", 20, 228 - 20, (int)strlen("CANNOT OPEN") * SYS8_W, "CANNOT OPEN");
+  chk("gb msg title", 20, 228 - 20, (int)strlen("NOT NOW") * SYS8_W, "NOT NOW");
+  PF("Save the Pokemon you moved,", 20, 200);
+  PF("then open the GB save.", 20, 200);
+  PF("The file could not be read.", 20, 200);
+  /* every refusal reason pdna_gen12_mount can hand s_msg */
+  PF("Not a Game Boy save file.", 20, 200);
+  PF("Wrong size for a GB save.", 20, 200);
+  PF("Japanese saves not supported yet.", 20, 200);
+  PF("GB save checksum failed (corrupt?).", 20, 200);
+  PF("Could not read the GB header.", 20, 200);
+  PF("Unrecognised file.", 20, 200);
+  /* ==== END: Game Boy import ============================================== */
 
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;

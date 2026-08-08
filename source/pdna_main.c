@@ -41,6 +41,7 @@
 #include "gen3_edit.h"     /* EditMon, gen3_edit_load/commit, em_set_*, em_preview */
 #include "gen3_clip.h"     /* ClipMon, slot ops (copy/paste/dup/release) */
 #include "pdna_legality.h" /* pdna_legality_show */
+#include "pdna_gen12.h"    /* GB import: mount a Gen-1/2 save read-only */
 #include "pdna_pk.h"     /* pdna_pk_export (.pk3) */
 #include "pdna_bank.h"   /* pdna_bank_show (bank = parallel boxes) */
 #include "gen3_flags.h"    /* event flags */
@@ -844,8 +845,12 @@ bool app_bank_defer_full(void) { return pdna_bank_defer_full(); }
 bool app_bank_defer_room(int n) { return pdna_bank_defer_room(n); }
 void app_bank_defer_pop(int n) { pdna_bank_defer_pop(n); }
 void app_bank_flush_deletions(void) { pdna_bank_flush_deletions(); }   /* delete queued Bank sources NOW (after the PC dest is committed) */
-void app_bank_hide_pending(int box, PkMon g[30]) { pdna_bank_hide_pending(box, g); }
-bool app_bank_slot_pending(int box, int slot) { return pdna_bank_slot_pending(box, slot); }
+/* A read-only FOREIGN source (a mounted GB save) sets is_bank so it inherits the
+ * bank's safe navigation, but it is NOT the bank: its box indices mean nothing to the
+ * deferred-deletion queue, and letting a queued Bank->PC delete blank one of its
+ * cells would make a Pokemon vanish from a save we do not even write to. */
+void app_bank_hide_pending(int box, PkMon g[30]) { if (app_src_readonly()) return; pdna_bank_hide_pending(box, g); }
+bool app_bank_slot_pending(int box, int slot) { return app_src_readonly() ? false : pdna_bank_slot_pending(box, slot); }
 bool app_bank_clear_slots(int box, const uint8_t* slots, const uint8_t (*recs80)[80], int n) {
   return pdna_bank_clear_slots(box, slots, recs80, n);
 }
@@ -1426,6 +1431,13 @@ void app_party_remove_at(int idx) {
 int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
                       bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
   if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return 0; }
+  /* Same two-axis gate as app_mon_menu, and here it is a DATA-LOSS guard: a party mon
+   * carried out through this overlay is removed from the party for real once it is
+   * dropped (drop_held -> clear_origin -> app_party_remove_at), so dropping it into a
+   * read-only source's buffer — which nothing persists — would destroy it. A
+   * read-only source sets is_bank, which already stops pdna_box from reaching the
+   * PARTY tab, so this is defence in depth on a path that must never open. */
+  if (app_src_readonly()) { snd_deny(); return 0; }
   const int gx0 = 100, gy0 = 26, dx = 46, dy = 42;   /* 2x3 cluster, right side */
   const int BACK = 6;
   int sel = 0;
@@ -1538,6 +1550,73 @@ static bool app_hatch(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* 
   return app_commit_with_dex(rec, is_party, commit, block);   /* verified write + auto-register dex */
 }
 
+/* ---- read-only BoxSource gate (contract + rationale in pdna_app.h) --------- */
+static const char* (*g_src_why)(const uint8_t* rec80);
+static const char*  g_src_note;
+static bool         g_src_ro;
+
+void app_src_readonly_set(const char* (*why_locked)(const uint8_t* rec80), const char* note) {
+  g_src_why = why_locked; g_src_note = note; g_src_ro = true;
+}
+void app_src_readonly_clear(void) { g_src_why = 0; g_src_note = 0; g_src_ro = false; }
+bool app_src_readonly(void) { return g_src_ro; }
+
+/* The action menu for a source that is read-only in ITSELF: only actions that cannot
+ * touch it. VIEW opens the summary with editing off; COPY just fills the 80-byte
+ * clipboard, so the mon leaves through the existing clipboard -> PC/Bank path and
+ * nothing new writes anything. Deliberately absent: PASTE / RELEASE / DUPLICATE /
+ * CREATE / MOVE (they mutate a buffer whose commit() cannot persist it) and TO GAME
+ * (it writes g_pc, which a mounted foreign source may currently be borrowing as its
+ * EWRAM arena). `why_locked` can additionally veto COPY for one record and say why —
+ * a Pokemon that is visible but cannot travel is far better than one that vanishes. */
+static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0) {
+  const char* locked = g_src_why ? g_src_why(rec) : 0;
+  enum { RO_VIEW, RO_LEGAL, RO_COPY, RO_CANCEL };
+  int act[4]; const char* lab[4]; int n = 0;
+  lab[n] = "VIEW";     act[n++] = RO_VIEW;
+  lab[n] = "LEGALITY"; act[n++] = RO_LEGAL;
+  if (!locked) { lab[n] = "COPY"; act[n++] = RO_COPY; }
+  lab[n] = "CANCEL";   act[n++] = RO_CANCEL;
+
+  /* 48, not the 16 the menu below uses: ui_truncate documents max_cols*4+1, and a
+   * 10-glyph nickname of gender signs really is 30 UTF-8 bytes. GB nicknames hit this
+   * (NIDORAN-male is in the test corpus), so this buffer is sized for it. */
+  char title[48];
+  ui_truncate(title, m0->nickname[0] ? m0->nickname : pk_species_name(m0->species), 11);
+  const int hdr = 15 + (g_src_note ? 10 : 0) + (locked ? 10 : 0);
+  const int mx = 138, mw = 100, mh = hdr + 3 + n * 13 + 11, my = 80 - mh / 2;
+  int sel = 0;
+  for (;;) {
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, title);
+    int y = my + 15;
+    /* Proportional face: these two lines are prose, and the panel is only 88 px wide
+     * inside its border (tests/host_textfit_test.c pins both). */
+    if (g_src_note) { ui_ptext_fit(mx + 6, y, mw - 12, UI_WARN, g_src_note); y += 10; }
+    if (locked)     { ui_ptext_fit(mx + 6, y, mw - 12, UI_WARN, locked);     y += 10; }
+    ui_hline(mx + 2, y, mw - 4, UI_BORDER);
+    for (int i = 0; i < n; i++) {
+      int ry = y + 3 + i * 13; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, ry - 1, mw - 4, 12, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, ry, s ? UI_SELTEXT : UI_TEXT, lab[i]);
+    }
+    ui_text(mx + 6, my + mh - 9, UI_DIM, "A ok B back");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return false;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % n;
+    else if (k & KEY_A) {
+      switch (act[sel]) {
+        case RO_VIEW:  { uint8_t d[100]; int card = 0;
+                         pdna_inspect(rec, is_party, false, d, 0, &card); return false; }
+        case RO_LEGAL: pdna_legality_show(m0); return false;
+        case RO_COPY:  return app_copy(rec, is_party);
+        default:       return false;
+      }
+    }
+  }
+}
+
 bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot) {
   PkMon m0;
   bool occupied = pk_decode_mon(rec, is_party, &m0);
@@ -1546,6 +1625,17 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
   if (!app_can_edit()) {                                 /* read-only carts: view only */
     if (occupied) { uint8_t d[100]; int card = 0; pdna_inspect(rec, is_party, false, d, 0, &card); }
     return false;
+  }
+
+  /* THE FIX: editability has two axes. Everything below this point was gated on
+   * app_can_edit() alone — the CART — so on an Omega a source that is read-only in
+   * itself (a mounted Gen-1/2 save) was still offered PASTE / RELEASE / DUPLICATE.
+   * Those would have mutated its RAM buffer, its commit() would have no-op'd, and the
+   * screen would have shown a change that never happened. pdna_box gates its own
+   * destructive paths on src->can_edit(); this is the same gate for the menu. */
+  if (g_src_ro) {
+    if (!occupied) return false;                         /* nothing to create or paste into */
+    return app_mon_menu_readonly(rec, is_party, &m0);
   }
 
   enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_TOBOX, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CREATE, A_HATCH, A_CANCEL };
@@ -1599,7 +1689,11 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
         case A_SUMMARY: return is_party ? party_browse(slot, commit)                  /* party: scroll mons */
                                         : app_box_browse(block, box, slot, commit);   /* box: scroll mons */
         case A_ITEM:    return app_quick_item (rec, is_party, commit);
-        case A_LEGAL:   pdna_legality_show(&m0); return false;
+        case A_LEGAL:   /* pass the box context so the screen can offer the 30-cell sweep;
+                         * a party mon has no box, so it gets the single-mon report */
+                        (void)pdna_legality_show_box(&m0, is_party ? NULL : block,
+                                                     is_party ? -1 : box, slot);
+                        return false;
         case A_HATCH:   return app_hatch(rec, is_party, commit, block);   /* egg -> revealed Pokemon */
         case A_MOVE:    g_move_req = true; return false;            /* box loop handles the move */
         case A_TOBOX:   g_party_tobox_req = true; return false;     /* party popup grabs it for a box */
@@ -3743,6 +3837,7 @@ enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_MIRAGE, NV_DEX, N
         * image (tools/fuse_rom.py) the map reads it from cartridge space, no SD needed.
         * An unfused emulator build shows the screen's own "no ROM" message. */
        NV_MAP,
+       NV_GB,          /* import from a Game Boy (Gen 1/2) save on the card */
        NV_SETTINGS, NV_BACK, NV_COUNT };
 
 /* Menu geometry. The column is wide enough for "Flags & counters" (85 px in the
@@ -3775,7 +3870,7 @@ static int nav_menu(void) {
     "Party", "Bank", "Daycare", "Trainer", "Clock fix", "Mirage", "Pokedex",
     "Bag", "Flags & counters",
     "Bases", "Blocks", "Tickets", "Records",
-    "Frontier", "Fly", "Map",
+    "Frontier", "Fly", "Map", "GB import",
     "Settings", "Back" };
   const int rows = (NV_COUNT + 1) / 2;              /* 9 rows per column */
   const int cw = NAV_COL_W, rh = 13;
@@ -4010,6 +4105,19 @@ static void view_save(const char* path) {
         case NV_FRONTIER: pdna_frontier(g_sb1, g_sb2, g_game); break;   /* viewing free; editing gates on Omega inside */
         case NV_FLY:      pdna_fly(g_sb1, g_game); break;        /* viewing free; editing gates on Omega inside */
         case NV_MAP:      pdna_map(g_sb1, g_sb2, g_game); break;  /* the user's own ROM: SD file, or fused into this image */
+        case NV_GB: {
+#ifdef PDNA_DELTA
+          msg_wait("GB IMPORT", UI_DIM, "Needs the SD card.", "Not available in this build.");
+#else
+          /* Browse for a Gen-1/2 .sav and mount it READ-ONLY as a box source. The
+           * loaded save's game is stamped as the origin on anything copied out, so a
+           * converted mon claims the cartridge it is actually going into. */
+          char gp[PATH_MAX];
+          if (app_pick_gb_save(gp, sizeof gp))
+            pdna_gen12_show(gp, (uint8_t)(g_game == PK_RS ? 1 : g_game == PK_FRLG ? 4 : 3));
+#endif
+          break;
+        }
         case NV_SETTINGS: pdna_settings(); break;
         default: break;                          /* NV_BACK */
       }

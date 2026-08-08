@@ -30,6 +30,34 @@ typedef bool (*AppCommitFn)(void);
  * "TO GAME" (inject into the loaded save). Returns true iff a write happened. */
 bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot);
 
+/* ---- read-only BoxSource gate ------------------------------------------------
+ * Editability has TWO axes and app_mon_menu used to know only one of them:
+ *   - the CART (app_can_edit: writes are EZ-Flash-Omega-only), and
+ *   - the SOURCE (BoxSource.can_edit: a mounted Gen-1/2 save is read-only no matter
+ *     what cart it is running on — the conversion is one-way and the GB file is
+ *     never written).
+ * On an Omega, a read-only source therefore got the FULL menu: PASTE / RELEASE /
+ * DUPLICATE / CREATE would mutate the source's RAM buffer, its commit() would
+ * no-op, and the screen would show a change that never happened. pdna_box already
+ * gates its own destructive paths on src->can_edit(); app_mon_menu could not,
+ * because it is handed a record and a commit function, not the source.
+ *
+ * So a source that is read-only *as a source* registers itself for the duration of
+ * its pdna_box() run. While registered:
+ *   - app_mon_menu offers only VIEW / LEGALITY / COPY (+ the reason a specific
+ *     record cannot even be copied), and
+ *   - the singleton bank's deferred-delete bookkeeping (app_bank_hide_pending /
+ *     app_bank_slot_pending) is skipped, because a foreign source's boxes are not
+ *     the bank's boxes and a queued Bank->PC deletion must never hide one of their
+ *     Pokemon.
+ * Nothing registers by default, so every existing call site behaves exactly as
+ * before. `why_locked(rec80)` returns NULL when that record may be copied, else a
+ * short reason to show; `note` is a short line shown under the menu title (e.g.
+ * "Converted copy"). Both may be NULL. */
+void app_src_readonly_set(const char* (*why_locked)(const uint8_t* rec80), const char* note);
+void app_src_readonly_clear(void);
+bool app_src_readonly(void);
+
 /* Bank "Copy to game": inject a stored 80-byte box record into the loaded save's
  * first free PC box slot (and commit). Returns true iff written. Omega-only. */
 bool app_inject_to_game(const uint8_t* rec80);

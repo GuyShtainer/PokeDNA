@@ -16,5 +16,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game);
  * the full path in out. Fails (false) when the arena is unavailable — i.e. unsaved
  * box moves are pending — as well as on cancel. Used by Settings > Game ROM. */
 bool app_pick_rom(char* out, int out_cap);
+/* The same browser filtered to Game Boy battery files (.sav/.srm) for GB import. */
+bool app_pick_gb_save(char* out, int out_cap);
 
 #endif /* PDNA_MAP_H */

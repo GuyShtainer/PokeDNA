@@ -124,13 +124,27 @@ static bool rom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
 #define PICK_NAME 64
 typedef struct { char name[PICK_NAME]; bool dir; } PickEnt;
 
-static bool has_gba_ext(const char* n) {
+/* The picker's extension filter. `pick_rom` wants .gba; the GB-import picker wants
+ * .sav/.srm (Game Boy battery files), so the wanted extension is a parameter now and
+ * the two entry points below just say which they mean. */
+static const char* s_pick_ext[3] = { ".gba", 0, 0 };
+static bool ext_matches(const char* n) {
   int l = (int)strlen(n);
-  if (l < 4) return false;
-  const char* e = n + l - 4;
-  return (e[0] == '.') && (e[1] == 'g' || e[1] == 'G') &&
-         (e[2] == 'b' || e[2] == 'B') && (e[3] == 'a' || e[3] == 'A');
+  for (int e = 0; e < 3 && s_pick_ext[e]; e++) {
+    int el = (int)strlen(s_pick_ext[e]);
+    if (l <= el) continue;
+    const char* t = n + l - el;
+    int ok = 1;
+    for (int i = 0; i < el && ok; i++) {
+      char a = t[i], b = s_pick_ext[e][i];
+      if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+      if (a != b) ok = 0;
+    }
+    if (ok) return true;
+  }
+  return false;
 }
+
 
 /* Browse for a .gba. `cwd` is updated in place. Returns true with the full path in
  * `out`. Entries live in the caller's buffer so this adds no EWRAM of its own. */
@@ -145,7 +159,7 @@ static bool pick_rom(char* cwd, int cwd_cap, char* out, int out_cap, PickEnt* en
       if (f_opendir(&d, cwd) == FR_OK) {
         while (n < PICK_MAX && f_readdir(&d, &fi) == FR_OK && fi.fname[0]) {
           bool isdir = (fi.fattrib & AM_DIR) != 0;
-          if (!isdir && !has_gba_ext(fi.fname)) continue;
+          if (!isdir && !ext_matches(fi.fname)) continue;
           if (fi.fname[0] == '.') continue;
           strncpy(ents[n].name, fi.fname, PICK_NAME - 1);
           ents[n].name[PICK_NAME - 1] = 0;
@@ -1896,7 +1910,23 @@ bool app_pick_rom(char* out, int out_cap) {
   if (!mem) return false;                    /* PC dirty or arena held: caller explains */
   char cwd[PATH_MAX];
   strcpy(cwd, "/");
+  s_pick_ext[0] = ".gba"; s_pick_ext[1] = 0;
   bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, (PickEnt*)mem);
+  app_arena_release();
+  return ok;
+}
+
+/* Same browser, Game Boy battery files: a Gen-1/2 save is 32 KiB (+ an optional RTC
+ * tail) and carries no signature in its NAME, so the extension filter is deliberately
+ * loose and pdna_gen12_mount does the real identification. */
+bool app_pick_gb_save(char* out, int out_cap) {
+  uint8_t* mem = app_arena_acquire(PICK_MAX * (uint32_t)sizeof(PickEnt));
+  if (!mem) return false;
+  char cwd[PATH_MAX];
+  strcpy(cwd, "/");
+  s_pick_ext[0] = ".sav"; s_pick_ext[1] = ".srm"; s_pick_ext[2] = 0;
+  bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, (PickEnt*)mem);
+  s_pick_ext[0] = ".gba"; s_pick_ext[1] = 0; s_pick_ext[2] = 0;   /* restore the default */
   app_arena_release();
   return ok;
 }

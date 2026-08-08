@@ -25,14 +25,14 @@
  *       +0xC8  const struct Item* items               (44 B/entry, description at +0x14)
  *       +0xFC  const u8* moveDescriptions             -- NULL in ALL retail builds
  *
- *   `moveDescriptions` being NULL is not a bug in our reader: pokeemerald sets
- *   `.moveDescriptions = NULL` (rom_header_gf.c:175) and only the fan expansion fills
- *   it in. gMoveDescriptionPointers (354 entries, [0] = Pound) therefore needs a
- *   pinned address per revision, exactly like rom_map.c's k_versions table.
+ *   `moveDescriptions` being NULL is not a bug in our reader: pokeemerald itself sets
+ *   `.moveDescriptions = NULL` (rom_header_gf.c:173, pokefirered:169) and only the fan
+ *   expansion fills it in. gMoveDescriptionPointers (354 entries, [0] = Pound) therefore
+ *   needs a pinned address per revision, exactly like rom_map.c's k_versions table.
  *
- *   Ruby / Sapphire predate the header entirely (ARM code sits at 0x100), so all
- *   three of their tables are pinned. Only the two R/S revisions there are dumps for
- *   are listed; every other revision fails closed rather than guessing an address.
+ *   Ruby / Sapphire predate the header entirely (ARM code sits at 0x100), so all three
+ *   of their tables are pinned. Only the two R/S revisions there is a dump for are
+ *   listed; every other revision fails closed rather than guessing an address.
  *
  * WHICH ROM MAY ANSWER (measured across all five carts, every string decoded):
  *   - ABILITY text is byte-identical in all five games (78/78 on every pair), so it
@@ -117,6 +117,9 @@ int rom_text_group(const RomText* rt);
  * ROM does not serve, a read failure, a byte outside the charset, an unterminated
  * string, or a decode that would not fit `cap`. It never returns a half-decoded or
  * truncated string: callers fall back to their art-free copy on 0.
+ *
+ * A 1 with an EMPTY string is a real answer, not a failure -- Ruby/Sapphire store an
+ * empty description for item 0 and for their unused slots. Only 0 means "fall back".
  */
 int rom_text_get(const RomText* rt, RomTextKind kind, uint16_t id, char* dst, uint32_t cap);
 

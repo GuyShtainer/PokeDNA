@@ -1,10 +1,10 @@
 /* Host test for the Gen 1/2 import: synthetic saves -> gen1_save/gen2_save ->
  * gen12_convert -> a real 80-byte Gen-3 PC record.
  *
- *   cc -std=c11 -I source -I tests tests/host_gen12_test.c tests/gen12_fixture.c \
- *      source/gen1_save.c source/gen2_save.c source/gen12_convert.c source/gen3_mon.c \
- *      source/gen3_edit.c source/gen3_save.c source/gen3_box.c source/data_tables.c \
- *      -o /tmp/hg12 && /tmp/hg12
+ *   cc -std=c11 -I source -I tests -DPDNA_GEN12_HOST tests/host_gen12_test.c \
+ *      tests/gen12_fixture.c source/gen1_save.c source/gen2_save.c \
+ *      source/gen12_convert.c source/pdna_gen12.c source/gen3_mon.c source/gen3_edit.c \
+ *      source/gen3_save.c source/gen3_box.c source/data_tables.c -o /tmp/hg12 && /tmp/hg12
  *
  * Guy owns no Gen-1/2 saves, so tests/gen12_fixture.c builds the corpus in memory. The
  * fixture is deliberately an INDEPENDENT transcription of the same primary sources the
@@ -23,6 +23,7 @@
 #include "gen1_save.h"
 #include "gen2_save.h"
 #include "gen12_convert.h"
+#include "pdna_gen12.h"
 #include "gen3_mon.h"
 #include "gen3_edit.h"
 #include "data_tables.h"
@@ -724,6 +725,281 @@ static void part3_convert(void) {
   }
 }
 
+
+/* ------------------------------------------------------------------------------
+ * (4) The BoxSource: a mounted GB save driven through the EXACT hooks pdna_box
+ *     calls, over the synthetic images from part 1/2.
+ *
+ * The load-bearing property here is DETERMINISM. A mounted GB save is never held in
+ * RAM: pdna_box asks records(box) for 30 x 80 bytes every time the user flips a box,
+ * and the whole box is re-converted on the spot. Meanwhile the clipboard, the bank's
+ * deferred-delete queue and app_pc_release_slot all identify a Pokemon by the FIRST
+ * EIGHT BYTES of its record (personality + OT id). So if a second page-in of the same
+ * box produced even one different byte in that range, "the mon I copied" and "the mon
+ * in that slot" would stop being the same mon — silently, and only for GB imports.
+ * That is why this is asserted three ways: same mount in a different order, and a
+ * COMPLETELY FRESH mount with fresh buffers.
+ * ---------------------------------------------------------------------------- */
+
+/* The read callback both builds use. On the GBA it is f_lseek + f_read; here it is a
+ * memcpy — the only difference between the hardware path and this test. */
+typedef struct { const uint8_t* img; uint32_t len; int reads; } MemFile;
+
+static bool mem_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
+  MemFile* f = (MemFile*)ctx;
+  if (!f || off > f->len || len > f->len - off) return false;
+  memcpy(buf, f->img + off, len);
+  f->reads++;
+  return true;
+}
+
+#define BS_MAXBOX 16
+#define BS_BOXREC (30 * 80)
+static uint8_t g_snap[2][BS_MAXBOX][BS_BOXREC];
+
+/* Page every box through the BoxSource hook and keep the bytes. `reverse` walks the
+ * boxes the other way round, so the second pass is not just a repeat of the first:
+ * a cache that returned the previously converted box would pass a forward repeat. */
+static void page_all(BoxSource* s, int nb, int which, bool reverse) {
+  for (int i = 0; i < nb; i++) {
+    int b = reverse ? nb - 1 - i : i;
+    uint8_t* r = s->records(b);
+    CHECK(r != 0, "records(%d) returned NULL", b);
+    if (r) memcpy(g_snap[which][b], r, BS_BOXREC);
+  }
+}
+
+static void part4_boxsource(GbfGame game, uint32_t rtc_tail) {
+  const char* label = (game == GBF_RBY) ? "R/B/Y"
+                    : (game == GBF_CRYSTAL) ? "Crystal" : "Gold/Silver";
+  printf("\n(4) BoxSource mount — %s%s\n", label, rtc_tail ? " (+RTC tail)" : "");
+
+  uint32_t len = gbf_build_ex(game, g_img, rtc_tail, growth_shipped);
+  MemFile f = { g_img, len, 0 };
+
+  static uint8_t recs[GB12_RECS_BYTES], stage[GB12_STAGE_BYTES];
+  Gb12Mount m;
+  const char* why = 0;
+
+  CHECK(pdna_gen12_size_is_gb(len), "%u bytes reads as a GB save size", (unsigned)len);
+  CHECK(!pdna_gen12_size_is_gb(131072u), "a 131072-byte Gen-3 save does not");
+  CHECK(!pdna_gen12_size_is_gb(GBF_SAVE_BYTES - 1u), "31 KiB does not");
+
+  bool ok = pdna_gen12_mount(&m, mem_read, &f, len, recs, stage, 3 /* Emerald */, &why);
+  CHECK(ok, "mount: %s", why ? why : "?");
+  if (!ok) return;
+
+  Gb12SaveKind want_kind = (game == GBF_RBY)     ? GB12_SAVE_RBY
+                         : (game == GBF_CRYSTAL) ? GB12_SAVE_CRYSTAL : GB12_SAVE_GS;
+  CHECK_EQ(m.kind, want_kind, "identified as %s", pdna_gen12_kind_name(want_kind));
+  CHECK_EQ(m.current_box, gbf_current_box(game), "current box (live copy, not the stale bank one)");
+  CHECK_EQ(m.tid, gbf_player_tid(), "trainer id");
+  CHECK_STR(m.player, gbf_player_name(), "player name");
+
+  /* ---- the census the info screen prints, against the roster ---- */
+  const int nb_real = gbf_nboxes(game);
+  int roster_total = 0, roster_refused = 0;
+  for (int b = -1; b < nb_real; b++) {
+    int n = 0; const GbfMon* r = gbf_roster(game, b, &n);
+    if (!r) continue;
+    roster_total += n;
+    for (int i = 0; i < n; i++) if (r[i].flags & GBF_F_REFUSE) roster_refused++;
+  }
+  CHECK_EQ(m.nstored, roster_total, "census counted every planted Pokemon");
+  CHECK_EQ(m.nready, roster_total - roster_refused, "census counted every convertible one");
+  CHECK_EQ(m.nblocked + m.nunreadable, roster_refused, "census counted every refusal");
+  CHECK_EQ(m.nreport, roster_refused, "every refusal is in the report the user is shown");
+  printf("    %s: %d stored, %d ready, %d locked, %d unreadable, %d SD reads at mount\n",
+         pdna_gen12_kind_name(m.kind), m.nstored, m.nready, m.nblocked, m.nunreadable, f.reads);
+
+  /* ---- the BoxSource contract (source/pdna_box.h) ---- */
+  BoxSource s = pdna_gen12_source(&m);
+  CHECK_EQ(s.nboxes, nb_real + 1, "boxes exposed = storage boxes + the party pseudo-box");
+  CHECK_EQ(s.start_box, gbf_current_box(game), "opens on the box the player left open");
+  CHECK(s.is_bank, "is_bank: removes the PARTY tab / START / PC hand-off from pdna_box");
+  CHECK(s.records && s.get_name && s.set_name && s.get_wp && s.set_wp &&
+        s.can_edit && s.commit && s.mark_dirty, "every hook pdna_box calls is filled");
+  CHECK(s.menu_block == recs, "menu_block is the pc-layout buffer (records at +4)");
+  CHECK(s.note_add == 0, "no note_add: nothing ever lands in a GB save");
+  CHECK(!s.can_edit(), "can_edit() is false");
+  /* commit() MUST be false, not just harmless: pdna_box's cross-scope drop writes the
+   * record, calls commit(), and reverts the destination when it fails. */
+  CHECK(!s.commit(), "commit() returns false so a cross-scope drop reverts itself");
+
+  /* the write-shaped hooks are no-ops */
+  {
+    char n0[12], n1[12];
+    s.get_name(0, n0);
+    s.set_name(0, "HACKED");
+    s.get_name(0, n1);
+    CHECK_STR(n1, n0, "set_name is a no-op");
+    int w0 = s.get_wp(0);
+    s.set_wp(0, (w0 + 1) % 16);
+    CHECK_EQ(s.get_wp(0), w0, "set_wp is a no-op");
+    s.mark_dirty();                        /* must not explode or change anything */
+    CHECK(!s.commit(), "commit() still false after mark_dirty()");
+  }
+
+  /* box names: prefixed so the banner can never be mistaken for a Gen-3 box */
+  {
+    char nm[12];
+    s.get_name(0, nm);
+    CHECK(strncmp(nm, "GB ", 3) == 0, "box 0 name is GB-prefixed (got \"%s\")", nm);
+    s.get_name(m.party_box, nm);
+    CHECK_STR(nm, "GB PARTY", "the party pseudo-box names itself");
+    s.get_name(nb_real - 1, nm);
+    CHECK(nm[0] != 0, "the last storage box has a name");
+  }
+
+  /* ---- DETERMINISM: two independent page-ins of every box ---- */
+  page_all(&s, s.nboxes, 0, false);
+  page_all(&s, s.nboxes, 1, true);          /* reverse order: no page can be a repeat */
+  {
+    int diff = 0, firstbox = -1, firstbyte = -1;
+    for (int b = 0; b < s.nboxes; b++) {
+      if (memcmp(g_snap[0][b], g_snap[1][b], BS_BOXREC) == 0) continue;
+      diff++;
+      if (firstbox < 0) {
+        firstbox = b;
+        for (int i = 0; i < BS_BOXREC; i++)
+          if (g_snap[0][b][i] != g_snap[1][b][i]) { firstbyte = i; break; }
+      }
+    }
+    CHECK_EQ(diff, 0, "every box is byte-identical across two page-ins "
+                      "(first difference: box %d byte %d)", firstbox, firstbyte);
+  }
+
+  /* ---- DETERMINISM across a whole re-open: a fresh mount, fresh buffers ---- */
+  {
+    static uint8_t recs2[GB12_RECS_BYTES], stage2[GB12_STAGE_BYTES];
+    Gb12Mount m2;
+    MemFile f2 = { g_img, len, 0 };
+    memset(recs2, 0xA5, sizeof recs2);      /* dirty buffers: a page-in must not inherit */
+    memset(stage2, 0x5A, sizeof stage2);
+    CHECK(pdna_gen12_mount(&m2, mem_read, &f2, len, recs2, stage2, 3, 0), "re-mount");
+    BoxSource s2 = pdna_gen12_source(&m2);
+    int diff = 0;
+    for (int b = 0; b < s2.nboxes; b++) {
+      uint8_t* r = s2.records(b);
+      if (!r || memcmp(g_snap[0][b], r, BS_BOXREC) != 0) diff++;
+    }
+    CHECK_EQ(diff, 0, "a fresh mount reproduces the same records "
+                      "(clipboard/bank identity matching depends on this)");
+    pdna_gen12_source(&m);                  /* restore the first mount as the active one */
+  }
+
+  /* ---- contents: every planted mon is findable, refusals included ---- */
+  for (int b = -1; b < nb_real; b++) {
+    int n = 0; const GbfMon* r = gbf_roster(game, b, &n);
+    if (!r) continue;
+    int box = (b < 0) ? m.party_box : b;
+    uint8_t* rp = s.records(box);
+    if (!rp) { CHECK(false, "box %d did not page in", box); continue; }
+
+    for (int i = 0; i < n; i++) {
+      const uint8_t* rec = rp + (size_t)i * 80;
+      PkMon pm;
+      bool occ = pk_decode_mon(rec, false, &pm);
+      uint8_t reason = pdna_gen12_slot_reason(&m, i);
+      const char* veto = pdna_gen12_why_locked(rec);
+
+      if (!(r[i].flags & GBF_F_REFUSE)) {
+        CHECK(occ, "box %d slot %d must be in the grid (%s)", box, i, r[i].why);
+        CHECK_EQ(reason, GB12_OK, "box %d slot %d has no refusal reason", box, i);
+        CHECK(veto == 0, "box %d slot %d: COPY is allowed", box, i);
+        if (occ) CHECK_EQ(pk_national_no(pm.species), r[i].dex,
+                          "box %d slot %d species (%s)", box, i, r[i].why);
+        continue;
+      }
+
+      /* A refusal must never be silent: either the Pokemon is visible and marked, or
+       * it is in the report the info screen shows. */
+      CHECK(reason != GB12_OK, "box %d slot %d: refusal recorded (%s)", box, i, r[i].why);
+      CHECK(veto != 0, "box %d slot %d: COPY vetoed with a reason", box, i);
+      int in_report = 0;
+      for (int k = 0; k < m.nreport; k++)
+        if (m.report[k].box == box && m.report[k].slot == i) in_report = 1;
+      CHECK(in_report, "box %d slot %d appears in the report (%s)", box, i, r[i].why);
+
+      if (reason == GB12_ERR_EGG) {
+        CHECK(occ, "box %d slot %d: an Egg must still be VISIBLE, not hidden", box, i);
+        if (occ) {
+          CHECK(pm.isEgg, "box %d slot %d draws as an Egg", box, i);
+          CHECK_EQ(pk_national_no(pm.species), r[i].dex, "box %d slot %d keeps its species", box, i);
+        }
+      } else if (reason == GB12_ERR_HELD_ITEM) {
+        CHECK(occ, "box %d slot %d: an item holder must still be VISIBLE", box, i);
+        if (occ) CHECK_EQ(pk_national_no(pm.species), r[i].dex,
+                          "box %d slot %d keeps its species", box, i);
+      } else {
+        /* A glitch species has no Gen-3 form at all — nothing can be drawn for it, so
+         * the report is the ONLY place it can be surfaced. */
+        CHECK_EQ(reason, GB12_ERR_SPECIES, "box %d slot %d refusal kind", box, i);
+      }
+    }
+
+    /* Everything past the box's occupancy is an empty cell, all the way to 30 (a GB
+     * box holds 20 and the Gen-3 grid draws 30). */
+    for (int sl = n; sl < 30; sl++) {
+      PkMon pm;
+      CHECK(!pk_decode_mon(rp + (size_t)sl * 80, false, &pm),
+            "box %d slot %d must read as empty", box, sl);
+    }
+  }
+
+  /* A box index the source does not expose must not page anything in. */
+  CHECK(pdna_gen12_page(&m, s.nboxes) == 0, "a box past the last one is refused");
+  CHECK(pdna_gen12_page(&m, -1) == 0, "a negative box is refused");
+
+  pdna_gen12_source(0);                     /* unmount */
+  CHECK(pdna_gen12_why_locked(recs + 4) == 0, "no veto once unmounted");
+}
+
+/* Files that are not GB saves must be refused with a REASON, not misparsed. */
+static void part5_rejection(void) {
+  printf("\n(5) refusing what is not a western GB save\n");
+  static uint8_t recs[GB12_RECS_BYTES], stage[GB12_STAGE_BYTES];
+  Gb12Mount m;
+  const char* why;
+
+  uint32_t len = gbf_build_ex(GBF_CRYSTAL, g_img, 0, growth_shipped);
+
+  /* corrupt the checksummed range: the stored sum no longer matches */
+  memcpy(g_img2, g_img, len);
+  gbf_break_primary(GBF_CRYSTAL, g_img2);
+  {
+    MemFile f = { g_img2, len, 0 };
+    why = 0;
+    CHECK(!pdna_gen12_mount(&m, mem_read, &f, len, recs, stage, 3, &why),
+          "a corrupt save is refused");
+    CHECK(why != 0 && strstr(why, "checksum") != 0, "...and says why (got \"%s\")", why ? why : "");
+  }
+
+  /* wrong size */
+  {
+    MemFile f = { g_img, 131072u, 0 };
+    why = 0;
+    CHECK(!pdna_gen12_mount(&m, mem_read, &f, 131072u, recs, stage, 3, &why),
+          "a Gen-3-sized file is refused");
+    CHECK(why != 0, "...with a reason (\"%s\")", why ? why : "");
+  }
+
+  /* all zeroes: no checksum can match */
+  {
+    memset(g_img2, 0, GBF_SAVE_BYTES);
+    MemFile f = { g_img2, GBF_SAVE_BYTES, 0 };
+    CHECK(!pdna_gen12_mount(&m, mem_read, &f, GBF_SAVE_BYTES, recs, stage, 3, 0),
+          "a blank 32 KiB file is refused");
+  }
+
+  /* a read callback that always fails must not crash or half-mount */
+  {
+    MemFile f = { g_img, 0, 0 };            /* len 0 -> every read fails the bounds test */
+    CHECK(!pdna_gen12_mount(&m, mem_read, &f, GBF_SAVE_BYTES, recs, stage, 3, 0),
+          "unreadable media is refused");
+  }
+}
+
 int main(void) {
   printf("== gen 1/2 import: synthetic saves + conversion ==\n");
   part0_oracles();
@@ -733,6 +1009,10 @@ int main(void) {
   part2_gen2(GBF_CRYSTAL, 0);
   part2_gen2(GBF_CRYSTAL, GBF_RTC_TAIL_64);
   part3_convert();
+  part4_boxsource(GBF_RBY, 0);
+  part4_boxsource(GBF_GS, 0);
+  part4_boxsource(GBF_CRYSTAL, GBF_RTC_TAIL_64);
+  part5_rejection();
 
   printf("\n%s: %d checks, %d failure(s)\n", g_fail ? "FAIL" : "OK", g_checks, g_fail);
   return g_fail ? 1 : 0;
