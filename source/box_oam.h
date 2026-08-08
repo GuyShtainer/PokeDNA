@@ -61,12 +61,24 @@ void boxoam_set_frame(int frame);
  * normal/orange(MOVE)/translucent(ITEM) look. cur is the 0..29 grid cell. */
 void boxoam_cursor(int cur, bool on_title, int mode);
 
+/* Retail's grab beat is pose + motion, not blending: the hand dips 8 px at 1 px/frame
+ * wide-OPEN over the mon (which stays in its cell), closes at the bottom, and rises
+ * carrying it (pokemon_storage_system.c MonPlaceChange_Grab). These two knobs are that
+ * animation's whole contract: the pose picks which tiles region A shows for the HAND
+ * (the closed fist already exists as the carry sprite), and dy shifts the hand AND the
+ * carry sprites vertically so one driver animates both phases. Both reset on
+ * boxoam_enter so a stray mid-beat state can never leak across screens. */
+enum { BOXOAM_POSE_NORMAL = 0, BOXOAM_POSE_REACH = 1 };
+void boxoam_hand_pose(int pose);
+void boxoam_cursor_dy(int dy);          /* 0 = rest; +8 = dipped onto the cell */
+
 /* MOVE-mode carry (mon-in-hand): the held mon's icon (species/form) rides cursor cell
  * `cur` front-most in region A, an orange grab fist behind it; the cursor hand is hidden.
  * boxoam_carry_end() stops carrying; boxoam_hide_slot() lift-hides the origin cell. */
 void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg);   /* egg=1 -> the Egg icon rides the glove */
 void boxoam_carry_end(void);
 void boxoam_hide_slot(int s);
+void boxoam_show_slot(int s);   /* undo a lift-hide (grab-dip: mon stays visible) */
 
 /* Rubber-band selection highlight (Emerald whitens the chosen; no rectangle). Every
  * OCCUPIED slot with sel[s]!=0 gets ATTR0_BLEND + the ITEM-mode alpha registers, so

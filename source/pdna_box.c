@@ -741,9 +741,25 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
 
 /* Push the full sprite state for the current frame: icons (reloaded if needed),
  * cursor / carry, and ITEM markers + carried item. */
+/* Mid-grab-dip: s_holding is already true (start_carry ran), but visually the mon has
+ * not left its cell yet — the open hand is still descending onto it. oam_sync draws the
+ * reaching cursor instead of the carry while this is set, and does NOT lift-hide the
+ * origin slot, which is exactly retail's ordering (MonPlaceChange_Grab: the icon stays
+ * put until the fist closes). */
+static int s_grab_dip = 0;
+
 static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
   if (s_oam_reload) { boxoam_load_box(g_box); s_oam_reload = false; }
-  if (s_holding) {
+  if (s_holding && s_grab_dip) {
+    boxoam_carry_end();
+    /* the menu-wipe repaint ran ONE oam_sync in the carry look, which lift-hid the
+     * origin cell — undo that: retail keeps the mon in place until the fist closes */
+    if (s_orig_slot >= 0 && s_orig_bank == is_bank && s_orig_box == box)
+      boxoam_show_slot(s_orig_slot);
+    boxoam_item_markers(g_box, false);
+    boxoam_carry_item(cur, 0, false);
+    boxoam_cursor(cur, false, cursor_look());        /* the descending open hand */
+  } else if (s_holding) {
     PkMon hm; pk_decode_mon(s_held, false, &hm);
     boxoam_carry_held(cur, hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
     if (s_orig_slot >= 0 && s_orig_bank == is_bank && s_orig_box == box)
@@ -843,14 +859,33 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
   oam_sync(cur, on_title, box, src->is_bank);        /* icons + cursor + carry + markers */
 }
 
-/* Pick-up grab cue when MOVE is chosen: the carried icon + grab fist lift over a few
- * frames. Pure OAM (the carry sprites already exist via oam_sync) — no software blit,
- * no flicker. The cursor hand is already hidden (carry state). */
+/* Pick-up grab cue when MOVE is chosen — retail's beat, not a hold. Emerald's
+ * MonPlaceChange_Grab is pure pose + motion: the hand dips 8 px at 1 px/frame in the
+ * wide-OPEN pose while the mon stays in its cell, the fist closes at the bottom, then
+ * hand + mon rise 8 px together. Our carry state (orange fist + riding icon) IS the
+ * "closed at the bottom" look, so the rise just animates the carry sprites up to their
+ * float height with the same dy driver. Pure OAM, ~18 frames, gated on the Box
+ * animation toggle like every other beat. */
 static void play_grab_anim(BoxSource* src, int box, int slot) {
-  (void)src; (void)box;
-  /* boxoam_carry already lifts the icon 8px; nudge a touch more for a "grab" beat */
-  for (int v = 0; v < 6; v++) { boxoam_commit(); s_vsync(); }
-  (void)slot;
+  if (!app_anim_enabled(ANIM_BOX)) { (void)src; (void)box; (void)slot; return; }
+  /* descend: open hand over the still-in-place mon */
+  s_grab_dip = 1;
+  boxoam_hand_pose(BOXOAM_POSE_REACH);
+  for (int d = 0; d <= 8; d++) {
+    boxoam_cursor_dy(d);
+    oam_sync(slot, false, box, src->is_bank);
+    boxoam_commit(); s_vsync();
+  }
+  /* the fist closes: switch to the carry look, still at the cell */
+  s_grab_dip = 0;
+  boxoam_hand_pose(BOXOAM_POSE_NORMAL);
+  /* rise: fist + mon come up from the cell to the carry float */
+  for (int d = 8; d >= 0; d--) {
+    boxoam_cursor_dy(d);
+    oam_sync(slot, false, box, src->is_bank);
+    boxoam_commit(); s_vsync();
+  }
+  boxoam_cursor_dy(0);
 }
 
 /* ITEM-take grab cue (the mon single-grab's play_grab_anim beat, mirrored for items —

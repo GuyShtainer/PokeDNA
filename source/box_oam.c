@@ -154,11 +154,22 @@ static void load_regb_grab(void) {
 
 /* ------- region A (time-shared: cursor hand / held-mon icon / full grab item) -------
  * the cursor hand is hidden whenever we carry a mon or grab an item, so its 16 tiles
- * are free for the held mon's icon or the full-size item; restore the hand on the way back. */
+ * are free for the held mon's icon or the full-size item; restore the hand on the way back.
+ * The hand has POSES now (normal glove / wide-open reach, for the retail grab dip), so
+ * region A's state ids are 10+pose — distinct from 1 (item) and 2 (held mon), and a pose
+ * change simply invalidates the region so the next load uploads the right tiles. */
+static int s_hand_pose = BOXOAM_POSE_NORMAL;
+static int s_cur_dy = 0;                /* grab/place dip offset (0 = rest) */
+void boxoam_hand_pose(int pose) { s_hand_pose = pose ? BOXOAM_POSE_REACH : BOXOAM_POSE_NORMAL; }
+void boxoam_cursor_dy(int dy)   { s_cur_dy = dy; }
 static void load_rega_hand(void) {
-  if (s_rega == 0) return;
-  upload_tiles_verified(TID_HAND, hand_oam_cursor_tiles, HAND_OAM_TILES * HAND_OAM_TILE_BYTES);
-  s_rega = 0;
+  int want = 10 + s_hand_pose;
+  if (s_rega == want) return;
+  upload_tiles_verified(TID_HAND,
+                        s_hand_pose == BOXOAM_POSE_REACH ? hand_oam_reach_tiles
+                                                         : hand_oam_cursor_tiles,
+                        HAND_OAM_TILES * HAND_OAM_TILE_BYTES);
+  s_rega = want;
 }
 
 /* Render the FULL 24x24 RGB15 icon for `item` at native size, centred in a 16-tile
@@ -239,6 +250,7 @@ void boxoam_enter(void) {
   for (int i = 0; i < 30; i++) { s_occupied[i] = 0; s_iconbank[i] = 0;
                                  s_selmark[i] = 0; s_covered[i] = 0; }
   s_bob = 0; s_regb = -1; s_rega = -1;
+  s_hand_pose = BOXOAM_POSE_NORMAL; s_cur_dy = 0;   /* no mid-beat leakage across screens */
   s_select_on = 0; s_chunk_on = 0; s_chunk_valid = 0;
 
   /* shared icon palettes -> banks 0..12 (416 bytes), staged + verified like the tiles
@@ -379,7 +391,7 @@ void boxoam_cursor(int cur, bool on_title, int mode) {
    * left arrow is decoration (the right one says the same thing), so the hand goes there
    * instead: it still points at the banner, and no data is ever underneath it. */
   if (on_title) { hx = WP_X + 1; hy = 13; }
-  else hand_xy(cur, &hx, &hy);
+  else { hand_xy(cur, &hx, &hy); hy += s_cur_dy; }   /* the grab/place dip rides the hand */
 
   int bank = (mode == BOXOAM_HAND_MOVE) ? PB_HANDORG : PB_HAND;
   int prio = 0;
@@ -414,7 +426,9 @@ void boxoam_cursor(int cur, bool on_title, int mode) {
  * the fist (empty hand). The caller hides the origin slot via boxoam_hide_slot(). */
 void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg) {
   int cx = GRID_X + (cur % COLS) * CELL_W, cy = GRID_Y + (cur / COLS) * CELL_H;
-  int ix = cx, iy = cy - 8; if (iy < WP_Y) iy = WP_Y;   /* Emerald's carry floats 8px up */
+  /* the carry floats 8px above the cell; +s_cur_dy lets the grab beat raise it FROM the
+   * cell (dy=8 -> exactly on the cell, dy=0 -> the float) with one animation driver */
+  int ix = cx, iy = cy - 8 + s_cur_dy; if (iy < WP_Y) iy = WP_Y;
   load_regb_grab();                                  /* fist tiles -> region B */
   REG_BLDCNT = 0;                                    /* carried mon is opaque  */
   const uint8_t* tiles; int bank = 0;
@@ -427,7 +441,7 @@ void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg) {
                  ATTR1_SIZE_32 | (ix & ATTR1_X_MASK),
                  ATTR2_ID(TID_HAND) | ATTR2_PRIO(0) | ATTR2_PALBANK(bank));
   } else hide(OE_CARRY);
-  int fx = cx + 3, fy = cy - 10; if (fy < WP_Y) fy = WP_Y;
+  int fx = cx + 3, fy = cy - 10 + s_cur_dy; if (fy < WP_Y) fy = WP_Y;
   obj_set_attr(oe(OE_GRAB),                          /* orange grab fist, behind the mon */
                ATTR0_SQUARE | ATTR0_4BPP | (fy & ATTR0_Y_MASK),
                ATTR1_SIZE_32 | (fx & ATTR1_X_MASK),
@@ -437,6 +451,10 @@ void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg) {
 
 void boxoam_carry_end(void) { hide(OE_CARRY); hide(OE_GRAB); }   /* stop carrying */
 void boxoam_hide_slot(int s) { if (s >= 0 && s < 30) hide(OE_ICON0 + s); }  /* lift-hide the origin */
+/* Undo a lift-hide WITHOUT re-uploading: a plain hide only touched the OAM entry, the
+ * slot's tiles are still in VRAM, so re-placing the attrs is enough. The grab dip uses
+ * this to keep the mon visibly in its cell while the open hand descends onto it. */
+void boxoam_show_slot(int s) { if (s >= 0 && s < 30 && s_occupied[s]) place_grid_slot(s); }
 
 /* Re-upload grid slot s's own icon (current bob frame) from the per-slot bookkeeping
  * and re-show/hide it — undoes a chunk borrow of that slot's tile region. */
