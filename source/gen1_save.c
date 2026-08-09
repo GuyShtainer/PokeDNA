@@ -35,7 +35,12 @@ typedef char gen1_party_geometry_check[
  *
  * SOURCE / PROVENANCE — read this before trusting a row:
  * The canonical table is pret/pokered `data/pokemon/dex_order.asm` (label
- * `PokedexOrder`, 190 entries). No pokered checkout exists on this machine, so the
+ * `PokedexOrder`, 190 entries). VERIFIED 2026-08-09: pokered is now checked out at
+ * assets/upstream/pokered and this table was diffed against it entry by entry —
+ * BYTE-IDENTICAL on all 190, 39 MissingNo zeros in the same places. The note below
+ * describes how it was originally transcribed, kept for provenance.
+ *
+ * (superseded) No pokered checkout existed on this machine, so the
  * values below were transcribed from the same public data as documented on
  * Bulbapedia, "List of Pokemon by index number (Generation I)". Two properties the
  * transcription was checked against, both of which a single wrong row would break:

@@ -98,3 +98,12 @@ tools/__pycache__/
 docs/
 .claude/
 __pycache__/
+
+# Game Boy cartridge dumps + their battery saves (Guy's own: Red/Yellow/Gold/Crystal).
+# They live OUTSIDE this repo at gba-toolkit/roms/gb/ (itself gitignored) — these
+# patterns are belt-and-braces so a stray copy inside the project can never be added.
+*.gb
+*.gbc
+*.pk2
+*.sav.dat
+/roms/

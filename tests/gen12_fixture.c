@@ -530,7 +530,7 @@ uint16_t gbf_gen2_checksum(const uint8_t* save, GbfGame game) {
  * §2.2, and every region's source and destination lengths were checked to agree. */
 static const GbfMirror k_gs_mirror[5] = {
   { 0x2009u, 0x222Eu, 0x15C7u },
-  { 0x222Fu, 0x23D8u, 0x3D96u },
+  { 0x222Fu, 0x23D8u, 0x3D69u },   /* NOT 0x3D96 — see gen2_save.c's k_gs_mirror note */
   { 0x23D9u, 0x2855u, 0x0C6Bu },
   { 0x2856u, 0x2889u, 0x7E39u },
   { 0x288Au, 0x2D68u, 0x10E8u },
@@ -551,7 +551,7 @@ int gbf_mirror_map(GbfGame game, const GbfMirror** out) {
  * load. */
 static const struct { uint32_t start, len; } k_gs_backup_sum[3] = {
   { 0x0C6Bu, 0x17ECu - 0x0C6Bu + 1u },
-  { 0x3D96u, 0x3F3Fu - 0x3D96u + 1u },
+  { 0x3D69u, 0x3F12u - 0x3D69u + 1u },
   { 0x7E39u, 0x7E6Cu - 0x7E39u + 1u },
 };
 
