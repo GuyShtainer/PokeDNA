@@ -261,6 +261,94 @@ static int fetch(const RomText* rt, uint32_t addr, char* dst, uint32_t cap) {
   return 1;
 }
 
+/* ---- THE READ CACHE ---------------------------------------------------------------
+ *
+ * WHY THIS EXISTS AT ALL. On the GBA, rc->read is pdna_main.c's iconrom_fatfs_read:
+ * an f_lseek + f_read on the user's registered .gba, on the microSD. FatFs here is
+ * built with FF_USE_FASTSEEK 0 (lib/fatfs/ffconf.h:33), so a seek that goes BACKWARDS
+ * re-walks the file's FAT cluster chain from its first cluster -- hundreds of FAT
+ * entries for a 16 MiB ROM -- before the data sector is even fetched. Every
+ * description read seeks backwards or forwards across the whole image, so each one is
+ * expensive in a way no host test and no emulator can show: PDNA_TARGET=delta compiles
+ * the entire SD path out (`#ifndef PDNA_DELTA`), which is exactly why this cost was
+ * invisible until it was on hardware.
+ *
+ * Uncached, ONE description cost TWO of those reads (the pointer-table entry, then the
+ * string) -- measured, every time, including asking for the same id again. And the
+ * screens that show descriptions repaint per KEYPRESS with key-repeat on: the summary
+ * re-renders card 0 (pdna_summary.c card_info -> app_ability_desc) on every L/R, and
+ * the item / move pickers redraw the description of the row under the cursor on every
+ * U/D (pdna_pick.c). Holding a direction therefore ran two full FAT walks per repeat
+ * tick. That is the regression.
+ *
+ * Two caches fix it without changing a single call site or weakening the feature:
+ *
+ *   1) ONE ALIGNED WINDOW of the pointer table. List scrolling walks CONSECUTIVE ids,
+ *      and a 512 B window holds 128 consecutive move/ability pointers (or 11 gItems
+ *      rows at their 44 B stride), so the pointer read is nearly always free. 512 is
+ *      deliberate: it is one SD sector, so a miss costs one sector, not two.
+ *   2) THE LAST DECODED STRING PER KIND. A repaint that shows the same id again costs
+ *      nothing at all. Per kind rather than one global slot so a screen that shows an
+ *      item and a move together cannot make the two evict each other forever.
+ *
+ * SCOPE / STALENESS. Both are file-static, and this module is written for ONE live
+ * source at a time (the app has exactly one, s_romtext). rom_text_open() resets them,
+ * and every entry additionally carries the RomCtx it was read through, so a second
+ * source can never be served another source's bytes. Nothing writes the ROM file, so
+ * within one source the bytes cannot change under the cache.
+ *
+ * Plain .bss (IWRAM), never EWRAM_BSS: the hardware build's EWRAM headroom is ~1.5 KB
+ * and guarded at link time, so this feature must not spend any of it. */
+#define TBLWIN 512
+
+static const RomCtx* s_owner;              /* the source both caches belong to      */
+static uint8_t       s_win[TBLWIN];
+static uint32_t      s_win_addr;           /* ROM address of s_win[0]               */
+static uint32_t      s_win_len;            /* valid bytes; 0 = no window            */
+static char          s_memo[ROM_TEXT_KINDS][ROM_TEXT_MAX];
+static uint16_t      s_memo_id[ROM_TEXT_KINDS];
+static uint8_t       s_memo_on[ROM_TEXT_KINDS];
+
+static void cache_reset(const RomCtx* rc) {
+  s_owner = rc;
+  s_win_len = 0;
+  s_win_addr = 0;
+  for (int k = 0; k < ROM_TEXT_KINDS; k++) { s_memo_on[k] = 0; s_memo[k][0] = 0; }
+}
+
+/* Point the caches at `rc`, throwing everything away if that is not who they already
+ * describe. Called from BOTH entry points, so no path can read one source's bytes out
+ * of another source's cache -- including the path that bypasses the window entirely. */
+static void cache_bind(const RomCtx* rc) {
+  if (s_owner != rc) cache_reset(rc);
+}
+
+/* The 4-byte pointer-table read, through the window. Falls back to a direct read for
+ * the one case the window cannot serve: four bytes straddling the end of the image's
+ * last (short) window. */
+static int table_read4(const RomText* rt, uint32_t addr, uint8_t out[4]) {
+  cache_bind(rt->rc);
+  if (s_win_len >= 4 &&
+      addr >= s_win_addr && addr - s_win_addr <= s_win_len - 4) {
+    memcpy(out, s_win + (addr - s_win_addr), 4);
+    return 1;
+  }
+  if (!rom_ptr_ok(rt->rc, addr)) return 0;
+  uint32_t off = (addr - ROM_BASE) & ~(uint32_t)(TBLWIN - 1);
+  uint32_t len = rt->rc->size - off;
+  if (len > TBLWIN) len = TBLWIN;
+  s_win_len = 0;                          /* drop the old window BEFORE the read, so a
+                                           * failed read cannot leave a stale one live */
+  if (len >= 4 && rom_read_at(rt->rc, ROM_BASE + off, s_win, len)) {
+    s_win_addr = ROM_BASE + off; s_win_len = len;
+    if (addr - s_win_addr <= s_win_len - 4) {
+      memcpy(out, s_win + (addr - s_win_addr), 4);
+      return 1;
+    }
+  }
+  return rom_read_at(rt->rc, addr, out, 4) ? 1 : 0;
+}
+
 /* ROM address of entry `id` in one of the pointer tables, or the item struct's
  * description pointer. Returns 0 on any out-of-range id or unreadable pointer. */
 static uint32_t entry_addr(const RomText* rt, RomTextKind kind, uint16_t id) {
@@ -269,15 +357,15 @@ static uint32_t entry_addr(const RomText* rt, RomTextKind kind, uint16_t id) {
   uint8_t p[4];
   if (kind == ROM_TEXT_ITEM) {
     if (id >= rt->count[kind]) return 0;
-    if (!rom_read_at(rt->rc, base + (uint32_t)id * ITEM_STRIDE + ITEM_DESC_OFF, p, 4)) return 0;
+    if (!table_read4(rt, base + (uint32_t)id * ITEM_STRIDE + ITEM_DESC_OFF, p)) return 0;
   } else if (kind == ROM_TEXT_MOVE) {
     /* MOVE_NONE has no row: the game itself indexes gMoveDescriptionPointers[move - 1]
      * (pokeemerald src/pokemon_summary_screen.c:3670). */
     if (id == 0 || id >= rt->count[kind]) return 0;
-    if (!rom_read_at(rt->rc, base + ((uint32_t)id - 1) * 4, p, 4)) return 0;
+    if (!table_read4(rt, base + ((uint32_t)id - 1) * 4, p)) return 0;
   } else {
     if (id >= rt->count[kind]) return 0;
-    if (!rom_read_at(rt->rc, base + (uint32_t)id * 4, p, 4)) return 0;
+    if (!table_read4(rt, base + (uint32_t)id * 4, p)) return 0;
   }
   return rd32le(p);
 }
@@ -307,6 +395,9 @@ int rom_text_open(RomText* rt, const RomCtx* rc) {
   memset(rt, 0, sizeof *rt);
   rt->group = ROM_TEXT_GROUP_NONE;
   rt->rc = rc;
+  /* A new source means the cached window and strings describe a ROM we are no longer
+   * reading. Reset BEFORE the validate() probes below, so they refill it correctly. */
+  cache_reset(rc);
   if (!rc || !rc->read) return 0;
 
   switch (rc->kind) {
@@ -373,10 +464,36 @@ int rom_text_group(const RomText* rt) {
   return (rt && rt->ok) ? (int)rt->group : ROM_TEXT_GROUP_NONE;
 }
 
+/* Copy a NUL-terminated string, truncating to `cap` exactly the way fetch() would. */
+static void copy_capped(char* dst, uint32_t cap, const char* src) {
+  uint32_t n = 0;
+  while (n + 1 < cap && src[n]) { dst[n] = src[n]; n++; }
+  dst[n] = 0;
+}
+
 int rom_text_get(const RomText* rt, RomTextKind kind, uint16_t id, char* dst, uint32_t cap) {
   if (dst && cap) dst[0] = 0;
   if (!dst || !cap || !rom_text_have(rt, kind)) return 0;
+  cache_bind(rt->rc);
+  /* The same id again is the COMMON case, not the rare one: every screen that shows a
+   * description repaints on each keypress and asks for the row under the cursor again.
+   * Serving it from the memo is the difference between two SD reads and none. */
+  if (s_memo_on[kind] && s_memo_id[kind] == id) {
+    copy_capped(dst, cap, s_memo[kind]);
+    return 1;
+  }
   uint32_t a = entry_addr(rt, kind, id);
   if (!a) return 0;
-  return fetch(rt, a, dst, cap);
+  if (!fetch(rt, a, dst, cap)) return 0;
+  /* Memoise only a string that FIT: a caller with a small `cap` must not be able to
+   * poison a later caller with a bigger one. A failure is never memoised either -- it
+   * has to be retried, because the next attempt may be on a source that works. */
+  { uint32_t n = 0;
+    while (dst[n]) n++;
+    if (n + 1 < cap && n + 1 < sizeof s_memo[kind]) {
+      memcpy(s_memo[kind], dst, n + 1);
+      s_memo_id[kind] = id; s_memo_on[kind] = 1;
+    }
+  }
+  return 1;
 }

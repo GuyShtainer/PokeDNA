@@ -44,8 +44,17 @@ static void chk(const char* rom, const char* what, int cond) {
 
 /* ---- a RomReadFn over a byte buffer, so a test can mutate the "ROM" ------------- */
 typedef struct { const uint8_t* p; uint32_t n; } MemCtx;
+
+/* Every read is counted, because on hardware a read is not free: rc->read is an
+ * f_lseek + f_read on the user's .gba on the microSD, and FatFs is built with
+ * FF_USE_FASTSEEK 0, so a backward seek re-walks the whole FAT chain first. The
+ * cache_tests() section below asserts on this counter -- see rom_text.c "THE READ
+ * CACHE". Every other section ignores it. */
+static long g_reads = 0;
+
 static bool mem_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   MemCtx* m = (MemCtx*)ctx;
+  g_reads++;
   if (off > m->n || len > m->n - off) return false;
   memcpy(dst, m->p + off, len);
   return true;
@@ -492,6 +501,85 @@ static void bounds_tests(const char* dir) {
   free(rom);
 }
 
+/* ---- the read cache ---------------------------------------------------------------
+ *
+ * These are PERFORMANCE assertions, and they are here because nothing else can make
+ * them: PDNA_TARGET=delta compiles the whole SD path out, so no emulator run can see
+ * what a description costs on hardware. Measured before the cache existed: 2 reads per
+ * description, EVERY time, including asking for the same id again -- and the summary
+ * (card_info -> app_ability_desc) plus the item/move pickers re-ask on every keypress,
+ * with key-repeat on.
+ *
+ * They also pin the two staleness rules, which is the part that could silently corrupt
+ * what the user reads: a reopen and a source switch must both throw the cache away. */
+static void cache_tests(const char* dir) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/Emerald.gba", dir);
+  uint32_t n = 0;
+  uint8_t* img = slurp(path, &n);
+  if (!img) { printf("  SKIP cache: no Emerald.gba\n"); return; }
+
+  MemCtx mc = { img, n };
+  RomCtx rc; RomText rt; char b[ROM_TEXT_MAX], b2[ROM_TEXT_MAX];
+  if (!rom_open(&rc, mem_read, &mc, n) || !rom_text_open(&rt, &rc)) {
+    chk("cache", "Emerald opens", 0); free(img); return;
+  }
+
+  long r0 = g_reads;
+  chk("cache", "a cold ability read succeeds", rom_text_get(&rt, ROM_TEXT_ABILITY, 13, b, sizeof b));
+  long cold = g_reads - r0;
+  chk("cache", "a cold description costs at most 2 reads", cold <= 2);
+
+  /* The summary re-renders card 0 on every L/R, so this is the shape of the hot path. */
+  r0 = g_reads;
+  for (int i = 0; i < 8; i++) rom_text_get(&rt, ROM_TEXT_ABILITY, 13, b2, sizeof b2);
+  chk("cache", "re-asking for the same id costs ZERO reads", g_reads - r0 == 0);
+  chk("cache", "the memoised string is the one that was decoded", strcmp(b, b2) == 0);
+
+  /* A list scroll walks consecutive ids; the pointer-table window must absorb the
+   * pointer read, so a row costs strictly less than the two it used to. */
+  r0 = g_reads;
+  for (int id = 1; id <= 40; id++) rom_text_get(&rt, ROM_TEXT_MOVE, (uint16_t)id, b2, sizeof b2);
+  chk("cache", "scrolling 40 move rows costs under 1.5 reads a row", g_reads - r0 < 60);
+
+  r0 = g_reads;
+  for (int id = 1; id <= 40; id++) rom_text_get(&rt, ROM_TEXT_ITEM, (uint16_t)id, b2, sizeof b2);
+  chk("cache", "scrolling 40 item rows costs under 1.5 reads a row", g_reads - r0 < 60);
+
+  /* A truncating `cap` must not poison a later caller with room for the whole string. */
+  char small[8];
+  rom_text_get(&rt, ROM_TEXT_ABILITY, 14, small, sizeof small);
+  chk("cache", "a full read after a truncated one is still complete",
+      rom_text_get(&rt, ROM_TEXT_ABILITY, 14, b2, sizeof b2) && strlen(b2) > sizeof small);
+
+  /* STALENESS 1 -- a different source, opened while this one is still alive. Repoint
+   * ability 13's pointer-table entry at ability 1's string (the table address is the GF
+   * header's abilityDescriptions field, ROM+0x100+0xC4), so the copy must read back
+   * ability 1's text for id 13. If either cache survived the switch it reads back 13's. */
+  uint8_t* copy = (uint8_t*)malloc(n);
+  memcpy(copy, img, n);
+  uint32_t tbl = (uint32_t)copy[0x1C4] | ((uint32_t)copy[0x1C5] << 8) |
+                 ((uint32_t)copy[0x1C6] << 16) | ((uint32_t)copy[0x1C7] << 24);
+  uint32_t toff = tbl - 0x08000000u;
+  memcpy(copy + toff + 13 * 4, copy + toff + 1 * 4, 4);
+
+  MemCtx mc2 = { copy, n };
+  RomCtx rc2; RomText rt2; char b3[ROM_TEXT_MAX], b4[ROM_TEXT_MAX];
+  if (rom_open(&rc2, mem_read, &mc2, n) && rom_text_open(&rt2, &rc2)) {
+    rom_text_get(&rt2, ROM_TEXT_ABILITY, 1, b3, sizeof b3);
+    rom_text_get(&rt2, ROM_TEXT_ABILITY, 13, b4, sizeof b4);
+    chk("cache", "a reopened source is not served the old source's string",
+        strcmp(b4, b3) == 0 && strcmp(b4, b) != 0);
+    /* STALENESS 2 -- going BACK to the first source, with no reopen at all. */
+    rom_text_get(&rt, ROM_TEXT_ABILITY, 13, b4, sizeof b4);
+    chk("cache", "switching back to the first source re-reads it", strcmp(b4, b) == 0);
+  } else {
+    chk("cache", "the repointed copy still opens", 0);
+  }
+  free(copy);
+  free(img);
+}
+
 int main(int argc, char** argv) {
   const char* dir = "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms";
   /* run_host_tests.py hands every argv[1]-reading test the .sav corpus -- this test
@@ -512,6 +600,7 @@ int main(int argc, char** argv) {
   unpinned_revision_tests(dir);
   compare_with_embedded(dir);
   bounds_tests(dir);
+  cache_tests(dir);
 
   printf("rom_text test: %d checks, %d failure(s)\n", checks, fails);
   return fails ? 1 : 0;
