@@ -195,5 +195,8 @@ const char* app_ability_desc(uint16_t ability_id);
 
 const char* app_rom_path(PkGame game);
 void        app_rom_path_set(PkGame game, const char* path);
+/* True once the user has registered ANY of their own game ROMs. The gate for extras
+ * that need real art to mean anything (Day-Care yard visitors). */
+bool        app_any_rom_registered(void);
 
 #endif /* PDNA_APP_H */

@@ -1930,3 +1930,20 @@ bool app_pick_gb_save(char* out, int out_cap) {
   app_arena_release();
   return ok;
 }
+
+/* Same browser, Game Boy CARTRIDGE dumps — the source of Gen-1/2 sprite art, so that a
+ * Pokemon imported from Red or Gold can be drawn in the art it actually came from. As
+ * everywhere else in PokeDNA, no game art ships with the tool: it is read at runtime from
+ * the user's own cartridge, and the caller identifies the ROM by its header before
+ * trusting a byte of it. The extension only narrows the list; it proves nothing. */
+bool app_pick_gb_rom(char* out, int out_cap) {
+  uint8_t* mem = app_arena_acquire(PICK_MAX * (uint32_t)sizeof(PickEnt));
+  if (!mem) return false;
+  char cwd[PATH_MAX];
+  strcpy(cwd, "/");
+  s_pick_ext[0] = ".gb"; s_pick_ext[1] = ".gbc"; s_pick_ext[2] = 0;
+  bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, (PickEnt*)mem);
+  s_pick_ext[0] = ".gba"; s_pick_ext[1] = 0; s_pick_ext[2] = 0;   /* restore the default */
+  app_arena_release();
+  return ok;
+}

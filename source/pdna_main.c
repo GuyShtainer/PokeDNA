@@ -67,6 +67,7 @@
 #include "savefile.h"
 #include "log.h"
 #include "ui.h"
+#include "pdna_layout.h"   /* screen geometry + fixed strings, shared with the host text-fit test */
 
 #define PDNA_DIR      "/PokeDNA"            /* all of PokeDNA's on-card files live here (not the SD root) */
 #define LOG_PATH      "/PokeDNA/log.txt"
@@ -94,10 +95,18 @@ static bool      g_show_hidden = false;
  * One bit per ANIM_* place. Box / Party / Dex / Daycare default ON; the summary
  * portrait wiggle defaults OFF (kept calm unless the user opts in). Defined up here so
  * cfg_save/cfg_load (above app_anim_enabled) can persist it. */
-/* Day-Care yard visitors: the invented scenery mons (see dc_roll_decos). ON by
- * default -- they make the yard look alive -- but the user can switch them off and
- * see only the two Pokemon that are really boarding. Persisted in config.cfg. */
-static bool      g_yard_visitors = true;
+/* Day-Care yard visitors: the invented scenery mons (see dc_roll_decos). OFF by
+ * default, and a ROM-GATED extra -- see app_yard_visitors_ok().
+ *
+ * They used to default ON because they make the yard look alive. Guy turned them off
+ * (2026-08-09): without art the wanderers are indistinguishable from the two Pokemon
+ * that are really boarding, and the selection arrow does not follow them, so it
+ * regularly points at empty grass. Scenery you cannot select, next to Pokemon you can,
+ * reads as a bug rather than as decoration. So the yard now shows only what is really
+ * there, and the visitors come back once the user registers their own game ROM -- which
+ * is also the only point at which there is real art to draw them with.
+ * Persisted in config.cfg. */
+static bool      g_yard_visitors = false;
 /* Backup mode: 0 = new file each save, 1 = single rolling .bak, 2 = skip. Persisted. */
 static int       g_backup_mode = 0;
 static unsigned  g_anim_mask = (1u << ANIM_BOX) | (1u << ANIM_PARTY) | (1u << ANIM_DEX) |
@@ -389,8 +398,10 @@ static void render_browser(int sel, int top) {
   ui_truncate(stc, status, 29);
   ui_text(2, 138, UI_OK, stc);
 
-  ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-  ui_text(2, 150, UI_DIM, "A pick  B up  SEL sort  ST menu");
+  /* UI_FOOTER_Y, not a hard 150: this row is what every popup is laid out to clear, and
+   * a literal here would let the two drift apart (see source/ui_layout.h). */
+  ui_hline(0, UI_FOOTER_RULE_Y, UI_SCR_W, UI_BORDER);
+  ui_text(2, UI_FOOTER_Y, UI_DIM, "A pick  B up  SEL sort  ST menu");
 }
 
 /* Reboot back into the flashcart loader menu (no return on confirm). */
@@ -768,6 +779,23 @@ void app_rom_path_set(PkGame game, const char* path) {
   if (i < 0 || i >= 3 || !path) return;
   strncpy(g_rom_path[i], path, PATH_MAX - 1);
   g_rom_path[i][PATH_MAX - 1] = 0;
+}
+
+/* Has the user registered ANY of their own game ROMs? The gate for the extras that
+ * only make sense once there is real art to draw them with -- today the Day-Care yard
+ * visitors. Deliberately "any ROM", not "this save's ROM": the visitors are scenery,
+ * so a registered FireRed is enough to dress an Emerald yard, whereas the map screen
+ * rightly insists on the matching game because it reads that save's own map data. */
+bool app_any_rom_registered(void) {
+  for (int i = 0; i < 3; i++) if (g_rom_path[i][0]) return true;
+  return false;
+}
+
+/* Draw the invented yard visitors? Only when the user asked for them AND owns a ROM.
+ * Both halves matter: the setting is the user's choice, the ROM is what makes the
+ * choice meaningful. See g_yard_visitors for why they are no longer on by default. */
+static bool app_yard_visitors_ok(void) {
+  return g_yard_visitors && app_any_rom_registered();
 }
 
 /* Release a PC box slot as part of a PC->Bank MOVE (multi-select "send to bank" + the
@@ -1515,8 +1543,10 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     if (bsel) ui_panel(gx0 - 4, gy0 + 2 * dy + 2, 3 * dx - 8, 14, UI_SEL, UI_TITLE);
     ui_text(gx0 + 4, gy0 + 2 * dy + 4, bsel ? UI_SELTEXT : UI_TEXT, "Back");
 
-    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-    ui_text(4, 150, UI_DIM, held ? "A place/swap  U/D/L/R  B" : "A actions  U/D/L/R  B");
+    /* The party screen carries the per-mon popup, so this footer must be the same row
+     * the popup arithmetic avoids — UI_FOOTER_Y, never a re-typed 150. */
+    ui_hline(0, UI_FOOTER_RULE_Y, UI_SCR_W, UI_BORDER);
+    ui_text(4, UI_FOOTER_Y, UI_DIM, held ? "A place/swap  U/D/L/R  B" : "A actions  U/D/L/R  B");
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if      (k & KEY_B)     { snd_back(); return 0; }
@@ -1555,7 +1585,38 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
   uint32_t otId = (uint32_t)g_vinfo.tid_public | ((uint32_t)g_vinfo.tid_secret << 16);
   uint8_t  mg   = (g_game == PK_EMERALD) ? 3 : (g_game == PK_FRLG) ? 4 : 2;   /* origin game (editable) */
   uint8_t tmp[80];
-  gen3_build_mon(sp, 5, dc_seed(), otId, g_vinfo.trainer_name, mg, tmp);
+  /* NOT a hard-coded 5 any more. gen3_build_level gives the species its own lowest legal
+   * level — 5 for a Bulbasaur, 36 for a Charizard, which is what Guy asked for in those
+   * words ("it must evolve to there"). Building it right beats building a L5 Charizard
+   * and then flagging it, which is what the create flow did until now. */
+  uint8_t lvl = gen3_build_level(sp);
+  gen3_build_mon(sp, lvl, dc_seed(), otId, g_vinfo.trainer_name, mg, tmp);
+
+  /* The builder gives anything with an egg route met level 0 — "hatched at" — because
+   * that is the one Gen-3 origin whose PID and IVs are not tied to a single RNG seed,
+   * so the record it writes passes PokeDNA's own checker without faking a provenance
+   * marker. Two follow-ups belong here rather than in the pure core:
+   *
+   *  - a freshly hatched Pokemon has friendship 120, hard-coded by CreateHatchedMon
+   *    (src/egg_hatch.c:350-351). gen3_build_mon leaves 70 because gen12_convert.c's
+   *    Gen-1 imports are identified by it (pdna_origin_art.c:27), and this is the one
+   *    caller that knows it just made a brand-new mon.
+   *  - for the ~25 species nothing can hatch — the legendaries and Unown — the record
+   *    honestly says "met here, at this level" instead, and the checker will (rightly)
+   *    say it cannot verify that. Say so BEFORE the user spends time in the editor;
+   *    quietly shipping a QUESTIONABLE mon would be the same kind of silence the met
+   *    location 255 default used to buy. */
+  if (gen3_species_can_hatch(sp)) {
+    EditMon e; gen3_edit_load(tmp, false, &e);
+    em_set_friendship(&e, 120);
+    gen3_edit_commit(&e, tmp);
+  } else {
+    /* Both lines measured against ui_ptext_fit's 184 px budget (175/162) — the dialog
+     * clips silently, which is how "JIGGLYPU~" once shipped. */
+    msg_wait("NO EGG ROUTE", UI_WARN, "Nothing breeds this one, and there",
+             "is no static data - expect a flag.");
+  }
+
   if (sp == 201) {                                   /* Unown -> also pick the letter, dex-grid style */
     EditMon e; gen3_edit_load(tmp, false, &e);
     int form = pick_unown_form(pk_unown_form(e.personality));
@@ -1566,6 +1627,45 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
   bool saved = false; int card = 0;                  /* open on card 0 = POKEMON INFO */
   pdna_inspect_create(tmp, out, &saved, &card);
   if (!saved) return false;                          /* discarded -> the slot stays empty */
+
+  /* THE OTHER WAY INTO A CREATED POKEMON, and the one that used to skip the warning
+   * above: the summary's SPECIES field is editable (pdna_edit.c F_SPECIES), so the user
+   * can pick BULBASAUR here, walk into the editor and come out holding a GROUDON. The
+   * origin was decided BEFORE that swap, so the record would still be carrying met
+   * level 0 — "hatched at" — for a species nothing in Gen 3 hatches.
+   *
+   * That is not a cosmetic mismatch. metLevel == 0 is exactly what mutes PokeDNA's own
+   * PID/IV check (pk_pidiv_exempt_reason, gen3_pidiv.c:152) and its move/encounter
+   * windows (Pk2Facts.is_hatched, gen3_legality2.c:409). A Groudon claiming it hatched
+   * would come out of this flow with a clean green banner — the tool buying silence from
+   * its own auditor with a provenance it cannot have, which is precisely what deleting
+   * the old met-location-255 default was meant to stop.
+   *
+   * So: re-read the species that actually landed, and if it is one with no egg route
+   * still claiming the egg origin, replace the claim with the honest one — met HERE, at
+   * the level it is standing at, the same thing gen3_build_mon would have written had
+   * this species been chosen in the picker — and then say so. The mon is still created;
+   * it is just no longer lying about where it came from.
+   *
+   * Only this direction is corrected. Going the other way (a swap to something that CAN
+   * hatch, leaving a caught origin) yields a record that is merely flagged, which is the
+   * safe failure and not something to silently "fix" by upgrading a user's mon to a
+   * provenance they did not ask for. */
+  PkMon fin;
+  memset(&fin, 0, sizeof fin);
+  pk_decode_mon(out, false, &fin);
+  if (!gen3_species_can_hatch(fin.species) && fin.metLevel == 0 && !fin.isEgg) {
+    /* A box record stores no level — it stores EXP — so derive the level the same way
+     * the checker does (gen3_legality2.c:406) rather than trusting fin.level, which
+     * pk_decode_mon leaves at 0 for a box mon. */
+    uint8_t lv = pk_level_from_exp(pk_species_growth(fin.species), fin.experience);
+    EditMon e; gen3_edit_load(out, false, &e);
+    em_set_metlevel(&e, lv ? lv : 1);
+    gen3_edit_commit(&e, out);
+    msg_wait("NO EGG ROUTE", UI_WARN, "Nothing breeds this one, and there",
+             "is no static data - expect a flag.");
+  }
+
   memcpy(rec, out, 80);
   return app_commit_with_dex(rec, false, commit, block);   /* gated write + auto-register dex (PC only) */
 }
@@ -1603,35 +1703,43 @@ bool app_src_readonly(void) { return g_src_ro; }
 static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0) {
   const char* locked = g_src_why ? g_src_why(rec) : 0;
   enum { RO_VIEW, RO_LEGAL, RO_COPY, RO_CANCEL };
-  int act[4]; const char* lab[4]; int n = 0;
-  lab[n] = "VIEW";     act[n++] = RO_VIEW;
-  lab[n] = "LEGALITY"; act[n++] = RO_LEGAL;
-  if (!locked) { lab[n] = "COPY"; act[n++] = RO_COPY; }
-  lab[n] = "CANCEL";   act[n++] = RO_CANCEL;
+  int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
+  lab[n] = PDNA_LBL_VIEW;     act[n++] = RO_VIEW;
+  lab[n] = PDNA_LBL_LEGALITY; act[n++] = RO_LEGAL;
+  if (!locked) { lab[n] = PDNA_LBL_COPY; act[n++] = RO_COPY; }
+  lab[n] = PDNA_LBL_CANCEL;   act[n++] = RO_CANCEL;
 
   /* 48, not the 16 the menu below uses: ui_truncate documents max_cols*4+1, and a
    * 10-glyph nickname of gender signs really is 30 UTF-8 bytes. GB nicknames hit this
    * (NIDORAN-male is in the test corpus), so this buffer is sized for it. */
   char title[48];
   ui_truncate(title, m0->nickname[0] ? m0->nickname : pk_species_name(m0->species), 11);
-  const int hdr = 15 + (g_src_note ? 10 : 0) + (locked ? 10 : 0);
-  const int mx = 138, mw = 100, mh = hdr + 3 + n * 13 + 11, my = 80 - mh / 2;
-  int sel = 0;
+  const int hdr = PDNA_ROMENU_HDR + (g_src_note ? PDNA_ROMENU_LINE : 0)
+                                  + (locked     ? PDNA_ROMENU_LINE : 0);
+  /* Laid out ABOVE the screen's footer row, and windowed if it ever stops fitting —
+   * the same rule as the full action menu below. */
+  int my, mh;
+  const int vis = ui_popup_vfit(n, PDNA_MONMENU_ROW_H, hdr + PDNA_ROMENU_HEAD_PAD,
+                                PDNA_MONMENU_FOOT, &my, &mh);
+  const int mx = PDNA_MONMENU_X, mw = PDNA_MONMENU_W;
+  int sel = 0, top = 0;
   for (;;) {
+    if (sel < top) top = sel;
+    if (sel >= top + vis) top = sel - vis + 1;
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
-    ui_text(mx + 6, my + 4, UI_TITLE, title);
-    int y = my + 15;
+    ui_text(mx + PDNA_MONMENU_PAD, my + 4, UI_TITLE, title);
+    int y = my + PDNA_ROMENU_HDR;
     /* Proportional face: these two lines are prose, and the panel is only 88 px wide
      * inside its border (tests/host_textfit_test.c pins both). */
-    if (g_src_note) { ui_ptext_fit(mx + 6, y, mw - 12, UI_WARN, g_src_note); y += 10; }
-    if (locked)     { ui_ptext_fit(mx + 6, y, mw - 12, UI_WARN, locked);     y += 10; }
+    if (g_src_note) { ui_ptext_fit(mx + PDNA_MONMENU_PAD, y, PDNA_MONMENU_PROSE_W, UI_WARN, g_src_note); y += PDNA_ROMENU_LINE; }
+    if (locked)     { ui_ptext_fit(mx + PDNA_MONMENU_PAD, y, PDNA_MONMENU_PROSE_W, UI_WARN, locked);     y += PDNA_ROMENU_LINE; }
     ui_hline(mx + 2, y, mw - 4, UI_BORDER);
-    for (int i = 0; i < n; i++) {
-      int ry = y + 3 + i * 13; bool s = (i == sel);
+    for (int i = 0; i < vis && top + i < n; i++) {
+      int ry = y + PDNA_ROMENU_HEAD_PAD + i * PDNA_MONMENU_ROW_H; bool s = (top + i == sel);
       if (s) ui_panel(mx + 2, ry - 1, mw - 4, 12, UI_SEL, UI_TITLE);
-      ui_text(mx + 10, ry, s ? UI_SELTEXT : UI_TEXT, lab[i]);
+      ui_text(mx + PDNA_MONMENU_ROW_DX, ry, s ? UI_SELTEXT : UI_TEXT, lab[top + i]);
     }
-    ui_text(mx + 6, my + mh - 9, UI_DIM, "A ok B back");
+    ui_text(mx + PDNA_MONMENU_PAD, my + mh + PDNA_POPUP_HINT_DY, UI_DIM, PDNA_MONMENU_FOOT_TXT);
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return false;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
@@ -1670,47 +1778,56 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
   }
 
   enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_TOBOX, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CREATE, A_HATCH, A_CANCEL };
-  int act[18]; const char* lab[18]; int n = 0;
+  /* Labels come from pdna_layout.h: they are 8 px/glyph inside a 100 px panel, so their
+   * WIDTH is a real constraint (host_textfit_test.c measures every one of them). */
+  int act[PDNA_MONMENU_MAX]; const char* lab[PDNA_MONMENU_MAX]; int n = 0;
   if (occupied) {
-    lab[n]="VIEW / EDIT"; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
-    lab[n]="ITEM";    act[n++]=A_ITEM;
-    lab[n]="LEGALITY"; act[n++]=A_LEGAL;
-    if (m0.isEgg && !m0.isBadEgg) { lab[n]="HATCH"; act[n++]=A_HATCH; }   /* eggs only: reveal + level 5 */
-    if (!is_party) { lab[n]="MOVE"; act[n++]=A_MOVE; }                    /* box: pick up + reposition */
-    else if (g_party_tobox_allowed) { lab[n]="MOVE TO BOX"; act[n++]=A_TOBOX; }  /* party popup: carry out to a box */
-    lab[n]="COPY";    act[n++]=A_COPY;
-    if (g_clip.occupied) { lab[n]="PASTE"; act[n++]=A_PASTE; }
-    lab[n]="DUPLICATE"; act[n++]=A_DUP;
-    if (!is_bank) { lab[n]="TO DAY-CARE"; act[n++]=A_DAYCARE; }  /* deposit into the daycare (all games incl. FR/LG) */
-    if (is_bank) { lab[n]="TO GAME"; act[n++]=A_TOGAME; }   /* bank: inject into the loaded save */
-    else         { lab[n]="EXPORT .pk"; act[n++]=A_EXPORT; }/* PC/party: write a .pk3 to the bank dir */
-    if (m0.heldItem && !g_item_held) { lab[n]="TAKE ITEM"; act[n++]=A_TAKEITEM; }
-    if (g_item_held)                 { lab[n]="GIVE ITEM"; act[n++]=A_GIVEITEM; }
-    lab[n]="RELEASE";   act[n++]=A_RELEASE;
+    lab[n]=PDNA_LBL_VIEW_EDIT; act[n++]=A_SUMMARY;     /* opens the editable summary (moves edited there) */
+    lab[n]=PDNA_LBL_ITEM;    act[n++]=A_ITEM;
+    lab[n]=PDNA_LBL_LEGALITY; act[n++]=A_LEGAL;
+    if (m0.isEgg && !m0.isBadEgg) { lab[n]=PDNA_LBL_HATCH; act[n++]=A_HATCH; }   /* eggs only: reveal + level 5 */
+    if (!is_party) { lab[n]=PDNA_LBL_MOVE; act[n++]=A_MOVE; }                    /* box: pick up + reposition */
+    else if (g_party_tobox_allowed) { lab[n]=PDNA_LBL_MOVE_TO_BOX; act[n++]=A_TOBOX; }  /* party popup: carry out to a box */
+    lab[n]=PDNA_LBL_COPY;    act[n++]=A_COPY;
+    if (g_clip.occupied) { lab[n]=PDNA_LBL_PASTE; act[n++]=A_PASTE; }
+    lab[n]=PDNA_LBL_DUPLICATE; act[n++]=A_DUP;
+    if (!is_bank) { lab[n]=PDNA_LBL_TO_DAYCARE; act[n++]=A_DAYCARE; }  /* deposit into the daycare (all games incl. FR/LG) */
+    if (is_bank) { lab[n]=PDNA_LBL_TO_GAME; act[n++]=A_TOGAME; }   /* bank: inject into the loaded save */
+    else         { lab[n]=PDNA_LBL_EXPORT_PK; act[n++]=A_EXPORT; }/* PC/party: write a .pk3 to the bank dir */
+    if (m0.heldItem && !g_item_held) { lab[n]=PDNA_LBL_TAKE_ITEM; act[n++]=A_TAKEITEM; }
+    if (g_item_held)                 { lab[n]=PDNA_LBL_GIVE_ITEM; act[n++]=A_GIVEITEM; }
+    lab[n]=PDNA_LBL_RELEASE;   act[n++]=A_RELEASE;
   } else {                                              /* empty slot */
-    if (!is_party) { lab[n]="CREATE"; act[n++]=A_CREATE; }   /* build a mon from nothing (box/bank) */
-    if (g_clip.occupied) { lab[n]="PASTE HERE"; act[n++]=A_PASTE; }
+    if (!is_party) { lab[n]=PDNA_LBL_CREATE; act[n++]=A_CREATE; }   /* build a mon from nothing (box/bank) */
+    if (g_clip.occupied) { lab[n]=PDNA_LBL_PASTE_HERE; act[n++]=A_PASTE; }
     if (n == 0) return false;                            /* empty party slot, nothing to paste */
   }
-  lab[n]="CANCEL"; act[n++]=A_CANCEL;
+  lab[n]=PDNA_LBL_CANCEL; act[n++]=A_CANCEL;
 
   char title[16];
   ui_truncate(title, occupied ? (m0.nickname[0] ? m0.nickname : pk_species_name(m0.species)) : "EMPTY", 11);
-  const int vis = n < 9 ? n : 9;                    /* scroll if more actions than fit */
-  const int mx = 138, mw = 100, mh = 18 + vis * 13 + 11, my = 80 - mh / 2;
+  /* Scroll if more actions than fit, and fit is measured against the FOOTER, not the
+   * screen: this popup is drawn over the box/party screen while that screen's own hints
+   * are still on the bottom row, and its 146 px panel used to end at y=152 — shearing the
+   * top off "A menu UP SEL B" / "U/D/L/R B" underneath it. */
+  int my, mh;
+  const int vis = ui_popup_vfit(n, PDNA_MONMENU_ROW_H, PDNA_MONMENU_HEAD,
+                                PDNA_MONMENU_FOOT, &my, &mh);
+  const int mx = PDNA_MONMENU_X, mw = PDNA_MONMENU_W;
   int sel = 0, top = 0;
   for (;;) {
     if (sel < top) top = sel;
     if (sel >= top + vis) top = sel - vis + 1;
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
-    ui_text(mx + 6, my + 4, UI_TITLE, title);
+    ui_text(mx + PDNA_MONMENU_PAD, my + 4, UI_TITLE, title);
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
     for (int i = 0; i < vis && top + i < n; i++) {
-      int y = my + 18 + i * 13; bool s = (top + i == sel);
+      int y = my + PDNA_MONMENU_HEAD + i * PDNA_MONMENU_ROW_H; bool s = (top + i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 12, UI_SEL, UI_TITLE);
-      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, lab[top + i]);
+      ui_text(mx + PDNA_MONMENU_ROW_DX, y, s ? UI_SELTEXT : UI_TEXT, lab[top + i]);
     }
-    ui_text(mx + 6, my + mh - 9, UI_DIM, "A ok B back");   /* popup is 100px wide: 12 cols max */
+    /* popup is 100 px wide: 12 sys8 columns max */
+    ui_text(mx + PDNA_MONMENU_PAD, my + mh + PDNA_POPUP_HINT_DY, UI_DIM, PDNA_MONMENU_FOOT_TXT);
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return false;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
@@ -2785,19 +2902,21 @@ static void dc_clear_egg(uint32_t base) {
 
 /* Small daycare action menu. Returns 0=view/edit, 1=take out, 2=put in, -1=cancel. */
 static int dc_menu(bool can_take, bool can_put) {
-  const char* rows[4]; int act[4], nr = 0;
+  const char* rows[PDNA_DCPOP_MAX]; int act[PDNA_DCPOP_MAX], nr = 0;
   rows[nr] = "View / Edit"; act[nr++] = 0;
   if (can_take) { rows[nr] = "Take out"; act[nr++] = 1; }
   if (can_put)  { rows[nr] = "Put in (clipboard)"; act[nr++] = 2; }
   rows[nr] = "Cancel"; act[nr++] = -1;
   int sel = 0;
   for (;;) {
-    const int mx = 40, my = 40, mw = 160, mh = 18 + nr * 14 + 8;
+    int my, mh;                                    /* stays clear of the yard's footer row */
+    ui_popup_vfit(nr, PDNA_DCPOP_ROW_H, PDNA_DCPOP_HEAD, PDNA_DCPOP_FOOT, &my, &mh);
+    const int mx = 40, mw = 160;
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "DAY-CARE");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
     for (int i = 0; i < nr; i++) {
-      int y = my + 18 + i * 14; bool s = (i == sel);
+      int y = my + PDNA_DCPOP_HEAD + i * PDNA_DCPOP_ROW_H; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
     }
@@ -2837,11 +2956,13 @@ static bool dc_withdraw(uint32_t base, uint32_t stride, uint8_t* rec, int physi)
   static const char* const D[3] = { "To Party", "To PC", "Cancel" };
   int sel = 0;
   for (;;) {
-    const int mx = 56, my = 52, mw = 128, mh = 18 + 3 * 14 + 8;
+    int my, mh;                                    /* stays clear of the yard's footer row */
+    ui_popup_vfit(3, PDNA_DCPOP_ROW_H, PDNA_DCPOP_HEAD, PDNA_DCPOP_FOOT, &my, &mh);
+    const int mx = 56, mw = 128;
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "TAKE OUT");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < 3; i++) { int y = my + 18 + i * 14; bool s = (i == sel);
+    for (int i = 0; i < 3; i++) { int y = my + PDNA_DCPOP_HEAD + i * PDNA_DCPOP_ROW_H; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
       ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, D[i]); }
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
@@ -2889,7 +3010,7 @@ static void pdna_daycare(void) {
    * counters must be zeroed: they are file-scope statics that survive the previous
    * visit (dc_rescan places from s_ndeco_roll, the draw loops read s_ndeco), so
    * zeroing one would leave ghosts from last time. */
-  if (g_yard_visitors) dc_roll_decos();
+  if (app_yard_visitors_ok()) dc_roll_decos();
   else { s_ndeco_roll = 0; s_ndeco = 0; s_dc_visit_rng = dc_seed(); }
 #endif
   int n = dc_rescan(base, stride, recs, dc, phys, dcx, dcy, &off, &to_check);
@@ -2929,35 +3050,40 @@ static void pdna_daycare(void) {
       }
       if (nshow == 0) ui_text(64, 58, RGB15(8, 5, 0), "It's quiet here.");
       if (n) { int py = dcy[sel] - 7; if (py < 12) py = 12; dc_pointer(dcx[sel] + 16, py); }
-      /* THREE proportional rows at y=125/134/143 inside the y=124..151 panel. Row 2
-       * is always drawn and is the one that says which mons are actually yours. */
-      ui_panel(2, 124, 236, 28, UI_PANEL, UI_BORDER);
+      /* THREE proportional rows inside the panel (geometry in pdna_layout.h, which the
+       * host text-fit test reads too). Row 2 is always drawn and is the one that says
+       * which mons are actually yours. The panel used to be 124..151, whose bottom
+       * border row (150) fell exactly on row 2's DESCENDER row — "Others are just
+       * visiting." lost the tails of its 'j' and 'g'. */
+      const int dcy0 = PDNA_DCY_ROW0_Y, dcyp = PDNA_DCY_ROW_PITCH, dcx = PDNA_DCY_TEXT_X;
+      ui_panel(PDNA_DCY_PANEL_X, PDNA_DCY_PANEL_Y, PDNA_DCY_PANEL_W, PDNA_DCY_PANEL_H,
+               UI_PANEL, UI_BORDER);
       if (n == 2) {
         DcCompat c = pk_daycare_compat(dc[0].species, dc[0].otId, dc[1].species, dc[1].otId);
-        ui_ptext(6, 125, UI_TITLE, pk_daycare_compat_msg(c));
+        ui_ptext(dcx, dcy0, UI_TITLE, pk_daycare_compat_msg(c));
         if (!pk_daycare_can_breed(dc[0].species, dc[0].gender, dc[1].species, dc[1].gender))
-          ui_ptext(6, 134, UI_DIM, "(no Egg: incompatible pair)");
-        else if (off) ui_ptext(6, 134, UI_OK, "An EGG is ready to collect!");
+          ui_ptext(dcx, dcy0 + dcyp, UI_DIM, "(no Egg: incompatible pair)");
+        else if (off) ui_ptext(dcx, dcy0 + dcyp, UI_OK, "An EGG is ready to collect!");
         else { char l[44]; siprintf(l, "Egg check ~%d steps (%d%%)", to_check, EGG_CHANCE[c]);
-               ui_ptext(6, 134, UI_DIM, l); }
+               ui_ptext(dcx, dcy0 + dcyp, UI_DIM, l); }
       } else if (n == 1) {
         /* a NAME -> proportional + pixel clamp, not ui_truncate's character count */
-        ui_ptext_fit(6, 125, 228, UI_TEXT,
+        ui_ptext_fit(dcx, dcy0, PDNA_DCY_NAME_W, UI_TEXT,
                      dc[0].nickname[0] ? dc[0].nickname : pk_species_name(dc[0].species));
-        ui_ptext(6, 134, off ? UI_OK : UI_DIM, off ? "An EGG is ready!" : "One Pokemon is boarding.");
+        ui_ptext(dcx, dcy0 + dcyp, off ? UI_OK : UI_DIM, off ? "An EGG is ready!" : "One Pokemon is boarding.");
       } else {
-        ui_ptext(6, 125, off ? UI_OK : UI_DIM, off ? "An EGG is ready to collect!" : "No Pokemon are boarding.");
+        ui_ptext(dcx, dcy0, off ? UI_OK : UI_DIM, off ? "An EGG is ready to collect!" : "No Pokemon are boarding.");
       }
 #ifdef HAVE_DAYCARE_BG
-      ui_ptext(6, 143, UI_DIM, pk_daycare_yard_note(n, s_ndeco));
+      ui_ptext(dcx, dcy0 + 2 * dcyp, UI_DIM, pk_daycare_yard_note(n, s_ndeco));
 #else
       /* no yard art -> no invented visitors, so the note only states the slot count */
-      ui_ptext(6, 143, UI_DIM, pk_daycare_yard_note(n, 0));
+      ui_ptext(dcx, dcy0 + 2 * dcyp, UI_DIM, pk_daycare_yard_note(n, 0));
 #endif
-      ui_fill_rect(0, 152, UI_SCR_W, 8, UI_BG);
+      ui_fill_rect(0, PDNA_DCY_FOOTER_Y, UI_SCR_W, 8, UI_BG);
       /* "your 2" is doing the disambiguating work: only the boarders are pickable. */
-      ui_ptext(4, 152, UI_DIM, n ? "A menu  L/R your 2  B back"
-                                 : (g_clip.occupied ? "A put in  B back" : "B back"));
+      ui_ptext(4, PDNA_DCY_FOOTER_Y, UI_DIM, n ? PDNA_DCY_HINT_PAIR
+                                 : (g_clip.occupied ? PDNA_DCY_HINT_PUT : "B back"));
     }
     u16 k, fresh;
     do { VBlankIntrWait(); snd_vblank(); key_poll();
@@ -3530,6 +3656,7 @@ static void anim_settings(void) {
  * Persists on exit. */
 static void rumble_settings(void) {
   enum { R_STR, R_DUR, R_CUE0 };
+  _Static_assert(R_CUE0 == PDNA_RMB_STEPPERS, "rumble stepper count out of sync");
   const int NROW = R_CUE0 + RCUE_COUNT;
   int sel = 0;
   for (;;) {
@@ -3541,12 +3668,18 @@ static void rumble_settings(void) {
       if      (i == R_STR) siprintf(r, "Strength    %d/5  < >", rmbl_get_strength());
       else if (i == R_DUR) siprintf(r, "Duration    %d/5  < >", rmbl_get_duration());
       else { int c = i - R_CUE0; siprintf(r, "%-12s %s", rmbl_cue_name(c), rmbl_cue_enabled(c) ? "On" : "Off"); }
-      int y = 24 + i * 14; bool s = (i == sel);
+      int y = PDNA_RMB_ROW0_Y + i * PDNA_RMB_ROW_PITCH; bool s = (i == sel);
       if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
-      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, r);
+      ui_text(PDNA_SET_ROW_X, y, s ? UI_SELTEXT : UI_TEXT, r);
     }
-    ui_text(8, 140, UI_DIM, "Needs an EZ-Flash Omega with");
-    ui_text(8, 150, UI_DIM, "GAME RTC on. <>adj A toggle B");
+    /* The help sentence and the control hints are two INDEPENDENT strings: they used to
+     * share the y=150 footer row as "GAME RTC on. <>adj A toggle B", which is 29 sys8
+     * columns — the row was full, so "back" had to be dropped from the hint to make it
+     * fit. Give each its own row. (Strings + rows in pdna_layout.h — the host test
+     * measures them from there.) */
+    ui_text(PDNA_RMB_HELP_X, PDNA_RMB_HELP_Y1, UI_DIM, PDNA_RMB_HELP1);
+    ui_text(PDNA_RMB_HELP_X, PDNA_RMB_HELP_Y2, UI_DIM, PDNA_RMB_HELP2);
+    ui_text(PDNA_SET_FOOT_X, PDNA_SET_FOOTER_Y, UI_DIM, PDNA_RMB_FOOT);
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) { cfg_save(); return; }
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : NROW - 1;
@@ -3564,27 +3697,43 @@ static void rumble_settings(void) {
 }
 
 static void pdna_settings(void) {
-  static const char* const MODE[3] = { "New each time", "Single (rolling)", "Skip (none)" };
+  /* Row strings live in pdna_layout.h: sys8 does not clip at the right margin, it WRAPS
+   * onto the row below, so their LENGTH is load-bearing and the host test checks it. */
+#define SET_MODE_ONE(s) s,
+  static const char* const MODE[3] = { PDNA_SET_BACKUP_MODES(SET_MODE_ONE) };
   enum { S_BACKUP, S_ANIM, S_YARD, S_ROM, S_RUMBLE, S_CLEAR, S_CLOSE, S_N };
+  _Static_assert(S_N == PDNA_SET_ROWS, "settings row count out of sync with pdna_layout.h");
   int sel = 0;
   for (;;) {
     ui_clear();
     ui_text(4, 4, UI_TITLE, "SETTINGS");
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    char r0[44]; siprintf(r0, "Backups:  %s", MODE[g_backup_mode]);
-    char r1[44]; siprintf(r1, "Yard visitors:  %s", g_yard_visitors ? "On" : "Off");
+    char r0[44]; siprintf(r0, PDNA_SET_BACKUP_FMT, MODE[g_backup_mode]);
+    /* Say WHY it is unavailable rather than showing a toggle that does nothing:
+     * without a registered ROM there is no art to draw a visitor with. */
+    bool yard_ok = app_any_rom_registered();
+    /* "Needs your ROM" made this row 30 sys8 columns wide at x=10, two past the 28 the
+     * screen holds — and TTE does not clip, it WRAPS: the "OM" reappeared at x=0 on the
+     * next row, on top of "Game ROM: not set". "Set Game ROM" is 28 columns and points
+     * at the row that fixes it. */
+    char r1[44]; siprintf(r1, PDNA_SET_YARD_FMT,
+                          !yard_ok ? PDNA_SET_YARD_NEEDROM
+                                   : (g_yard_visitors ? PDNA_SET_YARD_ON : PDNA_SET_YARD_OFF));
     char r2[44]; siprintf(r2, "Game ROM:  %s",
                           s_iconrom.ok ? rom_kind_name(s_iconrom_ctx.kind) : "not set");
-    const char* rows[S_N] = { r0, "Animations  >", r1, r2, "Rumble  >", "Clear backups (this save)", "Close" };
+    const char* rows[S_N] = { r0, "Animations  >", r1, r2, "Rumble  >", PDNA_SET_ROW_CLEAR, "Close" };
     for (int i = 0; i < S_N; i++) {
-      int y = 24 + i * 14; bool s = (i == sel);   /* 7 rows @14px: last band 106..119, clear of the help text */
+      /* 7 rows @14px: last band 106..119, clear of the help text */
+      int y = PDNA_SET_ROW0_Y + i * PDNA_SET_ROW_PITCH; bool s = (i == sel);
       if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
-      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
+      ui_text(PDNA_SET_ROW_X, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
     }
-    ui_text(8, 124, UI_DIM, "Animations + Rumble: per-item");
-    ui_text(8, 133, UI_DIM, "on/off inside each submenu.");
-    ui_ptext(8, 142, UI_DIM, "Yard visitors are scenery, not your Pokemon.");
-    ui_text(4, 152, UI_DIM, "A change/do  U/D move  B back");
+    /* Rebalanced across the two rows: the first was 29 sys8 columns at x=8, i.e. ending
+     * on the last pixel column of the screen with no margin at all. */
+    ui_text(PDNA_SET_HELP_X, PDNA_SET_HELP_Y1, UI_DIM, PDNA_SET_HELP1);
+    ui_text(PDNA_SET_HELP_X, PDNA_SET_HELP_Y2, UI_DIM, PDNA_SET_HELP2);
+    ui_ptext(PDNA_SET_HELP_X, PDNA_SET_NOTE_Y, UI_DIM, PDNA_SET_NOTE);
+    ui_text(PDNA_SET_FOOT_X, PDNA_SET_FOOTER_Y, UI_DIM, PDNA_SET_FOOT);
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) { cfg_save(); return; }
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : S_N - 1;
@@ -3592,7 +3741,15 @@ static void pdna_settings(void) {
     else if (k & KEY_A) {
       if (sel == S_BACKUP) g_backup_mode = (g_backup_mode + 1) % 3;
       else if (sel == S_ANIM)   anim_settings();
-      else if (sel == S_YARD)   g_yard_visitors = !g_yard_visitors;
+      else if (sel == S_YARD) {
+        /* Refuse rather than toggle a flag that cannot take effect — the row already
+         * reads "Needs your ROM", so this just explains the refusal once. */
+        if (!yard_ok) {
+          snd_deny();
+          msg_wait("YARD VISITORS", UI_DIM, "Register your game ROM first",
+                   "(Settings > Game ROM).");
+        } else g_yard_visitors = !g_yard_visitors;
+      }
       else if (sel == S_ROM) {
 #ifdef PDNA_DELTA
         snd_deny(); msg_wait("NO SD HERE", UI_DIM, "Fuse a ROM into this build", "with tools/fuse_rom.py.");
@@ -3861,34 +4018,29 @@ static void pdna_battle_record(void) {
 }
 
 /* START-menu destinations over the box (Party + Bank + Daycare are the storage
- * screens; SELECT no longer toggles the party — it cycles the box cursor mode). */
-enum { NV_PARTY, NV_BANK, NV_DAYCARE, NV_TRAINER, NV_CLOCK, NV_MIRAGE, NV_DEX, NV_BAG, NV_DATA, NV_SECRET, NV_POKEBLOCK, NV_EVENTS,
-       NV_BATTLEREC, NV_FRONTIER, NV_FLY,
-       /* Present in the emulator build too: when a Pokemon ROM has been fused into this
-        * image (tools/fuse_rom.py) the map reads it from cartridge space, no SD needed.
-        * An unfused emulator build shows the screen's own "no ROM" message. */
-       NV_MAP,
-       NV_GB,          /* import from a Game Boy (Gen 1/2) save on the card */
-       NV_SETTINGS, NV_BACK, NV_COUNT };
+ * screens; SELECT no longer toggles the party — it cycles the box cursor mode).
+ *
+ * The entries AND the menu geometry live in pdna_layout.h, because
+ * tests/host_textfit_test.c asserts on both (panel height, and every label against the
+ * 90 px selection band). A copy of them in the test would guard nothing. */
+#define NV_ENUM_ONE(id, label) id,
+enum { PDNA_NAV_ITEMS(NV_ENUM_ONE) NV_COUNT };
+_Static_assert(NV_COUNT == PDNA_NAV_COUNT, "nav enum and PDNA_NAV_COUNT disagree");
 
-/* Menu geometry. The column is wide enough for "Flags & counters" (85 px in the
- * proportional face) and two of them plus the gutter still clear the 240 px screen. */
-#define NAV_COL_W   98
-#define NAV_BAND_W  (NAV_COL_W - 4)
-#define NAV_BAND_H  12
-
-/* The menu is WINDOWED, not fixed-height: at rh 9 only 13 rows fit the 152-px budget
- * (my + 18 + n*rh + 11 <= 152), and the list passed that with the Frontier/Fly screens.
- * Previously each new entry paid for itself by shrinking rh (10 -> 9 for Battle record);
- * one more step would put a 7-px selection bar under an 8-px font. Scrolling instead
- * keeps rh 9 forever and makes the next screen free. */
-#define NV_VIS 13
+/* Menu HEIGHT, guarded at BUILD time. This menu is fixed-height and drawn exactly once
+ * (see nav_menu), so it has no scroll to fall back on — which is why adding the GB-import
+ * entry silently broke it: NV_COUNT 19 gave 10 rows at rh 13, a 164 px panel on a 160 px
+ * screen, top and bottom borders off-screen and the hint row landing at y=152 on top of
+ * the box screen's own footer ("A pick ABmback UP SEL B"). Entry N+1 must break the BUILD
+ * instead: drop an entry, shrink PDNA_NAV_ROW_H, or give the list a window. */
+_Static_assert(PDNA_NAV_MH <= UI_FOOTER_Y,
+               "nav menu no longer fits above the footer row (UI_FOOTER_Y)");
 /* Pixels under the selection bar, so it can be lifted off a row without repainting the
  * translucent panel. 2,256 B of EWRAM buys a menu that is drawn exactly ONCE. */
-static u16 EWRAM_BSS s_nav_band[NAV_BAND_W * NAV_BAND_H];
+static u16 EWRAM_BSS s_nav_band[PDNA_NAV_BAND_W * PDNA_NAV_BAND_H];
 
 static int nav_menu(void) {
-  /* TWO COLUMNS, eighteen entries, nine rows each — no scroll, no position counter.
+  /* TWO COLUMNS, ten rows each — no scroll, no position counter (NAV_MH guards the fit).
    *
    * DRAWN ONCE. ui_panel_alpha BLENDS with what is already on screen, and this used to
    * repaint the whole menu on every keypress: each scroll blended the panel over its own
@@ -3897,47 +4049,52 @@ static int nav_menu(void) {
    * only lifts the selection bar off the old row (restoring the pixels it covered) and lays
    * it on the new one. Labels use the proportional face, which is what makes room for
    * "Flags & counters" where nine fixed-width glyphs used to be the ceiling. */
-  static const char* const L[NV_COUNT] = {
-    "Party", "Bank", "Daycare", "Trainer", "Clock fix", "Mirage", "Pokedex",
-    "Bag", "Flags & counters",
-    "Bases", "Blocks", "Tickets", "Records",
-    "Frontier", "Fly", "Map", "GB import",
-    "Settings", "Back" };
-  const int rows = (NV_COUNT + 1) / 2;              /* 9 rows per column */
-  const int cw = NAV_COL_W, rh = 13;
-  const int mw = cw * 2 + 12, mh = 20 + rows * rh + 14;
-  const int mx = (UI_SCR_W - mw) / 2, my = (UI_SCR_H - mh) / 2;
-  const int bw = NAV_BAND_W;                        /* selection bar width */
+#define NV_LABEL_ONE(id, label) label,
+  static const char* const L[NV_COUNT] = { PDNA_NAV_ITEMS(NV_LABEL_ONE) };
+  const int rows = PDNA_NAV_ROWS;                   /* 10 rows per column */
+  const int cw = PDNA_NAV_COL_W, rh = PDNA_NAV_ROW_H;
+  const int mw = PDNA_NAV_MW, mh = PDNA_NAV_MH;
+  /* Centred in the space ABOVE the footer, not on the whole screen: the box screen keeps
+   * printing its own hints at y=152 underneath this panel. */
+  const int mx = (UI_SCR_W - mw) / 2, my = (UI_FOOTER_Y - mh) / 2;
+  const int bw = PDNA_NAV_BAND_W;                   /* selection bar width */
 
   /* Compose the panel and every label ONE time. */
+  /* Every offset below is PDNA_NAV_* from pdna_layout.h, including the head: the three
+   * row-placement sites here used to say "my + 20" while PDNA_NAV_HEAD fed only the
+   * panel height, so shrinking the constant moved the panel and left the rows behind
+   * with the host test still green. One symbol per number, so the test can bite. */
   ui_panel_alpha(mx, my, mw, mh, UI_PANEL, UI_BORDER, 5);
-  ui_text(mx + 6, my + 4, UI_TITLE, "MENU");
-  ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+  ui_text(mx + PDNA_NAV_PAD, my + PDNA_NAV_TITLE_DY, UI_TITLE, "MENU");
+  ui_hline(mx + 2, my + PDNA_NAV_DIV_DY, mw - 4, UI_BORDER);
   for (int i = 0; i < NV_COUNT; i++) {
     int col = i / rows, row = i % rows;
-    ui_ptext(mx + 6 + col * cw, my + 20 + row * rh, UI_TEXT, L[i]);
+    ui_ptext(mx + PDNA_NAV_PAD + col * cw, my + PDNA_NAV_HEAD + row * rh, UI_TEXT, L[i]);
   }
-  ui_text(mx + 6, my + mh - 10, UI_DIM, "A pick  B back");
+  ui_text(mx + PDNA_NAV_PAD, my + mh + PDNA_NAV_HINT_DY, UI_DIM, PDNA_NAV_HINT);
 
   int sel = 0, drawn = -1;
   for (;;) {
     if (drawn != sel) {
       if (drawn >= 0) {                             /* lift the bar off the old row */
         int c = drawn / rows, r = drawn % rows;
-        int bx = mx + 6 + c * cw - 4, by = my + 20 + r * rh - 2;
-        for (int j = 0; j < NAV_BAND_H; j++)
+        int bx = mx + PDNA_NAV_PAD + c * cw - PDNA_NAV_LABEL_DX;
+        int by = my + PDNA_NAV_HEAD + r * rh + PDNA_NAV_BAND_DY;
+        for (int j = 0; j < PDNA_NAV_BAND_H; j++)
           for (int i = 0; i < bw; i++)
             vid_mem[(by + j) * UI_SCR_W + bx + i] = s_nav_band[j * bw + i];
       }
       { int c = sel / rows, r = sel % rows;
-        int bx = mx + 6 + c * cw - 4, by = my + 20 + r * rh - 2;
-        for (int j = 0; j < NAV_BAND_H; j++)        /* remember what it covers */
+        int bx = mx + PDNA_NAV_PAD + c * cw - PDNA_NAV_LABEL_DX;
+        int by = my + PDNA_NAV_HEAD + r * rh + PDNA_NAV_BAND_DY;
+        for (int j = 0; j < PDNA_NAV_BAND_H; j++)   /* remember what it covers */
           for (int i = 0; i < bw; i++)
             s_nav_band[j * bw + i] = vid_mem[(by + j) * UI_SCR_W + bx + i];
-        /* The bar must CONTAIN the glyph box, not clip it: text sits at by+2 and is 8 px
-         * tall, so the bar spans by .. by+11 with two pixels of lead above and below. */
-        ui_panel_alpha(bx, by, bw, NAV_BAND_H, UI_SEL, UI_TITLE, 6);
-        ui_ptext(bx + 4, by + 2, UI_SELTEXT, L[sel]);
+        /* The bar must CONTAIN the glyph box, not clip it: the text sits BAND_DY below
+         * the bar's top and is UI_ROW_H tall, so the bar spans by .. by+BAND_H-1 with
+         * lead above and below. tests/host_textfit_test.c asserts both edges. */
+        ui_panel_alpha(bx, by, bw, PDNA_NAV_BAND_H, UI_SEL, UI_TITLE, 6);
+        ui_ptext(bx + PDNA_NAV_LABEL_DX, by - PDNA_NAV_BAND_DY, UI_SELTEXT, L[sel]);
       }
       drawn = sel;
     }
@@ -4059,7 +4216,7 @@ static void view_save(const char* path) {
     ui_text(6, 102, UI_TEXT, "over pokedna-delta.sav,");
     ui_text(6, 112, UI_TEXT, "then relaunch.");
 #endif
-    ui_text(4, 150, UI_DIM, "B=back");
+    ui_text(4, UI_FOOTER_Y, UI_DIM, "B=back");
     wait_keys(KEY_B);
     return;
   }
@@ -4178,7 +4335,7 @@ int main(void) {
    * from the image (see flashsave.c) — say so instead of showing an empty tool. */
   ui_clear();
   ui_text(6, 60, UI_TITLE, "PokeDNA (emulator build)");
-  ui_text(6, 150, UI_DIM, "build " __DATE__ " " __TIME__);
+  ui_text(6, UI_FOOTER_Y, UI_DIM, "build " __DATE__ " " __TIME__);
   uint16_t fid = 0;
   if (!flashsave_probe(&fid)) {
     ui_text(6, 84, UI_WARN, "No 128K flash save found.");
@@ -4191,7 +4348,7 @@ int main(void) {
 #else
   ui_clear();
   ui_text(6, 70, UI_TITLE, "Detecting flashcart...");
-  ui_text(6, 150, UI_DIM, "build " __DATE__ " " __TIME__);
+  ui_text(6, UI_FOOTER_Y, UI_DIM, "build " __DATE__ " " __TIME__);
   /* Cart detection AND the SD init/mount can fail transiently right after the loader
    * hands off (the EZ-Flash SD interface sometimes needs a moment, or a re-init, before
    * the first read succeeds). Retry both a few times with a short settle before giving

@@ -18,5 +18,9 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game);
 bool app_pick_rom(char* out, int out_cap);
 /* The same browser filtered to Game Boy battery files (.sav/.srm) for GB import. */
 bool app_pick_gb_save(char* out, int out_cap);
+/* The same browser filtered to Game Boy cartridge dumps (.gb/.gbc) — the runtime source
+ * of Gen-1/2 sprite art, so an imported mon can wear the art of the game it came from.
+ * The extension only narrows the list; the caller must identify the ROM by its header. */
+bool app_pick_gb_rom(char* out, int out_cap);
 
 #endif /* PDNA_MAP_H */
