@@ -46,6 +46,13 @@ void ui_panel_alpha(int x, int y, int w, int h, u16 fill, u16 border, int num) {
   m3_frame(x, y, x + w - 1, y + h - 1, border);
 }
 
+/* See ui.h for the contract. The arithmetic itself lives in ui_layout.h (pure C) so
+ * tests/host_textfit_test.c can run THIS code instead of a mirror of it — a mirrored
+ * copy of the formula in the test would keep passing after this one changed. */
+int ui_popup_vfit(int nrows, int row_h, int head, int foot, int* out_y, int* out_h) {
+  return ui_popup_fit(nrows, row_h, head, foot, out_y, out_h);
+}
+
 void ui_hline(int x, int y, int w, u16 color) {
   m3_line(x, y, x + w - 1, y, color);
 }

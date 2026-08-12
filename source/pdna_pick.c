@@ -11,6 +11,7 @@
 #include "pdna_pick.h"
 #include "pdna_app.h"      /* app_confirm, app_anim_enabled (Pokedex screen) */
 #include "ui.h"
+#include "pdna_layout.h"   /* list/popup geometry, shared with tests/host_textfit_test.c */
 #include "data_tables.h"
 #include "gen3_items.h"    /* pk_item_pocket / PkPocket (item-picker category filter) */
 #include "mon_icons.h"
@@ -91,7 +92,10 @@ static u16 type_color(uint8_t t) {
 }
 static void type_chip(int x, int y, uint8_t t) {
   if (t >= 18) return;
-  ui_fill_rect(x, y, 26, 9, type_color(t));
+  /* PDNA_FILT_CHIP_W, not a bare 26: the filter lists draw the type NAME a fixed
+   * PDNA_FILT_CHIP_DX along from the chip, and the host test asserts the chip stops
+   * before it. Two literals could not be checked against each other. */
+  ui_fill_rect(x, y, PDNA_FILT_CHIP_W, 9, type_color(t));
   ui_text(x + 2, y, RGB15(31, 31, 31), TYPE_ABBR[t]);
 }
 /* The real Gen-3 type badge (32x14, generated). Use where a row is tall enough;
@@ -169,6 +173,29 @@ static int filter_ids(int* out) {
   return n;
 }
 
+/* Row geometry shared by the two FILTER / SORT lists.
+ *
+ * They used to run at an 8 px pitch with the selection drawn as ui_panel(2, y-1, .., 9):
+ * ui_panel's frame puts its bottom line at y+7, which is INSIDE the 8-row glyph box, so
+ * the highlight rule ran straight through the feet of "Sort: No. (dex)" and its fill
+ * ended one pixel above the next row's ascenders — "Status: All" / "Game: All" looked
+ * clipped by the box above them. A 9 px pitch with a BORDERLESS bar (sp_row's idiom,
+ * below) leaves a clear pixel row between the bar and the next row, and nothing crosses
+ * the text. One row of the window pays for it: 15 rows now end at y=147, above the
+ * y=152 footer.
+ *
+ * The numbers themselves live in pdna_layout.h so tests/host_textfit_test.c checks THESE
+ * ones (bar-contains-glyph-box, bar-clear-of-the-next-row, last row above the footer)
+ * rather than a copy that never changes when this does. */
+#define FILT_Y0     PDNA_FILT_Y0
+#define FILT_ROW_H  PDNA_FILT_ROW_H
+#define FILT_VIS    PDNA_FILT_VIS
+/* BORDERLESS on purpose — see above. This is the one thing the host test cannot read
+ * from a header: that this is ui_fill_rect and not ui_panel. */
+static void filt_bar(int y) {
+  ui_fill_rect(PDNA_FILT_BAR_X, y + PDNA_FILT_BAR_DY, PDNA_FILT_BAR_W, PDNA_FILT_BAR_H, UI_SEL);
+}
+
 /* a nice list to jump to any filter (type rows show a colored chip) + sort toggle. */
 static void filter_menu(int* filter, int* sort) {
   int fids[24];
@@ -176,24 +203,26 @@ static void filter_menu(int* filter, int* sort) {
   int rows = 1 + nf, sel = 0, top = 0;
   for (;;) {
     if (sel < top) top = sel;
-    if (sel >= top + 16) top = sel - 15;
+    if (sel >= top + FILT_VIS) top = sel - FILT_VIS + 1;
     ui_clear();
     ui_text(4, 2, UI_TITLE, "FILTER / SORT");
     ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < 16 && top + i < rows; i++) {
-      int r = top + i, y = 14 + i * 8;
+    for (int i = 0; i < FILT_VIS && top + i < rows; i++) {
+      int r = top + i, y = FILT_Y0 + i * FILT_ROW_H;
       bool s = (r == sel);
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+      if (s) filt_bar(y);
       if (r == 0) {
-        char b[32]; siprintf(b, "Sort: %s", *sort ? "A-Z (name)" : "No. (dex)");
-        ui_text(8, y, s ? UI_SELTEXT : UI_DIRCLR, b);
+        char b[32];
+        siprintf(b, PDNA_FILT_SORT_FMT, *sort ? PDNA_FILT_SORT_NAME : PDNA_FILT_SORT_DEX);
+        ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b);
       } else {
         int fid = fids[r - 1];
-        if (fid >= 5) { type_chip(8, y, (uint8_t)(fid - 5)); ui_text(40, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
-        else ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid));
+        if (fid >= 5) { type_chip(PDNA_FILT_TEXT_X, y, (uint8_t)(fid - 5));
+                        ui_text(PDNA_FILT_TEXT_X + PDNA_FILT_CHIP_DX, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
+        else ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid));
       }
     }
-    ui_text(4, 152, UI_DIM, "A pick  U/D/L/R move  B back");
+    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_FILT_FOOT);
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
     if (k & KEY_B) return;
     else if (k & KEY_A) { if (sel == 0) *sort ^= 1; else { *filter = fids[sel - 1]; return; } }
@@ -429,7 +458,7 @@ static bool dex_bulk(void) {
   int sel = 0;
   for (;;) {
     /* options: Catch/See/Wipe ALL (state 2/1/0), National-Dex toggle (3), Undo (-1), Cancel (-2) */
-    const char* L[6]; int act[6], n = 0;
+    const char* L[PDNA_DEXBULK_MAX]; int act[PDNA_DEXBULK_MAX], n = 0;
     bool natl = (s_getnat && s_getnat());
     L[n] = "Catch ALL"; act[n++] = 2;
     L[n] = "See ALL";   act[n++] = 1;
@@ -438,15 +467,19 @@ static bool dex_bulk(void) {
     if (s_dex_snap_valid) { L[n] = "Undo last"; act[n++] = -1; }
     L[n] = "Cancel"; act[n++] = -2;
     if (sel >= n) sel = n - 1;
-    const int mx = 56, my = 42, mw = 128, mh = 18 + n * 14 + 11;
+    /* Six options put the old fixed my=42 panel at 42..154 — its bottom border and hint
+     * row landed on the dex screen's own footer. Laid out above it instead. */
+    int my, mh;
+    ui_popup_vfit(n, PDNA_DEXBULK_ROW_H, PDNA_DEXBULK_HEAD, PDNA_DEXBULK_FOOT, &my, &mh);
+    const int mx = 56, mw = 128;
     ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
     ui_text(mx + 6, my + 4, UI_TITLE, "DEX: ALL");
     ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < n; i++) { int y = my + 18 + i * 14; bool s = (i == sel);
+    for (int i = 0; i < n; i++) { int y = my + PDNA_DEXBULK_HEAD + i * PDNA_DEXBULK_ROW_H; bool s = (i == sel);
       if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
       uint16_t col = s ? UI_SELTEXT : (act[i] == -1 ? UI_OK : act[i] == 3 ? (natl ? UI_OK : UI_WARN) : UI_TEXT);
       ui_text(mx + 10, y, col, L[i]); }
-    ui_text(mx + 6, my + mh - 9, UI_DIM, "A pick  B back");
+    ui_text(mx + 6, my + mh + PDNA_POPUP_HINT_DY, UI_DIM, "A pick  B back");
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return false;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
@@ -493,23 +526,25 @@ static int dex_menu(int* filter, int* sort, int* status, bool can_edit) {
   bool changed = false, bulked = false;
   for (;;) {
     if (sel < top) top = sel;
-    if (sel >= top + 16) top = sel - 15;
+    if (sel >= top + FILT_VIS) top = sel - FILT_VIS + 1;
     ui_clear();
     ui_text(4, 2, UI_TITLE, "FILTER / SORT / FIND");
     ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < 16 && top + i < rows; i++) {
-      int r = top + i, y = 14 + i * 8; bool s = (r == sel);
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-      if (r == 0) { char b[32]; siprintf(b, "Sort: %s", *sort ? "A-Z (name)" : "No. (dex)");
-                    ui_text(8, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
+    for (int i = 0; i < FILT_VIS && top + i < rows; i++) {
+      int r = top + i, y = FILT_Y0 + i * FILT_ROW_H; bool s = (r == sel);
+      if (s) filt_bar(y);
+      if (r == 0) { char b[32];
+                    siprintf(b, PDNA_FILT_SORT_FMT, *sort ? PDNA_FILT_SORT_NAME : PDNA_FILT_SORT_DEX);
+                    ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
       else if (r == 1) { char b[32]; siprintf(b, "Status: %s", DS_NAME[*status]);
-                         ui_text(8, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
-      else if (can_edit && r == 2) ui_text(8, y, s ? UI_SELTEXT : UI_WARN, "Mark all...");
+                         ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
+      else if (can_edit && r == 2) ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_WARN, PDNA_FILT_MARKALL);
       else { int fid = fids[r - base];
-             if (fid >= 5) { type_chip(8, y, (uint8_t)(fid - 5)); ui_text(40, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
-             else ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
+             if (fid >= 5) { type_chip(PDNA_FILT_TEXT_X, y, (uint8_t)(fid - 5));
+                             ui_text(PDNA_FILT_TEXT_X + PDNA_FILT_CHIP_DX, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
+             else ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
     }
-    ui_text(4, 152, UI_DIM, "A pick  U/D/L/R move  B back");
+    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_FILT_FOOT);
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
     if (k & KEY_B) return bulked ? 2 : (changed ? 1 : 0);
     else if (k & KEY_A) {
@@ -849,7 +884,7 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
 /* ---- item picker filters (BACKLOG #13, "like the pokedex"): two combinable
  * axes — CATEGORY (via pk_item_pocket) and GAME availability (via the
  * generated pk_item_games mask: bit0 RS, bit1 Emerald, bit2 FRLG). ---- */
-#define NICAT 6
+#define NICAT PDNA_IFILT_NCAT   /* count lives in pdna_layout.h: the host test needs the row count */
 static const char* const ICAT_NAME[NICAT] = { "All", "Items", "Key items", "Poke Balls", "TMs-HMs", "Berries" };
 static const int8_t ICAT_POCKET[NICAT]    = { -1, POCKET_ITEMS, POCKET_KEY, POCKET_BALLS, POCKET_TMHM, POCKET_BERRIES };
 #define NIGAME 4
@@ -878,25 +913,31 @@ static int item_build(u16* idx, const char* search, int sort, int cat, int gamef
 /* START filter menu, the species picker's filter_menu idiom: Sort and Game
  * rows toggle in place (A / d-pad LEFT-RIGHT), a CATEGORY row picks + closes. */
 static void item_filter_menu(int* cat, int* gamef, int* sort) {
-  const int rows = 2 + NICAT;
+  const int rows = PDNA_IFILT_ROWS;              /* Sort + Game + one per category */
   int sel = 0;
   for (;;) {
     ui_clear();
     ui_text(4, 2, UI_TITLE, "FILTER / SORT");
     ui_hline(0, 11, UI_SCR_W, UI_BORDER);
     for (int r = 0; r < rows; r++) {
-      int y = 14 + r * 10;
+      /* 8 rows, so there is room for a BORDERED highlight here — but it has to enclose
+       * the glyph box rather than cut it: ui_panel's bottom rule sits at y+h-2, so height
+       * 12 from y-2 puts it at y+8, one pixel clear of the 8-row text. Pitch 11 keeps the
+       * next row's ascenders out of the bar. (Both numbers in pdna_layout.h, asserted by
+       * tests/host_textfit_test.c.) */
+      int y = PDNA_IFILT_Y0 + r * PDNA_IFILT_ROW_H;
       bool s = (r == sel);
-      if (s) ui_panel(2, y - 1, 236, 10, UI_SEL, UI_TITLE);
+      if (s) ui_panel(PDNA_FILT_BAR_X, y + PDNA_IFILT_BOX_DY, PDNA_FILT_BAR_W,
+                      PDNA_IFILT_BOX_H, UI_SEL, UI_TITLE);
       char b[36];
-      if (r == 0)      { siprintf(b, "Sort: %s", *sort ? "A-Z (name)" : "No. (id)");
-                         ui_text(8, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
+      if (r == 0)      { siprintf(b, PDNA_FILT_SORT_FMT, *sort ? PDNA_FILT_SORT_NAME : PDNA_FILT_SORT_ID);
+                         ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
       else if (r == 1) { siprintf(b, "Game: %s", IGAME_NAME[*gamef]);
-                         ui_text(8, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
+                         ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
       else             { siprintf(b, "%s%s", ICAT_NAME[r - 2], (*cat == r - 2) ? "  <" : "");
-                         ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, b); }
+                         ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_TEXT, b); }
     }
-    ui_text(4, 152, UI_DIM, "A pick  U/D move  B back");
+    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_IFILT_FOOT);
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) return;
     else if (k & KEY_A) {

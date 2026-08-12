@@ -1,0 +1,292 @@
+#ifndef PDNA_LAYOUT_H
+#define PDNA_LAYOUT_H
+
+/* Screen layout constants and fixed on-screen strings that a HOST TEST has to see.
+ *
+ * WHY THIS FILE EXISTS: PokeDNA's fonts clip silently. A string one pixel too wide just
+ * loses its tail on hardware ("JIGGLYPU~"), a popup four pixels too tall lands on the
+ * screen's own footer row and the two strings blend into garbage ("A pick ABmback UP SEL
+ * B"), and a highlight bar two pixels short strikes through the row it is meant to
+ * contain. tests/host_textfit_test.c catches all three at build time — but only if it
+ * measures the SAME numbers the screens draw with. When the test re-typed them as its
+ * own literals it measured its own copy, stayed green when pdna_main.c changed, and gave
+ * false confidence. So every number a test asserts on lives HERE, the screen code reads
+ * it from here, and the test includes this file.
+ *
+ * Pure C on purpose (no tonc, no libc): the host test compiles it as-is. Anything that
+ * needs a GBA type or a colour belongs in the .c file, not here.
+ *
+ * Rule of thumb for adding to this file: if changing the value could push ink off a
+ * screen, off a panel, or onto another string, it belongs here. Pure cosmetics
+ * (colours, gaps with slack on both sides) do not. */
+
+/* ---------------------------------------------------------------------------
+ * START menu over the box screen (nav_menu, source/pdna_main.c)
+ *
+ * FIXED height and drawn exactly ONCE, so it cannot window or scroll: if the entry
+ * list outgrows the screen the menu simply hangs off the bottom. That shipped — adding
+ * the GB-import entry made 19 entries = 10 rows at a 13 px pitch = a 164 px panel on a
+ * 160 px screen, with the hint row landing on the box screen's own footer. pdna_main.c
+ * turns that into a BUILD failure (_Static_assert on PDNA_NAV_MH) and the host test
+ * checks the same sum plus the label widths.
+ *
+ * The list is an X-macro so the enum, the drawn labels and the test all come from ONE
+ * place: X(enum_id, label). Add an entry here and nowhere else. */
+#define PDNA_NAV_ITEMS(X)                       \
+  X(NV_PARTY,      "Party")                     \
+  X(NV_BANK,       "Bank")                      \
+  X(NV_DAYCARE,    "Daycare")                   \
+  X(NV_TRAINER,    "Trainer")                   \
+  X(NV_CLOCK,      "Clock fix")                 \
+  X(NV_MIRAGE,     "Mirage")                    \
+  X(NV_DEX,        "Pokedex")                   \
+  X(NV_BAG,        "Bag")                       \
+  X(NV_DATA,       "Flags & counters")          \
+  X(NV_SECRET,     "Bases")                     \
+  X(NV_POKEBLOCK,  "Blocks")                    \
+  X(NV_EVENTS,     "Tickets")                   \
+  X(NV_BATTLEREC,  "Records")                   \
+  X(NV_FRONTIER,   "Frontier")                  \
+  X(NV_FLY,        "Fly")                       \
+  /* Present in the emulator build too: when a Pokemon ROM has been fused into this   */ \
+  /* image (tools/fuse_rom.py) the map reads it from cartridge space, no SD needed.   */ \
+  X(NV_MAP,        "Map")                       \
+  X(NV_GB,         "GB import")   /* import from a Game Boy (Gen 1/2) save on the card */ \
+  X(NV_SETTINGS,   "Settings")                  \
+  X(NV_BACK,       "Back")
+
+#define PDNA_NAV_COUNT_ONE(id, label) +1
+#define PDNA_NAV_COUNT (0 PDNA_NAV_ITEMS(PDNA_NAV_COUNT_ONE))   /* == NV_COUNT */
+
+/* The column is wide enough for "Flags & counters" (85 px in the proportional face) and
+ * two of them plus the gutter still clear the 240 px screen. */
+#define PDNA_NAV_COL_W   98
+#define PDNA_NAV_BAND_W  (PDNA_NAV_COL_W - 4)   /* selection bar width               */
+#define PDNA_NAV_BAND_H  12                     /* bar height: contains the glyph box */
+#define PDNA_NAV_LABEL_DX 4                     /* label inset inside the bar         */
+/* A label is drawn PDNA_NAV_LABEL_DX into the bar, so this — not the screen — is its
+ * budget. A wider label runs out past the highlight and into the second column. */
+#define PDNA_NAV_LABEL_W (PDNA_NAV_BAND_W - PDNA_NAV_LABEL_DX)
+
+#define PDNA_NAV_ROW_H   11
+#define PDNA_NAV_ROWS    ((PDNA_NAV_COUNT + 1) / 2)   /* two columns  */
+#define PDNA_NAV_HEAD    20                     /* title + divider above row 0        */
+#define PDNA_NAV_FOOT    14                     /* hint line + bottom border          */
+/* nav_menu draws row i of a column at my + PDNA_NAV_HEAD + i * PDNA_NAV_ROW_H, and the
+ * selection bar PDNA_NAV_BAND_DY above that. Those three sites used to spell the head as
+ * a bare 20 while PDNA_NAV_HEAD fed only PDNA_NAV_MH — so shrinking the constant shrank
+ * the PANEL and left the rows where they were, silently, with every test still green.
+ * They read the constant now, which is also what makes the two checks below real. */
+#define PDNA_NAV_BAND_DY (-2)                   /* bar top, relative to the text row   */
+#define PDNA_NAV_PAD      6                     /* title / label / hint inset from mx  */
+#define PDNA_NAV_TITLE_DY 4                     /* "MENU" baseline below the panel top */
+#define PDNA_NAV_DIV_DY  15                     /* the rule under the title            */
+#define PDNA_NAV_MH      (PDNA_NAV_HEAD + PDNA_NAV_ROWS * PDNA_NAV_ROW_H + PDNA_NAV_FOOT)
+#define PDNA_NAV_MW      (PDNA_NAV_COL_W * 2 + 12)
+#define PDNA_NAV_HINT_DY (-10)                  /* hint baseline rel. to panel bottom */
+#define PDNA_NAV_HINT    "A pick  B back"
+
+/* ---------------------------------------------------------------------------
+ * Per-mon action popup (app_mon_menu / app_mon_menu_readonly, source/pdna_main.c)
+ *
+ * Drawn over the box or party screen while THAT screen's hints are still on the bottom
+ * row, so it is laid out with ui_popup_fit above UI_FOOTER_Y and windowed if the action
+ * list ever stops fitting. */
+#define PDNA_MONMENU_MAX    18                  /* longest possible action list       */
+#define PDNA_MONMENU_ROW_H  13
+#define PDNA_MONMENU_HEAD   18                  /* title + divider                    */
+#define PDNA_MONMENU_FOOT   11                  /* "A ok B back" + bottom border      */
+#define PDNA_MONMENU_X     138
+#define PDNA_MONMENU_W     100
+#define PDNA_MONMENU_ROW_DX 10                  /* row text inset (sys8)              */
+#define PDNA_MONMENU_PAD     6                  /* title / prose / hint inset         */
+/* Right edge of the panel's ink: x + w - 2 is the border column, so a row drawn at
+ * X + ROW_DX has this much room. */
+#define PDNA_MONMENU_ROW_W  (PDNA_MONMENU_W - PDNA_MONMENU_ROW_DX - 2)
+/* The read-only popup's two prose lines are ui_ptext_fit'd to this. */
+#define PDNA_MONMENU_PROSE_W (PDNA_MONMENU_W - 2 * PDNA_MONMENU_PAD)
+#define PDNA_MONMENU_FOOT_TXT "A ok B back"     /* 100 px panel: 12 sys8 columns max  */
+/* Baseline of a popup's own hint line, relative to the panel's BOTTOM (my + mh). The
+ * hint inks UI_ROW_H rows and ui_panel's bottom rule sits at my + mh - 2, so -9 is the
+ * last offset that keeps the text's final row off that rule. Shared by every popup that
+ * carries a hint (app_mon_menu, the read-only menu, dex_bulk). */
+#define PDNA_POPUP_HINT_DY   (-9)
+
+#define PDNA_LBL_VIEW_EDIT   "VIEW / EDIT"
+#define PDNA_LBL_ITEM        "ITEM"
+#define PDNA_LBL_LEGALITY    "LEGALITY"
+#define PDNA_LBL_HATCH       "HATCH"
+#define PDNA_LBL_MOVE        "MOVE"
+#define PDNA_LBL_MOVE_TO_BOX "MOVE TO BOX"
+#define PDNA_LBL_COPY        "COPY"
+#define PDNA_LBL_PASTE       "PASTE"
+#define PDNA_LBL_DUPLICATE   "DUPLICATE"
+#define PDNA_LBL_TO_DAYCARE  "TO DAY-CARE"
+#define PDNA_LBL_TO_GAME     "TO GAME"
+#define PDNA_LBL_EXPORT_PK   "EXPORT .pk"
+#define PDNA_LBL_TAKE_ITEM   "TAKE ITEM"
+#define PDNA_LBL_GIVE_ITEM   "GIVE ITEM"
+#define PDNA_LBL_RELEASE     "RELEASE"
+#define PDNA_LBL_CREATE      "CREATE"
+#define PDNA_LBL_PASTE_HERE  "PASTE HERE"
+#define PDNA_LBL_CANCEL      "CANCEL"
+#define PDNA_LBL_VIEW        "VIEW"           /* read-only popup only */
+
+/* Every label either action popup can show, so the host test measures the strings the
+ * menus actually draw. The X() entries are the macros above, not fresh literals. */
+#define PDNA_MONMENU_LABELS(X)                                                        \
+  X(PDNA_LBL_VIEW_EDIT) X(PDNA_LBL_ITEM) X(PDNA_LBL_LEGALITY) X(PDNA_LBL_HATCH)       \
+  X(PDNA_LBL_MOVE) X(PDNA_LBL_MOVE_TO_BOX) X(PDNA_LBL_COPY) X(PDNA_LBL_PASTE)         \
+  X(PDNA_LBL_DUPLICATE) X(PDNA_LBL_TO_DAYCARE) X(PDNA_LBL_TO_GAME)                    \
+  X(PDNA_LBL_EXPORT_PK) X(PDNA_LBL_TAKE_ITEM) X(PDNA_LBL_GIVE_ITEM)                   \
+  X(PDNA_LBL_RELEASE) X(PDNA_LBL_CREATE) X(PDNA_LBL_PASTE_HERE) X(PDNA_LBL_CANCEL)    \
+  X(PDNA_LBL_VIEW)
+
+/* Read-only source popup: the header grows by one line per explanatory line above the
+ * rows (the source's note, and the per-record "why this one is locked"). */
+#define PDNA_ROMENU_MAX       4               /* VIEW, LEGALITY, COPY?, CANCEL        */
+#define PDNA_ROMENU_HDR       15              /* title only                           */
+#define PDNA_ROMENU_LINE      10              /* each optional prose line             */
+#define PDNA_ROMENU_HEAD_PAD   3              /* divider -> first row                 */
+
+/* ---------------------------------------------------------------------------
+ * Pokedex SELECT-all popup (dex_bulk, source/pdna_pick.c) */
+#define PDNA_DEXBULK_MAX     6                /* Catch/See/Wipe/Natl/Undo/Cancel      */
+#define PDNA_DEXBULK_ROW_H  14
+#define PDNA_DEXBULK_HEAD   18
+#define PDNA_DEXBULK_FOOT   11
+
+/* ---------------------------------------------------------------------------
+ * Day-care popups (dc_menu / dc_withdraw, source/pdna_main.c) */
+#define PDNA_DCPOP_MAX       4                /* View/Take out/Put in/Cancel          */
+#define PDNA_DCPOP_ROW_H    14
+#define PDNA_DCPOP_HEAD     18
+#define PDNA_DCPOP_FOOT      8
+
+/* ---------------------------------------------------------------------------
+ * Day-care yard: the three-row status panel (source/pdna_main.c)
+ *
+ * The panel used to be 124..151, whose bottom border row (150) fell exactly on row 2's
+ * DESCENDER row — "Others are just visiting." lost the tails of its 'j' and 'g'. It is
+ * 122..151 now with the rows lifted 1 px. ui_ptext inks UI_FONT_CELL_H rows, so the
+ * last row must still end above the border. */
+#define PDNA_DCY_PANEL_X     2
+#define PDNA_DCY_PANEL_Y   122
+#define PDNA_DCY_PANEL_W   236
+#define PDNA_DCY_PANEL_H    30
+#define PDNA_DCY_TEXT_X      6
+#define PDNA_DCY_ROW0_Y    124
+#define PDNA_DCY_ROW_PITCH   9
+/* Ink budget for a status line: up to the panel's right border column. */
+#define PDNA_DCY_TEXT_W  (PDNA_DCY_PANEL_X + PDNA_DCY_PANEL_W - 2 - PDNA_DCY_TEXT_X)
+#define PDNA_DCY_NAME_W    228                /* the single-boarder ui_ptext_fit clamp */
+#define PDNA_DCY_FOOTER_Y  152                /* the yard's own hint row               */
+#define PDNA_DCY_HINT_PAIR "A menu  L/R your 2  B back"
+#define PDNA_DCY_HINT_PUT  "A put in  B back"
+
+/* ---------------------------------------------------------------------------
+ * FILTER / SORT lists (source/pdna_pick.c)
+ *
+ * The species/dex lists run at a 9 px pitch with a BORDERLESS selection bar. They used
+ * to run at 8 px with ui_panel(2, y-1, .., 9): ui_panel's frame puts its bottom line at
+ * y+7, INSIDE the 8-row glyph box, so the rule ran through the feet of "Sort: No. (dex)"
+ * and its fill ended one pixel above the next row's ascenders. Two invariants:
+ *   the bar must CONTAIN the glyph box  (BAR_H - 2 >= UI_FONT_CELL_H - 1), and
+ *   it must not touch the next row's ink (BAR_H - 2 <= ROW_H - 2). */
+#define PDNA_FILT_Y0        14
+#define PDNA_FILT_ROW_H      9
+#define PDNA_FILT_VIS       15                /* rows in the window                   */
+#define PDNA_FILT_BAR_X      2
+#define PDNA_FILT_BAR_W    236
+#define PDNA_FILT_BAR_DY   (-1)               /* bar top, relative to the text row     */
+#define PDNA_FILT_BAR_H      9
+/* Where a row's text starts. filter_menu / dex_menu / item_filter_menu spelled this as a
+ * bare 8 at eight call sites while the constant sat here read by nobody — a decoy that
+ * looked like coverage. They read it now, so the two width checks below are real. */
+#define PDNA_FILT_TEXT_X     8
+/* A type row shows a colour chip first and the filter name after it. type_chip() paints
+ * PDNA_FILT_CHIP_W px from PDNA_FILT_TEXT_X; the name starts PDNA_FILT_CHIP_DX along, so
+ * the gap between them is CHIP_DX - CHIP_W and must not go negative. */
+#define PDNA_FILT_CHIP_W    26
+#define PDNA_FILT_CHIP_DX   32
+/* The bar's right border column is the ink budget for a row. */
+#define PDNA_FILT_ROW_W  (PDNA_FILT_BAR_X + PDNA_FILT_BAR_W - PDNA_FILT_TEXT_X)
+/* These lists put their hint TWO rows below UI_FOOTER_Y, not on it (nothing pops up over
+ * them, so they can use the whole band). Named so the host test can assert it is still
+ * inside the footer band and still on screen. */
+#define PDNA_FILT_FOOTER_Y 152
+#define PDNA_FILT_FOOT     "A pick  U/D/L/R move  B back"
+#define PDNA_IFILT_FOOT    "A pick  U/D move  B back"
+/* The one row of these lists that is a FIXED string rather than a species/type/item name
+ * out of a table the host cannot see. It is also the widest, which is why it is the one
+ * pinned here. */
+#define PDNA_FILT_SORT_FMT   "Sort: %s"
+#define PDNA_FILT_SORT_DEX   "No. (dex)"
+#define PDNA_FILT_SORT_ID    "No. (id)"       /* the item list sorts by item id       */
+#define PDNA_FILT_SORT_NAME  "A-Z (name)"
+#define PDNA_FILT_SORT_VALUES(X) \
+  X(PDNA_FILT_SORT_DEX) X(PDNA_FILT_SORT_ID) X(PDNA_FILT_SORT_NAME)
+#define PDNA_FILT_MARKALL    "Mark all..."    /* dex_menu's bulk-edit row             */
+
+/* The ITEM filter list keeps a BORDERED box, which is why its numbers differ: ui_panel's
+ * bottom rule sits at y+h-2, so height 12 from y-2 puts it at y+8, one pixel clear of
+ * the 8-row text, and an 11 px pitch keeps the next row's ascenders out of the fill. */
+#define PDNA_IFILT_Y0       14
+#define PDNA_IFILT_ROW_H    11
+#define PDNA_IFILT_BOX_DY  (-2)
+#define PDNA_IFILT_BOX_H    12
+#define PDNA_IFILT_NCAT      6                /* All, Items, Key items, Balls, TMs, Berries */
+#define PDNA_IFILT_ROWS     (2 + PDNA_IFILT_NCAT)   /* Sort + Game + the categories   */
+
+/* ---------------------------------------------------------------------------
+ * Settings + Rumble pages (source/pdna_main.c)
+ *
+ * These rows are sys8 (a FIXED 8 px cell), and libtonc's TTE does not clip at the right
+ * margin — it WRAPS. "Yard visitors:  Needs your ROM" was 30 columns at x=10, and the
+ * two that did not fit reappeared as "OM" at x=0 on top of the row below. Every string
+ * here is therefore length-critical; the host test measures them. */
+#define PDNA_SET_ROW_X        10
+#define PDNA_SET_ROW0_Y       24
+#define PDNA_SET_ROW_PITCH    14
+#define PDNA_SET_ROWS          7   /* Backups, Animations, Yard, Game ROM, Rumble, Clear, Close */
+#define PDNA_SET_FOOT_X        4
+#define PDNA_SET_HELP_X        8
+#define PDNA_SET_HELP_Y1     124
+#define PDNA_SET_HELP_Y2     133
+#define PDNA_SET_NOTE_Y      142
+#define PDNA_SET_FOOTER_Y    152
+
+#define PDNA_SET_BACKUP_FMT  "Backups:  %s"
+#define PDNA_SET_BACKUP_MODES(X) \
+  X("New each time") X("Single (rolling)") X("Skip (none)")
+#define PDNA_SET_YARD_FMT    "Yard visitors:  %s"
+/* "Needs your ROM" made this row 30 columns wide — two past the 28 the screen holds.
+ * "Set Game ROM" is 28 columns AND points at the row that fixes it. */
+#define PDNA_SET_YARD_NEEDROM "Set Game ROM"
+#define PDNA_SET_YARD_ON      "On"
+#define PDNA_SET_YARD_OFF     "Off"
+/* every value the %s can take, for the test to try all of them */
+#define PDNA_SET_YARD_VALUES(X) \
+  X(PDNA_SET_YARD_NEEDROM) X(PDNA_SET_YARD_ON) X(PDNA_SET_YARD_OFF)
+#define PDNA_SET_ROW_CLEAR   "Clear backups (this save)"
+#define PDNA_SET_HELP1       "Animations + Rumble have"
+#define PDNA_SET_HELP2       "per-item on/off submenus."
+#define PDNA_SET_NOTE        "Yard visitors are scenery, not your Pokemon."
+#define PDNA_SET_FOOT        "A change/do  U/D move  B back"
+
+/* Rumble page: the help sentence and the control hints used to share the y=150 row as
+ * "GAME RTC on. <>adj A toggle B" — one full row, which is why the hint had to drop its
+ * "back". Three separate rows now, and the cue rows must end above the first of them. */
+#define PDNA_RMB_ROW0_Y       24
+#define PDNA_RMB_ROW_PITCH    14
+#define PDNA_RMB_HELP_X        8
+#define PDNA_RMB_HELP_Y1     132
+#define PDNA_RMB_HELP_Y2     141
+#define PDNA_RMB_HELP1       "Needs an EZ-Flash Omega"
+#define PDNA_RMB_HELP2       "with GAME RTC on."
+#define PDNA_RMB_FOOT        "<> adjust  A toggle  B back"
+
+/* Two rows above the cue list: Strength and Duration. */
+#define PDNA_RMB_STEPPERS      2
+
+#endif /* PDNA_LAYOUT_H */

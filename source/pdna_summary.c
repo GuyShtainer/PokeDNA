@@ -21,6 +21,7 @@
 #include "mon_front.h"
 #include "mon_back.h"
 #include "mon_icons.h"
+#include "pdna_origin_art.h"   /* draw the mon in the art of the generation it came FROM */
 #include "mon_anim.h"     /* per-species Emerald front-animation family */
 #include "type_icons.h"
 #include "snd.h"
@@ -114,20 +115,30 @@ static void draw_left(const PkMon* p) {
   ui_panel(0, 11, 92, 139, RGB15(4, 7, 16), UI_BORDER);    /* dark-blue info column */
   m3_frame(11, 13, 80, 78, UI_BORDER);                     /* sprite sub-frame */
   for (int yy = 14; yy <= 77; yy++) ui_fill_rect(12, yy, 68, 1, portrait_bg(yy));   /* blue "screen" */
-  rumble_io_suspend();   /* portrait fetch LZ77-decompresses from ROM */
-  if (p->isEgg && !p->isBadEgg) {                          /* an Egg reads as an Egg (its species shows below) */
-    const uint16_t* eg = mon_front_egg();
-    rumble_io_resume();
-    if (eg) ui_sprite(14, 14, MON_FRONT_W, MON_FRONT_H, eg);
-    else    ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_egg());
+  rumble_io_suspend();   /* portrait fetch decompresses from ROM (Gen-3 LZ77 or GB pic) */
+  /* One accessor decides the era: a mon converted from a Game Boy save wears its OWN
+   * generation's art when that cartridge is registered, and everything else takes the
+   * front/back ladder this used to open-code. With no GB ROM registered the result is
+   * the same pointer and the same (14,14) 64x64 blit as before. */
+  PdnaArt art; PdnaOrigin org;
+  pdna_origin_art_portrait(p, g_back, &art, &org);
+  rumble_io_resume();
+  if (art.px) {
+    int ax, ay;
+    pdna_origin_art_place(&art, 12, 14, 68, 64, &ax, &ay);   /* 64x64 -> (14,14) exactly */
+    ui_sprite(ax, ay, art.w, art.h, art.px);
+  } else if (art.egg) {
+    ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_egg());
   } else {
-    const uint16_t* spr = g_back ? mon_back_for_form(p->species, p->isShiny, p->form) : 0;
-    if (!spr) spr = mon_front_for_form(p->species, p->isShiny, p->form);   /* fall back to front */
-    rumble_io_resume();
-    if (spr) ui_sprite(14, 14, MON_FRONT_W, MON_FRONT_H, spr);
-    else     ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
+    ui_sprite(30, 30, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
   }
   if (p->isShiny) ui_text(70, 16, C_HOT, "*");             /* gold shiny mark on the portrait */
+  /* Provenance stamp — drawn ONLY for a GB import, so a native Gen-3 mon's portrait is
+   * pixel-identical to before. Opaque chip rather than bare text so it stays readable
+   * over whatever the sprite puts behind it. "GB1?" = Gen 1 by elimination, i.e. the
+   * record cannot prove it is not a Gen-2 Kanto mon (pdna_origin_art.h). */
+  if (org.verdict == PDNA_ORIGIN_GB)
+    ui_name_chip(13, 15, 30, 11, pdna_origin_color(&org), 0x7FFF, pdna_origin_tag(&org));
 
   char buf[40];
   ui_hline(4, 81, 84, UI_BORDER);
@@ -399,20 +410,18 @@ static bool confirm_keep(void) {
  * EWRAM. Plays a one-shot rise+overshoot on open / mon-change, then a slow idle
  * bob. Gated on app_anim_enabled() by the caller. */
 
-/* the portrait sprite draw_left would pick (front/back, else the icon fallback) */
-static const uint16_t* portrait_sprite(const PkMon* p, bool* is_icon) {
-  rumble_io_suspend();   /* portrait fetch LZ77-decompresses from ROM */
-  const uint16_t* spr;
-  if (p->isEgg && !p->isBadEgg) {                          /* an Egg reads as the Egg sprite */
-    spr = mon_front_egg(); rumble_io_resume();
-    if (spr) { *is_icon = false; return spr; }
-    *is_icon = true; return mon_icon_egg();
-  }
-  spr = g_back ? mon_back_for_form(p->species, p->isShiny, p->form) : 0;
-  if (!spr) spr = mon_front_for_form(p->species, p->isShiny, p->form);
+/* The portrait sprite draw_left would pick, through the SAME era router — so the
+ * animated portrait and the static one can never disagree about which generation's
+ * art a mon wears. Also reports the source pixel size (*sw x *sh): Gen-3 art is 64x64,
+ * a Game Boy pic is not, and the pose math below scales relative to it. */
+static const uint16_t* portrait_sprite(const PkMon* p, bool* is_icon, int* sw, int* sh) {
+  rumble_io_suspend();   /* portrait fetch decompresses from ROM */
+  PdnaArt art;
+  pdna_origin_art_portrait(p, g_back, &art, 0);
   rumble_io_resume();
-  if (spr) { *is_icon = false; return spr; }
-  *is_icon = true; return mon_icon_for_form(p->species, p->form);
+  if (art.px) { *is_icon = false; *sw = art.w; *sh = art.h; return art.px; }
+  *is_icon = true; *sw = MON_ICON_W; *sh = MON_ICON_H;
+  return art.egg ? mon_icon_egg() : mon_icon_for_form(p->species, p->form);
 }
 
 /* Emerald-style intro: a squish-and-bounce of the single frame (vertical squash +
@@ -456,13 +465,21 @@ static void portrait_redraw(const PkMon* p, int wx, int sy, int dx, int dy, int*
   int key = (wx & 0xFF) | ((sy & 0xFF) << 8) | (((dx + 64) & 0xFF) << 16) | (((dy + 64) & 0xFF) << 24);
   if (key == *lastkey) return;
   *lastkey = key;
-  bool icon; const uint16_t* spr = portrait_sprite(p, &icon);
+  bool icon; int sw = MON_FRONT_W, sh = MON_FRONT_H;
+  const uint16_t* spr = portrait_sprite(p, &icon, &sw, &sh);
   /* Art-free build: no sprite exists at all. Without this check the loop below
    * sampled address 0 (open bus) and painted garbage stripes into the portrait —
    * paint the plain gradient instead (which also erases any previous pose). */
   int x0, baseline, top, iw, ih;
   if (!spr) { x0 = 0; baseline = -1; top = -1; iw = 0; ih = 1; }
-  else if (!icon) { x0 = 46 - wx / 2 + dx; baseline = 78 + dy; top = baseline - sy; iw = wx; ih = sy; }
+  /* wx/sy come out of portrait_params in units where 64 == natural, so scaling them
+   * by the source size makes a 56x56 Game Boy pic play the same pose at ITS natural
+   * size instead of being stretched to 64. For 64x64 art this is the identity and the
+   * arithmetic is literally what it was before. */
+  else if (!icon) { iw = wx * sw / MON_FRONT_W; ih = sy * sh / MON_FRONT_H;
+                    if (iw < 1) iw = 1;         /* never divide by zero at an extreme pose */
+                    if (ih < 1) ih = 1;
+                    x0 = 46 - iw / 2 + dx; baseline = 78 + dy; top = baseline - ih; }
   else       { x0 = 30 + dx; top = 30 + dy; if (top < 14) top = 14; if (top > 45) top = 45;
                baseline = top + 32; iw = 32; ih = 32; }
   for (int yy = 14; yy <= 77; yy++) {
@@ -470,9 +487,9 @@ static void portrait_redraw(const PkMon* p, int wx, int sy, int dx, int dy, int*
     for (int dx = 0; dx < 68; dx++) {
       int x = 12 + dx; u16 c = bg;
       if (yy >= top && yy < baseline && x >= x0 && x < x0 + iw) {
-        int sj = icon ? (yy - top) : ((yy - top) * 64 / ih);
-        int si = icon ? (x - x0)   : ((x - x0)   * 64 / iw);
-        u16 px = icon ? spr[sj * 32 + si] : spr[sj * 64 + si];
+        int sj = icon ? (yy - top) : ((yy - top) * sh / ih);
+        int si = icon ? (x - x0)   : ((x - x0)   * sw / iw);
+        u16 px = spr[sj * sw + si];   /* icon: sw == 32, exactly the old expression */
         if (px & 0x8000) c = (u16)(px & 0x7FFF);
       }
       s_pline[dx] = c;
@@ -480,6 +497,13 @@ static void portrait_redraw(const PkMon* p, int wx, int sy, int dx, int dy, int*
     dma3_cpy(&vid_mem[yy * 240 + 12], s_pline, 68 * 2);
   }
   if (p->isShiny) ui_text(70, 16, C_HOT, "*");
+  /* The loop above repaints the WHOLE frame interior, which erases anything draw_left
+   * put there — the shiny star (restored just above) and the provenance stamp. Redraw
+   * it here or the tag blinks out the moment the portrait animation starts. */
+  PdnaOrigin org;
+  pdna_origin_of(p, &org);
+  if (org.verdict == PDNA_ORIGIN_GB)
+    ui_name_chip(13, 15, 30, 11, pdna_origin_color(&org), 0x7FFF, pdna_origin_tag(&org));
 }
 
 /* Inline summary with two sub-modes:

@@ -4,14 +4,15 @@
 #include <tonc.h>
 #include <stdbool.h>
 
+/* Screen size, the footer row and the popup-fit arithmetic. Split out because that
+ * header is pure C: the host text-fit test includes it and therefore measures the SAME
+ * constants this code draws with. Do not re-declare them here. */
+#include "ui_layout.h"
+
 /* Bitmap (Mode 3) UI helper layer: filled panels, bordered boxes, colored text,
  * and a solid selection-highlight bar. Text still goes through libtonc TTE
  * (tte_write/tte_set_ink/tte_set_pos), but is rendered into the Mode 3 bitmap.
  * Initialise the mode + TTE in main (see ui_init). */
-
-#define UI_SCR_W   240
-#define UI_SCR_H   160
-#define UI_ROW_H   8            /* sys8 font line height (px)                   */
 
 /* Palette (RGB15). Tuned for a dark, readable look. */
 #define UI_BG       RGB15( 1,  2,  4)   /* screen background          */
@@ -41,6 +42,20 @@ void ui_panel(int x, int y, int w, int h, u16 fill, u16 border);
  * (8 = opaque, 4 = half). Mode 3 has no hardware blend for a software-drawn panel, so this
  * mixes per pixel. */
 void ui_panel_alpha(int x, int y, int w, int h, u16 fill, u16 border, int num);
+
+/* Vertical layout for a list popup, so it can never collide with the footer.
+ *
+ * `head` is the chrome above the first row (title + divider) and `foot` the chrome
+ * below the last one (the popup's own hint line + bottom border) — the same numbers
+ * the caller already draws with. Returns how many of `nrows` rows FIT above
+ * UI_FOOTER_Y: WINDOW the list at that count (the caller already knows how to scroll)
+ * instead of letting the panel run off the bottom of the screen. out_y and out_h receive
+ * the panel's top and height, centred in the space above the footer.
+ *
+ * A popup whose row count is a compile-time constant should instead assert its height
+ * at build time (see nav_menu) — a fixed menu that cannot scroll must not silently
+ * grow past the screen when someone adds an entry. */
+int ui_popup_vfit(int nrows, int row_h, int head, int foot, int* out_y, int* out_h);
 
 void ui_hline(int x, int y, int w, u16 color);
 
