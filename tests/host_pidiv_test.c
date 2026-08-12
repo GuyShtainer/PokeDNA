@@ -1,6 +1,6 @@
 /* Host test for the PIDIV reverse search (gen3_pidiv.c).
  *   cc -std=c11 -O2 -I source tests/host_pidiv_test.c source/gen3_pidiv.c \
- *      source/gen3_mon.c source/gen3_save.c source/gen3_box.c source/gen3_edit.c \
+ *      source/gen3_mon.c source/gen3_save.c source/gen3_box.c source/gen3_edit.c source/gen3_daycare.c \
  *      source/data_tables.c -o /tmp/hp
  *   /tmp/hp /Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/Emerald.sav ...
  *

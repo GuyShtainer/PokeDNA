@@ -1,6 +1,6 @@
 /* Host test for the Legality V2 check catalogue (gen3_legality2.c).
  *   cc -std=c11 -I source tests/host_legality2_test.c source/gen3_save.c source/gen3_mon.c \
- *      source/gen3_box.c source/gen3_legality2.c source/gen3_edit.c source/data_tables.c \
+ *      source/gen3_box.c source/gen3_legality2.c source/gen3_edit.c source/gen3_daycare.c source/data_tables.c \
  *      -o /tmp/hl2
  *   /tmp/hl2 /path/to/Emerald.sav /path/to/Ruby.sav ...
  *
@@ -251,10 +251,13 @@ static void negatives(void) {
     g_fail++;
   }
   CHECK(R.grade == PK2_LEGAL, "clean built mon grades LEGAL");
-  CHECK(R.hooks_absent == (PK2_HOOK_MOVES | PK2_HOOK_ENCOUNTER),
-        "absent moves/encounter hooks are reported (PIDIV is not run by default)");
+  /* This translation unit links NONE of the hook modules, so every family that runs by
+   * default must report itself absent. PK2_HOOK_EVO joined the list when the evolution
+   * rule landed (source/evolutions.h). */
+  CHECK(R.hooks_absent == (PK2_HOOK_MOVES | PK2_HOOK_ENCOUNTER | PK2_HOOK_EVO),
+        "absent moves/encounter/evolution hooks are reported (PIDIV is not run by default)");
   pk_check_legality2_ex(&x.m, &R, PK2_RUN_PIDIV);
-  CHECK(R.hooks_absent == (PK2_HOOK_MOVES | PK2_HOOK_ENCOUNTER | PK2_HOOK_PIDIV),
+  CHECK(R.hooks_absent == (PK2_HOOK_MOVES | PK2_HOOK_ENCOUNTER | PK2_HOOK_EVO | PK2_HOOK_PIDIV),
         "PK2_RUN_PIDIV reaches the (absent) PIDIV hook");
   CHECK(R.pidiv_ran == 0, "an absent PIDIV hook leaves pidiv_ran clear");
 
@@ -294,17 +297,23 @@ static void negatives(void) {
   fix_new(&x, 19, 5); em_set_ability(&x.e, 1);
   want_absent(CHK, "2nd ability but species has one", "2-ability species");
 
-  /* Ability slot vs PID on a two-ability species. The fixture PID is 0x1234ABCD,
-   * so PID&1 == 1 and gen3_build_mon's default slot 0 is the mismatch; slot 1
-   * matches; an in-game-trade met location is exempt (the trade template writes
-   * the slot by hand — src/trade.c:4570). */
-  fix_new(&x, 19, 5);
+  /* Ability slot vs PID on a two-ability species. The fixture PID is 0x1234ABCD, so
+   * PID&1 == 1 and slot 0 is the mismatch; slot 1 matches; an in-game-trade met
+   * location is exempt (the trade template writes the slot by hand — src/trade.c:4570).
+   *
+   * The mismatch has to be MADE now: gen3_build_mon derives the slot from the PID the
+   * way CreateBoxMon does (src/pokemon.c:2296-2300), so its output no longer supplies
+   * one for free. Clearing it by hand is also the honest fixture — the check is about a
+   * record whose slot contradicts its PID, not about what the builder happens to leave. */
+  fix_new(&x, 19, 5); em_set_ability(&x.e, 0);
   want(CHK, "Ability slot does not match the PID", PK2_SUSPECT, "ability vs PID");
   fix_new(&x, 19, 5); em_set_ability(&x.e, 1);
   want_absent(CHK, "Ability slot does not match the PID", "slot matches PID");
-  fix_new(&x, 19, 5); em_set_metloc(&x.e, 0xFE);
+  /* Both exemptions keep the mismatch in place — otherwise they would be asserting the
+   * absence of a row that had no reason to appear, and would pass with the check gone. */
+  fix_new(&x, 19, 5); em_set_ability(&x.e, 0); em_set_metloc(&x.e, 0xFE);
   want_absent(CHK, "Ability slot does not match the PID", "in-game-trade exemption");
-  fix_new(&x, 19, 5); em_set_metgame(&x.e, 15);
+  fix_new(&x, 19, 5); em_set_ability(&x.e, 0); em_set_metgame(&x.e, 15);
   want_absent(CHK, "Ability slot does not match the PID", "Colosseum/XD exemption");
 
   fix_new(&x, 260, 5);   /* internal 252..276 = the unused slots */

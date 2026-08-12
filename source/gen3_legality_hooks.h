@@ -5,15 +5,19 @@
 #include <stdbool.h>
 #include "gen3_legality2.h"
 
-/* Legality V2 — the three TABLE-DRIVEN check families, wired into the catalogue.
+/* Legality V2 — the four TABLE-DRIVEN check families, wired into the catalogue.
  *
  * gen3_legality2.c ships every check that needs no data beyond the tables PokeDNA
- * already had, and leaves three WEAK no-op hooks for the families that need new
- * data (gen3_legality2.h:119-138). This translation unit defines those three
+ * already had, and leaves four WEAK no-op hooks for the families that need new
+ * data (gen3_legality2.h:119-138). This translation unit defines those four
  * symbols STRONGLY, so simply adding it to the link enables:
  *
  *   pk2_hook_moves      docs/research-legality-v2.md §3 C2-C5, on source/learnsets2.h
  *   pk2_hook_encounter  §3 E2 + the flat "wild anywhere" gate, on source/encounters.h
+ *                       AND source/statics.h — the script-placed species the wild
+ *                       tables do not describe, whose absence produced this checker's
+ *                       one confirmed false-accusation class (the Devon-Scope Kecleon)
+ *   pk2_hook_evolution  research-legal-generator.md §3 T_evo, on source/evolutions.h
  *   pk2_hook_pidiv      §3 B1/B2, on source/gen3_pidiv.h (on demand only)
  *
  * There is no registration call and no RAM: the linker picks the strong symbol.
@@ -80,13 +84,41 @@ int pk2_line_wild_at(uint8_t game, uint8_t mapsec, uint16_t species,
                      uint8_t* lo, uint8_t* hi);
 int pk2_line_wild_anywhere(uint8_t game, uint16_t species);
 
+/* Does `species` (or a pre-evolution) have a SCRIPT placement in game `g` — a
+ * setwildbattle static or a givemon gift (source/statics.h)? Returns the statics.h
+ * tri-state (PK_STATIC_NO_DATA / PK_STATIC_NO / PK_STATIC_YES).
+ *
+ * This is the question that decides whether the encounter hook is allowed to speak at
+ * all. A wild table describes grass, water, rocks and fishing; it does not describe the
+ * Kecleon you reveal with the Devon Scope, and comparing that Kecleon's L30 against the
+ * route's L25-25 wild row is how a legitimately-caught Pokemon got called suspect. YES
+ * here means the wild table is not a complete account of this species, so no verdict
+ * derived from it is safe to publish. */
+int pk2_line_scripted(uint8_t game, uint16_t species);
+
 /* Whether each family has enough real data to be allowed to speak. The hooks call
  * these first and mark themselves ABSENT in Pk2Report.hooks_absent when they are
  * false, so the UI says "not checked" instead of showing a clean bill of health for
  * a check that never ran. */
 bool pk2_moves_data_ok(void);       /* learnsets2.c generated AND all four source
                                      * families backed by real data somewhere      */
-bool pk2_encounter_data_ok(void);   /* encounters.c generated with >= 1 game table  */
+bool pk2_encounter_data_ok(void);   /* encounters.c AND statics.c generated — both
+                                     * halves, because the wild table alone cannot
+                                     * account for a script-placed Pokemon           */
+bool pk2_evolution_data_ok(void);   /* evolutions.c generated (forward index +
+                                     * per-species floor + the wild relaxation)     */
+
+/* Lowest level `species` itself can stand at (PK_EVO_NO_DATA if no table is linked).
+ *
+ * Deliberately NOT a pk2_line_* helper, and that is the whole point: every other
+ * helper in this file takes a minimum over the pre-evolution chain, because a mon
+ * keeps its pre-evolution's moves and met location. Evolution level is the one fact
+ * that does NOT travel down the chain — Charmander being catchable at L5 says nothing
+ * about Charizard. Taking a chain minimum here would silently disable the rule for
+ * every species whose base form is a low-level wild encounter, i.e. for almost all of
+ * them. This wrapper exists so that trap is written down where the next reader
+ * expecting a pk2_line_* will hit it. */
+int pk2_evo_floor(uint16_t species);
 
 /* Pk2Report.pidiv_method uses the enum documented in gen3_legality2.h:79-80
  * (1/2/4 = Method 1/2/4, 5 = a reversed-order match, 0 = none). gen3_pidiv.h has a

@@ -88,6 +88,9 @@ __attribute__((weak)) void pk2_hook_encounter(const PkMon* m, const Pk2Facts* f,
 __attribute__((weak)) void pk2_hook_pidiv(const PkMon* m, const Pk2Facts* f, Pk2Report* R) {
   (void)m; (void)f; if (R) R->hooks_absent |= PK2_HOOK_PIDIV;
 }
+__attribute__((weak)) void pk2_hook_evolution(const PkMon* m, const Pk2Facts* f, Pk2Report* R) {
+  (void)m; (void)f; if (R) R->hooks_absent |= PK2_HOOK_EVO;
+}
 
 /* ---- small helpers -------------------------------------------------------- */
 
@@ -423,6 +426,7 @@ void pk_check_legality2_ex(const PkMon* m, Pk2Report* R, uint8_t flags) {
   /* Optional families. Absent ones only mark themselves in R->hooks_absent. */
   pk2_hook_moves(m, &f, R);
   pk2_hook_encounter(m, &f, R);
+  pk2_hook_evolution(m, &f, R);
   if (flags & PK2_RUN_PIDIV) pk2_hook_pidiv(m, &f, R);
 
   R->grade = R->n_invalid ? PK2_ILLEGAL : R->n_suspect ? PK2_QUESTIONABLE : PK2_LEGAL;

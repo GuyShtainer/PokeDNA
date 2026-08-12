@@ -1,16 +1,19 @@
 /* Host test for the Legality V2 table-driven hooks (source/gen3_legality_hooks.c).
  *   cc -std=c11 -O2 -I source tests/host_legality_hooks_test.c source/gen3_legality_hooks.c \
- *      source/gen3_legality2.c source/learnsets2.c source/encounters.c source/gen3_pidiv.c \
- *      source/gen3_mon.c source/gen3_box.c source/gen3_save.c source/gen3_edit.c \
+ *      source/gen3_legality2.c source/learnsets2.c source/encounters.c source/statics.c \
+ *      source/evolutions.c \
+ *      source/gen3_pidiv.c \
+ *      source/gen3_mon.c source/gen3_box.c source/gen3_save.c source/gen3_edit.c source/gen3_daycare.c \
  *      source/data_tables.c source/ui_font.c -o /tmp/hlh
  *   /tmp/hlh /path/to/Emerald.sav /path/to/Ruby.sav ...
  *
- * source/learnsets2.c and source/encounters.c are GENERATED and git-ignored — run
- * tools/gen_learnsets2.py and tools/gen_encounters.py --from-rom before this test, or
- * the link above fails (same contract as host_learnsets2_test.c / host_encounters_test.c).
+ * source/learnsets2.c, source/encounters.c and source/statics.c are GENERATED and
+ * git-ignored — run tools/gen_learnsets2.py, tools/gen_encounters.py --from-rom and
+ * tools/gen_statics.py --from-rom before this test, or the link above fails (same
+ * contract as host_learnsets2_test.c / host_encounters_test.c / host_statics_test.c).
  * -O2 matters: part (C) runs the 65,536-iteration PIDIV search over the whole corpus.
  *
- * Five parts:
+ * Six parts:
  *   (A) the pre-evolution table this module carries — sorted, acyclic, and spot-checked
  *       against the species NAMES, because a mistyped id would silently widen a check
  *       instead of failing anything;
@@ -24,7 +27,13 @@
  *   (D) negative tests: one deliberately-broken mon per check, each asserting that its
  *       OWN check fires and that the clean control stays silent;
  *   (E) the exemptions and the tri-state: bred / event / in-game-trade / Colosseum-XD /
- *       Smeargle mons must NOT be judged, and a missing table must produce no verdict.
+ *       Smeargle mons must NOT be judged, and a missing table must produce no verdict;
+ *   (F) THE TOOL'S OWN OUTPUT: a Pokemon straight out of gen3_build_mon must be judged
+ *       by these hooks and not waved through. It used to be stamped met location 255
+ *       (METLOC_FATEFUL_ENCOUNTER), which (E) exempts — so PokeDNA hid its own creations
+ *       from its own checker. Every (F) assertion is paired with the same record at 255,
+ *       which must go silent; that pairing is what proves the checker woke up rather
+ *       than that a fixture happens to be clean.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -38,6 +47,7 @@
 #include "gen3_pidiv.h"
 #include "learnsets2.h"
 #include "encounters.h"
+#include "statics.h"
 #include "data_tables.h"
 #include "ui_font.h"
 
@@ -51,14 +61,27 @@ static int g_fail = 0, g_checks = 0;
 #define SP_SMEARGLE   235
 #define SP_POOCHYENA  286
 #define SP_MIGHTYENA  287
+#define SP_KECLEON    317   /* the Devon-Scope static, the bug this all comes from */
+#define SP_ELECTRODE  101   /* what New Mauville's static VOLTORB evolves into      */
 #define SP_BELDUM     398
 #define SP_LATIAS     407    /* the two RSE roamers                                */
+/* (F) fixtures. One ability each (so no PID/ability row muddies the assertions) and
+ * TACKLE — gen3_build_mon's placeholder move — learnable at L1, so the only rows they
+ * can raise are the encounter ones under test. */
+#define SP_SKITTY     315    /* wild in Emerald, NOT on Route 101                  */
+#define SP_PIDGEY      16    /* Kanto Route 1, L2-5                                */
+#define SP_CATERPIE    10    /* wild in FireRed, NOT on Route 1                    */
 #define MV_POUND        1    /* nothing in Gen 3 teaches Pound to Bulbasaur        */
 #define MV_PETAL_DANCE 80    /* Bulbasaur EGG move only                            */
 #define MV_DRAGON_RAGE 82    /* Charmander L43 / Charizard L54 — the pre-evo case  */
 #define MV_SYNTHESIS  235    /* Bulbasaur level-up ONLY, L39                       */
 #define MAPSEC_R102  0x11    /* Emerald Route 102: POOCHYENA L3-4                  */
 #define MAPSEC_R105  0x14    /* Emerald Route 105: water only, no POOCHYENA        */
+#define MAPSEC_R120  0x23    /* Hoenn Route 120: wild KECLEON L25-25 AND the L30
+                              * Devon-Scope static — the regression below         */
+#define MAPSEC_R101  0x10    /* Hoenn Route 101 — what gen3_build_mon now stamps   */
+#define MAPSEC_R1    0x65    /* Kanto Route 1 — ditto, for a FireRed/LeafGreen origin */
+#define METLOC_FATEFUL 0xFF  /* METLOC_FATEFUL_ENCOUNTER — the stamp that was wrong */
 
 /* ---- (B) text metrics: a copy of ui_ptext_w(), as host_textfit_test.c does ---- */
 #define ROW_BUDGET 220       /* 240 px screen minus the severity glyph + gutter */
@@ -87,15 +110,21 @@ static void want_fits(const char* s, const char* what) {
  * tests/host_legality2_test.c. */
 typedef struct { EditMon e; uint8_t rec[100]; PkMon m; } Fix;
 
-/* gen3_build_mon stamps met location 255 = METLOC_FATEFUL_ENCOUNTER, which the moves
- * hook treats as an event distribution and exempts — so a fixture left at the default
- * would silently test nothing. Every fixture is therefore given an ORDINARY met
- * location (Emerald Route 102) unless the case under test overrides it. */
+/* Every fixture is pinned to Emerald Route 102 so that a case which cares about the met
+ * location states its own, and one that does not is never accidentally reading whatever
+ * gen3_build_mon happens to stamp today. (Part (F) is the exception: it tests that stamp,
+ * so it builds without the override.) */
 static void fix_new(Fix* x, uint16_t species, uint8_t lvl) {
   uint8_t base[80];
   gen3_build_mon(species, lvl, 0x1234ABCDu, 0x00010002u, "GUY", 3, base);
   gen3_edit_load(base, false, &x->e);
   em_set_metloc(&x->e, MAPSEC_R102);
+  /* ...and pinned to a CAUGHT origin for the same reason. gen3_build_mon now stamps met
+   * level 0 (= hatched) on every species with an egg route, which is a legitimate
+   * exemption from the move level-window, the encounter hook and the PID/IV search — so
+   * a fixture that inherited it would silently stop exercising all three. Cases that
+   * want the bred exemption set it themselves (part (E) does). */
+  em_set_metlevel(&x->e, lvl);
 }
 static Pk2Report fix_check_ex(Fix* x, uint8_t flags) {
   memset(x->rec, 0, sizeof x->rec);
@@ -271,7 +300,7 @@ static void negatives(void) {
    * PIDIV bit stays clear because an unrun hook never sets it. */
   fix_new(&x, SP_BULBASAUR, 5);
   R = fix_check(&x);
-  CHECK(R.hooks_absent == 0, "the moves and encounter hooks are linked in");
+  CHECK(R.hooks_absent == 0, "the moves, encounter and evolution hooks are linked in");
   /* gen3_build_mon's Tackle-at-L5 Bulbasaur is legal in every table, so the sweep
    * hooks must be silent on it. (The PIDIV hook is NOT expected to be: a hand-built
    * PID with all-zero IVs is exactly the uncorrelated pair it exists to notice.) */
@@ -367,8 +396,67 @@ static void negatives(void) {
   R = fix_check(&x);
   want_no_row(&R, "wild", "E2 honours the pre-evolution's encounter row");
 
-  /* A species that is wild NOWHERE in the origin game is a gift/static/fossil, and
-   * PokeDNA ships no static table — so it must produce silence, not a SUSPECT. */
+  /* ---- E2 REGRESSION: THE DEVON-SCOPE KECLEON -------------------------------
+   * Reported from hardware, in these words: "The sweep is a cool feature but it catches
+   * legit keckleons i caught in a legit way." Three of them in Guy's Emerald box 1 and
+   * two more in his Ruby, every one caught in normal play, every one flagged "Met at
+   * L30, wild there is L25-25".
+   *
+   * The flag was not a threshold that needed tuning — the hook was reasoning from data
+   * that does not describe how a Kecleon is obtained. Routes 118-123 carry an ordinary
+   * wild KECLEON row at L25-25, but the Kecleon a player actually meets there is the
+   * invisible object event revealed with the Devon Scope, which a map script starts at
+   * its own level: `setwildbattle SPECIES_KECLEON, 30` (pokeemerald
+   * data/scripts/kecleon.inc:74, data/maps/Route120/scripts.inc:193).
+   *
+   * Both fixture assumptions below are the ones that made the bug: the wild row really
+   * does exist and really does say 25-25, so this is NOT the "wild nowhere" case the
+   * next block covers — the hook had a row, matched it, and drew the wrong conclusion. */
+  {
+    uint8_t lo = 0, hi = 0;
+    CHECK(pk2_line_wild_at(PK_ENC_EMERALD, MAPSEC_R120, SP_KECLEON, &lo, &hi) == PK_WILD_YES &&
+          lo == 25 && hi == 25,
+          "fixture assumption: Emerald Route 120 has a wild KECLEON row at L25-25");
+    CHECK(pk2_line_scripted(PK_ENC_EMERALD, SP_KECLEON) == PK_STATIC_YES,
+          "fixture assumption: KECLEON is script-placed in Emerald");
+
+    /* Guy's mon, reconstructed: Emerald, Route 120, met at L30. Must be SILENT. */
+    for (int game = 1; game <= 3; game++) {          /* Sapphire, Ruby, Emerald */
+      fix_new(&x, SP_KECLEON, 30);
+      em_set_metgame(&x.e, (uint8_t)game);
+      em_set_metloc(&x.e, MAPSEC_R120);
+      em_set_metlevel(&x.e, 30);
+      R = fix_check(&x);
+      want_no_row(&R, "Met at L", "a Devon-Scope KECLEON is not accused of its met level");
+      want_no_row(&R, "Not found wild", "...nor of its met place");
+      g_checks++;
+      if (R.grade != PK2_LEGAL) {
+        printf("  !! FAIL: a legitimately caught KECLEON graded %s\n", pk2_grade_name(R.grade));
+        dump(&R);
+        g_fail++;
+      }
+    }
+
+    /* THE CONTROL, and the load-bearing half of this block: the suppression must be
+     * about KECLEON, not about the level window switching itself off. The same met
+     * data on an ordinary route species still gets the row. */
+    fix_new(&x, SP_POOCHYENA, 30);
+    em_set_metgame(&x.e, 3); em_set_metloc(&x.e, MAPSEC_R102); em_set_metlevel(&x.e, 30);
+    R = fix_check(&x);
+    want_like(&R, "Met at L30, wild there is L3-4", PK2_SUSPECT, PK2_CAT_MET,
+              "control: an ordinary species is still judged by the wild table");
+
+    /* And the chain: New Mauville places a VOLTORB at L25, so the ELECTRODE that Voltorb
+     * became inherits the same silence — its met data belongs to the form that was
+     * caught (the reason every other helper here is a pk2_line_* too). */
+    CHECK(pk2_line_scripted(PK_ENC_EMERALD, SP_ELECTRODE) == PK_STATIC_YES,
+          "the script placement of VOLTORB covers the ELECTRODE it evolves into");
+  }
+
+  /* A species that is wild NOWHERE in the origin game is a gift/static/fossil, so it
+   * must produce silence, not a SUSPECT. (The species-with-a-script-placement case is
+   * handled earlier and for a stronger reason; this gate still carries the routes
+   * statics.h cannot see — roamers and the FRLG Game Corner prizes.) */
   fix_new(&x, SP_BELDUM, 20);
   em_set_metgame(&x.e, 3); em_set_metloc(&x.e, MAPSEC_R105); em_set_metlevel(&x.e, 5);
   R = fix_check(&x);
@@ -397,6 +485,8 @@ static void negatives(void) {
     uint8_t base[80];
     gen3_build_mon(SP_BULBASAUR, 20, pid, 0x00010002u, "GUY", 3, base);
     Fix p; gen3_edit_load(base, false, &p.e);
+    em_set_metlevel(&p.e, 20);   /* caught, not the builder's hatched default: a bred mon
+                                  * is PID/IV-exempt and there would be nothing to search */
     em_set_iv(&p.e, PK_HP,  (uint8_t)(iv1 & 31));
     em_set_iv(&p.e, PK_ATK, (uint8_t)((iv1 >> 5) & 31));
     em_set_iv(&p.e, PK_DEF, (uint8_t)((iv1 >> 10) & 31));
@@ -445,6 +535,8 @@ static void negatives(void) {
     gen3_build_mon(SP_BULBASAUR, 40, pid, 0x00010002u, "GUY", 2, base);
     gen3_edit_load(base, false, &p.e);
     em_set_metloc(&p.e, MAPSEC_R102);
+    em_set_metlevel(&p.e, 40);   /* caught: LATIAS above is one of the species the builder
+                                  * cannot hatch, so it needs no pin — BULBASAUR does */
     em_set_iv(&p.e, PK_HP,  (uint8_t)(iv1 & 31));
     em_set_iv(&p.e, PK_ATK, (uint8_t)((iv1 >> 5) & 7));
     R = fix_check_ex(&p, PK2_RUN_PIDIV);
@@ -533,6 +625,154 @@ static void exemptions(void) {
     want_no_row(&R, "Met at L", "an unknown origin game yields no encounter verdict");
     want_no_row(&R, "Not found wild", "an unknown origin game yields no location verdict");
   }
+}
+
+/* ---- (F) the met location PokeDNA stamps on the mons it creates ------------
+ *
+ * gen3_build_mon used to write 255 = METLOC_FATEFUL_ENCOUNTER. Two things were wrong
+ * with that. It is the marker the retail game puts on an event distribution
+ * (data/scripts/gift_pichu.inc:33), so every Pokemon the tool made lied about where it
+ * came from. And gen3_legality_hooks.c:195 and :300 exempt every met location >= 0xFD,
+ * so the tool's output walked straight past the tool's own checker — part (E) proves
+ * that exemption exists, and this part proves PokeDNA is no longer standing inside it.
+ *
+ * Every case below is asserted twice: once as gen3_build_mon leaves it, and once with
+ * 255 put back. The second assertion is the load-bearing one — silence at 255 and a
+ * verdict at the real stamp is the difference between "this fixture is clean" and "the
+ * checker actually ran". */
+
+/* A fixture EXACTLY as gen3_build_mon leaves it — deliberately no fix_new override. */
+static void built(Fix* x, uint16_t species, uint8_t lvl, uint8_t metgame, uint16_t extra_move) {
+  uint8_t base[80];
+  gen3_build_mon(species, lvl, 0x1234ABCDu, 0x00010002u, "GUY", metgame, base);
+  gen3_edit_load(base, false, &x->e);
+  /* The met LOCATION — this part's whole subject — is left exactly as the builder wrote
+   * it. The met LEVEL is pinned to the caught value because the builder now writes 0
+   * (hatched) for any species with an egg route, and "was bred" legitimately exempts the
+   * move and encounter hooks (gen3_legality2.c:409-415). That exemption is EARNED, not
+   * the 0xFF lie this part exists to catch; without the pin, F3-F6 would go silent for
+   * the right reason and stop testing the wrong one. The no-egg-route species — the
+   * legendaries and Unown — still come out of the builder caught exactly like this.
+   * Coverage of the hatched default lives in tests/host_legalbuild_test.c. */
+  em_set_metlevel(&x->e, lvl);
+  if (extra_move) em_set_move(&x->e, 1, extra_move);
+}
+
+/* ...and the same record with the old stamp back on it: what the checker used to see. */
+static Pk2Report as_before(Fix* x, uint16_t species, uint8_t lvl, uint8_t metgame,
+                           uint16_t extra_move) {
+  built(x, species, lvl, metgame, extra_move);
+  em_set_metloc(&x->e, METLOC_FATEFUL);
+  return fix_check(x);
+}
+
+static void built_met_location(void) {
+  Fix x;
+  Pk2Report R;
+
+  /* F1 — the byte itself follows the origin game's own region, and is never one of the
+   * three non-places (0xFD special egg / 0xFE in-game trade / 0xFF fateful) that the
+   * hooks exempt. The loop runs over every origin byte the record can hold, because a
+   * default that fell through to 0 for an odd origin would be a silent regression. */
+  const struct { uint8_t game; uint8_t want; const char* what; } stamp[] = {
+    { 0, MAPSEC_R101, "origin 0 (defaults to Emerald) -> Route 101" },
+    { 1, MAPSEC_R101, "Sapphire  -> Route 101" },
+    { 2, MAPSEC_R101, "Ruby      -> Route 101" },
+    { 3, MAPSEC_R101, "Emerald   -> Route 101" },
+    { 4, MAPSEC_R1,   "FireRed   -> Route 1"   },
+    { 5, MAPSEC_R1,   "LeafGreen -> Route 1"   },
+  };
+  for (unsigned i = 0; i < sizeof stamp / sizeof stamp[0]; i++) {
+    built(&x, SP_POOCHYENA, 3, stamp[i].game, 0);
+    fix_check(&x);
+    g_checks++;
+    if (x.m.metLocation != stamp[i].want)
+      printf("  !! FAIL: %s, got 0x%02X\n", stamp[i].what, x.m.metLocation), g_fail++;
+  }
+  for (uint8_t game = 0; game <= 15; game++) {
+    built(&x, SP_POOCHYENA, 3, game, 0);
+    fix_check(&x);
+    g_checks++;
+    if (x.m.metLocation >= 0xFD) {
+      printf("  !! FAIL: origin %u is stamped 0x%02X, a marker the hooks exempt\n",
+             game, x.m.metLocation);
+      g_fail++;
+    }
+  }
+
+  /* Fixture assumptions, stated so a table regeneration that moved these rows fails
+   * here instead of quietly hollowing out the assertions below. */
+  uint8_t lo = 0, hi = 0;
+  CHECK(pk2_line_wild_at(PK_ENC_EMERALD, MAPSEC_R101, SP_POOCHYENA, &lo, &hi) == PK_WILD_YES &&
+        lo == 2 && hi == 3, "fixture: Emerald Route 101 has POOCHYENA L2-3");
+  CHECK(pk2_line_wild_at(PK_ENC_FIRERED, MAPSEC_R1, SP_PIDGEY, &lo, &hi) == PK_WILD_YES &&
+        lo == 2 && hi == 5, "fixture: FireRed Route 1 has PIDGEY L2-5");
+  CHECK(pk2_line_wild_at(PK_ENC_EMERALD, MAPSEC_R101, SP_SKITTY, 0, 0) == PK_WILD_NO &&
+        pk2_line_wild_anywhere(PK_ENC_EMERALD, SP_SKITTY) == PK_WILD_YES,
+        "fixture: SKITTY is wild in Emerald but not on Route 101");
+  CHECK(pk2_line_wild_at(PK_ENC_FIRERED, MAPSEC_R1, SP_CATERPIE, 0, 0) == PK_WILD_NO &&
+        pk2_line_wild_anywhere(PK_ENC_FIRERED, SP_CATERPIE) == PK_WILD_YES,
+        "fixture: CATERPIE is wild in FireRed but not on Route 1");
+
+  /* F2 — a created mon whose story ADDS UP is still silent. The fix must not blanket-
+   * flag everything the tool makes; a L3 POOCHYENA met at L3 on Route 101 is exactly
+   * what that place produces. */
+  built(&x, SP_POOCHYENA, 3, 3, 0);
+  R = fix_check(&x);
+  if (R.n) { printf("  !! FAIL: a coherent created mon raised %d row(s):\n", R.n); dump(&R); g_fail++; }
+  g_checks++;
+  CHECK(R.grade == PK2_LEGAL, "a coherent created mon still grades LEGAL");
+
+  /* F3 — the level window, Hoenn. Route 101 tops out at L3, so a L30 build cannot have
+   * been met there. This row can ONLY come from the encounter hook reading the stamp. */
+  built(&x, SP_POOCHYENA, 30, 3, 0);
+  R = fix_check(&x);
+  want_like(&R, "Met at L30, wild there is L2-3", PK2_SUSPECT, PK2_CAT_MET,
+            "F3 the encounter hook judges a created mon's met level");
+  R = as_before(&x, SP_POOCHYENA, 30, 3, 0);
+  want_no_row(&R, "Met at L", "F3 control: at the old stamp 255 the hook said nothing");
+
+  /* F4 — the place, Hoenn. SKITTY is wild in Emerald but not on Route 101. */
+  built(&x, SP_SKITTY, 5, 3, 0);
+  R = fix_check(&x);
+  want_like(&R, "Not found wild at its met location", PK2_SUSPECT, PK2_CAT_MET,
+            "F4 the encounter hook judges a created mon's met place");
+  R = as_before(&x, SP_SKITTY, 5, 3, 0);
+  want_no_row(&R, "Not found wild", "F4 control: at the old stamp 255 the hook said nothing");
+
+  /* F5 — the same two, for a Kanto origin. This also proves the stamp FOLLOWS the origin
+   * game: these verdicts come from the FireRed table at Route 1, a mapsec that does not
+   * even exist in the Hoenn games. */
+  built(&x, SP_PIDGEY, 3, 4, 0);
+  R = fix_check(&x);
+  want_no_row(&R, "Met at L", "F5 a coherent Kanto build is silent");
+  want_no_row(&R, "Not found wild", "F5 a coherent Kanto build is silent");
+  built(&x, SP_PIDGEY, 30, 4, 0);
+  R = fix_check(&x);
+  want_like(&R, "Met at L30, wild there is L2-5", PK2_SUSPECT, PK2_CAT_MET,
+            "F5 Kanto level window");
+  R = as_before(&x, SP_PIDGEY, 30, 4, 0);
+  want_no_row(&R, "Met at L", "F5 control: 255 muted the Kanto level window too");
+  built(&x, SP_CATERPIE, 5, 4, 0);
+  R = fix_check(&x);
+  want_like(&R, "Not found wild at its met location", PK2_SUSPECT, PK2_CAT_MET,
+            "F5 Kanto met place");
+  R = as_before(&x, SP_CATERPIE, 5, 4, 0);
+  want_no_row(&R, "Not found wild", "F5 control: 255 muted the Kanto place check too");
+
+  /* F6 — the MOVES hook was muted by the same byte, and that is the defect that was
+   * actually caught in the wild: a probe built with an impossible moveset came back
+   * LEGAL. A L5 BULBASAUR cannot know SYNTHESIS (level-up only, L39 in every game
+   * group) unless it was bred, traded or distributed — and a created mon is none of
+   * those. INVALID, i.e. the whole mon grades ILLEGAL. */
+  built(&x, SP_BULBASAUR, 5, 3, MV_SYNTHESIS);
+  R = fix_check(&x);
+  want_like(&R, "SYNTHESIS: needs L39", PK2_INVALID, PK2_CAT_MOVES,
+            "F6 the moves hook judges a created mon's moveset");
+  CHECK(R.grade == PK2_ILLEGAL, "F6 an impossible created moveset grades ILLEGAL");
+  R = as_before(&x, SP_BULBASAUR, 5, 3, MV_SYNTHESIS);
+  want_no_row(&R, "SYNTHESIS", "F6 control: at the old stamp 255 the moveset went unflagged");
+  CHECK(R.grade == PK2_LEGAL, "F6 control: the old stamp graded that same mon LEGAL");
 }
 
 /* ---- (A) the pre-evolution table ------------------------------------------- */
@@ -675,6 +915,8 @@ int main(int argc, char** argv) {
   negatives();
   printf("\n-- (E) exemptions and the tri-state --\n");
   exemptions();
+  printf("\n-- (F) the checker judges PokeDNA's own creations --\n");
+  built_met_location();
 
   printf("\n%s: %d checks, %d failure(s)\n", g_fail ? "FAIL" : "OK", g_checks, g_fail);
   return g_fail ? 1 : 0;

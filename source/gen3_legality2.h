@@ -66,6 +66,7 @@ typedef struct {
 #define PK2_HOOK_MOVES      0x01
 #define PK2_HOOK_ENCOUNTER  0x02
 #define PK2_HOOK_PIDIV      0x04
+#define PK2_HOOK_EVO        0x08
 
 typedef struct {
   uint8_t grade;               /* PK2_LEGAL / PK2_QUESTIONABLE / PK2_ILLEGAL */
@@ -116,10 +117,20 @@ typedef struct {
  *     in the corpus, so that risk is UNMEASURED rather than measured-zero.
  *
  *   E2 (encounter matching)  -> SUSPECT, deliberately NOT promoted.
- *     The gate PROVED it produces false positives: 6 Kecleon (a scripted L30 battle
- *     while the ROM's own wild row for those routes says L25-25) and 2 of the FireRed
- *     Dragonite line (a Game Corner prize met at Celadon). Both are the missing
- *     static/gift/trade table, not tuning noise, and both disappear the day it ships.
+ *     The gate PROVED it produces false positives, and the cause was structural rather
+ *     than a threshold: the hook knew only the wild tables, so it judged Pokemon whose
+ *     acquisition those tables do not describe. Guy reported it from hardware — five
+ *     Devon-Scope Kecleon (a scripted L30 battle on routes whose wild row says L25-25)
+ *     and a Berry Forest Hypno, all caught in normal play.
+ *     FIXED 2026-08-11 by source/statics.h: a species with a script placement
+ *     (setwildbattle / givemon, extracted from the carts) is one this hook is not
+ *     entitled to judge, so it says nothing. Re-measured over the same five saves:
+ *     654 Pokemon, 6 of the 8 encounter SUSPECTs gone, ZERO INVALID, and every
+ *     genuinely impossible mon still caught.
+ *     STILL OUTSTANDING: 2 of the FireRed Dragonite line, a Game Corner prize met at
+ *     Celadon. FRLG builds that one in C, not with a script command, so the shape scan
+ *     cannot see it — statics.h names it as the known hole. The promotion to INVALID
+ *     needs that hole closed AND the map attributed, not a severity edit.
  *
  *   B1 (PIDIV)  -> SUSPECT at most, on demand only.
  *     Method 3 is deliberately not searched, so a genuinely wild mon can fail. Every
@@ -162,5 +173,10 @@ const char* pk2_sev_name(uint8_t sev);       /* "info" / "suspect" / "INVALID"  
 void pk2_hook_moves(const PkMon* m, const Pk2Facts* f, Pk2Report* R);
 void pk2_hook_encounter(const PkMon* m, const Pk2Facts* f, Pk2Report* R);
 void pk2_hook_pidiv(const PkMon* m, const Pk2Facts* f, Pk2Report* R);
+/* pk2_hook_evolution answers the one question the catalogue could not: is this
+ * Pokemon standing below the level its own evolution stage requires? It runs on
+ * source/evolutions.h (git-ignored generated table), which is why it is a hook and
+ * not a core check — a build without the table must go SILENT, not clean. */
+void pk2_hook_evolution(const PkMon* m, const Pk2Facts* f, Pk2Report* R);
 
 #endif /* GEN3_LEGALITY2_H */

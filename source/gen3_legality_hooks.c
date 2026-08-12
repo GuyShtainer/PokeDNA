@@ -1,6 +1,8 @@
 #include "gen3_legality_hooks.h"
 #include "learnsets2.h"
 #include "encounters.h"
+#include "statics.h"
+#include "evolutions.h"
 #include "gen3_pidiv.h"
 #include "data_tables.h"
 
@@ -249,7 +251,28 @@ void pk2_hook_moves(const PkMon* m, const Pk2Facts* f, Pk2Report* R) {
 /* ============================== ENCOUNTERS ==================================
  * docs/research-legality-v2.md §3 E2 + the flat "wild anywhere" gate. */
 
-bool pk2_encounter_data_ok(void) { return pk_wild_have_data(); }
+/* BOTH tables, deliberately. The wild table alone is half a picture: it says where a
+ * species can be met in the grass and at what level, and says nothing about the species
+ * a map script places or hands over. Reasoning from half of it is exactly what flagged
+ * three Devon-Scope Kecleon that Guy caught in normal play (statics.h). A build that has
+ * encounters.c but not statics.c cannot tell those apart from forgeries, so it reports
+ * this whole family ABSENT rather than guessing — hooks_absent is displayed, a wrong
+ * SUSPECT is not retractable. */
+bool pk2_encounter_data_ok(void) { return pk_wild_have_data() && pk_static_have_data(); }
+
+int pk2_line_scripted(uint8_t game, uint16_t species) {
+  uint16_t line[CHAIN_MAX];
+  int n = line_of(species, line), found = PK_STATIC_NO;
+  for (int i = 0; i < n; i++) {
+    /* The whole CHAIN, for the same reason pk2_line_wild_at walks it: New Mauville's
+     * static VOLTORB is met at L25 and its owner may be showing you an ELECTRODE. The
+     * met data belongs to whatever form was actually obtained. */
+    int r = pk_static_any(game, line[i]);
+    if (r == PK_STATIC_NO_DATA) return PK_STATIC_NO_DATA;   /* absent table wins */
+    if (r == PK_STATIC_YES) found = PK_STATIC_YES;
+  }
+  return found;
+}
 
 int pk2_line_wild_at(uint8_t game, uint8_t mapsec, uint16_t species,
                      uint8_t* lo, uint8_t* hi) {
@@ -300,6 +323,37 @@ void pk2_hook_encounter(const PkMon* m, const Pk2Facts* f, Pk2Report* R) {
   if (m->metLocation >= MET_SPECIAL_EGG) return;
   if (m->metGame < PK_ENC_SAPPHIRE || m->metGame > PK_ENC_LEAFGREEN) return;
 
+  /* THE FIFTH EXEMPTION, and the one that was missing.
+   *
+   * Everything below this line reasons from the WILD TABLE — "the grass here holds these
+   * species at these levels". That reasoning is only sound if the wild table describes
+   * how this species is obtained. For a species a MAP SCRIPT places or gives, it does
+   * not, and the failure is not hypothetical: Routes 119/120 carry an ordinary wild
+   * KECLEON row at L25-25, but the Kecleon a player actually catches there is the
+   * invisible one revealed with the Devon Scope, which `setwildbattle SPECIES_KECLEON,
+   * 30` starts at L30 (statics.h). Comparing the second against the first accused five
+   * legitimately-caught Kecleon across Guy's Emerald and Ruby, and a Berry Forest HYPNO
+   * for the same reason.
+   *
+   * So the rule is about what this hook is ENTITLED to say, not about tuning: the wild
+   * table cannot speak for a script-placed species, therefore neither can the level
+   * window below NOR the "not found wild here" row — a static or a gift can be at a
+   * mapsec whose wild list has never heard of it (Emerald's Aqua Hideout ELECTRODE is
+   * exactly that). One return covers both because one premise fails for both.
+   *
+   * It is the SPECIES, not the level, that is checked, even though statics.h stores the
+   * levels. The table is complete over the two script commands, but not over every way
+   * the games hand a Pokemon out (C-code routes exist — statics.h says which), and it
+   * carries no map. Accepting only the exact static level would be claiming a
+   * completeness that has not been measured, and the cost of being wrong there is
+   * another false accusation. A missing verdict is the cheap error; this is the
+   * expensive one. pk_static_at_level is there for the day the map is attributable.
+   *
+   * PK_STATIC_NO_DATA cannot be reached from here (pk2_encounter_data_ok already
+   * required the table) but is treated as silence anyway: an absent table must never be
+   * the thing that produces a verdict. */
+  if (pk2_line_scripted(m->metGame, m->species) != PK_STATIC_NO) return;
+
   uint8_t lo = 0, hi = 0;
   int at = pk2_line_wild_at(m->metGame, m->metLocation, m->species, &lo, &hi);
   if (at == PK_WILD_NO_DATA) return;      /* tri-state: no table, no verdict */
@@ -322,11 +376,11 @@ void pk2_hook_encounter(const PkMon* m, const Pk2Facts* f, Pk2Report* R) {
   }
 
   /* Not in that section's wild table. That is only evidence if the species is wild
-   * SOMEWHERE in the origin game — the flat bitmap fast path. Every gift, starter,
-   * fossil, roamer and static (Beldum, the three Hoenn starters, Sudowoodo, the
-   * legendaries...) is wild nowhere, and PokeDNA ships no static table (research
-   * doc §4 T_static is not built), so for those the honest answer is silence rather
-   * than a SUSPECT nobody can act on. */
+   * SOMEWHERE in the origin game — the flat bitmap fast path. Every starter, fossil and
+   * roamer is wild nowhere, so for those the honest answer is silence rather than a
+   * SUSPECT nobody can act on. (This gate no longer carries the script-placed species
+   * — the exemption above retired them earlier and on a better reason. It still carries
+   * the routes statics.h cannot see: the roamers and the FRLG Game Corner prizes.) */
   int anywhere = pk2_line_wild_anywhere(m->metGame, m->species);
   if (anywhere != PK_WILD_YES) return;    /* covers NO and NO_DATA */
 
@@ -338,6 +392,68 @@ void pk2_hook_encounter(const PkMon* m, const Pk2Facts* f, Pk2Report* R) {
   if (pk_wild_mapsec_list((PkEncGame)m->metGame, m->metLocation, 0) == 0) return;
 
   pk2_add(R, PK2_CAT_MET, PK2_SUSPECT, "Not found wild at its met location");
+}
+
+/* ============================== EVOLUTION ===================================
+ * docs/research-legal-generator.md §3 T_evo, and §1's measured hole: "a level-5
+ * Charizard grades LEGAL — no evolution-level rule exists". This is that rule.
+ *
+ * The claim is narrow on purpose: a Pokemon cannot be BELOW the lowest level its own
+ * species can occupy. Everything else about evolution (did it have the stone, was the
+ * friendship high enough, was it traded) leaves no trace in the save and is not
+ * checkable. */
+
+bool pk2_evolution_data_ok(void) { return pk_evo_have_data(); }
+
+int pk2_evo_floor(uint16_t species) { return pk_evo_floor(species); }
+
+void pk2_hook_evolution(const PkMon* m, const Pk2Facts* f, Pk2Report* R) {
+  if (!m || !f || !R) return;
+  if (!pk2_evolution_data_ok()) { R->hooks_absent |= PK2_HOOK_EVO; return; }
+  if (!f->species_ok) return;      /* the core already has a row for a bad species */
+
+  /* Exemptions. Two of them are not shared with the other hooks, and both are real:
+   *
+   *  - AN IN-GAME TRADE HANDS YOU A POKEMON AT THE LEVEL OF THE ONE YOU GAVE AWAY.
+   *    CreateInGameTradePokemonInternal reads `u8 level = GetMonData(&gPlayerParty[
+   *    whichPlayerMon], MON_DATA_LEVEL)` and passes it straight to CreateMon
+   *    (src/trade.c:4552,4559). So FireRed's Poliwhirl-for-Jynx trade really does
+   *    produce a Jynx below L30, which is where Smoochum evolves. Without this
+   *    exemption the rule would call a stock in-game trade illegal. Met 0xFE is how
+   *    the game marks them (src/trade.c:4555).
+   *  - Colosseum/XD build their rosters with their own code; no GBA table describes
+   *    the levels they hand out, so judging them here is judging the wrong thing.
+   *
+   * 0xFD (special egg) and 0xFF (fateful/event) join them for the same reason they do
+   * in every other hook: they are markers, not places, and PokeDNA ships no event
+   * table to check an event distribution against. */
+  if (f->is_gc || f->fateful) return;
+  if (m->metLocation >= MET_SPECIAL_EGG) return;
+
+  int need = pk2_evo_floor(m->species);
+  if (need <= 1) return;                     /* base form, or PK_EVO_NO_DATA (-1) */
+  if ((int)f->level >= need) return;
+
+  /* SUSPECT, not INVALID. source/statics.h now enumerates the script placements instead
+   * of leaving them to memory, and it agrees with what this comment used to only assert:
+   * of the 71 rows across the five carts, exactly three species are not base forms —
+   * ELECTRODE (L30 in RSE, L34 in FRLG, floor 26), HYPNO (L30, floor 26) and MAROWAK
+   * (L30, floor 28) — and every one of them is placed at or above its own floor, so none
+   * is a counterexample. That is still not the
+   * measured-zero calibration the INVALID bar asks for: the table covers two script
+   * commands, not the C-code routes (statics.h), and the wild relaxation inside
+   * pk_evo_floor already had to absorb 23 species the naive rule would have called
+   * illegal (evolutions.h) — exactly the kind of surprise that argues for caution.
+   * Promoting this needs the C-code gift routes too, and a re-run of the corpus gate in
+   * tests/host_legality_hooks_test.c part (C). */
+  char t[PK2_TEXT_LEN];
+  Fmt fb;
+  fmt_init(&fb, t, sizeof t);
+  fmt_s(&fb, "Evolves at L");
+  fmt_u(&fb, (uint32_t)need);
+  fmt_s(&fb, ", this one is L");
+  fmt_u(&fb, f->level);
+  pk2_add(R, PK2_CAT_STRUCT, PK2_SUSPECT, t);
 }
 
 /* ================================ PIDIV =====================================
