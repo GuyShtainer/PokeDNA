@@ -1,15 +1,18 @@
 /* Host test for the egg flag + hatch edit core (pure C, no hardware):
  *   cc -std=c11 -I source tests/host_hatch_test.c source/gen3_save.c source/gen3_mon.c \
- *      source/gen3_box.c source/gen3_edit.c source/data_tables.c -o /tmp/hh && /tmp/hh
+ *      source/gen3_box.c source/gen3_edit.c source/gen3_daycare.c source/gen3_pidiv.c source/data_tables.c \
+ *      -o /tmp/hh && /tmp/hh
  *
  * Verifies em_set_egg toggles BOTH egg locations (flags byte bit2 + Misc IV-word bit30) and
- * that em_hatch clears the egg, resets the (hatch-counter) friendship byte, and keeps the
- * species/IVs — i.e. the revealed Pokemon is intact. */
+ * that em_hatch clears the egg, writes the two fields retail's hatch path writes
+ * (friendship 120, met level 0), and keeps the species/IVs — i.e. the revealed Pokemon is
+ * intact and is RECOGNISED AS HATCHED by PokeDNA's own readers. */
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
 #include "gen3_edit.h"
 #include "gen3_mon.h"
+#include "gen3_pidiv.h"
 #include "data_tables.h"
 
 static int fails = 0;
@@ -59,8 +62,57 @@ int main(void) {
   chk("hatched: not an egg", !m.isEgg && !m.isBadEgg);
   chk("hatched: species intact", m.species == 1);
   chk("hatched: IV intact", m.ivs[PK_ATK] == 31);
-  chk("hatched: friendship reset to base 70 (not the hatch counter)", m.friendship == 70);
   chk("hatched: exp = level 5", m.experience == pk_exp_for_level(pk_species_growth(1), 5));
+
+  /* The two fields retail's hatch path writes and this one used to get wrong.
+   *
+   * friendship: CreateHatchedMon hard-codes `friendship = 120` (src/egg_hatch.c:350-351).
+   * 70 is the CAUGHT base — the value gen3_build_mon still uses — and it appears nowhere
+   * in the hatch path. Grounded in Guy's five saves: over the 141 mons with metLevel 0,
+   * 120 is the largest single bucket (43 of them) and 126 sit at 120 or above.
+   *
+   * met level: AddHatchedMonToParty writes 0, with the decomp's own comment "A met level
+   * of 0 is interpreted on the summary screen as 'hatched at'" (src/egg_hatch.c:384-386),
+   * and all 17 eggs in the corpus already carry it. */
+  chk("hatched: friendship 120 (retail's hatch value, not the caught base 70)",
+      m.friendship == 120);
+  chk("hatched: met level 0 (\"hatched at\")", m.metLevel == 0);
+
+  /* ...and the reason met level 0 is not cosmetic: it is the ONLY thing that records
+   * "this was an egg", so PokeDNA's own hatched exemptions key off it. A hatch that
+   * leaves the byte alone produces a mon PokeDNA does not recognise as hatched. */
+  chk("hatched: PokeDNA's own reader calls it hatched",
+      pk_pidiv_exempt_reason(&m) == PK_PIDIV_EX_HATCHED);
+
+  /* The case the old code actually broke: an egg PokeDNA MADE itself. gen3_build_mon
+   * stamps met level = the build level, so nothing else in the record ever set it to 0
+   * and em_hatch was the only place it could happen.
+   *
+   * THE FIXTURE MOVED (and the guard below is what caught it, as its own note said it
+   * would). gen3_build_mon now writes met level 0 for any species with an egg route —
+   * the whole point being that a created Pokemon should already read as bred — so
+   * BULBASAUR no longer starts non-zero. GROUDON does: no pair can produce it, so the
+   * builder gives it a caught origin, which is exactly the record that still reaches
+   * em_hatch with a non-zero byte. Same test, a species where it can still fail. */
+  {
+    uint8_t brec[80], begg[80], bhat[80];
+    gen3_build_mon(405 /* GROUDON */, 5, 0x0BADF00Du, 0xAABBCCDDu, "TEST", 3, brec);
+    EditMon be; gen3_edit_load(brec, false, &be);
+    em_set_egg(&be, true); gen3_edit_commit(&be, begg);
+    PkMon bm; pk_decode_mon(begg, false, &bm);
+    /* Non-vacuity guard: gen3_build_mon writes metLevel = the build level and em_set_egg
+     * does not touch it, so the next two checks are only meaningful while this holds. If
+     * this ever fails, em_hatch is no longer the thing that zeroes the byte — move the
+     * fixture, do not delete the assertion. */
+    chk("built egg: starts with a NON-zero met level (else the next check is vacuous)",
+        bm.metLevel == 5);
+    gen3_edit_load(begg, false, &be); em_hatch(&be); gen3_edit_commit(&be, bhat);
+    pk_decode_mon(bhat, false, &bm);
+    chk("built egg hatched: met level 0", bm.metLevel == 0);
+    chk("built egg hatched: friendship 120", bm.friendship == 120);
+    chk("built egg hatched: recognised as hatched",
+        pk_pidiv_exempt_reason(&bm) == PK_PIDIV_EX_HATCHED);
+  }
 
   /* #26: an unnicknamed Gen-3 mon simply has its species name in the nickname field. */
   chk("hatched: nickname = species name", strcmp(m.nickname, pk_species_name(1)) == 0);

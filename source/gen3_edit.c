@@ -1,6 +1,9 @@
 #include "gen3_edit.h"
 #include "gen3_save.h"     /* gen3_decode_char (for symmetry doc), sizes */
 #include "data_tables.h"   /* base stats, nature mods, growth, exp, move PP */
+#include "gen3_daycare.h"  /* pk_egg_group — the shipped breedability table   */
+#include "learnsets2.h"    /* lg2_levelup_list / lg2_egg_list — real movesets */
+#include "evolutions.h"    /* pk_evo_floor — the lowest level a species can stand at */
 #include <string.h>
 
 /* --- little-endian helpers --- */
@@ -127,15 +130,197 @@ void em_set_contest(EditMon* e, int i, uint8_t v) {
   e->sub[2][6 + i] = v;
 }
 
+/* Met location for a Pokémon PokeDNA creates.
+ *
+ * It is deliberately NOT 0xFF. 0xFF is METLOC_FATEFUL_ENCOUNTER, the marker the game
+ * stamps on an event distribution (data/scripts/gift_pichu.inc:33, rendered as
+ * "fateful encounter" by src/pokemon_summary_screen.c:3149). Stamping it did two bad
+ * things: every mon this tool made claimed to be a distributed event Pokémon — a false
+ * provenance claim written into the user's save by a tool whose whole posture is
+ * telling the truth about save data — and it MUTED PokeDNA's own checker, because
+ * gen3_legality_hooks.c:195 and :300 exempt every met location >= 0xFD from the move
+ * and encounter reasoning. The tool was hiding its output from its own auditor.
+ *
+ * So: an ordinary place, in the region of the game the record says it came from, that
+ * actually HAS wild encounters — so the checker has something real to reason about and
+ * a created mon is judged like any other. The first route of each region is the most
+ * ordinary place a Gen-3 Pokémon can come from. Ids from the decomps' own
+ * src/data/region_map/region_map_sections.json (index == MAPSEC value):
+ *   0x10 MAPSEC_ROUTE_101 (Hoenn, pokeemerald)  — POOCHYENA/ZIGZAGOON/WURMPLE L2-3
+ *   0x65 MAPSEC_ROUTE_1   (Kanto, pokefirered)  — PIDGEY L2-5 / RATTATA L2-4
+ * Both are also where the retail player's own first Pokémon comes from. */
+#define G3_METLOC_ROUTE_101  0x10
+#define G3_METLOC_ROUTE_1    0x65
+
+/* Origin game (the record's own metGame byte) -> a met location in that game's region.
+ * 4/5 are FireRed/LeafGreen and are the only Kanto games; 1/2/3 (Sapphire/Ruby/Emerald)
+ * and anything unrecognised fall to Hoenn, which is where the default origin lands too.
+ * Origin 15 (Colosseum/XD) is exempted by the checker anyway (gen3_legality2.c:410). */
+static uint8_t default_metloc(uint8_t metgame) {
+  return (metgame == 4 || metgame == 5) ? G3_METLOC_ROUTE_1 : G3_METLOC_ROUTE_101;
+}
+
+/* ---- the ORIGIN a built Pokémon claims ------------------------------------------
+ *
+ * THE EGG IS THE ONE ORIGIN THIS TOOL CAN HONESTLY PRODUCE, and it is also the only
+ * one PokeDNA's own checker can be satisfied by without data PokeDNA does not have.
+ *
+ * A CAUGHT mon's PID and its IVs are not independent: retail CreateBoxMon draws the
+ * PID and then both IV words from ONE LCRNG stream (src/pokemon.c:2216, 2277-2293),
+ * so a hand-picked PID with hand-picked IVs matches no seed and gen3_pidiv.c says so
+ * ("No PID/IV RNG method matches"). A BRED mon has no such correlation to break: the
+ * offspring PID is `(Random2() << 16) | ((Random() % 0xfffe) + 1)` (src/daycare.c:466)
+ * — the high half comes from gRng2Value, a completely separate generator — and the IVs
+ * are then partly overwritten by parent inheritance. PokeDNA agrees and exempts it:
+ * pk_pidiv_exempt_reason() returns PK_PIDIV_EX_HATCHED for metLevel == 0
+ * (gen3_pidiv.c:152), and Pk2Facts.is_hatched (gen3_legality2.c:409) keys the move
+ * level-window and encounter exemptions off the same byte. So metLevel 0 buys free
+ * PID, free IVs, free nature, free shininess — with no search and no new table.
+ *
+ * It is not an exemption LIE either, which is the distinction that matters here.
+ * The four escape hatches (met 0xFD special egg / 0xFE in-game trade / 0xFF fateful,
+ * and ribbon bit 31) all make the checker skip its reasoning by claiming the record
+ * came from somewhere it did not; this tool writes none of them. metLevel 0 claims
+ * only "this line came out of an egg", which is true for anything with a breedable
+ * line — including the evolved forms, since a bred Charmander that becomes a
+ * Charizard keeps metLevel 0 for life.
+ *
+ * WHO CANNOT COME FROM AN EGG. pk_egg_group() already ships the real table
+ * (gen3_daycare.c:42) and returns 15 = UNDISCOVERED for everything unbreedable — but
+ * UNDISCOVERED alone is the wrong test, because the BABY forms are in it too: Pichu,
+ * Cleffa, Igglybuff, Togepi, Tyrogue, Smoochum, Elekid, Magby and Azurill cannot
+ * breed themselves, yet they are precisely what comes OUT of an egg. The game itself
+ * settles that: it defines a list of EGG MOVES for exactly those nine and for none of
+ * the 21 legendaries or Unown (measured over the generated tables — see the
+ * "no false positive" assertion in tests/host_legalbuild_test.c). A species the game
+ * gives egg moves to is a species the game hatches, so the two shipped tables answer
+ * the question between them and no new data is invented. */
+#define G3_EGG_UNDISCOVERED  15
+
+bool gen3_species_can_hatch(uint16_t species) {
+  if (species < 1 || species > G3_MAX_SPECIES) return false;
+  if (pk_egg_group(species, 0) != G3_EGG_UNDISCOVERED) return true;
+  for (int g = 0; g < 3; g++) {
+    const uint16_t* eggs;
+    if (lg2_egg_list((PkGame)g, species, &eggs) > 0) return true;
+  }
+  return false;
+  /* Undercounts by three and never over-counts: Wynaut (Wobbuffet + Lax Incense) and
+   * Nidorina/Nidoqueen (hatch as Nidoran♀, then evolve) really are egg-obtainable,
+   * but saying so needs the forward evolution table that this tree does not have yet
+   * (docs/research-legal-generator.md §3, T_evo). They fall to the caught origin
+   * below, which is the safe direction: a mon that is flagged is better than a mon
+   * that lies. */
+}
+
+/* Level-up moves this species knows at `lvl` in one game group, newest last, in the
+ * shape the record wants. The games' list is in ascending-level order, a mon holds at
+ * most four moves and forgets the oldest when it learns a fifth, and re-learning a
+ * move it already has is a no-op — so the window below is what a real Pokémon of that
+ * species and level actually carries. Returns how many slots were filled. */
+static int levelup_moves_in(PkGame g, uint16_t species, uint8_t lvl, uint16_t out[4]) {
+  const uint16_t* list;
+  int n = lg2_levelup_list(g, species, &list), used = 0;
+  for (int i = 0; i < n; i++) {
+    if (LG2_LV_LEVEL(list[i]) > (int)lvl) continue;      /* not learned yet */
+    uint16_t mv = LG2_LV_MOVE(list[i]);
+    if (mv == 0) continue;
+    int dup = 0;
+    for (int k = 0; k < used; k++) if (out[k] == mv) dup = 1;
+    if (dup) continue;                                   /* a duplicate move is INVALID */
+    if (used < 4) out[used++] = mv;
+    else { out[0] = out[1]; out[1] = out[2]; out[2] = out[3]; out[3] = mv; }
+  }
+  return used;
+}
+
+/* Origin-game byte -> the learnset group that game belongs to (1 Sapphire, 2 Ruby,
+ * 3 Emerald, 4 FireRed, 5 LeafGreen; anything else is treated as Emerald, which is
+ * also what default_metloc falls back to). */
+static PkGame group_of(uint8_t metgame) {
+  if (metgame == 1 || metgame == 2) return PK_RS;
+  if (metgame == 4 || metgame == 5) return PK_FRLG;
+  return PK_EMERALD;
+}
+
+/* The moves a built Pokémon starts with. Its OWN learnset, at its own level, from the
+ * game it says it came from — NOT a placeholder. The old hard-coded Tackle was a real
+ * legality failure and not a cosmetic one: 263 of the 386 species cannot learn Tackle
+ * by any Gen-3 method, so pk2_hook_moves said "TACKLE: no way to learn it", and five
+ * species learn it late enough that the level-window rule called it INVALID outright.
+ *
+ * A level-up move at or below the current level is legal on BOTH origins this builder
+ * emits, so there is one code path: a hatched mon may also carry egg moves, but it
+ * does not need them, and a caught mon may not. */
+static int default_moves(uint16_t species, uint8_t lvl, uint8_t metgame, uint16_t out[4]) {
+  int n = levelup_moves_in(group_of(metgame), species, lvl, out);
+  /* Fall back across the other groups only if the origin's own table said nothing —
+   * every species has a level-1 move somewhere, so this is for a partially generated
+   * table rather than for any real species. */
+  for (int g = 0; g < 3 && n == 0; g++) n = levelup_moves_in((PkGame)g, species, lvl, out);
+  return n;
+}
+
+/* ---- THE LEVEL A CREATED POKEMON STARTS AT ---------------------------------------
+ *
+ * It used to be 5 for everything, and that made the create flow build Pokemon that
+ * cannot exist: a level-5 Charizard, which the checker then (correctly, since T_evo
+ * shipped) flagged with "Evolves at L36, this one is L5". Guy's words for the bug were
+ * "the charizard is lvl 5 ... though it does come out questionable", and his original
+ * ask was the fix: "when creating a Charizard, it will have its correct MINIMUM LEVEL
+ * (it must evolve to there)". BUILDING IT RIGHT BEATS FLAGGING IT.
+ *
+ * WHICH floor. evolutions.h exposes two, and this deliberately uses the LOWER one:
+ *   - pk_evo_min_level() is the pure evolution walk (Charizard 36, Gyarados 20).
+ *   - pk_evo_floor() is min(that, the lowest level the species appears at in any of the
+ *     five carts' wild tables), because retail really does hand out evolved forms below
+ *     their own evolution level — Sootopolis' Super Rod has L5 Gyarados, FireRed's
+ *     Safari Zone has L20 Poliwhirl (evolutions.h, 23 species).
+ * pk_evo_floor is also the number pk2_hook_evolution judges against
+ * (gen3_legality_hooks.c:355), so building AT it is building at the lowest level this
+ * tool's own checker accepts — which is the promise gen3_build_mon makes. Using the
+ * higher number instead would hand the user a L20 Gyarados the game itself would have
+ * given them at L5, i.e. it would over-correct in the one direction the project forbids.
+ *
+ * 5 IS THE BASE, not a minimum bound of the data: a Gen-3 egg hatches at level 5
+ * (src/egg_hatch.c), and metLevel 0 — "hatched at" — is the origin gen3_build_mon
+ * claims for everything with an egg route, so 5 stays the answer whenever the species'
+ * own floor is at or below it. Raising the level never touches the met level: the
+ * PID/IV exemption keys off metLevel == 0 (gen3_pidiv.c:152), and a bred Charmander
+ * that grew into a Charizard keeps metLevel 0 for life, so L36 + met 0 is exactly what
+ * a real one looks like.
+ *
+ * FAILS OPEN. With source/evolutions.c not generated, pk_evo_floor returns
+ * PK_EVO_NO_DATA (evolutions.h's weak fallback) and this returns 5 — the old behaviour,
+ * unchanged. A missing table must never invent a level. */
+#define G3_BUILD_BASE_LVL 5
+
+uint8_t gen3_build_level(uint16_t species) {
+  int floor = pk_evo_floor(species);
+  if (floor == PK_EVO_NO_DATA || floor <= G3_BUILD_BASE_LVL) return G3_BUILD_BASE_LVL;
+  if (floor > 100) return 100;                  /* nothing in Gen 3 reaches this; clamp anyway */
+  return (uint8_t)floor;
+}
+
 /* Build a default, VALID 80-byte box record for `species` at `lvl` from nothing — for
  * the "create a Pokémon" flow (caller then opens the editor to customise + commit). The
  * record is a real present mon: species set, exp matching the level, hasSpecies flag set
  * (raw[0x13] bit1), not an egg, checksum written by commit. IVs/EVs/condition default 0,
- * friendship 70, a Poké Ball, one placeholder move (Tackle) so it isn't move-less. Pure
- * (no globals/UI) so it's host-testable. otName <= 7 chars; metgame 1..15 (0 -> Emerald). */
+ * friendship 70, a Poké Ball, real level-up moves. Pure (no globals/UI) so it's
+ * host-testable. otName <= 7 chars; metgame 1..15 (0 -> Emerald).
+ *
+ * The aim is that the result passes PokeDNA'S OWN CHECKER with no user input, because
+ * a tool that writes records its own auditor rejects has no business auditing anyone
+ * else's. Measured by tests/host_legalbuild_test.c over all 386 species. */
 void gen3_build_mon(uint16_t species, uint8_t lvl, uint32_t pid, uint32_t otId,
                     const char* otName, uint8_t metgame, uint8_t out[80]) {
-  if (lvl < 1) lvl = 5; if (lvl > 100) lvl = 100;
+  /* lvl 0 = "you pick" -> the species' own floor. An EXPLICIT level is honoured exactly,
+   * even below the floor, because the other caller is gen12_convert.c: a Gen-1/2 import
+   * must land at the level the imported Pokemon actually had, and silently promoting it
+   * would be rewriting the user's own data. The create flow asks for 0 (or passes
+   * gen3_build_level itself); the importer never does. */
+  if (lvl < 1) lvl = gen3_build_level(species);
+  if (lvl > 100) lvl = 100;
   EditMon e; memset(&e, 0, sizeof e);
   e.is_party = false;
   e.personality = pid ? pid : 0x1234ABCDu;
@@ -144,15 +329,46 @@ void gen3_build_mon(uint16_t species, uint8_t lvl, uint32_t pid, uint32_t otId,
   e.raw[0x13] = 0x02;                           /* flags: hasSpecies (present; not egg/bad-egg) */
   e.sub[0][0] = (uint8_t)species;               /* Growth substruct: species (LE) */
   e.sub[0][1] = (uint8_t)(species >> 8);
-  em_set_friendship(&e, 70);                    /* base-ish friendship */
+  uint8_t mg = metgame ? metgame : 3;           /* default Emerald */
+  /* 70 is the CAUGHT base friendship and stays the builder's contract: it is what a
+   * Gen-1 import keeps (gen12_convert.c has no friendship of its own for Gen 1) and
+   * pdna_origin_art.c reads it back as part of that import's signature. Nothing in the
+   * legality catalogue judges a non-egg's friendship, and 70 is a value a hatched mon
+   * reaches anyway (fainting lowers it), so this is honest as well as compatible — the
+   * fresh-from-the-egg 120 is applied by app_create_mon, which knows it just made one. */
+  em_set_friendship(&e, 70);
   em_set_level(&e, lvl);                        /* exp for the level (uses species growth rate) */
   em_set_nickname(&e, pk_species_name(species));
   em_set_otname(&e, otName ? otName : "");
   em_set_ball(&e, 4);                           /* Poké Ball */
-  em_set_metlevel(&e, lvl);
-  em_set_metgame(&e, metgame ? metgame : 3);    /* default Emerald */
-  em_set_metloc(&e, 255);                       /* "a faraway place" (gift-ish) */
-  em_set_move(&e, 0, 33);                       /* Tackle placeholder (user edits moves) */
+  em_set_metgame(&e, mg);
+  em_set_metloc(&e, default_metloc(mg));        /* an ordinary place, not "event mon" */
+
+  /* metLevel 0 = "hatched at" (src/egg_hatch.c:384-386). For a species with no egg
+   * route the record instead says, plainly, that it was met at its current level in an
+   * ordinary place — the truth about what this tool did, with no exemption claimed.
+   * It is also the flagged case: with PK2_RUN_PIDIV the checker correctly reports "No
+   * PID/IV RNG method matches", because a static encounter's spread cannot be
+   * fabricated without the static table (research-legal-generator.md §4). Callers can
+   * ask gen3_species_can_hatch() first and warn; app_create_mon does. */
+  em_set_metlevel(&e, gen3_species_can_hatch(species) ? 0 : lvl);
+
+  /* Ability slot. CreateBoxMon writes `value = personality & 1` and ONLY when the
+   * species has a second ability (src/pokemon.c:2296-2300); leaving the bit at 0 on an
+   * odd PID is what made 128 of the 386 species report "Ability slot does not match
+   * the PID". On a one-ability species the bit must stay 0 — there it is INVALID. */
+  if (pk_species_ability(species, 1) != 0)
+    em_set_ability(&e, (uint8_t)(e.personality & 1u));
+
+  uint16_t mv[4];
+  int nm = default_moves(species, lvl, mg, mv);
+  /* Only reachable when source/learnsets2.c was never generated (its weak fallbacks
+   * return an empty list, learnsets2.h:137). A move-less mon is INVALID by the core's
+   * own rule, so fail towards a legal-looking record rather than an illegal one; the
+   * checker's move hook is switched off in that build anyway (pk2_moves_data_ok). */
+  if (nm == 0) mv[nm++] = 33;                   /* TACKLE */
+  for (int i = 0; i < nm; i++) em_set_move(&e, i, mv[i]);
+
   gen3_edit_commit(&e, out);
 }
 
@@ -183,9 +399,35 @@ void em_set_egg(EditMon* e, bool egg) {
 }
 
 /* Hatch an egg: clear the egg flag, replace the stored hatch-cycle counter (which lives in
- * the friendship byte) with a real base-ish friendship, and set level 5 — Gen-3 eggs hatch at
- * level 5, and em_set_level recomputes exp + the party plaintext stats. The species/IVs/moves/
- * nature inside the egg are already present, so the revealed Pokemon is complete.
+ * the friendship byte) with the friendship retail gives a newly hatched mon, stamp met
+ * level 0, and set level 5 — Gen-3 eggs hatch at level 5, and em_set_level recomputes exp +
+ * the party plaintext stats. The species/IVs/moves/nature inside the egg are already
+ * present, so the revealed Pokemon is complete.
+ *
+ * FRIENDSHIP IS 120, NOT 70. CreateHatchedMon hard-codes it: `friendship = 120;
+ * SetMonData(temp, MON_DATA_FRIENDSHIP, &friendship);` (src/egg_hatch.c:350-351) — there
+ * is no species term and no other path. Measured over Guy's five saves: of the 141 mons
+ * with metLevel 0, 120 is the single largest bucket (43) and 126 of them sit at 120 or
+ * above, the spread upwards being the walking/level-up gains that follow. The ones below
+ * are ordinary friendship losses (fainting) on mons hatched long ago. 70 appeared nowhere
+ * in the hatch path — it is the base friendship a CAUGHT mon gets, which is why
+ * gen3_build_mon still uses it and this no longer does.
+ *
+ * MET LEVEL IS 0. AddHatchedMonToParty writes it explicitly, with the decomp's own
+ * comment: "A met level of 0 is interpreted on the summary screen as 'hatched at'"
+ * (src/egg_hatch.c:384-386). Both egg-creation routines already write 0 as well
+ * (src/daycare.c:836-843, 862-870) and all 17 eggs in Guy's saves carry it, so for a real
+ * egg this is a no-op — it matters for a record that reached em_hatch some other way (an
+ * egg PokeDNA itself made from gen3_build_mon, whose met level is the build level). Not
+ * cosmetic: metLevel == 0 IS how "was an egg" is recorded, and PokeDNA's own
+ * pk_pidiv_exempt_reason (gen3_pidiv.c:152) and Pk2Facts.is_hatched (gen3_legality2.c:409)
+ * both key the hatched exemptions off exactly that byte. Without it PokeDNA's "hatched"
+ * mon was not recognised as hatched by PokeDNA.
+ *
+ * Met LOCATION is deliberately left alone. Retail overwrites it with wherever the player
+ * was standing when the egg hatched (GetCurrentRegionMapSectionId, src/egg_hatch.c:388-389)
+ * and PokeDNA cannot know that; the egg's own location is a real place the record already
+ * carried, so keeping it invents nothing.
  *
  * ALSO renames it to its species. A Gen-3 egg is not "unnamed": it carries the Japanese
  * nickname タマゴ (bytes 60 6F 8B FF) with language=1, on every egg in every one of Guy's
@@ -201,7 +443,8 @@ void em_hatch(EditMon* e) {
     em_set_nickname(e, pk_species_name(sp));
     e->raw[0x12] = 2;                                 /* language: English, as gen3_build_mon */
   }
-  em_set_friendship(e, 70);
+  em_set_friendship(e, 120);                          /* src/egg_hatch.c:350-351 */
+  em_set_metlevel(e, 0);                              /* "hatched at", src/egg_hatch.c:384-386 */
   em_set_level(e, 5);
 }
 

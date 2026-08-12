@@ -34,17 +34,45 @@ void em_set_iv(EditMon* e, int stat, uint8_t v);             /* 0..31  */
 void em_set_ev(EditMon* e, int stat, uint8_t v);             /* 0..255 */
 void em_set_contest(EditMon* e, int i, uint8_t v);          /* condition i=0..5: cool/beauty/cute/smart/tough/sheen */
 
+/* The level a NEWLY CREATED Pokémon of this species should start at: 5 — the level a
+ * Gen-3 egg hatches at — unless the species cannot stand there, in which case its own
+ * pk_evo_floor (evolutions.h). A created Charizard is L36, not a L5 Charizard the
+ * checker then has to flag. Returns 5 when source/evolutions.c is not generated
+ * (pk_evo_floor = PK_EVO_NO_DATA), i.e. it fails open to the old behaviour.
+ * See gen3_edit.c for WHY it is pk_evo_floor and not pk_evo_min_level. */
+uint8_t gen3_build_level(uint16_t species);
+
 /* Build a default VALID 80-byte box record for `species` at `lvl` from scratch (the
- * "create a Pokémon" flow). Pure / host-testable. otName <=7 chars; metgame 1..15. */
+ * "create a Pokémon" flow). Pure / host-testable. otName <=7 chars; metgame 1..15.
+ * `lvl` 0 means "use gen3_build_level(species)"; any explicit level is honoured as
+ * given (the Gen-1/2 importer must keep the level its Pokémon really had).
+ *
+ * "Valid" now means it passes PokeDNA's own Legality-V2 checker unaided: real level-up
+ * moves from the species' own learnset, the ability slot CreateBoxMon would derive from
+ * the PID, and — for anything that can come from an egg — met level 0, which is the one
+ * origin whose PID/IV pair is legitimately unconstrained. It never writes an exemption
+ * marker (met 0xFD/0xFE/0xFF or the fateful ribbon bit): those would mute the checker
+ * by claiming a provenance the tool cannot have. See gen3_edit.c for the full rationale
+ * and tests/host_legalbuild_test.c for the all-species measurement. */
 void gen3_build_mon(uint16_t species, uint8_t lvl, uint32_t pid, uint32_t otId,
                     const char* otName, uint8_t metgame, uint8_t out[80]);
+
+/* Can this species legitimately have come out of an egg — i.e. will gen3_build_mon be
+ * able to give it an origin the checker accepts? False for the legendaries and Unown,
+ * for which Gen 3's only real origin is a static encounter PokeDNA ships no table for;
+ * those are still built, honestly, as "met here at this level", and the caller should
+ * say so rather than pretend. */
+bool gen3_species_can_hatch(uint16_t species);
 void em_set_species(EditMon* e, uint16_t species);           /* re-derive stats; caller re-checks gender/ability */
 void em_set_item(EditMon* e, uint16_t item);
 void em_set_move(EditMon* e, int i, uint16_t move);          /* also sets PP to the move's base PP */
 void em_set_pp(EditMon* e, int i, uint8_t pp);
 void em_set_friendship(EditMon* e, uint8_t f);
 void em_set_egg(EditMon* e, bool egg);                      /* flags byte bit2 + Misc IV-word bit30 */
-void em_hatch(EditMon* e);   /* clear egg + nickname:=species + language:=English + friendship 70 + level 5 */
+/* clear egg + nickname:=species + language:=English + friendship 120 + metLevel 0 + level 5
+ * (the last two are what retail's hatch path writes; metLevel 0 is also how every reader,
+ * PokeDNA's own included, recognises a mon as hatched). */
+void em_hatch(EditMon* e);
 void em_set_ability(EditMon* e, uint8_t n);                  /* 0 or 1 */
 void em_set_level(EditMon* e, uint8_t level);                /* sets exp (+ party level + stats) */
 void em_set_party_flag(EditMon* e, bool is_party);          /* box<->party kind (derives/drops plaintext stats) */

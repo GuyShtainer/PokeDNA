@@ -1,6 +1,6 @@
 /* Host test for the lossless edit core (gen3_edit.c).
  *   cc -std=c11 -I source tests/host_edit_test.c source/gen3_save.c source/gen3_mon.c \
- *      source/gen3_box.c source/gen3_edit.c source/data_tables.c -o /tmp/he
+ *      source/gen3_box.c source/gen3_edit.c source/gen3_daycare.c source/data_tables.c -o /tmp/he
  *   /tmp/he tests/fixtures/POKEMON_EMER_BPEE00.sav
  */
 #include <stdio.h>
