@@ -1,6 +1,6 @@
 /* Host test for the clipboard + slot-ops foundation (gen3_clip.c).
  *   cc -std=c11 -I source tests/host_clip_test.c source/gen3_save.c source/gen3_mon.c \
- *      source/gen3_box.c source/gen3_edit.c source/gen3_clip.c source/data_tables.c -o /tmp/hc
+ *      source/gen3_box.c source/gen3_edit.c source/gen3_daycare.c source/gen3_clip.c source/data_tables.c -o /tmp/hc
  *   /tmp/hc tests/fixtures/POKEMON_EMER_BPEE00.sav
  */
 #include <stdio.h>

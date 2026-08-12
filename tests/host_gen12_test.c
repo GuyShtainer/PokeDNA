@@ -3,7 +3,7 @@
  *
  *   cc -std=c11 -I source -I tests -DPDNA_GEN12_HOST tests/host_gen12_test.c \
  *      tests/gen12_fixture.c source/gen1_save.c source/gen2_save.c \
- *      source/gen12_convert.c source/pdna_gen12.c source/gen3_mon.c source/gen3_edit.c \
+ *      source/gen12_convert.c source/pdna_gen12.c source/gen3_mon.c source/gen3_edit.c source/gen3_daycare.c \
  *      source/gen3_save.c source/gen3_box.c source/data_tables.c -o /tmp/hg12 && /tmp/hg12
  *
  * Guy owns no Gen-1/2 saves, so tests/gen12_fixture.c builds the corpus in memory. The

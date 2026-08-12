@@ -1,7 +1,7 @@
 /* Host test for gen3_dex: confirm the SaveBlock2 dex-flag offsets match what the
  * trainer card reports (cross-check), proving the layout is right; plus a
  * self-contained per-game round-trip of the National-Dex unlock (magic+var+flag).
- *   cc -std=c11 -I source tests/host_dex_test.c source/gen3_save.c source/gen3_dex.c source/gen3_flags.c source/gen3_trainer.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c source/data_tables.c -o /tmp/hx
+ *   cc -std=c11 -I source tests/host_dex_test.c source/gen3_save.c source/gen3_dex.c source/gen3_flags.c source/gen3_trainer.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c source/gen3_daycare.c source/data_tables.c -o /tmp/hx
  *   /tmp/hx tests/fixtures/POKEMON_EMER_BPEE00.sav   (expects seen=195 owned=108)
  */
 #include <stdio.h>
