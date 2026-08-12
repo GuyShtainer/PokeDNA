@@ -68,6 +68,12 @@ build/
 /source/learnsets.c
 # wild-encounter tables read out of the user's own cart dumps (tools/gen_encounters.py)
 /source/encounters.c
+# script-placed Pokemon (setwildbattle/givemon), likewise from the cart dumps
+# (tools/gen_statics.py) — the other half of "how is this Pokemon obtained"
+/source/statics.c
+# forward evolution index + per-species minimum level, likewise from the cart dumps
+# (tools/gen_evolutions.py)
+/source/evolutions.c
 # per-game move-source tables extracted from the pret decomps (tools/gen_learnsets2.py)
 /source/learnsets2.c
 /source/wallpapers.c
@@ -79,6 +85,12 @@ daycare map/
 
 # on-hardware /PokeDNA/log.txt drops (local evidence, not shipped)
 logs/
+
+# tools/gb_roundtrip.py --selftest output: SCREENSHOTS OF RETAIL POKEMON GAMES, taken by
+# booting a real ROM in mGBA to prove an edited save still loads. Local evidence only —
+# every frame is Game Freak's copyrighted artwork and this repo is public GPLv3 with an
+# IP-cleanliness gate. Ignored so `git add -A` can never stage them.
+gb_roundtrip_out/
 
 # internal session/analysis notes (local-only; never published)
 docs/analysis-*/
