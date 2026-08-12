@@ -1,7 +1,7 @@
 /* Host test for PC box reading. Reassembles PC storage, decodes a couple of
  * boxes, and prints species/computed-level for occupied slots.
  *   cc -std=c11 -I source tests/host_box_test.c source/gen3_save.c source/gen3_mon.c \
- *      source/gen3_box.c source/gen3_edit.c source/data_tables.c -o /tmp/hb
+ *      source/gen3_box.c source/gen3_edit.c source/gen3_daycare.c source/data_tables.c -o /tmp/hb
  *   /tmp/hb tests/fixtures/POKEMON_EMER_BPEE00.sav
  */
 #include <stdio.h>
@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
   if (gen3_read_pc_storage(save, info.slot, pc) != G3_PC_BYTES) { printf("PC reassemble FAILED\n"); return 1; }
 
   printf("== %s : current box = %u ==\n", path, pk_current_box(pc));
-  int total = 0, fails = 0;
+  int total = 0, fails = 0, glitch = 0;
   for (int b = 0; b < G3_TOTAL_BOXES; b++) {
     PkMon box[30];
     int occ = pk_read_box(pc, b, box);
@@ -42,10 +42,23 @@ int main(int argc, char** argv) {
       printf("  [%2d] %-10s %-11s Lv%-3u %s  IVsum=%u EVsum=%u\n",
              s, p->nickname, pk_species_name(p->species), p->level, G[p->gender],
              p->ivs[0] + p->ivs[1] + p->ivs[2] + p->ivs[3] + p->ivs[4] + p->ivs[5], p->evSum);
-      if (p->species > 411) { printf("    !! species OOR\n"); fails++; }
+      /* An out-of-range species is NOT a parse failure. Real saves contain glitch
+       * Pokemon — Guy's Emerald has two (slot 7 "DOTS" at Lv100 with EVsum 636, and a
+       * blank-named record in slot 19) that he built deliberately as ACE payloads, and
+       * his FireRed has one. The parser is SUPPOSED to hand them back as-is; refusing
+       * to decode them would break the very saves this tool exists to inspect, and
+       * gen3_legality2 already grades them ILLEGAL ("Species id out of range"), which
+       * is where that judgement belongs. So count them, report them, and only fail if
+       * the save is nothing BUT glitch records — which would mean the decode really is
+       * broken rather than the data being odd. */
+      if (p->species > 411) { printf("    (glitch record — expected in an ACE save)\n"); glitch++; }
       if (p->level < 1 || p->level > 100) { printf("    !! level OOR\n"); fails++; }
     }
   }
-  printf("\n%s: %d box mons, %d failures\n", fails ? "FAIL" : "OK", total, fails);
+  /* All-glitch means the decode is broken; a handful among real Pokemon is just this
+   user's save. Guard the degenerate case so the relaxation cannot hide a regression. */
+  if (total && glitch == total) { printf("    !! EVERY record is a glitch — decode is broken\n"); fails++; }
+  printf("\n%s: %d box mons, %d failures, %d glitch record(s)\n",
+         fails ? "FAIL" : "OK", total, fails, glitch);
   return fails ? 1 : 0;
 }
