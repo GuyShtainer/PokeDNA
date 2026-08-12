@@ -8,7 +8,7 @@
  * and that a bank box decodes identically to the same records in the real PC.
  *
  *   cc -std=c11 -I source tests/host_bank_test.c source/gen3_save.c source/gen3_mon.c \
- *      source/gen3_box.c source/gen3_edit.c source/gen3_clip.c source/data_tables.c -o /tmp/hb
+ *      source/gen3_box.c source/gen3_edit.c source/gen3_daycare.c source/gen3_clip.c source/data_tables.c -o /tmp/hb
  *   /tmp/hb tests/fixtures/POKEMON_EMER_BPEE00.sav
  */
 #include <stdio.h>

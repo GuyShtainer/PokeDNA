@@ -20,6 +20,7 @@
 #include "mon_icons_oam.h"   /* artless probe: are the OAM icons compiled in? */
 #include "item_icons.h"     /* item_icon_for: held-item markers in ITEM mode */
 #include "box_oam.h"        /* hardware-OAM icon/cursor/carry/marker rendering */
+#include "pdna_origin_art.h" /* THE BANK IN PARALLEL: each cell in the art of its own era */
 #include "pdna_summary.h"
 #include "pdna_app.h"
 #include "snd.h"
@@ -65,7 +66,18 @@ static void box_decode_to(BoxSource* src, const uint8_t* recs, int box, PkMon ou
   pk_decode_box_raw(recs, out);
   if (src->is_bank) app_bank_hide_pending(box, out);
 }
-static void box_decode(BoxSource* src, const uint8_t* recs, int box) { box_decode_to(src, recs, box, g_box); }
+static void box_decode(BoxSource* src, const uint8_t* recs, int box) {
+  box_decode_to(src, recs, box, g_box);
+  /* THE ERA CACHE IS FILLED FROM WHAT IS ACTUALLY ON SCREEN. This is the single point
+   * where the 30 displayed records change, in the PC and in the bank alike, so it is
+   * the one place that can promise "the markers describe the mons you are looking at".
+   * Filling it from the RAW records instead (which is where it used to be done, in
+   * pdna_bank.c) put a Game Boy marker on a bank slot the user had already carried out
+   * to the PC: box_decode_to blanks those for display, and the raw buffer still holds
+   * them because that record is the mon's only on-card copy until the PC is written.
+   * Cost is 30 record decodes + 30 integer comparisons on a user action, never a frame. */
+  pdna_origin_box_note(g_box);
+}
 
 /* Occupancy for DROP targeting. A bank slot pending a Bank->PC deletion looks empty (box_decode
  * hides it) but still physically holds the mon's ONLY on-card copy, so it counts as OCCUPIED —
@@ -153,6 +165,15 @@ static const char* wp_name(int id) { return id < 16 ? WP_NAME[id] : WALDA_NAME[i
 /* Draw box wallpaper `wp` into the region. Falls back to the procedural grass for
  * any wallpaper without a real generated bitmap (see wallpaper_bmp). */
 static void draw_wallpaper(int wp, int x, int y, int w, int h);
+
+/* ---- the parallel era view (definitions live below artless_cells) ------------------
+ * Bit s set = cell s is wearing Game Boy era ART in the Mode-3 bitmap and its Gen-3 OBJ
+ * icon is hidden. A plain 4-byte .bss word, NOT EWRAM: the hardware build has ~1.5 KB
+ * of EWRAM headroom and a post-link guard, and this feature adds none of it. */
+static uint32_t s_era_drawn = 0;
+static void era_cell_mark(int slot);         /* the always-there era pad (free)        */
+static void era_cell_icon_back(int slot);    /* drop this cell's art, un-hide its icon */
+static void era_hides_apply(void);           /* re-hide era cells after an OAM reload  */
 
 /* light checkerboard behind the front sprite (the PKMN DATA "monitor") */
 static void draw_checker(int x, int y, int w, int h, u16 a, u16 b) {
@@ -561,6 +582,19 @@ void boxoam_under_hide(int slot) {
         sy < y + MON_ICON_H && sy + MON_ICON_H > y)
       under_blit(s);
   }
+  /* Same wound, the era layer. The restore rect also erased the era art / era pads of
+   * every cell it overlapped, and this runs on EVERY anchor move of a held chunk — so
+   * repainting the PICTURE here would mean an SD decode per D-pad press. Instead the
+   * damaged art cells are handed back to their Gen-3 OBJ icon (instant, and the mon is
+   * still visible) and only the free marker layer is repainted; the next full repaint,
+   * which the drop already does, restores the era art. */
+  for (int s = 0; s < G3_BOX_SLOTS; s++) {
+    int sx = GRID_X + (s % COLS) * CELL_W, sy = GRID_Y + (s / COLS) * CELL_H;
+    if (sx >= x + CELL_W || sx + CELL_W <= x || sy >= y + CELL_H || sy + CELL_H <= y)
+      continue;
+    era_cell_icon_back(s);
+    era_cell_mark(s);
+  }
 }
 
 /* ---- WP AUDIT (START+SELECT): the on-hardware wallpaper experiment ------------------
@@ -750,12 +784,16 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
 static int s_grab_dip = 0;
 
 static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
-  if (s_oam_reload) { boxoam_load_box(g_box); s_oam_reload = false; }
+  if (s_oam_reload) { boxoam_load_box(g_box); s_oam_reload = false; era_hides_apply(); }
   if (s_holding && s_grab_dip) {
     boxoam_carry_end();
     /* the menu-wipe repaint ran ONE oam_sync in the carry look, which lift-hid the
-     * origin cell — undo that: retail keeps the mon in place until the fist closes */
-    if (s_orig_slot >= 0 && s_orig_bank == is_bank && s_orig_box == box)
+     * origin cell — undo that: retail keeps the mon in place until the fist closes.
+     * NOT for a cell wearing era art: its icon is hidden on purpose and un-hiding it
+     * would stack a Gen-3 icon on the Gen-1 sprite for the length of the dip. */
+    if (s_orig_slot >= 0 && s_orig_slot < G3_BOX_SLOTS &&
+        s_orig_bank == is_bank && s_orig_box == box &&
+        !(s_era_drawn & (1u << s_orig_slot)))
       boxoam_show_slot(s_orig_slot);
     boxoam_item_markers(g_box, false);
     boxoam_carry_item(cur, 0, false);
@@ -838,6 +876,136 @@ static void artless_cells(void) {
   }
 }
 
+/* ---- THE BANK IN PARALLEL --------------------------------------------------------
+ *
+ * Guy: "if a pokemon is from gen 1, use a gen 1 sprite, if its from gen 2, use its gen 2
+ * sprite ... THE BANK SHOULD SHOW ALL IN PARALLEL." The bank is 16 SD-backed boxes where
+ * imports and natives sit side by side, so this grid is the screen the request is about;
+ * it is drawn by the SAME renderer as the PC (one BoxSource, one loop), and the era view
+ * is simply part of what a cell looks like — there is no second grid anywhere.
+ *
+ * Two layers, both simultaneous across all 30 cells (rationale + measured cost in
+ * pdna_origin_art.h §3):
+ *
+ *   1. THE PICTURE. A GB import whose era has a registered ROM is drawn in that era's
+ *      own sprite, scaled into the cell and blitted to the BG bitmap, with its Gen-3 OBJ
+ *      icon hidden so the two cannot stack. Natives keep their OBJ icon. All three eras
+ *      are therefore on screen at once, each in its own art.
+ *   2. THE LABEL. Every GB cell gets a small era pad ('1'/'2'/'?') at its top-left. This
+ *      layer is free (one cached byte per cell) so it is ALWAYS drawn — no GB ROM, the
+ *      artless build, a species the ROM would not serve. It is also the layer that makes
+ *      the answer unambiguous: a Gen-1 and a Gen-2 sprite of the same species can look
+ *      nearly identical, so the picture alone was never a complete answer.
+ *
+ * DEGRADES IN LAYERS, and the artless build is untouched: a save with no GB imports has
+ * no marked cells at all, so nothing here draws a single pixel — pdna_origin_box_mark()
+ * is a cache lookup and returns 0 for every cell.
+ */
+
+/* The era pad: a 1 px keyline, the era colour, the era glyph. BOTTOM-RIGHT of the cell.
+ *
+ * It used to sit top-LEFT, justified as "a 32x32 box icon on a 24x22 pitch is reliably
+ * transparent there (the mon is centred)". That reasoning was wrong about WHOSE icon is
+ * in the way. box_oam.c places every icon AT its own cell's top-left, so a 32x32 icon on
+ * a 24x22 pitch OVERHANGS its cell by 8 px right and 10 px down — and the pad is a BG
+ * bitmap draw, permanently under the OBJ layer. The cell ABOVE therefore covers
+ * cy..cy+10, i.e. the whole pad; 10 of 24 markers were partly hidden.
+ *
+ * Working the coverage out per neighbour, for cell (r,c) at (cx,cy):
+ *     its own icon   x cx..cx+32   y cy..cy+32
+ *     cell (r-1,c)   x cx..cx+32   y cy-22..cy+10   <- the one that broke it
+ *     cell (r,c-1)   x cx-24..cx+8 y cy..cy+32
+ * so the only part of the cell no NEIGHBOUR can reach is x >= cx+16, y >= cy+11 — the
+ * bottom-right corner, where just this cell's own icon overlaps, and that is its
+ * lower-right quadrant, which a centred mon leaves transparent. */
+static void era_cell_mark(int slot) {
+  char m = pdna_origin_box_mark(slot);
+  if (!m) return;
+  int cx = GRID_X + (slot % COLS) * CELL_W + (CELL_W - 8);
+  int cy = GRID_Y + (slot / COLS) * CELL_H + (CELL_H - 9);
+  char s[2] = { m, 0 };
+  ui_fill_rect(cx,     cy,     8, 9, RGB15(0, 0, 0));
+  ui_fill_rect(cx + 1, cy + 1, 6, 7, pdna_origin_box_color(slot));
+  ui_ptext(cx + 2, cy + 1, UI_TEXT, s);     /* the 5x7 face: rows cy+1..cy+8 */
+}
+
+/* Give a cell back to the OBJ layer (its bitmap art is about to be painted over and we
+ * are not paying an SD decode to redraw it right now). */
+static void era_cell_icon_back(int slot) {
+  if (slot < 0 || slot >= G3_BOX_SLOTS || !(s_era_drawn & (1u << slot))) return;
+  s_era_drawn &= ~(1u << slot);
+  boxoam_show_slot(slot);
+}
+
+/* One cell, both layers. Called only from a full repaint — the picture costs a GB pic
+ * decode off the card, so it must never sit on a per-frame path. */
+static void era_cell_draw(int slot) {
+  if (!pdna_origin_box_gb(slot)) return;              /* native / empty: nothing to do */
+  int cx = GRID_X + (slot % COLS) * CELL_W, cy = GRID_Y + (slot / COLS) * CELL_H;
+
+  /* Layer 1. art_wanted() is a cache lookup plus the source's have() probe — no decode,
+   * no card access — so a box with no registered era ROM stops here for free. */
+  if (pdna_origin_box_art_wanted(slot)) {
+    PdnaArt a;
+    /* gen == PDNA_GEN3 means the router fell back (the ROM could not serve this
+     * species): leave the ordinary Gen-3 OBJ icon alone rather than blitting the same
+     * picture twice, once badly. */
+    if (pdna_origin_box_art(slot, &g_box[slot], &a) && a.px && a.gen != PDNA_GEN3) {
+      u16 cell[CELL_W * CELL_H];         /* 1056 B of STACK. Never a static, never
+                                          * EWRAM (hard rule 2) — and never 30 of them. */
+      if (pdna_origin_cell_render(&a, cell, CELL_W, CELL_H)) {
+        ui_sprite(cx, cy, CELL_W, CELL_H, cell);
+        s_era_drawn |= 1u << slot;
+        boxoam_hide_slot(slot);          /* or the Gen-3 icon sits ON the Gen-1 sprite */
+      }
+    }
+  }
+  era_cell_mark(slot);                   /* layer 2 goes on top of layer 1 */
+}
+
+/* Every cell's era, in one pass, painted with the wallpaper so each full repaint carries
+ * it for free. */
+static void era_cells(void) {
+  /* THE BOX WITH NO IMPORTS DOES NOTHING AT ALL. Nothing to un-draw and nothing to
+   * draw is the case for every box of a save with no Game Boy imports -- so say it
+   * once instead of thirty times.
+   *
+   * HONEST MEASUREMENT: this guard bought nothing under mGBA (art-free box flip stayed
+   * at a 13-frame median), so the per-cell pass was never the expensive part -- the
+   * header's "free" claim about it holds up. It stays because it cannot change a pixel
+   * and it does take 60 calls plus the cell geometry off every full repaint, which is
+   * worth more on an Omega running from PSRAM than it is on a PC. The box-screen cost
+   * that DID move this session is in box_decode, not here: see pdna_origin_box_note.
+   *
+   * s_era_drawn must be in the condition: if a previous box left art on screen it
+   * still has to be handed back even when THIS box has no imports. */
+  if (s_era_drawn || pdna_origin_box_any_gb()) {
+    /* Reset first, THEN recompute. s_era_drawn survives across box flips and across whole
+     * pdna_box() runs, and a stale set bit means a permanently hidden OBJ icon over a cell
+     * that no longer has art to show — an empty cell holding a real Pokemon. Handing every
+     * marked cell back to the OAM layer up front makes that unrepresentable. */
+    for (int i = 0; i < G3_BOX_SLOTS; i++) era_cell_icon_back(i);
+    for (int i = 0; i < G3_BOX_SLOTS; i++) era_cell_draw(i);
+  }
+  /* OUTSIDE the bail, deliberately. The art source decodes into a buffer it owns and
+   * PUBLISHES A POINTER TO — and the obvious home for that buffer is mon_decomp, which
+   * this screen's own Gen-3 portrait streams through moments later. Dropping the
+   * router's fetch memo is what stops a later HIT handing out pixels that have since
+   * been overwritten (pdna_origin_art.h's contract), and a box flip from a box that DID
+   * fetch into one that has nothing to fetch is precisely when that would bite. */
+  pdna_origin_art_invalidate();
+}
+
+/* A boxoam_load_box() re-lays out and re-SHOWS all 30 grid entries, so cells wearing
+ * bitmap era art have to be re-hidden or the Gen-3 icon reappears on top of the Gen-1
+ * sprite. Re-applied from here rather than remembered inside box_oam.c, so the OAM layer
+ * goes on knowing nothing about generations. */
+static void era_hides_apply(void) {
+  if (!s_era_drawn) return;
+  for (int i = 0; i < G3_BOX_SLOTS; i++)
+    if (s_era_drawn & (1u << i)) boxoam_hide_slot(i);
+}
+
 /* Repaint the box-name banner + occupancy + the on-title selection frame (BG, software). */
 static void draw_box_banner(BoxSource* src, int box, bool on_title) {
   char bn[12], bnocc[24];
@@ -873,6 +1041,7 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
 
   draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
   artless_cells();
+  era_cells();                  /* each cell in the art of the era it came from */
   draw_box_banner(src, box, on_title);
   draw_footer(src->is_bank, on_title, moving);
 
@@ -969,7 +1138,14 @@ static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
                         int cur, bool on_title) {
   if (on_title != old_title) {                        /* entering/leaving the title row */
     draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
-  artless_cells();  /* clear stale title frame */
+    artless_cells();                                  /* clear stale title frame */
+    /* The wallpaper repaint above wipes the BG, and the era layer LIVES in the BG — so it
+     * has to be redrawn here too. Leaving it out cost every era marker on the first press
+     * of UP, permanently: moving onto the box title is how you change boxes, i.e. the
+     * core interaction of the screen this feature exists for, and nothing else repaints
+     * the layer. The rule is simply that artless_cells() and era_cells() are the two BG
+     * cell layers and every site that repaints the wallpaper owes both. */
+    era_cells();
     draw_box_banner(src, box, on_title);
     draw_footer(src->is_bank, on_title, false);
   }
@@ -1032,6 +1208,7 @@ static void chunk_draw(BoxSource* src, int box, bool clear) {
 
   draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
   artless_cells();
+  era_cells();                     /* same pairing as move_cursor: BG repaint owes both */
   draw_box_banner(src, box, false);
 
   /* no footprint frame — the block itself carries the fit cue (whitened/darkened) */

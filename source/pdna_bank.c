@@ -25,6 +25,7 @@
 #include "pdna_app.h"     /* app_can_edit, app_confirm */
 #include "pdna_pk.h"      /* PDNA_BANK_DIR */
 #include "pdna_bank.h"
+#include "pdna_origin_art.h"  /* the parallel era view: the bank is where all three meet */
 #include "ui.h"
 #include "snd.h"
 #include "rmbl.h"          /* rumble must not toggle the cart bus during an SD write */
@@ -298,5 +299,23 @@ int pdna_bank_show(void) {
       box_load(g_loaded);                          /* discard: reload the box from its file */
     g_dirty = false;
   }
+  /* THE BANK IN PARALLEL — where this screen's part of Guy's request actually lives.
+   *
+   * The bank is the one place mons from all three eras genuinely coexist, so it is the
+   * screen the "show all in parallel" ask is about; what it does NOT do is render them,
+   * because that is the shared box grid's job (pdna_box.c's era_cells) and forking a
+   * second grid for the bank would be the wrong answer twice over.
+   *
+   * Filling the era cache is not this file's job either, and used to be: box_load /
+   * box_save / mark_dirty each rebuilt it from the RAW records. That was both redundant
+   * — pdna_box.c re-decodes the box right after every one of those — and subtly WRONG:
+   * a bank slot the user has already carried out to the PC is displayed empty but still
+   * physically holds the mon's only on-card copy until the PC is written, so the raw
+   * buffer wears a Game Boy marker on a cell that shows no Pokemon. The cache is now
+   * filled from the DECODED box, which is exactly what is on screen.
+   *
+   * The cache is a singleton, so drop it on the way out: no other screen fills it, and
+   * a stale one would describe a box that is no longer displayed. */
+  pdna_origin_box_clear();
   return r;        /* 5 = the user dropped off the bottom -> caller reopens the PC on its tabs */
 }
