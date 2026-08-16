@@ -1792,17 +1792,32 @@ int pdna_box(BoxSource* src) {
     }
     u16 k, fresh;
     do { s_vsync();
-         /* Retail's idle is INVERTED from what we shipped (capture doc §1a): the HAND
-          * bounces on a 30/30 cadence and the grid icons stay static. Swap the hand
-          * pose on the tick (512 B upload + a cursor re-place, well inside vblank);
-          * paused while carrying / dragging / ITEM mode, exactly like retail. */
+         /* The HAND bounces on a 30/30 cadence (capture doc §1a) — and so does the
+          * grid, by 1 px in unison.
+          *
+          * 0a8f51f added the hand bounce and dropped the grid's own idle, which left
+          * boxoam_set_bob() with ZERO callers: the machinery was all still here and
+          * consistent (place_grid_slot adds s_bob to every y it writes; boxoam_enter
+          * resets it) but nothing ever drove it, so 30 icons sat frozen while a single
+          * 32x32 glove changed pose. Guy read that as the box animation being broken,
+          * which it was — the comment above this loop and box_oam.c's own header had
+          * been describing a bob that did not run.
+          *
+          * boxoam_set_bob is the right driver rather than boxoam_set_frame (the real
+          * 2-frame pose swap): the pose swap re-DMAs ~15 KiB, which box_oam.c:199 says
+          * cannot fit the vblank window, and it self-disables on streamed icons
+          * (box_oam.c:433) — i.e. on every artless box. The 1 px OAM nudge is a shadow
+          * write with no VRAM, ROM or SD traffic, so it is the one icon animation that
+          * works in BOTH builds. Paused while carrying / dragging / ITEM mode. */
          if (app_anim_enabled(ANIM_BOX) && !s_holding && !s_ch_hold && s_cur_mode != CM_ITEM) {
            if (++anim_ctr >= ANIM_PERIOD) {
              anim_ctr = 0; bob ^= 1;
              boxoam_hand_pose(bob ? BOXOAM_POSE_BOUNCE : BOXOAM_POSE_NORMAL);
+             boxoam_set_bob(bob);                 /* the grid's own idle, restored */
              boxoam_cursor(cur, on_title, cursor_look());
            }
          } else if (bob) { bob = 0; boxoam_hand_pose(BOXOAM_POSE_NORMAL);
+                           boxoam_set_bob(0);     /* settle the grid when the idle stops */
                            boxoam_cursor(cur, on_title, cursor_look()); }
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);
