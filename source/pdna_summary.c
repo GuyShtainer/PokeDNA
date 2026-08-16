@@ -461,12 +461,13 @@ static void portrait_params(int fam, int t, int* wx, int* sy, int* dx, int* dy) 
  * centred at x 46 — into a line buffer and DMAs it to VRAM in one pass. No separate
  * erase, so the animation never flickers (call site runs it in vblank). */
 static u16 s_pline[68];
-static void portrait_redraw(const PkMon* p, int wx, int sy, int dx, int dy, int* lastkey) {
+static void portrait_redraw(const PkMon* p, const uint16_t* spr, bool icon, int sw, int sh,
+                            int wx, int sy, int dx, int dy, int* lastkey) {
   int key = (wx & 0xFF) | ((sy & 0xFF) << 8) | (((dx + 64) & 0xFF) << 16) | (((dy + 64) & 0xFF) << 24);
   if (key == *lastkey) return;
   *lastkey = key;
-  bool icon; int sw = MON_FRONT_W, sh = MON_FRONT_H;
-  const uint16_t* spr = portrait_sprite(p, &icon, &sw, &sh);
+  /* spr/icon/sw/sh are supplied by the caller (fetched once per repaint) — see the
+   * hoist comment in summary_run. This function must not fetch: it runs per frame. */
   /* Art-free build: no sprite exists at all. Without this check the loop below
    * sampled address 0 (open bus) and painted garbage stripes into the portrait —
    * paint the plain gradient instead (which also erases any previous pose). */
@@ -482,14 +483,36 @@ static void portrait_redraw(const PkMon* p, int wx, int sy, int dx, int dy, int*
                     x0 = 46 - iw / 2 + dx; baseline = 78 + dy; top = baseline - ih; }
   else       { x0 = 30 + dx; top = 30 + dy; if (top < 14) top = 14; if (top > 45) top = 45;
                baseline = top + 32; iw = 32; ih = 32; }
+  /* The source column for a destination x depends only on x, x0, sw and iw — none of
+   * which change down the frame — yet it used to be recomputed inside the innermost
+   * loop. That is two software divisions per destination pixel (the ARM7TDMI has no
+   * divide instruction, so each is a ~20-40 cycle __aeabi_idiv call) across 68x64
+   * pixels: ~8,000 calls per pose change, and the pose changes nearly every frame
+   * while the portrait is animating. Hoisting is enough — build the column table once
+   * per redraw and lift the row term out of the x loop, and the count drops to 68 + 64.
+   *
+   * Deliberately NOT a fixed-point DDA: the expression below is character-for-character
+   * the one that shipped, so the rendering cannot shift by a pixel at a rounding
+   * boundary. Same pixels, ~60x fewer divisions. */
+  int16_t sicol[68];
+  if (spr && iw > 0) {
+    for (int dx = 0; dx < 68; dx++) {
+      int x = 12 + dx;
+      int k = x - x0;
+      sicol[dx] = (int16_t)(icon ? k : (k * sw / iw));
+    }
+  }
   for (int yy = 14; yy <= 77; yy++) {
     u16 bg = portrait_bg(yy);
+    const uint16_t* srow = 0;
+    if (spr && yy >= top && yy < baseline) {
+      int sj = icon ? (yy - top) : ((yy - top) * sh / ih);
+      srow = spr + sj * sw;
+    }
     for (int dx = 0; dx < 68; dx++) {
       int x = 12 + dx; u16 c = bg;
-      if (yy >= top && yy < baseline && x >= x0 && x < x0 + iw) {
-        int sj = icon ? (yy - top) : ((yy - top) * sh / ih);
-        int si = icon ? (x - x0)   : ((x - x0)   * sw / iw);
-        u16 px = spr[sj * sw + si];   /* icon: sw == 32, exactly the old expression */
+      if (srow && x >= x0 && x < x0 + iw) {
+        u16 px = srow[sicol[dx]];   /* icon: sw == 32, exactly the old expression */
         if (px & 0x8000) c = (u16)(px & 0x7FFF);
       }
       s_pline[dx] = c;
@@ -547,13 +570,31 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
                           : can_edit ? "A edit  U/D mon  L/R  SEL  B"
                                      : "U/D mon  L/R card  SEL  B");
     lastkey = 64 | (64 << 8) | (64 << 16) | (64 << 24);   /* render_card drew the rest pose (64,64,0,0) */
+    /* Fetch the portrait ONCE per repaint, not once per animation frame.
+     *
+     * portrait_redraw used to call portrait_sprite() itself, and portrait_sprite goes
+     * through the era router into mon_front_for_form -> LZ77UnCompWram of a 64x64 RGB15
+     * sprite (8 KB) into mon_decomp. The pose changes on almost every frame while the
+     * portrait animates, so that 8 KB BIOS decompress — plus, in the Game Boy case, a
+     * cartridge read — was running at up to 60 Hz to redraw pixels that had not changed.
+     *
+     * Safe to hoist here specifically: the only thing that runs between this point and
+     * the redraws is portrait_redraw, and the pointer is mon_decomp, a buffer shared
+     * with mon_back. Anything decoding into mon_decomp between the fetch and the last
+     * redraw would hand out the wrong mon's pixels — render_card/draw_left do exactly
+     * that, which is why the fetch sits AFTER them and inside the same repaint. If a
+     * future caller (rom_sprite.h:78, rom_gbsprite.h:134 and rom_itemart.h:145 all
+     * nominate mon_decomp as their staging buffer) starts decoding inside this loop, it
+     * must re-fetch here. */
+    bool p_icon = false; int p_sw = MON_FRONT_W, p_sh = MON_FRONT_H;
+    const uint16_t* p_spr = portrait_sprite(&cur, &p_icon, &p_sw, &p_sh);
     if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY) && !cur.isEgg) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
-                              portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, wx, sy, dx, dy, &lastkey); }
+                              portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }
 
     u16 k, fresh;
     do { s_vsync();
          if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY) && !cur.isEgg) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
-                                   portrait_params(fam, ++anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, wx, sy, dx, dy, &lastkey); }
+                                   portrait_params(fam, ++anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
     if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
