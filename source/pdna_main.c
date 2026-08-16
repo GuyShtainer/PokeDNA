@@ -150,6 +150,12 @@ static u16 wait_keys(u16 mask) {
 }
 
 static void init_system(void) {
+  /* FIRST, before anything else runs a single loop out of ROM: take the game-pak
+   * bus off the loader's 4/2-waitstates-no-prefetch handoff. Everything in this
+   * tool executes from ROM, so this is a flat speed-up of the whole app — the
+   * repaints, the animations, the decode. flashcartio drops back to the inherited
+   * timing for the duration of each SD transfer (see flashcartio.h). */
+  flashcartio_bus_fast();
   irq_init(NULL);
   irq_add(II_VBLANK, NULL);
   ui_init();                               /* Mode 3 + bitmap TTE */
@@ -4324,8 +4330,8 @@ int main(void) {
   log_line("=== PokeDNA (M0) ===");
   log_line("build " __DATE__ " " __TIME__);   /* stamp: proves WHICH binary produced this log
                                                * (stale flashes have faked "still broken" before) */
-  log_line("waitcnt=%04x dispcnt=%04x",       /* inherited cart timing — never written by the app */
-           *(volatile uint16_t*)0x04000204, REG_DISPCNT);
+  log_line("waitcnt=%04x (was %04x) dispcnt=%04x",   /* cart timing: boosted vs the loader's handoff */
+           *(volatile uint16_t*)0x04000204, flashcartio_bus_inherited(), REG_DISPCNT);
   log_line("mGBA debug log: %s", log_under_mgba() ? "active" : "absent");
 
 #ifdef PDNA_DELTA
