@@ -56,6 +56,7 @@
 #include "rom_text.h"      /* phase-2: descriptions out of the user's own ROM */
 #include "box_oam.h"       /* boxoam_rom_icons registration */
 #include "fused_rom.h"
+#include "fused_sav.h"    /* a save fused into the image: the emulator build's fallback */
 #include "gen3_secretbase.h" /* Secret Base records (RS/Emerald) */
 #include "osk.h"           /* osk_search (numeric entry) */
 #include "pdna_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
@@ -4301,6 +4302,27 @@ static void view_save(const char* path) {
   (void)path;
   sz = flashsave_read(g_save, G3_SAVE_FILE_SIZE) ? (uint32_t)G3_SAVE_FILE_SIZE : 0;
   if (!sz) err = "flash save unreadable";
+  /* ...unless the chip has nothing usable on it and a save was fused into the image, in
+   * which case fall back to that so the .gba works on its own with no .sav to place.
+   *
+   * FLASH WINS whenever it parses. That ordering is the whole safety argument: the chip
+   * is where the user's edits live, so a fused copy — a snapshot from the day the image
+   * was built — must never displace it. This branch is reachable only when flash is
+   * blank or corrupt, which is exactly the case that used to dead-end on "copy your
+   * Pokemon .sav over pokedna-delta.sav, then relaunch".
+   *
+   * Read-only: nothing is programmed to the chip here. The image goes to RAM and the
+   * user's first in-app save writes it through the normal verified flashsave path. */
+  {
+    Gen3SaveInfo probe;
+    bool flash_ok = sz && gen3_parse(g_save, sz, &probe) && probe.valid;
+    uint32_t fsz = 0;
+    if (!flash_ok && fused_sav_present(&fsz) && fsz == (uint32_t)G3_SAVE_FILE_SIZE &&
+        fused_sav_read(g_save, fsz)) {
+      sz = fsz; err = 0;
+      log_line("save: flash blank/invalid -> using the fused save (%lu B)", (unsigned long)fsz);
+    }
+  }
 #else
   SfStatus st = sf_read_full(path, g_save, G3_SAVE_FILE_SIZE, &sz);
   if (st != SF_OK) err = sf_status_str(st);
@@ -4315,11 +4337,12 @@ static void view_save(const char* path) {
     ui_text(6, 60, UI_WARN, "Cannot read this save.");
     ui_text(6, 76, UI_DIM, err ? err : "not a valid Gen-3 .sav");
 #ifdef PDNA_DELTA
-    /* The overwhelmingly likely cause in an emulator: the user has not copied their
-     * Pokemon .sav in as this ROM's save yet, so the flash is blank. */
+    /* Reaching here now means BOTH sources failed: the flash chip is blank or corrupt
+     * AND no usable save was fused into the image. Name the two ways out rather than
+     * only the .sav one, or a fused image that failed to load reads as unfixable. */
     ui_text(6, 92,  UI_TEXT, "Copy your Pokemon .sav");
-    ui_text(6, 102, UI_TEXT, "over pokedna-delta.sav,");
-    ui_text(6, 112, UI_TEXT, "then relaunch.");
+    ui_text(6, 102, UI_TEXT, "over this ROM's .sav,");
+    ui_text(6, 112, UI_TEXT, "or fuse one in (fuse_sav.py).");
 #endif
     ui_text(4, UI_FOOTER_Y, UI_DIM, "B=back");
     wait_keys(KEY_B);
