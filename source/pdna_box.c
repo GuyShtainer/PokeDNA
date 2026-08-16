@@ -1124,11 +1124,22 @@ static void cursor_slide(BoxSource* src, int box, int old_cur, int cur, bool car
   int dx = ((old_cur % COLS) - (cur % COLS)) * CELL_W;
   int dy = ((old_cur / COLS) - (cur / COLS)) * CELL_H;
   int steps = (dx < 0 ? -dx : dx) > (dy < 0 ? -dy : dy) ? (dx < 0 ? -dx : dx) : (dy < 0 ? -dy : dy);
-  steps /= 4; if (steps < 1) steps = 1; if (steps > 12) steps = 12;
+  steps /= 4; if (steps < 1) steps = 1;
+  /* A column/row WRAP is a teleport, not travel: LEFT off column 0 is dx=120 and the
+   * PC's DOWN off the bottom row is dy=88, which used to clamp to 12 steps — 183 ms of
+   * dead, uninterruptible input on a press made constantly. Give a wrap a 2-frame
+   * acknowledgement instead of animating a journey the cursor does not make. */
+  if (steps > 12) steps = 2;
   for (int f = steps - 1; f >= 1; f--) {
     boxoam_cursor_dxy(dx * f / steps, dy * f / steps);
     oam_sync(cur, false, box, src->is_bank);
     boxoam_commit(); s_vsync();
+    /* Bail the moment the user is already asking for the next cell. Held traversal
+     * used to pay the full glide per cell even though key_repeat wants one every 3
+     * frames (key_repeat_limits(14,3)), so a held d-pad ran ~2.5x slower than the
+     * repeat rate it was configured for — the scroll felt like it was wading. A
+     * level test, not key_hit: the repeat edge need not land on this frame. */
+    if (key_is_down(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) break;
   }
   boxoam_cursor_dxy(0, 0);
   (void)carrying;
