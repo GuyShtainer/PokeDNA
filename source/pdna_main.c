@@ -1886,6 +1886,32 @@ static void party_icon_y(int i, int* ry, int* iy) {
  * cut-off feet. compose-then-DMA (no erase) => flicker-free; runs only on idle frames. */
 static u16 __attribute__((aligned(4))) s_pcol[34];
 static void party_bob_recompose(int n, int sel, int frame) {
+  /* Resolve every icon ONCE, up front, for two reasons the per-scanline version got
+   * wrong — it called the accessor 139 times per mon per tick and never checked it.
+   *
+   * 1. NULL. mon_icon_for_form_frame returns 0 for the whole artless build
+   *    (art_fallbacks.c's weak stub), for internal ids 0 and 252..276, and for
+   *    anything past 411 — which a bad-egg slot can hold, and Guy's saves carry
+   *    deliberate ACE glitch mons. Adding a row offset to NULL and reading through it
+   *    lands in BIOS space; on hardware that is open bus, not the zeroes an emulator
+   *    tends to return, so roughly half the halfwords pass the `p & 0x8000` test and
+   *    speckle garbage over the icon column every 0.5 s. Every other consumer in the
+   *    app guards this (ui.c:99, ui.c:182, and the static party draw below).
+   * 2. Eggs. The static draw branches on isEgg and uses mon_icon_egg_frame; this did
+   *    not, so an egg in the party visibly turned into the hatched species half a
+   *    second after the last keypress and turned back on the next press. The day-care
+   *    bob gets this right — the party bob was the outlier. */
+  const u16* base[6];
+  int have = 0;
+  if (n > 6) n = 6;
+  for (int i = 0; i < n; i++) {
+    base[i] = (g_party[i].isEgg && !g_party[i].isBadEgg)
+                ? mon_icon_egg_frame((uint8_t)frame)
+                : mon_icon_for_form_frame(g_party[i].species, g_party[i].form, (uint8_t)frame);
+    if (base[i]) have = 1;
+  }
+  if (!have) return;   /* artless, or nothing drawable: leave the column exactly as drawn */
+
   rumble_io_suspend();   /* composes from mon_icon ROM data; mute the cart-bus motor toggle */
   int sry = (n && sel >= 0 && sel < n) ? 17 + sel * 21 : -100;   /* selected panel y..y+20 */
   for (int y = 12; y <= 150; y++) {
@@ -1894,8 +1920,8 @@ static void party_bob_recompose(int n, int sel, int frame) {
     for (int i = 0; i < n; i++) {
       int ry, iy; party_icon_y(i, &ry, &iy);
       if (y < iy || y >= iy + MON_ICON_H) continue;
-      const u16* row = mon_icon_for_form_frame(g_party[i].species, g_party[i].form, (uint8_t)frame)
-                       + (y - iy) * MON_ICON_W;
+      if (!base[i]) continue;
+      const u16* row = base[i] + (y - iy) * MON_ICON_W;
       for (int dx = 0; dx < MON_ICON_W; dx++) { u16 p = row[dx]; if (p & 0x8000) s_pcol[1 + dx] = (u16)(p & 0x7FFF); }
     }
     dma3_cpy(&vid_mem[y * 240 + 2], s_pcol, 34 * 2);   /* x=2 even, 68 bytes -> word-aligned */
