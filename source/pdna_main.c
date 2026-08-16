@@ -136,18 +136,35 @@ static void vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 /* Central input wait — also the app-wide UI-sound chokepoint. A FRESH d-pad press
  * ticks snd_move (NOT key_repeat, so a held scroll doesn't machine-gun); A/B play
  * the confirm/back earcons. Nearly every screen funnels through here. */
-static u16 wait_keys(u16 mask) {
+/* vblanks per idle bob toggle — the Gen-3 cadence, same constant the box screen
+ * (pdna_box.c ANIM_PERIOD) and the Pokedex (pdna_pick.c DEX_ANIM_PERIOD) use. */
+#define PDNA_BOB_PERIOD 30
+
+/* wait_keys, plus a 2-frame idle bob. `kind` is an ANIM_* place; while nothing is
+ * pressed and that place's toggle is on, *frame flips every PDNA_BOB_PERIOD
+ * vblanks and `redraw` recomposes the screen's sprites at the new frame. The
+ * animation runs ONLY on frames with no key pending, so a press or a key-repeat
+ * is never delayed behind a multi-sprite repaint (the rule the Pokedex learned).
+ * Callers own *ctr and *frame so the phase survives their redraw loop.
+ * kind < 0 or redraw == 0 makes this exactly the old wait_keys. */
+static u16 wait_keys_bob(u16 mask, int kind, int* ctr, int* frame,
+                         void (*redraw)(int)) {
   u16 hit, fresh;
   do {
     vsync();
     fresh = key_hit(mask);
     hit = fresh | key_repeat(mask & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT));
+    if (!hit && redraw && kind >= 0 && app_anim_enabled(kind) && ++*ctr >= PDNA_BOB_PERIOD) {
+      *ctr = 0; *frame ^= 1; redraw(*frame);
+    }
   } while (!hit);
   if (fresh & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) snd_move();
   if (fresh & KEY_A) snd_ok();
   else if (fresh & KEY_B) snd_back();
   return hit;
 }
+
+static u16 wait_keys(u16 mask) { return wait_keys_bob(mask, -1, 0, 0, 0); }
 
 static void init_system(void) {
   /* FIRST, before anything else runs a single loop out of ROM: take the game-pak
@@ -1493,6 +1510,50 @@ void app_party_remove_at(int idx) {
  *         into); choosing that fills grab80 + *grab_slot and returns 2. 0 = closed.
  * Self-contained (clears + repaints each frame) so the action menu's full-screen sub-views
  * can't leave artifacts; the caller repaints its own screen on return. */
+/* ---- the party cluster's idle bob (ANIM_PARTY) ---------------------------
+ *
+ * This screen — not party_list() below, which only runs when the save has no PC —
+ * is what the MENU's "Party" entry opens, and it is the screen the party sprites
+ * live on. It had no animation at all: it drew every icon at frame 0 and then
+ * blocked in wait_keys(), so ANIM_PARTY was a toggle that controlled nothing.
+ *
+ * Same compose-over-DMA shape the Pokedex grid uses: blit frame `f` straight over
+ * the cell's own background with no erase first, so there is never a frame where
+ * a sprite is blanked. The background differs per cell — the selected one sits on
+ * the UI_SEL panel — so each cell composes over its own colour, and the selection
+ * frame is left untouched underneath (the icon is inset 4 px inside it).
+ *
+ * Art-free build: mon_icon_for_form_frame returns NULL and ui_blit_over ignores it,
+ * so the cluster simply stays as drawn. Nothing to bob, nothing to break. */
+#define PARTY_GX0 100
+#define PARTY_GY0 26
+#define PARTY_CDX 46
+#define PARTY_CDY 42
+
+static uint16_t s_pov_sp[6];      /* species/form/egg of the mons currently drawn */
+static uint8_t  s_pov_fm[6];
+static bool     s_pov_egg[6];
+static int      s_pov_n, s_pov_sel;
+
+static void party_overlay_bob(int f) {
+  rumble_io_suspend();            /* composes from mon_icon ROM data; mute the cart-bus motor toggle */
+  for (int i = 0; i < s_pov_n && i < 6; i++) {
+    const u16* ic = s_pov_egg[i] ? mon_icon_egg_frame((uint8_t)f)
+                                 : mon_icon_for_form_frame(s_pov_sp[i], s_pov_fm[i], (uint8_t)f);
+    if (!ic) continue;
+    ui_blit_over(PARTY_GX0 + (i % 3) * PARTY_CDX, PARTY_GY0 + (i / 3) * PARTY_CDY,
+                 MON_ICON_W, MON_ICON_H, ic, (i == s_pov_sel) ? UI_SEL : UI_BG);
+  }
+  /* the big copy of the selected mon on the left panel bobs with its cell */
+  if (s_pov_sel >= 0 && s_pov_sel < s_pov_n) {
+    const u16* ic = s_pov_egg[s_pov_sel]
+                      ? mon_icon_egg_frame((uint8_t)f)
+                      : mon_icon_for_form_frame(s_pov_sp[s_pov_sel], s_pov_fm[s_pov_sel], (uint8_t)f);
+    if (ic) ui_blit_over(24, 24, MON_ICON_W, MON_ICON_H, ic, UI_BG);
+  }
+  rumble_io_resume();
+}
+
 int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
                       bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
   if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return 0; }
@@ -1503,9 +1564,10 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
    * read-only source sets is_bank, which already stops pdna_box from reaching the
    * PARTY tab, so this is defence in depth on a path that must never open. */
   if (app_src_readonly()) { snd_deny(); return 0; }
-  const int gx0 = 100, gy0 = 26, dx = 46, dy = 42;   /* 2x3 cluster, right side */
+  const int gx0 = PARTY_GX0, gy0 = PARTY_GY0, dx = PARTY_CDX, dy = PARTY_CDY;   /* 2x3 cluster, right side */
   const int BACK = 6;
   int sel = 0;
+  int bob_ctr = 0, bob = 0;          /* ANIM_PARTY idle bob phase, kept across repaints */
   for (;;) {
     int n = party_count(g_sb1, g_frlg);
     if (n < 1) return 0;                              /* shouldn't happen (party never empties) */
@@ -1520,8 +1582,10 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     /* left: the selected mon's summary */
     if (sel != BACK && sel < n) {
       PkMon* p = &pm[sel];
-      if (p->isEgg && !p->isBadEgg) ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_egg());
-      else ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, 0));
+      /* frame `bob`, not a hard 0: a repaint mid-animation must not snap the
+       * sprites back to frame 0 and restart the phase. */
+      if (p->isEgg && !p->isBadEgg) ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_egg_frame((uint8_t)bob));
+      else ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, (uint8_t)bob));
       /* Same fields, same proportional face as the PC panel (pdna_box.c draw_left) —
        * the two screens used to disagree about the same mon: 10 columns here, 9 and 5
        * there. Budget is the left column, up to the icon cluster at x=88. */
@@ -1540,8 +1604,8 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     for (int i = 0; i < 6; i++) {
       int cx = gx0 + (i % 3) * dx, cy = gy0 + (i / 3) * dy;
       if (i == sel) ui_panel(cx - 4, cy - 4, 40, 40, UI_SEL, UI_TITLE);
-      if (i < n && pm[i].isEgg && !pm[i].isBadEgg) ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_egg());
-      else if (i < n)        ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(pm[i].species, pm[i].form, 0));
+      if (i < n && pm[i].isEgg && !pm[i].isBadEgg) ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_egg_frame((uint8_t)bob));
+      else if (i < n)        ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(pm[i].species, pm[i].form, (uint8_t)bob));
       else if (i == addslot) ui_text(cx + 12, cy + 10, UI_OK,  "+");
       else                   ui_text(cx + 13, cy + 10, UI_DIM, "-");
     }
@@ -1554,7 +1618,16 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     ui_hline(0, UI_FOOTER_RULE_Y, UI_SCR_W, UI_BORDER);
     ui_text(4, UI_FOOTER_Y, UI_DIM, held ? "A place/swap  U/D/L/R  B" : "A actions  U/D/L/R  B");
 
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
+    /* Publish what the bob callback needs. `pm` is a stack array that dies with
+     * this iteration, so copy the three fields out rather than pointing at it. */
+    s_pov_n = n < 6 ? n : 6; s_pov_sel = (sel < s_pov_n) ? sel : -1;
+    for (int i = 0; i < s_pov_n; i++) {
+      s_pov_sp[i] = pm[i].species; s_pov_fm[i] = pm[i].form;
+      s_pov_egg[i] = pm[i].isEgg && !pm[i].isBadEgg;
+    }
+
+    u16 k = wait_keys_bob(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B,
+                          ANIM_PARTY, &bob_ctr, &bob, party_overlay_bob);
     if      (k & KEY_B)     { snd_back(); return 0; }
     else if (k & KEY_LEFT)  { if (sel < 6 && sel % 3 > 0) { snd_move(); sel--; } }
     else if (k & KEY_RIGHT) { if (sel < 6 && sel % 3 < 2) { snd_move(); sel++; } }
