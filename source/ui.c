@@ -112,14 +112,26 @@ void ui_sprite(int x, int y, int w, int h, const u16* data) {
  * compact list rows where the full 32x32 icon won't fit. */
 /* Nearest-neighbour blit of a 32x32 (0x8000-keyed) icon at an arbitrary dst size
  * — for grids that want icons bigger than the 16x16 sub but not the full 32. */
+/* `si` depends only on i and dw, so it was being recomputed dh times over for every
+ * column: dh*dw software divisions per icon (1,056 for the 32x32 the Pokedex grid
+ * actually asks for, ~22,000 for a full page of 21 cells) on a CPU with no divide
+ * instruction. Build the column table once. Same expression, same pixels. */
+#define UI_ICON_SCALE_MAX 64
+static int ui_scale_cols(int dw, unsigned char* si) {
+  if (dw > UI_ICON_SCALE_MAX) return 0;      /* caller falls back to the divide */
+  for (int i = 0; i < dw; i++) si[i] = (unsigned char)(i * 32 / dw);
+  return 1;
+}
+
 void ui_icon_scaled(int x, int y, int dw, int dh, const u16* src32) {
   if (!src32) return;
+  unsigned char sic[UI_ICON_SCALE_MAX];
+  int tbl = ui_scale_cols(dw, sic);
   rumble_io_suspend();                       /* src32 may be a raw ROM icon pointer */
   for (int j = 0; j < dh; j++) {
-    int sj = j * 32 / dh;
+    const u16* srow = src32 + (j * 32 / dh) * 32;
     for (int i = 0; i < dw; i++) {
-      int si = i * 32 / dw;
-      u16 p = src32[sj * 32 + si];
+      u16 p = srow[tbl ? sic[i] : (i * 32 / dw)];
       if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
     }
   }
@@ -136,12 +148,13 @@ static u16 ui_grey15(u16 c) {
 
 void ui_icon_scaled_grey(int x, int y, int dw, int dh, const u16* src32) {
   if (!src32) return;
+  unsigned char sic[UI_ICON_SCALE_MAX];      /* see ui_icon_scaled */
+  int tbl = ui_scale_cols(dw, sic);
   rumble_io_suspend();                       /* src32 may be a raw ROM icon pointer */
   for (int j = 0; j < dh; j++) {
-    int sj = j * 32 / dh;
+    const u16* srow = src32 + (j * 32 / dh) * 32;
     for (int i = 0; i < dw; i++) {
-      int si = i * 32 / dw;
-      u16 p = src32[sj * 32 + si];
+      u16 p = srow[tbl ? sic[i] : (i * 32 / dw)];
       if (p & 0x8000) m3_plot(x + i, y + j, ui_grey15((u16)(p & 0x7FFF)));
     }
   }
