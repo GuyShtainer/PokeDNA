@@ -131,7 +131,17 @@ static uint16_t s_stage[256];        /* one 512 B verify chunk (IWRAM .bss — E
  * 1 px OAM bob still runs, so the grid keeps its life. */
 static const RomMon* s_rommon = 0;
 static int           s_rom_icons = 0;            /* this box was loaded from the ROM */
-void boxoam_rom_icons(const struct RomMon* rm) { s_rommon = (rm && rm->ok) ? rm : 0; }
+/* Memoised icon LOCATION (see rom_mon.h RomMonLoc): the icon-table pointer and the
+ * palette index for one species. Invalidated whenever the ROM source changes — the
+ * RomMon POINTER can stay the same across a re-registration of a different file, so
+ * the pointer is not a safe cache key. */
+static RomMonLoc s_iconloc;
+static uint16_t  s_iconloc_sp = 0xFFFF;          /* 0xFFFF = nothing memoised */
+static uint8_t   s_iconloc_f;
+void boxoam_rom_icons(const struct RomMon* rm) {
+  s_rommon = (rm && rm->ok) ? rm : 0;
+  s_iconloc.ok = 0; s_iconloc_sp = 0xFFFF;
+}
 int  boxoam_icons_available(void) {
   const uint8_t* t; int b;
   return mon_icon_oam_for(1, &t, &b) || s_rommon != 0;
@@ -152,18 +162,31 @@ static int rom_icon_read_verified(uint16_t species, uint8_t form, int egg, int* 
   if (!s_rommon) return 0;
   uint16_t sp = egg ? 412 : species;
   uint8_t f  = egg ? 0 : form;
-  uint8_t pal = 0;
   rumble_io_suspend();
+  /* LOCATE ONCE, then read the same frame twice. The two table lookups cannot change
+   * between the verify passes, so doing them per pass cost four extra RomCtx reads per
+   * icon (six down to two, or zero extra on a memo hit) — and on the SD-file source
+   * every one of those was a BACKWARD f_lseek that FatFs walks from the head of the
+   * cluster chain of a 16 MB file. The verify itself is untouched: still two whole
+   * reads that must agree, still four attempts, still the same give-up log. */
+  if (!(s_iconloc.ok && s_iconloc_sp == sp && s_iconloc_f == f)) {
+    s_iconloc_sp = sp; s_iconloc_f = f;
+    if (!rom_mon_locate(s_rommon, sp, f, &s_iconloc)) {   /* leaves ok = 0 */
+      s_iconloc_sp = 0xFFFF;
+      rumble_io_resume();
+      return 0;
+    }
+  }
   int ok = 0;
   for (int a = 0; a < 4 && !ok; a++) {
-    if (!rom_mon_icon(s_rommon, sp, f, 0, (uint8_t*)s_stage, &pal)) { rumble_io_resume(); return 0; }
+    if (!rom_mon_icon_at(s_rommon, &s_iconloc, 0, (uint8_t*)s_stage)) { rumble_io_resume(); return 0; }
     uint32_t s1 = stage_sum();
-    if (!rom_mon_icon(s_rommon, sp, f, 0, (uint8_t*)s_stage, &pal)) { rumble_io_resume(); return 0; }
+    if (!rom_mon_icon_at(s_rommon, &s_iconloc, 0, (uint8_t*)s_stage)) { rumble_io_resume(); return 0; }
     ok = (stage_sum() == s1);
   }
   rumble_io_resume();
   if (!ok) { log_line("icons: rom read unstable sp=%u", sp); app_log_flush(); }
-  *bank = pal;                                    /* ROM pals live in OBJ banks 0..2 */
+  *bank = s_iconloc.pal;                          /* ROM pals live in OBJ banks 0..2 */
   return 1;
 }
 
@@ -173,6 +196,14 @@ static const uint8_t* icon_tiles(uint16_t species, uint8_t form, uint8_t frame,
                                  int egg, int* bank, int* from_rom) {
   const uint8_t* t; int b;
   *from_rom = 0;
+  /* EMPTY SLOT. The compiled-art branch below already short-circuits on species==0, but
+   * the ROM-streamed branch did NOT: species 0 is a VALID row of the icon table (the
+   * "??????" dummy), so rom_icon_read_verified happily performed two full verified
+   * 512-byte reads off the microSD — ~22 sectors — for a result boxoam_load_box then
+   * discards. MEASURED on the artless build: 60 rom_mon_icon calls / 180 ROM reads per
+   * box load REGARDLESS of occupancy, so an empty box cost exactly as much to open as a
+   * full one. All four icon_tiles call sites already NULL-guard. */
+  if (!egg && !species) return 0;
   if (egg ? mon_icon_oam_egg(&t, &b)
           : (species && mon_icon_oam_for_form_frame(species, form, frame, &t, &b))) {
     *bank = b; return t;

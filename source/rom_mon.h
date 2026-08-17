@@ -46,10 +46,36 @@ typedef struct RomMon {
  * that does not stay inside the image. */
 int rom_mon_open(RomMon* rm, const RomCtx* rc);
 
+/* Where one species' icon lives: the answer to the two SMALL table lookups (the
+ * gMonIconTable pointer and the palette index) that every frame read had to redo.
+ * Splitting locate from read matters because a caller that reads the same frame
+ * twice to verify it — box_oam does — otherwise paid those lookups twice as well:
+ * six RomCtx reads per icon instead of two. On the SD-file source every read is an
+ * f_lseek + f_read, and a BACKWARD seek re-walks the cluster chain from the head of
+ * a 16 MB file (FF_USE_FASTSEEK is deliberately 0 — it is a global switch on the
+ * same FatFs the save write path uses), so the ping-ponging offsets were the cost. */
+typedef struct RomMonLoc {
+  uint32_t tiles;         /* FILE offset of frame 0 (frame 1 sits +512 after it) */
+  uint8_t  pal;           /* palette index 0..2                                  */
+  uint8_t  ok;            /* 1 = usable; 0 = never located / lookup failed        */
+} RomMonLoc;
+
+/* Resolve (species, form) to its icon offset + palette index. Two small reads.
+ * `form` handles Unown (species 201, form 0..27); pass 0 otherwise. Species 412
+ * = the Egg. Returns 1 on success, 0 on any bounds/read failure (and *out is
+ * left with ok = 0, so a memoised RomMonLoc self-invalidates). */
+int rom_mon_locate(const RomMon* rm, uint16_t species, uint8_t form, RomMonLoc* out);
+
+/* Read one 512 B frame of an already-located icon. One read, no lookups. */
+int rom_mon_icon_at(const RomMon* rm, const RomMonLoc* loc, uint8_t frame,
+                    uint8_t dst[ROM_MON_ICON_BYTES]);
+
 /* Read one 512 B icon frame for an internal species id into dst, and that
  * species' palette index (0..2) into *pal_index (may be NULL). `form` handles
  * Unown (species 201, form 0..27); pass 0 otherwise. Species 412 = the Egg.
- * Returns 1 on success, 0 on any bounds/read failure. */
+ * Returns 1 on success, 0 on any bounds/read failure.
+ * Convenience wrapper over rom_mon_locate + rom_mon_icon_at — a caller that reads
+ * more than one frame or verifies by re-reading should use those directly. */
 int rom_mon_icon(const RomMon* rm, uint16_t species, uint8_t form, uint8_t frame,
                  uint8_t dst[ROM_MON_ICON_BYTES], uint8_t* pal_index);
 

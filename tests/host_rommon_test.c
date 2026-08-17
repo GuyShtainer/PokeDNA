@@ -31,9 +31,10 @@ static void chk(const char* rom, const char* what, int cond) {
   if (!cond) { printf("FAIL [%s] %s\n", rom, what); fails++; }
 }
 
-typedef struct { FILE* f; } FileCtx;
+typedef struct { FILE* f; int reads; } FileCtx;
 static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   FileCtx* fc = (FileCtx*)ctx;
+  fc->reads++;                          /* transaction count: what the SD path pays for */
   if (fseek(fc->f, (long)off, SEEK_SET) != 0) return false;
   return fread(dst, 1, len, fc->f) == len;
 }
@@ -47,7 +48,7 @@ static void run_rom(const char* path, const char* name, int expect_header) {
   FILE* f = fopen(path, "rb");
   if (!f) { printf("SKIP %s (no %s)\n", name, path); return; }
   fseek(f, 0, SEEK_END); long sz = ftell(f);
-  FileCtx fc = { f };
+  FileCtx fc = { f, 0 };
   RomCtx rc;
   if (!rom_open(&rc, file_read, &fc, (uint32_t)sz)) {
     chk(name, "rom_open accepts the retail dump", 0);
@@ -98,6 +99,47 @@ static void run_rom(const char* path, const char* name, int expect_header) {
     chk(name, what, r && distinct);
   }
   chk(name, "palette 3 rejected", !rom_mon_icon_pal(&rm, 3, 0));
+
+  /* 6) the locate/read SPLIT (box_oam streams icons off the SD, and its double-read
+   *    verify used to redo both table lookups per pass — six reads per icon). The split
+   *    must produce the SAME bytes and the same palette, and it must cost fewer reads. */
+  {
+    uint8_t wf[ROM_MON_ICON_BYTES], sf[ROM_MON_ICON_BYTES];
+    uint8_t wp = 0xFF;
+    fc.reads = 0;
+    int w_ok = rom_mon_icon(&rm, 25, 0, 0, wf, &wp);   /* Pikachu, the wrapper */
+    int w_reads = fc.reads;
+
+    RomMonLoc loc;
+    fc.reads = 0;
+    int l_ok = rom_mon_locate(&rm, 25, 0, &loc);
+    int l_reads = fc.reads;
+    fc.reads = 0;
+    int r_ok = rom_mon_icon_at(&rm, &loc, 0, sf);
+    int r_reads = fc.reads;
+
+    chk(name, "locate + icon_at both succeed", w_ok && l_ok && r_ok);
+    chk(name, "split frame == wrapper frame", memcmp(wf, sf, sizeof wf) == 0);
+    chk(name, "located palette == wrapper palette", loc.ok && loc.pal == wp);
+    chk(name, "locate costs 2 reads, icon_at costs 1", l_reads == 2 && r_reads == 1);
+    chk(name, "one verified icon: 2 reads via the split, not 6",
+        l_reads + 2 * r_reads == 4 && 2 * w_reads == 6 && w_reads == l_reads + r_reads);
+
+    /* frame 1 off the SAME location: no further lookups */
+    uint8_t s1[ROM_MON_ICON_BYTES];
+    fc.reads = 0;
+    chk(name, "frame 1 from a cached location", rom_mon_icon_at(&rm, &loc, 1, s1) && fc.reads == 1);
+    chk(name, "the two cached frames differ", memcmp(sf, s1, sizeof sf) != 0);
+
+    /* fail-closed contract the box_oam memo relies on */
+    RomMonLoc bad_loc;
+    chk(name, "out-of-range species leaves ok = 0",
+        !rom_mon_locate(&rm, 440, 0, &bad_loc) && !bad_loc.ok);
+    chk(name, "out-of-range Unown form leaves ok = 0",
+        !rom_mon_locate(&rm, 201, 28, &bad_loc) && !bad_loc.ok);
+    chk(name, "icon_at rejects a never-located loc", !rom_mon_icon_at(&rm, &bad_loc, 0, sf));
+    chk(name, "icon_at rejects frame 2", !rom_mon_icon_at(&rm, &loc, 2, sf));
+  }
 
   printf("  %s: ok (kind=%s rev=%u)\n", name, rom_kind_name(rc.kind), rc.version);
   fclose(f);

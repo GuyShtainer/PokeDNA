@@ -62,9 +62,10 @@ static uint16_t table_species(uint16_t species, uint8_t form) {
   return species;
 }
 
-int rom_mon_icon(const RomMon* rm, uint16_t species, uint8_t form, uint8_t frame,
-                 uint8_t dst[ROM_MON_ICON_BYTES], uint8_t* pal_index) {
-  if (!rm || !rm->ok || frame >= ROM_MON_ICON_FRAMES) return 0;
+int rom_mon_locate(const RomMon* rm, uint16_t species, uint8_t form, RomMonLoc* out) {
+  if (!out) return 0;
+  out->tiles = 0; out->pal = 0; out->ok = 0;     /* fail closed: a memo self-invalidates */
+  if (!rm || !rm->ok) return 0;
   if (species == 201 && form > 27) return 0;     /* 28 letters total: A + B..'?' */
   uint16_t ts = table_species(species, form);
   if (ts >= RM_TABLE_ENTRIES) return 0;
@@ -73,15 +74,32 @@ int rom_mon_icon(const RomMon* rm, uint16_t species, uint8_t form, uint8_t frame
   if (!rm->rc->read(rm->rc->ctx, rm->icons + (uint32_t)ts * 4, pe, 4)) return 0;
   uint32_t pic = rd32le(pe);
   if (!ptr_ok(rm, pic, ROM_MON_ICON_FRAMES * ROM_MON_ICON_BYTES)) return 0;
-  if (!rm->rc->read(rm->rc->ctx, (pic - ROM_BASE) + (uint32_t)frame * ROM_MON_ICON_BYTES,
-                    dst, ROM_MON_ICON_BYTES)) return 0;
 
-  if (pal_index) {
-    uint8_t id = 0;
-    if (!rm->rc->read(rm->rc->ctx, rm->pal_ids + ts, &id, 1)) return 0;
-    if (id >= ROM_MON_PALS) return 0;
-    *pal_index = id;
-  }
+  uint8_t id = 0;
+  if (!rm->rc->read(rm->rc->ctx, rm->pal_ids + ts, &id, 1)) return 0;
+  if (id >= ROM_MON_PALS) return 0;
+
+  out->tiles = pic - ROM_BASE;
+  out->pal   = id;
+  out->ok    = 1;
+  return 1;
+}
+
+int rom_mon_icon_at(const RomMon* rm, const RomMonLoc* loc, uint8_t frame,
+                    uint8_t dst[ROM_MON_ICON_BYTES]) {
+  if (!rm || !rm->ok || !loc || !loc->ok) return 0;
+  if (frame >= ROM_MON_ICON_FRAMES) return 0;
+  return rm->rc->read(rm->rc->ctx, loc->tiles + (uint32_t)frame * ROM_MON_ICON_BYTES,
+                      dst, ROM_MON_ICON_BYTES) ? 1 : 0;
+}
+
+int rom_mon_icon(const RomMon* rm, uint16_t species, uint8_t form, uint8_t frame,
+                 uint8_t dst[ROM_MON_ICON_BYTES], uint8_t* pal_index) {
+  if (frame >= ROM_MON_ICON_FRAMES) return 0;
+  RomMonLoc loc;
+  if (!rom_mon_locate(rm, species, form, &loc)) return 0;
+  if (!rom_mon_icon_at(rm, &loc, frame, dst)) return 0;
+  if (pal_index) *pal_index = loc.pal;
   return 1;
 }
 
