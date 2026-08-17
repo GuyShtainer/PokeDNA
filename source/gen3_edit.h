@@ -91,6 +91,19 @@ bool em_reroll(EditMon* e, int want_nature, int want_shiny, int want_gender, uin
 /* Set the Unown letter (0..27 = A..?) by adjusting the PID; keeps nature + shiny. */
 bool em_set_unown_form(EditMon* e, int form);
 
+/* Set the personality value to a KNOWN one. em_reroll/em_set_unown_form SEARCH for a PID;
+ * this is TOLD which — the reroll history has to be able to put back exactly the PID it
+ * took away. Nature, sex, ability slot, shininess and Unown's letter all move with it. */
+void em_set_pid(EditMon* e, uint32_t pid);
+
+/* The Misc substruct's 32-bit IV word EXACTLY as stored: bits 0-29 are the six 5-bit IVs
+ * in PkMon order, bit 30 is the egg flag (em_set_egg) and bit 31 the ability slot
+ * (em_set_ability). Exposed as ONE word because a caller that snapshots and restores an IV
+ * set must round-trip all three: six em_set_iv calls quietly leave the ability bit pointing
+ * at a PID that no longer exists, and drop the egg flag on the floor. */
+uint32_t em_get_ivword(const EditMon* e);
+void     em_set_ivword(EditMon* e, uint32_t w);
+
 /* Decode the current edit state into a PkMon for live preview (party stats are
  * plaintext; box stats need pk_resolve by the caller). */
 void em_preview(const EditMon* e, PkMon* out);

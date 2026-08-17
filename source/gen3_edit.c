@@ -526,11 +526,14 @@ static void encode_name(uint8_t* dst, int cap, const char* s) {
 void em_set_nickname(EditMon* e, const char* s) { encode_name(e->raw + 0x08, 10, s); }
 void em_set_otname(EditMon* e, const char* s)   { encode_name(e->raw + 0x14, 7, s); }
 
-static void apply_pid(EditMon* e, uint32_t pid) {
+void em_set_pid(EditMon* e, uint32_t pid) {
   e->personality = pid;
   wr32(e->raw + 0x00, pid);
   recompute_party_stats(e);                      /* nature may have changed -> stats shift */
 }
+
+uint32_t em_get_ivword(const EditMon* e) { return rd32(e->sub[3] + 4); }
+void em_set_ivword(EditMon* e, uint32_t w) { wr32(e->sub[3] + 4, w); recompute_party_stats(e); }
 
 bool em_reroll(EditMon* e, int want_nature, int want_shiny, int want_gender, uint8_t gender_ratio) {
   uint16_t tid = (uint16_t)(e->otId & 0xFFFF), sid = (uint16_t)(e->otId >> 16);
@@ -544,7 +547,7 @@ bool em_reroll(EditMon* e, int want_nature, int want_shiny, int want_gender, uin
         uint32_t pid = ((uint32_t)hi << 16) | lo;
         if (want_nature >= 0 && (int)(pid % 25) != want_nature) continue;
         if (want_gender >= 0 && pk_gender_from(pid, gender_ratio) != want_gender) continue;
-        apply_pid(e, pid);
+        em_set_pid(e, pid);
         return true;
       }
     }
@@ -561,7 +564,7 @@ bool em_reroll(EditMon* e, int want_nature, int want_shiny, int want_gender, uin
       if (shiny) continue;
     }
     if (want_gender >= 0 && pk_gender_from(pid, gender_ratio) != want_gender) continue;
-    apply_pid(e, pid);
+    em_set_pid(e, pid);
     return true;
   }
   return false;
@@ -582,7 +585,7 @@ bool em_set_unown_form(EditMon* e, int form) {
     if ((int)(pid % 25) != cur_nat) continue;
     int shiny = ((uint16_t)(tid ^ sid ^ (uint16_t)(pid & 0xFFFF) ^ (uint16_t)(pid >> 16)) < 8);
     if (shiny != cur_shiny) continue;
-    apply_pid(e, pid);
+    em_set_pid(e, pid);
     return true;
   }
   return false;
