@@ -444,13 +444,20 @@ void boxoam_load_box(const PkMon box[30]) {
  * Returns 1 if it animated, 0 if it could not — the caller uses that to fall back to the
  * 1 px positional bob rather than leaving the grid dead. */
 int boxoam_set_frame(int frame) {
-  frame &= 1;
-  if (frame == s_frame) return 1;               /* already there == animating fine */
-  /* Streamed icons have no frame-1 source in RAM, and there is nowhere to cache one:
+  /* CAPABILITY FIRST, BEFORE the already-on-that-frame short-circuit. Getting this
+   * order wrong is not cosmetic: on a box that cannot pose-swap, s_frame never advances
+   * past 0, so an equality test placed above this line answers "1, already there" on
+   * every even tick. The caller then skips its boxoam_set_bob(0), the grid nudges down
+   * on odd ticks and never comes back up, and the icons park 1 px low forever — worse
+   * than the bob this was meant to replace. That shipped in 010ec90; this is the fix.
+   *
+   * Streamed icons have no frame-1 source in RAM, and there is nowhere to cache one:
    * frame 1 for a full box is 15 KiB, EWRAM has ~1.5 KiB free, and the only large
    * borrowable block (app_arena_acquire) IS g_pc — the very buffer this screen is
    * displaying. So the artless/ROM-icon build keeps the positional bob. */
   if (s_rom_icons) return 0;
+  frame &= 1;
+  if (frame == s_frame) return 1;               /* already there == animating fine */
   s_frame = frame;
   for (int s = 0; s < 30; s++) {
     /* eggs keep their single Egg frame; covered regions hold the carried block's art
