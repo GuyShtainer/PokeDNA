@@ -1824,11 +1824,18 @@ int pdna_box(BoxSource* src) {
            if (++anim_ctr >= ANIM_PERIOD) {
              anim_ctr = 0; bob ^= 1;
              boxoam_hand_pose(bob ? BOXOAM_POSE_BOUNCE : BOXOAM_POSE_NORMAL);
-             boxoam_set_bob(bob);                 /* the grid's own idle, restored */
+             /* The REAL animation first: a 2-frame pose swap, which is what Gen 3
+              * actually does and what "animated" means. It only fails on ROM-streamed
+              * icons (no frame-1 source in RAM, and no 15 KiB anywhere to cache one —
+              * see boxoam_set_frame). There, and only there, fall back to nudging the
+              * sprites 1 px so the grid is not dead. Guy's words for the fallback on
+              * its own were "not animated, just jumping up and down" — exactly right,
+              * which is why it is now the fallback and not the animation. */
+             if (!boxoam_set_frame(bob)) boxoam_set_bob(bob);
              boxoam_cursor(cur, on_title, cursor_look());
            }
          } else if (bob) { bob = 0; boxoam_hand_pose(BOXOAM_POSE_NORMAL);
-                           boxoam_set_bob(0);     /* settle the grid when the idle stops */
+                           if (!boxoam_set_frame(0)) boxoam_set_bob(0);   /* settle the grid */
                            boxoam_cursor(cur, on_title, cursor_look()); }
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);

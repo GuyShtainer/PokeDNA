@@ -63,8 +63,11 @@ int  boxoam_icons_available(void);
 void boxoam_set_bob(int dy);
 
 /* Swap the box icons to bob frame 0/1 (the real Gen-3 2-frame pose animation) by
- * DMA-uploading that frame's tiles for every occupied icon. Call from the vblank tick. */
-void boxoam_set_frame(int frame);
+ * DMA-uploading that frame's tiles for every occupied icon. Call from the vblank tick.
+ * Returns 1 if it animated, 0 if this box cannot pose-swap (ROM-streamed icons have no
+ * frame-1 source in RAM and nowhere to cache one) — callers should fall back to
+ * boxoam_set_bob so the grid still shows life. */
+int boxoam_set_frame(int frame);
 
 /* Position/show the cursor hand. on_title -> parked over the banner. mode picks the
  * normal/orange(MOVE)/translucent(ITEM) look. cur is the 0..29 grid cell. */

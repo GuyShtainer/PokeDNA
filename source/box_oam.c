@@ -427,11 +427,30 @@ void boxoam_load_box(const PkMon box[30]) {
 
 /* The real Gen-3 box "bob" — a 2-frame pose swap. DMA the chosen frame's tiles for every
  * occupied icon into the SAME OBJ VRAM window (the two frames can't both fit, so we swap).
- * ~15 KiB for a full box; call in the vblank window. */
-void boxoam_set_frame(int frame) {
+ *
+ * WHY THE TWO FRAMES CANNOT BOTH BE RESIDENT, since it keeps getting re-asked: the box
+ * screen is a BITMAP mode, so OBJ tile memory is only the upper half, tiles 512..1023 =
+ * 16 KiB. This module already spends all of it — 30 icons x 16 tiles = 480 (TID_ICON0),
+ * plus 16 for the hand (TID_HAND 992) and 16 for region B (TID_REGB 1008) = exactly 512
+ * tiles. There is no second frame's worth of VRAM, at any price.
+ *
+ * The re-upload itself is cheap and DOES fit the vblank: upload_tiles is dma3_cpy, so a
+ * full box is 15,360 B = 3,840 words, roughly 9 K cycles against vblank's 83,776 — about
+ * 11%. (The "cannot fit the vblank window" note at the top of this file is about
+ * upload_tiles_VERIFIED, which reads every word back a second time. This path uses the
+ * plain copy: the icons were already verified when the box was staged, and a bob tick
+ * re-sends bytes that are known good.)
+ *
+ * Returns 1 if it animated, 0 if it could not — the caller uses that to fall back to the
+ * 1 px positional bob rather than leaving the grid dead. */
+int boxoam_set_frame(int frame) {
   frame &= 1;
-  if (frame == s_frame) return;
-  if (s_rom_icons) return;                      /* streamed icons: no frame-1 source in RAM */
+  if (frame == s_frame) return 1;               /* already there == animating fine */
+  /* Streamed icons have no frame-1 source in RAM, and there is nowhere to cache one:
+   * frame 1 for a full box is 15 KiB, EWRAM has ~1.5 KiB free, and the only large
+   * borrowable block (app_arena_acquire) IS g_pc — the very buffer this screen is
+   * displaying. So the artless/ROM-icon build keeps the positional bob. */
+  if (s_rom_icons) return 0;
   s_frame = frame;
   for (int s = 0; s < 30; s++) {
     /* eggs keep their single Egg frame; covered regions hold the carried block's art
@@ -444,6 +463,7 @@ void boxoam_set_frame(int frame) {
       upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles,
                    MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
   }
+  return 1;
 }
 
 void boxoam_set_bob(int dy) {
