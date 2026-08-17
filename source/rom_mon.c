@@ -62,7 +62,41 @@ static uint16_t table_species(uint16_t species, uint8_t form) {
   return species;
 }
 
-int rom_mon_locate(const RomMon* rm, uint16_t species, uint8_t form, RomMonLoc* out) {
+/* Read a SMALL table field (<= 4 B) at `off`.
+ *
+ * attempts == 1: one plain read — the legacy contract.
+ * attempts >  1: read the field TWICE, back to back, and accept only when the two
+ *   passes agree; retry up to `attempts` times. These few bytes are the icon's
+ *   ADDRESS and its palette bank, so a transient garble here is not a garbled
+ *   picture, it is the WRONG picture — and a caller that verifies the 512 B frame by
+ *   reading it twice cannot see that, because both of its passes read the same wrong
+ *   offset and agree. Verifying the lookup is the only place that error is visible.
+ *
+ * Reading the same few bytes twice back to back is also the cheapest verify this
+ * source can do: the second read seeks BACKWARD by at most 4 bytes, which stays
+ * inside the current cluster, so FatFs f_lseek takes its same-or-following-cluster
+ * fast path (ff.c:4523) instead of re-walking the chain from the head of a 16 MB file
+ * (FF_USE_FASTSEEK is 0). It adds no FAR seek at all.
+ *
+ * Returns 1 = value in dst is trustworthy, 0 = a read failed, -1 = reads succeeded
+ * but the passes never agreed. */
+static int read_small(const RomMon* rm, uint32_t off, uint8_t* dst, uint32_t len,
+                      int attempts) {
+  if (attempts < 1) attempts = 1;
+  if (attempts == 1) return rm->rc->read(rm->rc->ctx, off, dst, len) ? 1 : 0;
+  uint8_t b[4];
+  if (len > sizeof b) return 0;
+  for (int a = 0; a < attempts; a++) {
+    if (!rm->rc->read(rm->rc->ctx, off, dst, len)) return 0;
+    if (!rm->rc->read(rm->rc->ctx, off, b, len)) return 0;
+    if (memcmp(dst, b, len) == 0) return 1;
+  }
+  return -1;
+}
+
+static int locate_ex(const RomMon* rm, uint16_t species, uint8_t form, RomMonLoc* out,
+                     int attempts, int* unstable) {
+  if (unstable) *unstable = 0;
   if (!out) return 0;
   out->tiles = 0; out->pal = 0; out->ok = 0;     /* fail closed: a memo self-invalidates */
   if (!rm || !rm->ok) return 0;
@@ -71,18 +105,29 @@ int rom_mon_locate(const RomMon* rm, uint16_t species, uint8_t form, RomMonLoc* 
   if (ts >= RM_TABLE_ENTRIES) return 0;
 
   uint8_t pe[4];
-  if (!rm->rc->read(rm->rc->ctx, rm->icons + (uint32_t)ts * 4, pe, 4)) return 0;
+  int r = read_small(rm, rm->icons + (uint32_t)ts * 4, pe, 4, attempts);
+  if (r <= 0) { if (r < 0 && unstable) *unstable = 1; return 0; }
   uint32_t pic = rd32le(pe);
   if (!ptr_ok(rm, pic, ROM_MON_ICON_FRAMES * ROM_MON_ICON_BYTES)) return 0;
 
   uint8_t id = 0;
-  if (!rm->rc->read(rm->rc->ctx, rm->pal_ids + ts, &id, 1)) return 0;
+  r = read_small(rm, rm->pal_ids + ts, &id, 1, attempts);
+  if (r <= 0) { if (r < 0 && unstable) *unstable = 1; return 0; }
   if (id >= ROM_MON_PALS) return 0;
 
   out->tiles = pic - ROM_BASE;
   out->pal   = id;
   out->ok    = 1;
   return 1;
+}
+
+int rom_mon_locate(const RomMon* rm, uint16_t species, uint8_t form, RomMonLoc* out) {
+  return locate_ex(rm, species, form, out, 1, 0);
+}
+
+int rom_mon_locate_verified(const RomMon* rm, uint16_t species, uint8_t form,
+                            RomMonLoc* out, int attempts, int* unstable) {
+  return locate_ex(rm, species, form, out, attempts < 2 ? 2 : attempts, unstable);
 }
 
 int rom_mon_icon_at(const RomMon* rm, const RomMonLoc* loc, uint8_t frame,

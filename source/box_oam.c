@@ -163,17 +163,31 @@ static int rom_icon_read_verified(uint16_t species, uint8_t form, int egg, int* 
   uint16_t sp = egg ? 412 : species;
   uint8_t f  = egg ? 0 : form;
   rumble_io_suspend();
-  /* LOCATE ONCE, then read the same frame twice. The two table lookups cannot change
-   * between the verify passes, so doing them per pass cost four extra RomCtx reads per
-   * icon (six down to two, or zero extra on a memo hit) — and on the SD-file source
-   * every one of those was a BACKWARD f_lseek that FatFs walks from the head of the
-   * cluster chain of a 16 MB file. The verify itself is untouched: still two whole
-   * reads that must agree, still four attempts, still the same give-up log. */
+  /* LOCATE ONCE — VERIFIED — then read the same frame twice.
+   *
+   * Locating once per icon instead of once per verify pass is what removed four
+   * RomCtx reads per icon (and all of them on a memo hit); what it must NOT remove is
+   * the verify's cover over the lookup itself. The pointer and the palette id ARE the
+   * answer to "which species is this": a garbled pointer that still lands inside the
+   * image passes ptr_ok, and with the location cached BOTH frame passes then read that
+   * same wrong offset, agree, and paint another species' icon with nothing logged.
+   * rom_mon_locate_verified reads each field twice back to back and requires
+   * agreement, which is exactly the coverage the pre-memo code got from re-locating
+   * per pass — and it adds no FAR seek, because a same-offset re-read of 4 bytes stays
+   * inside the current FatFs cluster (rom_mon.c read_small). The FRAME verify below is
+   * untouched: still two whole reads that must agree, four attempts, same give-up log. */
   if (!(s_iconloc.ok && s_iconloc_sp == sp && s_iconloc_f == f)) {
+    int unstable = 0;
     s_iconloc_sp = sp; s_iconloc_f = f;
-    if (!rom_mon_locate(s_rommon, sp, f, &s_iconloc)) {   /* leaves ok = 0 */
-      s_iconloc_sp = 0xFFFF;
+    if (!rom_mon_locate_verified(s_rommon, sp, f, &s_iconloc, 4, &unstable)) {
+      s_iconloc_sp = 0xFFFF;                     /* leaves ok = 0: the memo self-voids */
       rumble_io_resume();
+      /* Fail CLOSED on an unstable lookup — the slot draws empty. Everywhere else here
+       * "a maybe-garbled icon beats a hole", but that trade is about PIXELS; an address
+       * we cannot agree on would confidently draw the wrong Pokemon, which reads as
+       * the save being wrong. A bounds failure (a corrupt species id in the save) is
+       * not logged, so it cannot spam the log on every box load. */
+      if (unstable) { log_line("icons: rom locate unstable sp=%u", sp); app_log_flush(); }
       return 0;
     }
   }

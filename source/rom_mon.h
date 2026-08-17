@@ -66,6 +66,29 @@ typedef struct RomMonLoc {
  * left with ok = 0, so a memoised RomMonLoc self-invalidates). */
 int rom_mon_locate(const RomMon* rm, uint16_t species, uint8_t form, RomMonLoc* out);
 
+/* Same, but VERIFIED: every table field is read twice back to back and accepted only
+ * when both passes agree, retried up to `attempts` times (minimum 2).
+ *
+ * WHY a caller that memoises the location MUST use this. The two fields locate reads
+ * are the icon's ADDRESS and its palette bank. Garble the pointer and ptr_ok still
+ * accepts it as long as it lands inside the image with 1 KiB of room, so the frame
+ * read succeeds — off the WRONG offset. A caller that verifies the 512 B frame by
+ * reading it twice cannot catch that: with the location located once, both of its
+ * passes read the same wrong offset, the two frames are identical, the verify says
+ * "stable", and the slot shows another species' art with nothing logged. The same
+ * goes for the palette byte: a garbled id that still lands in 0..2 picks the wrong
+ * OBJ palette bank. Before the memo existed, box_oam re-did these lookups inside
+ * every verify pass, and that is the coverage this restores — cheaply, because the
+ * second read of a 1..4 byte field is a backward seek that stays inside the current
+ * cluster (see read_small in rom_mon.c) and so costs no extra FAR seek.
+ *
+ * Returns 1 with *out usable; 0 on failure with out->ok = 0 (so a memoised RomMonLoc
+ * self-invalidates). `unstable` (may be NULL) is set to 1 only for the case worth
+ * logging: the reads themselves succeeded but never agreed. A bounds/read failure
+ * leaves it 0, so a corrupt species id in a save cannot spam the log. */
+int rom_mon_locate_verified(const RomMon* rm, uint16_t species, uint8_t form,
+                            RomMonLoc* out, int attempts, int* unstable);
+
 /* Read one 512 B frame of an already-located icon. One read, no lookups. */
 int rom_mon_icon_at(const RomMon* rm, const RomMonLoc* loc, uint8_t frame,
                     uint8_t dst[ROM_MON_ICON_BYTES]);
