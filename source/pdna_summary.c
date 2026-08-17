@@ -26,6 +26,8 @@
 #include "type_icons.h"
 #include "snd.h"
 #include "rumble.h"       /* rumble_io_suspend/resume around the ROM-read portrait LZ77 */
+#include "gen3_ivroll.h"  /* the IV reroll: one shared roller, an undo/redo list */
+#include "pdna_layout.h"  /* the reroll row's geometry + every string it draws */
 
 #define NCARDS 8
 
@@ -52,7 +54,11 @@ static const char* DSHORT[6] = { "HP", "Atk", "Def", "SpA", "SpD", "Spd" };
 #define C_VAL  UI_TEXT
 #define C_HOT  UI_WARN
 
-static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
+/* The reroll's entropy: this counts vblanks, so the seed depends on WHEN A was pressed —
+ * the only unpredictable thing a GBA has. gba_rtc_get is second-resolution and simply
+ * absent with the RTC switched off, so it cannot be the source. */
+static uint32_t s_ticks = 0;
+static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); s_ticks++; }
 
 /* SELECT flips the portrait between front and back sprite (issue #12); persists
  * across mon-scroll within a summary session. */
@@ -66,6 +72,23 @@ static void reg(int field, int x, int y, int w) {
   if (g_edit && g_nslot < 24) { g_slot[g_nslot].field = field; g_slot[g_nslot].x = x;
                                 g_slot[g_nslot].y = y; g_slot[g_nslot].w = w; g_nslot++; }
 }
+
+/* F_SUM_REROLL is a SUMMARY-LOCAL pseudo-field, one past pdna_edit.h's F_NUM and
+ * deliberately NOT an entry in that enum: the field-list editor walks 0..F_NUM-1 and indexes
+ * FLABEL[] by the same id (pdna_edit.c:117-126), so a real field id would put a dead
+ * "Reroll" row in a screen with no history to step and no confirm panel. It rides the slot
+ * registry purely to inherit focus, the highlight frame and U/D navigation; summary_run
+ * intercepts it before em_field_press/em_field_adjust ever see it.
+ * LIFETIME = ONE POKEMON: ivh_reset runs at the top of summary_run, and every mon change
+ * RETURNS from summary_run for the caller to call again (pdna_main.c:944, :968, :3238,
+ * :3346), so a redo entry can never be applied to a different mon. ivh_sync, once per
+ * repaint, is the other half of that promise. */
+#define F_SUM_REROLL (F_NUM + 0)
+_Static_assert(F_SUM_REROLL >= F_NUM, "summary pseudo-fields must sit past the real enum");
+static IvHistory g_ivh;
+static IvRollState g_roll_st;      /* seed survives across mons: never reset it */
+static bool      g_last_ivonly = false;   /* the newest roll kept the PID */
+static bool      g_have_roll   = false;
 
 static void draw_dots(int x, int y, int n, int active) {
   for (int i = 0; i < n; i++) {
@@ -278,6 +301,33 @@ static void card_skills(const PkMon* p) {
   }
 }
 
+/* The reroll button, the two history arrows Guy asked for, and a note row saying where in
+ * the history you are. Drawn dimmed in VIEW mode too, so the feature is discoverable. */
+static void draw_reroll_row(const PkMon* p) {
+  const int x = PDNA_SUM_CARD_X, y = PDNA_SUM_ROLL_Y, w = PDNA_SUM_CARD_W;
+  bool armed = g_edit && !p->isBadEgg;
+  if (armed) reg(F_SUM_REROLL, x, y, w);
+  ui_panel(x - 2, y + PDNA_SUM_ROLL_BOX_DY, w + 2, PDNA_SUM_ROLL_BOX_H, UI_PANEL, UI_BORDER);
+  int lw = (int)strlen(PDNA_SUM_ROLL_LBL) * UI_SYS8_W;
+  ui_text(x + (w - lw) / 2, y, armed ? C_VAL : UI_DIM, PDNA_SUM_ROLL_LBL);
+  /* Lit only when there is somewhere to step, so the arrows tell the truth about the ends
+   * of the list rather than inviting a press that does nothing. */
+  ui_text(x, y, (armed && g_ivh.cur > 0) ? C_HOT : UI_DIM, PDNA_SUM_ARROW_L);
+  ui_text(x + w - UI_SYS8_W, y,
+          (armed && g_ivh.cur + 1 < g_ivh.n) ? C_HOT : UI_DIM, PDNA_SUM_ARROW_R);
+  char b[40];
+  if (p->isBadEgg)       strcpy(b, PDNA_SUM_NOTE_BADEGG);
+  else if (!g_edit)      strcpy(b, PDNA_SUM_NOTE_VIEW);
+  else if (g_ivh.n <= 1) strcpy(b, PDNA_SUM_NOTE_IDLE);
+  else {
+    const char* tail = (g_ivh.cur == 0) ? PDNA_SUM_TAIL_ORIG
+                     : (g_have_roll && g_ivh.cur + 1 == g_ivh.n && g_last_ivonly)
+                       ? PDNA_SUM_TAIL_IVONLY : PDNA_SUM_TAIL_PIDIV;
+    siprintf(b, PDNA_SUM_NOTE_FMT, g_ivh.cur + 1, g_ivh.n, tail);
+  }
+  ui_ptext_fit(x, PDNA_SUM_NOTE_Y, w, UI_DIM, b);
+}
+
 static void card_spread(const PkMon* p, bool ev) {
   int x = 98, y = 14; char b[48];
   ui_text(x, y, C_HDR, ev ? "EVs" : "IVs"); y += 12;
@@ -297,6 +347,8 @@ static void card_spread(const PkMon* p, bool ev) {
   ui_text(x, y, C_KEY, "TOTAL");
   siprintf(b, "%d / %d", total, ev ? 510 : 186);
   ui_text(x + 44, y, total > (ev ? 510 : 186) ? UI_WARN : C_HOT, b);
+  if (!ev) draw_reroll_row(p);   /* the IV spread gets the reroll; the EV card has no RNG
+                                  * story to tell */
 }
 
 static void card_moves(const PkMon* p, bool contest) {
@@ -420,6 +472,86 @@ static bool confirm(void) {
  * "the slot stays empty", not "your edits are lost". */
 static bool confirm_keep(void) {
   return confirm_q("Keep this Pokemon?", "A = write (backup first)", "B = discard it");
+}
+
+static const char UNOWN_CH[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ!?";
+
+/* THE CONFIRM PANEL. For a caught Pokemon the IVs are not free: new IVs mean a new PID, and
+ * the PID IS the nature, sex, ability slot, shininess and Unown letter. The search keeps
+ * every one of them where it can (measured: never had to drop one over a 2,000-Pokemon
+ * sweep); this panel is for the case it could not — a SHINY, where keeping the sparkle costs
+ * ~8,192x more seeds than the budget can also spend on the nature — and for the one case
+ * NOTHING can keep, an NPC trade, whose PID is a constant in the trade template rather than
+ * RNG output. B cancels with NOTHING written and the history untouched. Never shown on the
+ * PID-exempt path. Drawn at x=96 so the portrait at x=12..79 stays visible, which is what
+ * its old comment claimed and its old geometry (x=16, w=208) did not do. */
+static bool reroll_confirm(const IvRoll* r) {
+  char ln[PDNA_SUM_RC_LINES][32];
+  int n = 0;
+  /* FIRST, because it is the only line that is about legality rather than looks — and the
+   * only one no search could have avoided. */
+  if (r->chg_trade && n < PDNA_SUM_RC_LINES)
+    strcpy(ln[n++], PDNA_SUM_RC_TRADE);
+  if (r->chg_shiny && n < PDNA_SUM_RC_LINES)
+    strcpy(ln[n++], r->new_shiny ? PDNA_SUM_RC_SHINY_ON : PDNA_SUM_RC_SHINY_OFF);
+  if (r->chg_nature && n < PDNA_SUM_RC_LINES)
+    siprintf(ln[n++], PDNA_SUM_RC_NAT_FMT, pk_nature_name(r->old_nature),
+                                           pk_nature_name(r->new_nature));
+  if (r->chg_gender && n < PDNA_SUM_RC_LINES)
+    siprintf(ln[n++], PDNA_SUM_RC_SEX_FMT, gender_sym(r->old_gender), gender_sym(r->new_gender));
+  if (r->chg_ability && n < PDNA_SUM_RC_LINES)
+    siprintf(ln[n++], PDNA_SUM_RC_ABI_FMT, (unsigned)(r->old_ability + 1),
+                                           (unsigned)(r->new_ability + 1));
+  if (r->chg_form && n < PDNA_SUM_RC_LINES)
+    siprintf(ln[n++], PDNA_SUM_RC_UNO_FMT, UNOWN_CH[r->old_form % 28], UNOWN_CH[r->new_form % 28]);
+  if (n == 0) return true;                        /* everything survived: no question */
+  int h  = PDNA_SUM_RC_HEAD + n * PDNA_SUM_RC_ROW_H + PDNA_SUM_RC_FOOT;
+  int tx = PDNA_SUM_RC_X + PDNA_SUM_RC_PAD;
+  ui_panel(PDNA_SUM_RC_X, PDNA_SUM_RC_Y, PDNA_SUM_RC_W, h, UI_PANEL, UI_WARN);
+  ui_text(tx, PDNA_SUM_RC_Y + 6, UI_TITLE, PDNA_SUM_RC_TITLE);
+  /* PROPORTIONAL, not sys8: "Nat ADAMANT>ADAMANT" is 19 glyphs, and at sys8's fixed 8 px
+   * cell that is 152 px against a 120 px text column — it would have lost the second
+   * nature entirely, on the one line whose whole job is to name what changed.
+   * tests/host_textfit_test.c pins every line on this panel at its worst case. */
+  for (int i = 0; i < n; i++)
+    ui_ptext_fit(tx, PDNA_SUM_RC_Y + PDNA_SUM_RC_HEAD + i * PDNA_SUM_RC_ROW_H,
+                 PDNA_SUM_RC_TEXT_W, UI_WARN, ln[i]);
+  ui_text(tx, PDNA_SUM_RC_Y + h - 14, UI_DIM, PDNA_SUM_RC_HINT);
+  u16 k; do { s_vsync(); k = key_hit(KEY_A | KEY_B); } while (!k);
+  if (k & KEY_A) { snd_ok(); return true; }
+  snd_back();
+  return false;
+}
+
+/* A on the reroll row. CHUNKED: 8,000 candidates a frame with an s_vsync() between slices,
+ * so sound, rumble and the frame counter keep running. A monolithic search would block
+ * s_vsync for ~0.5-1.0 s on a shiny — and s_vsync is the sole caller of snd_vblank(), which
+ * is the sole caller of rmbl_vblank(), which is the only thing that ENDS a rumble cue, so
+ * the motor would stay energised for the whole search on Guy's Omega. */
+static bool do_reroll(EditMon* e, PkMon* cur) {
+  if (cur->isBadEgg) { snd_back(); return false; }
+  if (!g_roll_st.seed)
+    g_roll_st.seed = ((uint32_t)s_ticks << 11) ^ ((uint32_t)REG_VCOUNT << 3)
+                   ^ e->personality ^ e->otId ^ 0x9E3779B9u;
+  g_roll_st.rung = 0; g_roll_st.started = 0;
+  IvRoll r; int rc;
+  ui_name_chip(PDNA_SUM_CARD_X, PDNA_SUM_NOTE_Y - 1, 60, 10, UI_WARN, 0x7FFF, PDNA_SUM_ROLLING);
+  while ((rc = iv_roll_step(e, cur, &g_roll_st, 8000u, &r)) == 0) s_vsync();
+  if (rc < 0) { snd_back(); return false; }
+  if (r.pid_locked && !reroll_confirm(&r)) return false;   /* cancelled: nothing applied */
+  iv_roll_apply(e, &r);
+  em_preview(e, cur); pk_resolve(cur);
+  ivh_push(&g_ivh, e);
+  g_last_ivonly = !r.pid_locked; g_have_roll = true;
+  return true;                     /* the A-press earcon at line 602 already fired */
+}
+
+static bool do_history(EditMon* e, PkMon* cur, int dir) {
+  if (!ivh_step(&g_ivh, e, dir)) { snd_back(); return false; }
+  em_preview(e, cur); pk_resolve(cur);
+  g_have_roll = false;             /* the note now describes a roll we have stepped off */
+  snd_edit();
+  return true;
 }
 
 /* ---- portrait animation (Emerald-style entrance bounce + gentle idle bob) ----
@@ -561,6 +693,7 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
   gen3_edit_load(rec, is_party, &e);
   PkMon cur;
   em_preview(&e, &cur); pk_resolve(&cur);
+  ivh_reset(&g_ivh, &e); g_have_roll = false;   /* the history belongs to THIS Pokemon */
 
   int card = (card_io && *card_io >= 0 && *card_io < NCARDS) ? *card_io : 0;
   int fsel = 0;
@@ -574,6 +707,11 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
   for (;;) {
     g_edit = editing;
     g_create = create && !editing;
+    /* Keep the history honest: anything that moved the PID or the IV word behind its back —
+     * a hand-edited IV row, a nature change on the INFO card (which re-rolls the PID), a
+     * species change — rebases it, so the arrows and the "Roll k/n" counter can never
+     * describe a state the record is not in. */
+    ivh_sync(&g_ivh, &e);
     render_card(&cur, card);
     if (editing && g_nslot) {
       if (fsel >= g_nslot) fsel = g_nslot - 1;
@@ -581,11 +719,13 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
       m3_frame(sx - 2, sy - 1, sx + sw, sy + UI_ROW_H, UI_SELTEXT);
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, editing ? (create ? "A list  <>edit  L/R  START"
-                                              : "A list  <>edit  U/D  L/R  B")
-                          : create   ? "A edit  L/R card  START keep"
-                          : can_edit ? "A edit  U/D mon  L/R  SEL  B"
-                                     : "U/D mon  L/R card  SEL  B");
+    const char* foot =
+        (editing && g_nslot && g_slot[fsel].field == F_SUM_REROLL) ? PDNA_SUM_FOOT_REROLL
+      : editing  ? (create ? PDNA_SUM_FOOT_CREATE_EDIT : PDNA_SUM_FOOT_EDIT)
+      : create   ? PDNA_SUM_FOOT_CREATE
+      : can_edit ? PDNA_SUM_FOOT_VIEW
+                 : PDNA_SUM_FOOT_RO;
+    ui_text(4, PDNA_SUM_FOOTER_Y, UI_DIM, foot);
     lastkey = 64 | (64 << 8) | (64 << 16) | (64 << 24);   /* render_card drew the rest pose (64,64,0,0) */
     /* Fetch the portrait ONCE per repaint, not once per animation frame.
      *
@@ -646,9 +786,23 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
       /* ---- EDIT MODE ---- */
       if (k & KEY_B) editing = false;              /* back to VIEW, keep pending edits */
       else if (k & (KEY_L | KEY_R)) { card = (card + (k & KEY_R ? 1 : NCARDS - 1)) % NCARDS; fsel = 0; }
-      else if (g_nslot && (k & KEY_A))    { em_field_press(g_slot[fsel].field, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true; }
-      else if (g_nslot && (k & KEY_LEFT)) { em_field_adjust(g_slot[fsel].field, -1, false, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true; }
-      else if (g_nslot && (k & KEY_RIGHT)){ em_field_adjust(g_slot[fsel].field, +1, false, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true; }
+      /* NOTE the LEFT/RIGHT branches test `fresh`, NOT `k`, on the reroll row: LEFT/RIGHT
+       * are in key_repeat_mask above, so a held d-pad would otherwise scrub fifteen history
+       * entries in a quarter of a second and machine-gun snd_back() at the end of them. */
+      else if (g_nslot && (k & KEY_A)) {
+        if (g_slot[fsel].field == F_SUM_REROLL) { if (do_reroll(&e, &cur)) dirty = true; }
+        else { em_field_press(g_slot[fsel].field, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true; }
+      }
+      else if (g_nslot && (k & KEY_LEFT)) {
+        if (g_slot[fsel].field == F_SUM_REROLL) {
+          if ((fresh & KEY_LEFT) && do_history(&e, &cur, -1)) dirty = true;
+        } else { em_field_adjust(g_slot[fsel].field, -1, false, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true; }
+      }
+      else if (g_nslot && (k & KEY_RIGHT)) {
+        if (g_slot[fsel].field == F_SUM_REROLL) {
+          if ((fresh & KEY_RIGHT) && do_history(&e, &cur, +1)) dirty = true;
+        } else { em_field_adjust(g_slot[fsel].field, +1, false, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true; }
+      }
       else if (k & KEY_UP)   { if (g_nslot) fsel = (fsel > 0) ? fsel - 1 : g_nslot - 1; }
       else if (k & KEY_DOWN) { if (g_nslot) fsel = (fsel + 1) % g_nslot; }
     } else {

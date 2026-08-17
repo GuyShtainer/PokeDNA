@@ -147,12 +147,11 @@ int main(void) {
   T("A menu  UP  SEL  B", 80);
 
   printf("\n== summary screen (#25) ==\n");
-  /* pdna_summary.c footers, drawn at x=4 */
-  T("A list  <>edit  L/R  START", 4);
-  T("A edit  L/R card  START keep", 4);
-  T("A list  <>edit  U/D  L/R  B", 4);
-  T("A edit  U/D mon  L/R  SEL  B", 4);
-  T("U/D mon  L/R card  SEL  B", 4);
+  /* pdna_summary.c footers, drawn at x=4 — the MACROS the screen draws, not copies of
+   * them, so adding a word to a hint is what fails here rather than in someone's photo. */
+#define SUMFOOT(s) T(s, 4);
+  PDNA_SUM_FOOTS(SUMFOOT)
+#undef SUMFOOT
   /* confirm_q panel: ui_panel(16, 44, 208, 60) so the ink must stop by x=224, and the
    * lines are drawn at x=28. This is where "A = write  (backup made first)" ran 44 px
    * past the panel and 28 px off the screen before it was shortened. */
@@ -162,6 +161,62 @@ int main(void) {
   chk("confirm panel", 28, PANEL_R - 28, (int)strlen("A = write (backup first)") * SYS8_W, "A = write (backup first)");
   chk("confirm panel", 28, PANEL_R - 28, (int)strlen("B = discard") * SYS8_W, "B = discard");
   chk("confirm panel", 28, PANEL_R - 28, (int)strlen("B = discard it") * SYS8_W, "B = discard it");
+
+  printf("\n== summary screen: the IV reroll row (#25) ==\n");
+  /* The button and its two history arrows share ONE 138 px card row: the label is centred
+   * and the arrows sit hard against each end, so the label must not reach either of them. */
+  T(PDNA_SUM_ROLL_LBL, PDNA_SUM_CARD_X + (PDNA_SUM_CARD_W
+      - (int)strlen(PDNA_SUM_ROLL_LBL) * SYS8_W) / 2);
+  chkv("reroll label clear of both arrows",
+       (int)strlen(PDNA_SUM_ROLL_LBL) * SYS8_W, PDNA_SUM_CARD_W - 2 * SYS8_W - 2);
+  T(PDNA_SUM_ARROW_L, PDNA_SUM_CARD_X);
+  T(PDNA_SUM_ARROW_R, PDNA_SUM_CARD_X + PDNA_SUM_CARD_W - SYS8_W);
+  T(PDNA_SUM_ROLLING, PDNA_SUM_CARD_X);
+  /* The note row is ui_ptext_fit'd into the card width, so it can only clip itself —
+   * measure every string it can hold, including the widest possible counter. */
+  PF(PDNA_SUM_NOTE_IDLE,   PDNA_SUM_CARD_X, PDNA_SUM_CARD_W);
+  PF(PDNA_SUM_NOTE_VIEW,   PDNA_SUM_CARD_X, PDNA_SUM_CARD_W);
+  PF(PDNA_SUM_NOTE_BADEGG, PDNA_SUM_CARD_X, PDNA_SUM_CARD_W);
+  { char b[48];
+    /* the widest counter the ring can ever print: two 2-digit numbers at capacity, and
+     * the longest of the three tails */
+    sprintf(b, PDNA_SUM_NOTE_FMT, IVH_CAP, IVH_CAP, PDNA_SUM_TAIL_ORIG);
+    PF(b, PDNA_SUM_CARD_X, PDNA_SUM_CARD_W);
+    sprintf(b, PDNA_SUM_NOTE_FMT, IVH_CAP, IVH_CAP, PDNA_SUM_TAIL_IVONLY);
+    PF(b, PDNA_SUM_CARD_X, PDNA_SUM_CARD_W);
+    sprintf(b, PDNA_SUM_NOTE_FMT, IVH_CAP, IVH_CAP, PDNA_SUM_TAIL_PIDIV);
+    PF(b, PDNA_SUM_CARD_X, PDNA_SUM_CARD_W); }
+
+  printf("\n== summary screen: the \"PID moves\" confirm panel (#25) ==\n");
+  /* Title and hint are sys8; the five variable lines are proportional (ui_ptext_fit),
+   * because "Nat ADAMANT>ADAMANT" is 19 glyphs = 152 px at sys8's fixed cell against a
+   * 120 px column. All of them are measured at the widest value they can hold. */
+#define RC_TX (PDNA_SUM_RC_X + PDNA_SUM_RC_PAD)
+  chk("confirm PID panel", RC_TX, PDNA_SUM_RC_TEXT_W,
+      (int)strlen(PDNA_SUM_RC_TITLE) * SYS8_W, PDNA_SUM_RC_TITLE);
+  chk("confirm PID panel", RC_TX, PDNA_SUM_RC_TEXT_W,
+      (int)strlen(PDNA_SUM_RC_HINT) * SYS8_W, PDNA_SUM_RC_HINT);
+  PF(PDNA_SUM_RC_TRADE,     RC_TX, PDNA_SUM_RC_TEXT_W);
+  PF(PDNA_SUM_RC_SHINY_ON,  RC_TX, PDNA_SUM_RC_TEXT_W);
+  PF(PDNA_SUM_RC_SHINY_OFF, RC_TX, PDNA_SUM_RC_TEXT_W);
+  { char b[48];
+    sprintf(b, PDNA_SUM_RC_NAT_FMT, PDNA_SUM_RC_NAT_LONGEST, PDNA_SUM_RC_NAT_LONGEST);
+    PF(b, RC_TX, PDNA_SUM_RC_TEXT_W);
+    sprintf(b, PDNA_SUM_RC_SEX_FMT, "M", "F");      PF(b, RC_TX, PDNA_SUM_RC_TEXT_W);
+    sprintf(b, PDNA_SUM_RC_ABI_FMT, 2u, 1u);        PF(b, RC_TX, PDNA_SUM_RC_TEXT_W);
+    sprintf(b, PDNA_SUM_RC_UNO_FMT, 'W', '?');      PF(b, RC_TX, PDNA_SUM_RC_TEXT_W); }
+  /* ...and the three vertical facts the row depends on: the note must finish above the
+   * screen's footer rule, the panel must clear the footer, and the button must not sit on
+   * top of its own note. */
+  chkv("reroll note above the footer rule",
+       PDNA_SUM_NOTE_Y + UI_ROW_H, UI_FOOTER_RULE_Y - 1);
+  chkv("PID-moves panel above the footer",
+       PDNA_SUM_RC_Y + PDNA_SUM_RC_H, UI_FOOTER_Y - 1);
+  chkv("reroll button clear of its note row",
+       PDNA_SUM_ROLL_Y + UI_ROW_H, PDNA_SUM_NOTE_Y - 1);
+  /* the framed button box must not reach into the note row either */
+  chkv("reroll box clear of its note row",
+       PDNA_SUM_ROLL_Y + PDNA_SUM_ROLL_BOX_DY + PDNA_SUM_ROLL_BOX_H, PDNA_SUM_NOTE_Y - 1);
 
   printf("\n== day-care yard (#21) ==\n");
   /* The three-row status panel. Geometry from pdna_layout.h (PDNA_DCY_*), which is what

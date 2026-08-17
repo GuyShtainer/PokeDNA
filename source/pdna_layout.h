@@ -150,6 +150,76 @@
 #define PDNA_ROMENU_HEAD_PAD   3              /* divider -> first row                 */
 
 /* ---------------------------------------------------------------------------
+ * Summary screen (source/pdna_summary.c). The card column starts at x=98 and the screen
+ * is 240 wide. The IVs card's six stat rows end at y=98 and TOTAL is drawn at y=100, so
+ * y=108 is the first free scanline and the note row must finish above the footer rule at
+ * y=151. */
+#define PDNA_SUM_CARD_X       98
+#define PDNA_SUM_CARD_W      138
+#define PDNA_SUM_ROLL_Y      116
+#define PDNA_SUM_ROLL_BOX_DY  (-2)
+#define PDNA_SUM_ROLL_BOX_H   12
+#define PDNA_SUM_NOTE_Y      130
+#define PDNA_SUM_FOOTER_Y    152
+/* IVH_CAP LIVES HERE, not in gen3_ivroll.h: tests/host_textfit_test.c includes only
+ * ui_font.h / ui_layout.h / pdna_layout.h / rmbl.h, and referencing IVH_CAP from the other
+ * header made the whole 36-test suite fail to build. pdna_layout.h is pure C with no tonc
+ * and no libc, so the pure-C rule survives. */
+#define IVH_CAP               16
+#define PDNA_SUM_ROLL_LBL    "Reroll IVs"
+#define PDNA_SUM_ARROW_L     "<"
+#define PDNA_SUM_ARROW_R     ">"
+#define PDNA_SUM_ROLLING     "Rolling..."
+#define PDNA_SUM_NOTE_FMT    "Roll %d/%d  %s"
+#define PDNA_SUM_TAIL_ORIG   "the original"
+#define PDNA_SUM_TAIL_IVONLY "IVs only"
+#define PDNA_SUM_TAIL_PIDIV  "PID + IVs"
+#define PDNA_SUM_NOTE_IDLE   "A = roll a new IV spread"
+#define PDNA_SUM_NOTE_VIEW   "Edit mode: A rolls IVs"
+#define PDNA_SUM_NOTE_BADEGG "Bad egg - cannot roll"
+/* Hint rows. sys8 is a FIXED 8 px cell drawn from x=4, so 29 columns is the budget
+ * (4 + 29*8 = 236). The reroll line is exactly at it — measure before editing. */
+#define PDNA_SUM_FOOT_EDIT        "A list  <>edit  U/D  L/R  B"
+#define PDNA_SUM_FOOT_CREATE_EDIT "A list  <>edit  L/R  START"
+#define PDNA_SUM_FOOT_CREATE      "A edit  L/R card  START keep"
+#define PDNA_SUM_FOOT_VIEW        "A edit  U/D mon  L/R  SEL  B"
+#define PDNA_SUM_FOOT_RO          "U/D mon  L/R card  SEL  B"
+#define PDNA_SUM_FOOT_REROLL      "A reroll  <>undo/redo  U/D  B"
+#define PDNA_SUM_FOOTS(X) \
+  X(PDNA_SUM_FOOT_EDIT) X(PDNA_SUM_FOOT_CREATE_EDIT) X(PDNA_SUM_FOOT_CREATE) \
+  X(PDNA_SUM_FOOT_VIEW) X(PDNA_SUM_FOOT_RO) X(PDNA_SUM_FOOT_REROLL)
+/* Confirm panel. x=96 (NOT 16): at x=16 it covered the 64x64 portrait at x=12..79, while
+ * its own comment claimed the user could still see which Pokemon it was about. */
+#define PDNA_SUM_RC_X         96
+#define PDNA_SUM_RC_Y         34
+#define PDNA_SUM_RC_W        136
+#define PDNA_SUM_RC_PAD        8
+#define PDNA_SUM_RC_LINES      5
+#define PDNA_SUM_RC_ROW_H     10
+#define PDNA_SUM_RC_HEAD      24
+#define PDNA_SUM_RC_FOOT      22
+#define PDNA_SUM_RC_H (PDNA_SUM_RC_HEAD + PDNA_SUM_RC_LINES * PDNA_SUM_RC_ROW_H + PDNA_SUM_RC_FOOT)
+#define PDNA_SUM_RC_TEXT_W (PDNA_SUM_RC_W - 2 * PDNA_SUM_RC_PAD)
+#define PDNA_SUM_RC_TITLE     "PID moves"
+#define PDNA_SUM_RC_HINT      "A ok   B cancel"
+#define PDNA_SUM_RC_SHINY_ON  "Becomes SHINY"
+#define PDNA_SUM_RC_SHINY_OFF "Not SHINY now"
+#define PDNA_SUM_RC_NAT_FMT   "Nat %s>%s"
+#define PDNA_SUM_RC_SEX_FMT   "Sex %s>%s"
+#define PDNA_SUM_RC_ABI_FMT   "Abil %u>%u"
+#define PDNA_SUM_RC_UNO_FMT   "Unown %c>%c"
+#define PDNA_SUM_RC_NAT_LONGEST "ADAMANT"
+/* An NPC-trade Pokemon's PID and IVs are FIXED in the trade template (src/trade.c:4570),
+ * so NO reroll outcome keeps its provenance — there is no seed that reproduces a value
+ * the game never drew from an RNG. PokeDNA's own checker exempts met 0xFE from the PID/IV
+ * search and so will stay quiet, which is precisely why this has to be SAID: the mon
+ * leaves the reroll no longer being the Pokemon that trade hands out, and a checker that
+ * carries the fixed-PID table will see it. It is the first line on the panel, and it is
+ * why a trade mon always gets the panel even when everything else was preserved.
+ * 14 glyphs x 8 px = 112, inside PDNA_SUM_RC_TEXT_W = 120. */
+#define PDNA_SUM_RC_TRADE     "Trade PID lost"
+
+/* ---------------------------------------------------------------------------
  * Pokedex SELECT-all popup (dex_bulk, source/pdna_pick.c) */
 #define PDNA_DEXBULK_MAX     6                /* Catch/See/Wipe/Natl/Undo/Cancel      */
 #define PDNA_DEXBULK_ROW_H  14
