@@ -40,6 +40,7 @@
 #include "pdna_edit.h"
 #include "gen3_edit.h"     /* EditMon, gen3_edit_load/commit, em_set_*, em_preview */
 #include "gen3_clip.h"     /* ClipMon, slot ops (copy/paste/dup/release) */
+#include "gen3_gen.h"      /* gen3_build_mon_spread — one seed, matched PID + IVs */
 #include "pdna_legality.h" /* pdna_legality_show */
 #include "pdna_gen12.h"    /* GB import: mount a Gen-1/2 save read-only */
 #include "pdna_pk.h"     /* pdna_pk_export (.pk3) */
@@ -1670,7 +1671,31 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
    * words ("it must evolve to there"). Building it right beats building a L5 Charizard
    * and then flagging it, which is what the create flow did until now. */
   uint8_t lvl = gen3_build_level(sp);
-  gen3_build_mon(sp, lvl, dc_seed(), otId, g_vinfo.trainer_name, mg, tmp);
+  /* THE UNOWN LETTER IS PART OF THE ROLL, so it has to be asked for BEFORE it.
+   * em_set_unown_form (gen3_edit.c:572) hunts for a NEW PID preserving nature and
+   * shininess and knows nothing about IVs, so running it after the spread was rolled would
+   * leave one seed's IVs under another seed's PID — exactly the unmatched pair this change
+   * exists to stop. Asking first costs ~29 seeds. B = "any letter", as before: cancelling
+   * the letter must NOT discard the species the user just picked. */
+  PkSpreadWant want;
+  pk_spread_want_init(&want);
+  if (sp == 201) {
+    int form = pick_unown_form(0);
+    if (form >= 0) want.unown_form = (uint8_t)form;
+  }
+
+  /* A SEED, NOT A PID. In Gen 3 the personality value and both IV words come out of one
+   * LCRNG stream in that order (src/pokemon.c:2216, 2277-2293), so they are one object: a
+   * hand-given PID with the IVs left at zero is a pair no seed can produce, and on the
+   * species with no egg route PokeDNA's own checker said so — "No PID/IV RNG method
+   * matches", 45 of 1083 build fixtures. Guy met the other half on hardware: "the venusaur
+   * ... had 0 IVs". Unconstrained here (bar the Unown letter), so it is a single roll —
+   * four multiplies, no search. The nature/shiny levers live in the editor that opens
+   * next, where the user can see what they are trading.
+   * SIDE EFFECT, worth knowing: dc_seed() returns `e | 1u` and used to BE the PID, so every
+   * two-ability species previously got ability slot 1. The PID is now an LCRNG output, so
+   * the slot is 50/50 — an improvement, but a change to created-mon output. */
+  gen3_build_mon_spread(sp, lvl, dc_seed(), otId, g_vinfo.trainer_name, mg, &want, tmp, 0);
 
   /* The builder gives anything with an egg route met level 0 — "hatched at" — because
    * that is the one Gen-3 origin whose PID and IVs are not tied to a single RNG seed,
@@ -1691,17 +1716,14 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
     em_set_friendship(&e, 120);
     gen3_edit_commit(&e, tmp);
   } else {
-    /* Both lines measured against ui_ptext_fit's 184 px budget (175/162) — the dialog
-     * clips silently, which is how "JIGGLYPU~" once shipped. */
-    msg_wait("NO EGG ROUTE", UI_WARN, "Nothing breeds this one, and there",
-             "is no static data - expect a flag.");
+    /* Both lines measured against ui_ptext_fit's 184 px budget (165/155) — the dialog
+     * clips silently, which is how "JIGGLYPU~" once shipped. DO NOT promise the mon is
+     * unflagged: NIDORINA/NIDOQUEEN/UNOWN at FRLG origin, WYNAUT at Emerald and Ruby
+     * origin and MEW everywhere still grade QUESTIONABLE with a matched PID/IV pair. */
+    msg_wait("NO EGG ROUTE", UI_WARN, "Nothing breeds this one - it says",
+             "it was met here. May be flagged.");
   }
 
-  if (sp == 201) {                                   /* Unown -> also pick the letter, dex-grid style */
-    EditMon e; gen3_edit_load(tmp, false, &e);
-    int form = pick_unown_form(pk_unown_form(e.personality));
-    if (form >= 0 && em_set_unown_form(&e, form)) gen3_edit_commit(&e, tmp);
-  }
   uint8_t out[100];                                  /* 100 to match the other pdna_inspect call
                                                       * sites; a box record only fills 80 */
   bool saved = false; int card = 0;                  /* open on card 0 = POKEMON INFO */
@@ -1742,8 +1764,8 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
     EditMon e; gen3_edit_load(out, false, &e);
     em_set_metlevel(&e, lv ? lv : 1);
     gen3_edit_commit(&e, out);
-    msg_wait("NO EGG ROUTE", UI_WARN, "Nothing breeds this one, and there",
-             "is no static data - expect a flag.");
+    msg_wait("NO EGG ROUTE", UI_WARN, "Nothing breeds this one - it says",
+             "it was met here. May be flagged.");
   }
 
   memcpy(rec, out, 80);

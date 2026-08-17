@@ -218,7 +218,19 @@ static void card_info(const PkMon* p) {
    * So clamp the POSITION instead of skipping the row: at y=142 it ends at 150, two pixels
    * clear of the footer, and the proportional face fits the whole location name. */
   if (y > 142) y = 142;
-  siprintf(b, "Met Lv%u %s", (unsigned)p->metLevel, pk_location_name(p->metLocation));
+  /* Met level 0 is not a missing value: it is how Gen 3 records "this came out of an egg",
+   * and retail prints a hatch sentence rather than a level — the decomp's own comment at
+   * src/egg_hatch.c:384-386 reads "A met level of 0 is interpreted on the summary screen as
+   * 'hatched at'". Rendering the raw 0 is what made a created L32 Venusaur look broken to
+   * Guy ("met at lvl 0"); the byte was right, the word was missing. An unhatched egg keeps
+   * the numeric row — it has not been met yet at all.
+   * "Hatched " is 44 px against INFO_W = 138; "Hatched at " is 58 and would push
+   * LITTLEROOT TOWN to 143 and PETALBURG WOODS to 145, i.e. it would newly truncate names
+   * that fit today. Drop the "at". */
+  if (p->metLevel == 0 && !p->isEgg)
+    siprintf(b, "Hatched %s", pk_location_name(p->metLocation));
+  else
+    siprintf(b, "Met Lv%u %s", (unsigned)p->metLevel, pk_location_name(p->metLocation));
   ui_ptext_fit(x, y, INFO_W, UI_DIM, b);
 }
 
@@ -320,7 +332,12 @@ static void card_origin(const PkMon* p) {
   ui_ptext_fit(x + 60, y, 238 - (x + 60), C_VAL, pk_item_name(p->pokeball)); y += 11;
 
   ui_text(x, y, C_KEY, "Met Lv"); reg(F_METLEVEL, x + 60, y, 30);            /* shortened: was "Met at Lv" (overlapped value) */
-  siprintf(b, "%u", (unsigned)p->metLevel); ui_text(x + 60, y, C_VAL, b); y += 11;
+  siprintf(b, "%u", (unsigned)p->metLevel); ui_text(x + 60, y, C_VAL, b);
+  /* The number stays (F_METLEVEL edits it), but 0 gets its meaning next to it. 41 px of
+   * proportional text at x+92 ends at 231, inside the 238 margin, and 2 px clear of the
+   * F_METLEVEL selection frame which ends at 188. */
+  if (p->metLevel == 0 && !p->isEgg) ui_ptext(x + 92, y, UI_OK, "hatched");
+  y += 11;
 
   ui_text(x, y, C_KEY, "Loc"); reg(F_METLOC, x + 60, y, 76);                 /* shortened: was "Location" (overlapped value) */
   ui_ptext_fit(x + 60, y, 238 - (x + 60), C_VAL, pk_location_name(p->metLocation)); y += 11;

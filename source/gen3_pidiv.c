@@ -1,6 +1,7 @@
 /* PIDIV reverse search. See gen3_pidiv.h for the mechanic, the methods and why an
  * egg must never reach this code. */
 #include "gen3_pidiv.h"
+#include <string.h>
 
 /* pokeemerald include/random.h:16 — 1103515245 / 24691, the numbers every RNG tool
  * quotes as 0x41C64E6D / 0x6073. */
@@ -198,4 +199,122 @@ const char* pk_pidiv_exempt_name(uint8_t exempt) {
     case PK_PIDIV_EX_TRADE:    return "in-game trade";
     default:                   return "?";
   }
+}
+
+/* ============================ FORWARD GENERATION ============================
+ * gen3_pidiv.h documents why this lives next to the search: it is the same four LCRNG
+ * steps read the other way, and sharing LCRNG_A/LCRNG_C with the checker is the point.
+ * (tests/host_spread_test.c re-types both constants itself, so a wrong shared value fails
+ * a test rather than cancelling out.) */
+
+uint32_t pk_lcrng_next(uint32_t s) { return LCRNG_A * s + LCRNG_C; }
+
+void pk_spread_want_init(PkSpreadWant* w) {
+  if (!w) return;
+  memset(w, 0, sizeof *w);
+  w->nature = -1; w->gender = -1; w->shiny = -1;
+  w->unown_form = PK_SPREAD_ANY_FORM;
+  w->ability = 0xFF;
+}
+
+/* Split one seed's four outputs into a spread. r1/r2 are the PID halves — LOW half first,
+ * because Random32() is `Random() | (Random() << 16)` (include/random.h:12) — and r3/r4
+ * are the two IV words, three 5-bit fields each (src/pokemon.c:2277-2293). `rev` is the
+ * Unown order, the same swap pidiv_pass makes on its reversed pass. */
+static void spread_fill(uint32_t seed, uint32_t x1, uint32_t x2, uint32_t x3, uint32_t x4,
+                        int rev, PkSpread* s) {
+  uint32_t r1 = x1 >> 16, r2 = x2 >> 16, r3 = x3 >> 16, r4 = x4 >> 16;
+  s->seed = seed;
+  s->pid  = rev ? ((r1 << 16) | r2) : ((r2 << 16) | r1);
+  s->ivs[PK_HP]  = (uint8_t)( r3        & 31u);
+  s->ivs[PK_ATK] = (uint8_t)((r3 >>  5) & 31u);
+  s->ivs[PK_DEF] = (uint8_t)((r3 >> 10) & 31u);
+  s->ivs[PK_SPE] = (uint8_t)( r4        & 31u);
+  s->ivs[PK_SPA] = (uint8_t)((r4 >>  5) & 31u);
+  s->ivs[PK_SPD] = (uint8_t)((r4 >> 10) & 31u);
+  s->tries = 1; s->ok = 1; s->next = LCRNG_A * x1 + LCRNG_C;
+}
+
+void pk_spread_from_seed(uint32_t seed, uint32_t opts, PkSpread* out) {
+  if (!out) return;
+  uint32_t x1 = LCRNG_A * seed + LCRNG_C;
+  uint32_t x2 = LCRNG_A * x1   + LCRNG_C;
+  uint32_t x3 = LCRNG_A * x2   + LCRNG_C;
+  uint32_t x4 = LCRNG_A * x3   + LCRNG_C;
+  spread_fill(seed, x1, x2, x3, x4, (opts & PK_SPREAD_REVERSED) ? 1 : 0, out);
+  out->next = x1;                    /* resume at the next frame, not four frames on */
+}
+
+/* Every constraint, cheapest and most selective first: the shiny test is three xors, the
+ * ability slot is one bit, and `pid % 25` is the only dear one (gcc emits umull + shifts,
+ * still ~10 cycles). Putting the 1-in-8,192 shiny test in front of it means only one
+ * candidate in 8,192 ever reaches the divide. */
+static int spread_wanted(const PkSpread* s, const PkSpreadWant* w,
+                         uint16_t tx, uint8_t minsum) {
+  if (w->shiny >= 0) {
+    int sh = ((uint16_t)(tx ^ (uint16_t)s->pid ^ (uint16_t)(s->pid >> 16)) < 8u);
+    if (sh != (w->shiny ? 1 : 0)) return 0;
+  }
+  if (w->ability != 0xFF && (uint8_t)(s->pid & 1u) != w->ability) return 0;
+  if (w->gender >= 0 && pk_gender_from(s->pid, w->gender_ratio) != (uint8_t)w->gender) return 0;
+  if (w->nature >= 0 && (int)(s->pid % 25u) != w->nature) return 0;
+  if (w->unown_form != PK_SPREAD_ANY_FORM && pk_unown_form(s->pid) != w->unown_form) return 0;
+  if (minsum) {
+    int sum = 0;
+    for (int i = 0; i < PK_NSTATS; i++) sum += s->ivs[i];
+    if (sum < (int)minsum) return 0;
+  }
+  return 1;
+}
+
+bool pk_spread_roll(uint32_t seed0, const PkSpreadWant* w, PkSpread* out) {
+  if (!out) return false;
+  PkSpreadWant dflt;
+  if (!w) { pk_spread_want_init(&dflt); w = &dflt; }
+
+  const uint32_t cap = w->cap ? w->cap : PK_SPREAD_CAP;
+  const int      rev = (w->opts & PK_SPREAD_REVERSED) ? 1 : 0;
+  const uint16_t tx  = (uint16_t)(w->otId ^ (w->otId >> 16));
+  uint8_t minsum = w->min_iv_sum;
+  if (minsum > PK_SPREAD_IV_MAXSUM) minsum = PK_SPREAD_IV_MAXSUM;   /* else unsatisfiable */
+
+  /* The four states this seed's outputs come from. Advancing the seed by ONE LCRNG step —
+   * which is what "the next frame" means — slides the whole window by one, so a trial
+   * costs a single multiply instead of four. */
+  uint32_t seed = seed0;
+  uint32_t x1 = LCRNG_A * seed + LCRNG_C;
+  uint32_t x2 = LCRNG_A * x1   + LCRNG_C;
+  uint32_t x3 = LCRNG_A * x2   + LCRNG_C;
+  uint32_t x4 = LCRNG_A * x3   + LCRNG_C;
+
+  PkSpread fallback;
+  int have_fallback = 0;
+
+  /* t < cap, NOT t <= cap: `for (t = 1; t <= cap; t++)` never terminates when a caller
+   * passes cap = 0xFFFFFFFF, and cap is an advertised public knob. */
+  for (uint32_t t = 0; t < cap; t++) {
+    PkSpread s;
+    spread_fill(seed, x1, x2, x3, x4, rev, &s);
+    /* PID 0 cannot be carried: gen3_build_mon substitutes a PID of its own for a zero one
+     * (gen3_edit.c:326), which would silently break the very pairing this exists to keep.
+     * One seed in 2^32; skipping it costs one compare. */
+    if (s.pid) {
+      if (!have_fallback) { fallback = s; have_fallback = 1; }
+      if (spread_wanted(&s, w, tx, minsum)) {
+        *out = s; out->tries = t + 1; out->ok = 1; out->next = x1;
+        return true;
+      }
+    }
+    seed = x1; x1 = x2; x2 = x3; x3 = x4; x4 = LCRNG_A * x4 + LCRNG_C;
+  }
+
+  /* Cap reached. Hand back a spread that is still a real Method-1 pair — just not the one
+   * asked for — so the caller degrades to "not your nature" instead of a zeroed struct, a
+   * hang, or an unmatched PID/IV pair. `next` lets a chunked caller resume. */
+  if (!have_fallback) pk_spread_from_seed(pk_lcrng_next(seed0), w->opts, &fallback);
+  *out = fallback;
+  out->tries = cap;
+  out->ok    = 0;
+  out->next  = seed;
+  return false;
 }

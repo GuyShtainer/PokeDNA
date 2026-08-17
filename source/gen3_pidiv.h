@@ -153,4 +153,75 @@ uint8_t pk_pidiv_exempt_reason(const PkMon* m);
 const char* pk_pidiv_method_name(uint8_t method);
 const char* pk_pidiv_exempt_name(uint8_t exempt);
 
+/* ============================ FORWARD GENERATION ============================
+ * The inverse of the search above, and the only honest way to give a Pokemon PokeDNA
+ * creates a PID and IVs at the same time.
+ *
+ * They are ONE object in Gen 3. CreateBoxMon draws the PID and then both IV words from a
+ * single LCRNG stream (pokeemerald src/pokemon.c:2216, 2277-2293), so a hand-picked PID
+ * next to hand-picked IVs is a pair no seed can produce and pk_pidiv_search says exactly
+ * that. Rolling a SEED and taking whatever falls out makes the verify step an assertion
+ * instead of a search that can fail: tests/host_spread_test.c re-finds every generated
+ * spread at its own seed.
+ *
+ * METHOD 1 ONLY, deliberately. Methods 2 and 4 exist because a VBlank interrupt burned an
+ * extra RNG call on real hardware; emitting one would be claiming an interrupt happened.
+ * Method 3 is not even searched by this module, so it must never be emitted either.
+ *
+ * THIS IS THE ONE ROLLER. The summary's IV reroll (gen3_ivroll.c) drives the SAME
+ * pk_spread_roll with progressively relaxed constraints rather than keeping its own copy
+ * of the LCRNG walk — a generator and an auditor that disagreed about the constants would
+ * be the worst possible bug in this file. */
+
+#define PK_SPREAD_REVERSED   0x1u   /* assemble the PID high-half-first (Unown order) */
+#define PK_SPREAD_ANY_FORM   0xFFu  /* PkSpreadWant.unown_form: don't care            */
+#define PK_SPREAD_IV_MAXSUM  186u   /* 6 x 31 — the largest satisfiable min_iv_sum    */
+#define PK_SPREAD_CAP        400000u
+
+typedef struct {
+  uint32_t seed;              /* state BEFORE the first call — what PkPidiv.seed prints */
+  uint32_t next;              /* state to RESUME from: lets a caller chunk a long search
+                               * across vblanks, and lets two presses never repeat        */
+  uint32_t pid;
+  uint8_t  ivs[PK_NSTATS];    /* HP, Atk, Def, Spe, SpA, SpD — the save-native order     */
+  uint32_t tries;             /* seeds consumed (1 when nothing was constrained)         */
+  uint8_t  ok;                /* 1 every constraint met; 0 the cap was hit               */
+} PkSpread;
+
+/* What the caller wants out of the roll. Use pk_spread_want_init(): "don't care" is -1 for
+ * the three signed fields and PK_SPREAD_ANY_FORM for the letter, so a zeroed struct would
+ * silently mean "nature HARDY, gender male, not shiny, Unown A". */
+typedef struct {
+  int8_t   nature;        /* 0..24, -1 don't care                                      */
+  int8_t   gender;        /* 0 M, 1 F, 2 genderless, -1 don't care                     */
+  int8_t   shiny;         /* 1 want, 0 refuse, -1 don't care                           */
+  uint8_t  gender_ratio;  /* pk_species_gender_ratio(species); read only if gender >= 0*/
+  uint8_t  unown_form;    /* 0..27, PK_SPREAD_ANY_FORM = don't care                    */
+  uint8_t  min_iv_sum;    /* 0 don't care; else sum(ivs) >= this (clamped to 186)      */
+  uint8_t  ability;       /* 0/1 required ability slot, 0xFF = don't care              */
+  uint32_t otId;          /* the trainer the shiny test is against                     */
+  uint32_t opts;          /* PK_SPREAD_REVERSED                                        */
+  uint32_t cap;           /* seed budget; 0 -> PK_SPREAD_CAP                           */
+} PkSpreadWant;
+
+void pk_spread_want_init(PkSpreadWant* w);
+
+/* One Method-1 roll: no search, no constraints, four multiplies. */
+void pk_spread_from_seed(uint32_t seed, uint32_t opts, PkSpread* out);
+
+/* One LCRNG step — so a caller can advance a seed without duplicating the constants. */
+uint32_t pk_lcrng_next(uint32_t s);
+
+/* Walk seeds from `seed0` (one LCRNG step per trial, i.e. the next "frame") until the
+ * spread satisfies `w`, or the cap is reached. Measured trial counts: nothing 1 · nature
+ * avg 22 worst 61 · Unown letter worst 122 · gender 2-8 · shiny ~8,800 · shiny+nature
+ * ~200k (worst observed 864k) — so anything asking for BOTH shiny and a nature needs
+ * chunking or a smaller cap.
+ *
+ * FAILS SOFT, and callers rely on it: on a cap miss this returns false, sets out->ok = 0,
+ * still leaves a REAL Method-1 spread in *out (the first one it rolled), and sets
+ * out->next so the caller can resume. A created Pokemon then has the wrong nature, never
+ * a broken pair, and never a hang. */
+bool pk_spread_roll(uint32_t seed0, const PkSpreadWant* w, PkSpread* out);
+
 #endif /* GEN3_PIDIV_H */
