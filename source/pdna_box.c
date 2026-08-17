@@ -334,8 +334,10 @@ static uint8_t s_under[G3_BOX_SLOTS];
  * uploads, BIOS LZ77 — never produce). volatile source: without it the compiler may
  * legally fold "copy then compare-to-source" into always-equal and delete the verify. */
 static uint16_t s_wp_map[20 * 18];     /* verified tilemap copy (720 B, IWRAM .bss) */
-static uint16_t s_wp_tile[64];         /* one verified 8x8 tile (128 B) — shared by
-                                        * draw_wallpaper and the START+SELECT audit */
+static uint16_t s_wp_tile[64] __attribute__((aligned(4)));
+                                       /* one verified 8x8 tile (128 B) — shared by
+                                        * draw_wallpaper and the START+SELECT audit.
+                                        * 4-ALIGNED: wp_blit_tile reads it as u32.   */
 
 IWRAM_CODE __attribute__((noinline))
 static int wp_copy_verified(uint16_t* dst, const uint16_t* src, int n) {
@@ -347,6 +349,30 @@ static int wp_copy_verified(uint16_t* dst, const uint16_t* src, int n) {
     if (ok) return a;
   }
   return -1;
+}
+
+/* Blit one staged 8x8 tile to (bx,by), `rows` scanlines tall, as 32-bit VRAM stores.
+ * The wallpaper grid is word-aligned BY CONSTRUCTION: bx = WP_X + 8*tx with WP_X=78, so
+ * the VRAM byte offset 2*bx = 156 + 16*tx is always a multiple of 4, and a Mode-3
+ * scanline is 480 B — so a row of 8 pixels is exactly four aligned word stores. That
+ * replaces 64 m3_plot calls per tile, each of which carried two loop-bound tests and a
+ * per-pixel mask: ~12 instructions per pixel over 23,040 pixels, a third of a whole box
+ * repaint.
+ * `t64` must ALREADY be Walda-substituted and masked to 15 bits — a word store cannot
+ * mask per pixel, so the caller does it once per tile instead of once per pixel. The GBA
+ * ignores bit 15 of a Mode-3 halfword, so this is the same picture; the mask is kept only
+ * so the bitmap stays byte-identical to what every other path writes.
+ * SAFE ONLY BECAUSE CFLAGS carries -fno-strict-aliasing (Makefile:141) — this reads a
+ * uint16_t[] through a uint32_t*. If that flag is ever dropped, route this through memcpy
+ * or a union. */
+static void wp_blit_tile(const uint16_t* t64, int bx, int by, int rows) {
+  uint32_t* d = (uint32_t*)(vid_mem + (uint32_t)by * 240 + bx);
+  const uint32_t* s = (const uint32_t*)t64;
+  for (int j = 0; j < rows; j++) {
+    d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+    d += 120;                          /* 480 B = one Mode-3 scanline */
+    s += 4;
+  }
 }
 
 static void draw_wallpaper(int wp, int x, int y, int w, int h) {
@@ -440,11 +466,18 @@ static void draw_wallpaper(int wp, int x, int y, int w, int h) {
           retries += r;
           last_idx = idx;
           wp_sub_walda(s_wp_tile);     /* AFTER the verify, BEFORE the blit (§12a) */
+          { uint32_t* wmk = (uint32_t*)s_wp_tile;      /* 15-bit mask ONCE per tile,   */
+            for (int k = 0; k < 32; k++)               /* so the blit can move words   */
+              wmk[k] &= 0x7FFF7FFFu; }
         }
         int bx = x + tx * 8, by = y + ty * 8;
-        for (int j = 0; j < 8 && by + j < y + h; j++)
-          for (int i = 0; i < 8 && bx + i < x + w; i++)
-            m3_plot(bx + i, by + j, s_wp_tile[j * 8 + i] & 0x7FFF);  /* VRAM write, source is RAM */
+        int rows = y + h - by; if (rows > 8) rows = 8;   /* only the bottom row clips  */
+        int cols = x + w - bx; if (cols > 8) cols = 8;   /* never clips at WP_W=162    */
+        if (rows <= 0 || cols <= 0) continue;
+        if (cols == 8 && !(bx & 1)) wp_blit_tile(s_wp_tile, bx, by, rows);
+        else for (int j = 0; j < rows; j++)              /* clipped/odd-x: per pixel   */
+               for (int i = 0; i < cols; i++)
+                 m3_plot(bx + i, by + j, s_wp_tile[j * 8 + i]);
       }
   }
   rumble_io_resume();

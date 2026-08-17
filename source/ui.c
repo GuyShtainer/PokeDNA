@@ -99,11 +99,14 @@ void ui_progress(int x, int y, int w, int h, int filled, u16 fill, u16 track, u1
 void ui_sprite(int x, int y, int w, int h, const u16* data) {
   if (!data) return;
   rumble_io_suspend();                       /* data may be in ROM: don't let the motor toggle mid-read */
+  /* Row pointers instead of m3_plot: this is the 64x64 mon portrait, so the old form
+   * recomputed the destination address 4,096 times per box flip with an occupied cell
+   * under the cursor. It cannot be word-blitted — the 0x8000 key is per pixel — so
+   * hoisting the row base is the available win. Same pixels, same key. */
   for (int j = 0; j < h; j++) {
-    for (int i = 0; i < w; i++) {
-      u16 p = data[j * w + i];
-      if (p & 0x8000) m3_plot(x + i, y + j, (u16)(p & 0x7FFF));
-    }
+    const u16* s = data + (unsigned)j * (unsigned)w;
+    u16*       d = &vid_mem[(unsigned)(y + j) * 240u + (unsigned)x];
+    for (int i = 0; i < w; i++) { u16 p = s[i]; if (p & 0x8000) d[i] = (u16)(p & 0x7FFF); }
   }
   rumble_io_resume();
 }
