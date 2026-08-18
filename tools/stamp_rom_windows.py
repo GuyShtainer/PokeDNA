@@ -24,10 +24,20 @@ WHY BY SYMBOL AND NOT BY MAGIC SCAN
     MISMATCH report - and "is the copy on my card short?" is the single most important
     question this tool answers.
 
+TWO INSTRUMENTS ARE STAMPED HERE
+    THE WINDOWS: 17 sampled 4 KiB windows, checked at every boot for free. 0.53% of a
+    12.5 MB image, so an OK from them is evidence, never proof.
+    THE GRID (v2): the WHOLE image in 64 KiB regions, one CRC32 each, plus the exclusion
+    zones and the per-region "nothing verifiable here" bits. The console scans it on
+    demand and paints one cell per region, so a hole gets an ADDRESS. See
+    source/pdna_romver.h for the zone + canonical-IRQ-word rules, which THIS FILE and the
+    cartridge must implement identically or every SD boot is a false alarm.
+
 THE HOLE RULE
-    The descriptor's own 624 bytes are the hole. crc_whole is computed with the hole read
-    as zeroes, so re-stamping the same image is bit-for-bit idempotent, and no window may
-    overlap the hole (its CRC would be self-invalidating). rom-load-lab/source/diag.h:96-111.
+    The descriptor's own 1732 bytes are the hole. crc_whole and every region CRC are
+    computed with the hole read as zeroes, so re-stamping the same image is bit-for-bit
+    idempotent (asserted, both halves), and no window may overlap the hole (its CRC would
+    be self-invalidating). rom-load-lab/source/diag.h:96-111.
 
 WHAT THE EZ-FLASH KERNEL DOES TO THE IMAGE, AND WHY THE GUARDS BELOW EXIST
     On an SD load the Omega DE kernel patches the copy in PSRAM
@@ -81,17 +91,25 @@ PATCHED_RECORDS = (
 MAGIC0 = 0x414E4450             # 'PDNA'
 MAGIC1 = 0x31305652             # 'RV01'
 STAMPED = 0x504D5453            # 'STMP'
-VERSION = 1
+VERSION = 2                     # 1 = windows only; 2 = windows + the region grid
 
 HDR_BYTES = 48
 WIN_BYTES = 24
 MAX_WINDOWS = 24
-DESC_BYTES = HDR_BYTES + MAX_WINDOWS * WIN_BYTES        # 624
+MAX_REGIONS = 256               # must match PDNA_RV_MAX_REGIONS
+MAX_ZONES = 6                   # must match PDNA_RV_MAX_ZONES
+MIN_RSHIFT = 16                 # 64 KiB regions unless the image needs coarser ones
+MAX_RSHIFT = 24
+ZONES_OFF = HDR_BYTES + MAX_WINDOWS * WIN_BYTES          #  624 (u32 n_zones, then z[])
+EXCL_OFF = ZONES_OFF + 4 + MAX_ZONES * 8                 #  676
+RCRC_OFF = EXCL_OFF + MAX_REGIONS // 8                   #  708
+DESC_BYTES = RCRC_OFF + MAX_REGIONS * 4                  # 1732
 
 HEAD_GUARD = 0x100              # the kernel rewrites ROM[0]
 TAIL_GUARD = 0x10000            # the kernel drops its patch blob near EOF (iTrimSize)
 MAX_WINLEN = 65536              # must match PDNA_RV_MAX_WINLEN
 IRQ_WORDS = (0x03007FFC, 0x03FFFFFC)
+IRQ_CANON = 0x03007FF4          # what PatchInternal turns both of them into
 
 # window flags - must match source/pdna_romver.h
 F_CONTROL = 0x0001
@@ -101,8 +119,67 @@ F_K_TABLE = 0x0020
 F_K_ART = 0x0040
 
 # field order must match PdnaRomVerify in source/pdna_romver.h
-HDR_FMT = "<12I"    # m0 m1 ver stamped image n_win n_present hole_off hole_len whole r0 r1
+HDR_FMT = "<12I"    # m0 m1 ver stamped image n_win n_present hole_off hole_len whole
+                    # region_shift n_regions
 WIN_FMT = "<5I4s"   # base off len crc flags tag
+
+
+# ---------------------------------------------------------------- grid ----------
+def pick_region_shift(size):
+    """Smallest region >= 64 KiB that fits the image into MAX_REGIONS cells."""
+    for s in range(MIN_RSHIFT, MAX_RSHIFT + 1):
+        if (size + (1 << s) - 1) >> s <= MAX_REGIONS:
+            return s
+    die("image of %d B cannot be covered by %d regions of <= %d B"
+        % (size, MAX_REGIONS, 1 << MAX_RSHIFT))
+
+
+def merge_zones(zones, size):
+    """Sort, 4-align outward, merge overlaps/abuts, and bounds-check.
+
+    The cartridge REFUSES a grid whose zone list is unsorted, unaligned or overlapping
+    (pdna_rv_grid_init) rather than risk a wild read out of a descriptor it cannot trust,
+    so producing a clean list here is not cosmetic: get it wrong and the instrument
+    silently reports 'no grid in this image'."""
+    out = []
+    for off, ln, why in sorted(zones):
+        if ln <= 0:
+            continue
+        a, b = off & ~3, (off + ln + 3) & ~3
+        a = max(0, a)
+        b = min(size, b)
+        if b <= a:
+            continue
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b), out[-1][2] + "+" + why)
+        else:
+            out.append((a, b, why))
+    if len(out) > MAX_ZONES:
+        die("%d exclusion zones but PDNA_RV_MAX_ZONES is %d" % (len(out), MAX_ZONES),
+            "Zones: " + ", ".join("%s[0x%x,0x%x)" % (w, a, b) for a, b, w in out))
+    return out
+
+
+def canon_image(data, zones):
+    """The byte image both sides checksum: zones zeroed, then IRQ words canonicalised.
+
+    Zeroing FIRST is what makes this equal to the cartridge's walk, which feeds zeroes
+    for a zone and canonicalises only the real bytes: a canonical word inside a zone
+    becomes 0 either way, and zones are 4-aligned so none can straddle a boundary."""
+    buf = bytearray(data)
+    for a, b, _why in zones:
+        buf[a:b] = b"\0" * (b - a)
+    n = 0
+    for word in IRQ_WORDS:
+        pat = struct.pack("<I", word)
+        rep = struct.pack("<I", IRQ_CANON)
+        i = buf.find(pat)
+        while i >= 0:
+            if i % 4 == 0:
+                buf[i:i + 4] = rep
+                n += 1
+            i = buf.find(pat, i + 1)
+    return bytes(buf), n
 
 
 def die(msg, *rest):
@@ -159,7 +236,18 @@ def read_hdr(data, off):
     f = struct.unpack_from(HDR_FMT, data, off)
     return dict(magic0=f[0], magic1=f[1], version=f[2], stamped=f[3],
                 image_bytes=f[4], n_windows=f[5], n_present=f[6],
-                hole_off=f[7], hole_len=f[8], crc_whole=f[9])
+                hole_off=f[7], hole_len=f[8], crc_whole=f[9],
+                region_shift=f[10], n_regions=f[11])
+
+
+def read_zones(data, off, size):
+    n = struct.unpack_from("<I", data, off + ZONES_OFF)[0]
+    out = []
+    for k in range(min(n, MAX_ZONES)):
+        a, ln = struct.unpack_from("<2I", data, off + ZONES_OFF + 4 + 8 * k)
+        if ln and a + ln <= size:
+            out.append((a, a + ln, "z%d" % k))
+    return out
 
 
 def read_win(data, off, i):
@@ -346,15 +434,62 @@ def stamp(elf, gba, nm, quiet, manifest):
         manifest_windows.append(dict(tag=tag, file_off=s_off, len=ln,
                                      kind=kind_of(w["flags"]), crc="%08x" % crc))
 
+    # ---- the full-image region grid ----------------------------------------------
+    # 17 windows are 0.53% of a 12.5 MB image, so an OK from them cannot PROVE the load.
+    # This can: every byte, in regions, each with its own CRC32, so the console can name
+    # the address of a hole instead of just its existence.
+    zones_in = [(0, HEAD_GUARD, "head"),
+                (desc_off, DESC_BYTES, "descriptor"),
+                (size - TAIL_GUARD, TAIL_GUARD, "tail")]
+    for r0, r1, rec_sym, _rec_tool in patched:
+        zones_in.append((r0, r1 - r0, rec_sym))
+    zones = merge_zones(zones_in, size)
+    rshift = pick_region_shift(size)
+    rb = 1 << rshift
+    n_regions = (size + rb - 1) // rb
+    cimg, n_canon = canon_image(bytes(data), zones)
+
+    excl = [0] * (MAX_REGIONS // 32)
+    rcrc = [0] * MAX_REGIONS
+    n_excl = 0
+    verified = 0
+    for i in range(n_regions):
+        a, b = i * rb, min((i + 1) * rb, size)
+        rcrc[i] = zlib.crc32(cimg[a:b]) & 0xFFFFFFFF
+        real = (b - a) - sum(max(0, min(b, z1) - max(a, z0)) for z0, z1, _w in zones)
+        verified += real
+        if real == 0:
+            # Nothing comparable in this region. Flagged so the console draws it as SKIP:
+            # a cell that "passes" because it compared nothing would be a lie.
+            excl[i >> 5] |= 1 << (i & 31)
+            n_excl += 1
+
+    struct.pack_into("<I", data, desc_off + ZONES_OFF, len(zones))
+    for k in range(MAX_ZONES):
+        a, ln = (zones[k][0], zones[k][1] - zones[k][0]) if k < len(zones) else (0, 0)
+        struct.pack_into("<2I", data, desc_off + ZONES_OFF + 4 + 8 * k, a, ln)
+    for k in range(MAX_REGIONS // 32):
+        struct.pack_into("<I", data, desc_off + EXCL_OFF + 4 * k, excl[k])
+    for k in range(MAX_REGIONS):
+        struct.pack_into("<I", data, desc_off + RCRC_OFF + 4 * k, rcrc[k])
+
     crc_whole = zlib.crc32(hole_zeroed(bytes(data), desc_off)) & 0xFFFFFFFF
     struct.pack_into(HDR_FMT, data, desc_off,
                      MAGIC0, MAGIC1, VERSION, STAMPED, size,
-                     n_windows, present, desc_off, DESC_BYTES, crc_whole, 0, 0)
+                     n_windows, present, desc_off, DESC_BYTES, crc_whole,
+                     rshift, n_regions)
 
-    # Idempotency self-check: stamping must not change anything the CRCs cover.
+    # Idempotency self-check: stamping must not change anything the CRCs cover. Both
+    # halves are covered, because every byte this function writes is inside the hole and
+    # the hole is zone 2 of the grid as well as the whole-image hole.
     again = zlib.crc32(hole_zeroed(bytes(data), desc_off)) & 0xFFFFFFFF
     if again != crc_whole:
         die("internal: stamping changed bytes outside the hole (not idempotent)")
+    cimg2, _ = canon_image(bytes(data), zones)
+    for i in range(n_regions):
+        a, b = i * rb, min((i + 1) * rb, size)
+        if (zlib.crc32(cimg2[a:b]) & 0xFFFFFFFF) != rcrc[i]:
+            die("internal: stamping changed region %d - the grid is not idempotent" % i)
 
     with open(gba, "wb") as fh:
         fh.write(bytes(data))
@@ -362,6 +497,11 @@ def stamp(elf, gba, nm, quiet, manifest):
         with open(manifest, "w") as fh:
             fh.write(json.dumps(dict(gba=gba, image_bytes=size, desc_off=desc_off,
                                      crc_whole="%08x" % crc_whole,
+                                     region_bytes=rb, n_regions=n_regions,
+                                     regions_excluded=n_excl,
+                                     bytes_verified=verified,
+                                     zones=[dict(off=a, len=b - a, why=w)
+                                            for a, b, w in zones],
                                      windows=manifest_windows), indent=2) + "\n")
 
     sampled = sum(x["len"] for x in manifest_windows)
@@ -374,6 +514,12 @@ def stamp(elf, gba, nm, quiet, manifest):
           % (present, n_windows, absent, sampled, pct, crc_whole))
     if present == 0:
         print("  ROM self-check: no anchors in this build - verification is a no-op")
+    print("  ROM full-image grid: %d regions x %d KiB, %d B verifiable (%.2f%% of image),"
+          " %d skipped, %d canon IRQ word(s)"
+          % (n_regions, rb // 1024, verified, verified / size * 100.0 if size else 0.0,
+             n_excl, n_canon))
+    if not quiet:
+        print("    blind: " + ", ".join("%s 0x%x..0x%x" % (w, a, b) for a, b, w in zones))
 
 
 # ---------------------------------------------------------------- verify --------
@@ -408,13 +554,39 @@ def verify(gba, desc_off):
         print("    %4s  0x%08x  %-5s %-5s%s"
               % (w["tag"], s, kind_of(w["flags"]), "ok" if ok else "BAD", detail))
 
+    # The grid, exhaustively: this is the half that can say WHERE. Same arithmetic the
+    # cartridge runs, so a disagreement between this and the console's verdict is itself
+    # information (the file is fine, the load is not).
+    rbad = []
+    rshift, n_regions = h["region_shift"], h["n_regions"]
+    if MIN_RSHIFT <= rshift <= MAX_RSHIFT and 0 < n_regions <= MAX_REGIONS:
+        rb = 1 << rshift
+        zones = read_zones(data, off, len(data))
+        cimg, _ = canon_image(data, zones)
+        for i in range(n_regions):
+            a, b = i * rb, min((i + 1) * rb, len(data))
+            want = struct.unpack_from("<I", data, off + RCRC_OFF + 4 * i)[0]
+            excl = (struct.unpack_from("<I", data, off + EXCL_OFF + 4 * (i >> 5))[0]
+                    >> (i & 31)) & 1
+            if excl:
+                continue
+            if (zlib.crc32(cimg[a:b]) & 0xFFFFFFFF) != want:
+                rbad.append((i, a))
+        print("    GRID  %d regions x %d KiB: %s"
+              % (n_regions, rb // 1024,
+                 "all ok" if not rbad else "%d BAD, first region %d @ 0x%08x"
+                 % (len(rbad), rbad[0][0], rbad[0][1])))
+    else:
+        print("    GRID  absent (v1 stamp or no grid in this image)")
+
     whole = zlib.crc32(hole_zeroed(data, off)) & 0xFFFFFFFF
     wok = whole == h["crc_whole"]
     wdetail = "ok" if wok else "BAD (exp 0x%08x)" % h["crc_whole"]
     print("    WHOLE 0x%08x %s" % (whole, wdetail))
-    if bad or not wok:
-        print("  VERDICT: FILE CORRUPT (%d sampled window(s) bad, whole %s) - "
-              "the copy failed, not the load." % (bad, "ok" if wok else "bad"))
+    if bad or rbad or not wok:
+        print("  VERDICT: FILE CORRUPT (%d sampled window(s) bad, %d region(s) bad, "
+              "whole %s) - the copy failed, not the load."
+              % (bad, len(rbad), "ok" if wok else "bad"))
         return 2
     print("  VERDICT: file matches its own stamp, byte for byte.")
     return 0
