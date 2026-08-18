@@ -146,29 +146,49 @@ int main(void) {
   }
   free(txt);
 
-  /* ---- T6: size cap writes its line once, then every flush is a no-op ----- */
+  /* ---- T6: the cap is a per-RUN budget, not the file's size ----------------
+   * A big STALE file must NOT silence a fresh run. It used to: the cap compared
+   * f_size() against 192 KiB, so if rotation had failed (read-only card, a name
+   * collision) the first flush of every later run wrote one cap line and went quiet
+   * for the rest of the run -- the "it didn't log anything" artifact. Now the budget
+   * counts what THIS RUN put on the card, with a separate 1 MiB file ceiling. */
   reset_all();
   {
     FILE* f = fopen(P, "wb");
     char pad[1024];
     memset(pad, 'x', sizeof pad);
-    for (int i = 0; i < 200; i++) fwrite(pad, 1, sizeof pad, f);  /* 200 KiB > 192 KiB */
+    for (int i = 0; i < 200; i++) fwrite(pad, 1, sizeof pad, f);  /* 200 KiB of history */
     fclose(f);
   }
-  log_line("past-the-cap");
-  CHECK(log_flush_to_sd(P) == -2, "T6 flush past the cap did not report -2");
+  log_line("past-the-old-cap");
+  CHECK(log_flush_to_sd(P) == 0, "T6 a stale 200 KiB file silenced a fresh run");
+  txt = slurp(P, &n);
+  CHECK(txt && strstr(txt, "past-the-old-cap") != 0, "T6 this run's line never landed");
+  free(txt);
+
+  /* ...and the run's own budget still stops a runaway logger, once. */
+  reset_all();
+  {
+    int r = 0, guard;
+    for (guard = 0; guard < 4000 && r == 0; guard++) {
+      log_line("%03d spam spam spam spam spam spam spam spam spam spam spam spam spam"
+               " spam spam spam spam spam spam spam spam spam spam spam spam spam", guard);
+      r = log_flush_to_sd(P);
+    }
+    CHECK(r == -2, "T6 the run budget never tripped (last=%d)", r);
+  }
   log_line("also-past");
-  CHECK(log_flush_to_sd(P) == -2, "T6 second flush past the cap did not report -2");
+  CHECK(log_flush_to_sd(P) == -2, "T6 flush after the budget did not report -2");
   txt = slurp(P, &n);
   CHECK(txt && count_occurrences(txt, "log size cap reached") == 1,
         "T6 cap line written %d times",
         txt ? count_occurrences(txt, "log size cap reached") : -1);
-  CHECK(txt && strstr(txt, "past-the-cap") == 0, "T6 wrote past the cap anyway");
+  CHECK(txt && strstr(txt, "also-past") == 0, "T6 wrote past the cap anyway");
   free(txt);
   /* ...and log_flush_urgent must still get the last words out. */
   CHECK(log_flush_urgent(P) == 0, "T6 urgent flush was blocked by the cap");
   txt = slurp(P, &n);
-  CHECK(txt && strstr(txt, "past-the-cap") != 0, "T6 urgent flush wrote nothing");
+  CHECK(txt && strstr(txt, "also-past") != 0, "T6 urgent flush wrote nothing");
   free(txt);
 
   /* ---- T7: rotation shifts log.txt -> prev1 -> prev2, and stops there ----- */

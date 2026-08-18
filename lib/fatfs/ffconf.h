@@ -27,8 +27,13 @@
 /* This option switches filtered directory read functions, f_findfirst() and
 /  f_findnext(). (0:Disable, 1:Enable 2:Enable with matching altname[] too) */
 
+#ifndef FF_USE_MKFS
 #define FF_USE_MKFS 0
-/* This option switches f_mkfs() function. (0:Disable or 1:Enable) */
+#endif
+/* This option switches f_mkfs() function. (0:Disable or 1:Enable)
+/  The #ifndef exists so a HOST test can build the same ff.c with -DFF_USE_MKFS=1 and
+/  format a RAM disk (tests/hostfat). The cartridge build passes no -D, so it still
+/  compiles f_mkfs out -- nothing on the GBA side changes. */
 
 #define FF_USE_FASTSEEK 0
 /* This option switches fast seek function. (0:Disable or 1:Enable) */

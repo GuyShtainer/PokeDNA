@@ -51,4 +51,38 @@ int  log_flush_to_sd(const char* path);
  * log_flush_to_sd(). */
 int  log_flush_urgent(const char* path);
 
+/* --- the log's own health, readable WITHOUT the log -------------------------
+ *
+ * The failure latch is circular: the "SD writes failing, logging off" line it writes
+ * cannot reach a card that is refusing writes. On 2026-08-18 that produced the worst
+ * possible artifact -- a run that hung with NOTHING on the card, indistinguishable from
+ * a run that never started. So the state is also readable here, and the UI paints it
+ * (pdna_main.c's load_phase badge + the boot line): a trail that survives a failure of
+ * the trail-writing mechanism.
+ *
+ * All pure C, no card traffic, safe to call anywhere -- including from a screen drawn
+ * between SD transfers (never during one: nothing here touches the cart bus). */
+#define LOG_HEALTH_OK       0   /* every flush so far committed                     */
+#define LOG_HEALTH_FAILING  1   /* 1..2 consecutive failures: still trying          */
+#define LOG_HEALTH_OFF      2   /* latched off after LOG_MAX_FAILS (retries rarely) */
+#define LOG_HEALTH_CAPPED   3   /* this run hit its byte budget: intentionally quiet */
+int  log_health(void);
+
+/* What log_begin_run() managed, which is the earliest signal that this run's log is in
+ * trouble -- it happens before the first flush. */
+#define LOG_ROT_NONE         0  /* nothing to rotate (first ever boot), or not called */
+#define LOG_ROT_DONE         1  /* the previous run's file is now <base>.prev1.txt    */
+#define LOG_ROT_REFUSED      2  /* the card refused the rename: writes are in trouble */
+#define LOG_ROT_UNSUPPORTED (-1)/* the path is not a ".txt" name that fits           */
+int  log_rotation(void);
+
+int  log_last_result(void);        /* the last flush's return value (0 = ok)        */
+int  log_fail_count(void);         /* consecutive hard failures right now           */
+unsigned long log_flush_count(void); /* flushes fully committed this run             */
+unsigned log_pending_bytes(void);  /* buffered bytes not yet on the card            */
+
+/* One short badge for the screen: "log R 12" / "LOG ERR e10" / "LOG OFF e5" /
+ * "LOG FULL". Needs 12 bytes to never truncate. */
+void log_health_str(char* out, unsigned cap);
+
 #endif /* LOG_H */

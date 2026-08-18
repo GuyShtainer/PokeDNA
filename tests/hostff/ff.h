@@ -16,7 +16,10 @@
 #include <string.h>
 
 typedef unsigned int UINT;
-typedef enum { FR_OK = 0, FR_DISK_ERR = 1, FR_NO_FILE = 4, FR_DENIED = 7 } FRESULT;
+typedef enum {
+  FR_OK = 0, FR_DISK_ERR = 1, FR_NO_FILE = 4, FR_NO_PATH = 5, FR_DENIED = 7,
+  FR_EXIST = 8, FR_WRITE_PROTECTED = 10
+} FRESULT;
 typedef struct { FILE* fp; unsigned long sz; } FIL;
 
 #define FA_READ         0x01
@@ -54,6 +57,10 @@ static inline unsigned long hostff_size(FIL* f) { return f->sz; }
 #define f_size(fp) hostff_size(fp)
 
 static inline FRESULT f_unlink(const char* p) { return remove(p) ? FR_NO_FILE : FR_OK; }
+/* log.c creates its path's parent folder when f_open says FR_NO_PATH. This shim's
+ * f_open is fopen(), which never reports FR_NO_PATH, so the stub is never reached --
+ * the REAL behaviour is covered in tests/host_logfat_test.c over real FatFs. */
+static inline FRESULT f_mkdir(const char* p) { (void)p; return FR_OK; }
 static inline FRESULT f_rename(const char* a, const char* b) {
   return rename(a, b) ? FR_NO_FILE : FR_OK;
 }
