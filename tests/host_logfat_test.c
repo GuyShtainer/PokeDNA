@@ -423,6 +423,32 @@ static void t_card_that_lies(void) {
   CHECK(log_verified() == LOG_VERIFY_GOOD, "lie4: verify %d", log_verified());
 }
 
+/* A card that is fine at boot and goes bad LATER. The first commit's read-back agreed,
+ * so a check that only ever ran once would call this run healthy for the rest of its
+ * life -- and the rest of its life is where the hang happens. This is what the every-
+ * LOG_VERIFY_EVERY-th re-check is for, and rd_lie_after is a card going bad mid-flush. */
+static void t_card_goes_bad_mid_run(void) {
+  int i;
+  fresh_card(4096, 1);
+  log_clear();
+  log_begin_run(P);
+  log_line("=== boot ===");
+  CHECK(log_flush_to_sd(P) == 0, "midrun: first flush");
+  CHECK(log_health() == LOG_HEALTH_OK, "midrun: should start healthy");
+  CHECK(log_verified() == LOG_VERIFY_GOOD, "midrun: first commit not read back");
+
+  rd_lie_after = 0;                       /* from the next sector on, the card lies */
+  for (i = 0; i < 40 && log_health() == LOG_HEALTH_OK; i++) {
+    log_line("breadcrumb %d", i);
+    CHECK(log_flush_to_sd(P) == 0, "midrun: flush %d should still 'succeed'", i);
+  }
+  rd_lie_after = -1; rd_lie_writes = 0;
+  CHECK(log_health() == LOG_HEALTH_LOST,
+        "midrun: %d flushes into a lying card and health is still %d", i, log_health());
+  /* And it must be caught within one re-check window, not eventually. */
+  CHECK(i <= LOG_VERIFY_EVERY, "midrun: took %d flushes to notice", i);
+}
+
 /* And the read-back must not become the next silent failure. Sweep a read error across
  * EVERY step of a boot flush -- the directory walk, the FAT, the read-back itself -- and
  * assert the one invariant that matters: whenever the medium actually refused something,
@@ -472,6 +498,7 @@ int main(void) {
   t_unsupported_path();
   t_run_budget_not_file_size();
   t_card_that_lies();
+  t_card_goes_bad_mid_run();
   t_readback_cannot_go_silent();
   f_mount(0, "", 0);
   rd_free();

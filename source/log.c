@@ -29,11 +29,11 @@
  * After the latch, one call in LOG_RETRY_EVERY actually tries the card: on an EverDrive
  * that is 1 directory scan instead of 32, and on a card that recovered the log resumes. */
 #define LOG_RETRY_EVERY 32
-/* Read the card back on the run's FIRST commit (that is the boot flush, whose verdict
- * the boot dialog shows) and every Nth commit after it. Not every commit: a read-back is
- * a directory scan, roughly the cost of the f_open the flush already pays, and a
- * breadcrumb-per-phase log would double its card traffic for a card that lies once. */
-#define LOG_VERIFY_EVERY 16
+/* LOG_VERIFY_EVERY (log.h) reads the card back on the run's FIRST commit -- that is the
+ * boot flush, whose verdict the boot dialog shows -- and every Nth commit after it. Not
+ * every commit: a read-back is a directory scan, roughly the cost of the f_open the flush
+ * already pays, and a breadcrumb-per-phase log would double its card traffic to catch a
+ * card that lies once. */
 /* "/PokeDNA/log.txt" -> "/PokeDNA/log.prev1.txt" needs strlen(path) + 7 bytes. */
 #define LOG_ROT_MAX   64
 

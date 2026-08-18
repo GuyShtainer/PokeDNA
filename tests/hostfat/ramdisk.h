@@ -27,6 +27,11 @@ extern int  rd_protect;           /* !=0: disk_status reports STA_PROTECT      *
 extern long rd_fail_write_in;     /* >0: fail that many writes from now, then heal */
 extern int  rd_fail_all_writes;   /* !=0: every disk_write returns RES_ERROR   */
 extern int  rd_lie_writes;        /* !=0: every disk_write returns RES_OK and discards */
+extern long rd_lie_after;         /* >=0: let that many writes land, then start lying
+                                   * (-1 = disabled). A card that goes bad PART WAY
+                                   * through an operation -- which is how a verified
+                                   * write can pass its own read-back and still have
+                                   * its final rename swallowed.                  */
 extern long rd_fail_reads_after;  /* >=0: let that many reads through, then fail every
                                    * read (-1 = disabled). Lets a test sweep a read
                                    * error across every step of a flush.          */

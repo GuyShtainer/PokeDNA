@@ -91,6 +91,9 @@ int  log_health(void);
  * NOT keep it", and "the read-back could not tell me" are three different things, and
  * collapsing the third into the first is the exact bug this fixes. LOST is STICKY for
  * the run: one proven lie is not undone by a later f_stat that happens to agree. */
+/* The cadence is part of the contract, not an implementation detail: a caller may rely
+ * on a lying card being noticed within this many committed flushes. */
+#define LOG_VERIFY_EVERY   16
 #define LOG_VERIFY_UNKNOWN  0   /* nothing committed yet, so nothing to read back   */
 #define LOG_VERIFY_GOOD     1   /* the card's copy is at least the size we wrote    */
 #define LOG_VERIFY_LOST     2   /* the file is missing or SHORT: acked, not stored  */
