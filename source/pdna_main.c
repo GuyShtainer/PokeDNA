@@ -765,10 +765,28 @@ void app_log_flush(void) {
  * app_log_flush() rmbl_pause()s the motor around the write (the documented DE
  * GPIO-interleave guard) and the write brackets WAITCNT back to the loader's
  * inherited timing, so a crumb never writes at 0x4317. */
+/* The log's OWN health, on screen. The failure latch is circular by construction: the
+ * "SD writes failing, logging off" line it writes cannot reach a card that is refusing
+ * writes. That is what made 2026-08-18 run 2 unreadable -- a run that reached "parsing"
+ * and left NOTHING on the card, indistinguishable from a run that never wrote a crumb
+ * because it died before the first one. This badge closes that hole: it is painted from
+ * RAM counters (log.h's health API), costs zero card traffic, and says which of the two
+ * happened while the screen is still on.
+ *
+ * Right-aligned so it never collides with the phase word. Main-loop level only -- like
+ * every other paint here, never inside a transfer (hard rule 1). */
+static void log_badge_right(int right, int y) {
+  char b[16];
+  log_health_str(b, sizeof b);
+  if (!b[0]) return;
+  ui_ptext(right - ui_ptext_w(b), y, log_health() == LOG_HEALTH_OK ? UI_DIM : UI_WARN, b);
+}
+
 static void load_phase(const char* what) {
   ui_panel(24, 62, 192, 36, UI_PANEL, UI_TITLE);   /* re-fills, so it self-erases */
   ui_ptext(32, 70, UI_TITLE, "Opening save...");
   ui_ptext(32, 84, UI_TEXT,  what);
+  log_badge_right(208, 84);                        /* inside the panel, so it self-erases */
 }
 
 /* Armed by view_save, fired by the box screen's FIRST full paint (pdna_box.c), and
@@ -4807,6 +4825,17 @@ int main(void) {
    * set and poison the volume for reads. */
   if (active_flashcart == EZ_FLASH_OMEGA) log_begin_run(LOG_PATH);
   app_log_flush();   /* Omega-gated + motor-paused, same as every other flush now */
+  /* If THAT did not land, say so on the screen right now. This is the boot's first and
+   * only write, so a failure here means the whole run will be silent -- and the message
+   * explaining it cannot go in the log (that would be another write). 2026-08-18 run 2
+   * hung with an empty card and no way to tell which of the two had happened.
+   * Omega-only: on an EverDrive every write fails by design, and nagging about a
+   * documented read-only setup would be noise. */
+  if (active_flashcart == EZ_FLASH_OMEGA && log_health() != LOG_HEALTH_OK) {
+    char m[40];
+    siprintf(m, "%s wrote nothing (e%d)", LOG_PATH, log_last_result());
+    msg_wait("LOG NOT SAVING", UI_WARN, m, "Card locked, full, or unwritable?");
+  }
   pdna_romcheck_report();  /* the verdict is already on the card before we ask for A */
 
   bus_late_selftests();
