@@ -13,6 +13,7 @@ long rd_fail_write_in  = 0;
 int  rd_fail_all_writes = 0;
 int  rd_lie_writes     = 0;
 long rd_lie_after = -1;
+long rd_fail_at = -1;
 long rd_fail_reads_after = -1;
 unsigned long rd_writes = 0, rd_reads = 0, rd_lied = 0, rd_read_fails = 0;
 
@@ -24,7 +25,7 @@ void rd_init(unsigned sectors) {
   s_sectors = sectors;
   s_mem = calloc(sectors, FF_MAX_SS);
   rd_protect = 0; rd_fail_write_in = 0; rd_fail_all_writes = 0; rd_lie_writes = 0;
-  rd_fail_reads_after = -1; rd_lie_after = -1;
+  rd_fail_reads_after = -1; rd_lie_after = -1; rd_fail_at = -1;
   rd_writes = rd_reads = rd_lied = rd_read_fails = 0;
 }
 
@@ -58,6 +59,15 @@ DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
   if (rd_fail_all_writes) return RES_ERROR;
   if (rd_fail_write_in > 0) { rd_fail_write_in--; return RES_ERROR; }
   if (sector + count > s_sectors) return RES_PARERR;
+  /* One honest failure, then healthy again -- and after the range check for the same reason
+   * the liar below is. This is the knob that catches a cleanup path which DELETES a good
+   * copy on failure: under rd_lie_* that cleanup's own f_unlink is swallowed too, so the
+   * deletion never takes effect and the bug stays invisible. Here the card recovers, the
+   * unlink really lands, and the loss is visible on the next remount. */
+  if (rd_fail_at >= 0) {
+    if (rd_fail_at < (long)count) { rd_fail_at = -1; return RES_ERROR; }
+    rd_fail_at -= (long)count;
+  }
   /* The card that says yes and keeps nothing. Deliberately AFTER the range check so a
    * genuine bug still trips PARERR, and deliberately RES_OK so nothing above this line
    * can tell -- that is the whole point. Reads keep returning the real (stale) bytes,

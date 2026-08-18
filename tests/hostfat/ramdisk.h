@@ -32,6 +32,13 @@ extern long rd_lie_after;         /* >=0: let that many writes land, then start 
                                    * through an operation -- which is how a verified
                                    * write can pass its own read-back and still have
                                    * its final rename swallowed.                  */
+extern long rd_fail_at;           /* >=0: let that many writes land, fail exactly ONE, then
+                                   * be healthy again (-1 = disabled). The honest transient
+                                   * error -- a bad block, a directory with no room -- as
+                                   * opposed to the rd_lie_* liars. It is the only way to
+                                   * observe a cleanup path that DELETES on failure, because
+                                   * a permanently lying card swallows the cleanup's own
+                                   * f_unlink too and so hides the very loss it causes. */
 extern long rd_fail_reads_after;  /* >=0: let that many reads through, then fail every
                                    * read (-1 = disabled). Lets a test sweep a read
                                    * error across every step of a flush.          */
