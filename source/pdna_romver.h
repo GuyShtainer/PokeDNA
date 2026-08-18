@@ -24,8 +24,11 @@
  *     the end of the stamped image, CRC32'd in fixed-size regions with a per-region
  *     stamp, so a hole's ADDRESS shows up on screen instead of merely its existence.
  *     Run from the boot hold (R+SELECT) or the browser's FILE MENU; see
- *     source/pdna_romfull.h. A green grid is proof the load is intact; the windows can
- *     only ever be evidence.
+ *     source/pdna_romfull.h. A green grid says every byte OUTSIDE THE ZONES arrived —
+ *     which on this build is 99.4% of the image and specifically NOT the last 64 KiB,
+ *     where crt0's load images live (see TAIL_GUARD below). It is far stronger than the
+ *     windows, and it is still not a clean bill of health for the whole file; the screen
+ *     prints the blind range so a photograph carries its own caveat.
  *
  * WHAT AN "OK" FROM THE WINDOWS ACTUALLY PROVES — READ THIS BEFORE QUOTING IT
  * --------------------------------------------------------------------------
@@ -118,16 +121,35 @@
  *   - no window may contain an aligned 0x03007FFC / 0x03FFFFFC word;
  *   - no window may sit in the last 64 KiB (TAIL_GUARD).
  *
- * TAIL_GUARD IS AN ACCEPTED BLIND SPOT — SAY SO OUT LOUD.
+ * TAIL_GUARD IS AN ACCEPTED BLIND SPOT — SAY SO OUT LOUD, ON SCREEN.
  * The 64 KiB guard is ~30x larger than the measured 0x2010 walk-back, and it blinds the
- * check to the last 64 KiB of the image, which is exactly where the crt0 LMA copies live
- * (__iwram_lma .. __rom_end__, ~8.8 KB: the IWRAM .data image and the EWRAM-resident
- * flashcart driver). Corruption there is code corruption and could absolutely hang the
- * tool, and this check will not see it. It is accepted deliberately, because a false
- * alarm on EVERY SD boot (which is what a window in the kernel's drop zone would
- * produce) is worse than a blind spot: it would train the user to ignore the alarm. The
- * host-side --verify covers the tail exhaustively (size compare + whole-image CRC), so
- * the blind spot is on the cartridge only.
+ * check to the last 64 KiB of the image — which on the current build is
+ * [0xBE75CC, 0xBF75CC), and that range contains __iwram_lma, __data_lma, __init/__fini,
+ * __ewram_lma and __rom_end__: ALL 9,336 bytes of crt0's load images, including the
+ * 1,580-byte EWRAM-resident EZ-Flash driver. That is precisely the corruption that would
+ * best explain a freeze before the first frame, and neither instrument can see it. It is
+ * accepted deliberately, because a false alarm on EVERY SD boot (which is what a window
+ * in the kernel's drop zone would produce) is worse than a blind spot: it would train the
+ * user to ignore the alarm. The host-side --verify covers the tail exhaustively (size
+ * compare + whole-image CRC), so the blind spot is on the cartridge only — and
+ * pdna_romfull.c prints the blind range in the verdict band so a phone photo of a green
+ * grid carries the caveat with it.
+ *
+ * WHAT IT WOULD TAKE TO SHRINK IT (not done, and not to be done blind):
+ *   The cheap, safe version is not to shrink the guard at all — it is to make the guard
+ *   cover nothing that matters. Append >= TAIL_GUARD bytes of filler AFTER __rom_end__ at
+ *   build time (a padding section in the link, or `truncate`/`dd` in build.sh before the
+ *   stamper runs) and the crt0 load images stop being the last 64 KiB; the guard then
+ *   sits over padding and the grid verifies the LMA copies like any other bytes. Cost:
+ *   64 KiB of image, zero risk to the kernel's drop zone.
+ *   The other version — lowering TAIL_GUARD toward the measured 0x2010 — needs evidence
+ *   this file cannot supply from a Mac: SetTrimSize's PATCH_LENGTH is one of 0x300 /
+ *   0x1000 / 0x2000 depending on which patches the kernel decided to apply, so the bound
+ *   has to be re-read from the kernel version actually on Guy's cart, and then confirmed
+ *   on hardware with rts/sleep/cheat patching ON (the worst case) — a boot that reports
+ *   the tail region green with those enabled, repeated across a cold boot and a
+ *   soft-reset. Change the constant here and in tools/stamp_rom_windows.py together, or
+ *   every boot is a false alarm.
  *
  * >>> Do NOT add -flto to this project. <<<  It would let the verifier see the
  * near-empty initialiser in pdna_romver_data.c and fold every read into a compile-time
@@ -245,7 +267,15 @@ typedef struct {
   uint32_t   excl[PDNA_RV_MAX_REGIONS / 32u];  /* POST-LINK: 1 = region has no
                                                 * verifiable byte left (it is all
                                                 * zone) — shown as SKIP, never as a
-                                                * pass. bit i of excl[i>>5].        */
+                                                * pass. bit i of excl[i>>5].
+                                                * ADVISORY ONLY on the cartridge: it is
+                                                * fully derivable from z[] and the console
+                                                * derives it, because one flipped bit here
+                                                * would otherwise skip — and so green — a
+                                                * region with a real hole in it. Kept in
+                                                * the format because the disagreement is
+                                                * the only signal we get about damage to
+                                                * the descriptor's own (zoned) bytes.   */
   uint32_t   rcrc[PDNA_RV_MAX_REGIONS];        /* POST-LINK: per-region CRC32       */
 } PdnaRomVerify;
 
@@ -359,7 +389,44 @@ typedef struct {
   uint32_t first_bad_exp, first_bad_got;
   uint32_t bytes_verified; /* real image bytes actually fed to a CRC               */
   uint32_t bytes_zoned;    /* bytes deliberately read as zeroes (the blind spot)   */
+  uint32_t bytes_verifiable;/* what a COMPLETE scan must reach: image_bytes minus the
+                            * zone lengths, re-derived from the validated zone list.
+                            * The verdict compares bytes_verified against this, because
+                            * "0 bad" is not a pass unless something was measured.   */
+  int32_t  n_partial;      /* regions with SOME verifiable bytes but not a full region
+                            * — they pass on less than a region's worth of evidence  */
+  int32_t  excl_mismatch;  /* regions where the STAMPED excl bit disagrees with the
+                            * zone list. The derived answer always wins (see below);
+                            * a non-zero count is itself a finding, because the excl
+                            * bitmap lives in the descriptor, which is inside the hole
+                            * zone and therefore invisible to every region CRC.       */
 } PdnaRvGrid;
+
+/* What a finished (or abandoned) scan is allowed to CLAIM.
+ *
+ * This is a pure function of the grid counters and lives here, not in the screen, for one
+ * reason: the screen cannot be host-tested, and the rule "no faults" == "pass" was wrong
+ * in a way no amount of reading caught. An image with every region excluded painted
+ * "IMAGE OK - 0 regions match, 192 skipped" in green under the sentence "Every region
+ * matched its build-time CRC32.", having compared zero bytes. tests/host_romgrid_test.c
+ * pins every branch below. */
+typedef enum {
+  PDNA_RVV_OK         = 0, /* something was measured, all of it matched                */
+  PDNA_RVV_INCOMPLETE = 1, /* at least one region read wrong or read inconsistently    */
+  PDNA_RVV_DESC       = 2, /* the stamped skip map contradicts the zone list it is
+                            * redundant with — the descriptor's own bytes are suspect,
+                            * and they are the one part no region CRC covers           */
+  PDNA_RVV_STOPPED    = 3, /* the user aborted; no fault found in what did run         */
+  PDNA_RVV_NOTHING    = 4, /* not one region had a byte to compare                     */
+  PDNA_RVV_SHORT      = 5  /* the scan finished having compared fewer bytes than the
+                            * zone list says this image can prove                      */
+} PdnaRvGridVerdict;
+
+/* `aborted` != 0 when the user stopped the scan. */
+int pdna_rv_grid_verdict(const PdnaRvGrid* g, int aborted);
+
+/* 1 when that verdict is a FAULT (red, remedy, error sound). STOPPED is not a fault. */
+int pdna_rv_grid_is_fault(int verdict);
 
 /* Validate the grid half of the descriptor and zero *g. Returns 1 when a grid is
  * present AND believable, 0 otherwise (unstamped, v1, artless-with-no-grid, or a
@@ -367,7 +434,18 @@ typedef struct {
  * purpose: the descriptor lives in the image under suspicion). */
 int pdna_rv_grid_init(const PdnaRomVerify* d, PdnaRvGrid* g);
 
-/* 1 if region `i` has no verifiable bytes (stamped excl bit). */
+/* Real (non-zone) bytes inside region `i`: its span minus every zone that covers part of
+ * it. 0 both for a region made entirely of zone and for a region index past the image. */
+uint32_t pdna_rv_region_real(const PdnaRomVerify* d, int32_t i);
+
+/* 1 if region `i` has no verifiable bytes.
+ *
+ * RE-DERIVED from the zone list, NEVER read from the stamped excl bitmap. The bitmap is
+ * 100% redundant with the zones — and it is the one number in the grid a single flipped
+ * bit could use to turn a hole into a pass: marking a region "nothing to compare here"
+ * makes it SKIP, and a skipped hole used to read out as "IMAGE OK ... 2 skipped".
+ * pdna_rv_grid_init still compares the two and counts the disagreements, because a
+ * disagreement is evidence about the descriptor's own bytes, which no region CRC covers. */
 int pdna_rv_region_excluded(const PdnaRomVerify* d, int32_t i);
 
 /* CRC32 one region exactly the way the stamper did: zones as zeroes, IRQ words

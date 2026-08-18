@@ -144,6 +144,31 @@ int main(void) {
         "verified+blind = %lu, image is %lu",
         (unsigned long)(g.bytes_verified + g.bytes_zoned), (unsigned long)IMG_BYTES);
   CHECK(g.first_bad == -1, "first_bad set on a clean image");
+  /* The coverage contract: what grid_init derives up front as provable has to be exactly
+   * what a completed scan measured. This is the number the verdict is gated on, and it is
+   * also the number tools/stamp_rom_windows.py prints as "%d B verifiable". */
+  CHECK(g.bytes_verifiable == expect_verified, "verifiable %lu B, expected %lu",
+        (unsigned long)g.bytes_verifiable, (unsigned long)expect_verified);
+  /* Region 0 holds the head zone and region 3 the descriptor hole: both pass on LESS than
+   * a region's worth of bytes, and the screen colours them differently for saying so. */
+  CHECK(g.n_partial == 2, "%d partial regions, expected 2 (head zone, descriptor hole)",
+        (int)g.n_partial);
+  CHECK(pdna_rv_region_real(&d, 1) == RB &&
+        pdna_rv_region_real(&d, 0) == RB - PDNA_RV_HEAD_GUARD &&
+        pdna_rv_region_real(&d, 3) == RB - PDNA_RV_SIZE &&
+        pdna_rv_region_real(&d, NREG - 1) == 0u,
+        "region_real: %lu / %lu / %lu / %lu",
+        (unsigned long)pdna_rv_region_real(&d, 1),
+        (unsigned long)pdna_rv_region_real(&d, 0),
+        (unsigned long)pdna_rv_region_real(&d, 3),
+        (unsigned long)pdna_rv_region_real(&d, NREG - 1));
+  /* The stamper's rule and the console's derivation must agree bit for bit on a healthy
+   * image, or every boot would report a damaged descriptor. */
+  CHECK(g.excl_mismatch == 0, "%d excl disagreements on a healthy image",
+        (int)g.excl_mismatch);
+  CHECK(pdna_rv_grid_verdict(&g, 0) == PDNA_RVV_OK &&
+        !pdna_rv_grid_is_fault(pdna_rv_grid_verdict(&g, 0)),
+        "a clean full scan must be PDNA_RVV_OK, got %d", pdna_rv_grid_verdict(&g, 0));
 
   /* 2. ONE FLIPPED BIT, mid-image, must turn exactly one region red and name its address.
    *    Region 5, 0x2000 into it, i.e. file offset 0x52000. */
@@ -223,6 +248,18 @@ int main(void) {
     CHECK(!pdna_rv_grid_init(&bad, &g), "a 4 GiB image_bytes must be refused");
     build(&bad); bad.n_zones = PDNA_RV_MAX_ZONES + 1u;
     CHECK(!pdna_rv_grid_init(&bad, &g), "too many zones must be refused");
+    /* TOO FEW is a fault as well, and it is the one that was missed: the stamper always
+     * emits head + descriptor + tail, so anything under three means the word is damaged.
+     * With n_zones == 0 the tail drop zone stops being excluded and gets COMPARED, and a
+     * byte-perfect image reported "IMAGE INCOMPLETE - 4 bad" plus a remedy, on a healthy
+     * cart. A false alarm on a good load is how an alarm gets trained away. */
+    build(&bad); bad.n_zones = 0u;
+    CHECK(!pdna_rv_grid_init(&bad, &g),
+          "n_zones == 0 must be refused - it un-excludes the loader's drop zone");
+    build(&bad); bad.n_zones = 1u;
+    CHECK(!pdna_rv_grid_init(&bad, &g), "n_zones == 1 must be refused");
+    build(&bad); bad.n_zones = 2u;
+    CHECK(!pdna_rv_grid_init(&bad, &g), "n_zones == 2 must be refused");
     build(&bad); bad.z[1].off += 2u;            /* unaligned zone */
     CHECK(!pdna_rv_grid_init(&bad, &g),
           "an unaligned zone must be refused (a canon word could straddle it)");
@@ -244,6 +281,118 @@ int main(void) {
         pdna_rv_region_check(&d, img, NREG + 5, tab, 3, &g) == PDNA_RVG_SKIP &&
         g.n_done == 0,
         "an out-of-range region index must be a no-op");
+
+  /* 7. THE FLIPPED EXCLUSION BIT. This is the adversarial review's headline finding,
+   *    reproduced exactly: an image with a REAL 4 KiB hole in region 6, plus one flipped
+   *    bit in the stamped excl bitmap claiming region 6 has nothing to compare. Obeying
+   *    that bitmap turned the verdict from "IMAGE INCOMPLETE - 1 bad" into a green
+   *    "IMAGE OK - 190 regions match, 2 skipped". The bitmap is fully derivable from the
+   *    zone list, so the zone list decides and the bitmap is only compared against. */
+  build(&d);
+  {
+    uint32_t hole = 6u * RB + 0x1000u;
+    memset(img + hole, 0, 4096);                 /* the hole a partial SD load leaves */
+    d.excl[6u >> 5] |= 1u << 6;                  /* "nothing to compare in region 6"  */
+
+    CHECK(scan(&d, &g, 6, &st), "grid_init refused after an excl bit was flipped");
+    CHECK(st == PDNA_RVG_BAD,
+          "region 6 has a 4 KiB hole and a set excl bit: state %d, expected BAD", st);
+    CHECK(g.n_bad == 1 && g.first_bad == 6,
+          "the hole must still be found and named: %d bad, first_bad %d",
+          (int)g.n_bad, (int)g.first_bad);
+    CHECK(g.n_skipped == 1,
+          "a flipped excl bit must not add a skip: %d skipped", (int)g.n_skipped);
+    CHECK(g.n_ok == (int32_t)NREG - 2, "%d ok, expected %u", (int)g.n_ok, NREG - 2);
+    CHECK(g.excl_mismatch == 1, "the disagreement must be COUNTED, got %d",
+          (int)g.excl_mismatch);
+    CHECK(pdna_rv_grid_verdict(&g, 0) == PDNA_RVV_INCOMPLETE,
+          "verdict %d, expected INCOMPLETE", pdna_rv_grid_verdict(&g, 0));
+    CHECK(pdna_rv_grid_is_fault(pdna_rv_grid_verdict(&g, 0)),
+          "a hole hidden behind an excl bit must still be a FAULT");
+
+    /* And the same bit flipped on a HEALTHY image is reported rather than swallowed: the
+     * descriptor lives inside its own zone, so this disagreement is the only evidence any
+     * of these instruments ever gets that the descriptor's own bytes were damaged. */
+    build(&d);
+    d.excl[2u >> 5] |= 1u << 2;
+    CHECK(scan(&d, &g, 2, &st), "grid_init refused a healthy image with a flipped bit");
+    CHECK(st == PDNA_RVG_OK && g.n_bad == 0,
+          "region 2 is healthy: state %d, %d bad", st, (int)g.n_bad);
+    CHECK(g.excl_mismatch == 1 && pdna_rv_grid_verdict(&g, 0) == PDNA_RVV_DESC,
+          "a lying excl bit on a healthy image must read as DESCRIPTOR DAMAGED "
+          "(%d mismatches, verdict %d)",
+          (int)g.excl_mismatch, pdna_rv_grid_verdict(&g, 0));
+  }
+
+  /* 8. THE SCAN THAT MEASURED NOTHING. Zones that cover the whole image exclude every
+   *    region, so n_bad and n_unstable are both 0 — and the old verdict, (n_bad +
+   *    n_unstable) > 0, called that GREEN: "IMAGE OK - 0 regions match, 192 skipped",
+   *    under the sentence "Every region matched its build-time CRC32.". */
+  build(&d);
+  {
+    d.n_zones = 3u;
+    d.z[0].off = 0u;         d.z[0].len = 0x20000u;
+    d.z[1].off = 0x20000u;   d.z[1].len = 0x20000u;
+    d.z[2].off = 0x40000u;   d.z[2].len = 0x40000u;   /* ... to EOF */
+    d.excl[0] = 0xFFu;                                /* honestly stamped: all skipped */
+
+    CHECK(pdna_rv_grid_init(&d, &g), "an all-zone image is still a valid descriptor");
+    CHECK(g.bytes_verifiable == 0u, "verifiable %lu B, expected 0",
+          (unsigned long)g.bytes_verifiable);
+    CHECK(g.excl_mismatch == 0, "the excl bitmap agrees here (%d)", (int)g.excl_mismatch);
+    for (st = 0; st < (int)NREG; st++)
+      (void)pdna_rv_region_check(&d, img, st, tab, PDNA_RV_GRID_TRIES, &g);
+    CHECK(g.n_skipped == (int32_t)NREG && g.n_ok == 0 && g.bytes_verified == 0u,
+          "%d skipped, %d ok, %lu B verified", (int)g.n_skipped, (int)g.n_ok,
+          (unsigned long)g.bytes_verified);
+    CHECK(g.n_bad == 0 && g.n_unstable == 0, "nothing can fail when nothing is read");
+    CHECK(pdna_rv_grid_verdict(&g, 0) == PDNA_RVV_NOTHING,
+          "a scan that compared 0 bytes must be NOTHING VERIFIED, got %d",
+          pdna_rv_grid_verdict(&g, 0));
+    CHECK(pdna_rv_grid_is_fault(pdna_rv_grid_verdict(&g, 0)),
+          "NOTHING VERIFIED must paint as a fault, never green");
+  }
+
+  /* 9. The verdict rule itself, branch by branch. It is a pure function of the counters
+   *    precisely so the thing the user reads can be pinned without a GBA. */
+  {
+    PdnaRvGrid v;
+    memset(&v, 0, sizeof v);
+    v.n_regions = 8; v.n_ok = 7; v.bytes_verified = 1000u; v.bytes_verifiable = 1000u;
+    CHECK(pdna_rv_grid_verdict(&v, 0) == PDNA_RVV_OK, "full clean scan is OK");
+    CHECK(!pdna_rv_grid_is_fault(PDNA_RVV_OK) && !pdna_rv_grid_is_fault(PDNA_RVV_STOPPED),
+          "OK and STOPPED are not faults");
+    CHECK(pdna_rv_grid_is_fault(PDNA_RVV_INCOMPLETE) &&
+          pdna_rv_grid_is_fault(PDNA_RVV_DESC) &&
+          pdna_rv_grid_is_fault(PDNA_RVV_NOTHING) &&
+          pdna_rv_grid_is_fault(PDNA_RVV_SHORT),
+          "every other verdict is a fault");
+    CHECK(pdna_rv_grid_verdict(&v, 1) == PDNA_RVV_STOPPED, "aborted clean scan is STOPPED");
+
+    /* An abort does not bury a finding. */
+    v.n_bad = 1;
+    CHECK(pdna_rv_grid_verdict(&v, 1) == PDNA_RVV_INCOMPLETE,
+          "a bad region outranks the abort");
+    v.n_bad = 0; v.n_unstable = 1;
+    CHECK(pdna_rv_grid_verdict(&v, 0) == PDNA_RVV_INCOMPLETE, "an unstable region fires");
+    v.n_unstable = 0; v.excl_mismatch = 3;
+    CHECK(pdna_rv_grid_verdict(&v, 0) == PDNA_RVV_DESC, "a lying skip map fires");
+    v.excl_mismatch = 0;
+
+    /* Half the image skipped away and the rest clean: still not a pass. */
+    v.bytes_verified = 999u;
+    CHECK(pdna_rv_grid_verdict(&v, 0) == PDNA_RVV_SHORT,
+          "one byte short of the verifiable total is COVERAGE SHORT");
+    CHECK(pdna_rv_grid_verdict(&v, 1) == PDNA_RVV_STOPPED,
+          "an aborted scan is judged on faults only, not on coverage");
+    v.bytes_verified = 1000u; v.n_ok = 0; v.n_recovered = 0;
+    CHECK(pdna_rv_grid_verdict(&v, 0) == PDNA_RVV_NOTHING,
+          "zero matched regions is NOTHING VERIFIED even at full byte coverage");
+    v.n_recovered = 1;
+    CHECK(pdna_rv_grid_verdict(&v, 0) == PDNA_RVV_OK,
+          "a region that matched only on a retry still counts as measured");
+    CHECK(pdna_rv_grid_verdict(0, 0) == PDNA_RVV_NOTHING, "a null grid claims nothing");
+  }
 
   printf(fails ? "%d FAILURES\n" : "all pass\n", fails);
   return fails ? 1 : 0;

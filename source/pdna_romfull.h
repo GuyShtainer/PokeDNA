@@ -2,8 +2,18 @@
 #define PDNA_ROMFULL_H
 
 /*
- * pdna_romfull.h — the FULL-IMAGE verifier screen: CRC32 every byte of this ROM over the
- * cartridge bus and paint one cell per region, so a partial SD load stops being a theory.
+ * pdna_romfull.h — the FULL-IMAGE verifier screen: CRC32 every byte of this ROM that CAN
+ * be compared, over the cartridge bus, and paint one cell per region, so a partial SD load
+ * stops being a theory.
+ *
+ * "every byte that can be compared" is ~99.4% of the image, and the missing 0.6% is not a
+ * rounding error: the last 64 KiB is the loader's drop zone (PDNA_RV_TAIL_GUARD), and on
+ * this build that range holds every one of crt0's load images — the IWRAM .data copy and
+ * the EWRAM-resident flashcart driver. A green grid therefore means "the image outside the
+ * zones arrived intact", never "the cartridge is fine": corruption in those 9 KB is
+ * exactly the kind that hangs a tool before its first frame, and this screen cannot see
+ * it. It prints the blind range in the verdict band for that reason — the deliverable is a
+ * phone photo, and the photo has to carry the caveat.
  *
  * WHY THIS EXISTS, IN ONE PARAGRAPH
  * ---------------------------------

@@ -259,10 +259,24 @@ void pdna_rv_check(const PdnaRomVerify* d, const unsigned char* rom,
  * any disagreement, and the zone list is checked for sortedness, alignment and overlap
  * before the walk relies on all three. A flipped bit must produce "no opinion", never a
  * wild read or a false accusation.
+ *
+ * "NOT TRUSTED" HAS TO MEAN THE EXCLUSION BITMAP TOO. Everything derivable is derived:
+ *   - n_regions      from image_bytes and region_shift (was already);
+ *   - the excl bits  from the zone list (region i is excluded iff the zones cover all of
+ *                    it) — a stamped bit that says "nothing to compare here" is the
+ *                    cheapest possible way to turn a real hole green, and it was: one
+ *                    flipped bit over a 4 KiB hole at 0x600000 read out as "IMAGE OK -
+ *                    190 regions match, 2 skipped";
+ *   - bytes_verifiable from image_bytes minus the zone lengths, so the caller can insist
+ *                    that a pass actually MEASURED the image instead of skipping it.
+ * The stamped bitmap is still read, only to count disagreements: it is the one part of
+ * the descriptor whose corruption a region CRC can never see (the descriptor sits in its
+ * own zone), so a mismatch is a finding rather than something to paper over.
  */
 
 int pdna_rv_grid_init(const PdnaRomVerify* d, PdnaRvGrid* g) {
-  uint32_t rb, img, want, k, prev_end = 0u;
+  uint32_t rb, img, want, k, prev_end = 0u, zoned = 0u;
+  int32_t  i;
 
   if (!g) return 0;
   g->region_bytes = 0u;
@@ -271,7 +285,8 @@ int pdna_rv_grid_init(const PdnaRomVerify* d, PdnaRvGrid* g) {
   g->first_bad = -1;
   g->first_bad_state = PDNA_RVG_PENDING;
   g->first_bad_off = g->first_bad_exp = g->first_bad_got = 0u;
-  g->bytes_verified = g->bytes_zoned = 0u;
+  g->bytes_verified = g->bytes_zoned = g->bytes_verifiable = 0u;
+  g->n_partial = g->excl_mismatch = 0;
 
   if (!d) return 0;
   if (d->magic0 != PDNA_RV_MAGIC0 || d->magic1 != PDNA_RV_MAGIC1) return 0;
@@ -288,7 +303,12 @@ int pdna_rv_grid_init(const PdnaRomVerify* d, PdnaRvGrid* g) {
   if (want == 0u || want > PDNA_RV_MAX_REGIONS) return 0;
   if (d->n_regions != want) return 0;
 
-  if (d->n_zones > PDNA_RV_MAX_ZONES) return 0;
+  /* Three is the floor, not one: the stamper always emits head + descriptor + tail, and
+   * fewer than that means the list itself is damaged. It matters because a SHORT zone list
+   * un-excludes the tail region and re-compares the loader's own drop zone — zeroing this
+   * one word on a byte-perfect image made the screen say "IMAGE INCOMPLETE - 4 bad" and
+   * offer a remedy for a healthy cart. */
+  if (d->n_zones < 3u || d->n_zones > PDNA_RV_MAX_ZONES) return 0;
   for (k = 0; k < d->n_zones; k++) {
     uint32_t z0 = d->z[k].off, zl = d->z[k].len, z1;
     if (zl == 0u) return 0;                    /* the stamper never emits an empty zone */
@@ -297,16 +317,71 @@ int pdna_rv_grid_init(const PdnaRomVerify* d, PdnaRvGrid* g) {
     if (z1 < z0 || z1 > img) return 0;
     if (k > 0 && z0 < prev_end) return 0;      /* sorted AND non-overlapping */
     prev_end = z1;
+    zoned += zl;                               /* no overlap, so this is a plain sum */
   }
 
   g->region_bytes = rb;
   g->n_regions    = (int32_t)want;
+  /* What a COMPLETE scan owes us. Every zone is inside the image and none overlap, so
+   * this is exactly what the stamper printed as "%d B verifiable". */
+  g->bytes_verifiable = img - zoned;
+
+  /* The stamped bitmap is redundant; count where it lies rather than obey it. */
+  for (i = 0; i < (int32_t)want; i++) {
+    int stamped = (int)((d->excl[(uint32_t)i >> 5] >> ((uint32_t)i & 31u)) & 1u);
+    if (stamped != pdna_rv_region_excluded(d, i)) g->excl_mismatch++;
+  }
   return 1;
+}
+
+int pdna_rv_grid_verdict(const PdnaRvGrid* g, int aborted) {
+  if (!g) return PDNA_RVV_NOTHING;
+  /* A fault outranks an abort: a region that already came back wrong is the finding, even
+   * if the user pressed B a second later. */
+  if (g->n_bad + g->n_unstable > 0)     return PDNA_RVV_INCOMPLETE;
+  if (g->excl_mismatch > 0)             return PDNA_RVV_DESC;
+  if (aborted)                          return PDNA_RVV_STOPPED;
+  /* Everything below is the coverage gate: "no faults" is not a pass until something was
+   * actually compared. Both halves are needed — n_ok alone would accept a scan that
+   * matched one region and skipped 191, and bytes alone would accept a grid whose only
+   * measured region was recovered-after-a-retry with zero clean matches. */
+  if (g->n_ok + g->n_recovered <= 0)    return PDNA_RVV_NOTHING;
+  if (g->bytes_verified < g->bytes_verifiable) return PDNA_RVV_SHORT;
+  return PDNA_RVV_OK;
+}
+
+int pdna_rv_grid_is_fault(int verdict) {
+  return verdict != PDNA_RVV_OK && verdict != PDNA_RVV_STOPPED;
+}
+
+uint32_t pdna_rv_region_real(const PdnaRomVerify* d, int32_t i) {
+  uint32_t rb, r0, r1, real, k;
+
+  if (!d || i < 0 || (uint32_t)i >= PDNA_RV_MAX_REGIONS) return 0u;
+  if (d->region_shift < PDNA_RV_MIN_RSHIFT || d->region_shift > PDNA_RV_MAX_RSHIFT)
+    return 0u;
+  rb = 1u << d->region_shift;
+  r0 = (uint32_t)i * rb;
+  if (r0 >= d->image_bytes) return 0u;
+  r1 = r0 + rb;
+  if (r1 > d->image_bytes) r1 = d->image_bytes;
+
+  real = r1 - r0;
+  for (k = 0; k < d->n_zones && k < PDNA_RV_MAX_ZONES; k++) {
+    uint32_t z0 = d->z[k].off, z1 = z0 + d->z[k].len, a, b;
+    if (z1 < z0) return 0u;                    /* wrapped: treat as nothing verifiable */
+    a = (z0 > r0) ? z0 : r0;
+    b = (z1 < r1) ? z1 : r1;
+    /* grid_init proves the zones disjoint, but this is callable on a raw descriptor, so
+     * saturate rather than wrap a uint32 into 4 GiB of "verifiable" bytes. */
+    if (b > a) real = (real > b - a) ? real - (b - a) : 0u;
+  }
+  return real;
 }
 
 int pdna_rv_region_excluded(const PdnaRomVerify* d, int32_t i) {
   if (!d || i < 0 || (uint32_t)i >= PDNA_RV_MAX_REGIONS) return 1;
-  return (int)((d->excl[(uint32_t)i >> 5] >> ((uint32_t)i & 31u)) & 1u);
+  return pdna_rv_region_real(d, i) == 0u;
 }
 
 uint32_t pdna_rv_region_crc(const PdnaRomVerify* d, const unsigned char* rom,
@@ -370,6 +445,10 @@ int pdna_rv_region_check(const PdnaRomVerify* d, const unsigned char* rom,
   got[0] = pdna_rv_region_crc(d, rom, i, tab, &nbytes);
   g->bytes_verified += nbytes;
   g->bytes_zoned    += span - nbytes;
+  /* A region only PARTLY covered still gets a pass/fail verdict, but on less evidence
+   * than a full one. Counted so the screen can say so instead of painting it identically
+   * to a region where every byte was compared. */
+  if (nbytes < span) g->n_partial++;
   if (got[0] != d->rcrc[i]) {
     while (n < tries) {
       got[n] = pdna_rv_region_crc(d, rom, i, tab, 0);

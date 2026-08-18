@@ -20,10 +20,25 @@
  *    on bus timing, the screen reports a measured rate at the live rung AND at the
  *    loader's own, from a 256 KiB calibration slab — two numbers instead of an argument.
  *
- * 3. A REGION WITH NOTHING VERIFIABLE IS DRAWN GREY, NEVER GREEN. The stamper marks
- *    regions that are entirely exclusion zone (the tail drop zone, the descriptor). A
- *    cell that passes because it compared nothing is a lie, and this screen's whole value
- *    is that a green grid can be trusted.
+ * 3. A REGION WITH NOTHING VERIFIABLE IS DRAWN GREY, NEVER GREEN, AND WHICH REGIONS THOSE
+ *    ARE IS DERIVED HERE, NOT BELIEVED. Regions made entirely of exclusion zone (the tail
+ *    drop zone, the descriptor) are skipped — but the "which ones" comes from
+ *    pdna_rv_region_excluded, which recomputes it from the zone list. Trusting the stamped
+ *    bitmap was a hole big enough to drive the whole feature through: flipping ONE bit in
+ *    it over a region with a real 4 KiB hole turned "IMAGE INCOMPLETE - 1 bad" into
+ *    "IMAGE OK - 190 regions match, 2 skipped". A cell that passes because it compared
+ *    nothing is a lie, and so is a verdict.
+ *
+ * 4. "NO FAULTS" IS NOT A PASS UNTIL SOMETHING WAS MEASURED. The verdict is gated on
+ *    coverage: bytes_verified has to reach the bytes_verifiable that grid_init derives
+ *    from the zone list, and at least one region has to have actually matched. Otherwise
+ *    an image that skipped all 192 regions printed "IMAGE OK - 0 regions match, 192
+ *    skipped" in green, under the sentence "Every region matched its build-time CRC32."
+ *
+ * 5. THE BLIND RANGE IS ON SCREEN, ALWAYS. This verdict leaves the console as a phone
+ *    photo, so the photo has to carry its own caveat: the last 64 KiB is the loader's drop
+ *    zone and holds every one of crt0's load images (the IWRAM .data copy, the
+ *    EWRAM-resident flashcart driver). A green grid does not clear those 9 KB.
  */
 
 #include <tonc.h>
@@ -33,6 +48,7 @@
 #include "pdna_romfull.h"
 #include "pdna_romver.h"
 #include "flashcartio.h"
+#include "fused_rom.h"
 #include "log.h"
 #include "rmbl.h"
 #include "rumble.h"
@@ -47,6 +63,10 @@ extern const PdnaRomVerify g_pdna_romver;
 #define CLR_PEND     RGB15( 4,  6, 11)
 #define CLR_CUR      RGB15(31, 31, 31)
 #define CLR_OK       RGB15( 4, 26,  8)
+/* A region only PARTLY covered by real bytes passes on less evidence than a full one, so
+ * it does not get the full-strength green. Teal, because on a phone photo of a GBA screen
+ * it is the one hue that cannot be mistaken for either the green or the grey. */
+#define CLR_OK_PART  RGB15( 0, 22, 20)
 #define CLR_RECOVER  RGB15(31, 20,  0)
 #define CLR_UNSTABLE RGB15(31, 31,  0)
 #define CLR_BAD      RGB15(31,  3,  3)
@@ -62,6 +82,14 @@ extern const PdnaRomVerify g_pdna_romver;
  * photograph has to carry to be actionable, and at three lines it ran off the right edge
  * (verified by screenshot, docs/analysis-2026-08-18/romfull-bad-verdict.png). */
 #define GRID_BOT 124
+
+/* Real bytes in region `i`, and the span it covers — the two numbers that decide whether a
+ * passing cell gets the full green or the "partly compared" teal. */
+static uint32_t region_span(const PdnaRomVerify* d, const PdnaRvGrid* g, int i) {
+  uint32_t r0 = (uint32_t)i * g->region_bytes;
+  if (r0 >= d->image_bytes) return 0u;
+  return (d->image_bytes - r0 < g->region_bytes) ? (d->image_bytes - r0) : g->region_bytes;
+}
 
 static u16 state_color(int st) {
   switch (st) {
@@ -186,7 +214,14 @@ void pdna_romfull_screen(void) {
            (unsigned long)(g.region_bytes >> 10),
            *(volatile uint16_t*)0x04000204, flashcartio_bus_rung());
   ui_ptext_fit(6, 14, 232, UI_DIM, l1);
-  ui_ptext_fit(6, 22, 232, UI_DIM, "green=ok  red=BAD  yellow=bus  grey=skip");
+  /* The legend is chosen at RUNTIME by measured width, not by hoping: "part" is the entry
+   * that made the string too long once, and a legend truncated to "grey=sk~" is worse than
+   * a terse one. ui_ptext_w is the same measurement ui_ptext_fit would use to cut. */
+  {
+    const char* leg = "green=ok  teal=part  red=BAD  yellow=bus  grey=skip";
+    if (ui_ptext_w(leg) > 232) leg = "grn=ok teal=part red=BAD ylw=bus gry=skip";
+    ui_ptext_fit(6, 22, 232, UI_DIM, leg);
+  }
   for (i = 0; i < g.n_regions; i++) draw_cell(i, rows, pitch, CLR_PEND);
 
   /* Freeze the motor for the whole scan. Gated on rumble_omega() so the boot-hold entry
@@ -226,7 +261,14 @@ void pdna_romfull_screen(void) {
        * second answer into a 36 second one for no new information. */
       tries = (g.n_bad + g.n_unstable < 12) ? PDNA_RV_GRID_TRIES : 1;
       s = pdna_rv_region_check(d, (const unsigned char*)PDNA_RV_ROM_BASE, i, tab, tries, &g);
-      draw_cell(i, rows, pitch, state_color(s));
+      {
+        u16 clr = state_color(s);
+        /* A pass over PART of a region is not the same evidence as a pass over all of it
+         * (on this build region 190 is 46% zone), so it does not get the same colour. */
+        if (s == PDNA_RVG_OK && pdna_rv_region_real(d, i) < region_span(d, &g, i))
+          clr = CLR_OK_PART;
+        draw_cell(i, rows, pitch, clr);
+      }
 
       if ((i & 7) == 7 || i == g.n_regions - 1) {
         char hdr[24];
@@ -248,11 +290,24 @@ void pdna_romfull_screen(void) {
    * page: how much was checked, how many regions failed, WHERE the first one is, how long
    * it took at which bus timing, and what to do about it. */
   {
-    int   bad   = (g.n_bad + g.n_unstable) > 0;
-    u16   ink   = bad ? CLR_BAD : (aborted ? UI_WARN : UI_OK);
+    /* WHAT COUNTS AS A PASS is decided by pdna_rv_grid_verdict, in the pure core, because
+     * the rule "no faults == pass" was wrong and this screen cannot be host-tested. It
+     * also demands COVERAGE: at least one region matched, and the scan reached the byte
+     * count grid_init derives from the zone list. Without that, an image whose every
+     * region was skipped printed "IMAGE OK - 0 regions match, 192 skipped" in green.
+     * tests/host_romgrid_test.c pins each branch. */
+    int   vd    = pdna_rv_grid_verdict(&g, aborted);
+    int   bad   = pdna_rv_grid_is_fault(vd);
+    u16   ink   = bad ? CLR_BAD : (vd == PDNA_RVV_STOPPED ? UI_WARN : UI_OK);
     u32   ms    = tmr_ms(t_scan);
     u32   per   = (d->image_bytes >= 1000u)
                     ? g.bytes_verified / (d->image_bytes / 1000u) : 0u;
+    /* On a fused image the descriptor's image_bytes is PokeDNA's own image, not the
+     * cartridge: the appended game ROM was added after stamping and has no CRCs at all.
+     * Say which denominator the percentage is against, or the line overstates the scan by
+     * more than half. */
+    uint32_t fsz = 0u;
+    int   fused = fused_rom_present(&fsz);
 
     commas(num, g.bytes_verified);
     commas(num2, d->image_bytes);
@@ -260,8 +315,9 @@ void pdna_romfull_screen(void) {
     /* Header line: coverage, in bytes, with the percentage spelled out. This is the line
      * that makes a green grid quotable — "99.4% of the image" instead of "it said OK". */
     ui_fill_rect(0, 13, UI_SCR_W, 17, UI_BG);
-    siprintf(l1, "%s of %s B checked (%lu.%01lu%%)", num, num2,
-             (unsigned long)(per / 10u), (unsigned long)(per % 10u));
+    siprintf(l1, "%s of %s B checked (%lu.%01lu%%)%s", num, num2,
+             (unsigned long)(per / 10u), (unsigned long)(per % 10u),
+             fused ? " base only" : "");
     ui_ptext_fit(6, 14, 232, UI_TEXT, l1);
 
     if (cal_bytes)
@@ -280,14 +336,36 @@ void pdna_romfull_screen(void) {
     ui_fill_rect(0, 124, UI_SCR_W, 36, UI_BG);
     ui_hline(0, 125, UI_SCR_W, UI_BORDER);
 
-    if (aborted)
-      siprintf(l1, "STOPPED at region %d of %d", (int)g.n_done, (int)g.n_regions);
-    else if (bad)
-      siprintf(l1, "IMAGE INCOMPLETE - %d bad, %d unstable, %d skip",
-               (int)g.n_bad, (int)g.n_unstable, (int)g.n_skipped);
-    else
-      siprintf(l1, "IMAGE OK - %d regions match, %d skipped",
-               (int)g.n_ok, (int)g.n_skipped);
+    /* One line per verdict, and every one of them says what was MEASURED. */
+    switch (vd) {
+      case PDNA_RVV_INCOMPLETE:
+        siprintf(l1, "IMAGE INCOMPLETE - %d bad, %d unstable, %d skip",
+                 (int)g.n_bad, (int)g.n_unstable, (int)g.n_skipped);
+        break;
+      case PDNA_RVV_DESC:
+        siprintf(l1, "DESCRIPTOR DAMAGED - %d skip bit(s) disagree",
+                 (int)g.excl_mismatch);
+        break;
+      case PDNA_RVV_STOPPED:
+        siprintf(l1, "STOPPED at region %d of %d", (int)g.n_done, (int)g.n_regions);
+        break;
+      case PDNA_RVV_NOTHING:
+        siprintf(l1, "NOTHING VERIFIED - 0 of %d regions had bytes", (int)g.n_regions);
+        break;
+      case PDNA_RVV_SHORT:
+        siprintf(l1, "COVERAGE SHORT - %lu of %lu KiB compared",
+                 (unsigned long)(g.bytes_verified >> 10),
+                 (unsigned long)(g.bytes_verifiable >> 10));
+        break;
+      default:
+        if (g.n_partial)
+          siprintf(l1, "IMAGE OK - %d match (%d partial), %d skipped",
+                   (int)g.n_ok, (int)g.n_partial, (int)g.n_skipped);
+        else
+          siprintf(l1, "IMAGE OK - %d regions match, %d skipped",
+                   (int)g.n_ok, (int)g.n_skipped);
+        break;
+    }
     ui_ptext_fit(6, 128, 232, ink, l1);
 
     if (g.first_bad >= 0) {
@@ -297,19 +375,59 @@ void pdna_romfull_screen(void) {
                (unsigned long)((g.first_bad_off / 10000u) % 100u),
                g.first_bad_state == PDNA_RVG_BAD ? "stable" : "unstable");
       ui_ptext_fit(6, 136, 232, UI_TEXT, l2);
-      /* The remedy, in the order that costs least. A stale /PATCH entry and a bad SD copy
-       * are not distinguishable from inside the cartridge (pdna_romver.h), so both are
-       * offered and the cheap one goes first. ONE line, abbreviated: the two-line wrapped
-       * version was measured off-screen at the bottom edge, and the log carries the full
-       * sentence anyway. */
-      strcpy(l3, "Del /PATCH/*.pat, re-copy the .gba, or NOR");
-      ui_ptext_fit(6, 144, 232, UI_TEXT, l3);
+    } else if (vd == PDNA_RVV_DESC) {
+      ui_ptext_fit(6, 136, 232, UI_TEXT,
+                   "Its own bytes are suspect - no region CRC covers them.");
+    } else if (bad) {
+      /* The all-skipped / short-coverage case. It used to land in the reassurance branch
+       * below and print "Every region matched its build-time CRC32." with zero regions
+       * compared, which is the exact lie this screen exists to prevent. */
+      ui_ptext_fit(6, 136, 232, UI_TEXT,
+                   vd == PDNA_RVV_NOTHING
+                     ? "This scan proved nothing - no bytes were compared."
+                     : "Fewer bytes were compared than this image can prove.");
     } else {
       siprintf(l2, "%d region(s) needed a retry - the cart bus lied once",
                (int)g.n_recovered);
       ui_ptext_fit(6, 136, 232, g.n_recovered ? UI_WARN : UI_DIM,
-                   g.n_recovered ? l2 : "Every region matched its build-time CRC32.");
+                   g.n_recovered ? l2 : "Every compared region matched its build CRC32.");
+    }
+
+    if (bad) {
+      /* The remedy, in the order that costs least — and only remedies that EXIST on the
+       * cart in front of the user: /PATCH and NOR are EZ-Flash Omega things, and printing
+       * them to an EverDrive user is a wild goose chase. The boot-hold entry runs before
+       * detection, so active_flashcart is NO_FLASHCART there and the generic line is the
+       * honest one. A stale /PATCH entry and a bad SD copy are not distinguishable from
+       * inside the cartridge (pdna_romver.h), so both are offered and the cheap one goes
+       * first. ONE line, abbreviated: the two-line wrapped version was measured off-screen
+       * at the bottom edge, and the log carries the full sentence anyway. */
+      strcpy(l3, (active_flashcart == EZ_FLASH_OMEGA)
+                   ? "Del /PATCH/*.pat, re-copy the .gba, or NOR"
+                   : "Re-copy the .gba to the card, then re-check");
+      ui_ptext_fit(6, 144, 232, UI_TEXT, l3);
+    } else {
       ui_ptext_fit(6, 144, 232, UI_DIM, "B  back");
+    }
+
+    /* The caveat, on every verdict including the green ones: the last TAIL_GUARD bytes are
+     * the loader's drop zone and are never compared, and on this build that range holds
+     * every one of crt0's load images. A photo of a green grid has to carry this or it
+     * over-claims. Derived from the zone that ends at EOF, so it stays true if the guard
+     * ever changes. */
+    {
+      uint32_t tail0 = 0u;
+      uint32_t k;
+      for (k = 0; k < d->n_zones && k < PDNA_RV_MAX_ZONES; k++)
+        if (d->z[k].off + d->z[k].len >= d->image_bytes) tail0 = d->z[k].off;
+      if (tail0)
+        siprintf(l3, "blind: 0x%06lx..EOF (%luK) holds crt0 load images",
+                 (unsigned long)tail0,
+                 (unsigned long)((d->image_bytes - tail0) >> 10));
+      else
+        siprintf(l3, "blind: %lu KiB of zones were never compared",
+                 (unsigned long)(g.bytes_zoned >> 10));
+      ui_ptext_fit(6, 152, 232, UI_DIM, l3);
     }
 
     if (bad)            snd_error();
@@ -318,15 +436,29 @@ void pdna_romfull_screen(void) {
 
     /* Two to four lines on the card, so the verdict outlives the photo. No flush: the
      * caller owns the card, and at the boot-hold entry there is no mounted card yet. */
-    log_line("rom full check: %s - %d ok, %d bad, %d unstable, %d recovered, %d skip of "
-             "%d regions x %lu KiB",
-             aborted ? "STOPPED" : (bad ? "IMAGE INCOMPLETE" : "IMAGE OK"),
-             (int)g.n_ok, (int)g.n_bad, (int)g.n_unstable, (int)g.n_recovered,
-             (int)g.n_skipped, (int)g.n_regions, (unsigned long)(g.region_bytes >> 10));
-    log_line("  %lu B checked, %lu B blind, %lu.%01lu s at waitcnt=%04x rung=%d",
-             (unsigned long)g.bytes_verified, (unsigned long)g.bytes_zoned,
+    log_line("rom full check: %s - %d ok (%d partial), %d bad, %d unstable, %d recovered, "
+             "%d skip of %d regions x %lu KiB",
+             vd == PDNA_RVV_INCOMPLETE ? "IMAGE INCOMPLETE" :
+             vd == PDNA_RVV_DESC       ? "DESCRIPTOR DAMAGED" :
+             vd == PDNA_RVV_STOPPED    ? "STOPPED" :
+             vd == PDNA_RVV_NOTHING    ? "NOTHING VERIFIED" :
+             vd == PDNA_RVV_SHORT      ? "COVERAGE SHORT" : "IMAGE OK",
+             (int)g.n_ok, (int)g.n_partial, (int)g.n_bad, (int)g.n_unstable,
+             (int)g.n_recovered, (int)g.n_skipped, (int)g.n_regions,
+             (unsigned long)(g.region_bytes >> 10));
+    log_line("  %lu of %lu verifiable B checked, %lu B blind, %lu.%01lu s at "
+             "waitcnt=%04x rung=%d",
+             (unsigned long)g.bytes_verified, (unsigned long)g.bytes_verifiable,
+             (unsigned long)g.bytes_zoned,
              (unsigned long)(ms / 1000u), (unsigned long)((ms % 1000u) / 100u),
              *(volatile uint16_t*)0x04000204, flashcartio_bus_rung());
+    if (g.excl_mismatch)
+      log_line("  descriptor skip map disagrees with its own zones at %d region(s) - the "
+               "zones win; the descriptor's bytes are themselves suspect",
+               (int)g.excl_mismatch);
+    if (fused)
+      log_line("  fused image: %lu B of appended game ROM are NOT covered by any CRC",
+               (unsigned long)fsz);
     if (cal_bytes)
       log_line("  %lu KiB CRC: %lu ms at this rung, %lu ms at the loader's timing",
                (unsigned long)(cal_bytes >> 10), (unsigned long)tmr_ms(tk_fast),
@@ -338,8 +470,14 @@ void pdna_romfull_screen(void) {
                g.first_bad_state == PDNA_RVG_BAD ? "stable - the IMAGE differs"
                                                 : "unstable - the cart BUS is lying");
     if (bad)
-      log_line("  remedy: delete /PATCH/*.pat on the card, then re-copy PokeDNA.gba; "
-               "or run from NOR");
+      log_line("  remedy: %s re-copy PokeDNA.gba to the card%s",
+               active_flashcart == EZ_FLASH_OMEGA ? "delete /PATCH/*.pat, then" : "",
+               active_flashcart == EZ_FLASH_OMEGA ? "; or run from NOR" : "");
+    /* The caveat goes in the log too, because the log is what gets pasted into a report
+     * while the photo is what gets waved around. */
+    log_line("  blind by design: the last %lu B (loader drop zone) hold crt0's load "
+             "images - a green grid does not clear them",
+             (unsigned long)PDNA_RV_TAIL_GUARD);
   }
 
   while (1) {
