@@ -130,7 +130,10 @@ void rumble_raw_off(void) {
  * resumes seamlessly afterwards. Nesting-counted (blit primitives nest). DISTINCT from
  * rumble_pause() (the SD-write guard) — do not share the s_paused flag. */
 void rumble_io_suspend(void) { s_io_depth++; }
-void rumble_io_resume(void)  { if (s_io_depth > 0 && --s_io_depth == 0 && !s_pwm) { CART_W(GPIO_DATA, 0); s_motor = 0; } }
+/* Routed through rumble_raw_off so the SD-transfer freeze applies here too (it wrote
+ * GPIO directly before, which was the one physical cart write that ignored
+ * flashcartio_is_reading). Depth is already 0 by then, so the semantics are identical. */
+void rumble_io_resume(void)  { if (s_io_depth > 0 && --s_io_depth == 0 && !s_pwm) rumble_raw_off(); }
 
 void rumble_pwm_set(int freq_hz, int duty) {
   if (freq_hz < 1) freq_hz = 1;
@@ -182,5 +185,15 @@ void rumble_resume(void) {
     s_ctr = 0;
     REG_TM2D   = (u16)(0x10000u - (16777216u / TICK_HZ));
     REG_TM2CNT = TM_ENABLE | TM_IRQ;
+  } else {
+    /* Drive the line low now the freezes have lifted. motor_set/rumble_raw_off RETURN
+     * EARLY while flashcartio_is_reading (the SD-transfer guard added 2026-08-18), and
+     * they do not remember that they wanted the motor off -- so an off-edge that arrived
+     * mid-transfer is simply lost, leaving the GPIO latched HIGH with s_motor == 0 and,
+     * with no PWM cue running, nothing that would ever clear it. A motor left energised
+     * across a long transfer is exactly the kind of cart-bus/power load this project is
+     * chasing, so the two places where a freeze lifts (here and rumble_io_resume) make
+     * the line match the commanded state instead of trusting the last edge. */
+    rumble_raw_off();
   }
 }
