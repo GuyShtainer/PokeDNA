@@ -13,8 +13,15 @@
 bool app_can_edit(void);
 
 /* Flush the RAM log to SD immediately (rmbl-paused). For anomaly evidence that must
- * survive a power-off; main-loop-synchronous callers only. */
+ * survive a power-off; main-loop-synchronous callers only. A no-op on anything but
+ * an EZ-Flash Omega — writes are Omega-only (hard rule 4), and a failed disk_write
+ * would leave FatFs' write flag set and poison the mounted volume for reads too. */
 void app_log_flush(void);
+
+/* Save-open breadcrumb: "the box is on screen". Armed once per save-open by
+ * view_save and fired by the box screen's first full paint; a no-op on every later
+ * paint, so it costs exactly one SD write per opened save. */
+void app_crumb_shown(void);
 
 /* How an edited in-RAM `block` is persisted. Each kind of block (PC storage,
  * SaveBlock1, SaveBlock2, a bank box file) supplies its own verified-write

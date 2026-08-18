@@ -1833,6 +1833,7 @@ int pdna_box(BoxSource* src) {
       if (s_ch_hold) chunk_draw(src, box, clr);
       else           render_full(src, box, cur, on_title, s_holding, clr);
       need_full = false; paint_over = false;
+      app_crumb_shown();   /* one-shot per save-open: the box is on screen (no-op after) */
     }
     u16 k, fresh;
     do { s_vsync();

@@ -168,13 +168,157 @@ static u16 wait_keys_bob(u16 mask, int kind, int* ctr, int* frame,
 
 static u16 wait_keys(u16 mask) { return wait_keys_bob(mask, -1, 0, 0, 0); }
 
+/* ---- console identity (swi 0x0D, GetBiosChecksum) -------------------------
+ * The DS's GBA-mode BIOS differs from the GBA's in exactly one byte ([3F0Ch]), so
+ * the BIOS checksum is a reliable console ID:
+ *     0xBAAE187F = GBA / GBA SP / Game Boy Micro
+ *     0xBAAE1880 = NDS / NDS Lite running in GBA mode
+ * (GBATEK "BIOS Misc Functions"; per-console dumps in mgba-emu/bios-dump.)
+ * libtonc exposes it as BiosCheckSum() — a two-instruction stub, `svc 13; bx lr` —
+ * so this costs nothing and needs no inline asm.
+ *
+ * Why it is worth a line in the log: every hardware report this project has ever
+ * filed is missing the answer to "which console was that run on?". The Aug-16 test
+ * console is unknown to this day, which is why a DS-Lite-specific factor could not
+ * be excluded from the save-open hang. One SWI makes it recorded fact forever.
+ *
+ * DETECT AND LOG, DO NOT GATE. Nothing branches on this. Retail carts set 0x4317
+ * and run from Omega-DE PSRAM in DS Lites universally, and every mechanism the
+ * hang report implicates (FPGA-emulated GPIO interleave, PSRAM margin) is cart-
+ * and-unit specific rather than console specific. Guy plays on a DS Lite, so a
+ * blanket NDS refusal would cost him 100% of the speedup on a ~50%-confidence
+ * hypothesis. The bus self-test below decides on measurement instead. */
+#define BIOS_SUM_GBA 0xBAAE187Fu
+#define BIOS_SUM_NDS 0xBAAE1880u
+
+static unsigned s_bios_sum = 0;
+
+static const char* console_name(void) {
+  switch (s_bios_sum) {
+    case BIOS_SUM_GBA: return "GBA/SP";
+    case BIOS_SUM_NDS: return "NDS";
+    default:           return "?";       /* unknown BIOS: an emulator's HLE, or a clone */
+  }
+}
+
+/* Bus self-test verdicts, stashed at the moment they are measured and logged later:
+ * init_system() runs BEFORE log_init(), whose log_clear() would wipe anything logged
+ * from here. v1 = the CPU+DMA ladder (the only one that may demote the bus). */
+static int s_busv1 = FCIO_BUS_SKIPPED;
+
+static const char* bus_verdict_str(int v) {
+  switch (v) {
+    case FCIO_BUS_OK:            return "ok";
+    case FCIO_BUS_SKIPPED:       return "skipped";
+    case FCIO_BUS_BAD_READ:      return "FAIL cpu-read";
+    case FCIO_BUS_BAD_DMA:       return "FAIL dma3-from-rom";
+    case FCIO_BUS_BAD_GPIO:      return "FAIL cart-gpio interleave";
+    case FCIO_BUS_BAD_FETCH:     return "FAIL rom instruction fetch";
+    case FCIO_BUS_UNSTABLE_SLOW: return "FAIL even at loader timing (bad image/cart)";
+    default:                     return "?";
+  }
+}
+
+/* ---- the two self-tests that could not run inside init_system() -------------
+ *
+ * Both are VERDICT ONLY: neither may move the rung ladder or demote the bus. A
+ * rumble fault must never cost the session its frame rate, and by this point the
+ * ladder has settled anyway. Each is preceded by a FLUSHED line, so if one of them
+ * is where a marginal unit dies, the card names the probe that killed it instead of
+ * leaving yet another unexplained hang.
+ *
+ * Called from BOTH boot paths on purpose. The delta/emulator build has no card and
+ * no rumble driver, so the GPIO half self-skips there -- but the ROM-fetch half
+ * still runs, which is the only way any of this code gets exercised off-hardware. */
+/* Test hook: force the GPIO half to run where there is no Omega (the delta build in
+ * mGBA), so -DFCIO_PROBE_FORCE_FAIL=3 can actually EXECUTE the BAD_GPIO branch and
+ * rmbl_lockout() before Guy's hardware does. An untested error branch whose first
+ * ever execution is on the console that is already hanging is not a safety net. */
+#ifndef PDNA_TEST_FORCE_GPIO_PROBE
+#define PDNA_TEST_FORCE_GPIO_PROBE 0
+#endif
+
+static void bus_late_selftests(void) {
+  int fetchv;
+
+  if ((rumble_omega() || PDNA_TEST_FORCE_GPIO_PROBE) && rmbl_get_mask() != 0u) {
+    /* GPIO interleave, in BOTH forms. Raw = the write exactly as it shipped before
+     * the WAITCNT bracket existed (it touches WAITCNT not at all), which answers the
+     * hang report's actual question. Bracketed = the mitigation that ships now.
+     * Running only one makes a failure unattributable, because the bracket itself
+     * writes WAITCNT twice per edge and an ISR writing WAITCNT has no retail
+     * precedent either. Skipped entirely when the user has turned every cue off: no
+     * cart-GPIO traffic ships in that case, so none should be generated. */
+    int graw, gbrk;
+    log_line("bus: probing cart-gpio interleave (stress rate, far above what ships)");
+    app_log_flush();
+    graw = flashcartio_bus_probe_gpio(rumble_bus_probe_raw);
+    gbrk = flashcartio_bus_probe_gpio(rumble_bus_probe_bracketed);
+    log_line("bus gpio self-test: raw=%s bracketed=%s (rung=%d)",
+             bus_verdict_str(graw), bus_verdict_str(gbrk), flashcartio_bus_rung());
+    if (gbrk == FCIO_BUS_BAD_GPIO) {
+      /* Even the shipping form corrupts reads here. Drop the nicety, keep the speed. */
+      rmbl_lockout();
+      log_line("rumble: OFF for this session - cart GPIO corrupts ROM reads on this "
+               "unit even bracketed. The bus boost is UNAFFECTED (rung=%d).",
+               flashcartio_bus_rung());
+    } else if (graw == FCIO_BUS_BAD_GPIO) {
+      /* The most useful result this probe can produce: the hazard is real on this
+       * unit and the mitigation demonstrably fixes it. Rumble stays on. */
+      log_line("rumble: kept - raw GPIO writes corrupt ROM reads here, the WAITCNT "
+               "bracket fixes it. That is the garbled-wallpaper hazard, measured.");
+    }
+  }
+
+  /* The half the IWRAM probe cannot reach: a checksum loop deliberately left in
+   * .text so the INSTRUCTION FETCHES run at the settled rung too. GamePak prefetch
+   * (WAITCNT bit 14) engages for opcode fetches only, so nothing before this line
+   * has tested the mechanism the hang report names as its prime suspect. It runs
+   * last, and its announcement is flushed first, precisely because this is the one
+   * probe that can take the tool down if the fetch path is what is broken. */
+  log_line("bus: probing rom instruction fetch (last, and the one that can hang)");
+  app_log_flush();
+  fetchv = flashcartio_bus_probe_fetch();
+  log_line("bus fetch self-test: %s (rung=%d, waitcnt=%04x)", bus_verdict_str(fetchv),
+           flashcartio_bus_rung(), *(volatile uint16_t*)0x04000204);
+  if (fetchv == FCIO_BUS_BAD_FETCH)
+    log_line("bus: rom CODE fetch is unreliable at this rung - hold L+SELECT at boot "
+             "to run the whole session at the loader's timing");
+  app_log_flush();
+}
+
 static void init_system(void) {
-  /* FIRST, before anything else runs a single loop out of ROM: take the game-pak
-   * bus off the loader's 4/2-waitstates-no-prefetch handoff. Everything in this
-   * tool executes from ROM, so this is a flat speed-up of the whole app — the
-   * repaints, the animations, the decode. flashcartio drops back to the inherited
-   * timing for the duration of each SD transfer (see flashcartio.h). */
-  flashcartio_bus_fast();
+  /* Console identity first, before anything touches the bus: swi 0x0D reads the
+   * BIOS, which WAITCNT cannot affect, and the answer belongs in the log either
+   * way. */
+  s_bios_sum = BiosCheckSum();
+
+  /* FIELD OVERRIDE: hold L+SELECT at boot to run the whole session at the loader's
+   * timing. This is the decisive A/B for a suspected bus-timing hang — the one
+   * experiment that otherwise needs a rebuild and a toolchain. Read raw: the key
+   * subsystem is not up yet, and REG_KEYINPUT is active-low. */
+  const u16 held = (u16)(~REG_KEYINPUT & KEY_MASK);
+  if ((held & (KEY_L | KEY_SELECT)) == (KEY_L | KEY_SELECT)) {
+    flashcartio_bus_hold();               /* capture the loader's value, never boost */
+  } else {
+    /* FIRST, before anything else runs a single loop out of ROM: take the game-pak
+     * bus off the loader's 4/2-waitstates-no-prefetch handoff. Everything in this
+     * tool executes from ROM, so this is a flat speed-up of the whole app — the
+     * repaints, the animations, the decode. flashcartio drops back to the inherited
+     * timing for the duration of each SD transfer (see flashcartio.h). */
+    flashcartio_bus_fast();
+    /* ...and IMMEDIATELY prove it, before irq_init/ui_init/snd_init execute another
+     * few thousand ROM fetches at an unvalidated timing. Three 4 KiB windows of this
+     * image, checksummed at the loader's timing and again at the boosted one, by CPU
+     * and by DMA3. On failure the library steps down a rung (3/2 + prefetch) or hands
+     * the bus back for good, so a marginal cart/console degrades into a slow session
+     * instead of a hang. DATA READS ONLY — the probe runs from IWRAM so a bad fetch
+     * cannot kill the detector, which means GamePak prefetch is untestable here; the
+     * ROM-resident fetch pass after mount covers that half. No GPIO agitator yet: the
+     * rumble driver does not own the cart GPIO until after the SD is up. */
+    s_busv1 = flashcartio_bus_validate();
+  }
+
   irq_init(NULL);
   irq_add(II_VBLANK, NULL);
   ui_init();                               /* Mode 3 + bitmap TTE */
@@ -196,7 +340,10 @@ static bool cart_writable(void) { return active_flashcart == EZ_FLASH_OMEGA; }
 
 static void halt_msg(const char* msg) {
   log_line("HALT: %s", msg);
-  log_flush_to_sd(LOG_PATH);
+  /* URGENT: bypass the "three failed writes, stop touching the card" latch. These
+   * are the last words of the run, and a halt with a reason on screen but nothing
+   * on the card is exactly the artifact that makes a hardware report unreadable. */
+  log_flush_urgent(LOG_PATH);
   ui_clear();
   ui_panel(8, 48, 224, 44, UI_PANEL, UI_WARN);
   ui_text(20, 58, UI_WARN, "HALT");
@@ -442,7 +589,7 @@ static void do_reboot(void) {
   ui_clear();
   ui_text(16, 72, UI_TITLE, "Rebooting...");
   cfg_save();                           /* persist last folder + sort before leaving */
-  log_flush_to_sd(LOG_PATH);
+  log_flush_urgent(LOG_PATH);           /* last words of the run: latch-bypassing */
   VBlankIntrWait();
   flashcartio_reboot();                 /* never returns */
 }
@@ -578,9 +725,62 @@ bool app_can_edit(void) { return active_flashcart == EZ_FLASH_OMEGA; }
  * evidence must survive a "see glitch -> power off". Same rmbl discipline as the
  * commit sites: no motor on the cart bus mid-transfer. Main-loop-synchronous only. */
 void app_log_flush(void) {
+  /* Hard rule 4: writes are Omega-only. On an EverDrive every disk_write fails by
+   * design, and a failed disk_write leaves FatFs' sync_window with fs->wflag still
+   * SET (lib/fatfs/ff.c) — after which every later move_window returns FR_DISK_ERR
+   * and one log write has poisoned the mounted volume for the browser too. So the
+   * cheapest correct thing is to not attempt it at all. */
+  if (active_flashcart != EZ_FLASH_OMEGA) return;
   rmbl_pause();
   log_flush_to_sd(LOG_PATH);
   rmbl_resume();
+}
+
+/* ---- save-open breadcrumbs ------------------------------------------------
+ *
+ * Opening a save is the longest silent stretch in the tool: a 128 KiB SD read, a
+ * Gen-3 parse, an SD-backed ROM open for the art, then a multi-frame box paint --
+ * and until now it wrote NOTHING to the card and painted NOTHING on screen. The
+ * 2026-08-18 DS-Lite hang therefore produced a log whose last line was "SD mounted
+ * OK": it named no phase at all. (Note the on-card trail really did end there --
+ * the `scan <dir>: N entries` lines that appear in captured logs are RAM-only and
+ * reach the card solely when some later, unrelated flush carries the whole buffer.)
+ *
+ * TWO trails, deliberately priced differently:
+ *   - load_phase() paints one word on screen. It is FREE (a 192x36 panel, no SD, no
+ *     ROM streaming), so it runs at EVERY step -- even a silent freeze then says
+ *     what it was doing, with no card to pull. It is also the trail that survives a
+ *     failure of the trail-writing mechanism: the word is in VRAM before the flush.
+ *   - the log crumbs flush to the card. That is an SD write, so they run only at the
+ *     boundaries worth a write.
+ *
+ * OS-mode discipline (hard rule 1): both are called from view_save at main-loop
+ * level, BETWEEN card operations -- never inside a transfer, never from an IRQ.
+ * flashcartio_is_reading is set and cleared inside flashcartio_read_sector /
+ * flashcartio_write_sector themselves, so it is provably false at every site here.
+ * app_log_flush() rmbl_pause()s the motor around the write (the documented DE
+ * GPIO-interleave guard) and the write brackets WAITCNT back to the loader's
+ * inherited timing, so a crumb never writes at 0x4317. */
+static void load_phase(const char* what) {
+  ui_panel(24, 62, 192, 36, UI_PANEL, UI_TITLE);   /* re-fills, so it self-erases */
+  ui_ptext(32, 70, UI_TITLE, "Opening save...");
+  ui_ptext(32, 84, UI_TEXT,  what);
+}
+
+/* Armed by view_save, fired by the box screen's FIRST full paint (pdna_box.c), and
+ * DISARMED unconditionally when the save's home screen returns -- otherwise a save
+ * with no PC storage (which goes down the party_list() path and never fires it)
+ * would leave the flag armed, and the first Bank screen the user opened would write
+ * "save: shown" claiming a PC box painted that never existed. A false breadcrumb is
+ * worse than a missing one: it is the one artifact this whole item exists to make
+ * trustworthy. */
+static bool s_crumb_shown_armed = false;
+
+void app_crumb_shown(void) {
+  if (!s_crumb_shown_armed) return;
+  s_crumb_shown_armed = false;
+  log_line("save: shown");
+  app_log_flush();
 }
 
 static void msg_wait(const char* title, u16 col, const char* l1, const char* l2) {
@@ -4319,6 +4519,13 @@ static void view_save(const char* path) {
   g_path[sizeof(g_path) - 1] = 0;
   uint32_t sz = 0;
   const char* err = 0;
+  /* Breadcrumb #1 of 3. This is the boundary the 2026-08-18 hang had no record of:
+   * the browser's "scan <dir>: N entries" was the last thing in RAM, and the next
+   * 128 KiB of SD reads left no trace on the card at all. */
+  s_crumb_shown_armed = true;                  /* re-arm the "box is on screen" one-shot */
+  load_phase("reading file");
+  log_line("save: open %s", path[0] ? path : "(flash)");
+  app_log_flush();
 #ifdef PDNA_DELTA
   /* Emulator build: `path` is ignored — the save is this ROM's own flash chip. */
   (void)path;
@@ -4349,6 +4556,9 @@ static void view_save(const char* path) {
   SfStatus st = sf_read_full(path, g_save, G3_SAVE_FILE_SIZE, &sz);
   if (st != SF_OK) err = sf_status_str(st);
 #endif
+  /* The read returned. The parse is pure CPU (microseconds), so it gets a screen
+   * phase but no write -- screen phases are free, card crumbs are not. */
+  load_phase("parsing");
   g_save_size = sz;
   if (!err && sz >= (uint32_t)G3_SLOT_BYTES && gen3_parse(g_save, sz, &g_vinfo) && g_vinfo.valid)
     app_note_boot_checksums();          /* BEFORE anything can edit it */
@@ -4368,8 +4578,17 @@ static void view_save(const char* path) {
 #endif
     ui_text(4, UI_FOOTER_Y, UI_DIM, "B=back");
     wait_keys(KEY_B);
+    s_crumb_shown_armed = false;               /* nothing painted: never claim it did */
     return;
   }
+
+  /* Breadcrumb #2 of 3: the file is read AND it parses. Everything after this point
+   * is decode + art + paint, so a log that stops here vs one that stops at #1 splits
+   * the hang cleanly into "SD read / parse" vs "everything else". */
+  load_phase("loading art");
+  log_line("save: parsed sz=%lu slot=%d ver=%d", (unsigned long)sz,
+           g_vinfo.slot, (int)g_vinfo.version_guess);
+  app_log_flush();
 
   g_frlg = false;
   g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
@@ -4404,11 +4623,20 @@ static void view_save(const char* path) {
   pdna_box_clear_carry();                          /* no mon in hand when a save opens */
   pdna_bank_clear_deletions();                     /* no stale Bank->PC deletions from a prior save */
   rmbl_fire(RCUE_ROOM);                            /* entering the save's home "room" */
+  /* app_icon_rom_open() above may have opened the user's ROM off the SD; from here on
+   * it is the box paint (wallpaper staging + 30 verified icon copies + tile uploads).
+   * Breadcrumb #3 fires from inside that paint -- see app_crumb_shown(). */
+  load_phase(g_have_pc ? "painting box" : "painting party");
   /* The PC box is "home"; Party / Bank / Daycare / etc. all hang off the START menu.
    * (Saves with no PC fall back to the party list as home.) */
   for (;;) {
     reload_saveblocks();                         /* editors share g_sb1/g_sb2 + commit all SB1 — keep them == the saved image so a declined edit can't ride along */
     int r = g_have_pc ? pdna_box(&pcs) : party_list();
+    /* The home screen has been up and the user has left it, so the one-shot has
+     * either fired or can never honestly fire (the no-PC party path). Disarm it, or
+     * the next Bank screen -- which is also pdna_box -- would claim the save-open
+     * paint that never happened. */
+    s_crumb_shown_armed = false;
     if (r == 0) { flush_on_exit(); cfg_save(); return; }  /* B / SAVE tab -> file browser (one prompt for all deferred moves; persist last PC box) */
     if (r == 4) {                                /* up past the PC tabs -> Bank (cursor from below) */
       rmbl_fire(RCUE_ROOM);
@@ -4474,8 +4702,22 @@ int main(void) {
   log_line("=== PokeDNA (M0) ===");
   log_line("build " __DATE__ " " __TIME__);   /* stamp: proves WHICH binary produced this log
                                                * (stale flashes have faked "still broken" before) */
-  log_line("waitcnt=%04x (was %04x) dispcnt=%04x",   /* cart timing: boosted vs the loader's handoff */
-           *(volatile uint16_t*)0x04000204, flashcartio_bus_inherited(), REG_DISPCNT);
+  log_line("waitcnt=%04x (was %04x) dispcnt=%04x console=%s",  /* cart timing: boosted vs the loader's handoff */
+           *(volatile uint16_t*)0x04000204, flashcartio_bus_inherited(), REG_DISPCNT,
+           console_name());
+  log_line("bios=%08lx  bus self-test: %s (rung=%d)",
+           (unsigned long)s_bios_sum, bus_verdict_str(s_busv1), flashcartio_bus_rung());
+  /* Say what was actually established, not more. This pass compared the boosted
+   * timing against the loader's own on the SAME possibly-bad image, with the probe
+   * loop in IWRAM -- so it proves the cart returns CONSISTENT DATA, and it proves
+   * nothing at all about instruction prefetch (tested after mount) or about the
+   * bytes being the ones the linker produced (that is the ROM self-check's job). */
+  log_line("bus: data-read consistency only; not prefetch, not a ROM integrity check");
+  if (s_busv1 == FCIO_BUS_BAD_READ || s_busv1 == FCIO_BUS_BAD_DMA)
+    log_line("bus: fast timing unstable on this console/cart - staying at loader timing");
+  else if (s_busv1 == FCIO_BUS_UNSTABLE_SLOW)
+    log_line("bus: reads differ at the LOADER's own timing - suspect the image or the cart, "
+             "not the boost. Re-copy PokeDNA.gba, or run from NOR.");
   log_line("mGBA debug log: %s", log_under_mgba() ? "active" : "absent");
 
 #ifdef PDNA_DELTA
@@ -4492,6 +4734,8 @@ int main(void) {
     ui_text(6, 100, UI_DIM, "Emulator save type wrong?");
     ui_text(6, 116, UI_DIM, "Set it to Flash 1Mbit.");
   }
+  bus_late_selftests();   /* no card and no motor here, but the ROM-fetch probe is
+                           * the only place this code can be exercised off-hardware */
   snd_boot();
   for (;;) view_save("");                    /* B just re-enters: there is nowhere to go back to */
   return 0;
@@ -4532,7 +4776,17 @@ int main(void) {
   log_line("SD mounted OK");
   rmbl_init();   /* rumble AFTER the SD is mounted: its cart-GPIO writes must never touch the bus before SD is up */
   f_mkdir(PDNA_DIR);                          /* all PokeDNA files live in /PokeDNA, not the SD root */
+  /* Rotate the last two runs aside BEFORE the first flush of this run. Without this,
+   * relaunching after a hang destroys the hang's own log -- which is exactly what
+   * happened to the 2026-08-18 DS-Lite hang. /PokeDNA/log.prev1.txt is the run before
+   * this one, log.prev2.txt the one before that. Omega-gated with every other write
+   * (hard rule 4): a failed rename on a read-only cart would leave FatFs' write flag
+   * set and poison the volume for reads. */
+  if (active_flashcart == EZ_FLASH_OMEGA) log_begin_run(LOG_PATH);
   log_flush_to_sd(LOG_PATH);
+
+  bus_late_selftests();
+
   snd_boot();                                /* welcome chime = audio self-test */
 
   strcpy(g_cwd, "/");
