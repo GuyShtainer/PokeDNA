@@ -138,7 +138,39 @@ typedef struct {
 
 /* ---- read-side ---------------------------------------------------------- */
 
+/* Parse the save image and fill `out`.
+ *
+ * `sb1_scratch` MUST point to at least G3_SAVEBLOCK1_BYTES (15,872) of writable
+ * memory whose contents the caller does not need preserved — the parse reassembles
+ * SaveBlock1 there to sanity-check the secret-base offsets and pick the game.
+ *
+ * WHY THE CALLER PASSES IT, instead of a local array as this function used to use:
+ * 15,872 bytes does not fit on a GBA's stack. The IWRAM stack on this build runs
+ * from __sp_usr (0x03007F00) down to the end of .data (~0x03004CE8) — 12,824 bytes
+ * — and main's own frame eats 2,304 of them, so the local version overflowed by
+ * ~5.4 KB and wrote SaveBlock1 bytes over newlib's malloc bin array
+ * (__malloc_av_), _impure_ptr, __sglue and the stdio handles on EVERY save open.
+ *
+ * MEASURED, both directions, in mGBA on 2026-08-18 with the stack watermark that
+ * pdna_main.c now paints at boot — reproduce with
+ * `python3 docs/analysis-2026-08-18/probe_stack.py pokedna-delta.gba 400`:
+ *   this version .............. "stack: after parse - 9608 B still free above 0x03004da8"
+ *   the local-array version ... "stack: after parse - OVERFLOW, the stack has
+ *                                written through .data (floor 0x03004da8)"
+ * That is hard rule 2 ("never big buffers on the IWRAM stack") and it is why there
+ * is no convenience overload for the cartridge build: the signature is the
+ * enforcement. */
+bool     gen3_parse_into(const uint8_t* save, uint32_t size, Gen3SaveInfo* out,
+                         uint8_t* sb1_scratch);
+
+#ifndef __arm__
+/* HOST TESTS ONLY. A static scratch buffer is free on a PC and keeps the ~20
+ * tests/host_*.c call sites unchanged. Deliberately NOT compiled for the
+ * cartridge: a 15,872-byte static there would land in IWRAM .bss (12 KB used of
+ * 32 KB, which also holds the stack) and blow the link — so a GBA caller that
+ * reaches for the easy signature gets a compile error, not a silent regression. */
 bool     gen3_parse(const uint8_t* save, uint32_t size, Gen3SaveInfo* out);
+#endif
 
 
 

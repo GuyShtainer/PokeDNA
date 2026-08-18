@@ -69,6 +69,7 @@
 #include "savefile.h"
 #include "log.h"
 #include "pdna_romcheck.h"  /* sampled high-ROM self-check: the incomplete-SD-load guard */
+#include "pdna_romfull.h"   /* the FULL-image verifier screen (boot hold R+SELECT / FILE MENU) */
 #include "ui.h"
 #include "pdna_layout.h"   /* screen geometry + fixed strings, shared with the host text-fit test */
 
@@ -288,6 +289,12 @@ static void bus_late_selftests(void) {
   app_log_flush();
 }
 
+/* The keys that were held when the ROM started, captured before anything can consume
+ * them. Two boot overrides read this: L+SELECT (slow bus, below) and R+SELECT (the
+ * full-image verifier, in main()). They are independent — holding L+R+SELECT gives you
+ * both, which is exactly what you want when a marginal bus is the suspect. */
+static u16 s_boot_held = 0;
+
 static void init_system(void) {
   /* Console identity first, before anything touches the bus: swi 0x0D reads the
    * BIOS, which WAITCNT cannot affect, and the answer belongs in the log either
@@ -299,6 +306,7 @@ static void init_system(void) {
    * experiment that otherwise needs a rebuild and a toolchain. Read raw: the key
    * subsystem is not up yet, and REG_KEYINPUT is active-low. */
   const u16 held = (u16)(~REG_KEYINPUT & KEY_MASK);
+  s_boot_held = held;
   if ((held & (KEY_L | KEY_SELECT)) == (KEY_L | KEY_SELECT)) {
     flashcartio_bus_hold();               /* capture the loader's value, never boost */
   } else {
@@ -614,10 +622,10 @@ static bool browse_menu(const BrowseEntry* fe) {
     ui_clear();
     ui_text(4, 4, UI_TITLE, "FILE MENU");
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    char rows[7][40];
-    int  act[7];
+    char rows[8][40];
+    int  act[8];
     int  n = 0;
-    enum { A_FILEOPS, A_SORTKEY, A_ORDER, A_FILES, A_HIDDEN, A_REBOOT, A_CLOSE };
+    enum { A_FILEOPS, A_SORTKEY, A_ORDER, A_FILES, A_HIDDEN, A_VERIFY, A_REBOOT, A_CLOSE };
     if (can_fileops) {
       char nm[24]; ui_truncate(nm, fe->name, 16);
       siprintf(rows[n], "File: %s...", nm); act[n++] = A_FILEOPS;
@@ -626,6 +634,9 @@ static bool browse_menu(const BrowseEntry* fe) {
     siprintf(rows[n], "Order:     %s", g_sortrev ? "descending" : "ascending"); act[n++] = A_ORDER;
     siprintf(rows[n], "Files:     %s", g_show_all ? "all files" : ".sav only"); act[n++] = A_FILES;
     siprintf(rows[n], "Hidden:    %s", g_show_hidden ? "shown" : "hidden"); act[n++] = A_HIDDEN;
+    /* Reachable from the browser, i.e. WITHOUT opening a save — the boot hold (R+SELECT)
+     * covers the case where even this menu cannot be reached. */
+    strcpy(rows[n], "Verify ROM image..."); act[n++] = A_VERIFY;
     strcpy(rows[n], "Reboot to flashcart menu..."); act[n++] = A_REBOOT;
     strcpy(rows[n], "Close"); act[n++] = A_CLOSE;
     for (int i = 0; i < n; i++) {
@@ -645,6 +656,7 @@ static bool browse_menu(const BrowseEntry* fe) {
         case A_ORDER:   g_sortrev = !g_sortrev; changed = true; break;
         case A_FILES:   g_show_all = !g_show_all; changed = true; break;
         case A_HIDDEN:  g_show_hidden = !g_show_hidden; changed = true; break;
+        case A_VERIFY:  pdna_romfull_screen(); app_log_flush(); break;  /* its verdict on the card too */
         case A_REBOOT:  do_reboot(); break;            /* returns only if cancelled */
         case A_CLOSE:   return changed;
       }
@@ -782,11 +794,140 @@ static void log_badge_right(int right, int y) {
   ui_ptext(right - ui_ptext_w(b), y, log_health() == LOG_HEALTH_OK ? UI_DIM : UI_WARN, b);
 }
 
-static void load_phase(const char* what) {
+/* ---- the free-running heartbeat -------------------------------------------
+ *
+ * The phase word says WHAT it was doing; it cannot say whether it is still doing
+ * it. 2026-08-18 run 2 stopped with "parsing" on screen and nothing on the card,
+ * and from one photograph "wedged" and "slow" are the same picture. So a 12x12
+ * bar spins in the panel's top-right corner, advanced from the VBlank IRQ every
+ * 8 frames (~7.5 turns/s -- fast enough to read as motion, slow enough that a
+ * still photo of a healthy tool shows a bar mid-rotation rather than a blur).
+ *
+ * STOPPED BAR  = the CPU or the IRQ path is wedged. CRAWLING BAR = merely slow.
+ *
+ * Why it may draw during an SD transfer, when nothing else may (hard rule 1):
+ * the rule exists because the cart ROM is UNMAPPED mid-transfer, so ROM code and
+ * ROM data vanish. This handler is IWRAM_CODE like the rumble PWM ISR beside it,
+ * touches only VRAM and IWRAM, and every value it needs -- geometry, both colours
+ * -- is an immediate in the instruction stream. It reads no ROM, calls nothing in
+ * ROM, and loads no literal from a ROM pool. It is therefore the one painter in
+ * this program that keeps working while the ROM is gone, which is exactly the
+ * window the save-open hang lives in.
+ *
+ * ARMED ONLY DURING THE LOAD (hb_arm/hb_off). Outside it the handler returns on
+ * the first instruction, so no other screen can find 144 of its pixels rewritten. */
+#define HB_X 196
+#define HB_Y 66
+static volatile u8 s_hb_on   = 0;      /* armed?                                */
+static volatile u8 s_hb_ph   = 0;      /* 0..3 bar orientation                   */
+static volatile u8 s_hb_sub  = 0;      /* VBlank divider                         */
+
+IWRAM_CODE static void hb_draw(int ph) {
+  u16* vram = (u16*)0x06000000;
+  /* clear the cell, then draw the bar. Both colours are immediates, so no pool. */
+  for (int y = 0; y < 12; y++) {
+    u16* row = vram + (HB_Y + y) * 240 + HB_X;
+    for (int x = 0; x < 12; x++) row[x] = 0x2482;      /* == UI_PANEL fill      */
+  }
+  for (int i = 0; i < 12; i++) {
+    int x, y;
+    if      (ph == 0) { x = i;      y = 6; }
+    else if (ph == 1) { x = i;      y = i; }
+    else if (ph == 2) { x = 6;      y = i; }
+    else              { x = i;      y = 11 - i; }
+    vram[(HB_Y + y) * 240 + HB_X + x] = 0x7FFF;        /* white                 */
+  }
+}
+
+IWRAM_CODE static void hb_isr(void) {
+  if (!s_hb_on) return;
+  if (++s_hb_sub < 8) return;
+  s_hb_sub = 0;
+  s_hb_ph = (u8)((s_hb_ph + 1) & 3);
+  hb_draw(s_hb_ph);
+}
+
+/* Installed only for the load and handed straight back, so the 59 other screens run
+ * with the plain ack-only VBlank handler they have always had. irq_add REPLACES the
+ * handler for an index that is already registered (init_system registers II_VBLANK
+ * with NULL), so this cannot grow the IRQ table or reorder it. */
+static void hb_arm(void) {
+  s_hb_sub = 0; s_hb_ph = 0; s_hb_on = 1;
+  irq_add(II_VBLANK, hb_isr);
+}
+static void hb_off(void) {
+  s_hb_on = 0;
+  irq_add(II_VBLANK, NULL);
+}
+
+/* How many named sub-steps the save-open sequence has. Written out so the on-screen
+ * "7/12" is a fraction Guy can read as progress, not just a label. */
+#define PDNA_LOAD_STEPS 12
+
+/* ---- IWRAM stack watermark -------------------------------------------------
+ *
+ * Hard rule 2 says "never big buffers on the IWRAM stack", and until 2026-08-18
+ * NOTHING MEASURED IT. gen3_parse carried a 15,872-byte local array for months on a
+ * stack that is 12,824 bytes long, and the only symptom was an unexplained hang: the
+ * overflow silently rewrote newlib's malloc bin array and _impure_ptr with save
+ * bytes. There is no linker check for this (ld range-checks nothing about the stack)
+ * and no emulator warning, so it has to be measured at runtime.
+ *
+ * Paint the unused stack at boot, then read the low-water mark whenever it is worth a
+ * line. `free == 0` means the paint was consumed to the last byte, i.e. the stack
+ * reached the end of .data and has been writing THROUGH it -- the exact condition
+ * that produced the hang. Cost: one ~12 KB memset at boot and 4 bytes of .bss. */
+extern unsigned char __data_end__[];
+#define STK_PAT 0xA5A5A5A5u
+static u32 s_stk_floor = 0;                   /* lowest painted address, 0 = not armed */
+
+static void stack_paint(void) {
+  u32 sp;
+  __asm__ volatile("mov %0, sp" : "=r"(sp));
+  u32 lo = ((u32)__data_end__ + 3u) & ~3u;
+  u32 hi = (sp - 64u) & ~3u;                  /* leave our own frame + margin alone */
+  if (hi <= lo) { s_stk_floor = 0; return; }
+  s_stk_floor = lo;
+  for (u32 a = lo; a < hi; a += 4) *(volatile u32*)a = STK_PAT;
+}
+
+static u32 stack_free_min(void) {
+  if (!s_stk_floor) return 0;
+  u32 a = s_stk_floor;
+  while (*(volatile u32*)a == STK_PAT) a += 4;
+  return a - s_stk_floor;
+}
+
+/* One line, at a point deep enough to be meaningful. Says OVERFLOW rather than "0 B"
+ * because 0 is not a tight stack, it is corruption that has already happened. */
+static void stack_report(const char* where) {
+  u32 f = stack_free_min();
+  if (!s_stk_floor)
+    log_line("stack: %s - not measured (paint skipped)", where);
+  else if (f == 0)
+    log_line("stack: %s - OVERFLOW, the stack has written through .data "
+             "(floor 0x%08lx)", where, (unsigned long)s_stk_floor);
+  else
+    log_line("stack: %s - %lu B still free above 0x%08lx", where,
+             (unsigned long)f, (unsigned long)s_stk_floor);
+}
+
+/* One named sub-step of the save-open sequence. Drawn BEFORE the work it names, so
+ * whatever is on screen when it stops is the step that did not finish. The step
+ * number is there because a photograph of "party" alone cannot say whether the two
+ * party decodes either side of the Deoxys re-read is the one that died. */
+static void load_phase_n(int step, const char* what) {
   ui_panel(24, 62, 192, 36, UI_PANEL, UI_TITLE);   /* re-fills, so it self-erases */
   ui_ptext(32, 70, UI_TITLE, "Opening save...");
-  ui_ptext(32, 84, UI_TEXT,  what);
-  log_badge_right(208, 84);                        /* inside the panel, so it self-erases */
+  char l[40];
+  siprintf(l, "%d/%d %s", step, PDNA_LOAD_STEPS, what);
+  ui_ptext(32, 84, UI_TEXT, l);
+  log_badge_right(190, 70);                        /* clear of the heartbeat cell */
+  /* The panel repaint just erased the heartbeat cell, and the ISR only redraws it
+   * every 8th VBlank -- so without this a phase that lasts under 8 frames leaves a
+   * BLANK corner, and "no bar" would read as "wedged" on the one photograph this
+   * whole thing exists for. Redraw it at the phase it is currently on. */
+  if (s_hb_on) hb_draw(s_hb_ph);
 }
 
 /* Armed by view_save, fired by the box screen's FIRST full paint (pdna_box.c), and
@@ -4545,7 +4686,8 @@ static void view_save(const char* path) {
    * the browser's "scan <dir>: N entries" was the last thing in RAM, and the next
    * 128 KiB of SD reads left no trace on the card at all. */
   s_crumb_shown_armed = true;                  /* re-arm the "box is on screen" one-shot */
-  load_phase("reading file");
+  hb_arm();                                    /* the bar spins from here to the first paint */
+  load_phase_n(1, "read file");
   log_line("save: open %s", path[0] ? path : "(flash)");
   app_log_flush();
 #ifdef PDNA_DELTA
@@ -4566,7 +4708,10 @@ static void view_save(const char* path) {
    * user's first in-app save writes it through the normal verified flashsave path. */
   {
     Gen3SaveInfo probe;
-    bool flash_ok = sz && gen3_parse(g_save, sz, &probe) && probe.valid;
+    /* g_sb1 is the parse scratch: nothing has read it yet this load, and step 4 below
+     * overwrites it with the real SaveBlock1 anyway. See gen3_parse_into's contract --
+     * the buffer must NOT be a local, which is the bug this signature exists to stop. */
+    bool flash_ok = sz && gen3_parse_into(g_save, sz, &probe, g_sb1) && probe.valid;
     uint32_t fsz = 0;
     if (!flash_ok && fused_sav_present(&fsz) && fsz == (uint32_t)G3_SAVE_FILE_SIZE &&
         fused_sav_read(g_save, fsz)) {
@@ -4590,15 +4735,26 @@ static void view_save(const char* path) {
              flashcartio_read_retries - rt0, flashcartio_read_failures - rf0);
   if (st != SF_OK) err = sf_status_str(st);
 #endif
-  /* The read returned. The parse is pure CPU (microseconds), so it gets a screen
-   * phase but no write -- screen phases are free, card crumbs are not. */
-  load_phase("parsing");
+  /* The read returned. What used to be ONE opaque phase called "parsing" is steps
+   * 2..4: the 2026-08-18 run 2 froze somewhere in here with "parsing" on screen, and
+   * that word covered a slot scan, a full 11-section checksum pass, a log line and a
+   * SaveBlock1 reassembly. Each is pure CPU on the EWRAM image, costs nothing to
+   * announce, and is drawn BEFORE the work it names. */
+  load_phase_n(2, "parse slots");
   g_save_size = sz;
-  if (!err && sz >= (uint32_t)G3_SLOT_BYTES && gen3_parse(g_save, sz, &g_vinfo) && g_vinfo.valid)
+  /* ONE parse, not two. This used to call gen3_parse twice on the same 128 KiB image --
+   * once to decide whether to snapshot the boot checksums, once inside the validity
+   * test -- doubling a 14-section scan and a double secret-base sweep for nothing. */
+  bool parsed = (!err && sz >= (uint32_t)G3_SLOT_BYTES) &&
+                gen3_parse_into(g_save, sz, &g_vinfo, g_sb1);
+  if (parsed && g_vinfo.valid) {
+    load_phase_n(3, "checksums");
     app_note_boot_checksums();          /* BEFORE anything can edit it */
-  if (err || sz < (uint32_t)G3_SLOT_BYTES ||
-      !gen3_parse(g_save, sz, &g_vinfo) || !g_vinfo.valid || !g_vinfo.sb1_ok ||
+  }
+  load_phase_n(4, "saveblock1");
+  if (!parsed || !g_vinfo.valid || !g_vinfo.sb1_ok ||
       gen3_read_saveblock1(g_save, g_vinfo.slot, g_sb1) != G3_SAVEBLOCK1_BYTES) {
+    hb_off();
     ui_clear();
     ui_text(6, 60, UI_WARN, "Cannot read this save.");
     ui_text(6, 76, UI_DIM, err ? err : "not a valid Gen-3 .sav");
@@ -4619,22 +4775,33 @@ static void view_save(const char* path) {
   /* Breadcrumb #2 of 3: the file is read AND it parses. Everything after this point
    * is decode + art + paint, so a log that stops here vs one that stops at #1 splits
    * the hang cleanly into "SD read / parse" vs "everything else". */
-  load_phase("loading art");
+  load_phase_n(5, "log parsed");
   log_line("save: parsed sz=%lu slot=%d ver=%d", (unsigned long)sz,
            g_vinfo.slot, (int)g_vinfo.version_guess);
+  /* Right after the deepest call chain in the whole program. Until 421e867 this line
+   * would have read OVERFLOW on every single save open. */
+  stack_report("after parse");
   app_log_flush();
 
+  load_phase_n(6, "party");
   g_frlg = false;
   g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
   for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
+  load_phase_n(7, "pc storage");
   g_have_pc = (gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc) == G3_PC_BYTES);
 
   /* SaveBlock2 (section 0) for the trainer card + per-game layout for stats */
+  load_phase_n(8, "saveblock2");
   int s0 = gen3_find_section(g_save, g_vinfo.slot, 0);
   if (s0 >= 0)
     memcpy(g_sb2, g_save + (uint32_t)g_vinfo.slot * G3_SLOT_BYTES + (uint32_t)s0 * G3_SECTOR_SIZE,
            G3_SECTOR_DATA_SIZE);
   g_game = g_frlg ? PK_FRLG : (g_vinfo.version_guess == G3_VER_RS ? PK_RS : PK_EMERALD);
+  /* The FIRST SD access after the read: f_open of the registered game ROM (artless) or
+   * a fused-ROM scan. Named apart from the decode steps because it is the only step
+   * here that can touch the card, and therefore the only one whose freeze would mean
+   * the cart rather than the CPU. */
+  load_phase_n(9, "art: open rom");
   app_icon_rom_open();                           /* fused or registered-SD icon source */
 #ifndef PDNA_DELTA
   /* The artless first run: offer the ROM registration ONCE per session, right where
@@ -4649,10 +4816,12 @@ static void view_save(const char* path) {
   /* Deoxys forme follows the game version (RS Normal / Emerald Speed / FR-LG Attack). FR vs LG
    * can't be told apart from the save, so FR/LG defaults to Attack (FireRed); the summary lets
    * the user cycle to any forme. Re-decode the party so a Deoxys picks up its forme sprite. */
+  load_phase_n(10, "party (forme)");
   pk_set_deoxys_form(g_game == PK_RS ? 0 : g_game == PK_EMERALD ? 3 : 1);
   g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
   for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
 
+  load_phase_n(11, "box source");
   BoxSource pcs = pc_box_source();
   pdna_box_clear_carry();                          /* no mon in hand when a save opens */
   pdna_bank_clear_deletions();                     /* no stale Bank->PC deletions from a prior save */
@@ -4660,7 +4829,12 @@ static void view_save(const char* path) {
   /* app_icon_rom_open() above may have opened the user's ROM off the SD; from here on
    * it is the box paint (wallpaper staging + 30 verified icon copies + tile uploads).
    * Breadcrumb #3 fires from inside that paint -- see app_crumb_shown(). */
-  load_phase(g_have_pc ? "painting box" : "painting party");
+  load_phase_n(12, g_have_pc ? "first paint: box" : "first paint: party");
+  /* Hand the VBlank handler back BEFORE the first full-screen paint: from here the
+   * screen is being drawn every frame anyway, so a spinner would only be 144 pixels
+   * of a real screen that the heartbeat has no business owning. A freeze from this
+   * point on shows a half-painted box, which localises itself. */
+  hb_off();
   /* The PC box is "home"; Party / Bank / Daycare / etc. all hang off the START menu.
    * (Saves with no PC fall back to the party list as home.) */
   for (;;) {
@@ -4732,6 +4906,10 @@ static void view_save(const char* path) {
 
 int main(void) {
   init_system();
+  /* Before anything goes deep: paint the unused IWRAM stack so the low-water mark is
+   * measurable for the rest of the session. main's own frame is already on the stack,
+   * so this covers exactly the region every call below is about to spend. */
+  stack_paint();
   log_init();
   log_line("=== PokeDNA (M0) ===");
   log_line("build " __DATE__ " " __TIME__);   /* stamp: proves WHICH binary produced this log
@@ -4758,6 +4936,21 @@ int main(void) {
    * flashcartio_activate() so no transfer can possibly be in flight (hard rule 1). The
    * log lines ride out on the existing post-mount flush; this writes nothing itself. */
   pdna_romcheck_boot();
+
+  /* FIELD OVERRIDE #2: hold R+SELECT at boot for the FULL-image verifier — every byte of
+   * this ROM CRC32'd against its build-time per-region stamps, with the address of any
+   * hole on screen. It runs HERE, before flashcart detection and long before any save is
+   * opened, because the failure it exists to diagnose is a tool that hangs on save-open:
+   * a check you can only reach through a working menu is no use on a broken image. Reads
+   * ROM only, writes nothing, and its log lines ride out on the post-mount flush below.
+   *
+   * Deliberately NOT L+SELECT (that one is the slow-bus override, pdna_main.c:302) and
+   * deliberately compatible with it: hold L+R+SELECT to check the image AT the loader's
+   * timing, which is the one combination that separates a bad image from a bad bus. */
+  if ((s_boot_held & (KEY_R | KEY_SELECT)) == (KEY_R | KEY_SELECT)) {
+    log_line("boot: R+SELECT held - running the full-image verifier");
+    pdna_romfull_screen();
+  }
 
 #ifdef PDNA_DELTA
   /* ---- emulator build: no flashcart, no microSD, no file browser. -------------

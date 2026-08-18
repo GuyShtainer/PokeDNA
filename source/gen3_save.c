@@ -360,7 +360,8 @@ uint32_t gen3_write_full_section(uint8_t* save, int slot, int section_id,
   return secoff;
 }
 
-bool gen3_parse(const uint8_t* save, uint32_t size, Gen3SaveInfo* out) {
+bool gen3_parse_into(const uint8_t* save, uint32_t size, Gen3SaveInfo* out,
+                     uint8_t* sb1_scratch) {
   memset(out, 0, sizeof(*out));
   out->version_guess = G3_VER_UNKNOWN;
   if (size < (uint32_t)G3_SLOT_BYTES) return false;
@@ -411,9 +412,13 @@ bool gen3_parse(const uint8_t* save, uint32_t size, Gen3SaveInfo* out) {
   out->play_m     = sb2[SB2_OFF_PLAYTIME_M];
   out->play_s     = sb2[SB2_OFF_PLAYTIME_S];
 
-  /* Version detection via secret-base sanity at each candidate offset. */
-  uint8_t sb1[G3_SAVEBLOCK1_BYTES];
-  if (gen3_read_saveblock1(save, slot, sb1) == G3_SAVEBLOCK1_BYTES) {
+  /* Version detection via secret-base sanity at each candidate offset.
+   *
+   * sb1 is the CALLER'S buffer, not a local — see gen3_parse_into's contract in
+   * gen3_save.h. A local `uint8_t sb1[G3_SAVEBLOCK1_BYTES]` here is a 15,876-byte
+   * stack frame, which is larger than the GBA's entire IWRAM stack. */
+  uint8_t* sb1 = sb1_scratch;
+  if (sb1 && gen3_read_saveblock1(save, slot, sb1) == G3_SAVEBLOCK1_BYTES) {
     out->sb1_ok   = true;
     out->bases_em = gen3_count_secret_bases(sb1, G3_VER_EMERALD);
     out->bases_rs = gen3_count_secret_bases(sb1, G3_VER_RS);
@@ -446,3 +451,12 @@ bool gen3_parse(const uint8_t* save, uint32_t size, Gen3SaveInfo* out) {
   out->valid = true;
   return true;
 }
+
+#ifndef __arm__
+/* Host-test convenience wrapper; see gen3_save.h for why the cartridge build has no
+ * such thing. A PC has megabytes of stack and .bss, so the scratch is a static here. */
+bool gen3_parse(const uint8_t* save, uint32_t size, Gen3SaveInfo* out) {
+  static uint8_t s_sb1[G3_SAVEBLOCK1_BYTES];
+  return gen3_parse_into(save, size, out, s_sb1);
+}
+#endif
