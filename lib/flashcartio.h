@@ -60,4 +60,83 @@ void           flashcartio_bus_transfer_leave(unsigned short prev);
  * from, and it is how the 4/2-no-prefetch handoff was found in the first place. */
 unsigned short flashcartio_bus_inherited(void);
 
+/* ---- fast-bus self-test ---------------------------------------------------
+ *
+ * flashcartio_bus_fast() is a bet: that this cart, in this console, answers ROM
+ * reads correctly at 3/1 + prefetch. That bet has no retail precedent for a
+ * flashcart's FPGA-fronted PSRAM, no emulator can test it, and when it loses the
+ * symptom is a hang somewhere far from the cause.
+ *
+ * These functions settle it by measurement, at boot. They checksum three 4 KiB
+ * windows of this very image at the loader's own timing -- the only timing this
+ * project has hardware proof for -- and then again at the boosted timing.
+ *
+ * WHAT EACH ONE CAN AND CANNOT SEE. Read this before quoting a verdict:
+ *
+ *   flashcartio_bus_validate()      CPU reads + a DMA3 burst straight out of ROM,
+ *                                   with the probe loop itself running from IWRAM.
+ *                                   It therefore tests ROM *data* reads ONLY. The
+ *                                   probe code is in IWRAM on purpose (a bad
+ *                                   instruction fetch must not take down the code
+ *                                   that exists to detect one), and the price of
+ *                                   that is that GamePak *prefetch* -- WAITCNT bit
+ *                                   14, which only engages for opcode fetches out
+ *                                   of the gamepak -- is untestable here BY
+ *                                   CONSTRUCTION. This is the ONLY function that
+ *                                   moves the rung ladder or latches a demotion.
+ *
+ *   flashcartio_bus_probe_fetch()   The missing half: the same checksum, but from
+ *                                   a copy of the loop deliberately left in .text,
+ *                                   so the instruction fetches AND the data reads
+ *                                   both run at the rung under test. Run it LAST,
+ *                                   after validate() has proven data integrity,
+ *                                   and flush your log FIRST -- if the fetch path
+ *                                   is what is broken, this is where it hangs, and
+ *                                   a hang here is a diagnosis rather than a
+ *                                   mystery. Verdict only; it never demotes.
+ *
+ *   flashcartio_bus_probe_gpio(ag)  The same read burst with `ag` toggling the
+ *                                   cart's GPIO between reads -- the FPGA/ROM
+ *                                   interleave that has already been observed to
+ *                                   corrupt ROM reads on the EZ-Flash Omega DE.
+ *                                   Verdict only; it NEVER moves the ladder,
+ *                                   because "rumble is unsafe here" must not cost
+ *                                   the whole session its frame rate. NOTE the
+ *                                   agitation is far denser than any real workload
+ *                                   -- it is a stress test, not a simulation.
+ *
+ * A pass says the cart returned CONSISTENT bytes. It does NOT say the bytes are
+ * the ones the linker produced -- nothing here reads a reference from outside the
+ * possibly-bad image. That question belongs to the ROM self-check (pdna_romver).
+ *
+ * BOOT ONLY: the DMA pass copies into VRAM 0x06013000, which is scratch in a
+ * bitmap mode (past the Mode-3 framebuffer, below bitmap OBJ tiles) but is OBJ
+ * tile storage in tile modes. The probe forces DCNT_BLANK for the duration and
+ * restores DISPCNT, so it is safe in Mode 4/5 page 1 too -- but never call it once
+ * a tile-mode BG is live.
+ */
+typedef void (*FlashcartioAgitator)(int on);
+
+#define FCIO_BUS_OK              0   /* boosted timing reads the image correctly   */
+#define FCIO_BUS_SKIPPED        (-1) /* never boosted, already demoted, or no ref  */
+#define FCIO_BUS_BAD_READ        1   /* CPU reads differ from the reference        */
+#define FCIO_BUS_BAD_DMA         2   /* DMA3-from-ROM differs from the reference   */
+#define FCIO_BUS_BAD_GPIO        3   /* differs only while cart GPIO is written    */
+#define FCIO_BUS_UNSTABLE_SLOW   4   /* two reads at the LOADER's timing disagree:
+                                      * not a boost problem -- bad image or cart   */
+#define FCIO_BUS_BAD_FETCH       5   /* the ROM-resident (code+data) pass differs  */
+
+int flashcartio_bus_validate(void);
+int flashcartio_bus_probe_gpio(FlashcartioAgitator agitate);
+int flashcartio_bus_probe_fetch(void);
+
+/* Which rung is live: 0 = 3/1+prefetch, 1 = 3/2+prefetch, 2 = the loader's timing
+ * (demoted and latched). Log it; it is the number that explains a slow session. */
+int flashcartio_bus_rung(void);
+
+/* Capture the loader's timing but never boost, and latch that. For a user override
+ * ("run this session at the loader's timing") -- keeps the transfer bracketing
+ * bookkeeping consistent, which simply not calling flashcartio_bus_fast() does not. */
+void flashcartio_bus_hold(void);
+
 #endif  // FLASHCARTIO_H
