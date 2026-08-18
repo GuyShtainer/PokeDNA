@@ -30,6 +30,13 @@ void rmbl_init(void);            /* rumble_init + clear cue state. Call once at 
 void rmbl_vblank(void);          /* advance the active cue one frame (tick every vsync) */
 void rmbl_fire(int cue);         /* play `cue` if its toggle is on (no-op otherwise)    */
 
+/* Hardware lockout: the boot bus self-test measured that cart-GPIO writes corrupt
+ * ROM reads on THIS unit even in their bracketed form. No cue may touch the cart
+ * again this session, whatever the per-cue mask says. One-way, and NOT persisted
+ * (the next boot re-measures). Never called on a passing unit. */
+void rmbl_lockout(void);
+bool rmbl_locked(void);
+
 /* SD-transfer safety: stop any cue + freeze the motor around FatFs writes. */
 void rmbl_pause(void);
 void rmbl_resume(void);

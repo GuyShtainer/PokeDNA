@@ -35,6 +35,15 @@ void rumble_pwm_stop(void);
 bool rumble_pwm_active(void);
 void rumble_raw_off(void);         /* force the motor off right now                */
 
+/* Bus self-test hooks — pass one of these to flashcartio_bus_probe_gpio() as the
+ * agitator so the probe interleaves real cart-GPIO writes with its ROM reads. TWO
+ * forms on purpose: `_raw` is the pre-bracket write (no WAITCNT touch) and answers
+ * "does cart GPIO corrupt ROM reads here?"; `_bracketed` is the mitigation that
+ * actually ships and answers "is the mitigation itself safe here?". Running only
+ * one makes a failure unattributable. Not for app use. */
+void rumble_bus_probe_raw(int on);
+void rumble_bus_probe_bracketed(int on);
+
 /* SD-transfer safety: freeze the motor + the timer IRQ around FatFs writes. */
 void rumble_pause(void);
 void rumble_resume(void);

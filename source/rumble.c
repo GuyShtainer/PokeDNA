@@ -18,6 +18,36 @@
 
 #define TICK_HZ 8192                 /* PWM update IRQ rate */
 
+/* ---- cart-bus bracketing ---------------------------------------------------
+ * Cart GPIO lives in the gamepak address window, so a GPIO write is a cart-bus
+ * write: it is exposed to whatever ROM timing the app happens to be running at.
+ * On the EZ-Flash Omega DE that window is FPGA-emulated on the same bus that
+ * serves ROM, and this project has already caught it corrupting in-flight ROM
+ * reads at the loader's own 4/2 timing (the garbled-wallpaper bug -- see the
+ * render guard below). Once the app boosts the bus to 3/1 + prefetch the margin is
+ * strictly tighter, and the render guard cannot cover instruction fetch.
+ *
+ * So every PHYSICAL GPIO write drops the bus back to the timing the loader handed
+ * us for the duration of the store, and restores it. Cost: two extra I/O-register
+ * stores per motor edge. The carrier is 120 Hz (rmbl.c R_FREQ) and motor_set runs
+ * twice per period, so that is ~240 edges/s -- the 8192 Hz ISR returns without
+ * touching the cart on ~97% of its ticks -- i.e. under 0.01% of the CPU. Safe
+ * against ISR/main-line interleave: each site saves and restores whatever it
+ * found, so a nested save/restore is a no-op.
+ *
+ * This does NOT claim to make GPIO/ROM interleave safe. It restores it to the
+ * timing regime that shipped and was hardware-validated for months. Whether even
+ * that is safe on a given unit is what the bus self-test's GPIO pass measures --
+ * which is why there are TWO probe entry points below, raw and bracketed. */
+static u16 s_bus_safe = 0;               /* the loader's WAITCNT, cached at init */
+
+#define CART_W(reg, val) do {            \
+    u16 w_ = REG_WAITCNT;                \
+    REG_WAITCNT = s_bus_safe;            \
+    (reg) = (val);                       \
+    REG_WAITCNT = w_;                    \
+  } while (0)
+
 static bool          s_omega  = false;
 static volatile bool s_pwm    = false;   /* PWM mode running          */
 static volatile bool s_paused = false;   /* true around SD transfers  */
@@ -32,7 +62,7 @@ static volatile u16 s_ctr    = 0;
 IWRAM_CODE static void motor_set(int on) {
   s_motor = (u8)(on != 0);
   if (s_io_depth) return;                 /* bus frozen for a ROM-read blit: don't toggle the cart */
-  GPIO_DATA = on ? RUMBLE_BIT : 0;
+  CART_W(GPIO_DATA, on ? RUMBLE_BIT : 0);
 }
 
 IWRAM_CODE static void pwm_isr(void) {
@@ -45,16 +75,39 @@ IWRAM_CODE static void pwm_isr(void) {
 
 void rumble_init(void) {
   s_omega = (active_flashcart == EZ_FLASH_OMEGA);
-  GPIO_CTRL = 1;            /* allow GPIO read/write           */
-  GPIO_DIR  = RUMBLE_BIT;   /* bit3 output, RTC bits as input  */
-  GPIO_DATA = 0;           /* motor off                       */
+  /* Cache the loader's timing BEFORE the first cart write. If the app never called
+   * flashcartio_bus_fast() this reads 0, which is the slowest setting the hardware
+   * has -- conservative in the right direction -- and CART_W restores whatever was
+   * actually live afterwards, so it is safe either way. */
+  s_bus_safe = flashcartio_bus_inherited();
+  CART_W(GPIO_CTRL, 1);            /* allow GPIO read/write           */
+  CART_W(GPIO_DIR,  RUMBLE_BIT);   /* bit3 output, RTC bits as input  */
+  CART_W(GPIO_DATA, 0);            /* motor off                       */
   s_pwm = false; s_paused = false; s_motor = 0;
 }
+
+/* ---- bus self-test hooks ---------------------------------------------------
+ * TWO forms, because one alone cannot be interpreted. The bracketed form is what
+ * actually ships, so it answers "is the mitigation safe here?"; the raw form
+ * writes GPIO exactly as the code did before the bracket existed and touches
+ * WAITCNT not at all, so it answers the ORIGINAL question -- "does cart GPIO
+ * corrupt ROM reads on this unit at the boosted timing?" -- without the confound
+ * of the bracket's own WAITCNT thrash. Running only the bracketed one would make
+ * a failure unattributable: the bracket writes WAITCNT twice per edge, and writing
+ * WAITCNT from a preempting ISR has no retail precedent either.
+ *
+ * Both deliberately bypass s_io_depth / s_paused (reproducing the hazard is the
+ * whole point) and are in IWRAM so the interleave under test is data-vs-GPIO,
+ * exactly like the real PWM ISR. Call them from the bus self-test and nowhere
+ * else. NOTE: the probe toggles far faster than the ~240 edges/s that ship -- it
+ * is a stress test, not a simulation. */
+IWRAM_CODE void rumble_bus_probe_raw(int on)       { GPIO_DATA = on ? RUMBLE_BIT : 0; }
+IWRAM_CODE void rumble_bus_probe_bracketed(int on) { CART_W(GPIO_DATA, on ? RUMBLE_BIT : 0); }
 
 bool rumble_omega(void)      { return s_omega; }
 bool rumble_pwm_active(void) { return s_pwm; }
 
-void rumble_raw_off(void) { s_motor = 0; if (s_io_depth) return; GPIO_DATA = 0; }
+void rumble_raw_off(void) { s_motor = 0; if (s_io_depth) return; CART_W(GPIO_DATA, 0); }
 
 /* Render guard: while a long software blit reads pixel data from ROM, a rumble GPIO
  * write to the cart bus (0x080000C4) can corrupt those in-flight ROM reads on the
@@ -65,7 +118,7 @@ void rumble_raw_off(void) { s_motor = 0; if (s_io_depth) return; GPIO_DATA = 0; 
  * resumes seamlessly afterwards. Nesting-counted (blit primitives nest). DISTINCT from
  * rumble_pause() (the SD-write guard) — do not share the s_paused flag. */
 void rumble_io_suspend(void) { s_io_depth++; }
-void rumble_io_resume(void)  { if (s_io_depth > 0 && --s_io_depth == 0 && !s_pwm) { GPIO_DATA = 0; s_motor = 0; } }
+void rumble_io_resume(void)  { if (s_io_depth > 0 && --s_io_depth == 0 && !s_pwm) { CART_W(GPIO_DATA, 0); s_motor = 0; } }
 
 void rumble_pwm_set(int freq_hz, int duty) {
   if (freq_hz < 1) freq_hz = 1;
@@ -90,7 +143,7 @@ void rumble_pwm_set(int freq_hz, int duty) {
 
 void rumble_pwm_start(int freq_hz, int duty) {
   rumble_pwm_set(freq_hz, duty);
-  GPIO_DIR = RUMBLE_BIT;
+  CART_W(GPIO_DIR, RUMBLE_BIT);
   s_ctr = 0; s_pwm = true;
   irq_add(II_TIMER2, pwm_isr);
   REG_TM2D   = (u16)(0x10000u - (16777216u / TICK_HZ));   /* F/1, TICK_HZ overflow */
@@ -113,7 +166,7 @@ void rumble_pause(void) {
 void rumble_resume(void) {
   s_paused = false;
   if (s_pwm) {
-    GPIO_DIR = RUMBLE_BIT;
+    CART_W(GPIO_DIR, RUMBLE_BIT);
     s_ctr = 0;
     REG_TM2D   = (u16)(0x10000u - (16777216u / TICK_HZ));
     REG_TM2CNT = TM_ENABLE | TM_IRQ;

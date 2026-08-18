@@ -63,8 +63,18 @@ void rmbl_init(void) {
 
 /* Arm a pattern (used by rmbl_fire after the toggle check, and by rmbl_demo which
  * bypasses the per-cue mask so Settings previews always play). */
+/* Hardware lockout, set only by a MEASURED failure of the bus self-test's GPIO
+ * pass: cart-GPIO writes corrupt ROM reads on this unit even in their bracketed
+ * (shipping) form. One-way for the session, never persisted -- the next boot
+ * re-measures, because a marginal bus is thermal/voltage dependent and a sticky
+ * flag in config.cfg would silently rob a good unit forever. */
+static bool s_hw_lock = false;
+
+void rmbl_lockout(void) { s_hw_lock = true; cue_end(); rumble_raw_off(); }
+bool rmbl_locked(void)  { return s_hw_lock; }
+
 static void fire_seq(const RStep* seq) {
-  if (s_paused || !seq) return;
+  if (s_hw_lock || s_paused || !seq) return;
   s_seq = seq; s_idx = 0; s_left = 0;             /* replace any current cue */
   if (!s_running) { rumble_pwm_start(R_FREQ, 0); s_running = true; }
 }
