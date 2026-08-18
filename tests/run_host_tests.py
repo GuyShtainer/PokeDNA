@@ -93,7 +93,12 @@ def main() -> int:
             failed.append(name + " (build)")
             continue
 
-        args = saves if re.search(r"argv\[1\]", src.read_text(errors="replace")) else []
+        # Any indexing of argv means "this test takes saves". It used to look for the
+        # literal `argv[1]`, which host_legality_hooks_test.c does not contain (it loops
+        # `argv[i]`), so that test ran with an EMPTY corpus and failed four checks whose
+        # whole point is that the corpus is non-empty — a red line in every run that had
+        # nothing to do with the code under test.
+        args = saves if re.search(r"argv\[\w+\]", src.read_text(errors="replace")) else []
         r = subprocess.run([binpath, *args], capture_output=True, text=True)
         out = (r.stdout + r.stderr).strip()
 
