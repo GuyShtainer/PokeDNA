@@ -350,7 +350,7 @@ void pdna_romfull_screen(void) {
         siprintf(l1, "STOPPED at region %d of %d", (int)g.n_done, (int)g.n_regions);
         break;
       case PDNA_RVV_NOTHING:
-        siprintf(l1, "NOTHING VERIFIED - 0 of %d regions had bytes", (int)g.n_regions);
+        siprintf(l1, "NOTHING VERIFIED - 0 bytes in %d regions", (int)g.n_regions);
         break;
       case PDNA_RVV_SHORT:
         siprintf(l1, "COVERAGE SHORT - %lu of %lu KiB compared",
@@ -377,20 +377,24 @@ void pdna_romfull_screen(void) {
       ui_ptext_fit(6, 136, 232, UI_TEXT, l2);
     } else if (vd == PDNA_RVV_DESC) {
       ui_ptext_fit(6, 136, 232, UI_TEXT,
-                   "Its own bytes are suspect - no region CRC covers them.");
+                   "Its bytes are suspect - no CRC covers them.");
     } else if (bad) {
       /* The all-skipped / short-coverage case. It used to land in the reassurance branch
        * below and print "Every region matched its build-time CRC32." with zero regions
        * compared, which is the exact lie this screen exists to prevent. */
       ui_ptext_fit(6, 136, 232, UI_TEXT,
                    vd == PDNA_RVV_NOTHING
-                     ? "This scan proved nothing - no bytes were compared."
-                     : "Fewer bytes were compared than this image can prove.");
+                     ? "This scan proved nothing - 0 bytes read."
+                     : "Fewer bytes compared than this image can prove.");
     } else {
       siprintf(l2, "%d region(s) needed a retry - the cart bus lied once",
                (int)g.n_recovered);
+      /* Short enough to RENDER, not just to be true: at "...matched its build CRC32." the
+       * proportional font clipped it to "...its build CRC~" (measured, screenshot
+       * docs/analysis-2026-08-18/honest-ok.png). A caveat a photograph cuts in half is
+       * not a caveat. */
       ui_ptext_fit(6, 136, 232, g.n_recovered ? UI_WARN : UI_DIM,
-                   g.n_recovered ? l2 : "Every compared region matched its build CRC32.");
+                   g.n_recovered ? l2 : "Every compared region matched its stamp.");
     }
 
     if (bad) {
@@ -420,10 +424,20 @@ void pdna_romfull_screen(void) {
       uint32_t k;
       for (k = 0; k < d->n_zones && k < PDNA_RV_MAX_ZONES; k++)
         if (d->z[k].off + d->z[k].len >= d->image_bytes) tail0 = d->z[k].off;
-      if (tail0)
-        siprintf(l3, "blind: 0x%06lx..EOF (%luK) holds crt0 load images",
+      /* "crt0 load images" is only true of the TAIL_GUARD-sized drop zone the stamper
+       * emits. Claiming it for whatever zone happens to end at EOF is the same kind of
+       * unearned assertion this whole pass is removing: an all-zone descriptor made the
+       * line read "blind: 0x7f72a0..EOF (4078K) = crt0 load images", naming 4 MB of image
+       * after 9 KB of crt0. Say the range always; name its contents only when the size
+       * says it really is the guard. */
+      if (tail0 && d->image_bytes - tail0 == PDNA_RV_TAIL_GUARD)
+        siprintf(l3, "blind: 0x%06lx..EOF (%luK) = crt0 load images",
                  (unsigned long)tail0,
                  (unsigned long)((d->image_bytes - tail0) >> 10));
+      else if (tail0)
+        siprintf(l3, "blind: 0x%06lx..EOF plus %luK of other zones",
+                 (unsigned long)tail0,
+                 (unsigned long)((g.bytes_zoned - (d->image_bytes - tail0)) >> 10));
       else
         siprintf(l3, "blind: %lu KiB of zones were never compared",
                  (unsigned long)(g.bytes_zoned >> 10));
