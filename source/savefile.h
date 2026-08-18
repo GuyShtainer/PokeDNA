@@ -52,8 +52,24 @@ SfStatus sf_copy(const char* src_path, const char* dst_path);
 
 /* Write buf(len) to path safely:
  *   write "<path>.tmp" -> re-read & byte-compare to buf -> unlink(path)
- *   -> rename(tmp -> path). The original is untouched unless verification
- *   passed, so a failure never corrupts it. */
+ *   -> rename(tmp -> path) -> READ THE CARD BACK to confirm the swap landed.
+ * The original is untouched unless verification passed, so a failure never
+ * corrupts it. SF_ERR_RENAME means the swap could not be confirmed: nothing was
+ * deleted, and sf_where_are_the_bytes() says what the user is left holding. */
 SfStatus sf_write_verified(const char* path, const uint8_t* buf, uint32_t len);
+
+/* After SF_ERR_RENAME: which file on the CARD actually holds buf(len)?
+ *
+ * A caller that guesses will lie to the user in at least one interleaving, so this
+ * asks the card instead -- byte-for-byte, both candidate names. It exists because
+ * "the write returned an error" and "your save is gone" are very different pieces
+ * of news and only one of them is true at a time. */
+typedef enum {
+  SF_WHERE_NEITHER = 0,  /* neither name holds it — fall back to the backup       */
+  SF_WHERE_TMP_ONLY,     /* "<path>.tmp" holds it and `path` is GONE (the bad one) */
+  SF_WHERE_TMP_AND_OLD,  /* "<path>.tmp" holds it, `path` still holds the OLD save */
+  SF_WHERE_TARGET        /* `path` holds it after all — the swap did land          */
+} SfWhere;
+SfWhere sf_where_are_the_bytes(const char* path, const uint8_t* buf, uint32_t len);
 
 #endif /* SAVEFILE_H */

@@ -1104,6 +1104,39 @@ static bool app_save_finalize(void) {
   rmbl_resume();
   log_line("edit: write %s (backup %s)", st == SF_OK ? "OK" : sf_status_str(st), bak);
   log_flush_to_sd(LOG_PATH);
+  if (st == SF_ERR_RENAME) {
+    /* The bytes were written AND read back byte-for-byte -- it is the final swap the card
+     * did not keep, which is a different piece of news from "the write failed" and has to
+     * read as one. Ask the card which file the user is actually holding rather than
+     * guessing: "your save is in the .tmp" is a lie in the interleaving where the rename
+     * landed and only the confirmation read failed. */
+    const char* nm = strrchr(g_path, '/');
+    nm = nm ? nm + 1 : g_path;
+    char l1[64];
+    SfWhere w = sf_where_are_the_bytes(g_path, g_save, G3_SAVE_FILE_SIZE);
+    log_line("edit: rename unconfirmed, bytes are at %d (%s)", (int)w, nm);
+    log_flush_to_sd(LOG_PATH);
+    snd_error();
+    switch (w) {
+      case SF_WHERE_TMP_ONLY:                      /* the loud one: no .sav on the card */
+        siprintf(l1, "Edit is in %.28s.tmp", nm);
+        msg_wait("SAVE NOT IN PLACE", UI_WARN, l1, "Card dropped it. Rename .tmp on a PC.");
+        break;
+      case SF_WHERE_TMP_AND_OLD:                   /* old save intact; edit not applied */
+        siprintf(l1, "Edit is in %.28s.tmp", nm);
+        msg_wait("NOT SAVED", UI_WARN, l1, "Old save intact. Try saving again.");
+        break;
+      case SF_WHERE_TARGET:                        /* it IS on the card; only unconfirmed */
+        siprintf(l1, "%.30s looks correct", nm);
+        msg_wait("UNCONFIRMED", UI_WARN, l1, "Could not re-check the card. Verify it.");
+        break;
+      default:                                     /* neither name matches: use the backup */
+        msg_wait("SAVE LOST", UI_WARN, "Card kept neither copy.",
+                 bak[0] ? "Restore the .bak on a PC." : "No backup was made!");
+        break;
+    }
+    return false;
+  }
   if (st != SF_OK) {
     snd_error();
     msg_wait("WRITE FAILED", UI_WARN, sf_status_str(st), "Backup kept; .tmp may remain.");
