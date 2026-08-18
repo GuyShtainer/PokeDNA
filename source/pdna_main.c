@@ -473,11 +473,19 @@ static void cfg_save(void) {
   for (int i = 0; i < 3; i++)
     if (g_rom_path[i][0])
       n += siprintf(buf + n, "%s=%s\n", k_romkey[i], g_rom_path[i]);
-  FIL f;
+  /* Through the SAME verified-write pipeline as every other write this tool makes.
+   * It used to be the one exception: FA_CREATE_ALWAYS truncated the existing config
+   * FIRST, then f_write and f_close both had their return codes discarded and nothing
+   * re-read the file -- so on a card that ACKs writes it does not keep, the settings
+   * silently ceased to exist and nothing anywhere said so. Nothing here is safety-
+   * critical (a missing key falls back to the compiled default, and g_backup_mode
+   * defaults to the safest mode), which is exactly why this is a two-line change
+   * rather than a design: there is no reason for it to be the unverified one. */
+  if (n <= 0) return;
   rmbl_pause();                                  /* no motor toggling during the SD write */
-  if (f_open(&f, CFG_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) { rmbl_resume(); return; }
-  UINT bw = 0; f_write(&f, buf, (UINT)n, &bw); f_close(&f);
+  SfStatus cst = sf_write_verified(CFG_PATH, (const uint8_t*)buf, (uint32_t)n);
   rmbl_resume();
+  if (cst != SF_OK) log_line("cfg: save failed (%s)", sf_status_str(cst));
 }
 
 /* Restore prefs saved by cfg_save (best-effort): a missing/unparsable file just
