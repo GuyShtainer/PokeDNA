@@ -805,16 +805,33 @@ static void log_badge_right(int right, int y) {
  *
  * STOPPED BAR  = the CPU or the IRQ path is wedged. CRAWLING BAR = merely slow.
  *
- * Why it may draw during an SD transfer, when nothing else may (hard rule 1):
- * the rule exists because the cart ROM is UNMAPPED mid-transfer, so ROM code and
- * ROM data vanish. This handler is IWRAM_CODE like the rumble PWM ISR beside it,
- * touches only VRAM and IWRAM, and every value it needs -- geometry, both colours
- * -- is an immediate in the instruction stream. It reads no ROM, calls nothing in
- * ROM, and loads no literal from a ROM pool. It is therefore the one painter in
- * this program that keeps working while the ROM is gone, which is exactly the
- * window the save-open hang lives in.
+ * SAFE to fire mid-transfer, but it does NOT fire mid-transfer -- and reading the
+ * bar correctly depends on knowing which. Both halves, measured, not assumed:
  *
- * ARMED ONLY DURING THE LOAD (hb_arm/hb_off). Outside it the handler returns on
+ *   SAFE. Hard rule 1 exists because the cart ROM is UNMAPPED mid-transfer, so ROM
+ *   code and ROM data vanish. This handler is IWRAM_CODE like the rumble PWM ISR
+ *   beside it, and libtonc's dispatcher is IWRAM too (isr_master at 0x03000338,
+ *   __isr_table at 0x03003160 -- arm-none-eabi-nm PokeDNA.elf). Geometry and both
+ *   colours are immediates, so there is no ROM literal pool to load. Nothing on the
+ *   path touches ROM.
+ *
+ *   BUT IT IS NOT REACHED. The EZ-Flash read path sets REG_IME = 0 for the whole of
+ *   _EZFO_readSectors (lib/ezflashomega/io_ezfo.c:210-219, and again in
+ *   lib/flashcartio.c:303/347 for the EverDrive branch), so no IRQ -- this one
+ *   included -- is delivered while a transfer is in flight.
+ *
+ * WHAT THE BAR THEREFORE MEANS, exactly:
+ *   spinning ......... the CPU is running and IRQs are being delivered.
+ *   stepping in bursts, stalling between them, during "1/12 read file" .... NORMAL:
+ *                      that is one f_read chunk per stall, IME off for its duration.
+ *   FROZEN for many seconds ...... the CPU is wedged, IRQs are off and never coming
+ *                      back, or one SD transfer never returned. All three are the
+ *                      bug; none of them is a healthy slow load.
+ *
+ * ARMED ONLY DURING THE LOAD (hb_arm/hb_off), and PAUSED around any screen that
+ * waits for the user (hb_pause/hb_resume) -- the cell sits inside app_confirm's
+ * frame, so an armed bar would otherwise stamp itself over the "ADD YOUR GAME ROM?"
+ * dialog and the ROM picker behind it. Outside all of that the handler returns on
  * the first instruction, so no other screen can find 144 of its pixels rewritten. */
 #define HB_X 196
 #define HB_Y 66
@@ -859,6 +876,12 @@ static void hb_off(void) {
   s_hb_on = 0;
   irq_add(II_VBLANK, NULL);
 }
+
+/* Stop the bar without giving the handler slot back, for the stretches of the load
+ * that hand the screen to the USER. hb_pause leaves the cell as it was; the caller
+ * repaints the whole screen anyway, and load_phase_n redraws the cell on resume. */
+static void hb_pause(void)  { s_hb_on = 0; }
+static void hb_resume(void) { s_hb_sub = 0; s_hb_on = 1; }
 
 /* How many named sub-steps the save-open sequence has. Written out so the on-screen
  * "7/12" is a fraction Guy can read as progress, not just a label. */
@@ -4809,8 +4832,14 @@ static void view_save(const char* path) {
   { static bool offered = false;
     if (!offered && !boxoam_icons_available() && app_can_edit()) {
       offered = true;
+      /* The heartbeat cell (196,66) sits INSIDE app_confirm's frame (16,44)-(224,118)
+       * and inside the ROM picker behind it, so an armed bar would blink a white
+       * diagonal through the dialog every 8th frame. Pause it while the screen
+       * belongs to the user; step 10's load_phase_n repaints the cell after. */
+      hb_pause();
       if (app_confirm("ADD YOUR GAME ROM?", "Unlocks the real art. B = later"))
         app_register_rom();
+      hb_resume();
     } }
 #endif
   /* Deoxys forme follows the game version (RS Normal / Emerald Speed / FR-LG Attack). FR vs LG
