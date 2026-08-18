@@ -32,6 +32,23 @@ export OBJCOPY := $(PREFIX)objcopy
 # the correct title, only detectable by running it on the cart. gbafix stamps the title
 # from the Makefile, so the title proves NOTHING about the code. Assert on the code.
 	@if [ "$(PDNA_TARGET)" != "delta" ] && grep -qa "PokeDNA (emulator build)" $@; then 		echo "*** FATAL: $(notdir $@) is a HARDWARE build but contains emulator-build code."; 		echo "***        Stale objects were linked in. rm -rf build* and rebuild."; 		rm -f $@; exit 1; 	fi
+# ROM SELF-CHECK STAMP. This image is ~12.5 MB and this card has a documented history of
+# incomplete 12 MB SD loads (projects/rom-load-lab). Post-link, CRC32 the sampled windows
+# declared in source/pdna_romver_data.c -- located BY SYMBOL through nm, never by scanning
+# for a magic (the verifier's own literal pool is a byte-identical false hit) -- and patch
+# them into the descriptor, so the ROM can say "re-copy me" instead of hanging. Anchors
+# absent from a build (artless, `make sd`) stamp as "no window": a runtime no-op, NOT a
+# false alarm. Runs AFTER gbafix (which only touches 0xA0..0xBD) and AFTER the guard above,
+# so a rejected binary is never stamped. Missing python3 is a WARNING, not a fatal, so
+# ./build.sh's Docker path can never be broken by an absent interpreter -- the cost is
+# visible at boot as "rom self-check: UNSTAMPED", not silent.
+	@if command -v python3 >/dev/null 2>&1; then \
+	   python3 $(dir $(OUTPUT))tools/stamp_rom_windows.py --elf $< --gba $@ --nm "$(NM)" \
+	     || { rm -f $@; exit 1; }; \
+	 else \
+	   echo "*** WARNING: python3 not found -- $(notdir $@) is UNSTAMPED."; \
+	   echo "***          It cannot self-check its own load and will say so at boot."; \
+	 fi
 
 %.mb.elf :
 	@echo Linking multiboot

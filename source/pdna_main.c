@@ -68,6 +68,7 @@
 #include "pdna_app.h"
 #include "savefile.h"
 #include "log.h"
+#include "pdna_romcheck.h"  /* sampled high-ROM self-check: the incomplete-SD-load guard */
 #include "ui.h"
 #include "pdna_layout.h"   /* screen geometry + fixed strings, shared with the host text-fit test */
 
@@ -335,8 +336,11 @@ static const char* flashcart_name(void) {
   }
 }
 
-/* Writes (edit mode, later) are Omega-only; surface it from M0. */
-static bool cart_writable(void) { return active_flashcart == EZ_FLASH_OMEGA; }
+/* Writes (edit mode, later) are Omega-only; surface it from M0. An image whose own
+ * sampled CRCs say it is not the one we shipped must never write a user's save. */
+static bool cart_writable(void) {
+  return active_flashcart == EZ_FLASH_OMEGA && !pdna_romcheck_bad();
+}
 
 static void halt_msg(const char* msg) {
   log_line("HALT: %s", msg);
@@ -716,9 +720,9 @@ static bool     g_item_held = false;
 #ifdef PDNA_DELTA
 /* Emulator build: there is no flashcart to gate on — the save is our own flash chip,
  * which is always writable. */
-bool app_can_edit(void) { return true; }
+bool app_can_edit(void) { return !pdna_romcheck_bad(); }
 #else
-bool app_can_edit(void) { return active_flashcart == EZ_FLASH_OMEGA; }
+bool app_can_edit(void) { return active_flashcart == EZ_FLASH_OMEGA && !pdna_romcheck_bad(); }
 #endif
 
 /* Flush the RAM log to SD now — for anomaly sites (wallpaper/icon self-verify) whose
@@ -4719,6 +4723,11 @@ int main(void) {
     log_line("bus: reads differ at the LOADER's own timing - suspect the image or the cart, "
              "not the boost. Re-copy PokeDNA.gba, or run from NOR.");
   log_line("mGBA debug log: %s", log_under_mgba() ? "active" : "absent");
+  /* Read ~64 KiB of ourselves back over the cart bus in 17 sampled windows and compare
+   * against the build-time CRC32s. ROM bus only — no SD, and deliberately before
+   * flashcartio_activate() so no transfer can possibly be in flight (hard rule 1). The
+   * log lines ride out on the existing post-mount flush; this writes nothing itself. */
+  pdna_romcheck_boot();
 
 #ifdef PDNA_DELTA
   /* ---- emulator build: no flashcart, no microSD, no file browser. -------------
@@ -4734,6 +4743,8 @@ int main(void) {
     ui_text(6, 100, UI_DIM, "Emulator save type wrong?");
     ui_text(6, 116, UI_DIM, "Set it to Flash 1Mbit.");
   }
+  pdna_romcheck_report();  /* deliberately reachable here: mGBA is where the failure
+                            * panel gets exercised before hardware ever sees it */
   bus_late_selftests();   /* no card and no motor here, but the ROM-fetch probe is
                            * the only place this code can be exercised off-hardware */
   snd_boot();
@@ -4783,7 +4794,8 @@ int main(void) {
    * (hard rule 4): a failed rename on a read-only cart would leave FatFs' write flag
    * set and poison the volume for reads. */
   if (active_flashcart == EZ_FLASH_OMEGA) log_begin_run(LOG_PATH);
-  log_flush_to_sd(LOG_PATH);
+  app_log_flush();   /* Omega-gated + motor-paused, same as every other flush now */
+  pdna_romcheck_report();  /* the verdict is already on the card before we ask for A */
 
   bus_late_selftests();
 
