@@ -62,6 +62,14 @@ static volatile u16 s_ctr    = 0;
 IWRAM_CODE static void motor_set(int on) {
   s_motor = (u8)(on != 0);
   if (s_io_depth) return;                 /* bus frozen for a ROM-read blit: don't toggle the cart */
+  /* ...and NEVER while an SD transfer is in flight. The explicit guards (rumble_io_suspend
+   * for blits, rmbl_pause for SD work) each depend on a caller remembering them, and
+   * view_save's 128 KiB save read went two months without one — the 2026-08-18 DS Lite hang
+   * stopped between "save: open" and "save: parsed" with the motor free to toggle the cart
+   * bus mid-transfer. flashcartio_is_reading is set by the driver itself, so this covers
+   * every SD path, including ones written later that forget to ask. Reading it here is safe
+   * during a transfer: it lives in RAM, not the unmapped ROM. */
+  if (flashcartio_is_reading) return;
   CART_W(GPIO_DATA, on ? RUMBLE_BIT : 0);
 }
 
@@ -107,7 +115,11 @@ IWRAM_CODE void rumble_bus_probe_bracketed(int on) { CART_W(GPIO_DATA, on ? RUMB
 bool rumble_omega(void)      { return s_omega; }
 bool rumble_pwm_active(void) { return s_pwm; }
 
-void rumble_raw_off(void) { s_motor = 0; if (s_io_depth) return; CART_W(GPIO_DATA, 0); }
+void rumble_raw_off(void) {
+  s_motor = 0;
+  if (s_io_depth || flashcartio_is_reading) return;   /* same two freezes as motor_set */
+  CART_W(GPIO_DATA, 0);
+}
 
 /* Render guard: while a long software blit reads pixel data from ROM, a rumble GPIO
  * write to the cart bus (0x080000C4) can corrupt those in-flight ROM reads on the

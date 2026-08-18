@@ -9,6 +9,13 @@ typedef enum { NO_FLASHCART, EVERDRIVE_GBA_X5, EZ_FLASH_OMEGA } ActiveFlashcart;
 extern ActiveFlashcart active_flashcart;
 extern volatile bool flashcartio_is_reading;
 
+/* Chunk-level read retries since boot, and reads that exhausted their retries. The driver
+ * cannot log from inside a transfer (log.c lives in the ROM this cart has unmapped), so it
+ * counts instead and the caller reports afterwards: a save-open that took a long time with
+ * retries>0 is a cart/bus problem, one with retries==0 is not. */
+extern volatile unsigned long flashcartio_read_retries;
+extern volatile unsigned long flashcartio_read_failures;
+
 bool flashcartio_activate(void);
 bool flashcartio_read_sector(unsigned int sector,
                              unsigned char* destination,

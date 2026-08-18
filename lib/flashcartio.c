@@ -13,6 +13,8 @@
 
 ActiveFlashcart active_flashcart = NO_FLASHCART;
 volatile bool flashcartio_is_reading = false;
+volatile unsigned long flashcartio_read_retries  = 0;
+volatile unsigned long flashcartio_read_failures = 0;
 
 /* ---- game-pak bus timing (see flashcartio.h for the why) ----------------- */
 

@@ -4557,7 +4557,19 @@ static void view_save(const char* path) {
     }
   }
 #else
+  /* Bracket the biggest SD read this app does. pdna_map.c:158 and pdna_bank.c:85 have
+   * bracketed their SD work since rumble landed; view_save never did, and the motor is a
+   * cart-bus device — the same bus the transfer is running on. The 2026-08-18 DS Lite log
+   * stopped between the two crumbs either side of this line. motor_set now also refuses on
+   * flashcartio_is_reading, so this is belt AND braces: this one keeps the cue's phase
+   * (rmbl_pause ends the cue cleanly) rather than relying on the driver flag alone. */
+  unsigned long rt0 = flashcartio_read_retries, rf0 = flashcartio_read_failures;
+  rmbl_pause();
   SfStatus st = sf_read_full(path, g_save, G3_SAVE_FILE_SIZE, &sz);
+  rmbl_resume();
+  if (flashcartio_read_retries != rt0 || flashcartio_read_failures != rf0)
+    log_line("save: SD read RETRIED %lu (failed %lu) - cart/bus trouble, not the parser",
+             flashcartio_read_retries - rt0, flashcartio_read_failures - rf0);
   if (st != SF_OK) err = sf_status_str(st);
 #endif
   /* The read returned. The parse is pure CPU (microseconds), so it gets a screen

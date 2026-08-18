@@ -4,6 +4,7 @@
 */
 
 #include "io_ezfo.h"
+#include "../flashcartio.h"   /* flashcartio_read_retries/_failures: counted here, logged by the caller */
 
 // SOURCE:
 // https://github.com/ez-flash/omega-de-kernel/blob/main/source/Ezcard_OP.c
@@ -86,10 +87,12 @@ static u32 EWRAM_CODE Read_SD_sectors(u32 address, u16 count, u8* SDbuffer) {
     res = Wait_SD_Response();
     SD_Enable();
     if (res == 1) {
+      flashcartio_read_retries++;    /* counted, not logged: log.c lives in unmapped ROM */
       if (--times) {
         delay(5000);
         goto read_again;
       }
+      flashcartio_read_failures++;
       /* Retries exhausted. Upstream FELL THROUGH to the dmaCopy and returned 0 = success,
        * so the caller got the FPGA window's stale contents and FatFs reported FR_OK over
        * them: ff.c's ABORT(fs, FR_DISK_ERR) was dead code on this cart, and every layer
