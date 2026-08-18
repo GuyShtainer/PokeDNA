@@ -29,6 +29,11 @@
  * After the latch, one call in LOG_RETRY_EVERY actually tries the card: on an EverDrive
  * that is 1 directory scan instead of 32, and on a card that recovered the log resumes. */
 #define LOG_RETRY_EVERY 32
+/* Read the card back on the run's FIRST commit (that is the boot flush, whose verdict
+ * the boot dialog shows) and every Nth commit after it. Not every commit: a read-back is
+ * a directory scan, roughly the cost of the f_open the flush already pays, and a
+ * breadcrumb-per-phase log would double its card traffic for a card that lies once. */
+#define LOG_VERIFY_EVERY 16
 /* "/PokeDNA/log.txt" -> "/PokeDNA/log.prev1.txt" needs strlen(path) + 7 bytes. */
 #define LOG_ROT_MAX   64
 
@@ -50,6 +55,17 @@ static unsigned long s_okn       = 0;   /* flushes fully committed this run     
 static unsigned long s_run_bytes = 0;   /* bytes this run has put on the card        */
 static unsigned      s_skips     = 0;   /* refused calls since the latch (retry ctr) */
 static int           s_rot       = LOG_ROT_NONE;
+
+/* --- the read-back, because a return code is not evidence --------------------
+ * See log.h. s_expect is not a guess: it is f_size() taken from the open handle AFTER
+ * the write and BEFORE the close, i.e. the size FatFs itself claims the file now has.
+ * Comparing THAT with what the card admits to afterwards makes the check exact for
+ * every case -- a fresh file, an append after a refused rotation, or extra marker
+ * lines -- instead of only for the tidy one. */
+static unsigned long s_expect     = 0;  /* size FatFs reported after the last commit */
+static unsigned long s_card_bytes = 0;  /* size the card admitted to at the read-back */
+static int           s_verify     = LOG_VERIFY_UNKNOWN;
+static int           s_vfr        = 0;  /* FRESULT of the last read-back              */
 
 /* --- mGBA debug interface ------------------------------------------------- */
 /* Write 0xC0DE to ENABLE; if it reads back 0x1DEA we're under mGBA. Strings
@@ -78,6 +94,10 @@ void log_clear(void) {
   s_okn = 0;
   s_run_bytes = 0;
   s_rot = LOG_ROT_NONE;
+  s_expect = 0;
+  s_card_bytes = 0;
+  s_verify = LOG_VERIFY_UNKNOWN;   /* "not checked yet" -- never "checked and fine" */
+  s_vfr = 0;
   s_buf[0] = 0;
 }
 
@@ -166,6 +186,7 @@ void log_begin_run(const char* path) {
   FRESULT fr;
   s_lost = 0; s_capped = 0; s_fail = 0; s_skips = 0;
   s_last = 0; s_okn = 0; s_run_bytes = 0;
+  s_expect = 0; s_card_bytes = 0; s_verify = LOG_VERIFY_UNKNOWN; s_vfr = 0;
   s_rot = LOG_ROT_NONE;
   if (!rot_name(p1, sizeof p1, path, 1) || !rot_name(p2, sizeof p2, path, 2)) {
     /* Say it out loud. On the card, "rotation was skipped for a name I do not
@@ -224,28 +245,33 @@ static void ensure_parent_dir(const char* path) {
   f_mkdir(dir);                                /* FR_EXIST is fine, so is failing */
 }
 
-/* The one real flush. `urgent` bypasses the failure latch and the size cap; see
- * log_flush_urgent() in log.h for when that is legitimate. */
-static int flush_common(const char* path, int urgent) {
+/* Everything that needs FatFs' FIL, in a frame of its own.
+ *
+ * The split is not cosmetic: FIL carries a 512-byte sector buffer (~560 bytes) and
+ * FILINFO carries an LFN name buffer (~290 bytes, FF_LFN_BUF=255), and this all lives on
+ * the 12,624-byte IWRAM stack. Nesting the read-back inside this function would have put
+ * both on the stack at once for every flush; keeping them in sibling frames leaves the
+ * peak exactly where it was before the read-back existed. d95202f is what a careless
+ * frame on that stack costs.
+ *
+ * Returns 0 on a fully committed write (with *wrote = bytes appended and *size_after =
+ * the size FatFs reports for the file, taken from the open handle after the write and
+ * before the close), -2 if the size cap fired, -1 on a short write, else the FRESULT. */
+static int commit_bytes(const char* path, int urgent, UINT* wrote,
+                        unsigned long* size_after) {
   FIL f;
   FRESULT fr, fc;
   UINT want, bw = 0;
 
-  if (!urgent) {
-    if (s_capped) { s_last = -2; return -2; }
-    if (s_fail >= LOG_MAX_FAILS) {
-      if (++s_skips < LOG_RETRY_EVERY) { s_last = -2; return -2; }
-      s_skips = 0;                             /* every 32nd call, try the card again */
-    }
-  }
-  if (s_flushed >= s_len) { s_last = 0; return 0; }  /* nothing new: zero card traffic */
+  *wrote = 0;
+  *size_after = 0;
 
   fr = f_open(&f, path, FA_WRITE | FA_OPEN_APPEND);
   if (fr == FR_NO_PATH) {                      /* missing app folder: make it, once */
     ensure_parent_dir(path);
     fr = f_open(&f, path, FA_WRITE | FA_OPEN_APPEND);
   }
-  if (fr != FR_OK) { s_last = (int)fr; note_fail(); return (int)fr; }
+  if (fr != FR_OK) return (int)fr;
 
   /* Runaway logging: say so, once. Measured on THIS RUN's bytes (plus an absolute file
    * ceiling), so a stale un-rotated file can no longer silence a fresh run. */
@@ -255,7 +281,6 @@ static int flush_common(const char* path, int urgent) {
     f_write(&f, cap_msg, (UINT)(sizeof cap_msg - 1), &bx);
     f_close(&f);
     s_capped = 1;
-    s_last = -2;
     return -2;
   }
 
@@ -267,13 +292,83 @@ static int flush_common(const char* path, int urgent) {
 
   want = (UINT)(s_len - s_flushed);
   fr = f_write(&f, s_buf + s_flushed, want, &bw);
+  /* Taken while the handle is still open: this is FatFs' OWN claim about the file's new
+   * size, which is what the read-back holds the card to. */
+  *size_after = (unsigned long)f_size(&f);
   fc = f_close(&f);                            /* f_close is what commits the last
                                                 * partial sector + the dir entry  */
-  if (fr != FR_OK || fc != FR_OK || bw != want) {
-    s_last = (fr != FR_OK) ? (int)fr : (fc != FR_OK) ? (int)fc : -1;
-    note_fail();
-    return s_last;
+  if (fr != FR_OK || fc != FR_OK || bw != want)
+    return (fr != FR_OK) ? (int)fr : (fc != FR_OK) ? (int)fc : -1;
+
+  *wrote = want;
+  return 0;
+}
+
+/* Ask the CARD what it kept. Pure read: one directory scan, no write, no remount, so it
+ * is safe exactly where the flush that preceded it was safe.
+ *
+ * Three outcomes, kept apart on purpose (log.h):
+ *   file present and >= what FatFs claimed  -> GOOD
+ *   file MISSING, or SHORT                  -> LOST, and it STICKS for the run
+ *   f_stat failed some other way            -> BLIND: this check cannot vouch, and it
+ *                                              must not be allowed to read as GOOD.
+ * BLIND is the deliberate answer to "what if the read-back itself fails": it is not OK,
+ * it shows on the badge, and it trips the boot dialog -- an unverifiable log is a
+ * diagnostic that has stopped being a diagnostic, which is the whole complaint.
+ *
+ * A word on FatFs' one-sector window cache: f_stat of "/PokeDNA/log.txt" walks the ROOT
+ * directory first, so the window cannot still be holding the /PokeDNA sector the just-
+ * closed f_sync wrote -- both levels come off the medium. A root-level log path would
+ * not have that guarantee; PokeDNA's never is (hard rule 9). */
+static void verify_on_card(const char* path) {
+  FILINFO fi;
+  FRESULT fr = f_stat(path, &fi);
+
+  s_vfr = (int)fr;
+  if (fr == FR_OK) {
+    s_card_bytes = (unsigned long)fi.fsize;
+    if (s_card_bytes < s_expect) {
+      if (s_verify != LOG_VERIFY_LOST)
+        log_line("log: card kept %lu of %lu bytes - it ACKED writes it did not store",
+                 s_card_bytes, s_expect);
+      s_verify = LOG_VERIFY_LOST;              /* sticky: one proven lie is enough */
+    } else if (s_verify != LOG_VERIFY_LOST) {
+      s_verify = LOG_VERIFY_GOOD;
+    }
+    return;
   }
+  if (fr == FR_NO_FILE || fr == FR_NO_PATH) {
+    s_card_bytes = 0;
+    if (s_verify != LOG_VERIFY_LOST)
+      log_line("log: %s is NOT on the card after a flush that returned OK", path);
+    s_verify = LOG_VERIFY_LOST;
+    return;
+  }
+  /* FR_DISK_ERR, FR_NOT_READY, FR_INVALID_DRIVE, ... The log may well be fine; we
+   * simply cannot say, and saying nothing is how this bug happened. */
+  s_card_bytes = 0;
+  if (s_verify != LOG_VERIFY_LOST) s_verify = LOG_VERIFY_BLIND;
+}
+
+/* The one real flush. `urgent` bypasses the failure latch and the size cap; see
+ * log_flush_urgent() in log.h for when that is legitimate. */
+static int flush_common(const char* path, int urgent) {
+  UINT wrote = 0;
+  unsigned long size_after = 0;
+  int r;
+
+  if (!urgent) {
+    if (s_capped) { s_last = -2; return -2; }
+    if (s_fail >= LOG_MAX_FAILS) {
+      if (++s_skips < LOG_RETRY_EVERY) { s_last = -2; return -2; }
+      s_skips = 0;                             /* every 32nd call, try the card again */
+    }
+  }
+  if (s_flushed >= s_len) { s_last = 0; return 0; }  /* nothing new: zero card traffic */
+
+  r = commit_bytes(path, urgent, &wrote, &size_after);
+  if (r == -2) { s_last = -2; return -2; }     /* the size cap: intentional, not a fault */
+  if (r != 0) { s_last = r; note_fail(); return r; }
 
   /* ONLY a fully-committed flush moves the watermark. If f_close failed, the bytes
    * may or may not be on the card, so the next flush re-sends them: a DUPLICATED
@@ -283,9 +378,15 @@ static int flush_common(const char* path, int urgent) {
   s_lost    = 0;
   s_fail    = 0;
   s_skips   = 0;
-  s_run_bytes += want;
+  s_run_bytes += wrote;
+  s_expect  = size_after;
   s_okn++;
   s_last = 0;
+
+  /* ...and "committed" is still only FatFs' opinion until the card is read back. The
+   * first commit of the run is always checked, because that is the boot flush the boot
+   * dialog reports on. */
+  if (urgent || s_okn == 1 || (s_okn % LOG_VERIFY_EVERY) == 0) verify_on_card(path);
   return 0;
 }
 
@@ -294,16 +395,28 @@ int log_flush_urgent(const char* path) { return flush_common(path, 1); }
 
 /* --- health readouts (pure C: the UI paints these, no card needed) --------- */
 
+/* Ordered by what the user must be told FIRST, not by how the state came about.
+ * LOST outranks everything because it is the only state that otherwise looks healthy:
+ * a card that silently drops writes reports FR_OK forever, so if it is also capped or
+ * failing, "the card is not keeping your bytes" is still the sentence that matters.
+ * UNVERIF sits below the real failures (they are more specific) but ABOVE OK -- an
+ * unverifiable log must never paint the healthy badge. */
 int log_health(void) {
+  if (s_verify == LOG_VERIFY_LOST) return LOG_HEALTH_LOST;
   if (s_capped) return LOG_HEALTH_CAPPED;
   if (s_fail >= LOG_MAX_FAILS) return LOG_HEALTH_OFF;
   if (s_fail > 0) return LOG_HEALTH_FAILING;
+  if (s_verify == LOG_VERIFY_BLIND) return LOG_HEALTH_UNVERIF;
   return LOG_HEALTH_OK;
 }
 
 int          log_last_result(void)  { return s_last; }
 int          log_fail_count(void)   { return s_fail; }
 int          log_rotation(void)     { return s_rot; }
+int          log_verified(void)     { return s_verify; }
+int          log_verify_result(void) { return s_vfr; }
+unsigned long log_card_bytes(void)  { return s_card_bytes; }
+unsigned long log_expect_bytes(void) { return s_expect; }
 unsigned long log_flush_count(void) { return s_okn; }
 unsigned     log_pending_bytes(void) { return (s_len > s_flushed) ? s_len - s_flushed : 0; }
 
@@ -311,6 +424,13 @@ void log_health_str(char* out, unsigned cap) {
   if (!out || cap == 0) return;
   out[0] = 0;
   switch (log_health()) {
+    case LOG_HEALTH_LOST:
+      /* The badge for the state that used to paint "log 1" in dim grey. */
+      snprintf(out, cap, "LOG LOST");
+      break;
+    case LOG_HEALTH_UNVERIF:
+      snprintf(out, cap, "LOG ?e%d", s_vfr);
+      break;
     case LOG_HEALTH_CAPPED:
       snprintf(out, cap, "LOG FULL");
       break;

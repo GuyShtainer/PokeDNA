@@ -11,7 +11,9 @@
 int  rd_protect        = 0;
 long rd_fail_write_in  = 0;
 int  rd_fail_all_writes = 0;
-unsigned long rd_writes = 0, rd_reads = 0;
+int  rd_lie_writes     = 0;
+long rd_fail_reads_after = -1;
+unsigned long rd_writes = 0, rd_reads = 0, rd_lied = 0, rd_read_fails = 0;
 
 static unsigned char* s_mem = 0;
 static unsigned       s_sectors = 0;
@@ -20,8 +22,9 @@ void rd_init(unsigned sectors) {
   rd_free();
   s_sectors = sectors;
   s_mem = calloc(sectors, FF_MAX_SS);
-  rd_protect = 0; rd_fail_write_in = 0; rd_fail_all_writes = 0;
-  rd_writes = rd_reads = 0;
+  rd_protect = 0; rd_fail_write_in = 0; rd_fail_all_writes = 0; rd_lie_writes = 0;
+  rd_fail_reads_after = -1;
+  rd_writes = rd_reads = rd_lied = rd_read_fails = 0;
 }
 
 void rd_free(void) { free(s_mem); s_mem = 0; s_sectors = 0; }
@@ -38,6 +41,10 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
   (void)pdrv;
   if (!s_mem) return RES_NOTRDY;
   if (sector + count > s_sectors) return RES_PARERR;
+  if (rd_fail_reads_after >= 0) {
+    if (rd_fail_reads_after == 0) { rd_read_fails++; return RES_ERROR; }
+    rd_fail_reads_after--;
+  }
   memcpy(buff, s_mem + (size_t)sector * FF_MAX_SS, (size_t)count * FF_MAX_SS);
   rd_reads += count;
   return RES_OK;
@@ -50,6 +57,11 @@ DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
   if (rd_fail_all_writes) return RES_ERROR;
   if (rd_fail_write_in > 0) { rd_fail_write_in--; return RES_ERROR; }
   if (sector + count > s_sectors) return RES_PARERR;
+  /* The card that says yes and keeps nothing. Deliberately AFTER the range check so a
+   * genuine bug still trips PARERR, and deliberately RES_OK so nothing above this line
+   * can tell -- that is the whole point. Reads keep returning the real (stale) bytes,
+   * which is what a read-back is for. */
+  if (rd_lie_writes) { rd_lied += count; return RES_OK; }
   memcpy(s_mem + (size_t)sector * FF_MAX_SS, buff, (size_t)count * FF_MAX_SS);
   rd_writes += count;
   return RES_OK;

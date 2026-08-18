@@ -15,8 +15,10 @@
  * So this harness compiles the shipped ff.c against the shipped ffconf.h (only
  * FF_USE_MKFS differs, so the test can format its own volume) over a RAM disk whose
  * knobs are the failures an EZ-Flash actually has: write-protected, every write fails
- * (that is an EverDrive), the Nth write fails (EZ-Flash writes have no retry), and a
- * volume too small to hold the log (a full card).
+ * (that is an EverDrive), the Nth write fails (EZ-Flash writes have no retry), a volume
+ * too small to hold the log (a full card), and -- the nastiest -- a card that ACKs every
+ * write and keeps nothing (rd_lie_writes), which no return code anywhere in the stack
+ * can reveal. See t_card_that_lies.
  */
 #include <stdio.h>
 #include <string.h>
@@ -83,6 +85,10 @@ static void t_first_boot(void) {
   CHECK(slurp(P1, buf, sizeof buf) == -1, "first boot: prev1 must not exist");
   CHECK(log_health() == LOG_HEALTH_OK, "first boot: health not ok");
   CHECK(log_flush_count() == 1, "first boot: flush count %lu", log_flush_count());
+  /* OK now means "read back", not "the write returned 0". */
+  CHECK(log_verified() == LOG_VERIFY_GOOD, "first boot: not read back (%d)", log_verified());
+  CHECK(log_card_bytes() == log_expect_bytes() && log_expect_bytes() > 0,
+        "first boot: card %lu vs expected %lu", log_card_bytes(), log_expect_bytes());
 }
 
 static void t_rotation_depth(void) {
@@ -359,6 +365,99 @@ static void t_run_budget_not_file_size(void) {
   }
 }
 
+/* THE CARD THAT SAYS YES AND KEEPS NOTHING.
+ *
+ * An EZ-Flash write has no retry and no read-back (flashcartio_write.c returns whatever
+ * _EZFO_writeSectors said), so a card, a dying contact, or a bad SD copy that ACKs a
+ * sector it never stores is invisible to every layer above it. Before the read-back, this
+ * exact boot sequence produced: flush rc=0, health=LOG_HEALTH_OK, badge "log 1" painted
+ * in the healthy colour, no boot dialog -- while f_stat on the same mounted volume said
+ * FR_NO_FILE. The diagnostic built to answer "did the log reach the card?" answered
+ * "yes" in precisely the case it exists to catch. */
+static void t_card_that_lies(void) {
+  char badge[16];
+  FILINFO fi;
+
+  /* (a) A card that lies from the first sector. Note rc == 0: FatFs is NOT wrong here,
+   * it faithfully reports what the driver told it. Only a read can tell. */
+  fresh_card(4096, 1);
+  rd_lie_writes = 1;
+  CHECK(run_once("run1") == 0, "lie: FatFs should report success (that IS the bug)");
+  CHECK(f_stat(P, &fi) == FR_NO_FILE, "lie: the card must really be empty for this test");
+  CHECK(log_health() == LOG_HEALTH_LOST, "lie: health %d, want LOST", log_health());
+  CHECK(log_verified() == LOG_VERIFY_LOST, "lie: verify %d", log_verified());
+  CHECK(log_card_bytes() == 0 && log_expect_bytes() > 0,
+        "lie: card %lu expected %lu", log_card_bytes(), log_expect_bytes());
+  log_health_str(badge, sizeof badge);
+  CHECK(strcmp(badge, "LOG LOST") == 0, "lie: badge '%s' must shout", badge);
+  CHECK(strlen(badge) < 12, "lie: badge '%s' too long for the screen", badge);
+
+  /* (b) A card that STARTS lying after an honest run -- and the reason the check is
+   * exact rather than a heuristic. Here the old file survives at its old size, and this
+   * run's byte count happens to equal it, so "fsize < bytes this run wrote" would have
+   * been satisfied and reported healthy. Holding the card to the size FatFs itself
+   * reported after the write (old size + this run's bytes) catches it. */
+  fresh_card(4096, 1);
+  CHECK(run_once("run1") == 0, "lie2: honest setup run");
+  rd_lie_writes = 1;
+  CHECK(run_once("run1") == 0, "lie2: FatFs should still report success");
+  CHECK(f_stat(P, &fi) == FR_OK, "lie2: the stale file should still be there");
+  CHECK((unsigned long)fi.fsize >= 1,  "lie2: stale file empty?");
+  CHECK(log_card_bytes() < log_expect_bytes(),
+        "lie2: card %lu vs expected %lu -- a size heuristic would have passed this",
+        log_card_bytes(), log_expect_bytes());
+  CHECK(log_health() == LOG_HEALTH_LOST, "lie2: health %d, want LOST", log_health());
+
+  /* (c) STICKY for the run: a card that lies once has disqualified itself, and a later
+   * read-back that happens to agree must not repaint the healthy badge. */
+  rd_lie_writes = 0;
+  {
+    int i;
+    for (i = 0; i < 40; i++) { log_line("healed %d", i); log_flush_to_sd(P); }
+  }
+  CHECK(log_health() == LOG_HEALTH_LOST, "lie3: health %d -- LOST must stick for the run",
+        log_health());
+  /* ...but a NEW run starts clean, so a one-off does not brand the card forever. */
+  CHECK(run_once("run2") == 0, "lie4: next run");
+  CHECK(log_health() == LOG_HEALTH_OK, "lie4: health %d on a healthy card", log_health());
+  CHECK(log_verified() == LOG_VERIFY_GOOD, "lie4: verify %d", log_verified());
+}
+
+/* And the read-back must not become the next silent failure. Sweep a read error across
+ * EVERY step of a boot flush -- the directory walk, the FAT, the read-back itself -- and
+ * assert the one invariant that matters: whenever the medium actually refused something,
+ * the log never claims LOG_HEALTH_OK. A read error during the commit shows as FAILING; a
+ * read error during the read-back shows as LOG_HEALTH_UNVERIF ("I cannot vouch"), which
+ * is a separate state from "the card lost it" on purpose. */
+static void t_readback_cannot_go_silent(void) {
+  int k, saw_unverif = 0, saw_failing = 0;
+  for (k = 0; k < 40; k++) {
+    fresh_card(4096, 1);
+    CHECK(run_once("setup") == 0, "blind: setup run (k=%d)", k);
+    log_clear();
+    log_begin_run(P);
+    log_line("=== run under a read error at %d ===", k);
+    rd_fail_reads_after = k;
+    log_flush_to_sd(P);
+    rd_fail_reads_after = -1;
+    if (rd_read_fails == 0) continue;              /* the sweep ran past the end */
+    CHECK(log_health() != LOG_HEALTH_OK,
+          "blind: a refused read at k=%d still reported LOG_HEALTH_OK", k);
+    if (log_health() == LOG_HEALTH_UNVERIF) {
+      char badge[16];
+      saw_unverif = 1;
+      log_health_str(badge, sizeof badge);
+      CHECK(strncmp(badge, "LOG ?", 5) == 0, "blind: badge '%s'", badge);
+      CHECK(strlen(badge) < 12, "blind: badge '%s' too long", badge);
+      CHECK(log_verified() == LOG_VERIFY_BLIND, "blind: verify %d", log_verified());
+    } else if (log_health() == LOG_HEALTH_FAILING || log_health() == LOG_HEALTH_OFF) {
+      saw_failing = 1;
+    }
+  }
+  CHECK(saw_unverif, "blind: no sweep position ever exercised the read-back's own failure");
+  CHECK(saw_failing, "blind: no sweep position ever failed the commit itself");
+}
+
 int main(void) {
   t_first_boot();
   t_rotation_depth();
@@ -372,6 +471,8 @@ int main(void) {
   t_full_card();
   t_unsupported_path();
   t_run_budget_not_file_size();
+  t_card_that_lies();
+  t_readback_cannot_go_silent();
   f_mount(0, "", 0);
   rd_free();
   if (fails) { printf("host_logfat_test: %d FAILURE(S)\n", fails); return 1; }

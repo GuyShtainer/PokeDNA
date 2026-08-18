@@ -5054,9 +5054,20 @@ int main(void) {
    * Omega-only: on an EverDrive every write fails by design, and nagging about a
    * documented read-only setup would be noise. */
   if (active_flashcart == EZ_FLASH_OMEGA && log_health() != LOG_HEALTH_OK) {
-    char m[40];
-    siprintf(m, "%s wrote nothing (e%d)", LOG_PATH, log_last_result());
-    msg_wait("LOG NOT SAVING", UI_WARN, m, "Card locked, full, or unwritable?");
+    char m[48];
+    const char* why = "Card locked, full, or unwritable?";
+    if (log_health() == LOG_HEALTH_LOST) {
+      /* The write said FR_OK and the card kept less than it acknowledged. This is the
+       * one the old gate could not see at all: every counter said healthy. */
+      siprintf(m, "card kept %lu of %lu bytes", log_card_bytes(), log_expect_bytes());
+      why = "Card ACKed writes it did not keep!";
+    } else if (log_health() == LOG_HEALTH_UNVERIF) {
+      siprintf(m, "read-back failed (e%d)", log_verify_result());
+      why = "Cannot confirm the log reached the card.";
+    } else {
+      siprintf(m, "%s wrote nothing (e%d)", LOG_PATH, log_last_result());
+    }
+    msg_wait("LOG NOT SAVING", UI_WARN, m, why);
   }
   pdna_romcheck_report();  /* the verdict is already on the card before we ask for A */
 

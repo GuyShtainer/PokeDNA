@@ -62,11 +62,43 @@ int  log_flush_urgent(const char* path);
  *
  * All pure C, no card traffic, safe to call anywhere -- including from a screen drawn
  * between SD transfers (never during one: nothing here touches the cart bus). */
-#define LOG_HEALTH_OK       0   /* every flush so far committed                     */
+#define LOG_HEALTH_OK       0   /* every flush committed AND the card was read back  */
 #define LOG_HEALTH_FAILING  1   /* 1..2 consecutive failures: still trying          */
 #define LOG_HEALTH_OFF      2   /* latched off after LOG_MAX_FAILS (retries rarely) */
 #define LOG_HEALTH_CAPPED   3   /* this run hit its byte budget: intentionally quiet */
+#define LOG_HEALTH_LOST     4   /* the card ACKED bytes it did not keep (read back) */
+#define LOG_HEALTH_UNVERIF  5   /* the read-back itself failed: cannot vouch either way */
 int  log_health(void);
+
+/* --- the read-back, and why LOG_HEALTH_OK could not be trusted without it -----
+ *
+ * Every counter above is downstream of a RETURN CODE, and on this hardware a return
+ * code is not evidence. An EZ-Flash write has no retry and no read-back:
+ * flashcartio_write_sector just hands back _EZFO_writeSectors' verdict, so a card (or a
+ * cart contact) that acknowledges a sector it never stored is invisible all the way up
+ * -- FatFs returns FR_OK, f_close returns FR_OK, s_fail stays 0, and the badge paints a
+ * healthy "log 1" for a card holding nothing. tests/host_logfat_test.c's t_card_that_lies
+ * reproduces exactly that over the real FatFs (ramdisk.h's rd_lie_writes), and it is the
+ * failure docs/kb/safety-pipeline.md's verified-write pattern exists for.
+ *
+ * So a committed flush is now followed by a READ: f_stat the log and compare its size
+ * with the size FatFs itself reported after the write. A read is safe wherever the
+ * flush was (no remount, no second write), and it runs on the run's FIRST commit --
+ * the boot flush, whose verdict the boot dialog reads -- then every LOG_VERIFY_EVERY-th
+ * commit and on every urgent flush, so a card that starts lying mid-run is still caught.
+ *
+ * The three outcomes are kept distinct on purpose: "the card kept it", "the card did
+ * NOT keep it", and "the read-back could not tell me" are three different things, and
+ * collapsing the third into the first is the exact bug this fixes. LOST is STICKY for
+ * the run: one proven lie is not undone by a later f_stat that happens to agree. */
+#define LOG_VERIFY_UNKNOWN  0   /* nothing committed yet, so nothing to read back   */
+#define LOG_VERIFY_GOOD     1   /* the card's copy is at least the size we wrote    */
+#define LOG_VERIFY_LOST     2   /* the file is missing or SHORT: acked, not stored  */
+#define LOG_VERIFY_BLIND    3   /* f_stat failed for another reason: cannot vouch   */
+int  log_verified(void);           /* LOG_VERIFY_*                                  */
+int  log_verify_result(void);      /* the FRESULT from the last read-back (0 = ok)  */
+unsigned long log_card_bytes(void);   /* bytes the card admitted to at that read-back */
+unsigned long log_expect_bytes(void); /* bytes FatFs said the file held after the write */
 
 /* What log_begin_run() managed, which is the earliest signal that this run's log is in
  * trouble -- it happens before the first flush. */
@@ -82,7 +114,7 @@ unsigned long log_flush_count(void); /* flushes fully committed this run        
 unsigned log_pending_bytes(void);  /* buffered bytes not yet on the card            */
 
 /* One short badge for the screen: "log R 12" / "LOG ERR e10" / "LOG OFF e5" /
- * "LOG FULL". Needs 12 bytes to never truncate. */
+ * "LOG FULL" / "LOG LOST" / "LOG ?e1". Needs 12 bytes to never truncate. */
 void log_health_str(char* out, unsigned cap);
 
 #endif /* LOG_H */

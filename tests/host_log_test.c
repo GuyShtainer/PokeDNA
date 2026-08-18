@@ -27,6 +27,7 @@
 int hostff_fail_open = 0;
 int hostff_fail_writes = 0;
 int hostff_fail_close = 0;
+int hostff_fail_stat = 0;
 int hostff_opens = 0;
 
 static int fails = 0;
@@ -60,7 +61,7 @@ static int count_occurrences(const char* hay, const char* needle) {
 
 static void reset_all(void) {
   remove(P); remove(P1); remove(P2);
-  hostff_fail_open = hostff_fail_writes = hostff_fail_close = 0;
+  hostff_fail_open = hostff_fail_writes = hostff_fail_close = hostff_fail_stat = 0;
   log_clear();
 }
 
@@ -232,6 +233,33 @@ int main(void) {
         "T9 the give-up line never made it into the log");
   CHECK(txt && strstr(txt, "try-0") != 0, "T9 urgent flush dropped the pending text");
   free(txt);
+
+  /* ---- T10: a flush is only "ok" once the medium has been read back --------
+   * Not the ACK-and-drop case (that needs real FatFs; see host_logfat_test.c's
+   * t_card_that_lies) but the two states that come out of the read-back here:
+   * it agreed, or it could not run at all. The second must never look healthy. */
+  reset_all();
+  log_line("verified");
+  CHECK(log_flush_to_sd(P) == 0, "T10 flush failed");
+  CHECK(log_verified() == LOG_VERIFY_GOOD, "T10 first flush was not read back (%d)",
+        log_verified());
+  CHECK(log_card_bytes() == log_expect_bytes(), "T10 card %lu vs expected %lu",
+        log_card_bytes(), log_expect_bytes());
+
+  reset_all();
+  hostff_fail_stat = 1;              /* the write lands; the read-back cannot run */
+  log_line("unverifiable");
+  CHECK(log_flush_to_sd(P) == 0, "T10 flush should still succeed");
+  CHECK(log_verified() == LOG_VERIFY_BLIND, "T10 verify state %d", log_verified());
+  CHECK(log_health() == LOG_HEALTH_UNVERIF,
+        "T10 an unverifiable log reported health %d", log_health());
+  CHECK(log_verify_result() == FR_DISK_ERR, "T10 verify result %d", log_verify_result());
+  {
+    char badge[16];
+    log_health_str(badge, sizeof badge);
+    CHECK(strncmp(badge, "LOG ?", 5) == 0, "T10 badge '%s'", badge);
+  }
+  hostff_fail_stat = 0;
 
   remove(P); remove(P1); remove(P2);
   printf(fails ? "FAILED (%d)\n" : "all pass\n", fails);
