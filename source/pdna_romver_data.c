@@ -111,10 +111,16 @@ const PdnaRomVerify g_pdna_romver __attribute__((used, aligned(4))) = {
         RV_W(__text_end,   0x003000u, 4096u, PDNA_RVW_K_TABLE, 'T','B','L','0'),
         /* +0x8000: s_t1 / s_base (base stats) / s_location                           */
         RV_W(__text_end,   0x008000u, 4096u, PDNA_RVW_K_TABLE, 'T','B','L','1'),
-        /* +0x10: immediately past the 16-byte fuse record — k_dex_from_index,
-         * k_spans, k_stored_off, k_box_off, k_substruct_pos: the Gen-3 parser's OWN
-         * offset tables, i.e. the likeliest source of a wild read if corrupted.       */
-        RV_W(g_pdna_fuse,  0x000010u, 4096u, PDNA_RVW_K_TABLE, 'T','B','L','2'),
+        /* +0x40: clear of BOTH post-link locator records — g_pdna_fuse (16 B, patched
+         * by tools/fuse_rom.py) and g_pdna_sav, which the DELTA link places immediately
+         * after it, at g_pdna_fuse+0x10, and which tools/fuse_sav.py patches. A window
+         * at +0x10 covered the second one, so every fused emulator image would have
+         * reported a false "ROM IMAGE MODIFIED" and turned editing off. The stamper now
+         * refuses any window overlapping either record, so this cannot come back
+         * silently. Past them lie k_dex_from_index, k_spans, k_stored_off, k_box_off,
+         * k_substruct_pos: the Gen-3 parser's OWN offset tables, i.e. the likeliest
+         * source of a wild read if corrupted.                                          */
+        RV_W(g_pdna_fuse,  0x000040u, 4096u, PDNA_RVW_K_TABLE, 'T','B','L','2'),
         /* +0x200: past the 512-byte cursor tile set — off_tbl, s_tm_move,
          * s_tutor_move, s_tut_ix (the TM/tutor learnset indices).                     */
         RV_W(hand_oam_cursor_tiles, 0x000200u, 4096u, PDNA_RVW_K_TABLE, 'T','B','L','3'),

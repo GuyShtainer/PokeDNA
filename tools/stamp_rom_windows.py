@@ -68,8 +68,15 @@ if sys.version_info < (3, 8):
 
 ROM_BASE = 0x08000000
 DESC_SYM = "g_pdna_romver"
-FUSE_SYM = "g_pdna_fuse"        # tools/fuse_rom.py patches these 16 bytes post-link
-FUSE_BYTES = 16
+# Locator records that POST-LINK tools patch in place. A window covering one of these
+# would false-alarm on every fused image, so the stamper refuses to build one. Keep this
+# list in step with tools/fuse_*.py -- and note that these two records sit ADJACENT in
+# .rodata in the delta build, which is exactly how a window aimed just past the first one
+# ended up covering the second.
+PATCHED_RECORDS = (
+    ("g_pdna_fuse", 16, "tools/fuse_rom.py"),
+    ("g_pdna_sav", 16, "tools/fuse_sav.py"),
+)
 
 MAGIC0 = 0x414E4450             # 'PDNA'
 MAGIC1 = 0x31305652             # 'RV01'
@@ -232,10 +239,11 @@ def stamp(elf, gba, nm, quiet, manifest):
         die("n_windows=%d > PDNA_RV_MAX_WINDOWS=%d" % (n_windows, MAX_WINDOWS))
 
     hole0, hole1 = desc_off, desc_off + DESC_BYTES
-    fuse0 = fuse1 = -1
-    if FUSE_SYM in byname:
-        fuse0 = byname[FUSE_SYM] - ROM_BASE
-        fuse1 = fuse0 + FUSE_BYTES
+    patched = []
+    for rec_sym, rec_len, rec_tool in PATCHED_RECORDS:
+        if rec_sym in byname:
+            r0 = byname[rec_sym] - ROM_BASE
+            patched.append((r0, r0 + rec_len, rec_sym, rec_tool))
 
     present = 0
     absent = 0
@@ -301,11 +309,13 @@ def stamp(elf, gba, nm, quiet, manifest):
             die("window %d (%s) overlaps the descriptor hole [0x%x,0x%x)"
                 % (i, tag, hole0, hole1),
                 "A window may not checksum the bytes it is stored in (the hole rule).")
-        if fuse0 >= 0 and s_off < fuse1 and e_off > fuse0:
-            die("window %d (%s) overlaps the %s record [0x%x,0x%x)"
-                % (i, tag, FUSE_SYM, fuse0, fuse1),
-                "tools/fuse_rom.py patches those 16 bytes post-link, which would make",
-                "every fused test image report a false ROM-corruption alarm.")
+        for r0, r1, rec_sym, rec_tool in patched:
+            if s_off < r1 and e_off > r0:
+                die("window %d (%s) overlaps the %s record [0x%x,0x%x)"
+                    % (i, tag, rec_sym, r0, r1),
+                    "%s patches those bytes post-link, which would make every" % rec_tool,
+                    "fused image report a false ROM-corruption alarm. Move this window's",
+                    "`off` in source/pdna_romver_data.c past the record.")
         if w["flags"] & F_EXACT:
             lim = extent_end(addrs, base, rom_end)
             if end > lim:
@@ -376,7 +386,7 @@ def verify(gba, desc_off):
           % (off, h["n_present"], h["n_windows"], h["image_bytes"]))
     if h["image_bytes"] != len(data):
         delta = len(data) - h["image_bytes"]
-        what = "TRUNCATED" if delta < 0 else "PADDED OR APPENDED TO"
+        what = "TRUNCATED" if delta < 0 else "PADDED OR APPENDED TO (fused?)"
         print("  SIZE MISMATCH: file is %d B, was stamped at %d B (%+d) -> %s"
               % (len(data), h["image_bytes"], delta, what))
         if delta > 0:
