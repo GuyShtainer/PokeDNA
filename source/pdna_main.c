@@ -2057,8 +2057,12 @@ static void party_draw_name_level(int i, const PkMon* p) {
   int ndx = isbox ? PDNA_PTY_BOX_NAME_DX : PDNA_PTY_NAME_DX;
   int ndy = isbox ? PDNA_PTY_BOX_NAME_DY : PDNA_PTY_NAME_DY;
   int nw  = isbox ? PDNA_PTY_BOX_NAME_W  : PDNA_PTY_NAME_W;
-  ui_ptext_fit_shadow(x + ndx, y + ndy, nw, UI_TEXT, UI_PTY_TEXT_SHADOW,
-                      p->nickname[0] ? p->nickname : pk_species_name(p->species));
+  /* TIGHT face only, here: a full-length 10-char species name or Gen-3 nickname clips
+   * against nw at the default advance (measured up to 60px vs a <=48px row budget — see
+   * UI_PTEXT_TIGHT_DELTA's comment in ui_font.h). The level line two rows down keeps the
+   * normal face; "Lv100" never gets close to its own budget either way. */
+  ui_ptext_fit_shadow_tight(x + ndx, y + ndy, nw, UI_TEXT, UI_PTY_TEXT_SHADOW,
+                            p->nickname[0] ? p->nickname : pk_species_name(p->species));
   char lvl[8]; siprintf(lvl, PDNA_PTY_LVL_FMT, (unsigned)p->level);
   int lvdy = isbox ? PDNA_PTY_BOX_LVL_DY : PDNA_PTY_LVL_DY;
   ui_ptext_shadow(x + ndx, y + lvdy, UI_TEXT, UI_PTY_TEXT_SHADOW, lvl);

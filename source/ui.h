@@ -149,6 +149,20 @@ int ui_ptext_right(int right, int y, u16 ink, const char* s);
 int ui_ptext_shadow(int x, int y, u16 ink, u16 shadow, const char* s);
 int ui_ptext_fit_shadow(int x, int y, int maxw, u16 ink, u16 shadow, const char* s);
 
+/* ---- TIGHT-SPACING variant: same face, glyph advance shrunk by UI_PTEXT_TIGHT_DELTA
+ * (ui_font.h) px per glyph. A SEPARATE path from the four functions above, which keep
+ * their exact original per-glyph advance for every existing caller — this is additive,
+ * not a change to the shared one. Only the party screen's name text (row + slot-1 box,
+ * source/pdna_main.c) uses it: PokeDNA's own proportional font runs ~23% wider per
+ * glyph than retail's, so a full-length 10-char species name or Gen-3 nickname clips in
+ * the column retail's narrower font fits, unless the column is either widened (not
+ * allowed — it is measured off retail) or the text is kerned tighter (this). See
+ * ui.c's ui_ptext_fit_shadow_tight / padv_tight for the exact arithmetic. */
+int ui_ptext_w_tight(const char* s);
+int ui_ptext_tight(int x, int y, u16 ink, const char* s);
+int ui_ptext_fit_tight(int x, int y, int maxw, u16 ink, const char* s);
+int ui_ptext_fit_shadow_tight(int x, int y, int maxw, u16 ink, u16 shadow, const char* s);
+
 /* Fill the whole screen with a 1px horizontally-banded stripe (alternating `a`/`b`
  * every scanline) from x=`marginW`..239, and a FLAT `margin` column at x=0..marginW-1.
  * marginW=0 skips the flat column (pure stripe, edge to edge). */

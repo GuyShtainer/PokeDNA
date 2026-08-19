@@ -67,6 +67,24 @@ static int pwidth(const char* s) {
   return w;
 }
 
+/* Mirrors ui.c's padv_tight()/ui_ptext_w_tight() exactly, using the SAME
+ * UI_PTEXT_TIGHT_DELTA the shipped renderer reads (ui_font.h) rather than a re-typed
+ * constant — the party-name tight face used by party_draw_name_level (source/pdna_main.c). */
+static int pwidth_tight(const char* s) {
+  int w = 0;
+  const unsigned char* p = (const unsigned char*)s;
+  while (*p) {
+    unsigned c;
+    if (*p == 0xC3u && p[1] == 0xA9u) { c = 127; p += 2; }
+    else if (*p < 0x80u) { c = *p++; }
+    else { p++; while ((*p & 0xC0u) == 0x80u) p++; c = '?'; }
+    if (c < 32u || c > 127u) c = '?';
+    int a = (int)ui_font_w[c - 32] - UI_PTEXT_TIGHT_DELTA;
+    w += a < 1 ? 1 : a;
+  }
+  return w;
+}
+
 static void chk(const char* what, int x, int budget, int w, const char* s) {
   checks++;
   int end = x + w;
@@ -1122,19 +1140,33 @@ int main(void) {
      * label and the HP numbers are drawn UNCLAMPED (ui_ptext_shadow, not _fit_), so each
      * is measured at its worst case against the gap it actually has to clear.
      *
-     * "SALAMENCE" is NOT asserted to fit in full any more (2026-08-19 mechanical-fix
-     * pass, MUST-FIX 1): retail's own real estate here is JUST as tight — measured
-     * directly off retail-party-idle-f00.png at y=15 (above the HP bar's own row band,
-     * so no bar pixels contaminate the sample), retail's "SALAMENCE" glyphs run
-     * x=118..162 in ITS OWN font, the same ~51px gap (icon ends ~117, PDNA_PTY_HP_LBL_DX
-     * starts at 169) PDNA_PTY_NAME_W now has to fit in too. PokeDNA's own proportional
-     * font renders the identical 9-letter string at 54px — wider than retail's — so it
-     * clips via ui_ptext_fit's own graceful '~' marker here even though retail shows it
-     * whole. That is a font-metric difference, not a layout bug: the field's real safety
-     * invariants (clears the icon beside it, clears the HP label ahead of it) are
-     * asserted below instead, and both hold. */
-    printf("  info %-46.46s w=%-4d budget=%-4d (expected to clip here; see comment above)\n",
-           "SALAMENCE (row name, informational only)", pwidth("SALAMENCE"), PDNA_PTY_NAME_W);
+     * SALAMENCE/METAGROSS/etc used to clip here via ui_ptext_fit's own '~' marker
+     * (2026-08-19 mechanical-fix pass): retail's own real estate is just as tight
+     * (~51px, measured off retail-party-idle-f00.png) but its font is narrower, so
+     * PokeDNA's identical 9-letter strings at the DEFAULT 6px/glyph advance (54px) blew
+     * the budget where retail's own font did not. #2026-08-20 fixes the font metric
+     * instead of the layout: party_draw_name_level now draws the name through
+     * ui_ptext_fit_shadow_tight (source/ui.c), which is UI_PTEXT_TIGHT_DELTA px/glyph
+     * narrower (ui_font.h) — see PWT() below for every worst-case name this pins. */
+#define PWT(s) pwidth_tight(s)
+    /* Every 10-char species name PokeDNA can show, plus a synthetic 10-char nickname
+     * (Gen-3 nicknames cap at 10 characters and allow any charset letter, so the true
+     * ceiling is 10 glyphs at the font's OWN widest per-glyph advance — not a real name,
+     * the same honesty rule PDNA_PTY_HP_NUM_FMT's "714/714" comment above already uses
+     * for "widest real case" vs "widest possible case"). Each must clear its column with
+     * >=1px to spare (chkv's limit is the budget MINUS one), never just barely tie it —
+     * a tie leaves 0px for the next glyph this font ever adds and reintroduces exactly
+     * the silent-clip failure mode this whole file exists to catch at build time. */
+    chkv("row name (BELLSPROUT, tight) clears its column with slack",
+         PWT("BELLSPROUT"), PDNA_PTY_NAME_W - 1);
+    chkv("row name (NIDOQUEEN, tight) clears its column with slack",
+         PWT("NIDOQUEEN"), PDNA_PTY_NAME_W - 1);
+    chkv("row name (SALAMENCE, tight) clears its column with slack",
+         PWT("SALAMENCE"), PDNA_PTY_NAME_W - 1);
+    chkv("row name (METAGROSS, tight) clears its column with slack",
+         PWT("METAGROSS"), PDNA_PTY_NAME_W - 1);
+    chkv("row name (synthetic worst-case 10-char nickname, tight) clears its column",
+         PWT("WWWWWWWWWW"), PDNA_PTY_NAME_W - 1);
     { char b[16];
       sprintf(b, PDNA_PTY_LVL_FMT, 100u);                 /* "Lv100": worst-case level */
       PF(b, PDNA_PTY_ROW_X + PDNA_PTY_NAME_DX, PDNA_PTY_GEND_DX - PDNA_PTY_NAME_DX);
@@ -1173,16 +1205,19 @@ int main(void) {
      * not fill its whole 32x32 bounding rect, so a few pixels of RECT overlap is not
      * necessarily a visible collision (confirmed directly: Tyranitar's own icon has no
      * opaque pixel in the overlapping columns at y=33, docs/analysis-2026-08-19-party/
-     * new-party-idle-f00.png). PokeDNA's box currently overlaps by 5px (2 more than
-     * retail's measured 3) — tightening PDNA_PTY_BOX_NAME_DX/W to zero-overlap would
-     * shrink the field below "TYRANITAR"'s own 52px width (the literal mon in Guy's
-     * slot 1, and it fits with 0px of slack today — see the PF check above), clipping a
-     * name that currently renders in full to close a rect overlap that is not visually
-     * manifesting. Reported here rather than forced: bounded at 8px (comfortably above
-     * both retail's 3 and PokeDNA's current 5, and still well short of a NAME_DX=3-class
-     * ~18px catastrophic error) instead of left completely unwatched. */
-    chkv("box name column's icon-rect overlap stays bounded (see comment; not zero-tolerance)",
-         (PDNA_PTY_BOX_ICON_DX + MON_ICON_W) - PDNA_PTY_BOX_NAME_DX, 8);
+     * new-party-idle-f00.png).
+     *
+     * #2026-08-20: CLOSED to retail's exact 3px. The 2026-08-19 pass left this at 5px
+     * (2 more than retail) because tightening PDNA_PTY_BOX_NAME_DX to zero-overlap would
+     * have shrunk the field below "TYRANITAR"'s own 52px width at the DEFAULT font
+     * advance, where it fit with 0px of slack. Tight-spacing (see PWT() above) renders
+     * the same string at 34px, so PDNA_PTY_BOX_NAME_DX moved 15->17 (pdna_layout.h) —
+     * matching retail's 3px exactly — with 17px of slack to spare, not 0. Asserted exact,
+     * not merely bounded, now that it is the measured value rather than a compromise. */
+    chkv("box name column's icon-rect overlap matches retail's measured 3px (<=)",
+         (PDNA_PTY_BOX_ICON_DX + MON_ICON_W) - PDNA_PTY_BOX_NAME_DX, 3);
+    chkv_min("box name column's icon-rect overlap matches retail's measured 3px (>=)",
+             (PDNA_PTY_BOX_ICON_DX + MON_ICON_W) - PDNA_PTY_BOX_NAME_DX, 3);
     /* "+ Add here" (the PLACE-mode empty-slot affordance, party_draw_slot_fg) is drawn
      * with plain ui_ptext — UNCLAMPED, unlike every other string on this screen — and
      * nothing measured it. It only ever lands on a ROW (a party carry can only ever
@@ -1193,8 +1228,22 @@ int main(void) {
     PF("+ Add here", PDNA_PTY_ROW_X + PDNA_PTY_NAME_DX, PDNA_PTY_ROW_W - PDNA_PTY_NAME_DX);
 
     /* Slot-1 box: same fields, but ONE per line (four stacked rows) — the box is only
-     * 71 px wide, so its own HP bar is narrower than a row's (PDNA_PTY_BOX_HP_BAR_W). */
-    PF("TYRANITAR", PDNA_PTY_BOX_X + PDNA_PTY_BOX_NAME_DX, PDNA_PTY_BOX_NAME_W);
+     * 71 px wide, so its own HP bar is narrower than a row's (PDNA_PTY_BOX_HP_BAR_W).
+     * The box name also draws through ui_ptext_fit_shadow_tight (party_draw_name_level
+     * uses the same tight/default split for isbox as for the row — see that function),
+     * so it is measured with pwidth_tight/PWT here too, not the default-face PF/pwidth. */
+    chk("ptext_fit_tight", PDNA_PTY_BOX_X + PDNA_PTY_BOX_NAME_DX, PDNA_PTY_BOX_NAME_W,
+        PWT("TYRANITAR"), "TYRANITAR");
+    chkv("box name (BELLSPROUT, tight) clears its column with slack",
+         PWT("BELLSPROUT"), PDNA_PTY_BOX_NAME_W - 1);
+    chkv("box name (NIDOQUEEN, tight) clears its column with slack",
+         PWT("NIDOQUEEN"), PDNA_PTY_BOX_NAME_W - 1);
+    chkv("box name (SALAMENCE, tight) clears its column with slack",
+         PWT("SALAMENCE"), PDNA_PTY_BOX_NAME_W - 1);
+    chkv("box name (METAGROSS, tight) clears its column with slack",
+         PWT("METAGROSS"), PDNA_PTY_BOX_NAME_W - 1);
+    chkv("box name (synthetic worst-case 10-char nickname, tight) clears its column",
+         PWT("WWWWWWWWWW"), PDNA_PTY_BOX_NAME_W - 1);
     { char b[16];
       sprintf(b, PDNA_PTY_LVL_FMT, 100u);
       PF(b, PDNA_PTY_BOX_X + PDNA_PTY_BOX_NAME_DX, PDNA_PTY_BOX_GEND_DX - PDNA_PTY_BOX_NAME_DX);
@@ -1210,6 +1259,7 @@ int main(void) {
          PDNA_PTY_BOX_GEND_DX + 9, PDNA_PTY_BOX_W);
     chkv("box's last text line stays inside the box (7 px glyph row)",
          PDNA_PTY_BOX_HP_NUM_DY + 7, PDNA_PTY_BOX_H);
+#undef PWT
   }
 
   printf("\n%d checks, %d FAILED\n", checks, fails);

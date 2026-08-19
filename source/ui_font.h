@@ -19,4 +19,20 @@ extern const unsigned char ui_font_w[96];
 
 #define UI_FONT_CELL_H 8    /* rows per glyph, so a proportional line still pitches at 8 */
 
+/* TIGHT-SPACING delta (source/ui.c's ui_ptext_*_tight family; see the block comment
+ * there for the full derivation). Party names ("SALAMENCE", "METAGROSS", ...) render
+ * 54 px wide at the default 6 px/glyph advance -- our capital letters ink 5 of those 6
+ * px, so even a ZERO-gap kerning (delta=1, i.e. touching but not overlapping) only saves
+ * 1 px/glyph, and a 10-glyph name (the worst real case: a full-length species name or a
+ * capped Gen-3 nickname) still runs 50 px against the party row's 48 px name column.
+ * delta=2 is the smallest INTEGER delta that clears it -- it costs one column of genuine
+ * ink overlap between adjacent glyphs (still no bitmap edit; a rendering choice, not a
+ * font change) and leaves 8 px of slack on the worst case instead of overflowing by 2.
+ * Defined here (not in ui.c) so tests/host_textfit_test.c, which links ui_font.c but
+ * never ui.c, can mirror the exact same number rather than re-typing it -- the whole
+ * point of this file's own "measures its own copy" rule (see host_textfit_test.c's
+ * top-of-file comment). Used ONLY by the tight functions; every existing ui_ptext* call
+ * is untouched and keeps its original per-glyph advance. */
+#define UI_PTEXT_TIGHT_DELTA 2
+
 #endif /* UI_FONT_H */

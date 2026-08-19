@@ -416,6 +416,77 @@ int ui_ptext_fit_shadow(int x, int y, int maxw, u16 ink, u16 shadow, const char*
   return ui_ptext_fit(x, y, maxw, ink, s);
 }
 
+/* ---- TIGHT-SPACING variant (party-name text only) ------------------------
+ *
+ * A whole separate path, not a parameter on the functions above: every existing
+ * ui_ptext* caller (there are dozens) must keep drawing byte-identical output, so the
+ * shared PADV()-based functions above are untouched and this is additive.
+ *
+ * padv_tight() below is the only new arithmetic; ui_ptext_w_tight/ui_ptext_tight/
+ * ui_ptext_fit_tight are the exact same bodies as ui_ptext_w/ui_ptext/ui_ptext_fit with
+ * PADV replaced by padv_tight — see UI_PTEXT_TIGHT_DELTA's own comment (ui_font.h) for
+ * why 2 px, not 1, is the smallest integer delta that clears the party name column. */
+static inline int padv_tight(unsigned c) {
+  int a = (int)PADV(c) - UI_PTEXT_TIGHT_DELTA;
+  return a < 1 ? 1 : a;             /* never zero/negative: a stuck cursor would hang
+                                      * ui_ptext_fit_tight's "does it fit" walk. */
+}
+
+int ui_ptext_w_tight(const char* s) {
+  int w = 0;
+  while (*s) w += padv_tight(pnext(&s));
+  return w;
+}
+
+int ui_ptext_tight(int x, int y, u16 ink, const char* s) {
+  while (*s) {
+    unsigned c = pnext(&s);
+    const unsigned char* gl = PGLYPH(c);
+    for (int r = 0; r < 8; r++) {
+      int py = y + r;
+      if ((unsigned)py >= (unsigned)UI_SCR_H) continue;
+      unsigned bits = gl[r];
+      u16* row = &vid_mem[py * UI_SCR_W];
+      while (bits) {
+        int col = 0;
+        while (!((bits >> col) & 1u)) col++;
+        bits &= ~(1u << col);
+        int px = x + col;
+        if ((unsigned)px < (unsigned)UI_SCR_W) row[px] = ink;
+      }
+    }
+    x += padv_tight(c);
+  }
+  return x;
+}
+
+int ui_ptext_fit_tight(int x, int y, int maxw, u16 ink, const char* s) {
+  int full = ui_ptext_w_tight(s);
+  if (full <= maxw) return ui_ptext_tight(x, y, ink, s) - x;
+
+  int tw = padv_tight((unsigned)'~');
+  const char* p = s;
+  int w = 0;
+  while (*p) {
+    const char* q = p;
+    int a = padv_tight(pnext(&p));
+    if (w + a + tw > maxw) { p = q; break; }
+    w += a;
+  }
+  int n = (int)(p - s);
+  char buf[64];
+  if (n > (int)sizeof buf - 2) n = (int)sizeof buf - 2;
+  for (int i = 0; i < n; i++) buf[i] = s[i];
+  buf[n] = '~';
+  buf[n + 1] = 0;
+  return ui_ptext_tight(x, y, ink, buf) - x;
+}
+
+int ui_ptext_fit_shadow_tight(int x, int y, int maxw, u16 ink, u16 shadow, const char* s) {
+  ui_ptext_fit_tight(x + 1, y + 1, maxw, shadow, s);
+  return ui_ptext_fit_tight(x, y, maxw, ink, s);
+}
+
 /* ---- retail-style banded-stripe fill (see ui.h) --------------------------
  * A flat colour swapped for a 1px horizontal hatch, alternating every
  * scanline — matches the retail party screen's background exactly (measured

@@ -626,7 +626,15 @@
 #define PDNA_PTY_HP_NUM_W    43              /* row right edge minus the inset */
 
 /* ---- box fields, relative to the box's own (x,y) — four stacked lines ----- */
-#define PDNA_PTY_BOX_NAME_DX 15
+/* BOX_NAME_DX was 15 (icon-rect overlap 5px, vs retail's measured 3px — MEASUREMENTS.md's
+ * box section: icon x~5..35, name x~32..83) through the 2026-08-19 mechanical-fix pass,
+ * which left it there: closing the extra 2px would have shrunk the field below
+ * "TYRANITAR"'s own 52px width at the DEFAULT font advance, where it fit with 0px of
+ * slack (see the party-screen host_textfit_test.c block). Tight-spacing (ui_ptext_fit_
+ * shadow_tight, party_draw_name_level) changed that: TYRANITAR now renders 34px wide, so
+ * shifting the field 2px right to match retail's 3px overlap still leaves 17px of slack
+ * inside PDNA_PTY_BOX_NAME_W -- closed here. */
+#define PDNA_PTY_BOX_NAME_DX 17
 #define PDNA_PTY_BOX_NAME_DY  8
 #define PDNA_PTY_BOX_NAME_W  52
 #define PDNA_PTY_BOX_LVL_DY  18
