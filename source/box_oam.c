@@ -326,7 +326,7 @@ static void load_regb_item(uint16_t carried_item, bool full, int tid) {
   uint8_t ctiles[16 * 32];                           /* up to 16 tonc tiles, 4bpp */
   for (unsigned b = 0; b < sizeof ctiles; b++) ctiles[b] = 0;
   int across = full ? 4 : 2;                          /* tiles per row -> 32x32 or 16x16 */
-  const uint16_t* ic = carried_item ? item_icon_for(carried_item) : 0;
+  const uint16_t* ic = carried_item ? app_item_icon(carried_item) : 0;   /* + the ROM rung */
   if (ic) {
     int ncol = 1;                                    /* build the 16-colour palette */
     for (int y = 0; y < ITEM_ICON_H; y++)

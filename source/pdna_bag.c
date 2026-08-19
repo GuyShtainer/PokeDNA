@@ -220,7 +220,7 @@ static void draw_desc(BgFrame bg, const BagLayout* L, const uint8_t* sb1,
   uint16_t id = pk_bag_item(sb1, g, pocket, sel);
   if (!id) { ui_text(L->desc_x0 + 6, L->desc_y0 + 18, BDIM, "(empty slot)"); return; }
   if (L->icon_x | L->icon_y)                     /* NULL icon data = no-op */
-    ui_sprite(L->icon_x, L->icon_y, ITEM_ICON_W, ITEM_ICON_H, item_icon_for(id));
+    ui_sprite(L->icon_x, L->icon_y, ITEM_ICON_W, ITEM_ICON_H, app_item_icon(id));
   const char* s = app_item_desc(id);
   int i = 0;
   bool multi = desc_flow(L, s, &i, false, false); /* single page? then the plain layout */

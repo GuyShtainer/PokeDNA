@@ -211,4 +211,19 @@ void        app_rom_path_set(PkGame game, const char* path);
  * that need real art to mean anything (Day-Care yard visitors). */
 bool        app_any_rom_registered(void);
 
+/* ---- items + type badges: the compiled accessor first, the registered ROM second
+ * (Phase 1, docs/analysis-2026-08-19-rom-art/DESIGN.md Sec 4.7) --------------------
+ * Same shape as item_icon_for()/type_icon_for() (item_icons.h/type_icons.h) --
+ * 0/0x8000|rgb RGB15, NULL on no art -- so these drop straight into those call
+ * sites. `out_h` (may be NULL) receives the real badge height: TYPE_ICON_H (14) for
+ * compiled art, 16 (RSE) or 12 (FRLG) for a ROM-served one -- callers that assumed a
+ * fixed 14 need it, since a ROM badge is not the same crop.
+ *
+ * The returned pointer is valid ONLY until the next call to EITHER of these two (a
+ * ROM-served icon decodes into the shared mon_decomp scratch, the same buffer the
+ * summary portrait uses) -- draw it before making another call, exactly like every
+ * other mon_decomp-backed accessor in this codebase. */
+const uint16_t* app_item_icon(uint16_t item_id);
+const uint16_t* app_type_badge(uint8_t type_id, uint8_t* out_h);
+
 #endif /* PDNA_APP_H */

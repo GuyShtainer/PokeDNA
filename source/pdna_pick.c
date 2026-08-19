@@ -112,8 +112,13 @@ static void type_chip(int x, int y, uint8_t t) {
  * the compact text type_chip() stays for 8-9px list rows. */
 static void type_icon(int x, int y, uint8_t t) {
   if (t >= 18) return;
-  const uint16_t* ic = type_icon_for(t);
-  if (ic) ui_sprite(x, y, TYPE_ICON_W, TYPE_ICON_H, ic);
+  /* app_type_badge adds the ROM rung on top of the compiled type_icon_for() (Phase 1,
+   * docs/analysis-2026-08-19-rom-art/DESIGN.md Sec 4.7); a ROM badge is not the same
+   * crop as the compiled one (16 px RSE / 12 px FRLG vs the compiled 14), so draw the
+   * height it actually reports rather than assuming TYPE_ICON_H. */
+  uint8_t h = TYPE_ICON_H;
+  const uint16_t* ic = app_type_badge(t, &h);
+  if (ic) ui_sprite(x, y, TYPE_ICON_W, h, ic);
   else    ui_type_chip(x, y, TYPE_ICON_W, TYPE_ICON_H, t);   /* art-free: original chip */
 }
 
@@ -983,7 +988,7 @@ static void iv_geom(int v, int* cols, int* cw, int* ch, int* x0, int* y0, int* v
 
 /* draw one cell's content (icon at the cell origin, no selection chrome). */
 static void iv_cell(int v, int x, int y, int id) {
-  const uint16_t* ic = item_icon_for((uint16_t)id);
+  const uint16_t* ic = app_item_icon((uint16_t)id);   /* compiled art -> the registered ROM */
   char lbl[48];
   pk_item_label((uint16_t)id, lbl, sizeof lbl);      /* "No26 EARTHQUAKE" for a TM */
   if (v == IV_LIST) {
@@ -1004,7 +1009,7 @@ static void iv_cell(int v, int x, int y, int id) {
 uint16_t pick_item(uint16_t current) {
   u16* idx = g_idx;
   char search[16] = "";
-  int sort = 0, view = item_icon_for(13) ? IV_SPLIT : IV_LIST, cat = 0, gamef = 0;   /* art-free -> text list (13 = Potion) */
+  int sort = 0, view = app_item_icon(13) ? IV_SPLIT : IV_LIST, cat = 0, gamef = 0;   /* art-free -> text list (13 = Potion) */
   int n = item_build(idx, search, sort, cat, gamef);
   int sel = 0;
   for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
@@ -1208,7 +1213,7 @@ uint8_t pick_ball(uint8_t current) {
       int id = top + i + 1, y = PDNA_BALL_Y0 + i * PDNA_BALL_ROW_H;
       bool s = (top + i == sel);
       if (s) ui_panel(2, y - 1, 236, PDNA_BALL_ROW_H - 1, UI_SEL, UI_TITLE);
-      const uint16_t* ic = item_icon_for((uint16_t)id);
+      const uint16_t* ic = app_item_icon((uint16_t)id);
       if (ic) ui_sprite(PDNA_BALL_ICON_X, y, ITEM_ICON_W, ITEM_ICON_H, ic);
       int tw = UI_SCR_W - PDNA_BALL_TEXT_X - 4;
       ui_ptext_fit(PDNA_BALL_TEXT_X, y + PDNA_BALL_NAME_DY, tw,

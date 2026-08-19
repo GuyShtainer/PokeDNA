@@ -42,8 +42,16 @@
  * Art-free build: the original coloured type chip stands in. */
 static void type_badge(int x, int y, uint8_t t) {
   if (t >= 18) return;
-  const uint16_t* ic = type_icon_for(t);
-  if (ic) ui_sprite(x, y, TYPE_ICON_W, TYPE_ICON_H, ic);
+  /* app_type_badge adds the ROM rung on top of the compiled type_icon_for() (Phase 1,
+   * docs/analysis-2026-08-19-rom-art/DESIGN.md Sec 4.7). Decodes into the SAME
+   * mon_decomp scratch the portrait below uses, but strictly BEFORE this card's own
+   * portrait fetch runs (draw_left calls this after it has already blitted the
+   * portrait -- see the "Fetch the portrait ONCE per repaint" comment further down),
+   * so there is no ordering hazard here; a ROM badge is not the compiled 14 px crop
+   * (16 RSE / 12 FRLG), so draw the height it actually reports. */
+  uint8_t h = TYPE_ICON_H;
+  const uint16_t* ic = app_type_badge(t, &h);
+  if (ic) ui_sprite(x, y, TYPE_ICON_W, h, ic);
   else    ui_type_chip(x, y, TYPE_ICON_W, TYPE_ICON_H, t);
 }
 

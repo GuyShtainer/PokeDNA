@@ -264,7 +264,7 @@ static void draw_left(const PkMon* p) {
    * is the five columns that produced `LUM ~`. */
   ui_text(4, 128, UI_DIRCLR, "Item");
   if (p->heldItem) {
-    const uint16_t* iic = item_icon_for(p->heldItem);
+    const uint16_t* iic = app_item_icon(p->heldItem);   /* + the ROM rung */
     if (iic) ui_sprite(PANEL_W - 28, 124, ITEM_ICON_W, ITEM_ICON_H, iic);
     char it[48];
     pk_item_label(p->heldItem, it, sizeof it);        /* a TM carries its move */
