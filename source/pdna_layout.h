@@ -569,4 +569,86 @@
 #define PDNA_RVF_BLIND_MORE  "blind: 0x%06lx..EOF + %luK of other zones"
 #define PDNA_RVF_BLIND_ZONES "blind: %lu KiB of zones never compared"
 
+/* ---------------------------------------------------------------------------
+ * Party overlay (app_party_overlay, source/pdna_main.c) — retail-layout pass,
+ * 2026-08-19. Coordinates are lifted VERBATIM from the measured retail capture
+ * (docs/analysis-2026-08-19-party/MEASUREMENTS.md): a fixed slot-1 box, always
+ * party position 0 regardless of cursor, plus five 142x24 list rows for
+ * positions 1-5. Both the message box and the CANCEL button sit below the last
+ * row, in the same 130..160 band retail uses for its own textbox + button.
+ *
+ * The box (51 px tall) stacks its four fields in one column, one line each
+ * (name / level+gender / HP label+bar / HP numbers); a row (only 24 px tall,
+ * but 142 wide) instead pairs them two-per-line (name+HP bar on top,
+ * level+gender+HP numbers below) — this is NOT the same layout scaled down,
+ * it is a different arrangement, per the measured y-ranges in MEASUREMENTS.md. */
+#define PDNA_PTY_BOX_X     17
+#define PDNA_PTY_BOX_Y     25
+#define PDNA_PTY_BOX_W     71
+#define PDNA_PTY_BOX_H     51
+#define PDNA_PTY_ROW_X     95
+#define PDNA_PTY_ROW_W     142
+#define PDNA_PTY_ROW_H     24
+#define PDNA_PTY_ROW_Y0    10               /* row for party slot 1 (index 1) */
+/* Icon anchor bleeds left of the box/row's own edge — measured, not a bug:
+ * retail's icon deliberately overlaps the background margin. */
+#define PDNA_PTY_BOX_ICON_DX (-12)
+#define PDNA_PTY_BOX_ICON_DY  3
+#define PDNA_PTY_ROW_ICON_DX (-10)
+#define PDNA_PTY_ROW_ICON_DY (-1)
+
+/* ---- row fields, relative to the row's own (x,y) --------------------------
+ * top line: name (left) + "HP" label + bar (right); bottom line: level +
+ * gender glyph (left) + HP numbers (right, under the bar). */
+#define PDNA_PTY_NAME_DX      3
+#define PDNA_PTY_NAME_DY      3
+#define PDNA_PTY_NAME_W      68              /* stops short of the HP label   */
+#define PDNA_PTY_LVL_DY      14
+#define PDNA_PTY_GEND_DX     62
+#define PDNA_PTY_GEND_DY     14
+#define PDNA_PTY_HP_LBL_DX   74
+#define PDNA_PTY_HP_LBL_DY    4
+#define PDNA_PTY_HP_BAR_DX   88
+#define PDNA_PTY_HP_BAR_DY    6
+#define PDNA_PTY_HP_BAR_W    50
+#define PDNA_PTY_HP_BAR_H     7
+#define PDNA_PTY_HP_NUM_DX   97
+#define PDNA_PTY_HP_NUM_DY   14
+#define PDNA_PTY_HP_NUM_W    43              /* row right edge minus the inset */
+
+/* ---- box fields, relative to the box's own (x,y) — four stacked lines ----- */
+#define PDNA_PTY_BOX_NAME_DX 15
+#define PDNA_PTY_BOX_NAME_DY  8
+#define PDNA_PTY_BOX_NAME_W  52
+#define PDNA_PTY_BOX_LVL_DY  18
+#define PDNA_PTY_BOX_GEND_DX 61
+#define PDNA_PTY_BOX_GEND_DY 18
+#define PDNA_PTY_BOX_HP_LBL_DX 15
+#define PDNA_PTY_BOX_HP_LBL_DY 28
+#define PDNA_PTY_BOX_HP_BAR_DX 29
+#define PDNA_PTY_BOX_HP_BAR_DY 28
+#define PDNA_PTY_BOX_HP_BAR_W  36            /* the box is too narrow for the row's 50 px bar */
+#define PDNA_PTY_BOX_HP_NUM_DX 15
+#define PDNA_PTY_BOX_HP_NUM_DY 38
+#define PDNA_PTY_BOX_HP_NUM_W  55
+
+#define PDNA_PTY_LVL_FMT     "Lv%u"          /* worst case "Lv100", 5 sys8 cols */
+#define PDNA_PTY_HP_NUM_FMT  "%u/%u"         /* worst case "999/999", 7 sys8 cols */
+
+/* Bottom message box + CANCEL button, y=133..160 — the same band retail's own
+ * textbox occupies below its last list row (y=130). */
+#define PDNA_PTY_MSG_X      2
+#define PDNA_PTY_MSG_Y      133
+#define PDNA_PTY_MSG_W      170
+#define PDNA_PTY_MSG_H      27
+#define PDNA_PTY_MSG_PAD     6
+#define PDNA_PTY_CANCEL_X   176
+#define PDNA_PTY_CANCEL_Y   134
+#define PDNA_PTY_CANCEL_W    62
+#define PDNA_PTY_CANCEL_H    25
+#define PDNA_PTY_MSG_CHOOSE "Choose a POKéMON."
+#define PDNA_PTY_MSG_PLACE  "Place it in the party."
+#define PDNA_PTY_MSG_W_BUDGET (PDNA_PTY_MSG_W - 2 * PDNA_PTY_MSG_PAD)
+#define PDNA_PTY_CANCEL_W_BUDGET (PDNA_PTY_CANCEL_W - 2 * PDNA_PTY_MSG_PAD)
+
 #endif /* PDNA_LAYOUT_H */
