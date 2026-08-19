@@ -145,20 +145,20 @@ static void vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 #define PDNA_BOB_PERIOD 30
 
 /* wait_keys, plus a 2-frame idle bob. `kind` is an ANIM_* place; while nothing is
- * pressed and that place's toggle is on, *frame flips every PDNA_BOB_PERIOD
- * vblanks and `redraw` recomposes the screen's sprites at the new frame. The
- * animation runs ONLY on frames with no key pending, so a press or a key-repeat
- * is never delayed behind a multi-sprite repaint (the rule the Pokedex learned).
- * Callers own *ctr and *frame so the phase survives their redraw loop.
- * kind < 0 or redraw == 0 makes this exactly the old wait_keys. */
-static u16 wait_keys_bob(u16 mask, int kind, int* ctr, int* frame,
-                         void (*redraw)(int)) {
+ * pressed and that place's toggle is on, *frame flips every `period` vblanks and
+ * `redraw` recomposes the screen's sprites at the new frame. The animation runs
+ * ONLY on frames with no key pending, so a press or a key-repeat is never delayed
+ * behind a multi-sprite repaint (the rule the Pokedex learned). Callers own *ctr
+ * and *frame so the phase survives their redraw loop. kind < 0 or redraw == 0
+ * makes this exactly the old wait_keys (period is unused in that case). */
+static u16 wait_keys_bob_p(u16 mask, int kind, int* ctr, int* frame,
+                           void (*redraw)(int), int period) {
   u16 hit, fresh;
   do {
     vsync();
     fresh = key_hit(mask);
     hit = fresh | key_repeat(mask & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT));
-    if (!hit && redraw && kind >= 0 && app_anim_enabled(kind) && ++*ctr >= PDNA_BOB_PERIOD) {
+    if (!hit && redraw && kind >= 0 && app_anim_enabled(kind) && ++*ctr >= period) {
       *ctr = 0; *frame ^= 1; redraw(*frame);
     }
   } while (!hit);
@@ -166,6 +166,14 @@ static u16 wait_keys_bob(u16 mask, int kind, int* ctr, int* frame,
   if (fresh & KEY_A) snd_ok();
   else if (fresh & KEY_B) snd_back();
   return hit;
+}
+
+/* PDNA_BOB_PERIOD (30, ~59-60 frame full cycle) is what the box/dex/daycare/
+ * summary screens all use — left untouched here, only the party screen's own
+ * call site below passes a different period (measured against retail). */
+static u16 wait_keys_bob(u16 mask, int kind, int* ctr, int* frame,
+                         void (*redraw)(int)) {
+  return wait_keys_bob_p(mask, kind, ctr, frame, redraw, PDNA_BOB_PERIOD);
 }
 
 static u16 wait_keys(u16 mask) { return wait_keys_bob(mask, -1, 0, 0, 0); }
@@ -1939,46 +1947,219 @@ void app_party_remove_at(int idx) {
  *         into); choosing that fills grab80 + *grab_slot and returns 2. 0 = closed.
  * Self-contained (clears + repaints each frame) so the action menu's full-screen sub-views
  * can't leave artifacts; the caller repaints its own screen on return. */
-/* ---- the party cluster's idle bob (ANIM_PARTY) ---------------------------
+/* ---- the party screen: one big slot-1 box + five list rows ----------------
  *
- * This screen — not party_list() below, which only runs when the save has no PC —
- * is what the MENU's "Party" entry opens, and it is the screen the party sprites
- * live on. It had no animation at all: it drew every icon at frame 0 and then
- * blocked in wait_keys(), so ANIM_PARTY was a toggle that controlled nothing.
+ * Retail layout, adopted 2026-08-19 from a measured capture of Guy's own
+ * Emerald cartridge (docs/analysis-2026-08-19-party/MEASUREMENTS.md): party
+ * slot 1 always gets its own larger panel, fixed at top-left regardless of the
+ * cursor; slots 2-6 are 142x24 list rows underneath a per-row HP bar. Every
+ * geometry number below comes from pdna_layout.h (PDNA_PTY_*), which the host
+ * text-fit test reads too — see that file's comment for why.
  *
- * Same compose-over-DMA shape the Pokedex grid uses: blit frame `f` straight over
- * the cell's own background with no erase first, so there is never a frame where
- * a sprite is blanked. The background differs per cell — the selected one sits on
- * the UI_SEL panel — so each cell composes over its own colour, and the selection
- * frame is left untouched underneath (the icon is inset 4 px inside it).
- *
- * Art-free build: mon_icon_for_form_frame returns NULL and ui_blit_over ignores it,
- * so the cluster simply stays as drawn. Nothing to bob, nothing to break. */
-#define PARTY_GX0 100
-#define PARTY_GY0 26
-#define PARTY_CDX 46
-#define PARTY_CDY 42
+ * `party_draw_all` is the ONE place that paints a slot's chrome, icon, and
+ * text; both the initial full draw and the idle-bob redraw call it, so the
+ * bob tick can never show a different layout than the one just drawn. It
+ * cannot do a partial/flicker-free composite the way the old 40x40 grid did
+ * (ui_blit_over composes over a SINGLE flat colour; a slot's own fill here is
+ * the same 1px-banded dither the background uses), so a bob tick repaints
+ * the six slots in full. That runs only once per PARTY_BOB_PERIOD vblanks
+ * (matched to retail's own ~15-16 frame cycle, see below) while idle, which
+ * is cheap next to the full ui_clear() + redraw every keypress already pays. */
+#define PARTY_BOB_PERIOD 8     /* retail's own idle-bob period is ~15-16 frames total
+                                * (measured: 6-8 frames per pose, MEASUREMENTS.md
+                                * "Animation" section) — this is HALF the period (one
+                                * pose's hold time), matching wait_keys_bob's own
+                                * "*ctr >= period -> flip" convention. The box/dex/
+                                * daycare/summary screens keep their own PDNA_BOB_PERIOD
+                                * (30, ~59-60 frame cycle); that mismatch from retail was
+                                * NOT re-measured or fixed here — only the party screen
+                                * was in scope for this pass. */
 
-static uint16_t s_pov_sp[6];      /* species/form/egg of the mons currently drawn */
-static uint8_t  s_pov_fm[6];
-static bool     s_pov_egg[6];
-static int      s_pov_n, s_pov_sel;
+/* `pm` points at app_party_overlay's own stack-local PkMon[6] for the
+ * duration of the call — never copied, never outliving it. redraw() only
+ * ever fires synchronously from inside wait_keys_bob, which is called from
+ * inside app_party_overlay while `pm` is still alive, so this is the same
+ * "point at the caller's own array" trick the rest of the app uses for
+ * per-frame callbacks, just without the copy the old s_pov_sp/fm/egg arrays
+ * paid for the same lifetime guarantee. */
+static PkMon* s_pov_pm;
+static int    s_pov_n, s_pov_sel, s_pov_addslot;
+
+/* Slot i's own bounding box: i==0 is the fixed slot-1 box; i==1..5 are the
+ * five list rows underneath it, in party order. Returns true for the box. */
+static bool party_slot_rect(int i, int* x, int* y, int* w, int* h) {
+  if (i == 0) { *x = PDNA_PTY_BOX_X; *y = PDNA_PTY_BOX_Y; *w = PDNA_PTY_BOX_W; *h = PDNA_PTY_BOX_H; return true; }
+  *x = PDNA_PTY_ROW_X; *y = PDNA_PTY_ROW_Y0 + (i - 1) * PDNA_PTY_ROW_H;
+  *w = PDNA_PTY_ROW_W; *h = PDNA_PTY_ROW_H; return false;
+}
+
+/* Chrome only: fill + border, border colour swapped for the cursor (retail's own
+ * selection mechanic — DIFFERENCES #3 in MEASUREMENTS.md — is a border recolour,
+ * navy -> orange, not a separate highlight sprite). */
+static void party_draw_slot_bg(int i, bool selected) {
+  int x, y, w, h; bool isbox = party_slot_rect(i, &x, &y, &w, &h);
+  u16 border = selected ? UI_PTY_CURSOR : UI_PTY_BORDER;
+  if (isbox) ui_panel_striped(x, y, w, h, UI_PTY_BOX_FILL_A, UI_PTY_BOX_FILL_B, border);
+  else       ui_panel_striped(x, y, w, h, UI_PTY_ROW_FILL_A, UI_PTY_ROW_FILL_B, border);
+}
+
+/* Icon + every text/HP field for one occupied slot, at bob frame `bob`. `p` NULL
+ * means an empty slot (draws our own "+add here"/"-" affordance instead — the tool
+ * still needs a PLACE target and an empty-party-slot indicator that retail's own
+ * always-full party screen never had to draw, see the KEEP-OURS note above
+ * app_party_overlay). */
+/* Name + level, the two fields that sit at the icon's own x — a real Gen-3 icon's
+ * silhouette can reach far enough right to sit under the first few glyphs of a long
+ * name (measured: SALAMENCE's icon opaque pixels alone don't reach it, but the bob
+ * tick repaints the icon's whole 32x32 BOUNDING rectangle regardless of where its
+ * opaque pixels end, and that rectangle DOES reach into the name column). So this is
+ * factored out: the initial draw calls it once after the icon, and the bob tick calls
+ * it again after every icon repaint, to put the text back on top where the icon's
+ * bounding box would otherwise have silently erased it — a real bug this pass caught
+ * (see party_overlay_bob). */
+static void party_draw_name_level(int i, const PkMon* p) {
+  int x, y, w, h; bool isbox = party_slot_rect(i, &x, &y, &w, &h); (void)w; (void)h;
+  int ndx = isbox ? PDNA_PTY_BOX_NAME_DX : PDNA_PTY_NAME_DX;
+  int ndy = isbox ? PDNA_PTY_BOX_NAME_DY : PDNA_PTY_NAME_DY;
+  int nw  = isbox ? PDNA_PTY_BOX_NAME_W  : PDNA_PTY_NAME_W;
+  ui_ptext_fit_shadow(x + ndx, y + ndy, nw, UI_TEXT, UI_PTY_TEXT_SHADOW,
+                      p->nickname[0] ? p->nickname : pk_species_name(p->species));
+  char lvl[8]; siprintf(lvl, PDNA_PTY_LVL_FMT, (unsigned)p->level);
+  int lvdy = isbox ? PDNA_PTY_BOX_LVL_DY : PDNA_PTY_LVL_DY;
+  ui_ptext_shadow(x + ndx, y + lvdy, UI_TEXT, UI_PTY_TEXT_SHADOW, lvl);
+}
+
+static void party_draw_slot_fg(int i, const PkMon* p, uint8_t bob, bool is_addslot) {
+  int x, y, w, h; bool isbox = party_slot_rect(i, &x, &y, &w, &h); (void)w; (void)h;
+  int ndx = isbox ? PDNA_PTY_BOX_NAME_DX : PDNA_PTY_NAME_DX;
+  int ndy = isbox ? PDNA_PTY_BOX_NAME_DY : PDNA_PTY_NAME_DY;
+  if (is_addslot) { ui_ptext(x + ndx, y + ndy, UI_OK, "+ Add here"); return; }
+  if (!p)         { ui_ptext(x + ndx, y + ndy, UI_DIM, "-"); return; }
+
+  bool isEgg = p->isEgg && !p->isBadEgg;
+  int idx = isbox ? PDNA_PTY_BOX_ICON_DX : PDNA_PTY_ROW_ICON_DX;
+  int idy = isbox ? PDNA_PTY_BOX_ICON_DY : PDNA_PTY_ROW_ICON_DY;
+  const u16* ic = isEgg ? mon_icon_egg_frame(bob) : mon_icon_for_form_frame(p->species, p->form, bob);
+  if (ic) ui_sprite(x + idx, y + idy, MON_ICON_W, MON_ICON_H, ic);
+
+  party_draw_name_level(i, p);
+
+  if (p->gender != 2) {   /* omitted for genderless species, same as retail */
+    int gdx = isbox ? PDNA_PTY_BOX_GEND_DX : PDNA_PTY_GEND_DX;
+    int gdy = isbox ? PDNA_PTY_BOX_GEND_DY : PDNA_PTY_GEND_DY;
+    if (p->gender == 0) ui_gender_glyph_m(x + gdx, y + gdy, UI_PTY_GEND_M_FILL, UI_PTY_GEND_M_LINE);
+    else                ui_gender_glyph_f(x + gdx, y + gdy, UI_PTY_GEND_F_FILL, UI_PTY_GEND_F_LINE);
+  }
+
+  /* pk_decode_mon only carries the COMPUTED max stat (stats[PK_HP]) into PkMon;
+   * current HP lives at record offset 0x56 (party-only field — gen3_edit.c:105
+   * writes the same offset on heal/create) and is read straight off p->raw here. */
+  uint16_t maxhp = p->stats[PK_HP];
+  uint16_t curhp = p->raw ? (uint16_t)(p->raw[0x56] | ((uint16_t)p->raw[0x57] << 8)) : maxhp;
+  if (curhp > maxhp) curhp = maxhp;     /* a torn/edited record must never over-fill the bar */
+
+  int lbldx = isbox ? PDNA_PTY_BOX_HP_LBL_DX : PDNA_PTY_HP_LBL_DX;
+  int lbldy = isbox ? PDNA_PTY_BOX_HP_LBL_DY : PDNA_PTY_HP_LBL_DY;
+  ui_ptext_shadow(x + lbldx, y + lbldy, UI_PTY_HP_LABEL, UI_PTY_HP_OUTLINE, "HP");
+
+  int bdx = isbox ? PDNA_PTY_BOX_HP_BAR_DX : PDNA_PTY_HP_BAR_DX;
+  int bdy = isbox ? PDNA_PTY_BOX_HP_BAR_DY : PDNA_PTY_HP_BAR_DY;
+  int bw  = isbox ? PDNA_PTY_BOX_HP_BAR_W  : PDNA_PTY_HP_BAR_W;
+  int filled = maxhp ? (int)((uint32_t)curhp * (uint32_t)bw / maxhp) : 0;
+  ui_progress(x + bdx, y + bdy, bw, PDNA_PTY_HP_BAR_H, filled,
+             UI_PTY_HP_FILL, UI_PTY_HP_TRACK, UI_PTY_HP_OUTLINE);
+  if (filled > 2) ui_hline(x + bdx + 1, y + bdy + 1, filled - 2, UI_PTY_HP_SHADE);  /* top-row shading */
+
+  char hpn[16]; siprintf(hpn, PDNA_PTY_HP_NUM_FMT, (unsigned)curhp, (unsigned)maxhp);
+  int hndx = isbox ? PDNA_PTY_BOX_HP_NUM_DX : PDNA_PTY_HP_NUM_DX;
+  int hndy = isbox ? PDNA_PTY_BOX_HP_NUM_DY : PDNA_PTY_HP_NUM_DY;
+  ui_ptext_shadow(x + hndx, y + hndy, UI_TEXT, UI_PTY_TEXT_SHADOW, hpn);
+}
+
+/* The one shared paint used by both the full redraw and the idle-bob tick — see the
+ * block comment above for why a partial/flicker-free composite is not available here.
+ * Pass 1 paints every slot's chrome; pass 2 paints icons+text on top of ALL of them,
+ * so a bleeding icon (retail deliberately overlaps the row above/below its own box —
+ * MEASUREMENTS.md "Element positions") draws over its neighbour's chrome the same way
+ * retail layers it, regardless of slot draw order. */
+static void party_draw_all(uint8_t bob) {
+  for (int i = 0; i < 6; i++) party_draw_slot_bg(i, i == s_pov_sel);
+  for (int i = 0; i < 6; i++) {
+    if (i == s_pov_addslot)     party_draw_slot_fg(i, 0, bob, true);
+    else if (i < s_pov_n)       party_draw_slot_fg(i, &s_pov_pm[i], bob, false);
+    else                        party_draw_slot_fg(i, 0, bob, false);
+  }
+}
+
+/* Flicker-free per-icon repaint for the idle bob: compose sprite-over-background,
+ * background resolved ONCE PER SCANLINE (not per pixel — see below), written straight
+ * to VRAM. `slot_i` is the icon's OWN slot (0=box, 1..5=rows): a row icon bleeds only
+ * into the row directly above or below it (MEASUREMENTS.md "Element positions"), and
+ * box icons never leave the box's own column, so each scanline has AT MOST one split
+ * point (the box/row's own left edge) between two known colours — precompute that pair
+ * once per row instead of walking every panel's rect for every pixel.
+ *
+ * WHY THE BOB TICK CANNOT JUST CALL party_draw_all AGAIN: it did, in an earlier pass of
+ * this redesign, and MEASURABLY tore — six striped panels + text + HP bars is enough
+ * software drawing that it ran past a single video frame's cycle budget, so mGBA (and,
+ * by the same arithmetic, real hardware) caught the screen mid-repaint for several
+ * frames every time the icons bobbed (verified: diffing docs/analysis-2026-08-19-party/
+ * new-party-idle-f00..f05.png showed rows blanking and reappearing over several frames,
+ * repeating every bob toggle). Only the icon pixels actually change between the two bob
+ * frames — chrome, text and HP bars are IDENTICAL — so repainting just the six 32x32
+ * icons is both correct and, unlike the full redraw, cheap enough to finish inside one
+ * frame. A first per-PIXEL-lookup version of this fix cut the tear from ~5 frames to
+ * ~3 but still measurably tore; per-SCANLINE lookup was the one that actually closed it
+ * (re-verified against a fresh 60-frame idle capture — see the animation measurement in
+ * the delivery notes). */
+static void party_icon_repaint(int slot_i, int x, int y, const u16* data) {
+  if (!data) return;
+  bool isbox = (slot_i == 0);
+  /* `probe` only ever advances forward as py increases (rows are contiguous and this
+   * is scanned top to bottom), so the 32-row icon costs at most 3 probe-row advances
+   * total, not 3 checks EVERY row — the earlier per-row neighbour scan re-did the same
+   * up-to-3 comparisons 32 times over for no reason. */
+  int probe = slot_i - 1; if (probe < 1) probe = 1;
+  for (int j = 0; j < MON_ICON_H; j++) {
+    int py = y + j; if ((unsigned)py >= (unsigned)UI_SCR_H) continue;
+    int splitX; u16 leftCol, rightCol;
+    if (isbox) {
+      splitX = PDNA_PTY_BOX_X;
+      leftCol = UI_PTY_BG_MARGIN;
+      rightCol = (py & 1) ? UI_PTY_BOX_FILL_B : UI_PTY_BOX_FILL_A;
+    } else {
+      splitX = PDNA_PTY_ROW_X;
+      leftCol = (py & 1) ? UI_PTY_BG_B : UI_PTY_BG_A;   /* row icons never reach the x<20 margin */
+      while (probe <= 5 && py >= PDNA_PTY_ROW_Y0 + (probe - 1) * PDNA_PTY_ROW_H + PDNA_PTY_ROW_H) probe++;
+      bool inRow = (probe <= 5) && (probe >= slot_i - 1) && (probe <= slot_i + 1)
+                 && (py >= PDNA_PTY_ROW_Y0 + (probe - 1) * PDNA_PTY_ROW_H);
+      rightCol = inRow ? ((py & 1) ? UI_PTY_ROW_FILL_B : UI_PTY_ROW_FILL_A)
+                       : ((py & 1) ? UI_PTY_BG_B : UI_PTY_BG_A);
+    }
+    const u16* srow = data + (uint32_t)j * MON_ICON_W;
+    u16* drow = &vid_mem[py * UI_SCR_W];
+    for (int i = 0; i < MON_ICON_W; i++) {
+      int px = x + i; if ((unsigned)px >= (unsigned)UI_SCR_W) continue;
+      u16 p = srow[i];
+      drow[px] = (p & 0x8000) ? (u16)(p & 0x7FFF) : (px < splitX ? leftCol : rightCol);
+    }
+  }
+}
 
 static void party_overlay_bob(int f) {
-  rumble_io_suspend();            /* composes from mon_icon ROM data; mute the cart-bus motor toggle */
-  for (int i = 0; i < s_pov_n && i < 6; i++) {
-    const u16* ic = s_pov_egg[i] ? mon_icon_egg_frame((uint8_t)f)
-                                 : mon_icon_for_form_frame(s_pov_sp[i], s_pov_fm[i], (uint8_t)f);
-    if (!ic) continue;
-    ui_blit_over(PARTY_GX0 + (i % 3) * PARTY_CDX, PARTY_GY0 + (i / 3) * PARTY_CDY,
-                 MON_ICON_W, MON_ICON_H, ic, (i == s_pov_sel) ? UI_SEL : UI_BG);
-  }
-  /* the big copy of the selected mon on the left panel bobs with its cell */
-  if (s_pov_sel >= 0 && s_pov_sel < s_pov_n) {
-    const u16* ic = s_pov_egg[s_pov_sel]
-                      ? mon_icon_egg_frame((uint8_t)f)
-                      : mon_icon_for_form_frame(s_pov_sp[s_pov_sel], s_pov_fm[s_pov_sel], (uint8_t)f);
-    if (ic) ui_blit_over(24, 24, MON_ICON_W, MON_ICON_H, ic, UI_BG);
+  rumble_io_suspend();       /* icon frames may be in ROM: mute the cart-bus motor toggle */
+  for (int i = 0; i < 6; i++) {
+    if (i == s_pov_addslot || i >= s_pov_n) continue;   /* nothing occupied to bob there */
+    const PkMon* p = &s_pov_pm[i];
+    bool isEgg = p->isEgg && !p->isBadEgg;
+    int x, y, w, h; bool isbox = party_slot_rect(i, &x, &y, &w, &h); (void)w; (void)h;
+    int idx = isbox ? PDNA_PTY_BOX_ICON_DX : PDNA_PTY_ROW_ICON_DX;
+    int idy = isbox ? PDNA_PTY_BOX_ICON_DY : PDNA_PTY_ROW_ICON_DY;
+    const u16* ic = isEgg ? mon_icon_egg_frame((uint8_t)f) : mon_icon_for_form_frame(p->species, p->form, (uint8_t)f);
+    party_icon_repaint(i, x + idx, y + idy, ic);
+    /* The icon repaint just overwrote its own full bounding box, name/level column
+     * included — put the text back on top (see party_draw_name_level's comment). */
+    party_draw_name_level(i, p);
   }
   rumble_io_resume();
 }
@@ -1993,7 +2174,6 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
    * read-only source sets is_bank, which already stops pdna_box from reaching the
    * PARTY tab, so this is defence in depth on a path that must never open. */
   if (app_src_readonly()) { snd_deny(); return 0; }
-  const int gx0 = PARTY_GX0, gy0 = PARTY_GY0, dx = PARTY_CDX, dy = PARTY_CDY;   /* 2x3 cluster, right side */
   const int BACK = 6;
   int sel = 0;
   int bob_ctr = 0, bob = 0;          /* ANIM_PARTY idle bob phase, kept across repaints */
@@ -2001,67 +2181,47 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     int n = party_count(g_sb1, g_frlg);
     if (n < 1) return 0;                              /* shouldn't happen (party never empties) */
     int addslot = (held && n < 6) ? n : -1;          /* PLACE: cell n is the "+ add" target */
+    int lastSel = (addslot >= 0) ? addslot : (n - 1); /* last slot before BACK, in UP/DOWN order */
     if (sel != BACK && sel >= n && sel != addslot) sel = n - 1;   /* clamp after a release */
     PkMon pm[6]; pk_read_party_auto(g_sb1, pm, &g_frlg);
     for (int i = 0; i < n; i++) pk_resolve(&pm[i]);
 
     ui_clear();
-    ui_text(4, 3, UI_TITLE, held ? "MOVE TO PARTY" : "PARTY");
-    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
-    /* left: the selected mon's summary */
-    if (sel != BACK && sel < n) {
-      PkMon* p = &pm[sel];
-      /* frame `bob`, not a hard 0: a repaint mid-animation must not snap the
-       * sprites back to frame 0 and restart the phase. */
-      if (p->isEgg && !p->isBadEgg) ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_egg_frame((uint8_t)bob));
-      else ui_sprite(24, 24, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, (uint8_t)bob));
-      /* Same fields, same proportional face as the PC panel (pdna_box.c draw_left) —
-       * the two screens used to disagree about the same mon: 10 columns here, 9 and 5
-       * there. Budget is the left column, up to the icon cluster at x=88. */
-      char b[48];
-      ui_ptext_fit(6, 66, 78, UI_TEXT,
-                   p->nickname[0] ? p->nickname : pk_species_name(p->species));
-      siprintf(b, "Lv%u%s", (unsigned)p->level, p->gender == 0 ? " M" : p->gender == 1 ? " F" : "");
-      ui_text(6, 80, UI_TEXT, b);
-      ui_ptext_fit(6, 94, 78, UI_DIM, pk_species_name(p->species));
-      ui_text(6, 112, UI_DIRCLR, "Item");
-      if (p->heldItem) pk_item_label(p->heldItem, b, sizeof b);
-      else             strcpy(b, "-");
-      ui_ptext_fit(6, 124, 78, UI_TEXT, b);
-    } else if (sel == addslot) ui_text(6, 66, UI_OK, "Add here");
-    /* right: the 2x3 cluster */
-    for (int i = 0; i < 6; i++) {
-      int cx = gx0 + (i % 3) * dx, cy = gy0 + (i / 3) * dy;
-      if (i == sel) ui_panel(cx - 4, cy - 4, 40, 40, UI_SEL, UI_TITLE);
-      if (i < n && pm[i].isEgg && !pm[i].isBadEgg) ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_egg_frame((uint8_t)bob));
-      else if (i < n)        ui_sprite(cx, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(pm[i].species, pm[i].form, (uint8_t)bob));
-      else if (i == addslot) ui_text(cx + 12, cy + 10, UI_OK,  "+");
-      else                   ui_text(cx + 13, cy + 10, UI_DIM, "-");
-    }
-    bool bsel = (sel == BACK);
-    if (bsel) ui_panel(gx0 - 4, gy0 + 2 * dy + 2, 3 * dx - 8, 14, UI_SEL, UI_TITLE);
-    ui_text(gx0 + 4, gy0 + 2 * dy + 4, bsel ? UI_SELTEXT : UI_TEXT, "Back");
+    ui_stripe_bg(20, UI_PTY_BG_MARGIN, UI_PTY_BG_A, UI_PTY_BG_B);
 
-    /* The party screen carries the per-mon popup, so this footer must be the same row
-     * the popup arithmetic avoids — UI_FOOTER_Y, never a re-typed 150. */
-    ui_hline(0, UI_FOOTER_RULE_Y, UI_SCR_W, UI_BORDER);
-    ui_text(4, UI_FOOTER_Y, UI_DIM, held ? "A place/swap  U/D/L/R  B" : "A actions  U/D/L/R  B");
+    /* Publish what party_draw_all (full redraw AND the bob-tick redraw both call it)
+     * needs. `pm` is this iteration's own stack array — see the comment above
+     * party_draw_slot_fg for why pointing at it, rather than copying out of it, is
+     * safe for the lifetime a redraw callback actually needs. */
+    s_pov_pm = pm; s_pov_n = n < 6 ? n : 6;
+    s_pov_sel = (sel == BACK) ? -1 : sel;
+    s_pov_addslot = addslot;
+    party_draw_all((uint8_t)bob);
 
-    /* Publish what the bob callback needs. `pm` is a stack array that dies with
-     * this iteration, so copy the three fields out rather than pointing at it. */
-    s_pov_n = n < 6 ? n : 6; s_pov_sel = (sel < s_pov_n) ? sel : -1;
-    for (int i = 0; i < s_pov_n; i++) {
-      s_pov_sp[i] = pm[i].species; s_pov_fm[i] = pm[i].form;
-      s_pov_egg[i] = pm[i].isEgg && !pm[i].isBadEgg;
+    /* Bottom message box + CANCEL button, retail's own layout for this band
+     * (docs/analysis-2026-08-19-party/MEASUREMENTS.md does not itemise these two —
+     * they were measured separately off the same capture for this pass). */
+    ui_panel(PDNA_PTY_MSG_X, PDNA_PTY_MSG_Y, PDNA_PTY_MSG_W, PDNA_PTY_MSG_H, UI_TEXT, UI_PTY_BORDER);
+    ui_ptext_fit(PDNA_PTY_MSG_X + PDNA_PTY_MSG_PAD, PDNA_PTY_MSG_Y + PDNA_PTY_MSG_PAD,
+                PDNA_PTY_MSG_W_BUDGET, UI_PTY_MSG_TEXT,
+                held ? PDNA_PTY_MSG_PLACE : PDNA_PTY_MSG_CHOOSE);
+    {
+      bool bsel = (sel == BACK);
+      ui_panel(PDNA_PTY_CANCEL_X, PDNA_PTY_CANCEL_Y, PDNA_PTY_CANCEL_W, PDNA_PTY_CANCEL_H,
+              UI_PTY_CANCEL_FILL, bsel ? UI_PTY_CURSOR : UI_PTY_BORDER);
+      ui_ptext_fit_shadow(PDNA_PTY_CANCEL_X + PDNA_PTY_MSG_PAD, PDNA_PTY_CANCEL_Y + PDNA_PTY_MSG_PAD,
+                         PDNA_PTY_CANCEL_W_BUDGET, UI_TEXT, UI_PTY_TEXT_SHADOW, PDNA_LBL_CANCEL);
     }
 
-    u16 k = wait_keys_bob(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B,
-                          ANIM_PARTY, &bob_ctr, &bob, party_overlay_bob);
+    /* No LEFT/RIGHT: retail's own party screen has no horizontal axis (a fixed
+     * top-left box plus a single column of rows) — UP/DOWN walks slot 0..lastSel,
+     * then BACK; see DIFFERENCES #2/#3 in MEASUREMENTS.md for why the old 3-column
+     * grid's L/R paging does not carry over. */
+    u16 k = wait_keys_bob_p(KEY_UP | KEY_DOWN | KEY_A | KEY_B,
+                            ANIM_PARTY, &bob_ctr, &bob, party_overlay_bob, PARTY_BOB_PERIOD);
     if      (k & KEY_B)     { snd_back(); return 0; }
-    else if (k & KEY_LEFT)  { if (sel < 6 && sel % 3 > 0) { snd_move(); sel--; } }
-    else if (k & KEY_RIGHT) { if (sel < 6 && sel % 3 < 2) { snd_move(); sel++; } }
-    else if (k & KEY_UP)    { snd_move(); if (sel == BACK) sel = 3; else if (sel >= 3) sel -= 3; }
-    else if (k & KEY_DOWN)  { snd_move(); if (sel < 3) sel += 3; else if (sel < 6) sel = BACK; }
+    else if (k & KEY_UP)    { if (sel == BACK) sel = lastSel; else if (sel > 0) sel--; }
+    else if (k & KEY_DOWN)  { if (sel != BACK) sel = (sel < lastSel) ? sel + 1 : BACK; }
     else if (k & KEY_A) {
       if (sel == BACK) { snd_back(); return 0; }
       if (held) {                                    /* PLACE: drop/swap into the party */

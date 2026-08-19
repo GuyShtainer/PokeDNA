@@ -1072,6 +1072,73 @@ int main(void) {
   }
   /* ==== END: the edit field list's new MAX PP rows ============================= */
 
+  printf("\n== party screen: retail layout (app_party_overlay, #2026-08-19) ==\n");
+  /* One big slot-1 box (name/level/gender/HP stacked one-per-line) plus five 142x24
+   * list rows (name+HP bar on top, level+gender+HP numbers below) — see the block
+   * comment above PDNA_PTY_BOX_X in pdna_layout.h for why the box is NOT the row
+   * layout scaled down. Every check below reads the SAME constants party_draw_slot_fg
+   * draws with (source/pdna_main.c). */
+  {
+    /* Every field this screen draws goes through ui_ptext_shadow/ui_ptext_fit_shadow
+     * (source/ui.c) — the PROPORTIONAL 5x7 face, not sys8 — so every check below is
+     * PF()/pwidth(), never T(). */
+    PF(PDNA_PTY_MSG_CHOOSE, PDNA_PTY_MSG_X + PDNA_PTY_MSG_PAD, PDNA_PTY_MSG_W_BUDGET);
+    PF(PDNA_PTY_MSG_PLACE,  PDNA_PTY_MSG_X + PDNA_PTY_MSG_PAD, PDNA_PTY_MSG_W_BUDGET);
+    chkv("message box ends above the screen bottom",
+         PDNA_PTY_MSG_Y + PDNA_PTY_MSG_H, UI_SCR_H);
+    /* CANCEL button: reuses the shared PDNA_LBL_CANCEL, but against THIS screen's own
+     * geometry — a new check even though the string itself is tested elsewhere. */
+    PF(PDNA_LBL_CANCEL, PDNA_PTY_CANCEL_X + PDNA_PTY_MSG_PAD, PDNA_PTY_CANCEL_W_BUDGET);
+    chkv("CANCEL button ends above the screen bottom",
+         PDNA_PTY_CANCEL_Y + PDNA_PTY_CANCEL_H, UI_SCR_H);
+    chkv("CANCEL button stays right of the message box",
+         PDNA_PTY_MSG_X + PDNA_PTY_MSG_W, PDNA_PTY_CANCEL_X);
+    chkv("CANCEL button ends on-screen",
+         PDNA_PTY_CANCEL_X + PDNA_PTY_CANCEL_W, SCR_W);
+
+    /* Row template (slots 2-6): name is fit-clamped to PDNA_PTY_NAME_W; level, the "HP"
+     * label and the HP numbers are drawn UNCLAMPED (ui_ptext_shadow, not _fit_), so each
+     * is measured at its worst case against the gap it actually has to clear. */
+    PF("SALAMENCE", PDNA_PTY_ROW_X + PDNA_PTY_NAME_DX, PDNA_PTY_NAME_W);
+    { char b[16];
+      sprintf(b, PDNA_PTY_LVL_FMT, 100u);                 /* "Lv100": worst-case level */
+      PF(b, PDNA_PTY_ROW_X + PDNA_PTY_NAME_DX, PDNA_PTY_GEND_DX - PDNA_PTY_NAME_DX);
+      sprintf(b, PDNA_PTY_HP_NUM_FMT, 714u, 714u);        /* worst REAL Gen-3 HP (Blissey,
+                                                           * Lv100, max IV/EV) — "999/999"
+                                                           * cannot occur but is the same
+                                                           * digit count, so this is not a
+                                                           * narrower case, just the honest one */
+      PF(b, PDNA_PTY_ROW_X + PDNA_PTY_HP_NUM_DX, PDNA_PTY_HP_NUM_W); }
+    PF("HP", PDNA_PTY_ROW_X + PDNA_PTY_HP_LBL_DX, PDNA_PTY_HP_BAR_DX - PDNA_PTY_HP_LBL_DX);
+    chkv("row HP bar ends inside the row",
+         PDNA_PTY_HP_BAR_DX + PDNA_PTY_HP_BAR_W, PDNA_PTY_ROW_W);
+    chkv("row HP numbers end inside the row",
+         PDNA_PTY_HP_NUM_DX + PDNA_PTY_HP_NUM_W, PDNA_PTY_ROW_W);
+    chkv("row name column clears the HP label",
+         PDNA_PTY_NAME_DX + PDNA_PTY_NAME_W, PDNA_PTY_HP_LBL_DX);
+    chkv("row bottom stays on-screen (slot 6, the last row)",
+         PDNA_PTY_ROW_Y0 + 5 * PDNA_PTY_ROW_H, PDNA_PTY_MSG_Y);
+
+    /* Slot-1 box: same fields, but ONE per line (four stacked rows) — the box is only
+     * 71 px wide, so its own HP bar is narrower than a row's (PDNA_PTY_BOX_HP_BAR_W). */
+    PF("TYRANITAR", PDNA_PTY_BOX_X + PDNA_PTY_BOX_NAME_DX, PDNA_PTY_BOX_NAME_W);
+    { char b[16];
+      sprintf(b, PDNA_PTY_LVL_FMT, 100u);
+      PF(b, PDNA_PTY_BOX_X + PDNA_PTY_BOX_NAME_DX, PDNA_PTY_BOX_GEND_DX - PDNA_PTY_BOX_NAME_DX);
+      sprintf(b, PDNA_PTY_HP_NUM_FMT, 714u, 714u);
+      PF(b, PDNA_PTY_BOX_X + PDNA_PTY_BOX_HP_NUM_DX, PDNA_PTY_BOX_HP_NUM_W); }
+    PF("HP", PDNA_PTY_BOX_X + PDNA_PTY_BOX_HP_LBL_DX,
+       PDNA_PTY_BOX_HP_BAR_DX - PDNA_PTY_BOX_HP_LBL_DX);
+    chkv("box HP bar ends inside the box",
+         PDNA_PTY_BOX_HP_BAR_DX + PDNA_PTY_BOX_HP_BAR_W, PDNA_PTY_BOX_W);
+    chkv("box HP numbers end inside the box",
+         PDNA_PTY_BOX_HP_NUM_DX + PDNA_PTY_BOX_HP_NUM_W, PDNA_PTY_BOX_W);
+    chkv("box gender glyph stays inside the box (9 px glyph)",
+         PDNA_PTY_BOX_GEND_DX + 9, PDNA_PTY_BOX_W);
+    chkv("box's last text line stays inside the box (7 px glyph row)",
+         PDNA_PTY_BOX_HP_NUM_DY + 7, PDNA_PTY_BOX_H);
+  }
+
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }
