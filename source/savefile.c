@@ -359,6 +359,88 @@ SfStatus sf_write_verified(const char* path, const uint8_t* buf, uint32_t len) {
   return SF_OK;
 }
 
+/* Write pass: pull `len` bytes from `src` in `chunk`-sized pieces and stream them to
+ * `tmp`, creating/truncating it. Own frame, same reason as write_all. */
+__attribute__((noinline))
+static SfStatus stream_write_all(const char* tmp, SfStreamFn src, void* ctx, uint32_t len,
+                                 uint8_t* scratch, uint32_t chunk) {
+  FIL f;
+  if (f_open(&f, tmp, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return SF_ERR_OPEN;
+  SfStatus st = SF_OK;
+  uint32_t off = 0;
+  while (off < len) {
+    uint32_t n = len - off; if (n > chunk) n = chunk;
+    if (!src(ctx, off, scratch, n)) { st = SF_ERR_READ; break; }
+    UINT bw = 0;
+    if (f_write(&f, scratch, n, &bw) != FR_OK || bw != n) { st = SF_ERR_WRITE; break; }
+    off += n;
+  }
+  FRESULT fc = f_close(&f);
+  if (st == SF_OK && fc != FR_OK) st = SF_ERR_WRITE;
+  return st;
+}
+
+/* Verify pass: re-derive the expected bytes from `src` AGAIN and compare them against
+ * a fresh read of `tmp` off the card, chunk by chunk — the streamed analogue of
+ * file_matches, which compares against a RAM buffer that (for this function) never
+ * exists all at once. Own frame, same reason. */
+__attribute__((noinline))
+static bool stream_file_matches(const char* tmp, SfStreamFn src, void* ctx, uint32_t len,
+                                uint8_t* scratch, uint32_t chunk) {
+  FIL f;
+  if (f_open(&f, tmp, FA_READ) != FR_OK) return false;
+  if (f_size(&f) != (FSIZE_t)len) { f_close(&f); return false; }
+  bool ok = true;
+  uint32_t off = 0;
+  while (off < len) {
+    uint32_t n = len - off; if (n > chunk) n = chunk;
+    if (!src(ctx, off, scratch, n)) { ok = false; break; }   /* fresh "expected" read */
+    UINT br = 0;
+    if (f_read(&f, s_cmp, n, &br) != FR_OK || br != n) { ok = false; break; } /* fresh "actual" */
+    if (memcmp(scratch, s_cmp, n) != 0) { ok = false; break; }
+    off += n;
+  }
+  f_close(&f);
+  return ok;
+}
+
+SfStatus sf_write_verified_stream(const char* path, SfStreamFn src, void* ctx,
+                                  uint32_t len, uint8_t* scratch, uint32_t chunk) {
+  if (!src || !scratch || chunk == 0 || chunk > sizeof(s_cmp)) return SF_ERR_LAYOUT;
+  char tmp[SF_PATH_MAX];
+  siprintf(tmp, "%s.tmp", path);
+
+  /* 1) write pass — same cleanup-ownership reasoning as sf_write_verified: an OPEN
+   * that failed leaves whatever .tmp already existed untouched (never delete a
+   * possibly-good copy on a failing open); a write/read failure AFTER a successful
+   * CREATE_ALWAYS truncated it, so THIS call's own (partial, untrusted) output is
+   * all that .tmp can hold, and deleting it is safe. */
+  SfStatus wst = stream_write_all(tmp, src, ctx, len, scratch, chunk);
+  if (wst != SF_OK) { if (wst != SF_ERR_OPEN) f_unlink(tmp); return wst; }
+
+  /* 2) re-derive + re-read, chunk by chunk */
+  if (!stream_file_matches(tmp, src, ctx, len, scratch, chunk)) {
+    f_unlink(tmp);
+    return SF_ERR_VERIFY;
+  }
+
+  /* 3) swap into place — identical to sf_write_verified */
+  f_unlink(path);
+  if (f_rename(tmp, path) != FR_OK) {
+    log_line("stream write: rename %s -> %s failed; bytes kept in the .tmp", tmp, path);
+    return SF_ERR_RENAME;
+  }
+
+  /* 4) read the CARD back — same swap_landed check, same reason: FR_OK from f_rename
+   * is not evidence anything landed. */
+  if (!swap_landed(path, tmp, len)) {
+    log_line("stream write: card did not keep the rename - %s holds the verified bytes",
+             tmp);
+    return SF_ERR_RENAME;
+  }
+  return SF_OK;
+}
+
 /* Ask the card, do not guess. Pure reads; nothing here deletes or writes anything. */
 SfWhere sf_where_are_the_bytes(const char* path, const uint8_t* buf, uint32_t len) {
   char tmp[SF_PATH_MAX];

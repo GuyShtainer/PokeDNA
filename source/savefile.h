@@ -58,6 +58,38 @@ SfStatus sf_copy(const char* src_path, const char* dst_path);
  * deleted, and sf_where_are_the_bytes() says what the user is left holding. */
 SfStatus sf_write_verified(const char* path, const uint8_t* buf, uint32_t len);
 
+/* A source of bytes for a STREAMED verified write: fill dst(want) with the bytes that
+ * belong at logical offset `off` (0-based) of the content being written. Must be able
+ * to reproduce the SAME bytes for the SAME offset on a second call (this function
+ * calls it once per chunk in the write pass and again in the verify pass) — the
+ * generator's own re-readable source (e.g. a ROM) is what makes that possible without
+ * holding the whole content in RAM. Returns false to abort the whole write (a read
+ * failure, or a caller-driven cancel — either way sf_write_verified_stream discards
+ * the .tmp and reports failure, exactly as if the write itself had failed). */
+typedef bool (*SfStreamFn)(void* ctx, uint32_t off, uint8_t* dst, uint32_t want);
+
+/* Same contract and the SAME four-step invariant as sf_write_verified (".tmp" -> byte-
+ * compare re-read -> unlink -> rename -> read-the-card-back-to-confirm), for content
+ * that is produced by `src` a chunk at a time instead of held in RAM as one buffer.
+ * This exists because a kind file can be hundreds of KB (icons.bin is ~450 KB) while
+ * the artless build's EWRAM headroom is a few KB — sf_write_verified's signature
+ * requires the WHOLE content already in RAM, which such a file cannot fit.
+ *
+ * Every byte is fetched from `src` TWICE — once while writing, once while verifying —
+ * which is the same "read twice, trust only agreement" discipline sf_write_verified
+ * gets for free from comparing the written bytes back against its RAM buffer. When
+ * `src` reads from a re-readable ROM, this doubles as read-twice-and-compare
+ * verification on the SOURCE side too, for zero extra plumbing.
+ *
+ * `chunk` bytes at a time, must be > 0 and <= 2048 (the internal compare buffer's
+ * size, matching s_cmp elsewhere in this file); `scratch` must hold at least `chunk`
+ * bytes and is the ONLY RAM this function asks the caller for — no buffer here scales
+ * with `len`. `src` is called with off = 0, chunk, 2*chunk, ... twice over (once per
+ * pass); a caller-side generator MAY use "off == 0" to detect the start of a new pass
+ * (see source/art_icons_extract.c). */
+SfStatus sf_write_verified_stream(const char* path, SfStreamFn src, void* ctx,
+                                  uint32_t len, uint8_t* scratch, uint32_t chunk);
+
 /* After SF_ERR_RENAME: which file on the CARD actually holds buf(len)?
  *
  * A caller that guesses will lie to the user in at least one interleaving, so this
