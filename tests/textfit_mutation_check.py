@@ -167,6 +167,42 @@ M = [
       "SET_FOOTER_Y 152->148 (settings footer rises into the popup band)"),
  (PL, "#define PDNA_SET_FOOTER_Y    152", "#define PDNA_SET_FOOTER_Y    154",
       "SET_FOOTER_Y 152->154 (settings footer ink off the screen)"),
+ # --- 2026-08-18: the ROM IMAGE CHECK verdict band --------------------------
+ # Six of these strings shipped over the 232 px field at realistic values and clipped to a
+ # trailing '~'. Each mutation puts the SHIPPED-AND-CLIPPING wording back, so the entry
+ # doubles as the record of what the old line was.
+ (PL, '#define PDNA_RVF_COVER_FMT   "%s of %s B (%lu.%01lu%%)%s"',
+      '#define PDNA_RVF_COVER_FMT   "%s of %s B checked (%lu.%01lu%%)%s"',
+      'coverage header takes "checked" back (rendered as "...(99.4%) b~")'),
+ (PL, '#define PDNA_RVF_V_FAULT     "IMAGE FAULT - %d bad, %d unstable, %d skip"',
+      '#define PDNA_RVF_V_FAULT     "IMAGE INCOMPLETE - %d bad, %d unstable, %d skip"',
+      'fault verdict back to "IMAGE INCOMPLETE" (256 px at 3-digit counts)'),
+ (PL, '#define PDNA_RVF_BAD1_FMT    "bad #1: reg %d @ 0x%06lx %lu.%02luMB %s"',
+      '#define PDNA_RVF_BAD1_FMT    "bad #1: region %d @ 0x%06lx (%lu.%02lu MB) %s"',
+      'bad-region line back to the form that cut off "unstable"'),
+ (PL, '#define PDNA_RVF_RETRY_FMT   "%d region(s) needed a retry - the bus lied"',
+      '#define PDNA_RVF_RETRY_FMT   "%d region(s) needed a retry - the cart bus lied once"',
+      'retry line back to the version that clipped at EVERY count'),
+ (PL, '#define PDNA_RVF_V_SHORT     "COVERAGE SHORT - %lu/%lu KiB compared"',
+      '#define PDNA_RVF_V_SHORT     "COVERAGE SHORT - %lu of %lu KiB compared"',
+      "COVERAGE SHORT back to the spelled-out ratio"),
+ (PL, '#define PDNA_RVF_SHORT_NOTE  "Less compared than this image can prove."',
+      '#define PDNA_RVF_SHORT_NOTE  "Fewer bytes compared than this image can prove."',
+      "short-coverage note back to the 246 px sentence"),
+ (PL, '#define PDNA_RVF_V_OK_PART   "IMAGE OK - %d match (%d part), %d skipped"',
+      '#define PDNA_RVF_V_OK_PART   "IMAGE OK - %d match (%d partial), %d skipped"',
+      '"partial" back in the green verdict (234 px at 3-digit counts)'),
+ (PL, '#define PDNA_RVF_LEGEND_ALT  "grn=ok teal=part red=BAD ylw=bus gry=skip"',
+      '#define PDNA_RVF_LEGEND_ALT  "grn=ok  teal=part  red=BAD  ylw=bus  gry=skip  X"',
+      "the legend FALLBACK grows (nothing measures it at runtime)"),
+ (PL, "#define PDNA_RVF_TEXT_W      232", "#define PDNA_RVF_TEXT_W      200",
+      "RVF_TEXT_W 232->200 (the band's field narrows under the strings)"),
+ (PL, "#define PDNA_RVF_ROW4_Y      152", "#define PDNA_RVF_ROW4_Y      156",
+      "RVF_ROW4_Y 152->156 (the blind-range line inks off the bottom)"),
+ (PL, "#define PDNA_RVF_ROW1_Y      128", "#define PDNA_RVF_ROW1_Y      124",
+      "RVF_ROW1_Y 128->124 (the verdict lands on the grid's bottom rule)"),
+ (PL, "#define PDNA_RVF_ROW2_Y      136", "#define PDNA_RVF_ROW2_Y      134",
+      "RVF_ROW2_Y 136->134 (row 1's descenders shear into row 2)"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -213,6 +249,17 @@ WIRING = [
   "the 13 filter-row draw lines (filter_menu 4, dex_menu 6, item_filter_menu 3)"),
  ("source/pdna_pick.c", r"ui_text\(4, PDNA_FILT_FOOTER_Y,", 3,
   "the three FILTER / SORT footers"),
+ # The ROM IMAGE CHECK band. Its strings sat as literals INSIDE pdna_romfull.c until
+ # 2026-08-18, where no host test could reach them — which is why six of them shipped
+ # clipping. BAND_X / BAND_W are the .c's aliases for the two header constants.
+ ("source/pdna_romfull.c", r"ui_ptext_fit\(\s*\d", 0,
+  "a band line drawn at a literal x instead of BAND_X"),
+ ("source/pdna_romfull.c", r"ui_ptext_fit\(BAND_X,", 12,
+  "the 12 band lines, all drawn through the header's geometry"),
+ ("source/pdna_romfull.c", r"#define BAND_W\s+PDNA_RVF_TEXT_W", 1,
+  "BAND_W must alias the header constant, not re-type 232"),
+ ("source/pdna_romfull.c", r'ui_ptext_fit\([^,]+,[^,]+,[^,]+,[^,]+,\s*"', 0,
+  "a band string typed at the draw site instead of coming from pdna_layout.h"),
 ]
 
 CC = ("cc -std=c11 -I source tests/host_textfit_test.c source/ui_font.c "

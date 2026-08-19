@@ -329,6 +329,81 @@ static void t_rolling_keeps_the_verified_copy(void) {
         ".baktmp the only copy) -- the check proves nothing if it cannot get there");
 }
 
+/* THE NEXT SAVE, TAKEN FROM THE STATE THE HOLE LEAVES THE USER IN.
+ *
+ * t_rename_hole_sweep proves the tool now REPORTS that state: no .sav on the card and a
+ * complete verified <name>.tmp beside it (SF_WHERE_TMP_ONLY — which the UI puts on screen
+ * as "the bytes are in the .tmp"). This starts there, which is the one starting card the
+ * sweep never uses, and asks the next question the user asks: they press Save again.
+ *
+ * If that attempt cannot even OPEN its scratch, it has truncated nothing and written
+ * nothing — the .tmp is still the only copy of their save in the world — so its cleanup
+ * must not delete it. The shared `if (wst != SF_OK) { f_unlink(tmp); ... }` did exactly
+ * that, which is why this file needs a case the sweep cannot express.
+ *
+ * WHY A NEW KNOB. This needs an f_open that fails while the REST of the card works, and
+ * no rd_lie_* setting can produce one: a card that lies permanently swallows the cleanup's
+ * own f_unlink too, so the deletion never lands and the loss is invisible — the same blind
+ * spot the note on t_rolling_keeps_the_verified_copy describes, and the reason rd_fail_at
+ * exists for writes. rd_fail_read_at is its read-side twin: one transient read error (a
+ * flaky cart contact on the directory sector), then a healthy card that carries the unlink
+ * out for real.
+ *
+ * WHAT IS ASSERTED, and why it is EXISTENCE rather than contents. f_open can fail before
+ * it touches anything (the ordinary case: the .tmp is untouched and complete) or from
+ * inside the truncation, after the directory entry is zeroed and while remove_chain walks
+ * the FAT (the .tmp is already empty through no fault of the cleanup). f_open never
+ * REMOVES the entry in either case, so `the .tmp still exists` is the exact line between
+ * the two: only an unlink can cross it. Both are swept; the sweep also requires that the
+ * position where the copy survives INTACT is actually reached, or it proves nothing. */
+static void t_open_failure_keeps_the_tmp(void) {
+  long k;
+  int saw_open_fail = 0, saw_intact = 0;
+  long first_open_fail = -1;
+  fill(s_new, SAVE_BYTES, 12);
+  for (k = 0; k < 40; k++) {
+    SfStatus st;
+    fresh_card(4096);
+    /* the post-hole card: the verified scratch is there, the save is NOT */
+    CHECK(write_raw(TMP, s_new, SAVE_BYTES), "open k=%ld: setup", k);
+    CHECK(!exists(SAV), "open k=%ld: setup left a .sav behind", k);
+    remount();                      /* drop FatFs' cached window, as a reboot would */
+    rd_fail_read_at = k;            /* one transient read error, then a healthy card */
+    st = sf_write_verified(SAV, s_new, SAVE_BYTES);
+    rd_fail_read_at = -1;
+    remount();
+
+    if (st == SF_ERR_OPEN) {
+      if (!saw_open_fail) first_open_fail = k;
+      saw_open_fail = 1;
+      CHECK(exists(TMP),
+            "open k=%ld: the write could not even open its scratch and DELETED the "
+            "user's only copy of the save", k);
+      if (holds(TMP, s_new, SAVE_BYTES)) saw_intact = 1;
+    } else if (st == SF_OK) {
+      /* the read error landed somewhere the write could ride out: same promise as ever */
+      CHECK(holds(SAV, s_new, SAVE_BYTES),
+            "open k=%ld: reported SAVED but the card does not hold the save", k);
+    }
+    /* NO invariant is asserted for the later failures, and that is deliberate rather than
+     * an omission. Once f_open HAS opened the scratch, FA_CREATE_ALWAYS has truncated it,
+     * so from that instant the card's copy is gone by design — sf_write_verified is
+     * rewriting the very file this card is starting from, with the same bytes, and the
+     * caller still holds them in RAM. Demanding a recoverable copy from those positions
+     * would be demanding a second scratch name, which is a different change. What IS
+     * pinned above is the only part the cleanup controls. */
+  }
+  CHECK(saw_open_fail,
+        "open: no position ever made f_open fail -- the sweep never reaches the branch it "
+        "exists for");
+  CHECK(saw_intact,
+        "open: f_open failed but never with the .tmp still INTACT, so the sweep never "
+        "reached the state this check exists for (a complete verified copy, and a write "
+        "that failed before touching it)");
+  if (getenv("PDNA_TEST_VERBOSE"))
+    printf("  open: f_open first fails at read k=%ld\n", first_open_fail);
+}
+
 /* An honest but FULL card, mid-commit: the classic non-lying failure must still leave the
  * original in place (this is the invariant sf_write_verified was built for). */
 static void t_full_card(void) {
@@ -383,6 +458,7 @@ int main(void) {
   t_rename_hole_sweep();
   t_rolling_backup_sweep();
   t_rolling_keeps_the_verified_copy();
+  t_open_failure_keeps_the_tmp();
   t_full_card();
   f_mount(0, "", 0);
   rd_free();

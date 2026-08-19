@@ -15,6 +15,7 @@ int  rd_lie_writes     = 0;
 long rd_lie_after = -1;
 long rd_fail_at = -1;
 long rd_fail_reads_after = -1;
+long rd_fail_read_at = -1;
 unsigned long rd_writes = 0, rd_reads = 0, rd_lied = 0, rd_read_fails = 0;
 
 static unsigned char* s_mem = 0;
@@ -25,7 +26,7 @@ void rd_init(unsigned sectors) {
   s_sectors = sectors;
   s_mem = calloc(sectors, FF_MAX_SS);
   rd_protect = 0; rd_fail_write_in = 0; rd_fail_all_writes = 0; rd_lie_writes = 0;
-  rd_fail_reads_after = -1; rd_lie_after = -1; rd_fail_at = -1;
+  rd_fail_reads_after = -1; rd_fail_read_at = -1; rd_lie_after = -1; rd_fail_at = -1;
   rd_writes = rd_reads = rd_lied = rd_read_fails = 0;
 }
 
@@ -46,6 +47,13 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
   if (rd_fail_reads_after >= 0) {
     if (rd_fail_reads_after == 0) { rd_read_fails++; return RES_ERROR; }
     rd_fail_reads_after--;
+  }
+  /* One honest read error, then healthy again -- the flaky cart contact, as opposed to the
+   * card that dies for good. A cleanup path that deletes on failure is only VISIBLE this
+   * way: the operation fails, the card recovers, and the delete really lands. */
+  if (rd_fail_read_at >= 0) {
+    if (rd_fail_read_at < (long)count) { rd_fail_read_at = -1; rd_read_fails++; return RES_ERROR; }
+    rd_fail_read_at -= (long)count;
   }
   memcpy(buff, s_mem + (size_t)sector * FF_MAX_SS, (size_t)count * FF_MAX_SS);
   rd_reads += count;

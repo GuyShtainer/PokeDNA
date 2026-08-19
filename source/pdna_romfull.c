@@ -45,6 +45,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "pdna_layout.h"   /* the verdict band's geometry AND its fixed strings */
 #include "pdna_romfull.h"
 #include "pdna_romver.h"
 #include "flashcartio.h"
@@ -80,8 +81,12 @@ extern const PdnaRomVerify g_pdna_romver;
 /* The grid may not draw at or below this row. 124 and not 128 because the verdict band
  * underneath needs FOUR lines, not three: the remedy sentence is the one line a
  * photograph has to carry to be actionable, and at three lines it ran off the right edge
- * (verified by screenshot, docs/analysis-2026-08-18/romfull-bad-verdict.png). */
-#define GRID_BOT 124
+ * (verified by screenshot, docs/analysis-2026-08-18/romfull-bad-verdict.png). The band's
+ * own geometry and every fixed string in it live in pdna_layout.h, because
+ * tests/host_textfit_test.c measures them against the real font. */
+#define GRID_BOT PDNA_RVF_GRID_BOT
+#define BAND_X   PDNA_RVF_TEXT_X
+#define BAND_W   PDNA_RVF_TEXT_W
 
 /* Real bytes in region `i`, and the span it covers — the two numbers that decide whether a
  * passing cell gets the full green or the "partly compared" teal. */
@@ -210,17 +215,17 @@ void pdna_romfull_screen(void) {
    * legend is the half a photograph needs, because a photo of a coloured grid with no key
    * is not evidence of anything. */
   commas(num, d->image_bytes);
-  siprintf(l1, "%s B  %d x %lu KiB  wait %04x rung %d", num, (int)g.n_regions,
+  siprintf(l1, PDNA_RVF_GEOM_FMT, num, (int)g.n_regions,
            (unsigned long)(g.region_bytes >> 10),
            *(volatile uint16_t*)0x04000204, flashcartio_bus_rung());
-  ui_ptext_fit(6, 14, 232, UI_DIM, l1);
+  ui_ptext_fit(BAND_X, PDNA_RVF_HDR_Y1, BAND_W, UI_DIM, l1);
   /* The legend is chosen at RUNTIME by measured width, not by hoping: "part" is the entry
    * that made the string too long once, and a legend truncated to "grey=sk~" is worse than
    * a terse one. ui_ptext_w is the same measurement ui_ptext_fit would use to cut. */
   {
-    const char* leg = "green=ok  teal=part  red=BAD  yellow=bus  grey=skip";
-    if (ui_ptext_w(leg) > 232) leg = "grn=ok teal=part red=BAD ylw=bus gry=skip";
-    ui_ptext_fit(6, 22, 232, UI_DIM, leg);
+    const char* leg = PDNA_RVF_LEGEND;
+    if (ui_ptext_w(leg) > BAND_W) leg = PDNA_RVF_LEGEND_ALT;
+    ui_ptext_fit(BAND_X, PDNA_RVF_HDR_Y2, BAND_W, UI_DIM, leg);
   }
   for (i = 0; i < g.n_regions; i++) draw_cell(i, rows, pitch, CLR_PEND);
 
@@ -313,88 +318,95 @@ void pdna_romfull_screen(void) {
     commas(num2, d->image_bytes);
 
     /* Header line: coverage, in bytes, with the percentage spelled out. This is the line
-     * that makes a green grid quotable — "99.4% of the image" instead of "it said OK". */
+     * that makes a green grid quotable — "99.4% of the image" instead of "it said OK".
+     * It carried the word "checked" until 2026-08-18, when a hardware screenshot showed
+     * the fused build's version rendering as "...B checked (99.4%) b~": the qualifier that
+     * says which denominator this is got cut, which is the one part of the line that can
+     * MISLEAD rather than merely inform. The verb was the affordable half. */
     ui_fill_rect(0, 13, UI_SCR_W, 17, UI_BG);
-    siprintf(l1, "%s of %s B checked (%lu.%01lu%%)%s", num, num2,
+    siprintf(l1, PDNA_RVF_COVER_FMT, num, num2,
              (unsigned long)(per / 10u), (unsigned long)(per % 10u),
-             fused ? " base only" : "");
-    ui_ptext_fit(6, 14, 232, UI_TEXT, l1);
+             fused ? PDNA_RVF_COVER_BASE : "");
+    ui_ptext_fit(BAND_X, PDNA_RVF_HDR_Y1, BAND_W, UI_TEXT, l1);
 
     if (cal_bytes)
-      siprintf(l2, "scan %lu.%01lus  %luK: now %lums, loader %lums",
+      siprintf(l2, PDNA_RVF_SCAN_FMT,
                (unsigned long)(ms / 1000u), (unsigned long)((ms % 1000u) / 100u),
                (unsigned long)(cal_bytes >> 10),
                (unsigned long)tmr_ms(tk_fast), (unsigned long)tmr_ms(tk_slow));
     else
-      siprintf(l2, "scan %lu.%01lu s at waitcnt %04x", (unsigned long)(ms / 1000u),
+      siprintf(l2, PDNA_RVF_SCAN2_FMT, (unsigned long)(ms / 1000u),
                (unsigned long)((ms % 1000u) / 100u), *(volatile uint16_t*)0x04000204);
-    ui_ptext_fit(6, 22, 232, UI_DIM, l2);
+    ui_ptext_fit(BAND_X, PDNA_RVF_HDR_Y2, BAND_W, UI_DIM, l2);
 
     /* Four rows at an 8 px pitch (128/136/144/152), the last ending on scanline 158.
      * Every one of them is clipped to the screen width — a truncated remedy is a
      * photograph nobody can act on. */
-    ui_fill_rect(0, 124, UI_SCR_W, 36, UI_BG);
-    ui_hline(0, 125, UI_SCR_W, UI_BORDER);
+    ui_fill_rect(0, GRID_BOT, UI_SCR_W, UI_SCR_H - GRID_BOT, UI_BG);
+    ui_hline(0, GRID_BOT + 1, UI_SCR_W, UI_BORDER);
 
-    /* One line per verdict, and every one of them says what was MEASURED. */
+    /* One line per verdict, and every one of them says what was MEASURED. The strings are
+     * pdna_layout.h's, so host_textfit_test.c formats the SAME text at the widest counts
+     * PDNA_RV_MAX_REGIONS allows — "IMAGE INCOMPLETE - 256 bad, 256 unstable, 256 skip"
+     * was 256 px against a 232 px field and dropped the skip count on the floor. */
     switch (vd) {
       case PDNA_RVV_INCOMPLETE:
-        siprintf(l1, "IMAGE INCOMPLETE - %d bad, %d unstable, %d skip",
+        siprintf(l1, PDNA_RVF_V_FAULT,
                  (int)g.n_bad, (int)g.n_unstable, (int)g.n_skipped);
         break;
       case PDNA_RVV_DESC:
-        siprintf(l1, "DESCRIPTOR DAMAGED - %d skip bit(s) disagree",
-                 (int)g.excl_mismatch);
+        siprintf(l1, PDNA_RVF_V_DESC, (int)g.excl_mismatch);
         break;
       case PDNA_RVV_STOPPED:
-        siprintf(l1, "STOPPED at region %d of %d", (int)g.n_done, (int)g.n_regions);
+        siprintf(l1, PDNA_RVF_V_STOPPED, (int)g.n_done, (int)g.n_regions);
         break;
       case PDNA_RVV_NOTHING:
-        siprintf(l1, "NOTHING VERIFIED - 0 bytes in %d regions", (int)g.n_regions);
+        siprintf(l1, PDNA_RVF_V_NOTHING, (int)g.n_regions);
         break;
       case PDNA_RVV_SHORT:
-        siprintf(l1, "COVERAGE SHORT - %lu of %lu KiB compared",
+        siprintf(l1, PDNA_RVF_V_SHORT,
                  (unsigned long)(g.bytes_verified >> 10),
                  (unsigned long)(g.bytes_verifiable >> 10));
         break;
       default:
         if (g.n_partial)
-          siprintf(l1, "IMAGE OK - %d match (%d partial), %d skipped",
+          siprintf(l1, PDNA_RVF_V_OK_PART,
                    (int)g.n_ok, (int)g.n_partial, (int)g.n_skipped);
         else
-          siprintf(l1, "IMAGE OK - %d regions match, %d skipped",
-                   (int)g.n_ok, (int)g.n_skipped);
+          siprintf(l1, PDNA_RVF_V_OK, (int)g.n_ok, (int)g.n_skipped);
         break;
     }
-    ui_ptext_fit(6, 128, 232, ink, l1);
+    ui_ptext_fit(BAND_X, PDNA_RVF_ROW1_Y, BAND_W, ink, l1);
 
     if (g.first_bad >= 0) {
-      siprintf(l2, "bad #1: region %d @ 0x%06lx (%lu.%02lu MB) %s",
+      /* The last field is the diagnosis — stable means the IMAGE differs (re-copy),
+       * unstable means the BUS lied (timing) — and at "region %d @ 0x%06lx (%lu.%02lu MB)"
+       * it was the field that got cut: 253 px worst case, and 237 px on the image Guy
+       * actually runs. The word "region" and the parentheses were what paid for it. */
+      siprintf(l2, PDNA_RVF_BAD1_FMT,
                (int)g.first_bad, (unsigned long)g.first_bad_off,
                (unsigned long)(g.first_bad_off / 1000000u),
                (unsigned long)((g.first_bad_off / 10000u) % 100u),
-               g.first_bad_state == PDNA_RVG_BAD ? "stable" : "unstable");
-      ui_ptext_fit(6, 136, 232, UI_TEXT, l2);
+               g.first_bad_state == PDNA_RVG_BAD ? PDNA_RVF_BAD1_STABLE
+                                                 : PDNA_RVF_BAD1_UNSTABLE);
+      ui_ptext_fit(BAND_X, PDNA_RVF_ROW2_Y, BAND_W, UI_TEXT, l2);
     } else if (vd == PDNA_RVV_DESC) {
-      ui_ptext_fit(6, 136, 232, UI_TEXT,
-                   "Its bytes are suspect - no CRC covers them.");
+      ui_ptext_fit(BAND_X, PDNA_RVF_ROW2_Y, BAND_W, UI_TEXT, PDNA_RVF_DESC_NOTE);
     } else if (bad) {
       /* The all-skipped / short-coverage case. It used to land in the reassurance branch
        * below and print "Every region matched its build-time CRC32." with zero regions
        * compared, which is the exact lie this screen exists to prevent. */
-      ui_ptext_fit(6, 136, 232, UI_TEXT,
-                   vd == PDNA_RVV_NOTHING
-                     ? "This scan proved nothing - 0 bytes read."
-                     : "Fewer bytes compared than this image can prove.");
+      ui_ptext_fit(BAND_X, PDNA_RVF_ROW2_Y, BAND_W, UI_TEXT,
+                   vd == PDNA_RVV_NOTHING ? PDNA_RVF_NOTHING_NOTE : PDNA_RVF_SHORT_NOTE);
     } else {
-      siprintf(l2, "%d region(s) needed a retry - the cart bus lied once",
-               (int)g.n_recovered);
+      siprintf(l2, PDNA_RVF_RETRY_FMT, (int)g.n_recovered);
       /* Short enough to RENDER, not just to be true: at "...matched its build CRC32." the
        * proportional font clipped it to "...its build CRC~" (measured, screenshot
-       * docs/analysis-2026-08-18/honest-ok.png). A caveat a photograph cuts in half is
-       * not a caveat. */
-      ui_ptext_fit(6, 136, 232, g.n_recovered ? UI_WARN : UI_DIM,
-                   g.n_recovered ? l2 : "Every compared region matched its stamp.");
+       * docs/analysis-2026-08-18/honest-ok.png), and the retry line clipped at EVERY
+       * count — 257 px with one digit — losing the "the cart bus lied once" that is its
+       * entire point. A caveat a photograph cuts in half is not a caveat. */
+      ui_ptext_fit(BAND_X, PDNA_RVF_ROW2_Y, BAND_W, g.n_recovered ? UI_WARN : UI_DIM,
+                   g.n_recovered ? l2 : PDNA_RVF_CLEAN_NOTE);
     }
 
     if (bad) {
@@ -406,12 +418,11 @@ void pdna_romfull_screen(void) {
        * inside the cartridge (pdna_romver.h), so both are offered and the cheap one goes
        * first. ONE line, abbreviated: the two-line wrapped version was measured off-screen
        * at the bottom edge, and the log carries the full sentence anyway. */
-      strcpy(l3, (active_flashcart == EZ_FLASH_OMEGA)
-                   ? "Del /PATCH/*.pat, re-copy the .gba, or NOR"
-                   : "Re-copy the .gba to the card, then re-check");
-      ui_ptext_fit(6, 144, 232, UI_TEXT, l3);
+      strcpy(l3, (active_flashcart == EZ_FLASH_OMEGA) ? PDNA_RVF_FIX_OMEGA
+                                                      : PDNA_RVF_FIX_OTHER);
+      ui_ptext_fit(BAND_X, PDNA_RVF_ROW3_Y, BAND_W, UI_TEXT, l3);
     } else {
-      ui_ptext_fit(6, 144, 232, UI_DIM, "B  back");
+      ui_ptext_fit(BAND_X, PDNA_RVF_ROW3_Y, BAND_W, UI_DIM, PDNA_RVF_BACK);
     }
 
     /* The caveat, on every verdict including the green ones: the last TAIL_GUARD bytes are
@@ -431,17 +442,14 @@ void pdna_romfull_screen(void) {
        * after 9 KB of crt0. Say the range always; name its contents only when the size
        * says it really is the guard. */
       if (tail0 && d->image_bytes - tail0 == PDNA_RV_TAIL_GUARD)
-        siprintf(l3, "blind: 0x%06lx..EOF (%luK) = crt0 load images",
-                 (unsigned long)tail0,
+        siprintf(l3, PDNA_RVF_BLIND_TAIL, (unsigned long)tail0,
                  (unsigned long)((d->image_bytes - tail0) >> 10));
       else if (tail0)
-        siprintf(l3, "blind: 0x%06lx..EOF plus %luK of other zones",
-                 (unsigned long)tail0,
+        siprintf(l3, PDNA_RVF_BLIND_MORE, (unsigned long)tail0,
                  (unsigned long)((g.bytes_zoned - (d->image_bytes - tail0)) >> 10));
       else
-        siprintf(l3, "blind: %lu KiB of zones were never compared",
-                 (unsigned long)(g.bytes_zoned >> 10));
-      ui_ptext_fit(6, 152, 232, UI_DIM, l3);
+        siprintf(l3, PDNA_RVF_BLIND_ZONES, (unsigned long)(g.bytes_zoned >> 10));
+      ui_ptext_fit(BAND_X, PDNA_RVF_ROW4_Y, BAND_W, UI_DIM, l3);
     }
 
     if (bad)            snd_error();
@@ -452,7 +460,7 @@ void pdna_romfull_screen(void) {
      * caller owns the card, and at the boot-hold entry there is no mounted card yet. */
     log_line("rom full check: %s - %d ok (%d partial), %d bad, %d unstable, %d recovered, "
              "%d skip of %d regions x %lu KiB",
-             vd == PDNA_RVV_INCOMPLETE ? "IMAGE INCOMPLETE" :
+             vd == PDNA_RVV_INCOMPLETE ? "IMAGE FAULT" :   /* same word the screen shows */
              vd == PDNA_RVV_DESC       ? "DESCRIPTOR DAMAGED" :
              vd == PDNA_RVV_STOPPED    ? "STOPPED" :
              vd == PDNA_RVV_NOTHING    ? "NOTHING VERIFIED" :

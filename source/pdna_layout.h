@@ -359,4 +359,89 @@
 /* Two rows above the cue list: Strength and Duration. */
 #define PDNA_RMB_STEPPERS      2
 
+/* ---------------------------------------------------------------------------
+ * ROM IMAGE CHECK — the verdict band (source/pdna_romfull.c)
+ *
+ * This screen's DELIVERABLE IS A PHONE PHOTO: it is what Guy sends when a 12.5 MB image
+ * hangs, and it has to be actionable without the console, the log or the person who wrote
+ * it. Every line of it is drawn with ui_ptext_fit(x, y, PDNA_RVF_TEXT_W, ...), and
+ * ui_ptext_fit does not wrap or shrink — it CUTS, leaving a single '~'. The tail it cuts
+ * is where these particular sentences keep their meaning:
+ *
+ *   "...(6.29 MB) unstable"   the word that says BUS fault, not IMAGE fault — i.e. whether
+ *                             the remedy is a re-copy or a timing change.
+ *   "...(99.4%) base only"    the qualifier saying the percentage is against PokeDNA's own
+ *                             image and NOT the fused game ROM. Without it the line
+ *                             overstates the scan by more than half. It rendered as
+ *                             "...B checked (99.4%) b~" on hardware.
+ *   "...the bus lied"         why a green grid still needed retries.
+ *
+ * So every string here is measured at the WIDEST values the code can put in it — 3-digit
+ * counts (PDNA_RV_MAX_REGIONS is 256), a 7-hex-digit offset and a 2-digit MB figure
+ * (PDNA_RV_MAX_IMAGE is 32 MiB), 10-character comma'd byte counts, "100.0%" — by
+ * tests/host_textfit_test.c, which formats THESE macros. A line that only fits at the
+ * lucky values is a line that clips on the day it matters. */
+#define PDNA_RVF_TEXT_X        6
+#define PDNA_RVF_TEXT_W      232   /* x=6 + 232 = 238: two px inside the 240 px screen */
+#define PDNA_RVF_HDR_Y1       14   /* coverage / geometry                              */
+#define PDNA_RVF_HDR_Y2       22   /* timing / legend                                  */
+#define PDNA_RVF_GRID_BOT    124   /* the grid may not draw at or below this row        */
+/* Four rows at an 8 px pitch, the last ending on scanline 158. The remedy sentence is the
+ * one line a photograph has to carry to be actionable; at three rows it ran off the edge. */
+#define PDNA_RVF_ROW1_Y      128
+#define PDNA_RVF_ROW2_Y      136
+#define PDNA_RVF_ROW3_Y      144
+#define PDNA_RVF_ROW4_Y      152
+
+/* --- before the scan: geometry + the colour key --------------------------- */
+#define PDNA_RVF_GEOM_FMT    "%s B  %d x %lu KiB  wait %04x rung %d"
+#define PDNA_RVF_LEGEND      "green=ok  teal=part  red=BAD  yellow=bus  grey=skip"
+#define PDNA_RVF_LEGEND_ALT  "grn=ok teal=part red=BAD ylw=bus gry=skip"
+
+/* --- the header, rewritten when the scan ends ------------------------------
+ * "checked" used to sit between the byte count and the percentage. It cost 44 px and the
+ * fused build needs those px for PDNA_RVF_COVER_BASE, which is the half of the line that
+ * can be WRONG rather than merely terse. */
+#define PDNA_RVF_COVER_FMT   "%s of %s B (%lu.%01lu%%)%s"
+#define PDNA_RVF_COVER_BASE  " base only"   /* fused image: which denominator this is */
+#define PDNA_RVF_SCAN_FMT    "scan %lu.%01lus  %luK: now %lums, loader %lums"
+#define PDNA_RVF_SCAN2_FMT   "scan %lu.%01lu s at waitcnt %04x"
+
+/* --- row 1: one line per verdict, each saying what was MEASURED ------------ */
+/* "IMAGE FAULT", not "IMAGE INCOMPLETE": at 3-digit counts that headline made the line
+ * 256 px and cut the skip count off. Keeping the word IMAGE is what separates this verdict
+ * (the bytes are wrong) from STOPPED / COVERAGE SHORT (the scan was short), so the
+ * adjective went instead of the noun. */
+#define PDNA_RVF_V_FAULT     "IMAGE FAULT - %d bad, %d unstable, %d skip"
+#define PDNA_RVF_V_DESC      "DESCRIPTOR DAMAGED - %d skip bit(s) differ"
+#define PDNA_RVF_V_STOPPED   "STOPPED at region %d of %d"
+#define PDNA_RVF_V_NOTHING   "NOTHING VERIFIED - 0 bytes in %d regions"
+#define PDNA_RVF_V_SHORT     "COVERAGE SHORT - %lu/%lu KiB compared"
+#define PDNA_RVF_V_OK_PART   "IMAGE OK - %d match (%d part), %d skipped"
+#define PDNA_RVF_V_OK        "IMAGE OK - %d regions match, %d skipped"
+
+/* --- row 2: the evidence behind the verdict -------------------------------- */
+/* The trailing %s is the whole diagnosis: STABLE means the image on the card differs
+ * (re-copy it), UNSTABLE means the same bytes read differently twice (the bus lied, so
+ * the timing is what to change). It is last because that is where the interesting value
+ * goes on a line whose earlier fields are addresses. */
+#define PDNA_RVF_BAD1_FMT    "bad #1: reg %d @ 0x%06lx %lu.%02luMB %s"
+#define PDNA_RVF_BAD1_STABLE   "stable"
+#define PDNA_RVF_BAD1_UNSTABLE "unstable"
+#define PDNA_RVF_DESC_NOTE   "Its bytes are suspect - no CRC covers them."
+#define PDNA_RVF_NOTHING_NOTE "This scan proved nothing - 0 bytes read."
+#define PDNA_RVF_SHORT_NOTE  "Less compared than this image can prove."
+#define PDNA_RVF_RETRY_FMT   "%d region(s) needed a retry - the bus lied"
+#define PDNA_RVF_CLEAN_NOTE  "Every compared region matched its stamp."
+
+/* --- row 3: the remedy, or the way out ------------------------------------- */
+#define PDNA_RVF_FIX_OMEGA   "Del /PATCH/*.pat, re-copy the .gba, or NOR"
+#define PDNA_RVF_FIX_OTHER   "Re-copy the .gba to the card, then re-check"
+#define PDNA_RVF_BACK        "B  back"
+
+/* --- row 4: the blind range, on EVERY verdict including the green ones ------ */
+#define PDNA_RVF_BLIND_TAIL  "blind: 0x%06lx..EOF (%luK) = crt0 load images"
+#define PDNA_RVF_BLIND_MORE  "blind: 0x%06lx..EOF + %luK of other zones"
+#define PDNA_RVF_BLIND_ZONES "blind: %lu KiB of zones never compared"
+
 #endif /* PDNA_LAYOUT_H */

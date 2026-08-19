@@ -35,6 +35,10 @@
 #include "ui_font.h"
 #include "ui_layout.h"     /* UI_SCR_W, UI_FOOTER_Y, ui_popup_fit — as shipped */
 #include "pdna_layout.h"   /* the screens' own geometry + fixed strings           */
+#include "pdna_romver.h"   /* the ROM verifier's own clamps: MAX_REGIONS, MAX_IMAGE,
+                            * TAIL_GUARD — i.e. the WORST CASE the verdict band's
+                            * numbers can reach, taken from the shipped header rather
+                            * than guessed at here */
 #include "rmbl.h"          /* RCUE_COUNT: how many cue rows the Rumble page draws */
 
 #define SCR_W   UI_SCR_W
@@ -118,6 +122,23 @@ static void chkv_min(const char* what, int value, int floor_) {
   if (!ok) fails++;
   printf("  %-4s %-46.46s          v=%-4d min=%-4d %s\n",
          ok ? "ok" : "FAIL", "(laid-out value)", value, floor_, what);
+}
+/* Thousands separators, mirroring pdna_romfull.c's commas(): 33554432 -> "33,554,432".
+ * The VALUE comes from PDNA_RV_MAX_IMAGE (the shipped clamp) — only the grouping is
+ * duplicated, because commas() is a static in the .c. Stated as a gap rather than hidden:
+ * if someone changes the separator style the screen and this test drift apart, but the
+ * WIDTH this test measures cannot drift from the real bound. */
+static void commas(char* out, unsigned long v) {
+  char raw[16];
+  int n, i, j = 0, k;
+  sprintf(raw, "%lu", v);
+  n = (int)strlen(raw);
+  for (i = 0; i < n; i++) {
+    out[j++] = raw[i];
+    k = n - 1 - i;
+    if (k > 0 && (k % 3) == 0) out[j++] = ',';
+  }
+  out[j] = 0;
 }
 /* ---- end of the added helpers -------------------------------------------- */
 
@@ -774,6 +795,121 @@ int main(void) {
    * 240 — draws in full, its final 't' inked at x=234..238. It is pinned above
    * with the other box footers and left alone deliberately. */
   /* ==== END: popups vs the footer row ===================================== */
+
+  /* ======================================================================== */
+  /* ==== BEGIN: ROM IMAGE CHECK, the verdict band (source/pdna_romfull.c) == */
+  /* ========================================================================
+   * This screen's output IS a phone photo — it is what gets sent when a 12.5 MB image
+   * hangs — so a clipped line here is not cosmetic, it is a lost diagnosis. Six of its
+   * strings were over the 232 px field at REALISTIC values and one was caught rendering
+   * as "...B checked (99.4%) b~" in mGBA, which turns "99.4% of PokeDNA's own image" into
+   * "99.4% of the cartridge" — an overstatement of more than half.
+   *
+   * WORST CASE, NOT THE LUCKY ONE. Every substitution below is the widest value the
+   * shipped code can put in that field, and each bound comes from pdna_romver.h rather
+   * than from a number typed here:
+   *   counts / region indices  PDNA_RV_MAX_REGIONS      (3 digits)
+   *   byte counts, KiB, offsets, MB   PDNA_RV_MAX_IMAGE (10-char comma'd, 32768 KiB,
+   *                                   a 7-hex-digit offset, "33.55" MB)
+   *   percentage               100.0
+   * Two fields have no structural clamp and are bounded by argument instead, called out
+   * where they are used: the elapsed times (a scan that takes 999.9 s, a 256 KiB CRC that
+   * takes 9999 ms — both an order of magnitude past anything measured) and the bus rung
+   * (FCIO_NRUNGS is a single digit). */
+  printf("\n== ROM IMAGE CHECK: the verdict band ==\n");
+#define RVF_X PDNA_RVF_TEXT_X
+#define RVF_W PDNA_RVF_TEXT_W
+  { char b[96], nA[16], nB[16];
+    const unsigned long MAXREG = PDNA_RV_MAX_REGIONS;
+    const unsigned long MAXIMG = PDNA_RV_MAX_IMAGE;
+    /* the last offset a region can START at: the smallest region the stamper may pick */
+    const unsigned long OFF    = PDNA_RV_MAX_IMAGE - (1ul << PDNA_RV_MIN_RSHIFT);
+    commas(nA, MAXIMG);
+    commas(nB, MAXIMG);
+
+    /* --- before the scan --------------------------------------------------- */
+    /* Two shapes reach the same digit count: 256 regions of 128 KiB, and the coarsest
+     * grid the stamper may emit (PDNA_RV_MAX_RSHIFT) over the largest image. */
+    sprintf(b, PDNA_RVF_GEOM_FMT, nA, (int)MAXREG,
+            (unsigned long)(MAXIMG / MAXREG) >> 10, 0xffffu, 9);
+    PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_GEOM_FMT, nA, 2, (1ul << PDNA_RV_MAX_RSHIFT) >> 10, 0xffffu, 9);
+    PF(b, RVF_X, RVF_W);
+    /* The long legend is chosen at RUNTIME by ui_ptext_w, so IT is allowed not to fit —
+     * the SHORT one is the fallback and nothing measures it at runtime, so it is the one
+     * that must fit here. (A fallback that also clips leaves no legend at all.) */
+    PF(PDNA_RVF_LEGEND_ALT, RVF_X, RVF_W);
+
+    /* --- the header, rewritten when the scan ends --------------------------- */
+    /* THE ONE CONFIRMED BY A RENDER. The " base only" qualifier is fused onto this line
+     * on purpose: separated from the number it qualifies, the number is simply wrong. */
+    sprintf(b, PDNA_RVF_COVER_FMT, nA, nB, 100ul, 0ul, PDNA_RVF_COVER_BASE);
+    PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_COVER_FMT, nA, nB, 100ul, 0ul, "");
+    PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_SCAN_FMT, 999ul, 9ul, 256ul, 9999ul, 9999ul);
+    PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_SCAN2_FMT, 999ul, 9ul, 0xffffu);
+    PF(b, RVF_X, RVF_W);
+
+    /* --- row 1: every verdict, at every count maxed ------------------------- */
+    sprintf(b, PDNA_RVF_V_FAULT, (int)MAXREG, (int)MAXREG, (int)MAXREG);
+    PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_V_DESC, (int)MAXREG);           PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_V_STOPPED, (int)MAXREG, (int)MAXREG);  PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_V_NOTHING, (int)MAXREG);        PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_V_SHORT, MAXIMG >> 10, MAXIMG >> 10);  PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_V_OK_PART, (int)MAXREG, (int)MAXREG, (int)MAXREG);
+    PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_V_OK, (int)MAXREG, (int)MAXREG); PF(b, RVF_X, RVF_W);
+
+    /* --- row 2: the evidence ----------------------------------------------- */
+    /* BOTH endings, because the ending is the diagnosis: "unstable" is the longer one and
+     * it is the one that says BUS fault (re-time) rather than IMAGE fault (re-copy). */
+    sprintf(b, PDNA_RVF_BAD1_FMT, (int)MAXREG, OFF, OFF / 1000000ul,
+            (OFF / 10000ul) % 100ul, PDNA_RVF_BAD1_UNSTABLE);
+    PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_BAD1_FMT, (int)MAXREG, OFF, OFF / 1000000ul,
+            (OFF / 10000ul) % 100ul, PDNA_RVF_BAD1_STABLE);
+    PF(b, RVF_X, RVF_W);
+    PF(PDNA_RVF_DESC_NOTE,    RVF_X, RVF_W);
+    PF(PDNA_RVF_NOTHING_NOTE, RVF_X, RVF_W);
+    PF(PDNA_RVF_SHORT_NOTE,   RVF_X, RVF_W);
+    PF(PDNA_RVF_CLEAN_NOTE,   RVF_X, RVF_W);
+    /* clipped at EVERY count, not just the big ones — so check the small one too */
+    sprintf(b, PDNA_RVF_RETRY_FMT, (int)MAXREG);        PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_RETRY_FMT, 1);                  PF(b, RVF_X, RVF_W);
+
+    /* --- row 3: the remedy -------------------------------------------------- */
+    PF(PDNA_RVF_FIX_OMEGA, RVF_X, RVF_W);
+    PF(PDNA_RVF_FIX_OTHER, RVF_X, RVF_W);
+    PF(PDNA_RVF_BACK,      RVF_X, RVF_W);
+
+    /* --- row 4: the blind range, on every verdict ---------------------------- */
+    /* This branch only fires when the zone IS the tail guard, so its KiB field is
+     * PDNA_RV_TAIL_GUARD and nothing wider. */
+    sprintf(b, PDNA_RVF_BLIND_TAIL, OFF, (unsigned long)(PDNA_RV_TAIL_GUARD >> 10));
+    PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_BLIND_MORE, OFF, MAXIMG >> 10); PF(b, RVF_X, RVF_W);
+    sprintf(b, PDNA_RVF_BLIND_ZONES, MAXIMG >> 10);     PF(b, RVF_X, RVF_W); }
+
+  /* ...and the band's geometry, so the field the strings are measured against is the one
+   * the screen actually draws with. */
+  chkv("verdict band ink stays on the screen",
+       PDNA_RVF_TEXT_X + PDNA_RVF_TEXT_W, UI_SCR_W);
+  chkv_min("verdict band starts below the grid's bottom rule",
+           PDNA_RVF_ROW1_Y, PDNA_RVF_GRID_BOT + 2);
+  chkv("verdict row 1 clear of row 2", PDNA_RVF_ROW1_Y + UI_FONT_CELL_H - 1,
+       PDNA_RVF_ROW2_Y - 1);
+  chkv("verdict row 2 clear of row 3", PDNA_RVF_ROW2_Y + UI_FONT_CELL_H - 1,
+       PDNA_RVF_ROW3_Y - 1);
+  chkv("verdict row 3 clear of row 4", PDNA_RVF_ROW3_Y + UI_FONT_CELL_H - 1,
+       PDNA_RVF_ROW4_Y - 1);
+  chkv("verdict row 4 last ink row is on screen",
+       PDNA_RVF_ROW4_Y + UI_FONT_CELL_H - 1, UI_SCR_H - 1);
+  chkv("header row 1 clear of header row 2",
+       PDNA_RVF_HDR_Y1 + UI_FONT_CELL_H - 1, PDNA_RVF_HDR_Y2 - 1);
+  /* ==== END: ROM IMAGE CHECK ============================================== */
 
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;

@@ -307,9 +307,34 @@ SfStatus sf_write_verified(const char* path, const uint8_t* buf, uint32_t len) {
   char tmp[SF_PATH_MAX];
   siprintf(tmp, "%s.tmp", path);
 
-  /* 1) write temp */
+  /* 1) write temp. Clean up only what THIS call put there.
+   *
+   * write_all can fail in exactly two ways, and they differ in whether f_open ran:
+   *
+   *   SF_ERR_WRITE — f_open SUCCEEDED, so FA_CREATE_ALWAYS truncated the file to zero
+   *     before the first byte went out. Whatever sits under the .tmp name now is this
+   *     call's own partial output; no earlier copy can still be in it. Delete it.
+   *
+   *   SF_ERR_OPEN  — f_open FAILED, so in the ordinary case nothing was truncated and the
+   *     .tmp still holds exactly what it held a moment ago (a refused mount, a
+   *     write-protected volume, FR_DENIED, FR_LOCKED, or a disk error while walking the
+   *     directory all return before the truncation). On a card that has just swallowed a
+   *     rename, that file is a COMPLETE, byte-for-byte VERIFIED copy of the user's save
+   *     and the .sav may already be gone — sf_where_are_the_bytes calls that state
+   *     SF_WHERE_TMP_ONLY and the UI tells the user, in those words, that their bytes are
+   *     in the .tmp. Unlinking it here is a FAILING WRITE THROWING AWAY THE LAST GOOD
+   *     COPY: the same rule sf_backup_rolling states, broken by the refactor that
+   *     introduced this shared cleanup (before it, the open failure returned early and
+   *     deleted nothing). If no .tmp existed the skipped unlink was a no-op anyway.
+   *
+   * The one sub-case that does NOT leave an intact .tmp: f_open can fail INSIDE the
+   * truncation, after it has zeroed the directory entry and while remove_chain is walking
+   * the FAT. Keeping the file is still never worse there — it is already empty, so
+   * file_matches rejects it, sf_where_are_the_bytes reports it as no copy at all, and the
+   * next write truncates it again. That asymmetry is the whole argument: keeping costs at
+   * most a stale zero-length scratch, deleting can cost the save. */
   SfStatus wst = write_all(tmp, buf, len);
-  if (wst != SF_OK) { f_unlink(tmp); return wst; }
+  if (wst != SF_OK) { if (wst != SF_ERR_OPEN) f_unlink(tmp); return wst; }
 
   /* 2) re-read temp and byte-compare to the intended buffer */
   if (!file_matches(tmp, buf, len)) { f_unlink(tmp); return SF_ERR_VERIFY; }

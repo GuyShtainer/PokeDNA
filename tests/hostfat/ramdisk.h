@@ -42,6 +42,15 @@ extern long rd_fail_at;           /* >=0: let that many writes land, fail exactl
 extern long rd_fail_reads_after;  /* >=0: let that many reads through, then fail every
                                    * read (-1 = disabled). Lets a test sweep a read
                                    * error across every step of a flush.          */
+extern long rd_fail_read_at;      /* >=0: let that many reads through, fail exactly ONE,
+                                   * then be healthy again (-1 = disabled). The read-side
+                                   * twin of rd_fail_at, and needed for the same reason: it
+                                   * is the only knob that can make an f_open fail while
+                                   * the very next f_unlink SUCCEEDS, which is what it
+                                   * takes to see a cleanup path delete a file this call
+                                   * never created. rd_fail_reads_after cannot -- once
+                                   * reads stay dead the cleanup's own unlink dies with
+                                   * them and the file survives by accident.        */
 extern unsigned long rd_lied;     /* sectors swallowed by rd_lie_writes         */
 extern unsigned long rd_read_fails; /* reads refused by rd_fail_reads_after      */
 extern unsigned long rd_writes;   /* successful sector writes since rd_init    */
