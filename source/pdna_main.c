@@ -2058,25 +2058,23 @@ static void party_draw_name_level(int i, const PkMon* p) {
   int ndy = isbox ? PDNA_PTY_BOX_NAME_DY : PDNA_PTY_NAME_DY;
   int nw  = isbox ? PDNA_PTY_BOX_NAME_W  : PDNA_PTY_NAME_W;
   const char* nm = p->nickname[0] ? p->nickname : pk_species_name(p->species);
-  /* ROW vs BOX draw through two different faces on purpose (2026-08-20 correction —
-   * see PDNA_PTY_NAME_W's own comment in pdna_layout.h for the full measurement this
-   * split is built on):
-   *   ROW:  the DEFAULT proportional face (ui_ptext_fit_shadow), same as every other
-   *         string on this screen. A full 10-glyph name still does not fit the row's
-   *         49px column even at its measured maximum width, but the fix for that is a
-   *         wider column, not tighter kerning — a name that overflows clips safely with
-   *         ui_ptext_fit's own trailing '~' instead. This screen's illegible ink-overlap
-   *         bug (UI_PTEXT_TIGHT_DELTA=2, docs/analysis-2026-08-19-party/
-   *         verify-2026-08-20-zoom.png) shipped from using the tight face here; it never
-   *         will again because the row no longer calls it at all.
-   *   BOX:  the TIGHT face (ui_ptext_fit_shadow_tight), delta capped at 1 (touching
-   *         glyphs, never overlapping — see UI_PTEXT_TIGHT_DELTA's comment in
-   *         ui_font.h). The box column is already at its true geometric maximum (its
-   *         own right edge sits against PokeDNA's own box border, no room to widen) and
-   *         "TYRANITAR" ties the default face's budget with 0px of slack, so this is the
-   *         one legitimate spot left for tight spacing. */
-  if (isbox) ui_ptext_fit_shadow_tight(x + ndx, y + ndy, nw, UI_TEXT, UI_PTY_TEXT_SHADOW, nm);
-  else       ui_ptext_fit_shadow(x + ndx, y + ndy, nw, UI_TEXT, UI_PTY_TEXT_SHADOW, nm);
+  /* ROW and BOX both draw through the TIGHT face now (2026-08-21 correction — see
+   * PDNA_PTY_NAME_W's own comment in pdna_layout.h for the full measurement history
+   * this rests on). Through 2026-08-20 the row used the DEFAULT face on the theory that
+   * a clipped name is safer than a kerned one; that was true of delta=2 (genuine ink
+   * OVERLAP — see UI_PTEXT_TIGHT_DELTA's comment in ui_font.h) but not of delta=1, which
+   * is proven touching-at-worst across all 96 glyphs and renders every real 9-glyph
+   * species name (SALAMENCE/METAGROSS/DRAGONITE/etc, 45px tight) with several pixels of
+   * slack inside the 49px column instead of clipping it to "SALAMEN~". A complete name
+   * beats a clipped one, so both branches take the same path:
+   *   ui_ptext_fit_shadow_tight (delta=1, capped — UI_PTEXT_TIGHT_DELTA in ui_font.h).
+   * A true 10-glyph name (BELLSPROUT, or this save's own "28/01/2026" nickname) still
+   * does not fit even at delta=1 (50px against 49px) and clips by ~1px via
+   * ui_ptext_fit_tight's own trailing '~' — an accepted, documented residual (see
+   * tests/host_textfit_test.c's row-name block): closing THAT last pixel needs a
+   * narrower party typeface, not more kerning (delta is capped at 1 and must stay
+   * there), and is a separate job. */
+  ui_ptext_fit_shadow_tight(x + ndx, y + ndy, nw, UI_TEXT, UI_PTY_TEXT_SHADOW, nm);
   char lvl[8]; siprintf(lvl, PDNA_PTY_LVL_FMT, (unsigned)p->level);
   int lvdy = isbox ? PDNA_PTY_BOX_LVL_DY : PDNA_PTY_LVL_DY;
   ui_ptext_shadow(x + ndx, y + lvdy, UI_TEXT, UI_PTY_TEXT_SHADOW, lvl);

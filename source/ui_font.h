@@ -40,13 +40,15 @@ extern const unsigned char ui_font_w[96];
  * rendered text and must never ship again.
  *
  * At delta=1 a 10-glyph name only saves 1 px/glyph (a full-length species name or a
- * capped Gen-3 nickname still runs ~50 px against a ~52 px column) -- nowhere near
- * enough to rescue a genuinely too-narrow column on its own. Kerning is not a substitute
- * for column width: widen the column first (PDNA_PTY_NAME_W / PDNA_PTY_BOX_NAME_W in
- * pdna_layout.h), and reach for the tight face only for a spot where the column is
- * already at its real geometric maximum and still short by a few forgivable pixels (see
- * PDNA_PTY_BOX_NAME_W's own comment in pdna_layout.h for the one remaining case that
- * needs it -- the slot-1 box name; ROW names no longer use this path at all).
+ * capped Gen-3 nickname still runs ~50 px against a ~49-52 px column) -- nowhere near
+ * enough to rescue a genuinely too-narrow column on its own; it clips by ~1px there even
+ * at delta=1, an accepted residual (see tests/host_textfit_test.c's row-name block).
+ * Kerning is not a substitute for column width: widen the column first (PDNA_PTY_NAME_W /
+ * PDNA_PTY_BOX_NAME_W in pdna_layout.h) where there is room to, and reach for the tight
+ * face where a column is already at its real geometric maximum and only short by a few
+ * forgivable pixels -- both party name columns (box AND rows, 2026-08-21 -- see
+ * PDNA_PTY_NAME_W's own comment in pdna_layout.h for the full history of why the row
+ * joined the box on this path) are exactly that case.
  *
  * Defined here (not in ui.c) so tests/host_textfit_test.c, which links ui_font.c but
  * never ui.c, can mirror the exact same number rather than re-typing it -- the whole

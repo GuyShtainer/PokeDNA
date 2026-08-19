@@ -1148,45 +1148,69 @@ int main(void) {
      * docs/analysis-2026-08-19-party/verify-2026-08-20-zoom.png, and
      * UI_PTEXT_TIGHT_DELTA's own comment in ui_font.h for exactly why delta=2 overlaps
      * and delta=1 does not (checked against all 96 glyphs' ink bitmaps, not just the
-     * capitals). #2026-08-20 reverts party_draw_name_level's row branch to the DEFAULT
-     * proportional face (ui_ptext_fit_shadow, source/ui.c) — no kerning at all — and
-     * widens PDNA_PTY_NAME_W to its true measured maximum instead (see that constant's
-     * own comment in pdna_layout.h for the full pixel-by-pixel derivation off
-     * retail-party-idle-f00.png). That maximum is 49px, still short of the 60px a full
-     * 10-glyph name needs at the default advance and even short of a real 9-letter
-     * species name (54px) — a real geometric limit of this column, not a bug — so the
-     * checks below prove BOTH halves honestly: a name that fits gets its slack checked,
-     * and a name that does not fit is proven to safely EXCEED the budget (i.e. it will
-     * clip via ui_ptext_fit's own trailing '~', never overlap) rather than silently
-     * assumed to work. */
+     * capitals). #2026-08-20 reverted party_draw_name_level's row branch to the DEFAULT
+     * proportional face (no kerning at all) and widened PDNA_PTY_NAME_W to its true
+     * measured maximum (49px) instead — safe, but it meant every real 9-glyph species
+     * name (52-54px default) still clipped to e.g. "SALAMEN~", because 49px was never
+     * wide enough for the default face's advance and there is no more room to widen it
+     * (see PDNA_PTY_NAME_W's own comment in pdna_layout.h for why 51px is the true
+     * geometric ceiling between the fixed name origin and the retail-measured HP label).
+     *
+     * #2026-08-21: now that delta=1 is proven to never overlap (the guard right below),
+     * the row joins the box on the TIGHT face (ui_ptext_fit_shadow_tight,
+     * source/pdna_main.c) instead of chasing a wider column that does not exist. A
+     * complete name beats a clipped one, and every real 9-glyph species name fits at
+     * delta=1 with real slack to spare — the checks below prove that with >=1px slack
+     * required, then separately prove the residual: a genuine 10-glyph name still does
+     * not fit even at delta=1 and is expected, by design, to clip by roughly a pixel —
+     * that gap needs a narrower party typeface (a separate job), not more kerning
+     * (delta stays capped at 1) or a moved column. */
     chkv("UI_PTEXT_TIGHT_DELTA never exceeds 1 (glyphs may touch, ink must never overlap)",
          UI_PTEXT_TIGHT_DELTA, 1);
-    /* The longest string that DOES fit this column at the default advance: 8 glyphs of
-     * the font's widest letter (6px/glyph, e.g. 'A'/'S'/'T'/'W'/...) = 48px against the
-     * 49px budget, exactly 1px of slack — the smallest amount this file's own rule still
-     * calls "fits". Synthetic on purpose (the font's own worst case, not a lucky real
-     * name — the same honesty rule the 10-char cases below already use). Proves the
-     * widened column is not vacuous: shrink PDNA_PTY_NAME_W by even 1px (to 48, the old
-     * value) and this goes red (48px name, 47px slack-adjusted limit) — checked by hand
-     * for this pass and restored before committing. */
-    chkv("row name (synthetic 8-char all-widest-glyph, default) clears its column with slack",
-         pwidth("AAAAAAAA"), PDNA_PTY_NAME_W - 1);
-    /* The real names that motivated this whole investigation. Every one of them EXCEEDS
-     * the widened column at the default advance (52-60px against the 49px budget) — that
-     * is the correct, expected outcome given the measured 51px span, not a leftover bug.
-     * chkv_min (must EXCEED, not fit) so that if PDNA_PTY_NAME_W is ever widened enough
-     * to fit one of these for real, the assertion goes red and forces this comment block
-     * to be revisited rather than quietly going stale. */
-    chkv_min("row name (SALAMENCE, default) exceeds its column and clips safely (no overlap)",
-             pwidth("SALAMENCE"), PDNA_PTY_NAME_W + 1);
-    chkv_min("row name (METAGROSS, default) exceeds its column and clips safely (no overlap)",
-             pwidth("METAGROSS"), PDNA_PTY_NAME_W + 1);
-    chkv_min("row name (NIDOQUEEN, default) exceeds its column and clips safely (no overlap)",
-             pwidth("NIDOQUEEN"), PDNA_PTY_NAME_W + 1);
-    chkv_min("row name (BELLSPROUT, default) exceeds its column and clips safely (no overlap)",
-             pwidth("BELLSPROUT"), PDNA_PTY_NAME_W + 1);
-    chkv_min("row name (synthetic worst-case 10-char nickname, default) exceeds its column",
-             pwidth("WWWWWWWWWW"), PDNA_PTY_NAME_W + 1);
+#define PWT(s) pwidth_tight(s)
+    /* The mathematical worst case for a 9-glyph name: nine of the font's widest letter
+     * (6px default / 5px tight — every uppercase letter except 'I', which is narrower).
+     * Synthetic on purpose, not a lucky real name — proves the >=1px-slack claim below
+     * holds even at the font's own ceiling, not just for names that happen to contain a
+     * narrow glyph. Non-vacuity: shrinking PDNA_PTY_NAME_W by 5px (to 44) turns this red
+     * (45px tight name, 43px slack-adjusted limit) — checked by hand for this pass. */
+    chkv("row name (synthetic 9-char all-widest-glyph, tight) clears its column with slack",
+         PWT("AAAAAAAAA"), PDNA_PTY_NAME_W - 1);
+    /* The real 9-glyph species names that motivated this whole investigation — including
+     * the three that actually sit in this save's own party rows (SALAMENCE/METAGROSS/
+     * DRAGONITE; see docs/analysis-2026-08-19-party/MEASUREMENTS.md). Every one now FITS
+     * with real slack at delta=1 (43-45px tight against the 49px budget), rendering the
+     * full name instead of "SALAMEN~"/"METAGRO~"/"DRAGONI~". */
+    chkv("row name (SALAMENCE, tight) clears its column with slack",
+         PWT("SALAMENCE"), PDNA_PTY_NAME_W - 1);
+    chkv("row name (METAGROSS, tight) clears its column with slack",
+         PWT("METAGROSS"), PDNA_PTY_NAME_W - 1);
+    chkv("row name (NIDOQUEEN, tight) clears its column with slack",
+         PWT("NIDOQUEEN"), PDNA_PTY_NAME_W - 1);
+    chkv("row name (DRAGONITE, tight) clears its column with slack",
+         PWT("DRAGONITE"), PDNA_PTY_NAME_W - 1);
+    /* KNOWN LIMITATION, recorded on purpose rather than silently fixed or forgotten: a
+     * genuine 10-glyph name does not fit this column even at delta=1. BELLSPROUT (no
+     * narrow glyphs, the same 50px tight as the font's own worst-case 10-char string)
+     * clips by 1px — chkv_min (must EXCEED, not fit) so that if PDNA_PTY_NAME_W or the
+     * tight delta ever changes enough to fit it for real, this assertion goes red and
+     * forces this comment to be revisited rather than quietly going stale. Retail fits a
+     * true 10-character name here only because its own font is narrower per glyph than
+     * PokeDNA's; closing this last ~1px needs a narrower party typeface, a separate job
+     * from this pass — NOT a higher tight delta (capped at 1, see ui_font.h) or a moved
+     * column (PDNA_PTY_NAME_DX/W are unchanged by this pass). */
+    chkv_min("row name (BELLSPROUT, tight) exceeds its column and clips safely (no overlap)",
+             PWT("BELLSPROUT"), PDNA_PTY_NAME_W + 1);
+    chkv_min("row name (synthetic worst-case 10-char nickname, tight) exceeds its column",
+             PWT("WWWWWWWWWW"), PDNA_PTY_NAME_W + 1);
+    /* Not every 10-glyph string clips, though — worth recording honestly rather than
+     * letting the BELLSPROUT case above read as "all 10-char names clip". WEEPINBELL
+     * (also a real Gen-3 species name) contains a narrow 'I' that saves 2px versus an
+     * all-wide-letter name of the same length, landing it at exactly 48px tight — 1px of
+     * real slack inside the 49px budget, so it renders in full. */
+    chkv("row name (WEEPINBELL, tight) — a 10-char name that happens to fit anyway",
+         PWT("WEEPINBELL"), PDNA_PTY_NAME_W - 1);
+#undef PWT
     { char b[16];
       sprintf(b, PDNA_PTY_LVL_FMT, 100u);                 /* "Lv100": worst-case level */
       PF(b, PDNA_PTY_ROW_X + PDNA_PTY_NAME_DX, PDNA_PTY_GEND_DX - PDNA_PTY_NAME_DX);

@@ -416,20 +416,21 @@ int ui_ptext_fit_shadow(int x, int y, int maxw, u16 ink, u16 shadow, const char*
   return ui_ptext_fit(x, y, maxw, ink, s);
 }
 
-/* ---- TIGHT-SPACING variant (slot-1 box name only — see below) ------------
+/* ---- TIGHT-SPACING variant (party names — see below) ---------------------
  *
  * A whole separate path, not a parameter on the functions above: every existing
  * ui_ptext* caller (there are dozens) must keep drawing byte-identical output, so the
  * shared PADV()-based functions above are untouched and this is additive.
  *
- * ONLY caller left: party_draw_name_level's box branch (source/pdna_main.c), for the
- * slot-1 box name, where the column is already at its measured geometric maximum
- * (PDNA_PTY_BOX_NAME_W in pdna_layout.h) and the default face's "TYRANITAR" ties it with
- * 0 px of slack. Party ROW names do NOT use this path — they draw through the plain
- * ui_ptext_fit_shadow above, at the font's normal advance, and safely clip with a
- * trailing '~' (ui_ptext_fit's own overflow marker) if a name does not fit, rather than
- * reach for kerning (see the block comment above PDNA_PTY_NAME_W in pdna_layout.h for
- * why the row column cannot fit a 10-glyph name even at its own measured maximum width).
+ * ONLY caller: party_draw_name_level (source/pdna_main.c), for BOTH the slot-1 box name
+ * and the five row names (2026-08-21 — through 2026-08-20 only the box branch used this;
+ * see PDNA_PTY_NAME_W's own comment in pdna_layout.h for the full history). Delta is
+ * capped at 1 (UI_PTEXT_TIGHT_DELTA, ui_font.h), proven to leave every one of the font's
+ * 96 glyphs touching-at-worst, never overlapping, so every real 9-glyph species name
+ * (SALAMENCE/METAGROSS/TYRANITAR/etc) fits both columns with real slack instead of
+ * clipping. A genuine 10-glyph name still does not fit either column at delta=1 and clips
+ * safely with a trailing '~' (ui_ptext_fit_tight's own overflow marker, same convention
+ * as the untight ui_ptext_fit) — an accepted residual, not chased with a higher delta.
  *
  * padv_tight() below is the only new arithmetic; ui_ptext_w_tight/ui_ptext_tight/
  * ui_ptext_fit_tight are the exact same bodies as ui_ptext_w/ui_ptext/ui_ptext_fit with

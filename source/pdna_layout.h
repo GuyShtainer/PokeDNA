@@ -629,15 +629,29 @@
  * retail's font is narrower per glyph than PokeDNA's (see the commit that first moved
  * this column, 467f731). There is no more geometric room between the fixed name origin
  * and the retail-measured HP label to find without moving one of those two anchors, and
- * this file's own rule is that neither moves without a fresh measurement. So: the field
- * is widened to its true safe maximum and left there -- NOT patched with kerning. A name
- * that still does not fit at 49px clips with ui_ptext_fit's own trailing '~' (the row
- * always draws through the DEFAULT proportional face now, never the tight one -- see
- * party_draw_name_level, source/pdna_main.c, and UI_PTEXT_TIGHT_DELTA's comment in
- * ui_font.h for why kerning is not an acceptable way to close the remaining gap). A
- * clipped name was always the safe fallback here; the illegible alternative (glyphs
- * overlapping into each other, UI_PTEXT_TIGHT_DELTA=2) is the bug this pass reverted --
- * see docs/analysis-2026-08-19-party/verify-2026-08-20-zoom.png. */
+ * this file's own rule is that neither moves without a fresh measurement. So the field
+ * is widened to its true safe maximum and left there -- the DEFAULT face still cannot be
+ * patched into fitting a 9-glyph name here with kerning alone; see the field-history note
+ * below.
+ *
+ * 2026-08-21 correction (party_draw_name_level, source/pdna_main.c): the row NOW draws
+ * through the TIGHT face (ui_ptext_fit_shadow_tight, delta=1 -- same helper the box below
+ * already used), same as the box. Through 2026-08-20 the row deliberately stayed on the
+ * DEFAULT face and let a too-long name clip via ui_ptext_fit's own trailing '~'
+ * ("SALAMEN~"), on the theory that a clipped name is safer than a kerned one -- true of
+ * delta=2 (see UI_PTEXT_TIGHT_DELTA's comment in ui_font.h: it made adjacent glyphs' ink
+ * genuinely OVERLAP, not just sit close -- docs/analysis-2026-08-19-party/
+ * verify-2026-08-20-zoom.png) but NOT of delta=1, which the same investigation proved
+ * touching-at-worst across all 96 glyphs, never overlapping. At delta=1 every real
+ * 9-glyph species name in this save (SALAMENCE/METAGROSS/DRAGONITE, 45px tight) fits this
+ * 49px column with several pixels of real slack instead of losing its tail -- a complete
+ * name reads better than a clipped one when the tight face is provably safe, so both
+ * branches take it now. A genuine 10-glyph name (BELLSPROUT, or this save's own
+ * "28/01/2026" nickname) still does not fit even at delta=1 (50px tight against this 49px
+ * budget) and clips by ~1px -- an accepted, documented residual (tests/
+ * host_textfit_test.c's row-name block), not chased with kerning past delta=1 (capped,
+ * see ui_font.h) or a narrower column. Closing that last pixel needs a genuinely narrower
+ * party typeface, a separate job. */
 #define PDNA_PTY_NAME_DX     23
 #define PDNA_PTY_NAME_DY      3
 #define PDNA_PTY_NAME_W      49              /* true safe max: HP_LBL_DX(74) - 2px gap */
@@ -673,8 +687,9 @@
  * on this row, and PokeDNA's own box frame (PDNA_PTY_BOX_X + PDNA_PTY_BOX_W - 1 = 87)
  * sits right where this field's current right edge already lands (17+17+52=86) -- there
  * is no room to extend the column rightward without crowding PokeDNA's own border, so
- * the tight face (not a wider column) is the correct tool here, unlike the row case
- * above where the fix was to widen the column and stop using tight spacing entirely. */
+ * the tight face is the correct tool here. (2026-08-21: the row column above now takes
+ * the same tight face too, once delta=1 was proven never to overlap -- see PDNA_PTY_NAME_W's
+ * own comment above for that history; the two columns are no longer on different faces.) */
 #define PDNA_PTY_BOX_NAME_DX 17
 #define PDNA_PTY_BOX_NAME_DY  8
 #define PDNA_PTY_BOX_NAME_W  52
