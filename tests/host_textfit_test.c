@@ -1141,32 +1141,52 @@ int main(void) {
      * is measured at its worst case against the gap it actually has to clear.
      *
      * SALAMENCE/METAGROSS/etc used to clip here via ui_ptext_fit's own '~' marker
-     * (2026-08-19 mechanical-fix pass): retail's own real estate is just as tight
-     * (~51px, measured off retail-party-idle-f00.png) but its font is narrower, so
-     * PokeDNA's identical 9-letter strings at the DEFAULT 6px/glyph advance (54px) blew
-     * the budget where retail's own font did not. #2026-08-20 fixes the font metric
-     * instead of the layout: party_draw_name_level now draws the name through
-     * ui_ptext_fit_shadow_tight (source/ui.c), which is UI_PTEXT_TIGHT_DELTA px/glyph
-     * narrower (ui_font.h) — see PWT() below for every worst-case name this pins. */
-#define PWT(s) pwidth_tight(s)
-    /* Every 10-char species name PokeDNA can show, plus a synthetic 10-char nickname
-     * (Gen-3 nicknames cap at 10 characters and allow any charset letter, so the true
-     * ceiling is 10 glyphs at the font's OWN widest per-glyph advance — not a real name,
-     * the same honesty rule PDNA_PTY_HP_NUM_FMT's "714/714" comment above already uses
-     * for "widest real case" vs "widest possible case"). Each must clear its column with
-     * >=1px to spare (chkv's limit is the budget MINUS one), never just barely tie it —
-     * a tie leaves 0px for the next glyph this font ever adds and reintroduces exactly
-     * the silent-clip failure mode this whole file exists to catch at build time. */
-    chkv("row name (BELLSPROUT, tight) clears its column with slack",
-         PWT("BELLSPROUT"), PDNA_PTY_NAME_W - 1);
-    chkv("row name (NIDOQUEEN, tight) clears its column with slack",
-         PWT("NIDOQUEEN"), PDNA_PTY_NAME_W - 1);
-    chkv("row name (SALAMENCE, tight) clears its column with slack",
-         PWT("SALAMENCE"), PDNA_PTY_NAME_W - 1);
-    chkv("row name (METAGROSS, tight) clears its column with slack",
-         PWT("METAGROSS"), PDNA_PTY_NAME_W - 1);
-    chkv("row name (synthetic worst-case 10-char nickname, tight) clears its column",
-         PWT("WWWWWWWWWW"), PDNA_PTY_NAME_W - 1);
+     * (2026-08-19 mechanical-fix pass), and that pass's "fix" (UI_PTEXT_TIGHT_DELTA=2,
+     * tight kerning for the row name) was WORSE than the clip it replaced: it made
+     * adjacent glyphs' ink genuinely overlap, turning "SALAMENCE"/"METAGROSS"/
+     * "TYRANITAR" into unreadable smears — see
+     * docs/analysis-2026-08-19-party/verify-2026-08-20-zoom.png, and
+     * UI_PTEXT_TIGHT_DELTA's own comment in ui_font.h for exactly why delta=2 overlaps
+     * and delta=1 does not (checked against all 96 glyphs' ink bitmaps, not just the
+     * capitals). #2026-08-20 reverts party_draw_name_level's row branch to the DEFAULT
+     * proportional face (ui_ptext_fit_shadow, source/ui.c) — no kerning at all — and
+     * widens PDNA_PTY_NAME_W to its true measured maximum instead (see that constant's
+     * own comment in pdna_layout.h for the full pixel-by-pixel derivation off
+     * retail-party-idle-f00.png). That maximum is 49px, still short of the 60px a full
+     * 10-glyph name needs at the default advance and even short of a real 9-letter
+     * species name (54px) — a real geometric limit of this column, not a bug — so the
+     * checks below prove BOTH halves honestly: a name that fits gets its slack checked,
+     * and a name that does not fit is proven to safely EXCEED the budget (i.e. it will
+     * clip via ui_ptext_fit's own trailing '~', never overlap) rather than silently
+     * assumed to work. */
+    chkv("UI_PTEXT_TIGHT_DELTA never exceeds 1 (glyphs may touch, ink must never overlap)",
+         UI_PTEXT_TIGHT_DELTA, 1);
+    /* The longest string that DOES fit this column at the default advance: 8 glyphs of
+     * the font's widest letter (6px/glyph, e.g. 'A'/'S'/'T'/'W'/...) = 48px against the
+     * 49px budget, exactly 1px of slack — the smallest amount this file's own rule still
+     * calls "fits". Synthetic on purpose (the font's own worst case, not a lucky real
+     * name — the same honesty rule the 10-char cases below already use). Proves the
+     * widened column is not vacuous: shrink PDNA_PTY_NAME_W by even 1px (to 48, the old
+     * value) and this goes red (48px name, 47px slack-adjusted limit) — checked by hand
+     * for this pass and restored before committing. */
+    chkv("row name (synthetic 8-char all-widest-glyph, default) clears its column with slack",
+         pwidth("AAAAAAAA"), PDNA_PTY_NAME_W - 1);
+    /* The real names that motivated this whole investigation. Every one of them EXCEEDS
+     * the widened column at the default advance (52-60px against the 49px budget) — that
+     * is the correct, expected outcome given the measured 51px span, not a leftover bug.
+     * chkv_min (must EXCEED, not fit) so that if PDNA_PTY_NAME_W is ever widened enough
+     * to fit one of these for real, the assertion goes red and forces this comment block
+     * to be revisited rather than quietly going stale. */
+    chkv_min("row name (SALAMENCE, default) exceeds its column and clips safely (no overlap)",
+             pwidth("SALAMENCE"), PDNA_PTY_NAME_W + 1);
+    chkv_min("row name (METAGROSS, default) exceeds its column and clips safely (no overlap)",
+             pwidth("METAGROSS"), PDNA_PTY_NAME_W + 1);
+    chkv_min("row name (NIDOQUEEN, default) exceeds its column and clips safely (no overlap)",
+             pwidth("NIDOQUEEN"), PDNA_PTY_NAME_W + 1);
+    chkv_min("row name (BELLSPROUT, default) exceeds its column and clips safely (no overlap)",
+             pwidth("BELLSPROUT"), PDNA_PTY_NAME_W + 1);
+    chkv_min("row name (synthetic worst-case 10-char nickname, default) exceeds its column",
+             pwidth("WWWWWWWWWW"), PDNA_PTY_NAME_W + 1);
     { char b[16];
       sprintf(b, PDNA_PTY_LVL_FMT, 100u);                 /* "Lv100": worst-case level */
       PF(b, PDNA_PTY_ROW_X + PDNA_PTY_NAME_DX, PDNA_PTY_GEND_DX - PDNA_PTY_NAME_DX);
@@ -1181,8 +1201,12 @@ int main(void) {
          PDNA_PTY_HP_BAR_DX + PDNA_PTY_HP_BAR_W, PDNA_PTY_ROW_W);
     chkv("row HP numbers end inside the row",
          PDNA_PTY_HP_NUM_DX + PDNA_PTY_HP_NUM_W, PDNA_PTY_ROW_W);
-    chkv("row name column clears the HP label",
-         PDNA_PTY_NAME_DX + PDNA_PTY_NAME_W, PDNA_PTY_HP_LBL_DX);
+    /* >=2px of clear gap before the "HP" label's own ink (not just <=0, i.e. not just
+     * "does not touch") — the margin PDNA_PTY_NAME_W's own comment in pdna_layout.h
+     * derives its 49px value from. Mutation-checked by hand: bumping PDNA_PTY_NAME_W to
+     * 50 (1px gap) turns this red. */
+    chkv("row name column clears the HP label by >=2px",
+         PDNA_PTY_NAME_DX + PDNA_PTY_NAME_W + 2, PDNA_PTY_HP_LBL_DX);
     chkv("row bottom stays on-screen (slot 6, the last row)",
          PDNA_PTY_ROW_Y0 + 5 * PDNA_PTY_ROW_H, PDNA_PTY_MSG_Y);
 
@@ -1229,11 +1253,27 @@ int main(void) {
 
     /* Slot-1 box: same fields, but ONE per line (four stacked rows) — the box is only
      * 71 px wide, so its own HP bar is narrower than a row's (PDNA_PTY_BOX_HP_BAR_W).
-     * The box name also draws through ui_ptext_fit_shadow_tight (party_draw_name_level
-     * uses the same tight/default split for isbox as for the row — see that function),
-     * so it is measured with pwidth_tight/PWT here too, not the default-face PF/pwidth. */
+     *
+     * The box name is the ONE place left that draws through ui_ptext_fit_shadow_tight
+     * (party_draw_name_level, source/pdna_main.c — the row branch reverted to the
+     * default face above; only the box branch still uses tight). So it is measured with
+     * pwidth_tight/PWT here, not the default-face PF/pwidth, using
+     * UI_PTEXT_TIGHT_DELTA=1 (capped — see ui_font.h): "TYRANITAR" renders 43px at
+     * delta=1 (was wrongly reported as 34px when this comment was written against the
+     * illegible delta=2 build; 43 is the real, checked number), 9px of genuine slack
+     * inside the 52px budget. Every glyph pair in the font is proven to touch-at-worst,
+     * never overlap, at delta=1 (see ui_font.h's own 96-glyph check). */
+#define PWT(s) pwidth_tight(s)
     chk("ptext_fit_tight", PDNA_PTY_BOX_X + PDNA_PTY_BOX_NAME_DX, PDNA_PTY_BOX_NAME_W,
         PWT("TYRANITAR"), "TYRANITAR");
+    /* BELLSPROUT/the synthetic 10-char case below are the tightest fits in the box (2px
+     * slack at delta=1) — mutation-checked by hand: setting UI_PTEXT_TIGHT_DELTA back to
+     * 2 turns every chkv in this box block red (each PWT() value shrinks further below
+     * budget, which chkv's <= comparison still passes... except that delta=2 is exactly
+     * the illegible-overlap bug this file's own UI_PTEXT_TIGHT_DELTA<=1 check (above,
+     * in the row block) catches first — that is the actual regression guard, not these
+     * per-name slack numbers, which stay numerically "green" either way since a smaller
+     * delta only ever shrinks PWT()'s output. */
     chkv("box name (BELLSPROUT, tight) clears its column with slack",
          PWT("BELLSPROUT"), PDNA_PTY_BOX_NAME_W - 1);
     chkv("box name (NIDOQUEEN, tight) clears its column with slack",

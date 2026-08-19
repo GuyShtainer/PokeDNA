@@ -2057,12 +2057,26 @@ static void party_draw_name_level(int i, const PkMon* p) {
   int ndx = isbox ? PDNA_PTY_BOX_NAME_DX : PDNA_PTY_NAME_DX;
   int ndy = isbox ? PDNA_PTY_BOX_NAME_DY : PDNA_PTY_NAME_DY;
   int nw  = isbox ? PDNA_PTY_BOX_NAME_W  : PDNA_PTY_NAME_W;
-  /* TIGHT face only, here: a full-length 10-char species name or Gen-3 nickname clips
-   * against nw at the default advance (measured up to 60px vs a <=48px row budget — see
-   * UI_PTEXT_TIGHT_DELTA's comment in ui_font.h). The level line two rows down keeps the
-   * normal face; "Lv100" never gets close to its own budget either way. */
-  ui_ptext_fit_shadow_tight(x + ndx, y + ndy, nw, UI_TEXT, UI_PTY_TEXT_SHADOW,
-                            p->nickname[0] ? p->nickname : pk_species_name(p->species));
+  const char* nm = p->nickname[0] ? p->nickname : pk_species_name(p->species);
+  /* ROW vs BOX draw through two different faces on purpose (2026-08-20 correction —
+   * see PDNA_PTY_NAME_W's own comment in pdna_layout.h for the full measurement this
+   * split is built on):
+   *   ROW:  the DEFAULT proportional face (ui_ptext_fit_shadow), same as every other
+   *         string on this screen. A full 10-glyph name still does not fit the row's
+   *         49px column even at its measured maximum width, but the fix for that is a
+   *         wider column, not tighter kerning — a name that overflows clips safely with
+   *         ui_ptext_fit's own trailing '~' instead. This screen's illegible ink-overlap
+   *         bug (UI_PTEXT_TIGHT_DELTA=2, docs/analysis-2026-08-19-party/
+   *         verify-2026-08-20-zoom.png) shipped from using the tight face here; it never
+   *         will again because the row no longer calls it at all.
+   *   BOX:  the TIGHT face (ui_ptext_fit_shadow_tight), delta capped at 1 (touching
+   *         glyphs, never overlapping — see UI_PTEXT_TIGHT_DELTA's comment in
+   *         ui_font.h). The box column is already at its true geometric maximum (its
+   *         own right edge sits against PokeDNA's own box border, no room to widen) and
+   *         "TYRANITAR" ties the default face's budget with 0px of slack, so this is the
+   *         one legitimate spot left for tight spacing. */
+  if (isbox) ui_ptext_fit_shadow_tight(x + ndx, y + ndy, nw, UI_TEXT, UI_PTY_TEXT_SHADOW, nm);
+  else       ui_ptext_fit_shadow(x + ndx, y + ndy, nw, UI_TEXT, UI_PTY_TEXT_SHADOW, nm);
   char lvl[8]; siprintf(lvl, PDNA_PTY_LVL_FMT, (unsigned)p->level);
   int lvdy = isbox ? PDNA_PTY_BOX_LVL_DY : PDNA_PTY_LVL_DY;
   ui_ptext_shadow(x + ndx, y + lvdy, UI_TEXT, UI_PTY_TEXT_SHADOW, lvl);

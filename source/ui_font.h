@@ -20,19 +20,41 @@ extern const unsigned char ui_font_w[96];
 #define UI_FONT_CELL_H 8    /* rows per glyph, so a proportional line still pitches at 8 */
 
 /* TIGHT-SPACING delta (source/ui.c's ui_ptext_*_tight family; see the block comment
- * there for the full derivation). Party names ("SALAMENCE", "METAGROSS", ...) render
- * 54 px wide at the default 6 px/glyph advance -- our capital letters ink 5 of those 6
- * px, so even a ZERO-gap kerning (delta=1, i.e. touching but not overlapping) only saves
- * 1 px/glyph, and a 10-glyph name (the worst real case: a full-length species name or a
- * capped Gen-3 nickname) still runs 50 px against the party row's 48 px name column.
- * delta=2 is the smallest INTEGER delta that clears it -- it costs one column of genuine
- * ink overlap between adjacent glyphs (still no bitmap edit; a rendering choice, not a
- * font change) and leaves 8 px of slack on the worst case instead of overflowing by 2.
+ * there for the full derivation).
+ *
+ * HARD CEILING: 1. NEVER raise this past 1 -- delta=2 shipped once (2026-08-19) and
+ * made every party name illegible: "SALAMENCE"/"METAGROSS"/"TYRANITAR" rendered with
+ * adjacent glyphs' INK OVERLAPPING (not just touching), fusing letters together into
+ * unreadable smears. See docs/analysis-2026-08-19-party/verify-2026-08-20-zoom.png --
+ * that capture is the reason this ceiling exists; look at it before ever touching this
+ * number. The bug was caught and reverted the same cycle (2026-08-20).
+ *
+ * Why 1 is safe and 2 is not, exactly (not "seemed fine" -- checked against every one of
+ * the 96 glyphs' actual ink bitmaps, not just the capitals): each glyph's ADVANCE
+ * (ui_font_w[i]) already bundles its ink width plus a 1 px inter-glyph gap. At delta=1,
+ * advance-1 >= ink_width for all 96 glyphs with zero exceptions (worst case, '!', has
+ * exactly 0 px of margin -- glyphs may end up TOUCHING but never overlapping). At
+ * delta=2, 93 of the 96 glyphs go negative (margin -1), meaning the next glyph's ink
+ * starts one pixel inside the previous glyph's own ink -- genuine overlap, not tight
+ * kerning. Touching is a legitimate stylistic choice; overlap is corruption of the
+ * rendered text and must never ship again.
+ *
+ * At delta=1 a 10-glyph name only saves 1 px/glyph (a full-length species name or a
+ * capped Gen-3 nickname still runs ~50 px against a ~52 px column) -- nowhere near
+ * enough to rescue a genuinely too-narrow column on its own. Kerning is not a substitute
+ * for column width: widen the column first (PDNA_PTY_NAME_W / PDNA_PTY_BOX_NAME_W in
+ * pdna_layout.h), and reach for the tight face only for a spot where the column is
+ * already at its real geometric maximum and still short by a few forgivable pixels (see
+ * PDNA_PTY_BOX_NAME_W's own comment in pdna_layout.h for the one remaining case that
+ * needs it -- the slot-1 box name; ROW names no longer use this path at all).
+ *
  * Defined here (not in ui.c) so tests/host_textfit_test.c, which links ui_font.c but
  * never ui.c, can mirror the exact same number rather than re-typing it -- the whole
  * point of this file's own "measures its own copy" rule (see host_textfit_test.c's
- * top-of-file comment). Used ONLY by the tight functions; every existing ui_ptext* call
- * is untouched and keeps its original per-glyph advance. */
-#define UI_PTEXT_TIGHT_DELTA 2
+ * top-of-file comment) -- and so host_textfit_test.c can assert UI_PTEXT_TIGHT_DELTA <=
+ * 1 directly, catching a regression back to 2 at build time rather than on a screenshot.
+ * Used ONLY by the tight functions; every existing ui_ptext* call is untouched and keeps
+ * its original per-glyph advance. */
+#define UI_PTEXT_TIGHT_DELTA 1
 
 #endif /* UI_FONT_H */

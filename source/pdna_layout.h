@@ -605,13 +605,42 @@
  * rect (PDNA_PTY_ROW_ICON_DX bleeds it to abs x=85..116). The row's own x is
  * PDNA_PTY_ROW_X (95), so DX = 118 - 95 = 23 -- NOT the x=98 (DX=3) an earlier,
  * wrong measurement in this same pass used, which put 18px of every row's name
- * on top of its icon. W shrinks by the same 20px the DX grew, so DX+W is
- * unchanged (71) and the field still stops 3px short of PDNA_PTY_HP_LBL_DX (74),
- * same margin as before -- see host_textfit_test.c's "row name column clears
- * the HP label"/"clears the icon" checks, which pin both ends. */
+ * on top of its icon.
+ *
+ * PDNA_PTY_NAME_W (corrected 2026-08-20; re-measured pixel-by-pixel off
+ * retail-party-idle-f00.png, not eyeballed): the 2026-08-19 pass set this to 48 purely
+ * because it kept the field's RIGHT edge where an earlier, narrower layout had left it
+ * -- it never re-measured how much room is actually there. Direct pixel search of the
+ * retail capture (scanning for the "HP" glyph's own ink -- fill RGB(255,181,66) AND its
+ * RGB(82,82,82) outline halo, which is 2px further left than the fill) finds the HP
+ * label's own leftmost ink column at absolute x=169, i.e. PDNA_PTY_HP_LBL_DX (74)
+ * exactly, confirming that constant is already right. That puts the true available span
+ * at HP_LBL_DX(74) - NAME_DX(23) = 51px, and requiring >=2px of clear gap before the
+ * label's own ink (never let the name's last glyph touch the "H") caps the name field at
+ * 51-2 = 49px -- ONE more pixel than the previous (wrong) budget of 48, not the ~64px an
+ * earlier estimate in this same investigation assumed (that number measured to the HP
+ * BAR's start, x=183, not the label's own left edge).
+ *
+ * 49px is deliberately NOT "wide enough for a 10-glyph name at the font's default
+ * advance": that would need 60px (BELLSPROUT / any all-wide-letter 10-char Gen-3
+ * nickname; see tests/host_textfit_test.c), and even PokeDNA's shortest REAL 9-letter
+ * species names in this save (SALAMENCE/METAGROSS, 54px at the default advance) do not
+ * fit either -- retail's own "SALAMENCE" fits this exact 51px span only because
+ * retail's font is narrower per glyph than PokeDNA's (see the commit that first moved
+ * this column, 467f731). There is no more geometric room between the fixed name origin
+ * and the retail-measured HP label to find without moving one of those two anchors, and
+ * this file's own rule is that neither moves without a fresh measurement. So: the field
+ * is widened to its true safe maximum and left there -- NOT patched with kerning. A name
+ * that still does not fit at 49px clips with ui_ptext_fit's own trailing '~' (the row
+ * always draws through the DEFAULT proportional face now, never the tight one -- see
+ * party_draw_name_level, source/pdna_main.c, and UI_PTEXT_TIGHT_DELTA's comment in
+ * ui_font.h for why kerning is not an acceptable way to close the remaining gap). A
+ * clipped name was always the safe fallback here; the illegible alternative (glyphs
+ * overlapping into each other, UI_PTEXT_TIGHT_DELTA=2) is the bug this pass reverted --
+ * see docs/analysis-2026-08-19-party/verify-2026-08-20-zoom.png. */
 #define PDNA_PTY_NAME_DX     23
 #define PDNA_PTY_NAME_DY      3
-#define PDNA_PTY_NAME_W      48              /* stops short of the HP label   */
+#define PDNA_PTY_NAME_W      49              /* true safe max: HP_LBL_DX(74) - 2px gap */
 #define PDNA_PTY_LVL_DY      14
 #define PDNA_PTY_GEND_DX     62
 #define PDNA_PTY_GEND_DY     14
@@ -630,10 +659,22 @@
  * box section: icon x~5..35, name x~32..83) through the 2026-08-19 mechanical-fix pass,
  * which left it there: closing the extra 2px would have shrunk the field below
  * "TYRANITAR"'s own 52px width at the DEFAULT font advance, where it fit with 0px of
- * slack (see the party-screen host_textfit_test.c block). Tight-spacing (ui_ptext_fit_
- * shadow_tight, party_draw_name_level) changed that: TYRANITAR now renders 34px wide, so
- * shifting the field 2px right to match retail's 3px overlap still leaves 17px of slack
- * inside PDNA_PTY_BOX_NAME_W -- closed here. */
+ * slack -- too tight to trust (see host_textfit_test.c's own ">=1px slack" rule). Moved
+ * to 17 that same pass (matching retail's exact 3px overlap) on the strength of
+ * tight-spacing, but that pass's tight delta (2) turned out to make ink genuinely
+ * OVERLAP, not just sit close (see UI_PTEXT_TIGHT_DELTA's comment in ui_font.h) --
+ * "TYRANITAR" rendered as illegible mush, not a tight 34px string.
+ *
+ * RE-CHECKED 2026-08-20 with the fix (UI_PTEXT_TIGHT_DELTA capped at 1): "TYRANITAR" at
+ * delta=1 renders 43px, leaving 9px of real slack inside this 52px budget -- comfortably
+ * clear, and every glyph pair in the font is proven touching-at-worst (never
+ * overlapping) at delta=1 (see ui_font.h). DX=17 is kept: re-measuring the box's own
+ * right border in the retail capture (retail-party-idle-f00.png) puts it at abs x~84-85
+ * on this row, and PokeDNA's own box frame (PDNA_PTY_BOX_X + PDNA_PTY_BOX_W - 1 = 87)
+ * sits right where this field's current right edge already lands (17+17+52=86) -- there
+ * is no room to extend the column rightward without crowding PokeDNA's own border, so
+ * the tight face (not a wider column) is the correct tool here, unlike the row case
+ * above where the fix was to widen the column and stop using tight spacing entirely. */
 #define PDNA_PTY_BOX_NAME_DX 17
 #define PDNA_PTY_BOX_NAME_DY  8
 #define PDNA_PTY_BOX_NAME_W  52
