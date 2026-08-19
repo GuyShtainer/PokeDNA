@@ -1169,3 +1169,54 @@ int pick_unown_form(int cur) {
     else if (k & KEY_DOWN)  { if (sel + GCOLS < N) sel += GCOLS; }
   }
 }
+
+/* ===================== Poke Ball picker (was a 12-press toggle) =============
+ * Gen 3 keeps the ball in FOUR BITS of the Misc origins word (bits 11-14), and the twelve
+ * balls happen to be item ids 1..12 (pk_item_pocket: "1..12 Master..Premier Ball"), so
+ * this list doubles as an item list: same pk_item_name, same item_icon_for icons, same
+ * app_item_desc blurb the item picker shows. That identity is the reason the ball field
+ * gets its own tiny picker rather than a call into pick_item — pick_item can return any
+ * of 377 ids, and anything above 12 would not survive the 4-bit field.
+ *
+ * Art-free build: item_icon_for returns NULL for every id, so the icon column is simply
+ * empty and the names carry the screen. */
+#define NBALL 12
+
+uint8_t pick_ball(uint8_t current) {
+  int sel = (current >= 1 && current <= NBALL) ? current - 1 : 3;   /* default: Poke Ball */
+  int top = 0;
+  for (;;) {
+    if (sel < top) top = sel;
+    if (sel >= top + PDNA_BALL_VIS) top = sel - PDNA_BALL_VIS + 1;
+
+    ui_clear();
+    char h[40];
+    siprintf(h, PDNA_BALL_TITLE_FMT, PDNA_BALL_TITLE, sel + 1, NBALL);
+    ui_text(4, 2, UI_TITLE, h);
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < PDNA_BALL_VIS && top + i < NBALL; i++) {
+      int id = top + i + 1, y = PDNA_BALL_Y0 + i * PDNA_BALL_ROW_H;
+      bool s = (top + i == sel);
+      if (s) ui_panel(2, y - 1, 236, PDNA_BALL_ROW_H - 1, UI_SEL, UI_TITLE);
+      const uint16_t* ic = item_icon_for((uint16_t)id);
+      if (ic) ui_sprite(PDNA_BALL_ICON_X, y, ITEM_ICON_W, ITEM_ICON_H, ic);
+      int tw = UI_SCR_W - PDNA_BALL_TEXT_X - 4;
+      ui_ptext_fit(PDNA_BALL_TEXT_X, y + PDNA_BALL_NAME_DY, tw,
+                   s ? UI_SELTEXT : UI_TEXT, pk_item_name((uint16_t)id));
+      ui_ptext_fit(PDNA_BALL_TEXT_X, y + PDNA_BALL_DESC_DY, tw,
+                   UI_DIM, app_item_desc((uint16_t)id));
+    }
+    ui_ptext(4, PDNA_BALL_NOTE_Y, UI_DIM, PDNA_BALL_NOTE);
+    ui_hline(0, PDNA_BALL_RULE_Y, UI_SCR_W, UI_BORDER);
+    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_BALL_FOOT);
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
+    if (k & KEY_B) return current;
+    else if (k & KEY_A) return (uint8_t)(sel + 1);
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : NBALL - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % NBALL;
+    else if (k & KEY_L)    sel = 0;
+    else if (k & KEY_R)    sel = NBALL - 1;
+  }
+}
+

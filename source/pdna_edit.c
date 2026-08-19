@@ -223,7 +223,7 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
       em_set_ev(e, f - F_EV0, v < 4 ? 4 : v < 252 ? 252 : v < 255 ? 255 : 0);
       break;
     }
-    case F_BALL:     { int v = c->pokeball + 1; if (v > 12) v = 1; em_set_ball(e, (uint8_t)v); break; }   /* next ball */
+    case F_BALL:     em_set_ball(e, pick_ball(c->pokeball)); break;                  /* the 12-ball list */
     case F_METGAME:  { int v = c->metGame + 1;  if (v > 15) v = 0; em_set_metgame(e, (uint8_t)v); break; }/* next game */
     case F_METLOC:   em_set_metloc(e, (uint8_t)clampi(c->metLocation + 10, 0, 255)); break;               /* +10 jump  */
     case F_METLEVEL: em_set_metlevel(e, (uint8_t)(c->metLevel >= 100 ? 1 : 100)); break;                  /* 1 <-> 100 */

@@ -17,6 +17,11 @@ uint16_t pick_item(uint16_t current_item);
 uint8_t  pick_nature(uint8_t current_nature);
 int      pick_unown_form(int current_form);     /* 0..27 = A..?, -1 cancel */
 
+/* Poke Ball picker. Gen 3 keeps the ball in four bits, and the twelve balls are item ids
+ * 1..12, so this shows the item name + icon + blurb for each. Returns the chosen ball
+ * (1..12), or `current` on cancel — the field can never hold anything else. */
+uint8_t pick_ball(uint8_t current);
+
 /* Ability picker. Gen-3 stores only a 1-bit ability SLOT, so the choices are the
  * species' two abilities (shown by name + description). Returns the chosen slot
  * (0 or 1), or `current` on cancel. */

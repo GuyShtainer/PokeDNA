@@ -318,6 +318,34 @@
 #define PDNA_IFILT_ROWS     (2 + PDNA_IFILT_NCAT)   /* Sort + Game + the categories   */
 
 /* ---------------------------------------------------------------------------
+ * BALL picker (source/pdna_pick.c)
+ *
+ * The ball field used to TOGGLE through the twelve balls one press at a time. It is a
+ * list now, borrowing the item picker's split-view geometry (24 px icon + name + blurb)
+ * so there is one list idiom rather than a new one — and it degrades to name-only in the
+ * artless build, where item_icon_for returns NULL for everything.
+ *
+ * Every fixed string below is measured by tests/host_textfit_test.c: this screen family
+ * clips silently. */
+/* A ball row is a 24 px item icon plus the name and its blurb, so the pitch has to
+ * clear the icon (ROW_H - 2 >= ITEM icon height) and the last row has to stop above the
+ * note. Four rows of twelve balls is the item picker's split-view density. */
+#define PDNA_BALL_Y0        14
+#define PDNA_BALL_ROW_H     26
+#define PDNA_BALL_VIS        4
+#define PDNA_BALL_ICON_X     6
+#define PDNA_BALL_TEXT_X    36
+#define PDNA_BALL_NAME_DY    4                /* name baseline inside the row          */
+#define PDNA_BALL_DESC_DY   14                /* blurb, one proportional line under it  */
+#define PDNA_BALL_NOTE_Y   126
+#define PDNA_BALL_RULE_Y   147
+#define PDNA_BALL_TITLE     "POKE BALL"
+#define PDNA_BALL_TITLE_FMT "%s  %d/%d"
+#define PDNA_BALL_FOOT      "A pick  U/D move  B cancel"
+#define PDNA_BALL_NOTE      "Gen 3 has a 4-bit ball id: these 12"
+
+
+/* ---------------------------------------------------------------------------
  * EDIT field list (source/pdna_edit.c): label column starts at PDNA_EDIT_LBL_X and the
  * value column at PDNA_EDIT_VAL_X, so a label has (VAL_X - LBL_X) px and a value has
  * (UI_SCR_W - VAL_X). The value is ui_truncate'd to PDNA_EDIT_VAL_COLS, the label is

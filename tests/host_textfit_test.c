@@ -911,6 +911,38 @@ int main(void) {
        PDNA_RVF_HDR_Y1 + UI_FONT_CELL_H - 1, PDNA_RVF_HDR_Y2 - 1);
   /* ==== END: ROM IMAGE CHECK ============================================== */
 
+  /* ==== BEGIN: BALL picker =====================================================
+   * The ball field used to be a 12-press toggle; it is a list of 24 px item icons now.
+   * The names inside a row are table data the host cannot see and are drawn through
+   * ui_ptext_fit, which clips VISIBLY with a '~' — the chrome around them is what
+   * silently overruns, so the chrome is what is checked. */
+  printf("\n== ball picker ==\n");
+  {
+    /* --- ball picker ------------------------------------------------------- */
+    { char b[48];
+      snprintf(b, sizeof b, PDNA_BALL_TITLE_FMT, PDNA_BALL_TITLE, 12, 12);
+      T(b, 4); }                                        /* header, sys8 at x=4 */
+    T(PDNA_BALL_FOOT, 4);                               /* footer, sys8 at x=4 */
+    P(PDNA_BALL_NOTE, 4);                               /* note, proportional  */
+    /* the row has to clear a 24 px item icon, and the last row has to stop above the
+     * note — the note used to sit at 140 and cut straight through row 6's blurb. */
+    chkv_min("ball row pitch clears the 24 px item icon", PDNA_BALL_ROW_H - 2, 24);
+    chkv_min("ball blurb sits below the ball name",
+             PDNA_BALL_DESC_DY, PDNA_BALL_NAME_DY + UI_FONT_CELL_H);
+    chkv("ball blurb stays inside its row",
+         PDNA_BALL_DESC_DY + UI_FONT_CELL_H - 1, PDNA_BALL_ROW_H - 2);
+    chkv("last ball row stops above the note",
+         PDNA_BALL_Y0 + (PDNA_BALL_VIS - 1) * PDNA_BALL_ROW_H + PDNA_BALL_ROW_H - 2,
+         PDNA_BALL_NOTE_Y - 1);
+    chkv("ball note stops above its rule",
+         PDNA_BALL_NOTE_Y + UI_FONT_CELL_H - 1, PDNA_BALL_RULE_Y - 1);
+    chkv("ball rule stops above the footer", PDNA_BALL_RULE_Y, PDNA_FILT_FOOTER_Y - 1);
+    chkv_min("ball name column starts clear of the icon",
+             PDNA_BALL_TEXT_X, PDNA_BALL_ICON_X + 24);
+
+  }
+  /* ==== END: BALL picker ======================================================= */
+
   /* ==== BEGIN: the edit field list's new MAX PP rows ==========================
    * A move's maximum PP is derived from its PP Ups, so the field list grew a "Max PP n"
    * row per move and the summary's PP cell grew the Up count. Both are fixed strings the
