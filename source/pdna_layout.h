@@ -600,9 +600,18 @@
 /* ---- row fields, relative to the row's own (x,y) --------------------------
  * top line: name (left) + "HP" label + bar (right); bottom line: level +
  * gender glyph (left) + HP numbers (right, under the bar). */
-#define PDNA_PTY_NAME_DX      3
+/* MEASURED (adversarial re-review of a fresh capture, 2026-08-19): retail's name
+ * glyphs begin at absolute x=118, one pixel clear of the row icon's own bounding
+ * rect (PDNA_PTY_ROW_ICON_DX bleeds it to abs x=85..116). The row's own x is
+ * PDNA_PTY_ROW_X (95), so DX = 118 - 95 = 23 -- NOT the x=98 (DX=3) an earlier,
+ * wrong measurement in this same pass used, which put 18px of every row's name
+ * on top of its icon. W shrinks by the same 20px the DX grew, so DX+W is
+ * unchanged (71) and the field still stops 3px short of PDNA_PTY_HP_LBL_DX (74),
+ * same margin as before -- see host_textfit_test.c's "row name column clears
+ * the HP label"/"clears the icon" checks, which pin both ends. */
+#define PDNA_PTY_NAME_DX     23
 #define PDNA_PTY_NAME_DY      3
-#define PDNA_PTY_NAME_W      68              /* stops short of the HP label   */
+#define PDNA_PTY_NAME_W      48              /* stops short of the HP label   */
 #define PDNA_PTY_LVL_DY      14
 #define PDNA_PTY_GEND_DX     62
 #define PDNA_PTY_GEND_DY     14

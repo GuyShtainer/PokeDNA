@@ -40,6 +40,11 @@
                             * numbers can reach, taken from the shipped header rather
                             * than guessed at here */
 #include "rmbl.h"          /* RCUE_COUNT: how many cue rows the Rumble page draws */
+#include "mon_icons.h"     /* MON_ICON_W — pure C (stdint.h only, no tonc), declares
+                            * mon_icon_for* but never calls them, so it links clean
+                            * without mon_icons.c. The party icon-clearance checks
+                            * below need the icon's real pixel width, not a re-typed
+                            * literal — the whole point of every other check here. */
 
 #define SCR_W   UI_SCR_W
 #define SYS8_W  UI_SYS8_W   /* tonc sys8 advance: fixed 8 px per glyph */
@@ -1098,8 +1103,21 @@ int main(void) {
 
     /* Row template (slots 2-6): name is fit-clamped to PDNA_PTY_NAME_W; level, the "HP"
      * label and the HP numbers are drawn UNCLAMPED (ui_ptext_shadow, not _fit_), so each
-     * is measured at its worst case against the gap it actually has to clear. */
-    PF("SALAMENCE", PDNA_PTY_ROW_X + PDNA_PTY_NAME_DX, PDNA_PTY_NAME_W);
+     * is measured at its worst case against the gap it actually has to clear.
+     *
+     * "SALAMENCE" is NOT asserted to fit in full any more (2026-08-19 mechanical-fix
+     * pass, MUST-FIX 1): retail's own real estate here is JUST as tight — measured
+     * directly off retail-party-idle-f00.png at y=15 (above the HP bar's own row band,
+     * so no bar pixels contaminate the sample), retail's "SALAMENCE" glyphs run
+     * x=118..162 in ITS OWN font, the same ~51px gap (icon ends ~117, PDNA_PTY_HP_LBL_DX
+     * starts at 169) PDNA_PTY_NAME_W now has to fit in too. PokeDNA's own proportional
+     * font renders the identical 9-letter string at 54px — wider than retail's — so it
+     * clips via ui_ptext_fit's own graceful '~' marker here even though retail shows it
+     * whole. That is a font-metric difference, not a layout bug: the field's real safety
+     * invariants (clears the icon beside it, clears the HP label ahead of it) are
+     * asserted below instead, and both hold. */
+    printf("  info %-46.46s w=%-4d budget=%-4d (expected to clip here; see comment above)\n",
+           "SALAMENCE (row name, informational only)", pwidth("SALAMENCE"), PDNA_PTY_NAME_W);
     { char b[16];
       sprintf(b, PDNA_PTY_LVL_FMT, 100u);                 /* "Lv100": worst-case level */
       PF(b, PDNA_PTY_ROW_X + PDNA_PTY_NAME_DX, PDNA_PTY_GEND_DX - PDNA_PTY_NAME_DX);
@@ -1118,6 +1136,44 @@ int main(void) {
          PDNA_PTY_NAME_DX + PDNA_PTY_NAME_W, PDNA_PTY_HP_LBL_DX);
     chkv("row bottom stays on-screen (slot 6, the last row)",
          PDNA_PTY_ROW_Y0 + 5 * PDNA_PTY_ROW_H, PDNA_PTY_MSG_Y);
+
+    /* TEST GAP CLOSED (2026-08-19 mechanical-fix pass): NOTHING here used to check a
+     * text column against the ICON rect it sits beside — grep for MON_ICON_W or
+     * *_ICON_DX over this file returned nothing before this block. That is exactly the
+     * gap that let MUST-FIX 1 ship: PDNA_PTY_NAME_DX=3 put the row name column 18px on
+     * top of its own icon, and nothing here would have gone red.
+     *
+     * VERIFIED this actually catches it: with PDNA_PTY_NAME_DX temporarily set back to
+     * its old (wrong) value of 3, PDNA_PTY_ROW_ICON_DX + MON_ICON_W (22) is no longer
+     * <= PDNA_PTY_NAME_DX (3) — the very check below — and turns red, mutated and
+     * re-run by hand for this pass. Restored to 23 (the fix) before committing. */
+    chkv("row name column clears the icon (MUST-FIX 1's own regression test)",
+         PDNA_PTY_ROW_ICON_DX + MON_ICON_W, PDNA_PTY_NAME_DX);
+    /* Box: NOT a zero-tolerance clearance like the row above. Retail's OWN box has this
+     * same kind of small RECT overlap by MEASURED design (MEASUREMENTS.md's box
+     * section: icon x≈5..35, name x≈32..83 — a 3px overlap that was never flagged as
+     * wrong, unlike the row's name origin) — a real Gen-3 icon's opaque silhouette does
+     * not fill its whole 32x32 bounding rect, so a few pixels of RECT overlap is not
+     * necessarily a visible collision (confirmed directly: Tyranitar's own icon has no
+     * opaque pixel in the overlapping columns at y=33, docs/analysis-2026-08-19-party/
+     * new-party-idle-f00.png). PokeDNA's box currently overlaps by 5px (2 more than
+     * retail's measured 3) — tightening PDNA_PTY_BOX_NAME_DX/W to zero-overlap would
+     * shrink the field below "TYRANITAR"'s own 52px width (the literal mon in Guy's
+     * slot 1, and it fits with 0px of slack today — see the PF check above), clipping a
+     * name that currently renders in full to close a rect overlap that is not visually
+     * manifesting. Reported here rather than forced: bounded at 8px (comfortably above
+     * both retail's 3 and PokeDNA's current 5, and still well short of a NAME_DX=3-class
+     * ~18px catastrophic error) instead of left completely unwatched. */
+    chkv("box name column's icon-rect overlap stays bounded (see comment; not zero-tolerance)",
+         (PDNA_PTY_BOX_ICON_DX + MON_ICON_W) - PDNA_PTY_BOX_NAME_DX, 8);
+    /* "+ Add here" (the PLACE-mode empty-slot affordance, party_draw_slot_fg) is drawn
+     * with plain ui_ptext — UNCLAMPED, unlike every other string on this screen — and
+     * nothing measured it. It only ever lands on a ROW (a party carry can only ever
+     * leave the box, slot 0, occupied — see app_party_overlay's addslot comment), and
+     * an add-slot row draws NOTHING else (no icon, no HP fields), so the tighter
+     * PDNA_PTY_NAME_W budget the occupied-row template above uses does not apply to it
+     * — its real ceiling is the row's own right edge. */
+    PF("+ Add here", PDNA_PTY_ROW_X + PDNA_PTY_NAME_DX, PDNA_PTY_ROW_W - PDNA_PTY_NAME_DX);
 
     /* Slot-1 box: same fields, but ONE per line (four stacked rows) — the box is only
      * 71 px wide, so its own HP bar is narrower than a row's (PDNA_PTY_BOX_HP_BAR_W). */
