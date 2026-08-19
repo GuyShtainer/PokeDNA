@@ -34,8 +34,13 @@ typedef bool (*AppCommitFn)(void);
  * read-only summary on Everdrive. `block` is the pc-layout buffer the slot lives in
  * and `box`/`slot` locate the record within it (box = -1, slot = party index for
  * party callers). `commit` persists `block`. `is_bank` swaps the EXPORT action for
- * "TO GAME" (inject into the loaded save). Returns true iff a write happened. */
-bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot);
+ * "TO GAME" (inject into the loaded save). `footer_y` is the caller's OWN footer
+ * boundary (ui_layout.h's UI_FOOTER_Y for box/bank/party_list; the party overlay's
+ * own PDNA_PTY_FOOTER_Y, pdna_layout.h, is well above it — its message box starts at
+ * y=133, not the box/bank screens' y=150) — the popup windows/scrolls above THAT row
+ * rather than the global one, so it never lands on a lower-sitting caller's own UI.
+ * Returns true iff a write happened. */
+bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot, int footer_y);
 
 /* ---- read-only BoxSource gate ------------------------------------------------
  * Editability has TWO axes and app_mon_menu used to know only one of them:

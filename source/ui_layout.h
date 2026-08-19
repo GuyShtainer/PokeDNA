@@ -46,17 +46,27 @@
  * The clamps are deliberate: a caller that asks for more rows than the screen can hold
  * gets a WINDOW, never a panel hanging off the bottom, and one that asks for an absurd
  * head/foot still gets a single usable row rather than a zero-height panel. */
-static inline int ui_popup_fit(int nrows, int row_h, int head, int foot,
-                               int* out_y, int* out_h) {
-  int vis = (row_h > 0) ? (UI_FOOTER_Y - head - foot) / row_h : 0;
+/* Same arithmetic, but against a CALLER-SUPPLIED footer row rather than the global
+ * UI_FOOTER_Y. app_mon_menu is drawn over more than one screen, and the party overlay's
+ * own message box starts well above UI_FOOTER_Y (PDNA_PTY_FOOTER_Y, pdna_layout.h) — a
+ * popup laid out against the wrong one lands on top of it. ui_popup_fit (below) is the
+ * UI_FOOTER_Y-default wrapper every other existing caller keeps using unchanged. */
+static inline int ui_popup_fit_at(int nrows, int row_h, int head, int foot, int footer_y,
+                                  int* out_y, int* out_h) {
+  int vis = (row_h > 0) ? (footer_y - head - foot) / row_h : 0;
   if (vis > nrows) vis = nrows;
   if (vis < 1)     vis = 1;
   int h = head + vis * row_h + foot;
-  int y = (UI_FOOTER_Y - h) / 2;
+  int y = (footer_y - h) / 2;
   if (y < 0) y = 0;
   if (out_y) *out_y = y;
   if (out_h) *out_h = h;
   return vis;
+}
+
+static inline int ui_popup_fit(int nrows, int row_h, int head, int foot,
+                               int* out_y, int* out_h) {
+  return ui_popup_fit_at(nrows, row_h, head, foot, UI_FOOTER_Y, out_y, out_h);
 }
 
 #endif /* UI_LAYOUT_H */

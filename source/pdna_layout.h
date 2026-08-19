@@ -648,6 +648,15 @@
  * textbox occupies below its last list row (y=130). */
 #define PDNA_PTY_MSG_X      2
 #define PDNA_PTY_MSG_Y      133
+/* This screen's OWN footer boundary, same pattern ui_layout.h documents for
+ * PDNA_SET_FOOTER_Y / PDNA_DCY_FOOTER_Y / PDNA_FILT_FOOTER_Y: app_mon_menu is drawn
+ * OVER this screen while ITS message box (PDNA_PTY_MSG_Y, above) is still on screen,
+ * not the box/bank screens' UI_FOOTER_Y (150) — the per-mon popup used to be laid out
+ * against the global UI_FOOTER_Y regardless of caller, so any party mon with 9+ action
+ * rows got a 146px panel spanning y=2..148, landing squarely on the message box that
+ * starts at 133. app_mon_menu now takes an explicit footer_y; the party overlay passes
+ * this constant, box/bank/party_list keep passing UI_FOOTER_Y (unchanged behaviour). */
+#define PDNA_PTY_FOOTER_Y   PDNA_PTY_MSG_Y
 #define PDNA_PTY_MSG_W      170
 #define PDNA_PTY_MSG_H      27
 #define PDNA_PTY_MSG_PAD     6

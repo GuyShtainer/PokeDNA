@@ -53,6 +53,13 @@ int ui_popup_vfit(int nrows, int row_h, int head, int foot, int* out_y, int* out
   return ui_popup_fit(nrows, row_h, head, foot, out_y, out_h);
 }
 
+/* Same, laid out against a caller-supplied footer row instead of the global
+ * UI_FOOTER_Y — see ui_layout.h's ui_popup_fit_at for why (app_mon_menu drawn over the
+ * party overlay, whose own message box starts well above UI_FOOTER_Y). */
+int ui_popup_vfit_at(int nrows, int row_h, int head, int foot, int footer_y, int* out_y, int* out_h) {
+  return ui_popup_fit_at(nrows, row_h, head, foot, footer_y, out_y, out_h);
+}
+
 void ui_hline(int x, int y, int w, u16 color) {
   m3_line(x, y, x + w - 1, y, color);
 }

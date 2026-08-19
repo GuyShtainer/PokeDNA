@@ -503,6 +503,23 @@ int main(void) {
       ui_popup_fit(n, PDNA_MONMENU_ROW_H, PDNA_MONMENU_HEAD, PDNA_MONMENU_FOOT, &y, &h);
       if (y + h > worst) worst = y + h; }
     chkv("app_mon_menu panel bottom (every action count)", worst, UI_FOOTER_Y); }
+  { /* SHOULD-FIX 6 (2026-08-19): app_mon_menu now takes a caller-supplied footer_y —
+     * the party overlay passes PDNA_PTY_FOOTER_Y (133), well above the global
+     * UI_FOOTER_Y (150) the check right above this one already covers for box/bank/
+     * party_list. Every party mon has 9+ actions (occupied: VIEW/EDIT, ITEM, LEGALITY,
+     * MOVE TO BOX, COPY, DUPLICATE, TO DAY-CARE, EXPORT, RELEASE, CANCEL = 10), which
+     * is exactly the row count that used to seat a 146px panel at y=2..148 — squarely
+     * on top of the message box that starts at y=133. This is the check that would
+     * have caught it: laid out against ui_popup_fit's OLD global-only contract (before
+     * ui_popup_fit_at existed) there was no way to even express "against 133", so the
+     * gap was structural, not just an untested case. */
+    int worst = 0, y, h;
+    for (int n = 1; n <= PDNA_MONMENU_MAX; n++) {
+      ui_popup_fit_at(n, PDNA_MONMENU_ROW_H, PDNA_MONMENU_HEAD, PDNA_MONMENU_FOOT,
+                      PDNA_PTY_FOOTER_Y, &y, &h);
+      if (y + h > worst) worst = y + h; }
+    chkv("app_mon_menu panel bottom, called from the party overlay (every action count)",
+         worst, PDNA_PTY_FOOTER_Y); }
   { /* app_mon_menu_readonly: header grows a line per prose line (source note / why
      * this record is locked), so try every combination. */
     int worst = 0, y, h;

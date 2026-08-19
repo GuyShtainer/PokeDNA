@@ -95,6 +95,9 @@ void ui_panel_alpha(int x, int y, int w, int h, u16 fill, u16 border, int num);
  * at build time (see nav_menu) — a fixed menu that cannot scroll must not silently
  * grow past the screen when someone adds an entry. */
 int ui_popup_vfit(int nrows, int row_h, int head, int foot, int* out_y, int* out_h);
+/* Same contract, laid out against a caller-supplied footer row instead of the global
+ * UI_FOOTER_Y — see ui_layout.h's ui_popup_fit_at. */
+int ui_popup_vfit_at(int nrows, int row_h, int head, int foot, int footer_y, int* out_y, int* out_h);
 
 void ui_hline(int x, int y, int w, u16 color);
 

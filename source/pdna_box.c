@@ -2099,7 +2099,7 @@ int pdna_box(BoxSource* src) {
         uint8_t* rec = recs + (uint32_t)cur * 80;
         int mbox = src->is_bank ? 0 : box;                               /* box index within menu_block */
         boxoam_suspend();                                                /* sprites off while the menu/summary is up */
-        app_mon_menu(rec, false, src->is_bank, src->commit, src->menu_block, mbox, cur);
+        app_mon_menu(rec, false, src->is_bank, src->commit, src->menu_block, mbox, cur, UI_FOOTER_Y);
         boxoam_resume();
         recs = src->records(box);                                        /* menu may have edited it */
         box_decode(src, recs, box);                                  /* refresh after possible write */

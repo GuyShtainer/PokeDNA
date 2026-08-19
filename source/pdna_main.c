@@ -2358,7 +2358,7 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
       } else if (sel < n) {                          /* BROWSE: the full action menu on this mon */
         uint8_t* rec = g_sb1 + (g_frlg ? 0x038 : 0x238) + (uint32_t)sel * 100;
         g_party_tobox_allowed = allow_move_to_box;
-        app_mon_menu(rec, true, false, app_commit_sb1, g_sb1, -1, sel);
+        app_mon_menu(rec, true, false, app_commit_sb1, g_sb1, -1, sel, PDNA_PTY_FOOTER_Y);
         g_party_tobox_allowed = false;
         if (g_party_tobox_req) {                      /* user chose "MOVE TO BOX" */
           g_party_tobox_req = false;
@@ -2574,7 +2574,7 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0) 
   }
 }
 
-bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot) {
+bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit, uint8_t* block, int box, int slot, int footer_y) {
   PkMon m0;
   bool occupied = pk_decode_mon(rec, is_party, &m0);
   if (occupied) pk_resolve(&m0);
@@ -2624,13 +2624,17 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
 
   char title[16];
   ui_truncate(title, occupied ? (m0.nickname[0] ? m0.nickname : pk_species_name(m0.species)) : "EMPTY", 11);
-  /* Scroll if more actions than fit, and fit is measured against the FOOTER, not the
-   * screen: this popup is drawn over the box/party screen while that screen's own hints
-   * are still on the bottom row, and its 146 px panel used to end at y=152 — shearing the
-   * top off "A menu UP SEL B" / "U/D/L/R B" underneath it. */
+  /* Scroll if more actions than fit, and fit is measured against the CALLER'S OWN
+   * footer, not always the global UI_FOOTER_Y: this popup is drawn over the box/party
+   * screen while that screen's own hints are still on the bottom row, and box/bank's
+   * footer sits at UI_FOOTER_Y (150) while the party overlay's message box starts at
+   * PDNA_PTY_FOOTER_Y (133, well above it) — laying out against 150 unconditionally
+   * used to seat a 9+-action popup (every party mon has at least that many) at y=2..148,
+   * squarely on top of that message box. Box/bank/party_list pass UI_FOOTER_Y and see no
+   * change; the party overlay passes PDNA_PTY_FOOTER_Y. */
   int my, mh;
-  const int vis = ui_popup_vfit(n, PDNA_MONMENU_ROW_H, PDNA_MONMENU_HEAD,
-                                PDNA_MONMENU_FOOT, &my, &mh);
+  const int vis = ui_popup_vfit_at(n, PDNA_MONMENU_ROW_H, PDNA_MONMENU_HEAD,
+                                   PDNA_MONMENU_FOOT, footer_y, &my, &mh);
   const int mx = PDNA_MONMENU_X, mw = PDNA_MONMENU_W;
   int sel = 0, top = 0;
   for (;;) {
@@ -2799,7 +2803,7 @@ static int party_list(void) {
     else if ((k & KEY_A) && g_nparty > 0) {
       uint16_t doff = g_frlg ? 0x0038 : 0x0238;
       uint8_t* rec = g_sb1 + doff + (uint32_t)sel * 100;     /* party lives in SaveBlock1 (ids 1..4) */
-      if (app_mon_menu(rec, true, false, app_commit_sb1, g_sb1, -1, sel)) {   /* party -> editor -> commit */
+      if (app_mon_menu(rec, true, false, app_commit_sb1, g_sb1, -1, sel, UI_FOOTER_Y)) {   /* party -> editor -> commit */
         g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
         for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
         if (sel >= g_nparty) sel = g_nparty ? g_nparty - 1 : 0;
