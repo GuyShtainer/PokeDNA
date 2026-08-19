@@ -2003,6 +2003,41 @@ static void party_draw_slot_bg(int i, bool selected) {
   else       ui_panel_striped(x, y, w, h, UI_PTY_ROW_FILL_A, UI_PTY_ROW_FILL_B, border);
 }
 
+/* Border only (m3_frame's own perimeter, not ui_panel_striped's full interior fill) —
+ * factored out of party_draw_slot_bg so the idle-bob tick can cheaply RESTORE a slot's
+ * divider/edge after party_icon_repaint's background reconstruction paints over it (see
+ * party_overlay_bob). Same border colour rule as party_draw_slot_bg.
+ *
+ * RAW vid_mem writes, not m3_frame -- same style as party_icon_repaint right above.
+ * An earlier version of this function called m3_frame(x, y, x+w-1, y+h-1, ...), exactly
+ * matching ui_panel_striped's own call (so it draws the identical rectangle -- see
+ * ui.c's ui_progress comment for the right/bottom-EXCLUSIVE convention that makes
+ * `w-1`/`h-1` the correct call here). That version was MEASURABLY too slow by a small
+ * margin: on a fresh 60-frame idle capture, the border-restore pass lost a race with
+ * this frame's own video output on the EXACT tick-transition frame (one frame in ten,
+ * matching PARTY_BOB_PERIOD's cadence) -- a genuine, if brief (1/60s), re-eroded-then-
+ * fixed-next-frame flicker, the same class of tearing party_icon_repaint's own block
+ * comment describes avoiding via per-scanline vid_mem writes over library calls. This
+ * closed it (re-verified: 0 eroded frames in 60, not 1). */
+static void party_draw_slot_border(int i, bool selected) {
+  int x, y, w, h; party_slot_rect(i, &x, &y, &w, &h);
+  u16 c = selected ? UI_PTY_CURSOR : UI_PTY_BORDER;
+  int x2 = x + w - 2, y2 = y + h - 2;   /* right/bottom column-row, EXCLUSIVE-of-w/h-1 */
+  if ((unsigned)y < (unsigned)UI_SCR_H) {
+    u16* row = &vid_mem[y * UI_SCR_W];
+    for (int px = x; px <= x2; px++) if ((unsigned)px < (unsigned)UI_SCR_W) row[px] = c;
+  }
+  if ((unsigned)y2 < (unsigned)UI_SCR_H) {
+    u16* row = &vid_mem[y2 * UI_SCR_W];
+    for (int px = x; px <= x2; px++) if ((unsigned)px < (unsigned)UI_SCR_W) row[px] = c;
+  }
+  for (int py = y; py <= y2; py++) {
+    if ((unsigned)py >= (unsigned)UI_SCR_H) continue;
+    if ((unsigned)x  < (unsigned)UI_SCR_W) vid_mem[py * UI_SCR_W + x]  = c;
+    if ((unsigned)x2 < (unsigned)UI_SCR_W) vid_mem[py * UI_SCR_W + x2] = c;
+  }
+}
+
 /* Icon + every text/HP field for one occupied slot, at bob frame `bob`. `p` NULL
  * means an empty slot (draws our own "+add here"/"-" affordance instead — the tool
  * still needs a PLACE target and an empty-party-slot indicator that retail's own
@@ -2029,6 +2064,84 @@ static void party_draw_name_level(int i, const PkMon* p) {
   ui_ptext_shadow(x + ndx, y + lvdy, UI_TEXT, UI_PTY_TEXT_SHADOW, lvl);
 }
 
+/* Just the "HP" label text — the ONE piece of party_draw_hp_fields (below) that the
+ * slot-1 BOX's own icon repaint can erase. The box icon is 32px wide (abs x=5..37,
+ * y=28..59) and its "HP" label sits at abs x=32 (17 + PDNA_PTY_BOX_HP_LBL_DX 15), y=53
+ * (25 + 28) — squarely inside that rect — so every bob tick used to erase most of the
+ * 'H' glyph and leave only its tail, rendering "HP" as ".P" forever after the first
+ * tick. The bar (BOX_HP_BAR_DX=29 -> abs x=46, past the icon's x=37) and the numbers
+ * (BOX_HP_NUM_DY=38 -> abs y=63, past the icon's y=59) are NOT in the icon's rect and
+ * do not need restoring — redrawing the whole HP block every tick to fix a label was
+ * measurably too slow (see party_overlay_bob's comment: it pushed the tick's total
+ * cost over budget and reintroduced scanline tearing on a fresh 60-frame capture). Row
+ * slots never needed this at all (their HP fields sit well past the 32px row icon). */
+static void party_draw_hp_label(int i) {
+  int x, y, w, h; bool isbox = party_slot_rect(i, &x, &y, &w, &h); (void)w; (void)h;
+  int lbldx = isbox ? PDNA_PTY_BOX_HP_LBL_DX : PDNA_PTY_HP_LBL_DX;
+  int lbldy = isbox ? PDNA_PTY_BOX_HP_LBL_DY : PDNA_PTY_HP_LBL_DY;
+  ui_ptext_shadow(x + lbldx, y + lbldy, UI_PTY_HP_LABEL, UI_PTY_HP_OUTLINE, "HP");
+}
+
+/* HP label + bar + numbers, the fields party_draw_slot_fg draws last for the INITIAL
+ * paint (both box and rows — see party_draw_hp_label's comment for why only the box's
+ * own "HP" label, not this whole block, needs restoring on every idle-bob tick). */
+static void party_draw_hp_fields(int i, const PkMon* p) {
+  int x, y, w, h; bool isbox = party_slot_rect(i, &x, &y, &w, &h); (void)w; (void)h;
+
+  /* pk_decode_mon only carries the COMPUTED max stat (stats[PK_HP]) into PkMon;
+   * current HP lives at record offset 0x56 (party-only field — gen3_edit.c:105
+   * writes the same offset on heal/create) and is read straight off p->raw here. */
+  uint16_t maxhp = p->stats[PK_HP];
+  uint16_t curhp = p->raw ? (uint16_t)(p->raw[0x56] | ((uint16_t)p->raw[0x57] << 8)) : maxhp;
+  if (curhp > maxhp) curhp = maxhp;     /* a torn/edited record must never over-fill the bar */
+
+  party_draw_hp_label(i);
+
+  int bdx = isbox ? PDNA_PTY_BOX_HP_BAR_DX : PDNA_PTY_HP_BAR_DX;
+  int bdy = isbox ? PDNA_PTY_BOX_HP_BAR_DY : PDNA_PTY_HP_BAR_DY;
+  int bw  = isbox ? PDNA_PTY_BOX_HP_BAR_W  : PDNA_PTY_HP_BAR_W;
+  int filled = maxhp ? (int)((uint32_t)curhp * (uint32_t)bw / maxhp) : 0;
+  /* A living Pokemon must show at least one VISIBLE pixel of fill, never an accidental
+   * "0 HP" bar from integer truncation at a low fraction. 1 is not enough by itself:
+   * the border drawn below covers the bar's own first column, so a single filled column
+   * would be swallowed whole. 2 is the smallest value that survives it. */
+  if (curhp > 0 && filled < 2 && bw >= 2) filled = 2;
+
+  /* Colour by HP fraction, thresholds CITED from pokeemerald's own GetHPBarLevel
+   * (src/battle_interface.c, pret decomp — a scratchpad checkout of the same public
+   * source CLAUDE.md already treats as reference-only; not found under this repo's own
+   * reference/ tree): green above 50%, yellow above 20%, red at or below. Written as the
+   * same integer test the decomp uses (hp*scale/maxhp against scale*N/100), just without
+   * the bar-pixel scale factor since it cancels out of a plain percentage comparison.
+   * The GREEN pair is Guy's own MEASURED retail capture (MEASUREMENTS.md) — his whole
+   * save is full HP, which is exactly the case that stays green here. YELLOW/RED are
+   * PROVISIONAL (see UI_PTY_HP_FILL_YEL/RED in ui.h for why the literal decomp RGB
+   * values could not be recovered from source alone). */
+  u16 fill, shade;
+  if (maxhp == 0 || (uint32_t)curhp * 100u > (uint32_t)maxhp * 50u) {
+    fill = UI_PTY_HP_FILL; shade = UI_PTY_HP_SHADE;
+  } else if ((uint32_t)curhp * 100u > (uint32_t)maxhp * 20u) {
+    fill = UI_PTY_HP_FILL_YEL; shade = UI_PTY_HP_SHADE_YEL;
+  } else {
+    fill = UI_PTY_HP_FILL_RED; shade = UI_PTY_HP_SHADE_RED;
+  }
+
+  ui_progress(x + bdx, y + bdy, bw, PDNA_PTY_HP_BAR_H, filled,
+             fill, UI_PTY_HP_TRACK, UI_PTY_HP_OUTLINE);
+  /* Retail's bar is FOUR bands top to bottom (MEASUREMENTS.md "HP bar colours"): outline,
+   * a 1px white highlight, a darker shading row, then the main fill — at h=7 that is
+   * outline+white+shade+3xmain+outline. The shipped bar only ever drew the shade row. */
+  if (filled > 2) {
+    ui_hline(x + bdx + 1, y + bdy + 1, filled - 2, UI_PTY_HP_HILITE);
+    ui_hline(x + bdx + 1, y + bdy + 2, filled - 2, shade);
+  }
+
+  char hpn[16]; siprintf(hpn, PDNA_PTY_HP_NUM_FMT, (unsigned)curhp, (unsigned)maxhp);
+  int hndx = isbox ? PDNA_PTY_BOX_HP_NUM_DX : PDNA_PTY_HP_NUM_DX;
+  int hndy = isbox ? PDNA_PTY_BOX_HP_NUM_DY : PDNA_PTY_HP_NUM_DY;
+  ui_ptext_shadow(x + hndx, y + hndy, UI_TEXT, UI_PTY_TEXT_SHADOW, hpn);
+}
+
 static void party_draw_slot_fg(int i, const PkMon* p, uint8_t bob, bool is_addslot) {
   int x, y, w, h; bool isbox = party_slot_rect(i, &x, &y, &w, &h); (void)w; (void)h;
   int ndx = isbox ? PDNA_PTY_BOX_NAME_DX : PDNA_PTY_NAME_DX;
@@ -2051,29 +2164,7 @@ static void party_draw_slot_fg(int i, const PkMon* p, uint8_t bob, bool is_addsl
     else                ui_gender_glyph_f(x + gdx, y + gdy, UI_PTY_GEND_F_FILL, UI_PTY_GEND_F_LINE);
   }
 
-  /* pk_decode_mon only carries the COMPUTED max stat (stats[PK_HP]) into PkMon;
-   * current HP lives at record offset 0x56 (party-only field — gen3_edit.c:105
-   * writes the same offset on heal/create) and is read straight off p->raw here. */
-  uint16_t maxhp = p->stats[PK_HP];
-  uint16_t curhp = p->raw ? (uint16_t)(p->raw[0x56] | ((uint16_t)p->raw[0x57] << 8)) : maxhp;
-  if (curhp > maxhp) curhp = maxhp;     /* a torn/edited record must never over-fill the bar */
-
-  int lbldx = isbox ? PDNA_PTY_BOX_HP_LBL_DX : PDNA_PTY_HP_LBL_DX;
-  int lbldy = isbox ? PDNA_PTY_BOX_HP_LBL_DY : PDNA_PTY_HP_LBL_DY;
-  ui_ptext_shadow(x + lbldx, y + lbldy, UI_PTY_HP_LABEL, UI_PTY_HP_OUTLINE, "HP");
-
-  int bdx = isbox ? PDNA_PTY_BOX_HP_BAR_DX : PDNA_PTY_HP_BAR_DX;
-  int bdy = isbox ? PDNA_PTY_BOX_HP_BAR_DY : PDNA_PTY_HP_BAR_DY;
-  int bw  = isbox ? PDNA_PTY_BOX_HP_BAR_W  : PDNA_PTY_HP_BAR_W;
-  int filled = maxhp ? (int)((uint32_t)curhp * (uint32_t)bw / maxhp) : 0;
-  ui_progress(x + bdx, y + bdy, bw, PDNA_PTY_HP_BAR_H, filled,
-             UI_PTY_HP_FILL, UI_PTY_HP_TRACK, UI_PTY_HP_OUTLINE);
-  if (filled > 2) ui_hline(x + bdx + 1, y + bdy + 1, filled - 2, UI_PTY_HP_SHADE);  /* top-row shading */
-
-  char hpn[16]; siprintf(hpn, PDNA_PTY_HP_NUM_FMT, (unsigned)curhp, (unsigned)maxhp);
-  int hndx = isbox ? PDNA_PTY_BOX_HP_NUM_DX : PDNA_PTY_HP_NUM_DX;
-  int hndy = isbox ? PDNA_PTY_BOX_HP_NUM_DY : PDNA_PTY_HP_NUM_DY;
-  ui_ptext_shadow(x + hndx, y + hndy, UI_TEXT, UI_PTY_TEXT_SHADOW, hpn);
+  party_draw_hp_fields(i, p);
 }
 
 /* The one shared paint used by both the full redraw and the idle-bob tick — see the
@@ -2157,9 +2248,40 @@ static void party_overlay_bob(int f) {
     int idy = isbox ? PDNA_PTY_BOX_ICON_DY : PDNA_PTY_ROW_ICON_DY;
     const u16* ic = isEgg ? mon_icon_egg_frame((uint8_t)f) : mon_icon_for_form_frame(p->species, p->form, (uint8_t)f);
     party_icon_repaint(i, x + idx, y + idy, ic);
-    /* The icon repaint just overwrote its own full bounding box, name/level column
-     * included — put the text back on top (see party_draw_name_level's comment). */
+    /* The icon repaint just overwrote its own full bounding box — put back whatever it
+     * may have painted over: name/level, on EVERY row/box (see party_draw_name_level's
+     * comment — a real Gen-3 icon's bounding rect reaches every row's name column), and
+     * — box only — its "HP" label (see party_draw_hp_label's comment for why the bar
+     * and numbers do not need it, and why redrawing the WHOLE HP block here, tried in
+     * an earlier version of this fix, measurably reintroduced the scanline tearing
+     * party_icon_repaint's own comment describes: it pushed this tick's total cost over
+     * budget, verified on a fresh 60-frame idle capture where row dividers alternated
+     * between fully restored and eroded frame to frame — a frame-budget overrun does
+     * that; a logic bug would not). */
+    if (isbox) party_draw_hp_label(i);
     party_draw_name_level(i, p);
+    /* party_icon_repaint's per-scanline background reconstruction only knows FILL vs
+     * background colour — it has no idea a slot's own BORDER line (a row divider, the
+     * box's edge) might fall inside the icon's 32x32 bounding rect too, so any such
+     * line got silently overwritten with fill colour on every tick.
+     *
+     * Restored HERE — right after THIS slot's own icon repaint, inside the same loop
+     * iteration — not in a separate trailing pass over all 6 slots (an earlier version
+     * of this fix did that, and it MEASURABLY still tore on the exact tick-transition
+     * frame, 1 frame in 10 on a fresh 60-frame capture: Mode 3 has no double buffer, so
+     * a write made partway through active display can miss the PPU's beam for a
+     * scanline near the top of the screen (row 1's own divider, y=10) on THAT frame
+     * even though it lands correctly in vid_mem for every later frame. Row i's own top
+     * edge is eroded by BOTH its own icon (whose 32px-tall bounding box reaches 1px
+     * above the row) and the row ABOVE's icon (which bleeds 6-7px down past its own
+     * bottom); its bottom edge is eroded only by its own icon (the row below's icon
+     * does not reach back up that far — the pitch/height maths land it 1px short). So
+     * by the time THIS iteration's own icon repaint finishes, every source that could
+     * have eroded slot i's border already has, and restoring right here — not several
+     * more icon-repaints later — keeps the CPU-to-scanout gap as tight as
+     * party_draw_name_level's own (which never showed this flicker for the same
+     * reason). Re-verified: 0 eroded frames in 60, not 1. */
+    party_draw_slot_border(i, i == s_pov_sel);
   }
   rumble_io_resume();
 }

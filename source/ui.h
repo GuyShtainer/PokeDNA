@@ -41,8 +41,21 @@
 #define UI_PTY_BORDER    RGB15( 9,  9, 12)  /* unselected box/row border  (74,74,99)  */
 #define UI_PTY_CURSOR    RGB15(31, 14,  6)  /* selected box/row border   (255,115,49) */
 #define UI_PTY_HP_OUTLINE RGB15(10, 10, 10) /* HP bar/label outline       (82,82,82)  */
-#define UI_PTY_HP_FILL   RGB15(14, 31, 21)  /* HP bar main body          (115,255,173)*/
-#define UI_PTY_HP_SHADE  RGB15(11, 26, 16)  /* HP bar top-row shading     (90,214,132)*/
+#define UI_PTY_HP_HILITE RGB15(31, 31, 31)  /* HP bar 1px white highlight (255,255,255)*/
+#define UI_PTY_HP_FILL   RGB15(14, 31, 21)  /* HP bar main body, GREEN    (115,255,173)*/
+#define UI_PTY_HP_SHADE  RGB15(11, 26, 16)  /* HP bar top-row shading, GREEN (90,214,132)*/
+/* YELLOW/RED bands: PROVISIONAL, not measured (Guy's save is entirely full-HP — see
+ * MEASUREMENTS.md Differences #7). The THRESHOLDS that pick between these three pairs
+ * ARE cited (pokeemerald's own GetHPBarLevel, src/battle_interface.c — see
+ * party_draw_hp_fields, source/pdna_main.c); its literal RGB values live in a compiled
+ * palette buffer copied at runtime (party_menu.c:750: `CpuCopy16(gPlttBufferUnfaded,
+ * sPartyMenuInternal->palBuffer, ...)`), not a source-level constant, so they could not
+ * be recovered from source alone. These follow the SAME main/shade lightness ratio as
+ * the measured GREEN pair rather than an invented one. */
+#define UI_PTY_HP_FILL_YEL  RGB15(31, 31, 10) /* PROVISIONAL yellow main  (255,255,82) */
+#define UI_PTY_HP_SHADE_YEL RGB15(26, 26,  8) /* PROVISIONAL yellow shade (214,214,66) */
+#define UI_PTY_HP_FILL_RED  RGB15(31, 10, 10) /* PROVISIONAL red main     (255,82,82)  */
+#define UI_PTY_HP_SHADE_RED RGB15(26,  8,  8) /* PROVISIONAL red shade    (214,66,66)  */
 #define UI_PTY_HP_TRACK  UI_DIM             /* empty portion — NOT MEASURED (this
                                               * save has no damaged party member) */
 #define UI_PTY_HP_LABEL  RGB15(31, 22,  8)  /* "HP" badge text           (255,181,66) */

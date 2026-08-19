@@ -85,13 +85,36 @@ void ui_fill_rect(int x, int y, int w, int h, u16 color) {
 }
 
 /* Outlined progress/stat bar: `track` background, `fill` for the first
- * `filled` pixels (clamped to [0,w]), `border` frame. */
+ * `filled` pixels (clamped to [0,w]), `border` frame.
+ *
+ * The border call USED to read `m3_frame(x, y, x + w - 1, y + h - 1, border)`, copying
+ * the `w-1`/`h-1` idiom every ui_panel* function in this file uses. That idiom is wrong
+ * for libtonc's actual m3_frame: measured directly off a live mGBA capture of the party
+ * HP bar (bw=50, h=7 — docs/analysis-2026-08-19-party/, sampling columns x=183/190/
+ * 231/232 and row y=16 pixel-by-pixel), m3_frame(left,top,right,bottom) draws its right
+ * column at right-1 and its bottom row at bottom-1 — i.e. it treats (right,bottom) as
+ * EXCLUSIVE, the SAME convention m3_rect already uses, not "inclusive, minus one" as the
+ * `w-1`/`h-1` call sites assume. With the old call the frame's right/bottom edges landed
+ * ONE PIXEL INSIDE m3_rect's true fill edge, leaving a `fill`-coloured sliver past the
+ * border on every progress bar's right and bottom side — invisible on the app's other
+ * six ui_progress callers (fill and border are both muted greys/blues there) but glaring
+ * on the party HP bar's bright green fill against a dark outline, which is how this got
+ * caught. Passing `x + w, y + h` (matching m3_rect's own parameters exactly, since frame
+ * and rect share this convention) draws the border flush with the fill on all four sides.
+ *
+ * SCOPE: only THIS function's own frame call changed. ui_panel/ui_panel_alpha/
+ * ui_panel_striped (and the two bare m3_frame calls further down this file) keep their
+ * existing `w-1`/`h-1` idiom — they are the app's whole panel-drawing vocabulary, used
+ * on dozens of screens, and re-deriving every one of those coordinates is a different,
+ * much larger change than the one the party HP bar needed. ui_progress has its own
+ * private frame call shared by exactly 7 sites (party + 6 pre-existing bars), none of
+ * which relied on the old (wrong) inset — this fixes all 7 consistently. */
 void ui_progress(int x, int y, int w, int h, int filled, u16 fill, u16 track, u16 border) {
   if (filled < 0) filled = 0;
   if (filled > w) filled = w;
   m3_rect(x, y, x + w, y + h, track);
   if (filled > 0) m3_rect(x, y, x + filled, y + h, fill);
-  m3_frame(x, y, x + w - 1, y + h - 1, border);
+  m3_frame(x, y, x + w, y + h, border);
 }
 
 /* Blit a w×h RGB15 sprite (0 = transparent, 0x8000|RGB15 = opaque). Same pixel
