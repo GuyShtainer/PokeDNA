@@ -1,6 +1,7 @@
 #ifndef BAG_BG_INCLUDED
 #define BAG_BG_INCLUDED
 #include <stdint.h>
+#include "lzblob.h"   /* the art ships LZ77-paged; accessors hand out a BgFrame */
 
 /* Real Gen-3 bag-screen backgrounds: one full 240x160 RGB15 frame per game
  * (PkGame-indexed: RS / Emerald / FRLG) and player gender, pre-composited at
@@ -68,7 +69,7 @@ static const BagLayout BAG_LAYOUTS[3] = {
 /* 240x160 RGB15 frame for (game, gender 0=male/1=female), or NULL when that
  * game's art is absent (art-free build). Lives in ROM — blit ROM->VRAM,
  * never buffer it in EWRAM. */
-const uint16_t* bag_bg(int game, int female);
+BgFrame bag_bg(int game, int female);
 
 /* 64x(64+rise) pocket-switch anim rect at (anim_x, anim_y), or NULL when
  * absent (art-free build / bad step): step 0..rise-1 = closed bag falling
@@ -76,6 +77,6 @@ const uint16_t* bag_bg(int game, int female);
  * resting look while browsing. FRLG's TMs&HMs / Berries pockets reuse the
  * Items open frame (the real game keeps those in the TM Case / Berry Pouch,
  * which have no bag frame). */
-const uint16_t* bag_anim(int game, int female, int step);
+BgFrame bag_anim(int game, int female, int step);
 
 #endif /* BAG_BG_INCLUDED */

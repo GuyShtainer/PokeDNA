@@ -2646,7 +2646,7 @@ static void nf_row_repaint(const NamedFlag* nf, int nc, int top, int r, int sel)
  * it in the same session. */
 static bool bag_screen_try(bool* dirty) {
   int female = (g_sb2[SB2_OFF_GENDER] == 1);
-  if (!bag_bg(g_game, female)) return false;     /* art-free build: weak NULL fallback */
+  if (!bag_bg(g_game, female).blob) return false;     /* art-free build: weak NULL fallback */
   if (bag_screen(g_sb1, g_sb2, g_game, female)) *dirty = true;
   return true;
 }
@@ -2968,7 +2968,7 @@ static bool pokeblock_edit(int idx) {
  * (git-ignored ripped art); these weak NULLs keep an art-free clone building, and
  * pdna_pokeblock then keeps its plain list. Same pattern as the bag and the
  * trainer card. FRLG returns NULL from the strong version too - no Pokeblocks. */
-__attribute__((weak)) const uint16_t* pokeblock_bg(int game) { (void)game; return 0; }
+__attribute__((weak)) BgFrame pokeblock_bg(int game) { (void)game; BgFrame f = { 0, 0, PB_BG_W }; return f; }
 __attribute__((weak)) const uint16_t* pokeblock_hl(int game, int state) {
   (void)game; (void)state; return 0;
 }
@@ -2981,18 +2981,15 @@ static void pdna_pokeblock(void) {
   bool dirty = false; int sel = 0, top = 0;
   /* The real case chrome, if the art was generated. NULL -> the plain list below,
    * unchanged, exactly as an art-free clone has always drawn it. */
-  const uint16_t* chrome = pokeblock_bg((int)g_game);
-  const int VIS = chrome ? PB_ROWS : 13;               /* retail's panel holds 9 rows */
+  BgFrame chrome = pokeblock_bg((int)g_game);
+  const int VIS = chrome.blob ? PB_ROWS : 13;               /* retail's panel holds 9 rows */
   for (;;) {
-    if (chrome) {
-      rumble_io_suspend();                             /* ROM -> VRAM blit */
-      dma3_cpy(vid_mem, chrome, PB_BG_W * PB_BG_H * 2);
-      rumble_io_resume();
-    } else ui_clear();
+    if (chrome.blob) bg_restore(chrome, 0, 0, PB_BG_W, PB_BG_H);  /* 20 LZ77 pages */
+    else ui_clear();
     int have = 0;
     for (int i = 0; i < PK_POKEBLOCK_COUNT; i++) { PkPokeblock p; pk_pokeblock_get(g_sb1, g_game, i, &p); if (pk_pokeblock_occupied(&p)) have++; }
     char ti[28]; siprintf(ti, "POKEBLOCK CASE  %d/40", have);
-    if (chrome) {
+    if (chrome.blob) {
       /* The case's own title box is 72 px of light chrome, so: dark ink, and the
        * label has to be "POKEBLOCKS" (measured 60 px, budget 64). "POKEBLOCK CASE"
        * is 81 px and "POKEBLOCKS 3" is 69 px -- both would clip to "POKEBLOCK~".
@@ -3006,11 +3003,11 @@ static void pdna_pokeblock(void) {
     }
     if (sel < top) top = sel; if (sel >= top + VIS) top = sel - VIS + 1;
     for (int i = 0; i < VIS && top + i < PK_POKEBLOCK_COUNT; i++) {
-      int idx = top + i, y = chrome ? (PB_LIST_Y + i * PB_ROW_H) : (16 + i * 10);
+      int idx = top + i, y = chrome.blob ? (PB_LIST_Y + i * PB_ROW_H) : (16 + i * 10);
       bool s = (idx == sel);
       PkPokeblock pb; pk_pokeblock_get(g_sb1, g_game, idx, &pb);
       bool occ = pk_pokeblock_occupied(&pb);
-      if (chrome) {
+      if (chrome.blob) {
         /* Inside the case's list panel: number, colour swatch, name. The panel is
          * 112 px wide, which the 5x7 face fits and sys8 would not. */
         if (s) ui_panel(PB_LIST_X + 2, y + 1, PB_LIST_W - 4, PB_ROW_H - 2, UI_SEL, UI_TITLE);
@@ -3035,7 +3032,7 @@ static void pdna_pokeblock(void) {
         } else ui_text(28, y + 1, s ? UI_SELTEXT : UI_DIM, "(empty)");
       }
     }
-    if (chrome) {
+    if (chrome.blob) {
       /* The bottom-left white panel is the game's FLAVOR/FEEL board — retail fills
        * it for the selected block and ours sat blank (Guy, HW round 2). Same
        * geometry as retail (labels at (16/64, 104/120/136), the has-flavor icon one

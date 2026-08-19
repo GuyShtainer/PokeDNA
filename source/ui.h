@@ -152,10 +152,10 @@ void ui_pokeball(int x, int y);
  * Requires x and w to be EVEN (word-aligned DMA). NULL data is a no-op. */
 void ui_blit_over(int x, int y, int w, int h, const u16* data, u16 bg);
 
-/* Re-copy a rect of a full-screen 240x160 ROM background bitmap into the Mode-3
- * frame — erases text/selection painted over a bitmap bg (e.g. the bag screen)
- * without repainting the whole frame. `bg` is the same-stride ROM image the
- * screen was blitted from; NULL is a no-op. */
-void ui_bg_restore(const u16* bg, int x, int y, int w, int h);
+/* Restoring a rect of a full-screen background bitmap used to live here as
+ * ui_bg_restore(const u16*). The backgrounds now ship LZ77-paged (they were
+ * 5.7 MB of a 12.5 MB ROM, which is why the image kept failing to load off
+ * SD), so there is no pointer to index: use bg_restore(BgFrame, x, y, w, h)
+ * from lzblob.h, which unpacks only the pages the rect overlaps. */
 
 #endif /* UI_H */

@@ -2,6 +2,7 @@
 #define POKEBLOCK_BG_H
 
 #include <stdint.h>
+#include "lzblob.h"   /* the art ships LZ77-paged; accessors hand out a BgFrame */
 
 /* Retail Pokeblock Case chrome, pre-rendered on the PC.
  *
@@ -46,7 +47,7 @@
 
 /* game is a PkGame (0 = RS, 1 = EMERALD, 2 = FRLG).
  * All three return NULL for FRLG and in an art-free build. */
-const uint16_t* pokeblock_bg(int game);                        /* 240x160 RGB15      */
+BgFrame pokeblock_bg(int game);                        /* 240x160 RGB15      */
 const uint16_t* pokeblock_hl(int game, int state);             /* 8x8; 0 none 1 blue 2 red */
 const uint16_t* pokeblock_flavor_icon(int game, int flavor);   /* 8x16; flavor 0..4  */
 

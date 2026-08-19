@@ -13,7 +13,7 @@
  * (the exact pick_item -> quantity -> pk_bag_set powers of the plain tab,
  * wrong-pocket auto-routing included), B exits. Edits stay in RAM; the CALLER
  * (data_editor) owns the confirm + verified SB1 commit — no new SD write paths.
- * Partial redraws restore rects from the ROM bg (ui_bg_restore): 0 new EWRAM.
+ * Partial redraws restore rects from the ROM bg (bg_restore): 0 new EWRAM.
  */
 #include <tonc.h>
 #include <stdio.h>
@@ -35,11 +35,11 @@
  * ripped art); these weak NULLs keep an art-free clone building — data_editor
  * then keeps the plain bag tab (same pattern as the wallpaper fallbacks in
  * pdna_box.c), and a NULL bag_anim() just skips the pocket animation. */
-__attribute__((weak)) const uint16_t* bag_bg(int game, int female) {
-  (void)game; (void)female; return 0;
+__attribute__((weak)) BgFrame bag_bg(int game, int female) {
+  (void)game; (void)female; BgFrame f = { 0, 0, BAG_BG_W }; return f;
 }
-__attribute__((weak)) const uint16_t* bag_anim(int game, int female, int step) {
-  (void)game; (void)female; (void)step; return 0;
+__attribute__((weak)) BgFrame bag_anim(int game, int female, int step) {
+  (void)game; (void)female; (void)step; BgFrame f = { 0, 0, BAG_ANIM_W }; return f;
 }
 
 /* Inks tuned on the generated bg: dark text on the cream list / white desc
@@ -91,19 +91,15 @@ static void bag_msg(const char* title, u16 col, const char* l1, const char* l2) 
 /* ---- bag sprite: rest frame + the game's pocket-switch animation --------- */
 
 /* blit one pre-composited 64x(64+rise) anim rect (ROM) at the bag anchor */
-static void bag_rect(const BagLayout* L, const uint16_t* r) {
-  rumble_io_suspend();                        /* rect lives in ROM */
-  for (int j = 0; j < 64 + L->rise; j++)
-    dma3_cpy(&vid_mem[(L->anim_y + j) * BAG_BG_W + L->anim_x],
-             r + j * BAG_ANIM_W, BAG_ANIM_W * 2);
-  rumble_io_resume();
+static void bag_rect(const BagLayout* L, BgFrame r) {
+  bg_blit_rect(r, L->anim_x, L->anim_y, BAG_ANIM_W, 64 + L->rise);
 }
 
 /* Resting bag = the current pocket's OPEN frame — the games never show the
  * closed bag while browsing. Art-free fallback: the bg's baked closed bag. */
 static void bag_rest(const BagLayout* L, PkGame g, int female, int pocket) {
-  const uint16_t* r = bag_anim(g, female, L->rise + pocket);
-  if (r) bag_rect(L, r);
+  BgFrame r = bag_anim(g, female, L->rise + pocket);
+  if (r.blob) bag_rect(L, r);
 }
 
 /* The game's own pocket-switch animation: the CLOSED bag pops up `rise` px and
@@ -111,15 +107,15 @@ static void bag_rest(const BagLayout* L, PkGame g, int female, int pocket) {
  * (SetBagVisualPocketId), RS 4 px at 1 px per 2 frames (sub_80A79EC) — then
  * the new pocket's open frame appears. One ~8.8 KiB ROM->VRAM blit per step.
  * No art -> no anim (the screen still works). */
-static void pocket_anim(const uint16_t* bg, const BagLayout* L,
+static void pocket_anim(BgFrame bg, const BagLayout* L,
                         PkGame g, int female, int pocket) {
   for (int i = 0; i < L->rise; i++) {
-    const uint16_t* r = bag_anim(g, female, i);
-    if (!r) return;
+    BgFrame r = bag_anim(g, female, i);
+    if (!r.blob) return;
     bag_rect(L, r);
     for (int w = 0; w < L->fall_wait; w++) s_vsync();
   }
-  ui_bg_restore(bg, L->anim_x, L->anim_y, BAG_ANIM_W, 64 + L->rise);  /* closed, landed */
+  bg_restore(bg, L->anim_x, L->anim_y, BAG_ANIM_W, 64 + L->rise);  /* closed, landed */
   s_vsync();
   bag_rest(L, g, female, pocket);             /* the new pocket springs open */
 }
@@ -128,25 +124,25 @@ static void pocket_anim(const uint16_t* bg, const BagLayout* L,
  * The restore rect is the layout's pkt_r* box — wider than the text window
  * where the banner graphic needs it ("Poke Balls" = 10 cols) and tall enough
  * to erase the dot markers. */
-static void draw_header(const uint16_t* bg, const BagLayout* L, int pocket) {
-  ui_bg_restore(bg, L->pkt_rx, L->pkt_ry, L->pkt_rw, L->pkt_rh);
+static void draw_header(BgFrame bg, const BagLayout* L, int pocket) {
+  bg_restore(bg, L->pkt_rx, L->pkt_ry, L->pkt_rw, L->pkt_rh);
   ui_text(L->pkt_tx, L->pkt_ty, BINK, pk_pocket_name(pocket));
   if (L->dot_x)
     ui_fill_rect(L->dot_x - 1 + pocket * 8, L->dot_y - 1, 4, 4, BCUR);
 }
 
 /* the '>' cursor column only (selection moved within the visible page) */
-static void draw_cursor(const uint16_t* bg, const BagLayout* L, int top, int sel) {
-  ui_bg_restore(bg, L->list_x0 + 2, L->list_y0, 8, L->list_y1 - L->list_y0);
+static void draw_cursor(BgFrame bg, const BagLayout* L, int top, int sel) {
+  bg_restore(bg, L->list_x0 + 2, L->list_y0, 8, L->list_y1 - L->list_y0);
   ui_text(L->list_x0 + 2, L->list_y0 + 1 + (sel - top) * 9, BCUR, ">");
 }
 
 /* whole list pane: name + right-aligned quantity per slot (name columns fill
  * whatever the pane leaves after the "x999" gutter). The Key Items pocket
  * shows no quantity, matching the games. */
-static void draw_list(const uint16_t* bg, const BagLayout* L, const uint8_t* sb1,
+static void draw_list(BgFrame bg, const BagLayout* L, const uint8_t* sb1,
                       const uint8_t* sb2, PkGame g, int pocket, int top, int sel) {
-  ui_bg_restore(bg, L->list_x0, L->list_y0,
+  bg_restore(bg, L->list_x0, L->list_y0,
                 L->list_x1 - L->list_x0, L->list_y1 - L->list_y0);
   int cap = pk_pocket_cap(g, pocket);
   int nx = L->list_x0 + 9;                       /* name column, just past the '>' */
@@ -208,18 +204,18 @@ static bool desc_flow(const BagLayout* L, const char* s, int* pi, bool draw, boo
   return i < n;
 }
 
-/* Repaints ONLY the desc pane rect + the game's icon slot (ui_bg_restore) —
+/* Repaints ONLY the desc pane rect + the game's icon slot (bg_restore) —
  * no flicker anywhere else. The icon goes in the chrome's own baked square
  * (L->icon_xy, outside the pane; (0,0) = this game shows no icon — RS), the
  * pane itself is pure text. Draws page `pg` (0-based, clamped) and the "n/m"
  * chip when it overflows; stores the page count in s_desc_pages for the idle
  * auto-flip. */
-static void draw_desc(const uint16_t* bg, const BagLayout* L, const uint8_t* sb1,
+static void draw_desc(BgFrame bg, const BagLayout* L, const uint8_t* sb1,
                       PkGame g, int pocket, int sel, int pg) {
-  ui_bg_restore(bg, L->desc_x0, L->desc_y0,
+  bg_restore(bg, L->desc_x0, L->desc_y0,
                 L->desc_x1 - L->desc_x0, L->desc_y1 - L->desc_y0);
   if (L->icon_x | L->icon_y)                     /* the game's icon slot */
-    ui_bg_restore(bg, L->icon_x, L->icon_y, ITEM_ICON_W, ITEM_ICON_H);
+    bg_restore(bg, L->icon_x, L->icon_y, ITEM_ICON_W, ITEM_ICON_H);
   s_desc_pages = 1;
   uint16_t id = pk_bag_item(sb1, g, pocket, sel);
   if (!id) { ui_text(L->desc_x0 + 6, L->desc_y0 + 18, BDIM, "(empty slot)"); return; }
@@ -246,8 +242,8 @@ static void draw_desc(const uint16_t* bg, const BagLayout* L, const uint8_t* sb1
 }
 
 bool bag_screen(uint8_t* sb1, const uint8_t* sb2, PkGame game, int female) {
-  const uint16_t* bg = bag_bg(game, female);
-  if (!bg || game < 0 || game > 2) return false; /* defensive: callers gate on bag_bg() */
+  BgFrame bg = bag_bg(game, female);
+  if (!bg.blob || game < 0 || game > 2) return false; /* defensive: callers gate on bag_bg() */
   const BagLayout* L = &BAG_LAYOUTS[game];
   int pocket = 0, sel = 0, top = 0, prev_sel = -1, desc_pg = 0;
   bool dirty = false, full = true, list = true, desc = true;
@@ -259,9 +255,7 @@ bool bag_screen(uint8_t* sb1, const uint8_t* sb2, PkGame game, int female) {
     if (sel >= top + BROWS(L)) { top = sel - (BROWS(L) - 1); list = true; }
 
     if (full) {                                  /* whole chrome (entry / after picker+dialogs) */
-      rumble_io_suspend();                       /* ~75 KB bg ROM->VRAM DMA; no motor toggle mid-read */
-      dma3_cpy(vid_mem, bg, BAG_BG_W * BAG_BG_H * 2);
-      rumble_io_resume();
+      bg_restore(bg, 0, 0, BAG_BG_W, BAG_BG_H);   /* 20 LZ77 pages ROM->VRAM */
       bag_rest(L, game, female, pocket);         /* bg bakes the CLOSED bag; show the pocket open */
       if (L->foot_y)                             /* only where the chrome leaves a free strip */
         ui_text(L->foot_x, L->foot_y, BFOOT, "A edit  L/R pocket  B done");

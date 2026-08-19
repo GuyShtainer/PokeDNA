@@ -1,6 +1,7 @@
 #ifndef CARD_BG_INCLUDED
 #define CARD_BG_INCLUDED
 #include <stdint.h>
+#include "lzblob.h"   /* the art ships LZ77-paged; accessors hand out a BgFrame */
 
 /* Real Gen-3 TRAINER CARD fronts: one full 240x160 RGB15 frame per game
  * (PkGame-indexed: RS / Emerald / FRLG), star tier 0..4 and player gender —
@@ -159,11 +160,11 @@ static const CardBackLayout CARD_BACK_LAYOUTS[3] = {
 
 /* 240x160 RGB15 frame for (game, star tier 0..4, gender), or NULL in an
  * art-free build. Lives in ROM — blit ROM->VRAM, never buffer it in EWRAM. */
-const uint16_t* card_bg(int game, int tier, int female);
+BgFrame card_bg(int game, int tier, int female);
 
 /* The card BACK frame of (game, tier, gender) — same surround, the game's
  * back.bin card face, no photo/stars/badges — or NULL in an art-free build. */
-const uint16_t* card_bg_back(int game, int tier, int female);
+BgFrame card_bg_back(int game, int tier, int female);
 
 /* 16x16 gym badge i (0..7) of `game` in ui_sprite format (0 = transparent),
  * or NULL. RS badges come through badges_map.bin, Emerald/FRLG are plain. */

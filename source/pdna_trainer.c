@@ -94,8 +94,8 @@ static bool flag_set_editor(uint8_t* sb1, PkGame game, const char* title,
  * card_bg.c (git-ignored ripped art); these weak NULLs keep an art-free clone
  * building — the screen then opens straight on the plain page (same pattern
  * as the bag-screen fallback in pdna_bag.c). */
-__attribute__((weak)) const uint16_t* card_bg(int game, int tier, int female) { (void)game; (void)tier; (void)female; return 0; }
-__attribute__((weak)) const uint16_t* card_bg_back(int game, int tier, int female) { (void)game; (void)tier; (void)female; return 0; }
+__attribute__((weak)) BgFrame card_bg(int game, int tier, int female) { (void)game; (void)tier; (void)female; BgFrame f = { 0, 0, CARD_BG_W }; return f; }
+__attribute__((weak)) BgFrame card_bg_back(int game, int tier, int female) { (void)game; (void)tier; (void)female; BgFrame f = { 0, 0, CARD_BG_W }; return f; }
 __attribute__((weak)) const uint16_t* card_badge16(int game, int i) { (void)game; (void)i; return 0; }
 __attribute__((weak)) const uint16_t* card_hoenn_dex(void) { return 0; }
 
@@ -103,27 +103,17 @@ __attribute__((weak)) const uint16_t* card_hoenn_dex(void) { return 0; }
 #define CFOOT  RGB15(31, 31, 31)   /* footer hint on the card border       */
 #define CSEL   RGB15(26,  4,  3)   /* selection frame (pdna_bag's red)     */
 
-/* Copy the 240x160 frame ROM -> VRAM one row at a time, each row read with
- * the wallpaper discipline (pdna_box.c wp_copy_verified): volatile re-read +
- * byte-compare, up to 4 attempts, from IWRAM so the cart bus carries pure
- * data reads. A raw 75 KB dma3_cpy is exactly the bulk-ROM-read shape this
- * cartridge demonstrably glitches (the wallpaper/icon saga) — the on-HW
- * "hot mess" class — and EZ reads have no retry, so verify instead of trust. */
-IWRAM_CODE __attribute__((noinline))
-static void card_blit(const uint16_t* bg) {
-  volatile const uint16_t* vsrc = bg;
-  rumble_io_suspend();                       /* bg lives in ROM */
-  for (uint32_t row = 0; row < CARD_BG_H; row++) {
-    uint16_t* dst = &vid_mem[row * CARD_BG_W];
-    const volatile uint16_t* src = vsrc + row * CARD_BG_W;
-    for (int a = 0; a < 4; a++) {
-      for (int i = 0; i < CARD_BG_W; i++) dst[i] = src[i];
-      int ok = 1;
-      for (int i = 0; i < CARD_BG_W; i++) if (dst[i] != src[i]) { ok = 0; break; }
-      if (ok) break;                         /* two passes agree -> row is good */
-    }
-  }
-  rumble_io_resume();
+/* Paint the whole card. The frame used to be a raw 240x160 block in ROM,
+ * copied row by row with a volatile re-read + byte-compare (wp_copy_verified
+ * discipline), because a 75 KB bulk ROM read is the shape this cartridge
+ * demonstrably glitches. That guard compared one ROM read against another and
+ * cannot survive compression: the frames now ship LZ77-paged (source/lzblob.c),
+ * so a bad ROM read corrupts the stream, not one pixel row. What replaces it is
+ * the boot-time ROM self-check stamp, which tests the whole image once and says
+ * "re-copy me" — and shipping 4.0 MB less ROM is what makes the bad load rare
+ * in the first place. Each page is 8 screen rows and lands directly in VRAM. */
+static void card_blit(BgFrame bg) {
+  bg_restore(bg, 0, 0, CARD_BG_W, CARD_BG_H);
 }
 
 /* The cursor-editable fields ON the card (CARDF_* order) own the per-game
@@ -208,11 +198,11 @@ static void card_sel_frame(PkGame game, int f, int bsel) {
 /* restore a field's rect from the ROM bg and repaint its overlay (no smear).
  * +1 px right/bottom so the selection frame is erased whichever edge
  * convention m3_frame uses (all rects stay on-screen with the margin). */
-static void card_restore(const uint16_t* bg, int f, int bsel, PkGame game,
+static void card_restore(BgFrame bg, int f, int bsel, PkGame game,
                          const uint8_t* sb1, const char* name, uint16_t tid,
                          uint32_t money, uint16_t ph, uint8_t pm) {
   int x, y, w, h; card_rect(game, f, bsel, &x, &y, &w, &h);
-  ui_bg_restore(bg, x, y, w + 1, h + 1);
+  bg_restore(bg, x, y, w + 1, h + 1);
   card_field(f, game, sb1, name, tid, money, ph, pm);
 }
 
@@ -267,10 +257,10 @@ static void back_row_draw(int row, PkGame game, const uint8_t* sb1, const uint8_
   ui_text(B->val_xr - 8 * (int)strlen(v), B->rows[row].y, CINK, v);
 }
 
-static void back_restore(const uint16_t* bg, int row, PkGame game,
+static void back_restore(BgFrame bg, int row, PkGame game,
                          const uint8_t* sb1, const uint8_t* sb2) {
   int x, y, w, h; back_rect(game, row, &x, &y, &w, &h);
-  ui_bg_restore(bg, x, y, w + 1, h + 1);
+  bg_restore(bg, x, y, w + 1, h + 1);
   back_row_draw(row, game, sb1, sb2);
 }
 
@@ -384,7 +374,7 @@ static void card_editor(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
   const int nback = CARD_BACK_LAYOUTS[game].nrows;
   int sel = CARDF_NAME, bsel = 0, brow = 0;
   bool back = false, full = true;
-  const uint16_t* bg = 0;
+  BgFrame bg = { 0, 0, CARD_BG_W };
   for (;;) {
     if (full) {                              /* (re)blit + all overlays */
       int tier = pk_star_count(sb1, sb2, game, card_hoenn_dex());
@@ -534,7 +524,7 @@ void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame g
   /* Any game with vendored art: the real card front IS the whole screen — the
    * cursor edits on the card itself (no plain-page fallback). Art-free builds
    * keep the plain details/edit page below, as before. */
-  if (card_bg(game, 0, gender) != 0) {
+  if (card_bg(game, 0, gender).blob != 0) {
     card_editor(sb1, sb2, game, edit, name, &gender, &tid, &sid,
                 &money, &ph, &pm, &d1, &d2);
     trainer_commit(d1, d2);
