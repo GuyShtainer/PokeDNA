@@ -447,6 +447,19 @@
  * this without either shrinking the pitch further or moving the help block. */
 #define PDNA_SET_ROW_PITCH    13
 #define PDNA_SET_ROWS          8   /* Backups, Animations, Yard, Game ROM, Extract art, Rumble, Clear, Close */
+/* The selection highlight panel: ui_panel(2, y - PDNA_SET_ROW_PANEL_YOFF, 236,
+ * <height>, ...). Normal rows use PDNA_SET_ROW_PANEL_H == PDNA_SET_ROW_PITCH, so
+ * consecutive rows' panels exactly TOUCH with no gap (row i's panel bottom is
+ * y_i - YOFF + H - 1 == y_i + 10; row i+1's panel top is y_(i+1) - YOFF == y_i + 11
+ * -- contiguous). The LAST row has no row below it to touch, only the help text at
+ * PDNA_SET_HELP_Y1 -- a full PDNA_SET_ROW_PANEL_H-tall panel there reaches
+ * ROW0+(ROWS-1)*PITCH - YOFF + H - 1 = 24+91-2+12 = 125, two rows INTO the help
+ * text's first ink row (124). PDNA_SET_ROW_LASTPANEL_H is 3 px shorter so the last
+ * row's panel bottoms out at 122, one pixel clear of 123 -- host-checked in
+ * tests/host_textfit_test.c ("settings last row panel clear of help"). */
+#define PDNA_SET_ROW_PANEL_YOFF   2
+#define PDNA_SET_ROW_PANEL_H      PDNA_SET_ROW_PITCH
+#define PDNA_SET_ROW_LASTPANEL_H  10
 #define PDNA_SET_FOOT_X        4
 #define PDNA_SET_HELP_X        8
 #define PDNA_SET_HELP_Y1     124

@@ -31,9 +31,20 @@
  * "retry", the memo already recorded why. */
 bool art_session_kind_ready(ArtKind k, const RomCtx* rc);
 
+/* Same check, MINUS the full re-hash of the kind file's content: size (against
+ * art.idx's promise) is checked, but the FNV walk over up to 451 KB is skipped. For
+ * the path that runs on EVERY boot (pdna_main.c's app_icon_rom_open) -- see
+ * art_session.c's verify_kind_file comment for the exact trade-off this accepts and
+ * why it is judged safe there. Shares the same per-kind memo as the deep check: a
+ * caller that needs the deep guarantee must call art_session_invalidate() first if a
+ * shallow check may already have memoized this epoch (app_icon_cache_resolve always
+ * does, both at boot and after a fresh extraction, so this is automatic in practice). */
+bool art_session_kind_ready_shallow(ArtKind k, const RomCtx* rc);
+
 /* Convenience: art_session_kind_ready(ART_KIND_ICONS, rc) plus the path a caller
  * hands to art_icons_cache_open() on success. */
 bool art_session_icons_ready(const RomCtx* rc);
+bool art_session_icons_ready_shallow(const RomCtx* rc);
 const char* art_session_icons_path(void);
 
 /* Read-only: the CURRENT memoized verdict for a kind, with NO I/O and no cross-check

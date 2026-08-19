@@ -22,4 +22,12 @@ const uint16_t* mon_icon_for_form_frame(uint16_t species, uint8_t form, uint8_t 
 const uint16_t* mon_icon_egg_frame(uint8_t frame);
 const uint16_t* mon_icon_egg(void);
 
+/* icons.bin-cache-backed fallback only (art_fallbacks.c): drop the small MRU cache
+ * the fallback keeps over recently-read icon frames. Call whenever the file behind
+ * icons.bin's path may have changed content (a ROM re-registration, a fresh
+ * extraction) -- pdna_main.c's app_icon_cache_resolve is the one place that already
+ * resets every other icons.bin-derived memo, so this joins that chokepoint. Always
+ * defined (never weak), so it links in the full-art build too, where it is a no-op. */
+void icon_frame_cache_invalidate(void);
+
 #endif

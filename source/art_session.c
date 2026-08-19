@@ -48,7 +48,19 @@ static bool fil_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   return f_read(f, dst, len, &br) == FR_OK && br == len;
 }
 
-static bool verify_kind_file(ArtKind k, const ArtIdxKindRow* row) {
+/* deep=true re-hashes the WHOLE kind file (up to 451 KB for icons.bin) against
+ * art.idx's stored FNV -- the only way to catch bit-level corruption of an
+ * otherwise-correctly-sized file. deep=false trusts the file's SIZE alone -- still a
+ * real check: it catches a truncated/interrupted/replaced file, exactly the failure
+ * mode art.idx's own invariant exists to make impossible (art_cache.h's header
+ * comment). TRADE-OFF ACCEPTED for the shallow path: silent same-size corruption (a
+ * flipped bit from bit rot, a card re-written by a PC with a byte-identical-length
+ * but different-content file) is not caught until the next deep check. Judged
+ * acceptable for the path that runs on EVERY boot, given the bytes were already
+ * verified byte-exact at write time (sf_write_verified_stream's own re-derive-and-
+ * compare pass) and a deep check still runs once, automatically, right after every
+ * fresh extraction (art_extract_screen's app_icon_cache_resolve call). */
+static bool verify_kind_file(ArtKind k, const ArtIdxKindRow* row, bool deep) {
   const char* path = art_kind_filename(k);
   if (!path) return false;
   FIL f;
@@ -57,19 +69,20 @@ static bool verify_kind_file(ArtKind k, const ArtIdxKindRow* row) {
     return false;
   }
   bool size_ok = (uint32_t)f_size(&f) == row->bytes;
-  uint32_t fnv = 0;
-  bool fnv_ok = size_ok &&
-                art_fnv_of_stream(fil_read, &f, row->bytes, (uint8_t*)mon_decomp,
-                                  8192u, &fnv) &&
-                fnv == row->fnv;
+  bool ok = size_ok;
+  if (size_ok && deep) {
+    uint32_t fnv = 0;
+    ok = art_fnv_of_stream(fil_read, &f, row->bytes, (uint8_t*)mon_decomp, 8192u, &fnv) &&
+         fnv == row->fnv;
+    if (!ok) log_line("art cache: %s failed its stored FNV check", path);
+  }
   f_close(&f);
   if (!size_ok) log_line("art cache: %s size mismatch (art.idx says %lu)", path,
                          (unsigned long)row->bytes);
-  else if (!fnv_ok) log_line("art cache: %s failed its stored FNV check", path);
-  return fnv_ok;
+  return ok;
 }
 
-bool art_session_kind_ready(ArtKind k, const RomCtx* rc) {
+static bool kind_ready(ArtKind k, const RomCtx* rc, bool deep) {
   if ((unsigned)k >= ART_KIND_COUNT) return false;
   if (s_verdict[k] != 0) return s_verdict[k] > 0;
 
@@ -100,17 +113,26 @@ bool art_session_kind_ready(ArtKind k, const RomCtx* rc) {
      * against — the cache is trusted on ITS OWN validity alone (DESIGN.md Sec 4.1:
      * "the card outlives the registration"). */
 
-    ok = verify_kind_file(k, row);
+    ok = verify_kind_file(k, row, deep);
   } while (0);
   rmbl_resume();
 
   s_verdict[k] = ok ? 1 : -1;
-  log_line("art cache: kind %d %s", (int)k, ok ? "ready" : "not ready");
+  log_line("art cache: kind %d %s (%s check)", (int)k, ok ? "ready" : "not ready",
+           deep ? "deep" : "shallow");
   return ok;
 }
 
+bool art_session_kind_ready(ArtKind k, const RomCtx* rc) { return kind_ready(k, rc, true); }
+bool art_session_kind_ready_shallow(ArtKind k, const RomCtx* rc) {
+  return kind_ready(k, rc, false);
+}
+
 bool art_session_icons_ready(const RomCtx* rc) {
-  return art_session_kind_ready(ART_KIND_ICONS, rc);
+  return kind_ready(ART_KIND_ICONS, rc, true);
+}
+bool art_session_icons_ready_shallow(const RomCtx* rc) {
+  return kind_ready(ART_KIND_ICONS, rc, false);
 }
 
 bool art_session_icons_ready_memoized(void) {

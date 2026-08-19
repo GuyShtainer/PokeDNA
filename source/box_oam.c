@@ -245,7 +245,13 @@ static int cache_icon_read(uint16_t species, uint8_t form, int egg, uint8_t fram
   uint8_t f = egg ? 0 : form;
   uint16_t row = art_icons_row_for(sp, f);
   if (row >= ART_ICONS_ROWS) return 0;
-  if (!art_icons_read_frame(s_iconcache_path, row, frame, (uint8_t*)s_stage)) return 0;
+  /* Same GPIO freeze the ROM rung below (rom_icon_read_verified) already brackets
+   * its own SD/ROM reads with -- art_icons_read_frame is f_open+f_lseek+f_read+
+   * f_close, real SD I/O, and had NO motor freeze at all until this fix. */
+  rumble_io_suspend();
+  bool ok = art_icons_read_frame(s_iconcache_path, row, frame, (uint8_t*)s_stage);
+  rumble_io_resume();
+  if (!ok) return 0;
   uint8_t id = art_icons_meta_pal_id(s_iconcache_path, row);
   if (id >= ART_ICONS_PALS) return 0;
   *bank = id;
@@ -444,11 +450,16 @@ void boxoam_enter(void) {
     s_rom_icons = 0;
     if (!mon_icon_oam_for(1, &t, &b)) {
       if (s_iconcache_path) {
+        /* art_icons_meta_pal_at lazily does art_icons_meta_load's f_open+f_read on
+         * its first call for this path (real SD I/O) -- same freeze as cache_icon_
+         * read above and the ROM rung below, for consistency (was unbracketed). */
+        rumble_io_suspend();
         for (int pnum = 0; pnum < (int)ART_ICONS_PALS; pnum++) {
           uint16_t pd[16];
           if (art_icons_meta_pal_at(s_iconcache_path, pnum, pd))
             for (int i = 0; i < 16; i++) pal_obj_mem[pnum * 16 + i] = pd[i];
         }
+        rumble_io_resume();
       } else if (s_rommon) {
         uint16_t pd[16];
         for (int pnum = 0; pnum < ROM_MON_PALS; pnum++)

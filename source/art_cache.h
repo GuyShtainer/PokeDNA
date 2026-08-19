@@ -21,8 +21,10 @@
  * and art_idx_parse() below refuses anything shorter than the header+rows it itself
  * promises, so a cut-off write reads as ABSENT, never as a damaged-but-present cache.
  * There is no code path here that returns "ok" for a truncated or half-written
- * manifest — see tests/host_artcache_test.c and tests/host_artcache_fat_test.c for the
- * proof (the latter drives this against the REAL FatFs with a card that lies).
+ * manifest — see tests/host_artcache_test.c (this file's own parse/pack proof) and
+ * tests/host_artsession_test.c (drives art_session_kind_ready against the REAL
+ * FatFs, including a truncated/absent/wrong-size/payload-disagrees-with-index
+ * art.idx) for the proof.
  *
  * A NOTE ON A NUMBER IN THE DESIGN DOC. DESIGN.md Sec 2.2 lists the ArtIdxHead fields
  * as (in order) magic[8], format(u16), builder(u16), rom_code[4], rom_rev(u8),

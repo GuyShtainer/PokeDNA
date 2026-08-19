@@ -16,6 +16,8 @@
  * ui_sprite() already ignores NULL, so passing a fallback result straight through
  * is safe everywhere.
  */
+#include <string.h>
+
 #include "mon_icons.h"
 #include "mon_icons_oam.h"
 #include "item_icons.h"
@@ -27,6 +29,7 @@
 #include "art_icons_cache.h" /* the icons.bin reader                                  */
 #include "icon4.h"           /* 4bpp -> RGB15 expansion                               */
 #include "artbuf.h"          /* mon_decomp -- the shared 8 KiB scratch, reused here   */
+#include "sys.h"             /* EWRAM_BSS                                             */
 
 /* ---- RGB15 icon/sprite accessors: no COMPILED art -> the icons.bin cache ---------
  *
@@ -56,6 +59,91 @@
  * "wrong ROM" cross-check). pdna_main.c's app_icon_rom_open() primes it once, at
  * boot and on every ROM re-registration, before any screen draws. */
 
+/* ---- a tiny MRU cache over the RAW 512 B per-frame bytes -------------------------
+ *
+ * icon_from_cache used to be a pure ROM-array lookup; since the icons.bin cache
+ * landed it is f_open + f_lseek (up to 450 KB into a FAT cluster chain -- FF_USE_
+ * FASTSEEK is 0, so even a BACKWARD seek re-walks the chain from the start) + a 512 B
+ * f_read + f_close, ON EVERY CALL. Two of this file's ~15 call sites are animation
+ * loops that redraw once per bob flip (pdna_pick.c's Pokedex-grid caught-cell bob,
+ * every DEX_ANIM_PERIOD == 30 frames; pdna_main.c's party bob, every
+ * PARTY_BOB_PERIOD frames) -- callers written when this was a cheap lookup never
+ * expected a file operation, and none of this runs inside an actual IRQ handler (it
+ * is ordinary mainline draw code between s_vsync() calls, so FatFs's own OS-mode
+ * handling is safe here), but a synchronous SD op on every redraw is still real,
+ * avoidable stutter this fix removes for the common case.
+ *
+ * MEMORY ARITHMETIC. The Makefile's EWRAM-overflow guard reported only 2,308 B free
+ * below 0x02040000 on the build immediately before this change -- mon_decomp alone
+ * already spends 8,192 of EWRAM's 262,144, and the rest of the app's static buffers
+ * account for the remainder. So this cache is sized to what is actually left, not to
+ * what would fully cover every caller. Each slot holds the RAW 512 B frame (exactly
+ * what art_icons_read_frame would have produced), keyed by (row, frame):
+ * uint16_t row (2 B) + uint8_t frame (1 B) + uint8_t valid (1 B) + uint32_t age (4 B,
+ * LRU order) + uint8_t raw[512] = 520 B/slot. ICON_FRAME_CACHE_SLOTS 3 -> 1,560 B,
+ * leaving 748 B of EWRAM headroom (2,308 - 1,560), still comfortably positive.
+ * IWRAM cost is ZERO: EWRAM_BSS (".sbss") is a completely separate linker region
+ * from the ~12 KiB IWRAM stack budget the earlier "hold a session-long FIL per
+ * caller" cut blew (2,272 B there, see art_icons_cache.h's header comment) --
+ * nothing in this cache touches IWRAM at all.
+ *
+ * A hit still re-expands to RGB15 into mon_decomp (cheap ALU, no I/O) on every call,
+ * so the "decode fresh, blit immediately, mon_decomp is shared scratch" contract
+ * every caller already relies on is UNCHANGED -- only the SD read is skipped.
+ * Eviction is plain LRU over 3 slots (a linear scan + an age counter; 3 entries is
+ * nowhere near worth a smarter structure).
+ *
+ * HONEST LIMIT: 3 slots fully serves a screen that keeps redrawing ONE icon (the
+ * box/summary single-mon views, the Pokedex list/grid selection highlight, a 2-frame
+ * idle bob of up to 3 simultaneously-visible mons) with ZERO SD I/O after the first
+ * draw. It does NOT fully eliminate SD I/O for the party overlay's up-to-6-mon bob or
+ * the Pokedex grid's many-caught-cell bob -- those still miss past slot 3 and read
+ * the card exactly as before, once per bob flip, same as pre-cache. There was no
+ * EWRAM room left to do better without shrinking some OTHER static buffer first. */
+#define ICON_FRAME_CACHE_SLOTS 3
+typedef struct {
+  uint16_t row;
+  uint8_t  frame;
+  uint8_t  valid;
+  uint32_t age;
+  uint8_t  raw[512];
+} IconFrameSlot;
+static IconFrameSlot EWRAM_BSS s_icfr[ICON_FRAME_CACHE_SLOTS];
+static uint32_t s_icfr_clock = 0; /* IWRAM .bss, 4 B -- an LRU tick, not a buffer */
+
+/* Drop every cached frame. Always defined (never weak -- nothing else provides this
+ * symbol), so it links the same in a full-art build too, where it simply has nothing
+ * to invalidate. Called from app_icon_cache_resolve (pdna_main.c) -- the one place
+ * that already resets every OTHER icons.bin-derived memo (art_session_invalidate,
+ * boxoam_set_icon_cache) on a ROM re-registration AND after a fresh extraction, since
+ * the file behind the SAME path string can hold different bytes afterwards. */
+void icon_frame_cache_invalidate(void) {
+  for (int i = 0; i < ICON_FRAME_CACHE_SLOTS; i++) s_icfr[i].valid = 0;
+}
+
+/* Find (row, frame)'s slot: a hit bumps its age and returns its index; a miss claims
+ * a slot (an empty one first, else the least-recently-used) and returns THAT index
+ * with valid left 0 -- the caller must fill s_icfr[idx].raw and only then set valid,
+ * so a read failure leaves the slot exactly as it would be on a genuine miss (never
+ * serving unfilled/garbage bytes as if they were a real cached frame). */
+static int icon_frame_slot_index(uint16_t row, uint8_t frame, bool* hit) {
+  for (int i = 0; i < ICON_FRAME_CACHE_SLOTS; i++)
+    if (s_icfr[i].valid && s_icfr[i].row == row && s_icfr[i].frame == frame) {
+      s_icfr[i].age = ++s_icfr_clock;
+      *hit = true;
+      return i;
+    }
+  int victim = 0;
+  for (int i = 0; i < ICON_FRAME_CACHE_SLOTS; i++) {
+    if (!s_icfr[i].valid) { victim = i; break; }              /* an empty slot always wins */
+    if (s_icfr[i].age < s_icfr[victim].age) victim = i;
+  }
+  s_icfr[victim].row = row; s_icfr[victim].frame = frame;
+  s_icfr[victim].valid = 0; s_icfr[victim].age = ++s_icfr_clock;
+  *hit = false;
+  return victim;
+}
+
 /* species/form/frame, or egg -- decode straight into mon_decomp and return it. Same
  * "decode fresh, blit immediately" contract app_item_icon/app_type_badge already
  * document in pdna_main.c: the buffer is shared, so a caller must use the pointer
@@ -67,7 +155,16 @@ static const uint16_t* icon_from_cache(uint16_t species, uint8_t form, uint8_t f
   uint16_t sp = egg ? 412 : species;
   uint8_t f = egg ? 0 : form;
   uint16_t row = art_icons_row_for(sp, f);
-  if (!art_icons_read_frame(path, row, frame, (uint8_t*)mon_decomp)) return 0;
+
+  bool hit = false;
+  int idx = icon_frame_slot_index(row, frame, &hit);
+  if (!hit) {
+    if (!art_icons_read_frame(path, row, frame, s_icfr[idx].raw)) return 0; /* slot stays
+        invalid: icon_frame_slot_index already left valid at 0, so the next lookup for
+        this (row, frame) retries the SD read instead of trusting a half-filled slot */
+    s_icfr[idx].valid = 1;
+  }
+  memcpy(mon_decomp, s_icfr[idx].raw, sizeof s_icfr[idx].raw);
   uint16_t pal[16];
   if (!art_icons_meta_pal(path, row, pal)) return 0;
   return icon4_to_rgb15((uint8_t*)mon_decomp, MON_DECOMP_BYTES, pal) ? mon_decomp : 0;

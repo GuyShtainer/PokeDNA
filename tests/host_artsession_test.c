@@ -214,6 +214,38 @@ static void t_memoization(void) {
       "memo: after invalidate(), the (now genuinely bad) file must be re-checked and refused");
 }
 
+/* The shallow (boot-path) check: art_session.c's verify_kind_file(deep=false) trusts
+ * SIZE alone and skips the FNV walk -- the accepted trade-off from the 2026-08-19
+ * rom-art Phase-2 review's "NOTE TO ACT ON" (the 451 KB re-hash on every boot). Prove
+ * both halves of that trade-off: shallow still catches a WRONG-SIZE file (the size
+ * check is real, not a no-op), but shallow does NOT catch a right-size, WRONG-
+ * CONTENT file -- while the EXISTING deep check (art_session_icons_ready, still the
+ * default for every other caller) still does, on the identical on-card bytes. */
+static void t_shallow_skips_content_check(void) {
+  fresh_card();
+  for (uint32_t i = 0; i < ICONS_BYTES; i++) s_icons[i] = (uint8_t)(i * 7 + 4);
+  write_good_idx("BPEE", 0, 1, 1, 1);
+
+  /* case A: wrong size -- shallow must still refuse (the cheap check is real) */
+  CHK(write_raw(ART_DIR "/icons.bin", s_icons, ICONS_BYTES - 1), "shallow: short write failed");
+  CHK(!art_session_icons_ready_shallow(0), "shallow: wrong-size kind file should NOT be ready");
+
+  /* case B: right size, tampered content -- shallow accepts (the documented
+   * trade-off), deep refuses (on the SAME bytes, after a fresh invalidate so the
+   * shallow verdict above cannot leak into the deep check via the shared memo). */
+  art_session_invalidate();
+  uint8_t tampered[ICONS_BYTES];
+  memcpy(tampered, s_icons, ICONS_BYTES);
+  tampered[100] ^= 0xFF;
+  CHK(write_raw(ART_DIR "/icons.bin", tampered, ICONS_BYTES), "shallow: tamper write failed");
+  CHK(art_session_icons_ready_shallow(0),
+      "shallow: right-size tampered content should still read ready (size-only trade-off)");
+
+  art_session_invalidate();
+  CHK(!art_session_icons_ready(0),
+      "deep: the SAME tampered file must still be refused by the full FNV check");
+}
+
 int main(void) {
   t_good_no_rom();
   t_good_with_matching_rom();
@@ -222,6 +254,7 @@ int main(void) {
   t_memoized_getter_never_does_io();
   t_no_idx_at_all();
   t_memoization();
+  t_shallow_skips_content_check();
   printf("%d checks, %d fail%s\n", checks, fails, fails == 1 ? "" : "s");
   return fails ? 1 : 0;
 }

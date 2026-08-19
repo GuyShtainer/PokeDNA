@@ -807,6 +807,18 @@ int main(void) {
   chkv("settings last row ink",
        PDNA_SET_ROW0_Y + (PDNA_SET_ROWS - 1) * PDNA_SET_ROW_PITCH + UI_ROW_H - 1,
        PDNA_SET_HELP_Y1 - 1);
+  /* The SELECTION HIGHLIGHT PANEL is a separate rectangle from the text ink checked
+   * just above -- ui_panel(2, y - PDNA_SET_ROW_PANEL_YOFF, 236, h, ...) expands (per
+   * ui.c's ui_panel: fills y..y+h-1) to a taller band than the glyph row it frames.
+   * The last row used the SAME height as every other row until this fix, whose panel
+   * bottomed out at row 125 -- two rows INTO the help text at PDNA_SET_HELP_Y1 (124).
+   * This is the check that would have caught it (a `PDNA_SET_ROW_PANEL_H` for the
+   * last row's height, or a shrunk PDNA_SET_ROW_LASTPANEL_H that isn't short enough,
+   * regresses this the same way). */
+  chkv("settings last row panel clear of help",
+       PDNA_SET_ROW0_Y + (PDNA_SET_ROWS - 1) * PDNA_SET_ROW_PITCH - PDNA_SET_ROW_PANEL_YOFF
+         + PDNA_SET_ROW_LASTPANEL_H - 1,
+       PDNA_SET_HELP_Y1 - 1);
   chkv("settings note last ink",
        PDNA_SET_NOTE_Y + UI_FONT_CELL_H - 1, PDNA_SET_FOOTER_Y - 1);
   /* Rumble page: the help sentence and the control hints used to share y=150 as

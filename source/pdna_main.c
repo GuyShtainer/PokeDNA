@@ -1541,9 +1541,19 @@ static bool iconrom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len)
  * Pokedex grid up even with NO ROM registered this session -- "the card outlives the
  * registration". `rc_ok` is the RomCtx to cross-check against, or NULL if none is
  * open (art_session_kind_ready then trusts the cache on its own validity alone). */
-static void app_icon_cache_resolve(const RomCtx* rc_ok) {
-  art_session_invalidate(); /* a ROM re-registration can flip either verdict */
-  if (art_session_icons_ready(rc_ok)) {
+/* deep=true re-hashes icons.bin's full ~451 KB against art.idx's stored FNV; deep=
+ * false trusts its size alone (see art_session.c's verify_kind_file for the accepted
+ * trade-off). Boot/registration (app_icon_rom_open, reached before the first screen
+ * on every launch) passes false -- that 451 KB read was previously unconditional and
+ * unmeasured on the critical path before a single frame draws. The one place that
+ * still runs the expensive deep check is art_extract_screen, right after a fresh
+ * extraction, so the strong guarantee stays reachable exactly when it matters most:
+ * immediately after writing bytes the user is already waiting on. */
+static void app_icon_cache_resolve(const RomCtx* rc_ok, bool deep) {
+  art_session_invalidate();      /* a ROM re-registration can flip either verdict   */
+  icon_frame_cache_invalidate(); /* the file behind icons.bin's path may hold new bytes */
+  bool ready = deep ? art_session_icons_ready(rc_ok) : art_session_icons_ready_shallow(rc_ok);
+  if (ready) {
     boxoam_set_icon_cache(art_session_icons_path());
     log_line("icons: cache ready (/PokeDNA/art/icons.bin)");
   } else {
@@ -1570,7 +1580,7 @@ static void app_icon_rom_open(void) {
       rom_itemart_open(&s_romitemart, &s_iconrom_ctx);
       log_line("icons: streaming from fused %s rev%u", rom_kind_name(s_iconrom_ctx.kind),
                s_iconrom_ctx.version);
-      app_icon_cache_resolve(&s_iconrom_ctx);
+      app_icon_cache_resolve(&s_iconrom_ctx, false); /* boot path: shallow (size-only) check */
       return;
     }
     log_line("icons: fused %s has no GF header (R/S) - trying SD", rom_kind_name(s_iconrom_ctx.kind));
@@ -1595,7 +1605,7 @@ static void app_icon_rom_open(void) {
       pdna_origin_art_set_romsprite(&s_romsprite);
       rom_itemart_open(&s_romitemart, &s_iconrom_ctx);
       log_line("icons: streaming from SD %s (%s)", path, rom_kind_name(s_iconrom_ctx.kind));
-      app_icon_cache_resolve(&s_iconrom_ctx);
+      app_icon_cache_resolve(&s_iconrom_ctx, false); /* boot path: shallow (size-only) check */
       return;
     }
     f_close(&s_iconrom_fil); s_iconrom_fil_open = false;
@@ -1604,7 +1614,7 @@ static void app_icon_rom_open(void) {
   /* No ROM at all this session (or every attempt failed) -- still try the cache with
    * no RomCtx to cross-check against; a previously-extracted, internally-valid cache
    * still serves (DESIGN.md Sec 4.1). */
-  app_icon_cache_resolve(0);
+  app_icon_cache_resolve(0, false); /* boot path: shallow (size-only) check */
 }
 
 /* ---- items + type badges: compiled art first, then the registered ROM (Phase 1,
@@ -4708,9 +4718,16 @@ static void art_extract_draw(int pass, int rows_done, int rows_total, u32 elapse
            (unsigned long)((elapsed_ms / 100) % 10));
   ui_text(8, 74, UI_DIM, row);
   if (pass == 1 && rows_done > 0 && elapsed_ms > 0) {
-    uint32_t bytes_so_far = (uint32_t)rows_done * ART_ICONS_ROW_BYTES;
+    /* Every row this pass costs a ROM read (art_icons_stream's fill_row) THEN an SD
+     * write of the SAME bytes (savefile.c's stream_write_all) -- count BOTH sides,
+     * not just the SD write, so this agrees in MEANING with the completion readout
+     * below (which also counts every read+write side of the whole operation). A
+     * label that named only the write half used to disagree with the completion
+     * number by ~2x for exactly this reason. */
+    uint32_t bytes_so_far = (uint32_t)rows_done * ART_ICONS_ROW_BYTES * 2u;
     uint32_t kbs10 = (uint32_t)(((uint64_t)bytes_so_far * 10000ull) / 1024ull / elapsed_ms);
-    siprintf(row, "~%lu.%lu KB/s so far", (unsigned long)(kbs10 / 10), (unsigned long)(kbs10 % 10));
+    siprintf(row, "~%lu.%lu KB/s overall so far", (unsigned long)(kbs10 / 10),
+             (unsigned long)(kbs10 % 10));
     ui_text(8, 84, UI_DIM, row);
   }
   ui_text(8, 148, UI_DIM, "B  cancel");
@@ -4744,6 +4761,25 @@ static bool art_extract_run(u32* out_elapsed_ms, u32* out_kbs10, bool* out_cance
   art_tmr_start(&ui.t0);
   gen.progress_ctx = &ui;
 
+  bool ok = false;
+
+  /* Every sibling SD path (pdna_map.c, pdna_bank.c, view_save) brackets its SD work in
+   * rmbl_pause()/rmbl_resume() so an armed cue's motor never toggles the cart bus
+   * mid-transfer (rmbl.h's contract). This is the longest transfer the app performs
+   * (icons.bin write + its verify read-back, ~30 s), and nothing in this function's own
+   * progress loop ever calls rmbl_vblank() -- it redraws + polls input every 8 rows, not
+   * every frame -- so a cue armed on entry would otherwise keep whatever duty it last
+   * committed running physically (the PWM ISR is IRQ-driven, independent of this
+   * function ever being called again) for the WHOLE session. One rmbl_pause() here ends
+   * that cue immediately (cue_end() + the PWM timer disabled) and nothing inside this
+   * function ever calls rmbl_fire()/rmbl_demo(), so no new cue can arm before
+   * rmbl_resume() below -- the individual ROM reads this triggers (iconrom_fatfs_read)
+   * bracket themselves too, but only ever pause/unpause an ALREADY-ended cue once this
+   * outer pause has run, so their nested calls cannot reopen the hazard. rumble_resume()
+   * (rumble.c, 2026-08-18) actively drives the line low on resume, so nothing is left
+   * latched on across this pause either. */
+  rmbl_pause();
+
   SfStatus st = sf_write_verified_stream(art_kind_filename(ART_KIND_ICONS), art_icons_stream,
                                          &gen, ART_ICONS_TOTAL_BYTES, (uint8_t*)mon_decomp,
                                          ART_ICONS_ROW_BYTES);
@@ -4751,48 +4787,64 @@ static bool art_extract_run(u32* out_elapsed_ms, u32* out_kbs10, bool* out_cance
   art_tmr_stop();
   *out_elapsed_ms = elapsed;
   if (elapsed > 0) {
-    /* SD traffic: the write pass (ART_ICONS_TOTAL_BYTES out) plus the verify pass'
-     * read-back (ART_ICONS_TOTAL_BYTES in) -- DESIGN.md Sec 3.3's own accounting. */
-    uint64_t sd_bytes = (uint64_t)ART_ICONS_TOTAL_BYTES * 2u;
-    *out_kbs10 = (u32)((sd_bytes * 10000ull) / 1024ull / elapsed);
+    /* Was labelled "KB/s (SD)" and counted only 2x ART_ICONS_TOTAL_BYTES (the write
+     * pass' SD write + the verify pass' SD read-back of the .tmp) -- wrong by
+     * construction, because `elapsed` ALSO spans both passes' ROM reads
+     * (art_icons_stream's fill_row, called once per pass -- see its own header
+     * comment): pass 1 reads the ROM to generate the bytes it writes, pass 2 reads
+     * the ROM AGAIN to re-derive what stream_file_matches compares the re-read .tmp
+     * against. That is FOUR full-file-sized transfers packed into `elapsed`, not
+     * two, so the old formula understated true throughput by ~2x and disagreed with
+     * the mid-run readout above, which (before this fix) counted only the write
+     * side of pass 1 alone. Count all four here so the two readouts finally agree
+     * in MEANING (this is overall wall-clock throughput for the whole operation,
+     * ROM reads included, not a pure-SD figure -- labelled accordingly below). */
+    uint64_t moved_bytes = (uint64_t)ART_ICONS_TOTAL_BYTES * 4u;
+    *out_kbs10 = (u32)((moved_bytes * 10000ull) / 1024ull / elapsed);
   }
 
-  if (gen.cancelled) { *out_cancelled = true; return false; }
+  if (gen.cancelled) { *out_cancelled = true; goto out; }
   if (st != SF_OK) {
     log_line("art extract: icons.bin write failed (%s)%s", sf_status_str(st),
              gen.rom_error ? " -- a rom read never verified" : "");
-    return false;
+    goto out;
   }
 
   /* art.idx last -- the ONE thing the loader trusts, and it names the kind file it
    * just finished verifying, never one still in flight. */
-  uint32_t rom_fnv = 0;
-  if (!art_rom_fnv(s_iconrom_ctx.read, s_iconrom_ctx.ctx, s_iconrom_ctx.size, &rom_fnv)) {
-    log_line("art extract: could not hash the rom for art.idx");
-    return false;
-  }
-  ArtIdxHead head; memset(&head, 0, sizeof head);
-  head.format = ART_IDX_FORMAT_V1;
-  head.builder = 1;
-  memcpy(head.rom_code, s_iconrom_ctx.code, 4);
-  head.rom_rev = s_iconrom_ctx.version;
-  head.rom_kind = (uint8_t)s_iconrom_ctx.kind;
-  head.kinds = (uint8_t)(1u << ART_KIND_ICONS);
-  head.rom_bytes = s_iconrom_ctx.size;
-  head.rom_fnv = rom_fnv;
-  ArtIdxKindRow row = { (uint8_t)ART_KIND_ICONS, ART_ICONS_TOTAL_BYTES,
-                        art_icons_gen_fnv(&gen), ART_ICONS_ROWS };
-  uint8_t idxbuf[ART_IDX_HEAD_BYTES + ART_IDX_KIND_BYTES];
-  art_idx_head_write(&head, idxbuf);
-  art_idx_kind_write(&row, idxbuf + ART_IDX_HEAD_BYTES);
-  SfStatus ist = sf_write_verified(ART_IDX_PATH, idxbuf, sizeof idxbuf);
-  if (ist != SF_OK) {
-    log_line("art extract: art.idx write failed (%s) -- icons.bin stays unreferenced",
-             sf_status_str(ist));
-    return false;
+  {
+    uint32_t rom_fnv = 0;
+    if (!art_rom_fnv(s_iconrom_ctx.read, s_iconrom_ctx.ctx, s_iconrom_ctx.size, &rom_fnv)) {
+      log_line("art extract: could not hash the rom for art.idx");
+      goto out;
+    }
+    ArtIdxHead head; memset(&head, 0, sizeof head);
+    head.format = ART_IDX_FORMAT_V1;
+    head.builder = 1;
+    memcpy(head.rom_code, s_iconrom_ctx.code, 4);
+    head.rom_rev = s_iconrom_ctx.version;
+    head.rom_kind = (uint8_t)s_iconrom_ctx.kind;
+    head.kinds = (uint8_t)(1u << ART_KIND_ICONS);
+    head.rom_bytes = s_iconrom_ctx.size;
+    head.rom_fnv = rom_fnv;
+    ArtIdxKindRow row = { (uint8_t)ART_KIND_ICONS, ART_ICONS_TOTAL_BYTES,
+                          art_icons_gen_fnv(&gen), ART_ICONS_ROWS };
+    uint8_t idxbuf[ART_IDX_HEAD_BYTES + ART_IDX_KIND_BYTES];
+    art_idx_head_write(&head, idxbuf);
+    art_idx_kind_write(&row, idxbuf + ART_IDX_HEAD_BYTES);
+    SfStatus ist = sf_write_verified(ART_IDX_PATH, idxbuf, sizeof idxbuf);
+    if (ist != SF_OK) {
+      log_line("art extract: art.idx write failed (%s) -- icons.bin stays unreferenced",
+               sf_status_str(ist));
+      goto out;
+    }
   }
   log_line("art extract: icons.bin OK, %lu ms, art.idx written", (unsigned long)elapsed);
-  return true;
+  ok = true;
+
+out:
+  rmbl_resume();
+  return ok;
 }
 
 static void art_extract_screen(void) {
@@ -4812,13 +4864,19 @@ static void art_extract_screen(void) {
   /* Whatever happened, re-resolve the icon source NOW: a success must light the
    * cache up immediately (not just next boot), and a failed/cancelled run must not
    * leave a stale "ready" memo if a PARTIAL run happened to leave an old cache from
-   * an earlier session looking (correctly) still valid. */
-  app_icon_cache_resolve(&s_iconrom_ctx);
+   * an earlier session looking (correctly) still valid. deep=true: this is the one
+   * reachable path for the full ~451 KB re-hash (see app_icon_cache_resolve) -- the
+   * user is already waiting right here, immediately after the bytes were written. */
+  app_icon_cache_resolve(&s_iconrom_ctx, true);
 
   ui_clear();
   if (ok) {
     char l2[40];
-    siprintf(l2, "%lu.%01lus, ~%lu.%lu KB/s (SD)", (unsigned long)(elapsed_ms / 1000),
+    /* "overall", not "(SD)": kbs10 now counts BOTH ROM reads and SD transfers over
+     * the whole elapsed time (see art_extract_run) -- it was never a pure-SD figure,
+     * since elapsed_ms always included the ROM-read side too; the old "(SD)" label
+     * claimed a number this measurement never actually produced. */
+    siprintf(l2, "%lu.%01lus, ~%lu.%lu KB/s overall", (unsigned long)(elapsed_ms / 1000),
              (unsigned long)((elapsed_ms / 100) % 10), (unsigned long)(kbs10 / 10),
              (unsigned long)(kbs10 % 10));
     snd_ok();
@@ -4870,9 +4928,15 @@ static void pdna_settings(void) {
     else siprintf(r3, "%s", PDNA_SET_ART_GO);
     const char* rows[S_N] = { r0, "Animations  >", r1, r2, r3, "Rumble  >", PDNA_SET_ROW_CLEAR, "Close" };
     for (int i = 0; i < S_N; i++) {
-      /* 8 rows @13px: last band 111..123, clear of the help text (host-checked) */
+      /* The highlight panel is PDNA_SET_ROW_PANEL_YOFF px taller than one row pitch
+       * (starts above the text) so consecutive rows' panels touch with no gap -- but
+       * the LAST row has no row below it to touch, only the help text at
+       * PDNA_SET_HELP_Y1, so it uses the shorter PDNA_SET_ROW_LASTPANEL_H instead
+       * (see pdna_layout.h for the exact numbers: a full-height panel here reached
+       * 125, two rows INTO the help text -- host-checked below). */
       int y = PDNA_SET_ROW0_Y + i * PDNA_SET_ROW_PITCH; bool s = (i == sel);
-      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
+      int panel_h = (i == S_N - 1) ? PDNA_SET_ROW_LASTPANEL_H : PDNA_SET_ROW_PANEL_H;
+      if (s) ui_panel(2, y - PDNA_SET_ROW_PANEL_YOFF, 236, panel_h, UI_SEL, UI_TITLE);
       ui_text(PDNA_SET_ROW_X, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
     }
     /* Rebalanced across the two rows: the first was 29 sys8 columns at x=8, i.e. ending
