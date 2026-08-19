@@ -40,7 +40,15 @@ char gen3_decode_char(uint8_t c) {
     case 0xAE: return '-';
     case 0xB3: return '\'';
     case 0xB4: return '\'';
-    case 0xBA: return ',';
+    /* 0xB8 = ',' and 0xBA = '/' in the real Gen-3 charmap (pokeemerald charmap.txt;
+     * also documented independently in source/rom_text.c's own charmap() table, which
+     * flagged this exact swap in a comment without fixing it here). This table had it
+     * backwards -- 0xBA decoded to ',' and 0xB8 had no case at all, so a genuine comma
+     * (0xB8) silently became '?' while a genuine slash (0xBA) silently became ','.
+     * Guy's own Lugia, nicknamed "28/01/2026", rendered as "28,01,2026" from exactly
+     * this. See tests/host_charmap_test.c for the round-trip regression test. */
+    case 0xB8: return ',';
+    case 0xBA: return '/';
     default:   return '?';
   }
 }

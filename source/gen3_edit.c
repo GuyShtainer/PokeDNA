@@ -34,8 +34,19 @@ uint8_t gen3_encode_char(char c) {
     case '?':  return 0xAC;
     case '.':  return 0xAD;
     case '-':  return 0xAE;
-    case '\'': return 0xB3;
-    case ',':  return 0xBA;
+    /* The real charmap's own compiler aliases a bare apostrophe to 0xB4 (the closing
+     * curly quote), not 0xB3 (the opening one, which has no ASCII alias at all) --
+     * charmap.txt carries both `'''' = B4` AND `'\''  = B4` for exactly this. Encoding
+     * to 0xB3 was the mirror image of the comma/slash bug below: gen3_decode_char folds
+     * BOTH 0xB3 and 0xB4 to '\'' for display (a reasonable simplification), but the
+     * ENCODE direction has only one real target and it is B4. */
+    case '\'': return 0xB4;
+    /* Same swap as gen3_decode_char (source/gen3_save.c) had, mirrored: this used to
+     * send ',' to 0xBA (the SLASH code point) and had no case for '/' at all, so typing
+     * a slash into a nickname silently produced a space (default case), and a comma
+     * silently produced a slash. 0xB8 = ',' and 0xBA = '/' in the real Gen-3 charmap. */
+    case ',':  return 0xB8;
+    case '/':  return 0xBA;
     default:   return 0x00;   /* unknown -> space */
   }
 }
