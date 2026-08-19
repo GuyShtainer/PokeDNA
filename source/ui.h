@@ -28,6 +28,32 @@
 #define UI_DIRCLR   RGB15(10, 24, 31)   /* directory rows (cyan)      */
 #define UI_SAVECLR  RGB15(31, 31, 31)   /* save rows (white)          */
 
+/* ---- retail party-screen palette (measured off Guy's own Emerald cartridge,
+ * docs/analysis-2026-08-19-party/MEASUREMENTS.md — every value below is a
+ * PIL.Image.getpixel() readout converted to RGB15, not eyeballed) ---------- */
+#define UI_PTY_BG_A     RGB15(25, 26, 15)  /* background stripe, band A (206,214,123) */
+#define UI_PTY_BG_B     RGB15(22, 22, 11)  /* background stripe, band B (181,181,90)  */
+#define UI_PTY_BG_MARGIN RGB15(17, 19, 5)  /* flat left-margin column   (140,156,41)  */
+#define UI_PTY_BOX_FILL_A RGB15(18, 28, 30)  /* slot-1 box interior, band A (approx)  */
+#define UI_PTY_BOX_FILL_B RGB15(21, 29, 31)  /* slot-1 box interior, band B (approx)  */
+#define UI_PTY_ROW_FILL_A RGB15(11, 21, 27)  /* list-row interior, band A (approx)    */
+#define UI_PTY_ROW_FILL_B RGB15(16, 24, 27)  /* list-row interior, band B (approx)    */
+#define UI_PTY_BORDER    RGB15( 9,  9, 12)  /* unselected box/row border  (74,74,99)  */
+#define UI_PTY_CURSOR    RGB15(31, 14,  6)  /* selected box/row border   (255,115,49) */
+#define UI_PTY_HP_OUTLINE RGB15(10, 10, 10) /* HP bar/label outline       (82,82,82)  */
+#define UI_PTY_HP_FILL   RGB15(14, 31, 21)  /* HP bar main body          (115,255,173)*/
+#define UI_PTY_HP_SHADE  RGB15(11, 26, 16)  /* HP bar top-row shading     (90,214,132)*/
+#define UI_PTY_HP_TRACK  UI_DIM             /* empty portion — NOT MEASURED (this
+                                              * save has no damaged party member) */
+#define UI_PTY_HP_LABEL  RGB15(31, 22,  8)  /* "HP" badge text           (255,181,66) */
+#define UI_PTY_TEXT_SHADOW RGB15(14, 14, 14) /* hard 1px text drop-shadow (115,115,115)*/
+#define UI_PTY_GEND_M_FILL RGB15(20, 24, 31) /* male glyph fill          (165,198,255)*/
+#define UI_PTY_GEND_M_LINE RGB15( 8,  8,  8) /* male glyph outline        (66,66,66)  */
+#define UI_PTY_GEND_F_FILL RGB15(31, 19, 18) /* female glyph fill        (255,156,148)*/
+#define UI_PTY_GEND_F_LINE RGB15(19,  8,  7) /* female glyph outline     (156,66,57)  */
+#define UI_PTY_MSG_TEXT    RGB15( 3,  4,  6) /* message-box text, on its own white fill */
+#define UI_PTY_CANCEL_FILL RGB15(14, 11, 22) /* CANCEL button fill        (115,90,181) */
+
 /* Switch to Mode 3 and init bitmap TTE with the fixed 8x8 system font. */
 void ui_init(void);
 
@@ -99,6 +125,30 @@ int ui_ptext_fit(int x, int y, int maxw, u16 ink, const char* s);
 
 /* Right-align `s` so it ENDS at x=`right`. */
 int ui_ptext_right(int right, int y, u16 ink, const char* s);
+
+/* Same as ui_ptext/ui_ptext_fit, but with a HARD 1px drop shadow first — the shadow
+ * glyph drawn at (x+1,y+1) in `shadow`, then the ink glyph at (x,y). A genuine
+ * offset duplicate, not blended, matching retail's own text rendering (see
+ * UI_PTY_TEXT_SHADOW). Returns the same width ui_ptext/ui_ptext_fit would. */
+int ui_ptext_shadow(int x, int y, u16 ink, u16 shadow, const char* s);
+int ui_ptext_fit_shadow(int x, int y, int maxw, u16 ink, u16 shadow, const char* s);
+
+/* Fill the whole screen with a 1px horizontally-banded stripe (alternating `a`/`b`
+ * every scanline) from x=`marginW`..239, and a FLAT `margin` column at x=0..marginW-1.
+ * marginW=0 skips the flat column (pure stripe, edge to edge). */
+void ui_stripe_bg(int marginW, u16 margin, u16 a, u16 b);
+
+/* Same banded-stripe fill, but confined to one w×h rect (a panel's own interior) —
+ * for the retail party box/rows, whose fill is the same per-scanline dither as the
+ * background rather than one flat colour. Border drawn separately (ui_panel/ui_frame
+ * pattern): this fills THEN the caller frames it, same order as ui_panel. */
+void ui_panel_striped(int x, int y, int w, int h, u16 a, u16 b, u16 border);
+
+/* A small (~9x9) coloured gender glyph — a circle with a diagonal tick (male) or a
+ * circle with a cross (female) below it — NOT a text letter. `fill`/`line` are the
+ * body colour and its dark outline. Top-left at (x,y). */
+void ui_gender_glyph_m(int x, int y, u16 fill, u16 line);
+void ui_gender_glyph_f(int x, int y, u16 fill, u16 line);
 
 /* Word-wrap `s` into `maxw`-pixel lines at `line_h` pitch, at most `max_lines`
  * (0 = unlimited). Returns the number of lines drawn. Breaks on spaces; a single

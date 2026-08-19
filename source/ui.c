@@ -370,6 +370,71 @@ int ui_ptext_wrap_lines(int maxw, const char* s) {
   return lines;
 }
 
+/* ---- hard 1px drop-shadow text (see ui.h) --------------------------------
+ * Shadow FIRST, ink SECOND: the shadow glyph is the same shape offset by
+ * (1,1), so drawing it first and the real glyph on top leaves exactly the
+ * shadow's non-overlapping pixels visible — a genuine hard offset, not a
+ * blend. Retail draws this on every name/level/HP-number glyph on the party
+ * screen (UI_PTY_TEXT_SHADOW, RGB(115,115,115) measured off the cartridge). */
+int ui_ptext_shadow(int x, int y, u16 ink, u16 shadow, const char* s) {
+  ui_ptext(x + 1, y + 1, shadow, s);
+  return ui_ptext(x, y, ink, s);
+}
+
+int ui_ptext_fit_shadow(int x, int y, int maxw, u16 ink, u16 shadow, const char* s) {
+  ui_ptext_fit(x + 1, y + 1, maxw, shadow, s);
+  return ui_ptext_fit(x, y, maxw, ink, s);
+}
+
+/* ---- retail-style banded-stripe fill (see ui.h) --------------------------
+ * A flat colour swapped for a 1px horizontal hatch, alternating every
+ * scanline — matches the retail party screen's background exactly (measured
+ * at two adjacent scanlines, docs/analysis-2026-08-19-party/MEASUREMENTS.md).
+ * m3_line is already the primitive ui_hline wraps, so this costs the same
+ * one-row-at-a-time draw ui_clear's m3_fill pays, just alternating colour. */
+void ui_stripe_bg(int marginW, u16 margin, u16 a, u16 b) {
+  if (marginW > 0) m3_rect(0, 0, marginW, UI_SCR_H, margin);
+  for (int y = 0; y < UI_SCR_H; y++)
+    m3_line(marginW, y, UI_SCR_W - 1, y, (y & 1) ? b : a);
+}
+
+void ui_panel_striped(int x, int y, int w, int h, u16 a, u16 b, u16 border) {
+  for (int r = 0; r < h; r++) {
+    int py = y + r;
+    if ((unsigned)py >= (unsigned)UI_SCR_H) continue;
+    m3_line(x, py, x + w - 1, py, (r & 1) ? b : a);
+  }
+  m3_frame(x, y, x + w - 1, y + h - 1, border);
+}
+
+/* ---- coloured gender glyphs (see ui.h) ------------------------------------
+ * A small ring (outline `line`, interior `fill`) with a diagonal tick for
+ * male or a cross for female below it — retail draws a genuine graphical
+ * glyph here, not a text letter (MEASUREMENTS.md "Gender indicator"). Hand-
+ * plotted rather than a bitmap table: the shape is nine rows at most and a
+ * table would cost more to read than these plot calls. */
+static void gender_ring(int x, int y, u16 fill, u16 line) {
+  m3_plot(x + 1, y,     line); m3_plot(x + 2, y,     line); m3_plot(x + 3, y,     line);
+  m3_plot(x,     y + 1, line); m3_plot(x + 4, y + 1, line);
+  m3_plot(x,     y + 2, line); m3_plot(x + 4, y + 2, line);
+  m3_plot(x,     y + 3, line); m3_plot(x + 4, y + 3, line);
+  m3_plot(x + 1, y + 4, line); m3_plot(x + 2, y + 4, line); m3_plot(x + 3, y + 4, line);
+  for (int r = 1; r <= 3; r++)
+    for (int c = 1; c <= 3; c++) m3_plot(x + c, y + r, fill);
+}
+
+void ui_gender_glyph_m(int x, int y, u16 fill, u16 line) {
+  gender_ring(x, y + 3, fill, line);                 /* ring sits low, arrow points up-right */
+  m3_plot(x + 4, y + 2, fill); m3_plot(x + 5, y + 1, fill);
+  m3_plot(x + 5, y,     line); m3_plot(x + 4, y,     line); m3_plot(x + 6, y + 1, line);
+}
+
+void ui_gender_glyph_f(int x, int y, u16 fill, u16 line) {
+  gender_ring(x, y, fill, line);                     /* ring sits high, stem+cross below */
+  m3_plot(x + 2, y + 5, fill); m3_plot(x + 2, y + 6, fill);
+  m3_plot(x + 1, y + 6, fill); m3_plot(x + 3, y + 6, fill);
+}
+
 /* ---- artless fallbacks (see ui.h) ---------------------------------------- */
 /* Clip a label to `maxw` px WITHOUT ui_ptext_fit's '~' marker: on a 22 px chip the
  * marker would eat a third of the label ("MA~"); a clean prefix ("MAG") reads better. */
