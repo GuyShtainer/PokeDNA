@@ -958,6 +958,21 @@ int main(void) {
          PDNA_LOC_TEXT_X + PDNA_LOC_ROW_COLS * SYS8_W, SCR_W);
     chkv("location header's column budget fits the screen",
          4 + PDNA_LOC_HDR_COLS * SYS8_W, SCR_W);
+    /* The header used to spell the region, game and sort out in full — 41 columns, which
+     * ui_truncate cut to "MET All regions/Emerald No. ~", losing the count AND the sort.
+     * It uses short tags now, and EVERY combination is formatted and measured here, so a
+     * new region or a longer tag fails the build rather than eating the count. */
+    { char b[64];
+#define LOC_TAG_ONE(s) s,
+      static const char* const RT[] = { PDNA_LOC_RGN_TAGS(LOC_TAG_ONE) };
+      static const char* const GT[] = { PDNA_LOC_GAME_TAGS(LOC_TAG_ONE) };
+      static const char* const ST[] = { PDNA_LOC_SORT_TAGS(LOC_TAG_ONE) };
+      for (unsigned r = 0; r < sizeof RT / sizeof RT[0]; r++)
+        for (unsigned g = 0; g < sizeof GT / sizeof GT[0]; g++)
+          for (unsigned t = 0; t < sizeof ST / sizeof ST[0]; t++) {
+            snprintf(b, sizeof b, PDNA_LOC_HDR_FMT, RT[r], GT[g], ST[t], 217);
+            chk("met header", 4, PDNA_LOC_HDR_COLS * SYS8_W, (int)strlen(b) * SYS8_W, b);
+          } }
     chkv("last location row stops above the rule",
          PDNA_LOC_Y0 + (PDNA_LOC_VIS - 1) * PDNA_LOC_ROW_H + UI_ROW_H - 1,
          PDNA_LOC_RULE_Y - 1);
@@ -1041,6 +1056,19 @@ int main(void) {
       PF(b, PDNA_SUM_CARD_X + PDNA_SUM_PP_X_DX, PDNA_SUM_PP_W); }
     chkv("summary PP cell ends inside the card",
          PDNA_SUM_PP_X_DX + PDNA_SUM_PP_W, PDNA_SUM_CARD_W);
+
+    /* --- the ORIGIN / MET card's new Region row ------------------------------
+     * The summary card IS the editor (pdna_edit's field list is not wired up), so this
+     * row is the only place a Region is reachable. Adding it pushed the OT/TID/SID tail
+     * down 11 px into territory nothing was watching. */
+    chk("origin card key", PDNA_SUM_CARD_X, PDNA_SUM_ORG_VAL_DX,
+        (int)strlen(PDNA_SUM_ORG_REGION_LBL) * SYS8_W, PDNA_SUM_ORG_REGION_LBL);
+    PF("Sevii Isles", PDNA_SUM_CARD_X + PDNA_SUM_ORG_VAL_DX,
+       PDNA_SUM_ORG_RIGHT - (PDNA_SUM_CARD_X + PDNA_SUM_ORG_VAL_DX));
+    chkv("origin card's value column ends inside the right margin",
+         PDNA_SUM_ORG_RIGHT, SCR_W);
+    chkv("origin card's last row stays above the note row",
+         PDNA_SUM_ORG_LAST_Y + UI_ROW_H - 1, PDNA_SUM_NOTE_Y - 1);
   }
   /* ==== END: the edit field list's new MAX PP rows ============================= */
 

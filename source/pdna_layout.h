@@ -175,6 +175,26 @@
 #define PDNA_SUM_PP_W         60
 #define PDNA_SUM_PP_FMT      "PP%u/%u"
 #define PDNA_SUM_PP_UPS_FMT  "PP%u/%u +%u"
+/* ORIGIN / MET card. It grew a Region row above Loc — region scopes the place list, so
+ * it reads above the place it scopes — which pushed the whole tail (OT / TID / SID /
+ * Pokerus) down 11 px. That card had no named geometry at all and its rows were bare
+ * numbers, so nothing would have noticed the tail walking into the note row; these are
+ * the numbers card_origin now draws with and the host test measures. */
+#define PDNA_SUM_ORG_Y0        14
+#define PDNA_SUM_ORG_HDR_DY    13             /* first row, below the card header      */
+#define PDNA_SUM_ORG_ROW_H     11             /* Ball / Met Lv / Region / Loc / Origin */
+#define PDNA_SUM_ORG_ROWS       5
+#define PDNA_SUM_ORG_GAP       14             /* under Origin, before the OT block     */
+#define PDNA_SUM_ORG_TAIL_H     9             /* OT / TID / SID / Pokerus              */
+#define PDNA_SUM_ORG_TAIL_ROWS  4
+#define PDNA_SUM_ORG_VAL_DX    60             /* value column, from the card's x       */
+#define PDNA_SUM_ORG_RIGHT    238             /* right ink margin for a value          */
+#define PDNA_SUM_ORG_REGION_LBL "Region"
+/* y of the last row's ink, which must stay above the note row. */
+#define PDNA_SUM_ORG_LAST_Y  (PDNA_SUM_ORG_Y0 + PDNA_SUM_ORG_HDR_DY + \
+                              (PDNA_SUM_ORG_ROWS - 1) * PDNA_SUM_ORG_ROW_H + \
+                              PDNA_SUM_ORG_GAP + \
+                              (PDNA_SUM_ORG_TAIL_ROWS - 1) * PDNA_SUM_ORG_TAIL_H)
 #define PDNA_SUM_ROLL_LBL    "Reroll IVs"
 #define PDNA_SUM_ARROW_L     "<"
 #define PDNA_SUM_ARROW_R     ">"
@@ -362,9 +382,16 @@
 #define PDNA_LOC_ROW_COLS   28                /* ui_truncate budget for "%3d %s"       */
 #define PDNA_LOC_HDR_COLS   29                /* ui_truncate budget for the header     */
 #define PDNA_LOC_RULE_Y    148
-/* Header is siprintf'd as HDR_FMT(region, game, sort, count) and clamped to 29 columns;
- * the values are the g3_place_* name tables, which the host test walks. */
+/* Header: HDR_FMT(region, game, sort, count). The FULL names ("All regions", "FireRed/LG",
+ * "A-Z (name)") add up to 41 columns, which ui_truncate cut back to "MET All regions/
+ * Emerald No. ~" — legal, visibly clipped, and useless: the count and the sort both went.
+ * So the header uses SHORT tags and the filter menu keeps the long names. The tags live
+ * here as X-macros so pdna_pick.c and the host test index the same table, and the test
+ * formats every combination. Worst case is "MET Sevii/FRLG A-Z 217" = 22 columns. */
 #define PDNA_LOC_HDR_FMT    "MET %s/%s %s %d"
+#define PDNA_LOC_RGN_TAGS(X)  X("All") X("Hoenn") X("Kanto") X("Sevii") X("Spec")
+#define PDNA_LOC_GAME_TAGS(X) X("All") X("RS") X("E") X("FRLG")
+#define PDNA_LOC_SORT_TAGS(X) X("No.") X("A-Z") X("Rgn")
 #define PDNA_LOC_FOOT       "A pick  SEL find  ST sort  B"
 #define PDNA_LOC_EMPTY      "No place matches. ST to widen."
 /* The location filter menu reuses the item filter's bordered-box geometry; it has Sort +

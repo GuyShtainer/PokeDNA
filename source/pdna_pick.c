@@ -1291,6 +1291,16 @@ static void loc_filter_menu(int* region, int* gamef, int* sort) {
   }
 }
 
+/* Short header tags; the long names stay in the filter menu. [0] of the region table is
+ * "all regions", so a G3_RGN_* indexes it at r + 1. */
+#define PDNA_TAG_ONE(s) s,
+static const char* const LOC_RGN_TAG[]  = { PDNA_LOC_RGN_TAGS(PDNA_TAG_ONE) };
+static const char* const LOC_GAME_TAG[] = { PDNA_LOC_GAME_TAGS(PDNA_TAG_ONE) };
+static const char* const LOC_SORT_TAG[] = { PDNA_LOC_SORT_TAGS(PDNA_TAG_ONE) };
+_Static_assert(sizeof LOC_RGN_TAG  / sizeof LOC_RGN_TAG[0]  == G3_RGN_COUNT + 1, "region tags");
+_Static_assert(sizeof LOC_GAME_TAG / sizeof LOC_GAME_TAG[0] == G3_PGAME_COUNT,   "game tags");
+_Static_assert(sizeof LOC_SORT_TAG / sizeof LOC_SORT_TAG[0] == G3_PSORT_COUNT,   "sort tags");
+
 uint16_t pick_metloc(uint16_t current, uint8_t metgame, int region0) {
   u16* idx = g_idx;
   char search[16] = "";
@@ -1310,8 +1320,8 @@ uint16_t pick_metloc(uint16_t current, uint8_t metgame, int region0) {
 
     ui_clear();
     char h[64], ht[48];
-    siprintf(h, PDNA_LOC_HDR_FMT, region < 0 ? PDNA_LFILT_ALL : g3_region_name(region),
-             g3_place_game_name(gamef), g3_place_sort_name(sort), n);
+    siprintf(h, PDNA_LOC_HDR_FMT, LOC_RGN_TAG[region < 0 ? 0 : region + 1],
+             LOC_GAME_TAG[gamef], LOC_SORT_TAG[sort], n);
     ui_truncate(ht, h, PDNA_LOC_HDR_COLS);
     ui_text(4, 2, UI_TITLE, ht);
     ui_hline(0, 11, UI_SCR_W, UI_BORDER);

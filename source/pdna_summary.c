@@ -15,6 +15,7 @@
 #include "ui.h"
 #include "gen3_mon.h"
 #include "gen3_edit.h"
+#include "gen3_places.h"   /* g3_region_of / g3_region_name for the Region row */
 #include "gen3_box.h"      /* pk_resolve */
 #include "data_tables.h"
 #include "pdna_edit.h"   /* F_*, em_field_press / em_field_adjust */
@@ -379,36 +380,48 @@ static void card_moves(const PkMon* p, bool contest) {
   }
 }
 
-/* ORIGIN / MET card — the caught info: Poké Ball, met level + location, origin game
- * (all editable), plus read-only OT / TID / SID and a Pokérus tag. */
+/* ORIGIN / MET card — the caught info: Poké Ball, met level, region + location, origin
+ * game (all editable), plus read-only OT / TID / SID and a Pokérus tag.
+ *
+ * Region sits ABOVE Loc because that is the direction the two work in: picking a region
+ * scopes the place list, and both open real lists (pick_region / pick_metloc) rather than
+ * stepping through 256 ids. Its geometry is in pdna_layout.h — adding the row pushed the
+ * OT/TID/SID tail down 11 px, and nothing was watching that tail. */
 static void card_origin(const PkMon* p) {
-  int x = 98, y = 14; char b[48];
-  ui_text(x, y, C_HDR, "ORIGIN / MET"); y += 13;
+  const int x = PDNA_SUM_CARD_X, vx = x + PDNA_SUM_ORG_VAL_DX;
+  const int vw = PDNA_SUM_ORG_RIGHT - vx;
+  int y = PDNA_SUM_ORG_Y0; char b[48];
+  ui_text(x, y, C_HDR, "ORIGIN / MET"); y += PDNA_SUM_ORG_HDR_DY;
 
-  ui_text(x, y, C_KEY, "Ball"); reg(F_BALL, x + 60, y, 76);
-  ui_ptext_fit(x + 60, y, 238 - (x + 60), C_VAL, pk_item_name(p->pokeball)); y += 11;
+  ui_text(x, y, C_KEY, "Ball"); reg(F_BALL, vx, y, 76);
+  ui_ptext_fit(vx, y, vw, C_VAL, pk_item_name(p->pokeball)); y += PDNA_SUM_ORG_ROW_H;
 
-  ui_text(x, y, C_KEY, "Met Lv"); reg(F_METLEVEL, x + 60, y, 30);            /* shortened: was "Met at Lv" (overlapped value) */
-  siprintf(b, "%u", (unsigned)p->metLevel); ui_text(x + 60, y, C_VAL, b);
+  ui_text(x, y, C_KEY, "Met Lv"); reg(F_METLEVEL, vx, y, 30);            /* shortened: was "Met at Lv" (overlapped value) */
+  siprintf(b, "%u", (unsigned)p->metLevel); ui_text(vx, y, C_VAL, b);
   /* The number stays (F_METLEVEL edits it), but 0 gets its meaning next to it. 41 px of
    * proportional text at x+92 ends at 231, inside the 238 margin, and 2 px clear of the
    * F_METLEVEL selection frame which ends at 188. */
   if (p->metLevel == 0 && !p->isEgg) ui_ptext(x + 92, y, UI_OK, "hatched");
-  y += 11;
+  y += PDNA_SUM_ORG_ROW_H;
 
-  ui_text(x, y, C_KEY, "Loc"); reg(F_METLOC, x + 60, y, 76);                 /* shortened: was "Location" (overlapped value) */
-  ui_ptext_fit(x + 60, y, 238 - (x + 60), C_VAL, pk_location_name(p->metLocation)); y += 11;
+  ui_text(x, y, C_KEY, PDNA_SUM_ORG_REGION_LBL); reg(F_METREGION, vx, y, 76);
+  { int r = g3_region_of(p->metLocation);
+    ui_ptext_fit(vx, y, vw, r < 0 ? UI_WARN : C_VAL, r < 0 ? "?" : g3_region_name(r)); }
+  y += PDNA_SUM_ORG_ROW_H;
 
-  ui_text(x, y, C_KEY, "Origin"); reg(F_METGAME, x + 60, y, 76);
-  ui_text(x + 60, y, C_HOT, pk_metgame_name(p->metGame)); y += 14;
+  ui_text(x, y, C_KEY, "Loc"); reg(F_METLOC, vx, y, 76);                 /* shortened: was "Location" (overlapped value) */
+  ui_ptext_fit(vx, y, vw, C_VAL, pk_location_name(p->metLocation)); y += PDNA_SUM_ORG_ROW_H;
 
-  siprintf(b, "OT %s", p->otName); ui_ptext_fit(x, y, 238 - x, UI_DIM, b); y += 9;
+  ui_text(x, y, C_KEY, "Origin"); reg(F_METGAME, vx, y, 76);
+  ui_text(vx, y, C_HOT, pk_metgame_name(p->metGame)); y += PDNA_SUM_ORG_GAP;
+
+  siprintf(b, "OT %s", p->otName); ui_ptext_fit(x, y, 238 - x, UI_DIM, b); y += PDNA_SUM_ORG_TAIL_H;
   /* One row cannot hold both: "TID 38800 SID 15243" is 19 glyphs and the column is 17, so
    * truncating it dropped three of the five SID digits without saying so. */
   siprintf(b, "TID %05u", (unsigned)(p->otId & 0xFFFF));
-  ui_text(x, y, UI_DIM, b); y += 9;
+  ui_text(x, y, UI_DIM, b); y += PDNA_SUM_ORG_TAIL_H;
   siprintf(b, "SID %05u", (unsigned)(p->otId >> 16));
-  ui_text(x, y, UI_DIM, b); y += 9;
+  ui_text(x, y, UI_DIM, b); y += PDNA_SUM_ORG_TAIL_H;
   if (p->pokerus) ui_text(x, y, UI_WARN, "Pokerus");
 }
 

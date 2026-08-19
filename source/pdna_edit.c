@@ -259,7 +259,10 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
       int r = pick_region(g3_region_of(c->metLocation), c->metGame);
       if (r < 0) break;
       uint16_t id = pick_metloc(c->metLocation, c->metGame, r);
-      if (id == 0xFFFF) id = g3_place_first(r, g3_game_filter_for(c->metGame), c->metLocation);
+      if (id == 0xFFFF) {                       /* backed out of the place list */
+        if (g3_region_of(c->metLocation) == r) break;   /* already there: change nothing */
+        id = g3_place_first(r, g3_game_filter_for(c->metGame), c->metLocation);
+      }
       em_set_metloc(e, (uint8_t)id);
       break;
     }
