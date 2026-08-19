@@ -14,6 +14,7 @@
 #include "pdna_layout.h"   /* list/popup geometry, shared with tests/host_textfit_test.c */
 #include "data_tables.h"
 #include "gen3_items.h"    /* pk_item_pocket / PkPocket (item-picker category filter) */
+#include "gen3_places.h"   /* met-location region / per-game scoping / list build     */
 #include "mon_icons.h"
 #include "type_icons.h"
 #include "item_icons.h"
@@ -27,6 +28,15 @@
 
 static u16 EWRAM_BSS g_list[NSPECIES];   /* internal species ids in display order */
 static int g_n;
+
+/* ONE index buffer for every flat list on this screen family — the generic list_pick,
+ * the item picker, the ball picker and the met-location picker. They are all leaf
+ * screens (none opens another), so sharing is safe, and it is what pays for the two new
+ * pickers: this used to be two separate static u16[NITEM] arrays, so folding them frees
+ * 800 bytes of EWRAM rather than spending any. G3_PLACE_MAX (217) fits well inside it.
+ * _Static_assert keeps that true if either count ever grows. */
+static u16 EWRAM_BSS g_idx[NITEM];
+_Static_assert(NITEM >= G3_PLACE_MAX, "g_idx must hold the whole met-location list");
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 /* fresh presses for all keys + auto-repeat for the held d-pad (tonc key_repeat,
@@ -819,7 +829,7 @@ static int list_build(u16* idx, int count, const char* (*name_fn)(uint16_t),
 static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(uint16_t),
                           const uint16_t* (*icon_fn)(uint16_t), int current,
                           bool searchable, bool sortable) {
-  static u16 EWRAM_BSS idx[NITEM];
+  u16* idx = g_idx;
   char search[16] = "";
   int sort = 0;
   int n = list_build(idx, count, name_fn, search, sort);
@@ -992,7 +1002,7 @@ static void iv_cell(int v, int x, int y, int id) {
 }
 
 uint16_t pick_item(uint16_t current) {
-  static u16 EWRAM_BSS idx[NITEM];
+  u16* idx = g_idx;
   char search[16] = "";
   int sort = 0, view = item_icon_for(13) ? IV_SPLIT : IV_LIST, cat = 0, gamef = 0;   /* art-free -> text list (13 = Potion) */
   int n = item_build(idx, search, sort, cat, gamef);
@@ -1220,3 +1230,155 @@ uint8_t pick_ball(uint8_t current) {
   }
 }
 
+/* ===================== met-location + region pickers =======================
+ * ~217 usable place ids is far too many for a ±1 field, so both are lists over
+ * gen3_places.c: it owns which ids exist, which region each belongs to, and which origin
+ * games can stamp one. The picker only draws.
+ *
+ * FILTER + SORT (Guy's ask):
+ *   - region scope   (All / Hoenn / Kanto / Sevii Isles / Special) — and, because region
+ *     and place are the same axis at two zooms, choosing a region in pick_region() drops
+ *     straight into this list already scoped to it.
+ *   - game scope, which is the LEGALITY guard: it defaults to the record's own metGame,
+ *     so a FireRed save is never offered Hoenn routes and an RS save is never offered
+ *     Emerald's Marine Cave. Widening it is a deliberate press, not the default.
+ *   - sort by id / name / region.
+ *   - SELECT opens the on-screen keyboard for an incremental substring filter. That is
+ *     the convention every other list here already uses (species, move, item), and it
+ *     beats a first-letter jump for this data set: the useful queries are "ROUTE 1",
+ *     "UNDERWATER" and "CAVE", i.e. shared INFIXES of dozens of names, which a
+ *     first-letter jump cannot express at all. Typing digits filters by id instead.
+ */
+static void loc_filter_menu(int* region, int* gamef, int* sort) {
+  const int rows = PDNA_LFILT_ROWS;
+  int sel = 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, PDNA_LFILT_TITLE);
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    for (int r = 0; r < rows; r++) {
+      int y = PDNA_IFILT_Y0 + r * PDNA_IFILT_ROW_H;
+      bool s = (r == sel);
+      if (s) ui_panel(PDNA_FILT_BAR_X, y + PDNA_IFILT_BOX_DY, PDNA_FILT_BAR_W,
+                      PDNA_IFILT_BOX_H, UI_SEL, UI_TITLE);
+      char b[40];
+      if (r == 0)      { siprintf(b, PDNA_FILT_SORT_FMT, g3_place_sort_name(*sort));
+                         ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
+      else if (r == 1) { siprintf(b, PDNA_LFILT_GAME_FMT, g3_place_game_name(*gamef));
+                         ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
+      else {
+        int rgn = r - 3;                          /* row 2 = All, rows 3.. = the regions */
+        const char* nm = (r == 2) ? PDNA_LFILT_ALL : g3_region_name(rgn);
+        siprintf(b, "%s%s", nm, (*region == rgn) ? "  <" : "");
+        ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_TEXT, b);
+      }
+    }
+    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_IFILT_FOOT);
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
+    if (k & KEY_B) return;
+    else if (k & KEY_A) {
+      if (sel == 0)      *sort  = (*sort + 1) % G3_PSORT_COUNT;
+      else if (sel == 1) *gamef = (*gamef + 1) % G3_PGAME_COUNT;
+      else { *region = sel - 3; return; }         /* a region picks + closes */
+    }
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : rows - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % rows;
+    else if (k & KEY_LEFT) { if (sel == 0) *sort  = (*sort + G3_PSORT_COUNT - 1) % G3_PSORT_COUNT;
+                             if (sel == 1) *gamef = (*gamef + G3_PGAME_COUNT - 1) % G3_PGAME_COUNT; }
+    else if (k & KEY_RIGHT){ if (sel == 0) *sort  = (*sort + 1) % G3_PSORT_COUNT;
+                             if (sel == 1) *gamef = (*gamef + 1) % G3_PGAME_COUNT; }
+  }
+}
+
+uint16_t pick_metloc(uint16_t current, uint8_t metgame, int region0) {
+  u16* idx = g_idx;
+  char search[16] = "";
+  int sort = G3_PSORT_ID;
+  int gamef = g3_game_filter_for(metgame);
+  int region = region0;                            /* <0 = all regions */
+  int n = g3_place_list(idx, G3_PLACE_MAX, region, gamef, search, sort);
+  int sel = 0;
+  for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
+  int top = 0;
+
+  for (;;) {
+    if (sel >= n) sel = n ? n - 1 : 0;
+    if (sel < top) top = sel;
+    if (sel >= top + PDNA_LOC_VIS) top = sel - PDNA_LOC_VIS + 1;
+    if (top < 0) top = 0;
+
+    ui_clear();
+    char h[64], ht[48];
+    siprintf(h, PDNA_LOC_HDR_FMT, region < 0 ? PDNA_LFILT_ALL : g3_region_name(region),
+             g3_place_game_name(gamef), g3_place_sort_name(sort), n);
+    ui_truncate(ht, h, PDNA_LOC_HDR_COLS);
+    ui_text(4, 2, UI_TITLE, ht);
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    if (!n) ui_ptext(PDNA_LOC_TEXT_X, PDNA_LOC_Y0 + 8, UI_WARN, PDNA_LOC_EMPTY);
+    for (int i = 0; i < PDNA_LOC_VIS && top + i < n; i++) {
+      int id = idx[top + i], y = PDNA_LOC_Y0 + i * PDNA_LOC_ROW_H;
+      bool s = (top + i == sel);
+      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+      char row[64], rt[72];
+      siprintf(row, "%3d %s", id, pk_location_name((uint16_t)id));
+      ui_truncate(rt, row, PDNA_LOC_ROW_COLS);
+      ui_text(PDNA_LOC_TEXT_X, y, s ? UI_SELTEXT : UI_TEXT, rt);
+    }
+    ui_hline(0, PDNA_LOC_RULE_Y, UI_SCR_W, UI_BORDER);
+    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_LOC_FOOT);
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B | KEY_SELECT | KEY_START);
+    if (k & KEY_B) return CANCEL;
+    else if (k & KEY_A) return n ? idx[sel] : CANCEL;
+    else if (k & KEY_UP)   sel = clampi(sel - 1, 0, n ? n - 1 : 0);
+    else if (k & KEY_DOWN) sel = clampi(sel + 1, 0, n ? n - 1 : 0);
+    else if (k & KEY_L)    sel = clampi(sel - PDNA_LOC_PAGE, 0, n ? n - 1 : 0);
+    else if (k & KEY_R)    sel = clampi(sel + PDNA_LOC_PAGE, 0, n ? n - 1 : 0);
+    else if (k & KEY_START) {
+      uint16_t keep = n ? idx[sel] : current;
+      loc_filter_menu(&region, &gamef, &sort);
+      n = g3_place_list(idx, G3_PLACE_MAX, region, gamef, search, sort);
+      sel = 0; top = 0;
+      for (int i = 0; i < n; i++) if (idx[i] == keep) { sel = i; break; }
+    }
+    else if (k & KEY_SELECT) {
+      char q[16];
+      if (osk_search("SEARCH", search, q, sizeof(q))) {
+        strcpy(search, q);
+        n = g3_place_list(idx, G3_PLACE_MAX, region, gamef, search, sort);
+        sel = 0; top = 0;
+      }
+    }
+  }
+}
+
+int pick_region(int current, uint8_t metgame) {
+  int gamef = g3_game_filter_for(metgame);
+  int sel = (current >= 0 && current < G3_RGN_COUNT) ? current : 0;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, PDNA_RGN_TITLE);
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    for (int r = 0; r < G3_RGN_COUNT; r++) {
+      int y = PDNA_RGN_Y0 + r * PDNA_RGN_ROW_H;
+      bool s = (r == sel);
+      if (s) ui_panel(2, y - 2, 236, 14, UI_SEL, UI_TITLE);
+      /* how many places this region offers THIS game — 0 is the honest way to show that
+       * a FireRed record has no Hoenn to be met in. */
+      int cnt = g3_place_list(g_idx, G3_PLACE_MAX, r, gamef, "", G3_PSORT_ID);
+      char b[40];
+      siprintf(b, PDNA_RGN_ROW_FMT, g3_region_name(r), cnt);
+      ui_text(PDNA_RGN_TEXT_X, y, s ? UI_SELTEXT : (cnt ? UI_TEXT : UI_DIM), b);
+    }
+    ui_ptext(4, PDNA_RGN_NOTE_Y, UI_DIM, PDNA_RGN_NOTE);
+    ui_hline(0, PDNA_RGN_RULE_Y, UI_SCR_W, UI_BORDER);
+    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_RGN_FOOT);
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return -1;
+    else if (k & KEY_A) return sel;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : G3_RGN_COUNT - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % G3_RGN_COUNT;
+  }
+}

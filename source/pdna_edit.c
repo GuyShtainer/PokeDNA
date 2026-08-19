@@ -16,6 +16,7 @@
 #include "gen3_mon.h"
 #include "gen3_edit.h"
 #include "gen3_box.h"      /* pk_resolve */
+#include "gen3_places.h"   /* met-location region + per-game scoping */
 #include "data_tables.h"
 #include "osk.h"
 #include "pdna_pick.h"
@@ -31,7 +32,7 @@ static const char* const FLABEL[F_NUM] = {
   PDNA_EDIT_MAXPP_LBL(1), PDNA_EDIT_MAXPP_LBL(2),
   PDNA_EDIT_MAXPP_LBL(3), PDNA_EDIT_MAXPP_LBL(4),
   "PP 1", "PP 2", "PP 3", "PP 4", "OT Name",
-  "Ball", "Met Loc", "Met Lv", "Met Game",
+  "Ball", PDNA_EDIT_REGION_LBL, "Met Loc", "Met Lv", "Met Game",
   "Cool", "Beauty", "Cute", "Smart", "Tough", "Sheen",
 };
 
@@ -101,6 +102,11 @@ static void field_value(int f, const PkMon* c, char* buf) {
       siprintf(buf, "%u/%u", (unsigned)c->pp[f - F_PP0], (unsigned)pp_max(c, f - F_PP0)); break;
     case F_OT:      siprintf(buf, "%s", c->otName); break;
     case F_BALL:    siprintf(buf, "%s", pk_item_name(c->pokeball)); break;
+    case F_METREGION: {
+      int r = g3_region_of(c->metLocation);
+      siprintf(buf, "%s", r < 0 ? "?" : g3_region_name(r));
+      break;
+    }
     case F_METLOC:  siprintf(buf, "%s", pk_location_name(c->metLocation)); break;
     case F_METLEVEL:siprintf(buf, "%u", (unsigned)c->metLevel); break;
     case F_METGAME: siprintf(buf, "%s", pk_metgame_name(c->metGame)); break;
@@ -177,7 +183,30 @@ void em_field_adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
     case F_PP0: case F_PP1: case F_PP2: case F_PP3:
       em_set_pp(e, f - F_PP0, (uint8_t)clampi(c->pp[f - F_PP0] + dir * s, 0, pp_max(c, f - F_PP0))); break;
     case F_BALL:     { int v = c->pokeball + dir; if (v < 1) v = 12; if (v > 12) v = 1; em_set_ball(e, (uint8_t)v); break; }
-    case F_METLOC:   em_set_metloc(e, (uint8_t)clampi(c->metLocation + dir * (big ? 10 : 1), 0, 255)); break;
+    /* Region: step to the next region that HAS places for this origin game, and re-home
+     * the met location to its first one — region and place are one field at two zooms. */
+    case F_METREGION: {
+      int gf = g3_game_filter_for(c->metGame);
+      int r = g3_region_of(c->metLocation);
+      if (r < 0) r = 0;
+      for (int t = 0; t < G3_RGN_COUNT; t++) {
+        r = (r + (dir > 0 ? 1 : G3_RGN_COUNT - 1)) % G3_RGN_COUNT;
+        uint16_t first = g3_place_first(r, gf, 0xFFFF);
+        if (first != 0xFFFF) { em_set_metloc(e, (uint8_t)first); break; }
+      }
+      break;
+    }
+    /* Step through VALID ids only: 214..252 is a hole no Gen-3 game emits, and the big
+     * step stays inside the current region so it cannot silently cross into another. */
+    case F_METLOC: {
+      int gf = g3_game_filter_for(c->metGame);
+      uint16_t v = c->metLocation;
+      int reps = big ? 10 : 1;
+      int rgn = big ? g3_region_of(c->metLocation) : -1;
+      for (int t = 0; t < reps; t++) v = g3_place_step(v, dir, rgn, gf);
+      em_set_metloc(e, (uint8_t)v);
+      break;
+    }
     case F_METLEVEL: em_set_metlevel(e, (uint8_t)clampi(c->metLevel + dir * s, 0, 100)); break;
     case F_METGAME:  { int v = c->metGame + dir; if (v < 0) v = 15; if (v > 15) v = 0; em_set_metgame(e, (uint8_t)v); break; }
     case F_CT0: case F_CT1: case F_CT2: case F_CT3: case F_CT4: case F_CT5:
@@ -225,7 +254,17 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
     }
     case F_BALL:     em_set_ball(e, pick_ball(c->pokeball)); break;                  /* the 12-ball list */
     case F_METGAME:  { int v = c->metGame + 1;  if (v > 15) v = 0; em_set_metgame(e, (uint8_t)v); break; }/* next game */
-    case F_METLOC:   em_set_metloc(e, (uint8_t)clampi(c->metLocation + 10, 0, 255)); break;               /* +10 jump  */
+    /* Region first, then the place list already scoped to it (Guy: "same for region"). */
+    case F_METREGION: {
+      int r = pick_region(g3_region_of(c->metLocation), c->metGame);
+      if (r < 0) break;
+      uint16_t id = pick_metloc(c->metLocation, c->metGame, r);
+      if (id == 0xFFFF) id = g3_place_first(r, g3_game_filter_for(c->metGame), c->metLocation);
+      em_set_metloc(e, (uint8_t)id);
+      break;
+    }
+    case F_METLOC: { uint16_t id = pick_metloc(c->metLocation, c->metGame, -1);
+                     if (id != 0xFFFF) em_set_metloc(e, (uint8_t)id); break; }
     case F_METLEVEL: em_set_metlevel(e, (uint8_t)(c->metLevel >= 100 ? 1 : 100)); break;                  /* 1 <-> 100 */
     case F_CT0: case F_CT1: case F_CT2: case F_CT3: case F_CT4: case F_CT5: {    /* cycle 0/128/255 */
       uint8_t v = c->contest[f - F_CT0];

@@ -22,6 +22,17 @@ int      pick_unown_form(int current_form);     /* 0..27 = A..?, -1 cancel */
  * (1..12), or `current` on cancel — the field can never hold anything else. */
 uint8_t pick_ball(uint8_t current);
 
+/* Met-location picker: a searchable, sortable list over gen3_places.c.
+ *   metgame — the record's origin byte; it SCOPES the list (a FireRed record is not
+ *             offered Hoenn), and 0 / Colo-XD / garbage means "don't narrow".
+ *   region0 — a G3_RGN_* to open scoped to, or <0 for all regions.
+ * Returns the chosen location id, or 0xFFFF on cancel. */
+uint16_t pick_metloc(uint16_t current, uint8_t metgame, int region0);
+
+/* Region chooser (Hoenn / Kanto / Sevii Isles / Special), showing how many places each
+ * offers THIS origin game. Returns a G3_RGN_*, or -1 on cancel. */
+int pick_region(int current, uint8_t metgame);
+
 /* Ability picker. Gen-3 stores only a 1-bit ability SLOT, so the choices are the
  * species' two abilities (shown by name + description). Returns the chosen slot
  * (0 or 1), or `current` on cancel. */

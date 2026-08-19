@@ -943,6 +943,68 @@ int main(void) {
   }
   /* ==== END: BALL picker ======================================================= */
 
+  /* ==== BEGIN: MET-LOCATION list + REGION chooser ==============================
+   * Both are lists over gen3_places.c now. Place names are table data the host cannot
+   * see and are ui_truncate'd (which clips with a visible '~'); what is measured here is
+   * the chrome, the column budgets those truncations are handed, and the row geometry. */
+  printf("\n== met-location + region pickers ==\n");
+  {
+    /* --- met-location list -------------------------------------------------- */
+    T(PDNA_LOC_FOOT, 4);
+    P(PDNA_LOC_EMPTY, PDNA_LOC_TEXT_X);
+    /* A row is ui_truncate'd to PDNA_LOC_ROW_COLS and the header to PDNA_LOC_HDR_COLS;
+     * ui_truncate only guarantees the COLUMN count, so the columns must fit the screen. */
+    chkv("location row's column budget fits the screen",
+         PDNA_LOC_TEXT_X + PDNA_LOC_ROW_COLS * SYS8_W, SCR_W);
+    chkv("location header's column budget fits the screen",
+         4 + PDNA_LOC_HDR_COLS * SYS8_W, SCR_W);
+    chkv("last location row stops above the rule",
+         PDNA_LOC_Y0 + (PDNA_LOC_VIS - 1) * PDNA_LOC_ROW_H + UI_ROW_H - 1,
+         PDNA_LOC_RULE_Y - 1);
+    chkv("location rule stops above the footer", PDNA_LOC_RULE_Y, PDNA_FILT_FOOTER_Y - 1);
+    chkv_min("location row pitch holds a glyph box", PDNA_LOC_ROW_H, UI_ROW_H);
+
+    /* --- the met filter menu (item-filter geometry, one more row) ----------- */
+    T(PDNA_LFILT_TITLE, 4);
+    T(PDNA_LFILT_ALL, PDNA_FILT_TEXT_X);
+    { char b[48];
+      /* every value the Game row can hold, formatted the way the screen formats it */
+      static const char* const GAMES[] = { "All", "Ruby/Sapph", "Emerald", "FireRed/LG" };
+      for (unsigned i = 0; i < sizeof GAMES / sizeof GAMES[0]; i++) {
+        snprintf(b, sizeof b, PDNA_LFILT_GAME_FMT, GAMES[i]);
+        chk("met filter game row", PDNA_FILT_TEXT_X, PDNA_FILT_ROW_W,
+            (int)strlen(b) * SYS8_W, b);
+      }
+      /* a region row with the "currently selected" marker the screen appends */
+      static const char* const RGNS[] = { "Hoenn", "Kanto", "Sevii Isles", "Special" };
+      for (unsigned i = 0; i < sizeof RGNS / sizeof RGNS[0]; i++) {
+        snprintf(b, sizeof b, "%s  <", RGNS[i]);
+        chk("met filter region row", PDNA_FILT_TEXT_X, PDNA_FILT_ROW_W,
+            (int)strlen(b) * SYS8_W, b);
+      } }
+    chkv("met filter's extra row still lands above the footer",
+         PDNA_IFILT_Y0 + (PDNA_LFILT_ROWS - 1) * PDNA_IFILT_ROW_H + UI_ROW_H - 1,
+         UI_FOOTER_Y - 1);
+
+    /* --- region chooser ----------------------------------------------------- */
+    T(PDNA_RGN_TITLE, 4);
+    T(PDNA_RGN_FOOT, 4);
+    P(PDNA_RGN_NOTE, 4);
+    { char b[48];
+      static const char* const RGNS[] = { "Hoenn", "Kanto", "Sevii Isles", "Special" };
+      for (unsigned i = 0; i < sizeof RGNS / sizeof RGNS[0]; i++) {
+        snprintf(b, sizeof b, PDNA_RGN_ROW_FMT, RGNS[i], 104);
+        T(b, PDNA_RGN_TEXT_X);
+      } }
+    chkv("last region row stops above the note",
+         PDNA_RGN_Y0 + (4 - 1) * PDNA_RGN_ROW_H + UI_ROW_H - 1, PDNA_RGN_NOTE_Y - 1);
+    chkv("region note stops above its rule",
+         PDNA_RGN_NOTE_Y + UI_FONT_CELL_H - 1, PDNA_RGN_RULE_Y);
+    chkv("region rule stops above the footer", PDNA_RGN_RULE_Y, PDNA_FILT_FOOTER_Y - 1);
+
+  }
+  /* ==== END: MET-LOCATION list + REGION chooser ================================ */
+
   /* ==== BEGIN: the edit field list's new MAX PP rows ==========================
    * A move's maximum PP is derived from its PP Ups, so the field list grew a "Max PP n"
    * row per move and the summary's PP cell grew the Up count. Both are fixed strings the
@@ -958,10 +1020,15 @@ int main(void) {
                         : (n == 3) ? PDNA_EDIT_MAXPP_LBL(3) : PDNA_EDIT_MAXPP_LBL(4);
         chk("edit label", PDNA_EDIT_LBL_X, PDNA_EDIT_LBL_W, (int)strlen(lbl) * SYS8_W, lbl);
       }
+      chk("edit label", PDNA_EDIT_LBL_X, PDNA_EDIT_LBL_W,
+          (int)strlen(PDNA_EDIT_REGION_LBL) * SYS8_W, PDNA_EDIT_REGION_LBL);
       /* the max-PP value at its widest reachable state: 40 base + 3 Ups = 64 */
       snprintf(b, sizeof b, PDNA_EDIT_MAXPP_FMT, 64u, 3u);
       chk("edit max-PP value", PDNA_EDIT_VAL_X, PDNA_EDIT_VAL_COLS * SYS8_W,
           (int)strlen(b) * SYS8_W, b);
+      /* the Region row's value is a region name, and the longest is "Sevii Isles" */
+      chk("edit region value", PDNA_EDIT_VAL_X, PDNA_EDIT_VAL_COLS * SYS8_W,
+          (int)strlen("Sevii Isles") * SYS8_W, "Sevii Isles");
     }
     chkv("edit value column's budget fits the screen",
          PDNA_EDIT_VAL_X + PDNA_EDIT_VAL_COLS * SYS8_W, SCR_W);

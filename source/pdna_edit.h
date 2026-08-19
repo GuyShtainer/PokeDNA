@@ -19,7 +19,8 @@ enum {
   F_PPU0, F_PPU1, F_PPU2, F_PPU3,
   F_PP0, F_PP1, F_PP2, F_PP3,   /* current PP of each move (0..max) */
   F_OT,
-  F_BALL, F_METLOC, F_METLEVEL, F_METGAME,
+  /* Region sits ABOVE the place it scopes, and editing it re-homes the met location. */
+  F_BALL, F_METREGION, F_METLOC, F_METLEVEL, F_METGAME,
   F_CT0, F_CT1, F_CT2, F_CT3, F_CT4, F_CT5,   /* contest condition: cool/beauty/cute/smart/tough/sheen */
   F_NUM
 };

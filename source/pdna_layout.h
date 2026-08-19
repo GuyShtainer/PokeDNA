@@ -303,8 +303,9 @@
 #define PDNA_FILT_SORT_DEX   "No. (dex)"
 #define PDNA_FILT_SORT_ID    "No. (id)"       /* the item list sorts by item id       */
 #define PDNA_FILT_SORT_NAME  "A-Z (name)"
+#define PDNA_FILT_SORT_REGION "Region"        /* the met-location list's third order   */
 #define PDNA_FILT_SORT_VALUES(X) \
-  X(PDNA_FILT_SORT_DEX) X(PDNA_FILT_SORT_ID) X(PDNA_FILT_SORT_NAME)
+  X(PDNA_FILT_SORT_DEX) X(PDNA_FILT_SORT_ID) X(PDNA_FILT_SORT_NAME) X(PDNA_FILT_SORT_REGION)
 #define PDNA_FILT_MARKALL    "Mark all..."    /* dex_menu's bulk-edit row             */
 
 /* The ITEM filter list keeps a BORDERED box, which is why its numbers differ: ui_panel's
@@ -323,7 +324,8 @@
  * The ball field used to TOGGLE through the twelve balls one press at a time. It is a
  * list now, borrowing the item picker's split-view geometry (24 px icon + name + blurb)
  * so there is one list idiom rather than a new one — and it degrades to name-only in the
- * artless build, where item_icon_for returns NULL for everything.
+ * artless build, where item_icon_for returns NULL for everything. The met-location list
+ * below borrows the same idiom for the same reason.
  *
  * Every fixed string below is measured by tests/host_textfit_test.c: this screen family
  * clips silently. */
@@ -345,6 +347,49 @@
 #define PDNA_BALL_NOTE      "Gen 3 has a 4-bit ball id: these 12"
 
 
+
+/* ---------------------------------------------------------------------------
+ * MET-LOCATION list + its filter menu, and the REGION chooser (source/pdna_pick.c)
+ *
+ * The met location used to step ±1 through 256 ids. It is a list over gen3_places.c now:
+ * 16 sys8 rows of "%3d %s" at an 8 px pitch, like list_pick's text mode, with the item
+ * filter menu's bordered-box geometry behind START. */
+#define PDNA_LOC_Y0         14
+#define PDNA_LOC_ROW_H       8
+#define PDNA_LOC_VIS        16                /* 14 + 15*8 + 7 = 141, clear of the rule */
+#define PDNA_LOC_TEXT_X      6
+#define PDNA_LOC_PAGE       10                /* L/R jump, same as list_pick's         */
+#define PDNA_LOC_ROW_COLS   28                /* ui_truncate budget for "%3d %s"       */
+#define PDNA_LOC_HDR_COLS   29                /* ui_truncate budget for the header     */
+#define PDNA_LOC_RULE_Y    148
+/* Header is siprintf'd as HDR_FMT(region, game, sort, count) and clamped to 29 columns;
+ * the values are the g3_place_* name tables, which the host test walks. */
+#define PDNA_LOC_HDR_FMT    "MET %s/%s %s %d"
+#define PDNA_LOC_FOOT       "A pick  SEL find  ST sort  B"
+#define PDNA_LOC_EMPTY      "No place matches. ST to widen."
+/* The location filter menu reuses the item filter's bordered-box geometry; it has Sort +
+ * Game rows plus one row per region and an "All regions" row. */
+#define PDNA_LFILT_NRGN      5                /* All, Hoenn, Kanto, Sevii, Special     */
+#define PDNA_LFILT_ROWS     (2 + PDNA_LFILT_NRGN)
+#define PDNA_LFILT_ALL      "All regions"
+#define PDNA_LFILT_GAME_FMT "Game: %s"
+#define PDNA_LFILT_TITLE    "MET FILTER / SORT"
+
+/* The REGION row of the edit list opens this one-screen chooser, and picking a region
+ * then drops straight into the location list scoped to it. */
+#define PDNA_RGN_TITLE      "REGION"
+#define PDNA_RGN_FOOT       "A pick  U/D move  B cancel"
+#define PDNA_RGN_NOTE       "Region scopes the place list"
+#define PDNA_RGN_Y0         20
+#define PDNA_RGN_ROW_H      16
+#define PDNA_RGN_TEXT_X      8
+#define PDNA_RGN_NOTE_Y    140
+#define PDNA_RGN_RULE_Y    148
+/* "%-12s %3d": the region name padded to the longest ("Sevii Isles"), then how many
+ * places it offers THIS origin game — 0 says out loud that a FireRed record has no
+ * Hoenn to have been met in. */
+#define PDNA_RGN_ROW_FMT    "%-12s %3d"
+
 /* ---------------------------------------------------------------------------
  * EDIT field list (source/pdna_edit.c): label column starts at PDNA_EDIT_LBL_X and the
  * value column at PDNA_EDIT_VAL_X, so a label has (VAL_X - LBL_X) px and a value has
@@ -356,6 +401,7 @@
 #define PDNA_EDIT_VAL_COLS   15               /* (240-118)/8 = 15 */
 #define PDNA_EDIT_LBL_W     (PDNA_EDIT_VAL_X - PDNA_EDIT_LBL_X)
 #define PDNA_EDIT_MAXPP_LBL(n)  "Max PP " #n
+#define PDNA_EDIT_REGION_LBL    "Region"
 /* "35  Ups 3": the derived maximum, then the PP-Up count that bought it. */
 #define PDNA_EDIT_MAXPP_FMT     "%u  Ups %u"
 #define PDNA_EDIT_FOOT          "L/R+- A:pick B:exit ST:save"
