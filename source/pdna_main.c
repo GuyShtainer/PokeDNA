@@ -2342,8 +2342,15 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     u16 k = wait_keys_bob_p(KEY_UP | KEY_DOWN | KEY_A | KEY_B,
                             ANIM_PARTY, &bob_ctr, &bob, party_overlay_bob, PARTY_BOB_PERIOD);
     if      (k & KEY_B)     { snd_back(); return 0; }
-    else if (k & KEY_UP)    { if (sel == BACK) sel = lastSel; else if (sel > 0) sel--; }
-    else if (k & KEY_DOWN)  { if (sel != BACK) sel = (sel < lastSel) ? sel + 1 : BACK; }
+    /* snd_move() (RCUE_SCROLL haptic + a short square-wave tick, source/snd.c:56) fired
+     * on every cursor move in the old 3x2 grid's L/R/U/D handlers; the retail-layout
+     * rewrite's UP/DOWN handlers dropped it. Restored here, only when the cursor
+     * actually moves (not when UP/DOWN is pressed against an end that clamps to a
+     * no-op) — sel==BACK->lastSel and sel!=BACK->(sel+1 or BACK) always move; sel>0 is
+     * the one guard that can be a no-op (sel==0, nothing above it). */
+    else if (k & KEY_UP)    { if (sel == BACK) { snd_move(); sel = lastSel; }
+                              else if (sel > 0) { snd_move(); sel--; } }
+    else if (k & KEY_DOWN)  { if (sel != BACK) { snd_move(); sel = (sel < lastSel) ? sel + 1 : BACK; } }
     else if (k & KEY_A) {
       if (sel == BACK) { snd_back(); return 0; }
       if (held) {                                    /* PLACE: drop/swap into the party */
