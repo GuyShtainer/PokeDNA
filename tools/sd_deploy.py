@@ -21,7 +21,10 @@ USAGE
         1  usage / environment / safety-guard error (nothing was written)
         2  BYTES BAD   — the card's copy differs from the source
         3  FRAGMENTED  — bytes are fine, the run table overruns the FPGA control words
-        4  UNMEASURED  — bytes verified, fragmentation could NOT be measured (no root)
+        4  UNMEASURED  — the raw probe could not run (no root, or it errored). In a
+                         deploy this means bytes were verified but fragmentation is
+                         unknown; in --check-only it means PRESENCE ITSELF is unknown —
+                         this is NOT evidence the file is absent. Do not re-copy on a 4.
 
 WHY THIS EXISTS
 ---------------
@@ -1007,13 +1010,16 @@ def do_deploy(args):
 
     # card facts + free map, before touching anything
     res0, hint, device = measure(card, dest if args.check_only else "", size)
-    if not res0.get("ok"):
-        if res0.get("need_sudo"):
+    probe_ok = res0.get("ok")
+    probe_need_sudo = res0.get("need_sudo")
+    probe_error = res0.get("error")
+    if not probe_ok:
+        if probe_need_sudo:
             warn("cannot read the raw partition without root.")
             info("Run exactly this to get the fragmentation number:")
             info("    %s" % hint)
         else:
-            warn("card probe failed: %s" % res0.get("error"))
+            warn("card probe failed: %s" % probe_error)
         res0 = {}
     report_card(card, res0, size or 1)
 
@@ -1028,6 +1034,26 @@ def do_deploy(args):
 
     # ---------------- check-only ----------------
     if args.check_only:
+        # A probe failure is NOT evidence the file is missing — res0 was reset to {}
+        # above precisely because the raw walk never got to look, so res0.get("found")
+        # would be falsy here for the exact same reason it would be for a genuinely
+        # absent file. Ask `probe_ok` (captured before that reset) first, and only
+        # trust "found" once the probe actually ran. Conflating the two used to print
+        # "is not on the card" — and this instruction sheet's exit 1 tells the user
+        # nothing was written and to re-copy — for the needs-root case, which
+        # destroys the very specimen a re-run was trying to measure.
+        if not probe_ok:
+            if probe_need_sudo:
+                warn("cannot read the raw partition without root, so presence "
+                     "could not be measured.")
+                info("Run exactly this to get the fragmentation number:")
+                info("    %s" % hint)
+            else:
+                warn("card probe failed: %s" % probe_error)
+            bad("presence of %s could NOT be determined — the probe failed, "
+                "not the file." % dest)
+            info("This is NOT evidence the file is missing. Do not re-copy the ROM.")
+            return 4
         if not res0.get("found"):
             bad("%s is not on the card" % dest)
             return 1
