@@ -54,6 +54,13 @@ void boxoam_load_box(const PkMon box[30]);
  * icons from it whenever the compiled icon art is absent. NULL clears. */
 struct RomMon;
 void boxoam_rom_icons(const struct RomMon* rm);
+/* Phase 2 (ROM-art cache): register /PokeDNA/art/icons.bin as the box's FIRST icon
+ * rung, ahead of the ROM stream (DESIGN.md Sec 4.1's ladder). path must already be
+ * validated by the caller (art_session_icons_ready()) -- this function does not
+ * re-check anything, it only opens the file and preloads its small metadata tail.
+ * NULL closes/clears (a ROM re-registration whose cache turned out invalid, or none
+ * present). Held open for the whole session, not re-opened per box entry. */
+void boxoam_set_icon_cache(const char* path);
 /* 1 if the grid can show real icons (compiled art OR a registered ROM) — the
  * artless name-chip fallback asks this before painting chips. */
 int  boxoam_icons_available(void);

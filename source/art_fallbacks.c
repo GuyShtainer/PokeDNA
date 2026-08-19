@@ -23,14 +23,74 @@
 #include "hand_oam.h"
 #include "mon_front.h"
 #include "mon_back.h"
+#include "art_session.h"     /* the memoized "is icons.bin ready" verdict (read-only) */
+#include "art_icons_cache.h" /* the icons.bin reader                                  */
+#include "icon4.h"           /* 4bpp -> RGB15 expansion                               */
+#include "artbuf.h"          /* mon_decomp -- the shared 8 KiB scratch, reused here   */
 
-/* ---- RGB15 icon/sprite accessors: no art -> NULL ------------------------- */
-__attribute__((weak)) const uint16_t* mon_icon_for(uint16_t s) { (void)s; return 0; }
-__attribute__((weak)) const uint16_t* mon_icon_for_frame(uint16_t s, uint8_t f) { (void)s; (void)f; return 0; }
-__attribute__((weak)) const uint16_t* mon_icon_for_form(uint16_t s, uint8_t fm) { (void)s; (void)fm; return 0; }
-__attribute__((weak)) const uint16_t* mon_icon_for_form_frame(uint16_t s, uint8_t fm, uint8_t f) { (void)s; (void)fm; (void)f; return 0; }
-__attribute__((weak)) const uint16_t* mon_icon_egg_frame(uint8_t f) { (void)f; return 0; }
-__attribute__((weak)) const uint16_t* mon_icon_egg(void) { return 0; }
+/* ---- RGB15 icon/sprite accessors: no COMPILED art -> the icons.bin cache ---------
+ *
+ * These four accessors and mon_icon_egg{,_frame} are weak, so mon_icons.c's strong
+ * definitions win outright in a full-art build (this file's bodies are then simply
+ * unreferenced) -- there is no runtime branch here, it is the SAME link-time choice
+ * the rest of this file already relies on. In the artless build, these ARE the
+ * symbols every caller gets: pdna_pick.c's Pokedex grid, the party overlay, the
+ * pickers, all of them, with ZERO changes to any of those call sites. This is what
+ * turns mon_icon_for() non-NULL and restores the Pokedex GRID view (pdna_pick.c:585
+ * picks it the moment mon_icon_for(1) answers) -- DESIGN.md Sec 4.7 / Sec 6 Phase 2's
+ * "item 9 falls out of item 1's plumbing" (item 1 here is really item 9's sibling:
+ * both ride the SAME icons.bin cache, just the box grid gets its 4bpp tiles straight
+ * from box_oam.c's own ladder while these accessors expand the same bytes to RGB15).
+ *
+ * No session-held file handle here (or anywhere in the icons cache -- see
+ * art_icons_cache.h's header comment: the first cut held one per caller and that
+ * measured 2,272 B of new IWRAM .bss, past the ~1,232 B this build is known to crash
+ * on). art_icons_read_frame opens/reads/closes its own FIL per call; the only static
+ * cost is art_icons_cache.c's single shared 536 B metadata block, populated lazily on
+ * first use and shared with box_oam.c's own cache rung -- both call the SAME
+ * functions, there is no separate instance here to hold anything.
+ *
+ * Deliberately reads the MEMOIZED verdict only (art_session_icons_ready_memoized),
+ * never triggers its own check: see art_session.h's comment on why a caller with no
+ * RomCtx of its own must never be the one that primes the memo (it would skip the
+ * "wrong ROM" cross-check). pdna_main.c's app_icon_rom_open() primes it once, at
+ * boot and on every ROM re-registration, before any screen draws. */
+
+/* species/form/frame, or egg -- decode straight into mon_decomp and return it. Same
+ * "decode fresh, blit immediately" contract app_item_icon/app_type_badge already
+ * document in pdna_main.c: the buffer is shared, so a caller must use the pointer
+ * before anything else decodes into mon_decomp. */
+static const uint16_t* icon_from_cache(uint16_t species, uint8_t form, uint8_t frame,
+                                       bool egg) {
+  if (!art_session_icons_ready_memoized()) return 0;
+  const char* path = art_session_icons_path();
+  uint16_t sp = egg ? 412 : species;
+  uint8_t f = egg ? 0 : form;
+  uint16_t row = art_icons_row_for(sp, f);
+  if (!art_icons_read_frame(path, row, frame, (uint8_t*)mon_decomp)) return 0;
+  uint16_t pal[16];
+  if (!art_icons_meta_pal(path, row, pal)) return 0;
+  return icon4_to_rgb15((uint8_t*)mon_decomp, MON_DECOMP_BYTES, pal) ? mon_decomp : 0;
+}
+
+__attribute__((weak)) const uint16_t* mon_icon_for(uint16_t s) {
+  return icon_from_cache(s, 0, 0, false);
+}
+__attribute__((weak)) const uint16_t* mon_icon_for_frame(uint16_t s, uint8_t f) {
+  return icon_from_cache(s, 0, f, false);
+}
+__attribute__((weak)) const uint16_t* mon_icon_for_form(uint16_t s, uint8_t fm) {
+  return icon_from_cache(s, fm, 0, false);
+}
+__attribute__((weak)) const uint16_t* mon_icon_for_form_frame(uint16_t s, uint8_t fm, uint8_t f) {
+  return icon_from_cache(s, fm, f, false);
+}
+__attribute__((weak)) const uint16_t* mon_icon_egg_frame(uint8_t f) {
+  return icon_from_cache(0, 0, f, true);
+}
+__attribute__((weak)) const uint16_t* mon_icon_egg(void) {
+  return icon_from_cache(0, 0, 0, true);
+}
 
 __attribute__((weak)) const uint16_t* mon_front_for(uint16_t s, bool sh) { (void)s; (void)sh; return 0; }
 __attribute__((weak)) const uint16_t* mon_front_for_form(uint16_t s, bool sh, uint8_t fm) { (void)s; (void)sh; (void)fm; return 0; }

@@ -21,6 +21,7 @@
 #include "hand_oam.h"
 #include "item_icons.h"
 #include "rom_mon.h"      /* phase-1 ROM-streamed icons (artless + the user's own ROM) */
+#include "art_icons_cache.h" /* phase-2 icons.bin cache -- tried BEFORE the rom rung   */
 #include "rumble.h"         /* rumble_io_suspend: freeze GPIO during verified CPU ROM reads */
 #include "log.h"            /* icon-upload self-verify diagnostics */
 #include "pdna_app.h"       /* app_log_flush: anomaly evidence must survive a power-off */
@@ -142,9 +143,32 @@ void boxoam_rom_icons(const struct RomMon* rm) {
   s_rommon = (rm && rm->ok) ? rm : 0;
   s_iconloc.ok = 0; s_iconloc_sp = 0xFFFF;
 }
+
+/* ---- Phase 2: the icons.bin cache rung ------------------------------------------
+ * Set by the app (pdna_main.c's art_session_icons_ready() gate) once per icon-source
+ * resolution. This is the rung DESIGN.md Sec 4.1 puts FIRST: the only source that can
+ * light the box up in an artless build with no ROM registered THIS session (the card
+ * outlives the registration). A cache read is a single seek+read (see
+ * art_icons_cache.c), unlike the ROM rung's separate locate + per-frame reads, and it
+ * needs no per-icon double-read verify: the whole file's FNV was already checked once
+ * this session (art_session_icons_ready), so a single read is trusted the same way a
+ * compiled .rodata array is.
+ *
+ * Just a POINTER, not a held-open file: art_icons_cache.c opens/reads/closes its own
+ * FIL per call (see that file's header comment for why -- a held-open FIL here plus
+ * one in art_fallbacks.c measured at 2,272 B of new IWRAM .bss and crashed the
+ * budget). The string itself is owned by art_cache.c's static filename table
+ * (art_kind_filename), so this is 4 bytes, not a new buffer. */
+static const char* s_iconcache_path = 0;
+
+void boxoam_set_icon_cache(const char* path) {
+  s_iconcache_path = path;
+  if (!path) art_icons_meta_clear();
+}
+
 int  boxoam_icons_available(void) {
   const uint8_t* t; int b;
-  return mon_icon_oam_for(1, &t, &b) || s_rommon != 0;
+  return mon_icon_oam_for(1, &t, &b) || s_iconcache_path != 0 || s_rommon != 0;
 }
 
 static uint32_t stage_sum(void) {
@@ -204,8 +228,34 @@ static int rom_icon_read_verified(uint16_t species, uint8_t form, int egg, int* 
   return 1;
 }
 
-/* compiled art first, else the user's ROM (staged into s_stage). Returns the tile
- * source or NULL; *from_rom tells the uploader the bytes are already verified RAM. */
+/* The cache rung: one seek+read (both frames at once, since extraction laid them out
+ * contiguously per row) into s_stage, no per-read doubling -- the file's FNV was
+ * already checked once this session (art_session_icons_ready), so this trusts a
+ * single read the way it already trusts a compiled .rodata array. species/form map
+ * to the icon table's row via art_icons_row_for, the SAME mapping rom_mon.c uses
+ * internally. *bank is the row's palette id (0..2) straight out of the preloaded
+ * metadata -- it addresses OBJ banks 0..2 directly, exactly like the ROM rung's
+ * s_iconloc.pal, because boxoam_enter copies the SAME 3 palettes there (see below;
+ * the cache's palette bytes are a verbatim copy of the ROM's, made at extraction
+ * time), whichever rung actually served the tiles. */
+static int cache_icon_read(uint16_t species, uint8_t form, int egg, uint8_t frame,
+                           int* bank) {
+  if (!s_iconcache_path) return 0;
+  uint16_t sp = egg ? 412 : species;
+  uint8_t f = egg ? 0 : form;
+  uint16_t row = art_icons_row_for(sp, f);
+  if (row >= ART_ICONS_ROWS) return 0;
+  if (!art_icons_read_frame(s_iconcache_path, row, frame, (uint8_t*)s_stage)) return 0;
+  uint8_t id = art_icons_meta_pal_id(s_iconcache_path, row);
+  if (id >= ART_ICONS_PALS) return 0;
+  *bank = id;
+  return 1;
+}
+
+/* compiled art first, then the cache, then the user's ROM (all staged into s_stage).
+ * Returns the tile source or NULL; *from_rom tells the uploader the bytes are already
+ * verified RAM (true for BOTH the cache and the ROM rung -- neither needs the staged-
+ * verify DMA path a compiled .rodata array would). */
 static const uint8_t* icon_tiles(uint16_t species, uint8_t form, uint8_t frame,
                                  int egg, int* bank, int* from_rom) {
   const uint8_t* t; int b;
@@ -221,6 +271,10 @@ static const uint8_t* icon_tiles(uint16_t species, uint8_t form, uint8_t frame,
   if (egg ? mon_icon_oam_egg(&t, &b)
           : (species && mon_icon_oam_for_form_frame(species, form, frame, &t, &b))) {
     *bank = b; return t;
+  }
+  if (frame < 2 && cache_icon_read(species, form, egg, frame, bank)) {
+    *from_rom = 1;
+    return (const uint8_t*)s_stage;
   }
   if (frame == 0 && rom_icon_read_verified(species, form, egg, bank)) {
     *from_rom = 1; return (const uint8_t*)s_stage;
@@ -379,16 +433,28 @@ void boxoam_enter(void) {
     if (icopy_verified(s_stage, mon_icon_oam_pal, n) < 0)
       log_line("icons: palette unstable rom reads");        /* best-effort: last attempt still lands */
     for (int i = 0; i < n; i++) pal_obj_mem[i] = s_stage[i]; }
-  /* Artless + the user's ROM: the compiled palettes above were weak zeros, so pull
-   * the game's own 3 shared icon palettes into banks 0..2 — the banks the streamed
-   * icons' palette ids (0..2) address. Compiled art present -> compiled wins. */
+  /* Artless + (cache or the user's ROM): the compiled palettes above were weak
+   * zeros, so pull the game's own 3 shared icon palettes into banks 0..2 — the banks
+   * BOTH the cache's and the ROM's palette ids (0..2) address (the cache's palette
+   * bytes are a verbatim copy of the ROM's, made at extraction time, so either
+   * source lands the SAME 3 palettes in the SAME banks). Compiled art present ->
+   * compiled wins; the cache is tried before the rom (it is a plain RAM-array read,
+   * no per-entry SD I/O once opened, vs. 3 separate rom_mon_icon_pal calls). */
   { const uint8_t* t; int b;
     s_rom_icons = 0;
-    if (s_rommon && !mon_icon_oam_for(1, &t, &b)) {
-      uint16_t pd[16];
-      for (int pnum = 0; pnum < ROM_MON_PALS; pnum++)
-        if (rom_mon_icon_pal(s_rommon, pnum, pd))
-          for (int i = 0; i < 16; i++) pal_obj_mem[pnum * 16 + i] = pd[i];
+    if (!mon_icon_oam_for(1, &t, &b)) {
+      if (s_iconcache_path) {
+        for (int pnum = 0; pnum < (int)ART_ICONS_PALS; pnum++) {
+          uint16_t pd[16];
+          if (art_icons_meta_pal_at(s_iconcache_path, pnum, pd))
+            for (int i = 0; i < 16; i++) pal_obj_mem[pnum * 16 + i] = pd[i];
+        }
+      } else if (s_rommon) {
+        uint16_t pd[16];
+        for (int pnum = 0; pnum < ROM_MON_PALS; pnum++)
+          if (rom_mon_icon_pal(s_rommon, pnum, pd))
+            for (int i = 0; i < 16; i++) pal_obj_mem[pnum * 16 + i] = pd[i];
+      }
     } }
 
   /* hand palette -> bank 13 (normal) and an orange-tinted copy -> bank 14 (MOVE) */

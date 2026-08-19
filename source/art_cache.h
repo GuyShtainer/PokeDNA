@@ -40,6 +40,10 @@
 
 #define ART_IDX_FORMAT_V1 1u
 
+/* Hard rule 9 (one folder per tool): every ROM-art file lives under /PokeDNA/art/. */
+#define ART_DIR "/PokeDNA/art"
+#define ART_IDX_PATH ART_DIR "/art.idx"
+
 /* Every kind the FINISHED design names (DESIGN.md Sec 2.1). Phase 2 extracts and
  * serves ONLY ART_KIND_ICONS — the rest exist here so `kinds` bitmask, the filename
  * table, and art.idx's row order are all settled once, without a format bump when a
