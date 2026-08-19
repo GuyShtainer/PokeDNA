@@ -89,6 +89,17 @@ int rom_mon_locate(const RomMon* rm, uint16_t species, uint8_t form, RomMonLoc* 
 int rom_mon_locate_verified(const RomMon* rm, uint16_t species, uint8_t form,
                             RomMonLoc* out, int attempts, int* unstable);
 
+/* Same as rom_mon_locate_verified, but by the icon table's own row index (0..439:
+ * 0..411 the species axis's raw ceiling, 412 the Egg, 413..439 Unown B..'?') instead
+ * of a (species, form) pair. This is the axis source/art_icons_extract.c's cache
+ * mirrors 1:1 (icons.bin row r == this table's row r) and the axis
+ * source/art_icons_cache.c's loader indexes by, so both sides of the cache agree with
+ * rom_mon.c's own layout by construction, not by re-deriving table_species(). Total
+ * row count is RM_TABLE_ENTRIES (440), exposed as rom_mon_table_rows(). */
+int rom_mon_locate_row_verified(const RomMon* rm, uint16_t row, RomMonLoc* out,
+                                int attempts, int* unstable);
+uint16_t rom_mon_table_rows(void);
+
 /* Read one 512 B frame of an already-located icon. One read, no lookups. */
 int rom_mon_icon_at(const RomMon* rm, const RomMonLoc* loc, uint8_t frame,
                     uint8_t dst[ROM_MON_ICON_BYTES]);

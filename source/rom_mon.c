@@ -94,14 +94,18 @@ static int read_small(const RomMon* rm, uint32_t off, uint8_t* dst, uint32_t len
   return -1;
 }
 
-static int locate_ex(const RomMon* rm, uint16_t species, uint8_t form, RomMonLoc* out,
-                     int attempts, int* unstable) {
+/* The guts of locate_ex, taking the icon TABLE INDEX (ts, 0..439) directly instead of
+ * a (species, form) pair. rom_mon_locate() and friends map (species, form) down to
+ * this via table_species(); the ROM-art extractor (source/art_icons_extract.c) walks
+ * the table's own axis in order (row 0..439 == exactly the icons.bin cache's own
+ * layout) and has no (species, form) pair to give it for row 412 (Egg) or the raw
+ * Unown rows -- it wants the table index directly, which is what this exposes. */
+static int locate_row_ex(const RomMon* rm, uint16_t ts, RomMonLoc* out, int attempts,
+                         int* unstable) {
   if (unstable) *unstable = 0;
   if (!out) return 0;
   out->tiles = 0; out->pal = 0; out->ok = 0;     /* fail closed: a memo self-invalidates */
   if (!rm || !rm->ok) return 0;
-  if (species == 201 && form > 27) return 0;     /* 28 letters total: A + B..'?' */
-  uint16_t ts = table_species(species, form);
   if (ts >= RM_TABLE_ENTRIES) return 0;
 
   uint8_t pe[4];
@@ -121,6 +125,15 @@ static int locate_ex(const RomMon* rm, uint16_t species, uint8_t form, RomMonLoc
   return 1;
 }
 
+static int locate_ex(const RomMon* rm, uint16_t species, uint8_t form, RomMonLoc* out,
+                     int attempts, int* unstable) {
+  if (out) { out->tiles = 0; out->pal = 0; out->ok = 0; }
+  if (!rm || !rm->ok) return 0;
+  if (species == 201 && form > 27) return 0;     /* 28 letters total: A + B..'?' */
+  uint16_t ts = table_species(species, form);
+  return locate_row_ex(rm, ts, out, attempts, unstable);
+}
+
 int rom_mon_locate(const RomMon* rm, uint16_t species, uint8_t form, RomMonLoc* out) {
   return locate_ex(rm, species, form, out, 1, 0);
 }
@@ -129,6 +142,13 @@ int rom_mon_locate_verified(const RomMon* rm, uint16_t species, uint8_t form,
                             RomMonLoc* out, int attempts, int* unstable) {
   return locate_ex(rm, species, form, out, attempts < 2 ? 2 : attempts, unstable);
 }
+
+int rom_mon_locate_row_verified(const RomMon* rm, uint16_t row, RomMonLoc* out,
+                                int attempts, int* unstable) {
+  return locate_row_ex(rm, row, out, attempts < 2 ? 2 : attempts, unstable);
+}
+
+uint16_t rom_mon_table_rows(void) { return RM_TABLE_ENTRIES; }
 
 int rom_mon_icon_at(const RomMon* rm, const RomMonLoc* loc, uint8_t frame,
                     uint8_t dst[ROM_MON_ICON_BYTES]) {
