@@ -45,8 +45,11 @@
 #define PB_FLAVOR_ICON_X  { 8, 8, 8, 56, 56 }
 #define PB_FLAVOR_ICON_Y  { 104, 120, 136, 104, 120 }
 
-/* game is a PkGame (0 = RS, 1 = EMERALD, 2 = FRLG).
- * All three return NULL for FRLG and in an art-free build. */
+/* game is a PkGame (0 = RS, 1 = EMERALD, 2 = FRLG). All three are empty for
+ * FRLG and in an art-free build: .blob == 0 for the frame, NULL for the two
+ * sprites. The blob ships LZ77-paged — paint the case with
+ * bg_restore(f, 0, 0, PB_BG_W, PB_BG_H). The two sprites are unpacked into a
+ * shared staging cell, so blit one before asking for the next. */
 BgFrame pokeblock_bg(int game);                        /* 240x160 RGB15      */
 const uint16_t* pokeblock_hl(int game, int state);             /* 8x8; 0 none 1 blue 2 red */
 const uint16_t* pokeblock_flavor_icon(int game, int flavor);   /* 8x16; flavor 0..4  */

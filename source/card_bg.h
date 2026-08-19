@@ -158,12 +158,14 @@ static const CardBackLayout CARD_BACK_LAYOUTS[3] = {
       { "BERRY CRUSH",      CBK_STAT, 51, 110, 65535 } } },
 };
 
-/* 240x160 RGB15 frame for (game, star tier 0..4, gender), or NULL in an
- * art-free build. Lives in ROM — blit ROM->VRAM, never buffer it in EWRAM. */
+/* Handle on the 240x160 RGB15 frame for (game, star tier 0..4, gender); its
+ * .blob is 0 in an art-free build — the old NULL. The pixels ship LZ77-paged
+ * in ROM: paint with bg_restore(f, 0, 0, W, H), repair a field's rect with
+ * bg_restore(f, x, y, w, h). Nothing is buffered in EWRAM. */
 BgFrame card_bg(int game, int tier, int female);
 
 /* The card BACK frame of (game, tier, gender) — same surround, the game's
- * back.bin card face, no photo/stars/badges — or NULL in an art-free build. */
+ * back.bin card face, no photo/stars/badges — .blob 0 in an art-free build. */
 BgFrame card_bg_back(int game, int tier, int female);
 
 /* 16x16 gym badge i (0..7) of `game` in ui_sprite format (0 = transparent),
