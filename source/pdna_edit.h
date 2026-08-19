@@ -13,6 +13,10 @@ enum {
   F_IV0, F_IV1, F_IV2, F_IV3, F_IV4, F_IV5,
   F_EV0, F_EV1, F_EV2, F_EV3, F_EV4, F_EV5,
   F_MV0, F_MV1, F_MV2, F_MV3,
+  /* A move's MAXIMUM PP is not stored — it is base PP scaled by the slot's PP Ups
+   * (gen3_edit.h). So the two are separate rows: "Max PP n" moves the PP Ups, which is
+   * the only thing that can move a maximum, and "PP n" is the current value. */
+  F_PPU0, F_PPU1, F_PPU2, F_PPU3,
   F_PP0, F_PP1, F_PP2, F_PP3,   /* current PP of each move (0..max) */
   F_OT,
   F_BALL, F_METLOC, F_METLEVEL, F_METGAME,

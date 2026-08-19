@@ -361,11 +361,16 @@ static void card_moves(const PkMon* p, bool contest) {
     if (mv == 0) { ui_text(x, y, UI_DIM, "-"); y += step; continue; }
     ui_ptext_fit(x, y, contest ? 132 : 74, C_VAL, pk_move_name(mv));
     if (!contest) {
-      uint8_t base = pk_move_pp(mv);
-      uint8_t maxpp = (uint8_t)(base + base / 5 * ((p->ppBonuses >> (i * 2)) & 3));
-      reg(F_PP0 + i, x + 76, y, 60);                         /* editable current PP */
-      siprintf(b, "PP%u/%u", (unsigned)p->pp[i], (unsigned)maxpp);
-      ui_text(x + 78, y, UI_DIM, b);
+      /* The MAXIMUM is what a player wants to change, and the only thing that can change
+       * it is the slot's PP Ups — so this cell edits F_PPU (max PP) and shows the Up
+       * count that produced the maximum. Current PP stays editable on the field list's
+       * own "PP n" row. */
+      uint8_t maxpp = em_pp_max(mv, p->ppBonuses, i);
+      uint8_t ups   = (uint8_t)((p->ppBonuses >> (i * 2)) & 3);
+      reg(F_PPU0 + i, x + 76, y, 60);
+      if (ups) siprintf(b, PDNA_SUM_PP_UPS_FMT, (unsigned)p->pp[i], (unsigned)maxpp, (unsigned)ups);
+      else     siprintf(b, PDNA_SUM_PP_FMT,     (unsigned)p->pp[i], (unsigned)maxpp);
+      ui_ptext_fit(x + PDNA_SUM_PP_X_DX, y, PDNA_SUM_PP_W, UI_DIM, b);
       type_badge(x + 4, y + 8, pk_move_type(mv));            /* real type badge under the name */
     } else {
       ui_text(x + 8, y + UI_ROW_H, C_HOT, pk_contest_name(pk_move_contest(mv)));

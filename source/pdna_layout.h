@@ -166,6 +166,15 @@
  * header made the whole 36-test suite fail to build. pdna_layout.h is pure C with no tonc
  * and no libc, so the pure-C rule survives. */
 #define IVH_CAP               16
+/* BATTLE MOVES rows. The PP cell is 60 px wide at card_x + 78 and now has to carry the
+ * PP-Up count as well, so it is drawn PROPORTIONALLY (ui_ptext_fit): "PP35/35 +3" is 10
+ * fixed-width columns = 80 px and would have run off the card. Worst realistic case is
+ * base 40 with 3 Ups -> "PP64/64 +3"; a corrupt PP byte can print wider and ui_ptext_fit
+ * clips it with a visible '~'. */
+#define PDNA_SUM_PP_X_DX      78
+#define PDNA_SUM_PP_W         60
+#define PDNA_SUM_PP_FMT      "PP%u/%u"
+#define PDNA_SUM_PP_UPS_FMT  "PP%u/%u +%u"
 #define PDNA_SUM_ROLL_LBL    "Reroll IVs"
 #define PDNA_SUM_ARROW_L     "<"
 #define PDNA_SUM_ARROW_R     ">"
@@ -307,6 +316,21 @@
 #define PDNA_IFILT_BOX_H    12
 #define PDNA_IFILT_NCAT      6                /* All, Items, Key items, Balls, TMs, Berries */
 #define PDNA_IFILT_ROWS     (2 + PDNA_IFILT_NCAT)   /* Sort + Game + the categories   */
+
+/* ---------------------------------------------------------------------------
+ * EDIT field list (source/pdna_edit.c): label column starts at PDNA_EDIT_LBL_X and the
+ * value column at PDNA_EDIT_VAL_X, so a label has (VAL_X - LBL_X) px and a value has
+ * (UI_SCR_W - VAL_X). The value is ui_truncate'd to PDNA_EDIT_VAL_COLS, the label is
+ * NOT — a label that overruns silently paints into the value column. Both new labels
+ * ("Max PP n", "Region") and the max-PP value format are therefore pinned here. */
+#define PDNA_EDIT_LBL_X       6
+#define PDNA_EDIT_VAL_X     118
+#define PDNA_EDIT_VAL_COLS   15               /* (240-118)/8 = 15 */
+#define PDNA_EDIT_LBL_W     (PDNA_EDIT_VAL_X - PDNA_EDIT_LBL_X)
+#define PDNA_EDIT_MAXPP_LBL(n)  "Max PP " #n
+/* "35  Ups 3": the derived maximum, then the PP-Up count that bought it. */
+#define PDNA_EDIT_MAXPP_FMT     "%u  Ups %u"
+#define PDNA_EDIT_FOOT          "L/R+- A:pick B:exit ST:save"
 
 /* ---------------------------------------------------------------------------
  * Settings + Rumble pages (source/pdna_main.c)

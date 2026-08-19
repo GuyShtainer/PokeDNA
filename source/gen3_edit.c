@@ -387,7 +387,58 @@ void em_set_move(EditMon* e, int i, uint16_t move) {
                                                  * mirroring the game's RemoveMonPPBonus. */
 }
 
+/* Deliberately NOT clamped to em_pp_max: gen12_convert.c writes the PP-Up'd current PP
+ * before it restores the bonus byte (em_set_move clears it), so a clamp here would cut
+ * every transferred move back to its base PP. The ceiling is enforced where the ceiling
+ * is chosen — em_set_ppups below, and the editor's PP row. */
 void em_set_pp(EditMon* e, int i, uint8_t pp) { e->sub[1][8 + i] = pp; }
+
+/* ---- the move's MAXIMUM PP ------------------------------------------------
+ * Gen 3 does not STORE a maximum. It derives one, every time it needs it, from the
+ * move's base PP and the 2-bit PP-Up count for that SLOT (Growth byte 8, bits 2*slot):
+ *
+ *     CalculatePPWithBonus(move, ppBonuses, slot)          pokeemerald src/pokemon.c
+ *       = gBattleMoves[move].pp + gBattleMoves[move].pp * 20 * ups / 100
+ *
+ * That product-then-divide is reproduced exactly rather than as `base / 5 * ups`: every
+ * retail base PP is a multiple of 5 so the two agree today, but they diverge the moment
+ * one is not, and the game's own order is the one a legality checker has to match.
+ *
+ * So "raise a move's maximum PP" means "give it a PP Up", and the only legal maxima are
+ * the four the item can reach. Nothing here can write a fifth. */
+uint8_t em_pp_max(uint16_t move, uint8_t ppBonuses, int slot) {
+  if (slot < 0 || slot > 3) return 0;
+  uint32_t base = pk_move_pp(move);
+  uint32_t ups  = (uint32_t)((ppBonuses >> (slot * 2)) & 3u);
+  return (uint8_t)(base + base * 20u * ups / 100u);
+}
+
+uint8_t em_get_ppups(const EditMon* e, int i) {
+  if (i < 0 || i > 3) return 0;
+  return (uint8_t)((e->sub[0][8] >> (i * 2)) & 3u);
+}
+
+/* Applying a PP Up in game does two things (ItemUseCB_PPUp -> pokemon_item_effect):
+ * it bumps the slot's 2-bit counter AND adds the PP the bump just bought to the CURRENT
+ * PP. Both are done here, so raising the maximum behaves like the item and lowering it
+ * can never leave current PP stranded above the new ceiling.
+ *
+ * An empty slot is forced to 0 Ups: the game clears a slot's bonus with the move
+ * (RemoveMonPPBonus), and "PP Ups on a move that isn't there" is a state no cartridge
+ * can produce. */
+void em_set_ppups(EditMon* e, int i, uint8_t ups) {
+  if (i < 0 || i > 3) return;
+  uint16_t move = rd16(e->sub[1] + i * 2);
+  if (ups > 3) ups = 3;
+  if (move == 0) ups = 0;
+  uint8_t old_max = em_pp_max(move, e->sub[0][8], i);
+  e->sub[0][8] = (uint8_t)((e->sub[0][8] & ~(3u << (i * 2))) | ((uint32_t)ups << (i * 2)));
+  uint8_t new_max = em_pp_max(move, e->sub[0][8], i);
+  int cur = (int)e->sub[1][8 + i] + ((int)new_max - (int)old_max);
+  if (cur < 0) cur = 0;
+  if (cur > (int)new_max) cur = new_max;
+  e->sub[1][8 + i] = (uint8_t)cur;
+}
 
 void em_set_friendship(EditMon* e, uint8_t f) { e->sub[0][9] = f; }
 

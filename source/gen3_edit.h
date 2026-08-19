@@ -65,8 +65,23 @@ void gen3_build_mon(uint16_t species, uint8_t lvl, uint32_t pid, uint32_t otId,
 bool gen3_species_can_hatch(uint16_t species);
 void em_set_species(EditMon* e, uint16_t species);           /* re-derive stats; caller re-checks gender/ability */
 void em_set_item(EditMon* e, uint16_t item);
-void em_set_move(EditMon* e, int i, uint16_t move);          /* also sets PP to the move's base PP */
-void em_set_pp(EditMon* e, int i, uint8_t pp);
+void em_set_move(EditMon* e, int i, uint16_t move);          /* also sets PP to the move's base PP,
+                                                              * and clears the slot's PP Ups */
+void em_set_pp(EditMon* e, int i, uint8_t pp);               /* CURRENT PP, raw (see the .c) */
+
+/* ---- maximum PP: derived, never stored ------------------------------------
+ * A Gen-3 record has no "max PP" field. The maximum is computed from the move's base PP
+ * and the slot's 2-bit PP-Up count (Growth byte 8, bits 2*slot) with the game's own
+ * CalculatePPWithBonus: base + base * 20 * ups / 100. So the ONLY way to raise a move's
+ * maximum is to give it PP Ups, and the only reachable maxima are the four that item
+ * can produce — a max above them is impossible on a cartridge and impossible here.
+ *
+ * em_set_ppups mirrors the item: it moves the counter AND carries current PP up by the
+ * PP the bump just bought, and it clamps current PP down when the counter is lowered.
+ * An empty move slot is forced to 0 Ups. */
+uint8_t em_pp_max(uint16_t move, uint8_t ppBonuses, int slot);   /* slot 0..3 */
+uint8_t em_get_ppups(const EditMon* e, int i);                   /* 0..3 */
+void    em_set_ppups(EditMon* e, int i, uint8_t ups);            /* clamped 0..3 */
 void em_set_friendship(EditMon* e, uint8_t f);
 void em_set_egg(EditMon* e, bool egg);                      /* flags byte bit2 + Misc IV-word bit30 */
 /* clear egg + nickname:=species + language:=English + friendship 120 + metLevel 0 + level 5

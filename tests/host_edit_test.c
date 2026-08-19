@@ -103,6 +103,83 @@ int main(int argc, char** argv) {
     }
   }
 
+  /* (4) MAX PP is PP Ups. A Gen-3 record stores no maximum: it stores a 2-bit PP-Up
+   * count per slot and derives the maximum with CalculatePPWithBonus. So the editor's
+   * "Max PP" row moves the Ups, and the invariant that matters for legality is that no
+   * reachable state has a maximum outside the four the item can produce, or a current PP
+   * above the maximum — gen3_legality2's check_moves flags exactly those. */
+  {
+    EditMon e; gen3_edit_load(sb1 + doff, true, &e);
+    em_set_move(&e, 0, 57);                      /* Surf, base PP 15 */
+    CHECK(em_get_ppups(&e, 0) == 0, "em_set_move clears the slot's PP Ups");
+    CHECK(em_pp_max(57, 0, 0) == 15, "0 Ups -> base PP");
+    printf("(4) Surf max PP by Ups: %u %u %u %u\n",
+           (unsigned)em_pp_max(57, 0, 0), (unsigned)em_pp_max(57, 1, 0),
+           (unsigned)em_pp_max(57, 2, 0), (unsigned)em_pp_max(57, 3, 0));
+    CHECK(em_pp_max(57, 1, 0) == 18 && em_pp_max(57, 2, 0) == 21 &&
+          em_pp_max(57, 3, 0) == 24, "Surf steps 15/18/21/24 with the Ups");
+
+    /* raising the maximum carries CURRENT PP up by what the Up bought (the item's own
+     * behaviour), and lowering it clamps current down to the new ceiling */
+    em_set_pp(&e, 0, 15);
+    em_set_ppups(&e, 0, 3);
+    { PkMon m; em_preview(&e, &m);
+      CHECK(m.pp[0] == 24, "full PP stays full when the maximum rises");
+      CHECK(em_pp_max(m.moves[0], m.ppBonuses, 0) == 24, "maximum rose to 24"); }
+    em_set_ppups(&e, 0, 1);
+    { PkMon m; em_preview(&e, &m);
+      CHECK(m.pp[0] == 18, "current PP clamps to the lowered maximum");
+      CHECK(em_pp_max(m.moves[0], m.ppBonuses, 0) == 18, "maximum fell to 18"); }
+    /* a partially-used move keeps its deficit rather than being topped up */
+    em_set_ppups(&e, 0, 0);
+    em_set_pp(&e, 0, 5);
+    em_set_ppups(&e, 0, 3);
+    { PkMon m; em_preview(&e, &m);
+      CHECK(m.pp[0] == 14, "5/15 becomes 14/24 — the Up adds 9, it does not heal"); }
+
+    /* the counter is two bits; nothing can push it past 3 */
+    em_set_ppups(&e, 0, 200);
+    CHECK(em_get_ppups(&e, 0) == 3, "PP Ups clamp at 3");
+    em_set_ppups(&e, 5, 3);                      /* out-of-range slot is a no-op */
+    CHECK(em_get_ppups(&e, 0) == 3, "an out-of-range slot changes nothing");
+
+    /* an empty move slot can never hold Ups (the game clears them with the move) */
+    em_set_move(&e, 3, 0);
+    em_set_ppups(&e, 3, 3);
+    CHECK(em_get_ppups(&e, 3) == 0, "an empty slot is forced to 0 Ups");
+    CHECK(em_pp_max(0, 0xFF, 3) == 0, "an empty slot has no maximum");
+
+    /* it survives the encrypt/decrypt round trip */
+    uint8_t out[100]; gen3_edit_commit(&e, out);
+    PkMon m; CHECK(pk_decode_mon(out, true, &m) && !m.isBadEgg, "PP-Up edit re-encodes");
+    CHECK(((m.ppBonuses >> 0) & 3) == 3, "ppBonuses survives the commit");
+    CHECK(m.pp[0] <= em_pp_max(m.moves[0], m.ppBonuses, 0), "current PP <= maximum");
+  }
+
+  /* (5) the invariant over the WHOLE move table: every reachable maximum is one of the
+   * four the PP Up item can reach, and no slot's bits leak into another's. */
+  {
+    int worst = 0;
+    for (uint16_t mv = 0; mv < 355; mv++) {
+      uint8_t base = pk_move_pp(mv);
+      for (int ups = 0; ups <= 3; ups++) {
+        for (int slot = 0; slot < 4; slot++) {
+          uint8_t bonuses = (uint8_t)(ups << (slot * 2));
+          uint8_t got = em_pp_max(mv, bonuses, slot);
+          uint8_t want = (uint8_t)(base + (unsigned)base * 20u * (unsigned)ups / 100u);
+          if (got != want) { printf("  !! move %u ups %d slot %d: %u != %u\n",
+                                    mv, ups, slot, got, want); g_fail++; }
+          if (got > worst) worst = got;
+          /* the other three slots read 0 Ups out of the same byte */
+          for (int o = 0; o < 4; o++)
+            if (o != slot) CHECK(em_pp_max(mv, bonuses, o) == base, "PP-Up bits do not cross slots");
+        }
+      }
+    }
+    printf("(5) highest reachable max PP over the whole move table: %d\n", worst);
+    CHECK(worst == 64, "the ceiling is 40 base + 3 Ups = 64, the game's own maximum");
+  }
+
   printf("\n%s: %d failure(s)\n", g_fail ? "FAIL" : "OK", g_fail);
   return g_fail ? 1 : 0;
 }

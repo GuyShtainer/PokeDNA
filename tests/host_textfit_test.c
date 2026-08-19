@@ -911,6 +911,40 @@ int main(void) {
        PDNA_RVF_HDR_Y1 + UI_FONT_CELL_H - 1, PDNA_RVF_HDR_Y2 - 1);
   /* ==== END: ROM IMAGE CHECK ============================================== */
 
+  /* ==== BEGIN: the edit field list's new MAX PP rows ==========================
+   * A move's maximum PP is derived from its PP Ups, so the field list grew a "Max PP n"
+   * row per move and the summary's PP cell grew the Up count. Both are fixed strings the
+   * host can measure; the geometry they live in comes from pdna_layout.h. */
+  printf("\n== max-PP rows ==\n");
+  {
+    T(PDNA_EDIT_FOOT, 4);
+    /* Labels are NOT truncated: an over-long one paints into the value column. */
+    { char b[32];
+      for (int n = 1; n <= 4; n++) {
+        /* the same macro the FLABEL table uses, so this cannot drift from it */
+        const char* lbl = (n == 1) ? PDNA_EDIT_MAXPP_LBL(1) : (n == 2) ? PDNA_EDIT_MAXPP_LBL(2)
+                        : (n == 3) ? PDNA_EDIT_MAXPP_LBL(3) : PDNA_EDIT_MAXPP_LBL(4);
+        chk("edit label", PDNA_EDIT_LBL_X, PDNA_EDIT_LBL_W, (int)strlen(lbl) * SYS8_W, lbl);
+      }
+      /* the max-PP value at its widest reachable state: 40 base + 3 Ups = 64 */
+      snprintf(b, sizeof b, PDNA_EDIT_MAXPP_FMT, 64u, 3u);
+      chk("edit max-PP value", PDNA_EDIT_VAL_X, PDNA_EDIT_VAL_COLS * SYS8_W,
+          (int)strlen(b) * SYS8_W, b);
+    }
+    chkv("edit value column's budget fits the screen",
+         PDNA_EDIT_VAL_X + PDNA_EDIT_VAL_COLS * SYS8_W, SCR_W);
+
+    /* --- the summary's PP cell, which now carries the PP-Up count ------------ */
+    { char b[32];
+      snprintf(b, sizeof b, PDNA_SUM_PP_UPS_FMT, 64u, 64u, 3u);
+      PF(b, PDNA_SUM_CARD_X + PDNA_SUM_PP_X_DX, PDNA_SUM_PP_W);
+      snprintf(b, sizeof b, PDNA_SUM_PP_FMT, 64u, 64u);
+      PF(b, PDNA_SUM_CARD_X + PDNA_SUM_PP_X_DX, PDNA_SUM_PP_W); }
+    chkv("summary PP cell ends inside the card",
+         PDNA_SUM_PP_X_DX + PDNA_SUM_PP_W, PDNA_SUM_CARD_W);
+  }
+  /* ==== END: the edit field list's new MAX PP rows ============================= */
+
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }

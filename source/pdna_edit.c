@@ -19,6 +19,7 @@
 #include "data_tables.h"
 #include "osk.h"
 #include "pdna_pick.h"
+#include "pdna_layout.h"   /* labels/geometry shared with tests/host_textfit_test.c */
 #include "snd.h"
 
 static const char* const FLABEL[F_NUM] = {
@@ -27,6 +28,8 @@ static const char* const FLABEL[F_NUM] = {
   "IV HP", "IV Atk", "IV Def", "IV Spe", "IV SpA", "IV SpD",
   "EV HP", "EV Atk", "EV Def", "EV Spe", "EV SpA", "EV SpD",
   "Move 1", "Move 2", "Move 3", "Move 4",
+  PDNA_EDIT_MAXPP_LBL(1), PDNA_EDIT_MAXPP_LBL(2),
+  PDNA_EDIT_MAXPP_LBL(3), PDNA_EDIT_MAXPP_LBL(4),
   "PP 1", "PP 2", "PP 3", "PP 4", "OT Name",
   "Ball", "Met Loc", "Met Lv", "Met Game",
   "Cool", "Beauty", "Cute", "Smart", "Tough", "Sheen",
@@ -61,11 +64,12 @@ static void refresh(EditMon* e, PkMon* cur) {
   pk_resolve(cur);                 /* fills gender (+ box level/stats) */
 }
 
-/* a move's max PP for slot i = base PP + PP-Up bonus (3 ups = +base*3/5). */
+/* A move's maximum PP is DERIVED, never stored: em_pp_max (gen3_edit.c) applies the
+ * game's own CalculatePPWithBonus to the base PP and the slot's 2-bit PP-Up count. */
 static uint8_t pp_max(const PkMon* c, int i) {
-  uint8_t base = pk_move_pp(c->moves[i]);
-  return (uint8_t)(base + base / 5 * ((c->ppBonuses >> (i * 2)) & 3));
+  return em_pp_max(c->moves[i], c->ppBonuses, i);
 }
+static uint8_t pp_ups(const PkMon* c, int i) { return (uint8_t)((c->ppBonuses >> (i * 2)) & 3); }
 
 /* format a field's current value into buf */
 static void field_value(int f, const PkMon* c, char* buf) {
@@ -86,6 +90,12 @@ static void field_value(int f, const PkMon* c, char* buf) {
     case F_MV0: case F_MV1: case F_MV2: case F_MV3: {
       uint16_t mv = c->moves[f - F_MV0];
       siprintf(buf, "%s", mv ? pk_move_name(mv) : "-"); break;
+    }
+    case F_PPU0: case F_PPU1: case F_PPU2: case F_PPU3: {
+      int i = f - F_PPU0;
+      if (!c->moves[i]) { buf[0] = '-'; buf[1] = 0; break; }
+      siprintf(buf, PDNA_EDIT_MAXPP_FMT, (unsigned)pp_max(c, i), (unsigned)pp_ups(c, i));
+      break;
     }
     case F_PP0: case F_PP1: case F_PP2: case F_PP3:
       siprintf(buf, "%u/%u", (unsigned)c->pp[f - F_PP0], (unsigned)pp_max(c, f - F_PP0)); break;
@@ -118,14 +128,14 @@ static void render(const PkMon* c, int sel, int top) {
     int f = top + i, y = 21 + i * 8;
     bool s = (f == sel);
     if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-    ui_text(6, y, s ? UI_SELTEXT : UI_DIM, FLABEL[f]);
+    ui_text(PDNA_EDIT_LBL_X, y, s ? UI_SELTEXT : UI_DIM, FLABEL[f]);
     field_value(f, c, val);
-    char vt[40];
-    ui_truncate(vt, val, 15);   /* (240-118)/8 = 15 cols */
-    ui_text(118, y, s ? UI_SELTEXT : UI_TEXT, vt);
+    char vt[72];
+    ui_truncate(vt, val, PDNA_EDIT_VAL_COLS);
+    ui_text(PDNA_EDIT_VAL_X, y, s ? UI_SELTEXT : UI_TEXT, vt);
   }
   ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-  ui_text(4, 152, UI_DIM, "L/R+- A:pick B:exit ST:save");
+  ui_text(4, 152, UI_DIM, PDNA_EDIT_FOOT);
 }
 
 /* re-roll PID for a (nature, shiny, gender) combo, relaxing gender then shiny. */
@@ -155,6 +165,15 @@ void em_field_adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
       em_set_ev(e, f - F_EV0, (uint8_t)clampi(c->evs[f - F_EV0] + dir * s, 0, 255)); break;
     case F_MV0: case F_MV1: case F_MV2: case F_MV3:
       em_set_move(e, f - F_MV0, clampi(c->moves[f - F_MV0] + dir * (big ? 10 : 1), 0, 65535)); break;
+    /* Max PP: the ONLY knob is the slot's PP-Up count, 0..3. LEFT/RIGHT steps it, the
+     * shoulders jump to the ends (the IV row's idiom). em_set_ppups carries current PP
+     * along, exactly as using the item does. */
+    case F_PPU0: case F_PPU1: case F_PPU2: case F_PPU3: {
+      int i = f - F_PPU0;
+      int v = big ? (dir > 0 ? 3 : 0) : clampi(pp_ups(c, i) + dir, 0, 3);
+      em_set_ppups(e, i, (uint8_t)v);
+      break;
+    }
     case F_PP0: case F_PP1: case F_PP2: case F_PP3:
       em_set_pp(e, f - F_PP0, (uint8_t)clampi(c->pp[f - F_PP0] + dir * s, 0, pp_max(c, f - F_PP0))); break;
     case F_BALL:     { int v = c->pokeball + dir; if (v < 1) v = 12; if (v > 12) v = 1; em_set_ball(e, (uint8_t)v); break; }
@@ -183,6 +202,11 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
     case F_NATURE:  { uint8_t nt = pick_nature(c->nature); reroll_to(e, c, nt, c->isShiny ? 1 : 0, c->gender < 2 ? c->gender : -1); break; }
     case F_MV0: case F_MV1: case F_MV2: case F_MV3:
       { uint16_t id = pick_move(c->moves[f - F_MV0]); if (id != 0xFFFF) em_set_move(e, f - F_MV0, id); break; }
+    case F_PPU0: case F_PPU1: case F_PPU2: case F_PPU3: {                    /* A = 0 <-> 3 Ups */
+      int i = f - F_PPU0;
+      em_set_ppups(e, i, (uint8_t)(pp_ups(c, i) == 3 ? 0 : 3));
+      break;
+    }
     case F_PP0: case F_PP1: case F_PP2: case F_PP3:                          /* A = restore to max PP */
       em_set_pp(e, f - F_PP0, pp_max(c, f - F_PP0)); break;
     case F_NICK: if (osk_input("NICKNAME", c->nickname, buf, 11)) em_set_nickname(e, buf); break;
