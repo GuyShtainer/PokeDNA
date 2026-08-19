@@ -16,6 +16,8 @@
 #include "gen12_convert.h"   /* gen12_hp_dv, gen12_is_shiny, gen12_nature, GEN12_IV_LOW_BIT */
 #include "mon_front.h"       /* mon_front_for_form, mon_front_egg (weak in art_fallbacks.c) */
 #include "mon_back.h"        /* mon_back_for_form                                            */
+#include "rom_sprite.h"      /* gen3_ladder's third rung -- see pdna_origin_art_set_romsprite */
+#include "artbuf.h"          /* mon_decomp -- the shared 8 KiB decode buffer                 */
 
 /* ---- constants the signature is written against ---------------------------------
  * Every one of these is the value gen12_convert.c actually writes, or a decomp fact,
@@ -315,12 +317,61 @@ static const uint16_t* fetch_pic(uint8_t gen, uint16_t dex, uint8_t form,
   return px;
 }
 
+/* ---- (3) THE GEN-3 ROM RUNG -------------------------------------------------------
+ * See the contract in pdna_origin_art.h. `rs` is COPIED (a small POD, no pointers back
+ * into it), exactly like PdnaGbArtSource above. No EWRAM here either: mon_decomp is
+ * artbuf.c's, not this module's. */
+static RomSprite s_romsprite;
+static int       s_romsprite_on = 0;
+
+void pdna_origin_art_set_romsprite(const RomSprite* rs) {
+  if (rs && rs->ok) { s_romsprite = *rs; s_romsprite_on = 1; }
+  else { memset(&s_romsprite, 0, sizeof s_romsprite); s_romsprite_on = 0; }
+}
+
+/* Decode straight into mon_decomp and expand it to RGB15 IN PLACE
+ * (rom_sprite_to_rgb15) -- after which it is exactly the pointer the compiled path
+ * used to return, so gen3_ladder's caller needs no change. Returns NULL (mon_decomp's
+ * contents undefined) on any failure: no ROM registered, wrong-game ROM, a species/
+ * form this cart cannot show, or a read that failed verification -- every one of
+ * those must degrade to "no art" here exactly like an absent compiled sprite does.
+ *
+ * DELIBERATELY NOT MEMOISED, unlike fetch_pic() above. mon_decomp is shared with
+ * item icons and type badges (app_item_icon/app_type_badge, pdna_main.c), and
+ * pdna_summary.c's draw_left draws its type badges AFTER fetching (and blitting) the
+ * portrait but BEFORE the summary's animation setup fetches it a SECOND time for the
+ * same mon (portrait_sprite(), pdna_summary.c:587) -- see the "Fetch the portrait
+ * ONCE per repaint" comment at pdna_summary.c:748-763, which already documents this
+ * exact hazard: "If a future caller ... starts decoding inside this loop, it must
+ * re-fetch here." A memo keyed on (species, form, back, shiny) would have handed
+ * that second fetch a STALE pointer -- same key, but mon_decomp's tail already
+ * overwritten by the type-badge decode in between. Always redecoding costs one
+ * extra 8 KB LZ77 pass per repaint (the SAME cost the compiled mon_front_for_form/
+ * mon_back_for_form already pay today, since neither of them memoises either), and
+ * buys correctness instead of a plausible-looking corrupted portrait. */
+static const uint16_t* rom_portrait(const PkMon* m, int back) {
+  if (!s_romsprite_on || !m) return 0;
+  RomSpritePic pic;
+  RomSpriteSide side = back ? ROM_SPRITE_BACK : ROM_SPRITE_FRONT;
+  if (!rom_sprite_pic(&s_romsprite, side, m->species, m->form,
+                      (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &pic))
+    return 0;
+  uint16_t pal[16];
+  if (!rom_sprite_pal(&s_romsprite, m->species, m->form, m->isShiny ? 1 : 0, pal)) return 0;
+  if (!rom_sprite_to_rgb15(mon_decomp, MON_DECOMP_BYTES, pic.frame, pal)) return 0;
+  return mon_decomp;
+}
+
 /* The Gen-3 ladder, character for character what pdna_summary.c's draw_left did before
- * this module existed. Kept in one place so "no GB ROM registered => no visible
- * change" is a property of the code and not of two files agreeing. */
+ * this module existed, PLUS the ROM rung (Phase 1): compiled art wins when present,
+ * a registered ROM lights up an otherwise-empty artless summary, and the procedural
+ * fallback (art_fallbacks.c's weak NULLs) still has the last word when neither has an
+ * answer. Kept in one place so "nothing registered => no visible change" is a
+ * property of the code and not of two files agreeing. */
 static void gen3_ladder(const PkMon* m, int back, PdnaArt* out) {
   const uint16_t* spr = back ? mon_back_for_form(m->species, m->isShiny, m->form) : 0;
   if (!spr) spr = mon_front_for_form(m->species, m->isShiny, m->form);
+  if (!spr) spr = rom_portrait(m, back);
   out->px = spr;
   out->w = MON_FRONT_W; out->h = MON_FRONT_H;
   out->gen = PDNA_GEN3;

@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #include "gen3_mon.h"     /* PkMon */
+#include "rom_sprite.h"   /* RomSprite -- gen3_ladder's third rung, see below */
 
 /*
  * pdna_origin_art — "draw a Pokemon in the art of the generation it came from".
@@ -239,6 +240,21 @@ void pdna_origin_art_register(const PdnaGbArtSource* src);
 
 /* 1 if era `gen` (1 or 2) can currently produce art. Always 0 with no source. */
 int pdna_origin_art_have(uint8_t gen);
+
+/* ---- (3) THE GEN-3 ROM RUNG (Phase 1, docs/analysis-2026-08-19-rom-art/DESIGN.md
+ * Sec 4.3) --------------------------------------------------------------------------
+ *
+ * gen3_ladder tries the compiled front/back accessors first; when BOTH answer NULL
+ * (the artless build, or a species/form absent from the compiled set) it now falls
+ * through to rom_sprite.c, streamed straight from the user's own retail ROM. Exactly
+ * the same registration shape as pdna_origin_art_register() above: this module never
+ * opens a file, pdna_main.c owns the RomSprite's lifetime (the same open ROM that
+ * already serves box icons and descriptions, app_icon_rom_open() in pdna_main.c) and
+ * re-registers whenever that changes. `rs` is COPIED (it is a small POD with no
+ * self-referential pointers — rom_sprite.h's "reload, never copy" warning is about
+ * RomItemArt's sheet cache, not RomSprite), so the caller may keep it on the stack.
+ * NULL (or an `rs` that failed rom_sprite_open) clears the rung. */
+void pdna_origin_art_set_romsprite(const RomSprite* rs);
 
 /* What a screen got back. `px == NULL` means "no art at all" and the caller paints
  * the artless build's name chip, exactly as it does today. */

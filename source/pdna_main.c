@@ -55,6 +55,12 @@
 #include "pokeblock_bg.h" /* Pokeblock case chrome (weak NULL when art-free) */
 #include "rom_mon.h"       /* phase-1 ROM-gated icons (fused ROM -> real box icons) */
 #include "rom_text.h"      /* phase-2: descriptions out of the user's own ROM */
+#include "rom_sprite.h"    /* Phase 1 (ROM-art): the summary portrait's third rung */
+#include "rom_itemart.h"   /* Phase 1 (ROM-art): item icons + type badges           */
+#include "pdna_origin_art.h" /* pdna_origin_art_set_romsprite -- registers the RomSprite */
+#include "artbuf.h"        /* mon_decomp -- the shared 8 KiB decode buffer            */
+#include "item_icons.h"    /* item_icon_for -- the compiled rung app_item_icon() tries first */
+#include "type_icons.h"    /* type_icon_for -- the compiled rung app_type_badge() tries first */
 #include "box_oam.h"       /* boxoam_rom_icons registration */
 #include "fused_rom.h"
 #include "fused_sav.h"    /* a save fused into the image: the emulator build's fallback */
@@ -1480,6 +1486,15 @@ static RomMon s_iconrom;
 /* Phase 2: the same open ROM also serves the games' description text. Kept beside the
  * icon source because they share a lifetime — one registration lights both up. */
 static RomText s_romtext;
+/* Phase 1 of the ROM-art plan (docs/analysis-2026-08-19-rom-art/DESIGN.md): the SAME
+ * open ROM also serves the summary portrait (rom_sprite.c, registered with
+ * pdna_origin_art.c's ladder) and item icons / type badges (rom_itemart.c, read
+ * directly through app_item_icon/app_type_badge below). One registration lights all
+ * four up, exactly the comment above already promised. Both structs are small PODs
+ * with an `ok` flag rom_*_open() zeroes on any failure, so callers may trust
+ * s_romitemart.ok directly without a separate "on" flag. */
+static RomSprite  s_romsprite;
+static RomItemArt s_romitemart;
 
 #ifndef PDNA_DELTA
 /* The SD-file icon source: the user's registered .gba, held open read-only for the
@@ -1511,11 +1526,20 @@ static bool iconrom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len)
 static void app_icon_rom_open(void) {
   boxoam_rom_icons(0);
   memset(&s_romtext, 0, sizeof s_romtext);
+  memset(&s_romitemart, 0, sizeof s_romitemart);
+  pdna_origin_art_set_romsprite(0);
   uint32_t fsz = 0;
   if (fused_rom_present(&fsz) && rom_open(&s_iconrom_ctx, fused_rom_read, 0, fsz)) {
     if (rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
       boxoam_rom_icons(&s_iconrom);
       rom_text_open(&s_romtext, &s_iconrom_ctx);
+      /* Phase 1 (ROM-art): the summary portrait + item icons/type badges. Neither
+       * gates icons/text above -- Ruby/Sapphire (no GF header) already returned
+       * before this point via rom_mon_open's own failure, but a cart with icons and
+       * no items (or vice versa) must still light up whichever half it has. */
+      rom_sprite_open(&s_romsprite, &s_iconrom_ctx);
+      pdna_origin_art_set_romsprite(&s_romsprite);
+      rom_itemart_open(&s_romitemart, &s_iconrom_ctx);
       log_line("icons: streaming from fused %s rev%u", rom_kind_name(s_iconrom_ctx.kind),
                s_iconrom_ctx.version);
       return;
@@ -1538,12 +1562,53 @@ static void app_icon_rom_open(void) {
         rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
       boxoam_rom_icons(&s_iconrom);
       rom_text_open(&s_romtext, &s_iconrom_ctx);
+      rom_sprite_open(&s_romsprite, &s_iconrom_ctx);          /* Phase 1 (ROM-art) */
+      pdna_origin_art_set_romsprite(&s_romsprite);
+      rom_itemart_open(&s_romitemart, &s_iconrom_ctx);
       log_line("icons: streaming from SD %s (%s)", path, rom_kind_name(s_iconrom_ctx.kind));
       return;
     }
     f_close(&s_iconrom_fil); s_iconrom_fil_open = false;
   }
 #endif
+}
+
+/* ---- items + type badges: compiled art first, then the registered ROM (Phase 1,
+ * docs/analysis-2026-08-19-rom-art/DESIGN.md Sec 4.7) -----------------------------
+ * Same ladder discipline as pdna_origin_art.c's gen3_ladder, but no cache and no
+ * memo here either: mon_decomp is shared with the summary portrait (rom_portrait in
+ * pdna_origin_art.c decodes fresh on every call for exactly this reason), so a
+ * cached pointer into it would go stale the moment ANYTHING else decodes into the
+ * same buffer. draw_left (pdna_summary.c) draws its type badges strictly BEFORE its
+ * OWN portrait fetch on every repaint, and every item-icon list draws one icon,
+ * blits it, then moves to the next id -- so a fresh decode-then-immediately-blit is
+ * always safe, and reloading the RSE type sheet on every badge is the honest
+ * "wiring, not a cache" cost Phase 1 signed up for (Sec 6, Phase 1: "no cache, no
+ * extraction, no SD write"). Phase 2's real cache removes this cost along with
+ * every other kind's. */
+const uint16_t* app_item_icon(uint16_t item_id) {
+  const uint16_t* ic = item_icon_for(item_id);            /* compiled rung first */
+  if (ic) return ic;
+  if (!s_romitemart.ok || !rom_itemart_have_items(&s_romitemart)) return 0;
+  uint16_t* dst = mon_decomp;                             /* 576 px = 1,152 B of 8,192 */
+  return rom_item_icon(&s_romitemart, item_id, dst, ROM_ITEM_ICON_PX) ? dst : 0;
+}
+
+const uint16_t* app_type_badge(uint8_t type_id, uint8_t* out_h) {
+  const uint16_t* ic = type_icon_for(type_id);             /* compiled rung first */
+  if (ic) { if (out_h) *out_h = TYPE_ICON_H; return ic; }
+  if (!s_romitemart.ok || !rom_itemart_have_types(&s_romitemart)) return 0;
+  uint32_t need = (uint32_t)rom_type_scratch_bytes(&s_romitemart);   /* 5,888 RSE / 0 FRLG */
+  uint8_t* scratch = need ? (uint8_t*)mon_decomp : 0;
+  RomTypeSheet ts;
+  if (!rom_type_sheet_load(&s_romitemart, &ts, scratch, need)) return 0;
+  /* the sheet occupies mon_decomp[0..need); the badge is decoded past it, at the
+   * offset rom_itemart.h:145-149 recommends, well inside the 8 KiB buffer either
+   * way (need is at most ROM_TYPE_SHEET_BYTES == 5,888). */
+  uint16_t* dst = mon_decomp + (6144 / 2);
+  if (!rom_type_badge(&s_romitemart, &ts, type_id, dst, ROM_TYPE_BADGE_MAX_PX)) return 0;
+  if (out_h) *out_h = (uint8_t)rom_type_badge_h(&s_romitemart);
+  return dst;
 }
 
 /* ---- descriptions: ROM first, embedded table second (see pdna_app.h) ------

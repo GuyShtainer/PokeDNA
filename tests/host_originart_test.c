@@ -1,16 +1,20 @@
 /* Host test for source/pdna_origin_art.c — origin detection + the art router.
  *
- *   cc -std=c11 -I source tests/host_originart_test.c source/pdna_origin_art.c \
+ *   cc -std=c11 -I tests/hostff -I source tests/host_originart_test.c source/pdna_origin_art.c \
  *      source/gen12_convert.c source/gen3_mon.c source/gen3_edit.c source/gen3_daycare.c source/gen3_save.c \
- *      source/gen3_box.c source/gen1_save.c source/gen2_save.c source/data_tables.c -o /tmp/hoa
+ *      source/gen3_box.c source/gen1_save.c source/gen2_save.c source/data_tables.c \
+ *      source/rom_sprite.c source/map_render.c source/rom_map.c source/artbuf.c -o /tmp/hoa
  *   /tmp/hoa /path/to/Emerald.sav /path/to/Ruby.sav ...
  *
  * Every argument is a real Gen-3 save; with none, part D is skipped. (tests/
  * run_host_tests.py hands a test the whole 5-save corpus only if the source mentions
  * argv[1] — hence the literal reference here and in main().) Part E reads Guy's Game
- * Boy saves from their fixed path and SKIPS if they are not there.
+ * Boy saves from their fixed path and SKIPS if they are not there. Part G reads
+ * Guy's Emerald ROM dump from its fixed path and SKIPS if it is not there.
+ * -I tests/hostff shims "sys.h" (EWRAM_BSS -> nothing) for source/artbuf.c, exactly
+ * the way tests/host_log_test.c already shims it for source/log.c.
  *
- * Six parts:
+ * Seven parts:
  *   A. POSITIVE — records produced by gen12_convert.c itself must come back as GB
  *      imports, and the era must be claimed ONLY where it is provable. Not a
  *      re-implementation checked against itself: the fixture drives the REAL
@@ -34,6 +38,12 @@
  *      is GROUND TRUTH), then put through three things ordinary Gen-3 play does to a
  *      mon. A Gen-1 record that comes back as a CONFIDENT "GB2" is the defect this
  *      part exists to count; the target is 0 of N and the number is printed.
+ *   G. THE GEN-3 ROM RUNG (Phase 1, docs/analysis-2026-08-19-rom-art/DESIGN.md) —
+ *      gen3_ladder's third rung, rom_sprite.c streamed against Guy's real Emerald
+ *      dump: the artless-and-registered case actually returns real pixels, compiled
+ *      art still wins when both are present (the ROM must not even be touched), an
+ *      out-of-range form degrades to no-art instead of a crash, and clearing the
+ *      registration restores today's plain-NULL behaviour.
  */
 #include <stdio.h>
 #include <string.h>
@@ -41,6 +51,8 @@
 #include <stdlib.h>
 
 #include "pdna_origin_art.h"
+#include "rom_map.h"      /* RomCtx, rom_open -- Part G */
+#include "rom_sprite.h"   /* RomSprite -- Part G, pdna_origin_art.h re-exports it too */
 #include "gen12_convert.h"
 #include "gen3_mon.h"
 #include "gen3_edit.h"
@@ -737,6 +749,94 @@ static void part_c(void) {
   g_art_on = 0;
 }
 
+/* ---- G. THE GEN-3 ROM RUNG ---------------------------------------------------------
+ * gen3_ladder's third rung (Phase 1, docs/analysis-2026-08-19-rom-art/DESIGN.md
+ * Sec 4.3): rom_sprite.c streamed against Guy's real Emerald dump. Everything in
+ * rom_sprite.c's own decoding is already covered by tests/host_romsprite_test.c's
+ * 159 checks against all five ROMs; this part exercises only the NEW glue --
+ * registration, the ladder order, and the degrade-to-NULL paths -- against one real
+ * ROM. SKIPS (not fails) when the dump is absent, same contract as every other
+ * ROM-dump test in this codebase. */
+typedef struct { FILE* f; uint32_t limit; long calls; } GRomCtx;
+static bool grom_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
+  GRomCtx* c = (GRomCtx*)ctx;
+  c->calls++;
+  if (off > c->limit || len > c->limit - off) return false;
+  if (fseek(c->f, (long)off, SEEK_SET) != 0) return false;
+  return fread(dst, 1, len, c->f) == len;
+}
+
+static void part_g(void) {
+  printf("G. the ROM rung (gen3_ladder's third source)\n");
+  const char* path = "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/Emerald.gba";
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("    (no %s -- SKIPPED)\n", path); return; }
+  fseek(f, 0, SEEK_END); long sz = ftell(f);
+  GRomCtx gc; gc.f = f; gc.limit = (uint32_t)sz; gc.calls = 0;
+  RomCtx rc;
+  if (!rom_open(&rc, grom_read, &gc, (uint32_t)sz)) {
+    CHECK(0, "G rom_open should accept Guy's Emerald dump");
+    fclose(f); return;
+  }
+  RomSprite rs;
+  CHECK(rom_sprite_open(&rs, &rc), "G rom_sprite_open should parse Emerald's GF header");
+
+  uint8_t nat[80]; PkMon nm;
+  gen3_build_mon(1, 5, 0x11112222u, 0x00010002u, "TEST", 3, nat);   /* Bulbasaur, native */
+  CHECK(pk_decode_mon(nat, false, &nm), "G test mon should decode");
+  pk_resolve(&nm);
+
+  PdnaArt a; PdnaOrigin o;
+
+  /* G1: artless, no ROM registered -> still NULL, exactly today's behaviour. */
+  g_art_on = 0; pdna_origin_art_set_romsprite(0);
+  CHECK(!pdna_origin_art_portrait(&nm, 0, &a, &o), "G1 no ROM registered -> no art");
+  CHECK(a.px == 0, "G1 px must be NULL so the chip fallback runs");
+
+  /* G2: artless, ROM registered -> the empty-blue-gradient screen gets a real sprite. */
+  pdna_origin_art_set_romsprite(&rs);
+  CHECK(pdna_origin_art_portrait(&nm, 0, &a, &o), "G2 ROM rung should return art");
+  CHECK_EQ(a.w, 64, "G2 width"); CHECK_EQ(a.h, 64, "G2 height");
+  CHECK_EQ(a.gen, PDNA_GEN3, "G2 pixels are Gen 3");
+  CHECK(a.px != 0, "G2 pointer must be non-NULL");
+  int opaque = 0;
+  for (int i = 0; i < 64 * 64; i++) if (a.px[i] & 0x8000u) opaque++;
+  CHECK(opaque > 100, "G2 the picture has real opaque pixels, not a blank buffer");
+
+  /* G3: back requested -> the back rung, same buffer contract. */
+  CHECK(pdna_origin_art_portrait(&nm, 1, &a, 0), "G3 back should also return art");
+  CHECK(a.px != 0, "G3 pointer must be non-NULL");
+
+  /* G4: compiled art still wins when present -- the ROM rung is a LAST resort and
+   * must not even be touched. */
+  g_art_on = 1; long before = gc.calls;
+  CHECK(pdna_origin_art_portrait(&nm, 0, &a, 0), "G4 should return art");
+  CHECK(a.px == g_front, "G4 compiled art must win over the ROM rung");
+  CHECK_EQ(gc.calls, before, "G4 the ROM must not be touched when compiled art answers");
+  g_art_on = 0;
+
+  /* G5: repeating the same request must still work every time (no memo to go stale
+   * behind item-icon/type-badge decodes sharing the same buffer -- see the big
+   * comment on rom_portrait() in pdna_origin_art.c). Not a performance assertion:
+   * a fresh redecode every call is the whole point. */
+  for (int i = 0; i < 5; i++)
+    CHECK(pdna_origin_art_portrait(&nm, 0, &a, 0), "G5 repeat fetch %d", i);
+
+  /* G6: a form this cart cannot show (Bulbasaur has no forme axis) degrades to NULL,
+   * not a crash and not garbage pixels -- so an unrecognised request still falls
+   * through to the caller's own fallback exactly like an absent compiled sprite. */
+  PkMon bogus = nm; bogus.form = 7;
+  CHECK(!pdna_origin_art_portrait(&bogus, 0, &a, 0), "G6 an unshowable form must not crash and must report no art");
+  CHECK(a.px == 0, "G6 px must be NULL");
+
+  /* G7: clearing the registration returns to today's artless behaviour. */
+  pdna_origin_art_set_romsprite(0);
+  CHECK(!pdna_origin_art_portrait(&nm, 0, &a, 0), "G7 clearing the ROM must restore the old NULL behaviour");
+
+  printf("    Emerald: %ld ROM reads across the rung's checks\n", gc.calls);
+  fclose(f);
+}
+
 /* ---- F. THE PARALLEL BANK GRID ----------------------------------------------------
  * The half of Guy's request the grid actually draws: every cell in the art of its own
  * generation, all at the same time. Part C proved the ROUTER picks the right picture;
@@ -1177,6 +1277,7 @@ int main(int argc, char** argv) {
   part_a();
   part_b();
   part_c();
+  part_g();              /* the Gen-3 ROM rung, against Guy's real Emerald dump */
   part_f();             /* the grid the bank draws */
   part_d(argc, argv);   /* argv[1..] = saves */
   part_e();
