@@ -784,7 +784,18 @@ int main(void) {
     for (unsigned i = 0; i < sizeof YARD / sizeof YARD[0]; i++) {
       snprintf(row, sizeof row, PDNA_SET_YARD_FMT, YARD[i]);
       chk("settings row", PDNA_SET_ROW_X, MARGIN_R - PDNA_SET_ROW_X,
-          (int)strlen(row) * SYS8_W, row); } }
+          (int)strlen(row) * SYS8_W, row); }
+#define SET_ART_ONE(s) s,
+    static const char* const ART[] = { PDNA_SET_ART_VALUES(SET_ART_ONE) };
+    for (unsigned i = 0; i < sizeof ART / sizeof ART[0]; i++) {
+      snprintf(row, sizeof row, PDNA_SET_ART_FMT, ART[i]);
+      chk("settings row", PDNA_SET_ROW_X, MARGIN_R - PDNA_SET_ROW_X,
+          (int)strlen(row) * SYS8_W, row); }
+    chk("settings row", PDNA_SET_ROW_X, MARGIN_R - PDNA_SET_ROW_X,
+        (int)strlen(PDNA_SET_ART_GO) * SYS8_W, PDNA_SET_ART_GO);
+    snprintf(row, sizeof row, PDNA_SET_ART_CACHED_FMT, (unsigned long)PDNA_SET_ART_CACHED_MAXKB);
+    chk("settings row", PDNA_SET_ROW_X, MARGIN_R - PDNA_SET_ROW_X,
+        (int)strlen(row) * SYS8_W, row); }
   chk("settings row", PDNA_SET_ROW_X, MARGIN_R - PDNA_SET_ROW_X,
       (int)strlen(PDNA_SET_ROW_CLEAR) * SYS8_W, PDNA_SET_ROW_CLEAR);
   chk("settings help", PDNA_SET_HELP_X, MARGIN_R - PDNA_SET_HELP_X,

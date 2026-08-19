@@ -442,8 +442,11 @@
  * here is therefore length-critical; the host test measures them. */
 #define PDNA_SET_ROW_X        10
 #define PDNA_SET_ROW0_Y       24
-#define PDNA_SET_ROW_PITCH    14
-#define PDNA_SET_ROWS          7   /* Backups, Animations, Yard, Game ROM, Rumble, Clear, Close */
+/* 13, not 14: an 8th row (Extract art) needed room. At 13px the 8th row's ink still
+ * clears PDNA_SET_HELP_Y1 by 1px (host-checked) — one row cannot afford more than
+ * this without either shrinking the pitch further or moving the help block. */
+#define PDNA_SET_ROW_PITCH    13
+#define PDNA_SET_ROWS          8   /* Backups, Animations, Yard, Game ROM, Extract art, Rumble, Clear, Close */
 #define PDNA_SET_FOOT_X        4
 #define PDNA_SET_HELP_X        8
 #define PDNA_SET_HELP_Y1     124
@@ -463,6 +466,20 @@
 /* every value the %s can take, for the test to try all of them */
 #define PDNA_SET_YARD_VALUES(X) \
   X(PDNA_SET_YARD_NEEDROM) X(PDNA_SET_YARD_ON) X(PDNA_SET_YARD_OFF)
+
+/* Extract-art row (Phase 2, docs/analysis-2026-08-19-rom-art/DESIGN.md Sec 3.1) — one
+ * row, three states, same "%s" pattern as Yard visitors above; the fourth (cached,
+ * with a byte count) is its own format since the value is numeric, not enumerable. */
+#define PDNA_SET_ART_FMT      "Extract art:  %s"
+#define PDNA_SET_ART_NEEDROM  "Set Game ROM"
+#define PDNA_SET_ART_NOOMEGA  "Omega only"
+#define PDNA_SET_ART_VALUES(X) X(PDNA_SET_ART_NEEDROM) X(PDNA_SET_ART_NOOMEGA)
+#define PDNA_SET_ART_GO       "Extract art from ROM  >"
+#define PDNA_SET_ART_CACHED_FMT "Extract art:  %lu KB cached"
+/* worst-case KB the host test tries against PDNA_SET_ART_CACHED_FMT's width budget;
+ * icons.bin alone is ~441 KB and every phase combined is designed to stay under 1 MB,
+ * so 3 digits is the real ceiling this format has to survive */
+#define PDNA_SET_ART_CACHED_MAXKB 999u
 #define PDNA_SET_ROW_CLEAR   "Clear backups (this save)"
 #define PDNA_SET_HELP1       "Animations + Rumble have"
 #define PDNA_SET_HELP2       "per-item on/off submenus."

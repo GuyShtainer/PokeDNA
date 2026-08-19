@@ -62,6 +62,9 @@
 #include "item_icons.h"    /* item_icon_for -- the compiled rung app_item_icon() tries first */
 #include "type_icons.h"    /* type_icon_for -- the compiled rung app_type_badge() tries first */
 #include "box_oam.h"       /* boxoam_rom_icons registration */
+#include "art_cache.h"     /* Phase 2 (ROM-art cache): art.idx format + FNV            */
+#include "art_session.h"   /* Phase 2: the once-per-session cache/rom resolver          */
+#include "art_icons_extract.h" /* Phase 2: the icons.bin extraction pass                */
 #include "fused_rom.h"
 #include "fused_sav.h"    /* a save fused into the image: the emulator build's fallback */
 #include "gen3_secretbase.h" /* Secret Base records (RS/Emerald) */
@@ -1497,6 +1500,13 @@ static RomSprite  s_romsprite;
 static RomItemArt s_romitemart;
 
 #ifndef PDNA_DELTA
+static void art_extract_screen(void); /* forward: defined below, offered from
+                                          app_register_rom() (Phase 2, DESIGN.md
+                                          Sec 3.1's second entry point) and from
+                                          Settings' Extract-art row */
+#endif
+
+#ifndef PDNA_DELTA
 /* The SD-file icon source: the user's registered .gba, held open read-only for the
  * whole session (FF_FS_LOCK is 0, so the map opening the same file is fine). The
  * FIL's ~600 B sector buffer lives in EWRAM like the map's. Every read brackets
@@ -1523,6 +1533,24 @@ static bool iconrom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len)
  *    icons are per-species art, so any Pokemon ROM serves them (Deoxys' forme is
  *    the only per-game difference). Ruby/Sapphire have no GF header yet and fail
  *    closed inside rom_mon_open. Call whenever the registration may have changed. */
+/* Phase 2 (ROM-art cache): resolve icons.bin ONCE per registration and register it
+ * with every consumer -- box_oam.c's OAM ladder AND art_fallbacks.c's RGB15 ladder
+ * (via the memoized verdict it reads, primed here). Called at the END of
+ * app_icon_rom_open() regardless of whether a ROM was found this session: the whole
+ * point of caching (DESIGN.md Sec 4.1) is that a valid cache lights the box AND the
+ * Pokedex grid up even with NO ROM registered this session -- "the card outlives the
+ * registration". `rc_ok` is the RomCtx to cross-check against, or NULL if none is
+ * open (art_session_kind_ready then trusts the cache on its own validity alone). */
+static void app_icon_cache_resolve(const RomCtx* rc_ok) {
+  art_session_invalidate(); /* a ROM re-registration can flip either verdict */
+  if (art_session_icons_ready(rc_ok)) {
+    boxoam_set_icon_cache(art_session_icons_path());
+    log_line("icons: cache ready (/PokeDNA/art/icons.bin)");
+  } else {
+    boxoam_set_icon_cache(0);
+  }
+}
+
 static void app_icon_rom_open(void) {
   boxoam_rom_icons(0);
   memset(&s_romtext, 0, sizeof s_romtext);
@@ -1542,6 +1570,7 @@ static void app_icon_rom_open(void) {
       rom_itemart_open(&s_romitemart, &s_iconrom_ctx);
       log_line("icons: streaming from fused %s rev%u", rom_kind_name(s_iconrom_ctx.kind),
                s_iconrom_ctx.version);
+      app_icon_cache_resolve(&s_iconrom_ctx);
       return;
     }
     log_line("icons: fused %s has no GF header (R/S) - trying SD", rom_kind_name(s_iconrom_ctx.kind));
@@ -1566,11 +1595,16 @@ static void app_icon_rom_open(void) {
       pdna_origin_art_set_romsprite(&s_romsprite);
       rom_itemart_open(&s_romitemart, &s_iconrom_ctx);
       log_line("icons: streaming from SD %s (%s)", path, rom_kind_name(s_iconrom_ctx.kind));
+      app_icon_cache_resolve(&s_iconrom_ctx);
       return;
     }
     f_close(&s_iconrom_fil); s_iconrom_fil_open = false;
   }
 #endif
+  /* No ROM at all this session (or every attempt failed) -- still try the cache with
+   * no RomCtx to cross-check against; a previously-extracted, internally-valid cache
+   * still serves (DESIGN.md Sec 4.1). */
+  app_icon_cache_resolve(0);
 }
 
 /* ---- items + type badges: compiled art first, then the registered ROM (Phase 1,
@@ -1663,10 +1697,19 @@ static void app_register_rom(void) {
             : (rc.kind == ROM_RUBY || rc.kind == ROM_SAPPHIRE) ? PK_RS : PK_FRLG;
   app_rom_path_set(rg, path);
   cfg_save();
-  app_icon_rom_open();                           /* light it up now */
+  app_icon_rom_open();                           /* light it up now (+ resolves the cache) */
   char l1[40]; siprintf(l1, "%s registered.", rom_kind_name(rc.kind));
   msg_wait("GAME ROM", UI_OK, l1,
            boxoam_icons_available() ? "Real art is ON." : "R/S icons come later; map works.");
+
+  /* Phase 2's second entry point (DESIGN.md Sec 3.1): the moment the user has just
+   * told us where their ROM is. Only offered when it would actually work (icons
+   * table present, Omega for the write) and is not already done this session.
+   * art_extract_screen() asks its own "extract now?" confirm -- one confirm dialog,
+   * shared by both entry points, not two stacked ones. */
+  if (s_iconrom.ok && active_flashcart == EZ_FLASH_OMEGA &&
+      !art_session_icons_ready_memoized())
+    art_extract_screen();
 }
 #endif
 
@@ -4622,12 +4665,180 @@ static void rumble_settings(void) {
   }
 }
 
+/* ---- Phase 2 (ROM-art cache): the extraction screen -----------------------------
+ * DESIGN.md Sec 3.1-3.3: progress + cancel + a stopwatch, reusing the two instruments
+ * that already exist (pdna_romfull.c's TM0/TM1 stopwatch pattern, duplicated here in
+ * miniature since that file's tmr_* helpers are file-static; and the free-running
+ * heartbeat hb_arm/hb_off already defined above in THIS file, so no new coupling).
+ * Omega-only (writes) -- the caller gates on active_flashcart before ever showing
+ * this row as selectable. */
+#ifndef PDNA_DELTA
+static void art_tmr_start(u32* t0) {
+  REG_TM0CNT = 0; REG_TM1CNT = 0; REG_TM0D = 0; REG_TM1D = 0;
+  REG_TM1CNT = TM_ENABLE | TM_CASCADE;
+  REG_TM0CNT = TM_ENABLE | TM_FREQ_1024;               /* TM2 is rumble's; untouched */
+  *t0 = 0;
+}
+static u32 art_tmr_ticks(void) {
+  u16 hi = REG_TM1D, lo = REG_TM0D, hi2 = REG_TM1D;
+  if (hi2 != hi) { hi = hi2; lo = REG_TM0D; }
+  return ((u32)hi << 16) | lo;
+}
+static u32 art_tmr_ms(u32 ticks) { return (u32)(((unsigned long long)ticks * 1000ull) >> 14); }
+static void art_tmr_stop(void) { REG_TM0CNT = 0; REG_TM1CNT = 0; }
+
+typedef struct {
+  int cancel;
+  u32 t0;
+} ArtExtractUi;
+
+static void art_extract_draw(int pass, int rows_done, int rows_total, u32 elapsed_ms) {
+  ui_clear();
+  ui_text(4, 4, UI_TITLE, "EXTRACTING ART");
+  ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+  ui_text(8, 26, UI_TEXT, pass == 1 ? "icons.bin  1/1" : "icons.bin  1/1  (verifying)");
+  char row[40];
+  siprintf(row, "row %d / %d", rows_done, rows_total);
+  ui_text(8, 40, UI_TEXT, row);
+  /* progress bar: 220 px wide, one fill per pass so a photograph shows which pass */
+  int w = rows_total > 0 ? (220 * rows_done) / rows_total : 0;
+  ui_panel(8, 54, 220, 12, UI_PANEL, UI_BORDER);
+  if (w > 0) ui_fill_rect(9, 55, w > 218 ? 218 : w, 10, UI_OK);
+  siprintf(row, "elapsed %lu.%01lus", (unsigned long)(elapsed_ms / 1000),
+           (unsigned long)((elapsed_ms / 100) % 10));
+  ui_text(8, 74, UI_DIM, row);
+  if (pass == 1 && rows_done > 0 && elapsed_ms > 0) {
+    uint32_t bytes_so_far = (uint32_t)rows_done * ART_ICONS_ROW_BYTES;
+    uint32_t kbs10 = (uint32_t)(((uint64_t)bytes_so_far * 10000ull) / 1024ull / elapsed_ms);
+    siprintf(row, "~%lu.%lu KB/s so far", (unsigned long)(kbs10 / 10), (unsigned long)(kbs10 % 10));
+    ui_text(8, 84, UI_DIM, row);
+  }
+  ui_text(8, 148, UI_DIM, "B  cancel");
+}
+
+static bool art_extract_progress(void* vctx, int pass, int rows_done, int rows_total) {
+  ArtExtractUi* c = (ArtExtractUi*)vctx;
+  /* Redraw + poll input every 8 rows, not every one -- 440 rows at 60 fps worth of
+   * redraws would slow the extraction for no visible benefit; every 8 is still
+   * clearly in motion in a photograph and costs a small fraction of the wall clock. */
+  if ((rows_done & 7) == 0 || rows_done >= rows_total) {
+    key_poll();
+    if (key_hit(KEY_B)) c->cancel = 1;
+    art_extract_draw(pass, rows_done, rows_total, art_tmr_ms(art_tmr_ticks() - c->t0));
+  }
+  return !c->cancel;
+}
+
+/* Returns true iff a complete, verified cache now exists (art.idx included). Never
+ * partial: on cancel/failure nothing new is left under a name the loader trusts (the
+ * whole point of art.idx being written LAST, DESIGN.md Sec 2.2/3.2). */
+static bool art_extract_run(u32* out_elapsed_ms, u32* out_kbs10, bool* out_cancelled) {
+  *out_elapsed_ms = 0; *out_kbs10 = 0; *out_cancelled = false;
+  if (!s_iconrom.ok) return false; /* caller already gated on this; belt and braces */
+
+  f_mkdir(PDNA_DIR "/art"); /* FR_EXIST is fine (hard rule 9: one folder per tool) */
+
+  ArtIconsGen gen;
+  art_icons_gen_init(&gen, &s_iconrom, art_extract_progress, 0);
+  ArtExtractUi ui; ui.cancel = 0;
+  art_tmr_start(&ui.t0);
+  gen.progress_ctx = &ui;
+
+  SfStatus st = sf_write_verified_stream(art_kind_filename(ART_KIND_ICONS), art_icons_stream,
+                                         &gen, ART_ICONS_TOTAL_BYTES, (uint8_t*)mon_decomp,
+                                         ART_ICONS_ROW_BYTES);
+  u32 elapsed = art_tmr_ms(art_tmr_ticks() - ui.t0);
+  art_tmr_stop();
+  *out_elapsed_ms = elapsed;
+  if (elapsed > 0) {
+    /* SD traffic: the write pass (ART_ICONS_TOTAL_BYTES out) plus the verify pass'
+     * read-back (ART_ICONS_TOTAL_BYTES in) -- DESIGN.md Sec 3.3's own accounting. */
+    uint64_t sd_bytes = (uint64_t)ART_ICONS_TOTAL_BYTES * 2u;
+    *out_kbs10 = (u32)((sd_bytes * 10000ull) / 1024ull / elapsed);
+  }
+
+  if (gen.cancelled) { *out_cancelled = true; return false; }
+  if (st != SF_OK) {
+    log_line("art extract: icons.bin write failed (%s)%s", sf_status_str(st),
+             gen.rom_error ? " -- a rom read never verified" : "");
+    return false;
+  }
+
+  /* art.idx last -- the ONE thing the loader trusts, and it names the kind file it
+   * just finished verifying, never one still in flight. */
+  uint32_t rom_fnv = 0;
+  if (!art_rom_fnv(s_iconrom_ctx.read, s_iconrom_ctx.ctx, s_iconrom_ctx.size, &rom_fnv)) {
+    log_line("art extract: could not hash the rom for art.idx");
+    return false;
+  }
+  ArtIdxHead head; memset(&head, 0, sizeof head);
+  head.format = ART_IDX_FORMAT_V1;
+  head.builder = 1;
+  memcpy(head.rom_code, s_iconrom_ctx.code, 4);
+  head.rom_rev = s_iconrom_ctx.version;
+  head.rom_kind = (uint8_t)s_iconrom_ctx.kind;
+  head.kinds = (uint8_t)(1u << ART_KIND_ICONS);
+  head.rom_bytes = s_iconrom_ctx.size;
+  head.rom_fnv = rom_fnv;
+  ArtIdxKindRow row = { (uint8_t)ART_KIND_ICONS, ART_ICONS_TOTAL_BYTES,
+                        art_icons_gen_fnv(&gen), ART_ICONS_ROWS };
+  uint8_t idxbuf[ART_IDX_HEAD_BYTES + ART_IDX_KIND_BYTES];
+  art_idx_head_write(&head, idxbuf);
+  art_idx_kind_write(&row, idxbuf + ART_IDX_HEAD_BYTES);
+  SfStatus ist = sf_write_verified(ART_IDX_PATH, idxbuf, sizeof idxbuf);
+  if (ist != SF_OK) {
+    log_line("art extract: art.idx write failed (%s) -- icons.bin stays unreferenced",
+             sf_status_str(ist));
+    return false;
+  }
+  log_line("art extract: icons.bin OK, %lu ms, art.idx written", (unsigned long)elapsed);
+  return true;
+}
+
+static void art_extract_screen(void) {
+  char kb[24];
+  /* Icons alone: ~441 KB (ART_ICONS_TOTAL_BYTES/1024). The confirm names ONLY what
+   * this phase actually extracts -- never the whole 9-kind design total, which does
+   * not exist yet. */
+  siprintf(kb, "%lu KB", (unsigned long)(ART_ICONS_TOTAL_BYTES / 1024u));
+  char l1[40]; siprintf(l1, "Icons, about %s, ~30s.", kb);
+  if (!app_confirm("Extract art from ROM?", l1)) return;
+
+  hb_arm();
+  u32 elapsed_ms, kbs10; bool cancelled;
+  bool ok = art_extract_run(&elapsed_ms, &kbs10, &cancelled);
+  hb_off();
+
+  /* Whatever happened, re-resolve the icon source NOW: a success must light the
+   * cache up immediately (not just next boot), and a failed/cancelled run must not
+   * leave a stale "ready" memo if a PARTIAL run happened to leave an old cache from
+   * an earlier session looking (correctly) still valid. */
+  app_icon_cache_resolve(&s_iconrom_ctx);
+
+  ui_clear();
+  if (ok) {
+    char l2[40];
+    siprintf(l2, "%lu.%01lus, ~%lu.%lu KB/s (SD)", (unsigned long)(elapsed_ms / 1000),
+             (unsigned long)((elapsed_ms / 100) % 10), (unsigned long)(kbs10 / 10),
+             (unsigned long)(kbs10 % 10));
+    snd_ok();
+    msg_wait("ART CACHED", UI_OK, "icons.bin written + verified.", l2);
+  } else if (cancelled) {
+    snd_back();
+    msg_wait("CANCELLED", UI_DIM, "Nothing was written.", "Re-run any time.");
+  } else {
+    snd_error();
+    msg_wait("EXTRACT FAILED", UI_WARN, "Nothing was written (see log).", 0);
+  }
+}
+#endif /* PDNA_DELTA */
+
 static void pdna_settings(void) {
   /* Row strings live in pdna_layout.h: sys8 does not clip at the right margin, it WRAPS
    * onto the row below, so their LENGTH is load-bearing and the host test checks it. */
 #define SET_MODE_ONE(s) s,
   static const char* const MODE[3] = { PDNA_SET_BACKUP_MODES(SET_MODE_ONE) };
-  enum { S_BACKUP, S_ANIM, S_YARD, S_ROM, S_RUMBLE, S_CLEAR, S_CLOSE, S_N };
+  enum { S_BACKUP, S_ANIM, S_YARD, S_ROM, S_ART, S_RUMBLE, S_CLEAR, S_CLOSE, S_N };
   _Static_assert(S_N == PDNA_SET_ROWS, "settings row count out of sync with pdna_layout.h");
   int sel = 0;
   for (;;) {
@@ -4647,9 +4858,19 @@ static void pdna_settings(void) {
                                    : (g_yard_visitors ? PDNA_SET_YARD_ON : PDNA_SET_YARD_OFF));
     char r2[44]; siprintf(r2, "Game ROM:  %s",
                           s_iconrom.ok ? rom_kind_name(s_iconrom_ctx.kind) : "not set");
-    const char* rows[S_N] = { r0, "Animations  >", r1, r2, "Rumble  >", PDNA_SET_ROW_CLEAR, "Close" };
+    /* Extract-art row (Phase 2): three dim/live states, same posture as Yard visitors
+     * above -- say WHY it is unavailable rather than show a toggle that does nothing. */
+    bool art_omega_ok = (active_flashcart == EZ_FLASH_OMEGA);
+    bool art_selectable = s_iconrom.ok && art_omega_ok;
+    char r3[44];
+    if (!s_iconrom.ok) siprintf(r3, PDNA_SET_ART_FMT, PDNA_SET_ART_NEEDROM);
+    else if (!art_omega_ok) siprintf(r3, PDNA_SET_ART_FMT, PDNA_SET_ART_NOOMEGA);
+    else if (art_session_icons_ready_memoized())
+      siprintf(r3, PDNA_SET_ART_CACHED_FMT, (unsigned long)(ART_ICONS_TOTAL_BYTES / 1024u));
+    else siprintf(r3, "%s", PDNA_SET_ART_GO);
+    const char* rows[S_N] = { r0, "Animations  >", r1, r2, r3, "Rumble  >", PDNA_SET_ROW_CLEAR, "Close" };
     for (int i = 0; i < S_N; i++) {
-      /* 7 rows @14px: last band 106..119, clear of the help text */
+      /* 8 rows @13px: last band 111..123, clear of the help text (host-checked) */
       int y = PDNA_SET_ROW0_Y + i * PDNA_SET_ROW_PITCH; bool s = (i == sel);
       if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
       ui_text(PDNA_SET_ROW_X, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
@@ -4681,6 +4902,18 @@ static void pdna_settings(void) {
         snd_deny(); msg_wait("NO SD HERE", UI_DIM, "Fuse a ROM into this build", "with tools/fuse_rom.py.");
 #else
         app_register_rom();
+#endif
+      }
+      else if (sel == S_ART) {
+#ifdef PDNA_DELTA
+        snd_deny(); msg_wait("NO SD HERE", UI_DIM, "Extraction needs a real card;", "not available in this build.");
+#else
+        if (!art_selectable) {
+          snd_deny();
+          msg_wait("EXTRACT ART", UI_DIM,
+                   !s_iconrom.ok ? "Register your game ROM first" : "Needs EZ-Flash Omega DE",
+                   !s_iconrom.ok ? "(Settings > Game ROM)." : "(EverDrive stays read-only).");
+        } else art_extract_screen();
 #endif
       }
       else if (sel == S_RUMBLE) rumble_settings();
