@@ -76,11 +76,11 @@ RV_ANCHOR(flashcartio_activate);  /* cart detect + sector I/O + FatFs disk glue 
 RV_ANCHOR(pdna_map);              /* a third slab of .text, further up          */
 /* --- art; any of these may be absent -------------------------------------- */
 RV_ANCHOR(hand_oam_cursor_tiles); /* also the anchor for the learnset tables    */
-RV_ANCHOR(bag_bg_blob);
-RV_ANCHOR(card_bg_blob);
+RV_ANCHOR(bag_bg_lz);             /* packed stream; bag_bg_blob is now file-static */
+RV_ANCHOR(card_bg_lz);            /* packed stream; card_bg_blob is now file-static */
 RV_ANCHOR(mon_front_blob);
 RV_ANCHOR(mon_icon_blob);
-RV_ANCHOR(pokeblock_bg_blob);
+RV_ANCHOR(pokeblock_bg_lz);       /* packed stream; pokeblock_bg_blob is now file-static */
 RV_ANCHOR(mon_back_blob);         /* absent in `make sd` */
 RV_ANCHOR(mon_front_shiny_blob);  /* absent in `make sd` */
 
@@ -126,13 +126,18 @@ const PdnaRomVerify g_pdna_romver __attribute__((used, aligned(4))) = {
         RV_W(hand_oam_cursor_tiles, 0x000200u, 4096u, PDNA_RVW_K_TABLE, 'T','B','L','3'),
 
         /* --- art: a spread probe from 0.76 MB to 12.14 MB ------------------------ */
-        RV_W(bag_bg_blob,          0x000000u, 4096u, RV_ART, 'B','A','G',' '),
-        RV_W(card_bg_blob,         0x000000u, 4096u, RV_ART, 'C','B','G','0'),
-        RV_W(card_bg_blob,         0x200000u, 4096u, RV_ART, 'C','B','G','1'),
-        RV_W(card_bg_blob,         0x400000u, 4096u, RV_ART, 'C','B','G','2'),
+        /* card_bg_lz is the LZ77-paged stream (ab9673d); its extent is the packed
+         * length, 628640 B (0x99760), not the 4.6 MB the raw frames used to occupy.
+         * CBG1/CBG2 are re-aimed inside that: 0x030000 (196608) and 0x060000
+         * (393216) both leave a full 4096 B window under the 624544-byte (0x98760)
+         * max start (628640 - 4096) and stay well apart from each other and CBG0. */
+        RV_W(bag_bg_lz,            0x000000u, 4096u, RV_ART, 'B','A','G',' '),
+        RV_W(card_bg_lz,           0x000000u, 4096u, RV_ART, 'C','B','G','0'),
+        RV_W(card_bg_lz,           0x030000u, 4096u, RV_ART, 'C','B','G','1'),
+        RV_W(card_bg_lz,           0x060000u, 4096u, RV_ART, 'C','B','G','2'),
         RV_W(mon_front_blob,       0x000000u, 4096u, RV_ART, 'F','R','N','0'),
         RV_W(mon_icon_blob,        0x100000u, 4096u, RV_ART, 'I','C','N','1'),
-        RV_W(pokeblock_bg_blob,    0x000000u, 4096u, RV_ART, 'P','B','L','K'),
+        RV_W(pokeblock_bg_lz,      0x000000u, 4096u, RV_ART, 'P','B','L','K'),
         RV_W(mon_back_blob,        0x0A0000u, 4096u, RV_ART, 'B','C','K','1'),
         RV_W(mon_front_shiny_blob, 0x0A0000u, 4096u, RV_ART, 'S','H','F','1'),
         /* entries 17..23 stay zero; the stamper asserts len==0 beyond n_windows, which
