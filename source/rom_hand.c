@@ -37,9 +37,9 @@ typedef struct {
 
 static const RomHandPin k_pins[] = {
   /*  code   rev  sheet        palette    */
-  { "BPEE", 0, 0x0857B118, 0x085723DC },   /* Emerald   */
-  { "BPRE", 1, 0x083D2C5C, 0x08E9C3F8 },   /* FireRed   */
-  { "BPGE", 0, 0x083D2A28, 0x08E9C478 },   /* LeafGreen */
+  { "BPEE", 0, 0x0857B118, 0x085724D4 },   /* Emerald   */
+  { "BPRE", 1, 0x083D2C5C, 0x083CE860 },   /* FireRed   */
+  { "BPGE", 0, 0x083D2A28, 0x083CE62C },   /* LeafGreen */
 };
 #define K_NPINS ((int)(sizeof k_pins / sizeof k_pins[0]))
 

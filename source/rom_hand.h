@@ -18,23 +18,21 @@
  * ============================================================================
  * NOT reachable from GFRomHeader (checked field by field, same as rom_itemart.h's
  * icon/badge tables) -- pinned per revision, exactly like rom_itemart.c's k_pins.
- * DESIGN.md Sec 1.3 located the sheet + Emerald/FireRed palettes by a shape scan and
- * flagged LeafGreen's palette "(not probed; expect the same relative site)". Both
- * gaps are now closed, VERIFIED against the actual dumps in gba-toolkit/roms/, not
- * guessed:
- *
- *   - the 2,048 B sheet is BYTE-IDENTICAL across Emerald, FireRed and LeafGreen (one
- *     PNG, the same glove, shipped three times at three different addresses) --
- *     confirmed with a direct memcmp, not inferred from "same relative site";
- *   - LeafGreen's palette was independently LOCATED by searching its image for the
- *     32 raw bytes FireRed's palette resolves to (identical 16 colours, since it is
- *     the same glove art): exactly one hit, at ROM+0x08E9C478 -- +0x80 from
- *     FireRed's 0x08E9C3F8, a real, found address, not a guessed offset.
+ * DESIGN.md Sec 1.3's shape scan found the SHEET correctly but the wrong PALETTE
+ * (0x085723DC / 0x08E9C3F8, LeafGreen's counterpart "not probed") -- decoding the
+ * sheet with those addresses paints palette index 3, the 72-pixel glove BODY, as
+ * 0x2D4A dark grey (RGB 82,82,90) where the compiled reference (hand_oam.c) paints
+ * it 0x7FFF white: a dark-grey blob, not a hand. The SHEET address is right --
+ * aligning it against the compiled art gives a perfect 1024/1024 mask match at
+ * offset (+7,+4). The CORRECT palette is a fresh, independently-verified find, a
+ * single unambiguous hit in each dump (exactly [0]=0x0000 [1]=0x5652 [2]=0x2D4A
+ * [3]=0x7FFF, matching hand_oam.c's hand_oam_pal byte for byte across all three
+ * games -- reproduces the white glove exactly):
  *
  *     Game       sheet (RAW, 2048 B)   palette (RAW, 32 B)
- *     Emerald    0x0857B118            0x085723DC
- *     FireRed    0x083D2C5C            0x08E9C3F8
- *     LeafGreen  0x083D2A28            0x08E9C478
+ *     Emerald    0x0857B118            0x085724D4
+ *     FireRed    0x083D2C5C            0x083CE860
+ *     LeafGreen  0x083D2A28            0x083CE62C
  *
  * Ruby/Sapphire ship a DIFFERENT glove (pokeruby's own hand_cursor.png -- DESIGN.md's
  * own honest gap): searching both dumps for Emerald's exact 2,048 B sheet gets ZERO

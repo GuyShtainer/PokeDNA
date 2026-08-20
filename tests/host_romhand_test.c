@@ -129,6 +129,29 @@ static void run_rom(const char* path, const char* name, int expect_pinned) {
   for (int i = 0; i < 16; i++) if (pal[i] & 0x8000) bit15_clear = 0;
   chk(name, "every palette entry has bit 15 clear", bit15_clear);
 
+  /* 4b) MUST-FIX 1 (2026-08-20 review): the check above never discriminates a wrong
+   * palette from a right one -- "non-degenerate" and "bit 15 clear" both pass on the
+   * WRONG pinned palette (0x085723DC/0x08E9C3F8/0x08E9C478), which decodes this exact
+   * sheet's glove BODY as 0x2D4A dark grey, not the retail white. This is the
+   * assertion that actually would have caught it: frame 0 pixel (20,6) is raw 4bpp
+   * index 3 on all three pinned games (the sheet is byte-identical, check 3 above --
+   * confirmed against Guy's own dumps), and index 3 is the 72-pixel glove BODY. It
+   * must decode to WHITE (0x7FFF), matching source/hand_oam.c's compiled
+   * hand_oam_pal[3] -- that exact value is snapshotted here (HAND_BODY_WHITE) rather
+   * than linking the generated, git-ignored hand_oam.c, so this test still builds on
+   * a tree that never ran the art-extraction step. Proven not vacuous: reverting
+   * rom_hand.c's k_pins to the old palette addresses turns this line red (pal[3]
+   * reads 0x2D4A there), while every check above it still passes. */
+  #define HAND_BODY_WHITE 0x7FFF
+  {
+    int tx = 20 >> 3, ty = 6 >> 3;
+    const uint8_t* t = frames[0] + (ty * 4 + tx) * 32 + (6 & 7) * 4;
+    uint8_t b = t[(20 & 7) >> 1];
+    uint8_t nib = (20 & 1) ? (uint8_t)(b >> 4) : (uint8_t)(b & 0x0F);
+    chk(name, "frame-0 pixel (20,6) is raw index 3 (the sheet's own body colour)", nib == 3);
+    chk(name, "glove BODY (palette index 3) decodes to white, not grey", pal[3] == HAND_BODY_WHITE);
+  }
+
   /* 5) out-of-range frame rejected */
   uint8_t junk[ROM_HAND_FRAME_BYTES];
   chk(name, "frame 4 (out of range) rejected", !rom_hand_frame(&rh, 4, junk));
