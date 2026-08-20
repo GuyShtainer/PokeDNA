@@ -85,14 +85,38 @@ def parse_off_tables(path):
 
 
 def kmeans(weighted, K, iters=10):
-    """weighted: Counter{rgb15:count} -> list of K rgb-tuples (float)."""
+    """weighted: Counter{rgb15:count} -> list of K rgb-tuples (float).
+
+    SEEDING IS GREEDY FARTHEST-POINT (a deterministic k-means++ variant), not
+    "top-K most frequent colours". The old seeding put every initial centroid on
+    whichever handful of colours dominate the bank's aggregate PIXEL COUNT: with
+    hundreds of near-duplicate LANCZOS-antialiased shades from ~30 icons funnelled
+    into one 15-colour shared bank, that is always a browns/greys plurality, so a
+    genuine but numerically small accent colour (e.g. Dragonite's ~11px blue
+    ear-tip, competing against 20+ bank-mates' worth of tan) never became a seed -
+    and Lloyd iteration only ever pulls an EXISTING centroid toward its current
+    members, so it had no mechanism to discover an un-seeded colour afterwards.
+    That silently turned Dragonite's ears and Milotic's face brown/orange in the
+    compiled OAM build while the RGB15 source (data/mon_icons.bin) and the ROM
+    still had the real hue (see docs/analysis-2026-08-20-pcparty).
+
+    Farthest-point seeding starts from the single most common colour (keeps a
+    sensible dominant-hue anchor), then repeatedly adds whichever remaining
+    colour maximises weight * (distance to its nearest existing centroid)^2 -
+    i.e. the most under-represented mass - until K seeds exist. That guarantees
+    every well-populated but rare colour gets first claim on its own centroid
+    before Lloyd refinement runs. Deterministic (no RNG), so a rebuild reproduces
+    byte-identical output. Measured effect across all ~440 icons: mean
+    quantisation error (palette_err) down ~50%; Dragonite -77%, Milotic -70%."""
     items = list(weighted.items())
     if not items:
         return [(0.0, 0.0, 0.0)]
-    cents = [rgb(c) for c, _ in sorted(items, key=lambda x: -x[1])[:K]]
+    pts = [(rgb(c), w) for c, w in items]
+    cents = [max(pts, key=lambda pw: pw[1])[0]]        # seed 0: the single most common colour
+    while len(cents) < K and len(cents) < len(pts):
+        cents.append(max(pts, key=lambda pw: min(d2(pw[0], c) for c in cents) * pw[1])[0])
     while len(cents) < K:
         cents.append(cents[-1])
-    pts = [(rgb(c), w) for c, w in items]
     for _ in range(iters):
         acc = [[0, 0, 0, 0] for _ in range(K)]
         for p, w in pts:
