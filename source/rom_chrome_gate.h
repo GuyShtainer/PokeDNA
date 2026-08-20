@@ -40,12 +40,12 @@
 #endif
 #endif
 
-/* Bag chrome is investigated but NOT implemented from ROM (see rom_chrome.h's header
- * comment for why: Ruby's 8,192 B bag tileset alone saturates the one spare 8 KiB
- * buffer, which the bag screen's ALREADY-WIRED item-icon decode (Phase 1) also needs
- * concurrently). This gate exists so that finding is recorded in code, not just prose,
- * and so a future fix has a switch to flip. bag_bg() keeps its plain compiled-art-or-
- * nothing behaviour unchanged. */
+/* Bag chrome IS implemented from ROM for Emerald/FireRed/LeafGreen (see
+ * rom_chrome.h's header comment) — the tileset that DESIGN.md called "not
+ * located" (Emerald) or missing entirely (FireRed/LeafGreen) turned out to be
+ * a few KB, not 8 KiB; only Ruby's is genuinely too big (8,192 B alone) and
+ * stays unsupported. Same __has_include gate as card/pokeblock, so a full-art
+ * build with bag_bg_data.s staged pays zero bytes for the decoder. */
 #ifndef PDNA_BAG_ART_COMPILED
 #if defined(__has_include) && __has_include("bag_bg_data.s")
 #define PDNA_BAG_ART_COMPILED 1
@@ -54,7 +54,8 @@
 #endif
 #endif
 
-/* Any ROM-chrome code needed at all in this build? (card OR pokeblock missing art) */
-#define PDNA_ROM_CHROME_NEEDED (!PDNA_CARD_ART_COMPILED || !PDNA_POKEBLOCK_ART_COMPILED)
+/* Any ROM-chrome code needed at all in this build? (card OR pokeblock OR bag missing art) */
+#define PDNA_ROM_CHROME_NEEDED \
+  (!PDNA_CARD_ART_COMPILED || !PDNA_POKEBLOCK_ART_COMPILED || !PDNA_BAG_ART_COMPILED)
 
 #endif /* ROM_CHROME_GATE_H */

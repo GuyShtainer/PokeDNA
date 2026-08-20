@@ -1,23 +1,25 @@
-/* Host (PC) test for rom_chrome -- the TRAINER CARD (Emerald + Ruby) and
- * POKeBLOCK CASE (Emerald) full-screen backgrounds read from REAL retail ROMs.
- * rom_chrome does all its I/O through the RomCtx callback, so the code
- * exercised here is byte-for-byte the code that runs on the GBA.
+/* Host (PC) test for rom_chrome -- the TRAINER CARD (Emerald + Ruby),
+ * POKeBLOCK CASE (Emerald), and BAG SCREEN (Emerald + FireRed + LeafGreen)
+ * full-screen backgrounds read from REAL retail ROMs. rom_chrome does all its
+ * I/O through the RomCtx callback, so the code exercised here is byte-for-byte
+ * the code that runs on the GBA.
  *
  * ROMs are the user's own dumps, never part of the repo; missing ROMs SKIP.
- * -DPDNA_CARD_ART_COMPILED=0 -DPDNA_POKEBLOCK_ART_COMPILED=0 forces the
- * decoders to compile regardless of whether this machine's source/ tree
- * happens to have the generated (git-ignored) art staged right now -- see
- * rom_chrome_gate.h.
+ * -DPDNA_CARD_ART_COMPILED=0 -DPDNA_POKEBLOCK_ART_COMPILED=0
+ * -DPDNA_BAG_ART_COMPILED=0 forces the decoders to compile regardless of
+ * whether this machine's source/ tree happens to have the generated
+ * (git-ignored) art staged right now -- see rom_chrome_gate.h.
  *
  * Build + run (from the repo root):
  *   cc -std=c11 -O2 -I source -DPDNA_CARD_ART_COMPILED=0 -DPDNA_POKEBLOCK_ART_COMPILED=0 \
+ *      -DPDNA_BAG_ART_COMPILED=0 \
  *      tests/host_romchrome_test.c source/rom_chrome.c source/rom_map.c source/map_render.c \
  *      -o /tmp/hrct && /tmp/hrct
  *
  * What it proves:
- *  1) rom_chrome_open() correctly identifies Emerald (card+pokeblock) and Ruby
- *     (card only) and correctly refuses Sapphire/FireRed/LeafGreen (the honest
- *     scope rom_chrome.h states).
+ *  1) rom_chrome_open() correctly identifies Emerald (card+pokeblock+bag),
+ *     Ruby (card only), FireRed/LeafGreen (bag only), and correctly refuses
+ *     Sapphire everywhere (the honest scope rom_chrome.h states).
  *  2) rom_chrome_card_load() succeeds for every (back, tier, female) combination
  *     on both wired games, always returns EXACTLY the declared byte counts, and
  *     the returned RomChromeSrc's tile/map pointers land inside the caller's
@@ -32,6 +34,10 @@
  *     while the face tilemap's are bank 0 exclusively -- the measured fact
  *     that makes an index-0-transparent composite the correct retail look
  *     instead of a flat fill. The Pokeblock case carries no bg_map at all.
+ *  6) rom_chrome_bag_load() succeeds for both genders on Emerald/FireRed/
+ *     LeafGreen and is refused for Ruby/Sapphire; every load's pointers land
+ *     inside scratch, bg_map is always NULL (single-layer screen), and a
+ *     too-small buffer fails closed.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -144,6 +150,54 @@ static void test_card_game(const char* label, const char* path, int expect_style
   fclose(c.f);
 }
 
+static void test_bag_game(const char* label, const char* path, int expect_style) {
+  HostCtx c; RomCtx rc;
+  if (!open_rom(path, &c, &rc)) { printf("%s: SKIP (no dump)\n", label); return; }
+
+  RomChrome rch; rom_chrome_open(&rch, &rc);
+  CHECK(rch.bag_style == expect_style, "%s: bag_style=%d want %d", label, rch.bag_style, expect_style);
+
+  if (expect_style >= 0) {
+    static uint8_t scratch[8192];
+    for (int female = 0; female <= 1; female++) {
+      RomChromeBag out;
+      memset(&out, 0xAA, sizeof out);
+      int ok = rom_chrome_bag_load(&rch, expect_style, female, scratch, sizeof scratch, &out);
+      CHECK(ok, "%s: bag_load female=%d failed", label, female);
+      if (!ok) continue;
+      CHECK(out.src.tiles != 0 && out.src.map != 0, "%s: null src pointers", label);
+      CHECK(out.src.tiles >= scratch && out.src.tiles < scratch + sizeof scratch,
+           "%s: tiles pointer outside scratch", label);
+      CHECK((const uint8_t*)out.src.map >= scratch &&
+           (const uint8_t*)out.src.map < scratch + sizeof scratch,
+           "%s: map pointer outside scratch", label);
+      CHECK(out.src.bg_map == 0, "%s: bag has no background layer -- bg_map must be "
+           "NULL, not a stale pointer", label);
+      CHECK(out.as_lzblob.romsrc == &out.src, "%s: as_lzblob.romsrc wrong", label);
+      CHECK(out.as_lzblob.pages == 0, "%s: as_lzblob.pages should be NULL (romsrc dispatch)", label);
+      /* Every decode must fit comfortably under half the shared 8 KiB buffer --
+       * the whole point of the fix over the old "Ruby saturates it" finding. */
+    }
+
+    /* A too-small buffer must fail closed, not truncate. */
+    RomChromeBag bad;
+    CHECK(!rom_chrome_bag_load(&rch, expect_style, 0, scratch, 64, &bad),
+         "%s: a 64 B scratch buffer must be refused, not truncated into", label);
+  } else {
+    RomChromeBag out;
+    CHECK(!rom_chrome_bag_load(&rch, 0, 0, 0, 0, &out) &&
+         !rom_chrome_bag_load(&rch, 1, 0, 0, 0, &out) &&
+         !rom_chrome_bag_load(&rch, 2, 0, 0, 0, &out),
+         "%s: an unwired game must refuse every bag style", label);
+  }
+
+  for (int g = 0; g < 3; g++)
+    CHECK(rom_chrome_bag_have(&rch, g) == (g == expect_style),
+         "%s: rom_chrome_bag_have(%d) disagrees with bag_style", label, g);
+
+  fclose(c.f);
+}
+
 static void test_pokeblock_game(const char* label, const char* path, int expect_ok) {
   HostCtx c; RomCtx rc;
   if (!open_rom(path, &c, &rc)) { printf("%s: SKIP (no dump)\n", label); return; }
@@ -184,6 +238,12 @@ int main(void) {
   test_pokeblock_game("Ruby pokeblock (unwired)", ruby, 0);
   test_pokeblock_game("Sapphire pokeblock (unwired)", sapphire, 0);
   test_pokeblock_game("FireRed pokeblock (none in-game)", firered, 0);
+
+  test_bag_game("Emerald bag", emerald, 1);
+  test_bag_game("FireRed bag", firered, 2);
+  test_bag_game("LeafGreen bag", leafgreen, 2);
+  test_bag_game("Ruby bag (unwired -- tileset alone saturates the buffer)", ruby, -1);
+  test_bag_game("Sapphire bag (unwired)", sapphire, -1);
 
   if (g_fail) { printf("%d check(s) FAILED\n", g_fail); return 1; }
   printf("host_romchrome_test: all checks passed\n");

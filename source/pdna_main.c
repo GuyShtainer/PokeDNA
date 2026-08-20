@@ -1604,9 +1604,10 @@ static void app_icon_rom_open(void) {
   memset(&s_romtext, 0, sizeof s_romtext);
   memset(&s_romitemart, 0, sizeof s_romitemart);
   memset(&s_romwallpaper, 0, sizeof s_romwallpaper);
-  memset(&s_romchrome, 0, sizeof s_romchrome); s_romchrome.card_style = -1;
+  memset(&s_romchrome, 0, sizeof s_romchrome); s_romchrome.card_style = -1; s_romchrome.bag_style = -1;
   pdna_origin_art_set_romsprite(0);
   pdna_trainer_set_romchrome(0);
+  pdna_bag_set_romchrome(0);
   uint32_t fsz = 0;
   if (fused_rom_present(&fsz) && rom_open(&s_iconrom_ctx, fused_rom_read, 0, fsz)) {
     /* rom_chrome_open() does NOT need the GF header rom_mon_open() below checks
@@ -1618,6 +1619,7 @@ static void app_icon_rom_open(void) {
      * Sapphire: no GF header, so rom_sprite_open fails closed" note). */
     rom_chrome_open(&s_romchrome, &s_iconrom_ctx);
     pdna_trainer_set_romchrome(&s_romchrome);
+    pdna_bag_set_romchrome(&s_romchrome);
     if (rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
       boxoam_rom_icons(&s_iconrom);
       rom_text_open(&s_romtext, &s_iconrom_ctx);
@@ -1663,6 +1665,7 @@ static void app_icon_rom_open(void) {
        * which rom_mon_open() below always refuses (no GF header). */
       rom_chrome_open(&s_romchrome, &s_iconrom_ctx);
       pdna_trainer_set_romchrome(&s_romchrome);
+      pdna_bag_set_romchrome(&s_romchrome);
       if (rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
         boxoam_rom_icons(&s_iconrom);
         rom_text_open(&s_romtext, &s_iconrom_ctx);

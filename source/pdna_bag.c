@@ -1,19 +1,31 @@
 /*
  * Real Gen-3 bag screen — the data editor's bag tab wearing the in-game bag
  * chrome of the LOADED game (RS / Emerald / FRLG, per-gender art). One
- * ROM->VRAM blit of the pre-composited 240x160 background (see
- * tools/gen_bag_bg.py) with the pocket's item list in the game's list pane,
- * the selected item's 24x24 icon in the chrome's own icon square (Emerald /
- * FRLG; RS's bag has none), its description in the desc region, and the
- * pocket name in its banner — all geometry from BAG_LAYOUTS[game] in
+ * ROM->VRAM blit of the background with the pocket's item list in the game's
+ * list pane, the selected item's 24x24 icon in the chrome's own icon square
+ * (Emerald / FRLG; RS's bag has none), its description in the desc region,
+ * and the pocket name in its banner — all geometry from BAG_LAYOUTS[game] in
  * bag_bg.h, zero magic pixels here. FRLG keeps its 3-pocket chrome but
  * browses all 5 PokeDNA pockets (its TM Case / Berry Pouch have no bag
  * frame — they reuse the Items open frame).
+ *
+ * The background itself is bag_bg(game, female) (bag_bg.h): the STRONG symbol
+ * is pre-composited art from tools/gen_bag_bg.py when a full-art build has it
+ * staged; otherwise (this file's weak fallback) it streams tileset+tilemap+
+ * palette straight out of the user's registered/fused ROM for Emerald/
+ * FireRed/LeafGreen (rom_chrome.h's bag section) — RS and every other art-free
+ * case fall back to blob==0 and the caller keeps the plain data-editor bag
+ * tab. Every call site below fetches bag_bg(game, female) FRESH, immediately
+ * before the bg_restore/bg_blit_rect that uses it, rather than reusing one
+ * value across the loop — required correctness for the ROM rung, not style;
+ * see rom_bag_frame()'s comment below for why.
+ *
  * Controls follow the game: L/R switch POCKET, U/D scroll, A edits the slot
  * (the exact pick_item -> quantity -> pk_bag_set powers of the plain tab,
  * wrong-pocket auto-routing included), B exits. Edits stay in RAM; the CALLER
  * (data_editor) owns the confirm + verified SB1 commit — no new SD write paths.
- * Partial redraws restore rects from the ROM bg (bg_restore): 0 new EWRAM.
+ * Partial redraws restore rects from bg_restore: 0 new EWRAM (the ROM rung
+ * decodes into mon_decomp, the existing shared 8 KiB buffer — artbuf.h).
  */
 #include <tonc.h>
 #include <stdio.h>
@@ -30,16 +42,61 @@
 #include "data_tables.h"     /* pk_item_name / pk_item_desc */
 #include "item_icons.h"
 #include "pdna_pick.h"       /* pick_item */
+#include "rom_chrome_gate.h"
+#include "rom_chrome.h"      /* the ROM rung: rom_chrome_bag_have/_load */
+#include "artbuf.h"          /* mon_decomp -- the shared 8 KiB decode buffer */
 
 /* Strong bag_bg()/bag_anim() come from the GENERATED bag_bg.c (git-ignored
  * ripped art); these weak NULLs keep an art-free clone building — data_editor
  * then keeps the plain bag tab (same pattern as the wallpaper fallbacks in
- * pdna_box.c), and a NULL bag_anim() just skips the pocket animation. */
-__attribute__((weak)) BgFrame bag_bg(int game, int female) {
-  (void)game; (void)female; BgFrame f = { 0, 0, BAG_BG_W }; return f;
-}
+ * pdna_box.c), and a NULL bag_anim() just skips the pocket animation.
+ * bag_anim() (the pocket-switch mascot animation sheets) has no ROM rung —
+ * out of this track's scope (rom_chrome.h: "the bag's own background chrome",
+ * matching what rom_chrome.c already does for the card/Pokeblock — neither of
+ * which animate either). */
 __attribute__((weak)) BgFrame bag_anim(int game, int female, int step) {
   (void)game; (void)female; (void)step; BgFrame f = { 0, 0, BAG_ANIM_W }; return f;
+}
+
+/* Set once per ROM (re)registration by pdna_main.c's app_icon_rom_open(), the
+ * same pattern pdna_trainer_set_romchrome() already uses for the card. NULL =
+ * no ROM open this session, or the open ROM can't serve this game's bag style. */
+static const RomChrome* s_bag_romchrome = 0;
+void pdna_bag_set_romchrome(const RomChrome* rch) { s_bag_romchrome = rch; }
+
+#if !PDNA_BAG_ART_COMPILED
+/* The ROM rung (Emerald/FireRed/LeafGreen -- rom_chrome.h states why Ruby/
+ * Sapphire fall through to blob==0). ALWAYS redecodes, on EVERY call -- this
+ * is not a style choice, it is required correctness: mon_decomp is the SAME
+ * shared 8 KiB buffer app_item_icon() decodes into (pdna_main.c, offset 0,
+ * no way to relocate it from here), and draw_desc() below calls
+ * app_item_icon() on every selection change. A BgFrame handed out by this
+ * function is only valid until the NEXT decode into mon_decomp by ANYTHING --
+ * including this function itself. bag_screen() below never stashes the
+ * result across a call boundary; every drawing helper fetches its own fresh
+ * copy immediately before it touches bg.blob. This is the exact bug class the
+ * Pokeblock case shipped once already (a pointer into this same buffer held
+ * across a call that let something else decode first) — see
+ * pdna_origin_art.c's rom_portrait() and this file's rom_bag_frame() callers
+ * for the two other places that learned it. */
+static RomChromeBag s_bag_chrome;
+static BgFrame rom_bag_frame(int game, int female) {
+  BgFrame f = { 0, 0, BAG_BG_W };
+  if (!s_bag_romchrome || !rom_chrome_bag_have(s_bag_romchrome, game)) return f;
+  if (!rom_chrome_bag_load(s_bag_romchrome, game, female,
+                           (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &s_bag_chrome))
+    return f;
+  f.blob = &s_bag_chrome.as_lzblob; f.off = 0; f.sw = BAG_BG_W;
+  return f;
+}
+#endif /* !PDNA_BAG_ART_COMPILED */
+
+__attribute__((weak)) BgFrame bag_bg(int game, int female) {
+#if !PDNA_BAG_ART_COMPILED
+  return rom_bag_frame(game, female);
+#else
+  (void)game; (void)female; BgFrame f = { 0, 0, BAG_BG_W }; return f;
+#endif
 }
 
 /* Inks tuned on the generated bg: dark text on the cream list / white desc
@@ -241,9 +298,15 @@ static void draw_desc(BgFrame bg, const BagLayout* L, const uint8_t* sb1,
   }
 }
 
+/* Every one of these calls fetches its OWN BgFrame right at the call site,
+ * immediately before the blit that uses it — bag_bg(game, female), never a
+ * `bg` local hoisted out and reused. This is not stylistic: see rom_chrome.h's
+ * bag section and pdna_bag.c's rom_bag_frame() comment above. The compiled-
+ * art rung is a cheap, stateless lookup, so this costs nothing extra when
+ * PDNA_BAG_ART_COMPILED; the ROM rung genuinely redecodes every time, which is
+ * the price of correctness against the interleaved item-icon decoder. */
 bool bag_screen(uint8_t* sb1, const uint8_t* sb2, PkGame game, int female) {
-  BgFrame bg = bag_bg(game, female);
-  if (!bg.blob || game < 0 || game > 2) return false; /* defensive: callers gate on bag_bg() */
+  if (game < 0 || game > 2 || !bag_bg(game, female).blob) return false; /* defensive: callers gate on bag_bg() */
   const BagLayout* L = &BAG_LAYOUTS[game];
   int pocket = 0, sel = 0, top = 0, prev_sel = -1, desc_pg = 0;
   bool dirty = false, full = true, list = true, desc = true;
@@ -255,16 +318,16 @@ bool bag_screen(uint8_t* sb1, const uint8_t* sb2, PkGame game, int female) {
     if (sel >= top + BROWS(L)) { top = sel - (BROWS(L) - 1); list = true; }
 
     if (full) {                                  /* whole chrome (entry / after picker+dialogs) */
-      bg_restore(bg, 0, 0, BAG_BG_W, BAG_BG_H);   /* 20 LZ77 pages ROM->VRAM */
+      bg_restore(bag_bg(game, female), 0, 0, BAG_BG_W, BAG_BG_H);   /* 20 LZ77 pages ROM->VRAM */
       bag_rest(L, game, female, pocket);         /* bg bakes the CLOSED bag; show the pocket open */
       if (L->foot_y)                             /* only where the chrome leaves a free strip */
         ui_text(L->foot_x, L->foot_y, BFOOT, "A edit  L/R pocket  B done");
-      draw_header(bg, L, pocket);
+      draw_header(bag_bg(game, female), L, pocket);
       list = true; full = false;
     }
-    if (list) { draw_list(bg, L, sb1, sb2, game, pocket, top, sel); list = false; desc = true; }
-    else if (sel != prev_sel) { draw_cursor(bg, L, top, sel); desc = true; }
-    if (desc) { desc_pg = 0; draw_desc(bg, L, sb1, game, pocket, sel, desc_pg); desc = false; }
+    if (list) { draw_list(bag_bg(game, female), L, sb1, sb2, game, pocket, top, sel); list = false; desc = true; }
+    else if (sel != prev_sel) { draw_cursor(bag_bg(game, female), L, top, sel); desc = true; }
+    if (desc) { desc_pg = 0; draw_desc(bag_bg(game, female), L, sb1, game, pocket, sel, desc_pg); desc = false; }
     prev_sel = sel;
 
     /* s_wait, inlined so idle frames can AUTO-PAGE an overflowing description
@@ -281,7 +344,7 @@ bool bag_screen(uint8_t* sb1, const uint8_t* sb2, PkGame game, int female) {
         if (!k && s_desc_pages > 1 && ++idle >= BAG_DESC_FLIP) {
           idle = 0;
           desc_pg = (desc_pg + 1) % s_desc_pages;
-          draw_desc(bg, L, sb1, game, pocket, sel, desc_pg);
+          draw_desc(bag_bg(game, female), L, sb1, game, pocket, sel, desc_pg);
         }
       } while (!k);
       if (fresh & (KEY_UP | KEY_DOWN)) snd_move();
@@ -295,8 +358,8 @@ bool bag_screen(uint8_t* sb1, const uint8_t* sb2, PkGame game, int female) {
       snd_tab();
       pocket = (pocket + ((k & (KEY_R | KEY_RIGHT)) ? 1 : POCKET_COUNT - 1)) % POCKET_COUNT;
       sel = top = 0; prev_sel = -1; list = true;
-      pocket_anim(bg, L, game, female, pocket);  /* closed bag pops + the pocket opens */
-      draw_header(bg, L, pocket);
+      pocket_anim(bag_bg(game, female), L, game, female, pocket);  /* closed bag pops + the pocket opens */
+      draw_header(bag_bg(game, female), L, pocket);
     } else if (k & KEY_A) {                      /* the plain tab's edit powers, verbatim */
       uint16_t cur = pk_bag_item(sb1, game, pocket, sel);
       uint16_t id = pick_item(cur);

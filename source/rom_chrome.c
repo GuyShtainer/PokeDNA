@@ -17,11 +17,13 @@ void rom_chrome_open(RomChrome* rch, const RomCtx* rc) {
   rch->rc = rc;
   rch->card_style = -1;
   rch->pokeblock_ok = 0;
+  rch->bag_style = -1;
   rch->verify = 1;
   if (!rc) return;
-  if (rc->kind == ROM_EMERALD) { rch->card_style = 1; rch->pokeblock_ok = 1; }
+  if (rc->kind == ROM_EMERALD) { rch->card_style = 1; rch->pokeblock_ok = 1; rch->bag_style = 1; }
   else if (rc->kind == ROM_RUBY) { rch->card_style = 0; }
-  /* Sapphire, FireRed, LeafGreen: neither wired (see rom_chrome.h's scope note). */
+  else if (rc->kind == ROM_FIRERED || rc->kind == ROM_LEAFGREEN) { rch->bag_style = 2; }
+  /* Sapphire: nothing wired (see rom_chrome.h's scope note). */
 }
 
 void rom_chrome_set_verify(RomChrome* rch, int on) { rch->verify = on ? 1 : 0; }
@@ -33,6 +35,10 @@ int rom_chrome_card_have(const RomChrome* rch, int g) {
 int rom_chrome_pokeblock_have(const RomChrome* rch, int g) {
   (void)g;                       /* Emerald is card_style==1 AND the only pokeblock */
   return rch && rch->rc && rch->pokeblock_ok;
+}
+
+int rom_chrome_bag_have(const RomChrome* rch, int g) {
+  return rch && rch->rc && rch->bag_style == g;
 }
 
 #if PDNA_ROM_CHROME_NEEDED   /* the actual decoders: empty otherwise -- see the gate header */
@@ -242,6 +248,122 @@ int rom_chrome_pokeblock_load(const RomChrome* rch, int g,
     int banks = (int)(p->pal_bytes / 32u); if (banks > 6) banks = 6;
     for (int b = 0; b < banks; b++) pal_bank_from_raw(raw + b * 32, &out->src.pal[b * 16]);
     for (int b = banks; b < 6; b++) for (int i = 0; i < 16; i++) out->src.pal[b * 16 + i] = 0;
+  }
+  out->as_lzblob.base = 0; out->as_lzblob.pages = 0;
+  out->as_lzblob.npages = 0; out->as_lzblob.raw_len = 0;
+  out->as_lzblob.romsrc = &out->src;
+  return 1;
+}
+
+/* ---- bag ---------------------------------------------------------------- */
+
+typedef struct {
+  uint32_t tileset;   uint8_t tileset_lz;  uint32_t tileset_bytes;
+  uint32_t tilemap;   uint8_t tilemap_lz;  uint32_t map_bytes;
+  uint16_t map_w;
+  uint32_t pal_m;      uint8_t pal_m_lz;    uint8_t pal_m_banks;  /* male/base palette */
+  uint32_t pal_f;      uint8_t pal_f_lz;    uint8_t pal_f_banks;  /* female palette --
+                                              * Emerald: a WHOLE separate blob (pal_f_at
+                                              * 0, pal_f_banks == pal_m_banks, full
+                                              * replace); FRLG: a partial override
+                                              * (pal_f_at 1, pal_f_banks 1) */
+  uint8_t  pal_f_at;
+} BagPins;
+
+/* Emerald BPEE r0. Tileset is the LZ10 blob immediately before the known
+ * tilemap pointer (menu.bin, referenced from 0x081AB134); male/female
+ * palettes are two COMPLETE independent 32-colour blobs, not a bank override
+ * -- rom_chrome.h's header comment records the code-reference evidence. */
+static const BagPins k_bag_emerald = {
+  0x08D9A620, 1, 1696u,
+  0x08D9A88C, 1, 2048u,
+  32,
+  0x08D9A588, 1, 2,
+  0x08D9A5D4, 1, 2, 0,
+};
+
+/* FireRed BPRE r1. A 3-bank palette, MEASURED to be gender-INDEPENDENT: a
+ * pixel-exact comparison against the compiled art (a female save; see
+ * rom_chrome.h) proved the base 3-bank blob alone reproduces every sampled
+ * background colour (header, list pane, desc pane fill, bottom-left corner)
+ * to the GBA's own RGB15 rounding. The address labelled "bg_female.pal" in
+ * DESIGN.md's inventory (0x08E83604) is a real, valid 1-bank LZ10 blob at a
+ * plausible-looking offset, but applying it as a bank-1 override produced a
+ * WRONG colour there (orange where retail is blue) -- it is not this
+ * screen's female recolour, whatever it actually is. No override is wired;
+ * pal_f_banks stays 0 for both genders until a real female difference (if
+ * one even exists here) is found and proven the same way. */
+static const BagPins k_bag_firered = {
+  0x08E830CC, 1, 1760u,
+  0x08E832C0, 1, 2048u,
+  32,
+  0x08E835B4, 1, 3,
+  0, 0, 0, 0,
+};
+
+/* LeafGreen BPGE r0 -- the FireRed set, shifted; found independently by the
+ * same code-reference scan, not assumed from FireRed's addresses. Same "no
+ * proven female override" posture as FireRed above. */
+static const BagPins k_bag_leafgreen = {
+  0x08E8314C, 1, 1760u,
+  0x08E83340, 1, 2048u,
+  32,
+  0x08E83634, 1, 3,
+  0, 0, 0, 0,
+};
+
+static const BagPins* bag_pins_for(RomKind kind) {
+  switch (kind) {
+    case ROM_EMERALD:   return &k_bag_emerald;
+    case ROM_FIRERED:   return &k_bag_firered;
+    case ROM_LEAFGREEN: return &k_bag_leafgreen;
+    default:             return 0;
+  }
+}
+
+int rom_chrome_bag_load(const RomChrome* rch, int g, int female,
+                        uint8_t* scratch, uint32_t cap, RomChromeBag* out) {
+  if (!rom_chrome_bag_have(rch, g) || !scratch || !out) return 0;
+  const BagPins* p = bag_pins_for(rch->rc->kind);
+  if (!p) return 0;   /* rom_chrome_open() promised bag_style only for pinned kinds */
+
+  uint32_t tileset_off = 0;
+  uint32_t map_off = (tileset_off + p->tileset_bytes + 1u) & ~1u;   /* 2-aligned */
+  uint32_t pal_off = map_off + p->map_bytes;
+  uint32_t pal_bytes = (uint32_t)p->pal_m_banks * 32u;
+  uint32_t need = pal_off + pal_bytes;
+  if (need > cap) return 0;
+
+  if (!fetch(rch->rc, rch->verify, p->tileset, p->tileset_lz,
+            scratch + tileset_off, cap - tileset_off, p->tileset_bytes)) return 0;
+  if (!fetch(rch->rc, rch->verify, p->tilemap, p->tilemap_lz,
+            scratch + map_off, cap - map_off, p->map_bytes)) return 0;
+  if (!fetch(rch->rc, rch->verify, p->pal_m, p->pal_m_lz,
+            scratch + pal_off, cap - pal_off, pal_bytes)) return 0;
+
+  out->src.tiles = scratch + tileset_off;
+  out->src.map = (const uint16_t*)(const void*)(scratch + map_off);
+  out->src.bg_map = 0;   /* single-layer screen -- no background layer under the bag */
+  out->src.map_w = p->map_w;
+  {
+    const uint8_t* raw = scratch + pal_off;
+    int banks = (int)p->pal_m_banks; if (banks > 6) banks = 6;
+    for (int b = 0; b < banks; b++) pal_bank_from_raw(raw + b * 32, &out->src.pal[b * 16]);
+    for (int b = banks; b < 6; b++) for (int i = 0; i < 16; i++) out->src.pal[b * 16 + i] = 0;
+  }
+  if (female && p->pal_f_banks) {
+    uint8_t fb[3 * 32];                              /* worst case 3 banks, 96 B -- stack,
+                                                        * not scratch: never overlaps the
+                                                        * caller's buffer */
+    uint32_t fbytes = (uint32_t)p->pal_f_banks * 32u;
+    if (fbytes <= sizeof fb &&
+        fetch(rch->rc, rch->verify, p->pal_f, p->pal_f_lz, fb, sizeof fb, fbytes)) {
+      for (int b = 0; b < p->pal_f_banks && (p->pal_f_at + b) < 6; b++)
+        pal_bank_from_raw(fb + b * 32, &out->src.pal[(p->pal_f_at + b) * 16]);
+    }
+    /* a failed female fetch just keeps the male/base banks -- the male colours
+     * on a female bag, never a corrupt or unreadable one (same posture as the
+     * card's female_bg fetch above). */
   }
   out->as_lzblob.base = 0; out->as_lzblob.pages = 0;
   out->as_lzblob.npages = 0; out->as_lzblob.raw_len = 0;

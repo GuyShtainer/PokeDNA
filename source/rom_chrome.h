@@ -38,25 +38,84 @@
  * global.h) and rom_chrome_pokeblock_have() reports that honestly, matching
  * gen3_pokeblock.c's own pk_pokeblock_offset()==0 for FRLG.
  *
- * BAG: NOT IMPLEMENTED, on purpose, and this is the header's most important
- * finding. Ruby is the only game DESIGN.md locates completely (Emerald's own
- * screen TILESET is explicitly "not located"; FireRed/LeafGreen have no tileset
- * row in the table at all — only a tilemap, which cannot be rendered without one).
- * Even for Ruby, the numbers do not fit the budget: its bag_screen.png tileset
- * decompresses to 8,192 B — the WHOLE 8 KiB shared staging buffer (artbuf.h) —
- * with zero bytes left for the tilemap (2,048 B) or the palette (64 B) it needs
- * AT THE SAME TIME to composite one tile, let alone the item-icon buffer the bag
- * screen ALREADY shares that same 8 KiB with (rom_itemart.h Sec "RECOMMENDED
- * BUFFER"). Holding a resident chrome tileset across the WHOLE bag screen's
- * lifetime (required for cheap partial-rect restores, DESIGN.md Sec 4.6) is
- * fundamentally incompatible with also decoding an item icon into the same RAM on
- * demand mid-screen without one silently clobbering the other. Fixing this needs
- * either new EWRAM (the brief forbids it: "NEW EWRAM MUST BE ZERO") or an
- * on-demand per-tile LZ77 seek scheme (LZ77 cannot be randomly seeked — decoding
- * tile N means decoding tiles 0..N-1 first, which is too slow for a screen
- * redrawn on every cursor move). bag_bg() therefore keeps its EXISTING two-rung
- * behaviour (compiled art, else blob==0 / the plain data-editor bag tab)
- * unchanged; this file adds no bag code at all.
+ * BAG: IMPLEMENTED for Emerald + FireRed + LeafGreen. Ruby/Sapphire NOT
+ * implemented, and this is now pinned down rather than estimated.
+ *
+ * The DESIGN.md inventory (Sec 1.4) had Emerald's screen TILESET as "not
+ * located" and FireRed/LeafGreen with no tileset row at all — only a tilemap,
+ * which cannot be rendered without one. All three were closed the way
+ * DESIGN.md itself predicted ("cost to close: minutes, not hours"): the known
+ * tilemap pointer is referenced from exactly one code site in every game
+ * (found by scanning the ROM for that literal 32-bit pointer value), and the
+ * bag screen's own asset-loading routine sits right there as a tight run of
+ * LZ77 pointer literals — the tileset is the LZ10 blob immediately BEFORE the
+ * tilemap in every one of the three ROMs, verified by decoding it and
+ * compositing the result (docs/analysis-2026-08-20-artless-phases/bag-*.png):
+ *   Emerald   tileset 0x08D9A620 (1,696 B / 53 tiles), tilemap 0x08D9A88C
+ *             (known), palette MALE 0x08D9A588 / FEMALE 0x08D9A5D4 — each a
+ *             COMPLETE, independent 32-colour (2-bank) blob, not a partial
+ *             override; gender picks which one to fetch, no swap needed.
+ *   FireRed   tileset 0x08E830CC (1,760 B / 55 tiles), tilemap 0x08E832C0
+ *             (known — DESIGN.md's "bg.bin"), palette 0x08E835B4 (96 B / 3
+ *             banks) — MEASURED gender-INDEPENDENT (below), no override.
+ *   LeafGreen the FireRed set, shifted: tileset 0x08E8314C, tilemap 0x08E83340,
+ *             palette 0x08E83634. Same code shape at the same relative
+ *             offsets, confirmed independently (not assumed from FireRed's
+ *             addresses).
+ * DESIGN.md's "bag.pal" / "bag_window_pal" table entries are NOT part of this
+ * screen's background at all — they are referenced from unrelated code sites
+ * (bag.pal's only reference sits beside rom_itemart.h's own FireRed item-icon
+ * pin, i.e. it is item-icon plumbing, not bag chrome) and were ruled out by
+ * that same code-reference check before being used. A FOURTH address at
+ * 0x08E83604 (DESIGN.md's "bg_female.pal"), applied as a bank-1 override, was
+ * tried and REJECTED: it decodes cleanly (32 B, 1 bank) and sits right next to
+ * the tileset/tilemap/palette pointers in the SAME code, so it looked exactly
+ * like the trainer card's tier+female_bg shape (CardPins above) — but wiring
+ * it in and pixel-diffing against a REAL female-save capture of the compiled
+ * art (docs/analysis-2026-08-20-artless-phases/bag-fullart-firered-*.png)
+ * showed a wrong colour (orange where retail is blue). Removing the override
+ * (rom_chrome.c's k_bag_firered/k_bag_leafgreen, pal_f_banks = 0) made every
+ * sampled background pixel match retail to RGB15 rounding. Lesson for the
+ * next person to touch this: "a pointer decodes, sits in the right place, and
+ * produces a plausible-looking image" is NOT proof it is correct — only a
+ * pixel-diff against real output is. A female recolour may genuinely exist
+ * here and simply live somewhere else, or may not exist at all — both are
+ * honest until proven, unlike a wrong colour shipped as if verified.
+ *
+ * Every tilemap uses TWO palette banks (measured, not assumed): bank 0 for the
+ * bulk of the screen, bank 1 for a small accent set that includes the desc
+ * pane's fill colour (Emerald: 5 of 1,024 tilemap entries; FRLG: 180 of
+ * 1,024). There is no second (bg_map) layer here — the bag has one tilemap, unlike the
+ * card's front/back-over-bg composite — so RomChromeBag.src.bg_map is always 0.
+ *
+ * RUBY/SAPPHIRE REMAIN UNSUPPORTED, and not for a located-data reason this
+ * time: DESIGN.md Sec 1.4 already fully locates Ruby's bag_screen.png tileset,
+ * and it is a genuine, unavoidable budget miss — LZ10 decodes to exactly
+ * 8,192 B, the WHOLE shared 8 KiB staging buffer (artbuf.h), leaving zero
+ * bytes for its own tilemap or palette, before even considering anything else
+ * that buffer must hold. Sapphire is not in DESIGN.md's bag table and was not
+ * independently probed (Ruby's own number already rules the family out).
+ *
+ * THE SHARED-BUFFER HAZARD THIS MODULE DOES NOT REMOVE: bag chrome (this file)
+ * and item icons (rom_itemart.c, Phase 1, already wired) target the SAME
+ * mon_decomp buffer at the SAME offset 0 — app_item_icon() (pdna_main.c) always
+ * decodes to `mon_decomp` with no parameter to relocate it, and that call is
+ * out of this module's scope (rule: own rom_chrome.c, don't rewire item art).
+ * So, unlike the trainer card and Pokeblock case (which share the screen with
+ * no other decoder for their whole visit), a decoded RomChromeBag is invalidated
+ * by the VERY NEXT app_item_icon() call — which pdna_bag.c's draw_desc() makes
+ * on every selection change. bag_screen() therefore cannot decode once and hold
+ * across the interactive loop the way card_bg()/pokeblock_bg() do; it must
+ * fetch a fresh BgFrame immediately before EVERY bg_restore()/bg_blit_rect()
+ * call, "decode fresh, blit immediately" (the same contract art_fallbacks.c:148
+ * already names for app_item_icon/app_type_badge) applied at finer grain. See
+ * pdna_bag.c's draw_header/draw_cursor/draw_list/draw_desc for the four call
+ * sites that each now fetch their own BgFrame instead of reusing one captured
+ * at screen entry — reusing one WAS the Pokeblock-case bug this codebase
+ * already shipped once. The cost is a redundant tileset+tilemap+palette
+ * re-decode on every cursor move and idle description auto-page (a few KB of
+ * LZ77, no SD access when the source is a fused/cartridge-bus ROM) — accepted
+ * because it is user-driven (a keypress or a 1.5 s idle tick), never per-frame.
  *
  * ============================================================================
  * MEMORY
@@ -71,12 +130,16 @@
  * case is now tileset + front/back tilemap + bg tilemap + palette: Emerald
  * 5,120 + 1,200 + 1,200 + 96 = 7,616 B; Ruby 5,120 + 1,280 + 1,280 + 96 =
  * 7,776 B. Pokeblock's is unchanged, 1,280 + 2,048 = 3,328 B (no background
- * layer — PokeblockPins has no bg field, RomChromeSrc.bg_map is set to 0). All
- * fit the 8,192 B buffer with room to spare, and — unlike the bag — neither
- * screen shares that buffer with any OTHER concurrent decoder (the trainer card
- * shows no item icons or mon sprites; this module deliberately does not wire
- * card_badge16() or pokeblock_flavor_icon()/pokeblock_hl(), so nothing else
- * touches the buffer while a chrome tileset is resident there).
+ * layer — PokeblockPins has no bg field, RomChromeSrc.bg_map is set to 0). Bag
+ * is the smallest of the three: Emerald 1,696 + 2,048 + 64 = 3,808 B (female
+ * is a whole separate 64 B fetch, same shape, not additive); FireRed/LeafGreen
+ * 1,760 + 2,048 + 96 = 3,904 B, gender-independent (no extra fetch at all — see
+ * the header's bag section for why). All fit the 8,192 B buffer with more
+ * than half spare, and — unlike the bag screen's INTERACTIVE LOOP (see the scope
+ * note above) — the card and Pokeblock screens never share that buffer with any
+ * OTHER concurrent decoder for their whole visit (this module deliberately does
+ * not wire card_badge16() or pokeblock_flavor_icon()/pokeblock_hl(), so nothing
+ * else touches the buffer while THEIR chrome tileset is resident there).
  *
  * A decoded RomChromeSrc (lzblob.h) must stay alive exactly as long as its
  * BgFrame is used — the SAME rule rom_itemart.h's RomTypeSheet.scratch already
@@ -97,6 +160,9 @@ typedef struct {
                              * Emerald and Ruby are wired, and Ruby renders as
                              * PK_RS style (card_bg's own game index 0) */
   int pokeblock_ok;       /* 1 iff this ROM is Emerald (the only one wired)    */
+  int bag_style;           /* -1 = none; else the PkGame (1 EMERALD / 2 FRLG)
+                             * this ROM's bag chrome renders as — bag_bg.h's own
+                             * index. Ruby/Sapphire always -1 (see header note). */
   int verify;             /* fetch-twice-and-compare, default ON (rom_itemart's
                              * "silent-garbage hazard" posture) — see
                              * rom_chrome_set_verify() */
@@ -142,5 +208,31 @@ typedef struct {
 
 int rom_chrome_pokeblock_load(const RomChrome* rch, int g,
                               uint8_t* scratch, uint32_t cap, RomChromePokeblock* out);
+
+/* ---- bag ---------------------------------------------------------------- */
+
+/* 1 iff rom_chrome_bag_load(game=g, ...) can succeed for THIS rom. g is
+ * bag_bg()'s own convention (bag_bg.h): 0 = RS (never true here), 1 = Emerald,
+ * 2 = FRLG (FireRed and LeafGreen both report g==2; rom_chrome_bag_load() picks
+ * the right pin table from rch->rc->kind). */
+int rom_chrome_bag_have(const RomChrome* rch, int g);
+
+typedef struct {
+  RomChromeSrc src;
+  LzBlob       as_lzblob;
+} RomChromeBag;
+
+/* Decode the bag screen's tileset + tilemap + (gendered) palette into
+ * `scratch` (>= cap bytes; worst case 3,904 B, the header comment's MEMORY
+ * section) and fill *out ready to hand to a BgFrame as `.blob =
+ * &out->as_lzblob, .off = 0, .sw = BAG_BG_W`. `female` selects the palette on
+ * Emerald (a whole separate 2-bank blob); FRLG has no proven gender-specific
+ * palette and always renders its one measured-correct 3-bank base regardless
+ * of `female` — see the header comment for why. Returns 1, or 0 with *out untouched
+ * (caller keeps the existing "blob == 0" fallback: the plain data-editor bag
+ * tab). NEVER memoise the result across calls — see the header's shared-buffer
+ * hazard note: it is invalidated by the very next item-icon decode. */
+int rom_chrome_bag_load(const RomChrome* rch, int g, int female,
+                        uint8_t* scratch, uint32_t cap, RomChromeBag* out);
 
 #endif /* ROM_CHROME_H */

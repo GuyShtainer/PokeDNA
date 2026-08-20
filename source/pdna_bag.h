@@ -4,6 +4,14 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "gen3_trainer.h"   /* PkGame */
+#include "rom_chrome.h"     /* RomChrome */
+
+/* Registers the open ROM's chrome rung with this file's bag_bg() ROM fallback
+ * -- same pattern as pdna_trainer_set_romchrome() for the card. Call from
+ * app_icon_rom_open() beside the others; NULL clears it (no ROM open, or the
+ * open ROM's bag chrome failed). Safe to call in a full-art build (a no-op
+ * store; the STRONG bag_bg() never reads it). */
+void pdna_bag_set_romchrome(const RomChrome* rch);
 
 /* Real Gen-3 bag screen — the data editor's bag tab wearing the loaded game's
  * in-game bag chrome (RS / Emerald / FRLG, per-gender; see bag_bg.h for the
