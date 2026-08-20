@@ -48,26 +48,42 @@
  * raw 4bpp, DESIGN.md Sec 1.2) -- always comfortably inside ROM_WP_TILES_MAX_BYTES,
  * which is why this rung needs no new EWRAM (see rom_wallpaper.c's header note).
  *
- * ---- the composition question DESIGN.md Sec 1.2/5 left OPEN, and what this module
- * ---- does about it
- * The repo's compiled wallpapers.c (git-ignored generated art) was independently
- * built by tools/gen_wallpaper.py from decomp PNG source assets, and DESIGN.md's
- * own decisive experiment (probe_wpexact.py, re-run in this pass -- see the phase
- * report) could NOT reproduce it byte-for-byte out of the ROM under any of the four
- * plausible palette-substitution rules it tried, nor under a literal "no
- * substitution" rule tried in this pass either. The missing background-pattern blob
- * DESIGN.md speculated about was searched for again in this pass and still was not
- * found anywhere in the Emerald image. This module therefore takes the ROM's own
- * gWallpaperTiles/gWallpaperTilemap as ALREADY the complete, final picture -- which
- * is how LoadWallpaperGfx actually uses them at retail (one decompress straight to
- * BG VRAM, no runtime compositing) -- and expands every tile INCLUDING palette
- * index 0 literally, through whichever of the row's palette banks the tilemap entry
- * names, with no synthetic substitution. This is a real, load-bearing design
- * decision, not a shortcut: it means a ROM-sourced wallpaper may not be pixel-
- * identical to the currently-shipped baked wallpapers.c art (that mismatch is
- * DESIGN.md's own still-open research question, budgeted separately at "one
- * afternoon" and NOT closed by this pass), but it is exactly what the cartridge
- * itself would show on its own PC screen.
+ * ---- the composition question DESIGN.md Sec 1.2/5 raised, MEASURED AND CLOSED
+ * ---- except for one specific, quantified piece
+ * The repo's compiled wallpapers.c (git-ignored generated art, Emerald-only source
+ * assets) is the byte-for-byte retail reference. Rendering this module's output
+ * against it (docs/analysis-2026-08-20-artless-phases/probe_wpfix_verify.py,
+ * re-runnable) settles the composition rule: a tilemap entry's raw 4-bit bank field
+ * is 0, 1 or 2 across every wallpaper on all three pinned games; the row's own
+ * palette blob holds exactly ROM_WP_PAL_BANKS (2) banks (64 B, NOT 128 -- see the
+ * ROM_WP_PAL_BYTES history below); raw bank 0 or 1 both read the row's FIRST bank,
+ * raw bank 2 reads its SECOND (rom_wallpaper_pal_bank() implements exactly this).
+ * Measured on Emerald (the only pinned game wallpapers.c was built from -- FireRed/
+ * LeafGreen use their OWN, never-byte-matched art per DESIGN.md Sec 1.2's own note,
+ * so comparing them against this Emerald reference is not a correctness check):
+ * every pixel whose 4bpp nibble is NONZERO (i.e. not palette index 0) reproduces
+ * wallpapers.c EXACTLY, 100.00%, across all 16 standard wallpapers.
+ *   The ONE genuinely open piece: pixels at palette index 0 (the tile nibble that
+ * is 0). Retail's LoadWallpaperGfx composites a wallpaper as TWO layers -- a tiled
+ * scenery pattern (bg.png in the decomp) underneath, with the tilemap layer drawn
+ * over it where index 0 is transparent and the pattern shows through. This module
+ * draws ONE Mode-3 layer with no compositing, so it expands index 0 LITERALLY
+ * (whatever RGB15 the row's palette bank stores there), not the true per-position
+ * backdrop pattern. Measured: 272 of 35,585 index-0 pixels (0.76%) happen to
+ * coincide anyway (an all-fill wallpaper stretch); the remaining ~9.6% of a
+ * wallpaper's total pixels are index-0 and differ from retail's tiled backdrop by
+ * this design. This includes the box's 12 corner cells (tilemap bank 0 on every
+ * wallpaper on every pinned game, always tid 0 -- the tiles blob's all-zero "blank"
+ * tile): retail draws these fully transparent over the same tiled backdrop, so ANY
+ * literal color choice there is equally approximate; this module reads them through
+ * rom_wallpaper_pal_bank(0) = the row's own first bank, the same literal-index-0
+ * policy applied everywhere else in this module, rather than inventing a special
+ * case or a synthetic fill. Closing this exactly would mean finding and compositing
+ * the per-wallpaper backdrop pattern (DESIGN.md speculated about a second blob; a
+ * repeated search in this pass still did not find one in the Emerald image) --
+ * genuinely open, budgeted separately, and NOT required for this module's own
+ * contract (it documents literal, no-substitution expansion as the design, not a
+ * bug). Nothing else about this module's composition is open.
  */
 
 #define ROM_WP_COUNT           16   /* standard wallpapers only; see SCOPE above  */
@@ -75,8 +91,13 @@
 #define ROM_WP_MAP_BYTES       (ROM_WP_MAP_ENTRIES * 2u)   /* 720                 */
 #define ROM_WP_TILES_MAX_BYTES 4096 /* >= measured worst case (3,072 B); refuses  *
                                       * rather than truncates a longer decode      */
-#define ROM_WP_PAL_BANKS       4
-#define ROM_WP_PAL_BYTES       (ROM_WP_PAL_BANKS * 32u)    /* 128                 */
+#define ROM_WP_PAL_BANKS       2   /* MEASURED: the row's palette blob is exactly *
+                                     * 64 B (2 banks) -- on Emerald wp 0 it is    *
+                                     * immediately followed by the tiles blob's   *
+                                     * LZ77 header (see rom_wallpaper.c). The old *
+                                     * 4-bank/128 B guess read past it into the   *
+                                     * next blob's compressed stream bytes.       */
+#define ROM_WP_PAL_BYTES       (ROM_WP_PAL_BANKS * 32u)    /* 64                  */
 
 typedef struct RomWallpaper {
   const RomCtx* rc;
@@ -112,6 +133,15 @@ int rom_wallpaper_tiles(const RomWallpaper* rw, int wp, uint8_t* dst, uint32_t d
  * as zeroes if the row's palette blob is shorter than ROM_WP_PAL_BYTES -- callers
  * must not trust a bank past what the row's own tilemap uses. Returns 1 on success. */
 int rom_wallpaper_pal(const RomWallpaper* rw, int wp, uint16_t dst[ROM_WP_PAL_BANKS][16]);
+
+/* Map a tilemap entry's raw 4-bit bank field (e>>12 & 0xF) to an index into the
+ * ROM_WP_PAL_BANKS-bank array rom_wallpaper_pal() fills -- the SINGLE place this
+ * mapping is implemented, so pdna_box.c's draw path and the host test can never
+ * drift apart. Measured (this header's top-of-file note, probe_wpfix_verify.py):
+ * raw bank 0 or 1 both read the row's bank 0; raw bank 2 reads bank 1. Anything
+ * else (never observed on a pinned game) clamps to the last real bank rather than
+ * reading out of the dst[ROM_WP_PAL_BANKS][16] array. */
+int rom_wallpaper_pal_bank(int bank);
 
 /* Expand ONE 8x8 4bpp tile (tid's 32 raw bytes inside `tiles`/`tiles_bytes`, as
  * rom_wallpaper_tiles produced) to 64 RGB15 pixels (bit 15 clear -- the caller masks

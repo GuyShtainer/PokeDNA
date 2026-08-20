@@ -106,16 +106,23 @@ int rom_wallpaper_pal(const RomWallpaper* rw, int wp, uint16_t dst[ROM_WP_PAL_BA
   memset(dst, 0, ROM_WP_PAL_BANKS * 16 * sizeof(uint16_t));
   uint8_t raw[ROM_WP_PAL_BYTES];
   /* The palette blob is plain (uncompressed) raw RGB15, like every other shared
-   * palette table this codebase reads (rom_mon_icon_pal, item icon palettes). A
-   * bank beyond what the ROM actually stored simply reads as whatever follows in
-   * the image; callers only ever ask for a bank a tilemap entry named, and the
-   * caller-side verify (pdna_box.c) covers a garbled read the same as any other
-   * source here. */
+   * palette table this codebase reads (rom_mon_icon_pal, item icon palettes).
+   * ROM_WP_PAL_BYTES is exactly the row's real length (64 B = 2 banks, MEASURED:
+   * on Emerald wp 0 this blob is immediately followed by the tiles blob's own
+   * LZ77 header at +64 -- see rom_wallpaper.h's top-of-file note), so this read
+   * never runs into the next blob's compressed bytes. */
   if (!rom_read_at(rw->rc, pals, raw, sizeof raw)) return 0;
   for (int bk = 0; bk < ROM_WP_PAL_BANKS; bk++)
     for (int c = 0; c < 16; c++)
       dst[bk][c] = (uint16_t)(rd16(raw + bk * 32 + c * 2) & 0x7FFF);
   return 1;
+}
+
+int rom_wallpaper_pal_bank(int bank) {
+  int pb = (bank <= 1) ? 0 : bank - 1;
+  if (pb >= ROM_WP_PAL_BANKS) pb = ROM_WP_PAL_BANKS - 1;
+  if (pb < 0) pb = 0;
+  return pb;
 }
 
 int rom_wallpaper_expand_tile(const uint8_t* tiles, uint32_t tiles_bytes, uint16_t tid,

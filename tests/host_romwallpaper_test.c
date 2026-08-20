@@ -88,8 +88,8 @@ static void run_rom(const char* path, const char* name, int expect_open) {
       int hf = (e >> 10) & 1, vf = (e >> 11) & 1, bank = (e >> 12) & 0xF;
       if ((uint32_t)tid * 32u + 32u > tbytes) { bad_tid++; continue; }
       uint16_t out[64];
-      if (!rom_wallpaper_expand_tile(tiles_a, tbytes, tid, hf, vf, pal[bank % ROM_WP_PAL_BANKS],
-                                     out))
+      if (!rom_wallpaper_expand_tile(tiles_a, tbytes, tid, hf, vf,
+                                     pal[rom_wallpaper_pal_bank(bank)], out))
         bad_expand++;
     }
     chk(name, tag, bad_tid == 0);

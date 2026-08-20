@@ -459,8 +459,8 @@ static bool wp_rom_cell(const uint8_t* tiles, uint32_t tiles_bytes,
   if (last_key && (int32_t)e == *last_key) return true;     /* already staged */
   uint16_t tid = (uint16_t)(e & 0x3FFu);
   int hf = (e >> 10) & 1, vf = (e >> 11) & 1, bank = (e >> 12) & 0xF;
-  if (!rom_wallpaper_expand_tile(tiles, tiles_bytes, tid, hf, vf, pal[bank % ROM_WP_PAL_BANKS],
-                                 s_wp_tile))
+  if (!rom_wallpaper_expand_tile(tiles, tiles_bytes, tid, hf, vf,
+                                 pal[rom_wallpaper_pal_bank(bank)], s_wp_tile))
     return false;
   if (last_key) *last_key = (int32_t)e;
   uint32_t* wmk = (uint32_t*)s_wp_tile;         /* 15-bit mask ONCE per tile, matching draw_wallpaper */
