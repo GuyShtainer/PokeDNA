@@ -28,6 +28,8 @@
 #include "osk.h"
 #include "rumble.h"         /* rumble_io_suspend/resume: mute the motor while the wallpaper blit reads ROM */
 #include "log.h"            /* log_line: wallpaper self-verify diagnostics */
+#include "artbuf.h"         /* mon_decomp: shared 8 KiB scratch, borrowed by the ROM wallpaper rung */
+#include "rom_wallpaper.h"  /* the §12c ROM-live wallpaper rung (a registered/fused ROM) */
 #include "gen3_chunk.h"     /* Chunk: Emerald-style rubber-band multi-select geometry */
 #include "pdna_progress.h"  /* pdna_progress_frame: batch sprite + N/total bar */
 #include "pdna_pk.h"        /* pdna_pk_export_silent: "Export all" from the box title */
@@ -299,6 +301,13 @@ __attribute__((weak)) const uint16_t* wallpaper_walda_sentinels(void) { return 0
  * the wallpaper accessors above (pdna_app.h is owned by concurrent work). */
 bool app_walda_colors(uint16_t out[2]);
 
+/* pdna_main.c: the currently open ROM's wallpaper reader (fused, or later a
+ * registered SD file) -- NULL if none is open this session, or the game/revision
+ * isn't one of the three rom_wallpaper.h pins. Declared here like the app_* ROM-art
+ * accessors above; defined beside s_iconrom/s_romsprite/s_romitemart so one
+ * registration lights this up too. */
+const RomWallpaper* app_wallpaper_rom(void);
+
 /* ---- §12a Walda color substitution -------------------------------------------------
  * The Friends/Walda wallpapers (ids 16..31) are pre-rendered with two SENTINEL colors
  * standing in for palette entries 1..2 — the entries Emerald overwrites at load with
@@ -324,6 +333,7 @@ static void wp_sub_walda(uint16_t* t64) {
  * none — wp_restore_rect then repaints the aligned grass patch instead), and which grid
  * cells carry a software-blitted "understudy" icon in the bitmap (see the hooks below). */
 static int s_wp_drawn = -1;
+static uint8_t s_wp_drawn_kind = 0;    /* 0 none/grass, 1 compiled (cart-baked), 2 ROM-live */
 static uint8_t s_under[G3_BOX_SLOTS];
 
 /* Copy n u16s ROM -> RAM, then RE-READ the ROM and byte-compare; retry on mismatch.
@@ -376,13 +386,143 @@ static void wp_blit_tile(const uint16_t* t64, int bx, int by, int rows) {
   }
 }
 
+/* ---- §12c the ROM-live wallpaper rung -------------------------------------------
+ * When the compiled (cart-baked) wallpaper art is absent (the artless build) but the
+ * user has a Pokemon ROM open this session (fused, or a registered SD file --
+ * app_wallpaper_rom()), serve the wallpaper straight off THAT cartridge instead of
+ * falling to procedural grass. Scope (which games/revisions, standard-only, why
+ * palette index 0 is not substituted): rom_wallpaper.h's top-of-file note.
+ *
+ * VERIFICATION: the SAME retry count (4) and the SAME abandon-to-grass rule as
+ * wp_copy_verified above -- deliberately NOT rom_sprite.c's "3 tries, agree twice"
+ * convention. A stray SD/cart-bus glitch during either of two independent
+ * decompress passes makes them disagree, exactly the "does a second read agree"
+ * contract wp_copy_verified applies to a raw pointer, one level up (decompress-of-
+ * a-read instead of a read). A tid that lands outside its own tiles blob is treated
+ * exactly like an out-of-range map index above: the jumble symptom, not trusted.
+ *
+ * MEMORY: zero new EWRAM. The map borrows the FIRST 720 B of the shared 8,192 B
+ * `mon_decomp` scratch (artbuf.h) as its compare buffer, then releases it; the tile
+ * blob (<= ROM_WP_TILES_MAX_BYTES = 4,096 B, comfortably above the measured 3,072 B
+ * worst case among the 16 standard wallpapers) uses the front and back HALVES of
+ * that same buffer for its own two independent decompresses. Nothing is held onto
+ * across calls -- every draw re-stages fresh, the same posture the compiled path's
+ * "read is a cart-bus memcpy, cheap" already takes. */
+#define WP_ROM_RETRIES 4   /* == wp_copy_verified's own attempt count, on purpose */
+
+static bool wp_rom_stage(const RomWallpaper* rw, int wp, uint32_t* tiles_bytes,
+                         uint16_t pal[ROM_WP_PAL_BANKS][16], int* retries_io) {
+  int ok = 0;
+  for (int a = 0; a < WP_ROM_RETRIES && !ok; a++) {
+    if (!rom_wallpaper_map(rw, wp, s_wp_map)) { (*retries_io)++; continue; }
+    uint16_t* cmp = mon_decomp;                      /* 720 B borrowed, released below */
+    if (rom_wallpaper_map(rw, wp, cmp) && memcmp(s_wp_map, cmp, ROM_WP_MAP_BYTES) == 0) ok = 1;
+    else (*retries_io)++;
+  }
+  if (!ok) return false;
+
+  ok = 0;
+  uint8_t* ta = (uint8_t*)mon_decomp;
+  uint8_t* tb = (uint8_t*)mon_decomp + ROM_WP_TILES_MAX_BYTES;
+  uint32_t na = 0, nb = 0;
+  for (int a = 0; a < WP_ROM_RETRIES && !ok; a++) {
+    if (!rom_wallpaper_tiles(rw, wp, ta, ROM_WP_TILES_MAX_BYTES, &na)) { (*retries_io)++; continue; }
+    if (rom_wallpaper_tiles(rw, wp, tb, ROM_WP_TILES_MAX_BYTES, &nb) &&
+        na == nb && memcmp(ta, tb, na) == 0) ok = 1;
+    else (*retries_io)++;
+  }
+  if (!ok) return false;
+  *tiles_bytes = na;
+
+  ok = 0;
+  for (int a = 0; a < WP_ROM_RETRIES && !ok; a++) {
+    uint16_t pal2[ROM_WP_PAL_BANKS][16];             /* 128 B, a real automatic (rule 2 OK) */
+    if (!rom_wallpaper_pal(rw, wp, pal)) { (*retries_io)++; continue; }
+    if (rom_wallpaper_pal(rw, wp, pal2) && memcmp(pal, pal2, sizeof pal2) == 0) ok = 1;
+    else (*retries_io)++;
+  }
+  return ok != 0;
+}
+
+/* One cell's tile, expanded from the just-verified staging into s_wp_tile, with the
+ * same consecutive-same-tile skip and 15-bit mask the compiled path applies. Shared
+ * by the full paint and the rect-restore below. Returns false on an out-of-range
+ * tid (the caller treats that as dirty, same as the compiled path). */
+static bool wp_rom_cell(const uint8_t* tiles, uint32_t tiles_bytes,
+                        const uint16_t pal[ROM_WP_PAL_BANKS][16], uint16_t e,
+                        int32_t* last_key) {
+  /* last_key is int32_t (not uint16_t) so -1 is a genuine "nothing staged yet"
+   * sentinel: e is a full 16-bit attribute word (tid 10b + hflip + vflip + bank
+   * 4b == 16 bits, so every uint16_t value is reachable) and a narrower sentinel
+   * could collide with a real first cell and wrongly skip its expansion, leaving
+   * s_wp_tile holding whatever an unrelated earlier caller left in it. */
+  if (last_key && (int32_t)e == *last_key) return true;     /* already staged */
+  uint16_t tid = (uint16_t)(e & 0x3FFu);
+  int hf = (e >> 10) & 1, vf = (e >> 11) & 1, bank = (e >> 12) & 0xF;
+  if (!rom_wallpaper_expand_tile(tiles, tiles_bytes, tid, hf, vf, pal[bank % ROM_WP_PAL_BANKS],
+                                 s_wp_tile))
+    return false;
+  if (last_key) *last_key = (int32_t)e;
+  uint32_t* wmk = (uint32_t*)s_wp_tile;         /* 15-bit mask ONCE per tile, matching draw_wallpaper */
+  for (int k = 0; k < 32; k++) wmk[k] &= 0x7FFF7FFFu;
+  return true;
+}
+
+static bool draw_wallpaper_rom(int wp, int x, int y, int w, int h) {
+  if (wp < 0 || wp >= ROM_WP_COUNT) return false;   /* Walda ids: not served, see rom_wallpaper.h */
+  const RomWallpaper* rw = app_wallpaper_rom();
+  if (!rw || !rw->ok) return false;
+
+  int retries = 0;
+  uint32_t tiles_bytes = 0;
+  uint16_t pal[ROM_WP_PAL_BANKS][16];
+  rumble_io_suspend();
+  bool ok = wp_rom_stage(rw, wp, &tiles_bytes, pal, &retries);
+  if (!ok) {
+    rumble_io_resume();
+    log_line("wp %d (rom): unstable reads after %d re-decodes, grass fallback", wp, retries);
+    return false;                                    /* abandon rule: caller falls to grass */
+  }
+
+  const uint8_t* tiles = (const uint8_t*)mon_decomp;  /* the verified pass-1 half, still resident */
+  bool dirty = false;
+  int32_t last_key = -1;
+  for (int ty = 0; ty < 18 && !dirty; ty++)
+    for (int tx = 0; tx < 20; tx++) {
+      uint16_t e = s_wp_map[ty * 20 + tx];
+      if (!wp_rom_cell(tiles, tiles_bytes, pal, e, &last_key)) { dirty = true; break; }
+      int bx = x + tx * 8, by = y + ty * 8;
+      int rows = y + h - by; if (rows > 8) rows = 8;
+      int cols = x + w - bx; if (cols > 8) cols = 8;
+      if (rows <= 0 || cols <= 0) continue;
+      if (cols == 8 && !(bx & 1)) wp_blit_tile(s_wp_tile, bx, by, rows);
+      else for (int j = 0; j < rows; j++)
+             for (int i = 0; i < cols; i++)
+               m3_plot(bx + i, by + j, s_wp_tile[j * 8 + i]);
+    }
+  rumble_io_resume();
+  if (dirty) {
+    log_line("wp %d (rom): tid out of range, grass fallback", wp);
+    return false;
+  }
+  if (retries) log_line("wp %d (rom): %d re-decodes", wp, retries);
+  s_wp_drawn = wp;
+  s_wp_drawn_kind = 2;
+  return true;
+}
+
 static void draw_wallpaper(int wp, int x, int y, int w, int h) {
   int nt; const uint16_t* tiles = wallpaper_tile_data(wp, &nt);
   const uint16_t* map = wallpaper_tilemap(wp);
   /* any full-region repaint wipes the §12b understudy blits with it */
   for (int s = 0; s < G3_BOX_SLOTS; s++) s_under[s] = 0;
   s_wp_drawn = -1;
-  if (!tiles || !map) { draw_grass(x, y, w, h); return; }   /* procedural fallback: no ROM read */
+  s_wp_drawn_kind = 0;
+  if (!tiles || !map) {
+    if (draw_wallpaper_rom(wp, x, y, w, h)) return;   /* NEW: a registered/fused ROM */
+    draw_grass(x, y, w, h);                           /* procedural fallback: no ROM read */
+    return;
+  }
   wp_walda_setup(wp);                  /* Walda (16..31): substitute the save's colors at blit */
   /* HW-ROBUST + SELF-VERIFYING render. History: the wallpaper garbled into a "jumble of
    * tiles" on the real EZ-Flash (never in emulators) and survived two fix theories — the
@@ -482,7 +622,7 @@ static void draw_wallpaper(int wp, int x, int y, int w, int h) {
       }
   }
   rumble_io_resume();
-  if (!dirty) s_wp_drawn = wp;         /* the art is on screen: rect restores may re-use it */
+  if (!dirty) { s_wp_drawn = wp; s_wp_drawn_kind = 1; }  /* art on screen: rect restores may re-use it */
   if (dirty) {
     log_line("wp %d: unstable rom reads, grass fallback (%d re-reads)", wp, retries);
     anom = 1;
@@ -508,12 +648,46 @@ static void plot_clip(int x, int y, u16 c, int x0, int y0, int x1, int y1) {
   if (x >= x0 && x < x1 && y >= y0 && y < y1) m3_plot(x, y, c);
 }
 
+/* Rect-only repaint for the §12c ROM-live rung, mirroring wp_restore_rect's
+ * compiled-path loop below but re-staging from ROM (cheap: <= 4,096 B LZ77 blob)
+ * rather than re-using a cart pointer, since nothing here is held resident between
+ * draws. `x0,y0,x1,y1` are ALREADY CLIPPED to the wallpaper region by the caller. A
+ * restage that fails to verify leaves the rect exactly as it was on screen --
+ * "a tile that stays dirty is skipped" (wp_restore_rect's own rule) applies
+ * identically here: a stale patch beats baked garbage. */
+static void wp_restore_rect_rom(int x0, int y0, int x1, int y1) {
+  if (s_wp_drawn < 0) return;
+  const RomWallpaper* rw = app_wallpaper_rom();
+  if (!rw || !rw->ok) return;
+  int retries = 0;
+  uint32_t tiles_bytes = 0;
+  uint16_t pal[ROM_WP_PAL_BANKS][16];
+  rumble_io_suspend();
+  bool ok = wp_rom_stage(rw, s_wp_drawn, &tiles_bytes, pal, &retries);
+  if (!ok) { rumble_io_resume(); return; }
+  const uint8_t* tiles = (const uint8_t*)mon_decomp;
+  int tx0 = (x0 - WP_X) / 8, tx1 = (x1 - 1 - WP_X) / 8;
+  int ty0 = (y0 - WP_Y) / 8, ty1 = (y1 - 1 - WP_Y) / 8;
+  for (int ty = ty0; ty <= ty1; ty++)
+    for (int tx = tx0; tx <= tx1; tx++) {
+      uint16_t e = s_wp_map[ty * 20 + tx];
+      if (!wp_rom_cell(tiles, tiles_bytes, pal, e, 0)) continue;  /* skip: stale beats garbage */
+      int bx = WP_X + tx * 8, by = WP_Y + ty * 8;
+      for (int j = 0; j < 8; j++)
+        for (int i = 0; i < 8; i++)
+          plot_clip(bx + i, by + j, s_wp_tile[j * 8 + i] & 0x7FFF, x0, y0, x1, y1);
+    }
+  rumble_io_resume();
+  if (retries) log_line("wp %d (rom): %d re-decodes (rect restore)", s_wp_drawn, retries);
+}
+
 /* Repaint the wallpaper inside [x0,x0+w)x[y0,y0+h) only. Art path: re-uses the staged
  * s_wp_map (verified + golden-checked by the last full draw of s_wp_drawn) and the
- * same verified per-tile staging + Walda substitution as draw_wallpaper. Grass path
- * (s_wp_drawn < 0): repaint base + leaves with the FULL-REGION phase so the patch
- * can't seam against the surrounding fallback. A tile that stays dirty is skipped —
- * a stale 8x8 beats baking garbage, and the next full repaint heals it. */
+ * same verified per-tile staging + Walda substitution as draw_wallpaper. ROM path
+ * (s_wp_drawn_kind == 2): the §12c rung above. Grass path (s_wp_drawn < 0): repaint
+ * base + leaves with the FULL-REGION phase so the patch can't seam against the
+ * surrounding fallback. A tile that stays dirty is skipped — a stale 8x8 beats
+ * baking garbage, and the next full repaint heals it. */
 static void wp_restore_rect(int x0, int y0, int w, int h) {
   int x1 = x0 + w, y1 = y0 + h;
   if (x0 < WP_X) x0 = WP_X;
@@ -521,6 +695,7 @@ static void wp_restore_rect(int x0, int y0, int w, int h) {
   if (x1 > WP_X + WP_W) x1 = WP_X + WP_W;
   if (y1 > WP_Y + WP_H) y1 = WP_Y + WP_H;
   if (x0 >= x1 || y0 >= y1) return;
+  if (s_wp_drawn_kind == 2) { wp_restore_rect_rom(x0, y0, x1, y1); return; }
   int nt = 0;
   const uint16_t* tiles = (s_wp_drawn >= 0) ? wallpaper_tile_data(s_wp_drawn, &nt) : 0;
   if (!tiles) {                                   /* the grass fallback is on screen */
