@@ -851,6 +851,25 @@
                                    kerning measures exactly 30px, the same as this budget;
                                    see tests/host_textfit_test.c's pcp-cancel check. */
 
+/* CHANGE 1 (2026-08-20, "make sure the pokemon are not trimmed"): retail's REAL icon
+ * anchor within a party tile, measured by cross-correlating the actual 32x32 ROM icon
+ * against native-E12e-storage-partystrip.top.png (docs/analysis-2026-08-20-pcparty's
+ * own report has the full methodology) for SIX different species on this exact panel
+ * (Salamence/Metagross/Tyranitar/Gengar matched pixel-exact, mean abs RGB error <22
+ * per opaque pixel; Dragonite/Milotic matched shape-exact with a palette mismatch
+ * attributable to the measurement script's own simplified colour decode, not the
+ * position). Every one of the 6 tiles (the offset slot AND all 5 column rows) gave the
+ * IDENTICAL relative offset -- this is retail's fixed placement rule, not a per-tile
+ * fit: the icon's top-left sits at (tile_x0 + PDNA_PCP_ICON_DX, tile_y0 + PDNA_PCP_ICON_DY),
+ * NOT a centred crop. The previous code centred with (tileH-32)/2 using C integer
+ * division on a negative numerator ((23-32)/2 truncates toward zero to -4), which
+ * biased the crop upward and ate more of the bottom than retail does -- retail's real
+ * vertical offset is -8, not -4, because Gen-3 icon art keeps the creature weighted
+ * toward the BOTTOM of its 32x32 canvas (built-in headroom at the top, for exactly
+ * this kind of tile packing) rather than centring it. */
+#define PDNA_PCP_ICON_DX      (-1)
+#define PDNA_PCP_ICON_DY      (-8)
+
 /* Occlusion range handed to boxoam_strip_open()/strip_restore_icons(): the box grid
  * cells the PANEL's own on-screen rectangle physically covers -- the outer bevel's
  * own extent, not just the column, now that the panel is a single big frame. */

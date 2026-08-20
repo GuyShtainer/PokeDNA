@@ -1818,10 +1818,66 @@ static void box_options_menu(BoxSource* src, int box) {
  * treating it as reachable-by-cursor rather than B-only is a judgement call, made so
  * the button is not just decoration once it exists on screen.
  *
- * Same PLACE/GRAB contract as app_party_overlay (see pdna_app.h): PLACE (held != NULL)
- * drops/swaps a carried box mon into the party on A, returning 1; GRAB (held == NULL)
- * opens the full action menu on A, returning 2 (+ grab80 / grab_slot filled) iff MOVE TO
- * BOX was chosen. 0 = closed (B, or CANCEL). */
+ * CHANGE 2 (2026-08-20, "the glove/cursor [must] go to the pc box while grabbing,
+ * just like the MOVE option in the game"): the popup's own cursor now has TWO foci,
+ * mirroring retail's "the cursor moves freely between the party panel and the box
+ * grid" (MEASUREMENTS.md has no frame of this — no capture shows the panel's cursor
+ * off the panel — so the exact mapping is this build's own judgement call, chosen to
+ * reuse the geometry that already exists): PANEL (the six tiles + CANCEL, as before)
+ * and GRID (the box's own cursor, over the 2 grid columns the panel does NOT cover —
+ * columns 4-5 at this build's GRID_X/CELL_W/COLS, see box_oam.c's boxoam_strip_open
+ * comment for why only those 2 survive the panel's own occlusion). RIGHT from the
+ * party COLUMN (not the offset tile — Guy's own call, "RIGHT from the party column
+ * into the grid", picked because the column already sits closer to the grid on
+ * screen) crosses into GRID at the near column, same row; LEFT from the grid's near
+ * column crosses back to PANEL, same row (col_sel tracks "last column row" across
+ * BOTH directions so a RIGHT then LEFT is a no-op on the cursor's position). UP/DOWN/
+ * LEFT/RIGHT clamp (not wrap) at the grid's own edges while in GRID focus — there is
+ * no top-tabs/Bank-switch/box-switch escape from inside this popup, so clamping is
+ * the safe, simple choice (a future version could wire those in; not attempted here).
+ * A grid cell can never render inside the panel's own rectangle by construction
+ * (columns 4-5 sit entirely to the panel's right, with margin — see box_oam.c).
+ *
+ * While focus is PANEL, the box's own cursor hand / carried mon stay hidden exactly
+ * as before (boxoam_strip_hide_cursor). While focus is GRID, they render normally —
+ * oam_sync (already shared with the outer pdna_box loop) draws them at the grid
+ * cursor, including a mon riding the glove, for free.
+ *
+ * GRID-focus A reuses the SAME mutation primitives the outer loop trusts (start_carry
+ * / drop_held / app_mon_menu / play_grab_anim / play_place_anim_down/up) rather than
+ * re-deriving them, and reads/writes the SAME file-scope s_holding/s_held/s_orig_*
+ * this whole file already shares with the outer loop — so does the PANEL's own PLACE
+ * branch, below (it used to take a `held`/`orig_*` snapshot as a parameter; now it
+ * reads the live globals directly, which is what makes a mon grabbed mid-session from
+ * the GRID immediately placeable from the PANEL without reopening anything):
+ *   - s_holding true, A on a grid cell: PLACE (drop_held) -- an empty cell or a
+ *     within-scope swap. Closes the popup (goto out, result 1) only once the hand is
+ *     genuinely empty (*done); a SWAP keeps the popup open, now holding the displaced
+ *     occupant, exactly like the outer loop's own swap handling.
+ *   - !s_holding, A on an occupied grid cell: GRAB -- opens the box's own action menu;
+ *     MOVE or DUPLICATE starts a carry (start_carry / the dup-copy path) and keeps the
+ *     popup OPEN so the freshly-grabbed mon can be walked back to the panel and placed
+ *     into a party slot without ever leaving this screen. B still closes the popup
+ *     unconditionally (matching how B already worked for a mon carried in from
+ *     OUTSIDE this popup) — the carry survives exactly as it always has, because
+ *     closing on B never discards s_holding/s_held.
+ *
+ * Round trips (both proven — docs/analysis-2026-08-20-pcparty's own report has the
+ * capture sequence): grab a party mon (top tabs, as before) -> RIGHT into GRID ->
+ * place onto a box cell (closes); and grab a box mon from GRID focus (MOVE) -> LEFT
+ * into PANEL -> place onto a party tile (closes). RULE 3 (never lose/duplicate a
+ * carried mon, never empty the party) holds throughout because every mutation still
+ * runs through the SAME primitives the outer loop already relies on for that
+ * guarantee — this popup adds new PATHS to them, not new COPIES of their logic.
+ *
+ * Same PLACE/GRAB contract as app_party_overlay (see pdna_app.h) for the RETURN
+ * VALUE: PLACE (a mon was already held on entry) drops/swaps a carried box mon into
+ * the party on A, returning 1; GRAB (empty-handed on entry) opens the full action
+ * menu on A, returning 2 (+ grab80 / grab_slot filled) iff MOVE TO BOX was chosen.
+ * 0 = closed (B, or CANCEL) — possibly still holding something (a mon grabbed via
+ * GRID focus, or one that was already held on entry and never got placed); the
+ * caller's own s_holding check (unconditional, same as any other carry) picks that
+ * up on the very next iteration regardless of which entry point this was. */
 
 /* Physical bbox (inclusive) for party index `idx` (0 = offset slot 1, 1..5 = column
  * rows 0..4, top-to-bottom = party index 1..5). Pure geometry, no drawing. */
@@ -1896,17 +1952,46 @@ static void pcp_draw_slot(int idx, const PkMon* p, bool addslot, bool selected) 
     else     ui_name_chip(x0 + 1, cy, cw, ch, UI_PANEL, UI_TEXT, pk_species_name(p->species));
     return;
   }
-  /* MUST-FIX 5: same centring target as before (a 32x32 icon in a 30x23 tile cannot
-   * avoid overflowing on every side), but now CLIPPED to the tile's own interior
-   * instead of bleeding into the tile above/below/across it — retail's icons never
-   * leave the plate (a direct pixel scan just outside the tile border in the ground-
-   * truth capture found only plain panel fill, never a sprite pixel). Deliberately
-   * NOT calling party_draw_name_level or party_draw_hp_fields (pdna_main.c) here; that
-   * per-mon detail lives ONLY in the reused PKMN DATA panel (draw_left, below),
-   * matching retail's own division of labour. */
-  int ix = x0 + ((x1 - x0 + 1) - MON_ICON_W) / 2;
-  int iy = y0 + ((y1 - y0 + 1) - MON_ICON_H) / 2;
-  boxoam_icon_blit_clip(ix, iy, x0 + 1, y0 + 1, x1, y1, p->species, p->form, egg);
+  /* CHANGE 1 (2026-08-20, "make sure the pokemon are not trimmed" -- see
+   * PDNA_PCP_ICON_DX/DY's own comment, pdna_layout.h, for the measurement this
+   * replaces MUST-FIX 5's centring formula with): retail's real, fixed icon anchor,
+   * not a centred crop -- confirmed constant across all 6 tiles. The 32x32 canvas
+   * still can't fit a 30x23 tile, so something still has to give, but retail's OWN
+   * answer is "let it, mostly": the top overflow (8 px) is real geometry, yet EVERY
+   * species measured had zero opaque pixels up there (Gen-3 icon art's own built-in
+   * headroom), so retail never actually needed to clip it -- the art avoids the
+   * collision on its own. This clip reproduces retail's measured allowance (1 px
+   * left/right/bottom, up to 8 px above) while still refusing, defensively, to let
+   * an untested species with a taller pose collide with the tile immediately above
+   * (there is only a 1 px gap between column rows) or bleed above the panel's own
+   * top edge -- a clean cut instead of a two-Pokemon collage, for a case the retail
+   * capture never exercises. Left/right/bottom overflow lands on plain panel
+   * background in every position (no tile is horizontally adjacent to another, and
+   * the last row's overflow is well clear of CANCEL), so those three sides always
+   * get retail's full 1 px. Deliberately NOT calling party_draw_name_level or
+   * party_draw_hp_fields (pdna_main.c) here; that per-mon detail lives ONLY in the
+   * reused PKMN DATA panel (draw_left, below), matching retail's own division of
+   * labour. */
+  int ix = x0 + PDNA_PCP_ICON_DX;
+  int iy = y0 + PDNA_PCP_ICON_DY;
+  int cx0 = x0 + PDNA_PCP_ICON_DX, cx1 = x1 + 2;   /* 1px overflow L/R, matching retail */
+  int cy1 = y1 + 2;                                /* 1px overflow bottom, matching retail */
+  int cy0 = y0 + PDNA_PCP_ICON_DY;                 /* up to 8px overflow above ... */
+  if (idx == 0 || idx == 1) {                      /* ... the offset slot and column row 0
+                                                     * have no party tile above them within
+                                                     * the panel -- only the panel's own fill
+                                                     * bounds it (retail's real allowance) */
+    if (cy0 < PDNA_PCP_FILL_Y0) cy0 = PDNA_PCP_FILL_Y0;
+  } else {                                         /* column rows 1-4: a real neighbour tile
+                                                     * sits just 1px above -- don't let an
+                                                     * untested species' overflow collide
+                                                     * with it (never observed in the ground
+                                                     * truth; defensive only) */
+    int px0, py0, px1, py1; pcp_pos(idx - 1, &px0, &py0, &px1, &py1);
+    (void)px0; (void)px1;
+    if (cy0 < py1 + 1) cy0 = py1 + 1;
+  }
+  boxoam_icon_blit_clip(ix, iy, cx0, cy0, cx1, cy1, p->species, p->form, egg);
 }
 
 /* CANCEL pill: retail's flat/dithered chrome vocabulary (pale-blue body, WHITE glyph
@@ -2006,9 +2091,8 @@ static void pcp_draw_panel(void) {
   m3_rect(PDNA_PCP_PANEL_X0, PDNA_PCP_BB_OUTER_Y0, PDNA_PCP_PANEL_X1 + 1, PDNA_PCP_BB_OUTER_Y1 + 1, UI_PCP_PANEL_OUTER);
 }
 
-static int party_strip_overlay(BoxSource* src, int box, int cur,
-                               const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
-                               bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
+static int party_strip_overlay(BoxSource* src, int box, int* cur,
+                               uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
   if (!app_can_edit()) {
     snd_deny();
     boxoam_suspend(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); boxoam_resume();
@@ -2026,7 +2110,21 @@ static int party_strip_overlay(BoxSource* src, int box, int cur,
   bool sel_seeded = false;            /* MUST-FIX 8: one-time seed, once `rows` is known */
   int col_sel = 1;                    /* MUST-FIX 8: last COLUMN row (never 0/offset or
                                        * CANCEL), so RIGHT from the offset tile returns
-                                       * somewhere sane regardless of party size        */
+                                       * somewhere sane regardless of party size; CHANGE 2
+                                       * also updates this on the PANEL<->GRID crossing so
+                                       * a RIGHT-then-LEFT round trip is a no-op            */
+  enum { PCP_FOCUS_PANEL = 0, PCP_FOCUS_GRID = 1 };   /* CHANGE 2: see this function
+                                                       * group's own top comment          */
+  int focus = PCP_FOCUS_PANEL;
+  int gcur = *cur;                    /* the box grid's own cursor while focus==GRID;
+                                       * seeded from the caller's last box cursor, but
+                                       * only ever DISPLAYED once RIGHT actually crosses
+                                       * into the grid (which overwrites it then)         */
+  uint8_t* recs = src->records(box);  /* CHANGE 2: grid-focus grab/place mutate the box
+                                       * directly; this popup never switches boxes (no
+                                       * L/R here), so this stays valid for the whole
+                                       * call, same guarantee the outer loop's own
+                                       * `recs` already relies on                        */
   /* Hide the grid icons under the panel's own on-screen rectangle and reserve 6 of
    * them (5 column + 1 offset) for the panel's OWN icons (box_oam.c) — done ONCE, not
    * per iteration, since neither the panel's rectangle nor the box's contents move
@@ -2036,7 +2134,11 @@ static int party_strip_overlay(BoxSource* src, int box, int cur,
   for (;;) {
     int n = app_party_n();
     if (n < 1) goto out;                              /* shouldn't happen (party never empties) */
-    int addslot = (held && n < 6) ? n : -1;          /* PLACE: cell n is the "+ add" target */
+    int addslot = (s_holding && n < 6) ? n : -1;     /* PLACE: cell n is the "+ add" target;
+                                                       * s_holding (not a snapshot param any
+                                                       * more, CHANGE 2) so a mon grabbed
+                                                       * mid-session from the GRID also gets
+                                                       * the add-slot target                */
     int rows = (addslot >= 0) ? n + 1 : n;           /* selectable party/add tiles, 1..6   */
     if (sel > rows) sel = rows;                      /* rows itself is the CANCEL stop     */
     /* MUST-FIX 8 (2026-08-20 review): pcp_pos puts idx 0 (the offset tile) BELOW idx 1
@@ -2053,16 +2155,23 @@ static int party_strip_overlay(BoxSource* src, int box, int cur,
      * (c-coding-guideline.md S1's concern is multi-KB locals, not this). */
     PkMon pm[6]; app_party_read(pm);
 
-    render_full(src, box, cur, false, false, false);   /* box grid/banner/footer stay alive
+    render_full(src, box, gcur, false, false, false);  /* box grid/banner/footer stay alive
                                                          * behind the panel; also undoes
                                                          * whatever a sub-screen opened by
-                                                         * app_party_mon_menu last iteration
-                                                         * may have painted over */
-    boxoam_strip_hide_cursor();        /* MUST-FIX 2: render_full's own oam_sync() just
+                                                         * app_party_mon_menu/app_mon_menu
+                                                         * last iteration may have painted
+                                                         * over. Always gcur (CHANGE 2): its
+                                                         * own oam_sync positions the box
+                                                         * cursor/carry there, which matters
+                                                         * once focus==GRID and is harmless
+                                                         * (immediately hidden) otherwise. */
+    if (focus == PCP_FOCUS_PANEL)
+      boxoam_strip_hide_cursor();      /* MUST-FIX 2: render_full's own oam_sync() just
                                        * positioned the box's cursor hand / carried mon
-                                       * off `cur`, which the panel now covers for up to
-                                       * 2/3 of the grid — suppress them for this frame
-                                       * (restored at `out:`, once the panel closes) */
+                                       * at gcur, which the panel covers for up to 2/3 of
+                                       * the grid — suppress them while focus is on the
+                                       * PANEL (restored at `out:`, or the instant focus
+                                       * crosses to GRID, CHANGE 2) */
     ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);   /* SHOULD-FIX 6: replace whatever fragment of
                                        * the box's own footer survived render_full's draw
                                        * (see PDNA_LBL_PCP_FOOTER's own comment) */
@@ -2079,18 +2188,82 @@ static int party_strip_overlay(BoxSource* src, int box, int cur,
                                                          * (see this group's own top comment) */
       bool isAdd = (idx == addslot);
       const PkMon* p = (!isAdd && idx < n) ? &pm[idx] : 0;
-      pcp_draw_slot(idx, p, isAdd, idx == sel && sel < rows);
+      pcp_draw_slot(idx, p, isAdd, focus == PCP_FOCUS_PANEL && idx == sel && sel < rows);
     }
-    pcp_draw_cancel(sel == rows);
+    pcp_draw_cancel(focus == PCP_FOCUS_PANEL && sel == rows);
     boxoam_commit();                  /* flush the panel's own OBJ icons + the hidden grid slots;
                                        * render_full's own oam_sync() only ever touches the shadow */
-    draw_left(sel < n ? &pm[sel] : 0);   /* the reused PKMN DATA panel follows the panel's
-                                          * OWN focus, not the box's last cursor cell —
+    draw_left(focus == PCP_FOCUS_GRID ? &g_box[gcur] : (sel < n ? &pm[sel] : 0));
+                                          /* the reused PKMN DATA panel follows whichever
+                                          * focus has the cursor (CHANGE 2), not the box's
+                                          * cursor cell from BEFORE the popup opened —
                                           * design decision #3 (blank while CANCEL is
                                           * focused: sel==rows >= n, same as "no mon") */
 
     u16 k; do { s_vsync(); k = key_hit(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B); } while (!k);
-    if (k & KEY_B) { snd_back(); goto out; }
+    if (k & KEY_B) { snd_back(); goto out; }          /* closes regardless of focus or of
+                                                       * whether a mon is held — a carry
+                                                       * that came from OUTSIDE this popup
+                                                       * (or one grabbed via GRID focus,
+                                                       * CHANGE 2) is untouched by B, exactly
+                                                       * like the outer loop's own carry-B
+                                                       * contract; nothing is ever discarded
+                                                       * here (RULE 3) */
+    else if (focus == PCP_FOCUS_GRID) {
+      /* CHANGE 2: the box's own grid, restricted to the 2 columns the panel does not
+       * cover (COLS-2, COLS-1 — see boxoam_strip_open's own comment, box_oam.c, for
+       * why only those 2 of 6 columns survive the panel's occlusion at this build's
+       * geometry). Clamp (not wrap) at every edge except the near column's LEFT,
+       * which is the crossing back to PANEL. */
+      if (k & KEY_LEFT) {
+        if (gcur % COLS > COLS - 2) { snd_move(); gcur--; }
+        else { snd_move(); focus = PCP_FOCUS_PANEL; sel = col_sel; }
+      }
+      else if (k & KEY_RIGHT) { if (gcur % COLS < COLS - 1) { snd_move(); gcur++; } }
+      else if (k & KEY_UP)    { if (gcur >= COLS) { snd_move(); gcur -= COLS; } }
+      else if (k & KEY_DOWN)  { if (gcur < COLS * (ROWS - 1)) { snd_move(); gcur += COLS; } }
+      else if (k & KEY_A) {
+        if (s_holding) {           /* PLACE onto the box cell — the SAME primitive (and
+                                    * the SAME empty/swap/cross-scope rules) the outer
+                                    * loop's own s_holding+A path already trusts */
+          play_place_anim_down(src, box, gcur);
+          bool done; recs = drop_held(src, box, gcur, recs, &done);
+          box_decode(src, recs, box); s_oam_reload = true;
+          play_place_anim_up(src, box, gcur);
+          if (done) { result = 1; goto out; }   /* hand now genuinely empty -> close, same
+                                                 * as the panel's own successful PLACE     */
+          /* else: SWAP -> still holding the displaced occupant; loop continues, exactly
+           * like the outer loop's own swap handling (drop_held already reset the
+           * origin to -1 for it — a RAM-only carry, never crosses save scopes) */
+        } else if (g_box[gcur].species) {   /* GRAB: the box's own action menu, same call
+                                            * the outer loop's NORMAL-mode A already makes */
+          int mbox = src->is_bank ? 0 : box;
+          boxoam_suspend();                 /* full-screen sub-view — own bracket, see box_oam.h */
+          app_mon_menu(recs + (uint32_t)gcur * 80, false, src->is_bank, src->commit,
+                       src->menu_block, mbox, gcur, UI_FOOTER_Y);
+          boxoam_resume();
+          recs = src->records(box); box_decode(src, recs, box); s_oam_reload = true;
+          if (app_take_move_request()) {                    /* MOVE -> into the glove; the
+                                                             * popup STAYS OPEN (CHANGE 2's
+                                                             * whole point) so it can be
+                                                             * walked back to the panel      */
+            start_carry(src, recs, box, gcur);
+            play_grab_anim(src, box, gcur);
+          } else if (app_take_dup_request()) {                /* DUPLICATE -> a fresh copy;
+                                                                * both flags are consumed
+                                                                * here so neither can leak
+                                                                * into a LATER, unrelated
+                                                                * app_mon_menu call         */
+            memcpy(s_held, recs + (uint32_t)gcur * 80, 80);
+            s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_bank = src->is_bank;
+            s_held_dup = true; s_orig_party = false;
+            play_grab_anim(src, box, gcur);
+          }
+          /* neither -> the menu only viewed/edited/released in place; recs/g_box are
+           * already fresh (refreshed above), the next iteration's redraw reflects it */
+        }
+      }
+    }
     /* MUST-FIX 8: LEFT/RIGHT hop between the offset tile (idx 0) and the column (idx
      * 1..rows-1) — chosen over row-aligning LEFT/RIGHT to just idx 3 (the column row
      * that happens to share the offset tile's own y-range) because that would make
@@ -2099,7 +2272,14 @@ static int party_strip_overlay(BoxSource* src, int box, int cur,
      * every party size. UP/DOWN never cross the idx0<->column boundary any more — no
      * keypress can ever move the highlight in a direction the input didn't ask for. */
     else if (k & KEY_LEFT)  { if (sel > 0 && sel < rows) { snd_move(); col_sel = sel; sel = 0; } }
-    else if (k & KEY_RIGHT) { if (sel == 0 && rows >= 2) { snd_move(); sel = col_sel; } }
+    else if (k & KEY_RIGHT) {
+      if (sel == 0 && rows >= 2) { snd_move(); sel = col_sel; }
+      else if (sel > 0 && sel < rows) {         /* CHANGE 2: column -> GRID, same row,
+                                                 * entering at the near visible column */
+        snd_move(); col_sel = sel; focus = PCP_FOCUS_GRID;
+        gcur = (sel - 1) * COLS + (COLS - 2);
+      }
+    }
     else if (k & KEY_UP) {
       if (sel > 1) { snd_move(); sel--; }
       else if (sel == 1 && rows == 1) { snd_move(); sel = 0; }   /* no column at all (n==1,
@@ -2113,8 +2293,41 @@ static int party_strip_overlay(BoxSource* src, int box, int cur,
     }
     else if (k & KEY_A) {
       if (sel == rows) { snd_back(); goto out; }        /* CANCEL selected -> same as B */
-      if (held) {                                    /* PLACE: drop/swap into the party */
-        if (app_party_place_held(held, sel, orig_box, orig_slot, orig_bank, can_swap)) { result = 1; goto out; }
+      if (s_holding) {                                /* PLACE: drop/swap into the party.
+                                                        * s_holding/s_held/s_orig_* (not
+                                                        * snapshot params any more, CHANGE
+                                                        * 2) so a mon grabbed mid-session
+                                                        * from the GRID is placeable here
+                                                        * too, without ever leaving this
+                                                        * popup. */
+        bool can_swap_now = (!s_orig_bank && s_orig_slot >= 0);
+        /* MUST-FIX (found by pixel-diffing the capture, not trusted from the trace):
+         * a box-origin carry's ADD clears its origin cell, and SWAP overwrites the
+         * target's origin cell, BOTH by writing g_pc directly (party_place_held /
+         * clear_origin) -- bytes this popup's OWN g_box[]/OAM cache never sees unless
+         * something re-decodes it. The very first version of this fix left that to
+         * the CALLER (mirroring how call site B's own rr==1 handling already did a
+         * redundant box_decode) -- which is exactly backwards: call site A (the
+         * BROWSE entry) never re-decoded at all, so a GRID-grabbed-then-PANEL-placed
+         * mon updated the real save data correctly but the box grid kept showing the
+         * stale pre-swap icon until the NEXT unrelated redraw. Refresh here,
+         * unconditionally, so this function is self-sufficient regardless of which
+         * call site is running (matches the same principle the s_holding clear below
+         * already follows). */
+        bool placed = app_party_place_held(s_held, sel, s_orig_box, s_orig_slot, s_orig_bank, can_swap_now);
+        if (placed && !s_orig_bank && s_orig_slot >= 0) {
+          recs = src->records(box); box_decode(src, recs, box); s_oam_reload = true;
+        }
+        if (placed) {
+          /* party_place_held doesn't know about s_holding -- clear it HERE so this
+           * function is self-sufficient regardless of which call site is running (a
+           * mon grabbed via GRID focus can close a BROWSE-entered session this way,
+           * a caller that only ever expected PLACE-entry's rr==1 didn't used to have
+           * to clear this itself) */
+          s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false;
+          s_held_dup = false; s_orig_party = false;
+          result = 1; goto out;
+        }
       } else if (sel < n) {                          /* BROWSE: the full action menu on this mon */
         bool tobox_hit = false;
         boxoam_suspend();               /* full-screen sub-view — own bracket, see box_oam.h */
@@ -2126,7 +2339,10 @@ static int party_strip_overlay(BoxSource* src, int box, int cur,
     }
   }
 out:
-  oam_sync(cur, false, box, src->is_bank);   /* MUST-FIX 2: bring the box's own cursor
+  *cur = gcur;                          /* CHANGE 2: hand the box cursor back to the
+                                       * caller wherever GRID focus (if ever entered)
+                                       * left it — a no-op if focus never left PANEL */
+  oam_sync(*cur, false, box, src->is_bank);   /* MUST-FIX 2: bring the box's own cursor
                                        * hand / carried mon back now that the panel is
                                        * closing — mirrors boxoam_strip_close() right
                                        * below, which hands the borrowed grid slots back */
@@ -2295,13 +2511,22 @@ int pdna_box(BoxSource* src) {
           if (!src->is_bank) { if (homeless || s_orig_party) snd_deny(); else { s_tab_focus = -1; boxoam_exit(); return 4; } }
         }
         else if (k & KEY_A) {
-          if (s_tab_focus == 1 && !src->is_bank && !s_orig_party) {  /* PARTY tab: place/swap the held box mon into the party */
-            bool can_swap = (!s_orig_bank && s_orig_slot >= 0);
-            int rr = party_strip_overlay(src, box, cur, s_held, s_orig_box, s_orig_slot, s_orig_bank, can_swap, 0, 0, false);
-            if (rr == 1) {                            /* placed -> end the carry */
+          if (s_tab_focus == 1 && !src->is_bank && !s_orig_party) {  /* PARTY tab: place/swap the held box mon into the party
+                                                        * (CHANGE 2: `cur` is now &cur -- the
+                                                        * popup's own GRID focus, if the user
+                                                        * crosses into it, can move the box
+                                                        * cursor and hands the new position
+                                                        * back on close) */
+            int rr = party_strip_overlay(src, box, &cur, 0, 0, false);
+            if (rr == 1) {                            /* placed -> end the carry (party_strip_overlay
+                                                        * already cleared s_holding/s_orig_* itself,
+                                                        * CHANGE 2 -- this is belt-and-braces) */
               s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
               s_tab_focus = -1; recs = src->records(box); box_decode(src, recs, box);
             }
+            /* rr==0: closed without placing -- either the untouched original carry (B) or
+             * a mon grabbed via GRID focus and then B'd out of; s_holding already reflects
+             * whichever is true, unconditionally checked next iteration same as any carry */
             s_oam_reload = true; need_full = true;    /* redraw over the popup */
           } else snd_deny();                          /* party-origin mon can't go back; PKMN DATA / SAVE locked while carrying */
         }
@@ -2395,7 +2620,15 @@ int pdna_box(BoxSource* src) {
           if (src->is_bank) snd_deny();
           else {
             uint8_t grab[80]; int gslot = -1;
-            int rr = party_strip_overlay(src, box, cur, 0, 0, 0, false, false, grab, &gslot, true);   /* empty-handed: A opens the action menu (Move to box -> grab) */
+            /* empty-handed: A opens the action menu (Move to box -> grab). CHANGE 2:
+             * `cur` is now &cur -- the popup's own GRID focus, if the user crosses into
+             * it, moves the box cursor and hands the new position back on close; it can
+             * also now grab a BOX mon itself (rr==1, placed into the party without ever
+             * leaving the popup) as well as the pre-existing rr==2 party-mon grab below
+             * -- party_strip_overlay already cleared s_holding/s_orig_* for a
+             * successful rr==1 itself, so "closed -> back to the grid" below is already
+             * the right redraw for that case too, no separate branch needed. */
+            int rr = party_strip_overlay(src, box, &cur, grab, &gslot, true);
             if (rr == 2 && gslot >= 0) {                  /* grabbed a party mon -> carry it (party origin) */
               memcpy(s_held, grab, 80);
               s_holding = true; s_orig_party = true; s_orig_slot = gslot;
@@ -2404,7 +2637,11 @@ int pdna_box(BoxSource* src) {
               render_full(src, box, cur, false, false, true);                  /* repaint box over the popup */
               play_grab_anim(src, box, cur); carry_move(src, box, cur, cur);
               draw_footer(src->is_bank, false, true);
-            } else { s_tab_focus = -1; s_oam_reload = true; need_full = true; } /* closed -> back to the grid */
+            } else { s_tab_focus = -1; s_oam_reload = true; need_full = true; } /* closed -> back to the grid
+                                                        * (rr==0 not holding, rr==0 still
+                                                        * holding a GRID-grabbed box mon, or
+                                                        * rr==1 already placed -- all three
+                                                        * want the same fresh redraw) */
           }
         }
         else { s_tab_focus = -1; boxoam_exit(); return 0; }                                   /* SAVE -> exit (save prompt) */
