@@ -25,6 +25,10 @@
 #include "item_icons.h"
 #include "rom_mon.h"      /* phase-1 ROM-streamed icons (artless + the user's own ROM) */
 #include "art_icons_cache.h" /* phase-2 icons.bin cache -- tried BEFORE the rom rung   */
+#include "hand_gate.h"       /* PDNA_HAND_ART_COMPILED -- see that header for why      */
+#if !PDNA_HAND_ART_COMPILED
+#include "rom_hand.h"        /* phase-3 ROM-streamed glove (DESIGN.md Sec 1.3/4.5)     */
+#endif
 #include "rumble.h"         /* rumble_io_suspend: freeze GPIO during verified CPU ROM reads */
 #include "log.h"            /* icon-upload self-verify diagnostics */
 #include "pdna_app.h"       /* app_log_flush: anomaly evidence must survive a power-off */
@@ -326,9 +330,49 @@ static void upload_tiles_verified(int tid, const void* src, int bytes) {
   if ((bad || rr) && s_icon_flushes < 2) { s_icon_flushes++; app_log_flush(); }
 }
 
+#if !PDNA_HAND_ART_COMPILED
+/* ------- Phase 3 (ROM-art, DESIGN.md Sec 1.3/4.5): the glove, streamed live -------
+ *
+ * All 16 of the hand's OAM tiles are ALREADY allocated (TID_HAND 992..1007) and the
+ * grab fist already shares TID_GRAB (== TID_REGB) with the item glyphs -- this rung
+ * changes only the DMA SOURCE those two uploads read from, exactly DESIGN.md Sec
+ * 4.5's "zero new OBJ tiles" plan. Compiled out entirely when the real poses are
+ * linked in (hand_gate.h), so this whole block is absent from a full-art build.
+ *
+ * s_romhand is the app's registered ROM (or NULL); s_romhand_pal_ready records
+ * whether boxoam_enter() could ALSO read the ROM's own palette this session -- tiles
+ * and palette are used as a PAIR, never mixed with the compiled/fallback array, so a
+ * palette-read failure cannot pair ROM tiles with the wrong (fallback) colours. */
+static const RomHand* s_romhand = 0;
+static int s_romhand_pal_ready = 0;
+
+void boxoam_rom_hand(const RomHand* rh) {
+  s_romhand = rom_hand_have(rh) ? rh : 0;
+  s_romhand_pal_ready = 0;              /* re-validated fresh on the next boxoam_enter() */
+}
+
+/* Read one verified 512 B pose off the ROM into s_stage and DMA it straight to `tid`
+ * (no extra verify at the upload step -- rom_hand_frame already fetched-twice-and-
+ * compared, same "already verified RAM" contract upload_icon()'s from_rom=1 path
+ * relies on for the icon-streaming rung). Returns 1 on success, 0 (nothing uploaded,
+ * caller falls back to the compiled/fallback array) otherwise. */
+static int load_rom_hand_frame(int tid, uint8_t frame) {
+  if (!s_romhand || !s_romhand_pal_ready) return 0;
+  rumble_io_suspend();
+  int ok = rom_hand_frame(s_romhand, frame, (uint8_t*)s_stage);
+  rumble_io_resume();
+  if (!ok) { log_line("hand: rom frame %d unstable/unavailable", frame); return 0; }
+  upload_tiles(tid, s_stage, ROM_HAND_FRAME_BYTES);
+  return 1;
+}
+#endif /* !PDNA_HAND_ART_COMPILED */
+
 /* ------- region B (time-shared between move/item grab-fist and the small item) ------- */
 static void load_regb_grab(void) {
   if (s_regb == 0) return;
+#if !PDNA_HAND_ART_COMPILED
+  if (load_rom_hand_frame(TID_GRAB, ROM_HAND_FRAME_GRAB)) { s_regb = 0; return; }
+#endif
   upload_tiles_verified(TID_GRAB, hand_oam_grab_tiles, HAND_OAM_TILES * HAND_OAM_TILE_BYTES);
   s_regb = 0;
 }
@@ -348,6 +392,12 @@ void boxoam_cursor_dxy(int dx, int dy) { s_cur_dx = dx; s_cur_dy = dy; }
 static void load_rega_hand(void) {
   int want = 10 + s_hand_pose;
   if (s_rega == want) return;
+#if !PDNA_HAND_ART_COMPILED
+  uint8_t romframe = s_hand_pose == BOXOAM_POSE_REACH  ? ROM_HAND_FRAME_REACH
+                    : s_hand_pose == BOXOAM_POSE_BOUNCE ? ROM_HAND_FRAME_BOUNCE
+                                                        : ROM_HAND_FRAME_CURSOR;
+  if (load_rom_hand_frame(TID_HAND, romframe)) { s_rega = want; return; }
+#endif
   const uint8_t* t = s_hand_pose == BOXOAM_POSE_REACH  ? hand_oam_reach_tiles
                    : s_hand_pose == BOXOAM_POSE_BOUNCE ? hand_oam_bounce_tiles
                                                        : hand_oam_cursor_tiles;
@@ -471,9 +521,29 @@ void boxoam_enter(void) {
       }
     } }
 
+#if !PDNA_HAND_ART_COMPILED
+  /* Phase 3 (ROM-art): the glove's own palette, read + verified ONCE per box entry
+   * (pose changes reuse it -- load_rom_hand_frame only ever swaps the tiles). Tiles
+   * and palette are used as a PAIR: this flag is what load_rega_hand/load_regb_grab
+   * gate on, so a palette that failed to read never gets paired with ROM tiles under
+   * the fallback's colours (or vice versa) -- see the s_romhand_pal_ready comment
+   * above load_regb_grab. */
+  uint16_t romhandpal[16];
+  s_romhand_pal_ready = 0;
+  if (s_romhand) {
+    rumble_io_suspend();
+    s_romhand_pal_ready = rom_hand_pal(s_romhand, romhandpal);
+    rumble_io_resume();
+    if (!s_romhand_pal_ready) log_line("hand: rom palette unstable/unavailable");
+  }
+#endif
   /* hand palette -> bank 13 (normal) and an orange-tinted copy -> bank 14 (MOVE) */
   for (int i = 0; i < 16; i++) {
+#if !PDNA_HAND_ART_COMPILED
+    uint16_t c = s_romhand_pal_ready ? romhandpal[i] : hand_oam_pal[i];
+#else
     uint16_t c = hand_oam_pal[i];
+#endif
     pal_obj_mem[PB_HAND * 16 + i] = c;
     /* push toward orange: keep luma, bias R up / B down */
     uint32_t r = c & 31, g = (c >> 5) & 31, b = (c >> 10) & 31;

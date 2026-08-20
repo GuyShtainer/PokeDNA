@@ -60,6 +60,10 @@
 #include "rom_wallpaper.h" /* Phase 4 (ROM-art): box wallpapers -- pdna_box.c's §12c rung */
 #include "rom_chrome_gate.h"
 #include "rom_chrome.h"    /* trainer-card + pokeblock ROM rung (Emerald/Ruby)      */
+#include "hand_gate.h"     /* PDNA_HAND_ART_COMPILED -- see that header for why      */
+#if !PDNA_HAND_ART_COMPILED
+#include "rom_hand.h"      /* Phase 3 (ROM-art): the pointer glove (DESIGN.md Sec 1.3/4.5) */
+#endif
 #include "pdna_origin_art.h" /* pdna_origin_art_set_romsprite -- registers the RomSprite */
 #include "artbuf.h"        /* mon_decomp -- the shared 8 KiB decode buffer            */
 #include "item_icons.h"    /* item_icon_for -- the compiled rung app_item_icon() tries first */
@@ -1503,6 +1507,12 @@ static RomText s_romtext;
  * s_romitemart.ok directly without a separate "on" flag. */
 static RomSprite  s_romsprite;
 static RomItemArt s_romitemart;
+/* Phase 3 (ROM-art): the pointer glove (rom_hand.h). Compiled out entirely when the
+ * real poses are linked in (hand_gate.h) -- a full-art build never opens or holds
+ * one, so this costs it nothing. */
+#if !PDNA_HAND_ART_COMPILED
+static RomHand s_romhand;
+#endif
 /* Phase 4 (ROM-art): box wallpapers (rom_wallpaper.h) -- Emerald/FireRed/LeafGreen
  * standard wallpapers only (rom_wallpaper.h's SCOPE note: no Walda, no R/S). Read
  * through app_wallpaper_rom() by pdna_box.c's §12c rung; same "small POD with an ok
@@ -1588,6 +1598,9 @@ static void app_icon_cache_resolve(const RomCtx* rc_ok, bool deep) {
 
 static void app_icon_rom_open(void) {
   boxoam_rom_icons(0);
+#if !PDNA_HAND_ART_COMPILED
+  boxoam_rom_hand(0);
+#endif
   memset(&s_romtext, 0, sizeof s_romtext);
   memset(&s_romitemart, 0, sizeof s_romitemart);
   memset(&s_romwallpaper, 0, sizeof s_romwallpaper);
@@ -1616,6 +1629,10 @@ static void app_icon_rom_open(void) {
       pdna_origin_art_set_romsprite(&s_romsprite);
       rom_itemart_open(&s_romitemart, &s_iconrom_ctx);
       rom_wallpaper_open(&s_romwallpaper, &s_iconrom_ctx);   /* Phase 4 (ROM-art) */
+#if !PDNA_HAND_ART_COMPILED
+      rom_hand_open(&s_romhand, &s_iconrom_ctx);             /* Phase 3 (ROM-art): the glove */
+      boxoam_rom_hand(&s_romhand);
+#endif
       log_line("icons: streaming from fused %s rev%u", rom_kind_name(s_iconrom_ctx.kind),
                s_iconrom_ctx.version);
       app_icon_cache_resolve(&s_iconrom_ctx, false); /* boot path: shallow (size-only) check */
@@ -1653,6 +1670,10 @@ static void app_icon_rom_open(void) {
         pdna_origin_art_set_romsprite(&s_romsprite);
         rom_itemart_open(&s_romitemart, &s_iconrom_ctx);
         rom_wallpaper_open(&s_romwallpaper, &s_iconrom_ctx);    /* Phase 4 (ROM-art) */
+#if !PDNA_HAND_ART_COMPILED
+        rom_hand_open(&s_romhand, &s_iconrom_ctx);              /* Phase 3 (ROM-art): the glove */
+        boxoam_rom_hand(&s_romhand);
+#endif
         log_line("icons: streaming from SD %s (%s)", path, rom_kind_name(s_iconrom_ctx.kind));
         app_icon_cache_resolve(&s_iconrom_ctx, false); /* boot path: shallow (size-only) check */
         return;

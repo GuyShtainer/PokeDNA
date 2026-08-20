@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "gen3_mon.h"      /* PkMon */
+#include "hand_gate.h"     /* PDNA_HAND_ART_COMPILED */
 
 /*
  * Hardware-OAM layer for the PC/Bank box screen (source/pdna_box.c).
@@ -54,6 +55,14 @@ void boxoam_load_box(const PkMon box[30]);
  * icons from it whenever the compiled icon art is absent. NULL clears. */
 struct RomMon;
 void boxoam_rom_icons(const struct RomMon* rm);
+/* Phase 3 (ROM-gated glove, DESIGN.md Sec 1.3/4.5): the app registers an open
+ * RomHand the same way. NULL clears. Compiled out entirely when the real poses are
+ * linked in (hand_gate.h) — a full-art build never holds a RomHand at all, so it
+ * costs this build literally nothing, not even a pointer store. */
+struct RomHand;
+#if !PDNA_HAND_ART_COMPILED
+void boxoam_rom_hand(const struct RomHand* rh);
+#endif
 /* Phase 2 (ROM-art cache): register /PokeDNA/art/icons.bin as the box's FIRST icon
  * rung, ahead of the ROM stream (DESIGN.md Sec 4.1's ladder). path must already be
  * validated by the caller (art_session_icons_ready()) -- this function does not
