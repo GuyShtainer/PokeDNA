@@ -386,7 +386,32 @@ static void load_regb_grab(void) {
 static int s_hand_pose = BOXOAM_POSE_NORMAL;
 static int s_cur_dy = 0;                /* grab/place dip offset (0 = rest) */
 static int s_cur_dx = 0;                /* cursor-slide X offset (retail fix #4) */
-void boxoam_hand_pose(int pose) { s_hand_pose = (pose >= 0 && pose <= 2) ? pose : BOXOAM_POSE_NORMAL; }
+#if !PDNA_HAND_ART_COMPILED
+/* MUST-FIX 2 (2026-08-20 review): BOUNCE's positional fallback for a ROM/SD-streamed
+ * hand -- see the long comment in boxoam_hand_pose() below. Applied as a plain OAM-
+ * position offset in boxoam_cursor(); zero new EWRAM, zero ROM/SD traffic. */
+static int s_hand_bob = 0;
+#endif
+void boxoam_hand_pose(int pose) {
+  pose = (pose >= 0 && pose <= 2) ? pose : BOXOAM_POSE_NORMAL;
+#if !PDNA_HAND_ART_COMPILED
+  /* BOUNCE is the ONLY automatic, idle-driven pose (pdna_box.c's ANIM_PERIOD loop
+   * toggles it every 30 vblanks, forever, while the player is simply sitting in the
+   * box) -- REACH/GRAB stay genuinely user-driven (rest -> reach -> grab on an actual
+   * button press), at most a handful of reads per action, never a standing per-tick
+   * cost. Letting BOUNCE re-source content from ROM/SD on every idle tick was exactly
+   * box_oam.c's icon-rung shape (boxoam_set_frame, see its header comment: "no
+   * frame-1 source in RAM ... keeps the positional bob" on streamed icons) -- same
+   * bug, same fix: a hand that is actually being streamed (s_romhand set) never calls
+   * rom_hand_frame for BOUNCE. It only nudges the sprite 1 px, applied as plain OAM-
+   * position arithmetic in boxoam_cursor() below. A fused/compiled hand has every
+   * pose's tiles in RAM already (hand_oam.c), so it keeps the real 2-frame swap --
+   * this guard only fires when the alternative is a genuine SD read. */
+  if (pose == BOXOAM_POSE_BOUNCE && s_romhand) { s_hand_bob = 1; return; }
+  s_hand_bob = 0;
+#endif
+  s_hand_pose = pose;
+}
 void boxoam_cursor_dy(int dy)   { s_cur_dy = dy; }
 void boxoam_cursor_dxy(int dx, int dy) { s_cur_dx = dx; s_cur_dy = dy; }
 static void load_rega_hand(void) {
@@ -484,6 +509,9 @@ void boxoam_enter(void) {
                                  s_selmark[i] = 0; s_covered[i] = 0; }
   s_bob = 0; s_regb = -1; s_rega = -1;
   s_hand_pose = BOXOAM_POSE_NORMAL; s_cur_dy = 0;   /* no mid-beat leakage across screens */
+#if !PDNA_HAND_ART_COMPILED
+  s_hand_bob = 0;
+#endif
   s_select_on = 0; s_chunk_on = 0; s_chunk_valid = 0;
 
   /* shared icon palettes -> banks 0..12 (416 bytes), staged + verified like the tiles
@@ -698,7 +726,11 @@ void boxoam_cursor(int cur, bool on_title, int mode) {
    * left arrow is decoration (the right one says the same thing), so the hand goes there
    * instead: it still points at the banner, and no data is ever underneath it. */
   if (on_title) { hx = WP_X + 1; hy = 13; }
-  else { hand_xy(cur, &hx, &hy); hx += s_cur_dx; hy += s_cur_dy; }   /* dip + slide ride the hand */
+  else { hand_xy(cur, &hx, &hy); hx += s_cur_dx; hy += s_cur_dy;   /* dip + slide ride the hand */
+#if !PDNA_HAND_ART_COMPILED
+         hy -= s_hand_bob;   /* MUST-FIX 2: streamed-hand BOUNCE fallback, see boxoam_hand_pose() */
+#endif
+       }
 
   int bank = (mode == BOXOAM_HAND_MOVE) ? PB_HANDORG : PB_HAND;
   int prio = 0;
