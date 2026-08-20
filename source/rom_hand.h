@@ -24,10 +24,20 @@
  * 0x2D4A dark grey (RGB 82,82,90) where the compiled reference (hand_oam.c) paints
  * it 0x7FFF white: a dark-grey blob, not a hand. The SHEET address is right --
  * aligning it against the compiled art gives a perfect 1024/1024 mask match at
- * offset (+7,+4). The CORRECT palette is a fresh, independently-verified find, a
- * single unambiguous hit in each dump (exactly [0]=0x0000 [1]=0x5652 [2]=0x2D4A
- * [3]=0x7FFF, matching hand_oam.c's hand_oam_pal byte for byte across all three
- * games -- reproduces the white glove exactly):
+ * offset (+7,+4) for the CURSOR pose. That offset is REAL, not incidental: the
+ * retail sheet is uncropped, so this pose's glove sits (+7,+4) right/down of where
+ * tools/gen_hand_oam.py's top-left crop puts the compiled art, and every OTHER pose
+ * is offset by a DIFFERENT amount again -- (+8,+5) bounce, (+4,+6) reach, (+7,+7)
+ * grab (MUST-FIX 1, 2026-08-20 review). Left uncompensated, the streamed glove is
+ * mis-registered on screen by a different amount per pose. box_oam.c's
+ * load_rom_hand_frame() re-anchors every frame to the compiled-art crop (see its
+ * k_hand_anchor table, the one place that knows all four numbers) before the DMA to
+ * VRAM, so this module's own rom_hand_frame() below still returns the RAW,
+ * unshifted sheet bytes on purpose -- tests/host_romhand_test.c's pixel-(20,6)
+ * check depends on that being true. The CORRECT palette is a fresh,
+ * independently-verified find, a single unambiguous hit in each dump (exactly
+ * [0]=0x0000 [1]=0x5652 [2]=0x2D4A [3]=0x7FFF, matching hand_oam.c's hand_oam_pal
+ * byte for byte across all three games -- reproduces the white glove exactly):
  *
  *     Game       sheet (RAW, 2048 B)   palette (RAW, 32 B)
  *     Emerald    0x0857B118            0x085724D4

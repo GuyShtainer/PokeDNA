@@ -351,9 +351,73 @@ void boxoam_rom_hand(const RomHand* rh) {
   s_romhand_pal_ready = 0;              /* re-validated fresh on the next boxoam_enter() */
 }
 
-/* Read one verified 512 B pose off the ROM into s_stage and DMA it straight to `tid`
- * (no extra verify at the upload step -- rom_hand_frame already fetched-twice-and-
- * compared, same "already verified RAM" contract upload_icon()'s from_rom=1 path
+/* MUST-FIX 1 (2026-08-20 review): the retail ROM sheet is UNCROPPED -- each pose's
+ * glove sits somewhere inside its 32x32 cell, not top-left like the compiled art
+ * (tools/gen_hand_oam.py packs every crop at (0,0), so hand_xy()'s single anchor --
+ * "hx+13 = cell_x+16", box_oam.c below -- is calibrated to that top-left crop only).
+ * Measured against hand_oam.c (independently re-verified here, brute-force search
+ * over dx,dy in Emerald.gba, perfect 1024/1024 opaque/transparent mask match at
+ * each): the ROM sheet's glove sits (+7,+4) right/down of the compiled crop for the
+ * CURSOR pose, and by a DIFFERENT amount for each other pose --
+ * (+8,+5) bounce, (+4,+6) reach, (+7,+7) grab -- because retail drew each pose's art
+ * at a different position within its own cell, not on a shared grid.
+ *
+ * THIS is the one place that knows those four numbers: every streamed-hand upload
+ * (cursor/bounce/reach into TID_HAND, grab into TID_GRAB) funnels through
+ * load_rom_hand_frame() below, so re-anchoring the pixels HERE, once, before the
+ * DMA to VRAM, makes every consumer of the sprite -- hand_xy(), the carry offsets in
+ * boxoam_carry_held(), the pop-free fist swap boxoam_cursor() relies on -- see
+ * compiled-art coordinates and nothing else. hand_xy() stays the single source of
+ * truth for WHERE the hand goes; this table is the only place that knows the sheet
+ * itself needs correcting before it gets there. */
+static const struct { uint8_t dx, dy; } k_hand_anchor[ROM_HAND_FRAMES] = {
+  [ROM_HAND_FRAME_CURSOR] = { 7, 4 },
+  [ROM_HAND_FRAME_BOUNCE] = { 8, 5 },
+  [ROM_HAND_FRAME_REACH]  = { 4, 6 },
+  [ROM_HAND_FRAME_GRAB]   = { 7, 7 },
+};
+
+/* One raw 4bpp pixel out of a 512 B 32x32 1D-tile-order frame (4x4 tiles, row-major)
+ * -- same layout rom_hand.c's internal frame_px() decodes, duplicated here (that
+ * helper is private to rom_hand.c, and this file already owns its own OAM-format
+ * pixel access for the icon/wallpaper rungs). */
+static uint8_t hand_px(const uint8_t* buf, int x, int y) {
+  int tx = x >> 3, ty = y >> 3;
+  const uint8_t* t = buf + (ty * 4 + tx) * 32 + (y & 7) * 4;
+  uint8_t b = t[(x & 7) >> 1];
+  return (uint8_t)((x & 1) ? (b >> 4) : (b & 0x0F));
+}
+static void hand_setpx(uint8_t* buf, int x, int y, uint8_t v) {
+  int tx = x >> 3, ty = y >> 3;
+  uint8_t* t = buf + (ty * 4 + tx) * 32 + (y & 7) * 4;
+  uint8_t* b = &t[(x & 7) >> 1];
+  *b = (x & 1) ? (uint8_t)((*b & 0x0F) | (v << 4))
+               : (uint8_t)((*b & 0xF0) | (v & 0x0F));
+}
+
+/* Re-anchor a 512 B frame in place: out(x,y) = in(x+dx, y+dy), 0 (transparent) past
+ * the sheet edge -- crops the retail cell down to the same top-left-aligned glove
+ * tools/gen_hand_oam.py bakes into the compiled art. Safe fully in place with NO
+ * scratch buffer (would otherwise be a 512 B addition -- this file's stack-buffer
+ * budget is tight, see s_stage's own "IWRAM is full" note two screens up): every
+ * source pixel (x+dx, y+dy) lies strictly past the destination (x,y) in row-major
+ * order since dx,dy > 0, and this loop visits destinations in that same increasing
+ * row-major order, so no source is ever read after it has already been overwritten. */
+static void hand_anchor_shift(uint8_t* buf, int dx, int dy) {
+  for (int y = 0; y < 32; y++) {
+    int sy = y + dy;
+    for (int x = 0; x < 32; x++) {
+      int sx = x + dx;
+      uint8_t v = (sx < 32 && sy < 32) ? hand_px(buf, sx, sy) : 0;
+      hand_setpx(buf, x, y, v);
+    }
+  }
+}
+
+/* Read one verified 512 B pose off the ROM into s_stage, re-anchor it to the
+ * compiled-art crop (see k_hand_anchor above -- MUST-FIX 1), and DMA it straight to
+ * `tid` (no extra verify at the upload step -- rom_hand_frame already fetched-twice-
+ * and-compared, same "already verified RAM" contract upload_icon()'s from_rom=1 path
  * relies on for the icon-streaming rung). Returns 1 on success, 0 (nothing uploaded,
  * caller falls back to the compiled/fallback array) otherwise. */
 static int load_rom_hand_frame(int tid, uint8_t frame) {
@@ -362,6 +426,7 @@ static int load_rom_hand_frame(int tid, uint8_t frame) {
   int ok = rom_hand_frame(s_romhand, frame, (uint8_t*)s_stage);
   rumble_io_resume();
   if (!ok) { log_line("hand: rom frame %d unstable/unavailable", frame); return 0; }
+  hand_anchor_shift((uint8_t*)s_stage, k_hand_anchor[frame].dx, k_hand_anchor[frame].dy);
   upload_tiles(tid, s_stage, ROM_HAND_FRAME_BYTES);
   return 1;
 }

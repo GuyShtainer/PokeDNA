@@ -253,12 +253,15 @@ typedef struct {
  * `scratch` (>= cap bytes; worst case 3,904 B, the header comment's MEMORY
  * section) and fill *out ready to hand to a BgFrame as `.blob =
  * &out->as_lzblob, .off = 0, .sw = BAG_BG_W`. `female` selects the palette on
- * Emerald (a whole separate 2-bank blob); FRLG has no proven gender-specific
- * palette and always renders its one measured-correct 3-bank base regardless
- * of `female` — see the header comment for why. Returns 1, or 0 with *out untouched
- * (caller keeps the existing "blob == 0" fallback: the plain data-editor bag
- * tab). NEVER memoise the result across calls — see the header's shared-buffer
- * hazard note: it is invalidated by the very next item-icon decode. */
+ * BOTH families: Emerald swaps in a whole separate 2-bank blob; FRLG (fixed
+ * 2026-08-20, see the header comment's "THE FEMALE ADDRESS WAS RIGHT" section)
+ * overrides bank 0 only with its own measured female blob (FireRed
+ * 0x08E83604 / LeafGreen 0x08E83684). Passing `female` as 0 on FRLG renders
+ * the male base, exactly like every other gendered rung in this module — it
+ * does NOT ignore the flag. Returns 1, or 0 with *out untouched (caller keeps
+ * the existing "blob == 0" fallback: the plain data-editor bag tab). NEVER
+ * memoise the result across calls — see the header's shared-buffer hazard
+ * note: it is invalidated by the very next item-icon decode. */
 int rom_chrome_bag_load(const RomChrome* rch, int g, int female,
                         uint8_t* scratch, uint32_t cap, RomChromeBag* out);
 
