@@ -1957,40 +1957,58 @@ static void pcp_draw_slot(int idx, const PkMon* p, bool addslot, bool selected) 
    * replaces MUST-FIX 5's centring formula with): retail's real, fixed icon anchor,
    * not a centred crop -- confirmed constant across all 6 tiles. The 32x32 canvas
    * still can't fit a 30x23 tile, so something still has to give, but retail's OWN
-   * answer is "let it, mostly": the top overflow (8 px) is real geometry, yet EVERY
-   * species measured had zero opaque pixels up there (Gen-3 icon art's own built-in
-   * headroom), so retail never actually needed to clip it -- the art avoids the
-   * collision on its own. This clip reproduces retail's measured allowance (1 px
-   * left/right/bottom, up to 8 px above) while still refusing, defensively, to let
-   * an untested species with a taller pose collide with the tile immediately above
-   * (there is only a 1 px gap between column rows) or bleed above the panel's own
-   * top edge -- a clean cut instead of a two-Pokemon collage, for a case the retail
-   * capture never exercises. Left/right/bottom overflow lands on plain panel
-   * background in every position (no tile is horizontally adjacent to another, and
-   * the last row's overflow is well clear of CANCEL), so those three sides always
-   * get retail's full 1 px. Deliberately NOT calling party_draw_name_level or
-   * party_draw_hp_fields (pdna_main.c) here; that per-mon detail lives ONLY in the
-   * reused PKMN DATA panel (draw_left, below), matching retail's own division of
-   * labour. */
+   * answer is "let it": the top overflow (8 px) is real geometry, and retail lets
+   * EVERY tile have the full allowance, interior column rows included -- there is
+   * no "collide with the neighbour" special case in retail's own rendering.
+   *
+   * CHANGE 1 FOLLOW-UP (2026-08-20, same day): the code above used to give only the
+   * offset slot and column row 0 (idx 0/1) the full 8 px, and clamp column rows 1-4
+   * to whatever gap sat between them and the tile above -- reasoning that every
+   * species tested had "zero ink up there anyway" so the clamp was a no-op safety
+   * net. That reasoning does not hold in general (a tall enough species' art DOES
+   * reach the top of its 32x32 canvas -- Milotic's crest was the case that exposed
+   * it), so EVERY tile now gets the identical treatment: full overflow, bounded
+   * only by the panel's own top edge, never by a neighbour.
+   *
+   * Z-ORDER, measured directly off native-E12e-storage-partystrip.top.png
+   * (docs/analysis-2026-08-20-pcparty) at the one boundary in that capture where a
+   * tile's overflow reaches into the tile above (row 3/row 4, Dragonite/Milotic):
+   * the LOWER tile's overflow paints ON TOP of the tile above, not the other way
+   * around -- retail draws its strip top-to-bottom and lets each later tile win the
+   * shared pixels. This loop already draws idx 0..5 in that same order, plate and
+   * icon together per idx, so idx-1's plate+icon are already fully on-screen by the
+   * time idx's icon (with its own overflow) is blitted -- the existing draw order
+   * reproduces retail's z-order for free; nothing needed restructuring into a
+   * separate plates-first pass.
+   *
+   * CAVEAT (found while re-verifying this against real gameplay, not just the
+   * spec that prompted it): for the six-species roster in this project's own test
+   * capture (Salamence/Metagross/Gengar/Dragonite/Milotic, against PokeDNA's own
+   * compiled data/mon_icons_oam_tiles.bin), NONE of the five column-row icons —
+   * Milotic included — carry any opaque pixel in the 8 rows above their own tile
+   * (verified by decoding the exact compiled tile data these five species resolve
+   * to, and separately confirmed on real hardware-equivalent render output by
+   * painting a marker over that exact 32x8 px strip immediately before the icon
+   * blit and finding it undisturbed). So on today's evidence this change is a
+   * pixel-for-pixel no-op for every tile in the verified capture -- it does not,
+   * by itself, restore Milotic's crest (that gap sits lower, INSIDE the tile's own
+   * bounds, not in the clamped overflow band; the true anchor DX=-1/DY=-8 was
+   * re-confirmed as the best fit by an exhaustive offset search, so it is not a
+   * placement bug either -- see this fix's own commit message). It is kept anyway
+   * because it is the geometrically correct, retail-matching rule and the one this
+   * spec asked for, and because a taller-posed species (not in today's roster)
+   * would otherwise still lose its own overflow to the old defensive clamp. Left/
+   * right/bottom overflow is unchanged (1 px each, matching retail). Deliberately
+   * NOT calling party_draw_name_level or party_draw_hp_fields (pdna_main.c) here;
+   * that per-mon detail lives ONLY in the reused PKMN DATA panel (draw_left,
+   * below), matching retail's own division of labour. */
   int ix = x0 + PDNA_PCP_ICON_DX;
   int iy = y0 + PDNA_PCP_ICON_DY;
   int cx0 = x0 + PDNA_PCP_ICON_DX, cx1 = x1 + 2;   /* 1px overflow L/R, matching retail */
   int cy1 = y1 + 2;                                /* 1px overflow bottom, matching retail */
-  int cy0 = y0 + PDNA_PCP_ICON_DY;                 /* up to 8px overflow above ... */
-  if (idx == 0 || idx == 1) {                      /* ... the offset slot and column row 0
-                                                     * have no party tile above them within
-                                                     * the panel -- only the panel's own fill
-                                                     * bounds it (retail's real allowance) */
-    if (cy0 < PDNA_PCP_FILL_Y0) cy0 = PDNA_PCP_FILL_Y0;
-  } else {                                         /* column rows 1-4: a real neighbour tile
-                                                     * sits just 1px above -- don't let an
-                                                     * untested species' overflow collide
-                                                     * with it (never observed in the ground
-                                                     * truth; defensive only) */
-    int px0, py0, px1, py1; pcp_pos(idx - 1, &px0, &py0, &px1, &py1);
-    (void)px0; (void)px1;
-    if (cy0 < py1 + 1) cy0 = py1 + 1;
-  }
+  int cy0 = y0 + PDNA_PCP_ICON_DY;                 /* up to 8px overflow above, EVERY tile; */
+  if (cy0 < PDNA_PCP_FILL_Y0) cy0 = PDNA_PCP_FILL_Y0;  /* ...bounded only by the panel's own
+                                                         * top edge, never by a neighbour. */
   boxoam_icon_blit_clip(ix, iy, cx0, cy0, cx1, cy1, p->species, p->form, egg);
 }
 
