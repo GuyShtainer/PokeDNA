@@ -65,6 +65,16 @@ void boxoam_set_icon_cache(const char* path);
  * artless name-chip fallback asks this before painting chips. */
 int  boxoam_icons_available(void);
 
+/* Blit grid slot `s`'s CURRENT icon straight into the Mode-3 bitmap at its own normal
+ * grid position — same tile bytes, same live OBJ palette bank (pal_obj_mem) already
+ * driving its sprite, so this is pixel-identical to what the OBJ itself shows (frame,
+ * species, form, egg pose all included) rather than a second, independently-generated
+ * bitmap icon table that cannot be guaranteed to agree with it pixel for pixel. For
+ * pdna_box.c's party-strip bitmap restore: a grid slot the strip's own on-screen
+ * column hides has nothing else that can stand in for it without this seam. A no-op
+ * for an empty or art-less slot. */
+void boxoam_slot_blit_bitmap(int s);
+
 /* Set the idle-bob vertical offset (0 or 1 px) applied uniformly to all 30 icon
  * sprites. Pure OAM write — call from the vblank tick. */
 void boxoam_set_bob(int dy);
@@ -126,6 +136,42 @@ typedef struct { uint8_t rr, cc;            /* footprint-relative row/col       
 void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
                         const BoxOamChunkMon* mons, int n, bool fit, int lift);
 void boxoam_chunk_end(void);
+
+/* PC-box party STRIP (pdna_box.c's party_strip_overlay): a narrow icon column pops up
+ * OVER the box grid, which stays visible and alive behind it. The strip's own chrome
+ * (borders/fills/CANCEL) is drawn to the BG2 bitmap, same as every other panel on this
+ * screen — but BG2 sits at priority 3, the lowest, UNDER every OBJ sprite (see
+ * boxoam_enter), so any leftover box icon under the strip's rectangle would show
+ * through it. bitmap mode's OBJ tile memory is spent to the exact tile (this file's
+ * header: 30 grid icons + hand + region B = 512), so the strip's own icons cannot be
+ * drawn as NEW sprites either — there is nothing left to draw them with.
+ *
+ * boxoam_strip_open(x0, x1) resolves both problems by hiding the grid icons whose cell
+ * falls in [x0, x1): every hidden slot is unavailable to the box grid instantly (no
+ * OBJ can bleed through the strip there), and ONE hidden slot per box row is reserved
+ * — its now-unused 16-tile region and OAM entry are repointed at whatever
+ * boxoam_strip_slot() draws for that row. Grid icons OUTSIDE [x0, x1) are never
+ * touched: they stay visible, in place, and still animate/cursor normally.
+ * boxoam_strip_close() hands every hidden/reused slot back via restore_slot() — the
+ * same machinery boxoam_chunk_end() already uses to uncover a cell — so a slot always
+ * comes back exactly as boxoam_load_box() last left it (species, frame, palette bank,
+ * selection mark).
+ *
+ * A full-screen view opened WHILE the strip is up (a warning dialog, the party action
+ * menu) still needs its OWN boxoam_suspend()/boxoam_resume() bracket around just that
+ * call, same as every other popup in pdna_box.c — those two are pure DISPCNT toggles
+ * and never disturb this bookkeeping, so nesting them here is safe. */
+void boxoam_strip_open(int x0, int x1);
+/* Draw (or clear) the strip's OWN icon for box row `row` (0..4 on this screen) at OAM
+ * position (x, y): species==0 && !egg hides that row's icon (an empty list row, or a
+ * row past the current viewport). Call every strip redraw — the visible party window
+ * scrolls — followed by boxoam_commit() like any other OAM update. A row whose box
+ * column had nothing to reuse (boxoam_strip_open found no intersecting grid cell for
+ * it) silently draws nothing; that cannot happen at this screen's own measured
+ * geometry (every row's column intersects), but degrading to "no icon" rather than a
+ * out-of-range OAM/VRAM write is the safe failure if the geometry ever changes. */
+void boxoam_strip_slot(int row, int x, int y, uint16_t species, uint8_t form, bool egg);
+void boxoam_strip_close(void);
 
 /* "Bitmap understudy" hooks (§12b) — box_oam.c owns the covered-cell bookkeeping and
  * fires these exactly on cover/uncover TRANSITIONS of the chunk block (<= a footprint

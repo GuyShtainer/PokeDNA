@@ -9,7 +9,10 @@
  *   ids 512..991  (480) : the 30 grid icons (slot s -> 512 + s*16, 16 tiles each)
  *   ids 992..1007 ( 16) : cursor hand (32x32)            [region A, permanent]
  *   ids 1008..1023( 16) : grab fist (move) OR item glyphs (ITEM)  [region B, shared]
- * Exactly 512 tiles.
+ * Exactly 512 tiles. There is no slack for a further icon kind, which is why the PC-box
+ * party strip (boxoam_strip_open/slot/close, below) draws its OWN icons by borrowing a
+ * HIDDEN grid slot's existing 512..991 tile range and OAM entry instead of claiming any
+ * of its own — see that group's own comment.
  *
  * OBJ palette banks (16 total): 0..12 = the 13 shared icon palettes (uploaded once);
  *   13 = hand (normal) + grab + item glyph; 14 = hand (orange, MOVE); 15 = carried
@@ -806,6 +809,79 @@ void boxoam_chunk_end(void) {
   hide(OE_GRAB);
   s_chunk_on = 0; s_chunk_valid = 0;
   REG_BLDCNT = 0;
+}
+
+/* See box_oam.h. Unpacks the SAME 4bpp tile bytes + OBJ palette bank the sprite path
+ * uses (icon_tiles(), the shared lookup restore_slot/place_grid_slot already call)
+ * into RGB15 pixels written straight to the Mode-3 framebuffer — no intermediate
+ * buffer (a 32x32 RGB15 icon is 2 KiB, too big for a local per §0's stack rule, and
+ * there is no EWRAM headroom to spare one statically either). Compiled .rodata tile
+ * bytes get the same verified-staged read every OTHER icon upload in this file uses
+ * (icopy_verified into s_stage) — this cartridge has measurably garbled raw CPU ROM
+ * reads before (see icopy_verified's own comment) — but a ROM-streamed/cache tiles
+ * pointer is already s_stage itself (icon_tiles's from_rom contract), so re-staging
+ * it would be a same-buffer copy; read it directly. */
+void boxoam_slot_blit_bitmap(int s) {
+  if (s < 0 || s >= 30 || !s_occupied[s]) return;
+  int bank, from_rom;
+  const uint8_t* tiles = icon_tiles(s_species[s], s_form[s], (uint8_t)s_frame, s_isegg[s], &bank, &from_rom);
+  if (!tiles) return;
+  const uint8_t* src = tiles;
+  if (!from_rom) {
+    if (icopy_verified(s_stage, (const uint16_t*)tiles, 256) < 0)
+      log_line("icons: strip-blit unstable rom reads");
+    src = (const uint8_t*)s_stage;
+  }
+  const uint16_t* pal = &pal_obj_mem[bank * 16];
+  int x0 = GRID_X + (s % COLS) * CELL_W, y0 = GRID_Y + (s / COLS) * CELL_H;
+  for (int ty = 0; ty < 4; ty++)
+    for (int tx = 0; tx < 4; tx++) {
+      const uint8_t* t = src + (unsigned)(ty * 4 + tx) * 32;   /* 32 B = one 8x8 4bpp tile */
+      for (int ry = 0; ry < 8; ry++)
+        for (int rx = 0; rx < 4; rx++) {
+          uint8_t byte = t[ry * 4 + rx];
+          uint8_t lo = byte & 0xF, hi = (uint8_t)(byte >> 4);
+          int px = tx * 8 + rx * 2, py = ty * 8 + ry;
+          if (lo) vid_mem[(y0 + py) * 240 + (x0 + px)]     = (COLOR)pal[lo];
+          if (hi) vid_mem[(y0 + py) * 240 + (x0 + px + 1)] = (COLOR)pal[hi];
+        }
+    }
+}
+
+/* ------- PC-box party strip: hide the covered column, borrow one slot per row ------- */
+static int s_strip_reuse[ROWS];      /* grid slot reused by strip row r; -1 = none      */
+
+void boxoam_strip_open(int x0, int x1) {
+  for (int r = 0; r < ROWS; r++) s_strip_reuse[r] = -1;
+  for (int s = 0; s < 30; s++) {
+    int cx0 = GRID_X + (s % COLS) * CELL_W, cx1 = cx0 + CELL_W;
+    if (cx1 <= x0 || cx0 >= x1) continue;              /* this cell's column misses the strip */
+    if (!s_covered[s]) { s_covered[s] = 1; hide(OE_ICON0 + s); }
+    int row = s / COLS;
+    if (s_strip_reuse[row] < 0) s_strip_reuse[row] = s;   /* first hit this row -> reused */
+  }
+}
+
+void boxoam_strip_slot(int row, int x, int y, uint16_t species, uint8_t form, bool egg) {
+  if (row < 0 || row >= ROWS) return;
+  int s = s_strip_reuse[row];
+  if (s < 0) return;                          /* no grid cell under the strip on this row */
+  if (!species && !egg) { hide(OE_ICON0 + s); return; }
+  int bank, from_rom;
+  const uint8_t* tiles = icon_tiles(species, form, 0, egg, &bank, &from_rom);
+  if (!tiles) { hide(OE_ICON0 + s); return; }             /* artless / not in this source */
+  upload_icon(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles, from_rom);
+  u16 a0 = ATTR0_SQUARE | ATTR0_4BPP | (y & ATTR0_Y_MASK);
+  obj_set_attr(oe(OE_ICON0 + s), a0,
+               ATTR1_SIZE_32 | (x & ATTR1_X_MASK),
+               ATTR2_ID(TID_ICON0 + s * MON_ICON_OAM_TILES) | ATTR2_PRIO(2) |
+               ATTR2_PALBANK(bank));
+}
+
+void boxoam_strip_close(void) {
+  for (int s = 0; s < 30; s++)
+    if (s_covered[s]) { s_covered[s] = 0; restore_slot(s); }
+  for (int r = 0; r < ROWS; r++) s_strip_reuse[r] = -1;
 }
 
 void boxoam_item_markers(const PkMon box[30], bool show) {
