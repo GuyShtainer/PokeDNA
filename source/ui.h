@@ -67,6 +67,18 @@
 #define UI_PTY_MSG_TEXT    RGB15( 3,  4,  6) /* message-box text, on its own white fill */
 #define UI_PTY_CANCEL_FILL RGB15(14, 11, 22) /* CANCEL button fill        (115,90,181) */
 
+/* ---- PC-box party STRIP palette (measured, docs/analysis-2026-08-20-pcparty/
+ * MEASUREMENTS.md S4.2/S7 — a DIFFERENT retail screen from the UI_PTY_* set above,
+ * see pdna_layout.h's PDNA_PCP_* comment for which is which). ------------------ */
+#define UI_PCP_FILL     RGB15( 2,  7, 15)  /* slot interior, sky blue    (23,60,124) */
+#define UI_PCP_BORDER   RGB15( 4,  5,  5)  /* unselected slot border    (34,40,44)  */
+#define UI_PCP_CURSOR   UI_PTY_CURSOR      /* selected-slot border — UNKNOWN in retail
+                                            * (S4.2: no captured frame shows the strip's
+                                            * own cursor without the action menu already
+                                            * open); reuses the app's existing party-
+                                            * cursor recolour convention rather than
+                                            * inventing a new one. */
+
 /* Switch to Mode 3 and init bitmap TTE with the fixed 8x8 system font. */
 void ui_init(void);
 

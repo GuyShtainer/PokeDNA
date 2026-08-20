@@ -763,4 +763,39 @@
 #define PDNA_PTY_MSG_W_BUDGET (PDNA_PTY_MSG_W - 2 * PDNA_PTY_MSG_PAD)
 #define PDNA_PTY_CANCEL_W_BUDGET (PDNA_PTY_CANCEL_W - 2 * PDNA_PTY_MSG_PAD)
 
+/* ---------------------------------------------------------------------------
+ * PC-box party STRIP (party_strip_overlay, source/pdna_box.c) — 2026-08-20.
+ * Guy's own words: "when choosing to move the pokemon within the PC, a side
+ * menu of the party pops up ontop of the pokemon in the PC in the background
+ * ... i like how i can grab a pokemon from party to box like so directly."
+ * That is a DIFFERENT retail screen from the one PDNA_PTY_* above matches
+ * (Emerald's field-menu "choose a POKeMON" list, START -> POKeMON) — this is
+ * the PC storage system's own PARTY POKEMON panel, measured fresh in
+ * docs/analysis-2026-08-20-pcparty/MEASUREMENTS.md.
+ *
+ * Only the icon column itself is placed at retail's measured coordinates
+ * (S4.2: "Column bbox: x = 137/138-166, y = 8-128 ... Slot pitch: exactly
+ * 24 px"). The big teal party-panel BACKGROUND retail washes over the
+ * *entire* box-grid pane when this opens (S4.1: "the panel replaces the
+ * ENTIRE center-right pane ... nothing [of the grid] stays visible") is
+ * DELIBERATELY NOT drawn here — the box grid + banner + PKMN DATA panel stay
+ * visible and alive behind the strip by design (Guy's words above), so this
+ * is not a like-for-like retail reproduction of the whole panel, only of the
+ * slot column sitting on top of it. At a slot pitch equal to the slot height
+ * (24 px), retail's own column tiles sit border-to-border with no visible
+ * background between them anyway — see PCP_FILL/PCP_BORDER in ui.h — so
+ * skipping the wash costs nothing inside the column itself. */
+#define PDNA_PCP_COL_X   137
+#define PDNA_PCP_COL_Y     8
+#define PDNA_PCP_COL_W    29             /* 166 - 137, MEASUREMENTS.md S4.2 */
+#define PDNA_PCP_SLOT_H   24
+#define PDNA_PCP_VIS       5             /* viewport rows — retail's own captures show
+                                          * exactly 5 in both available frames, at a
+                                          * fixed 8..128 column height; whether a 6th
+                                          * party member scrolls or the column grows is
+                                          * UNKNOWN (S4.2 "party size ambiguity") — a
+                                          * fixed 5-row scrolling viewport is the judgement
+                                          * call made here, consistent with the ONE
+                                          * geometry retail's frames do confirm. */
+
 #endif /* PDNA_LAYOUT_H */
