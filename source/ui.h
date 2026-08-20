@@ -87,9 +87,26 @@
                                                  * reuses the app's existing party-cursor
                                                  * recolour convention rather than inventing
                                                  * a new one. */
-#define UI_PCP_CANCEL_BORDER RGB15(21, 26, 30)  /* CANCEL pill border   #AED1F3 (174,209,243) */
-#define UI_PCP_CANCEL_BODY   RGB15(31, 31, 31)  /* CANCEL pill body (white highlight) #FEFBFF */
-#define UI_PCP_CANCEL_GLYPH  RGB15(16, 23, 13)  /* CANCEL glyph, green  #83B86D (131,184,109) */
+/* MUST-FIX 1 (2026-08-20 review): retail's 3-tone bevelled BLUE PLATE inside every
+ * tile — a previous "the interior fill IS the icon's own sprite background" claim
+ * was falsified: a PIL histogram over the five column tile interiors shows the SAME
+ * two colours below at 30-40% coverage under six different species (incl. the offset
+ * slot), which a per-species sprite background cannot produce. Measured pixel-exact
+ * (mode across all 6 tiles, sprite pixels excluded) off
+ * docs/analysis-2026-08-20-pcparty/native-E12e-storage-partystrip.top.png. */
+#define UI_PCP_TILE_HI       RGB15(17, 22, 30)  /* plate highlight (top row/left col) #8BB8F9 (137,184,249) */
+#define UI_PCP_TILE_MID      RGB15( 6, 14, 30)  /* plate main fill / bottom row       #3477F6 (52,119,246)  */
+#define UI_PCP_TILE_SHADOW   RGB15( 6, 11, 19)  /* plate shadow (right col)           #3558A0 (53,88,160)   */
+/* SHOULD-FIX 4 (2026-08-20 review): retail reads as a rounded PALE-BLUE pill with
+ * WHITE lettering + a GREEN drop shadow. The previous constants had body/glyph
+ * roles nearly exactly swapped (histogram over x=136..167,y=138..149: retail 52%
+ * pale-blue / 26% green / 21% white; this build measured 54% white / 24% green / 22%
+ * pale-blue) — a white sticker with green text instead of a blue pill with white
+ * text. Values unchanged from the old (correctly-measured) readings; only which ROLE
+ * each one plays changed. */
+#define UI_PCP_CANCEL_BODY   RGB15(21, 26, 30)  /* pill body, pale blue     #AED1F3 (174,209,243) */
+#define UI_PCP_CANCEL_GLYPH  RGB15(31, 31, 31)  /* glyph fill, WHITE        #FEFBFF (254,251,255) */
+#define UI_PCP_CANCEL_SHADOW RGB15(16, 23, 13)  /* glyph drop shadow, green #83B86D (131,184,109) */
 
 /* Switch to Mode 3 and init bitmap TTE with the fixed 8x8 system font. */
 void ui_init(void);

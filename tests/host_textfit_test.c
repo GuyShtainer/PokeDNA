@@ -1394,6 +1394,14 @@ int main(void) {
   chkv("CANCEL pill sits below the column's last tile (no overlap)",
        PDNA_PCP_COL_Y0 + 4 * PDNA_PCP_SLOT_H + PDNA_PCP_SLOT_VISH - 1, PDNA_PCP_CANCEL_Y0);
 
+  /* SHOULD-FIX 6 (2026-08-20 review): party_strip_overlay's own footer replaces the
+   * box's own (partially-overpainted, garbled) footer string with this one, drawn at
+   * PDNA_PCP_OCCLUDE_X1 + 2 — the ONLY screen space free of both the panel's own
+   * bevel (which covers the footer row for PDNA_PCP_OCCLUDE_X0..X1) and the left PKMN
+   * DATA panel. Budget is the real free width to the screen's right edge, not a
+   * guess. */
+  PF(PDNA_LBL_PCP_FOOTER, PDNA_PCP_OCCLUDE_X1 + 2, SCR_W - (PDNA_PCP_OCCLUDE_X1 + 2));
+
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }

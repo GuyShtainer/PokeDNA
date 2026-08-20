@@ -75,6 +75,32 @@ int  boxoam_icons_available(void);
  * for an empty or art-less slot. */
 void boxoam_slot_blit_bitmap(int s);
 
+/* MUST-FIX 5 (2026-08-20 review, PC-box party PANEL): draw species/form/egg's own
+ * icon as a Mode-3 BITMAP at (x,y), clipped to [cx0,cx1) x [cy0,cy1) — pixels outside
+ * that rect are never written. Same icon lookup as boxoam_slot_blit_bitmap (compiled
+ * art -> icons.bin cache -> the registered ROM, staged + read-verified the same way),
+ * but parameterised by an arbitrary destination + clip rect instead of a grid slot,
+ * because a bitmap blit CAN be clipped per-pixel where an OBJ sprite cannot. Safe to
+ * use here specifically because party_strip_overlay (pdna_box.c) now hides the box's
+ * own cursor hand + any carried mon/item for as long as the panel is open (MUST-FIX
+ * 2) — that was the ONLY reason the panel's icons rode an OBJ instead of a bitmap in
+ * the first place (an OBJ composites above BG2; a bitmap does not, and the hand/carry
+ * sprites used to be able to cross the panel — see boxoam_strip_open's own comment).
+ * Returns 0 (nothing drawn) if this source can't serve the icon (artless build, or a
+ * species this source can't serve) — caller degrades exactly like the OBJ path did. */
+int boxoam_icon_blit_clip(int x, int y, int cx0, int cy0, int cx1, int cy1,
+                           uint16_t species, uint8_t form, bool egg);
+
+/* MUST-FIX 2 (2026-08-20 review, PC-box party PANEL): hide the box's own cursor hand
+ * (OE_HAND) and any carried mon/item (OE_GRAB/OE_CARRY/OE_CITEM) for one frame. These
+ * are positioned off the BOX's cursor cell (`cur`), which the panel now covers for up
+ * to 2/3 of the grid — render_full()'s own oam_sync() runs first each iteration and
+ * positions them normally for the closed-grid case; call this right after it, before
+ * boxoam_commit() flushes, to suppress them for as long as the panel is on screen.
+ * party_strip_overlay calls oam_sync() once more at its own `out:` label (beside
+ * boxoam_strip_close()) to bring them back once the panel closes. */
+void boxoam_strip_hide_cursor(void);
+
 /* Set the idle-bob vertical offset (0 or 1 px) applied uniformly to all 30 icon
  * sprites. Pure OAM write — call from the vblank tick. */
 void boxoam_set_bob(int dy);
@@ -173,7 +199,13 @@ void boxoam_strip_open(int x0, int x1);
  * (boxoam_strip_open found no intersecting grid cell for it) silently draws nothing;
  * that cannot happen at this screen's own measured geometry (every row's column
  * intersects), but degrading to "no icon" rather than an out-of-range OAM/VRAM write
- * is the safe failure if the geometry ever changes. */
+ * is the safe failure if the geometry ever changes.
+ *
+ * MUST-FIX 5 (2026-08-20 review): pdna_box.c now calls this with species==0 (and the
+ * companion boxoam_icon_blit_clip() above for the actual visible icon, a bitmap that
+ * CAN be clipped to the tile) UNCONDITIONALLY, every draw — never with a real
+ * species/form any more. It still matters: it's what hides a borrowed slot's OWN OBJ
+ * so a stale sprite from an earlier iteration/species can never show through. */
 void boxoam_strip_slot(int row, int x, int y, uint16_t species, uint8_t form, bool egg);
 /* Same contract as boxoam_strip_slot, for the panel's 6th tile: the offset, alone
  * "slot 1" (party index 0), drawn at its own measured position (PDNA_PCP_S1_*,

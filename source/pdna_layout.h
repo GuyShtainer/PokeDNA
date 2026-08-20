@@ -857,4 +857,14 @@
 #define PDNA_PCP_OCCLUDE_X0  PDNA_PCP_PANEL_X0
 #define PDNA_PCP_OCCLUDE_X1  (PDNA_PCP_PANEL_X1 + 1)
 
+/* SHOULD-FIX 6 (2026-08-20 review): the box's own footer ("L/R tab  A pick  DN",
+ * draw_footer) is drawn UNDER this popup, at the s_tab_focus>=0 string -- exactly the
+ * state this popup opens in -- and gets partially overpainted by the panel's own
+ * bevel and the left PKMN DATA panel, leaving stray fragments on screen. Only
+ * UP/DOWN/A/B (and now LEFT/RIGHT, MUST-FIX 8) are read here; party_strip_overlay
+ * clears the row and draws this instead, sized to the ACTUAL free width to the right
+ * of the panel (screen edge minus PDNA_PCP_OCCLUDE_X1, 62 px -- see
+ * tests/host_textfit_test.c's own check). */
+#define PDNA_LBL_PCP_FOOTER  "B back"
+
 #endif /* PDNA_LAYOUT_H */

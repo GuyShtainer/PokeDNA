@@ -1837,58 +1837,101 @@ static void pcp_pos(int idx, int* x0, int* y0, int* x1, int* y1) {
   }
 }
 
-static void pcp_draw_slot(int idx, const PkMon* p, bool addslot, bool selected) {
-  int x0, y0, x1, y1; pcp_pos(idx, &x0, &y0, &x1, &y1);
-  /* Border ONLY — no separate fill. The panel's own teal dither (pcp_draw_panel,
-   * drawn earlier this same frame) already fills every tile's interior; retail's own
-   * "interior fill" IS the mon icon's sprite/background, not a flat app colour
-   * (MEASUREMENTS.md), so painting a solid fill here would just cover the dither with
-   * something retail never shows. m3_frame's (right,bottom) are EXCLUSIVE — see
-   * ui_progress's own comment in ui.c for the measured proof — hence the +1s. */
-  u16 border = selected ? UI_PCP_CURSOR : UI_PCP_TILE_BORDER;
-  m3_frame(x0, y0, x1 + 1, y1 + 1, border);
-  if (addslot || !p || p->species == 0) {          /* empty target/unfilled position: a
-                                                     * plain bordered tile, nothing else
-                                                     * drawn (see this function group's
-                                                     * own top-of-block comment). */
-    if (idx == 0) boxoam_strip_slot1(0, 0, 0, 0, false);
-    else          boxoam_strip_slot(idx - 1, 0, 0, 0, 0, false);
-    return;
-  }
-  /* The icon is drawn as an OBJ sprite riding a grid slot boxoam_strip_open() hid and
-   * lent this tile (box_oam.c) — NOT a bitmap blit like the rest of this panel. A
-   * bitmap icon here would sit UNDER any box-grid OBJ that still happens to overlap
-   * this panel (the cursor hand, a carried mon) — BG2 is priority 3, the lowest, and
-   * every sprite composites above it regardless of paint order. Riding an OBJ of its
-   * own is what keeps the panel's icon on top the way the rest of the box's icons are.
-   * icon_tiles() inside boxoam_strip_slot/slot1() degrades to "no icon" on its own
-   * (artless build, or a species this source can't serve) — nothing else to check here. */
-  bool egg = p->isEgg && !p->isBadEgg;
-  int ix = x0 + ((x1 - x0 + 1) - MON_ICON_W) / 2;
-  int iy = y0 + ((y1 - y0 + 1) - MON_ICON_H) / 2;
-  /* Icon-only per MEASUREMENTS.md ("interior fill of each tile = the mon icon's own
-   * sprite/background... don't treat as a fixed tile background colour") — deliberately
-   * NOT calling party_draw_name_level or party_draw_hp_fields (pdna_main.c) here; that
-   * per-mon detail lives ONLY in the reused PKMN DATA panel (draw_left, below), matching
-   * retail's own division of labour. A 32x32 icon centred in a 30x23 tile bleeds
-   * slightly past the tile's own edges — the same bleed the box grid's own
-   * 32x32-icons-in-24x22-cells already does, and consistent with retail's own icon
-   * anchor (this build's own convention, not itself a MEASUREMENTS.md number). */
-  if (idx == 0) boxoam_strip_slot1(ix, iy, p->species, p->form, egg);
-  else          boxoam_strip_slot(idx - 1, ix, iy, p->species, p->form, egg);
+/* MUST-FIX 1 (2026-08-20 review): retail's 3-tone bevelled BLUE PLATE — see UI_PCP_TILE_*'s
+ * own comment (source/ui.h) for how the colours were re-measured and why the old
+ * "no fill, the dither shows through" reading was wrong. Layout + exact colours are a
+ * pixel-for-pixel transcription of native-E12e-storage-partystrip.top.png (the mode
+ * across all 6 real tiles, at every position, with sprite pixels excluded by
+ * majority vote): a light-blue top row + left column, a mid-blue main fill switching
+ * to light-blue for the lower two-thirds, a mid-blue bottom row, and a darker-blue
+ * right column. Draw order matters at the two seams where a row and a column claim
+ * the same pixel (mirrors pcp_draw_panel's own "the band drawn LAST wins the corner"
+ * rule, right below this function): the right column is drawn LAST so it wins both of
+ * its own two corners (measured: mid-blue at its own top cell, shadow-blue below
+ * that, all the way to the bottom row); the left column is drawn after the fill so it
+ * wins its own top/mid cells but purposely does NOT extend to the bottom row
+ * (measured: that corner belongs to the row's own colour, not the column's).
+ * (x0,y0)-(x1,y1) is the tile's OUTER bordered box (pcp_pos's own convention);
+ * every party tile this panel draws is a fixed 30x23, so the offsets below are literal
+ * pixel counts from y0, not proportional math. */
+static void pcp_fill_plate(int x0, int y0, int x1, int y1) {
+  (void)y1;                                     /* every tile is 23 px tall (y1 == y0+22);
+                                                 * offsets below are measured from y0    */
+  m3_rect(x0 + 1, y0 + 2,  x1,     y0 + 12, UI_PCP_TILE_MID);   /* rows y0+2..y0+11  */
+  m3_rect(x0 + 1, y0 + 12, x1,     y0 + 21, UI_PCP_TILE_HI);    /* rows y0+12..y0+20 */
+  m3_line(x0 + 1, y0 + 1,  x1 - 1, y0 + 1,  UI_PCP_TILE_HI);    /* row y0+1          */
+  m3_line(x0 + 1, y0 + 21, x1 - 1, y0 + 21, UI_PCP_TILE_MID);   /* row y0+21         */
+  m3_plot(x1 - 1, y0 + 1,  UI_PCP_TILE_MID);                    /* right col, top cell */
+  m3_line(x1 - 1, y0 + 2,  x1 - 1, y0 + 21, UI_PCP_TILE_SHADOW);/* right col, rest   */
+  m3_line(x0 + 1, y0 + 1,  x0 + 1, y0 + 20, UI_PCP_TILE_HI);    /* left col (not the
+                                                                 * bottom row — measured) */
 }
 
-/* CANCEL pill: retail's flat/dithered chrome vocabulary (white-highlight body, pale
- * blue-ish border, green glyph — MEASUREMENTS.md's CANCEL BUTTON section), not faked
- * sprite art. The tight-kerned "CANCEL" measures exactly PDNA_PCP_CANCEL_W_BUDGET px
- * (pinned in tests/host_textfit_test.c) so it fills the 1px-bordered interior with no
- * clamp/ellipsis needed. */
+static void pcp_draw_slot(int idx, const PkMon* p, bool addslot, bool selected) {
+  int x0, y0, x1, y1; pcp_pos(idx, &x0, &y0, &x1, &y1);
+  /* m3_frame's (right,bottom) are EXCLUSIVE — see ui_progress's own comment in ui.c
+   * for the measured proof — hence the +1s. */
+  u16 border = selected ? UI_PCP_CURSOR : UI_PCP_TILE_BORDER;
+  m3_frame(x0, y0, x1 + 1, y1 + 1, border);
+  pcp_fill_plate(x0, y0, x1, y1);
+  /* The borrowed OAM slot (box_oam.c) never DISPLAYS this tile's icon any more (see
+   * boxoam_icon_blit_clip's own comment, MUST-FIX 5) — always hide it here so a stale
+   * sprite from an earlier iteration/species can never show through the plate. */
+  if (idx == 0) boxoam_strip_slot1(0, 0, 0, 0, false);
+  else          boxoam_strip_slot(idx - 1, 0, 0, 0, 0, false);
+  if (addslot || !p || p->species == 0) return;    /* empty target/unfilled position: the
+                                                     * plate alone, nothing else drawn (see
+                                                     * this function group's own top-of-
+                                                     * block comment). */
+  bool egg = p->isEgg && !p->isBadEgg;
+  if (!boxoam_icons_available()) {                 /* MUST-FIX 3: artless build — no OBJ/
+                                                     * bitmap icon exists to draw here at
+                                                     * all. Same fallback convention as the
+                                                     * box grid's own artless_cells(): an
+                                                     * original name chip so a party member
+                                                     * is at least IDENTIFIABLE, instead of
+                                                     * six indistinguishable blank tiles. */
+    int cw = (x1 - x0 + 1) - 2, ch = 12, cy = y0 + 5;
+    if (egg) ui_name_chip(x0 + 1, cy, cw, ch, 0x2A7A, 0x0000, "EGG");
+    else     ui_name_chip(x0 + 1, cy, cw, ch, UI_PANEL, UI_TEXT, pk_species_name(p->species));
+    return;
+  }
+  /* MUST-FIX 5: same centring target as before (a 32x32 icon in a 30x23 tile cannot
+   * avoid overflowing on every side), but now CLIPPED to the tile's own interior
+   * instead of bleeding into the tile above/below/across it — retail's icons never
+   * leave the plate (a direct pixel scan just outside the tile border in the ground-
+   * truth capture found only plain panel fill, never a sprite pixel). Deliberately
+   * NOT calling party_draw_name_level or party_draw_hp_fields (pdna_main.c) here; that
+   * per-mon detail lives ONLY in the reused PKMN DATA panel (draw_left, below),
+   * matching retail's own division of labour. */
+  int ix = x0 + ((x1 - x0 + 1) - MON_ICON_W) / 2;
+  int iy = y0 + ((y1 - y0 + 1) - MON_ICON_H) / 2;
+  boxoam_icon_blit_clip(ix, iy, x0 + 1, y0 + 1, x1, y1, p->species, p->form, egg);
+}
+
+/* CANCEL pill: retail's flat/dithered chrome vocabulary (pale-blue body, WHITE glyph
+ * + green drop shadow — see UI_PCP_CANCEL_*'s own comment, source/ui.h, for the
+ * 2026-08-20 role-swap fix), not faked sprite art. The tight-kerned "CANCEL" measures
+ * exactly PDNA_PCP_CANCEL_W_BUDGET px (pinned in tests/host_textfit_test.c) so it
+ * fills the 1px-bordered interior with no clamp/ellipsis needed.
+ *
+ * SHOULD-FIX 4 (2026-08-20 review): retail's body IS its own border (the histogram
+ * found no separate 3rd blue shade), so the unselected border is drawn in the SAME
+ * body colour — a plain pale-blue pill, only the cursor-highlighted state gets a
+ * visually distinct border. Corners are cut 1px (m3_plot, restoring the panel's own
+ * teal dither at that exact pixel) — the only "rounding" this codebase's Mode-3
+ * primitives allow (there is no arc/rounded-rect primitive to reach for). */
 static void pcp_draw_cancel(bool selected) {
   int x0 = PDNA_PCP_CANCEL_X0, y0 = PDNA_PCP_CANCEL_Y0;
   int x1 = PDNA_PCP_CANCEL_X1, y1 = PDNA_PCP_CANCEL_Y1;
   m3_rect(x0, y0, x1 + 1, y1 + 1, UI_PCP_CANCEL_BODY);
-  m3_frame(x0, y0, x1 + 1, y1 + 1, selected ? UI_PCP_CURSOR : UI_PCP_CANCEL_BORDER);
-  ui_ptext_tight(x0 + 1, y0 + 2, UI_PCP_CANCEL_GLYPH, PDNA_LBL_CANCEL);
+  m3_frame(x0, y0, x1 + 1, y1 + 1, selected ? UI_PCP_CURSOR : UI_PCP_CANCEL_BODY);
+  m3_plot(x0, y0, (y0 & 1) ? UI_PCP_FILL_B : UI_PCP_FILL_A);
+  m3_plot(x1, y0, (y0 & 1) ? UI_PCP_FILL_B : UI_PCP_FILL_A);
+  m3_plot(x0, y1, (y1 & 1) ? UI_PCP_FILL_B : UI_PCP_FILL_A);
+  m3_plot(x1, y1, (y1 & 1) ? UI_PCP_FILL_B : UI_PCP_FILL_A);
+  ui_ptext_fit_shadow_tight(x0 + 1, y0 + 2, PDNA_PCP_CANCEL_W_BUDGET,
+                            UI_PCP_CANCEL_GLYPH, UI_PCP_CANCEL_SHADOW, PDNA_LBL_CANCEL);
 }
 
 /* The panel's own outer rectangle (PDNA_PCP_OCCLUDE_X0..X1) covers 4 of the box
@@ -1914,6 +1957,14 @@ static void strip_restore_icons(int x0, int x1) {
   for (int s = 0; s < COLS * ROWS; s++) {
     int cx0 = GRID_X + (s % COLS) * CELL_W, cx1 = cx0 + CELL_W;
     if (cx1 <= x0 || cx0 >= x1) continue;               /* this cell's column misses the panel */
+    /* ALSO-WORTH-DOING 9 (2026-08-20 review): the icon this restores is a 32px
+     * sprite (MON_ICON_W), wider than the 24px cell pitch — the same bleed
+     * MUST-FIX 5's own comment documents for the box grid. When that whole 32px
+     * span already lies inside [x0,x1), pcp_draw_panel repaints over every pixel
+     * this blit would draw a moment later: skip the 1024-pixel Mode-3 write +
+     * verified re-read entirely (measured: 15 of the 20 occluded cells are fully
+     * covered — only the column straddling the panel's right edge needs restoring). */
+    if (cx0 >= x0 && cx0 + MON_ICON_W <= x1) continue;
     if (s_era_drawn & (1u << s)) continue;               /* its own Gen-1/2 bitmap art already stands */
     boxoam_slot_blit_bitmap(s);                          /* no-op for an empty/art-less slot */
   }
@@ -1932,8 +1983,17 @@ static void pcp_draw_panel(void) {
   for (int y = PDNA_PCP_FILL_Y0; y <= PDNA_PCP_FILL_Y1; y++)
     m3_line(PDNA_PCP_FILL_X0, y, PDNA_PCP_FILL_X1, y,
             (y & 1) ? UI_PCP_FILL_B : UI_PCP_FILL_A);
-  /* left: outer(1px) / mid(2px) / inner HIGHLIGHT(3px) */
-  m3_rect(PDNA_PCP_LB_OUTER_X, 0, PDNA_PCP_LB_OUTER_X + 1, PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_OUTER);
+  /* left: outer(1px, WIDENED leftward to PANEL_W) / mid(2px) / inner HIGHLIGHT(3px)
+   *
+   * ALSO-WORTH-DOING 7 (2026-08-20 review): the left PKMN DATA panel (draw_left)
+   * only reaches x=PANEL_W-1, and the box grid's own content starts at GRID_X
+   * (==PDNA_PCP_LB_OUTER_X, both 82) — leaving a few columns of stray box wallpaper
+   * visible in the seam between them for the panel's full height. The outer band
+   * below normally runs PDNA_PCP_LB_OUTER_X..+1; starting it at PANEL_W instead
+   * closes that seam for free (same colour, one wider rect) without touching
+   * PDNA_PCP_LB_OUTER_X itself, PDNA_PCP_OCCLUDE_X0, or any pinned
+   * host_textfit_test.c check that reads them. */
+  m3_rect(PANEL_W, 0, PDNA_PCP_LB_OUTER_X + 1, PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_OUTER);
   m3_rect(PDNA_PCP_LB_MID_X0,  0, PDNA_PCP_LB_MID_X1 + 1,  PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_MID);
   m3_rect(PDNA_PCP_LB_HI_X0,   0, PDNA_PCP_LB_HI_X1 + 1,   PDNA_PCP_FILL_Y1 + 1, UI_PCP_PANEL_HILITE);
   /* right: inner SHADOW(3px) / mid(2px) / outer(1px) */
@@ -1963,6 +2023,10 @@ static int party_strip_overlay(BoxSource* src, int box, int cur,
                                        * needs one value all return paths funnel through */
   int sel = 0;                        /* 0..5 = one of the 6 fixed tile positions;
                                        * == rows (below) = CANCEL, the 7th stop      */
+  bool sel_seeded = false;            /* MUST-FIX 8: one-time seed, once `rows` is known */
+  int col_sel = 1;                    /* MUST-FIX 8: last COLUMN row (never 0/offset or
+                                       * CANCEL), so RIGHT from the offset tile returns
+                                       * somewhere sane regardless of party size        */
   /* Hide the grid icons under the panel's own on-screen rectangle and reserve 6 of
    * them (5 column + 1 offset) for the panel's OWN icons (box_oam.c) — done ONCE, not
    * per iteration, since neither the panel's rectangle nor the box's contents move
@@ -1975,6 +2039,13 @@ static int party_strip_overlay(BoxSource* src, int box, int cur,
     int addslot = (held && n < 6) ? n : -1;          /* PLACE: cell n is the "+ add" target */
     int rows = (addslot >= 0) ? n + 1 : n;           /* selectable party/add tiles, 1..6   */
     if (sel > rows) sel = rows;                      /* rows itself is the CANCEL stop     */
+    /* MUST-FIX 8 (2026-08-20 review): pcp_pos puts idx 0 (the offset tile) BELOW idx 1
+     * (the column's own top row) on screen, so seeding the cursor to idx 0 meant the
+     * very FIRST DOWN press most players make jumped the highlight up-and-right by
+     * 48 px — the geometry is retail-correct, the linear idx==sel mapping wasn't.
+     * Seed to the column's own top row instead (when one exists) so DOWN reads
+     * naturally from the first press; idx 0 stays reachable via LEFT/RIGHT, below. */
+    if (!sel_seeded) { sel_seeded = true; if (rows >= 2) sel = 1; }
 
     /* PkMon[6] on the stack, same as app_party_overlay's own local (pdna_main.c) — not
      * EWRAM_BSS: the EWRAM guard is down to 748 B free (see this project's own build
@@ -1987,6 +2058,15 @@ static int party_strip_overlay(BoxSource* src, int box, int cur,
                                                          * whatever a sub-screen opened by
                                                          * app_party_mon_menu last iteration
                                                          * may have painted over */
+    boxoam_strip_hide_cursor();        /* MUST-FIX 2: render_full's own oam_sync() just
+                                       * positioned the box's cursor hand / carried mon
+                                       * off `cur`, which the panel now covers for up to
+                                       * 2/3 of the grid — suppress them for this frame
+                                       * (restored at `out:`, once the panel closes) */
+    ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);   /* SHOULD-FIX 6: replace whatever fragment of
+                                       * the box's own footer survived render_full's draw
+                                       * (see PDNA_LBL_PCP_FOOTER's own comment) */
+    ui_ptext(PDNA_PCP_OCCLUDE_X1 + 2, 152, RGB15(31, 31, 31), PDNA_LBL_PCP_FOOTER);
     strip_restore_icons(PDNA_PCP_OCCLUDE_X0, PDNA_PCP_OCCLUDE_X1);  /* the sliver of
                                                          * hidden-column icon outside the
                                                          * panel's own rectangle — before
@@ -2009,10 +2089,28 @@ static int party_strip_overlay(BoxSource* src, int box, int cur,
                                           * design decision #3 (blank while CANCEL is
                                           * focused: sel==rows >= n, same as "no mon") */
 
-    u16 k; do { s_vsync(); k = key_hit(KEY_UP | KEY_DOWN | KEY_A | KEY_B); } while (!k);
+    u16 k; do { s_vsync(); k = key_hit(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B); } while (!k);
     if (k & KEY_B) { snd_back(); goto out; }
-    else if (k & KEY_UP)   { if (sel > 0) { snd_move(); sel--; } }
-    else if (k & KEY_DOWN) { if (sel < rows) { snd_move(); sel++; } }
+    /* MUST-FIX 8: LEFT/RIGHT hop between the offset tile (idx 0) and the column (idx
+     * 1..rows-1) — chosen over row-aligning LEFT/RIGHT to just idx 3 (the column row
+     * that happens to share the offset tile's own y-range) because that would make
+     * idx 0 UNREACHABLE by any input whenever the party has fewer than 4 members
+     * (idx 3 doesn't exist as a selectable stop until rows>=4); this version works at
+     * every party size. UP/DOWN never cross the idx0<->column boundary any more — no
+     * keypress can ever move the highlight in a direction the input didn't ask for. */
+    else if (k & KEY_LEFT)  { if (sel > 0 && sel < rows) { snd_move(); col_sel = sel; sel = 0; } }
+    else if (k & KEY_RIGHT) { if (sel == 0 && rows >= 2) { snd_move(); sel = col_sel; } }
+    else if (k & KEY_UP) {
+      if (sel > 1) { snd_move(); sel--; }
+      else if (sel == 1 && rows == 1) { snd_move(); sel = 0; }   /* no column at all (n==1,
+                                                                   * browse): idx0 and CANCEL
+                                                                   * are the only 2 stops     */
+    }
+    else if (k & KEY_DOWN) {
+      if (sel == 0) { if (rows == 1) { snd_move(); sel = rows; } }  /* same no-column case,
+                                                                     * the only path to CANCEL */
+      else if (sel < rows) { snd_move(); sel++; }
+    }
     else if (k & KEY_A) {
       if (sel == rows) { snd_back(); goto out; }        /* CANCEL selected -> same as B */
       if (held) {                                    /* PLACE: drop/swap into the party */
@@ -2028,6 +2126,10 @@ static int party_strip_overlay(BoxSource* src, int box, int cur,
     }
   }
 out:
+  oam_sync(cur, false, box, src->is_bank);   /* MUST-FIX 2: bring the box's own cursor
+                                       * hand / carried mon back now that the panel is
+                                       * closing — mirrors boxoam_strip_close() right
+                                       * below, which hands the borrowed grid slots back */
   boxoam_strip_close();                 /* hand every hidden/reused grid slot back */
   return result;
 }

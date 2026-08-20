@@ -848,6 +848,48 @@ void boxoam_slot_blit_bitmap(int s) {
     }
 }
 
+/* MUST-FIX 5 (2026-08-20 review): see box_oam.h's own comment for the full rationale
+ * (bitmap, not OBJ, because it can be clipped, and it's safe now that MUST-FIX 2
+ * hides the only OBJ that used to need to ride above these tiles). Mirrors
+ * boxoam_slot_blit_bitmap's tile-unpack loop exactly, but bounds-checks each
+ * destination pixel against the caller's clip rect instead of always writing the
+ * full 32x32 span. */
+int boxoam_icon_blit_clip(int x, int y, int cx0, int cy0, int cx1, int cy1,
+                           uint16_t species, uint8_t form, bool egg) {
+  if (!species && !egg) return 0;
+  int bank, from_rom;
+  const uint8_t* tiles = icon_tiles(species, form, 0, egg, &bank, &from_rom);
+  if (!tiles) return 0;                               /* artless / not in this source */
+  const uint8_t* src = tiles;
+  if (!from_rom) {
+    if (icopy_verified(s_stage, (const uint16_t*)tiles, 256) < 0)
+      log_line("icons: strip-blit-clip unstable rom reads");
+    src = (const uint8_t*)s_stage;
+  }
+  const uint16_t* pal = &pal_obj_mem[bank * 16];
+  for (int ty = 0; ty < 4; ty++)
+    for (int tx = 0; tx < 4; tx++) {
+      const uint8_t* t = src + (unsigned)(ty * 4 + tx) * 32;   /* 32 B = one 8x8 4bpp tile */
+      for (int ry = 0; ry < 8; ry++) {
+        int py = y + ty * 8 + ry;
+        if (py < cy0 || py >= cy1) continue;                  /* row clipped out          */
+        for (int rx = 0; rx < 4; rx++) {
+          uint8_t byte = t[ry * 4 + rx];
+          uint8_t lo = byte & 0xF, hi = (uint8_t)(byte >> 4);
+          int px = x + tx * 8 + rx * 2;
+          if (lo && px >= cx0 && px < cx1)     vid_mem[py * 240 + px]     = (COLOR)pal[lo];
+          if (hi && px + 1 >= cx0 && px + 1 < cx1) vid_mem[py * 240 + px + 1] = (COLOR)pal[hi];
+        }
+      }
+    }
+  return 1;
+}
+
+/* MUST-FIX 2 (2026-08-20 review): see box_oam.h's own comment. */
+void boxoam_strip_hide_cursor(void) {
+  hide(OE_HAND); hide(OE_GRAB); hide(OE_CARRY); hide(OE_CITEM);
+}
+
 /* ------- PC-box party PANEL: hide the covered columns, borrow one slot per row
  * PLUS one extra slot anywhere in the scan, for the 6th (offset "slot 1") icon -------
  *
