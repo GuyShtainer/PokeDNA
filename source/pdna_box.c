@@ -10,6 +10,7 @@
 #include "sys.h"            /* EWRAM_BSS (after tonc.h so u8 macro doesn't clash) */
 #include "pdna_box.h"
 #include "ui.h"
+#include "pdna_layout.h"    /* PDNA_PCP_*: the PC-box party strip's retail-measured geometry */
 #include "gen3_save.h"
 #include "gen3_mon.h"
 #include "gen3_box.h"
@@ -1764,6 +1765,115 @@ static void box_options_menu(BoxSource* src, int box) {
  * app_anim_enabled(); suspended while move-carrying and in ITEM mode (markers stay put). */
 #define ANIM_PERIOD 30                    /* vblanks per bob toggle (~0.5s, Gen-3 cadence) */
 
+/* ---------------------------------------------------------------------------------
+ * PC-box party STRIP — the retail PARTY POKEMON panel (docs/analysis-2026-08-20-pcparty/
+ * MEASUREMENTS.md), replacing app_party_overlay's full-screen field-menu list at THIS
+ * screen's two PARTY-tab call sites only (app_party_overlay itself is unchanged and still
+ * serves the standalone NV_PARTY nav-menu screen — see its own doc comment, pdna_app.h).
+ *
+ * The box grid + banner + PKMN DATA panel stay visible and alive behind the strip: this
+ * function never calls ui_clear(); it repaints the box BG via render_full(...,clear=false)
+ * every iteration (undoing whatever a full-screen sub-view — the summary, legality, etc,
+ * reached through app_party_mon_menu — painted over it) and then draws only the narrow
+ * icon column + the reused PKMN DATA panel (draw_left, this file) on top, now showing the
+ * strip's own focused party mon rather than the box's last cursor cell. Box-grid MON
+ * ICONS specifically do go away while the strip is open — boxoam_suspend() (called by
+ * both call sites below, same as every other popup in this file) turns off the hardware
+ * OBJ layer, which is what the box's own mon icons/cursor/carry sprites are — so it is
+ * the wallpaper/grid BACKGROUND (a BG layer, not OBJ) that stays alive, not the sprites
+ * riding on top of it. That is a judgement call, not a retail fact: no MEASUREMENTS.md
+ * number covers it, and retail hides its own grid ENTIRELY here (S4.1) — this keeps
+ * PokeDNA's own existing suspend/resume convention instead of inventing a new one.
+ *
+ * Same PLACE/GRAB contract as app_party_overlay (see pdna_app.h): PLACE (held != NULL)
+ * drops/swaps a carried box mon into the party on A, returning 1; GRAB (held == NULL)
+ * opens the full action menu on A, returning 2 (+ grab80 / grab_slot filled) iff MOVE TO
+ * BOX was chosen. 0 = closed (B). */
+static void pcp_draw_slot(int row, const PkMon* p, bool addslot, bool selected) {
+  int y = PDNA_PCP_COL_Y + row * PDNA_PCP_SLOT_H;
+  u16 border = selected ? UI_PCP_CURSOR : UI_PCP_BORDER;
+  ui_panel(PDNA_PCP_COL_X, y, PDNA_PCP_COL_W, PDNA_PCP_SLOT_H, UI_PCP_FILL, border);
+  if (addslot || !p || p->species == 0) return;   /* empty target: a plain tile, nothing
+                                                    * else drawn — mirrors the box grid's
+                                                    * own empty-cell rule (MEASUREMENTS.md
+                                                    * S1: "plain wallpaper, nothing else");
+                                                    * no captured frame shows an empty PARTY
+                                                    * slot to measure directly (S4.4). */
+  const u16* ic = (p->isEgg && !p->isBadEgg) ? mon_icon_egg() : mon_icon_for_form(p->species, p->form);
+  if (!ic) return;                                 /* artless build: no icon asset, nothing to draw */
+  /* Icon-only per MEASUREMENTS.md S4.2 ("no nickname, level, HP bar, or gender/status
+   * icon is drawn in or next to any slot") — deliberately NOT calling party_draw_name_level
+   * or party_draw_hp_fields (pdna_main.c) here; that per-mon detail lives ONLY in the
+   * reused PKMN DATA panel (draw_left, below), matching retail's own division of labour
+   * (S3/S4.2). A 32x32 icon centred in this 24x24 tile bleeds slightly past the tile's own
+   * edges into whatever sits above/below it in the column — the same bleed the box grid's
+   * own 32x32-icons-in-24x22-cells already does, and consistent with retail's own icon
+   * anchor (S4.2 measures the TILE at 24x24, not the icon itself). The exact sub-pixel
+   * centring is NOT itself retail-measured (a judgement call, not a MEASUREMENTS.md
+   * number). */
+  ui_sprite(PDNA_PCP_COL_X + (PDNA_PCP_COL_W - MON_ICON_W) / 2, y + (PDNA_PCP_SLOT_H - MON_ICON_H) / 2,
+           MON_ICON_W, MON_ICON_H, ic);
+}
+
+static int party_strip_overlay(BoxSource* src, int box, int cur,
+                               const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
+                               bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return 0; }
+  /* Same read-only-SOURCE gate as app_party_overlay (see that function's own comment,
+   * pdna_main.c) — defence in depth on a path that must never open for a mounted
+   * foreign source, even though both call sites below already gate on !src->is_bank. */
+  if (app_src_readonly()) { snd_deny(); return 0; }
+
+  int sel = 0, top = 0;
+  for (;;) {
+    int n = app_party_n();
+    if (n < 1) return 0;                              /* shouldn't happen (party never empties) */
+    int addslot = (held && n < 6) ? n : -1;          /* PLACE: cell n is the "+ add" target */
+    int rows = (addslot >= 0) ? n + 1 : n;
+    if (sel >= rows) sel = rows - 1;
+    if (sel < top) top = sel;
+    if (sel >= top + PDNA_PCP_VIS) top = sel - PDNA_PCP_VIS + 1;
+    if (top > rows - PDNA_PCP_VIS) top = rows - PDNA_PCP_VIS;
+    if (top < 0) top = 0;
+
+    /* PkMon[6] on the stack, same as app_party_overlay's own local (pdna_main.c) — not
+     * EWRAM_BSS: the EWRAM guard is down to 748 B free (see this project's own build
+     * budget), and this ~700 B fits comfortably inside the ~12 KB IWRAM stack margin
+     * (c-coding-guideline.md S1's concern is multi-KB locals, not this). */
+    PkMon pm[6]; app_party_read(pm);
+
+    render_full(src, box, cur, false, false, false);   /* box grid/banner/footer stay alive
+                                                         * behind the strip; also undoes
+                                                         * whatever a sub-screen opened by
+                                                         * app_party_mon_menu last iteration
+                                                         * may have painted over */
+    int visN = rows < PDNA_PCP_VIS ? rows : PDNA_PCP_VIS;
+    for (int i = 0; i < visN; i++) {
+      int idx = top + i; bool isAdd = (idx == addslot);
+      const PkMon* p = (!isAdd && idx < n) ? &pm[idx] : 0;
+      pcp_draw_slot(i, p, isAdd, idx == sel);
+    }
+    draw_left(sel < n ? &pm[sel] : 0);   /* the reused PKMN DATA panel follows the strip's
+                                          * OWN focus, not the box's last cursor cell —
+                                          * design decision #3 */
+
+    u16 k; do { s_vsync(); k = key_hit(KEY_UP | KEY_DOWN | KEY_A | KEY_B); } while (!k);
+    if (k & KEY_B) { snd_back(); return 0; }
+    else if (k & KEY_UP)   { if (sel > 0) { snd_move(); sel--; } }
+    else if (k & KEY_DOWN) { if (sel < rows - 1) { snd_move(); sel++; } }
+    else if (k & KEY_A) {
+      if (held) {                                    /* PLACE: drop/swap into the party */
+        if (app_party_place_held(held, sel, orig_box, orig_slot, orig_bank, can_swap)) return 1;
+      } else if (sel < n) {                          /* BROWSE: the full action menu on this mon */
+        bool tobox_hit = false;
+        app_party_mon_menu(sel, UI_FOOTER_Y, allow_move_to_box, grab80, &tobox_hit);
+        if (tobox_hit) { if (grab_slot) *grab_slot = sel; return 2; }
+        /* else: edit/release/etc. ran -> loop re-reads the party + clamps sel, then redraws */
+      }
+    }
+  }
+}
+
 int pdna_box(BoxSource* src) {
   int nb = src->nboxes; if (nb < 1) nb = 1;
   int box = src->start_box; if (box < 0 || box >= nb) box = 0;
@@ -1928,7 +2038,7 @@ int pdna_box(BoxSource* src) {
           if (s_tab_focus == 1 && !src->is_bank && !s_orig_party) {  /* PARTY tab: place/swap the held box mon into the party */
             bool can_swap = (!s_orig_bank && s_orig_slot >= 0);
             boxoam_suspend();
-            int rr = app_party_overlay(s_held, s_orig_box, s_orig_slot, s_orig_bank, can_swap, 0, 0, false);
+            int rr = party_strip_overlay(src, box, cur, s_held, s_orig_box, s_orig_slot, s_orig_bank, can_swap, 0, 0, false);
             boxoam_resume();
             if (rr == 1) {                            /* placed -> end the carry */
               s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
@@ -2028,7 +2138,7 @@ int pdna_box(BoxSource* src) {
           else {
             uint8_t grab[80]; int gslot = -1;
             boxoam_suspend();
-            int rr = app_party_overlay(0, 0, 0, false, false, grab, &gslot, true);   /* empty-handed: A opens the action menu (Move to box -> grab) */
+            int rr = party_strip_overlay(src, box, cur, 0, 0, 0, false, false, grab, &gslot, true);   /* empty-handed: A opens the action menu (Move to box -> grab) */
             boxoam_resume();
             if (rr == 2 && gslot >= 0) {                  /* grabbed a party mon -> carry it (party origin) */
               memcpy(s_held, grab, 80);
