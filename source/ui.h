@@ -67,17 +67,29 @@
 #define UI_PTY_MSG_TEXT    RGB15( 3,  4,  6) /* message-box text, on its own white fill */
 #define UI_PTY_CANCEL_FILL RGB15(14, 11, 22) /* CANCEL button fill        (115,90,181) */
 
-/* ---- PC-box party STRIP palette (measured, docs/analysis-2026-08-20-pcparty/
- * MEASUREMENTS.md S4.2/S7 — a DIFFERENT retail screen from the UI_PTY_* set above,
- * see pdna_layout.h's PDNA_PCP_* comment for which is which). ------------------ */
-#define UI_PCP_FILL     RGB15( 2,  7, 15)  /* slot interior, sky blue    (23,60,124) */
-#define UI_PCP_BORDER   RGB15( 4,  5,  5)  /* unselected slot border    (34,40,44)  */
-#define UI_PCP_CURSOR   UI_PTY_CURSOR      /* selected-slot border — UNKNOWN in retail
-                                            * (S4.2: no captured frame shows the strip's
-                                            * own cursor without the action menu already
-                                            * open); reuses the app's existing party-
-                                            * cursor recolour convention rather than
-                                            * inventing a new one. */
+/* ---- PC-box party PANEL palette — REBUILT 2026-08-20 against the ONLY unobstructed
+ * retail frame (native-E12e-storage-partystrip.top.png, PIL.Image.getpixel() exact
+ * reads, this UI is flat/dithered so edges are crisp — see pdna_layout.h's PDNA_PCP_*
+ * comment for the geometry these pair with). A DIFFERENT retail screen from the
+ * UI_PTY_* set above (that's the field-menu party list, START -> POKeMON). */
+#define UI_PCP_PANEL_OUTER   RGB15(10, 12, 14)  /* bevel outer band     #556171 (85,97,113)  */
+#define UI_PCP_PANEL_MID     RGB15(17, 21, 22)  /* bevel mid band       #8CA9B4 (140,169,180) */
+#define UI_PCP_PANEL_HILITE  RGB15( 7, 13, 12)  /* left inner (highlight) #3B6863 (59,104,99) */
+#define UI_PCP_PANEL_SHADOW  RGB15( 3,  9,  8)  /* right/bottom inner (shadow) #1F4842 (31,72,66) */
+#define UI_PCP_FILL_A        RGB15(12, 21, 20)  /* teal dither, even scanline #64A8A4 (100,168,164) */
+#define UI_PCP_FILL_B        RGB15(10, 17, 17)  /* teal dither, odd scanline  #50888B (80,136,139)  */
+#define UI_PCP_TILE_BORDER   RGB15( 8, 10, 11)  /* every tile's border  #455159 (69,81,89)    */
+#define UI_PCP_CURSOR        UI_PTY_CURSOR      /* selected-tile border — UNKNOWN in retail
+                                                 * (this frame shows every tile with the SAME
+                                                 * border colour, no captured frame shows a
+                                                 * focused-but-unopened tile — see
+                                                 * MEASUREMENTS.md "FOCUS/CURSOR INDICATOR");
+                                                 * reuses the app's existing party-cursor
+                                                 * recolour convention rather than inventing
+                                                 * a new one. */
+#define UI_PCP_CANCEL_BORDER RGB15(21, 26, 30)  /* CANCEL pill border   #AED1F3 (174,209,243) */
+#define UI_PCP_CANCEL_BODY   RGB15(31, 31, 31)  /* CANCEL pill body (white highlight) #FEFBFF */
+#define UI_PCP_CANCEL_GLYPH  RGB15(16, 23, 13)  /* CANCEL glyph, green  #83B86D (131,184,109) */
 
 /* Switch to Mode 3 and init bitmap TTE with the fixed 8x8 system font. */
 void ui_init(void);

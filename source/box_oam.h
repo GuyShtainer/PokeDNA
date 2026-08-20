@@ -137,40 +137,48 @@ void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
                         const BoxOamChunkMon* mons, int n, bool fit, int lift);
 void boxoam_chunk_end(void);
 
-/* PC-box party STRIP (pdna_box.c's party_strip_overlay): a narrow icon column pops up
- * OVER the box grid, which stays visible and alive behind it. The strip's own chrome
- * (borders/fills/CANCEL) is drawn to the BG2 bitmap, same as every other panel on this
- * screen — but BG2 sits at priority 3, the lowest, UNDER every OBJ sprite (see
- * boxoam_enter), so any leftover box icon under the strip's rectangle would show
+/* PC-box party PANEL (pdna_box.c's party_strip_overlay): a big framed panel holding
+ * SIX party tiles (5 in a right-hand column + 1 offset "slot 1") pops up OVER the box
+ * grid, which stays visible and alive behind it. The panel's own chrome (bevel/dither
+ * fill/tile borders/CANCEL) is drawn to the BG2 bitmap, same as every other panel on
+ * this screen — but BG2 sits at priority 3, the lowest, UNDER every OBJ sprite (see
+ * boxoam_enter), so any leftover box icon under the panel's rectangle would show
  * through it. bitmap mode's OBJ tile memory is spent to the exact tile (this file's
- * header: 30 grid icons + hand + region B = 512), so the strip's own icons cannot be
+ * header: 30 grid icons + hand + region B = 512), so the panel's own icons cannot be
  * drawn as NEW sprites either — there is nothing left to draw them with.
  *
  * boxoam_strip_open(x0, x1) resolves both problems by hiding the grid icons whose cell
  * falls in [x0, x1): every hidden slot is unavailable to the box grid instantly (no
- * OBJ can bleed through the strip there), and ONE hidden slot per box row is reserved
- * — its now-unused 16-tile region and OAM entry are repointed at whatever
- * boxoam_strip_slot() draws for that row. Grid icons OUTSIDE [x0, x1) are never
- * touched: they stay visible, in place, and still animate/cursor normally.
- * boxoam_strip_close() hands every hidden/reused slot back via restore_slot() — the
- * same machinery boxoam_chunk_end() already uses to uncover a cell — so a slot always
- * comes back exactly as boxoam_load_box() last left it (species, frame, palette bank,
- * selection mark).
+ * OBJ can bleed through the panel there), and up to TWO hidden slots per box row are
+ * reserved — the first's now-unused 16-tile region and OAM entry are repointed at
+ * whatever boxoam_strip_slot() draws for that row (the column's 5 tiles, one per box
+ * row); a SECOND reservation, taken from wherever it's first found across the whole
+ * scan (there is no shortage — the panel now hides 4 of the box's 6 columns, so every
+ * row has spares), backs boxoam_strip_slot1() for the panel's 6th, offset icon. Grid
+ * icons OUTSIDE [x0, x1) are never touched: they stay visible, in place, and still
+ * animate/cursor normally. boxoam_strip_close() hands every hidden/reused slot back
+ * via restore_slot() — the same machinery boxoam_chunk_end() already uses to uncover a
+ * cell — so a slot always comes back exactly as boxoam_load_box() last left it
+ * (species, frame, palette bank, selection mark).
  *
- * A full-screen view opened WHILE the strip is up (a warning dialog, the party action
+ * A full-screen view opened WHILE the panel is up (a warning dialog, the party action
  * menu) still needs its OWN boxoam_suspend()/boxoam_resume() bracket around just that
  * call, same as every other popup in pdna_box.c — those two are pure DISPCNT toggles
  * and never disturb this bookkeeping, so nesting them here is safe. */
 void boxoam_strip_open(int x0, int x1);
-/* Draw (or clear) the strip's OWN icon for box row `row` (0..4 on this screen) at OAM
- * position (x, y): species==0 && !egg hides that row's icon (an empty list row, or a
- * row past the current viewport). Call every strip redraw — the visible party window
- * scrolls — followed by boxoam_commit() like any other OAM update. A row whose box
- * column had nothing to reuse (boxoam_strip_open found no intersecting grid cell for
- * it) silently draws nothing; that cannot happen at this screen's own measured
- * geometry (every row's column intersects), but degrading to "no icon" rather than a
- * out-of-range OAM/VRAM write is the safe failure if the geometry ever changes. */
+/* Draw (or clear) the panel's OWN column icon for box row `row` (0..4, party slots
+ * 2-6) at OAM position (x, y): species==0 && !egg hides that row's icon (an empty
+ * party slot — the "+ add" target). Call every redraw, followed by boxoam_commit()
+ * like any other OAM update. A row whose box column had nothing to reuse
+ * (boxoam_strip_open found no intersecting grid cell for it) silently draws nothing;
+ * that cannot happen at this screen's own measured geometry (every row's column
+ * intersects), but degrading to "no icon" rather than an out-of-range OAM/VRAM write
+ * is the safe failure if the geometry ever changes. */
 void boxoam_strip_slot(int row, int x, int y, uint16_t species, uint8_t form, bool egg);
+/* Same contract as boxoam_strip_slot, for the panel's 6th tile: the offset, alone
+ * "slot 1" (party index 0), drawn at its own measured position (PDNA_PCP_S1_*,
+ * pdna_layout.h) rather than a column row. */
+void boxoam_strip_slot1(int x, int y, uint16_t species, uint8_t form, bool egg);
 void boxoam_strip_close(void);
 
 /* "Bitmap understudy" hooks (§12b) — box_oam.c owns the covered-cell bookkeeping and

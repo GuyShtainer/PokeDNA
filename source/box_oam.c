@@ -10,9 +10,9 @@
  *   ids 992..1007 ( 16) : cursor hand (32x32)            [region A, permanent]
  *   ids 1008..1023( 16) : grab fist (move) OR item glyphs (ITEM)  [region B, shared]
  * Exactly 512 tiles. There is no slack for a further icon kind, which is why the PC-box
- * party strip (boxoam_strip_open/slot/close, below) draws its OWN icons by borrowing a
- * HIDDEN grid slot's existing 512..991 tile range and OAM entry instead of claiming any
- * of its own — see that group's own comment.
+ * party panel (boxoam_strip_open/slot/slot1/close, below) draws its OWN 6 icons by
+ * borrowing HIDDEN grid slots' existing 512..991 tile ranges and OAM entries instead
+ * of claiming any of its own — see that group's own comment.
  *
  * OBJ palette banks (16 total): 0..12 = the 13 shared icon palettes (uploaded once);
  *   13 = hand (normal) + grab + item glyph; 14 = hand (orange, MOVE); 15 = carried
@@ -848,24 +848,47 @@ void boxoam_slot_blit_bitmap(int s) {
     }
 }
 
-/* ------- PC-box party strip: hide the covered column, borrow one slot per row ------- */
-static int s_strip_reuse[ROWS];      /* grid slot reused by strip row r; -1 = none      */
+/* ------- PC-box party PANEL: hide the covered columns, borrow one slot per row
+ * PLUS one extra slot anywhere in the scan, for the 6th (offset "slot 1") icon -------
+ *
+ * TILE ARITHMETIC (the panel now occludes 4 of the box's 6 grid columns, not ~1):
+ * PDNA_PCP_OCCLUDE_X0..X1 spans x=82..176, i.e. GRID_X + 0*CELL_W .. GRID_X + 4*CELL_W
+ * with CELL_W=24 -- columns 0-3 (x82-178, four 24px columns) all overlap that range at
+ * least partially, column 4 (x178-202) does not (178 >= 176). An OBJ can't be partially
+ * hidden, so EVERY cell in columns 0-3 gets hidden for all 5 box rows: 4 cols x 5 rows =
+ * 20 hidden cells. Of those, the party panel needs exactly 6 borrowed OAM entries/tile
+ * ranges (5 column tiles + 1 offset slot-1 tile) -- 1 per box row for the column (5
+ * total, unchanged from before) plus ONE more taken from whichever cell is the SECOND
+ * hit in any row's scan (here always row 0's own 2nd hidden column, since rows are
+ * scanned in order and row 0 fills first) -- 6 of the 20 hidden cells are reused as the
+ * panel's own OAM entries and tile ranges; the other 14 are genuinely just hidden (their
+ * true icon is repainted at its native grid position as a Mode-3 BITMAP by the caller's
+ * strip_restore_icons() before the panel's own chrome draws over the part that's really
+ * covered -- see pdna_box.c). This borrows existing OBJ tile ranges (TID_ICON0 + s*16)
+ * and OAM entries only; it claims ZERO new OBJ tiles, keeping the exactly-512-tile
+ * budget this file's own header comment documents. */
+static int s_strip_reuse[ROWS];      /* grid slot reused by strip row r (column slots 2-6);
+                                      * -1 = none                                        */
+static int s_strip_extra = -1;       /* one more hidden slot, reserved for the panel's
+                                      * offset "slot 1" icon; -1 = none                  */
 
 void boxoam_strip_open(int x0, int x1) {
   for (int r = 0; r < ROWS; r++) s_strip_reuse[r] = -1;
+  s_strip_extra = -1;
   for (int s = 0; s < 30; s++) {
     int cx0 = GRID_X + (s % COLS) * CELL_W, cx1 = cx0 + CELL_W;
-    if (cx1 <= x0 || cx0 >= x1) continue;              /* this cell's column misses the strip */
+    if (cx1 <= x0 || cx0 >= x1) continue;              /* this cell's column misses the panel */
     if (!s_covered[s]) { s_covered[s] = 1; hide(OE_ICON0 + s); }
     int row = s / COLS;
-    if (s_strip_reuse[row] < 0) s_strip_reuse[row] = s;   /* first hit this row -> reused */
+    if (s_strip_reuse[row] < 0) s_strip_reuse[row] = s;        /* 1st hit this row -> the
+                                                                 * column tile for this row */
+    else if (s_strip_extra < 0) s_strip_extra = s;             /* 2nd hit anywhere -> the
+                                                                 * offset slot-1 tile      */
   }
 }
 
-void boxoam_strip_slot(int row, int x, int y, uint16_t species, uint8_t form, bool egg) {
-  if (row < 0 || row >= ROWS) return;
-  int s = s_strip_reuse[row];
-  if (s < 0) return;                          /* no grid cell under the strip on this row */
+static void strip_draw(int s, int x, int y, uint16_t species, uint8_t form, bool egg) {
+  if (s < 0) return;                          /* no grid cell under the panel to reuse */
   if (!species && !egg) { hide(OE_ICON0 + s); return; }
   int bank, from_rom;
   const uint8_t* tiles = icon_tiles(species, form, 0, egg, &bank, &from_rom);
@@ -878,10 +901,23 @@ void boxoam_strip_slot(int row, int x, int y, uint16_t species, uint8_t form, bo
                ATTR2_PALBANK(bank));
 }
 
+void boxoam_strip_slot(int row, int x, int y, uint16_t species, uint8_t form, bool egg) {
+  if (row < 0 || row >= ROWS) return;
+  strip_draw(s_strip_reuse[row], x, y, species, form, egg);
+}
+
+/* The 6th icon: retail's offset "slot 1", alone at the panel's own measured position
+ * (PDNA_PCP_S1_*). Draws through the SAME borrowed-OAM mechanism as boxoam_strip_slot,
+ * just off the s_strip_extra reservation instead of a per-row one. */
+void boxoam_strip_slot1(int x, int y, uint16_t species, uint8_t form, bool egg) {
+  strip_draw(s_strip_extra, x, y, species, form, egg);
+}
+
 void boxoam_strip_close(void) {
   for (int s = 0; s < 30; s++)
     if (s_covered[s]) { s_covered[s] = 0; restore_slot(s); }
   for (int r = 0; r < ROWS; r++) s_strip_reuse[r] = -1;
+  s_strip_extra = -1;
 }
 
 void boxoam_item_markers(const PkMon box[30], bool show) {

@@ -764,38 +764,97 @@
 #define PDNA_PTY_CANCEL_W_BUDGET (PDNA_PTY_CANCEL_W - 2 * PDNA_PTY_MSG_PAD)
 
 /* ---------------------------------------------------------------------------
- * PC-box party STRIP (party_strip_overlay, source/pdna_box.c) — 2026-08-20.
+ * PC-box party PANEL (party_strip_overlay, source/pdna_box.c) — REBUILT
+ * 2026-08-20 against native-E12e-storage-partystrip.top.png, the ONLY
+ * unobstructed retail frame (docs/analysis-2026-08-20-pcparty/MEASUREMENTS.md,
+ * "PANE MEASUREMENTS" pass). The panel's own party-section conclusions in
+ * that file's *first* pass ("5 slots at 24 px pitch", "the panel fully
+ * replaces the box pane") were derived from frames where retail's own action
+ * menu covered the pane and are WRONG — do not resurrect them.
+ *
  * Guy's own words: "when choosing to move the pokemon within the PC, a side
  * menu of the party pops up ontop of the pokemon in the PC in the background
- * ... i like how i can grab a pokemon from party to box like so directly."
- * That is a DIFFERENT retail screen from the one PDNA_PTY_* above matches
- * (Emerald's field-menu "choose a POKeMON" list, START -> POKeMON) — this is
- * the PC storage system's own PARTY POKEMON panel, measured fresh in
- * docs/analysis-2026-08-20-pcparty/MEASUREMENTS.md.
+ * ... i like how i can grab a pokemon from party to box like so directly" —
+ * and, on the first build of this: "It also shows 5 pokemon and not 6."
  *
- * Only the icon column itself is placed at retail's measured coordinates
- * (S4.2: "Column bbox: x = 137/138-166, y = 8-128 ... Slot pitch: exactly
- * 24 px"). The big teal party-panel BACKGROUND retail washes over the
- * *entire* box-grid pane when this opens (S4.1: "the panel replaces the
- * ENTIRE center-right pane ... nothing [of the grid] stays visible") is
- * DELIBERATELY NOT drawn here — the box grid + banner + PKMN DATA panel stay
- * visible and alive behind the strip by design (Guy's words above), so this
- * is not a like-for-like retail reproduction of the whole panel, only of the
- * slot column sitting on top of it. At a slot pitch equal to the slot height
- * (24 px), retail's own column tiles sit border-to-border with no visible
- * background between them anyway — see PCP_FILL/PCP_BORDER in ui.h — so
- * skipping the wash costs nothing inside the column itself. */
-#define PDNA_PCP_COL_X   137
-#define PDNA_PCP_COL_Y     8
-#define PDNA_PCP_COL_W    29             /* 166 - 137, MEASUREMENTS.md S4.2 */
-#define PDNA_PCP_SLOT_H   24
-#define PDNA_PCP_VIS       5             /* viewport rows — retail's own captures show
-                                          * exactly 5 in both available frames, at a
-                                          * fixed 8..128 column height; whether a 6th
-                                          * party member scrolls or the column grows is
-                                          * UNKNOWN (S4.2 "party size ambiguity") — a
-                                          * fixed 5-row scrolling viewport is the judgement
-                                          * call made here, consistent with the ONE
-                                          * geometry retail's frames do confirm. */
+ * Retail's shape: ONE big framed teal-dithered panel, x=[82,175] (94 px),
+ * full screen height y=[0,159] (flush to y=0, no top border). It holds SIX
+ * party tiles in retail's classic party layout: slot 1 sits ALONE, offset
+ * left and vertically centred on the column (not top/bottom aligned); slots
+ * 2-6 stack in a column on the panel's right side at 24 px pitch. A CANCEL
+ * pill sits bottom-right, snug in the panel's own corner. The box grid stays
+ * visible to the right of the panel (2 of its 6 columns fully, a sliver of a
+ * 3rd) — see box_oam.c's boxoam_strip_open/strip_slot1 for how the tile
+ * arithmetic keeps that true for THIS build's own (different) grid pitch.
+ *
+ * PokeDNA keeps the box grid + banner + PKMN DATA panel alive behind the
+ * panel (Guy's own request, see above) rather than retail's own full pane
+ * wipe — that divergence is deliberate, not a gap. */
+
+/* ---- outer panel: bevel border bands + interior teal dither ---- */
+#define PDNA_PCP_PANEL_X0   82           /* outer bbox left   (S: PANEL OUTER BBOX)  */
+#define PDNA_PCP_PANEL_X1  175           /* outer bbox right, inclusive              */
+#define PDNA_PCP_PANEL_Y0    0           /* flush to the very top -- no top border   */
+#define PDNA_PCP_PANEL_Y1  159           /* full native height                       */
+
+#define PDNA_PCP_LB_OUTER_X   82         /* left border, outer 1px band  #556171     */
+#define PDNA_PCP_LB_MID_X0    83         /* left border, mid 2px band    #8CA9B4     */
+#define PDNA_PCP_LB_MID_X1    84
+#define PDNA_PCP_LB_HI_X0     85         /* left border, inner 3px HIGHLIGHT #3B6863 */
+#define PDNA_PCP_LB_HI_X1     87
+
+#define PDNA_PCP_RB_SH_X0    170         /* right border, inner 3px SHADOW #1F4842   */
+#define PDNA_PCP_RB_SH_X1    172
+#define PDNA_PCP_RB_MID_X0   173         /* right border, mid 2px band  #8CA9B4      */
+#define PDNA_PCP_RB_MID_X1   174
+#define PDNA_PCP_RB_OUTER_X  175         /* right border, outer 1px band #556171     */
+
+#define PDNA_PCP_BB_SH_Y0    152         /* bottom border, inner 3px SHADOW #1F4842  */
+#define PDNA_PCP_BB_SH_Y1    154
+#define PDNA_PCP_BB_MID_Y0   155         /* bottom border, mid 3px band  #8CA9B4     */
+#define PDNA_PCP_BB_MID_Y1   157
+#define PDNA_PCP_BB_OUTER_Y0 158         /* bottom border, outer 2px band #556171    */
+#define PDNA_PCP_BB_OUTER_Y1 159
+
+#define PDNA_PCP_FILL_X0      88         /* interior teal-dither fill                */
+#define PDNA_PCP_FILL_X1     169
+#define PDNA_PCP_FILL_Y0       0
+#define PDNA_PCP_FILL_Y1     151
+
+/* ---- the party column (slots 2-6): x=137-166, 24 px pitch, 23 px tall tile,
+ * 1 px gap of plain dither between tiles (rows 31/55/79/103) ---- */
+#define PDNA_PCP_COL_X0      137
+#define PDNA_PCP_COL_X1      166
+#define PDNA_PCP_COL_Y0        8          /* top-of-first-tile              */
+#define PDNA_PCP_SLOT_H       24          /* top-to-top pitch, confirmed exact */
+#define PDNA_PCP_SLOT_VISH    23          /* visual tile height (< pitch: the gap) */
+#define PDNA_PCP_VIS            5          /* slots 2-6: exactly 5, fixed (no scroll --
+                                            * party caps at 6, and 1 (slot 1) + 5
+                                            * (column) covers every legal party size) */
+
+/* ---- slot 1 (offset, alone): x=89-118, SAME width as a column tile (30 px),
+ * y=56-78 -- vertically centred on the column (matches column tile #3, the
+ * middle one), NOT grid-aligned with the column horizontally. ---- */
+#define PDNA_PCP_S1_X0         89
+#define PDNA_PCP_S1_X1        118
+#define PDNA_PCP_S1_Y0         56
+#define PDNA_PCP_S1_Y1         78
+
+/* ---- CANCEL pill: snug in the panel's own bottom-right corner, centred
+ * under the column (not the whole panel, not slot 1). ---- */
+#define PDNA_PCP_CANCEL_X0    136
+#define PDNA_PCP_CANCEL_X1    167
+#define PDNA_PCP_CANCEL_Y0    138
+#define PDNA_PCP_CANCEL_Y1    149
+#define PDNA_PCP_CANCEL_W_BUDGET (PDNA_PCP_CANCEL_X1 - PDNA_PCP_CANCEL_X0 + 1 - 2)  /* 1px
+                                   border each side, zero extra pad -- CANCEL at TIGHT
+                                   kerning measures exactly 30px, the same as this budget;
+                                   see tests/host_textfit_test.c's pcp-cancel check. */
+
+/* Occlusion range handed to boxoam_strip_open()/strip_restore_icons(): the box grid
+ * cells the PANEL's own on-screen rectangle physically covers -- the outer bevel's
+ * own extent, not just the column, now that the panel is a single big frame. */
+#define PDNA_PCP_OCCLUDE_X0  PDNA_PCP_PANEL_X0
+#define PDNA_PCP_OCCLUDE_X1  (PDNA_PCP_PANEL_X1 + 1)
 
 #endif /* PDNA_LAYOUT_H */

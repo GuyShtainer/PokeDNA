@@ -1349,6 +1349,51 @@ int main(void) {
 #undef PWT
   }
 
+  printf("\n== PC-box party PANEL: retail-measured rebuild (#2026-08-20) ==\n");
+  /* The only fixed string this panel draws is CANCEL (party_strip_overlay's
+   * pcp_draw_cancel, source/pdna_box.c) -- reuses the shared PDNA_LBL_CANCEL, but at a
+   * NEW geometry (the pill snug in the panel's own bottom-right corner), so per this
+   * file's own convention this is a new check even though the string itself is tested
+   * elsewhere (the standalone party-overlay's own CANCEL, above). Drawn with
+   * ui_ptext_tight (delta=1) directly against the pill's 1px-bordered interior width,
+   * with zero extra padding -- CANCEL must fit EXACTLY, not just under a budget with
+   * slack, or the pill was sized wrong. */
+  {
+#define PWT(s) pwidth_tight(s)
+    int interior = (PDNA_PCP_CANCEL_X1 - PDNA_PCP_CANCEL_X0 + 1) - 2;   /* 1px border/side */
+    chkv("PDNA_PCP_CANCEL_W_BUDGET matches the pill's own 1px-bordered interior",
+         PDNA_PCP_CANCEL_W_BUDGET, interior);
+    chkv_min("PDNA_PCP_CANCEL_W_BUDGET matches the pill's own 1px-bordered interior",
+             PDNA_PCP_CANCEL_W_BUDGET, interior);
+    chkv("CANCEL (tight) fills the pill's interior exactly, no overflow",
+         PWT(PDNA_LBL_CANCEL), PDNA_PCP_CANCEL_W_BUDGET);
+#undef PWT
+  }
+  /* Geometry sanity: every element this rebuild introduced stays on the 240x160 native
+   * screen and inside the panel's own outer bevel -- a wrong sign on any offset added
+   * during the rebuild would silently draw off-screen or outside the panel, which no
+   * build-time check previously existed to catch (this whole panel was un-pinned). */
+  chkv("panel's own outer bbox stays on-screen (x)",
+       PDNA_PCP_PANEL_X1 + 1, SCR_W);
+  chkv("panel's own outer bbox stays on-screen (y)",
+       PDNA_PCP_PANEL_Y1 + 1, UI_SCR_H);
+  chkv("slot 1 (offset tile) stays inside the panel's left inner fill",
+       PDNA_PCP_FILL_X0, PDNA_PCP_S1_X0);
+  chkv("column's right edge stays inside the panel's right inner fill",
+       PDNA_PCP_COL_X1, PDNA_PCP_FILL_X1);
+  chkv("slot 1 is vertically centred on the column (matches tile #3, the middle one)",
+       PDNA_PCP_S1_Y0, PDNA_PCP_COL_Y0 + 2 * PDNA_PCP_SLOT_H);
+  chkv_min("slot 1 is vertically centred on the column (matches tile #3, the middle one)",
+           PDNA_PCP_S1_Y0, PDNA_PCP_COL_Y0 + 2 * PDNA_PCP_SLOT_H);
+  chkv("the 5th (last) column tile stays inside the panel's fill",
+       PDNA_PCP_COL_Y0 + 4 * PDNA_PCP_SLOT_H + PDNA_PCP_SLOT_VISH - 1, PDNA_PCP_FILL_Y1);
+  chkv("CANCEL pill stays inside the panel's outer bbox (x)",
+       PDNA_PCP_CANCEL_X1, PDNA_PCP_PANEL_X1);
+  chkv("CANCEL pill stays inside the panel's outer bbox (y)",
+       PDNA_PCP_CANCEL_Y1, PDNA_PCP_PANEL_Y1);
+  chkv("CANCEL pill sits below the column's last tile (no overlap)",
+       PDNA_PCP_COL_Y0 + 4 * PDNA_PCP_SLOT_H + PDNA_PCP_SLOT_VISH - 1, PDNA_PCP_CANCEL_Y0);
+
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }
