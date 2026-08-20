@@ -44,17 +44,24 @@ int rom_chrome_pokeblock_have(const RomChrome* rch, int g) {
 typedef struct {
   uint32_t tileset;  uint8_t tileset_lz;  uint32_t tileset_bytes;   /* 128x80 4bpp */
   uint32_t front;    uint8_t front_lz;
-  uint32_t back;     uint8_t back_lz;     uint32_t map_bytes;       /* front/back  */
+  uint32_t back;     uint8_t back_lz;     uint32_t map_bytes;       /* front/back/bg */
+  uint32_t bg;       uint8_t bg_lz;       /* background tilemap UNDER front/back,
+                                            * one shared address for both faces --
+                                            * palette bank 1 exclusively (measured);
+                                            * front/back use bank 0 exclusively, so
+                                            * compositing with index-0-transparent
+                                            * is exactly what retail draws */
   uint16_t map_w;                                                   /* stored stride */
   uint32_t tier[5];  uint8_t tier_lz;                               /* 96 B each   */
   uint32_t female_bg; uint8_t female_bg_lz;                         /* 32 B, bank1 */
 } CardPins;
 
-/* Emerald BPEE r0 -- DESIGN.md Sec 1.6. tileset+front+back LZ77; tier/female RAW. */
+/* Emerald BPEE r0 -- DESIGN.md Sec 1.6. tileset+front+back+bg LZ77; tier/female RAW. */
 static const CardPins k_card_emerald = {
   0x08DD1AB8, 1, 5120u,
   0x08DD2010, 1,
   0x08DD21B0, 1, 1200u,
+  0x08DD1F78, 1,
   30,
   { 0x08DD1A58, 0x0856F1AC, 0x0856F26C, 0x0856F32C, 0x0856F3EC }, 0,
   0x0856F4AC, 0,
@@ -65,6 +72,7 @@ static const CardPins k_card_ruby = {
   0x08E8B4E0, 0, 5120u,
   0x08E8CAC0, 0,
   0x08E8CFC0, 0, 1280u,
+  0x08E8D9C0, 0,
   32,
   { 0x08E8C8E0, 0x08E8C940, 0x08E8C9A0, 0x08E8CA00, 0x08E8CA60 }, 0,
   0x083B5F28, 0,
@@ -156,7 +164,9 @@ int rom_chrome_card_load(const RomChrome* rch, int g, int back, int tier, int fe
 
   uint32_t tileset_off = 0;
   uint32_t map_off = (tileset_off + p->tileset_bytes + 1u) & ~1u;   /* 2-aligned */
-  uint32_t pal_off = map_off + p->map_bytes;                        /* 3 banks = 96 B */
+  uint32_t bg_off = map_off + p->map_bytes;                         /* same size as
+                                                                      * front/back */
+  uint32_t pal_off = bg_off + p->map_bytes;                         /* 3 banks = 96 B */
   uint32_t need = pal_off + 96u;
   if (need > cap) return 0;
 
@@ -166,12 +176,19 @@ int rom_chrome_card_load(const RomChrome* rch, int g, int back, int tier, int fe
   int face_lz = back ? p->back_lz : p->front_lz;
   if (!fetch(rch->rc, rch->verify, face_addr, face_lz,
             scratch + map_off, cap - map_off, p->map_bytes)) return 0;
+  /* Background layer, shared by front and back -- composited underneath in
+   * romchrome_blit() wherever the face's own tilemap has index 0. Same tile
+   * grid size as front/back (DESIGN.md: "bg.bin/front.bin/back.bin ... 1,200 B
+   * each" for Emerald; Ruby's three faces are likewise all 1,280 B). */
+  if (!fetch(rch->rc, rch->verify, p->bg, p->bg_lz,
+            scratch + bg_off, cap - bg_off, p->map_bytes)) return 0;
   /* Tier palette: 96 B = 3 banks (0..2). Female overwrites bank 1 with female_bg. */
   if (!fetch(rch->rc, rch->verify, p->tier[tier], p->tier_lz,
             scratch + pal_off, cap - pal_off, 96u)) return 0;
 
   out->src.tiles = scratch + tileset_off;
   out->src.map = (const uint16_t*)(const void*)(scratch + map_off);
+  out->src.bg_map = (const uint16_t*)(const void*)(scratch + bg_off);
   out->src.map_w = p->map_w;
   {
     const uint8_t* raw = scratch + pal_off;
@@ -184,8 +201,11 @@ int rom_chrome_card_load(const RomChrome* rch, int g, int back, int tier, int fe
     uint8_t fb[32];
     if (fetch(rch->rc, rch->verify, p->female_bg, p->female_bg_lz, fb, sizeof fb, 32u))
       pal_bank_from_raw(fb, &out->src.pal[16]);
-    /* a failed female-palette fetch just keeps the tier's own bank 1 -- a wrong
-     * accent colour, never a corrupt or unreadable card */
+    /* a failed female-palette fetch just keeps the tier's own bank 1 -- the
+     * male border colour on a female card, never a corrupt or unreadable one.
+     * Bank 1 is not cosmetic trim: bg.bin's tilemap (out->src.bg_map above)
+     * uses palette bank 1 EXCLUSIVELY (measured), so this swap is the whole
+     * male/female border-colour distinction retail draws. */
   }
   out->as_lzblob.base = 0; out->as_lzblob.pages = 0;
   out->as_lzblob.npages = 0; out->as_lzblob.raw_len = 0;
@@ -215,6 +235,7 @@ int rom_chrome_pokeblock_load(const RomChrome* rch, int g,
 
   out->src.tiles = scratch + tileset_off;
   out->src.map = (const uint16_t*)(const void*)(scratch + map_off);
+  out->src.bg_map = 0;   /* no background layer for the Pokeblock case */
   out->src.map_w = p->map_w;
   {
     const uint8_t* raw = scratch + pal_off;

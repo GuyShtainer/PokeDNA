@@ -39,10 +39,21 @@
  * only the first 30 columns of each row are ever drawn (a 240 px screen), so
  * map_w may be wider than 30 to match the ROM's own stored stride (Ruby pads to
  * 32). `pal` holds up to 6 banks (96 colours) flat, bank b / index i at
- * pal[b*16+i]; an unused bank is simply never indexed by `map`. */
+ * pal[b*16+i]; an unused bank is simply never indexed by `map`.
+ *
+ * `bg_map` is an OPTIONAL second tilemap, same `tiles`/`map_w`/`pal` and same
+ * tile grid, composited UNDERNEATH `map`: wherever a `map` pixel's 4bpp index
+ * is 0, the corresponding `bg_map` pixel shows through instead of opaque
+ * palette-bank-0 colour 0. This is how the trainer card's card_bg.h "sticker on
+ * a background" retail look actually works -- the card sticker's tilemap
+ * (`map`) has real pixels only where the card art is, index 0 everywhere else,
+ * and the background tilemap paints the border underneath. NULL means `map`'s
+ * own index 0 is opaque, exactly as before (every non-card screen, and the
+ * Pokeblock case, which has no background layer of its own). */
 typedef struct {
   const uint8_t*  tiles;
   const uint16_t* map;
+  const uint16_t* bg_map;
   uint16_t        map_w;
   uint16_t        pal[96];
 } RomChromeSrc;

@@ -12,10 +12,11 @@
  * path above it needs no rumble_io_suspend bracketing.
  *
  * Tile-major, not pixel-major: for each 8x8 cell the rect overlaps, decode its
- * tonc BG_SBB attribute ONCE, then walk only the sub-rows/sub-cols the rect
- * actually needs. A full 240x160 redraw is at most 600 attribute decodes, not
- * 38,400 — the same order of work pdna_box.c's wp_blit_tile already spends on a
- * box wallpaper. Only the first 30 columns / 20 rows are ever drawn (a 240x160
+ * tonc BG_SBB attribute ONCE (and `bg_map`'s, when present), then walk only the
+ * sub-rows/sub-cols the rect actually needs. A full 240x160 redraw is at most
+ * 600 (or 1,200 with a background layer) attribute decodes, not 38,400 — the
+ * same order of work pdna_box.c's wp_blit_tile already spends on a box
+ * wallpaper. Only the first 30 columns / 20 rows are ever drawn (a 240x160
  * screen); a wider stored map_w (Ruby pads to 32) just changes the row stride. */
 static void romchrome_blit(const RomChromeSrc* s, uint32_t off, int sw,
                            int x, int y, int w, int h) {
@@ -31,19 +32,44 @@ static void romchrome_blit(const RomChromeSrc* s, uint32_t off, int sw,
       uint16_t e = s->map[(uint32_t)ty * s->map_w + (uint32_t)tx];
       int tile = e & 0x03FF, hf = (e >> 10) & 1, vf = (e >> 11) & 1, bank = (e >> 12) & 0xF;
       const uint16_t* pal = &s->pal[bank * 16];
+      /* The optional background cell underneath this SAME 8x8 grid position,
+       * decoded once per tile like the front cell above -- see the struct
+       * comment in lzblob.h for what this composites and why. */
+      int btile = 0, bhf = 0, bvf = 0;
+      const uint16_t* bpal = 0;
+      if (s->bg_map) {
+        uint16_t be = s->bg_map[(uint32_t)ty * s->map_w + (uint32_t)tx];
+        int bbank;
+        btile = be & 0x03FF; bhf = (be >> 10) & 1; bvf = (be >> 11) & 1; bbank = (be >> 12) & 0xF;
+        bpal = &s->pal[bbank * 16];
+      }
       int px0 = tx * 8, py0 = ty * 8;
       int lx0 = (px0 < x0) ? (x0 - px0) : 0, lx1 = (px0 + 8 > x1) ? (x1 - px0) : 8;
       int ly0 = (py0 < y0) ? (y0 - py0) : 0, ly1 = (py0 + 8 > y1) ? (y1 - py0) : 8;
       for (int ly = ly0; ly < ly1; ly++) {
         int sy = vf ? 7 - ly : ly;
         const uint8_t* trow = s->tiles + (uint32_t)tile * 32u + (uint32_t)sy * 4u;
+        const uint8_t* btrow = 0;
+        if (s->bg_map) {
+          int bsy = bvf ? 7 - ly : ly;
+          btrow = s->tiles + (uint32_t)btile * 32u + (uint32_t)bsy * 4u;
+        }
         int dy = y + (py0 + ly - y0);
         uint16_t* drow = &vid_mem[dy * 240 + x];
         for (int lx = lx0; lx < lx1; lx++) {
           int sxp = hf ? 7 - lx : lx;
           uint8_t b = trow[sxp >> 1];
           uint8_t idx = (uint8_t)((sxp & 1) ? (b >> 4) : (b & 0x0F));
-          drow[px0 + lx - x0] = pal[idx] & 0x7FFFu;
+          uint16_t color;
+          if (idx == 0 && btrow) {
+            int bsxp = bhf ? 7 - lx : lx;
+            uint8_t bb = btrow[bsxp >> 1];
+            uint8_t bidx = (uint8_t)((bsxp & 1) ? (bb >> 4) : (bb & 0x0F));
+            color = bpal[bidx] & 0x7FFFu;
+          } else {
+            color = pal[idx] & 0x7FFFu;
+          }
+          drow[px0 + lx - x0] = color;
         }
       }
     }

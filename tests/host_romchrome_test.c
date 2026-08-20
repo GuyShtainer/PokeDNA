@@ -27,6 +27,11 @@
  *     other game, matching gen3_pokeblock.c's own pk_pokeblock_offset()==0 for
  *     FRLG and the Ruby/Sapphire "located but not pinned" gap this module
  *     documents rather than guesses through.
+ *  5) Every card load carries a bg_map distinct from its face map, landing
+ *     inside scratch, whose tilemap entries are palette bank 1 EXCLUSIVELY
+ *     while the face tilemap's are bank 0 exclusively -- the measured fact
+ *     that makes an index-0-transparent composite the correct retail look
+ *     instead of a flat fill. The Pokeblock case carries no bg_map at all.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -82,8 +87,40 @@ static void test_card_game(const char* label, const char* path, int expect_style
           CHECK((const uint8_t*)out.src.map >= scratch &&
                (const uint8_t*)out.src.map < scratch + sizeof scratch,
                "%s: map pointer outside scratch", label);
+          /* The card composites a background layer under front/back (the retail
+           * male/blue vs female/pink striped border) -- rom_chrome.h's MEMORY
+           * section. Must always be present and land inside scratch, distinct
+           * from the face tilemap it draws under. */
+          CHECK(out.src.bg_map != 0, "%s: card bg_map is NULL", label);
+          CHECK((const uint8_t*)out.src.bg_map >= scratch &&
+               (const uint8_t*)out.src.bg_map < scratch + sizeof scratch,
+               "%s: bg_map pointer outside scratch", label);
+          CHECK((const uint8_t*)out.src.bg_map != (const uint8_t*)out.src.map,
+               "%s: bg_map aliases the face map", label);
           CHECK(out.as_lzblob.romsrc == &out.src, "%s: as_lzblob.romsrc wrong", label);
           CHECK(out.as_lzblob.pages == 0, "%s: as_lzblob.pages should be NULL (romsrc dispatch)", label);
+          /* Palette-bank exclusivity, measured (the review that found this bug):
+           * every entry of the face tilemap (front/back) uses bank 0, every
+           * entry of bg_map uses bank 1. If a future edit ever points bg_map at
+           * the wrong address (e.g. aliases front/back), this catches it even
+           * though the pointer-distinctness check above would not. */
+          /* Only the first 30 columns of each row are ever drawn (romchrome_blit
+           * skips tx >= 30) -- Ruby's stored stride pads to 32, and those two
+           * trailing columns per row are not composited art at all, so they
+           * must be excluded here or they read as noise. */
+          int seen_face = 0, seen_bg = 0;
+          for (int ty = 0; ty < 20; ty++)
+            for (int tx = 0; tx < 30; tx++) {
+              int i = ty * (int)out.src.map_w + tx;
+              int fb = (out.src.map[i] >> 12) & 0xF;
+              if (fb != 0) seen_face++;
+              int bb = (out.src.bg_map[i] >> 12) & 0xF;
+              if (bb != 1) seen_bg++;
+            }
+          CHECK(seen_face == 0, "%s: back=%d face tilemap has %d entries outside bank 0",
+               label, back, seen_face);
+          CHECK(seen_bg == 0, "%s: back=%d bg_map has %d entries outside bank 1",
+               label, back, seen_bg);
         }
     CHECK(any, "%s: every (back,tier,female) combination failed", label);
 
@@ -121,6 +158,8 @@ static void test_pokeblock_game(const char* label, const char* path, int expect_
   CHECK(ok == expect_ok, "%s: pokeblock_load returned %d, want %d", label, ok, expect_ok);
   if (ok) {
     CHECK(out.src.tiles != 0 && out.src.map != 0, "%s: null pokeblock src pointers", label);
+    CHECK(out.src.bg_map == 0, "%s: pokeblock case has no background layer -- bg_map "
+         "must be NULL, not a stale pointer", label);
     CHECK(out.as_lzblob.romsrc == &out.src, "%s: as_lzblob.romsrc wrong", label);
   }
   fclose(c.f);

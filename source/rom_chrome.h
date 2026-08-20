@@ -64,20 +64,31 @@
  * Every decode writes into a CALLER-SUPPLIED buffer (rule: never a stack local
  * for a pixel-sized buffer) — pass a slice of the shared 8,192 B artbuf.h buffer,
  * the SAME one rom_sprite.c / rom_itemart.c already use. Nothing here defines a
- * static of its own. Card's worst case (Emerald: 5,120 B tileset + 1,200 B
- * tilemap) is 6,320 B; Pokeblock's is 1,280 + 2,048 = 3,328 B. Both fit the
- * buffer with room to spare, and — unlike the bag — neither screen shares that
- * buffer with any OTHER concurrent decoder (the trainer card shows no item icons
- * or mon sprites; this module deliberately does not wire card_badge16() or
- * pokeblock_flavor_icon()/pokeblock_hl(), so nothing else touches the buffer
- * while a chrome tileset is resident there).
+ * static of its own. The card composites a THIRD tilemap underneath front/back
+ * (bg.bin — the striped border retail draws behind the sticker, palette bank 1,
+ * male/female via female_bg's bank-1 override; see lzblob.h's RomChromeSrc.bg_map
+ * and rom_chrome.c's romchrome_blit index-0-transparent composite). Card's worst
+ * case is now tileset + front/back tilemap + bg tilemap + palette: Emerald
+ * 5,120 + 1,200 + 1,200 + 96 = 7,616 B; Ruby 5,120 + 1,280 + 1,280 + 96 =
+ * 7,776 B. Pokeblock's is unchanged, 1,280 + 2,048 = 3,328 B (no background
+ * layer — PokeblockPins has no bg field, RomChromeSrc.bg_map is set to 0). All
+ * fit the 8,192 B buffer with room to spare, and — unlike the bag — neither
+ * screen shares that buffer with any OTHER concurrent decoder (the trainer card
+ * shows no item icons or mon sprites; this module deliberately does not wire
+ * card_badge16() or pokeblock_flavor_icon()/pokeblock_hl(), so nothing else
+ * touches the buffer while a chrome tileset is resident there).
  *
  * A decoded RomChromeSrc (lzblob.h) must stay alive exactly as long as its
  * BgFrame is used — the SAME rule rom_itemart.h's RomTypeSheet.scratch already
- * documents. Re-decode on any face flip (front/back) or tier/gender change:
- * these are user-driven, not per-frame, so a fresh LZ77 decode on an L/R press is
- * the same cost class the compiled-art build pays in raw page-cache misses.
- */
+ * documents. NEVER memoise a decode across separate calls into this module: the
+ * scratch buffer is shared with every other screen's decoder (box wallpaper,
+ * mon icons, item icons, the summary portrait), so a key that happens to repeat
+ * across a visit does not mean the bytes are still there — see pdna_trainer.c's
+ * rom_card_frame() and pdna_main.c's rom_pokeblock_frame() for the two callers
+ * that learned this the hard way and now always redecode. Re-decoding on every
+ * full repaint (any face flip, tier/gender change, or screen re-entry) is
+ * user-driven, not per-frame, so this costs the same class of thing the
+ * compiled-art build pays in raw page-cache misses. */
 
 typedef struct {
   const RomCtx* rc;
