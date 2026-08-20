@@ -4,6 +4,13 @@
 #include <stdint.h>
 #include "gen3_save.h"
 #include "gen3_trainer.h"
+#include "rom_chrome.h"     /* RomChrome -- the card's ROM rung, see rom_chrome.h */
+
+/* Register the open ROM's chrome session (or NULL to clear it) -- called once by
+ * app_icon_rom_open() beside pdna_origin_art_set_romsprite(), same pattern. Safe
+ * to call even in a full-art build (a no-op there: the registered RomChrome is
+ * simply never consulted once the strong card_bg() wins the link). */
+void pdna_trainer_set_romchrome(const RomChrome* rch);
 
 /* Trainer card / stats screen: name, ID, money, play time, Pokédex, the
  * designated Elite-Four / Hall-of-Fame first-clear time, and game records. On an

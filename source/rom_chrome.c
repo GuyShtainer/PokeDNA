@@ -1,0 +1,231 @@
+/* Trainer card + Pokeblock case backgrounds, read out of the user's own ROM.
+ * See rom_chrome.h for the design, the honest scope (Emerald+Ruby card, Emerald-
+ * only Pokeblock, NO bag), and why. */
+#include "rom_chrome_gate.h"
+#include "rom_chrome.h"
+
+/*
+ * rom_chrome_open()/rom_chrome_card_have()/rom_chrome_pokeblock_have()/
+ * rom_chrome_set_verify() stay OUTSIDE the PDNA_ROM_CHROME_NEEDED gate below and
+ * ALWAYS compile: pdna_main.c's app_icon_rom_open() calls rom_chrome_open() on
+ * every ROM registration unconditionally, in BOTH builds (rom_chrome.h's own
+ * promise: "Safe to call even in a full-art build"). They are a handful of
+ * comparisons and field writes each -- negligible, unlike the LZ77 decode +
+ * pin-table weight the *_load() functions below pull in, which is exactly what
+ * the gate exists to keep out of a full-art ROM. */
+void rom_chrome_open(RomChrome* rch, const RomCtx* rc) {
+  rch->rc = rc;
+  rch->card_style = -1;
+  rch->pokeblock_ok = 0;
+  rch->verify = 1;
+  if (!rc) return;
+  if (rc->kind == ROM_EMERALD) { rch->card_style = 1; rch->pokeblock_ok = 1; }
+  else if (rc->kind == ROM_RUBY) { rch->card_style = 0; }
+  /* Sapphire, FireRed, LeafGreen: neither wired (see rom_chrome.h's scope note). */
+}
+
+void rom_chrome_set_verify(RomChrome* rch, int on) { rch->verify = on ? 1 : 0; }
+
+int rom_chrome_card_have(const RomChrome* rch, int g) {
+  return rch && rch->rc && rch->card_style == g;
+}
+
+int rom_chrome_pokeblock_have(const RomChrome* rch, int g) {
+  (void)g;                       /* Emerald is card_style==1 AND the only pokeblock */
+  return rch && rch->rc && rch->pokeblock_ok;
+}
+
+#if PDNA_ROM_CHROME_NEEDED   /* the actual decoders: empty otherwise -- see the gate header */
+
+#include "map_render.h"     /* mr_lz77 -- do not write another LZ77 decoder */
+
+/* ---- per-game pins, EACH individually verified in DESIGN.md ------------------ */
+
+typedef struct {
+  uint32_t tileset;  uint8_t tileset_lz;  uint32_t tileset_bytes;   /* 128x80 4bpp */
+  uint32_t front;    uint8_t front_lz;
+  uint32_t back;     uint8_t back_lz;     uint32_t map_bytes;       /* front/back  */
+  uint16_t map_w;                                                   /* stored stride */
+  uint32_t tier[5];  uint8_t tier_lz;                               /* 96 B each   */
+  uint32_t female_bg; uint8_t female_bg_lz;                         /* 32 B, bank1 */
+} CardPins;
+
+/* Emerald BPEE r0 -- DESIGN.md Sec 1.6. tileset+front+back LZ77; tier/female RAW. */
+static const CardPins k_card_emerald = {
+  0x08DD1AB8, 1, 5120u,
+  0x08DD2010, 1,
+  0x08DD21B0, 1, 1200u,
+  30,
+  { 0x08DD1A58, 0x0856F1AC, 0x0856F26C, 0x0856F32C, 0x0856F3EC }, 0,
+  0x0856F4AC, 0,
+};
+
+/* Ruby AXVE r2 -- everything RAW (Sec 1.6: "Ruby | everything RAW"). */
+static const CardPins k_card_ruby = {
+  0x08E8B4E0, 0, 5120u,
+  0x08E8CAC0, 0,
+  0x08E8CFC0, 0, 1280u,
+  32,
+  { 0x08E8C8E0, 0x08E8C940, 0x08E8C9A0, 0x08E8CA00, 0x08E8CA60 }, 0,
+  0x083B5F28, 0,
+};
+
+typedef struct {
+  uint32_t tileset;  uint8_t tileset_lz;  uint32_t tileset_bytes;   /* 40 tiles    */
+  uint32_t tilemap;  uint8_t tilemap_lz;  uint32_t map_bytes;
+  uint16_t map_w;
+  uint32_t pal;      uint8_t pal_lz;      uint32_t pal_bytes;       /* 6 banks     */
+} PokeblockPins;
+
+/* Emerald BPEE r0 -- DESIGN.md Sec 1.7. Everything LZ77. */
+static const PokeblockPins k_pb_emerald = {
+  0x08D9B2B4, 1, 1280u,
+  0x08D9B7C8, 1, 2048u,
+  32,
+  0x08D9B470, 1, 192u,
+};
+
+/* ---- bounds / read helpers, the same posture rom_itemart.c uses -------------- */
+
+static int ptr_ok(const RomCtx* rc, uint32_t addr, uint32_t need) {
+  if (!rc || addr < ROM_BASE) return 0;
+  uint32_t off = addr - ROM_BASE;
+  return off < rc->size && need <= rc->size - off;
+}
+
+static uint32_t hash32(const uint8_t* p, uint32_t n) {
+  uint32_t h = 2166136261u;
+  while (n--) { h ^= *p++; h *= 16777619u; }
+  return h;
+}
+
+/* Raw n-byte read, verified by repetition when `verify`. */
+static int read_verified(const RomCtx* rc, int verify, uint32_t addr, uint8_t* dst, uint32_t n) {
+  if (!ptr_ok(rc, addr, n) || !rom_read_at(rc, addr, dst, n)) return 0;
+  if (!verify) return 1;
+  uint32_t prev = hash32(dst, n);
+  for (int attempt = 0; attempt < 2; attempt++) {
+    if (!rom_read_at(rc, addr, dst, n)) return 0;
+    uint32_t h = hash32(dst, n);
+    if (h == prev) return 1;
+    prev = h;
+  }
+  return 0;
+}
+
+/* LZ77-decompress addr into dst, requiring exactly `want` bytes out, verified by
+ * repetition when `verify`. */
+static int decode_verified(const RomCtx* rc, int verify, uint32_t addr, uint8_t* dst,
+                           uint32_t cap, uint32_t want) {
+  if (want > cap) return 0;
+  uint32_t n = mr_lz77(rc, addr, dst, cap);
+  if (n != want) return 0;
+  if (!verify) return 1;
+  uint32_t prev = hash32(dst, n);
+  for (int attempt = 0; attempt < 2; attempt++) {
+    n = mr_lz77(rc, addr, dst, cap);
+    if (n != want) return 0;
+    uint32_t h = hash32(dst, n);
+    if (h == prev) return 1;
+    prev = h;
+  }
+  return 0;
+}
+
+static int fetch(const RomCtx* rc, int verify, uint32_t addr, int is_lz,
+                 uint8_t* dst, uint32_t cap, uint32_t want) {
+  if (want > cap) return 0;         /* short buffer FAILS, never a silent partial read */
+  return is_lz ? decode_verified(rc, verify, addr, dst, cap, want)
+               : read_verified(rc, verify, addr, dst, want);
+}
+
+/* 16 raw little-endian RGB15 entries -> a palette bank. */
+static void pal_bank_from_raw(const uint8_t* raw, uint16_t out[16]) {
+  for (int i = 0; i < 16; i++)
+    out[i] = (uint16_t)(raw[i * 2] | ((uint16_t)raw[i * 2 + 1] << 8));
+}
+
+/* ---- card ------------------------------------------------------------------ */
+
+int rom_chrome_card_load(const RomChrome* rch, int g, int back, int tier, int female,
+                         uint8_t* scratch, uint32_t cap, RomChromeCard* out) {
+  if (!rom_chrome_card_have(rch, g) || !scratch || !out) return 0;
+  const CardPins* p = (g == 1) ? &k_card_emerald : &k_card_ruby;
+  if (tier < 0) tier = 0;
+  if (tier > 4) tier = 4;
+
+  uint32_t tileset_off = 0;
+  uint32_t map_off = (tileset_off + p->tileset_bytes + 1u) & ~1u;   /* 2-aligned */
+  uint32_t pal_off = map_off + p->map_bytes;                        /* 3 banks = 96 B */
+  uint32_t need = pal_off + 96u;
+  if (need > cap) return 0;
+
+  if (!fetch(rch->rc, rch->verify, p->tileset, p->tileset_lz,
+            scratch + tileset_off, cap - tileset_off, p->tileset_bytes)) return 0;
+  uint32_t face_addr = back ? p->back : p->front;
+  int face_lz = back ? p->back_lz : p->front_lz;
+  if (!fetch(rch->rc, rch->verify, face_addr, face_lz,
+            scratch + map_off, cap - map_off, p->map_bytes)) return 0;
+  /* Tier palette: 96 B = 3 banks (0..2). Female overwrites bank 1 with female_bg. */
+  if (!fetch(rch->rc, rch->verify, p->tier[tier], p->tier_lz,
+            scratch + pal_off, cap - pal_off, 96u)) return 0;
+
+  out->src.tiles = scratch + tileset_off;
+  out->src.map = (const uint16_t*)(const void*)(scratch + map_off);
+  out->src.map_w = p->map_w;
+  {
+    const uint8_t* raw = scratch + pal_off;
+    pal_bank_from_raw(raw + 0, &out->src.pal[0]);
+    pal_bank_from_raw(raw + 32, &out->src.pal[16]);
+    pal_bank_from_raw(raw + 64, &out->src.pal[32]);
+    for (int b = 3; b < 6; b++) for (int i = 0; i < 16; i++) out->src.pal[b * 16 + i] = 0;
+  }
+  if (female) {
+    uint8_t fb[32];
+    if (fetch(rch->rc, rch->verify, p->female_bg, p->female_bg_lz, fb, sizeof fb, 32u))
+      pal_bank_from_raw(fb, &out->src.pal[16]);
+    /* a failed female-palette fetch just keeps the tier's own bank 1 -- a wrong
+     * accent colour, never a corrupt or unreadable card */
+  }
+  out->as_lzblob.base = 0; out->as_lzblob.pages = 0;
+  out->as_lzblob.npages = 0; out->as_lzblob.raw_len = 0;
+  out->as_lzblob.romsrc = &out->src;
+  return 1;
+}
+
+/* ---- pokeblock -------------------------------------------------------------- */
+
+int rom_chrome_pokeblock_load(const RomChrome* rch, int g,
+                              uint8_t* scratch, uint32_t cap, RomChromePokeblock* out) {
+  if (!rom_chrome_pokeblock_have(rch, g) || !scratch || !out) return 0;
+  const PokeblockPins* p = &k_pb_emerald;
+
+  uint32_t tileset_off = 0;
+  uint32_t map_off = (tileset_off + p->tileset_bytes + 1u) & ~1u;
+  uint32_t pal_off = map_off + p->map_bytes;
+  uint32_t need = pal_off + p->pal_bytes;
+  if (need > cap) return 0;
+
+  if (!fetch(rch->rc, rch->verify, p->tileset, p->tileset_lz,
+            scratch + tileset_off, cap - tileset_off, p->tileset_bytes)) return 0;
+  if (!fetch(rch->rc, rch->verify, p->tilemap, p->tilemap_lz,
+            scratch + map_off, cap - map_off, p->map_bytes)) return 0;
+  if (!fetch(rch->rc, rch->verify, p->pal, p->pal_lz,
+            scratch + pal_off, cap - pal_off, p->pal_bytes)) return 0;
+
+  out->src.tiles = scratch + tileset_off;
+  out->src.map = (const uint16_t*)(const void*)(scratch + map_off);
+  out->src.map_w = p->map_w;
+  {
+    const uint8_t* raw = scratch + pal_off;
+    int banks = (int)(p->pal_bytes / 32u); if (banks > 6) banks = 6;
+    for (int b = 0; b < banks; b++) pal_bank_from_raw(raw + b * 32, &out->src.pal[b * 16]);
+    for (int b = banks; b < 6; b++) for (int i = 0; i < 16; i++) out->src.pal[b * 16 + i] = 0;
+  }
+  out->as_lzblob.base = 0; out->as_lzblob.pages = 0;
+  out->as_lzblob.npages = 0; out->as_lzblob.raw_len = 0;
+  out->as_lzblob.romsrc = &out->src;
+  return 1;
+}
+
+#endif /* PDNA_ROM_CHROME_NEEDED */

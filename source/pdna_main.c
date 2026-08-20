@@ -57,6 +57,9 @@
 #include "rom_text.h"      /* phase-2: descriptions out of the user's own ROM */
 #include "rom_sprite.h"    /* Phase 1 (ROM-art): the summary portrait's third rung */
 #include "rom_itemart.h"   /* Phase 1 (ROM-art): item icons + type badges           */
+#include "rom_wallpaper.h" /* Phase 4 (ROM-art): box wallpapers -- pdna_box.c's §12c rung */
+#include "rom_chrome_gate.h"
+#include "rom_chrome.h"    /* trainer-card + pokeblock ROM rung (Emerald/Ruby)      */
 #include "pdna_origin_art.h" /* pdna_origin_art_set_romsprite -- registers the RomSprite */
 #include "artbuf.h"        /* mon_decomp -- the shared 8 KiB decode buffer            */
 #include "item_icons.h"    /* item_icon_for -- the compiled rung app_item_icon() tries first */
@@ -1500,6 +1503,26 @@ static RomText s_romtext;
  * s_romitemart.ok directly without a separate "on" flag. */
 static RomSprite  s_romsprite;
 static RomItemArt s_romitemart;
+/* Phase 4 (ROM-art): box wallpapers (rom_wallpaper.h) -- Emerald/FireRed/LeafGreen
+ * standard wallpapers only (rom_wallpaper.h's SCOPE note: no Walda, no R/S). Read
+ * through app_wallpaper_rom() by pdna_box.c's §12c rung; same "small POD with an ok
+ * flag" convention as s_romsprite/s_romitemart. */
+static RomWallpaper s_romwallpaper;
+/* The trainer-card + pokeblock ROM rung (rom_chrome.h): Emerald + Ruby card,
+ * Emerald-only pokeblock, deliberately NO bag (see rom_chrome.h's scope note for
+ * why). Registered the same way as the other three, plus a setter into
+ * pdna_trainer.c (pokeblock's own weak stub lives right here in this file, so it
+ * reads s_romchrome directly with no setter needed). */
+static RomChrome s_romchrome;
+#if !PDNA_POKEBLOCK_ART_COMPILED
+/* The Pokeblock ROM rung's decode, held resident for the whole screen's lifetime
+ * (same shape as pdna_trainer.c's card rung). Declared here, ahead of
+ * app_icon_rom_open(), purely so that function can invalidate the memo on every
+ * ROM (re)registration -- see the reset there. */
+static RomChromePokeblock s_pb_chrome;
+static int s_pb_have = 0;
+static int s_pb_key = -1;
+#endif
 
 #ifndef PDNA_DELTA
 static void art_extract_screen(void); /* forward: defined below, offered from
@@ -1567,9 +1590,24 @@ static void app_icon_rom_open(void) {
   boxoam_rom_icons(0);
   memset(&s_romtext, 0, sizeof s_romtext);
   memset(&s_romitemart, 0, sizeof s_romitemart);
+  memset(&s_romwallpaper, 0, sizeof s_romwallpaper);
+  memset(&s_romchrome, 0, sizeof s_romchrome); s_romchrome.card_style = -1;
   pdna_origin_art_set_romsprite(0);
+  pdna_trainer_set_romchrome(0);
   uint32_t fsz = 0;
   if (fused_rom_present(&fsz) && rom_open(&s_iconrom_ctx, fused_rom_read, 0, fsz)) {
+    /* rom_chrome_open() does NOT need the GF header rom_mon_open() below checks
+     * (Ruby/Sapphire have none) -- it is called unconditionally on every
+     * successful rom_open() so a Ruby cart's card rung is reachable at all,
+     * unlike rom_sprite_open()/rom_itemart_open() below, which stay nested
+     * inside the rom_mon_open() gate and so are pre-existingly unreachable for
+     * R/S (not something this change fixes -- see rom_sprite.h's own "Ruby/
+     * Sapphire: no GF header, so rom_sprite_open fails closed" note). */
+    rom_chrome_open(&s_romchrome, &s_iconrom_ctx);
+    pdna_trainer_set_romchrome(&s_romchrome);
+#if !PDNA_POKEBLOCK_ART_COMPILED
+    s_pb_have = 0; s_pb_key = -1;   /* the old memo may be a DIFFERENT ROM's decode */
+#endif
     if (rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
       boxoam_rom_icons(&s_iconrom);
       rom_text_open(&s_romtext, &s_iconrom_ctx);
@@ -1580,9 +1618,15 @@ static void app_icon_rom_open(void) {
       rom_sprite_open(&s_romsprite, &s_iconrom_ctx);
       pdna_origin_art_set_romsprite(&s_romsprite);
       rom_itemart_open(&s_romitemart, &s_iconrom_ctx);
+      rom_wallpaper_open(&s_romwallpaper, &s_iconrom_ctx);   /* Phase 4 (ROM-art) */
       log_line("icons: streaming from fused %s rev%u", rom_kind_name(s_iconrom_ctx.kind),
                s_iconrom_ctx.version);
       app_icon_cache_resolve(&s_iconrom_ctx, false); /* boot path: shallow (size-only) check */
+      return;
+    }
+    if (rom_chrome_card_have(&s_romchrome, PK_RS) || rom_chrome_pokeblock_have(&s_romchrome, PK_EMERALD)) {
+      log_line("icons: fused %s has no GF header (R/S) - card/pokeblock chrome only",
+               rom_kind_name(s_iconrom_ctx.kind));
       return;
     }
     log_line("icons: fused %s has no GF header (R/S) - trying SD", rom_kind_name(s_iconrom_ctx.kind));
@@ -1599,16 +1643,34 @@ static void app_icon_rom_open(void) {
     if (f_open(&s_iconrom_fil, path, FA_READ) != FR_OK) continue;
     s_iconrom_fil_open = true;
     uint32_t sz = (uint32_t)f_size(&s_iconrom_fil);
-    if (rom_open(&s_iconrom_ctx, iconrom_fatfs_read, 0, sz) &&
-        rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
-      boxoam_rom_icons(&s_iconrom);
-      rom_text_open(&s_romtext, &s_iconrom_ctx);
-      rom_sprite_open(&s_romsprite, &s_iconrom_ctx);          /* Phase 1 (ROM-art) */
-      pdna_origin_art_set_romsprite(&s_romsprite);
-      rom_itemart_open(&s_romitemart, &s_iconrom_ctx);
-      log_line("icons: streaming from SD %s (%s)", path, rom_kind_name(s_iconrom_ctx.kind));
-      app_icon_cache_resolve(&s_iconrom_ctx, false); /* boot path: shallow (size-only) check */
-      return;
+    if (rom_open(&s_iconrom_ctx, iconrom_fatfs_read, 0, sz)) {
+      /* Same reasoning as the fused branch above: rom_chrome_open() does not need
+       * the GF header, so it runs on every successful rom_open() -- reaching Ruby,
+       * which rom_mon_open() below always refuses (no GF header). */
+      rom_chrome_open(&s_romchrome, &s_iconrom_ctx);
+      pdna_trainer_set_romchrome(&s_romchrome);
+#if !PDNA_POKEBLOCK_ART_COMPILED
+      s_pb_have = 0; s_pb_key = -1;
+#endif
+      if (rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
+        boxoam_rom_icons(&s_iconrom);
+        rom_text_open(&s_romtext, &s_iconrom_ctx);
+        rom_sprite_open(&s_romsprite, &s_iconrom_ctx);          /* Phase 1 (ROM-art) */
+        pdna_origin_art_set_romsprite(&s_romsprite);
+        rom_itemart_open(&s_romitemart, &s_iconrom_ctx);
+        rom_wallpaper_open(&s_romwallpaper, &s_iconrom_ctx);    /* Phase 4 (ROM-art) */
+        log_line("icons: streaming from SD %s (%s)", path, rom_kind_name(s_iconrom_ctx.kind));
+        app_icon_cache_resolve(&s_iconrom_ctx, false); /* boot path: shallow (size-only) check */
+        return;
+      }
+      if (rom_chrome_card_have(&s_romchrome, PK_RS) || rom_chrome_pokeblock_have(&s_romchrome, PK_EMERALD)) {
+        /* Ruby: no icons/text/sprite (no GF header), but the card rung is real --
+         * keep this ROM open and registered rather than falling through to the
+         * next candidate, which would silently discard it. */
+        log_line("icons: SD %s (%s) has no GF header - card/pokeblock chrome only",
+                 path, rom_kind_name(s_iconrom_ctx.kind));
+        return;
+      }
     }
     f_close(&s_iconrom_fil); s_iconrom_fil_open = false;
   }
@@ -1656,6 +1718,13 @@ const uint16_t* app_type_badge(uint8_t type_id, uint8_t* out_h) {
   if (out_h) *out_h = (uint8_t)rom_type_badge_h(&s_romitemart);
   return dst;
 }
+
+/* Phase 4 (ROM-art): pdna_box.c's §12c wallpaper rung reads this ROM directly
+ * (decompressing per-wallpaper, not through a cached RGB15 pointer the way the
+ * three accessors above work) -- see rom_wallpaper.h and pdna_box.c's draw_wallpaper_rom.
+ * NULL when no ROM is open this session or it isn't one of the three pinned
+ * game/revisions. */
+const RomWallpaper* app_wallpaper_rom(void) { return s_romwallpaper.ok ? &s_romwallpaper : 0; }
 
 /* ---- descriptions: ROM first, embedded table second (see pdna_app.h) ------
  * Each keeps ONE small static buffer, documented in the header as valid until the next
@@ -3427,7 +3496,36 @@ static bool pokeblock_edit(int idx) {
  * (git-ignored ripped art); these weak NULLs keep an art-free clone building, and
  * pdna_pokeblock then keeps its plain list. Same pattern as the bag and the
  * trainer card. FRLG returns NULL from the strong version too - no Pokeblocks. */
-__attribute__((weak)) BgFrame pokeblock_bg(int game) { (void)game; BgFrame f = { 0, 0, PB_BG_W }; return f; }
+#if !PDNA_POKEBLOCK_ART_COMPILED
+/* The ROM rung (Emerald only -- rom_chrome.h states why R/S and FRLG are not
+ * wired). s_pb_chrome/s_pb_have/s_pb_key live earlier in this file (declared
+ * beside s_romchrome) so app_icon_rom_open() can invalidate the memo on every
+ * ROM (re)registration; s_romchrome itself is this file's own instance, no
+ * cross-TU setter needed the way pdna_trainer.c's card rung requires one. */
+static BgFrame rom_pokeblock_frame(int game) {
+  BgFrame f = { 0, 0, PB_BG_W };
+  if (!s_romchrome.rc || !rom_chrome_pokeblock_have(&s_romchrome, game)) return f;
+  if (!(s_pb_have && s_pb_key == game)) {
+    s_pb_have = rom_chrome_pokeblock_load(&s_romchrome, game,
+                                          (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
+                                          &s_pb_chrome);
+    s_pb_key = s_pb_have ? game : -1;
+  }
+  if (!s_pb_have) return f;
+  f.blob = &s_pb_chrome.as_lzblob; f.off = 0; f.sw = PB_BG_W;
+  return f;
+}
+#endif /* !PDNA_POKEBLOCK_ART_COMPILED */
+
+__attribute__((weak)) BgFrame pokeblock_bg(int game) {
+#if !PDNA_POKEBLOCK_ART_COMPILED
+  return rom_pokeblock_frame(game);
+#else
+  (void)game; BgFrame f = { 0, 0, PB_BG_W }; return f;
+#endif
+}
+/* pokeblock_hl()/pokeblock_flavor_icon() stay compiled-art-only -- small sprite
+ * accessors, not the full-screen background this ROM rung covers (rom_chrome.h). */
 __attribute__((weak)) const uint16_t* pokeblock_hl(int game, int state) {
   (void)game; (void)state; return 0;
 }

@@ -27,11 +27,40 @@
  * VRAM hole the staged path unpacks into (see lzblob.c). */
 #define LZBLOB_PAGE 3840u          /* 240 px * 8 rows * 2 B */
 
+/*
+ * A live ROM-decoded chrome screen: one 8x8-tile plane (tileset + tilemap +
+ * palette), all already resident in RAM for a screen's whole lifetime (never
+ * re-read per blit). This is the ROM rung's payload — see rom_chrome.h for how it
+ * gets filled and DESIGN.md Sec 4.6 for why a full 240x160 frame is never buffered
+ * (76,800 B does not fit an EWRAM budget measured in hundreds of bytes).
+ *
+ * `tiles` is 4bpp planar, tile i at tiles + 32*i. `map` is `map_w` x 20 raw tonc
+ * BG_SBB entries (index bits 0-9, hflip bit10, vflip bit11, palbank bits 12-15);
+ * only the first 30 columns of each row are ever drawn (a 240 px screen), so
+ * map_w may be wider than 30 to match the ROM's own stored stride (Ruby pads to
+ * 32). `pal` holds up to 6 banks (96 colours) flat, bank b / index i at
+ * pal[b*16+i]; an unused bank is simply never indexed by `map`. */
+typedef struct {
+  const uint8_t*  tiles;
+  const uint16_t* map;
+  uint16_t        map_w;
+  uint16_t        pal[96];
+} RomChromeSrc;
+
 typedef struct {
   const uint8_t*  base;            /* packed stream                        */
   const uint32_t* pages;           /* npages+1 offsets into base           */
   uint32_t        npages;
   uint32_t        raw_len;         /* length of the ORIGINAL blob          */
+  /* NEW, trailing field. Every EXISTING generator (tools/lzband.py's C emitters)
+   * initialises an LzBlob with a 4-value positional initializer, e.g.
+   * `{ card_bg_lz, card_bg_pages, 1200u, 4608000u }` — ISO C zero-fills any
+   * trailing member a positional initializer does not mention, so every already-
+   * generated blob gets romsrc == NULL for free, no generator changes needed.
+   * NULL means "a real packed LZ77 stream, use the existing page-cache path";
+   * non-NULL means "this BgFrame is actually a RomChromeSrc*, composite tiles
+   * instead" — see lzblob.c's dispatch at the top of lzblob_blit/lzblob_read. */
+  const RomChromeSrc* romsrc;
 } LzBlob;
 
 /* Blit a w x h RGB15 rect to the Mode-3 framebuffer at (x, y).

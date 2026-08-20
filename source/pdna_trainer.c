@@ -26,6 +26,11 @@
 #include "gen3_stars.h"   /* star achievements (the card's tier)  */
 #include "card_bg.h"      /* real Emerald card front (weak NULLs) */
 #include "rumble.h"       /* io-suspend around the big bg DMA     */
+#include "rom_chrome_gate.h"
+#if !PDNA_CARD_ART_COMPILED
+#include "rom_chrome.h"   /* the ROM rung -- see rom_chrome.h for scope/why       */
+#include "artbuf.h"       /* the ONE shared 8 KiB EWRAM decode buffer, no new one */
+#endif
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 static u16  s_wait(u16 mask) {
@@ -94,8 +99,72 @@ static bool flag_set_editor(uint8_t* sb1, PkGame game, const char* title,
  * card_bg.c (git-ignored ripped art); these weak NULLs keep an art-free clone
  * building — the screen then opens straight on the plain page (same pattern
  * as the bag-screen fallback in pdna_bag.c). */
-__attribute__((weak)) BgFrame card_bg(int game, int tier, int female) { (void)game; (void)tier; (void)female; BgFrame f = { 0, 0, CARD_BG_W }; return f; }
-__attribute__((weak)) BgFrame card_bg_back(int game, int tier, int female) { (void)game; (void)tier; (void)female; BgFrame f = { 0, 0, CARD_BG_W }; return f; }
+/* Registered by app_icon_rom_open() on every ROM (re)registration, in BOTH
+ * builds -- rom_chrome.h's promise that the setter is "safe to call even in a
+ * full-art build". Kept OUTSIDE the PDNA_CARD_ART_COMPILED gate (unlike
+ * everything else below) purely so that promise holds: a full-art build simply
+ * never reads s_romchrome again (card_bg()'s strong symbol wins the link and
+ * never calls rom_card_frame at all), so this costs one pointer store. */
+static const RomChrome* s_romchrome = 0;
+#if !PDNA_CARD_ART_COMPILED
+static int s_chrome_have = 0;
+static int s_chrome_key = -1;   /* (game<<8)|(back<<4)|(tier<<1)|female, or -1 */
+#endif
+
+void pdna_trainer_set_romchrome(const RomChrome* rch) {
+  s_romchrome = rch;
+#if !PDNA_CARD_ART_COMPILED
+  s_chrome_have = 0; s_chrome_key = -1;   /* the old memo may be a DIFFERENT ROM's decode */
+#endif
+}
+
+#if !PDNA_CARD_ART_COMPILED
+/* The ROM rung (Emerald + Ruby only -- rom_chrome.h states why; Sapphire/FRLG
+ * fall through to blob==0 exactly as before). NULL s_romchrome means no ROM open
+ * this session, or the open ROM cannot serve `game`'s card style.
+ *
+ * The decode is held in a FILE-STATIC struct (IWRAM .bss, ~215 B -- nowhere near
+ * the ~1,232 B new-IWRAM-.bss crash threshold DESIGN.md Sec 4.2 measured) so the
+ * SAME tiles/tilemap/palette stay resident for every bg_restore() call across the
+ * whole screen's lifetime -- cursor moves and field edits redraw a rect from RAM,
+ * no re-read. Re-decoded only when (game, back, tier, female) actually changes,
+ * or the registered ROM changes (rom_chrome_card_have() then disagrees, which
+ * invalidates the memo the same way a changed key does). */
+static RomChromeCard s_chrome_card;
+
+static BgFrame rom_card_frame(int game, int back, int tier, int female) {
+  BgFrame f = { 0, 0, CARD_BG_W };
+  if (!s_romchrome || !rom_chrome_card_have(s_romchrome, game)) return f;
+  int key = (game << 8) | (back << 4) | (tier << 1) | (female ? 1 : 0);
+  if (!(s_chrome_have && s_chrome_key == key)) {
+    s_chrome_have = rom_chrome_card_load(s_romchrome, game, back, tier, female,
+                                         (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
+                                         &s_chrome_card);
+    s_chrome_key = s_chrome_have ? key : -1;
+  }
+  if (!s_chrome_have) return f;
+  f.blob = &s_chrome_card.as_lzblob; f.off = 0; f.sw = CARD_BG_W;
+  return f;
+}
+#endif /* !PDNA_CARD_ART_COMPILED */
+
+__attribute__((weak)) BgFrame card_bg(int game, int tier, int female) {
+#if !PDNA_CARD_ART_COMPILED
+  return rom_card_frame(game, 0, tier, female);
+#else
+  (void)game; (void)tier; (void)female; BgFrame f = { 0, 0, CARD_BG_W }; return f;
+#endif
+}
+__attribute__((weak)) BgFrame card_bg_back(int game, int tier, int female) {
+#if !PDNA_CARD_ART_COMPILED
+  return rom_card_frame(game, 1, tier, female);
+#else
+  (void)game; (void)tier; (void)female; BgFrame f = { 0, 0, CARD_BG_W }; return f;
+#endif
+}
+/* card_badge16()/card_hoenn_dex() stay compiled-art-only -- small icon sprites and
+ * a lookup table, not "a full-screen background plus its tilemap and palette"
+ * (the task this ROM rung covers); see rom_chrome.h's scope note. */
 __attribute__((weak)) const uint16_t* card_badge16(int game, int i) { (void)game; (void)i; return 0; }
 __attribute__((weak)) const uint16_t* card_hoenn_dex(void) { return 0; }
 

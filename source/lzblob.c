@@ -1,6 +1,65 @@
 #include <tonc.h>
 #include "lzblob.h"
 #include "rumble.h"   /* mute the cart-bus motor toggle while a blit reads ROM */
+#include "rom_chrome_gate.h"
+
+#if PDNA_ROM_CHROME_NEEDED
+/*
+ * The ROM rung's compositor: b->romsrc != NULL means every byte lzblob_blit/
+ * lzblob_read would normally page in from a packed LZ77 stream is ALREADY sitting
+ * in RAM as a decoded tile + tilemap + palette (rom_chrome.h). No SD/ROM traffic
+ * happens here at all — this is a pure RAM->VRAM composite, so unlike the LZ77
+ * path above it needs no rumble_io_suspend bracketing.
+ *
+ * Tile-major, not pixel-major: for each 8x8 cell the rect overlaps, decode its
+ * tonc BG_SBB attribute ONCE, then walk only the sub-rows/sub-cols the rect
+ * actually needs. A full 240x160 redraw is at most 600 attribute decodes, not
+ * 38,400 — the same order of work pdna_box.c's wp_blit_tile already spends on a
+ * box wallpaper. Only the first 30 columns / 20 rows are ever drawn (a 240x160
+ * screen); a wider stored map_w (Ruby pads to 32) just changes the row stride. */
+static void romchrome_blit(const RomChromeSrc* s, uint32_t off, int sw,
+                           int x, int y, int w, int h) {
+  if (!s || !s->tiles || !s->map || w <= 0 || h <= 0) return;
+  uint32_t srcpx = off / 2u;
+  int sx0 = (int)(srcpx % (uint32_t)sw), sy0 = (int)(srcpx / (uint32_t)sw);
+  int x0 = sx0, y0 = sy0, x1 = sx0 + w, y1 = sy0 + h;
+  int tx0 = x0 >> 3, ty0 = y0 >> 3, tx1 = (x1 - 1) >> 3, ty1 = (y1 - 1) >> 3;
+  for (int ty = ty0; ty <= ty1; ty++) {
+    if (ty < 0 || ty >= 20) continue;
+    for (int tx = tx0; tx <= tx1; tx++) {
+      if (tx < 0 || tx >= 30) continue;
+      uint16_t e = s->map[(uint32_t)ty * s->map_w + (uint32_t)tx];
+      int tile = e & 0x03FF, hf = (e >> 10) & 1, vf = (e >> 11) & 1, bank = (e >> 12) & 0xF;
+      const uint16_t* pal = &s->pal[bank * 16];
+      int px0 = tx * 8, py0 = ty * 8;
+      int lx0 = (px0 < x0) ? (x0 - px0) : 0, lx1 = (px0 + 8 > x1) ? (x1 - px0) : 8;
+      int ly0 = (py0 < y0) ? (y0 - py0) : 0, ly1 = (py0 + 8 > y1) ? (y1 - py0) : 8;
+      for (int ly = ly0; ly < ly1; ly++) {
+        int sy = vf ? 7 - ly : ly;
+        const uint8_t* trow = s->tiles + (uint32_t)tile * 32u + (uint32_t)sy * 4u;
+        int dy = y + (py0 + ly - y0);
+        uint16_t* drow = &vid_mem[dy * 240 + x];
+        for (int lx = lx0; lx < lx1; lx++) {
+          int sxp = hf ? 7 - lx : lx;
+          uint8_t b = trow[sxp >> 1];
+          uint8_t idx = (uint8_t)((sxp & 1) ? (b >> 4) : (b & 0x0F));
+          drow[px0 + lx - x0] = pal[idx] & 0x7FFFu;
+        }
+      }
+    }
+  }
+}
+
+/* Same idea for the small handful of standalone-sprite reads a ROM chrome screen
+ * might still want (none, today — card/pokeblock only ever full-blit their
+ * tilemap). Kept for symmetry with lzblob_read's signature; a caller asking for a
+ * ROM-chrome LzBlob's raw bytes gets zeros rather than reading VRAM staging that
+ * was never populated in this format. */
+static void romchrome_read(const RomChromeSrc* s, uint32_t off, uint32_t n, void* dst) {
+  (void)s; (void)off;
+  if (dst && n) __builtin_memset(dst, 0, n);
+}
+#endif /* PDNA_ROM_CHROME_NEEDED */
 
 /* WHERE THE STAGING PAGE LIVES, and why it is not in EWRAM.
  *
@@ -41,6 +100,9 @@ static void page_load(const LzBlob* b, uint32_t pg, uint32_t* cached) {
 void lzblob_blit(const LzBlob* b, uint32_t off, int sw,
                  int x, int y, int w, int h) {
   if (!b || w <= 0 || h <= 0) return;
+#if PDNA_ROM_CHROME_NEEDED
+  if (b->romsrc) { romchrome_blit(b->romsrc, off, sw, x, y, w, h); return; }
+#endif
   rumble_io_suspend();                       /* the packed stream lives in ROM */
 
   /* Fast path — a whole-width, page-aligned run of whole pages goes straight
@@ -81,6 +143,9 @@ void lzblob_blit(const LzBlob* b, uint32_t off, int sw,
 
 void lzblob_read(const LzBlob* b, uint32_t off, uint32_t n, void* dst) {
   if (!b || !n) return;
+#if PDNA_ROM_CHROME_NEEDED
+  if (b->romsrc) { romchrome_read(b->romsrc, off, n, dst); return; }
+#endif
   uint32_t cached = 0xFFFFFFFFu;
   uint8_t* out = (uint8_t*)dst;
   rumble_io_suspend();
