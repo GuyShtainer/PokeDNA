@@ -1515,13 +1515,13 @@ static RomWallpaper s_romwallpaper;
  * reads s_romchrome directly with no setter needed). */
 static RomChrome s_romchrome;
 #if !PDNA_POKEBLOCK_ART_COMPILED
-/* The Pokeblock ROM rung's decode, held resident for the whole screen's lifetime
- * (same shape as pdna_trainer.c's card rung). Declared here, ahead of
- * app_icon_rom_open(), purely so that function can invalidate the memo on every
- * ROM (re)registration -- see the reset there. */
+/* The Pokeblock ROM rung's decode target -- NOT a memo (see rom_pokeblock_frame()
+ * below for why one is unsafe: mon_decomp is the shared 8 KiB buffer every other
+ * screen's decoder also writes into between visits). Just a place for
+ * rom_chrome_pokeblock_load() to write its {tiles,map,pal} pointers into; every
+ * call overwrites it fresh. Declared here, ahead of app_icon_rom_open(), only so
+ * a stray reference from an old ROM registration can never read it uninitialised. */
 static RomChromePokeblock s_pb_chrome;
-static int s_pb_have = 0;
-static int s_pb_key = -1;
 #endif
 
 #ifndef PDNA_DELTA
@@ -1605,9 +1605,6 @@ static void app_icon_rom_open(void) {
      * Sapphire: no GF header, so rom_sprite_open fails closed" note). */
     rom_chrome_open(&s_romchrome, &s_iconrom_ctx);
     pdna_trainer_set_romchrome(&s_romchrome);
-#if !PDNA_POKEBLOCK_ART_COMPILED
-    s_pb_have = 0; s_pb_key = -1;   /* the old memo may be a DIFFERENT ROM's decode */
-#endif
     if (rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
       boxoam_rom_icons(&s_iconrom);
       rom_text_open(&s_romtext, &s_iconrom_ctx);
@@ -1649,9 +1646,6 @@ static void app_icon_rom_open(void) {
        * which rom_mon_open() below always refuses (no GF header). */
       rom_chrome_open(&s_romchrome, &s_iconrom_ctx);
       pdna_trainer_set_romchrome(&s_romchrome);
-#if !PDNA_POKEBLOCK_ART_COMPILED
-      s_pb_have = 0; s_pb_key = -1;
-#endif
       if (rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
         boxoam_rom_icons(&s_iconrom);
         rom_text_open(&s_romtext, &s_iconrom_ctx);
@@ -3498,20 +3492,27 @@ static bool pokeblock_edit(int idx) {
  * trainer card. FRLG returns NULL from the strong version too - no Pokeblocks. */
 #if !PDNA_POKEBLOCK_ART_COMPILED
 /* The ROM rung (Emerald only -- rom_chrome.h states why R/S and FRLG are not
- * wired). s_pb_chrome/s_pb_have/s_pb_key live earlier in this file (declared
- * beside s_romchrome) so app_icon_rom_open() can invalidate the memo on every
- * ROM (re)registration; s_romchrome itself is this file's own instance, no
- * cross-TU setter needed the way pdna_trainer.c's card rung requires one. */
+ * wired). s_pb_chrome lives earlier in this file (declared beside s_romchrome);
+ * s_romchrome itself is this file's own instance, no cross-TU setter needed the
+ * way pdna_trainer.c's card rung requires one.
+ *
+ * ALWAYS redecodes -- NOT memoised by (game), on purpose. mon_decomp is the
+ * shared 8 KiB EWRAM staging buffer (artbuf.h) that the box wallpaper, mon
+ * icons, item icons and the summary portrait ALL overwrite between visits to
+ * this screen; a memo keyed only on `game` would hand back a pointer into
+ * whichever of those last ran, not this screen's own pixels, the moment the
+ * player leaves and returns. pdna_origin_art.c's rom_portrait() documents the
+ * exact same hazard for the summary portrait and takes the same fix: always
+ * redecode. pdna_pokeblock() below calls this exactly once, on screen entry
+ * (not per keypress/redraw -- the decode then stays resident in mon_decomp for
+ * that visit, same as before), so the cost is one extra ~3.3 KB LZ77 pass per
+ * time the player OPENS the case, not per frame. */
 static BgFrame rom_pokeblock_frame(int game) {
   BgFrame f = { 0, 0, PB_BG_W };
   if (!s_romchrome.rc || !rom_chrome_pokeblock_have(&s_romchrome, game)) return f;
-  if (!(s_pb_have && s_pb_key == game)) {
-    s_pb_have = rom_chrome_pokeblock_load(&s_romchrome, game,
-                                          (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
-                                          &s_pb_chrome);
-    s_pb_key = s_pb_have ? game : -1;
-  }
-  if (!s_pb_have) return f;
+  if (!rom_chrome_pokeblock_load(&s_romchrome, game,
+                                 (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &s_pb_chrome))
+    return f;
   f.blob = &s_pb_chrome.as_lzblob; f.off = 0; f.sw = PB_BG_W;
   return f;
 }

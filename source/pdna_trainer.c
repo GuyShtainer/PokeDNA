@@ -106,16 +106,9 @@ static bool flag_set_editor(uint8_t* sb1, PkGame game, const char* title,
  * never reads s_romchrome again (card_bg()'s strong symbol wins the link and
  * never calls rom_card_frame at all), so this costs one pointer store. */
 static const RomChrome* s_romchrome = 0;
-#if !PDNA_CARD_ART_COMPILED
-static int s_chrome_have = 0;
-static int s_chrome_key = -1;   /* (game<<8)|(back<<4)|(tier<<1)|female, or -1 */
-#endif
 
 void pdna_trainer_set_romchrome(const RomChrome* rch) {
   s_romchrome = rch;
-#if !PDNA_CARD_ART_COMPILED
-  s_chrome_have = 0; s_chrome_key = -1;   /* the old memo may be a DIFFERENT ROM's decode */
-#endif
 }
 
 #if !PDNA_CARD_ART_COMPILED
@@ -123,26 +116,34 @@ void pdna_trainer_set_romchrome(const RomChrome* rch) {
  * fall through to blob==0 exactly as before). NULL s_romchrome means no ROM open
  * this session, or the open ROM cannot serve `game`'s card style.
  *
- * The decode is held in a FILE-STATIC struct (IWRAM .bss, ~215 B -- nowhere near
- * the ~1,232 B new-IWRAM-.bss crash threshold DESIGN.md Sec 4.2 measured) so the
- * SAME tiles/tilemap/palette stay resident for every bg_restore() call across the
- * whole screen's lifetime -- cursor moves and field edits redraw a rect from RAM,
- * no re-read. Re-decoded only when (game, back, tier, female) actually changes,
- * or the registered ROM changes (rom_chrome_card_have() then disagrees, which
- * invalidates the memo the same way a changed key does). */
+ * ALWAYS redecodes -- NOT memoised by (game, back, tier, female), even though a
+ * naive key check looks safe here. It is NOT: mon_decomp is the shared 8 KiB
+ * EWRAM staging buffer (artbuf.h) that the box wallpaper, mon icons, item icons
+ * and the summary portrait ALL overwrite between visits to this screen. A memo
+ * that survives across visits to pdna_trainer() would compare today's key
+ * against a key computed on a LAST visit, find them equal, and hand back a
+ * pointer into whatever those other screens left in mon_decomp since --
+ * garbage tiles rendered as the card. This is documented, and already fixed
+ * once, for the summary portrait: see pdna_origin_art.c's rom_portrait()
+ * ("DELIBERATELY NOT MEMOISED ... mon_decomp is shared ... a STALE pointer --
+ * same key"). The same rule applies here.
+ *
+ * The decode target (s_chrome_card, IWRAM .bss, ~215 B -- nowhere near the
+ * ~1,232 B new-IWRAM-.bss crash threshold DESIGN.md Sec 4.2 measured) is still
+ * a file-static so the caller's BgFrame stays valid for a screen's whole
+ * lifetime -- card_editor() calls this only on `full` repaints (screen entry,
+ * an L/R face flip, an editor that used the whole screen), which is
+ * user-driven, not per-frame, so re-decoding every time costs nothing a player
+ * would notice and buys correctness instead of a plausible-looking corrupted
+ * card. */
 static RomChromeCard s_chrome_card;
 
 static BgFrame rom_card_frame(int game, int back, int tier, int female) {
   BgFrame f = { 0, 0, CARD_BG_W };
   if (!s_romchrome || !rom_chrome_card_have(s_romchrome, game)) return f;
-  int key = (game << 8) | (back << 4) | (tier << 1) | (female ? 1 : 0);
-  if (!(s_chrome_have && s_chrome_key == key)) {
-    s_chrome_have = rom_chrome_card_load(s_romchrome, game, back, tier, female,
-                                         (uint8_t*)mon_decomp, MON_DECOMP_BYTES,
-                                         &s_chrome_card);
-    s_chrome_key = s_chrome_have ? key : -1;
-  }
-  if (!s_chrome_have) return f;
+  if (!rom_chrome_card_load(s_romchrome, game, back, tier, female,
+                            (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &s_chrome_card))
+    return f;
   f.blob = &s_chrome_card.as_lzblob; f.off = 0; f.sw = CARD_BG_W;
   return f;
 }
