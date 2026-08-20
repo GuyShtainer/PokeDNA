@@ -56,31 +56,56 @@
  *             COMPLETE, independent 32-colour (2-bank) blob, not a partial
  *             override; gender picks which one to fetch, no swap needed.
  *   FireRed   tileset 0x08E830CC (1,760 B / 55 tiles), tilemap 0x08E832C0
- *             (known — DESIGN.md's "bg.bin"), palette 0x08E835B4 (96 B / 3
- *             banks) — MEASURED gender-INDEPENDENT (below), no override.
+ *             (known — DESIGN.md's "bg.bin"), palette MALE 0x08E835B4 (96 B /
+ *             3 banks) + FEMALE 0x08E83604 (32 B / 1 bank), a BANK-0-ONLY
+ *             override, not a whole separate blob like Emerald's — see below.
  *   LeafGreen the FireRed set, shifted: tileset 0x08E8314C, tilemap 0x08E83340,
- *             palette 0x08E83634. Same code shape at the same relative
- *             offsets, confirmed independently (not assumed from FireRed's
- *             addresses).
+ *             palette MALE 0x08E83634 + FEMALE 0x08E83684. Same code shape at
+ *             the same relative offsets, confirmed independently (not assumed
+ *             from FireRed's addresses).
  * DESIGN.md's "bag.pal" / "bag_window_pal" table entries are NOT part of this
  * screen's background at all — they are referenced from unrelated code sites
  * (bag.pal's only reference sits beside rom_itemart.h's own FireRed item-icon
  * pin, i.e. it is item-icon plumbing, not bag chrome) and were ruled out by
- * that same code-reference check before being used. A FOURTH address at
- * 0x08E83604 (DESIGN.md's "bg_female.pal"), applied as a bank-1 override, was
- * tried and REJECTED: it decodes cleanly (32 B, 1 bank) and sits right next to
- * the tileset/tilemap/palette pointers in the SAME code, so it looked exactly
- * like the trainer card's tier+female_bg shape (CardPins above) — but wiring
- * it in and pixel-diffing against a REAL female-save capture of the compiled
- * art (docs/analysis-2026-08-20-artless-phases/bag-fullart-firered-*.png)
- * showed a wrong colour (orange where retail is blue). Removing the override
- * (rom_chrome.c's k_bag_firered/k_bag_leafgreen, pal_f_banks = 0) made every
- * sampled background pixel match retail to RGB15 rounding. Lesson for the
- * next person to touch this: "a pointer decodes, sits in the right place, and
- * produces a plausible-looking image" is NOT proof it is correct — only a
- * pixel-diff against real output is. A female recolour may genuinely exist
- * here and simply live somewhere else, or may not exist at all — both are
- * honest until proven, unlike a wrong colour shipped as if verified.
+ * that same code-reference check before being used.
+ *
+ * THE FEMALE ADDRESS WAS RIGHT; THE BANK WAS WRONG (fixed 2026-08-20). A
+ * fourth address, 0x08E83604 (DESIGN.md's "bg_female.pal"), decodes cleanly
+ * (LZ10, 32 B, 1 bank) and sits right next to the tileset/tilemap/palette
+ * pointers in the SAME code — it IS this screen's female recolour. An earlier
+ * pass wired it as a BANK-1 override (guessing from the trainer card's
+ * tier+female_bg shape, CardPins above) and, on seeing a wrong colour
+ * (orange where retail is blue), concluded the address itself was wrong and
+ * dropped it — the reasoning stopped one hypothesis short: only the bank
+ * index was wrong, not the address. tools/gen_bag_bg.py:118 (this project's
+ * own art generator for the SAME screen) already applies this exact blob to
+ * BANK 0, `female = load_jasc_pal(bg_female.pal) + male[16:]  # bank 0 only`,
+ * citing pokefirered src/item_menu.c:574 — and a byte-compare confirms the
+ * ROM's decoded 16 entries at 0x08E83604 are IDENTICAL to
+ * assets/bag/frlg/bg_female.pal. Re-measured with Guy's own female
+ * FireRed.sav (SaveBlock2+0x08 == 1) AND a synthetic male counterpart of the
+ * SAME save (identical trainer/items, only that one byte + its section
+ * checksum differ), against the compiled full-art build of each, with the
+ * SAME game ROM fused into both sides so item text isn't a confound
+ * (docs/analysis-2026-08-20-artless-phases/bagfix-*.png,
+ * bagfix_pixeldiff.py): MALE matches the full-art capture at 0/38,400
+ * differing pixels outside the animated bag-icon sprite (bag_anim() has no
+ * ROM rung — see below — so that ~2,077 px region is expected and was
+ * already out of scope before this fix). FEMALE matches at 0/38,400 in every
+ * sampled clean interior region (15,836 px checked directly); the only
+ * residual difference is 11 px at the extreme screen-edge corners, which sit
+ * inside the SAME out-of-scope animated-sprite footprint (its outer
+ * decorative trim) and are present because bag_bg.c's own GENERATED closed-
+ * bag animation frames for FRLG-female are themselves visibly corrupted in
+ * the full-art build (torn/striped, reproducible across repeated captures —
+ * a pre-existing bug in tools/gen_bag_bg.py's animation compositing, not in
+ * this file, and out of this track's scope; worth its own investigation).
+ * LeafGreen measured identically (its bag screen is pixel-for-pixel the same
+ * content as FireRed's, just at shifted ROM addresses). Lesson for the next
+ * person to touch this: "a pointer decodes, sits in the right place, and
+ * produces a plausible-looking image" is still not proof of which BANK it
+ * targets — a pixel-diff against real output is required for that, and a
+ * wrong-bank result does not itself prove the address is wrong.
  *
  * Every tilemap uses TWO palette banks (measured, not assumed): bank 0 for the
  * bulk of the screen, bank 1 for a small accent set that includes the desc
@@ -133,8 +158,10 @@
  * layer — PokeblockPins has no bg field, RomChromeSrc.bg_map is set to 0). Bag
  * is the smallest of the three: Emerald 1,696 + 2,048 + 64 = 3,808 B (female
  * is a whole separate 64 B fetch, same shape, not additive); FireRed/LeafGreen
- * 1,760 + 2,048 + 96 = 3,904 B, gender-independent (no extra fetch at all — see
- * the header's bag section for why). All fit the 8,192 B buffer with more
+ * 1,760 + 2,048 + 96 = 3,904 B in scratch, PLUS a 32 B bank-0 female override
+ * fetched to a 96 B STACK buffer (never scratch — same shape as the card's
+ * female_bg override) when female, not additive to the scratch budget either.
+ * All fit the 8,192 B buffer with more
  * than half spare, and — unlike the bag screen's INTERACTIVE LOOP (see the scope
  * note above) — the card and Pokeblock screens never share that buffer with any
  * OTHER concurrent decoder for their whole visit (this module deliberately does

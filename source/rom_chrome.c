@@ -266,7 +266,9 @@ typedef struct {
                                               * Emerald: a WHOLE separate blob (pal_f_at
                                               * 0, pal_f_banks == pal_m_banks, full
                                               * replace); FRLG: a partial override
-                                              * (pal_f_at 1, pal_f_banks 1) */
+                                              * (pal_f_at 0, pal_f_banks 1 -- bank 0
+                                              * only, matching tools/gen_bag_bg.py's
+                                              * own `# bank 0 only`) */
   uint8_t  pal_f_at;
 } BagPins;
 
@@ -282,34 +284,33 @@ static const BagPins k_bag_emerald = {
   0x08D9A5D4, 1, 2, 0,
 };
 
-/* FireRed BPRE r1. A 3-bank palette, MEASURED to be gender-INDEPENDENT: a
- * pixel-exact comparison against the compiled art (a female save; see
- * rom_chrome.h) proved the base 3-bank blob alone reproduces every sampled
- * background colour (header, list pane, desc pane fill, bottom-left corner)
- * to the GBA's own RGB15 rounding. The address labelled "bg_female.pal" in
- * DESIGN.md's inventory (0x08E83604) is a real, valid 1-bank LZ10 blob at a
- * plausible-looking offset, but applying it as a bank-1 override produced a
- * WRONG colour there (orange where retail is blue) -- it is not this
- * screen's female recolour, whatever it actually is. No override is wired;
- * pal_f_banks stays 0 for both genders until a real female difference (if
- * one even exists here) is found and proven the same way. */
+/* FireRed BPRE r1. A 3-bank palette; the female recolour is a BANK-0 override
+ * only (tools/gen_bag_bg.py:118, `female = load_jasc_pal(bg_female.pal) +
+ * male[16:]  # bank 0 only`, citing pokefirered src/item_menu.c:574), NOT the
+ * bank-1 override an earlier pass tried. MEASURED against Guy's own female
+ * FireRed.sav: the pal_f blob at 0x08E83604 (LZ10, 16 RGB15 entries) is
+ * BYTE-IDENTICAL to assets/bag/frlg/bg_female.pal, and applying it to bank 0
+ * (pal_f_at 0) reproduces the compiled full-art capture of that exact save
+ * to the GBA's own RGB15 rounding -- see rom_chrome.h's header comment for
+ * the pixel-diff numbers and how the earlier bank-1 attempt was misjudged. */
 static const BagPins k_bag_firered = {
   0x08E830CC, 1, 1760u,
   0x08E832C0, 1, 2048u,
   32,
   0x08E835B4, 1, 3,
-  0, 0, 0, 0,
+  0x08E83604, 1, 1, 0,
 };
 
 /* LeafGreen BPGE r0 -- the FireRed set, shifted; found independently by the
- * same code-reference scan, not assumed from FireRed's addresses. Same "no
- * proven female override" posture as FireRed above. */
+ * same code-reference scan, not assumed from FireRed's addresses. Same
+ * bank-0-only female override, same measured-byte-identical posture as
+ * FireRed above. */
 static const BagPins k_bag_leafgreen = {
   0x08E8314C, 1, 1760u,
   0x08E83340, 1, 2048u,
   32,
   0x08E83634, 1, 3,
-  0, 0, 0, 0,
+  0x08E83684, 1, 1, 0,
 };
 
 static const BagPins* bag_pins_for(RomKind kind) {

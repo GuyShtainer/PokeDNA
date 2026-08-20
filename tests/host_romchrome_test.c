@@ -38,6 +38,11 @@
  *     LeafGreen and is refused for Ruby/Sapphire; every load's pointers land
  *     inside scratch, bg_map is always NULL (single-layer screen), and a
  *     too-small buffer fails closed.
+ *  7) Palette bank 0 actually DIFFERS between the male and female load on
+ *     every wired game (the MUST-FIX 1 regression test: pal_f_banks == 0
+ *     would make this fail silently, since female would just re-decode the
+ *     male banks), and on FRLG specifically banks 1-2 stay byte-identical
+ *     across gender (the override is bank-0-only, not a bank-1 recolour).
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -159,6 +164,7 @@ static void test_bag_game(const char* label, const char* path, int expect_style)
 
   if (expect_style >= 0) {
     static uint8_t scratch[8192];
+    uint16_t pal[2][96];
     for (int female = 0; female <= 1; female++) {
       RomChromeBag out;
       memset(&out, 0xAA, sizeof out);
@@ -177,7 +183,20 @@ static void test_bag_game(const char* label, const char* path, int expect_style)
       CHECK(out.as_lzblob.pages == 0, "%s: as_lzblob.pages should be NULL (romsrc dispatch)", label);
       /* Every decode must fit comfortably under half the shared 8 KiB buffer --
        * the whole point of the fix over the old "Ruby saturates it" finding. */
+      memcpy(pal[female], out.src.pal, sizeof pal[female]);
     }
+
+    /* Bank 0 MUST differ by gender on every wired game -- this is the exact
+     * regression MUST-FIX 1 shipped once (pal_f_banks == 0, so female == male
+     * bank-for-bank). FRLG's override is bank-0-ONLY (rom_chrome.h), so banks
+     * 1-2 must stay byte-identical across gender -- a bank-1 (or any other)
+     * override sneaking back in would show up here as a bank-1+ mismatch. */
+    int bank0_differs = memcmp(pal[0], pal[1], 16 * sizeof(uint16_t)) != 0;
+    CHECK(bank0_differs, "%s: bank 0 identical for male and female -- the "
+         "female palette override isn't being applied (this is the MUST-FIX 1 bug)", label);
+    if (expect_style == 2)   /* FRLG: bank-0-only override */
+      CHECK(memcmp(pal[0] + 16, pal[1] + 16, 32 * sizeof(uint16_t)) == 0,
+           "%s: banks 1-2 changed with gender -- FRLG's override must be bank 0 only", label);
 
     /* A too-small buffer must fail closed, not truncate. */
     RomChromeBag bad;
