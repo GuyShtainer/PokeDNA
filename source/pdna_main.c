@@ -994,7 +994,9 @@ void app_crumb_shown(void) {
   app_log_flush();
 }
 
-static void msg_wait(const char* title, u16 col, const char* l1, const char* l2) {
+/* Not static: party_strip_overlay (pdna_box.c) shows the same read-only-cart denial
+ * app_party_overlay shows below — see the prototype in pdna_app.h. */
+void msg_wait(const char* title, u16 col, const char* l1, const char* l2) {
   ui_clear();
   ui_panel(16, 48, 208, 70, UI_PANEL, col);        /* framed so it reads as a dialog */
   /* Same reason as app_confirm: clamp INSIDE the dialog so no caller can overflow it. */
@@ -2040,6 +2042,40 @@ static bool party_place_held(const uint8_t* held80, int target, int orig_box, in
   snd_ok(); return true;
 }
 
+/* ---- shared party engine, exposed to pdna_box.c's party_strip_overlay (pdna_app.h) --
+ * g_sb1/g_frlg never leave this file; these wrap the exact same calls app_party_overlay
+ * itself makes below, so there is one place that knows the party's SaveBlock1 layout. */
+int app_party_n(void) { return party_count(g_sb1, g_frlg); }
+
+int app_party_read(PkMon out[6]) {
+  int n = pk_read_party_auto(g_sb1, out, &g_frlg);
+  for (int i = 0; i < n; i++) pk_resolve(&out[i]);
+  return n;
+}
+
+bool app_party_place_held(const uint8_t* held80, int target, int orig_box, int orig_slot,
+                          bool orig_bank, bool can_swap) {
+  return party_place_held(held80, target, orig_box, orig_slot, orig_bank, can_swap);
+}
+
+bool app_party_mon_menu(int slot, int footer_y, bool allow_move_to_box,
+                        uint8_t tobox_grab[80], bool* tobox_hit) {
+  uint8_t* rec = g_sb1 + (g_frlg ? 0x038 : 0x238) + (uint32_t)slot * 100;
+  g_party_tobox_allowed = allow_move_to_box;
+  bool changed = app_mon_menu(rec, true, false, app_commit_sb1, g_sb1, -1, slot, footer_y);
+  g_party_tobox_allowed = false;
+  if (tobox_hit) *tobox_hit = false;
+  if (g_party_tobox_req) {                          /* user chose "MOVE TO BOX" */
+    g_party_tobox_req = false;
+    if (party_count(g_sb1, g_frlg) <= 1) {
+      snd_deny(); msg_wait("CAN'T", UI_WARN, "The party can't be empty.", "Move another mon in first.");
+    } else if (tobox_hit) {
+      party_to_box(rec, tobox_grab); *tobox_hit = true;
+    }
+  }
+  return changed;
+}
+
 /* Remove party slot `idx` (gap-free shift) as a DEFERRED move: stage SB1 + mark PC dirty so
  * it folds into the single exit save, and refresh the cached party. Used when a party mon is
  * carried OUT to a box (party -> box). The caller does this only on a successful DROP
@@ -2489,16 +2525,12 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
       if (sel == BACK) { snd_back(); return 0; }
       if (held) {                                    /* PLACE: drop/swap into the party */
         if (party_place_held(held, sel, orig_box, orig_slot, orig_bank, can_swap)) return 1;
-      } else if (sel < n) {                          /* BROWSE: the full action menu on this mon */
-        uint8_t* rec = g_sb1 + (g_frlg ? 0x038 : 0x238) + (uint32_t)sel * 100;
-        g_party_tobox_allowed = allow_move_to_box;
-        app_mon_menu(rec, true, false, app_commit_sb1, g_sb1, -1, sel, PDNA_PTY_FOOTER_Y);
-        g_party_tobox_allowed = false;
-        if (g_party_tobox_req) {                      /* user chose "MOVE TO BOX" */
-          g_party_tobox_req = false;
-          if (party_count(g_sb1, g_frlg) <= 1) { snd_deny(); msg_wait("CAN'T", UI_WARN, "The party can't be empty.", "Move another mon in first."); }
-          else { party_to_box(rec, grab80); if (grab_slot) *grab_slot = sel; return 2; }
-        }
+      } else if (sel < n) {                          /* BROWSE: the full action menu on this mon
+                                                       * (app_party_mon_menu — shared with
+                                                       * party_strip_overlay, pdna_box.c) */
+        bool tobox_hit = false;
+        app_party_mon_menu(sel, PDNA_PTY_FOOTER_Y, allow_move_to_box, grab80, &tobox_hit);
+        if (tobox_hit) { if (grab_slot) *grab_slot = sel; return 2; }
         /* else: edit/release/etc. ran -> loop re-reads the party + clamps sel, then redraws */
       } else snd_deny();                             /* empty cell */
     }

@@ -93,7 +93,15 @@ bool app_take_pickup(int* box, int* slot);
 void app_box_start_set(int s);
 int  app_box_start_take(void);
 void app_note_pc_box(int b);              /* PC box screen reports its current box so the app remembers it */
-/* Party overlay popped from the box screen's PARTY tab (Gen-4/5-style "move to/from party").
+/* Full-screen party screen (Gen-4/5-style: a big slot-1 box + 5 rows), opened ONLY from
+ * the nav menu's standalone PARTY entry (NV_PARTY, pdna_main.c) — that screen has no box
+ * behind it, so a full-screen layout is the right one there. The box screen's own PARTY
+ * tab (pdna_box.c) does NOT use this any more — it opens the compact party_strip_overlay
+ * (pdna_box.c, static) instead, which leaves the box grid + PKMN DATA panel visible
+ * behind it (docs/analysis-2026-08-20-pcparty/MEASUREMENTS.md — a DIFFERENT retail
+ * screen from the field-menu list this function matches). Both share the same mutation
+ * core via the app_party_* accessors below, so there is exactly one place that knows how
+ * to add/swap/browse a party slot.
  * PLACE mode (held != NULL): carrying a box mon -> A on a slot ADDS/SWAPS it into the party
  * (orig_box/orig_slot/orig_bank = the held mon's origin; can_swap = it has a clean PC origin
  * to receive a swapped-out member). Returns 1 (placed -> caller ends the carry) or 0.
@@ -105,6 +113,30 @@ int  app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool or
  * dirty so it folds into the one exit save, and refresh the cached party. Called by the box
  * grid only when a carried party mon is successfully DROPPED into a box (lift-don't-clear). */
 void app_party_remove_at(int idx);
+
+/* ---- shared party-mutation/read core (pdna_main.c owns g_sb1/g_frlg; these let
+ * pdna_box.c's party_strip_overlay act on the party without either duplicating the
+ * SaveBlock1 offset math or exposing g_sb1 itself). Every one of these is the SAME
+ * underlying logic app_party_overlay itself calls — see that function's body. */
+int  app_party_n(void);                       /* party_count(g_sb1, g_frlg) */
+int  app_party_read(PkMon out[6]);             /* decode + pk_resolve every party mon; returns n */
+/* ADD (target == n) or SWAP (target < n) a held 80-byte box mon into the party. Same
+ * contract/return as the PLACE branch above. */
+bool app_party_place_held(const uint8_t* held80, int target, int orig_box, int orig_slot,
+                          bool orig_bank, bool can_swap);
+/* Open the full action menu (VIEW/EDIT, ITEM, LEGALITY, COPY, DUPLICATE, TO DAY-CARE,
+ * EXPORT .pk, TAKE/GIVE ITEM, RELEASE, CANCEL) on party slot `slot`. If the user picks
+ * MOVE TO BOX (only offered when allow_move_to_box), *tobox_hit is set true and
+ * tobox_grab receives the 80-byte box form (the caller still owns removing the slot via
+ * app_party_remove_at, same as app_party_overlay's own GRAB-mode contract) — otherwise
+ * *tobox_hit is false and the return value is app_mon_menu's own "did it write" bool. */
+bool app_party_mon_menu(int slot, int footer_y, bool allow_move_to_box,
+                        uint8_t tobox_grab[80], bool* tobox_hit);
+
+/* Shared framed message dialog (title + up to 2 lines + "Press A"). Used by every
+ * screen's error/info popups; exposed here so party_strip_overlay (pdna_box.c) can show
+ * the same read-only-cart denial app_party_overlay shows. */
+void msg_wait(const char* title, uint16_t col, const char* l1, const char* l2);
 /* Bank->PC / Bank->party carry: record the bank source slot AND the carried 80-byte record to
  * delete at the save phase (true move; matched by record so a re-arrange can't delete the wrong mon). */
 void app_bank_defer_delete(int box, int slot, const uint8_t* rec80);
