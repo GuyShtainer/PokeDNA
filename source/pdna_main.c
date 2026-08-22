@@ -1597,7 +1597,8 @@ static void app_icon_cache_resolve(const RomCtx* rc_ok, bool deep) {
 }
 
 static void app_icon_rom_open(void) {
-  boxoam_rom_icons(0);
+  boxoam_rom_icons(0, 0);
+  art_fallbacks_set_rommon(0);   /* Phase 1.5: the dex/party/picker RGB15 ROM rung */
 #if !PDNA_HAND_ART_COMPILED
   boxoam_rom_hand(0);
 #endif
@@ -1621,7 +1622,8 @@ static void app_icon_rom_open(void) {
     pdna_trainer_set_romchrome(&s_romchrome);
     pdna_bag_set_romchrome(&s_romchrome);
     if (rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
-      boxoam_rom_icons(&s_iconrom);
+      boxoam_rom_icons(&s_iconrom, 1);           /* fused_rom_read: cart-space memcpy, cheap */
+      art_fallbacks_set_rommon(&s_iconrom);      /* Phase 1.5: dex/party/picker ROM rung */
       rom_text_open(&s_romtext, &s_iconrom_ctx);
       /* Phase 1 (ROM-art): the summary portrait + item icons/type badges. Neither
        * gates icons/text above -- Ruby/Sapphire (no GF header) already returned
@@ -1667,7 +1669,8 @@ static void app_icon_rom_open(void) {
       pdna_trainer_set_romchrome(&s_romchrome);
       pdna_bag_set_romchrome(&s_romchrome);
       if (rom_mon_open(&s_iconrom, &s_iconrom_ctx)) {
-        boxoam_rom_icons(&s_iconrom);
+        boxoam_rom_icons(&s_iconrom, 0);         /* iconrom_fatfs_read: real SD I/O, not cheap */
+        art_fallbacks_set_rommon(&s_iconrom);    /* Phase 1.5: dex/party/picker ROM rung */
         rom_text_open(&s_romtext, &s_iconrom_ctx);
         rom_sprite_open(&s_romsprite, &s_iconrom_ctx);          /* Phase 1 (ROM-art) */
         pdna_origin_art_set_romsprite(&s_romsprite);
@@ -4240,7 +4243,13 @@ static void pdna_daycare(void) {
 #ifdef HAVE_DAYCARE_BG
          if (s_ndeco) anim_any = 1;
 #endif
-         if (app_anim_enabled(ANIM_DAYCARE) && anim_any && ++ctr >= 30) { /* idle 2-frame bob (flicker-free) */
+         /* mon_icon_anim_cheap() gates this off when the ONLY icon source is the ROM
+          * rung (art_fallbacks.c): up to 7 icons (2 boarders + up to 5 hazed yard
+          * visitors) would each pay a real per-icon SD locate+verify on every flip --
+          * exactly the "30-frame bob re-streaming the glove" trap already paid for
+          * once. The icons.bin cache and compiled art keep bobbing unchanged. */
+         if (app_anim_enabled(ANIM_DAYCARE) && anim_any && mon_icon_anim_cheap() &&
+             ++ctr >= 30) { /* idle 2-frame bob (flicker-free) */
            ctr = 0; frame ^= 1;
 #ifdef HAVE_DAYCARE_BG
            for (int i = 0; i < s_ndeco; i++)                    /* visitors first + hazed, as on redraw */
