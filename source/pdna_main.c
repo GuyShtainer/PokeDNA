@@ -29,6 +29,8 @@
 #include "gen3_box.h"
 #include "data_tables.h"
 #include "mon_icons.h"
+#include "mon_icons_gate.h"  /* PDNA_MON_ICONS_ART_COMPILED -- is this a full-art build (see
+                              * party_bob_recompose's s_party_bob_icons, MUST-FIX 2) */
 #include "pdna_summary.h"
 #include "pdna_box.h"
 #include "gen3_trainer.h"
@@ -166,7 +168,20 @@ static void vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
  * ONLY on frames with no key pending, so a press or a key-repeat is never delayed
  * behind a multi-sprite repaint (the rule the Pokedex learned). Callers own *ctr
  * and *frame so the phase survives their redraw loop. kind < 0 or redraw == 0
- * makes this exactly the old wait_keys (period is unused in that case). */
+ * makes this exactly the old wait_keys (period is unused in that case).
+ *
+ * MUST-FIX 3 (2026-08-22 review): `mon_icon_anim_cheap()` in the trigger condition
+ * below doubles as this helper's "no SD I/O on an animation tick" gate -- safe
+ * ONLY because its one and only kind>=0 caller today is app_party_overlay's own
+ * bob (party_overlay_bob, which redraws mon icons via mon_icon_egg_frame/
+ * mon_icon_for_form_frame). Before this fix that call site was UNGATED: with a
+ * ROM open and no icons.bin cache, every PARTY_BOB_PERIOD idle tick re-ran the
+ * ROM rung's locate-then-verify (up to 8 real SD reads) for up to 6 party mons,
+ * exactly the trap art_fallbacks.c's own header comment already named this call
+ * site as one of the two loops that must gate on this. A FUTURE kind>=0 caller
+ * whose redraw does NOT touch mon icons would be wrongly held to this gate too --
+ * if one is ever added, split this condition so the icon-cheap check only covers
+ * the icon-drawing callers. */
 static u16 wait_keys_bob_p(u16 mask, int kind, int* ctr, int* frame,
                            void (*redraw)(int), int period) {
   u16 hit, fresh;
@@ -174,7 +189,8 @@ static u16 wait_keys_bob_p(u16 mask, int kind, int* ctr, int* frame,
     vsync();
     fresh = key_hit(mask);
     hit = fresh | key_repeat(mask & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT));
-    if (!hit && redraw && kind >= 0 && app_anim_enabled(kind) && ++*ctr >= period) {
+    if (!hit && redraw && kind >= 0 && app_anim_enabled(kind) && mon_icon_anim_cheap() &&
+        ++*ctr >= period) {
       *ctr = 0; *frame ^= 1; redraw(*frame);
     }
   } while (!hit);
@@ -2957,40 +2973,82 @@ static void party_icon_y(int i, int* ry, int* iy) {
  * row overlap layers exactly like the static transparent draw — no solid bg square, no
  * cut-off feet. compose-then-DMA (no erase) => flicker-free; runs only on idle frames. */
 static u16 __attribute__((aligned(4))) s_pcol[34];
+
+/* MUST-FIX 2 (2026-08-22 review): mon_icon_for_form_frame/mon_icon_egg_frame return a
+ * pointer straight into the SHARED mon_decomp scratch (artbuf.c, one 8 KiB buffer for
+ * the whole app) whenever the icons.bin cache or the ROM rung is what serves them --
+ * art_fallbacks.c's icon_from_cache decodes fresh into mon_decomp on EVERY call and
+ * hands back that same address. party_bob_recompose used to resolve all 6 party icons
+ * into base[0..5] before compositing ANY of them (scanline-major: one outer sweep
+ * over y=12..150, all icons consulted per scanline), so in the artless build every
+ * pointer ended up aliasing the one buffer: base[0..5] all read as whatever the LAST
+ * (6th) mon decoded, i.e. six copies of the last party member instead of six distinct
+ * icons -- trap #1 (never memoise/hold a pointer into artbuf/mon_decomp) landing for
+ * real, where before this ROM rung existed the artless path had no source at all here
+ * and `if (!have) return;` kept it inert.
+ *
+ * The natural fix -- copy each icon out to its own storage the instant it is fetched
+ * -- does not fit: this project's own EWRAM guard is down to 748 B free in BOTH
+ * builds (measured, not assumed -- a first attempt at a 6-slot 32x32 copy,
+ * 6*2048=12,288 B, overflowed the artless build by 11,540 B on the very first
+ * build), and the full-art build has zero bytes to spare for something it does not
+ * even need (see below). So the two builds take genuinely different code paths:
+ *
+ * FULL-ART (PDNA_MON_ICONS_ART_COMPILED, mon_icons_gate.h): mon_icons.c's strong
+ * accessors (link-time override) return stable, distinct pointers straight into ROM
+ * .rodata -- nothing shared, nothing to alias -- so the original scanline-major
+ * sweep is safe exactly as written and keeps its zero-extra-EWRAM cost.
+ *
+ * ARTLESS: composes ICON-major instead. Decode one mon, immediately paint its own
+ * MON_ICON_H rows (full background reconstruct -- the same y-only, no-x-split
+ * colouring the scanline sweep used), THEN move to the next mon -- never holding a
+ * pointer past the one decode that produced it. Where two adjacent icons' bounding
+ * boxes overlap (11 rows -- party_icon_y's own ROW pitch=21 vs icon height=32; only
+ * ADJACENT icons ever overlap, pitch*2=42 > 32), the LATER (lower) mon's pass fully
+ * repaints those shared rows, background included -- this is party_icon_repaint's
+ * own already-shipped model for the identical adjacent-icon overlap in
+ * app_party_overlay's bob, not a new invention. The one visual difference from the
+ * full-art path's opaque-wins/transparent-lets-the-row-above-show-through
+ * compositing is confined to fully-transparent pixels in those shared rows -- a
+ * cosmetic edge case, not a correctness one, against the alternative this fix
+ * removes (six copies of one mon, a genuine bug). Zero new static storage either
+ * way: both paths reuse s_pcol, the one scratch this function already had. */
 static void party_bob_recompose(int n, int sel, int frame) {
-  /* Resolve every icon ONCE, up front, for two reasons the per-scanline version got
-   * wrong — it called the accessor 139 times per mon per tick and never checked it.
+  /* NULL and egg handling this loop (both builds) must get right, learned the hard
+   * way before this MUST-FIX 2 pass:
    *
-   * 1. NULL. mon_icon_for_form_frame returns 0 for the whole artless build
-   *    (art_fallbacks.c's weak stub), for internal ids 0 and 252..276, and for
-   *    anything past 411 — which a bad-egg slot can hold, and Guy's saves carry
-   *    deliberate ACE glitch mons. Adding a row offset to NULL and reading through it
-   *    lands in BIOS space; on hardware that is open bus, not the zeroes an emulator
-   *    tends to return, so roughly half the halfwords pass the `p & 0x8000` test and
-   *    speckle garbage over the icon column every 0.5 s. Every other consumer in the
-   *    app guards this (ui.c:99, ui.c:182, and the static party draw below).
-   * 2. Eggs. The static draw branches on isEgg and uses mon_icon_egg_frame; this did
-   *    not, so an egg in the party visibly turned into the hatched species half a
-   *    second after the last keypress and turned back on the next press. The day-care
-   *    bob gets this right — the party bob was the outlier. */
+   * 1. NULL. mon_icon_for_form_frame returns 0 for the whole artless build with no
+   *    source available, for internal ids 0 and 252..276, and for anything past
+   *    411 — which a bad-egg slot can hold, and Guy's saves carry deliberate ACE
+   *    glitch mons. Adding a row offset to NULL and reading through it lands in
+   *    BIOS space; on hardware that is open bus, not the zeroes an emulator tends
+   *    to return, so roughly half the halfwords pass the `p & 0x8000` test and
+   *    speckle garbage over the icon column every 0.5 s. Every other consumer in
+   *    the app guards this (ui.c:99, ui.c:182, and the static party draw below).
+   * 2. Eggs. The static draw branches on isEgg and uses mon_icon_egg_frame; this
+   *    once did not, so an egg in the party visibly turned into the hatched
+   *    species half a second after the last keypress and turned back on the next
+   *    press. The day-care bob gets this right — the party bob was the outlier. */
+  if (n > 6) n = 6;
+  int sry = (n && sel >= 0 && sel < n) ? 17 + sel * 21 : -100;   /* selected panel y..y+20 */
+
+#if PDNA_MON_ICONS_ART_COMPILED
   const u16* base[6];
   int have = 0;
-  if (n > 6) n = 6;
   for (int i = 0; i < n; i++) {
     base[i] = (g_party[i].isEgg && !g_party[i].isBadEgg)
                 ? mon_icon_egg_frame((uint8_t)frame)
                 : mon_icon_for_form_frame(g_party[i].species, g_party[i].form, (uint8_t)frame);
     if (base[i]) have = 1;
   }
-  if (!have) return;   /* artless, or nothing drawable: leave the column exactly as drawn */
+  if (!have) return;   /* nothing drawable: leave the column exactly as drawn */
 
   rumble_io_suspend();   /* composes from mon_icon ROM data; mute the cart-bus motor toggle */
-  int sry = (n && sel >= 0 && sel < n) ? 17 + sel * 21 : -100;   /* selected panel y..y+20 */
   for (int y = 12; y <= 150; y++) {
     u16 bg = (y >= sry && y <= sry + 20) ? UI_SEL : UI_BG;
     for (int dx = 0; dx < 34; dx++) s_pcol[dx] = bg;
     for (int i = 0; i < n; i++) {
-      int ry, iy; party_icon_y(i, &ry, &iy);
+      int ry, iy; party_icon_y(i, &ry, &iy); (void)ry;
       if (y < iy || y >= iy + MON_ICON_H) continue;
       if (!base[i]) continue;
       const u16* row = base[i] + (y - iy) * MON_ICON_W;
@@ -2999,6 +3057,26 @@ static void party_bob_recompose(int n, int sel, int frame) {
     dma3_cpy(&vid_mem[y * 240 + 2], s_pcol, 34 * 2);   /* x=2 even, 68 bytes -> word-aligned */
   }
   rumble_io_resume();
+#else
+  rumble_io_suspend();   /* composes from mon_icon ROM/cache data; mute the cart-bus motor toggle */
+  for (int i = 0; i < n; i++) {
+    const u16* ic = (g_party[i].isEgg && !g_party[i].isBadEgg)
+                ? mon_icon_egg_frame((uint8_t)frame)
+                : mon_icon_for_form_frame(g_party[i].species, g_party[i].form, (uint8_t)frame);
+    if (!ic) continue;   /* nothing to composite for this slot: leave its rows exactly as drawn */
+    int ry, iy; party_icon_y(i, &ry, &iy); (void)ry;
+    for (int j = 0; j < MON_ICON_H; j++) {
+      int y = iy + j; if (y < 12 || y > 150) continue;
+      u16 bg = (y >= sry && y <= sry + 20) ? UI_SEL : UI_BG;
+      const u16* row = ic + j * MON_ICON_W;
+      s_pcol[0] = bg;
+      for (int dx = 0; dx < MON_ICON_W; dx++) { u16 p = row[dx]; s_pcol[1 + dx] = (p & 0x8000) ? (u16)(p & 0x7FFF) : bg; }
+      s_pcol[33] = bg;
+      dma3_cpy(&vid_mem[y * 240 + 2], s_pcol, 34 * 2);   /* x=2 even, 68 bytes -> word-aligned */
+    }
+  }
+  rumble_io_resume();
+#endif
 }
 
 static int party_list(void) {
@@ -3035,14 +3113,21 @@ static int party_list(void) {
 
     /* idle 2-frame bob (compose-over-DMA, no erase). Animate only on frames with NO key
      * pending so navigation never stutters; recompose every icon in order so the row
-     * overlap layers exactly like the static draw (each over its own row's background). */
+     * overlap layers exactly like the static draw (each over its own row's background).
+     * MUST-FIX 3 (2026-08-22 review): mon_icon_anim_cheap() gates this off when the
+     * ONLY icon source is the ROM rung (art_fallbacks.c) -- up to 6 party mons' worth
+     * of locate-then-verify (up to 8 real SD reads each on a miss) every 30-frame
+     * tick, otherwise. This is the SECOND of art_fallbacks.c's own two named "party
+     * bob" loops (the first is app_party_overlay's, gated in wait_keys_bob_p above) --
+     * this one was still ungated until this fix, despite the ROM rung's own commit
+     * message claiming the idle cost was already zero everywhere. */
     u16 k, fresh;
     const u16 mask = KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_START;
     do {
       vsync();
       fresh = key_hit(mask);
       k = fresh | key_repeat(KEY_UP | KEY_DOWN);
-      if (!k && app_anim_enabled(ANIM_PARTY) && g_nparty && ++anim_ctr >= 30) {
+      if (!k && app_anim_enabled(ANIM_PARTY) && g_nparty && mon_icon_anim_cheap() && ++anim_ctr >= 30) {
         anim_ctr = 0; frame ^= 1;
         party_bob_recompose(g_nparty, sel, frame);
       }
@@ -5774,8 +5859,21 @@ static void view_save(const char* path) {
     if (r == 2) {                                /* START -> nav menu */
       int refresh_party = 0;
       switch (nav_menu()) {
-        case NV_PARTY:   { rmbl_fire(RCUE_ROOM); uint8_t dmy[80];   /* the same party popup (no box carry from here) */
-                           app_party_overlay(0, 0, 0, false, false, dmy, 0, false); refresh_party = 1; } break;
+        case NV_PARTY:   {                        /* Guy: "I expected to see the party menu
+                          * on top of the pc pokemon in the background" -- with a PC box
+                          * open, route to the SAME strip-over-the-box popup the box
+                          * screen's own PARTY tab uses (pcp_open_party_strip, pdna_box.c)
+                          * instead of the old full-screen list: arm the box's entry state
+                          * and let the outer loop's unconditional pdna_box(&pcs) call
+                          * (top of this for(;;)) open straight onto it. No PC storage this
+                          * save (g_have_pc false) -> no box to show behind a strip, so the
+                          * standalone full-screen browser is still the right screen; it is
+                          * the ONLY remaining caller of app_party_overlay. */
+                          rmbl_fire(RCUE_ROOM);
+                          if (g_have_pc) { app_box_start_set(3); }
+                          else { uint8_t dmy[80]; app_party_overlay(0, 0, 0, false, false, dmy, 0, false);
+                                 refresh_party = 1; }
+                          } break;
         case NV_BANK:    rmbl_fire(RCUE_ROOM); if (pdna_bank_show() == 5) app_box_start_set(1); refresh_party = 1; break;   /* bottom-out -> PC tabs; a paste may hit the party */
         case NV_DAYCARE: pdna_daycare(); break;
         case NV_TRAINER: pdna_trainer(g_sb1, g_sb2, &g_vinfo, g_game); break;

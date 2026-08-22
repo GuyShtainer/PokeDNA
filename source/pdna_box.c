@@ -2554,6 +2554,41 @@ out:
   return result;
 }
 
+/* Open the PARTY-tab strip exactly as if the user had pressed UP then A on the box's
+ * own top tabs -- factored out of that dispatch (below) so pdna_box()'s new
+ * app_box_start_take()==3 entry state (pdna_main.c's NV_PARTY routing, Guy's "the
+ * party menu on top of the pc pokemon in the background" ask) can fire the SAME
+ * popup on entry, before the user has pressed anything. `*need_full` is left the
+ * caller's to act on: true means "repaint from scratch" (the popup just closed with
+ * nothing else painted since), matching what a manual A-press already left it at;
+ * the grab branch instead paints everything itself (render_full + the grab anim +
+ * footer, same as the manual path always did) and clears it, so a caller that was
+ * sitting on need_full==true from its own fresh entry (this function's only other
+ * caller always had it already false, from its own prior paint) does not repeat
+ * that paint a second time for no reason. */
+static void pcp_open_party_strip(BoxSource* src, int box, int* cur, bool* need_full) {
+  if (src->is_bank) { snd_deny(); return; }
+  uint8_t grab[80]; int gslot = -1;
+  /* empty-handed: A opens the action menu (Move to box -> grab). The popup's own
+   * GRID focus, if the user crosses into it, moves the box cursor and hands the new
+   * position back on close; it can also grab a BOX mon itself (rr==1, placed into
+   * the party without ever leaving the popup) as well as the party-mon grab below. */
+  int rr = party_strip_overlay(src, box, cur, grab, &gslot, true);
+  if (rr == 2 && gslot >= 0) {                  /* grabbed a party mon -> carry it (party origin) */
+    memcpy(s_held, grab, 80);
+    s_holding = true; s_orig_party = true; s_orig_slot = gslot;
+    s_orig_box = -1; s_orig_bank = false; s_held_dup = false;
+    s_tab_focus = -1; s_oam_reload = true;
+    render_full(src, box, *cur, false, false, true);                  /* repaint box over the popup */
+    play_grab_anim(src, box, *cur); carry_move(src, box, *cur, *cur);
+    draw_footer(src->is_bank, false, true);
+    *need_full = false;                         /* already fully painted, see header comment */
+  } else { s_tab_focus = -1; s_oam_reload = true; *need_full = true; } /* closed -> back to the
+                                      * grid (rr==0 not holding, rr==0 still holding a
+                                      * GRID-grabbed box mon, or rr==1 already placed --
+                                      * all three want the same fresh redraw) */
+}
+
 int pdna_box(BoxSource* src) {
   int nb = src->nboxes; if (nb < 1) nb = 1;
   int box = src->start_box; if (box < 0 || box >= nb) box = 0;
@@ -2582,7 +2617,10 @@ int pdna_box(BoxSource* src) {
   box_decode(src, recs, box);
   if (pickup_ps >= 0) start_carry(src, recs, box, pickup_ps);   /* lift the parked mon */
   /* Cursor-arrival hint when crossing the PC<->Bank edge: bottom row (carrying up into the
-   * bank) or the top tabs (only when NOT carrying — you can't rest a held mon on a tab). */
+   * bank) or the top tabs (only when NOT carrying — you can't rest a held mon on a tab).
+   * 3 = open straight onto the PARTY strip (pdna_main.c's NV_PARTY routing) -- see
+   * pcp_open_party_strip's call below, right before the main loop starts. */
+  bool want_party_strip = false;
   { int st = app_box_start_take();
     if (s_ch_hold) {                                    /* carrying a chunk across the PC<->Bank edge */
       if (s_ch_tc > chunk_anchor_cmax(&s_ch)) s_ch_tc = chunk_anchor_cmax(&s_ch);
@@ -2591,6 +2629,7 @@ int pdna_box(BoxSource* src) {
       else if (s_ch_tr > chunk_anchor_rmax(&s_ch)) s_ch_tr = chunk_anchor_rmax(&s_ch);
     } else if (st == 1 && !s_holding) s_tab_focus = src->is_bank ? 2 : 1;
     else if (st == 2) cur = COLS * (ROWS - 1);
+    else if (st == 3 && !s_holding && !src->is_bank) want_party_strip = true;
   }
   /* Switch to box `nbx` (wrapping), reload + redraw. Two things this gets right that
    * it used to get wrong, both visible on every single L/R:
@@ -2625,6 +2664,12 @@ int pdna_box(BoxSource* src) {
       need_full = false; paint_over = false;
       app_crumb_shown();   /* one-shot per save-open: the box is on screen (no-op after) */
     }
+    /* want_party_strip (set above from app_box_start_take()==3): the box has now had
+     * its normal first paint -- clear=true, since paint_over starts false -- so it is
+     * safe for pcp_open_party_strip's own render_full(...,clear=false) passes to draw
+     * over it. Consumed once: a later need_full repaint (e.g. once the strip closes)
+     * must never re-trigger this. */
+    if (want_party_strip) { want_party_strip = false; pcp_open_party_strip(src, box, &cur, &need_full); }
     u16 k, fresh;
     do { s_vsync();
          /* MUST-FIX 1 (2026-08-22 review): drain the PREVIOUS tick's deferred pose-swap
@@ -2845,32 +2890,7 @@ int pdna_box(BoxSource* src) {
       else if (k & KEY_A) {
         if (s_tab_focus == 0) { s_tab_focus = -1; on_title = false; need_full = true; }      /* PKMN DATA -> grid */
         else if (s_tab_focus == 1) {                                                          /* PARTY -> overlay popup */
-          if (src->is_bank) snd_deny();
-          else {
-            uint8_t grab[80]; int gslot = -1;
-            /* empty-handed: A opens the action menu (Move to box -> grab). CHANGE 2:
-             * `cur` is now &cur -- the popup's own GRID focus, if the user crosses into
-             * it, moves the box cursor and hands the new position back on close; it can
-             * also now grab a BOX mon itself (rr==1, placed into the party without ever
-             * leaving the popup) as well as the pre-existing rr==2 party-mon grab below
-             * -- party_strip_overlay already cleared s_holding/s_orig_* for a
-             * successful rr==1 itself, so "closed -> back to the grid" below is already
-             * the right redraw for that case too, no separate branch needed. */
-            int rr = party_strip_overlay(src, box, &cur, grab, &gslot, true);
-            if (rr == 2 && gslot >= 0) {                  /* grabbed a party mon -> carry it (party origin) */
-              memcpy(s_held, grab, 80);
-              s_holding = true; s_orig_party = true; s_orig_slot = gslot;
-              s_orig_box = -1; s_orig_bank = false; s_held_dup = false;
-              s_tab_focus = -1; s_oam_reload = true;
-              render_full(src, box, cur, false, false, true);                  /* repaint box over the popup */
-              play_grab_anim(src, box, cur); carry_move(src, box, cur, cur);
-              draw_footer(src->is_bank, false, true);
-            } else { s_tab_focus = -1; s_oam_reload = true; need_full = true; } /* closed -> back to the grid
-                                                        * (rr==0 not holding, rr==0 still
-                                                        * holding a GRID-grabbed box mon, or
-                                                        * rr==1 already placed -- all three
-                                                        * want the same fresh redraw) */
-          }
+          pcp_open_party_strip(src, box, &cur, &need_full);
         }
         else { s_tab_focus = -1; boxoam_exit(); return 0; }                                   /* SAVE -> exit (save prompt) */
       }

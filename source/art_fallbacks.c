@@ -32,6 +32,7 @@
 #include "sys.h"             /* EWRAM_BSS                                             */
 #include "rom_mon.h"         /* phase-1.5: the ROM rung below the icons.bin cache     */
 #include "log.h"             /* rom-rung anomaly diagnostics                          */
+#include "mon_icons_gate.h"  /* PDNA_MON_ICONS_ART_COMPILED -- is this a full-art build */
 
 /* ---- RGB15 icon/sprite accessors: no COMPILED art -> the icons.bin cache ---------
  *
@@ -190,20 +191,39 @@ void art_fallbacks_set_rommon(const struct RomMon* rm) {
 }
 
 /* True while the CURRENT icon source is cheap enough to redraw on every idle-
- * animation tick: compiled art (this file's weak accessors are then unreferenced --
- * see the top-of-file note -- so the ROM rung never runs) or the icons.bin cache
- * (one seek+read per flip, the pre-existing accepted cost the MRU cache's own
- * header comment already documents). False when the ONLY source is the ROM rung
- * below: a locate-then-verify MISS costs up to 8 RomReadFn calls (4 locate + 2
- * frame-verify + up to 2 palette -- see tests/host_dexicons_test.c for the measured
- * numbers), which is real, avoidable SD churn on a 30-frame timer -- exactly the
- * "no SD I/O on an animation tick" trap box_oam.c's own glove fix already paid for
- * once. Callers (pdna_pick.c's dex bob, any future party-panel bob) MUST gate their
- * idle-tick frame swap on this and keep showing a static first frame otherwise -- a
- * caught Pokemon that doesn't bob still beats a hole, and costs nothing per tick. */
+ * animation tick. In a full-art build this is unconditionally true: PDNA_MON_ICONS_
+ * ART_COMPILED means mon_icons.c's compiled .rodata icons are the ONLY source that
+ * can ever answer a mon_icon_for* call (its strong definitions already win the
+ * weak/strong link over this file's accessors), and reading a compiled array costs
+ * zero I/O -- but that says nothing about THIS function, which mon_icons.c does not
+ * override (it has no counterpart to override with). Before this gate,
+ * mon_icon_anim_cheap() stayed art_fallbacks.c's single body in EVERY build and kept
+ * reading s_rommon regardless, so a full-art build with a ROM open and no icons.bin
+ * (the common case: compiled art needs no icons.bin at all) answered FALSE and
+ * silently killed the Pokedex-grid bob and the daycare bob -- see mon_icons_gate.h.
+ *
+ * In the artless build (this rung is actually reachable) the real question is: is
+ * the icons.bin cache serving, or the ROM rung below it? The cache costs one
+ * seek+read per flip (the pre-existing accepted cost the MRU cache's own header
+ * comment already documents) -- cheap. The ROM rung's locate-then-verify MISS costs
+ * up to 8 RomReadFn calls (4 locate + 2 frame-verify + up to 2 palette -- see
+ * tests/host_dexicons_test.c for the measured numbers), which is real, avoidable SD
+ * churn on a redraw timer -- exactly the "no SD I/O on an animation tick" trap
+ * box_oam.c's own glove fix already paid for once.
+ *
+ * Callers MUST gate every idle-tick frame swap on this and keep showing a static
+ * frame otherwise -- a caught Pokemon that doesn't bob still beats a hole, and costs
+ * nothing per tick. That currently means FOUR sites, not the dex-grid-only set this
+ * comment used to name: pdna_pick.c's Pokedex-grid bob, pdna_main.c's daycare bob,
+ * AND pdna_main.c's two party-icon bobs (app_party_overlay's wait_keys_bob_p and
+ * party_list's own bob) -- see each call site for its own gate. */
+#if PDNA_MON_ICONS_ART_COMPILED
+bool mon_icon_anim_cheap(void) { return true; }
+#else
 bool mon_icon_anim_cheap(void) {
   return art_session_icons_ready_memoized() || !s_rommon;
 }
+#endif
 
 /* A running byte-sum, box_oam.c's stage_sum() trick: verifying a read by comparing
  * two passes' sums (instead of a second 512 B buffer + memcmp) avoids a stack local

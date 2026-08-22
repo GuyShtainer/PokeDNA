@@ -89,19 +89,24 @@ bool app_take_dup_request(void);
 bool app_take_pickup(int* box, int* slot);
 
 /* Entry-cursor hint for the next box grid: 0 default, 1 = start on the top tabs,
- * 2 = start at the bottom row (used by the PC<->Bank up/down hand-off). */
+ * 2 = start at the bottom row (used by the PC<->Bank up/down hand-off), 3 = start with
+ * the PARTY strip already open (pdna_main.c's NV_PARTY routing — see pdna_box.c's
+ * pcp_open_party_strip and its app_box_start_take()==3 caller). */
 void app_box_start_set(int s);
 int  app_box_start_take(void);
 void app_note_pc_box(int b);              /* PC box screen reports its current box so the app remembers it */
-/* Full-screen party screen (Gen-4/5-style: a big slot-1 box + 5 rows), opened ONLY from
- * the nav menu's standalone PARTY entry (NV_PARTY, pdna_main.c) — that screen has no box
- * behind it, so a full-screen layout is the right one there. The box screen's own PARTY
- * tab (pdna_box.c) does NOT use this any more — it opens the compact party_strip_overlay
- * (pdna_box.c, static) instead, which leaves the box grid + PKMN DATA panel visible
- * behind it (docs/analysis-2026-08-20-pcparty/MEASUREMENTS.md — a DIFFERENT retail
- * screen from the field-menu list this function matches). Both share the same mutation
- * core via the app_party_* accessors below, so there is exactly one place that knows how
- * to add/swap/browse a party slot.
+/* Full-screen party screen (Gen-4/5-style: a big slot-1 box + 5 rows). ONLY caller left:
+ * NV_PARTY (pdna_main.c) when the open save has NO PC storage at all (g_have_pc false) —
+ * there is no box to show behind a strip in that case, so this full-screen browse-only
+ * list (held=NULL, allow_move_to_box=false) is what stands in for it. Every OTHER path —
+ * the box screen's own PARTY tab (pdna_box.c) AND NV_PARTY when g_have_pc IS true — opens
+ * the compact party_strip_overlay (pdna_box.c, static, via pcp_open_party_strip) instead,
+ * which leaves the box grid + PKMN DATA panel visible behind it
+ * (docs/analysis-2026-08-20-pcparty/MEASUREMENTS.md — a DIFFERENT retail screen from the
+ * field-menu list this function matches; Guy's own words on why NV_PARTY needed to move
+ * off this function: "I expected to see the party menu on top of the PC pokemon in the
+ * background"). Both share the same mutation core via the app_party_* accessors below, so
+ * there is exactly one place that knows how to add/swap/browse a party slot.
  * PLACE mode (held != NULL): carrying a box mon -> A on a slot ADDS/SWAPS it into the party
  * (orig_box/orig_slot/orig_bank = the held mon's origin; can_swap = it has a clean PC origin
  * to receive a swapped-out member). Returns 1 (placed -> caller ends the carry) or 0.
