@@ -2627,6 +2627,24 @@ int pdna_box(BoxSource* src) {
     }
     u16 k, fresh;
     do { s_vsync();
+         /* MUST-FIX 1 (2026-08-22 review): drain the PREVIOUS tick's deferred pose-swap
+          * half FIRST, before this tick gets a chance to queue a new one. This used to
+          * sit at the BOTTOM of the loop, right after boxoam_set_frame() in the SAME
+          * iteration — which meant a just-queued swap's odd half ran mere microseconds
+          * after its own even half, both inside the one vblank window s_vsync() just
+          * returned from: no real two-tick split at all, exactly the "cannot fit the
+          * vblank window" failure box_oam.c's own header warns about. REG_VCOUNT probes
+          * (artless+fused Emerald, mGBA) on that ordering: VCOUNT 214 after set_frame,
+          * 38 (into the NEXT frame's active display) after pose_pump+commit — 11/11
+          * ticks overrunning a 68-scanline VBlank by ~156%. Calling pose_pump() HERE
+          * instead — right after s_vsync(), before this tick's own set_frame() can run
+          * — makes the split real: the half deferred on tick N is drained at the very
+          * TOP of tick N+1, its own vblank window, with nothing else queued that tick
+          * (ANIM_PERIOD is 30, so ticks N and N+1 never both trigger a NEW swap). A
+          * no-op whenever nothing is pending, so unconditional every tick costs nothing
+          * on a full-art build (s_pend is never 1 there) or on a tick with no pending
+          * half. */
+         boxoam_pose_pump();
          /* The HAND bounces on a 30/30 cadence (capture doc §1a) — and so does the
           * grid, by 1 px in unison.
           *
@@ -2658,17 +2676,15 @@ int pdna_box(BoxSource* src) {
               * back to nudging every sprite 1 px so the grid is not dead. Guy's words
               * for the fallback on its own were "not animated, just jumping up and
               * down" — exactly right, which is why it is now the fallback and not the
-              * animation. */
+              * animation. Any ODD cheap-ROM slots this call queues get drained by
+              * boxoam_pose_pump() at the TOP of the *next* iteration (see above), not
+              * this one. */
              if (!boxoam_set_frame(bob)) boxoam_set_bob(bob);
              boxoam_cursor(cur, on_title, cursor_look());
            }
          } else if (bob) { bob = 0; boxoam_hand_pose(BOXOAM_POSE_NORMAL);
                            if (!boxoam_set_frame(0)) boxoam_set_bob(0);   /* settle the grid */
                            boxoam_cursor(cur, on_title, cursor_look()); }
-         /* The other half of a just-scheduled pose swap (cheap-ROM slots split across
-          * two vblanks, box_oam.c's boxoam_set_frame/boxoam_pose_pump header) — a
-          * no-op whenever nothing is pending, so this is unconditional every tick. */
-         boxoam_pose_pump();
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);

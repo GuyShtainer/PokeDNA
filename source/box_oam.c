@@ -151,6 +151,22 @@ static uint16_t s_stage[256];        /* one 512 B verify chunk (IWRAM .bss — E
  *                            30 SD reads inside the vblank tick (forbidden) or a
  *                            15,360 B frame-1 cache that does not exist. That source
  *                            keeps the 1 px OAM bob.
+ * MUST-FIX 2 (2026-08-22 review, MEASURED not assumed): that 15,360 B cache was
+ * checked against the ARTLESS build's ACTUAL EWRAM headroom, not the full-art number —
+ * a genuine artless rebuild (art sources absent, confirmed via `nm`: no
+ * mon_icons_oam.o/hand_oam.o/etc. linked) prints the SAME "EWRAM ok: 748 bytes free
+ * below 0x02040000" as the full-art build, because none of the artless-only modules
+ * own any EWRAM .bss/.data — they're ROM-resident .rodata pulled in by .incbin, so
+ * removing them frees ROM, not RAM. 748 B does not hold 15,360 B, and it does not hold
+ * a smaller per-slot unit either: even ONE slot (512 B, no LRU/recency metadata,
+ * since the box renders all 30 slots every tick with no "currently selected" concept
+ * an MRU cache could key off) would spend 68% of the remaining headroom on a single
+ * icon animating for real while the other 29 keep bobbing — a worse, more confusing
+ * result than a uniform bob, for a cost this EWRAM-overflow-is-FATAL build can't
+ * really spare either. Keeping the uniform 1 px bob here is the correct, deliberate
+ * choice for the SD-registered path, not a TODO — re-check the actual free-byte count
+ * (Makefile's own EWRAM guard prints it) before re-attempting this, on THIS build,
+ * not the full-art one; they are not always equal, but they were both 748 here.
  * `cheap_reads` is how the app tells us which one is currently open; s_rom_cheap
  * records it. It says nothing about the icons.bin CACHE rung below, which is real SD
  * I/O (f_open+f_lseek+f_read) every time regardless of what ROM is registered — see
@@ -840,7 +856,9 @@ static void pose_swap_rom_slot(int s, uint8_t frame) {
  * per-tick work the full-art build has always done, so a full-art box is unaffected
  * down to the frame. Only CHEAP-ROM slots (a fused cart-space memcpy: a fresh locate +
  * 512 B read per slot, not a bare DMA) split across two vblank ticks — even here, odd
- * on the very next boxoam_pose_pump() call — which is a real cost only the artless
+ * in the very next vblank's boxoam_pose_pump() call, NOT a same-tick call after this
+ * one (MUST-FIX 1, 2026-08-22 review — see boxoam_pose_pump's own header for the call-
+ * order requirement that makes the split real) — which is a real cost only the artless
  * build's cheap-ROM rung ever pays, matching the design this file's header block
  * (icon_tiles' *cheap comment) already committed to.
  *
@@ -884,7 +902,13 @@ int boxoam_set_frame(int frame) {
  * no-op once caught up (s_pend clears the moment it runs, and is never even SET unless
  * a cheap-ROM slot actually deferred), so callers can call this UNCONDITIONALLY every
  * vblank tick — see box_oam.h. In a full-art build s_pend is never 1, so this compiles
- * to a single branch that is never taken: zero added per-tick cost there. */
+ * to a single branch that is never taken: zero added per-tick cost there.
+ *
+ * CALL ORDER (MUST-FIX 1, 2026-08-22 review — see box_oam.h's header on this function
+ * for the full story): must run at the TOP of a tick, right after that tick's own
+ * s_vsync() and BEFORE that tick's own boxoam_set_frame() call, so the half it drains
+ * here was queued by the PREVIOUS tick's set_frame — never the one about to run below
+ * it. pdna_box.c's box loop is the only caller. */
 void boxoam_pose_pump(void) {
   if (!s_pend) return;
   s_pend = 0;

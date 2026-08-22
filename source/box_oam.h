@@ -123,7 +123,8 @@ void boxoam_set_bob(int dy);
  * DMA-uploading that frame's tiles for every occupied icon that CAN pose-swap (compiled
  * art, or a ROM source registered with cheap_reads — see boxoam_rom_icons); every other
  * occupied slot gets the 1 px positional nudge instead, applied to just that slot. Call
- * from the vblank tick, followed by boxoam_pose_pump() every tick after (see below).
+ * from the vblank tick; see boxoam_pose_pump()'s comment below for where the OTHER half
+ * of a cheap-ROM swap must be drained — NOT the same tick as this call.
  * Returns 1 if it animated (mixed pose-swap/bob, or all-bob), 0 only when NOTHING in
  * this box can pose-swap at all — callers should then fall back to boxoam_set_bob for
  * the whole grid so it still shows life. */
@@ -131,9 +132,20 @@ int boxoam_set_frame(int frame);
 
 /* The deferred second half of a boxoam_set_frame() pose swap: a cheap-ROM source is a
  * fresh locate + 512 B read per slot, not a bare DMA, so boxoam_set_frame does half the
- * pose-capable slots immediately and leaves the rest for the very next vblank tick. Call
- * this UNCONDITIONALLY every tick (right after boxoam_set_frame / boxoam_set_bob, before
- * boxoam_commit()) — it is a no-op whenever nothing is pending. */
+ * pose-capable slots immediately and leaves the rest for the very next vblank tick.
+ *
+ * MUST-FIX 1 (2026-08-22 review): "the very next vblank tick" means what it says — this
+ * MUST be called at the TOP of the NEXT loop iteration, right after that iteration's OWN
+ * s_vsync(), and BEFORE that iteration's own boxoam_set_frame()/boxoam_set_bob() call —
+ * never in the SAME iteration as the boxoam_set_frame() that set the pending flag. The
+ * previous wording here ("call this right after boxoam_set_frame / boxoam_set_bob, before
+ * boxoam_commit()") was itself the bug: followed literally, both halves of the swap DMA
+ * land in the SAME vblank window s_vsync() just returned from, which is not a split at
+ * all — measured (REG_VCOUNT, artless+fused Emerald, mGBA) at 11/11 ticks overrunning a
+ * 68-scanline VBlank by ~156%. Call it UNCONDITIONALLY every tick — it is a no-op
+ * whenever nothing is pending — but call it FIRST, before this tick's own
+ * boxoam_set_frame()/boxoam_set_bob(), so whatever IT queues waits for the iteration
+ * after. See pdna_box.c's box loop for the corrected call order. */
 void boxoam_pose_pump(void);
 
 /* Position/show the cursor hand. on_title -> parked over the banner. mode picks the
