@@ -647,8 +647,27 @@ void boxoam_enter(void) {
    * paths already calls it) always releases this, so the borrow cannot outlive a box
    * visit. NULL (acquire already held, or somehow too big) just means those slots
    * keep the pre-existing 1 px bob -- boxoam_load_box()'s finish_slot_pose() and every
-   * swap_cache_slot() call already guard on s_swapcache != 0. */
-  s_swapcache = app_box_swap_acquire(APP_BOX_SWAP_BYTES);
+   * swap_cache_slot() call already guard on s_swapcache != 0.
+   *
+   * DISABLED PENDING A HARDWARE A/B (2026-08-23). Guy filmed a repeatable crash on the
+   * box screen -- wash to white, RGB banding, then full-screen noise that EVOLVES over
+   * ~12 frames, i.e. code still running and scribbling. His build's timestamp is
+   * 17:10:12, three and a half minutes after this feature landed at 17:06:40, so that
+   * run was its FIRST hardware exposure, on the one configuration it could never be
+   * tested in: the artless build with the ROM registered on SD (his logs/log.txt:
+   * "icons: streaming from SD ... (Emerald)", "art cache: kind 0 not ready"). Every
+   * emulator proof it has -- 70 swap cycles, byte-identical checksums, 0 reads while
+   * idle, 0/150 vblank overruns -- was taken through the FUSED rung with cheap_reads
+   * forced to 0, because the SD rung is unreachable in mGBA. A fused read is a cart
+   * memcpy; an SD read is an f_lseek + f_read with the ROM unmapped underneath. Those
+   * are not the same experiment.
+   * No defect has been proven here, and a full audit of the OS-mode rule found none.
+   * This is the cheapest decisive test available: turning the borrow off costs Guy the
+   * two-frame pose animation on the SD path (it falls back to the 1 px bob, exactly as
+   * it behaved before 9224283) and nothing else, and it tells us in ONE hardware run
+   * whether this feature is the runaway. Flip it back on to re-arm the A/B. */
+  s_swapcache = 0;  /* was: app_box_swap_acquire(APP_BOX_SWAP_BYTES); */
+  (void)app_box_swap_acquire;
   s_bob = 0; s_regb = -1; s_rega = -1;
   s_hand_pose = BOXOAM_POSE_NORMAL; s_cur_dy = 0;   /* no mid-beat leakage across screens */
 #if !PDNA_HAND_ART_COMPILED
