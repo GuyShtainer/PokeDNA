@@ -435,6 +435,7 @@ static void wp_blit_tile(const uint16_t* t64, int bx, int by, int rows) {
 
 static bool wp_rom_stage(const RomWallpaper* rw, int wp, uint32_t* tiles_bytes,
                          uint16_t pal[ROM_WP_PAL_BANKS][16], int* retries_io) {
+  boxoam_trail_mark(BT_WALLPAPER, wp);
   int ok = 0;
   for (int a = 0; a < WP_ROM_RETRIES && !ok; a++) {
     if (!rom_wallpaper_map(rw, wp, s_wp_map)) { (*retries_io)++; continue; }
@@ -1831,6 +1832,8 @@ static int wallpaper_pick(BoxSource* src, int cur_wp) {
  * with a per-mon progress sprite + N/total bar (the slow batch the user asked to see). PC and
  * bank both; Omega-only (SD writes — the caller gates on can_edit). */
 static void export_box_all(BoxSource* src, int box) {
+  boxoam_trail_mark(BT_EXPORT_ALL, box);
+  boxoam_trail_flush_now();           /* about to do 30 SD writes: get a fresh line down first */
   uint8_t* recs = src->records(box);
   PkMon* list = s_box_all_scratch;
   box_decode_to(src, recs, box, list);
@@ -1869,6 +1872,8 @@ static void export_box_all(BoxSource* src, int box) {
  * from the bank box). Confirms first (destructive), then clears + commits via the box's verified-
  * write path (an immutable backup is taken before the .sav/box write). Omega-only. */
 static void release_box_all(BoxSource* src, int box) {
+  boxoam_trail_mark(BT_RELEASE_ALL, box);
+  boxoam_trail_flush_now();           /* about to clear + commit the whole box: get a fresh line down first */
   uint8_t* recs = src->records(box);
   PkMon* list = s_box_all_scratch;
   box_decode_to(src, recs, box, list);
@@ -2684,6 +2689,13 @@ int pdna_box(BoxSource* src) {
     if (want_party_strip) { want_party_strip = false; pcp_open_party_strip(src, box, &cur, &need_full); }
     u16 k, fresh;
     do { s_vsync();
+         /* Box trail heartbeat (see box_oam.h): advances the breadcrumb ring's frame
+          * counter every tick this loop runs, which is every tick the box is on
+          * screen -- idle sitting included. Flushes itself to the card no more than
+          * every ~3 s (BT_FLUSH_PERIOD_TICKS), so this is the ONE thing that can put
+          * a line in log.txt during idle browsing without costing idle-path SD
+          * traffic on every frame. */
+         boxoam_trail_tick();
          /* MUST-FIX 1 (2026-08-22 review): drain the PREVIOUS tick's deferred pose-swap
           * half FIRST, before this tick gets a chance to queue a new one. This used to
           * sit at the BOTTOM of the loop, right after boxoam_set_frame() in the SAME
