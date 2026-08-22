@@ -274,38 +274,4 @@ void boxoam_carry_item(int cur, uint16_t item, bool full);   /* full=grab (32x32
  * (after VBlankIntrWait, before the beam starts) so updates never tear. */
 void boxoam_commit(void);
 
-/* ---- box trail: a RAM ring of breadcrumbs, flushed to the card on a cadence ----
- *
- * Built 2026-08 while chasing a hardware crash that shows up AFTER the box's first
- * paint (progressive VRAM/OAM garbage, ~12 evolving frames) with nothing more in
- * log.txt than "save: shown" — every log_line() up to then is load-time-only, so
- * once the box is up and the player is just sitting there, NOTHING records what the
- * app is doing. That silence is the actual problem this exists to fix, independent
- * of whatever turns out to have caused that specific crash.
- *
- * boxoam_trail_mark() is a plain RAM write (no SD, no log.c call) — cheap enough to
- * call from every icon fetch / pose swap / tick with no idle-path cost, and safe to
- * call from inside a bracketed SD-read window if a caller ever needed to (none do:
- * every call site here marks just BEFORE issuing a fetch and/or just AFTER it
- * returns, at main-loop level, same discipline as every other log site in this
- * codebase — hard rule 1 still applies to the FLUSH, never to the mark).
- *
- * boxoam_trail_tick() drives the cadence: call it once per vblank from the box's own
- * tick loop. It advances the frame counter the marks are stamped with and, no more
- * than roughly once every 3 seconds (180 ticks), calls log_line()+app_log_flush() —
- * a real SD write, but off the idle path by construction (a few bytes every few
- * seconds, not every frame). boxoam_trail_flush_now() forces that same write
- * immediately, for the handful of state changes worth a fresher line (a box just
- * finished its first load, or the box screen is about to run something explicitly
- * SD-heavy like Export/Release all) — see box_oam.c's own header comment for the
- * exact call sites and the phase list. */
-enum {
-  BT_TICK = 0, BT_LOAD_BOX, BT_ICON_ROM, BT_ICON_CACHE, BT_WALLPAPER,
-  BT_POSE_SWAP, BT_PARTY_STRIP, BT_CHUNK_CARRY, BT_EXPORT_ALL, BT_RELEASE_ALL,
-  BT_RESTORE_SLOT, BT_PHASE_COUNT
-};
-void boxoam_trail_mark(int phase, int arg);
-void boxoam_trail_tick(void);
-void boxoam_trail_flush_now(void);
-
 #endif /* BOX_OAM_H */

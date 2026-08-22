@@ -114,58 +114,6 @@ static uint8_t  s_chunk_on = 0;         /* chunk-carry visuals active           
 static uint8_t  s_chunk_valid = 0;      /* borrowed uploads valid (load_box invalidates)  */
 static int      s_chunk_tr = 0, s_chunk_tc = 0;  /* last-applied anchor (skip re-DMA when unmoved) */
 
-/* ---- box trail: see box_oam.h for the why. RAM ring + a cadence-gated flush. ----
- * 8 entries x 5 B = 40 B static .bss, negligible next to this file's other budgets.
- * Deliberately NOT EWRAM_BSS -- EWRAM is the tight resource here (see s_stage's own
- * "EWRAM is full" comment), and this is small enough for IWRAM's spare headroom. */
-typedef struct { uint8_t phase; uint16_t frame; int16_t arg; } BoxTrailEntry;
-#define BT_RING 8
-#define BT_FLUSH_PERIOD_TICKS 180        /* ~3 s at 60 Hz -- off the idle path */
-static BoxTrailEntry s_trail[BT_RING];
-static uint8_t  s_trail_head = 0;
-static uint32_t s_trail_frame = 0;
-static uint32_t s_trail_last_flush = 0;
-
-static const char* const k_trail_name[BT_PHASE_COUNT] = {
-  "TICK", "LOAD", "ICONR", "ICONC", "WALLP",
-  "POSE", "STRIP", "CHUNK", "EXPORT", "RELEASE", "RESTORE"
-};
-
-void boxoam_trail_mark(int phase, int arg) {
-  if (phase < 0 || phase >= BT_PHASE_COUNT) return;
-  BoxTrailEntry* e = &s_trail[s_trail_head];
-  e->phase = (uint8_t)phase;
-  e->frame = (uint16_t)s_trail_frame;
-  e->arg   = (int16_t)arg;
-  s_trail_head = (uint8_t)((s_trail_head + 1) % BT_RING);
-}
-
-/* One line, oldest-to-newest: "trail f<now>: NAME@frame,arg NAME@frame,arg ...".
- * Main-loop-synchronous only (app_log_flush's own contract) -- every caller here is
- * either the tick loop between frames or a state-change site, never inside a
- * bracketed SD transfer. Slots this ring never wrote yet (a fresh boot, box just
- * entered) stay phase 0/frame 0 and print as "TICK@0,0" a few times; harmless, and
- * gone within one flush period. */
-static void trail_flush_now(void) {
-  char line[144];
-  int n = siprintf(line, "trail f%lu:", (unsigned long)s_trail_frame);
-  for (int i = 0; i < BT_RING; i++) {
-    const BoxTrailEntry* e = &s_trail[(s_trail_head + (unsigned)i) % BT_RING];
-    if (n >= (int)sizeof(line) - 20) break;      /* leave room for one more field */
-    n += siprintf(line + n, " %s@%u,%d", k_trail_name[e->phase], e->frame, e->arg);
-  }
-  log_line("%s", line);
-  app_log_flush();
-  s_trail_last_flush = s_trail_frame;
-}
-
-void boxoam_trail_flush_now(void) { trail_flush_now(); }
-
-void boxoam_trail_tick(void) {
-  s_trail_frame++;
-  if (s_trail_frame - s_trail_last_flush >= BT_FLUSH_PERIOD_TICKS) trail_flush_now();
-}
-
 static inline OBJ_ATTR* oe(int i) { return &s_shadow[i]; }
 
 /* hide one shadow entry */
@@ -407,15 +355,12 @@ static const uint8_t* icon_tiles(uint16_t species, uint8_t form, uint8_t frame,
           : (species && mon_icon_oam_for_form_frame(species, form, frame, &t, &b))) {
     *bank = b; *cheap = 1; return t;
   }
-  if (frame < 2 && s_iconcache_path) {
-    boxoam_trail_mark(BT_ICON_CACHE, (int)species);
-    if (cache_icon_read(species, form, egg, frame, bank)) { *from_rom = 1; return (const uint8_t*)s_stage; }
+  if (frame < 2 && cache_icon_read(species, form, egg, frame, bank)) {
+    *from_rom = 1;
+    return (const uint8_t*)s_stage;
   }
-  if (frame < 2 && s_rommon) {
-    boxoam_trail_mark(BT_ICON_ROM, (int)species);
-    if (rom_icon_read_verified(species, form, egg, frame, bank)) {
-      *from_rom = 1; *cheap = s_rom_cheap; return (const uint8_t*)s_stage;
-    }
+  if (frame < 2 && rom_icon_read_verified(species, form, egg, frame, bank)) {
+    *from_rom = 1; *cheap = s_rom_cheap; return (const uint8_t*)s_stage;
   }
   return 0;
 }
@@ -870,7 +815,6 @@ static void finish_slot_pose(int s, uint16_t species, uint8_t form, bool egg,
 }
 
 void boxoam_load_box(const PkMon box[30]) {
-  boxoam_trail_mark(BT_LOAD_BOX, 0);
   s_frame = 0;                                       /* a fresh box always shows frame 0 */
   s_pend = 0;                                         /* void any pump half-swap the old box owed */
   /* a reload rewrites all 30 tile regions and re-shows every entry, so any borrowed
@@ -898,10 +842,6 @@ void boxoam_load_box(const PkMon box[30]) {
       hide(OE_ICON0 + s);
     }
   }
-  /* The exact moment the previous investigation had no evidence for: log.txt's last
-   * line was "save: shown" and everything after was silent. Flush the trail right
-   * here, once per box load -- not hot (once per box switch, not per icon). */
-  boxoam_trail_flush_now();
 }
 
 /* Lightweight, UNVERIFIED per-tick fetch of a cheap-ROM slot's OTHER pose frame:
@@ -1028,7 +968,6 @@ int boxoam_set_frame(int frame) {
   if (!s_any_pose) return 0;      /* NOTHING in this box can pose-swap: whole-grid bob */
   frame &= 1;
   if (frame == s_frame) return 1;               /* already there == animating fine */
-  boxoam_trail_mark(BT_POSE_SWAP, frame);
   s_frame = frame;
   s_bob = frame;      /* the offset place_grid_slot applies to non-pose-capable slots */
   int any_rom_pending = 0;
@@ -1191,7 +1130,6 @@ void boxoam_show_slot(int s) { if (s >= 0 && s < 30 && s_occupied[s]) place_grid
  * panel use instead of a general per-tick failure. */
 static void restore_slot(int s) {
   if (!s_occupied[s]) { hide(OE_ICON0 + s); return; }
-  boxoam_trail_mark(BT_RESTORE_SLOT, s);
   int bank, from_rom, cheap;
   const uint8_t* tiles = icon_tiles(s_species[s], s_form[s], (uint8_t)s_frame,
                                     s_isegg[s], &bank, &from_rom, &cheap);
@@ -1239,7 +1177,6 @@ __attribute__((weak)) void boxoam_under_hide(int slot) { (void)slot; }
 
 void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
                         const BoxOamChunkMon* mons, int n, bool fit, int lift) {
-  boxoam_trail_mark(BT_CHUNK_CARRY, n);
   uint8_t newcov[30];
   for (int s = 0; s < 30; s++) newcov[s] = 0;
   for (int i = 0; i < n && i < 30; i++)
@@ -1409,7 +1346,6 @@ static int s_strip_extra = -1;       /* one more hidden slot, reserved for the p
                                       * offset "slot 1" icon; -1 = none                  */
 
 void boxoam_strip_open(int x0, int x1) {
-  boxoam_trail_mark(BT_PARTY_STRIP, x0);
   for (int r = 0; r < ROWS; r++) s_strip_reuse[r] = -1;
   s_strip_extra = -1;
   for (int s = 0; s < 30; s++) {
