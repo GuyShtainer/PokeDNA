@@ -61,6 +61,18 @@ static int s_item_from_box = -1;      /* box the carried item came from (for put
 
 static PkMon EWRAM_BSS g_box[30];
 
+/* Scratch for export_box_all/release_box_all's whole-box decode (hard rule 2: never
+ * big buffers on the IWRAM stack). Each of those two functions used to carry its OWN
+ * `PkMon list[G3_BOX_SLOTS]` local -- measured via -fstack-usage at 3,448 B and
+ * 3,480 B respectively, the two largest single-function stack frames in this file by
+ * a wide margin, on a 12,824 B IWRAM stack this project has already been bitten by
+ * once (gen3_parse's 15,872 B local silently rewrote newlib's malloc bin array and
+ * _impure_ptr -- see pdna_main.c's stack-watermark comment). Neither function is
+ * reentrant or recursive and the two are mutually exclusive (one box-options menu
+ * choice at a time), so ONE shared static buffer replaces both stack locals with no
+ * behaviour change -- each call still does its own fresh box_decode_to() before use. */
+static PkMon s_box_all_scratch[G3_BOX_SLOTS];
+
 /* Decode a box's raw records for DISPLAY. For the bank, a mon the user already carried out to the
  * PC is deleted from the card only at the save prompt — but it must LOOK gone right away (Guy), so
  * blank those slots here. This is display-only: the raw buffer keeps the record (it's the mon's only
@@ -1820,7 +1832,7 @@ static int wallpaper_pick(BoxSource* src, int cur_wp) {
  * bank both; Omega-only (SD writes — the caller gates on can_edit). */
 static void export_box_all(BoxSource* src, int box) {
   uint8_t* recs = src->records(box);
-  PkMon list[G3_BOX_SLOTS];
+  PkMon* list = s_box_all_scratch;
   box_decode_to(src, recs, box, list);
   int total = 0;
   for (int s = 0; s < G3_BOX_SLOTS; s++) if (list[s].species) total++;
@@ -1858,7 +1870,7 @@ static void export_box_all(BoxSource* src, int box) {
  * write path (an immutable backup is taken before the .sav/box write). Omega-only. */
 static void release_box_all(BoxSource* src, int box) {
   uint8_t* recs = src->records(box);
-  PkMon list[G3_BOX_SLOTS];
+  PkMon* list = s_box_all_scratch;
   box_decode_to(src, recs, box, list);
   int total = 0;
   for (int s = 0; s < G3_BOX_SLOTS; s++) if (list[s].species) total++;
