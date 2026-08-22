@@ -19,6 +19,7 @@
  *   item icon.  ITEM "translucent" hand = OBJ alpha-blend (bank 13 + BLDCNT).
  */
 #include <tonc.h>
+#include <string.h>
 #include "box_oam.h"
 #include "mon_icons_oam.h"
 #include "hand_oam.h"
@@ -93,6 +94,15 @@ static int      s_bob = 0;              /* current unison Y-bob offset (0/1)    
  * cheap enough (see boxoam_rom_icons below and boxoam_set_frame's header comment). */
 static uint8_t  s_pose_ok[30];          /* per slot: frame 1 reachable without SD I/O in a tick */
 static int      s_any_pose = 0;         /* any occupied slot can pose-swap                */
+/* SD/cache-sourced pose swap (2026-08-22 review, MUST-FIX 2 follow-up): a borrowed
+ * 15,360 B EWRAM cache (pdna_app.h app_box_swap_acquire) holding slot s's OTHER pose
+ * frame, fetched ONCE per slot at load/restore time -- see finish_slot_pose(). A tick-
+ * time swap is then a pure VRAM<->cache DMA exchange (swap_cache_slot, below), zero SD
+ * I/O, for exactly the sources that used to be stuck on the 1 px bob. s_swapcache is
+ * NULL whenever the borrow isn't held (box screen closed, or the acquire failed) --
+ * every use of it is guarded, so a failed acquire degrades to the pre-existing bob. */
+static uint8_t* s_swapcache = 0;
+static uint8_t  s_cache_ok[30];         /* 1 = s_swapcache's slot s holds a verified frame */
 static int      s_pend = 0;             /* second half of a split (fused-ROM) swap is due  */
 static int      s_pend_frame = 0;       /* which frame that pending half is swapping to    */
 static int      s_regb = -1;            /* what region B holds: 0=grab fist 1=item -1=none */
@@ -631,7 +641,14 @@ static void load_regb_item(uint16_t carried_item, bool full, int tid) {
 void boxoam_enter(void) {
   oam_init(s_shadow, 128);                         /* clears shadow to hidden     */
   for (int i = 0; i < 30; i++) { s_occupied[i] = 0; s_iconbank[i] = 0;
-                                 s_selmark[i] = 0; s_covered[i] = 0; }
+                                 s_selmark[i] = 0; s_covered[i] = 0; s_cache_ok[i] = 0; }
+  /* Borrow g_entries for the SD/cache-sourced pose-swap cache -- see pdna_app.h's
+   * app_box_swap_acquire comment. boxoam_exit() (every one of pdna_box()'s return
+   * paths already calls it) always releases this, so the borrow cannot outlive a box
+   * visit. NULL (acquire already held, or somehow too big) just means those slots
+   * keep the pre-existing 1 px bob -- boxoam_load_box()'s finish_slot_pose() and every
+   * swap_cache_slot() call already guard on s_swapcache != 0. */
+  s_swapcache = app_box_swap_acquire(APP_BOX_SWAP_BYTES);
   s_bob = 0; s_regb = -1; s_rega = -1;
   s_hand_pose = BOXOAM_POSE_NORMAL; s_cur_dy = 0;   /* no mid-beat leakage across screens */
 #if !PDNA_HAND_ART_COMPILED
@@ -730,6 +747,8 @@ void boxoam_exit(void) {
   REG_BG2CNT &= ~3;                                 /* restore BG2 priority 0       */
   oam_init(s_shadow, 128);
   oam_copy(oam_mem, s_shadow, 128);                 /* clear hardware OAM           */
+  if (s_swapcache) { app_box_swap_release(); s_swapcache = 0; }  /* hand g_entries back */
+  for (int i = 0; i < 30; i++) s_cache_ok[i] = 0;
 }
 
 void boxoam_suspend(void) { REG_DISPCNT &= ~DCNT_OBJ; REG_BLDCNT = 0; }
@@ -758,13 +777,50 @@ static void place_grid_slot(int s) {
                ATTR2_PALBANK(s_iconbank[s]));
 }
 
+/* Decide slot s's pose-swap capability and, where possible, cache its OTHER pose frame
+ * -- the one piece of bookkeeping that must stay IDENTICAL whether a slot is being
+ * freshly loaded (boxoam_load_box, frame0 == 0 by construction, s_frame just reset) or
+ * re-derived after a chunk-carry uncover / party-panel close (restore_slot, frame0 ==
+ * whatever s_frame currently is, which the covered slot's own bookkeeping cannot have
+ * tracked while it was hidden). ONE function computing "the other frame" as
+ * `1 - frame0` (never a hardcoded 1) is what makes restore_slot safe to add on top of
+ * this cache: reusing a cache built for a stale frame0 is exactly the asymmetric-
+ * exchange bug class this feature had to avoid (see swap_cache_slot's own comment).
+ *
+ * Eggs never pose-swap (a single frame, see boxoam_set_frame) regardless of source, so
+ * their capability bit stays 0 even though icon_tiles() itself reports whatever `cheap`
+ * the Egg row happened to resolve to. Compiled art / a cheap fused-ROM source (cheap!=0)
+ * needs no cache at all -- swap_cache_slot's read-based sibling path in pose_swap_slot
+ * already serves those without any EWRAM cost. Only a non-cheap source (the icons.bin
+ * SD cache, or the user's own ROM registered off the SD card) reaches the fetch below,
+ * and only when the box screen actually holds the borrowed g_entries buffer
+ * (s_swapcache != 0, see boxoam_enter). A failed fetch (SD hiccup, or no cache held)
+ * leaves s_cache_ok[s] at 0 and s_pose_ok[s] exactly what it was before this feature
+ * existed -- the 1 px bob, never a hole. */
+static void finish_slot_pose(int s, uint16_t species, uint8_t form, bool egg,
+                             uint8_t frame0, int cheap) {
+  s_pose_ok[s] = (!egg && cheap) ? 1 : 0;
+  s_cache_ok[s] = 0;
+  if (!egg && !cheap && s_swapcache) {
+    int bank1, from_rom1, cheap1;
+    uint8_t other = (uint8_t)(1 - frame0);
+    const uint8_t* t1 = icon_tiles(species, form, other, egg, &bank1, &from_rom1, &cheap1);
+    if (t1) {
+      uint8_t* c = s_swapcache + (uint32_t)s * (MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
+      memcpy(c, t1, (size_t)(MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES));
+      s_cache_ok[s] = 1;
+      s_pose_ok[s] = 1;
+    }
+  }
+}
+
 void boxoam_load_box(const PkMon box[30]) {
   s_frame = 0;                                       /* a fresh box always shows frame 0 */
   s_pend = 0;                                         /* void any pump half-swap the old box owed */
   /* a reload rewrites all 30 tile regions and re-shows every entry, so any borrowed
    * chunk regions / selection marks are void — the caller re-applies the chunk after */
   s_chunk_valid = 0;
-  for (int s = 0; s < 30; s++) { s_covered[s] = 0; s_selmark[s] = 0; }
+  for (int s = 0; s < 30; s++) { s_covered[s] = 0; s_selmark[s] = 0; s_cache_ok[s] = 0; }
   s_any_pose = 0;
   for (int s = 0; s < 30; s++) {
     int bank, from_rom, cheap;
@@ -774,14 +830,15 @@ void boxoam_load_box(const PkMon box[30]) {
       upload_icon(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles, from_rom);
       s_occupied[s] = 1; s_isegg[s] = egg ? 1 : 0; s_iconbank[s] = (uint8_t)bank;
       s_species[s] = box[s].species; s_form[s] = box[s].form;
-      /* Eggs never pose-swap (a single frame, see boxoam_set_frame) regardless of
-       * source, so their capability bit stays 0 even though icon_tiles() itself
-       * reports whatever `cheap` the Egg row happened to resolve to. */
-      s_pose_ok[s] = (!egg && cheap) ? 1 : 0;
+      /* frame0 is 0 here (s_frame was just reset above) -- finish_slot_pose fetches
+       * frame 1 verified and, off a non-cheap source with the swap cache held, caches
+       * it so this slot's tick-time swap needs no SD I/O (MUST-FIX 2 follow-up,
+       * 2026-08-22 review). */
+      finish_slot_pose(s, box[s].species, box[s].form, egg, 0, cheap);
       if (s_pose_ok[s]) s_any_pose = 1;
       place_grid_slot(s);
     } else {
-      s_occupied[s] = 0; s_isegg[s] = 0; s_pose_ok[s] = 0;
+      s_occupied[s] = 0; s_isegg[s] = 0; s_pose_ok[s] = 0; s_cache_ok[s] = 0;
       hide(OE_ICON0 + s);
     }
   }
@@ -808,20 +865,57 @@ static int rom_icon_pose_frame(uint16_t species, uint8_t form, uint8_t frame, in
   return 1;
 }
 
-/* Re-upload slot s's OTHER-pose tiles at `frame`, but ONLY through the cheap-ROM rung
- * (rom_icon_pose_frame) — compiled art is handled separately, synchronously, in
- * boxoam_set_frame itself (see that function's header for why the split MUST stop at
- * the compiled/ROM boundary). Callers already restrict WHICH slots they pass (the even
- * half inline in boxoam_set_frame, the odd half in boxoam_pose_pump's own `s += 2`
- * loop), so this does not re-check parity. Silently does nothing for a slot that is no
- * longer eligible (unoccupied, egg, covered, not pose_ok, or — despite s_pose_ok[s] —
- * actually a COMPILED slot: mon_icon_oam_for_form_frame is tried first and, on
- * success, this function does nothing further, because boxoam_set_frame already
- * uploaded every compiled slot synchronously, even and odd alike). */
+/* True VRAM<->EWRAM-cache exchange for grid slot s (2026-08-22 review, MUST-FIX 2
+ * follow-up): the SD/icons.bin-cache-sourced counterpart to rom_icon_pose_frame above,
+ * for a slot finish_slot_pose() already proved s_cache_ok[s] for. Zero per-tick I/O —
+ * the cache was populated ONCE, at load/restore time, by the same double-verified
+ * ladder frame 0 uses.
+ *
+ * DELIBERATELY a blind swap, not a frame-indexed read: it never asks "which frame
+ * number am I moving to", it only ever trades whatever VRAM currently holds for
+ * whatever the cache currently holds. finish_slot_pose() is the ONE place that
+ * establishes the invariant this depends on ("the cache always holds the frame that is
+ * NOT currently in VRAM") for a given slot, and every call here preserves it by
+ * construction: after the exchange, each buffer holds exactly what the other one held
+ * a moment ago. A frame-indexed design (read frame X, write if going TO X, skip if
+ * going FROM X) is one asymmetric branch away from a swap that copies data IN on one
+ * transition with no matching copy OUT on the other — that class of bug is exactly
+ * what silently drains every slot toward one stale value after enough cycles, and a
+ * blind three-step exchange cannot have it: there is no frame-number branch to get
+ * backwards. s_stage is the temp — 512 B, exactly one icon, touched by nothing else
+ * between these three statements (one synchronous call, nothing reentrant can run
+ * mid-exchange on this single-threaded ARM7TDMI main loop) — so reusing it per slot,
+ * per call, is safe with no accumulation across slots or ticks. */
+static void swap_cache_slot(int s) {
+  const int n = MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES;      /* 512 B, 4-aligned */
+  uint8_t* cache = s_swapcache + (uint32_t)s * (uint32_t)n;
+  uint16_t* vram = (uint16_t*)((uint8_t*)tile_mem_obj[0] +
+                               (uint32_t)(TID_ICON0 + s * MON_ICON_OAM_TILES) * 32);
+  dma3_cpy(s_stage, vram, (uint32_t)n);      /* temp  = VRAM  (the frame now on screen) */
+  dma3_cpy(vram, cache, (uint32_t)n);        /* VRAM  = cache (the frame NOT on screen) */
+  dma3_cpy(cache, s_stage, (uint32_t)n);     /* cache = temp  (what VRAM just gave up)  */
+}
+
+/* Re-upload slot s's OTHER-pose tiles at `frame`, through the cheap-ROM rung
+ * (rom_icon_pose_frame) or the SD/cache swap-cache (swap_cache_slot) — compiled art is
+ * handled separately, synchronously, in boxoam_set_frame itself (see that function's
+ * header for why the split MUST stop at the compiled/ROM boundary). Callers already
+ * restrict WHICH slots they pass (the even half inline in boxoam_set_frame, the odd
+ * half in boxoam_pose_pump's own `s += 2` loop), so this does not re-check parity.
+ * Silently does nothing for a slot that is no longer eligible (unoccupied, egg,
+ * covered, not pose_ok, or — despite s_pose_ok[s] — actually a COMPILED slot:
+ * mon_icon_oam_for_form_frame is tried first and, on success, this function does
+ * nothing further, because boxoam_set_frame already uploaded every compiled slot
+ * synchronously, even and odd alike). s_cache_ok[s] and s_rom_cheap are mutually
+ * exclusive per slot by construction (finish_slot_pose only builds a cache entry for a
+ * `!cheap` source), so exactly one of the two branches below can ever fire for a given
+ * slot — the pre-existing cheap-ROM path is untouched code, reached exactly as before,
+ * for exactly the slots it always served. */
 static void pose_swap_rom_slot(int s, uint8_t frame) {
   if (!s_occupied[s] || s_isegg[s] || s_covered[s] || !s_pose_ok[s]) return;
   const uint8_t* t; int b;
   if (mon_icon_oam_for_form_frame(s_species[s], s_form[s], frame, &t, &b)) return; /* compiled: already done */
+  if (s_cache_ok[s]) { swap_cache_slot(s); return; }
   if (!s_rom_cheap || !rom_icon_pose_frame(s_species[s], s_form[s], frame, &b)) return;
   upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, s_stage,
               MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
@@ -1019,7 +1113,21 @@ void boxoam_hide_slot(int s) { if (s >= 0 && s < 30) hide(OE_ICON0 + s); }  /* l
 void boxoam_show_slot(int s) { if (s >= 0 && s < 30 && s_occupied[s]) place_grid_slot(s); }
 
 /* Re-upload grid slot s's own icon (current bob frame) from the per-slot bookkeeping
- * and re-show/hide it — undoes a chunk borrow of that slot's tile region. */
+ * and re-show/hide it — undoes a chunk borrow of that slot's tile region.
+ *
+ * MUST re-derive the swap cache here too, not just the VRAM tiles: a covered slot's
+ * pose_swap_slot() calls are skipped outright (the `s_covered[s]` guard), but the
+ * BOX-WIDE s_frame keeps toggling every ~0.5 s the whole time it's covered — so by the
+ * time this runs, s_frame may have flipped an odd number of times since the slot was
+ * covered, and the cache built back at boxoam_load_box (paired with frame 0) would no
+ * longer be the correct "other frame" for whatever s_frame is NOW. finish_slot_pose()
+ * always derives "other" as 1 - the frame it was just handed, so calling it with THIS
+ * upload's actual frame (not a stale assumption) re-syncs the cache to the freshly
+ * uploaded VRAM content regardless of how many toggles happened out of sight — the
+ * same invariant boxoam_load_box establishes, just re-proven at a possibly different
+ * frame parity. Skipping this would reintroduce exactly the "cache disagrees with
+ * VRAM" class of bug this feature exists to avoid, just gated on chunk-carry/party-
+ * panel use instead of a general per-tick failure. */
 static void restore_slot(int s) {
   if (!s_occupied[s]) { hide(OE_ICON0 + s); return; }
   int bank, from_rom, cheap;
@@ -1028,8 +1136,9 @@ static void restore_slot(int s) {
   if (tiles) {
     upload_icon(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles, from_rom);
     s_iconbank[s] = (uint8_t)bank;
+    finish_slot_pose(s, s_species[s], s_form[s], s_isegg[s] != 0, (uint8_t)s_frame, cheap);
     place_grid_slot(s);
-  } else hide(OE_ICON0 + s);
+  } else { hide(OE_ICON0 + s); s_cache_ok[s] = 0; }
 }
 
 void boxoam_select_mark(const uint8_t sel[30]) {

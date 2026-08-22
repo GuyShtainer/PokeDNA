@@ -1263,6 +1263,22 @@ void app_arena_release(void) {
   gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);
 }
 
+/* ---- borrowed EWRAM cache (box_oam.c's SD/cache-sourced pose-swap frame-1s) ----
+ * See pdna_app.h's own comment on app_box_swap_acquire for the full rationale.
+ * g_entries donates its 19,456 B; box_oam.c only ever asks for APP_BOX_SWAP_BYTES
+ * (15,360 B) of it. Unlike g_arena there is no "dirty" concept to refuse on — g_entries
+ * carries no state across a browser visit, so releasing it is a plain flag clear, not a
+ * rebuild. */
+static bool g_box_swap_held = false;
+
+uint8_t* app_box_swap_acquire(uint32_t need) {
+  if (g_box_swap_held || need > (uint32_t)sizeof(g_entries)) return NULL;
+  g_box_swap_held = true;
+  return (uint8_t*)g_entries;
+}
+
+void app_box_swap_release(void) { g_box_swap_held = false; }
+
 /* ---- per-game ROM path (the map screen reads map data from the user's own ROM) */
 const char* app_rom_path(PkGame game) {
   int i = (int)game;

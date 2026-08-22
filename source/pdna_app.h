@@ -226,6 +226,34 @@ uint8_t* app_arena_acquire(uint32_t need);  /* NULL: too big, already held, or P
 void     app_arena_release(void);
 bool     app_arena_held(void);
 
+/* ---- borrowed EWRAM cache (the box screen's SD/cache-sourced pose-swap frame-1s) ----
+ * The real Gen-3 2-frame icon pose swap needs a persistent 15,360 B cache (30 grid
+ * slots x one 512 B "other pose" frame) so a per-tick swap never touches the SD card
+ * (box_oam.c's own header: OBJ VRAM only has room for ONE frame per icon, so animating
+ * means re-uploading the other frame's tiles, and an SD read inside a vblank tick is
+ * forbidden). The build's genuine EWRAM headroom (748 B, measured on both the full-art
+ * and artless builds — box_oam.c's MUST-FIX 2 comment) cannot hold that — but
+ * `g_entries` can donate it: 256 x 76 B = 19,456 B, and it is IDLE for the box screen's
+ * entire lifetime. main()'s outer loop is
+ *     for (;;) { if (browse_pick(path, ...)) view_save(path); }
+ * so scan_dir()/browse_pick() (the ONLY code that ever touches g_entries — it is
+ * `static` to pdna_main.c) has always finished before view_save(), and therefore the
+ * box screen (which lives entirely inside view_save()), is ever entered. No runtime
+ * dirty-check is needed the way app_arena_acquire needs one for g_pc: g_entries holds
+ * no state that survives past the browser screen — scan_dir() unconditionally rebuilds
+ * it from the SD directory listing the next time the browser is shown, never from
+ * anything a caller could have left behind in it.
+ *
+ * box_oam.c acquires this exactly once per box-screen visit, inside boxoam_enter(), and
+ * releases it inside boxoam_exit() — every one of pdna_box()'s return paths already
+ * funnels through boxoam_exit(), so the borrow can never leak past a visit. A failed
+ * acquire (NULL) is not fatal: box_oam.c degrades that box's non-cheap-ROM/cache-sourced
+ * slots to the existing 1 px positional bob, exactly as it did before this cache
+ * existed. */
+#define APP_BOX_SWAP_BYTES (30u * 512u)             /* == 15360 */
+uint8_t* app_box_swap_acquire(uint32_t need);  /* NULL: too big, or already held */
+void     app_box_swap_release(void);
+
 /* Path of the Pokemon ROM the map screen reads map data from, remembered per game
  * (RS / Emerald / FRLG) because their map data differs and each needs its own ROM.
  * Returns "" when none has been picked yet. Set persists via config.cfg. */
