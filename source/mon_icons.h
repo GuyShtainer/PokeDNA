@@ -4,6 +4,9 @@
 #ifndef MON_ICONS_INCLUDED
 #define MON_ICONS_INCLUDED
 #include <stdint.h>
+#include <stdbool.h>
+
+struct RomMon;
 
 #define MON_ICON_W 32
 #define MON_ICON_H 32
@@ -29,5 +32,20 @@ const uint16_t* mon_icon_egg(void);
  * resets every other icons.bin-derived memo, so this joins that chokepoint. Always
  * defined (never weak), so it links in the full-art build too, where it is a no-op. */
 void icon_frame_cache_invalidate(void);
+
+/* Phase 1.5 (ROM rung below the icons.bin cache, art_fallbacks.c): register the
+ * open RomMon these accessors should stream from once no cache is available. Call
+ * from pdna_main.c's app_icon_rom_open(), right beside boxoam_rom_icons() -- same
+ * open RomMon, a second independent reader. Pass NULL/not-ok to clear (no ROM this
+ * session). Always defined (never weak), so it links in the full-art build too,
+ * where it is a no-op (the weak accessors above are unreferenced there). */
+void art_fallbacks_set_rommon(const struct RomMon* rm);
+
+/* Is the icon source currently cheap enough to redraw on every idle-animation tick
+ * (compiled art or the icons.bin cache), or must a caller keep showing a static
+ * first frame because the only source is the ROM rung (real per-icon SD reads)?
+ * See art_fallbacks.c's definition for the full "no SD I/O on an animation tick"
+ * reasoning. Always defined (never weak); always true in the full-art build. */
+bool mon_icon_anim_cheap(void);
 
 #endif

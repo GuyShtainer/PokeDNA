@@ -646,7 +646,16 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
        * by the multi-cell repaint — this kills the occasional cursor "stick". Recompose
        * EVERY visible caught cell at once (shared `bob`) via compose-over-DMA, no erase,
        * so there's never a frame where a sprite is blanked. */
-      if (!k && grid && app_anim_enabled(ANIM_DEX) && ++anim_ctr >= DEX_ANIM_PERIOD) {
+      /* mon_icon_anim_cheap() gates this off when the ONLY icon source is the ROM
+       * rung (art_fallbacks.c): that rung's per-icon locate+verify is real SD I/O
+       * (up to 8 reads on a miss), and re-running it on a 30-frame timer is exactly
+       * the "no SD I/O on an animation tick" trap the glove fix already paid for
+       * once. Caught cells simply keep their first frame (still real art, no bob)
+       * instead — a static Pokemon beats a hole, and costs nothing per tick. The
+       * icons.bin cache (one seek+read per flip) and compiled art keep bobbing,
+       * unchanged from before this rung existed. */
+      if (!k && grid && app_anim_enabled(ANIM_DEX) && mon_icon_anim_cheap() &&
+          ++anim_ctr >= DEX_ANIM_PERIOD) {
         anim_ctr = 0; bob ^= 1;
         for (int i = 0; i < vis && top + i < g_n; i++) {
           uint16_t in = g_list[top + i];
