@@ -30,7 +30,7 @@
 #include "data_tables.h"
 #include "mon_icons.h"
 #include "mon_icons_gate.h"  /* PDNA_MON_ICONS_ART_COMPILED -- is this a full-art build (see
-                              * party_bob_recompose's s_party_bob_icons, MUST-FIX 2) */
+                              * party_bob_recompose's two code paths, MUST-FIX 2) */
 #include "pdna_summary.h"
 #include "pdna_box.h"
 #include "gen3_trainer.h"
