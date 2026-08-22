@@ -85,6 +85,42 @@ static void romchrome_read(const RomChromeSrc* s, uint32_t off, uint32_t n, void
   (void)s; (void)off;
   if (dst && n) __builtin_memset(dst, 0, n);
 }
+
+/* The small-sprite overlay compositor (lzblob.h): stars/badges/photo on the
+ * trainer card, the bag sprite, the Pokeblock device. Plain 4bpp tile-major
+ * picture data, ONE flat palette, index 0 transparent -- no tilemap/bank
+ * indirection at all, so this is deliberately simpler than romchrome_blit
+ * above (which exists to walk a real BG_SBB tilemap). Clips to the 240x160
+ * framebuffer; every caller in this codebase passes an on-screen rect anyway
+ * (star_xy/photo_xy/bag_xy/DEVICE_XY are all comfortably inside it), the
+ * bounds check is here only so a bad tile id or a future off-screen caller
+ * cannot scribble past vid_mem. */
+void romchrome_blit_tiles(const uint8_t* tiles, const uint16_t* pal16,
+                          const int16_t* tile_ids, int ntx, int nty,
+                          int dx, int dy) {
+  if (!tiles || !pal16 || ntx <= 0 || nty <= 0) return;
+  for (int ty = 0; ty < nty; ty++) {
+    for (int tx = 0; tx < ntx; tx++) {
+      int tid = tile_ids ? tile_ids[ty * ntx + tx] : (ty * ntx + tx);
+      if (tid < 0) continue;                    /* negative = "no tile here" */
+      const uint8_t* t = tiles + (uint32_t)tid * 32u;
+      int px0 = dx + tx * 8, py0 = dy + ty * 8;
+      for (int y = 0; y < 8; y++) {
+        int sy = py0 + y;
+        if (sy < 0 || sy >= 160) continue;
+        uint16_t* drow = &vid_mem[sy * 240];
+        const uint8_t* trow = t + y * 4;
+        for (int x = 0; x < 8; x++) {
+          int sx = px0 + x;
+          if (sx < 0 || sx >= 240) continue;
+          uint8_t b = trow[x >> 1];
+          uint8_t idx = (uint8_t)((x & 1) ? (b >> 4) : (b & 0x0F));
+          if (idx) drow[sx] = pal16[idx] & 0x7FFFu;
+        }
+      }
+    }
+  }
+}
 #endif /* PDNA_ROM_CHROME_NEEDED */
 
 /* WHERE THE STAGING PAGE LIVES, and why it is not in EWRAM.

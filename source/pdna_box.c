@@ -233,16 +233,27 @@ static void draw_left(const PkMon* p) {
   if (!p || p->species == 0) { ui_text(16, 92, UI_DIM, "(empty)"); return; }
 
   rumble_io_suspend();   /* the fetch LZ77-decompresses the portrait from ROM */
-  if (p->isEgg && !p->isBadEgg) {                        /* an Egg reads as the Egg sprite */
-    const uint16_t* eg = mon_front_egg();
-    rumble_io_resume();
-    if (eg) ui_sprite(6, 16, MON_FRONT_W, MON_FRONT_H, eg);
-    else    ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_egg());
+  /* pdna_origin_art_portrait() is the SAME unified ladder the summary screen's own
+   * draw_left uses (compiled art -> the mon's own GB-origin art, if that era's ROM is
+   * registered -> the Gen-3 ROM rung / rom_portrait). This panel used to call
+   * mon_front_for_form()/mon_front_egg() directly, which stops at compiled art and
+   * never reaches the ROM rung -- exactly why an artless build with a registered ROM
+   * showed a 32x32 icon here instead of the full portrait (Guy, item 2). Decoded fresh
+   * into mon_decomp on every call (pdna_origin_art.c's rom_portrait comment: never
+   * memoised, because era_cells()/item icons/type badges share the same buffer), and
+   * used immediately below, never stored past this function -- the shared-buffer rule
+   * this file's own header (source/pdna_origin_art.c:339-347) documents. */
+  PdnaArt art;
+  pdna_origin_art_portrait(p, 0, &art, 0);
+  rumble_io_resume();
+  if (art.px) {
+    int ax, ay;
+    pdna_origin_art_place(&art, 6, 16, 64, 64, &ax, &ay);   /* 64x64 Gen-3 -> (6,16), as before */
+    ui_sprite(ax, ay, art.w, art.h, art.px);
+  } else if (art.egg) {
+    ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_egg());
   } else {
-    const uint16_t* spr = mon_front_for_form(p->species, p->isShiny, p->form);
-    rumble_io_resume();
-    if (spr) ui_sprite(6, 16, MON_FRONT_W, MON_FRONT_H, spr);
-    else     ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
+    ui_sprite(22, 32, MON_ICON_W, MON_ICON_H, mon_icon_for_form(p->species, p->form));
   }
 
   /* Names are drawn with the PROPORTIONAL face. At 8 px/glyph this panel held nine
@@ -2628,28 +2639,36 @@ int pdna_box(BoxSource* src) {
           * been describing a bob that did not run.
           *
           * boxoam_set_bob is the right driver rather than boxoam_set_frame (the real
-          * 2-frame pose swap): the pose swap re-DMAs ~15 KiB, which box_oam.c:199 says
-          * cannot fit the vblank window, and it self-disables on streamed icons
-          * (box_oam.c:433) — i.e. on every artless box. The 1 px OAM nudge is a shadow
-          * write with no VRAM, ROM or SD traffic, so it is the one icon animation that
-          * works in BOTH builds. Paused while carrying / dragging / ITEM mode. */
+          * 2-frame pose swap) ONLY on a slot that cannot pose-swap at all — box_oam.c
+          * now does BOTH per slot: compiled art and a ROM registered with cheap_reads
+          * (a fused cart-space memcpy) get the real swap, every other slot (icons.bin
+          * cache, or an SD-registered ROM) keeps the 1 px OAM nudge. The 2026-08-19
+          * claim that the swap "cannot fit the vblank window" was about the VERIFIED
+          * re-stage path (upload_tiles_verified), not this plain-DMA one — see
+          * box_oam.c's boxoam_set_frame header. Paused while carrying / dragging /
+          * ITEM mode. */
          if (app_anim_enabled(ANIM_BOX) && !s_holding && !s_ch_hold && s_cur_mode != CM_ITEM) {
            if (++anim_ctr >= ANIM_PERIOD) {
              anim_ctr = 0; bob ^= 1;
              boxoam_hand_pose(bob ? BOXOAM_POSE_BOUNCE : BOXOAM_POSE_NORMAL);
              /* The REAL animation first: a 2-frame pose swap, which is what Gen 3
-              * actually does and what "animated" means. It only fails on ROM-streamed
-              * icons (no frame-1 source in RAM, and no 15 KiB anywhere to cache one —
-              * see boxoam_set_frame). There, and only there, fall back to nudging the
-              * sprites 1 px so the grid is not dead. Guy's words for the fallback on
-              * its own were "not animated, just jumping up and down" — exactly right,
-              * which is why it is now the fallback and not the animation. */
+              * actually does and what "animated" means. It only fails whole-box on a
+              * box with NO pose-capable slot at all (every occupied icon is on the
+              * icons.bin cache or an SD-registered ROM) — there, and only there, fall
+              * back to nudging every sprite 1 px so the grid is not dead. Guy's words
+              * for the fallback on its own were "not animated, just jumping up and
+              * down" — exactly right, which is why it is now the fallback and not the
+              * animation. */
              if (!boxoam_set_frame(bob)) boxoam_set_bob(bob);
              boxoam_cursor(cur, on_title, cursor_look());
            }
          } else if (bob) { bob = 0; boxoam_hand_pose(BOXOAM_POSE_NORMAL);
                            if (!boxoam_set_frame(0)) boxoam_set_bob(0);   /* settle the grid */
                            boxoam_cursor(cur, on_title, cursor_look()); }
+         /* The other half of a just-scheduled pose swap (cheap-ROM slots split across
+          * two vblanks, box_oam.c's boxoam_set_frame/boxoam_pose_pump header) — a
+          * no-op whenever nothing is pending, so this is unconditional every tick. */
+         boxoam_pose_pump();
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);

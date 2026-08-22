@@ -51,10 +51,15 @@ void boxoam_resume(void);
 void boxoam_load_box(const PkMon box[30]);
 
 /* Phase-1 ROM-gated icons: the app registers an open RomMon on the user's own ROM
- * (fused today; a registered SD file later) and the box streams the real 32x32
- * icons from it whenever the compiled icon art is absent. NULL clears. */
+ * (fused, or a registered SD file) and the box streams the real 32x32 icons from it
+ * whenever the compiled icon art is absent. NULL clears (cheap_reads then ignored).
+ *
+ * cheap_reads: is `rm`'s RomReadFn a fused, cart-space memcpy (nonzero) or an SD
+ * f_lseek+f_read (zero)? This is what decides, per grid slot, whether the real 2-frame
+ * Gen-3 pose swap can run live on an animation tick or must fall back to the 1 px
+ * positional bob — see box_oam.c's icon_tiles()/boxoam_set_frame() header comments. */
 struct RomMon;
-void boxoam_rom_icons(const struct RomMon* rm);
+void boxoam_rom_icons(const struct RomMon* rm, int cheap_reads);
 /* Phase 3 (ROM-gated glove, DESIGN.md Sec 1.3/4.5): the app registers an open
  * RomHand the same way. NULL clears. Compiled out entirely when the real poses are
  * linked in (hand_gate.h) — a full-art build never holds a RomHand at all, so it
@@ -115,11 +120,21 @@ void boxoam_strip_hide_cursor(void);
 void boxoam_set_bob(int dy);
 
 /* Swap the box icons to bob frame 0/1 (the real Gen-3 2-frame pose animation) by
- * DMA-uploading that frame's tiles for every occupied icon. Call from the vblank tick.
- * Returns 1 if it animated, 0 if this box cannot pose-swap (ROM-streamed icons have no
- * frame-1 source in RAM and nowhere to cache one) — callers should fall back to
- * boxoam_set_bob so the grid still shows life. */
+ * DMA-uploading that frame's tiles for every occupied icon that CAN pose-swap (compiled
+ * art, or a ROM source registered with cheap_reads — see boxoam_rom_icons); every other
+ * occupied slot gets the 1 px positional nudge instead, applied to just that slot. Call
+ * from the vblank tick, followed by boxoam_pose_pump() every tick after (see below).
+ * Returns 1 if it animated (mixed pose-swap/bob, or all-bob), 0 only when NOTHING in
+ * this box can pose-swap at all — callers should then fall back to boxoam_set_bob for
+ * the whole grid so it still shows life. */
 int boxoam_set_frame(int frame);
+
+/* The deferred second half of a boxoam_set_frame() pose swap: a cheap-ROM source is a
+ * fresh locate + 512 B read per slot, not a bare DMA, so boxoam_set_frame does half the
+ * pose-capable slots immediately and leaves the rest for the very next vblank tick. Call
+ * this UNCONDITIONALLY every tick (right after boxoam_set_frame / boxoam_set_bob, before
+ * boxoam_commit()) — it is a no-op whenever nothing is pending. */
+void boxoam_pose_pump(void);
 
 /* Position/show the cursor hand. on_title -> parked over the banner. mode picks the
  * normal/orange(MOVE)/translucent(ITEM) look. cur is the 0..29 grid cell. */

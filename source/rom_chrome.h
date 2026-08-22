@@ -223,18 +223,92 @@ int rom_chrome_pokeblock_have(const RomChrome* rch, int g);
 typedef struct {
   RomChromeSrc src;
   LzBlob       as_lzblob;   /* { 0,0,0,0, &src } — the BgFrame.blob to hand out */
+  uint16_t     star_pal[16];   /* tools/gen_card_bg.py's star.pal: a FLAT 16-colour
+                                 * palette, not a tilemap bank — drawn with
+                                 * romchrome_blit_tiles(src.tiles, star_pal, ...) on
+                                 * tile STAR_TILE (143 in every game's shared
+                                 * tileset, all three families -- gen_card_bg.py's
+                                 * own comment: "all three games' tilesets keep the
+                                 * star here"), `tier` copies left-to-right from the
+                                 * layout's star_xy. Zeroed (all-black, harmlessly
+                                 * invisible) when female's fetch below never runs
+                                 * or star.pal fails -- same fail-safe posture as
+                                 * female_bg. */
 } RomChromeCard;
 
 int rom_chrome_card_load(const RomChrome* rch, int g, int back, int tier, int female,
                          uint8_t* scratch, uint32_t cap, RomChromeCard* out);
 
+/* The card's STAR tile id within CardPins.tileset's shared 160-tile (128x80)
+ * sheet -- tools/gen_card_bg.py's STAR_TILE, "all three games' tilesets keep
+ * the star here". Already resident in `scratch` after rom_chrome_card_load(),
+ * so drawing the star row costs nothing beyond the tiny star_pal fetch that
+ * function already made -- no separate decode. */
+#define ROM_CHROME_STAR_TILE 143
+
+/* ---- card badges (8 gym-badge 16x16 icons, drawn per owned badge) -------- */
+
+/* 1 iff rom_chrome_card_badges_load(game=g, ...) can succeed for THIS rom.
+ * Emerald + Ruby only (the same two games the card front/back cover). */
+int rom_chrome_card_badges_have(const RomChrome* rch, int g);
+
+typedef struct {
+  const uint8_t* tiles;      /* badges.png's own tileset, in scratch          */
+  uint16_t       pal[16];    /* badges.png's own flat 16-colour palette       */
+} RomChromeCardBadges;
+
+/* Decode badges.png + its own palette into `scratch` (>= cap; worst case
+ * 1,056 B: 1,024 B tileset + 32 B palette -- see rom_chrome.h's MEMORY note
+ * for why this is a SEPARATE decode from rom_chrome_card_load(), never
+ * folded into the same buffer). Returns 1, or 0 with *out untouched. */
+int rom_chrome_card_badges_load(const RomChrome* rch, int g,
+                                uint8_t* scratch, uint32_t cap, RomChromeCardBadges* out);
+
+/* Badge `i` (0..7)'s four tile ids (TL, TR, BL, BR) into `ids[4]`, already
+ * translated into `out->tiles`' own local numbering (Ruby's badges_map.bin
+ * absolute VRAM ids, based at 164, are subtracted down to a local tile index
+ * here -- the caller never sees the VRAM convention). Emerald: badge i is the
+ * plain 2x2 block at {2i, 2i+1, 16+2i, 17+2i} (a 16-tile-wide strip). Ruby:
+ * indirected through badges_map.bin (8 x 4 absolute u16 ids). Returns 1, or 0
+ * (game not wired / i out of range) with `ids` untouched. */
+int rom_chrome_card_badge_ids(const RomChrome* rch, int g, int i, int16_t ids[4]);
+
+/* ---- card trainer photo (the gendered 64x64 portrait) -------------------- */
+
+int rom_chrome_card_photo_have(const RomChrome* rch, int g);
+
+typedef struct {
+  const uint8_t* tiles;      /* 64 tiles (8x8 grid), the WHOLE 64x64 picture  */
+  uint16_t       pal[16];    /* the photo's own flat 16-colour palette        */
+} RomChromeCardPhoto;
+
+/* Decode the gendered photo (brendan.png/red.png = male, may.png/leaf.png =
+ * female) + its own palette into `scratch` (>= cap; worst case 2,080 B:
+ * 2,048 B tileset + 32 B palette). Returns 1, or 0 with *out untouched. */
+int rom_chrome_card_photo_load(const RomChrome* rch, int g, int female,
+                               uint8_t* scratch, uint32_t cap, RomChromeCardPhoto* out);
+
 typedef struct {
   RomChromeSrc src;
   LzBlob       as_lzblob;
+  const uint8_t* device_tiles;   /* device.png: 64 tiles (8x8 grid), 64x64,
+                                   * pointing INTO `scratch` right after the
+                                   * screen's own tileset/tilemap/palette --
+                                   * folded into the SAME decode+buffer
+                                   * (fits: 3,328 + 2,080 = 5,408 B of 8,192 B) */
+  uint16_t       device_pal[16]; /* device.png's own flat 16-colour palette   */
 } RomChromePokeblock;
 
 int rom_chrome_pokeblock_load(const RomChrome* rch, int g,
                               uint8_t* scratch, uint32_t cap, RomChromePokeblock* out);
+
+/* Where the case device sprite sits on the 240x160 screen (gen_pokeblock_bg.py
+ * DEVICE_XY, pokeemerald/pokeruby CreatePokeblockCaseSprite(56,64,0) minus the
+ * 64x64 sprite's half-extent). Composite with romchrome_blit_tiles(
+ * device_tiles, device_pal, NULL, 8, 8, ROM_CHROME_POKEBLOCK_DEVICE_X,
+ * ROM_CHROME_POKEBLOCK_DEVICE_Y) right after the screen's own bg_restore(). */
+#define ROM_CHROME_POKEBLOCK_DEVICE_X 24
+#define ROM_CHROME_POKEBLOCK_DEVICE_Y 32
 
 /* ---- bag ---------------------------------------------------------------- */
 
@@ -264,5 +338,46 @@ typedef struct {
  * note: it is invalidated by the very next item-icon decode. */
 int rom_chrome_bag_load(const RomChrome* rch, int g, int female,
                         uint8_t* scratch, uint32_t cap, RomChromeBag* out);
+
+/* ---- bag SPRITE (the drawn bag itself, gendered, one frame per pocket) --- *
+ *
+ * Emerald + FireRed + LeafGreen ONLY -- narrower than rom_chrome_bag_have()'s
+ * game coverage, for a hard reason, not a located-data one: the ROM stores
+ * every gender's whole animation sheet as ONE monolithic LZ10 blob (closed +
+ * one open frame per pocket, all under a SINGLE header), and mr_lz77() can only
+ * decode a blob whose caller-supplied capacity covers its FULL declared size --
+ * there is no partial/seek decode (confirmed against the actual decoder,
+ * source/map_render.c's mr_lz77(): `if (size > dst_cap) return 0;` gates on the
+ * WHOLE blob before a single byte is written, and the loop always runs to
+ * `size`). FireRed/LeafGreen's declared size is 8,192 B, which fits the shared
+ * 8,192 B buffer ALONE (after the screen chrome's own decode has already been
+ * consumed by that visit's bg_restore() and the buffer is free again -- see
+ * pdna_bag.c's bag_rest()/pocket_anim(), which already call through bag_anim()
+ * at exactly that point). Emerald's is 12,288 B -- bigger than the ENTIRE
+ * shared buffer, for EVERY frame including the closed one, because getting
+ * ANY frame means decoding the whole stream from byte 0. rom_chrome_bag_sprite_have()
+ * reports this honestly: 1 for FireRed/LeafGreen, 0 for Emerald (and for every
+ * game rom_chrome_bag_have() already refuses). Closing the Emerald gap needs
+ * either a bigger scratch buffer or a decoder that can discard already-consumed
+ * output while decoding forward (neither exists today) -- not a wiring gap. */
+int rom_chrome_bag_sprite_have(const RomChrome* rch, int g);
+
+typedef struct {
+  const uint8_t* tiles;      /* frame_count x 64 tiles (8x8 grid each), in scratch */
+  uint16_t       pal[16];    /* the sheet's own flat 16-colour palette        */
+  uint8_t        frame_count;
+} RomChromeBagSprite;
+
+/* Decode the WHOLE gendered animation sheet (see above -- there is no way to
+ * ask for less) + its own 32 B palette into `scratch` (>= cap; FireRed/
+ * LeafGreen worst case 8,224 B). `out->tiles + frame*64*32` is frame `frame`'s
+ * 64 tiles (8x8 grid); frame 0 = closed, frame 1..frame_count-1 = pocket p's
+ * OPEN frame in bag_bg.h's own pocket_frame order (sAnims_Bag: PokeBalls/
+ * Items/KeyItems). Composite with romchrome_blit_tiles(out->tiles + frame*2048,
+ * out->pal, NULL, 8, 8, x, y). Returns 1, or 0 (game not FireRed/LeafGreen, no
+ * ROM, or `cap` too small) with *out untouched -- caller keeps whatever it had
+ * (bag_anim()'s existing "blob == 0 -> no animation, screen still works"). */
+int rom_chrome_bag_sprite_load(const RomChrome* rch, int g, int female,
+                               uint8_t* scratch, uint32_t cap, RomChromeBagSprite* out);
 
 #endif /* ROM_CHROME_H */

@@ -238,6 +238,119 @@ static void test_pokeblock_game(const char* label, const char* path, int expect_
   fclose(c.f);
 }
 
+/* Foreground overlays added 2026-08-22: card stars/badges/photo, the
+ * Pokeblock device, the bag sprite. Each address was located by decompress-
+ * and-byte-compare against the staged decomp assets (docs/analysis-2026-08-19-
+ * rom-art scripts' own method); this test proves the WIRING (right game
+ * gating, right sizes, non-NULL pointers, budget-safe scratch requirements),
+ * not the pixels themselves (that's the render probe / mGBA capture's job --
+ * this file, like the rest of rom_chrome, is pure C with no framebuffer). */
+static void test_foreground_game(const char* label, const char* path,
+                                 int card_g, int expect_badges, int expect_photo) {
+  HostCtx c; RomCtx rc;
+  if (!open_rom(path, &c, &rc)) { printf("%s: SKIP (no dump)\n", label); return; }
+  RomChrome rch; rom_chrome_open(&rch, &rc);
+  static uint8_t scratch[8192];
+
+  CHECK(rom_chrome_card_badges_have(&rch, card_g) == expect_badges,
+       "%s: badges_have disagrees", label);
+  CHECK(rom_chrome_card_photo_have(&rch, card_g) == expect_photo,
+       "%s: photo_have disagrees", label);
+
+  if (expect_badges) {
+    RomChromeCardBadges b;
+    int ok = rom_chrome_card_badges_load(&rch, card_g, scratch, sizeof scratch, &b);
+    CHECK(ok, "%s: badges_load failed", label);
+    if (ok) {
+      CHECK(b.tiles != 0, "%s: null badge tiles", label);
+      CHECK(b.pal[0] == 0, "%s: badge pal[0] must stay 0 (transparent index)", label);
+      int seen_nonzero = 0;
+      for (int t = 0; t < 32 * 32; t++) if (b.tiles[t]) seen_nonzero = 1;
+      CHECK(seen_nonzero, "%s: badge tileset decoded to all zero bytes", label);
+      /* every badge's 4 tile ids must be in-range (or the documented -1 skip) */
+      for (int i = 0; i < 8; i++) {
+        int16_t ids[4];
+        CHECK(rom_chrome_card_badge_ids(&rch, card_g, i, ids), "%s: badge_ids(%d) failed", label, i);
+        for (int k = 0; k < 4; k++)
+          CHECK(ids[k] == -1 || (ids[k] >= 0 && ids[k] < 32),
+               "%s: badge %d tile id[%d]=%d out of range", label, i, k, ids[k]);
+      }
+      CHECK(!rom_chrome_card_badge_ids(&rch, card_g, 8, (int16_t[4]){0}),
+           "%s: badge index 8 (out of range) must be refused", label);
+    }
+    /* too-small buffer fails closed, never truncates */
+    RomChromeCardBadges bad;
+    CHECK(!rom_chrome_card_badges_load(&rch, card_g, scratch, 64, &bad),
+         "%s: a 64 B badge scratch must be refused, not truncated into", label);
+  }
+
+  if (expect_photo) {
+    for (int female = 0; female <= 1; female++) {
+      RomChromeCardPhoto p;
+      int ok = rom_chrome_card_photo_load(&rch, card_g, female, scratch, sizeof scratch, &p);
+      CHECK(ok, "%s: photo_load(female=%d) failed", label, female);
+      if (ok) {
+        CHECK(p.tiles != 0, "%s: null photo tiles (female=%d)", label, female);
+        CHECK(p.pal[0] == 0, "%s: photo pal[0] must stay 0 (female=%d)", label, female);
+        int seen_nonzero = 0;
+        for (int t = 0; t < 64 * 32; t++) if (p.tiles[t]) seen_nonzero = 1;
+        CHECK(seen_nonzero, "%s: photo tileset decoded to all zero bytes (female=%d)", label, female);
+      }
+    }
+    RomChromeCardPhoto bad;
+    CHECK(!rom_chrome_card_photo_load(&rch, card_g, 0, scratch, 64, &bad),
+         "%s: a 64 B photo scratch must be refused, not truncated into", label);
+  }
+
+  fclose(c.f);
+}
+
+static void test_pokeblock_device(const char* label, const char* path, int expect_ok) {
+  HostCtx c; RomCtx rc;
+  if (!open_rom(path, &c, &rc)) { printf("%s: SKIP (no dump)\n", label); return; }
+  RomChrome rch; rom_chrome_open(&rch, &rc);
+  static uint8_t scratch[8192];
+  RomChromePokeblock out;
+  int ok = rom_chrome_pokeblock_load(&rch, 0, scratch, sizeof scratch, &out);
+  CHECK(ok == expect_ok, "%s: pokeblock_load returned %d, want %d", label, ok, expect_ok);
+  if (ok) {
+    CHECK(out.device_tiles != 0, "%s: device_tiles must decode when the case itself does", label);
+    CHECK(out.device_pal[0] == 0, "%s: device_pal[0] must stay 0", label);
+    int seen_nonzero = 0;
+    for (int t = 0; t < 64 * 32; t++) if (out.device_tiles[t]) seen_nonzero = 1;
+    CHECK(seen_nonzero, "%s: device tileset decoded to all zero bytes", label);
+  }
+  fclose(c.f);
+}
+
+static void test_bag_sprite(const char* label, const char* path, int card_bag_g, int expect_ok) {
+  HostCtx c; RomCtx rc;
+  if (!open_rom(path, &c, &rc)) { printf("%s: SKIP (no dump)\n", label); return; }
+  RomChrome rch; rom_chrome_open(&rch, &rc);
+  CHECK(rom_chrome_bag_sprite_have(&rch, card_bag_g) == expect_ok,
+       "%s: bag_sprite_have=%d want %d", label, rom_chrome_bag_sprite_have(&rch, card_bag_g), expect_ok);
+  static uint8_t scratch[8192];
+  for (int female = 0; female <= 1; female++) {
+    RomChromeBagSprite bs;
+    int ok = rom_chrome_bag_sprite_load(&rch, card_bag_g, female, scratch, sizeof scratch, &bs);
+    CHECK(ok == expect_ok, "%s: bag_sprite_load(female=%d)=%d want %d", label, female, ok, expect_ok);
+    if (ok) {
+      CHECK(bs.tiles != 0 && bs.frame_count > 0, "%s: bad bag sprite decode (female=%d)", label, female);
+      CHECK(bs.pal[0] == 0, "%s: bag sprite pal[0] must stay 0 (female=%d)", label, female);
+      /* the WHOLE declared blob (8,192 B) must fit exactly at cap == 8,192,
+       * and MUST be refused one byte under -- the "no partial decode" fact
+       * this module's whole Emerald-exclusion rests on. */
+      RomChromeBagSprite tight;
+      CHECK(rom_chrome_bag_sprite_load(&rch, card_bag_g, female, scratch, 8192, &tight),
+           "%s: an exact 8,192 B buffer must succeed (female=%d)", label, female);
+      RomChromeBagSprite bad;
+      CHECK(!rom_chrome_bag_sprite_load(&rch, card_bag_g, female, scratch, 8191, &bad),
+           "%s: an 8,191 B buffer must be refused, not truncated (female=%d)", label, female);
+    }
+  }
+  fclose(c.f);
+}
+
 int main(void) {
   const char* dir = "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms";
   char emerald[256], ruby[256], sapphire[256], firered[256], leafgreen[256];
@@ -263,6 +376,20 @@ int main(void) {
   test_bag_game("LeafGreen bag", leafgreen, 2);
   test_bag_game("Ruby bag (unwired -- tileset alone saturates the buffer)", ruby, -1);
   test_bag_game("Sapphire bag (unwired)", sapphire, -1);
+
+  /* stars/badges/photo (card_g: 1 = Emerald, 0 = Ruby) */
+  test_foreground_game("Emerald foreground", emerald, 1, 1, 1);
+  test_foreground_game("Ruby foreground", ruby, 0, 1, 1);
+
+  test_pokeblock_device("Emerald pokeblock device", emerald, 1);
+  test_pokeblock_device("Ruby pokeblock device (unwired case)", ruby, 0);
+
+  /* bag sprite: FireRed/LeafGreen (bag_style 2) only -- Emerald's monolithic
+   * 12,288 B blob cannot fit the 8,192 B shared buffer for ANY frame. */
+  test_bag_sprite("FireRed bag sprite", firered, 2, 1);
+  test_bag_sprite("LeafGreen bag sprite", leafgreen, 2, 1);
+  test_bag_sprite("Emerald bag sprite (budget-excluded)", emerald, 1, 0);
+  test_bag_sprite("Ruby bag sprite (unwired game)", ruby, 0, 0);
 
   if (g_fail) { printf("%d check(s) FAILED\n", g_fail); return 1; }
   printf("host_romchrome_test: all checks passed\n");

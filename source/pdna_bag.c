@@ -152,23 +152,70 @@ static void bag_rect(const BagLayout* L, BgFrame r) {
   bg_blit_rect(r, L->anim_x, L->anim_y, BAG_ANIM_W, 64 + L->rise);
 }
 
+#if !PDNA_BAG_ART_COMPILED
+/* The bag SPRITE'S ROM rung -- Emerald/FireRed/LeafGreen's screen chrome, but
+ * the DRAWN BAG ITSELF (rom_chrome.h's bag-sprite section) is FireRed/
+ * LeafGreen only: both games' whole gendered animation sheet is ONE
+ * monolithic LZ10 blob whose declared size (8,192 B) just fits the shared
+ * 8,192 B buffer alone; Emerald's is 12,288 B, bigger than the WHOLE buffer,
+ * for every frame including the closed one (there is no partial/seek decode
+ * -- see rom_chrome.h's header comment for the confirmed reason). So on
+ * Emerald this draws nothing and the screen keeps exactly today's look
+ * (background chrome only, no bag icon) -- a real, reported gap, not a
+ * silently-skipped one.
+ *
+ * Draws straight to vid_mem via romchrome_blit_tiles(), NOT through
+ * bag_anim()'s BgFrame/tilemap contract: the sheet is plain 8x8-tile picture
+ * data with ONE flat palette, and by the time this runs the caller has
+ * ALREADY bg_restore()'d the whole screen (or at minimum this rect) from the
+ * correct background, so there is no "clean patch above the sprite" to
+ * reconstruct the way bag_anim()'s taller (64+rise) rect does for the
+ * transient pop/fall frames (also out of scope here, for the same budget
+ * reason -- see rom_chrome_bag_sprite_load()). Reuses mon_decomp exactly like
+ * every other "decode fresh, blit immediately" call in this file: safe
+ * because rom_bag_frame()'s chrome decode, called just before this in every
+ * caller, has already been fully consumed by its own bg_restore(). */
+static void rom_bag_sprite_draw(const BagLayout* L, PkGame g, int female, int pocket) {
+  if (!s_bag_romchrome || !rom_chrome_bag_sprite_have(s_bag_romchrome, (int)g)) return;
+  /* bag_bg.h's own pocket_frame convention (tools/gen_bag_bg.py GAMES table,
+   * "frlg" row): OUR PkPocket order (Items/Key/Balls/TMHM/Berries) -> the
+   * sheet's own frame number (sAnims_Bag: closed/PokeBalls/Items/KeyItems).
+   * Emerald never reaches here (rom_chrome_bag_sprite_have() is 0 there). */
+  static const uint8_t k_pocket_frame_frlg[5] = { 2, 3, 1, 2, 2 };
+  int frame = (pocket >= 0 && pocket < 5) ? k_pocket_frame_frlg[pocket] : 0;
+  RomChromeBagSprite bs;
+  if (!rom_chrome_bag_sprite_load(s_bag_romchrome, (int)g, female,
+                                  (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &bs)) return;
+  if (frame >= bs.frame_count) frame = 0;
+  romchrome_blit_tiles(bs.tiles + (uint32_t)frame * 64u * 32u, bs.pal, 0, 8, 8,
+                       L->anim_x, L->anim_y + L->rise);
+}
+#endif
+
 /* Resting bag = the current pocket's OPEN frame — the games never show the
- * closed bag while browsing. Art-free fallback: the bg's baked closed bag. */
+ * closed bag while browsing. Art-free fallback: the bg's baked closed bag
+ * (or, artless with a wired ROM, the streamed sprite via the ROM rung above). */
 static void bag_rest(const BagLayout* L, PkGame g, int female, int pocket) {
   BgFrame r = bag_anim(g, female, L->rise + pocket);
-  if (r.blob) bag_rect(L, r);
+  if (r.blob) { bag_rect(L, r); return; }
+#if !PDNA_BAG_ART_COMPILED
+  rom_bag_sprite_draw(L, g, female, pocket);
+#endif
 }
 
 /* The game's own pocket-switch animation: the CLOSED bag pops up `rise` px and
  * falls back 1 px per fall_wait frames — Emerald/FRLG 5 px at 1 px/frame
  * (SetBagVisualPocketId), RS 4 px at 1 px per 2 frames (sub_80A79EC) — then
  * the new pocket's open frame appears. One ~8.8 KiB ROM->VRAM blit per step.
- * No art -> no anim (the screen still works). */
+ * No transient-animation art (compiled OR ROM -- see rom_bag_sprite_draw()'s
+ * comment, the pop/fall frames are out of this track's budget) -> `break`
+ * straight to the landed state, which bag_rest() below can still show via the
+ * ROM rung even when the pop/fall itself cannot animate. */
 static void pocket_anim(BgFrame bg, const BagLayout* L,
                         PkGame g, int female, int pocket) {
   for (int i = 0; i < L->rise; i++) {
     BgFrame r = bag_anim(g, female, i);
-    if (!r.blob) return;
+    if (!r.blob) break;
     bag_rect(L, r);
     for (int w = 0; w < L->fall_wait; w++) s_vsync();
   }

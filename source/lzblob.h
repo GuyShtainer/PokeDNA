@@ -74,6 +74,22 @@ typedef struct {
   const RomChromeSrc* romsrc;
 } LzBlob;
 
+/* Composite an ntx x nty grid of 8x8 4bpp tiles straight to the Mode-3
+ * framebuffer at (dx, dy), colour index 0 skipped (transparent), through ONE
+ * flat 16-entry RGB15 palette (no bank field -- unlike RomChromeSrc's `map`,
+ * these sprites are plain picture data, never read through a tilemap+bank
+ * attribute). `tile_ids` NULL means "sequential, row-major, 0..ntx*nty-1" --
+ * a plain WxH picture whose own 4bpp tileset IS the picture in tile-major
+ * order, which is exactly the shape rom_chrome.c decodes the trainer photo,
+ * the bag sprite, and the Pokeblock device into. A non-NULL `tile_ids` array
+ * (ntx*nty entries) is for sprites indirected through a tile-id table (the
+ * trainer card's badge icons: 2x2 tiles per badge, picked out of a shared
+ * sheet by id, Emerald by formula and Ruby/Sapphire through badges_map.bin --
+ * see rom_chrome.h). A negative id skips that cell (no tile there). */
+void romchrome_blit_tiles(const uint8_t* tiles, const uint16_t* pal16,
+                          const int16_t* tile_ids, int ntx, int nty,
+                          int dx, int dy);
+
 /* Blit a w x h RGB15 rect to the Mode-3 framebuffer at (x, y).
  * `off` is the byte offset of the rect's top-left pixel in the ORIGINAL
  * (unpacked) blob and `sw` is the source stride in PIXELS, so a full frame is

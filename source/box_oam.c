@@ -89,6 +89,12 @@ static uint8_t  s_isegg[30];            /* 1 = this slot shows the Egg icon (no 
 static uint8_t  s_icon_blend[30];       /* 1 = draw this icon semi-transparent (ITEM mode, non-holders) */
 static int      s_frame = 0;            /* current bob frame (0/1) in OBJ VRAM     */
 static int      s_bob = 0;              /* current unison Y-bob offset (0/1)      */
+/* Real Gen-3 2-frame pose swap, ROM-streamed slots included when the source is
+ * cheap enough (see boxoam_rom_icons below and boxoam_set_frame's header comment). */
+static uint8_t  s_pose_ok[30];          /* per slot: frame 1 reachable without SD I/O in a tick */
+static int      s_any_pose = 0;         /* any occupied slot can pose-swap                */
+static int      s_pend = 0;             /* second half of a split (fused-ROM) swap is due  */
+static int      s_pend_frame = 0;       /* which frame that pending half is swapping to    */
 static int      s_regb = -1;            /* what region B holds: 0=grab fist 1=item -1=none */
 static int      s_rega = -1;            /* what region A holds: 0=hand 1=full item 2=held mon -1 */
 static uint8_t  s_selmark[30];          /* 1 = whiten this slot (rubber-band selection)   */
@@ -132,13 +138,26 @@ static uint16_t s_stage[256];        /* one 512 B verify chunk (IWRAM .bss — E
 /* ---- ROM-streamed icons (phase 1 of the ROM-gated build) --------------------
  * When the compiled icon art is absent (the artless build) and the app has an open
  * RomMon on the user's own ROM, the box streams the real icons from it: 512 B raw
- * 4bpp per slot, staged into s_stage and read TWICE (the EZ-Flash read path can
- * return success holding garbage, and a fused read shares the compiled-art risk
- * class the verified uploads already treat). The 2-frame pose swap stays OFF on
- * this path — re-streaming 15 KiB per bob tick is not vblank material — but the
- * 1 px OAM bob still runs, so the grid keeps its life. */
+ * 4bpp per slot, staged into s_stage and read TWICE AT LOAD TIME (the EZ-Flash read
+ * path can return success holding garbage, and a fused read shares the compiled-art
+ * risk class the verified uploads already treat).
+ *
+ * Whether the 2-frame pose swap can ALSO run off that ROM depends on WHICH ROM:
+ *   fused into this image -> fused_rom_read is a memcpy from cart address space. No
+ *                            SD, no OS-mode window. One unverified 512 B read + DMA
+ *                            per slot, split over two vblanks (boxoam_pose_pump). The
+ *                            swap runs.
+ *   registered SD .gba    -> every read is f_lseek + f_read. A swap would need up to
+ *                            30 SD reads inside the vblank tick (forbidden) or a
+ *                            15,360 B frame-1 cache that does not exist. That source
+ *                            keeps the 1 px OAM bob.
+ * `cheap_reads` is how the app tells us which one is currently open; s_rom_cheap
+ * records it. It says nothing about the icons.bin CACHE rung below, which is real SD
+ * I/O (f_open+f_lseek+f_read) every time regardless of what ROM is registered — see
+ * icon_tiles()'s own `*cheap` output, which is the thing s_pose_ok[] is actually
+ * built from. */
 static const RomMon* s_rommon = 0;
-static int           s_rom_icons = 0;            /* this box was loaded from the ROM */
+static int           s_rom_cheap = 0;             /* s_rommon's reads are a cart-space memcpy */
 /* Memoised icon LOCATION (see rom_mon.h RomMonLoc): the icon-table pointer and the
  * palette index for one species. Invalidated whenever the ROM source changes — the
  * RomMon POINTER can stay the same across a re-registration of a different file, so
@@ -146,8 +165,9 @@ static int           s_rom_icons = 0;            /* this box was loaded from the
 static RomMonLoc s_iconloc;
 static uint16_t  s_iconloc_sp = 0xFFFF;          /* 0xFFFF = nothing memoised */
 static uint8_t   s_iconloc_f;
-void boxoam_rom_icons(const struct RomMon* rm) {
-  s_rommon = (rm && rm->ok) ? rm : 0;
+void boxoam_rom_icons(const struct RomMon* rm, int cheap_reads) {
+  s_rommon    = (rm && rm->ok) ? rm : 0;
+  s_rom_cheap = s_rommon ? (cheap_reads != 0) : 0;
   s_iconloc.ok = 0; s_iconloc_sp = 0xFFFF;
 }
 
@@ -188,8 +208,18 @@ static uint32_t stage_sum(void) {
  * same (with one buffer a full byte-compare needs a second read anyway; two whole
  * reads agreeing catches the transient-garbage failure the EZ driver can produce).
  * Retries like icopy_verified; on give-up the last read still stands (a maybe-garbled
- * icon beats a hole) and the anomaly is logged. */
-static int rom_icon_read_verified(uint16_t species, uint8_t form, int egg, int* bank) {
+ * icon beats a hole) and the anomaly is logged.
+ *
+ * `frame` used to be hardcoded to 0 (only the box's LOAD ever called this). Now the
+ * pose swap can also serve frame 1 through this same ladder for a slot restored
+ * mid-swap (chunk-carry uncover, party-panel close) — see icon_tiles()'s `frame < 2`
+ * gate below. The live per-TICK swap itself does NOT come through here (see
+ * rom_icon_pose_frame): a double-verified read is load-time-only spend, and reusing
+ * THIS function's shared s_iconloc memo from a tick would let an unverified pose-swap
+ * locate get silently trusted by a later verified caller — see rom_mon_locate_verified's
+ * own header comment on exactly that hazard. */
+static int rom_icon_read_verified(uint16_t species, uint8_t form, int egg, uint8_t frame,
+                                  int* bank) {
   if (!s_rommon) return 0;
   uint16_t sp = egg ? 412 : species;
   uint8_t f  = egg ? 0 : form;
@@ -224,9 +254,9 @@ static int rom_icon_read_verified(uint16_t species, uint8_t form, int egg, int* 
   }
   int ok = 0;
   for (int a = 0; a < 4 && !ok; a++) {
-    if (!rom_mon_icon_at(s_rommon, &s_iconloc, 0, (uint8_t*)s_stage)) { rumble_io_resume(); return 0; }
+    if (!rom_mon_icon_at(s_rommon, &s_iconloc, frame, (uint8_t*)s_stage)) { rumble_io_resume(); return 0; }
     uint32_t s1 = stage_sum();
-    if (!rom_mon_icon_at(s_rommon, &s_iconloc, 0, (uint8_t*)s_stage)) { rumble_io_resume(); return 0; }
+    if (!rom_mon_icon_at(s_rommon, &s_iconloc, frame, (uint8_t*)s_stage)) { rumble_io_resume(); return 0; }
     ok = (stage_sum() == s1);
   }
   rumble_io_resume();
@@ -268,11 +298,25 @@ static int cache_icon_read(uint16_t species, uint8_t form, int egg, uint8_t fram
 /* compiled art first, then the cache, then the user's ROM (all staged into s_stage).
  * Returns the tile source or NULL; *from_rom tells the uploader the bytes are already
  * verified RAM (true for BOTH the cache and the ROM rung -- neither needs the staged-
- * verify DMA path a compiled .rodata array would). */
+ * verify DMA path a compiled .rodata array would).
+ *
+ * *cheap tells the caller whether THIS fetch could be repeated on an animation tick
+ * with no SD I/O -- it is what s_pose_ok[] (the per-slot pose-swap capability array)
+ * is built from. Compiled art is always cheap (a .rodata read). The icons.bin CACHE
+ * rung is NEVER cheap: art_icons_read_frame is f_open+f_lseek+f_read+f_close, real SD
+ * I/O, every call, regardless of what ROM (if any) is registered. The ROM rung is
+ * cheap iff s_rom_cheap -- the app told us (boxoam_rom_icons's cheap_reads) that
+ * s_rommon's reads are a fused cart-space memcpy, not an f_lseek+f_read.
+ *
+ * frame is now `< 2` on BOTH the cache and ROM rungs (used to be `== 0` on the ROM
+ * rung -- box_oam.c's own header used to say the pose swap "stays OFF on this path").
+ * A ROM/cache-streamed slot restored mid-swap (chunk-carry uncover, party-panel
+ * close, boxoam_slot_blit_bitmap) can now be asked for frame 1 and must be able to
+ * serve it, or it would blink out for as long as the box sits on the odd frame. */
 static const uint8_t* icon_tiles(uint16_t species, uint8_t form, uint8_t frame,
-                                 int egg, int* bank, int* from_rom) {
+                                 int egg, int* bank, int* from_rom, int* cheap) {
   const uint8_t* t; int b;
-  *from_rom = 0;
+  *from_rom = 0; *cheap = 0;
   /* EMPTY SLOT. The compiled-art branch below already short-circuits on species==0, but
    * the ROM-streamed branch did NOT: species 0 is a VALID row of the icon table (the
    * "??????" dummy), so rom_icon_read_verified happily performed two full verified
@@ -283,14 +327,14 @@ static const uint8_t* icon_tiles(uint16_t species, uint8_t form, uint8_t frame,
   if (!egg && !species) return 0;
   if (egg ? mon_icon_oam_egg(&t, &b)
           : (species && mon_icon_oam_for_form_frame(species, form, frame, &t, &b))) {
-    *bank = b; return t;
+    *bank = b; *cheap = 1; return t;
   }
   if (frame < 2 && cache_icon_read(species, form, egg, frame, bank)) {
     *from_rom = 1;
     return (const uint8_t*)s_stage;
   }
-  if (frame == 0 && rom_icon_read_verified(species, form, egg, bank)) {
-    *from_rom = 1; return (const uint8_t*)s_stage;
+  if (frame < 2 && rom_icon_read_verified(species, form, egg, frame, bank)) {
+    *from_rom = 1; *cheap = s_rom_cheap; return (const uint8_t*)s_stage;
   }
   return 0;
 }
@@ -593,7 +637,6 @@ void boxoam_enter(void) {
    * compiled wins; the cache is tried before the rom (it is a plain RAM-array read,
    * no per-entry SD I/O once opened, vs. 3 separate rom_mon_icon_pal calls). */
   { const uint8_t* t; int b;
-    s_rom_icons = 0;
     if (!mon_icon_oam_for(1, &t, &b)) {
       if (s_iconcache_path) {
         /* art_icons_meta_pal_at lazily does art_icons_meta_load's f_open+f_read on
@@ -676,10 +719,20 @@ void boxoam_exit(void) {
 void boxoam_suspend(void) { REG_DISPCNT &= ~DCNT_OBJ; REG_BLDCNT = 0; }
 void boxoam_resume(void)  { REG_DISPCNT |= DCNT_OBJ | DCNT_OBJ_1D; }
 
-/* (re)place grid slot s's icon sprite at its cell (incl. the current bob offset). */
+/* (re)place grid slot s's icon sprite at its cell (incl. the current bob offset).
+ *
+ * s_bob is applied ONLY to a slot that cannot pose-swap (!s_pose_ok[s]): a pose-capable
+ * slot's "other pose" is a TILE change (boxoam_set_frame/pose_swap_rom_slot), never a
+ * position change, and s_bob is a SHARED, whole-box variable boxoam_set_frame now also
+ * writes (for the benefit of the slots that DO need it) even on a box where every
+ * occupied slot pose-swaps — without this gate, a LATER re-place of a pose-capable slot
+ * (restore_slot after a chunk-carry uncover, boxoam_show_slot after a lift-hide) would
+ * pick up that stale offset and nudge an icon whose two frames are meant to sit at the
+ * exact same pixel, exactly the bug class box_oam.h's boxoam_set_frame comment already
+ * warns about ("the icons park 1 px low forever"). */
 static void place_grid_slot(int s) {
   int x = GRID_X + (s % COLS) * CELL_W;
-  int y = GRID_Y + (s / COLS) * CELL_H + s_bob;
+  int y = GRID_Y + (s / COLS) * CELL_H + (s_pose_ok[s] ? 0 : s_bob);
   u16 a0 = ATTR0_SQUARE | ATTR0_4BPP | (y & ATTR0_Y_MASK);
   /* ITEM mode fades non-holders; rubber-band selection whitens marks (never both) */
   if (s_icon_blend[s] || s_selmark[s]) a0 |= ATTR0_BLEND;
@@ -691,26 +744,71 @@ static void place_grid_slot(int s) {
 
 void boxoam_load_box(const PkMon box[30]) {
   s_frame = 0;                                       /* a fresh box always shows frame 0 */
+  s_pend = 0;                                         /* void any pump half-swap the old box owed */
   /* a reload rewrites all 30 tile regions and re-shows every entry, so any borrowed
    * chunk regions / selection marks are void — the caller re-applies the chunk after */
   s_chunk_valid = 0;
   for (int s = 0; s < 30; s++) { s_covered[s] = 0; s_selmark[s] = 0; }
-  s_rom_icons = 0;
+  s_any_pose = 0;
   for (int s = 0; s < 30; s++) {
-    int bank, from_rom;
+    int bank, from_rom, cheap;
     bool egg = box[s].isEgg && !box[s].isBadEgg;
-    const uint8_t* tiles = icon_tiles(box[s].species, box[s].form, 0, egg, &bank, &from_rom);
+    const uint8_t* tiles = icon_tiles(box[s].species, box[s].form, 0, egg, &bank, &from_rom, &cheap);
     if ((egg || box[s].species) && tiles) {
       upload_icon(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles, from_rom);
       s_occupied[s] = 1; s_isegg[s] = egg ? 1 : 0; s_iconbank[s] = (uint8_t)bank;
       s_species[s] = box[s].species; s_form[s] = box[s].form;
-      if (from_rom) s_rom_icons = 1;
+      /* Eggs never pose-swap (a single frame, see boxoam_set_frame) regardless of
+       * source, so their capability bit stays 0 even though icon_tiles() itself
+       * reports whatever `cheap` the Egg row happened to resolve to. */
+      s_pose_ok[s] = (!egg && cheap) ? 1 : 0;
+      if (s_pose_ok[s]) s_any_pose = 1;
       place_grid_slot(s);
     } else {
-      s_occupied[s] = 0; s_isegg[s] = 0;
+      s_occupied[s] = 0; s_isegg[s] = 0; s_pose_ok[s] = 0;
       hide(OE_ICON0 + s);
     }
   }
+}
+
+/* Lightweight, UNVERIFIED per-tick fetch of a cheap-ROM slot's OTHER pose frame:
+ * rom_mon_icon() does its own fresh locate (2 small reads) + the 512 B frame read,
+ * with NO shared memo and NO double-compare. Both omissions are deliberate:
+ *   - sharing s_iconloc (the load-time memo) would let an unverified tick-time
+ *     locate get silently TRUSTED by a later verified caller (rom_icon_read_verified
+ *     skips its own re-locate whenever the memo already matches the species/form) —
+ *     see rom_mon_locate_verified's header comment on exactly that hazard;
+ *   - a double-compare read is the load-time cost this data already paid once at
+ *     boxoam_load_box; a glitched tick-time swap self-heals at the very next swap
+ *     (<= 1 tick later, same tolerance upload_tiles's plain-copy pose swap already
+ *     has for compiled art, box_oam.h's boxoam_set_frame comment).
+ * Only ever called when s_rom_cheap (a fused, cart-space memcpy, not SD I/O) — see
+ * pose_tile() below, the only caller. */
+static int rom_icon_pose_frame(uint16_t species, uint8_t form, uint8_t frame, int* bank) {
+  if (!s_rommon) return 0;
+  uint8_t pal = 0;
+  if (!rom_mon_icon(s_rommon, species, form, frame, (uint8_t*)s_stage, &pal)) return 0;
+  *bank = pal;
+  return 1;
+}
+
+/* Re-upload slot s's OTHER-pose tiles at `frame`, but ONLY through the cheap-ROM rung
+ * (rom_icon_pose_frame) — compiled art is handled separately, synchronously, in
+ * boxoam_set_frame itself (see that function's header for why the split MUST stop at
+ * the compiled/ROM boundary). Callers already restrict WHICH slots they pass (the even
+ * half inline in boxoam_set_frame, the odd half in boxoam_pose_pump's own `s += 2`
+ * loop), so this does not re-check parity. Silently does nothing for a slot that is no
+ * longer eligible (unoccupied, egg, covered, not pose_ok, or — despite s_pose_ok[s] —
+ * actually a COMPILED slot: mon_icon_oam_for_form_frame is tried first and, on
+ * success, this function does nothing further, because boxoam_set_frame already
+ * uploaded every compiled slot synchronously, even and odd alike). */
+static void pose_swap_rom_slot(int s, uint8_t frame) {
+  if (!s_occupied[s] || s_isegg[s] || s_covered[s] || !s_pose_ok[s]) return;
+  const uint8_t* t; int b;
+  if (mon_icon_oam_for_form_frame(s_species[s], s_form[s], frame, &t, &b)) return; /* compiled: already done */
+  if (!s_rom_cheap || !rom_icon_pose_frame(s_species[s], s_form[s], frame, &b)) return;
+  upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, s_stage,
+              MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
 }
 
 /* The real Gen-3 box "bob" — a 2-frame pose swap. DMA the chosen frame's tiles for every
@@ -729,6 +827,23 @@ void boxoam_load_box(const PkMon box[30]) {
  * plain copy: the icons were already verified when the box was staged, and a bob tick
  * re-sends bytes that are known good.)
  *
+ * PER-SLOT capability, not whole-box: s_pose_ok[s] (built at boxoam_load_box from
+ * icon_tiles()'s *cheap output) can differ slot to slot within the SAME box — e.g. one
+ * species served by the icons.bin cache (real SD I/O, never cheap) sitting next to
+ * another the cache doesn't have that fell through to a FUSED ROM (a cart-space
+ * memcpy, cheap). Compiled art and a cheap ROM source pose-swap for real; everything
+ * else keeps the 1 px positional bob — applied only to ITS OWN cell, via s_bob (which
+ * this function also drives for exactly that purpose; boxoam_set_bob is the pure
+ * "nothing at all can pose-swap" fallback the caller reaches for when this returns 0).
+ *
+ * COMPILED slots update HERE, synchronously, for every index — bit-for-bit the same
+ * per-tick work the full-art build has always done, so a full-art box is unaffected
+ * down to the frame. Only CHEAP-ROM slots (a fused cart-space memcpy: a fresh locate +
+ * 512 B read per slot, not a bare DMA) split across two vblank ticks — even here, odd
+ * on the very next boxoam_pose_pump() call — which is a real cost only the artless
+ * build's cheap-ROM rung ever pays, matching the design this file's header block
+ * (icon_tiles' *cheap comment) already committed to.
+ *
  * Returns 1 if it animated, 0 if it could not — the caller uses that to fall back to the
  * 1 px positional bob rather than leaving the grid dead. */
 int boxoam_set_frame(int frame) {
@@ -737,28 +852,44 @@ int boxoam_set_frame(int frame) {
    * past 0, so an equality test placed above this line answers "1, already there" on
    * every even tick. The caller then skips its boxoam_set_bob(0), the grid nudges down
    * on odd ticks and never comes back up, and the icons park 1 px low forever — worse
-   * than the bob this was meant to replace. That shipped in 010ec90; this is the fix.
-   *
-   * Streamed icons have no frame-1 source in RAM, and there is nowhere to cache one:
-   * frame 1 for a full box is 15 KiB, EWRAM has ~1.5 KiB free, and the only large
-   * borrowable block (app_arena_acquire) IS g_pc — the very buffer this screen is
-   * displaying. So the artless/ROM-icon build keeps the positional bob. */
-  if (s_rom_icons) return 0;
+   * than the bob this was meant to replace. That shipped in 010ec90; this is the fix. */
+  if (!s_any_pose) return 0;      /* NOTHING in this box can pose-swap: whole-grid bob */
   frame &= 1;
   if (frame == s_frame) return 1;               /* already there == animating fine */
   s_frame = frame;
+  s_bob = frame;      /* the offset place_grid_slot applies to non-pose-capable slots */
+  int any_rom_pending = 0;
   for (int s = 0; s < 30; s++) {
-    /* eggs keep their single Egg frame; covered regions hold the carried block's art
-     * (the pose anim is paused for the whole carry — this guards the forced frame-0
-     * reset at carry start; if the bob ever runs DURING a carry, this must instead
-     * upload the carried mon's frame for covered slots) */
     if (!s_occupied[s] || s_isegg[s] || s_covered[s]) continue;
-    const uint8_t* tiles; int bank;
-    if (mon_icon_oam_for_form_frame(s_species[s], s_form[s], (uint8_t)frame, &tiles, &bank))
-      upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles,
-                   MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
+    if (!s_pose_ok[s]) {                        /* this ONE slot can't pose-swap: nudge it */
+      int y = GRID_Y + (s / COLS) * CELL_H + s_bob;
+      obj_set_pos(oe(OE_ICON0 + s), GRID_X + (s % COLS) * CELL_W, y);
+      continue;
+    }
+    const uint8_t* t; int b;
+    if (mon_icon_oam_for_form_frame(s_species[s], s_form[s], (uint8_t)frame, &t, &b)) {
+      upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, t,
+                   MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);   /* compiled: always now */
+      continue;
+    }
+    if ((s & 1) == 0) pose_swap_rom_slot(s, (uint8_t)frame);       /* cheap-ROM, even: now */
+    else any_rom_pending = 1;                                       /* cheap-ROM, odd: pump */
   }
+  if (any_rom_pending) { s_pend = 1; s_pend_frame = frame; }
   return 1;
+}
+
+/* The deferred half of a pose swap: the ODD-indexed cheap-ROM slots boxoam_set_frame
+ * left for next tick (compiled slots never defer — see that function's header). A pure
+ * no-op once caught up (s_pend clears the moment it runs, and is never even SET unless
+ * a cheap-ROM slot actually deferred), so callers can call this UNCONDITIONALLY every
+ * vblank tick — see box_oam.h. In a full-art build s_pend is never 1, so this compiles
+ * to a single branch that is never taken: zero added per-tick cost there. */
+void boxoam_pose_pump(void) {
+  if (!s_pend) return;
+  s_pend = 0;
+  uint8_t frame = (uint8_t)s_pend_frame;
+  for (int s = 1; s < 30; s += 2) pose_swap_rom_slot(s, frame);
 }
 
 void boxoam_set_bob(int dy) {
@@ -838,8 +969,8 @@ void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg) {
   int ix = fx - 3 + 0, iy = fy + 4;              /* mon: centred under the fist */
   load_regb_grab();                                  /* fist tiles -> region B */
   REG_BLDCNT = 0;                                    /* carried mon is opaque  */
-  int bank = 0, from_rom = 0;
-  const uint8_t* tiles = icon_tiles(species, form, 0, egg, &bank, &from_rom);
+  int bank = 0, from_rom = 0, cheap = 0;
+  const uint8_t* tiles = icon_tiles(species, form, 0, egg, &bank, &from_rom, &cheap);
   if (tiles) {                                       /* the held mon (or Egg) rides the glove */
     upload_icon(TID_HAND, tiles, from_rom);
     s_rega = 2;                                      /* region A now holds the held mon */
@@ -867,9 +998,9 @@ void boxoam_show_slot(int s) { if (s >= 0 && s < 30 && s_occupied[s]) place_grid
  * and re-show/hide it — undoes a chunk borrow of that slot's tile region. */
 static void restore_slot(int s) {
   if (!s_occupied[s]) { hide(OE_ICON0 + s); return; }
-  int bank, from_rom;
+  int bank, from_rom, cheap;
   const uint8_t* tiles = icon_tiles(s_species[s], s_form[s], (uint8_t)s_frame,
-                                    s_isegg[s], &bank, &from_rom);
+                                    s_isegg[s], &bank, &from_rom, &cheap);
   if (tiles) {
     upload_icon(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles, from_rom);
     s_iconbank[s] = (uint8_t)bank;
@@ -925,9 +1056,9 @@ void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
 
   for (int i = 0; i < n && i < 30; i++) {
     int r = tr + mons[i].rr, c = tc + mons[i].cc, s = r * COLS + c;
-    int bank = 0, from_rom = 0;
+    int bank = 0, from_rom = 0, cheap = 0;
     const uint8_t* tiles = icon_tiles(mons[i].species, mons[i].form, 0, mons[i].egg,
-                                      &bank, &from_rom);
+                                      &bank, &from_rom, &cheap);
     bool have = (tiles != 0);
     if (!s_covered[s]) {                             /* cover TRANSITION: put the occupant into
                                                       * the bitmap so the ghost blends over it */
@@ -990,8 +1121,8 @@ void boxoam_chunk_end(void) {
  * it would be a same-buffer copy; read it directly. */
 void boxoam_slot_blit_bitmap(int s) {
   if (s < 0 || s >= 30 || !s_occupied[s]) return;
-  int bank, from_rom;
-  const uint8_t* tiles = icon_tiles(s_species[s], s_form[s], (uint8_t)s_frame, s_isegg[s], &bank, &from_rom);
+  int bank, from_rom, cheap;
+  const uint8_t* tiles = icon_tiles(s_species[s], s_form[s], (uint8_t)s_frame, s_isegg[s], &bank, &from_rom, &cheap);
   if (!tiles) return;
   const uint8_t* src = tiles;
   if (!from_rom) {
@@ -1024,8 +1155,8 @@ void boxoam_slot_blit_bitmap(int s) {
 int boxoam_icon_blit_clip(int x, int y, int cx0, int cy0, int cx1, int cy1,
                            uint16_t species, uint8_t form, bool egg) {
   if (!species && !egg) return 0;
-  int bank, from_rom;
-  const uint8_t* tiles = icon_tiles(species, form, 0, egg, &bank, &from_rom);
+  int bank, from_rom, cheap;
+  const uint8_t* tiles = icon_tiles(species, form, 0, egg, &bank, &from_rom, &cheap);
   if (!tiles) return 0;                               /* artless / not in this source */
   const uint8_t* src = tiles;
   if (!from_rom) {
@@ -1099,8 +1230,8 @@ void boxoam_strip_open(int x0, int x1) {
 static void strip_draw(int s, int x, int y, uint16_t species, uint8_t form, bool egg) {
   if (s < 0) return;                          /* no grid cell under the panel to reuse */
   if (!species && !egg) { hide(OE_ICON0 + s); return; }
-  int bank, from_rom;
-  const uint8_t* tiles = icon_tiles(species, form, 0, egg, &bank, &from_rom);
+  int bank, from_rom, cheap;
+  const uint8_t* tiles = icon_tiles(species, form, 0, egg, &bank, &from_rom, &cheap);
   if (!tiles) { hide(OE_ICON0 + s); return; }             /* artless / not in this source */
   upload_icon(TID_ICON0 + s * MON_ICON_OAM_TILES, tiles, from_rom);
   u16 a0 = ATTR0_SQUARE | ATTR0_4BPP | (y & ATTR0_Y_MASK);

@@ -3566,7 +3566,22 @@ static void pdna_pokeblock(void) {
   BgFrame chrome = pokeblock_bg((int)g_game);
   const int VIS = chrome.blob ? PB_ROWS : 13;               /* retail's panel holds 9 rows */
   for (;;) {
-    if (chrome.blob) bg_restore(chrome, 0, 0, PB_BG_W, PB_BG_H);  /* 20 LZ77 pages */
+    if (chrome.blob) {
+      bg_restore(chrome, 0, 0, PB_BG_W, PB_BG_H);  /* 20 LZ77 pages */
+#if !PDNA_POKEBLOCK_ART_COMPILED
+      /* The compiled-art build bakes the case DEVICE straight into the frame
+       * above (gen_pokeblock_bg.py's composite_device(), build time); the ROM
+       * rung fetched it as a SEPARATE decode (rom_chrome.h's device_tiles/
+       * device_pal, folded into the same s_pb_chrome buffer) and composites
+       * it here, every pass, same cadence as the chrome restore right above
+       * -- nothing else touches mon_decomp during this screen's visit, so
+       * s_pb_chrome's pointers are still good. device_tiles == 0 (fetch
+       * failed) just leaves the case empty, never garbled. */
+      if (s_pb_chrome.device_tiles)
+        romchrome_blit_tiles(s_pb_chrome.device_tiles, s_pb_chrome.device_pal, 0, 8, 8,
+                             ROM_CHROME_POKEBLOCK_DEVICE_X, ROM_CHROME_POKEBLOCK_DEVICE_Y);
+#endif
+    }
     else ui_clear();
     int have = 0;
     for (int i = 0; i < PK_POKEBLOCK_COUNT; i++) { PkPokeblock p; pk_pokeblock_get(g_sb1, g_game, i, &p); if (pk_pokeblock_occupied(&p)) have++; }

@@ -169,6 +169,109 @@ __attribute__((weak)) BgFrame card_bg_back(int game, int tier, int female) {
 __attribute__((weak)) const uint16_t* card_badge16(int game, int i) { (void)game; (void)i; return 0; }
 __attribute__((weak)) const uint16_t* card_hoenn_dex(void) { return 0; }
 
+/* ---- ROM-streamed FOREGROUND art: stars / badges / photo ------------------
+ *
+ * A CORRECTION to what this file used to assume (see the old comment this
+ * replaces, still visible in git blame): "STARS and SEX are baked into the
+ * frame" is true for SEX (the whole card front/back swaps) but WRONG for
+ * STARS. The tier passed to card_bg() only selects the border/surround
+ * PALETTE (tools/gen_card_bg.py's own docstring: "the tier is palette-only");
+ * the star GLYPHS are a runtime overlay even in the COMPILED build --
+ * gen_card_bg.py's draw_star() stamps `tier` copies of tile 143 at build
+ * time, using a palette (star.pal) that is never part of the tier's own 3
+ * banks. A frame with 0 stars and a frame with 4 stars share the exact same
+ * tilemap; only the offline compositor (or, here, the runtime one) puts the
+ * stars there. This was invisible in the compiled build (the star pixels are
+ * simply always present in whichever pre-baked frame was chosen) and only
+ * showed up as a real gap once the ROM rung had to draw them itself.
+ *
+ * badges.png / the photo were never wired at all -- rom_chrome.h's own scope
+ * note said so plainly ("this module deliberately does not wire
+ * card_badge16() ... so nothing else touches the buffer"). All three ROM
+ * addresses were located 2026-08-22 (rom_chrome.c's CardBadgePins/
+ * CardPhotoPins tables document each one).
+ *
+ * THE EWRAM TRAP THIS ALMOST SHIPPED WITH: a first pass gave badges/photo
+ * their OWN new static scratch buffer (2,080 B, the photo's worst case),
+ * reasoning that mon_decomp is busy holding the card's own tileset+tilemaps+
+ * palette (up to ~7,776 B on Ruby) for card_restore()'s partial re-blits. The
+ * artless build's actual EWRAM headroom that day was 748 B, not the "~10 KB"
+ * this project's own brief warns is stale and must be measured -- `make
+ * rebuild` with the generated art hidden failed outright: "FATAL: EWRAM
+ * OVERFLOW ... 1,332 bytes past the end". A NEW static buffer was never
+ * affordable here.
+ *
+ * The fix is not a smaller buffer -- badges (1,024 B tileset alone) and the
+ * photo (2,048 B) still do not fit in 748 B. It is to stop assuming
+ * mon_decomp's card-background residency ever safely outlives a SINGLE
+ * decode-then-consume step, and follow the SAME rule pdna_bag.c's bag chrome
+ * already lives by: badges/photo decode INTO mon_decomp (the existing 8,192 B
+ * buffer, zero new EWRAM), clobbering whatever the card's tileset/tilemaps
+ * were doing there -- so card_restore()/card_field() below no longer trust a
+ * stale `bg` handle across a call boundary; every restore re-fetches
+ * card_bg()/card_bg_back() FRESH (cheap in the compiled build: a stateless
+ * lookup into the pre-baked LZ77-paged blob; a real but small re-decode in
+ * the ROM build, same class of cost this file already pays per cursor move
+ * on the badge cursor). See card_restore()'s own comment for the sequencing
+ * this buys: decode bg -> blit -> [mon_decomp free again] -> decode+draw the
+ * field's own overlay (badges/stars/photo), never two decodes resident at
+ * once. */
+
+static void card_draw_stars(PkGame game, int tier) {
+#if !PDNA_CARD_ART_COMPILED
+  if (!s_romchrome || !rom_chrome_card_have(s_romchrome, (int)game)) return;
+  static const int16_t k_star_id = ROM_CHROME_STAR_TILE;
+  const CardLayout* L = &CARD_LAYOUTS[game];
+  int sx = L->rect[CARDF_STARS].x + 3, sy = L->rect[CARDF_STARS].y + 3;   /* ink box
+                                                                          * -3 px pad
+                                                                          * (card_bg.h) */
+  if (tier > 4) tier = 4;
+  /* Reads s_chrome_card DIRECTLY (not a fresh decode of its own): correct
+   * only because every caller (card_field()'s CARDF_STARS case) runs
+   * immediately after a card_bg()/card_bg_back() call that just populated it,
+   * with nothing else touching mon_decomp in between -- see card_field()'s
+   * own call order. */
+  for (int s = 0; s < tier; s++)
+    romchrome_blit_tiles(s_chrome_card.src.tiles, s_chrome_card.star_pal,
+                         &k_star_id, 1, 1, sx + 8 * s, sy);
+#else
+  (void)game; (void)tier;
+#endif
+}
+
+static void card_draw_badge(PkGame game, int i, int x, int y) {
+#if !PDNA_CARD_ART_COMPILED
+  if (s_romchrome && rom_chrome_card_badges_have(s_romchrome, (int)game)) {
+    RomChromeCardBadges b;
+    if (rom_chrome_card_badges_load(s_romchrome, (int)game,
+                                    (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &b)) {
+      int16_t ids[4];
+      if (rom_chrome_card_badge_ids(s_romchrome, (int)game, i, ids))
+        romchrome_blit_tiles(b.tiles, b.pal, ids, 2, 2, x, y);
+      return;
+    }
+  }
+#endif
+  ui_sprite(x, y, 16, 16, card_badge16((int)game, i));   /* compiled-art path (or a
+                                                          * no-ROM artless no-op) */
+}
+
+static void card_draw_photo(PkGame game, int female) {
+#if !PDNA_CARD_ART_COMPILED
+  if (!s_romchrome || !rom_chrome_card_photo_have(s_romchrome, (int)game)) return;
+  RomChromeCardPhoto ph;
+  if (!rom_chrome_card_photo_load(s_romchrome, (int)game, female,
+                                  (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &ph)) return;
+  const CardLayout* L = &CARD_LAYOUTS[game];
+  int px = L->rect[CARDF_SEX].x + 3, py = L->rect[CARDF_SEX].y + 3;   /* photo is a
+                                                                       * 64x64 ink box,
+                                                                       * -3 px pad */
+  romchrome_blit_tiles(ph.tiles, ph.pal, 0, 8, 8, px, py);
+#else
+  (void)game; (void)female;   /* compiled art already baked the photo into card_bg() */
+#endif
+}
+
 #define CINK   RGB15( 9,  9, 10)   /* card text (the games' dark-gray ink) */
 #define CFOOT  RGB15(31, 31, 31)   /* footer hint on the card border       */
 #define CSEL   RGB15(26,  4,  3)   /* selection frame (pdna_bag's red)     */
@@ -192,11 +295,18 @@ static void card_blit(BgFrame bg) {
  * bg. All geometry comes from card_bg.h — nothing game-specific here. */
 
 /* Draw one field's runtime overlay at the game's own position (card_bg.h);
- * STARS and SEX are baked into the frame, so they have nothing to add. RS
- * bakes the NAME/IDNo./MONEY/TIME labels into the art (L->labels == 0), so
- * only the bare values are drawn there. */
-static void card_field(int f, PkGame game, const uint8_t* sb1, const char* name,
-                       uint16_t tid, uint32_t money, uint16_t ph, uint8_t pm) {
+ * SEX itself is baked into the frame (the whole card front/back swaps), but
+ * unlike RS/E/FRLG's compiled build the ROM rung's card_bg() does NOT bake
+ * the trainer photo into that swap (card_draw_photo() draws it as a runtime
+ * overlay -- rom_chrome.h's photo section), so CARDF_SEX still has a case
+ * below: redraw the photo, purely cosmetic in the compiled build (it is
+ * already part of the frame there, so this just repaints the same pixels)
+ * but load-bearing in the ROM build. STARS is likewise NOT baked in -- see
+ * card_draw_stars()'s comment above for why that used to be assumed and was
+ * wrong. RS bakes the NAME/IDNo./MONEY/TIME labels into the art
+ * (L->labels == 0), so only the bare values are drawn there. */
+static void card_field(int f, PkGame game, int tier, int female, const uint8_t* sb1,
+                       const char* name, uint16_t tid, uint32_t money, uint16_t ph, uint8_t pm) {
   const CardLayout* L = &CARD_LAYOUTS[game];
   char line[32];
   switch (f) {
@@ -223,12 +333,30 @@ static void card_field(int f, PkGame game, const uint8_t* sb1, const char* name,
       siprintf(line, "%u:%02u", (unsigned)ph, (unsigned)pm);
       ui_text(L->val_xr - 8 * (int)strlen(line), L->time_y, CINK, line);
       break;
+    case CARDF_SEX:                          /* ROM rung only: repaint the photo
+                                              * this field's rect covers (see the
+                                              * function comment above) */
+      card_draw_photo(game, female);
+      break;
+    case CARDF_STARS:                        /* tier's star row -- NOT baked
+                                              * into the frame (that was a
+                                              * wrong assumption this file
+                                              * carried: the frame only bakes
+                                              * the PALETTE tier/border; the
+                                              * star GLYPHS themselves are a
+                                              * shared tile drawn `tier` times
+                                              * at runtime, exactly as
+                                              * tools/gen_card_bg.py's own
+                                              * draw_star() does at build
+                                              * time for the compiled art). */
+      card_draw_stars(game, tier);
+      break;
     case CARDF_BADGES:                       /* badges overlay only when owned
                                               * (the baked empty slots keep the
                                               * games' own 1..8 digit marks) */
       for (int i = 0; i < 8; i++)
         if (pk_flag_get(sb1, game, pk_badge_flag(game, i)))
-          ui_sprite(L->badge_x + 24 * i, L->badge_y, 16, 16, card_badge16(game, i));
+          card_draw_badge(game, i, L->badge_x + 24 * i, L->badge_y);
       break;
   }
 }
@@ -268,12 +396,25 @@ static void card_sel_frame(PkGame game, int f, int bsel) {
 /* restore a field's rect from the ROM bg and repaint its overlay (no smear).
  * +1 px right/bottom so the selection frame is erased whichever edge
  * convention m3_frame uses (all rects stay on-screen with the margin). */
-static void card_restore(BgFrame bg, int f, int bsel, PkGame game,
+/* Fetches its OWN card_bg() FRESH rather than trusting a `bg` handle the
+ * caller already holds -- required correctness in the ROM build, not style:
+ * card_draw_badge()/card_draw_photo() (called from card_field() below, for
+ * the very field this function is about to restore) decode INTO mon_decomp,
+ * the SAME buffer card_bg()'s tileset/tilemaps/palette live in, so a `bg`
+ * captured before an earlier badge/photo draw would read clobbered bytes.
+ * Sequencing per call: decode bg -> bg_restore() [reads it, done] ->
+ * card_field() [may decode a DIFFERENT thing into the same buffer, fine --
+ * nothing after this call needs `bg` again until the NEXT card_restore()].
+ * Cheap in the compiled build (a stateless lookup); a real but small (a few
+ * KB) re-decode in the ROM build, the same class of cost this file already
+ * pays on every badge-cursor L/R press. */
+static void card_restore(int f, int bsel, PkGame game, int tier, int female,
                          const uint8_t* sb1, const char* name, uint16_t tid,
                          uint32_t money, uint16_t ph, uint8_t pm) {
   int x, y, w, h; card_rect(game, f, bsel, &x, &y, &w, &h);
+  BgFrame bg = card_bg(game, tier, female);
   bg_restore(bg, x, y, w + 1, h + 1);
-  card_field(f, game, sb1, name, tid, money, ph, pm);
+  card_field(f, game, tier, female, sb1, name, tid, money, ph, pm);
 }
 
 /* ---- the card BACK (L/R flips; geometry + row model in card_bg.h) ---- */
@@ -442,17 +583,17 @@ static void card_editor(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
                         bool* d1, bool* d2) {
   const CardLayout* L = &CARD_LAYOUTS[game];
   const int nback = CARD_BACK_LAYOUTS[game].nrows;
-  int sel = CARDF_NAME, bsel = 0, brow = 0;
+  int sel = CARDF_NAME, bsel = 0, brow = 0, tier = 0;
   bool back = false, full = true;
   BgFrame bg = { 0, 0, CARD_BG_W };
   for (;;) {
     if (full) {                              /* (re)blit + all overlays */
-      int tier = pk_star_count(sb1, sb2, game, card_hoenn_dex());
+      tier = pk_star_count(sb1, sb2, game, card_hoenn_dex());
       if (!back) {
         bg = card_bg(game, tier, *gender);
         card_blit(bg);
         for (int f = 0; f < CARDF_NUM; f++)
-          card_field(f, game, sb1, name, *tid, *money, *ph, *pm);
+          card_field(f, game, tier, *gender, sb1, name, *tid, *money, *ph, *pm);
         if (pk_flag_get(sb1, game, L->dex_flag)) {   /* dex row: display-only */
           char line[16]; int seen, caught; bool nat; pk_pokedex(sb2, &seen, &caught, &nat);
           if (L->labels) ui_text(L->lbl_x, L->dex_y, CINK, "POKeDEX");
@@ -504,11 +645,11 @@ static void card_editor(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
     }
 
     if (k & (KEY_UP | KEY_DOWN)) {           /* move the frame: restore + repaint */
-      card_restore(bg, sel, bsel, game, sb1, name, *tid, *money, *ph, *pm);
+      card_restore(sel, bsel, game, tier, *gender, sb1, name, *tid, *money, *ph, *pm);
       sel = (k & KEY_UP) ? (sel > 0 ? sel - 1 : CARDF_NUM - 1) : (sel + 1) % CARDF_NUM;
       card_sel_frame(game, sel, bsel);
     } else if ((k & (KEY_LEFT | KEY_RIGHT)) && sel == CARDF_BADGES) {
-      card_restore(bg, sel, bsel, game, sb1, name, *tid, *money, *ph, *pm);
+      card_restore(sel, bsel, game, tier, *gender, sb1, name, *tid, *money, *ph, *pm);
       bsel = (bsel + ((k & KEY_RIGHT) ? 1 : 7)) & 7;   /* badge cursor 0..7 */
       card_sel_frame(game, sel, bsel);
     } else if ((k & KEY_SELECT) && sel == CARDF_BADGES && game == PK_EMERALD) {
@@ -542,7 +683,7 @@ static void card_editor(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
           int fn = pk_badge_flag(game, bsel);
           if (fn >= 0) {
             pk_flag_set(sb1, game, fn, !pk_flag_get(sb1, game, fn)); *d1 = true;
-            card_restore(bg, sel, bsel, game, sb1, name, *tid, *money, *ph, *pm);
+            card_restore(sel, bsel, game, tier, *gender, sb1, name, *tid, *money, *ph, *pm);
             card_sel_frame(game, sel, bsel);
           }
         } break;
