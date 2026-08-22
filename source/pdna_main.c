@@ -2967,11 +2967,17 @@ static void party_icon_y(int i, int* ry, int* iy) {
   *iy = *ry - 5; if (*iy < 12) *iy = 12; else if (*iy > 118) *iy = 118;
 }
 
-/* Recompose the whole party icon COLUMN (x 2..35) for the current bob frame, one
- * scanline at a time: fill each line with that row's background (the selection bar is
- * UI_SEL, others UI_BG), then overlay every icon that crosses the line IN ORDER so the
- * row overlap layers exactly like the static transparent draw — no solid bg square, no
- * cut-off feet. compose-then-DMA (no erase) => flicker-free; runs only on idle frames. */
+/* Recompose the whole party icon COLUMN (x 2..35) for the current bob frame.
+ * FULL-ART: one scanline at a time -- fill each line with that row's background (the
+ * selection bar is UI_SEL, others UI_BG), then overlay every icon that crosses the line
+ * IN ORDER; only opaque pixels overwrite, so the row overlap layers exactly like the
+ * static transparent draw -- no solid bg square, no cut-off feet.
+ * ARTLESS: icon-major, not scanline-major (see the #else branch below) -- each icon's
+ * pass repaints its own band unconditionally, background included, so paint order alone
+ * decides who wins a shared band; walking it backwards (MUST-FIX 1, 2026-08-22) makes
+ * the upper icon of each adjacent pair win instead of the lower, which is what keeps
+ * feet from being cut off there too. compose-then-DMA (no erase) => flicker-free; runs
+ * only on idle frames. */
 static u16 __attribute__((aligned(4))) s_pcol[34];
 
 /* MUST-FIX 2 (2026-08-22 review): mon_icon_for_form_frame/mon_icon_egg_frame return a
@@ -3004,15 +3010,27 @@ static u16 __attribute__((aligned(4))) s_pcol[34];
  * colouring the scanline sweep used), THEN move to the next mon -- never holding a
  * pointer past the one decode that produced it. Where two adjacent icons' bounding
  * boxes overlap (11 rows -- party_icon_y's own ROW pitch=21 vs icon height=32; only
- * ADJACENT icons ever overlap, pitch*2=42 > 32), the LATER (lower) mon's pass fully
- * repaints those shared rows, background included -- this is party_icon_repaint's
- * own already-shipped model for the identical adjacent-icon overlap in
- * app_party_overlay's bob, not a new invention. The one visual difference from the
- * full-art path's opaque-wins/transparent-lets-the-row-above-show-through
- * compositing is confined to fully-transparent pixels in those shared rows -- a
- * cosmetic edge case, not a correctness one, against the alternative this fix
- * removes (six copies of one mon, a genuine bug). Zero new static storage either
- * way: both paths reuse s_pcol, the one scratch this function already had. */
+ * ADJACENT icons ever overlap, pitch*2=42 > 32), whichever mon's pass runs LAST fully
+ * repaints those shared rows, background included -- unlike the full-art sweep, this
+ * is NOT opaque-wins/transparent-lets-the-row-above-show-through, it is
+ * last-write-wins, full stop. Getting the order wrong is a real correctness bug, not
+ * a cosmetic one: an ascending loop (0..n-1, matching the full-art sweep's iteration
+ * order) paints the LOWER mon of each pair last, and Gen-3 icons carry almost no ink
+ * in their own top rows (measured against this pack's real icon PNGs via the same
+ * PNG->RGB15 conversion tools/gen_icons.py ships: 43 opaque px in rows 0..10 is the
+ * MAX over the whole 411-species/2-frame set, 411 of 838 frames have zero there) --
+ * so the lower mon's near-blank top band blanked the upper mon's ink-heavy bottom
+ * band (rows 21..31: 106-170px lost per adjacent pair, worst pair GENGAR/DRAGONITE
+ * at 170px, for a 6-mon Tyranitar/Salamence/Metagross/Gengar/Dragonite/Milotic party)
+ * with plain background -- 740 differing pixels total vs. the full-art reference
+ * render for that party. That shipped for a time and erased the bottom third of five
+ * of six party icons after the first bob tick. MUST-FIX 1 (2026-08-22 review) walks
+ * the loop backwards (n-1..0) instead, so the UPPER mon of each pair paints last and
+ * reclaims the shared band with its own ink; re-measured the same way, the same
+ * party drops to 52 differing pixels total, worst pair TYRANITAR/SALAMENCE at 21px
+ * -- bounded by the OTHER mon's near-empty top-row ink instead of the ink-heavy
+ * bottom-row loss. Zero new static storage either way: both paths reuse s_pcol, the
+ * one scratch this function already had. */
 static void party_bob_recompose(int n, int sel, int frame) {
   /* NULL and egg handling this loop (both builds) must get right, learned the hard
    * way before this MUST-FIX 2 pass:
@@ -3059,7 +3077,21 @@ static void party_bob_recompose(int n, int sel, int frame) {
   rumble_io_resume();
 #else
   rumble_io_suspend();   /* composes from mon_icon ROM/cache data; mute the cart-bus motor toggle */
-  for (int i = 0; i < n; i++) {
+  /* MUST-FIX 1 (2026-08-22 review): walk BACKWARDS (n-1 .. 0), i.e. bottom party slot
+   * first. Each icon's pass repaints its own full MON_ICON_H band unconditionally
+   * (transparent pixels become background, not "leave alone" -- see the loop body),
+   * so whichever icon paints a shared band LAST wins it outright. Ascending order used
+   * to paint the LOWER of each adjacent pair last, so its near-empty top rows (at most
+   * 43 opaque px anywhere in the whole icon set) blanked the UPPER icon's ink-heavy
+   * bottom rows (21..31) with background -- measured against this pack's real icon
+   * art, 740 differing pixels vs. the full-art reference for a 6-mon Tyranitar/
+   * Salamence/Metagross/Gengar/Dragonite/Milotic party, i.e. five of six party icons
+   * lost their feet after the first bob tick. Descending order paints the UPPER icon
+   * of each pair last instead, so its own ink reclaims the shared band; the same
+   * party re-measures at 52 differing pixels, bounded by the lower icon's near-empty
+   * top-row ink instead. See party_bob_recompose's own header comment for the full
+   * per-pair numbers. */
+  for (int i = n - 1; i >= 0; i--) {
     const u16* ic = (g_party[i].isEgg && !g_party[i].isBadEgg)
                 ? mon_icon_egg_frame((uint8_t)frame)
                 : mon_icon_for_form_frame(g_party[i].species, g_party[i].form, (uint8_t)frame);
@@ -3112,8 +3144,11 @@ static int party_list(void) {
     ui_text(4, 152, UI_DIM, "A actions  START menu  B back");
 
     /* idle 2-frame bob (compose-over-DMA, no erase). Animate only on frames with NO key
-     * pending so navigation never stutters; recompose every icon in order so the row
-     * overlap layers exactly like the static draw (each over its own row's background).
+     * pending so navigation never stutters; party_bob_recompose() calls out per build
+     * how it orders the icons -- FULL-ART's scanline sweep layers exactly like the
+     * static draw (opaque-wins, so order doesn't matter); ARTLESS's icon-major loop is
+     * last-write-wins and must walk backwards (MUST-FIX 1, 2026-08-22) for the shared
+     * row band to come out right -- that is NOT the same layering as the static draw.
      * MUST-FIX 3 (2026-08-22 review): mon_icon_anim_cheap() gates this off when the
      * ONLY icon source is the ROM rung (art_fallbacks.c) -- up to 6 party mons' worth
      * of locate-then-verify (up to 8 real SD reads each on a miss) every 30-frame
