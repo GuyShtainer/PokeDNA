@@ -151,6 +151,87 @@ int rom_mon_locate_row_verified(const RomMon* rm, uint16_t row, RomMonLoc* out,
 
 uint16_t rom_mon_table_rows(void) { return RM_TABLE_ENTRIES; }
 
+/* A Fletcher-style running pair over a blob, in one pass and with no second buffer:
+ * the destination itself is both passes' target and only the two sums are compared.
+ * That is the same trick box_oam.c's stage_sum and icon_store.c's row_sum use, one
+ * accumulator wider -- and the extra accumulator earns its keep here, because a PLAIN
+ * byte sum cannot see two bytes swapping places, and in a 1,760 B table of pointers a
+ * swapped pair is not a smudge, it is the wrong species' icon at full confidence. */
+static uint32_t blob_sum(const uint8_t* b, uint32_t n) {
+  uint32_t a = 1, c = 0;
+  for (uint32_t i = 0; i < n; i++) { a += b[i]; c += a; }
+  return (a & 0xFFFFu) | (c << 16);
+}
+
+/* Read `len` bytes at `off` into `dst` twice back to back and accept only when the two
+ * passes' sums agree, up to `attempts` times. Returns 1 = trustworthy, 0 = a read
+ * failed, -1 = the reads succeeded but never agreed. */
+static int read_verified(const RomMon* rm, uint32_t off, uint8_t* dst, uint32_t len,
+                         int attempts) {
+  for (int a = 0; a < attempts; a++) {
+    if (!rm->rc->read(rm->rc->ctx, off, dst, len)) return 0;
+    uint32_t s1 = blob_sum(dst, len);
+    if (!rm->rc->read(rm->rc->ctx, off, dst, len)) return 0;
+    if (blob_sum(dst, len) == s1) return 1;
+  }
+  return -1;
+}
+
+int rom_mon_read_tables(const RomMon* rm, uint32_t off[], uint8_t palid[],
+                        uint16_t pals[][16], int* bad_rows) {
+  const int ATT = 4;
+  int bad = 0;
+
+  if (bad_rows) *bad_rows = 0;
+  if (!rm || !rm->ok || !off || !palid || !pals) return 0;
+
+  /* The pointer table, read as RAW BYTES into its own destination and widened in
+   * place. Forward order is what makes in-place safe: entry i is written only after
+   * bytes [4i, 4i+4) have been consumed, and nothing later has been touched yet. The
+   * widening goes through rd32le, never a pointer cast -- ARM7TDMI silently ROTATES an
+   * unaligned word load rather than faulting, and 438 of these 440 values sit at
+   * offsets a cast would get wrong on some other table. */
+  if (read_verified(rm, rm->icons, (uint8_t*)off, RM_TABLE_ENTRIES * 4u, ATT) != 1) return 0;
+  {
+    const uint8_t* raw = (const uint8_t*)off;
+    for (uint32_t i = 0; i < RM_TABLE_ENTRIES; i++) {
+      uint32_t pic = rd32le(raw + i * 4u);
+      if (ptr_ok(rm, pic, ROM_MON_ICON_FRAMES * ROM_MON_ICON_BYTES)) {
+        off[i] = pic - ROM_BASE;
+      } else {
+        off[i] = ROM_MON_OFF_NONE;                 /* no icon for this row, as before */
+        bad++;
+      }
+    }
+  }
+
+  /* The palette-id table. One byte per row, no widening, same verify. */
+  if (read_verified(rm, rm->pal_ids, palid, RM_TABLE_ENTRIES, ATT) != 1) return 0;
+  for (uint32_t i = 0; i < RM_TABLE_ENTRIES; i++)
+    if (palid[i] >= ROM_MON_PALS) { palid[i] = 0xFF; bad++; }
+
+  /* The 3 shared palettes: one verified read of the SpritePalette array, then one
+   * verified read of each 32 B colour block it points at. A palette that will not
+   * verify fails the WHOLE load rather than being marked bad per-bank: unlike a row,
+   * there is no "this one mon has no icon" degradation available -- every row using
+   * that bank would draw in the wrong colours, which looks like working art. */
+  {
+    uint8_t pe[ROM_MON_PALS * 8];
+    if (read_verified(rm, rm->pals, pe, sizeof pe, ATT) != 1) return 0;
+    for (int i = 0; i < ROM_MON_PALS; i++) {
+      uint32_t pd = rd32le(pe + i * 8);
+      uint8_t raw[32];
+      if (!ptr_ok(rm, pd, 32)) return 0;
+      if (read_verified(rm, pd - ROM_BASE, raw, 32, ATT) != 1) return 0;
+      for (int c = 0; c < 16; c++)
+        pals[i][c] = (uint16_t)(raw[c * 2] | ((uint16_t)raw[c * 2 + 1] << 8));
+    }
+  }
+
+  if (bad_rows) *bad_rows = bad;
+  return 1;
+}
+
 int rom_mon_icon_at(const RomMon* rm, const RomMonLoc* loc, uint8_t frame,
                     uint8_t dst[ROM_MON_ICON_BYTES]) {
   if (!rm || !rm->ok || !loc || !loc->ok) return 0;

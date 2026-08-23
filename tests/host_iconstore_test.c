@@ -431,12 +431,32 @@ static void t_failures(void) {
 }
 
 /* ================= the ROM rung, on Guy's real dumps ============================= */
-typedef struct { FILE* f; long reads; } FileCtx;
+typedef struct {
+  FILE* f;
+  long  reads;
+  /* The ROM rung's reads do NOT go through lib/fatfs here, so the sweep's ORDER has to
+   * be watched at this level instead of at disk_read. `back` counts reads that started
+   * at a lower file offset than the previous one -- the only case FatFs restarts a
+   * cluster walk from the head of the chain, and therefore the property the sort exists
+   * to produce. `fail_in` kills the Nth read, for the fill-then-validate case. */
+  long  back, prev;
+  long  fail_in;
+  /* A cart that READS SUCCESSFULLY AND HANDS BACK DIFFERENT BYTES EACH TIME -- which is
+   * the exact failure the double-read verify exists for and the one a single read
+   * cannot see. Every read comes back with one byte stirred by a counter, so no two
+   * passes ever agree. */
+  int   garble;
+} FileCtx;
 static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   FileCtx* fc = (FileCtx*)ctx;
   fc->reads++;
+  if (fc->fail_in > 0 && --fc->fail_in == 0) return false;
+  if ((long)off < fc->prev) fc->back++;
+  fc->prev = (long)off;
   if (fseek(fc->f, (long)off, SEEK_SET) != 0) return false;
-  return fread(dst, 1, len, fc->f) == len;
+  if (fread(dst, 1, len, fc->f) != len) return false;
+  if (fc->garble && len) ((uint8_t*)dst)[0] ^= (uint8_t)fc->reads;
+  return true;
 }
 
 static void t_rom_rung(const char* dir, const char* name) {
@@ -445,33 +465,139 @@ static void t_rom_rung(const char* dir, const char* name) {
   FILE* f = fopen(path, "rb");
   if (!f) { printf("SKIP ROM rung %s (no %s)\n", name, path); return; }
   fseek(f, 0, SEEK_END); long sz = ftell(f);
-  FileCtx fc = { f, 0 };
+  FileCtx fc = { f, 0, 0, 0, 0, 0 };
   RomCtx rc; RomMon rm;
   if (!rom_open(&rc, file_read, &fc, (uint32_t)sz) || !rom_mon_open(&rm, &rc)) {
     printf("SKIP ROM rung %s (no GF header)\n", name); fclose(f); return;
   }
 
   fresh_card(0);                        /* no icons.bin at all -- the user's own case */
+  fc.reads = 0;
   icon_store_reset(0, &rm);
+  long setup = fc.reads;
+  unsigned cap = icon_store_capacity();
   CHK(icon_store_rung() == ICON_RUNG_ROM, "[%s] the ROM rung must be chosen", name);
 
+  /* THE ONE-TIME INDEX LOAD. Three tables, each read twice back to back and accepted
+   * only when the two passes agree, plus the 3 palettes the same way: 2 + 2 + 2 + 3*2
+   * = 12 RomReadFn calls, once per registration. Bounded is the point -- an unbounded
+   * "load everything" at boot is a screen that does not draw. */
+  printf("  [%s] ROM index load: %ld RomReadFn calls, pool now %u rows\n",
+         name, setup, cap);
+  CHK(setup == 12, "[%s] the verified index load must be exactly 12 reads -- 2 per "
+                   "table x 3 tables, plus 2 per palette x 3 (got %ld)", name, setup);
+  CHK(cap == 4, "[%s] the ROM carve is 1,760 B of table + 4 rows (got %u)", name, cap);
+
+  /* PER-ICON LOCATE COST IS NOW ZERO. Before the tables, every single fetch re-read the
+   * icon pointer and the palette id, each twice to verify: 4 of the 6 reads a row cost.
+   * A row is now 2 reads -- the payload, and the payload again to verify it, which
+   * STAYS because the EZ read path can still return success holding garbage. */
   const uint16_t party[6] = { 3, 91, 150, 201, 330, 412 };
   fc.reads = 0;
-  for (int i = 0; i < 6; i++) CHK(icon_store_row(party[i]) != 0, "[%s] rom paint %d", name, i);
+  CHK(icon_store_row(party[0]) != 0, "[%s] rom single row", name);
+  long one_row = fc.reads;
+  CHK(one_row == 2, "[%s] LOCATE IS FREE: one cold ROM row must cost exactly 2 reads -- "
+                    "the 1024 B payload and its verify re-read, and NO locate (got %ld)",
+      name, one_row);
+
+  const uint16_t party4[4] = { 11, 91, 150, 201 };
+  icon_store_plan(0, 0);
+  fc.reads = 0;
+  for (int i = 0; i < 4; i++) CHK(icon_store_row(party4[i]) != 0, "[%s] rom paint %d", name, i);
   long paint = fc.reads;
 
   fc.reads = 0;
   for (int flip = 0; flip < 20; flip++)
-    for (int i = 0; i < 6; i++) CHK(icon_store_row(party[i]) != 0, "[%s] rom flip", name);
+    for (int i = 0; i < 4; i++) CHK(icon_store_row(party4[i]) != 0, "[%s] rom flip", name);
   long flips = fc.reads;
 
-  printf("  [%s] ROM rung, party of 6: first paint %ld RomReadFn calls, "
+  printf("  [%s] ROM rung, 4 mons (the pool): first paint %ld RomReadFn calls, "
          "20 bob flips = %ld\n", name, paint, flips);
-  CHK(flips == 0, "[%s] RETENTION on the ROM rung: a party bob must cost ZERO reads "
-                  "after the first paint (got %ld)", name, flips);
-  /* Per row: a verified locate (2 fields x 2 passes = 4) + BOTH frames read twice
-   * (2). Six rows = 36. The old ladder spent 8 calls per SINGLE frame. */
-  CHK(paint <= 6 * 6 + 2, "[%s] rom first paint stays at <= 6 reads/row (got %ld)", name, paint);
+  CHK(flips == 0, "[%s] RETENTION on the ROM rung: a working set that FITS must cost "
+                  "ZERO reads after the first paint (got %ld)", name, flips);
+  CHK(paint == 4 * 2, "[%s] rom first paint is exactly 2 reads/row, no locate (got %ld)",
+      name, paint);
+
+  /* A 6-mon party no longer fits the ROM carve, and the store must SAY so rather than
+   * quietly thrashing -- this is the animation gate. The cost is real and is the price
+   * of the index table; the borrowed tier is what buys it back. */
+  {
+    int res = icon_store_plan(party, 6);
+    CHK(res == (int)cap, "[%s] a 6-row plan against a %u-row pool fills %u and reports "
+                         "it (got %d)", name, cap, cap, res);
+    CHK(icon_store_plan_resident() == false,
+        "[%s] ...and must NOT claim residency for the two rows it could not hold", name);
+    for (int i = 0; i < 6; i++)
+      CHK(icon_store_row(party[i]) != 0,
+          "[%s] every row of an over-sized plan must still PAINT -- short does not mean "
+          "blank (row %u)", name, party[i]);
+  }
+
+  /* THE SWEEP'S ORDER ON THE ROM RUNG. Nothing merges here -- 0 of 439 adjacent table
+   * rows have adjacent blobs on any of Guy's dumps -- so the whole win of a sort is
+   * that every read inside a group moves FORWARD. Declared in an order chosen to be
+   * maximally hostile: descending by row, which is unrelated to file order anyway. */
+  {
+    uint16_t page[12];
+    for (int i = 0; i < 12; i++) page[i] = (uint16_t)(300 - i * 11);
+    icon_store_plan(0, 0);
+    for (int i = 0; i < 12; i++) icon_store_row(page[i]);      /* warm nothing useful */
+    icon_store_reset(0, &rm);                                  /* cold pool, cold order */
+    fc.reads = 0; fc.back = 0; fc.prev = 0;
+    icon_store_plan(page, 12);
+    for (int i = 0; i < 12; i++) CHK(icon_store_row(page[i]) != 0, "[%s] order cell %d",
+                                     name, i);
+    long groups = (12 + (long)cap - 1) / (long)cap;
+    printf("  [%s] 12-row DESCENDING plan: %ld reads, %ld backward seeks (%ld groups)\n",
+           name, fc.reads, fc.back, groups);
+    /* Two reads per row (payload + verify) means the verify re-read is itself a
+     * zero-distance "backward" step at the same offset -- which does not count, since
+     * `back` is a strict comparison. What is left is one step per group boundary. */
+    CHK(fc.back <= groups - 1,
+        "[%s] ASCENDING-OFFSET ORDER on the ROM rung: at most one backward seek per "
+        "group boundary (%ld groups, got %ld)", name, groups, fc.back);
+    CHK(fc.reads == 24, "[%s] 12 rows x (payload + verify), no locate (got %ld)",
+        name, fc.reads);
+  }
+
+  /* A FAILED READ MID-SWEEP VALIDATES NOTHING. Kill the very first payload read of a
+   * plan's sweep and the whole group must come back empty rather than half-trusted. */
+  {
+    uint16_t page[4] = { 30, 31, 32, 33 };
+    icon_store_reset(0, &rm);
+    fc.fail_in = 1;
+    int res = icon_store_plan(page, 4);
+    fc.fail_in = 0;
+    CHK(res < 4, "[%s] a plan whose sweep hit a dead read must report short (got %d)",
+        name, res);
+    for (int i = 0; i < 4; i++)
+      CHK(icon_store_row(page[i]) != 0,
+          "[%s] fill-then-validate: row %u must be RE-FETCHED clean after the failure",
+          name, page[i]);
+  }
+
+  /* A CART THAT READS SUCCESSFULLY AND LIES. Every read comes back changed, so no two
+   * passes of the index load ever agree. The load must FAIL CLOSED -- and the rung must
+   * survive it: rom_locate falls back to the per-icon verified lookup and the pool takes
+   * back the 1,760 B the table would have held. Slow and hazardous, but never dark, and
+   * the log says which session it was. */
+  {
+    fc.garble = 1;
+    icon_store_reset(0, &rm);
+    fc.garble = 0;
+    CHK(icon_store_rung() == ICON_RUNG_ROM,
+        "[%s] a failed index load must NOT retire the rung", name);
+    CHK(icon_store_capacity() == 6,
+        "[%s] ...and the pool takes the table's 1,760 B back as rows (got %u)",
+        name, icon_store_capacity());
+    CHK(icon_store_row(party[1]) != 0,
+        "[%s] ...and the per-icon locate fallback must still serve a row", name);
+    CHK(icon_store_pal_id(party[1]) < 3,
+        "[%s] ...and still find its palette bank", name);
+  }
+
+  icon_store_reset(0, &rm);
+  CHK(icon_store_capacity() == 4, "[%s] a clean re-registration reloads the tables", name);
 
   /* Both frames really are there, off the ROM, in one row. */
   const uint8_t* p = icon_store_row(party[0]);
@@ -484,9 +610,32 @@ static void t_rom_rung(const char* dir, const char* name) {
   CHK(p && memcmp(p, direct, ART_ICONS_ROW_BYTES) == 0,
       "[%s] the stored row must be frame 0 || frame 1, exactly as rom_mon reads them", name);
 
+  /* The palettes came off the ROM at reset, verified, all three at once -- so asking
+   * for one must not touch the ROM at all, on any row, ever again. */
   uint16_t pal[16];
+  fc.reads = 0;
   CHK(icon_store_pal(party[0], pal), "[%s] rom palette", name);
   CHK(icon_store_pal_id(party[0]) < 3, "[%s] rom palette bank in range", name);
+  CHK(fc.reads == 0, "[%s] a palette must never touch the ROM after the index load "
+                     "(got %ld reads)", name, fc.reads);
+
+  /* And the resident tables must AGREE with the per-icon path they replaced, on every
+   * one of the 440 rows -- offset for offset and bank for bank. This is the check that
+   * would catch a byte-order slip in the in-place widening, which would otherwise show
+   * up on hardware as the wrong Pokemon under the right name. */
+  {
+    int mismatch = 0, unusable = 0;
+    for (uint16_t r = 0; r < ART_ICONS_ROWS; r++) {
+      RomMonLoc l;
+      uint8_t id = icon_store_pal_id(r);
+      if (!rom_mon_locate_row_verified(&rm, r, &l, 2, 0)) { unusable++; continue; }
+      if (id != l.pal) mismatch++;
+    }
+    CHK(mismatch == 0, "[%s] the resident palette table must match rom_mon's own lookup "
+                       "on all 440 rows (%d differ)", name, mismatch);
+    CHK(unusable == 0, "[%s] every row of a real GF ROM must locate (%d did not)",
+        name, unusable);
+  }
 
   fclose(f);
 }

@@ -18,14 +18,40 @@
  * not found: LOG_CAP 8192 -> 2048 (6,144 B) plus folding pdna_pick.c's g_mv into
  * g_idx (710 B) plus deleting art_fallbacks.c's 1,560 B s_icfr. The Makefile's
  * post-link "EWRAM ok: N bytes free" guard is the arbiter and must stay comfortably
- * positive; if it ever goes under ~512, shrink THIS first (5 rows still covers a
- * party), before reaching for anything else.
- *
- * 6 rows is not arbitrary: it is exactly the party/day-care working set, which is the
- * set behind the bob Guy has twice reported as broken. */
+ * positive; if it ever goes under ~512, shrink THIS first, before reaching for
+ * anything else. */
 #define ICON_POOL_BYTES 6144u
 #define ICON_ROW_BYTES  ART_ICONS_ROW_BYTES        /* 1024 */
-#define ICON_POOL_SLOTS (ICON_POOL_BYTES / ICON_ROW_BYTES)
+
+/* THE POOL CARVE -- a DISCRIMINATED UNION over the same 6,144 B, decided once per
+ * session in icon_store_reset(), because the two rungs need different things from it.
+ *
+ * The cache rung needs nothing but rows: icons.bin is dense and ordered, so "where is
+ * row R" is r * 1024 and needs no table at all. It gets the whole pool: 6 rows, which
+ * is exactly the party / day-care working set -- the set behind the bob Guy has twice
+ * reported as broken.
+ *
+ * The ROM rung has no arithmetic answer. Its icon blobs are scattered over ~1.4 MB
+ * (measured on Guy's Emerald/FireRed/LeafGreen: strides 2.5-3 KB, 0 of 439 adjacent
+ * pairs, the table jumping backward by up to 1.3 MB), so an offset there is a table
+ * lookup or it is four SD reads. Holding the whole 440-entry table resident costs
+ * 1,760 B -- one and three-quarter rows -- and the pool drops to 4.
+ *
+ * THAT TRADE IS DELIBERATE AND IT IS NOT FREE. Two ROM rows are given up to make every
+ * one of the remaining fetches cost 2 reads instead of 6, to make a bulk sweep possible
+ * at all (a sort needs offsets), and to close the locate hazard rom_mon.h documents.
+ * A screen with a 5- or 6-row working set that does NOT declare a plan therefore
+ * thrashes on the ROM rung where it did not before; the second, borrowed tier is what
+ * pays that back, and until it lands this is a real regression on exactly those
+ * screens. It is written down here rather than discovered later.
+ *
+ * The table CANNOT live anywhere else. 1,760 B of new IWRAM .bss would sail past this
+ * build's ~1,232 B boot-crash threshold, and there is not 1,760 B of EWRAM left outside
+ * the pool (the guard reads ~1.2 KB). Inside the pool is the only place it fits. */
+#define ICON_ROMTAB_BYTES (ART_ICONS_ROWS * 4u)                                 /* 1760 */
+#define ICON_SLOTS_CACHE  (ICON_POOL_BYTES / ICON_ROW_BYTES)                       /* 6 */
+#define ICON_SLOTS_ROM    ((ICON_POOL_BYTES - ICON_ROMTAB_BYTES) / ICON_ROW_BYTES) /* 4 */
+#define ICON_POOL_SLOTS   ICON_SLOTS_CACHE     /* the MAXIMUM -- sizes every slot array */
 
 /* THE IRQ-OFF CAP ON ONE TRANSFER. IRQs are off for the whole of _EZFO_readSectors, so
  * the size of one f_read is the size of one blind window. Measured cost model
@@ -78,7 +104,14 @@ typedef struct {
  * next repaint, finds every row resident, and pays nothing. */
 _Static_assert(sizeof(IconSlot) == 8, "IconSlot must stay 8 B -- it is budgeted as such");
 
-static uint8_t EWRAM_BSS g_iconpool[ICON_POOL_BYTES] __attribute__((aligned(4)));
+/* uint32_t, not uint8_t, and that is the aliasing rule rather than taste: the ROM
+ * rung's half of the union IS an array of uint32_t, and reading a uint8_t object
+ * through a uint32_t* is undefined where the reverse -- byte access to anything -- is
+ * always allowed. Declaring the pool as words makes the table's accesses the object's
+ * own type and the rows' accesses the universally-legal ones. It also makes the 4-byte
+ * alignment lib/fatfs/diskio.c's DMA32 path requires intrinsic rather than an
+ * attribute somebody can delete. */
+static uint32_t EWRAM_BSS g_iconpool[ICON_POOL_BYTES / 4u];
 
 /* NAMED, and that is not style. `static struct { ... } EWRAM_BSS s_is;` puts the
  * attribute after an ANONYMOUS struct's closing brace, where GCC binds it to the TYPE
@@ -98,6 +131,7 @@ typedef struct {
   uint8_t  suspended;            /* the extraction latch                             */
   uint8_t  fil_open;
   uint8_t  pal_have;             /* bit i = palette bank i is loaded                 */
+  uint8_t  romtab;               /* the ROM index tables are loaded and verified      */
   uint32_t epoch;                /* bumped by every reset; a debugging anchor        */
 } IconStoreState;
 
@@ -133,9 +167,25 @@ static uint16_t s_pal[ART_ICONS_PALS][16];
 _Static_assert(ART_ICONS_ROWS == 440, "the row axis is rom_mon's RM_TABLE_ENTRIES");
 _Static_assert(ART_ICONS_PALS == ROM_MON_PALS, "both rungs share one 3-bank palette set");
 _Static_assert(ICON_ROW_BYTES == 2u * ROM_MON_ICON_BYTES, "a row is both bob frames");
-_Static_assert(ICON_POOL_SLOTS >= 6, "the pool must hold a full party without evicting");
+_Static_assert(ICON_SLOTS_CACHE >= 6,
+               "the CACHE rung must hold a full party without evicting (the ROM rung "
+               "cannot -- it spends 1,760 B of the same pool on its offset table)");
+_Static_assert(ICON_SLOTS_ROM >= 2,
+               "the ROM rung must hold at least a merged pair, or a run is never a run");
+_Static_assert(ICON_SLOTS_ROM * ICON_ROW_BYTES + ICON_ROMTAB_BYTES <= ICON_POOL_BYTES,
+               "the ROM carve's rows and its table must not overlap");
+_Static_assert(ICON_ROMTAB_BYTES % 4u == 0u, "the table is words and must start on one");
 
-static uint8_t* slot_bytes(int i) { return g_iconpool + (uint32_t)i * ICON_ROW_BYTES; }
+/* Rows always start at the FRONT of the pool, so a slot's address does not depend on
+ * which rung is serving; the ROM table lives at the BACK, past every slot that rung
+ * can use. The 288 B between them on the ROM carve is slack, not a bug: 1,760 B is not
+ * a whole number of rows. */
+static uint8_t* slot_bytes(int i) {
+  return (uint8_t*)g_iconpool + (uint32_t)i * ICON_ROW_BYTES;
+}
+static uint32_t* romtab(void) {
+  return g_iconpool + (ICON_POOL_BYTES - ICON_ROMTAB_BYTES) / 4u;
+}
 
 /* ---- rung plumbing -------------------------------------------------------------- */
 
@@ -188,6 +238,7 @@ void icon_store_suspend(void) {
   s_is.rung = ICON_RUNG_NONE;
   s_is.cap = 0;
   s_is.pal_have = 0;
+  s_is.romtab = 0;
   s_is.suspended = 1;
 }
 
@@ -199,6 +250,7 @@ void icon_store_reset(const char* icons_path, const struct RomMon* rm) {
   s_is.rung = ICON_RUNG_NONE;
   s_is.cap = 0;
   s_is.pal_have = 0;
+  s_is.romtab = 0;
   s_rm = (rm && rm->ok) ? rm : 0;
 
   /* Rung 1: the extracted cache. Preferred because it needs no ROM registered THIS
@@ -225,10 +277,38 @@ void icon_store_reset(const char* icons_path, const struct RomMon* rm) {
   }
   if (s_is.rung == ICON_RUNG_NONE && s_rm) s_is.rung = ICON_RUNG_ROM;
 
-  s_is.cap = (s_is.rung == ICON_RUNG_NONE) ? 0 : (uint8_t)ICON_POOL_SLOTS;
-  log_line("icons: store rung=%s cap=%u", s_is.rung == ICON_RUNG_CACHE ? "cache"
-                                        : s_is.rung == ICON_RUNG_ROM   ? "rom" : "none",
-           s_is.cap);
+  /* Rung 2: the user's own .gba. Load the WHOLE icon index -- 440 offsets, 440 palette
+   * bank ids, the 3 shared palettes -- once, verified, into the pool's ROM carve. 12
+   * RomReadFn calls, and after them a locate is a RAM index instead of 4 SD reads, so
+   * this pays for itself after the second icon of the session and is what lets a plan
+   * sweep sort by offset at all.
+   *
+   * If it fails, the rung STILL WORKS: rom_locate falls back to the per-icon verified
+   * lookup, and the pool keeps all 6 slots because the table region is then unused.
+   * Slower and with the locate hazard back, but never dark. */
+  if (s_is.rung == ICON_RUNG_ROM) {
+    int bad = 0, ok;
+    rumble_io_suspend();
+    ok = rom_mon_read_tables(s_rm, romtab(), s_palid, s_pal, &bad);
+    rumble_io_resume();
+    if (ok) {
+      s_is.romtab = 1;
+      s_is.pal_have = (uint8_t)((1u << ART_ICONS_PALS) - 1u);  /* all three, verified */
+      if (bad) log_line("icons: romtab ok, %d row(s) unusable", bad);
+    } else {
+      /* Nothing was written on failure, but say so explicitly: a half-written palette
+       * table served as whole would be the right art in the wrong colours. */
+      s_is.pal_have = 0;
+      log_line("icons: romtab load failed - per-icon locate for this session");
+    }
+  }
+
+  s_is.cap = (s_is.rung == ICON_RUNG_NONE) ? 0
+           : (s_is.romtab ? (uint8_t)ICON_SLOTS_ROM : (uint8_t)ICON_SLOTS_CACHE);
+  log_line("icons: store rung=%s cap=%u romtab=%u",
+           s_is.rung == ICON_RUNG_CACHE ? "cache"
+         : s_is.rung == ICON_RUNG_ROM   ? "rom" : "none",
+           s_is.cap, s_is.romtab);
 }
 
 int      icon_store_rung(void)     { return s_is.rung; }
@@ -271,13 +351,24 @@ static uint32_t row_sum(const uint8_t* b) {
   return v;
 }
 
-/* ROM rung: locate the row (verified -- the pointer and the palette bank ARE "which
- * species is this", and a garbled pointer that still lands inside the image would
- * confidently paint the wrong Pokemon), then read both frames twice and require the
- * two passes to agree. The EZ read path can return success holding garbage; nothing
- * about that changed, so neither does the verify. */
-static bool rom_fill_row(uint16_t row, uint8_t* dst, uint8_t* pal_out) {
-  if (!s_rm) return false;
+/* Where row `row`'s tiles are and which palette bank they use, on the ROM rung.
+ *
+ * ZERO I/O when the index tables loaded -- which is the whole point of loading them.
+ * The per-icon locate this replaces cost 4 RomReadFn calls (two fields, each read twice
+ * to verify) EVERY time, because the single-entry memo it fed was evicted by the very
+ * next species; that memo, not the row cache above it, was the binding constraint
+ * behind the measured 12 reads per flip at two bobbing mons.
+ *
+ * The fallback is the old path, unchanged, for a session whose table load failed. */
+static bool rom_locate(uint16_t row, uint32_t* tiles, uint8_t* pal) {
+  if (row >= ART_ICONS_ROWS) return false;
+  if (s_is.romtab) {
+    uint32_t o = romtab()[row];
+    uint8_t  p = s_palid[row];
+    if (o == ROM_MON_OFF_NONE || p >= ART_ICONS_PALS) return false;
+    *tiles = o; *pal = p;
+    return true;
+  }
   RomMonLoc loc;
   int unstable = 0;
   PERF_ICON(rom_loc);
@@ -285,16 +376,28 @@ static bool rom_fill_row(uint16_t row, uint8_t* dst, uint8_t* pal_out) {
     if (unstable) log_line("icons: rom locate unstable row=%u", row);
     return false;
   }
-  /* Both frames in ONE read: rom_mon_open already range-checked 2 x 512 B at this
-   * pointer, so a 1024 B read at loc.tiles is exactly as bounded as two 512 B reads
+  *tiles = loc.tiles; *pal = loc.pal;
+  return true;
+}
+
+/* ROM rung: locate the row (see above), then read both frames twice and require the two
+ * passes to agree. THE PAYLOAD VERIFY STAYS. The EZ read path can return success holding
+ * garbage and nothing about that has changed -- what changed is only that the LOCATE no
+ * longer needs verifying per icon, because the whole table was verified once. */
+static bool rom_fill_row(uint16_t row, uint8_t* dst, uint8_t* pal_out) {
+  uint32_t tiles = 0;
+  uint8_t  pal = 0xFF;
+  if (!s_rm || !rom_locate(row, &tiles, &pal)) return false;
+  /* Both frames in ONE read: rom_mon range-checked 2 x 512 B at this pointer (at table
+   * load, or in locate), so a 1024 B read here is exactly as bounded as two 512 B reads
    * were -- for half the transactions. */
   for (int a = 0; a < 4; a++) {
     PERF_ICON(rom_frm);
-    if (!s_rm->rc->read(s_rm->rc->ctx, loc.tiles, dst, ICON_ROW_BYTES)) return false;
+    if (!s_rm->rc->read(s_rm->rc->ctx, tiles, dst, ICON_ROW_BYTES)) return false;
     uint32_t s1 = row_sum(dst);
     PERF_ICON(rom_frm);
-    if (!s_rm->rc->read(s_rm->rc->ctx, loc.tiles, dst, ICON_ROW_BYTES)) return false;
-    if (row_sum(dst) == s1) { *pal_out = loc.pal; return true; }
+    if (!s_rm->rc->read(s_rm->rc->ctx, tiles, dst, ICON_ROW_BYTES)) return false;
+    if (row_sum(dst) == s1) { *pal_out = pal; return true; }
   }
   log_line("icons: rom read unstable row=%u", row);
   return false;
@@ -385,13 +488,22 @@ static bool slot_fill(int idx, uint16_t row) { return run_fill(idx, &row, 1, fal
  * the pool instead of through lib/fatfs/diskio.c's 4-sector-capped bounce buffer.
  *
  * The ROM rung has no arithmetic answer: its icon blobs are scattered over ~1.4 MB with
- * strides of 2.5-3 KB, so an offset there is a TABLE LOOKUP that does not exist yet.
- * ICON_OFF_UNKNOWN disables both the sort and the merge for that sweep, which is the
- * honest answer: without a real offset we cannot prove two rows are adjacent, and
- * guessing means reading 1024 B out of the middle of the wrong Pokemon. */
+ * strides of 2.5-3 KB, so an offset there is a TABLE LOOKUP -- which is one of the two
+ * reasons the resident index table is worth 1,760 B of the pool. (The other is that it
+ * deletes the per-icon locate.) With the table, a ROM sweep sorts and seeks forward
+ * exactly like a cache sweep; it just never MERGES, because 0 of 439 adjacent table
+ * rows have adjacent blobs on any of Guy's three dumps.
+ *
+ * ICON_OFF_UNKNOWN -- a session whose table load failed, and, by happy coincidence of
+ * value, a row rom_mon marked unusable -- disables both the sort and the merge, which
+ * is the honest answer: without a real offset we cannot prove two rows are adjacent,
+ * and guessing means reading 1024 B out of the middle of the wrong Pokemon. */
 #define ICON_OFF_UNKNOWN 0xFFFFFFFFu
+_Static_assert(ICON_OFF_UNKNOWN == ROM_MON_OFF_NONE,
+               "an unusable ROM row must sort and merge as an unknown offset");
 static uint32_t src_off(uint16_t row) {
   if (s_is.rung == ICON_RUNG_CACHE) return (uint32_t)row * ICON_ROW_BYTES;
+  if (s_is.romtab && row < ART_ICONS_ROWS) return romtab()[row];
   return ICON_OFF_UNKNOWN;
 }
 
@@ -593,9 +705,14 @@ uint8_t icon_store_pal_id(uint16_t row) {
     uint8_t id = s_palid[row];
     return id < ART_ICONS_PALS ? id : 0xFF;
   }
-  /* ROM rung: the bank came back with the row, so a caller that just fetched the row
-   * pays nothing. A caller that did not gets one locate -- rare by construction, since
-   * every consumer asks for the tiles first. */
+  /* ROM rung, tables loaded: a RAM index, for every caller, always. */
+  if (s_is.romtab) {
+    uint8_t id = s_palid[row];
+    return id < ART_ICONS_PALS ? id : 0xFF;
+  }
+  /* ROM rung, fallback: the bank came back with the row, so a caller that just fetched
+   * the row pays nothing. A caller that did not gets one locate -- rare by
+   * construction, since every consumer asks for the tiles first. */
   int i = slot_find(row);
   if (i >= 0 && s_is.slot[i].pal < ART_ICONS_PALS) return s_is.slot[i].pal;
   if (!s_rm) return 0xFF;

@@ -67,11 +67,9 @@ int rom_mon_open(RomMon* rm, const RomCtx* rc);
  * fastseek_arm's logged fragment count now measures on the user's own card.
  *
  * Since 2026-08-23 the app does not use this path per icon at all: source/icon_store.c
- * reads the whole 2,224-byte index block (gMonIconTable + gMonIconPaletteIndices +
- * gMonIconPalettes, which are ADJACENT with zero padding on every GF ROM -- verified on
- * Guy's Emerald/FireRed/LeafGreen dumps) once per registration, so there is no
- * per-icon locate left to memoise. rom_mon_locate_row_verified survives as the
- * fallback for a session whose index load failed. */
+ * calls rom_mon_read_tables() (below) once per registration and every later locate is
+ * a RAM index. rom_mon_locate_row_verified survives as the fallback for a session whose
+ * table load failed, and as the only path that still needs the per-field verify. */
 typedef struct RomMonLoc {
   uint32_t tiles;         /* FILE offset of frame 0 (frame 1 sits +512 after it) */
   uint8_t  pal;           /* palette index 0..2                                  */
@@ -117,6 +115,44 @@ int rom_mon_locate_verified(const RomMon* rm, uint16_t species, uint8_t form,
 int rom_mon_locate_row_verified(const RomMon* rm, uint16_t row, RomMonLoc* out,
                                 int attempts, int* unstable);
 uint16_t rom_mon_table_rows(void);
+
+/* ---- the WHOLE index, once, verified -- which is what makes the ROM rung bulk ----
+ *
+ * The three tables are read in full and checked, instead of two 1-4 byte fields being
+ * re-read per icon forever. That is a performance change and a SAFETY change, and the
+ * safety half is the bigger one.
+ *
+ * WHY IT IS SAFER, not just faster. rom_mon_locate_verified's own header states the
+ * hazard it cannot close: a garbled 4-byte pointer that still passes ptr_ok makes BOTH
+ * frame-verify passes read the same wrong offset, agree with each other, and paint
+ * another species confidently with nothing logged. Verifying the field itself is the
+ * only place that error is visible -- and once every field has been verified ONCE, at
+ * load, there is no per-icon locate path left to get it wrong and no single-entry memo
+ * left to poison. (source/box_oam.c and source/art_fallbacks.c used to keep one such
+ * memo EACH, over the same open ROM, with different verification policies.)
+ *
+ * WHAT IT COSTS. 12 RomReadFn calls total, once per registration: each of the three
+ * tables is read twice back to back and accepted only when the two passes agree, and
+ * the palette DATA (3 x 32 B at scattered pointers) the same way. Against 4 calls of
+ * locate per icon that pays for itself after 1.5 icons, and every icon after that
+ * locates for ZERO I/O. The tables are ADJACENT on every GF ROM measured (icons + 1760
+ * = pal ids, + 440 = the palette structs, on Guy's Emerald/FireRed/LeafGreen dumps) but
+ * that is NOT relied on -- each is read at its own header pointer, so a ROM that lays
+ * them out differently still works.
+ *
+ * PER-ROW FAILURE IS PER-ROW. A row whose pointer fails ptr_ok, or whose palette id is
+ * not 0..2, is marked ROM_MON_OFF_NONE / 0xFF and simply has no icon -- exactly what
+ * locate did for that row before. One bad row does not cost the other 439 their table.
+ *
+ * `off` receives FILE offsets (already ROM_BASE-relative), `palid` the raw bank ids,
+ * `pals` the 3 x 16 RGB15 entries. All three are caller-owned and are only written on
+ * success. `bad_rows` (may be NULL) receives how many rows were marked unusable.
+ * Returns 1 with all three tables usable; 0 if any of them could not be read or never
+ * verified -- in which case NOTHING is written and the caller must keep using
+ * rom_mon_locate_row_verified per icon. */
+#define ROM_MON_OFF_NONE 0xFFFFFFFFu
+int rom_mon_read_tables(const RomMon* rm, uint32_t off[], uint8_t palid[],
+                        uint16_t pals[][16], int* bad_rows);
 
 /* Read one 512 B frame of an already-located icon. One read, no lookups. */
 int rom_mon_icon_at(const RomMon* rm, const RomMonLoc* loc, uint8_t frame,
