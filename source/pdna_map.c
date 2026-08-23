@@ -107,7 +107,8 @@ static bool rom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   RomFile* r = (RomFile*)ctx;
   if (!r || !r->open) return false;
   UINT br = 0;
-  /* Seek ONLY when the file is not already there. FF_USE_FASTSEEK is 0, so every f_lseek
+  /* Seek ONLY when the file is not already there. This handle carries no cluster link
+   * map (FF_USE_FASTSEEK is 1 but opt-in per handle -- source/fastseek.h), so every f_lseek
    * walks the cluster chain from the start — on a fragmented card that is a long chain,
    * and the LZ77 and blockdata paths read strictly sequentially, so the seek they were
    * paying for was almost always a no-op. Fewer SD transactions is also less exposure to

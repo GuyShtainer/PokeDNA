@@ -75,8 +75,9 @@ static uint16_t table_species(uint16_t species, uint8_t form) {
  * Reading the same few bytes twice back to back is also the cheapest verify this
  * source can do: the second read seeks BACKWARD by at most 4 bytes, which stays
  * inside the current cluster, so FatFs f_lseek takes its same-or-following-cluster
- * fast path (ff.c:4523) instead of re-walking the chain from the head of a 16 MB file
- * (FF_USE_FASTSEEK is 0). It adds no FAR seek at all.
+ * fast path instead of walking the chain. It adds no FAR seek at all. Measured on the
+ * host FatFs harness: both small-field verify re-reads cost ZERO extra disk_read
+ * calls, which is the claim this paragraph makes and it holds.
  *
  * Returns 1 = value in dst is trustworthy, 0 = a read failed, -1 = reads succeeded
  * but the passes never agreed. */

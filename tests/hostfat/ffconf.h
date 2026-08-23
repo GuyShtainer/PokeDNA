@@ -8,8 +8,10 @@
  *
  * Only one option changes, and only in the direction of "the test can build a volume":
  * FF_USE_MKFS, which the GBA build has no use for. Everything else -- FAT/exFAT, LFN,
- * sector size, FF_USE_FASTSEEK 0 -- is byte-for-byte what the cartridge runs, because a
- * test on a different configuration proves nothing about the cartridge.
+ * sector size, FF_USE_FASTSEEK -- is byte-for-byte what the cartridge runs, because a
+ * test on a different configuration proves nothing about the cartridge. (FF_USE_FASTSEEK
+ * went to 1 on 2026-08-23; it is opt-in per handle, and tests/host_fastseek_test.c is
+ * what holds that claim to account.)
  */
 #include "../../lib/fatfs/ffconf.h"
 

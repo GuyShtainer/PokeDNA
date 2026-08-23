@@ -35,8 +35,26 @@
 /  format a RAM disk (tests/hostfat). The cartridge build passes no -D, so it still
 /  compiles f_mkfs out -- nothing on the GBA side changes. */
 
-#define FF_USE_FASTSEEK 0
-/* This option switches fast seek function. (0:Disable or 1:Enable) */
+#define FF_USE_FASTSEEK 1
+/* This option switches fast seek function. (0:Disable or 1:Enable)
+/
+/  ENABLED 2026-08-23, and it is safe to enable GLOBALLY because it is OPT-IN PER
+/  HANDLE: f_open sets fp->cltbl = 0 on every successful open, and f_read / f_write /
+/  f_lseek each run the FF_USE_FASTSEEK-0 code verbatim whenever cltbl is NULL. A
+/  handle that never calls source/fastseek.c's fastseek_arm() therefore behaves
+/  bit-identically to before this flip -- including EVERY handle on the save write
+/  path (source/savefile.c), which sets no cltbl and, by the rule enforced inside
+/  fastseek_arm, cannot.
+/
+/  Exactly two handles opt in, both FA_READ: the registered .gba icon/art source
+/  (source/pdna_main.c s_iconrom_fil) and the icons.bin cache (source/icon_store.c
+/  s_ic_fil). Read source/fastseek.h before adding a third -- the failure mode of
+/  getting this wrong is reading the WRONG SECTORS while returning FR_OK.
+/
+/  The one global cost: sizeof(FIL) 592 -> 600 (FSIZE_t is 8 B with exFAT on, so the
+/  added pointer pads to the struct's 8-byte alignment) and offsetof(FIL, buf)
+/  80 -> 84, which is still 4-aligned and so leaves lib/fatfs/diskio.c's DMA32 fast
+/  path alone. */
 
 #define FF_USE_EXPAND 0
 /* This option switches f_expand function. (0:Disable or 1:Enable) */

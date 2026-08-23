@@ -87,6 +87,7 @@
 #include "pdna_app.h"
 #include "savefile.h"
 #include "log.h"
+#include "fastseek.h"     /* FIL cluster link maps -- the ONE cltbl owner */
 #include "pdna_romcheck.h"  /* sampled high-ROM self-check: the incomplete-SD-load guard */
 #include "pdna_romfull.h"   /* the FULL-image verifier screen (boot hold R+SELECT / FILE MENU) */
 #include "ui.h"
@@ -1675,6 +1676,24 @@ static void art_extract_screen(void); /* forward: defined below, offered from
 static FIL EWRAM_BSS s_iconrom_fil;
 static bool s_iconrom_fil_open = false;
 
+/* This handle's FatFs cluster link map, so every far/backward seek into a 12.5 MB
+ * image is an in-RAM table lookup instead of a FAT chain walk. It matters more here
+ * than anywhere else in the app: the ROM's icon-table pointers scatter over the whole
+ * image with no locality at all (measured on Guy's Emerald/FireRed/LeafGreen dumps:
+ * 0 of 439 adjacent table rows have adjacent icon blobs, strides run 2.5-3 KB and jump
+ * by up to 1.3 MB), and a BACKWARD seek is the case FatFs restarts from cluster 0 for.
+ * Measured on the host harness: a 21-cell Pokedex page 369 -> 126 disk_read sectors.
+ *
+ * Sized for 64 fragments (2 + 2*64 = 130 DWORDs, 520 B). 64 rather than 32 because
+ * ../rom-load-lab/README.md puts the EZ-Flash kernel's own run-table overrun at ~61
+ * pieces: a card at 40 fragments still SD-loads fine and would lose fast seek under a
+ * 32-entry table, and the exact fragment count up to 64 is free evidence for that open
+ * question -- fastseek_arm logs it on every open, success or shortfall. Past 64 the arm
+ * fails, cltbl stays NULL and this handle simply seeks the old way.
+ *
+ * EWRAM_BSS is a REQUIREMENT, not a preference -- see fastseek.h rule 3. */
+static DWORD EWRAM_BSS s_iconrom_clmt[FASTSEEK_ITEMS_FOR(64)];
+
 static bool iconrom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   (void)ctx;
   if (!s_iconrom_fil_open) return false;
@@ -1870,6 +1889,7 @@ static void app_icon_rom_open(void) {
     if (!path || !path[0]) continue;
     if (f_open(&s_iconrom_fil, path, FA_READ) != FR_OK) continue;
     s_iconrom_fil_open = true;
+    fastseek_arm(&s_iconrom_fil, s_iconrom_clmt, sizeof s_iconrom_clmt / sizeof s_iconrom_clmt[0], "rom");
     uint32_t sz = (uint32_t)f_size(&s_iconrom_fil);
     if (rom_open(&s_iconrom_ctx, iconrom_fatfs_read, 0, sz)) {
       /* Same reasoning as the fused branch above: rom_chrome_open() does not need
@@ -2000,6 +2020,7 @@ static void app_register_rom(void) {
   f_close(&f);
   if (f_open(&s_iconrom_fil, path, FA_READ) != FR_OK) { msg_wait("CAN'T OPEN", UI_WARN, "File unreadable.", 0); return; }
   s_iconrom_fil_open = true;
+  fastseek_arm(&s_iconrom_fil, s_iconrom_clmt, sizeof s_iconrom_clmt / sizeof s_iconrom_clmt[0], "rom");
   uint32_t sz = (uint32_t)f_size(&s_iconrom_fil);
   RomCtx rc;
   if (!rom_open(&rc, iconrom_fatfs_read, 0, sz)) {

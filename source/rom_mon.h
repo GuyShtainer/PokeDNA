@@ -51,9 +51,27 @@ int rom_mon_open(RomMon* rm, const RomCtx* rc);
  * Splitting locate from read matters because a caller that reads the same frame
  * twice to verify it — box_oam does — otherwise paid those lookups twice as well:
  * six RomCtx reads per icon instead of two. On the SD-file source every read is an
- * f_lseek + f_read, and a BACKWARD seek re-walks the cluster chain from the head of
- * a 16 MB file (FF_USE_FASTSEEK is deliberately 0 — it is a global switch on the
- * same FatFs the save write path uses), so the ping-ponging offsets were the cost. */
+ * f_lseek + f_read, and the offsets ping-pong across the whole image, so seek cost is
+ * the cost.
+ *
+ * TWO CORRECTIONS to what this comment used to claim (2026-08-23, measured, not read
+ * off the source). First, FF_USE_FASTSEEK is now 1, and it is OPT-IN PER HANDLE, not a
+ * global switch on the save write path -- source/fastseek.h has the proof and
+ * tests/host_fastseek_test.c holds it to account; the icon handle is armed with a
+ * cluster link map, so its far seeks are an in-RAM table lookup. Second, even WITHOUT
+ * a map a backward seek on a CONTIGUOUS 16 MB file is about 4 disk_read calls, not
+ * hundreds: FatFs caches one FAT sector and 128 FAT32 entries live in each, so the
+ * walk is mostly CPU (~400 get_fat iterations, ~0.7 ms), and its cost tracks the seek
+ * TARGET's cluster index rather than the distance jumped -- f_lseek(1024) from EOF
+ * costs zero reads. The expensive case is a FRAGMENTED file, which is exactly what
+ * fastseek_arm's logged fragment count now measures on the user's own card.
+ *
+ * Since 2026-08-23 the app does not use this path per icon at all: source/icon_store.c
+ * reads the whole 2,224-byte index block (gMonIconTable + gMonIconPaletteIndices +
+ * gMonIconPalettes, which are ADJACENT with zero padding on every GF ROM -- verified on
+ * Guy's Emerald/FireRed/LeafGreen dumps) once per registration, so there is no
+ * per-icon locate left to memoise. rom_mon_locate_row_verified survives as the
+ * fallback for a session whose index load failed. */
 typedef struct RomMonLoc {
   uint32_t tiles;         /* FILE offset of frame 0 (frame 1 sits +512 after it) */
   uint8_t  pal;           /* palette index 0..2                                  */

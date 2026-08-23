@@ -265,7 +265,8 @@ static int fetch(const RomText* rt, uint32_t addr, char* dst, uint32_t cap) {
  *
  * WHY THIS EXISTS AT ALL. On the GBA, rc->read is pdna_main.c's iconrom_fatfs_read:
  * an f_lseek + f_read on the user's registered .gba, on the microSD. FatFs here is
- * built with FF_USE_FASTSEEK 0 (lib/fatfs/ffconf.h:33), so a seek that goes BACKWARDS
+ * built with FF_USE_FASTSEEK 1 but this handle does not opt in (see source/fastseek.h --
+ * only the icon/art ROM handle and icons.bin carry a link map), so a seek that goes BACKWARDS
  * re-walks the file's FAT cluster chain from its first cluster -- hundreds of FAT
  * entries for a 16 MiB ROM -- before the data sector is even fetched. Every
  * description read seeks backwards or forwards across the whole image, so each one is

@@ -46,8 +46,10 @@ static void chk(const char* rom, const char* what, int cond) {
 typedef struct { const uint8_t* p; uint32_t n; } MemCtx;
 
 /* Every read is counted, because on hardware a read is not free: rc->read is an
- * f_lseek + f_read on the user's .gba on the microSD, and FatFs is built with
- * FF_USE_FASTSEEK 0, so a backward seek re-walks the whole FAT chain first. The
+ * f_lseek + f_read on the user's .gba on the microSD, and this handle carries no
+ * cluster link map (FF_USE_FASTSEEK is 1 since 2026-08-23, but it is opt-in per handle
+ * -- see source/fastseek.h -- and only the icon/art ROM handle and icons.bin opt in),
+ * so a backward seek walks the FAT chain. The
  * cache_tests() section below asserts on this counter -- see rom_text.c "THE READ
  * CACHE". Every other section ignores it. */
 static long g_reads = 0;

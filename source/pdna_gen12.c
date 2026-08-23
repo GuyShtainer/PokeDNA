@@ -538,7 +538,8 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
  * u8 array whose alignment the compiler is not obliged to guarantee). */
 #define GB12_ARENA_NEED (GB12_A4(sizeof(Gb12Mount)) + GB12_A4(sizeof(FIL)) + \
                          GB12_RECS_BYTES + GB12_STAGE_BYTES + 4u)
-/* Measured 2026-08: 468 (mount) + 592 (FIL) + 2404 + 1152 + 4 = 4620 of 35712. The
+/* Measured 2026-08: 468 (mount) + 600 (FIL) + 2404 + 1152 + 4 = 4628 of 35712 (the
+ * FIL grew 592 -> 600 when FF_USE_FASTSEEK went to 1; see lib/fatfs/ffconf.h). The
  * assert is here because app_arena_acquire returns NULL rather than failing loudly if
  * the request ever outgrew the donor, and "the GB screen quietly refuses to open" is
  * a bad way to learn that a struct grew. */
