@@ -217,23 +217,52 @@ static void run_rom(const char* path, const char* name) {
       anim_cheap == false);
   printf("  [%s] 60 IDLE FRAMES (gated): 0 RomReadFn calls (mon_icon_anim_cheap() == false)\n", name);
 
-  /* Counterfactual, for the record only: what the OLD (unguarded) code would have
-   * cost, redrawing 3 visible caught cells every DEX_ANIM_PERIOD=30 ticks for 60
-   * idle frames = 2 flips. Each flip touches frame (bob^1) for each caught cell --
-   * a DIFFERENT MRU key from whatever the page draw left behind for cells 0 and 14
-   * (national #1, #15 -- 0 and 14 are the i%7==0 caught cells among 0..20), so every
-   * flip is a fresh locate+frame-verify. */
-  mirror_reset(); mru_reset(); fc.reads = 0; fc.backward = 0; fc.far_backward = 0; fc.last_off = -1;
-  uint16_t caught[3] = { page[0], page[7], page[14] };  /* the 3 caught cells (i%7==0) */
-  int bob = 1;
-  for (int flip = 0; flip < 2; flip++) {                /* 60 frames / 30-frame period = 2 flips */
-    bob ^= 1;
-    for (int i = 0; i < 3; i++) { uint16_t pal[16]; icon_via_rom(&rm, caught[i], (uint8_t)bob, pal); }
+  /* LIVE CONSTRAINT, not a "how bad the OLD code used to be" relic -- this is what
+   * the NEXT implementer pays the moment mon_icon_anim_cheap()'s gate (this rung's
+   * side of it; the caller-side gate is pdna_pick.c:657) is relaxed to let the
+   * 3-slot s_icfr MRU (art_fallbacks.c) carry a multi-mon idle bob instead of
+   * skipping it. That cache's own header comment used to claim it "fully serves ...
+   * a 2-frame idle bob of up to 3 simultaneously-visible mons ... with ZERO SD I/O
+   * after the first draw" -- FALSE for n>=2, and this sweep is the falsification on
+   * record so nobody has to re-derive it by hand a second time.
+   *
+   * WHY: a 2-frame bob needs 2 MRU keys (row,frame) per simultaneously-bobbing mon.
+   * Independently of the 3-slot MRU itself, THIS RUNG's row-locate memo
+   * (mirror_locate_row here; rom_mon_locate_row_verified's caller in the real code)
+   * holds only ONE species at a time. Cycling between 2+ DIFFERENT species every
+   * flip therefore re-locates (4 reads) AND re-fills its tile (2 reads) on EVERY
+   * single access, every flip, not just the first -- ROM_MISS_COST below is that
+   * per-access cost, matching PAGE 1's own "naive baseline" derivation above.
+   * n=1 has no second species to evict the row-locate memo with, so only its very
+   * first frame-1 fill ever misses; every later flip is a pure hit. Swept for
+   * n=1/2/3 simultaneously-bobbing mons, each pre-seeded with its frame-0 tile
+   * (exactly what the initial, non-animated draw already left cached before any
+   * bob starts), over 4 flips (enough to show STEADY STATE, not a one-time cost): */
+  #define ROM_MISS_COST 6   /* locate(4) + frame-verify(2); see the naive baseline above */
+  for (int n = 1; n <= 3; n++) {
+    mirror_reset(); mru_reset(); fc.backward = 0; fc.far_backward = 0; fc.last_off = -1;
+    uint16_t mons[3] = { page[0], page[7], page[14] };     /* same 3 caught cells, first n of them */
+    fc.reads = 0;
+    for (int i = 0; i < n; i++) { uint16_t pal[16]; icon_via_rom(&rm, mons[i], 0, pal); }  /* initial static draw */
+    fc.reads = 0;                                          /* only the BOB flips count from here on */
+    int bob = 0, cost[4], steady_ok = 1;
+    for (int flip = 0; flip < 4; flip++) {
+      bob ^= 1;
+      int before = fc.reads;
+      for (int i = 0; i < n; i++) { uint16_t pal[16]; icon_via_rom(&rm, mons[i], (uint8_t)bob, pal); }
+      cost[flip] = fc.reads - before;
+    }
+    for (int flip = 1; flip < 4; flip++) if (cost[flip] != cost[1]) steady_ok = 0;
+    printf("  [%s] n=%d simultaneously-bobbing mon(s): flip 1 = %d RomReadFn calls, "
+           "flips 2-4 steady at %d/flip\n", name, n, cost[0], cost[1]);
+    if (n == 1)
+      chk("n=1: the ONE mon this cache actually frees -- flips 2-4 are pure cache hits (0 reads)",
+          steady_ok && cost[1] == 0);
+    else
+      chk("n>=2: NOT free -- every flip re-misses BOTH memos at n*ROM_MISS_COST, not a one-time cost",
+          steady_ok && cost[1] == n * ROM_MISS_COST);
   }
-  printf("  [%s] 60 IDLE FRAMES counterfactual (UNGATED, pre-fix behaviour): %d RomReadFn calls\n",
-         name, fc.reads);
-  chk("the counterfactual is real, avoidable cost (>0), proving the gate matters",
-      fc.reads > 0);
+  #undef ROM_MISS_COST
 
   /* ---- 5: the Day-Care screen (up to 7 icons, first draw) -------------------- */
   mirror_reset(); mru_reset(); fc.reads = 0; fc.backward = 0; fc.far_backward = 0; fc.last_off = -1;

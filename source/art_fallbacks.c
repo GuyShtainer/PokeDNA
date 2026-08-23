@@ -96,13 +96,34 @@
  * Eviction is plain LRU over 3 slots (a linear scan + an age counter; 3 entries is
  * nowhere near worth a smarter structure).
  *
- * HONEST LIMIT: 3 slots fully serves a screen that keeps redrawing ONE icon (the
- * box/summary single-mon views, the Pokedex list/grid selection highlight, a 2-frame
- * idle bob of up to 3 simultaneously-visible mons) with ZERO SD I/O after the first
- * draw. It does NOT fully eliminate SD I/O for the party overlay's up-to-6-mon bob or
- * the Pokedex grid's many-caught-cell bob -- those still miss past slot 3 and read
- * the card exactly as before, once per bob flip, same as pre-cache. There was no
- * EWRAM room left to do better without shrinking some OTHER static buffer first. */
+ * MEASURED LIMIT (2026-08-23 review; a previous "up to 3 simultaneously-visible mons
+ * ... ZERO SD I/O" claim here was FALSE and is corrected below -- see
+ * tests/host_dexicons_test.c's n=1/n=2/n=3 sweep, the live regression guard for these
+ * exact numbers, real ROM ladder): 3 slots fully serves a screen that keeps
+ * redrawing ONE icon (the box/summary single-mon views, the Pokedex list/grid
+ * selection highlight, a 2-frame idle bob of exactly ONE bobbing mon) with ZERO SD
+ * I/O after its first two fills -- measured 2 RomReadFn calls total, ever, then 0 for
+ * the rest of the session. It does NOT scale to 2 or 3 simultaneously-bobbing mons:
+ * a 2-frame bob needs 2 keys per mon, and this rung's OWN row-locate memo
+ * (rom_mon_locate_row_verified's single-entry cache, one level below this MRU) holds
+ * only ONE species at a time -- so cycling between 2+ distinct species re-locates
+ * AND re-fills on EVERY access, EVERY flip, not just the first. Measured: 12
+ * RomReadFn calls PER FLIP at n=2, 18 PER FLIP at n=3 -- a sustained per-tick cost,
+ * not a one-time fill. Only ONE simultaneously-bobbing mon is actually free.
+ *
+ * CONSEQUENCE FOR THE GATE: pdna_pick.c:657's `&& mon_icon_anim_cheap()` exists to
+ * keep this rung's idle-bob callers off this cache ENTIRELY when only the ROM rung
+ * serves (a caught cell just holds its first frame instead of bobbing -- no I/O, no
+ * animation). Do not read the numbers above as license to relax that gate into "the
+ * MRU can carry a multi-mon bob for free" -- for the Pokedex grid's many-caught-cell
+ * bob or the party overlay's up-to-6-mon bob, that would put up to 18 RomReadFn calls
+ * (several of them >4 KiB backward seeks that re-walk a 16 MB FAT cluster chain,
+ * FF_USE_FASTSEEK is 0) on a 30-frame timer -- exactly the "no SD I/O on an animation
+ * tick" trap this project has already paid for twice. This cache does NOT
+ * eliminate SD I/O for those callers -- they still miss past slot 3 (and past the
+ * single-entry row-locate memo) and pay the full cost every bob flip, same as
+ * pre-cache. There was no EWRAM room left to do better without shrinking some OTHER
+ * static buffer first. */
 #define ICON_FRAME_CACHE_SLOTS 3
 typedef struct {
   uint16_t row;
