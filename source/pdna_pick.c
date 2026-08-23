@@ -730,14 +730,16 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
        * by the multi-cell repaint — this kills the occasional cursor "stick". Recompose
        * EVERY visible caught cell at once (shared `bob`) via compose-over-DMA, no erase,
        * so there's never a frame where a sprite is blanked. */
-      /* mon_icon_anim_cheap() gates this off when the ONLY icon source is the ROM
-       * rung (art_fallbacks.c): that rung's per-icon locate+verify is real SD I/O
-       * (up to 8 reads on a miss), and re-running it on a 30-frame timer is exactly
-       * the "no SD I/O on an animation tick" trap the glove fix already paid for
-       * once. Caught cells simply keep their first frame (still real art, no bob)
-       * instead — a static Pokemon beats a hole, and costs nothing per tick. The
-       * icons.bin cache (one seek+read per flip) and compiled art keep bobbing,
-       * unchanged from before this rung existed. */
+      /* mon_icon_anim_cheap() is now "is every row of the page this screen DECLARED
+       * already in RAM" (art_fallbacks.c), not "which rung is serving" -- the old
+       * question gated off the CHEAPER rung and waved the more expensive one through,
+       * and is why Guy's Pokedex sat still. dex_declare_page() above declares the 21
+       * rows and pdna_dex_screen rents the space to hold them (icon_store_borrow), so
+       * on a normal page this answers YES on both rungs and the flip is provably zero
+       * SD transactions -- against the 252-420 disk_read calls it used to cost every
+       * 30 frames. When it answers no (an unsaved PC refuses the borrow, so 21 rows do
+       * not fit) caught cells keep their first frame: a static Pokemon beats a hole and
+       * costs nothing per tick, and the log says which case it was. */
       if (!k && grid && app_anim_enabled(ANIM_DEX) && mon_icon_anim_cheap() &&
           ++anim_ctr >= DEX_ANIM_PERIOD) {
         anim_ctr = 0; bob ^= 1;

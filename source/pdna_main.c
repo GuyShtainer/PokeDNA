@@ -240,18 +240,21 @@ static void app_icons_drop(void) { icon_store_borrow(false); }
  * and *frame so the phase survives their redraw loop. kind < 0 or redraw == 0
  * makes this exactly the old wait_keys (period is unused in that case).
  *
- * MUST-FIX 3 (2026-08-22 review): `mon_icon_anim_cheap()` in the trigger condition
- * below doubles as this helper's "no SD I/O on an animation tick" gate -- safe
- * ONLY because its one and only kind>=0 caller today is app_party_overlay's own
- * bob (party_overlay_bob, which redraws mon icons via mon_icon_egg_frame/
- * mon_icon_for_form_frame). Before this fix that call site was UNGATED: with a
- * ROM open and no icons.bin cache, every PARTY_BOB_PERIOD idle tick re-ran the
- * ROM rung's locate-then-verify (up to 8 real SD reads) for up to 6 party mons,
- * exactly the trap art_fallbacks.c's own header comment already named this call
- * site as one of the two loops that must gate on this. A FUTURE kind>=0 caller
- * whose redraw does NOT touch mon icons would be wrongly held to this gate too --
- * if one is ever added, split this condition so the icon-cheap check only covers
- * the icon-drawing callers. */
+ * `mon_icon_anim_cheap()` in the trigger condition below doubles as this helper's
+ * "no SD I/O on an animation tick" gate -- safe ONLY because its one and only
+ * kind>=0 caller today is app_party_overlay's own bob (party_overlay_bob, which
+ * redraws mon icons via mon_icon_egg_frame/mon_icon_for_form_frame). A FUTURE
+ * kind>=0 caller whose redraw does NOT touch mon icons would be wrongly held to
+ * this gate too -- if one is ever added, split this condition so the icon-cheap
+ * check only covers the icon-drawing callers.
+ *
+ * WHAT THE GATE MEANS NOW (art_fallbacks.c): "is every row this screen DECLARED
+ * already in RAM", not the old "which rung is serving". The overlay declares its
+ * six rows and rents the space for them through app_icons_hold() before the paint,
+ * so this answers YES on both rungs and a flip is zero SD transactions -- against
+ * the 120-210 disk_read calls every 8 frames it used to cost on the icons.bin rung,
+ * and against a bob gated off entirely on the ROM rung, which is the "in the party
+ * they are static" Guy reported. */
 static u16 wait_keys_bob_p(u16 mask, int kind, int* ctr, int* frame,
                            void (*redraw)(int), int period) {
   u16 hit, fresh;
@@ -1817,17 +1820,20 @@ static void icon_rung_log(const RomCtx* rc_ok, bool resolved) {
 #endif
   /* An ABSENT `bob.*` rollup has three indistinguishable causes, and only one of them is
    * a bug: (a) the user turned that screen's animation off in Settings months ago,
-   * (b) mon_icon_anim_cheap() returned false because the ROM rung is serving -- the
-   * documented n>=2 gate, and the reason Guy separately reported "the pokedex sprites are
-   * stationary", or (c) he never opened that screen this run. g_anim_mask only ever
-   * reached config.cfg and mon_icon_anim_cheap()'s verdict was written nowhere, so
-   * distinguishing them meant asking him to go read his own settings menu and re-run.
-   * Logged HERE because this is where the rung is decided, and the verdict is a function
-   * of the rung: art_session's memo is set by the resolver just above, and s_rommon by
-   * art_fallbacks_set_rommon earlier in app_icon_rom_open. Bit order is the ANIM_* enum
+   * (b) the animation gate said no, or (c) he never opened that screen this run.
+   * g_anim_mask only ever reached config.cfg, so (a) is what this line pins down.
+   *
+   * (b) IS NO LONGER ANSWERABLE AT BOOT, and printing a boot-time verdict would now be
+   * a lie rather than a shortcut. mon_icon_anim_cheap() used to be a function of the
+   * RUNG, which is decided right here; it is a function of the live PLAN now -- whether
+   * the rows the screen on the glass declared are in RAM -- and no screen has declared
+   * anything yet at this point. What is logged instead is the two things that BOUND that
+   * answer for the whole session: which rung serves, and how many rows the pool holds.
+   * The per-screen verdict shows up where it is actually decided, as the store's own
+   * "icons: borrow refused (pc dirty) - anim off" line. Bit order is the ANIM_* enum
    * (pdna_app.h): box, party, dex, daycare, summary. */
-  log_line("anim: mask 0x%02x, cheap %s", g_anim_mask,
-           mon_icon_anim_cheap() ? "yes" : "no");
+  log_line("anim: mask 0x%02x, gate=plan (rung=%d cap=%u)",
+           g_anim_mask, icon_store_rung(), (unsigned)icon_store_capacity());
 }
 
 /* Open the best available icon source and register it with the box:
@@ -3481,13 +3487,12 @@ static int party_list(void) {
      * static draw (opaque-wins, so order doesn't matter); ARTLESS's icon-major loop is
      * last-write-wins and must walk backwards (MUST-FIX 1, 2026-08-22) for the shared
      * row band to come out right -- that is NOT the same layering as the static draw.
-     * MUST-FIX 3 (2026-08-22 review): mon_icon_anim_cheap() gates this off when the
-     * ONLY icon source is the ROM rung (art_fallbacks.c) -- up to 6 party mons' worth
-     * of locate-then-verify (up to 8 real SD reads each on a miss) every 30-frame
-     * tick, otherwise. This is the SECOND of art_fallbacks.c's own two named "party
-     * bob" loops (the first is app_party_overlay's, gated in wait_keys_bob_p above) --
-     * this one was still ungated until this fix, despite the ROM rung's own commit
-     * message claiming the idle cost was already zero everywhere. */
+     * mon_icon_anim_cheap() (art_fallbacks.c) now asks whether every row this screen
+     * DECLARED is already in RAM, not which rung is serving. app_icons_hold() at the
+     * top of the loop declares the six party rows and rents the space to hold them,
+     * so this answers YES on both rungs and a flip costs zero SD transactions. This
+     * is the SECOND of art_fallbacks.c's own two named "party bob" loops (the first
+     * is app_party_overlay's, gated in wait_keys_bob_p above). */
     u16 k, fresh;
     const u16 mask = KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_START;
     do {
@@ -4813,11 +4818,13 @@ static void pdna_daycare(void) {
     do { VBlankIntrWait(); snd_vblank(); key_poll();
          int anim_any = n;
          if (s_ndeco) anim_any = 1;
-         /* mon_icon_anim_cheap() gates this off when the ONLY icon source is the ROM
-          * rung (art_fallbacks.c): up to 7 icons (2 boarders + up to 5 hazed yard
-          * visitors) would each pay a real per-icon SD locate+verify on every flip --
-          * exactly the "30-frame bob re-streaming the glove" trap already paid for
-          * once. The icons.bin cache and compiled art keep bobbing unchanged. */
+         /* Up to 7 icons per flip (2 boarders + up to 5 hazed yard visitors) -- the
+          * widest bob in the app, and the one that used to pay a per-icon SD
+          * locate+verify for every one of them. mon_icon_anim_cheap()
+          * (art_fallbacks.c) now asks whether the rows app_icons_hold() declared above
+          * are all in RAM; seven rows fit the rented pool on both rungs, so the answer
+          * is yes and the flip is zero SD transactions. A refused borrow (unsaved PC)
+          * answers no and the yard keeps a static frame, with the reason logged. */
          if (app_anim_enabled(ANIM_DAYCARE) && anim_any && mon_icon_anim_cheap() &&
              ++ctr >= 30) { /* idle 2-frame bob (flicker-free) */
            ctr = 0; frame ^= 1;

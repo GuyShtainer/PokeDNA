@@ -205,17 +205,22 @@ static void run_rom(const char* path, const char* name) {
       fc.far_backward <= 2 * 21);
 
   /* ---- 4: the animation-tick gate's precondition ---------------------------- */
-  /* mon_icon_anim_cheap() in art_fallbacks.c is `cache_ready || !s_rommon`. On this
-   * rung cache_ready is always false (no icons.bin on a host run) and s_rommon is
-   * set, so the gate is FALSE -- pdna_pick.c's dex bob and pdna_main.c's daycare
-   * bob (both patched with `&& mon_icon_anim_cheap()`) never re-enter icon_via_rom
-   * on an idle tick. Real cost over any number of idle frames: 0 RomReadFn calls,
-   * by construction. Reported here as documentation, not a re-derivation: */
-  bool cache_ready_this_scenario = false;
-  bool anim_cheap = cache_ready_this_scenario /* || !rommon, and rommon IS open */;
-  chk("anim gate is false whenever only the ROM rung serves (no cache, ROM open)",
-      anim_cheap == false);
-  printf("  [%s] 60 IDLE FRAMES (gated): 0 RomReadFn calls (mon_icon_anim_cheap() == false)\n", name);
+  /* STALE AS OF THE PLAN GATE, and rewritten rather than deleted because the number it
+   * pins is still the one that matters. mon_icon_anim_cheap() no longer asks "which rung
+   * is serving" (it used to be `cache_ready || !s_rommon`, and this scenario -- ROM open,
+   * no icons.bin -- is exactly the case it answered FALSE for). It now asks
+   * icon_store_plan_resident(): are the rows this screen DECLARED already in RAM? On a
+   * real dex page they are, because pdna_dex_screen rents 32 more rows from g_pc
+   * (icon_store_borrow) and dex_declare_page names the 21 it is about to paint -- so the
+   * gate now answers TRUE here and the bob RUNS, at zero SD cost.
+   *
+   * What has NOT changed is the invariant this section exists for: an idle tick must
+   * cost 0 RomReadFn calls. Before, that was bought by not animating at all. Now it is
+   * bought by the rows already being resident. Either way, a re-entry into icon_via_rom
+   * on a 30-frame timer is the bug, and tests/host_iconstore_test.c is where the new
+   * mechanism is measured (a 21-row page: resident, and 20 flips = 0 reads). */
+  printf("  [%s] 60 IDLE FRAMES: 0 RomReadFn calls -- gated OFF before the plan gate, "
+         "resident and free after it (see host_iconstore_test)\n", name);
 
   /* LIVE CONSTRAINT, not a "how bad the OLD code used to be" relic -- this is what
    * the NEXT implementer pays the moment mon_icon_anim_cheap()'s gate (this rung's

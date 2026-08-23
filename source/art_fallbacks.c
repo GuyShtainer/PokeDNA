@@ -69,15 +69,17 @@
  * place that primes that verdict, at boot and on every ROM re-registration, before any
  * screen draws. */
 
-/* Set by pdna_main.c's app_icon_rom_open() alongside boxoam_rom_icons(). This file no
- * longer READS from the ROM -- icon_store does -- but it still needs to know whether a
- * ROM rung exists at all, for the anim gate below. rm may be NULL (no ROM this
- * session). */
-static const RomMon* s_rommon = 0;
-
-void art_fallbacks_set_rommon(const struct RomMon* rm) {
-  s_rommon = (rm && rm->ok) ? rm : 0;
-}
+/* Called by pdna_main.c's app_icon_rom_open() alongside boxoam_rom_icons(), at boot and
+ * on every ROM re-registration. NOW A NO-OP, and kept as a symbol for the same reason
+ * icon_frame_cache_invalidate() below is: it is part of that one registration chokepoint
+ * and its three call sites read better naming what they hand to each consumer.
+ *
+ * It used to latch the RomMon into an s_rommon this file consulted for exactly one
+ * thing -- the anim gate's "is the ROM rung serving" question. That question is gone
+ * (see mon_icon_anim_cheap below: the gate now asks whether the screen's declared rows
+ * are in RAM), icon_store owns every ROM read, and a pointer nothing reads is a pointer
+ * the next reader has to prove nothing reads. */
+void art_fallbacks_set_rommon(const struct RomMon* rm) { (void)rm; }
 
 /* Kept as a symbol because pdna_main.c's app_icon_cache_resolve() calls it as part of
  * the one invalidation chokepoint, and because a full-art build links this file too
@@ -97,37 +99,45 @@ void icon_frame_cache_invalidate(void) { }
  * (the common case: compiled art needs no icons.bin at all) answered FALSE and
  * silently killed the Pokedex-grid bob and the daycare bob -- see mon_icons_gate.h.
  *
- * THE ARTLESS BODY IS UNCHANGED IN MEANING, and deliberately so at this step. It
- * used to read `art_session_icons_ready_memoized() || !s_rommon`, i.e. "is the
- * icons.bin cache serving, or is there nothing to read at all?". It now asks
- * icon_store which rung it settled on, which is the same question answered by the
- * module that actually does the reading -- and is strictly more accurate, because
- * icon_store only reports the cache rung once it has really opened the file AND
- * validated its metadata tail, where the old memo answered on the session verdict
- * alone.
+ * WHAT THE GATE USED TO ASK, AND WHY IT WAS THE WRONG QUESTION. Until this step it
+ * asked WHICH RUNG IS SERVING. That is measurably wrong, and inverted: on a real card
+ * with a normally-populated root the icons.bin rung cost 20-35 sectors per icon (an
+ * f_open re-walking three directory levels, per icon, per redraw) against the ROM rung's
+ * 17-20 -- so it waved the EXPENSIVE rung through and gated OFF the cheaper one. Which
+ * rung is serving says nothing about what a flip costs. What a flip costs is whether the
+ * rows the screen is about to redraw are ALREADY IN RAM, which is a property of the
+ * screen's working set and the pool, not of the file underneath.
  *
- * WHAT THIS GATE GETS WRONG, RECORDED HERE BECAUSE THE FIX IS THE NEXT STEP AND NOT
- * THIS ONE. It asks WHICH RUNG is serving. That is measurably the wrong question, and
- * inverted: on a real card with a normally-populated root directory the old cache rung
- * cost 20-35 sectors per icon (an f_open re-walking three directory levels, per icon,
- * per redraw) against the ROM rung's 17-20 -- so it was gating OFF the cheaper rung and
- * waving the more expensive one through. The right question is whether the rows the
- * screen is about to flip are ALREADY IN RAM, which is a property of the screen's
- * working set and the pool, not of the rung.
+ * SO IT ASKS THAT INSTEAD. icon_store_plan_resident() is true iff every row of the live
+ * plan is held right now, i.e. iff the flip is provably ZERO SD transactions. Every one
+ * of the four sites below declares its rows before it paints them, and the three that
+ * needed more room than the pool has rent it (icon_store_borrow -- see app_icons_hold in
+ * pdna_main.c). Host-measured over the real FatFs: a 6-mon party and a 21-cell Pokedex
+ * page are both fully resident with the borrow, and 20 bob flips over either cost 0
+ * transfers and 0 sectors on BOTH rungs.
  *
- * It is NOT changed here. The honest answer -- icon_store_plan_resident(), "is every row
- * this screen is about to flip already in RAM" -- now EXISTS (icon_store.h), and the
- * Pokedex grid already declares its page through it. What is still missing is the
- * capacity to make that answer TRUE on the dex: 21 rows against a 6-row pool is not
- * resident and never will be, so flipping the gate today would only trade one wrong
- * answer for another. The borrowed second tier is what makes 21 rows fit; the gate moves
- * in the step after it, at all four sites at once, and until then it stays a rung
- * question and the dex stays still on the ROM rung.
+ * WHEN IT SAYS NO, IT STILL MEANS NO. A refused borrow (the user has unsaved box moves,
+ * so g_pc cannot be lent) leaves the party against a 4-row pool on the ROM rung, the
+ * plan is honestly not resident, and the cells keep a static frame -- which is the right
+ * outcome and the reason this is a gate and not a delete. icon_store logs the reason at
+ * the refusal ("icons: borrow refused (pc dirty) - anim off"), so the log says which of
+ * the two "no"s it was.
  *
- * What DOES improve at this step, without touching the gate: the party overlay, the
- * party list and the day-care all have working sets of 6-7 rows against a 6-row pool,
- * so on the cache rung their bobs go from one f_open + seek + read per mon per flip to
- * zero SD transactions after the first paint.
+ * AND THE THIRD ANSWER, WHICH IS A BUG. icon_store_plan_resident() also returns false
+ * when NO PLAN HAS BEEN DECLARED AT ALL -- nobody told the store what the screen is
+ * about to draw, so it cannot promise anything. That false is indistinguishable on
+ * screen from "does not fit": both are a Pokemon standing still, which is exactly the
+ * symptom this whole redesign exists to fix, arriving in a new disguise. So it is
+ * separated here and SAID OUT LOUD.
+ *
+ * A LOG LINE, and not an assert or a panic screen, deliberately: this is a COSMETIC gate
+ * -- the worst honest outcome is a static icon -- and halting a save editor on the user's
+ * cartridge over a missing animation would be far worse than the bug. /PokeDNA/log.txt is
+ * already the channel Guy reads for exactly this class of question (it is how "the
+ * pokedex sprites are stationary" got diagnosed at all), and a named BUG line in it points
+ * straight at the missing declaration. Rate-limited to three because this function is
+ * polled on EVERY idle frame of a bob loop -- ~60 lines a second, unbounded, would burn
+ * log.c's per-run byte budget in seconds and bury the evidence it exists to preserve.
  *
  * Callers MUST gate every idle-tick frame swap on this and keep showing a static
  * frame otherwise -- a caught Pokemon that doesn't bob still beats a hole, and costs
@@ -138,11 +148,24 @@ void icon_frame_cache_invalidate(void) { }
 #if PDNA_MON_ICONS_ART_COMPILED
 bool mon_icon_anim_cheap(void) { return true; }
 #else
+static uint8_t s_gate_nodecl = 0;   /* the undeclared-gate log's rate limiter */
+
 bool mon_icon_anim_cheap(void) {
-  /* Anything but the ROM rung: either the cache is serving (the old memo's verdict,
-   * now taken from the module that opened the file) or there is no rung at all, in
-   * which case a "bob" redraws nothing and costs nothing. */
-  return icon_store_rung() != ICON_RUNG_ROM;
+  /* No rung at all -- no icons.bin and no ROM -- means a "flip" redraws nothing and
+   * costs nothing, so the honest answer is yes and no plan is required to give it.
+   * (icon_store_plan_resident() says the same; the branch is here so the BUG check
+   * below cannot fire on a build that simply has no art to read.) */
+  if (icon_store_rung() == ICON_RUNG_NONE) return true;
+
+  if (icon_store_plan_count() == 0) {
+    if (s_gate_nodecl < 3)
+      log_line("icons: BUG anim gate with no plan declared - anim off");
+    else if (s_gate_nodecl == 3)
+      log_line("icons: further undeclared-gate BUGs not logged");
+    if (s_gate_nodecl < 0xFF) s_gate_nodecl++;
+    return false;
+  }
+  return icon_store_plan_resident();
 }
 #endif
 
