@@ -31,13 +31,22 @@ static u16 EWRAM_BSS g_list[NSPECIES];   /* internal species ids in display orde
 static int g_n;
 
 /* ONE index buffer for every flat list on this screen family — the generic list_pick,
- * the item picker, the ball picker and the met-location picker. They are all leaf
- * screens (none opens another), so sharing is safe, and it is what pays for the two new
- * pickers: this used to be two separate static u16[NITEM] arrays, so folding them frees
- * 800 bytes of EWRAM rather than spending any. G3_PLACE_MAX (217) fits well inside it.
- * _Static_assert keeps that true if either count ever grows. */
+ * the item picker, the ball picker, the met-location picker and the MOVE picker. They
+ * are all leaf screens (none opens another), so sharing is safe, and it is what pays
+ * for the newer pickers: this used to be two separate static u16[NITEM] arrays, so
+ * folding them frees 800 bytes of EWRAM rather than spending any. G3_PLACE_MAX (217)
+ * fits well inside it. _Static_assert keeps that true if any count ever grows.
+ *
+ * The move picker joined the fold on 2026-08-23 (it had its own static u16[NMOVE],
+ * g_mv, 710 B) to help pay for source/icon_store.c's row pool. The exclusivity proof is
+ * the same one the others rest on and it was re-checked by grep, not assumed:
+ * pick_move()'s body calls no other picker and no list_pick, its ONLY caller in the
+ * whole tree is pdna_edit.c's F_MV0 case arm -- a sibling of the very case arm that
+ * calls pick_item() -- and a switch case blocks on its picker's return value before the
+ * next arm can run. So no two users of this buffer are ever live at once. */
 static u16 EWRAM_BSS g_idx[NITEM];
 _Static_assert(NITEM >= G3_PLACE_MAX, "g_idx must hold the whole met-location list");
+_Static_assert(NITEM >= NMOVE, "g_idx must hold the whole move list (folded g_mv)");
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 /* fresh presses for all keys + auto-repeat for the held d-pad (tonc key_repeat,
@@ -734,7 +743,10 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
 
 /* ===================== move picker ===================================== */
 
-static u16 EWRAM_BSS g_mv[NMOVE];
+/* The move list shares g_idx with the item/ball/met-location/generic pickers -- see
+ * g_idx's own comment for the exclusivity proof. `g_mv` is a name for that storage,
+ * not storage of its own. */
+#define g_mv g_idx
 static int g_mvn;
 
 /* sort modes for the move list */
