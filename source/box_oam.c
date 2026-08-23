@@ -45,6 +45,17 @@
 #define WP_W    162
 #define WP_Y    12
 
+/* top-tab row geometry — MUST match pdna_box.c's PANEL_W(76)/UI_SCR_W(240) and its
+ * render_full()'s 3 draw_tab() calls: draw_tab(0,PANEL_W+1,"PKMN DATA",...),
+ * draw_tab(PANEL_W+1,92,"PARTY",...), draw_tab(PANEL_W+93,UI_SCR_W-(PANEL_W+93),"SAVE",...)
+ * -> left edges 0 / 77 / 169, each a 12px-tall bar (y 0..11). Added 2026-08-23 (glove-vs-
+ * tab-row fix) — this row had no geometry of its own here before; boxoam_cursor's
+ * title_row==1 (banner) branch was the only "off the grid" case and every tab-row caller
+ * fell into it too, at the banner's own fixed (WP_X+1,13) regardless of which tab. */
+#define TAB_X0_PKMN  0
+#define TAB_X0_PARTY 77
+#define TAB_X0_SAVE  169
+
 /* OBJ tile ids (charblock-4-relative 4bpp indices; only 512..1023 valid in bitmap modes) */
 #define TID_ICON0   512                 /* slot s -> TID_ICON0 + s*16            */
 #define TID_HAND    992                 /* region A: cursor hand (16 tiles)      */
@@ -1051,14 +1062,25 @@ static void hand_xy(int cur, int* hx, int* hy) {
   if (*hy < WP_Y) *hy = WP_Y;
 }
 
-void boxoam_cursor(int cur, bool on_title, int mode) {
+void boxoam_cursor(int cur, int title_row, int mode) {
   load_rega_hand();                                  /* region A back to the hand (a grab/carry may have borrowed it) */
   int hx, hy;
   /* On the box name the hand used to park mid-banner — dead centre of "NAME  n/30", so it
    * covered the count on the Bank and the tail of the name on a PC box. The banner's own
    * left arrow is decoration (the right one says the same thing), so the hand goes there
    * instead: it still points at the banner, and no data is ever underneath it. */
-  if (on_title) { hx = WP_X + 1; hy = 13; }
+  if (title_row == 1) { hx = WP_X + 1; hy = 13; }
+  else if (title_row >= 2) {
+    /* Tab row (2026-08-23 fix): re-anchor per SELECTED tab instead of reusing the
+     * banner's single fixed spot. Same "point in from the region's own left edge"
+     * convention hand_xy() uses for a grid cell (fingertip a few px inside the left
+     * edge, not centred) — and hy lands INSIDE the tab bar's own y=0..11 band (at the
+     * label text's own y=2, ui_text(tx,2,...) in draw_tab), not one row below its
+     * bottom edge the way the reused banner y=13 did. */
+    static const int TAB_X0[3] = { TAB_X0_PKMN, TAB_X0_PARTY, TAB_X0_SAVE };
+    hx = TAB_X0[title_row - 2] + 1;
+    hy = 2;
+  }
   else { hand_xy(cur, &hx, &hy); hx += s_cur_dx; hy += s_cur_dy;   /* dip + slide ride the hand */
 #if !PDNA_HAND_ART_COMPILED
          hy -= s_hand_bob;   /* MUST-FIX 2: streamed-hand BOUNCE fallback, see boxoam_hand_pose() */

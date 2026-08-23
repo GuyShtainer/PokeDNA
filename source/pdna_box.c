@@ -1003,6 +1003,20 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
  * put until the fist closes). */
 static int s_grab_dip = 0;
 
+/* boxoam_cursor's title_row (box_oam.h, 2026-08-23 glove-vs-tab-row fix): fold this
+ * file's own on_title/s_tab_focus pair into the single value box_oam.c needs to
+ * re-anchor the glove correctly. s_tab_focus wins over on_title when both are set —
+ * true simultaneously the whole time the cursor is up on the top tabs, see
+ * pdna_box()'s own KEY_UP handling on the title row, which sets s_tab_focus without
+ * ever clearing on_title (by design: DOWN/B from the tabs must return to the SAME box-
+ * name-row state, not the grid). 0/1 for the "not tab-focused" cases match the old
+ * bool exactly (false/true), so this is the only call site that needs to know about
+ * s_tab_focus at all. */
+static int cursor_title_row(bool on_title) {
+  if (s_tab_focus >= 0) return 2 + s_tab_focus;   /* 2/3/4 = PKMN DATA/PARTY/SAVE */
+  return on_title ? 1 : 0;
+}
+
 static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
   if (s_oam_reload) { boxoam_load_box(g_box); s_oam_reload = false; era_hides_apply(); }
   if (s_holding && s_grab_dip) {
@@ -1028,7 +1042,7 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
   } else if (s_cur_mode == CM_ITEM && s_item_held) {
     boxoam_carry_end();                                      /* ITEM GRAB: carried item rides the cursor */
     boxoam_item_markers(g_box, true);
-    boxoam_cursor(cur, on_title, BOXOAM_HAND_ITEM);          /* the HAND follows too — it used to stay
+    boxoam_cursor(cur, cursor_title_row(on_title), BOXOAM_HAND_ITEM);  /* the HAND follows too — it used to stay
                                                               * frozen on the source mon (only the item
                                                               * sprite moved with the cursor) */
     /* Small item (bottom-centre), NOT the full 32x32 that covered the mon — so the source
@@ -1042,7 +1056,7 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
       boxoam_carry_item(cur, g_box[cur].heldItem, false);    /* HOVER: small item bottom-left */
     else
       boxoam_carry_item(cur, 0, false);
-    boxoam_cursor(cur, on_title, cursor_look());             /* cursor hand last; restores region A */
+    boxoam_cursor(cur, cursor_title_row(on_title), cursor_look());  /* cursor hand last; restores region A */
   }
 }
 
@@ -2725,11 +2739,11 @@ int pdna_box(BoxSource* src) {
               * boxoam_pose_pump() at the TOP of the *next* iteration (see above), not
               * this one. */
              if (!boxoam_set_frame(bob)) boxoam_set_bob(bob);
-             boxoam_cursor(cur, on_title, cursor_look());
+             boxoam_cursor(cur, cursor_title_row(on_title), cursor_look());
            }
          } else if (bob) { bob = 0; boxoam_hand_pose(BOXOAM_POSE_NORMAL);
                            if (!boxoam_set_frame(0)) boxoam_set_bob(0);   /* settle the grid */
-                           boxoam_cursor(cur, on_title, cursor_look()); }
+                           boxoam_cursor(cur, cursor_title_row(on_title), cursor_look()); }
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
