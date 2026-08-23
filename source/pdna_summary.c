@@ -135,10 +135,29 @@ static u16 portrait_bg(int yy) {
   int t = yy - 14; if (t < 0) t = 0; if (t > 63) t = 63;
   return RGB15(16 - t * 6 / 63, 22 - t * 6 / 63, 30 - t * 4 / 63);
 }
-/* Whole-screen blue gradient (medium-dark so the light card text stays readable). */
+/* Whole-screen blue gradient (medium-dark so the light card text stays readable).
+ *
+ * Deliberately never paints (0,11)-(92,150): draw_left's own ui_panel() unconditionally
+ * fills that exact rect the moment it runs, so painting it here was always overwritten
+ * and wasted -- and now that draw_left can be SKIPPED on an unchanged mon+pose
+ * (draw_left_conditional below, the fix for the "renders from scratch" regression),
+ * painting it here would wipe the preserved portrait/name/type-badge pixels with plain
+ * gradient and nothing would ever put them back. Band 1 (rows 10-19) straddles the
+ * rect's top edge (row 11) and is split; every other band is either fully inside or
+ * fully outside it. */
 static void summary_bg(void) {
-  for (int b = 0; b < 16; b++)
-    ui_fill_rect(0, b * 10, UI_SCR_W, 10, RGB15(6 - b / 5, 11 - b / 3, 22 - b / 2));
+  for (int b = 0; b < 16; b++) {
+    int y = b * 10;
+    u16 col = RGB15(6 - b / 5, 11 - b / 3, 22 - b / 2);
+    if (b == 1) {                                              /* rows 10..19: split at row 11 */
+      ui_fill_rect(0, y, UI_SCR_W, 1, col);                    /* row 10: outside the rect      */
+      ui_fill_rect(92, y + 1, UI_SCR_W - 92, 9, col);          /* rows 11..19: rect's left 92px owned by draw_left */
+    } else if (y >= 11 && y + 10 <= 150) {
+      ui_fill_rect(92, y, UI_SCR_W - 92, 10, col);             /* fully inside the rect's row range */
+    } else {
+      ui_fill_rect(0, y, UI_SCR_W, 10, col);                   /* fully outside (header row / footer rows) */
+    }
+  }
 }
 
 /* Shared portrait column (all 7 cards): framed sprite, dex no, name, Lv + colored
@@ -196,6 +215,80 @@ static void draw_left(const PkMon* p) {
   if (p->isBadEgg)   ui_text(6, 142, UI_WARN, "BAD EGG");
   else if (p->isEgg) ui_text(6, 142, C_HOT, "EGG");
   else if (p->pokerus) ui_text(6, 142, UI_WARN, "Pokerus");
+}
+
+/* ---- draw_left, made conditional on the mon+pose actually having changed ----------
+ *
+ * THE BUG (Guy's report, 2026-08-23): "editing a pokemon or simply scrolling through
+ * its stats, the whole screen renders from scratch". render_card() runs unconditionally
+ * on EVERY keypress in summary_run's loop -- always did, since the inline-edit rewrite
+ * (a30647c) -- and that was cheap and invisible right up until this month's ROM-art
+ * work gave draw_left() real I/O: the portrait fetch (pdna_origin_art_portrait ->
+ * rom_portrait, DELIBERATELY not memoised, up to 3 verified SD reads + an 8 KB LZ77
+ * decode) and up to two type_badge() calls (app_type_badge, "no cache and no memo,
+ * matching Phase 1's pure wiring scope" -- reloads a 5,888 B ROM sheet from SD EVERY
+ * call, commit 63c0b45, 2026-08-19). On Guy's actual configuration -- the artless
+ * build with his ROM registered on SD, where the compiled art rungs are absent and
+ * EVERY portrait/badge falls through to the SD rung -- that is real flashcart I/O
+ * firing on a UP/DOWN that only moves the field cursor one row, something that changes
+ * NOTHING about the mon's portrait, name, level, gender, type or egg/Pokerus tag. It
+ * will not show up in a fused capture (a cart memcpy, not the SD path) or in mGBA
+ * (which has no EZ-Flash SD interface to exercise at all) -- see
+ * docs/analysis-2026-08-23/MEASUREMENTS.md.
+ *
+ * draw_left()'s entire output is a pure function of (*p, g_back): nothing about it
+ * depends on `card`, `fsel` or `editing`. So a byte-for-byte-identical (*p, g_back) as
+ * last time means draw_left would paint EXACTLY the same pixels it already painted --
+ * skip it and the correct pixels are already on screen. memcmp over the whole PkMon
+ * (not a hand-picked subset of "the fields that affect art") is deliberate: PkMon also
+ * drives pdna_origin_of()'s GB-import verdict inside pdna_origin_art_portrait (it reads
+ * otId/metLocation/pokeball/language/ivs/evs/contest/ribbons/nature/experience/moves/
+ * friendship), which the "GB1?"/"GB2?" chip depends on -- a subset keyed only on the
+ * fields that affect the SPRITE would go stale the moment an EV/IV edit flips that
+ * verdict without changing species/form/shiny. A false MISS here (the snapshot differs
+ * only in struct padding, or after gen3_edit_load() lands the mon at a different stack
+ * address) just falls back to the always-correct full draw -- there is no way for this
+ * comparison to produce a false HIT that hides a real change. The snapshot is one
+ * PkMon's worth of plain .bss (no arrays added, no EWRAM) -- a few dozen bytes against
+ * the 6,108 B IWRAM-stack floor CLAUDE.md warns is nearly spent, nowhere near the
+ * 3,360 B commit that got reverted for costing every call chain 3,424 B.
+ *
+ * Invalidation is explicit, not implicit, at the two places that can put different
+ * pixels in this rect without going through draw_left: pd_summary_left_dirty() is
+ * called at the top of summary_run() (a fresh session must never trust a stale
+ * snapshot from whatever screen was on-screen before) and inside confirm_q() right
+ * after its ui_clear() (the ONE path that can `continue` back into the SAME session
+ * after wiping the screen -- CREATE mode's confirm_keep()==false "B = carry on
+ * editing" branch, pdna_summary.c's summary_run). Audited: every OTHER dialog/overlay
+ * in this file (reroll_confirm, the reroll "Rolling..." chip) is drawn at x>=96,
+ * clear of the (0,11)-(92,150) rect draw_left owns, and every other confirm_q() call
+ * site unconditionally returns out of summary_run afterward (no `continue`), so a
+ * fresh session always resets the snapshot before the next render_card() anyway. */
+static PkMon s_dl_snap;
+static bool  s_dl_snap_valid = false;
+static bool  s_dl_snap_back  = false;
+
+static void pd_summary_left_dirty(void) { s_dl_snap_valid = false; }
+
+/* Returns true iff draw_left() actually ran (false on a skip). summary_run's caller
+ * MUST use this, not assume it: the "render_card drew the rest pose" lastkey reset a
+ * few lines below it is only true when draw_left really ran. Skip that reset on a
+ * false return and the idle-bob animation's diff check (portrait_redraw's own lastkey,
+ * pdna_summary.c) keeps comparing against what is ACTUALLY on screen -- the pose the
+ * previous outer-loop iteration's animation left it at, not an assumed rest pose that
+ * was never drawn. Getting this wrong doesn't corrupt anything (portrait_redraw's own
+ * redraw is self-contained and always paints a complete, correct frame WHEN it fires),
+ * it just means an occasional skipped animation frame -- caught empirically by diffing
+ * mGBA screenshots against the pre-fix build frame-for-frame
+ * (docs/analysis-2026-08-23/MEASUREMENTS.md) before this return value was wired up. */
+static bool draw_left_conditional(const PkMon* p) {
+  if (s_dl_snap_valid && g_back == s_dl_snap_back && memcmp(p, &s_dl_snap, sizeof *p) == 0)
+    return false;                               /* identical to last time: already on screen */
+  draw_left(p);
+  s_dl_snap = *p;
+  s_dl_snap_back = g_back;
+  s_dl_snap_valid = true;
+  return true;
 }
 
 /* Right-hand card column: x=98, so 138 px to the screen edge with a 4 px margin.
@@ -452,7 +545,7 @@ static void card_condition(const PkMon* p) {
   ui_text(x, y, UI_DIM, "Sheen: blocks fed");   /* 17 cols; the full phrase wrapped onto the portrait */
 }
 
-static void render_card(const PkMon* p, int card) {
+static bool render_card(const PkMon* p, int card) {
   summary_bg();                             /* Emerald-style blue gradient backdrop */
   g_nslot = 0;
   if (g_edit)        { ui_fill_rect(0, 0, 50, 9, UI_WARN); ui_text(8, 1, UI_PANEL, "EDIT"); } /* unmissable */
@@ -460,7 +553,7 @@ static void render_card(const PkMon* p, int card) {
   else               ui_text(4, 2, UI_DIM, "VIEW");
   draw_dots(150, 2, NCARDS, card);
   ui_hline(0, 10, UI_SCR_W, UI_BORDER);
-  draw_left(p);
+  bool dl_ran = draw_left_conditional(p);
   ui_hline(98, 24, 100, UI_TITLE);          /* header accent rule under each card title */
   switch (card) {
     case 0: card_info(p);          break;
@@ -472,10 +565,17 @@ static void render_card(const PkMon* p, int card) {
     case 6: card_origin(p);        break;
     case 7: card_condition(p);     break;
   }
+  return dl_ran;
 }
 
 static bool confirm_q(const char* title, const char* a_line, const char* b_line) {
   ui_clear();
+  /* CREATE mode's confirm_keep()==false path `continue`s back into summary_run's loop
+   * without changing mon or pose (pdna_summary.c's "B = carry on editing"), so the
+   * draw_left_conditional snapshot above would otherwise think nothing changed and skip
+   * redrawing the panel this ui_clear() just wiped. Every other caller of confirm_q()
+   * unconditionally returns out of summary_run afterward, so this is a no-op there. */
+  pd_summary_left_dirty();
   ui_panel(16, 44, 208, 60, UI_PANEL, UI_WARN);
   ui_text(28, 52, UI_TITLE, title);
   ui_text(28, 72, UI_TEXT, a_line);
@@ -729,6 +829,9 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
   /* g_back is file-static and survives between calls: a create opened after someone
    * flipped a previous mon to its back sprite would otherwise open on the back. */
   if (create) g_back = false;
+  /* A fresh session must never trust draw_left_conditional's snapshot from whatever
+   * screen (box, another mon's summary) was on-screen before this call. */
+  pd_summary_left_dirty();
 
   for (;;) {
     g_edit = editing;
@@ -738,7 +841,7 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
      * species change — rebases it, so the arrows and the "Roll k/n" counter can never
      * describe a state the record is not in. */
     ivh_sync(&g_ivh, &e);
-    render_card(&cur, card);
+    bool dl_ran = render_card(&cur, card);
     if (editing && g_nslot) {
       if (fsel >= g_nslot) fsel = g_nslot - 1;
       int sx = g_slot[fsel].x, sy = g_slot[fsel].y, sw = g_slot[fsel].w;
@@ -752,7 +855,17 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
       : can_edit ? PDNA_SUM_FOOT_VIEW
                  : PDNA_SUM_FOOT_RO;
     ui_text(4, PDNA_SUM_FOOTER_Y, UI_DIM, foot);
-    lastkey = 64 | (64 << 8) | (64 << 16) | (64 << 24);   /* render_card drew the rest pose (64,64,0,0) */
+    /* Only true when render_card's draw_left_conditional actually redrew the rest pose
+     * (64,64,0,0) -- draw_left_conditional's fix for Guy's "renders from scratch"
+     * report (2026-08-23) skips draw_left when the mon+pose are unchanged, and on a
+     * skip the screen is NOT at rest: it is still showing whatever pose the PREVIOUS
+     * outer-loop iteration's animation left on screen. Resetting lastkey to the rest
+     * sentinel on a skip made portrait_redraw's own diff check compare against a pose
+     * that was never actually drawn -- caught by diffing mGBA screenshots against the
+     * pre-fix build frame-for-frame (docs/analysis-2026-08-23/MEASUREMENTS.md), where
+     * card flips and field-cursor moves occasionally froze the idle bob on a stale
+     * frame instead of continuing it. */
+    if (dl_ran) lastkey = 64 | (64 << 8) | (64 << 16) | (64 << 24);
     /* Fetch the portrait ONCE per repaint, not once per animation frame.
      *
      * portrait_redraw used to call portrait_sprite() itself, and portrait_sprite goes
