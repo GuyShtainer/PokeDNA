@@ -233,11 +233,27 @@ static inline OBJ_ATTR* oe(int i) { return &s_shadow[i]; }
 /* hide one shadow entry */
 static void hide(int i) { obj_hide(oe(i)); }
 
-/* DMA `bytes` from src into OBJ tile id `tid` (charblock-4-relative). */
+/* DMA `bytes` from src into OBJ tile id `tid` (charblock-4-relative). LOAD TIME ONLY --
+ * see upload_tiles_cpu below for why the animation tick must not call this. */
 static void upload_tiles(int tid, const void* src, int bytes) {
   /* OBJ tile memory base = tile_mem_obj[0] (0x06010000); each 4bpp tile = 32 B. */
   uint16_t* dst = (uint16_t*)((uint8_t*)tile_mem_obj[0] + (uint32_t)tid * 32);
   dma3_cpy(dst, src, bytes);
+}
+
+/* Same upload, CPU transport. For the ANIMATION TICK only.
+ *
+ * The 2026-08-23 hardware A/B proved a dma3_cpy issued from the box's per-vblank tick
+ * kills an Omega DE (see swap_cache_slot for the three builds and what each isolated).
+ * Load-time DMA is NOT implicated and stays as it is: every shipping build already does
+ * it on entry and is fine -- it is specifically the tick that cannot take one.
+ *
+ * That distinction is why this exists as a separate function instead of changing
+ * upload_tiles: the two callers below are on the tick, the rest are not, and collapsing
+ * them would lose the one property that matters. bytes must be a multiple of 4. */
+static void upload_tiles_cpu(int tid, const void* src, int bytes) {
+  uint16_t* dst = (uint16_t*)((uint8_t*)tile_mem_obj[0] + (uint32_t)tid * 32);
+  memcpy32(dst, src, (uint32_t)bytes / 4u);
 }
 
 /* Verified copy for the ONE-SHOT icon uploads. The 30 grid icons composite OVER the
@@ -735,12 +751,10 @@ void boxoam_enter(void) {
    * real while the swap itself stays disabled (finish_slot_pose forces s_pose_ok back
    * off after its fill -- see that function); 'B' (2) leaves this acquire off and uses
    * a dedicated private buffer instead (s_expb_cache above). */
-#if PDNA_POSE_EXPERIMENT == 1
+  /* The borrow ships again. The 2026-08-23 hardware A/B settled the question this was
+   * disabled for: variant 'A' took this exact acquire and did this exact fill, and ran
+   * CLEAN. The borrow was never the crash -- the transport was (see swap_cache_slot). */
   s_swapcache = app_box_swap_acquire(APP_BOX_SWAP_BYTES);
-#else
-  s_swapcache = 0;  /* was: app_box_swap_acquire(APP_BOX_SWAP_BYTES); */
-  (void)app_box_swap_acquire;
-#endif
 #if PDNA_POSE_EXPERIMENT == 2
   s_expb_ok = 0;
 #endif
@@ -1060,9 +1074,30 @@ static void swap_cache_slot(int s) {
   uint8_t* cache = s_swapcache + (uint32_t)s * (uint32_t)n;
   uint16_t* vram = (uint16_t*)((uint8_t*)tile_mem_obj[0] +
                                (uint32_t)(TID_ICON0 + s * MON_ICON_OAM_TILES) * 32);
-  dma3_cpy(s_stage, vram, (uint32_t)n);      /* temp  = VRAM  (the frame now on screen) */
-  dma3_cpy(vram, cache, (uint32_t)n);        /* VRAM  = cache (the frame NOT on screen) */
-  dma3_cpy(cache, s_stage, (uint32_t)n);     /* cache = temp  (what VRAM just gave up)  */
+  /* CPU, NOT DMA -- and this line is the whole fix.
+   *
+   * The 2026-08-23 hardware A/B finally isolated it. Three builds, one variable each:
+   * 'A' borrowed the 15 KB cache and filled it for real but never exchanged -- ZERO
+   * DMA3 in the box's per-vblank tick -- and ran clean. 'B' exchanged ONE slot (3 DMA3,
+   * 1,536 B/tick) and died. 'C' moved the real feature's full volume across 30 slots
+   * (45 DMA3) but content-invariant, changing no displayed byte, and died the SAME way.
+   * So it is not the borrow, not the volume, and not the content: issuing ANY dma3_cpy
+   * from that tick kills an Omega DE. On this build's configuration that path had never
+   * executed one, in any build that shipped or that 'A' tested.
+   *
+   * The mechanism is NOT pinned -- three properties are still confounded (a VRAM DMA
+   * SOURCE, an EWRAM DMA DESTINATION, and simply any DMA3 in that tick; these three
+   * functions are the only sites in the tree with the first two). Rather than guess at a
+   * hardware story -- which is how two earlier investigations went wrong -- this removes
+   * all three at once. memcpy32 is libtonc's IWRAM_CODE LDMIA/STMIA word copy: identical
+   * bus traffic, identical 32-bit access width (VRAM never sees an 8-bit write), no DMA
+   * controller involved. ~1,900 cycles/slot; 15 slots is ~28,500 of vblank's 83,776
+   * (34%), and the 15-now/15-next-tick split is unchanged.
+   *
+   * mGBA runs the DMA version perfectly and forever. Only hardware finds this. */
+  memcpy32(s_stage, vram, (uint32_t)n / 4u);   /* temp  = VRAM  (the frame now on screen) */
+  memcpy32(vram, cache, (uint32_t)n / 4u);     /* VRAM  = cache (the frame NOT on screen) */
+  memcpy32(cache, s_stage, (uint32_t)n / 4u);  /* cache = temp  (what VRAM just gave up)  */
 }
 
 #if PDNA_POSE_EXPERIMENT == 2
@@ -1138,7 +1173,7 @@ static void pose_swap_rom_slot(int s, uint8_t frame) {
   if (s == 0 && s_expb_ok) { swap_expb_slot(); return; }
 #endif
   if (!s_rom_cheap || !rom_icon_pose_frame(s_species[s], s_form[s], frame, &b)) return;
-  upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, s_stage,
+  upload_tiles_cpu(TID_ICON0 + s * MON_ICON_OAM_TILES, s_stage,
               MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
 }
 
@@ -1212,7 +1247,7 @@ int boxoam_set_frame(int frame) {
     }
     const uint8_t* t; int b;
     if (mon_icon_oam_for_form_frame(s_species[s], s_form[s], (uint8_t)frame, &t, &b)) {
-      upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, t,
+      upload_tiles_cpu(TID_ICON0 + s * MON_ICON_OAM_TILES, t,
                    MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);   /* compiled: always now */
       continue;
     }
@@ -1488,8 +1523,16 @@ void boxoam_chunk_carry(int tr, int tc, int fist_r, int fist_c,
                         const BoxOamChunkMon* mons, int n, bool fit, int lift) {
   uint8_t newcov[30];
   for (int s = 0; s < 30; s++) newcov[s] = 0;
-  for (int i = 0; i < n && i < 30; i++)
-    newcov[(tr + mons[i].rr) * COLS + (tc + mons[i].cc)] = 1;
+  for (int i = 0; i < n && i < 30; i++) {
+    /* CLAMPED. This index is built from a caller-supplied anchor plus a per-mon offset
+     * and lands in a 30-BYTE STACK ARRAY; nothing here bounded it. It is safe today only
+     * because pdna_box.c's caller happens to clamp the anchor first -- i.e. the safety
+     * lives in a different file from the array. An out-of-range chunk would smash this
+     * frame, which is exactly the shape of crash this module has already cost us days
+     * over. Found 2026-08-23 while root-causing the pose-swap crash; not that bug. */
+    int k = (tr + mons[i].rr) * COLS + (tc + mons[i].cc);
+    if ((unsigned)k < 30u) newcov[k] = 1;
+  }
   /* tiles need re-DMA only when the cell->mon mapping moved (or a reload voided it) */
   bool full = !s_chunk_valid || tr != s_chunk_tr || tc != s_chunk_tc;
 
