@@ -207,9 +207,13 @@ static u16 wait_keys_bob_p(u16 mask, int kind, int* ctr, int* frame,
       /* THE tick the user feels: one idle bob flip. Rolled up, never logged per
        * occurrence -- at PARTY_BOB_PERIOD (8 frames) this fires ~7 times a second, and
        * a line each would burn log.c's per-run byte budget in under a minute. The
-       * owning screen calls perf_rep_flush(PERF_REP_BOB) when it is left. This is the
-       * ONE gate every wait_keys_bob* caller passes through (party overlay, day-care,
-       * box, summary), so instrumenting it here covers all of them at one site. */
+       * owning screen calls perf_rep_flush(PERF_REP_BOB) when it is left. Every
+       * wait_keys_bob* caller passes through here -- the party overlay, the box, the
+       * summary -- so one site covers all of them. It does NOT cover the three bob
+       * loops that are written inline instead of going through this helper (the
+       * Pokedex grid's, party_list's and the day-care's); those are instrumented at
+       * their own loops, which is why "bob.dex"/"bob.party"/"bob.daycare" can reach
+       * the log from either shape. */
       static const char* const k_bobname[ANIM_COUNT] = {
         "bob.box", "bob.party", "bob.dex", "bob.daycare", "bob.summary" };
       perf_rep_begin(PERF_REP_BOB,
@@ -3304,7 +3308,12 @@ static int party_list(void) {
       k = fresh | key_repeat(KEY_UP | KEY_DOWN);
       if (!k && app_anim_enabled(ANIM_PARTY) && g_nparty && mon_icon_anim_cheap() && ++anim_ctr >= 30) {
         anim_ctr = 0; frame ^= 1;
+        /* party_list has its own bob loop rather than calling wait_keys_bob_p, so it
+         * needs its own rollup (same slot, same name as the overlay's -- the two are
+         * never on screen together and cost the same six icons). */
+        perf_rep_begin(PERF_REP_BOB, "bob.party");
         party_bob_recompose(g_nparty, sel, frame);
+        perf_rep_end(PERF_REP_BOB);
       }
     } while (!k);
     if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
@@ -4604,6 +4613,10 @@ static void pdna_daycare(void) {
          if (app_anim_enabled(ANIM_DAYCARE) && anim_any && mon_icon_anim_cheap() &&
              ++ctr >= 30) { /* idle 2-frame bob (flicker-free) */
            ctr = 0; frame ^= 1;
+           /* Up to 7 icons per flip (2 boarders + up to 5 yard visitors) -- the widest
+            * bob in the app, and another inline loop that never reaches
+            * wait_keys_bob_p, so it carries its own rollup. */
+           perf_rep_begin(PERF_REP_BOB, "bob.daycare");
            for (int i = 0; i < s_ndeco; i++)                    /* visitors first + hazed, as on redraw */
              dc_icon_over_bg(s_deco_x[i], s_deco_y[i],
                              mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)), 6);
@@ -4617,6 +4630,7 @@ static void pdna_daycare(void) {
 #endif
            }
            if (n) { int py = dcy[sel] - 7; if (py < 12) py = 12; dc_pointer(dcx[sel] + 16, py); }  /* selection arrow */
+           perf_rep_end(PERF_REP_BOB);
          }
          fresh = key_hit(KEY_FULL); k = fresh; } while (!k);
     if      (fresh & KEY_B) snd_back();
