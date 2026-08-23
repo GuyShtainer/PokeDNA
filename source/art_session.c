@@ -14,8 +14,20 @@
  * for its OWN suggested additions; this is 8 B). */
 static int8_t s_verdict[ART_KIND_COUNT];
 
+/* WHY the last kind_ready() answered the way it did, as a short phrase for the log.
+ * Every failure below already wrote a distinct log line EXCEPT the two most common
+ * ones -- art.idx simply absent (a card that never ran "Extract art") and this kind's
+ * bit never set -- which returned silently, so a log said only "kind 0 not ready" and
+ * left the reader guessing between "no cache" and "broken cache". A pointer to a
+ * string literal: no storage beyond the pointer, and pure C (this file is compiled by
+ * tests/host_artsession_test.c too). */
+static const char* s_why = "not checked";
+
+const char* art_session_why(void) { return s_why; }
+
 void art_session_invalidate(void) {
   memset(s_verdict, 0, sizeof s_verdict);
+  s_why = "not checked";       /* a stale reason outliving its verdict would mislead */
 }
 
 /* Read /PokeDNA/art/art.idx (at most 160 B for format v1: 32 + 8*16) and validate its
@@ -24,14 +36,18 @@ void art_session_invalidate(void) {
  * calls out is refused here, before a single kind is even considered). */
 static bool read_idx(ArtIdxHead* head, ArtIdxKindRow rows[ART_KIND_COUNT], int* nrows) {
   FIL f;
-  if (f_open(&f, ART_IDX_PATH, FA_READ) != FR_OK) return false; /* absent: no cache at all */
+  if (f_open(&f, ART_IDX_PATH, FA_READ) != FR_OK) {
+    s_why = "art.idx absent (never extracted)";
+    return false;                                               /* absent: no cache at all */
+  }
   uint8_t buf[ART_IDX_HEAD_BYTES + ART_KIND_COUNT * ART_IDX_KIND_BYTES];
   UINT br = 0;
   FRESULT fr = f_read(&f, buf, sizeof buf, &br);
   f_close(&f);
-  if (fr != FR_OK) return false;
+  if (fr != FR_OK) { s_why = "art.idx unreadable"; return false; }
   ArtIdxParseStatus st = art_idx_parse(buf, br, head, rows, nrows);
   if (st != ART_IDX_OK) {
+    s_why = "art.idx rejected";
     log_line("art cache: art.idx rejected (status %d)", (int)st);
     return false;
   }
@@ -65,6 +81,7 @@ static bool verify_kind_file(ArtKind k, const ArtIdxKindRow* row, bool deep) {
   if (!path) return false;
   FIL f;
   if (f_open(&f, path, FA_READ) != FR_OK) {
+    s_why = "the kind file is missing";
     log_line("art cache: %s missing (art.idx promised it)", path);
     return false;
   }
@@ -74,11 +91,13 @@ static bool verify_kind_file(ArtKind k, const ArtIdxKindRow* row, bool deep) {
     uint32_t fnv = 0;
     ok = art_fnv_of_stream(fil_read, &f, row->bytes, (uint8_t*)mon_decomp, 8192u, &fnv) &&
          fnv == row->fnv;
-    if (!ok) log_line("art cache: %s failed its stored FNV check", path);
+    if (!ok) { s_why = "the kind file failed its FNV check";
+               log_line("art cache: %s failed its stored FNV check", path); }
   }
   f_close(&f);
-  if (!size_ok) log_line("art cache: %s size mismatch (art.idx says %lu)", path,
-                         (unsigned long)row->bytes);
+  if (!size_ok) { s_why = "the kind file is the wrong size";
+                  log_line("art cache: %s size mismatch (art.idx says %lu)", path,
+                           (unsigned long)row->bytes); }
   return ok;
 }
 
@@ -96,15 +115,17 @@ static bool kind_ready(ArtKind k, const RomCtx* rc, bool deep) {
     if (!read_idx(&head, rows, &n)) break;
 
     const ArtIdxKindRow* row = art_idx_find(rows, n, k);
-    if (!row) break; /* this kind's bit was never set -- nothing was ever extracted */
+    if (!row) { s_why = "this kind was never extracted"; break; }
 
     if (rc && rc->kind != ROM_NONE) {
       uint32_t rom_fnv;
       if (!art_rom_fnv(rc->read, rc->ctx, rc->size, &rom_fnv)) {
+        s_why = "could not hash the open rom";
         log_line("art cache: could not hash the open rom to cross-check art.idx");
         break;
       }
       if (!art_idx_matches_rom(&head, rc, rom_fnv)) {
+        s_why = "art.idx is for a DIFFERENT rom";
         log_line("art cache: art.idx does not match the currently open rom");
         break;
       }
@@ -116,6 +137,8 @@ static bool kind_ready(ArtKind k, const RomCtx* rc, bool deep) {
     ok = verify_kind_file(k, row, deep);
   } while (0);
   rmbl_resume();
+
+  if (ok) s_why = deep ? "verified (deep)" : "verified (size only)";
 
   s_verdict[k] = ok ? 1 : -1;
   log_line("art cache: kind %d %s (%s check)", (int)k, ok ? "ready" : "not ready",

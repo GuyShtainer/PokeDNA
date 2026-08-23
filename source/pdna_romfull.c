@@ -51,6 +51,7 @@
 #include "flashcartio.h"
 #include "fused_rom.h"
 #include "log.h"
+#include "perf.h"        /* the session clock -- see tmr_start below */
 #include "rmbl.h"
 #include "rumble.h"
 #include "snd.h"
@@ -110,26 +111,18 @@ static u16 state_color(int st) {
 /* ---- the self-measurement ------------------------------------------------------
  * TIMER0 at F/1024 (16384 Hz) with TIMER1 cascaded gives a 32-bit tick counter good for
  * 72 hours, which is 10,000x longer than this screen can possibly run. TIMER2 belongs to
- * the rumble PWM and is deliberately left alone; it is frozen for the duration anyway. */
-static void tmr_start(void) {
-  REG_TM0CNT = 0; REG_TM1CNT = 0;
-  REG_TM0D = 0;   REG_TM1D = 0;
-  REG_TM1CNT = TM_ENABLE | TM_CASCADE;
-  REG_TM0CNT = TM_ENABLE | TM_FREQ_1024;
-}
-static void tmr_stop(void) { REG_TM0CNT = 0; REG_TM1CNT = 0; }
+ * the rumble PWM and is deliberately left alone; it is frozen for the duration anyway.
+ *
+ * That timer pair is now perf.c's, started once at boot and left running for the whole
+ * session (perf.h). This screen used to start and STOP its own -- which, alongside a
+ * session-long clock, would be two owners resetting each other's counter. Every use
+ * below is a DELTA between two tmr_ticks() readings, so reading a free-running clock
+ * instead of a zeroed one is semantically identical and nothing on screen changes. */
+static void tmr_start(void) { }        /* the clock is already running: nothing to arm */
+static void tmr_stop(void)  { }        /* ...and it must keep running: nothing to stop */
 
-static u32 tmr_ticks(void) {
-  /* Read hi, lo, hi: if the high half moved between the two reads the low half we got
-   * belongs to the wrong epoch, so take a fresh pair. One retry is enough — the halves
-   * cannot both roll in the microseconds between two loads. */
-  u16 hi = REG_TM1D, lo = REG_TM0D, hi2 = REG_TM1D;
-  if (hi2 != hi) { hi = hi2; lo = REG_TM0D; }
-  return ((u32)hi << 16) | lo;
-}
-static u32 tmr_ms(u32 ticks) {
-  return (u32)(((unsigned long long)ticks * 1000ull) >> 14);   /* /16384, no division */
-}
+static u32 tmr_ticks(void) { return perf_ticks(); }
+static u32 tmr_ms(u32 ticks) { return perf_ms(ticks); }
 
 /* Time a raw CRC32 over `len` bytes at `off`, at the CURRENT bus timing. Canonicalisation
  * off: nothing is compared here, this is a stopwatch. */

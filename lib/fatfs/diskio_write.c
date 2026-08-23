@@ -16,6 +16,7 @@
 #include "ff.h"     /* integer types (WORD/DWORD/LBA_t) */
 #include "diskio.h" /* DRESULT, command codes */
 #include "gba_rtc.h" /* cartridge RTC (resolved via -Isource) */
+#include "perf.h"    /* PERF_SD_WRITE -- see the note in diskio.c's disk_read */
 
 #define ALIGNED __attribute__((aligned(4)))
 
@@ -29,6 +30,10 @@ extern u8 fc_bounce[512 * 4];
 
 DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
   (void)pdrv;
+
+  /* Same contract as disk_read's counter: arithmetic on EWRAM words, before the
+   * transfer, at the one choke point. */
+  PERF_SD_WRITE(count);
 
   /* WORD alignment, not halfword -- see the long note in disk_read(). The EZ-Flash write
    * path is the same DMA32 copy in the opposite direction, so a 2-mod-4 SOURCE reads two

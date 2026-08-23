@@ -34,6 +34,7 @@
 #include "log.h"            /* icon-upload self-verify diagnostics */
 #include "pdna_app.h"       /* app_log_flush: anomaly evidence must survive a power-off */
 #include "snd.h"            /* snd_deny: zero-I/O audible+haptic canary-trip cue */
+#include "perf.h"           /* PERF_ICON -- this ladder's rung counters (telemetry only) */
 
 /* ---- hardware A/B switch for the borrowed-cache pose-swap crash (2026-08-23) --------
  * boxoam_enter()'s own comment (below) has the incident writeup. Every test run so far
@@ -377,6 +378,7 @@ static int rom_icon_read_verified(uint16_t species, uint8_t form, int egg, uint8
   if (!(s_iconloc.ok && s_iconloc_sp == sp && s_iconloc_f == f)) {
     int unstable = 0;
     s_iconloc_sp = sp; s_iconloc_f = f;
+    PERF_ICON(rom_loc);                            /* a real locate, not a memo hit */
     if (!rom_mon_locate_verified(s_rommon, sp, f, &s_iconloc, 4, &unstable)) {
       s_iconloc_sp = 0xFFFF;                     /* leaves ok = 0: the memo self-voids */
       rumble_io_resume();
@@ -391,8 +393,13 @@ static int rom_icon_read_verified(uint16_t species, uint8_t form, int egg, uint8
   }
   int ok = 0;
   for (int a = 0; a < 4 && !ok; a++) {
+    /* Every ATTEMPT is counted, including the retries: an unstable cart that needs
+     * four passes costs eight 512 B reads, and averaging that away would hide the one
+     * thing this counter exists to expose. */
+    PERF_ICON(rom_frm);
     if (!rom_mon_icon_at(s_rommon, &s_iconloc, frame, (uint8_t*)s_stage)) { rumble_io_resume(); return 0; }
     uint32_t s1 = stage_sum();
+    PERF_ICON(rom_frm);
     if (!rom_mon_icon_at(s_rommon, &s_iconloc, frame, (uint8_t*)s_stage)) { rumble_io_resume(); return 0; }
     ok = (stage_sum() == s1);
   }
@@ -425,6 +432,7 @@ static int cache_icon_read(uint16_t species, uint8_t form, int egg, uint8_t fram
   rumble_io_suspend();
   bool ok = art_icons_read_frame(s_iconcache_path, row, frame, (uint8_t*)s_stage);
   rumble_io_resume();
+  if (ok) PERF_ICON(bin);
   if (!ok) return 0;
   uint8_t id = art_icons_meta_pal_id(s_iconcache_path, row);
   if (id >= ART_ICONS_PALS) return 0;
@@ -821,15 +829,18 @@ void boxoam_enter(void) {
         rumble_io_suspend();
         for (int pnum = 0; pnum < (int)ART_ICONS_PALS; pnum++) {
           uint16_t pd[16];
+          PERF_ICON(rom_pal);                    /* counted for both rungs: a palette fill */
           if (art_icons_meta_pal_at(s_iconcache_path, pnum, pd))
             for (int i = 0; i < 16; i++) pal_obj_mem[pnum * 16 + i] = pd[i];
         }
         rumble_io_resume();
       } else if (s_rommon) {
         uint16_t pd[16];
-        for (int pnum = 0; pnum < ROM_MON_PALS; pnum++)
+        for (int pnum = 0; pnum < ROM_MON_PALS; pnum++) {
+          PERF_ICON(rom_pal);
           if (rom_mon_icon_pal(s_rommon, pnum, pd))
             for (int i = 0; i < 16; i++) pal_obj_mem[pnum * 16 + i] = pd[i];
+        }
       }
     } }
 
@@ -892,6 +903,12 @@ void boxoam_exit(void) {
   oam_copy(oam_mem, s_shadow, 128);                 /* clear hardware OAM           */
   if (s_swapcache) { app_box_swap_release(); s_swapcache = 0; }  /* hand g_entries back */
   for (int i = 0; i < 30; i++) s_cache_ok[i] = 0;
+  /* Every one of pdna_box's ~9 exit paths calls this, which makes it the ONE place a
+   * screen-scoped rollup can be emitted without repeating it nine times (and without a
+   * tenth path being added later that forgets). Main-loop level, between transfers, so
+   * the flush inside is safe here for the same reason app_log_flush is. */
+  perf_rep_flush(PERF_REP_PAGE);
+  perf_rep_flush(PERF_REP_BOB);
 }
 
 void boxoam_suspend(void) { REG_DISPCNT &= ~DCNT_OBJ; REG_BLDCNT = 0; }
@@ -1038,6 +1055,9 @@ void boxoam_load_box(const PkMon box[30]) {
 static int rom_icon_pose_frame(uint16_t species, uint8_t form, uint8_t frame, int* bank) {
   if (!s_rommon) return 0;
   uint8_t pal = 0;
+  /* rom_mon_icon() is a locate + ONE frame read in one call, with no memo and no
+   * double-compare -- counted as both so the span line still adds up. */
+  PERF_ICON(rom_loc); PERF_ICON(rom_frm);
   if (!rom_mon_icon(s_rommon, species, form, frame, (uint8_t*)s_stage, &pal)) return 0;
   *bank = pal;
   return 1;

@@ -59,6 +59,15 @@ const char* art_session_icons_path(void);
  * memo is app_icon_rom_open's job alone; every other caller only ever READS it. */
 bool art_session_icons_ready_memoized(void);
 
+/* A short phrase for the log explaining the LAST verdict art_session_kind_ready*
+ * reached -- "art.idx absent (never extracted)", "art.idx is for a DIFFERENT rom",
+ * "the kind file is the wrong size", "verified (size only)" ... Never NULL. Two of
+ * those cases used to produce NO log line at all, so a log said "kind 0 not ready"
+ * and the reader could not tell "this card has no cache" from "this card's cache is
+ * broken" -- which is the difference between telling the user to run Extract art and
+ * debugging the extractor. Valid until the next kind_ready() call. */
+const char* art_session_why(void);
+
 void art_session_invalidate(void);
 
 #endif /* ART_SESSION_H */

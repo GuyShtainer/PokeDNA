@@ -32,6 +32,7 @@
 #include "sys.h"             /* EWRAM_BSS                                             */
 #include "rom_mon.h"         /* phase-1.5: the ROM rung below the icons.bin cache     */
 #include "log.h"             /* rom-rung anomaly diagnostics                          */
+#include "perf.h"            /* PERF_ICON -- which rung served, and how expensively    */
 #include "mon_icons_gate.h"  /* PDNA_MON_ICONS_ART_COMPILED -- is this a full-art build */
 
 /* ---- RGB15 icon/sprite accessors: no COMPILED art -> the icons.bin cache ---------
@@ -264,6 +265,7 @@ static bool rom_locate_row(uint16_t row) {
   if (s_romloc_row == row && s_romloc.ok) return true;
   int unstable = 0;
   s_romloc_row = row;
+  PERF_ICON(rom_loc);                            /* a real locate, not a memo hit */
   if (!rom_mon_locate_row_verified(s_rommon, row, &s_romloc, 4, &unstable)) {
     s_romloc_row = 0xFFFF;                       /* self-void: next call retries    */
     if (unstable) log_line("dex icons: rom locate unstable row=%u", row);
@@ -276,8 +278,12 @@ static bool rom_locate_row(uint16_t row) {
  * accepted only when their sums agree -- see sum512 above). */
 static bool rom_icon_fill(uint16_t row, uint8_t frame, uint8_t raw[512]) {
   if (!rom_locate_row(row)) return false;
+  /* Counted twice on purpose: the verify is a SECOND full 512 B read off the card, and
+   * hiding it inside "one fill" is what let its cost stay invisible. */
+  PERF_ICON(rom_frm);
   if (!rom_mon_icon_at(s_rommon, &s_romloc, frame, raw)) return false;
   uint32_t s1 = sum512(raw);
+  PERF_ICON(rom_frm);
   if (!rom_mon_icon_at(s_rommon, &s_romloc, frame, raw)) return false;
   if (sum512(raw) != s1) {
     log_line("dex icons: rom frame unstable row=%u frame=%u", row, frame);
@@ -294,6 +300,7 @@ static bool rom_pal_for_row(uint16_t row, uint16_t out[16]) {
   uint8_t id = s_romloc.pal;
   if (id >= ROM_MON_PALS) return false;
   if (!(s_rompal_have & (1u << id))) {
+    PERF_ICON(rom_pal);                          /* a real bank fill, not a cache hit */
     if (!s_rommon || !rom_mon_icon_pal(s_rommon, id, s_rompal[id])) return false;
     s_rompal_have |= (uint8_t)(1u << id);
   }
@@ -315,7 +322,7 @@ static bool rom_pal_for_row(uint16_t row, uint16_t out[16]) {
 static const uint16_t* icon_from_cache(uint16_t species, uint8_t form, uint8_t frame,
                                        bool egg) {
   bool cache_ready = art_session_icons_ready_memoized();
-  if (!cache_ready && !s_rommon) return 0;
+  if (!cache_ready && !s_rommon) { PERF_ICON(null_ans); return 0; }
   const char* path = cache_ready ? art_session_icons_path() : 0;
   uint16_t sp = egg ? 412 : species;
   uint8_t f = egg ? 0 : form;
@@ -323,20 +330,26 @@ static const uint16_t* icon_from_cache(uint16_t species, uint8_t form, uint8_t f
 
   bool hit = false;
   int idx = icon_frame_slot_index(row, frame, &hit);
-  if (!hit) {
+  if (hit) PERF_ICON(mru_hit);
+  else {
+    PERF_ICON(mru_miss);
     bool filled = path && art_icons_read_frame(path, row, frame, s_icfr[idx].raw);
+    if (filled) PERF_ICON(bin);                  /* the icons.bin rung served it */
     if (!filled && s_rommon) filled = rom_icon_fill(row, frame, s_icfr[idx].raw);
-    if (!filled) return 0; /* slot stays invalid: icon_frame_slot_index already left
-        valid at 0, so the next lookup for this (row, frame) retries instead of
-        trusting a half-filled slot */
+    if (!filled) { PERF_ICON(null_ans); return 0; } /* slot stays invalid:
+        icon_frame_slot_index already left valid at 0, so the next lookup for this
+        (row, frame) retries instead of trusting a half-filled slot */
     s_icfr[idx].valid = 1;
   }
   memcpy(mon_decomp, s_icfr[idx].raw, sizeof s_icfr[idx].raw);
   uint16_t pal[16];
   bool have_pal = path && art_icons_meta_pal(path, row, pal);
   if (!have_pal && s_rommon) have_pal = rom_pal_for_row(row, pal);
-  if (!have_pal) return 0;
-  return icon4_to_rgb15((uint8_t*)mon_decomp, MON_DECOMP_BYTES, pal) ? mon_decomp : 0;
+  if (!have_pal) { PERF_ICON(null_ans); return 0; }
+  const uint16_t* out = icon4_to_rgb15((uint8_t*)mon_decomp, MON_DECOMP_BYTES, pal)
+                            ? mon_decomp : 0;
+  if (!out) PERF_ICON(null_ans);
+  return out;
 }
 
 __attribute__((weak)) const uint16_t* mon_icon_for(uint16_t s) {

@@ -10,6 +10,16 @@
 
 #include "diskio.h" /* Declarations of disk functions */
 
+/* Telemetry only. perf.h is stdint-only on purpose so it can sit alongside sys.h's
+ * u8/u16/u32 MACROS here without a type clash, and PERF_SD_READ/PERF_SD_WRITE expand
+ * to plain arithmetic on EWRAM words -- no call, no log line, no ROM access. That
+ * matters HERE specifically: a few instructions below, flashcartio_read_sector unmaps
+ * the cartridge ROM for the length of the transfer with IRQs off (hard rule 1), so
+ * anything that reached into ROM-resident code from this function would be the exact
+ * class of bug that rule exists to prevent. Compiles to nothing under -DPDNA_PERF=0.
+ * Resolved through the Makefile's -Isource. */
+#include "perf.h"
+
 #define ALIGNED __attribute__((aligned(4)))
 
 /* ONE bounce buffer, shared by disk_read and disk_write.
@@ -46,6 +56,14 @@ DSTATUS disk_initialize(BYTE driveId) {
 /*-----------------------------------------------------------------------*/
 
 DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
+  /* Counted here, at the ONE choke point every SD read in the app passes through, and
+   * counted BEFORE the transfer rather than after: a read that never returns is
+   * exactly the one we most want to see in the log, and a failed read still cost the
+   * card its round trip. `count` is what FatFs asked for -- note the unaligned branch
+   * below splits that into ceil(count/4) driver calls, so on that path the real number
+   * of EZ-Flash transactions is higher than the one call recorded here. */
+  PERF_SD_READ(count);
+
   /* WORD alignment, not halfword. The EZ-Flash read path is a DMA32 copy
    * (io_ezfo.c Read_SD_sectors -> sys.h dmaCopy -> DMA_Copy(..., DMA32)) and the GBA DMA
    * unit force-aligns its addresses DOWN to the transfer width. A destination at 2 mod 4

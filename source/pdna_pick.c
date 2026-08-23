@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "sys.h"
+#include "perf.h"        /* dex screen span + page/bob rollups (telemetry) */
 #include "pdna_pick.h"
 #include "pdna_app.h"      /* app_confirm, app_anim_enabled (Pokedex screen) */
 #include "ui.h"
@@ -580,6 +581,8 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
   s_dget = get; s_dset = set;
   s_getnat = getnat; s_setnat = can_edit ? setnat : NULL;   /* read-only carts can't toggle it */
   s_dex_snap_valid = false;        /* fresh session: no bulk op to undo yet */
+  perf_span_begin("dex");            /* enter cost: up to 21 cells through the ladder */
+  bool perf_first_paint = true;
   /* Art-free build: no icons -> the LIST is the primary view (Guy's call: grids of
    * icons become lists until the art exists; L/R still reaches the chip grid). */
   int filter = 0, sort = 0, status = DS_ALL, view = mon_icon_for(1) ? DV_GRID : DV_LIST;
@@ -609,6 +612,11 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
     relist = false;
 
     if (full) {
+      /* One page draw: a fresh entry, a view/filter change, or a one-row scroll step
+       * (which repaints all `vis` cells, including the ones that did not move). Rolled
+       * up rather than logged per occurrence -- a held D-pad produces one of these
+       * every few frames. */
+      perf_rep_begin(PERF_REP_PAGE, "dex.page");
       ui_clear();
       ui_hline(0, 22, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
@@ -619,6 +627,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
         if (grid) dex_cell_grid(x, y, g_list[top + i], bob);
         else dex_cell_list(x, y, g_list[top + i], (top + i == sel));
       }
+      perf_rep_end(PERF_REP_PAGE);
     } else if (prev_sel >= top && prev_sel < top + vis) {   /* erase old selection chrome */
       int pi = prev_sel - top, px = x0 + (pi % cols) * cw, py = y0 + (pi / cols) * ch;
       if (grid) m3_frame(px - 1, py - 1, px + 32, py + 32, UI_BG);
@@ -634,6 +643,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
     dex_header(view, filter, status, g_n ? g_list[sel] : 0, seen, caught);
 
     prev_sel = sel; prev_top = top; prev_view = view;
+    if (perf_first_paint) { perf_first_paint = false; perf_span_end(); }
 
     /* wait for input; meanwhile bob the caught cells (grid/type, anim enabled) */
     u16 k, fresh;
@@ -657,6 +667,10 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
       if (!k && grid && app_anim_enabled(ANIM_DEX) && mon_icon_anim_cheap() &&
           ++anim_ctr >= DEX_ANIM_PERIOD) {
         anim_ctr = 0; bob ^= 1;
+        /* The tick the user feels most: every visible CAUGHT cell is re-fetched through
+         * the artless ladder on one 30-frame timer, so the cost scales with how many
+         * Pokemon are moving. Rolled up; emitted when the screen is left. */
+        perf_rep_begin(PERF_REP_BOB, "dex.bob");
         for (int i = 0; i < vis && top + i < g_n; i++) {
           uint16_t in = g_list[top + i];
           if (dstate(in) != 2) continue;
@@ -666,6 +680,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
           ui_pokeball(x + 21, y + 21);
           if (top + i == sel) m3_frame(x - 1, y - 1, x + 32, y + 32, UI_SELTEXT);
         }
+        perf_rep_end(PERF_REP_BOB);
       }
     } while (!k);
     if      (fresh & dpad)                          snd_move();
@@ -709,6 +724,11 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
       if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); dex_build(filter, sort, search, status, view); sel = 0; toprow = 0; relist = true; }
     }
   }
+  /* Leaving the screen: emit both rollups now, while the numbers still belong to a
+   * screen the user can name, instead of waiting for whatever reuses the slots next. */
+  perf_rep_flush(PERF_REP_PAGE);
+  perf_rep_flush(PERF_REP_BOB);
+  perf_span_end();          /* no-op if the first paint already closed it */
   return dirty;
 }
 

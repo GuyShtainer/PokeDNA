@@ -30,8 +30,9 @@
  * ---------------------------------
  * Reads ROM only — no SD, no SRAM, no card writes, nothing persisted. It freezes the
  * rumble motor for the duration (a cart-GPIO write can corrupt an in-flight ROM read on
- * this cart — source/rumble.c:59-66), borrows TIMER0/TIMER1 to measure itself, and
- * restores both. Zero new EWRAM and zero new .bss in either RAM: the per-region state is
+ * this cart — source/rumble.c:59-66) and READS the session clock (perf.h's TIMER0/TIMER1
+ * pair, started once at boot) to measure itself — it no longer starts or stops a timer of
+ * its own. Zero new EWRAM and zero new .bss in either RAM: the per-region state is
  * a stack local, which is also why it must stay a modal screen.
  *
  * TWO WAYS IN, and the first one is the important one

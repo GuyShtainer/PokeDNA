@@ -174,7 +174,10 @@ LIBS        := -ltonc
 # only symptom is at runtime on the cart. That shipped; it is why this comment is long.
 # Same hazard, same fix, for PDNA_ARTLESS: an artless build's objects must never be reused
 # for a full-art link (or vice versa), hence the "-artless" suffix below too.
-BUILD       := build$(if $(PDNA_TARGET),-$(PDNA_TARGET),)$(if $(filter 1,$(PDNA_ARTLESS)),-artless,)
+# ...and PDNA_PERF gets its own suffix for the same reason every other flag does: an
+# object built with the counters in and one built without carry no record of which, so a
+# shared directory would silently link a half-instrumented binary.
+BUILD       := build$(if $(PDNA_TARGET),-$(PDNA_TARGET),)$(if $(filter 1,$(PDNA_ARTLESS)),-artless,)$(if $(filter 0,$(PDNA_PERF)),-noperf,)
 SRCDIRS     := source lib lib/fatfs lib/ezflashomega lib/everdrivegbax5
 # Build target: 'nor' (default) embeds every sprite (~6.25 MB, run from NOR); 'sd' streams the
 # shiny+back blobs from /PokeDNA/sprites.pak so the ROM fits the EZ-Flash SD-mode budget (~<=4 MB).
@@ -226,7 +229,29 @@ ifeq ($(strip $(PDNA_ARTLESS)),1)
 CFLAGS += -DPDNA_HAND_ART_COMPILED=0 -DPDNA_MON_ICONS_ART_COMPILED=0 \
           -DPDNA_CARD_ART_COMPILED=0 -DPDNA_POKEBLOCK_ART_COMPILED=0 \
           -DPDNA_BAG_ART_COMPILED=0 -DPDNA_NO_DAYCARE_BG
+# ...and tell the CODE which variant it is, not just which art gates are off, so the
+# log's boot line can name the build the user is actually running (source/perf.c).
+CFLAGS += -DPDNA_ARTLESS=1
 endif
+
+# TELEMETRY SWITCH. 1 (the default) compiles source/perf.c's SD/icon counters, spans and
+# rollups in; `make artless PDNA_PERF=0` compiles every one of them away to nothing --
+# the call sites stay put, the macros become ((void)0) and the functions become empty
+# static inlines, so a release build pays no cycles, no bytes and no log lines. The
+# session CLOCK is deliberately outside this switch (perf.h says why): two on-screen
+# readouts depend on it, so removing it would not remove telemetry, it would zero them.
+PDNA_PERF ?= 1
+CFLAGS += -DPDNA_PERF=$(PDNA_PERF)
+
+# BUILD IDENTITY. __DATE__/__TIME__ alone cannot tell two builds of the same afternoon
+# apart, and "is that log from the old binary?" has already cost this project a
+# debugging session. The short hash + a '+' when the tree is dirty goes into the ROM and
+# into every log's `perf: git ...` line (source/perf.c). Everything is best-effort: no
+# git, a tarball, or Docker without the .git directory all yield an EMPTY string, which
+# the code prints as "?" -- a build must never fail for want of a version stamp.
+PDNA_GIT       := $(shell git -C "$(CURDIR)" rev-parse --short=8 HEAD 2>/dev/null)
+PDNA_GIT_DIRTY := $(shell git -C "$(CURDIR)" diff --quiet HEAD 2>/dev/null || echo +)
+CFLAGS += -DPDNA_GIT_HASH=\"$(PDNA_GIT)$(PDNA_GIT_DIRTY)\"
 
 CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions
 

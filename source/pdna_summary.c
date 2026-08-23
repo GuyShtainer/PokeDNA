@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "pdna_summary.h"
+#include "perf.h"        /* summary-open span (telemetry) */
 #include "pdna_app.h"     /* app_anim_enabled (portrait animation) */
 #include "ui.h"
 #include "gen3_mon.h"
@@ -843,6 +844,8 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
   em_preview(&e, &cur); pk_resolve(&cur);
   ivh_reset(&g_ivh, &e); g_have_roll = false;   /* the history belongs to THIS Pokemon */
 
+  perf_span_begin("summary");   /* open cost: the card render + one portrait fetch */
+  bool perf_first_paint = true;
   int card = (card_io && *card_io >= 0 && *card_io < NCARDS) ? *card_io : 0;
   int fsel = 0;
   bool dirty = false, editing = false;
@@ -909,6 +912,10 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
     if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY) && !cur.isEgg) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
                               portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }
 
+    /* The card and the portrait are on screen; everything past here is the idle
+     * portrait wiggle (pure CPU -- the sprite fetch is hoisted above on purpose) and
+     * input. That is where "open the summary" ends. */
+    if (perf_first_paint) { perf_first_paint = false; perf_span_end(); }
     u16 k, fresh;
     do { s_vsync();
          if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY) && !cur.isEgg) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;

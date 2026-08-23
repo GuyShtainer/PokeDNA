@@ -31,6 +31,7 @@
 #include "mon_icons.h"
 #include "mon_icons_gate.h"  /* PDNA_MON_ICONS_ART_COMPILED -- is this a full-art build (see
                               * party_bob_recompose's two code paths, MUST-FIX 2) */
+#include "perf.h"          /* SD/icon telemetry + the session clock (see perf.h) */
 #include "pdna_summary.h"
 #include "pdna_box.h"
 #include "gen3_trainer.h"
@@ -202,7 +203,19 @@ static u16 wait_keys_bob_p(u16 mask, int kind, int* ctr, int* frame,
     hit = fresh | key_repeat(mask & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT));
     if (!hit && redraw && kind >= 0 && app_anim_enabled(kind) && mon_icon_anim_cheap() &&
         ++*ctr >= period) {
-      *ctr = 0; *frame ^= 1; redraw(*frame);
+      *ctr = 0; *frame ^= 1;
+      /* THE tick the user feels: one idle bob flip. Rolled up, never logged per
+       * occurrence -- at PARTY_BOB_PERIOD (8 frames) this fires ~7 times a second, and
+       * a line each would burn log.c's per-run byte budget in under a minute. The
+       * owning screen calls perf_rep_flush(PERF_REP_BOB) when it is left. This is the
+       * ONE gate every wait_keys_bob* caller passes through (party overlay, day-care,
+       * box, summary), so instrumenting it here covers all of them at one site. */
+      static const char* const k_bobname[ANIM_COUNT] = {
+        "bob.box", "bob.party", "bob.dex", "bob.daycare", "bob.summary" };
+      perf_rep_begin(PERF_REP_BOB,
+                     (unsigned)kind < ANIM_COUNT ? k_bobname[kind] : "bob.?");
+      redraw(*frame);
+      perf_rep_end(PERF_REP_BOB);
     }
   } while (!hit);
   if (fresh & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) snd_move();
@@ -1026,7 +1039,13 @@ void app_crumb_shown(void) {
   if (!s_crumb_shown_armed) return;
   s_crumb_shown_armed = false;
   log_line("save: shown");
-  app_log_flush();
+  /* This one-shot fires from inside the box screen's FIRST full paint, which is
+   * exactly where "save open + parse + first paint" ends -- so it is the honest place
+   * to close view_save's span. The no-PC party path never calls this; view_save closes
+   * the span itself there (see its comment). Ordered AFTER the crumb so the span line
+   * and the crumb leave on the SAME flush instead of costing two directory walks. */
+  perf_span_end();
+  app_log_flush();   /* free when perf_span_end's own flush already carried both */
 }
 
 /* Not static: party_strip_overlay (pdna_box.c) shows the same read-only-cart denial
@@ -1685,6 +1704,27 @@ static void app_icon_cache_resolve(const RomCtx* rc_ok, bool deep) {
   } else {
     boxoam_set_icon_cache(0);
   }
+  /* WHICH RUNG IS ACTUALLY SERVING THIS SESSION -- the single most useful line in an
+   * artless log, and until now it had to be inferred from three other lines. The three
+   * are mutually exclusive and in ladder order: the icons.bin cache, else the user's
+   * open ROM, else nothing (text-only layouts, and every mon_icon_for* returns NULL).
+   * `rc_ok` is the RomCtx art.idx was cross-checked against, or NULL when no ROM is
+   * open this session -- in which case the cache is trusted on its own validity alone
+   * (art_session.h), which is a materially weaker guarantee and worth saying out loud.
+   * The reason string comes from art_session_why(): before it existed, the two
+   * commonest causes -- no cache on the card at all, and this kind never extracted --
+   * produced no line whatsoever. */
+  log_line("icons rung: %s (rom %s, art.idx %s)",
+           ready ? "cache" : s_iconrom.ok ? "rom" : "none",
+           s_iconrom.ok ? "open" : "none", rc_ok ? "cross-checked" : "not cross-checked");
+  if (!ready) log_line("icons: no cache - %s", art_session_why());
+#ifndef PDNA_DELTA
+  else {
+    FILINFO fi;
+    if (f_stat(art_session_icons_path(), &fi) == FR_OK)
+      log_line("icons.bin: %s %lu B", art_session_icons_path(), (unsigned long)fi.fsize);
+  }
+#endif
 }
 
 static void app_icon_rom_open(void) {
@@ -1789,7 +1829,8 @@ static void app_icon_rom_open(void) {
         rom_hand_open(&s_romhand, &s_iconrom_ctx);              /* Phase 3 (ROM-art): the glove */
         boxoam_rom_hand(&s_romhand);
 #endif
-        log_line("icons: streaming from SD %s (%s)", path, rom_kind_name(s_iconrom_ctx.kind));
+        log_line("icons: streaming from SD %s (%s) %lu B", path,
+                 rom_kind_name(s_iconrom_ctx.kind), (unsigned long)sz);
         app_icon_cache_resolve(&s_iconrom_ctx, false); /* boot path: shallow (size-only) check */
         return;
       }
@@ -2668,9 +2709,11 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
   const int BACK = 6;
   int sel = 0;
   int bob_ctr = 0, bob = 0;          /* ANIM_PARTY idle bob phase, kept across repaints */
+  bool first_paint = true;
+  perf_span_begin("party");          /* enter cost: 6 icons through the artless ladder */
   for (;;) {
     int n = party_count(g_sb1, g_frlg);
-    if (n < 1) return 0;                              /* shouldn't happen (party never empties) */
+    if (n < 1) { perf_span_end(); return 0; }         /* shouldn't happen (party never empties) */
     int addslot = (held && n < 6) ? n : -1;          /* PLACE: cell n is the "+ add" target */
     int lastSel = (addslot >= 0) ? addslot : (n - 1); /* last slot before BACK, in UP/DOWN order */
     if (sel != BACK && sel >= n && sel != addslot) sel = n - 1;   /* clamp after a release */
@@ -2704,13 +2747,17 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
                          PDNA_PTY_CANCEL_W_BUDGET, UI_TEXT, UI_PTY_TEXT_SHADOW, PDNA_LBL_CANCEL);
     }
 
+    /* The screen is painted; everything after this is idle-bob and input, which the
+     * PERF_REP_BOB rollup covers separately. That is where "open the party" ends. */
+    if (first_paint) { first_paint = false; perf_span_end(); }
+
     /* No LEFT/RIGHT: retail's own party screen has no horizontal axis (a fixed
      * top-left box plus a single column of rows) — UP/DOWN walks slot 0..lastSel,
      * then BACK; see DIFFERENCES #2/#3 in MEASUREMENTS.md for why the old 3-column
      * grid's L/R paging does not carry over. */
     u16 k = wait_keys_bob_p(KEY_UP | KEY_DOWN | KEY_A | KEY_B,
                             ANIM_PARTY, &bob_ctr, &bob, party_overlay_bob, PARTY_BOB_PERIOD);
-    if      (k & KEY_B)     { snd_back(); return 0; }
+    if      (k & KEY_B)     { snd_back(); perf_rep_flush(PERF_REP_BOB); return 0; }
     /* snd_move() (RCUE_SCROLL haptic + a short square-wave tick, source/snd.c:56) fired
      * on every cursor move in the old 3x2 grid's L/R/U/D handlers; the retail-layout
      * rewrite's UP/DOWN handlers dropped it. Restored here, only when the cursor
@@ -2721,7 +2768,7 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
                               else if (sel > 0) { snd_move(); sel--; } }
     else if (k & KEY_DOWN)  { if (sel != BACK) { snd_move(); sel = (sel < lastSel) ? sel + 1 : BACK; } }
     else if (k & KEY_A) {
-      if (sel == BACK) { snd_back(); return 0; }
+      if (sel == BACK) { snd_back(); perf_rep_flush(PERF_REP_BOB); return 0; }
       if (held) {                                    /* PLACE: drop/swap into the party */
         if (party_place_held(held, sel, orig_box, orig_slot, orig_bank, can_swap)) return 1;
       } else if (sel < n) {                          /* BROWSE: the full action menu on this mon
@@ -5166,19 +5213,17 @@ static void rumble_settings(void) {
  * Omega-only (writes) -- the caller gates on active_flashcart before ever showing
  * this row as selectable. */
 #ifndef PDNA_DELTA
-static void art_tmr_start(u32* t0) {
-  REG_TM0CNT = 0; REG_TM1CNT = 0; REG_TM0D = 0; REG_TM1D = 0;
-  REG_TM1CNT = TM_ENABLE | TM_CASCADE;
-  REG_TM0CNT = TM_ENABLE | TM_FREQ_1024;               /* TM2 is rumble's; untouched */
-  *t0 = 0;
-}
-static u32 art_tmr_ticks(void) {
-  u16 hi = REG_TM1D, lo = REG_TM0D, hi2 = REG_TM1D;
-  if (hi2 != hi) { hi = hi2; lo = REG_TM0D; }
-  return ((u32)hi << 16) | lo;
-}
-static u32 art_tmr_ms(u32 ticks) { return (u32)(((unsigned long long)ticks * 1000ull) >> 14); }
-static void art_tmr_stop(void) { REG_TM0CNT = 0; REG_TM1CNT = 0; }
+/* This screen used to start and stop its OWN TIMER0/TIMER1 pair. perf.c now owns that
+ * pair for the whole session (perf.h), so a second owner here would zero the session
+ * clock every time the user extracted art. Every readout below is a DELTA from the t0
+ * captured at the start, so reading a free-running clock instead of a zeroed one is
+ * semantically identical: `t0` is simply "the tick the run started at" rather than 0,
+ * and both the elapsed-time and the KB/s figures on screen are unchanged. TM2 is still
+ * rumble's and still untouched. */
+static void art_tmr_start(u32* t0) { *t0 = perf_ticks(); }
+static u32 art_tmr_ticks(void) { return perf_ticks(); }
+static u32 art_tmr_ms(u32 ticks) { return perf_ms(ticks); }
+static void art_tmr_stop(void) { }        /* session-long clock: nothing to stop */
 
 typedef struct {
   int cancel;
@@ -5949,6 +5994,13 @@ static void reload_saveblocks(void) {
 /* Load the picked save and show it: start in the PC boxes; SELECT toggles to the
  * party list and back; B from either returns to the file browser. */
 static void view_save(const char* path) {
+  /* THE span: SD read + Gen-3 parse + art/ROM open + the first full paint. It closes
+   * in app_crumb_shown() (the box screen's first paint) or, for a save with no PC
+   * storage, just before the party path takes over below. Named "boot" the first time
+   * so the launch cost is greppable on its own -- every later open is "save". */
+  { static bool first = true;
+    perf_span_begin(first ? "boot" : "save");
+    first = false; }
   g_pc_dirty = false;                          /* fresh save: no pending moves */
   g_sb1_deferred = false;
   strncpy(g_path, path, sizeof(g_path) - 1);
@@ -6040,6 +6092,8 @@ static void view_save(const char* path) {
     ui_text(6, 112, UI_TEXT, "or fuse one in (fuse_sav.py).");
 #endif
     ui_text(4, UI_FOOTER_Y, UI_DIM, "B=back");
+    perf_span_end();      /* no paint is coming: close it here or the NEXT span would
+                           * force-close it and wear a spurious !unclosed marker */
     wait_keys(KEY_B);
     s_crumb_shown_armed = false;               /* nothing painted: never claim it did */
     return;
@@ -6114,6 +6168,11 @@ static void view_save(const char* path) {
    * of a real screen that the heartbeat has no business owning. A freeze from this
    * point on shows a half-painted box, which localises itself. */
   hb_off();
+  /* app_crumb_shown() -- fired from pdna_box's first paint -- is what closes the span
+   * begun at the top of this function. The no-PC path goes to party_list() instead and
+   * never calls it, so close it here for that case; perf_span_end() is a no-op when a
+   * span is already closed, so this costs the box path nothing. */
+  if (!g_have_pc) perf_span_end();
   /* The PC box is "home"; Party / Bank / Daycare / etc. all hang off the START menu.
    * (Saves with no PC fall back to the party list as home.) */
   for (;;) {
@@ -6198,6 +6257,11 @@ static void view_save(const char* path) {
 
 int main(void) {
   init_system();
+  /* The session clock, before anything that might want a timestamp. perf.c owns
+   * TIMER0/TIMER1 from here to power-off; TIMER2 stays rumble's. Nothing else in the
+   * app starts a timer any more -- the art-extraction screen and pdna_romfull.c's
+   * verifier both READ this one (perf.h). */
+  perf_clock_start();
   /* Before anything goes deep: paint the unused IWRAM stack so the low-water mark is
    * measurable for the rest of the session. main's own frame is already on the stack,
    * so this covers exactly the region every call below is about to spend. */
@@ -6206,6 +6270,12 @@ int main(void) {
   log_line("=== PokeDNA (M0) ===");
   log_line("build " __DATE__ " " __TIME__);   /* stamp: proves WHICH binary produced this log
                                                * (stale flashes have faked "still broken" before) */
+  /* ...and the same again with the git short hash and the variant, because a DATE and
+   * TIME cannot tell two builds of the same afternoon apart, and "which tree was that
+   * binary?" has already cost this project a debugging session. Also carries the free
+   * EWRAM the binary was linked with, read from the linker's own __eheap_start, so a
+   * log states the memory budget it was built against instead of us guessing. */
+  perf_boot_line();
   log_line("waitcnt=%04x (was %04x) dispcnt=%04x console=%s",  /* cart timing: boosted vs the loader's handoff */
            *(volatile uint16_t*)0x04000204, flashcartio_bus_inherited(), REG_DISPCNT,
            console_name());
@@ -6300,6 +6370,11 @@ int main(void) {
     halt_msg(m);
   }
   log_line("SD mounted OK");
+  perf_fs_facts(&fs);     /* cluster size is the ceiling on any batched read (see perf.c) */
+  /* The stack low-water mark this early, not only after a save parse: a run that never
+   * reaches a save still leaves the figure behind, and the two together bracket the
+   * deepest call chain in the program. */
+  stack_report("boot");
   rmbl_init();   /* rumble AFTER the SD is mounted: its cart-GPIO writes must never touch the bus before SD is up */
   f_mkdir(PDNA_DIR);                          /* all PokeDNA files live in /PokeDNA, not the SD root */
   /* Rotate the last two runs aside BEFORE the first flush of this run. Without this,
@@ -6340,6 +6415,17 @@ int main(void) {
 
   strcpy(g_cwd, "/");
   cfg_load();                                /* restore last folder + sort/filter (#6) */
+  /* ONE throughput sample per run, at two sizes, on the user's own card -- see
+   * perf_sd_sample(). It runs HERE because it needs two things that only exist at this
+   * point: a mounted card, and cfg_load()'s restored ROM paths to pick a big enough
+   * file from. icons.bin first (it is the file the icon ladder actually reads), then
+   * any registered ROM. g_save is the scratch: 128 KiB, and provably idle -- no save
+   * has been picked yet, browse_pick() is the next statement. */
+  { const char* cand[5];
+    cand[0] = PDNA_DIR "/art/icons.bin";
+    cand[1] = g_rom_path[0]; cand[2] = g_rom_path[1]; cand[3] = g_rom_path[2];
+    cand[4] = 0;
+    perf_sd_sample(cand, g_save, (uint32_t)sizeof g_save); }
   for (;;) {
     char path[PATH_MAX];
     if (browse_pick(path, sizeof(path))) view_save(path);

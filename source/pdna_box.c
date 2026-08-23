@@ -23,6 +23,7 @@
 #include "box_oam.h"        /* hardware-OAM icon/cursor/carry/marker rendering */
 #include "pdna_origin_art.h" /* THE BANK IN PARALLEL: each cell in the art of its own era */
 #include "pdna_summary.h"
+#include "perf.h"        /* screen-enter spans + the box-load rollup (telemetry) */
 #include "pdna_app.h"
 #include "snd.h"
 #include "osk.h"
@@ -1018,7 +1019,16 @@ static int cursor_title_row(bool on_title) {
 }
 
 static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
-  if (s_oam_reload) { boxoam_load_box(g_box); s_oam_reload = false; era_hides_apply(); }
+  if (s_oam_reload) {
+    /* The 30-slot icon upload -- the whole cost of an L/R box page flip, and the
+     * single most expensive thing this screen does. Rolled up (it fires on every box
+     * change and after every operation that dirties the grid), emitted when the screen
+     * is left. */
+    perf_rep_begin(PERF_REP_PAGE, "box.load");
+    boxoam_load_box(g_box);
+    perf_rep_end(PERF_REP_PAGE);
+    s_oam_reload = false; era_hides_apply();
+  }
   if (s_holding && s_grab_dip) {
     boxoam_carry_end();
     /* the menu-wipe repaint ran ONE oam_sync in the carry look, which lift-hid the
@@ -2650,6 +2660,13 @@ int pdna_box(BoxSource* src) {
   if (!s_holding && !s_ch_hold) { int pb, ps;
     if (app_take_pickup(&pb, &ps) && pb >= 0 && pb < nb && ps >= 0 && ps < 30) { box = pb; cur = ps; pickup_ps = ps; }
   }
+  /* Screen-enter span. On a save open, view_save's own span is already covering this
+   * (its whole point is "save open + parse + FIRST PAINT"), so do not start a second
+   * one -- spans do not nest, and starting one here would force-close that span and
+   * tag it !unclosed. Either way the first full paint below closes whichever span is
+   * open, which is the moment the box is actually on screen. */
+  bool perf_first_paint = true;
+  if (!perf_span_active()) perf_span_begin(src->is_bank ? "bank" : "box");
   boxoam_enter();                             /* enable OBJ; upload hand/grab + palettes */
   s_oam_reload = true;                        /* first paint uploads the box's icon tiles */
   uint8_t* recs = src->records(box);          /* current box's 30*80 records */
@@ -2702,6 +2719,9 @@ int pdna_box(BoxSource* src) {
       else           render_full(src, box, cur, on_title, s_holding, clr);
       need_full = false; paint_over = false;
       app_crumb_shown();   /* one-shot per save-open: the box is on screen (no-op after) */
+      /* Closes view_save's save-open span (if app_crumb_shown did not already) or this
+       * screen's own -- a no-op if neither is open. */
+      if (perf_first_paint) { perf_first_paint = false; perf_span_end(); }
     }
     /* want_party_strip (set above from app_box_start_take()==3): the box has now had
      * its normal first paint -- clear=true, since paint_over starts false -- so it is
