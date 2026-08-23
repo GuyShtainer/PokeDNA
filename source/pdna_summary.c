@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "sys.h"          /* EWRAM_BSS: the selection outline's save-under buffer */
 #include "pdna_summary.h"
 #include "perf.h"        /* the summary-open rollup (telemetry) */
 #include "pdna_app.h"     /* app_anim_enabled (portrait animation) */
@@ -146,10 +147,16 @@ static u16 portrait_bg(int yy) {
  * gradient and nothing would ever put them back. Band 1 (rows 10-19) straddles the
  * rect's top edge (row 11) and is split; every other band is either fully inside or
  * fully outside it. */
+/* One band's colour. Factored out of summary_bg's loop so the footer strip below can
+ * restore EXACTLY the pixels summary_bg would have put there, from the same expression,
+ * rather than a second copy of the formula that could drift from this one. */
+static u16 summary_bg_col(int b) { return RGB15(6 - b / 5, 11 - b / 3, 22 - b / 2); }
+#define SUMMARY_BG_FOOT_BAND 15        /* the band rows 150..159 (and so the footer) live in */
+
 static void summary_bg(void) {
   for (int b = 0; b < 16; b++) {
     int y = b * 10;
-    u16 col = RGB15(6 - b / 5, 11 - b / 3, 22 - b / 2);
+    u16 col = summary_bg_col(b);
     if (b == 1) {                                              /* rows 10..19: split at row 11 */
       ui_fill_rect(0, y, UI_SCR_W, 1, col);                    /* row 10: outside the rect      */
       ui_fill_rect(92, y + 1, UI_SCR_W - 92, 9, col);          /* rows 11..19: rect's left 92px owned by draw_left */
@@ -568,6 +575,160 @@ static void card_condition(const PkMon* p) {
   ui_text(x, y, UI_DIM, "Sheen: blocks fed");   /* 17 cols; the full phrase wrapped onto the portrait */
 }
 
+/* ---- the WHOLE CARD, made conditional -- and its selection frame, made movable -----
+ *
+ * THE BUG (Guy, 2026-08-23): "the scroll is still very slow, and when editing the numbers
+ * it still rerenders the whole screen and not only the IV i edit for example which is very
+ * slow, so i cant quickly go from 0 to 30, it takes patience" -- plus the move list on the
+ * BATTLE MOVES card scrolling slowly. draw_left_conditional above fixed the info COLUMN
+ * (the portrait fetch); the rest of summary_run's loop still repainted the card side from
+ * scratch on every single keypress, and that side is where the remaining cost is:
+ *
+ *   summary_bg()      25,612 px = 51,224 B of framebuffer, every press.
+ *   type_badge() x4   BATTLE MOVES draws one badge per move; in Guy's configuration
+ *                     (artless build + his ROM registered on SD) each one is an
+ *                     app_type_badge -> rom_type_sheet_load, i.e. a 5,888 B / 12-sector
+ *                     read off the card, with no cache (pdna_main.c says why). Four of
+ *                     them, per D-pad press, to move a cursor between two move slots that
+ *                     did not change. The INFO card pays the same shape through
+ *                     app_ability_desc (ROM text) plus two badges.
+ *   portrait_sprite() once per iteration UNCONDITIONALLY -- another rom_portrait fetch
+ *                     (up to 3 verified SD reads + an 8 KB LZ77 decode) -- even with the
+ *                     summary animation switched OFF, in which case its result is never
+ *                     read at all. Commit fcb8300 hoisted it out of the per-FRAME loop;
+ *                     it stayed in the per-KEYPRESS one.
+ *
+ * WHAT THIS DOES. render_card()'s entire output is a pure function of the fields snapped
+ * in CardPaint below -- the record itself (memcmp, for the same reason draw_left_conditional
+ * memcmps: an EV edit can flip a GB-import verdict, so a hand-picked subset would go
+ * stale), which card is up, the VIEW/EDIT/NEW mode, the portrait side, and the four
+ * IV-history scalars draw_reroll_row prints. Identical snapshot => render_card would paint
+ * exactly the pixels already on screen => skip it, and skip the portrait fetch with it
+ * (nothing else in the loop decodes into mon_decomp, so the pointer stays live).
+ *
+ * THE CURSOR IS THE HARD PART, and it is the user's actual complaint. Moving the field
+ * cursor changes ONE thing on screen: a 1 px UI_SELTEXT outline. Folding fsel into the
+ * snapshot would be correct but would repaint the whole card -- badges and all -- on every
+ * U/D press, which is exactly the slow move list. So the outline is SAVED AND RESTORED
+ * instead: s_self_px keeps the 294 pixels that were underneath it, and moving it puts them
+ * back before drawing the outline in its new place. Save-under is used rather than
+ * "restore the gradient there", because the outline genuinely crosses card content -- on
+ * BATTLE MOVES the next row's outline runs through the bottom scanlines of the previous
+ * move's type badge, and on the IV/EV cards its right column crosses the stat bar -- and
+ * repainting that content is precisely the SD traffic being avoided. 588 B of EWRAM buys
+ * every cursor move for 1,176 B of framebuffer writes and ZERO card reads.
+ *
+ * COUNTED (from the geometry, not timed on hardware -- the SD path cannot be emulated,
+ * so the clock on this belongs to Guy's log), per keypress, moving the field cursor one
+ * slot on BATTLE MOVES with the mon unchanged:
+ *   before   51,224 B (summary_bg) + 4,096 B (4 badge blits) + 588 B (outline)
+ *            + ~118 glyph cells, AND ~51 SD sectors -- 4 type sheets at 12 plus the
+ *            portrait fetch -- every press, held-key repeat included
+ *   after     1,176 B: 294 px restored, 294 px drawn. 0 glyph cells. 0 SD sectors.
+ *            (+ 1,920 B and <=30 cells on the presses where the footer HINT changes)
+ *   = ~48x fewer framebuffer bytes and, the part that matters on the real card,
+ *     51 -> 0 sectors of SD traffic per press.
+ * Editing a value (LEFT/RIGHT on an IV) still repaints the card -- it must, the numbers
+ * and their bars really changed -- but it no longer also re-fetches the portrait, and the
+ * presses that change NOTHING (LEFT on an IV already at 0, a cancelled picker) now cost
+ * nothing at all instead of a full repaint. */
+typedef struct {
+  PkMon    mon;
+  uint32_t gen;                    /* ui_clear_gen() as of the paint                  */
+  int16_t  card, ivh_cur, ivh_n;
+  uint8_t  edit, create, back, have_roll, ivonly;
+  bool     valid;
+} CardPaint;
+
+/* The selection outline's own pixels. m3_frame(x, y, x+w, y+h) paints four 1 px strips
+ * with its right column at x+w-1 and its bottom row at y+h-1 -- (right,bottom) EXCLUSIVE,
+ * the same convention m3_rect uses; that is not a guess, it was measured pixel-by-pixel
+ * off a live capture (see ui_progress's comment in ui.c). self_strips() walks exactly
+ * those pixels in a fixed order, so the set that is saved and the set that is painted are
+ * the same set by construction -- there is no way for a frame pixel to be drawn but not
+ * recorded, which is the only way this could leave ghost ink behind. */
+#define SELF_MAX_W  (PDNA_SUM_CARD_W + 2)         /* the widest slot any card registers */
+#define SELF_H      (UI_ROW_H + 1)
+#define SELF_PX     (2 * SELF_MAX_W + 2 * (SELF_H - 2))     /* 294 px = 588 B */
+static uint16_t EWRAM_BSS s_self_px[SELF_PX];
+static int  s_self_x, s_self_y, s_self_w;
+static bool s_self_on = false;      /* an outline is drawn AND s_self_px holds its under */
+static bool s_self_toobig = false;  /* a slot too wide to save: fall back to full repaints */
+
+#define SELF_SAVE  0
+#define SELF_PUT   1
+#define SELF_PAINT 2
+static void self_strips(int x, int y, int w, int h, int mode, u16 col) {
+  int side = h - 2, n = 2 * w + 2 * side;
+  for (int i = 0; i < n; i++) {
+    int px, py;
+    if      (i < w)            { px = x + i;             py = y;         }
+    else if (i < 2 * w)        { px = x + i - w;         py = y + h - 1; }
+    else if (i < 2 * w + side) { px = x;                 py = y + 1 + (i - 2 * w); }
+    else                       { px = x + w - 1;         py = y + 1 + (i - 2 * w - side); }
+    if ((unsigned)px >= (unsigned)UI_SCR_W || (unsigned)py >= 160u) continue;
+    u16* v = &vid_mem[py * 240 + px];        /* halfword writes only into VRAM */
+    if      (mode == SELF_SAVE) s_self_px[i] = *v;
+    else if (mode == SELF_PUT)  *v = s_self_px[i];
+    else                        *v = col;
+  }
+}
+
+/* The card was repainted over the outline AND over the pixels s_self_px was holding:
+ * both are now meaningless. Never restore after this without a fresh save. */
+static void sel_frame_drop(void) { s_self_on = false; }
+
+/* Take the outline off the screen (leaving edit mode). */
+static void sel_frame_hide(void) {
+  if (!s_self_on) return;
+  self_strips(s_self_x, s_self_y, s_self_w, SELF_H, SELF_PUT, 0);
+  s_self_on = false;
+}
+
+/* Put the outline around the slot registered at (sx, sy, sw); a no-op if it is already
+ * exactly there. */
+static void sel_frame_set(int sx, int sy, int sw) {
+  int x = sx - 2, y = sy - 1, w = sw + 2;
+  if (w > SELF_MAX_W) {
+    /* Unreachable today (no reg() in this file passes more than PDNA_SUM_CARD_W). If
+     * someone adds a wider slot, degrade to the OLD behaviour -- a full card repaint every
+     * iteration, which erases the outline for us -- rather than drawing an outline whose
+     * under-pixels we cannot restore. */
+    s_self_toobig = true;
+    sel_frame_hide();
+    m3_frame(sx - 2, sy - 1, sx + sw, sy + UI_ROW_H, UI_SELTEXT);
+    return;
+  }
+  s_self_toobig = false;
+  if (s_self_on && s_self_x == x && s_self_y == y && s_self_w == w) return;
+  sel_frame_hide();
+  self_strips(x, y, w, SELF_H, SELF_SAVE, 0);
+  self_strips(x, y, w, SELF_H, SELF_PAINT, UI_SELTEXT);
+  s_self_x = x; s_self_y = y; s_self_w = w; s_self_on = true;
+}
+
+static bool card_paint_needed(const CardPaint* v, const PkMon* p, int card) {
+  return !v->valid || s_self_toobig
+      || v->gen  != ui_clear_gen()          /* a picker/OSK/confirm painted over us */
+      || v->card != (int16_t)card
+      || v->edit != (uint8_t)g_edit || v->create != (uint8_t)g_create
+      || v->back != (uint8_t)g_back
+      || v->ivh_cur   != (int16_t)g_ivh.cur || v->ivh_n != (int16_t)g_ivh.n
+      || v->have_roll != (uint8_t)g_have_roll
+      || v->ivonly    != (uint8_t)g_last_ivonly
+      || memcmp(p, &v->mon, sizeof *p) != 0;
+}
+
+static void card_paint_store(CardPaint* v, const PkMon* p, int card) {
+  v->mon = *p;
+  v->gen = ui_clear_gen();
+  v->card = (int16_t)card;
+  v->ivh_cur = (int16_t)g_ivh.cur; v->ivh_n = (int16_t)g_ivh.n;
+  v->edit = (uint8_t)g_edit; v->create = (uint8_t)g_create; v->back = (uint8_t)g_back;
+  v->have_roll = (uint8_t)g_have_roll; v->ivonly = (uint8_t)g_last_ivonly;
+  v->valid = true;
+}
+
 static bool render_card(const PkMon* p, int card) {
   summary_bg();                             /* Emerald-style blue gradient backdrop */
   g_nslot = 0;
@@ -865,6 +1026,20 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
   int fsel = 0;
   bool dirty = false, editing = false;
   int anim_t = 0, lastkey = -1;                /* portrait pose key (entrance anim + idle float) */
+  /* What is on screen. A LOCAL, not a static: summary_run returns to its caller on every
+   * mon step (the +/-1 nav below), so a per-call snapshot is exactly "one Pokemon's
+   * worth" and a fresh visit always paints in full. 128 B, inside the ~256 B ceiling the
+   * C guideline (Sec 0.2) sets for a stack local. */
+  CardPaint pv;
+  memset(&pv, 0, sizeof pv);
+  const char* foot_drawn = 0;                  /* the footer hint currently printed */
+  /* The portrait, fetched at most ONCE per real card repaint instead of once per keypress
+   * -- see the CardPaint comment. p_spr points into mon_decomp, so it stays valid exactly
+   * as long as nothing decodes into that buffer, and inside this loop the only thing that
+   * does is render_card (draw_left's portrait + type_badge). */
+  const uint16_t* p_spr = 0;
+  bool p_icon = false, p_spr_ok = false;
+  int  p_sw = MON_FRONT_W, p_sh = MON_FRONT_H;
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
   /* g_back is file-static and survives between calls: a create opened after someone
    * flipped a previous mon to its back sprite would otherwise open on the back. */
@@ -872,6 +1047,7 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
   /* A fresh session must never trust draw_left_conditional's snapshot from whatever
    * screen (box, another mon's summary) was on-screen before this call. */
   pd_summary_left_dirty();
+  sel_frame_drop();          /* likewise: whatever s_self_px held belonged to that screen */
 
   for (;;) {
     g_edit = editing;
@@ -881,20 +1057,42 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
      * species change — rebases it, so the arrows and the "Roll k/n" counter can never
      * describe a state the record is not in. */
     ivh_sync(&g_ivh, &e);
-    bool dl_ran = render_card(&cur, card);
+    /* THE REPAINT GATE. Everything render_card draws is a pure function of the snapshot
+     * card_paint_needed() compares; identical snapshot means identical pixels, which are
+     * already on screen. g_nslot/g_slot survive a skip untouched, which is what lets the
+     * cursor below still find its slots. */
+    bool dl_ran = false, painted = false;
+    if (card_paint_needed(&pv, &cur, card)) {
+      dl_ran  = render_card(&cur, card);
+      painted = true;
+      card_paint_store(&pv, &cur, card);
+      sel_frame_drop();     /* summary_bg just painted over the outline AND its under-pixels */
+      p_spr_ok = false;     /* ...and type_badge/draw_left decoded into mon_decomp */
+      ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+    }
     if (editing && g_nslot) {
       if (fsel >= g_nslot) fsel = g_nslot - 1;
-      int sx = g_slot[fsel].x, sy = g_slot[fsel].y, sw = g_slot[fsel].w;
-      m3_frame(sx - 2, sy - 1, sx + sw, sy + UI_ROW_H, UI_SELTEXT);
+      sel_frame_set(g_slot[fsel].x, g_slot[fsel].y, g_slot[fsel].w);
+    } else {
+      sel_frame_hide();
     }
-    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     const char* foot =
         (editing && g_nslot && g_slot[fsel].field == F_SUM_REROLL) ? PDNA_SUM_FOOT_REROLL
       : editing  ? (create ? PDNA_SUM_FOOT_CREATE_EDIT : PDNA_SUM_FOOT_EDIT)
       : create   ? PDNA_SUM_FOOT_CREATE
       : can_edit ? PDNA_SUM_FOOT_VIEW
                  : PDNA_SUM_FOOT_RO;
-    ui_text(4, PDNA_SUM_FOOTER_Y, UI_DIM, foot);
+    /* The hints are string literals, so comparing the POINTER is comparing the text: two
+     * that merged are the same text, and skipping a repaint of the same text is right.
+     * The strip goes back to the gradient first -- the hints differ in length, and a
+     * shorter one must not leave the tail of a longer one behind. */
+    if (painted || foot != foot_drawn) {
+      if (!painted)
+        ui_fill_rect(0, PDNA_SUM_FOOTER_Y, UI_SCR_W, UI_ROW_H,
+                     summary_bg_col(SUMMARY_BG_FOOT_BAND));
+      ui_text(4, PDNA_SUM_FOOTER_Y, UI_DIM, foot);
+      foot_drawn = foot;
+    }
     /* Only true when render_card's draw_left_conditional actually redrew the rest pose
      * (64,64,0,0) -- draw_left_conditional's fix for Guy's "renders from scratch"
      * report (2026-08-23) skips draw_left when the mon+pose are unchanged, and on a
@@ -922,9 +1120,15 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
      * future caller (rom_sprite.h:78, rom_gbsprite.h:134 and rom_itemart.h:145 all
      * nominate mon_decomp as their staging buffer) starts decoding inside this loop, it
      * must re-fetch here. */
-    bool p_icon = false; int p_sw = MON_FRONT_W, p_sh = MON_FRONT_H;
-    const uint16_t* p_spr = portrait_sprite(&cur, &p_icon, &p_sw, &p_sh);
-    if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY) && !cur.isEgg) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
+    bool anim = SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY) && !cur.isEgg;
+    /* Two conditions, both new. `anim` because with the animation off the fetched sprite
+     * was never read -- the loop paid a rom_portrait every keypress to throw it away.
+     * !p_spr_ok because a keypress that did not repaint the card did not decode anything
+     * into mon_decomp either, so last iteration's pointer still addresses this mon's
+     * pixels. Every path that CAN clobber the buffer clears p_spr_ok: render_card above,
+     * and a picker/OSK (which ui_clear()s, so the next iteration repaints anyway). */
+    if (anim && !p_spr_ok) { p_spr = portrait_sprite(&cur, &p_icon, &p_sw, &p_sh); p_spr_ok = true; }
+    if (anim) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
                               portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }
 
     /* The card and the portrait are on screen; everything past here is the idle
@@ -933,7 +1137,7 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
     if (perf_first_paint) { perf_first_paint = false; perf_rep_end(PERF_REP_MON); }
     u16 k, fresh;
     do { s_vsync();
-         if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY) && !cur.isEgg) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
+         if (anim) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
                                    portrait_params(fam, ++anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
@@ -974,7 +1178,14 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
        * are in key_repeat_mask above, so a held d-pad would otherwise scrub fifteen history
        * entries in a quarter of a second and machine-gun snd_back() at the end of them. */
       else if (g_nslot && (k & KEY_A)) {
-        if (g_slot[fsel].field == F_SUM_REROLL) { if (do_reroll(&e, &cur)) dirty = true; }
+        /* The reroll is the ONE action in this loop that paints without either changing the
+         * record or calling ui_clear(): do_reroll drops a "ROLLING" chip on the card, and
+         * reroll_confirm() opens a bordered panel over it. On the paths where nothing is
+         * applied -- a bad egg, a failed search, B in the confirm -- the record comes back
+         * byte-identical and ui_clear_gen() has not moved, so the gate above would leave
+         * both sitting on screen with nothing able to heal them. Invalidate by hand. */
+        if (g_slot[fsel].field == F_SUM_REROLL) { if (do_reroll(&e, &cur)) dirty = true;
+                                                  pv.valid = false; }
         else { em_field_press(g_slot[fsel].field, &e, &cur); em_preview(&e, &cur); pk_resolve(&cur); dirty = true; }
       }
       else if (g_nslot && (k & KEY_LEFT)) {

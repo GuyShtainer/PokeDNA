@@ -5,6 +5,12 @@
  * (nickname/OT) or toggles (ability/shiny/gender); B cancels; START -> commit
  * confirm. Personality-derived fields (nature/shiny/gender) re-roll the PID.
  * The actual SD write is done by the caller on the returned record.
+ *
+ * NOTE ON REACH: pdna_edit() -- the FIELD LIST below -- has no call site today; the
+ * six-card summary (pdna_summary.c) is the editor the user actually reaches, and it
+ * drives this file's em_field_press / em_field_adjust directly. Both screens are kept
+ * incremental for the same reason and by the same rule (see render() below), so the
+ * list does not quietly rot back into a full-screen repaint if it is ever re-wired.
  */
 #include <tonc.h>
 #include <stdio.h>
@@ -116,32 +122,173 @@ static void field_value(int f, const PkMon* c, char* buf) {
   }
 }
 
-static void render(const PkMon* c, int sel, int top) {
-  ui_clear();
-  char line[64];
-  int evtot = c->evs[0] + c->evs[1] + c->evs[2] + c->evs[3] + c->evs[4] + c->evs[5];
-  ui_text(4, 0, UI_TITLE, "EDIT POKEMON");
-  siprintf(line, "EV %d/510", evtot);
-  ui_text(160, 0, evtot > 510 ? UI_WARN : UI_DIM, line);   /* x=160: 10 cols fits "EV 510/510" */
-  siprintf(line, "%s  Lv%u  %s%s%s", pk_species_name(c->species), (unsigned)c->level,
-           pk_nature_name(c->nature), c->isShiny ? "  SHINY" : "",
-           c->gender == 1 ? "  F" : c->gender == 0 ? "  M" : "");
-  { char lt[40]; ui_truncate(lt, line, 29); ui_text(4, 10, UI_DIRCLR, lt); }
-  ui_hline(0, 19, UI_SCR_W, UI_BORDER);
+/* ---- COMPARE AND REPAINT ---------------------------------------------------------
+ *
+ * THE BUG (Guy, 2026-08-23): "when editing the numbers it still rerenders the whole
+ * screen and not only the IV i edit for example which is very slow, so i cant quickly
+ * go from 0 to 30, it takes patience." render() opened with ui_clear() -- a 76,800 B
+ * wipe of the entire Mode-3 framebuffer -- and then redrew the title, the EV total, the
+ * header line, all 16 visible rows and the footer; the loop in pdna_edit() called it
+ * unconditionally at the top of EVERY iteration. LEFT/RIGHT sit in key_repeat_mask
+ * (pdna_edit() below), so HOLDING RIGHT to walk an IV from 0 to 30 paid the whole thing
+ * thirty times.
+ *
+ * WHY NOT SIMPLY "REDRAW THE SELECTED ROW". The values on this screen are DERIVED:
+ * every press runs refresh() -> em_preview() + pk_resolve(), which recompute the whole
+ * PkMon, so one edit cascades. A species change rewrites the Ability and Gender rows AND
+ * the header line; any EV change moves the "EV n/510" total in the top-right corner; a
+ * Max PP change moves the matching "PP n" row four rows further down. A row-only
+ * repaint would leave every one of those stale, which is worse than slow.
+ *
+ * THE SHADOW IS THE MON, NOT THE STRINGS. Everything this screen prints is a pure
+ * function of (field id, PkMon): field_value() and FLABEL[] read nothing else -- no
+ * card, no ROM, no SD. So keeping ONE copy of the record that is currently ON SCREEN is
+ * enough to recompute any row's OLD text on demand and diff it against the new one.
+ * That is exactly as correct as shadowing the sixteen drawn strings, handles every
+ * cascade for free (a changed byte anywhere shows up in whichever rows print it), and
+ * costs ~112 B (one PkMon) instead of sixteen truncated-string buffers. It is also the
+ * idiom pdna_summary.c's draw_left_conditional already uses, for the same reason. A
+ * false MISS -- struct padding differing -- just repaints a row that did not need it; a
+ * false HIT cannot happen, because what is compared IS what the strings are derived
+ * from. It lives on pdna_edit()'s stack (128 B, well inside the ~256 B ceiling
+ * docs/kb/c-coding-guideline.md Sec 0.2 sets for a local) rather than in EWRAM, which
+ * also means a fresh entry to the screen always paints in full -- which is what we want.
+ *
+ * WHAT ELSE CAN HAVE PAINTED. Any picker (pdna_pick.c), the on-screen keyboard (osk.c)
+ * and confirm() open with ui_clear(); a picker CANCEL returns the mon byte-identical, so
+ * the mon shadow alone would think nothing changed and leave the picker's pixels sitting
+ * on this screen forever. Invalidation is therefore keyed to ui_clear_gen() (ui.h) --
+ * one counter every full-screen overlay in the codebase already bumps by calling
+ * ui_clear(), so a picker added later needs no bookkeeping here.
+ *
+ * COUNTED, per keypress -- framebuffer BYTES written and sys8 GLYPH CELLS drawn (a cell
+ * is 8x8 px = 128 B). The old cost was the same every press, whatever the press did:
+ *   ui_clear 240x160          76,800 B
+ *   two rules, 240 px each         960 B
+ *   one selection panel          5,212 B   (236x9 fill + its frame)
+ *   219 cells (title 12, EV 10, header 29, 16 rows of label+value ~168)  28,032 B
+ *                              -----------
+ *                            111,004 B / 219 cells
+ * and after, per press:
+ *   move the selection one row   21,324 B /  30 cells   ( 5.2x /  7.3x)  3 rows
+ *   change a value, no cascade   15,796 B /  20 cells   ( 7.0x / 11.0x)  2 rows
+ *   change a value, w/ cascade   18,356 B /  30 cells   ( 6.0x /  7.3x)  2 rows + corner
+ *   press that changes nothing        0 B /   0 cells   (LEFT on an IV already at 0)
+ *   scroll the window one row    94,684 B / 168 cells   ( 1.2x /  1.3x)  all 16 rows
+ * The scroll line is barely cheaper ON PURPOSE: when `top` moves, every row genuinely
+ * shows different text, so every row genuinely must be repainted -- all that is saved is
+ * the full-screen wipe and the chrome that did not change. The cases the user actually
+ * complained about (holding RIGHT on an IV) are 6-7x fewer bytes and 11x fewer glyphs,
+ * and the presses that change nothing at all now cost nothing at all. */
 
-  char val[40];
-  for (int i = 0; i < VIS_ROWS && top + i < F_NUM; i++) {
-    int f = top + i, y = 21 + i * 8;
-    bool s = (f == sel);
-    if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-    ui_text(PDNA_EDIT_LBL_X, y, s ? UI_SELTEXT : UI_DIM, FLABEL[f]);
-    field_value(f, c, val);
-    char vt[72];
-    ui_truncate(vt, val, PDNA_EDIT_VAL_COLS);
-    ui_text(PDNA_EDIT_VAL_X, y, s ? UI_SELTEXT : UI_TEXT, vt);
+/* What is on screen right now. */
+typedef struct {
+  PkMon    mon;        /* the record whose values are currently drawn        */
+  uint32_t gen;        /* ui_clear_gen() as of that paint                    */
+  int      top, sel;   /* the window and cursor that were drawn              */
+  bool     valid;      /* false = nothing of ours is on screen               */
+} EditPaint;
+
+static int ev_total(const PkMon* c) {
+  return c->evs[0] + c->evs[1] + c->evs[2] + c->evs[3] + c->evs[4] + c->evs[5];
+}
+
+/* Repaint ONE row in place. The wipe first, then the row, is what stops a shorter string
+ * leaving the tail of a longer one behind ("picker-cancel left pixels", the ghost-ink bug
+ * this codebase has hit before): the full render never had to think about it because
+ * ui_clear() had already erased everything.
+ *
+ * `erase_top` extends the wipe one scanline UP, onto the row above's last scanline. It is
+ * not free to do that -- see render()'s dirty-set rule for exactly when it is allowed. */
+static void row_paint(const PkMon* c, int f, int i, bool sel, bool erase_top) {
+  int y = 21 + i * 8;
+  int y0 = erase_top ? y - 1 : y;
+  ui_fill_rect(2, y0, 236, y + UI_ROW_H - y0, UI_BG);
+  if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+  ui_text(PDNA_EDIT_LBL_X, y, sel ? UI_SELTEXT : UI_DIM, FLABEL[f]);
+  char val[72], vt[72];
+  field_value(f, c, val);
+  ui_truncate(vt, val, PDNA_EDIT_VAL_COLS);
+  ui_text(PDNA_EDIT_VAL_X, y, sel ? UI_SELTEXT : UI_TEXT, vt);
+}
+
+static void render(const PkMon* c, int sel, int top, EditPaint* pv) {
+  char line[64];
+  int  evtot = ev_total(c);
+  bool full  = !pv->valid || pv->gen != ui_clear_gen();
+
+  if (full) {                       /* first paint of this screen, or an overlay wiped it */
+    ui_clear();
+    ui_text(4, 0, UI_TITLE, "EDIT POKEMON");
+    ui_hline(0, 19, UI_SCR_W, UI_BORDER);
+    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+    ui_text(4, 152, UI_DIM, PDNA_EDIT_FOOT);
   }
-  ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-  ui_text(4, 152, UI_DIM, PDNA_EDIT_FOOT);
+
+  /* EV total (top-right). Both the number and its colour are pure functions of the six
+   * EV bytes, so their sum is the whole comparison. */
+  if (full || ev_total(&pv->mon) != evtot) {
+    ui_fill_rect(160, 0, UI_SCR_W - 160, UI_ROW_H, UI_BG);
+    siprintf(line, "EV %d/510", evtot);
+    ui_text(160, 0, evtot > 510 ? UI_WARN : UI_DIM, line);  /* x=160: 10 cols fits "EV 510/510" */
+  }
+
+  /* Header line. Its five inputs are listed here rather than diffed as a string, so no
+   * second 64 B buffer is needed to hold the old one. */
+  if (full || c->species != pv->mon.species || c->level   != pv->mon.level ||
+      c->nature  != pv->mon.nature  || c->isShiny != pv->mon.isShiny ||
+      c->gender  != pv->mon.gender) {
+    ui_fill_rect(0, 10, UI_SCR_W, UI_ROW_H, UI_BG);
+    siprintf(line, "%s  Lv%u  %s%s%s", pk_species_name(c->species), (unsigned)c->level,
+             pk_nature_name(c->nature), c->isShiny ? "  SHINY" : "",
+             c->gender == 1 ? "  F" : c->gender == 0 ? "  M" : "");
+    /* lt[] was 40 B: 29 display columns can be 29 multi-byte codepoints (NIDORAN(f),
+     * POKe BALL), which ui_truncate copies through verbatim. 128 is the size Sec 1 of the
+     * C guideline tells screen-string buffers to be. */
+    char lt[128];
+    ui_truncate(lt, line, 29);
+    ui_text(4, 10, UI_DIRCLR, lt);
+  }
+
+  /* ---- which rows differ from what is drawn ---- */
+  uint32_t dirty = 0;
+  for (int i = 0; i < VIS_ROWS && top + i < F_NUM; i++) {
+    int  f = top + i, of = pv->top + i;              /* field now / field last time */
+    bool s = (f == sel), os = (of == pv->sel);
+    if (full || of != f || s != os) { dirty |= 1u << i; continue; }
+    char a[72], b[72];
+    field_value(f, c, a);
+    field_value(f, &pv->mon, b);                     /* the same row, off the shadow mon */
+    if (strcmp(a, b) != 0) dirty |= 1u << i;         /* comparing UNtruncated is safe: it
+                                                      * can only over-report, never under */
+  }
+
+  /* THE SELECTION PANEL IS 9 px TALL ON AN 8 px ROW PITCH. ui_panel(2, y-1, 236, 9)
+   * deliberately reaches one scanline INTO the row above -- that is how the full repaint
+   * has always drawn it (top row down, each panel covering the previous row's descender
+   * scanline). So the selected row and the row directly above it are ONE UNIT here:
+   * repainting the selected row alone would paint its panel over a descender nothing puts
+   * back, and repainting the row above alone would wipe the panel's top rule. Marking
+   * both, for the new cursor row AND the old one, costs at most one extra row each and
+   * makes the wipe below provably self-contained: a row's erase can only ever touch
+   * scanlines belonging to rows that are themselves in this set. */
+  for (int p = 0; p < 2; p++) {
+    int r = p ? pv->sel - pv->top : sel - top;
+    if (r <= 0 || r >= VIS_ROWS) continue;           /* r == 0 has no row above it */
+    if (dirty & ((1u << r) | (1u << (r - 1)))) dirty |= (1u << r) | (1u << (r - 1));
+  }
+
+  for (int i = 0; i < VIS_ROWS && top + i < F_NUM; i++) {
+    if (!(dirty & (1u << i))) continue;
+    bool etop = (i == 0) || (dirty & (1u << (i - 1))) != 0;   /* row 0's y-1 is blank chrome */
+    row_paint(c, top + i, i, top + i == sel, etop);
+  }
+
+  pv->mon = *c;
+  pv->top = top;
+  pv->sel = sel;
+  pv->gen = ui_clear_gen();          /* read AFTER the ui_clear() above, not before */
+  pv->valid = true;
 }
 
 /* re-roll PID for a (nature, shiny, gender) combo, relaxing gender then shiny. */
@@ -298,10 +445,12 @@ bool pdna_edit(const uint8_t* rec, bool is_party, uint8_t* out_rec) {
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
   int sel = 0, top = 0;
   bool committed = false;
+  EditPaint pv;
+  memset(&pv, 0, sizeof pv);         /* .valid = false: the first render() paints in full */
   for (;;) {
     if (sel < top) top = sel;
     if (sel >= top + VIS_ROWS) top = sel - VIS_ROWS + 1;
-    render(&cur, sel, top);
+    render(&cur, sel, top, &pv);
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B | KEY_START);
     if (k & KEY_B) break;
