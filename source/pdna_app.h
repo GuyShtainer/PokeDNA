@@ -267,13 +267,20 @@ void     app_box_swap_release(void);
  * app_box_swap_canary_ok() re-checks both every call and returns false (after
  * logging ONE loud RAM-log line per canary, not spamming) the first time either
  * changes; true whenever the borrow isn't held, so callers can call it
- * unconditionally every box tick at zero cost when the feature is off. The RAM log
- * line reaches the SD card only at the next ordinary flush boundary (log_line is a
- * RAM-buffer append, not a card write -- calling app_log_flush() itself from inside
- * a vblank tick is exactly the hazard e37f14b's revert already flagged for the
- * breadcrumb trail, so this deliberately does NOT force one): a canary line PRESENT
- * in logs/log.txt after a crash is definitive; ABSENT is inconclusive, not a clean
- * bill of health, if the crash was fast enough to outrun the next flush. */
+ * unconditionally every box tick at zero cost when the feature is off. This function
+ * itself never touches the SD card (log_line is a RAM-buffer append, not a card
+ * write) -- calling app_log_flush() unconditionally from inside a vblank tick is
+ * exactly the hazard e37f14b's revert already flagged for the breadcrumb trail (a
+ * flush EVERY tick, forever, healthy or not). Its one caller, box_oam.c's
+ * boxoam_pose_pump(), is NOT unconditional the same way: the first time this
+ * function returns false, it flushes ONCE (latched, exactly like this file's own
+ * upload_tiles_verified/draw_wallpaper anomaly-flush idiom) and raises a zero-I/O
+ * on-screen + audible cue, specifically so the one run that proves an overrun does
+ * not throw its own proof away — see that function's own comment for the full
+ * contract. A canary line in logs/log.txt after a crash is therefore close to
+ * definitive (it is written in the SAME call that detected the trip, before
+ * anything else in that tick runs); ABSENT still isn't a clean bill of health if the
+ * crash was fast enough to abort the flush itself mid-write. */
 bool app_box_swap_canary_ok(void);
 
 /* Path of the Pokemon ROM the map screen reads map data from, remembered per game

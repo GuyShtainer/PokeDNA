@@ -33,13 +33,14 @@
 #include "rumble.h"         /* rumble_io_suspend: freeze GPIO during verified CPU ROM reads */
 #include "log.h"            /* icon-upload self-verify diagnostics */
 #include "pdna_app.h"       /* app_log_flush: anomaly evidence must survive a power-off */
+#include "snd.h"            /* snd_deny: zero-I/O audible+haptic canary-trip cue */
 
 /* ---- hardware A/B switch for the borrowed-cache pose-swap crash (2026-08-23) --------
  * boxoam_enter()'s own comment (below) has the incident writeup. Every test run so far
  * changed TWO independent variables at once -- borrowing g_entries, AND performing the
  * VRAM<->cache DMA exchange -- so nothing so far can say which one the runaway is. This
- * switch separates them into two single-variable builds, plus the always-shippable OFF
- * state (bit-for-bit e37f14b: no borrow, no swap, 1 px bob everywhere non-cheap):
+ * switch separates them into three single-variable builds, plus the always-shippable
+ * OFF state (bit-for-bit e37f14b: no borrow, no swap, 1 px bob everywhere non-cheap):
  *
  *   0 = OFF (default -- what ships).
  *   1 = 'A' BORROW WITHOUT SWAPPING. app_box_swap_acquire() IS called, and
@@ -68,11 +69,55 @@
  *       same 512 B, compiled in only for this variant.) Every other slot stays on the
  *       ordinary bob. If THIS variant crashes, the exchange mechanism itself is at
  *       fault -- g_entries was never touched and is innocent.
+ *   3 = 'C' FULL VOLUME, NOT THE BORROW. Neither app_box_swap_acquire() nor the
+ *       displayed content is touched -- swap_volume_slot() below runs the SAME
+ *       three-dma3_cpy, 512 B shape as swap_cache_slot for EVERY one of the 30 grid
+ *       slots (occupied or not: worst-case volume needs all 30 hit, not however many
+ *       the loaded save happens to fill), split 15-now/15-next-tick exactly like the
+ *       real feature, but content-invariant by construction (each slot's VRAM tiles
+ *       are DMA'd out and straight back in; the third DMA is a pure scratch write for
+ *       byte-volume parity, never read back) -- so what's on screen never changes and
+ *       nothing 15 KiB is needed. If THIS variant crashes, the exchange VOLUME is
+ *       implicated, independent of both the borrow (never touched) and the single-
+ *       slot exchange mechanism (already covered by B).
  *
- * Change the number below, `make artless`, flash. See the delivery note (handoff /
- * commit message) for the order to run these in and what each outcome proves. */
+ * READING THE RESULTS -- what each outcome does and does NOT prove:
+ *   - A crashes, B and C don't -> the borrow (g_entries donation) is the runaway.
+ *   - B crashes, A and C don't -> the exchange MECHANISM itself is broken even at
+ *     one slot -- content garbling, a bad DMA arg, an address miscalculation.
+ *   - C crashes, A and B don't -> the exchange VOLUME/timing is the runaway -- 30
+ *     slots' worth of DMA (see below) does something 1 slot does not, independent of
+ *     the borrow or of any per-slot correctness bug.
+ *   - A and B BOTH come back clean -> this does NOT clear the feature. It clears the
+ *     borrow (A) and the single-slot mechanism (B) -- two of three variables. B moves
+ *     three dma3_cpy calls of 512 B = 1,536 B in ONE tick; the real feature moves that
+ *     many DMAs for up to 15 slots THIS tick and 15 more the NEXT (pose_swap_rom_slot's
+ *     even half inline in boxoam_set_frame, the odd half in boxoam_pose_pump's
+ *     `for (int s = 1; s < 30; s += 2)` loop) -- up to 23,040 B/tick, ~46,080 B across
+ *     the two-tick pair a full toggle spans. That is a ~15-30x difference in exactly
+ *     the dimension a vblank-overrun or bus-contention failure lives in, and this same
+ *     code path already measured a real overrun once (2026-08-22 review: REG_VCOUNT
+ *     probes showed 11/11 ticks running ~156% over a 68-scanline vblank window before
+ *     the call-order fix). A clean A+B means the cause is LIKELY THE VOLUME -- run C.
+ *   - A, B, and C all come back clean -> now the borrow, the mechanism, AND the volume
+ *     are all cleared; the remaining suspects are outside this switch entirely (OAM/
+ *     DISPCNT state, a timing interaction with rumble/RTC, or something the 2026-08-23
+ *     OS-mode audit's checklist did not cover).
+ *   - The canary (app_box_swap_canary_ok, checked every tick from boxoam_pose_pump,
+ *     only actually held under 'A'): a trip means some write missed g_entries's
+ *     intended 0..15,359 B span. `nm -S` on the ARTLESS elf confirms g_entries's
+ *     immediate, ZERO-padding successor is g_sb1 -- the reassembled SaveBlock1, i.e.
+ *     LIVE SAVE DATA, not idle scratch -- so a canary trip is not merely "a bug": it
+ *     means the overrun that just happened was writing into the user's save, in RAM,
+ *     the whole time. logs/log.txt PRESENT after a crash is definitive; ABSENT is
+ *     inconclusive on the flush timing, never a clean bill of health by itself (see
+ *     boxoam_pose_pump's own comment for the one-shot flush + on-screen/audible signal
+ *     this now triggers, so the evidence and the tell-tale survive even without SD).
+ *
+ * Change the number below, `make artless`, flash. Run in this order: A, then B, then
+ * (if A+B are both clean) C. */
 #ifndef PDNA_POSE_EXPERIMENT
-#define PDNA_POSE_EXPERIMENT 0   /* 0=off (ships)  1='A' borrow-only  2='B' swap-only */
+#define PDNA_POSE_EXPERIMENT 0   /* 0=off (ships)  1='A' borrow-only  2='B' swap-only  3='C' volume-only */
 #endif
 
 /* grid geometry — MUST match pdna_box.c */
@@ -155,12 +200,19 @@ static int      s_any_pose = 0;         /* any occupied slot can pose-swap      
  * every use of it is guarded, so a failed acquire degrades to the pre-existing bob. */
 static uint8_t* s_swapcache = 0;
 static uint8_t  s_cache_ok[30];         /* 1 = s_swapcache's slot s holds a verified frame */
-#if PDNA_POSE_EXPERIMENT == 2
-/* Experiment 'B' only -- see the PDNA_POSE_EXPERIMENT block above for why this is a
- * dedicated buffer rather than literal reuse of s_stage. Slot 0 exclusively; nothing
- * else ever reads or writes it. */
+#if PDNA_POSE_EXPERIMENT == 2 || PDNA_POSE_EXPERIMENT == 3
+/* Dedicated buffer -- see the PDNA_POSE_EXPERIMENT block above for why this is
+ * SEPARATE from s_stage. Under 'B' it holds slot 0's real other-pose frame (content
+ * matters, s_expb_ok below tracks whether it's valid). Under 'C' it is pure DMA
+ * scratch for every slot's third, volume-only copy -- its bytes are written and
+ * never read back, so no validity flag is needed there. */
 static uint16_t s_expb_cache[MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES / 2];  /* 512 B */
+#endif
+#if PDNA_POSE_EXPERIMENT == 2
 static uint8_t  s_expb_ok = 0;          /* 1 = s_expb_cache holds slot 0's verified other frame */
+#endif
+#if PDNA_POSE_EXPERIMENT == 3
+static int      s_vol_pend = 0;         /* 'C': odd-half volume exchange is due next tick   */
 #endif
 static int      s_pend = 0;             /* second half of a split (fused-ROM) swap is due  */
 static int      s_pend_frame = 0;       /* which frame that pending half is swapping to    */
@@ -1035,6 +1087,29 @@ static void swap_expb_slot(void) {
 }
 #endif
 
+#if PDNA_POSE_EXPERIMENT == 3
+/* Experiment 'C' only: bit-for-bit swap_cache_slot's three-dma3_cpy, 512 B shape --
+ * same volume, same call count, same DMA-register/timing profile per slot -- but
+ * CONTENT-INVARIANT: slot s's VRAM tiles are DMA'd out to s_stage and immediately
+ * back in unchanged, so nothing on screen ever moves. The third DMA (s_expb_cache =
+ * s_stage) exists ONLY to spend the same third 512 B of bus time the real exchange's
+ * "cache = temp" step spends; s_expb_cache's bytes are never read back for display,
+ * so its content doesn't matter and it can be shared, unsynchronized, across all 30
+ * slots' calls within one tick (nothing reentrant runs between them -- straight-line
+ * synchronous loop, exactly the same guarantee swap_cache_slot's own comment relies
+ * on for s_stage). Applies to slot s regardless of s_occupied/s_pose_ok: reproducing
+ * the real feature's WORST-CASE per-tick volume needs all 30 slots hit every time,
+ * not however many the loaded save happens to occupy -- see the caller. */
+static void swap_volume_slot(int s) {
+  const int n = MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES;      /* 512 B, 4-aligned */
+  uint16_t* vram = (uint16_t*)((uint8_t*)tile_mem_obj[0] +
+                               (uint32_t)(TID_ICON0 + s * MON_ICON_OAM_TILES) * 32);
+  dma3_cpy(s_stage, vram, (uint32_t)n);            /* temp    = VRAM (bytes unchanged)   */
+  dma3_cpy(vram, s_stage, (uint32_t)n);            /* VRAM    = temp (restores itself)   */
+  dma3_cpy(s_expb_cache, s_stage, (uint32_t)n);     /* scratch = temp (3rd DMA, volume only) */
+}
+#endif
+
 /* Re-upload slot s's OTHER-pose tiles at `frame`, through the cheap-ROM rung
  * (rom_icon_pose_frame) or the SD/cache swap-cache (swap_cache_slot) — compiled art is
  * handled separately, synchronously, in boxoam_set_frame itself (see that function's
@@ -1101,6 +1176,17 @@ static void pose_swap_rom_slot(int s, uint8_t frame) {
  * Returns 1 if it animated, 0 if it could not — the caller uses that to fall back to the
  * 1 px positional bob rather than leaving the grid dead. */
 int boxoam_set_frame(int frame) {
+#if PDNA_POSE_EXPERIMENT == 3
+  /* Experiment 'C': fire on the SAME cadence the real feature would (every call this
+   * function gets, i.e. every ANIM_PERIOD toggle from pdna_box.c's box loop) and
+   * BEFORE the s_any_pose early-return below -- a box with nothing marked pose-
+   * capable must still get the full volume, or this variant proves nothing about the
+   * feature's worst case. Even half now, odd half deferred to boxoam_pose_pump's own
+   * `s_vol_pend` drain next tick -- the same 15-now/15-next-tick split the real
+   * feature uses (see this file's header block, variant 'C' entry). */
+  for (int s = 0; s < 30; s += 2) swap_volume_slot(s);
+  s_vol_pend = 1;
+#endif
   /* CAPABILITY FIRST, BEFORE the already-on-that-frame short-circuit. Getting this
    * order wrong is not cosmetic: on a box that cannot pose-swap, s_frame never advances
    * past 0, so an equality test placed above this line answers "1, already there" on
@@ -1145,6 +1231,47 @@ int boxoam_set_frame(int frame) {
  * s_vsync() and BEFORE that tick's own boxoam_set_frame() call, so the half it drains
  * here was queued by the PREVIOUS tick's set_frame — never the one about to run below
  * it. pdna_box.c's box loop is the only caller. */
+
+/* Canary-trip response (MUST-FIX 1, 2026-08-23 review): a trip that only appends one
+ * line to the RAM log is worthless as evidence -- nothing in the box-entry path ever
+ * calls app_log_flush() on a clean run, so the ONE run that actually proves an overrun
+ * is exactly the run whose proof never reaches the card before the console dies (the
+ * incident writeup: white wash -> RGB banding -> evolving noise over ~12 frames, then
+ * a power-cycle). Two responses, both fired at most ONCE per box visit (the static
+ * latch below), the moment app_box_swap_canary_ok() first returns false:
+ *   - app_log_flush() ONE TIME. This is deliberately NOT the periodic/unconditional
+ *     breadcrumb flush e37f14b's revert already blocked (that one fired every tick on
+ *     a fixed cadence, forever, on every run, healthy or not -- SD I/O inside vblank as
+ *     routine cost). This is the opposite shape: it fires zero times on every run that
+ *     never trips, and at most once on the run that does, latched by a counter exactly
+ *     like upload_tiles_verified's own s_icon_flushes < 2 idiom just above in this
+ *     file -- the anomaly-flush pattern this file already uses (also 336/348 above,
+ *     and pdna_box.c's draw_wallpaper). One SD write is a real cost to pay on the
+ *     screen under investigation, but the alternative is throwing away the only
+ *     evidence a trip ever produces -- see this function's own definition below for
+ *     why a stuck/looping tick can't turn this into unbounded I/O either.
+ *   - canary_alarm() below: a zero-I/O, VRAM-only + PSG/rumble cue, so Guy can tell a
+ *     canary trip from a plain crash even with no card to pull afterward (the crash
+ *     itself is visually a wash-to-white/banding/noise progression -- this cue has to
+ *     read as deliberate against that, not blend into it). */
+static void canary_alarm(void) {
+  /* Solid, sharp-edged, saturated magenta band across the very top of the screen --
+   * unlike the crash's own white wash / RGB banding / evolving noise, this is a flat
+   * fill with a hard bottom edge, so it can't be mistaken for another instance of the
+   * symptom under investigation. Placed at y=0 rather than inside the grid/wallpaper
+   * so it never depends on this screen's box-tab-specific layout (PANEL_W/GRID_X/
+   * WP_X all vary by mode) -- what gets overdrawn there does not matter: a trip means
+   * the console is expected to die within frames, so preserving any other on-screen
+   * content is not a competing goal. Plain u16 vid_mem stores (Mode-3 bitmap, no
+   * palette/DMA involved) -- zero SD/ROM I/O, matching this response's own contract. */
+  const COLOR c = RGB15(31, 0, 31);
+  for (int y = 0; y < 8; y++)
+    for (int x = 0; x < 240; x++)
+      vid_mem[y * 240 + x] = c;
+  snd_deny();     /* audible buzz + rumble cue (already this file's/pdna_box.c's UI-deny
+                    * sound; zero SD/ROM I/O, safe every-frame per snd.h) */
+}
+
 void boxoam_pose_pump(void) {
   /* Canary check (2026-08-23 A/B, part C): pdna_box.c's box loop already calls this
    * function UNCONDITIONALLY every vblank tick (box_oam.h's own doc on this function),
@@ -1152,11 +1279,25 @@ void boxoam_pose_pump(void) {
    * s_pend/s_frame state -- the right anchor for a check that must not be skippable.
    * app_box_swap_canary_ok() is a no-op returning true whenever the borrow isn't held
    * (PDNA_POSE_EXPERIMENT != 1, i.e. every shipped build and variant B), so this costs
-   * one already-cheap function call, zero SD I/O, on every build but 'A'. The RAM log
-   * line it may emit is NOT force-flushed to SD from here -- see pdna_app.h's own
-   * comment on app_box_swap_canary_ok for why that would repeat the exact hazard
-   * e37f14b's revert already flagged for the breadcrumb trail. */
-  (void)app_box_swap_canary_ok();
+   * one already-cheap function call, zero SD I/O, on every build but 'A'. See
+   * canary_alarm()'s own comment just above for what happens the first time it
+   * returns false -- ONE flush + a zero-I/O visible/audible cue, latched so a stuck
+   * or looping tick can never turn either into per-tick cost. */
+  static int s_canary_alarms = 0;
+  if (!app_box_swap_canary_ok() && s_canary_alarms < 1) {
+    s_canary_alarms++;
+    app_log_flush();
+    canary_alarm();
+  }
+#if PDNA_POSE_EXPERIMENT == 3
+  /* Experiment 'C': drain the odd half boxoam_set_frame queued this same way the real
+   * feature's odd half is drained -- unconditional, orthogonal to s_pend/s_frame (this
+   * variant never sets those). */
+  if (s_vol_pend) {
+    s_vol_pend = 0;
+    for (int s = 1; s < 30; s += 2) swap_volume_slot(s);
+  }
+#endif
   if (!s_pend) return;
   s_pend = 0;
   uint8_t frame = (uint8_t)s_pend_frame;
