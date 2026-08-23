@@ -630,6 +630,30 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
   s_dget = get; s_dset = set;
   s_getnat = getnat; s_setnat = can_edit ? setnat : NULL;   /* read-only carts can't toggle it */
   s_dex_snap_valid = false;        /* fresh session: no bulk op to undo yet */
+  /* Rent 32 more icon rows for the WHOLE life of this screen -- the one screen in the
+   * app that can hold the borrow that long, and the reason it matters is the SCROLL.
+   * A 21-cell page fits Tier B, so a one-step scroll keeps 20 of its 21 rows resident
+   * and re-reads one instead of the whole page (host-measured: 1 transfer / 2 sectors,
+   * against 21 / 42). Releasing per keypress the way the party screens must would throw
+   * that away on every d-pad press.
+   *
+   * WHY THIS SCREEN MAY HOLD AND THEY MAY NOT: the borrow is g_pc, and the rule is that
+   * a holder must not reach anything that touches the PC. Everything this screen opens
+   * -- dex_menu, dex_bulk, osk_search, app_confirm -- reads and writes only the dex
+   * flags in g_sb1/g_sb2, and its caller (pdna_dex_edit, pdna_main.c) commits through
+   * app_commit_sb12, which by its own comment does NOT touch PC storage. The commit
+   * also happens AFTER this function returns, i.e. after the release below.
+   *
+   * A refusal (unsaved box moves) is not an error: the pool stays Tier A, a page is not
+   * resident, mon_icon_anim_cheap() answers no and the cells keep a static frame. The
+   * store logs the reason.
+   *
+   * ARTLESS ONLY, for dex_declare_page's reason: with mon_icons.c linked the store is
+   * never consulted here at all, so renting 33 KB of the user's PC storage would buy
+   * nothing and risk something. */
+#if !PDNA_MON_ICONS_ART_COMPILED
+  icon_store_borrow(true);
+#endif
   perf_span_begin("dex");            /* enter cost: up to 21 cells through the ladder */
   bool perf_first_paint = true;
   /* Art-free build: no icons -> the LIST is the primary view (Guy's call: grids of
@@ -785,6 +809,10 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
    * yes, and that answer is the animation gate. The rows themselves stay resident, so
    * coming straight back here costs nothing. */
   icon_store_plan(0, 0);
+  /* Give g_pc back on the ONE exit this screen has. icon_store_borrow(false) retires the
+   * plan as well, so the line above is belt-and-braces -- kept because the plan must be
+   * retired even in a build where the borrow was refused. */
+  icon_store_borrow(false);
   return dirty;
 }
 

@@ -88,6 +88,7 @@
 #include "savefile.h"
 #include "log.h"
 #include "fastseek.h"     /* FIL cluster link maps -- the ONE cltbl owner */
+#include "art_icons_cache.h" /* art_icons_row_for -- species -> icon-store row         */
 #include "icon_store.h"    /* THE icon row cache -- reset from app_icon_cache_resolve */
 #include "pdna_romcheck.h"  /* sampled high-ROM self-check: the incomplete-SD-load guard */
 #include "pdna_romfull.h"   /* the FULL-image verifier screen (boot hold R+SELECT / FILE MENU) */
@@ -175,6 +176,61 @@ static void vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 /* vblanks per idle bob toggle — the Gen-3 cadence, same constant the box screen
  * (pdna_box.c ANIM_PERIOD) and the Pokedex (pdna_pick.c DEX_ANIM_PERIOD) use. */
 #define PDNA_BOB_PERIOD 30
+
+/* ---- the Tier B icon borrow, from the three screens whose bob needs it -----------
+ *
+ * WHAT THIS IS FOR. The icon store's own pool holds 6 rows on the icons.bin rung and
+ * FOUR on the ROM rung (it spends 1,760 B of the same 6 KiB on the resident offset
+ * table). A party is six mons and the day-care yard is up to seven, so on the ROM rung
+ * those sets did not fit, icon_store_plan_resident() honestly said "not in RAM", and
+ * mon_icon_anim_cheap() left them STANDING STILL -- which is precisely what Guy
+ * reported ("in the party they are static"). icon_store_borrow() rents 32 more rows
+ * from g_pc for the length of one screen and makes the set fit on both rungs.
+ *
+ * THE RULE, AND WHY THE RELEASE SITS WHERE IT DOES. g_pc is the user's PC storage.
+ * app_commit_all() writes it straight back into the save (and app_commit_after_edit
+ * reaches app_commit_all from the PARTY editor whenever an edit registers a dex entry,
+ * pdna_main.c's own `block == g_sb1` branch) -- so committing with the borrow live
+ * would write icon tiles over every box the user owns. There is no version of that
+ * which is recoverable.
+ *
+ * So the borrow is held ONLY between a screen's paint and the first key it dispatches:
+ * app_icons_hold() before the paint, app_icons_drop() the instant the idle loop ends.
+ * Every key path -- repaint, nested menu, exit -- is then safe by construction, with
+ * ONE release site per screen instead of one per exit. The Pokedex is the exception and
+ * says so at its own call site: nothing it opens can reach the PC, so it holds across
+ * its whole lifetime and keeps a scrolled page resident. pdna_main.c's
+ * `switch (nav_menu())` calls icon_store_borrow(false) unconditionally after every case
+ * body as the structural backstop.
+ *
+ * The per-keypress cost is one app_arena_release(), i.e. one 35,712 B re-derive of g_pc
+ * from g_save -- a few ms on a screen that is repainting anyway, and never on the idle
+ * path the user is actually watching. What it buys back is a bob that costs zero SD
+ * transactions instead of 120-210 disk_read calls every 8 frames. */
+
+/* The icon-store row a mon draws from. Eggs all share row 412; everything else is
+ * species+form. Identical to the mapping box_oam.c's icon_tiles and art_fallbacks.c's
+ * icon_from_cache use, and it has to stay identical or a plan would declare rows the
+ * paint never asks for. */
+static uint16_t app_icon_row_of(uint16_t species, uint8_t form, bool egg) {
+  return art_icons_row_for(egg ? 412 : species, egg ? 0 : form);
+}
+
+#if PDNA_MON_ICONS_ART_COMPILED
+/* FULL-ART: mon_icons.c's compiled .rodata answers every mon_icon_for* call, so the
+ * store is never consulted for these screens and a plan would stream 6-7 KiB off the
+ * card that nothing reads -- a regression, not a no-op. Same reasoning, same gate, as
+ * pdna_pick.c's dex_declare_page. */
+static void app_icons_hold(const uint16_t* rows, int n) { (void)rows; (void)n; }
+static void app_icons_drop(void) { }
+#else
+static void app_icons_hold(const uint16_t* rows, int n) {
+  icon_store_borrow(true);      /* FIRST: the sweep must see the big pool, or it fills
+                                 * Tier A, comes up short, and the gate stays false */
+  icon_store_plan(rows, n);
+}
+static void app_icons_drop(void) { icon_store_borrow(false); }
+#endif
 
 /* wait_keys, plus a 2-frame idle bob. `kind` is an ANIM_* place; while nothing is
  * pressed and that place's toggle is on, *frame flips every `period` vblanks and
@@ -1264,6 +1320,17 @@ static bool app_commit_block(int sect_lo, int sect_hi, uint8_t* block) {
  * which spans SB1+SB2; the single whole-file write costs the same as committing one
  * section, so this just folds the dex sections in. */
 static bool app_commit_all(void) {
+  /* g_pc is Tier B's donor (icon_store_borrow). Reaching a PC-writing commit with the
+   * arena still lent out would write icon tiles into every box the user owns, so this
+   * is the one place worth a belt-and-braces check: every screen releases before it
+   * dispatches a key, and pdna_main.c's nav switch releases again unconditionally, so
+   * arriving here held is a PROGRAMMING ERROR. Say so, then give the memory back --
+   * which re-derives g_pc from g_save -- rather than committing what is in it. */
+  if (app_arena_held()) {
+    log_line("BUG: commit-all with the EWRAM arena held - releasing before the write");
+    icon_store_borrow(false);
+    if (app_arena_held()) app_arena_release();
+  }
   gen3_write_full_section(g_save, g_vinfo.slot, 0, g_sb2);
   for (int id = 1; id <= 4; id++)
     gen3_write_full_section(g_save, g_vinfo.slot, id, g_sb1 + (uint32_t)(id - 1) * G3_SECTOR_DATA_SIZE);
@@ -2826,6 +2893,18 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     s_pov_pm = pm; s_pov_n = n < 6 ? n : 6;
     s_pov_sel = (sel == BACK) ? -1 : sel;
     s_pov_addslot = addslot;
+    /* Declare the six rows and rent the space to hold them, BEFORE the paint that draws
+     * them -- see app_icons_hold. Without this the overlay's bob is what Guy watched
+     * cost 120-210 disk_read calls every 8 frames on a card with a populated root, and
+     * on the ROM rung it was gated off entirely because six rows never fit four slots. */
+    {
+      uint16_t irows[6];
+      int nr = 0;
+      for (int i = 0; i < s_pov_n; i++)
+        irows[nr++] = app_icon_row_of(pm[i].species, pm[i].form,
+                                      pm[i].isEgg && !pm[i].isBadEgg);
+      app_icons_hold(irows, nr);
+    }
     party_draw_all((uint8_t)bob);
 
     /* Bottom message box + CANCEL button, retail's own layout for this band
@@ -2853,6 +2932,11 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
      * grid's L/R paging does not carry over. */
     u16 k = wait_keys_bob_p(KEY_UP | KEY_DOWN | KEY_A | KEY_B,
                             ANIM_PARTY, &bob_ctr, &bob, party_overlay_bob, PARTY_BOB_PERIOD);
+    /* THE single release site for this screen, and it is here rather than at each of
+     * the five returns below on purpose: the idle loop is over, so every path from here
+     * -- repaint, app_party_mon_menu, party_place_held, exit -- is a path that may reach
+     * the PC, and none of them may run with g_pc lent out. One site, no exit to miss. */
+    app_icons_drop();
     if      (k & KEY_B)     { snd_back(); perf_rep_flush(PERF_REP_BOB); return 0; }
     /* snd_move() (RCUE_SCROLL haptic + a short square-wave tick, source/snd.c:56) fired
      * on every cursor move in the old 3x2 grid's L/R/U/D handlers; the retail-layout
@@ -3350,6 +3434,18 @@ static void party_bob_recompose(int n, int sel, int frame) {
 static int party_list(void) {
   int sel = 0, anim_ctr = 0, frame = 0;
   for (;;) {
+    /* Same contract as the overlay's (app_icons_hold): declare + rent before the paint,
+     * give it back the moment the idle loop ends. This screen's A opens app_mon_menu,
+     * which can reach app_commit_all through the dex-registration branch -- so holding
+     * past the wait loop is the one thing that must not happen here. */
+    {
+      uint16_t irows[6];
+      int nr = 0;
+      for (int i = 0; i < g_nparty && i < 6; i++)
+        irows[nr++] = app_icon_row_of(g_party[i].species, g_party[i].form,
+                                      g_party[i].isEgg && !g_party[i].isBadEgg);
+      app_icons_hold(irows, nr);
+    }
     ui_clear();
     char line[48];
     siprintf(line, "%s  -  %s", g_vinfo.trainer_name, ver_label(g_vinfo.version_guess, g_frlg));
@@ -3408,6 +3504,7 @@ static int party_list(void) {
         perf_rep_end(PERF_REP_BOB);
       }
     } while (!k);
+    app_icons_drop();                    /* the idle loop is over -- see app_icons_hold */
     if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
     else if (fresh & KEY_A)               snd_ok();
     else if (fresh & KEY_B)               snd_back();
@@ -4637,6 +4734,21 @@ static void pdna_daycare(void) {
       if (sel >= n) sel = n ? n - 1 : 0;
       rescan = false; redraw = true;
     }
+    /* Up to SEVEN rows -- 2 boarders + up to 5 hazed yard visitors -- which is the
+     * widest bob in the app and the exact shape of "it gets worse the more Pokemon are
+     * moving". Declared and rented before the paint; given back the moment the idle
+     * loop ends, because A from here reaches dc_withdraw -> app_inject_to_game_deferred,
+     * which writes g_pc. See app_icons_hold. */
+    {
+      uint16_t irows[7];
+      int nr = 0;
+      for (int i = 0; i < s_ndeco && nr < 7; i++)
+        irows[nr++] = app_icon_row_of(s_deco_sp[i], 0, false);
+      for (int i = 0; i < n && nr < 7; i++)
+        irows[nr++] = app_icon_row_of(dc[i].species, dc[i].form,
+                                      dc[i].isEgg && !dc[i].isBadEgg);
+      app_icons_hold(irows, nr);
+    }
     if (redraw) {
       redraw = false;
       dc_scene();                                              /* overdraws the whole screen */
@@ -4729,6 +4841,7 @@ static void pdna_daycare(void) {
            perf_rep_end(PERF_REP_BOB);
          }
          fresh = key_hit(KEY_FULL); k = fresh; } while (!k);
+    app_icons_drop();                    /* the idle loop is over -- see app_icons_hold */
     if      (fresh & KEY_B) snd_back();
     else if (fresh & KEY_A) snd_ok();
     else if (fresh & (KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R)) snd_move();
@@ -6313,6 +6426,8 @@ static void view_save(const char* path) {
   for (;;) {
     reload_saveblocks();                         /* editors share g_sb1/g_sb2 + commit all SB1 — keep them == the saved image so a declined edit can't ride along */
     int r = g_have_pc ? pdna_box(&pcs) : party_list();
+    icon_store_borrow(false);          /* the same backstop for the HOME screen, which
+                                        * does not go through nav_menu's switch */
     /* The home screen has been up and the user has left it, so the one-shot has
      * either fired or can never honestly fire (the no-PC party path). Disarm it, or
      * the next Bank screen -- which is also pdna_box -- would claim the save-open
@@ -6381,6 +6496,16 @@ static void view_save(const char* path) {
         case NV_SETTINGS: pdna_settings(); break;
         default: break;                          /* NV_BACK */
       }
+      /* THE STRUCTURAL BACKSTOP for the Tier B icon borrow (icon_store_borrow). Every
+       * screen above releases its own borrow at its own single release site; this line
+       * makes a forgotten one impossible to keep, because it runs after EVERY case body
+       * and a leaked borrow means g_pc holds icon tiles instead of the user's boxes when
+       * the next commit writes it back. It is safe to call blindly: the store releases
+       * only a borrow IT took (pdna_map.c and pdna_gen12.c hold the same arena and are
+       * untouched), and a release with nothing held is a no-op. It also retires any plan
+       * the screen left declared, so the next screen's animation gate cannot read a
+       * stale "yes" -- see icon_store.h. */
+      icon_store_borrow(false);
       if (refresh_party) {
         g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
         for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);

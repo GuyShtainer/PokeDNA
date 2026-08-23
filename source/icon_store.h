@@ -101,6 +101,11 @@ void icon_store_suspend(void);
  * pool that holds 6 does not make 21 rows resident -- it makes the store fetch them in
  * bulk GROUPS as the paint consumes them, which cuts transactions (the expensive part:
  * 24 fixed halfword cart writes + one card-latency poll each) without cutting sectors.
+ * icon_store_borrow() is how a screen makes the set actually FIT (32 more rows, rented
+ * from g_pc for one screen), and it must be taken BEFORE the plan is declared or the
+ * sweep fills the small pool and comes up short. The box screen is the one screen that
+ * can never borrow -- it is displaying the donor -- so it lives in the first case
+ * permanently, by design.
  * icon_store_plan_resident() is how a caller finds out which case it is in, and it is
  * the ONLY honest gate for an animation: a flip is free iff every row is already here.
  *
@@ -119,6 +124,15 @@ int  icon_store_plan(const uint16_t* rows, int n);
  * does not fit the pool. True when there is no rung at all (a "flip" then redraws
  * nothing and costs nothing, which is the same answer for the caller). */
 bool icon_store_plan_resident(void);
+
+/* How many rows the live plan declares; 0 = no screen has declared one.
+ *
+ * It exists so a caller can tell the two `false`s of icon_store_plan_resident() apart:
+ * "this screen's rows are not all in RAM" (an honest, expected answer -- fall back to a
+ * static frame) and "this screen never declared anything" (a PROGRAMMING ERROR -- the
+ * gate is being asked a question nobody supplied the input for, and the symptom is
+ * exactly the silently-dead animation this whole redesign exists to fix). */
+uint8_t icon_store_plan_count(void);
 
 /* ---- the read ------------------------------------------------------------------ */
 
@@ -144,9 +158,45 @@ uint8_t icon_store_pal_id(uint16_t row);
 /* Shared palette bank `i` (0..2) directly, for a caller uploading all three up front. */
 bool icon_store_pal_at(int i, uint16_t out[16]);
 
+/* ---- Tier B: borrow g_pc for 32 more rows ------------------------------------
+ *
+ * WHY A SECOND TIER EXISTS AT ALL. Tier A is 6 rows on the cache rung and FOUR on the
+ * ROM rung, because that rung spends 1,760 B of the same 6,144 B pool on its resident
+ * offset table (see the pool-carve comment in icon_store.c). Four rows cannot hold a
+ * party of SIX, a day-care yard of seven, or a 21-cell Pokedex page -- so on the ROM
+ * rung those screens thrash, and the animation gate (icon_store_plan_resident, and
+ * therefore mon_icon_anim_cheap) honestly answers "no" and leaves them static. That is
+ * the regression the ROM index table introduced and this is what pays it back.
+ *
+ * THE DONOR IS g_pc, and it is the well-trodden one: pdna_map.c and pdna_gen12.c
+ * already borrow the same 35,712 B through app_arena_acquire(). Two rules make it safe
+ * and they are NOT optional:
+ *   - it REFUSES when the PC is dirty (unsaved box moves live only in g_pc, and handing
+ *     it out would destroy them), and
+ *   - releasing RE-DERIVES g_pc from g_save, byte for byte.
+ * icon_store never touches g_pc except through those two calls.
+ *
+ * THE RULE FOR CALLERS, and it is the whole safety argument: the borrow may be held
+ * only while the screen can promise not to touch the PC. A screen that opens a mon
+ * menu, commits a save, or injects into a box MUST release first -- app_commit_all()
+ * writes g_pc back into g_save, so committing with the borrow live would write icon
+ * tiles over the user's boxes. In practice that means: acquire before the paint, and
+ * release the moment the idle loop ends and a key is dispatched. The Pokedex is the one
+ * screen that can hold across its whole lifetime, because nothing it opens reaches the
+ * PC. pdna_main.c's `switch (nav_menu())` calls icon_store_borrow(false) unconditionally
+ * after every case body, so a forgotten release cannot outlive one nav choice.
+ *
+ * Releasing also RETIRES THE LIVE PLAN. The release is exactly the moment a screen's
+ * claim about what is on the glass expires, and a stale plan would let the next
+ * screen's animation gate answer a stale "yes".
+ *
+ * Returns whether the borrow is held when the call returns. Idempotent both ways. */
+bool icon_store_borrow(bool on);
+
 /* ---- what the app can ask about the store ------------------------------------- */
 enum { ICON_RUNG_NONE = 0, ICON_RUNG_CACHE, ICON_RUNG_ROM };
 int      icon_store_rung(void);        /* ICON_RUNG_*                               */
 uint16_t icon_store_capacity(void);    /* rows the pool can hold resident right now  */
+bool     icon_store_borrowed(void);    /* Tier B is live (a test/telemetry question) */
 
 #endif /* ICON_STORE_H */

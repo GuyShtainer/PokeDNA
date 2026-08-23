@@ -62,6 +62,34 @@ PerfIcons perf_icons;
 void rumble_io_suspend(void) {}
 void rumble_io_resume(void) {}
 
+/* ---- the g_pc borrow, modelled exactly (pdna_main.c owns the real one) -----------
+ *
+ * Tier B's whole safety argument is two sentences -- "refuse when the PC is dirty" and
+ * "re-derive g_pc from g_save on release" -- so the harness has to be able to express
+ * both, or the tests below prove nothing about the property that matters. It adds a
+ * third thing the cartridge does not need: on release the donor is REPAINTED with a
+ * byte pattern that appears nowhere in icons.bin's generated content, so a slot the
+ * store failed to invalidate hands back 0xA7s and every content check catches it. */
+#define HOST_PC_BYTES 35712u
+static uint8_t  s_pc[HOST_PC_BYTES];
+static bool     s_pc_dirty = false, s_pc_held = false;
+static unsigned s_pc_acquires = 0, s_pc_releases = 0;
+
+uint8_t* app_arena_acquire(uint32_t need) {
+  if (s_pc_held || need > HOST_PC_BYTES) return NULL;
+  if (s_pc_dirty) return NULL;            /* unsaved box moves live ONLY here */
+  s_pc_held = true;
+  s_pc_acquires++;
+  return s_pc;
+}
+void app_arena_release(void) {
+  if (!s_pc_held) return;
+  s_pc_held = false;
+  s_pc_releases++;
+  memset(s_pc, 0xA7, sizeof s_pc);        /* stands in for gen3_read_pc_storage */
+}
+bool app_arena_held(void) { return s_pc_held; }
+
 #define DIR_ "/PokeDNA/art"
 #define ICONS DIR_ "/icons.bin"
 
@@ -637,7 +665,256 @@ static void t_rom_rung(const char* dir, const char* name) {
         name, unusable);
   }
 
+  /* ---- TIER B ON THE RUNG THAT NEEDS IT ------------------------------------------
+   * This is the regression payment, measured on Guy's own dump. Tier A here is FOUR
+   * rows, because the resident 440-entry offset table costs 1,760 B of the same 6 KiB
+   * pool -- so a party of SIX could not be resident, plan_resident() honestly answered
+   * "no", and the animation gate left the party static. That is the bug as reported.
+   * With the borrow the same party is fully resident and a flip is zero reads. */
+  CHK(icon_store_capacity() == 4, "[%s] Tier A on the ROM rung is 4 rows", name);
+  CHK(icon_store_plan(party, 6) < 6,
+      "[%s] BEFORE the borrow: a 6-mon party does NOT fit 4 slots", name);
+  CHK(icon_store_plan_resident() == false,
+      "[%s] BEFORE the borrow: the party is not resident -> anim off (the reported bug)",
+      name);
+
+  CHK(icon_store_borrow(true), "[%s] the ROM rung must be able to borrow", name);
+  CHK(icon_store_capacity() == 4 + 32, "[%s] Tier B adds 32 rows (got %u)",
+      name, icon_store_capacity());
+  CHK(icon_store_plan(party, 6) == 6, "[%s] AFTER the borrow: all 6 party rows resident",
+      name);
+  CHK(icon_store_plan_resident(),
+      "[%s] REGRESSION REPAID (rom): a 6-mon party IS resident -> anim ON", name);
+  {
+    long f0 = fc.reads;
+    unsigned long c0 = rd_read_calls;
+    for (int flip = 0; flip < 20; flip++)
+      for (int i = 0; i < 6; i++)
+        CHK(icon_store_row(party[i]) != 0, "[%s] rom party flip %d/%d", name, flip, i);
+    CHK(fc.reads == f0 && rd_read_calls == c0,
+        "[%s] 20 party bob flips on the ROM rung must be 0 ROM reads / 0 disk_read calls "
+        "(got %ld / %lu)", name, fc.reads - f0, rd_read_calls - c0);
+  }
+
+  /* A whole 21-cell dex page fits too -- 21 rows against 36 slots -- so the dex bob is
+   * free here as well. The ROM rung never MERGES (0 of 439 adjacent pairs on any of the
+   * three dumps), so the cold cost is one transfer per row and that is the honest
+   * number; what the borrow buys is that the page stays resident afterwards. */
+  {
+    uint16_t page[21];
+    for (int i = 0; i < 21; i++) page[i] = (uint16_t)(100 + i);
+    long f0 = fc.reads;
+    CHK(icon_store_plan(page, 21) == 21, "[%s] a 21-cell page fits Tier B", name);
+    CHK(icon_store_plan_resident(), "[%s] ...and is resident -> dex anim ON", name);
+    printf("  [%s] borrowed 21-cell page: %ld RomReadFn calls cold (2 per row, no merge)\n",
+           name, fc.reads - f0);
+    f0 = fc.reads;
+    for (int i = 0; i < 21; i++) CHK(icon_store_row(page[i]) != 0, "[%s] dex flip cell %d",
+                                     name, i);
+    CHK(fc.reads == f0, "[%s] a flip over a resident 21-row page is 0 ROM reads (got %ld)",
+        name, fc.reads - f0);
+  }
+
+  icon_store_borrow(false);
+  CHK(!app_arena_held(), "[%s] the ROM rung must give the arena back too", name);
+  CHK(icon_store_capacity() == 4, "[%s] ...and fall back to 4 rows", name);
+
   fclose(f);
+}
+
+/* ================= TIER B: the borrow, and the regression it repays ==============
+ *
+ * The ROM index table (the previous step) dropped Tier A from 6 rows to 4 on the ROM
+ * rung, which is smaller than a party. That is a real, documented regression on exactly
+ * the screens Guy reported as broken, and the borrow is the payment. These sections
+ * assert the payment landed -- on BOTH rungs, in transfers and in sectors -- and that
+ * the memory always goes back.
+ */
+static void t_borrow_cache(void) {
+  fresh_card(0);
+  build_content();
+  CHK(write_raw(ICONS, s_content, sizeof s_content), "borrow: write");
+  icon_store_reset(ICONS, 0);
+  unsigned tierA = icon_store_capacity();
+  CHK(tierA == 6, "borrow: the cache rung starts at 6 Tier A rows (got %u)", tierA);
+  CHK(icon_store_borrowed() == false, "borrow: nothing is borrowed at reset");
+
+  CHK(icon_store_borrow(true), "borrow: the cache rung must be able to borrow");
+  CHK(icon_store_borrowed(), "borrow: ...and must say so");
+  CHK(icon_store_capacity() == tierA + 32,
+      "borrow: Tier B adds 32 rows (got %u)", icon_store_capacity());
+
+  /* (1) THE PARTY, which is the reported bug. Six scattered rows, fully resident, and
+   *     twenty bob flips that must not touch the card at all. */
+  const uint16_t party[6] = { 3, 91, 150, 201, 330, 412 };
+  CHK(icon_store_plan(party, 6) == 6, "borrow: all 6 party rows resident after the plan");
+  CHK(icon_store_plan_resident(), "borrow: a 6-row party must be RESIDENT -> anim on");
+  unsigned long c0 = rd_read_calls, s0 = rd_reads;
+  for (int f = 0; f < 20; f++)
+    for (int i = 0; i < 6; i++)
+      CHK(row_matches(icon_store_row(party[i]), party[i]), "borrow: party flip %d/%d", f, i);
+  CHK(rd_read_calls == c0 && rd_reads == s0,
+      "REGRESSION REPAID (cache): 20 party bob flips must be 0 transfers / 0 sectors "
+      "(got %lu / %lu)", rd_read_calls - c0, rd_reads - s0);
+
+  /* (2) A WHOLE 21-CELL DEX PAGE, contiguous, cold. 21 rows now FIT, so the flip is
+   *     free -- and the cold paint is bounded by ICON_BULK_MAX_ROWS (8 rows per
+   *     transfer) and by the one Tier A/Tier B seam, which is 3 transfers, not 21. */
+  uint16_t page[21];
+  for (int i = 0; i < 21; i++) page[i] = (uint16_t)(100 + i);
+  c0 = rd_read_calls; s0 = rd_reads;
+  CHK(icon_store_plan(page, 21) == 21, "borrow: all 21 dex rows resident");
+  CHK(icon_store_plan_resident(), "borrow: a 21-cell page must be RESIDENT -> anim on");
+  for (int i = 0; i < 21; i++)
+    CHK(row_matches(icon_store_row(page[i]), page[i]), "borrow: dex cold cell %d", i);
+  unsigned long cold_calls = rd_read_calls - c0, cold_sec = rd_reads - s0;
+  printf("  borrowed 21-cell CONTIGUOUS page: cold %lu transfers / %lu sectors\n",
+         cold_calls, cold_sec);
+  CHK(cold_calls <= 3, "borrow: a contiguous 21-row page is 3 transfers (8+8 rows, "
+                       "broken once at the tier seam), not 21 (got %lu)", cold_calls);
+  CHK(cold_sec == 42, "borrow: 21 rows are 42 sectors, no more (got %lu)", cold_sec);
+
+  c0 = rd_read_calls; s0 = rd_reads;
+  for (int f = 0; f < 20; f++)
+    for (int i = 0; i < 21; i++)
+      CHK(row_matches(icon_store_row(page[i]), page[i]), "borrow: dex flip %d/%d", f, i);
+  CHK(rd_read_calls == c0 && rd_reads == s0,
+      "borrow: 20 dex bob flips over a resident page must be 0 transfers / 0 sectors "
+      "(got %lu / %lu)", rd_read_calls - c0, rd_reads - s0);
+
+  /* (3) A ONE-STEP SCROLL. 20 of the 21 rows are already here; only the arriving one
+   *     may move, and it is one transfer. This is the sliding window the pin policy
+   *     exists to give, and it only becomes visible once the page fits. */
+  uint16_t page2[21];
+  for (int i = 0; i < 21; i++) page2[i] = (uint16_t)(101 + i);
+  c0 = rd_read_calls; s0 = rd_reads;
+  CHK(icon_store_plan(page2, 21) == 21, "borrow: scrolled page resident");
+  for (int i = 0; i < 21; i++)
+    CHK(row_matches(icon_store_row(page2[i]), page2[i]), "borrow: scrolled cell %d", i);
+  printf("  borrowed one-step scroll: %lu transfers / %lu sectors\n",
+         rd_read_calls - c0, rd_reads - s0);
+  CHK(rd_read_calls - c0 <= 1,
+      "borrow: a one-step scroll must re-read ONE row, not the page (got %lu transfers)",
+      rd_read_calls - c0);
+
+  /* (4) GIVING IT BACK. The rows that lived in Tier B must not survive as hits: their
+   *     bytes are the user's PC storage again the instant app_arena_release() returns,
+   *     and the harness repaints the donor to prove a stale hit would be caught. */
+  unsigned rel0 = s_pc_releases;
+  icon_store_borrow(false);
+  CHK(icon_store_borrowed() == false, "borrow: release must clear the flag");
+  CHK(s_pc_releases == rel0 + 1, "borrow: release must hand the arena back exactly once");
+  CHK(app_arena_held() == false, "borrow: the donor must be free after a release");
+  CHK(icon_store_capacity() == tierA, "borrow: capacity must fall back to Tier A (got %u)",
+      icon_store_capacity());
+  CHK(icon_store_plan_count() == 0, "borrow: a release retires the live plan");
+  CHK(icon_store_plan_resident() == false, "borrow: ...so nothing is 'resident' after it");
+  /* page[10] lived in a Tier B slot. Re-reading it must go to the card and come back
+   * with icons.bin's bytes -- never the 0xA7 the released donor now holds. */
+  CHK(row_matches(icon_store_row(page[10]), page[10]),
+      "borrow: a Tier B row must be RE-READ after the release, never served stale");
+}
+
+/* Every exit path gives the memory back -- and a leak is DETECTABLE, because a leaked
+ * borrow means g_pc holds icon tiles instead of the user's boxes. */
+static void t_borrow_leak(void) {
+  fresh_card(0);
+  build_content();
+  CHK(write_raw(ICONS, s_content, sizeof s_content), "leak: write");
+  icon_store_reset(ICONS, 0);
+
+  /* Idempotent both ways: a screen that acquires twice must not acquire twice, and the
+   * unconditional release pdna_main.c fires after every nav case must be a no-op when
+   * the screen already released. That pair is what makes the backstop safe to call
+   * blindly, which is the only reason it can be unconditional. */
+  unsigned a0 = s_pc_acquires, r0 = s_pc_releases;
+  CHK(icon_store_borrow(true), "leak: first acquire");
+  CHK(icon_store_borrow(true), "leak: second acquire is the same borrow");
+  CHK(s_pc_acquires == a0 + 1, "leak: two acquires must take the arena ONCE (got %u)",
+      s_pc_acquires - a0);
+  icon_store_borrow(false);
+  icon_store_borrow(false);
+  CHK(s_pc_releases == r0 + 1, "leak: two releases must give it back ONCE (got %u)",
+      s_pc_releases - r0);
+  CHK(!app_arena_held(), "leak: the arena is free");
+
+  /* A reset must not be able to strand the donor. app_icon_cache_resolve() runs on ROM
+   * registration and after an extraction, which are both reachable from screens; if it
+   * could leave 33 KB of icon rows sitting in g_pc, the next PC write would commit them. */
+  CHK(icon_store_borrow(true), "leak: borrow before a reset");
+  icon_store_reset(ICONS, 0);
+  CHK(!app_arena_held(), "leak: icon_store_reset must release the borrow");
+  CHK(!icon_store_borrowed(), "leak: ...and clear its own flag");
+
+  /* Same for a suspend, which is the art-extraction screen about to rewrite icons.bin. */
+  CHK(icon_store_borrow(true), "leak: borrow before a suspend");
+  icon_store_suspend();
+  CHK(!app_arena_held(), "leak: icon_store_suspend must release the borrow");
+  icon_store_reset(ICONS, 0);
+}
+
+/* THE REFUSAL, which is not an error path -- it is what a user with an unsaved box move
+ * gets, and it must degrade to a static frame rather than to a blank one or to thrash. */
+static void t_borrow_dirty(void) {
+  fresh_card(0);
+  build_content();
+  CHK(write_raw(ICONS, s_content, sizeof s_content), "dirty: write");
+  icon_store_reset(ICONS, 0);
+
+  s_pc_dirty = true;
+  CHK(icon_store_borrow(true) == false, "dirty: the borrow MUST refuse an unsaved PC");
+  CHK(!icon_store_borrowed() && !app_arena_held(),
+      "dirty: a refused borrow must not half-take the arena");
+  CHK(icon_store_capacity() == 6, "dirty: capacity stays Tier A after a refusal");
+
+  /* Seven rows against six slots: honestly NOT resident, so the gate says no and the
+   * screen keeps a static frame -- but every row must still PAINT. "No animation" and
+   * "no icon" are different outcomes and only one of them is acceptable. */
+  const uint16_t seven[7] = { 5, 6, 7, 8, 9, 10, 11 };
+  icon_store_plan(seven, 7);
+  CHK(icon_store_plan_resident() == false,
+      "dirty: 7 rows against 6 slots is NOT resident -> anim off, static frame");
+  for (int i = 0; i < 7; i++)
+    CHK(row_matches(icon_store_row(seven[i]), seven[i]),
+        "dirty: row %d must still paint with the borrow refused", i);
+
+  s_pc_dirty = false;
+  CHK(icon_store_borrow(true), "dirty: a saved PC lends again");
+  CHK(icon_store_plan(seven, 7) == 7, "dirty: ...and then all 7 fit");
+  CHK(icon_store_plan_resident(), "dirty: ...and the gate flips to yes");
+  icon_store_borrow(false);
+}
+
+/* The animation gate's two edge cases, pinned so nobody "simplifies" them apart. */
+static void t_plan_edges(void) {
+  fresh_card(0);
+  build_content();
+  CHK(write_raw(ICONS, s_content, sizeof s_content), "edges: write");
+
+  /* NO RUNG. A flip redraws nothing and costs nothing, so the honest answer is YES --
+   * anything else would gate off an animation that is already free. */
+  icon_store_reset(0, 0);
+  CHK(icon_store_rung() == ICON_RUNG_NONE, "edges: no path and no ROM is no rung");
+  CHK(icon_store_plan_resident() == true,
+      "edges: with NO rung, a flip is free -- plan_resident must be TRUE");
+  CHK(icon_store_plan_count() == 0, "edges: no rung, no plan");
+  CHK(icon_store_plan(0, 0) == 0, "edges: retiring a plan with no rung is harmless");
+
+  /* NO PLAN DECLARED, with a live rung. This is FALSE, and it is a different false from
+   * "does not fit": nobody told the store what the screen is about to draw, so it
+   * cannot possibly promise the flip is free. art_fallbacks.c's gate distinguishes the
+   * two with icon_store_plan_count() and says so in the log. */
+  icon_store_reset(ICONS, 0);
+  CHK(icon_store_plan_count() == 0, "edges: a fresh store has no plan");
+  CHK(icon_store_plan_resident() == false,
+      "edges: a live rung with NO plan declared must be FALSE, not a silent yes");
+  const uint16_t six[6] = { 1, 2, 3, 4, 5, 6 };
+  CHK(icon_store_plan(six, 6) == 6, "edges: declare six");
+  CHK(icon_store_plan_count() == 6, "edges: the count is the declaration");
+  CHK(icon_store_plan_resident(), "edges: six fit six");
+  icon_store_plan(0, 0);
+  CHK(icon_store_plan_count() == 0, "edges: n <= 0 retires the plan");
+  CHK(icon_store_plan_resident() == false, "edges: a retired plan is not resident");
 }
 
 int main(int argc, char** argv) {
@@ -651,6 +928,10 @@ int main(int argc, char** argv) {
   t_plan_sorted_order();
   t_plan_run_failure();
   t_failures();
+  t_borrow_cache();
+  t_borrow_leak();
+  t_borrow_dirty();
+  t_plan_edges();
   t_rom_rung(dir, "Emerald");
   t_rom_rung(dir, "FireRed");
 

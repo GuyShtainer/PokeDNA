@@ -18,6 +18,9 @@
 #include "data_tables.h"
 #include "mon_front.h"
 #include "mon_icons.h"
+#include "mon_icons_gate.h"  /* PDNA_MON_ICONS_ART_COMPILED -- see pcp_declare_party */
+#include "art_icons_cache.h" /* art_icons_row_for -- species -> icon-store row        */
+#include "icon_store.h"      /* the party panel declares its 6 rows before it paints  */
 #include "mon_icons_oam.h"   /* artless probe: are the OAM icons compiled in? */
 #include "item_icons.h"     /* item_icon_for: held-item markers in ITEM mode */
 #include "box_oam.h"        /* hardware-OAM icon/cursor/carry/marker rendering */
@@ -2142,6 +2145,30 @@ static void pcp_fill_plate(int x0, int y0, int x1, int y1) {
                                                                  * bottom row — measured) */
 }
 
+/* The panel's six party rows, declared to the icon store before the tile loop draws
+ * them. NO BORROW HERE, deliberately and permanently: this popup lives inside the box
+ * screen, whose whole reason for existing is to display g_pc -- the very buffer Tier B
+ * rents. So the panel gets the plan's transaction saving (one sorted, merged sweep per
+ * pool-sized group instead of six cold single-row fetches per repaint) and not its
+ * residency; six rows fit the cache rung's pool anyway, and on the ROM rung's four they
+ * honestly do not, which is what icon_store_plan_resident() will keep saying.
+ *
+ * ARTLESS ONLY, for dex_declare_page's reason (pdna_pick.c). */
+static void pcp_declare_party(const PkMon* pm, int n) {
+#if PDNA_MON_ICONS_ART_COMPILED
+  (void)pm; (void)n;
+#else
+  uint16_t rows[6];
+  int k = 0;
+  for (int i = 0; i < n && i < 6; i++) {
+    bool egg = pm[i].isEgg && !pm[i].isBadEgg;
+    if (!egg && !pm[i].species) continue;
+    rows[k++] = art_icons_row_for(egg ? 412 : pm[i].species, egg ? 0 : pm[i].form);
+  }
+  icon_store_plan(rows, k);
+#endif
+}
+
 static void pcp_draw_slot(int idx, const PkMon* p, bool addslot, bool selected) {
   int x0, y0, x1, y1; pcp_pos(idx, &x0, &y0, &x1, &y1);
   /* m3_frame's (right,bottom) are EXCLUSIVE — see ui_progress's own comment in ui.c
@@ -2421,6 +2448,8 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
     pcp_draw_panel();                                   /* bevel + teal dither, every frame:
                                                          * render_full repainted the box BG
                                                          * underneath it a moment ago       */
+    pcp_declare_party(pm, n);                           /* the 6 rows, before the tiles that
+                                                         * draw them -- see its own comment  */
     for (int idx = 0; idx < 6; idx++) {                 /* all 6 physical tiles, every frame
                                                          * (see this group's own top comment) */
       bool isAdd = (idx == addslot);

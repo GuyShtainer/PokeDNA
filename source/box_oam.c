@@ -27,6 +27,7 @@
 #include "rom_mon.h"      /* phase-1 ROM-streamed icons (artless + the user's own ROM) */
 #include "art_icons_cache.h"
 #include "icon_store.h" /* phase-2 icons.bin cache -- tried BEFORE the rom rung   */
+#include "mon_icons_gate.h"  /* PDNA_MON_ICONS_ART_COMPILED -- see boxoam_load_box     */
 #include "hand_gate.h"       /* PDNA_HAND_ART_COMPILED -- see that header for why      */
 #if !PDNA_HAND_ART_COMPILED
 #include "rom_hand.h"        /* phase-3 ROM-streamed glove (DESIGN.md Sec 1.3/4.5)     */
@@ -951,6 +952,33 @@ static void finish_slot_pose(int s, uint16_t species, uint8_t form, bool egg,
 #endif
 }
 
+/* Declare the box's whole occupied set to the icon store BEFORE the upload loop walks
+ * it. The box screen is the one screen that can never BORROW -- the borrow's donor is
+ * g_pc and this screen is displaying it -- so its 30 rows still do not fit the 4-6 row
+ * pool, and the plan cannot cut sectors here. What it cuts is TRANSACTIONS: the sweep
+ * fetches the next pool-sized GROUP in sorted, merged order instead of one cold single
+ * row per cell, and on the EZ-Flash path the per-call cost (24 fixed halfword cart
+ * writes with IRQs off, plus a card-latency poll per 4-sector chunk) is the half that
+ * does not scale with size. Guy's own box.load span is the number to watch.
+ *
+ * ARTLESS ONLY: with mon_icons.c linked, icon_tiles' compiled-OAM branch answers every
+ * slot and never reaches the store, so a plan here would stream up to 30 KiB off the
+ * card for a paint that ignores it (dex_declare_page's reasoning, same gate). */
+static void boxoam_declare_box(const PkMon box[30]) {
+#if PDNA_MON_ICONS_ART_COMPILED
+  (void)box;
+#else
+  uint16_t rows[30];
+  int n = 0;
+  for (int s = 0; s < 30; s++) {
+    bool egg = box[s].isEgg && !box[s].isBadEgg;
+    if (!egg && !box[s].species) continue;           /* an empty slot asks for no icon */
+    rows[n++] = art_icons_row_for(egg ? 412 : box[s].species, egg ? 0 : box[s].form);
+  }
+  icon_store_plan(rows, n);
+#endif
+}
+
 void boxoam_load_box(const PkMon box[30]) {
   s_frame = 0;                                       /* a fresh box always shows frame 0 */
   s_pend = 0;                                         /* void any pump half-swap the old box owed */
@@ -959,6 +987,7 @@ void boxoam_load_box(const PkMon box[30]) {
   s_chunk_valid = 0;
   for (int s = 0; s < 30; s++) { s_covered[s] = 0; s_selmark[s] = 0; s_cache_ok[s] = 0; }
   s_any_pose = 0;
+  boxoam_declare_box(box);                           /* the whole page, before the paint */
   for (int s = 0; s < 30; s++) {
     int bank, from_rom, cheap;
     bool egg = box[s].isEgg && !box[s].isBadEgg;
