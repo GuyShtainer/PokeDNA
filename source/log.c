@@ -7,7 +7,30 @@
 #include "ff.h"
 #include "sys.h"  /* EWRAM_BSS */
 
-#define LOG_CAP 8192
+/* The RAM ring's capacity -- it bounds UNFLUSHED text only, never the file.
+ *
+ * s_buf is a ring with a flush watermark (s_flushed, below): flush_common writes
+ * s_len - s_flushed bytes and only advances the watermark on a fully committed write,
+ * so the card gets everything regardless of how big this is. LOG_RUN_MAX and
+ * LOG_FILE_MAX below are the FILE ceilings and are completely independent of it.
+ *
+ * WHY 2048 AND NOT 8192 (2026-08-23). This buffer is EWRAM_BSS, and 8192 was 3% of the
+ * whole 256 KiB chip sitting idle: all three of Guy's real hardware logs
+ * (/PokeDNA/log.txt + the two rotations) are 882 B / 21 lines, and NONE of them carries
+ * the "[N log bytes lost before flush]" marker log_flush_note emits when the ring
+ * wraps -- i.e. in real runs it has never wrapped, and peak observed unflushed volume is
+ * under 900 B. 6,144 B of it were reclaimed to pay for the icon store's row pool
+ * (source/icon_store.c), which is what makes a Pokedex/party bob cost zero SD reads.
+ *
+ * HARD FLOOR: LOG_CAP >= 2n + 4, where n is the longest single line. The overflow path
+ * below keeps LOG_CAP/2 bytes and then writes n + 2 more, so the top index reaches
+ * LOG_CAP/2 + n + 1. log_line's tmp[256] caps n at 255, so the absolute floor is 514.
+ * 2048 is 8x the longest possible line and 2.3x a whole observed boot run.
+ *
+ * The cost of being wrong is bounded and VISIBLE, never silent: an overflow drops the
+ * oldest half, counts what had not reached the card in s_lost, and says so on the card.
+ * If a future run ever prints that marker, raise this -- do not raise it on a hunch. */
+#define LOG_CAP 2048
 /* Stop appending past this MANY BYTES OF THIS RUN. A stuck loop logging every frame
  * must not fill the user's card; one line in the file says why it stopped.
  *
@@ -247,9 +270,11 @@ static void ensure_parent_dir(const char* path) {
 
 /* Everything that needs FatFs' FIL, in a frame of its own.
  *
- * The split is not cosmetic: FIL carries a 512-byte sector buffer (~560 bytes) and
- * FILINFO carries an LFN name buffer (~290 bytes, FF_LFN_BUF=255), and this all lives on
- * the 12,624-byte IWRAM stack. Nesting the read-back inside this function would have put
+ * The split is not cosmetic: FIL carries a 512-byte sector buffer (600 bytes with
+ * FF_USE_FASTSEEK on) and FILINFO carries an LFN name buffer (~290 bytes, FF_LFN_BUF=255),
+ * and this all lives on the IWRAM stack -- 10,848 B between __data_end__ (0x030054A0) and
+ * __sp_usr (0x03007F00), measured on the artless ELF 2026-08-23, not the 12,624 this
+ * comment used to claim. Nesting the read-back inside this function would have put
  * both on the stack at once for every flush; keeping them in sibling frames leaves the
  * peak exactly where it was before the read-back existed. d95202f is what a careless
  * frame on that stack costs.
