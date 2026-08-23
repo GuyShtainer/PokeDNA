@@ -31,9 +31,12 @@
  * MEMORY. All state is EWRAM (.sbss), NOT IWRAM: this build has a documented,
  * reproducible boot crash at roughly 1,232 B of NEW IWRAM .bss (art_icons_cache.c:9,
  * art_fallbacks.c:53, pdna_romcheck.c:47), and telemetry is not worth going anywhere
- * near that cliff. The cost is ~190 B of EWRAM, measured against the Makefile's
- * post-link `EWRAM ok: N bytes free` guard -- see the commit message for the exact
- * before/after.
+ * near that cliff. The cost is 329 B of EWRAM -- measured, not estimated: sum the
+ * `[bB]` symbols of perf.o in `arm-none-eabi-nm -S PokeDNA-artless.elf` (perf_sd 28,
+ * perf_icons 32, s_span 72, s_rep 180, and 17 for the clock/flush/high-water scalars).
+ * The Makefile's post-link `EWRAM ok: N bytes free` guard reads 416 with all of it in,
+ * and `make artless PDNA_PERF=0` reads 736 -- which is the same 320 back, plus the
+ * always-compiled clock's 9. That guard must stay POSITIVE.
  *
  * PURE-C RULE (docs/kb/c-coding-guideline.md Sec 2). This HEADER is stdint-only, so
  * lib/fatfs/diskio.c (which pulls in sys.h's u8/u16/u32 MACROS) and any host-compiled
@@ -72,8 +75,10 @@ uint32_t perf_ms(uint32_t ticks);     /* ticks -> milliseconds                  
 uint32_t perf_us(uint32_t ticks);     /* ticks -> microseconds (exact: *15625 >> 8) */
 
 
-/* Set by the Makefile (-DPDNA_GIT_HASH=\"...\"); empty or absent is not an error --
- * a Docker build with no git, or a tarball, still builds and logs "git ?". */
+/* Set by the Makefile through the generated $(BUILD)/pdna_git.h, which perf.c includes
+ * BEFORE this header (it used to be a -D on CFLAGS, which make could not track -- see the
+ * Makefile's PDNA_GIT block). Empty or absent is not an error: a Docker build with no git,
+ * or a tarball, still builds and logs "git ?". */
 #ifndef PDNA_GIT_HASH
 #define PDNA_GIT_HASH ""
 #endif
@@ -107,14 +112,25 @@ extern PerfSd perf_sd;
 /* ---- the artless icon ladder's counters -----------------------------------------
  * One field per rung, so a span line says WHICH rung served and how expensively.
  * `null_ans` is the one nobody would think to count and the one that explains a hole
- * on screen: the ladder was asked for an icon and no rung could produce one. */
+ * on screen: the ladder was asked for an icon and no rung could produce one.
+ *
+ * mru_hit/mru_miss are the RETENTION ratio, and BOTH icon ladders feed them: the
+ * dex/party/day-care ladder's 3-slot (row, frame) MRU (art_fallbacks.c) and the PC
+ * box's per-slot pose cache (box_oam.c's s_cache_ok[], filled once per box load and
+ * then swapped VRAM<->EWRAM on every bob tick with zero I/O). The two are never on
+ * screen at the same time, they mean exactly the same thing -- "this frame came out
+ * of RAM instead of off the card" -- and a span line is always scoped to one screen,
+ * so one pair of counters reads correctly for either. */
 typedef struct {
-  uint32_t mru_hit;   /* art_fallbacks.c's 3-slot (row,frame) MRU: served from RAM  */
+  uint32_t mru_hit;   /* a RAM-cached frame served with no SD I/O at all           */
   uint32_t mru_miss;  /* ...had to go to a rung below                              */
   uint32_t bin;       /* 512 B frames read out of /PokeDNA/art/icons.bin           */
+  uint32_t bin_pal;   /* icons.bin palette FETCHES (box_oam's 3-per-box-enter loop;
+                       * only the first per session touches the card -- the metadata
+                       * tail is loaded lazily and then held in RAM)                */
   uint32_t rom_loc;   /* rom_mon locate calls (the 2-field table lookup, verified)  */
   uint32_t rom_frm;   /* rom_mon 512 B frame reads (2 per verified fill)           */
-  uint32_t rom_pal;   /* rom_mon palette reads (the 3-bank cache's fills)          */
+  uint32_t rom_pal;   /* rom_mon palette reads ONLY -- never the cache rung's      */
   uint32_t null_ans;  /* the ladder answered "no icon"                             */
 } PerfIcons;
 extern PerfIcons perf_icons;
@@ -149,16 +165,31 @@ extern PerfIcons perf_icons;
  * perf_span_begin("dex") ... perf_span_end() emits ONE line with everything that
  * happened in between:
  *
- *   perf dex: 412 ms, sd 105r/105s 0w, icons 3/21 mru, bin 21, rom 0/0/0, null 0
+ *   perf dex: 412 ms, sd 105r/105s/2m 0w/0s, icons 3/21 mru, bin 21/3, rom 0/0/0, null 0
  *
- * Stable shape, under ~110 chars, greppable and diffable across runs.
+ * `sd 105r/105s/2m` is calls / sectors / calls-that-carried-more-than-one-sector, and
+ * `bin 21/3` is icons.bin frames / icons.bin palettes. Stable shape, under ~110 chars,
+ * greppable and diffable across runs.
  *
  * SPANS DO NOT NEST, and misuse cannot be silently wrong: a perf_span_begin() while
  * another span is open CLOSES the open one first and tags its line ` !unclosed`, then
  * starts the new one. You always get the data and the marker names the bug. An
- * unmatched perf_span_end() is a no-op. */
+ * unmatched perf_span_end() is a no-op.
+ *
+ * NO SPAN MAY CONTAIN A CALL THAT BLOCKS ON USER INPUT. A span is a measurement of
+ * what the MACHINE did; the moment a confirm dialog or a file picker sits inside one,
+ * its milliseconds are the user's thinking time and its sector count is however much
+ * of the card he chose to browse -- and the same binary then reports a different
+ * number for the same work on every run. view_save()'s "boot" span is the case that
+ * proved it: the artless build's one-shot "ADD YOUR GAME ROM?" offer sits right in the
+ * middle of it. Where such a call cannot be moved out, bracket it with the pause/resume
+ * pair below, which subtracts the blocked interval's ms AND its counter deltas from the
+ * open span. Nested pauses are not supported (a second pause is a no-op); a span that
+ * ends while paused resumes itself first, so the numbers are always well-formed. */
 void perf_span_begin(const char* name);
 void perf_span_end(void);
+void perf_span_pause(void);
+void perf_span_resume(void);
 /* True while a span is open. Lets a screen that can be entered EITHER standing alone
  * OR inside a bigger span (the PC box, which is both its own screen and the last step
  * of a save open) avoid starting a second one. */
@@ -171,16 +202,25 @@ bool perf_span_active(void);
  * is a log that says nothing. Wrap each occurrence in perf_rep_begin/perf_rep_end and
  * call perf_rep_flush() when the screen is left; one line reports the lot:
  *
- *   perf dex.bob x37: tot 640 ms, worst 31 ms, sd 3885r/3885s
+ *   perf bob.dex x37: tot 640 ms, worst 31 ms, sd 3885r/3885s, icons 12/37 mru, null 0
  *
- * TWO slots, because a screen typically has two distinct repeating events (a page
- * step and an idle bob) live at once. Screens are modal, so the same two slots are
- * reused by each screen in turn -- the name travels with the slot, and a perf_rep_begin
- * with a DIFFERENT name auto-flushes what the slot was holding first. That is what
- * makes a forgotten perf_rep_flush() a late line rather than two screens' numbers
- * silently added together. A flush with nothing accumulated prints nothing. */
+ * The icon fields are not decoration: a bob rollup is the ONLY telemetry the bobs
+ * produce, and without them "the retention cache is holding every row" and "the ladder
+ * is returning nothing at all, so the grid is blank" emit byte-identical lines -- both
+ * read `sd 0r/0s`. `null` is what separates a working screen from an empty one, and
+ * `mru` is the only place mandate #3 (keep in RAM what is still needed) can be proven,
+ * because the hit rate lives in the REPEATING event, not in the one-shot enter span.
+ *
+ * THREE slots, because a screen can have three distinct repeating events live at once:
+ * a page step, an idle bob, and -- for the summary -- a per-record open that the user
+ * walks through by holding the D-pad. Screens are modal, so the same slots are reused
+ * by each screen in turn: the name travels with the slot, and a perf_rep_begin with a
+ * DIFFERENT name auto-flushes what the slot was holding first. That is what makes a
+ * forgotten perf_rep_flush() a late line rather than two screens' numbers silently
+ * added together. A flush with nothing accumulated prints nothing. */
 #define PERF_REP_PAGE 0    /* the per-page / per-repaint event                      */
 #define PERF_REP_BOB  1    /* the per-animation-tick event                          */
+#define PERF_REP_MON  2    /* the per-record event (a summary card opened)          */
 void perf_rep_begin(int slot, const char* name);
 void perf_rep_end(int slot);
 void perf_rep_flush(int slot);
@@ -188,6 +228,19 @@ void perf_rep_flush(int slot);
 /* ---- one-time boot facts --------------------------------------------------------
  * Cheap, and each answers a question we currently have to guess at. */
 void     perf_boot_line(void);              /* build id + git hash + free EWRAM      */
+
+/* The BATCHING high-water marks, absolute rather than per-span: how many sectors the
+ * biggest single read and the biggest single write actually carried. rd_max is the only
+ * thing that can show whether FatFs clipped a prefetch at the cluster boundary the `fs:`
+ * line reports (ff.c f_read: `if (csect + cc > fs->csize) cc = fs->csize - csect;`), and
+ * it is uninferable from the rd/rd_sect pair -- 61 reads carrying 124 sectors averages
+ * 2.03, which reads like "batching landed" but is equally one 64-sector prefetch plus 60
+ * untouched singles. Self-rate-limiting: with force=false this prints ONLY when a
+ * high-water mark actually moved, and since both marks are monotonic and bounded by the
+ * cluster size, that converges to silence within a screen or two of the first big
+ * transfer. force=true prints unconditionally (perf_sd_sample uses it, so that every log
+ * carries at least one totals line as a baseline). */
+void     perf_sd_totals(bool force);
 void     perf_fs_facts(const void* fatfs);  /* const FATFS*; ff.h stays out of here  */
 uint32_t perf_ewram_free(void);             /* bytes below 0x02040000, from the ELF  */
 
@@ -209,17 +262,21 @@ void perf_sd_sample(const char* const* paths, void* scratch, uint32_t scratch_by
 #define PERF_ICON(field) ((void)0)
 #define PERF_REP_PAGE 0
 #define PERF_REP_BOB  1
+#define PERF_REP_MON  2
 #define PERF_SD_SAMPLE_BIG 0u
 
 /* NOTE: perf_clock_start / perf_ticks / perf_ms / perf_us are NOT stubbed here --
  * they are declared above, outside this switch, and always compiled (perf.c). */
 static inline void     perf_span_begin(const char* n) { (void)n; }
 static inline void     perf_span_end(void) {}
+static inline void     perf_span_pause(void) {}
+static inline void     perf_span_resume(void) {}
 static inline bool     perf_span_active(void) { return false; }
 static inline void     perf_rep_begin(int s, const char* n) { (void)s; (void)n; }
 static inline void     perf_rep_end(int s) { (void)s; }
 static inline void     perf_rep_flush(int s) { (void)s; }
 static inline void     perf_boot_line(void) {}
+static inline void     perf_sd_totals(bool f) { (void)f; }
 static inline void     perf_fs_facts(const void* f) { (void)f; }
 static inline uint32_t perf_ewram_free(void) { return 0; }
 static inline void     perf_sd_sample(const char* const* p, void* s, uint32_t b) {

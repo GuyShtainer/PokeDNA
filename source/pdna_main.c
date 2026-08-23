@@ -207,13 +207,25 @@ static u16 wait_keys_bob_p(u16 mask, int kind, int* ctr, int* frame,
       /* THE tick the user feels: one idle bob flip. Rolled up, never logged per
        * occurrence -- at PARTY_BOB_PERIOD (8 frames) this fires ~7 times a second, and
        * a line each would burn log.c's per-run byte budget in under a minute. The
-       * owning screen calls perf_rep_flush(PERF_REP_BOB) when it is left. Every
-       * wait_keys_bob* caller passes through here -- the party overlay, the box, the
-       * summary -- so one site covers all of them. It does NOT cover the three bob
-       * loops that are written inline instead of going through this helper (the
-       * Pokedex grid's, party_list's and the day-care's); those are instrumented at
-       * their own loops, which is why "bob.dex"/"bob.party"/"bob.daycare" can reach
-       * the log from either shape. */
+       * owning screen calls perf_rep_flush(PERF_REP_BOB) when it is left.
+       *
+       * WHAT THIS SITE ACTUALLY COVERS, since the previous version of this comment
+       * claimed "the party overlay, the box, the summary" and grep says otherwise:
+       * app_party_overlay (ANIM_PARTY, below) is the ONLY kind >= 0 caller in the tree.
+       * wait_keys_bob() has no other callers and wait_keys() passes kind = -1, which
+       * disables the bob entirely. Every other bob is an inline `do { vsync(); ... }`
+       * loop that never reaches this helper and carries its own rollup at its own site:
+       * the PC box's (pdna_box.c -> "bob.box"), party_list's ("bob.party", same name as
+       * the overlay's -- the two are never on screen together and cost the same six
+       * icons), the day-care yard's ("bob.daycare") and the Pokedex grid's
+       * (pdna_pick.c -> "bob.dex"). The summary's portrait wiggle (pdna_summary.c) is
+       * deliberately NOT instrumented: its sprite pointer is hoisted out of the loop, so
+       * the wiggle is pure CPU on a RAM buffer and there is nothing for an SD or icon
+       * counter to say about it -- no "bob.summary" line exists, or should be looked for.
+       *
+       * The table stays ANIM_COUNT wide so the index below is safe by construction; the
+       * four entries other than ANIM_PARTY are unreachable from HERE today and exist so
+       * that a future kind >= 0 caller is named rather than logged as "bob.?". */
       static const char* const k_bobname[ANIM_COUNT] = {
         "bob.box", "bob.party", "bob.dex", "bob.daycare", "bob.summary" };
       perf_rep_begin(PERF_REP_BOB,
@@ -1676,6 +1688,61 @@ static bool iconrom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len)
 }
 #endif
 
+/* WHICH RUNG IS ACTUALLY SERVING THIS SESSION -- the single most useful line in an
+ * artless log, and until it existed it had to be inferred from three other lines. The
+ * three verdicts are mutually exclusive and in ladder order: the icons.bin cache, else
+ * the user's open ROM, else nothing (text-only layouts, and every mon_icon_for* returns
+ * NULL). `rc_ok` is the RomCtx art.idx was cross-checked against, or NULL when no ROM is
+ * open this session -- in which case the cache is trusted on its own validity alone
+ * (art_session.h), which is a materially weaker guarantee and worth saying out loud. The
+ * reason string comes from art_session_why(): before it existed, the two commonest
+ * causes -- no cache on the card at all, and this kind never extracted -- produced no
+ * line whatsoever.
+ *
+ * HOISTED OUT of app_icon_cache_resolve so that EVERY app_icon_rom_open() exit emits it.
+ * Two paths do not run the resolver at all: the fused and SD-registered Ruby/Sapphire
+ * "card/pokeblock chrome only" returns, which bail the moment rom_mon_open() refuses an
+ * R/S image (no GF header). Guy's corpus has Ruby and Sapphire dumps, so an R/S session
+ * used to produce a log with NONE of these lines in it -- no way to tell whether
+ * icons.bin was serving, whether art.idx cross-checked, or why not, i.e. a re-run
+ * request, which is exactly what these lines exist to prevent.
+ *
+ * `resolved` is false on those two paths and the line says so, because what it reports
+ * there is the MEMOIZED verdict from an earlier save open (or "never checked" on a fresh
+ * boot) rather than a fresh one. That is deliberately the EFFECTIVE state -- the same
+ * memo art_fallbacks.c's rung reads, and the same boxoam icon-cache path the box will
+ * actually use -- not a recomputed answer nobody consults. */
+static void icon_rung_log(const RomCtx* rc_ok, bool resolved) {
+  bool ready = art_session_icons_ready_memoized();
+  log_line("icons rung: %s (rom %s, art.idx %s)",
+           ready ? "cache" : s_iconrom.ok ? "rom" : "none",
+           s_iconrom.ok ? "open" : "none",
+           !resolved      ? "carried over (R/S: no resolve)"
+           : rc_ok        ? "cross-checked"
+                          : "not cross-checked");
+  if (!ready) log_line("icons: no cache - %s", resolved ? art_session_why() : "not resolved this open");
+#ifndef PDNA_DELTA
+  else {
+    FILINFO fi;
+    if (f_stat(art_session_icons_path(), &fi) == FR_OK)
+      log_line("icons.bin: %s %lu B", art_session_icons_path(), (unsigned long)fi.fsize);
+  }
+#endif
+  /* An ABSENT `bob.*` rollup has three indistinguishable causes, and only one of them is
+   * a bug: (a) the user turned that screen's animation off in Settings months ago,
+   * (b) mon_icon_anim_cheap() returned false because the ROM rung is serving -- the
+   * documented n>=2 gate, and the reason Guy separately reported "the pokedex sprites are
+   * stationary", or (c) he never opened that screen this run. g_anim_mask only ever
+   * reached config.cfg and mon_icon_anim_cheap()'s verdict was written nowhere, so
+   * distinguishing them meant asking him to go read his own settings menu and re-run.
+   * Logged HERE because this is where the rung is decided, and the verdict is a function
+   * of the rung: art_session's memo is set by the resolver just above, and s_rommon by
+   * art_fallbacks_set_rommon earlier in app_icon_rom_open. Bit order is the ANIM_* enum
+   * (pdna_app.h): box, party, dex, daycare, summary. */
+  log_line("anim: mask 0x%02x, cheap %s", g_anim_mask,
+           mon_icon_anim_cheap() ? "yes" : "no");
+}
+
 /* Open the best available icon source and register it with the box:
  * 1) a ROM fused into this image (emulator or a fused NOR build);
  * 2) the registered SD .gba for the loaded save's game, then any other game's —
@@ -1689,7 +1756,16 @@ static bool iconrom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len)
  * point of caching (DESIGN.md Sec 4.1) is that a valid cache lights the box AND the
  * Pokedex grid up even with NO ROM registered this session -- "the card outlives the
  * registration". `rc_ok` is the RomCtx to cross-check against, or NULL if none is
- * open (art_session_kind_ready then trusts the cache on its own validity alone). */
+ * open (art_session_kind_ready then trusts the cache on its own validity alone).
+ *
+ * "REGARDLESS" IS NOT QUITE TRUE, and the exception is worth naming rather than leaving
+ * for the next reader to discover: app_icon_rom_open's two Ruby/Sapphire "card/pokeblock
+ * chrome only" returns bail before reaching here, so on an R/S session the resolver does
+ * not run, the memo and boxoam's cache path are whatever a previous save open left, and
+ * icon_frame_cache_invalidate() is not called. Those paths now at least LOG the effective
+ * state (icon_rung_log above, `resolved = false`). Making them actually resolve is a
+ * behaviour change to the icon ladder, not a logging fix, and is deliberately not made
+ * here -- see the report accompanying this commit. */
 /* deep=true re-hashes icons.bin's full ~451 KB against art.idx's stored FNV; deep=
  * false trusts its size alone (see art_session.c's verify_kind_file for the accepted
  * trade-off). Boot/registration (app_icon_rom_open, reached before the first screen
@@ -1708,27 +1784,7 @@ static void app_icon_cache_resolve(const RomCtx* rc_ok, bool deep) {
   } else {
     boxoam_set_icon_cache(0);
   }
-  /* WHICH RUNG IS ACTUALLY SERVING THIS SESSION -- the single most useful line in an
-   * artless log, and until now it had to be inferred from three other lines. The three
-   * are mutually exclusive and in ladder order: the icons.bin cache, else the user's
-   * open ROM, else nothing (text-only layouts, and every mon_icon_for* returns NULL).
-   * `rc_ok` is the RomCtx art.idx was cross-checked against, or NULL when no ROM is
-   * open this session -- in which case the cache is trusted on its own validity alone
-   * (art_session.h), which is a materially weaker guarantee and worth saying out loud.
-   * The reason string comes from art_session_why(): before it existed, the two
-   * commonest causes -- no cache on the card at all, and this kind never extracted --
-   * produced no line whatsoever. */
-  log_line("icons rung: %s (rom %s, art.idx %s)",
-           ready ? "cache" : s_iconrom.ok ? "rom" : "none",
-           s_iconrom.ok ? "open" : "none", rc_ok ? "cross-checked" : "not cross-checked");
-  if (!ready) log_line("icons: no cache - %s", art_session_why());
-#ifndef PDNA_DELTA
-  else {
-    FILINFO fi;
-    if (f_stat(art_session_icons_path(), &fi) == FR_OK)
-      log_line("icons.bin: %s %lu B", art_session_icons_path(), (unsigned long)fi.fsize);
-  }
-#endif
+  icon_rung_log(rc_ok, true);
 }
 
 static void app_icon_rom_open(void) {
@@ -1798,6 +1854,7 @@ static void app_icon_rom_open(void) {
     if (rom_chrome_card_have(&s_romchrome, PK_RS) || rom_chrome_pokeblock_have(&s_romchrome, PK_EMERALD)) {
       log_line("icons: fused %s has no GF header (R/S) - card/pokeblock chrome only",
                rom_kind_name(s_iconrom_ctx.kind));
+      icon_rung_log(&s_iconrom_ctx, false);   /* no resolver on this path -- see icon_rung_log */
       return;
     }
     log_line("icons: fused %s has no GF header (R/S) - trying SD", rom_kind_name(s_iconrom_ctx.kind));
@@ -1844,6 +1901,7 @@ static void app_icon_rom_open(void) {
          * next candidate, which would silently discard it. */
         log_line("icons: SD %s (%s) has no GF header - card/pokeblock chrome only",
                  path, rom_kind_name(s_iconrom_ctx.kind));
+        icon_rung_log(&s_iconrom_ctx, false); /* no resolver on this path -- see icon_rung_log */
         return;
       }
     }
@@ -3323,8 +3381,12 @@ static int party_list(void) {
 
     if      (k & KEY_UP)   { if (sel > 0) sel--; }
     else if (k & KEY_DOWN) { if (sel < g_nparty - 1) sel++; }
-    else if (k & KEY_B)    return 0;
-    else if (k & KEY_START) return 2;
+    /* Both exits flush the bob rollup: this screen owns PERF_REP_BOB while it is up and
+     * has no boxoam_exit() of its own to funnel through, so without these the line only
+     * escaped later, from whatever screen next reused the slot -- where it reads as
+     * belonging to THAT screen -- or not at all if the user powered off from here. */
+    else if (k & KEY_B)    { perf_rep_flush(PERF_REP_BOB); return 0; }
+    else if (k & KEY_START) { perf_rep_flush(PERF_REP_BOB); return 2; }
     else if ((k & KEY_A) && g_nparty > 0) {
       uint16_t doff = g_frlg ? 0x0038 : 0x0238;
       uint8_t* rec = g_sb1 + doff + (uint32_t)sel * 100;     /* party lives in SaveBlock1 (ids 1..4) */
@@ -4636,7 +4698,10 @@ static void pdna_daycare(void) {
     if      (fresh & KEY_B) snd_back();
     else if (fresh & KEY_A) snd_ok();
     else if (fresh & (KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R)) snd_move();
-    if (k & KEY_B) break;
+    /* The widest bob in the app (up to 7 icons per flip) and the exact shape of "it gets
+     * worse the more Pokemon are moving" -- so its rollup must not depend on some later
+     * screen happening to reuse the slot. Flushed at the one exit this screen has. */
+    if (k & KEY_B) { perf_rep_flush(PERF_REP_BOB); break; }
     else if ((k & (KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R)) && n == 2) { sel ^= 1; redraw = true; }
     else if (k & KEY_A) {
       if (n == 0) {                              /* empty day-care: A = put a copied mon in */
@@ -4644,7 +4709,7 @@ static void pdna_daycare(void) {
       } else {
         bool can_put = app_can_edit() && g_clip.occupied && n < 2;
         int a = dc_menu(app_can_edit(), can_put);
-        if (a == 1)      { if (dc_withdraw(base, stride, recs[sel], phys[sel])) { if (g_pickup_slot >= 0) return; rescan = true; } else redraw = true; }   /* withdraw->PC sets a pickup: close so the box carries it */
+        if (a == 1)      { if (dc_withdraw(base, stride, recs[sel], phys[sel])) { if (g_pickup_slot >= 0) { perf_rep_flush(PERF_REP_BOB); return; } rescan = true; } else redraw = true; }   /* withdraw->PC sets a pickup: close so the box carries it */
         else if (a == 2) { if (dc_deposit(base, stride)) rescan = true; else redraw = true; }
         else if (a == 0) {
           /* Editable summary, exactly like the box/party: a kept edit is written back into
@@ -6155,8 +6220,21 @@ static void view_save(const char* path) {
        * diagonal through the dialog every 8th frame. Pause it while the screen
        * belongs to the user; step 10's load_phase_n repaints the cell after. */
       hb_pause();
+      /* ...and pause the SPAN for the same stretch, for a different reason. This block
+       * blocks on the user: a confirm he may take ten seconds to answer, and behind it a
+       * file picker that browses his card for a 12.5 MB .gba (hundreds of directory
+       * reads). It sits INSIDE the "boot" span opened at the top of view_save, which is
+       * the headline artless-vs-full-art number -- and it can only ever fire in the
+       * ARTLESS build (boxoam_icons_available() is true whenever compiled icons exist),
+       * on exactly the state Guy's last three logs report. Left un-paused, `perf boot:`
+       * would carry his thinking time and his browsing, the comparison would read as
+       * "artless save-open is 26x slower and does 8x the I/O", and the same binary would
+       * report a different number for the same work on every run. perf.h states the rule
+       * this is an instance of: no span may contain a call that blocks on user input. */
+      perf_span_pause();
       if (app_confirm("ADD YOUR GAME ROM?", "Unlocks the real art. B = later"))
         app_register_rom();
+      perf_span_resume();
       hb_resume();
     } }
 #endif

@@ -11,7 +11,7 @@
 #include <string.h>
 
 #include "pdna_summary.h"
-#include "perf.h"        /* summary-open span (telemetry) */
+#include "perf.h"        /* the summary-open rollup (telemetry) */
 #include "pdna_app.h"     /* app_anim_enabled (portrait animation) */
 #include "ui.h"
 #include "gen3_mon.h"
@@ -844,7 +844,22 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
   em_preview(&e, &cur); pk_resolve(&cur);
   ivh_reset(&g_ivh, &e); g_have_roll = false;   /* the history belongs to THIS Pokemon */
 
-  perf_span_begin("summary");   /* open cost: the card render + one portrait fetch */
+  /* A ROLLUP, NOT A SPAN -- and the one screen in the app where that distinction is
+   * load-bearing. Every other span is opened by a deliberate screen transition; this one
+   * is driven by HELD INPUT. app_box_browse/party_browse (pdna_main.c) re-invoke
+   * pdna_inspect per mon, and the +/-1 nav below fires on key_repeat, so holding DOWN
+   * walks mon -> mon at repeat rate. One ~80 B span line per step against log.c's 192 KiB
+   * per-run budget (LOG_RUN_MAX) is ~2,400 steps to the ceiling -- and that ceiling does
+   * not drop the oldest half the way the 8 KiB ring does, it LATCHES: commit_bytes writes
+   * "[log size cap reached - logging stopped]", sets s_capped, and every later flush
+   * returns -2 forever, so the whole run's evidence after that instant -- later spans,
+   * every rollup, any hang breadcrumb -- is gone. Rolled up, a whole hold-DOWN sweep is
+   * ONE line that also reports the worst step, which is strictly more useful anyway.
+   * Its own slot, not PERF_REP_PAGE: the box owns that slot ("box.load") while the
+   * summary is up, and a differently-named begin would flush the box's rollup mid-visit.
+   * Flushed at every return-0 exit below; a +/-1 nav return deliberately does NOT flush,
+   * which is what makes the sweep accumulate into one line. */
+  perf_rep_begin(PERF_REP_MON, "summary.open");
   bool perf_first_paint = true;
   int card = (card_io && *card_io >= 0 && *card_io < NCARDS) ? *card_io : 0;
   int fsel = 0;
@@ -915,7 +930,7 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
     /* The card and the portrait are on screen; everything past here is the idle
      * portrait wiggle (pure CPU -- the sprite fetch is hoisted above on purpose) and
      * input. That is where "open the summary" ends. */
-    if (perf_first_paint) { perf_first_paint = false; perf_span_end(); }
+    if (perf_first_paint) { perf_first_paint = false; perf_rep_end(PERF_REP_MON); }
     u16 k, fresh;
     do { s_vsync();
          if (SUMMARY_ANIM && app_anim_enabled(ANIM_SUMMARY) && !cur.isEgg) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
@@ -945,6 +960,7 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
         key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
         if (card_io) *card_io = card;
         g_create = 0;
+        perf_rep_flush(PERF_REP_MON);
         return 0;
       }
       continue;                                    /* B in the prompt = carry on editing */
@@ -989,6 +1005,7 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
           key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
           if (card_io) *card_io = card;
           g_create = 0;
+          perf_rep_flush(PERF_REP_MON);
           return 0;                                  /* discarded -> *saved stays false */
         }
       }
@@ -996,7 +1013,10 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
         if (dirty && confirm()) { gen3_edit_commit(&e, out_rec); if (saved) *saved = true; }
         key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
         if (card_io) *card_io = card;                /* keep the card sticky across mon-scroll */
-        if (k & KEY_B) return 0;
+        /* B ends the visit -> emit. UP/DOWN is a nav step: the caller re-enters this
+         * function immediately, so the rollup stays open and the whole sweep lands as
+         * one line when the user finally backs out. */
+        if (k & KEY_B) { perf_rep_flush(PERF_REP_MON); return 0; }
         return (k & KEY_DOWN) ? +1 : -1;
       }
     }

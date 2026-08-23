@@ -23,7 +23,7 @@
 #include "box_oam.h"        /* hardware-OAM icon/cursor/carry/marker rendering */
 #include "pdna_origin_art.h" /* THE BANK IN PARALLEL: each cell in the art of its own era */
 #include "pdna_summary.h"
-#include "perf.h"        /* screen-enter spans + the box-load rollup (telemetry) */
+#include "perf.h"        /* screen-enter spans + the box-load/bob rollups (telemetry) */
 #include "pdna_app.h"
 #include "snd.h"
 #include "osk.h"
@@ -2772,6 +2772,14 @@ int pdna_box(BoxSource* src) {
          if (app_anim_enabled(ANIM_BOX) && !s_holding && !s_ch_hold && s_cur_mode != CM_ITEM) {
            if (++anim_ctr >= ANIM_PERIOD) {
              anim_ctr = 0; bob ^= 1;
+             /* The box's own bob tick, rolled up under "bob.box". This loop never goes
+              * through pdna_main.c's wait_keys_bob_p helper (whose comment used to claim
+              * it covered the box), so it needs its own bracket -- and it is the widest
+              * ICON bob that can carry real per-tick SD I/O: up to 30 occupied slots,
+              * each one a pose_swap_rom_slot() fetch on the artless build's ROM rung.
+              * boxoam_exit() already flushes PERF_REP_BOB on all ~9 of this screen's
+              * exit paths, so nothing else is needed to make the line land. */
+             perf_rep_begin(PERF_REP_BOB, "bob.box");
              boxoam_hand_pose(bob ? BOXOAM_POSE_BOUNCE : BOXOAM_POSE_NORMAL);
              /* The REAL animation first: a 2-frame pose swap, which is what Gen 3
               * actually does and what "animated" means. It only fails whole-box on a
@@ -2785,6 +2793,7 @@ int pdna_box(BoxSource* src) {
               * this one. */
              if (!boxoam_set_frame(bob)) boxoam_set_bob(bob);
              boxoam_cursor(cur, cursor_title_row(on_title), cursor_look());
+             perf_rep_end(PERF_REP_BOB);
            }
          } else if (bob) { bob = 0; boxoam_hand_pose(BOXOAM_POSE_NORMAL);
                            if (!boxoam_set_frame(0)) boxoam_set_bob(0);   /* settle the grid */

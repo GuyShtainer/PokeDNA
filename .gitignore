@@ -1,5 +1,9 @@
 # --- build artifacts ---
-build/
+# build*/ (not build/): every variant gets its OWN object directory -- build-artless,
+# build-delta, build-sd, build-artless-noperf ... Those used to stay invisible only because
+# every file inside them happened to match *.o/*.d below; the Makefile now also generates
+# build*/pdna_git.h (the build stamp), which does not. The trailing slash keeps build.sh out.
+build*/
 *.elf
 *.gba
 *.map

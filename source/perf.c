@@ -5,8 +5,21 @@
  * MACROS. perf.h itself is stdint-only and safe in either order. */
 #include <tonc.h>
 
+/* THE BUILD STAMP. Written by the Makefile into $(BUILD)/pdna_git.h on every build and
+ * rewritten only when its CONTENT changes, which is what makes perf.o's dependency on it
+ * real -- a -DPDNA_GIT_HASH on CFLAGS was not tracked by make and went stale on any
+ * incremental build (the Makefile's PDNA_GIT block has the whole story). It must come
+ * BEFORE perf.h, which supplies the "" fallback that makes the log say "git ?".
+ * __has_include so a hand-rolled compile of this file outside the Makefile still builds. */
+#if defined(__has_include)
+#  if __has_include("pdna_git.h")
+#    include "pdna_git.h"
+#  endif
+#endif
+
 #include "perf.h"
 
+#include <stddef.h>  /* offsetof -- span_flip walks PerfSd's uint32 prefix only */
 #include <stdio.h>   /* snprintf -- never sprintf (c-coding-guideline Sec 0.13) */
 #include <string.h>
 
@@ -91,12 +104,15 @@ PerfIcons PERF_EWRAM perf_icons;
  * behind every screen the user opens, which is the same "SD I/O on a UI event" trap
  * this whole effort exists to remove.
  *
- * The balance chosen: span lines flush at most once every PERF_FLUSH_GAP_MS. So the
- * most a freeze can cost is the span lines of the last 1.5 seconds, which is at most
- * a handful of lines still sitting in log.c's 8 KiB ring. Boot facts and rollup lines
- * flush UNCONDITIONALLY -- boot facts because a run that dies before the first screen
- * must still leave its build id and card geometry behind, rollups because they fire
- * once per screen EXIT and are therefore rare by construction. */
+ * The balance chosen: span AND rollup lines flush at most once every PERF_FLUSH_GAP_MS.
+ * So the most a freeze can cost is the lines of the last 1.5 seconds, which is at most a
+ * handful still sitting in log.c's 8 KiB ring. Only the BOOT FACTS and the throughput
+ * sample flush unconditionally, because a run that dies before the first screen must
+ * still leave its build id and card geometry behind.
+ *
+ * Rollups used to be in that unconditional set, on the reasoning that they "fire once
+ * per screen EXIT and are therefore rare by construction". That was false for the screen
+ * that matters most -- see perf_rep_flush. */
 #define PERF_FLUSH_GAP_MS 1500u
 static uint32_t PERF_EWRAM s_last_flush;   /* tick stamp, 0 = never flushed yet */
 
@@ -122,6 +138,7 @@ typedef struct {
   PerfIcons   ic0;
   uint8_t     active;
   uint8_t     unclosed;   /* this span was force-closed by a nested begin */
+  uint8_t     paused;     /* the baselines below currently hold DELTAS, not baselines */
 } PerfSpan;
 static PerfSpan PERF_EWRAM s_span;
 
@@ -138,29 +155,74 @@ void perf_span_begin(const char* name) {
   s_span.ic0      = perf_icons;
   s_span.active   = 1;
   s_span.unclosed = 0;
+  s_span.paused   = 0;
 }
 
 bool perf_span_active(void) { return s_span.active != 0; }
 
+/* PAUSE AND RESUME ARE THE SAME OPERATION, applied to every stored field:
+ *
+ *     x = current - x
+ *
+ * Each field holds either a BASELINE (the counter's value when the span opened) or the
+ * ELAPSED delta so far, and that one line is the involution between the two. Pausing
+ * turns baselines into deltas; resuming turns those deltas back into baselines shifted
+ * forward by exactly the paused interval, so the blocked stretch is subtracted from the
+ * span's ms AND from every one of its counters. No snapshot storage at all, which is
+ * the point: this build links with 416 bytes of EWRAM to spare (the Makefile's post-link
+ * guard), and a second PerfSd+PerfIcons pair would be 60 of them for a two-call feature. */
+static void span_flip(void) {
+  s_span.t0 = perf_ticks() - s_span.t0;
+  uint32_t* d = (uint32_t*)&s_span.sd0;
+  const uint32_t* c = (const uint32_t*)&perf_sd;
+  /* The two uint16 tails (rd_max/wr_max) are HIGH-WATER MARKS, not counters: there is
+   * no meaningful "delta" for a maximum, and the span line does not print them. Walk
+   * the uint32 prefix only, and let the compiler's own sizeof do the counting so a
+   * field added to PerfSd cannot silently fall out of this loop. */
+  for (unsigned i = 0; i < offsetof(PerfSd, rd_max) / sizeof(uint32_t); i++)
+    d[i] = c[i] - d[i];
+  d = (uint32_t*)&s_span.ic0;
+  c = (const uint32_t*)&perf_icons;
+  for (unsigned i = 0; i < sizeof(PerfIcons) / sizeof(uint32_t); i++)
+    d[i] = c[i] - d[i];
+}
+
+void perf_span_pause(void) {
+  if (!s_span.active || s_span.paused) return;   /* nested pause: a no-op, by contract */
+  s_span.paused = 1;
+  span_flip();
+}
+
+void perf_span_resume(void) {
+  if (!s_span.active || !s_span.paused) return;  /* unmatched resume: a no-op */
+  s_span.paused = 0;
+  span_flip();
+}
+
 void perf_span_end(void) {
   if (!s_span.active) return;                    /* unmatched end: a no-op, by contract */
+  perf_span_resume();                            /* ending while paused: close the gap first */
   s_span.active = 0;
   uint32_t ms = perf_ms(perf_ticks() - s_span.t0);
-  log_line("perf %s: %lu ms, sd %lur/%lus %luw, icons %lu/%lu mru, bin %lu, "
-           "rom %lu/%lu/%lu, null %lu%s",
+  log_line("perf %s: %lu ms, sd %lur/%lus/%lum %luw/%lus, icons %lu/%lu mru, "
+           "bin %lu/%lu, rom %lu/%lu/%lu, null %lu%s",
            s_span.name, (unsigned long)ms,
-           (unsigned long)(perf_sd.rd      - s_span.sd0.rd),
-           (unsigned long)(perf_sd.rd_sect - s_span.sd0.rd_sect),
-           (unsigned long)(perf_sd.wr      - s_span.sd0.wr),
+           (unsigned long)(perf_sd.rd       - s_span.sd0.rd),
+           (unsigned long)(perf_sd.rd_sect  - s_span.sd0.rd_sect),
+           (unsigned long)(perf_sd.rd_multi - s_span.sd0.rd_multi),
+           (unsigned long)(perf_sd.wr       - s_span.sd0.wr),
+           (unsigned long)(perf_sd.wr_sect  - s_span.sd0.wr_sect),
            (unsigned long)(perf_icons.mru_hit  - s_span.ic0.mru_hit),
            (unsigned long)(perf_icons.mru_miss - s_span.ic0.mru_miss),
            (unsigned long)(perf_icons.bin      - s_span.ic0.bin),
+           (unsigned long)(perf_icons.bin_pal  - s_span.ic0.bin_pal),
            (unsigned long)(perf_icons.rom_loc  - s_span.ic0.rom_loc),
            (unsigned long)(perf_icons.rom_frm  - s_span.ic0.rom_frm),
            (unsigned long)(perf_icons.rom_pal  - s_span.ic0.rom_pal),
            (unsigned long)(perf_icons.null_ans - s_span.ic0.null_ans),
            s_span.unclosed ? " !unclosed" : "");
   s_span.unclosed = 0;
+  perf_sd_totals(false);      /* prints only if a batching high-water mark moved */
   flush_rate_limited();
 }
 
@@ -168,12 +230,14 @@ void perf_span_end(void) {
 
 typedef struct {
   const char* name;
-  uint32_t    t0, rd0, sect0;    /* snapshot taken at perf_rep_begin */
+  uint32_t    t0, rd0, sect0;                  /* snapshot taken at perf_rep_begin */
+  uint32_t    hit0, miss0, null0;              /* ...and the icon ladder's, likewise */
   uint32_t    total_ms, sum_rd, sum_sect;
+  uint32_t    sum_hit, sum_miss, sum_null;
   uint16_t    count, worst_ms;
   uint8_t     running;
 } PerfRep;
-#define PERF_REP_SLOTS 2
+#define PERF_REP_SLOTS 3
 static PerfRep PERF_EWRAM s_rep[PERF_REP_SLOTS];
 
 void perf_rep_begin(int slot, const char* name) {
@@ -189,6 +253,9 @@ void perf_rep_begin(int slot, const char* name) {
   r->t0    = perf_ticks();
   r->rd0   = perf_sd.rd;
   r->sect0 = perf_sd.rd_sect;
+  r->hit0  = perf_icons.mru_hit;
+  r->miss0 = perf_icons.mru_miss;
+  r->null0 = perf_icons.null_ans;
   r->running = 1;
 }
 
@@ -206,19 +273,50 @@ void perf_rep_end(int slot) {
   r->total_ms += ms;
   r->sum_rd   += perf_sd.rd      - r->rd0;
   r->sum_sect += perf_sd.rd_sect - r->sect0;
+  r->sum_hit  += perf_icons.mru_hit  - r->hit0;
+  r->sum_miss += perf_icons.mru_miss - r->miss0;
+  r->sum_null += perf_icons.null_ans - r->null0;
 }
 
 void perf_rep_flush(int slot) {
   if ((unsigned)slot >= PERF_REP_SLOTS) return;
   PerfRep* r = &s_rep[slot];
   if (r->count) {
-    log_line("perf %s x%u: tot %lu ms, worst %u ms, sd %lur/%lus",
+    log_line("perf %s x%u: tot %lu ms, worst %u ms, sd %lur/%lus, icons %lu/%lu mru, null %lu",
              r->name, (unsigned)r->count, (unsigned long)r->total_ms,
              (unsigned)r->worst_ms, (unsigned long)r->sum_rd,
-             (unsigned long)r->sum_sect);
-    flush_now();                                  /* once per screen exit: rare */
+             (unsigned long)r->sum_sect, (unsigned long)r->sum_hit,
+             (unsigned long)r->sum_miss, (unsigned long)r->sum_null);
+    perf_sd_totals(false);
+    /* RATE-LIMITED, not unconditional. "Once per screen EXIT and therefore rare" was
+     * wrong about the screen that matters most: boxoam_exit() calls this on all ~9 of
+     * pdna_box's exit paths, so START (the box's own menu key), B, and every PC<->Bank
+     * crossing used to put an f_open + append + f_close on /PokeDNA/log.txt behind the
+     * most-used navigation keys in the app -- on a change whose sibling goal is to make
+     * this build FASTER, and with those writes counted into perf_sd.wr, so the
+     * instrument inflated its own next span. Nothing is lost by waiting: the line is
+     * already in log.c's 8 KiB ring, and the very next screen's span flushes it. The
+     * only case that loses a rollup is a power-off inside the 1.5 s window. */
+    flush_rate_limited();
   }
   memset(r, 0, sizeof *r);
+}
+
+/* ---- the batching high-water marks ------------------------------------------------ */
+
+/* Last values printed, so the unforced call can stay silent until something moves.
+ * Both marks are monotonic and bounded by the cluster size, so this converges. */
+static uint16_t PERF_EWRAM s_rdmax_said, s_wrmax_said;
+
+void perf_sd_totals(bool force) {
+  if (!force && perf_sd.rd_max <= s_rdmax_said && perf_sd.wr_max <= s_wrmax_said) return;
+  s_rdmax_said = perf_sd.rd_max;
+  s_wrmax_said = perf_sd.wr_max;
+  log_line("sd totals: %lur/%lus/%lum max %u sect, %luw/%lus/%lum max %u sect",
+           (unsigned long)perf_sd.rd, (unsigned long)perf_sd.rd_sect,
+           (unsigned long)perf_sd.rd_multi, (unsigned)perf_sd.rd_max,
+           (unsigned long)perf_sd.wr, (unsigned long)perf_sd.wr_sect,
+           (unsigned long)perf_sd.wr_multi, (unsigned)perf_sd.wr_max);
 }
 
 /* ---- boot facts ------------------------------------------------------------------ */
@@ -385,9 +483,10 @@ void perf_sd_sample(const char* const* paths, void* scratch, uint32_t scratch_by
   uint8_t* buf = (uint8_t*)(((uintptr_t)scratch + 3u) & ~(uintptr_t)3u);
   for (int i = 0; paths[i]; i++) {
     if (!paths[i][0]) continue;
-    if (sample_one(paths[i], buf)) { flush_now(); return; }
+    if (sample_one(paths[i], buf)) { perf_sd_totals(true); flush_now(); return; }
   }
   log_line("sd: no file big enough to sample (no rom registered, no icons.bin)");
+  perf_sd_totals(true);      /* a baseline totals line in EVERY log, sample or not */
   flush_now();
 }
 

@@ -481,6 +481,14 @@ static const uint8_t* icon_tiles(uint16_t species, uint8_t form, uint8_t frame,
   if (frame < 2 && rom_icon_read_verified(species, form, egg, frame, bank)) {
     *from_rom = 1; *cheap = s_rom_cheap; return (const uint8_t*)s_stage;
   }
+  /* THE hole on screen. Counted here, at the ladder's single terminal failure, rather
+   * than inside cache_icon_read/rom_icon_read_verified: a cache miss that the ROM rung
+   * then serves is not a failure, and counting it in the rung would make `null` read as
+   * "12 icons failed" on a box where all 12 came through one rung down. The empty-slot
+   * early return above deliberately does NOT count -- an empty PC cell was never asked
+   * for an icon, and conflating the two is precisely what made a box holding 18 mons in
+   * 30 slots indistinguishable from a box of 30 where 12 icons failed to read. */
+  PERF_ICON(null_ans);
   return 0;
 }
 
@@ -829,7 +837,12 @@ void boxoam_enter(void) {
         rumble_io_suspend();
         for (int pnum = 0; pnum < (int)ART_ICONS_PALS; pnum++) {
           uint16_t pd[16];
-          PERF_ICON(rom_pal);                    /* counted for both rungs: a palette fill */
+          /* bin_pal, NOT rom_pal: this is the icons.bin metadata tail, and a session
+           * with no ROM open at all used to log `icons rung: cache (rom none, ...)`
+           * followed by a span reading `rom 0/0/3` -- three ROM palette reads in a
+           * session the same log says has no ROM. A counter that fires on the wrong
+           * rung is a defect in the instrument, not a rounding error. */
+          PERF_ICON(bin_pal);
           if (art_icons_meta_pal_at(s_iconcache_path, pnum, pd))
             for (int i = 0; i < 16; i++) pal_obj_mem[pnum * 16 + i] = pd[i];
         }
@@ -1149,7 +1162,20 @@ static void pose_swap_rom_slot(int s, uint8_t frame) {
   if (!s_occupied[s] || s_isegg[s] || s_covered[s] || !s_pose_ok[s]) return;
   const uint8_t* t; int b;
   if (mon_icon_oam_for_form_frame(s_species[s], s_form[s], frame, &t, &b)) return; /* compiled: already done */
-  if (s_cache_ok[s]) { swap_cache_slot(s); return; }
+  /* The box's retention ratio, and the same question art_fallbacks.c's 3-slot MRU
+   * answers for the dex: did this bob tick come out of RAM, or off the card? The cache
+   * branch is a pure VRAM<->EWRAM exchange (zero I/O); everything below it is a real
+   * fetch. Without this pair a box span had a numerator (bin/rom reads) and no
+   * denominator, so "the retention work landed" could not be told from "this box has
+   * nothing to retain".
+   *
+   * EXPECT `icons 0/N mru` FROM A SHIPPING BUILD, and that is the correct reading, not
+   * a broken counter: s_swapcache is NULL unless PDNA_POSE_EXPERIMENT==1 (see
+   * boxoam_enter's DISABLED-PENDING-A-HARDWARE-A/B note), so finish_slot_pose never
+   * fills a slot and s_cache_ok[] is never set. Every box bob tick is a real fetch
+   * today. That zero is the BEFORE number the retention mandate is measured against. */
+  if (s_cache_ok[s]) { PERF_ICON(mru_hit); swap_cache_slot(s); return; }
+  PERF_ICON(mru_miss);
 #if PDNA_POSE_EXPERIMENT == 2
   if (s == 0 && s_expb_ok) { swap_expb_slot(); return; }
 #endif

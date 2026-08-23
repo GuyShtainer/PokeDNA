@@ -670,7 +670,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
         /* The tick the user feels most: every visible CAUGHT cell is re-fetched through
          * the artless ladder on one 30-frame timer, so the cost scales with how many
          * Pokemon are moving. Rolled up; emitted when the screen is left. */
-        perf_rep_begin(PERF_REP_BOB, "dex.bob");
+        perf_rep_begin(PERF_REP_BOB, "bob.dex");
         for (int i = 0; i < vis && top + i < g_n; i++) {
           uint16_t in = g_list[top + i];
           if (dstate(in) != 2) continue;
