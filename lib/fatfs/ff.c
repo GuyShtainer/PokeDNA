@@ -4442,6 +4442,7 @@ FRESULT f_lseek (
 	FSIZE_t ifptr;
 #if FF_USE_FASTSEEK
 	DWORD cl, pcl, ncl, tcl, tlen, ulen;
+	DWORD guard, gbcs;	/* PokeDNA: CREATE_LINKMAP cycle guard, see below */
 	DWORD *tbl;
 	LBA_t dsc;
 #endif
@@ -4461,12 +4462,29 @@ FRESULT f_lseek (
 			tbl = fp->cltbl;
 			tlen = *tbl++; ulen = 2;	/* Given table size and required table size */
 			cl = fp->obj.sclust;		/* Origin of the chain */
+			/* PokeDNA 2026-08-23: CYCLE GUARD -- a LOCAL DIVERGENCE FROM UPSTREAM FATFS.
+			 * Upstream's only exit from the walk below is end-of-chain, and get_fat()
+			 * range-checks its INPUT only -- it cannot tell that a cluster has already
+			 * been visited. So a FAT chain that loops spins here FOREVER: the FAT sector
+			 * is cached by move_window, so there is no I/O, no timeout, no log line and
+			 * IRQs stay on -- the screen simply freezes. This project's own driver notes
+			 * say the EZ-Flash read path can return success while holding garbage, which
+			 * is exactly how a garbled chain gets here.
+			 * A healthy read handle needs at most ceil(objsize / bytes-per-cluster)
+			 * clusters, so a bound of that + 2 cannot false-positive on a good chain.
+			 * Diagnosed 2026-08-23 from a user-reported hard freeze; the call site only
+			 * became reachable when FF_USE_FASTSEEK went 0 -> 1 (this repo's first ever
+			 * CREATE_LINKMAP), so this loop was dead code until then. */
+			gbcs = (DWORD)fs->csize * SS(fs);	/* bytes per cluster */
+			guard = gbcs ? (DWORD)(fp->obj.objsize / gbcs) + 2 : fs->n_fatent;
+			if (guard > fs->n_fatent) guard = fs->n_fatent;
 			if (cl != 0) {
 				do {
 					/* Get a fragment */
 					tcl = cl; ncl = 0; ulen += 2;	/* Top, length and used items */
 					do {
 						pcl = cl; ncl++;
+						if (guard-- == 0) ABORT(fs, FR_INT_ERR);	/* cyclic/garbled FAT */
 						cl = get_fat(&fp->obj, cl);
 						if (cl <= 1) ABORT(fs, FR_INT_ERR);
 						if (cl == 0xFFFFFFFF) ABORT(fs, FR_DISK_ERR);

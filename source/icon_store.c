@@ -184,6 +184,7 @@ static char  EWRAM_BSS s_ic_path[64];
 
 /* How many times this session had to rebuild the handle after a card read error. Also
  * the log's rate limiter. Reset with the store, so a re-registration starts clean. */
+#define ICON_REOPEN_MAX 3   /* per session; see cache_fill_rows */
 static uint16_t s_reopens = 0;
 
 /* Same idea for icon_store_borrow's refusals -- see its own comment for why a refusal
@@ -511,6 +512,15 @@ static bool cache_fill_rows(uint16_t first, uint16_t n, uint8_t* dst) {
                               (unsigned)first);
   else if (s_reopens == 3) log_line("icons: further icons.bin reopens not logged");
   if (s_reopens < 0xFFFF) s_reopens++;
+
+  /* A DYING CARD MUST STOP COSTING. "Exactly once per call" is not a budget: with no
+   * session-level limit, every icon fetch on every repaint pays a fresh f_open (a
+   * multi-level directory walk) plus a full CREATE_LINKMAP FAT walk, forever -- which on
+   * a bob-timer repaint is indistinguishable from a freeze even with no cycle involved.
+   * Three rebuilds is generous for a transient glitch and decisive for a real failure;
+   * after that the rung stays shut and the ladder falls through to the ROM rung or to a
+   * text layout. Cleared by icon_store_reset(), so a re-registration starts fresh. */
+  if (s_reopens > ICON_REOPEN_MAX) return false;
 
   if (!store_reopen()) return false;
   return art_icons_read_rows_fp(&s_ic_fil, first, n, dst);

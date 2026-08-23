@@ -29,6 +29,13 @@ int fastseek_arm(FIL* fp, DWORD* tbl, DWORD items, const char* what) {
      * FR_NOT_ENOUGH_CORE; leaving it that way makes the next f_read return
      * FR_OK over the wrong sectors. */
     fp->cltbl = 0;
+    /* RULE 2b. The ABORTing failures (FR_INT_ERR / FR_DISK_ERR -- including ff.c's new
+     * cycle guard) latch into fp->err (ff.c:234), after which EVERY later f_read on this
+     * handle returns that error without touching the card, and only f_open can clear it.
+     * Building a link map is an OPTIONAL optimisation: its failure must mean "seek the
+     * ordinary way", not "this file is dead for the rest of the session".
+     * FR_NOT_ENOUGH_CORE already behaved that way; this makes the rest match. */
+    fp->err = 0;
     log_line("fastseek: %s frags=%u need=%lu have=%lu FAIL fr=%d", what ? what : "?",
              frags, (unsigned long)need, (unsigned long)items, (int)fr);
     return 0;
