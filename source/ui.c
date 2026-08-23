@@ -10,9 +10,17 @@ void ui_init(void) {
   tte_set_paper(UI_BG);
 }
 
+/* IWRAM .bss, 4 B: a paint-generation counter, not a buffer -- see ui.h's
+ * ui_clear_gen() comment for why every full-screen overlay bumping this one place is
+ * enough to keep any caller's "did someone paint over my region" check honest. */
+static uint32_t s_ui_clear_gen = 0;
+
 void ui_clear(void) {
   m3_fill(UI_BG);
+  s_ui_clear_gen++;
 }
+
+uint32_t ui_clear_gen(void) { return s_ui_clear_gen; }
 
 void ui_panel(int x, int y, int w, int h, u16 fill, u16 border) {
   m3_rect(x, y, x + w, y + h, fill);

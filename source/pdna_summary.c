@@ -253,20 +253,36 @@ static void draw_left(const PkMon* p) {
  * the 6,108 B IWRAM-stack floor CLAUDE.md warns is nearly spent, nowhere near the
  * 3,360 B commit that got reverted for costing every call chain 3,424 B.
  *
- * Invalidation is explicit, not implicit, at the two places that can put different
- * pixels in this rect without going through draw_left: pd_summary_left_dirty() is
- * called at the top of summary_run() (a fresh session must never trust a stale
- * snapshot from whatever screen was on-screen before) and inside confirm_q() right
- * after its ui_clear() (the ONE path that can `continue` back into the SAME session
- * after wiping the screen -- CREATE mode's confirm_keep()==false "B = carry on
- * editing" branch, pdna_summary.c's summary_run). Audited: every OTHER dialog/overlay
- * in this file (reroll_confirm, the reroll "Rolling..." chip) is drawn at x>=96,
- * clear of the (0,11)-(92,150) rect draw_left owns, and every other confirm_q() call
- * site unconditionally returns out of summary_run afterward (no `continue`), so a
- * fresh session always resets the snapshot before the next render_card() anyway. */
+ * MUST-FIX (2026-08-23 review, reproduced not just reasoned): the "byte-identical
+ * mon" memo above is necessary but NOT sufficient -- it says nothing about what else
+ * painted the screen in between. em_field_press() (pdna_edit.c, called from EDIT
+ * mode's KEY_A handler below) routes F_SPECIES/F_NICK/F_OT/F_ITEM/F_MV0-3/F_NATURE/
+ * F_ABILITY/F_BALL/F_METLOC/F_METREGION into a picker (pdna_pick.c) or osk_input()
+ * (osk.c) -- full-screen overlays, reached through OTHER FILES, that ui_clear() and
+ * draw full-width rows straight through this rect. A field's CANCEL path (B in the
+ * picker) returns the mon byte-for-byte unchanged, so the old code here saw an
+ * identical PkMon and skipped draw_left -- leaving the picker's own pixels (its list,
+ * its selection box) sitting in the info column forever, healed by nothing (not even
+ * a further keypress, since the mon still doesn't change). A first version of this
+ * fix enumerated the field ids above by hand; that list already left out F_NATURE
+ * (also routes through pick_nature -- see em_field_press) on its first pass, which is
+ * exactly the failure mode of a hand-audited list: it silently stops being true the
+ * next time a field or a picker is added. So invalidation is NOT keyed to field ids
+ * or to "which dialogs live in this file" -- it is keyed to ui_clear_gen() (ui.h),
+ * one counter every full-screen overlay in the codebase already bumps for free by
+ * calling ui_clear() before it draws. draw_left_conditional remembers the generation
+ * it last painted in; ANY ui_clear() since then -- a picker, the OSK, confirm_q()'s
+ * own ui_clear() right before its `continue` back into the SAME session (CREATE
+ * mode's confirm_keep()==false "B = carry on editing" branch), or the top-of-
+ * summary_run() reset for a fresh session -- forces a real repaint even when the mon
+ * snapshot still matches. pd_summary_left_dirty() (the explicit call at the top of
+ * summary_run and inside confirm_q) stays as an extra, redundant belt: it forces the
+ * same outcome without relying on the generation counter, so the two mechanisms fail
+ * independently rather than sharing one blind spot. */
 static PkMon s_dl_snap;
 static bool  s_dl_snap_valid = false;
 static bool  s_dl_snap_back  = false;
+static uint32_t s_dl_snap_gen = 0;   /* ui_clear_gen() as of the last real paint */
 
 static void pd_summary_left_dirty(void) { s_dl_snap_valid = false; }
 
@@ -282,11 +298,17 @@ static void pd_summary_left_dirty(void) { s_dl_snap_valid = false; }
  * mGBA screenshots against the pre-fix build frame-for-frame
  * (docs/analysis-2026-08-23/MEASUREMENTS.md) before this return value was wired up. */
 static bool draw_left_conditional(const PkMon* p) {
-  if (s_dl_snap_valid && g_back == s_dl_snap_back && memcmp(p, &s_dl_snap, sizeof *p) == 0)
+  uint32_t gen = ui_clear_gen();
+  /* gen == s_dl_snap_gen is the fix: a picker/OSK cancel leaves the mon byte-identical
+   * but has ui_clear()-ed the screen since -- see the header comment above for the
+   * repro this closes. */
+  if (s_dl_snap_valid && gen == s_dl_snap_gen && g_back == s_dl_snap_back &&
+      memcmp(p, &s_dl_snap, sizeof *p) == 0)
     return false;                               /* identical to last time: already on screen */
   draw_left(p);
   s_dl_snap = *p;
   s_dl_snap_back = g_back;
+  s_dl_snap_gen = gen;
   s_dl_snap_valid = true;
   return true;
 }

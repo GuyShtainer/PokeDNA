@@ -114,6 +114,19 @@ void ui_init(void);
 /* Clear the whole screen to UI_BG. */
 void ui_clear(void);
 
+/* Bumped every time ui_clear() runs. A screen that memoizes "region R already has
+ * the right pixels on it, skip repainting it" (pdna_summary.c's left info column is
+ * the first one) must treat any ui_clear() since its last paint as region R being
+ * gone, REGARDLESS of whether the memo's own key (e.g. "has the mon changed")
+ * still matches — every full-screen picker/keyboard/confirm overlay in this codebase
+ * (pdna_pick.c, osk.c, pdna_edit.c's confirm panels, ...) opens with exactly a
+ * ui_clear() before it draws over the whole screen, so this one counter is a
+ * complete, self-maintaining "did anything paint over me" signal. Compare a
+ * remembered value against ui_clear_gen() rather than hand-listing which call sites
+ * open an overlay: a new picker only has to call ui_clear() like every existing one
+ * already does, not also remember to poke some screen-specific dirty flag. */
+uint32_t ui_clear_gen(void);
+
 /* Filled rectangle with a 1px border. (x,y) top-left, w/h in pixels. */
 void ui_panel(int x, int y, int w, int h, u16 fill, u16 border);
 
