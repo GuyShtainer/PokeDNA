@@ -3940,8 +3940,18 @@ static void pdna_events(void) {
 
 /* Optional generated yard background (tools/gen_daycare_bg.py): a Gen-3-style yard
  * with lava / ponds / a rocky hill / a power line / the day-care house. Git-ignored;
- * when absent the daycare falls back to the procedural scene helpers below. */
-#if defined(__has_include) && __has_include("daycare_bg_data.h")
+ * when absent the daycare falls back to the procedural scene helpers below.
+ *
+ * PDNA_NO_DAYCARE_BG is the -D escape hatch the Makefile's `artless` target passes:
+ * unlike every other art gate (mon_icons_gate.h, hand_gate.h, rom_chrome_gate.h),
+ * this one used to have no way to force the artless path from the compile line, only
+ * an __has_include probe of the file on disk. That was fine when "artless" meant
+ * physically moving daycare_bg_data.h out of source/ -- the probe and reality always
+ * agreed. It stopped being fine the moment artless became a build FLAG instead of a
+ * missing file: the artless target filters daycare_bg_data.h out of the *build* but
+ * never moves it, so the probe still finds it sitting in source/ and would wrongly
+ * define HAVE_DAYCARE_BG in a build that has no compiled yard art to back it. */
+#if !defined(PDNA_NO_DAYCARE_BG) && defined(__has_include) && __has_include("daycare_bg_data.h")
 #  include "daycare_bg_data.h"
 #  define HAVE_DAYCARE_BG 1
 #endif

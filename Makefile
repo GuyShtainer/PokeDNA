@@ -102,6 +102,32 @@ export OBJCOPY := $(PREFIX)objcopy
 
 export PATH := $(DEVKITARM)/bin:$(PATH)
 
+# === ART FILE INVENTORY / PRESENCE GUARD =============================
+#
+# The generated, git-ignored art modules (tools/gen_*.py output) that PDNA_ARTLESS=1
+# excludes from the build below -- listed by basename (they all live directly in
+# source/, except PDNA_ART_EMBED_SFILES which live in source/embed/). This is the
+# same 21-file + source/embed/ inventory the old move-aside ritual used
+# (docs/analysis-2026-08-18/report-artless-speed.md's now-superseded PART 1), kept
+# here as the single source of truth for both the artless filter and check-art below.
+PDNA_ART_CFILES := mon_front.c mon_back.c mon_icons.c mon_icons_oam.c \
+                    item_icons.c type_icons.c hand_cursor.c hand_oam.c \
+                    bag_bg.c card_bg.c pokeblock_bg.c wallpapers.c
+PDNA_ART_SFILES := mon_front_data.s mon_icons_data.s mon_icons_oam_data.s \
+                    item_icons_data.s bag_bg_data.s card_bg_data.s pokeblock_bg_data.s
+PDNA_ART_HFILES  := hand_cursor.h                 # daycare_bg_data.h is listed separately:
+PDNA_ART_HEADER_ONLY := daycare_bg_data.h         # it gates via PDNA_NO_DAYCARE_BG, not a filter
+PDNA_ART_EMBED_SFILES := mon_back_data.s mon_front_shiny_data.s
+
+PDNA_ART_FILES := $(addprefix source/,$(PDNA_ART_CFILES) $(PDNA_ART_SFILES) \
+                     $(PDNA_ART_HFILES) $(PDNA_ART_HEADER_ONLY)) \
+                   $(addprefix source/embed/,$(PDNA_ART_EMBED_SFILES))
+# check-art (the presence-guard target that uses this list) is defined further down, right
+# after `all`/$(BUILD) -- NOT here. This file's default goal is "whichever concrete,
+# non-pattern target is defined FIRST", and $(BUILD) must stay that target (it always was);
+# putting check-art's own rule ahead of it here would silently make a bare `make` run only
+# the guard and build nothing.
+
 # === PROJECT DETAILS =================================================
 
 # 'delta' is the EMULATOR build (Delta / RetroArch on a phone): it has no flashcart
@@ -119,6 +145,24 @@ export PROJ := PokeDNA
 TITLE       := PokeDNA
 endif
 
+# --- artless variant: same PROJ/TITLE scheme as above, "-artless"/short-suffixed. Composes
+# with every PDNA_TARGET above -- see the `artless`/`sd-artless`/`delta-artless` targets near
+# EOF. GBA header titles are a fixed 12-byte field, so the suffix stays short. PDNA_ARTLESS is
+# the flag that makes this a first-class build (see SRCDIRS/CFILES/SFILES/CFLAGS below) instead
+# of the old ritual of physically moving the ~21 generated art files out of source/ and back.
+ifeq ($(strip $(PDNA_ARTLESS)),1)
+ifeq ($(PDNA_TARGET),delta)
+export PROJ := pokedna-delta-artless
+TITLE       := PokeDNADltA
+else ifeq ($(PDNA_TARGET),sd)
+export PROJ := PokeDNA-SD-artless
+TITLE       := PokeDNASdA
+else
+export PROJ := PokeDNA-artless
+TITLE       := PokeDNAArt
+endif
+endif
+
 LIBS        := -ltonc
 
 # PER-VARIANT build directory. This MUST NOT be shared.
@@ -128,13 +172,22 @@ LIBS        := -ltonc
 # and links the DELTA objects into PokeDNA.gba — a hardware build that boots as the
 # emulator build and asks for a flash save. gbafix still stamps the right title, so the
 # only symptom is at runtime on the cart. That shipped; it is why this comment is long.
-BUILD       := build$(if $(PDNA_TARGET),-$(PDNA_TARGET),)
+# Same hazard, same fix, for PDNA_ARTLESS: an artless build's objects must never be reused
+# for a full-art link (or vice versa), hence the "-artless" suffix below too.
+BUILD       := build$(if $(PDNA_TARGET),-$(PDNA_TARGET),)$(if $(filter 1,$(PDNA_ARTLESS)),-artless,)
 SRCDIRS     := source lib lib/fatfs lib/ezflashomega lib/everdrivegbax5
 # Build target: 'nor' (default) embeds every sprite (~6.25 MB, run from NOR); 'sd' streams the
 # shiny+back blobs from /PokeDNA/sprites.pak so the ROM fits the EZ-Flash SD-mode budget (~<=4 MB).
-PDNA_TARGET ?= nor
+PDNA_TARGET  ?= nor
+# Artless flag: 1 excludes the ~21 generated/git-ignored art modules from THIS BUILD (they stay
+# exactly where they are in source/ -- see PDNA_ART_CFILES/PDNA_ART_SFILES below, and the
+# check-art guard, which fails loudly if they are ever actually missing from disk instead).
+PDNA_ARTLESS ?= 0
 ifneq ($(PDNA_TARGET),sd)
 SRCDIRS     += source/embed          # NOR: embed the shiny-front + back blobs
+endif
+ifeq ($(strip $(PDNA_ARTLESS)),1)
+SRCDIRS     := $(filter-out source/embed,$(SRCDIRS))   # source/embed/ is 100% art (see below)
 endif
 DATADIRS    :=          # front-sprite blobs are embedded via .incbin (source/mon_front_data.s), not bin2o
 INCDIRS     := source lib lib/fatfs lib/ezflashomega lib/everdrivegbax5
@@ -161,6 +214,18 @@ CFLAGS += -DPDNA_STREAM_SPRITES      # SD build: mon_front/mon_back stream shiny
 endif
 ifeq ($(PDNA_TARGET),delta)
 CFLAGS += -DPDNA_DELTA               # emulator build: save is our own 128 KiB flash, no SD
+endif
+# Artless: the ~21 generated art files stay ON DISK (never moved), so their own
+# __has_include probes (mon_icons_gate.h/hand_gate.h/rom_chrome_gate.h) would otherwise find
+# them present and wrongly report "art compiled" even though PDNA_ART_CFILES/PDNA_ART_SFILES
+# below excluded them from THIS build's OFILES -- undefined references at link time. Every
+# one of those gates already documents a `-D` escape hatch for exactly this (host tests use
+# it too, see tests/host_romhand_test.c / host_romchrome_test.c); PDNA_NO_DAYCARE_BG is the
+# same idea added for pdna_main.c's daycare_bg_data.h probe, which had no such escape before.
+ifeq ($(strip $(PDNA_ARTLESS)),1)
+CFLAGS += -DPDNA_HAND_ART_COMPILED=0 -DPDNA_MON_ICONS_ART_COMPILED=0 \
+          -DPDNA_CARD_ART_COMPILED=0 -DPDNA_POKEBLOCK_ART_COMPILED=0 \
+          -DPDNA_BAG_ART_COMPILED=0 -DPDNA_NO_DAYCARE_BG
 endif
 
 CXXFLAGS := $(CFLAGS) -fno-rtti -fno-exceptions
@@ -206,6 +271,15 @@ CPPFILES := $(foreach dir, $(SRCDIRS) , $(notdir $(wildcard $(dir)/*.cpp)))
 SFILES   := $(foreach dir, $(SRCDIRS) , $(notdir $(wildcard $(dir)/*.s)))
 BINFILES := $(foreach dir, $(DATADIRS), $(notdir $(wildcard $(dir)/*.*)))
 
+# ARTLESS FILTER. The files themselves are never touched -- this only keeps them out of
+# THIS variant's glob result (source/embed/ was already dropped from SRCDIRS above). A
+# plain full-art `make` never reaches this branch, so PokeDNA.gba's OFILES list is
+# unchanged by any of this.
+ifeq ($(strip $(PDNA_ARTLESS)),1)
+CFILES   := $(filter-out $(PDNA_ART_CFILES),$(CFILES))
+SFILES   := $(filter-out $(PDNA_ART_SFILES),$(SFILES))
+endif
+
 ifeq ($(strip $(CPPFILES)),)
 	export LD := $(CC)
 else
@@ -222,11 +296,35 @@ export INCLUDE := $(foreach dir,$(INCDIRS),-I$(CURDIR)/$(dir)) \
 
 export LIBPATHS := -L$(CURDIR) $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
+$(BUILD): check-art
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 all : $(BUILD)
+
+# Every build -- full-art AND artless alike -- expects the art files listed above to simply
+# be sitting in source/ at all times now that nothing ever moves them. Their absence means
+# the tree is stuck in the OLD move-aside ritual's half-done state (the exact incident this
+# target exists to catch: an agent moved them aside for an artless build, died mid-run,
+# never restored them, and every subsequent "full-art" `make` silently linked and shipped an
+# artless PokeDNA.gba under the full-art name -- caught only by the "8/17 windows stamped"
+# self-check line at boot). Fail loudly here instead, before a single file compiles. Defined
+# AFTER `all`/$(BUILD) on purpose -- see the comment where PDNA_ART_FILES is built.
+.PHONY: check-art
+check-art:
+	@missing=""; \
+	for f in $(PDNA_ART_FILES); do [ -e "$$f" ] || missing="$$missing $$f"; done; \
+	if [ -n "$$missing" ]; then \
+	  echo "*** FATAL: generated art sources are missing from source/:"; \
+	  for f in $$missing; do echo "***          $$f"; done; \
+	  echo "*** This tree is NEVER supposed to be missing them. 'make artless' filters them"; \
+	  echo "*** OUT OF THE BUILD (PDNA_ARTLESS=1); it does not need them gone from disk --"; \
+	  echo "*** moving art files aside is no longer how any build here is made. Restore"; \
+	  echo "*** them from wherever they were staged (tools/gen_*.py regenerates each one;"; \
+	  echo "*** see each generator's own --help) before building anything."; \
+	  exit 1; \
+	fi
 
 clean:
 	@echo clean ...
@@ -247,7 +345,7 @@ endif
 # DIRECTORY and never recurses, so a plain `make` after an edit does nothing and every
 # build has to be a full `make rebuild`. With it, the inner make does normal incremental
 # compilation and only the touched objects are rebuilt.
-.PHONY: $(BUILD) all clean rebuild sd delta
+.PHONY: $(BUILD) all clean rebuild sd delta artless sd-artless delta-artless
 rebuild: clean $(BUILD)
 
 sd:                    # trimmed build that streams shiny/back sprites from /PokeDNA/sprites.pak
@@ -262,5 +360,30 @@ delta:                 # emulator build (Delta / RetroArch): edits its OWN 128 K
 	@echo "  pokedna-delta.gba built."
 	@echo "  Put it in your emulator, then copy your Pokemon .sav over pokedna-delta.sav."
 	@echo "  Save type must be Flash 1Mbit (128K). NO BACKUPS in this build."
+
+# --- artless variants -------------------------------------------------------
+# Same code, same source/ tree — the ~21 generated art files are excluded from the BUILD
+# (PDNA_ARTLESS=1: filtered out of CFILES/SFILES, source/embed/ dropped from SRCDIRS, and
+# the PDNA_*_ART_COMPILED / PDNA_NO_DAYCARE_BG gates forced off), never moved, copied, or
+# deleted. If a target dies halfway through any of these, the working tree is exactly as
+# it was before — that is the entire point. Composes with 'delta'/'sd' above; this is the
+# cleanest spelling: bare 'artless' for the hardware/NOR case (the one Guy actually asked
+# for), '<target>-artless' for the others.
+artless:               # hardware build WITHOUT the generated/git-ignored art -> PokeDNA-artless.gba
+	@$(MAKE) PDNA_ARTLESS=1 rebuild
+	@echo ""
+	@echo "  PokeDNA-artless.gba built — weak fallbacks in source/art_fallbacks.c (+ the"
+	@echo "  PDNA_*_ART_COMPILED / PDNA_NO_DAYCARE_BG gates) stand in for every generated"
+	@echo "  art module. Not one file in source/ was moved, copied, or deleted to get here."
+
+delta-artless:         # emulator build, no compiled art (composes 'delta' + 'artless')
+	@$(MAKE) PDNA_TARGET=delta PDNA_ARTLESS=1 rebuild
+	@echo ""
+	@echo "  pokedna-delta-artless.gba built. Same save rules as 'delta' above."
+
+sd-artless:            # SD-streaming build, no compiled art (composes 'sd' + 'artless')
+	@$(MAKE) PDNA_TARGET=sd PDNA_ARTLESS=1 rebuild
+	@echo ""
+	@echo "  PokeDNA-SD-artless.gba built."
 
 # EOF
