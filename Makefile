@@ -296,33 +296,43 @@ export INCLUDE := $(foreach dir,$(INCDIRS),-I$(CURDIR)/$(dir)) \
 
 export LIBPATHS := -L$(CURDIR) $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
+# check-art only guards the FULL-ART path. A fresh public clone never has the ~21
+# gitignored generated art files (they are never committed -- see the "Graphics assets"
+# section of README.md), and that is the NORMAL, IP-clean state of the tree, not a defect
+# -- so PDNA_ARTLESS=1 ('artless'/'sd-artless'/'delta-artless') must build with none of
+# them present, without ever consulting this guard.
+ifneq ($(strip $(PDNA_ARTLESS)),1)
 $(BUILD): check-art
+endif
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 all : $(BUILD)
 
-# Every build -- full-art AND artless alike -- expects the art files listed above to simply
-# be sitting in source/ at all times now that nothing ever moves them. Their absence means
-# the tree is stuck in the OLD move-aside ritual's half-done state (the exact incident this
-# target exists to catch: an agent moved them aside for an artless build, died mid-run,
-# never restored them, and every subsequent "full-art" `make` silently linked and shipped an
-# artless PokeDNA.gba under the full-art name -- caught only by the "8/17 windows stamped"
-# self-check line at boot). Fail loudly here instead, before a single file compiles. Defined
+# FULL-ART builds only. A full-art `make`/`make sd`/`make delta` links the ~21 generated
+# art modules by name (PDNA_ART_FILES above) and produces a silently artless binary under
+# the full-art name if even one is missing -- caught only by the "N/17 windows stamped"
+# self-check line at boot, which is far too late. This target exists to catch exactly one
+# incident: an agent moved the art files aside to build artless the old way, died
+# mid-run, and left them missing for every subsequent full-art build. It is NOT the state
+# of a normal clone, which never has these files at all -- that tree wants `make artless`
+# (below), not this guard, which is why PDNA_ARTLESS=1 skips it entirely above. Defined
 # AFTER `all`/$(BUILD) on purpose -- see the comment where PDNA_ART_FILES is built.
 .PHONY: check-art
 check-art:
 	@missing=""; \
 	for f in $(PDNA_ART_FILES); do [ -e "$$f" ] || missing="$$missing $$f"; done; \
 	if [ -n "$$missing" ]; then \
-	  echo "*** FATAL: generated art sources are missing from source/:"; \
+	  echo "*** FATAL: this is a full-art build ($(PROJ)) but generated art sources are"; \
+	  echo "***        missing from source/:"; \
 	  for f in $$missing; do echo "***          $$f"; done; \
-	  echo "*** This tree is NEVER supposed to be missing them. 'make artless' filters them"; \
-	  echo "*** OUT OF THE BUILD (PDNA_ARTLESS=1); it does not need them gone from disk --"; \
-	  echo "*** moving art files aside is no longer how any build here is made. Restore"; \
-	  echo "*** them from wherever they were staged (tools/gen_*.py regenerates each one;"; \
-	  echo "*** see each generator's own --help) before building anything."; \
+	  echo "*** Two ways forward:"; \
+	  echo "***   1) Generate the art: see README.md's 'Graphics assets' section --"; \
+	  echo "***      each tools/gen_*.py regenerates one file; see its own --help."; \
+	  echo "***   2) Skip the art entirely: 'make artless' (or 'make sd-artless' /"; \
+	  echo "***      'make delta-artless') builds without needing any of these files,"; \
+	  echo "***      including on a fresh clone that never had them."; \
 	  exit 1; \
 	fi
 

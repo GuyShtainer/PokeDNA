@@ -179,6 +179,10 @@ make rebuild      # local devkitPro
 
 Output: `PokeDNA.gba`. Copy it to the flashcart SD next to your `.sav` files and run it.
 
+**A fresh clone has no game art (see below) — `./build.sh`/`make rebuild` will stop and tell you
+to either generate it or run `make artless` instead.** `make artless` needs nothing under
+`assets/` and builds out of the box; see *Build variants* and *Graphics assets* below.
+
 ### Build variants
 
 ```sh
@@ -186,6 +190,11 @@ make sd           # PokeDNA-SD.gba — trimmed image that streams shiny/back spr
                   # from /PokeDNA/sprites.pak instead of carrying them
 make delta        # pokedna-delta.gba — emulator build (Delta / RetroArch): no flashcart,
                   # it edits its OWN 128 KiB flash save (copy your .sav over pokedna-delta.sav)
+make artless      # PokeDNA-artless.gba — same code, none of the generated art modules
+                  # required or compiled in (see "Graphics assets" below) — this is what
+                  # a fresh clone can build with nothing under assets/
+make sd-artless   # 'sd' + 'artless' combined
+make delta-artless # 'delta' + 'artless' combined
 python3 tools/fuse_rom.py PokeDNA.gba YOUR_GAME.gba -o fused.gba
                   # append your game ROM to the image so the map viewer works under an
                   # emulator, where there is no microSD to read the ROM from
@@ -195,13 +204,17 @@ python3 tools/fuse_rom.py PokeDNA.gba YOUR_GAME.gba -o fused.gba
 
 The image assets (Pokémon sprites, box wallpapers, type badges, item icons, the bag and
 trainer-card chrome, the PC hand) are **not part of this repository** — they are git-ignored and
-generated on your machine from asset packs you place under `assets/`.
+generated on your machine from asset packs you place under `assets/`. A fresh clone never has
+them, and `make`/`make sd`/`make delta` (the full-art targets) expect them to be present —
+that's the normal, IP-clean state of every public checkout, not a broken tree.
 
-**A fresh clone builds an art-free PokeDNA out of the box.** Every art module has a weak
-fallback (`source/art_fallbacks.c`): with no generated art present you get a fully working build
-with original stand-ins — name chips in the PC grid, text lists for the Pokédex and pickers,
-coloured type chips, an original arrow cursor — at about 0.4 MB. Running the generators below
-upgrades it to the full visuals.
+**Run `make artless` for a fresh clone to build out of the box, with nothing under `assets/`.**
+Every art module has a weak fallback (`source/art_fallbacks.c`): `make artless` (or
+`sd-artless`/`delta-artless`) excludes the generated art from the build entirely and gives you a
+fully working image with original stand-ins — name chips in the PC grid, text lists for the
+Pokédex and pickers, coloured type chips, an original arrow cursor — at about 0.4 MB (not one
+file in `source/` is moved, copied, or deleted to get there). Running the generators below and
+using the plain `make`/`make sd`/`make delta` targets upgrades it to the full visuals.
 
 To generate them:
 
@@ -265,8 +278,9 @@ backlog.
   released `PokeDNA.gba` **does** embed them, so the download works out of the box the way community
   tools like PKHeX ship sprites. Being plain about it: that binary contains several megabytes of
   Game Freak / Nintendo artwork and the games' own item and move description text. If you would
-  rather run a build with none of that in it, clone the repo, skip the art generators, and build —
-  you get the art-free build described above, with every screen usable on original stand-ins.
+  rather run a build with none of that in it, clone the repo, skip the art generators, and run
+  `make artless` — you get the art-free build described above, with every screen usable on
+  original stand-ins.
 - **Vendored libraries keep their own licenses:** the flashcart I/O layer (MIT), the EZ-Flash
   `io_ezfo` driver (Apache-2.0), FatFs (BSD-1-Clause), and libtonc. Their notices are retained.
 - PokeDNA's own source is **GPLv3** (see `LICENSE`) — it stays free and open; you may use, study,
