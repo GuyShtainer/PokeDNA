@@ -2054,13 +2054,22 @@ static void box_options_menu(BoxSource* src, int box) {
  *     within-scope swap. Closes the popup (goto out, result 1) only once the hand is
  *     genuinely empty (*done); a SWAP keeps the popup open, now holding the displaced
  *     occupant, exactly like the outer loop's own swap handling.
- *   - !s_holding, A on an occupied grid cell: GRAB -- opens the box's own action menu;
- *     MOVE or DUPLICATE starts a carry (start_carry / the dup-copy path) and keeps the
- *     popup OPEN so the freshly-grabbed mon can be walked back to the panel and placed
- *     into a party slot without ever leaving this screen. B still closes the popup
- *     unconditionally (matching how B already worked for a mon carried in from
- *     OUTSIDE this popup) — the carry survives exactly as it always has, because
- *     closing on B never discards s_holding/s_held.
+ *   - !s_holding, A on an occupied grid cell, s_cur_mode == CM_MOVE (2026-08-23): a
+ *     DIRECT grab -- start_carry + the grab beat, no menu -- exactly what this same
+ *     cell does one screen over, outside the popup (pdna_box()'s own CM_MOVE A-
+ *     handler / begin_select()'s no-drag tap). Before this, GRID focus never read
+ *     s_cur_mode at all, so the grid's own fast "MOVE mode" idiom silently reverted
+ *     to the slow menu-first grab the instant the cursor crossed into the panel --
+ *     the same gesture, same cell, a DIFFERENT grammar depending on which side of
+ *     the RIGHT/LEFT crossing you made it from. Guy's own words this fixes: "i cant
+ *     intuitively grab pokemon from party to pc and back like in the game."
+ *   - !s_holding, A on an occupied grid cell, any OTHER cursor mode: GRAB -- opens
+ *     the box's own action menu; MOVE or DUPLICATE starts a carry (start_carry / the
+ *     dup-copy path) and keeps the popup OPEN so the freshly-grabbed mon can be
+ *     walked back to the panel and placed into a party slot without ever leaving
+ *     this screen. B still closes the popup unconditionally (matching how B already
+ *     worked for a mon carried in from OUTSIDE this popup) — the carry survives
+ *     exactly as it always has, because closing on B never discards s_holding/s_held.
  *
  * Round trips (both proven — docs/analysis-2026-08-20-pcparty's own report has the
  * capture sequence): grab a party mon (top tabs, as before) -> RIGHT into GRID ->
@@ -2453,6 +2462,22 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
           /* else: SWAP -> still holding the displaced occupant; loop continues, exactly
            * like the outer loop's own swap handling (drop_held already reset the
            * origin to -1 for it — a RAM-only carry, never crosses save scopes) */
+        } else if (s_cur_mode == CM_MOVE && g_box[gcur].species) {
+          /* 2026-08-23 ("grab pokemon from party to pc and back, intuitively"):
+           * this cell IS a box grid cell (CHANGE 2 only restricts WHICH columns
+           * are reachable, not what a cell IS), so it must honour the SAME
+           * s_cur_mode the outer loop's own grid already does — before this fix
+           * it never consulted s_cur_mode at all, so setting MOVE mode on the
+           * grid (SELECT) and then crossing in here via RIGHT silently reverted
+           * to the slow menu-first grab, a real third grammar for one gesture.
+           * Mirrors begin_select()'s own no-drag tap (start_carry + the grab
+           * beat, no menu) — not its rubber-band drag: this focus only shows 2
+           * of 6 columns (boxoam_strip_open's occlusion), so a multi-cell
+           * rectangle would reach into cells hidden under the panel's own
+           * chrome. The popup stays open, same as the menu's own MOVE branch
+           * below, so the grabbed mon can be walked back to the panel. */
+          start_carry(src, recs, box, gcur);
+          play_grab_anim(src, box, gcur);
         } else if (g_box[gcur].species) {   /* GRAB: the box's own action menu, same call
                                             * the outer loop's NORMAL-mode A already makes */
           int mbox = src->is_bank ? 0 : box;
@@ -2904,7 +2929,21 @@ int pdna_box(BoxSource* src) {
       else if (k & KEY_A) {
         if (s_tab_focus == 0) { s_tab_focus = -1; on_title = false; need_full = true; }      /* PKMN DATA -> grid */
         else if (s_tab_focus == 1) {                                                          /* PARTY -> overlay popup */
+          /* 2026-08-23: pcp_open_party_strip already resets s_tab_focus to -1 on every
+           * exit path (placed, grabbed, or just closed), same as the PKMN DATA branch
+           * above -- but unlike that branch it never touched on_title, which this whole
+           * dispatch is nested INSIDE (entered from "if (s_tab_focus >= 0)", itself only
+           * reachable while on_title was true). Left uncleared, the very next LEFT/RIGHT/
+           * A on what LOOKS like a plain grid cursor was actually still routed through
+           * the TITLE ROW's own handler below (box-switch on LEFT/RIGHT, the BOX OPTIONS
+           * popup on A instead of a grab/menu) until the player happened to press DOWN
+           * once -- silently breaking the exact "grab a mon" gesture this session's other
+           * fix (party_strip_overlay's GRID-focus CM_MOVE) exists to make reliable, on
+           * literally every use of the PARTY tab (which is how that popup is reached).
+           * The PKMN DATA tab already got this right one branch up; PARTY just never
+           * matched it. */
           pcp_open_party_strip(src, box, &cur, &need_full);
+          on_title = false;
         }
         else { s_tab_focus = -1; boxoam_exit(); return 0; }                                   /* SAVE -> exit (save prompt) */
       }
