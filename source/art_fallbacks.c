@@ -115,13 +115,14 @@ void icon_frame_cache_invalidate(void) { }
  * screen is about to flip are ALREADY IN RAM, which is a property of the screen's
  * working set and the pool, not of the rung.
  *
- * It is NOT changed here, because changing it here would be a regression: with no way
- * yet for a screen to declare its working set, a capacity-based answer would switch the
- * Pokedex grid's 21-cell bob ON against a 6-row pool -- a guaranteed 21 misses per flip
- * on a cyclic sweep, which on the ROM rung is 126 RomReadFn calls every half second
- * where today it is zero. The gate becomes a residency FACT once icon_store can be told
- * what a screen is about to draw; until then it stays a rung question and the dex stays
- * still on the ROM rung.
+ * It is NOT changed here. The honest answer -- icon_store_plan_resident(), "is every row
+ * this screen is about to flip already in RAM" -- now EXISTS (icon_store.h), and the
+ * Pokedex grid already declares its page through it. What is still missing is the
+ * capacity to make that answer TRUE on the dex: 21 rows against a 6-row pool is not
+ * resident and never will be, so flipping the gate today would only trade one wrong
+ * answer for another. The borrowed second tier is what makes 21 rows fit; the gate moves
+ * in the step after it, at all four sites at once, and until then it stays a rung
+ * question and the dex stays still on the ROM rung.
  *
  * What DOES improve at this step, without touching the gate: the party overlay, the
  * party list and the day-care all have working sets of 6-7 rows against a 6-row pool,

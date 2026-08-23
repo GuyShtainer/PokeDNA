@@ -78,11 +78,58 @@ void icon_store_reset(const char* icons_path, const struct RomMon* rm);
  * call is the whole defence. */
 void icon_store_suspend(void);
 
+/* ---- the plan: a screen says what it is about to draw, BEFORE it draws it ------
+ *
+ * WHY THIS EXISTS AT ALL. Every screen already knows its exact icon set one function
+ * call before the paint loop -- the Pokedex grid's 21 cells are g_list[top..top+20],
+ * the party's 6 are the party. Without a declaration that knowledge is thrown away and
+ * rediscovered one cell at a time, and a cache smaller than the page then has a hit
+ * rate of exactly ZERO on the cyclic sweep a repaint performs: every access evicts the
+ * entry needed `page` accesses later. Measured on the host FatFs harness before this
+ * call existed: a 21-cell page against a 6-row pool cost 21 separate transfers, and
+ * cost them again on every bob flip.
+ *
+ * WHAT THE DECLARATION BUYS. The store sorts the misses BY SOURCE BYTE OFFSET, merges
+ * strictly-consecutive rows into single transfers, and sweeps the file FORWARD once.
+ * On icons.bin, consecutive rows are consecutive bytes, and under the dex's default
+ * filter+sort 12 of 18 full pages are one contiguous 21-row span -- so a page that cost
+ * 21 transfers costs as few as ceil(21/rows-that-fit). Ascending order is the
+ * load-bearing half: FatFs restarts a chain walk only on a BACKWARD seek (ff.c:4527),
+ * so a forward sweep is cheap even if the cluster link map failed to build.
+ *
+ * WHAT IT CANNOT BUY, stated plainly: the pool is the pool. Declaring 21 rows against a
+ * pool that holds 6 does not make 21 rows resident -- it makes the store fetch them in
+ * bulk GROUPS as the paint consumes them, which cuts transactions (the expensive part:
+ * 24 fixed halfword cart writes + one card-latency poll each) without cutting sectors.
+ * icon_store_plan_resident() is how a caller finds out which case it is in, and it is
+ * the ONLY honest gate for an animation: a flip is free iff every row is already here.
+ *
+ * `rows` are row indices (0..439); duplicates and out-of-range entries are dropped.
+ * At most ICON_STORE_PLAN_MAX are kept. Returns how many of the plan are resident when
+ * the call returns. Calling it with n <= 0 retires the plan.
+ *
+ * A PLAN INVALIDATES EVERY OUTSTANDING ROW POINTER -- it is an icon_store_* call like
+ * any other, and it is the one most likely to move things, so declare BEFORE the paint
+ * loop, never inside it. */
+#define ICON_STORE_PLAN_MAX 40
+int  icon_store_plan(const uint16_t* rows, int n);
+
+/* True iff every row of the live plan is in RAM right now, so a redraw of the declared
+ * set is provably ZERO SD transactions. False when no plan is live, or when the plan
+ * does not fit the pool. True when there is no rung at all (a "flip" then redraws
+ * nothing and costs nothing, which is the same answer for the caller). */
+bool icon_store_plan_resident(void);
+
 /* ---- the read ------------------------------------------------------------------ */
 
 /* Row `row` (0..439, the axis art_icons_row_for and rom_mon both use), 1024 B: frame f
  * is at p + f * 512. NULL if no rung can produce it. Zero SD I/O on a hit.
- * SEE THE POINTER CONTRACT ABOVE. */
+ * SEE THE POINTER CONTRACT ABOVE.
+ *
+ * A miss on a row that IS in the live plan refills the pool with the next GROUP of
+ * planned rows in one sorted, merged sweep -- so a 21-cell page walks its plan in
+ * pool-sized bulk bites instead of 21 single reads. A miss on a row that is NOT in the
+ * plan is one single-row fetch into the LRU victim, exactly as before. */
 const uint8_t* icon_store_row(uint16_t row);
 
 /* Row `row`'s 16 RGB15 palette entries. Never touches the card on the cache rung

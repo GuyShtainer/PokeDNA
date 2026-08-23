@@ -17,6 +17,9 @@
 #include "gen3_items.h"    /* pk_item_pocket / PkPocket (item-picker category filter) */
 #include "gen3_places.h"   /* met-location region / per-game scoping / list build     */
 #include "mon_icons.h"
+#include "mon_icons_gate.h"  /* PDNA_MON_ICONS_ART_COMPILED -- is this a full-art build */
+#include "art_icons_cache.h" /* art_icons_row_for -- species -> icon-store row          */
+#include "icon_store.h"      /* the dex page declares its 21 rows before it paints them */
 #include "type_icons.h"
 #include "item_icons.h"
 #include "osk.h"
@@ -433,6 +436,43 @@ static void dex_geom(int view, int* cols, int* cw, int* ch, int* x0, int* y0, in
   else                 { *cols = 7; *cw = 33;  *ch = 34; *x0 = 8; *y0 = 24; *vrows = 3;  }
 }
 
+/* Tell icon_store the page's 21 icon rows one call BEFORE the paint loop asks for them.
+ *
+ * This screen is the reason the store has a plan at all. It re-requests every visible
+ * cell on a full repaint, on every one-row scroll step (all 21, including the 14 that
+ * did not move), and on every bob flip -- and it does so in list order, which is a
+ * CYCLIC SWEEP through a set far larger than the pool. Against a cache smaller than the
+ * page that has a hit rate of exactly zero: every access evicts the entry needed 21
+ * accesses later. Measured on the host FatFs harness before this call existed, a
+ * 21-cell page cost 21 separate transfers on each of those events.
+ *
+ * Declared, the store sorts the misses by source offset, merges consecutive rows and
+ * sweeps forward in pool-sized bulk groups instead. Under the default filter + No.
+ * sort, national 1-251 map 1:1 and monotonically onto icons.bin rows 1-251, so most
+ * full pages are one contiguous 21-row span and each group collapses to ONE f_read.
+ * A-Z sort and the type view destroy that locality; the sweep then degenerates to one
+ * read per row IN ASCENDING OFFSET ORDER, which is still strictly better than the
+ * arbitrary order the paint loop would otherwise seek in.
+ *
+ * ONLY IN THE ARTLESS BUILD. With mon_icons.c linked, mon_icon_for* is compiled
+ * .rodata and never reaches the store -- but icon_store is still live underneath
+ * box_oam.c, so declaring here would make a full-art build read 21 KiB off the card for
+ * a plan nothing consumes. That is a regression, not a no-op, hence the gate.
+ *
+ * List view declares nothing: dex_cell_list is text only, zero rows, zero I/O. */
+static void dex_declare_page(bool grid, int top, int vis) {
+#if PDNA_MON_ICONS_ART_COMPILED
+  (void)grid; (void)top; (void)vis;
+#else
+  uint16_t rows[ICON_STORE_PLAN_MAX];
+  int n = 0;
+  if (!grid) { icon_store_plan(0, 0); return; }
+  for (int i = 0; i < vis && top + i < g_n && n < (int)ICON_STORE_PLAN_MAX; i++)
+    rows[n++] = art_icons_row_for(g_list[top + i], 0);
+  icon_store_plan(rows, n);
+#endif
+}
+
 /* one grid/type cell at the icon origin: greyscale unseen, colour seen,
  * colour-at-frame-`bob` + Poke-Ball caught. */
 static void dex_cell_grid(int x, int y, uint16_t in, int bob) {
@@ -626,6 +666,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
        * up rather than logged per occurrence -- a held D-pad produces one of these
        * every few frames. */
       perf_rep_begin(PERF_REP_PAGE, "dex.page");
+      dex_declare_page(grid, top, vis);
       ui_clear();
       ui_hline(0, 22, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
@@ -738,6 +779,12 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
   perf_rep_flush(PERF_REP_PAGE);
   perf_rep_flush(PERF_REP_BOB);
   perf_span_end();          /* no-op if the first paint already closed it */
+  /* Retire the declaration, never the CONTENTS. A plan is a claim about what the screen
+   * on the glass is about to draw, and this screen is gone -- leaving it live would let
+   * the next screen's unrelated fetch answer icon_store_plan_resident() with a stale
+   * yes, and that answer is the animation gate. The rows themselves stay resident, so
+   * coming straight back here costs nothing. */
+  icon_store_plan(0, 0);
   return dirty;
 }
 

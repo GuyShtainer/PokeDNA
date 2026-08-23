@@ -54,6 +54,21 @@ extern long rd_fail_read_at;      /* >=0: let that many reads through, fail exac
 extern unsigned long rd_lied;     /* sectors swallowed by rd_lie_writes         */
 extern unsigned long rd_read_fails; /* reads refused by rd_fail_reads_after      */
 extern unsigned long rd_writes;   /* successful sector writes since rd_init    */
-extern unsigned long rd_reads;
+extern unsigned long rd_reads;    /* SECTORS delivered by disk_read            */
+/* disk_read CALLS -- the transfer count, which is NOT rd_reads and is the number the
+ * hardware actually charges for. Per lib/ezflashomega/io_ezfo.c, one call costs 24
+ * fixed halfword cart writes with IRQs off plus one card-latency poll per <=4-sector
+ * chunk, all of it size-INDEPENDENT; only the sectors scale (~46 us each). So 4 calls
+ * carrying 42 sectors and 21 calls carrying 42 sectors move the same bytes at very
+ * different prices, and rd_reads alone cannot tell them apart. */
+extern unsigned long rd_read_calls;
+/* How many disk_read calls started at a LOWER sector than the previous call did, and
+ * the previous call's start. A backward seek is the one case FatFs restarts a cluster
+ * walk from the head of the chain (ff.c:4527) -- a forward one resumes incrementally
+ * (ff.c:4521) -- so "did this sweep only ever move forward" is a real, cheap, and
+ * otherwise invisible property to assert. Both are plain counters a test zeroes before
+ * the region it means to measure. */
+extern unsigned long rd_read_back;
+extern unsigned long rd_read_last;
 
 #endif /* HOSTFAT_RAMDISK_H */

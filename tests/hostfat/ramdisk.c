@@ -17,6 +17,7 @@ long rd_fail_at = -1;
 long rd_fail_reads_after = -1;
 long rd_fail_read_at = -1;
 unsigned long rd_writes = 0, rd_reads = 0, rd_lied = 0, rd_read_fails = 0;
+unsigned long rd_read_calls = 0, rd_read_back = 0, rd_read_last = 0;
 
 static unsigned char* s_mem = 0;
 static unsigned       s_sectors = 0;
@@ -28,6 +29,7 @@ void rd_init(unsigned sectors) {
   rd_protect = 0; rd_fail_write_in = 0; rd_fail_all_writes = 0; rd_lie_writes = 0;
   rd_fail_reads_after = -1; rd_fail_read_at = -1; rd_lie_after = -1; rd_fail_at = -1;
   rd_writes = rd_reads = rd_lied = rd_read_fails = 0;
+  rd_read_calls = rd_read_back = rd_read_last = 0;
 }
 
 void rd_free(void) { free(s_mem); s_mem = 0; s_sectors = 0; }
@@ -57,6 +59,9 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
   }
   memcpy(buff, s_mem + (size_t)sector * FF_MAX_SS, (size_t)count * FF_MAX_SS);
   rd_reads += count;
+  rd_read_calls++;
+  if ((unsigned long)sector < rd_read_last) rd_read_back++;
+  rd_read_last = (unsigned long)sector;
   return RES_OK;
 }
 
