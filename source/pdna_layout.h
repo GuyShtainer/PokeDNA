@@ -493,6 +493,15 @@
  * icons.bin alone is ~441 KB and every phase combined is designed to stay under 1 MB,
  * so 3 digits is the real ceiling this format has to survive */
 #define PDNA_SET_ART_CACHED_MAXKB 999u
+/* Game ROM row (item 7's detach switch shows up here, not as its own row — see
+ * pdna_main.c's rom_row_menu). Worst case is the longest rom_kind_name() ("LeafGreen",
+ * 9 chars) or the detached suffix, whichever is longer; both are well inside budget. */
+#define PDNA_SET_ROM_FMT      "Game ROM:  %s"
+#define PDNA_SET_ROM_NOTSET   "not set"
+#define PDNA_SET_ROM_ARTOFF   "set, art OFF"
+#define PDNA_SET_ROM_LONGEST_KIND "LeafGreen"
+#define PDNA_SET_ROM_VALUES(X) \
+  X(PDNA_SET_ROM_NOTSET) X(PDNA_SET_ROM_ARTOFF) X(PDNA_SET_ROM_LONGEST_KIND)
 #define PDNA_SET_ROW_CLEAR   "Clear backups (this save)"
 #define PDNA_SET_HELP1       "Animations + Rumble have"
 #define PDNA_SET_HELP2       "per-item on/off submenus."

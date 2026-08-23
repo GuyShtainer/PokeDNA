@@ -129,6 +129,17 @@ static bool      g_show_hidden = false;
  * is also the only point at which there is real art to draw them with.
  * Persisted in config.cfg. */
 static bool      g_yard_visitors = false;
+/* ROM art detach switch (Settings > Game ROM, item 7): for A/B-testing the artless
+ * build with vs without a ROM to draw art from, WITHOUT re-browsing/re-registering a
+ * path. OFF (false) by default = normal behaviour (a registered ROM's art rungs are
+ * live). ON = app_icon_rom_open() (the single chokepoint every RomMon/RomSprite/
+ * RomItemArt/rom_wallpaper/rom_chrome/rom_hand source is opened through) skips
+ * opening any ROM this session and leaves every one of those sources at its reset/
+ * NULL state, so every consumer sees exactly what it already sees with no ROM
+ * registered at all -- the no-ROM fallbacks are the existing, tested ones, nothing
+ * new. g_rom_path[] itself is untouched either way, so flipping this back ON needs
+ * no re-browse. Persisted in config.cfg ("romoff"). */
+static bool      g_rom_art_off = false;
 /* Backup mode: 0 = new file each save, 1 = single rolling .bak, 2 = skip. Persisted. */
 static int       g_backup_mode = 0;
 static unsigned  g_anim_mask = (1u << ANIM_BOX) | (1u << ANIM_PARTY) | (1u << ANIM_DEX) |
@@ -503,10 +514,10 @@ static void scan_dir(void) {
 static void cfg_save(void) {
   if (!app_can_edit()) return;
   char buf[PATH_MAX * 4 + 128];
-  int n = siprintf(buf, "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\nyard=%d\nbak=%d\n",
+  int n = siprintf(buf, "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\nyard=%d\nbak=%d\nromoff=%d\n",
                    g_cwd, (int)g_sort, g_sortrev ? 1 : 0, g_show_all ? 1 : 0, g_show_hidden ? 1 : 0,
                    g_anim_mask, rmbl_get_mask(), rmbl_get_strength(), rmbl_get_duration(), g_pc_last_box,
-                   g_yard_visitors ? 1 : 0, g_backup_mode);
+                   g_yard_visitors ? 1 : 0, g_backup_mode, g_rom_art_off ? 1 : 0);
   /* One ROM path per game — RS/Emerald/FRLG map data differs, so each needs its own
    * ROM file (Guy's requirement). Only non-empty entries are written. */
   static const char* const k_romkey[3] = { "romrs", "romem", "romfr" };
@@ -550,6 +561,7 @@ static void cfg_load(void) {
       else if (!strcmp(k, "all"))    g_show_all    = (v[0] == '1');
       else if (!strcmp(k, "hidden")) g_show_hidden = (v[0] == '1');
       else if (!strcmp(k, "yard"))   g_yard_visitors = (v[0] == '1');
+      else if (!strcmp(k, "romoff")) g_rom_art_off = (v[0] == '1');
       else if (!strcmp(k, "bak"))    { int m = v[0] - '0'; if (m >= 0 && m <= 2) g_backup_mode = m; }
       else if (!strcmp(k, "anim"))   { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); g_anim_mask = m & ((1u << ANIM_COUNT) - 1u); }
       else if (!strcmp(k, "rumble")) { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); rmbl_set_mask(m); }
@@ -1641,6 +1653,24 @@ static void app_icon_rom_open(void) {
   pdna_origin_art_set_romsprite(0);
   pdna_trainer_set_romchrome(0);
   pdna_bag_set_romchrome(0);
+#ifndef PDNA_DELTA
+  /* Hoisted above the detach check (was only done inside the SD-candidate loop
+   * below) so a detach mid-session still releases the SD file handle instead of
+   * leaking it across the flip -- the loop's own close-if-open below is now the
+   * re-open case (a DIFFERENT path was just registered), not the only one. */
+  if (s_iconrom_fil_open) { f_close(&s_iconrom_fil); s_iconrom_fil_open = false; }
+#endif
+  /* TEST INSTRUMENT (item 7): which state this boot/re-open landed in. Checked once
+   * here rather than "sprinkled" at each consumer -- see g_rom_art_off's own comment
+   * for why gating HERE is what makes every consumer downstream see "no ROM"
+   * uniformly, through the SAME no-ROM fallbacks a real no-ROM session already uses
+   * and this project already trusts. */
+  log_line("rom art: %s (%s registered)", g_rom_art_off ? "DETACHED (testing)" : "attached",
+           app_any_rom_registered() ? "a path is" : "no path is");
+  if (g_rom_art_off) {
+    app_icon_cache_resolve(0, false);   /* the same tail every "no ROM this session" path reaches */
+    return;
+  }
   uint32_t fsz = 0;
   if (fused_rom_present(&fsz) && rom_open(&s_iconrom_ctx, fused_rom_read, 0, fsz)) {
     /* rom_chrome_open() does NOT need the GF header rom_mon_open() below checks
@@ -3966,11 +3996,18 @@ static uint32_t dc_seed(void) {
   return e | 1u;
 }
 
-#ifdef HAVE_DAYCARE_BG
-/* Areas on the daycare map bg (icon-CENTRE SCREEN coords; bg blitted at screen y 12),
- * TWO mon slots each so two mons in the same area don't overlap. Mirrors the SLOTS in
- * tools/gen_daycare_img.py (aligned to the lava/water/trees/yellow/flowers in the map). */
+/* Areas on the daycare scene (icon-CENTRE SCREEN coords; the scene is drawn/blitted
+ * starting at screen y 12), TWO mon slots each so two mons in the same area don't
+ * overlap. This — the SIX-AREA TYPE GROUPING BELOW, dc_region_pick/dc_take_slot,
+ * and the yard-visitor roll — is placement LOGIC, not art: it used to live entirely
+ * inside `#ifdef HAVE_DAYCARE_BG`, so the artless build (no compiled yard bg) lost
+ * it outright rather than falling back to it, which is why both were reported
+ * missing from the artless Day-Care alongside the (genuinely art-only) background
+ * image. It is unconditional now; only the SPOT COORDINATES differ by build, since
+ * the compiled art's spots are aligned to painted terrain (tools/gen_daycare_img.py)
+ * that the procedural scene has no equivalent of. */
 enum { DR_LAVA, DR_WATER, DR_SKY, DR_ELEC, DR_GRASS, DR_EMPTY, DR_COUNT };
+#ifdef HAVE_DAYCARE_BG
 /* Two slots per area, spaced so the 32x32 icons don't overlap (>=32px apart in one
  * axis) — the lava pit is tall so its two slots stack vertically, the others spread
  * horizontally. cx/cy are CENTERS; the icon is drawn at (cx-16, cy-16). */
@@ -3982,6 +4019,23 @@ static const struct { int cx, cy; } DC_SPOT[DR_COUNT][2] = {
   { { 26, 94}, { 66,108} },    /* GRASS - grass/bug (the flower beds)      */
   { { 96, 84}, {134,104} },    /* EMPTY - everyone else (plain grass)      */
 };
+#else
+/* No compiled yard art: the SAME six labelled areas, as generic anchor points spread
+ * across the procedural scene (dc_scene()'s #else branch: sky y 12..90, grass y
+ * 90..160), clear of the drawn house (x>=166) and mostly clear of the fence line
+ * (y~82-91). Not thematically matched to a picture — there is no lava/water for a
+ * mon to stand on — only the "sorted by type into one of six areas" BEHAVIOUR is
+ * being restored here, same as it always was for the real boarders in the art
+ * build; a fire-type still visibly clusters apart from a water-type. */
+static const struct { int cx, cy; } DC_SPOT[DR_COUNT][2] = {
+  { { 26, 34}, { 26, 66} },    /* LAVA  */
+  { {130, 34}, {130, 66} },    /* WATER */
+  { { 78, 22}, {110, 22} },    /* SKY   */
+  { { 46, 60}, { 96, 66} },    /* ELEC  */
+  { { 20,104}, { 56,112} },    /* GRASS */
+  { { 96,104}, {132,112} },    /* EMPTY */
+};
+#endif
 #define DC_MAXDECO 5
 static int      s_deco_x[DC_MAXDECO], s_deco_y[DC_MAXDECO];
 static uint16_t s_deco_sp[DC_MAXDECO];
@@ -4051,7 +4105,12 @@ static int dc_take_slot(int used[DR_COUNT][2], int rg, uint32_t* rng) {
  * They are always internal species 1..251, i.e. Kanto/Johto only — never a Hoenn
  * mon — which is itself the tell that they are not save data. The screen now says
  * so out loud (pk_daycare_yard_note), draws them hazed and behind the real pair,
- * and Settings > Yard visitors turns them off. */
+ * and Settings > Yard visitors turns them off.
+ *
+ * Unconditional (not `#ifdef HAVE_DAYCARE_BG`): the roll itself is pure RNG/logic
+ * and app_yard_visitors_ok() already separately gates on a ROM being registered
+ * (so there is real icon art to draw them with) — that gate, not the compiled-art
+ * ifdef, is the right reason for them to stay off. */
 static void dc_roll_decos(void) {
   uint32_t rng = dc_seed();
   rng = rng * 1103515245u + 12345u;
@@ -4062,9 +4121,26 @@ static void dc_roll_decos(void) {
   }
   s_dc_visit_rng = rng | 1u;                              /* seed the area-pick stream for this visit */
 }
-/* Compose a 32x32 icon over the bg image at screen (x,y) and DMA each scanline (no
- * separate erase => no flicker on the single Mode-3 buffer). x is forced even for
- * the word-aligned DMA. */
+/* Scene bottom bound for icon placement/compositing: the compiled bg's own height,
+ * or (procedural build) the usable area above the info panel (PDNA_DCY_PANEL_Y).
+ * DAYCARE_BG_W is always UI_SCR_W (240, tools/gen_daycare_bg.py's OUT_W) — see
+ * dc_icon_over_bg below, which used to bound against DAYCARE_BG_W directly. */
+#ifdef HAVE_DAYCARE_BG
+#define DC_SCENE_BOT (12 + DAYCARE_BG_H)
+#else
+#define DC_SCENE_BOT 122
+#endif
+/* Compose a 32x32 icon over whatever dc_scene() already drew at screen (x,y) and DMA
+ * each scanline (no separate erase => no flicker on the single Mode-3 buffer). x is
+ * forced even for the word-aligned DMA.
+ *
+ * Reads the "background" straight back out of the framebuffer (vid_mem) rather than
+ * a dedicated pixel array: by the time this is called, dc_scene() has already painted
+ * every pixel it can touch — the compiled yard bg (HAVE_DAYCARE_BG) or the procedural
+ * sky/grass/house scene alike — so blending against "whatever is already on screen"
+ * is correct either way, and it is what lets the SAME function (and so the SAME
+ * visitor-haze effect) serve both builds. For the art build this is byte-identical
+ * to the old daycare_bg[] lookup: DAYCARE_BG_W is always UI_SCR_W (240). */
 /* `num` is the icon's weight out of 8 when it is blended with the yard behind it:
  * 8 = fully opaque (the player's own boarders), lower = hazed into the background
  * (the invented yard visitors, so they read as scenery). Same blend as
@@ -4073,15 +4149,14 @@ static void dc_roll_decos(void) {
 static u16 __attribute__((aligned(4))) s_dcline[MON_ICON_W];   /* 32-bit DMA needs word align */
 static void dc_icon_over_bg(int x, int y, const u16* icon, int num) {
   if (!icon) return;
-  rumble_io_suspend();   /* reads icon + daycare_bg from ROM per pixel; mute the motor toggle */
+  rumble_io_suspend();   /* reads icon from ROM per pixel (ROM icon rung); mute the motor toggle */
   x &= ~1;
   for (int j = 0; j < MON_ICON_H; j++) {
     int yy = y + j;
-    if (yy < 12 || yy >= 12 + DAYCARE_BG_H) continue;
-    const u16* bg = &daycare_bg[(yy - 12) * DAYCARE_BG_W];
+    if (yy < 12 || yy >= DC_SCENE_BOT) continue;
     for (int i = 0; i < MON_ICON_W; i++) {
       int xx = x + i;
-      u16 c = (xx >= 0 && xx < DAYCARE_BG_W) ? bg[xx] : 0;
+      u16 c = (xx >= 0 && xx < UI_SCR_W) ? vid_mem[yy * 240 + xx] : 0;
       u16 pxl = icon[j * MON_ICON_W + i];
       if (pxl & 0x8000) {
         u16 s = (u16)(pxl & 0x7FFF);
@@ -4100,7 +4175,6 @@ static void dc_icon_over_bg(int x, int y, const u16* icon, int num) {
   }
   rumble_io_resume();
 }
-#endif /* HAVE_DAYCARE_BG */
 
 static void dc_scene(void) {
 #ifdef HAVE_DAYCARE_BG
@@ -4139,18 +4213,21 @@ static int dc_rescan(uint32_t base, uint32_t stride, uint8_t* recs[2], PkMon dc[
   *egg = (g_game == PK_EMERALD) ? ((op[0] | op[1] | op[2] | op[3]) != 0) : ((op[0] | op[1]) != 0);
   int stepc = (g_game == PK_EMERALD) ? g_sb1[base + 284] : g_sb1[base + 282];
   int tc = (g_game == PK_RS) ? stepc : (256 - stepc); if (tc < 1 || tc > 256) tc = 256; *to_check = tc;
-#ifdef HAVE_DAYCARE_BG
+  /* "Special areas": each boarder -> a slot in its type area (random for dual-type).
+   * Unconditional in both builds now — DC_SPOT supplies art-aligned coordinates with
+   * the compiled bg, generic ones without it (see DC_SPOT's own comment above). */
   int used[DR_COUNT][2] = {{0}};
   uint32_t arng = s_dc_visit_rng;               /* per-visit stream: stable within a visit, varies across */
-  for (int i = 0; i < n; i++) {                  /* each boarder -> a slot in its type area (random for dual-type) */
+  for (int i = 0; i < n; i++) {
     int slot = dc_take_slot(used, dc_region_pick(dc[i].species, &arng), &arng);
     int rg = (slot < 0) ? DR_EMPTY : slot / 2, sp = (slot < 0) ? 0 : slot % 2;
     int cx = DC_SPOT[rg][sp].cx - 16, cy = DC_SPOT[rg][sp].cy - 16;
     cx &= ~1; if (cx < 2) cx = 2; else if (cx > UI_SCR_W - 34) cx = UI_SCR_W - 34;
-    if (cy < 12) cy = 12; else if (cy > 12 + DAYCARE_BG_H - MON_ICON_H) cy = 12 + DAYCARE_BG_H - MON_ICON_H;
+    if (cy < 12) cy = 12; else if (cy > DC_SCENE_BOT - MON_ICON_H) cy = DC_SCENE_BOT - MON_ICON_H;
     dcx[i] = cx; dcy[i] = cy;
   }
-  /* the 2..5 random decoration mons (rolled once per visit) -> their type areas */
+  /* the 2..5 random decoration mons (rolled once per visit, or none — see
+   * dc_roll_decos/app_yard_visitors_ok) -> their type areas */
   s_ndeco = 0;
   for (int d = 0; d < s_ndeco_roll && s_ndeco < DC_MAXDECO; d++) {
     int slot = dc_take_slot(used, dc_region_pick(s_deco_roll[d], &arng), &arng);
@@ -4158,12 +4235,9 @@ static int dc_rescan(uint32_t base, uint32_t stride, uint8_t* recs[2], PkMon dc[
     int rg = slot / 2, sp = slot % 2;
     int cx = DC_SPOT[rg][sp].cx - 16, cy = DC_SPOT[rg][sp].cy - 16;
     cx &= ~1; if (cx < 2) cx = 2; else if (cx > UI_SCR_W - 34) cx = UI_SCR_W - 34;
-    if (cy < 12) cy = 12; else if (cy > 12 + DAYCARE_BG_H - MON_ICON_H) cy = 12 + DAYCARE_BG_H - MON_ICON_H;
+    if (cy < 12) cy = 12; else if (cy > DC_SCENE_BOT - MON_ICON_H) cy = DC_SCENE_BOT - MON_ICON_H;
     s_deco_sp[s_ndeco] = s_deco_roll[d]; s_deco_x[s_ndeco] = cx; s_deco_y[s_ndeco] = cy; s_ndeco++;
   }
-#else
-  for (int i = 0; i < n; i++) { dcx[i] = (i == 0) ? 70 : 108; dcy[i] = 90; }
-#endif
   return n;
 }
 
@@ -4293,14 +4367,13 @@ static void pdna_daycare(void) {
 #ifndef HAVE_DAYCARE_BG
   const u16 GRASS = RGB15(13, 22, 9);
 #endif
-#ifdef HAVE_DAYCARE_BG
-  /* Fresh yard visitors each visit — or none, if the user turned them off. BOTH
-   * counters must be zeroed: they are file-scope statics that survive the previous
-   * visit (dc_rescan places from s_ndeco_roll, the draw loops read s_ndeco), so
-   * zeroing one would leave ghosts from last time. */
+  /* Fresh yard visitors each visit — or none, if the user turned them off (or has no
+   * ROM registered — app_yard_visitors_ok()). BOTH counters must be zeroed: they are
+   * file-scope statics that survive the previous visit (dc_rescan places from
+   * s_ndeco_roll, the draw loops read s_ndeco), so zeroing one would leave ghosts
+   * from last time. Unconditional in both builds now — see dc_roll_decos' note. */
   if (app_yard_visitors_ok()) dc_roll_decos();
   else { s_ndeco_roll = 0; s_ndeco = 0; s_dc_visit_rng = dc_seed(); }
-#endif
   int n = dc_rescan(base, stride, recs, dc, phys, dcx, dcy, &off, &to_check);
   int sel = 0, frame = 0, ctr = 0;
   bool redraw = true, rescan = false;
@@ -4319,14 +4392,14 @@ static void pdna_daycare(void) {
         ui_ptext_right(236, 2, UI_DIM, sl); }
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
       int nshow = n;
-#ifdef HAVE_DAYCARE_BG
       /* Visitors FIRST and hazed, so a piece of scenery can never paint over one of
-       * the player's own Pokemon (four of the slot pairs overlap). */
+       * the player's own Pokemon (four of the slot pairs overlap). Unconditional in
+       * both builds — dc_icon_over_bg composites against whatever dc_scene() just
+       * drew, art or procedural alike. */
       for (int i = 0; i < s_ndeco; i++)
         dc_icon_over_bg(s_deco_x[i], s_deco_y[i],
                         mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)), 6);
       nshow += s_ndeco;
-#endif
       for (int i = 0; i < n; i++) {
         const u16* ic = (dc[i].isEgg && !dc[i].isBadEgg) ? mon_icon_egg_frame((uint8_t)(frame & 1))
                                 : mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1));
@@ -4362,12 +4435,9 @@ static void pdna_daycare(void) {
       } else {
         ui_ptext(dcx, dcy0, off ? UI_OK : UI_DIM, off ? "An EGG is ready to collect!" : "No Pokemon are boarding.");
       }
-#ifdef HAVE_DAYCARE_BG
+      /* s_ndeco is 0 unless the user has both a registered ROM and Yard visitors on
+       * (app_yard_visitors_ok), so this already reads correctly in both builds. */
       ui_ptext(dcx, dcy0 + 2 * dcyp, UI_DIM, pk_daycare_yard_note(n, s_ndeco));
-#else
-      /* no yard art -> no invented visitors, so the note only states the slot count */
-      ui_ptext(dcx, dcy0 + 2 * dcyp, UI_DIM, pk_daycare_yard_note(n, 0));
-#endif
       ui_fill_rect(0, PDNA_DCY_FOOTER_Y, UI_SCR_W, 8, UI_BG);
       /* "your 2" is doing the disambiguating work: only the boarders are pickable. */
       ui_ptext(4, PDNA_DCY_FOOTER_Y, UI_DIM, n ? PDNA_DCY_HINT_PAIR
@@ -4376,9 +4446,7 @@ static void pdna_daycare(void) {
     u16 k, fresh;
     do { VBlankIntrWait(); snd_vblank(); key_poll();
          int anim_any = n;
-#ifdef HAVE_DAYCARE_BG
          if (s_ndeco) anim_any = 1;
-#endif
          /* mon_icon_anim_cheap() gates this off when the ONLY icon source is the ROM
           * rung (art_fallbacks.c): up to 7 icons (2 boarders + up to 5 hazed yard
           * visitors) would each pay a real per-icon SD locate+verify on every flip --
@@ -4387,11 +4455,9 @@ static void pdna_daycare(void) {
          if (app_anim_enabled(ANIM_DAYCARE) && anim_any && mon_icon_anim_cheap() &&
              ++ctr >= 30) { /* idle 2-frame bob (flicker-free) */
            ctr = 0; frame ^= 1;
-#ifdef HAVE_DAYCARE_BG
            for (int i = 0; i < s_ndeco; i++)                    /* visitors first + hazed, as on redraw */
              dc_icon_over_bg(s_deco_x[i], s_deco_y[i],
                              mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)), 6);
-#endif
            for (int i = 0; i < n; i++) {                        /* compose icon over the bg + DMA (no erase) */
              const u16* ic = (dc[i].isEgg && !dc[i].isBadEgg) ? mon_icon_egg_frame((uint8_t)(frame & 1))
                                 : mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1));
@@ -5204,6 +5270,59 @@ static void art_extract_screen(void) {
     msg_wait("EXTRACT FAILED", UI_WARN, "Nothing was written (see log).", 0);
   }
 }
+
+/* Settings > Game ROM, once something is registered: a small menu instead of jumping
+ * straight to browse-for-ROM, so item 7's detach switch lives ON this same row (not
+ * a new one) rather than needing its own PDNA_SET_ROWS slot. "Cancel" mirrors
+ * dc_menu's pattern (ui_popup_vfit + a highlighted row list).
+ * Calls app_register_rom() (browse-for-ROM), which only exists outside PDNA_DELTA
+ * (there is no SD to browse in the emulator build) -- kept inside the SAME
+ * #ifndef PDNA_DELTA block as that function (and as this function's only call site,
+ * pdna_settings' S_GAMEROM handler below) rather than its own, so it can never again
+ * end up compiled where its callee isn't. */
+static void rom_row_menu(void) {
+  const char* rows[3]; int act[3], nr = 0;
+  rows[nr] = "Change ROM";                                       act[nr++] = 0;
+  rows[nr] = g_rom_art_off ? "Turn ROM art ON" : "Turn ROM art OFF"; act[nr++] = 1;
+  rows[nr] = "Cancel";                                            act[nr++] = -1;
+  int sel = 0;
+  for (;;) {
+    int my, mh;
+    ui_popup_vfit(nr, 14, 18, 8, &my, &mh);
+    const int mx = 16, mw = 208;
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, "GAME ROM");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < nr; i++) {
+      int y = my + 18 + i * 14; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
+    }
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : nr - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % nr;
+    else if (k & KEY_A) {
+      int a = act[sel];
+      if (a == 0) { app_register_rom(); return; }
+      else if (a == 1) {
+        /* One chokepoint (app_icon_rom_open, gated on g_rom_art_off) — everything
+         * downstream (box/party/dex/daycare/bag/trainer card/...) re-reads its icon
+         * source fresh the next time it draws, so this takes effect on the very
+         * next screen entry with no reboot and nothing left holding a stale
+         * pointer into the shared decode buffers. */
+        g_rom_art_off = !g_rom_art_off;
+        cfg_save();
+        app_icon_rom_open();
+        snd_ok();
+        msg_wait("ROM ART", g_rom_art_off ? UI_DIM : UI_OK,
+                 g_rom_art_off ? "Detached for testing." : "Reattached.",
+                 g_rom_art_off ? "Your ROM path is kept." : "Real art is back on.");
+        return;
+      } else return;                                              /* cancel */
+    }
+  }
+}
 #endif /* PDNA_DELTA */
 
 static void pdna_settings(void) {
@@ -5229,8 +5348,13 @@ static void pdna_settings(void) {
     char r1[44]; siprintf(r1, PDNA_SET_YARD_FMT,
                           !yard_ok ? PDNA_SET_YARD_NEEDROM
                                    : (g_yard_visitors ? PDNA_SET_YARD_ON : PDNA_SET_YARD_OFF));
-    char r2[44]; siprintf(r2, "Game ROM:  %s",
-                          s_iconrom.ok ? rom_kind_name(s_iconrom_ctx.kind) : "not set");
+    /* set+detached shows a state distinct from "not set" -- while detached,
+     * app_icon_rom_open() never opens s_iconrom, so s_iconrom.ok alone would read
+     * as "not set" even though g_rom_path[] still has the file (item 7: the whole
+     * point is that the registration survives the flip). */
+    char r2[44];
+    if (g_rom_art_off && app_any_rom_registered()) siprintf(r2, PDNA_SET_ROM_FMT, PDNA_SET_ROM_ARTOFF);
+    else siprintf(r2, PDNA_SET_ROM_FMT, s_iconrom.ok ? rom_kind_name(s_iconrom_ctx.kind) : PDNA_SET_ROM_NOTSET);
     /* Extract-art row (Phase 2): three dim/live states, same posture as Yard visitors
      * above -- say WHY it is unavailable rather than show a toggle that does nothing. */
     bool art_omega_ok = (active_flashcart == EZ_FLASH_OMEGA);
@@ -5280,7 +5404,7 @@ static void pdna_settings(void) {
 #ifdef PDNA_DELTA
         snd_deny(); msg_wait("NO SD HERE", UI_DIM, "Fuse a ROM into this build", "with tools/fuse_rom.py.");
 #else
-        app_register_rom();
+        if (app_any_rom_registered()) rom_row_menu(); else app_register_rom();
 #endif
       }
       else if (sel == S_ART) {

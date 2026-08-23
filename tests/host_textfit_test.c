@@ -791,6 +791,12 @@ int main(void) {
       snprintf(row, sizeof row, PDNA_SET_ART_FMT, ART[i]);
       chk("settings row", PDNA_SET_ROW_X, MARGIN_R - PDNA_SET_ROW_X,
           (int)strlen(row) * SYS8_W, row); }
+#define SET_ROM_ONE(s) s,
+    static const char* const ROMV[] = { PDNA_SET_ROM_VALUES(SET_ROM_ONE) };
+    for (unsigned i = 0; i < sizeof ROMV / sizeof ROMV[0]; i++) {
+      snprintf(row, sizeof row, PDNA_SET_ROM_FMT, ROMV[i]);
+      chk("settings row", PDNA_SET_ROW_X, MARGIN_R - PDNA_SET_ROW_X,
+          (int)strlen(row) * SYS8_W, row); }
     chk("settings row", PDNA_SET_ROW_X, MARGIN_R - PDNA_SET_ROW_X,
         (int)strlen(PDNA_SET_ART_GO) * SYS8_W, PDNA_SET_ART_GO);
     snprintf(row, sizeof row, PDNA_SET_ART_CACHED_FMT, (unsigned long)PDNA_SET_ART_CACHED_MAXKB);
