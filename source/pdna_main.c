@@ -88,6 +88,7 @@
 #include "savefile.h"
 #include "log.h"
 #include "fastseek.h"     /* FIL cluster link maps -- the ONE cltbl owner */
+#include "icon_store.h"    /* THE icon row cache -- reset from app_icon_cache_resolve */
 #include "pdna_romcheck.h"  /* sampled high-ROM self-check: the incomplete-SD-load guard */
 #include "pdna_romfull.h"   /* the FULL-image verifier screen (boot hold R+SELECT / FILE MENU) */
 #include "ui.h"
@@ -1803,6 +1804,18 @@ static void app_icon_cache_resolve(const RomCtx* rc_ok, bool deep) {
   } else {
     boxoam_set_icon_cache(0);
   }
+  /* THE single invalidation chokepoint for every icon byte in RAM. icon_store_reset
+   * closes and reopens the icons.bin handle, rebuilds its cluster link map, reloads the
+   * palettes and drops every cached row -- so a ROM re-registration or a fresh
+   * extraction can never leave one session's bytes serving under another's key. Nothing
+   * else in the app may invalidate the store; a screen "clearing the cache to be safe"
+   * is exactly how the icon path ended up five layers deep re-reading everything.
+   *
+   * Passed the ROM unconditionally: the store picks the cache rung when icons.bin is
+   * both present and readable, and falls to the ROM otherwise, so this one call decides
+   * the rung for the whole session. */
+  icon_store_reset(ready ? art_session_icons_path() : 0,
+                   s_iconrom.ok ? &s_iconrom : 0);
   icon_rung_log(rc_ok, true);
 }
 
@@ -5483,6 +5496,15 @@ static void art_extract_screen(void) {
   siprintf(kb, "%lu KB", (unsigned long)(ART_ICONS_TOTAL_BYTES / 1024u));
   char l1[40]; siprintf(l1, "Icons, about %s, ~30s.", kb);
   if (!app_confirm("Extract art from ROM?", l1)) return;
+
+  /* THE EXTRACTION LATCH -- mandatory, and the single most dangerous invariant this
+   * change adds. icon_store holds icons.bin OPEN for the whole session, and FF_FS_LOCK
+   * is 0, so FatFs will NOT stop that handle surviving across the f_unlink + f_rename
+   * art_extract_run performs on the very same file. A FIL left pointing at a freed
+   * cluster chain, on a card that also holds the user's saves, is not a cosmetic bug.
+   * FatFs provides no mechanism here; this call IS the defence. app_icon_cache_resolve
+   * below reopens everything. */
+  icon_store_suspend();
 
   hb_arm();
   u32 elapsed_ms, kbs10; bool cancelled;

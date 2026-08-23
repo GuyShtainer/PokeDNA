@@ -25,8 +25,8 @@
 #include "hand_oam.h"
 #include "mon_front.h"
 #include "mon_back.h"
-#include "art_session.h"     /* the memoized "is icons.bin ready" verdict (read-only) */
-#include "art_icons_cache.h" /* the icons.bin reader                                  */
+#include "art_icons_cache.h" /* art_icons_row_for -- the species/form -> row mapping   */
+#include "icon_store.h"      /* THE icon cache: rows, palettes, both rungs, one owner */
 #include "icon4.h"           /* 4bpp -> RGB15 expansion                               */
 #include "artbuf.h"          /* mon_decomp -- the shared 8 KiB scratch, reused here   */
 #include "sys.h"             /* EWRAM_BSS                                             */
@@ -35,7 +35,7 @@
 #include "perf.h"            /* PERF_ICON -- which rung served, and how expensively    */
 #include "mon_icons_gate.h"  /* PDNA_MON_ICONS_ART_COMPILED -- is this a full-art build */
 
-/* ---- RGB15 icon/sprite accessors: no COMPILED art -> the icons.bin cache ---------
+/* ---- RGB15 icon/sprite accessors: no COMPILED art -> source/icon_store.c ---------
  *
  * These four accessors and mon_icon_egg{,_frame} are weak, so mon_icons.c's strong
  * definitions win outright in a full-art build (this file's bodies are then simply
@@ -43,174 +43,47 @@
  * the rest of this file already relies on. In the artless build, these ARE the
  * symbols every caller gets: pdna_pick.c's Pokedex grid, the party overlay, the
  * pickers, all of them, with ZERO changes to any of those call sites. This is what
- * turns mon_icon_for() non-NULL and restores the Pokedex GRID view (pdna_pick.c:585
- * picks it the moment mon_icon_for(1) answers) -- DESIGN.md Sec 4.7 / Sec 6 Phase 2's
- * "item 9 falls out of item 1's plumbing" (item 1 here is really item 9's sibling:
- * both ride the SAME icons.bin cache, just the box grid gets its 4bpp tiles straight
- * from box_oam.c's own ladder while these accessors expand the same bytes to RGB15).
+ * turns mon_icon_for() non-NULL and restores the Pokedex GRID view (pdna_pick.c picks
+ * it the moment mon_icon_for(1) answers), and it is why the daycare's icons appear.
  *
- * No session-held file handle here (or anywhere in the icons cache -- see
- * art_icons_cache.h's header comment: the first cut held one per caller and that
- * measured 2,272 B of new IWRAM .bss, past the ~1,232 B this build is known to crash
- * on). art_icons_read_frame opens/reads/closes its own FIL per call; the only static
- * cost is art_icons_cache.c's single shared 536 B metadata block, populated lazily on
- * first use and shared with box_oam.c's own cache rung -- both call the SAME
- * functions, there is no separate instance here to hold anything.
+ * WHAT USED TO LIVE HERE, AND WHY IT DOES NOT ANY MORE (2026-08-23). This file owned
+ * three of the artless build's five icon caches: a 3-slot MRU over raw 512 B
+ * (row, frame) pairs (s_icfr, 1,560 B of EWRAM), a ONE-ENTRY row-locate memo
+ * (s_romloc), and the 3 ROM palette banks (s_rompal). All three are gone into
+ * source/icon_store.c, which holds SIX whole rows -- both bob frames each -- behind
+ * one key, one eviction policy and one open file handle.
  *
- * Deliberately reads the MEMOIZED verdict only (art_session_icons_ready_memoized),
- * never triggers its own check: see art_session.h's comment on why a caller with no
- * RomCtx of its own must never be the one that primes the memo (it would skip the
- * "wrong ROM" cross-check). pdna_main.c's app_icon_rom_open() primes it once, at
- * boot and on every ROM re-registration, before any screen draws. */
+ * The MRU's own header comment carried the measurement that condemned it, and it is
+ * worth keeping on the record rather than deleting with the code: 3 slots served
+ * exactly ONE bobbing mon for free, and cost 12 RomReadFn calls per flip at n=2 and 18
+ * at n=3 -- a SUSTAINED per-tick cost, not a one-time fill. The binding constraint was
+ * not the 3 slots at all but the single-entry locate memo one level below, which two
+ * alternating species evicted on every access. Both are the same bug in the end: a
+ * cache smaller than the working set, swept cyclically, has a hit rate of zero. That
+ * is precisely Guy's "it gets worse the more pokemon are moving", and it is what
+ * icon_store's pinned plan set exists to end.
+ *
+ * This file no longer consults art_session at all. Deciding WHICH rung serves -- and
+ * therefore whether the icons.bin verdict has been cross-checked against the open ROM
+ * -- is icon_store's job now, and pdna_main.c's app_icon_rom_open() is still the one
+ * place that primes that verdict, at boot and on every ROM re-registration, before any
+ * screen draws. */
 
-/* ---- a tiny MRU cache over the RAW 512 B per-frame bytes -------------------------
- *
- * icon_from_cache used to be a pure ROM-array lookup; since the icons.bin cache
- * landed it is f_open + f_lseek (up to 450 KB into a FAT cluster chain -- FF_USE_
- * FASTSEEK is 0, so even a BACKWARD seek re-walks the chain from the start) + a 512 B
- * f_read + f_close, ON EVERY CALL. Two of this file's ~15 call sites are animation
- * loops that redraw once per bob flip (pdna_pick.c's Pokedex-grid caught-cell bob,
- * every DEX_ANIM_PERIOD == 30 frames; pdna_main.c's party bob, every
- * PARTY_BOB_PERIOD frames) -- callers written when this was a cheap lookup never
- * expected a file operation, and none of this runs inside an actual IRQ handler (it
- * is ordinary mainline draw code between s_vsync() calls, so FatFs's own OS-mode
- * handling is safe here), but a synchronous SD op on every redraw is still real,
- * avoidable stutter this fix removes for the common case.
- *
- * MEMORY ARITHMETIC. The Makefile's EWRAM-overflow guard reported only 2,308 B free
- * below 0x02040000 on the build immediately before this change -- mon_decomp alone
- * already spends 8,192 of EWRAM's 262,144, and the rest of the app's static buffers
- * account for the remainder. So this cache is sized to what is actually left, not to
- * what would fully cover every caller. Each slot holds the RAW 512 B frame (exactly
- * what art_icons_read_frame would have produced), keyed by (row, frame):
- * uint16_t row (2 B) + uint8_t frame (1 B) + uint8_t valid (1 B) + uint32_t age (4 B,
- * LRU order) + uint8_t raw[512] = 520 B/slot. ICON_FRAME_CACHE_SLOTS 3 -> 1,560 B,
- * leaving 748 B of EWRAM headroom (2,308 - 1,560), still comfortably positive.
- * IWRAM cost is ZERO: EWRAM_BSS (".sbss") is a completely separate linker region
- * from the ~12 KiB IWRAM stack budget the earlier "hold a session-long FIL per
- * caller" cut blew (2,272 B there, see art_icons_cache.h's header comment) --
- * nothing in this cache touches IWRAM at all.
- *
- * A hit still re-expands to RGB15 into mon_decomp (cheap ALU, no I/O) on every call,
- * so the "decode fresh, blit immediately, mon_decomp is shared scratch" contract
- * every caller already relies on is UNCHANGED -- only the SD read is skipped.
- * Eviction is plain LRU over 3 slots (a linear scan + an age counter; 3 entries is
- * nowhere near worth a smarter structure).
- *
- * MEASURED LIMIT (2026-08-23 review; a previous "up to 3 simultaneously-visible mons
- * ... ZERO SD I/O" claim here was FALSE and is corrected below -- see
- * tests/host_dexicons_test.c's n=1/n=2/n=3 sweep, the live regression guard for these
- * exact numbers, real ROM ladder): 3 slots fully serves a screen that keeps
- * redrawing ONE icon (the box/summary single-mon views, the Pokedex list/grid
- * selection highlight, a 2-frame idle bob of exactly ONE bobbing mon) with ZERO SD
- * I/O after its first two fills -- measured 2 RomReadFn calls total, ever, then 0 for
- * the rest of the session. It does NOT scale to 2 or 3 simultaneously-bobbing mons:
- * a 2-frame bob needs 2 keys per mon, and this rung's OWN row-locate memo
- * (rom_mon_locate_row_verified's single-entry cache, one level below this MRU) holds
- * only ONE species at a time -- so cycling between 2+ distinct species re-locates
- * AND re-fills on EVERY access, EVERY flip, not just the first. Measured: 12
- * RomReadFn calls PER FLIP at n=2, 18 PER FLIP at n=3 -- a sustained per-tick cost,
- * not a one-time fill. Only ONE simultaneously-bobbing mon is actually free.
- *
- * CONSEQUENCE FOR THE GATE: pdna_pick.c:657's `&& mon_icon_anim_cheap()` exists to
- * keep this rung's idle-bob callers off this cache ENTIRELY when only the ROM rung
- * serves (a caught cell just holds its first frame instead of bobbing -- no I/O, no
- * animation). Do not read the numbers above as license to relax that gate into "the
- * MRU can carry a multi-mon bob for free" -- for the Pokedex grid's many-caught-cell
- * bob or the party overlay's up-to-6-mon bob, that would put up to 18 RomReadFn calls
- * (several of them >4 KiB backward seeks that re-walk a 16 MB FAT cluster chain,
- * FF_USE_FASTSEEK is 0) on a 30-frame timer -- exactly the "no SD I/O on an animation
- * tick" trap this project has already paid for twice. This cache does NOT
- * eliminate SD I/O for those callers -- they still miss past slot 3 (and past the
- * single-entry row-locate memo) and pay the full cost every bob flip, same as
- * pre-cache. There was no EWRAM room left to do better without shrinking some OTHER
- * static buffer first. */
-#define ICON_FRAME_CACHE_SLOTS 3
-typedef struct {
-  uint16_t row;
-  uint8_t  frame;
-  uint8_t  valid;
-  uint32_t age;
-  uint8_t  raw[512];
-} IconFrameSlot;
-static IconFrameSlot EWRAM_BSS s_icfr[ICON_FRAME_CACHE_SLOTS];
-static uint32_t s_icfr_clock = 0; /* IWRAM .bss, 4 B -- an LRU tick, not a buffer */
-
-/* Drop every cached frame. Always defined (never weak -- nothing else provides this
- * symbol), so it links the same in a full-art build too, where it simply has nothing
- * to invalidate. Called from app_icon_cache_resolve (pdna_main.c) -- the one place
- * that already resets every OTHER icons.bin-derived memo (art_session_invalidate,
- * boxoam_set_icon_cache) on a ROM re-registration AND after a fresh extraction, since
- * the file behind the SAME path string can hold different bytes afterwards. */
-void icon_frame_cache_invalidate(void) {
-  for (int i = 0; i < ICON_FRAME_CACHE_SLOTS; i++) s_icfr[i].valid = 0;
-}
-
-/* Find (row, frame)'s slot: a hit bumps its age and returns its index; a miss claims
- * a slot (an empty one first, else the least-recently-used) and returns THAT index
- * with valid left 0 -- the caller must fill s_icfr[idx].raw and only then set valid,
- * so a read failure leaves the slot exactly as it would be on a genuine miss (never
- * serving unfilled/garbage bytes as if they were a real cached frame). */
-static int icon_frame_slot_index(uint16_t row, uint8_t frame, bool* hit) {
-  for (int i = 0; i < ICON_FRAME_CACHE_SLOTS; i++)
-    if (s_icfr[i].valid && s_icfr[i].row == row && s_icfr[i].frame == frame) {
-      s_icfr[i].age = ++s_icfr_clock;
-      *hit = true;
-      return i;
-    }
-  int victim = 0;
-  for (int i = 0; i < ICON_FRAME_CACHE_SLOTS; i++) {
-    if (!s_icfr[i].valid) { victim = i; break; }              /* an empty slot always wins */
-    if (s_icfr[i].age < s_icfr[victim].age) victim = i;
-  }
-  s_icfr[victim].row = row; s_icfr[victim].frame = frame;
-  s_icfr[victim].valid = 0; s_icfr[victim].age = ++s_icfr_clock;
-  *hit = false;
-  return victim;
-}
-
-/* ---- ROM rung: the icons.bin cache needs a real SD card to BUILD (art_extract_
- * screen writes it, DESIGN.md Sec 3), so no emulator and no fresh registration ever
- * has one -- until now mon_icon_for* had NOTHING below the cache, so a session with
- * a registered/fused ROM but no extracted cache returned NULL from every RGB15
- * accessor. That is why pdna_pick.c:585's `mon_icon_for(1) ? DV_GRID : DV_LIST`
- * always forced the Pokedex to its list view, and why the daycare's icons (drawn
- * through these same accessors) never appeared: neither screen has its own art, they
- * only ever had the ONE rung this file provided.
- *
- * This mirrors box_oam.c's own rom_icon_read_verified rung one level up, over a
- * SEPARATE reader on the SAME open RomMon (box_oam.c's locate memo is private to
- * that file, and the two ladders visit rows in different orders -- the box walks
- * slot order, this walks whatever order the dex/party/picker call it in), keyed by
- * the SAME row axis art_icons_row_for/rom_mon.c's table_species() already agree on
- * (rom_mon.h's own header comment: "both sides of the cache agree ... by
- * construction"), so no species/form re-derivation is needed -- rom_mon_locate_
- * row_verified takes the row directly. */
+/* Set by pdna_main.c's app_icon_rom_open() alongside boxoam_rom_icons(). This file no
+ * longer READS from the ROM -- icon_store does -- but it still needs to know whether a
+ * ROM rung exists at all, for the anim gate below. rm may be NULL (no ROM this
+ * session). */
 static const RomMon* s_rommon = 0;
 
-/* One row's locate, memoised at depth 1 (box_oam.c's own memo is the same shape).
- * ~11 B of IWRAM .bss. Cleared on every (re-)registration so a stale offset can
- * never survive onto a different ROM. */
-static RomMonLoc s_romloc;
-static uint16_t  s_romloc_row = 0xFFFF;
-
-/* The 3 shared icon palettes, loaded from ROM the first time each bank is actually
- * needed and kept for the rest of the session -- 96 B, turns what would otherwise be
- * a repeated 2-read rom_mon_icon_pal() call (every distinct bank redrawn) into at
- * most 3 reads total per ROM registration. Bit i of s_rompal_have set = bank i
- * loaded. */
-static uint16_t s_rompal[ROM_MON_PALS][16];
-static uint8_t  s_rompal_have = 0;
-
-/* Called from pdna_main.c's app_icon_rom_open(), alongside boxoam_rom_icons() --
- * same open RomMon, a second independent reader. rm may be NULL/not-ok (no ROM this
- * session): every rung above already treats a NULL s_rommon as "this rung is
- * absent", so no session with no ROM and no cache changes behaviour at all. */
 void art_fallbacks_set_rommon(const struct RomMon* rm) {
   s_rommon = (rm && rm->ok) ? rm : 0;
-  s_romloc_row = 0xFFFF;
-  s_rompal_have = 0;
 }
+
+/* Kept as a symbol because pdna_main.c's app_icon_cache_resolve() calls it as part of
+ * the one invalidation chokepoint, and because a full-art build links this file too
+ * (where it has nothing to invalidate). The real work moved into icon_store_reset(),
+ * which app_icon_cache_resolve calls right beside this. */
+void icon_frame_cache_invalidate(void) { }
 
 /* True while the CURRENT icon source is cheap enough to redraw on every idle-
  * animation tick. In a full-art build this is unconditionally true: PDNA_MON_ICONS_
@@ -224,128 +97,78 @@ void art_fallbacks_set_rommon(const struct RomMon* rm) {
  * (the common case: compiled art needs no icons.bin at all) answered FALSE and
  * silently killed the Pokedex-grid bob and the daycare bob -- see mon_icons_gate.h.
  *
- * In the artless build (this rung is actually reachable) the real question is: is
- * the icons.bin cache serving, or the ROM rung below it? The cache costs one
- * seek+read per flip (the pre-existing accepted cost the MRU cache's own header
- * comment already documents) -- cheap. The ROM rung's locate-then-verify MISS costs
- * up to 8 RomReadFn calls (4 locate + 2 frame-verify + up to 2 palette -- see
- * tests/host_dexicons_test.c for the measured numbers), which is real, avoidable SD
- * churn on a redraw timer -- exactly the "no SD I/O on an animation tick" trap
- * box_oam.c's own glove fix already paid for once.
+ * THE ARTLESS BODY IS UNCHANGED IN MEANING, and deliberately so at this step. It
+ * used to read `art_session_icons_ready_memoized() || !s_rommon`, i.e. "is the
+ * icons.bin cache serving, or is there nothing to read at all?". It now asks
+ * icon_store which rung it settled on, which is the same question answered by the
+ * module that actually does the reading -- and is strictly more accurate, because
+ * icon_store only reports the cache rung once it has really opened the file AND
+ * validated its metadata tail, where the old memo answered on the session verdict
+ * alone.
+ *
+ * WHAT THIS GATE GETS WRONG, RECORDED HERE BECAUSE THE FIX IS THE NEXT STEP AND NOT
+ * THIS ONE. It asks WHICH RUNG is serving. That is measurably the wrong question, and
+ * inverted: on a real card with a normally-populated root directory the old cache rung
+ * cost 20-35 sectors per icon (an f_open re-walking three directory levels, per icon,
+ * per redraw) against the ROM rung's 17-20 -- so it was gating OFF the cheaper rung and
+ * waving the more expensive one through. The right question is whether the rows the
+ * screen is about to flip are ALREADY IN RAM, which is a property of the screen's
+ * working set and the pool, not of the rung.
+ *
+ * It is NOT changed here, because changing it here would be a regression: with no way
+ * yet for a screen to declare its working set, a capacity-based answer would switch the
+ * Pokedex grid's 21-cell bob ON against a 6-row pool -- a guaranteed 21 misses per flip
+ * on a cyclic sweep, which on the ROM rung is 126 RomReadFn calls every half second
+ * where today it is zero. The gate becomes a residency FACT once icon_store can be told
+ * what a screen is about to draw; until then it stays a rung question and the dex stays
+ * still on the ROM rung.
+ *
+ * What DOES improve at this step, without touching the gate: the party overlay, the
+ * party list and the day-care all have working sets of 6-7 rows against a 6-row pool,
+ * so on the cache rung their bobs go from one f_open + seek + read per mon per flip to
+ * zero SD transactions after the first paint.
  *
  * Callers MUST gate every idle-tick frame swap on this and keep showing a static
  * frame otherwise -- a caught Pokemon that doesn't bob still beats a hole, and costs
- * nothing per tick. That currently means FOUR sites, not the dex-grid-only set this
- * comment used to name: pdna_pick.c's Pokedex-grid bob, pdna_main.c's daycare bob,
- * AND pdna_main.c's two party-icon bobs (app_party_overlay's wait_keys_bob_p and
- * party_list's own bob) -- see each call site for its own gate. */
+ * nothing per tick. That is FOUR sites, grep-verified, not the dex-grid-only set an
+ * older version of this comment named: pdna_pick.c's Pokedex-grid bob, pdna_main.c's
+ * daycare bob, AND pdna_main.c's two party-icon bobs (app_party_overlay's
+ * wait_keys_bob_p and party_list's own bob). */
 #if PDNA_MON_ICONS_ART_COMPILED
 bool mon_icon_anim_cheap(void) { return true; }
 #else
 bool mon_icon_anim_cheap(void) {
-  return art_session_icons_ready_memoized() || !s_rommon;
+  /* Anything but the ROM rung: either the cache is serving (the old memo's verdict,
+   * now taken from the module that opened the file) or there is no rung at all, in
+   * which case a "bob" redraws nothing and costs nothing. */
+  return icon_store_rung() != ICON_RUNG_ROM;
 }
 #endif
 
-/* A running byte-sum, box_oam.c's stage_sum() trick: verifying a read by comparing
- * two passes' sums (instead of a second 512 B buffer + memcmp) avoids a stack local
- * past this codebase's ~256 B ceiling AND new EWRAM in the full-art build -- the
- * caller's OWN raw[512] destination is reused for both passes. */
-static uint32_t sum512(const uint8_t* b) {
-  uint32_t v = 0;
-  for (int i = 0; i < 512; i++) v += b[i];
-  return v;
-}
-
-/* Locate row `row` if not already memoised for it. On success s_romloc.ok is set
- * and s_romloc.pal is the row's palette bank (0..2). Fails closed (leaves the memo
- * self-voided) on a bounds failure or an unstable (never-agreeing) verified read. */
-static bool rom_locate_row(uint16_t row) {
-  if (!s_rommon) return false;
-  if (s_romloc_row == row && s_romloc.ok) return true;
-  int unstable = 0;
-  s_romloc_row = row;
-  PERF_ICON(rom_loc);                            /* a real locate, not a memo hit */
-  if (!rom_mon_locate_row_verified(s_rommon, row, &s_romloc, 4, &unstable)) {
-    s_romloc_row = 0xFFFF;                       /* self-void: next call retries    */
-    if (unstable) log_line("dex icons: rom locate unstable row=%u", row);
-    return false;
-  }
-  return true;
-}
-
-/* Fill `raw[512]` with (row, frame) straight off the open ROM, verified (two reads,
- * accepted only when their sums agree -- see sum512 above). */
-static bool rom_icon_fill(uint16_t row, uint8_t frame, uint8_t raw[512]) {
-  if (!rom_locate_row(row)) return false;
-  /* Counted twice on purpose: the verify is a SECOND full 512 B read off the card, and
-   * hiding it inside "one fill" is what let its cost stay invisible. */
-  PERF_ICON(rom_frm);
-  if (!rom_mon_icon_at(s_rommon, &s_romloc, frame, raw)) return false;
-  uint32_t s1 = sum512(raw);
-  PERF_ICON(rom_frm);
-  if (!rom_mon_icon_at(s_rommon, &s_romloc, frame, raw)) return false;
-  if (sum512(raw) != s1) {
-    log_line("dex icons: rom frame unstable row=%u frame=%u", row, frame);
-    return false;
-  }
-  return true;
-}
-
-/* Row `row`'s palette, 16 RGB15 entries, off the open ROM (with the 3-bank cache
- * above). Shares the row's locate with rom_icon_fill -- a caller that just filled
- * this row's tiles pays zero extra locate reads here. */
-static bool rom_pal_for_row(uint16_t row, uint16_t out[16]) {
-  if (!rom_locate_row(row)) return false;
-  uint8_t id = s_romloc.pal;
-  if (id >= ROM_MON_PALS) return false;
-  if (!(s_rompal_have & (1u << id))) {
-    PERF_ICON(rom_pal);                          /* a real bank fill, not a cache hit */
-    if (!s_rommon || !rom_mon_icon_pal(s_rommon, id, s_rompal[id])) return false;
-    s_rompal_have |= (uint8_t)(1u << id);
-  }
-  memcpy(out, s_rompal[id], 32);
-  return true;
-}
-
-/* species/form/frame, or egg -- decode straight into mon_decomp and return it. Same
- * "decode fresh, blit immediately" contract app_item_icon/app_type_badge already
- * document in pdna_main.c: the buffer is shared, so a caller must use the pointer
- * before anything else decodes into mon_decomp.
+/* species/form/frame, or egg -- copy the row's frame into mon_decomp, expand to RGB15
+ * in place, and return it. Same "decode fresh, blit immediately" contract
+ * app_item_icon/app_type_badge already document in pdna_main.c: mon_decomp is shared,
+ * so a caller must use the pointer before anything else decodes into it.
  *
- * Ladder: the icons.bin cache first (cheapest: one seek+read, no verify -- the
- * whole file's FNV was already checked once this session), then the ROM rung above.
- * The MRU slot and its (row, frame) key are shared by BOTH sources -- there is only
- * ever one active source per session (the cache flips a session-wide memoized
- * verdict), so a slot can never hold one source's bytes under a key the other
- * source would also serve differently. */
+ * TWO transient pointers are live inside this function and they belong to DIFFERENT
+ * owners: icon_store's row (valid only until the next icon_store_* call -- see
+ * icon_store.h's pointer contract) and mon_decomp (valid until the next decode
+ * anywhere). The memcpy consumes the first before icon_store_pal() can invalidate it,
+ * which is why the copy comes before the palette fetch and not after. */
 static const uint16_t* icon_from_cache(uint16_t species, uint8_t form, uint8_t frame,
                                        bool egg) {
-  bool cache_ready = art_session_icons_ready_memoized();
-  if (!cache_ready && !s_rommon) { PERF_ICON(null_ans); return 0; }
-  const char* path = cache_ready ? art_session_icons_path() : 0;
   uint16_t sp = egg ? 412 : species;
-  uint8_t f = egg ? 0 : form;
+  uint8_t  f  = egg ? 0 : form;
+  if (frame >= 2) frame = 0;
   uint16_t row = art_icons_row_for(sp, f);
 
-  bool hit = false;
-  int idx = icon_frame_slot_index(row, frame, &hit);
-  if (hit) PERF_ICON(mru_hit);
-  else {
-    PERF_ICON(mru_miss);
-    bool filled = path && art_icons_read_frame(path, row, frame, s_icfr[idx].raw);
-    if (filled) PERF_ICON(bin);                  /* the icons.bin rung served it */
-    if (!filled && s_rommon) filled = rom_icon_fill(row, frame, s_icfr[idx].raw);
-    if (!filled) { PERF_ICON(null_ans); return 0; } /* slot stays invalid:
-        icon_frame_slot_index already left valid at 0, so the next lookup for this
-        (row, frame) retries instead of trusting a half-filled slot */
-    s_icfr[idx].valid = 1;
-  }
-  memcpy(mon_decomp, s_icfr[idx].raw, sizeof s_icfr[idx].raw);
+  const uint8_t* p = icon_store_row(row);
+  if (!p) { PERF_ICON(null_ans); return 0; }
+  memcpy(mon_decomp, p + (uint32_t)frame * ROM_MON_ICON_BYTES, ROM_MON_ICON_BYTES);
+
   uint16_t pal[16];
-  bool have_pal = path && art_icons_meta_pal(path, row, pal);
-  if (!have_pal && s_rommon) have_pal = rom_pal_for_row(row, pal);
-  if (!have_pal) { PERF_ICON(null_ans); return 0; }
+  if (!icon_store_pal(row, pal)) { PERF_ICON(null_ans); return 0; }
+
   const uint16_t* out = icon4_to_rgb15((uint8_t*)mon_decomp, MON_DECOMP_BYTES, pal)
                             ? mon_decomp : 0;
   if (!out) PERF_ICON(null_ans);

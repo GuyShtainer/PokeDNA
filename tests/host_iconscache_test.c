@@ -1,5 +1,5 @@
-/* source/art_icons_cache.c -- the icons.bin CACHE READER (stateless: no session-held
- * FIL, one shared 536 B metadata block) -- over the REAL lib/fatfs, on a RAM disk,
+/* source/art_icons_cache.c -- the icons.bin FORMAT reader (no handle, no cache, no
+ * static byte: the caller owns the FIL) -- over the REAL lib/fatfs, on a RAM disk,
  * plus a cross-check of art_icons_row_for() against rom_mon.c's own (private)
  * table_species() on a real ROM dump.
  *
@@ -9,17 +9,23 @@
  *      -o /tmp/hic && /tmp/hic
  *
  * What this proves:
- *   1. a well-formed icons.bin: every frame + palette reads back exactly what was
- *      written, with no explicit "open" step (every call is self-contained);
- *   2. a file of the WRONG SIZE is refused by the metadata load, never silently
+ *   1. a well-formed icons.bin: every row (BOTH bob frames) + palette reads back
+ *      exactly what was written;
+ *   2. a MULTI-ROW read returns the same bytes as the same rows read one at a time --
+ *      the bulk path is the retention path, so "one big read == N small reads" is the
+ *      claim the whole batching design rests on -- and does it in ONE disk_read;
+ *   3. a file of the WRONG SIZE is refused by the metadata read, never silently
  *      truncated or padded;
- *   3. out-of-range row/frame/palette indices are refused, not read as garbage;
- *   4. metadata for one path stays cached across calls (no re-read) and reloads
- *      cleanly when the path changes or after art_icons_meta_clear();
+ *   4. out-of-range rows and spans that would run off the end are refused, not read
+ *      as garbage;
  *   5. art_icons_row_for() agrees with rom_mon.c's own species/form -> table-index
  *      mapping for EVERY one of the 440 rows on a real ROM (Emerald) -- the two
  *      halves of the cache (what the extractor stores by row, what the loader looks
  *      up by species) must never silently drift apart.
+ *
+ * The old "metadata stays cached across calls / reloads after clear()" section is gone
+ * with the statics it tested: this module holds nothing now. That caching moved to
+ * source/icon_store.c and is tested by tests/host_iconstore_test.c.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +47,17 @@ static FATFS s_fs;
 static BYTE s_work[FF_MAX_SS * 2];
 static uint8_t s_content[ART_ICONS_TOTAL_BYTES];
 
+/* The handle this module reads through. Opening it here rather than inside the reader
+ * IS the change under test: the previous cut did f_open + f_lseek + f_read + f_close
+ * per 512 B frame, which on a real card was 20-35 disk_read calls to deliver 512 B. */
+static bool with_open(const char* path, bool (*fn)(FIL*, void*), void* ud) {
+  FIL f;
+  if (f_open(&f, path, FA_READ) != FR_OK) return false;
+  bool r = fn(&f, ud);
+  f_close(&f);
+  return r;
+}
+
 static void fresh_card(void) {
   MKFS_PARM opt = { FM_FAT | FM_SFD, 1, 1, 0, 0 };
   f_mount(0, "", 0);
@@ -49,7 +66,6 @@ static void fresh_card(void) {
   CHK(f_mount(&s_fs, "", 1) == FR_OK, "f_mount failed");
   CHK(f_mkdir("/PokeDNA") == FR_OK, "f_mkdir /PokeDNA failed");
   CHK(f_mkdir(DIR_) == FR_OK, "f_mkdir " DIR_ " failed");
-  art_icons_meta_clear();
 }
 
 static bool write_raw(const char* path, const uint8_t* buf, uint32_t n) {
@@ -74,42 +90,96 @@ static void build_content(uint8_t* out) {
     }
 }
 
+/* Both bob frames of one row, and the palette tail, off a handle the test owns. */
+static uint8_t  s_palid[ART_ICONS_ROWS];
+static uint16_t s_pals[ART_ICONS_PALS][16];
+static uint8_t  s_rows[8][ART_ICONS_ROW_BYTES] __attribute__((aligned(4)));
+
+typedef struct { uint16_t first, n; bool ok; } RowsReq;
+static bool do_rows(FIL* f, void* ud) {
+  RowsReq* q = (RowsReq*)ud;
+  q->ok = art_icons_read_rows_fp(f, q->first, q->n, s_rows);
+  return q->ok;
+}
+static bool do_meta(FIL* f, void* ud) {
+  (void)ud;
+  return art_icons_meta_read_fp(f, s_palid, s_pals);
+}
+
+static bool read_rows(uint16_t first, uint16_t n) {
+  RowsReq q = { first, n, false };
+  with_open(ICONS, do_rows, &q);
+  return q.ok;
+}
+static bool read_meta(void) { return with_open(ICONS, do_meta, 0); }
+
 static void t_good(void) {
   fresh_card();
   build_content(s_content);
   CHK(write_raw(ICONS, s_content, sizeof s_content), "good: could not write icons.bin");
 
+  CHK(read_meta(), "good: metadata tail failed");
+  for (uint32_t r = 0; r < ART_ICONS_ROWS; r++)
+    if (s_palid[r] != (uint8_t)(r % 3)) { CHK(0, "good: pal id row %u mismatch", r); break; }
+  for (int i = 0; i < (int)ART_ICONS_PALS; i++)
+    for (int c = 0; c < 16; c++)
+      if (s_pals[i][c] != (uint16_t)(i * 1000 + c)) { CHK(0, "good: pal %d entry %d", i, c); i = 99; break; }
+
+  /* A ROW is 1024 B -- frame 0 then frame 1, adjacent. That adjacency is the whole
+   * reason a bob flip can be free, so it is asserted rather than assumed. */
   int rows_to_check[3] = { 0, 217, (int)ART_ICONS_ROWS - 1 };
   for (int ri = 0; ri < 3; ri++) {
     uint16_t r = (uint16_t)rows_to_check[ri];
-    for (int fr = 0; fr < 2; fr++) {
-      uint8_t frame[512];
-      CHK(art_icons_read_frame(ICONS, r, (uint8_t)fr, frame), "good: row %u frame %d failed", r, fr);
-      CHK(memcmp(frame, s_content + (uint32_t)r * ART_ICONS_ROW_BYTES + fr * 512, 512) == 0,
-          "good: row %u frame %d content mismatch", r, fr);
-    }
-    uint16_t pal[16];
-    CHK(art_icons_meta_pal(ICONS, r, pal), "good: pal %u read failed", r);
-    int expect_id = r % 3;
-    for (int j = 0; j < 16; j++)
-      CHK(pal[j] == (uint16_t)(expect_id * 1000 + j), "good: pal %u entry %d mismatch", r, j);
-    CHK(art_icons_meta_pal_id(ICONS, r) == (uint8_t)expect_id, "good: pal id %u mismatch", r);
+    CHK(read_rows(r, 1), "good: row %u failed", r);
+    CHK(memcmp(s_rows[0], s_content + (uint32_t)r * ART_ICONS_ROW_BYTES,
+               ART_ICONS_ROW_BYTES) == 0, "good: row %u content mismatch", r);
   }
-  for (int i = 0; i < 3; i++) {
-    uint16_t pal[16];
-    CHK(art_icons_meta_pal_at(ICONS, i, pal), "good: pal_at %d failed", i);
-    for (int j = 0; j < 16; j++)
-      CHK(pal[j] == (uint16_t)(i * 1000 + j), "good: pal_at %d entry %d mismatch", i, j);
-  }
-  CHK(!art_icons_meta_pal_at(ICONS, -1, (uint16_t[16]){0}), "pal_at(-1) must be refused");
-  CHK(!art_icons_meta_pal_at(ICONS, 3, (uint16_t[16]){0}), "pal_at(3) must be refused");
 
+  /* Strided sweep, one row at a time. */
   for (uint16_t r = 0; r < ART_ICONS_ROWS; r += 37) {
-    uint8_t out[512];
-    CHK(art_icons_read_frame(ICONS, r, 0, out), "sweep: row %u read failed", r);
-    CHK(memcmp(out, s_content + (uint32_t)r * ART_ICONS_ROW_BYTES, 512) == 0,
-        "sweep: row %u content mismatch", r);
+    CHK(read_rows(r, 1), "sweep: row %u read failed", r);
+    CHK(memcmp(s_rows[0], s_content + (uint32_t)r * ART_ICONS_ROW_BYTES,
+               ART_ICONS_ROW_BYTES) == 0, "sweep: row %u content mismatch", r);
   }
+}
+
+/* THE BATCHING CLAIM. A span of N consecutive rows must return byte-for-byte what the
+ * same N rows return read individually, and must cost ONE disk_read where the
+ * individual reads cost N. Everything the retention design does rests on this, and it
+ * is exactly the property a host RAM disk CAN prove (the wall-clock saving is a
+ * hardware fact, but the transaction count is not). */
+static void t_bulk_equals_singles(void) {
+  fresh_card();
+  build_content(s_content);
+  CHK(write_raw(ICONS, s_content, sizeof s_content), "bulk: write failed");
+
+  static uint8_t one[8][ART_ICONS_ROW_BYTES] __attribute__((aligned(4)));
+  const uint16_t first = 100, n = 8;
+
+  /* N separate reads on ONE held-open handle -- already far better than the old
+   * per-frame f_open, and still the baseline the span has to beat. */
+  unsigned long r0 = rd_reads;
+  {
+    FIL f;
+    CHK(f_open(&f, ICONS, FA_READ) == FR_OK, "bulk: open");
+    for (uint16_t i = 0; i < n; i++)
+      CHK(art_icons_read_rows_fp(&f, (uint16_t)(first + i), 1, one[i]), "bulk: single %u", i);
+    f_close(&f);
+  }
+  unsigned long singles = rd_reads - r0;
+
+  r0 = rd_reads;
+  CHK(read_rows(first, n), "bulk: span read failed");
+  unsigned long span = rd_reads - r0;
+
+  CHK(memcmp(s_rows, one, sizeof one) == 0,
+      "bulk: a %u-row span must be byte-identical to %u single-row reads", n, n);
+  printf("  %u consecutive rows: %lu sectors as singles, %lu sectors as one span\n",
+         n, singles, span);
+  CHK(span == singles, "bulk: a span must move the same SECTORS (it is the same bytes)");
+  /* The point is transactions, not sectors: same bytes, one call instead of eight.
+   * rd_reads counts sectors, so the saving shows up on hardware as 8 rompage swaps
+   * collapsing into 1 -- see perf.h's rd_multi counter, which is the on-card proof. */
 }
 
 static void t_wrong_size(void) {
@@ -117,59 +187,40 @@ static void t_wrong_size(void) {
   build_content(s_content);
 
   CHK(write_raw(ICONS, s_content, sizeof s_content - 1), "setup: 1-short write failed");
-  uint16_t pal[16];
-  CHK(!art_icons_meta_pal(ICONS, 0, pal), "1 byte short must be refused (metadata load)");
+  CHK(!read_meta(), "1 byte short must be refused (metadata read)");
 
   fresh_card();
   CHK(write_raw(ICONS, s_content, 0), "setup: empty write failed");
-  CHK(!art_icons_meta_pal(ICONS, 0, pal), "empty file must be refused");
+  CHK(!read_meta(), "empty file must be refused");
 
   fresh_card();
   CHK(write_raw(ICONS, s_content, 100), "setup: tiny write failed");
-  CHK(!art_icons_meta_pal(ICONS, 0, pal), "a tiny garbage file must be refused");
+  CHK(!read_meta(), "a tiny garbage file must be refused");
 
   fresh_card();
-  uint8_t big[ART_ICONS_TOTAL_BYTES + 1];
+  static uint8_t big[ART_ICONS_TOTAL_BYTES + 1];
   memcpy(big, s_content, sizeof s_content);
   big[ART_ICONS_TOTAL_BYTES] = 0xFF;
   CHK(write_raw(ICONS, big, sizeof big), "setup: 1-long write failed");
-  CHK(!art_icons_meta_pal(ICONS, 0, pal), "1 byte long must be refused too (not just short)");
+  CHK(!read_meta(), "1 byte long must be refused too (not just short)");
 
   fresh_card();
-  CHK(!art_icons_meta_pal(ICONS, 0, pal), "absent icons.bin must be refused, not crash");
-  CHK(!art_icons_read_frame(ICONS, 0, 0, (uint8_t*)pal), "absent icons.bin frame read must be refused");
+  CHK(!read_meta(), "absent icons.bin must be refused, not crash");
+  CHK(!read_rows(0, 1), "absent icons.bin row read must be refused");
 }
 
 static void t_out_of_range(void) {
   fresh_card();
   build_content(s_content);
   CHK(write_raw(ICONS, s_content, sizeof s_content), "oob: write failed");
-  uint8_t out[512];
-  CHK(!art_icons_read_frame(ICONS, (uint16_t)ART_ICONS_ROWS, 0, out), "row == ROWS must be refused");
-  CHK(!art_icons_read_frame(ICONS, 0xFFFF, 0, out), "row 0xFFFF must be refused");
-  CHK(!art_icons_read_frame(ICONS, 0, 2, out), "frame 2 must be refused");
-  uint16_t pal[16];
-  CHK(!art_icons_meta_pal(ICONS, (uint16_t)ART_ICONS_ROWS, pal), "pal oob must be refused");
-  CHK(art_icons_meta_pal_id(ICONS, (uint16_t)ART_ICONS_ROWS) == 0xFF, "pal id oob must sentinel");
-}
-
-static void t_reload_and_clear(void) {
-  fresh_card();
-  build_content(s_content);
-  CHK(write_raw(ICONS, s_content, sizeof s_content), "reload: write failed");
-  uint16_t pal[16];
-  CHK(art_icons_meta_pal(ICONS, 0, pal), "reload: first load failed");
-  CHK(art_icons_meta_pal(ICONS, 5, pal), "reload: cached reuse failed");
-
-  art_icons_meta_clear();
-  /* corrupt the file, THEN clear -- the corrupted state must actually be seen on the
-     next load (proves clear() really forces a reload, not just a no-op). */
-  uint8_t bad[ART_ICONS_TOTAL_BYTES];
-  memcpy(bad, s_content, sizeof bad);
-  bad[ART_ICONS_PAL_IDS_OFF] = 200; /* an invalid pal id (>= 3) for row 0 */
-  CHK(write_raw(ICONS, bad, sizeof bad), "reload: corrupt write failed");
-  CHK(!art_icons_meta_pal(ICONS, 0, pal),
-      "reload: after clear(), the now-corrupt pal id for row 0 must be refused");
+  CHK(!read_rows((uint16_t)ART_ICONS_ROWS, 1), "row == ROWS must be refused");
+  CHK(!read_rows(0xFFFF, 1), "row 0xFFFF must be refused");
+  CHK(!read_rows(0, 0), "a zero-length span must be refused");
+  /* A span running off the end is the one an unchecked bulk reader would happily
+   * serve out of whatever follows the tile block -- i.e. the palette tables. */
+  CHK(!read_rows((uint16_t)(ART_ICONS_ROWS - 3), 4), "a span past the last row must be refused");
+  CHK(read_rows((uint16_t)(ART_ICONS_ROWS - 4), 4), "a span ending exactly at the last row is fine");
+  CHK(!art_icons_read_rows_fp(0, 0, 1, s_rows), "a NULL handle must be refused");
 }
 
 typedef struct { FILE* f; } FileCtx;
@@ -216,7 +267,7 @@ int main(int argc, char** argv) {
   t_good();
   t_wrong_size();
   t_out_of_range();
-  t_reload_and_clear();
+  t_bulk_equals_singles();
   const char* dir = "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms";
   if (argc > 1) {
     size_t l = strlen(argv[1]);

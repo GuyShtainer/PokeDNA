@@ -25,7 +25,8 @@
 #include "hand_oam.h"
 #include "item_icons.h"
 #include "rom_mon.h"      /* phase-1 ROM-streamed icons (artless + the user's own ROM) */
-#include "art_icons_cache.h" /* phase-2 icons.bin cache -- tried BEFORE the rom rung   */
+#include "art_icons_cache.h"
+#include "icon_store.h" /* phase-2 icons.bin cache -- tried BEFORE the rom rung   */
 #include "hand_gate.h"       /* PDNA_HAND_ART_COMPILED -- see that header for why      */
 #if !PDNA_HAND_ART_COMPILED
 #include "rom_hand.h"        /* phase-3 ROM-streamed glove (DESIGN.md Sec 1.3/4.5)     */
@@ -296,17 +297,15 @@ static uint16_t s_stage[256];        /* one 512 B verify chunk (IWRAM .bss — E
  * built from. */
 static const RomMon* s_rommon = 0;
 static int           s_rom_cheap = 0;             /* s_rommon's reads are a cart-space memcpy */
-/* Memoised icon LOCATION (see rom_mon.h RomMonLoc): the icon-table pointer and the
- * palette index for one species. Invalidated whenever the ROM source changes — the
- * RomMon POINTER can stay the same across a re-registration of a different file, so
- * the pointer is not a safe cache key. */
-static RomMonLoc s_iconloc;
-static uint16_t  s_iconloc_sp = 0xFFFF;          /* 0xFFFF = nothing memoised */
-static uint8_t   s_iconloc_f;
+/* This file used to keep its OWN one-entry icon-location memo here (s_iconloc /
+ * s_iconloc_sp / s_iconloc_f), independent of the identical one in art_fallbacks.c --
+ * two memos over the SAME open ROM, visiting rows in different orders, each evicting
+ * for the other. Both are gone: source/icon_store.c holds whole rows (both bob frames)
+ * for both consumers, so there is no per-icon locate left to memoise. s_rommon is kept
+ * only for rom_icon_pose_frame() and the hand/wallpaper rungs, which are not icons. */
 void boxoam_rom_icons(const struct RomMon* rm, int cheap_reads) {
   s_rommon    = (rm && rm->ok) ? rm : 0;
   s_rom_cheap = s_rommon ? (cheap_reads != 0) : 0;
-  s_iconloc.ok = 0; s_iconloc_sp = 0xFFFF;
 }
 
 /* ---- Phase 2: the icons.bin cache rung ------------------------------------------
@@ -327,8 +326,8 @@ void boxoam_rom_icons(const struct RomMon* rm, int cheap_reads) {
 static const char* s_iconcache_path = 0;
 
 void boxoam_set_icon_cache(const char* path) {
-  s_iconcache_path = path;
-  if (!path) art_icons_meta_clear();
+  s_iconcache_path = path;    /* a flag for boxoam_icons_available; the READER is
+                               * icon_store, which pdna_main resets in the same breath */
 }
 
 int  boxoam_icons_available(void) {
@@ -342,152 +341,88 @@ static uint32_t stage_sum(void) {
   return v;
 }
 
-/* Read one icon frame into s_stage, TWICE, and accept only when both passes sum the
- * same (with one buffer a full byte-compare needs a second read anyway; two whole
- * reads agreeing catches the transient-garbage failure the EZ driver can produce).
- * Retries like icopy_verified; on give-up the last read still stands (a maybe-garbled
- * icon beats a hole) and the anomaly is logged.
+/* compiled art first, then source/icon_store.c (which owns the icons.bin and ROM rungs
+ * both). Returns the tile source or NULL; *from_rom tells the uploader the bytes are
+ * already verified RAM (true whenever the store served them -- it does not need the
+ * staged-verify DMA path a compiled .rodata array does).
  *
- * `frame` used to be hardcoded to 0 (only the box's LOAD ever called this). Now the
- * pose swap can also serve frame 1 through this same ladder for a slot restored
- * mid-swap (chunk-carry uncover, party-panel close) — see icon_tiles()'s `frame < 2`
- * gate below. The live per-TICK swap itself does NOT come through here (see
- * rom_icon_pose_frame): a double-verified read is load-time-only spend, and reusing
- * THIS function's shared s_iconloc memo from a tick would let an unverified pose-swap
- * locate get silently trusted by a later verified caller — see rom_mon_locate_verified's
- * own header comment on exactly that hazard. */
-static int rom_icon_read_verified(uint16_t species, uint8_t form, int egg, uint8_t frame,
-                                  int* bank) {
-  if (!s_rommon) return 0;
-  uint16_t sp = egg ? 412 : species;
-  uint8_t f  = egg ? 0 : form;
-  rumble_io_suspend();
-  /* LOCATE ONCE — VERIFIED — then read the same frame twice.
-   *
-   * Locating once per icon instead of once per verify pass is what removed four
-   * RomCtx reads per icon (and all of them on a memo hit); what it must NOT remove is
-   * the verify's cover over the lookup itself. The pointer and the palette id ARE the
-   * answer to "which species is this": a garbled pointer that still lands inside the
-   * image passes ptr_ok, and with the location cached BOTH frame passes then read that
-   * same wrong offset, agree, and paint another species' icon with nothing logged.
-   * rom_mon_locate_verified reads each field twice back to back and requires
-   * agreement, which is exactly the coverage the pre-memo code got from re-locating
-   * per pass — and it adds no FAR seek, because a same-offset re-read of 4 bytes stays
-   * inside the current FatFs cluster (rom_mon.c read_small). The FRAME verify below is
-   * untouched: still two whole reads that must agree, four attempts, same give-up log. */
-  if (!(s_iconloc.ok && s_iconloc_sp == sp && s_iconloc_f == f)) {
-    int unstable = 0;
-    s_iconloc_sp = sp; s_iconloc_f = f;
-    PERF_ICON(rom_loc);                            /* a real locate, not a memo hit */
-    if (!rom_mon_locate_verified(s_rommon, sp, f, &s_iconloc, 4, &unstable)) {
-      s_iconloc_sp = 0xFFFF;                     /* leaves ok = 0: the memo self-voids */
-      rumble_io_resume();
-      /* Fail CLOSED on an unstable lookup — the slot draws empty. Everywhere else here
-       * "a maybe-garbled icon beats a hole", but that trade is about PIXELS; an address
-       * we cannot agree on would confidently draw the wrong Pokemon, which reads as
-       * the save being wrong. A bounds failure (a corrupt species id in the save) is
-       * not logged, so it cannot spam the log on every box load. */
-      if (unstable) { log_line("icons: rom locate unstable sp=%u", sp); app_log_flush(); }
-      return 0;
-    }
-  }
-  int ok = 0;
-  for (int a = 0; a < 4 && !ok; a++) {
-    /* Every ATTEMPT is counted, including the retries: an unstable cart that needs
-     * four passes costs eight 512 B reads, and averaging that away would hide the one
-     * thing this counter exists to expose. */
-    PERF_ICON(rom_frm);
-    if (!rom_mon_icon_at(s_rommon, &s_iconloc, frame, (uint8_t*)s_stage)) { rumble_io_resume(); return 0; }
-    uint32_t s1 = stage_sum();
-    PERF_ICON(rom_frm);
-    if (!rom_mon_icon_at(s_rommon, &s_iconloc, frame, (uint8_t*)s_stage)) { rumble_io_resume(); return 0; }
-    ok = (stage_sum() == s1);
-  }
-  rumble_io_resume();
-  if (!ok) { log_line("icons: rom read unstable sp=%u", sp); app_log_flush(); }
-  *bank = s_iconloc.pal;                          /* ROM pals live in OBJ banks 0..2 */
-  return 1;
-}
-
-/* The cache rung: one seek+read (both frames at once, since extraction laid them out
- * contiguously per row) into s_stage, no per-read doubling -- the file's FNV was
- * already checked once this session (art_session_icons_ready), so this trusts a
- * single read the way it already trusts a compiled .rodata array. species/form map
- * to the icon table's row via art_icons_row_for, the SAME mapping rom_mon.c uses
- * internally. *bank is the row's palette id (0..2) straight out of the preloaded
- * metadata -- it addresses OBJ banks 0..2 directly, exactly like the ROM rung's
- * s_iconloc.pal, because boxoam_enter copies the SAME 3 palettes there (see below;
- * the cache's palette bytes are a verbatim copy of the ROM's, made at extraction
- * time), whichever rung actually served the tiles. */
-static int cache_icon_read(uint16_t species, uint8_t form, int egg, uint8_t frame,
-                           int* bank) {
-  if (!s_iconcache_path) return 0;
-  uint16_t sp = egg ? 412 : species;
-  uint8_t f = egg ? 0 : form;
-  uint16_t row = art_icons_row_for(sp, f);
-  if (row >= ART_ICONS_ROWS) return 0;
-  /* Same GPIO freeze the ROM rung below (rom_icon_read_verified) already brackets
-   * its own SD/ROM reads with -- art_icons_read_frame is f_open+f_lseek+f_read+
-   * f_close, real SD I/O, and had NO motor freeze at all until this fix. */
-  rumble_io_suspend();
-  bool ok = art_icons_read_frame(s_iconcache_path, row, frame, (uint8_t*)s_stage);
-  rumble_io_resume();
-  if (ok) PERF_ICON(bin);
-  if (!ok) return 0;
-  uint8_t id = art_icons_meta_pal_id(s_iconcache_path, row);
-  if (id >= ART_ICONS_PALS) return 0;
-  *bank = id;
-  return 1;
-}
-
-/* compiled art first, then the cache, then the user's ROM (all staged into s_stage).
- * Returns the tile source or NULL; *from_rom tells the uploader the bytes are already
- * verified RAM (true for BOTH the cache and the ROM rung -- neither needs the staged-
- * verify DMA path a compiled .rodata array would).
+ * WHAT THIS REPLACED, AND WHY THE MERGE IS SAFE (2026-08-23). Two private rungs used to
+ * live here: cache_icon_read (f_open + f_lseek + f_read(512) + f_close, per icon, per
+ * redraw) and rom_icon_read_verified (a verified locate through this file's own memo,
+ * then the same 512 B frame read twice and compared). They are now one call.
+ *
+ * The verify did NOT get weaker in the merge, which is the thing to check when two
+ * deliberately-separate paths are joined. rom_mon.h warns that a caller which memoises
+ * a location must verify the LOOKUP, because a garbled pointer that still lands inside
+ * the image passes ptr_ok, both frame passes then read the same wrong offset, agree,
+ * and paint another species with nothing logged. icon_store keeps exactly that: a
+ * verified locate (each field read twice and required to agree, four attempts) and then
+ * both frames read twice and required to sum the same. The hazard box_oam.c's old
+ * comment guarded against -- an UNVERIFIED tick-time locate being silently trusted by a
+ * later verified caller -- had a shared memo as its mechanism, and there is no shared
+ * memo any more: rom_icon_pose_frame() below still reads the ROM directly and still
+ * shares nothing with this path.
+ *
+ * MEASURED, and both old numbers here were wrong. This file used to claim "60
+ * rom_mon_icon calls / 180 ROM reads per box load"; the real figures for 30 occupied
+ * slots on the ROM rung were 186 RomReadFn calls and 323 disk_read calls. It also
+ * claimed the cache rung read "both frames at once, since extraction laid them out
+ * contiguously per row" -- that was simply false, cache_icon_read read 512 B, one
+ * frame. It is true now, and that is what makes a bob flip free.
  *
  * *cheap tells the caller whether THIS fetch could be repeated on an animation tick
- * with no SD I/O -- it is what s_pose_ok[] (the per-slot pose-swap capability array)
- * is built from. Compiled art is always cheap (a .rodata read). The icons.bin CACHE
- * rung is NEVER cheap: art_icons_read_frame is f_open+f_lseek+f_read+f_close, real SD
- * I/O, every call, regardless of what ROM (if any) is registered. The ROM rung is
- * cheap iff s_rom_cheap -- the app told us (boxoam_rom_icons's cheap_reads) that
- * s_rommon's reads are a fused cart-space memcpy, not an f_lseek+f_read.
+ * with no SD I/O -- it is what s_pose_ok[] (the per-slot pose-swap capability array) is
+ * built from, and its meaning is UNCHANGED. Compiled art is always cheap (a .rodata
+ * read). The store's cache rung is never cheap. The store's ROM rung is cheap iff
+ * s_rom_cheap -- the app told us (boxoam_rom_icons's cheap_reads) that this ROM is a
+ * fused cart-space memcpy rather than an f_lseek + f_read. Deliberately NOT widened to
+ * "is the row resident", even though it often now is: residency is a property of the
+ * pool at a moment in time, and s_pose_ok[] is latched for the life of a box.
  *
- * frame is now `< 2` on BOTH the cache and ROM rungs (used to be `== 0` on the ROM
- * rung -- box_oam.c's own header used to say the pose swap "stays OFF on this path").
- * A ROM/cache-streamed slot restored mid-swap (chunk-carry uncover, party-panel
- * close, boxoam_slot_blit_bitmap) can now be asked for frame 1 and must be able to
- * serve it, or it would blink out for as long as the box sits on the odd frame. */
+ * frame is `< 2` on the store rung. A store-streamed slot restored mid-swap
+ * (chunk-carry uncover, party-panel close, boxoam_slot_blit_bitmap) can be asked for
+ * frame 1 and must be able to serve it, or it would blink out for as long as the box
+ * sits on the odd frame.
+ *
+ * POINTER LIFETIME: the returned pointer is icon_store's (valid until the next
+ * icon_store_* call -- see icon_store.h), not s_stage's. Every call site here consumes
+ * it immediately, which is what that contract requires. icon_store_pal_id() below is
+ * an icon_store_* call, but a deliberately harmless one: it only ever LOOKS UP the row
+ * just fetched, and never evicts. */
 static const uint8_t* icon_tiles(uint16_t species, uint8_t form, uint8_t frame,
                                  int egg, int* bank, int* from_rom, int* cheap) {
   const uint8_t* t; int b;
   *from_rom = 0; *cheap = 0;
   /* EMPTY SLOT. The compiled-art branch below already short-circuits on species==0, but
    * the ROM-streamed branch did NOT: species 0 is a VALID row of the icon table (the
-   * "??????" dummy), so rom_icon_read_verified happily performed two full verified
-   * 512-byte reads off the microSD — ~22 sectors — for a result boxoam_load_box then
-   * discards. MEASURED on the artless build: 60 rom_mon_icon calls / 180 ROM reads per
-   * box load REGARDLESS of occupancy, so an empty box cost exactly as much to open as a
-   * full one. All four icon_tiles call sites already NULL-guard. */
+   * "??????" dummy), so a fill happily performed two full verified reads off the microSD
+   * for a result boxoam_load_box then discards -- so an empty box cost exactly as much
+   * to open as a full one. All icon_tiles call sites already NULL-guard. */
   if (!egg && !species) return 0;
   if (egg ? mon_icon_oam_egg(&t, &b)
           : (species && mon_icon_oam_for_form_frame(species, form, frame, &t, &b))) {
     *bank = b; *cheap = 1; return t;
   }
-  if (frame < 2 && cache_icon_read(species, form, egg, frame, bank)) {
-    *from_rom = 1;
-    return (const uint8_t*)s_stage;
-  }
-  if (frame < 2 && rom_icon_read_verified(species, form, egg, frame, bank)) {
-    *from_rom = 1; *cheap = s_rom_cheap; return (const uint8_t*)s_stage;
+  if (frame < 2) {
+    uint16_t row = art_icons_row_for(egg ? 412 : species, egg ? 0 : form);
+    const uint8_t* p = icon_store_row(row);
+    if (p) {
+      uint8_t id = icon_store_pal_id(row);
+      if (id < ART_ICONS_PALS) {
+        *bank = id;
+        *from_rom = 1;
+        *cheap = (icon_store_rung() == ICON_RUNG_ROM) ? s_rom_cheap : 0;
+        return p + (uint32_t)frame * (MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
+      }
+    }
   }
   /* THE hole on screen. Counted here, at the ladder's single terminal failure, rather
-   * than inside cache_icon_read/rom_icon_read_verified: a cache miss that the ROM rung
-   * then serves is not a failure, and counting it in the rung would make `null` read as
-   * "12 icons failed" on a box where all 12 came through one rung down. The empty-slot
-   * early return above deliberately does NOT count -- an empty PC cell was never asked
-   * for an icon, and conflating the two is precisely what made a box holding 18 mons in
-   * 30 slots indistinguishable from a box of 30 where 12 icons failed to read. */
+   * than inside the store's rungs: a cache miss that the ROM rung then serves is not a
+   * failure, and counting it in the rung would make `null` read as "12 icons failed" on
+   * a box where all 12 came through one rung down. The empty-slot early return above
+   * deliberately does NOT count -- an empty PC cell was never asked for an icon, and
+   * conflating the two is precisely what made a box holding 18 mons in 30 slots
+   * indistinguishable from a box of 30 where 12 icons failed to read. */
   PERF_ICON(null_ans);
   return 0;
 }
@@ -830,30 +765,24 @@ void boxoam_enter(void) {
    * no per-entry SD I/O once opened, vs. 3 separate rom_mon_icon_pal calls). */
   { const uint8_t* t; int b;
     if (!mon_icon_oam_for(1, &t, &b)) {
-      if (s_iconcache_path) {
-        /* art_icons_meta_pal_at lazily does art_icons_meta_load's f_open+f_read on
-         * its first call for this path (real SD I/O) -- same freeze as cache_icon_
-         * read above and the ROM rung below, for consistency (was unbracketed). */
-        rumble_io_suspend();
-        for (int pnum = 0; pnum < (int)ART_ICONS_PALS; pnum++) {
-          uint16_t pd[16];
-          /* bin_pal, NOT rom_pal: this is the icons.bin metadata tail, and a session
-           * with no ROM open at all used to log `icons rung: cache (rom none, ...)`
-           * followed by a span reading `rom 0/0/3` -- three ROM palette reads in a
-           * session the same log says has no ROM. A counter that fires on the wrong
-           * rung is a defect in the instrument, not a rounding error. */
-          PERF_ICON(bin_pal);
-          if (art_icons_meta_pal_at(s_iconcache_path, pnum, pd))
-            for (int i = 0; i < 16; i++) pal_obj_mem[pnum * 16 + i] = pd[i];
-        }
-        rumble_io_resume();
-      } else if (s_rommon) {
+      /* ONE authority for both rungs now. On the cache rung all three banks came out
+       * of the metadata tail at icon_store_reset and this loop is pure RAM; on the ROM
+       * rung the store fills a bank the first time it is asked and never again. Either
+       * way the banks are the SAME three palettes -- icons.bin's palette bytes are a
+       * verbatim copy of the ROM's, made at extraction time -- which is what lets the
+       * two rungs' palette ids (0..2) address these banks interchangeably.
+       *
+       * The rung decides which counter: a session with no ROM open used to log
+       * `icons rung: cache` and then `rom 0/0/3`, three ROM palette reads in a session
+       * the same log says has no ROM. A counter that fires on the wrong rung is a
+       * defect in the instrument, not a rounding error. */
+      int rung = icon_store_rung();
+      for (int pnum = 0; pnum < (int)ART_ICONS_PALS; pnum++) {
         uint16_t pd[16];
-        for (int pnum = 0; pnum < ROM_MON_PALS; pnum++) {
-          PERF_ICON(rom_pal);
-          if (rom_mon_icon_pal(s_rommon, pnum, pd))
-            for (int i = 0; i < 16; i++) pal_obj_mem[pnum * 16 + i] = pd[i];
-        }
+        if (rung == ICON_RUNG_CACHE) PERF_ICON(bin_pal);
+        else if (rung == ICON_RUNG_ROM) PERF_ICON(rom_pal);
+        if (icon_store_pal_at(pnum, pd))
+          for (int i = 0; i < 16; i++) pal_obj_mem[pnum * 16 + i] = pd[i];
       }
     } }
 
