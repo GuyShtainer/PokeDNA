@@ -3986,6 +3986,40 @@ static void dc_fence(int x0, int x1, int y) {
   m3_line(x0, y + 6, x1, y + 6, d);
   for (int x = x0; x < x1; x += 10) { ui_fill_rect(x, y, 3, 9, w); m3_plot(x, y, d); m3_plot(x + 2, y, d); }
 }
+
+/* The TRUE background colour dc_scene()'s procedural branch (above) paints at scene
+ * pixel (x,y), computed on demand instead of stored -- dc_icon_over_bg's compositor
+ * needs a source that is never itself the result of a previous icon composite (see
+ * that function's own comment for why sampling vid_mem broke it), and the artless
+ * build has no daycare_bg[] array to look up. This mirrors, in closed form, every
+ * shape dc_scene()'s #else branch and dc_fence() draw: sky/grass bands, the sun disc,
+ * the three cloud rects, and the fence's posts + two rails (pixel for pixel, incl.
+ * which rail survives under a post vs. in a gap). Costs zero EWRAM -- arithmetic
+ * only, no buffer.
+ * dc_house() is deliberately NOT modelled: DC_SPOT's artless anchors top out at
+ * x=126 (SKY slot 2, cx=110 + the 16px icon half-width), well clear of the house's
+ * x>=162 (roof apex at cx=196, half-base 34), so no icon footprint ever samples a
+ * house pixel; those coordinates just fall through to the plain sky/grass base. */
+static u16 dc_bg_px(int x, int y) {
+  const u16 SKY = RGB15(16, 25, 31), GRASS = RGB15(13, 22, 9);
+  const u16 SUN = RGB15(31, 30, 14), CLOUD = RGB15(30, 31, 31);
+  const u16 FW = RGB15(30, 30, 28), FD = RGB15(18, 18, 16);   /* dc_fence's w/d */
+  u16 base = (y < 90) ? SKY : GRASS;
+  if (y < 90) {
+    int dx = x - 22, dy = y - 26;                              /* sun: r*r <= 25 */
+    if (dx * dx + dy * dy <= 25) return SUN;
+    if (x >= 150 && x < 178 && y >= 20 && y < 26) return CLOUD;  /* cloud 1 */
+    if (x >= 158 && x < 172 && y >= 16 && y < 21) return CLOUD;  /* cloud 2 */
+    if (x >=  58 && x <  82 && y >= 28 && y < 34) return CLOUD;  /* cloud 3 */
+  }
+  if (y >= 82 && y <= 90 && x >= 6 && x < 150) {   /* dc_fence(6, 150, 82) */
+    int off = (x - 6) % 10;
+    if (off >= 0 && off <= 2) return (y == 82 && off != 1) ? FD : FW;  /* post: dark corner dots at its top row, else post-light */
+    if (y == 85) return FW;                         /* light rail, full width (gaps only -- posts already returned above) */
+    if (y == 88) return FD;                         /* dark rail, gaps only (posts paint over it) */
+  }
+  return base;
+}
 #endif /* !HAVE_DAYCARE_BG */
 
 static void dc_pointer(int cx, int y) {           /* small downward arrow over the picked mon */
@@ -4140,17 +4174,24 @@ static void dc_roll_decos(void) {
 #else
 #define DC_SCENE_BOT 122
 #endif
-/* Compose a 32x32 icon over whatever dc_scene() already drew at screen (x,y) and DMA
- * each scanline (no separate erase => no flicker on the single Mode-3 buffer). x is
- * forced even for the word-aligned DMA.
+/* Compose a 32x32 icon over the TRUE, unpainted-by-icons background at screen (x,y)
+ * and DMA each scanline (no separate erase => no flicker on the single Mode-3
+ * buffer). x is forced even for the word-aligned DMA.
  *
- * Reads the "background" straight back out of the framebuffer (vid_mem) rather than
- * a dedicated pixel array: by the time this is called, dc_scene() has already painted
- * every pixel it can touch — the compiled yard bg (HAVE_DAYCARE_BG) or the procedural
- * sky/grass/house scene alike — so blending against "whatever is already on screen"
- * is correct either way, and it is what lets the SAME function (and so the SAME
- * visitor-haze effect) serve both builds. For the art build this is byte-identical
- * to the old daycare_bg[] lookup: DAYCARE_BG_W is always UI_SCR_W (240). */
+ * The background sample MUST NOT be the framebuffer this function (or the previous
+ * tick's call to it) already drew into: a read-back out of vid_mem is self-
+ * referential -- an icon's now-transparent pixels stop being erased back to real
+ * terrain (they keep whatever the icon painted there last tick, so the bob
+ * silhouette only ever grows and freezes solid), and a hazed blend re-blends
+ * against its own already-blended output every tick instead of the original
+ * terrain colour, so it saturates to fully opaque in about a second instead of
+ * staying hazed. (Both were a real regression here once -- see git history for
+ * source/pdna_main.c around dc_icon_over_bg if this comment ever needs the receipts.)
+ * The source must be a fixed lookup that ignores anything an icon composite wrote:
+ * the compiled yard's own pixel data (HAVE_DAYCARE_BG's daycare_bg[], exactly like
+ * the original art-only version of this function) or, without compiled art,
+ * dc_bg_px()'s closed-form recomputation of what dc_scene()'s procedural branch
+ * paints at that pixel -- never vid_mem. */
 /* `num` is the icon's weight out of 8 when it is blended with the yard behind it:
  * 8 = fully opaque (the player's own boarders), lower = hazed into the background
  * (the invented yard visitors, so they read as scenery). Same blend as
@@ -4166,7 +4207,11 @@ static void dc_icon_over_bg(int x, int y, const u16* icon, int num) {
     if (yy < 12 || yy >= DC_SCENE_BOT) continue;
     for (int i = 0; i < MON_ICON_W; i++) {
       int xx = x + i;
-      u16 c = (xx >= 0 && xx < UI_SCR_W) ? vid_mem[yy * 240 + xx] : 0;
+#ifdef HAVE_DAYCARE_BG
+      u16 c = (xx >= 0 && xx < DAYCARE_BG_W) ? daycare_bg[(yy - 12) * DAYCARE_BG_W + xx] : 0;
+#else
+      u16 c = (xx >= 0 && xx < UI_SCR_W) ? dc_bg_px(xx, yy) : 0;
+#endif
       u16 pxl = icon[j * MON_ICON_W + i];
       if (pxl & 0x8000) {
         u16 s = (u16)(pxl & 0x7FFF);
