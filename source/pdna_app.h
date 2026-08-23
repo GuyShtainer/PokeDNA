@@ -254,6 +254,28 @@ bool     app_arena_held(void);
 uint8_t* app_box_swap_acquire(uint32_t need);  /* NULL: too big, or already held */
 void     app_box_swap_release(void);
 
+/* ---- borrowed-cache canary (2026-08-23, hardware A/B for the box-screen crash) ----
+ * app_box_swap_acquire() stamps a known 16-byte pattern into TWO places a runaway
+ * write into/around g_entries would hit before anything else does:
+ *   - the tail of g_entries itself, past the APP_BOX_SWAP_BYTES the cache ever
+ *     writes (4,096 B of slack before g_entries's own EWRAM neighbour, g_sb1 --
+ *     the reassembled SaveBlock1, confirmed live, confirmed adjacent with ZERO
+ *     padding via `arm-none-eabi-nm -S` on the ARTLESS binary, 2026-08-23);
+ *   - the last 16 bytes of g_cwd, the buffer immediately BEFORE g_entries (same
+ *     zero-gap adjacency) -- saved first and restored by app_box_swap_release, so
+ *     a real (long) current-directory path is never actually altered.
+ * app_box_swap_canary_ok() re-checks both every call and returns false (after
+ * logging ONE loud RAM-log line per canary, not spamming) the first time either
+ * changes; true whenever the borrow isn't held, so callers can call it
+ * unconditionally every box tick at zero cost when the feature is off. The RAM log
+ * line reaches the SD card only at the next ordinary flush boundary (log_line is a
+ * RAM-buffer append, not a card write -- calling app_log_flush() itself from inside
+ * a vblank tick is exactly the hazard e37f14b's revert already flagged for the
+ * breadcrumb trail, so this deliberately does NOT force one): a canary line PRESENT
+ * in logs/log.txt after a crash is definitive; ABSENT is inconclusive, not a clean
+ * bill of health, if the crash was fast enough to outrun the next flush. */
+bool app_box_swap_canary_ok(void);
+
 /* Path of the Pokemon ROM the map screen reads map data from, remembered per game
  * (RS / Emerald / FRLG) because their map data differs and each needs its own ROM.
  * Returns "" when none has been picked yet. Set persists via config.cfg. */

@@ -1281,15 +1281,62 @@ void app_arena_release(void) {
  * (15,360 B) of it. Unlike g_arena there is no "dirty" concept to refuse on — g_entries
  * carries no state across a browser visit, so releasing it is a plain flag clear, not a
  * rebuild. */
-static bool g_box_swap_held = false;
+static bool     g_box_swap_held = false;
+static uint32_t g_box_swap_need = 0;      /* the `need` acquire was called with (canary math) */
+
+/* ---- borrowed-cache canary (2026-08-23) -- see pdna_app.h's own comment on
+ * app_box_swap_canary_ok for the full rationale. Any 16-byte pattern with no long
+ * run of one repeated byte works; this one just needs to be implausible as either
+ * zeroed/freshly-scanned BrowseEntry bytes or an ASCII path fragment. */
+#define APP_BOX_SWAP_CANARY_LEN 16u
+static const uint8_t k_swap_canary[APP_BOX_SWAP_CANARY_LEN] = {
+  0xA5, 0x5A, 0xC3, 0x3C, 0x96, 0x69, 0xE1, 0x1E,
+  0x2D, 0xD2, 0x4B, 0xB4, 0x78, 0x87, 0xF0, 0x0F
+};
+/* g_cwd's true tail bytes, saved across the borrow so app_box_swap_release can put
+ * them back -- the canary stamp must never actually alter the current directory. */
+static uint8_t g_cwd_tail_save[APP_BOX_SWAP_CANARY_LEN];
 
 uint8_t* app_box_swap_acquire(uint32_t need) {
   if (g_box_swap_held || need > (uint32_t)sizeof(g_entries)) return NULL;
   g_box_swap_held = true;
+  g_box_swap_need = need;
+  uint32_t tail = (uint32_t)sizeof(g_entries) - need;
+  uint32_t clen = tail < APP_BOX_SWAP_CANARY_LEN ? tail : APP_BOX_SWAP_CANARY_LEN;
+  if (clen) memcpy((uint8_t*)g_entries + need, k_swap_canary, clen);
+  memcpy(g_cwd_tail_save, g_cwd + PATH_MAX - APP_BOX_SWAP_CANARY_LEN, APP_BOX_SWAP_CANARY_LEN);
+  memcpy(g_cwd + PATH_MAX - APP_BOX_SWAP_CANARY_LEN, k_swap_canary, APP_BOX_SWAP_CANARY_LEN);
   return (uint8_t*)g_entries;
 }
 
-void app_box_swap_release(void) { g_box_swap_held = false; }
+bool app_box_swap_canary_ok(void) {
+  if (!g_box_swap_held) return true;
+  static bool s_logged_after = false, s_logged_before = false;
+  bool ok = true;
+  uint32_t tail = (uint32_t)sizeof(g_entries) - g_box_swap_need;
+  uint32_t clen = tail < APP_BOX_SWAP_CANARY_LEN ? tail : APP_BOX_SWAP_CANARY_LEN;
+  if (clen && memcmp((uint8_t*)g_entries + g_box_swap_need, k_swap_canary, clen) != 0) {
+    ok = false;
+    if (!s_logged_after) {
+      log_line("CANARY TRIPPED: g_entries overrun past the pose cache (AFTER g_sb1-side)");
+      s_logged_after = true;
+    }
+  }
+  if (memcmp(g_cwd + PATH_MAX - APP_BOX_SWAP_CANARY_LEN, k_swap_canary, APP_BOX_SWAP_CANARY_LEN) != 0) {
+    ok = false;
+    if (!s_logged_before) {
+      log_line("CANARY TRIPPED: g_cwd tail changed (BEFORE g_entries side)");
+      s_logged_before = true;
+    }
+  }
+  return ok;
+}
+
+void app_box_swap_release(void) {
+  if (!g_box_swap_held) return;
+  memcpy(g_cwd + PATH_MAX - APP_BOX_SWAP_CANARY_LEN, g_cwd_tail_save, APP_BOX_SWAP_CANARY_LEN);
+  g_box_swap_held = false;
+}
 
 /* ---- per-game ROM path (the map screen reads map data from the user's own ROM) */
 const char* app_rom_path(PkGame game) {

@@ -34,6 +34,47 @@
 #include "log.h"            /* icon-upload self-verify diagnostics */
 #include "pdna_app.h"       /* app_log_flush: anomaly evidence must survive a power-off */
 
+/* ---- hardware A/B switch for the borrowed-cache pose-swap crash (2026-08-23) --------
+ * boxoam_enter()'s own comment (below) has the incident writeup. Every test run so far
+ * changed TWO independent variables at once -- borrowing g_entries, AND performing the
+ * VRAM<->cache DMA exchange -- so nothing so far can say which one the runaway is. This
+ * switch separates them into two single-variable builds, plus the always-shippable OFF
+ * state (bit-for-bit e37f14b: no borrow, no swap, 1 px bob everywhere non-cheap):
+ *
+ *   0 = OFF (default -- what ships).
+ *   1 = 'A' BORROW WITHOUT SWAPPING. app_box_swap_acquire() IS called, and
+ *       finish_slot_pose() does its real fill (same SD/cache reads, same memcpy into
+ *       the borrowed g_entries, same load-time timing the shipped feature would have
+ *       spent) -- but s_pose_ok[] is forced back off for every slot that fill would
+ *       have enabled, so pose_swap_rom_slot() never runs its swap_cache_slot() branch
+ *       and the grid keeps showing the ordinary 1 px bob throughout. If a hardware run
+ *       with THIS variant crashes, the borrow itself is at fault (g_entries is not as
+ *       idle as the acquire/release contract claims, or the fill sequence is the
+ *       problem) -- the exchange logic never ran and is innocent.
+ *   2 = 'B' SWAP WITHOUT BORROWING. app_box_swap_acquire() is NEVER called -- g_entries
+ *       is not touched at all. Instead grid slot 0 ALONE gets a real per-tick VRAM<->
+ *       cache DMA exchange (bit-for-bit swap_cache_slot's own three dma3_cpy calls),
+ *       sourced from a small dedicated static buffer this file owns outright
+ *       (s_expb_cache, 512 B) instead of the borrowed g_entries -- see finish_slot_pose
+ *       and pose_swap_rom_slot below for the one extra branch each needs. (This is
+ *       "s_stage can serve one slot" from the brief, done as a SEPARATE 512 B buffer
+ *       rather than literal reuse of s_stage itself: s_stage is this file's shared
+ *       load-time scratch -- rom_icon_read_verified, icon_tiles, the palette staging
+ *       in boxoam_enter, restore_slot's re-fetch on a chunk-carry uncover -- and several
+ *       of those CAN run between two pose-swap ticks, so parking slot 0's frame-1
+ *       persistently in s_stage across ticks would not have the same "touched by
+ *       nothing else" guarantee the real feature's single-synchronous-call use of
+ *       s_stage has. A dedicated buffer removes that ambiguity for the price of the
+ *       same 512 B, compiled in only for this variant.) Every other slot stays on the
+ *       ordinary bob. If THIS variant crashes, the exchange mechanism itself is at
+ *       fault -- g_entries was never touched and is innocent.
+ *
+ * Change the number below, `make artless`, flash. See the delivery note (handoff /
+ * commit message) for the order to run these in and what each outcome proves. */
+#ifndef PDNA_POSE_EXPERIMENT
+#define PDNA_POSE_EXPERIMENT 0   /* 0=off (ships)  1='A' borrow-only  2='B' swap-only */
+#endif
+
 /* grid geometry — MUST match pdna_box.c */
 #define COLS    6
 #define ROWS    5
@@ -114,6 +155,13 @@ static int      s_any_pose = 0;         /* any occupied slot can pose-swap      
  * every use of it is guarded, so a failed acquire degrades to the pre-existing bob. */
 static uint8_t* s_swapcache = 0;
 static uint8_t  s_cache_ok[30];         /* 1 = s_swapcache's slot s holds a verified frame */
+#if PDNA_POSE_EXPERIMENT == 2
+/* Experiment 'B' only -- see the PDNA_POSE_EXPERIMENT block above for why this is a
+ * dedicated buffer rather than literal reuse of s_stage. Slot 0 exclusively; nothing
+ * else ever reads or writes it. */
+static uint16_t s_expb_cache[MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES / 2];  /* 512 B */
+static uint8_t  s_expb_ok = 0;          /* 1 = s_expb_cache holds slot 0's verified other frame */
+#endif
 static int      s_pend = 0;             /* second half of a split (fused-ROM) swap is due  */
 static int      s_pend_frame = 0;       /* which frame that pending half is swapping to    */
 static int      s_regb = -1;            /* what region B holds: 0=grab fist 1=item -1=none */
@@ -676,9 +724,22 @@ void boxoam_enter(void) {
    * This is the cheapest decisive test available: turning the borrow off costs Guy the
    * two-frame pose animation on the SD path (it falls back to the 1 px bob, exactly as
    * it behaved before 9224283) and nothing else, and it tells us in ONE hardware run
-   * whether this feature is the runaway. Flip it back on to re-arm the A/B. */
+   * whether this feature is the runaway. Flip it back on to re-arm the A/B.
+   *
+   * PDNA_POSE_EXPERIMENT (top of this file) is the follow-up: OFF (0, this branch)
+   * ships; 'A' (1) re-enables exactly this acquire so the borrow gets exercised for
+   * real while the swap itself stays disabled (finish_slot_pose forces s_pose_ok back
+   * off after its fill -- see that function); 'B' (2) leaves this acquire off and uses
+   * a dedicated private buffer instead (s_expb_cache above). */
+#if PDNA_POSE_EXPERIMENT == 1
+  s_swapcache = app_box_swap_acquire(APP_BOX_SWAP_BYTES);
+#else
   s_swapcache = 0;  /* was: app_box_swap_acquire(APP_BOX_SWAP_BYTES); */
   (void)app_box_swap_acquire;
+#endif
+#if PDNA_POSE_EXPERIMENT == 2
+  s_expb_ok = 0;
+#endif
   s_bob = 0; s_regb = -1; s_rega = -1;
   s_hand_pose = BOXOAM_POSE_NORMAL; s_cur_dy = 0;   /* no mid-beat leakage across screens */
 #if !PDNA_HAND_ART_COMPILED
@@ -831,6 +892,9 @@ static void finish_slot_pose(int s, uint16_t species, uint8_t form, bool egg,
                              uint8_t frame0, int cheap) {
   s_pose_ok[s] = (!egg && cheap) ? 1 : 0;
   s_cache_ok[s] = 0;
+  /* s_swapcache is only ever non-NULL under PDNA_POSE_EXPERIMENT==1 ('A') -- see
+   * boxoam_enter -- so this whole branch, byte-for-byte the shipped feature's fill,
+   * naturally only runs there. */
   if (!egg && !cheap && s_swapcache) {
     int bank1, from_rom1, cheap1;
     uint8_t other = (uint8_t)(1 - frame0);
@@ -839,9 +903,41 @@ static void finish_slot_pose(int s, uint16_t species, uint8_t form, bool egg,
       uint8_t* c = s_swapcache + (uint32_t)s * (MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
       memcpy(c, t1, (size_t)(MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES));
       s_cache_ok[s] = 1;
+#if PDNA_POSE_EXPERIMENT == 1
+      /* 'A' = BORROW WITHOUT SWAPPING: the fill above just did the real acquire +
+       * real SD/cache read + real memcpy into the borrowed g_entries, at the real
+       * load-time cost -- but the grid must keep showing the 1 px bob, not the pose
+       * swap, so pose_swap_rom_slot() must never reach its swap_cache_slot() branch
+       * for this slot. Leaving s_cache_ok[s]=1 (a fill genuinely happened) but forcing
+       * s_pose_ok[s] back to 0 (place_grid_slot's bob-gate reads this) does exactly
+       * that with no other code path touched. */
+      s_pose_ok[s] = 0;
+#else
       s_pose_ok[s] = 1;
+#endif
     }
   }
+#if PDNA_POSE_EXPERIMENT == 2
+  /* 'B' = SWAP WITHOUT BORROWING: g_entries/app_box_swap_acquire is never touched --
+   * slot 0 alone gets a real fill into the dedicated s_expb_cache instead, through the
+   * SAME verified icon_tiles() ladder every other fill uses. Every other slot's
+   * s_pose_ok stays exactly what the top-of-function default set (0 for a non-cheap
+   * source), so only slot 0 ever pose-swaps in this variant. */
+  if (s == 0 && !egg && !cheap) {
+    int bank1, from_rom1, cheap1;
+    uint8_t other = (uint8_t)(1 - frame0);
+    const uint8_t* t1 = icon_tiles(species, form, other, egg, &bank1, &from_rom1, &cheap1);
+    if (t1) {
+      memcpy(s_expb_cache, t1, (size_t)(MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES));
+      s_expb_ok = 1;
+      s_pose_ok[0] = 1;
+    } else {
+      s_expb_ok = 0;
+    }
+  } else if (s == 0) {
+    s_expb_ok = 0;
+  }
+#endif
 }
 
 void boxoam_load_box(const PkMon box[30]) {
@@ -926,6 +1022,19 @@ static void swap_cache_slot(int s) {
   dma3_cpy(cache, s_stage, (uint32_t)n);     /* cache = temp  (what VRAM just gave up)  */
 }
 
+#if PDNA_POSE_EXPERIMENT == 2
+/* Experiment 'B' only: bit-for-bit swap_cache_slot's three-DMA exchange, but always
+ * slot 0 and always against the dedicated s_expb_cache instead of a g_entries offset.
+ * See the PDNA_POSE_EXPERIMENT block at the top of this file. */
+static void swap_expb_slot(void) {
+  const int n = MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES;      /* 512 B, 4-aligned */
+  uint16_t* vram = (uint16_t*)((uint8_t*)tile_mem_obj[0] + (uint32_t)TID_ICON0 * 32);
+  dma3_cpy(s_stage, vram, (uint32_t)n);            /* temp  = VRAM  (frame now on screen) */
+  dma3_cpy(vram, s_expb_cache, (uint32_t)n);       /* VRAM  = cache (frame NOT on screen) */
+  dma3_cpy(s_expb_cache, s_stage, (uint32_t)n);    /* cache = temp  (what VRAM gave up)   */
+}
+#endif
+
 /* Re-upload slot s's OTHER-pose tiles at `frame`, through the cheap-ROM rung
  * (rom_icon_pose_frame) or the SD/cache swap-cache (swap_cache_slot) — compiled art is
  * handled separately, synchronously, in boxoam_set_frame itself (see that function's
@@ -946,6 +1055,9 @@ static void pose_swap_rom_slot(int s, uint8_t frame) {
   const uint8_t* t; int b;
   if (mon_icon_oam_for_form_frame(s_species[s], s_form[s], frame, &t, &b)) return; /* compiled: already done */
   if (s_cache_ok[s]) { swap_cache_slot(s); return; }
+#if PDNA_POSE_EXPERIMENT == 2
+  if (s == 0 && s_expb_ok) { swap_expb_slot(); return; }
+#endif
   if (!s_rom_cheap || !rom_icon_pose_frame(s_species[s], s_form[s], frame, &b)) return;
   upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, s_stage,
               MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
@@ -1034,6 +1146,17 @@ int boxoam_set_frame(int frame) {
  * here was queued by the PREVIOUS tick's set_frame — never the one about to run below
  * it. pdna_box.c's box loop is the only caller. */
 void boxoam_pose_pump(void) {
+  /* Canary check (2026-08-23 A/B, part C): pdna_box.c's box loop already calls this
+   * function UNCONDITIONALLY every vblank tick (box_oam.h's own doc on this function),
+   * so it is the one place in this file guaranteed to run every tick regardless of
+   * s_pend/s_frame state -- the right anchor for a check that must not be skippable.
+   * app_box_swap_canary_ok() is a no-op returning true whenever the borrow isn't held
+   * (PDNA_POSE_EXPERIMENT != 1, i.e. every shipped build and variant B), so this costs
+   * one already-cheap function call, zero SD I/O, on every build but 'A'. The RAM log
+   * line it may emit is NOT force-flushed to SD from here -- see pdna_app.h's own
+   * comment on app_box_swap_canary_ok for why that would repeat the exact hazard
+   * e37f14b's revert already flagged for the breadcrumb trail. */
+  (void)app_box_swap_canary_ok();
   if (!s_pend) return;
   s_pend = 0;
   uint8_t frame = (uint8_t)s_pend_frame;
