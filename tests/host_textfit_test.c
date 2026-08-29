@@ -742,6 +742,22 @@ int main(void) {
   /* A type row paints type_chip() at PDNA_FILT_TEXT_X and the filter name a fixed
    * PDNA_FILT_CHIP_DX along, so the chip has to stop before the name starts. */
   chkv("type chip stops before the filter name", PDNA_FILT_CHIP_W, PDNA_FILT_CHIP_DX);
+  /* ...and the VERTICAL half, which was missing and is what let a real defect ship: only
+   * the chip's WIDTH was ever pinned, so a chip drawn 9 px from `y` (rows -1..7 of the
+   * NEXT row's slot) against a bar of -1..7 read as covered. Under partial repaint every
+   * row wipes its own rect, so the row below deleted the chip's last scanline and chips
+   * came out 8 px tall everywhere but the bottom of the window. The chip must live
+   * entirely inside the rect its own row's background wipe covers -- invariant (1) of
+   * pdna_pick.c's ROW REPAINT RULE. */
+  chkv_min("type chip top is not above the row bar", PDNA_FILT_CHIP_DY, PDNA_FILT_BAR_DY);
+  chkv("type chip bottom is not below the row bar",
+       PDNA_FILT_CHIP_DY + PDNA_FILT_CHIP_H, PDNA_FILT_BAR_DY + PDNA_FILT_BAR_H);
+  /* The FILT_* bar against the next row's BAR (not its ink, which the check above
+   * covers): 9 on a 9 px pitch, so the rects are disjoint and this geometry needs no
+   * paint-order arbitration at all. It is the only list geometry in pdna_pick.c that
+   * can say that. */
+  chkv("filter bar clear of the next row's BAR",
+       PDNA_FILT_BAR_DY + PDNA_FILT_BAR_H - 1, PDNA_FILT_ROW_H + PDNA_FILT_BAR_DY - 1);
   /* both lists' footers, drawn at x=4 on PDNA_FILT_FOOTER_Y */
   T(PDNA_FILT_FOOT, 4);
   T(PDNA_IFILT_FOOT, 4);
@@ -757,6 +773,21 @@ int main(void) {
        UI_ROW_H - 1, PDNA_IFILT_BOX_DY + PDNA_IFILT_BOX_H - 2 - 1);
   chkv("item filter fill clear of the next row's ink",
        PDNA_IFILT_BOX_DY + PDNA_IFILT_BOX_H - 1, PDNA_IFILT_ROW_H - 1);
+  /* The check above compares the box against the next row's INK and passes with room to
+   * spare, which is why it never noticed that the box overlaps the next row's BOX. It
+   * does, by exactly one scanline (rows -2..9 against a next-row top of ROW_H + BOX_DY =
+   * 9), and under partial repaint that scanline belongs to whichever of the two rows
+   * painted second -- pdna_pick.c's ROW REPAINT RULE makes it always the selected one.
+   * Two things have to stay true for that rule to be enough, and neither was pinned:
+   *   (a) the overlap is at most ONE scanline, so painting the selected row last is a
+   *       complete fix rather than a partial one;
+   *   (b) the shared scanline is at or below the glyph box, so arbitrating it costs no
+   *       TEXT -- this is the property the met/nature list's 9-on-8 panel does NOT have
+   *       (see the GAP note in the met-location section below). */
+  chkv("item filter box overlaps the next row's BOX by at most one scanline",
+       PDNA_IFILT_BOX_DY + PDNA_IFILT_BOX_H - 1, PDNA_IFILT_ROW_H + PDNA_IFILT_BOX_DY);
+  chkv_min("item filter shared scanline is clear of the glyph box",
+           PDNA_IFILT_ROW_H + PDNA_IFILT_BOX_DY, UI_ROW_H);
   chkv("item filter last row ink",
        PDNA_IFILT_Y0 + (PDNA_IFILT_ROWS - 1) * PDNA_IFILT_ROW_H + UI_ROW_H - 1,
        UI_FOOTER_Y - 1);
@@ -1047,6 +1078,22 @@ int main(void) {
          PDNA_LOC_RULE_Y - 1);
     chkv("location rule stops above the footer", PDNA_LOC_RULE_Y, PDNA_FILT_FOOTER_Y - 1);
     chkv_min("location row pitch holds a glyph box", PDNA_LOC_ROW_H, UI_ROW_H);
+    /* The selection panel, against the next row's PANEL. Same shape as the item filter's
+     * box -- one scanline of overlap, arbitrated by pdna_pick.c's ROW REPAINT RULE
+     * (selected row painted last on every path, so the panel is 9 rows tall whether you
+     * opened the screen onto this row or walked the cursor to it). */
+    chkv("location panel overlaps the next row's PANEL by at most one scanline",
+         PDNA_LOC_SEL_DY + PDNA_LOC_SEL_H - 1, PDNA_LOC_ROW_H + PDNA_LOC_SEL_DY);
+    /* GAP, stated rather than faked: the item filter's twin of this check
+     * (chkv_min(shared scanline, UI_ROW_H)) CANNOT be asserted here. ROW_H + SEL_DY = 7
+     * and the glyph box is 8 rows, so the shared scanline IS glyph row 7 -- which sys8
+     * inks for , ; g j p q y. An unselected row's wipe therefore clips the descenders of
+     * the row above it. Harmless for what these screens can display (s_location[] and
+     * s_nature[] are upper-case) and cheap to keep true, but list_pick is generic on
+     * name_fn: giving it a mixed-case list means widening the pitch to 9 the way the
+     * FILT_* lists did (costing a visible row) or dropping the border for a borderless
+     * bar. Asserting the invariant here would fail today and asserting the weaker one
+     * would read as coverage it is not, so it is written down instead. */
 
     /* --- the met filter menu (item-filter geometry, one more row) ----------- */
     T(PDNA_LFILT_TITLE, 4);

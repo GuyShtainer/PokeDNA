@@ -308,6 +308,17 @@
  * the gap between them is CHIP_DX - CHIP_W and must not go negative. */
 #define PDNA_FILT_CHIP_W    26
 #define PDNA_FILT_CHIP_DX   32
+/* VERTICAL placement of that chip, and it is deliberately not a second pair of numbers:
+ * the chip IS the row's highlight bar, drawn narrow. Every list that paints a type chip
+ * (filter_menu, dex_menu, pick_move's mv_row) backs its rows with a rect at
+ * y + BAR_DY of height BAR_H, and a row may not paint outside the rect its own
+ * background wipe covers — see pdna_pick.c's ROW REPAINT RULE. The chip used to be a
+ * literal `9` at `y`, i.e. y..y+8 against a bar of y-1..y+7: its LAST scanline sat in
+ * the NEXT row's rect, so the next row's wipe ate it and chips rendered 8 px tall
+ * everywhere except the bottom of the window. Tying the two together here means a future
+ * edit to the bar moves the chip with it and cannot re-open that gap. */
+#define PDNA_FILT_CHIP_DY   PDNA_FILT_BAR_DY
+#define PDNA_FILT_CHIP_H    PDNA_FILT_BAR_H
 /* The bar's right border column is the ink budget for a row. */
 #define PDNA_FILT_ROW_W  (PDNA_FILT_BAR_X + PDNA_FILT_BAR_W - PDNA_FILT_TEXT_X)
 /* These lists put their hint TWO rows below UI_FOOTER_Y, not on it (nothing pops up over
@@ -378,6 +389,15 @@
 #define PDNA_LOC_ROW_H       8
 #define PDNA_LOC_VIS        16                /* 14 + 15*8 + 7 = 141, clear of the rule */
 #define PDNA_LOC_TEXT_X      6
+/* The selection panel's rect, relative to the row's text baseline. Named (they were two
+ * literals inside ml_row) so the host test can see that this rect is ONE PIXEL TALLER
+ * THAN ITS OWN PITCH: rows -1..7 against a next-row top of ROW_H + SEL_DY = 7, i.e. one
+ * shared scanline. That is legal only under pdna_pick.c's ROW REPAINT RULE, which makes
+ * the selected row paint last on every path so it always wins that scanline. Unlike the
+ * IFILT box's shared scanline this one is INSIDE the glyph box (7 < UI_ROW_H) -- see
+ * lp_row's comment for the descender consequence and what widening it would cost. */
+#define PDNA_LOC_SEL_DY    (-1)
+#define PDNA_LOC_SEL_H       9
 #define PDNA_LOC_PAGE       10                /* L/R jump, same as list_pick's         */
 #define PDNA_LOC_ROW_COLS   28                /* ui_truncate budget for "%3d %s"       */
 #define PDNA_LOC_HDR_COLS   29                /* ui_truncate budget for the header     */

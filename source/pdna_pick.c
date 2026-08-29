@@ -117,8 +117,17 @@ static void type_chip(int x, int y, uint8_t t) {
   if (t >= 18) return;
   /* PDNA_FILT_CHIP_W, not a bare 26: the filter lists draw the type NAME a fixed
    * PDNA_FILT_CHIP_DX along from the chip, and the host test asserts the chip stops
-   * before it. Two literals could not be checked against each other. */
-  ui_fill_rect(x, y, PDNA_FILT_CHIP_W, 9, type_color(t));
+   * before it. Two literals could not be checked against each other.
+   *
+   * The VERTICAL pair used to be a bare `9` at `y` — one pixel LOWER than the y-1 row
+   * bar every caller (fm_row, dxm_row, mv_row) backs its rows with, so the chip's last
+   * scanline lived in the NEXT row's rect. Harmless while unselected rows painted no
+   * background; the moment partial repaint made every row wipe its own rect, the row
+   * below ate that scanline and chips came out 8 px tall (all but the last in the
+   * window, which has no row below it to eat it) and flickered as the cursor passed.
+   * The chip now IS the bar's rect, drawn narrow — invariant (1) of the ROW REPAINT
+   * RULE below. Its label stays on the text baseline `y`, level with the row's name. */
+  ui_fill_rect(x, y + PDNA_FILT_CHIP_DY, PDNA_FILT_CHIP_W, PDNA_FILT_CHIP_H, type_color(t));
   ui_text(x + 2, y, RGB15(31, 31, 31), TYPE_ABBR[t]);
 }
 /* The real Gen-3 type badge (32x14, generated). Use where a row is tall enough;
@@ -224,33 +233,106 @@ static void filt_bar(int y) {
   ui_fill_rect(PDNA_FILT_BAR_X, y + PDNA_FILT_BAR_DY, PDNA_FILT_BAR_W, PDNA_FILT_BAR_H, UI_SEL);
 }
 
-/* a nice list to jump to any filter (type rows show a colored chip) + sort toggle. */
+/* ============================ THE ROW REPAINT RULE ==========================
+ * Read this before touching any *_row / *_row_bg helper or any full-paint loop in this
+ * file. Partial repaint means a row's background is no longer supplied by a screen-wide
+ * ui_clear(): every row helper wipes its OWN rect and draws on top. Two invariants make
+ * that safe, and BOTH have to hold or the screen paints differently depending on which
+ * path last touched it:
+ *
+ * (1) A ROW PAINTS NOTHING OUTSIDE THE RECT ITS OWN WIPE COVERS.
+ *     Otherwise the stray pixels belong to a neighbour's rect and the neighbour's wipe
+ *     deletes them, so a row's appearance depends on whether the row next to it happened
+ *     to be repainted. type_chip() broke this (9 px at y against a bar at y-1) until it
+ *     was tied to PDNA_FILT_CHIP_DY/_H; nothing else in this file does.
+ *
+ * (2) WHERE TWO ROWS' RECTS OVERLAP BY CONSTRUCTION, THE SELECTED ROW WINS THE SHARED
+ *     SCANLINE -- SO EVERY PAINT PATH PAINTS THE SELECTED ROW LAST.
+ *     Two geometries here are one pixel taller than their own pitch and cannot be fixed
+ *     without a layout change: IFILT's 12 px box on an 11 px pitch (shared scanline
+ *     y+9) and the met-location / generic-list 9 px panel on an 8 px pitch (shared
+ *     scanline y+7). The shared scanline is simply whichever of the two rows painted
+ *     second. The row-pair diff paints old-then-new, i.e. selected LAST; a full paint
+ *     walking rows ascending would instead let the row BELOW the cursor write it, and
+ *     the selection bar would be 8 rows tall right after the screen opens and 9 rows
+ *     tall after any cursor move. So the full paints below skip the selected row in the
+ *     loop and draw it afterwards, which is also exactly what the pre-partial-repaint
+ *     code (ui_clear + only the selected row drawing a bar) put on screen.
+ *
+ * RESIDUAL, stated rather than hidden: on the 9-on-8 geometry the shared scanline y+7
+ * is also glyph row 7 of the 8 px cell, which libtonc's sys8 inks for , ; g j p q y. An
+ * unselected row's wipe therefore clips the DESCENDERS of the row above it. Every name
+ * these two screens can show today is upper-case (s_location[], s_nature[]), so nothing
+ * is clipped in this build; closing it for a future mixed-case name_fn needs the
+ * highlight to fit the pitch, which on an 8 px pitch with an 8 px glyph box means either
+ * dropping the border (the sp_row / filt_bar idiom) or widening the pitch and losing a
+ * visible row -- a layout decision, not a repaint fix, so it is not forced here.
+ * ============================================================================ */
+
+/* Row background for the FILT_* geometry (filter_menu + dex_menu share it): the bar is
+ * exactly as tall as the row pitch (9 on 9), so this is the one list geometry where the
+ * rects are disjoint and invariant (2) has nothing to arbitrate. It still needed
+ * invariant (1): its type chip used to hang one scanline below this rect. */
+static void filt_row_bg(int y, bool sel) {
+  if (sel) filt_bar(y);
+  else     ui_fill_rect(PDNA_FILT_BAR_X, y + PDNA_FILT_BAR_DY, PDNA_FILT_BAR_W, PDNA_FILT_BAR_H, UI_BG);
+}
+
+/* One row of the FILTER/SORT list: row 0 is the sort toggle, the rest are the
+ * gen/type/legendary filter list (a type row draws a chip). */
+static void fm_row(const int* fids, int r, int y, bool sel, int sort) {
+  filt_row_bg(y, sel);
+  if (r == 0) {
+    char b[32];
+    siprintf(b, PDNA_FILT_SORT_FMT, sort ? PDNA_FILT_SORT_NAME : PDNA_FILT_SORT_DEX);
+    ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_DIRCLR, b);
+  } else {
+    int fid = fids[r - 1];
+    if (fid >= 5) { type_chip(PDNA_FILT_TEXT_X, y, (uint8_t)(fid - 5));
+                    ui_text(PDNA_FILT_TEXT_X + PDNA_FILT_CHIP_DX, y, sel ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
+    else ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_TEXT, filter_name(fid));
+  }
+}
+
+/* a nice list to jump to any filter (type rows show a colored chip) + sort toggle.
+ *
+ * D2: full = first paint, an overlay wiped us (never happens today -- this screen opens
+ * nothing of its own -- but tracked anyway, the same uniform idiom every other picker in
+ * this file uses so a call added here later needs no new bookkeeping), or the window
+ * scrolled. A cursor move repaints the row pair; the A-toggle on row 0 (sel does not
+ * move) repaints just that row. */
 static void filter_menu(int* filter, int* sort) {
   int fids[24];
   int nf = filter_ids(fids);
   int rows = 1 + nf, sel = 0, top = 0;
+  int prev_sel = -1, prev_top = -1, prev_sort = -1;
+  uint32_t gen = 0; bool valid = false;
   for (;;) {
     if (sel < top) top = sel;
     if (sel >= top + FILT_VIS) top = sel - FILT_VIS + 1;
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, "FILTER / SORT");
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < FILT_VIS && top + i < rows; i++) {
-      int r = top + i, y = FILT_Y0 + i * FILT_ROW_H;
-      bool s = (r == sel);
-      if (s) filt_bar(y);
-      if (r == 0) {
-        char b[32];
-        siprintf(b, PDNA_FILT_SORT_FMT, *sort ? PDNA_FILT_SORT_NAME : PDNA_FILT_SORT_DEX);
-        ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b);
-      } else {
-        int fid = fids[r - 1];
-        if (fid >= 5) { type_chip(PDNA_FILT_TEXT_X, y, (uint8_t)(fid - 5));
-                        ui_text(PDNA_FILT_TEXT_X + PDNA_FILT_CHIP_DX, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
-        else ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid));
-      }
+
+    bool full = !valid || gen != ui_clear_gen() || top != prev_top;
+
+    if (full) {
+      ui_clear();
+      ui_text(4, 2, UI_TITLE, "FILTER / SORT");
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      for (int i = 0; i < FILT_VIS && top + i < rows; i++)   /* selected row LAST: rule (2) */
+        if (top + i != sel) fm_row(fids, top + i, FILT_Y0 + i * FILT_ROW_H, false, *sort);
+      if (sel >= top && sel < top + FILT_VIS && sel < rows)
+        fm_row(fids, sel, FILT_Y0 + (sel - top) * FILT_ROW_H, true, *sort);
+      ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_FILT_FOOT);
+    } else if (sel != prev_sel) {
+      int oi = prev_sel - top, ni = sel - top;
+      if (oi >= 0 && oi < FILT_VIS) fm_row(fids, prev_sel, FILT_Y0 + oi * FILT_ROW_H, false, *sort);
+      if (ni >= 0 && ni < FILT_VIS) fm_row(fids, sel,      FILT_Y0 + ni * FILT_ROW_H, true,  *sort);
+    } else if (*sort != prev_sort) {
+      int i = sel - top;
+      if (i >= 0 && i < FILT_VIS) fm_row(fids, sel, FILT_Y0 + i * FILT_ROW_H, true, *sort);
     }
-    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_FILT_FOOT);
+
+    prev_sel = sel; prev_top = top; prev_sort = *sort; valid = true; gen = ui_clear_gen();
+
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
     if (k & KEY_B) return;
     else if (k & KEY_A) { if (sel == 0) *sort ^= 1; else { *filter = fids[sel - 1]; return; } }
@@ -603,41 +685,83 @@ static bool dex_bulk(void) {
   }
 }
 
+/* One row of dex_menu's list: rows 0/1 are the sort/status toggles, row 2 (can_edit
+ * only) is the "Mark all..." bulk-edit entry, the rest are the gen/type/legendary
+ * filter list -- same shape as fm_row, with the two extra fixed rows spliced in. */
+static void dxm_row(const int* fids, int base, bool can_edit, int r, int y, bool sel,
+                    int sort, int status) {
+  filt_row_bg(y, sel);
+  if (r == 0) { char b[32];
+                siprintf(b, PDNA_FILT_SORT_FMT, sort ? PDNA_FILT_SORT_NAME : PDNA_FILT_SORT_DEX);
+                ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_DIRCLR, b); }
+  else if (r == 1) { char b[32]; siprintf(b, "Status: %s", DS_NAME[status]);
+                     ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_DIRCLR, b); }
+  else if (can_edit && r == 2) ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_WARN, PDNA_FILT_MARKALL);
+  else { int fid = fids[r - base];
+         if (fid >= 5) { type_chip(PDNA_FILT_TEXT_X, y, (uint8_t)(fid - 5));
+                         ui_text(PDNA_FILT_TEXT_X + PDNA_FILT_CHIP_DX, y, sel ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
+         else ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
+}
+
 /* START menu: sort toggle, status cycle, optional "Mark all", then the
  * gen/type/legendary filter list. Returns 0 nothing, 1 rebuild needed, 2 the dex
- * was bulk-changed (rebuild + mark dirty). */
+ * was bulk-changed (rebuild + mark dirty).
+ *
+ * THE TRAP (per the brief): dex_bulk() is a sub-overlay, but unlike every OSK/picker in
+ * this codebase it does NOT open with a ui_clear() -- it draws its confirm-list panel
+ * directly on top of whatever is already on screen (its own "stay open" comment). So
+ * `gen != ui_clear_gen()` -- the mechanism every other trap in this file relies on --
+ * genuinely does not see it: dex_bulk's Cancel and Undo-last paths can return having
+ * called ui_clear() zero times, leaving its popup's pixels sitting over this screen's
+ * rows with nothing in the paint state to say so. (The "counts on other rows" shape the
+ * brief describes does not actually apply here -- this menu shows no seen/caught
+ * numbers, only the sort/status/filter rows below; pdna_dex_screen's dex_header owns
+ * those, one call frame up.) Simpler-correct fix taken: force a full repaint the
+ * iteration after ANY call to dex_bulk(), whether or not it changed anything -- cheaper
+ * to reason about than reconstructing which of dex_bulk's several return paths did or
+ * did not paint, and it is what `relist` already means everywhere else in this file. */
 static int dex_menu(int* filter, int* sort, int* status, bool can_edit) {
   int fids[24]; int nf = filter_ids(fids);
   int base = can_edit ? 3 : 2;                          /* rows before the filter list */
   int rows = base + nf, sel = 0, top = 0;
   bool changed = false, bulked = false;
+  int prev_sel = -1, prev_top = -1, prev_sort = -1, prev_status = -1;
+  bool relist = false;
+  uint32_t gen = 0; bool valid = false;
   for (;;) {
     if (sel < top) top = sel;
     if (sel >= top + FILT_VIS) top = sel - FILT_VIS + 1;
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, "FILTER / SORT / FIND");
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < FILT_VIS && top + i < rows; i++) {
-      int r = top + i, y = FILT_Y0 + i * FILT_ROW_H; bool s = (r == sel);
-      if (s) filt_bar(y);
-      if (r == 0) { char b[32];
-                    siprintf(b, PDNA_FILT_SORT_FMT, *sort ? PDNA_FILT_SORT_NAME : PDNA_FILT_SORT_DEX);
-                    ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
-      else if (r == 1) { char b[32]; siprintf(b, "Status: %s", DS_NAME[*status]);
-                         ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
-      else if (can_edit && r == 2) ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_WARN, PDNA_FILT_MARKALL);
-      else { int fid = fids[r - base];
-             if (fid >= 5) { type_chip(PDNA_FILT_TEXT_X, y, (uint8_t)(fid - 5));
-                             ui_text(PDNA_FILT_TEXT_X + PDNA_FILT_CHIP_DX, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
-             else ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_TEXT, filter_name(fid)); }
+
+    bool full = relist || !valid || gen != ui_clear_gen() || top != prev_top;
+    relist = false;
+
+    if (full) {
+      ui_clear();
+      ui_text(4, 2, UI_TITLE, "FILTER / SORT / FIND");
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      for (int i = 0; i < FILT_VIS && top + i < rows; i++)   /* selected row LAST: rule (2) */
+        if (top + i != sel)
+          dxm_row(fids, base, can_edit, top + i, FILT_Y0 + i * FILT_ROW_H, false, *sort, *status);
+      if (sel >= top && sel < top + FILT_VIS && sel < rows)
+        dxm_row(fids, base, can_edit, sel, FILT_Y0 + (sel - top) * FILT_ROW_H, true, *sort, *status);
+      ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_FILT_FOOT);
+    } else if (sel != prev_sel) {
+      int oi = prev_sel - top, ni = sel - top;
+      if (oi >= 0 && oi < FILT_VIS) dxm_row(fids, base, can_edit, prev_sel, FILT_Y0 + oi * FILT_ROW_H, false, *sort, *status);
+      if (ni >= 0 && ni < FILT_VIS) dxm_row(fids, base, can_edit, sel,      FILT_Y0 + ni * FILT_ROW_H, true,  *sort, *status);
+    } else if (*sort != prev_sort || *status != prev_status) {
+      int i = sel - top;
+      if (i >= 0 && i < FILT_VIS) dxm_row(fids, base, can_edit, sel, FILT_Y0 + i * FILT_ROW_H, true, *sort, *status);
     }
-    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_FILT_FOOT);
+
+    prev_sel = sel; prev_top = top; prev_sort = *sort; prev_status = *status; valid = true; gen = ui_clear_gen();
+
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
     if (k & KEY_B) return bulked ? 2 : (changed ? 1 : 0);
     else if (k & KEY_A) {
       if (sel == 0)       { *sort ^= 1; changed = true; }
       else if (sel == 1)  { *status = (*status + 1) % DS_N; changed = true; }
-      else if (can_edit && sel == 2) { if (dex_bulk()) bulked = true; }   /* stay open */
+      else if (can_edit && sel == 2) { if (dex_bulk()) bulked = true; relist = true; }   /* stay open */
       else { *filter = fids[sel - base]; return bulked ? 2 : 1; }         /* pick -> close */
     }
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : rows - 1;
@@ -1004,6 +1128,39 @@ static int list_build(u16* idx, int count, const char* (*name_fn)(uint16_t),
   return n;
 }
 
+/* One row of the generic list picker. NOTE ON THE NON-ICON HEIGHT: it is a literal 9
+ * (not `rowh - 1` = 7) on an 8 px pitch (rowh=8) -- one pixel taller than its own pitch,
+ * so neighbouring rows' rects share the boundary scanline y+7 and invariant (2) of the
+ * ROW REPAINT RULE applies: the caller paints the selected row LAST in BOTH the pair
+ * diff and the full paint, so the selected row's whole 9-row panel survives either way.
+ *
+ * This geometry is NOT as clean as item_filter_menu's 12-on-11, and the difference is
+ * worth knowing before reusing it: there the shared scanline is two rows below the glyph
+ * box, here it IS glyph row 7 -- the row libtonc's sys8 inks for , ; g j p q y. So an
+ * unselected row's wipe clips the descenders of the row above. Every name list_pick can
+ * be handed today is upper-case, but this helper is generic on name_fn; a mixed-case one
+ * wants the pitch widened to 9 (as the FILT_* lists did) or the panel dropped for a
+ * borderless bar (sp_row's idiom) first. The icon row (rowh=26, panel height rowh-1=25)
+ * has no overlap at all (25 < 26) and is exact under any order. */
+static void lp_row(const char* (*name_fn)(uint16_t), const uint16_t* (*icon_fn)(uint16_t),
+                   int rowh, int id, int y, bool sel) {
+  char row[40], rt[40];
+  siprintf(row, "%3d %s", id, name_fn((uint16_t)id));
+  if (icon_fn) {
+    if (sel) ui_panel(2, y - 1, 236, rowh - 1, UI_SEL, UI_TITLE);
+    else     ui_fill_rect(2, y - 1, 236, rowh - 1, UI_BG);
+    const uint16_t* ic = icon_fn((uint16_t)id);
+    if (ic) ui_sprite(4, y, ITEM_ICON_W, ITEM_ICON_H, ic);
+    ui_truncate(rt, row, 24);
+    ui_text(32, y + 8, sel ? UI_SELTEXT : UI_TEXT, rt);
+  } else {
+    if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+    else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
+    ui_truncate(rt, row, 28);
+    ui_text(6, y, sel ? UI_SELTEXT : UI_TEXT, rt);
+  }
+}
+
 static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(uint16_t),
                           const uint16_t* (*icon_fn)(uint16_t), int current,
                           bool searchable, bool sortable) {
@@ -1018,6 +1175,9 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
   const int vis  = icon_fn ? 5 : 16;
   const int page = icon_fn ? 5 : 10;
   int top = 0;
+  int prev_top = -1, prev_sel = -1;
+  bool relist = false;
+  uint32_t gen = 0; bool valid = false;
 
   for (;;) {
     if (sel >= n) sel = n ? n - 1 : 0;
@@ -1025,31 +1185,34 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
     if (sel >= top + vis) top = sel - vis + 1;
     if (top < 0) top = 0;
 
-    ui_clear();
-    char h[40]; siprintf(h, "%s  %s  %d", title, sortable ? (sort ? "A-Z" : "No.") : "", n);
-    ui_text(4, 2, UI_TITLE, h);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    char row[40], rt[40];
-    for (int i = 0; i < vis && top + i < n; i++) {
-      int id = idx[top + i], y = 14 + i * rowh;
-      bool s = (top + i == sel);
-      siprintf(row, "%3d %s", id, name_fn((uint16_t)id));
-      if (icon_fn) {
-        if (s) ui_panel(2, y - 1, 236, rowh - 1, UI_SEL, UI_TITLE);
-        const uint16_t* ic = icon_fn((uint16_t)id);
-        if (ic) ui_sprite(4, y, ITEM_ICON_W, ITEM_ICON_H, ic);
-        ui_truncate(rt, row, 24);
-        ui_text(32, y + 8, s ? UI_SELTEXT : UI_TEXT, rt);
-      } else {
-        if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-        ui_truncate(rt, row, 28);
-        ui_text(6, y, s ? UI_SELTEXT : UI_TEXT, rt);
-      }
+    /* full: first paint, an overlay (the OSK, if searchable) wiped us, the search/sort
+     * list was rebuilt, or the visible window scrolled. Otherwise a cursor move touches
+     * just the two affected rows -- name_fn/icon_fn are pure id -> content lookups, so
+     * an unmoved id's row text never goes stale. */
+    bool full = relist || !valid || gen != ui_clear_gen() || top != prev_top;
+    relist = false;
+
+    if (full) {
+      ui_clear();
+      char h[40]; siprintf(h, "%s  %s  %d", title, sortable ? (sort ? "A-Z" : "No.") : "", n);
+      ui_text(4, 2, UI_TITLE, h);
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      for (int i = 0; i < vis && top + i < n; i++)          /* selected row LAST: rule (2) */
+        if (top + i != sel) lp_row(name_fn, icon_fn, rowh, idx[top + i], 14 + i * rowh, false);
+      if (n && sel >= top && sel < top + vis)
+        lp_row(name_fn, icon_fn, rowh, idx[sel], 14 + (sel - top) * rowh, true);
+      char foot[48];
+      siprintf(foot, "A pick  L/R +-%d  %s%sB", page,
+               searchable ? "SEL find  " : "", sortable ? "ST sort  " : "");
+      ui_text(4, 152, UI_DIM, foot);
+    } else if (sel != prev_sel) {
+      if (prev_sel >= top && prev_sel < top + vis)
+        lp_row(name_fn, icon_fn, rowh, idx[prev_sel], 14 + (prev_sel - top) * rowh, false);
+      if (sel >= top && sel < top + vis)
+        lp_row(name_fn, icon_fn, rowh, idx[sel], 14 + (sel - top) * rowh, true);
     }
-    char foot[48];
-    siprintf(foot, "A pick  L/R +-%d  %s%sB", page,
-             searchable ? "SEL find  " : "", sortable ? "ST sort  " : "");
-    ui_text(4, 152, UI_DIM, foot);
+
+    prev_sel = sel; prev_top = top; valid = true; gen = ui_clear_gen();
 
     u16 mask = KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B;
     if (searchable) mask |= KEY_SELECT;
@@ -1061,10 +1224,10 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
     else if (k & KEY_DOWN) sel = clampi(sel + 1, 0, n ? n - 1 : 0);
     else if (k & KEY_L)    sel = clampi(sel - page, 0, n ? n - 1 : 0);
     else if (k & KEY_R)    sel = clampi(sel + page, 0, n ? n - 1 : 0);
-    else if (sortable && (k & KEY_START)) { sort ^= 1; n = list_build(idx, count, name_fn, search, sort); sel = 0; }
+    else if (sortable && (k & KEY_START)) { sort ^= 1; n = list_build(idx, count, name_fn, search, sort); sel = 0; relist = true; }
     else if (searchable && (k & KEY_SELECT)) {
       char q[16];
-      if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); n = list_build(idx, count, name_fn, search, sort); sel = 0; }
+      if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); n = list_build(idx, count, name_fn, search, sort); sel = 0; relist = true; }
     }
   }
 }
@@ -1098,34 +1261,75 @@ static int item_build(u16* idx, const char* search, int sort, int cat, int gamef
   return n;
 }
 
+/* Row background for the IFILT_* geometry (item_filter_menu + loc_filter_menu share
+ * it): 8 rows, so there is room for a BORDERED highlight here -- but it has to enclose
+ * the glyph box rather than cut it: ui_panel's bottom rule sits at y+h-2, so height 12
+ * from y-2 puts it at y+8, one pixel clear of the 8-row text. Pitch 11 keeps the next
+ * row's ascenders out of the bar. (Both numbers in pdna_layout.h, asserted by
+ * tests/host_textfit_test.c.)
+ *
+ * THE TRAP: that 12-px box on an 11-px pitch means two neighboring rows' rects share
+ * one boundary scanline (row i's box spans y-2..y+9, row i+1's spans y+9..y+20). This
+ * helper always wipes its own FULL nominal rect, never a clipped one, so the shared
+ * scanline is just whichever of the two rows painted second -- which makes it invariant
+ * (2) of the ROW REPAINT RULE, not a property any single call site can guarantee on its
+ * own. "Old row before new row" in the pair diff is only half of it: the FULL paint has
+ * to leave the selected row for last too, or the box is 11 rows tall the instant the
+ * screen opens and 12 rows tall after one cursor move. Both call sites below do both.
+ * The shared scanline sits at y+9, two rows clear of the y..y+7 glyph box, so unlike
+ * the 9-on-8 geometry this one costs no text: the rule alone makes it exact. */
+static void ifilt_row_bg(int y, bool sel) {
+  if (sel) ui_panel(PDNA_FILT_BAR_X, y + PDNA_IFILT_BOX_DY, PDNA_FILT_BAR_W,
+                    PDNA_IFILT_BOX_H, UI_SEL, UI_TITLE);
+  else     ui_fill_rect(PDNA_FILT_BAR_X, y + PDNA_IFILT_BOX_DY, PDNA_FILT_BAR_W,
+                        PDNA_IFILT_BOX_H, UI_BG);
+}
+
+/* One row of item_filter_menu: row 0 sort, row 1 game, rows 2.. category (pick+close). */
+static void ifm_row(int r, int y, bool sel, int sort, int gamef, int cat) {
+  ifilt_row_bg(y, sel);
+  char b[36];
+  if (r == 0)      { siprintf(b, PDNA_FILT_SORT_FMT, sort ? PDNA_FILT_SORT_NAME : PDNA_FILT_SORT_ID);
+                     ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_DIRCLR, b); }
+  else if (r == 1) { siprintf(b, "Game: %s", IGAME_NAME[gamef]);
+                     ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_DIRCLR, b); }
+  else             { siprintf(b, "%s%s", ICAT_NAME[r - 2], (cat == r - 2) ? "  <" : "");
+                     ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_TEXT, b); }
+}
+
 /* START filter menu, the species picker's filter_menu idiom: Sort and Game
- * rows toggle in place (A / d-pad LEFT-RIGHT), a CATEGORY row picks + closes. */
+ * rows toggle in place (A / d-pad LEFT-RIGHT), a CATEGORY row picks + closes.
+ *
+ * No scrolling (8 rows, all always visible), so `full` needs only the first-paint /
+ * overlay-wiped-us terms. A cursor move repaints the row pair; a sort/game toggle (sel
+ * does not move for any of A/LEFT/RIGHT on rows 0-1) repaints just that row. */
 static void item_filter_menu(int* cat, int* gamef, int* sort) {
   const int rows = PDNA_IFILT_ROWS;              /* Sort + Game + one per category */
   int sel = 0;
+  int prev_sel = -1, prev_sort = -1, prev_gamef = -1;
+  uint32_t gen = 0; bool valid = false;
   for (;;) {
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, "FILTER / SORT");
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int r = 0; r < rows; r++) {
-      /* 8 rows, so there is room for a BORDERED highlight here — but it has to enclose
-       * the glyph box rather than cut it: ui_panel's bottom rule sits at y+h-2, so height
-       * 12 from y-2 puts it at y+8, one pixel clear of the 8-row text. Pitch 11 keeps the
-       * next row's ascenders out of the bar. (Both numbers in pdna_layout.h, asserted by
-       * tests/host_textfit_test.c.) */
-      int y = PDNA_IFILT_Y0 + r * PDNA_IFILT_ROW_H;
-      bool s = (r == sel);
-      if (s) ui_panel(PDNA_FILT_BAR_X, y + PDNA_IFILT_BOX_DY, PDNA_FILT_BAR_W,
-                      PDNA_IFILT_BOX_H, UI_SEL, UI_TITLE);
-      char b[36];
-      if (r == 0)      { siprintf(b, PDNA_FILT_SORT_FMT, *sort ? PDNA_FILT_SORT_NAME : PDNA_FILT_SORT_ID);
-                         ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
-      else if (r == 1) { siprintf(b, "Game: %s", IGAME_NAME[*gamef]);
-                         ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
-      else             { siprintf(b, "%s%s", ICAT_NAME[r - 2], (*cat == r - 2) ? "  <" : "");
-                         ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_TEXT, b); }
+    bool full = !valid || gen != ui_clear_gen();
+
+    if (full) {
+      ui_clear();
+      ui_text(4, 2, UI_TITLE, "FILTER / SORT");
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      for (int r = 0; r < rows; r++)                        /* selected row LAST: rule (2) */
+        if (r != sel) ifm_row(r, PDNA_IFILT_Y0 + r * PDNA_IFILT_ROW_H, false, *sort, *gamef, *cat);
+      if (sel >= 0 && sel < rows)
+        ifm_row(sel, PDNA_IFILT_Y0 + sel * PDNA_IFILT_ROW_H, true, *sort, *gamef, *cat);
+      ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_IFILT_FOOT);
+    } else if (sel != prev_sel) {
+      if (prev_sel >= 0 && prev_sel < rows)                 /* old row first: rule (2) */
+        ifm_row(prev_sel, PDNA_IFILT_Y0 + prev_sel * PDNA_IFILT_ROW_H, false, *sort, *gamef, *cat);
+      ifm_row(sel,      PDNA_IFILT_Y0 + sel      * PDNA_IFILT_ROW_H, true,  *sort, *gamef, *cat);
+    } else if (*sort != prev_sort || *gamef != prev_gamef) {
+      ifm_row(sel, PDNA_IFILT_Y0 + sel * PDNA_IFILT_ROW_H, true, *sort, *gamef, *cat);
     }
-    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_IFILT_FOOT);
+
+    prev_sel = sel; prev_sort = *sort; prev_gamef = *gamef; valid = true; gen = ui_clear_gen();
+
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) return;
     else if (k & KEY_A) {
@@ -1484,31 +1688,52 @@ uint8_t pick_ball(uint8_t current) {
  *     "UNDERWATER" and "CAVE", i.e. shared INFIXES of dozens of names, which a
  *     first-letter jump cannot express at all. Typing digits filters by id instead.
  */
+/* One row of loc_filter_menu: row 0 sort, row 1 game, row 2 = All, rows 3.. = regions
+ * (pick+close). Same IFILT_* box geometry (and the same shared-scanline ordering
+ * requirement -- see ifilt_row_bg's comment) as item_filter_menu. */
+static void lfm_row(int r, int y, bool sel, int sort, int gamef, int region) {
+  ifilt_row_bg(y, sel);
+  char b[40];
+  if (r == 0)      { siprintf(b, PDNA_FILT_SORT_FMT, g3_place_sort_name(sort));
+                     ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_DIRCLR, b); }
+  else if (r == 1) { siprintf(b, PDNA_LFILT_GAME_FMT, g3_place_game_name(gamef));
+                     ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_DIRCLR, b); }
+  else {
+    int rgn = r - 3;                          /* row 2 = All, rows 3.. = the regions */
+    const char* nm = (r == 2) ? PDNA_LFILT_ALL : g3_region_name(rgn);
+    siprintf(b, "%s%s", nm, (region == rgn) ? "  <" : "");
+    ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_TEXT, b);
+  }
+}
+
+/* No scrolling (PDNA_LFILT_ROWS is small and fixed), so `full` is just first-paint /
+ * overlay-wiped-us. Same row-pair / toggle-row split as item_filter_menu. */
 static void loc_filter_menu(int* region, int* gamef, int* sort) {
   const int rows = PDNA_LFILT_ROWS;
   int sel = 0;
+  int prev_sel = -1, prev_sort = -1, prev_gamef = -1;
+  uint32_t gen = 0; bool valid = false;
   for (;;) {
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, PDNA_LFILT_TITLE);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int r = 0; r < rows; r++) {
-      int y = PDNA_IFILT_Y0 + r * PDNA_IFILT_ROW_H;
-      bool s = (r == sel);
-      if (s) ui_panel(PDNA_FILT_BAR_X, y + PDNA_IFILT_BOX_DY, PDNA_FILT_BAR_W,
-                      PDNA_IFILT_BOX_H, UI_SEL, UI_TITLE);
-      char b[40];
-      if (r == 0)      { siprintf(b, PDNA_FILT_SORT_FMT, g3_place_sort_name(*sort));
-                         ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
-      else if (r == 1) { siprintf(b, PDNA_LFILT_GAME_FMT, g3_place_game_name(*gamef));
-                         ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_DIRCLR, b); }
-      else {
-        int rgn = r - 3;                          /* row 2 = All, rows 3.. = the regions */
-        const char* nm = (r == 2) ? PDNA_LFILT_ALL : g3_region_name(rgn);
-        siprintf(b, "%s%s", nm, (*region == rgn) ? "  <" : "");
-        ui_text(PDNA_FILT_TEXT_X, y, s ? UI_SELTEXT : UI_TEXT, b);
-      }
+    bool full = !valid || gen != ui_clear_gen();
+
+    if (full) {
+      ui_clear();
+      ui_text(4, 2, UI_TITLE, PDNA_LFILT_TITLE);
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      for (int r = 0; r < rows; r++)                        /* selected row LAST: rule (2) */
+        if (r != sel) lfm_row(r, PDNA_IFILT_Y0 + r * PDNA_IFILT_ROW_H, false, *sort, *gamef, *region);
+      if (sel >= 0 && sel < rows)
+        lfm_row(sel, PDNA_IFILT_Y0 + sel * PDNA_IFILT_ROW_H, true, *sort, *gamef, *region);
+      ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_IFILT_FOOT);
+    } else if (sel != prev_sel) {
+      if (prev_sel >= 0 && prev_sel < rows)                 /* old row first: rule (2) */
+        lfm_row(prev_sel, PDNA_IFILT_Y0 + prev_sel * PDNA_IFILT_ROW_H, false, *sort, *gamef, *region);
+      lfm_row(sel,      PDNA_IFILT_Y0 + sel      * PDNA_IFILT_ROW_H, true,  *sort, *gamef, *region);
+    } else if (*sort != prev_sort || *gamef != prev_gamef) {
+      lfm_row(sel, PDNA_IFILT_Y0 + sel * PDNA_IFILT_ROW_H, true, *sort, *gamef, *region);
     }
-    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_IFILT_FOOT);
+
+    prev_sel = sel; prev_sort = *sort; prev_gamef = *gamef; valid = true; gen = ui_clear_gen();
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) return;
@@ -1536,6 +1761,20 @@ _Static_assert(sizeof LOC_RGN_TAG  / sizeof LOC_RGN_TAG[0]  == G3_RGN_COUNT + 1,
 _Static_assert(sizeof LOC_GAME_TAG / sizeof LOC_GAME_TAG[0] == G3_PGAME_COUNT,   "game tags");
 _Static_assert(sizeof LOC_SORT_TAG / sizeof LOC_SORT_TAG[0] == G3_PSORT_COUNT,   "sort tags");
 
+/* One row of the met-location list: 9 px selection height on an 8 px row pitch -- the
+ * same overlapping shape as list_pick's non-icon row, and governed by the same invariant
+ * (2) of the ROW REPAINT RULE (selected row painted last by BOTH paint paths). See
+ * lp_row's comment for the descender caveat this geometry carries; s_location[] is
+ * upper-case throughout, so nothing on this screen is clipped by it. */
+static void ml_row(uint16_t id, int y, bool sel) {
+  if (sel) ui_panel(2, y + PDNA_LOC_SEL_DY, 236, PDNA_LOC_SEL_H, UI_SEL, UI_TITLE);
+  else     ui_fill_rect(2, y + PDNA_LOC_SEL_DY, 236, PDNA_LOC_SEL_H, UI_BG);
+  char row[64], rt[72];
+  siprintf(row, "%3d %s", id, pk_location_name(id));
+  ui_truncate(rt, row, PDNA_LOC_ROW_COLS);
+  ui_text(PDNA_LOC_TEXT_X, y, sel ? UI_SELTEXT : UI_TEXT, rt);
+}
+
 uint16_t pick_metloc(uint16_t current, uint8_t metgame, int region0) {
   u16* idx = g_idx;
   char search[16] = "";
@@ -1546,6 +1785,9 @@ uint16_t pick_metloc(uint16_t current, uint8_t metgame, int region0) {
   int sel = 0;
   for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
   int top = 0;
+  int prev_top = -1, prev_sel = -1;
+  bool relist = false;
+  uint32_t gen = 0; bool valid = false;
 
   for (;;) {
     if (sel >= n) sel = n ? n - 1 : 0;
@@ -1553,25 +1795,42 @@ uint16_t pick_metloc(uint16_t current, uint8_t metgame, int region0) {
     if (sel >= top + PDNA_LOC_VIS) top = sel - PDNA_LOC_VIS + 1;
     if (top < 0) top = 0;
 
-    ui_clear();
-    char h[64], ht[48];
-    siprintf(h, PDNA_LOC_HDR_FMT, LOC_RGN_TAG[region < 0 ? 0 : region + 1],
-             LOC_GAME_TAG[gamef], LOC_SORT_TAG[sort], n);
-    ui_truncate(ht, h, PDNA_LOC_HDR_COLS);
-    ui_text(4, 2, UI_TITLE, ht);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    if (!n) ui_ptext(PDNA_LOC_TEXT_X, PDNA_LOC_Y0 + 8, UI_WARN, PDNA_LOC_EMPTY);
-    for (int i = 0; i < PDNA_LOC_VIS && top + i < n; i++) {
-      int id = idx[top + i], y = PDNA_LOC_Y0 + i * PDNA_LOC_ROW_H;
-      bool s = (top + i == sel);
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-      char row[64], rt[72];
-      siprintf(row, "%3d %s", id, pk_location_name((uint16_t)id));
-      ui_truncate(rt, row, PDNA_LOC_ROW_COLS);
-      ui_text(PDNA_LOC_TEXT_X, y, s ? UI_SELTEXT : UI_TEXT, rt);
+    /* full: first paint, the list was rebuilt under us, an overlay wiped us, or the
+     * window scrolled. Otherwise a cursor move touches just the row pair.
+     *
+     * `relist` is not redundant with `gen`. Both overlays this screen opens DO happen to
+     * ui_clear() at least once even on an immediate cancel (osk_core renders before its
+     * first key read; loc_filter_menu's first iteration is always `full`) -- but that is
+     * a property of THEIR bodies, and loc_filter_menu's body is one this very slice
+     * rewrote from "clear every frame" to "clear once per visit". Leaning on it would
+     * make this screen silently under-repaint the day someone adds an early return above
+     * that first paint. A rebuild is something WE do, so we say so ourselves, exactly
+     * like pick_item does around item_filter_menu / item_build. */
+    bool full = relist || !valid || gen != ui_clear_gen() || top != prev_top;
+    relist = false;
+
+    if (full) {
+      ui_clear();
+      char h[64], ht[48];
+      siprintf(h, PDNA_LOC_HDR_FMT, LOC_RGN_TAG[region < 0 ? 0 : region + 1],
+               LOC_GAME_TAG[gamef], LOC_SORT_TAG[sort], n);
+      ui_truncate(ht, h, PDNA_LOC_HDR_COLS);
+      ui_text(4, 2, UI_TITLE, ht);
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      if (!n) ui_ptext(PDNA_LOC_TEXT_X, PDNA_LOC_Y0 + 8, UI_WARN, PDNA_LOC_EMPTY);
+      for (int i = 0; i < PDNA_LOC_VIS && top + i < n; i++) /* selected row LAST: rule (2) */
+        if (top + i != sel) ml_row(idx[top + i], PDNA_LOC_Y0 + i * PDNA_LOC_ROW_H, false);
+      if (n && sel >= top && sel < top + PDNA_LOC_VIS)
+        ml_row(idx[sel], PDNA_LOC_Y0 + (sel - top) * PDNA_LOC_ROW_H, true);
+      ui_hline(0, PDNA_LOC_RULE_Y, UI_SCR_W, UI_BORDER);
+      ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_LOC_FOOT);
+    } else if (sel != prev_sel) {
+      int oi = prev_sel - top, ni = sel - top;
+      if (oi >= 0 && oi < PDNA_LOC_VIS) ml_row(idx[prev_sel], PDNA_LOC_Y0 + oi * PDNA_LOC_ROW_H, false);
+      if (ni >= 0 && ni < PDNA_LOC_VIS) ml_row(idx[sel],      PDNA_LOC_Y0 + ni * PDNA_LOC_ROW_H, true);
     }
-    ui_hline(0, PDNA_LOC_RULE_Y, UI_SCR_W, UI_BORDER);
-    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_LOC_FOOT);
+
+    prev_sel = sel; prev_top = top; valid = true; gen = ui_clear_gen();
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B | KEY_SELECT | KEY_START);
     if (k & KEY_B) return CANCEL;
@@ -1584,7 +1843,7 @@ uint16_t pick_metloc(uint16_t current, uint8_t metgame, int region0) {
       uint16_t keep = n ? idx[sel] : current;
       loc_filter_menu(&region, &gamef, &sort);
       n = g3_place_list(idx, G3_PLACE_MAX, region, gamef, search, sort);
-      sel = 0; top = 0;
+      sel = 0; top = 0; relist = true;
       for (int i = 0; i < n; i++) if (idx[i] == keep) { sel = i; break; }
     }
     else if (k & KEY_SELECT) {
@@ -1592,33 +1851,56 @@ uint16_t pick_metloc(uint16_t current, uint8_t metgame, int region0) {
       if (osk_search("SEARCH", search, q, sizeof(q))) {
         strcpy(search, q);
         n = g3_place_list(idx, G3_PLACE_MAX, region, gamef, search, sort);
-        sel = 0; top = 0;
+        sel = 0; top = 0; relist = true;
       }
     }
   }
 }
 
+/* One row of pick_region: a 14 px selection box on a 16 px pitch (2 px clear on both
+ * sides -- no neighbor overlap, unlike ml_row/lp_row's 9-on-8 shape, so no ordering
+ * care needed here). `cnt` -- how many places this region offers THIS game, 0 being
+ * the honest way to show that a FireRed record has no Hoenn to be met in -- is
+ * recomputed here via g3_place_list (a pure in-memory scan over the places table, no
+ * SD) rather than cached, so a row-pair cursor move now costs 2 scans instead of the
+ * full paint's G3_RGN_COUNT: a free byproduct of only redrawing the rows that changed,
+ * not a new cache (gamef is fixed for the screen's life, so the count per row never
+ * goes stale). */
+static void rgn_row(int r, int y, bool sel, int gamef) {
+  if (sel) ui_panel(2, y - 2, 236, 14, UI_SEL, UI_TITLE);
+  else     ui_fill_rect(2, y - 2, 236, 14, UI_BG);
+  int cnt = g3_place_list(g_idx, G3_PLACE_MAX, r, gamef, "", G3_PSORT_ID);
+  char b[40];
+  siprintf(b, PDNA_RGN_ROW_FMT, g3_region_name(r), cnt);
+  ui_text(PDNA_RGN_TEXT_X, y, sel ? UI_SELTEXT : (cnt ? UI_TEXT : UI_DIM), b);
+}
+
 int pick_region(int current, uint8_t metgame) {
   int gamef = g3_game_filter_for(metgame);
   int sel = (current >= 0 && current < G3_RGN_COUNT) ? current : 0;
+  int prev_sel = -1;
+  uint32_t gen = 0; bool valid = false;
   for (;;) {
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, PDNA_RGN_TITLE);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int r = 0; r < G3_RGN_COUNT; r++) {
-      int y = PDNA_RGN_Y0 + r * PDNA_RGN_ROW_H;
-      bool s = (r == sel);
-      if (s) ui_panel(2, y - 2, 236, 14, UI_SEL, UI_TITLE);
-      /* how many places this region offers THIS game — 0 is the honest way to show that
-       * a FireRed record has no Hoenn to be met in. */
-      int cnt = g3_place_list(g_idx, G3_PLACE_MAX, r, gamef, "", G3_PSORT_ID);
-      char b[40];
-      siprintf(b, PDNA_RGN_ROW_FMT, g3_region_name(r), cnt);
-      ui_text(PDNA_RGN_TEXT_X, y, s ? UI_SELTEXT : (cnt ? UI_TEXT : UI_DIM), b);
+    bool full = !valid || gen != ui_clear_gen();
+
+    if (full) {
+      ui_clear();
+      ui_text(4, 2, UI_TITLE, PDNA_RGN_TITLE);
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      for (int r = 0; r < G3_RGN_COUNT; r++)                /* selected row LAST: rule (2) */
+        if (r != sel) rgn_row(r, PDNA_RGN_Y0 + r * PDNA_RGN_ROW_H, false, gamef);
+      if (sel >= 0 && sel < G3_RGN_COUNT)
+        rgn_row(sel, PDNA_RGN_Y0 + sel * PDNA_RGN_ROW_H, true, gamef);
+      ui_ptext(4, PDNA_RGN_NOTE_Y, UI_DIM, PDNA_RGN_NOTE);
+      ui_hline(0, PDNA_RGN_RULE_Y, UI_SCR_W, UI_BORDER);
+      ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_RGN_FOOT);
+    } else if (sel != prev_sel) {
+      if (prev_sel >= 0 && prev_sel < G3_RGN_COUNT)         /* old row first: rule (2) */
+        rgn_row(prev_sel, PDNA_RGN_Y0 + prev_sel * PDNA_RGN_ROW_H, false, gamef);
+      rgn_row(sel,      PDNA_RGN_Y0 + sel      * PDNA_RGN_ROW_H, true,  gamef);
     }
-    ui_ptext(4, PDNA_RGN_NOTE_Y, UI_DIM, PDNA_RGN_NOTE);
-    ui_hline(0, PDNA_RGN_RULE_Y, UI_SCR_W, UI_BORDER);
-    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_RGN_FOOT);
+
+    prev_sel = sel; valid = true; gen = ui_clear_gen();
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return -1;
