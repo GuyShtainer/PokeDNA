@@ -6071,7 +6071,10 @@ static void render_record_streaks(const uint8_t* sb2) {
  * reading straight into g_save + G3_REC_SECTOR_OFF the way rec_import does --
  * that would clobber the loaded save's live record just to preview a file. NULL
  * (the PC dirty) is told to the user, never silently retried. */
-static void rec_files_page(void) {
+/* noinline: this holds a FIL (~560 B) on the stack; inlined into the nav loop it was
+ * reserved on main's frame for the whole run (+384 B permanent IWRAM stack, measured
+ * with -fstack-usage in review). As its own frame it exists only while browsing. */
+static __attribute__((noinline)) void rec_files_page(void) {
   for (;;) {
     char name[40];
     if (!rec_list_pick("RECORD FILES", "A view  B page 1  U/D pick", name, sizeof name))
@@ -6088,7 +6091,12 @@ static void rec_files_page(void) {
     FIL f; UINT br = 0;
     bool ok = (f_open(&f, path, FA_READ) == FR_OK);
     if (ok) {
-      ok = (f_read(&f, blob, G3_SECTOR_SIZE, &br) == FR_OK) && (br == G3_SECTOR_SIZE);
+      /* Exact size FIRST, the same test rec_import applies (pdna_main.c, its f_size
+       * check): br == 4096 alone accepts any file >= 4 KiB, so an oversized .rec
+       * would preview fine here and then fail the import on page 1 -- two verdicts
+       * on the same file from the same feature. */
+      ok = (f_size(&f) == G3_SECTOR_SIZE)
+        && (f_read(&f, blob, G3_SECTOR_SIZE, &br) == FR_OK) && (br == G3_SECTOR_SIZE);
       f_close(&f);
     }
     G3RecordInfo fi;

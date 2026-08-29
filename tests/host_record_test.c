@@ -71,14 +71,25 @@ int main(void) {
    * to g3_record_scan(g_buf, sz, ...) above -- proving g3_record_scan's delegation
    * introduced no drift and that a staged file preview renders the same data the
    * live page does. */
+  /* An ISOLATED copy, not a window into the 128 KiB fixture: after the refactor
+   * g3_record_scan IS scan_sector on that window, so window-vs-window comparisons are
+   * tautologies (review proved it by mutation: a wrong RO_ offset and a 1-byte
+   * overread both passed them). The standalone blob makes the memcmp load-bearing --
+   * an overread past sec4k[4095] now reads bytes that differ from the save's -- and
+   * the ground-truth constants catch offset drift that structure alone cannot. */
+  static uint8_t g_blob[G3_SECTOR_SIZE + 64];
+  memset(g_blob, 0xA5, sizeof g_blob);               /* poison past the sector */
+  memcpy(g_blob, g_buf + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE);
   G3RecordInfo rs;
-  bool present2 = g3_record_scan_sector(g_buf + G3_REC_SECTOR_OFF, &rs);
-  CHECK(present2 == present, "scan_sector: same presence as g3_record_scan");
-  CHECK(memcmp(&rs, &ri, sizeof rs) == 0, "scan_sector: byte-identical G3RecordInfo to g3_record_scan");
-  CHECK(g3_record_party_sector(g_buf + G3_REC_SECTOR_OFF, 0) == g3_record_party(g_buf, 0),
-        "party_sector: same pointer as g3_record_party (side 0)");
-  CHECK(g3_record_party_sector(g_buf + G3_REC_SECTOR_OFF, 1) == g3_record_party(g_buf, 1),
-        "party_sector: same pointer as g3_record_party (side 1)");
+  bool present2 = g3_record_scan_sector(g_blob, &rs);
+  CHECK(present2 == present, "scan_sector: standalone blob, same presence");
+  CHECK(memcmp(&rs, &ri, sizeof rs) == 0, "scan_sector: reads ONLY within the 4 KiB sector");
+  CHECK(ri.rng_seed == 0x2E463A77u && ri.facility == 4,
+        "emerald: seed/facility ground truth (catches RO_ offset drift)");
+  CHECK(g3_record_party_sector(g_blob, 0) == g_blob + (G3_REC_STRUCT_OFF - G3_REC_SECTOR_OFF),
+        "party_sector: side 0 at the struct base inside the blob");
+  CHECK(g3_record_party_sector(g_blob, 1) == g3_record_party_sector(g_blob, 0) + 600,
+        "party_sector: side 1 exactly 600 bytes after side 0");
   G3RecordInfo rn;
   CHECK(!g3_record_scan_sector(NULL, &rn), "scan_sector: NULL blob refuses");
   CHECK(!rn.present, "scan_sector: NULL blob leaves *out zeroed");
