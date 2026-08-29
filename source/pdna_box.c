@@ -197,8 +197,13 @@ static void tri_right(int x, int y, u16 c) {
   for (int i = 0; i < 4; i++) for (int j = 3 - i; j <= 3 + i; j++) m3_plot(x + (3 - i), y + j, c);
 }
 
-/* tan rounded box-name banner with arrows */
-static void draw_banner(int x, int y, int w, const char* name) {
+/* tan rounded box-name banner with arrows. `pfx`, if non-NULL, is a dim box-number
+ * ordinal ("3:") drawn immediately ahead of `name` in the banner's own shadow ink, so
+ * it reads as an ordinal and not part of the name (Guy, BACKLOG #33). The prefix+name
+ * pair is measured and centred TOGETHER as one unit, on the same rect midpoint the
+ * name alone used to use -- see the centring comment below for why that invariant
+ * holds regardless of how long the prefix is. */
+static void draw_banner(int x, int y, int w, const char* pfx, const char* name) {
   const u16 fill = RGB15(30, 27, 14), hi = RGB15(31, 31, 24), sh = RGB15(24, 15, 2),
             bd = RGB15(14, 9, 0), ink = RGB15(8, 5, 0);
   ui_fill_rect(x, y, w, 14, fill);
@@ -207,11 +212,18 @@ static void draw_banner(int x, int y, int w, const char* name) {
   m3_frame(x, y, x + w - 1, y + 13, bd);
   tri_left(x + 5, y + 4, ink);
   tri_right(x + w - 9, y + 4, ink);
-  /* Proportional, and centred on its width. The glove's fingertip is now anchored to
-   * the banner's rect midpoint (box_oam.c boxoam_cursor), so the text can float freely
-   * without dodging the hand. */
+  /* Proportional, and centred on its combined width. The glove's fingertip is
+   * anchored to the banner's rect midpoint (box_oam.c boxoam_cursor's title_row==1,
+   * WP_X + WP_W/2 -- a FIXED point, not derived from the text), so `tx + (pw+tw)/2`
+   * must land on `x + w/2` for the hand to keep pointing at the text -- which it does
+   * for ANY pw/tw split, the same identity that already made the name-only version
+   * correct. `sh` (the banner's own bottom-hairline shadow colour) doubles as the
+   * prefix's dim ink: darker than `ink` against the `fill` tan, still legible -- the
+   * same colour already proven on-screen as the banner's 1px shadow line. */
+  int pw = pfx ? ui_ptext_w(pfx) : 0;
   int tw = ui_ptext_w(name);
-  int tx = x + (w - tw) / 2;
+  int tx = x + (w - (pw + tw)) / 2;
+  if (pfx) tx = ui_ptext(tx, y + 3, sh, pfx);   /* returns the next glyph's x -- exact join, no gap math */
   ui_ptext(tx, y + 3, ink, name);
 }
 
@@ -1108,7 +1120,14 @@ static void draw_footer(bool is_bank, bool on_title, bool moving) {
   if (s_tab_focus >= 0)    f = "L/R tab  A pick  DN";
   else if (moving)         f = "A drop  B cancel";
   else if (s_item_held)    f = "A give  B put back";
-  else if (on_title)       f = "L/R box  A edit  DN";
+  /* A now renames directly and SELECT opens the box menu (Guy, BACKLOG #33) -- "L/R
+   * box  A name  SEL menu  DN" (27 chars) does not fit the footer's real budget (the
+   * fill/text only spans WP_W=162px at 8px/glyph => 20 columns, not the wider figure
+   * this line's own history assumed), so "box" and "DN" are dropped: L/R's box-switch
+   * meaning is this row's original, most-used function and is kept; DN (title -> grid)
+   * is a bare DOWN-press a player finds by exploring, same as the grid footer never
+   * spelling out that L/R does nothing there. */
+  else if (on_title)       f = "L/R A name SEL menu";
   else if (s_cur_mode == CM_MOVE) f = "MOVE A grab hold=set";
   else if (s_cur_mode == CM_ITEM) f = "ITEM  A take  SEL B";
   else                     f = is_bank ? "A menu  SEL  L/R  B"
@@ -1285,12 +1304,16 @@ static void era_hides_apply(void) {
 
 /* Repaint the box-name banner + occupancy + the on-title selection frame (BG, software). */
 static void draw_box_banner(BoxSource* src, int box, bool on_title) {
-  char bn[12], bnocc[24];
+  char bn[12], bnocc[24], bnum[6];
   src->get_name(box, bn);
   int occ = 0;
   for (int s = 0; s < 30; s++) if (g_box[s].species) occ++;
   siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);
-  draw_banner(WP_X + 2, 13, WP_W - 4, bnocc);
+  /* box+1: this file's `box` is always the zero-based index (PC 0..13, Bank 0..15,
+   * GB-origin sources alike), so +1 is the same one-based ordinal a player sees on
+   * the box-select screen -- no per-source special-casing needed. */
+  siprintf(bnum, "%d:", box + 1);
+  draw_banner(WP_X + 2, 13, WP_W - 4, bnum, bnocc);
   /* Only when the cursor is ACTUALLY on the box name. `on_title` stays true while the cursor
    * is further up on the top tabs, so keying off it alone drew the identical frame in two
    * different focus states — a pixel diff of the banner band between "on box name" and "on
@@ -3047,8 +3070,25 @@ int pdna_box(BoxSource* src) {
     else if ((k & KEY_START) && !src->is_bank) { boxoam_exit(); return 2; }
     else if (k & KEY_L) { SWITCH_BOX((box + nb - 1) % nb); }
     else if (k & KEY_R) { SWITCH_BOX((box + 1) % nb); }
-    else if (k & KEY_SELECT) {                       /* cycle cursor mode (Omega-only edit modes) */
-      if (!on_title && src->can_edit()) { s_cur_mode = (s_cur_mode + 1) % 3; need_full = true; }
+    else if (k & KEY_SELECT) {
+      /* This branch sits ABOVE `on_title` in the else-if chain (it has to: SELECT is
+       * also the grid's cursor-mode cycle, tested every iteration regardless of row),
+       * so on_title's own KEY_SELECT never gets a chance to run -- SELECT must be
+       * handled HERE for the title row, not down there. (Before this change, that
+       * meant the title row silently ate SELECT: `!on_title` was false so it fell to
+       * `else snd_deny()` and did nothing but beep -- a real, load-bearing dispatch-
+       * order fact, not a hypothetical collision, confirmed by reading this chain.) */
+      if (on_title) {                                /* TITLE row: SELECT opens the box menu
+                                                        * (rename/wallpaper/export/release —
+                                                        * box_options_menu, unchanged; rename
+                                                        * there is now a second path to the
+                                                        * same osk_input as the direct-A one) */
+        if (src->can_edit()) { boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
+                               recs = src->records(box); box_decode(src, recs, box);  /* Release all mutates records */
+                               s_oam_reload = true; need_full = true; }
+        else snd_deny();
+      }
+      else if (src->can_edit()) { s_cur_mode = (s_cur_mode + 1) % 3; need_full = true; }  /* cycle cursor mode (Omega-only edit modes) */
       else snd_deny();
     }
     else if (on_title) {                           /* TITLE row: limited controls */
@@ -3063,9 +3103,27 @@ int pdna_box(BoxSource* src) {
       else if (fresh & KEY_LEFT)  { SWITCH_BOX((box + nb - 1) % nb); }
       else if (fresh & KEY_RIGHT) { SWITCH_BOX((box + 1) % nb); }
       else if (k & KEY_A) {
-        if (src->can_edit()) { boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
-                               recs = src->records(box); box_decode(src, recs, box);  /* Release all mutates records */
-                               s_oam_reload = true; need_full = true; }
+        /* A on the banner renames the box directly (Guy, BACKLOG #33): the rest of
+         * box_options_menu (wallpaper/export/release) moved to SELECT, below, since
+         * rename is the action a player reaches for from the name itself. This is
+         * box_options_menu's OWN rename case (sel==0), lifted verbatim rather than
+         * shared by a helper -- it is five lines and the menu's copy must stay able to
+         * `return` mid-loop on its own, so a shared function would need an out
+         * parameter for no real gain. `cur`/`buf` are LOCAL to this block only: this
+         * function's outer `cur` is the int grid cursor, so a same-named `char cur[12]`
+         * here would shadow it -- named `bxname`/`bxnew` instead to keep that impossible. */
+        if (src->can_edit()) {
+          boxoam_suspend();                                              /* full-screen sub-view — own bracket, see box_oam.h */
+          char bxname[12]; src->get_name(box, bxname);
+          char bxnew[12];
+          if (osk_input("BOX NAME", bxname[0] ? bxname : "BOX", bxnew, 9)) {
+            src->set_name(box, bxnew);
+            src->commit();
+          }
+          boxoam_resume();
+          recs = src->records(box); box_decode(src, recs, box);          /* belt-and-braces refresh, same as the menu path */
+          s_oam_reload = true; need_full = true;
+        }
         else { snd_deny(); }
       }
     }
