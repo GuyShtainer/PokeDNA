@@ -238,7 +238,9 @@ static void hide(int i) { obj_hide(oe(i)); }
 static void upload_tiles(int tid, const void* src, int bytes) {
   /* OBJ tile memory base = tile_mem_obj[0] (0x06010000); each 4bpp tile = 32 B. */
   uint16_t* dst = (uint16_t*)((uint8_t*)tile_mem_obj[0] + (uint32_t)tid * 32);
+  rumble_io_suspend();              /* freeze GPIO during ROM/VRAM DMA */
   dma3_cpy(dst, src, bytes);
+  rumble_io_resume();
 }
 
 /* Same upload, CPU transport. For the ANIMATION TICK only.
@@ -253,7 +255,9 @@ static void upload_tiles(int tid, const void* src, int bytes) {
  * them would lose the one property that matters. bytes must be a multiple of 4. */
 static void upload_tiles_cpu(int tid, const void* src, int bytes) {
   uint16_t* dst = (uint16_t*)((uint8_t*)tile_mem_obj[0] + (uint32_t)tid * 32);
+  rumble_io_suspend();              /* freeze GPIO during ROM/VRAM copy */
   memcpy32(dst, src, (uint32_t)bytes / 4u);
+  rumble_io_resume();
 }
 
 /* Verified copy for the ONE-SHOT icon uploads. The 30 grid icons composite OVER the
@@ -274,6 +278,7 @@ static int icopy_verified(uint16_t* dst, const uint16_t* src, int n) {
 }
 
 static uint16_t s_stage[256];        /* one 512 B verify chunk (IWRAM .bss — EWRAM is full) */
+_Static_assert(sizeof(s_stage) == 0x200, "s_stage must be exactly 512 bytes (abuts s_shadow with no guard)");
 
 /* ---- ROM-streamed icons (phase 1 of the ROM-gated build) --------------------
  * When the compiled icon art is absent (the artless build) and the app has an open
@@ -573,10 +578,10 @@ static int load_rom_hand_frame(int tid, uint8_t frame) {
   if (!s_romhand || !s_romhand_pal_ready) return 0;
   rumble_io_suspend();
   int ok = rom_hand_frame(s_romhand, frame, (uint8_t*)s_stage);
-  rumble_io_resume();
-  if (!ok) { log_line("hand: rom frame %d unstable/unavailable", frame); return 0; }
+  if (!ok) { rumble_io_resume(); log_line("hand: rom frame %d unstable/unavailable", frame); return 0; }
   hand_anchor_shift((uint8_t*)s_stage, k_hand_anchor[frame].dx, k_hand_anchor[frame].dy);
-  upload_tiles(tid, s_stage, ROM_HAND_FRAME_BYTES);
+  upload_tiles(tid, s_stage, ROM_HAND_FRAME_BYTES);  /* ROM/VRAM within bracket */
+  rumble_io_resume();
   return 1;
 }
 #endif /* !PDNA_HAND_ART_COMPILED */
@@ -587,7 +592,9 @@ static void load_regb_grab(void) {
 #if !PDNA_HAND_ART_COMPILED
   if (load_rom_hand_frame(TID_GRAB, ROM_HAND_FRAME_GRAB)) { s_regb = 0; return; }
 #endif
+  rumble_io_suspend();              /* freeze GPIO during grab-fist ROM/VRAM upload */
   upload_tiles_verified(TID_GRAB, hand_oam_grab_tiles, HAND_OAM_TILES * HAND_OAM_TILE_BYTES);
+  rumble_io_resume();
   s_regb = 0;
 }
 
@@ -640,7 +647,9 @@ static void load_rega_hand(void) {
   const uint8_t* t = s_hand_pose == BOXOAM_POSE_REACH  ? hand_oam_reach_tiles
                    : s_hand_pose == BOXOAM_POSE_BOUNCE ? hand_oam_bounce_tiles
                                                        : hand_oam_cursor_tiles;
+  rumble_io_suspend();              /* freeze GPIO during hand-pose ROM/VRAM upload */
   upload_tiles_verified(TID_HAND, t, HAND_OAM_TILES * HAND_OAM_TILE_BYTES);
+  rumble_io_resume();
   s_rega = want;
 }
 
