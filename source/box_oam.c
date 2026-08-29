@@ -1365,23 +1365,18 @@ static void hand_xy(int cur, int* hx, int* hy) {
   if (*hy < WP_Y) *hy = WP_Y;
 }
 
-void boxoam_cursor(int cur, int title_row, int mode) {
+void boxoam_cursor(int cur, int title_row, int mode, int label_cx) {
   load_rega_hand();                                  /* region A back to the hand (a grab/carry may have borrowed it) */
   int hx, hy;
-  /* On the box name the hand used to park mid-banner — dead centre of "NAME  n/30", so it
-   * covered the count on the Bank and the tail of the name on a PC box. The banner's own
-   * left arrow is decoration (the right one says the same thing), so the hand goes there
-   * instead: it still points at the banner, and no data is ever underneath it. */
-  if (title_row == 1) { hx = WP_X + 1; hy = 13; }
+  /* Glove anchor: the fingertip (sprite-local 13,0) lands at (hx,hy). On the box name
+   * or tabs, centre the fingertip on the label's own centre (label_cx), 13 px left of
+   * which is the anchor. On the grid, use the hand_xy() cell-relative position. */
+  if (title_row == 1) { hx = label_cx - 13; hy = 13; }
   else if (title_row >= 2) {
-    /* Tab row (2026-08-23 fix): re-anchor per SELECTED tab instead of reusing the
-     * banner's single fixed spot. Same "point in from the region's own left edge"
-     * convention hand_xy() uses for a grid cell (fingertip a few px inside the left
-     * edge, not centred) — and hy lands INSIDE the tab bar's own y=0..11 band (at the
-     * label text's own y=2, ui_text(tx,2,...) in draw_tab), not one row below its
-     * bottom edge the way the reused banner y=13 did. */
-    static const int TAB_X0[3] = { TAB_X0_PKMN, TAB_X0_PARTY, TAB_X0_SAVE };
-    hx = TAB_X0[title_row - 2] + 1;
+    /* Tab row: re-anchor per SELECTED tab's label centre. hy lands INSIDE the tab bar's
+     * own y=0..11 band (at the label text's own y=2, ui_text(tx,2,...) in draw_tab),
+     * not one row below its bottom edge. */
+    hx = label_cx - 13;
     hy = 2;
   }
   else { hand_xy(cur, &hx, &hy); hx += s_cur_dx; hy += s_cur_dy;   /* dip + slide ride the hand */
@@ -1421,12 +1416,14 @@ void boxoam_cursor(int cur, int title_row, int mode) {
  * and rides FRONT-MOST (PRIO 0) above every box icon (PRIO 2). An orange, semi-transparent
  * grab fist sits BEHIND it (region B, PRIO 1). The cursor hand is hidden. species 0 -> just
  * the fist (empty hand). The caller hides the origin slot via boxoam_hide_slot(). */
-void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg) {
+void boxoam_carry_held(int cur, int title_row, uint16_t species, uint8_t form, bool egg) {
   /* RETAIL GEOMETRY (measured + decomp §1d of docs/retail-pickup-capture.md): the
    * fist is the HAND at its rest anchor with swapped tiles — same position, so the
    * open->fist swap never pops — drawn IN FRONT, with the carried mon riding 4 px
    * BELOW it. +s_cur_dy is the grab/place dip driver as before. */
-  int hx, hy; hand_xy(cur, &hx, &hy);
+  int hx, hy;
+  if (title_row == 0) { hand_xy(cur, &hx, &hy); }
+  else { hx = hy = 0; }    /* title_row >= 1: carrying from banner/tab (shouldn't happen in normal play, but safe) */
   int fx = hx + s_cur_dx, fy = hy + s_cur_dy; if (fy < WP_Y) fy = WP_Y;
   int ix = fx - 3 + 0, iy = fy + 4;              /* mon: centred under the fist */
   load_regb_grab();                                  /* fist tiles -> region B */

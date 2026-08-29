@@ -161,7 +161,10 @@ void boxoam_pose_pump(void);
  * which is exactly why it read as "under the PARTY button" -- see pdna_box.c's
  * s_tab_focus and the cursor_title_slot() helper that produces this value). Old bool
  * call sites (`false`/`true`) still compile unchanged (0/1 under the hood). */
-void boxoam_cursor(int cur, int title_row, int mode);
+/* Position the cursor hand: on the grid (title_row=0), the box-name banner (title_row=1),
+ * or a tab (title_row=2/3/4 = PKMN DATA/PARTY/SAVE). label_cx is the label's centre X
+ * (banner rect midpoint or tab label centre); ignored when title_row=0. */
+void boxoam_cursor(int cur, int title_row, int mode, int label_cx);
 
 /* Retail's grab beat is pose + motion, not blending: the hand dips 8 px at 1 px/frame
  * wide-OPEN over the mon (which stays in its cell), closes at the bottom, and rises
@@ -178,7 +181,7 @@ void boxoam_cursor_dxy(int dx, int dy); /* the 6-frame cursor slide (retail #4) 
 /* MOVE-mode carry (mon-in-hand): the held mon's icon (species/form) rides cursor cell
  * `cur` front-most in region A, an orange grab fist behind it; the cursor hand is hidden.
  * boxoam_carry_end() stops carrying; boxoam_hide_slot() lift-hides the origin cell. */
-void boxoam_carry_held(int cur, uint16_t species, uint8_t form, bool egg);   /* egg=1 -> the Egg icon rides the glove */
+void boxoam_carry_held(int cur, int title_row, uint16_t species, uint8_t form, bool egg);   /* title_row: 0=grid, 1=banner, 2/3/4=tabs; egg=1 -> the Egg icon rides the glove */
 void boxoam_carry_end(void);
 void boxoam_hide_slot(int s);
 void boxoam_show_slot(int s);   /* undo a lift-hide (grab-dip: mon stays visible) */

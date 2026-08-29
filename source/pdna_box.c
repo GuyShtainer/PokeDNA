@@ -207,11 +207,11 @@ static void draw_banner(int x, int y, int w, const char* name) {
   m3_frame(x, y, x + w - 1, y + 13, bd);
   tri_left(x + 5, y + 4, ink);
   tri_right(x + w - 9, y + 4, ink);
-  /* Proportional, and centred on its MEASURED width: the cursor hand parks in the left
-   * gutter of this banner when the box name is selected, so the text has to stay clear of
-   * it even for an 8-character box name plus "  30/30". */
+  /* Proportional, and centred on its width. The glove's fingertip is now anchored to
+   * the banner's rect midpoint (box_oam.c boxoam_cursor), so the text can float freely
+   * without dodging the hand. */
   int tw = ui_ptext_w(name);
-  int tx = x + (w - tw) / 2; if (tx < x + 24) tx = x + 24;
+  int tx = x + (w - tw) / 2;
   ui_ptext(tx, y + 3, ink, name);
 }
 
@@ -1021,6 +1021,28 @@ static int cursor_title_row(bool on_title) {
   return on_title ? 1 : 0;
 }
 
+/* Compute the label's centre X for a tab (0=PKMN DATA, 1=PARTY, 2=SAVE). Tabs are drawn
+ * at draw_tab(x, w, label, ...) with x/w derived from PANEL_W; the label itself is
+ * centred within each tab using the same formula draw_tab uses: tw = strlen(label)*8,
+ * tx = x + (w - tw)/2 (with a +2 clamp for safety, matched here). */
+static int tab_label_cx(int tab) {
+  const char* labels[3] = { "PKMN DATA", "PARTY", "SAVE" };
+  const int tabs_x[3] = { 0, PANEL_W + 1, PANEL_W + 93 };
+  const int tabs_w[3] = { PANEL_W + 1, 92, 240 - (PANEL_W + 93) };
+  int tw = (int)strlen(labels[tab]) * 8;
+  int tx = tabs_x[tab] + (tabs_w[tab] - tw) / 2;
+  if (tx < tabs_x[tab] + 2) tx = tabs_x[tab] + 2;
+  return tx;
+}
+
+/* Compute the label centre X for boxoam_cursor() based on title_row:
+ * 0 (grid): unused; 1 (banner): rect midpoint; 2/3/4 (tabs): tab label centre. */
+static int cursor_label_cx(int title_row) {
+  if (title_row == 1) return WP_X + WP_W / 2;
+  if (title_row >= 2) return tab_label_cx(title_row - 2);
+  return 0;    /* unused for grid (title_row == 0) */
+}
+
 static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
   if (s_oam_reload) {
     /* The 30-slot icon upload -- the whole cost of an L/R box page flip, and the
@@ -1044,10 +1066,12 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
       boxoam_show_slot(s_orig_slot);
     boxoam_item_markers(g_box, false);
     boxoam_carry_item(cur, 0, false);
-    boxoam_cursor(cur, false, cursor_look());        /* the descending open hand */
+    int tr = cursor_title_row(on_title);
+    boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr));   /* the descending open hand */
   } else if (s_holding) {
     PkMon hm; pk_decode_mon(s_held, false, &hm);
-    boxoam_carry_held(cur, hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
+    int tr = cursor_title_row(on_title);
+    boxoam_carry_held(cur, tr, hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
     if (s_orig_slot >= 0 && s_orig_bank == is_bank && s_orig_box == box)
       boxoam_hide_slot(s_orig_slot);                         /* lift-hide the origin cell */
     boxoam_item_markers(g_box, false);
@@ -1055,7 +1079,8 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
   } else if (s_cur_mode == CM_ITEM && s_item_held) {
     boxoam_carry_end();                                      /* ITEM GRAB: carried item rides the cursor */
     boxoam_item_markers(g_box, true);
-    boxoam_cursor(cur, cursor_title_row(on_title), BOXOAM_HAND_ITEM);  /* the HAND follows too — it used to stay
+    int tr = cursor_title_row(on_title);
+    boxoam_cursor(cur, tr, BOXOAM_HAND_ITEM, cursor_label_cx(tr));  /* the HAND follows too — it used to stay
                                                               * frozen on the source mon (only the item
                                                               * sprite moved with the cursor) */
     /* Small item (bottom-centre), NOT the full 32x32 that covered the mon — so the source
@@ -1069,7 +1094,8 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
       boxoam_carry_item(cur, g_box[cur].heldItem, false);    /* HOVER: small item bottom-left */
     else
       boxoam_carry_item(cur, 0, false);
-    boxoam_cursor(cur, cursor_title_row(on_title), cursor_look());  /* cursor hand last; restores region A */
+    int tr = cursor_title_row(on_title);
+    boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr));  /* cursor hand last; restores region A */
   }
 }
 
@@ -1630,9 +1656,10 @@ static uint8_t* drop_chunk(BoxSource* src, int box, uint8_t* recs, bool* pfull) 
    * (capture doc §4.6). The block itself stays down — only the hand leaves. */
   if (app_anim_enabled(ANIM_BOX)) {
     boxoam_hand_pose(BOXOAM_POSE_REACH);
+    int tr = (s_tab_focus >= 0) ? (2 + s_tab_focus) : 0;
     for (int d = 8; d >= 0; d--) {
       boxoam_cursor_dy(d);
-      boxoam_cursor(g3_slot(s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc), false, cursor_look());
+      boxoam_cursor(g3_slot(s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc), tr, cursor_look(), cursor_label_cx(tr));
       boxoam_commit(); s_vsync();
     }
     boxoam_cursor_dy(0);
@@ -1699,7 +1726,8 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
   int anchor = cur, corner = cur;
   bool themed = false;
   boxoam_hand_pose(BOXOAM_POSE_REACH);
-  boxoam_cursor(cur, false, cursor_look());
+  int tr = (s_tab_focus >= 0) ? (2 + s_tab_focus) : 0;
+  boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr));
   boxoam_commit();
   for (;;) {
     s_vsync();                                          /* polls keys */
@@ -1766,9 +1794,10 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
    * fist is re-placed by chunk_move at the end. */
   if (app_anim_enabled(ANIM_BOX)) {
     boxoam_hand_pose(BOXOAM_POSE_REACH);
+    int tr = (s_tab_focus >= 0) ? (2 + s_tab_focus) : 0;
     for (int d = 0; d <= 8; d++) {
       boxoam_cursor_dy(d);
-      boxoam_cursor(g3_slot(s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc), false, cursor_look());
+      boxoam_cursor(g3_slot(s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc), tr, cursor_look(), cursor_label_cx(tr));
       boxoam_commit(); s_vsync();
     }
     boxoam_cursor_dy(0);
@@ -2821,12 +2850,14 @@ int pdna_box(BoxSource* src) {
               * boxoam_pose_pump() at the TOP of the *next* iteration (see above), not
               * this one. */
              if (!boxoam_set_frame(bob)) boxoam_set_bob(bob);
-             boxoam_cursor(cur, cursor_title_row(on_title), cursor_look());
+             int tr = cursor_title_row(on_title);
+             boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr));
              perf_rep_end(PERF_REP_BOB);
            }
          } else if (bob) { bob = 0; boxoam_hand_pose(BOXOAM_POSE_NORMAL);
                            if (!boxoam_set_frame(0)) boxoam_set_bob(0);   /* settle the grid */
-                           boxoam_cursor(cur, cursor_title_row(on_title), cursor_look()); }
+                           int tr = cursor_title_row(on_title);
+                           boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr)); }
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
