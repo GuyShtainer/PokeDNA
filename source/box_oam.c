@@ -1371,6 +1371,12 @@ void boxoam_cursor(int cur, int title_row, int mode, int label_cx) {
   /* Glove anchor: the fingertip (sprite-local 13,0) lands at (hx,hy). On the box name
    * or tabs, centre the fingertip on the label's own centre (label_cx), 13 px left of
    * which is the anchor. On the grid, use the hand_xy() cell-relative position. */
+  /* title_row 1: the fingertip sits on the banner text's centre, so the glove art
+   * DOES overlap the middle of "NAME  n/30". Deliberate: an earlier fix parked the
+   * glove in the left gutter for readability, and that park is exactly what Guy
+   * reported as the bug ("sticks to the left ... instead of hovering above" the box
+   * name, 2026-08-28). If the overlap reads badly on hardware, move the glove -- do
+   * not resurrect the gutter park. */
   if (title_row == 1) { hx = label_cx - 13; hy = 13; }
   else if (title_row >= 2) {
     /* Tab row: re-anchor per SELECTED tab's label centre. hy lands INSIDE the tab bar's
@@ -1416,15 +1422,25 @@ void boxoam_cursor(int cur, int title_row, int mode, int label_cx) {
  * and rides FRONT-MOST (PRIO 0) above every box icon (PRIO 2). An orange, semi-transparent
  * grab fist sits BEHIND it (region B, PRIO 1). The cursor hand is hidden. species 0 -> just
  * the fist (empty hand). The caller hides the origin slot via boxoam_hide_slot(). */
-void boxoam_carry_held(int cur, int title_row, uint16_t species, uint8_t form, bool egg) {
+void boxoam_carry_held(int cur, int title_row, int label_cx, uint16_t species, uint8_t form, bool egg) {
   /* RETAIL GEOMETRY (measured + decomp §1d of docs/retail-pickup-capture.md): the
    * fist is the HAND at its rest anchor with swapped tiles — same position, so the
    * open->fist swap never pops — drawn IN FRONT, with the carried mon riding 4 px
    * BELOW it. +s_cur_dy is the grab/place dip driver as before. */
+  /* Non-grid rows anchor exactly like boxoam_cursor(): fingertip (sprite-local 13,0)
+   * on the label centre. UP off the PC top while holding is a first-class route (it
+   * feeds the PARTY-tab drop), so the fist and its passenger must FOLLOW the cursor
+   * there -- the first cut fell back to (0,0) and teleported both to the screen
+   * corner; before that they stayed parked on the grid, which was half of the
+   * original left-gutter complaint. Dip/slide (s_cur_dx/dy) and the WP_Y clamp are
+   * grid-only: the grab/place beat cannot run on the banner or a tab, and the clamp
+   * would shove a tab-row fist (hy=2) down into the wallpaper. */
   int hx, hy;
-  if (title_row == 0) { hand_xy(cur, &hx, &hy); }
-  else { hx = hy = 0; }    /* title_row >= 1: carrying from banner/tab (shouldn't happen in normal play, but safe) */
-  int fx = hx + s_cur_dx, fy = hy + s_cur_dy; if (fy < WP_Y) fy = WP_Y;
+  if (title_row == 1)      { hx = label_cx - 13; hy = 13; }
+  else if (title_row >= 2) { hx = label_cx - 13; hy = 2; }
+  else                     { hand_xy(cur, &hx, &hy); }
+  int fx = hx, fy = hy;
+  if (title_row == 0) { fx += s_cur_dx; fy += s_cur_dy; if (fy < WP_Y) fy = WP_Y; }
   int ix = fx - 3 + 0, iy = fy + 4;              /* mon: centred under the fist */
   load_regb_grab();                                  /* fist tiles -> region B */
   REG_BLDCNT = 0;                                    /* carried mon is opaque  */

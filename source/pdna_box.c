@@ -1021,10 +1021,14 @@ static int cursor_title_row(bool on_title) {
   return on_title ? 1 : 0;
 }
 
-/* Compute the label's centre X for a tab (0=PKMN DATA, 1=PARTY, 2=SAVE). Tabs are drawn
- * at draw_tab(x, w, label, ...) with x/w derived from PANEL_W; the label itself is
- * centred within each tab using the same formula draw_tab uses: tw = strlen(label)*8,
- * tx = x + (w - tw)/2 (with a +2 clamp for safety, matched here). */
+/* Compute the label's centre X for a tab (0=PKMN DATA, 1=PARTY, 2=SAVE). draw_tab
+ * CENTRES its label in the tab rect (tw = strlen(label)*8, tx = x + (w - tw)/2), so a
+ * centred label's centre is the rect midpoint -- independent of the label's length,
+ * which is what makes this correct for the Bank's runtime "(BANK)" label too. The
+ * strlen dance below still mirrors draw_tab's formula so the two can only drift
+ * together, and the result is tx + tw/2 (the CENTRE -- the first cut returned tx, the
+ * label's left edge, which parked the glove 16-36 px left of every label and hung it
+ * off-screen on PKMN DATA). */
 static int tab_label_cx(int tab) {
   const char* labels[3] = { "PKMN DATA", "PARTY", "SAVE" };
   const int tabs_x[3] = { 0, PANEL_W + 1, PANEL_W + 93 };
@@ -1032,7 +1036,7 @@ static int tab_label_cx(int tab) {
   int tw = (int)strlen(labels[tab]) * 8;
   int tx = tabs_x[tab] + (tabs_w[tab] - tw) / 2;
   if (tx < tabs_x[tab] + 2) tx = tabs_x[tab] + 2;
-  return tx;
+  return tx + tw / 2;
 }
 
 /* Compute the label centre X for boxoam_cursor() based on title_row:
@@ -1071,7 +1075,7 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
   } else if (s_holding) {
     PkMon hm; pk_decode_mon(s_held, false, &hm);
     int tr = cursor_title_row(on_title);
-    boxoam_carry_held(cur, tr, hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
+    boxoam_carry_held(cur, tr, cursor_label_cx(tr), hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
     if (s_orig_slot >= 0 && s_orig_bank == is_bank && s_orig_box == box)
       boxoam_hide_slot(s_orig_slot);                         /* lift-hide the origin cell */
     boxoam_item_markers(g_box, false);
