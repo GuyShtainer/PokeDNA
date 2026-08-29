@@ -49,25 +49,74 @@ static void osk_field(const char* buf, int len, int cpos) {
   }
 }
 
-static void osk_render(const char* prompt, const char* buf, int len, int cpos,
-                       int cr, int cc, const char* warn) {
-  ui_clear();
-  char p[40];
-  ui_truncate(p, prompt, 29);
-  ui_text(2, 0, UI_TITLE, p);
-  osk_field(buf, len, cpos);
-  for (int r = 0; r < OSK_ROWS; r++) {
-    int y = 44 + r * 13;
-    int rl = rowlen(r);
-    for (int c = 0; c < rl; c++) {
-      int x = 8 + c * 17;
-      char cell[2] = { KB[r][c], 0 };
-      ui_text_sel(x, y, 13, (r == cr && c == cc), UI_TEXT, cell);
-    }
-  }
+/* What is on screen. There is no shift/layout mode here -- both cases of every letter
+ * are laid out at once (KB[] is a compile-time constant) -- so the prompt and the grid
+ * of key cells never change shape for the life of one osk_core() call; only WHICH cell
+ * is highlighted, the field's content/caret, and the footer line move from one keypress
+ * to the next. Stack-local, not a static, so a fresh call always starts invalid (first
+ * pass paints in full) -- same shape as pdna_edit.c's EditPaint / pdna_legality.c's
+ * LegPaint, minus the record shadow neither of those two need here: cr/cc IS the whole
+ * selection state, and the field/footer are cheap enough to just redraw every press
+ * rather than diff. */
+typedef struct { uint32_t gen; int cr, cc; bool valid; } OskPaint;
+
+/* One keyboard cell. ui_text_sel() only fills its UI_SEL highlight rect on the SELECTED
+ * path (ui.c) -- the unselected path draws the glyph straight over whatever is already
+ * there -- so unhighlighting a cell here has to wipe that rect itself or the old
+ * highlight fill would survive under the new plain-ink glyph. 13 px is the same width
+ * ui_text_sel's own fill uses; the 4 px gap to the next column (17 px pitch) is never
+ * touched by either cell, so a wipe here can't bleed into a neighbour. */
+static void osk_key_paint(int r, int c, bool sel) {
+  int x = 8 + c * 17, y = 44 + r * 13;
+  char cell[2] = { KB[r][c], 0 };
+  if (!sel) ui_fill_rect(x, y, 13, UI_ROW_H, UI_BG);
+  ui_text_sel(x, y, 13, sel, UI_TEXT, cell);
+}
+
+/* Wipe-then-draw, same ghost-ink guard as every other row painter in this codebase: a
+ * warning line shorter than the default hint (or vice versa) must not leave the old
+ * text's tail on screen. */
+static void osk_footer_paint(const char* warn) {
+  ui_fill_rect(2, 150, 236, UI_ROW_H, UI_BG);
   char ftext[40];
   ui_truncate(ftext, warn ? warn : "A ins  B del  L/R caret  ST ok", 29);
   ui_text(2, 150, warn ? UI_WARN : UI_DIM, ftext);
+}
+
+static void osk_render(const char* prompt, const char* buf, int len, int cpos,
+                       int cr, int cc, const char* warn, OskPaint* pv) {
+  bool full = !pv->valid || pv->gen != ui_clear_gen();
+
+  if (full) {
+    ui_clear();
+    char p[40];
+    ui_truncate(p, prompt, 29);
+    ui_text(2, 0, UI_TITLE, p);
+    for (int r = 0; r < OSK_ROWS; r++) {
+      int rl = rowlen(r);
+      for (int c = 0; c < rl; c++) osk_key_paint(r, c, r == cr && c == cc);
+    }
+  } else if (cr != pv->cr || cc != pv->cc) {
+    /* Cursor moved within the same grid: repaint just the two affected cells. A press
+     * that moves neither (A/B/L/R/START/SELECT) falls through this too and touches no
+     * cell at all. */
+    osk_key_paint(pv->cr, pv->cc, false);
+    osk_key_paint(cr, cc, true);
+  }
+
+  /* The field and footer are redrawn on every call regardless of `full`: both are
+   * self-contained (osk_field repaints its own panel; osk_footer_paint wipes its own
+   * strip first) and cheap, and almost every handled key changes one or the other
+   * (a typed char, a caret move, a warning appearing/clearing) -- diffing buf/cpos/warn
+   * to catch the rare true no-op (e.g. A on an already-full buffer) would cost more
+   * code than the two rows it would occasionally save. */
+  osk_field(buf, len, cpos);
+  osk_footer_paint(warn);
+
+  pv->cr    = cr;
+  pv->cc    = cc;
+  pv->gen   = ui_clear_gen();        /* read AFTER the ui_clear() above, not before */
+  pv->valid = true;
 }
 
 static bool osk_core(const char* prompt, const char* initial, char* out, int cap, bool allow_empty) {
@@ -81,13 +130,15 @@ static bool osk_core(const char* prompt, const char* initial, char* out, int cap
   int cr = 0, cc = 0, cpos = len;
   bool dirty = true;
   const char* warn = NULL;
+  OskPaint pv;
+  memset(&pv, 0, sizeof pv);   /* .valid = false: the first osk_render() paints in full */
 
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_B);  /* hold B to clear fast */
   key_repeat_limits(16, 3);
 
   for (;;) {
     if (cc >= rowlen(cr)) cc = rowlen(cr) - 1;
-    if (dirty) { osk_render(prompt, buf, len, cpos, cr, cc, warn); dirty = false; }
+    if (dirty) { osk_render(prompt, buf, len, cpos, cr, cc, warn, &pv); dirty = false; }
     osk_vsync();
 
     u16 k = key_hit(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R |
