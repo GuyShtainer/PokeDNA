@@ -243,7 +243,9 @@ endif
 ifeq ($(strip $(PDNA_ARTLESS)),1)
 CFLAGS += -DPDNA_HAND_ART_COMPILED=0 -DPDNA_MON_ICONS_ART_COMPILED=0 \
           -DPDNA_CARD_ART_COMPILED=0 -DPDNA_POKEBLOCK_ART_COMPILED=0 \
-          -DPDNA_BAG_ART_COMPILED=0 -DPDNA_NO_DAYCARE_BG
+          -DPDNA_BAG_ART_COMPILED=0
+# Daycare BG is procedurally generated (tools/gen_daycare_bg.py) from user-supplied images,
+# not ROM-derived, so the artless build includes it. Consumer gates via __has_include probe.
 # ...and tell the CODE which variant it is, not just which art gates are off, so the
 # log's boot line can name the build the user is actually running (source/perf.c).
 CFLAGS += -DPDNA_ARTLESS=1
@@ -408,7 +410,9 @@ endif
 # build has to be a full `make rebuild`. With it, the inner make does normal incremental
 # compilation and only the touched objects are rebuilt.
 .PHONY: $(BUILD) all clean rebuild sd delta artless sd-artless delta-artless
-rebuild: clean $(BUILD)
+rebuild:
+	@$(MAKE) clean
+	@$(MAKE) $(BUILD)
 
 sd:                    # trimmed build that streams shiny/back sprites from /PokeDNA/sprites.pak
 	@$(MAKE) PDNA_TARGET=sd rebuild
