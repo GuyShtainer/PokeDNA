@@ -2,8 +2,9 @@
  * fixture contains a REAL recorded battle (sentinel 9D B3 00 00 at 0x1F000), so this
  * validates sentinel + checksum + field decode against ground truth; the Ruby fixture
  * must scan as "no record". Build + run:
- *   cc -I source tests/host_record_test.c source/gen3_record.c source/gen3_frontier.c \
- *      source/gen3_save.c source/gen3_mon.c -o /tmp/hr && /tmp/hr
+ *   cc -std=c11 -I source tests/host_record_test.c source/gen3_record.c \
+ *      source/gen3_frontier.c source/gen3_save.c source/gen3_mon.c \
+ *      source/gen3_dex.c source/gen3_flags.c -o /tmp/hr && /tmp/hr
  * (gen3_record now delegates its lane offsets to gen3_frontier — one table in the tree.)
  */
 #include <stdio.h>
