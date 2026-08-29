@@ -58,6 +58,36 @@ static const char* kind_tag(int kind) {
   }
 }
 
+/* What is on screen. `t`/`n` (the destination list) are fixed for the whole screen
+ * life -- g3fly_list() is called once, above -- so `top`/`sel` are the whole cursor
+ * state, plus the ON-count the header derives from the same flags every row reads.
+ * Same shape as pdna_legality.c's SweepPaint, with the header counter pdna_trainer.c's
+ * stars_editor also tracks. Stack-local, not a static: a fresh call always starts
+ * invalid (first pass paints in full). */
+typedef struct { uint32_t gen; int top, sel, on; bool valid; } FlyPaint;
+
+/* One row. Self-contained: wipes its own UI_ROW_H-tall strip to UI_BG first (the
+ * ghost-ink guard every other row painter in this codebase uses) -- ui_text_sel only
+ * fills its own UI_SEL highlight rect on the SELECTED path (ui.c), so the unselected
+ * draw needs this or a shorter/changed row could leave the old one's tail on screen.
+ * No pairing trap: 8 px content on a 10 px pitch leaves a 2 px gap neither this nor
+ * any neighbour ever touches. */
+static void fly_row_paint(const G3FlyDest* t, uint8_t* sb1, PkGame game, int idx, int y, bool sel) {
+  bool set = g3fly_get(sb1, game, idx);
+  const G3FlyDest* d = &t[idx];
+  char l[48];
+  /* 15 + 4 + 3 = 22 columns at x=4 -> 180 px, inside the 240 px screen. */
+  siprintf(l, "%-16.15s%-4s%s", d->name, set ? "ON" : "off", kind_tag(d->kind));
+  ui_fill_rect(4, y, 232, UI_ROW_H, UI_BG);
+  ui_text_sel(4, y, 232, sel, set ? UI_OK : UI_DIM, l);
+}
+
+static void fly_header_paint(int on, int tot) {
+  char l[16];
+  siprintf(l, "%d/%d", on, tot);
+  ui_text(200, 4, on == tot ? UI_OK : UI_DIM, l);
+}
+
 void pdna_fly(uint8_t* sb1, PkGame game) {
   const G3FlyDest* t;
   int n = g3fly_list(game, &t);
@@ -69,7 +99,15 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
 
   int sel = 0, top = 0;
   bool dirty = false;
+  /* Set by the KEY_A handler below when g3fly_set() actually flipped the row at
+   * `sel` this iteration, and consumed (cleared) by the very next iteration's
+   * paint block. `on` (g3fly_count_on) only counts G3FLY_TOWN rows (gen3_fly.c)
+   * -- a facility/cursor/prereq toggle leaves it unchanged, so it cannot be the
+   * "did this row change" signal. `toggled` shadows the mutation itself instead. */
+  bool toggled = false;
   const int vis = 12;
+  FlyPaint pv;
+  memset(&pv, 0, sizeof pv);           /* .valid = false: the first pass paints in full */
 
   for (;;) {
     if (sel < top) top = sel;
@@ -77,34 +115,52 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
     if (top > n - vis) top = n - vis;
     if (top < 0) top = 0;
 
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, "FLY DESTINATIONS");
     int tot = 0, on = g3fly_count_on(sb1, game, &tot);
-    char l[48];
-    siprintf(l, "%d/%d", on, tot);
-    ui_text(200, 4, on == tot ? UI_OK : UI_DIM, l);
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    /* `top` unchanged also proves `sel` (old and new) is still inside the visible
+     * window -- see pdna_legality.c's sweep_screen for why that makes the row-pair
+     * repaint below safe without a bounds check. */
+    bool full = !pv.valid || pv.gen != ui_clear_gen() || top != pv.top;
 
-    for (int i = 0; i < vis && top + i < n; i++) {
-      const G3FlyDest* d = &t[top + i];
-      bool set = g3fly_get(sb1, game, top + i);
-      int y = 18 + i * 10; bool s = (top + i == sel);
-      const char* tag = kind_tag(d->kind);
-      /* 15 + 4 + 3 = 22 columns at x=4 -> 180 px, inside the 240 px screen. */
-      siprintf(l, "%-16.15s%-4s%s", d->name, set ? "ON" : "off", tag);
-      ui_text_sel(4, y, 232, s, set ? UI_OK : UI_DIM, l);
+    if (full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "FLY DESTINATIONS");
+      fly_header_paint(on, tot);
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+
+      for (int i = 0; i < vis && top + i < n; i++)
+        fly_row_paint(t, sb1, game, top + i, 18 + i * 10, top + i == sel);
+
+      ui_hline(0, 140, UI_SCR_W, UI_BORDER);
+      /* The badge line is the difference between "this feature is broken" and "I
+       * understand what this does". Both variants must stay <= 29 columns or they
+       * wrap onto y=152 and collide with the key hints drawn there. */
+      if (g3fly_badge_ok(sb1, game))
+        ui_text(4, 144, UI_OK, "Badge OK - need a mon w/ Fly");
+      else
+        ui_text(4, 144, UI_WARN, "No Fly badge yet - can't fly");
+      ui_text(4, 152, UI_DIM, app_can_edit() ? "A toggle  START all  B back"
+                                             : "read-only (Omega)  B back");
+    } else {
+      if (sel != pv.sel) {
+        fly_row_paint(t, sb1, game, pv.sel, 18 + (pv.sel - top) * 10, false);
+        fly_row_paint(t, sb1, game, sel,    18 + (sel    - top) * 10, true);
+      } else if (toggled) {
+        /* toggled at the cursor, which did not move: the only single-flag mutator
+         * below (KEY_A) only ever touches `sel`, so it is the row that flipped.
+         * Gated on `toggled`, NOT `on != pv.on` -- a facility/cursor/prereq row
+         * flips its ON/off text without moving the town-only `on` counter at all. */
+        fly_row_paint(t, sb1, game, sel, 18 + (sel - top) * 10, true);
+      }
+      if (toggled) {
+        /* Header repaint is cheap (one small rect) and this also covers the
+         * count-changed case (a TOWN toggle does move `on`). */
+        ui_fill_rect(200, 4, UI_SCR_W - 200, UI_ROW_H, UI_BG);
+        fly_header_paint(on, tot);
+      }
     }
 
-    ui_hline(0, 140, UI_SCR_W, UI_BORDER);
-    /* The badge line is the difference between "this feature is broken" and "I
-     * understand what this does". Both variants must stay <= 29 columns or they
-     * wrap onto y=152 and collide with the key hints drawn there. */
-    if (g3fly_badge_ok(sb1, game))
-      ui_text(4, 144, UI_OK, "Badge OK - need a mon w/ Fly");
-    else
-      ui_text(4, 144, UI_WARN, "No Fly badge yet - can't fly");
-    ui_text(4, 152, UI_DIM, app_can_edit() ? "A toggle  START all  B back"
-                                           : "read-only (Omega)  B back");
+    pv.top = top; pv.sel = sel; pv.on = on; pv.gen = ui_clear_gen(); pv.valid = true;
+    toggled = false;                     /* consumed for this pass either way */
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_START);
     if (k & KEY_B) break;
@@ -114,15 +170,22 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
     if (k & KEY_RIGHT) { sel += vis; if (sel >= n) sel = n - 1; }
 
     if (k & (KEY_A | KEY_START)) {
-      if (!app_can_edit()) { snd_deny(); s_msg("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+      if (!app_can_edit()) {
+        snd_deny();
+        s_msg("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0);
+        pv.valid = false;             /* s_msg painted over us without ui_clear() */
+        continue;
+      }
     }
 
     if (k & KEY_START) {
       if (!app_confirm("Mark all towns visited?", "Skips story order.")) continue;
       int ch = g3fly_mark_all(sb1, game);       /* towns + FRLG prereqs; never the facility */
       if (ch) { dirty = true; rmbl_fire(RCUE_EDIT); }
+      char l[48];
       siprintf(l, "%d newly marked.", ch);
       s_msg("MARKED", UI_OK, l, "Facility row untouched.");
+      pv.valid = false;               /* s_msg painted over us without ui_clear() */
       continue;
     }
 
@@ -136,11 +199,14 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
         continue;
       g3fly_set(sb1, game, sel, !set);
       dirty = true;
+      toggled = true;
       rmbl_fire(RCUE_EDIT);
       /* Mauville's flag doubles as the Cable Club Record Corner gate — benign, but
        * surprising if it just happens. */
-      if (!set && g3fly_extra_effect(game, sel))
+      if (!set && g3fly_extra_effect(game, sel)) {
         s_msg("ALSO UNLOCKED", UI_TITLE, "Mauville also opens the", "Record Corner.");
+        pv.valid = false;             /* s_msg painted over us without ui_clear() */
+      }
     }
   }
 
