@@ -2,8 +2,9 @@
  * fixture contains a REAL recorded battle (sentinel 9D B3 00 00 at 0x1F000), so this
  * validates sentinel + checksum + field decode against ground truth; the Ruby fixture
  * must scan as "no record". Build + run:
- *   cc -I source tests/host_record_test.c source/gen3_record.c source/gen3_frontier.c \
- *      source/gen3_save.c source/gen3_mon.c -o /tmp/hr && /tmp/hr
+ *   cc -std=c11 -I source tests/host_record_test.c source/gen3_record.c \
+ *      source/gen3_frontier.c source/gen3_save.c source/gen3_mon.c \
+ *      source/gen3_dex.c source/gen3_flags.c -o /tmp/hr && /tmp/hr
  * (gen3_record now delegates its lane offsets to gen3_frontier — one table in the tree.)
  */
 #include <stdio.h>
@@ -62,6 +63,36 @@ int main(void) {
     }
     CHECK(n >= 1, "each side has at least one mon");
   }
+
+  /* ---- g3_record_scan_sector: the BACKLOG #32 .rec-browser entry point ----
+   * A .rec export is a byte-exact copy of save + G3_REC_SECTOR_OFF (see
+   * pdna_main.c's sf_write_verified(path, g_save + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE)
+   * call), so a standalone 4 KiB blob starting at that offset must scan IDENTICALLY
+   * to g3_record_scan(g_buf, sz, ...) above -- proving g3_record_scan's delegation
+   * introduced no drift and that a staged file preview renders the same data the
+   * live page does. */
+  /* An ISOLATED copy, not a window into the 128 KiB fixture: after the refactor
+   * g3_record_scan IS scan_sector on that window, so window-vs-window comparisons are
+   * tautologies (review proved it by mutation: a wrong RO_ offset and a 1-byte
+   * overread both passed them). The standalone blob makes the memcmp load-bearing --
+   * an overread past sec4k[4095] now reads bytes that differ from the save's -- and
+   * the ground-truth constants catch offset drift that structure alone cannot. */
+  static uint8_t g_blob[G3_SECTOR_SIZE + 64];
+  memset(g_blob, 0xA5, sizeof g_blob);               /* poison past the sector */
+  memcpy(g_blob, g_buf + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE);
+  G3RecordInfo rs;
+  bool present2 = g3_record_scan_sector(g_blob, &rs);
+  CHECK(present2 == present, "scan_sector: standalone blob, same presence");
+  CHECK(memcmp(&rs, &ri, sizeof rs) == 0, "scan_sector: reads ONLY within the 4 KiB sector");
+  CHECK(ri.rng_seed == 0x2E463A77u && ri.facility == 4,
+        "emerald: seed/facility ground truth (catches RO_ offset drift)");
+  CHECK(g3_record_party_sector(g_blob, 0) == g_blob + (G3_REC_STRUCT_OFF - G3_REC_SECTOR_OFF),
+        "party_sector: side 0 at the struct base inside the blob");
+  CHECK(g3_record_party_sector(g_blob, 1) == g3_record_party_sector(g_blob, 0) + 600,
+        "party_sector: side 1 exactly 600 bytes after side 0");
+  G3RecordInfo rn;
+  CHECK(!g3_record_scan_sector(NULL, &rn), "scan_sector: NULL blob refuses");
+  CHECK(!rn.present, "scan_sector: NULL blob leaves *out zeroed");
 
   /* ---- Ruby fixture: must have NO record ---- */
   sz = load("tests/fixtures/POKEMON_RUBY_AXVE02.sav");

@@ -43,15 +43,31 @@ typedef struct {
   int      lane_len[4];     /* input bytes per battler (prefix before first 0xFF)  */
 } G3RecordInfo;
 
-/* Scan sector 31 of `save` (size = actual loaded byte count). Returns true iff a
- * record is PRESENT (sentinel found); fills *out either way. A 64 KiB dump (no
- * sector 31) or an erased sector returns false. Trust the teams/fields only when
- * present && checksum_ok. */
+/* Scan a STANDALONE 4 KiB sector-31 blob — `sec4k` points at byte 0 of the sector
+ * (the sentinel), i.e. exactly what a `.rec` export file contains verbatim (see
+ * pdna_main.c's sf_write_verified(path, g_save + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE)
+ * call) or what `g_save + G3_REC_SECTOR_OFF` looks like for the live save. Returns
+ * true iff a record is PRESENT (sentinel found); fills *out either way. Trust the
+ * teams/fields only when present && checksum_ok. The RO_* struct offsets are
+ * file-local to gen3_record.c and live ONLY here — every other reader (including
+ * g3_record_scan below) goes through this function. */
+bool g3_record_scan_sector(const uint8_t* sec4k, G3RecordInfo* out);
+
+/* Scan sector 31 inside a FULL save image `save` (size = actual loaded byte
+ * count) — a thin wrapper over g3_record_scan_sector(save + G3_REC_SECTOR_OFF, out).
+ * A 64 KiB dump (no sector 31) refuses before touching G3_REC_SECTOR_OFF. */
 bool g3_record_scan(const uint8_t* save, uint32_t size, G3RecordInfo* out);
 
-/* Pointer to the 6-slot party inside the record (side 0 = player, 1 = opponent).
- * Each mon is G3_REC_MON_SIZE bytes; its first 80 bytes are the standard encrypted
- * box-mon record (pk_decode_mon applies unchanged); byte 84 is the plaintext level. */
+/* Pointer to the 6-slot party inside a standalone sector-31 blob (see
+ * g3_record_scan_sector for what `sec4k` must point at). side 0 = player,
+ * 1 = opponent. Each mon is G3_REC_MON_SIZE bytes; its first 80 bytes are the
+ * standard encrypted box-mon record (pk_decode_mon applies unchanged); byte 84
+ * is the plaintext battle level. */
+const uint8_t* g3_record_party_sector(const uint8_t* sec4k, int side);
+
+/* Pointer to the 6-slot party inside the record of a FULL save image `save`
+ * (side 0 = player, 1 = opponent) — a thin wrapper over
+ * g3_record_party_sector(save + G3_REC_SECTOR_OFF, side). */
 const uint8_t* g3_record_party(const uint8_t* save, int side);
 
 const char* g3_record_facility_name(int facility);   /* "Battle Tower" .. "?" */
