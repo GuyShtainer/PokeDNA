@@ -638,9 +638,17 @@ static void draw_wallpaper(int wp, int x, int y, int w, int h) {
             for (int k = 0; k < 32; k++)               /* so the blit can move words   */
               wmk[k] &= 0x7FFF7FFFu; }
         }
+        /* TRAP for a future in-loop painter: the cols clamp below never actually
+         * shrinks anything for this call's WP_W=162 -- it only ever caps at 8 --
+         * which reads like "this loop paints the full WP_W-wide rect." It does
+         * not: the grid is fixed at 20 tiles * 8 px = 160 px wide regardless of w,
+         * so this loop only ever writes x=78..237 (WP_X..WP_X+159). Columns
+         * 238-239 -- 2 px still inside the declared WP_W=162 -- are UI_BG solely
+         * because whatever ran before this call cleared them; this loop never
+         * touches them. */
         int bx = x + tx * 8, by = y + ty * 8;
         int rows = y + h - by; if (rows > 8) rows = 8;   /* only the bottom row clips  */
-        int cols = x + w - bx; if (cols > 8) cols = 8;   /* never clips at WP_W=162    */
+        int cols = x + w - bx; if (cols > 8) cols = 8;   /* caps at 8, doesn't shrink (see above) */
         if (rows <= 0 || cols <= 0) continue;
         if (cols == 8 && !(bx & 1)) wp_blit_tile(s_wp_tile, bx, by, rows);
         else for (int j = 0; j < rows; j++)              /* clipped/odd-x: per pixel   */
@@ -1885,15 +1893,58 @@ static int wallpaper_pick(BoxSource* src, int cur_wp) {
     int base = (g < 4) ? g * 4 : G3_BOX_WALLPAPER_COUNT;     /* the set's id range */
     int glen = (g < 4) ? 4 : G3_WALDA_COUNT;
     if (wp < base || wp >= base + glen) wp = base;           /* keep wp when re-entering its set */
+    /* NO FULL-SCREEN FLASH ON L/R (the box loop's own need_full/"NO BLACK FLASH"
+     * convention, mirrored here). L/R and A/B are the only keys this loop reads --
+     * there is no separate cursor -- so every L/R press is a genuine wallpaper
+     * change, and draw_wallpaper()'s own full-rect repaint below is correct and
+     * unavoidable (it resets s_under[]/s_wp_drawn every single call regardless, see
+     * draw_wallpaper()'s §12b comment above -- this loop does not touch that
+     * contract at all, it only decides what happens AROUND that call). What used to
+     * also run on every press was ui_clear() -- a full 240x160 wipe of the margins
+     * OUTSIDE the preview rect too, so those margins flashed to plain UI_BG on
+     * every single L/R press (key_hit is rising-edge only, no key_repeat here, so
+     * that is a per-tap flash, not a held-shoulder one). wallpaper_group_menu above
+     * draws its OWN popup reaching into those same margins WITHOUT calling
+     * ui_clear() (box_options_menu style), so re-entering this while loop from the
+     * outer for(;;) is a place that can leave its stale pixels behind -- need_full
+     * is a fresh local every time this loop is (re)entered, which catches exactly
+     * that case (manual invalidation, since there is no ui_clear() to bump
+     * ui_clear_gen() on that path).
+     *
+     * ONE MARGIN IS NOT LEFT ALONE, THOUGH: the caption panel is a fixed 140x13
+     * fill (x 50..189), but the caption STRING inside it is not clipped/margined --
+     * "%d/%d %s%s" can run to 18+ chars for a Friends-group name ("7/16
+     * Pokecenter2 *"), and at x=56 with an 8px font that is ink out to x~200, past
+     * the panel's own right edge at x=190. Pre-commit this self-healed every press
+     * because ui_clear() repainted x=190..239 to UI_BG before ANY caption drew, so
+     * a shorter caption on the next press could never show a longer caption's
+     * leftover ink. Now that ui_clear() only runs on need_full, that self-heal is
+     * gone for this one strip, so it is repainted by hand below, unconditionally,
+     * every iteration -- the same "wipe the whole thing this could ever have
+     * touched, then draw" contract row_paint() uses (pdna_edit.c), sized to this
+     * caption's own worst-case overflow instead of a whole row. The caption panel
+     * and footer hint otherwise stay unconditional, as before: the caption's text
+     * always changes with wp, and the footer hint sits on y=152 == WP_Y+WP_H-1, the
+     * SAME row draw_wallpaper's own rect reaches down to -- skipping it past
+     * iteration 1 would let the wallpaper repaint clip the top scanline off every
+     * glyph. */
     bool back = false;
+    bool need_full = true;
     while (!back) {
-      ui_clear();
+      if (need_full) ui_clear();
       draw_wallpaper(wp, WP_X, WP_Y, WP_W, WP_H);
       /* the box's icons stay composited as OBJ sprites above this preview BG */
       char b[40]; siprintf(b, "%d/%d %s%s", wp - base + 1, glen, wp_name(wp), wp >= 16 ? " *" : "");   /* * = Walda secret */
       ui_panel(50, 0, 140, 13, UI_PANEL, UI_BORDER);
+      ui_fill_rect(190, 0, UI_SCR_W - 190, 12, UI_BG);   /* caption overflow strip (panel ends
+                                                          * at x=190); see the block above. Height
+                                                          * 12, NOT the panel's 13: row 12 is the
+                                                          * preview's top tile row (draw_wallpaper
+                                                          * ran above us), and caption ink only
+                                                          * reaches rows 2..9. */
       ui_text(56, 2, UI_TITLE, b);
       ui_text(2, 152, RGB15(31, 31, 31), "L/R pick  A set  B sets");
+      need_full = false;
       u16 k; do { s_vsync(); k = key_hit(KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B); } while (!k);
       if (k & KEY_B) { snd_back(); back = true; }            /* back to the set menu, like the game */
       else if (k & KEY_A) { snd_ok(); return wp; }
