@@ -197,8 +197,13 @@ static void tri_right(int x, int y, u16 c) {
   for (int i = 0; i < 4; i++) for (int j = 3 - i; j <= 3 + i; j++) m3_plot(x + (3 - i), y + j, c);
 }
 
-/* tan rounded box-name banner with arrows */
-static void draw_banner(int x, int y, int w, const char* name) {
+/* tan rounded box-name banner with arrows. `pfx`, if non-NULL, is a dim box-number
+ * ordinal ("3:") drawn immediately ahead of `name` in the banner's own shadow ink, so
+ * it reads as an ordinal and not part of the name (Guy, BACKLOG #33). The prefix+name
+ * pair is measured and centred TOGETHER as one unit, on the same rect midpoint the
+ * name alone used to use -- see the centring comment below for why that invariant
+ * holds regardless of how long the prefix is. */
+static void draw_banner(int x, int y, int w, const char* pfx, const char* name) {
   const u16 fill = RGB15(30, 27, 14), hi = RGB15(31, 31, 24), sh = RGB15(24, 15, 2),
             bd = RGB15(14, 9, 0), ink = RGB15(8, 5, 0);
   ui_fill_rect(x, y, w, 14, fill);
@@ -207,11 +212,18 @@ static void draw_banner(int x, int y, int w, const char* name) {
   m3_frame(x, y, x + w - 1, y + 13, bd);
   tri_left(x + 5, y + 4, ink);
   tri_right(x + w - 9, y + 4, ink);
-  /* Proportional, and centred on its MEASURED width: the cursor hand parks in the left
-   * gutter of this banner when the box name is selected, so the text has to stay clear of
-   * it even for an 8-character box name plus "  30/30". */
+  /* Proportional, and centred on its combined width. The glove's fingertip is
+   * anchored to the banner's rect midpoint (box_oam.c boxoam_cursor's title_row==1,
+   * WP_X + WP_W/2 -- a FIXED point, not derived from the text), so `tx + (pw+tw)/2`
+   * must land on `x + w/2` for the hand to keep pointing at the text -- which it does
+   * for ANY pw/tw split, the same identity that already made the name-only version
+   * correct. `sh` (the banner's own bottom-hairline shadow colour) doubles as the
+   * prefix's dim ink: darker than `ink` against the `fill` tan, still legible -- the
+   * same colour already proven on-screen as the banner's 1px shadow line. */
+  int pw = pfx ? ui_ptext_w(pfx) : 0;
   int tw = ui_ptext_w(name);
-  int tx = x + (w - tw) / 2; if (tx < x + 24) tx = x + 24;
+  int tx = x + (w - (pw + tw)) / 2;
+  if (pfx) tx = ui_ptext(tx, y + 3, sh, pfx);   /* returns the next glyph's x -- exact join, no gap math */
   ui_ptext(tx, y + 3, ink, name);
 }
 
@@ -1021,6 +1033,32 @@ static int cursor_title_row(bool on_title) {
   return on_title ? 1 : 0;
 }
 
+/* Compute the label's centre X for a tab (0=PKMN DATA, 1=PARTY, 2=SAVE). draw_tab
+ * CENTRES its label in the tab rect (tw = strlen(label)*8, tx = x + (w - tw)/2), so a
+ * centred label's centre is the rect midpoint -- independent of the label's length,
+ * which is what makes this correct for the Bank's runtime "(BANK)" label too. The
+ * strlen dance below still mirrors draw_tab's formula so the two can only drift
+ * together, and the result is tx + tw/2 (the CENTRE -- the first cut returned tx, the
+ * label's left edge, which parked the glove 16-36 px left of every label and hung it
+ * off-screen on PKMN DATA). */
+static int tab_label_cx(int tab) {
+  const char* labels[3] = { "PKMN DATA", "PARTY", "SAVE" };
+  const int tabs_x[3] = { 0, PANEL_W + 1, PANEL_W + 93 };
+  const int tabs_w[3] = { PANEL_W + 1, 92, 240 - (PANEL_W + 93) };
+  int tw = (int)strlen(labels[tab]) * 8;
+  int tx = tabs_x[tab] + (tabs_w[tab] - tw) / 2;
+  if (tx < tabs_x[tab] + 2) tx = tabs_x[tab] + 2;
+  return tx + tw / 2;
+}
+
+/* Compute the label centre X for boxoam_cursor() based on title_row:
+ * 0 (grid): unused; 1 (banner): rect midpoint; 2/3/4 (tabs): tab label centre. */
+static int cursor_label_cx(int title_row) {
+  if (title_row == 1) return WP_X + WP_W / 2;
+  if (title_row >= 2) return tab_label_cx(title_row - 2);
+  return 0;    /* unused for grid (title_row == 0) */
+}
+
 static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
   if (s_oam_reload) {
     /* The 30-slot icon upload -- the whole cost of an L/R box page flip, and the
@@ -1044,10 +1082,12 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
       boxoam_show_slot(s_orig_slot);
     boxoam_item_markers(g_box, false);
     boxoam_carry_item(cur, 0, false);
-    boxoam_cursor(cur, false, cursor_look());        /* the descending open hand */
+    int tr = cursor_title_row(on_title);
+    boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr));   /* the descending open hand */
   } else if (s_holding) {
     PkMon hm; pk_decode_mon(s_held, false, &hm);
-    boxoam_carry_held(cur, hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
+    int tr = cursor_title_row(on_title);
+    boxoam_carry_held(cur, tr, cursor_label_cx(tr), hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
     if (s_orig_slot >= 0 && s_orig_bank == is_bank && s_orig_box == box)
       boxoam_hide_slot(s_orig_slot);                         /* lift-hide the origin cell */
     boxoam_item_markers(g_box, false);
@@ -1055,7 +1095,8 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
   } else if (s_cur_mode == CM_ITEM && s_item_held) {
     boxoam_carry_end();                                      /* ITEM GRAB: carried item rides the cursor */
     boxoam_item_markers(g_box, true);
-    boxoam_cursor(cur, cursor_title_row(on_title), BOXOAM_HAND_ITEM);  /* the HAND follows too — it used to stay
+    int tr = cursor_title_row(on_title);
+    boxoam_cursor(cur, tr, BOXOAM_HAND_ITEM, cursor_label_cx(tr));  /* the HAND follows too — it used to stay
                                                               * frozen on the source mon (only the item
                                                               * sprite moved with the cursor) */
     /* Small item (bottom-centre), NOT the full 32x32 that covered the mon — so the source
@@ -1069,7 +1110,8 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
       boxoam_carry_item(cur, g_box[cur].heldItem, false);    /* HOVER: small item bottom-left */
     else
       boxoam_carry_item(cur, 0, false);
-    boxoam_cursor(cur, cursor_title_row(on_title), cursor_look());  /* cursor hand last; restores region A */
+    int tr = cursor_title_row(on_title);
+    boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr));  /* cursor hand last; restores region A */
   }
 }
 
@@ -1078,7 +1120,14 @@ static void draw_footer(bool is_bank, bool on_title, bool moving) {
   if (s_tab_focus >= 0)    f = "L/R tab  A pick  DN";
   else if (moving)         f = "A drop  B cancel";
   else if (s_item_held)    f = "A give  B put back";
-  else if (on_title)       f = "L/R box  A edit  DN";
+  /* A now renames directly and SELECT opens the box menu (Guy, BACKLOG #33) -- "L/R
+   * box  A name  SEL menu  DN" (27 chars) does not fit the footer's real budget (the
+   * fill/text only spans WP_W=162px at 8px/glyph => 20 columns, not the wider figure
+   * this line's own history assumed), so "box" and "DN" are dropped: L/R's box-switch
+   * meaning is this row's original, most-used function and is kept; DN (title -> grid)
+   * is a bare DOWN-press a player finds by exploring, same as the grid footer never
+   * spelling out that L/R does nothing there. */
+  else if (on_title)       f = "L/R A name SEL menu";
   else if (s_cur_mode == CM_MOVE) f = "MOVE A grab hold=set";
   else if (s_cur_mode == CM_ITEM) f = "ITEM  A take  SEL B";
   else                     f = is_bank ? "A menu  SEL  L/R  B"
@@ -1255,12 +1304,21 @@ static void era_hides_apply(void) {
 
 /* Repaint the box-name banner + occupancy + the on-title selection frame (BG, software). */
 static void draw_box_banner(BoxSource* src, int box, bool on_title) {
-  char bn[12], bnocc[24];
+  char bn[12], bnocc[24], bnum[6];
   src->get_name(box, bn);
   int occ = 0;
   for (int s = 0; s < 30; s++) if (g_box[s].species) occ++;
   siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);
-  draw_banner(WP_X + 2, 13, WP_W - 4, bnocc);
+  /* box+1: this file's `box` is the zero-based index everywhere, and this banner is
+   * the ONLY box identifier on screen (there is no box-select screen in this app), so
+   * the ordinal it shows has to be right. The one slot with no ordinal at all is the
+   * GB sources' party pseudo-box at nboxes-1 ("GB PARTY" -- RBY has 12 boxes, so a
+   * "13:" prefix there would be an invented number contradicting pdna_gen12.c's own
+   * party special-case): last_box_is_party suppresses the prefix, and draw_banner's
+   * NULL-pfx path degenerates to the original name-only centring. */
+  siprintf(bnum, "%d:", box + 1);
+  bool party_slot = src->last_box_is_party && box == src->nboxes - 1;
+  draw_banner(WP_X + 2, 13, WP_W - 4, party_slot ? 0 : bnum, bnocc);
   /* Only when the cursor is ACTUALLY on the box name. `on_title` stays true while the cursor
    * is further up on the top tabs, so keying off it alone drew the identical frame in two
    * different focus states — a pixel diff of the banner band between "on box name" and "on
@@ -1630,9 +1688,10 @@ static uint8_t* drop_chunk(BoxSource* src, int box, uint8_t* recs, bool* pfull) 
    * (capture doc §4.6). The block itself stays down — only the hand leaves. */
   if (app_anim_enabled(ANIM_BOX)) {
     boxoam_hand_pose(BOXOAM_POSE_REACH);
+    int tr = (s_tab_focus >= 0) ? (2 + s_tab_focus) : 0;
     for (int d = 8; d >= 0; d--) {
       boxoam_cursor_dy(d);
-      boxoam_cursor(g3_slot(s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc), false, cursor_look());
+      boxoam_cursor(g3_slot(s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc), tr, cursor_look(), cursor_label_cx(tr));
       boxoam_commit(); s_vsync();
     }
     boxoam_cursor_dy(0);
@@ -1699,7 +1758,8 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
   int anchor = cur, corner = cur;
   bool themed = false;
   boxoam_hand_pose(BOXOAM_POSE_REACH);
-  boxoam_cursor(cur, false, cursor_look());
+  int tr = (s_tab_focus >= 0) ? (2 + s_tab_focus) : 0;
+  boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr));
   boxoam_commit();
   for (;;) {
     s_vsync();                                          /* polls keys */
@@ -1766,9 +1826,10 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
    * fist is re-placed by chunk_move at the end. */
   if (app_anim_enabled(ANIM_BOX)) {
     boxoam_hand_pose(BOXOAM_POSE_REACH);
+    int tr = (s_tab_focus >= 0) ? (2 + s_tab_focus) : 0;
     for (int d = 0; d <= 8; d++) {
       boxoam_cursor_dy(d);
-      boxoam_cursor(g3_slot(s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc), false, cursor_look());
+      boxoam_cursor(g3_slot(s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc), tr, cursor_look(), cursor_label_cx(tr));
       boxoam_commit(); s_vsync();
     }
     boxoam_cursor_dy(0);
@@ -2821,12 +2882,14 @@ int pdna_box(BoxSource* src) {
               * boxoam_pose_pump() at the TOP of the *next* iteration (see above), not
               * this one. */
              if (!boxoam_set_frame(bob)) boxoam_set_bob(bob);
-             boxoam_cursor(cur, cursor_title_row(on_title), cursor_look());
+             int tr = cursor_title_row(on_title);
+             boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr));
              perf_rep_end(PERF_REP_BOB);
            }
          } else if (bob) { bob = 0; boxoam_hand_pose(BOXOAM_POSE_NORMAL);
                            if (!boxoam_set_frame(0)) boxoam_set_bob(0);   /* settle the grid */
-                           boxoam_cursor(cur, cursor_title_row(on_title), cursor_look()); }
+                           int tr = cursor_title_row(on_title);
+                           boxoam_cursor(cur, tr, cursor_look(), cursor_label_cx(tr)); }
          boxoam_commit();                       /* flush the OAM shadow in the vblank window */
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
@@ -3012,8 +3075,25 @@ int pdna_box(BoxSource* src) {
     else if ((k & KEY_START) && !src->is_bank) { boxoam_exit(); return 2; }
     else if (k & KEY_L) { SWITCH_BOX((box + nb - 1) % nb); }
     else if (k & KEY_R) { SWITCH_BOX((box + 1) % nb); }
-    else if (k & KEY_SELECT) {                       /* cycle cursor mode (Omega-only edit modes) */
-      if (!on_title && src->can_edit()) { s_cur_mode = (s_cur_mode + 1) % 3; need_full = true; }
+    else if (k & KEY_SELECT) {
+      /* This branch sits ABOVE `on_title` in the else-if chain (it has to: SELECT is
+       * also the grid's cursor-mode cycle, tested every iteration regardless of row),
+       * so on_title's own KEY_SELECT never gets a chance to run -- SELECT must be
+       * handled HERE for the title row, not down there. (Before this change, that
+       * meant the title row silently ate SELECT: `!on_title` was false so it fell to
+       * `else snd_deny()` and did nothing but beep -- a real, load-bearing dispatch-
+       * order fact, not a hypothetical collision, confirmed by reading this chain.) */
+      if (on_title) {                                /* TITLE row: SELECT opens the box menu
+                                                        * (rename/wallpaper/export/release —
+                                                        * box_options_menu, unchanged; rename
+                                                        * there is now a second path to the
+                                                        * same osk_input as the direct-A one) */
+        if (src->can_edit()) { boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
+                               recs = src->records(box); box_decode(src, recs, box);  /* Release all mutates records */
+                               s_oam_reload = true; need_full = true; }
+        else snd_deny();
+      }
+      else if (src->can_edit()) { s_cur_mode = (s_cur_mode + 1) % 3; need_full = true; }  /* cycle cursor mode (Omega-only edit modes) */
       else snd_deny();
     }
     else if (on_title) {                           /* TITLE row: limited controls */
@@ -3028,9 +3108,27 @@ int pdna_box(BoxSource* src) {
       else if (fresh & KEY_LEFT)  { SWITCH_BOX((box + nb - 1) % nb); }
       else if (fresh & KEY_RIGHT) { SWITCH_BOX((box + 1) % nb); }
       else if (k & KEY_A) {
-        if (src->can_edit()) { boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
-                               recs = src->records(box); box_decode(src, recs, box);  /* Release all mutates records */
-                               s_oam_reload = true; need_full = true; }
+        /* A on the banner renames the box directly (Guy, BACKLOG #33): the rest of
+         * box_options_menu (wallpaper/export/release) moved to SELECT, below, since
+         * rename is the action a player reaches for from the name itself. This is
+         * box_options_menu's OWN rename case (sel==0), lifted verbatim rather than
+         * shared by a helper -- it is five lines and the menu's copy must stay able to
+         * `return` mid-loop on its own, so a shared function would need an out
+         * parameter for no real gain. `cur`/`buf` are LOCAL to this block only: this
+         * function's outer `cur` is the int grid cursor, so a same-named `char cur[12]`
+         * here would shadow it -- named `bxname`/`bxnew` instead to keep that impossible. */
+        if (src->can_edit()) {
+          boxoam_suspend();                                              /* full-screen sub-view — own bracket, see box_oam.h */
+          char bxname[12]; src->get_name(box, bxname);
+          char bxnew[12];
+          if (osk_input("BOX NAME", bxname[0] ? bxname : "BOX", bxnew, 9)) {
+            src->set_name(box, bxnew);
+            src->commit();
+          }
+          boxoam_resume();
+          recs = src->records(box); box_decode(src, recs, box);          /* belt-and-braces refresh, same as the menu path */
+          s_oam_reload = true; need_full = true;
+        }
         else { snd_deny(); }
       }
     }

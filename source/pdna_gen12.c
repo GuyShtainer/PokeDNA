@@ -497,6 +497,7 @@ static void gbsrc_mark_dirty(void) { }
 BoxSource pdna_gen12_source(Gb12Mount* m) {
   BoxSource s;
   memset(&s, 0, sizeof s);
+  s.last_box_is_party = true;   /* the party pseudo-box at nboxes-1 gets no banner ordinal */
   g_m = m;
   if (!m || m->kind == GB12_SAVE_NONE) return s;
   s.nboxes     = pdna_gen12_nboxes(m);
