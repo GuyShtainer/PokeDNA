@@ -264,8 +264,53 @@ static void sweep_frame(void) {
   ui_ptext(32, 76, UI_DIM, "Fast checks, no RNG search.");
 }
 
+/* What is on screen. A standard cursor list: hit[]/nhit are built once above and never
+ * change for the rest of this screen's life, so `top` (the window) and `sel` (the
+ * cursor) are the whole state — same shape as pdna_edit.c's render(), minus the value
+ * cascade that screen has and this one doesn't. Local to sweep_screen's stack, not a
+ * static, so a fresh call always starts invalid (first pass paints in full). */
+typedef struct { uint32_t gen; int top, sel; bool valid; } SweepPaint;
+
+/* One row of the flagged-cell list. Self-contained: wipes its own 236x12 strip (to
+ * UI_SEL when selected, UI_BG otherwise) before drawing anything, so a shorter name or
+ * a changed verdict word can never leave the tail of a longer one behind — the same
+ * ghost-ink guard pdna_edit.c's row_paint uses. Fixed columns, each one width-CLAMPED,
+ * so a 10-glyph nickname can never push the verdict word off the right edge:
+ *   4 marker | 12 slot no. | 32..132 name | 138..216 verdict | 234 count */
+static void sweep_row_paint(const uint8_t* block, int box, const SwHit* h, int y,
+                            bool sel, int here) {
+  ui_fill_rect(2, y - 2, 236, 12, sel ? UI_SEL : UI_BG);
+  if (h->slot == here) ui_ptext(4, y, UI_DIM, ">");
+  PkMon mm;
+  char num[8];
+  siprintf(num, "%2d", h->slot + 1);
+  ui_text(12, y, sel ? UI_SELTEXT : UI_DIM, num);
+  if (pk_decode_mon(box_rec(block, box, h->slot), false, &mm)) {
+    pk_resolve(&mm);
+    ui_ptext_fit(32, y, 100, sel ? UI_SELTEXT : UI_TEXT, mon_label(&mm));
+  }
+  char cnt[8];
+  siprintf(cnt, "x%d", h->ninv + h->nsus);
+  ui_ptext_right(234, y, grade_ink(h->grade), cnt);
+  ui_ptext_fit(138, y, 78, grade_ink(h->grade), grade_word(h->grade));
+}
+
 /* Returns the slot the user picked to open, or -1. `R` is borrowed as scratch — the
  * caller rebuilds it on return (see the memory note at the top of the file). */
+/* The scrollbar must be repainted after ANY sweep_row_paint pass: the 236 px row wipe
+ * (x=2..237, exclusive right) overlaps 2 of the bar's 3 columns (x=236..238). The full
+ * branch always redrew it afterwards; the cursor-move branch has to do the same or the
+ * bar is erased row by row. top is unchanged on a cursor-only move, so this redraw is
+ * pixel-identical to the full path's -- idempotent restoration, not a behaviour change. */
+static void sweep_bar(int nhit, int top) {
+  if (nhit <= SW_VIS) return;
+  int trk = SW_VIS * 12, bh = trk * SW_VIS / nhit;
+  if (bh < 8) bh = 8;
+  int by = 18 + (trk - bh) * top / (nhit - SW_VIS);
+  ui_fill_rect(236, 18, 3, trk, UI_PANEL);
+  ui_fill_rect(236, by, 3, bh,  UI_BORDER);
+}
+
 static int sweep_screen(const uint8_t* block, int box, int here, Pk2Report* R) {
   SwHit hit[BOX_SLOTS];
   int nhit = 0;
@@ -300,58 +345,53 @@ static int sweep_screen(const uint8_t* block, int box, int here, Pk2Report* R) {
   sweep_sort(hit, nhit);
 
   int sel = 0, top = 0;
+  SweepPaint pv;
+  memset(&pv, 0, sizeof pv);          /* .valid = false: first pass paints in full */
   for (;;) {
     if (sel < top) top = sel;
     else if (sel >= top + SW_VIS) top = sel - SW_VIS + 1;
 
-    ui_clear();
-    ui_text(4, 3, UI_TITLE, "BOX SWEEP");
-    char hdr[32];
-    siprintf(hdr, "%d of %d flagged", nhit, BOX_SLOTS);
-    ui_ptext_right(236, 4, nhit ? UI_WARN : UI_OK, hdr);
-    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    /* `top` unchanged also proves `sel` (both the old and the new one) is still inside
+     * the visible window — it was inside it when last drawn, and the clamp just above
+     * only ever moves `top` when `sel` would otherwise fall outside it — so the
+     * row-pair diff below never needs to bounds-check the indices it computes. */
+    bool full = !pv.valid || pv.gen != ui_clear_gen() || top != pv.top;
 
-    if (!nhit) {
-      ui_ptext(8, 30, UI_OK, "Nothing questionable in this box.");
-      ui_ptext(8, 44, UI_DIM, "All 30 cells passed the fast checks.");
-      ui_ptext(8, 58, UI_DIM, "The RNG check is per Pokemon (A).");
-    } else {
-      for (int i = 0; i < SW_VIS && top + i < nhit; i++) {
-        const SwHit* h = &hit[top + i];
-        int y = 20 + i * 12;
-        bool s = (top + i == sel);
-        if (s) ui_fill_rect(2, y - 2, 236, 12, UI_SEL);
-        /* Fixed columns, each one width-CLAMPED, so a 10-glyph nickname can never
-         * push the verdict word off the right edge:
-         *   4 marker | 12 slot no. | 32..132 name | 138..216 verdict | 234 count */
-        if (h->slot == here) ui_ptext(4, y, UI_DIM, ">");
-        PkMon mm;
-        char num[8];
-        siprintf(num, "%2d", h->slot + 1);
-        ui_text(12, y, s ? UI_SELTEXT : UI_DIM, num);
-        if (pk_decode_mon(box_rec(block, box, h->slot), false, &mm)) {
-          pk_resolve(&mm);
-          ui_ptext_fit(32, y, 100, s ? UI_SELTEXT : UI_TEXT, mon_label(&mm));
-        }
-        char cnt[8];
-        siprintf(cnt, "x%d", h->ninv + h->nsus);
-        ui_ptext_right(234, y, grade_ink(h->grade), cnt);
-        ui_ptext_fit(138, y, 78, grade_ink(h->grade), grade_word(h->grade));
+    if (full) {
+      ui_clear();
+      ui_text(4, 3, UI_TITLE, "BOX SWEEP");
+      char hdr[32];
+      siprintf(hdr, "%d of %d flagged", nhit, BOX_SLOTS);
+      ui_ptext_right(236, 4, nhit ? UI_WARN : UI_OK, hdr);
+      ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+
+      if (!nhit) {
+        ui_ptext(8, 30, UI_OK, "Nothing questionable in this box.");
+        ui_ptext(8, 44, UI_DIM, "All 30 cells passed the fast checks.");
+        ui_ptext(8, 58, UI_DIM, "The RNG check is per Pokemon (A).");
+      } else {
+        for (int i = 0; i < SW_VIS && top + i < nhit; i++)
+          sweep_row_paint(block, box, &hit[top + i], 20 + i * 12, top + i == sel, here);
+        sweep_bar(nhit, top);
       }
-      if (nhit > SW_VIS) {
-        int trk = SW_VIS * 12, bh = trk * SW_VIS / nhit;
-        if (bh < 8) bh = 8;
-        int by = 18 + (trk - bh) * top / (nhit - SW_VIS);
-        ui_fill_rect(236, 18, 3, trk, UI_PANEL);
-        ui_fill_rect(236, by, 3, bh,  UI_BORDER);
-      }
+
+      /* Second footer row at y=152: the 5x7 cell is 8 rows, so anything below this
+       * loses its descenders off the bottom of the 160 px screen. */
+      ui_hline(0, 140, UI_SCR_W, UI_BORDER);
+      ui_ptext(4, 143, UI_DIM, "Worst first. Only flagged cells listed.");
+      ui_ptext(4, 152, UI_DIM, nhit ? "U/D   A open that Pokemon   B back" : "B back");
+    } else if (sel != pv.sel) {
+      /* Cursor move within the same window: repaint just the two affected rows. A
+       * held U/D that wraps without moving `sel` at all (a single-entry list) falls
+       * through both branches above and costs nothing. */
+      sweep_row_paint(block, box, &hit[pv.sel], 20 + (pv.sel - top) * 12, false, here);
+      sweep_row_paint(block, box, &hit[sel],    20 + (sel    - top) * 12, true,  here);
+      sweep_bar(nhit, top);   /* the row wipes span x=2..237 and the bar lives at 236..238 --
+                               * without this the cursor chews the bar away two columns at a
+                               * time until the next full repaint puts it back */
     }
 
-    /* Second footer row at y=152: the 5x7 cell is 8 rows, so anything below this
-     * loses its descenders off the bottom of the 160 px screen. */
-    ui_hline(0, 140, UI_SCR_W, UI_BORDER);
-    ui_ptext(4, 143, UI_DIM, "Worst first. Only flagged cells listed.");
-    ui_ptext(4, 152, UI_DIM, nhit ? "U/D   A open that Pokemon   B back" : "B back");
+    pv.top = top; pv.sel = sel; pv.gen = ui_clear_gen(); pv.valid = true;
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return -1;
@@ -368,8 +408,24 @@ static int sweep_screen(const uint8_t* block, int box, int here, Pk2Report* R) {
 #define BODY_Y  25
 #define ROW_H   10
 
+/* What is on screen. This report has no cursor, only a scroll window: `top` is the
+ * whole state that this screen's own key handling ever moves, so "did top change"
+ * is a complete predicate for "does anything need repainting" — a held LEFT/RIGHT at
+ * a list edge clamps `top` right back to where it started, so the early return below
+ * makes that cost nothing at all rather than a redundant full repaint.
+ *
+ * The one exception is keyed to ui_clear_gen() like every other screen in this file:
+ * help_screen() and sweep_screen() both open with their own ui_clear() loop, so
+ * returning from either naturally invalidates us. The RNG-check path (KEY_A below)
+ * does NOT — it paints a "Searching..." panel directly over this screen without
+ * calling ui_clear() — so that call site invalidates by hand (pv->valid = false),
+ * the same move e429f68 used for pdna_summary.c's reroll chip. */
+typedef struct { uint32_t gen; int top; bool valid; } LegPaint;
+
 static void render(const PkMon* m, const Pk2Report* R, const DispEnt* d, int nd,
-                   int top, bool has_box) {
+                   int top, bool has_box, LegPaint* pv) {
+  if (pv->valid && pv->gen == ui_clear_gen() && top == pv->top) return;
+
   ui_clear();
 
   /* Banner. The grade word is fixed-width (an aligned label), the name and the
@@ -411,6 +467,10 @@ static void render(const PkMon* m, const Pk2Report* R, const DispEnt* d, int nd,
   ui_ptext(4, 141, UI_DIM, "PokeDNA only reads here. Nothing is changed.");
   ui_ptext(4, 151, UI_DIM, has_box ? "U/D  A RNG  R sweep  START help  B back"
                                    : "U/D  A RNG  START help  B back");
+
+  pv->top   = top;
+  pv->gen   = ui_clear_gen();        /* read AFTER the ui_clear() above, not before */
+  pv->valid = true;
 }
 
 int pdna_legality_show_box(const PkMon* m, const uint8_t* block, int box, int slot) {
@@ -425,6 +485,8 @@ int pdna_legality_show_box(const PkMon* m, const uint8_t* block, int box, int sl
   DispEnt d[DISP_MAX];
   bool rng_ran = false;
   int top = 0;
+  LegPaint pv;
+  memset(&pv, 0, sizeof pv);   /* .valid = false: the first render() paints in full */
 
   rmbl_fire(RCUE_ROOM);
   run_checks(&cur, false, &R);
@@ -433,7 +495,7 @@ int pdna_legality_show_box(const PkMon* m, const uint8_t* block, int box, int sl
   for (;;) {
     if (top > nd - VIS) top = nd - VIS;
     if (top < 0) top = 0;
-    render(&cur, &R, d, nd, top, has_box);
+    render(&cur, &R, d, nd, top, has_box, &pv);
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT |
                    KEY_A | KEY_B | KEY_R | KEY_START);
@@ -453,6 +515,11 @@ int pdna_legality_show_box(const PkMon* m, const uint8_t* block, int box, int sl
       run_checks(&cur, true, &R);
       nd = build_disp(&R, rng_ran, d, DISP_MAX);
       top = 0;
+      /* The panel above painted directly over the last render(), without calling
+       * ui_clear() — so ui_clear_gen() has not moved and `top` may already be 0 from
+       * before. Neither half of render()'s predicate would fire on its own; invalidate
+       * by hand, same as e429f68's reroll case. */
+      pv.valid = false;
     }
     else if ((k & KEY_R) && has_box) {
       int pick = sweep_screen(block, box, cur_slot, &R);   /* R is scratch in there */
