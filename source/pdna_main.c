@@ -5987,6 +5987,7 @@ static void render_record_summary(const G3RecordInfo* ri) {
  * here — unlike the sidecar, this body has no non-Emerald caller to degrade
  * for. */
 static void render_record_streaks(const uint8_t* sb2) {
+  ui_text(4, 18, UI_DIM, "streaks");
   ui_text(64, 18, UI_DIM, "Lv50");
   ui_text(150, 18, UI_DIM, "Open");
   int y = 27;
@@ -6004,9 +6005,20 @@ static void render_record_streaks(const uint8_t* sb2) {
         int cur = g3f_streak_get(sb2, f, m, lvl, G3F_CURRENT);
         int rec = g3f_streak_get(sb2, f, m, lvl, G3F_RECORD);
         bool act = g3f_active_get(sb2, f, m, lvl);
-        char l[12];
-        siprintf(l, "%4d/%4d%c", cur < 0 ? 0 : cur, rec < 0 ? 0 : rec, act ? '*' : ' ');
-        ui_text(lvl ? 150 : 64, y, (cur > 0 && !act) ? UI_WARN : UI_TEXT, l);
+        /* g3f_streak_get returns the RAW u16 (65535 possible on a corrupt save), and
+         * "%4d/%4d%c" at 5 digits is 12 chars + NUL = 13 -- one byte past the first
+         * cut's char l[12], and 96 px of text that collides the Open column and runs
+         * off the 240 px screen. The columns stay fixed: an out-of-cap lane renders
+         * as "????" in UI_WARN -- shown as corrupt, never silently clamped. */
+        char l[16];
+        int cap = g3f_streak_cap(f);
+        if ((cur > cap && cur != -1) || (rec > cap && rec != -1)) {
+          siprintf(l, "????/????%c", act ? '*' : ' ');
+          ui_text(lvl ? 150 : 64, y, UI_WARN, l);
+        } else {
+          siprintf(l, "%4d/%4d%c", cur < 0 ? 0 : cur, rec < 0 ? 0 : rec, act ? '*' : ' ');
+          ui_text(lvl ? 150 : 64, y, (cur > 0 && !act) ? UI_WARN : UI_TEXT, l);
+        }
       }
       y += 9;
     }
@@ -6056,18 +6068,28 @@ static void pdna_battle_record(void) {
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
     if (page == RECPAGE_SUMMARY) render_record_summary(&ri);
     else                         render_record_streaks(g_sb2);
-    /* 29-column budget (same as the "A export  SEL import  B back" line this
-     * replaced) — export/import abbreviate so the L/R hint fits without
-     * stealing a content row from either page. "L/R page" mirrors the L/R
-     * hint wording pdna_trainer.c's card screen already uses ("L/R flip"). */
-    ui_text(4, 152, UI_DIM, "A exp SEL imp B back L/R page");
+    /* Per-page footer (29-column budget). Page 2 spends its columns on the
+     * legend that makes the rows readable (pdna_frontier.c's own convention:
+     * "cur/best  *=kept") and on saying where B goes -- because on page 2, B
+     * returns to page 1, the full pdna_trainer.c house style (its back page's
+     * B goes to the front and the footer says so), not just its L/R line. */
+    ui_text(4, 152, UI_DIM, page == RECPAGE_SUMMARY
+                              ? "A exp SEL imp B back L/R page"
+                              : "B page 1  cur/best  *=kept");
     u16 k = wait_keys(KEY_A | KEY_B | KEY_SELECT | KEY_L | KEY_R);
-    if (k & (KEY_L | KEY_R)) {          /* house style: pdna_trainer.c ~626-628 */
+    if (k & (KEY_L | KEY_R)) {          /* house style: pdna_trainer.c ~626-632 */
       snd_tab();
-      page = (page + 1) % RECPAGE_COUNT;
+      /* L back, R forward -- identical at 2 pages, load-bearing at 3 (the .rec
+       * browser page is planned; a bool-style "always forward" would make L
+       * advance the moment it lands). */
+      page = (page + ((k & KEY_R) ? 1 : RECPAGE_COUNT - 1)) % RECPAGE_COUNT;
       continue;
     }
-    if (k & KEY_B) { snd_back(); return; }
+    if (k & KEY_B) {
+      snd_back();
+      if (page != RECPAGE_SUMMARY) { page = RECPAGE_SUMMARY; continue; }
+      return;
+    }
     if (k & KEY_SELECT) {                              /* import an older .rec over this one */
       if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
       if (rec_import()) g3_record_scan(g_save, g_save_size, &ri);   /* show the imported battle */
@@ -6113,7 +6135,7 @@ static void pdna_battle_record(void) {
     SfStatus st = sf_write_verified(path, g_save + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE);
     if (st == SF_OK) {
       /* Best-effort SIDECAR (<basename>.txt): the export-time context the .rec
-       * itself cannot carry — all facilities' current streaks, player identity,
+       * itself cannot carry — all facilities' current and best streaks, player identity,
        * timestamp, teams. A failed sidecar never fails the export. */
       static char EWRAM_BSS sc[2048];
       char stamp[24]; stamp[0] = 0;
