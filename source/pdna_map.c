@@ -147,14 +147,36 @@ static bool ext_matches(const char* n) {
 }
 
 
+/* What is on screen. The directory listing (`ents`/`n`) is rebuilt only by the rescan
+ * branch below, so between two rescans `top`/`sel` are the whole state a keypress
+ * moves on its own -- same shape as pdna_legality.c's SweepPaint. Stack-local, not a
+ * static: a fresh browse session always starts invalid (first pass paints in full). */
+typedef struct { uint32_t gen; int top, sel; bool valid; } PickPaint;
+
+/* One row. Self-contained: wipes its own UI_ROW_H-tall strip to UI_BG first, same
+ * ghost-ink guard fly_row_paint (pdna_fly.c) uses for the identical ui_text_sel shape
+ * -- ui_text_sel only fills its UI_SEL highlight rect on the SELECTED path. No pairing
+ * trap: 8 px content on a 10 px pitch, same clean gap as pdna_fly.c's list. */
+static void pick_row_paint(const PickEnt* ents, int idx, int y, bool sel) {
+  char row[40];
+  siprintf(row, "%s%s", ents[idx].dir ? "/" : " ", ents[idx].name);
+  char rt[40]; ui_truncate(rt, row, 28);
+  ui_fill_rect(4, y, 232, UI_ROW_H, UI_BG);
+  ui_text_sel(4, y, 232, sel, ents[idx].dir ? UI_DIRCLR : UI_TEXT, rt);
+}
+
 /* Browse for a .gba. `cwd` is updated in place. Returns true with the full path in
  * `out`. Entries live in the caller's buffer so this adds no EWRAM of its own. */
 static bool pick_rom(char* cwd, int cwd_cap, char* out, int out_cap, PickEnt* ents) {
   int sel = 0, top = 0, n = 0;
   bool rescan = true;
+  const int vis = 11;
+  PickPaint pv;
+  memset(&pv, 0, sizeof pv);           /* .valid = false: the first pass paints in full */
   for (;;) {
+    bool did_rescan = false;
     if (rescan) {
-      rescan = false; n = 0; sel = 0; top = 0;
+      rescan = false; did_rescan = true; n = 0; sel = 0; top = 0;
       DIR d; FILINFO fi;
       rmbl_pause();
       if (f_opendir(&d, cwd) == FR_OK) {
@@ -172,23 +194,34 @@ static bool pick_rom(char* cwd, int cwd_cap, char* out, int out_cap, PickEnt* en
       rmbl_resume();
     }
 
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, "PICK YOUR ROM (.gba)");
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    char t[40]; ui_truncate(t, cwd, 29);
-    ui_text(4, 18, UI_DIM, t);
-    const int vis = 11;
     if (sel < top) top = sel; else if (sel >= top + vis) top = sel - vis + 1;
     if (top > n - vis) top = n - vis;
     if (top < 0) top = 0;
-    for (int i = 0; i < vis && top + i < n; i++) {
-      char row[40];
-      siprintf(row, "%s%s", ents[top + i].dir ? "/" : " ", ents[top + i].name);
-      char rt[40]; ui_truncate(rt, row, 28);
-      ui_text_sel(4, 30 + i * 10, 232, top + i == sel, ents[top + i].dir ? UI_DIRCLR : UI_TEXT, rt);
+
+    /* A rescan just rebuilt `ents`/`n`/cwd -- even if `top` happens to land back on 0
+     * by coincidence, the row content underneath it can be entirely different, so it
+     * is its own full-repaint trigger, not folded into the `top != pv.top` check. */
+    bool full = !pv.valid || pv.gen != ui_clear_gen() || did_rescan || top != pv.top;
+
+    if (full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "PICK YOUR ROM (.gba)");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+      char ct[40]; ui_truncate(ct, cwd, 29);
+      ui_text(4, 18, UI_DIM, ct);
+      for (int i = 0; i < vis && top + i < n; i++)
+        pick_row_paint(ents, top + i, 30 + i * 10, top + i == sel);
+      if (!n) ui_text(4, 40, UI_DIM, "No .gba here. B goes up.");
+      ui_text(4, 152, UI_DIM, "A pick  B up  START cancel");
+    } else if (sel != pv.sel) {
+      /* `top` unchanged also proves `sel` (old and new) is still inside the visible
+       * window -- see pdna_legality.c's sweep_screen for why that makes this safe
+       * without a bounds check. */
+      pick_row_paint(ents, pv.sel, 30 + (pv.sel - top) * 10, false);
+      pick_row_paint(ents, sel,    30 + (sel    - top) * 10, true);
     }
-    if (!n) ui_text(4, 40, UI_DIM, "No .gba here. B goes up.");
-    ui_text(4, 152, UI_DIM, "A pick  B up  START cancel");
+
+    pv.top = top; pv.sel = sel; pv.gen = ui_clear_gen(); pv.valid = true;
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_START);
     if (k & KEY_START) return false;

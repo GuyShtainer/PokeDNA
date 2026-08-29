@@ -62,33 +62,73 @@ static int badge_or_frontier_flag(PkGame g, int i) {
   return i < 8 ? pk_badge_flag(g, i) : pk_frontier_flag(g, i - 8);   /* -1 if absent */
 }
 
+/* What is on screen. A standard cursor list with a scroll window (count can be 22 for
+ * Emerald's badges+frontier): `top`/`sel` are the whole state a keypress moves on its
+ * own, same shape as pdna_legality.c's SweepPaint. No header counter on this screen
+ * (unlike stars_editor/pdna_fly.c below, this list prints no derived total). Stack-
+ * local, not a static: a fresh call always starts invalid (first pass paints in full). */
+typedef struct { uint32_t gen; int top, sel; bool valid; } FlagPaint;
+
+/* One row. Self-contained: the selected row IS ui_panel's own fill+border (236x9, the
+ * same rect the old full repaint always drew); the unselected row wipes to UI_BG first
+ * -- same ghost-ink guard as every other row painter in this codebase, needed because a
+ * row can go from selected (padded string, SELTEXT ink) to unselected (OK/DIM ink)
+ * between two draws of the same slot. No pairing trap: the panel height (9) exactly
+ * matches the row pitch (9), unlike pdna_edit.c's row_paint, so a row's own repaint can
+ * never touch a neighbour. */
+static void flag_row_paint(uint8_t* sb1, PkGame game, int (*flagnum)(PkGame, int),
+                           const char* const* names, int idx, int y, bool sel) {
+  int fn = flagnum(game, idx);
+  bool on = fn >= 0 && pk_flag_get(sb1, game, fn);
+  char row[40]; siprintf(row, "%-15s %s", names[idx], on ? "ON" : "off");
+  if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+  else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
+  ui_text(8, y, sel ? UI_SELTEXT : (on ? UI_OK : UI_DIM), row);
+}
+
 /* On/off toggler for a set of flags (badges / frontier symbols). Returns true if
  * anything changed. Edits SaveBlock1 flags in place; the caller commits SB1. */
 static bool flag_set_editor(uint8_t* sb1, PkGame game, const char* title,
                             int (*flagnum)(PkGame, int), const char* const* names, int count) {
   int sel = 0, top = 0; bool changed = false;
+  const int vis = 15;
+  FlagPaint pv;
+  memset(&pv, 0, sizeof pv);          /* .valid = false: the first pass paints in full */
   for (;;) {
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, title);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    const int vis = 15;
     if (sel < top) top = sel; if (sel >= top + vis) top = sel - vis + 1;
-    for (int i = 0; i < vis && top + i < count; i++) {
-      int idx = top + i, y = 16 + i * 9; bool s = (idx == sel);
-      int fn = flagnum(game, idx);
-      bool on = fn >= 0 && pk_flag_get(sb1, game, fn);
-      char row[40]; siprintf(row, "%-15s %s", names[idx], on ? "ON" : "off");
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-      ui_text(8, y, s ? UI_SELTEXT : (on ? UI_OK : UI_DIM), row);
+
+    /* `top` unchanged also proves `sel` (old and new) is still inside the visible
+     * window -- see pdna_legality.c's sweep_screen for why that makes the row-pair
+     * repaint below safe without a bounds check. */
+    bool full = !pv.valid || pv.gen != ui_clear_gen() || top != pv.top;
+
+    if (full) {
+      ui_clear();
+      ui_text(4, 2, UI_TITLE, title);
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      for (int i = 0; i < vis && top + i < count; i++)
+        flag_row_paint(sb1, game, flagnum, names, top + i, 16 + i * 9, top + i == sel);
+      ui_text(4, 152, UI_DIM, "A toggle  U/D  B back");
+    } else if (sel != pv.sel) {
+      flag_row_paint(sb1, game, flagnum, names, pv.sel, 16 + (pv.sel - top) * 9, false);
+      flag_row_paint(sb1, game, flagnum, names, sel,    16 + (sel    - top) * 9, true);
     }
-    ui_text(4, 152, UI_DIM, "A toggle  U/D  B back");
+
+    pv.top = top; pv.sel = sel; pv.gen = ui_clear_gen(); pv.valid = true;
+
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return changed;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : count - 1;
     else if (k & KEY_DOWN) sel = (sel + 1) % count;
     else if (k & KEY_A) {
       int fn = flagnum(game, sel);
-      if (fn >= 0) { pk_flag_set(sb1, game, fn, !pk_flag_get(sb1, game, fn)); changed = true; }
+      if (fn >= 0) {
+        pk_flag_set(sb1, game, fn, !pk_flag_get(sb1, game, fn)); changed = true;
+        /* toggled at the cursor, which did not move: the top-of-loop diff above only
+         * catches a `sel` change, so repaint this ONE row by hand -- same idiom
+         * card_editor's own CARDF_BADGES case uses a few screens down in this file. */
+        flag_row_paint(sb1, game, flagnum, names, sel, 16 + (sel - top) * 9, true);
+      }
     }
   }
 }
@@ -521,6 +561,27 @@ static void back_row_edit(const CardBackRow* r, PkGame game, uint8_t* sb1,
   }
 }
 
+/* What is on screen. At most PK_STAR_ACH_MAX (4) rows, all visible at once -- no
+ * scroll window here, unlike flag_set_editor's badge list -- so `sel` is the whole
+ * cursor state, plus the header's own star count (derived from the same underlying
+ * flags every row reads: turning a dex-based star OFF un-catches species, so a toggle
+ * that leaves `sel` in place can still move this number). Stack-local, not a static: a
+ * fresh call always starts invalid (first pass paints in full). */
+typedef struct { uint32_t gen; int sel, scount; bool valid; } StarsPaint;
+
+/* One row -- same wipe-then-draw shape as flag_row_paint above (panel height 9 on a
+ * 9 px pitch, no neighbour bleed). */
+static void star_row_paint(uint8_t* sb1, uint8_t* sb2, PkGame game, const uint16_t* dex,
+                           int idx, int y, bool sel) {
+  bool can = pk_star_ach_can_set(game, idx, dex);
+  bool on  = pk_star_ach_done(sb1, sb2, game, idx, dex);
+  char row[40]; siprintf(row, "%-16s %s", pk_star_ach_name(game, idx),
+                         !can ? "n/a" : on ? "ON" : "off");
+  if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+  else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
+  ui_text(8, y, sel ? UI_SELTEXT : (can && on ? UI_OK : UI_DIM), row);
+}
+
 /* The STARS row's sub-editor: this game's 4 star achievements (each ONE card
  * star / palette tier), toggled honestly in the underlying save data via
  * gen3_stars. Returns a dirty mask (1 = SB1, 2 = SB2); the caller commits. */
@@ -528,23 +589,36 @@ static int stars_editor(uint8_t* sb1, uint8_t* sb2, PkGame game) {
   const uint16_t* dex = card_hoenn_dex();    /* NULL in an art-free build */
   const int n = pk_star_ach_count(game);
   int sel = 0, dirty = 0;
+  StarsPaint pv;
+  memset(&pv, 0, sizeof pv);          /* .valid = false: the first pass paints in full */
   for (;;) {
-    ui_clear();
-    char t[32]; siprintf(t, "CARD STARS  %d/4", pk_star_count(sb1, sb2, game, dex));
-    ui_text(4, 2, UI_TITLE, t);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < n; i++) {
-      int y = 16 + i * 9; bool s = (i == sel);
-      bool can = pk_star_ach_can_set(game, i, dex);
-      bool on  = pk_star_ach_done(sb1, sb2, game, i, dex);
-      char row[40]; siprintf(row, "%-16s %s", pk_star_ach_name(game, i),
-                             !can ? "n/a" : on ? "ON" : "off");
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-      ui_text(8, y, s ? UI_SELTEXT : (can && on ? UI_OK : UI_DIM), row);
+    int scount = pk_star_count(sb1, sb2, game, dex);
+    bool full = !pv.valid || pv.gen != ui_clear_gen();
+
+    if (full) {
+      ui_clear();
+      char t[32]; siprintf(t, "CARD STARS  %d/4", scount);
+      ui_text(4, 2, UI_TITLE, t);
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      for (int i = 0; i < n; i++)
+        star_row_paint(sb1, sb2, game, dex, i, 16 + i * 9, i == sel);
+      ui_text(4, 62, UI_DIM, "Each ON = one star (card color).");
+      if (!dex) ui_text(4, 72, UI_DIM, "n/a: needs the generated art data.");
+      ui_text(4, 152, UI_DIM, "A toggle  U/D  B back");
+    } else {
+      if (sel != pv.sel) {
+        star_row_paint(sb1, sb2, game, dex, pv.sel, 16 + pv.sel * 9, false);
+        star_row_paint(sb1, sb2, game, dex, sel,    16 + sel    * 9, true);
+      }
+      if (scount != pv.scount) {
+        char t[32]; siprintf(t, "CARD STARS  %d/4", scount);
+        ui_fill_rect(0, 2, UI_SCR_W, UI_ROW_H, UI_BG);
+        ui_text(4, 2, UI_TITLE, t);
+      }
     }
-    ui_text(4, 62, UI_DIM, "Each ON = one star (card color).");
-    if (!dex) ui_text(4, 72, UI_DIM, "n/a: needs the generated art data.");
-    ui_text(4, 152, UI_DIM, "A toggle  U/D  B back");
+
+    pv.sel = sel; pv.scount = scount; pv.gen = ui_clear_gen(); pv.valid = true;
+
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return dirty;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
@@ -556,6 +630,10 @@ static int stars_editor(uint8_t* sb1, uint8_t* sb2, PkGame game) {
           !app_confirm("Clear dex catches?", "Un-catches these species."))
         continue;
       dirty |= pk_star_ach_set(sb1, sb2, game, sel, !on, dex);
+      /* toggled at the cursor, which did not move: repaint this ONE row by hand (the
+       * header's own count is caught automatically -- next pass recomputes scount and
+       * diffs it against pv.scount above). */
+      star_row_paint(sb1, sb2, game, dex, sel, 16 + sel * 9, true);
     }
   }
 }
@@ -701,6 +779,112 @@ static void card_editor(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
 
 enum { TF_NAME, TF_SEX, TF_TID, TF_SID, TF_MONEY, TF_TIME, TF_BADGES, TF_STARS, TF_NUM };
 
+/* What is on screen. Every field this loop's rows and the DEX/HOF/GAME RECORDS block
+ * below print is either the cursor position (only UP/DOWN move it, with no ui_clear()
+ * in between) or a value some editor mutated -- and EVERY editor reachable from the
+ * switch below (osk_input/num_entry/app_confirm/flag_set_editor/stars_editor) opens
+ * with its own ui_clear() on entry, so ui_clear_gen() alone already proves whether an
+ * edit ran, INCLUDING the cascades a hand-list would miss (e.g. turning a dex star OFF
+ * in stars_editor un-catches species, moving the DEX line's own caught count). That
+ * leaves exactly one case worth special-casing: a plain UP/DOWN cursor move, which
+ * touches nothing outside the two affected rows (the DEX/HOF/RECORDS block has no
+ * cursor and cannot change without an editor having run first). Stack-local, not a
+ * static: a fresh call always starts invalid (first pass paints in full). */
+typedef struct { uint32_t gen; int sel; bool valid; } TCardPaint;
+
+/* One field row (TF_* order). Reads live SB1/SB2 -- like pdna_edit.c's field_value(),
+ * everything here is a pure function of (idx, the live save buffers), so a fresh call
+ * always shows the current value with no separate shadow to keep in sync. Panel height
+ * 9 on a 9 px pitch: no neighbour bleed, same shape as flag_row_paint/star_row_paint
+ * above. */
+static void tcard_row_paint(uint8_t* sb1, uint8_t* sb2, PkGame game, const char* name,
+                            uint8_t gender, uint16_t tid, uint16_t sid, uint32_t money,
+                            uint16_t ph, uint8_t pm, int idx, int y, bool sel) {
+  const char* lbl; char val[24];
+  switch (idx) {
+    case TF_NAME:  lbl = "NAME";  siprintf(val, "%s", name); break;
+    case TF_SEX:   lbl = "SEX";   siprintf(val, "%s", gender ? "Female" : "Male"); break;
+    case TF_TID:   lbl = "ID No"; siprintf(val, "%05u", (unsigned)tid); break;
+    case TF_SID:   lbl = "SID";   siprintf(val, "%05u", (unsigned)sid); break;
+    case TF_MONEY: lbl = "MONEY"; siprintf(val, "$%lu", (unsigned long)money); break;
+    case TF_TIME:  lbl = "TIME";  siprintf(val, "%uh %02um", (unsigned)ph, (unsigned)pm); break;
+    case TF_BADGES: {
+      lbl = "BADGE";
+      int nb = 0; for (int i = 0; i < 8; i++) if (pk_flag_get(sb1, game, pk_badge_flag(game, i))) nb++;
+      siprintf(val, "%d/8%s (A)", nb, game == PK_EMERALD ? " +front" : "");   /* row budget 29 cols */
+    } break;
+    case TF_STARS:                     /* card tier (all three games, gen3_stars) */
+      lbl = "STARS";
+      if (pk_star_ach_count(game))
+        siprintf(val, "%d/4 (A)", pk_star_count(sb1, sb2, game, card_hoenn_dex()));
+      else siprintf(val, "n/a");
+      break;
+    default: lbl = ""; val[0] = 0;
+  }
+  if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+  else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
+  char line[64]; siprintf(line, "%-6s %s", lbl, val);
+  ui_text(6, y, sel ? UI_SELTEXT : (idx == TF_MONEY ? UI_OK : UI_TEXT), line);
+}
+
+static void tcard_render(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
+                         const char* name, uint8_t gender, uint16_t tid, uint16_t sid,
+                         uint32_t money, uint16_t ph, uint8_t pm, int sel, TCardPaint* pv) {
+  bool full = !pv->valid || pv->gen != ui_clear_gen();
+
+  if (full) {
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, "TRAINER CARD");
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < TF_NUM; i++)
+      tcard_row_paint(sb1, sb2, game, name, gender, tid, sid, money, ph, pm,
+                      i, 14 + i * 9, edit && i == sel);
+
+    char line[64];
+    int y = 14 + TF_NUM * 9 + 1;       /* one row denser than before: STARS fits */
+    int seen, caught; bool nat; pk_pokedex(sb2, &seen, &caught, &nat);
+    siprintf(line, "DEX  seen %d  caught %d%s", seen, caught, nat ? " Nat" : "");
+    { char lt[40]; ui_truncate(lt, line, 29); ui_text(6, y, UI_TEXT, lt); } y += 9;
+
+    ui_hline(4, y, 232, UI_BORDER); y += 3;
+    ui_text(6, y, UI_TITLE, "ELITE FOUR / HALL OF FAME"); y += 9;
+    uint16_t h; uint8_t m, s2;
+    if (pk_hof_time(sb1, sb2, game, &h, &m, &s2)) {
+      siprintf(line, "First cleared  %uh %02um %02us", (unsigned)h, (unsigned)m, (unsigned)s2);
+      ui_text(10, y, UI_OK, line);
+    } else ui_text(10, y, UI_DIM, "Not cleared yet");
+    y += 9;
+
+    ui_hline(4, y, 232, UI_BORDER); y += 3;
+    ui_text(6, y, UI_TITLE, "GAME RECORDS"); y += 9;
+    siprintf(line, "Steps %u", (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_STEPS));
+    ui_text(10, y, UI_TEXT, line); y += 9;
+    siprintf(line, "Battles %u (w%u/t%u)",
+             (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_TOTAL_BATTLES),
+             (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_WILD_BATTLES),
+             (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_TRAINER_BATTLES));
+    { char lt[40]; ui_truncate(lt, line, 28); ui_text(10, y, UI_TEXT, lt); } y += 9;
+    siprintf(line, "Captures %u  Eggs %u",
+             (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_POKEMON_CAPTURES),
+             (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_HATCHED_EGGS));
+    { char lt[40]; ui_truncate(lt, line, 28); ui_text(10, y, UI_TEXT, lt); }
+
+    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+    ui_text(4, 152, UI_DIM, edit ? "U/D field  A edit  B save" : "B back");
+  } else if (sel != pv->sel) {
+    /* the only thing a plain UP/DOWN moves: the two affected rows. Reachable only in
+     * edit mode -- the read-only page exits after this function's one full paint,
+     * before ever reading a key (pdna_trainer()'s own !edit early return below), so
+     * `edit` is always true on any call that reaches this branch. */
+    tcard_row_paint(sb1, sb2, game, name, gender, tid, sid, money, ph, pm,
+                    pv->sel, 14 + pv->sel * 9, false);
+    tcard_row_paint(sb1, sb2, game, name, gender, tid, sid, money, ph, pm,
+                    sel,     14 + sel     * 9, true);
+  }
+
+  pv->sel = sel; pv->gen = ui_clear_gen(); pv->valid = true;
+}
+
 void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame game) {
   const bool edit = app_can_edit();
   s_id_warned = false;                 /* the mixing-identity warning is once per VISIT */
@@ -742,63 +926,10 @@ void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame g
     return;
   }
 
+  TCardPaint pv;
+  memset(&pv, 0, sizeof pv);           /* .valid = false: the first pass paints in full */
   for (;;) {
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, "TRAINER CARD");
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-
-    char line[64];
-    const char* lbl[TF_NUM]; char val[TF_NUM][24];
-    lbl[TF_NAME]  = "NAME";  siprintf(val[TF_NAME],  "%s", name);
-    lbl[TF_SEX]   = "SEX";   siprintf(val[TF_SEX],   "%s", gender ? "Female" : "Male");
-    lbl[TF_TID]   = "ID No"; siprintf(val[TF_TID],   "%05u", (unsigned)tid);
-    lbl[TF_SID]   = "SID";   siprintf(val[TF_SID],   "%05u", (unsigned)sid);
-    lbl[TF_MONEY] = "MONEY"; siprintf(val[TF_MONEY], "$%lu", (unsigned long)money);
-    lbl[TF_TIME]  = "TIME";  siprintf(val[TF_TIME],  "%uh %02um", (unsigned)ph, (unsigned)pm);
-    int nb = 0; for (int i = 0; i < 8; i++) if (pk_flag_get(sb1, game, pk_badge_flag(game, i))) nb++;
-    lbl[TF_BADGES] = "BADGE"; siprintf(val[TF_BADGES], "%d/8%s (A)", nb,
-                                       game == PK_EMERALD ? " +front" : "");   /* row budget 29 cols */
-    lbl[TF_STARS] = "STARS";           /* card tier (all three games, gen3_stars) */
-    if (pk_star_ach_count(game))
-      siprintf(val[TF_STARS], "%d/4 (A)", pk_star_count(sb1, sb2, game, card_hoenn_dex()));
-    else siprintf(val[TF_STARS], "n/a");
-    for (int i = 0; i < TF_NUM; i++) {
-      int y = 14 + i * 9; bool s = edit && (i == sel);
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-      siprintf(line, "%-6s %s", lbl[i], val[i]);
-      ui_text(6, y, s ? UI_SELTEXT : (i == TF_MONEY ? UI_OK : UI_TEXT), line);
-    }
-
-    int y = 14 + TF_NUM * 9 + 1;       /* one row denser than before: STARS fits */
-    int seen, caught; bool nat; pk_pokedex(sb2, &seen, &caught, &nat);
-    siprintf(line, "DEX  seen %d  caught %d%s", seen, caught, nat ? " Nat" : "");
-    { char lt[40]; ui_truncate(lt, line, 29); ui_text(6, y, UI_TEXT, lt); } y += 9;
-
-    ui_hline(4, y, 232, UI_BORDER); y += 3;
-    ui_text(6, y, UI_TITLE, "ELITE FOUR / HALL OF FAME"); y += 9;
-    uint16_t h; uint8_t m, s2;
-    if (pk_hof_time(sb1, sb2, game, &h, &m, &s2)) {
-      siprintf(line, "First cleared  %uh %02um %02us", (unsigned)h, (unsigned)m, (unsigned)s2);
-      ui_text(10, y, UI_OK, line);
-    } else ui_text(10, y, UI_DIM, "Not cleared yet");
-    y += 9;
-
-    ui_hline(4, y, 232, UI_BORDER); y += 3;
-    ui_text(6, y, UI_TITLE, "GAME RECORDS"); y += 9;
-    siprintf(line, "Steps %u", (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_STEPS));
-    ui_text(10, y, UI_TEXT, line); y += 9;
-    siprintf(line, "Battles %u (w%u/t%u)",
-             (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_TOTAL_BATTLES),
-             (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_WILD_BATTLES),
-             (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_TRAINER_BATTLES));
-    { char lt[40]; ui_truncate(lt, line, 28); ui_text(10, y, UI_TEXT, lt); } y += 9;
-    siprintf(line, "Captures %u  Eggs %u",
-             (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_POKEMON_CAPTURES),
-             (unsigned)pk_game_stat(sb1, sb2, game, PK_STAT_HATCHED_EGGS));
-    { char lt[40]; ui_truncate(lt, line, 28); ui_text(10, y, UI_TEXT, lt); }
-
-    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, edit ? "U/D field  A edit  B save" : "B back");
+    tcard_render(sb1, sb2, game, edit, name, gender, tid, sid, money, ph, pm, sel, &pv);
 
     if (!edit) { do { s_vsync(); } while (!key_hit(KEY_B)); snd_back(); return; }
 
