@@ -63,6 +63,25 @@ int main(void) {
     CHECK(n >= 1, "each side has at least one mon");
   }
 
+  /* ---- g3_record_scan_sector: the BACKLOG #32 .rec-browser entry point ----
+   * A .rec export is a byte-exact copy of save + G3_REC_SECTOR_OFF (see
+   * pdna_main.c's sf_write_verified(path, g_save + G3_REC_SECTOR_OFF, G3_SECTOR_SIZE)
+   * call), so a standalone 4 KiB blob starting at that offset must scan IDENTICALLY
+   * to g3_record_scan(g_buf, sz, ...) above -- proving g3_record_scan's delegation
+   * introduced no drift and that a staged file preview renders the same data the
+   * live page does. */
+  G3RecordInfo rs;
+  bool present2 = g3_record_scan_sector(g_buf + G3_REC_SECTOR_OFF, &rs);
+  CHECK(present2 == present, "scan_sector: same presence as g3_record_scan");
+  CHECK(memcmp(&rs, &ri, sizeof rs) == 0, "scan_sector: byte-identical G3RecordInfo to g3_record_scan");
+  CHECK(g3_record_party_sector(g_buf + G3_REC_SECTOR_OFF, 0) == g3_record_party(g_buf, 0),
+        "party_sector: same pointer as g3_record_party (side 0)");
+  CHECK(g3_record_party_sector(g_buf + G3_REC_SECTOR_OFF, 1) == g3_record_party(g_buf, 1),
+        "party_sector: same pointer as g3_record_party (side 1)");
+  G3RecordInfo rn;
+  CHECK(!g3_record_scan_sector(NULL, &rn), "scan_sector: NULL blob refuses");
+  CHECK(!rn.present, "scan_sector: NULL blob leaves *out zeroed");
+
   /* ---- Ruby fixture: must have NO record ---- */
   sz = load("tests/fixtures/POKEMON_RUBY_AXVE02.sav");
   if (sz) {

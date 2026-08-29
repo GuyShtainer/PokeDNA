@@ -30,13 +30,13 @@ static uint32_t rd32(const uint8_t* p) {
  * game rejects a record carrying any of them; nonzero flags are also required). */
 #define REC_BAD_FLAGS 0x7D007E92u
 
-bool g3_record_scan(const uint8_t* save, uint32_t size, G3RecordInfo* out) {
+bool g3_record_scan_sector(const uint8_t* sec4k, G3RecordInfo* out) {
   memset(out, 0, sizeof *out);
-  if (!save || size < (uint32_t)G3_SAVE_FILE_SIZE) return false;   /* 64 KiB dump: no sector 31 */
-  if (rd32(save + G3_REC_SECTOR_OFF) != 0x0000B39Du) return false; /* erased / never recorded   */
+  if (!sec4k) return false;
+  if (rd32(sec4k) != 0x0000B39Du) return false;                   /* erased / never recorded   */
   out->present = true;
 
-  const uint8_t* r = save + G3_REC_STRUCT_OFF;
+  const uint8_t* r = sec4k + (G3_REC_STRUCT_OFF - G3_REC_SECTOR_OFF);   /* == sec4k + 4 */
   uint32_t sum = 0;
   for (uint32_t i = 0; i < RO_CHECKSUM; i++) sum += r[i];
   out->checksum_ok = (sum == rd32(r + RO_CHECKSUM));
@@ -69,8 +69,20 @@ bool g3_record_scan(const uint8_t* save, uint32_t size, G3RecordInfo* out) {
   return true;
 }
 
+bool g3_record_scan(const uint8_t* save, uint32_t size, G3RecordInfo* out) {
+  if (!save || size < (uint32_t)G3_SAVE_FILE_SIZE) {   /* 64 KiB dump: no sector 31 */
+    memset(out, 0, sizeof *out);
+    return false;
+  }
+  return g3_record_scan_sector(save + G3_REC_SECTOR_OFF, out);
+}
+
+const uint8_t* g3_record_party_sector(const uint8_t* sec4k, int side) {
+  return sec4k + (G3_REC_STRUCT_OFF - G3_REC_SECTOR_OFF) + (side ? 600u : 0u);
+}
+
 const uint8_t* g3_record_party(const uint8_t* save, int side) {
-  return save + G3_REC_STRUCT_OFF + (side ? 600u : 0u);
+  return g3_record_party_sector(save + G3_REC_SECTOR_OFF, side);
 }
 
 const char* g3_record_facility_name(int facility) {

@@ -5824,14 +5824,18 @@ static void pdna_settings(void) {
   }
 }
 
-/* ---- Import a .rec from /PokeDNA/battles back into the save (sector 31) -----------
- * The game gates the Frontier Pass "BATTLE RECORD" purely on the sector's own validity
- * (sentinel + battleFlags + byte-sum checksum — pokeemerald CanCopyRecordedBattleSaveData;
- * no other flag), so a valid imported record replays exactly like one just recorded.
- * The save's current record is overwritten (confirmed first); persistence rides the
- * standard backup + verified full-save commit (the whole g_save image is written, and
- * sector 31 is part of it). Omega-only (it is a save edit). */
-static bool rec_import(void) {
+/* ---- Shared /PokeDNA/battles/*.rec picker (BACKLOG #32) ---------------------------
+ * Lists, lets the user move the cursor, and returns the chosen filename (NOT a full
+ * path — callers build their own with PDNA_DIR "/battles/%s") into `out` (>= 40 bytes)
+ * on A; false on B or an empty directory (an empty directory already shows its own
+ * message here, so callers need no separate empty-list UI). `title`/`footer` are the
+ * only two strings that differ between callers (the importer vs. the RECPAGE_FILES
+ * page), so this one body serves both without hardcoding either's wording.
+ * Filters to *.rec: every export also writes a same-basename .txt sidecar, and
+ * without the filter every battle would list twice.
+ * Caps at 24 files / 39-char names / 14 rows; `static char names[24][40]` is plain
+ * static = IWRAM (960 B), not EWRAM — deliberate (the guard is at 612 B free). */
+static bool rec_list_pick(const char* title, const char* footer, char* out, size_t outcap) {
   static char names[24][40];
   int n = 0;
   { DIR d; FILINFO fi;                                  /* list /PokeDNA/battles/*.rec */
@@ -5845,13 +5849,13 @@ static bool rec_import(void) {
       }
       f_closedir(&d);
     } }
-  if (!n) { snd_deny(); msg_wait("IMPORT RECORD", UI_DIM, "No .rec files in", "/PokeDNA/battles."); return false; }
+  if (!n) { snd_deny(); msg_wait(title, UI_DIM, "No .rec files in", "/PokeDNA/battles."); return false; }
 
   int sel = 0, top = 0;                                 /* pick one */
   for (;;) {
     if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
     ui_clear();
-    ui_text(4, 4, UI_TITLE, "IMPORT RECORD");
+    ui_text(4, 4, UI_TITLE, title);
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
     for (int i = 0; i < 14 && top + i < n; i++) {
       int r = top + i, y = 20 + i * 9; bool s = (r == sel);
@@ -5859,15 +5863,31 @@ static bool rec_import(void) {
       char rt[40]; ui_truncate(rt, names[r], 29);
       ui_text(6, y, s ? UI_SELTEXT : UI_TEXT, rt);
     }
-    ui_text(4, 152, UI_DIM, "A import  B cancel");
+    ui_text(4, 152, UI_DIM, footer);
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return false;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
     else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) break;
   }
+  size_t L = strlen(names[sel]);
+  if (L >= outcap) return false;   /* defensive; names[] entries (< 40 B) fit every caller's outcap */
+  memcpy(out, names[sel], L + 1);
+  return true;
+}
+
+/* ---- Import a .rec from /PokeDNA/battles back into the save (sector 31) -----------
+ * The game gates the Frontier Pass "BATTLE RECORD" purely on the sector's own validity
+ * (sentinel + battleFlags + byte-sum checksum — pokeemerald CanCopyRecordedBattleSaveData;
+ * no other flag), so a valid imported record replays exactly like one just recorded.
+ * The save's current record is overwritten (confirmed first); persistence rides the
+ * standard backup + verified full-save commit (the whole g_save image is written, and
+ * sector 31 is part of it). Omega-only (it is a save edit). */
+static bool rec_import(void) {
+  char name[40];
+  if (!rec_list_pick("IMPORT RECORD", "A import  B cancel", name, sizeof name)) return false;
   char path[64];
-  sniprintf(path, sizeof path, PDNA_DIR "/battles/%s", names[sel]);
+  sniprintf(path, sizeof path, PDNA_DIR "/battles/%s", name);
 
   /* validate by STREAMING (512-B chunks, no big buffer): size, sentinel, checksum */
   FIL f; UINT br;
@@ -5910,7 +5930,7 @@ static bool rec_import(void) {
              br2 == G3_SECTOR_SIZE ? "old record restored." : "re-open the save!");
     return false;
   }
-  log_line("record: import %s", names[sel]);
+  log_line("record: import %s", name);
   /* persist: re-committing the (unchanged) SB2 runs the standard backup + verified
    * full-save write, which carries the new sector 31 with it */
   if (!app_commit_sb2()) {
@@ -5922,19 +5942,26 @@ static bool rec_import(void) {
 }
 
 /* Page index cycled by L/R in pdna_battle_record. An int (not a bool) because a
- * third page (a .rec browser, per BACKLOG.md) is coming later — RECPAGE_COUNT is
- * the single place that grows when it lands. */
-enum { RECPAGE_SUMMARY, RECPAGE_STREAKS, RECPAGE_COUNT };
+ * third page — the .rec file browser (RECPAGE_FILES, BACKLOG #32) — joins the
+ * cycle: order is summary -> streaks -> files -> wrap. RECPAGE_COUNT is the
+ * single place that grows if a fourth page ever lands. RECPAGE_FILES is NOT a
+ * per-frame page body like the other two (see pdna_battle_record's main loop):
+ * it is a self-contained sub-screen (rec_files_page), because it needs its own
+ * list/preview state machine, not a static display. */
+enum { RECPAGE_SUMMARY, RECPAGE_STREAKS, RECPAGE_FILES, RECPAGE_COUNT };
 
 /* The record's own summary: facility/level, who recorded it, seed + opponent (+ a
  * checksum-bad flag), both teams, and what exporting produces. Body only — the
- * caller draws the shared title/hline/footer chrome — so a later .rec-browser
- * slice can call this against any scanned G3RecordInfo without dragging along
- * this live screen's furniture. Reads the global g_save directly (same as the
- * inline code this was extracted from): a minimal signature beats threading one
- * more pointer through for a body that is never called against anything but the
- * live save. */
-static void render_record_summary(const G3RecordInfo* ri) {
+ * caller draws the shared title/hline/footer chrome — so both the live page and
+ * the .rec-browser's file preview (rec_files_page) can call this against any
+ * scanned G3RecordInfo without dragging along either screen's furniture.
+ * `sec4k` is the 4 KiB sector-31 blob the info was scanned from — byte 0 is the
+ * sentinel, exactly what g3_record_scan_sector expects and what a .rec file
+ * contains verbatim — NOT the full save image. The live page passes
+ * `g_save + G3_REC_SECTOR_OFF`; a byte-for-byte identical pointer to what the old
+ * g3_record_party(g_save, side) computed internally, so page-1 output for the
+ * live record is pixel-identical to before this was threaded through. */
+static void render_record_summary(const G3RecordInfo* ri, const uint8_t* sec4k) {
   char l[40];
   siprintf(l, "%s  %s", g3_record_facility_name(ri->facility),
            ri->lvl_mode ? "Open Level" : "Level 50");
@@ -5949,7 +5976,7 @@ static void render_record_summary(const G3RecordInfo* ri) {
   ui_text(4, 54, UI_TITLE, "YOUR TEAM");
   ui_text(124, 54, UI_TITLE, "OPPONENT");
   for (int side = 0; side < 2; side++) {
-    const uint8_t* party = g3_record_party(g_save, side);
+    const uint8_t* party = g3_record_party_sector(sec4k, side);
     int y = 64;
     for (int i = 0; i < 6; i++) {
       PkMon m;
@@ -6025,6 +6052,66 @@ static void render_record_streaks(const uint8_t* sb2) {
   }
 }
 
+/* ---- RECPAGE_FILES: browse /PokeDNA/battles/*.rec, preview without touching the
+ * save (BACKLOG #32) --------------------------------------------------------------
+ * A self-contained sub-screen, not a per-frame page body like pages 1/2 above: it
+ * needs its own list -> optional preview -> back-to-list state machine, and
+ * rec_list_pick already owns a full redraw/key loop, so nesting it here is simpler
+ * than threading a sub-state through pdna_battle_record's own loop. B on the list
+ * returns here to page 1 (rec_files_page's caller resets `page`); B on a preview
+ * returns to the list (the inner for(;;) below).
+ *
+ * SELECT is deliberately INERT on both the list and the preview -- unlike
+ * pdna_battle_record's own screen, where SELECT means "import over the live
+ * record". A casual browse-and-preview here must never risk that destructive
+ * action landing on the wrong keypress; importing an older .rec still works from
+ * page 1's own SELECT.
+ *
+ * The staged 4 KiB copy borrows app_arena_acquire() (pdna_app.h) rather than
+ * reading straight into g_save + G3_REC_SECTOR_OFF the way rec_import does --
+ * that would clobber the loaded save's live record just to preview a file. NULL
+ * (the PC dirty) is told to the user, never silently retried. */
+static void rec_files_page(void) {
+  for (;;) {
+    char name[40];
+    if (!rec_list_pick("RECORD FILES", "A view  B page 1  U/D pick", name, sizeof name))
+      return;                                            /* B on the list -> back to page 1 */
+
+    uint8_t* blob = app_arena_acquire(G3_SECTOR_SIZE);
+    if (!blob) {
+      snd_deny();
+      msg_wait("NOT NOW", UI_WARN, "Save your box changes", "first, then try again.");
+      continue;
+    }
+    char path[72];
+    sniprintf(path, sizeof path, PDNA_DIR "/battles/%s", name);
+    FIL f; UINT br = 0;
+    bool ok = (f_open(&f, path, FA_READ) == FR_OK);
+    if (ok) {
+      ok = (f_read(&f, blob, G3_SECTOR_SIZE, &br) == FR_OK) && (br == G3_SECTOR_SIZE);
+      f_close(&f);
+    }
+    G3RecordInfo fi;
+    bool valid = ok && g3_record_scan_sector(blob, &fi);
+    if (!valid) {
+      app_arena_release();
+      snd_error();
+      msg_wait("PREVIEW FAILED", UI_WARN, "Not a valid battle", "record file.");
+      continue;
+    }
+
+    ui_clear();
+    char t[40]; ui_truncate(t, name, 29);                 /* title = the FILE, not "BATTLE RECORD" --
+                                                            * never let this be mistaken for the live save */
+    ui_text(4, 4, UI_TITLE, t);
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    render_record_summary(&fi, blob);
+    ui_text(4, 152, UI_DIM, "B back");
+    wait_keys(KEY_B);
+    app_arena_release();
+  }
+}
+
 /* ---- Emerald Battle Record (save sector 31): info + export ------------------------
  * The Frontier Pass Battle Record is a full deterministic replay (RNG seed + both
  * teams + per-battler input streams) at a fixed, non-rotating sector. This screen
@@ -6063,10 +6150,15 @@ static void pdna_battle_record(void) {
   rmbl_fire(RCUE_ROOM);
   int page = RECPAGE_SUMMARY;
   for (;;) {
+    if (page == RECPAGE_FILES) {        /* self-contained sub-screen, not a page body -- see the enum comment */
+      rec_files_page();
+      page = RECPAGE_SUMMARY;           /* its own B already means "back to page 1" */
+      continue;
+    }
     ui_clear();
     ui_text(4, 4, UI_TITLE, "BATTLE RECORD");
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    if (page == RECPAGE_SUMMARY) render_record_summary(&ri);
+    if (page == RECPAGE_SUMMARY) render_record_summary(&ri, g_save + G3_REC_SECTOR_OFF);
     else                         render_record_streaks(g_sb2);
     /* Per-page footer (29-column budget). Page 2 spends its columns on the
      * legend that makes the rows readable (pdna_frontier.c's own convention:
@@ -6079,9 +6171,9 @@ static void pdna_battle_record(void) {
     u16 k = wait_keys(KEY_A | KEY_B | KEY_SELECT | KEY_L | KEY_R);
     if (k & (KEY_L | KEY_R)) {          /* house style: pdna_trainer.c ~626-632 */
       snd_tab();
-      /* L back, R forward -- identical at 2 pages, load-bearing at 3 (the .rec
-       * browser page is planned; a bool-style "always forward" would make L
-       * advance the moment it lands). */
+      /* L back, R forward -- identical at 2 pages, load-bearing at 3: R from
+       * streaks lands on RECPAGE_FILES (the .rec browser); a bool-style
+       * "always forward" would instead skip straight past it back to summary. */
       page = (page + ((k & KEY_R) ? 1 : RECPAGE_COUNT - 1)) % RECPAGE_COUNT;
       continue;
     }
