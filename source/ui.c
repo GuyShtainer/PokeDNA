@@ -231,21 +231,35 @@ void ui_pokeball(int x, int y) {
     }
 }
 
-static u16 __attribute__((aligned(4))) s_ovl_line[240];   /* compose buffer; aligned for 32-bit DMA */
+static u16 __attribute__((aligned(4))) s_ovl_line[240];   /* compose buffer; aligned for 32-bit copy */
+/* CPU transport, not DMA (2026-08-29, PokeDNA B3 audit). ui_blit_over is exported (ui.h)
+ * but a full-tree grep found exactly two live callers, both per-vblank idle-bob ticks:
+ * the Pokedex caught-cell bob (pdna_pick.c, `app_anim_enabled(ANIM_DEX)` loop) and the
+ * daycare yard bob's procedural-background branch (pdna_main.c, `ANIM_DAYCARE` loop) --
+ * this file's own header comment already named the Pokedex grid as the motivating case.
+ * Neither call site is load-time, so there is no DMA behaviour left to protect the way
+ * fd205bb protected box_oam.c's load-time uploads: unlike dc_icon_over_bg/portrait_redraw
+ * (pdna_main.c/pdna_summary.c), which keep a genuine load-time caller on dma3_cpy, this
+ * function converts outright rather than growing an unexercised third transport path.
+ * The word-aligned branch (even x AND even w) now uses memcpy32 -- libtonc's IWRAM_CODE
+ * LDMIA/STMIA word copy, identical bus traffic/width, no DMA controller -- matching the
+ * transport box_oam.c's swap_cache_slot proved safe on hardware for the same class of
+ * per-vblank animation tick (the 2026-08-23 A/B, mechanism not pinned). The odd-x/odd-w
+ * fallback was already a CPU per-halfword loop and is unchanged. */
 void ui_blit_over(int x, int y, int w, int h, const u16* data, u16 bg) {
   if (!data || w > 240) return;
-  /* 32-bit DMA needs a word-aligned destination (even x AND even w); otherwise fall
+  /* Word transport needs a word-aligned destination (even x AND even w); otherwise fall
    * back to a u16 CPU copy, which is valid at any halfword address. Either way each
    * row is composed (sprite over bg) and written in ONE pass — no separate erase, so
    * an animating sprite never blinks even at an odd x (e.g. the Pokedex grid, cw=33). */
-  bool dma = ((x & 1) == 0) && ((w & 1) == 0);
+  bool word_aligned = ((x & 1) == 0) && ((w & 1) == 0);
   rumble_io_suspend();                        /* data may be in ROM (compose reads it per pixel) */
   for (int j = 0; j < h; j++) {
     const u16* srow = data + (uint32_t)j * w;
     for (int i = 0; i < w; i++) { u16 p = srow[i]; s_ovl_line[i] = (p & 0x8000) ? (u16)(p & 0x7FFF) : bg; }
     u16* dst = &vid_mem[(y + j) * 240 + x];
-    if (dma) dma3_cpy(dst, s_ovl_line, (u32)w * 2);
-    else     for (int i = 0; i < w; i++) dst[i] = s_ovl_line[i];
+    if (word_aligned) memcpy32(dst, s_ovl_line, (u32)w * 2 / 4);
+    else              for (int i = 0; i < w; i++) dst[i] = s_ovl_line[i];
   }
   rumble_io_resume();
 }

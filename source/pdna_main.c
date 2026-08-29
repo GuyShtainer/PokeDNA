@@ -3303,8 +3303,8 @@ static void party_icon_y(int i, int* ry, int* iy) {
  * pass repaints its own band unconditionally, background included, so paint order alone
  * decides who wins a shared band; walking it backwards (MUST-FIX 1, 2026-08-22) makes
  * the upper icon of each adjacent pair win instead of the lower, which is what keeps
- * feet from being cut off there too. compose-then-DMA (no erase) => flicker-free; runs
- * only on idle frames. */
+ * feet from being cut off there too. compose-then-CPU-copy (no erase) => flicker-free;
+ * runs only on idle frames -- memcpy32, not DMA, see this function's own header comment. */
 static u16 __attribute__((aligned(4))) s_pcol[34];
 
 /* MUST-FIX 2 (2026-08-22 review): mon_icon_for_form_frame/mon_icon_egg_frame return a
@@ -3357,7 +3357,18 @@ static u16 __attribute__((aligned(4))) s_pcol[34];
  * party drops to 52 differing pixels total, worst pair TYRANITAR/SALAMENCE at 21px
  * -- bounded by the OTHER mon's near-empty top-row ink instead of the ink-heavy
  * bottom-row loss. Zero new static storage either way: both paths reuse s_pcol, the
- * one scratch this function already had. */
+ * one scratch this function already had.
+ *
+ * CPU transport, not DMA (2026-08-29, PokeDNA B3 audit): this function's ONLY caller
+ * is party_list()'s idle bob loop below (perf_rep_begin(PERF_REP_BOB, "bob.party")),
+ * i.e. every call to party_bob_recompose runs from a per-vblank animation tick. The
+ * 2026-08-23 hardware A/B that root-caused the PC box's pose-swap crash (box_oam.c's
+ * swap_cache_slot, fd205bb) found that issuing ANY dma3_cpy from that class of tick
+ * kills an Omega DE, mechanism not pinned. This site was dead until 421cc1f un-gated
+ * ANIM_PARTY, so it never got a hardware run before; it gets the same fix box_oam.c's
+ * tick sites got rather than a fresh, unproven pass. memcpy32 is libtonc's IWRAM_CODE
+ * LDMIA/STMIA word copy -- identical bus traffic, identical 32-bit width, no DMA
+ * controller. Needs hardware sign-off, same as fd205bb did. */
 static void party_bob_recompose(int n, int sel, int frame) {
   /* NULL and egg handling this loop (both builds) must get right, learned the hard
    * way before this MUST-FIX 2 pass:
@@ -3399,7 +3410,7 @@ static void party_bob_recompose(int n, int sel, int frame) {
       const u16* row = base[i] + (y - iy) * MON_ICON_W;
       for (int dx = 0; dx < MON_ICON_W; dx++) { u16 p = row[dx]; if (p & 0x8000) s_pcol[1 + dx] = (u16)(p & 0x7FFF); }
     }
-    dma3_cpy(&vid_mem[y * 240 + 2], s_pcol, 34 * 2);   /* x=2 even, 68 bytes -> word-aligned */
+    memcpy32(&vid_mem[y * 240 + 2], s_pcol, 34 * 2 / 4);   /* CPU transport -- see header comment */
   }
   rumble_io_resume();
 #else
@@ -3431,7 +3442,7 @@ static void party_bob_recompose(int n, int sel, int frame) {
       s_pcol[0] = bg;
       for (int dx = 0; dx < MON_ICON_W; dx++) { u16 p = row[dx]; s_pcol[1 + dx] = (p & 0x8000) ? (u16)(p & 0x7FFF) : bg; }
       s_pcol[33] = bg;
-      dma3_cpy(&vid_mem[y * 240 + 2], s_pcol, 34 * 2);   /* x=2 even, 68 bytes -> word-aligned */
+      memcpy32(&vid_mem[y * 240 + 2], s_pcol, 34 * 2 / 4);   /* CPU transport -- see header comment */
     }
   }
   rumble_io_resume();
@@ -3482,7 +3493,7 @@ static int party_list(void) {
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     ui_text(4, 152, UI_DIM, "A actions  START menu  B back");
 
-    /* idle 2-frame bob (compose-over-DMA, no erase). Animate only on frames with NO key
+    /* idle 2-frame bob (compose-then-CPU-copy, no erase). Animate only on frames with NO key
      * pending so navigation never stutters; party_bob_recompose() calls out per build
      * how it orders the icons -- FULL-ART's scanline sweep layers exactly like the
      * static draw (opaque-wins, so order doesn't matter); ARTLESS's icon-major loop is
@@ -4477,8 +4488,9 @@ static void dc_roll_decos(void) {
 #define DC_SCENE_BOT 122
 #endif
 /* Compose a 32x32 icon over the TRUE, unpainted-by-icons background at screen (x,y)
- * and DMA each scanline (no separate erase => no flicker on the single Mode-3
- * buffer). x is forced even for the word-aligned DMA.
+ * and write each scanline (no separate erase => no flicker on the single Mode-3
+ * buffer) -- DMA at load time, memcpy32 on the idle-bob tick, see `tick` below and
+ * this function's own transport comment. x is forced even for the word alignment.
  *
  * The background sample MUST NOT be the framebuffer this function (or the previous
  * tick's call to it) already drew into: a read-back out of vid_mem is self-
@@ -4499,8 +4511,20 @@ static void dc_roll_decos(void) {
  * (the invented yard visitors, so they read as scenery). Same blend as
  * ui_panel_alpha. Deliberately NOT greyscale — grey already means "not seen yet"
  * in the Pokedex and would say the wrong thing here. */
+/* `tick` (2026-08-29, PokeDNA B3 audit) selects the transport, NOT the composition: this
+ * function is called both from day_care()'s one-shot redraw block (load-time, tick=false,
+ * plain dma3_cpy) and from its idle-bob loop (`if (app_anim_enabled(ANIM_DAYCARE) && ...)`,
+ * every ~30-vblank tick, tick=true, memcpy32) -- the exact shared-helper shape box_oam.c's
+ * upload_tiles/upload_tiles_cpu split addresses (fd205bb): a per-vblank dma3_cpy is the
+ * proven-on-hardware crash trigger, mechanism not pinned, and this function was DEAD on
+ * that tick until 421cc1f un-gated ANIM_DAYCARE, so it never got a hardware run under the
+ * DMA transport. Load-time DMA is untouched -- every shipping build already does that on
+ * daycare entry and is fine (fd205bb: "Load-time DMA is NOT implicated"). A parameter
+ * rather than a duplicate function: the composited loop (background sample, alpha blend,
+ * bounds clamp) is the same ~30 lines either way, and duplicating it would let the two
+ * copies drift -- only the final transport line differs. */
 static u16 __attribute__((aligned(4))) s_dcline[MON_ICON_W];   /* 32-bit DMA needs word align */
-static void dc_icon_over_bg(int x, int y, const u16* icon, int num) {
+static void dc_icon_over_bg(int x, int y, const u16* icon, int num, bool tick) {
   if (!icon) return;
   rumble_io_suspend();   /* reads icon from ROM per pixel (ROM icon rung); mute the motor toggle */
   x &= ~1;
@@ -4528,7 +4552,8 @@ static void dc_icon_over_bg(int x, int y, const u16* icon, int num) {
       }
       s_dcline[i] = c;
     }
-    dma3_cpy(&vid_mem[yy * 240 + x], s_dcline, MON_ICON_W * 2);
+    if (tick) memcpy32(&vid_mem[yy * 240 + x], s_dcline, MON_ICON_W * 2 / 4);
+    else      dma3_cpy(&vid_mem[yy * 240 + x], s_dcline, MON_ICON_W * 2);
   }
   rumble_io_resume();
 }
@@ -4770,13 +4795,13 @@ static void pdna_daycare(void) {
        * drew, art or procedural alike. */
       for (int i = 0; i < s_ndeco; i++)
         dc_icon_over_bg(s_deco_x[i], s_deco_y[i],
-                        mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)), 6);
+                        mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)), 6, false);
       nshow += s_ndeco;
       for (int i = 0; i < n; i++) {
         const u16* ic = (dc[i].isEgg && !dc[i].isBadEgg) ? mon_icon_egg_frame((uint8_t)(frame & 1))
                                 : mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1));
 #ifdef HAVE_DAYCARE_BG
-        dc_icon_over_bg(dcx[i], dcy[i], ic, 8);               /* the real pair: fully opaque */
+        dc_icon_over_bg(dcx[i], dcy[i], ic, 8, false);        /* the real pair: fully opaque, load-time redraw -> DMA */
 #else
         ui_sprite(dcx[i], dcy[i], MON_ICON_W, MON_ICON_H, ic);
 #endif
@@ -4835,12 +4860,12 @@ static void pdna_daycare(void) {
            perf_rep_begin(PERF_REP_BOB, "bob.daycare");
            for (int i = 0; i < s_ndeco; i++)                    /* visitors first + hazed, as on redraw */
              dc_icon_over_bg(s_deco_x[i], s_deco_y[i],
-                             mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)), 6);
-           for (int i = 0; i < n; i++) {                        /* compose icon over the bg + DMA (no erase) */
+                             mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)), 6, true);
+           for (int i = 0; i < n; i++) {                        /* compose icon over the bg + CPU copy (no erase) */
              const u16* ic = (dc[i].isEgg && !dc[i].isBadEgg) ? mon_icon_egg_frame((uint8_t)(frame & 1))
                                 : mon_icon_for_form_frame(dc[i].species, dc[i].form, (uint8_t)(frame & 1));
 #ifdef HAVE_DAYCARE_BG
-             dc_icon_over_bg(dcx[i], dcy[i], ic, 8);
+             dc_icon_over_bg(dcx[i], dcy[i], ic, 8, true);      /* idle-bob tick -> memcpy32, see dc_icon_over_bg */
 #else
              ui_blit_over(dcx[i], dcy[i], MON_ICON_W, MON_ICON_H, ic, GRASS);
 #endif

@@ -917,11 +917,25 @@ static void portrait_params(int fam, int t, int* wx, int* sy, int* dx, int* dy) 
 /* Redraw the portrait at pose (wx,sy,dy) iff it changed. Composes each scanline of
  * the sprite sub-frame interior (x 12..79, y 14..77) — panel background plus the
  * 64x64 frame squashed to `sy` / widened to `wx`, anchored at the feet (y 78),
- * centred at x 46 — into a line buffer and DMAs it to VRAM in one pass. No separate
- * erase, so the animation never flickers (call site runs it in vblank). */
+ * centred at x 46 — into a line buffer and writes it to VRAM in one pass. No separate
+ * erase, so the animation never flickers.
+ *
+ * `tick` (2026-08-29, PokeDNA B3 audit) picks the transport, not the composition: this
+ * function has TWO callers below (summary_run's first paint, and its idle wiggle loop
+ * `do { s_vsync(); ... portrait_redraw(...) } while (!k)`), and only the second is a
+ * per-vblank animation tick. The 2026-08-23 hardware A/B that root-caused the PC box's
+ * pose-swap crash (box_oam.c's swap_cache_slot, fd205bb) found that ANY dma3_cpy issued
+ * from that class of tick kills an Omega DE, mechanism not pinned; this call path was
+ * dead until 421cc1f un-gated ANIM_SUMMARY, so it never got a hardware run under the DMA
+ * transport. The first-paint call keeps plain dma3_cpy (load-time DMA is NOT implicated
+ * per fd205bb, and every shipping build already draws the portrait's first frame this
+ * way). A parameter rather than a duplicate function: this ~65-line composer (the sicol
+ * table, the per-row source lookup, the alpha-free pixel copy) does not change between
+ * the two callers, only the final per-scanline write does, and duplicating the whole
+ * function would let the two copies drift out of sync on the next pose-math fix. */
 static u16 s_pline[68];
 static void portrait_redraw(const PkMon* p, const uint16_t* spr, bool icon, int sw, int sh,
-                            int wx, int sy, int dx, int dy, int* lastkey) {
+                            int wx, int sy, int dx, int dy, int* lastkey, bool tick) {
   int key = (wx & 0xFF) | ((sy & 0xFF) << 8) | (((dx + 64) & 0xFF) << 16) | (((dy + 64) & 0xFF) << 24);
   if (key == *lastkey) return;
   *lastkey = key;
@@ -976,7 +990,8 @@ static void portrait_redraw(const PkMon* p, const uint16_t* spr, bool icon, int 
       }
       s_pline[dx] = c;
     }
-    dma3_cpy(&vid_mem[yy * 240 + 12], s_pline, 68 * 2);
+    if (tick) memcpy32(&vid_mem[yy * 240 + 12], s_pline, 68 * 2 / 4);
+    else      dma3_cpy(&vid_mem[yy * 240 + 12], s_pline, 68 * 2);
   }
   if (p->isShiny) ui_text(70, 16, C_HOT, "*");
   /* The loop above repaints the WHOLE frame interior, which erases anything draw_left
@@ -1129,7 +1144,7 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
      * and a picker/OSK (which ui_clear()s, so the next iteration repaints anyway). */
     if (anim && !p_spr_ok) { p_spr = portrait_sprite(&cur, &p_icon, &p_sw, &p_sh); p_spr_ok = true; }
     if (anim) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
-                              portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }
+                              portrait_params(fam, anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_sw, p_sh, wx, sy, dx, dy, &lastkey, false); }  /* first paint: load-time -> DMA */
 
     /* The card and the portrait are on screen; everything past here is the idle
      * portrait wiggle (pure CPU -- the sprite fetch is hoisted above on purpose) and
@@ -1138,7 +1153,7 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
     u16 k, fresh;
     do { s_vsync();
          if (anim) { int fam = mon_anim_family(cur.species), wx, sy, dx, dy;
-                                   portrait_params(fam, ++anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_sw, p_sh, wx, sy, dx, dy, &lastkey); }
+                                   portrait_params(fam, ++anim_t, &wx, &sy, &dx, &dy); portrait_redraw(&cur, p_spr, p_icon, p_sw, p_sh, wx, sy, dx, dy, &lastkey, true); }  /* idle wiggle tick -> memcpy32 */
          fresh = key_hit(KEY_FULL);
          k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
     if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();

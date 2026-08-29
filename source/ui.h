@@ -280,10 +280,13 @@ void ui_icon_scaled_grey(int x, int y, int dw, int dh, const u16* src32);
 void ui_pokeball(int x, int y);
 
 /* Flicker-free sprite blit: composes each row (sprite over a SOLID `bg` colour) in
- * a buffer and DMA-copies it to VRAM in one pass — no separate erase step, so an
- * animating/moving sprite never blinks on the single-buffered Mode-3 display. Call
- * it right after VBlankIntrWait for small regions so the write lands in vblank.
- * Requires x and w to be EVEN (word-aligned DMA). NULL data is a no-op. */
+ * a buffer and word-copies it to VRAM in one pass (memcpy32, not DMA — see this
+ * function's own comment in ui.c: every current caller is a per-vblank animation
+ * tick, and a 2026-08-23 hardware A/B found dma3_cpy issued from that class of tick
+ * kills an Omega DE) — no separate erase step, so an animating/moving sprite never
+ * blinks on the single-buffered Mode-3 display. Call it right after VBlankIntrWait
+ * for small regions so the write lands in vblank. Requires x and w to be EVEN
+ * (word-aligned) or it falls back to a per-halfword CPU copy. NULL data is a no-op. */
 void ui_blit_over(int x, int y, int w, int h, const u16* data, u16 bg);
 
 /* Restoring a rect of a full-screen background bitmap used to live here as
