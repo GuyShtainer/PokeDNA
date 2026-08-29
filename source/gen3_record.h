@@ -77,10 +77,16 @@ int g3_record_win_streak(const uint8_t* sb2, const G3RecordInfo* ri);
 int g3_facility_streak(const uint8_t* sb2, int facility, int mode, int lvl);
 
 /* Build the human-readable export sidecar text (player + record summary + both
- * teams + the CURRENT streaks of all 7 facilities) into out (cap bytes,
- * NUL-terminated). Everything platform-specific comes in as arguments; pure C so
- * the host tests exercise it. `stamp` = RTC string or NULL. Returns the length
- * written (always < cap; the builder truncates safely). */
+ * teams + every facility's CURRENT/BEST streak, one line per level mode) into
+ * out (cap bytes, NUL-terminated). Everything platform-specific comes in as
+ * arguments; pure C so the host tests exercise it. `stamp` = RTC string or NULL.
+ * Returns the length written (always < cap; the builder truncates safely).
+ * The streak block is Emerald-only in truth, not just in the header: it needs
+ * `game == PK_EMERALD` AND a non-NULL `sb2` (Emerald's SaveBlock2 Frontier
+ * layout), else it prints "not available" rather than misreading a save that
+ * has no such struct — RS's Battle Tower current streak is DERIVED, not
+ * stored (gen3_frontier.h), and RS never reaches this export anyway (RS
+ * predates the Frontier: no sector 31 recording exists to export). */
 /* `sb1`/`game` may be NULL/anything when unavailable — the SAVE STATE block is then
  * omitted rather than guessed. See docs/REC-SIDECAR.md in the rec2mp4 project for the
  * consumer's contract. */

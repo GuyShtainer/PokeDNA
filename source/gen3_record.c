@@ -153,6 +153,46 @@ static void sc_hex8(char* out, int cap, int* n, uint32_t v) {
   }
 }
 
+/* Per lane (facility x mode x level), CURRENT/BEST — matching the frontier
+ * screen's own "cur/best" convention (pdna_frontier.c) — with the level mode
+ * spelled out on every line so a reader never has to remember a column order.
+ * The earlier version printed Lv50-current/Open-current under a "current
+ * streaks" header — both numbers were CURRENT, never BEST, so a player who
+ * plays Open (like Guy) had their real streak sitting where the header's own
+ * "best" convention would expect a record. Root-caused against a genuine
+ * export: "Arena singles 0/42" was Lv50-current 0 / Open-current 42, not a
+ * current/best pair at all. This block now reads G3F_RECORD too and is
+ * Emerald-only in truth as well as in the header: RS never reaches this
+ * screen (RS predates the Frontier — no sector 31 recording exists), but the
+ * function is pure C and callable with any `game`/`sb2`, so a mismatched pair
+ * degrades to an honest "not available" line instead of misreading Emerald's
+ * SaveBlock2 Frontier offsets against a save that doesn't have that struct. */
+static void sc_streaks(char* out, int cap, int* n, const uint8_t* sb2, int game) {
+  if (game != PK_EMERALD || !sb2) {
+    sc_put(out, cap, n, "streaks: not available (no Battle Frontier");
+    sc_put(out, cap, n, " win-streak data in this save)\n");
+    return;
+  }
+  sc_put(out, cap, n, "streaks (current/best):\n");
+  for (int f = 0; f < 7; f++) {
+    int modes = g3f_modes(f);
+    for (int lvl = 0; lvl < 2; lvl++) {
+      sc_put(out, cap, n, "  "); sc_put(out, cap, n, g3_record_facility_short(f));
+      sc_put(out, cap, n, lvl ? " Open" : " Lv50");
+      for (int m = 0; m < modes; m++) {
+        const char* mn = g3f_mode_name(f, m);        /* "" on a singles-only facility */
+        int cur = g3f_streak_get(sb2, f, m, lvl, G3F_CURRENT);
+        int rec = g3f_streak_get(sb2, f, m, lvl, G3F_RECORD);
+        sc_put(out, cap, n, " ");
+        if (mn && mn[0]) { sc_put(out, cap, n, mn); sc_put(out, cap, n, " "); }
+        sc_num(out, cap, n, cur < 0 ? 0 : cur);
+        sc_put(out, cap, n, "/"); sc_num(out, cap, n, rec < 0 ? 0 : rec);
+      }
+      sc_put(out, cap, n, "\n");
+    }
+  }
+}
+
 int g3_record_sidecar(char* out, int cap, const G3RecordInfo* ri,
                       const uint8_t* save, const uint8_t* sb2, const uint8_t* sb1,
                       int game, uint16_t tid_public, const char* stamp) {
@@ -191,19 +231,7 @@ int g3_record_sidecar(char* out, int cap, const G3RecordInfo* ri,
       sc_put(out, cap, &n, "\n");
     }
   }
-  sc_put(out, cap, &n, "current streaks (Lv50/Open):\n");
-  for (int f = 0; f < 7; f++) {
-    sc_put(out, cap, &n, "  "); sc_put(out, cap, &n, g3_record_facility_short(f));
-    for (int m = 0; m < 4; m++) {
-      int a = g3_facility_streak(sb2, f, m, 0);
-      if (a < 0) break;                             /* facility has no more mode lanes */
-      int b = g3_facility_streak(sb2, f, m, 1);
-      sc_put(out, cap, &n, "  "); sc_put(out, cap, &n, k_mode[m]);
-      sc_put(out, cap, &n, " "); sc_num(out, cap, &n, a);
-      sc_put(out, cap, &n, "/"); sc_num(out, cap, &n, b < 0 ? 0 : b);
-    }
-    sc_put(out, cap, &n, "\n");
-  }
+  sc_streaks(out, cap, &n, sb2, game);
 
   /* ---- SAVE STATE ----------------------------------------------------------
    * The state of the save the recording came OUT of, so a rendered video can open on who

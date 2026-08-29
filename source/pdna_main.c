@@ -36,6 +36,7 @@
 #include "pdna_box.h"
 #include "gen3_trainer.h"
 #include "gen3_record.h"    /* Emerald Battle Record (save sector 31) info + export */
+#include "gen3_frontier.h"  /* g3f_streak_get/g3f_modes/g3f_mode_name for the record screen's streaks page */
 #include "pdna_frontier.h"  /* Battle Frontier win-streak viewer/editor (SaveBlock2) */
 #include "pdna_fly.h"       /* Fly-destination (visited-town) flags (SaveBlock1)     */
 #include "pdna_map.h"       /* overworld map, read from the user's own Pokemon ROM   */
@@ -5920,6 +5921,98 @@ static bool rec_import(void) {
   return true;
 }
 
+/* Page index cycled by L/R in pdna_battle_record. An int (not a bool) because a
+ * third page (a .rec browser, per BACKLOG.md) is coming later — RECPAGE_COUNT is
+ * the single place that grows when it lands. */
+enum { RECPAGE_SUMMARY, RECPAGE_STREAKS, RECPAGE_COUNT };
+
+/* The record's own summary: facility/level, who recorded it, seed + opponent (+ a
+ * checksum-bad flag), both teams, and what exporting produces. Body only — the
+ * caller draws the shared title/hline/footer chrome — so a later .rec-browser
+ * slice can call this against any scanned G3RecordInfo without dragging along
+ * this live screen's furniture. Reads the global g_save directly (same as the
+ * inline code this was extracted from): a minimal signature beats threading one
+ * more pointer through for a body that is never called against anything but the
+ * live save. */
+static void render_record_summary(const G3RecordInfo* ri) {
+  char l[40];
+  siprintf(l, "%s  %s", g3_record_facility_name(ri->facility),
+           ri->lvl_mode ? "Open Level" : "Level 50");
+  ui_text(4, 20, UI_TEXT, l);
+  const char* who = ri->names[ri->multiplayer_id][0] ? ri->names[ri->multiplayer_id] : "?";
+  siprintf(l, "Recorded by %s (%s)", who, ri->genders[ri->multiplayer_id] ? "F" : "M");
+  ui_text(4, 30, UI_TEXT, l);
+  siprintf(l, "Seed %08lx  Opp #%u", (unsigned long)ri->rng_seed, ri->opponent_a);
+  ui_text(4, 40, UI_DIM, l);
+  if (!ri->checksum_ok) ui_text(130, 40, UI_WARN, "CHECKSUM BAD");
+
+  ui_text(4, 54, UI_TITLE, "YOUR TEAM");
+  ui_text(124, 54, UI_TITLE, "OPPONENT");
+  for (int side = 0; side < 2; side++) {
+    const uint8_t* party = g3_record_party(g_save, side);
+    int y = 64;
+    for (int i = 0; i < 6; i++) {
+      PkMon m;
+      if (!pk_decode_mon(party + (uint32_t)i * G3_REC_MON_SIZE, false, &m) || !m.species) continue;
+      uint8_t lvl = party[(uint32_t)i * G3_REC_MON_SIZE + 84];   /* plaintext battle level */
+      siprintf(l, "%s %u", pk_species_name(m.species), lvl);
+      ui_text(side ? 124 : 4, y, UI_TEXT, l);
+      y += 10;
+    }
+  }
+  /* What the exported pair IS, and what opens it on a PC. The band y=122..151 is
+   * free even for a full 6-mon column (rows start at y=64, pitch 10 -> ink ends at
+   * y=121). Proportional face: line 1 is 226 px here, 360 px at sys8. rec2mp4 is
+   * not published yet, so it is named, not linked. */
+  ui_hline(0, 124, UI_SCR_W, UI_BORDER);
+  ui_ptext(4, 128, UI_DIM, "A exports a .rec + .txt to /PokeDNA/battles/.");
+  ui_ptext(4, 138, UI_DIM, "On a PC, rec2mp4 replays it into a video.");
+}
+
+/* Page 2: every facility's win streak, current/best, Lv50 in the left number
+ * column vs Open in the right one — one row per (facility, battle mode) so a
+ * multi-mode facility (the Tower has 4) gets its own row instead of an
+ * ambiguous merged number. g3f_modes() summed over all 7 facilities is a fixed
+ * 13 (4+2+2+1+2+1+1: Tower/Dome/Palace/Arena/Factory/Pike/Pyramid), which is
+ * why a static 13-row table fits this screen with no scrolling needed — the
+ * same 13-row band pdna_frontier.c already proved fits (y=18..~146 there, at a
+ * 10 px pitch); this table only tightens the pitch to 9 px to also leave room
+ * for the Lv50/Open header row above it. Read-only: editing a streak already
+ * exists on the dedicated Frontier screen (pdna_frontier.c), so this is not a
+ * second control surface for the same write path.
+ * Reused verbatim from pdna_frontier.c's own row convention: cur then best,
+ * '*' marks winStreakActiveFlags (the streak the game will actually KEEP —
+ * see gen3_frontier.h). Only reachable when g_game == PK_EMERALD (checked at
+ * pdna_battle_record's entry), so sb2 is always a genuine Emerald SaveBlock2
+ * here — unlike the sidecar, this body has no non-Emerald caller to degrade
+ * for. */
+static void render_record_streaks(const uint8_t* sb2) {
+  ui_text(64, 18, UI_DIM, "Lv50");
+  ui_text(150, 18, UI_DIM, "Open");
+  int y = 27;
+  for (int f = 0; f < 7; f++) {
+    int modes = g3f_modes(f);
+    for (int m = 0; m < modes; m++) {
+      char lbl[8];
+      if (m == 0) ui_text(4, y, UI_TEXT, g3_record_facility_short(f));
+      else {
+        const char* mn = g3f_mode_name(f, m);
+        siprintf(lbl, " %c", (mn && mn[0]) ? mn[0] : '?');
+        ui_text(4, y, UI_DIM, lbl);
+      }
+      for (int lvl = 0; lvl < 2; lvl++) {
+        int cur = g3f_streak_get(sb2, f, m, lvl, G3F_CURRENT);
+        int rec = g3f_streak_get(sb2, f, m, lvl, G3F_RECORD);
+        bool act = g3f_active_get(sb2, f, m, lvl);
+        char l[12];
+        siprintf(l, "%4d/%4d%c", cur < 0 ? 0 : cur, rec < 0 ? 0 : rec, act ? '*' : ' ');
+        ui_text(lvl ? 150 : 64, y, (cur > 0 && !act) ? UI_WARN : UI_TEXT, l);
+      }
+      y += 9;
+    }
+  }
+}
+
 /* ---- Emerald Battle Record (save sector 31): info + export ------------------------
  * The Frontier Pass Battle Record is a full deterministic replay (RNG seed + both
  * teams + per-battler input streams) at a fixed, non-rotating sector. This screen
@@ -5956,44 +6049,24 @@ static void pdna_battle_record(void) {
     rec_import();                                      /* success -> the rescan shows it */
   }
   rmbl_fire(RCUE_ROOM);
+  int page = RECPAGE_SUMMARY;
   for (;;) {
     ui_clear();
     ui_text(4, 4, UI_TITLE, "BATTLE RECORD");
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    char l[40];
-    siprintf(l, "%s  %s", g3_record_facility_name(ri.facility),
-             ri.lvl_mode ? "Open Level" : "Level 50");
-    ui_text(4, 20, UI_TEXT, l);
-    const char* who = ri.names[ri.multiplayer_id][0] ? ri.names[ri.multiplayer_id] : "?";
-    siprintf(l, "Recorded by %s (%s)", who, ri.genders[ri.multiplayer_id] ? "F" : "M");
-    ui_text(4, 30, UI_TEXT, l);
-    siprintf(l, "Seed %08lx  Opp #%u", (unsigned long)ri.rng_seed, ri.opponent_a);
-    ui_text(4, 40, UI_DIM, l);
-    if (!ri.checksum_ok) ui_text(130, 40, UI_WARN, "CHECKSUM BAD");
-
-    ui_text(4, 54, UI_TITLE, "YOUR TEAM");
-    ui_text(124, 54, UI_TITLE, "OPPONENT");
-    for (int side = 0; side < 2; side++) {
-      const uint8_t* party = g3_record_party(g_save, side);
-      int y = 64;
-      for (int i = 0; i < 6; i++) {
-        PkMon m;
-        if (!pk_decode_mon(party + (uint32_t)i * G3_REC_MON_SIZE, false, &m) || !m.species) continue;
-        uint8_t lvl = party[(uint32_t)i * G3_REC_MON_SIZE + 84];   /* plaintext battle level */
-        siprintf(l, "%s %u", pk_species_name(m.species), lvl);
-        ui_text(side ? 124 : 4, y, UI_TEXT, l);
-        y += 10;
-      }
+    if (page == RECPAGE_SUMMARY) render_record_summary(&ri);
+    else                         render_record_streaks(g_sb2);
+    /* 29-column budget (same as the "A export  SEL import  B back" line this
+     * replaced) — export/import abbreviate so the L/R hint fits without
+     * stealing a content row from either page. "L/R page" mirrors the L/R
+     * hint wording pdna_trainer.c's card screen already uses ("L/R flip"). */
+    ui_text(4, 152, UI_DIM, "A exp SEL imp B back L/R page");
+    u16 k = wait_keys(KEY_A | KEY_B | KEY_SELECT | KEY_L | KEY_R);
+    if (k & (KEY_L | KEY_R)) {          /* house style: pdna_trainer.c ~626-628 */
+      snd_tab();
+      page = (page + 1) % RECPAGE_COUNT;
+      continue;
     }
-    /* What the exported pair IS, and what opens it on a PC. The band y=122..151 is
-     * free even for a full 6-mon column (rows start at y=64, pitch 10 -> ink ends at
-     * y=121). Proportional face: line 1 is 226 px here, 360 px at sys8. rec2mp4 is
-     * not published yet, so it is named, not linked. */
-    ui_hline(0, 124, UI_SCR_W, UI_BORDER);
-    ui_ptext(4, 128, UI_DIM, "A exports a .rec + .txt to /PokeDNA/battles/.");
-    ui_ptext(4, 138, UI_DIM, "On a PC, rec2mp4 replays it into a video.");
-    ui_text(4, 152, UI_DIM, "A export  SEL import  B back");
-    u16 k = wait_keys(KEY_A | KEY_B | KEY_SELECT);
     if (k & KEY_B) { snd_back(); return; }
     if (k & KEY_SELECT) {                              /* import an older .rec over this one */
       if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
@@ -6002,6 +6075,7 @@ static void pdna_battle_record(void) {
     }
     /* ---- A: export the raw 4 KiB sector (verified write, Omega-only) ---- */
     if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+    const char* who = ri.names[ri.multiplayer_id][0] ? ri.names[ri.multiplayer_id] : "?";
     char base[8]; int o = 0;
     for (int i = 0; who[i] && o < 7; i++) {              /* sanitize the trainer name for FAT */
       char c = who[i];
