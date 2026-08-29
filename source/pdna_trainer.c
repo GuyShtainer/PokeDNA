@@ -630,10 +630,19 @@ static int stars_editor(uint8_t* sb1, uint8_t* sb2, PkGame game) {
           !app_confirm("Clear dex catches?", "Un-catches these species."))
         continue;
       dirty |= pk_star_ach_set(sb1, sb2, game, sel, !on, dex);
-      /* toggled at the cursor, which did not move: repaint this ONE row by hand (the
-       * header's own count is caught automatically -- next pass recomputes scount and
-       * diffs it against pv.scount above). */
-      star_row_paint(sb1, sb2, game, dex, sel, 16 + sel * 9, true);
+      /* NOT a single-row repaint: FRLG's achievements overlap (gen3_stars.c --
+       * ACH_NATDEX's dex ranges 0..2 INCLUDE ACH_KANTO's range 0, so turning
+       * NatDex on/off can silently flip the Kanto row's on-state too, leaving a
+       * hand-repaint of just `sel` stale on a SIBLING row). Only 4 rows on this
+       * screen, all CPU-drawn -- repaint every row plus the header on any
+       * accepted toggle, which covers every cascade by construction and is
+       * still far cheaper than the old unconditional ui_clear(). */
+      int scount2 = pk_star_count(sb1, sb2, game, dex);
+      for (int i = 0; i < n; i++)
+        star_row_paint(sb1, sb2, game, dex, i, 16 + i * 9, i == sel);
+      char t2[32]; siprintf(t2, "CARD STARS  %d/4", scount2);
+      ui_fill_rect(0, 2, UI_SCR_W, UI_ROW_H, UI_BG);
+      ui_text(4, 2, UI_TITLE, t2);
     }
   }
 }

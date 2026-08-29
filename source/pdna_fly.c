@@ -99,6 +99,12 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
 
   int sel = 0, top = 0;
   bool dirty = false;
+  /* Set by the KEY_A handler below when g3fly_set() actually flipped the row at
+   * `sel` this iteration, and consumed (cleared) by the very next iteration's
+   * paint block. `on` (g3fly_count_on) only counts G3FLY_TOWN rows (gen3_fly.c)
+   * -- a facility/cursor/prereq toggle leaves it unchanged, so it cannot be the
+   * "did this row change" signal. `toggled` shadows the mutation itself instead. */
+  bool toggled = false;
   const int vis = 12;
   FlyPaint pv;
   memset(&pv, 0, sizeof pv);           /* .valid = false: the first pass paints in full */
@@ -138,18 +144,23 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
       if (sel != pv.sel) {
         fly_row_paint(t, sb1, game, pv.sel, 18 + (pv.sel - top) * 10, false);
         fly_row_paint(t, sb1, game, sel,    18 + (sel    - top) * 10, true);
-      } else if (on != pv.on) {
+      } else if (toggled) {
         /* toggled at the cursor, which did not move: the only single-flag mutator
-         * below (KEY_A) only ever touches `sel`, so it is the row that flipped. */
+         * below (KEY_A) only ever touches `sel`, so it is the row that flipped.
+         * Gated on `toggled`, NOT `on != pv.on` -- a facility/cursor/prereq row
+         * flips its ON/off text without moving the town-only `on` counter at all. */
         fly_row_paint(t, sb1, game, sel, 18 + (sel - top) * 10, true);
       }
-      if (on != pv.on) {
+      if (toggled) {
+        /* Header repaint is cheap (one small rect) and this also covers the
+         * count-changed case (a TOWN toggle does move `on`). */
         ui_fill_rect(200, 4, UI_SCR_W - 200, UI_ROW_H, UI_BG);
         fly_header_paint(on, tot);
       }
     }
 
     pv.top = top; pv.sel = sel; pv.on = on; pv.gen = ui_clear_gen(); pv.valid = true;
+    toggled = false;                     /* consumed for this pass either way */
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_START);
     if (k & KEY_B) break;
@@ -188,6 +199,7 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
         continue;
       g3fly_set(sb1, game, sel, !set);
       dirty = true;
+      toggled = true;
       rmbl_fire(RCUE_EDIT);
       /* Mauville's flag doubles as the Cable Club Record Corner gate — benign, but
        * surprising if it just happens. */
