@@ -280,6 +280,17 @@ uint16_t pick_species(uint16_t current) {
   char hdr[48];
   int prev_sel = -1, prev_top = -1, toprow = 0;
   bool relist = true;                 /* force a full redraw initially + after any list change */
+  /* header-badge memo (D1): type_icon() -> app_type_badge() hits the SD in a ROM-registered
+   * build (rom_type_sheet_load, ~12 sectors, no cache -- see type_icon()'s own comment) and
+   * the header strip below used to call it on EVERY keypress, cursor-only moves included.
+   * 0xFF is a safe sentinel: valid type ids are 0..17. */
+  uint8_t prev_t1 = 0xFF, prev_t2 = 0xFF;
+  /* gen/valid shadow (the same idiom the other three D1 sites use): a cancelled OSK
+   * (SELECT into the search, SELECT out) wipes the whole screen via its own ui_clear()
+   * and returns with relist false and top unchanged -- without this term neither the
+   * badge nor the LIST was repainted after that, which had been a live blank-screen
+   * bug on this exact path since before D1 attached the badge memo to it. */
+  uint32_t gen = 0; bool valid = false;
   /* Art-free build: one text row per species instead of the icon grid (Guy's call).
    * Same machinery — the grid just collapses to 1 column of 9 px rows. */
   const bool lst = (mon_icon_for(1) == 0);
@@ -296,7 +307,7 @@ uint16_t pick_species(uint16_t current) {
     /* Only a page scroll or a list change needs a full repaint; moving the cursor
      * within the page just swaps the selection frame + repaints the header strip
      * (the slow per-pixel grid blit no longer runs on every keypress). */
-    bool full = relist || top_idx != prev_top;
+    bool full = relist || !valid || gen != ui_clear_gen() || top_idx != prev_top;
     relist = false;
 
     if (full) {
@@ -331,20 +342,31 @@ uint16_t pick_species(uint16_t current) {
       }
     }
 
-    /* header strip (No./name + type badges + filter line) — repaint just this band */
-    ui_fill_rect(0, 0, UI_SCR_W, 21, UI_BG);
+    /* header strip (No./name + type badges + filter line) — repaint just this band.
+     * The badge rect (x=172..240, y=4..20 -- wide enough for the tallest ROM badge,
+     * ROM_TYPE_BADGE_H_RSE=16) is carved OUT of this wipe: it is wiped and redrawn only
+     * below, when (t1,t2) actually changed. The title text and filter line still repaint
+     * unconditionally every press exactly as before (cheap, no SD) — this memo touches
+     * only the badge call. */
+    ui_fill_rect(0, 0, 172, 21, UI_BG);
+    ui_fill_rect(172, 0, UI_SCR_W - 172, 4, UI_BG);
+    ui_fill_rect(172, 20, UI_SCR_W - 172, 1, UI_BG);
     uint16_t cs = g_n ? g_list[sel] : 0;
     if (cs) {
       siprintf(hdr, "No.%u  %s", (unsigned)pk_national_no(cs), pk_species_name(cs));
       ui_text(4, 2, UI_TITLE, hdr);
       uint8_t t1 = pk_species_type1(cs), t2 = pk_species_type2(cs);
-      if (t1 == t2) type_icon(204, 4, t1);
-      else { type_icon(172, 4, t1); type_icon(205, 4, t2); }
-    }
+      if (full || t1 != prev_t1 || t2 != prev_t2) {
+        ui_fill_rect(172, 4, UI_SCR_W - 172, 16, UI_BG);   /* clip wipe: only the badge rect */
+        if (t1 == t2) type_icon(204, 4, t1);
+        else { type_icon(172, 4, t1); type_icon(205, 4, t2); }
+        prev_t1 = t1; prev_t2 = t2;
+      }
+    } else { prev_t1 = 0xFF; prev_t2 = 0xFF; }
     siprintf(hdr, "[%s] sort:%s  %d", filter_name(filter), sort ? "A-Z" : "No.", g_n);
     ui_text(4, 11, UI_DIM, hdr);
 
-    prev_sel = sel; prev_top = top_idx;
+    prev_sel = sel; prev_top = top_idx; valid = true; gen = ui_clear_gen();
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
     if (k & KEY_B) return CANCEL;
@@ -875,6 +897,23 @@ static void text_wrap(int x, int y, int cols, u16 ink, const char* s) {
   }
 }
 
+/* One list row at screen slot `i` (list index `idx`). type_chip() is the plain
+ * text-abbreviation chip (local TYPE_ABBR/type_color tables) -- no SD here, unlike the
+ * detail panel's type_icon(). The row's own rect is [y-1, y+8): 9 px, exactly the height
+ * of its own selection panel one pixel above the 8 px glyph line, so wiping it (whether
+ * selected or not) clears any leftover panel from a row that WAS selected without
+ * touching a neighbor -- the next row's own rect starts at y+8, contiguous, not
+ * overlapping. */
+static void mv_row(int idx, int i, bool sel) {
+  uint16_t m = g_mv[idx];
+  int y = 14 + i * 9;
+  ui_fill_rect(2, y - 1, 236, 9, UI_BG);
+  if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+  char nm[20]; ui_truncate(nm, pk_move_name(m), 14);   /* fixed-width column: PP/type align */
+  ui_text(6, y, sel ? UI_SELTEXT : UI_TEXT, nm);
+  type_chip(120, y, pk_move_type(m));
+}
+
 uint16_t pick_move(uint16_t current) {
   int tf = -1, sort = 0;
   char search[16] = "";
@@ -883,51 +922,67 @@ uint16_t pick_move(uint16_t current) {
   for (int i = 0; i < g_mvn; i++) if (g_mv[i] == current) { sel = i; break; }
 
   int top = 0;
+  int prev_top = -1, prev_sel = -1;
+  uint16_t prev_mid = 0xFFFF;          /* sentinel: NMOVE=355, no real id reaches it */
+  uint32_t gen = 0;
+  bool relist = false, valid = false;
   for (;;) {
     if (sel >= g_mvn) sel = g_mvn ? g_mvn - 1 : 0;
     if (sel < top) top = sel;
     if (sel >= top + 9) top = sel - 8;
 
-    ui_clear();
-    char h[48];
-    siprintf(h, "MOVES [%.3s] %s %d", tf < 0 ? "All" : pk_type_name((uint8_t)tf),
-             MV_SORT[sort], g_mvn);
-    ui_text(4, 1, UI_TITLE, h);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    /* full: first paint, a picker/OSK overlay wiped us, the filter/sort/search list was
+     * rebuilt, or the visible window scrolled -- every row's text is then genuinely new.
+     * Otherwise a pure cursor move only touches the two affected rows (the row pair). */
+    bool full = relist || !valid || gen != ui_clear_gen() || top != prev_top;
+    relist = false;
 
-    for (int i = 0; i < 9 && top + i < g_mvn; i++) {
-      uint16_t m = g_mv[top + i];
-      int y = 14 + i * 9;
-      bool s = (top + i == sel);
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-      char nm[20]; ui_truncate(nm, pk_move_name(m), 14);   /* fixed-width column: PP/type align */
-      ui_text(6, y, s ? UI_SELTEXT : UI_TEXT, nm);
-      type_chip(120, y, pk_move_type(m));
+    if (full) {
+      ui_clear();
+      char h[48];
+      siprintf(h, "MOVES [%.3s] %s %d", tf < 0 ? "All" : pk_type_name((uint8_t)tf),
+               MV_SORT[sort], g_mvn);
+      ui_text(4, 1, UI_TITLE, h);
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, "A pick  L/R type  SEL find");
+      for (int i = 0; i < 9 && top + i < g_mvn; i++) mv_row(top + i, i, top + i == sel);
+    } else if (sel != prev_sel) {
+      if (prev_sel >= top && prev_sel < top + 9) mv_row(prev_sel, prev_sel - top, false);
+      if (sel      >= top && sel      < top + 9) mv_row(sel,      sel - top,      true);
     }
 
-    /* detail panel for the selected move: fixed-width stat columns so the real
-     * type badge gets its own column top-right and never sits on the numbers. */
-    if (g_mvn) {
-      uint16_t m = g_mv[sel];
-      ui_panel(0, 92, UI_SCR_W, 58, UI_PANEL, UI_BORDER);
-      type_icon(202, 95, pk_move_type(m));
-      char num[48];
-      siprintf(num, "Pow %3u  Acc %3u  PP %2u",
-               (unsigned)pk_move_power(m), (unsigned)pk_move_accuracy(m), (unsigned)pk_move_pp(m));
-      ui_text(6, 96, UI_DIRCLR, num);
-      text_wrap(6, 110, 28, UI_TEXT, app_move_desc(m));
+    /* detail panel for the selected move: fixed-width stat columns so the real type
+     * badge gets its own column top-right and never sits on the numbers. Both
+     * type_icon() (app_type_badge -> rom_type_sheet_load) and app_move_desc() hit the SD
+     * in a ROM-registered build with no cache of their own, so this repaints only when
+     * the selected move's id actually changed -- an unmoved cursor or a filter/sort
+     * change that leaves sel pointing at the same id costs neither. */
+    uint16_t mid = g_mvn ? g_mv[sel] : (uint16_t)0xFFFF;
+    if (full || mid != prev_mid) {
+      ui_fill_rect(0, 92, UI_SCR_W, 58, UI_BG);
+      if (g_mvn) {
+        ui_panel(0, 92, UI_SCR_W, 58, UI_PANEL, UI_BORDER);
+        type_icon(202, 95, pk_move_type(mid));
+        char num[48];
+        siprintf(num, "Pow %3u  Acc %3u  PP %2u",
+                 (unsigned)pk_move_power(mid), (unsigned)pk_move_accuracy(mid), (unsigned)pk_move_pp(mid));
+        ui_text(6, 96, UI_DIRCLR, num);
+        text_wrap(6, 110, 28, UI_TEXT, app_move_desc(mid));
+      }
+      prev_mid = mid;
     }
 
-    ui_text(4, 152, UI_DIM, "A pick  L/R type  SEL find");
+    prev_sel = sel; prev_top = top; valid = true; gen = ui_clear_gen();
+
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
     if (k & KEY_B) return CANCEL;
     else if (k & KEY_A) return g_mvn ? g_mv[sel] : CANCEL;
     else if (k & KEY_UP)   sel = clampi(sel - 1, 0, g_mvn ? g_mvn - 1 : 0);
     else if (k & KEY_DOWN) sel = clampi(sel + 1, 0, g_mvn ? g_mvn - 1 : 0);
-    else if (k & KEY_L) { do { tf = (tf <= -1) ? 17 : tf - 1; } while (tf == 9); build_moves(tf, sort, search); sel = 0; top = 0; }
-    else if (k & KEY_R) { do { tf = (tf >= 17) ? -1 : tf + 1; } while (tf == 9); build_moves(tf, sort, search); sel = 0; top = 0; }
-    else if (k & KEY_START) { sort = (sort + 1) % NMVSORT; build_moves(tf, sort, search); sel = 0; top = 0; }
-    else if (k & KEY_SELECT) { char q[16]; if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); build_moves(tf, sort, search); sel = 0; top = 0; } }
+    else if (k & KEY_L) { do { tf = (tf <= -1) ? 17 : tf - 1; } while (tf == 9); build_moves(tf, sort, search); sel = 0; top = 0; relist = true; }
+    else if (k & KEY_R) { do { tf = (tf >= 17) ? -1 : tf + 1; } while (tf == 9); build_moves(tf, sort, search); sel = 0; top = 0; relist = true; }
+    else if (k & KEY_START) { sort = (sort + 1) % NMVSORT; build_moves(tf, sort, search); sel = 0; top = 0; relist = true; }
+    else if (k & KEY_SELECT) { char q[16]; if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); build_moves(tf, sort, search); sel = 0; top = 0; relist = true; } }
   }
 }
 
@@ -1214,25 +1269,49 @@ uint16_t pick_item(uint16_t current) {
 static const char* nature16(uint16_t n) { return pk_nature_name((uint8_t)n); }
 uint8_t  pick_nature(uint8_t current)  { uint16_t r = list_pick("NATURE", 25, nature16, 0, current, false, false); return r == CANCEL ? current : (uint8_t)r; }
 
+/* One of the (at most 2) ability panels. `desc` is the CACHED string (see pick_ability's
+ * own comment) -- never a fresh app_ability_desc() call, so this never touches the SD. */
+static void ab_panel(int i, uint16_t aid, const char* desc, bool sel) {
+  int y = 18 + i * 56;
+  ui_panel(2, y - 2, 236, 52, sel ? UI_SEL : UI_PANEL, sel ? UI_TITLE : UI_BORDER);
+  char h[24]; siprintf(h, "%d. %s", i + 1, pk_ability_name(aid));
+  ui_text(8, y + 2, sel ? UI_SELTEXT : UI_TEXT, h);
+  text_wrap(8, y + 14, 28, UI_DIM, desc);
+}
+
 uint8_t pick_ability(uint16_t species, uint8_t cur) {
   uint16_t a0 = pk_species_ability(species, 0), a1 = pk_species_ability(species, 1);
   int n = (a1 && a1 != a0) ? 2 : 1;            /* most species have 2 distinct abilities */
   int sel = (cur && n == 2) ? 1 : 0;
+  /* a0/a1 are fixed for this whole screen (species/cur are call params, not state this
+   * loop mutates), so the SD-backed descriptions are worth fetching exactly ONCE, not
+   * once per keypress. app_ability_desc's own contract (pdna_app.h) says its returned
+   * pointer is only valid until the NEXT call to that same function (one shared 128 B
+   * static buffer) -- so both are copied out here before either call can clobber the
+   * other. da1 is zero-initialized so an n==1 species (never read) is never
+   * "uninitialized", not because it is ever drawn. */
+  char da0[128], da1[128] = "";
+  strcpy(da0, app_ability_desc(a0));
+  if (n == 2) strcpy(da1, app_ability_desc(a1));
+
+  int prev_sel = -1;
+  uint32_t gen = 0;
+  bool valid = false;
   for (;;) {
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, "ABILITY");
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < n; i++) {
-      uint16_t aid = i ? a1 : a0;
-      int y = 18 + i * 56;
-      bool s = (i == sel);
-      ui_panel(2, y - 2, 236, 52, s ? UI_SEL : UI_PANEL, s ? UI_TITLE : UI_BORDER);
-      char h[24]; siprintf(h, "%d. %s", i + 1, pk_ability_name(aid));
-      ui_text(8, y + 2, s ? UI_SELTEXT : UI_TEXT, h);
-      text_wrap(8, y + 14, 28, UI_DIM, app_ability_desc(aid));
+    bool full = !valid || gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      ui_text(4, 2, UI_TITLE, "ABILITY");
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      ui_text(4, 140, UI_DIM, "Gen-3 stores only the species' abilities");
+      ui_text(4, 152, UI_DIM, "A pick  U/D move  B cancel");
+      for (int i = 0; i < n; i++) ab_panel(i, i ? a1 : a0, i ? da1 : da0, i == sel);
+    } else if (sel != prev_sel) {
+      /* n is 1 or 2, so "the two affected rows" is simply every panel there is. */
+      for (int i = 0; i < n; i++) ab_panel(i, i ? a1 : a0, i ? da1 : da0, i == sel);
     }
-    ui_text(4, 140, UI_DIM, "Gen-3 stores only the species' abilities");
-    ui_text(4, 152, UI_DIM, "A pick  U/D move  B cancel");
+    prev_sel = sel; valid = true; gen = ui_clear_gen();
+
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return cur;
     else if (k & KEY_A) return (uint8_t)sel;
@@ -1315,33 +1394,66 @@ int pick_unown_form(int cur) {
  * empty and the names carry the screen. */
 #define NBALL 12
 
+/* One ball row at screen slot `i`, showing item id `id`. app_item_icon()/app_item_desc()
+ * both hit the SD (a ROM-registered build with no cache of its own -- same shape as
+ * app_type_badge, pdna_app.h), so this is called only for rows whose content is actually
+ * about to be redrawn -- either every visible row (the window just scrolled to a new
+ * page, so every id shown really is new) or just the one or two rows a cursor move
+ * actually touches (same id, only the selection tint changes). The wipe-then-draw order
+ * is the same "clip wipe" idiom as every other row helper in this file: a shorter name
+ * or description must not leave the tail of the previous (longer) one behind. */
+static void ball_row(int id, int i, bool sel) {
+  int y = PDNA_BALL_Y0 + i * PDNA_BALL_ROW_H;
+  int tw = UI_SCR_W - PDNA_BALL_TEXT_X - 4;
+  if (sel) ui_panel(2, y - 1, 236, PDNA_BALL_ROW_H - 1, UI_SEL, UI_TITLE);
+  else     ui_fill_rect(2, y - 1, 236, PDNA_BALL_ROW_H - 1, UI_BG);
+  const uint16_t* ic = app_item_icon((uint16_t)id);
+  if (ic) ui_sprite(PDNA_BALL_ICON_X, y, ITEM_ICON_W, ITEM_ICON_H, ic);
+  ui_ptext_fit(PDNA_BALL_TEXT_X, y + PDNA_BALL_NAME_DY, tw,
+               sel ? UI_SELTEXT : UI_TEXT, pk_item_name((uint16_t)id));
+  ui_ptext_fit(PDNA_BALL_TEXT_X, y + PDNA_BALL_DESC_DY, tw,
+               UI_DIM, app_item_desc((uint16_t)id));
+}
+
 uint8_t pick_ball(uint8_t current) {
   int sel = (current >= 1 && current <= NBALL) ? current - 1 : 3;   /* default: Poke Ball */
   int top = 0;
+  int prev_top = -1, prev_sel = -1;
+  uint32_t gen = 0;
+  bool valid = false;
   for (;;) {
     if (sel < top) top = sel;
     if (sel >= top + PDNA_BALL_VIS) top = sel - PDNA_BALL_VIS + 1;
 
-    ui_clear();
-    char h[40];
-    siprintf(h, PDNA_BALL_TITLE_FMT, PDNA_BALL_TITLE, sel + 1, NBALL);
-    ui_text(4, 2, UI_TITLE, h);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < PDNA_BALL_VIS && top + i < NBALL; i++) {
-      int id = top + i + 1, y = PDNA_BALL_Y0 + i * PDNA_BALL_ROW_H;
-      bool s = (top + i == sel);
-      if (s) ui_panel(2, y - 1, 236, PDNA_BALL_ROW_H - 1, UI_SEL, UI_TITLE);
-      const uint16_t* ic = app_item_icon((uint16_t)id);
-      if (ic) ui_sprite(PDNA_BALL_ICON_X, y, ITEM_ICON_W, ITEM_ICON_H, ic);
-      int tw = UI_SCR_W - PDNA_BALL_TEXT_X - 4;
-      ui_ptext_fit(PDNA_BALL_TEXT_X, y + PDNA_BALL_NAME_DY, tw,
-                   s ? UI_SELTEXT : UI_TEXT, pk_item_name((uint16_t)id));
-      ui_ptext_fit(PDNA_BALL_TEXT_X, y + PDNA_BALL_DESC_DY, tw,
-                   UI_DIM, app_item_desc((uint16_t)id));
+    /* full: first paint, an overlay wiped us, or the page scrolled -- every visible row
+     * then shows a genuinely different ball. Otherwise a cursor move only touches the
+     * row it left and the row it landed on (same page, same ids, only the tint moves). */
+    bool full = !valid || gen != ui_clear_gen() || top != prev_top;
+
+    if (full) {
+      ui_clear();
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+      ui_ptext(4, PDNA_BALL_NOTE_Y, UI_DIM, PDNA_BALL_NOTE);
+      ui_hline(0, PDNA_BALL_RULE_Y, UI_SCR_W, UI_BORDER);
+      ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_BALL_FOOT);
+      for (int i = 0; i < PDNA_BALL_VIS && top + i < NBALL; i++)
+        ball_row(top + i + 1, i, top + i == sel);
+    } else if (sel != prev_sel) {
+      int oi = prev_sel - top, ni = sel - top;
+      if (oi >= 0 && oi < PDNA_BALL_VIS) ball_row(top + oi + 1, oi, false);
+      if (ni >= 0 && ni < PDNA_BALL_VIS) ball_row(top + ni + 1, ni, true);
     }
-    ui_ptext(4, PDNA_BALL_NOTE_Y, UI_DIM, PDNA_BALL_NOTE);
-    ui_hline(0, PDNA_BALL_RULE_Y, UI_SCR_W, UI_BORDER);
-    ui_text(4, PDNA_FILT_FOOTER_Y, UI_DIM, PDNA_BALL_FOOT);
+
+    /* title (".. sel+1/NBALL") is the one thing above the hline that changes with the
+     * cursor alone; cheap (no SD), so it just repaints on any sel move, full or not. */
+    if (full || sel != prev_sel) {
+      ui_fill_rect(0, 0, UI_SCR_W, 11, UI_BG);
+      char h[40];
+      siprintf(h, PDNA_BALL_TITLE_FMT, PDNA_BALL_TITLE, sel + 1, NBALL);
+      ui_text(4, 2, UI_TITLE, h);
+    }
+
+    prev_sel = sel; prev_top = top; valid = true; gen = ui_clear_gen();
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
     if (k & KEY_B) return current;
