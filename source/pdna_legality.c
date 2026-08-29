@@ -297,6 +297,20 @@ static void sweep_row_paint(const uint8_t* block, int box, const SwHit* h, int y
 
 /* Returns the slot the user picked to open, or -1. `R` is borrowed as scratch — the
  * caller rebuilds it on return (see the memory note at the top of the file). */
+/* The scrollbar must be repainted after ANY sweep_row_paint pass: the 236 px row wipe
+ * (x=2..237, exclusive right) overlaps 2 of the bar's 3 columns (x=236..238). The full
+ * branch always redrew it afterwards; the cursor-move branch has to do the same or the
+ * bar is erased row by row. top is unchanged on a cursor-only move, so this redraw is
+ * pixel-identical to the full path's -- idempotent restoration, not a behaviour change. */
+static void sweep_bar(int nhit, int top) {
+  if (nhit <= SW_VIS) return;
+  int trk = SW_VIS * 12, bh = trk * SW_VIS / nhit;
+  if (bh < 8) bh = 8;
+  int by = 18 + (trk - bh) * top / (nhit - SW_VIS);
+  ui_fill_rect(236, 18, 3, trk, UI_PANEL);
+  ui_fill_rect(236, by, 3, bh,  UI_BORDER);
+}
+
 static int sweep_screen(const uint8_t* block, int box, int here, Pk2Report* R) {
   SwHit hit[BOX_SLOTS];
   int nhit = 0;
@@ -358,13 +372,7 @@ static int sweep_screen(const uint8_t* block, int box, int here, Pk2Report* R) {
       } else {
         for (int i = 0; i < SW_VIS && top + i < nhit; i++)
           sweep_row_paint(block, box, &hit[top + i], 20 + i * 12, top + i == sel, here);
-        if (nhit > SW_VIS) {
-          int trk = SW_VIS * 12, bh = trk * SW_VIS / nhit;
-          if (bh < 8) bh = 8;
-          int by = 18 + (trk - bh) * top / (nhit - SW_VIS);
-          ui_fill_rect(236, 18, 3, trk, UI_PANEL);
-          ui_fill_rect(236, by, 3, bh,  UI_BORDER);
-        }
+        sweep_bar(nhit, top);
       }
 
       /* Second footer row at y=152: the 5x7 cell is 8 rows, so anything below this
@@ -378,6 +386,9 @@ static int sweep_screen(const uint8_t* block, int box, int here, Pk2Report* R) {
        * through both branches above and costs nothing. */
       sweep_row_paint(block, box, &hit[pv.sel], 20 + (pv.sel - top) * 12, false, here);
       sweep_row_paint(block, box, &hit[sel],    20 + (sel    - top) * 12, true,  here);
+      sweep_bar(nhit, top);   /* the row wipes span x=2..237 and the bar lives at 236..238 --
+                               * without this the cursor chews the bar away two columns at a
+                               * time until the next full repaint puts it back */
     }
 
     pv.top = top; pv.sel = sel; pv.gen = ui_clear_gen(); pv.valid = true;
