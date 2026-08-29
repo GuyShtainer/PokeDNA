@@ -18,6 +18,10 @@
  * All function pointers act on module-singleton state, so they take no `self`. */
 typedef struct {
   int  nboxes;
+  bool last_box_is_party;    /* GB sources expose the party as one extra pseudo-box at
+                              * nboxes-1 ("GB PARTY"); it has no ordinal, so the banner
+                              * must not invent one ("13:" on a 12-box RBY save). All
+                              * sources memset their BoxSource, so this defaults false. */
   int  start_box;
   bool is_bank;
   int  wp_count;                            /* selectable wallpapers: 16 or 32 (PC Emerald) */

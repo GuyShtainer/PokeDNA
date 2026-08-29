@@ -1309,11 +1309,16 @@ static void draw_box_banner(BoxSource* src, int box, bool on_title) {
   int occ = 0;
   for (int s = 0; s < 30; s++) if (g_box[s].species) occ++;
   siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);
-  /* box+1: this file's `box` is always the zero-based index (PC 0..13, Bank 0..15,
-   * GB-origin sources alike), so +1 is the same one-based ordinal a player sees on
-   * the box-select screen -- no per-source special-casing needed. */
+  /* box+1: this file's `box` is the zero-based index everywhere, and this banner is
+   * the ONLY box identifier on screen (there is no box-select screen in this app), so
+   * the ordinal it shows has to be right. The one slot with no ordinal at all is the
+   * GB sources' party pseudo-box at nboxes-1 ("GB PARTY" -- RBY has 12 boxes, so a
+   * "13:" prefix there would be an invented number contradicting pdna_gen12.c's own
+   * party special-case): last_box_is_party suppresses the prefix, and draw_banner's
+   * NULL-pfx path degenerates to the original name-only centring. */
   siprintf(bnum, "%d:", box + 1);
-  draw_banner(WP_X + 2, 13, WP_W - 4, bnum, bnocc);
+  bool party_slot = src->last_box_is_party && box == src->nboxes - 1;
+  draw_banner(WP_X + 2, 13, WP_W - 4, party_slot ? 0 : bnum, bnocc);
   /* Only when the cursor is ACTUALLY on the box name. `on_title` stays true while the cursor
    * is further up on the top tabs, so keying off it alone drew the identical frame in two
    * different focus states — a pixel diff of the banner band between "on box name" and "on
