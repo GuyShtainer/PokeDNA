@@ -1936,8 +1936,12 @@ static int wallpaper_pick(BoxSource* src, int cur_wp) {
       /* the box's icons stay composited as OBJ sprites above this preview BG */
       char b[40]; siprintf(b, "%d/%d %s%s", wp - base + 1, glen, wp_name(wp), wp >= 16 ? " *" : "");   /* * = Walda secret */
       ui_panel(50, 0, 140, 13, UI_PANEL, UI_BORDER);
-      ui_fill_rect(190, 0, UI_SCR_W - 190, 13, UI_BG);   /* caption overflow strip (panel ends
-                                                          * at x=190); see the block above */
+      ui_fill_rect(190, 0, UI_SCR_W - 190, 12, UI_BG);   /* caption overflow strip (panel ends
+                                                          * at x=190); see the block above. Height
+                                                          * 12, NOT the panel's 13: row 12 is the
+                                                          * preview's top tile row (draw_wallpaper
+                                                          * ran above us), and caption ink only
+                                                          * reaches rows 2..9. */
       ui_text(56, 2, UI_TITLE, b);
       ui_text(2, 152, RGB15(31, 31, 31), "L/R pick  A set  B sets");
       need_full = false;
