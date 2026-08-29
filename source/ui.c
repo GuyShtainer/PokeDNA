@@ -247,7 +247,15 @@ static u16 __attribute__((aligned(4))) s_ovl_line[240];   /* compose buffer; ali
  * per-vblank animation tick (the 2026-08-23 A/B, mechanism not pinned). The odd-x/odd-w
  * fallback was already a CPU per-halfword loop and is unchanged. */
 void ui_blit_over(int x, int y, int w, int h, const u16* data, u16 bg) {
-  if (!data || w > 240) return;
+  /* w <= 0 (2026-08-29, PokeDNA B3 hardening pass): a negative w used to pass the
+   * word_aligned test (odd/even is well-defined for negatives) and skip the compose
+   * loop (`for (int i = 0; i < w; i++)` never runs when w < 0), landing straight on
+   * memcpy32(dst, s_ovl_line, (u32)w * 2 / 4) -- casting a negative int to u32 wraps to
+   * a huge unsigned word count, i.e. a multi-gigabyte-word hang. The old dma3_cpy path
+   * had the same bad input but a DMA length field truncates to 16 bits in hardware, so
+   * the failure mode was bounded; memcpy32 has no such ceiling, so this input got
+   * strictly worse under the transport change and needs its own guard. */
+  if (!data || w <= 0 || w > 240) return;
   /* Word transport needs a word-aligned destination (even x AND even w); otherwise fall
    * back to a u16 CPU copy, which is valid at any halfword address. Either way each
    * row is composed (sprite over bg) and written in ONE pass — no separate erase, so

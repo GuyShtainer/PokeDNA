@@ -459,11 +459,34 @@ static void upload_icon(int tid, const uint8_t* tiles, int from_rom) {
   else upload_tiles_verified(tid, tiles, MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
 }
 
-/* upload_tiles with staged verify: ROM -> RAM (verified, retried) -> DMA to VRAM
+/* upload_tiles with staged verify: ROM -> RAM (verified, retried) -> CPU copy to VRAM
  * (RAM->VRAM cannot glitch). On give-up, the raw upload still runs (a maybe-garbled
  * icon beats a hole) and the anomaly is logged + flushed so it survives a power-off.
  * NOT used by boxoam_set_frame: a verified 15 KiB re-stage cannot fit the vblank
- * window, and any set_frame glitch self-heals at the next swap (<= 0.5 s). */
+ * window, and any set_frame glitch self-heals at the next swap (<= 0.5 s).
+ *
+ * CPU transport, not DMA (2026-08-29, PokeDNA B3 hardening pass -- adversarial review
+ * caught what the first pass's sweep missed). This function has THREE callers: upload_
+ * icon (compiled-art box-open upload, load-time) and load_regb_grab (grab-fist upload
+ * on starting a MOVE, one-shot/input-driven) are genuinely load-time -- but load_rega_
+ * hand is NOT. In a FULL-ART build (PDNA_HAND_ART_COMPILED=1, hand_gate.h) the `#if
+ * !PDNA_HAND_ART_COMPILED` short-circuit in both boxoam_hand_pose() and load_rega_hand()
+ * compiles OUT entirely, so pdna_box.c's ANIM_BOX idle tick (`if (++anim_ctr >=
+ * ANIM_PERIOD) { ... boxoam_hand_pose(bob ? BOUNCE : NORMAL); ... boxoam_cursor(...); }`)
+ * reaches boxoam_cursor -> load_rega_hand() unconditionally every ANIM_PERIOD vblanks,
+ * and `want = 10 + s_hand_pose` alternates every call (BOUNCE/NORMAL toggle with `bob`),
+ * so the `if (s_rega == want) return;` short-circuit never fires -- this function runs
+ * for real, from the tick, every time. Artless builds with no ROM registered fall
+ * through the same way (s_romhand is 0, so load_rom_hand_frame's early-out never
+ * triggers, and load_rega_hand reaches the compiled/fallback tiles below). This was
+ * missed in the first B3 sweep because the sweep only traced the ICON pose-swap path
+ * (already converted: upload_tiles_cpu, swap_cache_slot's memcpy32) and treated
+ * box_oam.c as fully audited without tracing the separate glove/hand-pose path.
+ * CPU transport is safe here in every context (load-time or tick), so this converts
+ * unconditionally rather than growing a tick/load split: the two genuinely load-time
+ * callers lose nothing (memcpy32 is the same libtonc IWRAM_CODE word copy the icon
+ * pose-swap already proved safe on hardware, at DMA-parity speed for source/dest both
+ * in RAM/VRAM), and the tick caller gets the fix it actually needed. */
 static void upload_tiles_verified(int tid, const void* src, int bytes) {
   const uint16_t* s = (const uint16_t*)src;
   uint16_t* dst = (uint16_t*)((uint8_t*)tile_mem_obj[0] + (uint32_t)tid * 32);
@@ -474,11 +497,11 @@ static void upload_tiles_verified(int tid, const void* src, int bytes) {
     int r = icopy_verified(s_stage, s + done, n);
     if (r < 0) { bad = 1; break; }
     rr += r;
-    dma3_cpy(dst + done, s_stage, (uint32_t)n * 2);
+    memcpy32(dst + done, s_stage, (uint32_t)n * 2 / 4);
     done += n;
   }
   rumble_io_resume();
-  if (bad) { dma3_cpy(dst, src, bytes); log_line("icons: tid %d unstable rom reads", tid); }
+  if (bad) { memcpy32(dst, src, (uint32_t)bytes / 4); log_line("icons: tid %d unstable rom reads", tid); }
   else if (rr) log_line("icons: tid %d %d re-reads", tid, rr);
   static int s_icon_flushes = 0;
   if ((bad || rr) && s_icon_flushes < 2) { s_icon_flushes++; app_log_flush(); }
@@ -1103,7 +1126,21 @@ static void swap_cache_slot(int s) {
    * controller involved. ~1,900 cycles/slot; 15 slots is ~28,500 of vblank's 83,776
    * (34%), and the 15-now/15-next-tick split is unchanged.
    *
-   * mGBA runs the DMA version perfectly and forever. Only hardware finds this. */
+   * mGBA runs the DMA version perfectly and forever. Only hardware finds this.
+   *
+   * CAVEAT ADDED 2026-08-29 (PokeDNA B3 hardening pass, adversarial review): the three
+   * builds' exact configuration was never recorded, and in a FULL-ART build the box's
+   * BOUNCE hand-pose upload (load_rega_hand -> upload_tiles_verified, a separate 512 B
+   * dma3_cpy from THIS SAME per-vblank tick, see that function's own comment) was
+   * plausibly firing in all three variants -- including clean variant 'A'. If it was,
+   * then "any dma3_cpy in the tick is fatal" is NOT what the A/B actually proved; the
+   * fatal property could be narrower (the VRAM-source/EWRAM-dest class specific to the
+   * icon pose-swap exchange, which A never exercised either). The safe DIRECTION -- CPU
+   * transport for anything reachable from a per-vblank tick -- holds either way, which
+   * is why this hardening pass converts the glove path too rather than re-litigating
+   * which builds actually ran hand-upload-free. Whether "any DMA3" or "this DMA shape"
+   * is the true trigger remains open; hardware sign-off should not read this comment as
+   * having settled that question. */
   memcpy32(s_stage, vram, (uint32_t)n / 4u);   /* temp  = VRAM  (the frame now on screen) */
   memcpy32(vram, cache, (uint32_t)n / 4u);     /* VRAM  = cache (the frame NOT on screen) */
   memcpy32(cache, s_stage, (uint32_t)n / 4u);  /* cache = temp  (what VRAM just gave up)  */
