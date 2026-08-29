@@ -285,6 +285,12 @@ uint16_t pick_species(uint16_t current) {
    * the header strip below used to call it on EVERY keypress, cursor-only moves included.
    * 0xFF is a safe sentinel: valid type ids are 0..17. */
   uint8_t prev_t1 = 0xFF, prev_t2 = 0xFF;
+  /* gen/valid shadow (the same idiom the other three D1 sites use): a cancelled OSK
+   * (SELECT into the search, SELECT out) wipes the whole screen via its own ui_clear()
+   * and returns with relist false and top unchanged -- without this term neither the
+   * badge nor the LIST was repainted after that, which had been a live blank-screen
+   * bug on this exact path since before D1 attached the badge memo to it. */
+  uint32_t gen = 0; bool valid = false;
   /* Art-free build: one text row per species instead of the icon grid (Guy's call).
    * Same machinery — the grid just collapses to 1 column of 9 px rows. */
   const bool lst = (mon_icon_for(1) == 0);
@@ -301,7 +307,7 @@ uint16_t pick_species(uint16_t current) {
     /* Only a page scroll or a list change needs a full repaint; moving the cursor
      * within the page just swaps the selection frame + repaints the header strip
      * (the slow per-pixel grid blit no longer runs on every keypress). */
-    bool full = relist || top_idx != prev_top;
+    bool full = relist || !valid || gen != ui_clear_gen() || top_idx != prev_top;
     relist = false;
 
     if (full) {
@@ -360,7 +366,7 @@ uint16_t pick_species(uint16_t current) {
     siprintf(hdr, "[%s] sort:%s  %d", filter_name(filter), sort ? "A-Z" : "No.", g_n);
     ui_text(4, 11, UI_DIM, hdr);
 
-    prev_sel = sel; prev_top = top_idx;
+    prev_sel = sel; prev_top = top_idx; valid = true; gen = ui_clear_gen();
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
     if (k & KEY_B) return CANCEL;
