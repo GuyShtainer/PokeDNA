@@ -4484,14 +4484,16 @@ static void pdna_pokeblock(void) {
        * every row repaints -- still no ui_clear(). A naive fixed 2-row swap keyed
        * only on `sel != pv_sel` would use the wrong row position across a scroll
        * (the exact bug this pattern exists to avoid). */
-      uint32_t dirty = 0;
+      uint32_t rowdirty = 0;   /* NOT `dirty` -- that name is this function's
+                                * save-modified flag; shadowing it invites a
+                                * misassignment that silently drops edits */
       for (int i = 0; i < VIS && top + i < PK_POKEBLOCK_COUNT; i++) {
         int f = top + i, of = pv_top + i;
         bool s = (f == sel), os = (of == pv_sel);
-        if (of != f || s != os) dirty |= 1u << i;
+        if (of != f || s != os) rowdirty |= 1u << i;
       }
       for (int i = 0; i < VIS && top + i < PK_POKEBLOCK_COUNT; i++)
-        if (dirty & (1u << i)) pb_list_row_paint(top + i, i, top + i == sel);
+        if (rowdirty & (1u << i)) pb_list_row_paint(top + i, i, top + i == sel);
     }
     pv_top = top; pv_sel = sel; pv_valid = true; pv_gen = ui_clear_gen();
 
