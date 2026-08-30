@@ -312,7 +312,11 @@ static int fac_symbols(const uint8_t* sb1, PkGame game, int fac) {
 static void frs_row_paint(const uint8_t* sb2, const FrRow* rows, int idx, int i, bool sel) {
   const FrRow* r = &rows[idx];
   int y = 18 + i * 10;
-  ui_fill_rect(0, y - 1, UI_SCR_W, 10, UI_BG);
+  ui_fill_rect(0, y - 1, UI_SCR_W, 9, UI_BG);   /* 9, NOT the 10-px pitch: row ink spans
+                                                 * y-1..y+7 only (panel y-1..y+7, text
+                                                 * y..y+7); a 10-tall wipe on visible row
+                                                 * 12 (y=138) reaches y+8=146 and erases
+                                                 * the footer rule drawn only on full */
   if (r->kind == ROW_HDR) {
     if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
     ui_text(4, y, sel ? UI_SELTEXT : UI_DIRCLR, r->label);
