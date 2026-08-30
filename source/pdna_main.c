@@ -4194,20 +4194,37 @@ static void pokeblock_swatch(int x, int y, int sz, uint8_t color) {
   ui_fill_rect(x + 1, y + 1, sz - 2, sz - 2, pokeblock_rgb(color));
 }
 
-/* Preset colour picker: the 15 named Pokéblock colours with swatches (no free text). */
+/* One swatch row (D7): fixed labels/colours for the screen's lifetime, so only the
+ * highlight ever changes -- plain UI_BG wipe + redraw, 15px pitch matching the panel
+ * height exactly (no shared-scanline case). */
+static void pb_color_row_paint(int i, bool s) {
+  int col = i / 8, row = i % 8, x = 6 + col * 118, y = 18 + row * 16;
+  ui_fill_rect(x - 2, y - 1, 114, 15, UI_BG);
+  if (s) ui_panel(x - 2, y - 1, 114, 15, UI_SEL, UI_TITLE);
+  pokeblock_swatch(x, y, 12, (uint8_t)i);
+  ui_text(x + 18, y + 2, s ? UI_SELTEXT : UI_TEXT, pk_pokeblock_color_name((uint8_t)i));
+}
+
+/* Preset colour picker: the 15 named Pokéblock colours with swatches (no free text).
+ * This loop never calls anything that paints before returning (A/B both return
+ * immediately) -- gen tracked anyway, same uniform idiom every picker uses. */
 static int pick_pokeblock_color(uint8_t cur) {
   int sel = cur < 15 ? cur : 0;
+  int prev_sel = -1; bool valid = false; uint32_t gen = 0;
   for (;;) {
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, "BLOCK COLOR");
-    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < 15; i++) {
-      int col = i / 8, row = i % 8, x = 6 + col * 118, y = 18 + row * 16; bool s = (i == sel);
-      if (s) ui_panel(x - 2, y - 1, 114, 15, UI_SEL, UI_TITLE);
-      pokeblock_swatch(x, y, 12, (uint8_t)i);
-      ui_text(x + 18, y + 2, s ? UI_SELTEXT : UI_TEXT, pk_pokeblock_color_name((uint8_t)i));
+    bool full = !valid || gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      ui_text(4, 2, UI_TITLE, "BLOCK COLOR");
+      ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+      for (int i = 0; i < 15; i++) pb_color_row_paint(i, i == sel);
+      ui_text(4, 152, UI_DIM, "A pick  U/D/L/R  B cancel");
+    } else if (sel != prev_sel) {
+      pb_color_row_paint(prev_sel, false);
+      pb_color_row_paint(sel, true);
     }
-    ui_text(4, 152, UI_DIM, "A pick  U/D/L/R  B cancel");
+    prev_sel = sel; valid = true; gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) return -1;
     else if (k & KEY_A) return sel;
@@ -4321,6 +4338,43 @@ __attribute__((weak)) const uint16_t* pokeblock_flavor_icon(int game, int flavor
   (void)game; (void)flavor; return 0;
 }
 
+/* Erase+draw one ART-FREE list row. Row pitch 10 == panel height 10 (touching, not
+ * overlapping: ui_fill_rect(y,10) covers y..y+9, the next row starts at y+10) -- no
+ * shared-scanline. Only reachable in the art-free branch (see pdna_pokeblock: chrome
+ * mode never takes the partial path, so this never needs to coexist with a re-blitted
+ * ROM background). */
+static void pb_list_row_paint(int idx, int i, bool sel) {
+  int y = 16 + i * 10;
+  ui_fill_rect(0, y - 1, UI_SCR_W, 10, UI_BG);
+  if (sel) ui_panel(2, y - 1, 236, 10, UI_SEL, UI_TITLE);
+  char num[6]; siprintf(num, "%2d", idx + 1); ui_text(6, y + 1, sel ? UI_SELTEXT : UI_DIM, num);
+  PkPokeblock pb; pk_pokeblock_get(g_sb1, g_game, idx, &pb);
+  bool occ = pk_pokeblock_occupied(&pb);
+  if (occ) {
+    pokeblock_swatch(28, y, 8, pb.color);
+    char row[40]; siprintf(row, "%-8s  feel %u", pk_pokeblock_color_name(pb.color), (unsigned)pb.feel);
+    ui_text(42, y + 1, sel ? UI_SELTEXT : UI_TEXT, row);
+  } else ui_text(28, y + 1, sel ? UI_SELTEXT : UI_DIM, "(empty)");
+}
+
+/* Pokéblock case. Two very different repaint costs share this loop:
+ *
+ * ART-FREE (chrome.blob == NULL): a plain ui_clear() + row list, exactly like every
+ * other D-series list -- full = !valid||gen!=gen(); `top` stays OUT of full and a
+ * scroll/cursor move gets the usual per-row-or-2-row-swap treatment via
+ * pb_list_row_paint. Content only moves through pokeblock_edit (A), which ui_clear()s
+ * on its own first frame, so gen alone catches it.
+ *
+ * ROM CHROME (chrome.blob != NULL, survey note 2): the background is a 20-page LZ77
+ * decompress (bg_restore) plus a separate ROM device-tile blit, and the bottom-left
+ * FEEL/flavour board is baked into that SAME decoded bitmap, not a flat fill -- there
+ * is no sub-rect re-blit primitive here, and erasing that board with a flat "white"
+ * guess would be a visible seam against the real chrome art the instant its shading
+ * differs even slightly. So per the note's own fallback: this path forces a FULL
+ * repaint (identical to today's unconditional one) on ANY selection or window change,
+ * never attempting a partial chrome repaint. It still skips the redraw entirely on a
+ * genuine no-op (returning from a nested screen with nothing changed), which chrome
+ * mode did NOT do before this pass. */
 static void pdna_pokeblock(void) {
   if (pk_pokeblock_offset(g_game) == 0) { msg_wait("NO POKEBLOCKS", UI_DIM, "This game lacks contests.", 0); return; }
   bool dirty = false; int sel = 0, top = 0;
@@ -4328,98 +4382,119 @@ static void pdna_pokeblock(void) {
    * unchanged, exactly as an art-free clone has always drawn it. */
   BgFrame chrome = pokeblock_bg((int)g_game);
   const int VIS = chrome.blob ? PB_ROWS : 13;               /* retail's panel holds 9 rows */
+  int pv_top = -1, pv_sel = -1; bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
-    if (chrome.blob) {
-      bg_restore(chrome, 0, 0, PB_BG_W, PB_BG_H);  /* 20 LZ77 pages */
-#if !PDNA_POKEBLOCK_ART_COMPILED
-      /* The compiled-art build bakes the case DEVICE straight into the frame
-       * above (gen_pokeblock_bg.py's composite_device(), build time); the ROM
-       * rung fetched it as a SEPARATE decode (rom_chrome.h's device_tiles/
-       * device_pal, folded into the same s_pb_chrome buffer) and composites
-       * it here, every pass, same cadence as the chrome restore right above
-       * -- nothing else touches mon_decomp during this screen's visit, so
-       * s_pb_chrome's pointers are still good. device_tiles == 0 (fetch
-       * failed) just leaves the case empty, never garbled. */
-      if (s_pb_chrome.device_tiles)
-        romchrome_blit_tiles(s_pb_chrome.device_tiles, s_pb_chrome.device_pal, 0, 8, 8,
-                             ROM_CHROME_POKEBLOCK_DEVICE_X, ROM_CHROME_POKEBLOCK_DEVICE_Y);
-#endif
-    }
-    else ui_clear();
-    int have = 0;
-    for (int i = 0; i < PK_POKEBLOCK_COUNT; i++) { PkPokeblock p; pk_pokeblock_get(g_sb1, g_game, i, &p); if (pk_pokeblock_occupied(&p)) have++; }
-    char ti[28]; siprintf(ti, "POKEBLOCK CASE  %d/40", have);
-    if (chrome.blob) {
-      /* The case's own title box is 72 px of light chrome, so: dark ink, and the
-       * label has to be "POKEBLOCKS" (measured 60 px, budget 64). "POKEBLOCK CASE"
-       * is 81 px and "POKEBLOCKS 3" is 69 px -- both would clip to "POKEBLOCK~".
-       * The count goes on the wall just under the box, where there is nothing. */
-      ui_ptext(PB_TITLE_X + 4, PB_TITLE_Y + 4, UI_PANEL, "POKEBLOCKS");
-      char ct[12]; siprintf(ct, "%d/40", have);
-      ui_ptext(PB_TITLE_X + 4, PB_TITLE_Y + 20, UI_TEXT, ct);
-    } else {
-      ui_text(4, 2, UI_TITLE, ti);
-      ui_hline(0, 13, UI_SCR_W, UI_BORDER);
-    }
     if (sel < top) top = sel; if (sel >= top + VIS) top = sel - VIS + 1;
-    for (int i = 0; i < VIS && top + i < PK_POKEBLOCK_COUNT; i++) {
-      int idx = top + i, y = chrome.blob ? (PB_LIST_Y + i * PB_ROW_H) : (16 + i * 10);
-      bool s = (idx == sel);
-      PkPokeblock pb; pk_pokeblock_get(g_sb1, g_game, idx, &pb);
-      bool occ = pk_pokeblock_occupied(&pb);
+    bool full = !pv_valid || pv_gen != ui_clear_gen() || (chrome.blob && (sel != pv_sel || top != pv_top));
+
+    if (full) {
       if (chrome.blob) {
-        /* Inside the case's list panel: number, colour swatch, name. The panel is
-         * 112 px wide, which the 5x7 face fits and sys8 would not. */
-        if (s) ui_panel(PB_LIST_X + 2, y + 1, PB_LIST_W - 4, PB_ROW_H - 2, UI_SEL, UI_TITLE);
-        char num[6]; siprintf(num, "%2d", idx + 1);
-        ui_ptext(PB_LIST_X + 5, y + 5, s ? UI_SELTEXT : UI_DIM, num);
-        if (occ) {
-          pokeblock_swatch(PB_LIST_X + 20, y + 4, 8, pb.color);
-          ui_ptext_fit(PB_LIST_X + 32, y + 5, PB_LIST_W - 36, s ? UI_SELTEXT : UI_TEXT,
-                       pk_pokeblock_color_name(pb.color));
-        } else ui_ptext(PB_LIST_X + 20, y + 5, s ? UI_SELTEXT : UI_DIM, "(empty)");
-        if (s && occ) {                                /* FEEL, where the game prints it */
-          char fl[8]; siprintf(fl, "%2u", (unsigned)pb.feel);
-          ui_ptext(PB_FEEL_X, PB_FEEL_Y, UI_TEXT, fl);
-        }
+        bg_restore(chrome, 0, 0, PB_BG_W, PB_BG_H);  /* 20 LZ77 pages */
+#if !PDNA_POKEBLOCK_ART_COMPILED
+        /* The compiled-art build bakes the case DEVICE straight into the frame
+         * above (gen_pokeblock_bg.py's composite_device(), build time); the ROM
+         * rung fetched it as a SEPARATE decode (rom_chrome.h's device_tiles/
+         * device_pal, folded into the same s_pb_chrome buffer) and composites
+         * it here, every pass, same cadence as the chrome restore right above
+         * -- nothing else touches mon_decomp during this screen's visit, so
+         * s_pb_chrome's pointers are still good. device_tiles == 0 (fetch
+         * failed) just leaves the case empty, never garbled. */
+        if (s_pb_chrome.device_tiles)
+          romchrome_blit_tiles(s_pb_chrome.device_tiles, s_pb_chrome.device_pal, 0, 8, 8,
+                               ROM_CHROME_POKEBLOCK_DEVICE_X, ROM_CHROME_POKEBLOCK_DEVICE_Y);
+#endif
+      }
+      else ui_clear();
+      int have = 0;
+      for (int i = 0; i < PK_POKEBLOCK_COUNT; i++) { PkPokeblock p; pk_pokeblock_get(g_sb1, g_game, i, &p); if (pk_pokeblock_occupied(&p)) have++; }
+      char ti[28]; siprintf(ti, "POKEBLOCK CASE  %d/40", have);
+      if (chrome.blob) {
+        /* The case's own title box is 72 px of light chrome, so: dark ink, and the
+         * label has to be "POKEBLOCKS" (measured 60 px, budget 64). "POKEBLOCK CASE"
+         * is 81 px and "POKEBLOCKS 3" is 69 px -- both would clip to "POKEBLOCK~".
+         * The count goes on the wall just under the box, where there is nothing. */
+        ui_ptext(PB_TITLE_X + 4, PB_TITLE_Y + 4, UI_PANEL, "POKEBLOCKS");
+        char ct[12]; siprintf(ct, "%d/40", have);
+        ui_ptext(PB_TITLE_X + 4, PB_TITLE_Y + 20, UI_TEXT, ct);
       } else {
-        if (s) ui_panel(2, y - 1, 236, 10, UI_SEL, UI_TITLE);
-        char num[6]; siprintf(num, "%2d", idx + 1); ui_text(6, y + 1, s ? UI_SELTEXT : UI_DIM, num);
-        if (occ) {
-          pokeblock_swatch(28, y, 8, pb.color);
-          char row[40]; siprintf(row, "%-8s  feel %u", pk_pokeblock_color_name(pb.color), (unsigned)pb.feel);
-          ui_text(42, y + 1, s ? UI_SELTEXT : UI_TEXT, row);
-        } else ui_text(28, y + 1, s ? UI_SELTEXT : UI_DIM, "(empty)");
+        ui_text(4, 2, UI_TITLE, ti);
+        ui_hline(0, 13, UI_SCR_W, UI_BORDER);
       }
-    }
-    if (chrome.blob) {
-      /* The bottom-left white panel is the game's FLAVOR/FEEL board — retail fills
-       * it for the selected block and ours sat blank (Guy, HW round 2). Same
-       * geometry as retail (labels at (16/64, 104/120/136), the has-flavor icon one
-       * tile left of each label, FEEL's value right-aligned at (88,136)) — but as
-       * an editor we also print each flavor's VALUE after its label. Dark ink: the
-       * panel is white. The chrome re-blits every pass, so no erase bookkeeping. */
-      PkPokeblock sb; pk_pokeblock_get(g_sb1, g_game, sel, &sb);
-      bool occ2 = pk_pokeblock_occupied(&sb);
-      static const int FLX[5] = { 16, 16, 16, 64, 64 };
-      static const int FLY[5] = { 104, 120, 136, 104, 120 };
-      static const int FIX[5] = { 8, 8, 8, 56, 56 };
-      static const char* const FLN[5] = { "Spicy", "Dry", "Sweet", "Bitter", "Sour" };
-      const uint8_t flv[5] = { sb.spicy, sb.dry, sb.sweet, sb.bitter, sb.sour };
-      for (int i = 0; i < 5; i++) {
-        ui_ptext(FLX[i], FLY[i], UI_PANEL, FLN[i]);
-        if (occ2) {
-          char v[6]; siprintf(v, "%u", (unsigned)flv[i]);
-          ui_ptext(FLX[i], FLY[i] + 8, flv[i] ? 0x0000 : UI_PANEL, v);
-          const uint16_t* ic = pokeblock_flavor_icon((int)g_game, i);
-          if (flv[i] && ic) ui_sprite(FIX[i], FLY[i], 8, 16, ic);
+      for (int i = 0; i < VIS && top + i < PK_POKEBLOCK_COUNT; i++) {
+        int idx = top + i;
+        bool s = (idx == sel);
+        if (chrome.blob) {
+          int y = PB_LIST_Y + i * PB_ROW_H;
+          PkPokeblock pb; pk_pokeblock_get(g_sb1, g_game, idx, &pb);
+          bool occ = pk_pokeblock_occupied(&pb);
+          /* Inside the case's list panel: number, colour swatch, name. The panel is
+           * 112 px wide, which the 5x7 face fits and sys8 would not. */
+          if (s) ui_panel(PB_LIST_X + 2, y + 1, PB_LIST_W - 4, PB_ROW_H - 2, UI_SEL, UI_TITLE);
+          char num[6]; siprintf(num, "%2d", idx + 1);
+          ui_ptext(PB_LIST_X + 5, y + 5, s ? UI_SELTEXT : UI_DIM, num);
+          if (occ) {
+            pokeblock_swatch(PB_LIST_X + 20, y + 4, 8, pb.color);
+            ui_ptext_fit(PB_LIST_X + 32, y + 5, PB_LIST_W - 36, s ? UI_SELTEXT : UI_TEXT,
+                         pk_pokeblock_color_name(pb.color));
+          } else ui_ptext(PB_LIST_X + 20, y + 5, s ? UI_SELTEXT : UI_DIM, "(empty)");
+          if (s && occ) {                                /* FEEL, where the game prints it */
+            char fl[8]; siprintf(fl, "%2u", (unsigned)pb.feel);
+            ui_ptext(PB_FEEL_X, PB_FEEL_Y, UI_TEXT, fl);
+          }
+        } else {
+          pb_list_row_paint(idx, i, s);
         }
       }
-      if (occ2) { char fv[6]; siprintf(fv, "%u", (unsigned)sb.feel);
-                  ui_ptext_right(102, 137, 0x0000, fv); }
-      ui_ptext(4, 152, UI_PANEL, "A edit/create  U/D  B done");
+      if (chrome.blob) {
+        /* The bottom-left white panel is the game's FLAVOR/FEEL board — retail fills
+         * it for the selected block and ours sat blank (Guy, HW round 2). Same
+         * geometry as retail (labels at (16/64, 104/120/136), the has-flavor icon one
+         * tile left of each label, FEEL's value right-aligned at (88,136)) — but as
+         * an editor we also print each flavor's VALUE after its label. Dark ink: the
+         * panel is white. The chrome re-blits every pass (this is `full`-only), so no
+         * erase bookkeeping. */
+        PkPokeblock sb; pk_pokeblock_get(g_sb1, g_game, sel, &sb);
+        bool occ2 = pk_pokeblock_occupied(&sb);
+        static const int FLX[5] = { 16, 16, 16, 64, 64 };
+        static const int FLY[5] = { 104, 120, 136, 104, 120 };
+        static const int FIX[5] = { 8, 8, 8, 56, 56 };
+        static const char* const FLN[5] = { "Spicy", "Dry", "Sweet", "Bitter", "Sour" };
+        const uint8_t flv[5] = { sb.spicy, sb.dry, sb.sweet, sb.bitter, sb.sour };
+        for (int i = 0; i < 5; i++) {
+          ui_ptext(FLX[i], FLY[i], UI_PANEL, FLN[i]);
+          if (occ2) {
+            char v[6]; siprintf(v, "%u", (unsigned)flv[i]);
+            ui_ptext(FLX[i], FLY[i] + 8, flv[i] ? 0x0000 : UI_PANEL, v);
+            const uint16_t* ic = pokeblock_flavor_icon((int)g_game, i);
+            if (flv[i] && ic) ui_sprite(FIX[i], FLY[i], 8, 16, ic);
+          }
+        }
+        if (occ2) { char fv[6]; siprintf(fv, "%u", (unsigned)sb.feel);
+                    ui_ptext_right(102, 137, 0x0000, fv); }
+        ui_ptext(4, 152, UI_PANEL, "A edit/create  U/D  B done");
+      }
+      else        ui_text(4, 152, UI_DIM, "A edit/create  U/D  B done");
+    } else {
+      /* Art-free only (chrome always took `full` above). `top` is deliberately NOT
+       * part of `full` -- same per-row index-identity diff as render_browser/
+       * pdna_secretbase (D5's F1 fix): the entry index that WAS drawn at row i
+       * (pv_top+i) vs the one that belongs there NOW (top+i). A pure cursor move
+       * (top unchanged) only flips the two rows whose selection changed; a scroll
+       * (top changed at all) makes every visible row's old/new index differ, so
+       * every row repaints -- still no ui_clear(). A naive fixed 2-row swap keyed
+       * only on `sel != pv_sel` would use the wrong row position across a scroll
+       * (the exact bug this pattern exists to avoid). */
+      uint32_t dirty = 0;
+      for (int i = 0; i < VIS && top + i < PK_POKEBLOCK_COUNT; i++) {
+        int f = top + i, of = pv_top + i;
+        bool s = (f == sel), os = (of == pv_sel);
+        if (of != f || s != os) dirty |= 1u << i;
+      }
+      for (int i = 0; i < VIS && top + i < PK_POKEBLOCK_COUNT; i++)
+        if (dirty & (1u << i)) pb_list_row_paint(top + i, i, top + i == sel);
     }
-    else        ui_text(4, 152, UI_DIM, "A edit/create  U/D  B done");
+    pv_top = top; pv_sel = sel; pv_valid = true; pv_gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) break;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : PK_POKEBLOCK_COUNT - 1;
@@ -5565,26 +5640,57 @@ static int days_in_month_ui(int y, int m) {
   return md[m - 1] + ((m == 2 && leap) ? 1 : 0);
 }
 
-/* Dial in the date/time the game should believe is "now"; on A, write + commit. */
+/* One stepper field row. Row pitch 16 vs panel height 13 (3px gap): no
+ * shared-scanline. Always wipes first -- the value's own digit count is fixed per
+ * field (year zero-pads to 4, the rest to 2), but the label+value composed string can
+ * still shrink in principle, and this is the held-repeat hot path (survey note 1) so
+ * correctness here matters more than shaving one wipe. */
+static void ck_field_paint(int i, const char* lbl, int v, bool wide4, bool s) {
+  char r[40]; siprintf(r, "%-7s %0*d", lbl, wide4 ? 4 : 2, v);
+  int yy = 30 + i * 16;
+  ui_fill_rect(2, yy - 2, 150, 13, UI_BG);
+  if (s) ui_panel(2, yy - 2, 150, 13, UI_SEL, UI_TITLE);
+  ui_text(10, yy, s ? UI_SELTEXT : UI_TEXT, r);
+}
+
+/* Dial in the date/time the game should believe is "now"; on A, write + commit.
+ *
+ * THE HELD-STEPPER CASE (survey note 1). UP/DOWN/LEFT/RIGHT sit in wait_keys()'s
+ * key_repeat mask, and holding UP/DOWN mutates the CURRENT field's value at repeat
+ * rate with NO overlay at all -- app_confirm() (the only nested call, on A) is the
+ * lone path that ui_clear()s. So a gen-only shadow would miss every single stepper
+ * tick: this is lesson 1 in its purest form, and the fix is to shadow the actual
+ * VALUES, not just gen. Shadow: the five displayed values (pv_v[]) + the selected
+ * field (pv_f) + valid/gen. Each keypress diffs both value AND selection per field, so
+ * a step redraws exactly the field that changed (plus a field-switch redraws the two
+ * fields whose highlight flipped even though neither's VALUE moved). */
 static void clock_manual_entry(GbaRtcTime live) {
   enum { F_Y, F_MO, F_D, F_H, F_MI, F_N };
   static const char* const LBL[F_N] = { "Year", "Month", "Day", "Hour", "Minute" };
   int y = live.year, mo = live.month, d = live.day, h = live.hour, mi = live.minute, f = 0;
+  int pv_v[F_N] = { 0, 0, 0, 0, 0 }, pv_f = -1; bool valid = false; uint32_t gen = 0;
   for (;;) {
     int dim = days_in_month_ui(y, mo); if (d > dim) d = dim; if (d < 1) d = 1;
     int v[F_N] = { y, mo, d, h, mi };
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, "SET IN-GAME CLOCK");
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < F_N; i++) {
-      char r[40]; siprintf(r, "%-7s %0*d", LBL[i], i == F_Y ? 4 : 2, v[i]);
-      int yy = 30 + i * 16; bool s = (i == f);
-      if (s) ui_panel(2, yy - 2, 150, 13, UI_SEL, UI_TITLE);
-      ui_text(10, yy, s ? UI_SELTEXT : UI_TEXT, r);
+
+    bool full = !valid || gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "SET IN-GAME CLOCK");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+      for (int i = 0; i < F_N; i++) ck_field_paint(i, LBL[i], v[i], i == F_Y, i == f);
+      ui_text(6, 120, UI_DIM, "Becomes the game's current");
+      ui_text(6, 130, UI_DIM, "date/time; resumes events.");
+      ui_text(4, 152, UI_DIM, "U/D change  L/R field  A set  B");
+    } else {
+      for (int i = 0; i < F_N; i++) {
+        bool s = (i == f), os = (i == pv_f);
+        if (v[i] != pv_v[i] || s != os) ck_field_paint(i, LBL[i], v[i], i == F_Y, s);
+      }
     }
-    ui_text(6, 120, UI_DIM, "Becomes the game's current");
-    ui_text(6, 130, UI_DIM, "date/time; resumes events.");
-    ui_text(4, 152, UI_DIM, "U/D change  L/R field  A set  B");
+    for (int i = 0; i < F_N; i++) pv_v[i] = v[i];
+    pv_f = f; valid = true; gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) return;
     else if (k & KEY_LEFT)  f = (f > 0) ? f - 1 : F_N - 1;
@@ -5712,8 +5818,21 @@ static void pdna_mirage(void) {
   }
 }
 
+/* Survey note 3: the RTC poll below stays exactly where it was, EVERY iteration --
+ * this is a live diagnostic and the read has to stay fresh. Only the PAINT is gated,
+ * by shadowing the rendered content (not the poll): compose the same dynamic lines
+ * this screen has always drawn into one buffer and diff that against last frame's, so
+ * a re-entry whose RTC read landed on byte-identical output (common: this loop only
+ * re-enters after A/SELECT, and both always run a nested full-screen call --
+ * app_confirm always ui_clear()s even on decline, clock_manual_entry ui_clear()s on
+ * its own first frame -- so gen alone already forces a repaint on every real
+ * re-entry today; the string shadow is the belt to gen's suspenders, and is what
+ * keeps this screen correct if a future edit ever adds a re-entry path that does NOT
+ * go through one of those two calls). 176 B composite buffer, ASCII only (numbers and
+ * fixed literals, no filename/nickname content), well inside the modest-frame budget. */
 static void pdna_clock(void) {
   bool can = app_can_edit();
+  char pv_txt[176] = ""; bool valid = false; uint32_t gen = 0;
   for (;;) {
     if (g_game == PK_FRLG) {
       ui_clear();
@@ -5731,55 +5850,66 @@ static void pdna_clock(void) {
     int rtc_sec  = have ? (live.hour * 3600 + live.minute * 60 + live.second) : 0;
     Gen3ClockInfo ci; gen3_clock_read(g_sb2, rtc_days, rtc_sec, have, &ci);
 
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, "SAVE CLOCK / RTC");
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    char b[44];
-    if (have) { siprintf(b, "Cart clock  %04u-%02u-%02u %02u:%02u",
-                         live.year, live.month, live.day, live.hour, live.minute); ui_text(6, 22, UI_TEXT, b); }
-    else ui_text(6, 22, UI_WARN, "Cart clock not available.");
-    if (have) { siprintf(b, "Save clock  %04d-%02d-%02d  (in-game)", ci.ly, ci.lm, ci.ld); ui_text(6, 34, UI_TEXT, b); }
-    else        ui_text(6, 34, UI_DIM, "Save clock  --");
+    char txt[176];
+    if (have) siprintf(txt, "%04u-%02u-%02u %02u:%02u", live.year, live.month, live.day, live.hour, live.minute);
+    else      strcpy(txt, "-");
+    if (have) { char t2[48]; siprintf(t2, "|%04d-%02d-%02d", ci.ly, ci.lm, ci.ld);
+                strncat(txt, t2, sizeof(txt) - strlen(txt) - 1); }
+    { char t3[48]; siprintf(t3, "|%d", ci.verdict); strncat(txt, t3, sizeof(txt) - strlen(txt) - 1); }
+    if (have) { char t4[48]; siprintf(t4, "|%d|%d|%d", ci.delta, ci.off_days, ci.berry_days);
+                strncat(txt, t4, sizeof(txt) - strlen(txt) - 1); }
 
-    /* Verdict + plain-language detail. A POSITIVE gap is normal — it just means that
-     * many in-game days will process next time you play (berries grow, etc.). Only a
-     * clock that runs BEHIND the save freezes those events. */
-    const char* vmsg; u16 vcol;
-    switch (ci.verdict) {
-      case 0: vmsg = (ci.delta == 0) ? "Clock is in sync." : "Clock is healthy."; vcol = UI_OK;   break;
-      case 1: vmsg = "Large gap - is the cart clock right?";                       vcol = UI_WARN; break;
-      case 2: vmsg = "Cart clock is BEHIND the save.";                             vcol = UI_WARN; break;
-      case 3: vmsg = "Clock data looks wrong.";                                    vcol = UI_WARN; break;
-      default: vmsg = "Enable GAME RTC on the cart.";                              vcol = UI_DIM;  break;
-    }
-    ui_text(6, 50, vcol, vmsg);
-    if (have) {
-      if      (ci.verdict == 2) siprintf(b, "Behind by %d day(s): events frozen.", -ci.delta);
-      else if (ci.verdict == 3) siprintf(b, "Offset %dd, berry day %d.", ci.off_days, ci.berry_days);
-      else if (ci.delta > 0)    siprintf(b, "%d day(s) will pass when you play.", ci.delta);
-      else                      strcpy(b, "Up to date - nothing pending.");
-      ui_text(6, 64, UI_DIM, b);
-      ui_text(6, 78, UI_DIM, "(Save clock = in-game time;");
-      ui_text(6, 88, UI_DIM, " it need not match today.)");
-    }
+    bool full = !valid || gen != ui_clear_gen() || strcmp(txt, pv_txt) != 0;
+    if (full) {
+      char b[44];
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "SAVE CLOCK / RTC");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+      if (have) { siprintf(b, "Cart clock  %04u-%02u-%02u %02u:%02u",
+                           live.year, live.month, live.day, live.hour, live.minute); ui_text(6, 22, UI_TEXT, b); }
+      else ui_text(6, 22, UI_WARN, "Cart clock not available.");
+      if (have) { siprintf(b, "Save clock  %04d-%02d-%02d  (in-game)", ci.ly, ci.lm, ci.ld); ui_text(6, 34, UI_TEXT, b); }
+      else        ui_text(6, 34, UI_DIM, "Save clock  --");
 
-    if (!have) {
-      ui_text(6, 102, UI_DIM, "On the EZ-Flash: System >");
-      ui_text(6, 112, UI_DIM, "GAME RTC = on, then set TIME.");
-      ui_text(4, 152, UI_DIM, "B back");
-      wait_keys(KEY_B);
-      return;
+      /* Verdict + plain-language detail. A POSITIVE gap is normal — it just means that
+       * many in-game days will process next time you play (berries grow, etc.). Only a
+       * clock that runs BEHIND the save freezes those events. */
+      const char* vmsg; u16 vcol;
+      switch (ci.verdict) {
+        case 0: vmsg = (ci.delta == 0) ? "Clock is in sync." : "Clock is healthy."; vcol = UI_OK;   break;
+        case 1: vmsg = "Large gap - is the cart clock right?";                       vcol = UI_WARN; break;
+        case 2: vmsg = "Cart clock is BEHIND the save.";                             vcol = UI_WARN; break;
+        case 3: vmsg = "Clock data looks wrong.";                                    vcol = UI_WARN; break;
+        default: vmsg = "Enable GAME RTC on the cart.";                              vcol = UI_DIM;  break;
+      }
+      ui_text(6, 50, vcol, vmsg);
+      if (have) {
+        if      (ci.verdict == 2) siprintf(b, "Behind by %d day(s): events frozen.", -ci.delta);
+        else if (ci.verdict == 3) siprintf(b, "Offset %dd, berry day %d.", ci.off_days, ci.berry_days);
+        else if (ci.delta > 0)    siprintf(b, "%d day(s) will pass when you play.", ci.delta);
+        else                      strcpy(b, "Up to date - nothing pending.");
+        ui_text(6, 64, UI_DIM, b);
+        ui_text(6, 78, UI_DIM, "(Save clock = in-game time;");
+        ui_text(6, 88, UI_DIM, " it need not match today.)");
+      }
+
+      if (!have) {
+        ui_text(6, 102, UI_DIM, "On the EZ-Flash: System >");
+        ui_text(6, 112, UI_DIM, "GAME RTC = on, then set TIME.");
+        ui_text(4, 152, UI_DIM, "B back");
+      } else if (!can) {
+        ui_text(6, 102, UI_DIM, "Read-only cart - fixing needs");
+        ui_text(6, 112, UI_DIM, "an EZ-Flash Omega.");
+        ui_text(4, 152, UI_DIM, "B back");
+      } else {
+        ui_text(6, 102, UI_DIM, "Set the cart clock correctly");
+        ui_text(6, 112, UI_DIM, "first, then sync.");
+        ui_text(4, 152, UI_DIM, "A sync to cart  SEL set  B back");
+      }
     }
-    if (!can) {
-      ui_text(6, 102, UI_DIM, "Read-only cart - fixing needs");
-      ui_text(6, 112, UI_DIM, "an EZ-Flash Omega.");
-      ui_text(4, 152, UI_DIM, "B back");
-      wait_keys(KEY_B);
-      return;
-    }
-    ui_text(6, 102, UI_DIM, "Set the cart clock correctly");
-    ui_text(6, 112, UI_DIM, "first, then sync.");
-    ui_text(4, 152, UI_DIM, "A sync to cart  SEL set  B back");
+    strcpy(pv_txt, txt); valid = true; gen = ui_clear_gen();
+
+    if (!have || !can) { wait_keys(KEY_B); return; }
     u16 k = wait_keys(KEY_A | KEY_SELECT | KEY_B);
     if (k & KEY_B) return;
     else if (k & KEY_A) {
