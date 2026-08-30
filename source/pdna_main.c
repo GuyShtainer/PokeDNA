@@ -705,7 +705,13 @@ static void br_row_paint(int idx, int i, bool sel) {
   int y = 14 + i * UI_ROW_H;
   ui_fill_rect(3, y, UI_SCR_W - 6, UI_ROW_H, UI_PANEL);
   const BrowseEntry* e = &g_entries[idx];
-  char row[LIST_COLS * 4 + 1], nm[NAME_MAX + 2], sz[12];
+  /* nm is a ui_truncate OUTPUT for up to 21 display columns; ui.h's contract wants
+   * max_cols*4+1 (85) to be UTF-8-safe (FF_LFN_UNICODE means e->name can be real
+   * multi-byte). NAME_MAX+2 (66) was under that -- it only stayed safe today via
+   * scan_dir's incidental 63-byte name cap, an unstated cross-function invariant. 128
+   * matches ui.h's contract outright, same size pdna_edit.c documents for a screen
+   * string. */
+  char row[LIST_COLS * 4 + 1], nm[128], sz[12];
   if (e->is_dir) {
     ui_truncate(nm, e->name, 21);
     siprintf(row, "%-21s (DIR)", nm);
@@ -725,7 +731,9 @@ static void br_detail_paint(int sel) {
   ui_fill_rect(0, 116, UI_SCR_W, UI_FOOTER_RULE_Y - 116, UI_BG);
   if (g_count > 0) {
     const BrowseEntry* e = &g_entries[sel];
-    char dn[40]; ui_truncate(dn, e->name, 29);
+    /* 29 cols needs 117 B per ui.h's contract (e->name is real UTF-8 under
+     * FF_LFN_UNICODE); dn[40] silently violated it. */
+    char dn[128]; ui_truncate(dn, e->name, 29);
     ui_text(2, 118, UI_SELTEXT, dn);
     char meta[40];
     if (e->is_dir) siprintf(meta, "folder");
@@ -750,15 +758,28 @@ static void br_detail_paint(int sel) {
  * a scalar-derived gate would miss it (the exact bug class an earlier repaint batch
  * shipped twice). Explicit invalidation at the mutation site is what closes that. */
 static void render_browser(int sel, int top, bool relist, BrowsePaint* pv) {
-  bool full = relist || !pv->valid || pv->gen != ui_clear_gen() || top != pv->top;
+  /* `top` is deliberately NOT part of `full` -- see the row loop below. Folding it in
+   * here would pay the 76,800 B ui_clear() on every scroll, and wait_keys() DOES
+   * auto-repeat the d-pad, so held-DOWN past VIS_ROWS is the single most common way
+   * this screen scrolls: that used to be a full-screen wipe every few frames. */
+  bool full = relist || !pv->valid || pv->gen != ui_clear_gen();
 
   if (full) {
     ui_clear();
-    char title[80], cwdc[LIST_COLS * 4 + 1];      /* only recomputed on a full repaint --
-                                                    * cwd only ever changes alongside a
-                                                    * relist, never on a bare cursor move */
-    siprintf(title, "Pick .sav: %s", g_cwd);
-    ui_truncate(cwdc, title, 29);
+    /* g_cwd is PATH_MAX=256 and grows via strcpy on every folder entry, and
+     * FF_LFN_UNICODE means it can be real multi-byte UTF-8 -- an unbounded
+     * siprintf("Pick .sav: %s", g_cwd) into a small stack frame overruns it past
+     * ~68 raw bytes of path (a hang on HW). Bound the cwd by DISPLAY COLUMNS first
+     * (ui_truncate into its own 128 B buffer -- ui.h wants max_cols*4+1, 117 for 29
+     * cols), THEN compose the fixed "Pick .sav: " prefix onto the now-bounded result
+     * (11 + up to 116 + nul fits 128 exactly), THEN truncate the composed line to the
+     * 29 cols actually drawn -- truncating a truncation to a SMALLER budget is the
+     * same as truncating the original to that budget, so the on-screen result is
+     * unchanged; only the intermediate frame is now bounded by construction instead
+     * of by g_cwd happening to stay short. */
+    char cwdt[128]; ui_truncate(cwdt, g_cwd, 29);
+    char title[128]; siprintf(title, "Pick .sav: %s", cwdt);
+    char cwdc[128]; ui_truncate(cwdc, title, 29);
     ui_text(2, 2, UI_TITLE, cwdc);
     ui_panel(0, 11, UI_SCR_W, 104, UI_PANEL, UI_BORDER);
     if (g_count == 0) {
@@ -772,15 +793,23 @@ static void render_browser(int sel, int top, bool relist, BrowsePaint* pv) {
     ui_text(2, UI_FOOTER_Y, UI_DIM, "A pick  B up  SEL sort  ST menu");
   }
 
+  /* Per-ROW dirty, mirroring pdna_edit.c's render(): compare the entry index that WAS
+   * drawn at row i (pv->top+i) against the one that belongs there NOW (top+i) -- if
+   * they differ, or the row's selection state flipped, that row is dirty. A scroll (any
+   * top change, including the L/R jump-to-end and the LEFT/RIGHT +-11 fast jump) makes
+   * EVERY visible row's old/new index differ, so every row repaints -- exactly
+   * pdna_edit.c's "scroll: all rows, no full-screen wipe" cost case -- while the chrome
+   * and panel frame drawn above stay untouched. A bare cursor move (top unchanged)
+   * leaves every index the same, so only the old-sel/new-sel rows differ. */
   if (g_count > 0) {
-    if (full) {
-      for (int i = 0; i < VIS_ROWS && top + i < g_count; i++)
-        br_row_paint(top + i, i, top + i == sel);
-    } else if (sel != pv->sel) {                  /* cursor move only: swap the highlight */
-      int oi = pv->sel - top, ni = sel - top;
-      if (oi >= 0 && oi < VIS_ROWS) br_row_paint(pv->sel, oi, false);
-      if (ni >= 0 && ni < VIS_ROWS) br_row_paint(sel, ni, true);
+    uint32_t dirty = 0;
+    for (int i = 0; i < VIS_ROWS && top + i < g_count; i++) {
+      int f = top + i, of = pv->top + i;
+      bool s = (f == sel), os = (of == pv->sel);
+      if (full || of != f || s != os) dirty |= 1u << i;
     }
+    for (int i = 0; i < VIS_ROWS && top + i < g_count; i++)
+      if (dirty & (1u << i)) br_row_paint(top + i, i, top + i == sel);
   }
 
   if (full || sel != pv->sel) br_detail_paint(sel);
@@ -828,14 +857,22 @@ static bool browse_menu(const BrowseEntry* fe) {
   int sel = 0;
   bool changed = false;
   bool can_fileops = (fe && !fe->is_dir);
-  char rows[8][40], prev_rows[8][40];
+  /* rows/prev_rows sized 128, not a tight 40: the "File: %s..." row below composes a
+   * FILENAME (real multi-byte UTF-8 under FF_LFN_UNICODE) into it, and "File: " (6) +
+   * up to 64 raw bytes for a 16-col name + "..." (3) + nul can reach 74 bytes -- a 40 B
+   * row would have overflowed into its neighbour (prev_rows sits right after rows on
+   * this frame) even with nm itself fixed below. */
+  char rows[8][128], prev_rows[8][128];
   int  act[8];
   int  prev_sel = -1; bool valid = false; uint32_t gen = 0;
   for (;;) {
     int  n = 0;
     enum { A_FILEOPS, A_SORTKEY, A_ORDER, A_FILES, A_HIDDEN, A_VERIFY, A_REBOOT, A_CLOSE };
     if (can_fileops) {
-      char nm[24]; ui_truncate(nm, fe->name, 16);
+      /* 16 cols needs 65 B per ui.h's contract (fe->name is real UTF-8); nm[24] was a
+       * ui_truncate stack-smash next to prev_rows[] above -- "a smash silently poisons
+       * the text-diff". */
+      char nm[128]; ui_truncate(nm, fe->name, 16);
       siprintf(rows[n], "File: %s...", nm); act[n++] = A_FILEOPS;
     }
     siprintf(rows[n], "Sort key:  %s", g_sort == SORT_NAME ? "Name" : g_sort == SORT_SIZE ? "Size" : "Date"); act[n++] = A_SORTKEY;
@@ -2258,7 +2295,9 @@ static bool file_actions(const BrowseEntry* e) {
     bool full = !valid || gen != ui_clear_gen();
     if (full) {
       ui_clear();
-      char hdr[40]; ui_truncate(hdr, e->name, 29);
+      /* 29 cols needs 117 B per ui.h's contract (e->name is real UTF-8); hdr[40]
+       * silently violated it. */
+      char hdr[128]; ui_truncate(hdr, e->name, 29);
       ui_text(4, 4, UI_TITLE, "FILE");
       ui_text(4, 16, UI_SELTEXT, hdr);
       ui_hline(0, 28, UI_SCR_W, UI_BORDER);
@@ -3787,6 +3826,15 @@ static void ct_row_repaint(int top, int r, int sel) {
   ct_draw_row(r, y, r == sel);
 }
 
+/* Visible bag-pocket rows on tab 1 -- ONE constant shared by the window clamp, the
+ * full draw loop, and bg_row_repaint's guard below so they cannot drift apart. They
+ * already had (a pre-existing bug, not introduced by this repaint pass): the clamp
+ * used a stray 13, one more than the other two, which put the selected row one slot
+ * BELOW the drawn window from the 13th item on -- no highlight drawn, and A would
+ * edit a slot that was not on screen. Every pocket in the game has >= 13 items, so
+ * this was reachable in every pocket, not an edge case. */
+#define BAG_VIS 12
+
 /* Draw one BAG-pocket slot row at screen y. Same contract as ct_draw_row. */
 static void bg_draw_row(int pocket, int sl, int y, bool s) {
   char row[44], rt[44];
@@ -3799,7 +3847,7 @@ static void bg_draw_row(int pocket, int sl, int y, bool s) {
   ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
 }
 static void bg_row_repaint(int pocket, int top, int sl, int sel) {
-  int i = sl - top; if (i < 0 || i >= 12) return;
+  int i = sl - top; if (i < 0 || i >= BAG_VIS) return;
   int y = 26 + i * 9;
   ui_fill_rect(0, y - 1, UI_SCR_W, 9, UI_BG);
   bg_draw_row(pocket, sl, y, sl == sel);
@@ -3862,7 +3910,7 @@ static bool data_editor_tab(int only) {
       } else if (tab == 1) {
         pcap = pk_pocket_cap(g_game, pocket);
         if (sel >= pcap) sel = pcap - 1;
-        if (sel < top) top = sel; if (sel >= top + 13) top = sel - 12;
+        if (sel < top) top = sel; if (sel >= top + BAG_VIS) top = sel - (BAG_VIS - 1);
         part = b_valid && top == b_top && pocket == b_pocket && b_gen == ui_clear_gen();
       }
     }
@@ -3897,7 +3945,7 @@ static bool data_editor_tab(int only) {
       if (!part) {
         char hh[40]; siprintf(hh, "%s  (%d)", pk_pocket_name(pocket), pcap);
         ui_text(6, 15, UI_DIRCLR, hh);
-        for (int i = 0; i < 12 && top + i < pcap; i++) bg_draw_row(pocket, top + i, 26 + i * 9, top + i == sel);
+        for (int i = 0; i < BAG_VIS && top + i < pcap; i++) bg_draw_row(pocket, top + i, 26 + i * 9, top + i == sel);
         ui_text(4, 152, UI_DIM, "A edit  SEL pocket  B done");
       } else if (sel != b_sel) {
         bg_row_repaint(pocket, top, b_sel, sel);
