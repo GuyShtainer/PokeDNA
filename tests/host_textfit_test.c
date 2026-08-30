@@ -761,6 +761,27 @@ int main(void) {
   /* both lists' footers, drawn at x=4 on PDNA_FILT_FOOTER_Y */
   T(PDNA_FILT_FOOT, 4);
   T(PDNA_IFILT_FOOT, 4);
+
+  printf("\n== move picker window (source/pdna_pick.c pick_move/mv_row) ==\n");
+  /* mv_row (BACKLOG #36 item 7) now paints on the SAME PDNA_FILT_Y0/ROW_H/BAR_* geometry
+   * as fm_row/dxm_row above, so the bar-covers-glyph-box / chip-vs-bar checks already
+   * above (they are generic over PDNA_FILT_BAR_ and PDNA_FILT_CHIP_, not tied to a
+   * specific caller) now cover mv_row too -- that IS the assertion tying mv_row's pitch
+   * to the chip geometry: mv_row referencing the shared names by construction (not a
+   * coincidentally-equal literal) is what makes them apply, so no separate numeric check
+   * was added here.
+   *
+   * A DIFFERENT boundary was investigated and is RESIDUAL, stated rather than hidden
+   * (pdna_pick.c's ROW REPAINT RULE names the same class): PDNA_MV_VIS rows at
+   * PDNA_FILT_ROW_H pitch put row 8's ink at y=86..93 (PDNA_FILT_Y0 + 8*9 .. +8-1),
+   * 2 px INTO PDNA_MV_DETAIL_Y=92's panel rect. This is not a bug -- pick_move's own
+   * `full`/`mid != prev_mid` gating means the detail panel redraws in the SAME pass as
+   * every row-8 draw (any `top` change forces `full`; any `sel` change changes `mid`,
+   * since the list holds no duplicate move ids), so the panel's opaque fill always paints
+   * over those 2 scanlines after mv_row does. A chkv here would need a hand-tuned "+2 px
+   * is fine, more is not" fudge factor to pass without asserting the real invariant (paint
+   * order, which a static geometry check cannot see) -- worse than not adding one. */
+
   /* GAP, stated rather than faked: that the bar is ui_fill_rect and NOT ui_panel is a
    * property of filt_bar()'s body, and no header can carry it. The two invariants above
    * are what a bordered bar would violate (a ui_panel of height 9 puts its rule at

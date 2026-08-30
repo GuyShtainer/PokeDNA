@@ -116,6 +116,13 @@ void icon_frame_cache_invalidate(void) { }
  * page are both fully resident with the borrow, and 20 bob flips over either cost 0
  * transfers and 0 sectors on BOTH rungs.
  *
+ * "ZERO SD transactions" used to mean rows only (BACKLOG #36 item 4 closed the gap):
+ * every one of these four call sites redraws through icon_from_cache below, which fetches
+ * the row AND the palette, and icon_store_pal()'s fetch can hit rom_pal_bank() -- a real
+ * SD read -- on the ROM rung's romtab-load-failed fallback. icon_store_plan_resident()
+ * now checks both; see its own comment in icon_store.c for why that stayed a RAM-only
+ * check (every planned row's bank is already known the moment its slot exists).
+ *
  * WHEN IT SAYS NO, IT STILL MEANS NO. A refused borrow (the user has unsaved box moves,
  * so g_pc cannot be lent) leaves the party against a 4-row pool on the ROM rung, the
  * plan is honestly not resident, and the cells keep a static frame -- which is the right

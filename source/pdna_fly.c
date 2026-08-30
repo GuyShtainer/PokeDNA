@@ -60,11 +60,16 @@ static const char* kind_tag(int kind) {
 
 /* What is on screen. `t`/`n` (the destination list) are fixed for the whole screen
  * life -- g3fly_list() is called once, above -- so `top`/`sel` are the whole cursor
- * state, plus the ON-count the header derives from the same flags every row reads.
- * Same shape as pdna_legality.c's SweepPaint, with the header counter pdna_trainer.c's
- * stars_editor also tracks. Stack-local, not a static: a fresh call always starts
- * invalid (first pass paints in full). */
-typedef struct { uint32_t gen; int top, sel, on; bool valid; } FlyPaint;
+ * state. The header's ON-count is NOT shadowed here (no `on` field): it is re-derived
+ * fresh every frame from g3fly_count_on(), and the repaint decision below is driven by
+ * the explicit `toggled` flag, not a `on != pv.on` diff (see that flag's own comment --
+ * a facility/cursor/prereq toggle flips a row without moving the town-only count at
+ * all, so a stored `on` couldn't answer "did anything change" by itself anyway; an
+ * earlier revision stored one, but nothing ever read it -- BACKLOG #36 item 8, golden
+ * rule 6). Same shape as pdna_legality.c's SweepPaint, with the header counter
+ * pdna_trainer.c's stars_editor also tracks. Stack-local, not a static: a fresh call
+ * always starts invalid (first pass paints in full). */
+typedef struct { uint32_t gen; int top, sel; bool valid; } FlyPaint;
 
 /* One row. Self-contained: wipes its own UI_ROW_H-tall strip to UI_BG first (the
  * ghost-ink guard every other row painter in this codebase uses) -- ui_text_sel only
@@ -159,7 +164,7 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
       }
     }
 
-    pv.top = top; pv.sel = sel; pv.on = on; pv.gen = ui_clear_gen(); pv.valid = true;
+    pv.top = top; pv.sel = sel; pv.gen = ui_clear_gen(); pv.valid = true;
     toggled = false;                     /* consumed for this pass either way */
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_START);

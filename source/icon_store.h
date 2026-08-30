@@ -119,9 +119,13 @@ void icon_store_suspend(void);
 #define ICON_STORE_PLAN_MAX 40
 int  icon_store_plan(const uint16_t* rows, int n);
 
-/* True iff every row of the live plan is in RAM right now, so a redraw of the declared
- * set is provably ZERO SD transactions. False when no plan is live, or when the plan
- * does not fit the pool. True when there is no rung at all (a "flip" then redraws
+/* True iff every row of the live plan is in RAM right now AND every one of those rows'
+ * palette banks is already loaded (BACKLOG #36 item 4 -- rows alone used to be all this
+ * checked, which left icon_store_pal()'s rare rom_pal_bank() fetch as an unguarded
+ * tick-time SD read on the ROM rung's romtab-load-failed fallback), so a redraw of the
+ * declared set is provably ZERO SD transactions, tiles AND colours both. False when no
+ * plan is live, or when the plan does not fit the pool, or when a planned row's bank
+ * has not been paid for yet. True when there is no rung at all (a "flip" then redraws
  * nothing and costs nothing, which is the same answer for the caller). */
 bool icon_store_plan_resident(void);
 

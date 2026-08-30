@@ -778,7 +778,14 @@ static void render_browser(int sel, int top, bool relist, BrowsePaint* pv) {
      * unchanged; only the intermediate frame is now bounded by construction instead
      * of by g_cwd happening to stay short. */
     char cwdt[128]; ui_truncate(cwdt, g_cwd, 29);
-    char title[128]; siprintf(title, "Pick .sav: %s", cwdt);
+    /* title[192], not [128]: cwdt is already bounded to ui.h's 29-col contract (<=117 B
+     * incl. nul), but "Pick .sav: " (11) + up to 116 non-nul cwdt bytes + nul = exactly
+     * 128 -- ZERO slack for the worst case, one byte from a silent siprintf truncation
+     * (siprintf itself is bounds-safe, so not a smash, but a wrong-looking title on a
+     * long path) rather than an intentional margin. BACKLOG #36 item 6: 192 gives this
+     * shallow, one-frame-deep buffer real headroom instead of landing exactly on the
+     * edge of its own known-worst-case math. */
+    char title[192]; siprintf(title, "Pick .sav: %s", cwdt);
     char cwdc[128]; ui_truncate(cwdc, title, 29);
     ui_text(2, 2, UI_TITLE, cwdc);
     ui_panel(0, 11, UI_SCR_W, 104, UI_PANEL, UI_BORDER);
@@ -857,12 +864,17 @@ static bool browse_menu(const BrowseEntry* fe) {
   int sel = 0;
   bool changed = false;
   bool can_fileops = (fe && !fe->is_dir);
-  /* rows/prev_rows sized 128, not a tight 40: the "File: %s..." row below composes a
+  /* rows/prev_rows sized 80, not a tight 40: the "File: %s..." row below composes a
    * FILENAME (real multi-byte UTF-8 under FF_LFN_UNICODE) into it, and "File: " (6) +
-   * up to 64 raw bytes for a 16-col name + "..." (3) + nul can reach 74 bytes -- a 40 B
-   * row would have overflowed into its neighbour (prev_rows sits right after rows on
-   * this frame) even with nm itself fixed below. */
-  char rows[8][128], prev_rows[8][128];
+   * up to 64 raw bytes for a 16-col name (nm is already ui.h-contract-sized below, but
+   * ui_truncate itself never emits more than 16 display cols worth of UTF-8) + "..." (3)
+   * + nul reaches 74 bytes -- a 40 B row would have overflowed into its neighbour
+   * (prev_rows sits right after rows on this frame) even with nm itself fixed below.
+   * No other row (Sort key/Order/Files/Hidden/Verify/Reboot/Close, all short fixed
+   * labels) comes close; 74 is the real worst case (BACKLOG #36 item 6), so 80 keeps a
+   * few bytes of named slack instead of the previous 128 (54 B of pure unused padding
+   * per row x 8 rows x 2 arrays = 864 B of this frame that was never reachable). */
+  char rows[8][80], prev_rows[8][80];
   int  act[8];
   int  prev_sel = -1; bool valid = false; uint32_t gen = 0;
   for (;;) {
@@ -3630,7 +3642,13 @@ static void pl_row_paint(int i, int frame, int sel) {
   PkMon* p = &g_party[i];
   if (p->isEgg && !p->isBadEgg) ui_sprite(3, iy, MON_ICON_W, MON_ICON_H, mon_icon_egg_frame((uint8_t)frame));
   else ui_sprite(3, iy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, (uint8_t)frame));
-  char nm[16];
+  /* nm is a ui_truncate OUTPUT for 11 display columns; ui.h's contract wants
+   * max_cols*4+1 (45) to be UTF-8-safe. nm[16] only stayed safe because nickname is a
+   * hard-capped `char[11]` (gen3_save.c:147-148, single-byte-per-glyph gen3_decode_char,
+   * 10 populated chars max) -- a source-bound argument, not the buffer meeting the
+   * contract outright. BACKLOG #36 item 5: size to the literal contract like
+   * br_row_paint's nm[128] does, so a future richer decode can't silently reopen this. */
+  char nm[128];
   ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);
   char line[48];
   siprintf(line, "%-11s Lv%u", nm, (unsigned)p->level);
@@ -5542,7 +5560,11 @@ static void sb_card_draw(const SbRecord* b, int i, bool sel) {
   uint8_t fo = (sp == 201) ? pk_unown_form(b->party.personality[i])
              : (sp == 410) ? (uint8_t)pk_get_deoxys_form() : 0;   /* letter/forme, not form 0 (Deoxys internal 410) */
   ui_sprite(cx + 22, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form(sp, fo));
-  char nm[16]; ui_truncate(nm, pk_species_name(sp), 9); ui_text(cx, cy + 32, s ? UI_SELTEXT : UI_TEXT, nm);
+  /* nm: 9-col ui_truncate output, ui.h's contract wants max_cols*4+1 (37). Source is
+   * pk_species_name() (a static internal table, plain ASCII, short) so 16 was safe by
+   * inspection; BACKLOG #36 item 5 moves it to the literal contract anyway (uniform
+   * hygiene, the same 128 br_row_paint's nm and pl_row_paint's nm above use for theirs). */
+  char nm[128]; ui_truncate(nm, pk_species_name(sp), 9); ui_text(cx, cy + 32, s ? UI_SELTEXT : UI_TEXT, nm);
   char line[16]; siprintf(line, "Lv%u", (unsigned)b->party.level[i]); ui_text(cx, cy + 40, UI_DIRCLR, line);
 }
 
@@ -5568,7 +5590,12 @@ static bool sb_detail(SbRecord* b, uint32_t off) {
     bool full = !valid || gen != ui_clear_gen();
     if (full) {
       ui_clear();
-      char hdr[40]; ui_truncate(hdr, b->trainerName[0] ? b->trainerName : "?", 14);
+      /* hdr: 14-col ui_truncate output, ui.h's contract wants max_cols*4+1 (57). Source
+       * is trainerName, a hard-capped `char[8]` (gen3_secretbase.c:50-51, <=7 populated
+       * bytes) decoded single-byte-per-glyph -- same source-bound argument
+       * sb_list_row_paint documents for its own nm below. BACKLOG #36 item 5 moves both
+       * to the literal contract instead of leaning on that invariant holding forever. */
+      char hdr[128]; ui_truncate(hdr, b->trainerName[0] ? b->trainerName : "?", 14);
       ui_text(4, 3, UI_TITLE, hdr);
       if (b->own) ui_text(150, 3, UI_OK, "YOUR BASE");
       ui_hline(0, 13, UI_SCR_W, UI_BORDER);
@@ -5624,20 +5651,22 @@ static bool sb_detail(SbRecord* b, uint32_t off) {
 }
 
 /* One SECRET BASES list row. Row pitch 15 vs panel height 13 (2px gap): no
- * shared-scanline. `nm` is trainerName -- NOT safe because the decode happens to be
- * single-byte-per-glyph today (other Gen-3 text decoders in this codebase, e.g.
- * gen3_edit.c/data_tables.c, DO emit multi-byte UTF-8 for gender glyphs elsewhere, so
- * that would be a fragile thing to lean on); it is safe because trainerName is a
- * hard-capped `char[8]` (gen3_secretbase.c:50-51 writes at most 7 populated bytes
- * before the NUL, by construction of the loop bound and the field's own size,
- * regardless of what any byte decodes to). nm[12] can never see more than that 7-byte
- * input to an 8-col ui_truncate, unlike the browser's real FatFs filenames. */
+ * shared-scanline. `nm` is trainerName -- it was ARGUED safe at nm[12] because
+ * trainerName is a hard-capped `char[8]` (gen3_secretbase.c:50-51 writes at most 7
+ * populated bytes before the NUL, by construction of the loop bound and the field's
+ * own size, regardless of what any byte decodes to) decoded single-byte-per-glyph,
+ * unlike the browser's real FatFs filenames (other Gen-3 text decoders in this
+ * codebase, e.g. gen3_edit.c/data_tables.c, DO emit multi-byte UTF-8 for gender
+ * glyphs elsewhere, so leaning on "today's decode is single-byte" was fragile).
+ * BACKLOG #36 item 5: ui.h's contract wants max_cols*4+1 (33 for this 8-col call)
+ * regardless of the source argument, so nm now sizes to the same 128 the browser's
+ * real-filename buffers use instead of relying on trainerName's cap holding forever. */
 static void sb_list_row_paint(int idx, int i, bool sel) {
   const SbRecord* b = &g_sb_recs[idx];
   int y = 18 + i * 15;
   ui_fill_rect(0, y - 2, UI_SCR_W, 13, UI_BG);
   if (sel) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
-  char nm[12]; ui_truncate(nm, b->trainerName[0] ? b->trainerName : "?", 8);
+  char nm[128]; ui_truncate(nm, b->trainerName[0] ? b->trainerName : "?", 8);
   char row[44];
   siprintf(row, "%-8s %s  Lv%-3d  %dmon", nm, b->own ? "YOU" : (b->gender ? "(F)" : "(M)"),
            sb_party_maxlevel(b), b->partyCount);
@@ -5844,7 +5873,15 @@ static void clock_manual_entry(GbaRtcTime live) {
  * work (no SD, no icons) and the win that matters is skipping the ui_clear() +
  * chrome on the common no-RTC-change cursor move. Shadow: sel + the RTC-derived
  * values that feed the text (hi, have, owed) -- covers both "cursor moved" and "real
- * time passed enough to change the owed-days text between two keypresses". */
+ * time passed enough to change the owed-days text between two keypresses".
+ *
+ * INVARIANT (BACKLOG #36 item 8): the shadow deliberately does NOT cover the party
+ * list's own content (key[]/slot[]/nicknames, read straight from g_sb1 below, not from
+ * g_party) -- that is only safe because this screen NEVER writes the party. Its one
+ * write path (KEY_A -> mirage_solve/mirage_set/app_commit_sb1) touches only the two
+ * mirage dice u16s; nothing here can change a party member's personality or nickname
+ * out from under an unshadowed content_dirty. If a future edit adds any party mutation
+ * to this screen, content_dirty must start covering it too. */
 static void pdna_mirage(void) {
   int sel = 0;
   int pv_sel = -1; uint16_t pv_hi = 0; bool pv_have = false; int pv_owed = -2;

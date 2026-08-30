@@ -779,7 +779,27 @@ int icon_store_plan(const uint16_t* rows, int n) {
 
 bool icon_store_plan_resident(void) {
   if (s_is.rung == ICON_RUNG_NONE) return true;      /* nothing to read either way    */
-  return s_is.plan_res != 0;
+  if (s_is.plan_res == 0) return false;
+  /* BACKLOG #36 item 4: rows resident is necessary but not sufficient for the header's
+   * "provably ZERO SD transactions" promise. Every draw this gate is meant to make free
+   * (art_fallbacks.c's icon_from_cache) also calls icon_store_pal(), and that CAN still
+   * hit rom_pal_bank() -> a real SD read, per icon_store_pal's own header comment -- but
+   * only in one specific case: the ROM rung with romtab load FAILED (icon_store_reset()
+   * sets pal_have to all ART_ICONS_PALS bits eagerly, up front, on the cache rung and on
+   * a successfully-loaded romtab; only the romtab-failed fallback can leave a bank
+   * unloaded this far in). Checking it here is cheap BECAUSE plan_res just confirmed
+   * every planned row already has a resident slot: run_fill/slot_fill always stamp
+   * IconSlot.pal the moment a row is fetched (line ~577 below), so this is a RAM read of
+   * data already paid for, never a fresh locate -- the gate asking the question must not
+   * cost what it exists to avoid, and calling icon_store_pal_id() instead risks exactly
+   * that on this same fallback path (its "no romtab" branch does its own locate). */
+  for (int i = 0; i < s_is.plan_n; i++) {
+    int si = slot_find(s_is.plan[i]);
+    if (si < 0) return false;                        /* defensive: plan_res says this can't happen */
+    uint8_t pal = slot_at(si)->pal;
+    if (pal >= ART_ICONS_PALS || !(s_is.pal_have & (uint8_t)(1u << pal))) return false;
+  }
+  return true;
 }
 
 uint8_t icon_store_plan_count(void) { return s_is.plan_n; }

@@ -321,6 +321,18 @@
 #define PDNA_FILT_CHIP_H    PDNA_FILT_BAR_H
 /* The bar's right border column is the ink budget for a row. */
 #define PDNA_FILT_ROW_W  (PDNA_FILT_BAR_X + PDNA_FILT_BAR_W - PDNA_FILT_TEXT_X)
+
+/* MOVE PICKER (source/pdna_pick.c pick_move / mv_row): the same PDNA_FILT_Y0/ROW_H/
+ * BAR_* geometry as the two filter lists above -- mv_row wipes+highlights the identical
+ * rect (BACKLOG #36 item 7 moved it off a coincidentally-equal `14 + i*9` / `(2,y-1,236,9)`
+ * literal pair onto these names) -- but a SHORTER window: pick_move draws a stat detail
+ * panel below the list (PDNA_MV_DETAIL_Y..+58), so it only fits PDNA_MV_VIS rows where
+ * the filter lists fit the taller PDNA_FILT_VIS. Named here (not left as bare 9/92 in
+ * pdna_pick.c) so a future PDNA_FILT_ROW_H change is checked against THIS boundary too,
+ * not just the filter lists' own footer -- the exact class of gap host_textfit_test's
+ * "filter list last row ink" check exists to catch for the other two lists. */
+#define PDNA_MV_VIS          9                /* rows in pick_move's window            */
+#define PDNA_MV_DETAIL_Y    92                /* top of the stat detail panel below it */
 /* These lists put their hint TWO rows below UI_FOOTER_Y, not on it (nothing pops up over
  * them, so they can use the whole band). Named so the host test can assert it is still
  * inside the footer band and still on screen. */

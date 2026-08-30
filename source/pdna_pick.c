@@ -1046,9 +1046,20 @@ static void text_wrap(int x, int y, int cols, u16 ink, const char* s) {
  * overlapping. */
 static void mv_row(int idx, int i, bool sel) {
   uint16_t m = g_mv[idx];
-  int y = 14 + i * 9;
-  ui_fill_rect(2, y - 1, 236, 9, UI_BG);
-  if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+  /* BACKLOG #36 item 7: y/wipe geometry used to be a hardcoded `14 + i*9` / `(2, y-1,
+   * 236, 9)` literal pair that happened to equal FILT_Y0/FILT_ROW_H/PDNA_FILT_BAR_* --
+   * type_chip()'s own header comment already names mv_row as one of the three callers
+   * backing its rows with that bar rect (fm_row, dxm_row, mv_row), so a future
+   * PDNA_FILT_BAR_H/DY edit silently drifting this one out of step would reopen exactly
+   * the bug type_chip's comment describes (chip painting outside the wipe rect,
+   * invariant (1) of the ROW REPAINT RULE above) -- caught only by eye, not the build.
+   * Pinned to the same macros fm_row/dxm_row use (see pdna_layout.h's PDNA_MV_VIS/
+   * PDNA_MV_DETAIL_Y for the window-height half of this same tie). The selection paint
+   * stays ui_panel (bordered), not filt_bar (borderless) -- that's mv_row's own visual
+   * choice, unchanged here. */
+  int y = FILT_Y0 + i * FILT_ROW_H;
+  ui_fill_rect(PDNA_FILT_BAR_X, y + PDNA_FILT_BAR_DY, PDNA_FILT_BAR_W, PDNA_FILT_BAR_H, UI_BG);
+  if (sel) ui_panel(PDNA_FILT_BAR_X, y + PDNA_FILT_BAR_DY, PDNA_FILT_BAR_W, PDNA_FILT_BAR_H, UI_SEL, UI_TITLE);
   char nm[20]; ui_truncate(nm, pk_move_name(m), 14);   /* fixed-width column: PP/type align */
   ui_text(6, y, sel ? UI_SELTEXT : UI_TEXT, nm);
   type_chip(120, y, pk_move_type(m));
@@ -1069,7 +1080,7 @@ uint16_t pick_move(uint16_t current) {
   for (;;) {
     if (sel >= g_mvn) sel = g_mvn ? g_mvn - 1 : 0;
     if (sel < top) top = sel;
-    if (sel >= top + 9) top = sel - 8;
+    if (sel >= top + PDNA_MV_VIS) top = sel - (PDNA_MV_VIS - 1);
 
     /* full: first paint, a picker/OSK overlay wiped us, the filter/sort/search list was
      * rebuilt, or the visible window scrolled -- every row's text is then genuinely new.
@@ -1085,10 +1096,10 @@ uint16_t pick_move(uint16_t current) {
       ui_text(4, 1, UI_TITLE, h);
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
       ui_text(4, 152, UI_DIM, "A pick  L/R type  SEL find");
-      for (int i = 0; i < 9 && top + i < g_mvn; i++) mv_row(top + i, i, top + i == sel);
+      for (int i = 0; i < PDNA_MV_VIS && top + i < g_mvn; i++) mv_row(top + i, i, top + i == sel);
     } else if (sel != prev_sel) {
-      if (prev_sel >= top && prev_sel < top + 9) mv_row(prev_sel, prev_sel - top, false);
-      if (sel      >= top && sel      < top + 9) mv_row(sel,      sel - top,      true);
+      if (prev_sel >= top && prev_sel < top + PDNA_MV_VIS) mv_row(prev_sel, prev_sel - top, false);
+      if (sel      >= top && sel      < top + PDNA_MV_VIS) mv_row(sel,      sel - top,      true);
     }
 
     /* detail panel for the selected move: fixed-width stat columns so the real type
@@ -1099,9 +1110,9 @@ uint16_t pick_move(uint16_t current) {
      * change that leaves sel pointing at the same id costs neither. */
     uint16_t mid = g_mvn ? g_mv[sel] : (uint16_t)0xFFFF;
     if (full || mid != prev_mid) {
-      ui_fill_rect(0, 92, UI_SCR_W, 58, UI_BG);
+      ui_fill_rect(0, PDNA_MV_DETAIL_Y, UI_SCR_W, 58, UI_BG);
       if (g_mvn) {
-        ui_panel(0, 92, UI_SCR_W, 58, UI_PANEL, UI_BORDER);
+        ui_panel(0, PDNA_MV_DETAIL_Y, UI_SCR_W, 58, UI_PANEL, UI_BORDER);
         type_icon(202, 95, pk_move_type(mid));
         char num[48];
         siprintf(num, "Pow %3u  Acc %3u  PP %2u",

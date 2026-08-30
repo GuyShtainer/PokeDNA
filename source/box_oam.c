@@ -221,6 +221,14 @@ static int      s_pend = 0;             /* second half of a split (fused-ROM) sw
 static int      s_pend_frame = 0;       /* which frame that pending half is swapping to    */
 static int      s_regb = -1;            /* what region B holds: 0=grab fist 1=item -1=none */
 static int      s_rega = -1;            /* what region A holds: 0=hand 1=full item 2=held mon -1 */
+/* BACKLOG #36 item 3: same-content resident id for load_regb_item's short-circuit,
+ * packing (tid, full, carried_item) the same way load_rega_hand packs its own `want`
+ * -- see that function's short-circuit and load_regb_item's own comment for why. -1
+ * can never collide with a real packed value (tid is always >= TID_HAND, so a real
+ * value is always >= 0). Plain `static int`, same as s_regb/s_rega right above: this
+ * project's convention is EWRAM_BSS as the explicit opt-in for big buffers, so an
+ * untagged static here links to IWRAM .bss like its neighbours, at zero EWRAM cost. */
+static int      s_regb_item_want = -1;
 static uint8_t  s_selmark[30];          /* 1 = whiten this slot (rubber-band selection)   */
 static uint8_t  s_select_on = 0;        /* selection brightness-blend registers active    */
 static uint8_t  s_covered[30];          /* 1 = slot's tile region borrowed by the chunk   */
@@ -270,24 +278,15 @@ static void hide(int i) { obj_hide(oe(i)); }
  * lose nothing: sources are IWRAM/stack-resident, memcpy32 runs at DMA parity for
  * them, and a full box-open (~30 slots x 512 B) stays trivial at load time.
  *
- * upload_tiles_cpu (below) is now BYTE-IDENTICAL to this function in body -- the
- * tick/load split it was created for (fd205bb, 2026-08-23) no longer exists anywhere
- * in this file. Kept as a separate name rather than merged/removed this round: its 2
- * call sites were reviewer-verified closed in an earlier round, and merging would
- * touch them for zero behavioural gain. A future cleanup pass can fold the two names
- * together; this round's mandate is the DMA removal, not a refactor. */
+ * upload_tiles_cpu used to be a separate, BYTE-IDENTICAL copy of this function -- the
+ * tick/load split it was created for (fd205bb, 2026-08-23) no longer existed anywhere
+ * in this file as of the previous round, which kept the two names because folding them
+ * would have touched their 2 call sites for zero behavioural gain mid-DMA-removal.
+ * BACKLOG #36 item 2 is that fold: both call sites now call this function directly,
+ * upload_tiles_cpu is gone, and `bytes` must be a multiple of 4 (true of every caller:
+ * all pass a whole-tile count * 32) -- the same contract the deleted twin documented. */
 static void upload_tiles(int tid, const void* src, int bytes) {
   /* OBJ tile memory base = tile_mem_obj[0] (0x06010000); each 4bpp tile = 32 B. */
-  uint16_t* dst = (uint16_t*)((uint8_t*)tile_mem_obj[0] + (uint32_t)tid * 32);
-  rumble_io_suspend();              /* freeze GPIO during ROM/VRAM copy */
-  memcpy32(dst, src, (uint32_t)bytes / 4u);
-  rumble_io_resume();
-}
-
-/* Same upload, same CPU transport as upload_tiles above -- kept as a distinct name
- * only for the historical/no-refactor-this-round reason documented there. bytes must
- * be a multiple of 4 (true of every caller: all pass a whole-tile count * 32). */
-static void upload_tiles_cpu(int tid, const void* src, int bytes) {
   uint16_t* dst = (uint16_t*)((uint8_t*)tile_mem_obj[0] + (uint32_t)tid * 32);
   rumble_io_suspend();              /* freeze GPIO during ROM/VRAM copy */
   memcpy32(dst, src, (uint32_t)bytes / 4u);
@@ -312,8 +311,9 @@ static int icopy_verified(uint16_t* dst, const uint16_t* src, int n) {
 }
 
 /* aligned(4) (2026-08-30, PokeDNA B3 round-3 hardening): s_stage feeds memcpy32 as a
- * source (upload_tiles_verified, and now the whole file's upload_tiles/upload_tiles_cpu
- * pair too) -- it happened to link word-aligned already (GCC's array-alignment boost
+ * source (upload_tiles_verified, and now upload_tiles too, the whole file's one CPU
+ * transport since BACKLOG #36 item 2 folded its former upload_tiles_cpu twin into it)
+ * -- it happened to link word-aligned already (GCC's array-alignment boost
  * for a 512 B object), same as s_pline before its own fix earlier in this slice, but
  * that was luck, not a contract. Declared explicitly so nothing about that depends on
  * the compiler's heuristics for this object's size or on it staying exactly 256
@@ -517,9 +517,10 @@ static void upload_icon(int tid, const uint8_t* tiles, int from_rom) {
  * load-time" classification in this file turned out to be wrong, which is the actual
  * lesson: per-caller classification in a file this densely cross-called does not
  * converge reliably. As of round 3, box_oam.c has ZERO dma3_cpy outside the
- * PDNA_POSE_EXPERIMENT compile gates (default 0, not shipped) -- upload_tiles,
- * upload_tiles_cpu, and this function are all CPU transport, unconditionally, for
- * every caller, load-time or tick alike. No classification question applies to THIS
+ * PDNA_POSE_EXPERIMENT compile gates (default 0, not shipped) -- upload_tiles (its
+ * former upload_tiles_cpu twin folded into it since, BACKLOG #36 item 2) and this
+ * function are all CPU transport, unconditionally, for every caller, load-time or
+ * tick alike. No classification question applies to THIS
  * function, or to any other upload_* helper in this file, ever again -- that is a
  * file-wide invariant now, not a per-call-site judgement call. memcpy32 is the same
  * libtonc IWRAM_CODE word copy the icon pose-swap (swap_cache_slot) already proved
@@ -741,23 +742,29 @@ static uint8_t citem_index(const uint16_t* ic, const uint16_t* cpal, int ncol, i
   return (uint8_t)best;
 }
 
-/* NO SAME-ITEM SHORT-CIRCUIT (2026-08-30, PokeDNA B3 round-3 note, recorded not fixed):
- * unlike load_rega_hand's `if (s_rega == want) return;` or load_regb_grab's `if (s_regb
- * == 0) return;`, this function rebuilds the palette + repacks every tile and calls
- * upload_tiles on EVERY call, even when `carried_item`/`full` are identical to last
- * time. Its caller, boxoam_carry_item(), is itself called every pass of pdna_box.c's
- * cursor_slide() per-vblank loop while an item is carried/hovered and a direction is
- * held (up to 12 vblanks) -- so the same 512 or 128 B upload repeats, unchanged, once
- * per vblank for that beat's duration. Bounded (the beat ends the moment the key is
- * released or the slide completes) and now CPU-only (upload_tiles is memcpy32, see its
- * own comment), so this is a redundancy note, not a correctness or safety concern. A
- * same-content short-circuit (an `s_regb_item`-style resident-id check, mirroring
- * s_rega/s_regb) is a real perf nicety QUEUED for later, deliberately NOT added this
- * round: it would need a new piece of resident state, and the EWRAM guard is at 612 B
- * free with zero budget for another static this slice can spend. */
+/* SAME-CONTENT SHORT-CIRCUIT (BACKLOG #36 item 3, fixing the 2026-08-30 B3 round-3
+ * "recorded not fixed" note below): unlike load_rega_hand's `if (s_rega == want)
+ * return;` or load_regb_grab's `if (s_regb == 0) return;`, this function used to
+ * rebuild the palette + repack every tile and call upload_tiles on EVERY call, even
+ * when `carried_item`/`full`/`tid` were identical to last time. Its caller,
+ * boxoam_carry_item(), is itself called every pass of pdna_box.c's cursor_slide()
+ * per-vblank loop while an item is carried/hovered and a direction is held (up to 12
+ * vblanks) -- so the same 512 or 128 B upload repeated, unchanged, once per vblank for
+ * that beat's duration. That was bounded and CPU-only (upload_tiles is memcpy32), so
+ * never a correctness or safety concern, purely a redundancy -- but the fix turned out
+ * to be free: the round-3 note assumed a new resident-id static would cost EWRAM (the
+ * guard was at 612 B free with no budget to spend), without checking WHERE it would
+ * actually link. s_rega/s_regb two lines above this function are plain `static int`,
+ * not EWRAM_BSS, and this project routes an untagged static to IWRAM .bss by
+ * convention (EWRAM_BSS is the explicit opt-in for the big buffers) -- so
+ * s_regb_item_want costs zero EWRAM, and the short-circuit below is exactly the nicety
+ * the note queued, added this round instead of deferred. */
 static void load_regb_item(uint16_t carried_item, bool full, int tid) {
   /* full = 32x32 (16 tiles) carried/grab item; !full = 16x16 (4 tiles) hover preview.
    * tid = where the tiles go (TID_CITEM in region B for hover, TID_HAND in region A for grab). */
+  int want = ((int)tid << 17) | (full ? (1 << 16) : 0) | (int)carried_item;
+  if (s_regb_item_want == want) return;
+  s_regb_item_want = want;
   uint16_t cpal[16]; for (int i = 0; i < 16; i++) cpal[i] = 0;
   /* aligned(4) (2026-08-30, PokeDNA B3 round-3 hardening): this stack array is the
    * memcpy32 source at this function's own upload_tiles(tid, ctiles, ...) call below --
@@ -849,6 +856,13 @@ void boxoam_enter(void) {
   s_expb_ok = 0;
 #endif
   s_bob = 0; s_regb = -1; s_rega = -1;
+  /* s_regb_item_want too (BACKLOG #36 item 3): its short-circuit trusts that an
+   * unchanged (tid, full, carried_item) triple means TID_HAND/TID_REGB's tile memory
+   * still holds what was last uploaded for it -- true within one box-screen visit
+   * (nothing else here touches those tile ids), false across a re-entry, since whatever
+   * screen ran in between may have reused the same OBJ tile slots for something else.
+   * Same "no mid-beat leakage across screens" reason s_rega/s_regb reset here for. */
+  s_regb_item_want = -1;
   s_hand_pose = BOXOAM_POSE_NORMAL; s_cur_dy = 0;   /* no mid-beat leakage across screens */
 #if !PDNA_HAND_ART_COMPILED
   s_hand_bob = 0;
@@ -1277,7 +1291,7 @@ static void pose_swap_rom_slot(int s, uint8_t frame) {
   if (s == 0 && s_expb_ok) { swap_expb_slot(); return; }
 #endif
   if (!s_rom_cheap || !rom_icon_pose_frame(s_species[s], s_form[s], frame, &b)) return;
-  upload_tiles_cpu(TID_ICON0 + s * MON_ICON_OAM_TILES, s_stage,
+  upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, s_stage,
               MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
 }
 
@@ -1290,10 +1304,11 @@ static void pose_swap_rom_slot(int s, uint8_t frame) {
  * plus 16 for the hand (TID_HAND 992) and 16 for region B (TID_REGB 1008) = exactly 512
  * tiles. There is no second frame's worth of VRAM, at any price.
  *
- * The re-upload itself is cheap and DOES fit the vblank: this path calls upload_tiles_cpu
+ * The re-upload itself is cheap and DOES fit the vblank: this path calls upload_tiles
  * (memcpy32, same as every upload_* helper in this file as of the 2026-08-30 round-3
  * hardening pass -- this comment used to say "upload_tiles is dma3_cpy", which named the
- * wrong function even before that pass), so a full box is 15,360 B = 3,840 words, roughly
+ * wrong function even before that pass; the call site itself said upload_tiles_cpu until
+ * BACKLOG #36 item 2 folded that name into this one), so a full box is 15,360 B = 3,840 words, roughly
  * 9 K cycles against vblank's 83,776 — about 11%. (The "cannot fit the vblank window" note
  * at the top of this file is about upload_tiles_VERIFIED, which reads every word back a
  * second time. This path uses the plain copy: the icons were already verified when the
@@ -1353,7 +1368,7 @@ int boxoam_set_frame(int frame) {
     }
     const uint8_t* t; int b;
     if (mon_icon_oam_for_form_frame(s_species[s], s_form[s], (uint8_t)frame, &t, &b)) {
-      upload_tiles_cpu(TID_ICON0 + s * MON_ICON_OAM_TILES, t,
+      upload_tiles(TID_ICON0 + s * MON_ICON_OAM_TILES, t,
                    MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);   /* compiled: always now */
       continue;
     }
