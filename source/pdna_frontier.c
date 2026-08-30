@@ -200,37 +200,77 @@ static int lane_menu(bool singles, const char* brain_lbl) {
   }
 }
 
-/* ---- Ruby/Sapphire Battle Tower -------------------------------------------- */
+/* One selectable tower row (i=0/1 the two records, i=2 total wins).
+ * ui_text_sel draws no background when unselected (D5's lesson 3), so this erases
+ * first; UI_ROW_H (8px) fits well inside the 12px row pitch, no shared-scanline
+ * case. */
+static void rst_row_paint(const uint8_t* sb2, int i, bool sel) {
+  char l[40];
+  int y = (i < 2) ? 62 + i * 12 : 86;
+  ui_fill_rect(4, y, 232, UI_ROW_H, UI_BG);
+  if (i < 2) siprintf(l, "%-17s%4d", i ? "Record (Open)" : "Record (Lv50)", g3f_rs_record(sb2, i));
+  else       siprintf(l, "%-17s%4d", "Total wins", g3f_u16_get(sb2, G3F_RS_TOTAL_WINS_OFF));
+  ui_text_sel(4, y, 232, sel, UI_TEXT, l);
+}
+/* The non-selectable "Best (derived)" row -- g3f_rs_set_record's own comment says it
+ * refreshes this cached value as a SIDE EFFECT of editing either record, so it needs
+ * its own value-diff even though it is never the cursor target. */
+static void rst_best_paint(const uint8_t* sb2) {
+  char l[40];
+  ui_fill_rect(4, 100, 232, UI_ROW_H, UI_BG);
+  siprintf(l, "%-17s%4d", "Best (derived)", g3f_u16_get(sb2, G3F_RS_BEST_STREAK_OFF));
+  ui_text(4, 100, UI_DIM, l);
+}
+
+/* ---- Ruby/Sapphire Battle Tower --------------------------------------------
+ * s_msg() (this file's own, NOT pdna_main.c's msg_wait) draws its panel directly
+ * over whatever is already on screen -- it never calls ui_clear(), so it does not
+ * bump ui_clear_gen() either. Every call site here that shows it must therefore
+ * force the shadow invalid by hand (pv_valid = false) right after, or the panel's
+ * leftover pixels would sit there forever with nothing to trigger their removal --
+ * the "overlay without ui_clear needs manual invalidation" rule. num_entry() (via
+ * osk_search, pdna_main.c-shared osk.c) DOES ui_clear() even on cancel, so gen alone
+ * already catches every path through it. */
 static void rs_tower(uint8_t* sb2) {
   bool dirty = false;
   int sel = 0;
+  int pv_sel = -1, pv_r0 = -1, pv_r1 = -1, pv_tw = -1, pv_best = -1;
+  bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, "BATTLE TOWER");
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    ui_text(4, 22, UI_DIM, "Ruby/Sapphire store only the");
-    ui_text(4, 32, UI_DIM, "RECORD streaks. The current");
-    ui_text(4, 42, UI_DIM, "streak is derived in-game.");
+    int r0 = g3f_rs_record(sb2, 0), r1 = g3f_rs_record(sb2, 1);
+    int tw = g3f_u16_get(sb2, G3F_RS_TOTAL_WINS_OFF);
+    int best = g3f_u16_get(sb2, G3F_RS_BEST_STREAK_OFF);
+    bool full = !pv_valid || pv_gen != ui_clear_gen();
 
-    char l[40];                       /* rows stay <= 23 cols (x=4 -> 188 px) */
-    for (int i = 0; i < 2; i++) {
-      siprintf(l, "%-17s%4d", i ? "Record (Open)" : "Record (Lv50)", g3f_rs_record(sb2, i));
-      ui_text_sel(4, 62 + i * 12, 232, sel == i, UI_TEXT, l);
+    if (full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "BATTLE TOWER");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+      ui_text(4, 22, UI_DIM, "Ruby/Sapphire store only the");
+      ui_text(4, 32, UI_DIM, "RECORD streaks. The current");
+      ui_text(4, 42, UI_DIM, "streak is derived in-game.");
+      for (int i = 0; i < 3; i++) rst_row_paint(sb2, i, sel == i);
+      rst_best_paint(sb2);
+      ui_text(4, 118, UI_DIM, "The game recomputes 'best'");
+      ui_text(4, 128, UI_DIM, "from the two records.");
+      ui_text(4, 152, UI_DIM, app_can_edit() ? "A edit  B back" : "B back (read-only)");
+    } else {
+      bool rowchg[3] = { r0 != pv_r0, r1 != pv_r1, tw != pv_tw };
+      for (int i = 0; i < 3; i++) {
+        bool s = (sel == i), os = (pv_sel == i);
+        if (rowchg[i] || s != os) rst_row_paint(sb2, i, s);
+      }
+      if (best != pv_best) rst_best_paint(sb2);
     }
-    siprintf(l, "%-17s%4d", "Total wins", g3f_u16_get(sb2, G3F_RS_TOTAL_WINS_OFF));
-    ui_text_sel(4, 86, 232, sel == 2, UI_TEXT, l);
-    siprintf(l, "%-17s%4d", "Best (derived)", g3f_u16_get(sb2, G3F_RS_BEST_STREAK_OFF));
-    ui_text(4, 100, UI_DIM, l);
-    ui_text(4, 118, UI_DIM, "The game recomputes 'best'");
-    ui_text(4, 128, UI_DIM, "from the two records.");
-    ui_text(4, 152, UI_DIM, app_can_edit() ? "A edit  B back" : "B back (read-only)");
+    pv_sel = sel; pv_r0 = r0; pv_r1 = r1; pv_tw = tw; pv_best = best;
+    pv_valid = true; pv_gen = ui_clear_gen();
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) break;
     if (k & KEY_UP)   sel = sel ? sel - 1 : 2;
     if (k & KEY_DOWN) sel = (sel + 1) % 3;
     if (k & KEY_A) {
-      if (!app_can_edit()) { snd_deny(); s_msg("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+      if (!app_can_edit()) { snd_deny(); s_msg("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); pv_valid = false; continue; }
       int v;
       if (sel < 2) {
         if (!num_entry(sel ? "Record streak (Open)" : "Record streak (Lv50)",
@@ -262,7 +302,61 @@ static int fac_symbols(const uint8_t* sb1, PkGame game, int fac) {
   return n;
 }
 
-/* ---- the Emerald screen ---------------------------------------------------- */
+/* One streaks-table row (HDR/LANE/COUNTER). Row pitch 10; the HDR panel is 9px tall
+ * and ui_text_sel's own highlight is UI_ROW_H (8px) -- both fit inside the pitch with
+ * a 1-2px margin, so this erase (10px, touching not overlapping the next row's) is
+ * the only wipe needed regardless of kind. Values are read LIVE from sb2 every call
+ * (cur/rec/act or the counter), same as render_browser reads live from g_entries --
+ * correct because every path that can change them also forces a full repaint (see
+ * pdna_frontier's own header comment on this loop). */
+static void frs_row_paint(const uint8_t* sb2, const FrRow* rows, int idx, int i, bool sel) {
+  const FrRow* r = &rows[idx];
+  int y = 18 + i * 10;
+  ui_fill_rect(0, y - 1, UI_SCR_W, 10, UI_BG);
+  if (r->kind == ROW_HDR) {
+    if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+    ui_text(4, y, sel ? UI_SELTEXT : UI_DIRCLR, r->label);
+    return;
+  }
+  char l[48], nm[28];
+  lane_label(nm, sizeof nm, r);
+  if (r->kind == ROW_LANE) {
+    int cur = g3f_streak_get(sb2, r->fac, r->mode, r->lvl, G3F_CURRENT);
+    int rec = g3f_streak_get(sb2, r->fac, r->mode, r->lvl, G3F_RECORD);
+    bool act = g3f_active_get(sb2, r->fac, r->mode, r->lvl);
+    /* '*' = the lane's winStreakActiveFlags bit is set, i.e. the game will KEEP
+     * this streak. Without it the number is cosmetic and dies on the next visit. */
+    /* 22 cols at x=10 -> 186 px. Indent comes from x, not padding spaces, so a
+     * long label can never push the row past the screen edge. */
+    siprintf(l, "%-11s%4d/%4d %c", nm, cur, rec, act ? '*' : ' ');
+    ui_text_sel(10, y, 226, sel, (cur > 0 && !act) ? UI_WARN : UI_TEXT, l);
+  } else {
+    siprintf(l, "%-11s%4d", nm, g3f_u16_get(sb2, r->off));
+    ui_text_sel(10, y, 226, sel, UI_DIM, l);
+  }
+}
+
+/* ---- the Emerald screen -----------------------------------------------------
+ *
+ * VERIFIED (batch-D8 note 3): every path that writes a lane/counter value routes
+ * through one of two gates, both of which invalidate the shadow --
+ *   - ROW_COUNTER and every ACT_CURRENT/ACT_BEST edit go through num_entry() ->
+ *     osk_search (pdna_main.c-shared osk.c), which ui_clear()s even on cancel, so
+ *     gen alone catches it;
+ *   - every ACT_* case (including ACT_MEET_BRAIN, ACT_CLEAR, ACT_ACTIVE, which do
+ *     NOT go through num_entry) is only reachable after lane_menu() has already run,
+ *     and lane_menu -- like this file's own s_msg() -- draws its panel directly over
+ *     the list WITHOUT ui_clear(), so it does NOT bump gen. Both of THOSE are
+ *     therefore forced invalid by hand (pv_valid = false) the moment they return,
+ *     unconditionally -- covering every downstream ACT_* case and the READ-ONLY
+ *     denial in one place each, rather than one flag per case.
+ * With both gates covered, `top` stays OUT of `full` and gets the same per-row
+ * index-identity diff as pdna_main.c's render_browser/pdna_secretbase (D5's F1 fix):
+ * LEFT/RIGHT's +-6 jump and UP/DOWN wrap both move the window without an auto-repeat
+ * concern (s_wait(), this file's own helper, does not key_repeat -- unlike
+ * pdna_main.c's wait_keys()), but the window can still legitimately move, and a
+ * fixed-width value-diff on top of a wrong row position would be exactly D5's F1 bug
+ * again. */
 void pdna_frontier(uint8_t* sb1, uint8_t* sb2, PkGame game) {
   if (!sb2 || !g3f_supported(game)) {
     s_msg("FRONTIER", UI_DIM, "This game has no Battle", "Frontier records.");
@@ -274,6 +368,7 @@ void pdna_frontier(uint8_t* sb1, uint8_t* sb2, PkGame game) {
   int nrows = build_rows(rows);
   int sel = 1, top = 0;                     /* start on the first lane, not the header */
   bool dirty = false, warned_busy = false;
+  int pv_top = -1, pv_sel = -1; bool pv_valid = false; uint32_t pv_gen = 0;
   rmbl_fire(RCUE_ROOM);
 
   for (;;) {
@@ -283,41 +378,27 @@ void pdna_frontier(uint8_t* sb1, uint8_t* sb2, PkGame game) {
     if (top > nrows - vis) top = nrows - vis;
     if (top < 0) top = 0;
 
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, "FRONTIER STREAKS");
-    /* 12 cols = 96 px; at x=142 it ends on 238, inside the 240 px screen. */
-    if (g3f_challenge_active(sb2))
-      ui_text(142, 4, UI_WARN, "IN CHALLENGE");
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-
-    char l[48], nm[28];
-    for (int i = 0; i < vis && top + i < nrows; i++) {
-      const FrRow* r = &rows[top + i];
-      int y = 18 + i * 10; bool s = (top + i == sel);
-      if (r->kind == ROW_HDR) {
-        if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-        ui_text(4, y, s ? UI_SELTEXT : UI_DIRCLR, r->label);
-        continue;
-      }
-      lane_label(nm, sizeof nm, r);
-      if (r->kind == ROW_LANE) {
-        int cur = g3f_streak_get(sb2, r->fac, r->mode, r->lvl, G3F_CURRENT);
-        int rec = g3f_streak_get(sb2, r->fac, r->mode, r->lvl, G3F_RECORD);
-        bool act = g3f_active_get(sb2, r->fac, r->mode, r->lvl);
-        /* '*' = the lane's winStreakActiveFlags bit is set, i.e. the game will KEEP
-         * this streak. Without it the number is cosmetic and dies on the next visit. */
-        /* 22 cols at x=10 -> 186 px. Indent comes from x, not padding spaces, so a
-         * long label can never push the row past the screen edge. */
-        siprintf(l, "%-11s%4d/%4d %c", nm, cur, rec, act ? '*' : ' ');
-        ui_text_sel(10, y, 226, s, (cur > 0 && !act) ? UI_WARN : UI_TEXT, l);
-      } else {
-        siprintf(l, "%-11s%4d", nm, g3f_u16_get(sb2, r->off));
-        ui_text_sel(10, y, 226, s, UI_DIM, l);
-      }
+    bool full = !pv_valid || pv_gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "FRONTIER STREAKS");
+      /* 12 cols = 96 px; at x=142 it ends on 238, inside the 240 px screen. */
+      if (g3f_challenge_active(sb2))
+        ui_text(142, 4, UI_WARN, "IN CHALLENGE");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+      ui_hline(0, 146, UI_SCR_W, UI_BORDER);
+      /* 27 cols max at x=4 -> 220 px. */
+      ui_text(4, 150, UI_DIM, app_can_edit() ? "A edit  cur/best  *=kept" : "read-only  cur/best *=kept");
     }
-    ui_hline(0, 146, UI_SCR_W, UI_BORDER);
-    /* 27 cols max at x=4 -> 220 px. */
-    ui_text(4, 150, UI_DIM, app_can_edit() ? "A edit  cur/best  *=kept" : "read-only  cur/best *=kept");
+    uint32_t dirtyrow = 0;
+    for (int i = 0; i < vis && top + i < nrows; i++) {
+      int f = top + i, of = pv_top + i;
+      bool s = (f == sel), os = (of == pv_sel);
+      if (full || of != f || s != os) dirtyrow |= 1u << i;
+    }
+    for (int i = 0; i < vis && top + i < nrows; i++)
+      if (dirtyrow & (1u << i)) frs_row_paint(sb2, rows, top + i, i, top + i == sel);
+    pv_top = top; pv_sel = sel; pv_valid = true; pv_gen = ui_clear_gen();
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) break;
@@ -329,7 +410,7 @@ void pdna_frontier(uint8_t* sb1, uint8_t* sb2, PkGame game) {
 
     const FrRow* r = &rows[sel];
     if (r->kind == ROW_HDR) continue;
-    if (!app_can_edit()) { snd_deny(); s_msg("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
+    if (!app_can_edit()) { snd_deny(); s_msg("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); pv_valid = false; continue; }
 
     /* Editing mid-challenge collides with the resume flow, which also owns the
      * party stashed for the run. Warn once per visit, then let the user decide. */
@@ -339,6 +420,7 @@ void pdna_frontier(uint8_t* sb1, uint8_t* sb2, PkGame game) {
       warned_busy = true;
     }
 
+    char nm[28];
     if (r->kind == ROW_COUNTER) {
       int v;
       lane_label(nm, sizeof nm, r);
@@ -357,6 +439,8 @@ void pdna_frontier(uint8_t* sb1, uint8_t* sb2, PkGame game) {
     siprintf(brain_lbl, "Meet Brain (%s)", tier == 1 ? "Gold" : "Silver");
 
     int act = lane_menu(singles, brain_lbl);
+    pv_valid = false;    /* lane_menu drew its own panel over the list without
+                          * ui_clear() -- see this function's header comment */
     if (act < 0) continue;
     int cap = g3f_streak_cap(r->fac);
     int v;
@@ -379,7 +463,7 @@ void pdna_frontier(uint8_t* sb1, uint8_t* sb2, PkGame game) {
       case ACT_MEET_BRAIN: {
         int t = g3f_brain_target(r->fac, symbols);
         g3f_set_current(sb2, r->fac, r->mode, r->lvl, t, true);
-        siprintf(l, "Set to %d for %s.", t, tier == 1 ? "Gold" : "Silver");
+        char l[40]; siprintf(l, "Set to %d for %s.", t, tier == 1 ? "Gold" : "Silver");
         s_msg("BRAIN NEXT BATTLE", UI_OK, l, "Win once here to meet them.");
         dirty = true;
       } break;

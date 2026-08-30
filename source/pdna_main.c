@@ -6394,6 +6394,25 @@ static void pdna_settings(void) {
  * without the filter every battle would list twice.
  * Caps at 24 files / 39-char names / 14 rows; `static char names[24][40]` is plain
  * static = IWRAM (960 B), not EWRAM — deliberate (the guard is at 612 B free). */
+/* One file row. Row pitch 9 == the panel height (touching, not overlapping -- same
+ * contract as every other 9px-pitch list in this file, e.g. render_browser). `rt` is
+ * sized 128, not 40: ui.h's contract wants max_cols*4+1 (117 for 29 cols) because
+ * these ARE real FatFs long filenames (FF_LFN_UNICODE), unlike D7's Gen-3 in-game
+ * names -- the same bug class D5's F3 finding caught in the file browser, latent here
+ * since B1/B2 first wrote this row and fixed while this line was already being
+ * touched for the repaint conversion. */
+static void rl_row_paint(char (*names)[40], int idx, int i, bool sel) {
+  int y = 20 + i * 9;
+  ui_fill_rect(0, y - 1, UI_SCR_W, 9, UI_BG);
+  if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+  char rt[128]; ui_truncate(rt, names[idx], 29);
+  ui_text(6, y, sel ? UI_SELTEXT : UI_TEXT, rt);
+}
+
+/* The list is scanned ONCE, before the loop, and never rescanned inside it (unlike
+ * D5's file browser, whose scan_dir()/sort_entries() can re-run mid-loop) -- so unlike
+ * that screen, no explicit relist flag is needed here: `names`/`n` are invariant for
+ * the whole picking session and only sel/top move. */
 static bool rec_list_pick(const char* title, const char* footer, char* out, size_t outcap) {
   static char names[24][40];
   int n = 0;
@@ -6411,18 +6430,31 @@ static bool rec_list_pick(const char* title, const char* footer, char* out, size
   if (!n) { snd_deny(); msg_wait(title, UI_DIM, "No .rec files in", "/PokeDNA/battles."); return false; }
 
   int sel = 0, top = 0;                                 /* pick one */
+  int pv_top = -1, pv_sel = -1; bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
     if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, title);
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < 14 && top + i < n; i++) {
-      int r = top + i, y = 20 + i * 9; bool s = (r == sel);
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-      char rt[40]; ui_truncate(rt, names[r], 29);
-      ui_text(6, y, s ? UI_SELTEXT : UI_TEXT, rt);
+
+    bool full = !pv_valid || pv_gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, title);
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, footer);
     }
-    ui_text(4, 152, UI_DIM, footer);
+    /* Per-row dirty via index identity, same as render_browser/pdna_secretbase (D5's
+     * F1 fix): `top` stays OUT of `full`, so a scroll (auto-repeating UP/DOWN, up to
+     * 24 files over a 14-row window) repaints every visible row without paying the
+     * ui_clear(); a bare cursor move only flips the two rows whose selection changed. */
+    uint32_t dirty = 0;
+    for (int i = 0; i < 14 && top + i < n; i++) {
+      int f = top + i, of = pv_top + i;
+      bool s = (f == sel), os = (of == pv_sel);
+      if (full || of != f || s != os) dirty |= 1u << i;
+    }
+    for (int i = 0; i < 14 && top + i < n; i++)
+      if (dirty & (1u << i)) rl_row_paint(names, top + i, i, top + i == sel);
+    pv_top = top; pv_sel = sel; pv_valid = true; pv_gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return false;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
@@ -6716,25 +6748,50 @@ static void pdna_battle_record(void) {
   }
   rmbl_fire(RCUE_ROOM);
   int page = RECPAGE_SUMMARY;
+  /* Neither page has a cursor (render_record_summary/render_record_streaks are plain
+   * dumps, no selectable row), so there is no per-row diff to make here -- a page flip
+   * legitimately redraws the whole content area (batch-D8 note 1). What IS wasteful is
+   * paying the 76,800 B ui_clear() plus re-drawing the TITLE/hline (pixel-identical on
+   * both pages) on every L/R flip between SUMMARY and STREAKS -- the two most-pressed
+   * keys here, and neither is in wait_keys' repeat mask (only UP/DOWN/LEFT/RIGHT
+   * auto-repeat; L/R do not), so this is about per-press cost, not held-spam. Shadow:
+   * page + valid + gen. Every OTHER mutation here (SELECT->rec_import, A->export) goes
+   * through msg_wait/busy_panel/rec_list_pick, all of which ui_clear() -- even
+   * rec_import's own "no files" denial does, via msg_wait -- so gen alone catches
+   * every content change that is NOT a plain page flip. */
+  int pv_page = -1; bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
     if (page == RECPAGE_FILES) {        /* self-contained sub-screen, not a page body -- see the enum comment */
       rec_files_page();
       page = RECPAGE_SUMMARY;           /* its own B already means "back to page 1" */
       continue;
     }
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, "BATTLE RECORD");
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    if (page == RECPAGE_SUMMARY) render_record_summary(&ri, g_save + G3_REC_SECTOR_OFF);
-    else                         render_record_streaks(g_sb2);
-    /* Per-page footer (29-column budget). Page 2 spends its columns on the
-     * legend that makes the rows readable (pdna_frontier.c's own convention:
-     * "cur/best  *=kept") and on saying where B goes -- because on page 2, B
-     * returns to page 1, the full pdna_trainer.c house style (its back page's
-     * B goes to the front and the footer says so), not just its L/R line. */
-    ui_text(4, 152, UI_DIM, page == RECPAGE_SUMMARY
-                              ? "A exp SEL imp B back L/R page"
-                              : "B page 1  cur/best  *=kept");
+    bool chrome_full = !pv_valid || pv_gen != ui_clear_gen();
+    bool content_dirty = chrome_full || page != pv_page;
+
+    if (chrome_full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "BATTLE RECORD");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    }
+    if (content_dirty) {
+      /* Chrome (title+hline) already exists and is unchanged -- wipe just the content
+       * + footer band below the hline before redrawing it, matching what ui_clear()
+       * would have left there. */
+      if (!chrome_full) ui_fill_rect(0, 15, UI_SCR_W, UI_SCR_H - 15, UI_BG);
+      if (page == RECPAGE_SUMMARY) render_record_summary(&ri, g_save + G3_REC_SECTOR_OFF);
+      else                         render_record_streaks(g_sb2);
+      /* Per-page footer (29-column budget). Page 2 spends its columns on the
+       * legend that makes the rows readable (pdna_frontier.c's own convention:
+       * "cur/best  *=kept") and on saying where B goes -- because on page 2, B
+       * returns to page 1, the full pdna_trainer.c house style (its back page's
+       * B goes to the front and the footer says so), not just its L/R line. */
+      ui_text(4, 152, UI_DIM, page == RECPAGE_SUMMARY
+                                ? "A exp SEL imp B back L/R page"
+                                : "B page 1  cur/best  *=kept");
+    }
+    pv_page = page; pv_valid = true; pv_gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_A | KEY_B | KEY_SELECT | KEY_L | KEY_R);
     if (k & (KEY_L | KEY_R)) {          /* house style: pdna_trainer.c ~626-632 */
       snd_tab();
