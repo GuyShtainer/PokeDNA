@@ -3780,31 +3780,65 @@ static uint32_t osk_number(const char* prompt, uint32_t cur, uint32_t maxv) {
 /* Raw guarded "flag #N" browser — drilled into from the named FLAGS view. Its own
  * loop; B returns up to the named list. Toggles set *dirty; the soft-lock caution
  * fires once per editor session via the shared *warned flag. */
+/* One raw-flag row at logical offset i (-6..6) from the centred cursor. Row pitch is
+ * 9px and the selected row's own panel is also 9px tall -- pitch == the largest ink
+ * extent here, so a 9px wipe is exactly right (not the D8 pitch-vs-ink mismatch: there
+ * is no separate, taller pitch to over-wipe with). Always erases first, even when
+ * `valid` is false, so a row that scrolls OUT of [0,N) is blanked instead of left
+ * showing its last flag. */
+static void frv_row_paint(int fn, int i, bool sel, bool valid) {
+  int y = 84 + i * 9;
+  ui_fill_rect(2, y - 1, 236, 9, UI_BG);
+  if (!valid) return;
+  char row[40];
+  siprintf(row, "Flag 0x%03X (%d)  %s", fn, fn, pk_flag_get(g_sb1, g_game, fn) ? "ON" : "off");
+  if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+  ui_text(8, y, sel ? UI_SELTEXT : (pk_flag_get(g_sb1, g_game, fn) ? UI_OK : UI_DIM), row);
+}
+
+/* Raw-flag grid: a 13-row window CENTRED on the cursor (row i=0 is always the
+ * selected one; scrolling moves every row's content instead of a top/sel pair).
+ * Held UP/DOWN auto-repeats (wait_keys()), so this is treated like any other
+ * scrolling list: per-row index identity (which flag number is now at position i)
+ * PLUS a live on/off diff, since A toggles the CURRENT flag with no overlay of its
+ * own (lesson 1 -- the same reason data_editor_tab's flags tab force-repaints its
+ * selected row every frame; here a value-diff does the same job more precisely,
+ * since it only repaints when the read-back bit actually flipped). */
 static void flags_raw_view(bool* dirty, bool* warned) {
   int N = pk_flags_count(g_game), flagn = 0;
+  int pv_fn[13] = {0}; bool pv_on[13] = {0}; bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, "RAW FLAGS");
-    ui_text(6, 14, UI_WARN, "Raw flags can break a save!");
-    ui_hline(0, 24, UI_SCR_W, UI_BORDER);
     if (flagn >= N) flagn = N - 1; if (flagn < 0) flagn = 0;
-    char row[40];
-    for (int i = -6; i <= 6; i++) {
-      int fn = flagn + i; if (fn < 0 || fn >= N) continue;
-      int y = 84 + i * 9; bool s = (i == 0);
-      siprintf(row, "Flag 0x%03X (%d)  %s", fn, fn, pk_flag_get(g_sb1, g_game, fn) ? "ON" : "off");
-      if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-      ui_text(8, y, s ? UI_SELTEXT : (pk_flag_get(g_sb1, g_game, fn) ? UI_OK : UI_DIM), row);
+
+    bool full = !pv_valid || pv_gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      ui_text(4, 2, UI_TITLE, "RAW FLAGS");
+      ui_text(6, 14, UI_WARN, "Raw flags can break a save!");
+      ui_hline(0, 24, UI_SCR_W, UI_BORDER);
+      ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, "A toggle  U/D  SEL jump#  B back");
     }
-    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, "A toggle  U/D  SEL jump#  B back");
+    for (int i = -6; i <= 6; i++) {
+      int fn = flagn + i, idx = i + 6;
+      bool valid_now = (fn >= 0 && fn < N);
+      bool on = valid_now && pk_flag_get(g_sb1, g_game, fn);
+      bool was_valid = (pv_fn[idx] >= 0);
+      bool changed = full || (valid_now != was_valid)
+                   || (valid_now && (fn != pv_fn[idx] || on != pv_on[idx]));
+      if (changed) frv_row_paint(fn, i, i == 0, valid_now);
+      pv_fn[idx] = valid_now ? fn : -1;
+      pv_on[idx] = on;
+    }
+    pv_valid = true; pv_gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT);
     if (k & KEY_B) return;
     else if (k & KEY_UP)   { if (flagn > 0) flagn--; }
     else if (k & KEY_DOWN) flagn++;
     else if (k & KEY_SELECT) flagn = (int)osk_number("FLAG #", flagn, N - 1);
     else if (k & KEY_A) {
-      if (!*warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); *warned = true; }
+      if (!*warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); *warned = true; pv_valid = false; }
       pk_flag_set(g_sb1, g_game, flagn, !pk_flag_get(g_sb1, g_game, flagn)); *dirty = true;
     }
   }
@@ -4237,36 +4271,77 @@ static int pick_pokeblock_color(uint8_t cur) {
 
 /* Edit one Pokéblock, game-like: a colour swatch (A = preset picker) + flavour bars +
  * feel, plus "Delete this block". Returns true if anything changed. */
+/* Row 0 (colour swatch + name + "A: pick"). 20px tall, matching its own panel exactly
+ * -- not a shared pitch, so no D8-class pitch-vs-ink mismatch. */
+static void pbe_row0_paint(const PkPokeblock* pb, bool sel) {
+  ui_fill_rect(2, 17, 236, 20, UI_BG);
+  if (sel) ui_panel(2, 17, 236, 20, UI_SEL, UI_TITLE);
+  pokeblock_swatch(8, 19, 16, pb->color);
+  ui_text(30, 23, sel ? UI_SELTEXT : UI_TEXT, pk_pokeblock_color_name(pb->color));
+  ui_text(150, 23, sel ? UI_SELTEXT : UI_DIM, "A: pick");
+}
+/* A flavour/feel row: label + 3-digit value + a progress bar. 12px tall, matching its
+ * own panel exactly. */
+static void pbe_flavor_paint(const char* label, uint8_t v, u16 barcol, int y, bool sel) {
+  ui_fill_rect(2, y - 1, 236, 12, UI_BG);
+  int fb = v; if (fb > 99) fb = 99;
+  if (sel) ui_panel(2, y - 1, 236, 12, UI_SEL, UI_TITLE);
+  ui_text(8, y, sel ? UI_SELTEXT : UI_DIM, label);
+  char b[8]; siprintf(b, "%3u", (unsigned)v); ui_text(56, y, sel ? UI_SELTEXT : UI_TEXT, b);
+  ui_progress(84, y + 1, 150, 6, fb * 150 / 99, barcol, UI_PANEL, UI_BORDER);
+}
+/* "Delete this block". 11px tall, matching its own panel exactly. */
+static void pbe_delete_paint(bool sel) {
+  int y = 42 + 6 * 13 + 4;
+  ui_fill_rect(2, y - 1, 236, 11, UI_BG);
+  if (sel) ui_panel(2, y - 1, 236, 11, UI_SEL, UI_TITLE);
+  ui_text(8, y, sel ? UI_SELTEXT : UI_WARN, "Delete this block");
+}
+
+/* HELD-STEPPER CASE (batch-D10 note 4, the clock_manual_entry precedent): LEFT/RIGHT
+ * sit in wait_keys()'s repeat mask and mutate colour/flavour/feel directly, with NO
+ * overlay -- a gen-only shadow would miss every held step. Shadow: the actual VALUES
+ * (pv_color, pv_fv[5], pv_feel) plus pv_sel, not just gen. KEY_A's two paths
+ * (pick_pokeblock_color, osk_number) both ui_clear() unconditionally on their own
+ * first frame, cancelled or not, so gen alone already catches those -- only the
+ * LEFT/RIGHT steppers need the value diff.
+ *
+ * CALLER DEPENDENCY: pdna_pokeblock's own partial-repaint path relies on THIS
+ * function's entry always painting (ui_clear() on the first, `!pv_valid`-forced,
+ * iteration below) to bump ui_clear_gen() -- that is what lets pdna_pokeblock treat
+ * "pokeblock_edit was opened" as sufficient invalidation without its own extra flag.
+ * That entry clear is preserved exactly (valid starts false, so `full` is always true
+ * on iteration 1); only the REPEATED per-keypress clears this loop used to pay are
+ * gated. */
 static bool pokeblock_edit(int idx) {
   static const char* const FL[5] = { "Spicy", "Dry", "Sweet", "Bitter", "Sour" };
   PkPokeblock pb; pk_pokeblock_get(g_sb1, g_game, idx, &pb);
   uint8_t* fv[5] = { &pb.spicy, &pb.dry, &pb.sweet, &pb.bitter, &pb.sour };
   int sel = 0; bool changed = false;                          /* rows: 0 colour, 1..5 flavours, 6 feel, 7 delete */
+  int pv_sel = -1, pv_color = -1, pv_feel = -1; uint8_t pv_fv[5] = { 0 };
+  bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
-    ui_clear();
-    char t[24]; siprintf(t, "POKEBLOCK %d", idx + 1); ui_text(4, 2, UI_TITLE, t);
-    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
-    bool s0 = (sel == 0);
-    if (s0) ui_panel(2, 17, 236, 20, UI_SEL, UI_TITLE);
-    pokeblock_swatch(8, 19, 16, pb.color);
-    ui_text(30, 23, s0 ? UI_SELTEXT : UI_TEXT, pk_pokeblock_color_name(pb.color));
-    ui_text(150, 23, s0 ? UI_SELTEXT : UI_DIM, "A: pick");
-    for (int i = 0; i < 5; i++) {
-      int y = 42 + i * 13; bool s = (sel == 1 + i); int fb = *fv[i]; if (fb > 99) fb = 99;
-      if (s) ui_panel(2, y - 1, 236, 12, UI_SEL, UI_TITLE);
-      ui_text(8, y, s ? UI_SELTEXT : UI_DIM, FL[i]);
-      char b[8]; siprintf(b, "%3u", (unsigned)*fv[i]); ui_text(56, y, s ? UI_SELTEXT : UI_TEXT, b);
-      ui_progress(84, y + 1, 150, 6, fb * 150 / 99, UI_OK, UI_PANEL, UI_BORDER);
+    bool full = !pv_valid || pv_gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      char t[24]; siprintf(t, "POKEBLOCK %d", idx + 1); ui_text(4, 2, UI_TITLE, t);
+      ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, "A edit/pick  <> +/-  U/D  B done");
     }
-    { int y = 42 + 5 * 13; bool s = (sel == 6); int fb = pb.feel; if (fb > 99) fb = 99;
-      if (s) ui_panel(2, y - 1, 236, 12, UI_SEL, UI_TITLE);
-      ui_text(8, y, s ? UI_SELTEXT : UI_DIM, "Feel");
-      char b[8]; siprintf(b, "%3u", (unsigned)pb.feel); ui_text(56, y, s ? UI_SELTEXT : UI_TEXT, b);
-      ui_progress(84, y + 1, 150, 6, fb * 150 / 99, UI_DIRCLR, UI_PANEL, UI_BORDER); }
-    { int y = 42 + 6 * 13 + 4; bool s = (sel == 7);
-      if (s) ui_panel(2, y - 1, 236, 11, UI_SEL, UI_TITLE);
-      ui_text(8, y, s ? UI_SELTEXT : UI_WARN, "Delete this block"); }
-    ui_text(4, 152, UI_DIM, "A edit/pick  <> +/-  U/D  B done");
+    if (full || pb.color != pv_color || (sel == 0) != (pv_sel == 0))
+      pbe_row0_paint(&pb, sel == 0);
+    for (int i = 0; i < 5; i++) {
+      bool s = (sel == 1 + i), os = (pv_sel == 1 + i);
+      if (full || *fv[i] != pv_fv[i] || s != os) pbe_flavor_paint(FL[i], *fv[i], UI_OK, 42 + i * 13, s);
+    }
+    { bool s = (sel == 6), os = (pv_sel == 6);
+      if (full || pb.feel != pv_feel || s != os) pbe_flavor_paint("Feel", pb.feel, UI_DIRCLR, 42 + 5 * 13, s); }
+    { bool s = (sel == 7), os = (pv_sel == 7);
+      if (full || s != os) pbe_delete_paint(s); }
+    pv_sel = sel; pv_color = pb.color; pv_feel = pb.feel;
+    for (int i = 0; i < 5; i++) pv_fv[i] = *fv[i];
+    pv_valid = true; pv_gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) break;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 7;
@@ -4560,25 +4635,51 @@ static bool grant_key_item(uint16_t item) {              /* add to the Key Items
   return false;                                          /* pocket full (very unlikely) */
 }
 
+/* One ticket row. 18px pitch, 17px panel/wipe -- matches the panel exactly, no
+ * D8-class pitch-vs-ink mismatch. `on` (ticket_granted) is read live -- safe because
+ * every path that can change it (KEY_A below) always runs app_confirm() first (which
+ * ui_clear()s regardless of accept/decline), so a pure cursor move can never see a
+ * stale `on` here. */
+static void ev_row_paint(const EventTicket* T, int i, bool sel) {
+  int y = 20 + i * 18;
+  ui_fill_rect(0, y - 1, UI_SCR_W, 17, UI_BG);
+  if (sel) ui_panel(2, y - 1, 236, 17, UI_SEL, UI_TITLE);
+  bool on = ticket_granted(&T[i]);
+  ui_text(8, y, sel ? UI_SELTEXT : UI_TEXT, T[i].name);
+  ui_text(150, y, on ? UI_OK : UI_DIM, on ? "READY" : "-");
+  char sub[40]; siprintf(sub, "-> %s", T[i].mon);
+  ui_text(12, y + 8, sel ? UI_SELTEXT : UI_DIM, sub);
+}
+
+/* Fixed-size list (n <= 4, every ticket fits on screen -- no scrolling window), so a
+ * plain sel-vs-pv_sel 2-row swap is exact here, unlike a windowed list (no `top` to
+ * get wrong). The "MG: on/off" indicator (mgf) is read only, never written by this
+ * screen (its enable_flag/recv_flag writes below target DIFFERENT flag ids for every
+ * game table -- checked), so it is static for the whole visit and only needs the
+ * `full` branch. Every KEY_A path -- NO ROOM, GRANTED, or a plain decline -- runs
+ * app_confirm() first, which ui_clear()s regardless of outcome, so gen alone catches
+ * every content change; no held-repeat stepper exists here (only U/D, A, B). */
 static void pdna_events(void) {
   const EventTicket* T; int n = event_tickets(&T);
   int mgf = mg_enable_flag();
   bool dirty = false; int sel = 0;
+  int pv_sel = -1; bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, "EVENT TICKETS");
-    bool mg = (mgf >= 0) && pk_flag_get(g_sb1, g_game, mgf);
-    if (mgf >= 0) ui_text(150, 2, mg ? UI_OK : UI_DIM, mg ? "MG: on" : "MG: off");
-    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < n; i++) {
-      int y = 20 + i * 18; bool s = (i == sel), on = ticket_granted(&T[i]);
-      if (s) ui_panel(2, y - 1, 236, 17, UI_SEL, UI_TITLE);
-      ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, T[i].name);
-      ui_text(150, y, on ? UI_OK : UI_DIM, on ? "READY" : "-");
-      char sub[40]; siprintf(sub, "-> %s", T[i].mon);
-      ui_text(12, y + 8, s ? UI_SELTEXT : UI_DIM, sub);
+    bool full = !pv_valid || pv_gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      ui_text(4, 2, UI_TITLE, "EVENT TICKETS");
+      bool mg = (mgf >= 0) && pk_flag_get(g_sb1, g_game, mgf);
+      if (mgf >= 0) ui_text(150, 2, mg ? UI_OK : UI_DIM, mg ? "MG: on" : "MG: off");
+      ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, "A grant  U/D  B done");
+      for (int i = 0; i < n; i++) ev_row_paint(T, i, i == sel);
+    } else if (sel != pv_sel) {
+      ev_row_paint(T, pv_sel, false);
+      ev_row_paint(T, sel, true);
     }
-    ui_text(4, 152, UI_DIM, "A grant  U/D  B done");
+    pv_sel = sel; pv_valid = true; pv_gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) break;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
@@ -5732,14 +5833,27 @@ static void clock_manual_entry(GbaRtcTime live) {
  *    before the map script on load and would overwrite it (MEASURED: 5 days on Guy's Emerald,
  *    68 on Ruby). So we write the LCG PRE-IMAGE and let the game's own catch-up land on the
  *    target. That is why this screen needs the cart RTC. */
+/* This screen polls the cart RTC every iteration for a live "days owed" display (same
+ * shape as pdna_clock, D7 note 3) -- the poll stays unconditional, only the PAINT is
+ * gated. Unlike pdna_clock, UP/DOWN here (sel) ALWAYS change something (n>0 in every
+ * reachable save; a corrupted n==0 save is the only case where they wouldn't), so the
+ * realized win mirrors pdna_battle_record's page-flip split (D8): `chrome_full` gates
+ * the TITLE/hline (pixel-identical across every state), `content_dirty` gates
+ * everything below it (dice line, RTC-derived text, party list, footer) -- a single
+ * wipe+redraw of that whole band rather than per-line diffing, since it's cheap CPU
+ * work (no SD, no icons) and the win that matters is skipping the ui_clear() +
+ * chrome on the common no-RTC-change cursor move. Shadow: sel + the RTC-derived
+ * values that feed the text (hi, have, owed) -- covers both "cursor moved" and "real
+ * time passed enough to change the owed-days text between two keypresses". */
 static void pdna_mirage(void) {
   int sel = 0;
+  int pv_sel = -1; uint16_t pv_hi = 0; bool pv_have = false; int pv_owed = -2;
+  bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, "MIRAGE ISLAND");
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-
     if (g_game == PK_FRLG) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "MIRAGE ISLAND");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
       ui_text(6, 44, UI_DIM, "FireRed / LeafGreen have no");
       ui_text(6, 56, UI_DIM, "Mirage Island.");
       ui_text(4, 152, UI_DIM, "B back");
@@ -5760,39 +5874,51 @@ static void pdna_mirage(void) {
     /* VAR_DAYS is stored in the game's 1-BASED day count; local_days is epoch-0. */
     int owed = have ? mirage_days_owed(g_sb1, g_game, ci.local_days + 1) : -1;
 
-    /* 240 px / 8 px per char = 30 columns, and text starts at x=6 — so 29. Every line here is
-     * counted against that; the first draft wrapped and overlapped itself. */
-    char b[44];
-    siprintf(b, "Dice now %04X  %s", hi, showing ? "SHOWING" : "hidden");
-    ui_text(6, 22, showing ? UI_OK : UI_TEXT, b);
-    if (owed < 0) {
-      ui_text(6, 34, UI_WARN, "Cart clock off.");
-      ui_text(6, 44, UI_DIM,  "Set GAME RTC to use this.");
-    } else if (owed == 0) {
-      ui_text(6, 34, UI_DIM, "Nothing owed - writes as-is.");
-    } else {
-      siprintf(b, "Owed %d day(s): writes a seed", owed);
-      ui_text(6, 34, UI_DIM, b);
-      ui_text(6, 44, UI_DIM, "the game rolls into place.");
-    }
+    bool chrome_full = !pv_valid || pv_gen != ui_clear_gen();
+    bool content_dirty = chrome_full || sel != pv_sel || hi != pv_hi || have != pv_have || owed != pv_owed;
 
-    /* WORDING MATTERS HERE. Guy read the first draft ("Make it match:" over a list of his
-     * Pokemon) as editing the Pokemon. It never does: the only bytes written are the two u16s
-     * of the dice. The list exists because the dice has to land on SOME party member's key and
-     * he has six to choose from. Say that on screen. */
-    ui_text(6, 60, UI_TEXT, n ? "Point the dice at:" : "No Pokemon in the party.");
-    for (int i = 0; i < n; i++) {
-      PkMon m;
-      const uint8_t* mon = g_sb1 + 0x238u + (uint32_t)slot[i] * 100u;
-      bool ok = pk_decode_mon(mon, true, &m);
-      siprintf(b, "%c %-11.11s %04X", (i == sel) ? '>' : ' ',
-               ok && m.nickname[0] ? m.nickname : "?", key[i]);
-      ui_text(6, 72 + i * 9, (i == sel) ? UI_TEXT : UI_DIM, b);  /* 9 px: six rows must clear y=128 */
+    if (chrome_full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "MIRAGE ISLAND");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
     }
+    if (content_dirty) {
+      if (!chrome_full) ui_fill_rect(0, 15, UI_SCR_W, UI_SCR_H - 15, UI_BG);
+      /* 240 px / 8 px per char = 30 columns, and text starts at x=6 — so 29. Every line here is
+       * counted against that; the first draft wrapped and overlapped itself. */
+      char b[44];
+      siprintf(b, "Dice now %04X  %s", hi, showing ? "SHOWING" : "hidden");
+      ui_text(6, 22, showing ? UI_OK : UI_TEXT, b);
+      if (owed < 0) {
+        ui_text(6, 34, UI_WARN, "Cart clock off.");
+        ui_text(6, 44, UI_DIM,  "Set GAME RTC to use this.");
+      } else if (owed == 0) {
+        ui_text(6, 34, UI_DIM, "Nothing owed - writes as-is.");
+      } else {
+        siprintf(b, "Owed %d day(s): writes a seed", owed);
+        ui_text(6, 34, UI_DIM, b);
+        ui_text(6, 44, UI_DIM, "the game rolls into place.");
+      }
 
-    ui_text(6, 128, UI_DIM, "Dice only; no Pokemon edited.");
-    ui_text(6, 138, UI_DIM, "Lasts one in-game day.");
-    ui_text(4, 152, UI_DIM, n ? "A appear  U/D pick  B back" : "B back");
+      /* WORDING MATTERS HERE. Guy read the first draft ("Make it match:" over a list of his
+       * Pokemon) as editing the Pokemon. It never does: the only bytes written are the two u16s
+       * of the dice. The list exists because the dice has to land on SOME party member's key and
+       * he has six to choose from. Say that on screen. */
+      ui_text(6, 60, UI_TEXT, n ? "Point the dice at:" : "No Pokemon in the party.");
+      for (int i = 0; i < n; i++) {
+        PkMon m;
+        const uint8_t* mon = g_sb1 + 0x238u + (uint32_t)slot[i] * 100u;
+        bool ok = pk_decode_mon(mon, true, &m);
+        siprintf(b, "%c %-11.11s %04X", (i == sel) ? '>' : ' ',
+                 ok && m.nickname[0] ? m.nickname : "?", key[i]);
+        ui_text(6, 72 + i * 9, (i == sel) ? UI_TEXT : UI_DIM, b);  /* 9 px: six rows must clear y=128 */
+      }
+
+      ui_text(6, 128, UI_DIM, "Dice only; no Pokemon edited.");
+      ui_text(6, 138, UI_DIM, "Lasts one in-game day.");
+      ui_text(4, 152, UI_DIM, n ? "A appear  U/D pick  B back" : "B back");
+    }
+    pv_sel = sel; pv_hi = hi; pv_have = have; pv_owed = owed; pv_valid = true; pv_gen = ui_clear_gen();
 
     u16 k = wait_keys(KEY_A | KEY_UP | KEY_DOWN | KEY_B);
     if (k & KEY_B) return;
@@ -5927,23 +6053,43 @@ static void pdna_clock(void) {
   }
 }
 
+/* One animation-toggle row. Row pitch 16, wipe/panel 13 -- matches the panel's own
+ * height, not the larger pitch (the D8 lesson). */
+static void as_row_paint(const char* const nm[ANIM_COUNT], int i, bool sel) {
+  char r[40]; siprintf(r, "%-10s %s", nm[i], app_anim_enabled(i) ? "On" : "Off");
+  int y = 30 + i * 16;
+  ui_fill_rect(2, y - 2, 236, 13, UI_BG);
+  if (sel) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
+  ui_text(10, y, sel ? UI_SELTEXT : UI_TEXT, r);
+}
+
 /* Settings > Animations: a per-place On/Off list (the 2-frame bobs + the summary
- * portrait wiggle), each its own toggle. Persists on exit. */
+ * portrait wiggle), each its own toggle. Persists on exit. Pure lesson-1 case
+ * (batch-D10 note 2): A toggles g_anim_mask directly, no overlay screen at all, so
+ * the row's on/off VALUE has to be shadowed, not just gen -- nothing else would ever
+ * invalidate it. No header/counter here derives from the toggles (the help line is a
+ * fixed sentence), so only the per-row diff is needed. */
 static void anim_settings(void) {
   static const char* const NM[ANIM_COUNT] = { "Box icons", "Party", "Pokedex", "Daycare", "Summary" };
   int sel = 0;
+  int pv_sel = -1; bool pv_on[ANIM_COUNT] = { 0 }; bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, "ANIMATIONS");
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < ANIM_COUNT; i++) {
-      char r[40]; siprintf(r, "%-10s %s", NM[i], app_anim_enabled(i) ? "On" : "Off");
-      int y = 30 + i * 16; bool s = (i == sel);
-      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
-      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, r);
+    bool full = !pv_valid || pv_gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "ANIMATIONS");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+      ui_text(8, 124, UI_DIM, "Moving sprites, per screen.");
+      ui_text(4, 152, UI_DIM, "A toggle  U/D move  B back");
     }
-    ui_text(8, 124, UI_DIM, "Moving sprites, per screen.");
-    ui_text(4, 152, UI_DIM, "A toggle  U/D move  B back");
+    for (int i = 0; i < ANIM_COUNT; i++) {
+      bool on = app_anim_enabled(i);
+      bool s = (i == sel), os = (i == pv_sel);
+      if (full || on != pv_on[i] || s != os) as_row_paint(NM, i, s);
+      pv_on[i] = on;
+    }
+    pv_sel = sel; pv_valid = true; pv_gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) { cfg_save(); return; }
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : ANIM_COUNT - 1;
@@ -5952,36 +6098,65 @@ static void anim_settings(void) {
   }
 }
 
+/* One rumble-settings row (a stepper or a cue toggle). i==0 strength, i==1 duration
+ * (PDNA_RMB_STEPPERS of them), i>=PDNA_RMB_STEPPERS a cue. Wipe/panel height 13
+ * matches the panel exactly, not PDNA_RMB_ROW_PITCH (the D8 lesson). */
+static void rs_row_paint(int i, bool sel) {
+  char r[40];
+  if      (i == 0) siprintf(r, "Strength    %d/5  < >", rmbl_get_strength());
+  else if (i == 1) siprintf(r, "Duration    %d/5  < >", rmbl_get_duration());
+  else { int c = i - PDNA_RMB_STEPPERS; siprintf(r, "%-12s %s", rmbl_cue_name(c), rmbl_cue_enabled(c) ? "On" : "Off"); }
+  int y = PDNA_RMB_ROW0_Y + i * PDNA_RMB_ROW_PITCH;
+  ui_fill_rect(2, y - 2, 236, 13, UI_BG);
+  if (sel) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
+  ui_text(PDNA_SET_ROW_X, y, sel ? UI_SELTEXT : UI_TEXT, r);
+}
+
 /* Settings > Rumble: global Strength + Duration steppers (the motor can read as
  * "nothing" on a weak unit, so these are tunable), then a per-cue On/Off list. <>
  * adjust strength/duration (with a live buzz preview); A toggles a cue (+preview).
- * Persists on exit. */
+ * Persists on exit.
+ *
+ * BOTH the held-stepper rows AND the toggle rows have NO overlay of their own --
+ * rmbl_demo()/rmbl_fire() play a MOTOR PULSE, not a screen (batch-D10 notes 2 and 4:
+ * this is simultaneously the "held-stepper, shadow the values" case and the
+ * "toggle-in-place, no overlay" case). Shadow the per-row VALUE (strength, duration,
+ * or a cue's on/off as 0/1), not just gen. pv_val[] is sized
+ * PDNA_RMB_STEPPERS+RCUE_COUNT -- both compile-time constants, so this is a fixed
+ * array, not a VLA, even though the loop bound NROW is a runtime `const int` (its
+ * value is always the same compile-time sum). */
 static void rumble_settings(void) {
   enum { R_STR, R_DUR, R_CUE0 };
   _Static_assert(R_CUE0 == PDNA_RMB_STEPPERS, "rumble stepper count out of sync");
   const int NROW = R_CUE0 + RCUE_COUNT;
   int sel = 0;
+  int pv_sel = -1; int pv_val[PDNA_RMB_STEPPERS + RCUE_COUNT] = { 0 };
+  bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, "RUMBLE");
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < NROW; i++) {
-      char r[40];
-      if      (i == R_STR) siprintf(r, "Strength    %d/5  < >", rmbl_get_strength());
-      else if (i == R_DUR) siprintf(r, "Duration    %d/5  < >", rmbl_get_duration());
-      else { int c = i - R_CUE0; siprintf(r, "%-12s %s", rmbl_cue_name(c), rmbl_cue_enabled(c) ? "On" : "Off"); }
-      int y = PDNA_RMB_ROW0_Y + i * PDNA_RMB_ROW_PITCH; bool s = (i == sel);
-      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
-      ui_text(PDNA_SET_ROW_X, y, s ? UI_SELTEXT : UI_TEXT, r);
+    bool full = !pv_valid || pv_gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "RUMBLE");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+      /* The help sentence and the control hints are two INDEPENDENT strings: they used to
+       * share the y=150 footer row as "GAME RTC on. <>adj A toggle B", which is 29 sys8
+       * columns — the row was full, so "back" had to be dropped from the hint to make it
+       * fit. Give each its own row. (Strings + rows in pdna_layout.h — the host test
+       * measures them from there.) */
+      ui_text(PDNA_RMB_HELP_X, PDNA_RMB_HELP_Y1, UI_DIM, PDNA_RMB_HELP1);
+      ui_text(PDNA_RMB_HELP_X, PDNA_RMB_HELP_Y2, UI_DIM, PDNA_RMB_HELP2);
+      ui_text(PDNA_SET_FOOT_X, PDNA_SET_FOOTER_Y, UI_DIM, PDNA_RMB_FOOT);
     }
-    /* The help sentence and the control hints are two INDEPENDENT strings: they used to
-     * share the y=150 footer row as "GAME RTC on. <>adj A toggle B", which is 29 sys8
-     * columns — the row was full, so "back" had to be dropped from the hint to make it
-     * fit. Give each its own row. (Strings + rows in pdna_layout.h — the host test
-     * measures them from there.) */
-    ui_text(PDNA_RMB_HELP_X, PDNA_RMB_HELP_Y1, UI_DIM, PDNA_RMB_HELP1);
-    ui_text(PDNA_RMB_HELP_X, PDNA_RMB_HELP_Y2, UI_DIM, PDNA_RMB_HELP2);
-    ui_text(PDNA_SET_FOOT_X, PDNA_SET_FOOTER_Y, UI_DIM, PDNA_RMB_FOOT);
+    for (int i = 0; i < NROW; i++) {
+      int val = (i == R_STR) ? rmbl_get_strength()
+              : (i == R_DUR) ? rmbl_get_duration()
+              : (rmbl_cue_enabled(i - R_CUE0) ? 1 : 0);
+      bool s = (i == sel), os = (i == pv_sel);
+      if (full || val != pv_val[i] || s != os) rs_row_paint(i, s);
+      pv_val[i] = val;
+    }
+    pv_sel = sel; pv_valid = true; pv_gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
     if (k & KEY_B) { cfg_save(); return; }
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : NROW - 1;
@@ -6274,6 +6449,37 @@ static void rom_row_menu(void) {
 }
 #endif /* PDNA_DELTA */
 
+/* One settings row. The highlight panel is PDNA_SET_ROW_PANEL_YOFF px taller than one
+ * row pitch (starts above the text) so consecutive rows' panels touch with no gap --
+ * but the LAST row has no row below it to touch, only the help text at
+ * PDNA_SET_HELP_Y1, so its CALLER passes the shorter PDNA_SET_ROW_LASTPANEL_H instead
+ * (pdna_layout.h; a full-height panel there reached 125, two rows INTO the help text
+ * -- host-checked). The wipe below reuses that SAME `panel_h`, whichever one the
+ * caller passed, rather than a separate/larger pitch value -- the D8 lesson (wipe the
+ * ink extent, not the pitch) applied by construction: this geometry already had to
+ * solve "don't paint into the chrome below the last row" for the ORIGINAL full draw,
+ * and reusing its own height keeps that property for the partial repaint too. */
+static void ps_row_paint(const char* text, int i, int panel_h, bool sel) {
+  int y = PDNA_SET_ROW0_Y + i * PDNA_SET_ROW_PITCH;
+  ui_fill_rect(2, y - PDNA_SET_ROW_PANEL_YOFF, 236, panel_h, UI_BG);
+  if (sel) ui_panel(2, y - PDNA_SET_ROW_PANEL_YOFF, 236, panel_h, UI_SEL, UI_TITLE);
+  ui_text(PDNA_SET_ROW_X, y, sel ? UI_SELTEXT : UI_TEXT, text);
+}
+
+/* SETTINGS main menu. Two rows toggle IN PLACE with no overlay (lesson 1, batch-D10
+ * note 2): S_BACKUP cycles g_backup_mode directly, and S_YARD flips g_yard_visitors
+ * directly when yard_ok (its denial branch, when !yard_ok, goes through msg_wait and
+ * so is already gen-covered). The other rows (ROM/ART status, and the two ">" +
+ * "Close" static labels) can only change via a NESTED full-screen call (rom_row_menu/
+ * app_register_rom/art_extract_screen/anim_settings/rumble_settings), all of which
+ * ui_clear() on their own first frame -- so gen alone would already catch them.
+ * Rather than hand-splitting "these two need a value diff, those don't" (and risk
+ * missing a THIRD silent path later), this shadows the COMPOSED TEXT of every row --
+ * same idiom D5's browse_menu uses for the identical reason (a toggle that edits the
+ * row you're already sitting on). A row's text can only ever grow more specific than a
+ * boolean, never less, so this is strictly a superset of the two rows that truly need
+ * it, at the cost of 8*44=352 B on this one shallow menu frame ("modest frames" still
+ * holds: this is not a frame that stays live during any SD transfer). */
 static void pdna_settings(void) {
   /* Row strings live in pdna_layout.h: sys8 does not clip at the right margin, it WRAPS
    * onto the row below, so their LENGTH is load-bearing and the host test checks it. */
@@ -6282,10 +6488,11 @@ static void pdna_settings(void) {
   enum { S_BACKUP, S_ANIM, S_YARD, S_ROM, S_ART, S_RUMBLE, S_CLEAR, S_CLOSE, S_N };
   _Static_assert(S_N == PDNA_SET_ROWS, "settings row count out of sync with pdna_layout.h");
   int sel = 0;
+  char pv_rows[S_N][44] = { { 0 } };
+  int pv_sel = -1; bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, "SETTINGS");
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    bool full = !pv_valid || pv_gen != ui_clear_gen();
+
     char r0[44]; siprintf(r0, PDNA_SET_BACKUP_FMT, MODE[g_backup_mode]);
     /* Say WHY it is unavailable rather than showing a toggle that does nothing:
      * without a registered ROM there is no art to draw a visitor with. */
@@ -6315,24 +6522,26 @@ static void pdna_settings(void) {
       siprintf(r3, PDNA_SET_ART_CACHED_FMT, (unsigned long)(ART_ICONS_TOTAL_BYTES / 1024u));
     else siprintf(r3, "%s", PDNA_SET_ART_GO);
     const char* rows[S_N] = { r0, "Animations  >", r1, r2, r3, "Rumble  >", PDNA_SET_ROW_CLEAR, "Close" };
-    for (int i = 0; i < S_N; i++) {
-      /* The highlight panel is PDNA_SET_ROW_PANEL_YOFF px taller than one row pitch
-       * (starts above the text) so consecutive rows' panels touch with no gap -- but
-       * the LAST row has no row below it to touch, only the help text at
-       * PDNA_SET_HELP_Y1, so it uses the shorter PDNA_SET_ROW_LASTPANEL_H instead
-       * (see pdna_layout.h for the exact numbers: a full-height panel here reached
-       * 125, two rows INTO the help text -- host-checked below). */
-      int y = PDNA_SET_ROW0_Y + i * PDNA_SET_ROW_PITCH; bool s = (i == sel);
-      int panel_h = (i == S_N - 1) ? PDNA_SET_ROW_LASTPANEL_H : PDNA_SET_ROW_PANEL_H;
-      if (s) ui_panel(2, y - PDNA_SET_ROW_PANEL_YOFF, 236, panel_h, UI_SEL, UI_TITLE);
-      ui_text(PDNA_SET_ROW_X, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
+
+    if (full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "SETTINGS");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+      /* Rebalanced across the two rows: the first was 29 sys8 columns at x=8, i.e. ending
+       * on the last pixel column of the screen with no margin at all. */
+      ui_text(PDNA_SET_HELP_X, PDNA_SET_HELP_Y1, UI_DIM, PDNA_SET_HELP1);
+      ui_text(PDNA_SET_HELP_X, PDNA_SET_HELP_Y2, UI_DIM, PDNA_SET_HELP2);
+      ui_ptext(PDNA_SET_HELP_X, PDNA_SET_NOTE_Y, UI_DIM, PDNA_SET_NOTE);
+      ui_text(PDNA_SET_FOOT_X, PDNA_SET_FOOTER_Y, UI_DIM, PDNA_SET_FOOT);
     }
-    /* Rebalanced across the two rows: the first was 29 sys8 columns at x=8, i.e. ending
-     * on the last pixel column of the screen with no margin at all. */
-    ui_text(PDNA_SET_HELP_X, PDNA_SET_HELP_Y1, UI_DIM, PDNA_SET_HELP1);
-    ui_text(PDNA_SET_HELP_X, PDNA_SET_HELP_Y2, UI_DIM, PDNA_SET_HELP2);
-    ui_ptext(PDNA_SET_HELP_X, PDNA_SET_NOTE_Y, UI_DIM, PDNA_SET_NOTE);
-    ui_text(PDNA_SET_FOOT_X, PDNA_SET_FOOTER_Y, UI_DIM, PDNA_SET_FOOT);
+    for (int i = 0; i < S_N; i++) {
+      bool s = (i == sel), os = (i == pv_sel);
+      int panel_h = (i == S_N - 1) ? PDNA_SET_ROW_LASTPANEL_H : PDNA_SET_ROW_PANEL_H;
+      if (full || s != os || strcmp(rows[i], pv_rows[i]) != 0) ps_row_paint(rows[i], i, panel_h, s);
+      strncpy(pv_rows[i], rows[i], sizeof pv_rows[i] - 1); pv_rows[i][sizeof pv_rows[i] - 1] = 0;
+    }
+    pv_sel = sel; pv_valid = true; pv_gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) { cfg_save(); return; }
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : S_N - 1;
