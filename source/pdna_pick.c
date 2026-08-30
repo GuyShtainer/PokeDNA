@@ -1408,6 +1408,10 @@ uint16_t pick_item(uint16_t current) {
   for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
 
   int prev_sel = -1, prev_top = -1, prev_view = -1, toprow = 0;
+  unsigned gen = 0; bool valid = false;   /* gen term: osk_search paints its whole
+                                           * keyboard even on a cancelled SELECT, and a
+                                           * cancel changes no other shadowed value --
+                                           * same fix pdna_dex_screen just got */
   bool relist = true;
 
   for (;;) {
@@ -1422,7 +1426,8 @@ uint16_t pick_item(uint16_t current) {
     int top = toprow * cols;
     bool grid = (view == IV_ICONS || view == IV_GRID);
 
-    bool full = relist || view != prev_view || top != prev_top;
+    bool full = relist || !valid || gen != ui_clear_gen() ||
+                view != prev_view || top != prev_top;
     relist = false;
 
     if (full) {
@@ -1466,6 +1471,7 @@ uint16_t pick_item(uint16_t current) {
     }
 
     prev_sel = sel; prev_top = top; prev_view = view;
+    valid = true; gen = ui_clear_gen();   /* after any ui_clear this pass issued */
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
     if (k & KEY_B) return CANCEL;

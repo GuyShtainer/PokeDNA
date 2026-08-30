@@ -7012,7 +7012,7 @@ static void pdna_battle_record(void) {
        * "B page 1" but never mention L/R at all, even though L/R cycles from here
        * exactly like it does from page 1 -- same main loop, same key handling above,
        * L always lands on page 1 (same destination "B" already names) and R on page 3
-       * (the .rec browser). Reworded to "L/R page  cur/best  *=kept" (26 chars) --
+       * (the .rec browser). Reworded to "L/R/B page  cur/best  *=kept" (28 chars) --
        * L/R's destination already subsumes what "B page 1" said, so that phrase is
        * dropped to make room rather than cutting the cur/best legend, which explains
        * a number format ("21/45*") nothing else on screen does. Still inside
@@ -7029,7 +7029,7 @@ static void pdna_battle_record(void) {
        * back, so it was left as-is rather than claim a capability that isn't there. */
       ui_text(4, 152, UI_DIM, page == RECPAGE_SUMMARY
                                 ? "A exp SEL imp B back L/R page"
-                                : "L/R page  cur/best  *=kept");
+                                : "L/R/B page  cur/best  *=kept");
     }
     pv_page = page; pv_valid = true; pv_gen = ui_clear_gen();
 
