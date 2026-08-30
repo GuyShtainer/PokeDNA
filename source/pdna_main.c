@@ -3683,26 +3683,29 @@ static int party_list(void) {
       ui_text(4, 152, UI_DIM, "A actions  START menu  B back");
     } else if (sel != pv_sel) {
       /* Cursor-only move (always by exactly one row: UP/DOWN clamp to +-1). A row's
-       * icon is 32px tall on a 21px pitch, so ADJACENT icons overlap by 11 rows
-       * (MUST-FIX 1/2's own measured fact, above) -- erasing just the moving row's
-       * 20px selection band would also wipe whatever ink a NEIGHBOUR's icon had
-       * contributed there, with nothing to put it back. So this redraws every row
-       * whose icon bounding box can reach into EITHER the old or the new selection
-       * band -- lo-1, lo, hi(=lo+1), hi+1 -- not just the two that changed, in
-       * ASCENDING index order (matching the full draw's own ascending loop, since
-       * transparent ui_sprite compositing is last-opaque-wins on any pixel two icons
-       * both ink). pl_row_paint's icon/text calls are safe to repeat even where the
-       * erase below did NOT reach (icons are idempotent, text is a self-contained
-       * opaque redraw), so this does not need to be pixel-exact about the erase
-       * bounds -- only about erasing at least the two 20px bands whose highlight
-       * state changed, and redrawing every icon that could show through the gap. */
+       * icon is 32px tall on a 21px pitch (icon i spans [12+21i, 44+21i)), so it
+       * reaches 4px UP into row i-1's band and 6px DOWN into row i+1's band -- erasing
+       * just the moving row's 20px selection band would also wipe whatever ink a
+       * NEIGHBOUR's icon had contributed there, with nothing to put it back.
+       * lo-1..lo+2 (lo=min(old,new)) covers the DAMAGED region exactly, but redrawing
+       * icon lo+2 (the outer edge of that range) itself re-damages icon lo+3's top
+       * rows -- a region nothing erased -- and on a naive fixed-width redraw that
+       * leaves lo+2 winning a shared band where the full draw's ascending order had
+       * lo+3 winning (transparent ui_sprite compositing is last-opaque-wins). Each
+       * redraw re-damages the row below it, so the ascending chain has to run all the
+       * way to the LAST party row, not stop at a fixed offset -- n <= 6 always, so
+       * this is at most 2-3 extra rows past the minimal damaged set. Still no
+       * ui_clear() and no chrome; the erase bands below stay exactly the two 20px
+       * bands whose highlight actually changed (icons are idempotent, text is a
+       * self-contained opaque redraw -- see pl_row_paint's own comment -- so
+       * redrawing rows the erase never touched is always safe, just not free). */
       int ry_old, iy_old; party_icon_y(pv_sel, &ry_old, &iy_old); (void)iy_old;
       ui_fill_rect(0, ry_old, UI_SCR_W, 20, UI_BG);              /* drop the old highlight */
       int ry_new, iy_new; party_icon_y(sel, &ry_new, &iy_new); (void)iy_new;
       ui_panel(2, ry_new, 236, 20, UI_SEL, UI_TITLE);            /* add the new one, BEFORE any icon */
-      int lo = (pv_sel < sel) ? pv_sel : sel, hi = lo + 1;
-      for (int r = lo - 1; r <= hi + 1; r++) {
-        if (r < 0 || r >= g_nparty) continue;
+      int lo = (pv_sel < sel) ? pv_sel : sel;
+      for (int r = lo - 1; r < g_nparty; r++) {
+        if (r < 0) continue;
         pl_row_paint(r, frame, sel);
       }
     }
@@ -5325,18 +5328,35 @@ static void sb_mon_edit(SbRecord* b, uint32_t off, int start, bool* dirty) {
   }
 }
 
-/* One party card (icon + name + level, panel-highlighted when selected). Cards are
- * 78x46-pitched and the panel/erase rect is 76x45 -- a 2px/1px gap on every side, so
- * neighbouring cards never share a scanline (unlike party_list's icons, nothing here
- * is taller than its own cell). Erase-then-draw, not draw-over: the panel fill (when
- * losing the highlight) has nothing else that would paint over it, and re-drawing the
- * icon (ui_sprite, transparent) + text (tte_write, opaque per glyph cell) afterward is
- * always correct regardless of what the erase left, so this is safe to call for BOTH
- * the row gaining and the row losing the highlight with no special-casing. */
-static void sb_card_paint(const SbRecord* b, int i, bool sel) {
+/* Erase one party card's rect ONLY -- no content. Split out of the draw step below
+ * because a card is NOT independently repaintable (see sb_card_draw's comment on the
+ * level-text overhang); sb_detail's partial path erases all six before drawing any. */
+static void sb_card_erase(int i) {
   int col = i % 3, row = i / 3;
   int cx = 4 + col * 78, cy = 56 + row * 46;
   ui_fill_rect(cx - 2, cy - 2, 76, 45, UI_BG);
+}
+
+/* One party card's content: panel (if selected) + icon + name + level. Cards are
+ * 78x46-pitched with a 76x45 rect (2px/1px gap on every side) -- BUT `ui_text(cx,
+ * cy+40, ...)` with the 8px sys8 font paints rows cy+40..cy+47, five rows past this
+ * card's OWN rect (cy-2..cy+42). For a top-row card (row=0) that overhang lands
+ * inside the bottom-row card directly below it in the same column (row=1's rect
+ * starts at cy+44, pitch 46 vs cell 45): the two are NOT independent the way
+ * party_list's icon-taller-than-pitch rows aren't independent either, just via text
+ * instead of an icon. A prior version of this fix erased+redrew ONLY the two cards
+ * whose selection flipped, which is order-dependent -- old=3/new=0 happens to match
+ * the full draw's own ascending order, but old=0/new=3 does not, and a 2-card
+ * operation cannot be made order-correct in both directions with a fixed pair of
+ * calls. sb_detail's partial path therefore erases ALL SIX cards, THEN draws all six
+ * ascending (see there) -- ui_sprite is a true transparent blit and tte_write is an
+ * opaque per-glyph-cell draw, so an unchanged icon/string redrawn at an unchanged
+ * position is always correct regardless of what the erase covered, which is what
+ * makes "erase 6, draw 6 ascending" byte-identical to a full ui_clear()+draw6 rather
+ * than just visually close. */
+static void sb_card_draw(const SbRecord* b, int i, bool sel) {
+  int col = i % 3, row = i / 3;
+  int cx = 4 + col * 78, cy = 56 + row * 46;
   bool s = sel && (i < b->partyCount);
   if (s) ui_panel(cx - 2, cy - 2, 76, 45, UI_SEL, UI_TITLE);
   uint16_t sp = b->party.species[i];
@@ -5385,15 +5405,25 @@ static bool sb_detail(SbRecord* b, uint32_t off) {
       ui_text(6, 37, UI_DIM, line);
       if (b->battledToday) ui_text(6, 46, UI_WARN, "Battled today");     /* #6: its own line */
 
-      for (int i = 0; i < SB_PARTY; i++) sb_card_paint(b, i, i == psel);
+      for (int i = 0; i < SB_PARTY; i++) sb_card_draw(b, i, i == psel);   /* ui_clear() above already erased */
 
       ui_hline(0, 151, UI_SCR_W, UI_BORDER);
       ui_text(4, 152, UI_DIM, (can && !b->own) ? "A edit mon  SEL owner  B back"
                             : can               ? "A edit mon  B back"
                                                 : "A view mon  B back");
-    } else if (psel != prev_psel) {                    /* cursor-only move: swap two cards */
-      sb_card_paint(b, prev_psel, false);
-      sb_card_paint(b, psel, true);
+    } else if (psel != prev_psel) {
+      /* Cursor-only move: erase ALL SIX cards, then draw ALL SIX ascending -- see
+       * sb_card_draw's comment for why a 2-card swap (erase old, erase new, draw old,
+       * draw new) is order-dependent and wrong in one direction (the level-text
+       * overhang makes cards non-independent). This reproduces the full path's own
+       * ascending draw order exactly, so the result is byte-identical to it. Content
+       * cannot change within one visit without a gen bump (every mutator here --
+       * sb_owner_pick, sb_mon_edit->pdna_inspect -- is a full-screen sub-view that
+       * ui_clear()s, per this function's own header comment), so the six species/level
+       * values redrawn here are always exactly what was already on screen; only the
+       * highlight moves. Still skips ui_clear() and the header/footer chrome. */
+      for (int i = 0; i < SB_PARTY; i++) sb_card_erase(i);
+      for (int i = 0; i < SB_PARTY; i++) sb_card_draw(b, i, i == psel);
     }
     prev_psel = psel; valid = true; gen = ui_clear_gen();
 
@@ -5416,10 +5446,14 @@ static bool sb_detail(SbRecord* b, uint32_t off) {
 }
 
 /* One SECRET BASES list row. Row pitch 15 vs panel height 13 (2px gap): no
- * shared-scanline. `nm` is trainerName, a Gen-3 in-game name already DECODED to
- * plain ASCII (gen3_secretbase.c, <=7 chars, char[8]) -- not a FatFs filename, so
- * (unlike the browser's ui_truncate calls) it carries no FF_LFN_UNICODE risk and
- * nm[12] is genuinely enough for a 8-col truncate of a <=7-char ASCII string. */
+ * shared-scanline. `nm` is trainerName -- NOT safe because the decode happens to be
+ * single-byte-per-glyph today (other Gen-3 text decoders in this codebase, e.g.
+ * gen3_edit.c/data_tables.c, DO emit multi-byte UTF-8 for gender glyphs elsewhere, so
+ * that would be a fragile thing to lean on); it is safe because trainerName is a
+ * hard-capped `char[8]` (gen3_secretbase.c:50-51 writes at most 7 populated bytes
+ * before the NUL, by construction of the loop bound and the field's own size,
+ * regardless of what any byte decodes to). nm[12] can never see more than that 7-byte
+ * input to an 8-col ui_truncate, unlike the browser's real FatFs filenames. */
 static void sb_list_row_paint(int idx, int i, bool sel) {
   const SbRecord* b = &g_sb_recs[idx];
   int y = 18 + i * 15;
