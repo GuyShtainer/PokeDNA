@@ -813,6 +813,16 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
   int sel = 0, toprow = 0;
   int prev_sel = -1, prev_top = -1, prev_view = -1;
   bool relist = true;
+  /* dex_menu's own comment (above) explains why IT needs gen/valid: dex_bulk's
+   * Cancel/Undo-last paths can return without a ui_clear(), which `relist` alone
+   * would miss. That leaves a DIFFERENT trap for the caller here: dex_menu itself
+   * ALWAYS ui_clear()s on its own first frame (its own `!valid` forces that), so
+   * ui_clear_gen() DOES advance on every dex_menu() call -- but when it returns 0
+   * (cancelled, r<1 below), `relist` is left false and view/top are unchanged, so
+   * the old `full` predicate never saw it: dex_menu's own filter-panel pixels were
+   * left sitting over the dex grid after Cancel. Same fix as dex_menu uses on
+   * itself for the same reason -- gen/valid alongside relist. */
+  uint32_t gen = 0; bool valid = false;
   int bob = 0, anim_ctr = 0;
 
   for (;;) {
@@ -827,14 +837,17 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
     int top = toprow * cols;
     bool grid = (view != DV_LIST);
 
-    bool full = relist || view != prev_view || top != prev_top;
+    bool full = relist || !valid || gen != ui_clear_gen() || view != prev_view || top != prev_top;
     relist = false;
 
     if (full) {
-      /* One page draw: a fresh entry, a view/filter change, or a one-row scroll step
-       * (which repaints all `vis` cells, including the ones that did not move). Rolled
-       * up rather than logged per occurrence -- a held D-pad produces one of these
-       * every few frames. */
+      /* One page draw: a fresh entry, a view/filter change, a one-row scroll step
+       * (which repaints all `vis` cells, including the ones that did not move), or an
+       * overlay that painted over us -- dex_menu() always ui_clear()s on its own first
+       * frame regardless of what the user does inside it, including a plain B-cancel
+       * (r==0 below), which sets neither `relist` nor moves view/top; only the
+       * gen != ui_clear_gen() term catches that path. Rolled up rather than logged per
+       * occurrence -- a held D-pad produces one of these every few frames. */
       perf_rep_begin(PERF_REP_PAGE, "dex.page");
       dex_declare_page(grid, top, vis);
       ui_clear();
@@ -863,6 +876,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
     dex_header(view, filter, status, g_n ? g_list[sel] : 0, seen, caught);
 
     prev_sel = sel; prev_top = top; prev_view = view;
+    valid = true; gen = ui_clear_gen();          /* read AFTER the ui_clear() above, not before */
     if (perf_first_paint) { perf_first_paint = false; perf_span_end(); }
 
     /* wait for input; meanwhile bob the caught cells (grid/type, anim enabled) */

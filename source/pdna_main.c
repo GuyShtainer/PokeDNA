@@ -6938,7 +6938,23 @@ static void pdna_battle_record(void) {
     return;
   }
   G3RecordInfo ri;
-  while (!g3_record_scan(g_save, g_save_size, &ri)) {  /* none yet -> still offer import */
+  /* BACKLOG #35 item 2: a save with no valid sector 31 used to gate out of this WHOLE
+   * screen -- but RECPAGE_FILES (rec_files_page) is a read-only browser over
+   * /PokeDNA/battles that never touches the live record or g_save at all, so it works
+   * fine with none. Restructured to let a no-record user reach it directly: "A" here
+   * calls rec_files_page() the same way page 3 does further down, then `continue`s back
+   * to this SAME while-condition, which re-scans -- so browsing/previewing (which
+   * changes nothing) just redraws this same gate, and a successful IMPORT (still SEL,
+   * unchanged) naturally falls out of the loop into the normal 3-page screen below.
+   * Chose "skip pages 1-2 entirely" over "show them in an honest no-record state":
+   * `ri` is only ever populated by a SUCCESSFUL g3_record_scan, so rendering
+   * render_record_summary/render_record_streaks against it here (an uninitialised
+   * struct) would be a real bug, not a cosmetic one -- ri.multiplayer_id indexes
+   * ri.names[] and could read garbage. Reaching the browser directly needs no new
+   * "no record" rendering path for those two screens at all, and does not touch
+   * rec_import()'s own validation (unchanged below). A works read-only (no
+   * app_can_edit() gate), matching that browsing needs no write access. */
+  while (!g3_record_scan(g_save, g_save_size, &ri)) {  /* none yet -> still offer import/browse */
     ui_clear();
     ui_text(4, 4, UI_TITLE, "BATTLE RECORD");
     ui_hline(0, 14, UI_SCR_W, UI_BORDER);
@@ -6949,9 +6965,10 @@ static void pdna_battle_record(void) {
      * these run 198/208 px at 5x7 but would be 320+ px at sys8's fixed 8 px/glyph. */
     ui_ptext(4, 60, UI_DIM, "A .rec is a battle exported here or by a");
     ui_ptext(4, 70, UI_DIM, "friend; rec2mp4 (PC) turns one into video.");
-    ui_text(4, 152, UI_DIM, "SEL import  B back");
-    u16 k = wait_keys(KEY_SELECT | KEY_B);
+    ui_text(4, 152, UI_DIM, "A files  SEL import  B back");
+    u16 k = wait_keys(KEY_A | KEY_SELECT | KEY_B);
     if (k & KEY_B) { snd_back(); return; }
+    if (k & KEY_A) { rec_files_page(); continue; }      /* browse exports; no record needed */
     if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
     rec_import();                                      /* success -> the rescan shows it */
   }
@@ -6990,14 +7007,29 @@ static void pdna_battle_record(void) {
       if (!chrome_full) ui_fill_rect(0, 15, UI_SCR_W, UI_SCR_H - 15, UI_BG);
       if (page == RECPAGE_SUMMARY) render_record_summary(&ri, g_save + G3_REC_SECTOR_OFF);
       else                         render_record_streaks(g_sb2);
-      /* Per-page footer (29-column budget). Page 2 spends its columns on the
-       * legend that makes the rows readable (pdna_frontier.c's own convention:
-       * "cur/best  *=kept") and on saying where B goes -- because on page 2, B
-       * returns to page 1, the full pdna_trainer.c house style (its back page's
-       * B goes to the front and the footer says so), not just its L/R line. */
+      /* Per-page footer (29-column budget; both hit it, page 1 exactly ("A exp SEL imp
+       * B back L/R page" = 29). BACKLOG #35 item 1: page 2's own footer used to say
+       * "B page 1" but never mention L/R at all, even though L/R cycles from here
+       * exactly like it does from page 1 -- same main loop, same key handling above,
+       * L always lands on page 1 (same destination "B" already names) and R on page 3
+       * (the .rec browser). Reworded to "L/R page  cur/best  *=kept" (26 chars) --
+       * L/R's destination already subsumes what "B page 1" said, so that phrase is
+       * dropped to make room rather than cutting the cur/best legend, which explains
+       * a number format ("21/45*") nothing else on screen does. Still inside
+       * `content_dirty` (page != pv_page is one of its terms, D8), so this line
+       * repaints on every flip, not just the content above it.
+       *
+       * Page 3 (RECPAGE_FILES / rec_files_page, further down and in its own footer
+       * string passed to rec_list_pick) is NOT given an "L/R cycles" hint: checked
+       * rec_list_pick's key mask (KEY_UP|KEY_DOWN|KEY_A|KEY_B only) and confirmed L/R
+       * is not polled there at all -- wiring it would mean changing a SHARED picker
+       * also used by rec_import's plain file-import dialog (where "L/R page" would
+       * be actively wrong), which is a real feature change, not a footer reword.
+       * Page 3's existing "B page 1" already correctly describes its one working way
+       * back, so it was left as-is rather than claim a capability that isn't there. */
       ui_text(4, 152, UI_DIM, page == RECPAGE_SUMMARY
                                 ? "A exp SEL imp B back L/R page"
-                                : "B page 1  cur/best  *=kept");
+                                : "L/R page  cur/best  *=kept");
     }
     pv_page = page; pv_valid = true; pv_gen = ui_clear_gen();
 

@@ -1316,16 +1316,21 @@ static void draw_box_banner(BoxSource* src, int box, bool on_title) {
   src->get_name(box, bn);
   int occ = 0;
   for (int s = 0; s < 30; s++) if (g_box[s].species) occ++;
-  siprintf(bnocc, "%s  %d/30", bn[0] ? bn : "BOX", occ);
   /* box+1: this file's `box` is the zero-based index everywhere, and this banner is
    * the ONLY box identifier on screen (there is no box-select screen in this app), so
    * the ordinal it shows has to be right. The one slot with no ordinal at all is the
    * GB sources' party pseudo-box at nboxes-1 ("GB PARTY" -- RBY has 12 boxes, so a
    * "13:" prefix there would be an invented number contradicting pdna_gen12.c's own
    * party special-case): last_box_is_party suppresses the prefix, and draw_banner's
-   * NULL-pfx path degenerates to the original name-only centring. */
-  siprintf(bnum, "%d:", box + 1);
+   * NULL-pfx path degenerates to the original name-only centring. Computed BEFORE
+   * bnocc now (BACKLOG #35 item 3): the same pseudo-box also holds at most a Gen-1/2
+   * PARTY (6), not a 30-slot box, and "GB PARTY  6/30" for a genuinely full party
+   * read as 24 short instead of full -- the /30 denominator was contradicting the
+   * very party_slot special-case that already suppresses the ordinal for this exact
+   * slot. */
   bool party_slot = src->last_box_is_party && box == src->nboxes - 1;
+  siprintf(bnocc, "%s  %d/%d", bn[0] ? bn : "BOX", occ, party_slot ? 6 : 30);
+  siprintf(bnum, "%d:", box + 1);
   draw_banner(WP_X + 2, 13, WP_W - 4, party_slot ? 0 : bnum, bnocc);
   /* Only when the cursor is ACTUALLY on the box name. `on_title` stays true while the cursor
    * is further up on the top tabs, so keying off it alone drew the identical frame in two
@@ -1535,8 +1540,13 @@ static void chunk_draw(BoxSource* src, int box, bool clear) {
   era_cells();                     /* same pairing as move_cursor: BG repaint owes both */
   draw_box_banner(src, box, false);
 
-  /* no footprint frame — the block itself carries the fit cue (whitened/darkened) */
-  char f[28]; siprintf(f, "x%d  A drop  B cancel", s_ch.n);
+  /* no footprint frame — the block itself carries the fit cue (whitened/darkened).
+   * Budget is 20 columns (WP_W=162px fill, text at WP_X+2 -> 160px/8). The double-
+   * spaced original ("x%d  A drop  B cancel") was exactly 20 chars at a single-digit
+   * count and 21 at two digits (s_ch.n can reach 30, the whole box) -- it fit by
+   * accident up to x9 and clipped from x10 on. Single-spaced, the n=30 worst case is
+   * 19 chars ("x30 A drop B cancel"), inside the budget with one column to spare. */
+  char f[28]; siprintf(f, "x%d A drop B cancel", s_ch.n);
   ui_fill_rect(WP_X, 152, WP_W, 8, UI_BG);
   ui_text(WP_X + 2, 152, RGB15(31, 31, 31), f);
 
