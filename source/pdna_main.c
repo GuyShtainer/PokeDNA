@@ -2994,6 +2994,16 @@ static void party_overlay_bob(int f) {
   rumble_io_resume();
 }
 
+/* CANCEL button, drawn as one unit (fill + border + label). Reused for the full paint
+ * and for the partial path's BACK-focus swap; ui_panel's fill is unconditional so this
+ * is self-contained either way (no separate erase needed). */
+static void party_ov_cancel_paint(bool bsel) {
+  ui_panel(PDNA_PTY_CANCEL_X, PDNA_PTY_CANCEL_Y, PDNA_PTY_CANCEL_W, PDNA_PTY_CANCEL_H,
+           UI_PTY_CANCEL_FILL, bsel ? UI_PTY_CURSOR : UI_PTY_BORDER);
+  ui_ptext_fit_shadow(PDNA_PTY_CANCEL_X + PDNA_PTY_MSG_PAD, PDNA_PTY_CANCEL_Y + PDNA_PTY_MSG_PAD,
+                     PDNA_PTY_CANCEL_W_BUDGET, UI_TEXT, UI_PTY_TEXT_SHADOW, PDNA_LBL_CANCEL);
+}
+
 int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
                       bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
   if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return 0; }
@@ -3008,6 +3018,9 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
   int sel = 0;
   int bob_ctr = 0, bob = 0;          /* ANIM_PARTY idle bob phase, kept across repaints */
   bool first_paint = true;
+  /* Cursor-only shadow (sel/n/addslot + gen), stack scalars, no PkMon copy needed --
+   * see the block comment below for why. */
+  int pv_sel = -2, pv_n = -1, pv_addslot = -2; bool pv_valid = false; uint32_t pv_gen = 0;
   perf_span_begin("party");          /* enter cost: 6 icons through the artless ladder */
   for (;;) {
     int n = party_count(g_sb1, g_frlg);
@@ -3018,20 +3031,35 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
     PkMon pm[6]; pk_read_party_auto(g_sb1, pm, &g_frlg);
     for (int i = 0; i < n; i++) pk_resolve(&pm[i]);
 
-    ui_clear();
-    ui_stripe_bg(20, UI_PTY_BG_MARGIN, UI_PTY_BG_A, UI_PTY_BG_B);
+    /* WHY A SCALAR SHADOW IS ENOUGH, NO PkMon[6] SNAPSHOT. Every path that can change
+     * what's drawn here (party_place_held's success returns, which EXIT the function
+     * entirely without looping back to us; app_party_mon_menu, reached from BROWSE
+     * mode) opens a full-screen sub-view (app_mon_menu's own menu loop at minimum,
+     * even on an immediate B-cancel) that ui_clear()s on its own first frame -- so
+     * ui_clear_gen() catches every content change. party_place_held's DENIAL paths
+     * are the one place that returns without a repaint: some show msg_wait (gen
+     * moves), and the rest (bad target index, party_append failing) are silent
+     * snd_deny()-only no-ops that change nothing on screen -- correctly invisible to
+     * this gate. n/addslot are shadowed too, defensively, even though they can only
+     * change alongside a gen bump by the same argument (the derived-scalar trap this
+     * arc keeps finding is a reason to double-check, not a reason to skip the check). */
+    bool full = !pv_valid || pv_gen != ui_clear_gen() || n != pv_n || addslot != pv_addslot;
 
-    /* Publish what party_draw_all (full redraw AND the bob-tick redraw both call it)
-     * needs. `pm` is this iteration's own stack array — see the comment above
-     * party_draw_slot_fg for why pointing at it, rather than copying out of it, is
-     * safe for the lifetime a redraw callback actually needs. */
+    /* s_pov_* are read by party_overlay_bob on the NEXT wait_keys_bob_p call below --
+     * including on a partial repaint, where the full paint (and its s_pov_* publish)
+     * is skipped. Update them EVERY iteration, unconditionally, or a bob tick right
+     * after a cursor-only move would restore borders against a stale s_pov_sel/pm/n
+     * and either draw the wrong slot's cursor colour or read a freed `pm` -- the exact
+     * interleave hazard this batch was warned about. */
     s_pov_pm = pm; s_pov_n = n < 6 ? n : 6;
     s_pov_sel = (sel == BACK) ? -1 : sel;
     s_pov_addslot = addslot;
     /* Declare the six rows and rent the space to hold them, BEFORE the paint that draws
      * them -- see app_icons_hold. Without this the overlay's bob is what Guy watched
      * cost 120-210 disk_read calls every 8 frames on a card with a populated root, and
-     * on the ROM rung it was gated off entirely because six rows never fit four slots. */
+     * on the ROM rung it was gated off entirely because six rows never fit four slots.
+     * Unconditional too: it is RAM bookkeeping (icon_store_plan), not a paint, and the
+     * bob on the upcoming wait needs it declared regardless of which path drew. */
     {
       uint16_t irows[6];
       int nr = 0;
@@ -3040,21 +3068,32 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
                                       pm[i].isEgg && !pm[i].isBadEgg);
       app_icons_hold(irows, nr);
     }
-    party_draw_all((uint8_t)bob);
 
-    /* Bottom message box + CANCEL button, retail's own layout for this band
-     * (docs/analysis-2026-08-19-party/MEASUREMENTS.md does not itemise these two —
-     * they were measured separately off the same capture for this pass). */
-    ui_panel(PDNA_PTY_MSG_X, PDNA_PTY_MSG_Y, PDNA_PTY_MSG_W, PDNA_PTY_MSG_H, UI_TEXT, UI_PTY_BORDER);
-    ui_ptext_fit(PDNA_PTY_MSG_X + PDNA_PTY_MSG_PAD, PDNA_PTY_MSG_Y + PDNA_PTY_MSG_PAD,
-                PDNA_PTY_MSG_W_BUDGET, UI_PTY_MSG_TEXT,
-                held ? PDNA_PTY_MSG_PLACE : PDNA_PTY_MSG_CHOOSE);
-    {
-      bool bsel = (sel == BACK);
-      ui_panel(PDNA_PTY_CANCEL_X, PDNA_PTY_CANCEL_Y, PDNA_PTY_CANCEL_W, PDNA_PTY_CANCEL_H,
-              UI_PTY_CANCEL_FILL, bsel ? UI_PTY_CURSOR : UI_PTY_BORDER);
-      ui_ptext_fit_shadow(PDNA_PTY_CANCEL_X + PDNA_PTY_MSG_PAD, PDNA_PTY_CANCEL_Y + PDNA_PTY_MSG_PAD,
-                         PDNA_PTY_CANCEL_W_BUDGET, UI_TEXT, UI_PTY_TEXT_SHADOW, PDNA_LBL_CANCEL);
+    if (full) {
+      ui_clear();
+      ui_stripe_bg(20, UI_PTY_BG_MARGIN, UI_PTY_BG_A, UI_PTY_BG_B);
+      party_draw_all((uint8_t)bob);
+
+      /* Bottom message box + CANCEL button, retail's own layout for this band
+       * (docs/analysis-2026-08-19-party/MEASUREMENTS.md does not itemise these two —
+       * they were measured separately off the same capture for this pass). */
+      ui_panel(PDNA_PTY_MSG_X, PDNA_PTY_MSG_Y, PDNA_PTY_MSG_W, PDNA_PTY_MSG_H, UI_TEXT, UI_PTY_BORDER);
+      ui_ptext_fit(PDNA_PTY_MSG_X + PDNA_PTY_MSG_PAD, PDNA_PTY_MSG_Y + PDNA_PTY_MSG_PAD,
+                  PDNA_PTY_MSG_W_BUDGET, UI_PTY_MSG_TEXT,
+                  held ? PDNA_PTY_MSG_PLACE : PDNA_PTY_MSG_CHOOSE);
+      party_ov_cancel_paint(sel == BACK);
+    } else if (sel != pv_sel) {
+      /* Cursor-only move: retail's own selection mechanic is a BORDER RECOLOUR, not a
+       * separate highlight sprite or a re-striped fill (party_draw_slot_bg's own
+       * comment) -- so party_draw_slot_border (the SAME cheap raw-vid_mem perimeter
+       * write the idle-bob tick already uses to restore a slot's edge) is a complete,
+       * self-contained repaint: it touches no icon or striped-fill pixel, so there is
+       * nothing here that needs the stripe primitive as a row eraser (survey note 2
+       * does not apply to this site -- selection never touches the fill). BACK has no
+       * slot rect, so only the CANCEL button's own border toggles for it. */
+      if (pv_sel != BACK && pv_sel >= 0) party_draw_slot_border(pv_sel, false);
+      if (sel    != BACK && sel    >= 0) party_draw_slot_border(sel, true);
+      if (sel == BACK || pv_sel == BACK) party_ov_cancel_paint(sel == BACK);
     }
 
     /* The screen is painted; everything after this is idle-bob and input, which the
@@ -3072,6 +3111,7 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
      * -- repaint, app_party_mon_menu, party_place_held, exit -- is a path that may reach
      * the PC, and none of them may run with g_pc lent out. One site, no exit to miss. */
     app_icons_drop();
+    pv_sel = sel; pv_n = n; pv_addslot = addslot; pv_valid = true; pv_gen = ui_clear_gen();
     if      (k & KEY_B)     { snd_back(); perf_rep_flush(PERF_REP_BOB); return 0; }
     /* snd_move() (RCUE_SCROLL haptic + a short square-wave tick, source/snd.c:56) fired
      * on every cursor move in the old 3x2 grid's L/R/U/D handlers; the retail-layout
@@ -3577,8 +3617,37 @@ static void party_bob_recompose(int n, int sel, int frame) {
 #endif
 }
 
+/* Static-draw one party row's icon + both text lines (shared by the full redraw and a
+ * cursor-move partial repaint, so they stay pixel-identical). ui_sprite is a TRUE
+ * transparent blit (only opaque pixels write, ui.c:137-149) and tte_write is an
+ * OPAQUE per-glyph-cell draw (ui_init sets tte_set_paper(UI_BG), so every call is a
+ * complete self-contained redraw of its own pixels) -- both are safe to call again at
+ * an unchanged position with unchanged data regardless of what a caller's own erase
+ * covered or missed, which is what makes the neighbour-redraw below correct without
+ * needing to reason about exact erase-rect vs icon-bounding-box pixel overlap. */
+static void pl_row_paint(int i, int frame, int sel) {
+  int ry, iy; party_icon_y(i, &ry, &iy);
+  PkMon* p = &g_party[i];
+  if (p->isEgg && !p->isBadEgg) ui_sprite(3, iy, MON_ICON_W, MON_ICON_H, mon_icon_egg_frame((uint8_t)frame));
+  else ui_sprite(3, iy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, (uint8_t)frame));
+  char nm[16];
+  ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);
+  char line[48];
+  siprintf(line, "%-11s Lv%u", nm, (unsigned)p->level);
+  ui_text(40, ry + 3, i == sel ? UI_SELTEXT : UI_TEXT, line);
+  siprintf(line, "%s%s%s", pk_species_name(p->species),
+           p->isShiny ? "  *" : "", p->isEgg ? "  EGG" : "");
+  ui_text(40, ry + 12, UI_DIM, line);
+}
+
 static int party_list(void) {
   int sel = 0, anim_ctr = 0, frame = 0;
+  /* Cursor-only shadow: gen alone invalidates content changes here too (the ONE
+   * mutating path, KEY_A -> app_mon_menu, always opens a full-screen menu that
+   * ui_clear()s on its first frame even if the user immediately backs out -- same
+   * argument as app_party_overlay above). g_nparty is shadowed defensively though it
+   * can only change alongside a gen bump by that same argument. */
+  int pv_sel = -2, pv_n = -1; bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
     /* Same contract as the overlay's (app_icons_hold): declare + rent before the paint,
      * give it back the moment the idle loop ends. This screen's A opens app_mon_menu,
@@ -3592,34 +3661,52 @@ static int party_list(void) {
                                       g_party[i].isEgg && !g_party[i].isBadEgg);
       app_icons_hold(irows, nr);
     }
-    ui_clear();
-    char line[48];
-    siprintf(line, "%s  -  %s", g_vinfo.trainer_name, ver_label(g_vinfo.version_guess, g_frlg));
-    ui_text(4, 2, UI_TITLE, line);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
 
-    if (g_nparty == 0) ui_text(6, 40, UI_WARN, "No Pokemon in party.");
-    /* One full-size 32x32 icon per row, vertically CENTRED on its two-line name block so
-     * each mon reads as directly left of its name. ROW_TOP 17 puts row 0's icon just below
-     * the header WITHOUT a clamp (the old clamp pushed the top mon too low). Draw the
-     * selection bar first so an overhanging icon above it isn't clipped. */
-    if (g_nparty) { int ry = 17 + sel * 21; ui_panel(2, ry, 236, 20, UI_SEL, UI_TITLE); }
-    for (int i = 0; i < g_nparty; i++) {
-      int ry, iy; party_icon_y(i, &ry, &iy);
-      PkMon* p = &g_party[i];
-      if (p->isEgg && !p->isBadEgg) ui_sprite(3, iy, MON_ICON_W, MON_ICON_H, mon_icon_egg_frame((uint8_t)frame));
-      else ui_sprite(3, iy, MON_ICON_W, MON_ICON_H, mon_icon_for_form_frame(p->species, p->form, (uint8_t)frame));
-      char nm[16];
-      ui_truncate(nm, p->nickname[0] ? p->nickname : pk_species_name(p->species), 11);
-      siprintf(line, "%-11s Lv%u", nm, (unsigned)p->level);
-      ui_text(40, ry + 3, i == sel ? UI_SELTEXT : UI_TEXT, line);
-      siprintf(line, "%s%s%s", pk_species_name(p->species),
-               p->isShiny ? "  *" : "", p->isEgg ? "  EGG" : "");
-      ui_text(40, ry + 12, UI_DIM, line);
+    bool full = !pv_valid || pv_gen != ui_clear_gen() || g_nparty != pv_n;
+
+    if (full) {
+      ui_clear();
+      char line[48];
+      siprintf(line, "%s  -  %s", g_vinfo.trainer_name, ver_label(g_vinfo.version_guess, g_frlg));
+      ui_text(4, 2, UI_TITLE, line);
+      ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+
+      if (g_nparty == 0) ui_text(6, 40, UI_WARN, "No Pokemon in party.");
+      /* One full-size 32x32 icon per row, vertically CENTRED on its two-line name block so
+       * each mon reads as directly left of its name. ROW_TOP 17 puts row 0's icon just below
+       * the header WITHOUT a clamp (the old clamp pushed the top mon too low). Draw the
+       * selection bar first so an overhanging icon above it isn't clipped. */
+      if (g_nparty) { int ry = 17 + sel * 21; ui_panel(2, ry, 236, 20, UI_SEL, UI_TITLE); }
+      for (int i = 0; i < g_nparty; i++) pl_row_paint(i, frame, sel);
+
+      ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, "A actions  START menu  B back");
+    } else if (sel != pv_sel) {
+      /* Cursor-only move (always by exactly one row: UP/DOWN clamp to +-1). A row's
+       * icon is 32px tall on a 21px pitch, so ADJACENT icons overlap by 11 rows
+       * (MUST-FIX 1/2's own measured fact, above) -- erasing just the moving row's
+       * 20px selection band would also wipe whatever ink a NEIGHBOUR's icon had
+       * contributed there, with nothing to put it back. So this redraws every row
+       * whose icon bounding box can reach into EITHER the old or the new selection
+       * band -- lo-1, lo, hi(=lo+1), hi+1 -- not just the two that changed, in
+       * ASCENDING index order (matching the full draw's own ascending loop, since
+       * transparent ui_sprite compositing is last-opaque-wins on any pixel two icons
+       * both ink). pl_row_paint's icon/text calls are safe to repeat even where the
+       * erase below did NOT reach (icons are idempotent, text is a self-contained
+       * opaque redraw), so this does not need to be pixel-exact about the erase
+       * bounds -- only about erasing at least the two 20px bands whose highlight
+       * state changed, and redrawing every icon that could show through the gap. */
+      int ry_old, iy_old; party_icon_y(pv_sel, &ry_old, &iy_old); (void)iy_old;
+      ui_fill_rect(0, ry_old, UI_SCR_W, 20, UI_BG);              /* drop the old highlight */
+      int ry_new, iy_new; party_icon_y(sel, &ry_new, &iy_new); (void)iy_new;
+      ui_panel(2, ry_new, 236, 20, UI_SEL, UI_TITLE);            /* add the new one, BEFORE any icon */
+      int lo = (pv_sel < sel) ? pv_sel : sel, hi = lo + 1;
+      for (int r = lo - 1; r <= hi + 1; r++) {
+        if (r < 0 || r >= g_nparty) continue;
+        pl_row_paint(r, frame, sel);
+      }
     }
-
-    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, "A actions  START menu  B back");
+    pv_sel = sel; pv_n = g_nparty; pv_valid = true; pv_gen = ui_clear_gen();
 
     /* idle 2-frame bob (compose-then-CPU-copy, no erase). Animate only on frames with NO key
      * pending so navigation never stutters; party_bob_recompose() calls out per build
@@ -5122,24 +5209,46 @@ static const char* const SB_CLASS_NAME[10] = {
   "Lass", "School Kid", "Lady", "Picnicker", "Cooltrainer F",
 };
 
+/* One OWNER APPEARANCE row. Labels are compile-time constants (SB_CLASS_NAME), never
+ * change while this screen is open -- so unlike a filename or a save-derived string, a
+ * plain UI_BG wipe + redraw is enough (fixed ASCII, no shortening/UTF-8 concern). Row
+ * height matches the highlight panel exactly (11 on an 11 pitch), so neighbours never
+ * share a scanline. */
+static void sb_owner_row_paint(int i, bool s) {
+  int y = 40 + i * 11;
+  ui_fill_rect(2, y - 1, 236, 11, UI_BG);
+  if (s) ui_panel(2, y - 1, 236, 11, UI_SEL, UI_TITLE);
+  char r[32]; siprintf(r, "%-13s %s", SB_CLASS_NAME[i], i < 5 ? "(M)" : "(F)");
+  ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, r);
+}
+
 /* Change a friend's base owner to one of the 10 NPC presets (writes gender + trainerId[0]
  * into g_sb1; sets *dirty). Omega + non-own only — gated by the caller. */
 static void sb_owner_pick(SbRecord* b, uint32_t off, bool* dirty) {
   int cur = sb_owner_class(g_sb1, off, b->slot);
   int sel = (cur >= 0 && cur < 10) ? cur : 0;
+  /* This loop never calls out to anything that paints (A returns immediately, B
+   * returns immediately) -- so gen can only ever change from OUTSIDE this call, which
+   * cannot happen while it's the one blocking on wait_keys(). Tracked anyway (gen +
+   * valid), the same uniform idiom every picker in this file uses, so nothing has to
+   * be remembered specially if a future edit adds a nested call here. */
+  int prev_sel = -1; bool valid = false; uint32_t gen = 0;
   for (;;) {
-    ui_clear();
-    ui_text(4, 3, UI_TITLE, "OWNER APPEARANCE");
-    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
-    ui_text(6, 17, UI_DIM, "Overworld look + battle class");
-    ui_text(6, 26, UI_DIM, "(one of 10 presets).");
-    for (int i = 0; i < 10; i++) {
-      int y = 40 + i * 11; bool s = (i == sel);
-      if (s) ui_panel(2, y - 1, 236, 11, UI_SEL, UI_TITLE);
-      char r[32]; siprintf(r, "%-13s %s", SB_CLASS_NAME[i], i < 5 ? "(M)" : "(F)");
-      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, r);
+    bool full = !valid || gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      ui_text(4, 3, UI_TITLE, "OWNER APPEARANCE");
+      ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+      ui_text(6, 17, UI_DIM, "Overworld look + battle class");
+      ui_text(6, 26, UI_DIM, "(one of 10 presets).");
+      for (int i = 0; i < 10; i++) sb_owner_row_paint(i, i == sel);
+      ui_text(4, 152, UI_DIM, "A set  U/D move  B cancel");
+    } else if (sel != prev_sel) {
+      sb_owner_row_paint(prev_sel, false);
+      sb_owner_row_paint(sel, true);
     }
-    ui_text(4, 152, UI_DIM, "A set  U/D move  B cancel");
+    prev_sel = sel; valid = true; gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 9;
@@ -5216,46 +5325,78 @@ static void sb_mon_edit(SbRecord* b, uint32_t off, int start, bool* dirty) {
   }
 }
 
+/* One party card (icon + name + level, panel-highlighted when selected). Cards are
+ * 78x46-pitched and the panel/erase rect is 76x45 -- a 2px/1px gap on every side, so
+ * neighbouring cards never share a scanline (unlike party_list's icons, nothing here
+ * is taller than its own cell). Erase-then-draw, not draw-over: the panel fill (when
+ * losing the highlight) has nothing else that would paint over it, and re-drawing the
+ * icon (ui_sprite, transparent) + text (tte_write, opaque per glyph cell) afterward is
+ * always correct regardless of what the erase left, so this is safe to call for BOTH
+ * the row gaining and the row losing the highlight with no special-casing. */
+static void sb_card_paint(const SbRecord* b, int i, bool sel) {
+  int col = i % 3, row = i / 3;
+  int cx = 4 + col * 78, cy = 56 + row * 46;
+  ui_fill_rect(cx - 2, cy - 2, 76, 45, UI_BG);
+  bool s = sel && (i < b->partyCount);
+  if (s) ui_panel(cx - 2, cy - 2, 76, 45, UI_SEL, UI_TITLE);
+  uint16_t sp = b->party.species[i];
+  if (!sp) { ui_text(cx + 26, cy + 14, UI_DIM, "-"); return; }
+  uint8_t fo = (sp == 201) ? pk_unown_form(b->party.personality[i])
+             : (sp == 410) ? (uint8_t)pk_get_deoxys_form() : 0;   /* letter/forme, not form 0 (Deoxys internal 410) */
+  ui_sprite(cx + 22, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form(sp, fo));
+  char nm[16]; ui_truncate(nm, pk_species_name(sp), 9); ui_text(cx, cy + 32, s ? UI_SELTEXT : UI_TEXT, nm);
+  char line[16]; siprintf(line, "Lv%u", (unsigned)b->party.level[i]); ui_text(cx, cy + 40, UI_DIRCLR, line);
+}
+
 /* Secret-base detail: owner info + the boarding party, with a cursor to view/edit each
  * mon (A) and change the owner's overworld look (SELECT). Returns true if g_sb1 was
- * edited (the caller commits or reverts SB1). */
+ * edited (the caller commits or reverts SB1).
+ *
+ * The header block (owner name/gender/TID/look/visits/deco/battled-today) is a pure
+ * function of `b` and sb_owner_class(), both of which can only move through
+ * sb_owner_pick() (SELECT) or sb_mon_edit() -> pdna_inspect() (A) -- both open a
+ * full-screen sub-view that ui_clear()s on its own first frame regardless of what the
+ * user does inside (same `pv.valid` idiom pdna_inspect's own comment shows), so
+ * ui_clear_gen() alone is a complete invalidation signal here: nothing on this screen
+ * can change without something ALSO painting over it first. Shadow is therefore just
+ * `psel` (for the cheap cursor-only path) plus valid/gen -- no separate b->partyCount
+ * or b->own tracking needed, because a change to either always routes through one of
+ * those two calls. */
 static bool sb_detail(SbRecord* b, uint32_t off) {
   bool dirty = false, can = app_can_edit();
   int psel = 0;
+  int prev_psel = -1; bool valid = false; uint32_t gen = 0;
   for (;;) {
-    ui_clear();
-    char hdr[40]; ui_truncate(hdr, b->trainerName[0] ? b->trainerName : "?", 14);
-    ui_text(4, 3, UI_TITLE, hdr);
-    if (b->own) ui_text(150, 3, UI_OK, "YOUR BASE");
-    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    bool full = !valid || gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      char hdr[40]; ui_truncate(hdr, b->trainerName[0] ? b->trainerName : "?", 14);
+      ui_text(4, 3, UI_TITLE, hdr);
+      if (b->own) ui_text(150, 3, UI_OK, "YOUR BASE");
+      ui_hline(0, 13, UI_SCR_W, UI_BORDER);
 
-    char line[40];
-    ui_text(6, 17, UI_DIRCLR, b->gender ? "Trainer: Female" : "Trainer: Male");
-    siprintf(line, "TID %05u", (unsigned)b->trainerId); ui_text(150, 17, UI_DIM, line);
-    int cls = sb_owner_class(g_sb1, off, b->slot);
-    siprintf(line, "Looks like: %s", (cls >= 0 && cls < 10) ? SB_CLASS_NAME[cls] : "?");
-    ui_text(6, 27, UI_TEXT, line);
-    siprintf(line, "Visits %u  Deco %d/16", (unsigned)(b->numEntered > 9999 ? 9999 : b->numEntered), b->decorCount);
-    ui_text(6, 37, UI_DIM, line);
-    if (b->battledToday) ui_text(6, 46, UI_WARN, "Battled today");     /* #6: its own line */
+      char line[40];
+      ui_text(6, 17, UI_DIRCLR, b->gender ? "Trainer: Female" : "Trainer: Male");
+      siprintf(line, "TID %05u", (unsigned)b->trainerId); ui_text(150, 17, UI_DIM, line);
+      int cls = sb_owner_class(g_sb1, off, b->slot);
+      siprintf(line, "Looks like: %s", (cls >= 0 && cls < 10) ? SB_CLASS_NAME[cls] : "?");
+      ui_text(6, 27, UI_TEXT, line);
+      siprintf(line, "Visits %u  Deco %d/16", (unsigned)(b->numEntered > 9999 ? 9999 : b->numEntered), b->decorCount);
+      ui_text(6, 37, UI_DIM, line);
+      if (b->battledToday) ui_text(6, 46, UI_WARN, "Battled today");     /* #6: its own line */
 
-    for (int i = 0; i < SB_PARTY; i++) {
-      int col = i % 3, row = i / 3;
-      int cx = 4 + col * 78, cy = 56 + row * 46;
-      uint16_t sp = b->party.species[i];
-      bool s = (i == psel) && (i < b->partyCount);
-      if (s) ui_panel(cx - 2, cy - 2, 76, 45, UI_SEL, UI_TITLE);
-      if (!sp) { ui_text(cx + 26, cy + 14, UI_DIM, "-"); continue; }
-      { uint8_t fo = (sp == 201) ? pk_unown_form(b->party.personality[i])
-                   : (sp == 410) ? (uint8_t)pk_get_deoxys_form() : 0;   /* letter/forme, not form 0 (Deoxys internal 410) */
-        ui_sprite(cx + 22, cy, MON_ICON_W, MON_ICON_H, mon_icon_for_form(sp, fo)); }
-      char nm[16]; ui_truncate(nm, pk_species_name(sp), 9); ui_text(cx, cy + 32, s ? UI_SELTEXT : UI_TEXT, nm);
-      siprintf(line, "Lv%u", (unsigned)b->party.level[i]); ui_text(cx, cy + 40, UI_DIRCLR, line);
+      for (int i = 0; i < SB_PARTY; i++) sb_card_paint(b, i, i == psel);
+
+      ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, (can && !b->own) ? "A edit mon  SEL owner  B back"
+                            : can               ? "A edit mon  B back"
+                                                : "A view mon  B back");
+    } else if (psel != prev_psel) {                    /* cursor-only move: swap two cards */
+      sb_card_paint(b, prev_psel, false);
+      sb_card_paint(b, psel, true);
     }
-    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, (can && !b->own) ? "A edit mon  SEL owner  B back"
-                          : can               ? "A edit mon  B back"
-                                              : "A view mon  B back");
+    prev_psel = psel; valid = true; gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_SELECT);
     if (k & KEY_B) return dirty;
     else if (k & KEY_A) { if (b->partyCount > 0) sb_mon_edit(b, off, psel, &dirty); }
@@ -5274,6 +5415,33 @@ static bool sb_detail(SbRecord* b, uint32_t off) {
   }
 }
 
+/* One SECRET BASES list row. Row pitch 15 vs panel height 13 (2px gap): no
+ * shared-scanline. `nm` is trainerName, a Gen-3 in-game name already DECODED to
+ * plain ASCII (gen3_secretbase.c, <=7 chars, char[8]) -- not a FatFs filename, so
+ * (unlike the browser's ui_truncate calls) it carries no FF_LFN_UNICODE risk and
+ * nm[12] is genuinely enough for a 8-col truncate of a <=7-char ASCII string. */
+static void sb_list_row_paint(int idx, int i, bool sel) {
+  const SbRecord* b = &g_sb_recs[idx];
+  int y = 18 + i * 15;
+  ui_fill_rect(0, y - 2, UI_SCR_W, 13, UI_BG);
+  if (sel) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
+  char nm[12]; ui_truncate(nm, b->trainerName[0] ? b->trainerName : "?", 8);
+  char row[44];
+  siprintf(row, "%-8s %s  Lv%-3d  %dmon", nm, b->own ? "YOU" : (b->gender ? "(F)" : "(M)"),
+           sb_party_maxlevel(b), b->partyCount);
+  ui_text(8, y, sel ? UI_SELTEXT : UI_TEXT, row);
+  if (b->battledToday) ui_text(228, y, UI_WARN, "*");
+}
+
+/* SECRET BASES list. Every mutation site below (A -> sb_detail -> sb_owner_pick/
+ * sb_mon_edit->pdna_inspect; SELECT -> app_confirm/msg_wait/busy_panel) opens a
+ * full-screen sub-view that ui_clear()s on ITS OWN first frame, INCLUDING the paths
+ * that end up changing nothing (sb_detail returns false after a look-and-B-out) --
+ * so ui_clear_gen() alone is a complete invalidation signal; there is no silent
+ * mutation path the way scan_dir()/sort_entries() were for the file browser (D5),
+ * which is why this one does NOT need an explicit relist-style flag. `top` is kept
+ * OUT of `full` (a scroll must not pay the ui_clear()) and handled by the same
+ * per-row index-identity diff render_browser uses. */
 static void pdna_secretbase(void) {
   Gen3Version v = (g_game == PK_RS) ? G3_VER_RS : (g_game == PK_EMERALD) ? G3_VER_EMERALD : G3_VER_UNKNOWN;
   uint32_t off = gen3_secret_base_offset(v);
@@ -5283,27 +5451,36 @@ static void pdna_secretbase(void) {
 
   int sel = 0, top = 0;
   const int VIS = 8;
+  int pv_top = -1, pv_sel = -1; bool pv_valid = false; uint32_t pv_gen = 0;
   for (;;) {
     if (sel < 0) sel = 0; if (sel >= n) sel = n - 1;
     if (sel < top) top = sel; if (sel >= top + VIS) top = sel - VIS + 1;
-    ui_clear();
-    ui_text(4, 3, UI_TITLE, "SECRET BASES");
-    char cnt[16]; siprintf(cnt, "%d/%d", n, SB_COUNT); ui_text(196, 3, UI_DIM, cnt);
-    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < VIS && top + i < n; i++) {
-      const SbRecord* b = &g_sb_recs[top + i];
-      int y = 18 + i * 15; bool s = (top + i == sel);
-      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
-      char nm[12]; ui_truncate(nm, b->trainerName[0] ? b->trainerName : "?", 8);
-      char row[44];
-      siprintf(row, "%-8s %s  Lv%-3d  %dmon", nm, b->own ? "YOU" : (b->gender ? "(F)" : "(M)"),
-               sb_party_maxlevel(b), b->partyCount);
-      ui_text(8, y, s ? UI_SELTEXT : UI_TEXT, row);
-      if (b->battledToday) ui_text(228, y, UI_WARN, "*");
+
+    bool full = !pv_valid || pv_gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      ui_text(4, 3, UI_TITLE, "SECRET BASES");
+      char cnt[16]; siprintf(cnt, "%d/%d", n, SB_COUNT); ui_text(196, 3, UI_DIM, cnt);
+      ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+      ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+      ui_text(4, 152, UI_DIM, app_can_edit() ? "A view  U/D move  SEL clear  B back"
+                                              : "A view  U/D move  B back");
     }
-    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, app_can_edit() ? "A view  U/D move  SEL clear  B back"
-                                            : "A view  U/D move  B back");
+    /* Per-row dirty: the entry index drawn at row i WAS (pv_top+i), belongs there NOW
+     * (top+i) -- differ, or the row's selection flipped, and it repaints. A scroll (any
+     * top change) makes every visible row's old/new index differ, so a scroll still
+     * repaints all VIS rows but skips ui_clear() and the header/footer chrome. */
+    uint32_t dirty = 0;
+    for (int i = 0; i < VIS && top + i < n; i++) {
+      int f = top + i, of = pv_top + i;
+      bool s = (f == sel), os = (of == pv_sel);
+      if (full || of != f || s != os) dirty |= 1u << i;
+    }
+    for (int i = 0; i < VIS && top + i < n; i++)
+      if (dirty & (1u << i)) sb_list_row_paint(top + i, i, top + i == sel);
+
+    pv_top = top; pv_sel = sel; pv_valid = true; pv_gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT);
     if (k & KEY_B) return;
     else if (k & KEY_UP)   { if (sel > 0) sel--; }
