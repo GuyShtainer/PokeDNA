@@ -223,10 +223,13 @@ static int      s_regb = -1;            /* what region B holds: 0=grab fist 1=it
 static int      s_rega = -1;            /* what region A holds: 0=hand 1=full item 2=held mon -1 */
 /* BACKLOG #36 item 3: same-content resident id for load_regb_item's short-circuit,
  * packing (tid, full, carried_item) the same way load_rega_hand packs its own `want`
- * -- see that function's short-circuit and load_regb_item's own comment for why. -1
- * can never collide with a real packed value (tid is always >= TID_HAND, so a real
- * value is always >= 0). Plain `static int`, same as s_regb/s_rega right above: this
- * project's convention is EWRAM_BSS as the explicit opt-in for big buffers, so an
+ * -- see that function's short-circuit and load_regb_item's own comment for why. NOT
+ * sufficient alone (review-caught): the gate also requires s_rega/s_regb (right above)
+ * to still read their "item resident" value, since three other writers reuse the same
+ * two tile ids without touching this key -- see load_regb_item's comment for the full
+ * trace. -1 can never collide with a real packed value (tid is always >= TID_HAND, so a
+ * real value is always >= 0). Plain `static int`, same as s_regb/s_rega right above:
+ * this project's convention is EWRAM_BSS as the explicit opt-in for big buffers, so an
  * untagged static here links to IWRAM .bss like its neighbours, at zero EWRAM cost. */
 static int      s_regb_item_want = -1;
 static uint8_t  s_selmark[30];          /* 1 = whiten this slot (rubber-band selection)   */
@@ -757,13 +760,55 @@ static uint8_t citem_index(const uint16_t* ic, const uint16_t* cpal, int ncol, i
  * actually link. s_rega/s_regb two lines above this function are plain `static int`,
  * not EWRAM_BSS, and this project routes an untagged static to IWRAM .bss by
  * convention (EWRAM_BSS is the explicit opt-in for the big buffers) -- so
- * s_regb_item_want costs zero EWRAM, and the short-circuit below is exactly the nicety
- * the note queued, added this round instead of deferred. */
+ * s_regb_item_want costs zero EWRAM.
+ *
+ * FIRST CUT WAS WRONG (review-caught, 2026-08-30): `s_regb_item_want == want` alone is
+ * not sufficient, because TID_HAND and TID_REGB are NOT this function's private
+ * property -- three OTHER writers overwrite the same tile memory without touching
+ * s_regb_item_want at all:
+ *   (a) load_regb_grab() (region B, TID_GRAB==TID_REGB) -- called from boxoam_carry_item
+ *       itself (the `full` branch, right after this call, line ~1913), from
+ *       boxoam_carry_held() (line ~1566), and from the block-carry path (line ~1703).
+ *       Sets s_regb = 0.
+ *   (b) load_rega_hand() (region A, TID_HAND) -- called from boxoam_cursor() every
+ *       frame the cursor hand is shown (line ~1490). Sets s_rega = 10+pose.
+ *   (c) boxoam_carry_held()'s upload_icon(TID_HAND, ...) (region A, held-mon icon) --
+ *       line ~1571. Sets s_rega = 2 unconditionally right after.
+ * Reproduction (region B, hover): hover item X (s_regb_item_want=W, s_regb=1) -> grab
+ * then release (either of (a)'s other two call sites runs load_regb_grab, overwriting
+ * TID_REGB with the fist and setting s_regb=0 -- s_regb_item_want is untouched, still
+ * W) -> hover item X again: want recomputes to the SAME W, so the naive check short-
+ * circuited and skipped the upload -- the FIST stayed resident where the item preview
+ * belonged. Region A (grab) has the same shape twice over, via (b) (carry item X full
+ * -> s_rega=1 -> cursor shown without carrying, load_rega_hand overwrites TID_HAND and
+ * sets s_rega=10+pose -> carry item X again: want matches W, naive check skips, the
+ * HAND POSE stays resident instead of the item) and via (c) (carry item X full ->
+ * s_rega=1 -> a held-mon carry runs, overwriting TID_HAND and setting s_rega=2 -> carry
+ * item X again: same skip, the MON ICON stays resident instead of the item).
+ *
+ * THE FIX: gate on the EXISTING region tracker too, not the key alone. s_rega/s_regb
+ * are each the single tracker for their region, and EVERY writer to TID_HAND or
+ * TID_REGB already updates the matching one (grepped: load_rega_hand, load_regb_grab,
+ * boxoam_carry_held's upload_icon(TID_HAND,...), and this function's own two call
+ * sites are the complete set touching those two tile ids in this file). Item-resident
+ * in region A <=> s_rega == 1; item-resident in region B <=> s_regb == 1 -- both are
+ * set by the CALLER (boxoam_carry_item, unconditionally, right after this function
+ * returns, hit or miss), never by this function itself, so the tracker always reflects
+ * what is ACTUALLY in the region right now, independent of this function's own cached
+ * verdict. ORDERING: this function's gate reads s_rega/s_regb as they were left by
+ * whatever ran on the PREVIOUS call (correct -- that is exactly the current occupant);
+ * the caller's `s_rega = 1` / `s_regb = 1` assignment runs strictly AFTER this function
+ * returns (hit or miss), so it is what the NEXT call's gate will see, and every one of
+ * (a)/(b)/(c) knocks the tracker to a non-1 value BEFORE any subsequent re-hover/re-
+ * carry call can run (single-threaded, no ISR touches this state -- see the OS-mode
+ * rule). All three reproductions above now re-upload: the gate requires the region
+ * tracker to still read 1, and each interfering writer already left it at 0 / 10+pose /
+ * 2 by the time the re-hover/re-carry call's gate runs. */
 static void load_regb_item(uint16_t carried_item, bool full, int tid) {
   /* full = 32x32 (16 tiles) carried/grab item; !full = 16x16 (4 tiles) hover preview.
    * tid = where the tiles go (TID_CITEM in region B for hover, TID_HAND in region A for grab). */
   int want = ((int)tid << 17) | (full ? (1 << 16) : 0) | (int)carried_item;
-  if (s_regb_item_want == want) return;
+  if (want == s_regb_item_want && (full ? s_rega == 1 : s_regb == 1)) return;
   s_regb_item_want = want;
   uint16_t cpal[16]; for (int i = 0; i < 16; i++) cpal[i] = 0;
   /* aligned(4) (2026-08-30, PokeDNA B3 round-3 hardening): this stack array is the
@@ -856,12 +901,17 @@ void boxoam_enter(void) {
   s_expb_ok = 0;
 #endif
   s_bob = 0; s_regb = -1; s_rega = -1;
-  /* s_regb_item_want too (BACKLOG #36 item 3): its short-circuit trusts that an
-   * unchanged (tid, full, carried_item) triple means TID_HAND/TID_REGB's tile memory
-   * still holds what was last uploaded for it -- true within one box-screen visit
-   * (nothing else here touches those tile ids), false across a re-entry, since whatever
-   * screen ran in between may have reused the same OBJ tile slots for something else.
-   * Same "no mid-beat leakage across screens" reason s_rega/s_regb reset here for. */
+  /* s_regb_item_want too (BACKLOG #36 item 3, corrected after review): its short-
+   * circuit no longer trusts the (tid, full, carried_item) key alone -- load_regb_item's
+   * own comment traces why that was wrong even WITHIN one visit (load_rega_hand,
+   * load_regb_grab, and boxoam_carry_held's held-mon upload all overwrite the same two
+   * tile ids without touching this key) -- the gate now ALSO requires s_rega==1 /
+   * s_regb==1, which the reset two lines above already forces false right after this
+   * function runs. So this line is technically redundant with that reset now, not the
+   * load-bearing half it was in the first cut; kept anyway; explicit and free, same "no
+   * mid-beat leakage across screens" symmetry s_rega/s_regb reset here for, and it means
+   * s_regb_item_want cannot go stale across a re-entry even if the region-tracker gate
+   * above it is ever loosened or removed later. */
   s_regb_item_want = -1;
   s_hand_pose = BOXOAM_POSE_NORMAL; s_cur_dy = 0;   /* no mid-beat leakage across screens */
 #if !PDNA_HAND_ART_COMPILED
