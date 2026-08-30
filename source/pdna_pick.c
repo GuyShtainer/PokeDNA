@@ -874,7 +874,9 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
       k = fresh | key_repeat(dpad);
       /* Animate ONLY on idle frames (no key pending) so a press/repeat is never delayed
        * by the multi-cell repaint — this kills the occasional cursor "stick". Recompose
-       * EVERY visible caught cell at once (shared `bob`) via compose-over-DMA, no erase,
+       * EVERY visible caught cell at once (shared `bob`) via compose-then-CPU-copy
+       * (ui_blit_over, memcpy32 — see that function's own comment for why: a per-vblank
+       * animation tick, not DMA), no erase,
        * so there's never a frame where a sprite is blanked. */
       /* mon_icon_anim_cheap() is now "is every row of the page this screen DECLARED
        * already in RAM" (art_fallbacks.c), not "which rung is serving" -- the old

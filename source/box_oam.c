@@ -233,26 +233,60 @@ static inline OBJ_ATTR* oe(int i) { return &s_shadow[i]; }
 /* hide one shadow entry */
 static void hide(int i) { obj_hide(oe(i)); }
 
-/* DMA `bytes` from src into OBJ tile id `tid` (charblock-4-relative). LOAD TIME ONLY --
- * see upload_tiles_cpu below for why the animation tick must not call this. */
+/* Copy `bytes` from src into OBJ tile id `tid` (charblock-4-relative), CPU transport.
+ *
+ * ALWAYS CPU, not DMA (2026-08-30, PokeDNA B3 round-3 hardening -- round 2 kept this
+ * function on dma3_cpy under a "LOAD TIME ONLY" label that a second adversarial review
+ * found false). round 2 fixed upload_tiles_verified's tick reachability (the glove
+ * BOUNCE path) but left THIS function classified as load-time-only, on the assumption
+ * that its other callers were all one-shot box-open/input-driven uploads. They are not:
+ * a per-vblank hardware-review trace found upload_tiles reachable from at least three
+ * live per-vblank loops --
+ *   (B) pdna_box.c's cursor_slide() (up to 12-iteration `for` loop, `boxoam_commit();
+ *       s_vsync();` every pass) -> oam_sync()'s CM_ITEM carry/hover branches ->
+ *       boxoam_carry_item() -> load_regb_item() (box_oam.c, below -- NO same-item
+ *       short-circuit, unlike load_rega_hand's `s_rega == want` check) -> upload_tiles.
+ *       Re-uploads the identical 512 B every vblank for as long as an item is carried
+ *       or hovered AND a direction is held (both builds).
+ *   (A) boxoam_carry_held() -> upload_icon(..., from_rom=1) -> upload_tiles, from the
+ *       same cursor_slide loop, artless-with-a-registered-ROM.
+ *   (C) boxoam_chunk_carry()'s 8-frame lift beat (pdna_box.c, `for (int v = 7; v >= 0;
+ *       v--) { ...; boxoam_commit(); s_vsync(); }`) -> upload_icon -> upload_tiles,
+ *       artless-with-a-registered-ROM.
+ * Rather than run a fourth classification round chasing whichever caller a reviewer
+ * finds next, this converts upload_tiles itself: after this, box_oam.c has ZERO
+ * dma3_cpy outside the PDNA_POSE_EXPERIMENT compile gates (default 0, not shipped;
+ * see that block's own comment), so no caller of ANY upload_* helper in this file
+ * needs load-time/tick classification ever again -- the property this whole B3 slice
+ * has been chasing is now a FILE INVARIANT, not a per-call-site judgement call. The
+ * severity here is honestly lower than fd205bb's original finding or the glove-BOUNCE
+ * miss: these are bounded, input-triggered bursts (12 vblanks max for a slide, 8 for a
+ * lift beat), not the free-running-forever idle ticks those two were, and the map
+ * viewer's 2026-07-30 hardware validation (real Emerald/Ruby/LeafGreen carts, camera
+ * pan + zoom-build DMA every held-key frame) suggests bounded per-frame DMA bursts of
+ * this shape would likely have survived on hardware too -- but there is no reason to
+ * bet on that when the conversion costs nothing (see below) and removes the question
+ * entirely. Load-time callers (box-open icon uploads, restore_slot, strip_draw, etc.)
+ * lose nothing: sources are IWRAM/stack-resident, memcpy32 runs at DMA parity for
+ * them, and a full box-open (~30 slots x 512 B) stays trivial at load time.
+ *
+ * upload_tiles_cpu (below) is now BYTE-IDENTICAL to this function in body -- the
+ * tick/load split it was created for (fd205bb, 2026-08-23) no longer exists anywhere
+ * in this file. Kept as a separate name rather than merged/removed this round: its 2
+ * call sites were reviewer-verified closed in an earlier round, and merging would
+ * touch them for zero behavioural gain. A future cleanup pass can fold the two names
+ * together; this round's mandate is the DMA removal, not a refactor. */
 static void upload_tiles(int tid, const void* src, int bytes) {
   /* OBJ tile memory base = tile_mem_obj[0] (0x06010000); each 4bpp tile = 32 B. */
   uint16_t* dst = (uint16_t*)((uint8_t*)tile_mem_obj[0] + (uint32_t)tid * 32);
-  rumble_io_suspend();              /* freeze GPIO during ROM/VRAM DMA */
-  dma3_cpy(dst, src, bytes);
+  rumble_io_suspend();              /* freeze GPIO during ROM/VRAM copy */
+  memcpy32(dst, src, (uint32_t)bytes / 4u);
   rumble_io_resume();
 }
 
-/* Same upload, CPU transport. For the ANIMATION TICK only.
- *
- * The 2026-08-23 hardware A/B proved a dma3_cpy issued from the box's per-vblank tick
- * kills an Omega DE (see swap_cache_slot for the three builds and what each isolated).
- * Load-time DMA is NOT implicated and stays as it is: every shipping build already does
- * it on entry and is fine -- it is specifically the tick that cannot take one.
- *
- * That distinction is why this exists as a separate function instead of changing
- * upload_tiles: the two callers below are on the tick, the rest are not, and collapsing
- * them would lose the one property that matters. bytes must be a multiple of 4. */
+/* Same upload, same CPU transport as upload_tiles above -- kept as a distinct name
+ * only for the historical/no-refactor-this-round reason documented there. bytes must
+ * be a multiple of 4 (true of every caller: all pass a whole-tile count * 32). */
 static void upload_tiles_cpu(int tid, const void* src, int bytes) {
   uint16_t* dst = (uint16_t*)((uint8_t*)tile_mem_obj[0] + (uint32_t)tid * 32);
   rumble_io_suspend();              /* freeze GPIO during ROM/VRAM copy */
@@ -277,7 +311,14 @@ static int icopy_verified(uint16_t* dst, const uint16_t* src, int n) {
   return -1;
 }
 
-static uint16_t s_stage[256];        /* one 512 B verify chunk (IWRAM .bss — EWRAM is full) */
+/* aligned(4) (2026-08-30, PokeDNA B3 round-3 hardening): s_stage feeds memcpy32 as a
+ * source (upload_tiles_verified, and now the whole file's upload_tiles/upload_tiles_cpu
+ * pair too) -- it happened to link word-aligned already (GCC's array-alignment boost
+ * for a 512 B object), same as s_pline before its own fix earlier in this slice, but
+ * that was luck, not a contract. Declared explicitly so nothing about that depends on
+ * the compiler's heuristics for this object's size or on it staying exactly 256
+ * elements. */
+static uint16_t __attribute__((aligned(4))) s_stage[256];        /* one 512 B verify chunk (IWRAM .bss — EWRAM is full) */
 _Static_assert(sizeof(s_stage) == 0x200, "s_stage must be exactly 512 bytes (abuts s_shadow with no guard)");
 
 /* ---- ROM-streamed icons (phase 1 of the ROM-gated build) --------------------
@@ -459,11 +500,31 @@ static void upload_icon(int tid, const uint8_t* tiles, int from_rom) {
   else upload_tiles_verified(tid, tiles, MON_ICON_OAM_TILES * MON_ICON_OAM_TILE_BYTES);
 }
 
-/* upload_tiles with staged verify: ROM -> RAM (verified, retried) -> DMA to VRAM
+/* upload_tiles with staged verify: ROM -> RAM (verified, retried) -> CPU copy to VRAM
  * (RAM->VRAM cannot glitch). On give-up, the raw upload still runs (a maybe-garbled
  * icon beats a hole) and the anomaly is logged + flushed so it survives a power-off.
  * NOT used by boxoam_set_frame: a verified 15 KiB re-stage cannot fit the vblank
- * window, and any set_frame glitch self-heals at the next swap (<= 0.5 s). */
+ * window, and any set_frame glitch self-heals at the next swap (<= 0.5 s).
+ *
+ * ALWAYS CPU, not DMA. THE OLD VERSION OF THIS COMMENT (2026-08-29) argued this
+ * function's callers split into "genuinely load-time" (upload_icon, load_regb_grab)
+ * vs. the one that wasn't (load_rega_hand, the glove BOUNCE path) -- and used that
+ * split to justify converting THIS function unconditionally while leaving sibling
+ * function upload_tiles (above) on dma3_cpy, reasoned as load-time-only. A second
+ * adversarial review (2026-08-30) found upload_tiles reachable from at least three
+ * more live per-vblank loops the first pass never traced -- see upload_tiles' own
+ * comment for the paths. That is the second time in two rounds a "this caller is
+ * load-time" classification in this file turned out to be wrong, which is the actual
+ * lesson: per-caller classification in a file this densely cross-called does not
+ * converge reliably. As of round 3, box_oam.c has ZERO dma3_cpy outside the
+ * PDNA_POSE_EXPERIMENT compile gates (default 0, not shipped) -- upload_tiles,
+ * upload_tiles_cpu, and this function are all CPU transport, unconditionally, for
+ * every caller, load-time or tick alike. No classification question applies to THIS
+ * function, or to any other upload_* helper in this file, ever again -- that is a
+ * file-wide invariant now, not a per-call-site judgement call. memcpy32 is the same
+ * libtonc IWRAM_CODE word copy the icon pose-swap (swap_cache_slot) already proved
+ * safe on hardware, at DMA-parity speed for buffers this size resident in RAM/VRAM,
+ * so nothing here costs a load-time caller anything measurable. */
 static void upload_tiles_verified(int tid, const void* src, int bytes) {
   const uint16_t* s = (const uint16_t*)src;
   uint16_t* dst = (uint16_t*)((uint8_t*)tile_mem_obj[0] + (uint32_t)tid * 32);
@@ -474,11 +535,11 @@ static void upload_tiles_verified(int tid, const void* src, int bytes) {
     int r = icopy_verified(s_stage, s + done, n);
     if (r < 0) { bad = 1; break; }
     rr += r;
-    dma3_cpy(dst + done, s_stage, (uint32_t)n * 2);
+    memcpy32(dst + done, s_stage, (uint32_t)n * 2 / 4);
     done += n;
   }
   rumble_io_resume();
-  if (bad) { dma3_cpy(dst, src, bytes); log_line("icons: tid %d unstable rom reads", tid); }
+  if (bad) { memcpy32(dst, src, (uint32_t)bytes / 4); log_line("icons: tid %d unstable rom reads", tid); }
   else if (rr) log_line("icons: tid %d %d re-reads", tid, rr);
   static int s_icon_flushes = 0;
   if ((bad || rr) && s_icon_flushes < 2) { s_icon_flushes++; app_log_flush(); }
@@ -680,11 +741,31 @@ static uint8_t citem_index(const uint16_t* ic, const uint16_t* cpal, int ncol, i
   return (uint8_t)best;
 }
 
+/* NO SAME-ITEM SHORT-CIRCUIT (2026-08-30, PokeDNA B3 round-3 note, recorded not fixed):
+ * unlike load_rega_hand's `if (s_rega == want) return;` or load_regb_grab's `if (s_regb
+ * == 0) return;`, this function rebuilds the palette + repacks every tile and calls
+ * upload_tiles on EVERY call, even when `carried_item`/`full` are identical to last
+ * time. Its caller, boxoam_carry_item(), is itself called every pass of pdna_box.c's
+ * cursor_slide() per-vblank loop while an item is carried/hovered and a direction is
+ * held (up to 12 vblanks) -- so the same 512 or 128 B upload repeats, unchanged, once
+ * per vblank for that beat's duration. Bounded (the beat ends the moment the key is
+ * released or the slide completes) and now CPU-only (upload_tiles is memcpy32, see its
+ * own comment), so this is a redundancy note, not a correctness or safety concern. A
+ * same-content short-circuit (an `s_regb_item`-style resident-id check, mirroring
+ * s_rega/s_regb) is a real perf nicety QUEUED for later, deliberately NOT added this
+ * round: it would need a new piece of resident state, and the EWRAM guard is at 612 B
+ * free with zero budget for another static this slice can spend. */
 static void load_regb_item(uint16_t carried_item, bool full, int tid) {
   /* full = 32x32 (16 tiles) carried/grab item; !full = 16x16 (4 tiles) hover preview.
    * tid = where the tiles go (TID_CITEM in region B for hover, TID_HAND in region A for grab). */
   uint16_t cpal[16]; for (int i = 0; i < 16; i++) cpal[i] = 0;
-  uint8_t ctiles[16 * 32];                           /* up to 16 tonc tiles, 4bpp */
+  /* aligned(4) (2026-08-30, PokeDNA B3 round-3 hardening): this stack array is the
+   * memcpy32 source at this function's own upload_tiles(tid, ctiles, ...) call below --
+   * same "linked aligned by luck, not by contract" gap s_stage just got fixed for, but
+   * sharper here since it is a STACK local (IWRAM stack frame layout has no size-based
+   * alignment boost the way a .bss array can get; nothing here guaranteed word
+   * alignment except accident of the surrounding frame). */
+  uint8_t __attribute__((aligned(4))) ctiles[16 * 32];  /* up to 16 tonc tiles, 4bpp */
   for (unsigned b = 0; b < sizeof ctiles; b++) ctiles[b] = 0;
   int across = full ? 4 : 2;                          /* tiles per row -> 32x32 or 16x16 */
   const uint16_t* ic = carried_item ? app_item_icon(carried_item) : 0;   /* + the ROM rung */
@@ -1103,7 +1184,21 @@ static void swap_cache_slot(int s) {
    * controller involved. ~1,900 cycles/slot; 15 slots is ~28,500 of vblank's 83,776
    * (34%), and the 15-now/15-next-tick split is unchanged.
    *
-   * mGBA runs the DMA version perfectly and forever. Only hardware finds this. */
+   * mGBA runs the DMA version perfectly and forever. Only hardware finds this.
+   *
+   * CAVEAT ADDED 2026-08-29 (PokeDNA B3 hardening pass, adversarial review): the three
+   * builds' exact configuration was never recorded, and in a FULL-ART build the box's
+   * BOUNCE hand-pose upload (load_rega_hand -> upload_tiles_verified, a separate 512 B
+   * dma3_cpy from THIS SAME per-vblank tick, see that function's own comment) was
+   * plausibly firing in all three variants -- including clean variant 'A'. If it was,
+   * then "any dma3_cpy in the tick is fatal" is NOT what the A/B actually proved; the
+   * fatal property could be narrower (the VRAM-source/EWRAM-dest class specific to the
+   * icon pose-swap exchange, which A never exercised either). The safe DIRECTION -- CPU
+   * transport for anything reachable from a per-vblank tick -- holds either way, which
+   * is why this hardening pass converts the glove path too rather than re-litigating
+   * which builds actually ran hand-upload-free. Whether "any DMA3" or "this DMA shape"
+   * is the true trigger remains open; hardware sign-off should not read this comment as
+   * having settled that question. */
   memcpy32(s_stage, vram, (uint32_t)n / 4u);   /* temp  = VRAM  (the frame now on screen) */
   memcpy32(vram, cache, (uint32_t)n / 4u);     /* VRAM  = cache (the frame NOT on screen) */
   memcpy32(cache, s_stage, (uint32_t)n / 4u);  /* cache = temp  (what VRAM just gave up)  */
@@ -1195,12 +1290,14 @@ static void pose_swap_rom_slot(int s, uint8_t frame) {
  * plus 16 for the hand (TID_HAND 992) and 16 for region B (TID_REGB 1008) = exactly 512
  * tiles. There is no second frame's worth of VRAM, at any price.
  *
- * The re-upload itself is cheap and DOES fit the vblank: upload_tiles is dma3_cpy, so a
- * full box is 15,360 B = 3,840 words, roughly 9 K cycles against vblank's 83,776 — about
- * 11%. (The "cannot fit the vblank window" note at the top of this file is about
- * upload_tiles_VERIFIED, which reads every word back a second time. This path uses the
- * plain copy: the icons were already verified when the box was staged, and a bob tick
- * re-sends bytes that are known good.)
+ * The re-upload itself is cheap and DOES fit the vblank: this path calls upload_tiles_cpu
+ * (memcpy32, same as every upload_* helper in this file as of the 2026-08-30 round-3
+ * hardening pass -- this comment used to say "upload_tiles is dma3_cpy", which named the
+ * wrong function even before that pass), so a full box is 15,360 B = 3,840 words, roughly
+ * 9 K cycles against vblank's 83,776 — about 11%. (The "cannot fit the vblank window" note
+ * at the top of this file is about upload_tiles_VERIFIED, which reads every word back a
+ * second time. This path uses the plain copy: the icons were already verified when the
+ * box was staged, and a bob tick re-sends bytes that are known good.)
  *
  * PER-SLOT capability, not whole-box: s_pose_ok[s] (built at boxoam_load_box from
  * icon_tiles()'s *cheap output) can differ slot to slot within the SAME box — e.g. one
