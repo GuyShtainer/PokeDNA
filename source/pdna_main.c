@@ -684,40 +684,46 @@ static const char* human_size(uint32_t b, char* out) {
   return out;
 }
 
-/* sd-browser-style listing: cwd header, framed panel, (DIR) tags + right-aligned
- * size column, a per-selection detail block, and a green status line. */
-static void render_browser(int sel, int top) {
-  ui_clear();
-  char title[80], cwdc[LIST_COLS * 4 + 1];
-  siprintf(title, "Pick .sav: %s", g_cwd);      /* state the goal every frame */
-  ui_truncate(cwdc, title, 29);
-  ui_text(2, 2, UI_TITLE, cwdc);
-  ui_panel(0, 11, UI_SCR_W, 104, UI_PANEL, UI_BORDER);
+/* What is on screen right now, owned by browse_pick()'s stack -- no new static, same
+ * idiom as pdna_edit.c's EditPaint / pdna_pick.c's pick_species prev_sel+prev_top+gen. */
+typedef struct {
+  int      top, sel;
+  bool     valid;
+  uint32_t gen;
+} BrowsePaint;
 
-  if (g_count == 0) {
-    ui_text(6, 40, UI_WARN, "(no folders or .sav files here)");
-    ui_text(6, 52, UI_DIM,  at_root() ? "Open the folder with your saves."
-                                      : "B = go up a folder.");
+/* Paint (or repaint) one list row in place. The list's own background is UI_PANEL, not
+ * UI_BG -- ui_panel() at (0,11)-(240,115) filled it once in the full path below, so a
+ * row erase here must match that fill or it punches a UI_BG rectangle into the panel.
+ * ui_text_sel() draws no background when `sel` is false, and names are NOT fixed-width
+ * (the %-21s/%-18s padding only holds for a given row's OWN two possible shapes, not
+ * across two DIFFERENT entries), so the wipe below is what stops a longer old name's
+ * tail from surviving under a shorter new one (lesson: text that can shorten needs an
+ * explicit wipe). Row height matches ui_text_sel's own highlight rect exactly
+ * (UI_ROW_H on a UI_ROW_H pitch), so neighbouring rows never share a scanline. */
+static void br_row_paint(int idx, int i, bool sel) {
+  int y = 14 + i * UI_ROW_H;
+  ui_fill_rect(3, y, UI_SCR_W - 6, UI_ROW_H, UI_PANEL);
+  const BrowseEntry* e = &g_entries[idx];
+  char row[LIST_COLS * 4 + 1], nm[NAME_MAX + 2], sz[12];
+  if (e->is_dir) {
+    ui_truncate(nm, e->name, 21);
+    siprintf(row, "%-21s (DIR)", nm);
+    ui_text_sel(3, y, UI_SCR_W - 6, sel, UI_DIRCLR, row);
   } else {
-    char row[LIST_COLS * 4 + 1], nm[NAME_MAX + 2], sz[12];
-    for (int i = 0; i < VIS_ROWS && top + i < g_count; i++) {
-      int idx = top + i;
-      int y = 14 + i * UI_ROW_H;
-      const BrowseEntry* e = &g_entries[idx];
-      if (e->is_dir) {
-        ui_truncate(nm, e->name, 21);
-        siprintf(row, "%-21s (DIR)", nm);
-        ui_text_sel(3, y, UI_SCR_W - 6, idx == sel, UI_DIRCLR, row);
-      } else {
-        ui_truncate(nm, e->name, 18);
-        human_size(e->size, sz);
-        siprintf(row, "%-18s %8s", nm, sz);
-        ui_text_sel(3, y, UI_SCR_W - 6, idx == sel, UI_SAVECLR, row);
-      }
-    }
+    ui_truncate(nm, e->name, 18);
+    human_size(e->size, sz);
+    siprintf(row, "%-18s %8s", nm, sz);
+    ui_text_sel(3, y, UI_SCR_W - 6, sel, UI_SAVECLR, row);
   }
+}
 
-  if (g_count > 0) {                          /* per-selection detail block */
+/* The per-selection detail block + status line, both pure functions of `sel` (plus the
+ * filter/sort/count state folded into the caller's `full`/relist decision) -- a cursor
+ * move alone must repaint them even when no row content changed. */
+static void br_detail_paint(int sel) {
+  ui_fill_rect(0, 116, UI_SCR_W, UI_FOOTER_RULE_Y - 116, UI_BG);
+  if (g_count > 0) {
     const BrowseEntry* e = &g_entries[sel];
     char dn[40]; ui_truncate(dn, e->name, 29);
     ui_text(2, 118, UI_SELTEXT, dn);
@@ -726,17 +732,60 @@ static void render_browser(int sel, int top) {
     else { char sz[12]; human_size(e->size, sz); siprintf(meta, "save file   %s", sz); }
     ui_text(2, 128, UI_DIM, meta);
   }
-
   char status[64], stc[40];
   siprintf(status, "%d/%d  %s  %s", g_count ? sel + 1 : 0, g_count,
            sort_label(), g_show_all ? "all" : ".sav");
   ui_truncate(stc, status, 29);
   ui_text(2, 138, UI_OK, stc);
+}
 
-  /* UI_FOOTER_Y, not a hard 150: this row is what every popup is laid out to clear, and
-   * a literal here would let the two drift apart (see source/ui_layout.h). */
-  ui_hline(0, UI_FOOTER_RULE_Y, UI_SCR_W, UI_BORDER);
-  ui_text(2, UI_FOOTER_Y, UI_DIM, "A pick  B up  SEL sort  ST menu");
+/* sd-browser-style listing: cwd header, framed panel, (DIR) tags + right-aligned
+ * size column, a per-selection detail block, and a green status line.
+ *
+ * `relist` is set by the caller at every site that mutates g_entries (a rescan or a
+ * re-sort) -- see browse_pick(). It is NOT inferred from g_count or from top/sel:
+ * a same-count re-sort, or a rescan that resets sel/top back to the SAME 0/0 they
+ * already were, changes every row's content without moving the cursor or the window
+ * or touching ui_clear_gen() (sort_entries()/scan_dir() paint nothing themselves), so
+ * a scalar-derived gate would miss it (the exact bug class an earlier repaint batch
+ * shipped twice). Explicit invalidation at the mutation site is what closes that. */
+static void render_browser(int sel, int top, bool relist, BrowsePaint* pv) {
+  bool full = relist || !pv->valid || pv->gen != ui_clear_gen() || top != pv->top;
+
+  if (full) {
+    ui_clear();
+    char title[80], cwdc[LIST_COLS * 4 + 1];      /* only recomputed on a full repaint --
+                                                    * cwd only ever changes alongside a
+                                                    * relist, never on a bare cursor move */
+    siprintf(title, "Pick .sav: %s", g_cwd);
+    ui_truncate(cwdc, title, 29);
+    ui_text(2, 2, UI_TITLE, cwdc);
+    ui_panel(0, 11, UI_SCR_W, 104, UI_PANEL, UI_BORDER);
+    if (g_count == 0) {
+      ui_text(6, 40, UI_WARN, "(no folders or .sav files here)");
+      ui_text(6, 52, UI_DIM,  at_root() ? "Open the folder with your saves."
+                                        : "B = go up a folder.");
+    }
+    /* UI_FOOTER_Y, not a hard 150: this row is what every popup is laid out to clear, and
+     * a literal here would let the two drift apart (see source/ui_layout.h). */
+    ui_hline(0, UI_FOOTER_RULE_Y, UI_SCR_W, UI_BORDER);
+    ui_text(2, UI_FOOTER_Y, UI_DIM, "A pick  B up  SEL sort  ST menu");
+  }
+
+  if (g_count > 0) {
+    if (full) {
+      for (int i = 0; i < VIS_ROWS && top + i < g_count; i++)
+        br_row_paint(top + i, i, top + i == sel);
+    } else if (sel != pv->sel) {                  /* cursor move only: swap the highlight */
+      int oi = pv->sel - top, ni = sel - top;
+      if (oi >= 0 && oi < VIS_ROWS) br_row_paint(pv->sel, oi, false);
+      if (ni >= 0 && ni < VIS_ROWS) br_row_paint(sel, ni, true);
+    }
+  }
+
+  if (full || sel != pv->sel) br_detail_paint(sel);
+
+  pv->top = top; pv->sel = sel; pv->valid = true; pv->gen = ui_clear_gen();
 }
 
 /* Reboot back into the flashcart loader menu (no return on confirm). */
@@ -765,16 +814,24 @@ static bool file_actions(const BrowseEntry* e);
 /* START menu over the browser: file actions on the selection, then sort key/order,
  * file filter, show-hidden, reboot. Returns true if something changed that needs a
  * re-scan. `fe` is the selected entry (NULL or a folder => no file-ops row). */
+/* One row of a small fixed-count text menu (browse_menu / file_actions share this
+ * geometry): 13 px highlight on a 16 px pitch, so adjacent rows never share a
+ * scanline. Always wipes first -- these row STRINGS are not fixed-width (unlike the
+ * browser's %-21s rows), so a shorter new label must not leave the old one's tail. */
+static void ui_menu_row(int y, const char* text, bool sel) {
+  ui_fill_rect(2, y - 2, 236, 13, UI_BG);
+  if (sel) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
+  ui_text(10, y, sel ? UI_SELTEXT : UI_TEXT, text);
+}
+
 static bool browse_menu(const BrowseEntry* fe) {
   int sel = 0;
   bool changed = false;
   bool can_fileops = (fe && !fe->is_dir);
+  char rows[8][40], prev_rows[8][40];
+  int  act[8];
+  int  prev_sel = -1; bool valid = false; uint32_t gen = 0;
   for (;;) {
-    ui_clear();
-    ui_text(4, 4, UI_TITLE, "FILE MENU");
-    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
-    char rows[8][40];
-    int  act[8];
     int  n = 0;
     enum { A_FILEOPS, A_SORTKEY, A_ORDER, A_FILES, A_HIDDEN, A_VERIFY, A_REBOOT, A_CLOSE };
     if (can_fileops) {
@@ -790,12 +847,29 @@ static bool browse_menu(const BrowseEntry* fe) {
     strcpy(rows[n], "Verify ROM image..."); act[n++] = A_VERIFY;
     strcpy(rows[n], "Reboot to flashcart menu..."); act[n++] = A_REBOOT;
     strcpy(rows[n], "Close"); act[n++] = A_CLOSE;
-    for (int i = 0; i < n; i++) {
-      int y = 26 + i * 16; bool s = (i == sel);
-      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
-      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
+
+    /* Building rows[] above is pure string formatting (no SD I/O) -- cheap enough to
+     * redo every frame. What used to be expensive was drawing all of it: shadow the
+     * PAINTED text (not g_sort/g_sortrev/... individually) so a toggle that changes a
+     * row's own label while `sel` stays put (A on Sort key/Order/Files/Hidden all edit
+     * the row you're already sitting on) still gets caught -- diffing derived scalars
+     * one by one is exactly the miss two earlier repaint batches shipped. */
+    bool full = !valid || gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      ui_text(4, 4, UI_TITLE, "FILE MENU");
+      ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+      for (int i = 0; i < n; i++) ui_menu_row(26 + i * 16, rows[i], i == sel);
+      ui_text(4, 152, UI_DIM, "A change  U/D move  B back");
+    } else {
+      for (int i = 0; i < n; i++) {
+        bool s = (i == sel), os = (i == prev_sel);
+        if (s != os || strcmp(rows[i], prev_rows[i]) != 0) ui_menu_row(26 + i * 16, rows[i], s);
+      }
     }
-    ui_text(4, 152, UI_DIM, "A change  U/D move  B back");
+    for (int i = 0; i < n; i++) strcpy(prev_rows[i], rows[i]);
+    prev_sel = sel; valid = true; gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return changed;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
@@ -820,13 +894,16 @@ static bool browse_menu(const BrowseEntry* fe) {
 static bool browse_pick(char* out, int cap) {
   scan_dir();
   int sel = 0, top = 0;
+  bool relist = false;                /* the very first frame is covered by !pv.valid */
+  BrowsePaint bp = {0};
   for (;;) {
     if (sel >= g_count) sel = g_count > 0 ? g_count - 1 : 0;
     if (sel < 0) sel = 0;
     if (sel < top) top = sel;
     if (sel >= top + VIS_ROWS) top = sel - VIS_ROWS + 1;
 
-    render_browser(sel, top);
+    render_browser(sel, top, relist, &bp);
+    relist = false;
 
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT | KEY_START);
     if      (k & KEY_UP)   { if (sel > 0) sel--; }
@@ -838,10 +915,10 @@ static bool browse_pick(char* out, int cap) {
     else if (k & KEY_SELECT) {           /* cycle the 6 sort states (key x order) */
       int s = ((int)g_sort * 2 + (g_sortrev ? 1 : 0) + 1) % 6;
       g_sort = (BrSortKey)(s / 2); g_sortrev = (s & 1) != 0;
-      sort_entries(); sel = 0; top = 0; cfg_save();           /* remember the sort */
+      sort_entries(); sel = 0; top = 0; cfg_save(); relist = true;   /* remember the sort */
     }
-    else if (k & KEY_START) { if (browse_menu(g_count ? &g_entries[sel] : 0)) { scan_dir(); sel = 0; top = 0; cfg_save(); } }
-    else if (k & KEY_B)    { if (!at_root()) { path_up(); scan_dir(); sel = 0; top = 0; cfg_save(); } }   /* remember the folder */
+    else if (k & KEY_START) { if (browse_menu(g_count ? &g_entries[sel] : 0)) { scan_dir(); sel = 0; top = 0; cfg_save(); relist = true; } }
+    else if (k & KEY_B)    { if (!at_root()) { path_up(); scan_dir(); sel = 0; top = 0; cfg_save(); relist = true; } }   /* remember the folder */
     else if (k & KEY_A) {
       if (g_count == 0) continue;
       const BrowseEntry* e = &g_entries[sel];
@@ -850,7 +927,7 @@ static bool browse_pick(char* out, int cap) {
       if (e->is_dir) {
         strcpy(g_cwd, np);
         scan_dir();
-        sel = 0; top = 0; cfg_save();                         /* remember the folder */
+        sel = 0; top = 0; cfg_save(); relist = true;             /* remember the folder */
       } else if ((int)strlen(np) < cap) {
         cfg_save();                                           /* remember where this save was picked from */
         strcpy(out, np);
@@ -2169,19 +2246,31 @@ static bool file_actions(const BrowseEntry* e) {
   if (!path_join(g_cwd, e->name, src)) return false;
   int sel = 0; bool changed = false;
   static const char* const L[4] = { "Duplicate", "Rename", "Delete backups", "Close" };
+  /* Everything else on this screen (header, the read-only note, the 4 labels) is fixed
+   * for the whole call -- `e` and cart_writable() cannot change while this modal is up
+   * -- so only the cursor moves between frames, and every action below (Duplicate/
+   * Rename/Delete/the READ-ONLY denial) routes through msg_wait/busy_panel/app_confirm/
+   * osk_input, which all ui_clear() before returning here. gen alone is therefore a
+   * complete invalidation signal; no separate value shadow is needed (unlike a screen
+   * whose row content can change without painting an overlay). */
+  int prev_sel = -1; bool valid = false; uint32_t gen = 0;
   for (;;) {
-    ui_clear();
-    char hdr[40]; ui_truncate(hdr, e->name, 29);
-    ui_text(4, 4, UI_TITLE, "FILE");
-    ui_text(4, 16, UI_SELTEXT, hdr);
-    ui_hline(0, 28, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < 4; i++) {
-      int y = 40 + i * 16; bool s = (i == sel);
-      if (s) ui_panel(2, y - 2, 236, 13, UI_SEL, UI_TITLE);
-      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, L[i]);
+    bool full = !valid || gen != ui_clear_gen();
+    if (full) {
+      ui_clear();
+      char hdr[40]; ui_truncate(hdr, e->name, 29);
+      ui_text(4, 4, UI_TITLE, "FILE");
+      ui_text(4, 16, UI_SELTEXT, hdr);
+      ui_hline(0, 28, UI_SCR_W, UI_BORDER);
+      for (int i = 0; i < 4; i++) ui_menu_row(40 + i * 16, L[i], i == sel);
+      if (!cart_writable()) ui_text(8, 122, UI_DIM, "Read-only: writes need Omega.");
+      ui_text(4, 152, UI_DIM, "A do  U/D move  B back");
+    } else if (sel != prev_sel) {
+      ui_menu_row(40 + prev_sel * 16, L[prev_sel], false);
+      ui_menu_row(40 + sel * 16, L[sel], true);
     }
-    if (!cart_writable()) ui_text(8, 122, UI_DIM, "Read-only: writes need Omega.");
-    ui_text(4, 152, UI_DIM, "A do  U/D move  B back");
+    prev_sel = sel; valid = true; gen = ui_clear_gen();
+
     u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return changed;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 3;
@@ -3679,6 +3768,43 @@ static bool bag_screen_try(bool* dirty) {
   return true;
 }
 
+/* Draw one COUNTERS row (Money / Coins / a game stat) at screen y — a pure function of
+ * (row index, save state), same "erase-then-draw" contract as nf_draw_row above (row
+ * text is not fixed-width, so a partial repaint must wipe before it writes). */
+static void ct_draw_row(int r, int y, bool s) {
+  char row[44], rt[44];
+  if (r == 0)      siprintf(row, "%-20s %lu", "Money", (unsigned long)pk_money(g_sb1, g_sb2, g_game));
+  else if (r == 1) siprintf(row, "%-20s %u",  "Coins", (unsigned)pk_coins(g_sb1, g_sb2, g_game));
+  else             siprintf(row, "%-20s %lu", pk_game_stat_name(r - 2), (unsigned long)pk_game_stat(g_sb1, g_sb2, g_game, r - 2));
+  ui_truncate(rt, row, 29);
+  if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+  ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
+}
+static void ct_row_repaint(int top, int r, int sel) {
+  int i = r - top; if (i < 0 || i >= 14) return;       /* row scrolled out of the window */
+  int y = 16 + i * 9;
+  ui_fill_rect(0, y - 1, UI_SCR_W, 9, UI_BG);
+  ct_draw_row(r, y, r == sel);
+}
+
+/* Draw one BAG-pocket slot row at screen y. Same contract as ct_draw_row. */
+static void bg_draw_row(int pocket, int sl, int y, bool s) {
+  char row[44], rt[44];
+  uint16_t id = pk_bag_item(g_sb1, g_game, pocket, sl);
+  uint16_t q  = pk_bag_qty(g_sb1, g_sb2, g_game, pocket, sl);
+  if (id) siprintf(row, "%-16s x%u", pk_item_name(id), q);
+  else    strcpy(row, "-");
+  ui_truncate(rt, row, 29);
+  if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+  ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
+}
+static void bg_row_repaint(int pocket, int top, int sl, int sel) {
+  int i = sl - top; if (i < 0 || i >= 12) return;
+  int y = 26 + i * 9;
+  ui_fill_rect(0, y - 1, UI_SCR_W, 9, UI_BG);
+  bg_draw_row(pocket, sl, y, sl == sel);
+}
+
 /* `only` >= 0 locks the screen to that ONE tab. The Bag has its own menu entry now, so it is
  * entered directly instead of hiding two L/R presses deep inside this screen; the plain
  * (art-free) bag list still lives here as tab 1 and is what a build with no bag art falls
@@ -3691,11 +3817,28 @@ static bool data_editor_tab(int only) {
 
   const NamedFlag* f_nf = 0; int f_top = -1, f_sel = -1;   /* flags-tab partial-redraw state */
   uint32_t f_fold = 0; bool f_valid = false;   /* must match s_flags_folded's width */
+  /* Counters/bag tabs' own partial-redraw shadow, same idiom as the flags tab's f_* one
+   * above. Each is reachable through exactly one path per CALL of this function: tab 0
+   * only ever pairs with tab 2 here (L/R, unlocked), and tab 1 is entered locked with no
+   * other tab reachable in that call (bag_entry() -> data_editor_tab(1)) -- so one
+   * top/sel/gen shadow per tab is enough, no cross-tab identity to confuse it. Every
+   * value edit on both tabs routes through an overlay first (osk_number/pick_item, and
+   * the pocket-full/right-pocket messages are msg_wait) -- all of them ui_clear() -- so
+   * `gen` alone catches every content change; that is NOT the flags tab's situation (a
+   * flag toggle writes straight to the save with no overlay), which is why THAT one still
+   * force-repaints its selected row every frame instead of trusting gen alone. Pocket
+   * switching (SELECT) is the one bag mutation with no overlay, so its shadow adds
+   * `pocket` explicitly rather than inferring the change from top/sel (both of which the
+   * switch resets to 0 -- indistinguishable from "already at 0/0" without it). */
+  int c_top = -1, c_sel = -1; bool c_valid = false; uint32_t c_gen = 0;                 /* tab 0 */
+  int b_top = -1, b_sel = -1, b_pocket = -1; bool b_valid = false; uint32_t b_gen = 0;  /* tab 1 */
   for (;;) {
     /* Flags tab computes its layout FIRST: when only the cursor moved (same window,
      * same folds) we repaint just the two affected rows instead of the whole screen
-     * (the full-refresh flicker Guy flagged; same idea as pick_species). */
-    int nc = 0, total = 0; bool part = false;
+     * (the full-refresh flicker Guy flagged; same idea as pick_species). Counters/bag
+     * mirror the same "clamp the window, THEN decide part" order so `part` is judged
+     * against the FINAL top/sel, not a stale pre-clamp one. */
+    int nc = 0, total = 0, N = 0, pcap = 0; bool part = false;
     if (tab == 2) {
       nc = pk_named_flags(g_game, &f_nf); total = nc + 1;
       nf_cache(f_nf, nc);
@@ -3709,7 +3852,20 @@ static bool data_editor_tab(int only) {
       }
       if (!nf_visible(f_nf, nc, top)) top = nf_step(f_nf, nc, total, top, +1);
       part = f_valid && top == f_top && s_flags_folded == f_fold;
-    } else f_valid = false;
+    } else {
+      f_valid = false;
+      if (tab == 0) {
+        N = pk_game_stat_count(g_game) + 2;
+        if (sel >= N) sel = N - 1;
+        if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
+        part = c_valid && top == c_top && c_gen == ui_clear_gen();
+      } else if (tab == 1) {
+        pcap = pk_pocket_cap(g_game, pocket);
+        if (sel >= pcap) sel = pcap - 1;
+        if (sel < top) top = sel; if (sel >= top + 13) top = sel - 12;
+        part = b_valid && top == b_top && pocket == b_pocket && b_gen == ui_clear_gen();
+      }
+    }
 
     if (!part) {
       ui_clear();
@@ -3729,38 +3885,25 @@ static bool data_editor_tab(int only) {
     }
 
     if (tab == 0) {                              /* ---- counters (row 0 = Money, 1 = Coins) ---- */
-      int N = pk_game_stat_count(g_game) + 2;
-      if (sel >= N) sel = N - 1;
-      if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
-      char row[44];
-      for (int i = 0; i < 14 && top + i < N; i++) {
-        int r = top + i, y = 16 + i * 9; bool s = (r == sel);
-        if (r == 0)      siprintf(row, "%-20s %lu", "Money", (unsigned long)pk_money(g_sb1, g_sb2, g_game));
-        else if (r == 1) siprintf(row, "%-20s %u",  "Coins", (unsigned)pk_coins(g_sb1, g_sb2, g_game));
-        else             siprintf(row, "%-20s %lu", pk_game_stat_name(r - 2), (unsigned long)pk_game_stat(g_sb1, g_sb2, g_game, r - 2));
-        char rt[44]; ui_truncate(rt, row, 29);
-        if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-        ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
+      if (!part) {
+        for (int i = 0; i < 14 && top + i < N; i++) ct_draw_row(top + i, 16 + i * 9, top + i == sel);
+        ui_text(4, 152, UI_DIM, lock ? "A edit  U/D  B done" : "A edit  U/D  L/R tab  B done");
+      } else if (sel != c_sel) {                  /* cursor-only change: swap the highlight */
+        ct_row_repaint(top, c_sel, sel);
+        ct_row_repaint(top, sel, sel);
       }
-      ui_text(4, 152, UI_DIM, lock ? "A edit  U/D  B done" : "A edit  U/D  L/R tab  B done");
+      c_top = top; c_sel = sel; c_valid = true; c_gen = ui_clear_gen();
     } else if (tab == 1) {                       /* ---- bag ---- */
-      int cap = pk_pocket_cap(g_game, pocket);
-      if (sel >= cap) sel = cap - 1;
-      if (sel < top) top = sel; if (sel >= top + 13) top = sel - 12;
-      char hh[40]; siprintf(hh, "%s  (%d)", pk_pocket_name(pocket), cap);
-      ui_text(6, 15, UI_DIRCLR, hh);
-      char row[44];
-      for (int i = 0; i < 12 && top + i < cap; i++) {
-        int sl = top + i, y = 26 + i * 9; bool s = (sl == sel);
-        uint16_t id = pk_bag_item(g_sb1, g_game, pocket, sl);
-        uint16_t q  = pk_bag_qty(g_sb1, g_sb2, g_game, pocket, sl);
-        if (id) siprintf(row, "%-16s x%u", pk_item_name(id), q);
-        else    strcpy(row, "-");
-        char rt[44]; ui_truncate(rt, row, 29);
-        if (s) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-        ui_text(4, y, s ? UI_SELTEXT : UI_TEXT, rt);
+      if (!part) {
+        char hh[40]; siprintf(hh, "%s  (%d)", pk_pocket_name(pocket), pcap);
+        ui_text(6, 15, UI_DIRCLR, hh);
+        for (int i = 0; i < 12 && top + i < pcap; i++) bg_draw_row(pocket, top + i, 26 + i * 9, top + i == sel);
+        ui_text(4, 152, UI_DIM, "A edit  SEL pocket  B done");
+      } else if (sel != b_sel) {
+        bg_row_repaint(pocket, top, b_sel, sel);
+        bg_row_repaint(pocket, top, sel, sel);
       }
-      ui_text(4, 152, UI_DIM, "A edit  SEL pocket  B done");
+      b_top = top; b_sel = sel; b_pocket = pocket; b_valid = true; b_gen = ui_clear_gen();
     } else {                                     /* ---- flags (named list, foldable sections) ---- */
       if (part) {                                 /* cursor-only change: repaint two rows */
         if (f_sel != sel) nf_row_repaint(f_nf, nc, top, f_sel, sel);
