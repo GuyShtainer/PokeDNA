@@ -101,7 +101,17 @@ def main():
         c.write('#include "hand_oam.h"\n\n')
         for name, tiles in framedata:
             cname = "hand_oam_%s_tiles" % name.replace("hand_", "")
-            c.write("const uint8_t %s[HAND_OAM_TILES * HAND_OAM_TILE_BYTES] = {\n" % cname)
+            # aligned(4): these tiles are a memcpy32 source at every one of their
+            # call sites (box_oam.c's load_rega_hand -> upload_tiles_verified, the
+            # PDNA_POSE_EXPERIMENT paths -> upload_tiles), which reads/writes whole
+            # words. A plain `const uint8_t foo[512]` link word-aligned anyway today
+            # (GCC's own array-size alignment heuristic), but that is the compiler's
+            # luck, not a contract this generator makes -- see box_oam.c's s_stage/
+            # s_pline/ctiles comments for the same fix applied to the hand-written
+            # arrays these tiles feed into. Emitting the attribute here makes the
+            # generated array carry its own guarantee instead of relying on nobody
+            # ever changing HAND_OAM_TILES/TILE_BYTES to a size GCC no longer boosts.
+            c.write("const uint8_t __attribute__((aligned(4))) %s[HAND_OAM_TILES * HAND_OAM_TILE_BYTES] = {\n" % cname)
             for i in range(0, len(tiles), 16):
                 c.write("  " + ",".join("0x%02x" % b for b in tiles[i:i + 16]) + ",\n")
             c.write("};\n\n")
