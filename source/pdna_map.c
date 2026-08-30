@@ -158,9 +158,13 @@ typedef struct { uint32_t gen; int top, sel; bool valid; } PickPaint;
  * -- ui_text_sel only fills its UI_SEL highlight rect on the SELECTED path. No pairing
  * trap: 8 px content on a 10 px pitch, same clean gap as pdna_fly.c's list. */
 static void pick_row_paint(const PickEnt* ents, int idx, int y, bool sel) {
-  char row[40];
+  char row[PICK_NAME + 2];   /* marker + name[63] + NUL. Was 40: name comes from a real
+                              * FatFs LFN (FF_MAX_LFN 255, strncpy-capped to 63 bytes at
+                              * scan time), so any >=39-char filename overran the frame --
+                              * e.g. "Pokemon - Emerald Version (USA, Europe).gba" (43). */
   siprintf(row, "%s%s", ents[idx].dir ? "/" : " ", ents[idx].name);
-  char rt[40]; ui_truncate(rt, row, 28);
+  char rt[128]; ui_truncate(rt, row, 28);   /* ui.h contract: out >= max_cols*4+1 (113) --
+                                             * 28 cols of multi-byte UTF-8 don't fit 40 */
   ui_fill_rect(4, y, 232, UI_ROW_H, UI_BG);
   ui_text_sel(4, y, 232, sel, ents[idx].dir ? UI_DIRCLR : UI_TEXT, rt);
 }
