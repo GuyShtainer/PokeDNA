@@ -255,10 +255,11 @@ static void hide(int i) { obj_hide(oe(i)); }
  * live per-vblank loops --
  *   (B) pdna_box.c's cursor_slide() (up to 12-iteration `for` loop, `boxoam_commit();
  *       s_vsync();` every pass) -> oam_sync()'s CM_ITEM carry/hover branches ->
- *       boxoam_carry_item() -> load_regb_item() (box_oam.c, below -- NO same-item
- *       short-circuit, unlike load_rega_hand's `s_rega == want` check) -> upload_tiles.
- *       Re-uploads the identical 512 B every vblank for as long as an item is carried
- *       or hovered AND a direction is held (both builds).
+ *       boxoam_carry_item() -> load_regb_item() (box_oam.c, below) -> upload_tiles.
+ *       HISTORICAL: this path used to re-upload the identical 512 B every vblank while
+ *       an item was carried/hovered with a direction held. load_regb_item now has a
+ *       same-item short-circuit (key + region-tracker gate -- see its header for why
+ *       the key alone was NOT enough), so the steady-state cost is zero uploads.
  *   (A) boxoam_carry_held() -> upload_icon(..., from_rom=1) -> upload_tiles, from the
  *       same cursor_slide loop, artless-with-a-registered-ROM.
  *   (C) boxoam_chunk_carry()'s 8-frame lift beat (pdna_box.c, `for (int v = 7; v >= 0;
