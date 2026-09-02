@@ -7420,6 +7420,15 @@ static void view_save(const char* path) {
   if (!err && pdna_gen12_size_is_gb(sz)) {
     memset(&g_vinfo, 0, sizeof g_vinfo);       /* no Gen-3 save is loaded in a GB session */
     g_save_size = sz;
+    /* Same hygiene the Gen-3 path gets at "box source" below, which this early return
+     * skips: pdna_box's mon-in-hand carry is a STATIC that deliberately survives across
+     * pdna_box runs (it has to, for the PC<->Bank hand-off), so a mon picked up in a
+     * previous save and never dropped would float over the GB grid as a phantom and
+     * suppress the box idle animation. It could not be DROPPED there -- every drop path
+     * is gated on src->can_edit(), constant false for a GB mount -- so this is state
+     * hygiene, not a data path, but a Pokemon from another save hovering over someone's
+     * Game Boy boxes is exactly the kind of thing that reads as corruption. */
+    pdna_box_clear_carry();
     hb_off();
     /* met_game 3 = Emerald: with no Gen-3 save open there is no destination cartridge
      * to claim, and Emerald is the same default pdna_gen12_show() uses for 0. */
