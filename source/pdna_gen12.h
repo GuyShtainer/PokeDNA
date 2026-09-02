@@ -82,6 +82,12 @@ typedef enum {
  * offset `off` or return false. */
 typedef bool (*Gb12ReadFn)(void* ctx, uint32_t off, void* buf, uint32_t len);
 
+/* Context for the resident-image read callback: a GB save the caller has ALREADY read
+ * into RAM. The file browser's fork uses this (the bytes are in g_save by the time the
+ * Gen-3 parse refuses them), and so will the write path — the engines edit a resident
+ * image and one sf_write_verified() persists it. `img` must outlive the mount. */
+typedef struct { const uint8_t* img; uint32_t len; } Gb12Image;
+
 /* One slot that will NOT convert, remembered so the user can be shown where their
  * Pokemon went instead of being left to conclude the tool lost it. */
 typedef struct {
@@ -195,6 +201,20 @@ BoxSource pdna_gen12_source(Gb12Mount* m);
  * Borrows the EWRAM arena for the duration; returns 0 always (a screen, not a
  * chooser). Safe on every cart: it only ever reads. */
 int pdna_gen12_show(const char* path, uint8_t met_game);
+
+/* What pdna_gen12_show_image() did. The file browser needs to tell these apart: it
+ * forks on SIZE ALONE (nothing else in the PokeDNA world is 32 KiB), and a size test
+ * cannot prove a file is a GB save — so NOT_GB means "fall through and report it the
+ * way you were going to", not "the user has seen an error". */
+#define GB12_ENTER_NOT_GB   0    /* did not mount; the caller still owes the user a message */
+#define GB12_ENTER_OK       1    /* mounted, browsed, backed out                            */
+#define GB12_ENTER_BUSY     2    /* arena held / PC dirty; the user HAS been told            */
+
+/* The same session over bytes already in RAM — no FatFs handle is opened and no file is
+ * read a second time. `img` must remain valid and unmodified for the whole call. `len`
+ * is the FILE length (RTC tail included). See docs/GEN12-EDIT-DESIGN.md section 3.2. */
+int pdna_gen12_show_image(const char* path, const uint8_t* img, uint32_t len,
+                          uint8_t met_game);
 #endif
 
 #endif /* PDNA_GEN12_H */

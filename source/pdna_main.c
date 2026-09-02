@@ -1505,7 +1505,14 @@ void app_arena_release(void) {
   if (!g_arena_held) return;
   g_arena_held = false;
   /* Rebuild the PC exactly as it was: g_pc is pure derived state, and g_save (which
-   * the arena never touches) is still authoritative. */
+   * the arena never touches) is still authoritative.
+   *
+   * ...but only when g_save actually holds a parsed Gen-3 save. A Game Boy session
+   * (view_save's GB fork) borrows this same arena with 32 KiB of GB battery data in
+   * g_save and g_vinfo cleared; rebuilding from that would read a Gen-3 PC out of
+   * Game Boy bytes and hand back 30 boxes of noise. Nothing to rebuild FROM is not an
+   * error, so leave g_pc alone and let the next real save load fill it. */
+  if (!g_vinfo.valid) return;
   gen3_read_pc_storage(g_save, g_vinfo.slot, g_pc);
 }
 
@@ -7391,6 +7398,40 @@ static void view_save(const char* path) {
     log_line("save: SD read RETRIED %lu (failed %lu) - cart/bus trouble, not the parser",
              flashcartio_read_retries - rt0, flashcartio_read_failures - rf0);
   if (st != SF_OK) err = sf_status_str(st);
+
+  /* ---- THE GAME BOY FORK -------------------------------------------------------
+   * A Gen-1/2 battery save is 32 KiB (+ an optional 44/48-byte RTC tail) and can
+   * never parse as Gen 3, so it used to die four lines below on "not a valid Gen-3
+   * .sav" -- with the whole file already sitting in g_save, which is the thing that
+   * made the old message so wrong: nothing was missing, we simply refused to look.
+   * Fork on SIZE here (nothing else in the PokeDNA world is 32 KiB) and let the GB
+   * mount do the real identification; if it is not a GB save after all, fall through
+   * and report it exactly as before.
+   *
+   * g_vinfo is CLEARED FIRST and deliberately: it still holds the PREVIOUS save's
+   * parse, and app_arena_release() -- which the GB session calls on its way out --
+   * rebuilds g_pc with gen3_read_pc_storage(g_save, g_vinfo.slot, ...). Left stale,
+   * that would read a Gen-3 PC out of Game Boy bytes and leave 30 boxes of noise in
+   * g_pc. Cleared, the release skips the rebuild (see app_arena_release), so the GB
+   * session borrows the arena and gives it back with nothing invented in it.
+   *
+   * Read-only for now (docs/GEN12-EDIT-DESIGN.md: S1). The editor is S2, and it will
+   * hand this same resident image to gen1_write/gen2_write rather than re-read it. */
+  if (!err && pdna_gen12_size_is_gb(sz)) {
+    memset(&g_vinfo, 0, sizeof g_vinfo);       /* no Gen-3 save is loaded in a GB session */
+    g_save_size = sz;
+    hb_off();
+    /* met_game 3 = Emerald: with no Gen-3 save open there is no destination cartridge
+     * to claim, and Emerald is the same default pdna_gen12_show() uses for 0. */
+    int gr = pdna_gen12_show_image(path, g_save, sz, 3);
+    if (gr != GB12_ENTER_NOT_GB) {             /* mounted, or the user was told why not */
+      perf_span_end();
+      s_crumb_shown_armed = false;             /* the box screen paints its own crumb */
+      return;
+    }
+    /* NOT_GB: 32 KiB, but not a Game Boy save either. Say THAT, not "not a Gen-3 .sav" */
+    err = "32 KiB, but not a Gen-1/2 save";
+  }
 #endif
   /* The read returned. What used to be ONE opaque phase called "parsing" is steps
    * 2..4: the 2026-08-18 run 2 froze somewhere in here with "parsing" on screen, and

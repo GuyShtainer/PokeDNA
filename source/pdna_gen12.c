@@ -579,6 +579,24 @@ static bool gb_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
   return br == len;
 }
 
+/* The SAME shim against a RESIDENT image instead of a file. The GB session opened
+ * from the file browser has already read the whole save into g_save (pdna_main.c) --
+ * a GB battery save is 32 KiB and g_save is 128 KiB of EWRAM that a GB session never
+ * otherwise uses -- so every parser read is a memcpy and no FatFs handle is held at
+ * all. This is also the shape the WRITE path needs: the engines edit a resident image
+ * and sf_write_verified() persists it once, so the user's file is never open for
+ * writing while an edit is half-applied (docs/GEN12-EDIT-DESIGN.md section 3.2).
+ *
+ * The bounds test is written as two subtractions rather than `off + len > c->len` so
+ * that a caller asking for a range that wraps 32 bits is refused instead of accepted. */
+static bool gb_img_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
+  const Gb12Image* c = (const Gb12Image*)ctx;
+  if (!c || !c->img || !buf) return false;
+  if (off > c->len || len > c->len - off) return false;
+  memcpy(buf, c->img + off, len);
+  return true;
+}
+
 /* ---- info + report screens ------------------------------------------------ */
 
 static void gb_report_page(const Gb12Mount* m) {
@@ -665,6 +683,36 @@ static bool gb_info_page(const Gb12Mount* m) {
 
 /* ---- entry ---------------------------------------------------------------- */
 
+/* Arena block for a session whose bytes are already resident: no FIL, and the image
+ * pointer is the caller's (g_save), so only the mount + the two GB buffers are borrowed. */
+#define GB12_ARENA_NEED_IMG (GB12_A4(sizeof(Gb12Mount)) + GB12_A4(sizeof(Gb12Image)) + \
+                             GB12_RECS_BYTES + GB12_STAGE_BYTES + 4u)
+_Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
+               "GB import (resident image) no longer fits the borrowed EWRAM arena");
+
+/* Info page -> box grid -> the "these did not convert" report. The whole session above
+ * the mount, shared by both entry points: the only difference between opening a GB save
+ * from a loaded Gen-3 save's nav menu and opening one straight off the file browser is
+ * WHERE THE BYTES COME FROM, and that difference lives entirely in the read callback. */
+static void gb_session_core(Gb12Mount* m) {
+  rmbl_fire(RCUE_ROOM);
+  if (!gb_info_page(m)) return;              /* B on the info page = never entered */
+  /* Tell app_mon_menu that the ACTIVE box source is read-only, so its destructive
+   * actions (PASTE / RELEASE / DUPLICATE / CREATE / MOVE) are not offered on a
+   * source that cannot accept them. This also suppresses the bank's deferred-delete
+   * bookkeeping for these boxes — see pdna_main.c. Cleared unconditionally below;
+   * every exit from the box screen passes through it. */
+  app_src_readonly_set(pdna_gen12_why_locked, "Converted copy");
+  BoxSource s = pdna_gen12_source(m);
+  /* Returns 0 on B / the SAVE tab, 5 when the cursor drops off the bottom row (the
+   * PC<->Bank hand-off, which has no PC to hand off to here) — re-enter on the top
+   * tabs so DOWN puts the user back in the grid instead of silently exiting. */
+  while (pdna_box(&s) != 0) app_box_start_set(1);
+  app_src_readonly_clear();
+  pdna_gen12_source(0);                      /* unmount: no dangling arena pointers */
+  if (m->nblocked || m->nunreadable) gb_report_page(m);
+}
+
 int pdna_gen12_show(const char* path, uint8_t met_game) {
   if (!path || !path[0]) return 0;
 
@@ -713,27 +761,58 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
            path, pdna_gen12_kind_name(m->kind), m->nstored, m->nready,
            m->nblocked, m->nunreadable);
 
-  rmbl_fire(RCUE_ROOM);
-  if (gb_info_page(m)) {
-    /* Tell app_mon_menu that the ACTIVE box source is read-only, so its destructive
-     * actions (PASTE / RELEASE / DUPLICATE / CREATE / MOVE) are not offered on a
-     * source that cannot accept them. This also suppresses the bank's deferred-delete
-     * bookkeeping for these boxes — see pdna_main.c. Cleared unconditionally below;
-     * every exit from the box screen passes through it. */
-    app_src_readonly_set(pdna_gen12_why_locked, "Converted copy");
-    BoxSource s = pdna_gen12_source(m);
-    /* Returns 0 on B / the SAVE tab, 5 when the cursor drops off the bottom row (the
-     * PC<->Bank hand-off, which has no PC to hand off to here) — re-enter on the top
-     * tabs so DOWN puts the user back in the grid instead of silently exiting. */
-    while (pdna_box(&s) != 0) app_box_start_set(1);
-    app_src_readonly_clear();
-    pdna_gen12_source(0);                    /* unmount: no dangling arena pointers */
-    if (m->nblocked || m->nunreadable) gb_report_page(m);
-  }
+  gb_session_core(m);
 
   f_close(f);
   app_arena_release();
   return 0;
+}
+
+/* Same session over bytes the caller has already read. `img` must stay put and stay
+ * unchanged for the whole call (the mount pages boxes out of it on demand); `len` is
+ * the FILE length, RTC tail included, which is what pdna_gen12_size_is_gb() accepted.
+ *
+ * Returns GB12_ENTER_* so the file browser can tell "that was not a GB save after all"
+ * (fall through to the Gen-3 error the caller was about to print) from "it mounted and
+ * the user has now backed out of it" — a size test alone cannot distinguish a Gen-1/2
+ * save from any other 32 KiB file, and printing "not a valid Gen-3 .sav" over a file we
+ * never even tried to parse as Gen-3 would be a lie in the other direction. */
+int pdna_gen12_show_image(const char* path, const uint8_t* img, uint32_t len,
+                          uint8_t met_game) {
+  if (!img || !pdna_gen12_size_is_gb(len)) return GB12_ENTER_NOT_GB;
+
+  uint8_t* arena = app_arena_acquire(GB12_ARENA_NEED_IMG);
+  if (!arena) {
+    ui_clear();
+    snd_deny();
+    s_msg("NOT NOW", UI_WARN, "Save the Pokemon you moved,", "then open the GB save.");
+    return GB12_ENTER_BUSY;
+  }
+
+  uint32_t base   = GB12_A4((uint32_t)(uintptr_t)arena);
+  Gb12Mount* m    = (Gb12Mount*)(uintptr_t)base;
+  Gb12Image* ic   = (Gb12Image*)(uintptr_t)(base + GB12_A4(sizeof(Gb12Mount)));
+  uint8_t* recs   = (uint8_t*)(uintptr_t)(base + GB12_A4(sizeof(Gb12Mount)) + GB12_A4(sizeof(Gb12Image)));
+  uint8_t* stage  = recs + GB12_RECS_BYTES;
+
+  ic->img = img;
+  ic->len = len;
+
+  const char* why = 0;
+  if (!pdna_gen12_mount(m, gb_img_read, ic, len, recs, stage, met_game, &why)) {
+    log_line("gen12: %s is %lu bytes but did not mount: %s",
+             path ? path : "(image)", (unsigned long)len, why ? why : "?");
+    app_arena_release();
+    return GB12_ENTER_NOT_GB;                /* the caller says what it is not */
+  }
+  log_line("gen12: %s mounted from RAM (%s) %d mons, %d ready, %d locked, %d bad",
+           path ? path : "(image)", pdna_gen12_kind_name(m->kind), m->nstored,
+           m->nready, m->nblocked, m->nunreadable);
+
+  gb_session_core(m);
+
+  app_arena_release();
+  return GB12_ENTER_OK;
 }
 
 #endif /* PDNA_GEN12_HOST */
