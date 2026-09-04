@@ -646,6 +646,13 @@ static void gb_report_page(const Gb12Mount* m) {
   }
 }
 
+/* S5-B Part E (defined further down, after the S2 edit session it needs -- g_ed,
+ * GbSession, gb_has_sidecar): "N Pokemon here came from Gen 3", counted for
+ * gb_info_page() below. Forward-declared here so the info page can call it without
+ * moving the whole S2 section above the info/report screens it has never depended on
+ * until now. */
+static int gb_sidecar_here_count(const Gb12Mount* m);
+
 /* The page the user lands on. Everything honest about this feature is said here
  * BEFORE any Pokemon is shown, and again on the way out if anything was blocked. */
 static bool gb_info_page(const Gb12Mount* m) {
@@ -680,9 +687,24 @@ static bool gb_info_page(const Gb12Mount* m) {
     ui_ptext_fit(4, 88, 232, m->nunreadable ? UI_WARN : UI_DIM, l);
 
     ui_hline(0, 100, UI_SCR_W, UI_BORDER);
-    ui_ptext_wrap(4, 105, 232, 9, 4, UI_DIM,
+    /* S5-B Part E: max_lines dropped 4 -> 3 here. The fixed paragraph below measures
+     * exactly 3 wrapped lines at 232px (tests/host_textfit_test.c pins it), so this
+     * was never really a 4-line budget -- it is a 3-line paragraph plus ONE more row
+     * deliberately reserved for the sidecar count line below, so the total ink still
+     * provably stays within the same y=105..147 span the screen always had. */
+    int nlines = ui_ptext_wrap(4, 105, 232, 9, 3, UI_DIM,
                   "Copy a Pokemon here, then paste it into your Gen 3 boxes or the Bank. "
                   "This Game Boy save is only ever read.");
+    /* Computed lazily (this page only, not on every repaint elsewhere) -- see
+     * gb_sidecar_here_count()'s own comment for why box 0 stands in for "the current
+     * box" here and the f_stat bound this stays within. */
+    int here = gb_sidecar_here_count(m);
+    if (here >= 0) {
+      char l2[40]; int pos2 = 0;
+      put_uint(l2, (int)sizeof l2, &pos2, (unsigned)here);
+      put_str(l2, (int)sizeof l2, &pos2, PDNA_SIDECAR_INFO_SUFFIX);
+      ui_ptext_fit(4, 105 + nlines * 9, 232, UI_TEXT, l2);
+    }
 
     ui_hline(0, 147, UI_SCR_W, UI_BORDER);
     ui_text(4, 150, UI_DIM, "A browse  SEL list  B back");
@@ -814,6 +836,64 @@ static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out) {
   return gb_load(out, s->gen, g_ed->list, box, slot);
 }
 
+/* S5-B Part E: does `mon` already have a sidecar entry on the card? Only Gen 2 ever
+ * can (Gen 1 has no gen3_to_gb() target yet -- S5-C -- so no Gen-1 record was ever
+ * transferred down). noinline for the same reason gb_paste_write is: FILINFO
+ * (lib/fatfs/ffconf.h: FF_USE_LFN=1, so fname[FF_LFN_BUF+1]=256 bytes alone) is well
+ * over the ~200 B a hook's own frame should carry -- one f_stat is cheap, but only if
+ * its 280-ish-byte argument lives in a frame that is not also live for the whole
+ * editor/picker/confirm run gb_edit_hook drives. */
+static bool __attribute__((noinline)) gb_has_sidecar(uint8_t gen, const GbEditMon* mon) {
+  if (gen != GB_GEN2) return false;
+  uint8_t dv4[4] = {
+    gb_get_dv(mon, GB_ATK), gb_get_dv(mon, GB_DEF),
+    gb_get_dv(mon, GB_SPE), gb_get_dv(mon, GB_SPC)
+  };
+  uint64_t key = gbsc_key(mon->gen, gb_get_otid(mon), dv4, mon->otname);
+  char path[48];
+  if (gbsc_path(path, sizeof path, PDNA_GEN12_SIDECAR_DIR, key) < 0) return false;
+  FILINFO fi;
+  return f_stat(path, &fi) == FR_OK;
+}
+
+/* S5-B Part E, forward-declared above gb_info_page(): "N Pokemon here came from Gen 3".
+ * Walks the PARTY plus ONE box (never the whole save -- every box x its capacity would
+ * be dozens of f_stat calls) and counts occupied slots whose CURRENT key already has a
+ * sidecar file. -1 (line omitted by the caller) when there is nothing to walk with:
+ * Gen 1 has no gen3_to_gb() target yet (S5-C) so it can never have a sidecar entry, and
+ * no open edit session (g_ed NULL, the read-only nav-menu mount) means no GbSession to
+ * load a slot through at all.
+ *
+ * "the current box": gb_info_page() runs BEFORE the box grid ever pages one in
+ * (m->loaded is -1 there -- see pdna_gen12_mount's own comment, set only once
+ * gbsrc_records() actually runs), so there IS no current box yet at the point this is
+ * called. Box 0 (the grid's own default landing box) stands in for it -- a deliberate,
+ * documented call, not what the S5-B brief's "current box" literally describes.
+ *
+ * Bounded: gb_list_capacity's own party (6) + one box (<= G2's 20, well under 30)
+ * f_stat calls, at most. */
+static int gb_sidecar_here_count(const Gb12Mount* m) {
+  if (!g_ed || g_ed->s.gen != GB_GEN2) return -1;
+
+  int boxes[2]; int nb = 0;
+  int box0 = (m->loaded >= 0) ? m->loaded : 0;
+  boxes[nb++] = box0;
+  if (m->party_box != box0) boxes[nb++] = m->party_box;
+
+  int n = 0;
+  for (int bi = 0; bi < nb; bi++) {
+    int box = boxes[bi];
+    if (gbs_load_list(&g_ed->s, box, g_ed->list) != GBS_OK) continue;
+    int cnt = gb_list_count(g_ed->s.gen, g_ed->list, box);
+    for (int slot = 0; slot < cnt; slot++) {
+      GbEditMon e;
+      if (!gb_load(&e, g_ed->s.gen, g_ed->list, box, slot)) continue;
+      if (gb_has_sidecar(g_ed->s.gen, &e)) n++;
+    }
+  }
+  return n;
+}
+
 /* app_src_ops_set() hook: EDIT on the read-only mon menu.
  *
  * Order of gates past gb_locate's two, each refusing with the card untouched:
@@ -837,7 +917,9 @@ static bool gb_edit_hook(uint8_t* rec80) {
 
   GbEditMon e;
   if (!gb_load(&e, s->gen, g_ed->list, box, slot)) { snd_deny(); return false; }
-  if (!pdna_gbedit(&e, s->gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record")) return false;
+  bool has_sidecar = gb_has_sidecar(s->gen, &e);
+  if (!pdna_gbedit(&e, s->gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record", has_sidecar))
+    return false;
 
   if (!gb_commit_checked(&e, g_ed->list, box, slot)) {                       /* 3 */
     snd_error();

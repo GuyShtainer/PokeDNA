@@ -403,11 +403,23 @@ int main(void) {
   PF("Ready to copy: 999", 4, 232);
   PF("Shown but locked: 999", 4, 232);
   PF("Slots we cannot read: 999", 4, 232);
-  /* The closing paragraph is wrapped at 232 px from y=105 with a 9 px pitch, and the
-   * footer rule is at y=147 -> at most 4 lines. */
-  chkv("info paragraph fits above the footer",
-       105 + wrap_lines("Copy a Pokemon here, then paste it into your Gen 3 boxes or the Bank. "
-                        "This Game Boy save is only ever read.", 232) * 9, 147);
+  /* The closing paragraph is wrapped at 232 px from y=105 with a 9 px pitch, capped at
+   * 3 lines (S5-B Part E, pdna_gen12.c gb_info_page: dropped from 4 -- see that call
+   * site's own comment for why). The footer rule is at y=147, so 3 lines PLUS the
+   * sidecar count line's own row must both clear it. */
+  {
+    int para_lines = wrap_lines(
+        "Copy a Pokemon here, then paste it into your Gen 3 boxes or the Bank. "
+        "This Game Boy save is only ever read.", 232);
+    chkv("info paragraph actually wraps to <= 3 lines (the cap)", para_lines, 3);
+    chkv("info paragraph fits above the footer", 105 + para_lines * 9, 147);
+    /* S5-B Part E: the "N here came from Gen 3" line lands exactly one 9px row below
+     * the (now capped-at-3) paragraph -- deterministic, not a padded worst case. A
+     * 2-digit count ("30" -- a box tops out well under 100) is the widest plausible
+     * prefix. */
+    PF("30" PDNA_SIDECAR_INFO_SUFFIX, 4, 232);
+    chkv("sidecar count line clears the footer", 105 + para_lines * 9 + 9, 147);
+  }
   T("A browse  SEL list  B back", 4);
 
   printf("\n== GB import: not-transferable list ==\n");
@@ -640,6 +652,12 @@ int main(void) {
         2 * (PDNA_SIDECAR_LOSS_ROW_H / 2) + UI_ROW_H - 1,
       "loss screen: worst case (all 10 loss flags) clears the screen");
   /* ==== END S5-B sidecar (Part D) ============================================ */
+
+  /* ==== S5-B Part E: the DV-orphan warning (source/pdna_gbedit.c dv_orphan_warn) ==== */
+  PF(PDNA_SIDECAR_DV_TITLE, 28, 184);
+  PF(PDNA_SIDECAR_DV_L1,    28, 184);
+  PF(PDNA_SIDECAR_DV_L2,    28, 184);
+  /* ==== END S5-B sidecar (Part E) ============================================= */
 
   /* ==== ADDED for the native-generation art router (source/pdna_origin_art.c) ====
    * Guy: "if a pokemon is from gen 1, use a gen 1 sprite ... The bank should show all

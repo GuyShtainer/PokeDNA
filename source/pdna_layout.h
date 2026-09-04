@@ -666,7 +666,7 @@
 /* pdna_gbedit.c's DV-orphan warning (Part E): shown once per editor visit, on the first
  * adjust/press of a DV row, when the mon's current key already has a sidecar file. */
 #define PDNA_SIDECAR_DV_TITLE        "SIDECAR WARNING"
-#define PDNA_SIDECAR_DV_L1           "Changing DVs orphans its Gen-3 sidecar."
+#define PDNA_SIDECAR_DV_L1           "Changing DVs orphans the sidecar."
 #define PDNA_SIDECAR_DV_L2           "A = continue"
 
 /* The GB info page's extra line (Part E): "N here came from Gen 3". Built dynamically
