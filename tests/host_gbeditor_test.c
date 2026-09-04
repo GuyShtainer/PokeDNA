@@ -3,6 +3,7 @@
  *   cc -std=c11 -Wall -Wextra -I source -I tests tests/host_gbeditor_test.c \
  *      source/gb_editor.c source/gb_session.c source/gb_edit.c source/gen1_save.c \
  *      source/gen1_write.c source/gen2_save.c source/gen2_write.c source/data_tables.c \
+ *      source/ui_font.c \
  *      -o /tmp/hgbe && /tmp/hgbe
  *
  * Drives every editor row over every occupied slot of Guy's real Game Boy saves,
@@ -29,6 +30,10 @@
 #include "gb_editor.h"
 #include "gb_session.h"
 #include "pdna_layout.h"   /* PDNA_EDIT_LBL_W -- the label column row_paint draws into */
+#include "ui_font.h"       /* ui_font_w -- the real proportional-font advance table, for
+                            * the gb_issue_text/gbe_stale_note wrap check below. Pure
+                            * data (source/ui_font.c), no GBA headers, so it dual-compiles
+                            * here same as it does in tests/host_textfit_test.c. */
 
 #define ROMS "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/gb"
 
@@ -160,6 +165,102 @@ static void one_save(const char* name, uint8_t want_gen) {
   }
 }
 
+/* How many ui_ptext_wrap(maxw=216) lines `s` needs — mirrors ui_ptext_break/
+ * ui_ptext_wrap (source/ui.c) exactly, same as host_textfit_test.c's own wrap_lines(). */
+static int wrap_lines(const char* s, int maxw) {
+  int n = 0;
+  while (*s) {
+    const char* p = s;
+    int w = 0, last_space = -1;
+    while (*p) {
+      if (*p == ' ') last_space = (int)(p - s);
+      unsigned c = (unsigned char)*p;
+      if (c < 32u || c > 127u) c = '?';
+      int a = ui_font_w[c - 32];
+      if (w + a > maxw) break;
+      w += a; p++;
+    }
+    int i = (int)(p - s), skip;
+    if (!s[i]) skip = i;
+    else if (last_space > 0) skip = last_space + 1;
+    else skip = i ? i : 1;
+    s += skip; n++;
+  }
+  return n;
+}
+
+/* confirm()'s dynamic prose (source/pdna_gbedit.c) wraps every gb_issue_text() sentence
+ * and both gbe_stale_note() sentences at PDNA_GBEDIT_CONFIRM_W (216px), clamped to
+ * PDNA_GBEDIT_CONFIRM_MAXLN (2) lines via ui_ptext_wrap, whose fixed-size line buffer
+ * (source/ui.c) is 64 bytes. A string that needs a 3rd line loses it silently (the
+ * max_lines clamp just stops drawing); a string >= 64 bytes overflows that buffer. Both
+ * would be real bugs, so enumerate every string these two functions can produce --
+ * every gb_issue_text() branch (one GbIssues field set at a time is how gb_issue_text
+ * picks its "first problem") and both gbe_stale_note() outcomes (Gen 1 / Gen 2) -- and
+ * check both budgets against the real font table, not a re-typed guess. */
+static void issue_and_stale_text_fits(void) {
+  /* One GbIssues per branch, each with exactly the field gb_issue_text() checks for
+   * that branch set -- explicit designated initializers rather than indexing the
+   * struct as an array of bool, so this does not depend on GbIssues' member layout. */
+  const struct { const char* name; GbIssues iss; } cases[] = {
+    { "species_bad",   { .species_bad   = true } },
+    { "list_mismatch", { .list_mismatch = true } },
+    { "level_range",   { .level_range   = true } },
+    { "level_exp_bad", { .level_exp_bad = true } },
+    { "move_empty",    { .move_empty    = true } },
+    { "move_hole",     { .move_hole     = true } },
+    { "move_range",    { .move_range    = true } },
+    { "move_dup",      { .move_dup      = true } },
+    { "pp_over",       { .pp_over       = true } },
+    { "pp_on_empty",   { .pp_on_empty   = true } },
+    { "gen1_type_bad", { .gen1_type_bad = true } },
+    { "stats_stale",   { .stats_stale   = true } },
+  };
+  for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    const char* fname = cases[i].name;
+    const char* txt = gb_issue_text(&cases[i].iss);
+    g_check++;
+    if (!txt) { g_fail++; printf("  !! FAIL: gb_issue_text has no text for %s\n", fname); continue; }
+    g_check++;
+    if ((int)strlen(txt) >= 64) {
+      g_fail++;
+      printf("  !! FAIL: gb_issue_text(%s) = '%s' is >= 64 bytes (ui_ptext_wrap's line buffer)\n",
+             fname, txt);
+    }
+    g_check++;
+    int lines = wrap_lines(txt, PDNA_GBEDIT_CONFIRM_W);
+    if (lines > PDNA_GBEDIT_CONFIRM_MAXLN) {
+      g_fail++;
+      printf("  !! FAIL: gb_issue_text(%s) = '%s' needs %d lines at %dpx, only %d shown\n",
+             fname, txt, lines, PDNA_GBEDIT_CONFIRM_W, PDNA_GBEDIT_CONFIRM_MAXLN);
+    }
+  }
+
+  GbEditMon e;
+  memset(&e, 0, sizeof e);
+  e.is_party = true;
+  e.stats_stale = true;
+  const uint8_t gens[] = { GB_GEN1, GB_GEN2 };
+  for (unsigned i = 0; i < sizeof gens / sizeof gens[0]; i++) {
+    e.gen = gens[i];
+    const char* note = gbe_stale_note(&e);
+    g_check++;
+    if (!note) { g_fail++; printf("  !! FAIL: gbe_stale_note has no text for gen %u\n", gens[i]); continue; }
+    g_check++;
+    if ((int)strlen(note) >= 64) {
+      g_fail++;
+      printf("  !! FAIL: gbe_stale_note(gen %u) = '%s' is >= 64 bytes\n", gens[i], note);
+    }
+    g_check++;
+    int lines = wrap_lines(note, PDNA_GBEDIT_CONFIRM_W);
+    if (lines > PDNA_GBEDIT_CONFIRM_MAXLN) {
+      g_fail++;
+      printf("  !! FAIL: gbe_stale_note(gen %u) = '%s' needs %d lines at %dpx, only %d shown\n",
+             gens[i], note, lines, PDNA_GBEDIT_CONFIRM_W, PDNA_GBEDIT_CONFIRM_MAXLN);
+    }
+  }
+}
+
 /* Every row label must fit pdna_gbedit.c's label column (source/pdna_layout.h
  * PDNA_EDIT_LBL_W, 112px at 8px/glyph — sys8, the same face row_paint draws labels
  * with). Checked here rather than in tests/host_textfit_test.c because that file only
@@ -188,6 +289,7 @@ int main(void) {
   one_save("Gold.sav",    GB_GEN2);
   one_save("Crystal.sav", GB_GEN2);
   label_widths_fit();
+  issue_and_stale_text_fits();
   printf("\n%d slots, %d rows, %d mutations; %d checks, %d failed\n",
          g_slots, g_rows, g_changes, g_check, g_fail);
   return g_fail ? 1 : 0;

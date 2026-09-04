@@ -126,11 +126,21 @@ GbsStatus gbs_load_list(GbSession* s, int box, uint8_t* list);
 /* Write a staged list back into the image and prove it took.
  *
  * Both pipelines end with the engine re-reading what it wrote and refusing unless it
- * comes back exactly as intended, and on any failure the image is left byte-identical to
- * how it arrived — so a caller may retry, or abandon, without a partially edited save in
- * RAM. That is the LAYOUT half of the safety story; the CARD half is the caller's
- * sf_write_verified() afterwards. gen1_write.h names the split exactly: "This is the
- * check that the layout is right; that one is the check that the card is."
+ * comes back exactly as intended -- but a refusal does NOT mean the image is left
+ * byte-identical to how it arrived. Before the verify, gen2_write.c's write_patch()
+ * has already landed the new bytes in every copy; on a verify failure it restores
+ * NOTHING, so the image can be left partially written across the primary/backup/banked
+ * copies. gen1_write.c's restore-on-failure writes ONE pre-write snapshot (the first
+ * target's own original bytes) into every target, which is only a true restore if all
+ * targets already agreed before the edit -- not a guarantee this layer makes. Either
+ * way, a caller that needs "no edit ever visible after a refused commit" must keep its
+ * own pristine copy of the image and roll back to it itself on any non-GBS_OK status
+ * (see pdna_gen12.c's gb_edit_rollback(), called from every failure branch of its
+ * gb_edit_hook / gb_edit_persist). That is the LAYOUT half of the safety story; the
+ * CARD half is the caller's sf_write_verified() afterwards. gen1_write.h names the
+ * split exactly: "This is the check that the layout is right; that one is the check
+ * that the card is." -- but "the layout is right" is a refusal signal, not a promise
+ * that a refusal leaves the layout untouched.
  *
  * A commit whose list is byte-identical to what the image already holds writes NOTHING
  * and returns GBS_OK — "open a box and back out" must not rewrite a save, checksums
