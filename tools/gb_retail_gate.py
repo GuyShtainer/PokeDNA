@@ -231,6 +231,16 @@ def boot(python, rom, sav, out_dir: Path, vendor, json_path: Path,
     return proc.returncode, rep, proc.stdout, proc.stderr
 
 
+def stderr_tail(err: str, n: int = 5) -> str:
+    """Last `n` non-blank lines of a subprocess's captured stderr, joined for a one-line
+    detail string. Exists so a harness-level failure (mgba missing, a bad --mgba-vendor)
+    shows up as "stderr: ModuleNotFoundError: No module named 'mgba'" instead of the
+    caller silently printing "verdict=None" and leaving the real cause to a re-run with
+    stderr un-captured."""
+    lines = [l for l in err.strip().splitlines() if l.strip()]
+    return " / ".join(lines[-n:])
+
+
 def secondary_gate(rep: dict, gen: int):
     """The SRAM-diff gate (see module docstring): did the game's own load-time SRAM
     rewrite behave like an ACCEPTED save, independent of what the screen showed? For
@@ -401,9 +411,9 @@ def edited_case(python, vendor, work, rom, gen, edited_sav, orig_size, dump_name
     if not ok:
         if fails:
             detail += " | " + "; ".join(fails)
-        stderr_tail = [l for l in err.strip().splitlines() if l.strip()][-5:]
-        if stderr_tail:
-            detail += " | stderr: " + " / ".join(stderr_tail)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
     return tally.record(label, ok, detail)
 
 
@@ -424,8 +434,13 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     rc, rep, out, err = boot(python, rom, sav, work / "baseline", vendor,
                              work / "baseline.json")
     base_name, base_pc = rep.get("player_name"), rep.get("party_count")
-    if not tally.record("baseline", rep.get("verdict") == "accept" and base_pc == party_count0,
-                        f"verdict={rep.get('verdict')} name={base_name!r} party={base_pc}"):
+    base_ok = rep.get("verdict") == "accept" and base_pc == party_count0
+    base_detail = f"verdict={rep.get('verdict')} name={base_name!r} party={base_pc}"
+    if not base_ok:
+        tail = stderr_tail(err)
+        if tail:
+            base_detail += " | stderr: " + tail
+    if not tally.record("baseline", base_ok, base_detail):
         return tally   # nothing downstream can be trusted without a good baseline
 
     # ---- 2. pass-through ----

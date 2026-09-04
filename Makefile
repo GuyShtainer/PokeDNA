@@ -457,6 +457,10 @@ sd-artless:            # SD-streaming build, no compiled art (composes 'sd' + 'a
 # not on this tree's own parser (tools/gb_retail_gate.py). Not part of
 # tests/run_host_tests.py's default loop -- that script's tests are near-instant pure C;
 # this one is ~30 emulator boots.
+# The interpreter and --mgba-vendor path below are MACHINE-SPECIFIC (Guy's Mac, where
+# libmgba-py is vendored under rec2mp4/ and /usr/local/bin/python3 is the interpreter
+# that can import it -- the system python3 has neither mgba nor markdown). On another
+# machine, run `python3 tools/gb_retail_gate.py --mgba-vendor <path>` directly instead.
 retail-gate:
 	@/usr/local/bin/python3 tools/gb_retail_gate.py \
 		--mgba-vendor /Users/guyshtainer/VSCodeProjects/gba-toolkit/projects/rec2mp4/vendor
