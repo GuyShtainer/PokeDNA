@@ -248,6 +248,8 @@ static void s3_mail_predicate_boundaries(void) {
   CHECK(!gbs_is_mail_item(0xb4), "gbs_is_mail_item: 0xb4 (BRICK_PIECE) is NOT Mail");
   CHECK(gbs_is_mail_item(0xb5), "gbs_is_mail_item: SURF_MAIL (0xb5) is Mail");
   CHECK(gbs_is_mail_item(0xbd), "gbs_is_mail_item: MIRAGE_MAIL (0xbd) is Mail");
+  CHECK(!gbs_is_mail_item(0x9d), "gbs_is_mail_item: 0x9d (HEAVY_BALL) is NOT Mail");
+  CHECK(!gbs_is_mail_item(0xbe), "gbs_is_mail_item: 0xbe (ITEM_BE) is NOT Mail");
 }
 
 /* Do slot `sa` of `la` (box `boxa`) and slot `sb` of `lb` (box `boxb`) hold the SAME
