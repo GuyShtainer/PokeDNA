@@ -811,11 +811,44 @@ static bool gb_edit_persist(int box, int slot) {
   rmbl_resume();
   log_line("gb edit: write %s (backup %s)", wst == SF_OK ? "OK" : sf_status_str(wst), bak);
   app_log_flush();
-  if (wst != SF_OK) {
+  if (wst == SF_ERR_RENAME) {
+    /* The bytes were written AND read back byte-for-byte -- it is the final swap the
+     * card did not keep, a different piece of news from "the write failed". Ask the
+     * card which file the user is actually holding rather than guessing, same as the
+     * Gen-3 path (pdna_main.c app_commit). */
+    const char* nm = strrchr(g_ed->path, '/');
+    nm = nm ? nm + 1 : g_ed->path;
+    char l1[64];
+    SfWhere w = sf_where_are_the_bytes(g_ed->path, g_ed->img, g_ed->len);
+    log_line("gb edit: rename unconfirmed, bytes are at %d (%s)", (int)w, nm);
+    app_log_flush();
+    if (w == SF_WHERE_TARGET) {                     /* it IS on the card; only unconfirmed */
+      siprintf(l1, "%.30s looks correct", nm);
+      msg_wait("UNCONFIRMED", UI_WARN, l1, "Could not re-check the card. Verify it.");
+      /* fall through: the card really holds the new image, so this is a success */
+    } else {
+      gb_edit_rollback();
+      snd_error();
+      switch (w) {
+        case SF_WHERE_TMP_ONLY:                     /* the loud one: no .sav on the card */
+          siprintf(l1, "Edit is in %.28s.tmp", nm);
+          msg_wait("SAVE NOT IN PLACE", UI_WARN, l1, "Card dropped it. Rename .tmp on a PC.");
+          break;
+        case SF_WHERE_TMP_AND_OLD:                  /* old save intact; edit not applied */
+          siprintf(l1, "Edit is in %.28s.tmp", nm);
+          msg_wait("NOT SAVED", UI_WARN, l1, "Old save intact. Try saving again.");
+          break;
+        default:                                    /* neither name matches: use the backup */
+          msg_wait("SAVE LOST", UI_WARN, "Card kept neither copy.",
+                   bak[0] ? "Restore the .bak on a PC." : "No backup was made!");
+          break;
+      }
+      return false;
+    }
+  } else if (wst != SF_OK) {
     gb_edit_rollback();
     snd_error();
-    msg_wait("WRITE FAILED", UI_WARN, sf_status_str(wst),
-             wst == SF_ERR_RENAME ? "Check the .tmp beside the save." : "Save NOT modified; edit discarded.");
+    msg_wait("WRITE FAILED", UI_WARN, sf_status_str(wst), "Save NOT modified; edit discarded.");
     return false;
   }
   memcpy(g_ed->pristine, g_ed->img, g_ed->len);   /* the card now holds this image */
