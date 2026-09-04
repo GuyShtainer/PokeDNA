@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include "gen3_mon.h"      /* PkMon (app_bank_hide_pending) */
 #include "gen3_trainer.h"  /* PkGame (app_rom_path)         */
+#include "gb_edit.h"       /* GbEditMon (AppSrcOps.copy_native)         */
 
 /* Shared app glue so the party list and box grid can open the editor and persist
  * safely. Implemented in pdna_main.c (which owns the loaded save + path). */
@@ -81,10 +82,20 @@ bool app_src_readonly(void);
  * returning, which forces the next records() to reload from the card. `ops` is
  * retained (not copied), so it must outlive the registration -- pdna_gen12.c's is a
  * static const. */
+/* `copy_native` (S5-B, docs/GEN3-TO-GB-SIDECAR-DESIGN.md section 10) lets COPY on this
+ * source's read-only popup additionally capture the record in ITS OWN native shape --
+ * a Game Boy GbEditMon, not the lossy Gen-3-converted bytes the grid shows -- into the
+ * clipboard, so a later PASTE in a Gen-3 session can look up the sidecar and merge the
+ * ORIGINAL Gen-3 record back rather than re-degrading through the lossy path a second
+ * time. NULL = no native record exists for this source (every source before S5-B, and
+ * still true for the read-only nav-menu mount, which has no edit session to load one
+ * through -- see pdna_gen12.c's gb_locate_addr/gb_copy_native_hook). Returns false
+ * (leaving `out` untouched) when `rec80` cannot be resolved to a real record. */
 typedef struct {
   bool (*edit)(uint8_t* rec80);
   bool (*move)(uint8_t* rec80);
   bool (*release)(uint8_t* rec80);
+  bool (*copy_native)(const uint8_t* rec80, GbEditMon* out);
 } AppSrcOps;
 void app_src_ops_set(const AppSrcOps* ops);
 

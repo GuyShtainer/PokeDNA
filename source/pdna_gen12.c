@@ -737,17 +737,15 @@ static void gb_rollback(void) {
  * named, so this function's own lines stay generic. */
 static bool __attribute__((noinline)) gb_persist(const char* what_for_log);
 
-/* Shared by gb_edit_hook / gb_move_hook / gb_release_hook: `rec80`'s ADDRESS inside the
- * paged box (exactly like pdna_gen12_why_locked) resolves to a (box, slot) in the GB
- * session's own numbering -- storage boxes 0..n-1 and the party at n, which is
- * GEN1_PARTY_BOX / G2_BOX_PARTY (both == their box count) -- gated on the two things
- * every one of the three needs before it may touch the image at all:
- *   1. the cart (app_can_edit: Omega only, hard rule 4);
- *   2. the box (gbs_box_writable: a Gen-1 virgin bank would DESTROY the edit).
- * Returns false (nothing touched, the user already told why for 1/2) or true with
- * the out-params box and slot filled in. */
-static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
-  if (!g_ed || !g_m || !g_m->recs || !rec80 || !box || !slot) return false;
+/* The address-only half of gb_locate: `rec80`'s ADDRESS inside the paged box (exactly
+ * like pdna_gen12_why_locked) resolves to a (box, slot) in the GB session's own
+ * numbering -- storage boxes 0..n-1 and the party at n, which is GEN1_PARTY_BOX /
+ * G2_BOX_PARTY (both == their box count). NO CART GATE and NO edit-session requirement
+ * here on purpose: gb_copy_native_hook below calls this directly because "copying is
+ * allowed on any cart" (docs/GEN3-TO-GB-SIDECAR-DESIGN.md section 10) -- only the two
+ * hooks that actually mutate the image (via gb_locate, just below) need the gates. */
+static bool gb_locate_addr(const uint8_t* rec80, int* box, int* slot) {
+  if (!g_m || !g_m->recs || !rec80 || !box || !slot) return false;
   const uint8_t* base = g_m->recs + 0x0004;
   if (rec80 < base || rec80 >= base + (uint32_t)GB12_SLOTS * 80) return false;
   uint32_t d = (uint32_t)(rec80 - base);
@@ -755,6 +753,19 @@ static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
   *slot = (int)(d / 80u);
   *box  = g_m->loaded;
   if (*box < 0) return false;
+  return true;
+}
+
+/* Shared by gb_edit_hook / gb_move_hook / gb_release_hook: gb_locate_addr() above, plus
+ * the two gates every one of the three needs before it may touch the image at all:
+ *   1. the cart (app_can_edit: Omega only, hard rule 4);
+ *   2. the box (gbs_box_writable: a Gen-1 virgin bank would DESTROY the edit).
+ * Also requires an open edit session (g_ed) -- none of these three exist without one.
+ * Returns false (nothing touched, the user already told why for 1/2) or true with
+ * the out-params box and slot filled in. */
+static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
+  if (!g_ed) return false;
+  if (!gb_locate_addr(rec80, box, slot)) return false;
 
   if (!app_can_edit()) {                                                    /* 1 */
     snd_deny();
@@ -769,6 +780,23 @@ static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
     return false;
   }
   return true;
+}
+
+/* AppSrcOps.copy_native (S5-B): capture the record in its own Game Boy shape for the
+ * clipboard, not the lossy Gen-3-converted bytes the grid shows. Deliberately requires
+ * an open edit session (g_ed) even though gb_locate_addr() itself does not -- reading
+ * the RAW record needs a GbSession (gbs_load_list) and a staging buffer, both of which
+ * only exist while g_ed is set (the picker's resident-image path); the read-only
+ * nav-menu mount streams boxes from a FIL and never builds either. Nothing here mutates
+ * the image or requires app_can_edit(): "copying is allowed on any cart". */
+static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out) {
+  int box, slot;
+  if (!g_ed) return false;
+  if (!gb_locate_addr(rec80, &box, &slot)) return false;
+  GbSession* s = &g_ed->s;
+  if (gbs_load_list(s, box, g_ed->list) != GBS_OK) return false;
+  if (slot >= gb_list_count(s->gen, g_ed->list, box)) return false;
+  return gb_load(out, s->gen, g_ed->list, box, slot);
 }
 
 /* app_src_ops_set() hook: EDIT on the read-only mon menu.
@@ -1061,7 +1089,9 @@ _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
 /* S2/S3: the resident-image edit pipeline's three hooks, registered as one const struct
  * (pdna_app.h's AppSrcOps) rather than three separate setters -- const data lives in
  * ROM, so this costs nothing against the EWRAM guard. */
-static const AppSrcOps k_gb_ops = { gb_edit_hook, gb_move_hook, gb_release_hook };
+static const AppSrcOps k_gb_ops = {
+  gb_edit_hook, gb_move_hook, gb_release_hook, gb_copy_native_hook
+};
 
 /* Info page -> box grid -> the "these did not convert" report. The whole session above
  * the mount, shared by both entry points: the only difference between opening a GB save

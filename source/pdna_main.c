@@ -2419,8 +2419,21 @@ static bool app_inject_to_game_deferred(const uint8_t* rec80, int* out_box, int*
   return false;
 }
 
+/* Forward declaration: the real (tentative) definition and app_src_readonly_set/clear/
+ * app_src_ops_set live with the rest of the read-only BoxSource gate, further down this
+ * file -- declared again here (legal for a file-scope static with no initializer, C11
+ * 6.9.2) so app_copy, textually earlier, can reach it without moving either block. */
+static const AppSrcOps* g_src_ops;
+
 static bool app_copy(uint8_t* rec, bool is_party) {
   clip_copy_from(&g_clip, rec, is_party);
+  /* S5-B: if the ACTIVE source is a Game Boy save with a copy_native hook (only true
+   * while a resident GB edit session is open -- pdna_gen12.c's k_gb_ops/gb_ed gate),
+   * also capture the record in its own native shape. A later PASTE in a Gen-3 session
+   * (app_paste) checks g_clip.from_gb to look up the sidecar instead of using the
+   * lossy `rec` bytes clip_copy_from just filled. */
+  if (g_src_ops && g_src_ops->copy_native && g_src_ops->copy_native(rec, &g_clip.gb))
+    g_clip.from_gb = true;
   msg_wait("COPIED", UI_OK, "PASTE places it in a slot.", "(kept until overwritten)");
   return false;                                          /* no save change */
 }

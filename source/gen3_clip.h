@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "gb_edit.h"       /* GbEditMon -- S5-B: the clipboard also carries a Game Boy
+                             * source's NATIVE record, not just its lossy Gen-3 copy */
 
 /* One-slot Pokémon clipboard + raw slot operations (pure C, host-testable).
  * The shared foundation for copy/paste/duplicate/release, held-item move, .pk
@@ -16,6 +18,16 @@ typedef struct {
   uint8_t rec[100];   /* raw record (only the first 80 bytes matter for a box mon) */
   bool    is_party;   /* true => a 100-byte party source (carries plaintext stats) */
   bool    occupied;
+  /* S5-B (docs/GEN3-TO-GB-SIDECAR-DESIGN.md section 10): when a copy came off a Game
+   * Boy source THROUGH ITS OWN AppSrcOps.copy_native (pdna_gen12.c's
+   * gb_copy_native_hook), `gb` holds the untouched native record and `from_gb` is
+   * true, so a later PASTE in a Gen-3 session can look up
+   * `/PokeDNA/sidecar/<gbsc_key(...)>.pds` and restore the ORIGINAL Gen-3 record
+   * instead of re-degrading `rec` (which clip_copy_from also filled, lossily, from
+   * the same slot -- see pdna_main.c app_copy). clip_copy_from() below always sets
+   * from_gb = false; only app_copy's own extra step after calling it may set it true. */
+  GbEditMon gb;
+  bool      from_gb;
 } ClipMon;
 
 /* Snapshot a slot's record into the clipboard. */
