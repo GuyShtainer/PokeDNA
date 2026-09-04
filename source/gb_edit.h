@@ -264,6 +264,7 @@ uint8_t  gb_get_pp(const GbEditMon* e, int i);
 uint8_t  gb_get_ppup(const GbEditMon* e, int i);
 uint16_t gb_get_otid(const GbEditMon* e);
 uint8_t  gb_get_held_item(const GbEditMon* e);    /* Gen 2 only; 0 for Gen 1              */
+uint8_t  gb_get_friendship(const GbEditMon* e);   /* Gen 2 only; 0 for Gen 1              */
 uint16_t gb_get_stat(const GbEditMon* e, int i);  /* party only, i = 0..4 (Gen 1) / 0..5  */
 bool     gb_is_egg(const GbEditMon* e);           /* Gen 2 list byte 0xFD                 */
 /* Editable text — see NAMES.

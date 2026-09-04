@@ -1140,6 +1140,9 @@ bool gb_set_held_item(GbEditMon* e, uint8_t item) {
   e->rec[R2_ITEM] = item;
   return true;
 }
+uint8_t gb_get_friendship(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN2) ? e->rec[R2_HAPPY] : 0;
+}
 bool gb_set_friendship(GbEditMon* e, uint8_t f) {
   if (!e || e->gen != GB_GEN2) return false;
   e->rec[R2_HAPPY] = f;
