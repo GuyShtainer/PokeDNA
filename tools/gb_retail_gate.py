@@ -194,6 +194,72 @@ def secondary_gate(rep: dict, gen: int):
                   "(mirror sync only)")
 
 
+PARTY_ROWS_PER_SLOT = 2   # every generation draws two screen rows per party member,
+                          # measured off all four corpus saves' real party screens:
+                          # Gen 1  row A "NICK...LEVEL[STATUS]"       row B "HP/MAXHP"
+                          # Gen 2  row A "NICK...HP/MAXHP" (fused,     row B "LEVEL" alone
+                          #        no separator once the name fills
+                          #        its field)
+                          # so slot i's own rows are always party_screen[2*i:2*i+2].
+
+
+def party_rows_for_slot(party_screen, slot_idx):
+    """The two consecutive rows this generation draws for party slot `slot_idx`
+    (0-based), or None if the screen was never read or has fewer rows than that."""
+    if not party_screen:
+        return None
+    i = PARTY_ROWS_PER_SLOT * slot_idx
+    if i + 1 >= len(party_screen):
+        return None
+    return party_screen[i], party_screen[i + 1]
+
+
+def slot_level(gen, row_a, row_b, nick):
+    """The level digits for a slot whose nickname is `nick` (already confirmed to lead
+    row_a by the caller). Gen 1 fuses the level onto the END of row_a, right after the
+    (fixed-width) nickname field; Gen 2's row_a is name+HP with no level in it at all --
+    the level is the ENTIRE contents of row_b. Levels ARE readable off the party screen
+    (see docs/GEN12-EDIT-DESIGN.md S4 -- an earlier revision of this file claimed
+    otherwise and was wrong)."""
+    m = re.search(r"(\d+)", row_a[len(nick):] if gen == 1 else row_b)
+    return int(m.group(1)) if m else None
+
+
+def check_nick_slot(slot_idx, nick):
+    """SLOT-ANCHORED nickname check. `--expect-party` alone is a substring search over
+    the WHOLE party blob (gb_roundtrip.py evaluate()/party_count()), so a nickname
+    written to the WRONG slot still passes it -- proven: rewriting the surgery op from
+    slot 0 to slot 1 stayed green on Red and Crystal before this check existed. This
+    reads the ORDERED rows out of the JSON report instead and requires THIS slot's own
+    row to start with the new text."""
+    def _check(rep):
+        rows = party_rows_for_slot(rep.get("party_screen"), slot_idx)
+        if rows is None:
+            return False, f"no party row pair for slot {slot_idx}"
+        return rows[0].startswith(nick), f"slot {slot_idx} row={rows[0]!r}"
+    return _check
+
+
+def check_level_slot(slot_idx, gen, nick, want_level):
+    """SLOT-ANCHORED level check, same row-0 anchor as check_nick_slot(): confirms the
+    UNCHANGED nickname (the level op never touches it) still leads this slot's row --
+    catching the same wrong-slot class of bug -- AND reads the new level back off the
+    row the game actually drew, instead of the vacuous fallback this file used to fall
+    back to (asserting the ORIGINAL nickname was on screen at all: on Red that passed
+    even with slot 0 renamed to ZZZ, because slot 1 is literally named MEWTWO and
+    'MEW' is a substring of it)."""
+    def _check(rep):
+        rows = party_rows_for_slot(rep.get("party_screen"), slot_idx)
+        if rows is None:
+            return False, f"no party row pair for slot {slot_idx}"
+        row_a, row_b = rows
+        if not row_a.startswith(nick):
+            return False, f"slot {slot_idx} row={row_a!r} does not start with {nick!r}"
+        lvl = slot_level(gen, row_a, row_b, nick)
+        return lvl == want_level, f"slot {slot_idx} level read={lvl} want={want_level}"
+    return _check
+
+
 def diff_dump(edited_path: Path, dump_path: Path):
     """Independent, file-level cross-check of gb_roundtrip's own SRAM figures: read the
     dump and the file we actually fed the emulator, and compare their SRAM spans
@@ -232,24 +298,39 @@ class Tally:
 
 
 def edited_case(python, vendor, work, rom, gen, edited_sav, dump_name, extra_args,
-               tally, label):
-    """Boot an edited save with content assertions, THEN run the two secondary checks.
-    Returns the combined bool so callers can gate follow-on steps on it."""
+               tally, label, extra_check=None):
+    """Boot an edited save with content assertions, THEN run the secondary checks.
+    `extra_check`, if given, is a callable(rep) -> (bool, str) for an assertion
+    gb_roundtrip's own --expect* flags cannot express (slot-anchoring: see
+    check_nick_slot/check_level_slot). Returns the combined bool so callers can gate
+    follow-on steps on it."""
     dump_path = work / f"{dump_name}_dump.sav"
     rc, rep, out, err = boot(python, rom, edited_sav, work / dump_name, vendor,
                              work / f"{dump_name}.json", dump_path=dump_path,
                              extra_args=extra_args)
     content_ok = (rc == 0)
+    extra_ok, extra_detail = (True, "")
+    if extra_check is not None:
+        extra_ok, extra_detail = extra_check(rep)
     sec_ok, sec_detail = secondary_gate(rep, gen)
     diff_ok, diff_detail, changed = (True, "no dump", 0)
     if dump_path.exists():
         diff_ok, diff_detail, changed = diff_dump(edited_sav, dump_path)
     fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
-    detail = (f"verdict={rep.get('verdict')} sec=({sec_detail}) "
-             f"dump=({diff_detail}, {changed}B changed)")
-    if not content_ok:
-        detail += " | " + "; ".join(fails) if fails else ""
-    return tally.record(label, content_ok and sec_ok and diff_ok, detail)
+    detail = (f"verdict={rep.get('verdict')} extra=({extra_detail}) sec=({sec_detail}) "
+             # the whole SRAM span INCLUDING scratch (Gen 1: sprite buffers 0x0000-0x0497;
+             # Gen 2: sDecompressScratch + the window stack) -- informational only, NEVER
+             # asserted on: it churns by design and its size depends only on where the
+             # boot happened to stop.
+             f"dump=({diff_detail}, {changed}B changed incl. scratch, not asserted)")
+    ok = content_ok and extra_ok and sec_ok and diff_ok
+    if not ok:
+        if fails:
+            detail += " | " + "; ".join(fails)
+        stderr_tail = [l for l in err.strip().splitlines() if l.strip()][-5:]
+        if stderr_tail:
+            detail += " | stderr: " + " / ".join(stderr_tail)
+    return tally.record(label, ok, detail)
 
 
 def run_game(name, info, rom, sav, scratch, binary, python, vendor):
@@ -300,7 +381,7 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     if rc == 0:
         edited_case(python, vendor, work, rom, gen, nick_sav, "nick",
                    ["--expect-party", NEW_NICK, "--expect-name", base_name],
-                   tally, "nickname")
+                   tally, "nickname", extra_check=check_nick_slot(0, NEW_NICK))
     else:
         tally.record("nickname", False, f"surgery refused: {err.strip()}")
 
@@ -310,16 +391,14 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     rc, out, err = run_surgery(binary, sav, lvl_sav,
                                [["level", "party", "0", str(new_level)]])
     if rc == 0:
-        # read_party() cannot show a level (Pan Docs: the level glyph is a graphic tile,
-        # not text) — so the fallback per the S4 brief is: the ORIGINAL nickname (which
-        # this op never touched) still shows, and the secondary gate stands in for "the
-        # edit's own record was not silently discarded" (see module docstring on why a
-        # byte-count bound on the diff would be meaningless here: Gold's backup is
-        # already stale independent of any edit, and the diff is before/after LOAD, not
-        # before/after our own offline edit).
+        # Levels ARE readable off the party screen (an earlier revision of this file
+        # claimed otherwise -- see docs/GEN12-EDIT-DESIGN.md S4 for the correction); the
+        # slot-anchored check below reads the new level back off the exact row this slot
+        # draws and also re-confirms the untouched nickname still leads that row.
         edited_case(python, vendor, work, rom, gen, lvl_sav, "level",
-                   ["--expect-party", slot0["nick"], "--expect-name", base_name],
-                   tally, f"level {slot0['level']}->{new_level}")
+                   ["--expect-name", base_name],
+                   tally, f"level {slot0['level']}->{new_level}",
+                   extra_check=check_level_slot(0, gen, slot0["nick"], new_level))
     else:
         tally.record("level", False, f"surgery refused: {err.strip()}")
 
