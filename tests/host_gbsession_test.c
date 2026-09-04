@@ -2,7 +2,9 @@
  *
  *   cc -std=c11 -Wall -Wextra -I source -I tests tests/host_gbsession_test.c \
  *      source/gb_session.c source/gb_edit.c source/gen1_save.c source/gen1_write.c \
- *      source/gen2_save.c source/gen2_write.c source/data_tables.c -o /tmp/hgbs && /tmp/hgbs
+ *      source/gen2_save.c source/gen2_write.c source/data_tables.c \
+ *      source/gen3_to_gb.c source/gb_sidecar.c source/gen3_edit.c source/gen3_mon.c \
+ *      source/gen3_box.c source/gen3_save.c source/gen3_daycare.c -o /tmp/hgbs && /tmp/hgbs
  *
  * WHAT THIS FILE IS FOR, and why the engines' own tests are not enough.
  * --------------------------------------------------------------------
@@ -40,6 +42,9 @@
 #include "gb_session.h"
 #include "gb_edit.h"
 #include "gen1_write.h"   /* Gen1EditMon, gen1_edit_load, G1R_* -- the S3 Gen-1 conversion test */
+#include "gen3_to_gb.h"   /* S5-B review fix #8: gen3_to_gb -- the production down converter */
+#include "gb_sidecar.h"   /* S5-B review fix #8: gbsc_entry_from/gbsc_merge_up               */
+#include "gen3_edit.h"    /* gen3_build_mon -- a synthetic but LEGAL Gen-3 record             */
 
 #define ROMS "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/gb"
 
@@ -824,6 +829,68 @@ static void s5_insert(const char* file, uint8_t expect_gen) {
   }
 }
 
+/* ---- S5-B review fix #8: round-trip the PRODUCTION COMPOSITION -------------------
+ * host_gen3gb_test.c already proves gen3_to_gb() + gbsc_merge_up() agree in isolation,
+ * over an in-memory list buffer neither ever touches. What it CANNOT prove is that
+ * they still agree once gbs_insert()'s real engine calls -- gen1_blob_apply's
+ * GEN1_OP_INSERT or g2w_append, both of which move bytes, shift the terminator, and
+ * re-verify against a REAL cartridge save image -- sit between them. This is that one
+ * test: gen3_to_gb() -> gbs_insert() -> gb_load() of the slot it actually landed at ->
+ * gbsc_entry_from() -> gbsc_merge_up() -> byte-identical to the ORIGINAL 80 bytes,
+ * because nothing changed on the Game Boy side between the insert and the merge. */
+static void s8_roundtrip(const char* file, uint8_t expect_gen) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (S8 production round trip)\n", file); return; }
+  printf("  -- S8 production round trip: %s\n", file);
+
+  GbSession s;
+  CHECK(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "S8: session opens");
+  CHECK(s.gen == expect_gen, "S8: the right generation was detected");
+  if (s.gen != GB_GEN2) {
+    printf("     (Gen 1 has no gen3_to_gb() target yet -- S5-C; skipped)\n");
+    return;
+  }
+
+  int nb = gbs_nboxes(&s), pb = gbs_party_box(&s), dst = -1;
+  for (int b = 0; b < nb; b++) {
+    if (b == pb || gbs_box_writable(&s, b) != GBS_OK) continue;
+    if (gbs_load_list(&s, b, g_list) != GBS_OK) continue;
+    int c = gb_list_count(s.gen, g_list, b);
+    if (c >= 0 && c < gb_list_capacity(s.gen, b)) { dst = b; break; }
+  }
+  if (dst < 0) { printf("     (no writable box with room; skipped)\n"); return; }
+
+  uint8_t rec80[80];
+  gen3_build_mon(1 /* Bulbasaur */, 10, 0x87654321u, 0xBEEF0007u, "S8TEST", 3, rec80);
+
+  GbEditMon mon;
+  Gen3ToGbLoss loss;
+  G3GbStatus cst = gen3_to_gb(rec80, GB_GEN2, NULL, &mon, &loss);
+  CHECK(cst == G3GB_OK, "S8: gen3_to_gb accepts the synthetic mon");
+  if (cst != G3GB_OK) return;
+
+  int slot = -1;
+  GbsStatus ist = gbs_insert(&s, dst, &mon, &slot, g_list);
+  CHECK(ist == GBS_OK, "S8: gbs_insert lands it");
+  if (ist != GBS_OK) return;
+
+  CHECK(gbs_load_list(&s, dst, g_list) == GBS_OK, "S8: destination reloads");
+  GbEditMon landed;
+  CHECK(gb_load(&landed, s.gen, g_list, dst, slot), "S8: gb_load reads the landed slot back");
+
+  GbscEntry e;
+  gbsc_entry_from(&e, &mon, rec80, 0);
+
+  uint8_t back80[80];
+  GbscMergeReport rep;
+  CHECK(gbsc_merge_up(&e, &landed, back80, &rep), "S8: gbsc_merge_up succeeds");
+  CHECK(memcmp(back80, rec80, 80) == 0,
+        "S8: the full production chain round-trips byte-identical");
+  CHECK(!rep.evolved && !rep.level_changed && !rep.moves_changed && !rep.renamed &&
+        !rep.rename_refused && !rep.gb_item_ignored,
+        "S8: the merge report is all-false -- a true no-op");
+}
+
 /* A file that is the right SIZE but is not a Game Boy save at all must be refused —
  * the browser forks on size alone, so this is the guard that stands behind that. */
 static void rejects_garbage(void) {
@@ -883,6 +950,9 @@ int main(void) {
   s5_insert("Yellow.sav",  GB_GEN1);
   s5_insert("Gold.sav",    GB_GEN2);
   s5_insert("Crystal.sav", GB_GEN2);
+
+  s8_roundtrip("Gold.sav",    GB_GEN2);
+  s8_roundtrip("Crystal.sav", GB_GEN2);
 
   if (!g_ran) printf("  (no corpus present — structural checks only)\n");
   printf("%s: %d/%d checks passed over %d save(s)\n",
