@@ -28,6 +28,7 @@
 
 #include "gb_editor.h"
 #include "gb_session.h"
+#include "pdna_layout.h"   /* PDNA_EDIT_LBL_W -- the label column row_paint draws into */
 
 #define ROMS "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/gb"
 
@@ -159,11 +160,34 @@ static void one_save(const char* name, uint8_t want_gen) {
   }
 }
 
+/* Every row label must fit pdna_gbedit.c's label column (source/pdna_layout.h
+ * PDNA_EDIT_LBL_W, 112px at 8px/glyph — sys8, the same face row_paint draws labels
+ * with). Checked here rather than in tests/host_textfit_test.c because that file only
+ * links source/ui_font.c; pulling in gb_editor.c there would drag gen1/gen2 write +
+ * data_tables along for one geometry number. "Egg cycles" (gbe_label_of's own addition,
+ * F9) is checked alongside the table gbe_label() reads from. */
+static void label_widths_fit(void) {
+  for (int f = 0; f < GBE_NUM; f++) {
+    const char* lbl = gbe_label(f);
+    g_check++;
+    if ((int)strlen(lbl) * 8 > PDNA_EDIT_LBL_W) {
+      g_fail++;
+      printf("  !! FAIL: label '%s' (f=%d) is wider than PDNA_EDIT_LBL_W\n", lbl, f);
+    }
+  }
+  g_check++;
+  if ((int)strlen("Egg cycles") * 8 > PDNA_EDIT_LBL_W) {
+    g_fail++;
+    printf("  !! FAIL: label 'Egg cycles' is wider than PDNA_EDIT_LBL_W\n");
+  }
+}
+
 int main(void) {
   one_save("Red.sav",     GB_GEN1);
   one_save("Yellow.sav",  GB_GEN1);
   one_save("Gold.sav",    GB_GEN2);
   one_save("Crystal.sav", GB_GEN2);
+  label_widths_fit();
   printf("\n%d slots, %d rows, %d mutations; %d checks, %d failed\n",
          g_slots, g_rows, g_changes, g_check, g_fail);
   return g_fail ? 1 : 0;

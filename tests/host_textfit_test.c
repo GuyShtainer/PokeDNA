@@ -463,6 +463,65 @@ int main(void) {
   PF("Unrecognised file.", 20, 200);
   /* ==== END: Game Boy import ============================================== */
 
+  /* ==== ADDED for the GB mon editor screen (source/pdna_gbedit.c) + its persist-path
+   * popups (source/pdna_gen12.c gb_edit_hook/gb_edit_persist) — every fixed string
+   * both draw now lives in pdna_layout.h as a PDNA_GBEDIT_* macro so this test reads
+   * the SAME literal the screen does, not a re-typed copy (this file's own rule). */
+  printf("\n== GB mon editor ==\n");
+  T(PDNA_GBEDIT_TITLE, 4);
+  T(PDNA_GBEDIT_CONFIRM_TITLE, 20);
+  PF(PDNA_GBEDIT_WRITE_ANYWAY, 20, PDNA_GBEDIT_CONFIRM_W);
+  T(PDNA_GBEDIT_A_WRITE, 20);
+  T(PDNA_GBEDIT_B_CANCEL, 20);
+  T(PDNA_GBEDIT_BAK_L1, 20);
+  T(PDNA_GBEDIT_BAK_L2, 20);
+  {
+    /* confirm()'s dynamic prose block draws, worst case: an issue sentence wrapped to
+     * PDNA_GBEDIT_CONFIRM_MAXLN lines, the "write anyway?" line + its gap, then a
+     * stale-stats sentence also wrapped to PDNA_GBEDIT_CONFIRM_MAXLN lines — the exact
+     * arithmetic confirm() itself does. Assert "B = cancel", the LOWER of the two
+     * fixed lines below that block, still ends above the backup footer (moved to
+     * PDNA_GBEDIT_BAK_Y1 for exactly this reason — see that macro's own comment). */
+    int y = PDNA_GBEDIT_CONFIRM_Y0;
+    y += PDNA_GBEDIT_CONFIRM_MAXLN * PDNA_GBEDIT_CONFIRM_LINE_H;
+    y += PDNA_GBEDIT_CONFIRM_GAP;
+    y += PDNA_GBEDIT_CONFIRM_MAXLN * PDNA_GBEDIT_CONFIRM_LINE_H;
+    chkv("gbedit confirm: worst-case B=cancel line ends above the backup footer",
+         y + PDNA_GBEDIT_AB_DY2 + UI_ROW_H - 1, PDNA_GBEDIT_BAK_Y1 - 1);
+  }
+  chkv("gbedit confirm: second backup footer line stays on-screen",
+       PDNA_GBEDIT_BAK_Y2 + UI_ROW_H - 1, UI_SCR_H - 1);
+
+  /* press()'s msg_wait popups — all through the (28, .., 184) clamp msg_wait itself
+   * draws with (source/pdna_main.c msg_wait). */
+  PF(PDNA_GBEDIT_BADCHARSET_TITLE, 28, 184);
+  PF(PDNA_GBEDIT_BADCHARSET_L1,    28, 184);
+  PF(PDNA_GBEDIT_BADNAME_L1,       28, 184);
+  PF(PDNA_GBEDIT_MOVE_LATE_TITLE,  28, 184);
+  PF(PDNA_GBEDIT_MOVE_LATE_L1,     28, 184);
+  PF(PDNA_GBEDIT_MOVE_LATE_L2,     28, 184);
+  PF(PDNA_GBEDIT_MOVE_DUP_TITLE,   28, 184);
+  PF(PDNA_GBEDIT_MOVE_DUP_L1,      28, 184);
+  PF(PDNA_GBEDIT_MOVE_DUP_L2,      28, 184);
+
+  /* gb_edit_persist's SF_ERR_RENAME switch + gb_edit_hook's SF_ERR_UNWRITABLE hint —
+   * same (28, .., 184) msg_wait clamp. PDNA_GBEDIT_UNCONFIRMED_L2 is deliberately
+   * SHORTER than pdna_main.c's own wording for the same case ("Could not re-check the
+   * card. Verify it." measures 191px, over budget there too — this file must not
+   * copy that clip; see the macro's own comment in pdna_layout.h). */
+  PF(PDNA_GBEDIT_UNCONFIRMED_TITLE, 28, 184);
+  PF(PDNA_GBEDIT_UNCONFIRMED_L2,    28, 184);
+  PF(PDNA_GBEDIT_TMPONLY_TITLE,     28, 184);
+  PF(PDNA_GBEDIT_TMPONLY_L2,        28, 184);
+  PF(PDNA_GBEDIT_TMPANDOLD_TITLE,   28, 184);
+  PF(PDNA_GBEDIT_TMPANDOLD_L2,      28, 184);
+  PF(PDNA_GBEDIT_SAVELOST_TITLE,    28, 184);
+  PF(PDNA_GBEDIT_SAVELOST_L1,       28, 184);
+  PF(PDNA_GBEDIT_SAVELOST_BAK,      28, 184);
+  PF(PDNA_GBEDIT_SAVELOST_NOBAK,    28, 184);
+  PF(PDNA_GBEDIT_UNWRITABLE_HINT,   28, 184);
+  /* ==== END: GB mon editor ================================================= */
+
   /* ==== ADDED for the native-generation art router (source/pdna_origin_art.c) ====
    * Guy: "if a pokemon is from gen 1, use a gen 1 sprite ... The bank should show all
    * in parallel." These are the fixed strings that feature puts on screen.

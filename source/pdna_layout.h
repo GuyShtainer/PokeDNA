@@ -467,6 +467,67 @@
 #define PDNA_EDIT_FOOT          "L/R+- A:pick B:exit ST:save"
 
 /* ---------------------------------------------------------------------------
+ * The Game Boy mon editor screen (source/pdna_gbedit.c) and the persist-path popups
+ * it and source/pdna_gen12.c's gb_edit_hook/gb_edit_persist show -- pinned here so
+ * tests/host_textfit_test.c can measure every one against the real font.
+ *
+ * confirm()'s dynamic prose block draws, in order: an optional issue sentence
+ * (ui_ptext_wrap, <=2 lines), an optional "write anyway?" line (1 line, only when the
+ * issue line drew), an optional stale-stats sentence (ui_ptext_wrap, <=2 lines) --
+ * worst case 2+1+2 = 5 lines at PDNA_GBEDIT_CONFIRM_LINE_H px each. That pushes the
+ * "A = write" / "B = cancel" lines low enough to reach y=131, which collided with the
+ * old footer at y=128/138 -- so the footer moved to PDNA_GBEDIT_BAK_Y1/Y2 (134/144;
+ * nothing else is drawn below it and UI_SCR_H is 160, so there is room). */
+#define PDNA_GBEDIT_TITLE          "EDIT GB POKEMON"
+#define PDNA_GBEDIT_CONFIRM_TITLE  "Write to the save?"
+#define PDNA_GBEDIT_CONFIRM_W      216            /* x=20 -> ends at 236, screen is 240 */
+#define PDNA_GBEDIT_CONFIRM_LINE_H 10              /* = UI_ROW_H (8) + 2                */
+#define PDNA_GBEDIT_CONFIRM_MAXLN  2
+#define PDNA_GBEDIT_CONFIRM_Y0     56              /* first dynamic line's y            */
+#define PDNA_GBEDIT_CONFIRM_GAP    12              /* after "write anyway?" / after stale */
+#define PDNA_GBEDIT_AB_DY1          4              /* "A = write" y, relative to the block end */
+#define PDNA_GBEDIT_AB_DY2         16              /* "B = cancel" y, relative to the block end */
+#define PDNA_GBEDIT_WRITE_ANYWAY   "The game may not accept it. Write anyway?"
+#define PDNA_GBEDIT_A_WRITE        "A = write (backs up first)"
+#define PDNA_GBEDIT_B_CANCEL       "B = cancel"
+#define PDNA_GBEDIT_BAK_L1         "Original backed up to .bak,"
+#define PDNA_GBEDIT_BAK_L2         "new save verified on write."
+#define PDNA_GBEDIT_BAK_Y1         134
+#define PDNA_GBEDIT_BAK_Y2         144
+
+#define PDNA_GBEDIT_BADCHARSET_TITLE "CAN'T STORE THAT"
+#define PDNA_GBEDIT_BADCHARSET_L1    "Not in this game's charset:"
+#define PDNA_GBEDIT_BADNAME_L1       "The name was refused."
+#define PDNA_GBEDIT_MOVE_LATE_TITLE  "NOT IN THIS GAME"
+#define PDNA_GBEDIT_MOVE_LATE_L1     "That move is from a later"
+#define PDNA_GBEDIT_MOVE_LATE_L2     "generation."
+#define PDNA_GBEDIT_MOVE_DUP_TITLE   "ALREADY KNOWN"
+#define PDNA_GBEDIT_MOVE_DUP_L1      "This Pokemon has that move"
+#define PDNA_GBEDIT_MOVE_DUP_L2      "in another slot."
+
+/* gb_edit_persist's SF_ERR_RENAME switch (source/pdna_gen12.c): same shape as the
+ * Gen-3 path (pdna_main.c app_commit), but the SF_WHERE_TARGET line is SHORTER —
+ * pdna_main.c's own "Could not re-check the card. Verify it." measures 191px against
+ * msg_wait's 184px proportional clamp (already over budget there, unfixed; this file
+ * must not copy that clip). The other three lines measure under 184px unchanged. */
+#define PDNA_GBEDIT_UNCONFIRMED_TITLE "UNCONFIRMED"
+#define PDNA_GBEDIT_UNCONFIRMED_L2    "Could not re-check the card."
+#define PDNA_GBEDIT_TMPONLY_TITLE     "SAVE NOT IN PLACE"
+#define PDNA_GBEDIT_TMPONLY_L2        "Card dropped it. Rename .tmp on a PC."
+#define PDNA_GBEDIT_TMPANDOLD_TITLE   "NOT SAVED"
+#define PDNA_GBEDIT_TMPANDOLD_L2      "Old save intact. Try saving again."
+#define PDNA_GBEDIT_SAVELOST_TITLE    "SAVE LOST"
+#define PDNA_GBEDIT_SAVELOST_L1       "Card kept neither copy."
+#define PDNA_GBEDIT_SAVELOST_BAK      "Restore the .bak on a PC."
+#define PDNA_GBEDIT_SAVELOST_NOBAK    "No backup was made!"
+
+/* gbs_box_writable's SF_ERR_UNWRITABLE hint (source/pdna_gen12.c gb_edit_hook step 2):
+ * "Switch boxes in-game once, then retry." measures 195px, over the 184px clamp;
+ * "Change box in-game once, then retry." measures 188px, STILL over; this one (161px)
+ * fits. */
+#define PDNA_GBEDIT_UNWRITABLE_HINT   "Change box in-game, then retry."
+
+/* ---------------------------------------------------------------------------
  * Settings + Rumble pages (source/pdna_main.c)
  *
  * These rows are sys8 (a FIXED 8 px cell), and libtonc's TTE does not clip at the right

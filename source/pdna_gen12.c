@@ -534,6 +534,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gb_session.h"
 #include "gb_editor.h"
 #include "pdna_gbedit.h"
+#include "pdna_layout.h"   /* PDNA_GBEDIT_* -- the persist path's own fixed strings */
 
 #define GB12_A4(n)  (((uint32_t)(n) + 3u) & ~3u)
 /* One arena block holds everything: the mount, the FatFs handle we keep open for the
@@ -758,7 +759,7 @@ static bool gb_edit_hook(uint8_t* rec80) {
   if (st != GBS_OK) {
     snd_deny();
     msg_wait("CAN'T EDIT THIS BOX", UI_WARN, gbs_status_text(st),
-             st == GBS_ERR_UNWRITABLE ? "Switch boxes in-game once, then retry." : 0);
+             st == GBS_ERR_UNWRITABLE ? PDNA_GBEDIT_UNWRITABLE_HINT : 0);
     return false;
   }
   st = gbs_load_list(s, box, g_ed->list);
@@ -826,7 +827,7 @@ static bool gb_edit_persist(int box, int slot) {
     app_log_flush();
     if (w == SF_WHERE_TARGET) {                     /* it IS on the card; only unconfirmed */
       siprintf(l1, "%.30s looks correct", nm);
-      msg_wait("UNCONFIRMED", UI_WARN, l1, "Could not re-check the card. Verify it.");
+      msg_wait(PDNA_GBEDIT_UNCONFIRMED_TITLE, UI_WARN, l1, PDNA_GBEDIT_UNCONFIRMED_L2);
       /* fall through: the card really holds the new image, so this is a success */
     } else {
       gb_edit_rollback();
@@ -834,15 +835,15 @@ static bool gb_edit_persist(int box, int slot) {
       switch (w) {
         case SF_WHERE_TMP_ONLY:                     /* the loud one: no .sav on the card */
           siprintf(l1, "Edit is in %.28s.tmp", nm);
-          msg_wait("SAVE NOT IN PLACE", UI_WARN, l1, "Card dropped it. Rename .tmp on a PC.");
+          msg_wait(PDNA_GBEDIT_TMPONLY_TITLE, UI_WARN, l1, PDNA_GBEDIT_TMPONLY_L2);
           break;
         case SF_WHERE_TMP_AND_OLD:                  /* old save intact; edit not applied */
           siprintf(l1, "Edit is in %.28s.tmp", nm);
-          msg_wait("NOT SAVED", UI_WARN, l1, "Old save intact. Try saving again.");
+          msg_wait(PDNA_GBEDIT_TMPANDOLD_TITLE, UI_WARN, l1, PDNA_GBEDIT_TMPANDOLD_L2);
           break;
         default:                                    /* neither name matches: use the backup */
-          msg_wait("SAVE LOST", UI_WARN, "Card kept neither copy.",
-                   bak[0] ? "Restore the .bak on a PC." : "No backup was made!");
+          msg_wait(PDNA_GBEDIT_SAVELOST_TITLE, UI_WARN, PDNA_GBEDIT_SAVELOST_L1,
+                   bak[0] ? PDNA_GBEDIT_SAVELOST_BAK : PDNA_GBEDIT_SAVELOST_NOBAK);
           break;
       }
       return false;

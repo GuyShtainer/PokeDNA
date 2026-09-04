@@ -59,7 +59,7 @@ static void render(const GbEditMon* e, const uint8_t* rows, int nrows, int sel, 
 
   if (full) {
     ui_clear();
-    ui_text(4, 0, UI_TITLE, "EDIT GB POKEMON");
+    ui_text(4, 0, UI_TITLE, PDNA_GBEDIT_TITLE);
     if (note) ui_ptext_right(UI_SCR_W - 4, 0, UI_WARN, note);
     ui_hline(0, 19, UI_SCR_W, UI_BORDER);
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
@@ -120,15 +120,24 @@ static bool confirm(const GbEditMon* e) {
   }
 
   ui_clear();
-  ui_text(20, 40, UI_TITLE, "Write this Pokemon to the save?");
-  int y = 56;
-  if (issue) { ui_ptext_fit(20, y, 200, UI_WARN, issue); y += 10;
-               ui_ptext_fit(20, y, 200, UI_WARN, "The game may not accept it. Write anyway?"); y += 12; }
-  if (stale) { ui_ptext_fit(20, y, 200, UI_TEXT, stale); y += 12; }
-  ui_text(20, y + 4,  UI_TEXT, "A = write (backs up first)");
-  ui_text(20, y + 16, UI_WARN, "B = cancel");
-  ui_text(20, 128, UI_DIM, "Original backed up to .bak,");
-  ui_text(20, 138, UI_DIM, "new save verified on write.");
+  ui_text(20, 40, UI_TITLE, PDNA_GBEDIT_CONFIRM_TITLE);
+  int y = PDNA_GBEDIT_CONFIRM_Y0;
+  if (issue) {
+    y += ui_ptext_wrap(20, y, PDNA_GBEDIT_CONFIRM_W, PDNA_GBEDIT_CONFIRM_LINE_H,
+                        PDNA_GBEDIT_CONFIRM_MAXLN, UI_WARN, issue)
+         * PDNA_GBEDIT_CONFIRM_LINE_H;
+    ui_ptext_fit(20, y, PDNA_GBEDIT_CONFIRM_W, UI_WARN, PDNA_GBEDIT_WRITE_ANYWAY);
+    y += PDNA_GBEDIT_CONFIRM_GAP;
+  }
+  if (stale) {
+    y += ui_ptext_wrap(20, y, PDNA_GBEDIT_CONFIRM_W, PDNA_GBEDIT_CONFIRM_LINE_H,
+                        PDNA_GBEDIT_CONFIRM_MAXLN, UI_TEXT, stale)
+         * PDNA_GBEDIT_CONFIRM_LINE_H;
+  }
+  ui_text(20, y + PDNA_GBEDIT_AB_DY1, UI_TEXT, PDNA_GBEDIT_A_WRITE);
+  ui_text(20, y + PDNA_GBEDIT_AB_DY2, UI_WARN, PDNA_GBEDIT_B_CANCEL);
+  ui_text(20, PDNA_GBEDIT_BAK_Y1, UI_DIM, PDNA_GBEDIT_BAK_L1);
+  ui_text(20, PDNA_GBEDIT_BAK_Y2, UI_DIM, PDNA_GBEDIT_BAK_L2);
   u16 k = s_wait(KEY_A | KEY_B);
   return (k & KEY_A) != 0;
 }
@@ -141,8 +150,8 @@ static void press(GbEditMon* e, int f) {
     if (!osk_input(gbe_label_of(e, f), cur, out, sizeof out)) return;
     if (gbe_set_text(e, f, out, bad)) { snd_edit(); return; }
     snd_deny();
-    if (bad[0]) msg_wait("CAN'T STORE THAT", UI_WARN, "Not in this game's charset:", bad);
-    else        msg_wait("CAN'T STORE THAT", UI_WARN, "The name was refused.", 0);
+    if (bad[0]) msg_wait(PDNA_GBEDIT_BADCHARSET_TITLE, UI_WARN, PDNA_GBEDIT_BADCHARSET_L1, bad);
+    else        msg_wait(PDNA_GBEDIT_BADCHARSET_TITLE, UI_WARN, PDNA_GBEDIT_BADNAME_L1, 0);
     return;
   }
   if (kind == GBE_K_MOVE) {
@@ -150,8 +159,8 @@ static void press(GbEditMon* e, int f) {
     if (id == 0xFFFF) return;
     if (gbe_set_move(e, f, id)) { snd_edit(); return; }
     snd_deny();
-    if (id > gb_max_move(e->gen)) msg_wait("NOT IN THIS GAME", UI_WARN, "That move is from a later", "generation.");
-    else                          msg_wait("ALREADY KNOWN", UI_WARN, "This Pokemon has that move", "in another slot.");
+    if (id > gb_max_move(e->gen)) msg_wait(PDNA_GBEDIT_MOVE_LATE_TITLE, UI_WARN, PDNA_GBEDIT_MOVE_LATE_L1, PDNA_GBEDIT_MOVE_LATE_L2);
+    else                          msg_wait(PDNA_GBEDIT_MOVE_DUP_TITLE, UI_WARN, PDNA_GBEDIT_MOVE_DUP_L1, PDNA_GBEDIT_MOVE_DUP_L2);
     return;
   }
   if (kind == GBE_K_NUM) { if (gbe_press(e, f)) snd_edit(); else snd_deny(); return; }
