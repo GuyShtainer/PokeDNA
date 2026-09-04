@@ -603,6 +603,44 @@ int main(void) {
       "sidecar confirm: worst case (all 6 flags) clears the panel");
   /* ==== END S5-B sidecar (Part C) ============================================ */
 
+  /* ==== S5-B Part D: PASTE (GB), source/pdna_gen12.c gb_paste_hook/gb_paste_write ===
+   * PDNA_LBL_PASTE_GB is measured through PDNA_MONMENU_LABELS below, not here. */
+  PF(PDNA_SIDECAR_GEN1_TITLE,       28, 184);
+  PF(PDNA_SIDECAR_GEN1_L1,          28, 184);
+  PF(PDNA_SIDECAR_XFER_TITLE,       28, 184);
+  PF(PDNA_SIDECAR_FULL_TITLE,       28, 184);
+  PF(PDNA_SIDECAR_FULL_L1,          28, 184);
+  PF(PDNA_SIDECAR_NOTWRITTEN_TITLE, 28, 184);
+  PF(PDNA_SIDECAR_NOTWRITTEN_L2,    28, 184);
+
+  /* The loss screen: fixed sys8 title/footer at x=4 (gb_pick_box's own convention),
+   * proportional rows fit to UI_SCR_W - 8 at x=4. */
+  T(PDNA_SIDECAR_LOSS_TITLE, 4);
+  PF(PDNA_SIDECAR_LOSS_NATURE,      4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_RIBBONS,     4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_METDATA,     4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_IVS,         4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_EVS,         4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_ITEM,        4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_SECRETID,    4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_SHINY,       4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_GENDER,      4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_NAME,        4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_KEPT_L1,     4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_KEPT_L2,     4, UI_SCR_W - 8);
+  PF(PDNA_SIDECAR_LOSS_STAYS,       4, UI_SCR_W - 8);
+  T(PDNA_SIDECAR_LOSS_A_TRANSFER, 4);
+  T(PDNA_SIDECAR_LOSS_B_CANCEL,   4);
+  /* Worst case: all 10 conditional rows + the 3 fixed lines + the 2 A/B lines (14 total)
+   * at ROW_H apart, plus the two ROW_H/2 gaps, then the last line's own ink (UI_ROW_H
+   * tall) -- mirrors gb_paste_loss_screen's exact sequence of y increments. */
+  chk("loss screen worst-case height", 0,
+      UI_SCR_H - 1,
+      PDNA_SIDECAR_LOSS_ROW_Y0 + 14 * PDNA_SIDECAR_LOSS_ROW_H +
+        2 * (PDNA_SIDECAR_LOSS_ROW_H / 2) + UI_ROW_H - 1,
+      "loss screen: worst case (all 10 loss flags) clears the screen");
+  /* ==== END S5-B sidecar (Part D) ============================================ */
+
   /* ==== ADDED for the native-generation art router (source/pdna_origin_art.c) ====
    * Guy: "if a pokemon is from gen 1, use a gen 1 sprite ... The bank should show all
    * in parallel." These are the fixed strings that feature puts on screen.

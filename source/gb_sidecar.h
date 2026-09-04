@@ -84,6 +84,19 @@ typedef struct {
   uint8_t  otname_written[GB_NAME_BYTES];
   uint8_t  nick_written[GB_NAME_BYTES];
   uint32_t exp_written;
+  /* Not a UNIX epoch -- there is no RTC-epoch conversion anywhere in this tree and this
+   * module will not invent one (same posture as GbGen1Base). PACKING (S5-B, the only
+   * writer is pdna_gen12.c's gb_paste_hook, from a GbaRtcTime -- gba_rtc.h):
+   *   bits 31..26  year - 2000  (0..63, i.e. 2000..2063)
+   *   bits 25..22  month        (1..12)
+   *   bits 21..17  day          (1..31)
+   *   bits 16..12  hour         (0..23)
+   *   bits 11..6   minute       (0..59)
+   *   bits  5..0   second       (0..59)
+   * 0 when gba_rtc_get() fails (no RTC exposed) -- also a real, if vanishingly
+   * unlikely, encoding (year 2000, month 0, ...), so 0 is "absent" by CONVENTION, not
+   * because it cannot otherwise occur; nothing in this module or S5-B decodes this
+   * field back into a GbaRtcTime today, so the ambiguity has no consequence yet. */
   uint32_t rtc_epoch;
   uint8_t  original80[80];
 } GbscEntry;

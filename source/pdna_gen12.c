@@ -534,7 +534,16 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gb_session.h"
 #include "gb_editor.h"
 #include "pdna_gbedit.h"
-#include "pdna_layout.h"   /* PDNA_GBEDIT_* -- the persist path's own fixed strings */
+#include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
+#include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
+#include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
+#include "gba_rtc.h"       /* S5-B: the sidecar entry's transfer-time RTC stamp        */
+
+/* Same value as pdna_main.c's PDNA_DIR "/sidecar" (hard rule 9: one folder per tool).
+ * Not shared through a header because nothing in this tree centralises PokeDNA's own
+ * path constants today (pdna_main.c's LOG_PATH is likewise a local #define) -- if
+ * PDNA_DIR ever changes, this one must change with it. */
+#define PDNA_GEN12_SIDECAR_DIR "/PokeDNA/sidecar"
 
 #define GB12_A4(n)  (((uint32_t)(n) + 3u) & ~3u)
 /* One arena block holds everything: the mount, the FatFs handle we keep open for the
@@ -708,6 +717,12 @@ typedef struct {
   uint8_t*   pristine;        /* byte-exact copy: rollback after a failed write */
   uint32_t   len;
   const char* path;           /* where an edit is persisted                    */
+  /* S5-B (Part D): the one .pds file gb_paste_write()/gb_paste_sidecar_undo() are
+   * reading/rewriting RIGHT NOW -- one at a time, never a cache, so it does not grow
+   * with GBSC_MAX_ENTRIES the way a real cache would. Arena-resident like every other
+   * Gb12Edit field, not a local: 1042 B is real weight neither hook's own frame should
+   * carry (see gb_paste_write's own noinline comment). */
+  uint8_t    sidecar[GBSC_FILE_MAX];
 } Gb12Edit;
 static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the arena */
 
@@ -1006,12 +1021,191 @@ static bool gb_release_hook(uint8_t* rec80) {
   return gb_persist("release");
 }
 
-/* Step 5 (all three hooks): the card. Same two safe points as the Gen-3 path (pdna_main.c
- * app_commit): the motor is off the bus for both transfers, and the log is flushed after
- * the verdict. Split out of the hooks so `bak` (SF_PATH_MAX, 272 B) is not live in any of
- * their frames while the editor/picker/confirm sub-screens run. `what_for_log` is the
- * one-word tag ("edit"/"move"/"release") the calling hook already logged its own
- * detailed line under, just here to keep THIS function's lines identifiable too. */
+/* ============================================================================
+ * S5-B Part D: AppSrcOps.paste -- PASTE (GB) on an empty cell, the DOWN direction
+ * (docs/GEN3-TO-GB-SIDECAR-DESIGN.md sections 5 + 10)
+ * ========================================================================== */
+
+/* The transfer-down confirm screen: one short line per Gen3ToGbLoss flag actually set,
+ * grouped to the ten categories the design doc lists (several raw flags share a line --
+ * nature+ability both vanish for the same reason: neither exists on a Game Boy record).
+ * noinline for the same reason gb_release_confirm is split off gb_release_hook. */
+static int loss_row(int y, bool cond, const char* text) {
+  if (!cond) return y;
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, text);
+  return y + PDNA_SIDECAR_LOSS_ROW_H;
+}
+static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* loss) {
+  ui_clear();
+  ui_text(4, 3, UI_TITLE, PDNA_SIDECAR_LOSS_TITLE);
+  ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+
+  int y = PDNA_SIDECAR_LOSS_ROW_Y0;
+  y = loss_row(y, loss->nature || loss->ability,      PDNA_SIDECAR_LOSS_NATURE);
+  y = loss_row(y, loss->ribbons || loss->contest,     PDNA_SIDECAR_LOSS_RIBBONS);
+  y = loss_row(y, loss->met_data || loss->ball,       PDNA_SIDECAR_LOSS_METDATA);
+  y = loss_row(y, loss->ivs_halved,                   PDNA_SIDECAR_LOSS_IVS);
+  y = loss_row(y, loss->evs_scaled,                   PDNA_SIDECAR_LOSS_EVS);
+  y = loss_row(y, loss->item_dropped,                 PDNA_SIDECAR_LOSS_ITEM);
+  y = loss_row(y, loss->secret_id,                    PDNA_SIDECAR_LOSS_SECRETID);
+  y = loss_row(y, loss->shiny_lost,                   PDNA_SIDECAR_LOSS_SHINY);
+  y = loss_row(y, loss->gender_lost,                  PDNA_SIDECAR_LOSS_GENDER);
+  y = loss_row(y, loss->nick_lossy || loss->ot_lossy, PDNA_SIDECAR_LOSS_NAME);
+
+  y += PDNA_SIDECAR_LOSS_ROW_H / 2;
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_KEPT_L1); y += PDNA_SIDECAR_LOSS_ROW_H;
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_KEPT_L2); y += PDNA_SIDECAR_LOSS_ROW_H;
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LOSS_STAYS);   y += PDNA_SIDECAR_LOSS_ROW_H;
+  y += PDNA_SIDECAR_LOSS_ROW_H / 2;
+  ui_text(4, y, UI_TEXT, PDNA_SIDECAR_LOSS_A_TRANSFER); y += PDNA_SIDECAR_LOSS_ROW_H;
+  ui_text(4, y, UI_DIM,  PDNA_SIDECAR_LOSS_B_CANCEL);
+
+  u16 k = s_wait(KEY_A | KEY_B);
+  return (k & KEY_A) != 0;
+}
+
+/* Best-effort cleanup after gbs_insert()/gb_persist() refused a paste whose sidecar
+ * entry already landed on the card: remove that entry (it is always the LAST one --
+ * gbsc_add() appends, and nothing else touches this file between gb_paste_write()'s own
+ * write and this call running). An orphan entry left behind is harmless (design doc
+ * section 5: "an unclaimed entry nobody will ever match"), so a failure here only logs,
+ * it never blocks -- the caller has already decided what to tell the user about the
+ * paste itself. */
+static void gb_paste_sidecar_undo(const char* path) {
+  uint32_t len = 0;
+  if (sf_read_full(path, g_ed->sidecar, GBSC_FILE_MAX, &len) != SF_OK) {
+    log_line("gen12: sidecar cleanup: could not re-read %s", path);
+    return;
+  }
+  int n = gbsc_count(g_ed->sidecar, len);
+  if (n <= 0) { log_line("gen12: sidecar cleanup: %s is empty", path); return; }
+
+  if (gbsc_remove(g_ed->sidecar, &len, n - 1) != 0) {
+    log_line("gen12: sidecar cleanup: remove failed in %s", path);
+    return;
+  }
+  rmbl_pause();
+  SfStatus wst;
+  if (gbsc_count(g_ed->sidecar, len) == 0) wst = (f_unlink(path) == FR_OK) ? SF_OK : SF_ERR_WRITE;
+  else                                     wst = sf_write_verified(path, g_ed->sidecar, len);
+  rmbl_resume();
+  if (wst != SF_OK) log_line("gen12: sidecar cleanup: rewrite failed for %s", path);
+}
+
+/* Steps 6-8 of gb_paste_hook (below): the sidecar, then gbs_insert(), then the card.
+ * noinline: GbscEntry (~120 B) + the 48-byte path together are exactly the kind of
+ * "sidecar I/O" weight the S5-B brief calls out as needing its own frame, same
+ * reasoning as gb_persist's bak[SF_PATH_MAX] split. */
+static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int box) {
+  uint8_t dv4[4] = {
+    gb_get_dv(mon, GB_ATK), gb_get_dv(mon, GB_DEF),
+    gb_get_dv(mon, GB_SPE), gb_get_dv(mon, GB_SPC)
+  };
+  uint64_t key = gbsc_key(mon->gen, gb_get_otid(mon), dv4, mon->otname);
+  char path[48];
+  if (gbsc_path(path, sizeof path, PDNA_GEN12_SIDECAR_DIR, key) < 0) return false;
+
+  f_mkdir(PDNA_GEN12_SIDECAR_DIR);            /* FR_EXIST is fine (hard rule 9) */
+
+  uint32_t len = 0;
+  SfStatus rst = sf_read_full(path, g_ed->sidecar, GBSC_FILE_MAX, &len);
+  if (rst != SF_OK || gbsc_count(g_ed->sidecar, len) < 0)
+    len = (uint32_t)gbsc_init(g_ed->sidecar, key);   /* absent or corrupt: start fresh */
+
+  GbaRtcTime t;
+  uint32_t epoch = 0;
+  if (gba_rtc_get(&t))                              /* 0 when absent -- gb_sidecar.h's own note */
+    epoch = ((uint32_t)(t.year - 2000u) << 26) | ((uint32_t)t.month << 22) |
+            ((uint32_t)t.day << 17) | ((uint32_t)t.hour << 12) |
+            ((uint32_t)t.minute << 6) | (uint32_t)t.second;
+
+  GbscEntry e;
+  gbsc_entry_from(&e, mon, app_clip_rec(), epoch);
+  int idx = gbsc_add(g_ed->sidecar, &len, GBSC_FILE_MAX, &e);
+  if (idx < 0) {
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_FULL_TITLE, UI_WARN, PDNA_SIDECAR_FULL_L1, 0);
+    return false;
+  }
+
+  rmbl_pause();
+  SfStatus wst = sf_write_verified(path, g_ed->sidecar, len);
+  rmbl_resume();
+  log_line("gen12: sidecar %s: %s", path, wst == SF_OK ? "OK" : sf_status_str(wst));
+  if (wst != SF_OK) {
+    snd_error();
+    msg_wait(PDNA_SIDECAR_NOTWRITTEN_TITLE, UI_WARN, sf_status_str(wst), PDNA_SIDECAR_NOTWRITTEN_L2);
+    return false;
+  }
+
+  int newslot = -1;
+  GbsStatus ist = gbs_insert(&g_ed->s, box, mon, &newslot, g_ed->list);
+  if (ist != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: paste insert box %d refused: %s", box, gbs_status_text(ist));
+    gb_paste_sidecar_undo(path);
+    snd_error();
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
+    return false;
+  }
+
+  log_line("=== gb paste -> %s box %d slot %d ===", g_ed->path, box, newslot);
+  bool ok = gb_persist("paste");           /* on failure gb_persist() has already rolled
+                                             * RAM back to what the card holds */
+  if (!ok) gb_paste_sidecar_undo(path);
+  return ok;
+}
+
+/* AppSrcOps.paste: convert the CLIPBOARD's Gen-3 record and append it into `rec80`'s
+ * box (an empty cell -- app_mon_menu's own gate: g_clip.occupied && !g_clip.from_gb).
+ * Order, each refusal leaving nothing PAST it touched:
+ *   1. locate (box + the S2/S3 gates, gb_locate)
+ *   2. Gen 1 refused outright -- no base-stat table in this tree yet (S5-C)
+ *   3. gen3_to_gb() -- species/move/Egg refusals
+ *   4. the loss screen (A = continue, B = cancel: nothing touched)
+ *   5. gbs_box_writable() re-checked fresh (gb_locate's own check is against the box
+ *      as it stood when the popup opened; cheap, and every other hook does the same)
+ *   6-8. gb_paste_write(): the sidecar (verified, written FIRST -- design doc section 5
+ *      point 3), gbs_insert(), then the card (gb_persist). */
+static bool gb_paste_hook(uint8_t* rec80) {
+  int box, slot;
+  if (!gb_locate(rec80, &box, &slot)) return false;                          /* 1 */
+
+  if (g_ed->s.gen == GB_GEN1) {                                              /* 2 */
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_GEN1_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_L1, 0);
+    return false;
+  }
+
+  GbEditMon mon;
+  Gen3ToGbLoss loss;
+  G3GbStatus cst = gen3_to_gb(app_clip_rec(), GB_GEN2, NULL, &mon, &loss);   /* 3 */
+  if (cst != G3GB_OK) {
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, g3gb_status_text(cst), 0);
+    return false;
+  }
+
+  if (!gb_paste_loss_screen(&loss)) return false;                           /* 4 */
+
+  GbsStatus wst = gbs_box_writable(&g_ed->s, box);                          /* 5 */
+  if (wst != GBS_OK) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_BOXWR_TITLE, UI_WARN, gbs_status_text(wst),
+             wst == GBS_ERR_UNWRITABLE ? PDNA_GBEDIT_UNWRITABLE_HINT : 0);
+    return false;
+  }
+
+  return gb_paste_write(&mon, box);                                         /* 6-8 */
+}
+
+/* The card, for all FOUR hooks (edit/move/release, and S5-B's paste). Same two safe
+ * points as the Gen-3 path (pdna_main.c app_commit): the motor is off the bus for both
+ * transfers, and the log is flushed after the verdict. Split out of the hooks so `bak`
+ * (SF_PATH_MAX, 272 B) is not live in any of their frames while the editor/picker/
+ * confirm sub-screens run. `what_for_log` is the one-word tag ("edit"/"move"/"release"/
+ * "paste") the calling hook already logged its own detailed line under, just here to
+ * keep THIS function's lines identifiable too. */
 static bool gb_persist(const char* what_for_log) {
   char bak[SF_PATH_MAX]; bak[0] = 0;
   s_busy(PDNA_GBEDIT_BUSY_BACKUP);
@@ -1086,11 +1280,11 @@ static bool gb_persist(const char* what_for_log) {
 _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
                "GB import (resident image) no longer fits the borrowed EWRAM arena");
 
-/* S2/S3: the resident-image edit pipeline's three hooks, registered as one const struct
- * (pdna_app.h's AppSrcOps) rather than three separate setters -- const data lives in
+/* S2/S3/S5-B: the resident-image edit pipeline's hooks, registered as one const struct
+ * (pdna_app.h's AppSrcOps) rather than five separate setters -- const data lives in
  * ROM, so this costs nothing against the EWRAM guard. */
 static const AppSrcOps k_gb_ops = {
-  gb_edit_hook, gb_move_hook, gb_release_hook, gb_copy_native_hook
+  gb_edit_hook, gb_move_hook, gb_release_hook, gb_copy_native_hook, gb_paste_hook
 };
 
 /* Info page -> box grid -> the "these did not convert" report. The whole session above

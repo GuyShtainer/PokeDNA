@@ -91,13 +91,33 @@ bool app_src_readonly(void);
  * still true for the read-only nav-menu mount, which has no edit session to load one
  * through -- see pdna_gen12.c's gb_locate_addr/gb_copy_native_hook). Returns false
  * (leaving `out` untouched) when `rec80` cannot be resolved to a real record. */
+/* `paste` (S5-B, docs/GEN3-TO-GB-SIDECAR-DESIGN.md section 10, the DOWN direction) adds
+ * a PASTE (GB) row to the read-only popup, but ONLY on an EMPTY cell and only while the
+ * clipboard holds a Gen-3 record that did NOT itself come off a Game Boy source
+ * (`g_clip.occupied && !g_clip.from_gb` -- pdna_main.c's app_mon_menu). `rec80` is the
+ * empty cell's own address (exactly like every other hook here), so the hook can
+ * gb_locate() the destination box; it never reads through `rec80` itself. Converts the
+ * CLIPBOARD's Gen-3 record via gen3_to_gb(), writes the sidecar FIRST, then inserts
+ * (gbs_insert) -- see pdna_gen12.c's gb_paste_hook for the full order and the
+ * atomicity story. NULL = this source never accepts a paste (every source before
+ * S5-B, and Gen 1 targets today -- see gb_paste_hook's own Gen-1 refusal). */
 typedef struct {
   bool (*edit)(uint8_t* rec80);
   bool (*move)(uint8_t* rec80);
   bool (*release)(uint8_t* rec80);
   bool (*copy_native)(const uint8_t* rec80, GbEditMon* out);
+  bool (*paste)(uint8_t* rec80);
 } AppSrcOps;
 void app_src_ops_set(const AppSrcOps* ops);
+
+/* S5-B: the clipboard's raw 80-byte Gen-3 record, for a foreign source's own `paste`
+ * hook (AppSrcOps.paste is handed the DESTINATION's rec80 only -- never the clip
+ * itself). Points at g_clip's own bytes; valid to read for the duration of the paste
+ * hook's call (nothing else runs in between the popup's A-press and the hook), and
+ * only meaningful when the caller already knows the clipboard is occupied and NOT
+ * `from_gb` -- app_mon_menu's own gate before PASTE (GB) is ever offered. Do not call
+ * this speculatively and do not retain the pointer past the hook's return. */
+const uint8_t* app_clip_rec(void);
 
 /* Bank "Copy to game": inject a stored 80-byte box record into the loaded save's
  * first free PC box slot (and commit). Returns true iff written. Omega-only. */

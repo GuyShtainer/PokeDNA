@@ -133,6 +133,7 @@
 #define PDNA_LBL_VIEW        "VIEW"           /* read-only popup only */
 #define PDNA_LBL_EDIT_GB     "EDIT"           /* read-only popup, GB session only */
 #define PDNA_LBL_MOVE_TO     "MOVE TO"        /* read-only popup, GB session S3 only */
+#define PDNA_LBL_PASTE_GB    "PASTE (GB)"     /* read-only popup, empty GB cell, S5-B */
 
 /* Every label either action popup can show, so the host test measures the strings the
  * menus actually draw. The X() entries are the macros above, not fresh literals. */
@@ -142,7 +143,7 @@
   X(PDNA_LBL_DUPLICATE) X(PDNA_LBL_TO_DAYCARE) X(PDNA_LBL_TO_GAME)                    \
   X(PDNA_LBL_EXPORT_PK) X(PDNA_LBL_TAKE_ITEM) X(PDNA_LBL_GIVE_ITEM)                   \
   X(PDNA_LBL_RELEASE) X(PDNA_LBL_CREATE) X(PDNA_LBL_PASTE_HERE) X(PDNA_LBL_CANCEL)    \
-  X(PDNA_LBL_VIEW) X(PDNA_LBL_EDIT_GB) X(PDNA_LBL_MOVE_TO)
+  X(PDNA_LBL_VIEW) X(PDNA_LBL_EDIT_GB) X(PDNA_LBL_MOVE_TO) X(PDNA_LBL_PASTE_GB)
 
 /* Read-only source popup: the header grows by one line per explanatory line above the
  * rows (the source's note, and the per-record "why this one is locked"). */
@@ -654,9 +655,13 @@
 #define PDNA_SIDECAR_LOSS_STAYS      "The copy in your Gen-3 save stays."
 #define PDNA_SIDECAR_LOSS_A_TRANSFER "A = transfer"
 #define PDNA_SIDECAR_LOSS_B_CANCEL   "B = cancel"
-#define PDNA_SIDECAR_LOSS_ROWS       12
-#define PDNA_SIDECAR_LOSS_ROW_Y0     20
-#define PDNA_SIDECAR_LOSS_ROW_H      10
+/* Full-screen list (gb_pick_box's own geometry: title y=3, rule y=13), not a scrolling
+ * picker -- rows are drawn only for flags actually set, so the common case is much
+ * shorter than the worst case the host test pins: 10 conditional Gen3ToGbLoss lines +
+ * KEPT_L1/L2 + STAYS + A + B = 14 lines at ROW_H, plus two ROW_H/2 gaps, must still
+ * clear the screen (UI_SCR_H = 160) -- see gb_paste_loss_screen's own layout. */
+#define PDNA_SIDECAR_LOSS_ROW_Y0     16
+#define PDNA_SIDECAR_LOSS_ROW_H      9
 
 /* pdna_gbedit.c's DV-orphan warning (Part E): shown once per editor visit, on the first
  * adjust/press of a DV row, when the mon's current key already has a sidecar file. */

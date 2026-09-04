@@ -2426,6 +2426,11 @@ static bool app_inject_to_game_deferred(const uint8_t* rec80, int* out_box, int*
  * 6.9.2) so app_copy, textually earlier, can reach it without moving either block. */
 static const AppSrcOps* g_src_ops;
 
+/* S5-B: hand the clipboard's raw Gen-3 record to a foreign source's own `paste` hook
+ * (pdna_gen12.c's gb_paste_hook), which is called with the DESTINATION's rec80, never
+ * the clip. See pdna_app.h's own contract comment for the validity rules. */
+const uint8_t* app_clip_rec(void) { return g_clip.rec; }
+
 static bool app_copy(uint8_t* rec, bool is_party) {
   clip_copy_from(&g_clip, rec, is_party);
   /* S5-B: if the ACTIVE source is a Game Boy save with a copy_native hook (only true
@@ -3476,28 +3481,38 @@ bool app_src_readonly(void) { return g_src_ro; }
  * currently be borrowing as its EWRAM arena). `why_locked` can additionally veto COPY
  * for one record and say why — a Pokemon that is visible but cannot travel is far
  * better than one that vanishes. */
-static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0) {
-  const char* locked = g_src_why ? g_src_why(rec) : 0;
-  enum { RO_VIEW, RO_EDIT, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_CANCEL };
+/* `empty` (S5-B): the cell has no record at all -- PkMon `m0` is not meaningful (the
+ * caller does not resolve it for an empty slot) and every row below except PASTE (GB)
+ * would either dereference a Pokemon that is not there or offer an action ("EDIT" a
+ * Pokemon that does not exist) that makes no sense, so the row list collapses to just
+ * that one row + CANCEL. See pdna_app.h's AppSrcOps.paste for what the row does. */
+static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, bool empty) {
+  const char* locked = (!empty && g_src_why) ? g_src_why(rec) : 0;
+  enum { RO_VIEW, RO_EDIT, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CANCEL };
   int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
-  lab[n] = PDNA_LBL_VIEW;     act[n++] = RO_VIEW;
-  /* EDIT / MOVE TO / RELEASE are the GB session's own in-place pipeline (pdna_gen12.c),
-   * never the Gen-3 one: each edits the Game Boy record by address, never the converted
-   * copy this menu was handed. */
-  if (g_src_ops && g_src_ops->edit)    { lab[n] = PDNA_LBL_EDIT_GB;   act[n++] = RO_EDIT; }
-  if (g_src_ops && g_src_ops->move)    { lab[n] = PDNA_LBL_MOVE_TO;   act[n++] = RO_MOVE; }
-  if (g_src_ops && g_src_ops->release) { lab[n] = PDNA_LBL_RELEASE;   act[n++] = RO_RELEASE; }
-  lab[n] = PDNA_LBL_LEGALITY; act[n++] = RO_LEGAL;
-  if (!locked) { lab[n] = PDNA_LBL_COPY; act[n++] = RO_COPY; }
+  if (empty) {
+    lab[n] = PDNA_LBL_PASTE_GB; act[n++] = RO_PASTE;
+  } else {
+    lab[n] = PDNA_LBL_VIEW;     act[n++] = RO_VIEW;
+    /* EDIT / MOVE TO / RELEASE are the GB session's own in-place pipeline
+     * (pdna_gen12.c), never the Gen-3 one: each edits the Game Boy record by address,
+     * never the converted copy this menu was handed. */
+    if (g_src_ops && g_src_ops->edit)    { lab[n] = PDNA_LBL_EDIT_GB;   act[n++] = RO_EDIT; }
+    if (g_src_ops && g_src_ops->move)    { lab[n] = PDNA_LBL_MOVE_TO;   act[n++] = RO_MOVE; }
+    if (g_src_ops && g_src_ops->release) { lab[n] = PDNA_LBL_RELEASE;   act[n++] = RO_RELEASE; }
+    lab[n] = PDNA_LBL_LEGALITY; act[n++] = RO_LEGAL;
+    if (!locked) { lab[n] = PDNA_LBL_COPY; act[n++] = RO_COPY; }
+  }
   lab[n] = PDNA_LBL_CANCEL;   act[n++] = RO_CANCEL;
 
   /* 48, not the 16 the menu below uses: ui_truncate documents max_cols*4+1, and a
    * 10-glyph nickname of gender signs really is 30 UTF-8 bytes. GB nicknames hit this
    * (NIDORAN-male is in the test corpus), so this buffer is sized for it. */
   char title[48];
-  ui_truncate(title, m0->nickname[0] ? m0->nickname : pk_species_name(m0->species), 11);
-  const int hdr = PDNA_ROMENU_HDR + (g_src_note ? PDNA_ROMENU_LINE : 0)
-                                  + (locked     ? PDNA_ROMENU_LINE : 0);
+  if (empty) ui_truncate(title, "EMPTY", 11);
+  else       ui_truncate(title, m0->nickname[0] ? m0->nickname : pk_species_name(m0->species), 11);
+  const int hdr = PDNA_ROMENU_HDR + (!empty && g_src_note ? PDNA_ROMENU_LINE : 0)
+                                  + (locked                ? PDNA_ROMENU_LINE : 0);
   /* Laid out ABOVE the screen's footer row, and windowed if it ever stops fitting —
    * the same rule as the full action menu below. */
   int my, mh;
@@ -3513,7 +3528,7 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0) 
     int y = my + PDNA_ROMENU_HDR;
     /* Proportional face: these two lines are prose, and the panel is only 88 px wide
      * inside its border (tests/host_textfit_test.c pins both). */
-    if (g_src_note) { ui_ptext_fit(mx + PDNA_MONMENU_PAD, y, PDNA_MONMENU_PROSE_W, UI_WARN, g_src_note); y += PDNA_ROMENU_LINE; }
+    if (!empty && g_src_note) { ui_ptext_fit(mx + PDNA_MONMENU_PAD, y, PDNA_MONMENU_PROSE_W, UI_WARN, g_src_note); y += PDNA_ROMENU_LINE; }
     if (locked)     { ui_ptext_fit(mx + PDNA_MONMENU_PAD, y, PDNA_MONMENU_PROSE_W, UI_WARN, locked);     y += PDNA_ROMENU_LINE; }
     ui_hline(mx + 2, y, mw - 4, UI_BORDER);
     for (int i = 0; i < vis && top + i < n; i++) {
@@ -3535,6 +3550,7 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0) 
         case RO_RELEASE: return (g_src_ops && g_src_ops->release) ? g_src_ops->release(rec) : false;
         case RO_LEGAL: pdna_legality_show(m0); return false;
         case RO_COPY:  return app_copy(rec, is_party);
+        case RO_PASTE: return (g_src_ops && g_src_ops->paste) ? g_src_ops->paste(rec) : false;
         default:       return false;
       }
     }
@@ -3558,8 +3574,16 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
    * screen would have shown a change that never happened. pdna_box gates its own
    * destructive paths on src->can_edit(); this is the same gate for the menu. */
   if (g_src_ro) {
-    if (!occupied) return false;                         /* nothing to create or paste into */
-    return app_mon_menu_readonly(rec, is_party, &m0);
+    if (!occupied) {
+      /* S5-B: an empty GB cell offers PASTE (GB) only when this source accepts one AND
+       * the clipboard holds a Gen-3 record that did not itself come off a Game Boy
+       * source (from_gb) -- pasting a GB-native clip back down would be the wrong
+       * direction and gen3_to_gb() would refuse it anyway (no Gen-3 record to convert). */
+      if (g_src_ops && g_src_ops->paste && g_clip.occupied && !g_clip.from_gb)
+        return app_mon_menu_readonly(rec, is_party, &m0, true);
+      return false;                                       /* nothing to create or paste into */
+    }
+    return app_mon_menu_readonly(rec, is_party, &m0, false);
   }
 
   enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_TOBOX, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CREATE, A_HATCH, A_CANCEL };
