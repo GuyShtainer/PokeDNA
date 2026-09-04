@@ -16,30 +16,46 @@ Run it with: /usr/local/bin/python3 tools/gb_retail_gate.py
 the default below points at this workspace's vendored copy). `make retail-gate` runs it
 with the right interpreter and vendor path already filled in.
 
-THE TWO GATES, and why both run on every edited boot (docs/GEN12-EDIT-DESIGN.md trap 7):
-  PRIMARY — a content assertion read off the screen the game itself drew (--expect-party,
-    --expect-no-screen, --expect-party-count). This is the one that catches a save the
-    game silently discarded: Crystal boots the stale backup and shows the OLD data with
-    verdict=accept and the right trainer name, so anything less than "is MY edit visible"
-    waves it through.
-  SECONDARY — the SRAM diff gb_roundtrip.py already computes for every run (no --dump-save
-    needed for the numbers; --dump-save is used here ADDITIONALLY for an independent,
-    file-level cross-check). The signal: a Gen-2 load that behaves correctly never
-    rewrites the PRIMARY copy at all (only the backup mirror, and only because two copies
-    disagreed before the game ever ran) — so sram_changed_primary_bytes != 0 means the
-    primary we handed the emulator (WITH our edit already baked in) was rejected and the
-    backup got booted instead, even though the screen may look fine. Gen 1 carries no such
-    split; a good Gen-1 load rewrites NO save byte at all (gb_roundtrip.py's own selftest
-    asserts exactly that), so sram_changed_bytes must be 0 there. Either way this is
-    SECONDARY, not primary: it is not a bound on "how big was our edit" (the diff is
-    before-load vs after-load, and our edit already happened offline, before the emulator
-    ever saw the file) — it is a check that the GAME did not react to it by falling back to
-    a stale copy.
-  Independently of both: every edited boot's --dump-save is diffed against the edited
-  INPUT file (not the original), SRAM only (split_rtc_tail, reused from gb_roundtrip.py —
-  an MBC3 RTC footer is mGBA's clock, never save data and never part of this comparison).
-  A length change there is a hard failure on its own, regardless of what the two internal
-  gates above say.
+THREE GATES run on every edited boot, and NONE of them is redundant --
+docs/GEN12-EDIT-DESIGN.md trap 7 exists precisely because a save can boot, show the
+right trainer, and still have quietly lost the edit:
+
+  CONTENT — an assertion read off the screen the game itself drew: gb_roundtrip.py's
+    --expect-party/--expect-no-screen/--expect-party-count, PLUS (nickname/level cases)
+    a SLOT-ANCHORED re-read of the ordered rows in rep["party_screen"] (see
+    check_nick_slot/check_level_slot) -- gb_roundtrip's own --expect-party is a substring
+    search over the WHOLE party blob, so it cannot tell "my edit landed in slot 0" from
+    "my edit landed in slot 1 instead", which is a real bug this gate caught.
+
+  SRAM DIFF (sram_changed_primary_bytes / sram_changed_bytes) — gb_roundtrip.py computes
+    this for every run; secondary_gate() reads it back. Its role differs by generation,
+    and the difference is NOT cosmetic:
+      Gen 2 -- THIS is the ONLY thing that can detect a stale-primary silent discard in
+        THIS tree, and CONTENT CANNOT SUBSTITUTE FOR IT. gen2_write.c / gb_session.c
+        write every edit into BOTH the primary and the backup copy at commit time, so an
+        edited save's backup already carries the edit before it ever reaches mGBA --
+        unlike the original Crystal.sav corpus file, whose backup is stale from years of
+        untouched retail play. Proven: the reviewer corrupted just the primary's
+        checksum on an already-edited Crystal save; the game booted the (already-edited)
+        backup, verdict=accept, the edited nickname right there on screen -- CONTENT
+        assertions saw nothing wrong. Only sram_changed_primary_bytes (1 byte, nonzero)
+        caught it. NEVER weaken or drop this check for Gen 2.
+      Gen 1 -- no primary/backup split exists at all (gb_roundtrip.py's _classify()
+        never sets a `lay` for gen 1, so everything non-scratch lands in "other"), and
+        gb_roundtrip's own selftest asserts a good Gen-1 load rewrites NO save byte.
+        sram_changed_bytes (scratch already excluded by gb_roundtrip) is the signal here.
+    Either way this is not a bound on "how big was our edit": the diff is BEFORE-LOAD vs
+    AFTER-LOAD, and our edit already happened offline before the emulator ever ran, so a
+    byte-count threshold on it would be measuring the wrong thing entirely.
+
+  LENGTH GUARD — edited_case() stat()s the file it is about to boot against the
+    ORIGINAL save's length BEFORE booting at all (trap 8), and separately, after booting,
+    diff_dump() re-derives the SRAM/RTC-tail split (split_rtc_tail, reused from
+    gb_roundtrip.py, never reimplemented) between the dump and the edited input. The
+    reported byte count there is the WHOLE SRAM span INCLUDING scratch (Gen 1 sprite
+    buffers, Gen 2 decompression scratch + window stack) and is informational only --
+    never asserted on, since it churns by design and its size depends only on where the
+    boot happened to stop. Only a LENGTH change there is a hard failure.
 
 Skips are explicit: a case whose precondition the corpus doesn't meet (a party under 2
 members, no box with a free slot) prints "[skip] <save> <case> -- <reason>" and is never
@@ -176,8 +192,13 @@ def boot(python, rom, sav, out_dir: Path, vendor, json_path: Path,
 
 
 def secondary_gate(rep: dict, gen: int):
-    """THE secondary gate (see module docstring): did the game's own load-time SRAM
-    rewrite behave like an ACCEPTED save, independent of what the screen showed?"""
+    """The SRAM-diff gate (see module docstring): did the game's own load-time SRAM
+    rewrite behave like an ACCEPTED save, independent of what the screen showed? For
+    Gen 2 this is the ONLY detector of a stale-primary silent discard in this tree
+    (gen2_write.c mirrors every edit into both save copies, so the CONTENT the game
+    draws is identical whichever copy it actually booted) -- this branch must never be
+    weakened or made conditional. For Gen 1 there is no primary/backup split at all; a
+    good load rewrites no save byte, full stop."""
     if rep.get("harness_error"):
         return False, f"harness error: {rep['harness_error']}"
     if gen == 1:
