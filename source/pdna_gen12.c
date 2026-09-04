@@ -724,6 +724,8 @@ static void gb_edit_rollback(void) {
   if (g_m) g_m->loaded = -1;
 }
 
+static bool gb_edit_persist(int box, int slot);
+
 /* app_src_edit_set() hook: EDIT on the read-only mon menu. `rec80` identifies the slot
  * by ADDRESS inside the paged box, exactly like pdna_gen12_why_locked; the box is the
  * one the mount has paged. The GB numbering is the grid's own: storage boxes 0..n-1 and
@@ -734,8 +736,9 @@ static void gb_edit_rollback(void) {
  *   2. the box (gbs_box_writable: a Gen-1 virgin bank would DESTROY the edit);
  *   3. the record (gb_commit_checked: the bytes landed where the editor put them);
  *   4. the image (gbs_commit_list: the engine's own structural + verify gates);
- *   5. the card (sf_backup_rolling, then sf_write_verified's four steps).
- * Returns true only after step 5, which is what makes the grid re-page. */
+ *   5. the card (gb_edit_persist: sf_backup_rolling, then sf_write_verified's four steps).
+ * Returns true only after step 5, which is what makes the grid re-page.
+ * Step 5 lives in gb_edit_persist(), defined just below. */
 static bool gb_edit_hook(uint8_t* rec80) {
   if (!g_ed || !g_m || !g_m->recs || !rec80) return false;
   const uint8_t* base = g_m->recs + 0x0004;
@@ -780,8 +783,14 @@ static bool gb_edit_hook(uint8_t* rec80) {
     return false;
   }
 
-  /* 5. The card. Same two safe points as the Gen-3 path (pdna_main.c app_commit): the
-   * motor is off the bus for both transfers, and the log is flushed after the verdict. */
+  return gb_edit_persist(box, slot);
+}
+
+/* Step 5: the card. Same two safe points as the Gen-3 path (pdna_main.c app_commit): the
+ * motor is off the bus for both transfers, and the log is flushed after the verdict. Split
+ * out of gb_edit_hook so `bak` (SF_PATH_MAX, 272 B) is not live in that frame while the
+ * editor screen and its keyboard/picker sub-screens run. */
+static bool gb_edit_persist(int box, int slot) {
   log_line("=== gb edit commit -> %s box %d slot %d ===", g_ed->path, box, slot);
   char bak[SF_PATH_MAX]; bak[0] = 0;
   s_busy("Backing up original...");
