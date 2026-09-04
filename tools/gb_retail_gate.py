@@ -427,23 +427,34 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
         tally.record("delete", False, f"surgery refused: {err.strip()}")
 
     # ---- 6. move box 0 slot 0 -> party (free a slot first: every corpus party is 6/6) --
-    box0_nick = sections.get("box0", {}).get("slots", [{}])[0].get("nick")
-    b2p_ops = [["delete", "party", str(last_idx)], ["move", "0", "0", "party"]]
-    b2p_sav = work / "box2party.sav"
-    rc, out, err = run_surgery(binary, sav, b2p_sav, b2p_ops)
-    if gen == 1:
-        refused_right = (rc == 1 and not b2p_sav.exists()
-                         and "needs base stats" in err.lower())
-        tally.record("Gen-1 box0->party refused", refused_right,
-                    f"rc={rc} wrote_file={b2p_sav.exists()} stderr={err.strip()!r}")
+    box0_slots = sections.get("box0", {}).get("slots", [])
+    case6 = "Gen-1 box0->party refused" if gen == 1 else "Gen-2 box0->party"
+    if not box0_slots:
+        # box 0 empty (or unreadable) means slot 0 isn't OCCUPIED, so gbs_move would
+        # refuse with GBS_ERR_SLOT before ever reaching the check this case exists to
+        # test (GBS_ERR_FULL / GBS_ERR_NEEDS_BASE) -- an untested corpus save with a
+        # thin box 0 must SKIP this case, not crash (a bare sections["box0"]["slots"][0]
+        # raised IndexError here on an empty box) and not silently pass it either.
+        tally.skip_case(case6, "box 0 is empty (or unreadable) -- nothing to move")
     else:
-        if rc == 0:
-            edited_case(python, vendor, work, rom, gen, b2p_sav, len(orig), "box2party",
-                       ["--expect-party-count", str(party_count0),
-                        "--expect-party", box0_nick],
-                       tally, "Gen-2 box0->party")
+        box0_nick = box0_slots[0]["nick"]
+        b2p_ops = [["delete", "party", str(last_idx)], ["move", "0", "0", "party"]]
+        b2p_sav = work / "box2party.sav"
+        rc, out, err = run_surgery(binary, sav, b2p_sav, b2p_ops)
+        if gen == 1:
+            refused_right = (rc == 1 and not b2p_sav.exists()
+                             and "needs base stats" in err.lower())
+            tally.record(case6, refused_right,
+                        f"rc={rc} wrote_file={b2p_sav.exists()} stderr={err.strip()!r}")
         else:
-            tally.record("Gen-2 box0->party", False, f"surgery refused: {err.strip()}")
+            if rc == 0:
+                edited_case(python, vendor, work, rom, gen, b2p_sav, len(orig),
+                           "box2party",
+                           ["--expect-party-count", str(party_count0),
+                            "--expect-party", box0_nick],
+                           tally, case6)
+            else:
+                tally.record(case6, False, f"surgery refused: {err.strip()}")
 
     # ---- 7. move party's last slot -> the first storage box with room ----
     dst = first_room_box(sections)
