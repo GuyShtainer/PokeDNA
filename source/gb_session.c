@@ -360,6 +360,25 @@ GbsStatus gbs_delete(GbSession* s, int box, int slot, uint8_t* list) {
   return cst;
 }
 
+/* ---- the append tail, shared by gbs_move()'s destination half and gbs_insert() -----
+ *
+ * gbs_move() decides (and may refuse) a box<->party record-kind CONVERSION above this;
+ * by the time either of these runs, the record is already shaped for `box` and the only
+ * question left is "does the engine's own insert primitive accept it". gbs_insert()
+ * skips the conversion entirely (it only ever targets a storage box) and calls straight
+ * in. */
+static GbsStatus append_gen1(uint8_t* list, int box, const Gen1EditMon* e, int* slot_out) {
+  Gen1Op ins; memset(&ins, 0, sizeof ins);
+  ins.kind = GEN1_OP_INSERT; ins.box = box; ins.slot = 0; ins.mon = e;
+  GbsStatus st = map_gen1w(gen1_blob_apply(list, &ins));
+  if (st == GBS_OK) *slot_out = ins.slot;
+  return st;
+}
+
+static GbsStatus append_gen2(uint8_t* list, int box, const G2Slot* slotv, int* slot_out) {
+  return map_g2w(g2w_append(list, box, slotv, slot_out));
+}
+
 GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* to_slot,
                    uint8_t* src_list, uint8_t* dst_list) {
   if (!s || !s->open || !src_list || !dst_list || !to_slot) return GBS_ERR_ARG;
@@ -415,11 +434,10 @@ GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* t
        * carries no Gen-1 base-stat table (gb_edit.h's GbGen1Base) -- nothing moved. */
       return GBS_ERR_NEEDS_BASE;
     }
-    Gen1Op ins; memset(&ins, 0, sizeof ins);
-    ins.kind = GEN1_OP_INSERT; ins.box = to_box; ins.slot = 0; ins.mon = &e;
-    GbsStatus mst = map_gen1w(gen1_blob_apply(dst_list, &ins));
+    int slot_out = 0;
+    GbsStatus mst = append_gen1(dst_list, to_box, &e, &slot_out);
     if (mst != GBS_OK) return mst;
-    *to_slot = ins.slot;
+    *to_slot = slot_out;
   } else {
     G2Slot slotv;
     GbsStatus gst = map_g2w(g2w_get(src_list, from_box, from_slot, &slotv));
@@ -451,7 +469,7 @@ GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* t
     }
 
     int slot_out = 0;
-    GbsStatus ast = map_g2w(g2w_append(dst_list, to_box, &slotv, &slot_out));
+    GbsStatus ast = append_gen2(dst_list, to_box, &slotv, &slot_out);
     if (ast != GBS_OK) return ast;
     *to_slot = slot_out;
   }
@@ -471,4 +489,64 @@ GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* t
   GbsStatus csrc = gbs_commit_list(s, from_box, src_list);
   if (need_ack_src) s->g2w.party_mail_ack = false;
   return csrc;
+}
+
+/* ============================================================================
+ * S5-B — insert an already-built BOX record (gen3_to_gb's output), no conversion
+ * ========================================================================== */
+
+GbsStatus gbs_insert(GbSession* s, int box, const GbEditMon* mon, int* slot_out,
+                     uint8_t* list) {
+  if (!s || !s->open || !mon || !slot_out || !list) return GBS_ERR_ARG;
+  if (!gb_box_valid(s->gen, box)) return GBS_ERR_BOX;
+
+  GbsStatus wr = gbs_box_writable(s, box);
+  if (wr != GBS_OK) return wr;
+
+  /* PARTY IS REFUSED HERE, ON PURPOSE: landing a converted mon in the party belongs to
+   * gbs_move() (species-limit / live-stat / Mail rules), not this function -- see
+   * gb_session.h. `mon->gen`/`mon->is_party` disagreeing with the destination is folded
+   * into the same refusal rather than given its own status, matching gen3_to_gb's own
+   * "refuse rather than guess" rule. */
+  if (gb_box_is_party(s->gen, box)) return GBS_ERR_ARG;
+  if (mon->gen != s->gen || mon->is_party) return GBS_ERR_ARG;
+
+  GbsStatus ld = gbs_load_list(s, box, list);
+  if (ld != GBS_OK) return ld;
+
+  int count = gb_list_count(s->gen, list, box);
+  if (count < 0) return GBS_ERR_STRUCT;
+  if (count >= gb_list_capacity(s->gen, box)) return GBS_ERR_FULL;
+
+  int slot = 0;
+  if (s->gen == GB_GEN1) {
+    /* Built straight from the GbEditMon's own bytes -- no gen1_edit_load, there is no
+     * existing slot to load from. gen3_to_gb() already shaped `mon->rec` as a Gen-1 BOX
+     * record (rec_len 33) at the same offsets Gen1EditMon.rec uses (gb_edit.h: "no
+     * encryption... the fields are just bytes at fixed offsets", the same layout
+     * pokered/macros/ram.asm's box_struct describes), so the bytes carry over as-is. */
+    Gen1EditMon e;
+    memset(&e, 0, sizeof e);
+    e.is_party = false;
+    memcpy(e.rec, mon->rec, mon->rec_len);
+    memcpy(e.ot,   mon->otname, GB_NAME_BYTES);
+    memcpy(e.nick, mon->nick,   GB_NAME_BYTES);
+    GbsStatus ist = append_gen1(list, box, &e, &slot);
+    if (ist != GBS_OK) return ist;
+  } else {
+    G2Slot slotv;
+    memset(&slotv, 0, sizeof slotv);
+    uint8_t list_sp = 0;
+    if (!gb_commit_parts(mon, slotv.rec, slotv.otname, slotv.nickname, &list_sp))
+      return GBS_ERR_ENGINE;
+    slotv.is_egg   = (list_sp == G2_LIST_EGG);
+    slotv.is_party = false;
+    GbsStatus ist = append_gen2(list, box, &slotv, &slot);
+    if (ist != GBS_OK) return ist;
+  }
+
+  GbsStatus cst = gbs_commit_list(s, box, list);
+  if (cst != GBS_OK) return cst;
+  *slot_out = slot;
+  return GBS_OK;
 }

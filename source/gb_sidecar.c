@@ -264,13 +264,29 @@ static void merge_moves(EditMon* em, const GbEditMon* now, const PkMon* orig,
   rep->moves_changed = true;
 }
 
-/* The Gen-3 charset can only spell ASCII (gen3_edit.h's gen3_encode_char: "unknown ->
- * space"), so a decoded Game Boy name is refused here for EITHER of two reasons: it
- * needed a "{XX}" escape (a byte with no text spelling at all -- gb_edit.h NAMES), or
- * it decoded to a real non-ASCII glyph the Game Boy charset CAN spell but Gen 3's
- * encoder cannot (the gender signs 0xEF/0xF5, e/x/umlauts...). Both keep the
- * sidecar's own nickname untouched rather than silently substitute a space for a
- * character the player actually typed. */
+/* The Gen-3 charset can only spell ASCII (gen3_edit.h's gen3_encode_char), so a decoded
+ * Game Boy name is refused here for ANY of three reasons: it needed a "{XX}" escape (a
+ * byte with no text spelling at all -- gb_edit.h NAMES); it decoded to a real non-ASCII
+ * glyph the Game Boy charset CAN spell but Gen 3's cannot (the gender signs 0xEF/0xF5,
+ * e/x/umlauts...); or it is one of the eight ASCII punctuation glyphs the Game Boy CAN
+ * spell but gen3_encode_char has no case for and silently falls through to its
+ * "default: return 0x00, unknown -> space" -- '(' ')' ':' ';' '[' ']' '&' '$'. That
+ * third case was originally missed here (an earlier revision let these eight straight
+ * through to em_set_nickname, which then quietly turned each into a Gen-3 space rather
+ * than refusing) -- caught by review. All three keep the sidecar's own nickname
+ * untouched rather than silently substitute a space for a character the player actually
+ * typed. */
+static bool gb_nick_char_ok_for_gen3(unsigned char c) {
+  if (c == '{' || c >= 0x80u) return false;
+  switch (c) {
+    case '(': case ')': case ':': case ';':
+    case '[': case ']': case '&': case '$':
+      return false;
+    default:
+      return true;
+  }
+}
+
 static void merge_nickname(EditMon* em, const GbscEntry* e, const GbEditMon* now,
                            GbscMergeReport* rep) {
   if (memcmp(now->nick, e->nick_written, GB_NAME_BYTES) == 0) return;
@@ -279,8 +295,7 @@ static void merge_nickname(EditMon* em, const GbscEntry* e, const GbEditMon* now
   int n = gb_name_decode(now->gen, text, (int)sizeof text, now->nick, GB_NAME_BYTES);
   bool unrepresentable = false;
   for (int i = 0; i < n; i++) {
-    unsigned char c = (unsigned char)text[i];
-    if (c == '{' || c >= 0x80u) { unrepresentable = true; break; }
+    if (!gb_nick_char_ok_for_gen3((unsigned char)text[i])) { unrepresentable = true; break; }
   }
   if (unrepresentable) {
     rep->rename_refused = true;

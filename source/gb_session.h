@@ -7,6 +7,7 @@
 #include "gen1_save.h"
 #include "gen2_save.h"
 #include "gen2_write.h"   /* G2Writer lives in the session: it IS the Gen-2 pipeline */
+#include "gb_edit.h"      /* GbEditMon -- gbs_insert() takes one already built        */
 
 /*
  * gb_session — ONE editing API over a Game Boy save that is RESIDENT IN RAM.
@@ -219,6 +220,33 @@ GbsStatus gbs_delete(GbSession* s, int box, int slot, uint8_t* list);
  * contract above. */
 GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* to_slot,
                    uint8_t* src_list, uint8_t* dst_list);
+
+/* ---- S5-B: insert an ALREADY-BUILT record (docs/GEN3-TO-GB-SIDECAR-DESIGN.md section 5)
+ *
+ * gbs_move() above composes a box<->party CONVERSION with an APPEND; this is just the
+ * append half, exposed for a caller that already holds a finished BOX-kind GbEditMon —
+ * the Gen-3 -> Game Boy transfer (gen3_to_gb()) builds exactly that, and never a party
+ * record (see gen3_to_gb.h: "into a brand-new Game Boy BOX record"). So `mon` may only
+ * land in a STORAGE box, never the party: PARTY IS DELIBERATELY REFUSED WITH
+ * GBS_ERR_ARG, because landing a converted mon in the party (species-limit checks,
+ * live-stat computation, the Gen-2 Mail-shift rule) is gbs_move()'s job, not this one's
+ * — a caller that wants the party target still has to go through gbs_move() with `mon`
+ * inserted into a scratch box first, exactly as today.
+ *
+ *   GBS_ERR_BOX          `box` is not a valid box for this session's generation.
+ *   GBS_ERR_UNWRITABLE   gbs_box_writable()'s own refusal (a virgin Gen-1 bank, ...).
+ *   GBS_ERR_ARG          `box` is the party pseudo-box, OR `mon->gen` disagrees with
+ *                        the session's generation, OR `mon->is_party` is true (a
+ *                        party-shaped record handed to a box destination).
+ *   GBS_ERR_FULL         `box` already holds gb_list_capacity() Pokemon.
+ * Otherwise whatever gbs_commit_list(s, box, list) returns. `*slot_out` is valid only on
+ * GBS_OK. `list` is the caller's GBS_LIST_BYTES staging buffer (loaded here, then
+ * rewritten in place) — same convention as gbs_delete()'s `list` parameter.
+ *
+ * No Gen-2 Mail check: Mail only shifts OTHER party members, and this never targets the
+ * party. */
+GbsStatus gbs_insert(GbSession* s, int box, const GbEditMon* mon, int* slot_out,
+                     uint8_t* list);
 
 /* Gen-2 Mail item ids, from the decomp (assets/upstream/pokecrystal/constants/
  * item_constants.asm) -- NOT one contiguous range: FLOWER_MAIL sits alone at 0x9e

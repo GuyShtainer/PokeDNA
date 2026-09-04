@@ -336,6 +336,21 @@ static void test_rename_refused(void) {
     CHECK(memcmp(back80, rec, 80) == 0,
           "gender sign: record byte-identical (name never applied)");
   }
+  {
+    /* A third reason, caught by review: '(' (GB byte 0x9A) is representable in BOTH
+     * generations' own charsets, but gen3_edit.c's gen3_encode_char has no case for it
+     * and falls to `default: return 0x00` ("unknown -> space") -- so letting it through
+     * to em_set_nickname would silently rewrite the name to a space rather than refuse.
+     * Same for ')' ':' ';' '[' ']' '&' '$'; '(' stands in for all eight here. */
+    GbEditMon chg = out;
+    uint8_t nick[GB_NAME_BYTES] = { 0x9Au, 0x50u, 0x50u, 0x50u, 0x50u,
+                                    0x50u, 0x50u, 0x50u, 0x50u, 0x50u, 0x50u };
+    gb_set_nickname_raw(&chg, nick);
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "'(' : merge up succeeds");
+    CHECK(rep.rename_refused && !rep.renamed, "'(' : rename_refused set, renamed not set");
+    CHECK(memcmp(back80, rec, 80) == 0, "'(' : record byte-identical (name never applied)");
+  }
 }
 
 /* ============================================================================ */

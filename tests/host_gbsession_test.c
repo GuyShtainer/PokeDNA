@@ -692,6 +692,138 @@ static void s3_full_destination(const char* file, uint8_t expect_gen) {
   s3_noop_after_surgery(&s, len, "S3 full: post-surgery check exercised a box");
 }
 
+/* ---- S5-B: gbs_insert() — append an already-built BOX-kind record ----------------
+ * The design brief allows substituting "a copy of an existing GB slot" for a live
+ * gen3_to_gb() conversion when pulling that converter's own dependencies into this
+ * test's link line would drag too much: gbs_insert() never looks past `mon->gen` /
+ * `mon->is_party` and the four pieces gb_commit_parts() writes, so a GbEditMon loaded
+ * straight out of an existing occupied box slot exercises exactly the same path a
+ * freshly converted one would. */
+static void s5_insert(const char* file, uint8_t expect_gen) {
+  /* (a) into a box with room: OK, count+1, gb_verify_slot() agrees it landed intact. */
+  {
+    uint32_t len = load(file);
+    if (!len) { printf("  SKIP %s (S5 insert)\n", file); return; }
+    printf("  -- S5 insert: %s\n", file);
+    (void)expect_gen;
+
+    GbSession s;
+    CHECK(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK,
+          "S5 insert: session opens");
+
+    int nb = gbs_nboxes(&s), pb = gbs_party_box(&s);
+    int srcbox = -1;
+    GbEditMon mon;
+    for (int b = 0; b < nb; b++) {
+      if (b == pb) continue;
+      if (gbs_load_list(&s, b, g_list3) != GBS_OK) continue;
+      if (gb_list_count(s.gen, g_list3, b) > 0 && gb_load(&mon, s.gen, g_list3, b, 0)) {
+        srcbox = b; break;
+      }
+    }
+    if (srcbox < 0) { printf("     (no box mon to copy; skipped)\n"); return; }
+    CHECK(!mon.is_party, "S5 insert: the source record is BOX-kind");
+
+    int dst = -1, dcount0 = -1;
+    for (int b = 0; b < nb; b++) {
+      if (b == pb || gbs_box_writable(&s, b) != GBS_OK) continue;
+      if (gbs_load_list(&s, b, g_list) != GBS_OK) continue;
+      int c = gb_list_count(s.gen, g_list, b);
+      if (c >= 0 && c < gb_list_capacity(s.gen, b)) { dst = b; dcount0 = c; break; }
+    }
+    if (dst < 0) { printf("     (no writable box with room; skipped)\n"); return; }
+
+    int slot = -1;
+    GbsStatus st = gbs_insert(&s, dst, &mon, &slot, g_list);
+    CHECK(st == GBS_OK, "S5 insert: accepted into a box with room");
+    if (st == GBS_OK) {
+      CHECK(gbs_load_list(&s, dst, g_list4) == GBS_OK, "S5 insert: destination reloads");
+      CHECK(gb_list_count(s.gen, g_list4, dst) == dcount0 + 1,
+            "S5 insert: destination count is +1");
+      CHECK(slot == dcount0, "S5 insert: landed at the expected (appended) slot");
+      CHECK(gb_verify_slot(&mon, g_list4, dst, slot),
+            "S5 insert: the shipping parser agrees the record landed intact");
+    }
+  }
+
+  /* (b) into a full box: GBS_ERR_FULL, image byte-identical. */
+  {
+    uint32_t len = load(file);
+    if (!len) return;
+    GbSession s;
+    if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK) return;
+    int nb = gbs_nboxes(&s), pb = gbs_party_box(&s), dst = -1;
+    for (int b = 0; b < nb; b++)
+      if (b != pb && gbs_box_writable(&s, b) == GBS_OK) { dst = b; break; }
+    if (dst < 0) return;
+    int cap = gb_list_capacity(s.gen, dst);
+
+    /* Fill `dst` to capacity exactly like s3_full_destination -- a no-op loop when
+     * `dst` (the first writable box) already starts full, which is the common case on
+     * Guy's real saves. */
+    int guard = cap + nb + 2;                             /* provable upper bound */
+    while (guard-- > 0) {
+      if (gbs_load_list(&s, dst, g_list) != GBS_OK) break;
+      if (gb_list_count(s.gen, g_list, dst) >= cap) break;
+      int srcbox = -1;
+      for (int b = 0; b < nb; b++) {
+        if (b == dst || b == pb || gbs_box_writable(&s, b) != GBS_OK) continue;
+        if (gbs_load_list(&s, b, g_list3) != GBS_OK) continue;
+        if (gb_list_count(s.gen, g_list3, b) > 0) { srcbox = b; break; }
+      }
+      if (srcbox < 0) break;
+      int to_slot = -1;
+      if (gbs_move(&s, srcbox, 0, dst, &to_slot, g_list3, g_list) != GBS_OK) break;
+    }
+    if (gbs_load_list(&s, dst, g_list) != GBS_OK || gb_list_count(s.gen, g_list, dst) < cap) {
+      printf("     (could not fill a box; S5 full-destination skipped)\n");
+      return;
+    }
+
+    /* THEN, separately, find any mon to attempt the (refused) insert with -- it does
+     * not have to be one that took part in filling `dst` above. */
+    GbEditMon mon; bool have_mon = false; int srcbox2 = -1;
+    for (int b = 0; b < nb; b++) {
+      if (b == dst || b == pb || gbs_box_writable(&s, b) != GBS_OK) continue;
+      if (gbs_load_list(&s, b, g_list3) != GBS_OK) continue;
+      if (gb_list_count(s.gen, g_list3, b) > 0) { srcbox2 = b; break; }
+    }
+    if (srcbox2 >= 0) have_mon = gb_load(&mon, s.gen, g_list3, srcbox2, 0);
+    if (!have_mon) { printf("     (no mon left to attempt the overflow insert; skipped)\n"); return; }
+
+    memcpy(g_snap, g_img, len);
+    int slot = -1;
+    GbsStatus st = gbs_insert(&s, dst, &mon, &slot, g_list4);
+    CHECK(st == GBS_ERR_FULL, "S5 insert: a full box is refused");
+    CHECK(memcmp(g_img, g_snap, len) == 0, "S5 insert: the refused insert changed nothing");
+  }
+
+  /* (c) into the party pseudo-box: GBS_ERR_ARG, image byte-identical. */
+  {
+    uint32_t len = load(file);
+    if (!len) return;
+    GbSession s;
+    if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK) return;
+    int nb = gbs_nboxes(&s), pb = gbs_party_box(&s);
+    GbEditMon mon; bool have_mon = false;
+    for (int b = 0; b < nb; b++) {
+      if (b == pb) continue;
+      if (gbs_load_list(&s, b, g_list3) != GBS_OK) continue;
+      if (gb_list_count(s.gen, g_list3, b) > 0) {
+        have_mon = gb_load(&mon, s.gen, g_list3, b, 0); break;
+      }
+    }
+    if (!have_mon) return;
+
+    memcpy(g_snap, g_img, len);
+    int slot = -1;
+    GbsStatus st = gbs_insert(&s, pb, &mon, &slot, g_list);
+    CHECK(st == GBS_ERR_ARG, "S5 insert: the party pseudo-box is refused");
+    CHECK(memcmp(g_img, g_snap, len) == 0,
+          "S5 insert: the refused party insert changed nothing");
+  }
+}
+
 /* A file that is the right SIZE but is not a Game Boy save at all must be refused —
  * the browser forks on size alone, so this is the guard that stands behind that. */
 static void rejects_garbage(void) {
@@ -746,6 +878,11 @@ int main(void) {
   s3_full_destination("Yellow.sav",  GB_GEN1);
   s3_full_destination("Gold.sav",    GB_GEN2);
   s3_full_destination("Crystal.sav", GB_GEN2);
+
+  s5_insert("Red.sav",     GB_GEN1);
+  s5_insert("Yellow.sav",  GB_GEN1);
+  s5_insert("Gold.sav",    GB_GEN2);
+  s5_insert("Crystal.sav", GB_GEN2);
 
   if (!g_ran) printf("  (no corpus present — structural checks only)\n");
   printf("%s: %d/%d checks passed over %d save(s)\n",
