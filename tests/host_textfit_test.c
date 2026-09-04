@@ -666,6 +666,11 @@ int main(void) {
   PF(PDNA_SIDECAR_DV_L2,    28, 184);
   /* ==== END S5-B sidecar (Part E) ============================================= */
 
+  /* ==== S5-B review fix #5: app_copy()'s honest toast (source/pdna_main.c) ========= */
+  PF(PDNA_SIDECAR_COPY_NATIVE,    28, 184);
+  PF(PDNA_SIDECAR_COPY_CONVERTED, 28, 184);
+  /* ==== END S5-B review fix #5 ================================================= */
+
   /* ==== ADDED for the native-generation art router (source/pdna_origin_art.c) ====
    * Guy: "if a pokemon is from gen 1, use a gen 1 sprite ... The bank should show all
    * in parallel." These are the fixed strings that feature puts on screen.

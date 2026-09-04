@@ -817,20 +817,37 @@ static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
 }
 
 /* AppSrcOps.copy_native (S5-B): capture the record in its own Game Boy shape for the
- * clipboard, not the lossy Gen-3-converted bytes the grid shows. Deliberately requires
- * an open edit session (g_ed) even though gb_locate_addr() itself does not -- reading
- * the RAW record needs a GbSession (gbs_load_list) and a staging buffer, both of which
- * only exist while g_ed is set (the picker's resident-image path); the read-only
- * nav-menu mount streams boxes from a FIL and never builds either. Nothing here mutates
- * the image or requires app_can_edit(): "copying is allowed on any cart". */
+ * clipboard, not the lossy Gen-3-converted bytes the grid shows. Nothing here mutates
+ * the image or requires app_can_edit(): "copying is allowed on any cart". Two sources
+ * of the raw bytes, because this hook is reachable from BOTH GB entry points:
+ *   - g_ed set (the picker's resident-image path): a real GbSession exists, so read
+ *     through it exactly as the S2/S3 hooks do.
+ *   - g_ed NULL (S5-B review fix #5, BLOCKING: the read-only nav-menu mount, which
+ *     streams boxes from a FIL and never builds a GbSession at all -- COPY there was
+ *     silently, permanently lossy before this fix, with no notice). This path is NOT
+ *     actually missing the raw bytes: pdna_gen12_page() already staged `box`'s list
+ *     blob into g_m->stage via gb_list_read() the moment the grid paged to it, and
+ *     nothing overwrites that buffer until the grid pages to a DIFFERENT box (which
+ *     changes g_m->loaded) -- gb_locate_addr() below sets `box` FROM g_m->loaded
+ *     itself, so the two can never disagree here. This hook is only ever reached on a
+ *     slot app_mon_menu already found OCCUPIED, which (gb_build_slot's own contract)
+ *     can only be true because gb_list_read() genuinely succeeded for THIS box, so
+ *     g_m->stage is guaranteed fresh -- no GbSession needed at all. */
 static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out) {
   int box, slot;
-  if (!g_ed) return false;
   if (!gb_locate_addr(rec80, &box, &slot)) return false;
-  GbSession* s = &g_ed->s;
-  if (gbs_load_list(s, box, g_ed->list) != GBS_OK) return false;
-  if (slot >= gb_list_count(s->gen, g_ed->list, box)) return false;
-  return gb_load(out, s->gen, g_ed->list, box, slot);
+
+  if (g_ed) {
+    GbSession* s = &g_ed->s;
+    if (gbs_load_list(s, box, g_ed->list) != GBS_OK) return false;
+    if (slot >= gb_list_count(s->gen, g_ed->list, box)) return false;
+    return gb_load(out, s->gen, g_ed->list, box, slot);
+  }
+
+  if (!g_m || !g_m->stage) return false;
+  uint8_t gen = (g_m->kind == GB12_SAVE_RBY) ? GB_GEN1 : GB_GEN2;
+  if (slot >= gb_list_count(gen, g_m->stage, box)) return false;
+  return gb_load(out, gen, g_m->stage, box, slot);
 }
 
 /* S5-B Part E: does `mon` already have a sidecar entry on the card? Only Gen 2 ever

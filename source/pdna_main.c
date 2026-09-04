@@ -2434,14 +2434,23 @@ const uint8_t* app_clip_rec(void) { return g_clip.rec; }
 
 static bool app_copy(uint8_t* rec, bool is_party) {
   clip_copy_from(&g_clip, rec, is_party);
-  /* S5-B: if the ACTIVE source is a Game Boy save with a copy_native hook (only true
-   * while a resident GB edit session is open -- pdna_gen12.c's k_gb_ops/gb_ed gate),
-   * also capture the record in its own native shape. A later PASTE in a Gen-3 session
-   * (app_paste) checks g_clip.from_gb to look up the sidecar instead of using the
-   * lossy `rec` bytes clip_copy_from just filled. */
-  if (g_src_ops && g_src_ops->copy_native && g_src_ops->copy_native(rec, &g_clip.gb))
-    g_clip.from_gb = true;
-  msg_wait("COPIED", UI_OK, "PASTE places it in a slot.", "(kept until overwritten)");
+  /* S5-B: if the ACTIVE source is a Game Boy save with a copy_native hook (now true on
+   * BOTH GB entry points -- the picker's resident edit session AND the read-only
+   * nav-menu mount, review fix #5), also capture the record in its own native shape. A
+   * later PASTE in a Gen-3 session (app_paste) checks g_clip.from_gb to look up the
+   * sidecar instead of using the lossy `rec` bytes clip_copy_from just filled. */
+  const char* l2 = "(kept until overwritten)";
+  if (g_src_ops && g_src_ops->copy_native) {
+    /* S5-B review fix #5: say which one actually happened, rather than a generic
+     * line that reads the same whether the copy is lossless or not -- COPY off a GB
+     * source used to leave from_gb false silently on the nav-menu path with no
+     * indication anything was lost. Only shown when a GB source is even active
+     * (copy_native registered); an ordinary same-generation Gen-3 copy keeps its
+     * original wording, since "lossless" is simply always true there. */
+    g_clip.from_gb = g_src_ops->copy_native(rec, &g_clip.gb);
+    l2 = g_clip.from_gb ? PDNA_SIDECAR_COPY_NATIVE : PDNA_SIDECAR_COPY_CONVERTED;
+  }
+  msg_wait("COPIED", UI_OK, "PASTE places it in a slot.", l2);
   return false;                                          /* no save change */
 }
 

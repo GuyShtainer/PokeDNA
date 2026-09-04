@@ -691,6 +691,12 @@
  * under 100). */
 #define PDNA_SIDECAR_INFO_SUFFIX     " here came from Gen 3"
 
+/* app_copy()'s toast, S5-B review fix #5: which shape the clipboard actually holds,
+ * shown only when a GB source is active (copy_native registered) -- an ordinary
+ * same-generation Gen-3 copy keeps its original "(kept until overwritten)" line. */
+#define PDNA_SIDECAR_COPY_NATIVE     "Native record kept (lossless)"
+#define PDNA_SIDECAR_COPY_CONVERTED  "Converted copy (lossy)"
+
 /* ---------------------------------------------------------------------------
  * Settings + Rumble pages (source/pdna_main.c)
  *
