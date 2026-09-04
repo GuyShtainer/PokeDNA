@@ -907,10 +907,16 @@ gb_release_confirm(uint8_t gen, const uint8_t* list, int box, int slot) {
   GbEditMon e;
   if (gb_load(&e, gen, list, box, slot)) gb_get_nickname(&e, name, sizeof name);
   else name[0] = 0;
-  /* app_confirm wraps l1 to 2 lines inside a 184 px proportional panel; 12 glyphs of
-   * even the widest GB nickname (10 real glyphs max, GB_NICK_GLYPHS) clears that with
-   * room to spare, and the ASCII fallback is exactly 12 characters, needing no cut. */
-  ui_truncate(l1, name[0] ? name : "this Pokemon", 12);
+  /* app_confirm wraps l1 to 2 lines inside a 184 px proportional panel. ui_truncate here
+   * is a SAFETY CAP, not a claim that nothing is ever cut: gb_get_nickname's own escape
+   * for a byte no charset spells is "{XX}", four columns for one glyph, so a nickname
+   * built entirely of such escapes can run to 40 columns for 10 real glyphs (GB_NICK_
+   * GLYPHS) -- 12 columns genuinely truncates a name like that to 11 characters plus a
+   * trailing '~' (ui_truncate's own marker). That is the intended behaviour of a confirm
+   * prompt that must not overflow its panel, not a guarantee against truncation. The
+   * ASCII fallback (PDNA_GBEDIT_RELEASE_FALLBACK) is exactly 12 characters and never
+   * needs the cut. */
+  ui_truncate(l1, name[0] ? name : PDNA_GBEDIT_RELEASE_FALLBACK, 12);
   return app_confirm(PDNA_GBEDIT_RELEASE_TITLE, l1);
 }
 

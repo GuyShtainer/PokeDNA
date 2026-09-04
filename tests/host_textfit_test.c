@@ -546,6 +546,7 @@ int main(void) {
    * shared app_confirm(), which draws at the same (28, .., 184) clamp as msg_wait; the
    * move-refusal hints are msg_wait's own second line, same clamp. */
   PF(PDNA_GBEDIT_RELEASE_TITLE,     28, 184);
+  PF(PDNA_GBEDIT_RELEASE_FALLBACK,  28, 184);
   PF(PDNA_GBEDIT_MOVE_NEEDSBASE_L2, 28, 184);
   PF(PDNA_GBEDIT_MOVE_FLOOR_L2,     28, 184);
   PF(PDNA_GBEDIT_MOVE_MAIL_L2,      28, 184);

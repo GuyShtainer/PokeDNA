@@ -556,6 +556,11 @@
  * title with the SAME x=28/184px proportional clamp msg_wait uses -- measured in the
  * same PF(...,28,184) block as the other GBEDIT titles below. */
 #define PDNA_GBEDIT_RELEASE_TITLE     "Release this Pokemon?"
+/* gb_release_confirm's fallback when the slot's own GB nickname fails to load (should
+ * not happen once gb_locate has already validated box/slot, but a confirm dialog must
+ * never show garbage). Exactly 12 characters -- the same ui_truncate() cap the real
+ * nickname goes through -- so it never itself needs the cut. */
+#define PDNA_GBEDIT_RELEASE_FALLBACK  "this Pokemon"
 
 /* gb_move_hook's per-status hints, shown as msg_wait's second line alongside
  * gbs_status_text(st) as the first -- 184px proportional, same clamp. */
