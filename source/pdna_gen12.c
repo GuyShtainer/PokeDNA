@@ -737,8 +737,10 @@ static bool gb_edit_persist(int box, int slot);
  *   3. the record (gb_commit_checked: the bytes landed where the editor put them);
  *   4. the image (gbs_commit_list: the engine's own structural + verify gates);
  *   5. the card (gb_edit_persist: sf_backup_rolling, then sf_write_verified's four steps).
- * Returns true only after step 5, which is what makes the grid re-page.
- * Step 5 lives in gb_edit_persist(), defined just below. */
+ * Returns true only after step 5 -- but that return value is not what re-pages the
+ * grid: both app_mon_menu call sites (pdna_box.c) discard it and re-fetch
+ * src->records(box) unconditionally. The re-page happens because gb_edit_persist's
+ * success path sets g_m->loaded = -1, which forces the next records() to reload. */
 static bool gb_edit_hook(uint8_t* rec80) {
   if (!g_ed || !g_m || !g_m->recs || !rec80) return false;
   const uint8_t* base = g_m->recs + 0x0004;

@@ -74,7 +74,10 @@ bool app_src_readonly(void);
  * the grid stays a lossy converted copy, so the edit addresses the GB record by
  * ADDRESS of `rec80` inside the paged buffer, exactly like why_locked. Registering
  * this adds an EDIT row to the read-only popup; app_src_readonly_clear() drops it.
- * Returns true iff the source was written (the grid re-pages on true). */
+ * Both app_mon_menu call sites (pdna_box.c) discard its return value and re-fetch
+ * src->records(box) unconditionally, so the grid does not re-page on the return value
+ * at all -- it re-pages because a true implementation sets its mount's `loaded = -1`
+ * before returning, which forces the next records() to reload from the card. */
 typedef bool (*AppSrcEditFn)(uint8_t* rec80);
 void app_src_edit_set(AppSrcEditFn fn);
 
