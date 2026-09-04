@@ -463,6 +463,6 @@ bool pdna_edit(const uint8_t* rec, bool is_party, uint8_t* out_rec) {
     else if (k & KEY_L)     { em_field_adjust(sel, -1, true,  &e, &cur); refresh(&e, &cur); }
     else if (k & KEY_R)     { em_field_adjust(sel, +1, true,  &e, &cur); refresh(&e, &cur); }
   }
-  key_repeat_mask(KEY_UP | KEY_DOWN);    /* restore the global repeat set */
+  key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);    /* restore the global repeat set */
   return committed;
 }

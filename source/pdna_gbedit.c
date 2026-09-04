@@ -187,6 +187,6 @@ bool pdna_gbedit(GbEditMon* e, const char* note) {
     else if (k & KEY_L)     gbe_adjust(e, rows[sel], -1, true);
     else if (k & KEY_R)     gbe_adjust(e, rows[sel], +1, true);
   }
-  key_repeat_mask(KEY_UP | KEY_DOWN);
+  key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);   /* restore the global repeat set */
   return committed;
 }
