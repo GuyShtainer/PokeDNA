@@ -837,21 +837,41 @@ static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
  *     slot app_mon_menu already found OCCUPIED, which (gb_build_slot's own contract)
  *     can only be true because gb_list_read() genuinely succeeded for THIS box, so
  *     g_m->stage is guaranteed fresh -- no GbSession needed at all. */
-static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out) {
+/* Forward-declared: defined below, and gb_copy_native_hook() (S5-B re-verification
+ * NEW-3) needs it to fill its own `has_sidecar` out-param. Does NOT require an open
+ * edit session (g_ed) -- it only needs the record's own key and does its own f_stat --
+ * so it works identically on both GB entry points, exactly like the copy itself now
+ * does (review fix #5). */
+static bool __attribute__((noinline)) gb_has_sidecar(uint8_t gen, const GbEditMon* mon);
+
+/* `has_sidecar` (may be NULL) is set to false up front and only set true after a
+ * successful load whose sidecar actually exists -- so a caller that only wants the
+ * record can still pass NULL, and a caller that wants the toast-honesty flag (S5-B
+ * re-verification NEW-3: app_copy()'s "lossless" claim used to fire for every GB mon,
+ * including Gen-1 mons and Gen-2 mons that were never transferred down, neither of
+ * which actually pastes losslessly) always gets a real answer, never a stale one from
+ * a previous call. */
+static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out, bool* has_sidecar) {
+  if (has_sidecar) *has_sidecar = false;
   int box, slot;
   if (!gb_locate_addr(rec80, &box, &slot)) return false;
 
+  bool ok;
+  uint8_t gen;
   if (g_ed) {
     GbSession* s = &g_ed->s;
     if (gbs_load_list(s, box, g_ed->list) != GBS_OK) return false;
     if (slot >= gb_list_count(s->gen, g_ed->list, box)) return false;
-    return gb_load(out, s->gen, g_ed->list, box, slot);
+    gen = s->gen;
+    ok = gb_load(out, gen, g_ed->list, box, slot);
+  } else {
+    if (!g_m || !g_m->stage) return false;
+    gen = (g_m->kind == GB12_SAVE_RBY) ? GB_GEN1 : GB_GEN2;
+    if (slot >= gb_list_count(gen, g_m->stage, box)) return false;
+    ok = gb_load(out, gen, g_m->stage, box, slot);
   }
-
-  if (!g_m || !g_m->stage) return false;
-  uint8_t gen = (g_m->kind == GB12_SAVE_RBY) ? GB_GEN1 : GB_GEN2;
-  if (slot >= gb_list_count(gen, g_m->stage, box)) return false;
-  return gb_load(out, gen, g_m->stage, box, slot);
+  if (ok && has_sidecar) *has_sidecar = gb_has_sidecar(gen, out);
+  return ok;
 }
 
 /* S5-B Part E: does `mon` already have a sidecar entry on the card? Only Gen 2 ever

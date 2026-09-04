@@ -612,7 +612,11 @@
  * or cancel). */
 #define PDNA_SIDECAR_CORRUPT_TITLE     "SIDECAR CORRUPT"
 #define PDNA_SIDECAR_CORRUPT_KEPT_L1   "Kept as .bad; a new file is started."
-#define PDNA_SIDECAR_CORRUPT_MERGE_L1  "Not merged; converted copy pasted."
+/* S5-B re-verification NEW-3 (should): reworded as a QUESTION -- this is
+ * app_confirm()'s own l1, and app_confirm() always draws "A = yes" / "B = no" below
+ * whatever text it is given, so a flat statement here read like the choice had already
+ * been made instead of being asked. */
+#define PDNA_SIDECAR_CORRUPT_MERGE_L1  "Paste the converted copy anyway?"
 
 /* The merge confirm screen (app_sidecar_confirm, pdna_main.c): one panel, up to six
  * conditional GbscMergeReport lines, then the always-shown EVs line, then A/B. */
@@ -695,11 +699,16 @@
  * under 100). */
 #define PDNA_SIDECAR_INFO_SUFFIX     " here came from Gen 3"
 
-/* app_copy()'s toast, S5-B review fix #5: which shape the clipboard actually holds,
- * shown only when a GB source is active (copy_native registered) -- an ordinary
- * same-generation Gen-3 copy keeps its original "(kept until overwritten)" line. */
-#define PDNA_SIDECAR_COPY_NATIVE     "Native record kept (lossless)"
-#define PDNA_SIDECAR_COPY_CONVERTED  "Converted copy (lossy)"
+/* app_copy()'s toast, shown only when a GB source is active (copy_native registered)
+ * -- an ordinary same-generation Gen-3 copy keeps its original "(kept until
+ * overwritten)" line. S5-B re-verification NEW-3: retired PDNA_SIDECAR_COPY_NATIVE/
+ * CONVERTED, which claimed "lossless" for every GB mon including Gen-1 mons and
+ * never-transferred-down Gen-2 mons -- neither of which a later PASTE can actually
+ * merge losslessly, since that needs a sidecar entry that does not exist for them.
+ * These two are gated on has_sidecar (the real answer) instead of from_gb (only "was
+ * the native record captured", which is not the same question). */
+#define PDNA_SIDECAR_COPY_HAS        "Sidecar found: pastes lossless"
+#define PDNA_SIDECAR_COPY_NONE       "No sidecar: paste will convert it"
 
 /* ---------------------------------------------------------------------------
  * Settings + Rumble pages (source/pdna_main.c)

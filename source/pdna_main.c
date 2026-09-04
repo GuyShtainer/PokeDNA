@@ -2441,14 +2441,19 @@ static bool app_copy(uint8_t* rec, bool is_party) {
    * sidecar instead of using the lossy `rec` bytes clip_copy_from just filled. */
   const char* l2 = "(kept until overwritten)";
   if (g_src_ops && g_src_ops->copy_native) {
-    /* S5-B review fix #5: say which one actually happened, rather than a generic
-     * line that reads the same whether the copy is lossless or not -- COPY off a GB
-     * source used to leave from_gb false silently on the nav-menu path with no
-     * indication anything was lost. Only shown when a GB source is even active
-     * (copy_native registered); an ordinary same-generation Gen-3 copy keeps its
-     * original wording, since "lossless" is simply always true there. */
-    g_clip.from_gb = g_src_ops->copy_native(rec, &g_clip.gb);
-    l2 = g_clip.from_gb ? PDNA_SIDECAR_COPY_NATIVE : PDNA_SIDECAR_COPY_CONVERTED;
+    /* S5-B re-verification NEW-3: say whether a later PASTE will actually be
+     * lossless, not just whether the native record was captured. copy_native()
+     * always succeeds for a Gen-1 mon (there is a real GbEditMon to cache) and for
+     * any Gen-2 mon that was never transferred down -- "Native record kept
+     * (lossless)" was claiming a guarantee neither of those can deliver, since PASTE
+     * can only merge from a sidecar that actually exists. has_sidecar answers the
+     * question the toast is really trying to: Gen 2, and previously transferred down.
+     * Only shown when a GB source is even active (copy_native registered); an
+     * ordinary same-generation Gen-3 copy keeps its original wording, since a sidecar
+     * lookup never applies there. */
+    bool has_sidecar = false;
+    g_clip.from_gb = g_src_ops->copy_native(rec, &g_clip.gb, &has_sidecar);
+    l2 = has_sidecar ? PDNA_SIDECAR_COPY_HAS : PDNA_SIDECAR_COPY_NONE;
   }
   msg_wait("COPIED", UI_OK, "PASTE places it in a slot.", l2);
   return false;                                          /* no save change */

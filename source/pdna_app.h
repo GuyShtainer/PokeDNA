@@ -97,10 +97,18 @@ bool app_src_readonly(void);
  * a Game Boy GbEditMon, not the lossy Gen-3-converted bytes the grid shows -- into the
  * clipboard, so a later PASTE in a Gen-3 session can look up the sidecar and merge the
  * ORIGINAL Gen-3 record back rather than re-degrading through the lossy path a second
- * time. NULL = no native record exists for this source (every source before S5-B, and
- * still true for the read-only nav-menu mount, which has no edit session to load one
- * through -- see pdna_gen12.c's gb_locate_addr/gb_copy_native_hook). Returns false
- * (leaving `out` untouched) when `rec80` cannot be resolved to a real record. */
+ * time. NULL = no native record exists for this source (every source before S5-B).
+ * Works on BOTH GB entry points as of review fix #5 -- see pdna_gen12.c's
+ * gb_locate_addr/gb_copy_native_hook for how the read-only nav-menu mount (no edit
+ * session) still reaches the raw bytes. Returns false (leaving `out` untouched) when
+ * `rec80` cannot be resolved to a real record.
+ *
+ * `has_sidecar` (S5-B re-verification NEW-3, may be NULL) is set to whether the
+ * captured record ALREADY has a /PokeDNA/sidecar/<key>.pds entry -- Gen 2 only (Gen 1
+ * has no gen3_to_gb() target yet, S5-C, so it can never have one), and false whenever
+ * the call itself fails. app_copy()'s toast uses this to say whether a later PASTE
+ * will actually be lossless, instead of claiming "lossless" for every GB mon
+ * regardless of whether it was ever transferred down. */
 /* `paste` (S5-B, docs/GEN3-TO-GB-SIDECAR-DESIGN.md section 10, the DOWN direction) adds
  * a PASTE (GB) row to the read-only popup, but ONLY on an EMPTY cell and only while the
  * clipboard holds a Gen-3 record that did NOT itself come off a Game Boy source
@@ -115,7 +123,7 @@ typedef struct {
   bool (*edit)(uint8_t* rec80);
   bool (*move)(uint8_t* rec80);
   bool (*release)(uint8_t* rec80);
-  bool (*copy_native)(const uint8_t* rec80, GbEditMon* out);
+  bool (*copy_native)(const uint8_t* rec80, GbEditMon* out, bool* has_sidecar);
   bool (*paste)(uint8_t* rec80);
 } AppSrcOps;
 void app_src_ops_set(const AppSrcOps* ops);
