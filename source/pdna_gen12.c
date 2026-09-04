@@ -653,6 +653,12 @@ static int gb_sidecar_here_count(const Gb12Mount* m);
 /* The page the user lands on. Everything honest about this feature is said here
  * BEFORE any Pokemon is shown, and again on the way out if anything was blocked. */
 static bool gb_info_page(const Gb12Mount* m) {
+  /* S5-B review fix #9: computed ONCE per screen entry, not once per repaint -- the
+   * loop below repaints on every key (including a round trip through
+   * gb_report_page() and back via SELECT), and nothing this screen can do changes a
+   * sidecar file, so the count can never go stale while it is up. */
+  int sidecar_here = gb_sidecar_here_count(m);
+
   for (;;) {
     char l[64]; int pos;
 
@@ -692,13 +698,11 @@ static bool gb_info_page(const Gb12Mount* m) {
     int nlines = ui_ptext_wrap(4, 105, 232, 9, 3, UI_DIM,
                   "Copy a Pokemon here, then paste it into your Gen 3 boxes or the Bank. "
                   "This Game Boy save is only ever read.");
-    /* Computed lazily (this page only, not on every repaint elsewhere) -- see
-     * gb_sidecar_here_count()'s own comment for why box 0 stands in for "the current
-     * box" here and the f_stat bound this stays within. */
-    int here = gb_sidecar_here_count(m);
-    if (here >= 0) {
+    /* sidecar_here was computed ONCE above, before this loop -- see that computation's
+     * own comment and gb_sidecar_here_count()'s for the "which box" reasoning. */
+    if (sidecar_here >= 0) {
       char l2[40]; int pos2 = 0;
-      put_uint(l2, (int)sizeof l2, &pos2, (unsigned)here);
+      put_uint(l2, (int)sizeof l2, &pos2, (unsigned)sidecar_here);
       put_str(l2, (int)sizeof l2, &pos2, PDNA_SIDECAR_INFO_SUFFIX);
       ui_ptext_fit(4, 105 + nlines * 9, 232, UI_TEXT, l2);
     }
@@ -880,17 +884,24 @@ static bool __attribute__((noinline)) gb_has_sidecar(uint8_t gen, const GbEditMo
  *
  * "the current box": gb_info_page() runs BEFORE the box grid ever pages one in
  * (m->loaded is -1 there -- see pdna_gen12_mount's own comment, set only once
- * gbsrc_records() actually runs), so there IS no current box yet at the point this is
- * called. Box 0 (the grid's own default landing box) stands in for it -- a deliberate,
- * documented call, not what the S5-B brief's "current box" literally describes.
+ * gbsrc_records() actually runs), so `m->loaded` cannot answer this. `m->current_box`
+ * CAN: the mount already knows "the box whose LIVE copy is in main data" (its own
+ * field comment) at mount time, and the grid lands on it via start_box -- so it is the
+ * box the player is actually about to see, not an arbitrary stand-in. Only falls back
+ * to box 0 if `current_box` is itself out of range (defensive; not expected in
+ * practice). S5-B review fix #9 (corrects an earlier revision that always used box 0
+ * here, calling it a "deliberate" substitute for something m->current_box already
+ * tracked).
  *
  * Bounded: gb_list_capacity's own party (6) + one box (<= G2's 20, well under 30)
- * f_stat calls, at most. */
+ * f_stat calls, at most -- and CALLED ONCE by gb_info_page() (hoisted out of its own
+ * repaint loop, review fix #9), not once per repaint. */
 static int gb_sidecar_here_count(const Gb12Mount* m) {
   if (!g_ed || g_ed->s.gen != GB_GEN2) return -1;
 
   int boxes[2]; int nb = 0;
-  int box0 = (m->loaded >= 0) ? m->loaded : 0;
+  int box0 = (m->loaded >= 0) ? m->loaded
+           : ((m->current_box >= 0 && m->current_box < m->nboxes) ? m->current_box : 0);
   boxes[nb++] = box0;
   if (m->party_box != box0) boxes[nb++] = m->party_box;
 
