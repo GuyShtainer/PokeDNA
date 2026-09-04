@@ -63,7 +63,13 @@ typedef enum {
   GBS_ERR_UNWRITABLE, /* this box cannot be written (Gen-1 virgin/uninitialised)   */
   GBS_ERR_STRUCT,     /* the list handed in is not structurally sound              */
   GBS_ERR_ENGINE,     /* the write engine refused the commit                       */
-  GBS_ERR_VERIFY      /* the image did not read back as intended (image restored)  */
+  GBS_ERR_VERIFY,     /* the image did not read back as intended (image restored)  */
+  /* ---- S3: list surgery (gbs_delete / gbs_move) -------------------------- */
+  GBS_ERR_FULL,       /* the destination box/party has no free slot                */
+  GBS_ERR_PARTY_FLOOR,/* this would leave the party without a usable Pokemon       */
+  GBS_ERR_MAIL,       /* a Gen-2 party restructure while a member holds Mail       */
+  GBS_ERR_NEEDS_BASE, /* Gen-1 box->party needs base stats this tree does not carry*/
+  GBS_ERR_SLOT        /* the source slot is empty, or unreadable                   */
 } GbsStatus;
 
 const char* gbs_status_text(GbsStatus st);
@@ -146,5 +152,66 @@ GbsStatus gbs_load_list(GbSession* s, int box, uint8_t* list);
  * and returns GBS_OK — "open a box and back out" must not rewrite a save, checksums
  * included. */
 GbsStatus gbs_commit_list(GbSession* s, int box, const uint8_t* list);
+
+/* ---- S3: list surgery (docs/GEN12-EDIT-DESIGN.md section 6) ---------------
+ *
+ * DELETE and MOVE, over the primitives gen1_write.h / gen2_write.h expose for exactly
+ * this: gen1_blob_apply's GEN1_OP_DELETE/GEN1_OP_INSERT for Gen 1, g2w_delete/g2w_append
+ * for Gen 2. Both stage into a CALLER-OWNED GBS_LIST_BYTES buffer and go through the same
+ * gbs_commit_list() this file already has, so the destination gate (a virgin Gen-1 bank,
+ * a failed verify) is exactly the gate every other commit gets — no second copy of it.
+ *
+ * ATOMICITY CONTRACT. Every refusal listed on a function below happens BEFORE that
+ * function's first byte moves. gbs_move() is the one exception worth spelling out: it is
+ * two RAM commits (destination, then source), and if the SECOND one (the source delete)
+ * fails, the destination commit has already landed in `s->img` — a duplicate. This layer
+ * does not roll that back itself (there is nothing left in this file to roll back FROM:
+ * unlike gb_session.c's own pristine-copy convention, gbs_move never sees the session's
+ * pristine buffer). The caller MUST treat any non-GBS_OK from gbs_move() as "restore the
+ * whole image from your own pristine copy", exactly the same contract gbs_commit_list's
+ * own header comment already documents for a bare commit (see pdna_gen12.c's
+ * gb_edit_rollback()). A duplicate is therefore never actually persisted: it can only
+ * ever exist in RAM, for the instant between the two commits, and only on a failure path
+ * the caller is required to roll back. */
+
+/* Remove slot `slot` of `box` (or the party). `list` is the caller's GBS_LIST_BYTES
+ * staging buffer, loaded and rewritten in place.
+ *   GBS_ERR_SLOT         slot >= the box's occupied count.
+ *   GBS_ERR_PARTY_FLOOR  `box` is the party and this would leave it with no usable
+ *                        Pokemon — Gen 1: the count would hit 0; Gen 2: no non-Egg slot
+ *                        other than `slot` would remain (an Egg is not "a Pokemon" for
+ *                        the retail "can't deposit your last POKeMON" rule).
+ *   GBS_ERR_MAIL         Gen-2 party only: some OTHER party member holds Mail (the mail
+ *                        array in SRAM bank 0 is indexed by party slot and shifts with
+ *                        a delete; this file does not know its G/S offsets).
+ *   GBS_ERR_UNWRITABLE   `box` is a virgin Gen-1 bank (gbs_box_writable's own rule).
+ * Otherwise whatever gbs_commit_list(s, box, list) returns. */
+GbsStatus gbs_delete(GbSession* s, int box, int slot, uint8_t* list);
+
+/* Move slot `from_slot` of `from_box` into `to_box`, landing it at `*to_slot` (out
+ * parameter, valid only on GBS_OK). `src_list`/`dst_list` are the caller's two
+ * GBS_LIST_BYTES staging buffers — TWO, because both boxes are loaded and rewritten
+ * independently and neither commit may see the other's half-built bytes.
+ *   GBS_ERR_ARG          from_box == to_box.
+ *   GBS_ERR_SLOT         from_slot is not occupied, OR (Gen 1 only) the slot's
+ *                        species-list byte disagrees with its record (gen1_edit_load's
+ *                        own refusal) — such a slot may be gbs_delete()d but not moved.
+ *   GBS_ERR_FULL         `to_box` already holds gb_list_capacity() Pokemon.
+ *   GBS_ERR_PARTY_FLOOR  see gbs_delete — checked when `from_box` is the party.
+ *   GBS_ERR_MAIL         Gen-2 only: some member of whichever party box is INVOLVED
+ *                        (source or destination) holds Mail. An append into the party
+ *                        changes its species/count area exactly as a delete does, so
+ *                        the same refusal applies in both directions.
+ *   GBS_ERR_NEEDS_BASE   Gen-1 box -> party: the party record needs computed stats and
+ *                        this tree carries no Gen-1 base-stat table (see gb_edit.h's
+ *                        GbGen1Base). Nothing is moved. Gen-1 party -> box always works
+ *                        (drop the extra bytes, copy the live level into the box-level
+ *                        field, exactly what the game's own deposit does).
+ * Record-kind conversion when crossing box<->party is automatic and lossless in the
+ * directions this returns GBS_OK for; see gb_session.c for exactly what each direction
+ * does. Otherwise whatever the two gbs_commit_list() calls returned — see the atomicity
+ * contract above. */
+GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* to_slot,
+                   uint8_t* src_list, uint8_t* dst_list);
 
 #endif /* GB_SESSION_H */

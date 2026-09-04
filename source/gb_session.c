@@ -17,6 +17,11 @@ const char* gbs_status_text(GbsStatus st) {
     case GBS_ERR_STRUCT:    return "the box is not structurally sound";
     case GBS_ERR_ENGINE:    return "the write was refused";
     case GBS_ERR_VERIFY:    return "it did not read back as written";
+    case GBS_ERR_FULL:      return "that box is full";
+    case GBS_ERR_PARTY_FLOOR: return "the party needs one Pokemon";
+    case GBS_ERR_MAIL:      return "a party member is holding Mail";
+    case GBS_ERR_NEEDS_BASE:return "Gen 1 needs base stats for that";
+    case GBS_ERR_SLOT:      return "no Pokemon in that slot";
     default:                return "?";
   }
 }
@@ -219,5 +224,232 @@ GbsStatus gbs_commit_list(GbSession* s, int box, const uint8_t* list) {
   if (st == G2W_OK)          return GBS_OK;
   if (st == G2W_ERR_STRUCT || st == G2W_ERR_CONTENT) return GBS_ERR_STRUCT;
   if (st == G2W_ERR_VERIFY)  return GBS_ERR_VERIFY;
+  if (st == G2W_ERR_PARTY_MAIL) return GBS_ERR_MAIL;
+  if (st == G2W_ERR_FULL)    return GBS_ERR_FULL;
+  if (st == G2W_ERR_EMPTY)   return GBS_ERR_SLOT;
   return GBS_ERR_ENGINE;
+}
+
+/* ============================================================================
+ * S3 — list surgery: gbs_delete / gbs_move (docs/GEN12-EDIT-DESIGN.md section 6)
+ * ========================================================================== */
+
+/* Map the two engines' own statuses onto GbsStatus, so gbs_delete/gbs_move never have to
+ * re-litigate what a refusal means -- the same discipline gbs_box_writable and
+ * gbs_commit_list already use. */
+static GbsStatus map_gen1w(Gen1WStatus st) {
+  switch (st) {
+    case GEN1W_OK:          return GBS_OK;
+    case GEN1W_ERR_FULL:    return GBS_ERR_FULL;
+    case GEN1W_ERR_EMPTY:   return GBS_ERR_SLOT;
+    case GEN1W_ERR_VIRGIN:
+    case GEN1W_ERR_UNINIT:  return GBS_ERR_UNWRITABLE;
+    default:                return GBS_ERR_STRUCT;   /* ARG/SIZE/SAVE/SPECIES/TEXT/STRUCT */
+  }
+}
+
+static GbsStatus map_g2w(G2WStatus st) {
+  switch (st) {
+    case G2W_OK:            return GBS_OK;
+    case G2W_ERR_FULL:      return GBS_ERR_FULL;
+    case G2W_ERR_EMPTY:     return GBS_ERR_SLOT;
+    case G2W_ERR_PARTY_MAIL:return GBS_ERR_MAIL;
+    default:                return GBS_ERR_STRUCT;   /* ARG/STRUCT/CONTENT/TEXT/STATS/... */
+  }
+}
+
+/* Gen-2 party floor: would `exclude` leaving (deleted, or moved away) leave the party
+ * with no non-Egg member? Eggs are not "a Pokemon" for the retail "can't deposit your
+ * last POKeMON" rule -- gb_list_count includes them, so they cannot be counted here. */
+static bool g2_nonegg_survives(const uint8_t* list, int box, int exclude) {
+  int n = gb_list_count(GB_GEN2, list, box);
+  if (n < 0) return false;
+  for (int i = 0; i < n; i++) {
+    if (i == exclude) continue;
+    int sp = gb_off_species(GB_GEN2, box, i);
+    if (sp >= 0 && list[sp] != G2_LIST_EGG) return true;
+  }
+  return false;
+}
+
+/* Gen-2 Mail item ids, from the decomp (assets/upstream/pokecrystal/constants/
+ * item_constants.asm) -- NOT one contiguous range as the design doc guessed: FLOWER_MAIL
+ * sits alone at 0x9e (line 166, between HEAVY_BALL and LEVEL_BALL), and the other nine
+ * (SURF_MAIL .. MIRAGE_MAIL) are contiguous at 0xb5..0xbd (lines 189-197). */
+#define G2_MAIL_FLOWER  0x9eu
+#define G2_MAIL_LO      0xb5u
+#define G2_MAIL_HI      0xbdu
+static bool g2_is_mail_item(uint8_t item) {
+  return item == G2_MAIL_FLOWER || (item >= G2_MAIL_LO && item <= G2_MAIL_HI);
+}
+
+/* Does ANY current member of party box `box` hold Mail? Checked on the list as it stands
+ * BEFORE the operation, over every occupied slot -- an append changes the species/count
+ * area exactly as a delete does (both trip g2w_commit_list's own party_mail_ack gate), so
+ * both directions need the same answer. */
+static bool g2_party_has_mail(const uint8_t* list, int box) {
+  int n = gb_list_count(GB_GEN2, list, box);
+  if (n < 0) return false;
+  for (int i = 0; i < n; i++) {
+    GbEditMon e;
+    if (!gb_load(&e, GB_GEN2, list, box, i)) continue;
+    if (g2_is_mail_item(gb_get_held_item(&e))) return true;
+  }
+  return false;
+}
+
+/* The byte-surgery half of a delete, shared by gbs_delete() and the second half of
+ * gbs_move(): apply the engine's own DELETE op to a list already loaded and already past
+ * every refusal gbs_delete() would have raised. Does not commit. */
+static GbsStatus delete_from_list(GbSession* s, int box, int slot, uint8_t* list) {
+  if (s->gen == GB_GEN1) {
+    Gen1Op op; memset(&op, 0, sizeof op);
+    op.kind = GEN1_OP_DELETE; op.box = box; op.slot = slot; op.mon = NULL;
+    return map_gen1w(gen1_blob_apply(list, &op));
+  }
+  return map_g2w(g2w_delete(list, box, slot));
+}
+
+GbsStatus gbs_delete(GbSession* s, int box, int slot, uint8_t* list) {
+  if (!s || !s->open || !list) return GBS_ERR_ARG;
+  if (!gb_box_valid(s->gen, box)) return GBS_ERR_BOX;
+
+  GbsStatus ld = gbs_load_list(s, box, list);
+  if (ld != GBS_OK) return ld;
+
+  int count = gb_list_count(s->gen, list, box);
+  if (count < 0) return GBS_ERR_STRUCT;
+  if (slot < 0 || slot >= count) return GBS_ERR_SLOT;
+
+  bool need_ack = false;
+  if (gb_box_is_party(s->gen, box)) {
+    if (s->gen == GB_GEN1) {
+      if (count == 1) return GBS_ERR_PARTY_FLOOR;
+    } else {
+      if (!g2_nonegg_survives(list, box, slot)) return GBS_ERR_PARTY_FLOOR;
+      if (g2_party_has_mail(list, box)) return GBS_ERR_MAIL;
+      need_ack = true;
+    }
+  }
+
+  GbsStatus dst = delete_from_list(s, box, slot, list);
+  if (dst != GBS_OK) return dst;
+
+  if (need_ack) s->g2w.party_mail_ack = true;
+  GbsStatus cst = gbs_commit_list(s, box, list);
+  if (need_ack) s->g2w.party_mail_ack = false;   /* never leaks into a later commit */
+  return cst;
+}
+
+GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* to_slot,
+                   uint8_t* src_list, uint8_t* dst_list) {
+  if (!s || !s->open || !src_list || !dst_list || !to_slot) return GBS_ERR_ARG;
+  if (from_box == to_box) return GBS_ERR_ARG;
+  if (!gb_box_valid(s->gen, from_box) || !gb_box_valid(s->gen, to_box)) return GBS_ERR_BOX;
+
+  GbsStatus ld = gbs_load_list(s, from_box, src_list);
+  if (ld != GBS_OK) return ld;
+  GbsStatus ld2 = gbs_load_list(s, to_box, dst_list);
+  if (ld2 != GBS_OK) return ld2;
+
+  int scount = gb_list_count(s->gen, src_list, from_box);
+  if (scount < 0) return GBS_ERR_STRUCT;
+  if (from_slot < 0 || from_slot >= scount) return GBS_ERR_SLOT;
+
+  int dcount = gb_list_count(s->gen, dst_list, to_box);
+  if (dcount < 0) return GBS_ERR_STRUCT;
+  if (dcount >= gb_list_capacity(s->gen, to_box)) return GBS_ERR_FULL;
+
+  const bool src_party = gb_box_is_party(s->gen, from_box);
+  const bool dst_party = gb_box_is_party(s->gen, to_box);
+  bool need_ack_src = false, need_ack_dst = false;
+
+  if (src_party) {
+    if (s->gen == GB_GEN1) {
+      if (scount == 1) return GBS_ERR_PARTY_FLOOR;
+    } else {
+      if (!g2_nonegg_survives(src_list, from_box, from_slot)) return GBS_ERR_PARTY_FLOOR;
+      if (g2_party_has_mail(src_list, from_box)) return GBS_ERR_MAIL;
+      need_ack_src = true;
+    }
+  }
+  if (dst_party && s->gen == GB_GEN2) {
+    /* An append into the party changes its species/count area exactly as a delete does
+     * (g2w_commit_list's own on-disk comparison cannot tell the difference), so the same
+     * Mail refusal applies here, checked against the party as it stands before arrival. */
+    if (g2_party_has_mail(dst_list, to_box)) return GBS_ERR_MAIL;
+    need_ack_dst = true;
+  }
+
+  /* ---- record-kind conversion, decided (and refused) before any byte moves --------- */
+  if (s->gen == GB_GEN1) {
+    Gen1EditMon e;
+    if (!gen1_edit_load(src_list, from_box, from_slot, &e)) return GBS_ERR_SLOT;
+    if (src_party && !dst_party) {
+      /* party -> box: drop the extra 11 bytes and sync the box-level field to the live
+       * level, exactly what the game's own deposit does (gen1_write.h g1e_set_level's
+       * own comment, and docs/GEN12-EDIT-DESIGN.md section 6). */
+      e.is_party = false;
+      e.rec[G1R_BOXLEVEL] = e.rec[G1R_LEVEL];
+    } else if (!src_party && dst_party) {
+      /* box -> party: refused. The party record needs computed stats and this tree
+       * carries no Gen-1 base-stat table (gb_edit.h's GbGen1Base) -- nothing moved. */
+      return GBS_ERR_NEEDS_BASE;
+    }
+    Gen1Op ins; memset(&ins, 0, sizeof ins);
+    ins.kind = GEN1_OP_INSERT; ins.box = to_box; ins.slot = 0; ins.mon = &e;
+    GbsStatus mst = map_gen1w(gen1_blob_apply(dst_list, &ins));
+    if (mst != GBS_OK) return mst;
+    *to_slot = ins.slot;
+  } else {
+    G2Slot slotv;
+    GbsStatus gst = map_g2w(g2w_get(src_list, from_box, from_slot, &slotv));
+    if (gst != GBS_OK) return gst;
+
+    if (src_party && !dst_party) {
+      g2w_slot_to_box(&slotv);
+    } else if (!src_party && dst_party) {
+      /* box -> party: build a party-kind GbEditMon from the box record (bytes 32..47 --
+       * status/unused/curHP/stats -- zeroed, so gb_recalc_stats's own "carry HP across
+       * the old/new maximum" rule sees old_max == 0 and lands the mon at full HP, status
+       * healthy), recompute its stats (Gen 2's base-stat table is built in), and commit
+       * the whole 48-byte record straight back out. Chosen over hand-extracting six
+       * stats into g2w_slot_to_party: gb_commit_parts already knows the party record
+       * layout, so there is nothing left for this file to get wrong by transcribing it a
+       * second time. */
+      GbEditMon e;
+      uint8_t rec48[GB_MAX_REC];
+      memcpy(rec48, slotv.rec, 32);
+      memset(rec48 + 32, 0, GB_MAX_REC - 32);
+      uint8_t list_sp = slotv.is_egg ? (uint8_t)G2_LIST_EGG : slotv.rec[0];
+      if (!gb_load_parts(&e, GB_GEN2, true, rec48, slotv.otname, slotv.nickname, list_sp))
+        return GBS_ERR_ENGINE;
+      if (!gb_recalc_stats(&e)) return GBS_ERR_ENGINE;
+      if (!gb_commit_parts(&e, slotv.rec, slotv.otname, slotv.nickname, &list_sp))
+        return GBS_ERR_ENGINE;
+      slotv.is_egg   = (list_sp == G2_LIST_EGG);
+      slotv.is_party = true;
+    }
+
+    int slot_out = 0;
+    GbsStatus ast = map_g2w(g2w_append(dst_list, to_box, &slotv, &slot_out));
+    if (ast != GBS_OK) return ast;
+    *to_slot = slot_out;
+  }
+
+  /* ---- destination first, one card write, then the source ------------------------- */
+  if (need_ack_dst) s->g2w.party_mail_ack = true;
+  GbsStatus cdst = gbs_commit_list(s, to_box, dst_list);
+  if (need_ack_dst) s->g2w.party_mail_ack = false;
+  if (cdst != GBS_OK) return cdst;             /* nothing else has changed yet */
+
+  GbsStatus ddel = delete_from_list(s, from_box, from_slot, src_list);
+  if (ddel != GBS_OK) return ddel;             /* destination already committed -- see the
+                                                 * header's atomicity contract: the caller
+                                                 * must roll the whole image back now */
+
+  if (need_ack_src) s->g2w.party_mail_ack = true;
+  GbsStatus csrc = gbs_commit_list(s, from_box, src_list);
+  if (need_ack_src) s->g2w.party_mail_ack = false;
+  return csrc;
 }
