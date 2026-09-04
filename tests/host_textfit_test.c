@@ -520,6 +520,27 @@ int main(void) {
   PF(PDNA_GBEDIT_SAVELOST_BAK,      28, 184);
   PF(PDNA_GBEDIT_SAVELOST_NOBAK,    28, 184);
   PF(PDNA_GBEDIT_UNWRITABLE_HINT,   28, 184);
+
+  /* gb_edit_hook / gb_edit_persist's own gate + verdict popups — everything else the
+   * S2 edit path draws. s_busy's own line ("Saving - do not power off") and the
+   * caller-supplied line draw via ui_text at x=28 (T(), fixed sys8); every msg_wait
+   * title/line is PF() at the same (28, .., 184) clamp as the rest of this screen. */
+  T(PDNA_GBEDIT_BUSY_SAVING,  28);
+  T(PDNA_GBEDIT_BUSY_BACKUP,  28);
+  T(PDNA_GBEDIT_BUSY_WRITING, 28);
+  PF(PDNA_GBEDIT_READONLY_TITLE,    28, 184);
+  PF(PDNA_GBEDIT_NEEDS_OMEGA,       28, 184);
+  PF(PDNA_GBEDIT_BOXWR_TITLE,       28, 184);
+  PF(PDNA_GBEDIT_BOXRD_TITLE,       28, 184);
+  PF(PDNA_GBEDIT_EMPTYSLOT_TITLE,   28, 184);
+  PF(PDNA_GBEDIT_EMPTYSLOT_L1,      28, 184);
+  PF(PDNA_GBEDIT_REFUSED_TITLE,     28, 184);
+  PF(PDNA_GBEDIT_NOVERIFY_L1,       28, 184);
+  PF(PDNA_GBEDIT_NOTHING_L2,        28, 184);
+  PF(PDNA_GBEDIT_UNCHANGED_L2,      28, 184);
+  PF(PDNA_GBEDIT_BACKUPFAIL_TITLE,  28, 184);
+  PF(PDNA_GBEDIT_WRITEFAIL_TITLE,   28, 184);
+  PF(PDNA_GBEDIT_DISCARDED_L2,      28, 184);
   /* ==== END: GB mon editor ================================================= */
 
   /* ==== ADDED for the native-generation art router (source/pdna_origin_art.c) ====

@@ -527,6 +527,29 @@
  * fits. */
 #define PDNA_GBEDIT_UNWRITABLE_HINT   "Change box in-game, then retry."
 
+/* gb_edit_hook / gb_edit_persist's own gate + verdict popups (source/pdna_gen12.c) —
+ * everything else the S2 edit path draws besides the confirm screen (above) and the
+ * SF_ERR_RENAME switch (above). msg_wait lines measure against its 184px proportional
+ * clamp; s_busy draws with ui_text at x=28 (8px/glyph fixed), budget 240-28=212px. */
+#define PDNA_GBEDIT_BUSY_SAVING    "Saving - do not power off"     /* s_busy's own line */
+#define PDNA_GBEDIT_BUSY_BACKUP    "Backing up original..."
+#define PDNA_GBEDIT_BUSY_WRITING   "Writing + verifying..."
+
+#define PDNA_GBEDIT_READONLY_TITLE "READ-ONLY"
+#define PDNA_GBEDIT_NEEDS_OMEGA    "Needs EZ-Flash Omega."
+
+#define PDNA_GBEDIT_BOXWR_TITLE    "CAN'T EDIT THIS BOX"
+#define PDNA_GBEDIT_BOXRD_TITLE    "CAN'T READ THIS BOX"
+#define PDNA_GBEDIT_EMPTYSLOT_TITLE "EMPTY SLOT"
+#define PDNA_GBEDIT_EMPTYSLOT_L1   "The GB list has no Pokemon here."
+#define PDNA_GBEDIT_REFUSED_TITLE  "EDIT REFUSED"
+#define PDNA_GBEDIT_NOVERIFY_L1    "The record did not verify."
+#define PDNA_GBEDIT_NOTHING_L2     "Nothing was written."
+#define PDNA_GBEDIT_UNCHANGED_L2   "Save unchanged."
+#define PDNA_GBEDIT_BACKUPFAIL_TITLE "BACKUP FAILED"
+#define PDNA_GBEDIT_WRITEFAIL_TITLE  "WRITE FAILED"
+#define PDNA_GBEDIT_DISCARDED_L2   "Save NOT modified; edit discarded."
+
 /* ---------------------------------------------------------------------------
  * Settings + Rumble pages (source/pdna_main.c)
  *

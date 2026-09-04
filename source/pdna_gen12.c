@@ -713,7 +713,7 @@ static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the are
 static void s_busy(const char* line) {
   ui_clear();
   ui_panel(16, 60, 208, 48, UI_PANEL, UI_WARN);
-  ui_text(28, 70, UI_WARN, "Saving - do not power off");
+  ui_text(28, 70, UI_WARN, PDNA_GBEDIT_BUSY_SAVING);
   ui_text(28, 88, UI_TEXT, line);
 }
 
@@ -756,20 +756,20 @@ static bool gb_edit_hook(uint8_t* rec80) {
   int box  = g_m->loaded;
   if (box < 0) return false;
 
-  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return false; }  /* 1 */
+  if (!app_can_edit()) { snd_deny(); msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, PDNA_GBEDIT_NEEDS_OMEGA, 0); return false; }  /* 1 */
 
   GbSession* s = &g_ed->s;
   GbsStatus st = gbs_box_writable(s, box);                                   /* 2 */
   if (st != GBS_OK) {
     snd_deny();
-    msg_wait("CAN'T EDIT THIS BOX", UI_WARN, gbs_status_text(st),
+    msg_wait(PDNA_GBEDIT_BOXWR_TITLE, UI_WARN, gbs_status_text(st),
              st == GBS_ERR_UNWRITABLE ? PDNA_GBEDIT_UNWRITABLE_HINT : 0);
     return false;
   }
   st = gbs_load_list(s, box, g_ed->list);
-  if (st != GBS_OK) { snd_deny(); msg_wait("CAN'T READ THIS BOX", UI_WARN, gbs_status_text(st), 0); return false; }
+  if (st != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(st), 0); return false; }
   if (slot >= gb_list_count(s->gen, g_ed->list, box)) {
-    snd_deny(); msg_wait("EMPTY SLOT", UI_WARN, "The GB list has no Pokemon here.", 0); return false;
+    snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
   }
 
   GbEditMon e;
@@ -778,7 +778,7 @@ static bool gb_edit_hook(uint8_t* rec80) {
 
   if (!gb_commit_checked(&e, g_ed->list, box, slot)) {                       /* 3 */
     snd_error();
-    msg_wait("EDIT REFUSED", UI_WARN, "The record did not verify.", "Nothing was written.");
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, PDNA_GBEDIT_NOVERIFY_L1, PDNA_GBEDIT_NOTHING_L2);
     return false;
   }
   st = gbs_commit_list(s, box, g_ed->list);                                  /* 4 */
@@ -786,7 +786,7 @@ static bool gb_edit_hook(uint8_t* rec80) {
     gb_edit_rollback();
     log_line("gen12: commit box %d slot %d refused: %s", box, slot, gbs_status_text(st));
     snd_error();
-    msg_wait("EDIT REFUSED", UI_WARN, gbs_status_text(st), "Save unchanged.");
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(st), PDNA_GBEDIT_UNCHANGED_L2);
     return false;
   }
 
@@ -800,7 +800,7 @@ static bool gb_edit_hook(uint8_t* rec80) {
 static bool gb_edit_persist(int box, int slot) {
   log_line("=== gb edit commit -> %s box %d slot %d ===", g_ed->path, box, slot);
   char bak[SF_PATH_MAX]; bak[0] = 0;
-  s_busy("Backing up original...");
+  s_busy(PDNA_GBEDIT_BUSY_BACKUP);
   rmbl_pause();
   SfStatus bst = sf_backup_rolling(g_ed->path, bak, sizeof bak);
   rmbl_resume();
@@ -809,10 +809,10 @@ static bool gb_edit_persist(int box, int slot) {
     app_log_flush();
     gb_edit_rollback();
     snd_error();
-    msg_wait("BACKUP FAILED", UI_WARN, sf_status_str(bst), "Save NOT modified; edit discarded.");
+    msg_wait(PDNA_GBEDIT_BACKUPFAIL_TITLE, UI_WARN, sf_status_str(bst), PDNA_GBEDIT_DISCARDED_L2);
     return false;
   }
-  s_busy("Writing + verifying...");
+  s_busy(PDNA_GBEDIT_BUSY_WRITING);
   rmbl_pause();
   SfStatus wst = sf_write_verified(g_ed->path, g_ed->img, g_ed->len);
   rmbl_resume();
@@ -855,7 +855,7 @@ static bool gb_edit_persist(int box, int slot) {
   } else if (wst != SF_OK) {
     gb_edit_rollback();
     snd_error();
-    msg_wait("WRITE FAILED", UI_WARN, sf_status_str(wst), "Save NOT modified; edit discarded.");
+    msg_wait(PDNA_GBEDIT_WRITEFAIL_TITLE, UI_WARN, sf_status_str(wst), PDNA_GBEDIT_DISCARDED_L2);
     return false;
   }
   memcpy(g_ed->pristine, g_ed->img, g_ed->len);   /* the card now holds this image */
