@@ -1,7 +1,7 @@
 #include "gb_sidecar.h"
 #include "gen3_edit.h"     /* EditMon, gen3_edit_load/commit, em_set_*             */
 #include "gen3_mon.h"      /* PkMon, pk_decode_mon, PK_* stat order                */
-#include "gen12_convert.h" /* gen12_iv_from_dv -- the exact inverse of DV = IV/2   */
+#include "gen3_box.h"      /* pk_resolve -- the ORIGINAL record's true level       */
 #include <string.h>
 
 /* ---- little-endian codec, CRC-16/CCITT-FALSE -------------------------------- */
@@ -194,11 +194,106 @@ int gbsc_remove(uint8_t* buf, uint32_t* len, int idx) {
   return 0;
 }
 
-/* ---- the merge UP ------------------------------------------------------------
+/* ---- the merge UP, one stage per helper ---------------------------------------
  * docs/GEN3-TO-GB-SIDECAR-DESIGN.md section 4. Species mapping: National Dex and the
  * Gen-3 INTERNAL index are the same number for 1..251 (gen12_convert.c:304-307), and
  * every species a Game Boy record can hold is in that range, so em_set_species() takes
- * gb_get_species_dex()'s result directly -- no lookup table on this side either. */
+ * gb_get_species_dex()'s result directly -- no lookup table on this side either.
+ *
+ * `orig`/`have_orig`: the ORIGINAL Gen-3 record decoded once by the caller
+ * (gbsc_merge_up below), with pk_resolve() already run so `orig->level` is its true
+ * level even though it was stored as a box-shaped (is_party=false) record — pk_resolve
+ * computes level from EXP+growth-rate for exactly that case (gen3_box.c). Every helper
+ * takes `have_orig` rather than re-checking a NULL, because a failed decode is not
+ * this function's problem to solve twice. */
+
+static void merge_species_and_level(EditMon* em, const GbscEntry* e, const GbEditMon* now,
+                                    const PkMon* orig, bool have_orig,
+                                    GbscMergeReport* rep) {
+  uint16_t dex_now = gb_get_species_dex(now);
+  if (dex_now != 0 && dex_now != e->species_written) {
+    em_set_species(em, dex_now);
+    rep->evolved = true;
+  }
+
+  /* Gated on LEVEL, not EXP: Gen 2 shows a player only the level, and em_set_level()
+   * writes the EXP FLOOR for that level under the (possibly new) species' growth
+   * rate. Gating on "does EXP differ from exp_written" instead — an earlier revision
+   * of this function did exactly that — meant ANY exp gain on the Game Boy without a
+   * level-up (which happens on every single battle) called em_set_level() and reset
+   * the Gen-3 mon's careful within-level EXP progress down to that level's floor:
+   * measured on the real corpus, 101 of 314 accepted Gen-2 conversions would have
+   * lost EXP this way, the worst by 14,454 points. There is no way to reflect a
+   * Game-Boy-side EXP gain that has not produced a level-up: Gen 2 does not expose
+   * it, and there is nothing else to write. So a same-level EXP change on the Game
+   * Boy is simply not applied — the Gen-3 side keeps its own precise EXP — and only
+   * an actual level change (the one thing the player can see and this merge can
+   * therefore know really happened) moves it. */
+  if (have_orig && gb_get_level(now) != orig->level) {
+    em_set_level(em, gb_get_level(now));
+    rep->level_changed = true;
+  }
+}
+
+/* Move ids agree 1:1 across Gen 1/2/3 for every id a Game Boy can hold (gb_editor.h:
+ * "Gen-1/2 move ids ARE the Gen-3 ids for 1..251"), so the ORIGINAL record's own
+ * moves -- decoded straight out of `original80` -- are exactly what the Game Boy
+ * record held right after gen3_to_gb ran. No separate "moves_written" field is
+ * needed in the entry. */
+static void merge_moves(EditMon* em, const GbEditMon* now, const PkMon* orig,
+                        bool have_orig, GbscMergeReport* rep) {
+  if (!have_orig) return;
+  bool differ = false;
+  for (int i = 0; i < 4; i++) {
+    uint8_t orig_mv = (orig->moves[i] > 255u) ? 0 : (uint8_t)orig->moves[i];
+    uint8_t orig_up = (uint8_t)((orig->ppBonuses >> (i * 2)) & 0x3u);
+    if (gb_get_move(now, i) != orig_mv || gb_get_ppup(now, i) != orig_up) {
+      differ = true;
+      break;
+    }
+  }
+  if (!differ) return;
+
+  /* Moves first: em_set_move resets PP/PP-Ups for the slot, so setting PP Ups (and
+   * then current PP) has to follow it, not precede it. */
+  for (int i = 0; i < 4; i++) {
+    em_set_move(em, i, gb_get_move(now, i));
+    em_set_ppups(em, i, gb_get_ppup(now, i));
+    em_set_pp(em, i, gb_get_pp(now, i));
+  }
+  rep->moves_changed = true;
+}
+
+/* The Gen-3 charset can only spell ASCII (gen3_edit.h's gen3_encode_char: "unknown ->
+ * space"), so a decoded Game Boy name is refused here for EITHER of two reasons: it
+ * needed a "{XX}" escape (a byte with no text spelling at all -- gb_edit.h NAMES), or
+ * it decoded to a real non-ASCII glyph the Game Boy charset CAN spell but Gen 3's
+ * encoder cannot (the gender signs 0xEF/0xF5, e/x/umlauts...). Both keep the
+ * sidecar's own nickname untouched rather than silently substitute a space for a
+ * character the player actually typed. */
+static void merge_nickname(EditMon* em, const GbscEntry* e, const GbEditMon* now,
+                           GbscMergeReport* rep) {
+  if (memcmp(now->nick, e->nick_written, GB_NAME_BYTES) == 0) return;
+
+  char text[GB_TEXT_MAX];
+  int n = gb_name_decode(now->gen, text, (int)sizeof text, now->nick, GB_NAME_BYTES);
+  bool unrepresentable = false;
+  for (int i = 0; i < n; i++) {
+    unsigned char c = (unsigned char)text[i];
+    if (c == '{' || c >= 0x80u) { unrepresentable = true; break; }
+  }
+  if (unrepresentable) {
+    rep->rename_refused = true;
+  } else {
+    em_set_nickname(em, text);
+    rep->renamed = true;
+  }
+}
+
+/* Rebuild the Gen-3 record: start from `e->original80` (so PID, nature, ability,
+ * shininess, gender, met data, ball, ribbons, contest, markings, secret ID and EVs
+ * all come back exactly), then fold in what changed on the Game Boy between the
+ * conversion and now. See gb_sidecar.h for the full contract. */
 bool gbsc_merge_up(const GbscEntry* e, const GbEditMon* now, uint8_t out80[80],
                    GbscMergeReport* rep) {
   GbscMergeReport local;
@@ -210,72 +305,24 @@ bool gbsc_merge_up(const GbscEntry* e, const GbEditMon* now, uint8_t out80[80],
   EditMon em;
   gen3_edit_load(e->original80, false, &em);
 
-  uint16_t dex_now = gb_get_species_dex(now);
-  if (dex_now != 0 && dex_now != e->species_written) {
-    em_set_species(&em, dex_now);
-    rep->evolved = true;
-  }
-
-  if (gb_get_exp(now) != e->exp_written) {
-    em_set_level(&em, gb_get_level(now));
-    rep->level_changed = true;
-  }
-
-  /* Move ids agree 1:1 across Gen 1/2/3 for every id a Game Boy can hold
-   * (gb_editor.h: "Gen-1/2 move ids ARE the Gen-3 ids for 1..251"), so the ORIGINAL
-   * record's own moves -- decoded straight out of `original80` -- are exactly what
-   * the Game Boy record held right after gen3_to_gb ran. No separate "moves_written"
-   * field is needed in the entry. */
   PkMon orig;
-  bool moves_differ = false;
-  if (pk_decode_mon(e->original80, false, &orig)) {
-    for (int i = 0; i < 4; i++) {
-      uint8_t orig_mv = (orig.moves[i] > 255u) ? 0 : (uint8_t)orig.moves[i];
-      uint8_t orig_up = (uint8_t)((orig.ppBonuses >> (i * 2)) & 0x3u);
-      if (gb_get_move(now, i) != orig_mv || gb_get_ppup(now, i) != orig_up) {
-        moves_differ = true;
-        break;
-      }
-    }
-  }
-  if (moves_differ) {
-    /* Moves first: em_set_move resets PP/PP-Ups for the slot, so setting PP Ups (and
-     * then current PP) has to follow it, not precede it. */
-    for (int i = 0; i < 4; i++) {
-      em_set_move(&em, i, gb_get_move(now, i));
-      em_set_ppups(&em, i, gb_get_ppup(now, i));
-      em_set_pp(&em, i, gb_get_pp(now, i));
-    }
-    rep->moves_changed = true;
-  }
+  bool have_orig = pk_decode_mon(e->original80, false, &orig);
+  if (have_orig) pk_resolve(&orig);
 
-  if (memcmp(now->nick, e->nick_written, GB_NAME_BYTES) != 0) {
-    char text[GB_TEXT_MAX];
-    int n = gb_name_decode(now->gen, text, (int)sizeof text, now->nick, GB_NAME_BYTES);
-    bool has_escape = false;
-    for (int i = 0; i < n; i++) if (text[i] == '{') { has_escape = true; break; }
-    if (has_escape) {
-      /* The Gen-3 charset has no way to spell a "{XX}" escape (gb_edit.h NAMES):
-       * keep the sidecar's own nickname rather than write a name the player never
-       * typed on either side. */
-      rep->rename_refused = true;
-    } else {
-      em_set_nickname(&em, text);
-      rep->renamed = true;
-    }
-  }
+  merge_species_and_level(&em, e, now, &orig, have_orig, rep);
+  merge_moves(&em, now, &orig, have_orig, rep);
+  merge_nickname(&em, e, now, rep);
 
-  /* DVs: GB_SPC maps to SpA only, never SpD (docs/GEN3-TO-GB-SIDECAR-DESIGN.md
-   * section 4's table is explicit that SpD is not touched here). */
-  static const int gb_stat[4] = { GB_ATK, GB_DEF, GB_SPE, GB_SPC };
-  static const int pk_stat[4] = { PK_ATK, PK_DEF, PK_SPE, PK_SPA };
-  for (int i = 0; i < 4; i++) {
-    uint8_t dv_now = gb_get_dv(now, gb_stat[i]);
-    if (dv_now != e->dv4[i]) {
-      em_set_iv(&em, pk_stat[i], gen12_iv_from_dv(dv_now));
-      rep->dv_edited = true;
-    }
-  }
+  /* DVs are deliberately NOT re-checked here. dv4 is part of the sidecar's own
+   * fingerprint (gbsc_key/gbsc_find), so a DV edit on the Game Boy already changes
+   * what gbsc_find() looks for -- by the time a caller reaches this function through
+   * the supported find-then-merge path, `now`'s DVs and `e->dv4` cannot disagree. A
+   * caller that bypasses gbsc_find and hands over a mismatched entry gets the
+   * sidecar's ORIGINAL IVs, unedited: there is no "which side wins" question to
+   * answer, because in the supported flow the question cannot arise. See
+   * gb_sidecar.h's GbscMergeReport comment and design doc section 4: a DV edit on
+   * the Game Boy orphans that Pokemon's sidecar on purpose (S5-B's UI must warn
+   * before letting a DV edit happen on a mon that still has one). */
 
   if (now->gen == GB_GEN2) {
     em_set_friendship(&em, gb_get_friendship(now));      /* same 0..255 scale, always */

@@ -129,19 +129,36 @@ typedef struct {
   bool level_changed;     /* EXP differs from exp_written                             */
   bool moves_changed;     /* any of the 4 moves or their PP Ups differ                */
   bool renamed;           /* nickname bytes differ and the new text was applied       */
-  bool rename_refused;    /* nickname bytes differ but decoded to a '{escape}' the
-                            * Gen-3 charset cannot spell -- the SIDECAR's name is kept */
-  bool dv_edited;         /* at least one of Atk/Def/Spe/Spc differs from dv4         */
+  bool rename_refused;    /* nickname bytes differ but decoded to something the
+                            * Gen-3 (ASCII-only) charset cannot spell -- a "{XX}"
+                            * escape OR a real non-ASCII glyph such as the gender
+                            * signs -- so the SIDECAR's name is kept instead         */
   bool gb_item_ignored;   /* Gen 2 holds a non-zero item -- no Gen-2->Gen-3 item map
                             * exists in this tree, so the sidecar's Gen-3 item is kept */
 } GbscMergeReport;
 
+/* NOTE ON DVs, DELIBERATELY ABSENT FROM GbscMergeReport (design decision,
+ * 2026-09-04): dv4 is part of the sidecar's own fingerprint (gbsc_key/gbsc_find), so
+ * editing a DV on the Game Boy record changes what gbsc_find() looks for -- the
+ * fingerprint TWO Pokemon of the same trainer with the same name would otherwise
+ * share is exactly what dv4 exists to break, so it cannot be dropped from the key
+ * without reintroducing that collision. The consequence is real and intentional: A
+ * DV EDIT ON THE GAME BOY ORPHANS THAT POKEMON'S SIDECAR. gbsc_find() will no longer
+ * locate it (by any OTHER field matching), and gbsc_merge_up() below does not try to
+ * reconcile a DV mismatch it is handed directly -- it keeps the sidecar's original,
+ * unedited IVs, because in the supported find-then-merge flow the mismatch cannot
+ * arise at all. The UI slice that edits Game Boy DVs (S5-B) must warn before letting
+ * a DV edit happen on a mon that still has a sidecar entry. */
+
 /* Rebuild the Gen-3 record: start from `e->original80` (so PID, nature, ability,
- * shininess, gender, met data, ball, ribbons, contest, markings, secret ID and EVs
- * all come back exactly), then fold in what changed on the Game Boy between the
- * conversion and now. `rep` may be NULL. False only for a NULL/mismatched-generation
- * argument, in which case `out80` is untouched; otherwise the merge always succeeds
- * and `out80` holds the merged 80-byte record. */
+ * shininess, gender, met data, ball, ribbons, contest, markings, secret ID, EVs and
+ * IVs all come back exactly), then fold in what changed on the Game Boy between the
+ * conversion and now -- species (evolution), level (gated on the level itself, not
+ * EXP: see gb_sidecar.c's merge_species_and_level for why gating on EXP silently
+ * erased within-level progress), moves/PP-Ups, and a charset-safe nickname. `rep`
+ * may be NULL. False only for a NULL/mismatched-generation argument, in which case
+ * `out80` is untouched; otherwise the merge always succeeds and `out80` holds the
+ * merged 80-byte record. */
 bool gbsc_merge_up(const GbscEntry* e, const GbEditMon* now, uint8_t out80[80],
                    GbscMergeReport* rep);
 
