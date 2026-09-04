@@ -3289,11 +3289,13 @@ static bool app_hatch(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* 
 static const char* (*g_src_why)(const uint8_t* rec80);
 static const char*  g_src_note;
 static bool         g_src_ro;
+static AppSrcEditFn g_src_edit;
 
 void app_src_readonly_set(const char* (*why_locked)(const uint8_t* rec80), const char* note) {
   g_src_why = why_locked; g_src_note = note; g_src_ro = true;
 }
-void app_src_readonly_clear(void) { g_src_why = 0; g_src_note = 0; g_src_ro = false; }
+void app_src_readonly_clear(void) { g_src_why = 0; g_src_note = 0; g_src_ro = false; g_src_edit = 0; }
+void app_src_edit_set(AppSrcEditFn fn) { g_src_edit = fn; }
 bool app_src_readonly(void) { return g_src_ro; }
 
 /* The action menu for a source that is read-only in ITSELF: only actions that cannot
@@ -3306,9 +3308,12 @@ bool app_src_readonly(void) { return g_src_ro; }
  * a Pokemon that is visible but cannot travel is far better than one that vanishes. */
 static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0) {
   const char* locked = g_src_why ? g_src_why(rec) : 0;
-  enum { RO_VIEW, RO_LEGAL, RO_COPY, RO_CANCEL };
+  enum { RO_VIEW, RO_EDIT, RO_LEGAL, RO_COPY, RO_CANCEL };
   int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
   lab[n] = PDNA_LBL_VIEW;     act[n++] = RO_VIEW;
+  /* EDIT is the GB session's own in-place editor (pdna_gen12.c), not the Gen-3 one:
+   * it edits the Game Boy record, never the converted copy this menu was handed. */
+  if (g_src_edit) { lab[n] = PDNA_LBL_EDIT_GB; act[n++] = RO_EDIT; }
   lab[n] = PDNA_LBL_LEGALITY; act[n++] = RO_LEGAL;
   if (!locked) { lab[n] = PDNA_LBL_COPY; act[n++] = RO_COPY; }
   lab[n] = PDNA_LBL_CANCEL;   act[n++] = RO_CANCEL;
@@ -3352,6 +3357,7 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0) 
       switch (act[sel]) {
         case RO_VIEW:  { uint8_t d[100]; int card = 0;
                          pdna_inspect(rec, is_party, false, d, 0, &card); return false; }
+        case RO_EDIT:  return g_src_edit ? g_src_edit(rec) : false;
         case RO_LEGAL: pdna_legality_show(m0); return false;
         case RO_COPY:  return app_copy(rec, is_party);
         default:       return false;
@@ -7415,8 +7421,8 @@ static void view_save(const char* path) {
    * g_pc. Cleared, the release skips the rebuild (see app_arena_release), so the GB
    * session borrows the arena and gives it back with nothing invented in it.
    *
-   * Read-only for now (docs/GEN12-EDIT-DESIGN.md: S1). The editor is S2, and it will
-   * hand this same resident image to gen1_write/gen2_write rather than re-read it. */
+   * S1 opened it read-only; S2 (docs/GEN12-EDIT-DESIGN.md) edits this same resident
+   * image in place through gb_session and persists it with sf_write_verified. */
   if (!err && pdna_gen12_size_is_gb(sz)) {
     memset(&g_vinfo, 0, sizeof g_vinfo);       /* no Gen-3 save is loaded in a GB session */
     g_save_size = sz;
@@ -7432,7 +7438,10 @@ static void view_save(const char* path) {
     hb_off();
     /* met_game 3 = Emerald: with no Gen-3 save open there is no destination cartridge
      * to claim, and Emerald is the same default pdna_gen12_show() uses for 0. */
-    int gr = pdna_gen12_show_image(path, g_save, sz, 3);
+    /* The pristine copy lives in the idle upper half of g_save (128 KiB; a GB image is
+     * at most 32816 B): rollback after a failed card write is one memcpy, and the card
+     * is never opened for writing until the edit has passed every RAM gate. */
+    int gr = pdna_gen12_show_image(path, g_save, sz, g_save + GB12_PRISTINE_OFF, 3);
     if (gr != GB12_ENTER_NOT_GB) {             /* mounted, or the user was told why not */
       perf_span_end();
       s_crumb_shown_armed = false;             /* the box screen paints its own crumb */

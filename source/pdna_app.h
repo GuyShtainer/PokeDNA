@@ -69,6 +69,14 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
 void app_src_readonly_set(const char* (*why_locked)(const uint8_t* rec80), const char* note);
 void app_src_readonly_clear(void);
 bool app_src_readonly(void);
+/* A read-only SOURCE whose records can nonetheless be edited IN PLACE through the
+ * source's own pipeline (the resident Game Boy save, docs/GEN12-EDIT-DESIGN.md S2):
+ * the grid stays a lossy converted copy, so the edit addresses the GB record by
+ * ADDRESS of `rec80` inside the paged buffer, exactly like why_locked. Registering
+ * this adds an EDIT row to the read-only popup; app_src_readonly_clear() drops it.
+ * Returns true iff the source was written (the grid re-pages on true). */
+typedef bool (*AppSrcEditFn)(uint8_t* rec80);
+void app_src_edit_set(AppSrcEditFn fn);
 
 /* Bank "Copy to game": inject a stored 80-byte box record into the loaded save's
  * first free PC box slot (and commit). Returns true iff written. Omega-only. */

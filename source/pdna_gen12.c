@@ -531,6 +531,9 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "snd.h"
 #include "rmbl.h"
 #include "pdna_app.h"
+#include "gb_session.h"
+#include "gb_editor.h"
+#include "pdna_gbedit.h"
 
 #define GB12_A4(n)  (((uint32_t)(n) + 3u) & ~3u)
 /* One arena block holds everything: the mount, the FatFs handle we keep open for the
@@ -683,10 +686,138 @@ static bool gb_info_page(const Gb12Mount* m) {
 
 /* ---- entry ---------------------------------------------------------------- */
 
+
+/* ---- S2: editing the resident image (docs/GEN12-EDIT-DESIGN.md 3.2-3.3) ------
+ *
+ * Everything an edit needs, placed in the arena behind the mount's buffers — no new
+ * statics (the EWRAM guard is a few hundred bytes). ONE module pointer to it, NULL for
+ * a read-only session (the nav-menu entry, which opens a FIL over a file while a Gen-3
+ * save owns g_save, and the delta build).
+ *
+ * The session's scratch is its OWN 1152 B and not the mount's staging buffer: the
+ * G2Writer keeps the pointer for the whole session and streams its verify through it,
+ * and the mount pages boxes through `stage` on every grid refresh — never at the same
+ * instant today, but "never at the same instant" is not a contract anyone checks. */
+typedef struct {
+  GbSession  s;
+  uint8_t    list[GBS_LIST_BYTES];
+  uint8_t    scratch[GBS_SCRATCH_BYTES];
+  uint8_t*   img;             /* the resident save, edited in place            */
+  uint8_t*   pristine;        /* byte-exact copy: rollback after a failed write */
+  uint32_t   len;
+  const char* path;           /* where an edit is persisted                    */
+} Gb12Edit;
+static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the arena */
+
+static void s_busy(const char* line) {
+  ui_clear();
+  ui_panel(16, 60, 208, 48, UI_PANEL, UI_WARN);
+  ui_text(28, 70, UI_WARN, "Saving - do not power off");
+  ui_text(28, 88, UI_TEXT, line);
+}
+
+/* The card refused; put RAM back to what the card holds so the grid never shows an
+ * edit that did not land, and re-latch the session over the restored bytes. */
+static void gb_edit_rollback(void) {
+  memcpy(g_ed->img, g_ed->pristine, g_ed->len);
+  gbs_open(&g_ed->s, g_ed->img, g_ed->len, g_ed->scratch, sizeof g_ed->scratch);
+  if (g_m) g_m->loaded = -1;
+}
+
+/* app_src_edit_set() hook: EDIT on the read-only mon menu. `rec80` identifies the slot
+ * by ADDRESS inside the paged box, exactly like pdna_gen12_why_locked; the box is the
+ * one the mount has paged. The GB numbering is the grid's own: storage boxes 0..n-1 and
+ * the party at n, which is GEN1_PARTY_BOX / G2_BOX_PARTY (both == their box count).
+ *
+ * Order of gates, each refusing with the card untouched:
+ *   1. the cart (app_can_edit: Omega only, hard rule 4);
+ *   2. the box (gbs_box_writable: a Gen-1 virgin bank would DESTROY the edit);
+ *   3. the record (gb_commit_checked: the bytes landed where the editor put them);
+ *   4. the image (gbs_commit_list: the engine's own structural + verify gates);
+ *   5. the card (sf_backup_rolling, then sf_write_verified's four steps).
+ * Returns true only after step 5, which is what makes the grid re-page. */
+static bool gb_edit_hook(uint8_t* rec80) {
+  if (!g_ed || !g_m || !g_m->recs || !rec80) return false;
+  const uint8_t* base = g_m->recs + 0x0004;
+  if (rec80 < base || rec80 >= base + (uint32_t)GB12_SLOTS * 80) return false;
+  uint32_t d = (uint32_t)(rec80 - base);
+  if (d % 80u) return false;
+  int slot = (int)(d / 80u);
+  int box  = g_m->loaded;
+  if (box < 0) return false;
+
+  if (!app_can_edit()) { snd_deny(); return false; }                        /* 1 */
+
+  GbSession* s = &g_ed->s;
+  GbsStatus st = gbs_box_writable(s, box);                                   /* 2 */
+  if (st != GBS_OK) {
+    snd_deny();
+    msg_wait("CAN'T EDIT THIS BOX", UI_WARN, gbs_status_text(st),
+             st == GBS_ERR_UNWRITABLE ? "Switch boxes in-game once, then retry." : 0);
+    return false;
+  }
+  st = gbs_load_list(s, box, g_ed->list);
+  if (st != GBS_OK) { snd_deny(); msg_wait("CAN'T READ THIS BOX", UI_WARN, gbs_status_text(st), 0); return false; }
+  if (slot >= gb_list_count(s->gen, g_ed->list, box)) {
+    snd_deny(); msg_wait("EMPTY SLOT", UI_WARN, "The GB list has no Pokemon here.", 0); return false;
+  }
+
+  GbEditMon e;
+  if (!gb_load(&e, s->gen, g_ed->list, box, slot)) { snd_deny(); return false; }
+  if (!pdna_gbedit(&e, s->gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record")) return false;
+
+  if (!gb_commit_checked(&e, g_ed->list, box, slot)) {                       /* 3 */
+    snd_error();
+    msg_wait("EDIT REFUSED", UI_WARN, "The record did not verify.", "Nothing was written.");
+    return false;
+  }
+  st = gbs_commit_list(s, box, g_ed->list);                                  /* 4 */
+  if (st != GBS_OK) {
+    log_line("gen12: commit box %d slot %d refused: %s", box, slot, gbs_status_text(st));
+    snd_error();
+    msg_wait("EDIT REFUSED", UI_WARN, gbs_status_text(st), "Save unchanged.");
+    return false;
+  }
+
+  /* 5. The card. Same two safe points as the Gen-3 path (pdna_main.c app_commit): the
+   * motor is off the bus for both transfers, and the log is flushed after the verdict. */
+  log_line("=== gb edit commit -> %s box %d slot %d ===", g_ed->path, box, slot);
+  char bak[SF_PATH_MAX]; bak[0] = 0;
+  s_busy("Backing up original...");
+  rmbl_pause();
+  SfStatus bst = sf_backup_rolling(g_ed->path, bak, sizeof bak);
+  rmbl_resume();
+  if (bst != SF_OK) {
+    log_line("gb edit: backup failed (%s)", sf_status_str(bst));
+    app_log_flush();
+    gb_edit_rollback();
+    snd_error();
+    msg_wait("BACKUP FAILED", UI_WARN, sf_status_str(bst), "Save NOT modified; edit discarded.");
+    return false;
+  }
+  s_busy("Writing + verifying...");
+  rmbl_pause();
+  SfStatus wst = sf_write_verified(g_ed->path, g_ed->img, g_ed->len);
+  rmbl_resume();
+  log_line("gb edit: write %s (backup %s)", wst == SF_OK ? "OK" : sf_status_str(wst), bak);
+  app_log_flush();
+  if (wst != SF_OK) {
+    gb_edit_rollback();
+    snd_error();
+    msg_wait("WRITE FAILED", UI_WARN, sf_status_str(wst),
+             wst == SF_ERR_RENAME ? "Check the .tmp beside the save." : "Save NOT modified; edit discarded.");
+    return false;
+  }
+  memcpy(g_ed->pristine, g_ed->img, g_ed->len);   /* the card now holds this image */
+  g_m->loaded = -1;                               /* the grid re-pages from the new bytes */
+  snd_save();
+  return true;
+}
+
 /* Arena block for a session whose bytes are already resident: no FIL, and the image
  * pointer is the caller's (g_save), so only the mount + the two GB buffers are borrowed. */
 #define GB12_ARENA_NEED_IMG (GB12_A4(sizeof(Gb12Mount)) + GB12_A4(sizeof(Gb12Image)) + \
-                             GB12_RECS_BYTES + GB12_STAGE_BYTES + 4u)
+                             GB12_RECS_BYTES + GB12_STAGE_BYTES + GB12_A4(sizeof(Gb12Edit)) + 4u)
 _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
                "GB import (resident image) no longer fits the borrowed EWRAM arena");
 
@@ -703,6 +834,7 @@ static void gb_session_core(Gb12Mount* m) {
    * bookkeeping for these boxes — see pdna_main.c. Cleared unconditionally below;
    * every exit from the box screen passes through it. */
   app_src_readonly_set(pdna_gen12_why_locked, "Converted copy");
+  if (g_ed) app_src_edit_set(gb_edit_hook);       /* S2: EDIT on the read-only menu */
   BoxSource s = pdna_gen12_source(m);
   /* Returns 0 on B / the SAVE tab, 5 when the cursor drops off the bottom row (the
    * PC<->Bank hand-off, which has no PC to hand off to here) — re-enter on the top
@@ -777,9 +909,10 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
  * the user has now backed out of it" — a size test alone cannot distinguish a Gen-1/2
  * save from any other 32 KiB file, and printing "not a valid Gen-3 .sav" over a file we
  * never even tried to parse as Gen-3 would be a lie in the other direction. */
-int pdna_gen12_show_image(const char* path, const uint8_t* img, uint32_t len,
-                          uint8_t met_game) {
+int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
+                          uint8_t* pristine, uint8_t met_game) {
   if (!img || !pdna_gen12_size_is_gb(len)) return GB12_ENTER_NOT_GB;
+  if (pristine && len > GB12_PRISTINE_OFF) pristine = 0;   /* cannot both fit: read-only */
 
   uint8_t* arena = app_arena_acquire(GB12_ARENA_NEED_IMG);
   if (!arena) {
@@ -794,6 +927,7 @@ int pdna_gen12_show_image(const char* path, const uint8_t* img, uint32_t len,
   Gb12Image* ic   = (Gb12Image*)(uintptr_t)(base + GB12_A4(sizeof(Gb12Mount)));
   uint8_t* recs   = (uint8_t*)(uintptr_t)(base + GB12_A4(sizeof(Gb12Mount)) + GB12_A4(sizeof(Gb12Image)));
   uint8_t* stage  = recs + GB12_RECS_BYTES;
+  Gb12Edit* ed    = (Gb12Edit*)(uintptr_t)(stage + GB12_STAGE_BYTES);
 
   ic->img = img;
   ic->len = len;
@@ -809,8 +943,25 @@ int pdna_gen12_show_image(const char* path, const uint8_t* img, uint32_t len,
            path ? path : "(image)", pdna_gen12_kind_name(m->kind), m->nstored,
            m->nready, m->nblocked, m->nunreadable);
 
+  /* S2: the editing session over the same bytes. gbs_open runs its own identification
+   * (Gen 2 first, then Gen 1); the mount just succeeded on the same image, so a refusal
+   * here is news worth logging — and the session simply stays read-only. */
+  g_ed = 0;
+  if (pristine && path) {
+    memcpy(pristine, img, len);
+    GbsStatus st = gbs_open(&ed->s, img, len, ed->scratch, sizeof ed->scratch);
+    if (st == GBS_OK && (ed->s.gen == GB_GEN1) == (m->kind == GB12_SAVE_RBY)) {
+      ed->img = img; ed->pristine = pristine; ed->len = len; ed->path = path;
+      g_ed = ed;
+    } else {
+      log_line("gen12: edit session refused (%s, gen %d vs mount kind %d): read-only",
+               gbs_status_text(st), ed->s.gen, (int)m->kind);
+    }
+  }
+
   gb_session_core(m);
 
+  g_ed = 0;                                       /* the arena block is about to go */
   app_arena_release();
   return GB12_ENTER_OK;
 }

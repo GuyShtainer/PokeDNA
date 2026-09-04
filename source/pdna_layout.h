@@ -131,6 +131,7 @@
 #define PDNA_LBL_PASTE_HERE  "PASTE HERE"
 #define PDNA_LBL_CANCEL      "CANCEL"
 #define PDNA_LBL_VIEW        "VIEW"           /* read-only popup only */
+#define PDNA_LBL_EDIT_GB     "EDIT"           /* read-only popup, GB session only */
 
 /* Every label either action popup can show, so the host test measures the strings the
  * menus actually draw. The X() entries are the macros above, not fresh literals. */
@@ -140,11 +141,11 @@
   X(PDNA_LBL_DUPLICATE) X(PDNA_LBL_TO_DAYCARE) X(PDNA_LBL_TO_GAME)                    \
   X(PDNA_LBL_EXPORT_PK) X(PDNA_LBL_TAKE_ITEM) X(PDNA_LBL_GIVE_ITEM)                   \
   X(PDNA_LBL_RELEASE) X(PDNA_LBL_CREATE) X(PDNA_LBL_PASTE_HERE) X(PDNA_LBL_CANCEL)    \
-  X(PDNA_LBL_VIEW)
+  X(PDNA_LBL_VIEW) X(PDNA_LBL_EDIT_GB)
 
 /* Read-only source popup: the header grows by one line per explanatory line above the
  * rows (the source's note, and the per-record "why this one is locked"). */
-#define PDNA_ROMENU_MAX       4               /* VIEW, LEGALITY, COPY?, CANCEL        */
+#define PDNA_ROMENU_MAX       5               /* VIEW, EDIT?, LEGALITY, COPY?, CANCEL */
 #define PDNA_ROMENU_HDR       15              /* title only                           */
 #define PDNA_ROMENU_LINE      10              /* each optional prose line             */
 #define PDNA_ROMENU_HEAD_PAD   3              /* divider -> first row                 */
