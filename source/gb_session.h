@@ -130,7 +130,7 @@ GbsStatus gbs_load_list(GbSession* s, int box, uint8_t* list);
  * byte-identical to how it arrived. Before the verify, gen2_write.c's write_patch()
  * has already landed the new bytes in every copy; on a verify failure it restores
  * NOTHING, so the image can be left partially written across the primary/backup/banked
- * copies. gen1_write.c's restore-on-failure writes ONE pre-write snapshot (the first
+ * copies. This file's Gen-1 commit (gb_session.c gen1_commit) restores ONE snapshot (the first
  * target's own original bytes) into every target, which is only a true restore if all
  * targets already agreed before the edit -- not a guarantee this layer makes. Either
  * way, a caller that needs "no edit ever visible after a refused commit" must keep its

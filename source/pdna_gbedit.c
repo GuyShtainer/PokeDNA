@@ -129,7 +129,7 @@ static bool confirm(const GbEditMon* e) {
   char hdr[HDR_MAX], lt[29 * 4 + 1];
   gbe_header(e, hdr, sizeof hdr);
   ui_truncate(lt, hdr, 29);
-  ui_text(20, 26, UI_DIRCLR, lt);
+  ui_text(4, 26, UI_DIRCLR, lt);          /* x=4 like render(): 29 cols end at 236, not 252 */
   ui_text(20, 40, UI_TITLE, PDNA_GBEDIT_CONFIRM_TITLE);
   int y = PDNA_GBEDIT_CONFIRM_Y0;
   if (issue) {
