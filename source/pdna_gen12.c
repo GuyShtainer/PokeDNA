@@ -1257,8 +1257,19 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
     snd_deny();
     msg_wait(PDNA_SIDECAR_CORRUPT_TITLE, UI_WARN, PDNA_SIDECAR_CORRUPT_KEPT_L1, 0);
     len = (uint32_t)gbsc_init(g_ed->sidecar, key);
+  } else if (rst == SF_ERR_OPEN) {
+    len = (uint32_t)gbsc_init(g_ed->sidecar, key);   /* genuinely absent (or unopenable) */
   } else if (rst != SF_OK) {
-    len = (uint32_t)gbsc_init(g_ed->sidecar, key);   /* absent: start fresh */
+    /* S5-B re-verification NEW-2 (must): SF_ERR_OPEN is the ONLY status that means
+     * "no such file" -- sf_read_full() also returns SF_ERR_READ for a failed/short
+     * read of a file that DOES exist (savefile.c). The old `rst != SF_OK` catch-all
+     * treated a transient card fault on a VALID .pds exactly like "absent" and went on
+     * to gbsc_init() + sf_write_verified() over it, destroying up to
+     * GBSC_MAX_ENTRIES-1 other mons' originals for a fault that might not even recur
+     * on retry. Refuse instead -- nothing is touched. */
+    snd_error();
+    msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, sf_status_str(rst), PDNA_SIDECAR_NOTWRITTEN_L2);
+    return false;
   }
 
   GbaRtcTime t;
