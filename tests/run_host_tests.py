@@ -15,6 +15,12 @@ else tests/fixtures/*.sav. Those saves are Guy's own cartridge dumps: they live 
 the repo, are gitignored, and are never published.
 
 Exit status is 0 only if every test that could be built also passed.
+
+NOT covered here: tools/gb_retail_gate.py (`make retail-gate`) boots EDITED Gen-1/2
+saves in the real ROM under mGBA and asserts on the screen the game drew. It is
+deliberately excluded from this default loop -- ~30 emulator boots vs. the near-instant
+pure-C tests below -- but it is the gate anything touching gb_session/gb_edit/gb_editor
+should also pass before being called done.
 """
 from __future__ import annotations
 

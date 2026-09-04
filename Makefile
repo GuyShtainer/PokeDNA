@@ -409,7 +409,7 @@ endif
 # DIRECTORY and never recurses, so a plain `make` after an edit does nothing and every
 # build has to be a full `make rebuild`. With it, the inner make does normal incremental
 # compilation and only the touched objects are rebuilt.
-.PHONY: $(BUILD) all clean rebuild sd delta artless sd-artless delta-artless
+.PHONY: $(BUILD) all clean rebuild sd delta artless sd-artless delta-artless retail-gate
 rebuild:
 	@$(MAKE) clean
 	@$(MAKE) $(BUILD)
@@ -451,5 +451,14 @@ sd-artless:            # SD-streaming build, no compiled art (composes 'sd' + 'a
 	@$(MAKE) PDNA_TARGET=sd PDNA_ARTLESS=1 rebuild
 	@echo ""
 	@echo "  PokeDNA-SD-artless.gba built."
+
+# --- host-side gates (pure C / Python; no ROM build, no GBA hardware) -------
+# S4: boot EDITED Gen-1/2 saves in the real ROM and assert on the screen the game drew,
+# not on this tree's own parser (tools/gb_retail_gate.py). Not part of
+# tests/run_host_tests.py's default loop -- that script's tests are near-instant pure C;
+# this one is ~30 emulator boots.
+retail-gate:
+	@/usr/local/bin/python3 tools/gb_retail_gate.py \
+		--mgba-vendor /Users/guyshtainer/VSCodeProjects/gba-toolkit/projects/rec2mp4/vendor
 
 # EOF
