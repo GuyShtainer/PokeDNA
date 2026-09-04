@@ -297,13 +297,26 @@ class Tally:
         self.skip += 1
 
 
-def edited_case(python, vendor, work, rom, gen, edited_sav, dump_name, extra_args,
-               tally, label, extra_check=None):
+def edited_case(python, vendor, work, rom, gen, edited_sav, orig_size, dump_name,
+               extra_args, tally, label, extra_check=None):
     """Boot an edited save with content assertions, THEN run the secondary checks.
     `extra_check`, if given, is a callable(rep) -> (bool, str) for an assertion
     gb_roundtrip's own --expect* flags cannot express (slot-anchoring: see
     check_nick_slot/check_level_slot). Returns the combined bool so callers can gate
-    follow-on steps on it."""
+    follow-on steps on it.
+
+    LENGTH GUARD (trap 8, docs/GEN12-EDIT-DESIGN.md sec. 5) runs BEFORE the boot, not
+    after: an engine bug that drops the 48-byte RTC footer (or otherwise changes the
+    file's length) on one op was proven to stay green here -- gb_roundtrip's own
+    harness_error only fires on a SRAM-length mismatch measured INSIDE the emulator,
+    which never runs if the edited file itself is already the wrong size for a reason
+    unrelated to what the emulator does with it."""
+    actual = edited_sav.stat().st_size
+    if actual != orig_size:
+        return tally.record(label, False,
+            f"length guard: {edited_sav.name} is {actual}B, the original save is "
+            f"{orig_size}B -- refusing to boot a save whose length already changed "
+            "before the emulator ever saw it")
     dump_path = work / f"{dump_name}_dump.sav"
     rc, rep, out, err = boot(python, rom, edited_sav, work / dump_name, vendor,
                              work / f"{dump_name}.json", dump_path=dump_path,
@@ -359,7 +372,7 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     rc, out, err = run_surgery(binary, sav, pt_sav, [])
     identical = rc == 0 and pt_sav.exists() and pt_sav.read_bytes() == orig
     if identical:
-        edited_case(python, vendor, work, rom, gen, pt_sav, "passthrough",
+        edited_case(python, vendor, work, rom, gen, pt_sav, len(orig), "passthrough",
                    ["--expect-name", base_name, "--expect-party-count", str(base_pc)],
                    tally, "pass-through")
     else:
@@ -379,7 +392,7 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     nick_sav = work / "nick.sav"
     rc, out, err = run_surgery(binary, sav, nick_sav, [["nick", "party", "0", NEW_NICK]])
     if rc == 0:
-        edited_case(python, vendor, work, rom, gen, nick_sav, "nick",
+        edited_case(python, vendor, work, rom, gen, nick_sav, len(orig), "nick",
                    ["--expect-party", NEW_NICK, "--expect-name", base_name],
                    tally, "nickname", extra_check=check_nick_slot(0, NEW_NICK))
     else:
@@ -395,7 +408,7 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
         # claimed otherwise -- see docs/GEN12-EDIT-DESIGN.md S4 for the correction); the
         # slot-anchored check below reads the new level back off the exact row this slot
         # draws and also re-confirms the untouched nickname still leads that row.
-        edited_case(python, vendor, work, rom, gen, lvl_sav, "level",
+        edited_case(python, vendor, work, rom, gen, lvl_sav, len(orig), "level",
                    ["--expect-name", base_name],
                    tally, f"level {slot0['level']}->{new_level}",
                    extra_check=check_level_slot(0, gen, slot0["nick"], new_level))
@@ -406,7 +419,7 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     del_sav = work / "delete.sav"
     rc, out, err = run_surgery(binary, sav, del_sav, [["delete", "party", str(last_idx)]])
     if rc == 0:
-        edited_case(python, vendor, work, rom, gen, del_sav, "delete",
+        edited_case(python, vendor, work, rom, gen, del_sav, len(orig), "delete",
                    ["--expect-party-count", str(party_count0 - 1),
                     "--expect-no-screen", last_nick],
                    tally, "delete party last")
@@ -425,7 +438,7 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
                     f"rc={rc} wrote_file={b2p_sav.exists()} stderr={err.strip()!r}")
     else:
         if rc == 0:
-            edited_case(python, vendor, work, rom, gen, b2p_sav, "box2party",
+            edited_case(python, vendor, work, rom, gen, b2p_sav, len(orig), "box2party",
                        ["--expect-party-count", str(party_count0),
                         "--expect-party", box0_nick],
                        tally, "Gen-2 box0->party")
@@ -441,7 +454,7 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
         rc, out, err = run_surgery(binary, sav, p2b_sav,
                                    [["move", "party", str(last_idx), str(dst)]])
         if rc == 0:
-            edited_case(python, vendor, work, rom, gen, p2b_sav, "party2box",
+            edited_case(python, vendor, work, rom, gen, p2b_sav, len(orig), "party2box",
                        ["--expect-party-count", str(party_count0 - 1),
                         "--expect-no-screen", last_nick],
                        tally, f"party last -> box {dst}")
