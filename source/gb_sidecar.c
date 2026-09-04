@@ -56,6 +56,23 @@ void gbsc_key_hex(uint64_t key, char out[17]) {
   out[16] = 0;
 }
 
+int gbsc_path(char* out, int cap, const char* dir, uint64_t key) {
+  if (!out || !dir || cap <= 0) return -1;
+  int dl = 0;
+  while (dir[dl]) dl++;
+  int need = dl + 1 + 16 + 4 + 1;               /* dir + '/' + hex16 + ".pds" + NUL */
+  if (need > cap) return -1;
+  char hex[17];
+  gbsc_key_hex(key, hex);
+  int p = 0;
+  for (int i = 0; i < dl; i++) out[p++] = dir[i];
+  out[p++] = '/';
+  for (int i = 0; i < 16; i++) out[p++] = hex[i];
+  out[p++] = '.'; out[p++] = 'p'; out[p++] = 'd'; out[p++] = 's';
+  out[p] = 0;
+  return p;
+}
+
 /* ---- one entry, decoded ------------------------------------------------------ */
 
 void gbsc_entry_from(GbscEntry* e, const GbEditMon* written, const uint8_t* original80,

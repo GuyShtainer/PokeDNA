@@ -85,6 +85,7 @@
 #include "rmbl.h"          /* haptic rumble cues (per-cue toggles) */
 #include "rumble.h"        /* rumble_io_suspend/resume: mute the motor while a blit reads ROM */
 #include "gba_rtc.h"       /* live cartridge RTC reader (clock check & fix) */
+#include "gb_sidecar.h"    /* S5-B: the Gen-3 <-> Game Boy sidecar format + merge-up */
 #include "pdna_app.h"
 #include "savefile.h"
 #include "log.h"
@@ -2438,9 +2439,163 @@ static bool app_copy(uint8_t* rec, bool is_party) {
   return false;                                          /* no save change */
 }
 
+/* S5-B section 10: the merge confirm screen shown once app_paste_gb_merge() has found a
+ * matching sidecar entry. Lists what gbsc_merge_up() actually changed -- all-false is
+ * the common case, the Game Boy record is exactly what gen3_to_gb() produced -- plus
+ * the one line that is true for every merge: the sidecar's OWN EVs land, not whatever
+ * the Game Boy's stat exp happens to show. */
+static bool app_sidecar_confirm(const GbscMergeReport* rep) {
+  ui_clear();
+  ui_panel(PDNA_SIDECAR_PANEL_X, PDNA_SIDECAR_PANEL_Y, PDNA_SIDECAR_PANEL_W,
+           PDNA_SIDECAR_PANEL_H, UI_PANEL, UI_OK);
+  ui_ptext_fit(PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_PANEL_Y + 8, PDNA_SIDECAR_TEXT_MAXW,
+               UI_OK, PDNA_SIDECAR_CONFIRM_TITLE);
+
+  int y = PDNA_SIDECAR_LINE_Y0;
+  if (rep->evolved)        { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_EVOLVED);        y += PDNA_SIDECAR_LINE_H; }
+  if (rep->level_changed)  { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_LEVEL);          y += PDNA_SIDECAR_LINE_H; }
+  if (rep->moves_changed)  { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_MOVES);          y += PDNA_SIDECAR_LINE_H; }
+  if (rep->renamed)        { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_RENAMED);        y += PDNA_SIDECAR_LINE_H; }
+  if (rep->rename_refused) { ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_RENAME_REFUSED); y += PDNA_SIDECAR_LINE_H; }
+  if (rep->gb_item_ignored){ ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_TEXT, PDNA_SIDECAR_L_ITEM_IGNORED);   y += PDNA_SIDECAR_LINE_H; }
+  y += PDNA_SIDECAR_EVS_GAP;
+  ui_ptext_fit(PDNA_SIDECAR_TEXT_X, y, PDNA_SIDECAR_TEXT_MAXW, UI_DIM, PDNA_SIDECAR_L_EVS);
+  y += PDNA_SIDECAR_LINE_H + PDNA_SIDECAR_AB_GAP;
+  ui_text(PDNA_SIDECAR_TEXT_X, y, UI_TEXT, PDNA_SIDECAR_A_PASTE); y += PDNA_SIDECAR_LINE_H;
+  ui_text(PDNA_SIDECAR_TEXT_X, y, UI_DIM, PDNA_SIDECAR_B_CANCEL);
+
+  u16 k; do { vsync(); k = key_hit(KEY_A | KEY_B); } while (!k);
+  bool yes = (k & KEY_A) != 0;
+  if (yes) snd_ok(); else snd_back();
+  return yes;
+}
+
+/* S5-B: PASTE in a Gen-3 session when the clipboard came off a Game Boy source
+ * (g_clip.from_gb, set by app_copy() via AppSrcOps.copy_native). Looks up
+ * /PokeDNA/sidecar/<key>.pds and, when a matching entry is found, restores the
+ * ORIGINAL Gen-3 record (gbsc_merge_up) instead of the lossy converted copy
+ * clip_to_record() would otherwise build.
+ *
+ * *handled == true: the whole paste is decided one way or another (merged + committed,
+ * or a refusal already shown on screen) -- the caller returns this function's own
+ * return value straight through. *handled == false: no sidecar could be found for this
+ * clip, so the caller falls through to the ordinary converted-copy path, after this
+ * function has already shown the one-line notice ("No sidecar: converted copy").
+ *
+ * noinline: GbscEntry (~130 B) + GbscMergeReport + the 80-byte merged record are real
+ * frame weight app_paste's own (much more common) non-GB path should never carry --
+ * same "split out the big locals" reasoning as pdna_gen12.c's gb_persist/gb_rollback
+ * split. The 1042-byte sidecar file buffer itself is borrowed (app_box_swap_acquire),
+ * not on this frame either. */
+static bool __attribute__((noinline))
+app_paste_gb_merge(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block,
+                   bool* handled) {
+  *handled = true;
+
+  uint8_t dv4[4] = {
+    gb_get_dv(&g_clip.gb, GB_ATK), gb_get_dv(&g_clip.gb, GB_DEF),
+    gb_get_dv(&g_clip.gb, GB_SPE), gb_get_dv(&g_clip.gb, GB_SPC)
+  };
+  uint64_t key = gbsc_key(g_clip.gb.gen, gb_get_otid(&g_clip.gb), dv4, g_clip.gb.otname);
+  char path[48];
+  if (gbsc_path(path, sizeof path, PDNA_DIR "/sidecar", key) < 0) { *handled = false; return false; }
+
+  /* Borrowed, not a new static: pdna_app.h's own contract says NULL means "too big, or
+   * already held" -- box_oam.c holds this SAME cache for the whole box-screen visit
+   * (boxoam_enter/exit), so a PASTE reached from the box/bank grid's popup will find it
+   * held and land here; a PASTE from the party screen (which never touches box_oam)
+   * finds it free. Never silently fall back to the lossy path when a sidecar might
+   * exist -- tell the user to retry instead. */
+  uint8_t* buf = app_box_swap_acquire(GBSC_FILE_MAX);
+  if (!buf) {
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_BUSY_TITLE, UI_WARN, PDNA_SIDECAR_BUSY_L1, PDNA_SIDECAR_BUSY_L2);
+    return false;
+  }
+
+  uint32_t len = 0;
+  SfStatus rst = sf_read_full(path, buf, GBSC_FILE_MAX, &len);
+  if (rst == SF_ERR_OPEN) {                    /* no such file: never transferred down */
+    app_box_swap_release();
+    *handled = false;
+    msg_wait(PDNA_SIDECAR_NONE_TITLE, UI_OK, PDNA_SIDECAR_NONE_L1, 0);
+    return false;
+  }
+  if (rst != SF_OK) {
+    app_box_swap_release();
+    snd_error();
+    msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, sf_status_str(rst), 0);
+    return false;
+  }
+
+  int idx = gbsc_find(buf, len, &g_clip.gb, 0);
+  if (idx < 0) {
+    app_box_swap_release();
+    *handled = false;
+    msg_wait(PDNA_SIDECAR_NONE_TITLE, UI_OK, PDNA_SIDECAR_NONE_L1, 0);
+    return false;
+  }
+
+  GbscEntry e;
+  uint8_t merged[80];
+  GbscMergeReport rep;
+  if (!gbsc_get(buf, len, idx, &e) || !gbsc_merge_up(&e, &g_clip.gb, merged, &rep)) {
+    app_box_swap_release();
+    snd_error();
+    msg_wait(PDNA_SIDECAR_MERGEFAIL_TITLE, UI_WARN, PDNA_SIDECAR_MERGEFAIL_L1, 0);
+    return false;
+  }
+
+  if (!app_sidecar_confirm(&rep)) { app_box_swap_release(); return false; }
+
+  ClipMon tmp; memset(&tmp, 0, sizeof tmp);
+  memcpy(tmp.rec, merged, 80);
+  tmp.is_party = false;                        /* gbsc_merge_up always builds a box record */
+  tmp.occupied = true;
+  uint8_t out[100];
+  if (!clip_to_record(&tmp, is_party, out)) { app_box_swap_release(); return false; }
+  memcpy(rec, out, is_party ? 100 : 80);
+  bool committed = app_commit_with_dex(rec, is_party, commit, block);
+
+  if (committed) {
+    /* Best-effort: the Pokemon is already pasted either way (never undo a landed
+     * write), so a sidecar-bookkeeping failure is reported, not rolled back. */
+    bool sidecar_ok = false;
+    if (gbsc_remove(buf, &len, idx) == 0) {
+      if (gbsc_count(buf, len) == 0) {
+        rmbl_pause();
+        sidecar_ok = (f_unlink(path) == FR_OK);
+        rmbl_resume();
+      } else {
+        rmbl_pause();
+        sidecar_ok = (sf_write_verified(path, buf, len) == SF_OK);
+        rmbl_resume();
+      }
+    }
+    if (!sidecar_ok) {
+      log_line("gen3: sidecar not updated after merge-paste (%s idx %d)", path, idx);
+      msg_wait(PDNA_SIDECAR_NOTUPDATED_TITLE, UI_WARN,
+               PDNA_SIDECAR_NOTUPDATED_L1, PDNA_SIDECAR_NOTUPDATED_L2);
+    }
+    g_clip.from_gb = false;   /* a second paste of the same clip looks for the converted
+                                * path instead of a now-removed entry -- see pdna_app.h */
+  }
+  app_box_swap_release();
+  return committed;
+}
+
 static bool app_paste(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, bool occupied) {
   if (!g_clip.occupied) return false;
   if (occupied && !app_confirm("Overwrite this Pokemon?", "Paste the copied mon here?")) return false;
+
+  if (g_clip.from_gb) {
+    bool handled;
+    bool r = app_paste_gb_merge(rec, is_party, commit, block, &handled);
+    if (handled) return r;
+    /* No sidecar found for this clip -- fall through to the ordinary converted-copy
+     * path below; app_paste_gb_merge() already showed the one-line notice. */
+  }
+
   uint8_t out[100];
   if (!clip_to_record(&g_clip, is_party, out)) return false;
   memcpy(rec, out, is_party ? 100 : 80);

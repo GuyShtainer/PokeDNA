@@ -64,6 +64,15 @@ uint64_t gbsc_key(uint8_t gen, uint16_t otid16, const uint8_t dv4[4],
 /* 16 upper-case hex digits + NUL -- the file's own name. */
 void gbsc_key_hex(uint64_t key, char out[17]);
 
+/* One place for the on-card path both S5-B callers need (pdna_main.c's PASTE-merge and
+ * pdna_gen12.c's PASTE(GB)): "<dir>/<16 hex><.pds>", e.g.
+ * "/PokeDNA/sidecar/0019A3F17C0B44E2.pds". `dir` carries NO trailing slash. Still no
+ * file I/O -- this only builds a string. Returns the length written (excluding the
+ * NUL), or -1 if it would not fit in `cap` bytes (out is then left untouched) or `dir`/
+ * `out` is NULL. A caller sizes `out` at >= 48: the longest real `dir`
+ * (PDNA_DIR "/sidecar", 17 bytes) plus '/' plus 16 hex plus ".pds" plus NUL is 39. */
+int gbsc_path(char* out, int cap, const char* dir, uint64_t key);
+
 /* ---- one entry, decoded ------------------------------------------------------ */
 
 typedef struct {

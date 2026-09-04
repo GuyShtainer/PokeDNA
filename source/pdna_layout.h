@@ -586,6 +586,91 @@
 #define PDNA_GBEDIT_PICKBOX_NONE_L1    "No other box can be written to."
 
 /* ---------------------------------------------------------------------------
+ * S5-B: the Gen-3 <-> Game Boy sidecar UI (docs/GEN3-TO-GB-SIDECAR-DESIGN.md sec. 10)
+ * source/pdna_main.c's PASTE-with-merge and source/pdna_gen12.c's PASTE(GB) + the
+ * DV-orphan warning. Body text goes through the shared msg_wait 184px proportional
+ * clamp exactly like PDNA_GBEDIT_* above, EXCEPT the merge confirm screen's own
+ * per-flag lines, which reuse that same (28, 184) convention directly. */
+#define PDNA_SIDECAR_BUSY_TITLE      "CAN'T MERGE NOW"
+#define PDNA_SIDECAR_BUSY_L1         "The sidecar buffer is busy."
+#define PDNA_SIDECAR_BUSY_L2         "Paste again from the box screen."
+#define PDNA_SIDECAR_READFAIL_TITLE  "SIDECAR READ FAILED"
+#define PDNA_SIDECAR_NONE_TITLE      "NO SIDECAR"
+#define PDNA_SIDECAR_NONE_L1         "No sidecar: converted copy."
+#define PDNA_SIDECAR_MERGEFAIL_TITLE "MERGE FAILED"
+#define PDNA_SIDECAR_MERGEFAIL_L1    "The sidecar could not be merged."
+#define PDNA_SIDECAR_NOTUPDATED_TITLE "SIDECAR NOT UPDATED"
+#define PDNA_SIDECAR_NOTUPDATED_L1   "The Pokemon was pasted;"
+#define PDNA_SIDECAR_NOTUPDATED_L2   "the sidecar entry remains."
+
+/* The merge confirm screen (app_sidecar_confirm, pdna_main.c): one panel, up to six
+ * conditional GbscMergeReport lines, then the always-shown EVs line, then A/B. */
+#define PDNA_SIDECAR_CONFIRM_TITLE   "RESTORED FROM THE SIDECAR"
+#define PDNA_SIDECAR_L_EVOLVED       "It evolved on the Game Boy."
+#define PDNA_SIDECAR_L_LEVEL         "Its level changed."
+#define PDNA_SIDECAR_L_MOVES         "Its moves changed."
+#define PDNA_SIDECAR_L_RENAMED       "It was renamed."
+#define PDNA_SIDECAR_L_RENAME_REFUSED "Rename refused, kept the old name."
+#define PDNA_SIDECAR_L_ITEM_IGNORED  "GB item ignored; kept the original."
+#define PDNA_SIDECAR_L_EVS           "EVs restored from the sidecar."
+#define PDNA_SIDECAR_A_PASTE         "A = paste"
+#define PDNA_SIDECAR_B_CANCEL        "B = cancel"
+#define PDNA_SIDECAR_PANEL_X         16
+#define PDNA_SIDECAR_PANEL_Y         14
+#define PDNA_SIDECAR_PANEL_W         208
+#define PDNA_SIDECAR_PANEL_H         144
+#define PDNA_SIDECAR_TEXT_X          28
+#define PDNA_SIDECAR_TEXT_MAXW       184
+#define PDNA_SIDECAR_LINE_H          10
+#define PDNA_SIDECAR_LINE_Y0         44   /* first conditional-flag line's y            */
+#define PDNA_SIDECAR_EVS_GAP         4    /* extra gap before the always-shown EVs line */
+#define PDNA_SIDECAR_AB_GAP          10   /* extra gap before the A/B footer            */
+
+/* ---- S5-B Part D: PASTE (GB) on an empty Game Boy cell (pdna_gen12.c) ------------- */
+#define PDNA_SIDECAR_GEN1_TITLE      "GEN 1: NOT YET"
+#define PDNA_SIDECAR_GEN1_L1         "Needs base stats (S5-C)."
+#define PDNA_SIDECAR_XFER_TITLE      "CAN'T TRANSFER"
+#define PDNA_SIDECAR_MKDIR_TITLE     "SIDECAR FOLDER"
+#define PDNA_SIDECAR_FULL_TITLE      "SIDECAR FULL"
+#define PDNA_SIDECAR_FULL_L1         "Too many clones of this Pokemon."
+#define PDNA_SIDECAR_NOTWRITTEN_TITLE "SIDECAR NOT WRITTEN"
+#define PDNA_SIDECAR_NOTWRITTEN_L2   "Nothing transferred."
+
+/* The transfer-down loss screen (pdna_gen12.c gb_paste_loss_screen): one short line per
+ * Gen3ToGbLoss flag set, from a const {flag, text} table -- texts measured here. */
+#define PDNA_SIDECAR_LOSS_TITLE      "WHAT WON'T TRANSFER"
+#define PDNA_SIDECAR_LOSS_NATURE     "Nature and ability"
+#define PDNA_SIDECAR_LOSS_RIBBONS    "Ribbons and contest stats"
+#define PDNA_SIDECAR_LOSS_METDATA    "Met place / level / ball"
+#define PDNA_SIDECAR_LOSS_IVS        "IVs halved to DVs"
+#define PDNA_SIDECAR_LOSS_EVS        "EVs rescaled"
+#define PDNA_SIDECAR_LOSS_ITEM       "Held item"
+#define PDNA_SIDECAR_LOSS_SECRETID   "Secret ID"
+#define PDNA_SIDECAR_LOSS_SHINY      "Shiny not preserved"
+#define PDNA_SIDECAR_LOSS_GENDER     "Gender not preserved"
+#define PDNA_SIDECAR_LOSS_NAME       "Nickname/OT changed"
+#define PDNA_SIDECAR_LOSS_KEPT_L1    "Kept in /PokeDNA/sidecar;"
+#define PDNA_SIDECAR_LOSS_KEPT_L2    "restored when it comes back."
+#define PDNA_SIDECAR_LOSS_STAYS      "The copy in your Gen-3 save stays."
+#define PDNA_SIDECAR_LOSS_A_TRANSFER "A = transfer"
+#define PDNA_SIDECAR_LOSS_B_CANCEL   "B = cancel"
+#define PDNA_SIDECAR_LOSS_ROWS       12
+#define PDNA_SIDECAR_LOSS_ROW_Y0     20
+#define PDNA_SIDECAR_LOSS_ROW_H      10
+
+/* pdna_gbedit.c's DV-orphan warning (Part E): shown once per editor visit, on the first
+ * adjust/press of a DV row, when the mon's current key already has a sidecar file. */
+#define PDNA_SIDECAR_DV_TITLE        "SIDECAR WARNING"
+#define PDNA_SIDECAR_DV_L1           "Changing DVs orphans its Gen-3 sidecar."
+#define PDNA_SIDECAR_DV_L2           "A = continue"
+
+/* The GB info page's extra line (Part E): "N here came from Gen 3". Built dynamically
+ * (the count is data), but the trailing text is fixed and measured here at its widest
+ * plausible count prefix ("30 " -- a box tops out at G3_IN_BOX/gb_list_capacity, well
+ * under 100). */
+#define PDNA_SIDECAR_INFO_SUFFIX     " here came from Gen 3"
+
+/* ---------------------------------------------------------------------------
  * Settings + Rumble pages (source/pdna_main.c)
  *
  * These rows are sys8 (a FIXED 8 px cell), and libtonc's TTE does not clip at the right

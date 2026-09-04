@@ -566,6 +566,43 @@ int main(void) {
   PF(PDNA_GBEDIT_PICKBOX_NONE_L1,    28, 184);
   /* ==== END: GB mon editor ================================================= */
 
+  /* ==== S5-B: the Gen-3 <-> Game Boy sidecar (source/pdna_main.c app_paste_gb_merge /
+   * app_sidecar_confirm). msg_wait strings share its (28, .., 184) clamp; the confirm
+   * screen's own lines use PDNA_SIDECAR_TEXT_X/TEXT_MAXW directly, which today equal
+   * the same (28, 184) -- checked from the macros, not retyped, so a future geometry
+   * change here is caught rather than silently drifting from what this test measures. */
+  PF(PDNA_SIDECAR_BUSY_TITLE,      28, 184);
+  PF(PDNA_SIDECAR_BUSY_L1,         28, 184);
+  PF(PDNA_SIDECAR_BUSY_L2,         28, 184);
+  PF(PDNA_SIDECAR_READFAIL_TITLE,  28, 184);
+  PF(PDNA_SIDECAR_NONE_TITLE,      28, 184);
+  PF(PDNA_SIDECAR_NONE_L1,         28, 184);
+  PF(PDNA_SIDECAR_MERGEFAIL_TITLE, 28, 184);
+  PF(PDNA_SIDECAR_MERGEFAIL_L1,    28, 184);
+  PF(PDNA_SIDECAR_NOTUPDATED_TITLE,28, 184);
+  PF(PDNA_SIDECAR_NOTUPDATED_L1,   28, 184);
+  PF(PDNA_SIDECAR_NOTUPDATED_L2,   28, 184);
+
+  PF(PDNA_SIDECAR_CONFIRM_TITLE,   PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_SIDECAR_L_EVOLVED,       PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_SIDECAR_L_LEVEL,         PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_SIDECAR_L_MOVES,         PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_SIDECAR_L_RENAMED,       PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_SIDECAR_L_RENAME_REFUSED,PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_SIDECAR_L_ITEM_IGNORED,  PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  PF(PDNA_SIDECAR_L_EVS,           PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
+  /* A/B footer is fixed sys8 (ui_text), same convention as PDNA_GBEDIT_A_WRITE/B_CANCEL. */
+  T(PDNA_SIDECAR_A_PASTE,  PDNA_SIDECAR_TEXT_X);
+  T(PDNA_SIDECAR_B_CANCEL, PDNA_SIDECAR_TEXT_X);
+  /* All six conditional lines plus the always-shown EVs line, plus the A/B footer,
+   * must clear the panel's own bottom border. */
+  chk("sidecar confirm worst-case height", 0,
+      PDNA_SIDECAR_PANEL_Y + PDNA_SIDECAR_PANEL_H - 1,
+      PDNA_SIDECAR_LINE_Y0 + 6 * PDNA_SIDECAR_LINE_H + PDNA_SIDECAR_EVS_GAP +
+        PDNA_SIDECAR_LINE_H + PDNA_SIDECAR_AB_GAP + 2 * PDNA_SIDECAR_LINE_H + UI_ROW_H - 1,
+      "sidecar confirm: worst case (all 6 flags) clears the panel");
+  /* ==== END S5-B sidecar (Part C) ============================================ */
+
   /* ==== ADDED for the native-generation art router (source/pdna_origin_art.c) ====
    * Guy: "if a pokemon is from gen 1, use a gen 1 sprite ... The bank should show all
    * in parallel." These are the fixed strings that feature puts on screen.
