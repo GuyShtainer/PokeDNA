@@ -70,16 +70,23 @@ void app_src_readonly_set(const char* (*why_locked)(const uint8_t* rec80), const
 void app_src_readonly_clear(void);
 bool app_src_readonly(void);
 /* A read-only SOURCE whose records can nonetheless be edited IN PLACE through the
- * source's own pipeline (the resident Game Boy save, docs/GEN12-EDIT-DESIGN.md S2):
- * the grid stays a lossy converted copy, so the edit addresses the GB record by
- * ADDRESS of `rec80` inside the paged buffer, exactly like why_locked. Registering
- * this adds an EDIT row to the read-only popup; app_src_readonly_clear() drops it.
- * Both app_mon_menu call sites (pdna_box.c) discard its return value and re-fetch
- * src->records(box) unconditionally, so the grid does not re-page on the return value
- * at all -- it re-pages because a true implementation sets its mount's `loaded = -1`
- * before returning, which forces the next records() to reload from the card. */
-typedef bool (*AppSrcEditFn)(uint8_t* rec80);
-void app_src_edit_set(AppSrcEditFn fn);
+ * source's own pipeline (the resident Game Boy save, docs/GEN12-EDIT-DESIGN.md S2/S3):
+ * the grid stays a lossy converted copy, so every hook addresses the GB record by
+ * ADDRESS of `rec80` inside the paged buffer, exactly like why_locked. Registering this
+ * adds EDIT / MOVE TO / RELEASE rows to the read-only popup (NULL = that row is not
+ * offered); app_src_readonly_clear() drops all three. Every app_mon_menu call site
+ * (pdna_box.c) discards a hook's return value and re-fetches src->records(box)
+ * unconditionally, so the grid does not re-page on the return value at all -- it
+ * re-pages because a true implementation sets its mount's `loaded = -1` before
+ * returning, which forces the next records() to reload from the card. `ops` is
+ * retained (not copied), so it must outlive the registration -- pdna_gen12.c's is a
+ * static const. */
+typedef struct {
+  bool (*edit)(uint8_t* rec80);
+  bool (*move)(uint8_t* rec80);
+  bool (*release)(uint8_t* rec80);
+} AppSrcOps;
+void app_src_ops_set(const AppSrcOps* ops);
 
 /* Bank "Copy to game": inject a stored 80-byte box record into the loaded save's
  * first free PC box slot (and commit). Returns true iff written. Omega-only. */

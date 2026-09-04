@@ -3289,31 +3289,36 @@ static bool app_hatch(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* 
 static const char* (*g_src_why)(const uint8_t* rec80);
 static const char*  g_src_note;
 static bool         g_src_ro;
-static AppSrcEditFn g_src_edit;
+static const AppSrcOps* g_src_ops;
 
 void app_src_readonly_set(const char* (*why_locked)(const uint8_t* rec80), const char* note) {
-  g_src_why = why_locked; g_src_note = note; g_src_ro = true; g_src_edit = 0;
+  g_src_why = why_locked; g_src_note = note; g_src_ro = true; g_src_ops = 0;
 }
-void app_src_readonly_clear(void) { g_src_why = 0; g_src_note = 0; g_src_ro = false; g_src_edit = 0; }
-void app_src_edit_set(AppSrcEditFn fn) { g_src_edit = fn; }
+void app_src_readonly_clear(void) { g_src_why = 0; g_src_note = 0; g_src_ro = false; g_src_ops = 0; }
+void app_src_ops_set(const AppSrcOps* ops) { g_src_ops = ops; }
 bool app_src_readonly(void) { return g_src_ro; }
 
 /* The action menu for a source that is read-only in ITSELF: only actions that cannot
- * touch it. VIEW opens the summary with editing off; COPY just fills the 80-byte
- * clipboard, so the mon leaves through the existing clipboard -> PC/Bank path and
- * nothing new writes anything. Deliberately absent: PASTE / RELEASE / DUPLICATE /
- * CREATE / MOVE (they mutate a buffer whose commit() cannot persist it) and TO GAME
- * (it writes g_pc, which a mounted foreign source may currently be borrowing as its
- * EWRAM arena). `why_locked` can additionally veto COPY for one record and say why —
- * a Pokemon that is visible but cannot travel is far better than one that vanishes. */
+ * touch it directly through the Gen-3 path, plus whatever the source's OWN in-place
+ * pipeline offers (EDIT / MOVE TO / RELEASE, S2/S3, each NULL-gated on g_src_ops). VIEW
+ * opens the summary with editing off; COPY just fills the 80-byte clipboard, so the mon
+ * leaves through the existing clipboard -> PC/Bank path and nothing new writes anything.
+ * Deliberately absent: PASTE / DUPLICATE / CREATE (they mutate a buffer whose commit()
+ * cannot persist it) and TO GAME (it writes g_pc, which a mounted foreign source may
+ * currently be borrowing as its EWRAM arena). `why_locked` can additionally veto COPY
+ * for one record and say why — a Pokemon that is visible but cannot travel is far
+ * better than one that vanishes. */
 static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0) {
   const char* locked = g_src_why ? g_src_why(rec) : 0;
-  enum { RO_VIEW, RO_EDIT, RO_LEGAL, RO_COPY, RO_CANCEL };
+  enum { RO_VIEW, RO_EDIT, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_CANCEL };
   int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
   lab[n] = PDNA_LBL_VIEW;     act[n++] = RO_VIEW;
-  /* EDIT is the GB session's own in-place editor (pdna_gen12.c), not the Gen-3 one:
-   * it edits the Game Boy record, never the converted copy this menu was handed. */
-  if (g_src_edit) { lab[n] = PDNA_LBL_EDIT_GB; act[n++] = RO_EDIT; }
+  /* EDIT / MOVE TO / RELEASE are the GB session's own in-place pipeline (pdna_gen12.c),
+   * never the Gen-3 one: each edits the Game Boy record by address, never the converted
+   * copy this menu was handed. */
+  if (g_src_ops && g_src_ops->edit)    { lab[n] = PDNA_LBL_EDIT_GB;   act[n++] = RO_EDIT; }
+  if (g_src_ops && g_src_ops->move)    { lab[n] = PDNA_LBL_MOVE_TO;   act[n++] = RO_MOVE; }
+  if (g_src_ops && g_src_ops->release) { lab[n] = PDNA_LBL_RELEASE;   act[n++] = RO_RELEASE; }
   lab[n] = PDNA_LBL_LEGALITY; act[n++] = RO_LEGAL;
   if (!locked) { lab[n] = PDNA_LBL_COPY; act[n++] = RO_COPY; }
   lab[n] = PDNA_LBL_CANCEL;   act[n++] = RO_CANCEL;
@@ -3357,7 +3362,9 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0) 
       switch (act[sel]) {
         case RO_VIEW:  { uint8_t d[100]; int card = 0;
                          pdna_inspect(rec, is_party, false, d, 0, &card); return false; }
-        case RO_EDIT:  return g_src_edit ? g_src_edit(rec) : false;
+        case RO_EDIT:    return (g_src_ops && g_src_ops->edit)    ? g_src_ops->edit(rec)    : false;
+        case RO_MOVE:    return (g_src_ops && g_src_ops->move)    ? g_src_ops->move(rec)    : false;
+        case RO_RELEASE: return (g_src_ops && g_src_ops->release) ? g_src_ops->release(rec) : false;
         case RO_LEGAL: pdna_legality_show(m0); return false;
         case RO_COPY:  return app_copy(rec, is_party);
         default:       return false;
