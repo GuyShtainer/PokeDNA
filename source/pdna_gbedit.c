@@ -120,6 +120,16 @@ static bool confirm(const GbEditMon* e) {
   }
 
   ui_clear();
+  /* Which mon this arms a write for -- the screen used to ask "Write to the save?"
+   * without ever naming it. Same header render() draws at y=10 (species/level/DVs,
+   * gbe_header), truncated the same way; built from `e` so it is dynamic text and
+   * cannot be a pdna_layout.h macro. Drawn at y=26, ABOVE the title (y=40): there is
+   * nothing else in that band and it reads name-then-question rather than squeezing
+   * a line into the y=40..56 gap, which is too tight for one. */
+  char hdr[HDR_MAX], lt[29 * 4 + 1];
+  gbe_header(e, hdr, sizeof hdr);
+  ui_truncate(lt, hdr, 29);
+  ui_text(20, 26, UI_DIRCLR, lt);
   ui_text(20, 40, UI_TITLE, PDNA_GBEDIT_CONFIRM_TITLE);
   int y = PDNA_GBEDIT_CONFIRM_Y0;
   if (issue) {
