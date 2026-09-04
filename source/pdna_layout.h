@@ -567,7 +567,9 @@
 #define PDNA_GBEDIT_MOVE_NEEDSBASE_L2 "Gen 1: withdraw it in-game instead."
 #define PDNA_GBEDIT_MOVE_FLOOR_L2     "The party must keep one Pokemon."
 #define PDNA_GBEDIT_MOVE_MAIL_L2      "Take the Mail off it in-game first."
-#define PDNA_GBEDIT_MOVE_FULL_L2      "That box is full."
+/* NOT "That box is full." -- gbs_status_text(GBS_ERR_FULL) already says exactly that as
+ * msg_wait's L1, so an L2 repeating it would tell the player nothing new. */
+#define PDNA_GBEDIT_MOVE_FULL_L2      "Free a slot there first."
 
 /* gb_pick_box's full-screen destination list -- same fixed sys8 layout as
  * gb_report_page/gb_info_page (title at x=4,y=3; footer at x=4,y=150; both 8px/glyph). */
