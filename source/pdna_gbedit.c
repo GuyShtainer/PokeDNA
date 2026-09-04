@@ -45,7 +45,7 @@ static void row_paint(const GbEditMon* e, int f, int i, bool sel, bool erase_top
   int y0 = erase_top ? y - 1 : y;
   ui_fill_rect(2, y0, 236, y + UI_ROW_H - y0, UI_BG);
   if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-  ui_text(PDNA_EDIT_LBL_X, y, sel ? UI_SELTEXT : UI_DIM, gbe_label(f));
+  ui_text(PDNA_EDIT_LBL_X, y, sel ? UI_SELTEXT : UI_DIM, gbe_label_of(e, f));
   char val[GBE_VALUE_MAX], vt[PDNA_EDIT_VAL_COLS * 4 + 1];
   gbe_value(e, f, val, sizeof val);
   ui_truncate(vt, val, PDNA_EDIT_VAL_COLS);
@@ -138,7 +138,7 @@ static void press(GbEditMon* e, int f) {
   if (kind == GBE_K_TEXT) {
     char cur[GB_TEXT_MAX], out[GB_TEXT_MAX], bad[GB_GLYPH_MAX];
     gbe_value(e, f, cur, sizeof cur);
-    if (!osk_input(gbe_label(f), cur, out, sizeof out)) return;
+    if (!osk_input(gbe_label_of(e, f), cur, out, sizeof out)) return;
     if (gbe_set_text(e, f, out, bad)) { snd_edit(); return; }
     snd_deny();
     if (bad[0]) msg_wait("CAN'T STORE THAT", UI_WARN, "Not in this game's charset:", bad);

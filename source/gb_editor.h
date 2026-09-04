@@ -51,6 +51,10 @@ int gbe_fields(const GbEditMon* e, uint8_t out[GBE_NUM]);
 const char* gbe_label(int f);
 int         gbe_kind(int f);
 
+/* Same as gbe_label except a Gen-2 EGG's Friendship row reads "Egg cycles" -- that
+ * byte is the hatch counter while the list byte is 0xFD. */
+const char* gbe_label_of(const GbEditMon* e, int f);
+
 /* The row's value as text. Moves use pk_move_name (Gen-1/2 move ids ARE the Gen-3 ids
  * for 1..251); a Gen-2 held item has no name table in this tree and is shown as "#n". */
 void gbe_value(const GbEditMon* e, int f, char* out, int cap);

@@ -45,6 +45,11 @@ int gbe_fields(const GbEditMon* e, uint8_t out[GBE_NUM]) {
 
 const char* gbe_label(int f) { return (f >= 0 && f < GBE_NUM) ? LABEL[f] : "?"; }
 
+const char* gbe_label_of(const GbEditMon* e, int f) {
+  if (f == GBE_FRIEND && e && gb_is_egg(e)) return "Egg cycles";
+  return gbe_label(f);
+}
+
 int gbe_kind(int f) {
   if (f == GBE_NICK || f == GBE_OT) return GBE_K_TEXT;
   if (f >= GBE_MV0 && f <= GBE_MV3) return GBE_K_MOVE;

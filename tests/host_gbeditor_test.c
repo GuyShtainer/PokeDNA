@@ -125,6 +125,12 @@ static void one_slot(GbSession* s, int box, int slot) {
   char hdr[64];
   gbe_header(&e, hdr, sizeof hdr);
   CHECK(strstr(hdr, "Lv") != 0, "the header names a level");
+  if (gb_is_egg(&e))
+    CHECK(strcmp(gbe_label_of(&e, GBE_FRIEND), "Egg cycles") == 0,
+          "an egg's friendship row is labelled as the hatch counter");
+  else
+    CHECK(strcmp(gbe_label_of(&e, GBE_FRIEND), gbe_label(GBE_FRIEND)) == 0,
+          "a hatched mon keeps the Friendship label");
   for (int i = 0; i < n; i++) one_row(&e, box, slot, rows[i]);
 
   /* 4: the refusals */
