@@ -702,6 +702,7 @@ static bool gb_info_page(const Gb12Mount* m) {
 typedef struct {
   GbSession  s;
   uint8_t    list[GBS_LIST_BYTES];
+  uint8_t    list2[GBS_LIST_BYTES];   /* S3: gbs_move's SECOND staging buffer (destination) */
   uint8_t    scratch[GBS_SCRATCH_BYTES];
   uint8_t*   img;             /* the resident save, edited in place            */
   uint8_t*   pristine;        /* byte-exact copy: rollback after a failed write */
@@ -718,55 +719,74 @@ static void s_busy(const char* line) {
 }
 
 /* The card refused; put RAM back to what the card holds so the grid never shows an
- * edit that did not land, and re-latch the session over the restored bytes. */
-static void gb_edit_rollback(void) {
+ * edit that did not land, and re-latch the session over the restored bytes. Also the
+ * documented recovery for gbs_move()'s own atomicity contract (gb_session.h): a failure
+ * on the SOURCE half of a move can leave the destination half already committed in RAM,
+ * and this is the only way back to a state the card actually holds. */
+static void gb_rollback(void) {
   memcpy(g_ed->img, g_ed->pristine, g_ed->len);
   gbs_open(&g_ed->s, g_ed->img, g_ed->len, g_ed->scratch, sizeof g_ed->scratch);
   if (g_m) g_m->loaded = -1;
 }
 
 /* noinline is the whole point of the split: with one call site GCC inlines it at -O2 and
- * bak[272] + l1[64] are back in gb_edit_hook's frame for the entire editor run (measured
- * 472 B inlined vs 120 + 360 B split). savefile.c:122 uses the same attribute for the
- * same reason. */
-static bool __attribute__((noinline)) gb_edit_persist(int box, int slot);
+ * bak[272] would be back in every hook's frame for the entire editor/picker run (measured
+ * 472 B inlined vs 120 + 360 B split for the S2 editor alone). savefile.c:122 uses the
+ * same attribute for the same reason. Shared by all three hooks now: `what_for_log` is
+ * the one-word tag ("edit"/"move"/"release") each hook's own detailed log line already
+ * named, so this function's own lines stay generic. */
+static bool __attribute__((noinline)) gb_persist(const char* what_for_log);
 
-/* app_src_edit_set() hook: EDIT on the read-only mon menu. `rec80` identifies the slot
- * by ADDRESS inside the paged box, exactly like pdna_gen12_why_locked; the box is the
- * one the mount has paged. The GB numbering is the grid's own: storage boxes 0..n-1 and
- * the party at n, which is GEN1_PARTY_BOX / G2_BOX_PARTY (both == their box count).
- *
- * Order of gates, each refusing with the card untouched:
+/* Shared by gb_edit_hook / gb_move_hook / gb_release_hook: `rec80`'s ADDRESS inside the
+ * paged box (exactly like pdna_gen12_why_locked) resolves to a (box, slot) in the GB
+ * session's own numbering -- storage boxes 0..n-1 and the party at n, which is
+ * GEN1_PARTY_BOX / G2_BOX_PARTY (both == their box count) -- gated on the two things
+ * every one of the three needs before it may touch the image at all:
  *   1. the cart (app_can_edit: Omega only, hard rule 4);
- *   2. the box (gbs_box_writable: a Gen-1 virgin bank would DESTROY the edit);
- *   3. the record (gb_commit_checked: the bytes landed where the editor put them);
- *   4. the image (gbs_commit_list: the engine's own structural + verify gates);
- *   5. the card (gb_edit_persist: sf_backup_rolling, then sf_write_verified's four steps).
- * Returns true only after step 5 -- but that return value is not what re-pages the
- * grid: both app_mon_menu call sites (pdna_box.c) discard it and re-fetch
- * src->records(box) unconditionally. The re-page happens because gb_edit_persist's
- * success path sets g_m->loaded = -1, which forces the next records() to reload. */
-static bool gb_edit_hook(uint8_t* rec80) {
-  if (!g_ed || !g_m || !g_m->recs || !rec80) return false;
+ *   2. the box (gbs_box_writable: a Gen-1 virgin bank would DESTROY the edit).
+ * Returns false (nothing touched, the user already told why for 1/2) or true with
+ * the out-params box and slot filled in. */
+static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
+  if (!g_ed || !g_m || !g_m->recs || !rec80 || !box || !slot) return false;
   const uint8_t* base = g_m->recs + 0x0004;
   if (rec80 < base || rec80 >= base + (uint32_t)GB12_SLOTS * 80) return false;
   uint32_t d = (uint32_t)(rec80 - base);
   if (d % 80u) return false;
-  int slot = (int)(d / 80u);
-  int box  = g_m->loaded;
-  if (box < 0) return false;
+  *slot = (int)(d / 80u);
+  *box  = g_m->loaded;
+  if (*box < 0) return false;
 
-  if (!app_can_edit()) { snd_deny(); msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, PDNA_GBEDIT_NEEDS_OMEGA, 0); return false; }  /* 1 */
-
-  GbSession* s = &g_ed->s;
-  GbsStatus st = gbs_box_writable(s, box);                                   /* 2 */
+  if (!app_can_edit()) {                                                    /* 1 */
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_READONLY_TITLE, UI_WARN, PDNA_GBEDIT_NEEDS_OMEGA, 0);
+    return false;
+  }
+  GbsStatus st = gbs_box_writable(&g_ed->s, *box);                          /* 2 */
   if (st != GBS_OK) {
     snd_deny();
     msg_wait(PDNA_GBEDIT_BOXWR_TITLE, UI_WARN, gbs_status_text(st),
              st == GBS_ERR_UNWRITABLE ? PDNA_GBEDIT_UNWRITABLE_HINT : 0);
     return false;
   }
-  st = gbs_load_list(s, box, g_ed->list);
+  return true;
+}
+
+/* app_src_ops_set() hook: EDIT on the read-only mon menu.
+ *
+ * Order of gates past gb_locate's two, each refusing with the card untouched:
+ *   3. the record (gb_commit_checked: the bytes landed where the editor put them);
+ *   4. the image (gbs_commit_list: the engine's own structural + verify gates);
+ *   5. the card (gb_persist: sf_backup_rolling, then sf_write_verified's four steps).
+ * Returns true only after step 5 -- but that return value is not what re-pages the
+ * grid: both app_mon_menu call sites (pdna_box.c) discard it and re-fetch
+ * src->records(box) unconditionally. The re-page happens because gb_persist's
+ * success path sets g_m->loaded = -1, which forces the next records() to reload. */
+static bool gb_edit_hook(uint8_t* rec80) {
+  int box, slot;
+  if (!gb_locate(rec80, &box, &slot)) return false;
+  GbSession* s = &g_ed->s;
+
+  GbsStatus st = gbs_load_list(s, box, g_ed->list);
   if (st != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(st), 0); return false; }
   if (slot >= gb_list_count(s->gen, g_ed->list, box)) {
     snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
@@ -783,31 +803,162 @@ static bool gb_edit_hook(uint8_t* rec80) {
   }
   st = gbs_commit_list(s, box, g_ed->list);                                  /* 4 */
   if (st != GBS_OK) {
-    gb_edit_rollback();
-    log_line("gen12: commit box %d slot %d refused: %s", box, slot, gbs_status_text(st));
+    gb_rollback();
+    log_line("gen12: edit commit box %d slot %d refused: %s", box, slot, gbs_status_text(st));
     snd_error();
     msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(st), PDNA_GBEDIT_UNCHANGED_L2);
     return false;
   }
 
-  return gb_edit_persist(box, slot);
+  log_line("=== gb edit commit -> %s box %d slot %d ===", g_ed->path, box, slot);
+  return gb_persist("edit");                                                 /* 5 */
 }
 
-/* Step 5: the card. Same two safe points as the Gen-3 path (pdna_main.c app_commit): the
- * motor is off the bus for both transfers, and the log is flushed after the verdict. Split
- * out of gb_edit_hook so `bak` (SF_PATH_MAX, 272 B) is not live in that frame while the
- * editor screen and its keyboard/picker sub-screens run. */
-static bool gb_edit_persist(int box, int slot) {
-  log_line("=== gb edit commit -> %s box %d slot %d ===", g_ed->path, box, slot);
+/* MOVE TO's destination picker: every box the session knows, party last (S3 design,
+ * docs/GEN12-EDIT-DESIGN.md section 6). `exclude` (the box the mon already lives in) is
+ * drawn UI_DIM and is never reachable by UP/DOWN or pickable by A -- moving a box to
+ * itself is not a move gbs_move() even accepts (GBS_ERR_ARG). Returns the picked box,
+ * or -1 on B. */
+static int gb_pick_box(const Gb12Mount* m, int exclude) {
+  int n = m->party_box + 1;
+  if (n <= 1) return -1;
+  int sel = (exclude == 0) ? 1 : 0;
+  int top = 0;
+  for (;;) {
+    if (sel < top) top = sel;
+    if (sel >= top + PDNA_GBEDIT_PICKBOX_ROWS) top = sel - PDNA_GBEDIT_PICKBOX_ROWS + 1;
+
+    ui_clear();
+    ui_text(4, 3, UI_TITLE, PDNA_GBEDIT_PICKBOX_TITLE);
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    int shown = n - top;
+    if (shown > PDNA_GBEDIT_PICKBOX_ROWS) shown = PDNA_GBEDIT_PICKBOX_ROWS;
+    for (int i = 0; i < shown; i++) {
+      int b = top + i;
+      char nm[12];
+      pdna_gen12_box_name(m, b, nm);
+      int y = PDNA_GBEDIT_PICKBOX_Y0 + i * PDNA_GBEDIT_PICKBOX_ROW_H;
+      bool sh = (b == sel);
+      if (sh) ui_panel(2, y - 1, UI_SCR_W - 4, PDNA_GBEDIT_PICKBOX_ROW_H, UI_SEL, UI_TITLE);
+      ui_text(4, y, (b == exclude) ? UI_DIM : (sh ? UI_SELTEXT : UI_TEXT), nm);
+    }
+    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+    ui_text(4, 150, UI_DIM, PDNA_GBEDIT_PICKBOX_FOOT);
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return -1;
+    if (k & KEY_UP)   { do { sel = (sel > 0) ? sel - 1 : n - 1; } while (sel == exclude); }
+    if (k & KEY_DOWN) { do { sel = (sel + 1) % n; } while (sel == exclude); }
+    if ((k & KEY_A) && sel != exclude) return sel;
+  }
+}
+
+/* app_src_ops_set() hook: MOVE TO on the read-only mon menu (S3). Picks a destination,
+ * then gbs_move() -- see its header for the full refusal list and the atomicity
+ * contract this function has to honour: a non-OK return can mean the DESTINATION half
+ * already committed (the source delete is what failed), so every non-OK here rolls the
+ * whole image back, not just on the ones that look like they need it. */
+static bool gb_move_hook(uint8_t* rec80) {
+  int box, slot;
+  if (!gb_locate(rec80, &box, &slot)) return false;
+
+  int dst = gb_pick_box(g_m, box);
+  if (dst < 0) return false;                       /* B on the picker: nothing touched */
+
+  int to_slot = -1;
+  GbsStatus st = gbs_move(&g_ed->s, box, slot, dst, &to_slot, g_ed->list, g_ed->list2);
+  if (st != GBS_OK) {
+    /* A refusal BEFORE either commit (ARG/SLOT/FULL/PARTY_FLOOR/MAIL/NEEDS_BASE/BOX)
+     * leaves the image untouched, and gb_rollback() over an untouched image is a no-op
+     * memcpy -- calling it unconditionally is simpler than tracking which refusals are
+     * "safe" and is documented as the deliberate choice in gb_session.h's own header. */
+    gb_rollback();
+    log_line("gen12: move box %d slot %d -> box %d refused: %s",
+             box, slot, dst, gbs_status_text(st));
+    snd_error();
+    const char* hint = 0;
+    switch (st) {
+      case GBS_ERR_NEEDS_BASE:  hint = PDNA_GBEDIT_MOVE_NEEDSBASE_L2; break;
+      case GBS_ERR_PARTY_FLOOR: hint = PDNA_GBEDIT_MOVE_FLOOR_L2;     break;
+      case GBS_ERR_MAIL:        hint = PDNA_GBEDIT_MOVE_MAIL_L2;      break;
+      case GBS_ERR_FULL:        hint = PDNA_GBEDIT_MOVE_FULL_L2;      break;
+      default: break;
+    }
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(st), hint);
+    return false;
+  }
+
+  log_line("=== gb move -> %s box %d slot %d -> box %d slot %d ===",
+           g_ed->path, box, slot, dst, to_slot);
+  return gb_persist("move");
+}
+
+/* app_src_ops_set() hook: RELEASE on the read-only mon menu (S3). Confirms with the
+ * mon's own GB nickname (decoded fresh via gb_load -- NEVER the converted Gen-3 record
+ * the grid shows, which the design forbids editing off of), then gbs_delete(). */
+/* Split out of gb_release_hook so its own frame never has to hold a GbEditMon
+ * (~90 B, gb_edit.h's own estimate) alongside the two name buffers app_confirm needs
+ * -- same "noinline sheds the big locals" reasoning as gb_persist's split for
+ * bak[SF_PATH_MAX]. Decodes the mon's OWN GB nickname (never the converted Gen-3
+ * record the grid shows -- the design forbids editing off of that). */
+static bool __attribute__((noinline))
+gb_release_confirm(uint8_t gen, const uint8_t* list, int box, int slot) {
+  char name[GB_TEXT_MAX], l1[64];
+  GbEditMon e;
+  if (gb_load(&e, gen, list, box, slot)) gb_get_nickname(&e, name, sizeof name);
+  else name[0] = 0;
+  /* app_confirm wraps l1 to 2 lines inside a 184 px proportional panel; 12 glyphs of
+   * even the widest GB nickname (10 real glyphs max, GB_NICK_GLYPHS) clears that with
+   * room to spare, and the ASCII fallback is exactly 12 characters, needing no cut. */
+  ui_truncate(l1, name[0] ? name : "this Pokemon", 12);
+  return app_confirm(PDNA_GBEDIT_RELEASE_TITLE, l1);
+}
+
+static bool gb_release_hook(uint8_t* rec80) {
+  int box, slot;
+  if (!gb_locate(rec80, &box, &slot)) return false;
+  GbSession* s = &g_ed->s;
+
+  GbsStatus st = gbs_load_list(s, box, g_ed->list);
+  if (st != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(st), 0); return false; }
+  if (slot >= gb_list_count(s->gen, g_ed->list, box)) {
+    snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
+  }
+
+  if (!gb_release_confirm(s->gen, g_ed->list, box, slot)) return false;
+
+  st = gbs_delete(s, box, slot, g_ed->list);
+  if (st != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: release box %d slot %d refused: %s", box, slot, gbs_status_text(st));
+    snd_error();
+    const char* hint = (st == GBS_ERR_PARTY_FLOOR) ? PDNA_GBEDIT_MOVE_FLOOR_L2
+                      : (st == GBS_ERR_MAIL)        ? PDNA_GBEDIT_MOVE_MAIL_L2
+                      : PDNA_GBEDIT_UNCHANGED_L2;
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(st), hint);
+    return false;
+  }
+
+  log_line("=== gb release -> %s box %d slot %d ===", g_ed->path, box, slot);
+  return gb_persist("release");
+}
+
+/* Step 5 (all three hooks): the card. Same two safe points as the Gen-3 path (pdna_main.c
+ * app_commit): the motor is off the bus for both transfers, and the log is flushed after
+ * the verdict. Split out of the hooks so `bak` (SF_PATH_MAX, 272 B) is not live in any of
+ * their frames while the editor/picker/confirm sub-screens run. `what_for_log` is the
+ * one-word tag ("edit"/"move"/"release") the calling hook already logged its own
+ * detailed line under, just here to keep THIS function's lines identifiable too. */
+static bool gb_persist(const char* what_for_log) {
   char bak[SF_PATH_MAX]; bak[0] = 0;
   s_busy(PDNA_GBEDIT_BUSY_BACKUP);
   rmbl_pause();
   SfStatus bst = sf_backup_rolling(g_ed->path, bak, sizeof bak);
   rmbl_resume();
   if (bst != SF_OK) {
-    log_line("gb edit: backup failed (%s)", sf_status_str(bst));
+    log_line("gb %s: backup failed (%s)", what_for_log, sf_status_str(bst));
     app_log_flush();
-    gb_edit_rollback();
+    gb_rollback();
     snd_error();
     msg_wait(PDNA_GBEDIT_BACKUPFAIL_TITLE, UI_WARN, sf_status_str(bst), PDNA_GBEDIT_DISCARDED_L2);
     return false;
@@ -816,7 +967,7 @@ static bool gb_edit_persist(int box, int slot) {
   rmbl_pause();
   SfStatus wst = sf_write_verified(g_ed->path, g_ed->img, g_ed->len);
   rmbl_resume();
-  log_line("gb edit: write %s (backup %s)", wst == SF_OK ? "OK" : sf_status_str(wst), bak);
+  log_line("gb %s: write %s (backup %s)", what_for_log, wst == SF_OK ? "OK" : sf_status_str(wst), bak);
   app_log_flush();
   if (wst == SF_ERR_RENAME) {
     /* The bytes were written AND read back byte-for-byte -- it is the final swap the
@@ -827,14 +978,14 @@ static bool gb_edit_persist(int box, int slot) {
     nm = nm ? nm + 1 : g_ed->path;
     char l1[64];
     SfWhere w = sf_where_are_the_bytes(g_ed->path, g_ed->img, g_ed->len);
-    log_line("gb edit: rename unconfirmed, bytes are at %d (%s)", (int)w, nm);
+    log_line("gb %s: rename unconfirmed, bytes are at %d (%s)", what_for_log, (int)w, nm);
     app_log_flush();
     if (w == SF_WHERE_TARGET) {                     /* it IS on the card; only unconfirmed */
       siprintf(l1, "%.30s looks correct", nm);
       msg_wait(PDNA_GBEDIT_UNCONFIRMED_TITLE, UI_WARN, l1, PDNA_GBEDIT_UNCONFIRMED_L2);
       /* fall through: the card really holds the new image, so this is a success */
     } else {
-      gb_edit_rollback();
+      gb_rollback();
       snd_error();
       switch (w) {
         case SF_WHERE_TMP_ONLY:                     /* the loud one: no .sav on the card */
@@ -853,7 +1004,7 @@ static bool gb_edit_persist(int box, int slot) {
       return false;
     }
   } else if (wst != SF_OK) {
-    gb_edit_rollback();
+    gb_rollback();
     snd_error();
     msg_wait(PDNA_GBEDIT_WRITEFAIL_TITLE, UI_WARN, sf_status_str(wst), PDNA_GBEDIT_DISCARDED_L2);
     return false;
@@ -872,6 +1023,11 @@ static bool gb_edit_persist(int box, int slot) {
 _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
                "GB import (resident image) no longer fits the borrowed EWRAM arena");
 
+/* S2/S3: the resident-image edit pipeline's three hooks, registered as one const struct
+ * (pdna_app.h's AppSrcOps) rather than three separate setters -- const data lives in
+ * ROM, so this costs nothing against the EWRAM guard. */
+static const AppSrcOps k_gb_ops = { gb_edit_hook, gb_move_hook, gb_release_hook };
+
 /* Info page -> box grid -> the "these did not convert" report. The whole session above
  * the mount, shared by both entry points: the only difference between opening a GB save
  * from a loaded Gen-3 save's nav menu and opening one straight off the file browser is
@@ -880,12 +1036,12 @@ static void gb_session_core(Gb12Mount* m) {
   rmbl_fire(RCUE_ROOM);
   if (!gb_info_page(m)) return;              /* B on the info page = never entered */
   /* Tell app_mon_menu that the ACTIVE box source is read-only, so its destructive
-   * actions (PASTE / RELEASE / DUPLICATE / CREATE / MOVE) are not offered on a
-   * source that cannot accept them. This also suppresses the bank's deferred-delete
-   * bookkeeping for these boxes — see pdna_main.c. Cleared unconditionally below;
-   * every exit from the box screen passes through it. */
+   * actions (PASTE / DUPLICATE / CREATE) are not offered on a source that cannot
+   * accept them. This also suppresses the bank's deferred-delete bookkeeping for these
+   * boxes — see pdna_main.c. Cleared unconditionally below; every exit from the box
+   * screen passes through it. */
   app_src_readonly_set(pdna_gen12_why_locked, "Converted copy");
-  if (g_ed) app_src_edit_set(gb_edit_hook);       /* S2: EDIT on the read-only menu */
+  if (g_ed) app_src_ops_set(&k_gb_ops);      /* S2/S3: EDIT / MOVE TO / RELEASE */
   BoxSource s = pdna_gen12_source(m);
   /* Returns 0 on B / the SAVE tab, 5 when the cursor drops off the bottom row (the
    * PC<->Bank hand-off, which has no PC to hand off to here) — re-enter on the top
