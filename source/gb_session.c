@@ -220,13 +220,27 @@ GbsStatus gbs_commit_list(GbSession* s, int box, const uint8_t* list) {
    * inside the checksummed span, refreshes both stored checksums, then re-reads and
    * re-parses the WHOLE file and refuses unless it comes back exactly as intended. Its
    * scratch was set at gbs_open and has been its own ever since. */
+  /* NOT mapped to GBS_ERR_MAIL: g2w_commit_list raises G2W_ERR_PARTY_MAIL whenever the
+   * party's count+species area differs from what is on disk and party_mail_ack is not
+   * set -- which fires just as readily for an S2 in-place species/Egg edit (gb_edit_hook
+   * never sets the ack) as for an actual S3 restructure. Reporting that as "a party
+   * member is holding Mail" would be a FALSE statement about a save with no Mail
+   * anywhere in it -- caught on Crystal.sav during review. gbs_delete/gbs_move (below)
+   * are the only S3 callers that legitimately mean this refusal, and they detect it
+   * themselves via g2_party_has_mail() BEFORE ever touching party_mail_ack or calling
+   * this function, so they never depend on this mapping. Falls through to the generic
+   * engine refusal instead, as it did before S3.
+   *
+   * G2W_ERR_FULL / G2W_ERR_EMPTY are not mapped either: g2w_commit_list never returns
+   * them (only its own g2w_check_list, write_patch, refresh_checksums and g2w_verify
+   * calls contribute a status, and none of those four can produce FULL/EMPTY -- those
+   * come only from the slot-level ops g2w_put/insert/append/delete/get, which this
+   * function never calls). Mapping a status the callee cannot produce is dead code that
+   * looks load-bearing; removed rather than left as false documentation. */
   G2WStatus st = g2w_commit_list(&s->g2w, box, list);
   if (st == G2W_OK)          return GBS_OK;
   if (st == G2W_ERR_STRUCT || st == G2W_ERR_CONTENT) return GBS_ERR_STRUCT;
   if (st == G2W_ERR_VERIFY)  return GBS_ERR_VERIFY;
-  if (st == G2W_ERR_PARTY_MAIL) return GBS_ERR_MAIL;
-  if (st == G2W_ERR_FULL)    return GBS_ERR_FULL;
-  if (st == G2W_ERR_EMPTY)   return GBS_ERR_SLOT;
   return GBS_ERR_ENGINE;
 }
 
