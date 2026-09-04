@@ -106,6 +106,46 @@ NEW_NICK = "GATEX"          # pure-letter ASCII, well inside GB_NICK_GLYPHS (10)
                              # Game Boy generation's charset can show it as typed
 BOX_CAPACITY = 20           # both generations' storage boxes (gb_edit.c gen1/g2_list_capacity)
 
+SCRATCH_MARKER = ".gb_retail_gate"   # written into every scratch dir this script creates
+
+
+# --------------------------------------------------------------------------
+# scratch-directory safety (a user-supplied --scratch is rmtree'd; guard it)
+# --------------------------------------------------------------------------
+def _contains(parent: Path, child: Path) -> bool:
+    """True if `child` is `parent` itself or lives anywhere under it."""
+    parent, child = parent.resolve(), child.resolve()
+    return parent == child or parent in child.parents
+
+
+def guard_scratch_path(scratch: Path, corpus: Path):
+    """Refuse outright if --scratch could ever put the corpus at risk: rmtree(scratch)
+    must never be able to reach `corpus` (or the reverse -- writing/removing scratch
+    contents inside a directory this tool treats as READ ONLY is its own footgun)."""
+    if _contains(scratch, corpus) or _contains(corpus, scratch):
+        print(f"refusing --scratch {scratch.resolve()}: it equals, contains, or is "
+              f"contained by the corpus directory {corpus.resolve()} -- this tool "
+              "rmtree's its scratch dir and must never be able to touch the corpus",
+              file=sys.stderr)
+        sys.exit(2)
+
+
+def prepare_scratch(scratch: Path):
+    """rmtree an EXISTING scratch dir only if a previous run of THIS script created it
+    (the marker file), so pointing --scratch at some unrelated directory by mistake
+    (a typo, a shell-expansion accident) fails loudly instead of deleting it."""
+    marker = scratch / SCRATCH_MARKER
+    if scratch.exists():
+        if not marker.exists():
+            print(f"refusing to remove {scratch.resolve()}: it already exists and has "
+                  f"no {SCRATCH_MARKER} marker, so it was not created by "
+                  "gb_retail_gate.py. Point --scratch at an empty or gate-owned "
+                  "directory.", file=sys.stderr)
+            sys.exit(2)
+        shutil.rmtree(scratch)
+    scratch.mkdir(parents=True, exist_ok=True)
+    marker.write_text("gb_retail_gate.py scratch directory -- safe to delete\n")
+
 
 # --------------------------------------------------------------------------
 # the surgery tool (tests/host_gbsurgery_tool.c)
@@ -507,9 +547,9 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     scratch = Path(a.scratch)
-    if scratch.exists():
-        shutil.rmtree(scratch)
-    scratch.mkdir(parents=True, exist_ok=True)
+    corpus = Path(a.corpus)
+    guard_scratch_path(scratch, corpus)
+    prepare_scratch(scratch)
 
     t0 = time.time()
     binary = build_tool(scratch)
@@ -533,6 +573,9 @@ def main(argv=None):
     print(f"\n{total_ok} ok, {total_fail} FAIL, {total_skip} skip -- {dt:.1f}s wall")
 
     if not a.keep:
+        # Safe without re-checking the marker: this is the SAME directory
+        # guard_scratch_path()/prepare_scratch() already verified and stamped at the
+        # top of this run.
         shutil.rmtree(scratch, ignore_errors=True)
     else:
         print(f"scratch kept at {scratch}")
