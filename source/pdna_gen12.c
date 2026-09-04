@@ -819,10 +819,34 @@ static bool gb_edit_hook(uint8_t* rec80) {
  * drawn UI_DIM and is never reachable by UP/DOWN or pickable by A -- moving a box to
  * itself is not a move gbs_move() even accepts (GBS_ERR_ARG). Returns the picked box,
  * or -1 on B. */
+/* The largest either generation's box list can be: G2_NUM_BOXES (14) storage boxes +
+ * the party pseudo-box = 15 (Gen 1 is 12 + 1 = 13). Sized to that rather than to
+ * m->party_box + 1 at call time so the array is a fixed frame slot, not a VLA. */
+#define GB12_PICKBOX_MAX 15
+
 static int gb_pick_box(const Gb12Mount* m, int exclude) {
   int n = m->party_box + 1;
   if (n <= 1) return -1;
-  int sel = (exclude == 0) ? 1 : 0;
+  if (n > GB12_PICKBOX_MAX) n = GB12_PICKBOX_MAX;   /* defensive; never true today */
+
+  /* Every box gbs_box_writable refuses (a Gen-1 virgin/uninitialised bank) is exactly as
+   * unreachable as `exclude` -- moving a Pokemon there would only bounce back off
+   * gbs_move's own gbs_commit_list gate, so it is dimmed and skipped here instead of
+   * offered and then refused a screen later. Computed ONCE, not per repaint: a box's
+   * writability cannot change while this picker is up (nothing else touches the image). */
+  bool skip[GB12_PICKBOX_MAX];
+  int selectable = 0;
+  for (int b = 0; b < n; b++) {
+    skip[b] = (b == exclude) || (gbs_box_writable(&g_ed->s, b) != GBS_OK);
+    if (!skip[b]) selectable++;
+  }
+  if (!selectable) {
+    msg_wait(PDNA_GBEDIT_PICKBOX_NONE_TITLE, UI_WARN, PDNA_GBEDIT_PICKBOX_NONE_L1, 0);
+    return -1;
+  }
+
+  int sel = 0;
+  while (skip[sel]) sel++;                          /* selectable > 0, so this halts */
   int top = 0;
   for (;;) {
     if (sel < top) top = sel;
@@ -840,16 +864,16 @@ static int gb_pick_box(const Gb12Mount* m, int exclude) {
       int y = PDNA_GBEDIT_PICKBOX_Y0 + i * PDNA_GBEDIT_PICKBOX_ROW_H;
       bool sh = (b == sel);
       if (sh) ui_panel(2, y - 1, UI_SCR_W - 4, PDNA_GBEDIT_PICKBOX_ROW_H, UI_SEL, UI_TITLE);
-      ui_text(4, y, (b == exclude) ? UI_DIM : (sh ? UI_SELTEXT : UI_TEXT), nm);
+      ui_text(4, y, skip[b] ? UI_DIM : (sh ? UI_SELTEXT : UI_TEXT), nm);
     }
     ui_hline(0, 147, UI_SCR_W, UI_BORDER);
     ui_text(4, 150, UI_DIM, PDNA_GBEDIT_PICKBOX_FOOT);
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return -1;
-    if (k & KEY_UP)   { do { sel = (sel > 0) ? sel - 1 : n - 1; } while (sel == exclude); }
-    if (k & KEY_DOWN) { do { sel = (sel + 1) % n; } while (sel == exclude); }
-    if ((k & KEY_A) && sel != exclude) return sel;
+    if (k & KEY_UP)   { do { sel = (sel > 0) ? sel - 1 : n - 1; } while (skip[sel]); }
+    if (k & KEY_DOWN) { do { sel = (sel + 1) % n; } while (skip[sel]); }
+    if ((k & KEY_A) && !skip[sel]) return sel;
   }
 }
 
@@ -882,6 +906,11 @@ static bool gb_move_hook(uint8_t* rec80) {
       case GBS_ERR_PARTY_FLOOR: hint = PDNA_GBEDIT_MOVE_FLOOR_L2;     break;
       case GBS_ERR_MAIL:        hint = PDNA_GBEDIT_MOVE_MAIL_L2;      break;
       case GBS_ERR_FULL:        hint = PDNA_GBEDIT_MOVE_FULL_L2;      break;
+      /* gb_pick_box already dims and skips every box gbs_box_writable refuses, so this
+       * should be unreachable in practice -- kept as a real case, not folded into
+       * `default`, because "unreachable in practice" is not a proof and a refusal this
+       * specific deserves its own hint rather than silently falling back to none. */
+      case GBS_ERR_UNWRITABLE:  hint = PDNA_GBEDIT_UNWRITABLE_HINT;   break;
       default: break;
     }
     msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(st), hint);

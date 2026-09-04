@@ -561,6 +561,9 @@ int main(void) {
       147 - 1,
       PDNA_GBEDIT_PICKBOX_Y0 + (PDNA_GBEDIT_PICKBOX_ROWS - 1) * PDNA_GBEDIT_PICKBOX_ROW_H + UI_ROW_H - 1,
       "pickbox rows clear the footer rule");
+  /* Shown via msg_wait when every box is unwritable -- same (28, .., 184) clamp. */
+  PF(PDNA_GBEDIT_PICKBOX_NONE_TITLE, 28, 184);
+  PF(PDNA_GBEDIT_PICKBOX_NONE_L1,    28, 184);
   /* ==== END: GB mon editor ================================================= */
 
   /* ==== ADDED for the native-generation art router (source/pdna_origin_art.c) ====

@@ -579,6 +579,11 @@
 #define PDNA_GBEDIT_PICKBOX_ROW_H  10
 #define PDNA_GBEDIT_PICKBOX_ROWS   12    /* visible rows; last row's ink ends at y=137,
                                            * clear of the y=147 footer rule           */
+/* Shown (via the shared msg_wait, 184px proportional clamp) instead of the picker when
+ * every box but the source is a virgin/uninitialised Gen-1 bank -- there is nowhere to
+ * pick, so no destination list is drawn at all. */
+#define PDNA_GBEDIT_PICKBOX_NONE_TITLE "NO DESTINATION"
+#define PDNA_GBEDIT_PICKBOX_NONE_L1    "No other box can be written to."
 
 /* ---------------------------------------------------------------------------
  * Settings + Rumble pages (source/pdna_main.c)
