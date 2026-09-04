@@ -773,6 +773,7 @@ static bool gb_edit_hook(uint8_t* rec80) {
   }
   st = gbs_commit_list(s, box, g_ed->list);                                  /* 4 */
   if (st != GBS_OK) {
+    gb_edit_rollback();
     log_line("gen12: commit box %d slot %d refused: %s", box, slot, gbs_status_text(st));
     snd_error();
     msg_wait("EDIT REFUSED", UI_WARN, gbs_status_text(st), "Save unchanged.");
