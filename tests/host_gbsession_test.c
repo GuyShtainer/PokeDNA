@@ -230,6 +230,20 @@ static void one_save(const char* file, uint8_t expect_gen) {
  * S3 — list surgery: gbs_delete / gbs_move
  * ========================================================================== */
 
+/* gbs_is_mail_item's own boundary: FLOWER_MAIL (0x9e) is isolated, so its immediate
+ * neighbour 0x9f (LEVEL_BALL, item_constants.asm:167) must NOT read as Mail; the
+ * contiguous run is 0xb5..0xbd (SURF_MAIL..MIRAGE_MAIL, lines 189-197), so 0xb4
+ * (BRICK_PIECE, line 188) is the other just-outside id, and 0xb5/0xbd are the run's own
+ * two ends. This is what makes the "NOT one contiguous range" claim testable rather
+ * than asserted. */
+static void s3_mail_predicate_boundaries(void) {
+  CHECK(gbs_is_mail_item(0x9e), "gbs_is_mail_item: FLOWER_MAIL (0x9e) is Mail");
+  CHECK(!gbs_is_mail_item(0x9f), "gbs_is_mail_item: 0x9f (LEVEL_BALL) is NOT Mail");
+  CHECK(!gbs_is_mail_item(0xb4), "gbs_is_mail_item: 0xb4 (BRICK_PIECE) is NOT Mail");
+  CHECK(gbs_is_mail_item(0xb5), "gbs_is_mail_item: SURF_MAIL (0xb5) is Mail");
+  CHECK(gbs_is_mail_item(0xbd), "gbs_is_mail_item: MIRAGE_MAIL (0xbd) is Mail");
+}
+
 /* Do slot `sa` of `la` (box `boxa`) and slot `sb` of `lb` (box `boxb`) hold the SAME
  * Pokemon — species-list byte, record, OT name and nickname all byte-identical? Used to
  * prove compaction (a survivor now at index i is the original's index i+1) and to prove
@@ -509,7 +523,7 @@ static void s3_gen2_party_box(const char* file) {
   bool has_mail = false;
   for (int i = 0; i < pcount; i++) {
     GbEditMon e;
-    if (gb_load(&e, GB_GEN2, g_list, pb, i) && gb_get_held_item(&e) >= 0x9e) has_mail = true;
+    if (gb_load(&e, GB_GEN2, g_list, pb, i) && gbs_is_mail_item(gb_get_held_item(&e))) has_mail = true;
   }
   int nb = gbs_nboxes(&s), srcbox = -1;
   for (int b = 0; b < nb && !has_mail; b++) {
@@ -636,6 +650,7 @@ int main(void) {
   printf("gb_session (resident-image edit pipeline)\n");
 
   rejects_garbage();
+  s3_mail_predicate_boundaries();
 
   one_save("Red.sav",     GB_GEN1);
   one_save("Yellow.sav",  GB_GEN1);

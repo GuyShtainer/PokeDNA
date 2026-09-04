@@ -214,4 +214,13 @@ GbsStatus gbs_delete(GbSession* s, int box, int slot, uint8_t* list);
 GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* to_slot,
                    uint8_t* src_list, uint8_t* dst_list);
 
+/* Gen-2 Mail item ids, from the decomp (assets/upstream/pokecrystal/constants/
+ * item_constants.asm) -- NOT one contiguous range: FLOWER_MAIL sits alone at 0x9e
+ * (line 166, between HEAVY_BALL and LEVEL_BALL), and the other nine (SURF_MAIL ..
+ * MIRAGE_MAIL) are contiguous at 0xb5..0xbd (lines 189-197). Exposed (not file-static)
+ * so a caller checking "does this held item mean gbs_delete/gbs_move will refuse with
+ * GBS_ERR_MAIL" — a test, or a future UI hint — asks the exact same predicate this file
+ * refuses on, rather than a second hand-copied guess at the ranges. */
+bool gbs_is_mail_item(uint8_t item);
+
 #endif /* GB_SESSION_H */

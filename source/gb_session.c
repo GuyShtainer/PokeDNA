@@ -286,14 +286,13 @@ static bool g2_nonegg_survives(const uint8_t* list, int box, int exclude) {
   return false;
 }
 
-/* Gen-2 Mail item ids, from the decomp (assets/upstream/pokecrystal/constants/
- * item_constants.asm) -- NOT one contiguous range as the design doc guessed: FLOWER_MAIL
- * sits alone at 0x9e (line 166, between HEAVY_BALL and LEVEL_BALL), and the other nine
- * (SURF_MAIL .. MIRAGE_MAIL) are contiguous at 0xb5..0xbd (lines 189-197). */
+/* See gb_session.h for the citation; declared there (not static) so
+ * tests/host_gbsession_test.c checks the SAME predicate this file refuses on, rather
+ * than a second hand-copied guess at the id ranges. */
 #define G2_MAIL_FLOWER  0x9eu
 #define G2_MAIL_LO      0xb5u
 #define G2_MAIL_HI      0xbdu
-static bool g2_is_mail_item(uint8_t item) {
+bool gbs_is_mail_item(uint8_t item) {
   return item == G2_MAIL_FLOWER || (item >= G2_MAIL_LO && item <= G2_MAIL_HI);
 }
 
@@ -307,7 +306,7 @@ static bool g2_party_has_mail(const uint8_t* list, int box) {
   for (int i = 0; i < n; i++) {
     GbEditMon e;
     if (!gb_load(&e, GB_GEN2, list, box, i)) continue;
-    if (g2_is_mail_item(gb_get_held_item(&e))) return true;
+    if (gbs_is_mail_item(gb_get_held_item(&e))) return true;
   }
   return false;
 }
