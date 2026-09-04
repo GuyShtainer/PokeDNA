@@ -541,6 +541,25 @@ int main(void) {
   PF(PDNA_GBEDIT_BACKUPFAIL_TITLE,  28, 184);
   PF(PDNA_GBEDIT_WRITEFAIL_TITLE,   28, 184);
   PF(PDNA_GBEDIT_DISCARDED_L2,      28, 184);
+
+  /* S3: MOVE TO / RELEASE (source/pdna_gen12.c). RELEASE's title goes through the
+   * shared app_confirm(), which draws at the same (28, .., 184) clamp as msg_wait; the
+   * move-refusal hints are msg_wait's own second line, same clamp. */
+  PF(PDNA_GBEDIT_RELEASE_TITLE,     28, 184);
+  PF(PDNA_GBEDIT_MOVE_NEEDSBASE_L2, 28, 184);
+  PF(PDNA_GBEDIT_MOVE_FLOOR_L2,     28, 184);
+  PF(PDNA_GBEDIT_MOVE_MAIL_L2,      28, 184);
+  PF(PDNA_GBEDIT_MOVE_FULL_L2,      28, 184);
+
+  /* gb_pick_box's full-screen list: fixed sys8 title/footer at x=4, same as
+   * gb_report_page/gb_info_page's own "NOT TRANSFERABLE" / "A browse..." checks above. */
+  T(PDNA_GBEDIT_PICKBOX_TITLE, 4);
+  T(PDNA_GBEDIT_PICKBOX_FOOT,  4);
+  /* Its last visible row's ink must clear the y=147 footer rule. */
+  chk("pickbox last row", 0,
+      147 - 1,
+      PDNA_GBEDIT_PICKBOX_Y0 + (PDNA_GBEDIT_PICKBOX_ROWS - 1) * PDNA_GBEDIT_PICKBOX_ROW_H + UI_ROW_H - 1,
+      "pickbox rows clear the footer rule");
   /* ==== END: GB mon editor ================================================= */
 
   /* ==== ADDED for the native-generation art router (source/pdna_origin_art.c) ====

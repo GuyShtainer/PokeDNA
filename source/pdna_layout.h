@@ -132,6 +132,7 @@
 #define PDNA_LBL_CANCEL      "CANCEL"
 #define PDNA_LBL_VIEW        "VIEW"           /* read-only popup only */
 #define PDNA_LBL_EDIT_GB     "EDIT"           /* read-only popup, GB session only */
+#define PDNA_LBL_MOVE_TO     "MOVE TO"        /* read-only popup, GB session S3 only */
 
 /* Every label either action popup can show, so the host test measures the strings the
  * menus actually draw. The X() entries are the macros above, not fresh literals. */
@@ -141,11 +142,11 @@
   X(PDNA_LBL_DUPLICATE) X(PDNA_LBL_TO_DAYCARE) X(PDNA_LBL_TO_GAME)                    \
   X(PDNA_LBL_EXPORT_PK) X(PDNA_LBL_TAKE_ITEM) X(PDNA_LBL_GIVE_ITEM)                   \
   X(PDNA_LBL_RELEASE) X(PDNA_LBL_CREATE) X(PDNA_LBL_PASTE_HERE) X(PDNA_LBL_CANCEL)    \
-  X(PDNA_LBL_VIEW) X(PDNA_LBL_EDIT_GB)
+  X(PDNA_LBL_VIEW) X(PDNA_LBL_EDIT_GB) X(PDNA_LBL_MOVE_TO)
 
 /* Read-only source popup: the header grows by one line per explanatory line above the
  * rows (the source's note, and the per-record "why this one is locked"). */
-#define PDNA_ROMENU_MAX       5               /* VIEW, EDIT?, LEGALITY, COPY?, CANCEL */
+#define PDNA_ROMENU_MAX       7               /* VIEW, EDIT?, MOVE TO?, RELEASE?, LEGALITY, COPY?, CANCEL */
 #define PDNA_ROMENU_HDR       15              /* title only                           */
 #define PDNA_ROMENU_LINE      10              /* each optional prose line             */
 #define PDNA_ROMENU_HEAD_PAD   3              /* divider -> first row                 */
@@ -549,6 +550,28 @@
 #define PDNA_GBEDIT_BACKUPFAIL_TITLE "BACKUP FAILED"
 #define PDNA_GBEDIT_WRITEFAIL_TITLE  "WRITE FAILED"
 #define PDNA_GBEDIT_DISCARDED_L2   "Save NOT modified; edit discarded."
+
+/* S3: MOVE TO / RELEASE (source/pdna_gen12.c gb_move_hook/gb_release_hook/gb_pick_box).
+ * RELEASE's title goes through the shared app_confirm() (pdna_main.c), which draws its
+ * title with the SAME x=28/184px proportional clamp msg_wait uses -- measured in the
+ * same PF(...,28,184) block as the other GBEDIT titles below. */
+#define PDNA_GBEDIT_RELEASE_TITLE     "Release this Pokemon?"
+
+/* gb_move_hook's per-status hints, shown as msg_wait's second line alongside
+ * gbs_status_text(st) as the first -- 184px proportional, same clamp. */
+#define PDNA_GBEDIT_MOVE_NEEDSBASE_L2 "Gen 1: withdraw it in-game instead."
+#define PDNA_GBEDIT_MOVE_FLOOR_L2     "The party must keep one Pokemon."
+#define PDNA_GBEDIT_MOVE_MAIL_L2      "Take the Mail off it in-game first."
+#define PDNA_GBEDIT_MOVE_FULL_L2      "That box is full."
+
+/* gb_pick_box's full-screen destination list -- same fixed sys8 layout as
+ * gb_report_page/gb_info_page (title at x=4,y=3; footer at x=4,y=150; both 8px/glyph). */
+#define PDNA_GBEDIT_PICKBOX_TITLE  "MOVE TO"
+#define PDNA_GBEDIT_PICKBOX_FOOT   "A pick  B cancel"
+#define PDNA_GBEDIT_PICKBOX_Y0     20    /* first row's y, below the y=13 title rule */
+#define PDNA_GBEDIT_PICKBOX_ROW_H  10
+#define PDNA_GBEDIT_PICKBOX_ROWS   12    /* visible rows; last row's ink ends at y=137,
+                                           * clear of the y=147 footer rule           */
 
 /* ---------------------------------------------------------------------------
  * Settings + Rumble pages (source/pdna_main.c)
