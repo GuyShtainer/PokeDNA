@@ -749,7 +749,7 @@ static bool gb_edit_hook(uint8_t* rec80) {
   int box  = g_m->loaded;
   if (box < 0) return false;
 
-  if (!app_can_edit()) { snd_deny(); return false; }                        /* 1 */
+  if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return false; }  /* 1 */
 
   GbSession* s = &g_ed->s;
   GbsStatus st = gbs_box_writable(s, box);                                   /* 2 */
