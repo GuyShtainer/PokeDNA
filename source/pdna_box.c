@@ -2639,8 +2639,13 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
            * below, so the grabbed mon can be walked back to the panel. */
           start_carry(src, recs, box, gcur);
           play_grab_anim(src, box, gcur);
-        } else if (g_box[gcur].species) {   /* GRAB: the box's own action menu, same call
-                                            * the outer loop's NORMAL-mode A already makes */
+        } else if (g_box[gcur].species || app_src_paste_offered()) {   /* GRAB / PASTE (GB):
+                                            * the box's own action menu, same call the
+                                            * outer loop's NORMAL-mode A already makes.
+                                            * S5-B review fix (BLOCKING #1): an empty GB
+                                            * cell must still open the menu when PASTE
+                                            * (GB) is on offer, or that action is
+                                            * unreachable from this focus. */
           int mbox = src->is_bank ? 0 : box;
           boxoam_suspend();                 /* full-screen sub-view — own bracket, see box_oam.h */
           app_mon_menu(recs + (uint32_t)gcur * 80, false, src->is_bank, src->commit,
@@ -3215,8 +3220,11 @@ int pdna_box(BoxSource* src) {
     }
     else if (k & KEY_A) {
       /* NORMAL: open the action menu on an occupied slot, or on an empty slot when
-       * editable (CREATE a mon, or PASTE if the clipboard holds one). */
-      if (g_box[cur].species || src->can_edit()) {
+       * editable (CREATE a mon, or PASTE if the clipboard holds one) -- or, S5-B review
+       * fix (BLOCKING #1), when a read-only GB source is offering PASTE (GB): that
+       * source's can_edit() is always false, so without this OR an empty GB cell never
+       * opened the menu PASTE (GB) lives in at all. */
+      if (g_box[cur].species || src->can_edit() || app_src_paste_offered()) {
         uint8_t* rec = recs + (uint32_t)cur * 80;
         int mbox = src->is_bank ? 0 : box;                               /* box index within menu_block */
         boxoam_suspend();                                                /* sprites off while the menu/summary is up */

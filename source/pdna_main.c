@@ -3471,6 +3471,17 @@ void app_src_readonly_clear(void) { g_src_why = 0; g_src_note = 0; g_src_ro = fa
 void app_src_ops_set(const AppSrcOps* ops) { g_src_ops = ops; }
 bool app_src_readonly(void) { return g_src_ro; }
 
+/* S5-B review fix (BLOCKING #1): pdna_box.c's own grid loop decides whether A even
+ * OPENS app_mon_menu on an empty cell BEFORE app_mon_menu ever runs -- its two call
+ * sites gate on `g_box[cur].species || src->can_edit()`, and a foreign read-only
+ * source's can_edit() is a constant false, so an empty GB cell never reached the menu
+ * PASTE (GB) was added to. This is the same predicate app_mon_menu's own g_src_ro
+ * branch already uses to decide whether to offer PASTE (GB) at all -- exposed here so
+ * pdna_box.c can OR it into its own gate without duplicating the four-way check. */
+bool app_src_paste_offered(void) {
+  return g_src_ro && g_src_ops && g_src_ops->paste && g_clip.occupied && !g_clip.from_gb;
+}
+
 /* The action menu for a source that is read-only in ITSELF: only actions that cannot
  * touch it directly through the Gen-3 path, plus whatever the source's OWN in-place
  * pipeline offers (EDIT / MOVE TO / RELEASE, S2/S3, each NULL-gated on g_src_ops). VIEW
@@ -3575,10 +3586,16 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
    * destructive paths on src->can_edit(); this is the same gate for the menu. */
   if (g_src_ro) {
     if (!occupied) {
-      /* S5-B: an empty GB cell offers PASTE (GB) only when this source accepts one AND
-       * the clipboard holds a Gen-3 record that did not itself come off a Game Boy
-       * source (from_gb) -- pasting a GB-native clip back down would be the wrong
-       * direction and gen3_to_gb() would refuse it anyway (no Gen-3 record to convert). */
+      /* S5-B review fix #11: explicit, not relied-on-by-implication -- pk_decode_mon's
+       * own memset already zeroed `m0` above on this path (species 0 -> occupied ==
+       * false), but app_mon_menu_readonly(..., empty=true) is handed `&m0` regardless,
+       * so this stays correct even if that internal detail of pk_decode_mon ever
+       * changes. */
+      memset(&m0, 0, sizeof m0);
+      /* An empty GB cell offers PASTE (GB) only when this source accepts one AND the
+       * clipboard holds a Gen-3 record that did not itself come off a Game Boy source
+       * (from_gb) -- pasting a GB-native clip back down would be the wrong direction
+       * and gen3_to_gb() would refuse it anyway (no Gen-3 record to convert). */
       if (g_src_ops && g_src_ops->paste && g_clip.occupied && !g_clip.from_gb)
         return app_mon_menu_readonly(rec, is_party, &m0, true);
       return false;                                       /* nothing to create or paste into */

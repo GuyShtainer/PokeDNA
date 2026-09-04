@@ -1278,6 +1278,33 @@ static bool gb_paste_hook(uint8_t* rec80) {
     return false;
   }
 
+  /* S5-B review fix (BLOCKING #1): the grid shows 30 cells but a GB box holds at most
+   * gb_list_capacity() (20 for Gen 2) -- cells 20..29 always read empty on this source,
+   * so without this check a paste attempted there would write the sidecar to the card
+   * FIRST and only then have gbs_insert() refuse with GBS_ERR_FULL inside
+   * gb_paste_write(), leaving an orphan sidecar entry behind on EVERY such attempt
+   * rather than only on a genuine race. `g_ed->list` is reloaded a moment later by
+   * gb_paste_write()'s own gbs_insert() -- cheap, and every other hook in this file
+   * re-derives its own gates fresh the same way. */
+  GbsStatus lst = gbs_load_list(&g_ed->s, box, g_ed->list);
+  if (lst != GBS_OK) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(lst), 0);
+    return false;
+  }
+  int cnt = gb_list_count(g_ed->s.gen, g_ed->list, box);
+  if (cnt < 0) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_STRUCT), 0);
+    return false;
+  }
+  if (cnt >= gb_list_capacity(g_ed->s.gen, box)) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_FULL),
+             PDNA_GBEDIT_MOVE_FULL_L2);
+    return false;
+  }
+
   return gb_paste_write(&mon, box);                                         /* 6-8 */
 }
 

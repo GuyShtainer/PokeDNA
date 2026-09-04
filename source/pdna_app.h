@@ -119,6 +119,16 @@ void app_src_ops_set(const AppSrcOps* ops);
  * this speculatively and do not retain the pointer past the hook's return. */
 const uint8_t* app_clip_rec(void);
 
+/* S5-B review fix: would app_mon_menu(rec80, ...) on THIS empty cell right now offer
+ * PASTE (GB)? pdna_box.c's grid loop decides whether to call app_mon_menu AT ALL on an
+ * empty cell before app_mon_menu ever runs (`g_box[cur].species || src->can_edit()`),
+ * and a foreign read-only source's can_edit() is always false -- so without this, an
+ * empty GB cell's A press was silently swallowed and PASTE (GB) was unreachable. OR
+ * this into that gate. True iff: a read-only source is active, it registered a `paste`
+ * hook, and the clipboard holds a Gen-3 record that did not itself come off a Game Boy
+ * source (the exact same four-way check app_mon_menu's own g_src_ro branch uses). */
+bool app_src_paste_offered(void);
+
 /* Bank "Copy to game": inject a stored 80-byte box record into the loaded save's
  * first free PC box slot (and commit). Returns true iff written. Omega-only. */
 bool app_inject_to_game(const uint8_t* rec80);
