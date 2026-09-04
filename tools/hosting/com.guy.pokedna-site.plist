@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.guy.pokedna-site</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/local/bin/python3</string><string>-m</string><string>http.server</string>
+    <string>8770</string><string>--bind</string><string>127.0.0.1</string>
+    <string>--directory</string>
+    <string>/Users/guyshtainer/VSCodeProjects/gba-toolkit/projects/PokeDNA/docs/site</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/pokedna-site.log</string>
+  <key>StandardErrorPath</key><string>/tmp/pokedna-site.log</string>
+</dict></plist>

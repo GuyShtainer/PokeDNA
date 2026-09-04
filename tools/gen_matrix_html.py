@@ -4,6 +4,8 @@
 Quick viewer, not a build step: run it again after editing the markdown.
     python3 tools/gen_matrix_html.py && open docs/feature-matrix.html
 """
+import base64
+import datetime
 import html
 import pathlib
 import re
@@ -14,6 +16,17 @@ import markdown
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "docs" / "FEATURE-MATRIX.md"
 OUT = ROOT / "docs" / "feature-matrix.html"
+# A second copy in a folder that holds ONLY the page: docs/ itself carries fused ROM
+# builds and analysis dumps, so the tailnet server (tools/hosting/) serves docs/site alone.
+SITE = ROOT / "docs" / "site" / "index.html"
+# Screenshots embedded as data URIs so the page stays one self-contained file.
+SHOTS = [
+    (ROOT / "docs" / "contact-sheet-2026-08-30.png",
+     "Contact sheet, 2026-08-30 arc (repaint pass D1-D10, DMA audit B3) — emulator build"),
+    (ROOT / "docs" / "shots" / "sheet-artless.png", "Artless build, 2026-08-08"),
+    (ROOT / "docs" / "shots" / "sheet-p1-rom-gated-icons.png",
+     "ROM-gated icons, 2026-08-08"),
+]
 
 # status token -> (css class, colour)
 TOKENS = {
@@ -78,6 +91,7 @@ TEMPLATE = """<!doctype html>
 </div>
 <div class="wrap">
 BODY
+SHOTS_HTML
 <p class="foot">Generated from <code>docs/FEATURE-MATRIX.md</code> by
 <code>tools/gen_matrix_html.py</code>. Edit the markdown, re-run the script.</p>
 </div>
@@ -138,10 +152,30 @@ def main() -> int:
         for c in TOKENS.values()
     )
 
+    shots = []
+    for path, caption in SHOTS:
+        if not path.exists():
+            continue
+        data = base64.b64encode(path.read_bytes()).decode("ascii")
+        shots.append(
+            '<figure style="margin:18px 0"><img src="data:image/png;base64,%s" '
+            'style="max-width:100%%;border:1px solid #21262d;border-radius:6px" alt="%s">'
+            '<figcaption style="color:#8b949e;font-size:13px;margin-top:6px">%s</figcaption></figure>'
+            % (data, html.escape(caption), html.escape(caption)))
+    shots_html = ""
+    if shots:
+        shots_html = ('<h2 id="shots">Screenshots</h2><p>The GB editor (S2b) has no picture yet: '
+                      'the Game Boy fork is compiled out of the emulator build, so its first '
+                      'screen will come from the Omega run.</p>' + "".join(shots))
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     page = (TEMPLATE.replace("BADGECSS", badgecss)
                     .replace("BUTTONS", buttons)
-                    .replace("BODY", body))
+                    .replace("BODY", body)
+                    .replace("SHOTS_HTML", shots_html)
+                    .replace("</h1>", "</h1><p style=\"color:#8b949e;margin:0 0 18px\">Page generated " + stamp + "</p>", 1))
     OUT.write_text(page, encoding="utf-8")
+    SITE.parent.mkdir(parents=True, exist_ok=True)
+    SITE.write_text(page, encoding="utf-8")
     print("%s  (%d bytes)" % (OUT, OUT.stat().st_size))
     print("badges: " + ", ".join("%s=%d" % (t, n) for t, n in counts.items()))
     return 0
