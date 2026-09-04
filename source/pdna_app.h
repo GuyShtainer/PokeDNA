@@ -10,6 +10,16 @@
 /* Shared app glue so the party list and box grid can open the editor and persist
  * safely. Implemented in pdna_main.c (which owns the loaded save + path). */
 
+/* Hard rule 9 (one folder per tool): every file PokeDNA writes lives under this one
+ * root. S5-B review fix (item #10): promoted here from a pdna_main.c-local #define
+ * so pdna_gen12.c's sidecar code (and any other future writer) shares the SAME
+ * literal instead of keeping its own copy that could silently drift from this one.
+ * PDNA_SIDECAR_DIR is the one place both S5-B callers (pdna_main.c's
+ * app_paste_gb_merge, pdna_gen12.c's gb_paste_write/gb_has_sidecar) get the sidecar
+ * folder from. */
+#define PDNA_DIR          "/PokeDNA"
+#define PDNA_SIDECAR_DIR  PDNA_DIR "/sidecar"
+
 /* Writes are EZ-Flash-Omega-only. */
 bool app_can_edit(void);
 

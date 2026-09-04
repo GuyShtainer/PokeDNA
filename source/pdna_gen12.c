@@ -539,11 +539,8 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
 #include "gba_rtc.h"       /* S5-B: the sidecar entry's transfer-time RTC stamp        */
 
-/* Same value as pdna_main.c's PDNA_DIR "/sidecar" (hard rule 9: one folder per tool).
- * Not shared through a header because nothing in this tree centralises PokeDNA's own
- * path constants today (pdna_main.c's LOG_PATH is likewise a local #define) -- if
- * PDNA_DIR ever changes, this one must change with it. */
-#define PDNA_GEN12_SIDECAR_DIR "/PokeDNA/sidecar"
+/* S5-B review fix #10: PDNA_SIDECAR_DIR now lives in pdna_app.h (included above), not
+ * duplicated as a local literal here. */
 
 #define GB12_A4(n)  (((uint32_t)(n) + 3u) & ~3u)
 /* One arena block holds everything: the mount, the FatFs handle we keep open for the
@@ -850,8 +847,8 @@ static bool __attribute__((noinline)) gb_has_sidecar(uint8_t gen, const GbEditMo
     gb_get_dv(mon, GB_SPE), gb_get_dv(mon, GB_SPC)
   };
   uint64_t key = gbsc_key(mon->gen, gb_get_otid(mon), dv4, mon->otname);
-  char path[48];
-  if (gbsc_path(path, sizeof path, PDNA_GEN12_SIDECAR_DIR, key) < 0) return false;
+  char path[GBSC_PATH_MAX];
+  if (gbsc_path(path, sizeof path, PDNA_SIDECAR_DIR, key) < 0) return false;
   FILINFO fi;
   return f_stat(path, &fi) == FR_OK;
 }
@@ -1184,15 +1181,54 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
     gb_get_dv(mon, GB_SPE), gb_get_dv(mon, GB_SPC)
   };
   uint64_t key = gbsc_key(mon->gen, gb_get_otid(mon), dv4, mon->otname);
-  char path[48];
-  if (gbsc_path(path, sizeof path, PDNA_GEN12_SIDECAR_DIR, key) < 0) return false;
+  char path[GBSC_PATH_MAX];
+  if (gbsc_path(path, sizeof path, PDNA_SIDECAR_DIR, key) < 0) return false;
 
-  f_mkdir(PDNA_GEN12_SIDECAR_DIR);            /* FR_EXIST is fine (hard rule 9) */
+  /* S5-B review fix #10: PDNA_SIDECAR_MKDIR_TITLE was measured but never wired up --
+   * f_mkdir's result was silently discarded. FR_EXIST is the expected steady state
+   * (every transfer after the first); anything else means the write below cannot
+   * possibly land, so say so now rather than let sf_write_verified fail later with a
+   * less specific message. */
+  FRESULT mkr = f_mkdir(PDNA_SIDECAR_DIR);
+  if (mkr != FR_OK && mkr != FR_EXIST) {
+    log_line("gen12: sidecar mkdir %s failed (%d)", PDNA_SIDECAR_DIR, (int)mkr);
+    snd_error();
+    msg_wait(PDNA_SIDECAR_MKDIR_TITLE, UI_WARN, PDNA_SIDECAR_NOTWRITTEN_L2, 0);
+    return false;
+  }
 
   uint32_t len = 0;
   SfStatus rst = sf_read_full(path, g_ed->sidecar, GBSC_FILE_MAX, &len);
-  if (rst != SF_OK || gbsc_count(g_ed->sidecar, len) < 0)
-    len = (uint32_t)gbsc_init(g_ed->sidecar, key);   /* absent or corrupt: start fresh */
+  if (rst == SF_OK && gbsc_count(g_ed->sidecar, len) < 0) {
+    /* S5-B review fix #3 (BLOCKING): the file EXISTS but fails its own CRC -- up to
+     * GBSC_MAX_ENTRIES-1 OTHER mons' ORIGINAL Gen-3 records live in those bytes.
+     * gbsc_init()-ing straight over them (the old behaviour here) would DESTROY every
+     * one. Rename the corrupt file aside instead -- preserved, in case a future tool
+     * can recover it -- and only THEN start fresh; overwriting an older .bad is
+     * deliberate (this is already the second corruption of the same key, so there is
+     * nothing more to preserve by keeping the first .bad too). */
+    char badpath[GBSC_PATH_MAX + 4];
+    int bp = 0;
+    while (path[bp] && bp < GBSC_PATH_MAX - 1) { badpath[bp] = path[bp]; bp++; }
+    badpath[bp++] = '.'; badpath[bp++] = 'b'; badpath[bp++] = 'a'; badpath[bp++] = 'd';
+    badpath[bp] = 0;
+    f_unlink(badpath);
+    FRESULT rr = f_rename(path, badpath);
+    log_line("gen12: sidecar %s failed its CRC, renamed to %s (%s)",
+             path, badpath, rr == FR_OK ? "OK" : "FAILED");
+    if (rr != FR_OK) {
+      /* The corrupt bytes are still at `path` -- refuse rather than risk
+       * gbsc_init()+sf_write_verified() overwriting them a moment later. */
+      snd_error();
+      msg_wait(PDNA_SIDECAR_CORRUPT_TITLE, UI_WARN, PDNA_SIDECAR_NOTWRITTEN_L2, 0);
+      return false;
+    }
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_CORRUPT_TITLE, UI_WARN, PDNA_SIDECAR_CORRUPT_KEPT_L1, 0);
+    len = (uint32_t)gbsc_init(g_ed->sidecar, key);
+  } else if (rst != SF_OK) {
+    len = (uint32_t)gbsc_init(g_ed->sidecar, key);   /* absent: start fresh */
+  }
 
   GbaRtcTime t;
   uint32_t epoch = 0;
@@ -1206,7 +1242,7 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
   int idx = gbsc_add(g_ed->sidecar, &len, GBSC_FILE_MAX, &e);
   if (idx < 0) {
     snd_deny();
-    msg_wait(PDNA_SIDECAR_FULL_TITLE, UI_WARN, PDNA_SIDECAR_FULL_L1, 0);
+    msg_wait(PDNA_SIDECAR_FULL_TITLE, UI_WARN, PDNA_SIDECAR_FULL_L1, PDNA_SIDECAR_NOTWRITTEN_L2);
     return false;
   }
 

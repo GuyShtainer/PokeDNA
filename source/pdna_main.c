@@ -97,7 +97,8 @@
 #include "ui.h"
 #include "pdna_layout.h"   /* screen geometry + fixed strings, shared with the host text-fit test */
 
-#define PDNA_DIR      "/PokeDNA"            /* all of PokeDNA's on-card files live here (not the SD root) */
+/* PDNA_DIR itself now lives in pdna_app.h (S5-B review fix #10: shared, not re-defined
+ * per file) -- pdna_app.h is included above, before this point. */
 #define LOG_PATH      "/PokeDNA/log.txt"
 #define PATH_MAX      256
 #define MAX_ENTRIES   256
@@ -2475,6 +2476,128 @@ static bool app_sidecar_confirm(const GbscMergeReport* rep) {
   return yes;
 }
 
+/* Lookup + merge half of app_paste_gb_merge (S5-B review fix #11: split so the outer
+ * noinline frame's own comment stays honest about what it holds). `buf`/`len` are the
+ * caller's own GBSC_FILE_MAX buffer; read fresh from `path` here. On success fills
+ * `out80`/`rep`/`*idx` and returns true. On any refusal, sets `*handled` per
+ * app_paste_gb_merge's own out-param contract (true = caller returns this function's
+ * return value; false = fall through to the converted-copy path) and returns false. */
+static bool app_paste_gb_lookup(uint8_t* buf, uint32_t* len, const char* path,
+                                uint8_t out80[80], GbscMergeReport* rep, int* idx,
+                                bool* handled) {
+  SfStatus rst = sf_read_full(path, buf, GBSC_FILE_MAX, len);
+  if (rst == SF_ERR_OPEN) {                    /* no such file: never transferred down */
+    *handled = false;
+    msg_wait(PDNA_SIDECAR_NONE_TITLE, UI_OK, PDNA_SIDECAR_NONE_L1, 0);
+    return false;
+  }
+  if (rst != SF_OK) {
+    *handled = true;
+    snd_error();
+    msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, sf_status_str(rst), 0);
+    return false;
+  }
+
+  int n = gbsc_count(buf, *len);
+  if (n < 0) {
+    /* S5-B review fix #3 (BLOCKING): the file EXISTS but fails its own CRC -- NOT the
+     * same thing as "no sidecar". Silently taking the converted-copy path here would
+     * hide real, avoidable data loss from the player. Ask instead: A = paste the
+     * (lossy) converted copy anyway, B = cancel the whole paste. */
+    *handled = true;
+    if (app_confirm(PDNA_SIDECAR_CORRUPT_TITLE, PDNA_SIDECAR_CORRUPT_MERGE_L1)) *handled = false;
+    return false;
+  }
+
+  /* S5-B review fix #7: two same-OT mons with identical dv4 (all-31 IVs are common)
+   * collide on the fingerprint -- gbsc_key() deliberately excludes species (S5-A
+   * design, so a Game Boy evolution still finds its sidecar), so a plain first-match
+   * can hand back the WRONG original for a species the clipboard's GB record no
+   * longer agrees with. Two passes over gbsc_find()'s own `start` walk, bounded by
+   * GBSC_MAX_ENTRIES (golden rule 2): prefer the candidate whose species_written
+   * equals the GB record's CURRENT dex number (unevolved since the transfer, the
+   * common case); fall back to the first match at all (an evolution, whose species is
+   * now EXPECTED to differ from species_written by design). */
+  uint16_t nowdex = gb_get_species_dex(&g_clip.gb);
+  int first = -1, species_match = -1, start = 0;
+  for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
+    int i = gbsc_find(buf, *len, &g_clip.gb, start);
+    if (i < 0) break;
+    if (first < 0) first = i;
+    GbscEntry cand;
+    if (gbsc_get(buf, *len, i, &cand) && cand.species_written == nowdex) {
+      species_match = i;
+      break;
+    }
+    start = i + 1;
+  }
+  int found = (species_match >= 0) ? species_match : first;
+  if (found < 0) {
+    *handled = false;
+    msg_wait(PDNA_SIDECAR_NONE_TITLE, UI_OK, PDNA_SIDECAR_NONE_L1, 0);
+    return false;
+  }
+
+  GbscEntry e;
+  if (!gbsc_get(buf, *len, found, &e) || !gbsc_merge_up(&e, &g_clip.gb, out80, rep)) {
+    *handled = true;
+    snd_error();
+    msg_wait(PDNA_SIDECAR_MERGEFAIL_TITLE, UI_WARN, PDNA_SIDECAR_MERGEFAIL_L1, 0);
+    return false;
+  }
+  *idx = found;
+  return true;
+}
+
+/* Confirm + commit + sidecar-cleanup half of app_paste_gb_merge (S5-B review fix #11).
+ * `buf`/`len` are the same GBSC_FILE_MAX buffer app_paste_gb_lookup() just filled;
+ * `idx`/`merged`/`rep` are its output. Returns whatever app_commit_with_dex() returned
+ * (false only for B on the confirm screen, or a downstream commit refusal -- both mean
+ * "nothing landed", so the caller's *handled stays at its default true either way). */
+static bool app_paste_gb_commit(uint8_t* buf, uint32_t* len, const char* path, int idx,
+                                const uint8_t merged[80], uint8_t* rec, bool is_party,
+                                AppCommitFn commit, uint8_t* block,
+                                const GbscMergeReport* rep) {
+  if (!app_sidecar_confirm(rep)) return false;
+
+  ClipMon tmp; memset(&tmp, 0, sizeof tmp);
+  memcpy(tmp.rec, merged, 80);
+  tmp.is_party = false;                        /* gbsc_merge_up always builds a box record */
+  tmp.occupied = true;
+  uint8_t out[100];
+  if (!clip_to_record(&tmp, is_party, out)) return false;
+  memcpy(rec, out, is_party ? 100 : 80);
+  bool committed = app_commit_with_dex(rec, is_party, commit, block);
+  if (!committed) return false;
+
+  /* Best-effort: the Pokemon is already pasted either way (never undo a landed
+   * write), so a sidecar-bookkeeping failure is reported, not rolled back. */
+  bool sidecar_ok = false;
+  if (gbsc_remove(buf, len, idx) == 0) {
+    if (gbsc_count(buf, *len) == 0) {
+      rmbl_pause();
+      sidecar_ok = (f_unlink(path) == FR_OK);
+      rmbl_resume();
+    } else {
+      rmbl_pause();
+      sidecar_ok = (sf_write_verified(path, buf, *len) == SF_OK);
+      rmbl_resume();
+    }
+  }
+  if (!sidecar_ok) {
+    log_line("gen3: sidecar not updated after merge-paste (%s idx %d)", path, idx);
+    msg_wait(PDNA_SIDECAR_NOTUPDATED_TITLE, UI_WARN,
+             PDNA_SIDECAR_NOTUPDATED_L1, PDNA_SIDECAR_NOTUPDATED_L2);
+  }
+  /* S5-B review fix #6: g_clip.from_gb is DELIBERATELY left true here (an earlier
+   * revision cleared it). A second paste of the SAME clip now re-enters this whole
+   * lookup: the entry it merged is gone (removed above), so sf_read_full/gbsc_find
+   * report "no sidecar" and app_paste() shows "No sidecar: converted copy" before
+   * pasting the lossy converted bytes -- an honest, visible fallback, rather than
+   * silently pasting the converted copy with no notice at all. */
+  return true;
+}
+
 /* S5-B: PASTE in a Gen-3 session when the clipboard came off a Game Boy source
  * (g_clip.from_gb, set by app_copy() via AppSrcOps.copy_native). Looks up
  * /PokeDNA/sidecar/<key>.pds and, when a matching entry is found, restores the
@@ -2484,14 +2607,23 @@ static bool app_sidecar_confirm(const GbscMergeReport* rep) {
  * *handled == true: the whole paste is decided one way or another (merged + committed,
  * or a refusal already shown on screen) -- the caller returns this function's own
  * return value straight through. *handled == false: no sidecar could be found for this
- * clip, so the caller falls through to the ordinary converted-copy path, after this
- * function has already shown the one-line notice ("No sidecar: converted copy").
+ * clip (or its corrupt file was declined), so the caller falls through to the ordinary
+ * converted-copy path, after this function has already shown a notice.
  *
- * noinline: GbscEntry (~130 B) + GbscMergeReport + the 80-byte merged record are real
- * frame weight app_paste's own (much more common) non-GB path should never carry --
- * same "split out the big locals" reasoning as pdna_gen12.c's gb_persist/gb_rollback
- * split. The 1042-byte sidecar file buffer itself is borrowed (app_box_swap_acquire),
- * not on this frame either. */
+ * noinline, and the ONE thing that must stay true of this split (review fix #11): the
+ * 1042-byte sidecar buffer lives HERE, on this frame, not a static and not borrowed --
+ * app_box_swap (pdna_app.h) turned out to be held by box_oam.c for the ENTIRE
+ * box-screen visit (boxoam_enter/exit bracket the whole visit, not a tick --
+ * boxoam_suspend/resume touch only DISPCNT/BLDCNT), so a merge-paste reached from the
+ * box/bank grid's own popup could NEVER have borrowed it -- review fix #2 (BLOCKING).
+ * Stack cost is real but bounded and measured: the deepest call chain through this
+ * function (main -> ... -> app_mon_menu -> app_paste -> here) runs ~6.9 KB against an
+ * 11,512-byte IWRAM stack, and pdna_box.c's own release_box_all path already reaches
+ * ~6.4 KB at the same depth -- this frame's extra ~1 KB is nowhere near the 15-36 KB
+ * class hard rule 2 exists to catch; it is budget spent on purpose, not a big buffer
+ * that wandered onto the stack by accident. app_paste_gb_lookup()/app_paste_gb_commit()
+ * above are deliberately NOT forced noinline (review fix #11): whether GCC inlines them
+ * or not, the 1 KB buffer itself stays right here, passed down by pointer either way. */
 static bool __attribute__((noinline))
 app_paste_gb_merge(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block,
                    bool* handled) {
@@ -2502,91 +2634,17 @@ app_paste_gb_merge(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* blo
     gb_get_dv(&g_clip.gb, GB_SPE), gb_get_dv(&g_clip.gb, GB_SPC)
   };
   uint64_t key = gbsc_key(g_clip.gb.gen, gb_get_otid(&g_clip.gb), dv4, g_clip.gb.otname);
-  char path[48];
-  if (gbsc_path(path, sizeof path, PDNA_DIR "/sidecar", key) < 0) { *handled = false; return false; }
+  char path[GBSC_PATH_MAX];
+  if (gbsc_path(path, sizeof path, PDNA_SIDECAR_DIR, key) < 0) { *handled = false; return false; }
 
-  /* Borrowed, not a new static: pdna_app.h's own contract says NULL means "too big, or
-   * already held" -- box_oam.c holds this SAME cache for the whole box-screen visit
-   * (boxoam_enter/exit), so a PASTE reached from the box/bank grid's popup will find it
-   * held and land here; a PASTE from the party screen (which never touches box_oam)
-   * finds it free. Never silently fall back to the lossy path when a sidecar might
-   * exist -- tell the user to retry instead. */
-  uint8_t* buf = app_box_swap_acquire(GBSC_FILE_MAX);
-  if (!buf) {
-    snd_deny();
-    msg_wait(PDNA_SIDECAR_BUSY_TITLE, UI_WARN, PDNA_SIDECAR_BUSY_L1, PDNA_SIDECAR_BUSY_L2);
-    return false;
-  }
-
+  uint8_t buf[GBSC_FILE_MAX];
   uint32_t len = 0;
-  SfStatus rst = sf_read_full(path, buf, GBSC_FILE_MAX, &len);
-  if (rst == SF_ERR_OPEN) {                    /* no such file: never transferred down */
-    app_box_swap_release();
-    *handled = false;
-    msg_wait(PDNA_SIDECAR_NONE_TITLE, UI_OK, PDNA_SIDECAR_NONE_L1, 0);
-    return false;
-  }
-  if (rst != SF_OK) {
-    app_box_swap_release();
-    snd_error();
-    msg_wait(PDNA_SIDECAR_READFAIL_TITLE, UI_WARN, sf_status_str(rst), 0);
-    return false;
-  }
-
-  int idx = gbsc_find(buf, len, &g_clip.gb, 0);
-  if (idx < 0) {
-    app_box_swap_release();
-    *handled = false;
-    msg_wait(PDNA_SIDECAR_NONE_TITLE, UI_OK, PDNA_SIDECAR_NONE_L1, 0);
-    return false;
-  }
-
-  GbscEntry e;
   uint8_t merged[80];
   GbscMergeReport rep;
-  if (!gbsc_get(buf, len, idx, &e) || !gbsc_merge_up(&e, &g_clip.gb, merged, &rep)) {
-    app_box_swap_release();
-    snd_error();
-    msg_wait(PDNA_SIDECAR_MERGEFAIL_TITLE, UI_WARN, PDNA_SIDECAR_MERGEFAIL_L1, 0);
-    return false;
-  }
+  int idx = -1;
+  if (!app_paste_gb_lookup(buf, &len, path, merged, &rep, &idx, handled)) return false;
 
-  if (!app_sidecar_confirm(&rep)) { app_box_swap_release(); return false; }
-
-  ClipMon tmp; memset(&tmp, 0, sizeof tmp);
-  memcpy(tmp.rec, merged, 80);
-  tmp.is_party = false;                        /* gbsc_merge_up always builds a box record */
-  tmp.occupied = true;
-  uint8_t out[100];
-  if (!clip_to_record(&tmp, is_party, out)) { app_box_swap_release(); return false; }
-  memcpy(rec, out, is_party ? 100 : 80);
-  bool committed = app_commit_with_dex(rec, is_party, commit, block);
-
-  if (committed) {
-    /* Best-effort: the Pokemon is already pasted either way (never undo a landed
-     * write), so a sidecar-bookkeeping failure is reported, not rolled back. */
-    bool sidecar_ok = false;
-    if (gbsc_remove(buf, &len, idx) == 0) {
-      if (gbsc_count(buf, len) == 0) {
-        rmbl_pause();
-        sidecar_ok = (f_unlink(path) == FR_OK);
-        rmbl_resume();
-      } else {
-        rmbl_pause();
-        sidecar_ok = (sf_write_verified(path, buf, len) == SF_OK);
-        rmbl_resume();
-      }
-    }
-    if (!sidecar_ok) {
-      log_line("gen3: sidecar not updated after merge-paste (%s idx %d)", path, idx);
-      msg_wait(PDNA_SIDECAR_NOTUPDATED_TITLE, UI_WARN,
-               PDNA_SIDECAR_NOTUPDATED_L1, PDNA_SIDECAR_NOTUPDATED_L2);
-    }
-    g_clip.from_gb = false;   /* a second paste of the same clip looks for the converted
-                                * path instead of a now-removed entry -- see pdna_app.h */
-  }
-  app_box_swap_release();
-  return committed;
+  return app_paste_gb_commit(buf, &len, path, idx, merged, rec, is_party, commit, block, &rep);
 }
 
 static bool app_paste(uint8_t* rec, bool is_party, AppCommitFn commit, uint8_t* block, bool occupied) {

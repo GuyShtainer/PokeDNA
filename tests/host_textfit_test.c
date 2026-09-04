@@ -583,9 +583,8 @@ int main(void) {
    * screen's own lines use PDNA_SIDECAR_TEXT_X/TEXT_MAXW directly, which today equal
    * the same (28, 184) -- checked from the macros, not retyped, so a future geometry
    * change here is caught rather than silently drifting from what this test measures. */
-  PF(PDNA_SIDECAR_BUSY_TITLE,      28, 184);
-  PF(PDNA_SIDECAR_BUSY_L1,         28, 184);
-  PF(PDNA_SIDECAR_BUSY_L2,         28, 184);
+  /* PDNA_SIDECAR_BUSY_* removed (S5-B review fix BLOCKING #2): app_paste_gb_merge no
+   * longer borrows app_box_swap, so that refusal path no longer exists. */
   PF(PDNA_SIDECAR_READFAIL_TITLE,  28, 184);
   PF(PDNA_SIDECAR_NONE_TITLE,      28, 184);
   PF(PDNA_SIDECAR_NONE_L1,         28, 184);
@@ -594,6 +593,11 @@ int main(void) {
   PF(PDNA_SIDECAR_NOTUPDATED_TITLE,28, 184);
   PF(PDNA_SIDECAR_NOTUPDATED_L1,   28, 184);
   PF(PDNA_SIDECAR_NOTUPDATED_L2,   28, 184);
+  /* S5-B review fix #3: a corrupt (CRC-failed) sidecar file is refused loudly, never
+   * silently reinitialised over other mons' original records. */
+  PF(PDNA_SIDECAR_CORRUPT_TITLE,     28, 184);
+  PF(PDNA_SIDECAR_CORRUPT_KEPT_L1,   28, 184);
+  PF(PDNA_SIDECAR_CORRUPT_MERGE_L1,  28, 184);
 
   PF(PDNA_SIDECAR_CONFIRM_TITLE,   PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
   PF(PDNA_SIDECAR_L_EVOLVED,       PDNA_SIDECAR_TEXT_X, PDNA_SIDECAR_TEXT_MAXW);
@@ -620,6 +624,9 @@ int main(void) {
   PF(PDNA_SIDECAR_GEN1_TITLE,       28, 184);
   PF(PDNA_SIDECAR_GEN1_L1,          28, 184);
   PF(PDNA_SIDECAR_XFER_TITLE,       28, 184);
+  /* S5-B review fix #10: PDNA_SIDECAR_MKDIR_TITLE is now actually wired up (f_mkdir's
+   * result is checked). */
+  PF(PDNA_SIDECAR_MKDIR_TITLE,      28, 184);
   PF(PDNA_SIDECAR_FULL_TITLE,       28, 184);
   PF(PDNA_SIDECAR_FULL_L1,          28, 184);
   PF(PDNA_SIDECAR_NOTWRITTEN_TITLE, 28, 184);

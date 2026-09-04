@@ -592,9 +592,10 @@
  * DV-orphan warning. Body text goes through the shared msg_wait 184px proportional
  * clamp exactly like PDNA_GBEDIT_* above, EXCEPT the merge confirm screen's own
  * per-flag lines, which reuse that same (28, 184) convention directly. */
-#define PDNA_SIDECAR_BUSY_TITLE      "CAN'T MERGE NOW"
-#define PDNA_SIDECAR_BUSY_L1         "The sidecar buffer is busy."
-#define PDNA_SIDECAR_BUSY_L2         "Paste again from the box screen."
+/* S5-B review fix (BLOCKING #2): PDNA_SIDECAR_BUSY_* is GONE -- app_paste_gb_merge()
+ * no longer borrows app_box_swap (box_oam.c holds that cache for the WHOLE box-screen
+ * visit, not a tick, so the borrow could never succeed from the box/bank grid at all);
+ * it now uses its own local stack buffer. See app_paste_gb_merge's own comment. */
 #define PDNA_SIDECAR_READFAIL_TITLE  "SIDECAR READ FAILED"
 #define PDNA_SIDECAR_NONE_TITLE      "NO SIDECAR"
 #define PDNA_SIDECAR_NONE_L1         "No sidecar: converted copy."
@@ -603,6 +604,15 @@
 #define PDNA_SIDECAR_NOTUPDATED_TITLE "SIDECAR NOT UPDATED"
 #define PDNA_SIDECAR_NOTUPDATED_L1   "The Pokemon was pasted;"
 #define PDNA_SIDECAR_NOTUPDATED_L2   "the sidecar entry remains."
+/* S5-B review fix #3 (BLOCKING): a sidecar file that exists but fails its own CRC is
+ * NOT the same as "no sidecar" -- silently falling back to the lossy converted copy
+ * would hide real, avoidable data loss. Two distinct bodies share the one title:
+ * pdna_gen12.c's gb_paste_write() (the file is renamed aside, not destroyed) and
+ * pdna_main.c's app_paste_gb_merge() (an app_confirm: paste the converted copy anyway,
+ * or cancel). */
+#define PDNA_SIDECAR_CORRUPT_TITLE     "SIDECAR CORRUPT"
+#define PDNA_SIDECAR_CORRUPT_KEPT_L1   "Kept as .bad; a new file is started."
+#define PDNA_SIDECAR_CORRUPT_MERGE_L1  "Not merged; converted copy pasted."
 
 /* The merge confirm screen (app_sidecar_confirm, pdna_main.c): one panel, up to six
  * conditional GbscMergeReport lines, then the always-shown EVs line, then A/B. */

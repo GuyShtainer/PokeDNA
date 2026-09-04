@@ -56,6 +56,11 @@
 #define GBSC_HEADER       18
 #define GBSC_ENTRY        128
 #define GBSC_FILE_MAX     (GBSC_HEADER + GBSC_MAX_ENTRIES * GBSC_ENTRY)   /* 1042 */
+/* The on-card path buffer every gbsc_path() caller needs (S5-B review fix #10): the
+ * longest real `dir` (PDNA_SIDECAR_DIR = "/PokeDNA/sidecar", 17 bytes) plus '/' plus
+ * 16 hex plus ".pds" plus NUL is 39 -- one shared constant so every `char path[...]`
+ * in this tree agrees, instead of three separate `char path[48]` locals. */
+#define GBSC_PATH_MAX     48
 
 /* ---- the fingerprint -------------------------------------------------------- */
 
@@ -69,8 +74,7 @@ void gbsc_key_hex(uint64_t key, char out[17]);
  * "/PokeDNA/sidecar/0019A3F17C0B44E2.pds". `dir` carries NO trailing slash. Still no
  * file I/O -- this only builds a string. Returns the length written (excluding the
  * NUL), or -1 if it would not fit in `cap` bytes (out is then left untouched) or `dir`/
- * `out` is NULL. A caller sizes `out` at >= 48: the longest real `dir`
- * (PDNA_DIR "/sidecar", 17 bytes) plus '/' plus 16 hex plus ".pds" plus NUL is 39. */
+ * `out` is NULL. A caller sizes `out` at >= GBSC_PATH_MAX. */
 int gbsc_path(char* out, int cap, const char* dir, uint64_t key);
 
 /* ---- one entry, decoded ------------------------------------------------------ */
