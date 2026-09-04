@@ -648,15 +648,21 @@
 #define PDNA_SIDECAR_NOTWRITTEN_L2   "Nothing transferred."
 
 /* The transfer-down loss screen (pdna_gen12.c gb_paste_loss_screen): one short line per
- * Gen3ToGbLoss flag set, from a const {flag, text} table -- texts measured here. */
+ * Gen3ToGbLoss flag set, from a const {flag, text} table -- texts measured here.
+ * S5-B review fix #4: two of Gen3ToGbLoss's 17 flags (pokerus_dropped,
+ * friendship_dropped) had no row at all. The screen's own fit has exactly 2 px of
+ * slack (host_textfit_test.c's own worst-case check), so the fix is ROW-COUNT-NEUTRAL:
+ * ITEM and SECRETID merge into one row (both are "this one plain fact about the mon
+ * does not survive"), freeing exactly the one row POKERUS needs -- still 10 conditional
+ * rows total, not 11. */
 #define PDNA_SIDECAR_LOSS_TITLE      "WHAT WON'T TRANSFER"
 #define PDNA_SIDECAR_LOSS_NATURE     "Nature and ability"
 #define PDNA_SIDECAR_LOSS_RIBBONS    "Ribbons and contest stats"
 #define PDNA_SIDECAR_LOSS_METDATA    "Met place / level / ball"
 #define PDNA_SIDECAR_LOSS_IVS        "IVs halved to DVs"
 #define PDNA_SIDECAR_LOSS_EVS        "EVs rescaled"
-#define PDNA_SIDECAR_LOSS_ITEM       "Held item"
-#define PDNA_SIDECAR_LOSS_SECRETID   "Secret ID"
+#define PDNA_SIDECAR_LOSS_ITEMSECRET "Held item and Secret ID"
+#define PDNA_SIDECAR_LOSS_POKERUS    "Pokerus and friendship"
 #define PDNA_SIDECAR_LOSS_SHINY      "Shiny not preserved"
 #define PDNA_SIDECAR_LOSS_GENDER     "Gender not preserved"
 #define PDNA_SIDECAR_LOSS_NAME       "Nickname/OT changed"

@@ -1125,8 +1125,11 @@ static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* l
   y = loss_row(y, loss->met_data || loss->ball,       PDNA_SIDECAR_LOSS_METDATA);
   y = loss_row(y, loss->ivs_halved,                   PDNA_SIDECAR_LOSS_IVS);
   y = loss_row(y, loss->evs_scaled,                   PDNA_SIDECAR_LOSS_EVS);
-  y = loss_row(y, loss->item_dropped,                 PDNA_SIDECAR_LOSS_ITEM);
-  y = loss_row(y, loss->secret_id,                    PDNA_SIDECAR_LOSS_SECRETID);
+  y = loss_row(y, loss->item_dropped || loss->secret_id, PDNA_SIDECAR_LOSS_ITEMSECRET);
+  /* S5-B review fix #4: two of Gen3ToGbLoss's 17 flags had no row at all before this --
+   * merged with item/secret_id above (row-count-neutral: was 2 separate rows, now 1 +
+   * this 1, still 10 conditional rows total, matching the screen's own 2px-slack fit). */
+  y = loss_row(y, loss->pokerus_dropped || loss->friendship_dropped, PDNA_SIDECAR_LOSS_POKERUS);
   y = loss_row(y, loss->shiny_lost,                   PDNA_SIDECAR_LOSS_SHINY);
   y = loss_row(y, loss->gender_lost,                  PDNA_SIDECAR_LOSS_GENDER);
   y = loss_row(y, loss->nick_lossy || loss->ot_lossy, PDNA_SIDECAR_LOSS_NAME);
