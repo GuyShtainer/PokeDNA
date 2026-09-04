@@ -62,6 +62,12 @@ static uint8_t g_scratch2[GBS_SCRATCH_BYTES];
 static uint8_t g_list3[GBS_LIST_BYTES];
 static uint8_t g_list4[GBS_LIST_BYTES];
 static uint8_t g_snap[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+/* A THIRD full image + scratch: s3_gen2_party_box's box->party probe needs to free a
+ * party slot when the real save is already 6/6 (both Gold.sav and Crystal.sav are), and
+ * doing that on its own isolated copy means the probe can never disturb the party->box
+ * half of the same test, which keeps using the untouched `s`/g_img. */
+static uint8_t g_img2[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+static uint8_t g_scratch3[GBS_SCRATCH_BYTES];
 
 static uint32_t load(const char* file) {
   char p[512];
@@ -501,6 +507,94 @@ static void s3_gen1_party_box(const char* file) {
 }
 
 /* ---- Gen 2: box -> party (stats computed, full HP) and party -> box (first 32 bytes) */
+/* box -> party, run on an ISOLATED copy of the image (its own session, its own g_img2)
+ * so it can never disturb the party -> box half below or the shared no-op check that
+ * follows it, both of which keep using the caller's own `s`/g_img. Frees a party slot
+ * first when the real save's party is already full (both Gold.sav and Crystal.sav are
+ * 6/6, which used to skip this whole branch on the corpus) -- deleting a member is
+ * gbs_delete(), already proven correct by s3_delete/s3_party_floor, and its own
+ * party-floor/Mail refusals apply exactly as they would to a player doing this in-game. */
+static void s3_gen2_box_to_party(const char* file, uint32_t len) {
+  memcpy(g_img2, g_img, len);
+  GbSession bp;
+  GbsStatus bo = gbs_open(&bp, g_img2, len, g_scratch3, sizeof g_scratch3);
+  CHECK(bo == GBS_OK, "S3 Gen2 conv: isolated box->party probe session opens");
+  if (bo != GBS_OK) return;
+  int pb = gbs_party_box(&bp), nb = gbs_nboxes(&bp);
+
+  uint8_t plist[GBS_LIST_BYTES];
+  if (gbs_load_list(&bp, pb, plist) != GBS_OK) {
+    printf("     (%s: party unreadable; box->party skipped)\n", file); return;
+  }
+  int pcount = gb_list_count(bp.gen, plist, pb);
+  if (pcount < 0) { printf("     (%s: party unreadable; box->party skipped)\n", file); return; }
+
+  int freed = -1;
+  if (pcount >= gb_list_capacity(bp.gen, pb)) {
+    /* Mail on ANY member refuses the WHOLE restructure (gbs_delete's own gate), so try
+     * every slot in turn -- a real save can hold Mail on one slot without holding it
+     * on all six. */
+    for (int i = 0; i < pcount && freed < 0; i++) {
+      uint8_t dl[GBS_LIST_BYTES];
+      if (gbs_delete(&bp, pb, i, dl) == GBS_OK) freed = i;
+    }
+    CHECK(freed >= 0, "S3 Gen2 conv: freed a full party's slot to make room for box->party");
+    if (freed < 0) {
+      printf("     (%s: every party member holds Mail; box->party skipped)\n", file); return;
+    }
+    if (gbs_load_list(&bp, pb, plist) != GBS_OK) return;
+    pcount = gb_list_count(bp.gen, plist, pb);
+  }
+
+  bool has_mail = false;
+  for (int i = 0; i < pcount; i++) {
+    GbEditMon e;
+    if (gb_load(&e, GB_GEN2, plist, pb, i) && gbs_is_mail_item(gb_get_held_item(&e))) has_mail = true;
+  }
+  int srcbox = -1;
+  for (int b = 0; b < nb && !has_mail; b++) {
+    uint8_t l[GBS_LIST_BYTES];
+    if (gbs_load_list(&bp, b, l) != GBS_OK) continue;
+    if (gb_list_count(bp.gen, l, b) > 0) { srcbox = b; break; }
+  }
+  if (has_mail || srcbox < 0) {
+    printf("     (%s: Mail present or no source mon; box->party skipped)\n", file);
+    return;
+  }
+
+  uint8_t srclist[GBS_LIST_BYTES], dstlist[GBS_LIST_BYTES];
+  int to_slot = -1;
+  GbsStatus st = gbs_move(&bp, srcbox, 0, pb, &to_slot, srclist, dstlist);
+  CHECK(st == GBS_OK, "S3 Gen2 conv: box -> party is accepted");
+  if (st != GBS_OK) return;
+
+  /* The real comparison: recompute the landed slot's stats independently (a FRESH
+   * gb_recalc_stats over a copy of what gbs_move actually wrote) rather than merely
+   * asserting the six numbers are non-zero, which a bad conversion could satisfy too. */
+  GbEditMon landed;
+  CHECK(gb_load(&landed, bp.gen, dstlist, pb, to_slot), "S3 Gen2 conv: the new party slot loads");
+  GbEditMon recompute = landed;
+  CHECK(gb_recalc_stats(&recompute), "S3 Gen2 conv: recalculating its stats succeeds");
+  bool stats_match = true;
+  for (int i = 0; i < 6; i++)
+    if (gb_get_stat(&landed, i) != gb_get_stat(&recompute, i)) stats_match = false;
+  CHECK(stats_match, "S3 Gen2 conv: the landed stats equal a fresh gb_recalc_stats");
+
+  G2Mon m;
+  CHECK(g2_list_mon(dstlist, pb, to_slot, &m),
+        "S3 Gen2 conv: the new party slot decodes via the shipping parser");
+  CHECK(m.cur_hp == m.stats[0], "S3 Gen2 conv: a freshly converted mon is at full HP");
+  CHECK(m.status == 0, "S3 Gen2 conv: a freshly converted mon has healthy status");
+
+  uint8_t scratch4[GBS_SCRATCH_BYTES];
+  GbSession s2;
+  CHECK(gbs_open(&s2, g_img2, len, scratch4, sizeof scratch4) == GBS_OK,
+        "S3 Gen2 conv: image parses after box->party");
+
+  printf("     %s: box->party RAN (freed slot %d, landed at party slot %d)\n",
+         file, freed, to_slot);
+}
+
 static void s3_gen2_party_box(const char* file) {
   uint32_t len = load(file);
   if (!len) { printf("  SKIP %s (S3 Gen2 party<->box)\n", file); return; }
@@ -511,45 +605,12 @@ static void s3_gen2_party_box(const char* file) {
   CHECK(os_open == GBS_OK, "S3 Gen2 conv: session opens");
   if (os_open != GBS_OK) return;
   CHECK(s.gen == GB_GEN2, "S3 Gen2 conv: this file really is Gen 2");
-  int pb = gbs_party_box(&s);
-  if (gbs_load_list(&s, pb, g_list) != GBS_OK) { printf("     (party unreadable)\n"); return; }
-  int pcount = gb_list_count(s.gen, g_list, pb);
-  if (pcount < 0 || pcount >= gb_list_capacity(s.gen, pb)) {
-    printf("     (party full or unreadable; box->party test skipped)\n"); return;
-  }
+  int pb = gbs_party_box(&s), nb = gbs_nboxes(&s);
 
-  /* box -> party, ONLY if no current member holds Mail (else GBS_ERR_MAIL is the correct,
-   * expected answer and there is nothing more to prove here). */
-  bool has_mail = false;
-  for (int i = 0; i < pcount; i++) {
-    GbEditMon e;
-    if (gb_load(&e, GB_GEN2, g_list, pb, i) && gbs_is_mail_item(gb_get_held_item(&e))) has_mail = true;
-  }
-  int nb = gbs_nboxes(&s), srcbox = -1;
-  for (int b = 0; b < nb && !has_mail; b++) {
-    if (gbs_load_list(&s, b, g_list3) != GBS_OK) continue;
-    if (gb_list_count(s.gen, g_list3, b) > 0) { srcbox = b; break; }
-  }
-  if (has_mail || srcbox < 0) {
-    printf("     (Mail present or no source mon; box->party test skipped)\n");
-  } else {
-    int to_slot = -1;
-    GbsStatus st = gbs_move(&s, srcbox, 0, pb, &to_slot, g_list3, g_list);
-    CHECK(st == GBS_OK, "S3 Gen2 conv: box -> party is accepted");
-    if (st == GBS_OK) {
-      G2Mon m;
-      CHECK(g2_list_mon(g_list, pb, to_slot, &m), "S3 Gen2 conv: the new party slot decodes");
-      bool nonzero = true;
-      for (int i = 0; i < 6; i++) if (m.stats[i] == 0) nonzero = false;
-      CHECK(nonzero, "S3 Gen2 conv: computed stats are non-zero");
-      CHECK(m.cur_hp == m.stats[0], "S3 Gen2 conv: a freshly converted mon is at full HP");
-      GbSession s2;
-      CHECK(gbs_open(&s2, g_img, len, g_scratch2, sizeof g_scratch2) == GBS_OK,
-            "S3 Gen2 conv: image parses after box->party");
-    }
-  }
+  s3_gen2_box_to_party(file, len);
 
-  /* party -> box: the box record is the first 32 bytes of the party record. */
+  /* party -> box: the box record is the first 32 bytes of the party record. Always
+   * runs on the untouched `s`/g_img, regardless of what the isolated probe above did. */
   if (gbs_load_list(&s, pb, g_list) == GBS_OK && gb_list_count(s.gen, g_list, pb) > 0) {
     G2Slot before;
     if (g2w_get(g_list, pb, 0, &before) == G2W_OK) {
