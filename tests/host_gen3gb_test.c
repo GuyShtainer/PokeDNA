@@ -3,7 +3,7 @@
  * format + the merge back up). docs/GEN3-TO-GB-SIDECAR-DESIGN.md is the design.
  *
  *   cc -std=c11 -Wall -Wextra -I source tests/host_gen3gb_test.c \
- *      source/gen3_to_gb.c source/gb_sidecar.c source/gen12_convert.c \
+ *      source/gen3_to_gb.c source/gb_sidecar.c \
  *      source/gen3_save.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c \
  *      source/gen3_daycare.c source/data_tables.c \
  *      source/gb_edit.c source/gb_session.c source/gen1_save.c source/gen1_write.c \
@@ -36,7 +36,6 @@
 #include "data_tables.h"
 #include "gen3_to_gb.h"
 #include "gb_sidecar.h"
-#include "gen12_convert.h"   /* gen12_iv_from_dv, used only to cross-check the merge  */
 #include "gb_session.h"
 #include "gen1_write.h"
 
@@ -162,13 +161,181 @@ static void test_format(void) {
           "post-remove index %d matches original entry %d", i, src);
   }
 
-  /* key stability */
+  /* key stability: a PINNED known-answer, not `k1 == k2` on identical inputs (that
+   * tautology passes even if gbsc_key were replaced by a constant). The value below
+   * was computed once, by hand, from the FNV-1a-64 definition in gb_sidecar.h over
+   * the same 18-byte sequence gbsc_key builds -- gen(1) otid16-LE(2) dv4(4)
+   * otname(11) -- for exactly the `dv4`/`otname` fixture above with otid16 0x1234,
+   * so this test also pins the byte ORDER, not just that some hash comes out. */
   uint64_t k1 = gbsc_key(GB_GEN2, 0x1234, dv4, otname);
-  uint64_t k2 = gbsc_key(GB_GEN2, 0x1234, dv4, otname);
-  CHECK(k1 == k2, "gbsc_key is stable across calls with the same inputs");
+  CHECK(k1 == 0xADB7F8303693F215ULL, "gbsc_key matches the pinned known-answer (got 0x%016llX)",
+        (unsigned long long)k1);
   uint8_t otname2[GB_NAME_BYTES]; memcpy(otname2, otname, GB_NAME_BYTES); otname2[0] ^= 1;
   uint64_t k3 = gbsc_key(GB_GEN2, 0x1234, dv4, otname2);
   CHECK(k1 != k3, "a different otname byte changes the key");
+}
+
+/* ============================================================================ */
+/* 1b. Codec negatives: malformed headers gbsc_count() must reject.             */
+/* ============================================================================ */
+
+static void test_codec_negatives(void) {
+  printf("== 1b. codec negatives ==\n");
+  uint8_t buf[GBSC_HEADER];
+  CHECK(gbsc_init(buf, 0x1122334455667788ULL) == GBSC_HEADER, "init for negatives setup");
+
+  uint8_t bad_magic[GBSC_HEADER];
+  memcpy(bad_magic, buf, GBSC_HEADER);
+  bad_magic[0] ^= 0xFFu;
+  CHECK(gbsc_count(bad_magic, GBSC_HEADER) == -1, "bad magic -> count == -1");
+
+  CHECK(gbsc_count(buf, GBSC_HEADER - 1) == -1, "len < GBSC_HEADER -> count == -1");
+
+  uint8_t len_mismatch[GBSC_HEADER];
+  memcpy(len_mismatch, buf, GBSC_HEADER);
+  len_mismatch[5] = 1;   /* claims one entry follows, but len below still says zero */
+  CHECK(gbsc_count(len_mismatch, GBSC_HEADER) == -1,
+        "len != GBSC_HEADER + count*GBSC_ENTRY -> count == -1");
+}
+
+/* ============================================================================ */
+/* 1c. Synthetic unit tests -- built fresh, independent of the corpus.          */
+/* ============================================================================ */
+
+/* STOP/REPORT (S5-A review item 8, "one synthetic lossy-name Gen-3 record...
+ * exercising both _lossy branches and the first_bad fields"): that record cannot be
+ * built. gen3_mon.c's decode_name() runs every nickname/OT byte through
+ * gen3_save.c's gen3_decode_char(), whose only outputs are space, '0'-'9', 'A'-'Z',
+ * 'a'-'z', eight punctuation marks (!?.-',/), and '?' for EVERY OTHER BYTE VALUE
+ * ("default: return '?'", gen3_save.c). Every one of those characters has an
+ * explicit, non-lossy case in gb_edit.c's enc_one() for BOTH generations, so
+ * gen3_to_gb()'s nick_lossy/ot_lossy branches (and the gb_set_nickname_lossy/
+ * gb_set_otname_lossy calls behind them) are UNREACHABLE from any record this
+ * decoder can produce today -- not a gap in gen3_to_gb.c, which still carries the
+ * correct, defensive handling for the day gen3_mon.c's decoder gets richer (real
+ * cartridges DO store gender signs and accented letters in nicknames; this
+ * decode_name() just does not surface them as such). Changing that decoder is out
+ * of S5-A's scope. Reported rather than faking a test that would either never run
+ * its intended branch or assert something false.
+ *
+ * What IS pinned here instead: the "unreachable" claim itself, by feeding every
+ * character gen3_decode_char can ever produce through the real gb_text_lossy() and
+ * requiring zero for both generations. If gen3_mon.c's decoder is ever widened, or
+ * gb_edit.c's charset support ever narrows, this starts failing and says why. */
+static void test_lossy_name(void) {
+  printf("== 1c. nick/OT-name losslessness (nick_lossy is unreachable today -- see comment) ==\n");
+  static const char reachable[] = " 0123456789"
+                                  "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                  "abcdefghijklmnopqrstuvwxyz"
+                                  "!?.-',/";
+  for (uint8_t g = GB_GEN1; g <= GB_GEN2; g++) {
+    char one[2] = { 0, 0 };
+    for (const char* p = reachable; *p; p++) {
+      one[0] = *p;
+      CHECK(gb_text_lossy(g, one, 1, NULL) == 0,
+            "gen %u: '%c' (everything gen3_decode_char can produce) is not lossy", g, *p);
+    }
+  }
+
+  /* The synthetic build/convert path still works end to end for a plain name --
+   * the same non-lossy result check_conversion() asserts across the real corpus. */
+  uint8_t rec[80];
+  gen3_build_mon(1 /* Bulbasaur */, 10, 0x87654321u, 0xBEEF0003u, "OTNAME", 3, rec);
+  GbEditMon out; Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  CHECK(st == G3GB_OK, "plain-name synthetic mon converts (%s)", g3gb_status_text(st));
+  if (st == G3GB_OK) {
+    CHECK(!loss.nick_lossy, "a plain name is not lossy");
+    CHECK(!loss.ot_lossy, "a plain OT name is not lossy");
+  }
+}
+
+/* Deterministic EV -> stat-exp and IV -> DV-halving checks on a synthetic record,
+ * independent of what the real corpus happens to contain. */
+static void test_stat_exp_and_ivs(void) {
+  printf("== 1c. synthetic EV/IV -> stat-exp/DV ==\n");
+  uint8_t rec[80];
+  gen3_build_mon(25 /* Pikachu */, 20, 0x11112222u, 0xAAAA0002u, "EVTEST", 3, rec);
+
+  EditMon em;
+  gen3_edit_load(rec, false, &em);
+  em_set_ev(&em, PK_HP, 4);
+  em_set_ev(&em, PK_ATK, 100);
+  em_set_ev(&em, PK_DEF, 0);
+  em_set_ev(&em, PK_SPE, 252);
+  em_set_ev(&em, PK_SPA, 6);
+  em_set_ev(&em, PK_SPD, 252);
+  em_set_iv(&em, PK_ATK, 31);   /* odd -> ivs_halved */
+  em_set_iv(&em, PK_DEF, 20);
+  em_set_iv(&em, PK_SPE, 20);
+  em_set_iv(&em, PK_SPA, 20);
+  em_set_iv(&em, PK_SPD, 20);
+  gen3_edit_commit(&em, rec);
+
+  GbEditMon out; Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  CHECK(st == G3GB_OK, "EV/IV synthetic mon converts (%s)", g3gb_status_text(st));
+  if (st == G3GB_OK) {
+    CHECK(gb_get_statexp(&out, GB_HP)  == (uint16_t)(4u   * 257u), "stat exp HP = ev*257");
+    CHECK(gb_get_statexp(&out, GB_ATK) == (uint16_t)(100u * 257u), "stat exp Atk = ev*257");
+    CHECK(gb_get_statexp(&out, GB_DEF) == 0u,                      "stat exp Def = 0");
+    CHECK(gb_get_statexp(&out, GB_SPE) == (uint16_t)(252u * 257u), "stat exp Spe = ev*257");
+    CHECK(gb_get_statexp(&out, GB_SPC) == (uint16_t)(252u * 257u),
+          "stat exp Spc = max(SpA=6, SpD=252)*257");
+    CHECK(loss.ivs_halved, "an odd Atk IV sets ivs_halved");
+  }
+
+  /* all-even, SpA == SpD: ivs_halved must be false */
+  em_set_iv(&em, PK_ATK, 20);
+  em_set_iv(&em, PK_SPA, 18);
+  em_set_iv(&em, PK_SPD, 18);
+  gen3_edit_commit(&em, rec);
+  st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  CHECK(st == G3GB_OK, "all-even synthetic mon converts (%s)", g3gb_status_text(st));
+  if (st == G3GB_OK)
+    CHECK(!loss.ivs_halved, "all-even IVs with SpA==SpD -> ivs_halved is false");
+}
+
+/* The Gen-3 charset is ASCII-only (gen3_edit.h's gen3_encode_char). A Game Boy
+ * nickname decoded either to a "{XX}" escape (an unassigned byte with no text
+ * spelling -- 0x5D, gb_edit.c's own example, <TRAINER>) or to a real non-ASCII glyph
+ * the Game Boy CAN spell but Gen 3 cannot (0xEF, the male sign) must both be refused
+ * by gbsc_merge_up's merge_nickname(), keeping the sidecar's own name untouched. */
+static void test_rename_refused(void) {
+  printf("== 1c. rename_refused: {XX} escape and a non-ASCII glyph ==\n");
+  uint8_t rec[80];
+  gen3_build_mon(1 /* Bulbasaur */, 10, 0x12345678u, 0xABCD0001u, "TESTER", 3, rec);
+
+  GbEditMon out; Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  CHECK(st == G3GB_OK, "synthetic mon converts for Gen 2 (%s)", g3gb_status_text(st));
+  if (st != G3GB_OK) return;
+
+  GbscEntry e;
+  gbsc_entry_from(&e, &out, rec, 0);
+
+  {
+    GbEditMon chg = out;
+    uint8_t nick[GB_NAME_BYTES] = { 0x5Du, 0x50u, 0x50u, 0x50u, 0x50u,
+                                    0x50u, 0x50u, 0x50u, 0x50u, 0x50u, 0x50u };
+    gb_set_nickname_raw(&chg, nick);
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "escape: merge up succeeds");
+    CHECK(rep.rename_refused && !rep.renamed, "escape: rename_refused set, renamed not set");
+    CHECK(memcmp(back80, rec, 80) == 0, "escape: record byte-identical (name never applied)");
+  }
+  {
+    GbEditMon chg = out;
+    uint8_t nick[GB_NAME_BYTES] = { 0xEFu, 0x50u, 0x50u, 0x50u, 0x50u,
+                                    0x50u, 0x50u, 0x50u, 0x50u, 0x50u, 0x50u };
+    gb_set_nickname_raw(&chg, nick);
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &chg, back80, &rep), "gender sign: merge up succeeds");
+    CHECK(rep.rename_refused && !rep.renamed,
+          "gender sign: rename_refused set, renamed not set");
+    CHECK(memcmp(back80, rec, 80) == 0,
+          "gender sign: record byte-identical (name never applied)");
+  }
 }
 
 /* ============================================================================ */
@@ -244,7 +411,7 @@ static void check_conversion(const uint8_t* rec, uint8_t gen, const GbGen1Base* 
   }
 
   if (!g_have_sample[gen] && !rep.evolved && !rep.level_changed &&
-      !rep.moves_changed && !rep.renamed && !rep.dv_edited) {
+      !rep.moves_changed && !rep.renamed) {
     g_have_sample[gen] = true;
     memcpy(g_sample_rec[gen], rec, 80);
     g_sample_out[gen] = out;
@@ -330,6 +497,30 @@ static void test_gb_side_changes(void) {
     CHECK(memcmp(g_sample_rec[GB_GEN2], back80, 8) == 0, "(a) personality+otId raw bytes unchanged");
   }
 
+  /* (a2) MUST-FIX regression (S5-A review item 2): bumping EXP by 1 WITHOUT a level
+   * change must be a complete no-op. The bug this pins: an earlier revision gated
+   * the level restore on "does EXP differ from exp_written" and then called
+   * em_set_level(), which writes the EXP FLOOR for the level -- so any Game-Boy-side
+   * EXP gain that had not yet produced a level-up (every single battle) silently
+   * zeroed the Gen-3 mon's precise within-level EXP progress. Gating on LEVEL
+   * instead (gb_sidecar.c's merge_species_and_level) means this must change
+   * nothing at all. */
+  {
+    GbEditMon chg = g_sample_out[GB_GEN2];
+    uint32_t old_exp = gb_get_exp(&chg);
+    uint8_t old_level = gb_get_level(&chg);
+    CHECK(gb_set_exp(&chg, old_exp + 1), "(a2) bump EXP by 1");
+    if (gb_get_level(&chg) != old_level) {
+      printf("   (a2) SKIP: +1 EXP crossed a level boundary for this particular sample\n");
+    } else {
+      uint8_t back80[80]; GbscMergeReport rep;
+      CHECK(gbsc_merge_up(&g_sample_entry[GB_GEN2], &chg, back80, &rep), "(a2) merge up");
+      CHECK(!rep.level_changed, "(a2) a same-level EXP bump does not report level_changed");
+      CHECK(memcmp(back80, g_sample_rec[GB_GEN2], 80) == 0,
+            "(a2) +1 EXP without a level-up is a byte-identical no-op (the fixed bug)");
+    }
+  }
+
   /* (b) move change: replace slot 0 with a different in-range move */
   {
     GbEditMon chg = g_sample_out[GB_GEN2];
@@ -367,26 +558,42 @@ static void test_gb_side_changes(void) {
     CHECK(memcmp(g_sample_rec[GB_GEN2], back80, 8) == 0, "(c) personality+otId raw bytes unchanged");
   }
 
-  /* (d) DV change on Atk */
+  /* (d) DV change on Atk -- design decision (2026-09-04, gb_sidecar.h): dv4 stays in
+   * the sidecar's fingerprint, so editing a DV on the Game Boy ORPHANS the sidecar
+   * rather than being folded into the merge. Two consequences, both asserted here:
+   * gbsc_find() can no longer locate the entry by the changed record, and
+   * gbsc_merge_up() called directly with the (now mismatched) original entry keeps
+   * the sidecar's ORIGINAL, unedited IV rather than guessing which side is right. */
   {
     GbEditMon chg = g_sample_out[GB_GEN2];
     uint8_t old_dv = gb_get_dv(&chg, GB_ATK);
     uint8_t new_dv = (uint8_t)((old_dv + 1) & 15);
     CHECK(gb_set_dv(&chg, GB_ATK, new_dv), "(d) set a different Atk DV");
+
+    static uint8_t filebuf[GBSC_FILE_MAX];
+    uint8_t dv4[4] = { old_dv, gb_get_dv(&g_sample_out[GB_GEN2], GB_DEF),
+                       gb_get_dv(&g_sample_out[GB_GEN2], GB_SPE),
+                       gb_get_dv(&g_sample_out[GB_GEN2], GB_SPC) };
+    uint64_t key = gbsc_key(GB_GEN2, gb_get_otid(&g_sample_out[GB_GEN2]), dv4,
+                            g_sample_out[GB_GEN2].otname);
+    uint32_t flen = (uint32_t)gbsc_init(filebuf, key);
+    CHECK(gbsc_add(filebuf, &flen, sizeof filebuf, &g_sample_entry[GB_GEN2]) == 0,
+          "(d) rebuild a one-entry sidecar file for the unedited sample");
+    CHECK(gbsc_find(filebuf, flen, &chg, 0) == -1,
+          "(d) gbsc_find no longer locates the entry once a DV changed (orphaned)");
+
     uint8_t back80[80]; GbscMergeReport rep;
-    CHECK(gbsc_merge_up(&g_sample_entry[GB_GEN2], &chg, back80, &rep), "(d) merge up");
+    CHECK(gbsc_merge_up(&g_sample_entry[GB_GEN2], &chg, back80, &rep),
+          "(d) merge up (bypassing find, on purpose)");
     PkMon merged; CHECK(pk_decode_mon(back80, false, &merged), "(d) merged record decodes");
     pk_resolve(&merged);
-    CHECK(rep.dv_edited, "(d) report says dv_edited");
-    CHECK(merged.ivs[PK_ATK] == gen12_iv_from_dv(new_dv),
-          "(d) the merged Atk IV reflects the GB DV");
-    CHECK(merged.ivs[PK_DEF] == orig.ivs[PK_DEF], "(d) Def IV unaffected");
-    CHECK(merged.ivs[PK_SPE] == orig.ivs[PK_SPE], "(d) Spe IV unaffected");
-    CHECK(merged.ivs[PK_SPA] == orig.ivs[PK_SPA], "(d) SpA IV unaffected");
-    CHECK(merged.ivs[PK_SPD] == orig.ivs[PK_SPD], "(d) SpD IV unaffected (never touched)");
+    CHECK(merged.ivs[PK_ATK] == orig.ivs[PK_ATK],
+          "(d) the merged Atk IV keeps the SIDECAR's original, not the GB edit");
+    CHECK(memcmp(merged.ivs, orig.ivs, sizeof orig.ivs) == 0, "(d) every IV unaffected");
     CHECK(merged.species == orig.species, "(d) species unaffected");
     CHECK(strcmp(merged.nickname, orig.nickname) == 0, "(d) nickname unaffected");
-    CHECK(memcmp(g_sample_rec[GB_GEN2], back80, 8) == 0, "(d) personality+otId raw bytes unchanged");
+    CHECK(memcmp(back80, g_sample_rec[GB_GEN2], 80) == 0,
+          "(d) an unreachable DV mismatch leaves the merge a complete no-op");
   }
 
   /* (e) species change (evolution stand-in): next dex number, if the generation has one */
@@ -525,6 +732,27 @@ static void test_engine_gen1(const char* file) {
   Gen1WStatus ws = gen1_write_apply(img, len, &s, &op, &scratch);
   CHECK(ws == GEN1W_OK, "%s: gen1_write_apply INSERT (%s)", file, gen1_write_status_text(ws));
   if (ws != GEN1W_OK) return;
+
+  /* Re-open the MUTATED image fresh (mirroring the Gen-2 path's reload+gb_verify_slot,
+   * rather than trusting gen1_write_apply's own internal verify alone) and compare
+   * the landed slot's record/OT/nickname bytes against what was asked for. */
+  Gen1Save s2;
+  Gen1Status gs2 = gen1_open(img, len, &s2);
+  CHECK(gs2 == GEN1_OK, "%s: re-open the mutated image (%s)", file, gen1_status_text(gs2));
+  if (gs2 == GEN1_OK) {
+    uint32_t off = gen1_list_offset(&s2, roomy);
+    GbEditMon back;
+    CHECK(gb_load(&back, GB_GEN1, img + off, roomy, op.slot),
+          "%s: gb_load the new slot", file);
+    CHECK(gb_verify_slot(&back, img + off, roomy, op.slot),
+          "%s: gb_verify_slot on the new slot", file);
+    CHECK(memcmp(back.rec, e.rec, GEN1_BOX_REC_BYTES) == 0,
+          "%s: landed record bytes match what was inserted", file);
+    CHECK(memcmp(back.otname, e.ot, GEN1_NAME_BYTES) == 0,
+          "%s: landed OT name matches what was inserted", file);
+    CHECK(memcmp(back.nick, e.nick, GEN1_NAME_BYTES) == 0,
+          "%s: landed nickname matches what was inserted", file);
+  }
   printf("  %s: landed in box %d slot %d\n", file, roomy, op.slot);
   landed++;
 }
@@ -533,6 +761,10 @@ static void test_engine_gen1(const char* file) {
 
 int main(int argc, char** argv) {
   test_format();
+  test_codec_negatives();
+  test_lossy_name();
+  test_stat_exp_and_ivs();
+  test_rename_refused();
 
   printf("== 2. the Gen-3 corpus, both target generations ==\n");
   for (int i = 1; i < argc; i++) run_corpus_file(argv[i]);
@@ -545,6 +777,16 @@ int main(int argc, char** argv) {
            g_refused[g][G3GB_ERR_ARG], g_refused[g][G3GB_ERR_EGG],
            g_refused[g][G3GB_ERR_SPECIES], g_refused[g][G3GB_ERR_MOVE],
            g_refused[g][G3GB_ERR_NEEDS_BASE], g_refused[g][G3GB_ERR_GLITCH]);
+    /* Both are load-bearing, not vacuous: GLITCH used to be 113/68 (every mon with
+     * fewer than 4 moves, wrongly refused by a gb_set_ppup-on-an-empty-slot bug,
+     * fixed in source/gen3_to_gb.c). With that fixed, this corpus measures 314
+     * accepted for Gen 2 and 141 for Gen 1 -- the floors below are a comfortable
+     * margin under that so a future data_tables.c regen does not flake the suite. */
+    CHECK(g_refused[g][G3GB_ERR_GLITCH] == 0,
+          "gen %d: zero GLITCH refusals (the PP-Ups bug is fixed)", g);
+    int floor = (g == GB_GEN2) ? 300 : 130;
+    CHECK(g_accepted[g] >= floor,
+          "gen %d: accepted >= %d (measured 314 Gen2 / 141 Gen1 on this corpus)", g, floor);
     CHECK(g_accepted[g] == g_roundtrip[g], "gen %d: every accepted conversion round-tripped", g);
   }
 
