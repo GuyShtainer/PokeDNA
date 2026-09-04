@@ -3292,7 +3292,7 @@ static bool         g_src_ro;
 static AppSrcEditFn g_src_edit;
 
 void app_src_readonly_set(const char* (*why_locked)(const uint8_t* rec80), const char* note) {
-  g_src_why = why_locked; g_src_note = note; g_src_ro = true;
+  g_src_why = why_locked; g_src_note = note; g_src_ro = true; g_src_edit = 0;
 }
 void app_src_readonly_clear(void) { g_src_why = 0; g_src_note = 0; g_src_ro = false; g_src_edit = 0; }
 void app_src_edit_set(AppSrcEditFn fn) { g_src_edit = fn; }
