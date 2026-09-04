@@ -725,7 +725,11 @@ static void gb_edit_rollback(void) {
   if (g_m) g_m->loaded = -1;
 }
 
-static bool gb_edit_persist(int box, int slot);
+/* noinline is the whole point of the split: with one call site GCC inlines it at -O2 and
+ * bak[272] + l1[64] are back in gb_edit_hook's frame for the entire editor run (measured
+ * 472 B inlined vs 120 + 360 B split). savefile.c:122 uses the same attribute for the
+ * same reason. */
+static bool __attribute__((noinline)) gb_edit_persist(int box, int slot);
 
 /* app_src_edit_set() hook: EDIT on the read-only mon menu. `rec80` identifies the slot
  * by ADDRESS inside the paged box, exactly like pdna_gen12_why_locked; the box is the
