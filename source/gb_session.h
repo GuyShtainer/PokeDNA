@@ -179,8 +179,14 @@ GbsStatus gbs_commit_list(GbSession* s, int box, const uint8_t* list);
  *   GBS_ERR_SLOT         slot >= the box's occupied count.
  *   GBS_ERR_PARTY_FLOOR  `box` is the party and this would leave it with no usable
  *                        Pokemon — Gen 1: the count would hit 0; Gen 2: no non-Egg slot
- *                        other than `slot` would remain (an Egg is not "a Pokemon" for
- *                        the retail "can't deposit your last POKeMON" rule).
+ *                        other than `slot` would remain. DELIBERATELY STRICTER than
+ *                        retail here: pokecrystal's own deposit gate
+ *                        (bills_pc.asm:1594-1632 BillsPC_CheckMail_PreventBlackout) is a
+ *                        plain party-count check with no species test, so retail itself
+ *                        lets a player carry an Egg alone. (Retail's Egg rule runs the
+ *                        OTHER way — bills_pc.asm:1634-1650 BillsPC_IsMonAnEgg refuses
+ *                        to RELEASE an Egg at all; this function does not reproduce
+ *                        that refusal, so releasing an Egg through S3 is allowed.)
  *   GBS_ERR_MAIL         Gen-2 party only: some OTHER party member holds Mail (the mail
  *                        array in SRAM bank 0 is indexed by party slot and shifts with
  *                        a delete; this file does not know its G/S offsets).

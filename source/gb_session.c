@@ -273,8 +273,14 @@ static GbsStatus map_g2w(G2WStatus st) {
 }
 
 /* Gen-2 party floor: would `exclude` leaving (deleted, or moved away) leave the party
- * with no non-Egg member? Eggs are not "a Pokemon" for the retail "can't deposit your
- * last POKeMON" rule -- gb_list_count includes them, so they cannot be counted here. */
+ * with no non-Egg member? DELIBERATELY STRICTER than retail: pokecrystal's own deposit
+ * gate (bills_pc.asm:1594-1632 BillsPC_CheckMail_PreventBlackout) is a plain party-count
+ * check with no species test at all, so retail itself lets a player carry an Egg as
+ * their only party member -- this module keeps one non-Egg member instead, so an edited
+ * save is never left with nothing usable in battle. (Retail's Egg rule runs the OTHER
+ * way -- bills_pc.asm:1634-1650 BillsPC_IsMonAnEgg refuses to RELEASE an Egg at all;
+ * gbs_delete() does not reproduce that refusal, so releasing an Egg through S3 stays
+ * allowed.) gb_list_count includes Eggs in its count, so they cannot be counted here. */
 static bool g2_nonegg_survives(const uint8_t* list, int box, int exclude) {
   int n = gb_list_count(GB_GEN2, list, box);
   if (n < 0) return false;
