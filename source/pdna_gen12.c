@@ -1320,6 +1320,23 @@ static bool gb_paste_hook(uint8_t* rec80) {
   int box, slot;
   if (!gb_locate(rec80, &box, &slot)) return false;                          /* 1 */
 
+  /* S5-B re-verification NEW-1 (must): the party pseudo-box IS a grid box (nboxes ==
+   * party_box + 1), so app_src_paste_offered() opened PASTE (GB) on an empty PARTY
+   * cell too -- gbs_box_writable() says OK for the Gen-2 party and the capacity
+   * pre-check below passes (g2_list_capacity(party) == 6), so without this guard
+   * gb_paste_write() would write the sidecar to the CARD and only THEN have
+   * gbs_insert() refuse with GBS_ERR_ARG (it only ever inserts BOX-kind records into
+   * storage boxes -- gb_session.h's own contract), triggering a rollback + best-effort
+   * sidecar-undo on every single attempt. Landing a converted mon in the party needs
+   * species-limit/live-stat/Mail rules gbs_insert() deliberately does not have; that is
+   * gbs_move()'s job, and S5-C's. Refused here, before ANYTHING (including the loss
+   * screen) runs. */
+  if (gb_box_is_party(g_ed->s.gen, box)) {
+    snd_deny();
+    msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_PARTY_L1, 0);
+    return false;
+  }
+
   if (g_ed->s.gen == GB_GEN1) {                                              /* 2 */
     snd_deny();
     msg_wait(PDNA_SIDECAR_GEN1_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_L1, 0);

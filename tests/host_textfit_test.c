@@ -624,6 +624,8 @@ int main(void) {
   PF(PDNA_SIDECAR_GEN1_TITLE,       28, 184);
   PF(PDNA_SIDECAR_GEN1_L1,          28, 184);
   PF(PDNA_SIDECAR_XFER_TITLE,       28, 184);
+  /* S5-B re-verification NEW-1: gbs_insert() refuses the party pseudo-box outright. */
+  PF(PDNA_SIDECAR_PARTY_L1,         28, 184);
   /* S5-B review fix #10: PDNA_SIDECAR_MKDIR_TITLE is now actually wired up (f_mkdir's
    * result is checked). */
   PF(PDNA_SIDECAR_MKDIR_TITLE,      28, 184);

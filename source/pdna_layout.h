@@ -641,6 +641,10 @@
 #define PDNA_SIDECAR_GEN1_TITLE      "GEN 1: NOT YET"
 #define PDNA_SIDECAR_GEN1_L1         "Needs base stats (S5-C)."
 #define PDNA_SIDECAR_XFER_TITLE      "CAN'T TRANSFER"
+/* S5-B re-verification NEW-1: gbs_insert() only ever lands a BOX-kind record into a
+ * storage box (gb_session.h's own contract) -- the party pseudo-box is refused before
+ * gb_paste_write() ever touches the card. */
+#define PDNA_SIDECAR_PARTY_L1        "Storage boxes only, not the party."
 #define PDNA_SIDECAR_MKDIR_TITLE     "SIDECAR FOLDER"
 #define PDNA_SIDECAR_FULL_TITLE      "SIDECAR FULL"
 #define PDNA_SIDECAR_FULL_L1         "Too many clones of this Pokemon."
