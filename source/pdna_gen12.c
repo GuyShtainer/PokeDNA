@@ -852,6 +852,7 @@ static bool gb_edit_persist(int box, int slot) {
     return false;
   }
   memcpy(g_ed->pristine, g_ed->img, g_ed->len);   /* the card now holds this image */
+  gb_census(g_m);                                 /* nready/nblocked/the exit report may have changed */
   g_m->loaded = -1;                               /* the grid re-pages from the new bytes */
   snd_save();
   return true;
