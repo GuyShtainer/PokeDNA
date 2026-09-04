@@ -33,7 +33,178 @@ static uint8_t rec_markings(const uint8_t* rec80) { return rec80[0x1B]; }
  * once so both this file and the merge in gb_sidecar.c use the identical rule. */
 static uint8_t iv_to_dv(uint8_t iv) { return (uint8_t)(iv / 2u); }
 
-/* Every field below is built into a LOCAL record and only copied to `out` on the final
+/* ---- helpers, each one stage of the build, each checked -----------------------
+ *
+ * Every setter below returns bool and IS checked (rule: trust nothing across a
+ * boundary), folding into G3GB_ERR_GLITCH on a false it should not have been able to
+ * produce given the screening in screen() below. That fallback is not theoretical:
+ * an earlier revision of set_moves() called gb_set_ppup() for every slot including
+ * empty ones, and gb_set_ppup() REFUSES a non-zero PP-Up count on an empty move slot
+ * by design (gb_edit.c — "an empty slot has no maximum ... clear the slot with
+ * gb_set_move(e, i, 0) instead"). That was a bug in THIS file's call order, not a
+ * corrupt Gen-3 record: it refused every single Pokemon with fewer than four moves
+ * (181 of 654 real corpus mons) as G3GB_ERR_GLITCH. Fixed below by never touching a
+ * slot's PP Ups or PP at all when its move is empty — the checked-return convention
+ * is what caught it (every refusal showed up as a counted GLITCH rather than a
+ * silently wrong record), and it stays, but the earlier comment's explanation for
+ * *why* a setter might refuse here was wrong and has been corrected to this one. */
+
+static G3GbStatus screen(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1base,
+                         PkMon* m, uint16_t* dex_out) {
+  if (!pk_decode_mon(rec80, false, m)) return G3GB_ERR_GLITCH;
+  if (m->isEgg || m->isBadEgg) return G3GB_ERR_EGG;
+  pk_resolve(m);   /* fills m->level (box mons decode with level 0) and m->gender */
+
+  /* A checksum-valid record can still hold a level byte outside 1..100 for a party
+   * mon (gen3_mon.c reads mon[0x54] straight into m->level with no clamp — box levels
+   * come back clamped by pk_level_from_exp, so this can only bite a party record). */
+  if (m->level < 1 || m->level > 100) return G3GB_ERR_GLITCH;
+
+  uint16_t dex = pk_national_no(m->species);
+  if (dex < 1 || dex > gb_max_species(gen)) return G3GB_ERR_SPECIES;
+
+  for (int i = 0; i < 4; i++)
+    if (m->moves[i] != 0 && m->moves[i] > gb_max_move(gen)) return G3GB_ERR_MOVE;
+
+  if (gen == GB_GEN1 && !g1base) return G3GB_ERR_NEEDS_BASE;
+
+  *dex_out = dex;
+  return G3GB_OK;
+}
+
+/* Species FIRST: gb_set_level needs the growth rate gb_set_species just installed,
+ * and (Gen 1) the type/catch-rate bytes have to exist before anything else runs. */
+static G3GbStatus set_identity_and_level(GbEditMon* e, const PkMon* m, uint16_t dex,
+                                         const GbGen1Base* g1base, Gen3ToGbLoss* loss) {
+  if (!gb_set_species(e, dex, g1base)) return G3GB_ERR_SPECIES;
+
+  gb_set_otid(e, (uint16_t)(m->otId & 0xFFFFu));
+  loss->secret_id = (m->otId >> 16) != 0;
+
+  if (!gb_set_level(e, m->level)) return G3GB_ERR_GLITCH;
+  return G3GB_OK;
+}
+
+/* DVs. Gen 3's stat order is HP,Atk,Def,Spe,SpA,SpD; the Game Boy's is HP,Atk,Def,
+ * Spe,Spc — Spc is fed from SpA (gen12_convert.h documents the same choice on the way
+ * up), so SpD's information is what ivs_halved additionally reports losing.
+ *
+ * Stat exp. GB_SPC takes the LARGER of SpA/SpD's investment so a Pokemon trained
+ * either way keeps at least that much of its special stat exp visibly; the sidecar
+ * keeps the true split for the round trip up (design doc section 4, "stat exp: KEPT
+ * AS SIDECAR EVs"). ev*257 never exceeds 65535 (255*257 == 65535), so every one of
+ * these is in gb_set_statexp's domain by construction. */
+static G3GbStatus set_dvs_and_statexp(GbEditMon* e, const PkMon* m, Gen3ToGbLoss* loss) {
+  uint8_t iv_atk = m->ivs[PK_ATK], iv_def = m->ivs[PK_DEF];
+  uint8_t iv_spe = m->ivs[PK_SPE], iv_spa = m->ivs[PK_SPA], iv_spd = m->ivs[PK_SPD];
+  if (!gb_set_dv(e, GB_ATK, iv_to_dv(iv_atk))) return G3GB_ERR_GLITCH;
+  if (!gb_set_dv(e, GB_DEF, iv_to_dv(iv_def))) return G3GB_ERR_GLITCH;
+  if (!gb_set_dv(e, GB_SPE, iv_to_dv(iv_spe))) return G3GB_ERR_GLITCH;
+  if (!gb_set_dv(e, GB_SPC, iv_to_dv(iv_spa))) return G3GB_ERR_GLITCH;
+  loss->ivs_halved = ((iv_atk | iv_def | iv_spe | iv_spa) & 1u) != 0 ||
+                     (iv_to_dv(iv_spa) != iv_to_dv(iv_spd));
+
+  uint8_t ev_hp = m->evs[PK_HP], ev_atk = m->evs[PK_ATK], ev_def = m->evs[PK_DEF];
+  uint8_t ev_spe = m->evs[PK_SPE], ev_spa = m->evs[PK_SPA], ev_spd = m->evs[PK_SPD];
+  uint8_t ev_spc = (ev_spa > ev_spd) ? ev_spa : ev_spd;
+  if (!gb_set_statexp(e, GB_HP,  (uint16_t)(ev_hp  * 257u))) return G3GB_ERR_GLITCH;
+  if (!gb_set_statexp(e, GB_ATK, (uint16_t)(ev_atk * 257u))) return G3GB_ERR_GLITCH;
+  if (!gb_set_statexp(e, GB_DEF, (uint16_t)(ev_def * 257u))) return G3GB_ERR_GLITCH;
+  if (!gb_set_statexp(e, GB_SPE, (uint16_t)(ev_spe * 257u))) return G3GB_ERR_GLITCH;
+  if (!gb_set_statexp(e, GB_SPC, (uint16_t)(ev_spc * 257u))) return G3GB_ERR_GLITCH;
+  loss->evs_scaled = (ev_hp | ev_atk | ev_def | ev_spe | ev_spa | ev_spd) != 0;
+  return G3GB_OK;
+}
+
+/* Moves: base PP first (gb_set_move resets it), then PP Ups, then current PP clamped
+ * to whatever maximum those Ups now allow — and NEITHER of the last two for an empty
+ * slot: gb_set_ppup() refuses a non-zero PP-Up count with no move to buy it for, and
+ * an empty slot's PP byte has to stay 0 (see the note above this file's helpers). */
+static G3GbStatus set_moves(GbEditMon* e, uint8_t gen, const PkMon* m) {
+  for (int i = 0; i < 4; i++) {
+    uint16_t mv = m->moves[i];
+    uint8_t mv8 = (mv > 255u) ? 0 : (uint8_t)mv;   /* screened <= gb_max_move above */
+    if (!gb_set_move(e, i, mv8)) return G3GB_ERR_GLITCH;
+    if (mv8 == 0) continue;
+
+    uint8_t ppups = (uint8_t)((m->ppBonuses >> (i * 2)) & 0x3u);
+    if (!gb_set_ppup(e, i, ppups)) return G3GB_ERR_GLITCH;
+    uint8_t cap = gb_max_pp(gen, mv8, ppups);
+    uint8_t pp = m->pp[i];
+    if (pp > cap) pp = cap;
+    if (!gb_set_pp(e, i, pp)) return G3GB_ERR_GLITCH;
+  }
+  return G3GB_OK;
+}
+
+/* Names. gb_text_lossy tells us BEFORE we touch anything whether the exact setter
+ * will accept the text; the _lossy variant is only reached when it would refuse. */
+static G3GbStatus set_names(GbEditMon* e, uint8_t gen, const PkMon* m, Gen3ToGbLoss* loss) {
+  char bad[GB_GLYPH_MAX];
+  if (gb_text_lossy(gen, m->nickname, GB_NICK_GLYPHS, bad) == 0) {
+    if (!gb_set_nickname(e, m->nickname)) return G3GB_ERR_GLITCH;
+  } else {
+    if (!gb_set_nickname_lossy(e, m->nickname)) return G3GB_ERR_GLITCH;
+    loss->nick_lossy = true;
+    memcpy(loss->nick_first_bad, bad, GB_GLYPH_MAX);
+  }
+  if (gb_text_lossy(gen, m->otName, GB_OT_GLYPHS, bad) == 0) {
+    if (!gb_set_otname(e, m->otName)) return G3GB_ERR_GLITCH;
+  } else {
+    if (!gb_set_otname_lossy(e, m->otName)) return G3GB_ERR_GLITCH;
+    loss->ot_lossy = true;
+    memcpy(loss->ot_first_bad, bad, GB_GLYPH_MAX);
+  }
+  return G3GB_OK;
+}
+
+/* Gen-2-only record fields; Gen 1 has none of these, so it only records what got
+ * dropped. Pokerus is a single byte, high nibble strain / low nibble days remaining,
+ * in BOTH generations (gen2_save.c:490 rec[0x1C]; gen3_mon.c:139 m[0x00] of the Misc
+ * substruct use the identical nibble split) — verified layout, not a guess, so it is
+ * wired through rather than reported as pokerus_dropped. Crystal's capture record
+ * (time/level/loc/ot_gender) is only READ by Crystal; gen2_save.c:493-497 shows it is
+ * just bytes 0x1D/0x1E, so writing it on a G/S target is harmless dead data rather
+ * than a corruption. RTC-less time slot (0 = "not recorded") and location 0 (no
+ * Gen-3 -> Gen-2 location map exists) — only the level and OT gender carry over. */
+static G3GbStatus set_gen2_only_fields(GbEditMon* e, uint8_t gen, const PkMon* m,
+                                       Gen3ToGbLoss* loss) {
+  if (gen != GB_GEN2) {
+    loss->friendship_dropped = true;   /* Gen 1 has no friendship byte at all */
+    loss->pokerus_dropped    = (m->pokerus != 0);
+    return G3GB_OK;
+  }
+  if (!gb_set_friendship(e, m->friendship)) return G3GB_ERR_GLITCH;
+  if (!gb_set_pokerus(e, m->pokerus)) return G3GB_ERR_GLITCH;
+  uint8_t caught_level = (m->metLevel > 63) ? 63 : m->metLevel;
+  if (!gb_set_caught(e, 0, caught_level, 0, m->otGender)) return G3GB_ERR_GLITCH;
+  return G3GB_OK;
+}
+
+/* Everything else the Game Boy record cannot carry, none of it ever refused on:
+ * nature/ability/ribbons/contest/met data/ball/markings/held item/shiny-or-gender
+ * drift, each flagged only when it is non-default so the UI lists real losses. */
+static void set_remaining_loss_flags(const GbEditMon* e, const uint8_t* rec80,
+                                     const PkMon* m, Gen3ToGbLoss* loss) {
+  loss->item_dropped = (m->heldItem != 0);   /* no Gen-3 -> Gen-2 item map in this tree */
+
+  uint16_t ab0 = pk_species_ability(m->species, 0), ab1 = pk_species_ability(m->species, 1);
+  loss->ability  = (ab0 != ab1);
+  loss->nature   = (pk_nature_boost(m->nature) != -1) || (pk_nature_hinder(m->nature) != -1);
+  loss->ribbons  = (m->ribbons != 0);
+  loss->contest  = (m->contest[0] | m->contest[1] | m->contest[2] |
+                    m->contest[3] | m->contest[4] | m->contest[5]) != 0;
+  loss->met_data = (m->metLocation != 0) || (m->metLevel != 0) || (m->metGame != 0);
+  loss->ball     = (m->pokeball != 1);       /* 1 == the plain Poke Ball */
+  loss->markings = (rec_markings(rec80) != 0);
+
+  GbDvEffects eff;
+  gb_dv_effects_of(e, &eff);
+  loss->shiny_lost  = m->isShiny && !eff.shiny;
+  loss->gender_lost = (m->gender != (uint8_t)eff.gender);
+}
+
+/* Every field is built into a LOCAL record and only copied to `out` on the final
  * G3GB_OK — never into the caller's `out` directly — so "on refusal `out` is untouched"
  * holds even for a defensive mid-function refusal, not only for the up-front screening. */
 G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1base,
@@ -45,30 +216,10 @@ G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1bas
   if (!rec80 || !out || (gen != GB_GEN1 && gen != GB_GEN2)) return G3GB_ERR_ARG;
 
   PkMon m;
-  if (!pk_decode_mon(rec80, false, &m)) return G3GB_ERR_GLITCH;
-  if (m.isEgg || m.isBadEgg) return G3GB_ERR_EGG;
-  pk_resolve(&m);   /* fills m.level (box mons decode with level 0) and m.gender */
+  uint16_t dex;
+  G3GbStatus st = screen(rec80, gen, g1base, &m, &dex);
+  if (st != G3GB_OK) return st;
 
-  /* A checksum-valid record can still hold a level byte outside 1..100 for a party
-   * mon (gen3_mon.c reads mon[0x54] straight into m.level with no clamp — box levels
-   * come back clamped by pk_level_from_exp, so this can only bite a party record).
-   * gb_set_level below refuses such a value; screening it here keeps every refusal
-   * ahead of the first write, the same place every other one already is. */
-  if (m.level < 1 || m.level > 100) return G3GB_ERR_GLITCH;
-
-  uint16_t dex = pk_national_no(m.species);
-  if (dex < 1 || dex > gb_max_species(gen)) return G3GB_ERR_SPECIES;
-
-  for (int i = 0; i < 4; i++)
-    if (m.moves[i] != 0 && m.moves[i] > gb_max_move(gen)) return G3GB_ERR_MOVE;
-
-  if (gen == GB_GEN1 && !g1base) return G3GB_ERR_NEEDS_BASE;
-
-  /* Every refusal is behind us for the screening this function can do cheaply; the
-   * setters below are still checked (rule: trust nothing across a boundary), each
-   * folding into G3GB_ERR_GLITCH — "the record's own data does not add up" — since by
-   * this point species/moves/level have all already been screened and a setter
-   * refusing here means the input was more corrupt than the screening could tell. */
   GbEditMon e;
   uint8_t rec[GB_MAX_REC];
   uint8_t nm[GB_NAME_BYTES];
@@ -76,112 +227,22 @@ G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1bas
   memset(nm, 0x50, sizeof nm);
   if (!gb_load_parts(&e, gen, false, rec, nm, nm, 0)) return G3GB_ERR_ARG;
 
-  /* Species FIRST: gb_set_level needs the growth rate gb_set_species just installed,
-   * and (Gen 1) the type/catch-rate bytes have to exist before anything else runs. */
-  if (!gb_set_species(&e, dex, g1base)) return G3GB_ERR_SPECIES;
+  st = set_identity_and_level(&e, &m, dex, g1base, loss);
+  if (st != G3GB_OK) return st;
 
-  gb_set_otid(&e, (uint16_t)(m.otId & 0xFFFFu));
-  loss->secret_id = (m.otId >> 16) != 0;
+  st = set_dvs_and_statexp(&e, &m, loss);
+  if (st != G3GB_OK) return st;
 
-  if (!gb_set_level(&e, m.level)) return G3GB_ERR_GLITCH;
+  st = set_moves(&e, gen, &m);
+  if (st != G3GB_OK) return st;
 
-  /* DVs. Gen 3's stat order is HP,Atk,Def,Spe,SpA,SpD; the Game Boy's is
-   * HP,Atk,Def,Spe,Spc — Spc is fed from SpA (gen12_convert.h documents the same
-   * choice on the way up), so SpD's information is what ivs_halved additionally
-   * reports losing. */
-  uint8_t iv_atk = m.ivs[PK_ATK], iv_def = m.ivs[PK_DEF];
-  uint8_t iv_spe = m.ivs[PK_SPE], iv_spa = m.ivs[PK_SPA], iv_spd = m.ivs[PK_SPD];
-  if (!gb_set_dv(&e, GB_ATK, iv_to_dv(iv_atk))) return G3GB_ERR_GLITCH;
-  if (!gb_set_dv(&e, GB_DEF, iv_to_dv(iv_def))) return G3GB_ERR_GLITCH;
-  if (!gb_set_dv(&e, GB_SPE, iv_to_dv(iv_spe))) return G3GB_ERR_GLITCH;
-  if (!gb_set_dv(&e, GB_SPC, iv_to_dv(iv_spa))) return G3GB_ERR_GLITCH;
-  loss->ivs_halved = ((iv_atk | iv_def | iv_spe | iv_spa) & 1u) != 0 ||
-                     (iv_to_dv(iv_spa) != iv_to_dv(iv_spd));
+  st = set_names(&e, gen, &m, loss);
+  if (st != G3GB_OK) return st;
 
-  /* Stat exp. GB_SPC takes the LARGER of SpA/SpD's investment so a Pokemon trained
-   * either way keeps at least that much of its special stat exp; the sidecar keeps
-   * the true split for the round trip up (docs/GEN3-TO-GB-SIDECAR-DESIGN.md section 4,
-   * "stat exp: KEPT AS SIDECAR EVs"). ev*257 never exceeds 65535 (255*257 == 65535),
-   * so every one of these is in gb_set_statexp's domain by construction. */
-  uint8_t ev_hp = m.evs[PK_HP], ev_atk = m.evs[PK_ATK], ev_def = m.evs[PK_DEF];
-  uint8_t ev_spe = m.evs[PK_SPE], ev_spa = m.evs[PK_SPA], ev_spd = m.evs[PK_SPD];
-  uint8_t ev_spc = (ev_spa > ev_spd) ? ev_spa : ev_spd;
-  if (!gb_set_statexp(&e, GB_HP,  (uint16_t)(ev_hp  * 257u))) return G3GB_ERR_GLITCH;
-  if (!gb_set_statexp(&e, GB_ATK, (uint16_t)(ev_atk * 257u))) return G3GB_ERR_GLITCH;
-  if (!gb_set_statexp(&e, GB_DEF, (uint16_t)(ev_def * 257u))) return G3GB_ERR_GLITCH;
-  if (!gb_set_statexp(&e, GB_SPE, (uint16_t)(ev_spe * 257u))) return G3GB_ERR_GLITCH;
-  if (!gb_set_statexp(&e, GB_SPC, (uint16_t)(ev_spc * 257u))) return G3GB_ERR_GLITCH;
-  loss->evs_scaled = (ev_hp | ev_atk | ev_def | ev_spe | ev_spa | ev_spd) != 0;
+  st = set_gen2_only_fields(&e, gen, &m, loss);
+  if (st != G3GB_OK) return st;
 
-  /* Moves: base PP first (gb_set_move resets it), then PP Ups, then current PP
-   * clamped to whatever maximum those Ups now allow. */
-  for (int i = 0; i < 4; i++) {
-    uint16_t mv = m.moves[i];
-    uint8_t mv8 = (mv > 255u) ? 0 : (uint8_t)mv;   /* screened <= gb_max_move above */
-    if (!gb_set_move(&e, i, mv8)) return G3GB_ERR_GLITCH;
-    uint8_t ppups = (uint8_t)((m.ppBonuses >> (i * 2)) & 0x3u);
-    if (!gb_set_ppup(&e, i, ppups)) return G3GB_ERR_GLITCH;
-    if (mv8 != 0) {
-      uint8_t cap = gb_max_pp(gen, mv8, ppups);
-      uint8_t pp = m.pp[i];
-      if (pp > cap) pp = cap;
-      if (!gb_set_pp(&e, i, pp)) return G3GB_ERR_GLITCH;
-    }
-  }
-
-  /* Names. gb_text_lossy tells us BEFORE we touch anything whether the exact setter
-   * will accept the text; the _lossy variant is only reached when it would refuse. */
-  char bad[GB_GLYPH_MAX];
-  if (gb_text_lossy(gen, m.nickname, GB_NICK_GLYPHS, bad) == 0) {
-    if (!gb_set_nickname(&e, m.nickname)) return G3GB_ERR_GLITCH;
-  } else {
-    if (!gb_set_nickname_lossy(&e, m.nickname)) return G3GB_ERR_GLITCH;
-    loss->nick_lossy = true;
-    memcpy(loss->nick_first_bad, bad, GB_GLYPH_MAX);
-  }
-  if (gb_text_lossy(gen, m.otName, GB_OT_GLYPHS, bad) == 0) {
-    if (!gb_set_otname(&e, m.otName)) return G3GB_ERR_GLITCH;
-  } else {
-    if (!gb_set_otname_lossy(&e, m.otName)) return G3GB_ERR_GLITCH;
-    loss->ot_lossy = true;
-    memcpy(loss->ot_first_bad, bad, GB_GLYPH_MAX);
-  }
-
-  if (gen == GB_GEN2) {
-    if (!gb_set_friendship(&e, m.friendship)) return G3GB_ERR_GLITCH;
-    /* Pokerus is a single byte, high nibble strain / low nibble days remaining, in
-     * BOTH generations (gen2_save.c:490 rec[0x1C]; gen3_mon.c:139 m[0x00] of the Misc
-     * substruct use the identical nibble split) — verified layout, not a guess, so
-     * this is wired through rather than reported as pokerus_dropped. */
-    if (!gb_set_pokerus(&e, m.pokerus)) return G3GB_ERR_GLITCH;
-    /* Crystal's capture record (time/level/loc/ot_gender) is only READ by Crystal;
-     * gen2_save.c:493-497 shows it is just bytes 0x1D/0x1E, so writing it on a G/S
-     * target is harmless dead data rather than a corruption. RTC-less time slot
-     * (0 = "not recorded") and location 0 (no Gen-3 -> Gen-2 location map exists) —
-     * only the level and OT gender carry over. */
-    uint8_t caught_level = (m.metLevel > 63) ? 63 : m.metLevel;
-    if (!gb_set_caught(&e, 0, caught_level, 0, m.otGender)) return G3GB_ERR_GLITCH;
-  } else {
-    loss->friendship_dropped = true;   /* Gen 1 has no friendship byte at all */
-    loss->pokerus_dropped    = (m.pokerus != 0);
-  }
-
-  loss->item_dropped = (m.heldItem != 0);   /* no Gen-3 -> Gen-2 item map in this tree */
-
-  uint16_t ab0 = pk_species_ability(m.species, 0), ab1 = pk_species_ability(m.species, 1);
-  loss->ability     = (ab0 != ab1);
-  loss->nature      = (pk_nature_boost(m.nature) != -1) || (pk_nature_hinder(m.nature) != -1);
-  loss->ribbons     = (m.ribbons != 0);
-  loss->contest     = (m.contest[0] | m.contest[1] | m.contest[2] |
-                       m.contest[3] | m.contest[4] | m.contest[5]) != 0;
-  loss->met_data    = (m.metLocation != 0) || (m.metLevel != 0) || (m.metGame != 0);
-  loss->ball        = (m.pokeball != 1);           /* 1 == the plain Poke Ball */
-  loss->markings    = (rec_markings(rec80) != 0);
-
-  GbDvEffects eff;
-  gb_dv_effects_of(&e, &eff);
-  loss->shiny_lost  = m.isShiny && !eff.shiny;
-  loss->gender_lost = (m.gender != (uint8_t)eff.gender);
+  set_remaining_loss_flags(&e, rec80, &m, loss);
 
   *out = e;
   return G3GB_OK;
