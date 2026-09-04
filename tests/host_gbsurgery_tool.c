@@ -26,6 +26,22 @@
  * session is open, so the same token works for both generations without the caller
  * knowing which one it is).
  *
+ * TEXT (nick/ot) longer than the game's glyph cap (GB_NICK_GLYPHS 10 / GB_OT_GLYPHS 7)
+ * is NOT refused: gbe_set_text -> gb_set_nickname/gb_set_otname silently truncate at a
+ * glyph boundary, the same limit the game's own keyboard enforces (gb_edit.h's NAMES
+ * block calls this the one loss that is deliberately not refused). A caller that needs
+ * to know whether its text got shortened should read it back with --list afterwards
+ * rather than trust the exit code.
+ *
+ * OPS APPLY IN ORDER, on the SAME in-memory image, each seeing every prior op's result
+ * — there is no batch/transaction semantics beyond "all ops succeed or nothing is
+ * written". This matters most for delete/move: a delete SHIFTS every later slot in that
+ * box/party down by one, so `--op delete party 0 --op nick party 0 X` renames the
+ * Pokemon that WAS in slot 1 before the delete, not the one that was in slot 0. Chain
+ * ops with that in mind (gb_retail_gate.py's box0->party case relies on exactly this:
+ * `--op delete party N --op move 0 0 party` frees a party slot before the move needs
+ * one, in a single invocation, on one file).
+ *
  * Reads the whole file (up to 65536 B) into a static buffer, gbs_open()s it, applies
  * every --op IN ORDER, and on total success writes the WHOLE image — same length as the
  * input, RTC tail included, since none of these operations change a Game Boy save's file
@@ -150,15 +166,21 @@ static int resolve_box(GbSession* s, const char* tok) {
   return (int)v;
 }
 
-static int resolve_slot(const char* tok) {
+/* One non-negative-integer parser for every token that needs one, so the error message
+ * always names the FIELD the caller was actually parsing ("bad level abc", not "bad slot
+ * abc" for a level token that happens to fail the same strtol check a slot token would).
+ */
+static int resolve_uint(const char* tok, const char* what) {
   char* end = NULL;
   long v = strtol(tok, &end, 10);
   if (end == tok || *end != '\0' || v < 0) {
-    fprintf(stderr, "bad slot %s\n", tok);
+    fprintf(stderr, "bad %s %s\n", what, tok);
     return -1;
   }
   return (int)v;
 }
+
+static int resolve_slot(const char* tok) { return resolve_uint(tok, "slot"); }
 
 static int resolve_stat(const char* tok) {
   if (!strcmp(tok, "atk")) return GB_ATK;
@@ -196,7 +218,8 @@ static int do_text(GbSession* s, int field, int box, int slot, const char* text)
 }
 
 static int do_level(GbSession* s, int box, int slot, const char* ntok) {
-  int lvl = resolve_slot(ntok);
+  int lvl = resolve_uint(ntok, "level");
+  if (lvl < 0) return 2;
   if (lvl < 1 || lvl > 100) { fprintf(stderr, "bad level %s (want 1..100)\n", ntok); return 2; }
   GbsStatus ls = gbs_load_list(s, box, g_list);
   if (ls != GBS_OK) return refuse(gbs_status_text(ls));
@@ -216,8 +239,9 @@ static int do_level(GbSession* s, int box, int slot, const char* ntok) {
 static int do_dv(GbSession* s, int box, int slot, const char* stok, const char* vtok) {
   int stat = resolve_stat(stok);
   if (stat < 0) return 2;
-  int v = resolve_slot(vtok);
-  if (v < 0 || v > 15) { fprintf(stderr, "bad dv value %s (want 0..15)\n", vtok); return 2; }
+  int v = resolve_uint(vtok, "dv value");
+  if (v < 0) return 2;
+  if (v > 15) { fprintf(stderr, "bad dv value %s (want 0..15)\n", vtok); return 2; }
   GbsStatus ls = gbs_load_list(s, box, g_list);
   if (ls != GBS_OK) return refuse(gbs_status_text(ls));
   GbEditMon e;
