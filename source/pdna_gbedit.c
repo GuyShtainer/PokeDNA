@@ -1,5 +1,9 @@
 /* pdna_gbedit.c — the Game Boy mon editor SCREEN. See pdna_gbedit.h.
  *
+ * BACKLOG #41: reached only via SELECT from source/pdna_gbsummary.c now (the box
+ * menu's own EDIT/VIEW rows open that screen instead) — the reviewed fallback until
+ * pdna_gbsummary.c gets its own hardware-testing-protocol pass. See pdna_gbedit.h.
+ *
  * Shape and paint discipline are pdna_edit.c's, on purpose: same title/rule/footer
  * geometry, same label/value columns (pdna_layout.h), same diff-render — a shadow of
  * the record as last drawn, rows repainted only where their text changed, a full

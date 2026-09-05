@@ -6,6 +6,14 @@
 
 /* Field-edit screen for ONE Game Boy Pokemon — the Gen-1/2 twin of pdna_edit().
  *
+ * BACKLOG #41 (2026-09-05): the box-menu's EDIT and VIEW rows no longer call this
+ * screen directly — both now open source/pdna_gbsummary.c over the same GbEditMon.
+ * This screen is reachable ONLY via SELECT from inside that summary (pdna_gbsummary.c
+ * itself), as the REVIEWED FALLBACK: pdna_gbsummary.c has not yet had its own
+ * hardware-testing-protocol pass, so a real write can still go through this
+ * already-signed-off path in the meantime. LOAD-BEARING for HW sign-off — do not
+ * delete or bypass this screen until pdna_gbsummary.c has cleared its own HW run.
+ *
  * Edits `e` IN PLACE with a live preview; the rows, their text and what the d-pad
  * does to them come from gb_editor.c (pure C, host-tested), this file only draws,
  * opens the keyboard / move picker, and asks before it returns.
