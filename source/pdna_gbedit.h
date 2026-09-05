@@ -31,4 +31,33 @@
  * orphaned by then and a second warning would say nothing new. */
 bool pdna_gbedit(GbEditMon* e, const char* note, bool has_sidecar);
 
+/* ---- shared with pdna_gbsummary.c (BACKLOG #41) ---------------------------------
+ * The Gen-1/2 summary editor mirrors this screen's row dispatch and confirm-before-
+ * write panel rather than re-deriving (and risking drifting from) the same rules, so
+ * the pieces that are not pure drawing are exposed here instead of duplicated. Every
+ * one of these draws on screen (msg_wait/osk_input/pick_move/ui_*), which is why they
+ * live in this file and not gb_editor.h's pure-C row model. */
+
+/* dv4 is part of the sidecar's own fingerprint (gb_sidecar.h gbsc_key) — true for the
+ * four STORED DVs (Atk/Def/Spe/Spc); the derived HP DV (GBE_DVH) is excluded since it
+ * cannot itself be the edit that orphans anything. */
+bool gbedit_is_dv_field(int f);
+/* Shown once per editor visit on the FIRST adjust/press of a DV row while `has_sidecar`
+ * is true, then never again (`*warned` is the caller's own one-shot latch). */
+void gbedit_dv_orphan_warn(bool has_sidecar, bool* warned);
+/* d-pad/L/R adjust, DV-warning-checked — the shared tail of every LEFT/RIGHT/L/R
+ * branch that touches a row: warn once on a DV row, then gbe_adjust(). */
+void gbedit_adjust_checked(GbEditMon* e, int f, int dir, bool big,
+                            bool has_sidecar, bool* dv_warned);
+/* A on a row: TEXT opens the keyboard, MOVE opens the move picker, NUM presses via
+ * gbe_press — each through the DV-warning check first. Reports a refusal (bad
+ * charset / an in-a-later-generation or duplicate move) with the same messages this
+ * screen shows. */
+void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned);
+/* START/B-with-unsaved-edits confirm panel: names the mon, shows gb_check()'s first
+ * issue (if any, with the write-anyway warning) and gbe_stale_note() (if any), then
+ * asks A = write / B = cancel. Does NOT call gbe_settle_stats() itself — the caller
+ * does that only once A is chosen, exactly like pdna_gbedit()'s own START handler. */
+bool gbedit_confirm(const GbEditMon* e);
+
 #endif /* PDNA_GBEDIT_H */

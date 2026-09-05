@@ -108,7 +108,7 @@ static void render(const GbEditMon* e, const uint8_t* rows, int nrows, int sel, 
 /* START: say what will happen, then ask. A hacked record the player already owns is
  * theirs to keep (gb_edit.h, gb_commit_checked), so a structural issue is shown and
  * may be overridden — but never silently. */
-static bool confirm(const GbEditMon* e) {
+bool gbedit_confirm(const GbEditMon* e) {
   GbIssues iss;
   bool clean = gb_check(e, &iss);
   const char* stale = gbe_stale_note(e);
@@ -157,14 +157,14 @@ static bool confirm(const GbEditMon* e) {
  * associate with its current sidecar entry again -- an edit that silently orphans it.
  * GBE_DVH (the derived HP DV) is READ-ONLY (gb_editor.h: "shown, not editable") and is
  * deliberately excluded -- it cannot itself be the edit that orphans anything. */
-static bool is_dv_field(int f) {
+bool gbedit_is_dv_field(int f) {
   return f == GBE_DVA || f == GBE_DVD || f == GBE_DVS || f == GBE_DVC;
 }
 
 /* Shown once per editor visit (has_sidecar's own `*warned` latch), on the FIRST
  * adjust/press of a DV row, then never again in this visit -- the sidecar is already
  * orphaned after that first edit, so repeating the warning would say nothing new. */
-static void dv_orphan_warn(bool has_sidecar, bool* warned) {
+void gbedit_dv_orphan_warn(bool has_sidecar, bool* warned) {
   if (!has_sidecar || *warned) return;
   *warned = true;
   msg_wait(PDNA_SIDECAR_DV_TITLE, UI_WARN, PDNA_SIDECAR_DV_L1, PDNA_SIDECAR_DV_L2);
@@ -172,14 +172,14 @@ static void dv_orphan_warn(bool has_sidecar, bool* warned) {
 
 /* d-pad/L/R adjust, DV-warning-checked -- the shared tail of pdna_gbedit()'s four
  * KEY_LEFT/RIGHT/L/R branches, none of which differ except direction and step size. */
-static void adjust_checked(GbEditMon* e, int f, int dir, bool big,
+void gbedit_adjust_checked(GbEditMon* e, int f, int dir, bool big,
                            bool has_sidecar, bool* dv_warned) {
-  if (is_dv_field(f)) dv_orphan_warn(has_sidecar, dv_warned);
+  if (gbedit_is_dv_field(f)) gbedit_dv_orphan_warn(has_sidecar, dv_warned);
   gbe_adjust(e, f, dir, big);
 }
 
-static void press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned) {
-  if (is_dv_field(f)) dv_orphan_warn(has_sidecar, dv_warned);
+void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned) {
+  if (gbedit_is_dv_field(f)) gbedit_dv_orphan_warn(has_sidecar, dv_warned);
   int kind = gbe_kind(f);
   if (kind == GBE_K_TEXT) {
     char cur[GB_TEXT_MAX], out[GB_TEXT_MAX], bad[GB_GLYPH_MAX];
@@ -224,15 +224,15 @@ bool pdna_gbedit(GbEditMon* e, const char* note, bool has_sidecar) {
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B | KEY_START);
     if (k & KEY_B) break;
     else if (k & KEY_START) {
-      if (confirm(e)) { gbe_settle_stats(e); committed = true; break; }
+      if (gbedit_confirm(e)) { gbe_settle_stats(e); committed = true; break; }
     }
     else if (k & KEY_UP)    sel = (sel == 0) ? nrows - 1 : sel - 1;
     else if (k & KEY_DOWN)  sel = (sel + 1) % nrows;
-    else if (k & KEY_A)     press(e, rows[sel], has_sidecar, &dv_warned);
-    else if (k & KEY_LEFT)  adjust_checked(e, rows[sel], -1, false, has_sidecar, &dv_warned);
-    else if (k & KEY_RIGHT) adjust_checked(e, rows[sel], +1, false, has_sidecar, &dv_warned);
-    else if (k & KEY_L)     adjust_checked(e, rows[sel], -1, true,  has_sidecar, &dv_warned);
-    else if (k & KEY_R)     adjust_checked(e, rows[sel], +1, true,  has_sidecar, &dv_warned);
+    else if (k & KEY_A)     gbedit_press(e, rows[sel], has_sidecar, &dv_warned);
+    else if (k & KEY_LEFT)  gbedit_adjust_checked(e, rows[sel], -1, false, has_sidecar, &dv_warned);
+    else if (k & KEY_RIGHT) gbedit_adjust_checked(e, rows[sel], +1, false, has_sidecar, &dv_warned);
+    else if (k & KEY_L)     gbedit_adjust_checked(e, rows[sel], -1, true,  has_sidecar, &dv_warned);
+    else if (k & KEY_R)     gbedit_adjust_checked(e, rows[sel], +1, true,  has_sidecar, &dv_warned);
   }
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);   /* restore the global repeat set */
   return committed;

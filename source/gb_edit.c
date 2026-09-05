@@ -430,6 +430,19 @@ uint16_t gb_get_stat(const GbEditMon* e, int i) {
   if (i >= n) return 0;
   return rd16be(e->rec + (e->gen == GB_GEN1 ? R1_STATS : R2_STATS) + i * 2);
 }
+uint16_t gb_get_current_hp(const GbEditMon* e) {
+  if (!e || !gen_ok(e->gen) || !e->is_party) return 0;
+  return rd16be(e->rec + (e->gen == GB_GEN1 ? R1_CURHP : R2_CURHP));
+}
+uint8_t gb_get_gen1_type1(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN1) ? e->rec[R1_TYPE1] : 0;
+}
+uint8_t gb_get_gen1_type2(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN1) ? e->rec[R1_TYPE2] : 0;
+}
+uint8_t gb_get_gen1_status(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN1) ? e->rec[R1_STATUS] : 0;
+}
 bool gb_is_egg(const GbEditMon* e) {
   return e && e->gen == GB_GEN2 && e->list_species == G2_LIST_EGG;
 }
