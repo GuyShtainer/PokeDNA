@@ -44,41 +44,41 @@
  * ---- THE RESOLVER CHAIN (se_resolve, spelled out here so the tests can hit every
  * branch by name) --------------------------------------------------------------------
  *
- *   1. WANTED     the grid cell for (kind, place), UNLESS place is the PC grid and the
- *                 cell is GEN1 -- refused outright (rom_gbsprite has no per-species Gen-1
- *                 icons, only the four-shade bitplane portraits; SPRITE-ERA-DESIGN.md
- *                 sec 2) -- which is treated exactly like the cell being NATIVE.
- *   2. NO_SPECIES if WANTED is a concrete era (not NATIVE) and this species does not
- *                 exist there (se_species_exists), fall to NATIVE.
- *   3. NO_ROM     if WANTED is concrete, the species exists, but WANTED's ROM is not
- *                 registered, fall to NATIVE.
- *   4. WANTED     otherwise WANTED is drawable as itself -- return it.
- *   5. (native)   NATIVE resolves to a concrete era via se_native_era -- ONE OF SE_ERA_
+ *   1. WANTED     the grid cell for (kind, place). Checked against TWO gates, in this
+ *                 order, before it is drawn as itself:
+ *   2. NO_ICONS      place is the PC grid and the cell is GEN1 -- refused outright
+ *                    (rom_gbsprite has no per-species Gen-1 icons, only the four-shade
+ *                    bitplane portraits; SPRITE-ERA-DESIGN.md sec 2). Fall to NATIVE.
+ *   3. NO_SPECIES    the cell is concrete (not NATIVE) and this species does not exist
+ *                    there (se_species_exists). Fall to NATIVE.
+ *   4. NO_ROM        the cell is concrete, the species exists, but the cell's ROM is
+ *                    not registered. Fall to NATIVE.
+ *   5. WANTED        none of the above fired -- WANTED is drawable as itself, return it.
+ *   6. (native)   NATIVE resolves to a concrete era via se_native_era -- ONE OF SE_ERA_
  *                 GEN1/GEN2/G3_RS/G3_EM/G3_FRLG, never the NATIVE sentinel itself. That
- *                 concrete era is checked against the SAME TWO GATES `wanted` was
- *                 checked against -- the PC_GRID+GEN1 icon refusal AND species
- *                 existence -- before it is trusted. AN EARLIER VERSION OF THIS RESOLVER
- *                 APPLIED BOTH GATES ONLY TO `wanted`: a Gen-1 import sitting in an
- *                 UNTOUCHED (NATIVE) Emerald PC-box cell -- the default path, no user
- *                 override needed -- resolved straight to literal GEN1 for the PC grid,
- *                 where there are no per-species Gen-1 icons; and a caller hint forcing
- *                 origin_gen=1 onto a Johto species (dex 152..251, e.g. a mis-hinted
- *                 Tyranitar) asked for a picture Gen 1 never had. Both are refused here,
- *                 on `native`, exactly as `wanted` was. If native clears both gates and
- *                 its ROM is registered, draw it (reason stays whatever step 1-4 left it
+ *                 concrete era is checked against the SAME TWO GATES as wanted was (2A.
+ *                 CAUGHT THE BUG THIS COMMENT USED TO PAPER OVER: an EARLIER version of
+ *                 this resolver applied the PC_GRID+GEN1 refusal and the species check
+ *                 ONLY to `wanted`, so a Gen-1 import sitting in an Emerald PC box --
+ *                 the DEFAULT path, no user override needed -- resolved to literal GEN1
+ *                 for the PC grid, and a caller hint that force-set origin_gen=1 on a
+ *                 Johto species (dex 152..251, e.g. a mis-hinted Tyranitar) would ask
+ *                 for a picture Gen 1 never had. Both are checked again here, on
+ *                 `native`, not just on `wanted`.) If native clears BOTH gates and its
+ *                 ROM is registered, draw it (reason stays whatever step 1-5 left it
  *                 at: SE_WHY_WANTED if the cell was NATIVE to begin with and native
- *                 cleared everything, else the NO_SPECIES / NO_ROM reason WANTED failed
- *                 for -- note the PC_GRID+GEN1 refusal is ALSO reported as NO_SPECIES,
- *                 not a distinct reason; see sprite_era.c for why that is enough for a
- *                 correct answer even though it blurs two different causes).
- *   6. COMPILED   native failed a gate, OR native's own ROM is ALSO absent. A native
+ *                 cleared everything, else whichever of NO_ICONS/NO_SPECIES/NO_ROM
+ *                 WANTED failed for).
+ *   7. COMPILED   native failed a gate, OR native's own ROM is ALSO absent. A native
  *                 Gen-3 mon or a GB import with no era-specific ROM registered both fall
  *                 here today (pdna_origin_art.h: "GB import + no such ROM -> the Gen-3
  *                 picture") -- if the build has compiled Gen-3 art (`compiled_gen3`),
  *                 draw it. There is no per-era SeEra value for "the compiled sprite
  *                 table" (it is not game-specific), so the return value is the NATIVE
- *                 sentinel and `reason` carries the news.
- *   7. CHIP       no compiled art either (the artless build) -- the caller draws the
+ *                 sentinel and `reason` carries the news (SE_WHY_COMPILED, discarding
+ *                 whatever step 1-6 left `reason` at -- once we are drawing the generic
+ *                 fallback, WHY wanted/native failed no longer matters to the caller).
+ *   8. CHIP       no compiled art either (the artless build) -- the caller draws the
  *                 name chip. Also the NATIVE sentinel, reason SE_WHY_CHIP.
  *
  * A resolver that returns SE_ERA_NATIVE therefore means "run the pre-existing pipeline
@@ -129,11 +129,14 @@ typedef struct {
   bool have[SE_ERA_N];
 } SeRoms;
 
-/* Why se_resolve returned what it did, so a screen can print "(no ROM)" or similar. */
+/* Why se_resolve returned what it did, so a screen can print "(no ROM)" or similar.
+ * Checked in this order against both `wanted` and (separately) `native` -- see the
+ * resolver chain above. */
 typedef enum {
   SE_WHY_WANTED = 0,   /* drew exactly the configured cell (possibly NATIVE itself)    */
-  SE_WHY_NO_SPECIES,   /* the wanted era (or a PC_GRID+GEN1 refusal) has no such species*/
-  SE_WHY_NO_ROM,       /* the wanted era's ROM is not registered                        */
+  SE_WHY_NO_ICONS,     /* PC_GRID + GEN1: no per-species Gen-1 icons exist              */
+  SE_WHY_NO_SPECIES,   /* this era has no such species (se_species_exists)              */
+  SE_WHY_NO_ROM,       /* this era's ROM is not registered                              */
   SE_WHY_COMPILED,     /* fell all the way to the compiled Gen-3 sprite table           */
   SE_WHY_CHIP          /* no art at all -- the caller draws the name chip               */
 } SeWhy;
@@ -190,15 +193,33 @@ SeEra se_resolve(const SeSetting* s, SeSaveKind kind, SePlace place,
  * A key whose kind/place tokens do not parse is NOT OURS (se_config_apply returns
  * false so pdna_main.c's cfg_load can try its own keys next, the same shape as its
  * existing k_romkey loop). A recognised key with an unrecognised value sets that cell
- * to NATIVE (the safe default) and still returns true -- the key WAS ours. */
+ * to NATIVE (the safe default) and still returns true -- the key WAS ours.
+ *
+ * NOT EVERY CELL OF THE 5x5 GRID APPLIES -- see se_cell_applies below. The design doc's
+ * "15 keys" was an early estimate; the actual dead-cell rule (a Gen-3 kind's own
+ * SE_PLACE_GBGRID, and a Game Boy kind's SE_PLACE_PC) removes 5 of the 25, leaving 20
+ * that can ever be written or read back.
+ *
+ * WIRING NOTE for E3/E4: pdna_main.c's cfg_save() writes into `char buf[PATH_MAX * 4 +
+ * 128]` = 1152 bytes today (PATH_MAX is 256), via an UNCAPPED siprintf loop that trusts
+ * the fixed set of existing keys to fit. Adding the sprite-era lines needs that buffer
+ * grown and se_config_write called with the REMAINING capacity (`sizeof(buf) - n`), not
+ * a fresh `sizeof(buf)` -- and its `truncated` out-param wired to a log_line() call, so
+ * a buffer that turns out too small is a logged fact instead of a silently dropped
+ * setting (cfg_save's existing philosophy: "nothing here is safety-critical... there is
+ * no reason for it to be the unverified one" applies equally to truncation). */
 
-/* Write every NON-DEFAULT cell as one "era_<kind>_<place>=<era>\n" line into `out`
- * (capacity `cap`). Bounded: never writes past `out[cap-1]`, always leaves a trailing
- * NUL when cap >= 1. Returns the number of bytes actually written (NOT counting the
- * NUL, and never more than cap-1) -- a full line that would not fit is simply not
- * started (no half-written lines), so cap 1 writes nothing and cap "exactly enough"
- * writes everything. `s` may be NULL (writes nothing, returns 0). */
-int se_config_write(const SeSetting* s, char* out, int cap);
+/* Write every NON-DEFAULT, APPLICABLE (se_cell_applies) cell as one
+ * "era_<kind>_<place>=<era>\n" line into `out` (capacity `cap`). Bounded: never writes
+ * past `out[cap-1]`, always leaves a trailing NUL when cap >= 1. Returns the number of
+ * bytes actually written (NOT counting the NUL, and never more than cap-1) -- a full
+ * line that would not fit is simply not started (no half-written lines), so cap 1
+ * writes nothing and cap "exactly enough" writes everything. `s` may be NULL (writes
+ * nothing, returns 0). `truncated` may be NULL; when non-NULL it is always written:
+ * true if at least one line had to be dropped for lack of room, false otherwise
+ * (including every early-return case, where nothing was dropped because nothing was
+ * attempted). */
+int se_config_write(const SeSetting* s, char* out, int cap, bool* truncated);
 
 /* Apply one already-split "key" / "value" pair (mirrors pdna_main.c's cfg_load, which
  * splits a line at '=' before dispatching). Returns false when the key is not one of
@@ -219,5 +240,36 @@ const char* se_place_name(SePlace p);
  * offered when `place` is SE_PLACE_PC (the same refusal se_resolve applies). Bounded to
  * at most SE_ERA_N steps, so it always terminates -- NATIVE alone guarantees a hit. */
 SeEra se_era_next(SeEra e, const SeRoms* roms, SePlace place);
+
+/* ---- small helpers for the E3/E4 wiring -------------------------------------------- */
+
+/* Is `era`'s ROM registered? The same check se_resolve and se_era_next use internally,
+ * exported so a caller can grey out a Settings row without re-deriving it. NATIVE is
+ * always available (it is the fallback sentinel, never something with its own ROM). */
+bool se_era_available(SeEra era, const SeRoms* roms);
+
+/* Does the (kind, place) cell exist at all? Two dead-cell rules remove 5 of the 25
+ * grid cells: a Gen-3 kind's (RS/EM/FRLG) SE_PLACE_GBGRID never applies (that place is
+ * a Game Boy save's OWN box grid), and a Game Boy kind's (GEN1/GEN2) SE_PLACE_PC never
+ * applies (a Game Boy save has no Gen-3-style PC box). se_config_write skips cells this
+ * reports false for even if a caller somehow set one to a non-default value. An
+ * out-of-range kind or place answers false. */
+bool se_cell_applies(SeSaveKind kind, SePlace place);
+
+/* Which era the icon store should build its ROM from for this (kind, place) cell: the
+ * cell's own setting IF it is a concrete Gen-3 era (G3_RS/G3_EM/G3_FRLG) with a
+ * registered ROM, else the save's native Gen-3 era (se_native_era(kind, 3, 1) -- origin
+ * 3/certain, i.e. "as if this were a native Gen-3 mon", which is what the icon store's
+ * OWN game ROM already means today). GEN1/GEN2 cell settings and NATIVE do not name a
+ * Gen-3 ROM, so they fall through to the same native answer. `s` or `roms` NULL falls
+ * straight to the native answer (nothing else to read). */
+SeEra se_store_era(const SeSetting* s, SeSaveKind kind, SePlace place, const SeRoms* roms);
+
+/* Map a PkGame value (gen3_trainer.h's PK_RS/PK_EMERALD/PK_FRLG, 0/1/2) onto its
+ * SeSaveKind. Takes a raw `int`, not PkGame, so this header stays free of
+ * gen3_trainer.h -- the .c file includes it privately and _Static_asserts the
+ * numbering this mapping assumes. An out-of-range value defensively returns
+ * SE_KIND_EM (a Gen-3 kind always exists to degrade to). */
+SeSaveKind se_kind_from_game(int pkgame);
 
 #endif /* SPRITE_ERA_H */

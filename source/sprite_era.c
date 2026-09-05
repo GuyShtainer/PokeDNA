@@ -2,6 +2,15 @@
 
 #include <string.h>
 
+#include "gen3_trainer.h"   /* PkGame -- ONLY for se_kind_from_game's mapping table;
+                             * kept out of sprite_era.h so the header stays pure/
+                             * decoupled per this codebase's pure-C-core convention. */
+
+/* If PkGame's numbering ever changes, se_kind_from_game's switch below silently maps
+ * the wrong save kind to the wrong art -- this catches that at compile time instead. */
+_Static_assert(PK_RS == 0 && PK_EMERALD == 1 && PK_FRLG == 2,
+               "se_kind_from_game assumes this exact PkGame numbering");
+
 /* Config tokens -- see sprite_era.h's "config.cfg text" section. Kept private: the
  * public se_*_name() functions are UI labels and are free to read differently. Kind and
  * era tokens are all exactly 2 chars except "native", which is never WRITTEN (it is the
@@ -73,45 +82,44 @@ SeEra se_resolve(const SeSetting* s, SeSaveKind kind, SePlace place,
   SeEra wanted = (SeEra)s->era[kind][place];
   int why = SE_WHY_WANTED;
 
-  /* Step 1: PC_GRID + GEN1 is refused outright -- no per-species Gen-1 icons exist. */
-  if (place == SE_PLACE_PC && wanted == SE_ERA_GEN1) {
-    wanted = SE_ERA_NATIVE;
-    why = SE_WHY_NO_SPECIES;
-  }
-
   if (wanted != SE_ERA_NATIVE) {
-    /* Step 2/3: the wanted era must both have this species and have its ROM open. */
-    if (!se_species_exists(wanted, national_dex)) {
+    /* Steps 2/3/4: the wanted era must clear the icon refusal, have this species, AND
+     * have its ROM open -- checked in that order so the reason names the FIRST gate
+     * that actually blocked it. */
+    if (place == SE_PLACE_PC && wanted == SE_ERA_GEN1) {
+      why = SE_WHY_NO_ICONS;
+    } else if (!se_species_exists(wanted, national_dex)) {
       why = SE_WHY_NO_SPECIES;
     } else if (!era_has_rom(wanted, roms)) {
       why = SE_WHY_NO_ROM;
     } else {
       if (reason) *reason = SE_WHY_WANTED;
-      return wanted;                                   /* Step 4: draw it as asked */
+      return wanted;                                   /* Step 5: draw it as asked */
     }
   }
 
-  /* Fell to NATIVE (either the cell said so, or WANTED just failed above). THE FIX: an
-   * earlier version of this resolver stopped here and trusted `native` unconditionally
-   * -- but se_native_era ALWAYS returns a CONCRETE era (GEN1/GEN2/G3_RS/G3_EM/G3_FRLG),
-   * never the NATIVE sentinel, and that concrete era is not automatically safe to draw
-   * any more than `wanted` was. Two real cases this missed: a Gen-1 import sitting in
-   * an UNTOUCHED (NATIVE) Emerald PC-box cell -- the default path, no user override at
-   * all -- used to resolve straight to literal GEN1 for the PC grid, where there are no
-   * per-species Gen-1 icons; and a caller hint forcing origin_gen=1 onto a Johto species
-   * (dex 152..251, e.g. a mis-hinted Tyranitar) used to ask for a picture Gen 1 never
-   * had. `native` is therefore checked against the SAME two gates `wanted` was, before
-   * its ROM is even consulted. */
+  /* Fell to NATIVE (either the cell said so, or WANTED just failed one of the gates
+   * above). se_native_era ALWAYS returns a concrete era (GEN1/GEN2/G3_RS/G3_EM/
+   * G3_FRLG), never the NATIVE sentinel -- and that concrete era is NOT automatically
+   * safe to draw: it must clear the SAME two gates `wanted` was checked against.
+   * Skipping this check was the bug a review caught before this shipped -- a Gen-1
+   * import sitting in an Emerald PC box (the cell is NATIVE, no user override at all)
+   * used to resolve straight to literal GEN1 for the PC grid, where there are no
+   * per-species Gen-1 icons; and a caller hint forcing origin_gen=1 onto a Johto
+   * species (dex 152..251) used to ask for a picture Gen 1 never had. Both are refused
+   * here exactly as `wanted` was. */
   SeEra native = se_native_era(kind, origin_gen, origin_certain);
-  bool native_ok = se_species_exists(native, national_dex) &&
-                   !(place == SE_PLACE_PC && native == SE_ERA_GEN1);
-  if (native_ok && era_has_rom(native, roms)) {
-    if (reason) *reason = why;                          /* Step 5 */
+  bool native_icons_ok   = !(place == SE_PLACE_PC && native == SE_ERA_GEN1);
+  bool native_species_ok = se_species_exists(native, national_dex);
+  if (native_icons_ok && native_species_ok && era_has_rom(native, roms)) {
+    if (reason) *reason = why;                          /* Step 6 */
     return native;
   }
 
-  /* Step 6/7: native failed a gate, or its ROM is ALSO absent -- compiled Gen-3 art,
-   * else the chip. */
+  /* Step 7/8: native failed a gate, or its ROM is ALSO absent -- compiled Gen-3 art,
+   * else the chip. The reason from here on describes THIS step, not whatever `wanted`
+   * or `native` failed for earlier -- once the answer is the generic fallback, that
+   * earlier detail no longer changes what the caller does. */
   if (reason) *reason = compiled_gen3 ? SE_WHY_COMPILED : SE_WHY_CHIP;
   return SE_ERA_NATIVE;
 }
@@ -129,7 +137,8 @@ static int append_all_or_nothing(char* out, int cap, const char* src) {
   return len;
 }
 
-int se_config_write(const SeSetting* s, char* out, int cap) {
+int se_config_write(const SeSetting* s, char* out, int cap, bool* truncated) {
+  if (truncated) *truncated = false;
   if (!s || !out || cap <= 0) return 0;
   int pos = 0;
   bool stop = false;
@@ -138,6 +147,9 @@ int se_config_write(const SeSetting* s, char* out, int cap) {
     for (int p = 0; p < SE_PLACE_N && !stop; p++) {
       SeEra e = (SeEra)s->era[k][p];
       if (e == SE_ERA_NATIVE) continue;
+      if (!se_cell_applies((SeSaveKind)k, (SePlace)p)) continue;  /* dead cell: never
+                                                                    * written, even if
+                                                                    * some caller set it */
 
       char line[24];
       int n = 0;
@@ -154,6 +166,7 @@ int se_config_write(const SeSetting* s, char* out, int cap) {
                                                 * iteration order, so truncation is
                                                 * always a clean whole-line prefix */
         stop = true;
+        if (truncated) *truncated = true;
         break;
       }
       pos += room;
@@ -199,4 +212,38 @@ SeEra se_era_next(SeEra e, const SeRoms* roms, SePlace place) {
     if (era_has_rom(cur, roms)) return cur;
   }
   return SE_ERA_NATIVE;                         /* unreachable: NATIVE always qualifies */
+}
+
+bool se_era_available(SeEra era, const SeRoms* roms) { return era_has_rom(era, roms); }
+
+bool se_cell_applies(SeSaveKind kind, SePlace place) {
+  if ((unsigned)kind >= SE_KIND_N || (unsigned)place >= SE_PLACE_N) return false;
+  bool g3_kind = (kind == SE_KIND_RS || kind == SE_KIND_EM || kind == SE_KIND_FRLG);
+  bool gb_kind = (kind == SE_KIND_GEN1 || kind == SE_KIND_GEN2);
+  if (g3_kind && place == SE_PLACE_GBGRID) return false; /* GBGRID is a GB save's OWN
+                                                           * box grid, not a Gen-3 one */
+  if (gb_kind && place == SE_PLACE_PC) return false;     /* PC is a Gen-3 save's box,
+                                                           * a GB save has none */
+  return true;
+}
+
+SeEra se_store_era(const SeSetting* s, SeSaveKind kind, SePlace place, const SeRoms* roms) {
+  SeEra fallback = se_native_era(kind, 3, 1);   /* "as if this were a native Gen-3 mon"
+                                                  * -- the icon store's own game today */
+  if (!s || !roms) return fallback;
+  if ((unsigned)kind >= SE_KIND_N || (unsigned)place >= SE_PLACE_N) return fallback;
+
+  SeEra cell = (SeEra)s->era[kind][place];
+  bool concrete_g3 = (cell == SE_ERA_G3_RS || cell == SE_ERA_G3_EM || cell == SE_ERA_G3_FRLG);
+  if (concrete_g3 && era_has_rom(cell, roms)) return cell;
+  return fallback;
+}
+
+SeSaveKind se_kind_from_game(int pkgame) {
+  switch (pkgame) {
+    case PK_RS:      return SE_KIND_RS;
+    case PK_EMERALD: return SE_KIND_EM;
+    case PK_FRLG:    return SE_KIND_FRLG;
+    default:         return SE_KIND_EM;   /* defensive: a Gen-3 kind always exists */
+  }
 }
