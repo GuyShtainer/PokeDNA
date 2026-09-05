@@ -119,8 +119,16 @@ PDNA_ART_HFILES  := hand_cursor.h                 # daycare_bg_data.h is listed 
 PDNA_ART_HEADER_ONLY := daycare_bg_data.h         # it gates via PDNA_NO_DAYCARE_BG, not a filter
 PDNA_ART_EMBED_SFILES := mon_back_data.s mon_front_shiny_data.s
 
+# BACKLOG #19's last item (docs/AUDIT-2026-09-05-backlog-3-19.md section B): the 741
+# verbatim Game Freak item/move/ability description strings, split out of
+# data_tables.c into their own generated/git-ignored file so PDNA_ARTLESS=1 can drop
+# them the same way it drops the 21 art files above -- see desc_gate.h /
+# data_desc_shim.c. Not merged into PDNA_ART_CFILES: it isn't ripped art, it's text,
+# and keeping its own name makes `grep PDNA_DESC` find every piece of this gate.
+PDNA_DESC_CFILES := data_desc.c
+
 PDNA_ART_FILES := $(addprefix source/,$(PDNA_ART_CFILES) $(PDNA_ART_SFILES) \
-                     $(PDNA_ART_HFILES) $(PDNA_ART_HEADER_ONLY)) \
+                     $(PDNA_ART_HFILES) $(PDNA_ART_HEADER_ONLY) $(PDNA_DESC_CFILES)) \
                    $(addprefix source/embed/,$(PDNA_ART_EMBED_SFILES))
 # check-art (the presence-guard target that uses this list) is defined further down, right
 # after `all`/$(BUILD) -- NOT here. This file's default goal is "whichever concrete,
@@ -243,7 +251,7 @@ endif
 ifeq ($(strip $(PDNA_ARTLESS)),1)
 CFLAGS += -DPDNA_HAND_ART_COMPILED=0 -DPDNA_MON_ICONS_ART_COMPILED=0 \
           -DPDNA_CARD_ART_COMPILED=0 -DPDNA_POKEBLOCK_ART_COMPILED=0 \
-          -DPDNA_BAG_ART_COMPILED=0
+          -DPDNA_BAG_ART_COMPILED=0 -DPDNA_DESC_TEXT_COMPILED=0
 # Daycare BG is procedurally generated (tools/gen_daycare_bg.py) from user-supplied images,
 # not ROM-derived, so the artless build includes it. Consumer gates via __has_include probe.
 # ...and tell the CODE which variant it is, not just which art gates are off, so the
@@ -326,7 +334,7 @@ BINFILES := $(foreach dir, $(DATADIRS), $(notdir $(wildcard $(dir)/*.*)))
 # plain full-art `make` never reaches this branch, so PokeDNA.gba's OFILES list is
 # unchanged by any of this.
 ifeq ($(strip $(PDNA_ARTLESS)),1)
-CFILES   := $(filter-out $(PDNA_ART_CFILES),$(CFILES))
+CFILES   := $(filter-out $(PDNA_ART_CFILES) $(PDNA_DESC_CFILES),$(CFILES))
 SFILES   := $(filter-out $(PDNA_ART_SFILES),$(SFILES))
 endif
 

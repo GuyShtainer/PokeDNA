@@ -1347,4 +1347,18 @@
  * tests/host_textfit_test.c's own check). */
 #define PDNA_LBL_PCP_FOOTER  "B back"
 
+/* ---------------------------------------------------------------------------
+ * Description placeholder (BACKLOG #19 / docs/AUDIT-2026-09-05-backlog-3-19.md §B,
+ * desc_gate.h / data_desc_shim.c): what pk_item_desc/pk_move_desc/pk_ability_desc
+ * return in an artless build (PDNA_DESC_TEXT_COMPILED=0) when NO ROM is registered
+ * this session, so pdna_main.c's desc_or_fallback() degrades to something honest
+ * instead of an empty string. Every caller already renders through ui_ptext_wrap,
+ * ui_ptext_fit or text_wrap (pdna_bag.c's draw_desc, pdna_pick.c's item/ability
+ * panels, pdna_summary.c's ability card) -- all three either wrap or truncate with a
+ * visible '~', so nothing NEW can overflow here. It is still measured in
+ * tests/host_textfit_test.c against the tightest of those call sites' single-line
+ * budget (the item-picker ball row, PDNA_BALL_TEXT_X..UI_SCR_W) so a future edit
+ * can't quietly make it worse. */
+#define PDNA_DESC_PLACEHOLDER "(attach a ROM for descriptions)"
+
 #endif /* PDNA_LAYOUT_H */
