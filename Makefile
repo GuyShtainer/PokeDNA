@@ -119,8 +119,16 @@ PDNA_ART_HFILES  := hand_cursor.h                 # daycare_bg_data.h is listed 
 PDNA_ART_HEADER_ONLY := daycare_bg_data.h         # it gates via PDNA_NO_DAYCARE_BG, not a filter
 PDNA_ART_EMBED_SFILES := mon_back_data.s mon_front_shiny_data.s
 
+# BACKLOG #19's last item (docs/AUDIT-2026-09-05-backlog-3-19.md section B): the 741
+# verbatim Game Freak item/move/ability description strings, split out of
+# data_tables.c into their own generated/git-ignored file so PDNA_ARTLESS=1 can drop
+# them the same way it drops the 21 art files above -- see desc_gate.h /
+# data_desc_shim.c. Not merged into PDNA_ART_CFILES: it isn't ripped art, it's text,
+# and keeping its own name makes `grep PDNA_DESC` find every piece of this gate.
+PDNA_DESC_CFILES := data_desc.c
+
 PDNA_ART_FILES := $(addprefix source/,$(PDNA_ART_CFILES) $(PDNA_ART_SFILES) \
-                     $(PDNA_ART_HFILES) $(PDNA_ART_HEADER_ONLY)) \
+                     $(PDNA_ART_HFILES) $(PDNA_ART_HEADER_ONLY) $(PDNA_DESC_CFILES)) \
                    $(addprefix source/embed/,$(PDNA_ART_EMBED_SFILES))
 # check-art (the presence-guard target that uses this list) is defined further down, right
 # after `all`/$(BUILD) -- NOT here. This file's default goal is "whichever concrete,
@@ -243,7 +251,7 @@ endif
 ifeq ($(strip $(PDNA_ARTLESS)),1)
 CFLAGS += -DPDNA_HAND_ART_COMPILED=0 -DPDNA_MON_ICONS_ART_COMPILED=0 \
           -DPDNA_CARD_ART_COMPILED=0 -DPDNA_POKEBLOCK_ART_COMPILED=0 \
-          -DPDNA_BAG_ART_COMPILED=0
+          -DPDNA_BAG_ART_COMPILED=0 -DPDNA_DESC_TEXT_COMPILED=0
 # Daycare BG is procedurally generated (tools/gen_daycare_bg.py) from user-supplied images,
 # not ROM-derived, so the artless build includes it. Consumer gates via __has_include probe.
 # ...and tell the CODE which variant it is, not just which art gates are off, so the
@@ -326,7 +334,7 @@ BINFILES := $(foreach dir, $(DATADIRS), $(notdir $(wildcard $(dir)/*.*)))
 # plain full-art `make` never reaches this branch, so PokeDNA.gba's OFILES list is
 # unchanged by any of this.
 ifeq ($(strip $(PDNA_ARTLESS)),1)
-CFILES   := $(filter-out $(PDNA_ART_CFILES),$(CFILES))
+CFILES   := $(filter-out $(PDNA_ART_CFILES) $(PDNA_DESC_CFILES),$(CFILES))
 SFILES   := $(filter-out $(PDNA_ART_SFILES),$(SFILES))
 endif
 
@@ -378,13 +386,18 @@ check-art:
 	@missing=""; \
 	for f in $(PDNA_ART_FILES); do [ -e "$$f" ] || missing="$$missing $$f"; done; \
 	if [ -n "$$missing" ]; then \
-	  echo "*** FATAL: this is a full-art build ($(PROJ)) but generated art sources are"; \
-	  echo "***        missing from source/:"; \
+	  echo "*** FATAL: this is a full-art/full-text build ($(PROJ)) but generated"; \
+	  echo "***        sources are missing from source/ (art AND/OR data_desc.c --"; \
+	  echo "***        the latter is the 741 verbatim description STRINGS, not art,"; \
+	  echo "***        but it fails the SAME way for the SAME reason: PDNA_ARTLESS=1"; \
+	  echo "***        would have excluded it on purpose; a full build silently"; \
+	  echo "***        missing it is the failure this guard exists to catch):"; \
 	  for f in $$missing; do echo "***          $$f"; done; \
 	  echo "*** Two ways forward:"; \
-	  echo "***   1) Generate the art: see README.md's 'Graphics assets' section --"; \
-	  echo "***      each tools/gen_*.py regenerates one file; see its own --help."; \
-	  echo "***   2) Skip the art entirely: 'make artless' (or 'make sd-artless' /"; \
+	  echo "***   1) Generate it: see README.md's 'Graphics assets' section --"; \
+	  echo "***      each tools/gen_*.py regenerates one file (data_desc.c comes from"; \
+	  echo "***      tools/gen_data.py, same as data_tables.c); see its own --help."; \
+	  echo "***   2) Skip it entirely: 'make artless' (or 'make sd-artless' /"; \
 	  echo "***      'make delta-artless') builds without needing any of these files,"; \
 	  echo "***      including on a fresh clone that never had them."; \
 	  exit 1; \
@@ -435,20 +448,34 @@ delta:                 # emulator build (Delta / RetroArch): edits its OWN 128 K
 # it was before — that is the entire point. Composes with 'delta'/'sd' above; this is the
 # cleanest spelling: bare 'artless' for the hardware/NOR case (the one Guy actually asked
 # for), '<target>-artless' for the others.
+# NAMING NOTE (review finding, 2026-09-05): PROJ itself is wrong here -- the TOP-level
+# `make artless` invocation never sets PDNA_ARTLESS (only the recursive `$(MAKE)
+# PDNA_ARTLESS=1 rebuild` below does), so THIS make's own $(PROJ) resolves to the
+# full-art name ("PokeDNA"), not the artless one actually produced by the recursive
+# build. PDNA_PERF, by contrast, IS visible here (it's a command-line variable that
+# propagates to every recursive $(MAKE) automatically, and `make artless
+# PDNA_PERF=0` is real usage -- 'noperf' variant docs above), so the basename is
+# rebuilt by hand from the same pieces PROJ's own definition uses, mirroring
+# PDNA_ARTLESS=1 explicitly instead of trusting the (wrong, here) $(PROJ).
 artless:               # hardware build WITHOUT the generated/git-ignored art -> PokeDNA-artless.gba
 	@$(MAKE) PDNA_ARTLESS=1 rebuild
+	@./tools/check_no_desc_text.sh PokeDNA-artless$(if $(filter 0,$(PDNA_PERF)),-noperf,)
 	@echo ""
 	@echo "  PokeDNA-artless.gba built — weak fallbacks in source/art_fallbacks.c (+ the"
 	@echo "  PDNA_*_ART_COMPILED / PDNA_NO_DAYCARE_BG gates) stand in for every generated"
 	@echo "  art module. Not one file in source/ was moved, copied, or deleted to get here."
+	@echo "  No Game Freak description text compiled in either (desc_gate.h /"
+	@echo "  data_desc_shim.c) -- verified by tools/check_no_desc_text.sh above."
 
 delta-artless:         # emulator build, no compiled art (composes 'delta' + 'artless')
 	@$(MAKE) PDNA_TARGET=delta PDNA_ARTLESS=1 rebuild
+	@./tools/check_no_desc_text.sh pokedna-delta-artless$(if $(filter 0,$(PDNA_PERF)),-noperf,)
 	@echo ""
 	@echo "  pokedna-delta-artless.gba built. Same save rules as 'delta' above."
 
 sd-artless:            # SD-streaming build, no compiled art (composes 'sd' + 'artless')
 	@$(MAKE) PDNA_TARGET=sd PDNA_ARTLESS=1 rebuild
+	@./tools/check_no_desc_text.sh PokeDNA-SD-artless$(if $(filter 0,$(PDNA_PERF)),-noperf,)
 	@echo ""
 	@echo "  PokeDNA-SD-artless.gba built."
 

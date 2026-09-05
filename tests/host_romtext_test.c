@@ -6,8 +6,8 @@
  *
  * Build + run (from the repo root):
  *   cc -std=c11 -I source tests/host_romtext_test.c source/rom_text.c \
- *      source/rom_map.c source/data_tables.c source/gen3_flags.c source/ui_font.c \
- *      -o /tmp/hrtx && /tmp/hrtx
+ *      source/rom_map.c source/data_tables.c source/data_desc.c source/gen3_flags.c \
+ *      source/ui_font.c -o /tmp/hrtx && /tmp/hrtx
  *
  * What it proves, against Guy's own five cartridge dumps:
  *   1) the tables open on Emerald + FireRed + LeafGreen (GF header) and on the two

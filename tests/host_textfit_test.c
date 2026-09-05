@@ -1414,9 +1414,28 @@ int main(void) {
     chkv("ball rule stops above the footer", PDNA_BALL_RULE_Y, PDNA_FILT_FOOTER_Y - 1);
     chkv_min("ball name column starts clear of the icon",
              PDNA_BALL_TEXT_X, PDNA_BALL_ICON_X + 24);
-
   }
   /* ==== END: BALL picker ======================================================= */
+
+  /* ==== BEGIN: item picker's non-split line (PDNA_DESC_PLACEHOLDER budget) =====
+   * PDNA_DESC_PLACEHOLDER (BACKLOG #19 / desc_gate.h) is a FIXED string, unlike the
+   * item names/descriptions this file otherwise excludes as table data it can't
+   * see -- so it belongs here per this file's own rule (any number that could push
+   * ink off a screen lives here). Earlier revisions measured it against the ball
+   * row's tw (PDNA_BALL_TEXT_X..UI_SCR_W); a review (2026-09-05) found the REAL
+   * tightest budget is pdna_pick.c:1478-1481's non-split, one-line-above-the-footer
+   * view instead: it draws "label  desc" through ONE ui_ptext_fit(4, 139,
+   * UI_SCR_W-8, ...) SHARED between pk_item_label()'s output and the description,
+   * not the description's own column the way the split view/ball row/bag give it.
+   * Measured against the real item table, the widest label is a TM ("No35
+   * FLAMETHROWER", 99 px) + 2 literal space glyphs (6 px), leaving
+   * PDNA_PICK_DESC_LINE_BUDGET_PX = 127 px for the description half of the line --
+   * real descriptions already exceed that and clip with a visible '~' (accepted,
+   * pre-existing), but the placeholder must actually FIT it: a fixed string
+   * clipping would be a new, avoidable regression, not an existing one. */
+  printf("\n== item picker (non-split line, PDNA_DESC_PLACEHOLDER) ==\n");
+  PF(PDNA_DESC_PLACEHOLDER, 0, PDNA_PICK_DESC_LINE_BUDGET_PX);
+  /* ==== END: item picker's non-split line ======================================= */
 
   /* ==== BEGIN: MET-LOCATION list + REGION chooser ==============================
    * Both are lists over gen3_places.c now. Place names are table data the host cannot

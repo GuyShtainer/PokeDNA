@@ -1349,4 +1349,29 @@
  * tests/host_textfit_test.c's own check). */
 #define PDNA_LBL_PCP_FOOTER  "B back"
 
+/* ---------------------------------------------------------------------------
+ * Description placeholder (BACKLOG #19 / docs/AUDIT-2026-09-05-backlog-3-19.md §B,
+ * desc_gate.h / data_desc_shim.c): what pk_item_desc/pk_move_desc/pk_ability_desc
+ * return in an artless build (PDNA_DESC_TEXT_COMPILED=0) when NO ROM is registered
+ * this session, so pdna_main.c's desc_or_fallback() degrades to something honest
+ * instead of an empty string. Every caller already renders through ui_ptext_wrap,
+ * ui_ptext_fit or text_wrap (pdna_bag.c's draw_desc, pdna_pick.c's item/ability
+ * panels, pdna_summary.c's ability card) -- three of those four either wrap or
+ * paginate, so an over-long placeholder there just adds a line.
+ *
+ * The FOURTH -- pdna_pick.c:1478-1481, the non-split item-picker's one-line-above-
+ * the-footer view -- is the real tightest budget (review finding, 2026-09-05,
+ * corrects this file's earlier claim that the ball row was tightest): it draws
+ * "label  desc" through ONE ui_ptext_fit(4, 139, UI_SCR_W-8=232, ...) SHARED between
+ * pk_item_label()'s output and the description, with 2 literal space glyphs between
+ * them. Measured against the real item table, the widest label is a TM ("No35
+ * FLAMETHROWER", 99 px), leaving only 232 - 99 - 2*3 = 127 px for the description
+ * half of the line -- PDNA_PICK_DESC_LINE_BUDGET_PX below. Real descriptions already
+ * exceed that routinely and clip with a visible '~' (accepted, pre-existing
+ * behaviour this gate must not make WORSE); the placeholder must actually FIT it,
+ * since a fixed string clipping is a new, avoidable regression, not an existing one.
+ * tests/host_textfit_test.c measures it against this budget, not the ball row. */
+#define PDNA_PICK_DESC_LINE_BUDGET_PX 127
+#define PDNA_DESC_PLACEHOLDER "(needs ROM)"
+
 #endif /* PDNA_LAYOUT_H */
