@@ -642,8 +642,15 @@
 #define PDNA_SIDECAR_AB_GAP          10   /* extra gap before the A/B footer            */
 
 /* ---- S5-B Part D: PASTE (GB) on an empty Game Boy cell (pdna_gen12.c) ------------- */
-#define PDNA_SIDECAR_GEN1_TITLE      "GEN 1: NOT YET"
-#define PDNA_SIDECAR_GEN1_L1         "Needs base stats (S5-C)."
+/* S5-C Part B1: Gen 1 is no longer refused outright -- a base-stat table now exists
+ * (read live off the user's own ROM beside the .sav). GEN1_TITLE/L1 are repurposed
+ * for the one refusal that remains: no <base>.gb/.gbc sits next to the save. L1 is
+ * the STATIC tail of a two-line message; the dynamic "Put NAME.gb here" line is
+ * built with siprintf (gb_gen1_norom_msg) and is safe by construction (msg_wait runs
+ * it through ui_ptext_fit, same as every other dynamic message in this tree). */
+#define PDNA_SIDECAR_GEN1_TITLE      "NO GEN-1 ROM"
+#define PDNA_SIDECAR_GEN1_L1         "beside the .sav to transfer."
+#define PDNA_SIDECAR_GEN1_BADROM_L1  "Bad or unreadable ROM."
 #define PDNA_SIDECAR_XFER_TITLE      "CAN'T TRANSFER"
 /* S5-B re-verification NEW-1: gbs_insert() only ever lands a BOX-kind record into a
  * storage box (gb_session.h's own contract) -- the party pseudo-box is refused before

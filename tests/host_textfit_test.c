@@ -623,6 +623,11 @@ int main(void) {
    * PDNA_LBL_PASTE_GB is measured through PDNA_MONMENU_LABELS below, not here. */
   PF(PDNA_SIDECAR_GEN1_TITLE,       28, 184);
   PF(PDNA_SIDECAR_GEN1_L1,          28, 184);
+  /* S5-C Part B1: the STATIC tail of the "no ROM beside the save" message; the
+   * dynamic "Put NAME.gb here" line is built at runtime (gb_gen1_norom_msg) and is
+   * exempt from static measurement per this file's own header note -- it goes
+   * through msg_wait's own ui_ptext_fit, which clips instead of overflowing. */
+  PF(PDNA_SIDECAR_GEN1_BADROM_L1,   28, 184);
   PF(PDNA_SIDECAR_XFER_TITLE,       28, 184);
   /* S5-B re-verification NEW-1: gbs_insert() refuses the party pseudo-box outright. */
   PF(PDNA_SIDECAR_PARTY_L1,         28, 184);

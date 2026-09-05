@@ -10,7 +10,7 @@
  *      source/gen3_save.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c \
  *      source/gen3_daycare.c source/data_tables.c \
  *      source/gb_edit.c source/gb_session.c source/gen1_save.c source/gen1_write.c \
- *      source/gen2_save.c source/gen2_write.c -o /tmp/hrombase
+ *      source/gen2_save.c source/gen2_write.c source/gb_sidecar.c -o /tmp/hrombase
  *   /tmp/hrombase /Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/ (.sav files)
  *
  * Coverage:
@@ -34,6 +34,15 @@
  *      accepts a genuine cartridge write. The save is read into a RAM buffer and never
  *      written back to disk, so Guy's real Red.sav is untouched (same posture as
  *      tests/host_gen3gb_test.c's test_engine_gen1).
+ *   5) S5-C Part B1's OWN review ask, on a SEPARATE copy of the same Red.sav image:
+ *      the exact production composition PASTE (GB) runs for a Gen-1 target --
+ *      gen3_to_gb(GB_GEN1, ROM base) -> gbs_insert() (the GbSession-level call
+ *      pdna_gen12.c's gb_paste_write() makes, not the lower-level gen1_write_apply
+ *      section 4 exercises) -> gb_load() the landed slot -> gbsc_merge_up() against a
+ *      sidecar entry built from the SAME conversion, asserting the merged 80 bytes are
+ *      byte-IDENTICAL to the original Gen-3 record -- the sidecar's whole promise,
+ *      exercised end to end through the real session API for a Gen-1 target for the
+ *      first time.
  *
  * ROMs are Guy's own dumps: they live OUTSIDE the repo and are never copied into it,
  * so a missing corpus SKIPs rather than fails.
@@ -53,6 +62,8 @@
 #include "data_tables.h"
 #include "gen3_to_gb.h"
 #include "gen1_write.h"
+#include "gb_session.h"
+#include "gb_sidecar.h"
 
 #define ROMS "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/gb"
 
@@ -347,6 +358,76 @@ static void test_engine_gen1(const RomGbSprite* gs) {
 }
 
 /* ============================================================================ */
+/* 5. S5-C Part B1 review ask: the PRODUCTION composition, on a fresh Red.sav copy --
+ *    gen3_to_gb(GB_GEN1, ROM base) -> gbs_insert() -> gb_load() -> gbsc_merge_up()
+ *    reproduces the original80 exactly. gb_paste_write() (source/pdna_gen12.c) makes
+ *    precisely these calls in precisely this order; this is that composition, minus
+ *    the FatFs/UI around it. */
+static void test_session_insert_merge_roundtrip(void) {
+  printf("== engine acceptance: gbs_insert -> gb_load -> gbsc_merge_up (Gen 1) ==\n");
+  if (!g_have_sample) {
+    printf("  SKIP (no sample conversion -- need at least one dex<=151 party mon on argv)\n");
+    return;
+  }
+
+  char path[512];
+  snprintf(path, sizeof path, "%s/Red.sav", ROMS);
+  FILE* f = fopen(path, "rb");
+  if (!f) { printf("  SKIP Red.sav (not present)\n"); return; }
+  static uint8_t img[GEN1_SAVE_SIZE];
+  uint32_t len = (uint32_t)fread(img, 1, sizeof img, f);
+  fclose(f);
+
+  /* Pick a box with room the SAME way test_engine_gen1 does, over the raw image --
+   * gbs_open() below does not mutate anything until a commit, so this is safe to do
+   * before opening the session. */
+  Gen1Save probe;
+  Gen1Status pst = gen1_open(img, len, &probe);
+  CHECK(pst == GEN1_OK, "Red.sav: gen1_open for box selection (%s)", gen1_status_text(pst));
+  if (pst != GEN1_OK) return;
+  int roomy = -1;
+  for (int b = 0; b < GEN1_NUM_BOXES; b++) {
+    if (b == probe.current_box) continue;
+    int c = gen1_count(&probe, b);
+    if (c >= 0 && c < GEN1_BOX_CAPACITY) { roomy = b; break; }
+  }
+  if (roomy < 0) { printf("  Red.sav: SKIP (no box with room)\n"); return; }
+
+  static uint8_t scratch[GBS_SCRATCH_BYTES];
+  GbSession sess;
+  GbsStatus ost = gbs_open(&sess, img, len, scratch, sizeof scratch);
+  CHECK(ost == GBS_OK, "Red.sav: gbs_open (%s)", gbs_status_text(ost));
+  if (ost != GBS_OK) return;
+
+  static uint8_t list[GBS_LIST_BYTES];
+  int newslot = -1;
+  GbsStatus ist = gbs_insert(&sess, roomy, &g_sample_out, &newslot, list);
+  CHECK(ist == GBS_OK, "Red.sav: gbs_insert (%s)", gbs_status_text(ist));
+  if (ist != GBS_OK) return;
+
+  GbEditMon back;
+  CHECK(gb_load(&back, GB_GEN1, list, roomy, newslot), "Red.sav: gb_load the inserted slot");
+  CHECK(gb_verify_slot(&back, list, roomy, newslot), "Red.sav: gb_verify_slot on the inserted slot");
+
+  /* The sidecar entry gb_paste_write() would have written FIRST, before this same
+   * gbs_insert() call -- built from the identical (mon, original80) pair. */
+  GbscEntry e;
+  gbsc_entry_from(&e, &g_sample_out, g_sample_rec, 0);
+  uint8_t out80[80];
+  GbscMergeReport rep;
+  bool mok = gbsc_merge_up(&e, &back, out80, &rep);
+  CHECK(mok, "gbsc_merge_up succeeds against the record read back from the save");
+  CHECK(memcmp(out80, g_sample_rec, 80) == 0,
+        "gbsc_merge_up reproduces the original 80 bytes EXACTLY (nothing changed on the GB side)");
+  CHECK(!rep.evolved && !rep.level_changed && !rep.moves_changed && !rep.renamed &&
+        !rep.rename_refused && !rep.gb_item_ignored,
+        "the merge report shows no changes (round-trip, not an edit)");
+
+  printf("  Red.sav: gbs_insert -> box %d slot %d, gb_load + gbsc_merge_up round-trip exact "
+         "(in-memory copy only, never written to disk)\n", roomy, newslot);
+}
+
+/* ============================================================================ */
 
 int main(int argc, char** argv) {
   printf("== 1/2/3. rom_gbbase_gen1 over every dex, Red.gb and Yellow.gb ==\n");
@@ -360,6 +441,7 @@ int main(int argc, char** argv) {
   if (open_rom("Red.gb", &gs, &f)) {
     test_conversion_corpus(&gs, f, argc, argv);
     test_engine_gen1(&gs);
+    test_session_insert_merge_roundtrip();
     fclose(f);
   } else {
     printf("  SKIP integration sections (Red.gb not present)\n");

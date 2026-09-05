@@ -538,6 +538,10 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
 #include "gba_rtc.h"       /* S5-B: the sidecar entry's transfer-time RTC stamp        */
+#include "rom_gbsprite.h"  /* S5-C: locates BaseStats in the user's own Gen-1 ROM      */
+#include "rom_gbbase.h"    /* S5-C: decodes the 28-byte BaseStats row rom_gbsprite found;
+                            * pk_national_no (internal index -> National Dex) comes from
+                            * data_tables.h, already included at the top of this file. */
 
 /* S5-B review fix #10: PDNA_SIDECAR_DIR now lives in pdna_app.h (included above), not
  * duplicated as a local literal here. */
@@ -746,6 +750,18 @@ typedef struct {
    * Gb12Edit field, not a local: 1042 B is real weight neither hook's own frame should
    * carry (see gb_paste_write's own noinline comment). */
   uint8_t    sidecar[GBSC_FILE_MAX];
+  /* S5-C Part B1: the Gen-1 BASE-STAT source, read live off the user's own ROM
+   * (<save's dir>/<save's basename>.gb or .gbc) when PASTE (GB) targets a Gen-1
+   * save -- gb_gen1_base_from_rom()'s own scratch, never that noinline helper's
+   * stack (its OWN frame must stay < 300 B, same as gb_reconcile_on_load's, per
+   * this slice's brief). romgs/romfil/romscan mirror exactly what
+   * rom_gbsprite_open() asks a caller to own (rom_gbsprite.h: "No new statics
+   * anywhere. The two buffers are the caller's"); romspath holds the derived ROM
+   * path so no path buffer ever lives on that helper's stack either. */
+  RomGbSprite romgs;
+  FIL         romfil;
+  uint8_t     romscan[ROM_GBSPRITE_SCRATCH_MIN];
+  char        romspath[SF_PATH_MAX];
 } Gb12Edit;
 static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the arena */
 
@@ -1336,12 +1352,120 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
   return ok;
 }
 
+/* S5-C Part B1: Gen-1 targets. gen3_to_gb() itself already refuses everything a
+ * missing base table has nothing to do with (egg, bad species/move, a corrupt
+ * record) BEFORE it ever looks at g1base -- gen3_to_gb.c's screen() checks those in
+ * that order and only then does `if (gen == GB_GEN1 && !g1base) return
+ * G3GB_ERR_NEEDS_BASE;`. So gb_paste_hook below tries the conversion with no base
+ * table first and only reaches for the ROM on that ONE specific refusal, rather
+ * than duplicating gen3_to_gb's own gates here. */
+typedef enum {
+  GB1BASE_OK = 0,
+  GB1BASE_NO_ROM,    /* neither <base>.gb nor <base>.gbc sits beside the .sav       */
+  GB1BASE_BAD_ROM    /* opened, but not a valid Gen-1 ROM, or the dex row is bad    */
+} Gb1BaseStatus;
+
+/* Just the dex number PASTE (GB) needs to look up base stats for -- PkMon (~90 B) is
+ * exactly the kind of weight this slice's brief says must not ride in gb_paste_hook's
+ * own frame, so it gets its own noinline frame instead. 0 (an impossible dex) on any
+ * decode failure or an Egg, which have no base stats to fetch and are about to be
+ * refused by gen3_to_gb's own EGG/GLITCH checks the moment the caller retries it. */
+static uint16_t __attribute__((noinline)) gb_clip_dex(void) {
+  PkMon m;
+  if (!pk_decode_mon(app_clip_rec(), false, &m) || m.isEgg || m.isBadEgg) return 0;
+  return pk_national_no(m.species);
+}
+
+/* Derive "<save's dir><save's basename>" (no extension) from g_ed->path into
+ * g_ed->romspath -- arena-resident, so the path never lives on any function's own
+ * stack. Truncates (never overflows) if the source path is implausibly long. */
+static void gb_rom_base_path(void) {
+  const char* p = g_ed->path ? g_ed->path : "";
+  int len = 0; while (p[len]) len++;
+  int slash = -1, dot = -1;
+  for (int i = 0; i < len; i++) { if (p[i] == '/') slash = i; if (p[i] == '.') dot = i; }
+  int baselen = (dot > slash) ? dot : len;          /* strip the LAST extension only */
+  if (baselen > (int)sizeof(g_ed->romspath) - 5) baselen = (int)sizeof(g_ed->romspath) - 5;
+  memcpy(g_ed->romspath, p, (size_t)baselen);
+  g_ed->romspath[baselen] = 0;
+}
+
+/* Open "<base>.gb" then "<base>.gbc" read-only over g_ed->romfil (arena-resident: a
+ * FIL is ~600 B and does not belong on this or any caller's stack), locate its
+ * tables through g_ed->romgs/romscan (rom_gbsprite.h: "the caller's" scan window --
+ * also arena-resident, never a local), then read dex's 28-byte BaseStats row.
+ * `out` is untouched unless this returns GB1BASE_OK. noinline, and every buffer it
+ * touches is a Gb12Edit field, precisely so THIS function's own frame -- not just
+ * gb_paste_hook's -- stays under the 300 B this slice's brief measures for. */
+static Gb1BaseStatus __attribute__((noinline))
+gb_gen1_base_from_rom(uint16_t dex, GbGen1Base* out) {
+  if (!g_ed || !out || dex < 1) return GB1BASE_BAD_ROM;
+
+  gb_rom_base_path();
+  int baselen = 0; while (g_ed->romspath[baselen]) baselen++;
+
+  static const char* const kExt[2] = { ".gb", ".gbc" };
+  FRESULT fr = FR_NO_FILE;
+  for (int e = 0; e < 2; e++) {
+    int bp = baselen;
+    const char* ext = kExt[e];
+    for (int i = 0; ext[i] && bp < (int)sizeof(g_ed->romspath) - 1; i++)
+      g_ed->romspath[bp++] = ext[i];
+    g_ed->romspath[bp] = 0;
+    memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+    fr = f_open(&g_ed->romfil, g_ed->romspath, FA_READ);
+    if (fr == FR_OK) break;
+    g_ed->romspath[baselen] = 0;                    /* back to the bare base for the next try */
+  }
+  if (fr != FR_OK) {
+    log_line("gen12: gen-1 rom: neither .gb nor .gbc beside %s", g_ed->path);
+    return GB1BASE_NO_ROM;
+  }
+  log_line("gen12: gen-1 rom candidate %s", g_ed->romspath);
+
+  FSIZE_t fsz = f_size(&g_ed->romfil);
+  uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+  int ok = rom_gbsprite_open(&g_ed->romgs, gb_read, &g_ed->romfil, sz,
+                             g_ed->romscan, sizeof g_ed->romscan);
+  if (!ok || g_ed->romgs.gen != GB_ROM_GEN1) {
+    log_line("gen12: gen-1 rom: %s did not open as a Gen-1 ROM", g_ed->romspath);
+    f_close(&g_ed->romfil);
+    return GB1BASE_BAD_ROM;
+  }
+
+  RomGb1Species sp;
+  bool got = rom_gbbase_gen1(&g_ed->romgs, gb_read, &g_ed->romfil, dex, &sp);
+  f_close(&g_ed->romfil);
+  if (!got) {
+    log_line("gen12: gen-1 rom: %s has no readable row for dex %u", g_ed->romspath, dex);
+    return GB1BASE_BAD_ROM;
+  }
+  log_line("gen12: gen-1 base stats: dex %u from %s (base_stats offset 0x%lX)",
+           dex, g_ed->romspath, (unsigned long)g_ed->romgs.base_stats);
+  *out = sp.base;
+  return GB1BASE_OK;
+}
+
+/* The ROM was absent: name it. base_only points INTO the arena-resident romspath
+ * (still holding "<dir><base>" after gb_gen1_base_from_rom's own failure above), so
+ * this needs no path buffer of its own -- only the short printf-staging one, which
+ * (like every message string in this tree) is safe by construction: msg_wait()
+ * itself runs l1 through ui_ptext_fit(), so a long path is clipped, never overflowed. */
+static void __attribute__((noinline)) gb_gen1_norom_msg(void) {
+  const char* base_only = g_ed->romspath;
+  for (int i = 0; g_ed->romspath[i]; i++)
+    if (g_ed->romspath[i] == '/') base_only = g_ed->romspath + i + 1;
+  char l1[48];
+  siprintf(l1, "Put %.10s.gb here", base_only);
+  msg_wait(PDNA_SIDECAR_GEN1_TITLE, UI_WARN, l1, PDNA_SIDECAR_GEN1_L1);
+}
+
 /* AppSrcOps.paste: convert the CLIPBOARD's Gen-3 record and append it into `rec80`'s
  * box (an empty cell -- app_mon_menu's own gate: g_clip.occupied && !g_clip.from_gb).
  * Order, each refusal leaving nothing PAST it touched:
  *   1. locate (box + the S2/S3 gates, gb_locate)
- *   2. Gen 1 refused outright -- no base-stat table in this tree yet (S5-C)
- *   3. gen3_to_gb() -- species/move/Egg refusals
+ *   2-3. gen3_to_gb() -- species/move/Egg refusals; a Gen-1 target that needs base
+ *      stats retries once with the user's own ROM's table (S5-C)
  *   4. the loss screen (A = continue, B = cancel: nothing touched)
  *   5. gbs_box_writable() re-checked fresh (gb_locate's own check is against the box
  *      as it stood when the popup opened; cheap, and every other hook does the same)
@@ -1368,15 +1492,27 @@ static bool gb_paste_hook(uint8_t* rec80) {
     return false;
   }
 
-  if (g_ed->s.gen == GB_GEN1) {                                              /* 2 */
-    snd_deny();
-    msg_wait(PDNA_SIDECAR_GEN1_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_L1, 0);
-    return false;
-  }
-
   GbEditMon mon;
   Gen3ToGbLoss loss;
-  G3GbStatus cst = gen3_to_gb(app_clip_rec(), GB_GEN2, NULL, &mon, &loss);   /* 3 */
+  G3GbStatus cst = gen3_to_gb(app_clip_rec(), g_ed->s.gen, NULL, &mon, &loss);   /* 2 */
+  if (cst == G3GB_ERR_NEEDS_BASE) {          /* Gen 1 only -- everything else about this
+                                              * mon already checked out (gen3_to_gb.c's
+                                              * screen() reaches this check LAST) */
+    uint16_t dex = gb_clip_dex();
+    GbGen1Base g1base;
+    Gb1BaseStatus bst = dex ? gb_gen1_base_from_rom(dex, &g1base) : GB1BASE_BAD_ROM;
+    if (bst == GB1BASE_NO_ROM) {
+      snd_deny();
+      gb_gen1_norom_msg();
+      return false;
+    }
+    if (bst != GB1BASE_OK) {
+      snd_deny();
+      msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0);
+      return false;
+    }
+    cst = gen3_to_gb(app_clip_rec(), g_ed->s.gen, &g1base, &mon, &loss);   /* 3 */
+  }
   if (cst != G3GB_OK) {
     snd_deny();
     msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, g3gb_status_text(cst), 0);
