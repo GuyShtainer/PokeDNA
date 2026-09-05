@@ -7663,6 +7663,11 @@ typedef struct {
   GbReconHit hits[GB_RECON_MAX_HITS];   /* GbReconHit/GB_RECON_MAX_HITS: gb_reconcile.h */
   int        nfiles;
   int        nhits;
+  int        nunique;   /* S5-C 2nd review #1: DISTINCT (box, slot) targets among nhits
+                         * -- nhits over-counts whenever a mon was transferred to more
+                         * than one Game Boy save (each transfer is its own sidecar
+                         * entry, but they all name the SAME Gen-3 slot). The confirm
+                         * screen promises nunique mons, not nhits entries. */
 } GbReconBuf;
 _Static_assert(sizeof(GbReconBuf) <= sizeof(g_entries),
               "gb_reconcile buffer no longer fits the borrowed g_entries cache");
@@ -7676,7 +7681,7 @@ static void gb_recon_path(char* out, const char* name) {
   out[pn] = 0;
 }
 
-/* Scan /PokeDNA/sidecar/*.pds (bounded to GB_RECON_MAX_FILES ACCEPTED and
+/* Scan /PokeDNA/sidecar for .pds files (bounded to GB_RECON_MAX_FILES ACCEPTED and
  * GB_RECON_MAX_EXAMINE entries LOOKED AT -- S5-C review #11: the old bound only
  * counted accepted .pds files, so a directory holding many unrelated entries could
  * make f_readdir() run unbounded; rb->dir already opened by the caller), and for
@@ -7689,16 +7694,19 @@ static void gb_recon_path(char* out, const char* name) {
  * DEDUPE (S5-C review #1, belt): when a new hit's (box, slot) matches an EARLIER
  * hit already in rb->hits (the same Gen-3 original transferred to two different
  * Game Boy generations, or re-transferred after a merge-up, produces two unclaimed
- * entries pointing at the same slot), the new one is marked `duplicate` here and
- * gb_reconcile_plan() (pdna_main.c's gb_reconcile_release) never attempts to
- * release it a second time -- gb_reconcile_plan() also re-derives this
- * independently, so this pass is a first, cheap line of defense, not the only one.
+ * entries pointing at the same slot), the new one is marked `duplicate` here (also
+ * counted, not into rb->nhits -- see rb->nunique below) so gb_reconcile_plan()
+ * never attempts to release it a second time. gb_reconcile_plan() independently
+ * re-derives any duplicate this pass MISSES too (it can only ever ADD a duplicate
+ * mark, never clear one gb_reconcile_walk() got wrong -- see gb_reconcile.h), so
+ * this pass is a first, cheap line of defense, not the only one.
  *
  * noinline: DIR/FILINFO/the 1042 B sidecar buffer all live in *rb (the borrowed
  * g_entries cache), never this function's own frame. */
 static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb) {
   rb->nfiles = 0;
   rb->nhits = 0;
+  rb->nunique = 0;
   int examined = 0;
   while (examined < GB_RECON_MAX_EXAMINE && rb->nfiles < GB_RECON_MAX_FILES &&
         rb->nhits < GB_RECON_MAX_HITS &&
@@ -7742,6 +7750,7 @@ static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb) {
       bool dup = false;
       for (int k = 0; k < rb->nhits; k++)
         if (rb->hits[k].box == (int8_t)box && rb->hits[k].slot == (int8_t)slot) { dup = true; break; }
+      if (!dup) rb->nunique++;   /* S5-C 2nd review #1: count DISTINCT targets, not entries */
 
       GbReconHit* h = &rb->hits[rb->nhits++];
       h->box = (int8_t)box; h->slot = (int8_t)slot;
@@ -7768,6 +7777,18 @@ static bool __attribute__((noinline)) gb_reconcile_confirm(int n) {
   return app_confirm(title, PDNA_SIDECAR_RECON_L1);
 }
 
+/* S5-C 2nd review #2: gb_reconcile_plan() calls clip_clear_box_slot()/
+ * party_release() directly (pure C -- it has no persistence layer, and no
+ * app_pc_release_slot() call either), so nothing marks g_pc dirty on its own.
+ * Told to msg_wait() when a commit fails (a measured line, reused across both
+ * buffers since the underlying reason was already shown by app_commit_pc()/
+ * app_commit_sb1()'s own failure screen a moment earlier -- see app_save_finalize).
+ * noinline to keep the string off gb_reconcile_release()'s own frame. */
+static void __attribute__((noinline)) gb_reconcile_commit_failed_msg(void) {
+  snd_error();
+  msg_wait(PDNA_SIDECAR_RECON_NOSAVE_TITLE, UI_WARN, PDNA_SIDECAR_RECON_NOSAVE_L1, 0);
+}
+
 /* Release every hit gb_reconcile_walk() found via gb_reconcile_plan() (S5-C review;
  * source/gb_reconcile.c) -- the pure-C ordering/dedupe/live-reverify core that
  * fixes the data-loss bug the old inline version here had: two sidecar entries
@@ -7776,31 +7797,65 @@ static bool __attribute__((noinline)) gb_reconcile_confirm(int n) {
  * then blindly release "the same recorded slot" again for the second -- which, for
  * a party slot, now named a DIFFERENT, innocent mon after the first release
  * shifted everything down by one. gb_reconcile_plan() mutates g_sb1/g_pc in place
- * (pure C, no persistence of its own); this wrapper just derives which buffer(s)
- * actually changed and does ONE commit per touched buffer (app_commit_pc /
- * app_commit_sb1), matching app_release()'s own commit convention. Returns the
- * count gb_reconcile_plan() reports released, for gb_reconcile_apply()'s "K of N"
- * shortfall message. */
-static int __attribute__((noinline)) gb_reconcile_release(GbReconBuf* rb) {
-  int released = gb_reconcile_plan(rb->hits, rb->nhits, g_sb1, g_frlg,
-                                   g_have_pc ? g_pc : NULL);
+ * (pure C, no persistence of its own); this wrapper does ONE commit per touched
+ * buffer (app_commit_pc / app_commit_sb1), matching app_release()'s own commit
+ * convention.
+ *
+ * S5-C 2nd review #2 (must): a failed commit means the release never reached the
+ * card -- claiming its sidecar entry anyway would hide that mon's ONLY remaining
+ * record of the transfer (the .pds) while the card still holds the un-released
+ * original, so a failed buffer's hits are un-released here (claimed by NEITHER
+ * this run nor a future one gets to see them as still-pending, since gb_reconcile_
+ * walk() would find them unclaimed again next load and simply re-offer them --
+ * exactly the fallback wanted). g_pc is ALSO marked dirty UNCONDITIONALLY,
+ * regardless of whether app_commit_pc() then succeeds: gb_reconcile_plan() never
+ * calls app_pc_release_slot() (only its own pure clip_clear_box_slot()), so
+ * nothing else marks it, and a failed commit must still leave flush_on_exit()'s
+ * "save changes?" prompt able to offer a second chance rather than the RAM-only
+ * release silently evaporating on exit.
+ *
+ * Returns the PHYSICAL release count (released && !duplicate) -- the count of
+ * ACTUAL clip_clear_box_slot()/party_release() calls that both ran and made it to
+ * the card, for gb_reconcile_apply()'s "K of N" shortfall message. This is
+ * deliberately NOT gb_reconcile_plan()'s own return value: that one also counts
+ * duplicates (claimable, but never touching the card themselves), which would
+ * make the shortfall check compare against the wrong, entry-counting N.
+ *
+ * `*commit_failed` is set true iff either commit was attempted and failed, so
+ * gb_reconcile_apply() can skip its own generic "K of N" shortfall message when
+ * THIS function already showed a more specific one for the same event. */
+static int __attribute__((noinline)) gb_reconcile_release(GbReconBuf* rb, bool* commit_failed) {
+  gb_reconcile_plan(rb->hits, rb->nhits, g_sb1, g_frlg, g_have_pc ? g_pc : NULL);
 
   bool touched_pc = false, touched_party = false;
   for (int i = 0; i < rb->nhits; i++) {
     if (!rb->hits[i].released || rb->hits[i].duplicate) continue;
     if (rb->hits[i].box == -1) touched_party = true; else touched_pc = true;
   }
-  if (touched_pc && !app_commit_pc())
+
+  if (touched_pc) app_mark_pc_dirty();          /* BEFORE the commit attempt -- see above */
+  bool pc_ok = !touched_pc || app_commit_pc();
+  if (touched_pc && !pc_ok)
     log_line("gen3: reconcile: app_commit_pc failed -- PC release(s) NOT saved to the card");
-  if (touched_party && !app_commit_sb1())
+  bool party_ok = !touched_party || app_commit_sb1();
+  if (touched_party && !party_ok)
     log_line("gen3: reconcile: app_commit_sb1 failed -- party release(s) NOT saved to the card");
-  return released;
+
+  if (!pc_ok)    for (int i = 0; i < rb->nhits; i++) if (rb->hits[i].box >= 0) rb->hits[i].released = false;
+  if (!party_ok) for (int i = 0; i < rb->nhits; i++) if (rb->hits[i].box == -1) rb->hits[i].released = false;
+  *commit_failed = !pc_ok || !party_ok;
+  if (*commit_failed) gb_reconcile_commit_failed_msg();
+
+  int physical = 0;
+  for (int i = 0; i < rb->nhits; i++) if (rb->hits[i].released && !rb->hits[i].duplicate) physical++;
+  return physical;
 }
 
 /* Rewrite every TOUCHED sidecar file once: A (release_all) claims the entries that
- * were actually released (a party-floor skip leaves its entry unclaimed, to be
- * reconsidered next load); B sets GBSC_FLAG_KEEP_ASKED on the whole file's header so
- * the question is not repeated for it. A write failure is logged + surfaced but
+ * were actually released (a party-floor skip, a dedupe, or an un-committed buffer
+ * per gb_reconcile_release() above all leave their entry unclaimed, to be
+ * reconsidered next load); B sets GBSC_FLAG_KEEP_ASKED on the whole file's header
+ * so the question is not repeated for it. A write failure is logged + surfaced but
  * never undoes a release already applied -- design doc section 12's own bias: "a
  * card error during the walk = skip the question this time", not "roll back a
  * release that already landed on the card". */
@@ -7848,32 +7903,34 @@ static void __attribute__((noinline)) gb_reconcile_claim_sidecars(GbReconBuf* rb
   }
 }
 
-/* Apply the user's choice over every hit gb_reconcile_walk() found: release (A) or
- * leave both copies alone (B), then rewrite whatever sidecar files that decision
- * touches. Split into gb_reconcile_release() / gb_reconcile_claim_sidecars() (golden
- * rule 4: one function, one job) -- this one is just the two-line sequencing. */
-/* S5-C review #4: the user was promised N ("N POKEMON TRANSFERRED"); if the party
- * floor or a dedupe/re-verify refusal meant fewer than N were actually released,
- * say so rather than let the confirm screen's own count go silently wrong. K and N
- * are both data, so this line is built at runtime (siprintf into a 64 B buffer) --
- * safe by construction like every other dynamic message in this tree (msg_wait()
- * runs it through ui_ptext_fit()). noinline to keep the buffer off the caller's own
- * frame. */
-static void __attribute__((noinline)) gb_reconcile_shortfall_msg(int released, int total) {
+/* S5-C review #4: the user was promised N ("N POKEMON TRANSFERRED", N ==
+ * rb->nunique -- S5-C 2nd review #1: DISTINCT mons, not sidecar entries); if the
+ * party floor, a dedupe, or an un-committed buffer meant fewer were actually
+ * released, say so rather than let the confirm screen's own count go silently
+ * wrong. K and N are both data, so this line is built at runtime (siprintf into a
+ * 64 B buffer) -- safe by construction like every other dynamic message in this
+ * tree (msg_wait() runs it through ui_ptext_fit()). noinline to keep the buffer off
+ * the caller's own frame. */
+static void __attribute__((noinline)) gb_reconcile_shortfall_msg(int physical, int nunique) {
   char l1[64];
-  siprintf(l1, "%d of %d released;", released, total);
+  siprintf(l1, "%d of %d released;", physical, nunique);
   msg_wait(PDNA_SIDECAR_RECON_PARTIAL_TITLE, UI_WARN, l1, PDNA_SIDECAR_RECON_PARTIAL_L2);
 }
 
 /* Apply the user's choice over every hit gb_reconcile_walk() found: release (A) or
  * leave both copies alone (B), then rewrite whatever sidecar files that decision
- * touches, then (A only) tell the user if fewer than N were actually released.
- * Split into gb_reconcile_release() / gb_reconcile_claim_sidecars() (golden rule 4:
- * one function, one job) -- this one is just the sequencing. */
+ * touches, then (A only) tell the user if fewer than N distinct mons were actually
+ * released -- UNLESS a commit already failed (gb_reconcile_release() showed its
+ * own, more specific message for that; a second, generic shortfall screen right
+ * behind it would just be noise about the same event). Split into gb_reconcile_
+ * release() / gb_reconcile_claim_sidecars() (golden rule 4: one function, one
+ * job) -- this one is just the sequencing. */
 static void __attribute__((noinline)) gb_reconcile_apply(GbReconBuf* rb, bool release_all) {
-  int released = release_all ? gb_reconcile_release(rb) : 0;
+  bool commit_failed = false;
+  int physical = release_all ? gb_reconcile_release(rb, &commit_failed) : 0;
   gb_reconcile_claim_sidecars(rb, release_all);
-  if (release_all && released != rb->nhits) gb_reconcile_shortfall_msg(released, rb->nhits);
+  if (release_all && !commit_failed && physical != rb->nunique)
+    gb_reconcile_shortfall_msg(physical, rb->nunique);
 }
 
 static void __attribute__((noinline)) gb_reconcile_on_load(void) {
@@ -7890,7 +7947,10 @@ static void __attribute__((noinline)) gb_reconcile_on_load(void) {
   f_closedir(&rb->dir);
 
   if (rb->nhits > 0) {
-    bool release_all = gb_reconcile_confirm(rb->nhits);
+    /* S5-C 2nd review #1: nunique (DISTINCT mons), not nhits (sidecar entries) --
+     * the same mon transferred to two Game Boy generations is one Pokemon, not
+     * two, from the user's point of view on this screen. */
+    bool release_all = gb_reconcile_confirm(rb->nunique);
     gb_reconcile_apply(rb, release_all);
   }
   app_box_swap_release();

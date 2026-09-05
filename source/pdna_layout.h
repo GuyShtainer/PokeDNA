@@ -737,6 +737,14 @@
  * shortfall would read as the feature simply not working. K/N are data (siprintf). */
 #define PDNA_SIDECAR_RECON_PARTIAL_TITLE "PARTIAL RELEASE"
 #define PDNA_SIDECAR_RECON_PARTIAL_L2    "rest skipped (party floor/dupes)."
+/* S5-C 2nd review #2: shown instead of (not alongside) the PARTIAL_RELEASE message
+ * above when a release was made in RAM but app_commit_pc()/app_commit_sb1() then
+ * FAILED to persist it -- the underlying reason was already shown by that commit's
+ * OWN failure screen (app_save_finalize's "BACKUP FAILED"/"WRITE FAILED"/etc., which
+ * names the real SfStatus); this one just says, specifically for this feature, that
+ * the release itself did not reach the card and nothing was claimed. */
+#define PDNA_SIDECAR_RECON_NOSAVE_TITLE  "RELEASE NOT SAVED"
+#define PDNA_SIDECAR_RECON_NOSAVE_L1     "Not saved; nothing was claimed."
 
 /* S5-C review #5: view_save()'s load_phase_n() label for gb_reconcile_on_load() --
  * it can read/write several SD files before the box screen ever paints, and

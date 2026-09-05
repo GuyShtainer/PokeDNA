@@ -705,6 +705,9 @@ int main(void) {
    * by construction like every other dynamic message in this tree). */
   PF(PDNA_SIDECAR_RECON_PARTIAL_TITLE, 28, 184);
   PF(PDNA_SIDECAR_RECON_PARTIAL_L2,    28, 184);
+  /* S5-C 2nd review #2: the "commit failed, nothing claimed" message. */
+  PF(PDNA_SIDECAR_RECON_NOSAVE_TITLE,  28, 184);
+  PF(PDNA_SIDECAR_RECON_NOSAVE_L1,     28, 184);
   /* S5-C review #5: view_save()'s new load_phase_n(11, ...) label. load_phase_n
    * draws "%d/%d %s" with plain ui_ptext (NOT _fit -- it does not clip) inside a
    * 192 px panel at x=32 (source/pdna_main.c load_phase_n: ui_panel(24,62,192,36),
