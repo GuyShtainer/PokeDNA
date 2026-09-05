@@ -25,14 +25,20 @@
  *   0   4   magic "PDS1"
  *   4   1   version = 1
  *   5   1   count (entries that follow, 0..GBSC_MAX_ENTRIES)
- *   6   2   flags (reserved 0)
+ *   6   2   flags -- bit 0 GBSC_FLAG_KEEP_ASKED (S5-C Part B2: "the reconcile screen
+ *           already asked about every entry in this file and the user chose KEEP,
+ *           so gb_reconcile_on_load() must not ask again"), bits 1..15 reserved 0
  *   8   8   key (FNV-1a-64, gbsc_key() — also the filename, for self-check)
  *   16  2   header crc16 (CRC-16/CCITT-FALSE over bytes 0..15)
  *
  * ---- ENTRY, GBSC_ENTRY (128) bytes, `count` of them follow the header ------------
  *   +0    1   gen (GB_GEN1 / GB_GEN2)
- *   +1    1   claimed (0/1) -- reserved for the "keep after a successful up-transfer"
- *             policy the design doc leaves as a build-time choice; 0 always today
+ *   +1    1   claimed (0/1) -- S5-C Part B2: set by gb_reconcile_on_load() once the
+ *             Gen-3 original has been released from this save (design doc section
+ *             12); a claimed entry is never offered again by that screen but still
+ *             serves gbsc_merge_up() on the way UP (gbsc_find(..., include_claimed)) --
+ *             the sidecar's whole job (restoring what a GB edit can't hold) does not
+ *             stop just because the original was released
  *   +2    2   species_written (National Dex, as gb_get_species_dex(written) reads it)
  *   +4    2   otid16
  *   +6    4   dv4 (Atk, Def, Spe, Spc, one byte each -- gb_edit.h's own DV order)
@@ -61,6 +67,9 @@
  * 16 hex plus ".pds" plus NUL is 39 -- one shared constant so every `char path[...]`
  * in this tree agrees, instead of three separate `char path[48]` locals. */
 #define GBSC_PATH_MAX     48
+
+/* Header flags byte, bit 0 (S5-C Part B2 -- see the header layout comment above). */
+#define GBSC_FLAG_KEEP_ASKED  0x0001u
 
 /* ---- the fingerprint -------------------------------------------------------- */
 
@@ -135,8 +144,31 @@ bool gbsc_get(const uint8_t* buf, uint32_t len, int idx, GbscEntry* out);
 
 /* First entry at index >= `start` whose gen, otid16, dv4 and otname_written bytes ALL
  * match `now`'s (species is deliberately NOT compared -- see the fingerprint note
- * above). -1 if none, or if the file does not validate. */
-int gbsc_find(const uint8_t* buf, uint32_t len, const GbEditMon* now, int start);
+ * above). -1 if none, or if the file does not validate.
+ *
+ * `include_claimed` (S5-C Part B2, new parameter): false SKIPS entries whose
+ * `claimed` byte is set -- gb_reconcile_on_load()'s own walk never re-offers a mon it
+ * already released. true also considers claimed entries -- the merge UP
+ * (app_paste_gb_lookup, pdna_main.c) must still find one: a released original is
+ * exactly why the sidecar exists, not a reason to stop serving it. Every call site
+ * that predates this parameter (the up-merge, and every existing test) wants true --
+ * nothing could BE claimed before this slice. */
+int gbsc_find(const uint8_t* buf, uint32_t len, const GbEditMon* now, int start,
+             bool include_claimed);
+
+/* Set/clear entry `idx`'s `claimed` byte and rewrite its crc16 (the entry's own crc
+ * covers bytes +0..+125, `claimed` included -- see the entry layout above). 0 on
+ * success, -1 on a bad index or a file that does not validate; `buf` unchanged on
+ * failure. Does NOT touch the header (count/flags/header crc16 are unaffected by a
+ * claim -- only gbsc_add/gbsc_remove change the entry count). */
+int gbsc_set_claimed(uint8_t* buf, uint32_t len, int idx, bool claimed);
+
+/* Header `flags` (bit 0 GBSC_FLAG_KEEP_ASKED, see the header layout above). Rewrites
+ * the header crc16 on set. gbsc_flags_get returns 0 for a file that does not
+ * validate (the same "absent == no flags" convention gbsc_count's callers already
+ * rely on); gbsc_flags_set returns 0 on success, -1 on a bad/NULL buffer. */
+uint16_t gbsc_flags_get(const uint8_t* buf, uint32_t len);
+int      gbsc_flags_set(uint8_t* buf, uint32_t len, uint16_t flags);
 
 /* Remove entry `idx`, compacting the entries after it down by one slot and rewriting
  * the header (new count, new header crc16). The surviving entries' own bytes --

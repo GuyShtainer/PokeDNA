@@ -2535,7 +2535,9 @@ static bool app_paste_gb_lookup(uint8_t* buf, uint32_t* len, const char* path,
   uint16_t nowdex = gb_get_species_dex(&g_clip.gb);
   int first = -1, species_match = -1, start = 0;
   for (int guard = 0; guard <= GBSC_MAX_ENTRIES; guard++) {
-    int i = gbsc_find(buf, *len, &g_clip.gb, start);
+    /* include_claimed=true: a claimed entry (its Gen-3 original already released by
+     * gb_reconcile_on_load) must still serve the merge up -- see gb_sidecar.h. */
+    int i = gbsc_find(buf, *len, &g_clip.gb, start, true);
     if (i < 0) break;
     if (first < 0) first = i;
     GbscEntry cand;

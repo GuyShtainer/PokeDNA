@@ -176,7 +176,8 @@ bool gbsc_get(const uint8_t* buf, uint32_t len, int idx, GbscEntry* out) {
   return true;
 }
 
-int gbsc_find(const uint8_t* buf, uint32_t len, const GbEditMon* now, int start) {
+int gbsc_find(const uint8_t* buf, uint32_t len, const GbEditMon* now, int start,
+             bool include_claimed) {
   int count = gbsc_count(buf, len);
   if (count < 0 || !now || start < 0) return -1;
   uint8_t dv4[4] = {
@@ -186,6 +187,7 @@ int gbsc_find(const uint8_t* buf, uint32_t len, const GbEditMon* now, int start)
   uint16_t otid = gb_get_otid(now);
   for (int i = start; i < count; i++) {
     const uint8_t* e = buf + GBSC_HEADER + (uint32_t)i * GBSC_ENTRY;
+    if (!include_claimed && e[E_CLAIMED]) continue;
     if (e[E_GEN] != now->gen) continue;
     if (rd16(e + E_OTID) != otid) continue;
     if (memcmp(e + E_DV4, dv4, 4) != 0) continue;
@@ -193,6 +195,28 @@ int gbsc_find(const uint8_t* buf, uint32_t len, const GbEditMon* now, int start)
     return i;                 /* species deliberately not compared -- see gb_sidecar.h */
   }
   return -1;
+}
+
+/* S5-C Part B2. */
+int gbsc_set_claimed(uint8_t* buf, uint32_t len, int idx, bool claimed) {
+  int count = gbsc_count(buf, len);
+  if (count < 0 || idx < 0 || idx >= count) return -1;
+  uint8_t* e = buf + GBSC_HEADER + (uint32_t)idx * GBSC_ENTRY;
+  e[E_CLAIMED] = claimed ? 1 : 0;
+  wr16(e + E_CRC, crc16(e, GBSC_ENTRY - 2));
+  return 0;
+}
+
+uint16_t gbsc_flags_get(const uint8_t* buf, uint32_t len) {
+  if (gbsc_count(buf, len) < 0) return 0;
+  return rd16(buf + 6);
+}
+
+int gbsc_flags_set(uint8_t* buf, uint32_t len, uint16_t flags) {
+  if (gbsc_count(buf, len) < 0) return -1;
+  wr16(buf + 6, flags);
+  wr16(buf + 16, crc16(buf, 16));
+  return 0;
 }
 
 int gbsc_remove(uint8_t* buf, uint32_t* len, int idx) {
