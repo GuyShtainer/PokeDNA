@@ -5,6 +5,20 @@ fetched separately). Matches the API in source/data_tables.h.
 
 Output source/data_tables.c is git-ignored (generate-locally policy). Run from
 the repo root:  python3 tools/gen_data.py
+
+TRAP (found in review, 2026-09-05): sp_national (internal species id -> national
+dex number) is read from assets/sprites/Gen 3 Sprite Pack V1/PBS/pokemon_metrics.txt
+(PBS_PATH below). If that file is absent, the `except FileNotFoundError: pass`
+there does NOT fail the run -- it silently leaves pbs_nat empty, and every species
+with an internal id > 251 (the "displaced legendaries" the code comment a few lines
+down warns about, e.g. Kyogre at internal 404) falls back to national=0 instead of
+its real dex number. This does not crash or warn; data_tables.c generates fine and
+looks plausible. Sanity-check after any regeneration:
+    grep -c '0,0,0,0,0,252,253,254' source/data_tables.c
+should print exactly 1 (one legitimate run of zeros in s_national, not a mass
+zeroing from a missing PBS file) -- if it's higher, or the file is missing entirely,
+the sprite pack didn't get picked up and sp_national is wrong for every displaced
+legendary.
 """
 import os, re
 
@@ -162,6 +176,8 @@ for const, body in iter_blocks(rd("src/data/pokemon/base_stats.h")):
 
 # ---- internal -> national dex number (exact; the +25 shortcut mismaps the
 #      displaced legendaries, e.g. Kyogre 404->382 not 379) ----
+# See the TRAP note in this file's module docstring: a missing PBS_PATH does NOT
+# fail this script, it silently zeroes sp_national for every id > 251 below.
 PBS_PATH = os.path.join(ROOT, "assets", "sprites", "Gen 3 Sprite Pack V1", "PBS", "pokemon_metrics.txt")
 pbs_nat = {}
 try:

@@ -386,13 +386,18 @@ check-art:
 	@missing=""; \
 	for f in $(PDNA_ART_FILES); do [ -e "$$f" ] || missing="$$missing $$f"; done; \
 	if [ -n "$$missing" ]; then \
-	  echo "*** FATAL: this is a full-art build ($(PROJ)) but generated art sources are"; \
-	  echo "***        missing from source/:"; \
+	  echo "*** FATAL: this is a full-art/full-text build ($(PROJ)) but generated"; \
+	  echo "***        sources are missing from source/ (art AND/OR data_desc.c --"; \
+	  echo "***        the latter is the 741 verbatim description STRINGS, not art,"; \
+	  echo "***        but it fails the SAME way for the SAME reason: PDNA_ARTLESS=1"; \
+	  echo "***        would have excluded it on purpose; a full build silently"; \
+	  echo "***        missing it is the failure this guard exists to catch):"; \
 	  for f in $$missing; do echo "***          $$f"; done; \
 	  echo "*** Two ways forward:"; \
-	  echo "***   1) Generate the art: see README.md's 'Graphics assets' section --"; \
-	  echo "***      each tools/gen_*.py regenerates one file; see its own --help."; \
-	  echo "***   2) Skip the art entirely: 'make artless' (or 'make sd-artless' /"; \
+	  echo "***   1) Generate it: see README.md's 'Graphics assets' section --"; \
+	  echo "***      each tools/gen_*.py regenerates one file (data_desc.c comes from"; \
+	  echo "***      tools/gen_data.py, same as data_tables.c); see its own --help."; \
+	  echo "***   2) Skip it entirely: 'make artless' (or 'make sd-artless' /"; \
 	  echo "***      'make delta-artless') builds without needing any of these files,"; \
 	  echo "***      including on a fresh clone that never had them."; \
 	  exit 1; \
