@@ -5,6 +5,7 @@
 
 #include "ui.h"
 #include "snd.h"
+#include "utf8_walk.h"
 
 #define OSK_ROWS   8
 /* §15: sized for real FAT long names (the browser's NAME_MAX is 64), NOT the 8-16
@@ -29,21 +30,48 @@ static const char* const KB[OSK_ROWS] = {
 static int rowlen(int r) { return (int)strlen(KB[r]); }
 static void osk_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
+/* BACKLOG #38: `buf` can hold a gb_name_decode()'d name -- e-acute, the Male/Female
+ * signs (2/3-byte UTF-8) or a "{5D}" hex escape (4 ASCII bytes, one glyph) -- so this
+ * can no longer draw one buffer BYTE per screen column or a multi-byte glyph shows as
+ * mojibake split across cells. `starts[]` holds the byte offset of every glyph via
+ * the utf8_walk walker, plus a trailing sentinel at `len` for the caret-past-the-
+ * last-glyph cell (mirrors the old ci==len case) -- OSK_MAXLEN+2 covers the worst
+ * case of every glyph being 1 byte. `cpos` is always a glyph boundary (osk_core's
+ * invariant), so it is guaranteed to appear in starts[] exactly. */
 static void osk_field(const char* buf, int len, int cpos) {
   ui_panel(4, 16, 232, 14, UI_PANEL, UI_BORDER);
   const int x0 = 8, y = 19, cols = 28;
-  int scroll = (cpos > cols - 1) ? cpos - (cols - 1) : 0;
+
+  int starts[OSK_MAXLEN + 2];
+  int glen = 0;
+  for (int i = 0; i <= len; ) {
+    starts[glen++] = i;
+    if (i >= len) break;
+    i = u8w_next(buf, i);
+  }
+  int gcaret = 0;
+  while (gcaret < glen && starts[gcaret] < cpos) gcaret++;
+
+  int scroll = (gcaret > cols - 1) ? gcaret - (cols - 1) : 0;
   for (int i = 0; i < cols; i++) {
-    int ci = scroll + i;
-    if (ci > len) break;
+    int gi = scroll + i;
+    if (gi >= glen) break;
     int x = x0 + i * 8;
-    char ch[2];
-    ch[0] = (ci < len) ? buf[ci] : ' ';
-    ch[1] = 0;
-    if (ci == cpos) {
+    int bstart = starts[gi];
+    int bend   = (gi + 1 < glen) ? starts[gi + 1] : len;
+    char ch[2] = { ' ', 0 };
+    if (bend > bstart) {
+      /* One glyph, one cell: a single printable ASCII byte draws as itself; anything
+       * the 8px sys font cannot spell as one character -- a multi-byte UTF-8 glyph or
+       * a "{XX}" escape -- draws as '?' rather than mangled bytes. `buf` itself keeps
+       * every original byte; only the on-screen picture is lossy. */
+      ch[0] = (bend - bstart == 1 && buf[bstart] >= 0x20 && buf[bstart] < 0x7F)
+              ? buf[bstart] : '?';
+    }
+    if (gi == gcaret) {
       m3_rect(x, y, x + 8, y + UI_ROW_H, RGB15(31, 31, 31));
       ui_text(x, y, RGB15(0, 0, 0), ch);
-    } else if (ci < len) {
+    } else if (bend > bstart) {
       ui_text(x, y, UI_TEXT, ch);
     }
   }
@@ -123,9 +151,16 @@ static bool osk_core(const char* prompt, const char* initial, char* out, int cap
   char buf[OSK_MAXLEN + 1];
   int len = 0;
   buf[0] = 0;
-  if (initial)
-    for (; initial[len] && len < OSK_MAXLEN && len < cap - 1; len++) buf[len] = initial[len];
-  buf[len] = 0;
+  if (initial) {
+    /* BACKLOG #38: truncate on a GLYPH boundary, not a raw byte count -- a plain
+     * byte cap here could cut a UTF-8 sequence or a "{XX}" escape in half right at
+     * the OSK_MAXLEN/cap-1 edge. seedcap is the tighter of the two byte limits
+     * (the internal scratch buffer's own OSK_MAXLEN and the caller's `cap`); when
+     * `initial` fits under both, this is a byte-for-byte copy -- the "seeding keeps
+     * every byte" guarantee for the common case. */
+    int seedcap = (cap < OSK_MAXLEN + 1) ? cap : OSK_MAXLEN + 1;
+    len = u8w_copy_capped(buf, seedcap, initial);
+  }
 
   int cr = 0, cc = 0, cpos = len;
   bool dirty = true;
@@ -154,26 +189,32 @@ static bool osk_core(const char* prompt, const char* initial, char* out, int cap
       if (len < 1 && !allow_empty) { snd_deny(); warn = "Name cannot be empty"; }
       else {
         snd_ok();
-        int i = 0;
-        for (; i < cap - 1 && buf[i]; i++) out[i] = buf[i];
-        out[i] = 0;
+        /* Glyph-boundary-safe by construction (u8w_copy_capped), not just a plain
+         * byte copy -- `buf` can never actually exceed cap-1 bytes given the seed
+         * and insert caps below, but this stays the single source of truth for
+         * "copy out, never split a glyph" rather than trusting that invariant twice. */
+        u8w_copy_capped(out, cap, buf);
         key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
         return true;
       }
     }
     else if (k & KEY_A) {
-      if (len < OSK_MAXLEN && len < cap - 1) {
-        for (int j = len; j > cpos; j--) buf[j] = buf[j - 1];
-        buf[cpos] = KB[cr][cc];
-        len++; cpos++;
-        buf[len] = 0;
+      /* Every key on the grid types one plain ASCII byte, which is always its own
+       * whole glyph -- so this never needs to split or merge a sequence; only the
+       * byte-capacity check below (unchanged) still applies. */
+      if (len < OSK_MAXLEN) {
+        int nl = u8w_insert_byte(buf, len, cap, cpos, KB[cr][cc]);
+        if (nl >= 0) { len = nl; cpos++; }
       }
     }
     else if (k & KEY_B) {
-      if (cpos > 0) { for (int j = cpos - 1; j < len; j++) buf[j] = buf[j + 1]; len--; cpos--; }
+      /* One B press removes one whole glyph -- 1 byte for plain ASCII, up to 4 for
+       * a UTF-8 sequence or a "{XX}" escape -- never half of one (BACKLOG #38). */
+      int nl, start = u8w_delete_before(buf, len, cpos, &nl);
+      if (start >= 0) { len = nl; cpos = start; }
     }
-    else if (k & KEY_L) { if (cpos > 0)   cpos--; }
-    else if (k & KEY_R) { if (cpos < len) cpos++; }
+    else if (k & KEY_L) { if (cpos > 0)   cpos = u8w_prev(buf, cpos); }
+    else if (k & KEY_R) { if (cpos < len) cpos = u8w_next(buf, cpos); }
     else if (k & KEY_UP)    { cr = (cr == 0) ? OSK_ROWS - 1 : cr - 1; }
     else if (k & KEY_DOWN)  { cr = (cr + 1) % OSK_ROWS; }
     else if (k & KEY_LEFT)  { int rl = rowlen(cr); cc = (cc == 0) ? rl - 1 : cc - 1; }
