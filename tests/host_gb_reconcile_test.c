@@ -23,6 +23,26 @@
  *      left at -1/-1 (refuses to guess which of the two is "the" one).
  * A missing corpus SKIPs rather than fails (same posture as every other Gen-3 host
  * test in this tree).
+ *
+ * S5-C REVIEW (2026-09-05): gb_reconcile_plan() -- the ordering/dedupe/re-verify
+ * fix for the data-loss bug the old inline pdna_main.c version had (two sidecar
+ * entries resolving to the SAME slot -- the same Gen-3 mon transferred to a Gen-1
+ * save AND a Gen-2 save, or re-transferred after a merge-up -- used to release the
+ * first fine and then blindly release "the same recorded slot" again for the
+ * second, deleting a DIFFERENT, innocent mon once the first release had shifted the
+ * party down). Synthetic (no corpus needed -- these are exact, deterministic
+ * scenarios, not spot checks over real data):
+ *   6) a party of 6 with TWO hits both recording slot 1 -> exactly ONE PHYSICAL
+ *      release (party_count drops by one, never two), the neighbour (originally
+ *      slot 2) survives and shifts into slot 1, and BOTH hits end up `released`
+ *      (claimable) even though only the first one actually touched the party;
+ *   7) two PC hits both recording the same (box, slot) -> the slot ends up cleared
+ *      exactly once, and both hits end up `released` for the same reason as (6);
+ *   8) the party floor (a lone party member is never released, even when a hit
+ *      targets it) is respected;
+ *   9) a 3-hit party batch releases HIGHEST SLOT FIRST regardless of the hits'
+ *      array order -- proven by the SURVIVING member being the one order-agnostic
+ *      low-to-high release would have gotten wrong.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -177,6 +197,136 @@ static void test_save(const char* path) {
   }
 }
 
+/* ============================================================================ */
+/* S5-C review: gb_reconcile_plan() -- ordering, dedupe, re-verify, party floor. */
+/* ============================================================================ */
+
+/* Build a synthetic 100-byte party record whose first 8 bytes are `id` repeated --
+ * gb_reconcile_plan() only ever reads the first 8 bytes (the identity) and copies
+ * the record whole (party_release's own memmove), so the other 92 bytes never need
+ * to look like a real Gen-3 mon for this module's own tests. */
+static void mk_rec(uint8_t rec[100], uint8_t id) {
+  memset(rec, id, 100);
+}
+
+static void mk_hit(GbReconHit* h, int8_t box, int8_t slot, uint8_t id) {
+  memset(h, 0, sizeof *h);
+  h->box = box; h->slot = slot;
+  memset(h->id8, id, 8);
+}
+
+/* 6) Two hits both recording party slot 1 (the exact shape of the bug: the same
+ * Gen-3 original transferred to two different Game Boy generations, both resolving
+ * to the same slot at walk time) -> exactly ONE release, the neighbour (originally
+ * slot 2, id 0x22) survives and shifts down into slot 1, and BOTH hits end up
+ * `released` (the duplicate is claimed, never touched a second time). */
+static void test_plan_party_duplicate(void) {
+  static uint8_t sb1[G3_SAVEBLOCK1_BYTES];
+  memset(sb1, 0, sizeof sb1);
+  uint8_t rec[100];
+  for (uint8_t id = 0x10; id <= 0x60; id += 0x10) { mk_rec(rec, id); party_append(sb1, false, rec); }
+  CHECK(party_count(sb1, false) == 6, "party_duplicate: 6-member party built");
+
+  GbReconHit hits[2];
+  mk_hit(&hits[0], -1, 1, 0x20);   /* slot 1 holds id 0x20 -- both hits agree     */
+  mk_hit(&hits[1], -1, 1, 0x20);
+
+  /* released == 2, not 1: BOTH hits are claimable (the mon really is gone from the
+   * save either way), even though only ONE physical party_release() ran -- that
+   * physical count is what party_count() dropping by exactly one, below, proves. */
+  int released = gb_reconcile_plan(hits, 2, sb1, false, NULL);
+  CHECK(released == 2, "party_duplicate: gb_reconcile_plan reports both hits claimable (got %d)",
+        released);
+  CHECK(party_count(sb1, false) == 5, "party_duplicate: party shrinks by exactly ONE (one physical release)");
+  CHECK(hits[0].released && hits[1].released,
+        "party_duplicate: BOTH hits end up released (%d, %d)", hits[0].released, hits[1].released);
+  CHECK(hits[1].duplicate, "party_duplicate: the second hit is marked duplicate");
+  uint8_t* now1 = pk_party_slot(sb1, false, 1);
+  CHECK(now1[0] == 0x30, "party_duplicate: the neighbour (id 0x30) shifted into slot 1 (got 0x%02X)",
+        now1[0]);
+  for (int i = 0; i < 5; i++) {
+    uint8_t want = (uint8_t)(0x10 * (i < 1 ? i + 1 : i + 2));
+    CHECK(pk_party_slot(sb1, false, i)[0] == want,
+          "party_duplicate: post-release slot %d is id 0x%02X (got 0x%02X)",
+          i, want, pk_party_slot(sb1, false, i)[0]);
+  }
+}
+
+/* 7) Two hits recording the SAME PC (box, slot) -> exactly one release, the slot
+ * ends up cleared exactly once (a second clip_clear_box_slot on an already-zero
+ * slot would be harmless anyway, but this proves it is never even attempted --
+ * `duplicate` short-circuits before touching `pc` at all). */
+static void test_plan_pc_duplicate(void) {
+  static uint8_t pc[G3_PC_BYTES];
+  memset(pc, 0, sizeof pc);
+  memset(pk_box_slot(pc, 2, 7), 0x55, 80);
+
+  GbReconHit hits[2];
+  mk_hit(&hits[0], 2, 7, 0x55);
+  mk_hit(&hits[1], 2, 7, 0x55);
+
+  static uint8_t sb1[G3_SAVEBLOCK1_BYTES];
+  memset(sb1, 0, sizeof sb1);          /* no party hits in this test; must still be a
+                                        * valid (empty, count 0) party for party_count() */
+  /* released == 2 for the same reason as party_duplicate above: both hits are
+   * claimable; the "exactly one release" this test's name refers to is the single
+   * clip_clear_box_slot() call, proven by the slot ending up cleared just once. */
+  int released = gb_reconcile_plan(hits, 2, sb1, false, pc);
+  CHECK(released == 2, "pc_duplicate: gb_reconcile_plan reports both hits claimable (got %d)",
+        released);
+  CHECK(hits[0].released && hits[1].released,
+        "pc_duplicate: BOTH hits end up released (%d, %d)", hits[0].released, hits[1].released);
+  CHECK(hits[1].duplicate, "pc_duplicate: the second hit is marked duplicate");
+  uint8_t zero80[80]; memset(zero80, 0, 80);
+  CHECK(memcmp(pk_box_slot(pc, 2, 7), zero80, 80) == 0, "pc_duplicate: the slot is cleared exactly once");
+}
+
+/* 8) The party floor: a LONE party member is never released, even when a hit
+ * targets it directly (no duplicate involved -- this is app_release()'s own
+ * "the party can't be empty" rule, re-checked live inside gb_reconcile_plan()). */
+static void test_plan_party_floor(void) {
+  static uint8_t sb1[G3_SAVEBLOCK1_BYTES];
+  memset(sb1, 0, sizeof sb1);
+  uint8_t rec[100]; mk_rec(rec, 0x99);
+  party_append(sb1, false, rec);
+  CHECK(party_count(sb1, false) == 1, "party_floor: 1-member party built");
+
+  GbReconHit hits[1];
+  mk_hit(&hits[0], -1, 0, 0x99);
+  int released = gb_reconcile_plan(hits, 1, sb1, false, NULL);
+  CHECK(released == 0, "party_floor: gb_reconcile_plan releases nothing (got %d)", released);
+  CHECK(!hits[0].released, "party_floor: the hit itself is not marked released");
+  CHECK(party_count(sb1, false) == 1, "party_floor: the party is still 1 member");
+  CHECK(pk_party_slot(sb1, false, 0)[0] == 0x99, "party_floor: the lone member is untouched");
+}
+
+/* 9) A 3-hit party batch, given to gb_reconcile_plan() in a SCRAMBLED (not
+ * highest-slot-first) array order, still releases correctly -- provable only if
+ * the function itself sorts by slot descending internally: a party of 4 (ids
+ * 0x01, 0x02, 0x03, 0x04 at slots 0..3), hits for slots 0, 3 and 1 (in THAT
+ * array order), must leave EXACTLY slot-2's mon (id 0x03) as the sole survivor. A
+ * naive low-to-high or array-order release would shift indices under itself and
+ * leave the wrong mon standing (or crash on a stale index). */
+static void test_plan_party_order(void) {
+  static uint8_t sb1[G3_SAVEBLOCK1_BYTES];
+  memset(sb1, 0, sizeof sb1);
+  uint8_t rec[100];
+  for (uint8_t id = 1; id <= 4; id++) { mk_rec(rec, id); party_append(sb1, false, rec); }
+  CHECK(party_count(sb1, false) == 4, "party_order: 4-member party built");
+
+  GbReconHit hits[3];
+  mk_hit(&hits[0], -1, 0, 1);   /* deliberately NOT highest-slot-first in array order */
+  mk_hit(&hits[1], -1, 3, 4);
+  mk_hit(&hits[2], -1, 1, 2);
+
+  int released = gb_reconcile_plan(hits, 3, sb1, false, NULL);
+  CHECK(released == 3, "party_order: gb_reconcile_plan releases all 3 (got %d)", released);
+  CHECK(party_count(sb1, false) == 1, "party_order: exactly one member remains");
+  CHECK(pk_party_slot(sb1, false, 0)[0] == 3,
+        "party_order: the survivor is id 0x03 (got 0x%02X) -- proves highest-slot-first order",
+        pk_party_slot(sb1, false, 0)[0]);
+}
+
 int main(int argc, char** argv) {
   int examined = 0;
   for (int i = 1; i < argc; i++) {
@@ -184,6 +334,12 @@ int main(int argc, char** argv) {
     examined++;
   }
   if (!examined) printf("  (no .sav given on argv -- nothing to test)\n");
+
+  printf("== gb_reconcile_plan: ordering, dedupe, re-verify, party floor ==\n");
+  test_plan_party_duplicate();
+  test_plan_pc_duplicate();
+  test_plan_party_floor();
+  test_plan_party_order();
 
   printf("\n%s: %d check(s), %d failure(s)\n", g_fail ? "FAIL" : "OK", g_check, g_fail);
   return g_fail ? 1 : 0;

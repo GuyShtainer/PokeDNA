@@ -722,11 +722,30 @@
  * The title is built dynamically ("N " + this suffix, siprintf into a 40 B buffer);
  * measured here at a worst-case count prefix the same way PDNA_SIDECAR_INFO_SUFFIX
  * is (a save's party+PC together top out at 6 + G3_TOTAL_BOXES*G3_IN_BOX == 426, so
- * "426 " is the true worst case, wider than "30 "/"999 " would suggest). */
+ * "426 " is the true worst case, wider than "30 "/"999 " would suggest).
+ *
+ * S5-C review #4: RECON_L1 now says permanent deletion explicitly, matching the
+ * single-mon confirm's own wording (pdna_main.c app_release(): "Release this
+ * Pokemon?" / "Deleted permanently.") -- silence on that point read as gentler than
+ * the action actually is. Two lines via app_confirm's own ui_ptext_wrap(...,2,...). */
 #define PDNA_SIDECAR_RECON_TITLE_SUFFIX "POKEMON TRANSFERRED"
-#define PDNA_SIDECAR_RECON_L1           "Release the originals here?"
+#define PDNA_SIDECAR_RECON_L1           "Release the originals? Deleted permanently."
 #define PDNA_SIDECAR_RECON_NOTUPD_TITLE "SIDECAR NOT UPDATED"
 #define PDNA_SIDECAR_RECON_NOTUPD_L1    "Release saved; a sidecar wasn't."
+/* S5-C review #4: shown after A only when fewer than N were actually released (the
+ * party floor, or a duplicate-entry dedupe) -- the user was promised N, so a silent
+ * shortfall would read as the feature simply not working. K/N are data (siprintf). */
+#define PDNA_SIDECAR_RECON_PARTIAL_TITLE "PARTIAL RELEASE"
+#define PDNA_SIDECAR_RECON_PARTIAL_L2    "rest skipped (party floor/dupes)."
+
+/* S5-C review #5: view_save()'s load_phase_n() label for gb_reconcile_on_load() --
+ * it can read/write several SD files before the box screen ever paints, and
+ * without its own label the screen would still show the PREVIOUS phase's text for
+ * however long that takes, which reads as a hang on the wrong step. Measured below
+ * against the same "step/PDNA_LOAD_STEPS " prefix load_phase_n() itself builds
+ * (pdna_main.c); PDNA_LOAD_STEPS is pdna_main.c-internal, so the prefix is a
+ * literal here, commented so a step-count change is not missed. */
+#define PDNA_LOAD_PHASE_SIDECARS "Checking sidecars..."
 
 /* ---------------------------------------------------------------------------
  * Settings + Rumble pages (source/pdna_main.c)

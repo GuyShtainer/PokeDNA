@@ -44,3 +44,78 @@ int gb_reconcile_match(const uint8_t* sb1, bool frlg, const uint8_t* pc,
   }
   return count;
 }
+
+/* ---- the release plan (S5-C review) -- see gb_reconcile.h for the full design
+ * note, including the exact data-loss scenario this function exists to prevent. */
+int gb_reconcile_plan(GbReconHit* hits, int n, uint8_t* sb1, bool frlg, uint8_t* pc) {
+  if (!hits || !sb1 || n <= 0) return 0;
+  if (n > GB_RECON_MAX_HITS) n = GB_RECON_MAX_HITS;    /* defensive clamp, golden rule 2 */
+
+  for (int i = 0; i < n; i++) { hits[i].released = false; hits[i].done = false; }
+
+  /* Dedupe: any hit sharing an EXACT (box, slot) with an earlier (lower-index) hit
+   * is a duplicate of it, independent of whatever the caller may already have
+   * marked (`!hits[k].duplicate` below always resolves a chain back to the FIRST
+   * hit in a group, never a middle one). A duplicate is claimed but never touches
+   * `sb1`/`pc` -- the earlier hit already released "the" mon. */
+  for (int i = 1; i < n; i++)
+    for (int k = 0; k < i; k++)
+      if (!hits[k].duplicate && hits[k].box == hits[i].box && hits[k].slot == hits[i].slot) {
+        hits[i].duplicate = true;
+        break;
+      }
+  for (int i = 0; i < n; i++)
+    if (hits[i].duplicate) { hits[i].released = true; hits[i].done = true; }
+
+  /* PC hits: fixed addresses, array order is fine (no shift between releases).
+   * Live-reverified immediately before touching anything; a mismatch here means
+   * something unexpected is at that slot, so it is left unreleased and unclaimed
+   * (never a bystander touched, and never a phantom "release" claimed either). */
+  if (pc) {
+    for (int i = 0; i < n; i++) {
+      if (hits[i].done || hits[i].box < 0) continue;
+      if (memcmp(pk_box_slot(pc, hits[i].box, hits[i].slot), hits[i].id8, 8) != 0) {
+        hits[i].done = true;
+        continue;
+      }
+      clip_clear_box_slot(pc, hits[i].box, hits[i].slot);
+      hits[i].released = true;
+      hits[i].done = true;
+    }
+  }
+
+  /* Party hits: HIGHEST SLOT FIRST -- party_release() shifts every later index
+   * down by one, so releasing low-to-high would silently release the WRONG
+   * (shifted) mon at a later hit's recorded slot. Bounded by n+1 (golden rule 2):
+   * each pass marks exactly one not-yet-done hit `done`, or finds none left. */
+  for (int guard = 0; guard <= n; guard++) {
+    int best = -1;
+    for (int i = 0; i < n; i++) {
+      if (hits[i].done || hits[i].box != -1) continue;
+      if (best < 0 || hits[i].slot > hits[best].slot) best = i;
+    }
+    if (best < 0) break;
+
+    GbReconHit* h = &hits[best];
+    int pcnt = party_count(sb1, frlg);
+    const uint8_t* cur = (h->slot >= 0 && h->slot < pcnt) ? pk_party_slot(sb1, frlg, h->slot) : NULL;
+    if (!cur || memcmp(cur, h->id8, 8) != 0) {
+      /* By construction the only way a party slot's content can change between
+       * the walk and this call is an EARLIER hit in this SAME pass releasing it
+       * (every other cause is excluded by the ordering above) -- so a mismatch
+       * here means "already released, by a different entry", not "something
+       * unexpected". Claim it: the mon really is gone from the save. */
+      h->released = true;
+      h->done = true;
+      continue;
+    }
+    if (pcnt <= 1) { h->done = true; continue; }   /* never release the last party mon */
+    party_release(sb1, frlg, h->slot);
+    h->released = true;
+    h->done = true;
+  }
+
+  int released = 0;
+  for (int i = 0; i < n; i++) if (hits[i].released) released++;
+  return released;
+}

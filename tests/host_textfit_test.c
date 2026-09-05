@@ -685,9 +685,35 @@ int main(void) {
    * the title with ui_ptext_fit(28, 54, 184, ...) -- same geometry as every other
    * PF(..., 28, 184) check in this file. */
   PF("426 " PDNA_SIDECAR_RECON_TITLE_SUFFIX, 28, 184);
-  PF(PDNA_SIDECAR_RECON_L1,           28, 184);
+  /* S5-C review #4: RECON_L1 now names the permanent deletion explicitly and is
+   * WRAPPED (app_confirm's own ui_ptext_wrap(28, 74, 184, ROW_H+2, 2, ...)), not
+   * clamped to one line -- a PF (single-line) check would fail this string by
+   * design. wrap_lines() (this file's own helper, added for the legality help
+   * pages) mirrors ui_ptext_break exactly, so this checks the real budget: 2 lines
+   * at 184 px, the same the single-mon confirm's own two-string call gets for free
+   * from app_confirm's fixed layout. */
+  checks++;
+  { int ln = wrap_lines(PDNA_SIDECAR_RECON_L1, 184);
+    int ok = (ln <= 2);
+    if (!ok) fails++;
+    printf("  %-4s %-46.46s          lines=%-4d limit=%-4d %s\n",
+           ok ? "ok" : "FAIL", PDNA_SIDECAR_RECON_L1, ln, 2, "ptext_wrap"); }
   PF(PDNA_SIDECAR_RECON_NOTUPD_TITLE, 28, 184);
   PF(PDNA_SIDECAR_RECON_NOTUPD_L1,    28, 184);
+  /* S5-C review #4: the "K of N released" shortfall message (gb_reconcile_
+   * shortfall_msg) -- title + the STATIC tail (K/N themselves are siprintf'd, safe
+   * by construction like every other dynamic message in this tree). */
+  PF(PDNA_SIDECAR_RECON_PARTIAL_TITLE, 28, 184);
+  PF(PDNA_SIDECAR_RECON_PARTIAL_L2,    28, 184);
+  /* S5-C review #5: view_save()'s new load_phase_n(11, ...) label. load_phase_n
+   * draws "%d/%d %s" with plain ui_ptext (NOT _fit -- it does not clip) inside a
+   * 192 px panel at x=32 (source/pdna_main.c load_phase_n: ui_panel(24,62,192,36),
+   * ui_ptext(32,84,...)), i.e. the same 184 px budget at x=28..32 convention used
+   * everywhere else -- so an un-clipped overflow here is a real, visible cut, not
+   * just an ellipsis. "11/13 " is PDNA_LOAD_STEPS-coupled (pdna_main.c) and
+   * therefore a literal, not a shared constant -- see PDNA_LOAD_PHASE_SIDECARS's
+   * own header comment. */
+  PF("11/13 " PDNA_LOAD_PHASE_SIDECARS, 32, 184);
   /* ==== END S5-C Part B2 ======================================================== */
 
   /* ==== ADDED for the native-generation art router (source/pdna_origin_art.c) ====

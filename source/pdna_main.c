@@ -1165,7 +1165,7 @@ static void hb_resume(void) { s_hb_sub = 0; s_hb_on = 1; }
 
 /* How many named sub-steps the save-open sequence has. Written out so the on-screen
  * "7/12" is a fraction Guy can read as progress, not just a label. */
-#define PDNA_LOAD_STEPS 12
+#define PDNA_LOAD_STEPS 13   /* S5-C review #5: step 11 "sidecars" (gb_reconcile_on_load) added */
 
 /* ---- IWRAM stack watermark -------------------------------------------------
  *
@@ -7648,20 +7648,11 @@ static void reload_saveblocks(void) {
  * boxoam_enter()) ever touches it, and the file browser rescans g_entries on every
  * return visit regardless of what was in it (box_oam.c already borrows the exact
  * same array on every single box-screen visit on that same assumption). */
-#define GB_RECON_MAX_FILES 64
-#define GB_RECON_MAX_HITS  64
-#define GB_RECON_NAME_MAX  21     /* "0123456789ABCDEF.pds" + NUL == 20 + 1        */
-
-typedef struct {
-  int8_t  box;         /* -1 == party (0..G3_TOTAL_BOXES-1 otherwise); -2 == a party
-                        * hit the apply step has already processed (see gb_reconcile_
-                        * apply's own comment on why party releases need an order) */
-  int8_t  slot;
-  uint8_t file_idx;     /* index into GbReconBuf.names                              */
-  uint8_t entry_idx;    /* index within that file's sidecar entries                 */
-  uint8_t id8[8];       /* personality+otId, re-checked at release time             */
-  bool    released;
-} GbReconHit;
+#define GB_RECON_MAX_FILES   64
+#define GB_RECON_MAX_EXAMINE 256   /* S5-C review #11: files LOOKED AT, not just .pds
+                                    * ones accepted -- a directory full of unrelated
+                                    * files must not make this scan unbounded */
+#define GB_RECON_NAME_MAX    21    /* "0123456789ABCDEF.pds" + NUL == 20 + 1        */
 
 typedef struct {
   DIR        dir;
@@ -7669,7 +7660,7 @@ typedef struct {
   uint8_t    sidecar[GBSC_FILE_MAX];
   char       path[GBSC_PATH_MAX];
   char       names[GB_RECON_MAX_FILES][GB_RECON_NAME_MAX];
-  GbReconHit hits[GB_RECON_MAX_HITS];
+  GbReconHit hits[GB_RECON_MAX_HITS];   /* GbReconHit/GB_RECON_MAX_HITS: gb_reconcile.h */
   int        nfiles;
   int        nhits;
 } GbReconBuf;
@@ -7685,18 +7676,34 @@ static void gb_recon_path(char* out, const char* name) {
   out[pn] = 0;
 }
 
-/* Scan /PokeDNA/sidecar/*.pds (bounded to GB_RECON_MAX_FILES; rb->dir already
- * opened by the caller), and for every entry that is not claimed and whose file has
- * not been asked-and-kept (GBSC_FLAG_KEEP_ASKED), look for an EXACT single match in
- * this save (gb_reconcile_match, source/gb_reconcile.c). Fills rb->hits/rb->nhits
- * (bounded to GB_RECON_MAX_HITS) and rb->names/rb->nfiles. noinline: DIR/FILINFO/the
- * 1042 B sidecar buffer all live in *rb (the borrowed g_entries cache), never this
- * function's own frame. */
+/* Scan /PokeDNA/sidecar/*.pds (bounded to GB_RECON_MAX_FILES ACCEPTED and
+ * GB_RECON_MAX_EXAMINE entries LOOKED AT -- S5-C review #11: the old bound only
+ * counted accepted .pds files, so a directory holding many unrelated entries could
+ * make f_readdir() run unbounded; rb->dir already opened by the caller), and for
+ * every entry that is not claimed and whose file has not been asked-and-kept
+ * (GBSC_FLAG_KEEP_ASKED), look for an EXACT single match in this save
+ * (gb_reconcile_match, source/gb_reconcile.c). Fills rb->hits/rb->nhits (bounded to
+ * GB_RECON_MAX_HITS; the outer scan also stops once that many are found -- no point
+ * reading more files that can never contribute another hit) and rb->names/rb->nfiles.
+ *
+ * DEDUPE (S5-C review #1, belt): when a new hit's (box, slot) matches an EARLIER
+ * hit already in rb->hits (the same Gen-3 original transferred to two different
+ * Game Boy generations, or re-transferred after a merge-up, produces two unclaimed
+ * entries pointing at the same slot), the new one is marked `duplicate` here and
+ * gb_reconcile_plan() (pdna_main.c's gb_reconcile_release) never attempts to
+ * release it a second time -- gb_reconcile_plan() also re-derives this
+ * independently, so this pass is a first, cheap line of defense, not the only one.
+ *
+ * noinline: DIR/FILINFO/the 1042 B sidecar buffer all live in *rb (the borrowed
+ * g_entries cache), never this function's own frame. */
 static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb) {
   rb->nfiles = 0;
   rb->nhits = 0;
-  while (rb->nfiles < GB_RECON_MAX_FILES &&
+  int examined = 0;
+  while (examined < GB_RECON_MAX_EXAMINE && rb->nfiles < GB_RECON_MAX_FILES &&
+        rb->nhits < GB_RECON_MAX_HITS &&
         f_readdir(&rb->dir, &rb->fi) == FR_OK && rb->fi.fname[0]) {
+    examined++;
     if (rb->fi.fattrib & AM_DIR) continue;
     int L = 0; while (rb->fi.fname[L]) L++;
     if (L < 5 || L >= GB_RECON_NAME_MAX) continue;
@@ -7732,11 +7739,20 @@ static void __attribute__((noinline)) gb_reconcile_walk(GbReconBuf* rb) {
                             rb->path, i, m);
         continue;
       }
+      bool dup = false;
+      for (int k = 0; k < rb->nhits; k++)
+        if (rb->hits[k].box == (int8_t)box && rb->hits[k].slot == (int8_t)slot) { dup = true; break; }
+
       GbReconHit* h = &rb->hits[rb->nhits++];
       h->box = (int8_t)box; h->slot = (int8_t)slot;
       h->file_idx = (uint8_t)fidx; h->entry_idx = (uint8_t)i;
       memcpy(h->id8, e2.original80, 8);
       h->released = false;
+      h->done = false;
+      h->duplicate = dup;
+      if (dup)
+        log_line("gen3: reconcile: %s entry %d duplicates an earlier hit at box=%d slot=%d",
+                 rb->path, i, box, slot);
     }
   }
 }
@@ -7752,49 +7768,33 @@ static bool __attribute__((noinline)) gb_reconcile_confirm(int n) {
   return app_confirm(title, PDNA_SIDECAR_RECON_L1);
 }
 
-/* A (release_all only): PC slots first (app_pc_release_slot is order-independent --
- * a fixed-array zero, identity re-checked, never a compaction); THEN party slots,
- * highest slot first -- party_release() shifts every later slot down by one, so
- * releasing low-to-high would silently release the WRONG (shifted) mon at a later
- * hit's recorded slot. The party-floor rule (never empty the party) is re-checked
- * LIVE before each party release, because an earlier release in this same batch can
- * bring the count down to the floor. ONE commit per touched buffer (app_commit_pc /
- * app_commit_sb1), matching app_release()'s own commit convention. Marks each
- * ACTUALLY-released hit's `released` flag for gb_reconcile_claim_sidecars() below. */
-static void __attribute__((noinline)) gb_reconcile_release(GbReconBuf* rb) {
-  bool touched_pc = false, touched_party = false;
+/* Release every hit gb_reconcile_walk() found via gb_reconcile_plan() (S5-C review;
+ * source/gb_reconcile.c) -- the pure-C ordering/dedupe/live-reverify core that
+ * fixes the data-loss bug the old inline version here had: two sidecar entries
+ * resolving to the SAME slot (the same Gen-3 mon transferred to a Gen-1 save AND a
+ * Gen-2 save, or re-transferred after a merge-up) used to release the first fine,
+ * then blindly release "the same recorded slot" again for the second -- which, for
+ * a party slot, now named a DIFFERENT, innocent mon after the first release
+ * shifted everything down by one. gb_reconcile_plan() mutates g_sb1/g_pc in place
+ * (pure C, no persistence of its own); this wrapper just derives which buffer(s)
+ * actually changed and does ONE commit per touched buffer (app_commit_pc /
+ * app_commit_sb1), matching app_release()'s own commit convention. Returns the
+ * count gb_reconcile_plan() reports released, for gb_reconcile_apply()'s "K of N"
+ * shortfall message. */
+static int __attribute__((noinline)) gb_reconcile_release(GbReconBuf* rb) {
+  int released = gb_reconcile_plan(rb->hits, rb->nhits, g_sb1, g_frlg,
+                                   g_have_pc ? g_pc : NULL);
 
+  bool touched_pc = false, touched_party = false;
   for (int i = 0; i < rb->nhits; i++) {
-    GbReconHit* h = &rb->hits[i];
-    if (h->box < 0) continue;                       /* party (or already processed) */
-    app_pc_release_slot(h->box, h->slot, h->id8);
-    h->released = true;
-    touched_pc = true;
-  }
-  /* Bounded by rb->nhits+1 (golden rule 2): each pass either finds nothing left to
-   * process (break) or marks exactly one hit's box -2 ("processed"), so this can
-   * never outlive the fixed-size hits array. */
-  for (int guard = 0; guard <= rb->nhits; guard++) {
-    int best = -1;
-    for (int i = 0; i < rb->nhits; i++) {
-      if (rb->hits[i].box != -1) continue;           /* not party, or already processed */
-      if (best < 0 || rb->hits[i].slot > rb->hits[best].slot) best = i;
-    }
-    if (best < 0) break;
-    GbReconHit* h = &rb->hits[best];
-    if (party_count(g_sb1, g_frlg) <= 1) {
-      log_line("gen3: reconcile: keeping the last party mon (slot %d), not releasing", h->slot);
-    } else {
-      party_release(g_sb1, g_frlg, h->slot);
-      h->released = true;
-      touched_party = true;
-    }
-    h->box = -2;                                     /* processed either way */
+    if (!rb->hits[i].released || rb->hits[i].duplicate) continue;
+    if (rb->hits[i].box == -1) touched_party = true; else touched_pc = true;
   }
   if (touched_pc && !app_commit_pc())
     log_line("gen3: reconcile: app_commit_pc failed -- PC release(s) NOT saved to the card");
   if (touched_party && !app_commit_sb1())
     log_line("gen3: reconcile: app_commit_sb1 failed -- party release(s) NOT saved to the card");
+  return released;
 }
 
 /* Rewrite every TOUCHED sidecar file once: A (release_all) claims the entries that
@@ -7852,9 +7852,28 @@ static void __attribute__((noinline)) gb_reconcile_claim_sidecars(GbReconBuf* rb
  * leave both copies alone (B), then rewrite whatever sidecar files that decision
  * touches. Split into gb_reconcile_release() / gb_reconcile_claim_sidecars() (golden
  * rule 4: one function, one job) -- this one is just the two-line sequencing. */
+/* S5-C review #4: the user was promised N ("N POKEMON TRANSFERRED"); if the party
+ * floor or a dedupe/re-verify refusal meant fewer than N were actually released,
+ * say so rather than let the confirm screen's own count go silently wrong. K and N
+ * are both data, so this line is built at runtime (siprintf into a 64 B buffer) --
+ * safe by construction like every other dynamic message in this tree (msg_wait()
+ * runs it through ui_ptext_fit()). noinline to keep the buffer off the caller's own
+ * frame. */
+static void __attribute__((noinline)) gb_reconcile_shortfall_msg(int released, int total) {
+  char l1[64];
+  siprintf(l1, "%d of %d released;", released, total);
+  msg_wait(PDNA_SIDECAR_RECON_PARTIAL_TITLE, UI_WARN, l1, PDNA_SIDECAR_RECON_PARTIAL_L2);
+}
+
+/* Apply the user's choice over every hit gb_reconcile_walk() found: release (A) or
+ * leave both copies alone (B), then rewrite whatever sidecar files that decision
+ * touches, then (A only) tell the user if fewer than N were actually released.
+ * Split into gb_reconcile_release() / gb_reconcile_claim_sidecars() (golden rule 4:
+ * one function, one job) -- this one is just the sequencing. */
 static void __attribute__((noinline)) gb_reconcile_apply(GbReconBuf* rb, bool release_all) {
-  if (release_all) gb_reconcile_release(rb);
+  int released = release_all ? gb_reconcile_release(rb) : 0;
   gb_reconcile_claim_sidecars(rb, release_all);
+  if (release_all && released != rb->nhits) gb_reconcile_shortfall_msg(released, rb->nhits);
 }
 
 static void __attribute__((noinline)) gb_reconcile_on_load(void) {
@@ -8153,7 +8172,13 @@ static void view_save(const char* path) {
    * safe window to borrow the box_oam swap cache before it might be busy and to release
    * a PC/party slot before the user could have started moving anything by hand. Absent
    * folder / read-only cart / a card error mid-walk all fall through silently (design
-   * doc section 12: "a card error during the walk = skip the question this time"). */
+   * doc section 12: "a card error during the walk = skip the question this time").
+   *
+   * S5-C review #5: this can read/write several SD files (up to GB_RECON_MAX_FILES
+   * .pds files, plus a party/PC commit) before the box ever paints -- without its own
+   * load_phase_n() the screen would still show "10/13 party (forme)" for however long
+   * that takes, which reads as a hang on exactly the step that did NOT freeze. */
+  load_phase_n(11, PDNA_LOAD_PHASE_SIDECARS);
   gb_reconcile_on_load();
   /* A party release above edited g_sb1 in place -- g_party/g_nparty are a CACHE of
    * it (every other mutator in this file re-derives the same way afterward, e.g.
@@ -8163,7 +8188,7 @@ static void view_save(const char* path) {
   g_nparty = pk_read_party_auto(g_sb1, g_party, &g_frlg);
   for (int i = 0; i < g_nparty; i++) pk_resolve(&g_party[i]);
 
-  load_phase_n(11, "box source");
+  load_phase_n(12, "box source");
   BoxSource pcs = pc_box_source();
   pdna_box_clear_carry();                          /* no mon in hand when a save opens */
   pdna_bank_clear_deletions();                     /* no stale Bank->PC deletions from a prior save */
@@ -8171,7 +8196,7 @@ static void view_save(const char* path) {
   /* app_icon_rom_open() above may have opened the user's ROM off the SD; from here on
    * it is the box paint (wallpaper staging + 30 verified icon copies + tile uploads).
    * Breadcrumb #3 fires from inside that paint -- see app_crumb_shown(). */
-  load_phase_n(12, g_have_pc ? "first paint: box" : "first paint: party");
+  load_phase_n(13, g_have_pc ? "first paint: box" : "first paint: party");
   /* Hand the VBlank handler back BEFORE the first full-screen paint: from here the
    * screen is being drawn every frame anyway, so a spinner would only be 144 pixels
    * of a real screen that the heartbeat has no business owning. A freeze from this
