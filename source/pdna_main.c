@@ -3589,7 +3589,17 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
      * gone: it is the only caller g_src_ops->edit had (grepped), so nothing else reaches
      * it now, but the hook itself is left in place (AppSrcOps.edit / gb_edit_hook) rather
      * than torn out of the shared source-ops contract for a label change. */
-    bool editable = g_src_ops && g_src_ops->edit && app_can_edit();
+    /* Bag/menu review fix: `editable` used to be `edit && app_can_edit()` -- the CART
+     * gate alone -- but gb_view_hook's own `can_edit` (the thing that actually decides
+     * whether the summary opens in edit mode) also requires the BOX to be writable
+     * (gbs_box_writable == GBS_OK; a virgin Gen-1 bank never is, even on an Omega). That
+     * mismatch let this row promise "VIEW/EDIT" on a box the summary would then refuse
+     * with a bare buzz. A source with a box-level gate of its own registers `editable`
+     * (pdna_gen12.c's gb_editable_hook, the same two checks gb_view_hook applies) and
+     * this uses it; a source without one (editable == NULL) falls back to the old
+     * cart-only expression unchanged. */
+    bool editable = g_src_ops && (g_src_ops->editable ? g_src_ops->editable(rec)
+                                                       : (g_src_ops->edit && app_can_edit()));
     lab[n] = editable ? PDNA_LBL_VIEW_EDIT : PDNA_LBL_VIEW; act[n++] = RO_VIEW;
     /* MOVE TO / RELEASE are the GB session's own in-place pipeline (pdna_gen12.c), never
      * the Gen-3 one: each edits the Game Boy record by address, never the converted copy

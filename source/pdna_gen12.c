@@ -865,6 +865,21 @@ static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
   return true;
 }
 
+/* AppSrcOps.editable (bag/menu review fix): the read-only popup's VIEW/EDIT row asks
+ * this BEFORE it labels itself, so the label never promises more than gb_view_hook's
+ * own `can_edit` (below) will actually allow once opened. Same two gates as gb_locate's
+ * 1/2 above -- the cart (app_can_edit) and the box (gbs_box_writable, a virgin Gen-1
+ * bank can never be written) -- but silent: this is a menu-drawing query, not an action,
+ * so it must never pop a message box or make a sound. Requires an open edit session for
+ * the same reason EDIT/MOVE/RELEASE do (no GbSession to gate against otherwise); k_gb_ops_ro
+ * (the nav-menu mount, g_ed NULL) leaves this NULL. */
+static bool gb_editable_hook(const uint8_t* rec80) {
+  int box, slot;
+  if (!g_ed) return false;
+  if (!gb_locate_addr(rec80, &box, &slot)) return false;
+  return app_can_edit() && gbs_box_writable(&g_ed->s, box) == GBS_OK;
+}
+
 /* AppSrcOps.copy_native (S5-B): capture the record in its own Game Boy shape for the
  * clipboard, not the lossy Gen-3-converted bytes the grid shows. Nothing here mutates
  * the image or requires app_can_edit(): "copying is allowed on any cart". Two sources
@@ -1818,6 +1833,7 @@ static bool gb_view_hook(uint8_t* rec80) {
 static const AppSrcOps k_gb_ops = {
   .edit = gb_edit_hook, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
+  .editable = gb_editable_hook,
 };
 
 /* Bag/menu review fix (the nav-menu-copy-lossy finding): the read-only nav-menu mount
@@ -1834,10 +1850,12 @@ static const AppSrcOps k_gb_ops = {
  * app_mon_menu_readonly's row list already NULL-gates each one off g_src_ops, so this
  * is enough to keep every destructive row off the menu on this path. `view` and
  * `copy_native` are the two hooks S5-B/BACKLOG#41 already made g_ed-optional (see their
- * own comments above), so they carry over unchanged. */
+ * own comments above), so they carry over unchanged; `editable` stays NULL, which
+ * folds app_mon_menu_readonly's row label back to `edit && app_can_edit()` --
+ * `edit` is NULL on this table, so the row is never mislabelled VIEW/EDIT here either. */
 static const AppSrcOps k_gb_ops_ro = {
   .edit = 0, .move = 0, .release = 0, .copy_native = gb_copy_native_hook,
-  .paste = 0, .view = gb_view_hook,
+  .paste = 0, .view = gb_view_hook, .editable = 0,
 };
 
 /* Info page -> box grid -> the "these did not convert" report. The whole session above

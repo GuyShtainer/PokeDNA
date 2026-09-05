@@ -125,6 +125,15 @@ bool app_src_readonly(void);
  * converted copy. NULL (every source before #41) keeps the old default. Handed the
  * cell's own rec80 exactly like every other hook here; returns whatever it returns
  * for logging purposes only — app_mon_menu_readonly always re-pages regardless. */
+/* `editable` (bag/menu review fix): does the row this menu is about to draw actually
+ * get to edit `rec80` if picked? Before this hook existed, the row's own label used
+ * `edit && app_can_edit()` -- the CART gate only -- while the summary `view` actually
+ * opens (gb_view_hook, pdna_gen12.c) additionally gates on gbs_box_writable(), the BOX
+ * gate (a virgin Gen-1 bank can never be written even on an Omega). That mismatch let
+ * the row say "VIEW/EDIT" on a box the summary would then silently refuse with a bare
+ * buzz. NULL = no extra gate beyond the cart (app_mon_menu_readonly falls back to the
+ * old `edit && app_can_edit()` expression); a source that has a box-level gate of its
+ * own (pdna_gen12.c's gb_editable_hook) implements both checks here instead. */
 typedef struct {
   bool (*edit)(uint8_t* rec80);
   bool (*move)(uint8_t* rec80);
@@ -132,6 +141,7 @@ typedef struct {
   bool (*copy_native)(const uint8_t* rec80, GbEditMon* out, bool* has_sidecar);
   bool (*paste)(uint8_t* rec80);
   bool (*view)(uint8_t* rec80);
+  bool (*editable)(const uint8_t* rec80);
 } AppSrcOps;
 void app_src_ops_set(const AppSrcOps* ops);
 
