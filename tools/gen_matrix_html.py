@@ -21,6 +21,9 @@ OUT = ROOT / "docs" / "feature-matrix.html"
 SITE = ROOT / "docs" / "site" / "index.html"
 # Screenshots embedded as data URIs so the page stays one self-contained file.
 SHOTS = [
+    (ROOT / "docs" / "contact-sheet-2026-09-05-gb-arc.png",
+     "Gen-1/2 arc (S1..S5-B) in mGBA via a fused GB save, 2026-09-05 — SD writes "
+     "refuse in the emulator, so the \"Saving\" outcomes are hardware-only"),
     (ROOT / "docs" / "contact-sheet-2026-08-30.png",
      "Contact sheet, 2026-08-30 arc (repaint pass D1-D10, DMA audit B3) — emulator build"),
     (ROOT / "docs" / "shots" / "sheet-artless.png", "Artless build, 2026-08-08"),
@@ -164,9 +167,7 @@ def main() -> int:
             % (data, html.escape(caption), html.escape(caption)))
     shots_html = ""
     if shots:
-        shots_html = ('<h2 id="shots">Screenshots</h2><p>The GB editor (S2b) has no picture yet: '
-                      'the Game Boy fork is compiled out of the emulator build, so its first '
-                      'screen will come from the Omega run.</p>' + "".join(shots))
+        shots_html = '<h2 id="shots">Screenshots</h2>' + "".join(shots)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     page = (TEMPLATE.replace("BADGECSS", badgecss)
                     .replace("BUTTONS", buttons)
