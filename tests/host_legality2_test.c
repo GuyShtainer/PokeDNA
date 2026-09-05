@@ -241,6 +241,30 @@ static void negatives(void) {
     want(&CR, "EXP above the level-100 cap", PK2_INVALID, "EXP past the cap");
   }
 
+  /* B-stat — the party stat-formula cross-check gen3_mon.h:72-75 documents but nothing
+   * exercised before this batch. gen3_edit.c's own mutators (em_set_level etc.) always
+   * recompute the plaintext stats correctly, so the only way to produce a mismatch is
+   * to poke a stat byte directly after commit — same idiom as the level tests above. */
+  {
+    Fix sp; Pk2Report SR;
+    fix_new(&sp, 1, 50); em_set_party_flag(&sp.e, true);
+    SR = fix_check(&sp);
+    want_absent(&SR, "Max HP does not match the stat formula", "correctly-committed party stats");
+    want_absent(&SR, "A stat does not match the formula", "correctly-committed party stats");
+
+    SR = fix_check_poke(&sp, 0x58, 1);   /* Max HP low byte -> implausible for L50 */
+    want(&SR, "Max HP does not match the stat formula", PK2_INVALID, "hex-edited Max HP");
+
+    SR = fix_check_poke(&sp, 0x5A, 1);   /* Attack low byte */
+    want(&SR, "A stat does not match the formula", PK2_INVALID, "hex-edited Attack stat");
+
+    /* A BOX record's stats are something WE compute in pk_resolve — comparing them
+     * to the same formula would be tautological, so the check must not run there. */
+    Fix bx; fix_new(&bx, 1, 50);
+    Pk2Report BR = fix_check(&bx);
+    want_absent(&BR, "Max HP does not match the stat formula", "box records are not checked");
+  }
+
   /* B0 — the clean control. gen3_build_mon must produce a mon with NOTHING to say. */
   fix_new(&x, 1, 5);
   Pk2Report R = fix_check(&x);

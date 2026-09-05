@@ -32,6 +32,17 @@
 #define G3_JP_NAME_MAX       5   /* JP carts cap nicknames/player names at 5 glyphs */
 #define SPECIES_MEW        151
 #define SPECIES_DEOXYS     410   /* INTERNAL index (national 386)                   */
+#define SPECIES_SHEDINJA   303   /* CalculateMonStats forces its Max HP to 1        */
+
+/* E4 — Safari Ball <-> Safari Zone. Both games hand out ONLY the Safari Ball inside
+ * their Safari Zone (RSE: `GiveMonToPlayer`/ball is unconditionally ITEM_SAFARI_BALL
+ * in the safari catching subroutine; FRLG's Safari Zone is the same subroutine
+ * ported), and nowhere else legitimately hands one out — so the ball id and the met
+ * MAPSEC travel together. Indices confirmed against source/data_tables.c's
+ * s_location table (RSE "SAFARI ZONE" at 0x39, FRLG's at 0x88). */
+#define G3_BALL_SAFARI      5
+#define MAPSEC_SAFARI_RSE   0x39
+#define MAPSEC_SAFARI_FRLG  0x88
 
 /* Record offsets used for the fields PkMon does not (and should not) decode:
  * the raw nickname/OT bytes, which we need UNDECODED because the interesting
@@ -185,6 +196,39 @@ static void check_structure(const PkMon* m, const Pk2Facts* f, Pk2Report* R) {
   if (pk_species_ability(m->species, 1) != 0 && !f->is_gc && m->metLocation != 0xFE &&
       m->abilityNum != (uint8_t)(m->personality & 1))
     pk2_add(R, PK2_CAT_PID, PK2_SUSPECT, "Ability slot does not match the PID");
+
+  /* Party stat formula (gen3_mon.h:72-75 flags this exact cross-check as the reason
+   * pk_calc_hp/pk_calc_stat take explicit args instead of reading a PkMon). A BOX
+   * record's m->stats[] is something WE computed in pk_resolve — comparing it back
+   * to the same formula would be tautological. A PARTY record's m->stats[] is
+   * plaintext the GAME wrote (CalculateMonStats, src/pokemon.c:2823-2862): every
+   * level-up, every stat-EV gain and every load of a saved party recomputes and
+   * overwrites it from base stats + IVs + EVs + nature + level. There is no retail
+   * path that leaves it holding anything else, so a mismatch is a structural tell —
+   * a hex-edited stat, or a record moved to a level/EV combination that was never
+   * recalculated. Shedinja is the one documented exception: CalculateMonStats hard-
+   * codes its Max HP to 1 regardless of the formula (its other five stats still use
+   * it normally). Colosseum/XD share pokeemerald's mon-creation code but run it on
+   * different hardware we have not bit-verified, so that origin is SUSPECT instead
+   * of INVALID — everywhere else the formula is unconditional. */
+  if (m->isParty) {
+    uint8_t base[6];
+    pk_base_stats(m->species, base);
+    uint8_t sev = f->is_gc ? PK2_SUSPECT : PK2_INVALID;
+    uint16_t want_hp = (m->species == SPECIES_SHEDINJA) ? 1
+        : pk_calc_hp(base[PK_HP], m->ivs[PK_HP], m->evs[PK_HP], f->level);
+    if (m->stats[PK_HP] != want_hp)
+      pk2_add(R, PK2_CAT_STRUCT, sev, "Max HP does not match the stat formula");
+    int nb = pk_nature_boost(m->nature), nh = pk_nature_hinder(m->nature);
+    for (int s = PK_ATK; s <= PK_SPD; s++) {
+      int mod = (s == nb) ? 1 : (s == nh) ? -1 : 0;
+      uint16_t want = pk_calc_stat(base[s], m->ivs[s], m->evs[s], f->level, mod);
+      if (m->stats[s] != want) {
+        pk2_add(R, PK2_CAT_STRUCT, sev, "A stat does not match the formula");
+        break;   /* one row says it; four more would just be noise */
+      }
+    }
+  }
 }
 
 static void check_moves(const PkMon* m, const Pk2Facts* f, Pk2Report* R) {
