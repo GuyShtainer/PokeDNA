@@ -101,7 +101,7 @@ static IvRollState g_roll_st;      /* seed survives across mons: never reset it 
 static bool      g_last_ivonly = false;   /* the newest roll kept the PID */
 static bool      g_have_roll   = false;
 
-static void draw_dots(int x, int y, int n, int active) {
+void pdna_summary_draw_dots(int x, int y, int n, int active) {
   for (int i = 0; i < n; i++) {
     int cx = x + i * 7;
     if (i == active) ui_fill_rect(cx, y, 5, 5, C_HDR);
@@ -153,7 +153,7 @@ static u16 portrait_bg(int yy) {
 static u16 summary_bg_col(int b) { return RGB15(6 - b / 5, 11 - b / 3, 22 - b / 2); }
 #define SUMMARY_BG_FOOT_BAND 15        /* the band rows 150..159 (and so the footer) live in */
 
-static void summary_bg(void) {
+void pdna_summary_bg(void) {
   for (int b = 0; b < 16; b++) {
     int y = b * 10;
     u16 col = summary_bg_col(b);
@@ -170,7 +170,7 @@ static void summary_bg(void) {
 
 /* Shared portrait column (all 7 cards): framed sprite, dex no, name, Lv + colored
  * sex, species, type badges, and an egg/shiny tag. No editable fields here. */
-static void draw_left(const PkMon* p) {
+static void draw_left_ex(const PkMon* p, bool back) {
   ui_panel(0, 11, 92, 139, RGB15(4, 7, 16), UI_BORDER);    /* dark-blue info column */
   m3_frame(11, 13, 80, 78, UI_BORDER);                     /* sprite sub-frame */
   for (int yy = 14; yy <= 77; yy++) ui_fill_rect(12, yy, 68, 1, portrait_bg(yy));   /* blue "screen" */
@@ -180,7 +180,7 @@ static void draw_left(const PkMon* p) {
    * front/back ladder this used to open-code. With no GB ROM registered the result is
    * the same pointer and the same (14,14) 64x64 blit as before. */
   PdnaArt art; PdnaOrigin org;
-  pdna_origin_art_portrait(p, g_back, &art, &org);
+  pdna_origin_art_portrait(p, back, &art, &org);
   rumble_io_resume();
   if (art.px) {
     int ax, ay;
@@ -206,7 +206,7 @@ static void draw_left(const PkMon* p) {
   if (p->species == 410) {                                 /* Deoxys (internal 410): show the current forme (SELECT cycles it) */
     static const char* const DF[4] = { "Normal", "Attack", "Defense", "Speed" };
     ui_text(40, 84, C_HOT, DF[p->form < 4 ? p->form : 0]);
-  } else if (g_back) ui_text(44, 84, UI_DIM, "back");      /* current portrait side */
+  } else if (back) ui_text(44, 84, UI_DIM, "back");        /* current portrait side */
 
   ui_ptext_fit(6, 94, 86, C_VAL, p->nickname[0] ? p->nickname : pk_species_name(p->species));
 
@@ -224,6 +224,14 @@ static void draw_left(const PkMon* p) {
   else if (p->isEgg) ui_text(6, 142, C_HOT, "EGG");
   else if (p->pokerus) ui_text(6, 142, UI_WARN, "Pokerus");
 }
+
+/* This screen's own front/back toggle (SELECT), unchanged. */
+static void draw_left(const PkMon* p) { draw_left_ex(p, g_back); }
+
+/* Exported for pdna_gbsummary.c (BACKLOG #41 slice E1) — same body as draw_left(),
+ * just with the front/back flag passed in rather than read off this file's g_back,
+ * since the Game Boy summary has no such toggle of its own. */
+void pdna_summary_draw_left(const PkMon* p, bool back) { draw_left_ex(p, back); }
 
 /* ---- draw_left, made conditional on the mon+pose actually having changed ----------
  *
@@ -676,10 +684,10 @@ static void self_strips(int x, int y, int w, int h, int mode, u16 col) {
 
 /* The card was repainted over the outline AND over the pixels s_self_px was holding:
  * both are now meaningless. Never restore after this without a fresh save. */
-static void sel_frame_drop(void) { s_self_on = false; }
+void pdna_summary_sel_frame_drop(void) { s_self_on = false; }
 
 /* Take the outline off the screen (leaving edit mode). */
-static void sel_frame_hide(void) {
+void pdna_summary_sel_frame_hide(void) {
   if (!s_self_on) return;
   self_strips(s_self_x, s_self_y, s_self_w, SELF_H, SELF_PUT, 0);
   s_self_on = false;
@@ -687,7 +695,7 @@ static void sel_frame_hide(void) {
 
 /* Put the outline around the slot registered at (sx, sy, sw); a no-op if it is already
  * exactly there. */
-static void sel_frame_set(int sx, int sy, int sw) {
+void pdna_summary_sel_frame_set(int sx, int sy, int sw) {
   int x = sx - 2, y = sy - 1, w = sw + 2;
   if (w > SELF_MAX_W) {
     /* Unreachable today (no reg() in this file passes more than PDNA_SUM_CARD_W). If
@@ -695,13 +703,13 @@ static void sel_frame_set(int sx, int sy, int sw) {
      * iteration, which erases the outline for us -- rather than drawing an outline whose
      * under-pixels we cannot restore. */
     s_self_toobig = true;
-    sel_frame_hide();
+    pdna_summary_sel_frame_hide();
     m3_frame(sx - 2, sy - 1, sx + sw, sy + UI_ROW_H, UI_SELTEXT);
     return;
   }
   s_self_toobig = false;
   if (s_self_on && s_self_x == x && s_self_y == y && s_self_w == w) return;
-  sel_frame_hide();
+  pdna_summary_sel_frame_hide();
   self_strips(x, y, w, SELF_H, SELF_SAVE, 0);
   self_strips(x, y, w, SELF_H, SELF_PAINT, UI_SELTEXT);
   s_self_x = x; s_self_y = y; s_self_w = w; s_self_on = true;
@@ -730,12 +738,12 @@ static void card_paint_store(CardPaint* v, const PkMon* p, int card) {
 }
 
 static bool render_card(const PkMon* p, int card) {
-  summary_bg();                             /* Emerald-style blue gradient backdrop */
+  pdna_summary_bg();                        /* Emerald-style blue gradient backdrop */
   g_nslot = 0;
   if (g_edit)        { ui_fill_rect(0, 0, 50, 9, UI_WARN); ui_text(8, 1, UI_PANEL, "EDIT"); } /* unmissable */
   else if (g_create) { ui_fill_rect(0, 0, 50, 9, UI_OK);   ui_text(12, 1, UI_PANEL, "NEW"); } /* not saved yet */
   else               ui_text(4, 2, UI_DIM, "VIEW");
-  draw_dots(150, 2, NCARDS, card);
+  pdna_summary_draw_dots(150, 2, NCARDS, card);
   ui_hline(0, 10, UI_SCR_W, UI_BORDER);
   bool dl_ran = draw_left_conditional(p);
   ui_hline(98, 24, 100, UI_TITLE);          /* header accent rule under each card title */
@@ -1066,7 +1074,7 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
   /* A fresh session must never trust draw_left_conditional's snapshot from whatever
    * screen (box, another mon's summary) was on-screen before this call. */
   pd_summary_left_dirty();
-  sel_frame_drop();          /* likewise: whatever s_self_px held belonged to that screen */
+  pdna_summary_sel_frame_drop();   /* likewise: whatever s_self_px held belonged to that screen */
 
   for (;;) {
     g_edit = editing;
@@ -1085,15 +1093,15 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
       dl_ran  = render_card(&cur, card);
       painted = true;
       card_paint_store(&pv, &cur, card);
-      sel_frame_drop();     /* summary_bg just painted over the outline AND its under-pixels */
+      pdna_summary_sel_frame_drop();  /* summary_bg just painted over the outline AND its under-pixels */
       p_spr_ok = false;     /* ...and type_badge/draw_left decoded into mon_decomp */
       ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     }
     if (editing && g_nslot) {
       if (fsel >= g_nslot) fsel = g_nslot - 1;
-      sel_frame_set(g_slot[fsel].x, g_slot[fsel].y, g_slot[fsel].w);
+      pdna_summary_sel_frame_set(g_slot[fsel].x, g_slot[fsel].y, g_slot[fsel].w);
     } else {
-      sel_frame_hide();
+      pdna_summary_sel_frame_hide();
     }
     const char* foot =
         (editing && g_nslot && g_slot[fsel].field == F_SUM_REROLL) ? PDNA_SUM_FOOT_REROLL
