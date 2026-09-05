@@ -248,6 +248,9 @@ static void draw_header(BgFrame bg, const BagLayout* L, int pocket) {
 #define BAG_CUR_DX   2                            /* cursor '>' x offset from list_x0 */
 #define BAG_CUR_W    7                            /* cursor column erase width        */
 #define BAG_NAME_DX  9                            /* name column x offset (draw_list's nx) */
+/* The sys8 '>' glyph inks cell columns 1..6 (libtonc sys8Glyphs[30] = 00 06 18 60 18 06 00 00),
+ * so an erase narrower than 7 would leave its ink behind when the cursor moves. */
+_Static_assert(BAG_CUR_W >= 7, "the cursor erase must cover the '>' glyph's ink (columns 1..6)");
 _Static_assert(BAG_CUR_DX + BAG_CUR_W <= BAG_NAME_DX,
               "bag cursor erase rect must not reach the item-name column");
 
@@ -284,7 +287,7 @@ static void draw_list(BgFrame bg, const BagLayout* L, const uint8_t* sb1,
       ui_ptext_fit(nx, y, right - nx, BINK, nm);
     } else ui_ptext(nx, y, BDIM, "-");
   }
-  ui_text(L->list_x0 + 2, L->list_y0 + 1 + (sel - top) * 9, BCUR, ">");
+  ui_text(L->list_x0 + BAG_CUR_DX, L->list_y0 + 1 + (sel - top) * 9, BCUR, ">");
 }
 
 /* ---- description pane: word-wrap + AUTO-PAGING (BACKLOG 12d) --------------
