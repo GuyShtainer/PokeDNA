@@ -103,7 +103,10 @@ static void test_escape(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * prev/next are symmetric at every glyph boundary of a mixed string. */
+ * prev/next are symmetric at every glyph boundary of a mixed string. Each
+ * comparison is its own CHECK (with the byte offsets in its label) rather than
+ * one aggregate pass/fail, so a future regression names exactly which boundary
+ * broke instead of just "symmetry failed somewhere". */
 static void test_symmetry(void) {
   printf("\n== prev/next symmetry over a mixed ASCII/UTF-8/escape string ==\n");
   const char s[] = "P\xC3\xA9K{5D}\xE2\x99\x80X";  /* P, e-acute, K, {5D}, female sign, X */
@@ -112,14 +115,16 @@ static void test_symmetry(void) {
   for (int i = 0; i <= n; ) { bounds[nb++] = i; if (i >= n) break; i = u8w_next(s, i); }
   expect_int("6 glyphs in the mixed string", nb - 1, 6);
 
-  int all_ok = 1;
   for (int k = 1; k < nb; k++) {
-    if (u8w_prev(s, bounds[k]) != bounds[k - 1]) all_ok = 0;
+    char what[64];
+    snprintf(what, sizeof what, "u8w_prev(%d)==%d (glyph %d start)", bounds[k], bounds[k - 1], k - 1);
+    expect_int(what, u8w_prev(s, bounds[k]), bounds[k - 1]);
   }
   for (int k = 0; k < nb - 1; k++) {
-    if (u8w_next(s, bounds[k]) != bounds[k + 1]) all_ok = 0;
+    char what[64];
+    snprintf(what, sizeof what, "u8w_next(%d)==%d (glyph %d end)", bounds[k], bounds[k + 1], k);
+    expect_int(what, u8w_next(s, bounds[k]), bounds[k + 1]);
   }
-  expect_true("u8w_prev(next(i))==i and u8w_next(prev(j))==j at every boundary", all_ok);
 }
 
 /* ---------------------------------------------------------------------------
@@ -195,6 +200,183 @@ static void test_copy_capped(void) {
   expect_int("cap==1 writes zero content bytes", n4, 0);
 }
 
+/* True if byte offset `p` is a boundary a forward walk from 0 would visit. */
+static int on_boundary(const char* s, int p) {
+  int i = 0;
+  int guard = (int)strlen(s) + 2;
+  while (guard-- > 0) {
+    if (i == p) return 1;
+    if (!s[i]) return 0;
+    i = u8w_next(s, i);
+  }
+  return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * u8w_prev / u8w_delete_before on MALFORMED input: reviewer-supplied repros.
+ * Neither "{5AD}" (three characters between braces, not the two-hex escape
+ * gb_name_decode ever emits) nor a bare 0xC3 lead byte followed by a stray
+ * continuation byte (never produced by gen3_decode_char, gb_name_decode, or
+ * FatFs's UTF-8 LFN decode -- and the OSK's own key grid has no '{', '}', or
+ * non-ASCII key to type one by hand) can occur from any real producer in this
+ * tree, so this pins the DOCUMENTED behaviour (in bounds, no crash, forward
+ * progress, but NOT necessarily caret-on-boundary of the shortened string --
+ * see utf8_walk.h) rather than a stronger invariant nothing here can promise. */
+static void test_malformed_prev(void) {
+  printf("\n== u8w_prev/u8w_delete_before on malformed input (documented, not crash) ==\n");
+
+  /* "{5AD}" is NOT a real escape (3 chars between the braces) -- is_escape_at
+   * requires exactly 2 -- so it walks as 5 separate ASCII glyphs. Deleting the
+   * 'A' (byte 2) leaves "{5D}", which NOW parses as one real escape glyph, so
+   * the caret this hands back (byte 2) lands mid-glyph of the new string. */
+  char a[8] = "{5AD}";
+  int nl_a, start_a = u8w_delete_before(a, 5, 3, &nl_a);
+  expect_true("delete-before succeeds (in range, no refusal)", start_a >= 0);
+  expect_int("caret lands at byte 2 (where 'A' was)", start_a, 2);
+  expect_int("new length is 4", nl_a, 4);
+  expect_str("bytes become the real escape \"{5D}\"", a, "{5D}");
+  expect_true("DOCUMENTED gap: caret 2 is NOT a boundary of \"{5D}\" (escape now spans 0..4)",
+              !on_boundary(a, start_a));
+
+  /* 0xC3 (an orphaned 2-byte UTF-8 lead, no valid continuation follows it) then
+   * 'A' then 0xA9 (a stray continuation byte on its own). Deleting the 'A'
+   * (byte 1) leaves { 0xC3, 0xA9 }, which is a well-formed e-acute, so the
+   * caret (byte 1) lands mid-glyph of the new string. */
+  char b[8]; memcpy(b, "\xC3\x41\xA9", 4);   /* incl. the NUL memcpy's 4th byte copies */
+  int nl_b, start_b = u8w_delete_before(b, 3, 2, &nl_b);
+  expect_true("delete-before succeeds (in range, no refusal)", start_b >= 0);
+  expect_int("caret lands at byte 1 (where 'A' was)", start_b, 1);
+  expect_int("new length is 2", nl_b, 2);
+  expect_true("bytes become the well-formed e-acute C3 A9",
+              (unsigned char)b[0] == 0xC3 && (unsigned char)b[1] == 0xA9 && b[2] == 0);
+  expect_true("DOCUMENTED gap: caret 1 is NOT a boundary of the merged e-acute",
+              !on_boundary(b, start_b));
+
+  /* Whatever u8w_prev/u8w_delete_before return here, they must still be IN
+   * BOUNDS and terminate -- the one guarantee that DOES hold unconditionally. */
+  expect_true("start_a in [0, nl_a]", start_a >= 0 && start_a <= nl_a);
+  expect_true("start_b in [0, nl_b]", start_b >= 0 && start_b <= nl_b);
+}
+
+/* ---------------------------------------------------------------------------
+ * u8w_insert_byte with cap != sizeof(buf) -- osk.c's own calling convention
+ * after the review fix (osk_core passes `icap`, the tighter of buf's real
+ * storage and the caller's `cap`, which is very often smaller than buf's
+ * actual stack allocation). */
+static void test_insert_cap_mismatch(void) {
+  printf("\n== u8w_insert_byte / u8w_copy_capped with cap < sizeof(buf) (osk.c's own case) ==\n");
+
+  /* buf has room for 16 bytes, but the caller's field only allows a cap of 6
+   * (e.g. an 8-byte OT-name-style field passed down as `icap`): insertion must
+   * stop at cap-1 = 5 content bytes even though buf itself has far more room. */
+  char buf[16]; memset(buf, 0xAA, sizeof buf); buf[0] = 0;
+  int cap = 6, len = 0;
+  for (int i = 0; i < 10; i++) {
+    int nl = u8w_insert_byte(buf, len, cap, len, (char)('A' + i));
+    if (nl < 0) break;
+    len = nl;
+  }
+  expect_int("stopped at cap-1 bytes despite buf holding 16", len, cap - 1);
+  expect_int("strlen agrees", (int)strlen(buf), cap - 1);
+  expect_true("bytes past the cap in buf's own storage are untouched",
+              (unsigned char)buf[cap] == 0xAA);
+
+  /* A multi-byte glyph that lands EXACTLY at cap-1 must be KEPT WHOLE by
+   * u8w_copy_capped, not dropped the way a glyph that overruns the cap is
+   * (test_copy_capped covers the overrun case; this is the exact-fit case). */
+  const char src[] = "AB\xE2\x99\x82";              /* "AB" + male sign, 5 bytes total */
+  char out[8];
+  int n = u8w_copy_capped(out, (int)sizeof(src), src);   /* cap-1 == strlen(src) exactly */
+  expect_str("glyph landing exactly at cap-1 is kept whole", out, src);
+  expect_int("all 5 bytes copied", n, 5);
+}
+
+/* ---------------------------------------------------------------------------
+ * osk_core-level: the pure edit loop (seed / A-insert / B-delete / L-R-caret /
+ * commit) via u8w_apply_key + u8w_copy_capped -- the SAME functions osk.c calls,
+ * so this is not a second copy of osk.c's dispatch that could drift from it. */
+static void test_edit_loop_seed_commit(void) {
+  printf("\n== edit loop: seed -> commit with NO edits returns identical bytes ==\n");
+  const char* seeds[] = {
+    "PIKACHU",                    /* plain ASCII (Gen-3 path)            */
+    "caf\xC3\xA9",                /* e-acute                             */
+    "NIDORAN\xE2\x99\x82",        /* male sign                           */
+    "PIKA{5D}",                   /* hex escape                          */
+    "P{8A}",                      /* gb_edit.h's own <PK>-merge example: 'P' next to */
+                                   /* the escaped byte that would otherwise read "PK" */
+  };
+  for (size_t s = 0; s < sizeof(seeds) / sizeof(seeds[0]); s++) {
+    char buf[64];
+    int len = u8w_copy_capped(buf, (int)sizeof buf, seeds[s]);
+    char out[48];
+    u8w_copy_capped(out, (int)sizeof out, buf);
+    char what[80];
+    snprintf(what, sizeof what, "seed \"%s\" survives an untouched commit", seeds[s]);
+    expect_str(what, out, seeds[s]);
+    (void)len;
+  }
+}
+
+/* Tiny deterministic LCG so the 1000-step sequence is reproducible run to run
+ * (a real failure must be re-diagnosable from the printed step number alone). */
+static unsigned rnd_next(unsigned long* state) {
+  *state = *state * 1103515245u + 12345u;
+  return (unsigned)(*state >> 8);
+}
+
+static void test_edit_loop_random(void) {
+  printf("\n== edit loop: caret stays on a glyph boundary over 1000 random A/B/L/R ==\n");
+  static const char kb[] =
+    "1234567890qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM -.,'!?";
+  unsigned long rs = 0xC0FFEEu;
+
+  int seed_all_ok = 1, len_ok = 1, range_ok = 1, boundary_ok = 1;
+  int first_bad_step = -1;
+  const int OSK_MAXLEN = 63, cap = 48;
+
+  for (int run = 0; run < 5; run++) {
+    /* Build a WELL-FORMED seed the way gb_name_decode actually would (ASCII,
+     * e-acute, male/female sign, or a hex escape -- never a bare lead byte or
+     * a lone continuation byte), matching what the OSK will really see. */
+    char buf[64]; int len = 0;
+    while (len < 40) {
+      unsigned r = rnd_next(&rs) % 100; char g[4]; int n;
+      if (r < 55) { g[0] = kb[rnd_next(&rs) % (sizeof kb - 1)]; n = 1; }
+      else if (r < 70) { memcpy(g, "\xC3\xA9", 2); n = 2; }
+      else if (r < 85) { memcpy(g, (rnd_next(&rs) & 1) ? "\xE2\x99\x80" : "\xE2\x99\x82", 3); n = 3; }
+      else { const char* h = "0123456789ABCDEF";
+             g[0] = '{'; g[1] = h[rnd_next(&rs) % 16]; g[2] = h[rnd_next(&rs) % 16]; g[3] = '}'; n = 4; }
+      if (len + n > 40) break;
+      memcpy(buf + len, g, (size_t)n); len += n;
+      if (rnd_next(&rs) % 100 < 15) break;
+    }
+    buf[len] = 0;
+    if (!on_boundary(buf, len)) seed_all_ok = 0;
+
+    int cpos = len;
+    for (int step = 0; step < 1000; step++) {
+      unsigned op = rnd_next(&rs) % 4;
+      char c = kb[rnd_next(&rs) % (sizeof kb - 1)];
+      U8wOp ops[4] = { U8W_OP_INSERT, U8W_OP_DELETE, U8W_OP_LEFT, U8W_OP_RIGHT };
+      u8w_apply_key(buf, &len, &cpos, OSK_MAXLEN, cap, ops[op], c);
+      if ((int)strlen(buf) != len) { len_ok = 0; if (first_bad_step < 0) first_bad_step = step; }
+      if (cpos < 0 || cpos > len) { range_ok = 0; if (first_bad_step < 0) first_bad_step = step; }
+      if (!on_boundary(buf, cpos)) { boundary_ok = 0; if (first_bad_step < 0) first_bad_step = step; }
+    }
+  }
+
+  expect_true("every random seed parses as whole glyphs", seed_all_ok);
+  expect_true("strlen(buf) tracks `len` after every step", len_ok);
+  expect_true("cpos stays in [0, len] after every step", range_ok);
+  if (!boundary_ok) {
+    char what[96];
+    snprintf(what, sizeof what, "caret on a glyph boundary after every step (first break: step %d)", first_bad_step);
+    expect_true(what, boundary_ok);
+  } else {
+    expect_true("caret on a glyph boundary after every one of 5x1000 steps", boundary_ok);
+  }
+}
+
 int main(void) {
   test_ascii();
   test_utf8();
@@ -202,6 +384,10 @@ int main(void) {
   test_symmetry();
   test_edit_ops();
   test_copy_capped();
+  test_malformed_prev();
+  test_insert_cap_mismatch();
+  test_edit_loop_seed_commit();
+  test_edit_loop_random();
 
   printf("\n%d/%d checks passed\n", checks - fails, checks);
   return fails ? 1 : 0;
