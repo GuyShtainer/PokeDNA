@@ -211,7 +211,10 @@ static void check_structure(const PkMon* m, const Pk2Facts* f, Pk2Report* R) {
    * it normally). Colosseum/XD share pokeemerald's mon-creation code but run it on
    * different hardware we have not bit-verified, so that origin is SUSPECT instead
    * of INVALID — everywhere else the formula is unconditional. */
-  if (m->isParty) {
+  /* Party EGGS are exempt (review 2026-09-05): the corpus has no party egg to calibrate on,
+   * and retail's daycare path stores stats from the PRE-inheritance IVs (CreateEgg ->
+   * CreateMon, then InheritIVs), which CreateHatchedMon only fixes at hatch. */
+  if (m->isParty && !m->isEgg) {
     uint8_t base[6];
     pk_base_stats(m->species, base);
     uint8_t sev = f->is_gc ? PK2_SUSPECT : PK2_INVALID;
@@ -282,7 +285,9 @@ static void check_met(const PkMon* m, const Pk2Facts* f, Pk2Report* R) {
                         m->metLocation == MAPSEC_SAFARI_FRLG);
     if (m->pokeball == G3_BALL_SAFARI && !met_safari)
       pk2_add(R, PK2_CAT_MET, PK2_INVALID, "Safari Ball outside a Safari Zone");
-    else if (met_safari && m->pokeball != G3_BALL_SAFARI)
+    /* A HATCHED mon is always in a Poke Ball and takes the met place where the player
+     * stood (egg_hatch.c:388-389) -- a Ruby Skitty hatched inside the Safari Zone is real. */
+    else if (met_safari && m->pokeball != G3_BALL_SAFARI && !f->is_hatched)
       pk2_add(R, PK2_CAT_MET, PK2_SUSPECT, "Safari Zone catch, wrong Ball");
   }
 }
