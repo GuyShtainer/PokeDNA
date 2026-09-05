@@ -563,6 +563,11 @@
  * nickname goes through -- so it never itself needs the cut. */
 #define PDNA_GBEDIT_RELEASE_FALLBACK  "this Pokemon"
 
+/* BACKLOG review (post-#40(c)): gb_move_hook's own refusals reused
+ * PDNA_GBEDIT_REFUSED_TITLE ("EDIT REFUSED"), same mismatch #40(c) fixed for PASTE — a
+ * MOVE TO was never an edit either. Same (28, 184) proportional clamp. */
+#define PDNA_GBEDIT_MOVE_REFUSED_TITLE "MOVE REFUSED"
+
 /* gb_move_hook's per-status hints, shown as msg_wait's second line alongside
  * gbs_status_text(st) as the first -- 184px proportional, same clamp. */
 #define PDNA_GBEDIT_MOVE_NEEDSBASE_L2 "Gen 1: withdraw it in-game instead."
@@ -612,7 +617,12 @@
 #define PDNA_GBSUM_CARD_MOVES  "MOVES"
 #define PDNA_GBSUM_FOOT_VIEW    "A edit  U/D mon  L/R card  B"
 #define PDNA_GBSUM_FOOT_VIEW_RO "U/D mon  L/R card  B back"
-#define PDNA_GBSUM_FOOT_EDIT    "<>edit A:ok L/R SEL:list B"
+/* U/D = move the field cursor, <>edit = LEFT/RIGHT adjusts it, A:ok = press (osk/picker/
+ * jump-to-extreme), L/R card = flip card, B = back to VIEW (NOT leave the screen — the
+ * screen's own B-in-VIEW does that). 26 cols (208 px) at x=4, comfortably inside 240.
+ * SELECT (drop to the flat field-list editor, pdna_gbedit.c) does not fit alongside all
+ * of the above within budget — documented in pdna_gbsummary.h instead of the footer. */
+#define PDNA_GBSUM_FOOT_EDIT    "U/D <>edit A:ok L/R card B"
 
 /* Card 0 (INFO) row labels not already covered by gb_editor.c's own LABEL[] table
  * (gbe_label_of) — species/type/status/sex/shiny/pokerus/EXP are display-only, so
@@ -621,8 +631,10 @@
  * PDNA_EDIT_LBL_W (112 px) — see gbe_label_of's own "Friendship" (10 cols/80 px),
  * already proven to fit the same column by pdna_gbedit's own screen. */
 #define PDNA_GBSUM_LBL_SPECIES "Species"
+/* Shared by both generations — Gen 1's raw type bytes are mapped onto Gen 3's own
+ * numbering (source/pdna_gbsummary.c g1_to_g3_type()) so both draw a real ui_type_chip,
+ * not a "T14"-style raw id. */
 #define PDNA_GBSUM_LBL_TYPE    "Type"
-#define PDNA_GBSUM_LBL_G1TYPE  "G1 Type"     /* Gen 1: the STORED type bytes, not a name table */
 #define PDNA_GBSUM_LBL_STATUS  "Status"      /* Gen 1 only (Gen 2's status_screen row has no
                                               * Gen-2 equivalent this tree can read — see
                                               * gb_edit.h, no Gen-2 status getter exists) */
@@ -687,7 +699,10 @@
 #define PDNA_GBSUM_PPROW_X      18             /* indented under the move name        */
 #define PDNA_GBSUM_PP_LBL       "PP"
 #define PDNA_GBSUM_PP_VAL_X     40
-#define PDNA_GBSUM_UPS_LBL      "Ups"
+/* "Max", not "Ups": gbe_value(GBE_PPU0+i) (gb_editor.c) returns "<max>  Ups <n>" — the
+ * FIRST number in that column is the derived max PP, and the row used to read
+ * "Ups 35  Ups 0" with both halves labelled the same word. */
+#define PDNA_GBSUM_UPS_LBL      "Max"
 #define PDNA_GBSUM_UPS_LBL_X    96
 #define PDNA_GBSUM_UPS_VAL_X   128
 
