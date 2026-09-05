@@ -443,9 +443,18 @@ delta:                 # emulator build (Delta / RetroArch): edits its OWN 128 K
 # it was before — that is the entire point. Composes with 'delta'/'sd' above; this is the
 # cleanest spelling: bare 'artless' for the hardware/NOR case (the one Guy actually asked
 # for), '<target>-artless' for the others.
+# NAMING NOTE (review finding, 2026-09-05): PROJ itself is wrong here -- the TOP-level
+# `make artless` invocation never sets PDNA_ARTLESS (only the recursive `$(MAKE)
+# PDNA_ARTLESS=1 rebuild` below does), so THIS make's own $(PROJ) resolves to the
+# full-art name ("PokeDNA"), not the artless one actually produced by the recursive
+# build. PDNA_PERF, by contrast, IS visible here (it's a command-line variable that
+# propagates to every recursive $(MAKE) automatically, and `make artless
+# PDNA_PERF=0` is real usage -- 'noperf' variant docs above), so the basename is
+# rebuilt by hand from the same pieces PROJ's own definition uses, mirroring
+# PDNA_ARTLESS=1 explicitly instead of trusting the (wrong, here) $(PROJ).
 artless:               # hardware build WITHOUT the generated/git-ignored art -> PokeDNA-artless.gba
 	@$(MAKE) PDNA_ARTLESS=1 rebuild
-	@./tools/check_no_desc_text.sh PokeDNA-artless
+	@./tools/check_no_desc_text.sh PokeDNA-artless$(if $(filter 0,$(PDNA_PERF)),-noperf,)
 	@echo ""
 	@echo "  PokeDNA-artless.gba built — weak fallbacks in source/art_fallbacks.c (+ the"
 	@echo "  PDNA_*_ART_COMPILED / PDNA_NO_DAYCARE_BG gates) stand in for every generated"
@@ -455,13 +464,13 @@ artless:               # hardware build WITHOUT the generated/git-ignored art ->
 
 delta-artless:         # emulator build, no compiled art (composes 'delta' + 'artless')
 	@$(MAKE) PDNA_TARGET=delta PDNA_ARTLESS=1 rebuild
-	@./tools/check_no_desc_text.sh pokedna-delta-artless
+	@./tools/check_no_desc_text.sh pokedna-delta-artless$(if $(filter 0,$(PDNA_PERF)),-noperf,)
 	@echo ""
 	@echo "  pokedna-delta-artless.gba built. Same save rules as 'delta' above."
 
 sd-artless:            # SD-streaming build, no compiled art (composes 'sd' + 'artless')
 	@$(MAKE) PDNA_TARGET=sd PDNA_ARTLESS=1 rebuild
-	@./tools/check_no_desc_text.sh PokeDNA-SD-artless
+	@./tools/check_no_desc_text.sh PokeDNA-SD-artless$(if $(filter 0,$(PDNA_PERF)),-noperf,)
 	@echo ""
 	@echo "  PokeDNA-SD-artless.gba built."
 

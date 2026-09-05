@@ -5,12 +5,19 @@
 # this script verifies actually held). Same spirit as the EWRAM-usage guard: a build
 # that silently regresses on this is worse than one that fails loudly.
 #
+# GUARD INTEGRITY (review finding, 2026-09-05): a script that inspects NOTHING must
+# never report OK. Earlier versions treated a missing .gba/.elf as "skip" (exit 0)
+# and let a missing arm-none-eabi-nm make the symbol check silently vacuous
+# (`cmd 2>/dev/null | grep -c` -> 0 hits when `cmd` itself doesn't exist). Both are
+# now hard failures with their own message -- "the check didn't run" is never the
+# same as "the check ran and passed".
+#
 # Usage: tools/check_no_desc_text.sh <PROJ-basename>
 #   e.g. tools/check_no_desc_text.sh PokeDNA-artless
 # Checks <basename>.gba (three verbatim Game Freak sentences, via `strings`) and
 # <basename>.elf (the three description arrays' own symbols, via `arm-none-eabi-nm`)
 # in the current directory. Exits non-zero -- failing the calling `make` recipe -- the
-# moment either check finds a hit.
+# moment either check finds a hit, is missing its input, or is missing its own tool.
 set -euo pipefail
 
 BASE="${1:?usage: check_no_desc_text.sh <PROJ-basename>}"
@@ -37,17 +44,22 @@ if [ -f "$GBA" ]; then
     fi
   done
 else
-  echo "*** check_no_desc_text.sh: $GBA not found -- skipping the strings check" >&2
+  echo "*** FATAL: $GBA not found -- the strings check did NOT run, so this is not a pass" >&2
+  fail=1
 fi
 
-if [ -f "$ELF" ]; then
-  n=$(arm-none-eabi-nm "$ELF" 2>/dev/null | grep -c -E 's_itemdesc|s_mvdesc|s_abilitydesc' || true)
+if ! command -v arm-none-eabi-nm >/dev/null 2>&1; then
+  echo "*** FATAL: arm-none-eabi-nm not on PATH -- the symbol check did NOT run, so this is not a pass" >&2
+  fail=1
+elif [ -f "$ELF" ]; then
+  n=$(arm-none-eabi-nm "$ELF" | grep -c -E 's_itemdesc|s_mvdesc|s_abilitydesc' || true)
   if [ "$n" -gt 0 ]; then
     echo "*** FATAL: $ELF still links s_itemdesc/s_mvdesc/s_abilitydesc ($n symbol(s))"
     fail=1
   fi
 else
-  echo "*** check_no_desc_text.sh: $ELF not found -- skipping the nm check" >&2
+  echo "*** FATAL: $ELF not found -- the symbol check did NOT run, so this is not a pass" >&2
+  fail=1
 fi
 
 if [ "$fail" -ne 0 ]; then
