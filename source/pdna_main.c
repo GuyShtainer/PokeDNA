@@ -3574,16 +3574,26 @@ bool app_src_paste_offered(void) {
  * that one row + CANCEL. See pdna_app.h's AppSrcOps.paste for what the row does. */
 static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, bool empty) {
   const char* locked = (!empty && g_src_why) ? g_src_why(rec) : 0;
-  enum { RO_VIEW, RO_EDIT, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CANCEL };
+  enum { RO_VIEW, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CANCEL };
   int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
   if (empty) {
     lab[n] = PDNA_LBL_PASTE_GB; act[n++] = RO_PASTE;
   } else {
-    lab[n] = PDNA_LBL_VIEW;     act[n++] = RO_VIEW;
-    /* EDIT / MOVE TO / RELEASE are the GB session's own in-place pipeline
-     * (pdna_gen12.c), never the Gen-3 one: each edits the Game Boy record by address,
-     * never the converted copy this menu was handed. */
-    if (g_src_ops && g_src_ops->edit)    { lab[n] = PDNA_LBL_EDIT_GB;   act[n++] = RO_EDIT; }
+    /* Gen-3 parity (Guy, 2026-09-05: "make sure the pokemon edit is in the summary for
+     * gen 1 and 2 like gen 3"): the Gen-3 mon menu has ONE row, PDNA_LBL_VIEW_EDIT, that
+     * opens the editable summary in VIEW (A inside it enters edit). This row now does the
+     * same: RO_VIEW's own handler already calls g_src_ops->view (gb_view_hook), which
+     * opens pdna_gbsummary with can_edit = app_can_edit() && the box is writable -- so
+     * relabelling it costs nothing, there is no separate EDIT action to wire. The old
+     * standalone EDIT row (g_src_ops->edit / gb_edit_hook, straight into edit mode) is
+     * gone: it is the only caller g_src_ops->edit had (grepped), so nothing else reaches
+     * it now, but the hook itself is left in place (AppSrcOps.edit / gb_edit_hook) rather
+     * than torn out of the shared source-ops contract for a label change. */
+    bool editable = g_src_ops && g_src_ops->edit && app_can_edit();
+    lab[n] = editable ? PDNA_LBL_VIEW_EDIT : PDNA_LBL_VIEW; act[n++] = RO_VIEW;
+    /* MOVE TO / RELEASE are the GB session's own in-place pipeline (pdna_gen12.c), never
+     * the Gen-3 one: each edits the Game Boy record by address, never the converted copy
+     * this menu was handed. */
     if (g_src_ops && g_src_ops->move)    { lab[n] = PDNA_LBL_MOVE_TO;   act[n++] = RO_MOVE; }
     if (g_src_ops && g_src_ops->release) { lab[n] = PDNA_LBL_RELEASE;   act[n++] = RO_RELEASE; }
     lab[n] = PDNA_LBL_LEGALITY; act[n++] = RO_LEGAL;
@@ -3638,7 +3648,6 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
           if (g_src_ops && g_src_ops->view) { g_src_ops->view(rec); return false; }
           { uint8_t d[100]; int card = 0;
             pdna_inspect(rec, is_party, false, d, 0, &card); return false; }
-        case RO_EDIT:    return (g_src_ops && g_src_ops->edit)    ? g_src_ops->edit(rec)    : false;
         case RO_MOVE:    return (g_src_ops && g_src_ops->move)    ? g_src_ops->move(rec)    : false;
         case RO_RELEASE: return (g_src_ops && g_src_ops->release) ? g_src_ops->release(rec) : false;
         case RO_LEGAL: pdna_legality_show(m0); return false;

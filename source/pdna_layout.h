@@ -130,8 +130,7 @@
 #define PDNA_LBL_CREATE      "CREATE"
 #define PDNA_LBL_PASTE_HERE  "PASTE HERE"
 #define PDNA_LBL_CANCEL      "CANCEL"
-#define PDNA_LBL_VIEW        "VIEW"           /* read-only popup only */
-#define PDNA_LBL_EDIT_GB     "EDIT"           /* read-only popup, GB session only */
+#define PDNA_LBL_VIEW        "VIEW"           /* read-only popup only, source not editable */
 #define PDNA_LBL_MOVE_TO     "MOVE TO"        /* read-only popup, GB session S3 only */
 #define PDNA_LBL_PASTE_GB    "PASTE (GB)"     /* read-only popup, empty GB cell, S5-B */
 
@@ -143,11 +142,14 @@
   X(PDNA_LBL_DUPLICATE) X(PDNA_LBL_TO_DAYCARE) X(PDNA_LBL_TO_GAME)                    \
   X(PDNA_LBL_EXPORT_PK) X(PDNA_LBL_TAKE_ITEM) X(PDNA_LBL_GIVE_ITEM)                   \
   X(PDNA_LBL_RELEASE) X(PDNA_LBL_CREATE) X(PDNA_LBL_PASTE_HERE) X(PDNA_LBL_CANCEL)    \
-  X(PDNA_LBL_VIEW) X(PDNA_LBL_EDIT_GB) X(PDNA_LBL_MOVE_TO) X(PDNA_LBL_PASTE_GB)
+  X(PDNA_LBL_VIEW) X(PDNA_LBL_MOVE_TO) X(PDNA_LBL_PASTE_GB)
 
 /* Read-only source popup: the header grows by one line per explanatory line above the
  * rows (the source's note, and the per-record "why this one is locked"). */
-#define PDNA_ROMENU_MAX       7               /* VIEW, EDIT?, MOVE TO?, RELEASE?, LEGALITY, COPY?, CANCEL */
+#define PDNA_ROMENU_MAX       6               /* VIEW/EDIT, MOVE TO?, RELEASE?, LEGALITY, COPY?, CANCEL --
+                                                * one row dropped 2026-09-05 (BACKLOG #41 follow-up): VIEW
+                                                * and EDIT merged into one row, matching the Gen-3 menu's
+                                                * own PDNA_LBL_VIEW_EDIT row. */
 #define PDNA_ROMENU_HDR       15              /* title only                           */
 #define PDNA_ROMENU_LINE      10              /* each optional prose line             */
 #define PDNA_ROMENU_HEAD_PAD   3              /* divider -> first row                 */
