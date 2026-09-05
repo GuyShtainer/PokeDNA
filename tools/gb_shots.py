@@ -80,6 +80,7 @@ class Session:
         self.prefix = prefix
         self.taken = []     # (filename, caption)
         self.skipped = []   # (label, reason)
+        self._last_shot = None    # (name, raw RGB bytes) -- for the consecutive-differ check
         self.run(180)       # let the boot screen (info page) fully settle
 
     def run(self, n: int) -> None:
@@ -109,6 +110,26 @@ class Session:
             self.run(settle)
         img = self.screen.to_pil().convert("RGB")
         path = self.out_dir / f"{self.prefix}{name}.png"
+
+        # Fail LOUDLY here rather than write a plausible-but-wrong PNG a human has to
+        # catch by eye later (exactly the class of bug the DV-edit and MOVE-TO/RELEASE
+        # navigation mistakes earlier in this script's own history were: a tap silently
+        # not landing, leaving the emulator on the previous screen).
+        lo, hi = img.convert("L").getextrema()
+        if lo == hi:
+            raise RuntimeError(
+                f"{self.prefix}{name}: captured frame is a single flat colour "
+                f"(value {lo}) -- the emulator is very unlikely to be showing a real "
+                f"screen; a settle/press was probably too short or landed mid-transition.")
+        raw = img.tobytes()
+        if self._last_shot is not None and raw == self._last_shot[1]:
+            raise RuntimeError(
+                f"{self.prefix}{name}: pixel-identical to the previous shot "
+                f"({self._last_shot[0]}) -- the tap(s) between them had no visible "
+                f"effect, so this is very likely the same screen twice, not two "
+                f"different ones (see this file's own DOWN,DOWN chord-vs-sequence bug).")
+        self._last_shot = (name, raw)
+
         img.save(path)
         self.taken.append((path.name, caption))
         print(f"  [ok]   {path.name:32s} {caption}")

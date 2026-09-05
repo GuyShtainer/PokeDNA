@@ -57,7 +57,13 @@ def main(argv=None) -> int:
     if not manifest_path.is_file():
         sys.exit(f"{manifest_path}: missing — run tools/gb_shots.py first")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    shots = manifest["shots"]
+    # gb_shots.py's manifest is in CAPTURE order, not narrative order -- run_gold()
+    # visits MOVE TO (07) and RELEASE (08) before it visits the editor (04/05/06),
+    # since parking on Bulbasaur once and walking the mon menu twice is cheaper than
+    # re-opening it three times in narrative order. Sort by filename (which carries
+    # the narrative numbers) so the sheet reads S1 -> S2 -> S2b -> S3 -> S5-B, not the
+    # order the emulator happened to visit them in.
+    shots = sorted(manifest["shots"], key=lambda e: e["file"])
     if not shots:
         sys.exit("manifest has zero shots — nothing to composite")
 
