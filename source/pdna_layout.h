@@ -571,6 +571,11 @@
 /* NOT "That box is full." -- gbs_status_text(GBS_ERR_FULL) already says exactly that as
  * msg_wait's L1, so an L2 repeating it would tell the player nothing new. */
 #define PDNA_GBEDIT_MOVE_FULL_L2      "Free a slot there first."
+/* BACKLOG #40(d): gbs_status_text(GBS_ERR_FULL) says "that box is full" -- correct for
+ * a storage box, but read backwards for the party pseudo-box (a "box" a player has
+ * never once called one). gb_move_hook substitutes this as msg_wait's L1 specifically
+ * when the destination gb_box_is_party(). */
+#define PDNA_GBEDIT_MOVE_PARTYFULL_L1 "The party is full."
 
 /* gb_pick_box's full-screen destination list -- same fixed sys8 layout as
  * gb_report_page/gb_info_page (title at x=4,y=3; footer at x=4,y=150; both 8px/glyph). */
@@ -585,6 +590,106 @@
  * pick, so no destination list is drawn at all. */
 #define PDNA_GBEDIT_PICKBOX_NONE_TITLE "NO DESTINATION"
 #define PDNA_GBEDIT_PICKBOX_NONE_L1    "No other box can be written to."
+
+/* ---------------------------------------------------------------------------
+ * BACKLOG #41 (Guy, 2026-09-05): source/pdna_gbsummary.c, the Gen-1/2 twin of
+ * pdna_summary.c's pdna_inspect() — "the edit page for gen 2 and 1 should feel the
+ * same as gen 3 ... we edit within the summary page". Three cards styled after the
+ * retail Gen-1/2 summary screens (pokered/engine/pokemon/status_screen.asm,
+ * pokecrystal/engine/pokemon/stats_screen.asm — field ORDER only, clean-room, no
+ * ripped art). Fixed sys8 throughout (ui_text, 8 px/glyph — the same convention
+ * pdna_gbedit.c's own flat list uses), so every literal here is checked by counting
+ * columns rather than measuring proportional pixels; per-record VALUES (a species
+ * name, gbe_value's own formatted numbers) are ui_truncate'd to a column width and
+ * stay out of host_textfit_test.c by that file's own header rule ("built from data
+ * the host cannot see"). PDNA_EDIT_LBL_X/VAL_X (6/118, above) are reused as-is for
+ * every single-field row so a label already proven to fit there does not need its
+ * own new check. */
+#define PDNA_GBSUM_VIEW_CHIP   "VIEW"
+#define PDNA_GBSUM_EDIT_CHIP   "EDIT"
+#define PDNA_GBSUM_CARD_INFO   "INFO"
+#define PDNA_GBSUM_CARD_STATS  "STATS"
+#define PDNA_GBSUM_CARD_MOVES  "MOVES"
+#define PDNA_GBSUM_FOOT_VIEW    "A edit  U/D mon  L/R card  B"
+#define PDNA_GBSUM_FOOT_VIEW_RO "U/D mon  L/R card  B back"
+#define PDNA_GBSUM_FOOT_EDIT    "<>edit A:ok L/R SEL:list B"
+
+/* Card 0 (INFO) row labels not already covered by gb_editor.c's own LABEL[] table
+ * (gbe_label_of) — species/type/status/sex/shiny/pokerus/EXP are display-only, so
+ * they get their own short labels rather than borrowing an editable field's. All at
+ * PDNA_EDIT_LBL_X (6); the longest, "PKRS", is 4 columns (32 px), well inside
+ * PDNA_EDIT_LBL_W (112 px) — see gbe_label_of's own "Friendship" (10 cols/80 px),
+ * already proven to fit the same column by pdna_gbedit's own screen. */
+#define PDNA_GBSUM_LBL_SPECIES "Species"
+#define PDNA_GBSUM_LBL_TYPE    "Type"
+#define PDNA_GBSUM_LBL_G1TYPE  "G1 Type"     /* Gen 1: the STORED type bytes, not a name table */
+#define PDNA_GBSUM_LBL_STATUS  "Status"      /* Gen 1 only (Gen 2's status_screen row has no
+                                              * Gen-2 equivalent this tree can read — see
+                                              * gb_edit.h, no Gen-2 status getter exists) */
+#define PDNA_GBSUM_LBL_PKRS    "PKRS"        /* Gen 2 only */
+/* "Sex M  Shiny Yes" — one combined display row (BACKLOG #41's row budget: Card 0
+ * has up to 11 rows on Gen 2 and the y=34..150 band is 116 px / 9 px-per-row = ~12,
+ * so two single-purpose rows here would leave no margin for Pokerus). Worst case
+ * "Sex M  Shiny Yes" is 17 cols (136 px) at x=6, comfortably inside 240. */
+#define PDNA_GBSUM_SEXSHINY_FMT "Sex %s  Shiny %s"
+#define PDNA_GBSUM_SHINY_YES    "Yes"
+#define PDNA_GBSUM_SHINY_NO     "No"
+/* "EXP 1640000  +999999" (worst case) is 21 cols (168 px) at x=6. */
+#define PDNA_GBSUM_EXP_FMT      "EXP %lu  +%lu"
+#define PDNA_GBSUM_EXP_MAX_FMT  "EXP %lu  MAX"
+/* Gen-1 status byte (pokered/constants/battle_constants.asm:62-67): bits 0-2 sleep-
+ * turns-left, bit 3 poison, bit 4 burn, bit 5 freeze, bit 6 paralysis. Only ONE ever
+ * applies to a legally-obtained Gen-1 mon at a time (a hacked record could set more
+ * than one bit; the first match wins, same "report the first problem" convention as
+ * gb_issue_text()). */
+#define PDNA_GBSUM_ST_OK   "OK"
+#define PDNA_GBSUM_ST_SLP  "Asleep"
+#define PDNA_GBSUM_ST_PSN  "Poisoned"
+#define PDNA_GBSUM_ST_BRN  "Burned"
+#define PDNA_GBSUM_ST_FRZ  "Frozen"
+#define PDNA_GBSUM_ST_PAR  "Paralyzed"
+
+/* Card 1 (STATS): a 4-column grid — label / computed stat / DV / stat exp — none of
+ * gbe_label_of's own labels (they are one word each, "DV Atk" etc.) fit this tight a
+ * layout, so the stat row gets its own 3-letter names. DV_X - VAL_X leaves 64 px for
+ * the widest VAL text, "999/999" (the HP row's cur/max), at 56 px; SE_X - DV_X
+ * leaves 44 px for "DV 15" (40 px, the widest DV cell — the HP row's own DV, GBE_DVH,
+ * is read-only and drawn dim in the SAME column). Checked directly against these
+ * macros, not retyped, in host_textfit_test.c. */
+#define PDNA_GBSUM_STAT_LBL_X   6
+#define PDNA_GBSUM_STAT_VAL_X  34
+#define PDNA_GBSUM_STAT_DV_X   98
+#define PDNA_GBSUM_STAT_SE_X  142
+#define PDNA_GBSUM_HDR_DV      "DV"
+#define PDNA_GBSUM_HDR_SE      "SE"
+#define PDNA_GBSUM_STAT_HP     "HP"
+#define PDNA_GBSUM_STAT_ATK    "ATK"
+#define PDNA_GBSUM_STAT_DEF    "DEF"
+#define PDNA_GBSUM_STAT_SPE    "SPE"
+#define PDNA_GBSUM_STAT_SPA    "SpA"
+#define PDNA_GBSUM_STAT_SPD    "SpD"
+#define PDNA_GBSUM_STAT_SPC    "SPC"          /* Gen 1: Special, not split */
+/* "999/999" (party) or "-" (box). "DV 15" / "SE 65535" (worst case, 8 cols/64 px —
+ * inside SE_X's own 240 - 142 = 98 px budget). */
+#define PDNA_GBSUM_STAT_CURMAX_FMT "%u/%u"
+#define PDNA_GBSUM_STAT_DASH       "-"
+#define PDNA_GBSUM_STAT_DV_FMT     "DV %u"
+#define PDNA_GBSUM_STAT_SE_FMT     "SE %u"
+/* Shown once, under the last stat row, for a BOX record only (no live HP/stats exist
+ * to show — gb_get_stat/gb_get_current_hp are party-only by contract). 23 cols
+ * (184 px) at x=6. */
+#define PDNA_GBSUM_BOX_STAT_NOTE  "Computed on withdrawal"
+
+/* Card 2 (MOVES): two lines per move — the name at PDNA_EDIT_LBL_X/VAL_X (like every
+ * other GBE_K_MOVE row in this tree), then an indented PP/PP-Ups line with its own
+ * two sub-fields. "Move 4" is 6 cols (48 px), inside PDNA_EDIT_LBL_W. */
+#define PDNA_GBSUM_LBL_MOVE_FMT "Move %u"
+#define PDNA_GBSUM_PPROW_X      18             /* indented under the move name        */
+#define PDNA_GBSUM_PP_LBL       "PP"
+#define PDNA_GBSUM_PP_VAL_X     40
+#define PDNA_GBSUM_UPS_LBL      "Ups"
+#define PDNA_GBSUM_UPS_LBL_X    96
+#define PDNA_GBSUM_UPS_VAL_X   128
 
 /* ---------------------------------------------------------------------------
  * S5-B: the Gen-3 <-> Game Boy sidecar UI (docs/GEN3-TO-GB-SIDECAR-DESIGN.md sec. 10)
@@ -661,6 +766,16 @@
 #define PDNA_SIDECAR_FULL_L1         "Too many clones of this Pokemon."
 #define PDNA_SIDECAR_NOTWRITTEN_TITLE "SIDECAR NOT WRITTEN"
 #define PDNA_SIDECAR_NOTWRITTEN_L2   "Nothing transferred."
+/* BACKLOG #40(c): gb_paste_write()/gb_paste_hook's own STRUCTURAL refusals (the
+ * conversion already succeeded and the loss screen was already accepted -- gbs_insert()
+ * itself then said no: the box filled up between the check and the write, or the list
+ * came back malformed) used to reuse PDNA_GBEDIT_REFUSED_TITLE ("EDIT REFUSED"), which
+ * reads as though an EDIT was refused when this is a PASTE (a Gen-3 -> GB transfer).
+ * Distinct title, same (28, 184) proportional clamp as every other GBEDIT/SIDECAR
+ * title in this file. NOT used for the earlier PDNA_SIDECAR_XFER_TITLE refusals above
+ * (species/move/Egg/no-ROM) -- those already name the problem specifically; this one
+ * is for the generic "it didn't land" cases only. */
+#define PDNA_SIDECAR_XFER_REFUSED_TITLE "TRANSFER REFUSED"
 
 /* The transfer-down loss screen (pdna_gen12.c gb_paste_loss_screen): one short line per
  * Gen3ToGbLoss flag set, from a const {flag, text} table -- texts measured here.

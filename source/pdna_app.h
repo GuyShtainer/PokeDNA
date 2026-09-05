@@ -119,12 +119,19 @@ bool app_src_readonly(void);
  * (gbs_insert) -- see pdna_gen12.c's gb_paste_hook for the full order and the
  * atomicity story. NULL = this source never accepts a paste (every source before
  * S5-B, and Gen 1 targets today -- see gb_paste_hook's own Gen-1 refusal). */
+/* `view` (BACKLOG #41, "the edit page for gen 2 and 1 should feel the same as gen 3"):
+ * lets a source's read-only popup open its OWN native summary/inspect screen for VIEW,
+ * instead of app_mon_menu_readonly's default pdna_inspect() on the lossy Gen-3-
+ * converted copy. NULL (every source before #41) keeps the old default. Handed the
+ * cell's own rec80 exactly like every other hook here; returns whatever it returns
+ * for logging purposes only — app_mon_menu_readonly always re-pages regardless. */
 typedef struct {
   bool (*edit)(uint8_t* rec80);
   bool (*move)(uint8_t* rec80);
   bool (*release)(uint8_t* rec80);
   bool (*copy_native)(const uint8_t* rec80, GbEditMon* out, bool* has_sidecar);
   bool (*paste)(uint8_t* rec80);
+  bool (*view)(uint8_t* rec80);
 } AppSrcOps;
 void app_src_ops_set(const AppSrcOps* ops);
 

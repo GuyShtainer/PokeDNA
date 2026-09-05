@@ -456,7 +456,12 @@ void pdna_gen12_box_name(const Gb12Mount* m, int box, char out[12]) {
       return;
     }
   }
-  put_str(out, 12, &pos, "BOX ");
+  /* BACKLOG #40(b): "GB BOX1", no space before the number -- Gen 1 always falls
+   * through to this synthesized name (it has none of its own); Gen 2 only reaches it
+   * when the save's own box name is empty. Before this fix Gen 1 read "GB BOX 1"
+   * (a space) while a REAL Gen-2 box name of "BOX1" (Crystal's own default, above)
+   * read "GB BOX1" — two spellings for what is meant to look like the same thing. */
+  put_str(out, 12, &pos, "BOX");
   put_uint(out, 12, &pos, (unsigned)(box + 1));
 }
 
@@ -494,6 +499,16 @@ static bool gbsrc_can_edit(void) { return false; }
 static bool gbsrc_commit(void) { return false; }
 static void gbsrc_mark_dirty(void) { }
 
+/* BACKLOG #40(a): the box banner's own occupancy denominator (see pdna_box.h's
+ * BoxSource.capacity) — the same gen1_list_capacity/g2_list_capacity pair
+ * gb_list_read() above already reads, so this can never disagree with what the
+ * grid actually pages in. 0 for an out-of-range box (draw_box_banner never asks
+ * for one; defensive only). */
+static int gbsrc_capacity(int box) {
+  if (!g_m || box < 0 || box > g_m->party_box) return 0;
+  return (g_m->kind == GB12_SAVE_RBY) ? gen1_list_capacity(box) : g2_list_capacity(box);
+}
+
 BoxSource pdna_gen12_source(Gb12Mount* m) {
   BoxSource s;
   memset(&s, 0, sizeof s);
@@ -515,6 +530,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   s.commit     = gbsrc_commit;
   s.mark_dirty = gbsrc_mark_dirty;
   s.note_add   = 0;                           /* nothing lands here; nothing to register */
+  s.capacity   = gbsrc_capacity;
   return s;
 }
 
@@ -534,6 +550,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gb_session.h"
 #include "gb_editor.h"
 #include "pdna_gbedit.h"
+#include "pdna_gbsummary.h"   /* BACKLOG #41: the native VIEW/EDIT summary */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
@@ -977,6 +994,39 @@ static int gb_sidecar_here_count(const Gb12Mount* m) {
  * grid: both app_mon_menu call sites (pdna_box.c) discard it and re-fetch
  * src->records(box) unconditionally. The re-page happens because gb_persist's
  * success path sets g_m->loaded = -1, which forces the next records() to reload. */
+/* Steps 3-5 of the S2 edit contract, factored out so BOTH the read-only nav menu's
+ * EDIT row (gb_edit_hook, below) and the new VIEW-opens-the-native-summary row
+ * (gb_view_hook, BACKLOG #41) commit through the exact same path rather than two
+ * copies drifting apart:
+ *   3. the record  (gb_commit_checked: the bytes landed where the editor put them);
+ *   4. the image   (gbs_commit_list: the engine's own structural + verify gates);
+ *   5. the card    (gb_persist: sf_backup_rolling, then sf_write_verified's steps).
+ * `what_for_log` is the one-word tag gb_persist's own lines use ("edit"/"view"). */
+static bool gb_edit_commit(int box, int slot, const GbEditMon* e, const char* what_for_log) {
+  GbSession* s = &g_ed->s;
+  if (!gb_commit_checked(e, g_ed->list, box, slot)) {                        /* 3 */
+    snd_error();
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, PDNA_GBEDIT_NOVERIFY_L1, PDNA_GBEDIT_NOTHING_L2);
+    return false;
+  }
+  GbsStatus st = gbs_commit_list(s, box, g_ed->list);                        /* 4 */
+  if (st != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: %s commit box %d slot %d refused: %s", what_for_log, box, slot, gbs_status_text(st));
+    snd_error();
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(st), PDNA_GBEDIT_UNCHANGED_L2);
+    return false;
+  }
+
+  log_line("=== gb %s commit -> %s box %d slot %d ===", what_for_log, g_ed->path, box, slot);
+  return gb_persist(what_for_log);                                          /* 5 */
+}
+
+/* app_src_ops_set() hook: EDIT on the read-only mon menu. BACKLOG #41: opens the SAME
+ * native summary screen VIEW does (pdna_gbsummary.c), just straight into edit mode
+ * (`start_editing`) -- no separate flat-list screen for this row any more. pdna_gbedit.c
+ * stays in the tree, reachable via SELECT inside the summary, as the reviewed fallback
+ * until the summary screen itself has had a hardware pass (docs/GEN12-EDIT-DESIGN.md). */
 static bool gb_edit_hook(uint8_t* rec80) {
   int box, slot;
   if (!gb_locate(rec80, &box, &slot)) return false;
@@ -991,25 +1041,12 @@ static bool gb_edit_hook(uint8_t* rec80) {
   GbEditMon e;
   if (!gb_load(&e, s->gen, g_ed->list, box, slot)) { snd_deny(); return false; }
   bool has_sidecar = gb_has_sidecar(s->gen, &e);
-  if (!pdna_gbedit(&e, s->gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record", has_sidecar))
-    return false;
+  bool saved = false; int card = 0;
+  pdna_gbsummary(&e, true, true, s->gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
+                 has_sidecar, &saved, &card);
+  if (!saved) return false;
 
-  if (!gb_commit_checked(&e, g_ed->list, box, slot)) {                       /* 3 */
-    snd_error();
-    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, PDNA_GBEDIT_NOVERIFY_L1, PDNA_GBEDIT_NOTHING_L2);
-    return false;
-  }
-  st = gbs_commit_list(s, box, g_ed->list);                                  /* 4 */
-  if (st != GBS_OK) {
-    gb_rollback();
-    log_line("gen12: edit commit box %d slot %d refused: %s", box, slot, gbs_status_text(st));
-    snd_error();
-    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(st), PDNA_GBEDIT_UNCHANGED_L2);
-    return false;
-  }
-
-  log_line("=== gb edit commit -> %s box %d slot %d ===", g_ed->path, box, slot);
-  return gb_persist("edit");                                                 /* 5 */
+  return gb_edit_commit(box, slot, &e, "edit");
 }
 
 /* MOVE TO's destination picker: every box the session knows, party last (S3 design,
@@ -1111,7 +1148,12 @@ static bool gb_move_hook(uint8_t* rec80) {
       case GBS_ERR_UNWRITABLE:  hint = PDNA_GBEDIT_UNWRITABLE_HINT;   break;
       default: break;
     }
-    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(st), hint);
+    /* BACKLOG #40(d): gbs_status_text(GBS_ERR_FULL) says "that box is full", which
+     * reads oddly for the party -- nobody calls their party a box. Same status, a
+     * destination-specific L1 instead. */
+    const char* l1 = (st == GBS_ERR_FULL && gb_box_is_party(g_ed->s.gen, dst))
+                    ? PDNA_GBEDIT_MOVE_PARTYFULL_L1 : gbs_status_text(st);
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, l1, hint);
     return false;
   }
 
@@ -1361,7 +1403,7 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
     log_line("gen12: paste insert box %d refused: %s", box, gbs_status_text(ist));
     gb_paste_sidecar_undo(path);
     snd_error();
-    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
+    msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
     return false;
   }
 
@@ -1600,12 +1642,12 @@ static bool gb_paste_hook(uint8_t* rec80) {
   int cnt = gb_list_count(g_ed->s.gen, g_ed->list, box);
   if (cnt < 0) {
     snd_deny();
-    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_STRUCT), 0);
+    msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_STRUCT), 0);
     return false;
   }
   if (cnt >= gb_list_capacity(g_ed->s.gen, box)) {
     snd_deny();
-    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_FULL),
+    msg_wait(PDNA_SIDECAR_XFER_REFUSED_TITLE, UI_WARN, gbs_status_text(GBS_ERR_FULL),
              PDNA_GBEDIT_MOVE_FULL_L2);
     return false;
   }
@@ -1697,8 +1739,52 @@ _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
 /* S2/S3/S5-B: the resident-image edit pipeline's hooks, registered as one const struct
  * (pdna_app.h's AppSrcOps) rather than five separate setters -- const data lives in
  * ROM, so this costs nothing against the EWRAM guard. */
+/* app_src_ops_set() hook: VIEW on the read-only mon menu (BACKLOG #41). Replaces
+ * pdna_inspect() on the lossy Gen-3-converted copy with pdna_gbsummary() over the
+ * NATIVE record, for both generations. Unlike gb_edit_hook/gb_move_hook/
+ * gb_release_hook this does NOT call gb_locate() -- it uses gb_locate_addr() alone,
+ * the same address-only resolve gb_copy_native_hook uses, because viewing is free:
+ * no cart gate, no box-writable gate (docs/GEN3-TO-GB-SIDECAR-DESIGN.md sec. 10's
+ * "copying is allowed on any cart" reasoning applies just as well to looking). Only
+ * `can_edit` -- whether the summary is even ALLOWED to open in edit mode -- checks
+ * both of gb_locate()'s own gates by hand.
+ *
+ * U/D inside the summary asks for the next/prev mon; every slot 0..count-1 of a GB
+ * list IS occupied by definition (gb_list_count()'s own contract: "slots 0..count-1
+ * hold Pokemon; everything from count on is free space"), so "next occupied slot"
+ * is just a wrapping +-1 over count, never a skip-empty-slots search. */
+static bool gb_view_hook(uint8_t* rec80) {
+  int box, slot;
+  if (!gb_locate_addr(rec80, &box, &slot)) return false;
+  GbSession* s = &g_ed->s;
+
+  for (;;) {
+    GbsStatus lst = gbs_load_list(s, box, g_ed->list);
+    if (lst != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(lst), 0); return false; }
+    int count = gb_list_count(s->gen, g_ed->list, box);
+    if (count <= 0 || slot >= count) {
+      snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
+    }
+
+    GbEditMon e;
+    if (!gb_load(&e, s->gen, g_ed->list, box, slot)) { snd_deny(); return false; }
+    bool has_sidecar = gb_has_sidecar(s->gen, &e);
+    bool can_edit = app_can_edit() && gbs_box_writable(s, box) == GBS_OK;
+
+    bool saved = false; int card = 0;
+    int nav = pdna_gbsummary(&e, can_edit, false,
+                             s->gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
+                             has_sidecar, &saved, &card);
+    if (saved && !gb_edit_commit(box, slot, &e, "view")) return false;
+    if (nav == 0) return false;
+
+    int dir = (nav > 0) ? 1 : -1;
+    slot = (slot + dir + count) % count;
+  }
+}
+
 static const AppSrcOps k_gb_ops = {
-  gb_edit_hook, gb_move_hook, gb_release_hook, gb_copy_native_hook, gb_paste_hook
+  gb_edit_hook, gb_move_hook, gb_release_hook, gb_copy_native_hook, gb_paste_hook, gb_view_hook
 };
 
 /* Info page -> box grid -> the "these did not convert" report. The whole session above

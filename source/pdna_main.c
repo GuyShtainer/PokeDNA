@@ -3629,8 +3629,15 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
     else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) {
       switch (act[sel]) {
-        case RO_VIEW:  { uint8_t d[100]; int card = 0;
-                         pdna_inspect(rec, is_party, false, d, 0, &card); return false; }
+        case RO_VIEW:
+          /* BACKLOG #41: a source with its own native summary (today: GB sessions,
+           * pdna_gen12.c's gb_view_hook) opens THAT instead of pdna_inspect() on the
+           * lossy Gen-3-converted copy this menu was handed -- the whole point being
+           * that VIEW (and, from inside it, EDIT) work on the record as its own
+           * generation actually stores it. */
+          if (g_src_ops && g_src_ops->view) { g_src_ops->view(rec); return false; }
+          { uint8_t d[100]; int card = 0;
+            pdna_inspect(rec, is_party, false, d, 0, &card); return false; }
         case RO_EDIT:    return (g_src_ops && g_src_ops->edit)    ? g_src_ops->edit(rec)    : false;
         case RO_MOVE:    return (g_src_ops && g_src_ops->move)    ? g_src_ops->move(rec)    : false;
         case RO_RELEASE: return (g_src_ops && g_src_ops->release) ? g_src_ops->release(rec) : false;

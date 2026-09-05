@@ -563,6 +563,8 @@ int main(void) {
   PF(PDNA_GBEDIT_MOVE_FLOOR_L2,     28, 184);
   PF(PDNA_GBEDIT_MOVE_MAIL_L2,      28, 184);
   PF(PDNA_GBEDIT_MOVE_FULL_L2,      28, 184);
+  /* BACKLOG #40(d): the party-specific "that box is full" rewording. */
+  PF(PDNA_GBEDIT_MOVE_PARTYFULL_L1, 28, 184);
 
   /* gb_pick_box's full-screen list: fixed sys8 title/footer at x=4, same as
    * gb_report_page/gb_info_page's own "NOT TRANSFERABLE" / "A browse..." checks above. */
@@ -577,6 +579,83 @@ int main(void) {
   PF(PDNA_GBEDIT_PICKBOX_NONE_TITLE, 28, 184);
   PF(PDNA_GBEDIT_PICKBOX_NONE_L1,    28, 184);
   /* ==== END: GB mon editor ================================================= */
+
+  /* ==== BACKLOG #41: source/pdna_gbsummary.c, the Gen-1/2 native VIEW/EDIT summary.
+   * Fixed sys8 throughout (T(), like pdna_gbedit's own screen); every editable
+   * GBE_* row reuses PDNA_EDIT_LBL_X/VAL_X, already proven to fit by that screen —
+   * only the labels/values pdna_gbsummary.c adds ON TOP of gb_editor.c's own rows
+   * are new here. Dynamic rows (species name, computed numbers) are built from
+   * their real _FMT macro at a worst-case value, not retyped as a literal. */
+  T(PDNA_GBSUM_VIEW_CHIP, 4);
+  T(PDNA_GBSUM_EDIT_CHIP, 8);
+  T(PDNA_GBSUM_CARD_INFO,  4);
+  T(PDNA_GBSUM_CARD_STATS, 4);
+  T(PDNA_GBSUM_CARD_MOVES, 4);
+  T(PDNA_GBSUM_FOOT_VIEW,    4);
+  T(PDNA_GBSUM_FOOT_VIEW_RO, 4);
+  T(PDNA_GBSUM_FOOT_EDIT,    4);
+
+  /* Card 0 (INFO): display-only labels at PDNA_EDIT_LBL_X, values at PDNA_EDIT_VAL_X
+   * (val_row()'s own split — the same columns pdna_gbedit's row_paint uses). */
+  T(PDNA_GBSUM_LBL_SPECIES, PDNA_EDIT_LBL_X);
+  T(PDNA_GBSUM_LBL_TYPE,    PDNA_EDIT_LBL_X);
+  T(PDNA_GBSUM_LBL_G1TYPE,  PDNA_EDIT_LBL_X);
+  T(PDNA_GBSUM_LBL_STATUS,  PDNA_EDIT_LBL_X);
+  T(PDNA_GBSUM_LBL_PKRS,    PDNA_EDIT_LBL_X);
+  T(PDNA_GBSUM_ST_OK,  PDNA_EDIT_VAL_X);
+  T(PDNA_GBSUM_ST_SLP, PDNA_EDIT_VAL_X);
+  T(PDNA_GBSUM_ST_PSN, PDNA_EDIT_VAL_X);
+  T(PDNA_GBSUM_ST_BRN, PDNA_EDIT_VAL_X);
+  T(PDNA_GBSUM_ST_FRZ, PDNA_EDIT_VAL_X);
+  T(PDNA_GBSUM_ST_PAR, PDNA_EDIT_VAL_X);
+  {
+    /* Sex/Shiny combined row (disp_row, full width at PDNA_EDIT_LBL_X). "M"/"F"/"-"
+     * are all 1 column; Yes(3)/No(2) — check the longer one. */
+    char b[32];
+    sprintf(b, PDNA_GBSUM_SEXSHINY_FMT, "M", PDNA_GBSUM_SHINY_YES);
+    T(b, PDNA_EDIT_LBL_X);
+  }
+  {
+    /* EXP row (disp_row, full width at PDNA_EDIT_LBL_X: the "EXP " label is baked
+     * into the _FMT macro itself, since PDNA_EDIT_VAL_X's own 122 px value column
+     * is not wide enough for a 7-digit EXP + a 6-digit remainder). */
+    char b[32];
+    sprintf(b, PDNA_GBSUM_EXP_FMT, 1640000ul, 999999ul);
+    T(b, PDNA_EDIT_LBL_X);
+    sprintf(b, PDNA_GBSUM_EXP_MAX_FMT, 1640000ul);
+    T(b, PDNA_EDIT_LBL_X);
+  }
+
+  /* Card 1 (STATS): the 4-column grid's own x positions (PDNA_GBSUM_STAT_*). */
+  T(PDNA_GBSUM_HDR_DV, PDNA_GBSUM_STAT_DV_X);
+  T(PDNA_GBSUM_HDR_SE, PDNA_GBSUM_STAT_SE_X);
+  T(PDNA_GBSUM_STAT_HP,  PDNA_GBSUM_STAT_LBL_X);
+  T(PDNA_GBSUM_STAT_ATK, PDNA_GBSUM_STAT_LBL_X);
+  T(PDNA_GBSUM_STAT_DEF, PDNA_GBSUM_STAT_LBL_X);
+  T(PDNA_GBSUM_STAT_SPE, PDNA_GBSUM_STAT_LBL_X);
+  T(PDNA_GBSUM_STAT_SPA, PDNA_GBSUM_STAT_LBL_X);
+  T(PDNA_GBSUM_STAT_SPD, PDNA_GBSUM_STAT_LBL_X);
+  T(PDNA_GBSUM_STAT_SPC, PDNA_GBSUM_STAT_LBL_X);
+  {
+    char b[16];
+    sprintf(b, PDNA_GBSUM_STAT_CURMAX_FMT, 999u, 999u);
+    T(b, PDNA_GBSUM_STAT_VAL_X);
+    sprintf(b, PDNA_GBSUM_STAT_DV_FMT, 15u);
+    T(b, PDNA_GBSUM_STAT_DV_X);
+    sprintf(b, PDNA_GBSUM_STAT_SE_FMT, 65535u);
+    T(b, PDNA_GBSUM_STAT_SE_X);
+  }
+  T(PDNA_GBSUM_BOX_STAT_NOTE, PDNA_EDIT_LBL_X);
+
+  /* Card 2 (MOVES). */
+  T(PDNA_GBSUM_PP_LBL,  PDNA_GBSUM_PPROW_X);
+  T(PDNA_GBSUM_UPS_LBL, PDNA_GBSUM_UPS_LBL_X);
+  {
+    char b[16];
+    sprintf(b, PDNA_GBSUM_LBL_MOVE_FMT, 4u);
+    T(b, PDNA_EDIT_LBL_X);
+  }
+  /* ==== END BACKLOG #41 ====================================================== */
 
   /* ==== S5-B: the Gen-3 <-> Game Boy sidecar (source/pdna_main.c app_paste_gb_merge /
    * app_sidecar_confirm). msg_wait strings share its (28, .., 184) clamp; the confirm
@@ -629,6 +708,9 @@ int main(void) {
    * through msg_wait's own ui_ptext_fit, which clips instead of overflowing. */
   PF(PDNA_SIDECAR_GEN1_BADROM_L1,   28, 184);
   PF(PDNA_SIDECAR_XFER_TITLE,       28, 184);
+  /* BACKLOG #40(c): the paste-side STRUCTURAL refusals (gbs_insert failed after the
+   * conversion + loss screen already succeeded) get their own title. */
+  PF(PDNA_SIDECAR_XFER_REFUSED_TITLE, 28, 184);
   /* S5-B re-verification NEW-1: gbs_insert() refuses the party pseudo-box outright. */
   PF(PDNA_SIDECAR_PARTY_L1,         28, 184);
   /* S5-B review fix #10: PDNA_SIDECAR_MKDIR_TITLE is now actually wired up (f_mkdir's
