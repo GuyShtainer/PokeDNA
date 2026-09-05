@@ -678,6 +678,18 @@ int main(void) {
   PF(PDNA_SIDECAR_COPY_NONE, 28, 184);
   /* ==== END S5-B review fix #5 ================================================= */
 
+  /* ==== S5-C Part B2: gb_reconcile_on_load's confirm screen (source/pdna_main.c) ====
+   * The title is "N " + this suffix (siprintf); "426 " is the true worst-case prefix
+   * (party 6 + G3_TOTAL_BOXES*G3_IN_BOX == 420 == 426 total slots a save can hold),
+   * checked here the same way PDNA_SIDECAR_INFO_SUFFIX is above. app_confirm() draws
+   * the title with ui_ptext_fit(28, 54, 184, ...) -- same geometry as every other
+   * PF(..., 28, 184) check in this file. */
+  PF("426 " PDNA_SIDECAR_RECON_TITLE_SUFFIX, 28, 184);
+  PF(PDNA_SIDECAR_RECON_L1,           28, 184);
+  PF(PDNA_SIDECAR_RECON_NOTUPD_TITLE, 28, 184);
+  PF(PDNA_SIDECAR_RECON_NOTUPD_L1,    28, 184);
+  /* ==== END S5-C Part B2 ======================================================== */
+
   /* ==== ADDED for the native-generation art router (source/pdna_origin_art.c) ====
    * Guy: "if a pokemon is from gen 1, use a gen 1 sprite ... The bank should show all
    * in parallel." These are the fixed strings that feature puts on screen.

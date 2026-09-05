@@ -717,6 +717,17 @@
 #define PDNA_SIDECAR_COPY_HAS        "Sidecar found: pastes lossless"
 #define PDNA_SIDECAR_COPY_NONE       "No sidecar: paste will convert it"
 
+/* S5-C Part B2: gb_reconcile_on_load()'s one confirm screen (app_confirm(), so the
+ * footer is app_confirm's own standard "A = yes / B = no" -- "yes" means release).
+ * The title is built dynamically ("N " + this suffix, siprintf into a 40 B buffer);
+ * measured here at a worst-case count prefix the same way PDNA_SIDECAR_INFO_SUFFIX
+ * is (a save's party+PC together top out at 6 + G3_TOTAL_BOXES*G3_IN_BOX == 426, so
+ * "426 " is the true worst case, wider than "30 "/"999 " would suggest). */
+#define PDNA_SIDECAR_RECON_TITLE_SUFFIX "POKEMON TRANSFERRED"
+#define PDNA_SIDECAR_RECON_L1           "Release the originals here?"
+#define PDNA_SIDECAR_RECON_NOTUPD_TITLE "SIDECAR NOT UPDATED"
+#define PDNA_SIDECAR_RECON_NOTUPD_L1    "Release saved; a sidecar wasn't."
+
 /* ---------------------------------------------------------------------------
  * Settings + Rumble pages (source/pdna_main.c)
  *
