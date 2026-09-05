@@ -375,8 +375,13 @@ static void negatives(void) {
    * MAPSEC, 0x10 an ordinary Hoenn route (data_tables.c s_location). */
   fix_new(&x, 1, 5); em_set_ball(&x.e, 5); em_set_metloc(&x.e, 0x10);
   want(CHK, "Safari Ball outside a Safari Zone", PK2_INVALID, "Safari Ball met elsewhere");
-  fix_new(&x, 1, 5); em_set_ball(&x.e, 4); em_set_metloc(&x.e, 0x39);
+  /* A CAUGHT mon (met level > 0) in a Poke Ball with a Safari met place is suspect... */
+  fix_new(&x, 1, 5); em_set_ball(&x.e, 4); em_set_metloc(&x.e, 0x39); em_set_metlevel(&x.e, 5);
   want(CHK, "Safari Zone catch, wrong Ball", PK2_SUSPECT, "Safari Zone met without a Safari Ball");
+  /* ...but a HATCHED one (met level 0) is exactly Ruby.sav's Skitty: Poke Ball, met where the
+   * player stood (egg_hatch.c:388-389) -- legitimate, never flagged (review 2026-09-05). */
+  fix_new(&x, 1, 5); em_set_ball(&x.e, 4); em_set_metloc(&x.e, 0x39); em_set_metlevel(&x.e, 0);
+  want_absent(CHK, "Safari Zone catch, wrong Ball", "hatched inside the Safari Zone");
   fix_new(&x, 1, 5); em_set_ball(&x.e, 5); em_set_metloc(&x.e, 0x39);
   want_absent(CHK, "Safari Ball outside a Safari Zone", "matched Safari Ball and Zone");
   want_absent(CHK, "Safari Zone catch, wrong Ball", "matched Safari Ball and Zone");
