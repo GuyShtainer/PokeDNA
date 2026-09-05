@@ -68,20 +68,32 @@ int gb_reconcile_plan(GbReconHit* hits, int n, uint8_t* sb1, bool frlg, uint8_t*
     if (hits[i].duplicate) { hits[i].released = true; hits[i].done = true; }
 
   /* PC hits: fixed addresses, array order is fine (no shift between releases).
-   * Live-reverified immediately before touching anything; a mismatch here means
-   * something unexpected is at that slot, so it is left unreleased and unclaimed
-   * (never a bystander touched, and never a phantom "release" claimed either). */
-  if (pc) {
-    for (int i = 0; i < n; i++) {
-      if (hits[i].done || hits[i].box < 0) continue;
-      if (memcmp(pk_box_slot(pc, hits[i].box, hits[i].slot), hits[i].id8, 8) != 0) {
-        hits[i].done = true;
-        continue;
-      }
-      clip_clear_box_slot(pc, hits[i].box, hits[i].slot);
-      hits[i].released = true;
+   * Bounds-checked (S5-C 2nd review #3) BEFORE ever indexing `pc` -- a hit is
+   * caller-supplied data (ultimately decoded off the SD card via a sidecar's
+   * original80/gb_reconcile_match()), so an out-of-range box/slot must be refused
+   * exactly like a live mismatch, not trusted into pk_box_slot()'s own pointer
+   * arithmetic. Live-reverified immediately before touching anything; a mismatch
+   * (or an out-of-range hit) means it is left unreleased and unclaimed (never a
+   * bystander touched, and never a phantom "release" claimed either).
+   *
+   * `pc == NULL` (no PC storage this save): every box-hit is marked `done` here
+   * too (S5-C 2nd review #4) -- nothing else in this function will ever visit a
+   * box hit (the party loop below only considers box == -1), so leaving `done`
+   * false for it would break the "always true when this function returns"
+   * invariant gb_reconcile.h documents for every hit. */
+  for (int i = 0; i < n; i++) {
+    if (hits[i].done || hits[i].box < 0) continue;
+    if (!pc || hits[i].box >= G3_TOTAL_BOXES || hits[i].slot < 0 || hits[i].slot >= G3_IN_BOX) {
       hits[i].done = true;
+      continue;
     }
+    if (memcmp(pk_box_slot(pc, hits[i].box, hits[i].slot), hits[i].id8, 8) != 0) {
+      hits[i].done = true;
+      continue;
+    }
+    clip_clear_box_slot(pc, hits[i].box, hits[i].slot);
+    hits[i].released = true;
+    hits[i].done = true;
   }
 
   /* Party hits: HIGHEST SLOT FIRST -- party_release() shifts every later index

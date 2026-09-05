@@ -86,8 +86,14 @@ typedef struct {
                          * targets this exact (box, slot) -- e.g. the same original
                          * transferred to two different Game Boy generations. A
                          * caller MAY pre-mark this (gb_reconcile_walk() does, for an
-                         * early skip); gb_reconcile_plan() always re-derives it
-                         * independently too, so leaving it false is safe */
+                         * early skip); gb_reconcile_plan() independently re-derives
+                         * it too and will set a FALSE to true if it finds a match
+                         * itself, so leaving it false is always safe. It is
+                         * MONOTONIC, NOT a fresh recompute: gb_reconcile_plan()
+                         * never clears a duplicate flag the caller already set to
+                         * true, even if that pre-mark turns out to be wrong (e.g. a
+                         * bug in the caller's own dedupe) -- a caller must only ever
+                         * pre-mark this true for a GENUINE duplicate */
   bool    done;          /* OUT: this hit has been fully decided (released, refused
                          * for the party floor, found a live mismatch, or a
                          * duplicate) -- gb_reconcile_plan()'s own "already visited"
@@ -107,6 +113,13 @@ typedef struct {
  * released HIGHEST SLOT FIRST -- party_release() shifts every later index down by
  * one, so releasing low-to-high would silently release the WRONG (shifted) mon at
  * a later hit's recorded slot.
+ *
+ * BOUNDS. A PC hit whose box/slot falls outside 0..G3_TOTAL_BOXES-1 /
+ * 0..G3_IN_BOX-1 is refused (unreleased, unclaimed, `done`) BEFORE it is ever used
+ * to index `pc` -- a hit is caller-supplied data, ultimately built from bytes read
+ * off the SD card, so it is validated like any other untrusted boundary crossing.
+ * `pc == NULL` (no PC storage this save) marks every box-hit `done` the same way,
+ * for the same reason: nothing else in this function will ever visit it.
  *
  * DEDUPE. Any hit sharing an EXACT (box, slot) with an earlier hit is a duplicate:
  * never touched (the earlier hit already released "the" mon), but `released` is

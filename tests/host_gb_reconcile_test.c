@@ -42,7 +42,14 @@
  *      targets it) is respected;
  *   9) a 3-hit party batch releases HIGHEST SLOT FIRST regardless of the hits'
  *      array order -- proven by the SURVIVING member being the one order-agnostic
- *      low-to-high release would have gotten wrong.
+ *      low-to-high release would have gotten wrong;
+ *  10) S5-C 2ND REVIEW: (6)/(7) above also assert the PHYSICAL release count
+ *      (released && !duplicate) and the DISTINCT target count (!duplicate) are
+ *      both 1 -- gb_reconcile_plan()'s raw return value (2, both entries
+ *      claimable) over-counts either one, and the caller (pdna_main.c) must
+ *      derive them itself, not trust the return value for the confirm screen's
+ *      "N POKEMON TRANSFERRED" or the post-release shortfall check; and a PC hit
+ *      whose box/slot is OUT OF RANGE is refused before ever indexing `pc`.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -241,6 +248,19 @@ static void test_plan_party_duplicate(void) {
   CHECK(hits[0].released && hits[1].released,
         "party_duplicate: BOTH hits end up released (%d, %d)", hits[0].released, hits[1].released);
   CHECK(hits[1].duplicate, "party_duplicate: the second hit is marked duplicate");
+  /* S5-C 2nd review #1: released == nhits (2) over-counts the DISTINCT mons this
+   * batch actually touched -- the caller (pdna_main.c gb_reconcile_release) must
+   * derive its own "physical release" count as released && !duplicate, and its own
+   * "distinct target" count as !duplicate, rather than trust gb_reconcile_plan()'s
+   * raw return value for either. Both are exactly 1 here: one mon, two entries. */
+  int physical = 0, distinct = 0;
+  for (int i = 0; i < 2; i++) {
+    if (hits[i].released && !hits[i].duplicate) physical++;
+    if (!hits[i].duplicate) distinct++;
+  }
+  CHECK(physical == 1, "party_duplicate: exactly 1 PHYSICAL release (released && !duplicate), got %d",
+        physical);
+  CHECK(distinct == 1, "party_duplicate: exactly 1 DISTINCT target (!duplicate), got %d", distinct);
   uint8_t* now1 = pk_party_slot(sb1, false, 1);
   CHECK(now1[0] == 0x30, "party_duplicate: the neighbour (id 0x30) shifted into slot 1 (got 0x%02X)",
         now1[0]);
@@ -277,6 +297,13 @@ static void test_plan_pc_duplicate(void) {
   CHECK(hits[0].released && hits[1].released,
         "pc_duplicate: BOTH hits end up released (%d, %d)", hits[0].released, hits[1].released);
   CHECK(hits[1].duplicate, "pc_duplicate: the second hit is marked duplicate");
+  { int physical = 0, distinct = 0;
+    for (int i = 0; i < 2; i++) {
+      if (hits[i].released && !hits[i].duplicate) physical++;
+      if (!hits[i].duplicate) distinct++;
+    }
+    CHECK(physical == 1, "pc_duplicate: exactly 1 PHYSICAL release, got %d", physical);
+    CHECK(distinct == 1, "pc_duplicate: exactly 1 DISTINCT target, got %d", distinct); }
   uint8_t zero80[80]; memset(zero80, 0, 80);
   CHECK(memcmp(pk_box_slot(pc, 2, 7), zero80, 80) == 0, "pc_duplicate: the slot is cleared exactly once");
 }
@@ -327,6 +354,31 @@ static void test_plan_party_order(void) {
         pk_party_slot(sb1, false, 0)[0]);
 }
 
+/* 10) S5-C 2nd review #3: a PC hit whose box/slot is OUT OF RANGE must be refused
+ * before it is ever used to index `pc` -- a hit is caller-supplied data, ultimately
+ * built from bytes read off the SD card (a sidecar entry's original80), so an
+ * out-of-range box/slot has to be treated as untrusted input, not indexed on
+ * faith. Neither released nor claimed; `pc` itself must come back byte-identical
+ * (nothing was ever written through the bad pointer). */
+static void test_plan_pc_out_of_range(void) {
+  static uint8_t pc[G3_PC_BYTES];
+  memset(pc, 0xAA, sizeof pc);   /* a fixed pattern -- any write anywhere would show */
+  uint8_t pc_before[G3_PC_BYTES];
+  memcpy(pc_before, pc, sizeof pc);
+
+  static uint8_t sb1[G3_SAVEBLOCK1_BYTES];
+  memset(sb1, 0, sizeof sb1);
+
+  GbReconHit hits[2];
+  mk_hit(&hits[0], (int8_t)G3_TOTAL_BOXES, 0, 0x99);        /* box one past the end   */
+  mk_hit(&hits[1], 0, (int8_t)G3_IN_BOX, 0x99);             /* slot one past the end  */
+
+  int released = gb_reconcile_plan(hits, 2, sb1, false, pc);
+  CHECK(released == 0, "pc_out_of_range: neither out-of-range hit is released (got %d)", released);
+  CHECK(!hits[0].released && !hits[1].released, "pc_out_of_range: both hits' released stays false");
+  CHECK(memcmp(pc, pc_before, sizeof pc) == 0, "pc_out_of_range: pc is byte-identical (nothing indexed OOB)");
+}
+
 int main(int argc, char** argv) {
   int examined = 0;
   for (int i = 1; i < argc; i++) {
@@ -340,6 +392,7 @@ int main(int argc, char** argv) {
   test_plan_pc_duplicate();
   test_plan_party_floor();
   test_plan_party_order();
+  test_plan_pc_out_of_range();
 
   printf("\n%s: %d check(s), %d failure(s)\n", g_fail ? "FAIL" : "OK", g_check, g_fail);
   return g_fail ? 1 : 0;
