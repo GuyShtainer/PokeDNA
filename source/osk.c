@@ -1,6 +1,7 @@
 #include "osk.h"
 
 #include <tonc.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "ui.h"
@@ -42,10 +43,14 @@ static void osk_field(const char* buf, int len, int cpos) {
   ui_panel(4, 16, 232, 14, UI_PANEL, UI_BORDER);
   const int x0 = 8, y = 19, cols = 28;
 
-  int starts[OSK_MAXLEN + 2];
+  /* uint8_t, not int: every offset here is <= OSK_MAXLEN (63), and this array is
+   * on osk_core's stack for the life of the whole keyboard loop -- ~195 B of
+   * IWRAM stack back versus an int array, on a 32 KiB stack that also holds
+   * everything osk_render()/ui_*() call into. */
+  uint8_t starts[OSK_MAXLEN + 2];
   int glen = 0;
   for (int i = 0; i <= len; ) {
-    starts[glen++] = i;
+    starts[glen++] = (uint8_t)i;
     if (i >= len) break;
     i = u8w_next(buf, i);
   }
@@ -151,15 +156,20 @@ static bool osk_core(const char* prompt, const char* initial, char* out, int cap
   char buf[OSK_MAXLEN + 1];
   int len = 0;
   buf[0] = 0;
+  /* `buf`'s own storage (sizeof buf, not the caller's `cap`) is what must bound
+   * every write into it: a caller-supplied `cap` larger than sizeof(buf) must
+   * never let u8w_insert_byte/u8w_apply_key believe there is more room than this
+   * stack array actually has. `cap` on its own still matters when it is the
+   * TIGHTER of the two (a short save-format field). */
+  int icap = (cap < (int)sizeof buf) ? cap : (int)sizeof buf;
   if (initial) {
     /* BACKLOG #38: truncate on a GLYPH boundary, not a raw byte count -- a plain
      * byte cap here could cut a UTF-8 sequence or a "{XX}" escape in half right at
-     * the OSK_MAXLEN/cap-1 edge. seedcap is the tighter of the two byte limits
-     * (the internal scratch buffer's own OSK_MAXLEN and the caller's `cap`); when
-     * `initial` fits under both, this is a byte-for-byte copy -- the "seeding keeps
-     * every byte" guarantee for the common case. */
-    int seedcap = (cap < OSK_MAXLEN + 1) ? cap : OSK_MAXLEN + 1;
-    len = u8w_copy_capped(buf, seedcap, initial);
+     * the OSK_MAXLEN/cap-1 edge. `icap` is already the tighter of the two byte
+     * limits (buf's own storage and the caller's `cap`); when `initial` fits under
+     * both, this is a byte-for-byte copy -- the "seeding keeps every byte"
+     * guarantee for the common case. */
+    len = u8w_copy_capped(buf, icap, initial);
   }
 
   int cr = 0, cc = 0, cpos = len;
@@ -198,23 +208,15 @@ static bool osk_core(const char* prompt, const char* initial, char* out, int cap
         return true;
       }
     }
-    else if (k & KEY_A) {
-      /* Every key on the grid types one plain ASCII byte, which is always its own
-       * whole glyph -- so this never needs to split or merge a sequence; only the
-       * byte-capacity check below (unchanged) still applies. */
-      if (len < OSK_MAXLEN) {
-        int nl = u8w_insert_byte(buf, len, cap, cpos, KB[cr][cc]);
-        if (nl >= 0) { len = nl; cpos++; }
-      }
-    }
-    else if (k & KEY_B) {
-      /* One B press removes one whole glyph -- 1 byte for plain ASCII, up to 4 for
-       * a UTF-8 sequence or a "{XX}" escape -- never half of one (BACKLOG #38). */
-      int nl, start = u8w_delete_before(buf, len, cpos, &nl);
-      if (start >= 0) { len = nl; cpos = start; }
-    }
-    else if (k & KEY_L) { if (cpos > 0)   cpos = u8w_prev(buf, cpos); }
-    else if (k & KEY_R) { if (cpos < len) cpos = u8w_next(buf, cpos); }
+    /* A/B/L/R all go through u8w_apply_key -- the exact state transition
+     * tests/host_osk_test.c drives on the host, so there is no second copy of
+     * this logic to drift out of sync with what ships. `icap`, not `cap`, bounds
+     * the write: `buf`'s own storage is what must never overflow, and `icap` is
+     * already the tighter of `buf`'s real size and the caller's `cap`. */
+    else if (k & KEY_A) { u8w_apply_key(buf, &len, &cpos, OSK_MAXLEN, icap, U8W_OP_INSERT, KB[cr][cc]); }
+    else if (k & KEY_B) { u8w_apply_key(buf, &len, &cpos, OSK_MAXLEN, icap, U8W_OP_DELETE, 0); }
+    else if (k & KEY_L) { u8w_apply_key(buf, &len, &cpos, OSK_MAXLEN, icap, U8W_OP_LEFT,   0); }
+    else if (k & KEY_R) { u8w_apply_key(buf, &len, &cpos, OSK_MAXLEN, icap, U8W_OP_RIGHT,  0); }
     else if (k & KEY_UP)    { cr = (cr == 0) ? OSK_ROWS - 1 : cr - 1; }
     else if (k & KEY_DOWN)  { cr = (cr + 1) % OSK_ROWS; }
     else if (k & KEY_LEFT)  { int rl = rowlen(cr); cc = (cc == 0) ? rl - 1 : cc - 1; }

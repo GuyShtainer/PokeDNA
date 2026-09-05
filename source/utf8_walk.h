@@ -35,7 +35,21 @@ int u8w_next(const char* s, int i);
  * Mirrors u8w_next: recognizes a "{XX}" escape ending at `i` (checks the 4 bytes
  * s[i-4..i-1] spell exactly that), else walks back over up to 3 UTF-8 continuation
  * bytes (0x80-0xBF) to find the lead byte. i==0 is refused by the caller, not this
- * function (there is nothing before offset 0). */
+ * function (there is nothing before offset 0).
+ *
+ * On a MALFORMED string the result can fail to be a boundary u8w_next would ever
+ * produce walking forward from 0 -- e.g. deleting the 'A' out of "{5AD}" (not a
+ * real escape: three characters between the braces) leaves "{5D}", which IS a real
+ * escape, so the caret this function hands back now sits mid-glyph in the new
+ * string; deleting the 'A' out of C3 41 A9 (an orphaned UTF-8 lead byte followed by
+ * a stray continuation byte) leaves C3 A9, a valid e-acute, with the same effect.
+ * Both require a malformed sequence no producer in this tree emits --
+ * gen3_decode_char/gb_name_decode only ever produce well-formed "{XX}" escapes and
+ * complete UTF-8 sequences, FatFs's UTF-8 LFN decode does the same, and the OSK's
+ * own key grid has no '{', '}', or non-ASCII key to type one by hand -- so build no
+ * stronger invariant on this function's result than "in bounds, forward progress
+ * made"; tests/host_osk_test.c documents both repros without asserting boundary-ness
+ * for them. */
 int u8w_prev(const char* s, int i);
 
 /* Number of glyphs in the NUL-terminated string `s` (0 for NULL or ""). */
@@ -67,17 +81,42 @@ int u8w_insert_byte(char* buf, int len, int cap, int pos, char c);
  * escape glyph -- one B press, one glyph, regardless of its byte width. Returns
  * the new caret position (== the start of the glyph just removed, so callers can
  * assign it straight back to their caret variable) and writes the new length to
- * `*new_len` (may be NULL). */
+ * `*new_len` (may be NULL). On a malformed `buf`, the returned position can land
+ * mid-glyph of the SHORTENED string -- see u8w_prev's comment; unreachable from
+ * any real producer. */
 int u8w_delete_before(char* buf, int len, int pos, int* new_len);
 
-/* Copy `src` (NUL-terminated) into `dst` (capacity `cap` bytes, cap >= 1), stopping
- * at the last WHOLE glyph that fits within cap-1 bytes -- never splits a UTF-8
- * sequence or a "{XX}" escape the way a plain `strncpy`-style byte cap would.
- * Always NUL-terminates `dst`. Returns the number of bytes written (excluding the
- * NUL), i.e. the resulting strlen(dst). Used both to seed the OSK's edit buffer
- * from a caller's `initial` string and to copy the result back out on commit, so
- * an untouched name that happens to end exactly at a byte-cap boundary keeps its
- * last glyph intact instead of losing its trailing half. */
+/* Copy `src` (NUL-terminated) into `dst` (capacity `cap` bytes; cap should be
+ * >= 1, but cap <= 0 or a NULL `src` still terminates `dst` at dst[0] rather than
+ * handing back an uninitialised string -- the one exception is `dst` itself being
+ * NULL, which this function cannot write through at all), stopping at the last
+ * WHOLE glyph that fits within cap-1 bytes -- never splits a UTF-8 sequence or a
+ * "{XX}" escape the way a plain `strncpy`-style byte cap would. Always NUL-
+ * terminates `dst` when `dst` is non-NULL. Returns the number of bytes written
+ * (excluding the NUL), i.e. the resulting strlen(dst). Used both to seed the
+ * OSK's edit buffer from a caller's `initial` string and to copy the result back
+ * out on commit, so an untouched name that happens to end exactly at a byte-cap
+ * boundary keeps its last glyph intact instead of losing its trailing half. */
 int u8w_copy_capped(char* dst, int cap, const char* src);
+
+/* ---- the OSK's own key dispatch, factored out of osk.c so the exact state
+ * transition each content-changing key performs is host-testable without tonc
+ * (osk.c's other keys -- the cursor-grid D-pad, START, SELECT -- never touch
+ * buf/len/cpos and have no op here). ---- */
+typedef enum {
+  U8W_OP_INSERT,  /* KEY_A: insert byte `c` at the caret                        */
+  U8W_OP_DELETE,  /* KEY_B: delete the glyph before the caret                   */
+  U8W_OP_LEFT,    /* KEY_L: caret to the start of the previous glyph            */
+  U8W_OP_RIGHT,   /* KEY_R: caret to the start of the next glyph                */
+} U8wOp;
+
+/* Apply one edit key to (*buf, *len, *cpos) in place -- byte-for-byte the same
+ * transition osk_core's A/B/L/R branches perform, so tests/host_osk_test.c drives
+ * the identical logic that ships rather than a second copy of it. `c` is used
+ * only for U8W_OP_INSERT. `maxlen` is osk.c's own internal scratch-buffer cap
+ * (OSK_MAXLEN); `cap` is the caller's byte-buffer capacity, already clamped by
+ * osk.c to `buf`'s real size before this is called. A key that cannot apply (the
+ * buffer is full, the caret is already at an end) leaves everything unchanged. */
+void u8w_apply_key(char* buf, int* len, int* cpos, int maxlen, int cap, U8wOp op, char c);
 
 #endif /* UTF8_WALK_H */

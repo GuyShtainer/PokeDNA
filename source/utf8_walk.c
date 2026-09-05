@@ -87,8 +87,16 @@ int u8w_delete_before(char* buf, int len, int pos, int* new_len) {
 }
 
 int u8w_copy_capped(char* dst, int cap, const char* src) {
-  if (!dst || cap <= 0) return 0;
-  if (!src || cap == 1) { if (cap >= 1) dst[0] = 0; return 0; }
+  if (!dst) return 0;                       /* nothing this function can write through */
+  if (cap <= 0 || !src || cap == 1) {
+    /* Defensive terminator: every real caller passes cap == sizeof(dst) >= 1, but
+     * the old byte-loop this replaced always terminated regardless of `cap`
+     * (buf's real storage was fixed-size, independent of the caller's bound), so
+     * a cap<=0 mistake here still gets a valid empty string rather than handing
+     * back whatever garbage was already sitting in dst. */
+    dst[0] = 0;
+    return 0;
+  }
 
   int n = 0;
   int guard = (int)strlen(src) + 1;         /* provable loop bound (golden rule 2) */
@@ -101,4 +109,30 @@ int u8w_copy_capped(char* dst, int cap, const char* src) {
   }
   dst[n] = 0;
   return n;
+}
+
+void u8w_apply_key(char* buf, int* len, int* cpos, int maxlen, int cap, U8wOp op, char c) {
+  if (!buf || !len || !cpos) return;
+  switch (op) {
+    case U8W_OP_INSERT:
+      /* Every key on the OSK's own grid types one plain ASCII byte, which is
+       * always its own whole glyph, so this never needs to split or merge a
+       * sequence -- only the byte-capacity check matters. */
+      if (*len < maxlen) {
+        int nl = u8w_insert_byte(buf, *len, cap, *cpos, c);
+        if (nl >= 0) { *len = nl; (*cpos)++; }
+      }
+      break;
+    case U8W_OP_DELETE: {
+      int nl, start = u8w_delete_before(buf, *len, *cpos, &nl);
+      if (start >= 0) { *len = nl; *cpos = start; }
+      break;
+    }
+    case U8W_OP_LEFT:
+      if (*cpos > 0) *cpos = u8w_prev(buf, *cpos);
+      break;
+    case U8W_OP_RIGHT:
+      if (*cpos < *len) *cpos = u8w_next(buf, *cpos);
+      break;
+  }
 }
