@@ -184,6 +184,38 @@ static void test_format(void) {
     CHECK(gbsc_flags_set(buf, len, 0) == 0, "flags cleared back to 0 (leaves the rest of the run clean)");
     CHECK(gbsc_flags_get(buf, len) == 0, "flags read back 0 after clearing");
   }
+
+  /* S5-C review #3: GBSC_FLAG_KEEP_ASKED must not silence a NEW entry a key just
+   * gained -- pdna_gen12.c's gb_paste_write() now clears it right after a
+   * successful gbsc_add(), before the file is written. This is that exact
+   * sequence (set flag -> add entry -> flag clear) at the codec level, on a FRESH
+   * small file (the 8/8-full `buf` above has no room left for gbsc_add). */
+  {
+    uint8_t kbuf[GBSC_FILE_MAX];
+    uint32_t klen = (uint32_t)gbsc_init(kbuf, 0xABCDu);
+    GbscEntry e0; memset(&e0, 0, sizeof e0);
+    e0.gen = GB_GEN2; e0.otid16 = 0x1111;
+    memcpy(e0.otname_written, otname, GB_NAME_BYTES);
+    CHECK(gbsc_add(kbuf, &klen, sizeof kbuf, &e0) == 0, "keep-asked: first entry added");
+
+    CHECK(gbsc_flags_set(kbuf, klen, GBSC_FLAG_KEEP_ASKED) == 0, "keep-asked: flag set (user chose B once)");
+    CHECK(gbsc_flags_get(kbuf, klen) == GBSC_FLAG_KEEP_ASKED, "keep-asked: flag reads back set");
+
+    /* A second transfer to the SAME key (re-transferred after a merge-up, or a
+     * genuinely new clone) appends a new entry -- gbsc_add() itself never touches
+     * flags (this asserts that division of responsibility explicitly). */
+    GbscEntry e1 = e0;
+    CHECK(gbsc_add(kbuf, &klen, sizeof kbuf, &e1) == 1, "keep-asked: second entry added");
+    CHECK(gbsc_flags_get(kbuf, klen) == GBSC_FLAG_KEEP_ASKED,
+          "keep-asked: gbsc_add() alone does NOT clear the flag");
+
+    /* gb_paste_write()'s own fix: clear the flag right after the add. */
+    uint16_t kflags = gbsc_flags_get(kbuf, klen);
+    CHECK(gbsc_flags_set(kbuf, klen, kflags & ~GBSC_FLAG_KEEP_ASKED) == 0,
+          "keep-asked: gb_paste_write's clear-after-add succeeds");
+    CHECK(gbsc_flags_get(kbuf, klen) == 0, "keep-asked: flag reads back CLEAR after the fix");
+    CHECK(gbsc_count(kbuf, klen) == 2, "keep-asked: both entries still present after the flag round-trip");
+  }
   /* ==== END S5-C Part B2 ======================================================== */
 
   /* remove entry 3, check compaction */
