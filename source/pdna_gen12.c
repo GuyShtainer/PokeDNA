@@ -762,6 +762,18 @@ typedef struct {
   FIL         romfil;
   uint8_t     romscan[ROM_GBSPRITE_SCRATCH_MIN];
   char        romspath[SF_PATH_MAX];
+  /* S5-C review fix #6b: rom_gbsprite_open()'s table-locating scan streams the WHOLE
+   * ROM once (rom_gbsprite.h: "1 MB (Gen 1) ... in ONE pass") -- re-running it on
+   * every single Gen-1 paste this session is pure waste once the tables are already
+   * known. romgs_ready caches "romgs already holds a valid, located Gen-1 ROM";
+   * romgs_path remembers WHICH path that was (a pointer compare against g_ed->path,
+   * which the mount's own contract already promises outlives the session -- see
+   * pdna_gen12_show_image's own comment on `path`), so a changed save (a fresh
+   * pdna_gen12_show_image() call, a different g_ed->path) re-scans rather than
+   * silently reusing another ROM's tables. Explicitly cleared to false wherever a
+   * new g_ed is latched (never left as whatever garbage the borrowed arena held). */
+  bool        romgs_ready;
+  const char* romgs_path;
 } Gb12Edit;
 static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the arena */
 
@@ -1398,17 +1410,17 @@ static void gb_rom_base_path(void) {
   g_ed->romspath[baselen] = 0;
 }
 
-/* Open "<base>.gb" then "<base>.gbc" read-only over g_ed->romfil (arena-resident: a
- * FIL is ~600 B and does not belong on this or any caller's stack), locate its
- * tables through g_ed->romgs/romscan (rom_gbsprite.h: "the caller's" scan window --
- * also arena-resident, never a local), then read dex's 28-byte BaseStats row.
- * `out` is untouched unless this returns GB1BASE_OK. noinline, and every buffer it
- * touches is a Gb12Edit field, precisely so THIS function's own frame -- not just
- * gb_paste_hook's -- stays under the 300 B this slice's brief measures for. */
-static Gb1BaseStatus __attribute__((noinline))
-gb_gen1_base_from_rom(uint16_t dex, GbGen1Base* out) {
-  if (!g_ed || !out || dex < 1) return GB1BASE_BAD_ROM;
-
+/* Locate a Gen-1 ROM's tables -- the part of gb_gen1_base_from_rom() worth caching
+ * (S5-C review fix #6b): rom_gbsprite_open() streams the WHOLE ROM once through
+ * romscan to find them (rom_gbsprite.h: "1 MB (Gen 1) ... in ONE pass"), so redoing
+ * it on every single Gen-1 paste this session was pure waste once g_ed->romgs
+ * already holds a valid result. Derives "<base>.gb" then "<base>.gbc" from
+ * g_ed->path into g_ed->romspath, opens it read-only over g_ed->romfil (arena-
+ * resident: a FIL is ~600 B and does not belong on any stack), and locates it into
+ * g_ed->romgs/romscan. Sets g_ed->romgs_ready/romgs_path on success. Every buffer
+ * this touches is a Gb12Edit field, precisely so THIS function's own frame stays
+ * under the 300 B this slice's brief measures for. */
+static Gb1BaseStatus __attribute__((noinline)) gb_gen1_locate_rom(void) {
   gb_rom_base_path();
   int baselen = 0; while (g_ed->romspath[baselen]) baselen++;
 
@@ -1435,12 +1447,40 @@ gb_gen1_base_from_rom(uint16_t dex, GbGen1Base* out) {
   uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
   int ok = rom_gbsprite_open(&g_ed->romgs, gb_read, &g_ed->romfil, sz,
                              g_ed->romscan, sizeof g_ed->romscan);
+  f_close(&g_ed->romfil);
   if (!ok || g_ed->romgs.gen != GB_ROM_GEN1) {
     log_line("gen12: gen-1 rom: %s did not open as a Gen-1 ROM", g_ed->romspath);
-    f_close(&g_ed->romfil);
     return GB1BASE_BAD_ROM;
   }
+  g_ed->romgs_ready = true;
+  g_ed->romgs_path = g_ed->path;
+  return GB1BASE_OK;
+}
 
+/* Read dex's 28-byte BaseStats row out of the ROM g_ed->romgs already located --
+ * re-locating it first (gb_gen1_locate_rom(), the expensive part) only when the
+ * cache is cold or the save's path changed. `out` is untouched unless this returns
+ * GB1BASE_OK. noinline for the same 300 B budget as every other helper here. */
+static Gb1BaseStatus __attribute__((noinline))
+gb_gen1_base_from_rom(uint16_t dex, GbGen1Base* out) {
+  if (!g_ed || !out || dex < 1) return GB1BASE_BAD_ROM;
+
+  if (!g_ed->romgs_ready || g_ed->romgs_path != g_ed->path) {
+    g_ed->romgs_ready = false;
+    Gb1BaseStatus lst = gb_gen1_locate_rom();
+    if (lst != GB1BASE_OK) return lst;
+  }
+
+  /* rom_gbbase_gen1() needs the file open again for its own reads (through the SAME
+   * gb_read() shim) -- reopened by the already-resolved g_ed->romspath rather than
+   * held open across pastes, so a later paste never finds a FIL left in a state it
+   * did not itself create. */
+  memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+  if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) {
+    log_line("gen12: gen-1 rom: %s could not be reopened", g_ed->romspath);
+    g_ed->romgs_ready = false;              /* the card changed underneath us -- rescan next time */
+    return GB1BASE_BAD_ROM;
+  }
   RomGb1Species sp;
   bool got = rom_gbbase_gen1(&g_ed->romgs, gb_read, &g_ed->romfil, dex, &sp);
   f_close(&g_ed->romfil);
@@ -1463,8 +1503,14 @@ static void __attribute__((noinline)) gb_gen1_norom_msg(void) {
   const char* base_only = g_ed->romspath;
   for (int i = 0; g_ed->romspath[i]; i++)
     if (g_ed->romspath[i] == '/') base_only = g_ed->romspath + i + 1;
-  char l1[48];
-  siprintf(l1, "Put %.10s.gb here", base_only);
+  /* S5-C review fix #6c: this used to hard-truncate the basename at 10 characters --
+   * cutting off the very name the message tells the user to CREATE. The pixel-width
+   * clamp is msg_wait()'s own ui_ptext_fit() (same as every other dynamic message in
+   * this tree); %.48s here only bounds the STRING build against l1's own size, wide
+   * enough that no real ROM filename is cut before the screen ever gets a chance to
+   * ellipsize it visually. */
+  char l1[64];
+  siprintf(l1, "Put %.48s.gb here", base_only);
   msg_wait(PDNA_SIDECAR_GEN1_TITLE, UI_WARN, l1, PDNA_SIDECAR_GEN1_L1);
 }
 
@@ -1786,6 +1832,12 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
     GbsStatus st = gbs_open(&ed->s, img, len, ed->scratch, sizeof ed->scratch);
     if (st == GBS_OK && (ed->s.gen == GB_GEN1) == (m->kind == GB12_SAVE_RBY)) {
       ed->img = img; ed->pristine = pristine; ed->len = len; ed->path = path;
+      /* S5-C review fix #6b: the arena block is uninitialised memory left over from
+       * whatever last borrowed it -- romgs_ready must start false EVERY session, or
+       * a stale true (garbage that happens to survive) plus a coincidentally-equal
+       * romgs_path would skip the ROM scan entirely and hand back whatever RomGbSprite
+       * garbage was sitting there. */
+      ed->romgs_ready = false;
       g_ed = ed;
     } else {
       log_line("gen12: edit session refused (%s, gen %d vs mount kind %d): read-only",
