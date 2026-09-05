@@ -1329,7 +1329,11 @@ static void draw_box_banner(BoxSource* src, int box, bool on_title) {
    * very party_slot special-case that already suppresses the ordinal for this exact
    * slot. */
   bool party_slot = src->last_box_is_party && box == src->nboxes - 1;
-  siprintf(bnocc, "%s  %d/%d", bn[0] ? bn : "BOX", occ, party_slot ? 6 : 30);
+  /* BACKLOG #40(a): a GB source's box holds fewer than the 30-cell grid it is drawn
+   * into (src->capacity, NULL for every source before this — falls back to the
+   * Gen-3 PC/bank's real 30, unchanged for them). */
+  int denom = party_slot ? 6 : (src->capacity ? src->capacity(box) : 30);
+  siprintf(bnocc, "%s  %d/%d", bn[0] ? bn : "BOX", occ, denom);
   siprintf(bnum, "%d:", box + 1);
   draw_banner(WP_X + 2, 13, WP_W - 4, party_slot ? 0 : bnum, bnocc);
   /* Only when the cursor is ACTUALLY on the box name. `on_title` stays true while the cursor

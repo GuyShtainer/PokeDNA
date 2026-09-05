@@ -35,6 +35,12 @@ typedef struct {
   AppCommitFn commit;                       /* persist the current box now                   */
   void (*mark_dirty)(void);                 /* deferred persist (move-mode drop)             */
   void (*note_add)(const uint8_t* rec);     /* opt: a mon landed here -> register its dex (PC only; NULL on bank) */
+  /* BACKLOG #40(a): the box banner's occupancy denominator. NULL (every source before
+   * #40) means the Gen-3 grid's own 30 -- the PC/bank's real capacity, unchanged. A GB
+   * source's box holds fewer (20 for Gen 2, 12-99 for Gen 1 depending on version) than
+   * the 30-cell grid it is drawn into; without this the banner read "20/30" for a full
+   * Gen-2 box, 10 short of full. */
+  int  (*capacity)(int box);
 } BoxSource;
 
 /* Game-faithful box screen over `src`: a left PKMN DATA panel + a 6x5 icon grid on
