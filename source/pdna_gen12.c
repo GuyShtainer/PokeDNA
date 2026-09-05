@@ -1323,6 +1323,14 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
     msg_wait(PDNA_SIDECAR_FULL_TITLE, UI_WARN, PDNA_SIDECAR_FULL_L1, PDNA_SIDECAR_NOTWRITTEN_L2);
     return false;
   }
+  /* S5-C review #3: GBSC_FLAG_KEEP_ASKED is a whole-FILE flag ("gb_reconcile_
+   * on_load already asked about every entry in this file and the user chose
+   * KEEP") -- it must not silence a NEW entry this same key just gained. Without
+   * this, one "keep both" on an OLDER transfer would permanently hide every LATER
+   * transfer to the same OT/DVs/name (the sidecar key), reconcile-on-load included,
+   * with no way for the user to ever be asked about it again. */
+  uint16_t flags = gbsc_flags_get(g_ed->sidecar, len);
+  if (flags & GBSC_FLAG_KEEP_ASKED) gbsc_flags_set(g_ed->sidecar, len, flags & ~GBSC_FLAG_KEEP_ASKED);
 
   rmbl_pause();
   SfStatus wst = sf_write_verified(path, g_ed->sidecar, len);
