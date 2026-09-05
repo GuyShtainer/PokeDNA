@@ -590,88 +590,150 @@ int main(void) {
   PF(PDNA_GBEDIT_PICKBOX_NONE_L1,    28, 184);
   /* ==== END: GB mon editor ================================================= */
 
-  /* ==== BACKLOG #41: source/pdna_gbsummary.c, the Gen-1/2 native VIEW/EDIT summary.
-   * Fixed sys8 throughout (T(), like pdna_gbedit's own screen); every editable
-   * GBE_* row reuses PDNA_EDIT_LBL_X/VAL_X, already proven to fit by that screen —
-   * only the labels/values pdna_gbsummary.c adds ON TOP of gb_editor.c's own rows
-   * are new here. Dynamic rows (species name, computed numbers) are built from
-   * their real _FMT macro at a worst-case value, not retyped as a literal. */
+  /* ==== BACKLOG #41 slice E1: source/pdna_gbsummary.c restyled to the Gen-3
+   * CARD chrome (docs/SPRITE-ERA-DESIGN.md sec 3). Card bodies live in the SAME
+   * 138 px column pdna_summary.c's own cards do (PDNA_SUM_CARD_X/W), so labels
+   * are checked against PDNA_GBSUM_VAL_DX (the value column's own start, NOT the
+   * screen edge — a label reaching the value column would crowd or overlap the
+   * value it labels, which T()'s screen-edge budget would miss) and sentence-
+   * shaped strings against the CARD's width, matching what render()/card_*()
+   * actually draw them with. */
 
-  /* Review item 11: gbe_label(f) (gb_editor.c's own LABEL[] table — "Nickname",
-   * "OT Name", "Friendship", ...) was never measured even for pdna_gbedit.c's own
-   * screen (a pre-existing gap); pdna_gbsummary.c's field_row() reuses the exact same
-   * PDNA_EDIT_LBL_X column, so one loop over the real function covers both screens. */
+  /* Review item 11 (kept from the retail-page version): gbe_label(f)
+   * (gb_editor.c's own LABEL[] table) was never measured even for pdna_gbedit.c's
+   * own screen (a pre-existing gap); pdna_gbsummary.c's field_row() reuses the
+   * exact same PDNA_EDIT_LBL_X column pdna_gbedit.c's row_paint does — a
+   * DIFFERENT, wider column than the card labels below — so one loop over the
+   * real function still covers both screens. */
   for (int f = 0; f < GBE_NUM; f++) T(gbe_label(f), PDNA_EDIT_LBL_X);
 
   T(PDNA_GBSUM_VIEW_CHIP, 4);
   T(PDNA_GBSUM_EDIT_CHIP, 8);
-  T(PDNA_GBSUM_CARD_INFO,  4);
-  T(PDNA_GBSUM_CARD_STATS, 4);
-  T(PDNA_GBSUM_CARD_MOVES, 4);
+  /* Card titles: fixed sys8 at PDNA_SUM_CARD_X, must fit the 138 px card itself
+   * (not just before the screen edge — checked directly, not via T(), since T()
+   * always budgets to the screen edge). */
+  chk("card title", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen(PDNA_GBSUM_CARD_INFO) * SYS8_W, PDNA_GBSUM_CARD_INFO);
+  chk("card title", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen(PDNA_GBSUM_CARD_SKILLS) * SYS8_W, PDNA_GBSUM_CARD_SKILLS);
+  chk("card title", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen(PDNA_GBSUM_CARD_MOVES) * SYS8_W, PDNA_GBSUM_CARD_MOVES);
+  chk("card title", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen(PDNA_GBSUM_CARD_ORIGIN) * SYS8_W, PDNA_GBSUM_CARD_ORIGIN);
   T(PDNA_GBSUM_FOOT_VIEW,    4);
   T(PDNA_GBSUM_FOOT_VIEW_RO, 4);
   T(PDNA_GBSUM_FOOT_EDIT,    4);
 
-  /* Card 0 (INFO): display-only labels at PDNA_EDIT_LBL_X, values at PDNA_EDIT_VAL_X
-   * (val_row()'s own split — the same columns pdna_gbedit's row_paint uses). */
-  T(PDNA_GBSUM_LBL_SPECIES, PDNA_EDIT_LBL_X);
-  T(PDNA_GBSUM_LBL_TYPE,    PDNA_EDIT_LBL_X);
-  T(PDNA_GBSUM_LBL_STATUS,  PDNA_EDIT_LBL_X);
-  T(PDNA_GBSUM_LBL_PKRS,    PDNA_EDIT_LBL_X);
-  T(PDNA_GBSUM_ST_OK,  PDNA_EDIT_VAL_X);
-  T(PDNA_GBSUM_ST_SLP, PDNA_EDIT_VAL_X);
-  T(PDNA_GBSUM_ST_PSN, PDNA_EDIT_VAL_X);
-  T(PDNA_GBSUM_ST_BRN, PDNA_EDIT_VAL_X);
-  T(PDNA_GBSUM_ST_FRZ, PDNA_EDIT_VAL_X);
-  T(PDNA_GBSUM_ST_PAR, PDNA_EDIT_VAL_X);
+  /* Card 0 (INFO): field_row()'s labels at PDNA_SUM_CARD_X, budgeted to
+   * PDNA_GBSUM_VAL_DX (the value column's own start) rather than the screen
+   * edge — this is exactly the check that would have caught the old design's
+   * "Friend"/"Status" landing flush against the value column with the old
+   * VAL_DX (48 px, since fixed): both are 6 cols / 48 px, so VAL_DX was widened
+   * to 52 for a 4 px gap and this check is what proves it. */
+#define GBSUM_LBL(s) \
+  chk("card 0 label", PDNA_SUM_CARD_X, PDNA_GBSUM_VAL_DX, (int)strlen(s) * SYS8_W, s)
+  GBSUM_LBL(PDNA_GBSUM_LBL_NAME);
+  GBSUM_LBL(PDNA_GBSUM_LBL_OT);
+  GBSUM_LBL(PDNA_GBSUM_LBL_ID);
+  GBSUM_LBL(PDNA_GBSUM_LBL_LV);
+  GBSUM_LBL(PDNA_GBSUM_LBL_ITEM);
+  GBSUM_LBL(PDNA_GBSUM_LBL_FRIEND);
+  GBSUM_LBL(PDNA_GBSUM_LBL_STATUS);
+  GBSUM_LBL(PDNA_GBSUM_LBL_PKRS);
+#undef GBSUM_LBL
+  /* ID's own value ("%05u", always exactly 5 digits) and the Gen-1 status text
+   * (fixed sys8, UNtruncated — unlike every other value on this card, which
+   * goes through field_row()'s own ui_truncate) both need checking against the
+   * value column's real width (PDNA_SUM_CARD_W - VAL_DX). */
+  { char b[8]; sprintf(b, PDNA_GBSUM_ID_FMT, 65535u);
+    chk("card 0 ID value", PDNA_SUM_CARD_X + PDNA_GBSUM_VAL_DX,
+        PDNA_SUM_CARD_W - PDNA_GBSUM_VAL_DX, (int)strlen(b) * SYS8_W, b); }
+#define GBSUM_STV(s) \
+  chk("card 0 status value", PDNA_SUM_CARD_X + PDNA_GBSUM_VAL_DX, \
+      PDNA_SUM_CARD_W - PDNA_GBSUM_VAL_DX, (int)strlen(s) * SYS8_W, s)
+  GBSUM_STV(PDNA_GBSUM_ST_OK);
+  GBSUM_STV(PDNA_GBSUM_ST_SLP);
+  GBSUM_STV(PDNA_GBSUM_ST_PSN);
+  GBSUM_STV(PDNA_GBSUM_ST_BRN);
+  GBSUM_STV(PDNA_GBSUM_ST_FRZ);
+  GBSUM_STV(PDNA_GBSUM_ST_PAR);
+#undef GBSUM_STV
   {
-    /* Sex/Shiny combined row (disp_row, full width at PDNA_EDIT_LBL_X). "M"/"F"/"-"
-     * are all 1 column; Yes(3)/No(2) — check the longer one. */
-    char b[32];
-    sprintf(b, PDNA_GBSUM_SEXSHINY_FMT, "M", PDNA_GBSUM_SHINY_YES);
-    T(b, PDNA_EDIT_LBL_X);
+    /* Pokerus detail row: proportional (ui_ptext_fit), so it can only clip
+     * itself, but the worst case — both nibbles at their two-digit maximum —
+     * is exactly what would have overflowed the old fixed-sys8 rendering
+     * (13 cols / 104 px against an 86 px value column) had it shipped that way. */
+    char b[24];
+    sprintf(b, PDNA_GBSUM_PKRS_DAYS_FMT, 15u, 15u);
+    PF(b, PDNA_SUM_CARD_X + PDNA_GBSUM_VAL_DX, PDNA_SUM_CARD_W - PDNA_GBSUM_VAL_DX);
+    sprintf(b, PDNA_GBSUM_PKRS_IMMUNE_FMT, 15u);
+    PF(b, PDNA_SUM_CARD_X + PDNA_GBSUM_VAL_DX, PDNA_SUM_CARD_W - PDNA_GBSUM_VAL_DX);
   }
   {
-    /* EXP row (disp_row, full width at PDNA_EDIT_LBL_X: the "EXP " label is baked
-     * into the _FMT macro itself, since PDNA_EDIT_VAL_X's own 122 px value column
-     * is not wide enough for a 7-digit EXP + a 6-digit remainder). */
+    /* EXP line: proportional, fit to the whole card width (card_info draws it
+     * full-width below the other rows, not split into a label/value pair). */
     char b[32];
     sprintf(b, PDNA_GBSUM_EXP_FMT, 1640000ul, 999999ul);
-    T(b, PDNA_EDIT_LBL_X);
+    PF(b, PDNA_SUM_CARD_X, PDNA_SUM_CARD_W);
     sprintf(b, PDNA_GBSUM_EXP_MAX_FMT, 1640000ul);
-    T(b, PDNA_EDIT_LBL_X);
+    PF(b, PDNA_SUM_CARD_X, PDNA_SUM_CARD_W);
   }
+  /* The `note` string every pdna_gbsummary() caller passes ("Gen 1 record" /
+   * "Gen 2 record", pdna_gen12.c's own two call sites) is not a macro — it is
+   * caller-supplied — but both of its real values are fully known, so they are
+   * checked here rather than skipped as "data the host cannot see". Drawn fixed
+   * sys8, UNtruncated, at the top of the ORIGIN card. */
+  T("Gen 1 record", PDNA_SUM_CARD_X);
+  T("Gen 2 record", PDNA_SUM_CARD_X);
 
-  /* Card 1 (STATS): the 4-column grid's own x positions (PDNA_GBSUM_STAT_*). */
-  T(PDNA_GBSUM_HDR_DV, PDNA_GBSUM_STAT_DV_X);
-  T(PDNA_GBSUM_HDR_SE, PDNA_GBSUM_STAT_SE_X);
-  T(PDNA_GBSUM_STAT_HP,  PDNA_GBSUM_STAT_LBL_X);
-  T(PDNA_GBSUM_STAT_ATK, PDNA_GBSUM_STAT_LBL_X);
-  T(PDNA_GBSUM_STAT_DEF, PDNA_GBSUM_STAT_LBL_X);
-  T(PDNA_GBSUM_STAT_SPE, PDNA_GBSUM_STAT_LBL_X);
-  T(PDNA_GBSUM_STAT_SPA, PDNA_GBSUM_STAT_LBL_X);
-  T(PDNA_GBSUM_STAT_SPD, PDNA_GBSUM_STAT_LBL_X);
-  T(PDNA_GBSUM_STAT_SPC, PDNA_GBSUM_STAT_LBL_X);
+  /* Card 1 (SKILLS): two rows per stat. Row 1 labels + the widest computed
+   * value; row 2's DV/stat-exp cells at their own PDNA_GBSUM_STAT_*_DX offsets
+   * from PDNA_SUM_CARD_X (NOT screen-absolute x positions like the old 4-column
+   * grid used — this design has no single-row-spans-everything layout left to
+   * re-derive absolute x from, so each cell's own real budget is used instead). */
+#define GBSUM_STATLBL(s) \
+  chk("card 1 stat label", PDNA_SUM_CARD_X, 26, (int)strlen(s) * SYS8_W, s)
+  GBSUM_STATLBL(PDNA_GBSUM_STAT_HP);
+  GBSUM_STATLBL(PDNA_GBSUM_STAT_ATK);
+  GBSUM_STATLBL(PDNA_GBSUM_STAT_DEF);
+  GBSUM_STATLBL(PDNA_GBSUM_STAT_SPE);
+  GBSUM_STATLBL(PDNA_GBSUM_STAT_SPA);
+  GBSUM_STATLBL(PDNA_GBSUM_STAT_SPD);
+  GBSUM_STATLBL(PDNA_GBSUM_STAT_SPC);
+#undef GBSUM_STATLBL
   {
     char b[16];
+    /* Row 1 value, at PDNA_SUM_CARD_X + 26, budgeted to the rest of the card. */
     sprintf(b, PDNA_GBSUM_STAT_CURMAX_FMT, 999u, 999u);
-    T(b, PDNA_GBSUM_STAT_VAL_X);
+    chk("card 1 stat value", PDNA_SUM_CARD_X + 26, PDNA_SUM_CARD_W - 26,
+        (int)strlen(b) * SYS8_W, b);
+    /* Row 2: DV cell must clear the SE cell that starts right after it. */
     sprintf(b, PDNA_GBSUM_STAT_DV_FMT, 15u);
-    T(b, PDNA_GBSUM_STAT_DV_X);
+    chk("card 1 DV cell", PDNA_SUM_CARD_X + PDNA_GBSUM_STAT_DV_DX,
+        PDNA_GBSUM_STAT_SE_DX - PDNA_GBSUM_STAT_DV_DX, (int)strlen(b) * SYS8_W, b);
+    /* Row 2: SE cell, budgeted to the rest of the card. */
     sprintf(b, PDNA_GBSUM_STAT_SE_FMT, 65535u);
-    T(b, PDNA_GBSUM_STAT_SE_X);
+    chk("card 1 SE cell", PDNA_SUM_CARD_X + PDNA_GBSUM_STAT_SE_DX,
+        PDNA_SUM_CARD_W - PDNA_GBSUM_STAT_SE_DX, (int)strlen(b) * SYS8_W, b);
   }
-  T(PDNA_GBSUM_BOX_STAT_NOTE, PDNA_EDIT_LBL_X);
+  PF(PDNA_GBSUM_BOX_STAT_NOTE, PDNA_SUM_CARD_X, PDNA_SUM_CARD_W);
 
-  /* Card 2 (MOVES). */
-  T(PDNA_GBSUM_PP_LBL,  PDNA_GBSUM_PPROW_X);
-  T(PDNA_GBSUM_UPS_LBL, PDNA_GBSUM_UPS_LBL_X);
-  {
-    char b[16];
-    sprintf(b, PDNA_GBSUM_LBL_MOVE_FMT, 4u);
-    T(b, PDNA_EDIT_LBL_X);
-  }
-  /* ==== END BACKLOG #41 ====================================================== */
+  /* Card 2 (MOVES) reuses pdna_summary.c's own PDNA_SUM_PP_X_DX/PP_W and
+   * PDNA_SUM_PP_FMT/PP_UPS_FMT VERBATIM (already checked above, in the summary
+   * screen's own section, at the same worst-case PP/Ups values) — no new
+   * geometry, so no new check. The move-name column (PDNA_SUM_PP_X_DX - 4 =
+   * 74 px) is likewise pdna_summary.c's own already-shipped BATTLE MOVES width.
+   *
+   * Card 3 (ORIGIN): the two prose lines (proportional, fit to the card) and
+   * the fixed-sys8 sidecar line (fits trivially, checked for completeness). */
+  PF(PDNA_GBSUM_ORIGIN_ART_L1, PDNA_SUM_CARD_X, PDNA_SUM_CARD_W);
+  PF(PDNA_GBSUM_ORIGIN_ART_L2, PDNA_SUM_CARD_X, PDNA_SUM_CARD_W);
+  T(PDNA_GBSUM_ORIGIN_TYPE_LBL, PDNA_SUM_CARD_X);
+  chk("origin sidecar line", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen(PDNA_GBSUM_ORIGIN_SIDECAR_YES) * SYS8_W, PDNA_GBSUM_ORIGIN_SIDECAR_YES);
+  chk("origin sidecar line", PDNA_SUM_CARD_X, PDNA_SUM_CARD_W,
+      (int)strlen(PDNA_GBSUM_ORIGIN_SIDECAR_NO) * SYS8_W, PDNA_GBSUM_ORIGIN_SIDECAR_NO);
+  /* ==== END BACKLOG #41 slice E1 ============================================= */
 
   /* ==== S5-B: the Gen-3 <-> Game Boy sidecar (source/pdna_main.c app_paste_gb_merge /
    * app_sidecar_confirm). msg_wait strings share its (28, .., 184) clamp; the confirm
