@@ -371,6 +371,16 @@ static void negatives(void) {
   fix_new(&x, 1, 5); em_set_ball(&x.e, 0);
   want(CHK, "Unusual Poke Ball id", PK2_SUSPECT, "ball id");
 
+  /* B3b — E4, Safari Ball <-> Safari Zone (doc §3 E4). 0x39 is RSE's SAFARI ZONE
+   * MAPSEC, 0x10 an ordinary Hoenn route (data_tables.c s_location). */
+  fix_new(&x, 1, 5); em_set_ball(&x.e, 5); em_set_metloc(&x.e, 0x10);
+  want(CHK, "Safari Ball outside a Safari Zone", PK2_INVALID, "Safari Ball met elsewhere");
+  fix_new(&x, 1, 5); em_set_ball(&x.e, 4); em_set_metloc(&x.e, 0x39);
+  want(CHK, "Safari Zone catch, wrong Ball", PK2_SUSPECT, "Safari Zone met without a Safari Ball");
+  fix_new(&x, 1, 5); em_set_ball(&x.e, 5); em_set_metloc(&x.e, 0x39);
+  want_absent(CHK, "Safari Ball outside a Safari Zone", "matched Safari Ball and Zone");
+  want_absent(CHK, "Safari Zone catch, wrong Ball", "matched Safari Ball and Zone");
+
   /* B4 — eggs. Build a CLEAN egg first (level 5, metLevel 0, Poke Ball, hatch
    * counter <= 120, Japanese nickname タマゴ = 60 6F 8B FF with language 1) and
    * require silence; then break one field at a time. */

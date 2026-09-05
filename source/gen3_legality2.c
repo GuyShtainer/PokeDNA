@@ -269,6 +269,22 @@ static void check_met(const PkMon* m, const Pk2Facts* f, Pk2Report* R) {
    * (doc §3 E1/E2). Colosseum/XD met data is nonstandard, so skip it there. */
   if (!f->is_gc && m->metLocation > 0xD5 && m->metLocation < 0xFD)
     pk2_add(R, PK2_CAT_MET, PK2_SUSPECT, "Invalid met location");
+
+  /* E4 — Safari Ball <-> Safari Zone (doc §3 E4). Skip the three met-location
+   * markers (egg/trade/fateful aren't places) and Colosseum/XD (nonstandard met
+   * data, already skipped above). INVALID direction: a Safari Ball with no
+   * legitimate zone it could have come from — ball and met location both travel
+   * with the mon, so there is no ordinary path to this combination. The reverse
+   * (met in a Safari Zone without a Safari Ball) stays SUSPECT: PokeDNA has not
+   * independently confirmed RSE never issues another ball there. */
+  if (!f->is_gc && m->metLocation < 0xFD) {
+    bool met_safari = (m->metLocation == MAPSEC_SAFARI_RSE ||
+                        m->metLocation == MAPSEC_SAFARI_FRLG);
+    if (m->pokeball == G3_BALL_SAFARI && !met_safari)
+      pk2_add(R, PK2_CAT_MET, PK2_INVALID, "Safari Ball outside a Safari Zone");
+    else if (met_safari && m->pokeball != G3_BALL_SAFARI)
+      pk2_add(R, PK2_CAT_MET, PK2_SUSPECT, "Safari Zone catch, wrong Ball");
+  }
 }
 
 /* Egg coherence — doc §3 F. Every INVALID here cites CreateEgg/SetInitialEggData
