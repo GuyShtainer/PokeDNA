@@ -342,6 +342,8 @@ def check_only(path: str) -> int:
                 cbad.append(f"size is not {CLIP_SIZE}")
             print(f"  clip offset  : 0x{coff:08X} ({coff:,})  clip size: {csize}")
             print("  clip PROBLEMS: " + "; ".join(cbad) if cbad else "  clip looks consistent")
+            if cbad:
+                return 1
     return 0
 
 
@@ -357,7 +359,10 @@ def main(argv=None) -> int:
     ap.add_argument("--check", metavar="FUSED.GBA",
                     help="just report the save locator record of an image")
     ap.add_argument("--force", action="store_true",
-                    help="replace an already-fused save (drops the old payload)")
+                    help="replace an already-fused save (drops the old payload). If a "
+                         "--clip record was fused AFTER it, this aborts by design "
+                         "(dropping the save would corrupt the clip payload sitting "
+                         "past it) — re-fuse both from a clean build instead")
     ap.add_argument("--gb", action="store_true",
                     help="the save is a Game Boy (Gen-1/2) battery image, not Gen-3 — "
                          "32 KiB, or 32 KiB + a 44/48-byte RTC tail")
