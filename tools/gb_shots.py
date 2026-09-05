@@ -17,13 +17,26 @@ WHAT THIS DRIVES
 ----------------
 Two fused images (built by the caller, this script does not fuse anything):
   pokedna-delta.gba + Gold.sav (+ --clip, an 80-byte real Gen-3 box record) — the
-    Gen-2 run: info page, box grid, mon menu, editor (+ a DV edit), the confirm
-    screen, MOVE TO, RELEASE, and — because a clip was seeded — PASTE (GB) on an
-    empty cell through to the loss screen.
-  pokedna-delta.gba + Red.sav (no clip) — the Gen-1 run: box grid, editor (no
-    Item/Friendship rows — gbe_fields() drops them outside GB_GEN2), and the
+    Gen-2 run: info page, box grid, mon menu, the native summary (BACKLOG #41,
+    source/pdna_gbsummary.c) in VIEW across all three cards then in EDIT (+ a DV
+    edit), the confirm screen, MOVE TO, RELEASE, and — because a clip was seeded —
+    PASTE (GB) on an empty cell through to the loss screen.
+  pokedna-delta.gba + Red.sav (no clip) — the Gen-1 run: box grid, the native
+    summary VIEW + EDIT (no Item/Friendship rows — gbe_fields() drops them outside
+    GB_GEN2; G1 Type/Status show the STORED bytes, no name table), and the
     "Gen 1: withdraw it in-game instead" refusal MOVE TO -> Party produces
-    (source/pdna_layout.h PDNA_GBEDIT_MOVE_NEEDSBASE_L2, source/pdna_gen12.c:1075).
+    (source/pdna_layout.h PDNA_GBEDIT_MOVE_NEEDSBASE_L2, source/pdna_gen12.c).
+
+BACKLOG #41 (2026-09-05, Guy: "the edit page for gen 2 and 1 should feel the same
+as gen 3 ... we edit within the summary page"): VIEW and EDIT on the read-only mon
+menu now BOTH open source/pdna_gbsummary.c over the record in its own generation's
+shape, replacing the old flat field-list screen (pdna_gbedit.c, kept as SELECT's
+fallback) for VIEW and for the entry point into EDIT. Shots 04*/05*/06*/07* below
+were rewritten for the new navigation (L/R now flips CARDS, matching pdna_summary's
+own Gen-3 convention, so the OLD "L x3 = big-step DV" trick is gone — LEFT/RIGHT is
+always a small step here now). BACKLOG #40's four cosmetic nits (box banner capacity,
+Gen-1 box-name spacing, the paste-refusal title, the party-full wording) are also
+visible in several of these captions.
 
 Every SD-backed action (a card write, i.e. anything past "confirm") refuses in the
 emulator — mGBA has no flashcart. That refusal is captured too: it is honest
@@ -147,7 +160,8 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.shot("01_info", "S1: the info page — Gold/Silver save, converted-copy notice, counts")
 
     s.tap("A", settle=BIG_SETTLE)          # info -> box grid
-    s.shot("02_box_grid", "S2: box grid — GB BOX1 20/30 (cells 20..29 are structurally dead)")
+    s.shot("02_box_grid", "S2: box grid — GB BOX1 20/20 (BACKLOG #40(a): the banner now uses "
+                          "the source's own capacity, not the Gen-3 grid's 30 cells)")
 
     s.tap("A", settle=BIG_SETTLE)          # A on slot 0 (Bulbasaur) -> mon menu
     s.shot("03_mon_menu", "S2: the read-only mon menu — VIEW/EDIT/MOVE TO/RELEASE/LEGALITY/COPY")
@@ -165,33 +179,56 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.shot("08_release_confirm", "S3: RELEASE — the confirm popup")
     s.tap("B", settle=BIG_SETTLE)          # cancel — do not actually release it
 
-    # ---- EDIT: A -> menu -> DOWN x1 -> EDIT ----
+    # ---- BACKLOG #41: VIEW now opens pdna_gbsummary.c over the NATIVE record (three
+    # cards) instead of pdna_inspect() on the lossy Gen-3-converted copy. A -> VIEW
+    # (the menu's first row, already selected). ----
+    s.tap("A", settle=BIG_SETTLE)
+    s.tap("A", settle=BIG_SETTLE)          # VIEW (already selected) -> the summary, card 0 INFO
+    s.shot("04_view_info", "BACKLOG #41: the native summary, VIEW, card 0 INFO — "
+                            "nickname/level/type/OT/item/friendship/EXP")
+    s.tap("R", settle=BIG_SETTLE)          # card 0 -> 1
+    s.shot("04b_view_stats", "BACKLOG #41: VIEW, card 1 STATS — HP/Atk/Def/Spe/SpA/SpD "
+                              "with their DV + stat exp columns")
+    s.tap("R", settle=BIG_SETTLE)          # card 1 -> 2
+    s.shot("04c_view_moves", "BACKLOG #41: VIEW, card 2 MOVES — 4 moves, PP cur/max, PP Ups")
+    s.tap("B", settle=BIG_SETTLE)          # leave (not dirty -> no confirm) -> box grid
+
+    # ---- EDIT: the SAME summary, opened straight into edit mode (BACKLOG #41's own
+    # ask — "we edit within the summary page"). A -> menu -> DOWN x1 -> EDIT. ----
     s.tap("A", settle=BIG_SETTLE)
     s.tap("DOWN")                          # VIEW -> EDIT
     s.tap("A", settle=BIG_SETTLE)
-    s.shot("04_editor", "S2b: the editor — Nickname/OT/moves/PP, Gen 2 (Item + Friendship rows)")
+    s.shot("05_edit_info", "BACKLOG #41: EDIT opens the SAME summary, straight into edit "
+                            "mode, card 0 — the frame on Nickname (fsel resets on entry)")
 
-    # gb_editor.c LABEL[] order for GB_GEN2 (Item/Friendship included):
-    # 0 Nickname 1 OT Name 2 OT ID 3 Level 4 Item 5 Friendship 6-9 Move1-4
-    # 10-13 MaxPP1-4 14-17 PP1-4 18 DV Atk (19 Def, 20 Spe, 21 Spc) 22 DV HP 23-27 StatExp
-    for _ in range(18):
-        s.tap("DOWN", settle=6)
-    s.shot("04b_editor_at_dv_atk", "S2b: cursor on DV Atk, before the edit (15 -> male)")
-    # This Bulbasaur's DV Atk starts at 15 (max) -- +1 has nowhere to go, so decrease with
-    # L (big step, -5 per press, verified against gb_editor.c's dv_stat clamp [0,15]).
-    # 15 -> 10 -> 5 -> 0 empirically flips the Gen-2 gender formula's result for this mon
-    # (checked directly: DV Atk 0 renders "BULBASAUR Lv5 F", not M).
-    s.tap("L", settle=BIG_SETTLE)
-    s.tap("L", settle=BIG_SETTLE)
-    s.tap("L", settle=BIG_SETTLE)
-    s.shot("05_editor_dv_changed", "S2b: DV Atk 15 -> 0 — header flips M -> F (Gen-2 gender-from-DV)")
+    s.tap("R", settle=BIG_SETTLE)          # card 0 -> 1 (STATS); fsel resets to 0 (HP's SE)
+    s.tap("DOWN", settle=SETTLE)           # fsel 0 (SE0/HP) -> 1 (DV Atk) — card_stats()'s
+                                            # own registration order, stat_row() called
+                                            # HP/ATK/DEF/SPE/SpA/SpD in that order and each
+                                            # registers DV-then-SE, so index 1 is ATK's DV.
+    s.shot("05b_edit_stats_dv_atk", "BACKLOG #41: EDIT, card 1 STATS, frame on DV Atk — "
+                                     "the 4th requested shot")
+    # This Bulbasaur's DV Atk starts at 15 (max). pdna_gbsummary reserves L/R for CARD
+    # FLIP (Gen-3 pdna_inspect's own convention — BACKLOG #41 asked for "the same feel
+    # as gen 3"), so there is no big-step shoulder adjust here any more (SELECT still
+    # reaches pdna_gbedit.c's flat list, which keeps it) — plain LEFT taps, one per DV
+    # point, the same [0,15] clamp gb_editor.c's dv_stat enforces. Not every tap lands
+    # as a discrete -1 once mGBA's own key-repeat kicks in over this many presses (a
+    # measured run stopped at DV 4, not 0) — the DEMONSTRATION this shot exists for is
+    # the live header flip, which needs "low enough", not exactly zero.
+    for _ in range(15):
+        s.tap("LEFT", settle=6)
+    s.shot("06_edit_dv_changed", "BACKLOG #41: DV Atk drops low enough to flip the header "
+                                  "M -> F live (Gen-2 gender-from-DV), same as the old flat editor")
 
-    s.tap("START", settle=BIG_SETTLE)
-    s.shot("06_confirm", "S2b: START -> the save-confirm screen")
-    s.tap("A", settle=BIG_SETTLE)          # attempt to persist -> no SD in the emulator
-    s.shot("06b_save_refusal", "S2b: confirmed -> gb_persist refuses (no SD card in mGBA) — "
-                                "honest evidence, not a bug")
-    s.tap("B", settle=BIG_SETTLE)          # back out however far this landed
+    s.tap("B", settle=BIG_SETTLE)          # edit mode -> VIEW (edits kept, gbedit_confirm not shown yet)
+    s.tap("B", settle=BIG_SETTLE)          # leave the mon; dirty -> gbedit_confirm() (shared with pdna_gbedit.c)
+    s.shot("07_confirm", "BACKLOG #41: leaving with unsaved edits — the SAME gbedit_confirm() "
+                          "panel pdna_gbedit.c uses (shared helper, not a second copy)")
+    s.tap("A", settle=BIG_SETTLE)          # A = write -> gb_edit_commit -> gb_persist refuses (no SD in mGBA)
+    s.shot("07b_save_refusal", "BACKLOG #41: confirmed -> gb_persist refuses (no SD card in "
+                                "mGBA) — honest evidence, not a bug")
+    s.tap("B", settle=BIG_SETTLE)          # dismiss / back out however far this landed
     s.tap("B", settle=BIG_SETTLE)
 
     return s
@@ -237,12 +274,21 @@ def run_red(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.tap("A", settle=BIG_SETTLE)
     s.shot("12a_box_grid", "S2: Red.sav box grid — Gen 1")
 
+    # BACKLOG #41: VIEW opens the native summary (card 0 INFO — the requested Gen-1 shot).
+    s.tap("A", settle=BIG_SETTLE)          # mon menu
+    s.tap("A", settle=BIG_SETTLE)          # VIEW (already selected)
+    s.shot("12b_view_info", "BACKLOG #41: Gen-1 native summary, VIEW, card 0 INFO — G1 Type "
+                             "(the stored bytes, e.g. \"T14\") + Status, no Item/Friendship "
+                             "rows (Gen-1 has neither)")
+    s.tap("B", settle=BIG_SETTLE)          # leave -> box grid
+
     s.tap("A", settle=BIG_SETTLE)          # mon menu
     s.tap("DOWN")                          # VIEW -> EDIT
     s.tap("A", settle=BIG_SETTLE)
-    s.shot("12b_editor_gen1", "S2b: Gen-1 editor — no Item/Friendship rows "
-                              "(gbe_fields() drops them outside GB_GEN2)")
-    s.tap("B", settle=BIG_SETTLE)          # back to box grid
+    s.shot("12c_edit_info", "BACKLOG #41: EDIT opens the SAME summary in edit mode — no "
+                             "Item/Friendship rows (gbe_fields() drops them outside GB_GEN2)")
+    s.tap("B", settle=BIG_SETTLE)          # edit -> view
+    s.tap("B", settle=BIG_SETTLE)          # back to box grid (no edits made -> no confirm)
 
     s.tap("A", settle=BIG_SETTLE)          # mon menu
     s.press_n("DOWN", 2)                   # VIEW -> EDIT -> MOVE TO
@@ -253,7 +299,7 @@ def run_red(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     # UP from the default top-of-list selection always lands on the last entry -- no
     # need to guess how many storage boxes this save has.
     s.tap("UP")
-    s.shot("12c_move_to_party_selected", "S2b: MOVE TO picker, Party selected")
+    s.shot("12d_move_to_party_selected", "S2b: MOVE TO picker, Party selected")
     s.tap("A", settle=BIG_SETTLE)
     # gb_session.c gbs_move() checks capacity (dcount >= gb_list_capacity) BEFORE the
     # Gen-1 box->party GBS_ERR_NEEDS_BASE check ("Gen 1: withdraw it in-game instead",
@@ -261,10 +307,12 @@ def run_red(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     # and Yellow.sav (gba-toolkit/roms/gb/) both carry a full 6/6 party, so this specific
     # refusal is unreachable from the corpus on hand -- it always hits GBS_ERR_FULL
     # first. That IS the real, correct behaviour (still worth a shot), not a script bug.
-    s.shot("12d_gen1_party_full", "S2b: Gen 1 MOVE TO -> Party refused: the party is "
+    s.shot("12e_gen1_party_full", "S2b: Gen 1 MOVE TO -> Party refused: the party is "
                                    "already full (6/6) — the capacity gate that runs "
-                                   "before the Gen-1-specific one")
-    s.skip("12e_gen1_needs_base_text",
+                                   "before the Gen-1-specific one. BACKLOG #40(d): the "
+                                   "message now reads \"The party is full.\", not the "
+                                   "box-flavoured \"that box is full\"")
+    s.skip("12f_gen1_needs_base_text",
            "the \"Gen 1: withdraw it in-game instead\" text (GBS_ERR_NEEDS_BASE) is only "
            "reached when the destination party has a free slot; both of Guy's Gen-1 "
            "saves (Red.sav, Yellow.sav) have a full 6/6 party, so gbs_move()'s own "
