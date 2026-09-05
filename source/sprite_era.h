@@ -258,11 +258,15 @@ bool se_cell_applies(SeSaveKind kind, SePlace place);
 
 /* Which era the icon store should build its ROM from for this (kind, place) cell: the
  * cell's own setting IF it is a concrete Gen-3 era (G3_RS/G3_EM/G3_FRLG) with a
- * registered ROM, else the save's native Gen-3 era (se_native_era(kind, 3, 1) -- origin
- * 3/certain, i.e. "as if this were a native Gen-3 mon", which is what the icon store's
- * OWN game ROM already means today). GEN1/GEN2 cell settings and NATIVE do not name a
- * Gen-3 ROM, so they fall through to the same native answer. `s` or `roms` NULL falls
- * straight to the native answer (nothing else to read). */
+ * registered ROM, else the SAVE'S OWN native era: G3_RS/G3_EM/G3_FRLG for a Gen-3 kind
+ * (se_native_era(kind, 3, 1): a native Gen-3 mon of that game -- what the icon store's own
+ * game ROM already means today), but GEN1 / GEN2 for a Game Boy kind (se_native_era
+ * short-circuits on GB kinds before reading origin_gen, so the `3` is inert there). A
+ * caller mapping the result onto a PkGame MUST handle the two GB values -- there is no
+ * Gen-3 ROM behind them. GEN1/GEN2 CELL settings and NATIVE do not name a Gen-3 ROM and
+ * fall through to that native answer (so for an EM/PC cell set to GEN2, se_resolve says
+ * GEN2 per mon while the store stays EM -- E5, Gen-2 menu icons as PC-grid art, must
+ * revisit this). `s` or `roms` NULL falls straight to the native answer. */
 SeEra se_store_era(const SeSetting* s, SeSaveKind kind, SePlace place, const SeRoms* roms);
 
 /* Map a PkGame value (gen3_trainer.h's PK_RS/PK_EMERALD/PK_FRLG, 0/1/2) onto its

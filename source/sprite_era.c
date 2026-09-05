@@ -228,8 +228,8 @@ bool se_cell_applies(SeSaveKind kind, SePlace place) {
 }
 
 SeEra se_store_era(const SeSetting* s, SeSaveKind kind, SePlace place, const SeRoms* roms) {
-  SeEra fallback = se_native_era(kind, 3, 1);   /* "as if this were a native Gen-3 mon"
-                                                  * -- the icon store's own game today */
+  SeEra fallback = se_native_era(kind, 3, 1);   /* Gen-3 kind: its own game; GB kind: GEN1/
+                                                  * GEN2 (the 3 is inert -- see the header) */
   if (!s || !roms) return fallback;
   if ((unsigned)kind >= SE_KIND_N || (unsigned)place >= SE_PLACE_N) return fallback;
 
