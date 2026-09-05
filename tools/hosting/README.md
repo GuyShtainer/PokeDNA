@@ -22,5 +22,18 @@ Refresh the page after editing `docs/FEATURE-MATRIX.md`:
 
     /usr/local/bin/python3 tools/gen_matrix_html.py      # (the system python3 lacks `markdown`)
 
+Regenerate per-feature sheets (screenshots sorted per feature, not capture order —
+run after `tools/gb_shots.py` produces new shots in `docs/shots/gb/manifest.json`):
+
+    /usr/local/bin/python3 tools/gb_contact_sheet.py --per-feature
+    /usr/local/bin/python3 tools/gen_matrix_html.py
+
+The first command writes `docs/contact-sheets/<feature-id>.png` + `index.json`
+(feature order fixed by `tools/gb_contact_sheet.py`'s own `FEATURE_TABLE`); the
+second picks up that index and renders one `<h3 id="shots-<id>">` per feature,
+with a jump list, ahead of the older combined sheets. If the generated page grows
+past ~2 MB, re-run the first command with `--scale 1.5` to shrink the per-feature
+sheets before regenerating the page.
+
 Teardown: `tailscale serve --http=8090 off`, `pkill -f 'http.server 8770'`, and if installed
 `launchctl unload ~/Library/LaunchAgents/com.guy.pokedna-site.plist && rm` that file.

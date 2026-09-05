@@ -7,6 +7,7 @@ Quick viewer, not a build step: run it again after editing the markdown.
 import base64
 import datetime
 import html
+import json
 import pathlib
 import re
 import sys
@@ -19,11 +20,20 @@ OUT = ROOT / "docs" / "feature-matrix.html"
 # A second copy in a folder that holds ONLY the page: docs/ itself carries fused ROM
 # builds and analysis dumps, so the tailnet server (tools/hosting/) serves docs/site alone.
 SITE = ROOT / "docs" / "site" / "index.html"
-# Screenshots embedded as data URIs so the page stays one self-contained file.
+# tools/gb_contact_sheet.py --per-feature writes one sheet per feature (docs/FEATURE-
+# MATRIX.md's own S1/S2/S3/bag/#41/S5-B rows) plus this index, in the fixed order Guy
+# asked the status page to stay sorted in ("keep updating the screenshots sorted per
+# feature") rather than capture order. Older sheets below are still listed as-is.
+CONTACT_SHEETS_INDEX = ROOT / "docs" / "contact-sheets" / "index.json"
+# Screenshots embedded as data URIs so the page stays one self-contained file. These
+# render AFTER the per-feature sheets above (when the index exists) as the pre-
+# per-feature history.
 SHOTS = [
     (ROOT / "docs" / "contact-sheet-2026-09-05-gb-arc.png",
      "Gen-1/2 arc (S1..S5-B) in mGBA via a fused GB save, 2026-09-05 — SD writes "
-     "refuse in the emulator, so the \"Saving\" outcomes are hardware-only"),
+     "refuse in the emulator, so the \"Saving\" outcomes are hardware-only "
+     "(combined sheet — see the per-feature sheets above for the same shots sorted "
+     "by feature)"),
     (ROOT / "docs" / "contact-sheet-2026-08-30.png",
      "Contact sheet, 2026-08-30 arc (repaint pass D1-D10, DMA audit B3) — emulator build"),
     (ROOT / "docs" / "shots" / "sheet-artless.png", "Artless build, 2026-08-08"),
@@ -155,19 +165,52 @@ def main() -> int:
         for c in TOKENS.values()
     )
 
-    shots = []
-    for path, caption in SHOTS:
-        if not path.exists():
-            continue
+    def figure(path: pathlib.Path, caption: str) -> str:
         data = base64.b64encode(path.read_bytes()).decode("ascii")
-        shots.append(
+        return (
             '<figure style="margin:18px 0"><img src="data:image/png;base64,%s" '
             'style="max-width:100%%;border:1px solid #21262d;border-radius:6px" alt="%s">'
             '<figcaption style="color:#8b949e;font-size:13px;margin-top:6px">%s</figcaption></figure>'
             % (data, html.escape(caption), html.escape(caption)))
+
+    per_feature_html = ""
+    jump_list_html = ""
+    if CONTACT_SHEETS_INDEX.is_file():
+        features = json.loads(CONTACT_SHEETS_INDEX.read_text(encoding="utf-8"))
+        sections = []
+        jumps = []
+        for entry in features:
+            sheet_path = ROOT / entry["file"]
+            if not sheet_path.exists():
+                continue
+            jumps.append('<a href="#shots-%s">%s</a>' % (
+                html.escape(entry["id"]), html.escape(entry["title"])))
+            sections.append(
+                '<h3 id="shots-%s">%s <span style="color:#6e7681;font-weight:400">'
+                '(%d shot%s, updated %s)</span></h3>%s'
+                % (html.escape(entry["id"]), html.escape(entry["title"]),
+                   entry["count"], "" if entry["count"] == 1 else "s",
+                   html.escape(entry["updated"]),
+                   figure(sheet_path, entry["title"])))
+        if sections:
+            per_feature_html = "".join(sections)
+            jump_list_html = (
+                '<p style="color:#8b949e;font-size:13px">Jump to feature: '
+                + " &middot; ".join(jumps) + "</p>")
+
+    older_shots = []
+    for path, caption in SHOTS:
+        if not path.exists():
+            continue
+        older_shots.append(figure(path, caption))
+
     shots_html = ""
-    if shots:
-        shots_html = '<h2 id="shots">Screenshots</h2>' + "".join(shots)
+    if per_feature_html or older_shots:
+        shots_html = '<h2 id="shots">Screenshots</h2>' + jump_list_html + per_feature_html
+        if older_shots:
+            if per_feature_html:
+                shots_html += '<h3>Older sheets</h3>'
+            shots_html += "".join(older_shots)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     page = (TEMPLATE.replace("BADGECSS", badgecss)
                     .replace("BUTTONS", buttons)
