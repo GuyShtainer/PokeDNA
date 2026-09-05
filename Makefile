@@ -445,18 +445,23 @@ delta:                 # emulator build (Delta / RetroArch): edits its OWN 128 K
 # for), '<target>-artless' for the others.
 artless:               # hardware build WITHOUT the generated/git-ignored art -> PokeDNA-artless.gba
 	@$(MAKE) PDNA_ARTLESS=1 rebuild
+	@./tools/check_no_desc_text.sh PokeDNA-artless
 	@echo ""
 	@echo "  PokeDNA-artless.gba built — weak fallbacks in source/art_fallbacks.c (+ the"
 	@echo "  PDNA_*_ART_COMPILED / PDNA_NO_DAYCARE_BG gates) stand in for every generated"
 	@echo "  art module. Not one file in source/ was moved, copied, or deleted to get here."
+	@echo "  No Game Freak description text compiled in either (desc_gate.h /"
+	@echo "  data_desc_shim.c) -- verified by tools/check_no_desc_text.sh above."
 
 delta-artless:         # emulator build, no compiled art (composes 'delta' + 'artless')
 	@$(MAKE) PDNA_TARGET=delta PDNA_ARTLESS=1 rebuild
+	@./tools/check_no_desc_text.sh pokedna-delta-artless
 	@echo ""
 	@echo "  pokedna-delta-artless.gba built. Same save rules as 'delta' above."
 
 sd-artless:            # SD-streaming build, no compiled art (composes 'sd' + 'artless')
 	@$(MAKE) PDNA_TARGET=sd PDNA_ARTLESS=1 rebuild
+	@./tools/check_no_desc_text.sh PokeDNA-SD-artless
 	@echo ""
 	@echo "  PokeDNA-SD-artless.gba built."
 
