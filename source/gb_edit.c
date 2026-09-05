@@ -440,6 +440,9 @@ uint8_t gb_get_gen1_type1(const GbEditMon* e) {
 uint8_t gb_get_gen1_type2(const GbEditMon* e) {
   return (e && e->gen == GB_GEN1) ? e->rec[R1_TYPE2] : 0;
 }
+uint8_t gb_get_pokerus(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN2) ? e->rec[R2_PKRS] : 0;
+}
 uint8_t gb_get_gen1_status(const GbEditMon* e) {
   return (e && e->gen == GB_GEN1) ? e->rec[R1_STATUS] : 0;
 }

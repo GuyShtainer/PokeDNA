@@ -266,20 +266,29 @@ uint16_t gb_get_otid(const GbEditMon* e);
 uint8_t  gb_get_held_item(const GbEditMon* e);    /* Gen 2 only; 0 for Gen 1              */
 uint8_t  gb_get_friendship(const GbEditMon* e);   /* Gen 2 only; 0 for Gen 1              */
 uint16_t gb_get_stat(const GbEditMon* e, int i);  /* party only, i = 0..4 (Gen 1) / 0..5  */
-/* Current HP — party only, 0 for a box record (box structs store no live damage; a
- * boxed mon is always "full" on withdrawal until recalculated). Read-only: no editor
- * setter exists for it, on purpose — real play only ever changes it via battle damage
- * or a heal, neither of which this tree models. */
+/* Current HP — party only, 0 for a box record. NOT because the byte is absent: a Gen-1
+ * box record's struct carries the same current-HP field at the same offset as its party
+ * counterpart (pokered/macros/ram.asm's box_struct, verified against R1_CURHP). It reads
+ * 0 here because a box record pairs with no COMPUTED max HP (gb_get_stat() is party-only
+ * too), and a bare current-HP number with no max to put it over is not worth showing —
+ * not because the bytes do not exist. Read-only: no editor setter exists for it, on
+ * purpose — real play only ever changes it via battle damage or a heal, neither of which
+ * this tree models. */
 uint16_t gb_get_current_hp(const GbEditMon* e);
 /* Gen-1-only, read-only: the STORED type bytes and status byte (pokered/macros/ram.asm:
  * 12-15 box_struct's Type1/Type2/Status). 0 for a Gen-2 record. Gen-1 type IDS are NOT
- * Gen-3's (see GbGen1Base's own comment) and this tree carries no Gen-1 type-NAME table,
- * so a caller shows the raw id (e.g. "T14") rather than guessing a name. Status is the
- * usual Game Boy bitfield: bits 0-2 sleep-turns-left, bit 3 poison, bit 4 burn, bit 5
- * freeze, bit 6 paralysis (pokered/constants/battle_constants.asm:62-67), 0 = OK. */
+ * Gen-3's (see GbGen1Base's own comment) — this tree has no Gen-1-NUMBERED type-name
+ * table, but the ids map onto Gen 3's own numbering (identity for 0x00-0x05, -1 for
+ * 0x07-0x09, -0x0A for 0x14-0x1B; 0x06 is Gen 1's unused BIRD slot, no equivalent), so a
+ * caller can still show the real name via pk_type_name()/ui_type_chip() after mapping —
+ * see source/pdna_gbsummary.c's g1_to_g3_type(). */
 uint8_t  gb_get_gen1_type1(const GbEditMon* e);
 uint8_t  gb_get_gen1_type2(const GbEditMon* e);
 uint8_t  gb_get_gen1_status(const GbEditMon* e);
+/* Gen-2-only: high nibble strain, low nibble days left (0 with a strain set = immune,
+ * past infection); 0 = never had it. 0 for a Gen-1 record (no such field exists there).
+ * Read-only — this tree has no setter or row for it yet. */
+uint8_t  gb_get_pokerus(const GbEditMon* e);
 bool     gb_is_egg(const GbEditMon* e);           /* Gen 2 list byte 0xFD                 */
 /* Editable text — see NAMES.
  *
