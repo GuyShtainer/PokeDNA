@@ -1752,11 +1752,22 @@ _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
  * U/D inside the summary asks for the next/prev mon; every slot 0..count-1 of a GB
  * list IS occupied by definition (gb_list_count()'s own contract: "slots 0..count-1
  * hold Pokemon; everything from count on is free space"), so "next occupied slot"
- * is just a wrapping +-1 over count, never a skip-empty-slots search. */
+ * is just a wrapping +-1 over count, never a skip-empty-slots search.
+ *
+ * Two sources of the record, same shape as gb_copy_native_hook (bag/menu review fix,
+ * the nav-menu-copy-lossy finding's sibling): an open edit session (g_ed set) reads
+ * and can edit through the real GbSession exactly as before; no session (g_ed NULL,
+ * the read-only nav-menu mount over a bare FIL) reads the box straight from the
+ * mount's already-staged list (g_m->stage -- fresh for the same reason
+ * gb_copy_native_hook's own comment gives: gb_build_slot never reaches this hook on a
+ * slot whose box didn't just load) and NEVER offers editing -- there is no GbSession
+ * to commit an edit through, so `can_edit` is unconditionally false on this path
+ * (gb_edit_commit dereferences g_ed unconditionally and would crash if it ever ran
+ * here; it can't, because `saved` can only go true when pdna_gbsummary was opened
+ * with can_edit true). */
 static bool gb_view_hook(uint8_t* rec80) {
   int box, slot;
   if (!gb_locate_addr(rec80, &box, &slot)) return false;
-  GbSession* s = &g_ed->s;
   /* Review fix: this used to be `int card = 0;` INSIDE the loop, so every +1/-1 step to
    * the next/prev mon silently reset the card back to 0 (INFO) -- contradicting
    * pdna_gbsummary.h's own documented contract ("scrolling to the next mon stays on the
@@ -1765,21 +1776,36 @@ static bool gb_view_hook(uint8_t* rec80) {
   int card = 0;
 
   for (;;) {
-    GbsStatus lst = gbs_load_list(s, box, g_ed->list);
-    if (lst != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(lst), 0); return false; }
-    int count = gb_list_count(s->gen, g_ed->list, box);
-    if (count <= 0 || slot >= count) {
-      snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
-    }
-
     GbEditMon e;
-    if (!gb_load(&e, s->gen, g_ed->list, box, slot)) { snd_deny(); return false; }
-    bool has_sidecar = gb_has_sidecar(s->gen, &e);
-    bool can_edit = app_can_edit() && gbs_box_writable(s, box) == GBS_OK;
+    uint8_t gen;
+    bool can_edit;
+    int count;
+    if (g_ed) {
+      GbSession* s = &g_ed->s;
+      GbsStatus lst = gbs_load_list(s, box, g_ed->list);
+      if (lst != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(lst), 0); return false; }
+      count = gb_list_count(s->gen, g_ed->list, box);
+      if (count <= 0 || slot >= count) {
+        snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
+      }
+      gen = s->gen;
+      if (!gb_load(&e, gen, g_ed->list, box, slot)) { snd_deny(); return false; }
+      can_edit = app_can_edit() && gbs_box_writable(s, box) == GBS_OK;
+    } else {
+      if (!g_m || !g_m->stage) return false;
+      gen = (g_m->kind == GB12_SAVE_RBY) ? GB_GEN1 : GB_GEN2;
+      count = gb_list_count(gen, g_m->stage, box);
+      if (count <= 0 || slot >= count) {
+        snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
+      }
+      if (!gb_load(&e, gen, g_m->stage, box, slot)) { snd_deny(); return false; }
+      can_edit = false;
+    }
+    bool has_sidecar = gb_has_sidecar(gen, &e);
 
     bool saved = false;
     int nav = pdna_gbsummary(&e, can_edit, false,
-                             s->gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
+                             gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
                              has_sidecar, &saved, &card);
     if (saved && !gb_edit_commit(box, slot, &e, "view")) return false;
     if (nav == 0) return false;
@@ -1790,7 +1816,28 @@ static bool gb_view_hook(uint8_t* rec80) {
 }
 
 static const AppSrcOps k_gb_ops = {
-  gb_edit_hook, gb_move_hook, gb_release_hook, gb_copy_native_hook, gb_paste_hook, gb_view_hook
+  .edit = gb_edit_hook, .move = gb_move_hook, .release = gb_release_hook,
+  .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
+};
+
+/* Bag/menu review fix (the nav-menu-copy-lossy finding): the read-only nav-menu mount
+ * (pdna_gen12_show over a bare FIL, no edit session -- g_ed stays NULL for its whole
+ * visit) used to register NO ops table at all, because gb_session_core below only
+ * called app_src_ops_set() `if (g_ed)`. That left g_src_ops NULL on this path, so
+ * app_copy()'s `g_src_ops && g_src_ops->copy_native` check in pdna_main.c never fired,
+ * from_gb never got set, and a later PASTE in a Gen-3 save pasted the lossy converted
+ * copy with no sidecar merge -- the exact loss copy_native/gb_copy_native_hook exists
+ * to prevent, just unreachable from this entry point.
+ *
+ * This table is the read-only twin of k_gb_ops above: every mutating hook (edit/move/
+ * release/paste) is NULL, because none of them has a GbSession to write through here --
+ * app_mon_menu_readonly's row list already NULL-gates each one off g_src_ops, so this
+ * is enough to keep every destructive row off the menu on this path. `view` and
+ * `copy_native` are the two hooks S5-B/BACKLOG#41 already made g_ed-optional (see their
+ * own comments above), so they carry over unchanged. */
+static const AppSrcOps k_gb_ops_ro = {
+  .edit = 0, .move = 0, .release = 0, .copy_native = gb_copy_native_hook,
+  .paste = 0, .view = gb_view_hook,
 };
 
 /* Info page -> box grid -> the "these did not convert" report. The whole session above
@@ -1806,7 +1853,11 @@ static void gb_session_core(Gb12Mount* m) {
    * boxes — see pdna_main.c. Cleared unconditionally below; every exit from the box
    * screen passes through it. */
   app_src_readonly_set(pdna_gen12_why_locked, "Converted copy");
-  if (g_ed) app_src_ops_set(&k_gb_ops);      /* S2/S3: EDIT / MOVE TO / RELEASE */
+  /* Bag/menu review fix: the nav-menu path (no edit session, g_ed NULL) used to skip
+   * app_src_ops_set() entirely, leaving g_src_ops NULL -- so COPY there never reached
+   * copy_native and silently pasted the lossy converted bytes. Register the read-only
+   * twin so VIEW and (lossless) COPY still work with no GbSession to write through. */
+  app_src_ops_set(g_ed ? &k_gb_ops : &k_gb_ops_ro);  /* S2/S3: EDIT / MOVE TO / RELEASE */
   BoxSource s = pdna_gen12_source(m);
   /* Returns 0 on B / the SAVE tab, 5 when the cursor drops off the bottom row (the
    * PC<->Bank hand-off, which has no PC to hand off to here) — re-enter on the top
