@@ -1415,6 +1415,15 @@ int main(void) {
     chkv_min("ball name column starts clear of the icon",
              PDNA_BALL_TEXT_X, PDNA_BALL_ICON_X + 24);
 
+    /* PDNA_DESC_PLACEHOLDER (BACKLOG #19 / desc_gate.h) is a FIXED string, unlike the
+     * item names/descriptions above -- pdna_pick.c's ball_row() draws it through the
+     * same ui_ptext_fit(PDNA_BALL_TEXT_X, ..., tw, ...) as the real per-item blurb, at
+     * tw = UI_SCR_W - PDNA_BALL_TEXT_X - 4, the tightest single-line (non-wrapped)
+     * budget any description is ever drawn into (pdna_bag.c/pdna_pick.c's other two
+     * call sites both wrap or paginate, so an over-long placeholder there just adds a
+     * line instead of clipping). Measured here so it can't silently grow past this
+     * budget and start clipping with a '~' where a real description never would. */
+    PF(PDNA_DESC_PLACEHOLDER, PDNA_BALL_TEXT_X, UI_SCR_W - PDNA_BALL_TEXT_X - 4);
   }
   /* ==== END: BALL picker ======================================================= */
 
