@@ -164,17 +164,20 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
                           "the source's own capacity, not the Gen-3 grid's 30 cells)")
 
     s.tap("A", settle=BIG_SETTLE)          # A on slot 0 (Bulbasaur) -> mon menu
-    s.shot("03_mon_menu", "S2: the read-only mon menu — VIEW/EDIT/MOVE TO/RELEASE/LEGALITY/COPY")
+    s.shot("03_mon_menu", "S2: the read-only mon menu — Gen-3 parity (BACKLOG #42/#43 batch, "
+                          "2026-09-05): VIEW and EDIT are now ONE row (\"VIEW / EDIT\", same "
+                          "label the Gen-3 menu uses), then MOVE TO/RELEASE/LEGALITY/COPY")
 
-    # ---- MOVE TO: menu order is VIEW, EDIT, MOVE TO, RELEASE, LEGALITY, COPY, CANCEL ----
-    s.press_n("DOWN", 2)                   # VIEW -> EDIT -> MOVE TO
+    # ---- MOVE TO: menu order is now VIEW/EDIT, MOVE TO, RELEASE, LEGALITY, COPY, CANCEL
+    # (one row shorter than before the VIEW/EDIT merge). ----
+    s.press_n("DOWN", 1)                   # VIEW/EDIT -> MOVE TO
     s.tap("A", settle=BIG_SETTLE)          # open the box/party picker
     s.shot("07_move_to_picker", "S3: MOVE TO — the destination box/party picker")
     s.tap("B", settle=BIG_SETTLE)          # cancel — do not actually move anything
 
-    # ---- RELEASE: back at the box grid; A -> menu -> DOWN x3 -> RELEASE ----
+    # ---- RELEASE: back at the box grid; A -> menu -> DOWN x2 -> RELEASE ----
     s.tap("A", settle=BIG_SETTLE)
-    s.press_n("DOWN", 3)                   # VIEW -> EDIT -> MOVE TO -> RELEASE
+    s.press_n("DOWN", 2)                   # VIEW/EDIT -> MOVE TO -> RELEASE
     s.tap("A", settle=BIG_SETTLE)
     s.shot("08_release_confirm", "S3: RELEASE — the confirm popup")
     s.tap("B", settle=BIG_SETTLE)          # cancel — do not actually release it
@@ -193,12 +196,14 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.shot("04c_view_moves", "BACKLOG #41: VIEW, card 2 MOVES — 4 moves, PP cur/max, PP Ups")
     s.tap("B", settle=BIG_SETTLE)          # leave (not dirty -> no confirm) -> box grid
 
-    # ---- EDIT: the SAME summary, opened straight into edit mode (BACKLOG #41's own
-    # ask — "we edit within the summary page"). A -> menu -> DOWN x1 -> EDIT. ----
+    # ---- EDIT: Gen-3 parity (BACKLOG #42/#43 batch) retired the standalone EDIT row that
+    # opened straight into edit mode -- the merged VIEW/EDIT row always opens in VIEW, and
+    # (like the Gen-3 summary) A INSIDE it flips to edit mode (pdna_gbsummary.c's own KEY_A
+    # handler, c->can_edit). menu -> VIEW/EDIT (already selected) -> A again for edit. ----
     s.tap("A", settle=BIG_SETTLE)
-    s.tap("DOWN")                          # VIEW -> EDIT
-    s.tap("A", settle=BIG_SETTLE)
-    s.shot("05_edit_info", "BACKLOG #41: EDIT opens the SAME summary, straight into edit "
+    s.tap("A", settle=BIG_SETTLE)          # VIEW/EDIT (already selected) -> the summary, VIEW
+    s.tap("A", settle=BIG_SETTLE)          # A inside VIEW -> editing = true, same as Gen 3
+    s.shot("05_edit_info", "Gen-3 parity: A inside the VIEW/EDIT summary flips to edit "
                             "mode, card 0 — the frame on Nickname (fsel resets on entry)")
 
     s.tap("R", settle=BIG_SETTLE)          # card 0 -> 1 (STATS); fsel resets to 0 (HP's SE)
@@ -283,15 +288,16 @@ def run_red(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.tap("B", settle=BIG_SETTLE)          # leave -> box grid
 
     s.tap("A", settle=BIG_SETTLE)          # mon menu
-    s.tap("DOWN")                          # VIEW -> EDIT
-    s.tap("A", settle=BIG_SETTLE)
-    s.shot("12c_edit_info", "BACKLOG #41: EDIT opens the SAME summary in edit mode — no "
-                             "Item/Friendship rows (gbe_fields() drops them outside GB_GEN2)")
+    s.tap("A", settle=BIG_SETTLE)          # VIEW/EDIT (already selected) -> the summary, VIEW
+    s.tap("A", settle=BIG_SETTLE)          # A inside VIEW -> editing = true, same as Gen 3
+    s.shot("12c_edit_info", "Gen-3 parity: A inside the VIEW/EDIT summary flips to edit "
+                             "mode — no Item/Friendship rows (gbe_fields() drops them "
+                             "outside GB_GEN2)")
     s.tap("B", settle=BIG_SETTLE)          # edit -> view
     s.tap("B", settle=BIG_SETTLE)          # back to box grid (no edits made -> no confirm)
 
     s.tap("A", settle=BIG_SETTLE)          # mon menu
-    s.press_n("DOWN", 2)                   # VIEW -> EDIT -> MOVE TO
+    s.press_n("DOWN", 1)                   # VIEW/EDIT -> MOVE TO
     s.tap("A", settle=BIG_SETTLE)
     # Party is the LAST row in the box/party picker for a Gen-1 source (gb_edit.c
     # GEN1_PARTY_BOX has the highest box number, so it sorts last). The picker's cursor
