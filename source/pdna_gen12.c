@@ -1153,7 +1153,7 @@ static bool gb_move_hook(uint8_t* rec80) {
      * destination-specific L1 instead. */
     const char* l1 = (st == GBS_ERR_FULL && gb_box_is_party(g_ed->s.gen, dst))
                     ? PDNA_GBEDIT_MOVE_PARTYFULL_L1 : gbs_status_text(st);
-    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, l1, hint);
+    msg_wait(PDNA_GBEDIT_MOVE_REFUSED_TITLE, UI_WARN, l1, hint);
     return false;
   }
 
@@ -1757,6 +1757,12 @@ static bool gb_view_hook(uint8_t* rec80) {
   int box, slot;
   if (!gb_locate_addr(rec80, &box, &slot)) return false;
   GbSession* s = &g_ed->s;
+  /* Review fix: this used to be `int card = 0;` INSIDE the loop, so every +1/-1 step to
+   * the next/prev mon silently reset the card back to 0 (INFO) -- contradicting
+   * pdna_gbsummary.h's own documented contract ("scrolling to the next mon stays on the
+   * same card"). Hoisted so it persists across the whole browse, exactly like
+   * pdna_inspect's own `card` in/out parameter. */
+  int card = 0;
 
   for (;;) {
     GbsStatus lst = gbs_load_list(s, box, g_ed->list);
@@ -1771,7 +1777,7 @@ static bool gb_view_hook(uint8_t* rec80) {
     bool has_sidecar = gb_has_sidecar(s->gen, &e);
     bool can_edit = app_can_edit() && gbs_box_writable(s, box) == GBS_OK;
 
-    bool saved = false; int card = 0;
+    bool saved = false;
     int nav = pdna_gbsummary(&e, can_edit, false,
                              s->gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
                              has_sidecar, &saved, &card);
