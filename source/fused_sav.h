@@ -54,4 +54,24 @@ bool fused_sav_present(uint32_t* size);
  * fused_sav_present); a short or over-long request fails rather than truncating. */
 bool fused_sav_read(void* dst, uint32_t len);
 
+/* ---- optional THIRD payload: a lone 80-byte Gen-3 box record, for seeding the
+ * clipboard on a screenshot build (docs the "PASTE (GB) on an empty cell" popup
+ * without a Gen-3 session ever being open). tools/fuse_sav.py --clip appends it and
+ * patches this record the same way; a delta-only test hook, never read outside
+ * PDNA_DELTA. Same shape as PdnaSavRec, kept separate so neither tool's magic can
+ * collide with the other's. */
+typedef struct {
+  char     magic[8];
+  uint32_t offset;
+  uint32_t size;
+} PdnaClipRec;
+
+extern const volatile PdnaClipRec g_pdna_clip;
+
+/* Is an 80-byte record appended? Fills *size (always 80 when true). */
+bool fused_clip_present(uint32_t* size);
+
+/* Copy it out. `len` must be the recorded size (80). */
+bool fused_clip_read(void* dst, uint32_t len);
+
 #endif /* FUSED_SAV_H */

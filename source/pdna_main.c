@@ -7675,6 +7675,45 @@ static void view_save(const char* path) {
         fused_sav_read(g_save, fsz)) {
       sz = fsz; err = 0;
       log_line("save: flash blank/invalid -> using the fused save (%lu B)", (unsigned long)fsz);
+    } else if (!flash_ok && fused_sav_present(&fsz) && pdna_gen12_size_is_gb(fsz) &&
+               fused_sav_read(g_save, fsz)) {
+      /* SCREENSHOT VEHICLE ONLY (docs/HANDOFF.md 2026-09-05): the GB fork below this
+       * #else is compiled OUT of every emulator build, because the real path reads a
+       * .sav off the SD card `view_save` never has in mGBA. A fused GB image is the
+       * one way to reach S1..S5-B's screens headlessly. Mirrors the real-hardware GB
+       * fork at the #else below line for line: same g_vinfo clear (nothing Gen-3 is
+       * loaded), same pdna_box_clear_carry (no phantom mon-in-hand from a previous
+       * save), same met_game 3 default. Persisting will fail here -- there is no SD
+       * card in the emulator -- and that refusal is itself an honest screenshot: it
+       * proves the never-corrupt gate holds even with nowhere to write.
+       *
+       * Looped rather than a single call: pdna_gen12_show_image() browses until B
+       * backs all the way out (GB12_ENTER_OK), and a delta build has no file browser
+       * to return to underneath it -- so re-enter the same session instead of falling
+       * into whatever view_save does next with a cleared g_vinfo. */
+      memset(&g_vinfo, 0, sizeof g_vinfo);
+      g_save_size = fsz;
+      pdna_box_clear_carry();
+      hb_off();
+      /* Optional clipboard seed (fuse_sav.py --clip): a real 80-byte Gen-3 box record
+       * so an empty GB cell's mon-menu offers PASTE (GB) -- app_mon_menu's own gate is
+       * g_clip.occupied && !g_clip.from_gb, and clip_copy_from always clears from_gb. */
+      { uint8_t rec80[80]; uint32_t csz = 0;
+        if (fused_clip_present(&csz) && csz == sizeof rec80 && fused_clip_read(rec80, csz)) {
+          clip_copy_from(&g_clip, rec80, false);
+          log_line("save: fused clip record loaded (%lu B) -> PASTE (GB) reachable",
+                   (unsigned long)csz);
+        }
+      }
+      log_line("save: flash blank/invalid -> using the fused GB save (%lu B)",
+               (unsigned long)fsz);
+      s_crumb_shown_armed = false;             /* the box screen paints its own crumb */
+      for (;;) {
+        int gr = pdna_gen12_show_image(path, g_save, fsz, g_save + GB12_PRISTINE_OFF, 3);
+        if (gr == GB12_ENTER_NOT_GB) break;    /* defensive: should be unreachable here */
+      }
+      perf_span_end();
+      return;
     }
   }
 #else

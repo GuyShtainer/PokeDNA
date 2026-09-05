@@ -68,6 +68,19 @@ CART_WINDOW = 0x02000000            # 32 MiB — the GBA's cart address space
 SAVE_SIZE = 0x20000                 # 128 KiB — G3_SAVE_FILE_SIZE
 SAVE_SIZE_ALT = 0x10000             # 64 KiB dumps exist; the tool accepts and pads them
 
+# --gb: a Game Boy battery save (source/gen2_save.h's G2_SAVE_SIZE/G2_MAX_RTC_TAIL).
+# 32 KiB flat, or 32 KiB + a 44/48-byte MBC3 RTC clock footer some emulators append
+# (bgb.bircd.org/rtcsave.html). source/pdna_gen12.c's pdna_gen12_size_is_gb() accepts
+# the same window; keep the two in step.
+GB_SAVE_SIZE = 0x8000                # 32768
+GB_MAX_RTC_TAIL = 48
+
+# --clip: an 80-byte Gen-3 PC box record, the THIRD optional payload (own locator,
+# source/fused_sav.h's PdnaClipRec / magic PDNACLP1). Screenshot-only: seeds g_clip so
+# an empty GB cell's mon-menu offers PASTE (GB) with nothing typed in by hand.
+CLIP_MAGIC = b"PDNACLP1"
+CLIP_SIZE = 80
+
 
 def find_records(blob: bytes, magic: bytes) -> list[int]:
     """Every offset at which `magic` occurs (any alignment)."""
@@ -128,18 +141,30 @@ def check_rom_payload_intact(blob: bytes) -> None:
             "  save was fused? Re-fuse the ROM first, then the save.")
 
 
-def fuse(pokedna_path: str, sav_path: str, out_path: str, force: bool) -> int:
+def fuse(pokedna_path: str, sav_path: str, out_path: str, force: bool,
+          gb: bool = False, clip_path: str | None = None) -> int:
     with open(pokedna_path, "rb") as fh:
         base = bytearray(fh.read())
     with open(sav_path, "rb") as fh:
         sav = fh.read()
 
-    if len(sav) not in (SAVE_SIZE, SAVE_SIZE_ALT):
+    if gb:
+        # A Game Boy battery save (source/gen2_save.h G2_SAVE_SIZE/G2_MAX_RTC_TAIL,
+        # source/pdna_gen12.c pdna_gen12_size_is_gb): 32 KiB flat, or 32 KiB plus a
+        # 44/48-byte MBC3 RTC clock footer some emulators append. Never padded — the
+        # C side accepts the whole window as-is.
+        if not (GB_SAVE_SIZE <= len(sav) <= GB_SAVE_SIZE + GB_MAX_RTC_TAIL):
+            sys.exit(
+                f"{sav_path}: {len(sav)} bytes — expected {GB_SAVE_SIZE} (32 KiB) up "
+                f"to {GB_SAVE_SIZE + GB_MAX_RTC_TAIL} (32 KiB + a 48-byte RTC tail).\n"
+                "  --gb was passed but this is not a Game Boy save.")
+    elif len(sav) not in (SAVE_SIZE, SAVE_SIZE_ALT):
         sys.exit(
             f"{sav_path}: {len(sav)} bytes — expected {SAVE_SIZE} (128 KiB) or "
             f"{SAVE_SIZE_ALT} (64 KiB).\n"
-            "  That is not a Gen-3 .sav. Check you picked the save, not the ROM.")
-    if len(sav) == SAVE_SIZE_ALT:
+            "  That is not a Gen-3 .sav. Check you picked the save, not the ROM.\n"
+            "  (Fusing a 32 KiB Game Boy save needs --gb.)")
+    if not gb and len(sav) == SAVE_SIZE_ALT:
         # A 64 KiB dump has no sector 31; pad to the full image with 0xFF (erased
         # flash), which is exactly what gen3_parse already tolerates.
         print(f"  note         : 64 KiB dump padded to {SAVE_SIZE} with 0xFF")
@@ -209,7 +234,71 @@ def fuse(pokedna_path: str, sav_path: str, out_path: str, force: bool) -> int:
     print("        valid save, so this copy is only used when flash is blank, and it")
     print("        does NOT update when you save in-app. Re-fuse to refresh it.")
     print("  REMINDER: this file embeds a personal save (trainer name + IDs). Don't publish it.")
+
+    if clip_path:
+        fuse_clip(out_path, clip_path)
     return 0
+
+
+def fuse_clip(out_path: str, clip_path: str) -> None:
+    """Append an 80-byte Gen-3 box record as a THIRD payload (its own PDNACLP1
+    locator) and patch it in place. Delta-only test hook (docs the D1 handoff): seeds
+    g_clip at boot so PASTE (GB) is reachable on an empty cell without a Gen-3 session
+    ever having been open. Runs on the file fuse() just wrote, after its own
+    save-payload verification, so a clip failure never lands with a half-verified
+    image."""
+    with open(clip_path, "rb") as fh:
+        clip = fh.read()
+    if len(clip) != CLIP_SIZE:
+        sys.exit(
+            f"{clip_path}: {len(clip)} bytes — expected exactly {CLIP_SIZE} (one raw "
+            "Gen-3 box record). tools/extract_gen3_record.c pulls one out of a real "
+            ".sav.")
+
+    with open(out_path, "rb") as fh:
+        base = bytearray(fh.read())
+    if CLIP_MAGIC in clip:
+        sys.exit(f"{clip_path} itself contains the bytes {CLIP_MAGIC.decode()} — "
+                 "pick a different slot, this one is unlocatable once fused.")
+
+    rec_off = locate_record(bytes(base), CLIP_MAGIC, out_path)
+    cur_off, cur_size = read_record(bytes(base), rec_off)
+    if cur_size:
+        if cur_off + cur_size == len(base):
+            print(f"  --clip       : dropping the previous {cur_size}-byte payload")
+            del base[cur_off:]
+        else:
+            sys.exit(
+                "--clip: the existing clip payload is not at the end of the file, so "
+                "dropping it would corrupt whatever follows.\n"
+                "  Re-fuse from a clean build instead.")
+
+    pad = (-len(base)) % ALIGN
+    base.extend(b"\xFF" * pad)
+    off = len(base)
+    base.extend(clip)
+    if off + len(clip) > CART_WINDOW:
+        sys.exit(f"fused image would be 0x{off + len(clip):X} bytes, past the "
+                 f"0x{CART_WINDOW:X} cartridge window.")
+    write_record(base, rec_off, off, len(clip))
+
+    with open(out_path, "wb") as fh:
+        fh.write(base)
+
+    with open(out_path, "rb") as fh:
+        back = fh.read()
+    v_off, v_size = read_record(back, locate_record(back, CLIP_MAGIC, out_path))
+    ok = (v_off == off and v_size == len(clip)
+          and back[v_off:v_off + v_size] == clip
+          and all(b == 0xFF for b in back[off - pad:off]))
+
+    print(f"  clip         : {clip_path} ({len(clip)} bytes)")
+    print(f"  clip record  : 0x{rec_off:X}")
+    print(f"  clip offset  : 0x{off:08X} ({off:,})")
+    print(f"  output       : {out_path} ({len(back):,} bytes)")
+    if not ok:
+        sys.exit("  CLIP VERIFY: FAILED — output does not read back as written.")
+    print("  CLIP VERIFY: OK — record patched and appended bytes match byte-for-byte")
 
 
 def check_only(path: str) -> int:
@@ -229,12 +318,30 @@ def check_only(path: str) -> int:
         bad.append(f"offset is not {ALIGN}-byte aligned")
     if off + size > len(blob):
         bad.append("payload runs past the end of the file")
-    if size not in (SAVE_SIZE, SAVE_SIZE_ALT):
-        bad.append(f"size is not {SAVE_SIZE} or {SAVE_SIZE_ALT}")
+    is_gb = GB_SAVE_SIZE <= size <= GB_SAVE_SIZE + GB_MAX_RTC_TAIL
+    if size not in (SAVE_SIZE, SAVE_SIZE_ALT) and not is_gb:
+        bad.append(f"size is not {SAVE_SIZE} or {SAVE_SIZE_ALT} (Gen-3), or a "
+                    f"{GB_SAVE_SIZE}..{GB_SAVE_SIZE + GB_MAX_RTC_TAIL} GB size")
     if bad:
         print("  PROBLEMS: " + "; ".join(bad))
         return 1
-    print("  looks consistent")
+    print("  looks consistent" + ("  (Game Boy save)" if is_gb else ""))
+
+    if CLIP_MAGIC in blob:
+        crec = locate_record(blob, CLIP_MAGIC, path)
+        coff, csize = read_record(blob, crec)
+        if not csize:
+            print("  fused clip   : none (offset/size are 0)")
+        else:
+            cbad = []
+            if coff % ALIGN:
+                cbad.append("offset is not %d-byte aligned" % ALIGN)
+            if coff + csize > len(blob):
+                cbad.append("payload runs past the end of the file")
+            if csize != CLIP_SIZE:
+                cbad.append(f"size is not {CLIP_SIZE}")
+            print(f"  clip offset  : 0x{coff:08X} ({coff:,})  clip size: {csize}")
+            print("  clip PROBLEMS: " + "; ".join(cbad) if cbad else "  clip looks consistent")
     return 0
 
 
@@ -251,6 +358,15 @@ def main(argv=None) -> int:
                     help="just report the save locator record of an image")
     ap.add_argument("--force", action="store_true",
                     help="replace an already-fused save (drops the old payload)")
+    ap.add_argument("--gb", action="store_true",
+                    help="the save is a Game Boy (Gen-1/2) battery image, not Gen-3 — "
+                         "32 KiB, or 32 KiB + a 44/48-byte RTC tail")
+    ap.add_argument("--clip", metavar="REC80.BIN",
+                    help="delta-only test hook: also fuse an 80-byte raw Gen-3 box "
+                         "record (own locator) so PDNA_DELTA boot pre-fills g_clip, "
+                         "making PASTE (GB) on an empty cell reachable without a "
+                         "Gen-3 session ever having been open. "
+                         "tools/extract_gen3_record.c pulls one out of a real .sav")
     a = ap.parse_args(argv)
 
     if a.check:
@@ -260,7 +376,9 @@ def main(argv=None) -> int:
     for p in (a.pokedna, a.sav):
         if not os.path.isfile(p):
             sys.exit(f"{p}: not a file")
-    return fuse(a.pokedna, a.sav, a.output, a.force)
+    if a.clip and not os.path.isfile(a.clip):
+        sys.exit(f"{a.clip}: not a file")
+    return fuse(a.pokedna, a.sav, a.output, a.force, gb=a.gb, clip_path=a.clip)
 
 
 if __name__ == "__main__":
