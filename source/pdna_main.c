@@ -7950,9 +7950,14 @@ static void view_save(const char* path) {
       hb_off();
       /* Optional clipboard seed (fuse_sav.py --clip): a real 80-byte Gen-3 box record
        * so an empty GB cell's mon-menu offers PASTE (GB) -- app_mon_menu's own gate is
-       * g_clip.occupied && !g_clip.from_gb, and clip_copy_from always clears from_gb. */
+       * g_clip.occupied && !g_clip.from_gb, and clip_copy_from always clears from_gb.
+       * pk3_validate() re-checks the checksum + species range at the point of USE, not
+       * just at extraction time (tools/extract_gen3_record.c already filters for this,
+       * but a hand-edited or bit-rotted --clip file must not be trusted just because
+       * fused_clip_read() copied the right number of bytes). */
       { uint8_t rec80[80]; uint32_t csz = 0;
-        if (fused_clip_present(&csz) && csz == sizeof rec80 && fused_clip_read(rec80, csz)) {
+        if (fused_clip_present(&csz) && csz == sizeof rec80 && fused_clip_read(rec80, csz) &&
+            pk3_validate(rec80)) {
           clip_copy_from(&g_clip, rec80, false);
           log_line("save: fused clip record loaded (%lu B) -> PASTE (GB) reachable",
                    (unsigned long)csz);
@@ -7960,12 +7965,17 @@ static void view_save(const char* path) {
       }
       log_line("save: flash blank/invalid -> using the fused GB save (%lu B)",
                (unsigned long)fsz);
-      s_crumb_shown_armed = false;             /* the box screen paints its own crumb */
-      for (;;) {
-        int gr = pdna_gen12_show_image(path, g_save, fsz, g_save + GB12_PRISTINE_OFF, 3);
-        if (gr == GB12_ENTER_NOT_GB) break;    /* defensive: should be unreachable here */
-      }
+      /* Looped rather than a single call: pdna_gen12_show_image() browses until B backs
+       * all the way out (GB12_ENTER_OK), and a delta build has no file browser to
+       * return to underneath it -- so re-enter the same session instead of falling into
+       * whatever view_save does next with a cleared g_vinfo. Only ENTER_OK re-loops;
+       * BUSY/NOT_GB fall out to the same crumb-clear + perf_span_end() the hardware
+       * fork uses after its own single call, matching it line for line, rather than
+       * spinning forever on an outcome a screenshot run should stop and report. */
+      while (pdna_gen12_show_image(path, g_save, fsz, g_save + GB12_PRISTINE_OFF, 3)
+             == GB12_ENTER_OK) {}
       perf_span_end();
+      s_crumb_shown_armed = false;             /* the box screen paints its own crumb */
       return;
     }
   }
