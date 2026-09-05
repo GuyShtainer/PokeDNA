@@ -535,6 +535,12 @@ int pdna_gbsummary(GbEditMon* e, bool can_edit, bool start_editing, const char* 
     bool need = full || shadow_fsel != want_fsel || memcmp(&shadow, c.e, sizeof(GbEditMon)) != 0;
     if (need) {
       if (shadow_valid && memcmp(&shadow, c.e, sizeof shadow) != 0) c.dirty = true;
+      /* Clamp BEFORE the paint (review): the slot count of the card being redrawn is the
+       * one the previous render counted, so on the same card the frame is drawn at a valid
+       * field. A card change resets fsel to 0 anyway; the post-render clamp stays as the
+       * true bound once nslot is fresh. Unreachable today (U/D is mod nslot) -- defence. */
+      if (c.editing && shadow_valid && shadow_card == c.card && c.nslot && c.fsel >= c.nslot)
+        c.fsel = c.nslot - 1;
       render(c.e, c.card, c.editing, c.can_edit, c.note, c.fsel, c.slot, &c.nslot, full);
       if (c.editing && c.nslot && c.fsel >= c.nslot) c.fsel = c.nslot - 1;
       shadow = *c.e; shadow_gen = ui_clear_gen(); shadow_card = c.card;
