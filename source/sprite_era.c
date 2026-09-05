@@ -91,14 +91,27 @@ SeEra se_resolve(const SeSetting* s, SeSaveKind kind, SePlace place,
     }
   }
 
-  /* Fell to NATIVE (either the cell said so, or WANTED just failed above). */
+  /* Fell to NATIVE (either the cell said so, or WANTED just failed above). THE FIX: an
+   * earlier version of this resolver stopped here and trusted `native` unconditionally
+   * -- but se_native_era ALWAYS returns a CONCRETE era (GEN1/GEN2/G3_RS/G3_EM/G3_FRLG),
+   * never the NATIVE sentinel, and that concrete era is not automatically safe to draw
+   * any more than `wanted` was. Two real cases this missed: a Gen-1 import sitting in
+   * an UNTOUCHED (NATIVE) Emerald PC-box cell -- the default path, no user override at
+   * all -- used to resolve straight to literal GEN1 for the PC grid, where there are no
+   * per-species Gen-1 icons; and a caller hint forcing origin_gen=1 onto a Johto species
+   * (dex 152..251, e.g. a mis-hinted Tyranitar) used to ask for a picture Gen 1 never
+   * had. `native` is therefore checked against the SAME two gates `wanted` was, before
+   * its ROM is even consulted. */
   SeEra native = se_native_era(kind, origin_gen, origin_certain);
-  if (era_has_rom(native, roms)) {
+  bool native_ok = se_species_exists(native, national_dex) &&
+                   !(place == SE_PLACE_PC && native == SE_ERA_GEN1);
+  if (native_ok && era_has_rom(native, roms)) {
     if (reason) *reason = why;                          /* Step 5 */
     return native;
   }
 
-  /* Step 6/7: native's own ROM is ALSO absent -- compiled Gen-3 art, else the chip. */
+  /* Step 6/7: native failed a gate, or its ROM is ALSO absent -- compiled Gen-3 art,
+   * else the chip. */
   if (reason) *reason = compiled_gen3 ? SE_WHY_COMPILED : SE_WHY_CHIP;
   return SE_ERA_NATIVE;
 }
@@ -137,9 +150,12 @@ int se_config_write(const SeSetting* s, char* out, int cap) {
       n += append_all_or_nothing(line + n, (int)sizeof(line) - n, "\n");
 
       int room = append_all_or_nothing(out + pos, cap - pos, line);
-      if (room == 0) { stop = true; break; }  /* would overflow -- stop for good, in
+      if (room == 0) {                        /* would overflow -- stop for good, in
                                                 * iteration order, so truncation is
                                                 * always a clean whole-line prefix */
+        stop = true;
+        break;
+      }
       pos += room;
     }
   }

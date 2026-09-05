@@ -5,14 +5,18 @@
  *      source/sprite_era.c -o /tmp/hse && /tmp/hse
  *
  * Covers: defaults; the native-era mapping for every SaveKind x origin (including the
- * "uncertain Kanto import defaults to Gen 1" case, which is already folded into
- * origin_gen by pdna_origin_of() in the real integration -- this test only proves the
- * mapping honours that value); species existence at every dex edge (151/152, 251/252,
- * 386/387); the FULL resolver fallback chain with every reason hit at least once; the
- * PC_GRID+GEN1 refusal; a config write/apply round trip including absent and unknown
- * keys and two cap-bounded writes (cap 1, cap exactly enough); and se_era_next cycling
- * through only possible eras and terminating from every start, for all 64 SeRoms
- * combinations x 6 starting eras x 5 places.
+ * "uncertain Kanto import defaults to Gen 1" case); species existence at every dex edge
+ * (151/152, 251/252, 386/387); the FULL resolver fallback chain with every SeWhy reason
+ * hit at least once, INCLUDING the fix a review caught before this shipped -- the
+ * PC_GRID+GEN1 icon refusal and the species-existence gate are applied to the RESOLVED
+ * NATIVE era, not just to the user's WANTED cell, so a Gen-1 import sitting in the
+ * DEFAULT (untouched) PC-grid cell of an Emerald box is refused down to compiled/chip
+ * art exactly like an explicit GEN1 request would be; a config write/apply round trip
+ * including absent and unknown keys and cap-bounded writes (cap 1, cap exact, cap one
+ * short); and se_era_next's per-call invariants AND a full-cycle closure/coverage
+ * assertion designed to be MUTATION-SENSITIVE (a body that ignores its input and always
+ * returns NATIVE fails the cycle-coverage check the moment more than one era is
+ * offerable).
  */
 #include <stdio.h>
 #include <string.h>
@@ -124,12 +128,15 @@ static void test_resolve(void) {
   }
 
   /* D4: the cell IS native already -- reason is WANTED even though a concrete era is
-   * returned, because nothing was overridden. */
+   * returned, because nothing was overridden. Deliberately at SE_PLACE_PARTY, NOT
+   * SE_PLACE_PC: at PC, a Gen-1-import native era is exactly the case D8/D8b below
+   * exist to veto -- using PARTY here isolates "native cell resolves to the mon's real
+   * era" from that separate refusal. */
   {
     SeSetting s; se_default(&s);   /* every cell NATIVE */
     int why = -1;
-    SeEra got = se_resolve(&s, SE_KIND_RS, SE_PLACE_PC, 1, 0, 40, &all_roms, true, &why);
-    CHECK(got == SE_ERA_GEN1, "D4: NATIVE cell + Gen1 import -> concrete GEN1");
+    SeEra got = se_resolve(&s, SE_KIND_RS, SE_PLACE_PARTY, 1, 0, 40, &all_roms, true, &why);
+    CHECK(got == SE_ERA_GEN1, "D4: NATIVE cell + Gen1 import (party) -> concrete GEN1");
     CHECK(why == SE_WHY_WANTED, "D4: reason is WANTED (nothing was overridden)");
   }
 
@@ -164,20 +171,60 @@ static void test_resolve(void) {
     CHECK(why == SE_WHY_COMPILED, "D7: reason is COMPILED for the GB-import path too");
   }
 
-  /* D8: PC_GRID + GEN1 refusal -- even with a Gen1 ROM registered and a valid dex, the
-   * PC grid never draws GEN1 (no per-species icons). */
+  /* D8: PC_GRID + GEN1 refusal on an EXPLICIT wanted cell -- with a Gen1 ROM registered
+   * and a valid dex, the PC grid still never draws GEN1 (no per-species icons). This
+   * mon's OWN native era is ALSO Gen1 (it really is a Gen-1 import), so the refusal
+   * must carry all the way through to compiled/chip -- NOT quietly re-admit GEN1 by a
+   * back door, which is exactly the bug a review caught: an earlier version of this
+   * resolver checked the icon refusal only against `wanted`, then handed `native`
+   * (which happened to compute to GEN1 too) straight through unchecked. */
   {
     SeSetting s; se_default(&s);
     s.era[SE_KIND_EM][SE_PLACE_PC] = SE_ERA_GEN1;
     int why = -1;
     SeEra got = se_resolve(&s, SE_KIND_EM, SE_PLACE_PC, 1, 1, 40, &all_roms, true, &why);
-    CHECK(got == SE_ERA_GEN1, "D8: refused to GEN1-native, but native for a Gen1 import IS Gen1");
-    CHECK(why == SE_WHY_NO_SPECIES, "D8: reason reports the refusal as NO_SPECIES");
-    /* Prove the refusal is REAL (not accidentally passing through), by using a native
-     * Gen-3 mon instead: the wanted-GEN1 cell must be refused down to native G3_EM,
-     * never drawn as GEN1, even though GEN1's ROM is registered. */
+    CHECK(got == SE_ERA_NATIVE, "D8: PC+GEN1 refused, native is ALSO Gen1 -> compiled, not GEN1");
+    CHECK(why == SE_WHY_COMPILED, "D8: reason is COMPILED (fell all the way through)");
+  }
+
+  /* D8b: the SAME wanted-GEN1-on-PC cell, but this record is a NATIVE Gen-3 mon
+   * (origin_gen=3). Now native resolves to G3_EM, which is NOT Gen1, so it clears the
+   * icon-refusal gate on its own merits and is drawn normally -- proving the refusal is
+   * about the PLACE+ERA combination, not a blanket veto on the whole cell. (The PC+GEN1
+   * refusal on `wanted` is reported as NO_SPECIES here -- the same reason a genuine
+   * species-existence failure gets; see sprite_era.c for why that overlap is fine.) */
+  {
+    SeSetting s; se_default(&s);
+    s.era[SE_KIND_EM][SE_PLACE_PC] = SE_ERA_GEN1;
+    int why = -1;
     SeEra got2 = se_resolve(&s, SE_KIND_EM, SE_PLACE_PC, 3, 1, 25, &all_roms, true, &why);
-    CHECK(got2 == SE_ERA_G3_EM, "D8b: PC_GRID+GEN1 refused even for a native Gen-3 mon");
+    CHECK(got2 == SE_ERA_G3_EM, "D8b: PC_GRID+GEN1 refused, but native G3_EM is unaffected");
+    CHECK(why == SE_WHY_NO_SPECIES, "D8b: reason still names the wanted-cell refusal");
+  }
+
+  /* D8c: the DEFAULT path, no user override at all -- a Gen-1 import sitting in an
+   * Emerald PC box cell that was NEVER touched (still NATIVE). This is the scenario the
+   * review flagged BY NAME: the cell being NATIVE must not let a Gen-1-native mon slip
+   * past the PC-grid icon refusal just because nothing was "wanted". */
+  {
+    SeSetting s; se_default(&s);   /* PC cell left at NATIVE -- no override */
+    int why = -1;
+    SeEra got = se_resolve(&s, SE_KIND_EM, SE_PLACE_PC, 1, 0, 40, &all_roms, true, &why);
+    CHECK(got == SE_ERA_NATIVE, "D8c: default PC cell + Gen1-native mon -> refused to compiled");
+    CHECK(why == SE_WHY_COMPILED, "D8c: reason is COMPILED (native itself failed the icon gate)");
+  }
+
+  /* D8d: a caller hint forcing origin_gen=1 onto a JOHTO species (dex 152..251, e.g. a
+   * mis-hinted Tyranitar at 248) -- the other half of the bug report. Gen 1 never had
+   * this species, so even off the PC grid (SUMMARY here, where the icon refusal does
+   * not apply) native must be refused on species grounds and fall through, never
+   * silently draw "Gen-1 Tyranitar". */
+  {
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve(&s, SE_KIND_EM, SE_PLACE_SUMMARY, 1, 1, 248, &all_roms, true, &why);
+    CHECK(got == SE_ERA_NATIVE, "D8d: origin_gen=1 hint on a Johto dex -> refused, not GEN1");
+    CHECK(why == SE_WHY_COMPILED, "D8d: reason is COMPILED (native failed se_species_exists)");
   }
 
   /* D9: NULL setting / roms degrade to the safest answer instead of crashing. */
@@ -227,7 +274,6 @@ static void test_config(void) {
   /* Absent key -> stays NATIVE (nothing to apply). */
   {
     SeSetting d; se_default(&d);
-    CHECK(memcmp(&d, &d, sizeof d) == 0, "E3: sanity");
     CHECK(d.era[SE_KIND_RS][SE_PLACE_PC] == SE_ERA_NATIVE, "E3: an unmentioned cell is NATIVE");
   }
 
@@ -287,37 +333,75 @@ static void test_names(void) {
   printf("(F) UI labels ok\n");
 }
 
-/* ---- (G) se_era_next: cycles only through possible eras, always terminates -------- */
+/* ---- (G) se_era_next: per-call invariants + a MUTATION-SENSITIVE full-cycle check -- */
 static void test_era_next(void) {
   for (int mask = 0; mask < 64; mask++) {           /* all 64 SeRoms.have combinations */
     SeRoms roms;
     for (int i = 0; i < SE_ERA_N; i++) roms.have[i] = (mask >> i) & 1;
+
     for (int place = 0; place < SE_PLACE_N; place++) {
+      /* The offerable set for this (roms, place): NATIVE always, any concrete era with
+       * a registered ROM, minus GEN1 when place is the PC grid. NATIVE guarantees
+       * count >= 1 always. */
+      bool offerable[SE_ERA_N];
+      int count = 0;
+      for (int e = 0; e < SE_ERA_N; e++) {
+        bool ok = (e == SE_ERA_NATIVE) || roms.have[e];
+        if (place == SE_PLACE_PC && e == SE_ERA_GEN1) ok = false;
+        offerable[e] = ok;
+        if (ok) count++;
+      }
+      CHECK(count >= 1, "G: NATIVE alone guarantees at least one offerable era");
+
       for (int start = 0; start < SE_ERA_N; start++) {
+        /* Per-call invariants, for every possible starting value (not just offerable
+         * ones -- se_era_next must behave sanely even fed a currently-unofferable
+         * era, e.g. the very cell a ROM registration just revoked). */
         SeEra got = se_era_next((SeEra)start, &roms, (SePlace)place);
         CHECK((unsigned)got < SE_ERA_N, "G: result is always a valid SeEra");
-        /* Never GEN1 for the PC grid. */
         CHECK(!(place == SE_PLACE_PC && got == SE_ERA_GEN1), "G: PC_GRID never offers GEN1");
-        /* Whatever it returned must be genuinely offerable: NATIVE always is; a
-         * concrete era only when its ROM bit is set. */
-        bool offerable = (got == SE_ERA_NATIVE) || roms.have[got];
-        CHECK(offerable, "G: the returned era is actually possible for this ROM set");
+        CHECK(offerable[got], "G: the returned era is actually possible for this ROM set");
+        if (count == 1) {
+          CHECK(got == SE_ERA_NATIVE, "G: with only one era offerable, it must be NATIVE, "
+                                       "and every start maps to that fixed point");
+        } else {
+          CHECK((int)got != start, "G: advances (never returns its own input) once >1 era is offerable");
+        }
       }
+
+      /* MUTATION-SENSITIVE full-cycle check. NATIVE is always offerable, so walking the
+       * cycle starting there is well-defined regardless of `roms`/`place`: repeated
+       * se_era_next calls must visit EXACTLY the offerable set and close back to NATIVE
+       * after precisely `count` steps. A stub body that ignores its argument and always
+       * returns NATIVE would still "close after 1 step" -- but the visited-set check
+       * below catches that immediately whenever count > 1, because the stub never
+       * visits anything else. Bounded to count+1 steps (slack of exactly one, to detect
+       * "never closes" as a failure rather than a hang, per the codebase's loop-bound
+       * convention). */
+      bool visited[SE_ERA_N] = { false };
+      SeEra cur = SE_ERA_NATIVE;
+      int steps = 0;
+      for (; steps < count + 1; steps++) {
+        cur = se_era_next(cur, &roms, (SePlace)place);
+        if ((unsigned)cur < SE_ERA_N) visited[cur] = true;
+        if (cur == SE_ERA_NATIVE) { steps++; break; }
+      }
+      CHECK(steps == count, "G: the cycle from NATIVE closes back to NATIVE after exactly |offerable| steps");
+      bool visited_matches = true;
+      for (int e = 0; e < SE_ERA_N; e++)
+        if (visited[e] != offerable[e]) visited_matches = false;
+      CHECK(visited_matches, "G: the cycle visits EXACTLY the offerable set, nothing more, nothing less");
     }
   }
+
   /* One concrete example a human can read: only G3_EM registered, starting at NATIVE,
-   * cycling for the party place (not PC, so GEN1 isn't specially excluded here). */
+   * cycling for the party place (not PC, so GEN1 isn't specially excluded here) --
+   * GEN1/GEN2/G3_RS/G3_FRLG all have no ROM, so the ONLY possible next value is G3_EM. */
   {
     SeRoms roms; for (int i = 0; i < SE_ERA_N; i++) roms.have[i] = false;
     roms.have[SE_ERA_G3_EM] = true;
     SeEra n1 = se_era_next(SE_ERA_NATIVE, &roms, SE_PLACE_PARTY);
-    CHECK(n1 == SE_ERA_GEN1 || n1 == SE_ERA_G3_EM,
-          "G-example: from NATIVE, next is GEN1 (unavailable, skipped) or G3_EM");
-    /* Whichever it landed on, it must be one with a ROM or NATIVE -- already checked
-     * above by the exhaustive loop; here just confirm the concrete unavailable one
-     * (GEN1) is never returned when only G3_EM is registered. */
-    CHECK(n1 != SE_ERA_GEN1 && n1 != SE_ERA_GEN2 && n1 != SE_ERA_G3_RS && n1 != SE_ERA_G3_FRLG,
-          "G-example: only G3_EM or NATIVE can come back with just that ROM registered");
+    CHECK(n1 == SE_ERA_G3_EM, "G-example: from NATIVE, next SKIPS every unregistered era and lands on G3_EM");
   }
   printf("(G) se_era_next ok\n");
 }

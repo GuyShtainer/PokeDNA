@@ -53,17 +53,31 @@
  *   3. NO_ROM     if WANTED is concrete, the species exists, but WANTED's ROM is not
  *                 registered, fall to NATIVE.
  *   4. WANTED     otherwise WANTED is drawable as itself -- return it.
- *   5. (native)   NATIVE resolves to a concrete era via se_native_era. If THAT era's ROM
- *                 is registered, draw it (reason stays whatever step 1-4 left it at:
- *                 SE_WHY_WANTED if the cell was NATIVE to begin with, else the NO_SPECIES
- *                 / NO_ROM reason WANTED failed for).
- *   6. COMPILED   native's ROM is ALSO absent. A native Gen-3 mon or a GB import with no
- *                 era-specific ROM registered both fall here today (pdna_origin_art.h:
- *                 "GB import + no such ROM -> the Gen-3 picture") -- if the build has
- *                 compiled Gen-3 art (`compiled_gen3`), draw it. There is no per-era
- *                 SeEra value for "the compiled sprite table" (it is not game-specific),
- *                 so the return value is the NATIVE sentinel and `reason` carries the
- *                 news.
+ *   5. (native)   NATIVE resolves to a concrete era via se_native_era -- ONE OF SE_ERA_
+ *                 GEN1/GEN2/G3_RS/G3_EM/G3_FRLG, never the NATIVE sentinel itself. That
+ *                 concrete era is checked against the SAME TWO GATES `wanted` was
+ *                 checked against -- the PC_GRID+GEN1 icon refusal AND species
+ *                 existence -- before it is trusted. AN EARLIER VERSION OF THIS RESOLVER
+ *                 APPLIED BOTH GATES ONLY TO `wanted`: a Gen-1 import sitting in an
+ *                 UNTOUCHED (NATIVE) Emerald PC-box cell -- the default path, no user
+ *                 override needed -- resolved straight to literal GEN1 for the PC grid,
+ *                 where there are no per-species Gen-1 icons; and a caller hint forcing
+ *                 origin_gen=1 onto a Johto species (dex 152..251, e.g. a mis-hinted
+ *                 Tyranitar) asked for a picture Gen 1 never had. Both are refused here,
+ *                 on `native`, exactly as `wanted` was. If native clears both gates and
+ *                 its ROM is registered, draw it (reason stays whatever step 1-4 left it
+ *                 at: SE_WHY_WANTED if the cell was NATIVE to begin with and native
+ *                 cleared everything, else the NO_SPECIES / NO_ROM reason WANTED failed
+ *                 for -- note the PC_GRID+GEN1 refusal is ALSO reported as NO_SPECIES,
+ *                 not a distinct reason; see sprite_era.c for why that is enough for a
+ *                 correct answer even though it blurs two different causes).
+ *   6. COMPILED   native failed a gate, OR native's own ROM is ALSO absent. A native
+ *                 Gen-3 mon or a GB import with no era-specific ROM registered both fall
+ *                 here today (pdna_origin_art.h: "GB import + no such ROM -> the Gen-3
+ *                 picture") -- if the build has compiled Gen-3 art (`compiled_gen3`),
+ *                 draw it. There is no per-era SeEra value for "the compiled sprite
+ *                 table" (it is not game-specific), so the return value is the NATIVE
+ *                 sentinel and `reason` carries the news.
  *   7. CHIP       no compiled art either (the artless build) -- the caller draws the
  *                 name chip. Also the NATIVE sentinel, reason SE_WHY_CHIP.
  *
