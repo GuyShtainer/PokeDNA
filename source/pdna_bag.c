@@ -235,10 +235,26 @@ static void draw_header(BgFrame bg, const BagLayout* L, int pocket) {
     ui_fill_rect(L->dot_x - 1 + pocket * 8, L->dot_y - 1, 4, 4, BCUR);
 }
 
+/* Column geometry shared by draw_cursor()'s erase and draw_list()'s text origin. Must
+ * stay in this relationship: BAG_CUR_DX + BAG_CUR_W <= BAG_NAME_DX, i.e. the cursor
+ * column's erase rect may never reach the pixel column the item name's first glyph
+ * starts at. BACKLOG #42/#43 (Guy, 2026-09-05): it used to be off by one (erase width
+ * 8 against a name x of list_x0+9, so the erase's rightmost column WAS the name's
+ * first column) -- a cursor-only repaint (any UP/DOWN that does not also scroll, not
+ * just a scroll) erased the leftmost ink column of every row's first letter, because
+ * bg_restore's rect spans the WHOLE list height, every row, every time the cursor
+ * moves. The static assert below pins the fixed relationship so it can't regress
+ * silently the next time either offset is tuned. */
+#define BAG_CUR_DX   2                            /* cursor '>' x offset from list_x0 */
+#define BAG_CUR_W    7                            /* cursor column erase width        */
+#define BAG_NAME_DX  9                            /* name column x offset (draw_list's nx) */
+_Static_assert(BAG_CUR_DX + BAG_CUR_W <= BAG_NAME_DX,
+              "bag cursor erase rect must not reach the item-name column");
+
 /* the '>' cursor column only (selection moved within the visible page) */
 static void draw_cursor(BgFrame bg, const BagLayout* L, int top, int sel) {
-  bg_restore(bg, L->list_x0 + 2, L->list_y0, 8, L->list_y1 - L->list_y0);
-  ui_text(L->list_x0 + 2, L->list_y0 + 1 + (sel - top) * 9, BCUR, ">");
+  bg_restore(bg, L->list_x0 + BAG_CUR_DX, L->list_y0, BAG_CUR_W, L->list_y1 - L->list_y0);
+  ui_text(L->list_x0 + BAG_CUR_DX, L->list_y0 + 1 + (sel - top) * 9, BCUR, ">");
 }
 
 /* whole list pane: name + right-aligned quantity per slot (name columns fill
@@ -249,7 +265,7 @@ static void draw_list(BgFrame bg, const BagLayout* L, const uint8_t* sb1,
   bg_restore(bg, L->list_x0, L->list_y0,
                 L->list_x1 - L->list_x0, L->list_y1 - L->list_y0);
   int cap = pk_pocket_cap(g, pocket);
-  int nx = L->list_x0 + 9;                       /* name column, just past the '>' */
+  int nx = L->list_x0 + BAG_NAME_DX;             /* name column, just past the '>' */
   for (int i = 0; i < BROWS(L) && top + i < cap; i++) {
     int sl = top + i, y = L->list_y0 + 1 + i * 9;
     uint16_t id = pk_bag_item(sb1, g, pocket, sl);
