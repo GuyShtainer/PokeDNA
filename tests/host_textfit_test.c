@@ -10,10 +10,15 @@
  * measurement below is the real one, not an approximation. ui_font.c is pure data with
  * no GBA headers, so it dual-compiles on the host.
  *
- *   cc -std=c11 -I source tests/host_textfit_test.c source/ui_font.c -o /tmp/htf && /tmp/htf
+ *   cc -std=c11 -I source tests/host_textfit_test.c source/ui_font.c \
+ *      source/gb_editor.c source/gb_edit.c source/gen1_save.c source/gen2_save.c \
+ *      source/data_tables.c -o /tmp/htf && /tmp/htf
  *
  * (run_host_tests.py reads that line out of the FIRST 24 lines of this comment — keep
- * it up here, above the long note below, or the whole test is silently skipped.)
+ * it up here, above the long note below, or the whole test is silently skipped. The
+ * gb_editor.c/gb_edit.c/gen1_save.c/gen2_save.c/data_tables.c tail is BACKLOG #41
+ * review item 11: gbe_label() (gb_editor.h) is a real function, not a re-typed copy,
+ * so its own LABEL[] strings can be measured directly instead of mirrored.)
  *
  * WHERE THE NUMBERS COME FROM — read this before adding a check.
  * A check that RE-TYPES a geometry constant or an on-screen string as its own literal
@@ -45,6 +50,8 @@
                             * without mon_icons.c. The party icon-clearance checks
                             * below need the icon's real pixel width, not a re-typed
                             * literal — the whole point of every other check here. */
+#include "gb_editor.h"     /* gbe_label/GBE_NUM — real function + real enum, not a
+                            * mirrored copy of gb_editor.c's own LABEL[] table */
 
 #define SCR_W   UI_SCR_W
 #define SYS8_W  UI_SYS8_W   /* tonc sys8 advance: fixed 8 px per glyph */
@@ -557,6 +564,9 @@ int main(void) {
   /* S3: MOVE TO / RELEASE (source/pdna_gen12.c). RELEASE's title goes through the
    * shared app_confirm(), which draws at the same (28, .., 184) clamp as msg_wait; the
    * move-refusal hints are msg_wait's own second line, same clamp. */
+  /* Review fix: gb_move_hook's own refusals used to reuse PDNA_GBEDIT_REFUSED_TITLE
+   * ("EDIT REFUSED") — same mismatch #40(c) fixed for PASTE. */
+  PF(PDNA_GBEDIT_MOVE_REFUSED_TITLE, 28, 184);
   PF(PDNA_GBEDIT_RELEASE_TITLE,     28, 184);
   PF(PDNA_GBEDIT_RELEASE_FALLBACK,  28, 184);
   PF(PDNA_GBEDIT_MOVE_NEEDSBASE_L2, 28, 184);
@@ -586,6 +596,13 @@ int main(void) {
    * only the labels/values pdna_gbsummary.c adds ON TOP of gb_editor.c's own rows
    * are new here. Dynamic rows (species name, computed numbers) are built from
    * their real _FMT macro at a worst-case value, not retyped as a literal. */
+
+  /* Review item 11: gbe_label(f) (gb_editor.c's own LABEL[] table — "Nickname",
+   * "OT Name", "Friendship", ...) was never measured even for pdna_gbedit.c's own
+   * screen (a pre-existing gap); pdna_gbsummary.c's field_row() reuses the exact same
+   * PDNA_EDIT_LBL_X column, so one loop over the real function covers both screens. */
+  for (int f = 0; f < GBE_NUM; f++) T(gbe_label(f), PDNA_EDIT_LBL_X);
+
   T(PDNA_GBSUM_VIEW_CHIP, 4);
   T(PDNA_GBSUM_EDIT_CHIP, 8);
   T(PDNA_GBSUM_CARD_INFO,  4);
@@ -599,7 +616,6 @@ int main(void) {
    * (val_row()'s own split — the same columns pdna_gbedit's row_paint uses). */
   T(PDNA_GBSUM_LBL_SPECIES, PDNA_EDIT_LBL_X);
   T(PDNA_GBSUM_LBL_TYPE,    PDNA_EDIT_LBL_X);
-  T(PDNA_GBSUM_LBL_G1TYPE,  PDNA_EDIT_LBL_X);
   T(PDNA_GBSUM_LBL_STATUS,  PDNA_EDIT_LBL_X);
   T(PDNA_GBSUM_LBL_PKRS,    PDNA_EDIT_LBL_X);
   T(PDNA_GBSUM_ST_OK,  PDNA_EDIT_VAL_X);
