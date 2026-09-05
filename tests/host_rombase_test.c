@@ -82,8 +82,9 @@ static uint32_t file_size(const char* p) {
 
 /* gb_edit.c's g1_type_ok (source/gb_edit.c:1190) is file-static, so the same set of
  * accepted raw Gen-1 type ids is mirrored here rather than exposed just for a test.
- * 0x00-0x09 physical (+ one slot of the unused range), 0x14-0x1B special --
- * assets/upstream/pokered/constants/type_constants.asm. */
+ * 0x00-0x08 physical + 0x09 STEEL, 0x14-0x1A special + 0x1B DARK -- the predicate is a
+ * Gen-1 UNION Gen-2 set (pokecrystal/constants/type_constants.asm:19,34 adds STEEL/DARK on
+ * top of pokered/constants/type_constants.asm). */
 static bool g1_type_ok_mirror(uint8_t t) {
   return t <= 0x09u || (t >= 0x14u && t <= 0x1Bu);
 }
@@ -205,6 +206,7 @@ static bool gb_record_clean(const GbEditMon* e) {
 }
 
 static bool     g_have_sample = false;
+static int      g_converted = 0;
 static uint8_t  g_sample_rec[80];
 static GbEditMon g_sample_out;
 
@@ -233,7 +235,8 @@ static void try_convert(const RomGbSprite* gs, FILE* f, const uint8_t* rec) {
     return;
   }
   CHECK(gb_record_clean(&out), "dex %u: gb_check clean apart from stats_stale", m.species);
-  CHECK(gb_get_dv(&out, GB_ATK) < 16, "dex %u: DV Atk in range", m.species);
+  CHECK(gb_get_dv(&out, GB_ATK) == (m.ivs[1] >> 1), "dex %u: DV Atk == Gen-3 Atk IV / 2", m.species);
+  g_converted++;
 
   if (!g_have_sample) {
     g_have_sample = true;
@@ -273,7 +276,8 @@ static void test_conversion_corpus(const RomGbSprite* gs, FILE* f, int argc, cha
   }
   if (examined == 0)
     printf("  (no Gen-3 .sav given on argv -- integration section will be empty)\n");
-  printf("  %d record(s) examined for conversion\n", examined);
+  printf("  %d record(s) examined, %d converted via ROM base stats\n", examined, g_converted);
+  CHECK(examined == 0 || g_converted > 0, "at least one record converted when a corpus was given");
 }
 
 static void test_engine_gen1(const RomGbSprite* gs) {
