@@ -70,6 +70,8 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     ("summary", "#41 — the native summary editor (E1: Gen-3 card design)",
      ("BACKLOG #41", "BACKLOG #40", "#41", "#40", "BACKLOG #41 slice E1", "E1", "Gen-3 parity")),
     ("s5b-transfer", "S5-B — Gen-3-to-GB transfer (PASTE)", ("S5-B",)),
+    ("e4-settings", "E4 — the Settings > Sprites era grid (docs/SPRITE-ERA-DESIGN.md)",
+     ("E4",)),
     ("misc", "Misc — captions without a tracked feature prefix", ()),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
