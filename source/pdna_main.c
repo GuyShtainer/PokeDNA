@@ -7214,6 +7214,14 @@ static void sprite_settings(void) {
 #define SPR_HDR_ONE(s) s,
   static const char* const HDR[SE_PLACE_N] = { PDNA_SETSPR_PLACE_HDRS(SPR_HDR_ONE) };
   int kind = SE_KIND_RS, place = SE_PLACE_PC;
+  /* D3: the PC-grid icon STORE is built once, by app_icon_rom_open() (called only
+   * from view_save + app_register_rom) -- se_store_era()'s whole-store choice for the
+   * CURRENT save kind. Changing the PC cell here has no effect until that store is
+   * rebuilt, so remember this save kind's PC cell as it stood on entry and, if it
+   * changed by the time this screen saves, rebuild the store the same way
+   * app_register_rom() does. */
+  SeSaveKind k0 = app_save_kind();
+  uint8_t pc0 = g_era.era[k0][SE_PLACE_PC];
   for (;;) {
     SeRoms roms = app_era_roms();
     ui_clear();
@@ -7243,6 +7251,12 @@ static void sprite_settings(void) {
       cfg_save();
       pdna_origin_art_invalidate();
       art_session_invalidate();
+      /* D3: the PC cell for THIS save kind changed -- the icon store still reflects
+       * whichever era was current when app_icon_rom_open() last ran (view_save entry,
+       * or app_register_rom), so it must be rebuilt now, the same call
+       * app_register_rom() makes from Settings, or the new choice sits invisible
+       * until the save is closed and reopened. */
+      if (g_era.era[k0][SE_PLACE_PC] != pc0) app_icon_rom_open();
       return;
     } else if (k2 & KEY_UP) {
       for (int i = 0; i < SE_KIND_N; i++) {
