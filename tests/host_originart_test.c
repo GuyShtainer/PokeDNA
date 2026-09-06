@@ -1333,6 +1333,24 @@ static uint16_t fill_solid(int x, int y)  { (void)x; (void)y; return 0x8000u | 0
 static uint16_t fill_rows(int x, int y)   { (void)x; return (uint16_t)(0x8000u | (y + 1)); }
 /* One pixel wide, full height: the feature plain point sampling deletes. */
 static uint16_t fill_hair(int x, int y)   { (void)y; return x == 28 ? (uint16_t)(0x8000u | 0x7FFFu) : 0u; }
+/* D4: every pixel a DISTINCT opaque value (fits in one byte -- a 16x16 source has
+ * exactly 256 pixels) so a 1:1 blit's exact placement, not just its bounding box,
+ * can be checked pixel-for-pixel against the source. */
+static uint16_t fill_idx16(int x, int y)  { return (uint16_t)(0x8000u | (uint16_t)(y * 16 + x)); }
+
+/* D4: an exact-bytes regression lock for pdna_origin_cell_render's UNCHANGED
+ * downscale branch (sw > dw || sh > dh) -- computed from THIS code (unchanged
+ * since before E5 added the 1:1 branch above it), so a future edit that
+ * disturbs the downscale path's output, even one that keeps every existing
+ * bounding-box/floor/stride assertion passing, still gets caught here. */
+static uint32_t fnv1a16(const uint16_t* p, int n) {
+  uint32_t h = 0x811C9DC5u;
+  for (int i = 0; i < n; i++) {
+    h ^= (uint8_t)(p[i] & 0xFF);       h *= 0x01000193u;
+    h ^= (uint8_t)((p[i] >> 8) & 0xFF); h *= 0x01000193u;
+  }
+  return h;
+}
 
 #define CELL_W 24
 #define CELL_H 22
@@ -1362,6 +1380,42 @@ static void part_f(void) {
     CHECK_EQ(maxy, CELL_H - 1, "F1 feet on the cell floor");
     printf("    56x56 -> %dx%d at (%d,%d) in a %dx%d cell\n",
            maxx - minx + 1, maxy - miny + 1, minx, miny, CELL_W, CELL_H);
+  }
+
+  /* F1c (D4): the DOWNSCALE branch (sw > dw || sh > dh) is untouched by E5's new
+   * <=-cell branch (a structurally separate `if` above it that returns before
+   * this code ever runs for a small source) -- an exact-bytes hash of this same
+   * 56x56-in-24x22 render, over every one of the 24*22 destination pixels (not
+   * just the bounding box F1 already checked), computed from this unmodified
+   * code so a future change to the downscale path that somehow kept F1-F4's
+   * coarser assertions passing would still be caught here. */
+  CHECK_EQ(fnv1a16(cell, CELL_W * CELL_H), 0x75E27725u,
+           "F1c (D4) 56x56-in-24x22 downscale bytes must match the pre-E5 render exactly");
+
+  /* F1b (D4): the NEW <=-cell branch -- a 16x16 source (the real Gen-2 menu icon
+   * size) in a 24x22 cell is blitted 1:1, CENTRED: x0 = (24-16)/2 = 4,
+   * y0 = (22-16)/2 = 3. Every source pixel is a DISTINCT value (fill_idx16), so
+   * this checks exact placement pixel-for-pixel, not just a bounding box -- and
+   * every pixel OUTSIDE that 16x16 window (the border E5's own comment promises
+   * stays untouched) must read exactly 0. */
+  art_fill(src, 16, 16, fill_idx16);
+  a.px = src; a.w = 16; a.h = 16; a.gen = PDNA_GEN2;
+  memset(cell, 0xAB, sizeof cell);   /* sentinel: a border the code forgets to clear shows up */
+  CHECK(pdna_origin_cell_render(&a, cell, CELL_W, CELL_H), "F1b (D4) 16x16 in 24x22 should render");
+  {
+    int border_ok = 1, placed_ok = 1;
+    for (int y = 0; y < CELL_H; y++) {
+      for (int x = 0; x < CELL_W; x++) {
+        uint16_t got = cell[y * CELL_W + x];
+        if (x >= 4 && x < 4 + 16 && y >= 3 && y < 3 + 16) {
+          if (got != fill_idx16(x - 4, y - 3)) placed_ok = 0;
+        } else {
+          if (got != 0) border_ok = 0;
+        }
+      }
+    }
+    CHECK(placed_ok, "F1b (D4) the 16x16 window is placed at exactly (4,3), pixel-for-pixel");
+    CHECK(border_ok, "F1b (D4) every pixel outside the 16x16 window is 0");
   }
 
   /* F2: BOTTOM-ANCHORED, not centred vertically. A short, wide picture must stand on
