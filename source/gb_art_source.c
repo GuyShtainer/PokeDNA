@@ -335,7 +335,12 @@ static int gb_art_have_cb(void* ctx, uint8_t gen) { (void)ctx; return gb_art_hav
  * guard's use of the equivalent EWRAM symbol (__eheap_start vs the EWRAM top,
  * Makefile) -- same idiom, other end of memory. Valid in any GBA-target build
  * (delta included; harmless there since gb_art_have() is already false with no SD),
- * so this is not wrapped in #ifndef PDNA_DELTA. */
+ * so this is not wrapped in #ifndef PDNA_DELTA.
+ * ASSUMES AN EMPTY HEAP: newlib's heap grows UP from this same symbol, so the subtraction
+ * is exact only while nothing has malloc'd. True today (0 malloc / ff_memalloc call sites;
+ * the tree uses the integer-only siprintf family), but a future malloc or a %f-capable
+ * printf would silently eat the ~550 B of slack between the 6,144-B need and the measured
+ * 5,592-B fetch subtree. Re-measure with the call-graph tool if either ever appears. */
 extern char __iheap_start[];
 static int gb_art_stack_room(void) {
   register char* sp __asm__("sp");
