@@ -632,8 +632,13 @@
 #define PDNA_GBSUM_FOOT_VIEW    "A edit  U/D mon  L/R  SEL  B"
 #define PDNA_GBSUM_FOOT_VIEW_RO "U/D mon  L/R card  SEL  B"
 
-/* Card 0 INFO: label at PDNA_SUM_CARD_X, value at +VAL_DX — the same 98 / +48
- * split pdna_summary.c's own card_info uses for its 138 px INFO_W. Everything
+/* Card 0 INFO: label at PDNA_SUM_CARD_X, value at +VAL_DX — the SAME split
+ * IDEA pdna_summary.c's own card_info uses for its 138 px INFO_W, but +52, not
+ * pdna_summary.c's own +48: this card's own labels ("Friend", "Status", and
+ * the Egg relabel "Hatch") are 6 columns (48 px) wide, i.e. EXACTLY 48 px at
+ * PDNA_SUM_CARD_X — flush against a +48 value column with no gap at all.
+ * tests/host_textfit_test.c's own card-0-label check (budgeted to this macro,
+ * not the screen edge) is what caught it; +52 buys a 4 px gap instead. Everything
  * that already lives on the shared left panel (species, level, gender, type,
  * shiny/egg/Pokerus tag — pdna_summary_draw_left) is NOT repeated here; nickname
  * and level keep their rows because THIS is where the edit control lives, the
@@ -695,6 +700,10 @@
 #define PDNA_GBSUM_STAT_DASH       "-"
 #define PDNA_GBSUM_STAT_DV_FMT     "DV %u"
 #define PDNA_GBSUM_STAT_SE_FMT     "SE %u"
+/* Row-1 label/value split, from PDNA_SUM_CARD_X: the label ("HP".."SpD", <=3
+ * cols/24 px) then the computed value ("999/999" worst case, 7 cols/56 px, so
+ * VAL_DX needs at least 24 -- 26 leaves a 2 px gap). */
+#define PDNA_GBSUM_STAT_VAL_DX    26
 /* Row-2 offsets from PDNA_SUM_CARD_X. DV at +8 ("DV 15", 5 cols/40 px, ends at
  * 48); SE at +56 ("SE 65535", 8 cols/64 px, ends at 120) — both inside the
  * 138 px card with margin either side. */

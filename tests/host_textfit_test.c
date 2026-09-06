@@ -693,7 +693,7 @@ int main(void) {
    * grid used — this design has no single-row-spans-everything layout left to
    * re-derive absolute x from, so each cell's own real budget is used instead). */
 #define GBSUM_STATLBL(s) \
-  chk("card 1 stat label", PDNA_SUM_CARD_X, 26, (int)strlen(s) * SYS8_W, s)
+  chk("card 1 stat label", PDNA_SUM_CARD_X, PDNA_GBSUM_STAT_VAL_DX, (int)strlen(s) * SYS8_W, s)
   GBSUM_STATLBL(PDNA_GBSUM_STAT_HP);
   GBSUM_STATLBL(PDNA_GBSUM_STAT_ATK);
   GBSUM_STATLBL(PDNA_GBSUM_STAT_DEF);
@@ -704,10 +704,10 @@ int main(void) {
 #undef GBSUM_STATLBL
   {
     char b[16];
-    /* Row 1 value, at PDNA_SUM_CARD_X + 26, budgeted to the rest of the card. */
+    /* Row 1 value, at PDNA_SUM_CARD_X + STAT_VAL_DX, budgeted to the rest of the card. */
     sprintf(b, PDNA_GBSUM_STAT_CURMAX_FMT, 999u, 999u);
-    chk("card 1 stat value", PDNA_SUM_CARD_X + 26, PDNA_SUM_CARD_W - 26,
-        (int)strlen(b) * SYS8_W, b);
+    chk("card 1 stat value", PDNA_SUM_CARD_X + PDNA_GBSUM_STAT_VAL_DX,
+        PDNA_SUM_CARD_W - PDNA_GBSUM_STAT_VAL_DX, (int)strlen(b) * SYS8_W, b);
     /* Row 2: DV cell must clear the SE cell that starts right after it. */
     sprintf(b, PDNA_GBSUM_STAT_DV_FMT, 15u);
     chk("card 1 DV cell", PDNA_SUM_CARD_X + PDNA_GBSUM_STAT_DV_DX,

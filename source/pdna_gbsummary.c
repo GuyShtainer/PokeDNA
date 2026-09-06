@@ -332,7 +332,7 @@ static void stat_row(const GbEditMon* e, const char* label, int stat_i, int dv_f
   } else {
     strcpy(b, PDNA_GBSUM_STAT_DASH);
   }
-  ui_text(x + 26, y, C_VAL, b);
+  ui_text(x + PDNA_GBSUM_STAT_VAL_DX, y, C_VAL, b);
 
   int y2 = y + ROW_H;
   if (dv_field == GBE_DVH) {
@@ -478,7 +478,9 @@ static void render(const GbEditMon* e, const PkMon* left, bool left_ok, bool dra
   ui_text(4, PDNA_SUM_FOOTER_Y, UI_DIM, foot);
 }
 
-/* ---- input dispatch, split out of pdna_gbsummary() to keep it under ~60 lines --- */
+/* ---- input dispatch, split out of pdna_gbsummary() so that function stays a
+ * setup + a two-call loop body (the repaint gate, then gbsum_input() below)
+ * instead of one long inline block. ------------------------------------- */
 
 typedef struct {
   GbEditMon* e;
@@ -566,12 +568,40 @@ static bool gbsum_view_keys(GbSumCtx* c, u16 k, u16 fresh, int* out) {
   return false;
 }
 
-static void gbsum_click(u16 fresh, bool editing) {
+/* `nslot` lets a card with nothing to edit (ORIGIN today) say so: in EDIT mode
+ * with no registered field, A/U/D/LEFT/RIGHT are exactly the keys
+ * gbsum_edit_keys() no-ops on (KEY_B and KEY_L/KEY_R still work regardless --
+ * B always leaves, L/R always flips cards), so playing their NORMAL earcon
+ * (snd_ok for A, snd_move for U/D, snd_edit for LEFT/RIGHT) would tell the
+ * player something happened when nothing did. */
+static void gbsum_click(u16 fresh, bool editing, int nslot) {
+  if (editing && !nslot && (fresh & (KEY_A | KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT))) {
+    snd_deny();
+    return;
+  }
   if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
   else if (fresh & (KEY_L | KEY_R | KEY_SELECT)) snd_tab();
   else if (fresh & KEY_A) snd_ok();
   else if (fresh & KEY_B) snd_back();
   else if (fresh & (KEY_LEFT | KEY_RIGHT)) { if (editing) snd_edit(); else snd_tab(); }
+}
+
+/* Wait for one key, dispatch it, and report whether pdna_gbsummary() should
+ * `return *out` right now (a SELECT commit, or a VIEW-mode leave/nav step) --
+ * everything past "the card and the outline are on screen" in that function. */
+static bool gbsum_input(GbSumCtx* c, bool* shadow_valid, int* out) {
+  u16 k, fresh;
+  do { s_vsync(); fresh = key_hit(KEY_FULL);
+       k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
+  gbsum_click(fresh, c->editing, c->nslot);
+
+  if (fresh & KEY_SELECT) {
+    if (gbsum_select_fallback(c, shadow_valid)) { *out = 0; return true; }
+    return false;
+  }
+
+  if (c->editing) { gbsum_edit_keys(c, k); return false; }
+  return gbsum_view_keys(c, k, fresh, out);
 }
 
 int pdna_gbsummary(GbEditMon* e, bool can_edit, bool start_editing, const char* note,
@@ -647,21 +677,7 @@ int pdna_gbsummary(GbEditMon* e, bool can_edit, bool start_editing, const char* 
       pdna_summary_sel_frame_hide();
     }
 
-    u16 k, fresh;
-    do { s_vsync(); fresh = key_hit(KEY_FULL);
-         k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
-    gbsum_click(fresh, c.editing);
-
-    if (fresh & KEY_SELECT) {
-      if (gbsum_select_fallback(&c, &shadow_valid)) return 0;
-      continue;
-    }
-
-    if (c.editing) {
-      gbsum_edit_keys(&c, k);
-    } else {
-      int out;
-      if (gbsum_view_keys(&c, k, fresh, &out)) return out;
-    }
+    int out;
+    if (gbsum_input(&c, &shadow_valid, &out)) return out;
   }
 }
