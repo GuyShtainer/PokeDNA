@@ -138,7 +138,10 @@ typedef enum {
   SE_WHY_NO_SPECIES,   /* this era has no such species (se_species_exists)              */
   SE_WHY_NO_ROM,       /* this era's ROM is not registered                              */
   SE_WHY_COMPILED,     /* fell all the way to the compiled Gen-3 sprite table           */
-  SE_WHY_CHIP          /* no art at all -- the caller draws the name chip               */
+  SE_WHY_CHIP,         /* no art at all -- the caller draws the name chip               */
+  SE_WHY_GRID_OPT_IN   /* se_resolve_cell() only (E5b): a Gen-3 save's PC/BANK grid cell
+                        * is NATIVE -- the icon STORE's own picture for this record, by
+                        * Guy's 2026-09-06 opt-in decision, never a bitmap era cell     */
 } SeWhy;
 
 /* ---- the setting itself -------------------------------------------------------------- */
@@ -203,6 +206,45 @@ SeEra se_resolve_for_router(const SeSetting* s, SeSaveKind kind, SePlace place,
                              uint8_t origin_gen, uint8_t origin_certain,
                              uint16_t national_dex, const SeRoms* roms,
                              bool compiled_gen3, int* reason);
+
+/* THE GRID-CELL WRAPPER (E5b, Guy's 2026-09-06 decision: box-grid art is opt-in, not
+ * the default, for a Gen-3 save). Three resolvers now exist and each has exactly one
+ * caller class:
+ *   se_resolve            the CONCRETE answer -- what a raw settings lookup says,
+ *                         gates and all. Used directly only by tests and by the two
+ *                         wrappers below.
+ *   se_resolve_for_router the ROUTER wrapper (portraits: party/summary/hover/bank's
+ *                         left panel) -- collapses a concrete answer that equals the
+ *                         record's own native era back to NATIVE so the compiled/
+ *                         same-game pipeline runs unchanged for every untouched cell.
+ *   se_resolve_cell       THIS wrapper (the box GRID's per-cell picture only: PC and
+ *                         BANK's 30 drawn cells) -- for a GEN-3 save kind (RS/EM/FRLG)
+ *                         at SE_PLACE_PC or SE_PLACE_BANK, a NATIVE cell setting no
+ *                         longer means "whatever this record's own native era is"
+ *                         (which, for a Game Boy import, used to be a bitmap Gen-1/
+ *                         Gen-2 picture -- the pre-E5b default this decision retires):
+ *                         it means "the icon STORE's own picture", i.e. the save's own
+ *                         Gen-3 era, se_native_era(kind, 3, 1), for EVERY mon in that
+ *                         grid, imports included. The '1'/'2' provenance mark is
+ *                         UNCHANGED (pdna_origin_art.c keeps drawing it from CELL_GB,
+ *                         never from this resolver) -- only the PICTURE opts out.
+ *                         Any OTHER cell setting (GEN1, GEN2, a concrete G3_* override)
+ *                         is unaffected: this wrapper falls straight through to
+ *                         se_resolve(), gates and all -- including se_resolve()'s own
+ *                         SE_PLACE_PC + SE_ERA_GEN1 icon refusal, which leaves an
+ *                         explicit GEN1 cell a no-op at PC (there are no per-species
+ *                         Gen-1 icons to refuse INTO; see se_resolve's SE_WHY_NO_ICONS)
+ *                         but honours it at BANK (that gate checks SE_PLACE_PC only) --
+ *                         a Gen-1 import's BANK cell explicitly set to GEN1 resolves
+ *                         concretely and the box grid keeps E3's downscaled Gen-1
+ *                         portrait cell for it (pdna_origin_art.c's pdna_origin_box_art,
+ *                         the ERA_GEN1 branch). Every other (kind, place) pair --
+ *                         parties, summaries, the two GB-save kinds' own GBGRID -- is
+ *                         identical to se_resolve() with no wrapping at all. */
+SeEra se_resolve_cell(const SeSetting* s, SeSaveKind kind, SePlace place,
+                       uint8_t origin_gen, uint8_t origin_certain,
+                       uint16_t national_dex, const SeRoms* roms,
+                       int compiled_gen3, int* reason);
 
 /* ---- config.cfg text: "era_<kind>_<place>=<era>" ------------------------------------
  *
@@ -308,20 +350,26 @@ bool se_cell_applies(SeSaveKind kind, SePlace place);
  * the store stays EM" is exactly what a mixed box (native Emerald mons sitting beside
  * a Crystal import, both wanting the Gen-2 icon look) needs.
  *
- * D1 (E5 fix, adversarial review): "asks the era resolver directly" above means the
- * UNCOLLAPSED one (pdna_origin_art.c's cell_era_of(), fed by
- * pdna_origin_art_set_era_resolver_raw -- pdna_main.c's era_resolver_raw_cb calls
- * se_resolve() itself, not se_resolve_for_router()). The ROUTER-facing hook
- * (era_resolver_cb / se_resolve_for_router) is wrong for this call site: it reports a
- * concrete answer that equals the (kind, origin_gen, origin_certain) NATIVE answer as
- * NATIVE, which is correct for the PORTRAIT rung (see se_resolve_for_router's own
- * comment) but wrong here -- it means a Gen-2 SAVE'S OWN GBGRID, and a Gen-2 import
- * sitting at its native/default cell in a Gen-3 PC, would never see GEN2 and never get
- * the icon, while a NATIVE Gen-3 mon whose cell was explicitly overridden to GEN2
- * would (the answers differ from native, so the router never collapses them) -- the
- * inverse of the intended rule. Asking the raw/uncollapsed resolver fixes both: a
- * Gen-2-kind save's default cell and a native-default Gen-2 import both resolve
- * concretely to GEN2 and take the icon rung, same as an explicit override does. */
+ * D1 (E5 fix, adversarial review) / E5b (Guy's 2026-09-06 opt-in decision, which
+ * SUPERSEDES part of D1 below -- kept for the parts still true): "asks the era
+ * resolver directly" above means pdna_origin_art.c's cell_era_of(), fed by
+ * pdna_origin_art_set_era_resolver_cell -- pdna_main.c's era_resolver_cell_cb calls
+ * se_resolve_cell() (this file), not se_resolve_for_router(). The ROUTER-facing hook
+ * (era_resolver_cb / se_resolve_for_router) is still wrong for this call site for the
+ * reason D1 gave: it collapses a concrete answer that equals the record's own native
+ * era back to NATIVE, which is correct for the PORTRAIT rung (se_resolve_for_router's
+ * own comment) but would hide GEN2 exactly where the box grid needs to see it --
+ * D1's two examples (a Gen-2 SAVE'S OWN GBGRID, and a Gen-2 import at its native/
+ * default cell) are UNCHANGED by E5b, because neither is a Gen-3-kind PC/BANK cell.
+ * What CHANGED under E5b: se_resolve_cell (not plain se_resolve) is what
+ * era_resolver_cell_cb actually calls, and for a Gen-3 kind's PC/BANK NATIVE cell
+ * specifically, se_resolve_cell answers the icon STORE's own era (se_native_era(kind,
+ * 3, 1)) instead of the record's own native era -- so a Gen-2 (or Gen-1) import
+ * sitting at ITS native/default cell in a Gen-3 PC/BANK box no longer resolves to
+ * GEN2/GEN1 and no longer takes a bitmap era rung at all; only an EXPLICIT GEN2 cell
+ * override does (for every mon at that cell, imports and dex<=251 natives alike). A
+ * Gen-2-kind save's own GBGRID is a Game Boy kind, not a Gen-3 one, so se_resolve_cell
+ * never intercepts it -- it keeps resolving concretely to GEN2 exactly as D1 fixed. */
 SeEra se_store_era(const SeSetting* s, SeSaveKind kind, SePlace place, const SeRoms* roms);
 
 /* Map a PkGame value (gen3_trainer.h's PK_RS/PK_EMERALD/PK_FRLG, 0/1/2) onto its

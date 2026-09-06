@@ -293,6 +293,139 @@ static void test_resolve_for_router(void) {
   printf("(Da) se_resolve_for_router ok\n");
 }
 
+/* ---- (Db) se_resolve_cell -- E5b: box-grid art is opt-in for a Gen-3 save ----------- */
+static void test_resolve_cell(void) {
+  SeRoms all_roms; for (int i = 0; i < SE_ERA_N; i++) all_roms.have[i] = true;
+
+  /* Db1: Emerald kind, PC place, cell NATIVE (default), a Gen-2 import (origin_gen=2) --
+   * the opt-in short-circuit fires: the answer is the STORE's own era (G3_EM), not the
+   * import's own GEN2, with the new reason naming why. */
+  {
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PC, 2, 1, 25, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_G3_EM, "Db1: EM/PC/NATIVE + Gen-2 import -> the store's G3_EM");
+    CHECK(why == SE_WHY_GRID_OPT_IN, "Db1: reason names the grid opt-in");
+  }
+
+  /* Db2: same cell, a native Emerald mon (origin_gen=3) -- identical answer, proving the
+   * short-circuit does not care whether the record is an import at all. */
+  {
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PC, 3, 1, 25, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_G3_EM, "Db2: EM/PC/NATIVE + native mon -> the same store G3_EM");
+    CHECK(why == SE_WHY_GRID_OPT_IN, "Db2: reason names the grid opt-in for natives too");
+  }
+
+  /* Db3: PC cell explicitly set to GEN2 -- falls straight through to se_resolve(): a
+   * Gen-2 import (dex 25, exists in GEN2) resolves concretely to GEN2. */
+  {
+    SeSetting s; se_default(&s);
+    s.era[SE_KIND_EM][SE_PLACE_PC] = SE_ERA_GEN2;
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PC, 2, 1, 25, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_GEN2, "Db3: EM/PC/GEN2 cell + import dex<=251 -> GEN2");
+  }
+
+  /* Db3b: the SAME explicit GEN2 cell, a NATIVE mon (origin_gen=3) with a dex GEN2 also
+   * has (25) -- se_resolve() does not care about provenance, only the dex, so this must
+   * ALSO be GEN2: "GEN2 per mon while the store stays EM" applies to natives too. */
+  {
+    SeSetting s; se_default(&s);
+    s.era[SE_KIND_EM][SE_PLACE_PC] = SE_ERA_GEN2;
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PC, 3, 1, 25, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_GEN2, "Db3b: EM/PC/GEN2 cell + NATIVE dex<=251 mon -> GEN2 too");
+  }
+
+  /* Db4: the same explicit GEN2 cell, but a dex GEN2 never had (252, Treecko) -- refused
+   * by se_species_exists, same gate se_resolve() always applied. */
+  {
+    SeSetting s; se_default(&s);
+    s.era[SE_KIND_EM][SE_PLACE_PC] = SE_ERA_GEN2;
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PC, 3, 1, 252, &all_roms, 1, &why);
+    CHECK(got != SE_ERA_GEN2, "Db4: dex 252 (Hoenn-only) is refused for a GEN2 cell");
+  }
+
+  /* Db5 (decision, documented): PC cell explicitly set to GEN1 -- se_resolve() itself
+   * refuses SE_PLACE_PC + SE_ERA_GEN1 outright (SE_WHY_NO_ICONS: no per-species Gen-1
+   * icons exist), and se_resolve_cell only intercepts the NATIVE cell case, so this
+   * falls straight through to that refusal: the cell answers NATIVE (the sentinel),
+   * same as se_resolve() always did at PC for a GEN1 cell -- a GEN1 cell has nothing
+   * left to do at the PC grid (sprite_era.h's se_resolve_cell comment spells this out).
+   * The grid's opt-in for Gen 1 lives at BANK instead (Db6), where that PC-only gate
+   * does not fire. */
+  {
+    SeSetting s; se_default(&s);
+    s.era[SE_KIND_EM][SE_PLACE_PC] = SE_ERA_GEN1;
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PC, 1, 1, 1, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_NATIVE,
+          "Db5: EM/PC/GEN1 cell is refused at PC (no per-species Gen-1 icons) -> NATIVE");
+  }
+
+  /* Db6: the SAME GEN1 cell setting, at BANK instead of PC -- se_resolve()'s icon
+   * refusal checks SE_PLACE_PC only, so BANK honours it concretely: this is how a
+   * Gen-1 import keeps E3's downscaled Gen-1 portrait cell in the grid, opt-in. */
+  {
+    SeSetting s; se_default(&s);
+    s.era[SE_KIND_EM][SE_PLACE_BANK] = SE_ERA_GEN1;
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_BANK, 1, 1, 1, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_GEN1, "Db6: EM/BANK/GEN1 cell is honoured concretely (unlike PC)");
+  }
+
+  /* Db7: BANK, NATIVE cell -- "EM BANK same as PC": the opt-in short-circuit fires
+   * identically at BANK. */
+  {
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_BANK, 2, 1, 25, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_G3_EM, "Db7: EM/BANK/NATIVE + import -> the store's G3_EM, same as PC");
+    CHECK(why == SE_WHY_GRID_OPT_IN, "Db7: reason names the grid opt-in at BANK too");
+  }
+
+  /* Db8: PARTY and SUMMARY are NOT grid places -- se_resolve_cell must be byte-identical
+   * to se_resolve() there, for every place the opt-in does not name. */
+  {
+    SeSetting s; se_default(&s);
+    int why_cell = -1, why_plain = -1;
+    SeEra got_cell  = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PARTY, 2, 1, 25,
+                                       &all_roms, 1, &why_cell);
+    SeEra got_plain = se_resolve(&s, SE_KIND_EM, SE_PLACE_PARTY, 2, 1, 25,
+                                  &all_roms, true, &why_plain);
+    CHECK(got_cell == got_plain, "Db8: PARTY is unaffected -- same answer as se_resolve()");
+    CHECK(why_cell == why_plain, "Db8: PARTY -- same reason too");
+
+    why_cell = -1; why_plain = -1;
+    got_cell  = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_SUMMARY, 2, 1, 25,
+                                 &all_roms, 1, &why_cell);
+    got_plain = se_resolve(&s, SE_KIND_EM, SE_PLACE_SUMMARY, 2, 1, 25,
+                            &all_roms, true, &why_plain);
+    CHECK(got_cell == got_plain, "Db8: SUMMARY is unaffected -- same answer as se_resolve()");
+    CHECK(why_cell == why_plain, "Db8: SUMMARY -- same reason too");
+  }
+
+  /* Db9: a Game Boy kind's own GBGRID is untouched by the Gen-3-only opt-in -- NATIVE
+   * still means "this save's own generation", exactly as se_resolve() always answered. */
+  {
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_GEN2, SE_PLACE_GBGRID, 2, 1, 25, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_GEN2, "Db9: a Gen-2 save's own GBGRID at NATIVE -> GEN2, unchanged");
+  }
+  {
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_GEN1, SE_PLACE_GBGRID, 1, 1, 1, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_GEN1, "Db9b: a Gen-1 save's own GBGRID at NATIVE -> GEN1, unchanged");
+  }
+
+  printf("(Db) se_resolve_cell ok\n");
+}
+
 /* ---- (E) config write/apply round trip --------------------------------------------- */
 static void test_config(void) {
   SeSetting s; se_default(&s);
@@ -567,6 +700,7 @@ int main(void) {
   test_species_exists();
   test_resolve();
   test_resolve_for_router();
+  test_resolve_cell();
   test_config();
   test_names();
   test_era_next();

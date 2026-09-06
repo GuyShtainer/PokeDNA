@@ -140,6 +140,33 @@ SeEra se_resolve_for_router(const SeSetting* s, SeSaveKind kind, SePlace place,
   return e;
 }
 
+/* Is `kind` one of the three Gen-3 save kinds? Used only by se_resolve_cell -- pulled
+ * out so that function reads as one sentence instead of a three-way `||`. */
+static bool kind_is_gen3(SeSaveKind kind) {
+  return kind == SE_KIND_RS || kind == SE_KIND_EM || kind == SE_KIND_FRLG;
+}
+
+SeEra se_resolve_cell(const SeSetting* s, SeSaveKind kind, SePlace place,
+                       uint8_t origin_gen, uint8_t origin_certain,
+                       uint16_t national_dex, const SeRoms* roms,
+                       int compiled_gen3, int* reason) {
+  /* E5b (Guy, 2026-09-06): a Gen-3 save's PC/BANK grid NATIVE cell means "the icon
+   * STORE's own picture", not "this record's own native era" -- see sprite_era.h's
+   * comment on this function for the full rationale. `kind`/`place` are validated by
+   * se_resolve() below on every path that reaches it; this short-circuit reads them
+   * only to decide whether to intercept, so an out-of-range value here simply fails
+   * the two `==`/`kind_is_gen3` checks and falls through to se_resolve() untouched --
+   * that function does its own defensive clamping. */
+  if (s && (unsigned)kind < SE_KIND_N && (unsigned)place < SE_PLACE_N &&
+      kind_is_gen3(kind) && (place == SE_PLACE_PC || place == SE_PLACE_BANK) &&
+      s->era[kind][place] == (uint8_t)SE_ERA_NATIVE) {
+    if (reason) *reason = SE_WHY_GRID_OPT_IN;
+    return se_native_era(kind, 3, 1);   /* the save's own Gen-3 era -- "the store" */
+  }
+  return se_resolve(s, kind, place, origin_gen, origin_certain, national_dex, roms,
+                     compiled_gen3 ? true : false, reason);
+}
+
 /* Bounded string append: copies as much of `src` as fits in `out[0..cap-1]`, always
  * leaving room for (and writing) a trailing NUL when cap >= 1. Returns the number of
  * bytes actually copied (never counting the NUL). A `src` that would not fit ENTIRELY
