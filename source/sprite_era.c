@@ -124,6 +124,22 @@ SeEra se_resolve(const SeSetting* s, SeSaveKind kind, SePlace place,
   return SE_ERA_NATIVE;
 }
 
+SeEra se_resolve_for_router(const SeSetting* s, SeSaveKind kind, SePlace place,
+                             uint8_t origin_gen, uint8_t origin_certain,
+                             uint16_t national_dex, const SeRoms* roms,
+                             bool compiled_gen3, int* reason) {
+  SeEra e = se_resolve(s, kind, place, origin_gen, origin_certain, national_dex,
+                        roms, compiled_gen3, reason);
+  /* D1: a concrete answer that is EXACTLY what se_native_era() would say for this
+   * (kind, origin_gen, origin_certain) means "this is the untouched/default answer" --
+   * report it as NATIVE so the router runs the pre-E4 pipeline instead of the
+   * cross-game rung. se_native_era() does its own defensive clamping of `kind`, same
+   * as se_resolve() does internally, so no re-clamping is needed here. */
+  if (e != SE_ERA_NATIVE && e == se_native_era(kind, origin_gen, origin_certain))
+    return SE_ERA_NATIVE;
+  return e;
+}
+
 /* Bounded string append: copies as much of `src` as fits in `out[0..cap-1]`, always
  * leaving room for (and writing) a trailing NUL when cap >= 1. Returns the number of
  * bytes actually copied (never counting the NUL). A `src` that would not fit ENTIRELY

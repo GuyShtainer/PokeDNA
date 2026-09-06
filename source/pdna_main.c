@@ -1774,8 +1774,14 @@ static int era_resolver_cb(int place, uint8_t origin_gen, uint8_t origin_certain
 #else
   bool compiled_gen3 = true;
 #endif
-  return (int)se_resolve(&g_era, app_save_kind(), (SePlace)place, origin_gen,
-                         origin_certain, national_dex, &roms, compiled_gen3, reason);
+  /* D1: se_resolve_for_router() (not se_resolve() directly) -- a concrete answer that
+   * is exactly the (kind, origin_gen, origin_certain) native answer must be reported
+   * as NATIVE, or every untouched grid cell reroutes onto the cross-game ROM rung
+   * instead of gen3_ladder's compiled/same-game path. See sprite_era.h's comment on
+   * se_resolve_for_router. */
+  return (int)se_resolve_for_router(&g_era, app_save_kind(), (SePlace)place, origin_gen,
+                                    origin_certain, national_dex, &roms, compiled_gen3,
+                                    reason);
 }
 
 /* Registered once from main()'s startup (alongside gb_art_boot_register(), just
@@ -2174,6 +2180,10 @@ g3x_fetch_other(PkGame game, uint16_t species, uint8_t form, uint8_t back, uint8
 static const uint16_t* g3cross_pic_cb(void* ctx, int game, uint16_t species, uint8_t form,
                                       uint8_t back, uint8_t shiny, uint8_t* out_w, uint8_t* out_h) {
   (void)ctx;
+  /* D1/item 7: the detach switch means "no ROM art" -- the cross-game rung is ROM art
+   * too, so it must honour g_rom_art_off exactly like the other rungs, not just the
+   * same-game one. */
+  if (g_rom_art_off) return 0;
   PkGame wanted = (PkGame)game;
   /* Fast path: the currently open icon ROM already IS this game -- reuse the SAME
    * open RomSprite every other rung reads, no new file at all. */

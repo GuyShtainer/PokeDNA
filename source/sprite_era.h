@@ -184,6 +184,26 @@ SeEra se_resolve(const SeSetting* s, SeSaveKind kind, SePlace place,
                   uint8_t origin_gen, uint8_t origin_certain, uint16_t national_dex,
                   const SeRoms* roms, bool compiled_gen3, int* reason);
 
+/* THE ROUTER-FACING WRAPPER (E4 fix D1). se_resolve() answers a CONCRETE era at its
+ * step 6 (the untouched/NATIVE-cell case, once `native` clears its own gates) -- e.g.
+ * SE_ERA_G3_EM for an Emerald mon on an Emerald save, the moment that game's ROM is
+ * registered. Every caller of se_resolve() that feeds an art ROUTER (pdna_origin_art's
+ * era_resolver_cb) must NOT see that concrete answer when it is exactly what
+ * se_native_era() would say for this same (kind, origin_gen, origin_certain): that
+ * answer means "draw this record exactly as the pre-E4 pipeline always has" (the
+ * compiled Gen-3 ladder / same-game ROM already open), and reporting it as a concrete
+ * era instead sends EVERY untouched grid cell down the cross-game rung -- a second
+ * ROM opened and cluster-walked per portrait, for a picture the old pipeline already
+ * drew for free. An EXPLICIT override (e.g. an Emerald save's cell set to G3_FRLG)
+ * differs from the native answer and is returned concrete, unchanged.
+ *
+ * `reason` (when non-NULL) is left exactly as se_resolve() set it -- this wrapper only
+ * changes what the ROUTER does with the era, not the UI's account of why. */
+SeEra se_resolve_for_router(const SeSetting* s, SeSaveKind kind, SePlace place,
+                             uint8_t origin_gen, uint8_t origin_certain,
+                             uint16_t national_dex, const SeRoms* roms,
+                             bool compiled_gen3, int* reason);
+
 /* ---- config.cfg text: "era_<kind>_<place>=<era>" ------------------------------------
  *
  * kind tokens (2 chars each, so key parsing is fixed-width): rs em fr g1 g2

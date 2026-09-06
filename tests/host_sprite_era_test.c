@@ -243,6 +243,56 @@ static void test_resolve(void) {
   printf("(D) se_resolve ok\n");
 }
 
+/* ---- (Da) se_resolve_for_router: D1's "a native answer must be reported as NATIVE"
+ * fix. A default (untouched) grid cell resolves (via se_resolve's own step 6) to the
+ * CONCRETE native era the instant that era's ROM is registered -- D4 above proved that
+ * shape. Fed straight to the art router, that concrete answer skips gen3_ladder's
+ * compiled/same-game path and opens a SECOND ROM (the cross-game rung) for a picture
+ * the old pipeline already drew for free. se_resolve_for_router() is the fix: it
+ * collapses a concrete answer that matches se_native_era()'s own answer back to the
+ * NATIVE sentinel, and leaves everything else (including explicit overrides) alone. */
+static void test_resolve_for_router(void) {
+  SeRoms all_roms; for (int i = 0; i < SE_ERA_N; i++) all_roms.have[i] = true;
+  SeRoms no_roms;  for (int i = 0; i < SE_ERA_N; i++) no_roms.have[i]  = false;
+
+  /* Da1: default grid, Emerald save, SUMMARY place, a native Emerald mon, Emerald ROM
+   * registered -- se_resolve() itself answers concrete G3_EM (same shape as D4); the
+   * router wrapper must report NATIVE instead. */
+  {
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve_for_router(&s, SE_KIND_EM, SE_PLACE_SUMMARY, 3, 1, 25,
+                                       &all_roms, true, &why);
+    CHECK(got == SE_ERA_NATIVE,
+          "Da1: default grid + Emerald mon on an Emerald save -> NATIVE, not G3_EM");
+    CHECK(why == SE_WHY_WANTED, "Da1: reason is left exactly as se_resolve() set it");
+  }
+
+  /* Da2: an EXPLICIT override that differs from the native answer stays concrete -- an
+   * Emerald save's SUMMARY cell set to G3_FRLG, with FRLG registered. */
+  {
+    SeSetting s; se_default(&s);
+    s.era[SE_KIND_EM][SE_PLACE_SUMMARY] = SE_ERA_G3_FRLG;
+    int why = -1;
+    SeEra got = se_resolve_for_router(&s, SE_KIND_EM, SE_PLACE_SUMMARY, 3, 1, 25,
+                                       &all_roms, true, &why);
+    CHECK(got == SE_ERA_G3_FRLG,
+          "Da2: an explicit G3_FRLG override on an Emerald save stays concrete");
+  }
+
+  /* Da3: se_resolve() already answers the NATIVE sentinel (no ROMs at all, compiled
+   * art available) -- the wrapper must pass that through unchanged. */
+  {
+    SeSetting s; se_default(&s);
+    int why = -1;
+    SeEra got = se_resolve_for_router(&s, SE_KIND_EM, SE_PLACE_SUMMARY, 3, 1, 25,
+                                       &no_roms, true, &why);
+    CHECK(got == SE_ERA_NATIVE, "Da3: se_resolve's own NATIVE sentinel passes through");
+  }
+
+  printf("(Da) se_resolve_for_router ok\n");
+}
+
 /* ---- (E) config write/apply round trip --------------------------------------------- */
 static void test_config(void) {
   SeSetting s; se_default(&s);
@@ -508,6 +558,7 @@ int main(void) {
   test_native_era();
   test_species_exists();
   test_resolve();
+  test_resolve_for_router();
   test_config();
   test_names();
   test_era_next();
