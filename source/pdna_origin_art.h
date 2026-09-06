@@ -229,9 +229,10 @@ typedef struct PdnaGbArtSource {
                          uint8_t back, uint8_t shiny, uint8_t* out_w, uint8_t* out_h);
   /* Is a ROM for that era registered at all? Cheap; used to skip work. */
   int (*have)(void* ctx, uint8_t gen);
-  /* E5 (docs/SPRITE-ERA-DESIGN.md sec 2/4): the REAL Gen-2 16x16 party/PC MENU
-   * icon for national dex `dex` -- what the retail Gold/Silver/Crystal box list
-   * actually draws, as opposed to `pic` above's 56x56 battle-style sprite. NULL-
+  /* E5 (docs/SPRITE-ERA-DESIGN.md sec 2/4): the REAL Gen-2 16x16 party-MENU icon
+   * for national dex `dex` (D5: NOT the PC box list -- Bill's PC draws the front
+   * picture; this is the party menu's, also the naming/move-list/trade screens
+   * and the Fly map), as opposed to `pic` above's 56x56 battle-style sprite. NULL-
    * able (a source with no icon reader, or the artless-equivalent "nothing
    * registered" case, simply never offers this rung) and, when present, ONLY
    * ever answers for `gen == PDNA_GEN2` -- Gen 1 has no per-species menu icons
@@ -239,8 +240,12 @@ typedef struct PdnaGbArtSource {
    * GEN1 at the PC grid for exactly this reason) and a `gen == PDNA_GEN1` call
    * always returns NULL. No `form`/`back`/`shiny` parameters: Gen-2 menu icons
    * are one picture per species regardless of Unown letter or shininess (the
-   * icon KIND lookup does not vary on either). Writes 16 to out_w/out_h on
-   * success. Returns NULL when this ROM cannot serve it. */
+   * icon KIND lookup does not vary on either). D6: `dex == 0` is the EGG
+   * sentinel -- never a real national dex (1..251) -- and asks for the fixed
+   * ICON_EGG kind instead of a per-species lookup; a source with no eggs to draw
+   * (there are none -- ICON_EGG is a ROM fact, not optional) still answers it the
+   * same way it answers any other kind. Writes 16 to out_w/out_h on success.
+   * Returns NULL when this ROM cannot serve it. */
   const uint16_t* (*icon)(void* ctx, uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h);
   void* ctx;
 } PdnaGbArtSource;

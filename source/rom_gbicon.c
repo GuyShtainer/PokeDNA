@@ -315,6 +315,19 @@ int rom_gbicon_kind(const RomGbIcon* gi, uint16_t dex) {
   return b;
 }
 
+/* D6 (E5 fix): ICON_EGG -- pokecrystal/pokegold's fixed egg-icon kind, 28. Present in
+ * the ROM (a real, decodable 16x16 picture at kind 28) but used by no species in
+ * MonMenuIcons -- it is drawn only when the game code explicitly asks for kind 28
+ * itself (an egg party-menu/box slot), never reached through rom_gbicon_kind()'s
+ * per-species table lookup. Same fail-closed posture as every other accessor here:
+ * 28 > n on a variant with fewer kinds (there is no such variant among Guy's own
+ * dumps, both measuring n=38, but nothing here assumes that) refuses rather than
+ * serving a kind this ROM's own table never proved decodes to anything. */
+int rom_gbicon_kind_egg(const RomGbIcon* gi) {
+  if (!gi || !gi->ok) return 0;
+  return (ROM_GBICON_KIND_EGG <= gi->n) ? ROM_GBICON_KIND_EGG : 0;
+}
+
 int rom_gbicon_tiles(RomGbIcon* gi, int kind, int frame, uint8_t out[ROM_GBICON_FRAME_BYTES]) {
   if (!gi || !gi->ok || !out) return 0;
   if (kind < 1 || (uint32_t)kind > gi->n) return 0;

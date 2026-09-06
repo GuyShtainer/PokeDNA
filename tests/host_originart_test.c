@@ -1295,6 +1295,36 @@ static void part_i(void) {
     CHECK(a10.px == g_front, "I10 falls back to compiled native Gen-3 art");
   }
 
+  /* I11 (D6): an EGG on a GEN2-resolved cell must show Gen 2's fixed ICON_EGG kind,
+   * never the hidden species' own icon. Built as a REAL egg (gen3_edit's em_set_egg,
+   * the same round-trip tests/host_hatch_test.c uses), hiding an ordinary Bulbasaur
+   * (dex 1, exists in GEN2 -- proves the icon rung is reached at all) so a bug that
+   * fell back to nat_dex would be indistinguishable from correct UNLESS the fetch
+   * itself is checked: the stub source (fake_icon) cannot tell an egg's picture from
+   * a species' by content, so this asserts on the ARGUMENT the router sends it,
+   * g_gbicon_last_dex, which pdna_origin_box_art must set to the D6 sentinel 0, not
+   * Bulbasaur's national dex 1. */
+  s_rr_setting.era[SE_KIND_FRLG][SE_PLACE_PC] = SE_ERA_GEN2;   /* already set by I10; explicit here too */
+  pdna_origin_art_invalidate();
+  {
+    uint8_t rec11[80], egg11[80]; PkMon m11;
+    gen3_build_mon(1, 5, 0x44445555u, 0x00010002u, "TEST", 3, rec11);   /* native Bulbasaur */
+    EditMon e11; gen3_edit_load(rec11, false, &e11);
+    em_set_egg(&e11, true);
+    gen3_edit_commit(&e11, egg11);
+    CHECK(pk_decode_mon(egg11, false, &m11), "I11 setup: egg decode");
+    pk_resolve(&m11);
+    CHECK(m11.isEgg && !m11.isBadEgg, "I11 setup: this really is an egg");
+    CHECK_EQ((int)m11.species, 1, "I11 setup: the egg still hides Bulbasaur (species 1)");
+
+    PdnaArt a11; g_gbicon_calls = 0; g_gbicon_last_dex = 999; g_gb_calls = 0;
+    CHECK(pdna_origin_box_art(0, &m11, &a11), "I11 should return art");
+    CHECK(a11.px == g_gbicon_pix, "I11 (D6) an egg on a GEN2 cell takes the icon rung");
+    CHECK_EQ(g_gbicon_last_dex, 0, "I11 (D6) the icon fetch must use the EGG sentinel (0), "
+                                   "not the hidden species' national dex (1)");
+    CHECK_EQ(a11.egg, 1, "I11 (D6) out->egg is set for the egg icon too");
+  }
+
   /* leave global state clean for whichever part runs next */
   g_gbicon_on = 0;
   gb_source_on();

@@ -135,6 +135,13 @@ static void run_gen2(const char* name, int with_pixel_checks) {
   }
   chk(name, "every kind 1..n decodes to a non-empty frame 0", all_decode);
 
+  /* D6 (E5 fix): ICON_EGG (kind 28) is a real, decodable kind on both of Guy's
+   * dumps (n=38 on both, so 28 <= n) -- already proved non-degenerate by the loop
+   * just above (it iterates every kind 1..n, 28 included); this just confirms the
+   * accessor itself answers 28, fail-closed shape and all. */
+  chk(name, "rom_gbicon_kind_egg answers ICON_EGG (28)",
+      rom_gbicon_kind_egg(&gi) == ROM_GBICON_KIND_EGG);
+
   /* 4) pixel-identical to the decomp PNGs, by species */
   if (with_pixel_checks) {
     for (unsigned i = 0; i < sizeof WANT / sizeof WANT[0]; i++) {

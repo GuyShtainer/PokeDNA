@@ -764,21 +764,39 @@ int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out) {
   uint16_t nat_dex = pk_national_no(m->species);
   int era = cell_era_of(o.gen, o.gen_certain, nat_dex);
 
+  /* D6 (E5 fix): an egg's cell (species could be anything: an egg's `species` field
+   * holds the HIDDEN hatch target, exactly what the portrait path's own isEgg check
+   * above already treats as irrelevant to the picture) must show Gen 2's own fixed
+   * ICON_EGG kind, never the hidden species' icon -- pre-fix, an egg holding e.g. a
+   * Bulbasaur (internal id 1, inside the ordinary species gate below) wore
+   * Bulbasaur's icon on a GEN2-resolved cell, which is not what the retail party
+   * menu shows for an unhatched egg. `dex` 0 is the sentinel gb_art_fetch_icon()
+   * reads as "give me ICON_EGG" (never a real species -- nat_dex 0 already means
+   * "no such species" everywhere else in this router, and se_species_exists(_,0) is
+   * false, so no real cell ever reaches this call with dex 0 by accident). Bypasses
+   * the ordinary species-range gate below: an egg's hidden species may be outside
+   * 1..GEN2_MAX_DEX (a Hoenn-only hatch target, say) and still wants the icon --
+   * the egg picture does not depend on it. */
+  int is_egg = m->isEgg && !m->isBadEgg;
+
   if (era == ERA_GEN2 && s_gb_on && s_gb.icon &&
-      m->species >= 1 && m->species <= GEN2_MAX_DEX &&
+      (is_egg || (m->species >= 1 && m->species <= GEN2_MAX_DEX)) &&
       pdna_origin_art_have(PDNA_GEN2) &&
       pdna_origin_art_stack_room(PDNA_GB_ICON_NEED)) {
     uint8_t w = 0, h = 0;
-    const uint16_t* px = fetch_pic_ex(PDNA_GEN2, nat_dex, 0, 0, 0, 1, &w, &h);
+    uint16_t icon_dex = is_egg ? 0u : nat_dex;
+    const uint16_t* px = fetch_pic_ex(PDNA_GEN2, icon_dex, 0, 0, 0, 1, &w, &h);
     if (px && w && h) {
       out->px = px; out->w = w; out->h = h; out->gen = PDNA_GEN2;
       out->era = o.gen; out->era_certain = o.gen_certain;
+      out->egg = is_egg ? 1 : 0;
       return 1;
     }
-    /* The Gen-2 ROM could not serve this species' icon (should not happen --
-     * se_species_exists(GEN2,dex) already gated era==GEN2 on dex<=251 -- but
-     * degrade to the ordinary portrait rather than showing nothing, same
-     * posture as every other rung's failure). */
+    /* The Gen-2 ROM could not serve this icon (should not happen -- for a real
+     * species, se_species_exists(GEN2,dex) already gated era==GEN2 on dex<=251;
+     * for an egg, rom_gbicon_kind_egg()'s own fail-closed rule is the only way
+     * this refuses -- but degrade to the ordinary portrait rather than showing
+     * nothing, same posture as every other rung's failure). */
   }
   return pdna_origin_art_portrait(m, 0, out, 0);
 }

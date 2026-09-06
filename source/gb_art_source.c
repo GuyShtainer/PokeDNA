@@ -363,7 +363,12 @@ gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
   }
   if (!ok) { f_close(&fil); return 0; }
 
-  int kind = rom_gbicon_kind(&gi, dex);
+  /* D6 (E5 fix): dex 0 is the EGG sentinel (pdna_origin_art.c's pdna_origin_box_art
+   * comment) -- never a real national dex (1..251), so this can never accidentally
+   * fire for a real species. Ask for the fixed ICON_EGG kind instead of a per-
+   * species lookup: an egg has no species to look up by, and the retail party menu
+   * draws the SAME egg picture no matter what is inside. */
+  int kind = (dex == 0) ? rom_gbicon_kind_egg(&gi) : rom_gbicon_kind(&gi, dex);
   const uint16_t* px = 0;
   if (kind) {
     uint8_t tile[ROM_GBICON_FRAME_BYTES];      /* 64 B, this frame's OWN stack --

@@ -157,6 +157,10 @@
 #define ROM_GBICON_SCRATCH_MIN   2048   /* same window size as rom_gbsprite.h    */
 #define ROM_GBICON_SPECIES       251    /* MonMenuIcons length                   */
 #define ROM_GBICON_MAX_KINDS     63     /* generous ceiling on N (measured 38)   */
+#define ROM_GBICON_KIND_EGG      28     /* D6: pokecrystal/pokegold's fixed egg
+                                          * icon kind -- present in the ROM, used
+                                          * by no species in MonMenuIcons (see
+                                          * rom_gbicon_kind_egg())               */
 #define ROM_GBICON_TILE_BYTES    16u
 #define ROM_GBICON_FRAME_TILES   4u
 #define ROM_GBICON_FRAME_BYTES   (ROM_GBICON_FRAME_TILES * ROM_GBICON_TILE_BYTES) /* 64 */
@@ -226,6 +230,14 @@ void rom_gbicon_save_loc(const RomGbIcon* gi, RomGbIconLoc* out);
  * every one of the 251 species this module ever sees (no PokedexOrder-style
  * remap exists in Gen 2, unlike Gen 1; see rom_gbsprite.h). */
 int rom_gbicon_kind(const RomGbIcon* gi, uint16_t dex);
+
+/* D6 (E5 fix): the fixed EGG icon kind (ROM_GBICON_KIND_EGG, 28) -- NOT looked up
+ * per species (an egg has none to look up by), always the same picture in both
+ * games. Returns ROM_GBICON_KIND_EGG when it is `<= gi->n` (true on both of Guy's
+ * dumps, n=38), else 0 (never a valid kind) -- fail closed exactly like
+ * rom_gbicon_kind() rather than serving a kind this ROM's own table never proved
+ * decodes to anything. `gi` must be open (gi->ok); an unopened/failed `gi` returns 0. */
+int rom_gbicon_kind_egg(const RomGbIcon* gi);
 
 /* Read one 16x16 animation frame's raw 2bpp tile bytes for icon `kind` (1..n)
  * into `out[64]` -- 4 tiles x 16 B, tile order top-left/top-right/bottom-left/
