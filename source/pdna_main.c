@@ -69,6 +69,7 @@
 #include "rom_hand.h"      /* Phase 3 (ROM-art): the pointer glove (DESIGN.md Sec 1.3/4.5) */
 #endif
 #include "pdna_origin_art.h" /* pdna_origin_art_set_romsprite -- registers the RomSprite */
+#include "gb_art_source.h" /* slice E3: the GB half of the same art router, romgb1/romgb2 */
 #include "artbuf.h"        /* mon_decomp -- the shared 8 KiB decode buffer            */
 #include "item_icons.h"    /* item_icon_for -- the compiled rung app_item_icon() tries first */
 #include "type_icons.h"    /* type_icon_for -- the compiled rung app_type_badge() tries first */
@@ -166,6 +167,17 @@ static char        EWRAM_BSS g_cwd[PATH_MAX];             /* current directory (
  * map data out of the user's OWN ROM, and RS/E/FRLG map data differs, so each game
  * remembers its own file. Persisted by cfg_save. */
 static char        EWRAM_BSS g_rom_path[3][PATH_MAX];
+/* Game Boy cartridge ROM path per generation. GB_ROM_PATH_MAX (128, gb_art_source.h)
+ * rather than PATH_MAX(256): two full-width slots would leave ~12 B of the ~524 B
+ * EWRAM budget, two half-width slots leave ~268 -- see gb_art_source.h's memory note.
+ * Persisted by cfg_save (romgb1/romgb2 keys). Exactly 2 slots, not 3 like g_rom_path's
+ * PkGame-indexed array above -- a wasted index-0 slot here is 128 B this budget does
+ * not have (measured: it cost the difference between 140 B and 268 B free). Indexed
+ * via gb_gen_idx(gen) (PDNA_GEN1/2 -> 0/1, or -1 for anything else). */
+static char        EWRAM_BSS g_gb_rom_path[2][GB_ROM_PATH_MAX];
+static int gb_gen_idx(uint8_t gen) {
+  return (gen == PDNA_GEN1) ? 0 : (gen == PDNA_GEN2) ? 1 : -1;
+}
 static PkMon       EWRAM_BSS g_party[6];                  /* decoded party of the open save  */
 static u8          EWRAM_BSS g_pc[G3_PC_BYTES];           /* reassembled PC storage (boxes)  */
 static u8          EWRAM_BSS g_sb2[G3_SECTOR_DATA_SIZE];   /* SaveBlock2 (trainer card/stats) */
@@ -602,22 +614,63 @@ static void scan_dir(void) {
 /* ---- persistent browser prefs: last folder + sort/filter (#6) ------------ */
 #define CFG_PATH PDNA_DIR "/config.cfg"
 
+/* Was PATH_MAX*4+128 (1152 B: "4 PATH_MAX-scale strings" == dir + the 3 Gen-3 ROM
+ * paths, +128 slack for every small int/flag key). Grown for slice E3's two GB ROM
+ * paths (romgb1/romgb2, GB_ROM_PATH_MAX each, not PATH_MAX -- see gb_art_source.h) and
+ * pre-sized for E2's sprite-era grid (up to 20 "era_<kind>_<place>=<era>\n" lines, 22 B
+ * worst case each per sprite_era.h's own token table) even though nothing writes those
+ * lines yet -- se_config_write()/se_config_apply() wiring is E4's Settings-grid slice,
+ * not this one (see sprite_era.h's "WIRING NOTE for E3/E4"), but the buffer only wants
+ * sizing ONCE. The +256 slack covers the 12 small int/flag keys in the first siprintf
+ * below (each a handful of bytes) with room to spare. */
+#define CFG_BUF_BYTES (PATH_MAX * 4 + GB_ROM_PATH_MAX * 2 + 20 * 22 + 256)
+
 /* Persist the browser state so the next launch reopens the same folder with the
  * same sort/filter. Writes are EZ-Flash-Omega-only (EverDrive write isn't wired),
- * so this is a no-op on a read-only cart; best-effort, any failure is ignored. */
+ * so this is a no-op on a read-only cart; best-effort, any failure is ignored.
+ *
+ * EVERY append below is now bounded (sniprintf against the REMAINING capacity, never
+ * a fresh sizeof(buf)) and a write that would not fit sets `truncated` and stops
+ * rather than running siprintf's return value past the end of `buf` -- the landmine
+ * the original uncapped `n += siprintf(buf + n, ...)` loop left for whichever key
+ * eventually pushed the total over CFG_BUF_BYTES (E3 review). A truncation is logged,
+ * never silent: nothing here is safety-critical (a missing key just falls back to its
+ * compiled default), so "say so and drop the rest" is enough. */
 static void cfg_save(void) {
   if (!app_can_edit()) return;
-  char buf[PATH_MAX * 4 + 128];
-  int n = siprintf(buf, "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\nyard=%d\nbak=%d\nromoff=%d\n",
+  char buf[CFG_BUF_BYTES];
+  int n = sniprintf(buf, sizeof buf,
+                   "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\nyard=%d\nbak=%d\nromoff=%d\n",
                    g_cwd, (int)g_sort, g_sortrev ? 1 : 0, g_show_all ? 1 : 0, g_show_hidden ? 1 : 0,
                    g_anim_mask, rmbl_get_mask(), rmbl_get_strength(), rmbl_get_duration(), g_pc_last_box,
                    g_yard_visitors ? 1 : 0, g_backup_mode, g_rom_art_off ? 1 : 0);
+  bool truncated = (n < 0 || n >= (int)sizeof buf);
+  if (truncated) n = (int)sizeof buf - 1;
+
   /* One ROM path per game — RS/Emerald/FRLG map data differs, so each needs its own
    * ROM file (Guy's requirement). Only non-empty entries are written. */
   static const char* const k_romkey[3] = { "romrs", "romem", "romfr" };
-  for (int i = 0; i < 3; i++)
-    if (g_rom_path[i][0])
-      n += siprintf(buf + n, "%s=%s\n", k_romkey[i], g_rom_path[i]);
+  for (int i = 0; i < 3 && !truncated; i++) {
+    if (!g_rom_path[i][0]) continue;
+    int w = sniprintf(buf + n, sizeof(buf) - (size_t)n, "%s=%s\n", k_romkey[i], g_rom_path[i]);
+    if (w < 0 || w >= (int)(sizeof(buf) - (size_t)n)) { truncated = true; break; }
+    n += w;
+  }
+
+  /* romgb1/romgb2 (slice E3) — one Game Boy cartridge ROM per generation, same
+   * "only non-empty" rule as the Gen-3 paths above. */
+  static const char* const k_gbkey[2] = { "romgb1", "romgb2" };
+  for (uint8_t gen = PDNA_GEN1; gen <= PDNA_GEN2 && !truncated; gen++) {
+    int gi = gb_gen_idx(gen);
+    if (!g_gb_rom_path[gi][0]) continue;
+    int w = sniprintf(buf + n, sizeof(buf) - (size_t)n, "%s=%s\n", k_gbkey[gi], g_gb_rom_path[gi]);
+    if (w < 0 || w >= (int)(sizeof(buf) - (size_t)n)) { truncated = true; break; }
+    n += w;
+  }
+
+  if (truncated)
+    log_line("cfg: config.cfg buffer full -- some settings were NOT saved this write");
+
   /* Through the SAME verified-write pipeline as every other write this tool makes.
    * It used to be the one exception: FA_CREATE_ALWAYS truncated the existing config
    * FIRST, then f_write and f_close both had their return codes discarded and nothing
@@ -639,7 +692,7 @@ static void cfg_save(void) {
 static void cfg_load(void) {
   FIL f;
   if (f_open(&f, CFG_PATH, FA_READ) != FR_OK) return;
-  char buf[PATH_MAX * 4 + 128]; UINT br = 0;
+  char buf[CFG_BUF_BYTES]; UINT br = 0;
   FRESULT fr = f_read(&f, buf, sizeof(buf) - 1, &br); f_close(&f);
   if (fr != FR_OK || br == 0) return;
   buf[br] = 0;
@@ -663,6 +716,8 @@ static void cfg_load(void) {
       else if (!strcmp(k, "romrs") && v[0]) { strncpy(g_rom_path[PK_RS], v, PATH_MAX - 1);      g_rom_path[PK_RS][PATH_MAX - 1] = 0; }
       else if (!strcmp(k, "romem") && v[0]) { strncpy(g_rom_path[PK_EMERALD], v, PATH_MAX - 1); g_rom_path[PK_EMERALD][PATH_MAX - 1] = 0; }
       else if (!strcmp(k, "romfr") && v[0]) { strncpy(g_rom_path[PK_FRLG], v, PATH_MAX - 1);    g_rom_path[PK_FRLG][PATH_MAX - 1] = 0; }
+      else if (!strcmp(k, "romgb1") && v[0]) app_gb_rom_path_set(PDNA_GEN1, v);
+      else if (!strcmp(k, "romgb2") && v[0]) app_gb_rom_path_set(PDNA_GEN2, v);
     }
     p = term ? eol + 1 : eol;
   }
@@ -1604,6 +1659,29 @@ bool app_any_rom_registered(void) {
   return false;
 }
 
+/* ---- per-generation Game Boy ROM path (slice E3, pdna_app.h has the full contract) */
+const char* app_gb_rom_path(uint8_t gen) {
+  int gi = gb_gen_idx(gen);
+  return (gi >= 0) ? g_gb_rom_path[gi] : "";
+}
+void app_gb_rom_path_set(uint8_t gen, const char* path) {
+  int gi = gb_gen_idx(gen);
+  if (gi < 0) return;
+  /* A manual bounded copy, not strncpy(dst, src, GB_ROM_PATH_MAX-1): -Wstringop-
+   * truncation flags that exact "count == cap-1" shape (already true, harmlessly, of
+   * romrs/romem/romfr's strncpy calls above -- not touched here to keep this change
+   * scoped to the code it adds). */
+  if (!path) path = "";
+  int i = 0;
+  for (; path[i] && i < GB_ROM_PATH_MAX - 1; i++) g_gb_rom_path[gi][i] = path[i];
+  g_gb_rom_path[gi][i] = 0;
+}
+bool app_gb_rom_registered(uint8_t gen) { return gb_art_have(gen); }
+
+/* ---- the currently open save (view_save() sets g_path the moment it opens one) --- */
+const char* app_current_save_path(void) { return g_path; }
+bool app_current_save_is_gb(void) { return pdna_gen12_size_is_gb(g_save_size); }
+
 /* Draw the invented yard visitors? Only when the user asked for them AND owns a ROM.
  * Both halves matter: the setting is the user's choice, the ROM is what makes the
  * choice meaningful. See g_yard_visitors for why they are no longer on by default. */
@@ -2268,6 +2346,49 @@ static void app_register_rom(void) {
   if (s_iconrom.ok && active_flashcart == EZ_FLASH_OMEGA &&
       !art_session_icons_ready_memoized())
     art_extract_screen();
+}
+
+/* Settings > Game ROM, slice E3: browse for a .gb/.gbc and register it for generation
+ * `gen` (PDNA_GEN1/PDNA_GEN2) so Gen-1/2 mons draw their real Game Boy sprites. Mirrors
+ * app_register_rom() above but delegates the actual open+identify to gb_art_source.c
+ * (it owns the FIL/RomGbSprite/scratch dance) and refuses a ROM that identifies as the
+ * OTHER generation rather than silently accepting it into the wrong slot. */
+static void app_register_gb_rom(uint8_t gen) {
+  char path[PATH_MAX];
+  if (!app_pick_gb_rom(path, sizeof path)) {
+    if (g_pc_dirty) msg_wait("SAVE FIRST", UI_WARN, "Unsaved box moves pending.", "Commit, then retry.");
+    return;
+  }
+  /* app_gb_rom_path_set() stores into GB_ROM_PATH_MAX(128) slots, not PATH_MAX(256) --
+   * see gb_art_source.h's memory note. A path that would be silently truncated there
+   * would register successfully NOW and point at the WRONG (truncated) file on the
+   * very next boot, so this is refused up front rather than clipped. */
+  if (strlen(path) >= (size_t)GB_ROM_PATH_MAX) {
+    msg_wait("PATH TOO LONG", UI_WARN, "That folder is too deep for", "this app (127-char limit).");
+    return;
+  }
+  GbArtRegStatus st = gb_art_register(gen, path);
+  switch (st) {
+    case GB_ART_REG_OK: {
+      app_gb_rom_path_set(gen, path);
+      cfg_save();
+      char l1[40]; siprintf(l1, "Gen %u ROM registered.", (unsigned)gen);
+      msg_wait("GAME ROM", UI_OK, l1, "Real Game Boy sprites are ON.");
+      break;
+    }
+    case GB_ART_REG_WRONG_GEN:
+      msg_wait("WRONG GENERATION", UI_WARN,
+               gen == PDNA_GEN1 ? "That's a Gen 2 (Gold/Silver/Crystal)" : "That's a Gen 1 (Red/Blue/Yellow)",
+               "ROM -- pick the other slot instead.");
+      break;
+    case GB_ART_REG_BAD_ROM:
+      msg_wait("NOT A GAME BOY ROM", UI_WARN, "Could not locate its sprite tables.", 0);
+      break;
+    case GB_ART_REG_CANT_OPEN:
+      msg_wait("CAN'T OPEN", UI_WARN, "File unreadable.", 0);
+      break;
+    default: break;
+  }
 }
 #endif
 
@@ -6772,9 +6893,18 @@ static void art_extract_screen(void) {
  * pdna_settings' S_GAMEROM handler below) rather than its own, so it can never again
  * end up compiled where its callee isn't. */
 static void rom_row_menu(void) {
-  const char* rows[3]; int act[3], nr = 0;
+  /* Slice E3: two more rows, same menu, same "no new PDNA_SET_ROWS slot" reasoning
+   * item 7 already used for the ROM-art toggle. Computed once at entry -- every
+   * action below returns immediately, so (unlike pdna_settings' own loop) this popup
+   * never needs to repaint its rows with fresher text mid-visit. */
+  char r_gb1[32], r_gb2[32];
+  siprintf(r_gb1, "Gen 1 ROM: %s", app_gb_rom_path(PDNA_GEN1)[0] ? "set" : "not set");
+  siprintf(r_gb2, "Gen 2 ROM: %s", app_gb_rom_path(PDNA_GEN2)[0] ? "set" : "not set");
+  const char* rows[5]; int act[5], nr = 0;
   rows[nr] = "Change ROM";                                       act[nr++] = 0;
   rows[nr] = g_rom_art_off ? "Turn ROM art ON" : "Turn ROM art OFF"; act[nr++] = 1;
+  rows[nr] = r_gb1;                                              act[nr++] = 2;
+  rows[nr] = r_gb2;                                              act[nr++] = 3;
   rows[nr] = "Cancel";                                            act[nr++] = -1;
   int sel = 0;
   for (;;) {
@@ -6810,7 +6940,10 @@ static void rom_row_menu(void) {
                  g_rom_art_off ? "Detached for testing." : "Reattached.",
                  g_rom_art_off ? "Your ROM path is kept." : "Real art is back on.");
         return;
-      } else return;                                              /* cancel */
+      }
+      else if (a == 2) { app_register_gb_rom(PDNA_GEN1); return; }
+      else if (a == 3) { app_register_gb_rom(PDNA_GEN2); return; }
+      else return;                                                 /* cancel */
     }
   }
 }
@@ -7996,6 +8129,7 @@ static void view_save(const char* path) {
   g_sb1_deferred = false;
   strncpy(g_path, path, sizeof(g_path) - 1);
   g_path[sizeof(g_path) - 1] = 0;
+  gb_art_session_reset();  /* new save -- the "beside the save" fallback forgets the old one */
   uint32_t sz = 0;
   const char* err = 0;
   /* Breadcrumb #1 of 3. This is the boundary the 2026-08-18 hang had no record of:
@@ -8547,6 +8681,7 @@ int main(void) {
 
   strcpy(g_cwd, "/");
   cfg_load();                                /* restore last folder + sort/filter (#6) */
+  gb_art_boot_register();                    /* light up any registered GB ROMs (romgb1/romgb2) */
   /* ONE throughput sample per run, at two sizes, on the user's own card -- see
    * perf_sd_sample(). It runs HERE because it needs two things that only exist at this
    * point: a mounted card, and cfg_load()'s restored ROM paths to pick a big enough

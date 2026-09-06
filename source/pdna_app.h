@@ -399,6 +399,33 @@ void        app_rom_path_set(PkGame game, const char* path);
  * that need real art to mean anything (Day-Care yard visitors). */
 bool        app_any_rom_registered(void);
 
+/* ---- Game Boy cartridge ROMs (Settings > Game ROM, slice E3) -----------------------
+ * Same shape as app_rom_path()/app_rom_path_set() above, one slot per generation
+ * (`gen` is PDNA_GEN1==1 or PDNA_GEN2==2, pdna_origin_art.h) instead of one per Gen-3
+ * game — Gen-1 and Gen-2 sprite/palette tables are shaped too differently to share a
+ * ROM the way RS and Emerald can't either. Persists via config.cfg's romgb1/romgb2
+ * keys, restored by cfg_load(). Backed by a genuine resident array (gb_art_source.c's
+ * gb_art_register() only VALIDATES a path; it does not remember it) sized
+ * GB_ROM_PATH_MAX (128, not PATH_MAX's 256 — see gb_art_source.h's memory note) so two
+ * slots fit the ~524 B EWRAM budget. An out-of-range `gen` returns ""/is a no-op. */
+const char* app_gb_rom_path(uint8_t gen);
+void        app_gb_rom_path_set(uint8_t gen, const char* path);
+/* True iff generation `gen` can currently serve art -- an explicit Settings/boot
+ * registration OR (while a raw GB save of some kind is open) a "beside the save"
+ * session fallback that already proved out (gb_art_source.h's gb_art_have(), which
+ * this proxies verbatim). "Openable" is what SeRoms.have[] (sprite_era.h, E4) wants,
+ * not "the user visited a Settings row", so the fallback counting is deliberate. */
+bool        app_gb_rom_registered(uint8_t gen);
+
+/* The path of the currently open save (g_path — set the moment view_save() opens a
+ * file, valid for the whole time a save is open) and whether that save is itself a
+ * raw Game Boy battery file rather than a Gen-3 .sav. Both back gb_art_source.c's
+ * "ROM beside the save" fallback (S5-C's rule): it only makes sense to go looking for
+ * a sibling .gb/.gbc when the thing actually open IS a Game Boy save, never when a
+ * Gen-3 save merely CONTAINS a Game Boy-origin import. */
+const char* app_current_save_path(void);
+bool        app_current_save_is_gb(void);
+
 /* ---- items + type badges: the compiled accessor first, the registered ROM second
  * (Phase 1, docs/analysis-2026-08-19-rom-art/DESIGN.md Sec 4.7) --------------------
  * Same shape as item_icon_for()/type_icon_for() (item_icons.h/type_icons.h) --

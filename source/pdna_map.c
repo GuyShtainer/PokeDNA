@@ -209,13 +209,20 @@ static bool pick_rom(char* cwd, int cwd_cap, char* out, int out_cap, PickEnt* en
 
     if (full) {
       ui_clear();
-      ui_text(4, 4, UI_TITLE, "PICK YOUR ROM (.gba)");
+      /* The title/empty-state text used to hardcode ".gba" even when s_pick_ext[] was
+       * set to .gb/.gbc or .sav/.srm (app_pick_gb_rom/app_pick_gb_save) -- cosmetic,
+       * but confusing on a screen that is genuinely filtering for something else. */
+      char title[32];
+      if (s_pick_ext[1]) siprintf(title, "PICK A FILE (%s/%s)", s_pick_ext[0], s_pick_ext[1]);
+      else siprintf(title, "PICK YOUR ROM (%s)", s_pick_ext[0]);
+      ui_text(4, 4, UI_TITLE, title);
       ui_hline(0, 14, UI_SCR_W, UI_BORDER);
       char ct[40]; ui_truncate(ct, cwd, 29);
       ui_text(4, 18, UI_DIM, ct);
       for (int i = 0; i < vis && top + i < n; i++)
         pick_row_paint(ents, top + i, 30 + i * 10, top + i == sel);
-      if (!n) ui_text(4, 40, UI_DIM, "No .gba here. B goes up.");
+      if (!n) { char empty[40]; siprintf(empty, "No %s here. B goes up.", s_pick_ext[0]);
+                ui_text(4, 40, UI_DIM, empty); }
       ui_text(4, 152, UI_DIM, "A pick  B up  START cancel");
     } else if (sel != pv.sel) {
       /* `top` unchanged also proves `sel` (old and new) is still inside the visible
