@@ -570,6 +570,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
                             * pk_national_no (internal index -> National Dex) comes from
                             * data_tables.h, already included at the top of this file. */
 #include "pdna_origin_art.h"  /* BACKLOG #53a: pdna_origin_box_set_hint, PDNA_GEN1/GEN2 */
+#include "icon_store.h"    /* E6 D4: icon_store_borrow(false), the every-exit backstop */
 
 /* S5-B review fix #10: PDNA_SIDECAR_DIR now lives in pdna_app.h (included above), not
  * duplicated as a local literal here. */
@@ -1899,26 +1900,39 @@ static void gb_nav_from_start(Gb12Mount* m) {
   if (nv == NV_SETTINGS) {
     app_nav_settings();
     /* Settings can register/clear a Gen-1/2 ROM or flip the Sprites grid. Neither
-     * needs an explicit cache-clear here: gb_art_source.c's app_gb_rom_path_set /
-     * gb_rom_row_action already call pdna_origin_art_invalidate() unconditionally,
-     * regardless of caller, and the very next pdna_box(&s) call below re-decodes
-     * the box and re-notes the cell cache from scratch (box_decode ->
-     * pdna_origin_box_note runs on every entry, unconditionally) -- see
-     * pdna_origin_box_clear()'s own header comment. sprite_settings's
-     * app_icon_rom_open() opens its OWN s_iconrom_fil over a Gen-3 ROM candidate
-     * (a different FIL from this mount's `f`, and it never touches g_pc/g_save/
-     * this session's arena), so it is harmless to run mid-session. Just
-     * re-assert the hint below: nothing else in the tree writes it today, but
-     * this is the cheap belt-and-braces against that ever changing under
-     * Settings' many sub-screens. */
+     * needs an explicit cache-clear here: the actual invalidation happens inside
+     * gb_art_source.c's gb_art_register() (E6 D6 fix -- this comment used to
+     * misattribute it to app_gb_rom_path_set(), which is a plain string copy in
+     * pdna_main.c and calls nothing; gb_art_register() is what app_register_gb_rom()
+     * calls after a successful pick, and what gb_rom_row_action()'s "Clear ROM" row
+     * calls directly, and it invalidates unconditionally on every path including
+     * failure). The very next pdna_box(&s) call below re-decodes the box and
+     * re-notes the cell cache from scratch (box_decode -> pdna_origin_box_note runs
+     * on every entry, unconditionally) -- see pdna_origin_box_clear()'s own header
+     * comment. sprite_settings's app_icon_rom_open() opens its OWN s_iconrom_fil
+     * over a Gen-3 ROM candidate (a different FIL from this mount's `f`, and it
+     * never touches g_pc/g_save/this session's arena), so it is harmless to run
+     * mid-session. Just re-assert the hint below: nothing else in the tree writes
+     * it today, but this is the cheap belt-and-braces against that ever changing
+     * under Settings' many sub-screens. */
     pdna_origin_box_set_hint(m->kind == GB12_SAVE_RBY ? PDNA_GEN1 : PDNA_GEN2);
   } else if (nv == NV_TRAINER) {
     (void)gb_info_page(m);      /* A and B both just return to the grid from here */
   } else if (nv == NAV_UNAVAILABLE) {
     snd_deny();
-    msg_wait("GEN 3 ONLY", UI_DIM, "Not in Gen 1/2 sessions yet.", "See BACKLOG #49/#52.");
+    /* E6 D5: the old text ("See BACKLOG #49/#52.") pointed a player at Guy's own
+     * issue tracker, which they have no access to and no reason to know exists. */
+    msg_wait("GEN 3 ONLY", UI_DIM, "Gen 3 saves only, for now.", 0);
   }
-  /* NV_BACK: nothing to do -- the caller re-enters the grid right after this returns. */
+  /* NV_BACK: nothing to do -- the caller re-enters the grid right after this returns.
+   * E6 D4: icon_store.c's backstop (the same call pdna_main.c's `switch (nav_menu())`
+   * makes on every screen exit -- see icon_store.c ~817-823) retires any Tier B icon
+   * plan left over from whatever this menu visited, so a later screen never reads a
+   * stale claim as a yes. It cannot release THIS session's own EWRAM arena: that
+   * arena was acquired directly (app_arena_acquire in pdna_gen12_show), not through
+   * icon_store_borrow(), so icon_store's s_borrow is NULL here and the call is a
+   * harmless no-op that only exists to keep the two nav-menu call sites symmetric. */
+  icon_store_borrow(false);
 }
 
 /* Info page -> box grid -> the "these did not convert" report. The whole session above
