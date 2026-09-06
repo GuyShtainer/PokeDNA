@@ -520,7 +520,15 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   s.nboxes     = pdna_gen12_nboxes(m);
   s.start_box  = (m->current_box >= 0 && m->current_box < s.nboxes) ? m->current_box : 0;
   s.is_bank    = true;                       /* see the header: this is what removes the
-                                              * PARTY tab / START / PC hand-off paths */
+                                              * PARTY tab and the PC hand-off edges (codes
+                                              * 1/4) -- neither applies to a raw GB save's
+                                              * own box */
+  s.has_start  = true;                       /* BACKLOG #48: is_bank also suppresses START
+                                              * by default (see pdna_box.h's has_start
+                                              * comment) -- opt back in: this box IS the
+                                              * top-level screen for the visit, with no PC
+                                              * to back out to first, so START must still
+                                              * open the (GB-limited) nav menu. */
   s.wp_count   = G3_BOX_WALLPAPER_COUNT;
   s.records    = gbsrc_records;
   s.menu_block = m->recs;                    /* records at +0x0004; menu box index = 0 */
@@ -1867,6 +1875,52 @@ static const AppSrcOps k_gb_ops_ro = {
   .paste = 0, .view = gb_view_hook, .editable = 0,
 };
 
+/* BACKLOG #48 (Guy's hardware test, 2026-09-06): "the start button doesn't work, I
+ * don't have the same menu" / "I can't enter settings". Root cause was NOT the box
+ * screen returning a code this loop mishandled -- pdna_gen12_source() sets
+ * is_bank=true (its own comment explains why: no PARTY tab, no PC hand-off edges),
+ * and pdna_box.c's plain KEY_START dispatch used to be gated `!src->is_bank`
+ * outright, so a GB session's START press matched no case at all and did nothing,
+ * exactly as reported. Fixed at the source (BoxSource.has_start, pdna_box.h/.c,
+ * set only by pdna_gen12_source): pdna_box() now genuinely returns 2 for this
+ * session, which is what this helper handles.
+ *
+ * The shared nav menu (app_nav_menu -> pdna_main.c's nav_menu) under a mask that
+ * only lights up the two rows honest for a raw Game Boy save: Settings (registers/
+ * clears the Gen-1/2 ROM this session's own art reads from) and Trainer (reuses
+ * gb_info_page's kind/player/TID line -- it IS this mount's trainer/save info).
+ * Everything else on the list acts on Gen-3 SaveBlock state that does not exist
+ * here (Bag, Flags, Bases, Frontier, Fly, Map, the real Bank, ...) -- BACKLOG
+ * #49/#52 track wiring any of it up for real; until then picking it says so
+ * instead of silently doing nothing, the same complaint this item exists to fix. */
+static void gb_nav_from_start(Gb12Mount* m) {
+  uint32_t mask = (1u << NV_SETTINGS) | (1u << NV_BACK) | (1u << NV_TRAINER);
+  int nv = app_nav_menu(mask);
+  if (nv == NV_SETTINGS) {
+    app_nav_settings();
+    /* Settings can register/clear a Gen-1/2 ROM or flip the Sprites grid. Neither
+     * needs an explicit cache-clear here: gb_art_source.c's app_gb_rom_path_set /
+     * gb_rom_row_action already call pdna_origin_art_invalidate() unconditionally,
+     * regardless of caller, and the very next pdna_box(&s) call below re-decodes
+     * the box and re-notes the cell cache from scratch (box_decode ->
+     * pdna_origin_box_note runs on every entry, unconditionally) -- see
+     * pdna_origin_box_clear()'s own header comment. sprite_settings's
+     * app_icon_rom_open() opens its OWN s_iconrom_fil over a Gen-3 ROM candidate
+     * (a different FIL from this mount's `f`, and it never touches g_pc/g_save/
+     * this session's arena), so it is harmless to run mid-session. Just
+     * re-assert the hint below: nothing else in the tree writes it today, but
+     * this is the cheap belt-and-braces against that ever changing under
+     * Settings' many sub-screens. */
+    pdna_origin_box_set_hint(m->kind == GB12_SAVE_RBY ? PDNA_GEN1 : PDNA_GEN2);
+  } else if (nv == NV_TRAINER) {
+    (void)gb_info_page(m);      /* A and B both just return to the grid from here */
+  } else if (nv == NAV_UNAVAILABLE) {
+    snd_deny();
+    msg_wait("GEN 3 ONLY", UI_DIM, "Not in Gen 1/2 sessions yet.", "See BACKLOG #49/#52.");
+  }
+  /* NV_BACK: nothing to do -- the caller re-enters the grid right after this returns. */
+}
+
 /* Info page -> box grid -> the "these did not convert" report. The whole session above
  * the mount, shared by both entry points: the only difference between opening a GB save
  * from a loaded Gen-3 save's nav menu and opening one straight off the file browser is
@@ -1896,10 +1950,15 @@ static void gb_session_core(Gb12Mount* m) {
    * unconditionally below so a LATER Gen-3 PC/BANK visit this same run is never left
    * thinking it is still inside a GB session. */
   pdna_origin_box_set_hint(m->kind == GB12_SAVE_RBY ? PDNA_GEN1 : PDNA_GEN2);
-  /* Returns 0 on B / the SAVE tab, 5 when the cursor drops off the bottom row (the
-   * PC<->Bank hand-off, which has no PC to hand off to here) — re-enter on the top
-   * tabs so DOWN puts the user back in the grid instead of silently exiting. */
-  while (pdna_box(&s) != 0) app_box_start_set(1);
+  /* Returns 0 on B / the SAVE tab (leave); 2 on START, now reachable (BACKLOG #48,
+   * BoxSource.has_start) -- handled by gb_nav_from_start above; 5 when the cursor
+   * drops off the bottom row (the PC<->Bank hand-off, which has no PC to hand off to
+   * here). All non-zero codes re-enter on the top tabs, so DOWN/START never silently
+   * exit the session. */
+  for (int r; (r = pdna_box(&s)) != 0; ) {
+    if (r == 2) gb_nav_from_start(m);
+    app_box_start_set(1);
+  }
   pdna_origin_box_set_hint(0);
   app_src_readonly_clear();
   pdna_gen12_source(0);                      /* unmount: no dangling arena pointers */

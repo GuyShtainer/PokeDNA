@@ -24,6 +24,16 @@ typedef struct {
                               * sources memset their BoxSource, so this defaults false. */
   int  start_box;
   bool is_bank;
+  /* BACKLOG #48: is_bank already suppresses START (a Bank screen is a SUB-screen
+   * reached off the main nav menu; opening the SAME menu again from inside it would
+   * be a pointless nested trip back to the very place it came from) as well as the
+   * PARTY tab and the PC<->Bank hand-off edges (codes 1/4) — none of which a raw
+   * Game Boy save's OWN box (pdna_gen12.c) wants either, so it also sets is_bank.
+   * But unlike the real Bank, a GB session's box IS the top-level screen for that
+   * visit, with no PC to back out to first — so START must still work there. Default
+   * false (PC/real-Bank behaviour unchanged); pdna_gen12_source() is the only source
+   * that sets this true. */
+  bool has_start;
   int  wp_count;                            /* selectable wallpapers: 16 or 32 (PC Emerald) */
   uint8_t* (*records)(int box);             /* -> 30*80 records (loads/flushes for the bank) */
   uint8_t* menu_block;                      /* pc-layout buffer (records at +0x0004)        */
@@ -47,7 +57,7 @@ typedef struct {
  * a wallpaper, with a ◄ box-name ► banner. D-pad moves the cursor, L/R (and LEFT/
  * RIGHT on the title) change box, A opens the action menu / 6-card summary.
  * Returns 0 if the user backed out (B), 1 to switch to party (SELECT), or 2 for the
- * trainer/menu (START). */
+ * trainer/menu (START — only reachable when `!src->is_bank || src->has_start`). */
 int pdna_box(BoxSource* src);
 
 /* Reset the mon-in-hand carry state — call once when a save is (re)opened, since the

@@ -3186,7 +3186,7 @@ int pdna_box(BoxSource* src) {
     }
 
     if (k & KEY_B) { if (s_cur_mode != CM_NORMAL && !on_title) { s_cur_mode = CM_NORMAL; need_full = true; } else { boxoam_exit(); return 0; } }
-    else if ((k & KEY_START) && !src->is_bank) { boxoam_exit(); return 2; }
+    else if ((k & KEY_START) && (!src->is_bank || src->has_start)) { boxoam_exit(); return 2; }  /* BACKLOG #48: a GB session's own box sets has_start to opt back in */
     else if (k & KEY_L) { SWITCH_BOX((box + nb - 1) % nb); }
     else if (k & KEY_R) { SWITCH_BOX((box + 1) % nb); }
     else if (k & KEY_SELECT) {
