@@ -1342,10 +1342,17 @@ int main(void) {
   chkv("sprites grid: 5 columns fit the screen",
        PDNA_SETSPR_COL0_X + SE_PLACE_N * PDNA_SETSPR_COL_PITCH, SCR_W);
   T(PDNA_SETSPR_HELP1, PDNA_SET_HELP_X);
+  T(PDNA_SETSPR_HELP2, PDNA_SET_HELP_X);   /* D8: the honest BANK/GBG scope note */
   T(PDNA_SETSPR_FOOT, PDNA_SET_FOOT_X);
   chkv("sprites grid last row above help",
        PDNA_SETSPR_ROW0_Y + (SE_KIND_N - 1) * PDNA_SETSPR_ROW_PITCH + UI_ROW_H - 1,
        PDNA_SETSPR_HELP_Y1 - 1);
+  /* D8: the two help lines must not collide with each other or with the footer,
+   * same two-line layout the Rumble page's own check already proves for itself. */
+  chkv("sprites help row 1 above row 2",
+       PDNA_SETSPR_HELP_Y1 + UI_ROW_H - 1, PDNA_SETSPR_HELP_Y2 - 1);
+  chkv("sprites help row 2 above footer",
+       PDNA_SETSPR_HELP_Y2 + UI_ROW_H - 1, PDNA_SET_FOOTER_Y - 1);
 
   printf("\n== day-care panel: descenders clear of the bottom border ==\n");
   /* ui_panel(x, y, w, h) fills y .. y+h-1 and frames it with m3_frame(.., y+h-1), whose

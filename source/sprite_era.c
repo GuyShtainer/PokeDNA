@@ -219,12 +219,28 @@ const char* se_era_name(SeEra e)       { return (unsigned)e < SE_ERA_N   ? ERA_U
 const char* se_kind_name(SeSaveKind k) { return (unsigned)k < SE_KIND_N  ? KIND_UI[k]  : "?"; }
 const char* se_place_name(SePlace p)   { return (unsigned)p < SE_PLACE_N ? PLACE_UI[p] : "?"; }
 
+/* D8 (E4 review): is `e` one of the three concrete Gen-3 eras? Used only to keep
+ * se_era_next's BANK/GBGRID refusal below readable -- not exported, this file's other
+ * concrete-G3 checks (se_store_era) spell the three out inline instead. */
+static bool era_is_g3(SeEra e) {
+  return e == SE_ERA_G3_RS || e == SE_ERA_G3_EM || e == SE_ERA_G3_FRLG;
+}
+
 SeEra se_era_next(SeEra e, const SeRoms* roms, SePlace place) {
   if ((unsigned)e >= SE_ERA_N) e = SE_ERA_NATIVE;
   SeEra cur = e;
   for (int i = 0; i < SE_ERA_N; i++) {          /* bounded: at most SE_ERA_N steps */
     cur = (SeEra)((cur + 1) % SE_ERA_N);
     if (place == SE_PLACE_PC && cur == SE_ERA_GEN1) continue;
+    /* D8: the box GRID's per-mon era overlay (pdna_box.c's era_cell_draw) only ever
+     * fires for a Game-Boy-import mon (CELL_GB) and its "wanted" pre-check
+     * (pdna_origin_art_have) only ever asks about a GB art source -- it has no path
+     * to the cross-game Gen-3 rung at all. At BANK and GBGRID, offering a concrete
+     * Gen-3 destination is therefore a setting that LOOKS like a choice but never
+     * changes a pixel on those two grids (PC is different: se_store_era() gives it a
+     * separate, working whole-store mechanism, D3). Skip these three destinations at
+     * BANK/GBGRID so the picker never lands on one that silently does nothing. */
+    if ((place == SE_PLACE_BANK || place == SE_PLACE_GBGRID) && era_is_g3(cur)) continue;
     if (era_has_rom(cur, roms)) return cur;
   }
   return SE_ERA_NATIVE;                         /* unreachable: NATIVE always qualifies */

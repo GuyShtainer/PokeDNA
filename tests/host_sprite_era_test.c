@@ -410,13 +410,18 @@ static void test_era_next(void) {
 
     for (int place = 0; place < SE_PLACE_N; place++) {
       /* The offerable set for this (roms, place): NATIVE always, any concrete era with
-       * a registered ROM, minus GEN1 when place is the PC grid. NATIVE guarantees
+       * a registered ROM, minus GEN1 when place is the PC grid, minus the three
+       * concrete Gen-3 eras when place is BANK or GBGRID (D8: the box grid's per-mon
+       * overlay has no path to the cross-game rung at those two places, so offering
+       * one there would be a setting that never changes a pixel). NATIVE guarantees
        * count >= 1 always. */
       bool offerable[SE_ERA_N];
       int count = 0;
       for (int e = 0; e < SE_ERA_N; e++) {
         bool ok = (e == SE_ERA_NATIVE) || roms.have[e];
         if (place == SE_PLACE_PC && e == SE_ERA_GEN1) ok = false;
+        bool g3 = (e == SE_ERA_G3_RS || e == SE_ERA_G3_EM || e == SE_ERA_G3_FRLG);
+        if ((place == SE_PLACE_BANK || place == SE_PLACE_GBGRID) && g3) ok = false;
         offerable[e] = ok;
         if (ok) count++;
       }
@@ -429,6 +434,9 @@ static void test_era_next(void) {
         SeEra got = se_era_next((SeEra)start, &roms, (SePlace)place);
         CHECK((unsigned)got < SE_ERA_N, "G: result is always a valid SeEra");
         CHECK(!(place == SE_PLACE_PC && got == SE_ERA_GEN1), "G: PC_GRID never offers GEN1");
+        CHECK(!((place == SE_PLACE_BANK || place == SE_PLACE_GBGRID) &&
+                (got == SE_ERA_G3_RS || got == SE_ERA_G3_EM || got == SE_ERA_G3_FRLG)),
+              "G (D8): BANK/GBGRID never offer a concrete Gen-3 era");
         CHECK(offerable[got], "G: the returned era is actually possible for this ROM set");
         if (count == 1) {
           CHECK(got == SE_ERA_NATIVE, "G: with only one era offerable, it must be NATIVE, "

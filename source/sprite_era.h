@@ -257,8 +257,15 @@ const char* se_place_name(SePlace p);
 /* The Settings "Sprites" grid's A-button cycle: the next era AFTER `e` (wrapping) that
  * is actually offerable for this ROM set and place -- NATIVE is always offerable; a
  * concrete era is offered only when its ROM is registered (`roms`); GEN1 is never
- * offered when `place` is SE_PLACE_PC (the same refusal se_resolve applies). Bounded to
- * at most SE_ERA_N steps, so it always terminates -- NATIVE alone guarantees a hit. */
+ * offered when `place` is SE_PLACE_PC (the same refusal se_resolve applies). D8 (E4
+ * review): a concrete GEN-3 era (G3_RS/G3_EM/G3_FRLG) is never offered at
+ * SE_PLACE_BANK or SE_PLACE_GBGRID either -- the box GRID's per-mon overlay
+ * (pdna_box.c's era_cell_draw) has no path to the cross-game Gen-3 rung at those two
+ * places (its "wanted" pre-check only ever asks about a Game Boy art source), so
+ * picking one there would look like a choice and never change a pixel. PC is
+ * unaffected: se_store_era() gives it a separate, working whole-store mechanism.
+ * Bounded to at most SE_ERA_N steps, so it always terminates -- NATIVE alone
+ * guarantees a hit. */
 SeEra se_era_next(SeEra e, const SeRoms* roms, SePlace place);
 
 /* ---- small helpers for the E3/E4 wiring -------------------------------------------- */

@@ -1030,6 +1030,15 @@
 #define PDNA_SETSPR_ROW_PITCH  16
 #define PDNA_SETSPR_HELP_Y1   124
 #define PDNA_SETSPR_HELP1     "NATIVE = its own era."
+/* D8 (E4 review): a second, honest line -- the box GRID's per-mon overlay can only
+ * ever swap in a Game Boy look, never a cross-game Gen-3 one, at BANK/GBGRID (PC is
+ * different: it gets its whole icon SET from se_store_era() instead, unaffected).
+ * se_era_next() already refuses to OFFER a Gen-3 destination at those two places
+ * (sprite_era.c); this line is why. Same Y1/Y2 two-help-line layout as the Rumble
+ * page's PDNA_RMB_HELP1/2 (pdna_layout.h), not colliding with PDNA_SET_FOOTER_Y
+ * (152) -- see tests/host_textfit_test.c's "Settings > Sprites grid" section. */
+#define PDNA_SETSPR_HELP_Y2   133
+#define PDNA_SETSPR_HELP2     "BANK/GBG skip Gen-3 targets."
 #define PDNA_SETSPR_FOOT      "L/R col U/D row A set B back"
 /* Column legend, index-matched to sprite_era.h's SePlace order (PC/PARTY/SUMMARY/
  * BANK/GBGRID) -- deliberately NOT se_place_name(), see the note above. */

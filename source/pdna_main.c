@@ -7276,6 +7276,7 @@ static void sprite_settings(void) {
       }
     }
     ui_text(PDNA_SET_HELP_X, PDNA_SETSPR_HELP_Y1, UI_DIM, PDNA_SETSPR_HELP1);
+    ui_text(PDNA_SET_HELP_X, PDNA_SETSPR_HELP_Y2, UI_DIM, PDNA_SETSPR_HELP2);
     ui_text(PDNA_SET_FOOT_X, PDNA_SET_FOOTER_Y, UI_DIM, PDNA_SETSPR_FOOT);
 
     u16 k2 = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_START);
