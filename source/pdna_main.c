@@ -2446,20 +2446,30 @@ static void app_icon_rom_open(void) {
    * choice the way the portrait router has one. se_store_era() is exactly the
    * "which era should a WHOLE-STORE choice like this one use" question sprite_era.h
    * defines for it: a concrete, REGISTERED Gen-3 era (G3_RS/G3_EM/G3_FRLG) for the
-   * PC place wins outright; anything else (NATIVE, or a GEN1/GEN2 cell -- dead here
-   * per se_cell_applies, since app_save_kind() is always a Gen-3 kind at this call
-   * site: this function only ever runs from view_save()'s Gen-3 branch, AFTER
-   * g_save_kind is set and BEFORE any GB session could exist) falls back to
-   * se_native_era's answer, which for a Gen-3 kind is exactly the save's own game --
-   * i.e. today's `g_game` default, unchanged when the user has not touched the grid.
-   * (A GEN1/GEN2 store answer -- unreachable today, see above -- would fall through
-   * to that same native default; wiring a Game Boy PC-grid icon set is E5's job, not
-   * this one's -- sprite_era.h's se_store_era() doc already says so.) */
+   * PC place wins outright; anything else (NATIVE, or a GEN1/GEN2 cell) falls back
+   * to se_native_era's answer, which for a Gen-3 kind is exactly the save's own game
+   * -- i.e. today's `g_game` default, unchanged when the user has not touched the grid.
+   *
+   * E6 D7: this function is DESIGNED around app_save_kind() being a Gen-3 kind (this
+   * comment used to (wrongly, after E6) claim that was the only way it could ever run)
+   * -- se_store_era() would return SE_ERA_GEN1/SE_ERA_GEN2 for a GB kind (its own
+   * native fallback), which the ternary below has no case for and would silently
+   * default to PK_EMERALD: a wrong, unlabelled answer, not a crash. sprite_settings()
+   * now gates its rebuild call so a GB kind can never reach here in practice (its PC
+   * cell is dead anyway -- se_cell_applies(GEN1/GEN2, PC) is false), but this is the
+   * one place that ambiguity already existed, so guard it here too rather than trust
+   * every future caller to remember the gate: fall back to today's g_game default
+   * instead of guessing Emerald. */
+  bool kind_is_gen3 = app_save_kind() < SE_KIND_GEN1;
   SeRoms eroms = app_era_roms();
   SeEra want_era = se_store_era(&g_era, app_save_kind(), SE_PLACE_PC, &eroms);
-  PkGame want_game = (want_era == SE_ERA_G3_RS)   ? PK_RS
+  PkGame want_game = !kind_is_gen3 ? g_game
+                    : (want_era == SE_ERA_G3_RS)   ? PK_RS
                     : (want_era == SE_ERA_G3_FRLG) ? PK_FRLG : PK_EMERALD;
-  if (want_game != g_game)
+  if (!kind_is_gen3)
+    log_line("icons: PC-grid rebuild requested for a GB save kind -- kept %s (E5's job, not this one's)",
+             g_game == PK_RS ? "RS" : g_game == PK_FRLG ? "FRLG" : "EM");
+  else if (want_game != g_game)
     log_line("icons: Sprites setting picked %s for the PC grid (save is %s)",
              want_game == PK_RS ? "RS" : want_game == PK_FRLG ? "FRLG" : "EM",
              g_game == PK_RS ? "RS" : g_game == PK_FRLG ? "FRLG" : "EM");
@@ -7327,8 +7337,17 @@ static void sprite_settings(void) {
        * whichever era was current when app_icon_rom_open() last ran (view_save entry,
        * or app_register_rom), so it must be rebuilt now, the same call
        * app_register_rom() makes from Settings, or the new choice sits invisible
-       * until the save is closed and reopened. */
-      if (g_era.era[k0][SE_PLACE_PC] != pc0) app_icon_rom_open();
+       * until the save is closed and reopened.
+       *
+       * E6 D7: k0 CAN be SE_KIND_GEN1/SE_KIND_GEN2 now that this screen is reachable
+       * from a Game Boy session's own Settings row (gb_nav_from_start). app_icon_rom_open()
+       * is designed around a Gen-3 save kind (it rebuilds the PC-grid icon STORE, which
+       * has no Game Boy content -- E5 is what wires that up, not this). Today the PC
+       * cell can never actually change for a GB kind (se_cell_applies(GEN1/GEN2, PC) is
+       * false, so the row is dead in the grid above), so this branch cannot fire from a
+       * GB session in practice -- but "cannot fire today" is not "designed not to", so
+       * gate it on kind explicitly rather than rely on that being permanently true. */
+      if (k0 < SE_KIND_GEN1 && g_era.era[k0][SE_PLACE_PC] != pc0) app_icon_rom_open();
       return;
     } else if (k2 & KEY_UP) {
       for (int i = 0; i < SE_KIND_N; i++) {
