@@ -7,6 +7,14 @@
 /* Per-gen resident path cap: half of PATH_MAX(256), see the memory note below for why. */
 #define GB_ROM_PATH_MAX 128
 
+/* E3 review re-verification (2026-09-06): the worst measured cost of taking the GB
+ * rung from pdna_origin_art_portrait() on down (gb_art_pic_cb -> gb_art_fetch ->
+ * rom_gbsprite_pic_buf/rom_gbsprite_pal -> gb_art_read -> the SD read tail), read off
+ * the call-graph tool as gb_art_pic_cb's own total. Rounded UP from the measured
+ * number (not down) -- see gb_art_boot_register()'s stack-room hook, which is the
+ * ONLY consumer of this constant, for the exact chains it was checked against. */
+#define PDNA_GB_FETCH_NEED 6144
+
 /*
  * gb_art_source — the FIRST real caller of rom_gbsprite.c (source/rom_gbsprite.h), and
  * the GB half of pdna_origin_art's `PdnaGbArtSource` vtable (never registered by
@@ -56,22 +64,36 @@
  *     own comment for why a second full validation there bought nothing: gb_art_fetch
  *     re-validates for real a moment later regardless.
  *
- *     ONE CHAIN REMAINS OVER BUDGET, found independently of the review's three named
- *     ones while proving them: main()'s absolute worst reachable path is
- *     Bank -> box -> the party strip overlay -> the mon menu -> Daycare ->
- *     inspect-a-deposited-mon -> its summary -> the portrait fetch, which the
- *     call-graph tool measures at 13,208 B (main+pdna_bank_show+pdna_box+
- *     pcp_open_party_strip+party_strip_overlay+app_party_mon_menu+app_mon_menu+
- *     pdna_daycare+pdna_inspect = 6,480 B of PRE-EXISTING UI nesting this module
- *     never touches, + this module's own 6,728 B summary chain) -- 1.7 KB over.
- *     That 6,480 B UI prefix is not new: it is the SAME depth the OLD Gen-3-only
- *     rom_portrait() path sat underneath, which never needed FIL/SD-scratch stack at
- *     all (a persistent already-open RomSprite), so it never pushed this particular
- *     nesting over the edge before. This is flagged, not fixed here -- restructuring
- *     Daycare/party-strip/mon-menu's nesting is outside this module's scope and risky
- *     to attempt blind under this slice's time budget; docs/HW-TEST-2026-09-05-GB-ARC.md
- *     §J's stress test specifically includes "inspect a GB-origin mon from inside the
- *     Daycare screen", which is the one path this module cannot yet prove safe.
+ *     ONE CHAIN WAS FOUND OVER BUDGET, independently of the review's three named ones
+ *     while proving them: main()'s absolute worst reachable path is Bank -> box ->
+ *     the party strip overlay (offered over the Bank because is_bank is false there,
+ *     the same "To Day-Care" row app_to_daycare wires up) -> the party menu -> the mon
+ *     menu -> Daycare -> inspect-a-deposited-mon -> its summary -> the portrait
+ *     fetch. It measures 7,880 B of stack in use with the ORDINARY Gen-3 rung --
+ *     i.e. it does NOT overflow today -- and 13,200 B with the GB rung: E3's own
+ *     addition (+5,320 B) is the ENTIRE reason this chain would overflow, not any
+ *     pre-existing problem in the Daycare/party-strip/mon-menu nesting itself.
+ *
+ *     FIXED (not flagged) by a stack-headroom GATE rather than by touching that
+ *     nesting: pdna_origin_art_stack_room() (pdna_origin_art.h/.c) is a hook
+ *     pdna_origin_art_portrait() consults immediately before taking the GB branch,
+ *     defaulting to "yes, there is room" (so the host build and every existing host
+ *     test keep today's behaviour with zero code changes) unless something registers
+ *     a real check. gb_art_boot_register() registers exactly that: gb_art_stack_room()
+ *     reads the CPU's own SP against `__iheap_start` (the SAME linker low-water-mark
+ *     idiom the build's own post-link EWRAM guard uses at the other end of memory)
+ *     and refuses when fewer than PDNA_GB_FETCH_NEED (6,144 B -- gb_art_pic_cb's own
+ *     measured worst-case total) bytes remain. On the Daycare chain (7,384 B already
+ *     in use by the time the check runs, ~4,112 B left) that refuses and
+ *     pdna_origin_art_portrait() falls through to gen3_ladder -- out->era/era_certain
+ *     were already set from origin detection before the check, so the tag/pad stay
+ *     honest ("this IS a Game Boy import") even though the pixels degrade. On the
+ *     three named chains (summary 3,312 B in use, box era-cells ~2,880 B, box hover
+ *     ~2,864 B) it allows the GB rung exactly as before. tests/host_originart_test.c's
+ *     part C (C5b) proves the default ("always room") and an injected "no room" hook
+ *     both behave correctly, including that a refused fetch never touches the GB
+ *     source at all. docs/HW-TEST-2026-09-05-GB-ARC.md §J9(b) is the real-hardware
+ *     regression check that the gate actually closes this chain in practice.
  *   - The two registered ROM paths are genuine EWRAM_BSS residents, because
  *     cfg_save() rewrites config.cfg FROM RESIDENT STATE on almost every browser
  *     keypress — a path that only round-tripped through a file could not survive

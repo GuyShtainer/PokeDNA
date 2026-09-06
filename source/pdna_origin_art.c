@@ -298,6 +298,16 @@ int pdna_origin_art_have(uint8_t gen) {
   return s_gb.have ? (s_gb.have(s_gb.ctx, gen) ? 1 : 0) : 1;
 }
 
+/* E3 review re-verification: the stack-headroom gate. Plain .bss, one function
+ * pointer, no EWRAM. NULL (never registered -- the host build, and any GBA build
+ * that boots before gb_art_source.c's registration runs) means "always room": this
+ * function must never ITSELF be the reason art that used to show stops showing. */
+static PdnaStackRoomFn s_stack_room_fn = 0;
+
+void pdna_origin_art_set_stack_room_hook(PdnaStackRoomFn fn) { s_stack_room_fn = fn; }
+
+int pdna_origin_art_stack_room(void) { return s_stack_room_fn ? s_stack_room_fn() : 1; }
+
 /* One picture, memoised on the WHOLE request (including `want_back`, so the
  * back-then-front fallback is remembered as one answer and a summary showing the back
  * sprite does not re-run the failed back fetch every frame). */
@@ -415,7 +425,7 @@ int pdna_origin_art_portrait(const PkMon* m, int back, PdnaArt* out, PdnaOrigin*
 
   if (o->verdict == PDNA_ORIGIN_GB && s_gb_on && s_gb.pic &&
       m->species >= 1 && m->species <= GEN2_MAX_DEX &&
-      pdna_origin_art_have(o->gen)) {
+      pdna_origin_art_have(o->gen) && pdna_origin_art_stack_room()) {
     /* Internal id == national dex for 1..251 (gen12_convert.c:304-307), so no map.
      * The Unown LETTER is a real part of the picture and the converter went out of its
      * way to preserve it (solve_pid's want_letter), so it has to reach the source:

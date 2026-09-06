@@ -217,8 +217,12 @@ static bool gb_art_resolve_path(uint8_t gen, char* out, int cap) {
 static const uint16_t* __attribute__((noinline))
 gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uint8_t back, uint8_t shiny,
             uint8_t* out_w, uint8_t* out_h) {
-  if (!gb_art_have(gen)) return 0;
-
+  /* have() is re-checked in gb_art_pic_cb() (24 B own frame) now, not here (E3
+   * re-verification "free partial") -- pdna_origin_art_portrait() already checked it
+   * before ever reaching this call, so this was a redundant re-check paid for INSIDE
+   * gb_art_fetch's own ~3.7 KB frame; the graph tool cannot tell "redundant" from
+   * "load-bearing" and charged the whole gb_art_have() subtree against this frame's
+   * total either way. Measured: 5,664 -> 5,552 B. */
   char path[GB_ROM_PATH_MAX];
   if (!gb_art_resolve_path(gen, path, (int)sizeof path)) return 0;
 
@@ -315,13 +319,33 @@ static const uint16_t* gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uin
 static const uint16_t* gb_art_pic_cb(void* ctx, uint8_t gen, uint16_t dex, uint8_t form,
                                      uint8_t back, uint8_t shiny, uint8_t* out_w, uint8_t* out_h) {
   (void)ctx;
+  /* have() re-checked HERE (24 B own frame), not inside gb_art_fetch (E3
+   * re-verification "free partial") -- see gb_art_fetch's own comment. */
+  if (!gb_art_have(gen)) return 0;
   return gb_art_fetch(gen, dex, form, back, shiny, out_w, out_h);
 }
 static int gb_art_have_cb(void* ctx, uint8_t gen) { (void)ctx; return gb_art_have(gen) ? 1 : 0; }
 
+/* E3 review re-verification: the real stack-headroom check. __iheap_start is the
+ * SAME linker symbol gba_cart.ld places right after every static IWRAM .text/.data/
+ * .bss section -- the low-water mark the user stack (which starts at __sp_usr, just
+ * under IWRAM's top, and grows DOWN) can never cross without colliding with code/
+ * data. `sp - __iheap_start` is therefore exactly the number of bytes of stack still
+ * free at the moment this runs, matching this project's OWN post-link EWRAM-overflow
+ * guard's use of the equivalent EWRAM symbol (__eheap_start vs the EWRAM top,
+ * Makefile) -- same idiom, other end of memory. Valid in any GBA-target build
+ * (delta included; harmless there since gb_art_have() is already false with no SD),
+ * so this is not wrapped in #ifndef PDNA_DELTA. */
+extern char __iheap_start[];
+static int gb_art_stack_room(void) {
+  register char* sp __asm__("sp");
+  return (sp - __iheap_start) > PDNA_GB_FETCH_NEED;
+}
+
 void gb_art_boot_register(void) {
   static const PdnaGbArtSource src = { gb_art_pic_cb, gb_art_have_cb, 0 };
   pdna_origin_art_register(&src);
+  pdna_origin_art_set_stack_room_hook(gb_art_stack_room);
 #ifndef PDNA_DELTA
   for (uint8_t gen = PDNA_GEN1; gen <= PDNA_GEN2; gen++) {
     const char* p = app_gb_rom_path(gen);

@@ -127,6 +127,11 @@ static void gb_source_on(void) {
 }
 static void gb_source_off(void) { pdna_origin_art_register(0); }
 
+/* E3 review re-verification: a test-injected stack-room hook that always refuses,
+ * to prove pdna_origin_art_portrait() degrades to the Gen-3 rung (era still honest)
+ * instead of taking the GB one when told there is no room. */
+static int no_room_hook(void) { return 0; }
+
 /* ---- fixture: drive the REAL converter ------------------------------------------- */
 
 /* A plain Gen-1 record: Kanto species, Gen-1 moves only, no Gen-2 fields at all. */
@@ -628,6 +633,27 @@ static void part_c(void) {
   CHECK_EQ(a.gen, PDNA_GEN3, "C5 pixels are Gen 3");
   CHECK(strcmp(pdna_origin_tag(&o), "GB?") == 0, "C5 tag survives the art fallback");
   g_gb1_on = 1;
+
+  /* C5b: E3 re-verification -- the stack-headroom gate. With no hook registered
+   * (the default, and every check above ran with none), the GB rung is always
+   * taken when everything else says yes: pdna_origin_art_stack_room() must default
+   * to "there is room". A test-injected hook returning 0 must make the router
+   * serve Gen-3 art instead -- exactly like C5's "ROM not registered" case -- with
+   * out->era/era_certain still honest, and must NOT touch the GB source at all
+   * (the gate is checked BEFORE the fetch, not as a fallback after a failed one). */
+  CHECK_EQ(pdna_origin_art_stack_room(), 1, "C5b default hook says there is room");
+  pdna_origin_art_set_stack_room_hook(no_room_hook);
+  g_gb_calls = 0;
+  CHECK(pdna_origin_art_portrait(&m, 0, &a, &o), "C5b should still return art");
+  CHECK(a.px == g_front, "C5b must fall back to Gen-3 art when stack room is refused");
+  CHECK_EQ(a.era, PDNA_GEN1, "C5b era still says Gen 1");
+  CHECK_EQ(a.era_certain, 0, "C5b era_certain is unchanged by the gate (same as C1's)");
+  CHECK_EQ(a.gen, PDNA_GEN3, "C5b pixels are Gen 3");
+  CHECK_EQ(g_gb_calls, 0, "C5b must not touch the GB source when there is no room");
+  pdna_origin_art_set_stack_room_hook(0);   /* restore the default for every test after this */
+  g_gb_calls = 0;
+  CHECK(pdna_origin_art_portrait(&m, 0, &a, 0), "C5b restore should return art");
+  CHECK(a.px == g_gbpix, "C5b restoring the hook must let the GB rung fire again");
 
   /* C6: a NATIVE Gen-3 mon never consults the GB source at all. */
   {

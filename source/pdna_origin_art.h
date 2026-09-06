@@ -241,6 +241,27 @@ void pdna_origin_art_register(const PdnaGbArtSource* src);
 /* 1 if era `gen` (1 or 2) can currently produce art. Always 0 with no source. */
 int pdna_origin_art_have(uint8_t gen);
 
+/* E3 review re-verification (2026-09-06): "is there enough STACK left right now to
+ * safely take the GB rung" -- a GB fetch (gb_art_source.c's gb_art_pic_cb ->
+ * gb_art_fetch -> rom_gbsprite_pic_buf -> ... -> the SD read tail) can cost up to
+ * PDNA_GB_FETCH_NEED bytes on top of whatever the caller chain already used, and one
+ * real caller chain (Bank -> box -> party strip -> party menu -> mon menu -> Daycare
+ * -> inspect -> summary -> the portrait) is already 7,384 B deep with only ~4,112 B
+ * left by the time it gets there -- not enough. pdna_origin_art_portrait() consults
+ * this immediately before taking the GB branch and falls through to gen3_ladder when
+ * it says no; out->era/out->era_certain are set from origin detection BEFORE that
+ * check either way, so the tag/pad stay honest ("this IS a Game Boy import") even
+ * when the PIXELS degrade to the Gen-3 rung.
+ *
+ * PURE C DEFAULT: with no hook registered, this always answers "yes, there is room"
+ * (1) -- exactly today's behaviour, which is what the host build and every existing
+ * host test keep getting. The GBA build registers a REAL check (gb_art_source.c,
+ * reading the CPU's own SP against the linker's low-water mark) at boot; a host test
+ * that wants to exercise the "no room" branch registers its own stub. */
+int pdna_origin_art_stack_room(void);
+typedef int (*PdnaStackRoomFn)(void);
+void pdna_origin_art_set_stack_room_hook(PdnaStackRoomFn fn);
+
 /* ---- (3) THE GEN-3 ROM RUNG (Phase 1, docs/analysis-2026-08-19-rom-art/DESIGN.md
  * Sec 4.3) --------------------------------------------------------------------------
  *
