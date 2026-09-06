@@ -1190,18 +1190,34 @@ static void artless_cells(void) {
  * it is drawn by the SAME renderer as the PC (one BoxSource, one loop), and the era view
  * is simply part of what a cell looks like — there is no second grid anywhere.
  *
- * Two layers, both simultaneous across all 30 cells (rationale + measured cost in
+ * E5b (Guy, 2026-09-06) MADE LAYER 1 OPT-IN. The paragraph above describes the
+ * original ask, which layer 1 used to satisfy unconditionally (every GB import always
+ * drew its own generation's picture, no Settings touched); Guy then decided that was
+ * too much by default -- a Gen-3 save's PC and BANK grids now draw the icon-store's
+ * OWN picture for every mon, imports included, unless the (kind, place) cell in
+ * Settings > Game ROM > Sprites is explicitly set away from NATIVE (sprite_era.h's
+ * se_resolve_cell has the exact rule, including why GEN1 keeps working at BANK but is
+ * a no-op at PC). Layer 2 (the mark) is UNCHANGED and is what still makes "the bank
+ * shows every mon's provenance in parallel" true by default -- only the PICTURE
+ * became a choice.
+ *
+ * Two layers, independent of each other since E5b (rationale + measured cost in
  * pdna_origin_art.h §3):
  *
- *   1. THE PICTURE. A GB import whose era has a registered ROM is drawn in that era's
- *      own sprite, scaled into the cell and blitted to the BG bitmap, with its Gen-3 OBJ
- *      icon hidden so the two cannot stack. Natives keep their OBJ icon. All three eras
- *      are therefore on screen at once, each in its own art.
- *   2. THE LABEL. Every GB cell gets a small era pad ('1'/'2'/'?') at its top-left. This
- *      layer is free (one cached byte per cell) so it is ALWAYS drawn — no GB ROM, the
- *      artless build, a species the ROM would not serve. It is also the layer that makes
- *      the answer unambiguous: a Gen-1 and a Gen-2 sprite of the same species can look
- *      nearly identical, so the picture alone was never a complete answer.
+ *   1. THE PICTURE, OPT-IN. A cell whose Settings era resolves concretely to GEN1 or
+ *      GEN2 (an explicit override -- or, at PC/BANK, never a plain import's own
+ *      untouched NATIVE cell any more) is drawn in that era's own sprite/icon, scaled
+ *      into the cell and blitted to the BG bitmap, with its Gen-3 OBJ icon hidden so
+ *      the two cannot stack. Every other cell -- natives AND untouched imports alike
+ *      -- keeps its OBJ icon.
+ *   2. THE LABEL, ALWAYS ON PROVENANCE. Every GB-import cell gets a small era pad
+ *      ('1'/'2'/'?') at its top-left, REGARDLESS of whether layer 1 drew anything for
+ *      it. This layer is free (one cached byte per cell) so it is ALWAYS drawn — no
+ *      GB ROM, the artless build, a species the ROM would not serve, layer 1 declining
+ *      to draw a picture at all. It is also the layer that makes the answer
+ *      unambiguous: a Gen-1 and a Gen-2 sprite of the same species can look nearly
+ *      identical, so the picture alone was never a complete answer -- and now that the
+ *      picture is opt-in, the label is the ONLY thing a default-cell import wears.
  *
  * DEGRADES IN LAYERS, and the artless build is untouched: a save with no GB imports has
  * no marked cells at all, so nothing here draws a single pixel — pdna_origin_box_mark()
@@ -1261,9 +1277,16 @@ era_cell_blit(int slot, const PdnaArt* a, int cx, int cy) {
 }
 
 /* One cell, both layers. Called only from a full repaint — the picture costs a GB pic
- * decode off the card, so it must never sit on a per-frame path. */
+ * decode off the card, so it must never sit on a per-frame path.
+ *
+ * E5b: pdna_origin_box_gb() answers the ART half only (does this cell want a bitmap
+ * era picture) -- a plain GB import with no Settings override no longer implies that
+ * (Guy's opt-in decision), so it can no longer gate the PROVENANCE mark too. The mark
+ * is checked independently here (pdna_origin_box_mark(), a second cache-only lookup,
+ * equally free) so a Crystal import sitting at its default cell still wears its '2'
+ * even though it draws no picture over the Gen-3 OBJ icon. */
 static void era_cell_draw(int slot) {
-  if (!pdna_origin_box_gb(slot)) return;              /* native / empty: nothing to do */
+  if (!pdna_origin_box_gb(slot) && !pdna_origin_box_mark(slot)) return; /* nothing at all */
   int cx = GRID_X + (slot % COLS) * CELL_W, cy = GRID_Y + (slot / COLS) * CELL_H;
 
   /* Layer 1. art_wanted() is a cache lookup plus the source's have() probe — no decode,

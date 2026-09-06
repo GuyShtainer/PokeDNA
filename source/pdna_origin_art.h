@@ -350,21 +350,25 @@ typedef int (*PdnaEraResolverFn)(int place, uint8_t origin_gen, uint8_t origin_c
                                  uint16_t national_dex, int* reason);
 void pdna_origin_art_set_era_resolver(PdnaEraResolverFn fn);
 
-/* THE UNCOLLAPSED HOOK (E5 fix D1). The ordinary hook above reports a concrete answer
- * that happens to equal the (kind, origin_gen, origin_certain) native answer as NATIVE
- * on purpose -- see se_resolve_for_router's comment in sprite_era.h -- because the
- * PORTRAIT rung must not reroute every untouched cell onto the cross-game ROM path.
- * The box GRID's per-cell art (cell_pack(), pdna_origin_box_art()) is not that rung: it
- * needs the CONCRETE answer (is this cell's era actually GEN2?) even when that answer
- * happens to equal the save's own native era -- otherwise a Gen-2 save's own GBGRID,
- * and a Gen-2 import sitting in a Gen-3 PC at the native/default cell, never see the
- * icon rung, while a native Gen-3 mon whose cell was overridden to GEN2 does (the
- * inverse of the intended rule). This hook is OPTIONAL: unset (host tests, or a screen
- * reached before pdna_main.c's boot registration runs) falls back to the ordinary
- * resolver above, so nothing regresses where this was never wired. Only the box-grid
- * cell path (cell_pack, pdna_origin_box_art) may call it; pdna_origin_art_portrait()
- * (the PORTRAIT rung) must keep asking the collapsed resolver. */
-void pdna_origin_art_set_era_resolver_raw(PdnaEraResolverFn fn);
+/* THE GRID-CELL HOOK (E5 fix D1, E5b Guy's 2026-09-06 opt-in decision). The ordinary
+ * hook above reports a concrete answer that happens to equal the (kind, origin_gen,
+ * origin_certain) native answer as NATIVE on purpose -- see se_resolve_for_router's
+ * comment in sprite_era.h -- because the PORTRAIT rung must not reroute every
+ * untouched cell onto the cross-game ROM path. The box GRID's per-cell art
+ * (cell_pack(), pdna_origin_box_art()) is not that rung, and its correct source is not
+ * "the same question, uncollapsed" either (that was this hook's D1-era behaviour,
+ * when it was named "raw" and called se_resolve() directly) -- it is
+ * se_resolve_cell()'s OWN rule: a Gen-2 save's own GBGRID still resolves concretely to
+ * GEN2 (D1's fix, unchanged), but a Gen-3 save's PC/BANK cell left at NATIVE now
+ * answers the icon STORE's own era for every mon, imports included, NOT the record's
+ * own native era -- a Gen-2 (or Gen-1) import sitting at its native/default cell no
+ * longer sees a bitmap era picture by default; only an explicit cell override does.
+ * This hook is OPTIONAL: unset (host tests, or a screen reached before pdna_main.c's
+ * boot registration runs) falls back to the ordinary resolver above, so nothing
+ * regresses where this was never wired. Only the box-grid cell path (cell_pack,
+ * pdna_origin_box_art) may call it; pdna_origin_art_portrait() (the PORTRAIT rung)
+ * must keep asking the collapsed resolver. */
+void pdna_origin_art_set_era_resolver_cell(PdnaEraResolverFn fn);
 
 /* ---- (3c) THE CROSS-GAME GEN-3 RUNG (E4) -------------------------------------------
  *

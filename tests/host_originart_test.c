@@ -53,14 +53,19 @@
  *      a resolver naming a concrete Gen-3 era reaches a stub PdnaG3CrossSource with
  *      the right (game, species, form) triple; the stack-room gate and a source that
  *      fails/is absent both degrade to gen3_ladder exactly like every other rung.
- *   I. E5 (sprite-era, docs/SPRITE-ERA-DESIGN.md sec 2/4) — the 16x16 Gen-2 menu-icon
- *      rung, box-grid-only: pdna_origin_box_art() takes it for BOTH a GB-import and a
- *      NATIVE record whenever the resolver names GEN2 (the icon is a property of the
- *      CELL's resolved era, not of provenance); any other era (GEN1, or NATIVE with no
- *      override) is untouched, falling through to the ordinary up-to-56x56 portrait
- *      rung exactly as before this slice; and the memo's `icon` flag stops a box-cell
- *      icon fetch from handing its 16x16 buffer/size to a caller asking for the
- *      ordinary portrait at the exact same (gen, dex), or vice versa.
+ *   I. E5 (sprite-era, docs/SPRITE-ERA-DESIGN.md sec 2/4) / E5b (Guy's 2026-09-06
+ *      opt-in decision) — the 16x16 Gen-2 menu-icon rung, box-grid-only:
+ *      pdna_origin_box_art() takes it for BOTH a GB-import and a NATIVE record
+ *      whenever the resolver names GEN2 for that cell (the icon is a property of the
+ *      CELL's resolved era, not of provenance); GEN1 falls through to the ordinary
+ *      up-to-56x56 portrait rung exactly as before this slice; and the memo's `icon`
+ *      flag stops a box-cell icon fetch from handing its 16x16 buffer/size to a
+ *      caller asking for the ordinary portrait at the exact same (gen, dex), or vice
+ *      versa. E5b changed WHEN a cell resolves to GEN1/GEN2 at a Gen-3 save's PC/BANK
+ *      grid at all: a plain import's own NATIVE/default cell no longer does (the icon
+ *      STORE's own picture is now the default for every mon there, imports included)
+ *      -- only an EXPLICIT Settings override does. I6-I11 below wire the REAL
+ *      se_resolve/se_resolve_cell pair and assert this opt-in directly.
  */
 #include <stdio.h>
 #include <string.h>
@@ -1044,14 +1049,16 @@ static void part_h(void) {
   pdna_origin_art_set_place(SE_PLACE_SUMMARY);
 }
 
-/* ---- I (D1 fix, adversarial review): THE REAL se_resolve/se_resolve_for_router PAIR --
+/* ---- I (D1 fix, adversarial review; E5b Guy's 2026-09-06 opt-in decision): THE REAL
+ * se_resolve/se_resolve_for_router/se_resolve_cell TRIO --
  * h_resolver above is a scripted stub -- perfect for proving the ROUTER's call
- * sequence, useless for proving se_resolve_for_router's COLLAPSE rule itself (whether a
- * concrete answer equals the native one is exactly what se_native_era computes, and a
+ * sequence, useless for proving se_resolve_for_router's/se_resolve_cell's actual
+ * POLICY (whether a concrete answer equals the native one, or whether a cell is a
+ * Gen-3 kind's PC/BANK NATIVE cell, is exactly what those two wrappers compute, and a
  * stub can never get that wrong by construction). These cases wire the REAL
- * sprite_era.c pair through pdna_origin_art's TWO hooks, mirroring pdna_main.c's
- * era_resolver_cb (collapsed, se_resolve_for_router) and era_resolver_raw_cb
- * (uncollapsed, se_resolve) byte-for-byte, so the box-grid cell path (cell_pack(),
+ * sprite_era.c trio through pdna_origin_art's TWO hooks, mirroring pdna_main.c's
+ * era_resolver_cb (collapsed, se_resolve_for_router) and era_resolver_cell_cb
+ * (se_resolve_cell) byte-for-byte, so the box-grid cell path (cell_pack(),
  * pdna_origin_box_art()) is proven against the actual production wiring instead of a
  * mock that cannot express the bug. */
 static SeSetting  s_rr_setting;
@@ -1063,9 +1070,9 @@ static int rr_collapsed_cb(int place, uint8_t gen, uint8_t certain, uint16_t dex
   return (int)se_resolve_for_router(&s_rr_setting, s_rr_kind, (SePlace)place, gen, certain,
                                     dex, &s_rr_roms, s_rr_compiled, reason);
 }
-static int rr_raw_cb(int place, uint8_t gen, uint8_t certain, uint16_t dex, int* reason) {
-  return (int)se_resolve(&s_rr_setting, s_rr_kind, (SePlace)place, gen, certain, dex,
-                         &s_rr_roms, s_rr_compiled, reason);
+static int rr_cell_cb(int place, uint8_t gen, uint8_t certain, uint16_t dex, int* reason) {
+  return (int)se_resolve_cell(&s_rr_setting, s_rr_kind, (SePlace)place, gen, certain, dex,
+                              &s_rr_roms, s_rr_compiled ? 1 : 0, reason);
 }
 
 /* Every Gen-1/Gen-2/Gen-3 ROM "registered", every cell NATIVE (se_default) -- a caller
@@ -1080,7 +1087,7 @@ static void rr_reset(void) {
   s_rr_roms.have[SE_ERA_G3_EM]  = true;
   s_rr_roms.have[SE_ERA_G3_FRLG] = true;
   pdna_origin_art_set_era_resolver(rr_collapsed_cb);
-  pdna_origin_art_set_era_resolver_raw(rr_raw_cb);
+  pdna_origin_art_set_era_resolver_cell(rr_cell_cb);
 }
 
 /* ---- I. E5: THE GEN-2 MENU-ICON RUNG, BOX-GRID ONLY --------------------------------
@@ -1151,14 +1158,20 @@ static void part_i(void) {
   CHECK_EQ(g_gbicon_calls, 0, "I3 the icon rung must never be touched for GEN1");
   CHECK_EQ(g_gb_last_gen, 1, "I3 the portrait rung was asked for gen 1");
 
-  /* I4: resolver says NATIVE (no override) for the native mon -> compiled Gen-3 art,
-   * completely untouched by this whole rung. */
+  /* I4 (E5b): resolver says NATIVE (no override) for the native mon -> pdna_origin_
+   * box_art() itself now takes NO rung at all for NATIVE (return 0, the caller's
+   * Gen-3 OBJ store icon stays) -- this changed FROM the pre-E5b behaviour of falling
+   * through to pdna_origin_art_portrait() (which, for a NATIVE mon with a NATIVE cell,
+   * happened to land on the same compiled sprite anyway; era_cell_draw()'s own
+   * `a.gen != PDNA_GEN3` guard already discarded that redundant fetch before a pixel
+   * ever got drawn, so this is a behaviour change in the TEST's own directness, not in
+   * what ships on screen for a native mon). */
   s_h_next_era = SE_ERA_NATIVE;
   g_gbicon_calls = 0; g_gb_calls = 0; g_front_calls = 0;
-  CHECK(pdna_origin_box_art(0, &nat_m, &a), "I4 NATIVE should return art");
-  CHECK(a.px == g_front, "I4 NATIVE native mon must be the compiled Gen-3 sprite");
+  CHECK(!pdna_origin_box_art(0, &nat_m, &a), "I4 (E5b) NATIVE returns no era cell at all");
   CHECK_EQ(g_gbicon_calls, 0, "I4 the icon rung must never be touched for NATIVE");
   CHECK_EQ(g_gb_calls, 0, "I4 the GB portrait rung must never be touched either");
+  CHECK_EQ(g_front_calls, 0, "I4 (E5b) not even the compiled-sprite rung is asked");
 
   /* I5 (the memo-flag fix): fetch the ICON for dex 1, THEN ask for the ordinary
    * PORTRAIT of the exact same (gen=2, dex=1) directly via pdna_origin_art_portrait
@@ -1203,13 +1216,17 @@ static void part_i(void) {
     CHECK_EQ(a6.w, 16, "I6 icon width 16");
   }
 
-  /* I7: a Gen-2 IMPORT sitting in an EMERALD PC box at its NATIVE/default cell (the
-   * common, no-settings-touched case) -- pre-D1 the collapsed resolver reported this
-   * cell's concrete GEN2 answer as NATIVE (it equals se_native_era for this import),
-   * so the import kept its old downscaled-portrait look; fixed, it gets the real
-   * party-menu icon by default (design decision: this changes WHICH picture a
-   * default-cell import wears, not WHETHER it wears one -- pre-E5 it already showed a
-   * Gen-2-sourced picture here). */
+  /* I7 (E5b, SUPERSEDES the pre-E5b "I7" case): a Gen-2 IMPORT sitting in an EMERALD
+   * PC box at its NATIVE/default cell (the common, no-settings-touched case) -- pre-
+   * D1 the collapsed resolver reported this cell's concrete GEN2 answer as NATIVE (it
+   * equals se_native_era for this import), so the import kept its old downscaled-
+   * portrait look; D1 then made it take the icon rung BY DEFAULT; Guy's 2026-09-06
+   * decision retired THAT default in turn -- se_resolve_cell's opt-in short-circuit
+   * answers the store's own era (G3_EM) for a Gen-3 kind's NATIVE PC/BANK cell,
+   * imports included, so this import now wants NO era art at all here and draws NO
+   * cell (the caller keeps the Gen-3 OBJ store icon) -- but its '1'/'2' PROVENANCE
+   * mark is UNAFFECTED (pdna_origin_box_mark/_color read CELL_GB only, never the ART
+   * bits this case now clears). */
   rr_reset();
   pdna_origin_art_invalidate();
   s_rr_kind = SE_KIND_EM;
@@ -1220,10 +1237,31 @@ static void part_i(void) {
     CHECK(make(&g7, rec7, &m7), "I7 setup: GB fixture must decode");
     PkMon box7[PDNA_ORIGIN_BOX]; memset(box7, 0, sizeof box7); box7[0] = m7;
     pdna_origin_box_note(box7);
-    CHECK(pdna_origin_box_art_wanted(0), "I7 (D1) a native-default-cell Gen-2 import must WANT the icon");
+    CHECK(!pdna_origin_box_art_wanted(0),
+          "I7 (E5b) a native-default-cell Gen-2 import no longer wants the icon");
+    CHECK_EQ(pdna_origin_box_mark(0), '2', "I7 (E5b) but its provenance mark still reports '2'");
     PdnaArt a7; g_gbicon_calls = 0;
-    CHECK(pdna_origin_box_art(0, &m7, &a7), "I7 should return art");
-    CHECK(a7.px == g_gbicon_pix, "I7 (D1) a Gen-2 import at its default cell must take the icon rung");
+    CHECK(!pdna_origin_box_art(0, &m7, &a7),
+          "I7 (E5b) a Gen-2 import at its default PC cell draws no era art at all");
+    CHECK_EQ(g_gbicon_calls, 0, "I7 (E5b) the icon rung must never fire for the default cell");
+  }
+
+  /* I7b (E5b): the SAME Gen-2 import, PC cell now EXPLICITLY set to GEN2 -- the
+   * opt-in the user actually has to choose; this must (still) take the icon rung, and
+   * pdna_origin_box_gb()'s ART-bits-only answer must agree with art_wanted(). */
+  s_rr_setting.era[SE_KIND_EM][SE_PLACE_PC] = SE_ERA_GEN2;
+  pdna_origin_art_invalidate();
+  {
+    Gb12Mon g7b; uint8_t rec7b[80]; PkMon m7b;
+    gb2_mon(&g7b, 201);
+    CHECK(make(&g7b, rec7b, &m7b), "I7b setup: GB fixture must decode");
+    PkMon box7b[PDNA_ORIGIN_BOX]; memset(box7b, 0, sizeof box7b); box7b[0] = m7b;
+    pdna_origin_box_note(box7b);
+    CHECK(pdna_origin_box_gb(0), "I7b (E5b) an explicit GEN2 cell wants art (box_gb)");
+    CHECK(pdna_origin_box_art_wanted(0), "I7b (E5b) ...and art_wanted agrees");
+    PdnaArt a7b; g_gbicon_calls = 0;
+    CHECK(pdna_origin_box_art(0, &m7b, &a7b), "I7b should return art");
+    CHECK(a7b.px == g_gbicon_pix, "I7b (E5b) an explicit GEN2 cell takes the icon rung");
   }
 
   /* I8: a MIXED Emerald box with the PC cell explicitly overridden to GEN2 -- BOTH a
@@ -1263,25 +1301,64 @@ static void part_i(void) {
           "I8 (D1) the Crystal import's overridden cell must ALSO take the icon rung");
   }
 
-  /* I9: a Red import (unproven origin gen 1) at its NATIVE/default cell -> Gen 1 has no
-   * per-species menu icons (se_resolve's own NO_ICONS gate), so this must still fall
-   * through to the ordinary portrait rung -- unaffected by D1's fix either way. */
+  /* I9 (E5b, SUPERSEDES the pre-E5b "I9" case): a Red import (unproven origin gen 1)
+   * at its NATIVE/default PC cell -> se_resolve_cell's opt-in short-circuit answers
+   * the store's own era (G3_FRLG) here too, same as I7 -- so this now draws NO era
+   * cell at all (not even the old downscaled-portrait fallback: se_resolve's own
+   * SE_PLACE_PC + SE_ERA_GEN1 icon refusal used to leave this case landing on
+   * NATIVE/COMPILED already, so the OLD "stays the 56x56 portrait" outcome and the
+   * NEW "no era cell" outcome are reached by different routes but neither one was
+   * ever the icon rung -- the visible change is that pdna_origin_box_art() itself now
+   * says so directly with a 0 return, matching I4's E5b change). Its mark is
+   * unaffected: still '?' (unproven), still drawn by era_cell_draw's independent
+   * pdna_origin_box_mark() check even though box_gb() answers 0. */
   rr_reset();
   pdna_origin_art_invalidate();
   s_rr_kind = SE_KIND_FRLG;
   pdna_origin_art_set_place(SE_PLACE_PC);
   {
+    PkMon box9[PDNA_ORIGIN_BOX]; memset(box9, 0, sizeof box9); box9[0] = gb_m;
+    pdna_origin_box_note(box9);   /* populate the cache with THIS mon at slot 0, so
+                                    * the mark check below reads gb_m's own answer,
+                                    * not whatever an earlier I-case left behind */
     PdnaArt a9; g_gbicon_calls = 0; g_gb_calls = 0;
-    CHECK(pdna_origin_box_art(0, &gb_m, &a9), "I9 should return art");
-    CHECK(a9.px == g_gbpix, "I9 an unproven Gen-1 import at its default cell stays the 56x56 portrait");
+    CHECK(!pdna_origin_box_art(0, &gb_m, &a9),
+          "I9 (E5b) an unproven Gen-1 import at its default PC cell draws no era cell");
     CHECK_EQ(g_gbicon_calls, 0, "I9 the icon rung must never fire for GEN1");
+    CHECK_EQ(g_gb_calls, 0, "I9 (E5b) not even the ordinary GB portrait rung fires here");
+    CHECK_EQ(pdna_origin_box_mark(0), '?', "I9 (E5b) the mark still shows, unproven ('?')");
   }
 
-  /* I10: a NATIVE Hoenn-only mon (Treecko, national dex 252 -- no Gen-2 species) whose
-   * cell is explicitly overridden to GEN2 -- se_species_exists(GEN2, 252) is false, so
-   * the override is refused (NO_SPECIES) and this must fall through to native Gen-3
-   * art, never the icon. Proves cell_era_of()'s species gate still holds even though
-   * it is now fed by the raw, uncollapsed resolver. */
+  /* I9b (E5b): the SAME Gen-1 import, but at BANK with the cell explicitly set to
+   * GEN1 -- se_resolve()'s SE_PLACE_PC+GEN1 refusal checks SE_PLACE_PC only, so BANK
+   * honours the override concretely and this DOES take the grid's opt-in Gen-1
+   * portrait cell (E3's downscaled picture, not a menu icon -- Gen 1 has none). This
+   * is the "keep E3's era cell for an explicit GEN1 override" half of Guy's decision. */
+  s_rr_kind = SE_KIND_FRLG;
+  s_rr_setting.era[SE_KIND_FRLG][SE_PLACE_BANK] = SE_ERA_GEN1;
+  pdna_origin_art_set_place(SE_PLACE_BANK);
+  pdna_origin_art_invalidate();
+  {
+    PdnaArt a9b; g_gbicon_calls = 0; g_gb_calls = 0;
+    CHECK(pdna_origin_box_art(0, &gb_m, &a9b),
+          "I9b (E5b) an EXPLICIT GEN1 cell at BANK should return art");
+    CHECK(a9b.px == g_gbpix, "I9b (E5b) BANK/GEN1 takes the ordinary 56x56 portrait rung");
+    CHECK_EQ(a9b.w, 56, "I9b portrait width is 56");
+    CHECK_EQ(g_gbicon_calls, 0, "I9b the icon rung must never fire for GEN1");
+    CHECK_EQ(g_gb_calls, 1, "I9b the GB portrait rung fires exactly once");
+  }
+  pdna_origin_art_set_place(SE_PLACE_PC);   /* restore for I10/I11 below */
+
+  /* I10 (E5b changed the OUTCOME, not the gate it proves): a NATIVE Hoenn-only mon
+   * (Treecko, national dex 252 -- no Gen-2 species) whose PC cell is explicitly
+   * overridden to GEN2 -- se_species_exists(GEN2, 252) is false, so the override is
+   * refused (NO_SPECIES) and se_resolve() falls to the NATIVE chain, which for this
+   * native Hoenn mon resolves concretely to G3_FRLG (se_native_era's answer, its own
+   * ROM registered) -- NOT the NATIVE sentinel. pdna_origin_box_art() takes NO rung
+   * for a concrete G3_* era any more than it does for NATIVE (E5b, see I4/I9): this
+   * proves cell_era_of()'s species gate still refuses the icon rung, now fed by
+   * se_resolve_cell, and that the store icon (not a redundant compiled-art fetch)
+   * is what a native mon's box cell wears when no era art applies. */
   s_rr_setting.era[SE_KIND_FRLG][SE_PLACE_PC] = SE_ERA_GEN2;
   pdna_origin_art_invalidate();
   {
@@ -1289,10 +1366,11 @@ static void part_i(void) {
     gen3_build_mon(277, 5, 0x33334444u, 0x00010002u, "TEST", 3, rec10);  /* Treecko (dex 252) */
     CHECK(pk_decode_mon(rec10, false, &m10), "I10 setup: decode");
     pk_resolve(&m10);
-    PdnaArt a10; g_gbicon_calls = 0;
-    CHECK(pdna_origin_box_art(0, &m10, &a10), "I10 should return art");
-    CHECK(a10.px != g_gbicon_pix, "I10 (species gate) a dex Gen 2 never had must not take the icon rung");
-    CHECK(a10.px == g_front, "I10 falls back to compiled native Gen-3 art");
+    PdnaArt a10; g_gbicon_calls = 0; g_front_calls = 0;
+    CHECK(!pdna_origin_box_art(0, &m10, &a10),
+          "I10 (E5b) a dex Gen 2 never had, refused, draws no era cell at all");
+    CHECK_EQ(g_gbicon_calls, 0, "I10 (species gate) must never take the icon rung");
+    CHECK_EQ(g_front_calls, 0, "I10 (E5b) not even the compiled-sprite rung is asked");
   }
 
   /* I11 (D6): an EGG on a GEN2-resolved cell must show Gen 2's fixed ICON_EGG kind,
@@ -1329,7 +1407,7 @@ static void part_i(void) {
   g_gbicon_on = 0;
   gb_source_on();
   pdna_origin_art_set_era_resolver(0);
-  pdna_origin_art_set_era_resolver_raw(0);
+  pdna_origin_art_set_era_resolver_cell(0);
   pdna_origin_art_set_place(SE_PLACE_SUMMARY);
   pdna_origin_art_invalidate();
 }
@@ -1384,6 +1462,15 @@ static uint32_t fnv1a16(const uint16_t* p, int n) {
 
 #define CELL_W 24
 #define CELL_H 22
+
+/* E5b: a resolver stub for part_f's F6-F8 plumbing cases -- see the comment at its
+ * one call site (just before F6 below) for why part_f needs its OWN stub rather than
+ * relying on "no resolver registered" the way it did pre-E5b. */
+static int gb_native_stub(int place, uint8_t gen, uint8_t certain, uint16_t dex, int* reason) {
+  (void)place; (void)certain; (void)dex;
+  if (reason) *reason = SE_WHY_WANTED;
+  return gen == 2 ? SE_ERA_GEN2 : gen == 1 ? SE_ERA_GEN1 : SE_ERA_NATIVE;
+}
 
 static void part_f(void) {
   printf("F. the parallel bank grid\n");
@@ -1515,6 +1602,20 @@ static void part_f(void) {
   CHECK(!pdna_origin_cell_render(&a, 0, CELL_W, CELL_H), "F5 NULL dst -> no render");
   CHECK_EQ(cell[0], 0xDEAD, "F5 a refused render must not touch the caller's buffer");
 
+  /* F6-F8 (E5b note): before this slice, an unregistered era resolver (cell_era_of()
+   * falling all the way to ERA_NATIVE) still let a plain GB import's OWN provenance
+   * drive pdna_origin_box_gb()/art_wanted() -- the CELL_GB bit doubled as an implicit
+   * "wants my own era's art" default. That WAS the pre-E5b default this whole slice
+   * retires (see part_i's I7/I9): under se_resolve_cell, a Gen-3 kind's PC/BANK
+   * NATIVE cell answers the icon STORE's era, never a bitmap GEN1/GEN2 answer, no
+   * matter the mon's provenance. F6-F8 test box_art()'s MEMO/FETCH/RENDER plumbing,
+   * not the resolution POLICY (that is I6-I11's job), so they now register gb_native_
+   * stub (declared at file scope, above) which scripts "this cell's era is exactly
+   * this mon's own provenance" -- mimicking what an EXPLICIT per-kind BANK override
+   * (or a GB save's own GBGRID) would produce concretely -- so the plumbing keeps
+   * getting real GEN1/GEN2 answers to chew on. */
+  pdna_origin_art_set_era_resolver(gb_native_stub);
+
   /* F6: the cheap door. This is what the grid asks 30 times per repaint. */
   {
     Gb12Mon g; uint8_t rec[80]; PkMon m;
@@ -1559,8 +1660,10 @@ static void part_f(void) {
      * but is still a Gen-1 import wearing its marker. That is layer 2 doing its job. */
     g_gb1_on = 0;
     CHECK_EQ(pdna_origin_box_art_wanted(0), 0, "F6 no Gen-1 ROM -> no Gen-1 art");
-    CHECK_EQ(pdna_origin_box_gb(0), 1, "F6 ...but it is still a GB import");
-    CHECK_EQ(pdna_origin_box_mark(0), '?', "F6 ...and it still wears its marker");
+    CHECK_EQ(pdna_origin_box_gb(0), 1,
+             "F6 ...the cached ART bit still says GEN1 (art_wanted, not box_gb, is the "
+             "live ROM check)");
+    CHECK_EQ(pdna_origin_box_mark(0), '?', "F6 ...and its provenance marker is untouched");
     CHECK_EQ(pdna_origin_box_art_wanted(3), 1, "F6 the Gen-2 cell is unaffected");
     g_gb1_on = 1;
 
@@ -1595,6 +1698,9 @@ static void part_f(void) {
     pdna_origin_box_clear();
     gb_source_off();
   }
+
+  /* leave global state clean for whichever part runs next */
+  pdna_origin_art_set_era_resolver(0);
 }
 
 /* ---- D. FALSE POSITIVES ON REAL GEN-3 CARTRIDGE DATA ------------------------------ */

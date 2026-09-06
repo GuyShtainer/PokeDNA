@@ -1784,25 +1784,31 @@ static int era_resolver_cb(int place, uint8_t origin_gen, uint8_t origin_certain
                                     reason);
 }
 
-/* E5 fix D1: the UNCOLLAPSED counterpart of era_resolver_cb above, registered as
- * pdna_origin_art.c's "raw" hook (pdna_origin_art_set_era_resolver_raw) and asked
- * ONLY by the box-grid cell path (cell_pack/pdna_origin_box_art via cell_era_of()).
- * Identical to era_resolver_cb except it calls se_resolve() directly -- the box grid
- * needs the CONCRETE per-cell answer, not the router's "same as native => NATIVE"
- * collapse (that collapse exists so the PORTRAIT rung doesn't reroute every untouched
- * cell onto the cross-game ROM path; the box grid never touches that rung at all, it
- * only asks "is this cell's era GEN2?"). See pdna_origin_art.h's comment on
- * pdna_origin_art_set_era_resolver_raw for the concrete bug this fixes. */
-static int era_resolver_raw_cb(int place, uint8_t origin_gen, uint8_t origin_certain,
-                               uint16_t national_dex, int* reason) {
+/* E5b (Guy, 2026-09-06): the box-grid-CELL counterpart of era_resolver_cb above,
+ * registered as pdna_origin_art.c's "cell" hook (pdna_origin_art_set_era_resolver_cell)
+ * and asked ONLY by the box-grid cell path (cell_pack/pdna_origin_box_art via
+ * cell_era_of()). Identical to era_resolver_cb except it calls se_resolve_cell()
+ * instead of se_resolve_for_router() -- the box grid needs the CONCRETE per-cell
+ * answer, not the router's "same as native => NATIVE" collapse (that collapse exists
+ * so the PORTRAIT rung doesn't reroute every untouched cell onto the cross-game ROM
+ * path; the box grid never touches that rung at all), AND (this is the E5b change,
+ * superseding this callback's old D1-era name "raw"/"uncollapsed") se_resolve_cell()'s
+ * own opt-in short-circuit: a Gen-3 save's PC/BANK grid cell left at NATIVE answers
+ * the icon STORE's own era for every mon, imports included, never a bitmap era
+ * picture by default. See sprite_era.h's comment on se_resolve_cell for the full
+ * rule, and pdna_origin_art.h's comment on pdna_origin_art_set_era_resolver_cell for
+ * why this hook (not the router-facing one) is the box grid's only correct source. */
+static int era_resolver_cell_cb(int place, uint8_t origin_gen, uint8_t origin_certain,
+                                uint16_t national_dex, int* reason) {
   SeRoms roms = app_era_roms();
 #if PDNA_ARTLESS
   bool compiled_gen3 = false;
 #else
   bool compiled_gen3 = true;
 #endif
-  return (int)se_resolve(&g_era, app_save_kind(), (SePlace)place, origin_gen,
-                         origin_certain, national_dex, &roms, compiled_gen3, reason);
+  return (int)se_resolve_cell(&g_era, app_save_kind(), (SePlace)place, origin_gen,
+                              origin_certain, national_dex, &roms,
+                              compiled_gen3 ? 1 : 0, reason);
 }
 
 /* Registered once from main()'s startup (alongside gb_art_boot_register(), just
@@ -1812,7 +1818,7 @@ static int era_resolver_raw_cb(int place, uint8_t origin_gen, uint8_t origin_cer
  * it simply never has a registered ROM to name there. */
 static void pdna_era_boot_register(void) {
   pdna_origin_art_set_era_resolver(era_resolver_cb);
-  pdna_origin_art_set_era_resolver_raw(era_resolver_raw_cb);
+  pdna_origin_art_set_era_resolver_cell(era_resolver_cell_cb);
   g3cross_boot_register();
 }
 
