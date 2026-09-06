@@ -293,8 +293,20 @@ bool se_cell_applies(SeSaveKind kind, SePlace place);
  * caller mapping the result onto a PkGame MUST handle the two GB values -- there is no
  * Gen-3 ROM behind them. GEN1/GEN2 CELL settings and NATIVE do not name a Gen-3 ROM and
  * fall through to that native answer (so for an EM/PC cell set to GEN2, se_resolve says
- * GEN2 per mon while the store stays EM -- E5, Gen-2 menu icons as PC-grid art, must
- * revisit this). `s` or `roms` NULL falls straight to the native answer. */
+ * GEN2 per mon while the store stays EM). `s` or `roms` NULL falls straight to the
+ * native answer.
+ *
+ * E5 RESOLVED THIS RATHER THAN REVISITING IT: the icon STORE staying the save's own
+ * Gen-3 game (Hoenn mons drawn from it, plus every other native species' compiled/
+ * ROM-rung fallback) while a GEN2-resolved CELL gets a bitmap Gen-2 menu icon on top
+ * is the intended design, not a gap -- source/pdna_origin_art.c's pdna_origin_box_art()
+ * asks the era resolver directly (not through se_store_era, which answers a
+ * per-BOX-VISIT ROM choice, not a per-mon picture choice) and swaps in the 16x16 icon
+ * for that ONE cell when the answer is GEN2, leaving every other cell in the box
+ * (native Hoenn mons included) drawn from whatever se_store_era already picked. So the
+ * store and a cell's picture are allowed to disagree by design: "GEN2 per mon while
+ * the store stays EM" is exactly what a mixed box (native Emerald mons sitting beside
+ * a Crystal import, both wanting the Gen-2 icon look) needs. */
 SeEra se_store_era(const SeSetting* s, SeSaveKind kind, SePlace place, const SeRoms* roms);
 
 /* Map a PkGame value (gen3_trainer.h's PK_RS/PK_EMERALD/PK_FRLG, 0/1/2) onto its
