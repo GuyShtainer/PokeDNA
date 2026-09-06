@@ -1476,7 +1476,13 @@ static void gb_rom_base_path(void) {
  * resident: a FIL is ~600 B and does not belong on any stack), and locates it into
  * g_ed->romgs/romscan. Sets g_ed->romgs_ready/romgs_path on success. Every buffer
  * this touches is a Gb12Edit field, precisely so THIS function's own frame stays
- * under the 300 B this slice's brief measures for. */
+ * under the 300 B this slice's brief measures for.
+ *
+ * gb_art_source.c's gb_rom_path_beside() is the SAME "<base>.gb then .gbc" probe,
+ * independently implemented (not refactored to share this one, which is
+ * arena-resident, paste-path code this slice deliberately does not touch) for
+ * origin-art's "ROM beside the save" fallback -- if the extension-derivation rule
+ * ever changes, it has to change in both places. */
 static Gb1BaseStatus __attribute__((noinline)) gb_gen1_locate_rom(void) {
   gb_rom_base_path();
   int baselen = 0; while (g_ed->romspath[baselen]) baselen++;

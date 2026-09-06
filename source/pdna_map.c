@@ -1843,7 +1843,13 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         continue;
       }
 
-      app_rom_path_set(game, path);           /* remember per game */
+      /* g_rom_path's slots are GB_ROM_PATH_MAX(128) wide (E3 review item 3) -- a path
+       * too long to remember still WORKS for this session (below uses the local
+       * `path`/`s_rf`, not a re-read), it just won't survive to next launch, which
+       * is the one thing worth telling the user rather than silently losing. */
+      if (!app_rom_path_set(game, path))
+        s_msg("ROM PATH TOO LONG", UI_WARN, "Works this session, but won't be",
+              "remembered next launch (127-char limit).");
       have = true;
       rmbl_fire(RCUE_ROOM);
     }

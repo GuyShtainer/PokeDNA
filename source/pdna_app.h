@@ -394,7 +394,11 @@ const char* app_move_desc(uint16_t move_id);
 const char* app_ability_desc(uint16_t ability_id);
 
 const char* app_rom_path(PkGame game);
-void        app_rom_path_set(PkGame game, const char* path);
+/* Returns false (refused, unchanged) when `path` would not fit the shared
+ * GB_ROM_PATH_MAX(128) cap (gb_art_source.h) -- E3 review item 3: silently
+ * truncating used to be able to register a DIFFERENT, likely nonexistent path than
+ * the one the user picked. An empty path (clearing) always succeeds. */
+bool        app_rom_path_set(PkGame game, const char* path);
 /* True once the user has registered ANY of their own game ROMs. The gate for extras
  * that need real art to mean anything (Day-Care yard visitors). */
 bool        app_any_rom_registered(void);
@@ -406,10 +410,13 @@ bool        app_any_rom_registered(void);
  * ROM the way RS and Emerald can't either. Persists via config.cfg's romgb1/romgb2
  * keys, restored by cfg_load(). Backed by a genuine resident array (gb_art_source.c's
  * gb_art_register() only VALIDATES a path; it does not remember it) sized
- * GB_ROM_PATH_MAX (128, not PATH_MAX's 256 — see gb_art_source.h's memory note) so two
- * slots fit the ~524 B EWRAM budget. An out-of-range `gen` returns ""/is a no-op. */
+ * GB_ROM_PATH_MAX (128, not PATH_MAX's 256 — see gb_art_source.h's memory note); as
+ * of E3 review item 3 the SAME array and cap as app_rom_path()'s three Gen-3 slots
+ * (g_rom_path[5][GB_ROM_PATH_MAX], pdna_main.c). An out-of-range `gen` returns ""/
+ * is a no-op. Returns false (refused, unchanged) when `path` would not fit — see
+ * app_rom_path_set()'s comment, identical rule. */
 const char* app_gb_rom_path(uint8_t gen);
-void        app_gb_rom_path_set(uint8_t gen, const char* path);
+bool        app_gb_rom_path_set(uint8_t gen, const char* path);
 /* True iff generation `gen` can currently serve art -- an explicit Settings/boot
  * registration OR (while a raw GB save of some kind is open) a "beside the save"
  * session fallback that already proved out (gb_art_source.h's gb_art_have(), which

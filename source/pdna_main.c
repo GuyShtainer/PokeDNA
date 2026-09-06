@@ -163,20 +163,22 @@ static u8          EWRAM_BSS g_sb1[G3_SAVEBLOCK1_BYTES];  /* reassembled SaveBlo
 static BrowseEntry EWRAM_BSS g_entries[MAX_ENTRIES];      /* current-dir listing     */
 static int         g_count = 0;
 static char        EWRAM_BSS g_cwd[PATH_MAX];             /* current directory (set in main) */
-/* Pokemon ROM path per game (PkGame index: RS / Emerald / FRLG). The map screen reads
- * map data out of the user's OWN ROM, and RS/E/FRLG map data differs, so each game
- * remembers its own file. Persisted by cfg_save. */
-static char        EWRAM_BSS g_rom_path[3][PATH_MAX];
-/* Game Boy cartridge ROM path per generation. GB_ROM_PATH_MAX (128, gb_art_source.h)
- * rather than PATH_MAX(256): two full-width slots would leave ~12 B of the ~524 B
- * EWRAM budget, two half-width slots leave ~268 -- see gb_art_source.h's memory note.
- * Persisted by cfg_save (romgb1/romgb2 keys). Exactly 2 slots, not 3 like g_rom_path's
- * PkGame-indexed array above -- a wasted index-0 slot here is 128 B this budget does
- * not have (measured: it cost the difference between 140 B and 268 B free). Indexed
- * via gb_gen_idx(gen) (PDNA_GEN1/2 -> 0/1, or -1 for anything else). */
-static char        EWRAM_BSS g_gb_rom_path[2][GB_ROM_PATH_MAX];
-static int gb_gen_idx(uint8_t gen) {
-  return (gen == PDNA_GEN1) ? 0 : (gen == PDNA_GEN2) ? 1 : -1;
+/* ONE registered-ROM-path table for all five slots this app ever remembers a ROM
+ * for: PkGame's RS/Emerald/FRLG (indices 0-2, the map screen's per-game ROMs) plus
+ * Gen-1/Gen-2 Game Boy ROMs (indices 3-4, gb_art_source.c's origin-art source) --
+ * merged here (E3 review item 3) from two separate arrays (g_rom_path[3][PATH_MAX]
+ * + g_gb_rom_path[2][GB_ROM_PATH_MAX]) that together cost 1,024 B of the ~524 B
+ * EWRAM budget's already-tight remainder. Every slot is capped at GB_ROM_PATH_MAX
+ * (128, gb_art_source.h) now, not PATH_MAX's 256 -- five half-width slots (640 B)
+ * fit; three full + two half (1,024 B) did not leave enough for anything else this
+ * arc still needs. Measured: 268 B free (three full + two half) -> 652 B free
+ * (five half). A path that would not fit is REFUSED at set-time (app_rom_path_set()/
+ * app_gb_rom_path_set()), not silently truncated -- item 3's other half. */
+#define APP_ROM_SLOTS 5
+static char        EWRAM_BSS g_rom_path[APP_ROM_SLOTS][GB_ROM_PATH_MAX];
+/* PkGame (0-2) indices unchanged; Game Boy generations land at 3/4. */
+static int gb_gen_slot(uint8_t gen) {
+  return (gen == PDNA_GEN1) ? 3 : (gen == PDNA_GEN2) ? 4 : -1;
 }
 static PkMon       EWRAM_BSS g_party[6];                  /* decoded party of the open save  */
 static u8          EWRAM_BSS g_pc[G3_PC_BYTES];           /* reassembled PC storage (boxes)  */
@@ -661,9 +663,10 @@ static void cfg_save(void) {
    * "only non-empty" rule as the Gen-3 paths above. */
   static const char* const k_gbkey[2] = { "romgb1", "romgb2" };
   for (uint8_t gen = PDNA_GEN1; gen <= PDNA_GEN2 && !truncated; gen++) {
-    int gi = gb_gen_idx(gen);
-    if (!g_gb_rom_path[gi][0]) continue;
-    int w = sniprintf(buf + n, sizeof(buf) - (size_t)n, "%s=%s\n", k_gbkey[gi], g_gb_rom_path[gi]);
+    int gi = gb_gen_slot(gen);
+    const char* key = k_gbkey[gen - PDNA_GEN1];
+    if (!g_rom_path[gi][0]) continue;
+    int w = sniprintf(buf + n, sizeof(buf) - (size_t)n, "%s=%s\n", key, g_rom_path[gi]);
     if (w < 0 || w >= (int)(sizeof(buf) - (size_t)n)) { truncated = true; break; }
     n += w;
   }
@@ -713,11 +716,22 @@ static void cfg_load(void) {
       else if (!strcmp(k, "anim"))   { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); g_anim_mask = m & ((1u << ANIM_COUNT) - 1u); }
       else if (!strcmp(k, "rumble")) { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); rmbl_set_mask(m); }
       else if (!strcmp(k, "pcbox"))  { int m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (*d - '0'); g_pc_last_box = m; }
-      else if (!strcmp(k, "romrs") && v[0]) { strncpy(g_rom_path[PK_RS], v, PATH_MAX - 1);      g_rom_path[PK_RS][PATH_MAX - 1] = 0; }
-      else if (!strcmp(k, "romem") && v[0]) { strncpy(g_rom_path[PK_EMERALD], v, PATH_MAX - 1); g_rom_path[PK_EMERALD][PATH_MAX - 1] = 0; }
-      else if (!strcmp(k, "romfr") && v[0]) { strncpy(g_rom_path[PK_FRLG], v, PATH_MAX - 1);    g_rom_path[PK_FRLG][PATH_MAX - 1] = 0; }
-      else if (!strcmp(k, "romgb1") && v[0]) app_gb_rom_path_set(PDNA_GEN1, v);
-      else if (!strcmp(k, "romgb2") && v[0]) app_gb_rom_path_set(PDNA_GEN2, v);
+      /* All five ROM-path keys REJECT (and log) a value too long for
+       * GB_ROM_PATH_MAX(128) instead of truncating it -- E3 review item 3. This used
+       * to be a plain strncpy(..., PATH_MAX-1) here, which silently cut a Gen-3 path
+       * to a DIFFERENT (likely nonexistent) 255-byte string -- and, now that
+       * g_rom_path shrank to GB_ROM_PATH_MAX-wide slots, would have been an actual
+       * out-of-bounds write (255 into a 128-byte row). */
+      else if (!strcmp(k, "romrs") && v[0] && !app_rom_path_set(PK_RS, v))
+        log_line("cfg: romrs value too long (>%d), ignored", GB_ROM_PATH_MAX - 1);
+      else if (!strcmp(k, "romem") && v[0] && !app_rom_path_set(PK_EMERALD, v))
+        log_line("cfg: romem value too long (>%d), ignored", GB_ROM_PATH_MAX - 1);
+      else if (!strcmp(k, "romfr") && v[0] && !app_rom_path_set(PK_FRLG, v))
+        log_line("cfg: romfr value too long (>%d), ignored", GB_ROM_PATH_MAX - 1);
+      else if (!strcmp(k, "romgb1") && v[0] && !app_gb_rom_path_set(PDNA_GEN1, v))
+        log_line("cfg: romgb1 value too long (>%d), ignored", GB_ROM_PATH_MAX - 1);
+      else if (!strcmp(k, "romgb2") && v[0] && !app_gb_rom_path_set(PDNA_GEN2, v))
+        log_line("cfg: romgb2 value too long (>%d), ignored", GB_ROM_PATH_MAX - 1);
     }
     p = term ? eol + 1 : eol;
   }
@@ -1642,11 +1656,20 @@ const char* app_rom_path(PkGame game) {
   int i = (int)game;
   return (i >= 0 && i < 3) ? g_rom_path[i] : "";
 }
-void app_rom_path_set(PkGame game, const char* path) {
+/* Returns false (REFUSED, g_rom_path untouched) when `path` would not fit
+ * GB_ROM_PATH_MAX(128) -- E3 review item 3: this used to silently truncate via
+ * strncpy(..., PATH_MAX-1), which could register a path pointing at a DIFFERENT
+ * (truncated, likely nonexistent) file than the one the user picked. An empty
+ * path (clearing the slot) always succeeds. */
+bool app_rom_path_set(PkGame game, const char* path) {
   int i = (int)game;
-  if (i < 0 || i >= 3 || !path) return;
-  strncpy(g_rom_path[i], path, PATH_MAX - 1);
-  g_rom_path[i][PATH_MAX - 1] = 0;
+  if (i < 0 || i >= 3) return false;
+  if (!path) path = "";
+  if (strlen(path) >= (size_t)GB_ROM_PATH_MAX) return false;
+  int k = 0;
+  for (; path[k]; k++) g_rom_path[i][k] = path[k];
+  g_rom_path[i][k] = 0;
+  return true;
 }
 
 /* Has the user registered ANY of their own game ROMs? The gate for the extras that
@@ -1661,20 +1684,19 @@ bool app_any_rom_registered(void) {
 
 /* ---- per-generation Game Boy ROM path (slice E3, pdna_app.h has the full contract) */
 const char* app_gb_rom_path(uint8_t gen) {
-  int gi = gb_gen_idx(gen);
-  return (gi >= 0) ? g_gb_rom_path[gi] : "";
+  int gi = gb_gen_slot(gen);
+  return (gi >= 0) ? g_rom_path[gi] : "";
 }
-void app_gb_rom_path_set(uint8_t gen, const char* path) {
-  int gi = gb_gen_idx(gen);
-  if (gi < 0) return;
-  /* A manual bounded copy, not strncpy(dst, src, GB_ROM_PATH_MAX-1): -Wstringop-
-   * truncation flags that exact "count == cap-1" shape (already true, harmlessly, of
-   * romrs/romem/romfr's strncpy calls above -- not touched here to keep this change
-   * scoped to the code it adds). */
+/* Same "refuse, never truncate" rule as app_rom_path_set() -- see its comment. */
+bool app_gb_rom_path_set(uint8_t gen, const char* path) {
+  int gi = gb_gen_slot(gen);
+  if (gi < 0) return false;
   if (!path) path = "";
+  if (strlen(path) >= (size_t)GB_ROM_PATH_MAX) return false;
   int i = 0;
-  for (; path[i] && i < GB_ROM_PATH_MAX - 1; i++) g_gb_rom_path[gi][i] = path[i];
-  g_gb_rom_path[gi][i] = 0;
+  for (; path[i]; i++) g_rom_path[gi][i] = path[i];
+  g_rom_path[gi][i] = 0;
+  return true;
 }
 bool app_gb_rom_registered(uint8_t gen) { return gb_art_have(gen); }
 
@@ -2252,6 +2274,7 @@ const uint16_t* app_item_icon(uint16_t item_id) {
   const uint16_t* ic = item_icon_for(item_id);            /* compiled rung first */
   if (ic) return ic;
   if (!s_romitemart.ok || !rom_itemart_have_items(&s_romitemart)) return 0;
+  artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
   uint16_t* dst = mon_decomp;                             /* 576 px = 1,152 B of 8,192 */
   return rom_item_icon(&s_romitemart, item_id, dst, ROM_ITEM_ICON_PX) ? dst : 0;
 }
@@ -2260,6 +2283,7 @@ const uint16_t* app_type_badge(uint8_t type_id, uint8_t* out_h) {
   const uint16_t* ic = type_icon_for(type_id);             /* compiled rung first */
   if (ic) { if (out_h) *out_h = TYPE_ICON_H; return ic; }
   if (!s_romitemart.ok || !rom_itemart_have_types(&s_romitemart)) return 0;
+  artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
   uint32_t need = (uint32_t)rom_type_scratch_bytes(&s_romitemart);   /* 5,888 RSE / 0 FRLG */
   uint8_t* scratch = need ? (uint8_t*)mon_decomp : 0;
   RomTypeSheet ts;
@@ -2312,6 +2336,13 @@ static void app_register_rom(void) {
   char path[PATH_MAX];
   if (!app_pick_rom(path, sizeof path)) {
     if (g_pc_dirty) msg_wait("SAVE FIRST", UI_WARN, "Unsaved box moves pending.", "Commit, then retry.");
+    return;
+  }
+  /* g_rom_path's slots are GB_ROM_PATH_MAX(128) wide (E3 review item 3) -- refuse up
+   * front rather than let app_rom_path_set() refuse later after the ROM has already
+   * been opened+identified. */
+  if (strlen(path) >= (size_t)GB_ROM_PATH_MAX) {
+    msg_wait("PATH TOO LONG", UI_WARN, "That folder is too deep for", "this app (127-char limit).");
     return;
   }
   FIL f;
@@ -2389,6 +2420,14 @@ static void app_register_gb_rom(uint8_t gen) {
       break;
     default: break;
   }
+  /* E3 review item 5: a failed re-pick just called gb_art_register(gen, <bad path>),
+   * which left s_reg_have[gen] false -- de-registering whatever WORKING ROM was
+   * there before, for the rest of this session, even though config.cfg (and
+   * app_gb_rom_path(gen)) still names it and it is still perfectly fine on disk. A
+   * "Change ROM" attempt that fails must not cost the user their already-working
+   * art. Re-register the OLD path on any non-OK outcome; a no-op (EMPTY) if there
+   * never was one. */
+  if (st != GB_ART_REG_OK) gb_art_register(gen, app_gb_rom_path(gen));
 }
 #endif
 
@@ -4858,6 +4897,7 @@ static bool pokeblock_edit(int idx) {
 static BgFrame rom_pokeblock_frame(int game) {
   BgFrame f = { 0, 0, PB_BG_W };
   if (!s_romchrome.rc || !rom_chrome_pokeblock_have(&s_romchrome, game)) return f;
+  artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
   if (!rom_chrome_pokeblock_load(&s_romchrome, game,
                                  (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &s_pb_chrome))
     return f;
@@ -6763,6 +6803,7 @@ static bool art_extract_run(u32* out_elapsed_ms, u32* out_kbs10, bool* out_cance
    * (rumble.c, 2026-08-18) actively drives the line low on resume, so nothing is left
    * latched on across this pause either. */
   rmbl_pause();
+  artbuf_claim();  /* E3 review BLOCKING 2: the stream below fills mon_decomp per chunk */
 
   SfStatus st = sf_write_verified_stream(art_kind_filename(ART_KIND_ICONS), art_icons_stream,
                                          &gen, ART_ICONS_TOTAL_BYTES, (uint8_t*)mon_decomp,
@@ -6883,6 +6924,49 @@ static void art_extract_screen(void) {
   }
 }
 
+/* The Gen 1/2 ROM row's own action (E3 review item 6): "Change" when nothing is set
+ * yet goes straight to the picker (app_register_gb_rom, unchanged); once a ROM IS
+ * registered, offer Change/Clear instead of silently jumping to the picker again --
+ * there was no way to unregister at all before this. Clear: forgets the config
+ * path, un-registers the source for this gen (have() goes false immediately, not
+ * just after the next boot) and drops the router's memo (a stale pointer into
+ * whatever this ROM last decoded must not survive the ROM disappearing). Leaving
+ * the vtable itself registered with both generations empty is fine -- gb_art_have()
+ * gates every fetch, so an all-empty registration behaves exactly like none. */
+static void gb_rom_row_action(uint8_t gen) {
+  if (!app_gb_rom_path(gen)[0]) { app_register_gb_rom(gen); return; }
+  const char* rows[2] = { "Change ROM", "Clear ROM" };
+  int sel = 0;
+  for (;;) {
+    int my, mh;
+    ui_popup_vfit(2, 14, 18, 8, &my, &mh);
+    const int mx = 16, mw = 208;
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, gen == PDNA_GEN1 ? "GEN 1 ROM" : "GEN 2 ROM");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < 2; i++) {
+      int y = my + 18 + i * 14; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, rows[i]);
+    }
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % 2;
+    else if (k & KEY_A) {
+      if (sel == 0) { app_register_gb_rom(gen); return; }
+      app_gb_rom_path_set(gen, "");
+      gb_art_register(gen, "");
+      cfg_save();
+      pdna_origin_art_invalidate();
+      snd_ok();
+      msg_wait("GAME ROM", UI_OK, gen == PDNA_GEN1 ? "Gen 1 ROM cleared." : "Gen 2 ROM cleared.",
+               "Gen-3 art returns for that era.");
+      return;
+    }
+  }
+}
+
 /* Settings > Game ROM, once something is registered: a small menu instead of jumping
  * straight to browse-for-ROM, so item 7's detach switch lives ON this same row (not
  * a new one) rather than needing its own PDNA_SET_ROWS slot. "Cancel" mirrors
@@ -6941,8 +7025,8 @@ static void rom_row_menu(void) {
                  g_rom_art_off ? "Your ROM path is kept." : "Real art is back on.");
         return;
       }
-      else if (a == 2) { app_register_gb_rom(PDNA_GEN1); return; }
-      else if (a == 3) { app_register_gb_rom(PDNA_GEN2); return; }
+      else if (a == 2) { gb_rom_row_action(PDNA_GEN1); return; }
+      else if (a == 3) { gb_rom_row_action(PDNA_GEN2); return; }
       else return;                                                 /* cancel */
     }
   }
