@@ -49,6 +49,12 @@ void pdna_summary_bg(void);
  * pdna_summary.c's own draw_left_conditional wraps the identical static draw_left(). */
 void pdna_summary_draw_left(const PkMon* p, bool back);
 
+/* Same, for a caller that KNOWS the source generation (1 or 2) because it
+ * mounted the GB save itself — the provenance chip reads GB1/GB2 (certain)
+ * instead of draw_left's own best guess ("GB?"). See pdna_summary.c's own
+ * header comment on this function for the full rationale. */
+void pdna_summary_draw_left_hint(const PkMon* p, bool back, uint8_t hint_gen);
+
 /* The card-index dots (n dots, dot `active` lit). */
 void pdna_summary_draw_dots(int x, int y, int n, int active);
 

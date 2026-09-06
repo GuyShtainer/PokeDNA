@@ -455,7 +455,11 @@ static void render(const GbEditMon* e, const PkMon* left, bool left_ok, bool dra
   ui_hline(0, 10, UI_SCR_W, UI_BORDER);
 
   if (draw_left) {
-    if (left_ok) pdna_summary_draw_left(left, false);
+    /* e->gen (GB_GEN1/GB_GEN2, 1/2) is the CERTAIN source generation -- this
+     * mon was loaded off that mount, not inferred -- so the chip reads GB1/GB2
+     * instead of pdna_origin_of's own best guess. See pdna_summary.c's header
+     * comment on pdna_summary_draw_left_hint (E1-b, 2026-09-06 review). */
+    if (left_ok) pdna_summary_draw_left_hint(left, false, e->gen);
     else         gbsum_draw_left_unknown();
   }
 

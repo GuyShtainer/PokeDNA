@@ -233,6 +233,28 @@ static void draw_left(const PkMon* p) { draw_left_ex(p, g_back); }
  * since the Game Boy summary has no such toggle of its own. */
 void pdna_summary_draw_left(const PkMon* p, bool back) { draw_left_ex(p, back); }
 
+/* Same, but for a caller that KNOWS the source generation because it mounted the
+ * GB save itself (pdna_gbsummary.c: e->gen, 1 or 2) — draw_left_ex's own
+ * pdna_origin_art_portrait has no such hint and falls back to pdna_origin_of's
+ * best GUESS ("GB?", or GB1-by-elimination), which is strictly less honest than
+ * what the caller already knows for certain. Over-draws the SAME provenance-chip
+ * rect draw_left_ex just painted (or left blank) with pdna_origin_of_hint's own
+ * verdict instead — the same guard draw_left_ex itself uses (only a GB import
+ * gets a chip at all, so a native Gen-3 portrait's rect is untouched either way).
+ * E1 moved the `note` string ("Gen 1/2 record") onto the ORIGIN card only, so
+ * without this every OTHER card would show no generation at all — a real
+ * regression against the pre-E1 flat-list screen, which always headed with it.
+ * The ART itself staying Gen-3-shaped regardless of hint_gen is E3's job (wiring
+ * rom_gbsprite as the router's own GB source, docs/SPRITE-ERA-DESIGN.md sec 4);
+ * this only fixes the LABEL. */
+void pdna_summary_draw_left_hint(const PkMon* p, bool back, uint8_t hint_gen) {
+  draw_left_ex(p, back);
+  PdnaOrigin org;
+  pdna_origin_of_hint(p, hint_gen, &org);
+  if (org.verdict == PDNA_ORIGIN_GB)
+    ui_name_chip(13, 15, 30, 11, pdna_origin_color(&org), 0x7FFF, pdna_origin_tag(&org));
+}
+
 /* ---- draw_left, made conditional on the mon+pose actually having changed ----------
  *
  * THE BUG (Guy's report, 2026-08-23): "editing a pokemon or simply scrolling through
