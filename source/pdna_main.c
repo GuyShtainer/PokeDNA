@@ -7194,6 +7194,79 @@ static void gb_rom_row_action(uint8_t gen) {
  * #ifndef PDNA_DELTA block as that function (and as this function's only call site,
  * pdna_settings' S_GAMEROM handler below) rather than its own, so it can never again
  * end up compiled where its callee isn't. */
+/* Settings > Game ROM > Sprites (E4): the 5 (kind) x 5 (place) grid of the user's
+ * chosen art era per cell. Reached from rom_row_menu (below) rather than its own
+ * PDNA_SET_ROWS row -- see pdna_layout.h's header comment on this screen's macros
+ * for the full layout rationale. UP/DOWN moves the KIND (row), LEFT/RIGHT the PLACE
+ * (column); both skip dead cells (se_cell_applies() == false) rather than land on
+ * one -- bounded to SE_KIND_N/SE_PLACE_N steps so a future all-dead row/column
+ * (impossible today: se_cell_applies() only ever kills ONE cell per kind and per
+ * place, see its own comment) could never spin forever. A cursor is guaranteed to
+ * start valid: (SE_KIND_RS, SE_PLACE_PC) always applies. */
+static void sprite_settings(void) {
+#define SPR_HDR_ONE(s) s,
+  static const char* const HDR[SE_PLACE_N] = { PDNA_SETSPR_PLACE_HDRS(SPR_HDR_ONE) };
+  int kind = SE_KIND_RS, place = SE_PLACE_PC;
+  for (;;) {
+    SeRoms roms = app_era_roms();
+    ui_clear();
+    ui_text(4, 4, UI_TITLE, PDNA_SETSPR_TITLE);
+    ui_hline(0, 14, UI_SCR_W, UI_BORDER);
+    for (int p = 0; p < SE_PLACE_N; p++) {
+      int x = PDNA_SETSPR_COL0_X + p * PDNA_SETSPR_COL_PITCH;
+      ui_text(x, PDNA_SETSPR_HDR_Y, UI_DIM, HDR[p]);
+    }
+    for (int k = 0; k < SE_KIND_N; k++) {
+      int y = PDNA_SETSPR_ROW0_Y + k * PDNA_SETSPR_ROW_PITCH;
+      ui_text(PDNA_SETSPR_LABEL_X, y, UI_DIM, se_kind_name((SeSaveKind)k));
+      for (int p = 0; p < SE_PLACE_N; p++) {
+        int x = PDNA_SETSPR_COL0_X + p * PDNA_SETSPR_COL_PITCH;
+        bool sel = (k == kind && p == place);
+        bool applies = se_cell_applies((SeSaveKind)k, (SePlace)p);
+        const char* txt = applies ? se_era_name((SeEra)g_era.era[k][p]) : PDNA_SETSPR_DEAD;
+        if (sel) ui_panel(x - 2, y - 1, PDNA_SETSPR_COL_PITCH - 2, 13, UI_SEL, UI_TITLE);
+        ui_ptext(x, y, !applies ? UI_DIM : (sel ? UI_SELTEXT : UI_TEXT), txt);
+      }
+    }
+    ui_text(PDNA_SET_HELP_X, PDNA_SETSPR_HELP_Y1, UI_DIM, PDNA_SETSPR_HELP1);
+    ui_text(PDNA_SET_FOOT_X, PDNA_SET_FOOTER_Y, UI_DIM, PDNA_SETSPR_FOOT);
+
+    u16 k2 = wait_keys(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_START);
+    if (k2 & (KEY_B | KEY_START)) {
+      cfg_save();
+      pdna_origin_art_invalidate();
+      art_session_invalidate();
+      return;
+    } else if (k2 & KEY_UP) {
+      for (int i = 0; i < SE_KIND_N; i++) {
+        kind = (kind + SE_KIND_N - 1) % SE_KIND_N;
+        if (se_cell_applies((SeSaveKind)kind, (SePlace)place)) break;
+      }
+    } else if (k2 & KEY_DOWN) {
+      for (int i = 0; i < SE_KIND_N; i++) {
+        kind = (kind + 1) % SE_KIND_N;
+        if (se_cell_applies((SeSaveKind)kind, (SePlace)place)) break;
+      }
+    } else if (k2 & KEY_LEFT) {
+      for (int i = 0; i < SE_PLACE_N; i++) {
+        place = (place + SE_PLACE_N - 1) % SE_PLACE_N;
+        if (se_cell_applies((SeSaveKind)kind, (SePlace)place)) break;
+      }
+    } else if (k2 & KEY_RIGHT) {
+      for (int i = 0; i < SE_PLACE_N; i++) {
+        place = (place + 1) % SE_PLACE_N;
+        if (se_cell_applies((SeSaveKind)kind, (SePlace)place)) break;
+      }
+    } else if (k2 & KEY_A) {
+      if (se_cell_applies((SeSaveKind)kind, (SePlace)place)) {
+        g_era.era[kind][place] = (uint8_t)se_era_next((SeEra)g_era.era[kind][place],
+                                                       &roms, (SePlace)place);
+        snd_ok();
+      } else snd_deny();
+    }
+  }
+}
+
 static void rom_row_menu(void) {
   /* Slice E3: two more rows, same menu, same "no new PDNA_SET_ROWS slot" reasoning
    * item 7 already used for the ROM-art toggle. Computed once at entry -- every
@@ -7202,11 +7275,12 @@ static void rom_row_menu(void) {
   char r_gb1[32], r_gb2[32];
   siprintf(r_gb1, "Gen 1 ROM: %s", app_gb_rom_path(PDNA_GEN1)[0] ? "set" : "not set");
   siprintf(r_gb2, "Gen 2 ROM: %s", app_gb_rom_path(PDNA_GEN2)[0] ? "set" : "not set");
-  const char* rows[5]; int act[5], nr = 0;
+  const char* rows[6]; int act[6], nr = 0;
   rows[nr] = "Change ROM";                                       act[nr++] = 0;
   rows[nr] = g_rom_art_off ? "Turn ROM art ON" : "Turn ROM art OFF"; act[nr++] = 1;
   rows[nr] = r_gb1;                                              act[nr++] = 2;
   rows[nr] = r_gb2;                                              act[nr++] = 3;
+  rows[nr] = "Sprites  >";                                       act[nr++] = 4;
   rows[nr] = "Cancel";                                            act[nr++] = -1;
   int sel = 0;
   for (;;) {
@@ -7245,6 +7319,7 @@ static void rom_row_menu(void) {
       }
       else if (a == 2) { gb_rom_row_action(PDNA_GEN1); return; }
       else if (a == 3) { gb_rom_row_action(PDNA_GEN2); return; }
+      else if (a == 4) { sprite_settings(); return; }
       else return;                                                 /* cancel */
     }
   }

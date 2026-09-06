@@ -12,7 +12,7 @@
  *
  *   cc -std=c11 -I source tests/host_textfit_test.c source/ui_font.c \
  *      source/gb_editor.c source/gb_edit.c source/gen1_save.c source/gen2_save.c \
- *      source/data_tables.c -o /tmp/htf && /tmp/htf
+ *      source/data_tables.c source/sprite_era.c -o /tmp/htf && /tmp/htf
  *
  * (run_host_tests.py reads that line out of the FIRST 24 lines of this comment — keep
  * it up here, above the long note below, or the whole test is silently skipped. The
@@ -52,6 +52,8 @@
                             * literal — the whole point of every other check here. */
 #include "gb_editor.h"     /* gbe_label/GBE_NUM — real function + real enum, not a
                             * mirrored copy of gb_editor.c's own LABEL[] table */
+#include "sprite_era.h"    /* se_era_name/se_kind_name — the Sprites grid's real
+                            * strings (E4), not a re-typed copy */
 
 #define SCR_W   UI_SCR_W
 #define SYS8_W  UI_SYS8_W   /* tonc sys8 advance: fixed 8 px per glyph */
@@ -1313,6 +1315,37 @@ int main(void) {
        PDNA_RMB_ROW0_Y + (PDNA_RMB_STEPPERS + RCUE_COUNT - 1) * PDNA_RMB_ROW_PITCH
          + UI_ROW_H - 1,
        PDNA_RMB_HELP_Y1 - 1);
+
+  printf("\n== Settings > Sprites grid (E4, source/pdna_main.c) ==\n");
+  /* Era cell text is PROPORTIONAL (ui_ptext), not sys8 -- see pdna_layout.h's own
+   * comment on why. Every one of sprite_era.h's real SE_ERA_N names (not a re-typed
+   * guess) must fit ONE column at PDNA_SETSPR_COL_PITCH, with a few px to spare for
+   * the cursor highlight's own inset. */
+  for (int e = 0; e < SE_ERA_N; e++) {
+    const char* nm = se_era_name((SeEra)e);
+    chk("sprites era cell", 0, PDNA_SETSPR_COL_PITCH - 4, pwidth(nm), nm);
+  }
+  /* Kind labels (se_kind_name) are sys8 in the left gutter. */
+  for (int k = 0; k < SE_KIND_N; k++) {
+    const char* nm = se_kind_name((SeSaveKind)k);
+    chk("sprites kind label", 0, PDNA_SETSPR_LABEL_W, (int)strlen(nm) * SYS8_W, nm);
+  }
+  /* Column headers are this file's own short abbreviations (NOT se_place_name() --
+   * "SUMMARY" alone is 56 px sys8, wider than one 40 px column). */
+#define SPR_HDR_ONE(s) s,
+  { static const char* const HDRS[] = { PDNA_SETSPR_PLACE_HDRS(SPR_HDR_ONE) };
+    for (unsigned i = 0; i < sizeof HDRS / sizeof HDRS[0]; i++)
+      chk("sprites col header", 0, PDNA_SETSPR_COL_PITCH - 4,
+          (int)strlen(HDRS[i]) * SYS8_W, HDRS[i]); }
+  /* 5 columns must fit the screen at all (the coarse sanity check the design asked
+   * for), on top of the per-string budget checks above. */
+  chkv("sprites grid: 5 columns fit the screen",
+       PDNA_SETSPR_COL0_X + SE_PLACE_N * PDNA_SETSPR_COL_PITCH, SCR_W);
+  T(PDNA_SETSPR_HELP1, PDNA_SET_HELP_X);
+  T(PDNA_SETSPR_FOOT, PDNA_SET_FOOT_X);
+  chkv("sprites grid last row above help",
+       PDNA_SETSPR_ROW0_Y + (SE_KIND_N - 1) * PDNA_SETSPR_ROW_PITCH + UI_ROW_H - 1,
+       PDNA_SETSPR_HELP_Y1 - 1);
 
   printf("\n== day-care panel: descenders clear of the bottom border ==\n");
   /* ui_panel(x, y, w, h) fills y .. y+h-1 and frames it with m3_frame(.., y+h-1), whose

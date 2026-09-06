@@ -1006,6 +1006,44 @@
 #define PDNA_RMB_STEPPERS      2
 
 /* ---------------------------------------------------------------------------
+ * Settings > Game ROM > Sprites grid (source/pdna_main.c, slice E4)
+ *
+ * A 5 (kind, sprite_era.h's SeSaveKind) x 5 (place, SePlace) grid of the user's
+ * chosen SeEra per cell. Reached from rom_row_menu, not its own PDNA_SET_ROWS row
+ * (that list is already full at 8 -- same "no new slot" pattern E3's two GB-ROM
+ * rows and item 7's ROM-art toggle used).
+ *
+ * Kind labels (se_kind_name) are sys8 in a narrow left gutter; era CELL text
+ * (se_era_name) is PROPORTIONAL (ui_ptext), not sys8 -- "Native" is 48 px at sys8's
+ * fixed 8 px/glyph, wider than one 40 px column, but only 31 px proportional (N6+a6+
+ * t5+i2+v6+e6, ui_font_w), comfortably inside it (host-checked against ui_font_w
+ * directly, tests/host_textfit_test.c -- not a re-typed guess). Column HEADERS are
+ * this file's own short abbreviations (PDNA_SETSPR_PLACE_HDR*), not se_place_name()'s
+ * full labels -- "SUMMARY" alone is 7 sys8 columns (56 px), wider than one column. */
+#define PDNA_SETSPR_TITLE      "SPRITES"
+#define PDNA_SETSPR_LABEL_X     2
+#define PDNA_SETSPR_LABEL_W    34   /* se_kind_name()'s longest is 4 chars = 32 px sys8 */
+#define PDNA_SETSPR_COL0_X     38
+#define PDNA_SETSPR_COL_PITCH  40   /* 5 columns, 38..238 px -- inside the 240 px screen */
+#define PDNA_SETSPR_HDR_Y      18
+#define PDNA_SETSPR_ROW0_Y     28
+#define PDNA_SETSPR_ROW_PITCH  16
+#define PDNA_SETSPR_HELP_Y1   124
+#define PDNA_SETSPR_HELP1     "NATIVE = its own era."
+#define PDNA_SETSPR_FOOT      "L/R col U/D row A set B back"
+/* Column legend, index-matched to sprite_era.h's SePlace order (PC/PARTY/SUMMARY/
+ * BANK/GBGRID) -- deliberately NOT se_place_name(), see the note above. */
+#define PDNA_SETSPR_PLACE_HDR0 "PC"
+#define PDNA_SETSPR_PLACE_HDR1 "PTY"
+#define PDNA_SETSPR_PLACE_HDR2 "SUM"
+#define PDNA_SETSPR_PLACE_HDR3 "BANK"
+#define PDNA_SETSPR_PLACE_HDR4 "GBG"
+#define PDNA_SETSPR_PLACE_HDRS(X) X(PDNA_SETSPR_PLACE_HDR0) X(PDNA_SETSPR_PLACE_HDR1) \
+  X(PDNA_SETSPR_PLACE_HDR2) X(PDNA_SETSPR_PLACE_HDR3) X(PDNA_SETSPR_PLACE_HDR4)
+/* The dead-cell marker (se_cell_applies() == false) -- one glyph, trivially fits. */
+#define PDNA_SETSPR_DEAD       "-"
+
+/* ---------------------------------------------------------------------------
  * ROM IMAGE CHECK — the verdict band (source/pdna_romfull.c)
  *
  * This screen's DELIVERABLE IS A PHONE PHOTO: it is what Guy sends when a 12.5 MB image
