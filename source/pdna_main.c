@@ -2150,13 +2150,31 @@ static const uint16_t* g3x_decode(const RomSprite* rs, uint16_t species, uint8_t
   return mon_decomp;
 }
 
+/* D6: g3x_fetch_other's own cluster link map, parallel to s_iconrom_clmt above but
+ * sized for 32 fragments (2 + 2*32 = 66 DWORDs, 264 B) rather than 64 -- this ROM is
+ * opened, read once for a single sprite, and closed, not held for the whole session,
+ * so a shorter arm that still covers the overwhelming majority of SD images is the
+ * right trade against the EWRAM guard (620 B free measured before this change; this
+ * table leaves ~356 B). Past 32 fragments the arm fails, cltbl stays NULL on this
+ * FIL and it simply seeks the old (cluster-walk-from-0) way, same graceful fallback
+ * s_iconrom_clmt already relies on. EWRAM_BSS is a REQUIREMENT -- fastseek.h rule 3. */
+static DWORD EWRAM_BSS s_g3x_clmt[FASTSEEK_ITEMS_FOR(32)];
+
 /* The slow path: `game` is NOT the currently open icon ROM, so open app_rom_path(game)
  * in a TEMPORARY RomCtx, decode, close. ONE noinline frame (FIL ~600 B + RomCtx +
  * RomSprite, measured with -fstack-usage -- see docs/HW-TEST-2026-09-05-GB-ARC.md §K
  * and the E4 handoff note) so the call-graph tool charges this exact subtree against
  * the stack-room gate (pdna_origin_art_stack_room()) at its own measured need
  * (PDNA_G3X_FETCH_NEED, D4 -- smaller than the Game Boy rung's PDNA_GB_FETCH_NEED),
- * rather than folding it into whatever frame happened to call it. */
+ * rather than folding it into whatever frame happened to call it.
+ *
+ * D6: without a cluster link map, g3x_fatfs_read's f_lseek walks the FAT chain from
+ * cluster 0 on every backward/far seek into this ROM -- exactly the scatter pattern
+ * measured for the icon ROM's own table (s_iconrom_clmt's comment above), and this
+ * path re-opens the whole ROM AND re-walks from 0 on EVERY draw (no session-lifetime
+ * handle, unlike the icon ROM). fastseek_arm arms s_g3x_clmt on this FIL the same way
+ * app_icon_rom_open already arms s_iconrom_clmt, right after the open succeeds and
+ * before any seek happens. */
 static const uint16_t* __attribute__((noinline))
 g3x_fetch_other(PkGame game, uint16_t species, uint8_t form, uint8_t back, uint8_t shiny,
                 uint8_t* out_w, uint8_t* out_h) {
@@ -2166,6 +2184,7 @@ g3x_fetch_other(PkGame game, uint16_t species, uint8_t form, uint8_t back, uint8
   FIL fil;
   memset(&fil, 0, sizeof fil);
   if (f_open(&fil, path, FA_READ) != FR_OK) return 0;
+  fastseek_arm(&fil, s_g3x_clmt, sizeof s_g3x_clmt / sizeof s_g3x_clmt[0], "g3x");
   FSIZE_t fsz = f_size(&fil);
   uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
 
