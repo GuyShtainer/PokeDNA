@@ -276,6 +276,14 @@ static const uint16_t* s_memo_px;
 static uint16_t s_memo_dex;
 static uint8_t  s_memo_on, s_memo_gen, s_memo_form, s_memo_back, s_memo_shiny,
                 s_memo_w, s_memo_h;
+/* E5: an icon() fetch and a pic() fetch for the SAME (gen,dex) are two DIFFERENT
+ * pictures (16x16 vs up to 56x56) that can legitimately alternate on the same
+ * mon within one screen visit (a box grid cell asks for the icon, its hover
+ * panel or the summary asks for the portrait) -- so the memo key must say which
+ * kind of picture it is holding, or a box-cell HIT would hand a 16x16 buffer to
+ * a caller expecting up to 56x56 (and vice-versa), reading past what was
+ * actually decoded. 1 more byte of plain .bss, no EWRAM. */
+static uint8_t  s_memo_icon;
 /* E3 review BLOCKING 2: the memo's key alone is not enough -- mon_decomp is shared
  * with every OTHER decoder in the app (artbuf.h's artbuf_claim() list), so a memo
  * hit on (gen,dex,form,back,shiny) can no longer prove the buffer still holds THESE
@@ -344,12 +352,20 @@ void pdna_origin_art_set_g3cross(const PdnaG3CrossSource* src) {
 
 /* One picture, memoised on the WHOLE request (including `want_back`, so the
  * back-then-front fallback is remembered as one answer and a summary showing the back
- * sprite does not re-run the failed back fetch every frame). */
-static const uint16_t* fetch_pic(uint8_t gen, uint16_t dex, uint8_t form,
-                                 uint8_t want_back, uint8_t shiny,
-                                 uint8_t* out_w, uint8_t* out_h) {
+ * sprite does not re-run the failed back fetch every frame).
+ *
+ * E5: `icon` selects the 16x16 party/PC menu-icon rung (source->icon(), gen==GEN2
+ * only, no form/back/shiny -- Gen-2 menu icons are one picture per species
+ * regardless of any of those) instead of the ordinary up-to-56x56 pic() rung.
+ * Folded into the SAME memo/epoch machinery as the portrait fetch (a box cell's
+ * icon request and the next mon's portrait request still take turns through one
+ * shared last-fetch slot) but keyed additionally on `icon`, so the two kinds of
+ * picture can never satisfy each other's cache hit -- see s_memo_icon's comment. */
+static const uint16_t* fetch_pic_ex(uint8_t gen, uint16_t dex, uint8_t form,
+                                    uint8_t want_back, uint8_t shiny, uint8_t icon,
+                                    uint8_t* out_w, uint8_t* out_h) {
   if (s_memo_on && s_memo_epoch == artbuf_epoch && s_memo_gen == gen &&
-      s_memo_dex == dex && s_memo_form == form &&
+      s_memo_dex == dex && s_memo_form == form && s_memo_icon == icon &&
       s_memo_back == want_back && s_memo_shiny == shiny) {
     *out_w = s_memo_w; *out_h = s_memo_h;
     return s_memo_px;
@@ -359,17 +375,28 @@ static const uint16_t* fetch_pic(uint8_t gen, uint16_t dex, uint8_t form,
   memo_clear();
   uint8_t w = 0, h = 0;
   const uint16_t* px = 0;
-  if (want_back) px = s_gb.pic(s_gb.ctx, gen, dex, form, 1, shiny, &w, &h);
-  if (!px)       px = s_gb.pic(s_gb.ctx, gen, dex, form, 0, shiny, &w, &h);
+  if (icon) {
+    if (s_gb.icon) px = s_gb.icon(s_gb.ctx, gen, dex, &w, &h);
+  } else {
+    if (want_back) px = s_gb.pic(s_gb.ctx, gen, dex, form, 1, shiny, &w, &h);
+    if (!px)       px = s_gb.pic(s_gb.ctx, gen, dex, form, 0, shiny, &w, &h);
+  }
   if (!px || !w || !h) return 0;
   s_memo_on = 1; s_memo_gen = gen; s_memo_dex = dex; s_memo_form = form;
-  s_memo_back = want_back; s_memo_shiny = shiny;
+  s_memo_back = want_back; s_memo_shiny = shiny; s_memo_icon = icon;
   s_memo_px = px; s_memo_w = w; s_memo_h = h;
-  s_memo_epoch = artbuf_epoch;    /* the source's pic() call above may itself have
-                                   * bumped this (gb_art_source.c does, before its own
-                                   * decode) -- capture it AFTER the call, not before */
+  s_memo_epoch = artbuf_epoch;    /* the source's pic()/icon() call above may itself
+                                   * have bumped this (gb_art_source.c does, before its
+                                   * own decode) -- capture it AFTER the call, not before */
   *out_w = w; *out_h = h;
   return px;
+}
+
+/* The ordinary portrait rung -- unchanged call shape for every pre-E5 caller. */
+static const uint16_t* fetch_pic(uint8_t gen, uint16_t dex, uint8_t form,
+                                 uint8_t want_back, uint8_t shiny,
+                                 uint8_t* out_w, uint8_t* out_h) {
+  return fetch_pic_ex(gen, dex, form, want_back, shiny, 0, out_w, out_h);
 }
 
 /* ---- (3) THE GEN-3 ROM RUNG -------------------------------------------------------
@@ -547,10 +574,19 @@ void pdna_origin_art_place(const PdnaArt* a, int x, int y, int w, int h,
  * of state and can be rebuilt from scratch on every box flip.
  *   bits 0-1 : gen (0 = empty slot, 1/2/3)
  *   bit  2   : gen_certain
- *   bit  3   : this cell is a GB import */
+ *   bit  3   : this cell is a GB import
+ *   bit  4   : E5 -- the era RESOLVER says this cell draws in GEN2 at the
+ *              CURRENT place (pdna_origin_box_art will therefore try the
+ *              16x16 menu-icon rung for it). Independent of bit 3: set for an
+ *              ordinary GB import whose native/overridden era is GEN2 (bit 3
+ *              usually set too), AND for a NATIVE Gen-3 mon whose cell the
+ *              user overrode to GEN2 in Settings (bit 3 stays clear -- a
+ *              costume is not provenance, so this bit must never feed the
+ *              '1'/'2' import marker). */
 #define CELL_GEN   0x03u
 #define CELL_CERT  0x04u
 #define CELL_GB    0x08u
+#define CELL_ERA_GB2 0x10u
 
 static uint8_t s_cell[PDNA_ORIGIN_BOX];
 static int     s_cells_valid = 0;
@@ -566,6 +602,18 @@ static uint8_t cell_pack(const PkMon* m) {
   uint8_t v = (uint8_t)(o.gen & CELL_GEN);
   if (o.gen_certain) v |= CELL_CERT;
   if (o.verdict == PDNA_ORIGIN_GB) v |= CELL_GB;
+  /* E5: ask the SAME resolver hook pdna_origin_box_art() will ask, at the SAME
+   * place -- box_decode() (pdna_box.c) is the only caller of pdna_origin_box_note/
+   * _records, and pdna_box() has already called pdna_origin_art_set_place() before
+   * ever reaching it, so s_place is already correct for whichever grid (PC/BANK/
+   * GBGRID) is on screen. No resolver registered => era stays ERA_NATIVE => this
+   * bit is never set => zero change from pre-E5 behaviour, same convention as
+   * every other era_resolver_cb call site in this file. */
+  if (s_era_resolver) {
+    uint16_t nat_dex = pk_national_no(m->species);
+    if (s_era_resolver(s_place, o.gen, o.gen_certain, nat_dex, 0) == ERA_GEN2)
+      v |= CELL_ERA_GB2;
+  }
   return v;
 }
 
@@ -573,7 +621,7 @@ static uint8_t cell_pack(const PkMon* m) {
 static void cells_finish(void) {
   uint8_t any = 0;
   for (int i = 0; i < PDNA_ORIGIN_BOX; i++) any |= s_cell[i];
-  s_cells_any_gb = (any & CELL_GB) ? 1 : 0;
+  s_cells_any_gb = (any & (CELL_GB | CELL_ERA_GB2)) ? 1 : 0;
   s_cells_valid = 1;
 }
 
@@ -629,7 +677,12 @@ int pdna_origin_box_count(uint8_t gen) {
   return n;
 }
 
-int pdna_origin_box_gb(int slot) { return (cell_at(slot) & CELL_GB) ? 1 : 0; }
+/* E5: also true for a cell whose resolver-derived era is GEN2 even when it is
+ * NOT a GB import (a native Gen-3 mon wearing a Settings-overridden Gen-2
+ * icon) -- this is the gate era_cell_draw() checks before doing ANY work for a
+ * slot, so a native-GEN2 cell must not be skipped here the way an ordinary
+ * native cell (CELL_GB clear, CELL_ERA_GB2 clear) still is. */
+int pdna_origin_box_gb(int slot) { return (cell_at(slot) & (CELL_GB | CELL_ERA_GB2)) ? 1 : 0; }
 
 int pdna_origin_box_any_gb(void) { return s_cells_valid ? s_cells_any_gb : 0; }
 
@@ -640,13 +693,61 @@ int pdna_origin_box_any_gb(void) { return s_cells_valid ? s_cells_any_gb : 0; }
  * over 30 bytes. */
 int pdna_origin_box_art_wanted(int slot) {
   uint8_t v = cell_at(slot);
+  /* E5: a GEN2-resolved cell (import or native-overridden alike) wants the
+   * icon rung whenever a Gen-2 ROM is registered, regardless of CELL_GB --
+   * checked FIRST so a native-GEN2 cell (CELL_GB clear) is not short-circuited
+   * by the plain-GB check below. */
+  if (v & CELL_ERA_GB2) return pdna_origin_art_have(PDNA_GEN2);
   if (!(v & CELL_GB)) return 0;
   return pdna_origin_art_have((uint8_t)(v & CELL_GEN));
 }
 
+/*
+ * E5 (docs/SPRITE-ERA-DESIGN.md sec 2/4): in the box GRID specifically -- not the
+ * hover panel, not the summary, not the party list, all of which keep asking
+ * pdna_origin_art_portrait() for the up-to-56x56 picture -- a cell whose
+ * RESOLVED era is GEN2 wears the REAL 16x16 Gen-2 menu icon instead, matching
+ * what the retail Gold/Silver/Crystal PC list actually shows. This applies
+ * uniformly to a GB-import cell resolved to GEN2 (the ordinary case: a Crystal
+ * import sitting in an Emerald PC box) AND to a NATIVE Gen-3 mon whose PC/BANK/
+ * GBGRID cell the user set to GEN2 in Settings -- both ask the SAME question
+ * ("what era does THIS cell, at the CURRENT place, resolve to") and get the
+ * SAME answer, which is the whole point: the icon is a property of the CELL's
+ * chosen era, not of whether the mon happened to arrive via an import.
+ *
+ * GEN1-resolved cells are UNCHANGED (fall through to the portrait below): Gen 1
+ * has no per-species menu icons at all (rom_gbicon.h; se_resolve's own
+ * SE_WHY_NO_ICONS already refuses GEN1 at the PC grid for the same reason), so
+ * there is nothing here for GEN1 to serve.
+ */
 int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out) {
   (void)slot;   /* the cache decides the MARKER; the art is always recomputed from the
                  * record, so a stale cache can never put the wrong picture on screen */
+  if (out) memset(out, 0, sizeof *out);
+  if (!m || !out) return 0;
+
+  PdnaOrigin o;
+  pdna_origin_of(m, &o);
+  int era = ERA_NATIVE;
+  uint16_t nat_dex = pk_national_no(m->species);
+  if (s_era_resolver) era = s_era_resolver(s_place, o.gen, o.gen_certain, nat_dex, 0);
+
+  if (era == ERA_GEN2 && s_gb_on && s_gb.icon &&
+      m->species >= 1 && m->species <= GEN2_MAX_DEX &&
+      pdna_origin_art_have(PDNA_GEN2) &&
+      pdna_origin_art_stack_room(PDNA_GB_ICON_NEED)) {
+    uint8_t w = 0, h = 0;
+    const uint16_t* px = fetch_pic_ex(PDNA_GEN2, nat_dex, 0, 0, 0, 1, &w, &h);
+    if (px && w && h) {
+      out->px = px; out->w = w; out->h = h; out->gen = PDNA_GEN2;
+      out->era = o.gen; out->era_certain = o.gen_certain;
+      return 1;
+    }
+    /* The Gen-2 ROM could not serve this species' icon (should not happen --
+     * se_species_exists(GEN2,dex) already gated era==GEN2 on dex<=251 -- but
+     * degrade to the ordinary portrait rather than showing nothing, same
+     * posture as every other rung's failure). */
+  }
   return pdna_origin_art_portrait(m, 0, out, 0);
 }
 
@@ -655,6 +756,27 @@ int pdna_origin_cell_render(const PdnaArt* a, uint16_t* dst, int dw, int dh) {
   if (dw <= 0 || dh <= 0 || a->w == 0 || a->h == 0) return 0;
 
   int sw = (int)a->w, sh = (int)a->h;
+
+  /* E5: a source no LARGER than the cell in either axis (the 16x16 Gen-2 menu
+   * icon against a 24x22 cell, at every size PDNA_ORIGIN_BOX cells come in
+   * today) is blitted 1:1, CENTRED on both axes -- not scaled up, and not
+   * anchored to the floor the way a downscaled sprite is below. A retail menu
+   * icon must not be stretched (it would look soft/blurred against the crisp
+   * Gen-3 OBJ icons beside it) and it is small enough that floor-anchoring
+   * would look wrong too (a 16x16 icon sitting at the very bottom of a 22-tall
+   * cell reads as "floating low", not "standing" -- true centring is what the
+   * real game's own box list does). Every larger-than-cell source (the
+   * existing 56x56/64x64 portrait path) is UNCHANGED below, byte for byte. */
+  if (sw <= dw && sh <= dh) {
+    for (int i = 0; i < dw * dh; i++) dst[i] = 0;
+    int x0 = (dw - sw) / 2, y0 = (dh - sh) / 2;
+    for (int y = 0; y < sh; y++) {
+      const uint16_t* srow = a->px + (unsigned)y * (unsigned)sw;
+      uint16_t* drow = dst + (unsigned)(y0 + y) * (unsigned)dw + (unsigned)x0;
+      for (int x = 0; x < sw; x++) drow[x] = srow[x] & 0x8000u ? srow[x] : 0u;
+    }
+    return 1;
+  }
 
   /* Largest box fit that keeps the aspect ratio. Rounded, then clamped: the rounding
    * is what stops a 56x56 pic landing on 21x22 and leaning. */

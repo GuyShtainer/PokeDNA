@@ -14,7 +14,7 @@
  * -I tests/hostff shims "sys.h" (EWRAM_BSS -> nothing) for source/artbuf.c, exactly
  * the way tests/host_log_test.c already shims it for source/log.c.
  *
- * Seven parts:
+ * Eight parts:
  *   A. POSITIVE — records produced by gen12_convert.c itself must come back as GB
  *      imports, and the era must be claimed ONLY where it is provable. Not a
  *      re-implementation checked against itself: the fixture drives the REAL
@@ -53,6 +53,14 @@
  *      a resolver naming a concrete Gen-3 era reaches a stub PdnaG3CrossSource with
  *      the right (game, species, form) triple; the stack-room gate and a source that
  *      fails/is absent both degrade to gen3_ladder exactly like every other rung.
+ *   I. E5 (sprite-era, docs/SPRITE-ERA-DESIGN.md sec 2/4) — the 16x16 Gen-2 menu-icon
+ *      rung, box-grid-only: pdna_origin_box_art() takes it for BOTH a GB-import and a
+ *      NATIVE record whenever the resolver names GEN2 (the icon is a property of the
+ *      CELL's resolved era, not of provenance); any other era (GEN1, or NATIVE with no
+ *      override) is untouched, falling through to the ordinary up-to-56x56 portrait
+ *      rung exactly as before this slice; and the memo's `icon` flag stops a box-cell
+ *      icon fetch from handing its 16x16 buffer/size to a caller asking for the
+ *      ordinary portrait at the exact same (gen, dex), or vice versa.
  */
 #include <stdio.h>
 #include <string.h>
@@ -132,9 +140,24 @@ static int fake_have(void* ctx, uint8_t gen) {
   (void)ctx;
   return (gen == 1) ? g_gb1_on : (gen == 2) ? g_gb2_on : 0;
 }
+
+/* E5: the 16x16 menu-icon rung. `g_gbicon_on` gates whether gb_source_on() wires it
+ * into the vtable at ALL, defaulting to off -- so every pre-E5 call site of
+ * gb_source_on() (parts A/B/C/F/H above) keeps seeing icon()==NULL, byte for byte,
+ * with zero risk of this addition changing their behaviour. */
+static uint16_t g_gbicon_pix[16 * 16];
+static int g_gbicon_on = 0;
+static int g_gbicon_calls, g_gbicon_last_gen, g_gbicon_last_dex;
+static const uint16_t* fake_icon(void* ctx, uint8_t gen, uint16_t dex, uint8_t* w, uint8_t* h) {
+  (void)ctx;
+  g_gbicon_calls++; g_gbicon_last_gen = gen; g_gbicon_last_dex = dex;
+  if (gen != 2 || !g_gb2_on) return 0;
+  *w = 16; *h = 16;
+  return g_gbicon_pix;
+}
 static void gb_source_on(void) {
   PdnaGbArtSource s; memset(&s, 0, sizeof s);
-  s.pic = fake_pic; s.have = fake_have; s.ctx = 0;
+  s.pic = fake_pic; s.have = fake_have; s.icon = g_gbicon_on ? fake_icon : 0; s.ctx = 0;
   pdna_origin_art_register(&s);
 }
 static void gb_source_off(void) { pdna_origin_art_register(0); }
@@ -1021,6 +1044,105 @@ static void part_h(void) {
   pdna_origin_art_set_place(SE_PLACE_SUMMARY);
 }
 
+/* ---- I. E5: THE GEN-2 MENU-ICON RUNG, BOX-GRID ONLY --------------------------------
+ * pdna_origin_box_art() (NOT pdna_origin_art_portrait(), which every other place --
+ * the hover panel, the summary, the party list -- keeps calling) is the one accessor
+ * that takes the 16x16 icon rung instead of the up-to-56x56 portrait rung, and only
+ * when the era resolver names GEN2. This part proves three things a stub source
+ * cannot fake by accident: (1) BOTH a GB-import record and a NATIVE one reach the
+ * SAME icon rung when the resolver says GEN2 for either -- the icon is a property of
+ * the CELL's resolved era, not of the record's own provenance; (2) any OTHER
+ * resolved era (GEN1, or NATIVE with no override) is completely unaffected -- the
+ * ordinary up-to-56x56 portrait rung runs exactly as it did before this rung existed;
+ * (3) the shared memo cannot hand a 16x16 icon to a caller asking for the ordinary
+ * portrait, or vice versa, even for the exact same (gen, dex). */
+static void part_i(void) {
+  printf("I. E5: the Gen-2 menu-icon rung (box grid only)\n");
+
+  Gb12Mon g; uint8_t rec[80]; PkMon gb_m;
+  gb1_mon(&g, 1);                                       /* an unproven Gen-1 import, Bulbasaur */
+  if (!make(&g, rec, &gb_m)) { CHECK(0, "I setup: GB fixture must decode"); return; }
+
+  uint8_t nat_rec[80]; PkMon nat_m;
+  gen3_build_mon(1, 5, 0x11112222u, 0x00010002u, "TEST", 3, nat_rec);  /* native Bulbasaur */
+  CHECK(pk_decode_mon(nat_rec, false, &nat_m), "I setup: native fixture must decode");
+  pk_resolve(&nat_m);
+
+  g_gbicon_on = 1;
+  gb_source_on();
+  g_art_on = 1; g_gb1_on = 1; g_gb2_on = 1;
+  pdna_origin_art_set_place(SE_PLACE_PC);
+
+  /* I1: resolver says GEN2 for a NATIVE mon -> the 16x16 icon rung, not the compiled
+   * 64x64 sprite and not the portrait's downscaled 56x56. */
+  s_h_next_era = SE_ERA_GEN2;
+  pdna_origin_art_set_era_resolver(h_resolver);
+  PdnaArt a; g_gbicon_calls = 0; g_gb_calls = 0;
+  CHECK(pdna_origin_box_art(0, &nat_m, &a), "I1 native+GEN2 should return art");
+  CHECK(a.px == g_gbicon_pix, "I1 native+GEN2 must be the ICON buffer");
+  CHECK_EQ(a.w, 16, "I1 icon width is 16"); CHECK_EQ(a.h, 16, "I1 icon height is 16");
+  CHECK_EQ((int)a.gen, PDNA_GEN2, "I1 out->gen reports GEN2");
+  CHECK_EQ(g_gbicon_calls, 1, "I1 exactly one icon fetch"); CHECK_EQ(g_gb_calls, 0, "I1 never the portrait rung");
+  CHECK_EQ(g_gbicon_last_gen, 2, "I1 icon() asked for gen 2");
+  CHECK_EQ(g_gbicon_last_dex, 1, "I1 icon() asked for national dex 1");
+
+  /* I1b: calling it again for the identical mon must be a memo HIT (no second fetch) --
+   * the icon rung memoises exactly like the portrait rung. */
+  PdnaArt a2; g_gbicon_calls = 0;
+  CHECK(pdna_origin_box_art(0, &nat_m, &a2), "I1b repeat should return art");
+  CHECK_EQ(g_gbicon_calls, 0, "I1b a repeat request must be a memo hit, not a new fetch");
+  CHECK(a2.px == g_gbicon_pix, "I1b memo hit still returns the icon buffer");
+
+  /* I2: resolver says GEN2 for a GB-IMPORT mon -> the SAME icon rung (provenance is
+   * irrelevant to which rung serves the picture; only the resolved era matters). */
+  g_gbicon_calls = 0; g_gb_calls = 0;
+  CHECK(pdna_origin_box_art(0, &gb_m, &a), "I2 GB-import+GEN2 should return art");
+  CHECK(a.px == g_gbicon_pix, "I2 GB-import+GEN2 must ALSO be the ICON buffer");
+  CHECK_EQ(a.w, 16, "I2 icon width is 16");
+  CHECK_EQ(g_gb_calls, 0, "I2 never the portrait rung either");
+
+  /* I3: resolver says GEN1 -- unaffected. Gen 1 has no menu icons at all, so this
+   * must fall through to the ordinary portrait rung (the GB source's 56x56 pic()),
+   * exactly as it did before E5. */
+  s_h_next_era = SE_ERA_GEN1;
+  g_gbicon_calls = 0; g_gb_calls = 0;
+  CHECK(pdna_origin_box_art(0, &gb_m, &a), "I3 GEN1 should return art");
+  CHECK(a.px == g_gbpix, "I3 GEN1 must be the ordinary 56x56 portrait buffer");
+  CHECK_EQ(a.w, 56, "I3 portrait width is 56");
+  CHECK_EQ(g_gbicon_calls, 0, "I3 the icon rung must never be touched for GEN1");
+  CHECK_EQ(g_gb_last_gen, 1, "I3 the portrait rung was asked for gen 1");
+
+  /* I4: resolver says NATIVE (no override) for the native mon -> compiled Gen-3 art,
+   * completely untouched by this whole rung. */
+  s_h_next_era = SE_ERA_NATIVE;
+  g_gbicon_calls = 0; g_gb_calls = 0; g_front_calls = 0;
+  CHECK(pdna_origin_box_art(0, &nat_m, &a), "I4 NATIVE should return art");
+  CHECK(a.px == g_front, "I4 NATIVE native mon must be the compiled Gen-3 sprite");
+  CHECK_EQ(g_gbicon_calls, 0, "I4 the icon rung must never be touched for NATIVE");
+  CHECK_EQ(g_gb_calls, 0, "I4 the GB portrait rung must never be touched either");
+
+  /* I5 (the memo-flag fix): fetch the ICON for dex 1, THEN ask for the ordinary
+   * PORTRAIT of the exact same (gen=2, dex=1) directly via pdna_origin_art_portrait
+   * -- if the memo's key did not distinguish icon vs portrait, this would return a
+   * stale 16x16 pointer/size to a caller that asked for (and expects up to) 56x56. */
+  s_h_next_era = SE_ERA_GEN2;
+  g_gbicon_calls = 0; g_gb_calls = 0;
+  CHECK(pdna_origin_box_art(0, &nat_m, &a), "I5 seed the icon memo");
+  CHECK(a.px == g_gbicon_pix && a.w == 16, "I5 seeded as the 16x16 icon");
+  PdnaArt a3;
+  CHECK(pdna_origin_art_portrait(&gb_m, 0, &a3, 0), "I5 the portrait call should return art");
+  CHECK(a3.px == g_gbpix, "I5 the portrait call must get the 56x56 buffer, NOT the stale icon one");
+  CHECK_EQ(a3.w, 56, "I5 the portrait call's width must be 56, not 16");
+  CHECK_EQ(g_gb_calls, 1, "I5 the portrait call must have actually fetched (not a false memo hit)");
+
+  /* leave global state clean for whichever part runs next */
+  g_gbicon_on = 0;
+  gb_source_on();
+  pdna_origin_art_set_era_resolver(0);
+  pdna_origin_art_set_place(SE_PLACE_SUMMARY);
+  pdna_origin_art_invalidate();
+}
+
 /* ---- F. THE PARALLEL BANK GRID ----------------------------------------------------
  * The half of Guy's request the grid actually draws: every cell in the art of its own
  * generation, all at the same time. Part C proved the ROUTER picks the right picture;
@@ -1463,6 +1585,7 @@ int main(int argc, char** argv) {
   part_c();
   part_g();              /* the Gen-3 ROM rung, against Guy's real Emerald dump */
   part_h();              /* E4: place-aware resolver + the cross-game Gen-3 rung */
+  part_i();              /* E5: the Gen-2 menu-icon rung, box grid only */
   part_f();             /* the grid the bank draws */
   part_d(argc, argv);   /* argv[1..] = saves */
   part_e();
