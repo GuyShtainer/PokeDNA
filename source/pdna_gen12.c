@@ -509,6 +509,8 @@ static int gbsrc_capacity(int box) {
   return (g_m->kind == GB12_SAVE_RBY) ? gen1_list_capacity(box) : g2_list_capacity(box);
 }
 
+Gb12SaveKind pdna_gen12_active_kind(void) { return g_m ? g_m->kind : GB12_SAVE_NONE; }
+
 BoxSource pdna_gen12_source(Gb12Mount* m) {
   BoxSource s;
   memset(&s, 0, sizeof s);

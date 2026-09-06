@@ -18,6 +18,7 @@
 #include "mon_back.h"        /* mon_back_for_form                                            */
 #include "rom_sprite.h"      /* gen3_ladder's third rung -- see pdna_origin_art_set_romsprite */
 #include "artbuf.h"          /* mon_decomp -- the shared 8 KiB decode buffer                 */
+#include "data_tables.h"     /* pk_national_no -- the era resolver hook wants NATIONAL dex   */
 
 /* ---- constants the signature is written against ---------------------------------
  * Every one of these is the value gen12_convert.c actually writes, or a decomp fact,
@@ -308,6 +309,38 @@ void pdna_origin_art_set_stack_room_hook(PdnaStackRoomFn fn) { s_stack_room_fn =
 
 int pdna_origin_art_stack_room(void) { return s_stack_room_fn ? s_stack_room_fn() : 1; }
 
+/* ---- (3b) PLACE-AWARE ROUTING (E4) ------------------------------------------------
+ * Plain .bss, no EWRAM: a screen-scoped int and a function pointer. See the header
+ * for why this module never includes sprite_era.h or calls se_resolve() itself. */
+#define PDNA_PLACE_DEFAULT 2   /* sprite_era.h's SE_PLACE_SUMMARY, mirrored as a
+                                * literal so this file need not include that header
+                                * just for one default value -- se_resolve() itself
+                                * defends the same out-of-range case the same way. */
+static int s_place = PDNA_PLACE_DEFAULT;
+static PdnaEraResolverFn s_era_resolver = 0;
+
+void pdna_origin_art_set_place(int place) { s_place = place; }
+int pdna_origin_art_get_place(void) { return s_place; }
+void pdna_origin_art_set_era_resolver(PdnaEraResolverFn fn) { s_era_resolver = fn; }
+
+/* sprite_era.h's SeEra values, mirrored as literals for the same reason as
+ * PDNA_PLACE_DEFAULT above -- the resolver hook is typed `int` on purpose so this
+ * file has nothing to keep in sync but these six numbers, which sprite_era.h's own
+ * enum ordering is _Static_assert-pinned against by sprite_era.c and every host test
+ * that includes both headers. */
+enum {
+  ERA_NATIVE = 0, ERA_GEN1, ERA_GEN2, ERA_G3_RS, ERA_G3_EM, ERA_G3_FRLG
+};
+
+/* ---- (3c) THE CROSS-GAME GEN-3 RUNG (E4) ------------------------------------------ */
+static PdnaG3CrossSource s_g3x;
+static int               s_g3x_on = 0;
+
+void pdna_origin_art_set_g3cross(const PdnaG3CrossSource* src) {
+  if (src && src->pic) { s_g3x = *src; s_g3x_on = 1; }
+  else { memset(&s_g3x, 0, sizeof s_g3x); s_g3x_on = 0; }
+}
+
 /* One picture, memoised on the WHOLE request (including `want_back`, so the
  * back-then-front fallback is remembered as one answer and a summary showing the back
  * sprite does not re-run the failed back fetch every frame). */
@@ -423,14 +456,58 @@ int pdna_origin_art_portrait(const PkMon* m, int back, PdnaArt* out, PdnaOrigin*
   out->era = o->gen;
   out->era_certain = o->gen_certain;
 
-  if (o->verdict == PDNA_ORIGIN_GB && s_gb_on && s_gb.pic &&
+  /* E4: ask the place-aware resolver hook what era THIS screen's setting wants for
+   * this record. No resolver registered (the host build's other tests, or a screen
+   * reached before pdna_main.c's boot registration runs) => ERA_NATIVE => every line
+   * below behaves EXACTLY as it did before this slice existed -- the branch is a
+   * structural no-op in that case, not a re-derivation of the old logic. */
+  int era = ERA_NATIVE;
+  if (s_era_resolver) {
+    uint16_t nat_dex = pk_national_no(m->species);
+    era = s_era_resolver(s_place, o->gen, o->gen_certain, nat_dex, 0);
+  }
+
+  if (era == ERA_GEN1 || era == ERA_GEN2) {
+    /* The resolver already ran se_resolve()'s own gates (species-exists, ROM
+     * registered, the PC-grid Gen-1-icon refusal) -- the only thing left for THIS
+     * module to check is the stack-room gate, which is a live hardware fact
+     * se_resolve() has no way to know about (sprite_era.c is pure and stack-agnostic
+     * by design). Same have()/stack-room pair the NATIVE branch below always used. */
+    uint8_t want_gen = (era == ERA_GEN2) ? (uint8_t)PDNA_GEN2 : (uint8_t)PDNA_GEN1;
+    if (s_gb_on && s_gb.pic && m->species >= 1 && m->species <= GEN2_MAX_DEX &&
+        pdna_origin_art_have(want_gen) && pdna_origin_art_stack_room()) {
+      uint8_t form = 0;
+      if (m->species == UNOWN_DEX && m->form < UNOWN_LETTERS) form = m->form;
+      uint8_t w = 0, h = 0;
+      const uint16_t* px = fetch_pic(want_gen, m->species, form,
+                                     back ? 1u : 0u, m->isShiny ? 1u : 0u, &w, &h);
+      if (px && w && h) { out->px = px; out->w = w; out->h = h; out->gen = want_gen; return 1; }
+    }
+    /* Refused or could not serve it -- fall through to gen3_ladder below, same as
+     * every other rung's failure. */
+  } else if (era == ERA_G3_RS || era == ERA_G3_EM || era == ERA_G3_FRLG) {
+    if (s_g3x_on && s_g3x.pic && pdna_origin_art_stack_room()) {
+      int game = (era == ERA_G3_RS) ? 0 : (era == ERA_G3_EM) ? 1 : 2;  /* PkGame */
+      uint8_t w = 0, h = 0;
+      const uint16_t* px = s_g3x.pic(s_g3x.ctx, game, m->species, m->form,
+                                     back ? 1u : 0u, m->isShiny ? 1u : 0u, &w, &h);
+      if (px && w && h) {
+        out->px = px; out->w = w; out->h = h; out->gen = PDNA_GEN3;
+        out->game = (uint8_t)(game + 1);
+        return 1;
+      }
+    }
+    /* No cross-game source, or it could not serve this species/form/game -- fall
+     * through to gen3_ladder, exactly like every other rung's failure. */
+  } else if (o->verdict == PDNA_ORIGIN_GB && s_gb_on && s_gb.pic &&
       m->species >= 1 && m->species <= GEN2_MAX_DEX &&
       pdna_origin_art_have(o->gen) && pdna_origin_art_stack_room()) {
-    /* Internal id == national dex for 1..251 (gen12_convert.c:304-307), so no map.
-     * The Unown LETTER is a real part of the picture and the converter went out of its
-     * way to preserve it (solve_pid's want_letter), so it has to reach the source:
-     * dropping it here would draw a Gen-2 Unown A for every letter. Gen-3-only forms
-     * (! and ?, 26/27) have no Gen-2 picture, so they fall back to A. */
+    /* era == ERA_NATIVE: the pre-E4 behaviour, byte for byte. Internal id ==
+     * national dex for 1..251 (gen12_convert.c:304-307), so no map. The Unown LETTER
+     * is a real part of the picture and the converter went out of its way to
+     * preserve it (solve_pid's want_letter), so it has to reach the source: dropping
+     * it here would draw a Gen-2 Unown A for every letter. Gen-3-only forms (! and ?,
+     * 26/27) have no Gen-2 picture, so they fall back to A. */
     uint8_t form = 0;
     if (m->species == UNOWN_DEX && m->form < UNOWN_LETTERS) form = m->form;
     uint8_t w = 0, h = 0;

@@ -25,6 +25,7 @@
 #include "item_icons.h"     /* item_icon_for: held-item markers in ITEM mode */
 #include "box_oam.h"        /* hardware-OAM icon/cursor/carry/marker rendering */
 #include "pdna_origin_art.h" /* THE BANK IN PARALLEL: each cell in the art of its own era */
+#include "sprite_era.h"      /* SePlace -- pdna_origin_art_set_place() on entry (E4) */
 #include "pdna_summary.h"
 #include "perf.h"        /* screen-enter spans + the box-load/bob rollups (telemetry) */
 #include "pdna_app.h"
@@ -2811,6 +2812,14 @@ static void pcp_open_party_strip(BoxSource* src, int box, int* cur, bool* need_f
 }
 
 int pdna_box(BoxSource* src) {
+  /* E4 (sprite-era): tell the art router which PLACE is on screen, once per visit --
+   * this same function draws the in-save PC, the SD-backed Bank, AND a Game Boy
+   * save's own box grid, distinguished by the two fields every BoxSource already
+   * carries: `capacity` is non-NULL ONLY for a Game Boy source (its own doc comment,
+   * pdna_box.h -- the PC/Bank sources leave it NULL), and `is_bank` tells the PC
+   * apart from the Bank for everything else. */
+  pdna_origin_art_set_place(src->capacity ? SE_PLACE_GBGRID
+                            : src->is_bank ? SE_PLACE_BANK : SE_PLACE_PC);
   int nb = src->nboxes; if (nb < 1) nb = 1;
   int box = src->start_box; if (box < 0 || box >= nb) box = 0;
   int cur = 0;

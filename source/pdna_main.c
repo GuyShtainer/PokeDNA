@@ -1735,6 +1735,59 @@ bool app_gb_rom_registered(uint8_t gen) { return gb_art_have(gen); }
 const char* app_current_save_path(void) { return g_path; }
 bool app_current_save_is_gb(void) { return pdna_gen12_size_is_gb(g_save_size); }
 
+/* ---- E4: sprite-era plumbing (pdna_app.h) ---------------------------------------- */
+SeRoms app_era_roms(void) {
+  SeRoms r;
+  memset(&r, 0, sizeof r);
+  r.have[SE_ERA_G3_RS]   = app_rom_path(PK_RS)[0]      != 0;
+  r.have[SE_ERA_G3_EM]   = app_rom_path(PK_EMERALD)[0] != 0;
+  r.have[SE_ERA_G3_FRLG] = app_rom_path(PK_FRLG)[0]    != 0;
+  r.have[SE_ERA_GEN1]    = app_gb_rom_registered(PDNA_GEN1);
+  r.have[SE_ERA_GEN2]    = app_gb_rom_registered(PDNA_GEN2);
+  return r;
+}
+
+SeSaveKind app_save_kind(void) {
+  Gb12SaveKind gk = pdna_gen12_active_kind();
+  if (gk == GB12_SAVE_RBY) return SE_KIND_GEN1;
+  if (gk != GB12_SAVE_NONE) return SE_KIND_GEN2;   /* GS or CRYSTAL */
+  return g_save_kind;                              /* Gen-3 session (or none yet) */
+}
+
+static void g3cross_boot_register(void); /* forward: defined below with the rest of the
+                                          * cross-game rung, near s_iconrom/s_romsprite */
+
+/* pdna_origin_art.h's PdnaEraResolverFn: the thin wrapper se_resolve() lives behind so
+ * pdna_origin_art.c never has to include sprite_era.h or know about g_era/config.cfg
+ * at all (see that header's own comment on the resolver hook). `place` arrives as the
+ * plain int pdna_origin_art_set_place() was last called with; se_resolve() itself
+ * defends any out-of-range value the same way it always has. */
+static int era_resolver_cb(int place, uint8_t origin_gen, uint8_t origin_certain,
+                           uint16_t national_dex, int* reason) {
+  SeRoms roms = app_era_roms();
+  /* Whether the build has COMPILED Gen-3 art at all -- informational only (it
+   * decides SE_WHY_COMPILED vs SE_WHY_CHIP in `reason`, never which pixels the
+   * router actually tries: gen3_ladder tries the compiled accessors and the ROM
+   * rung regardless of this flag, exactly as it did before this slice existed). */
+#if PDNA_ARTLESS
+  bool compiled_gen3 = false;
+#else
+  bool compiled_gen3 = true;
+#endif
+  return (int)se_resolve(&g_era, app_save_kind(), (SePlace)place, origin_gen,
+                         origin_certain, national_dex, &roms, compiled_gen3, reason);
+}
+
+/* Registered once from main()'s startup (alongside gb_art_boot_register(), just
+ * below this call site) -- unconditional, unlike g3cross_boot_register(): the
+ * resolver itself touches no SD card (app_era_roms()/app_save_kind() are pure reads
+ * of resident state), so it is exactly as safe under PDNA_DELTA as everywhere else --
+ * it simply never has a registered ROM to name there. */
+static void pdna_era_boot_register(void) {
+  pdna_origin_art_set_era_resolver(era_resolver_cb);
+  g3cross_boot_register();
+}
+
 /* Draw the invented yard visitors? Only when the user asked for them AND owns a ROM.
  * Both halves matter: the setting is the user's choice, the ROM is what makes the
  * choice meaningful. See g_yard_visitors for why they are no longer on by default. */
@@ -2044,6 +2097,100 @@ static bool iconrom_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len)
   rmbl_resume();
   return ok;
 }
+
+/* ---- E4: the cross-game Gen-3 art rung (pdna_origin_art.h's PdnaG3CrossSource) ----
+ * Registered once at boot (g3cross_boot_register, below main()'s startup). Lives here
+ * (not a separate module) because it needs three things only this file already owns:
+ * FatFs, app_rom_path(), and s_iconrom_ctx/s_romsprite -- the currently-open icon ROM
+ * every OTHER rung already reads. */
+
+static bool g3x_kind_matches(RomKind k, PkGame game) {
+  switch (game) {
+    case PK_RS:      return k == ROM_RUBY || k == ROM_SAPPHIRE;
+    case PK_EMERALD: return k == ROM_EMERALD;
+    case PK_FRLG:    return k == ROM_FIRERED || k == ROM_LEAFGREEN;
+    default:         return false;
+  }
+}
+
+/* A local FIL, not the session-wide s_iconrom_fil -- this ROM is not the one the rest
+ * of the session reads from, and closing it the moment this one fetch is done (below)
+ * must not touch the icon ROM's own handle. */
+static bool g3x_fatfs_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
+  FIL* f = (FIL*)ctx;
+  bool ok = true;
+  UINT br = 0;
+  rmbl_pause();
+  if (off != f->fptr && f_lseek(f, off) != FR_OK) ok = false;
+  if (ok && (f_read(f, dst, (UINT)len, &br) != FR_OK || br != len)) ok = false;
+  rmbl_resume();
+  return ok;
+}
+
+/* Decode straight into mon_decomp, exactly like pdna_origin_art.c's own rom_portrait()
+ * (no memo -- see that function's comment for why one is unsafe here: mon_decomp is
+ * shared with item icons/type badges between two fetches of the very same mon). */
+static const uint16_t* g3x_decode(const RomSprite* rs, uint16_t species, uint8_t form,
+                                  uint8_t back, uint8_t shiny, uint8_t* out_w, uint8_t* out_h) {
+  RomSpritePic pic;
+  RomSpriteSide side = back ? ROM_SPRITE_BACK : ROM_SPRITE_FRONT;
+  artbuf_claim();     /* about to overwrite mon_decomp -- claim BEFORE the first write */
+  if (!rom_sprite_pic(rs, side, species, form, (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &pic))
+    return 0;
+  uint16_t pal[16];
+  if (!rom_sprite_pal(rs, species, form, shiny ? 1 : 0, pal)) return 0;
+  if (!rom_sprite_to_rgb15(mon_decomp, MON_DECOMP_BYTES, pic.frame, pal)) return 0;
+  *out_w = ROM_SPRITE_W; *out_h = ROM_SPRITE_H;
+  return mon_decomp;
+}
+
+/* The slow path: `game` is NOT the currently open icon ROM, so open app_rom_path(game)
+ * in a TEMPORARY RomCtx, decode, close. ONE noinline frame (FIL ~600 B + RomCtx +
+ * RomSprite, measured with -fstack-usage -- see docs/HW-TEST-2026-09-05-GB-ARC.md §K
+ * and the E4 handoff note) so the call-graph tool charges this exact subtree against
+ * the SAME stack-room gate the Game Boy rung uses (pdna_origin_art_stack_room()),
+ * rather than folding it into whatever frame happened to call it. */
+static const uint16_t* __attribute__((noinline))
+g3x_fetch_other(PkGame game, uint16_t species, uint8_t form, uint8_t back, uint8_t shiny,
+                uint8_t* out_w, uint8_t* out_h) {
+  const char* path = app_rom_path(game);
+  if (!path || !path[0]) return 0;
+
+  FIL fil;
+  memset(&fil, 0, sizeof fil);
+  if (f_open(&fil, path, FA_READ) != FR_OK) return 0;
+  FSIZE_t fsz = f_size(&fil);
+  uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+
+  RomCtx rc;
+  RomSprite rs;
+  const uint16_t* px = 0;
+  if (rom_open(&rc, g3x_fatfs_read, &fil, sz) && rom_sprite_open(&rs, &rc))
+    px = g3x_decode(&rs, species, form, back, shiny, out_w, out_h);
+  f_close(&fil);
+  return px;
+}
+
+static const uint16_t* g3cross_pic_cb(void* ctx, int game, uint16_t species, uint8_t form,
+                                      uint8_t back, uint8_t shiny, uint8_t* out_w, uint8_t* out_h) {
+  (void)ctx;
+  PkGame wanted = (PkGame)game;
+  /* Fast path: the currently open icon ROM already IS this game -- reuse the SAME
+   * open RomSprite every other rung reads, no new file at all. */
+  if (s_iconrom.ok && g3x_kind_matches(s_iconrom_ctx.kind, wanted))
+    return g3x_decode(&s_romsprite, species, form, back, shiny, out_w, out_h);
+  return g3x_fetch_other(wanted, species, form, back, shiny, out_w, out_h);
+}
+
+/* Called once from main()'s startup, after cfg_load() -- see gb_art_boot_register()
+ * just below this call for the sibling registration. A no-op under PDNA_DELTA (no SD
+ * card to open a second ROM from; the #else stand-in just below never runs). */
+static void g3cross_boot_register(void) {
+  static const PdnaG3CrossSource src = { g3cross_pic_cb, 0 };
+  pdna_origin_art_set_g3cross(&src);
+}
+#else  /* PDNA_DELTA: no SD, so no second ROM to ever open. */
+static void g3cross_boot_register(void) { }
 #endif
 
 /* WHICH RUNG IS ACTUALLY SERVING THIS SESSION -- the single most useful line in an
@@ -3462,8 +3609,8 @@ static void party_ov_cancel_paint(bool bsel) {
                      PDNA_PTY_CANCEL_W_BUDGET, UI_TEXT, UI_PTY_TEXT_SHADOW, PDNA_LBL_CANCEL);
 }
 
-int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
-                      bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
+static int app_party_overlay_inner(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
+                                   bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
   if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); return 0; }
   /* Same two-axis gate as app_mon_menu, and here it is a DATA-LOSS guard: a party mon
    * carried out through this overlay is removed from the party for real once it is
@@ -3594,6 +3741,23 @@ int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool ori
       } else snd_deny();                             /* empty cell */
     }
   }
+}
+
+/* E4 (sprite-era): the party list is always SE_PLACE_PARTY while this overlay is up.
+ * Same save/restore shape as pdna_summary.c's summary_run() wrapper and for the same
+ * reason: this overlay is opened FROM INSIDE pdna_box.c's own loop (the box screen's
+ * PARTY-tab call sites), which already set PC/BANK/GBGRID once on its own entry and
+ * expects that to still be true once this overlay closes -- and app_party_mon_menu
+ * above can itself open the summary (pdna_inspect), which already restores whatever
+ * place was active when IT was entered, composing correctly with this wrapper. */
+int app_party_overlay(const uint8_t* held, int orig_box, int orig_slot, bool orig_bank,
+                      bool can_swap, uint8_t grab80[80], int* grab_slot, bool allow_move_to_box) {
+  int prev_place = pdna_origin_art_get_place();
+  pdna_origin_art_set_place(SE_PLACE_PARTY);
+  int r = app_party_overlay_inner(held, orig_box, orig_slot, orig_bank, can_swap,
+                                  grab80, grab_slot, allow_move_to_box);
+  pdna_origin_art_set_place(prev_place);
+  return r;
 }
 
 /* CREATE a Pokémon from nothing into the empty slot `rec`: pick a species, build a
@@ -8798,6 +8962,7 @@ int main(void) {
   strcpy(g_cwd, "/");
   cfg_load();                                /* restore last folder + sort/filter (#6) */
   gb_art_boot_register();                    /* light up any registered GB ROMs (romgb1/romgb2) */
+  pdna_era_boot_register();                  /* E4: the era resolver + cross-game Gen-3 rung */
   /* ONE throughput sample per run, at two sizes, on the user's own card -- see
    * perf_sd_sample(). It runs HERE because it needs two things that only exist at this
    * point: a mounted card, and cfg_load()'s restored ROM paths to pick a big enough

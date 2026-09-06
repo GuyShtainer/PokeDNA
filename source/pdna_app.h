@@ -434,6 +434,31 @@ bool        app_gb_rom_registered(uint8_t gen);
 const char* app_current_save_path(void);
 bool        app_current_save_is_gb(void);
 
+/* ---- sprite-era resolver plumbing (E4, docs/SPRITE-ERA-DESIGN.md) -----------------
+ * pdna_main.c owns the SeSetting (g_era) and registers a PdnaEraResolverFn
+ * (pdna_origin_art.h) that wraps se_resolve() with these two lookups plus the
+ * setting itself -- these are exported mainly so the resolver callback and the
+ * Settings "Sprites" grid can build a SeRoms/read the current kind without a second
+ * copy of the plumbing. */
+
+/* Which era ROMs are openable right now, one flag per SeEra (sprite_era.h). The
+ * three Gen-3 slots mirror app_rom_path() (a non-empty path is "registered", exactly
+ * what the icon/map/description rungs already treat as available); the two Game Boy
+ * slots proxy app_gb_rom_registered(), which — see that function's own comment —
+ * already exists FOR this. SE_ERA_NATIVE's slot is left false (se_resolve never
+ * reads it; se_era_available()/se_cell_applies() special-case NATIVE as always
+ * "available" without consulting SeRoms at all). */
+SeRoms app_era_roms(void);
+
+/* The save kind se_resolve() should use RIGHT NOW: se_kind_from_game(g_game) while a
+ * Gen-3 save is open, or SE_KIND_GEN1/SE_KIND_GEN2 while a Game Boy session's box
+ * screen is on screen (pdna_gen12_active_kind(), pdna_gen12.h) -- both are "set by
+ * view_save()" in the sense that view_save() is the one call that ever puts either
+ * kind of save on screen; which of the two branches answers is simply whichever kind
+ * of session is currently live. Defaults to whatever g_game's own compiled default
+ * is (PK_EMERALD) before the first save is ever opened, same as g_game itself. */
+SeSaveKind app_save_kind(void);
+
 /* ---- items + type badges: the compiled accessor first, the registered ROM second
  * (Phase 1, docs/analysis-2026-08-19-rom-art/DESIGN.md Sec 4.7) --------------------
  * Same shape as item_icon_for()/type_icon_for() (item_icons.h/type_icons.h) --

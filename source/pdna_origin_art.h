@@ -277,6 +277,74 @@ void pdna_origin_art_set_stack_room_hook(PdnaStackRoomFn fn);
  * NULL (or an `rs` that failed rom_sprite_open) clears the rung. */
 void pdna_origin_art_set_romsprite(const RomSprite* rs);
 
+/* ---- (3b) PLACE-AWARE ROUTING (E4, docs/SPRITE-ERA-DESIGN.md) ---------------------
+ *
+ * Slices E1/E2 built sprite_era.c's pure resolver (SeSetting/SeRoms/se_resolve); this
+ * is where the ROUTER asks it. pdna_origin_art.c deliberately does NOT include
+ * sprite_era.h or call se_resolve() itself -- the router only knows "ask the
+ * registered resolver hook for an era", the same dependency-inversion shape
+ * pdna_origin_art_register()/pdna_origin_art_set_romsprite() already use for pixels.
+ * That keeps this module testable with a bare-function stub (no SeSetting/config
+ * plumbing needed to exercise the router) and keeps the POLICY (which cell the user
+ * picked, which ROMs are registered) entirely in pdna_main.c, which owns config.cfg.
+ *
+ * WHERE `place` comes from: a screen sets it ONCE on entry (pdna_box.c for the PC
+ * grid / the bank / a GB save's own grid; pdna_main.c's app_party_overlay for the
+ * party list; pdna_summary.c's pdna_inspect for the big portrait) — not once per mon,
+ * since it does not change while that screen is open. Values are sprite_era.h's
+ * SePlace, carried as a plain int so this header need not include it. Defaults to
+ * SE_PLACE_SUMMARY(2)'s numeric value until the first screen sets it, matching
+ * se_resolve()'s own defensive default for an out-of-range place. */
+void pdna_origin_art_set_place(int place);
+/* Read back the current place -- for a screen that opens ANOTHER screen (the box/
+ * party screens opening a mon's summary mid-visit) to save its own place, let the
+ * nested screen set its own, and restore the outer one on return rather than leaving
+ * PLACE stuck at whatever the nested screen last set it to. */
+int pdna_origin_art_get_place(void);
+
+/* The resolver hook: given the CURRENT place, this record's origin (gen 1/2/3 and
+ * whether that is proven), and its NATIONAL dex number, return an SeEra as a plain
+ * int (sprite_era.h's SE_ERA_*, 0 = NATIVE) and, if `reason` is non-NULL, why
+ * (SE_WHY_*). pdna_main.c's registered implementation is a thin wrapper around
+ * se_resolve(&g_era, app_save_kind(), (SePlace)place, origin_gen, origin_certain,
+ * national_dex, &app_era_roms(), compiled_gen3, reason) -- this module never sees
+ * any of those inputs directly. NULL (never registered -- the host build's other
+ * tests, and any screen reached before pdna_main.c's boot registration runs) means
+ * "always NATIVE", i.e. today's exact behaviour: the router's NATIVE branch is
+ * character-for-character what pdna_origin_art_portrait() did before this slice. */
+typedef int (*PdnaEraResolverFn)(int place, uint8_t origin_gen, uint8_t origin_certain,
+                                 uint16_t national_dex, int* reason);
+void pdna_origin_art_set_era_resolver(PdnaEraResolverFn fn);
+
+/* ---- (3c) THE CROSS-GAME GEN-3 RUNG (E4) -------------------------------------------
+ *
+ * When the resolver names a CONCRETE Gen-3 era (SE_ERA_G3_RS/G3_EM/G3_FRLG) that is
+ * NOT the mon's own native game, the picture has to come from a DIFFERENT retail ROM
+ * than whichever one is already open for icons/descriptions/portraits. Opening a
+ * second ROM needs FatFs (a FIL, f_open/f_read), which this module may never touch
+ * (hard convention 5: pure-C cores stay free of tonc/FatFs/GBA headers) — so, exactly
+ * like the Game Boy rung's PdnaGbArtSource, this is a REGISTERED vtable and the real
+ * file I/O lives in pdna_main.c (or a sibling module it wires up), never here.
+ *
+ * `game` is a raw int (PkGame's PK_RS/PK_EMERALD/PK_FRLG == 0/1/2, gen3_trainer.h) so
+ * this header stays decoupled from gen3_trainer.h the same way se_kind_from_game()
+ * keeps sprite_era.h decoupled from it. The callee decides for itself whether `game`
+ * is the CURRENTLY open icon ROM (reuse that RomSprite directly, no new file) or a
+ * different one (open app_rom_path(game) in a temporary RomCtx, decode, close) --
+ * this module has no opinion either way, only the result. Returns NULL on any
+ * failure (no ROM registered for `game`, a species/form that ROM cannot show, a
+ * stack-room refusal, a read that failed verification) and the router falls through
+ * to gen3_ladder exactly like every other rung's NULL. */
+typedef struct PdnaG3CrossSource {
+  const uint16_t* (*pic)(void* ctx, int game, uint16_t species, uint8_t form,
+                         uint8_t back, uint8_t shiny, uint8_t* out_w, uint8_t* out_h);
+  void* ctx;
+} PdnaG3CrossSource;
+
+/* Register (or, with NULL, clear) the cross-game source. Copied, like the other two
+ * vtables above. */
+void pdna_origin_art_set_g3cross(const PdnaG3CrossSource* src);
+
 /* What a screen got back. `px == NULL` means "no art at all" and the caller paints
  * the artless build's name chip, exactly as it does today. */
 typedef struct {
@@ -286,6 +354,12 @@ typedef struct {
   uint8_t era;          /* the era the mon SHOULD wear -- always == origin.gen      */
   uint8_t era_certain;  /* 0 = `era` is a best guess; present it neutrally          */
   uint8_t egg;          /* 1 = this is the Egg picture; chip fallback is the Egg    */
+  /* E4 (sprite-era, docs/SPRITE-ERA-DESIGN.md): which Gen-3 GAME the pixels came
+   * from, when gen == PDNA_GEN3 and a cross-game rung served them. 0 = compiled
+   * art or the currently-open icon ROM (today's behaviour, unlabelled); 1/2/3 =
+   * PkGame's PK_RS/PK_EMERALD/PK_FRLG + 1 (gen3_trainer.h) -- kept a raw int here,
+   * not a PkGame, so this header stays free of gen3_trainer.h. */
+  uint8_t game;
 } PdnaArt;
 
 /*

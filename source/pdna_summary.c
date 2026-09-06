@@ -25,6 +25,7 @@
 #include "mon_back.h"
 #include "mon_icons.h"
 #include "pdna_origin_art.h"   /* draw the mon in the art of the generation it came FROM */
+#include "sprite_era.h"        /* SE_PLACE_SUMMARY -- pdna_origin_art_set_place() (E4) */
 #include "mon_anim.h"     /* per-species Emerald front-animation family */
 #include "type_icons.h"
 #include "snd.h"
@@ -1045,8 +1046,8 @@ static void portrait_redraw(const PkMon* p, const uint16_t* spr, bool icon, int 
  *                    B returns to VIEW (edits stay pending). The EDIT banner shows.
  * Returns 0 to exit, +1 for "next mon", -1 for "prev mon" (the caller loads it and
  * calls again). *saved is set true (and out_rec filled) if the user kept the edits. */
-static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
-                       bool* saved, int* card_io, bool create) {
+static int summary_run_inner(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
+                             bool* saved, int* card_io, bool create) {
   if (saved) *saved = false;
   EditMon e;
   gen3_edit_load(rec, is_party, &e);
@@ -1281,6 +1282,23 @@ static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_
       }
     }
   }
+}
+
+/* E4 (sprite-era): the big portrait is always SE_PLACE_SUMMARY while this screen is
+ * up -- but summary_run is routinely called FROM INSIDE another screen's own loop
+ * (the box/party screens open a mon's summary and then resume drawing their OWN
+ * grid/list before the next full repaint, all inside the SAME BoxSource visit that
+ * already set PC/BANK/GBGRID/PARTY once on entry), so this wrapper saves and restores
+ * the caller's place around the visit rather than leaving PLACE stuck at SUMMARY for
+ * whatever draws next. summary_run_inner keeps its original body untouched, multiple
+ * return points and all. */
+static int summary_run(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
+                       bool* saved, int* card_io, bool create) {
+  int prev_place = pdna_origin_art_get_place();
+  pdna_origin_art_set_place(SE_PLACE_SUMMARY);
+  int r = summary_run_inner(rec, is_party, can_edit, out_rec, saved, card_io, create);
+  pdna_origin_art_set_place(prev_place);
+  return r;
 }
 
 /* ---- public entry points -------------------------------------------------

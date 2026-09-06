@@ -155,6 +155,15 @@ bool pdna_gen12_mount(Gb12Mount* m, Gb12ReadFn rd, void* ctx, uint32_t len,
 
 const char* pdna_gen12_kind_name(Gb12SaveKind k);
 
+/* Which GB save is CURRENTLY mounted, for the sprite-era resolver's app_save_kind()
+ * (pdna_main.c, E4) -- GB12_SAVE_NONE outside a GB session. Backed by the same
+ * module-static pdna_gen12_source() already sets/clears (g_m), which is valid for
+ * exactly the span a GB box screen is on screen: set the moment the session's
+ * BoxSource is built, cleared by gb_session_core() right after pdna_box() returns
+ * and before the arena that held it is released -- so this is always either NULL
+ * (no GB session open) or a live, in-scope pointer, never dangling. */
+Gb12SaveKind pdna_gen12_active_kind(void);
+
 /* Total boxes the source exposes: storage boxes + the party pseudo-box. */
 int  pdna_gen12_nboxes(const Gb12Mount* m);
 

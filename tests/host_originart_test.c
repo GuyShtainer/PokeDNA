@@ -3,7 +3,7 @@
  *   cc -std=c11 -I tests/hostff -I source tests/host_originart_test.c source/pdna_origin_art.c \
  *      source/gen12_convert.c source/gen3_mon.c source/gen3_edit.c source/gen3_daycare.c source/gen3_save.c \
  *      source/gen3_box.c source/gen1_save.c source/gen2_save.c source/data_tables.c \
- *      source/rom_sprite.c source/map_render.c source/rom_map.c source/artbuf.c -o /tmp/hoa
+ *      source/rom_sprite.c source/map_render.c source/rom_map.c source/artbuf.c source/sprite_era.c -o /tmp/hoa
  *   /tmp/hoa /path/to/Emerald.sav /path/to/Ruby.sav ...
  *
  * Every argument is a real Gen-3 save; with none, part D is skipped. (tests/
@@ -44,6 +44,15 @@
  *      art still wins when both are present (the ROM must not even be touched), an
  *      out-of-range form degrades to no-art instead of a crash, and clearing the
  *      registration restores today's plain-NULL behaviour.
+ *   H. E4 (sprite-era, docs/SPRITE-ERA-DESIGN.md) — the place-aware resolver hook
+ *      (pdna_origin_art_set_place/set_era_resolver) and the cross-game Gen-3 rung
+ *      (pdna_origin_art_set_g3cross): a stub resolver's call count/args prove `place`
+ *      and the origin fields actually reach it; NATIVE (the default with no resolver
+ *      registered at all) is asserted PIXEL-IDENTICAL to the pre-E4 code path; a
+ *      resolver forcing GEN1/GEN2 overrides the mon's own (possibly unproven) origin;
+ *      a resolver naming a concrete Gen-3 era reaches a stub PdnaG3CrossSource with
+ *      the right (game, species, form) triple; the stack-room gate and a source that
+ *      fails/is absent both degrade to gen3_ladder exactly like every other rung.
  */
 #include <stdio.h>
 #include <string.h>
@@ -51,6 +60,8 @@
 #include <stdlib.h>
 
 #include "pdna_origin_art.h"
+#include "sprite_era.h"   /* SeEra/SePlace real values -- Part H */
+#include "gen3_trainer.h" /* PkGame -- Part H checks the cross-game rung's game arg  */
 #include "rom_map.h"      /* RomCtx, rom_open -- Part G */
 #include "rom_sprite.h"   /* RomSprite -- Part G, pdna_origin_art.h re-exports it too */
 #include "gen12_convert.h"
@@ -863,6 +874,131 @@ static void part_g(void) {
   fclose(f);
 }
 
+/* ---- H. E4: PLACE-AWARE RESOLVER + THE CROSS-GAME GEN-3 RUNG ----------------------
+ * See the file header for the summary. Both hooks are bare function pointers (no
+ * sprite_era.h dependency inside pdna_origin_art.c itself -- see that file's own
+ * comment), so this part can drive every branch with stubs that owe nothing to
+ * config.cfg or a real SeSetting. */
+static int  s_h_calls, s_h_last_place, s_h_last_gen, s_h_last_certain;
+static uint16_t s_h_last_dex;
+static int  s_h_next_era;
+
+static int h_resolver(int place, uint8_t gen, uint8_t certain, uint16_t dex, int* reason) {
+  s_h_calls++;
+  s_h_last_place = place; s_h_last_gen = gen; s_h_last_certain = certain; s_h_last_dex = dex;
+  if (reason) *reason = SE_WHY_WANTED;
+  return s_h_next_era;
+}
+
+static int      s_h3_calls, s_h3_last_game, s_h3_last_back, s_h3_last_shiny, s_h3_fail;
+static uint16_t s_h3_last_species;
+static uint8_t  s_h3_last_form;
+static uint16_t s_h3_px[64 * 64];
+
+static const uint16_t* h3_pic(void* ctx, int game, uint16_t species, uint8_t form,
+                              uint8_t back, uint8_t shiny, uint8_t* out_w, uint8_t* out_h) {
+  (void)ctx;
+  s_h3_calls++;
+  s_h3_last_game = game; s_h3_last_species = species; s_h3_last_form = form;
+  s_h3_last_back = back; s_h3_last_shiny = shiny;
+  if (s_h3_fail) return 0;
+  *out_w = 64; *out_h = 64;
+  for (int i = 0; i < 64 * 64; i++) s_h3_px[i] = 0x8000u | 0x1111u;
+  return s_h3_px;
+}
+
+static void part_h(void) {
+  printf("H. E4: place-aware resolver + the cross-game Gen-3 rung\n");
+  Gb12Mon g; uint8_t rec[80]; PkMon m;
+  gb1_mon(&g, 1);          /* an unproven Gen-1 import (Bulbasaur) -- same fixture C uses */
+  if (!make(&g, rec, &m)) { CHECK(0, "H setup: fixture must decode"); return; }
+
+  gb_source_on(); g_art_on = 1; g_gb1_on = 1; g_gb2_on = 1;
+
+  /* H1: with NO resolver registered at all (this file's default state up to now),
+   * capture today's exact answer. Then register a resolver that always answers
+   * NATIVE and prove the two runs are pixel-identical -- NATIVE must mean "run the
+   * pre-E4 pipeline", never "draw literal NATIVE pixels" (there is no such thing). */
+  pdna_origin_art_set_era_resolver(0);
+  PdnaArt a_none; g_gb_calls = 0;
+  CHECK(pdna_origin_art_portrait(&m, 0, &a_none, 0), "H1 baseline (no resolver) should return art");
+
+  s_h_next_era = SE_ERA_NATIVE;
+  pdna_origin_art_set_era_resolver(h_resolver);
+  s_h_calls = 0;
+  PdnaArt a_res; g_gb_calls = 0;
+  CHECK(pdna_origin_art_portrait(&m, 0, &a_res, 0), "H1 NATIVE-resolver should return art");
+  CHECK_EQ(s_h_calls, 1, "H1 the resolver must be consulted exactly once per call");
+  CHECK(a_none.px == a_res.px, "H1 NATIVE must be pixel-identical to no-resolver-at-all");
+  CHECK_EQ(a_res.gen, a_none.gen, "H1 gen must match");
+  CHECK_EQ(a_res.w, a_none.w, "H1 w must match");
+  CHECK_EQ(a_res.h, a_none.h, "H1 h must match");
+  CHECK_EQ(a_res.era, a_none.era, "H1 era must match");
+  CHECK_EQ(a_res.era_certain, a_none.era_certain, "H1 era_certain must match");
+
+  /* H2: `place` reaches the resolver exactly as pdna_origin_art_set_place() left it,
+   * and the origin fields (gen/certain/dex) are this mon's real detection, not the
+   * resolver's own business to derive. National dex for internal id 1 is 1. */
+  pdna_origin_art_set_place(SE_PLACE_BANK);
+  pdna_origin_art_portrait(&m, 0, &a_res, 0);
+  CHECK_EQ(s_h_last_place, SE_PLACE_BANK, "H2 place must reach the resolver unchanged");
+  CHECK_EQ(s_h_last_gen, 1, "H2 origin gen (unproven Gen 1)");
+  CHECK_EQ(s_h_last_certain, 0, "H2 origin certain (unproven)");
+  CHECK_EQ((int)s_h_last_dex, 1, "H2 national dex");
+  pdna_origin_art_set_place(SE_PLACE_SUMMARY);
+
+  /* H3: the resolver can OVERRIDE the mon's own (unproven Gen-1) origin -- forcing
+   * GEN2 must ask the GB source for gen 2, not this mon's own gen 1. */
+  s_h_next_era = SE_ERA_GEN2;
+  g_gb_calls = 0;
+  CHECK(pdna_origin_art_portrait(&m, 0, &a_res, 0), "H3 should return art");
+  CHECK_EQ(g_gb_calls, 1, "H3 exactly one GB fetch");
+  CHECK_EQ(g_gb_last_gen, 2, "H3 the GB rung must be asked for the RESOLVER'S era, gen 2");
+  CHECK_EQ((int)a_res.gen, 2, "H3 pixels report gen 2");
+
+  /* H4: the resolver names a concrete Gen-3 era -> the NEW cross-game rung, with the
+   * right (game, species, form) triple reaching the stub source. */
+  PdnaG3CrossSource src = { h3_pic, 0 };
+  pdna_origin_art_set_g3cross(&src);
+  s_h_next_era = SE_ERA_G3_FRLG;
+  s_h3_calls = 0; s_h3_fail = 0;
+  CHECK(pdna_origin_art_portrait(&m, 0, &a_res, 0), "H4 should return art");
+  CHECK_EQ(s_h3_calls, 1, "H4 the cross-game source must be asked exactly once");
+  CHECK_EQ(s_h3_last_game, (int)PK_FRLG, "H4 game arg names FRLG");
+  CHECK_EQ((int)s_h3_last_species, (int)m.species, "H4 species arg is this mon's own");
+  CHECK_EQ(a_res.gen, PDNA_GEN3, "H4 pixels report Gen 3");
+  CHECK_EQ((int)a_res.game, (int)PK_FRLG + 1, "H4 out->game is PkGame+1");
+  CHECK(a_res.px == s_h3_px, "H4 pixels are the cross-game source's own buffer");
+
+  /* H5: the cross-game source REFUSES (species/form this cart cannot show) -> falls
+   * through to gen3_ladder, same NULL-degrades-cleanly contract as every other rung. */
+  s_h3_fail = 1;
+  CHECK(pdna_origin_art_portrait(&m, 0, &a_res, 0), "H5 should still return art (compiled Gen-3)");
+  CHECK(a_res.px == g_front, "H5 a refusing cross-game source must fall back to compiled Gen-3 art");
+  s_h3_fail = 0;
+
+  /* H6: the stack-room gate applies to the cross-game rung exactly like the GB one --
+   * a "no room" hook must stop the router from ever calling the source at all. */
+  pdna_origin_art_set_stack_room_hook(no_room_hook);
+  s_h3_calls = 0;
+  CHECK(pdna_origin_art_portrait(&m, 0, &a_res, 0), "H6 should still return art");
+  CHECK_EQ(s_h3_calls, 0, "H6 must not touch the cross-game source when there is no room");
+  CHECK(a_res.px == g_front, "H6 falls back to compiled Gen-3 art");
+  pdna_origin_art_set_stack_room_hook(0);
+
+  /* H7: clearing the cross-game source (no registration at all) degrades cleanly. */
+  pdna_origin_art_set_g3cross(0);
+  s_h3_calls = 0;
+  CHECK(pdna_origin_art_portrait(&m, 0, &a_res, 0), "H7 should still return art");
+  CHECK_EQ(s_h3_calls, 0, "H7 a cleared source must never be called");
+  CHECK(a_res.px == g_front, "H7 no cross-game source -> compiled Gen-3 art");
+
+  /* leave global state clean for whichever part runs next */
+  pdna_origin_art_set_era_resolver(0);
+  pdna_origin_art_set_g3cross(0);
+  pdna_origin_art_set_place(SE_PLACE_SUMMARY);
+}
+
 /* ---- F. THE PARALLEL BANK GRID ----------------------------------------------------
  * The half of Guy's request the grid actually draws: every cell in the art of its own
  * generation, all at the same time. Part C proved the ROUTER picks the right picture;
@@ -1304,6 +1440,7 @@ int main(int argc, char** argv) {
   part_b();
   part_c();
   part_g();              /* the Gen-3 ROM rung, against Guy's real Emerald dump */
+  part_h();              /* E4: place-aware resolver + the cross-game Gen-3 rung */
   part_f();             /* the grid the bank draws */
   part_d(argc, argv);   /* argv[1..] = saves */
   part_e();
