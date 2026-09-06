@@ -533,15 +533,38 @@ void pdna_origin_art_invalidate(void);
  * the detection itself. */
 void pdna_origin_box_note(const PkMon box[PDNA_ORIGIN_BOX]);
 
-/* Recompute the cache from 30 RAW 80-byte box records (2400 bytes), decoding them
- * internally ONE AT A TIME into a single stack PkMon -- never an array of 30, which
- * would put ~4 KB on the 32 KB IWRAM stack (hard rule 2). This is the door for
- * pdna_bank.c's page-in hook, which holds records and not PkMon. */
-void pdna_origin_box_note_records(const uint8_t* recs);
-
 /* Forget the cache (every cell reads back as native/no marker). Call when the box the
- * cache describes is no longer on screen. */
+ * cache describes is no longer on screen. Independent of pdna_origin_box_set_hint()
+ * below -- a box flip clears the CACHE, never the session's hint, which persists
+ * across flips within the same GB session. */
 void pdna_origin_box_clear(void);
+
+/* BACKLOG #53a (Guy's hardware test, 2026-09-06): tell the cell cache which Game Boy
+ * generation the CURRENT session's mount is -- PDNA_GEN1, PDNA_GEN2, or 0 for "no
+ * session" (a Gen-3 save's own PC/BANK, or nothing mounted at all; the default).
+ *
+ * WHY THIS EXISTS: pdna_origin_of() can only ever call a record "unproven" (the '?'
+ * mark) from the record's OWN bytes -- that is its whole contract, and correctly so
+ * for a Gen-3 save's PC/BANK, where a GB-import cell's provenance genuinely IS in
+ * doubt without outside information. A raw Gen-1/Gen-2 session's OWN box (pdna_gen12.c
+ * mounting a Yellow/Gold/Crystal save directly) has NO such doubt: every occupied,
+ * non-egg cell in that box unconditionally comes from THAT save's own generation --
+ * the mount already knows it (Gb12Mount.kind) the same way pdna_summary_draw_left_
+ * hint's caller does for the summary's left panel. Before this existed, a GB session's
+ * box grid asked pdna_origin_of() with no hint and every genuinely-unproven-by-bytes-
+ * alone record (most of them) showed the uncertain '?' mark, in a Gen-3 OBJ icon
+ * (never the Gen-1/Gen-2 ART bits, which key off the SAME uncertain call) -- Guy's
+ * hardware test on a Yellow save: every cell red-boxed '?', all showing Gen-3 icons.
+ *
+ * Sets a plain `static uint8_t`, not EWRAM_BSS (this module adds none, see the ~16-
+ * byte .bss comment above s_gb) -- pdna_gen12.c's gb_session_core() sets it to the
+ * mount's generation right before entering the box loop and clears it back to 0
+ * right after, for BOTH of its call sites (pdna_gen12_show and the nav-menu path
+ * share this one function). cell_pack() passes it to pdna_origin_of_hint() instead of
+ * calling plain pdna_origin_of() -- 0 (or any value that is neither PDNA_GEN1 nor
+ * PDNA_GEN2) makes pdna_origin_of_hint() behave exactly like pdna_origin_of(), so a
+ * Gen-3 save's PC/BANK grid (hint always 0) is completely unaffected. */
+void pdna_origin_box_set_hint(uint8_t gen);
 
 /* Per-cell readback for the grid renderer. `slot` 0..29. */
 int      pdna_origin_box_gen(int slot);     /* 1/2/3; 3 (or 0 for an empty slot)     */

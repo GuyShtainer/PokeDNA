@@ -643,17 +643,28 @@ static int     s_cells_valid = 0;
  * pdna_origin_box_any_gb(). */
 static int     s_cells_any_gb = 0;
 
+/* BACKLOG #53a: which GB generation the CURRENT session's mount is, or 0 for none (a
+ * Gen-3 save's own PC/BANK, or no session at all). Plain .bss, not EWRAM -- see
+ * pdna_origin_box_set_hint()'s own doc comment in the header for why cell_pack() needs
+ * this at all (a raw Gen-1/Gen-2 session's OWN box has no signature to detect: every
+ * occupied cell genuinely IS that generation, but pdna_origin_of() alone can only ever
+ * call it "unproven" the way it would for a Gen-3-save import, because it has no other
+ * way to learn which save is even open). */
+static uint8_t s_box_hint = 0;
+
+void pdna_origin_box_set_hint(uint8_t gen) { s_box_hint = gen; }
+
 static uint8_t cell_pack(const PkMon* m) {
   if (!m || m->species == 0) return 0;
   PdnaOrigin o;
-  pdna_origin_of(m, &o);
+  pdna_origin_of_hint(m, s_box_hint, &o);
   uint8_t v = (uint8_t)(o.gen & CELL_GEN);
   if (o.gen_certain) v |= CELL_CERT;
   if (o.verdict == PDNA_ORIGIN_GB) v |= CELL_GB;
   /* E5b: the ART half is a pure function of cell_era_of() (fed by the CELL resolver,
    * se_resolve_cell in production) at the SAME place -- box_decode() (pdna_box.c) is
-   * the only caller of pdna_origin_box_note/_records, and pdna_box() has already
-   * called pdna_origin_art_set_place() before ever reaching it, so s_place is already
+   * the only caller of pdna_origin_box_note, and pdna_box() has already called
+   * pdna_origin_art_set_place() before ever reaching it, so s_place is already
    * correct for whichever grid (PC/BANK/GBGRID) is on screen. Provenance (above) plays
    * NO part in this: a plain GB import with its cell left at NATIVE gets neither ART
    * bit at a Gen-3 save's PC/BANK grid (se_resolve_cell's opt-in short-circuit), which
@@ -678,16 +689,6 @@ static void cells_finish(void) {
 void pdna_origin_box_note(const PkMon box[PDNA_ORIGIN_BOX]) {
   if (!box) { pdna_origin_box_clear(); return; }
   for (int i = 0; i < PDNA_ORIGIN_BOX; i++) s_cell[i] = cell_pack(&box[i]);
-  cells_finish();
-}
-
-void pdna_origin_box_note_records(const uint8_t* recs) {
-  if (!recs) { pdna_origin_box_clear(); return; }
-  for (int i = 0; i < PDNA_ORIGIN_BOX; i++) {
-    PkMon m;                                   /* ONE PkMon on the stack, never 30 */
-    if (!pk_decode_mon(recs + (unsigned)i * 80u, false, &m)) { s_cell[i] = 0; continue; }
-    s_cell[i] = cell_pack(&m);
-  }
   cells_finish();
 }
 

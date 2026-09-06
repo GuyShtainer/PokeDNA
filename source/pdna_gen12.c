@@ -561,6 +561,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "rom_gbbase.h"    /* S5-C: decodes the 28-byte BaseStats row rom_gbsprite found;
                             * pk_national_no (internal index -> National Dex) comes from
                             * data_tables.h, already included at the top of this file. */
+#include "pdna_origin_art.h"  /* BACKLOG #53a: pdna_origin_box_set_hint, PDNA_GEN1/GEN2 */
 
 /* S5-B review fix #10: PDNA_SIDECAR_DIR now lives in pdna_app.h (included above), not
  * duplicated as a local literal here. */
@@ -1885,10 +1886,21 @@ static void gb_session_core(Gb12Mount* m) {
    * twin so VIEW and (lossless) COPY still work with no GbSession to write through. */
   app_src_ops_set(g_ed ? &k_gb_ops : &k_gb_ops_ro);  /* S2/S3: EDIT / MOVE TO / RELEASE */
   BoxSource s = pdna_gen12_source(m);
+  /* BACKLOG #53a: this session's box grid is a RAW Game Boy save's OWN box -- unlike a
+   * Gen-3 save's PC/BANK, every occupied, non-egg cell here genuinely IS m->kind's
+   * generation, no signature needed. Tell the cell cache so (era_cell_mark/box_gb/
+   * art_wanted all key off pdna_origin_of_hint() through cell_pack()) instead of
+   * leaving it to guess from the record's bytes alone, which is what produced Guy's
+   * hardware finding: every cell on a Yellow save read uncertain ('?', red box, the
+   * ordinary Gen-3 OBJ icon) instead of a certain '1' with the Gen-1 picture. Cleared
+   * unconditionally below so a LATER Gen-3 PC/BANK visit this same run is never left
+   * thinking it is still inside a GB session. */
+  pdna_origin_box_set_hint(m->kind == GB12_SAVE_RBY ? PDNA_GEN1 : PDNA_GEN2);
   /* Returns 0 on B / the SAVE tab, 5 when the cursor drops off the bottom row (the
    * PC<->Bank hand-off, which has no PC to hand off to here) — re-enter on the top
    * tabs so DOWN puts the user back in the grid instead of silently exiting. */
   while (pdna_box(&s) != 0) app_box_start_set(1);
+  pdna_origin_box_set_hint(0);
   app_src_readonly_clear();
   pdna_gen12_source(0);                      /* unmount: no dangling arena pointers */
   if (m->nblocked || m->nunreadable) gb_report_page(m);

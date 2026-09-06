@@ -777,7 +777,12 @@ static void part_c(void) {
     CHECK_EQ(y, 14, "C8 oversized art is clamped, never negative");
   }
 
-  /* C9: the box cache, from RAW records -- pdna_bank.c's door. */
+  /* C9: the box cache, decoded from RAW records (pdna_bank.c's own decode loop
+   * already exists in pdna_box.c/pdna_bank.c -- pdna_origin_box_note_records(), a
+   * second one-record-at-a-time decoder living IN THIS MODULE, had zero production
+   * callers and was deleted (E5b/BACKLOG #53a cleanup); this test now decodes the
+   * same fixtures itself and feeds pdna_origin_box_note(), the one door production
+   * actually uses). */
   {
     static uint8_t recs[30 * 80];
     memset(recs, 0, sizeof recs);
@@ -789,7 +794,11 @@ static void part_c(void) {
     gen3_build_mon(300, 40, 0x1234ABCDu, 0x00010002u, "GUY", 3, nat);
     memcpy(recs + 7 * 80, nat, 80);                       /* a native Gen-3 mon    */
 
-    pdna_origin_box_note_records(recs);
+    static PkMon box9c[PDNA_ORIGIN_BOX];
+    memset(box9c, 0, sizeof box9c);
+    for (int i = 0; i < PDNA_ORIGIN_BOX; i++)
+      (void)pk_decode_mon(recs + (size_t)i * 80u, false, &box9c[i]);
+    pdna_origin_box_note(box9c);
     CHECK_EQ(pdna_origin_box_mark(0), '?', "C9 slot 0 = GB import, era unproven");
     CHECK_EQ(pdna_origin_box_mark(3), '2', "C9 slot 3 = proven Gen-2 import");
     CHECK_EQ(pdna_origin_box_mark(7), 0,   "C9 slot 7 = native, no marker");
@@ -1189,7 +1198,7 @@ static void part_i(void) {
 
   /* ---- I6-I10 (D1 fix): the REAL se_resolve/se_resolve_for_router pair, wired exactly
    * as pdna_main.c wires them, driving the box-grid cell path (cell_pack() via
-   * pdna_origin_box_note_records()/pdna_origin_box_art_wanted(), and
+   * pdna_origin_box_note()/pdna_origin_box_art_wanted(), and
    * pdna_origin_box_art() itself). h_resolver is scripted and cannot express the
    * collapse bug; these cases can. */
 
@@ -1403,6 +1412,34 @@ static void part_i(void) {
     CHECK_EQ(a11.egg, 1, "I11 (D6) out->egg is set for the egg icon too");
   }
 
+  /* I12 (BACKLOG #53a, Guy's hardware test 2026-09-06): the CELL CACHE must honour
+   * pdna_origin_box_set_hint(), the same way the summary's left panel already honours
+   * pdna_origin_of_hint() directly (Part B tests that call in isolation) -- this proves
+   * the plumbing from the SETTER through cell_pack()/pdna_origin_box_note() to the
+   * MARK, not pdna_origin_of_hint() itself again. gb_m is the unproven Gen-1 import
+   * (Bulbasaur) built at the top of this function -- pdna_origin_of() alone always
+   * calls it uncertain ('?'), which is exactly the bug: a raw Gen-1 session's OWN box
+   * has no such doubt, but without a hint the cache cannot tell the difference between
+   * that and a Gen-3 save's genuinely-unproven import. */
+  {
+    PkMon box12[PDNA_ORIGIN_BOX]; memset(box12, 0, sizeof box12); box12[0] = gb_m;
+
+    pdna_origin_box_set_hint(0);           /* baseline: no session hint (a Gen-3 save) */
+    pdna_origin_box_note(box12);
+    CHECK_EQ(pdna_origin_box_mark(0), '?', "I12 no hint -> the pre-existing uncertain mark");
+    CHECK_EQ(pdna_origin_box_gen(0), 1, "I12 no hint -> era guess is still Gen 1 (evidence)");
+
+    pdna_origin_box_set_hint(PDNA_GEN1);   /* a raw Gen-1 session's OWN box */
+    pdna_origin_box_note(box12);
+    CHECK_EQ(pdna_origin_box_mark(0), '1',
+             "I12 (#53a) hint=GEN1 -> CERTAIN Gen-1, not the uncertain '?' any more");
+
+    pdna_origin_box_set_hint(0);           /* cleared -- must revert, not stick */
+    pdna_origin_box_note(box12);
+    CHECK_EQ(pdna_origin_box_mark(0), '?',
+             "I12 (#53a) clearing the hint reverts to the ordinary uncertain mark");
+  }
+
   /* leave global state clean for whichever part runs next */
   g_gbicon_on = 0;
   gb_source_on();
@@ -1410,6 +1447,7 @@ static void part_i(void) {
   pdna_origin_art_set_era_resolver_cell(0);
   pdna_origin_art_set_place(SE_PLACE_SUMMARY);
   pdna_origin_art_invalidate();
+  pdna_origin_box_set_hint(0);
 }
 
 /* ---- F. THE PARALLEL BANK GRID ----------------------------------------------------
@@ -1630,7 +1668,14 @@ static void part_f(void) {
     uint8_t nat[80];
     gen3_build_mon(300, 40, 0x1234ABCDu, 0x00010002u, "GUY", 3, nat);
     memcpy(recs + 7 * 80, nat, 80);                        /* a native Gen-3 mon     */
-    pdna_origin_box_note_records(recs);
+    static PkMon box6[PDNA_ORIGIN_BOX];   /* pdna_origin_box_note_records() (deleted,
+                                            * zero production callers) used to decode
+                                            * these raw records itself; decode here and
+                                            * feed pdna_origin_box_note() instead. */
+    memset(box6, 0, sizeof box6);
+    for (int i = 0; i < PDNA_ORIGIN_BOX; i++)
+      (void)pk_decode_mon(recs + (size_t)i * 80u, false, &box6[i]);
+    pdna_origin_box_note(box6);
 
     CHECK_EQ(pdna_origin_box_gb(0), 1, "F6 slot 0 is a GB import");
     CHECK_EQ(pdna_origin_box_gb(3), 1, "F6 slot 3 is a GB import");
