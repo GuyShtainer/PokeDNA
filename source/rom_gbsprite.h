@@ -304,14 +304,13 @@ int rom_gbsprite_to_rgb15(const GbSprite* s, const uint16_t pal[4],
  * buf[0 .. 2*w*h), read from indexed pixels at buf[px_off .. px_off + w*h). Safe
  * IFF px_off >= GB_SPRITE_MAX_PX (3,136) -- the loop runs i = 0 .. w*h-1 ascending
  * ("front to back" through the destination, reading from "the back" of the shared
- * buffer), and for every i < w*h-1 the write to buf[2i, 2i+1] lands strictly before
- * buf[px_off+i] (the pixel it is about to read on some LATER iteration is never
- * touched by an EARLIER one, because writes only ever reach as far as
- * 2*(w*h-1)+1 = 2*w*h-1, and px_off - 1 + w*h >= px_off - 1 + i + 1 for the
- * smallest still-unread index; concretely, with px_off == 3,136 and w*h <= 3,136,
- * the write frontier 2i+1 never reaches an unread px_off+j for j > i). The single
- * coincidence is i == w*h-1 at the worst-case size (px_off == GB_SPRITE_MAX_PX,
- * w*h == 3,136 exactly): buf[px_off+i] and buf[2i+1] are the SAME byte, which is
+ * buffer). Let n = w*h (n <= 3,136 always). For i < n-1, writing dst[i] (bytes
+ * [2i, 2i+1]) must not touch the NEXT pixel still unread, px[i+1] (byte
+ * px_off+i+1) -- the closest not-yet-read byte, since ascending order has already
+ * consumed px[0..i]. That needs 2i+1 < px_off+i+1, i.e. i < px_off; since i <= n-2
+ * <= 3,134 and px_off >= 3,136, that holds with margin to spare. The single
+ * coincidence is i == n-1 at the worst-case size (px_off == GB_SPRITE_MAX_PX,
+ * n == 3,136 exactly): buf[px_off+i] and buf[2i+1] are the SAME byte, which is
  * why the loop body reads px[i] into a local BEFORE writing dst[i] -- ordinary
  * "read source, then write destination" is already enough; no special-casing that
  * index is needed, only NOT reordering the two inside one iteration.
