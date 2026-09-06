@@ -4,20 +4,26 @@
 #include <stdint.h>
 
 /*
- * Gen-2 (Gold/Silver/Crystal) PARTY/PC MENU ICONS -- the tiny 16x16 bouncing
- * silhouettes the real game draws in its party list and PC box list, read live
- * out of the user's own cartridge dump.
+ * Gen-2 (Gold/Silver/Crystal) PARTY-MENU ICONS -- the tiny 16x16 bouncing
+ * silhouettes the real game draws in its party menu (also the naming screen,
+ * the move-list/trade screens, and the Fly map), read live out of the user's
+ * own cartridge dump.
+ *
+ * D5 (E5 fix, adversarial review): NOT the PC box list -- per pokecrystal, Bill's
+ * PC draws each mon's FRONT PICTURE (the same battle-style sprite rom_gbsprite.c
+ * already serves), never this icon. An earlier version of this comment claimed
+ * the PC list used it too; it does not.
  *
  * WHY THIS EXISTS (E5, docs/SPRITE-ERA-DESIGN.md sec 2/4): source/rom_gbsprite.c
- * already gives a Gen-2 import its 56x56 battle-style front sprite, but that is
- * NOT what a real Gold/Silver/Crystal PC box shows -- the retail PC list uses a
- * much smaller, much simpler MENU icon (one of only ~38 generic shapes shared
- * across many species, e.g. every "small round bird" species reuses the same
- * bird icon) with NO per-species colour. Kept a separate module (not folded into
- * rom_gbsprite.c) because the data shape, the addressing scheme (species -> a
- * small icon KIND -> a shared bitmap, not species -> its own bitmap) and the
- * palette rule are all different enough that merging them would have made
- * rom_gbsprite.c's own header harder to read, not easier.
+ * already gives a Gen-2 import its 56x56 battle-style front sprite for the PC and
+ * the summary, but the PARTY MENU draws a much smaller, much simpler icon
+ * instead (one of only ~38 generic shapes shared across many species, e.g. every
+ * "small round bird" species reuses the same bird icon) with NO per-species
+ * colour. Kept a separate module (not folded into rom_gbsprite.c) because the
+ * data shape, the addressing scheme (species -> a small icon KIND -> a shared
+ * bitmap, not species -> its own bitmap) and the palette rule are all different
+ * enough that merging them would have made rom_gbsprite.c's own header harder to
+ * read, not easier.
  *
  * PokeDNA ships NO Game Freak art. Everything here is a transient read of a file
  * the user already owns, exactly the posture rom_gbsprite.c/rom_sprite.c take.
@@ -103,15 +109,22 @@
  * derivation does not hold refuses outright rather than guessing.
  *
  * ---------------------------------------------------------------------------
- * THE PALETTE. Gen-2 menu icons carry NO per-species (or per-kind) colour table
- * at all -- engine/gfx/mon_icons.asm never references a palette, OBP or BGP
+ * THE PALETTE (D2, E5 fix -- an earlier version of this note was wrong twice
+ * over). Gen-2 menu icons carry NO per-species (or per-kind) colour table at
+ * all -- engine/gfx/mon_icons.asm never references a palette, OBP or BGP
  * anywhere near the icon-loading code, in EITHER pokegold or pokecrystal, unlike
- * the front/back sprites' own PokemonPalettes table (rom_gbsprite.h). That
- * matches what the real hardware shows: the Gold/Silver/Crystal party and PC
- * icon lists are rendered in the DMG's monochrome ramp even on GBC hardware.
- * rom_gbicon_pal() therefore always answers the same fixed four-shade
- * DMG-style ramp (reusing rom_gbsprite.h's own G1_GREY* convention: white is
- * transparent) for every kind, in both games -- there is nothing else to read.
+ * the front/back sprites' own PokemonPalettes table (rom_gbsprite.h). But that
+ * does NOT mean the icons render in the DMG's monochrome ramp -- they are
+ * coloured with the FIXED party-menu OBJ palette (gfx/stats/party_menu_ob.pal,
+ * PartyMenuOBPals, byte-identical in both games): idx0 RGB(27,31,27)
+ * transparent, idx1 RGB(31,19,10) light orange, idx2 RGB(31,7,4) red, idx3
+ * RGB(0,0,0) black. rom_gbicon_pal() therefore always answers that same fixed
+ * four-colour palette for every kind, in both games -- there is nothing else to
+ * read, but it is a genuine (if narrow) colour palette, not a monochrome ramp,
+ * and it is NOT rom_gbsprite.h's DMG grey ramp (G1_GREY0..3) -- that one belongs
+ * to a completely different asset (Gen-1 battle sprites), which really is
+ * monochrome. Confusing the two would have painted every Gen-2 icon in Gen-1's
+ * greys instead of Gen-2's actual orange-and-red look.
  *
  * ---------------------------------------------------------------------------
  * WHAT IT COSTS. RomGbIcon is small (~24 B: one borrowed GbReadFn/ctx pair plus
@@ -204,7 +217,8 @@ int rom_gbicon_kind(const RomGbIcon* gi, uint16_t dex);
  * or 0 for a bad kind/frame or a read that left the ROM. */
 int rom_gbicon_tiles(RomGbIcon* gi, int kind, int frame, uint8_t out[ROM_GBICON_FRAME_BYTES]);
 
-/* The fixed four-shade DMG ramp every kind uses (see the palette note above).
+/* The fixed four-colour party-menu OBJ palette every kind uses (see the palette
+ * note above -- it is NOT the DMG monochrome ramp).
  * `kind` and `gi` are accepted (and validated) for API symmetry with
  * rom_gbsprite_pal() and so a future per-kind table, if one is ever found, has
  * somewhere to plug in without an ABI change -- today every valid call answers

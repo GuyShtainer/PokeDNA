@@ -310,16 +310,22 @@ int rom_gbicon_tiles(RomGbIcon* gi, int kind, int frame, uint8_t out[ROM_GBICON_
   return rd(gi, foff, out, ROM_GBICON_FRAME_BYTES);
 }
 
-/* The four DMG greys — same RGB15 values as rom_gbsprite.h's G1_GREY0..3 (its
- * own comment: "A Red/Blue mon SHOULD look like a Red/Blue mon"), reused here
- * because Gen-2 menu icons render in exactly the same monochrome ramp — see
- * rom_gbicon.h's palette note for why there is nothing per-kind to read. */
-static const uint16_t DMG_RAMP[4] = { 0x7FFFu, 0x56B5u, 0x294Au, 0x0000u };
+/* D2 (E5 fix): there is no per-icon palette table -- Gen 2 colours every menu icon
+ * with the FIXED party-menu OBJ palette 0 (PartyMenuOBPals, gfx/stats/party_menu_ob.pal
+ * in both pokegold and pokecrystal, byte-identical): idx0 RGB(27,31,27) transparent,
+ * idx1 RGB(31,19,10) light orange, idx2 RGB(31,7,4) red, idx3 RGB(0,0,0) black. These
+ * are GBC 5-bit-per-channel values (0..31, the palette-RAM format), packed the same
+ * way rom_gbicon_to_rgb15's caller expects: r | g<<5 | b<<10. This is NOT the DMG
+ * monochrome ramp -- Gen 2's party-menu icons are colour on GBC hardware (and on the
+ * SGB); the DMG grey ramp (rom_gbsprite.h's G1_GREY0..3) belongs to Gen 1's back/front
+ * sprites, a completely different asset with its own (monochrome, DMG-native)
+ * palette. See rom_gbicon.h's own palette note. */
+static const uint16_t GB_ICON_PAL[4] = { 0x6FFBu, 0x2A7Fu, 0x10FFu, 0x0000u };
 
 int rom_gbicon_pal(const RomGbIcon* gi, int kind, uint16_t out[4]) {
   if (!gi || !gi->ok || !out) return 0;
   if (kind < 1 || (uint32_t)kind > gi->n) return 0;
-  memcpy(out, DMG_RAMP, sizeof DMG_RAMP);
+  memcpy(out, GB_ICON_PAL, sizeof GB_ICON_PAL);
   return 1;
 }
 

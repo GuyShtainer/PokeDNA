@@ -175,16 +175,25 @@ def tile_2bpp(t: bytes) -> list[list[int]]:
     return px
 
 
+# D2 (E5 fix): NOT the DMG monochrome ramp -- Gen 2 colours every menu icon with the
+# fixed party-menu OBJ palette 0 (PartyMenuOBPals, gfx/stats/party_menu_ob.pal, byte-
+# identical in pokegold and pokecrystal): idx0 RGB(27,31,27) transparent, idx1
+# RGB(31,19,10) light orange, idx2 RGB(31,7,4) red, idx3 RGB(0,0,0) black. These are
+# GBC 5-bit-per-channel values (0..31); scaled to 8-bit (v*255//31) for this PNG
+# sheet, the same four colours source/rom_gbicon.c's GB_ICON_PAL packs as RGB15.
+_PAL_5BIT = {0: (27, 31, 27), 1: (31, 19, 10), 2: (31, 7, 4), 3: (0, 0, 0)}
+RAMP = {k: tuple(v * 255 // 31 for v in rgb) for k, rgb in _PAL_5BIT.items()}
+
+
 def decode_frame0(rom: bytes, off: int) -> Image.Image:
     tiles = [tile_2bpp(rom[off + t * 16: off + t * 16 + 16]) for t in range(4)]
     pos = [(0, 0), (0, 8), (8, 0), (8, 8)]
-    im = Image.new("L", (16, 16))
+    im = Image.new("RGB", (16, 16))
     px = im.load()
-    ramp = {0: 255, 1: 173, 2: 85, 3: 0}   # the same fixed DMG-style ramp
     for tile, (ty, tx) in zip(tiles, pos):
         for r in range(8):
             for c in range(8):
-                px[tx + c, ty + r] = ramp[tile[r][c]]
+                px[tx + c, ty + r] = RAMP[tile[r][c]]
     return im
 
 

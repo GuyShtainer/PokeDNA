@@ -162,13 +162,27 @@ static void run_gen2(const char* name, int with_pixel_checks) {
     }
   }
 
-  /* 5) palette is the fixed DMG ramp for every kind */
+  /* 5) palette is the fixed party-menu OBJ palette for every kind (D2, E5 fix:
+   * this used to assert a DMG monochrome ramp, which is the wrong asset's
+   * palette entirely -- see rom_gbicon.h's palette note). RGB(27,31,27)
+   * transparent, RGB(31,19,10) light orange, RGB(31,7,4) red, RGB(0,0,0) black,
+   * each packed r | g<<5 | b<<10 (5-bit-per-channel GBC palette-RAM values) --
+   * computed here from the RGB triples, independently of rom_gbicon.c's own
+   * literal, so a transcription slip in either place would be caught. */
   uint16_t pal1[4], pal2[4];
   chk(name, "pal(1) succeeds", rom_gbicon_pal(&gi, 1, pal1));
   chk(name, "pal(n) succeeds", rom_gbicon_pal(&gi, gi.n, pal2));
-  chk(name, "the ramp is fixed across kinds", memcmp(pal1, pal2, sizeof pal1) == 0);
-  chk(name, "the ramp is white/light/dark/black",
-      pal1[0] == 0x7FFFu && pal1[1] == 0x56B5u && pal1[2] == 0x294Au && pal1[3] == 0x0000u);
+  chk(name, "the palette is fixed across kinds", memcmp(pal1, pal2, sizeof pal1) == 0);
+  {
+    uint16_t want0 = 27u | (31u << 5) | (27u << 10);   /* transparent   */
+    uint16_t want1 = 31u | (19u << 5) | (10u << 10);   /* light orange  */
+    uint16_t want2 = 31u | ( 7u << 5) | ( 4u << 10);   /* red           */
+    uint16_t want3 =  0u | ( 0u << 5) | ( 0u << 10);   /* black         */
+    chk(name, "idx0 is RGB(27,31,27), packed r|g<<5|b<<10", pal1[0] == want0);
+    chk(name, "idx1 is RGB(31,19,10), packed r|g<<5|b<<10", pal1[1] == want1);
+    chk(name, "idx2 is RGB(31,7,4), packed r|g<<5|b<<10",   pal1[2] == want2);
+    chk(name, "idx3 is RGB(0,0,0), packed r|g<<5|b<<10",    pal1[3] == want3);
+  }
   chk(name, "pal(0) is refused (never a valid kind)", !rom_gbicon_pal(&gi, 0, pal1));
 
   /* to_rgb15: color 0 transparent, refuses a bad index */
