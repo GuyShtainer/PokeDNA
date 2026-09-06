@@ -2184,7 +2184,7 @@ g3x_fetch_other(PkGame game, uint16_t species, uint8_t form, uint8_t back, uint8
   FIL fil;
   memset(&fil, 0, sizeof fil);
   if (f_open(&fil, path, FA_READ) != FR_OK) return 0;
-  fastseek_arm(&fil, s_g3x_clmt, sizeof s_g3x_clmt / sizeof s_g3x_clmt[0], "g3x");
+  fastseek_arm(&fil, s_g3x_clmt, sizeof s_g3x_clmt / sizeof s_g3x_clmt[0], NULL /* quiet: per draw */);
   FSIZE_t fsz = f_size(&fil);
   uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
 

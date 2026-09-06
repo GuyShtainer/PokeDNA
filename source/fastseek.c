@@ -36,11 +36,15 @@ int fastseek_arm(FIL* fp, DWORD* tbl, DWORD items, const char* what) {
      * ordinary way", not "this file is dead for the rest of the session".
      * FR_NOT_ENOUGH_CORE already behaved that way; this makes the rest match. */
     fp->err = 0;
-    log_line("fastseek: %s frags=%u need=%lu have=%lu FAIL fr=%d", what ? what : "?",
+    log_line("fastseek: %s frags=%u need=%lu have=%lu FAIL fr=%d", what ? what : "quiet",
              frags, (unsigned long)need, (unsigned long)items, (int)fr);
     return 0;
   }
-  log_line("fastseek: %s frags=%u need=%lu have=%lu ok", what ? what : "?", frags,
-           (unsigned long)need, (unsigned long)items);
+  /* `what == NULL` = a QUIET caller: one that arms per draw (the cross-game portrait
+   * rung, pdna_main.c g3x_fetch_other) and would otherwise write a line per cursor
+   * move into the RAM ring, evicting older history at LOG_CAP. Failures still log. */
+  if (what)
+    log_line("fastseek: %s frags=%u need=%lu have=%lu ok", what, frags,
+             (unsigned long)need, (unsigned long)items);
   return (int)frags;
 }

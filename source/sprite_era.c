@@ -237,7 +237,9 @@ SeEra se_era_next(SeEra e, const SeRoms* roms, SePlace place) {
      * (pdna_origin_art_have) only ever asks about a GB art source -- it has no path
      * to the cross-game Gen-3 rung at all. At BANK and GBGRID, offering a concrete
      * Gen-3 destination is therefore a setting that LOOKS like a choice but never
-     * changes a pixel on those two grids (PC is different: se_store_era() gives it a
+     * changes a pixel of the 30 GRID CELLS (the box screen's left hover panel,
+     * pdna_box.c draw_left, does go through the full router, so this refusal is an
+     * accepted simplification, not a strict no-op) (PC is different: se_store_era() gives it a
      * separate, working whole-store mechanism, D3). Skip these three destinations at
      * BANK/GBGRID so the picker never lands on one that silently does nothing. */
     if ((place == SE_PLACE_BANK || place == SE_PLACE_GBGRID) && era_is_g3(cur)) continue;

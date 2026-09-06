@@ -262,7 +262,8 @@ const char* se_place_name(SePlace p);
  * SE_PLACE_BANK or SE_PLACE_GBGRID either -- the box GRID's per-mon overlay
  * (pdna_box.c's era_cell_draw) has no path to the cross-game Gen-3 rung at those two
  * places (its "wanted" pre-check only ever asks about a Game Boy art source), so
- * picking one there would look like a choice and never change a pixel. PC is
+ * picking one there would look like a choice and never change a grid cell (only the
+ * box screen's hover panel would follow it -- refused anyway, a simplification). PC is
  * unaffected: se_store_era() gives it a separate, working whole-store mechanism.
  * Bounded to at most SE_ERA_N steps, so it always terminates -- NATIVE alone
  * guarantees a hit. */

@@ -270,8 +270,11 @@ typedef int (*PdnaStackRoomFn)(int need);
 void pdna_origin_art_set_stack_room_hook(PdnaStackRoomFn fn);
 
 /* D4: the cross-game Gen-3 rung's own measured need, parallel to gb_art_source.h's
- * PDNA_GB_FETCH_NEED (6,144 B) -- 2,480 B measured (g3cross_pic_cb -> g3x_fetch_other/
- * g3x_decode's own subtree) plus head-room. Declared here (not gb_art_source.h) since
+ * PDNA_GB_FETCH_NEED (6,144 B) -- 2,480-2,512 B measured (g3cross_pic_cb ->
+ * g3x_fetch_other/g3x_decode's own subtree, two -fstack-usage runs) plus head-room.
+ * NOTE: on the deepest chain that reaches it (Bank -> box -> party strip -> Day-Care ->
+ * summary, HW-TEST §K6) only ~3,400 B are free at the gate, so any growth of ~340 B on
+ * that chain silently (and safely) re-disables cross-game art there. Declared here (not gb_art_source.h) since
  * this rung is pdna_origin_art.c's own, not gb_art_source.c's. */
 #define PDNA_G3X_FETCH_NEED 3072
 
