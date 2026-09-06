@@ -72,6 +72,8 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     ("s5b-transfer", "S5-B — Gen-3-to-GB transfer (PASTE)", ("S5-B",)),
     ("e4-settings", "E4 — the Settings > Sprites era grid (docs/SPRITE-ERA-DESIGN.md)",
      ("E4",)),
+    ("e5-icons", "E5 — Gen-2 party/PC menu icons, real ROM art (docs/SPRITE-ERA-DESIGN.md)",
+     ("E5",)),
     ("misc", "Misc — captions without a tracked feature prefix", ()),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
