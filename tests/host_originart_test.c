@@ -1044,6 +1044,45 @@ static void part_h(void) {
   pdna_origin_art_set_place(SE_PLACE_SUMMARY);
 }
 
+/* ---- I (D1 fix, adversarial review): THE REAL se_resolve/se_resolve_for_router PAIR --
+ * h_resolver above is a scripted stub -- perfect for proving the ROUTER's call
+ * sequence, useless for proving se_resolve_for_router's COLLAPSE rule itself (whether a
+ * concrete answer equals the native one is exactly what se_native_era computes, and a
+ * stub can never get that wrong by construction). These cases wire the REAL
+ * sprite_era.c pair through pdna_origin_art's TWO hooks, mirroring pdna_main.c's
+ * era_resolver_cb (collapsed, se_resolve_for_router) and era_resolver_raw_cb
+ * (uncollapsed, se_resolve) byte-for-byte, so the box-grid cell path (cell_pack(),
+ * pdna_origin_box_art()) is proven against the actual production wiring instead of a
+ * mock that cannot express the bug. */
+static SeSetting  s_rr_setting;
+static SeRoms     s_rr_roms;
+static SeSaveKind s_rr_kind;
+static bool       s_rr_compiled = true;
+
+static int rr_collapsed_cb(int place, uint8_t gen, uint8_t certain, uint16_t dex, int* reason) {
+  return (int)se_resolve_for_router(&s_rr_setting, s_rr_kind, (SePlace)place, gen, certain,
+                                    dex, &s_rr_roms, s_rr_compiled, reason);
+}
+static int rr_raw_cb(int place, uint8_t gen, uint8_t certain, uint16_t dex, int* reason) {
+  return (int)se_resolve(&s_rr_setting, s_rr_kind, (SePlace)place, gen, certain, dex,
+                         &s_rr_roms, s_rr_compiled, reason);
+}
+
+/* Every Gen-1/Gen-2/Gen-3 ROM "registered", every cell NATIVE (se_default) -- a caller
+ * overrides only the specific (kind, place) cell its case needs. Registers BOTH hooks,
+ * exactly as pdna_era_boot_register() does. */
+static void rr_reset(void) {
+  se_default(&s_rr_setting);
+  memset(&s_rr_roms, 0, sizeof s_rr_roms);
+  s_rr_roms.have[SE_ERA_GEN1]   = true;
+  s_rr_roms.have[SE_ERA_GEN2]   = true;
+  s_rr_roms.have[SE_ERA_G3_RS]  = true;
+  s_rr_roms.have[SE_ERA_G3_EM]  = true;
+  s_rr_roms.have[SE_ERA_G3_FRLG] = true;
+  pdna_origin_art_set_era_resolver(rr_collapsed_cb);
+  pdna_origin_art_set_era_resolver_raw(rr_raw_cb);
+}
+
 /* ---- I. E5: THE GEN-2 MENU-ICON RUNG, BOX-GRID ONLY --------------------------------
  * pdna_origin_box_art() (NOT pdna_origin_art_portrait(), which every other place --
  * the hover panel, the summary, the party list -- keeps calling) is the one accessor
@@ -1135,10 +1174,132 @@ static void part_i(void) {
   CHECK_EQ(a3.w, 56, "I5 the portrait call's width must be 56, not 16");
   CHECK_EQ(g_gb_calls, 1, "I5 the portrait call must have actually fetched (not a false memo hit)");
 
+  /* ---- I6-I10 (D1 fix): the REAL se_resolve/se_resolve_for_router pair, wired exactly
+   * as pdna_main.c wires them, driving the box-grid cell path (cell_pack() via
+   * pdna_origin_box_note_records()/pdna_origin_box_art_wanted(), and
+   * pdna_origin_box_art() itself). h_resolver is scripted and cannot express the
+   * collapse bug; these cases can. */
+
+  /* I6: a Gen-2 SAVE'S OWN box grid (SE_KIND_GEN2, SE_PLACE_GBGRID), DEFAULT cell (no
+   * override) -- pre-D1, cell_pack()/pdna_origin_box_art() asked the COLLAPSED
+   * resolver, which reports this cell's concrete answer (GEN2, exactly se_native_era's
+   * answer for a GEN2-kind save) as NATIVE, so the icon rung never fired. Fixed: they
+   * now ask cell_era_of(), which prefers the RAW hook and gets the real GEN2. */
+  rr_reset();
+  pdna_origin_art_invalidate();
+  s_rr_kind = SE_KIND_GEN2;
+  pdna_origin_art_set_place(SE_PLACE_GBGRID);
+  {
+    uint8_t rec6[80]; PkMon m6;
+    gen3_build_mon(1, 5, 0x11112222u, 0x00010002u, "TEST", 3, rec6);  /* Bulbasaur */
+    CHECK(pk_decode_mon(rec6, false, &m6), "I6 setup: decode");
+    pk_resolve(&m6);
+    PkMon box6[PDNA_ORIGIN_BOX]; memset(box6, 0, sizeof box6); box6[0] = m6;
+    pdna_origin_box_note(box6);
+    CHECK(pdna_origin_box_art_wanted(0), "I6 (D1) a Gen-2 save's own GBGRID default cell must WANT the icon");
+    PdnaArt a6; g_gbicon_calls = 0;
+    CHECK(pdna_origin_box_art(0, &m6, &a6), "I6 should return art");
+    CHECK(a6.px == g_gbicon_pix, "I6 (D1) must take the icon rung, not the portrait");
+    CHECK_EQ(a6.w, 16, "I6 icon width 16");
+  }
+
+  /* I7: a Gen-2 IMPORT sitting in an EMERALD PC box at its NATIVE/default cell (the
+   * common, no-settings-touched case) -- pre-D1 the collapsed resolver reported this
+   * cell's concrete GEN2 answer as NATIVE (it equals se_native_era for this import),
+   * so the import kept its old downscaled-portrait look; fixed, it gets the real
+   * party-menu icon by default (design decision: this changes WHICH picture a
+   * default-cell import wears, not WHETHER it wears one -- pre-E5 it already showed a
+   * Gen-2-sourced picture here). */
+  rr_reset();
+  pdna_origin_art_invalidate();
+  s_rr_kind = SE_KIND_EM;
+  pdna_origin_art_set_place(SE_PLACE_PC);
+  {
+    Gb12Mon g7; uint8_t rec7[80]; PkMon m7;
+    gb2_mon(&g7, 201);   /* Unown: Johto-only dex -> a PROVEN Gen-2 import */
+    CHECK(make(&g7, rec7, &m7), "I7 setup: GB fixture must decode");
+    PkMon box7[PDNA_ORIGIN_BOX]; memset(box7, 0, sizeof box7); box7[0] = m7;
+    pdna_origin_box_note(box7);
+    CHECK(pdna_origin_box_art_wanted(0), "I7 (D1) a native-default-cell Gen-2 import must WANT the icon");
+    PdnaArt a7; g_gbicon_calls = 0;
+    CHECK(pdna_origin_box_art(0, &m7, &a7), "I7 should return art");
+    CHECK(a7.px == g_gbicon_pix, "I7 (D1) a Gen-2 import at its default cell must take the icon rung");
+  }
+
+  /* I8: a MIXED Emerald box with the PC cell explicitly overridden to GEN2 -- BOTH a
+   * NATIVE Kanto mon (Charmander) and a Crystal import (Totodile, proven Gen-2) must
+   * take the icon rung. The import's case is the one the collapsed resolver would
+   * still deny (GEN2 explicit == this import's OWN native answer, so the router
+   * collapses it to NATIVE too) -- proving the raw hook, not just "explicit beats
+   * collapse", is what fixes it. */
+  rr_reset();
+  pdna_origin_art_invalidate();
+  s_rr_kind = SE_KIND_EM;
+  s_rr_setting.era[SE_KIND_EM][SE_PLACE_PC] = SE_ERA_GEN2;
+  pdna_origin_art_set_place(SE_PLACE_PC);
+  {
+    uint8_t rec8n[80]; PkMon m8n;
+    gen3_build_mon(4, 5, 0x22223333u, 0x00010002u, "TEST", 3, rec8n);  /* Charmander, native */
+    CHECK(pk_decode_mon(rec8n, false, &m8n), "I8 setup: native decode");
+    pk_resolve(&m8n);
+
+    Gb12Mon g8; uint8_t rec8i[80]; PkMon m8i;
+    gb2_mon(&g8, 158);   /* Totodile: Johto dex -> a PROVEN Gen-2 import */
+    CHECK(make(&g8, rec8i, &m8i), "I8 setup: import decode");
+
+    PkMon box8[PDNA_ORIGIN_BOX]; memset(box8, 0, sizeof box8);
+    box8[0] = m8n; box8[1] = m8i;
+    pdna_origin_box_note(box8);
+    CHECK(pdna_origin_box_art_wanted(0), "I8 (D1) the overridden native cell must WANT the icon");
+    CHECK(pdna_origin_box_art_wanted(1), "I8 (D1) the overridden import cell must WANT the icon too");
+
+    PdnaArt a8n; g_gbicon_calls = 0;
+    CHECK(pdna_origin_box_art(0, &m8n, &a8n), "I8 native cell should return art");
+    CHECK(a8n.px == g_gbicon_pix, "I8 (D1) the native Kanto mon's overridden cell takes the icon rung");
+
+    PdnaArt a8i; g_gbicon_calls = 0;
+    CHECK(pdna_origin_box_art(1, &m8i, &a8i), "I8 import cell should return art");
+    CHECK(a8i.px == g_gbicon_pix,
+          "I8 (D1) the Crystal import's overridden cell must ALSO take the icon rung");
+  }
+
+  /* I9: a Red import (unproven origin gen 1) at its NATIVE/default cell -> Gen 1 has no
+   * per-species menu icons (se_resolve's own NO_ICONS gate), so this must still fall
+   * through to the ordinary portrait rung -- unaffected by D1's fix either way. */
+  rr_reset();
+  pdna_origin_art_invalidate();
+  s_rr_kind = SE_KIND_FRLG;
+  pdna_origin_art_set_place(SE_PLACE_PC);
+  {
+    PdnaArt a9; g_gbicon_calls = 0; g_gb_calls = 0;
+    CHECK(pdna_origin_box_art(0, &gb_m, &a9), "I9 should return art");
+    CHECK(a9.px == g_gbpix, "I9 an unproven Gen-1 import at its default cell stays the 56x56 portrait");
+    CHECK_EQ(g_gbicon_calls, 0, "I9 the icon rung must never fire for GEN1");
+  }
+
+  /* I10: a NATIVE Hoenn-only mon (Treecko, national dex 252 -- no Gen-2 species) whose
+   * cell is explicitly overridden to GEN2 -- se_species_exists(GEN2, 252) is false, so
+   * the override is refused (NO_SPECIES) and this must fall through to native Gen-3
+   * art, never the icon. Proves cell_era_of()'s species gate still holds even though
+   * it is now fed by the raw, uncollapsed resolver. */
+  s_rr_setting.era[SE_KIND_FRLG][SE_PLACE_PC] = SE_ERA_GEN2;
+  pdna_origin_art_invalidate();
+  {
+    uint8_t rec10[80]; PkMon m10;
+    gen3_build_mon(277, 5, 0x33334444u, 0x00010002u, "TEST", 3, rec10);  /* Treecko (dex 252) */
+    CHECK(pk_decode_mon(rec10, false, &m10), "I10 setup: decode");
+    pk_resolve(&m10);
+    PdnaArt a10; g_gbicon_calls = 0;
+    CHECK(pdna_origin_box_art(0, &m10, &a10), "I10 should return art");
+    CHECK(a10.px != g_gbicon_pix, "I10 (species gate) a dex Gen 2 never had must not take the icon rung");
+    CHECK(a10.px == g_front, "I10 falls back to compiled native Gen-3 art");
+  }
+
   /* leave global state clean for whichever part runs next */
   g_gbicon_on = 0;
   gb_source_on();
   pdna_origin_art_set_era_resolver(0);
+  pdna_origin_art_set_era_resolver_raw(0);
   pdna_origin_art_set_place(SE_PLACE_SUMMARY);
   pdna_origin_art_invalidate();
 }

@@ -306,7 +306,22 @@ bool se_cell_applies(SeSaveKind kind, SePlace place);
  * (native Hoenn mons included) drawn from whatever se_store_era already picked. So the
  * store and a cell's picture are allowed to disagree by design: "GEN2 per mon while
  * the store stays EM" is exactly what a mixed box (native Emerald mons sitting beside
- * a Crystal import, both wanting the Gen-2 icon look) needs. */
+ * a Crystal import, both wanting the Gen-2 icon look) needs.
+ *
+ * D1 (E5 fix, adversarial review): "asks the era resolver directly" above means the
+ * UNCOLLAPSED one (pdna_origin_art.c's cell_era_of(), fed by
+ * pdna_origin_art_set_era_resolver_raw -- pdna_main.c's era_resolver_raw_cb calls
+ * se_resolve() itself, not se_resolve_for_router()). The ROUTER-facing hook
+ * (era_resolver_cb / se_resolve_for_router) is wrong for this call site: it reports a
+ * concrete answer that equals the (kind, origin_gen, origin_certain) NATIVE answer as
+ * NATIVE, which is correct for the PORTRAIT rung (see se_resolve_for_router's own
+ * comment) but wrong here -- it means a Gen-2 SAVE'S OWN GBGRID, and a Gen-2 import
+ * sitting at its native/default cell in a Gen-3 PC, would never see GEN2 and never get
+ * the icon, while a NATIVE Gen-3 mon whose cell was explicitly overridden to GEN2
+ * would (the answers differ from native, so the router never collapses them) -- the
+ * inverse of the intended rule. Asking the raw/uncollapsed resolver fixes both: a
+ * Gen-2-kind save's default cell and a native-default Gen-2 import both resolve
+ * concretely to GEN2 and take the icon rung, same as an explicit override does. */
 SeEra se_store_era(const SeSetting* s, SeSaveKind kind, SePlace place, const SeRoms* roms);
 
 /* Map a PkGame value (gen3_trainer.h's PK_RS/PK_EMERALD/PK_FRLG, 0/1/2) onto its

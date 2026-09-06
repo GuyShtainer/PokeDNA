@@ -332,6 +332,15 @@ void pdna_origin_art_set_place(int place) { s_place = place; }
 int pdna_origin_art_get_place(void) { return s_place; }
 void pdna_origin_art_set_era_resolver(PdnaEraResolverFn fn) { s_era_resolver = fn; }
 
+/* E5 fix D1: the uncollapsed hook the box-GRID cell path asks instead of the ordinary
+ * (collapsed) resolver above -- see the header's comment on
+ * pdna_origin_art_set_era_resolver_raw. NULL (unset) is the safe default: cell_era_of()
+ * falls back to s_era_resolver so a build/test that never registers this hook keeps
+ * asking the same resolver it always did. */
+static PdnaEraResolverFn s_era_resolver_raw = 0;
+
+void pdna_origin_art_set_era_resolver_raw(PdnaEraResolverFn fn) { s_era_resolver_raw = fn; }
+
 /* sprite_era.h's SeEra values, mirrored as literals for the same reason as
  * PDNA_PLACE_DEFAULT above -- the resolver hook is typed `int` on purpose so this
  * file has nothing to keep in sync but these six numbers, which sprite_era.h's own
@@ -340,6 +349,17 @@ void pdna_origin_art_set_era_resolver(PdnaEraResolverFn fn) { s_era_resolver = f
 enum {
   ERA_NATIVE = 0, ERA_GEN1, ERA_GEN2, ERA_G3_RS, ERA_G3_EM, ERA_G3_FRLG
 };
+
+/* E5 fix D1: the box-GRID cell path's era question, asked of the UNCOLLAPSED resolver
+ * when one is registered (falls back to the ordinary/collapsed resolver, then to
+ * ERA_NATIVE, when it is not -- the same two-step degrade every other s_era_resolver
+ * call site in this file already tolerates). `gen`/`certain`/`nat_dex` are exactly
+ * cell_pack()'s and pdna_origin_box_art()'s own PdnaOrigin fields, unpacked so both
+ * call sites can share this one helper instead of duplicating the fallback chain. */
+static int cell_era_of(uint8_t gen, uint8_t certain, uint16_t nat_dex) {
+  PdnaEraResolverFn f = s_era_resolver_raw ? s_era_resolver_raw : s_era_resolver;
+  return f ? f(s_place, gen, certain, nat_dex, 0) : ERA_NATIVE;
+}
 
 /* ---- (3c) THE CROSS-GAME GEN-3 RUNG (E4) ------------------------------------------ */
 static PdnaG3CrossSource s_g3x;
@@ -602,16 +622,20 @@ static uint8_t cell_pack(const PkMon* m) {
   uint8_t v = (uint8_t)(o.gen & CELL_GEN);
   if (o.gen_certain) v |= CELL_CERT;
   if (o.verdict == PDNA_ORIGIN_GB) v |= CELL_GB;
-  /* E5: ask the SAME resolver hook pdna_origin_box_art() will ask, at the SAME
-   * place -- box_decode() (pdna_box.c) is the only caller of pdna_origin_box_note/
-   * _records, and pdna_box() has already called pdna_origin_art_set_place() before
-   * ever reaching it, so s_place is already correct for whichever grid (PC/BANK/
-   * GBGRID) is on screen. No resolver registered => era stays ERA_NATIVE => this
-   * bit is never set => zero change from pre-E5 behaviour, same convention as
-   * every other era_resolver_cb call site in this file. */
-  if (s_era_resolver) {
+  /* E5 fix D1: ask the UNCOLLAPSED era question (cell_era_of(), not s_era_resolver
+   * directly) at the SAME place -- box_decode() (pdna_box.c) is the only caller of
+   * pdna_origin_box_note/_records, and pdna_box() has already called
+   * pdna_origin_art_set_place() before ever reaching it, so s_place is already correct
+   * for whichever grid (PC/BANK/GBGRID) is on screen. Asking the COLLAPSED resolver
+   * here (as before D1) reported a Gen-2 save's own GBGRID, and a Gen-2 import sitting
+   * at the native/default cell of a Gen-3 PC, as NATIVE (never the icon), while a
+   * native Gen-3 mon overridden to GEN2 got the icon -- the inverse of the intended
+   * rule. cell_era_of() falls back to the ordinary resolver, then to ERA_NATIVE, when
+   * the raw hook is unset, so no resolver registered still means zero change from
+   * pre-E5 behaviour. */
+  {
     uint16_t nat_dex = pk_national_no(m->species);
-    if (s_era_resolver(s_place, o.gen, o.gen_certain, nat_dex, 0) == ERA_GEN2)
+    if (cell_era_of(o.gen, o.gen_certain, nat_dex) == ERA_GEN2)
       v |= CELL_ERA_GB2;
   }
   return v;
@@ -707,18 +731,27 @@ int pdna_origin_box_art_wanted(int slot) {
  * hover panel, not the summary, not the party list, all of which keep asking
  * pdna_origin_art_portrait() for the up-to-56x56 picture -- a cell whose
  * RESOLVED era is GEN2 wears the REAL 16x16 Gen-2 menu icon instead, matching
- * what the retail Gold/Silver/Crystal PC list actually shows. This applies
- * uniformly to a GB-import cell resolved to GEN2 (the ordinary case: a Crystal
- * import sitting in an Emerald PC box) AND to a NATIVE Gen-3 mon whose PC/BANK/
- * GBGRID cell the user set to GEN2 in Settings -- both ask the SAME question
- * ("what era does THIS cell, at the CURRENT place, resolve to") and get the
- * SAME answer, which is the whole point: the icon is a property of the CELL's
- * chosen era, not of whether the mon happened to arrive via an import.
+ * what the retail Gold/Silver/Crystal PARTY MENU actually shows (D5: NOT Bill's PC
+ * list -- per pokecrystal, the PC box screen draws each mon's FRONT picture; the
+ * 16x16 icon this rung reaches for is the party menu's -- also the naming screen,
+ * move list, trade, and the Fly map). This applies uniformly to a GB-import cell
+ * resolved to GEN2 (the ordinary case: a Crystal import sitting in an Emerald PC
+ * box) AND to a NATIVE Gen-3 mon whose PC/BANK/GBGRID cell the user set to GEN2 in
+ * Settings -- both ask the SAME question ("what era does THIS cell, at the CURRENT
+ * place, resolve to") and get the SAME answer, which is the whole point: the icon
+ * is a property of the CELL's chosen era, not of whether the mon happened to arrive
+ * via an import.
  *
  * GEN1-resolved cells are UNCHANGED (fall through to the portrait below): Gen 1
  * has no per-species menu icons at all (rom_gbicon.h; se_resolve's own
  * SE_WHY_NO_ICONS already refuses GEN1 at the PC grid for the same reason), so
  * there is nothing here for GEN1 to serve.
+ *
+ * D1: the era question below is cell_era_of() (the UNCOLLAPSED resolver, falling
+ * back to the ordinary one), the same helper cell_pack() uses -- not s_era_resolver
+ * directly. Asking the collapsed resolver here reported a Gen-2 import sitting at
+ * its native/default cell as NATIVE (no icon) while a native Gen-3 mon overridden
+ * to GEN2 got one -- see cell_era_of()'s comment for the full reasoning.
  */
 int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out) {
   (void)slot;   /* the cache decides the MARKER; the art is always recomputed from the
@@ -728,9 +761,8 @@ int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out) {
 
   PdnaOrigin o;
   pdna_origin_of(m, &o);
-  int era = ERA_NATIVE;
   uint16_t nat_dex = pk_national_no(m->species);
-  if (s_era_resolver) era = s_era_resolver(s_place, o.gen, o.gen_certain, nat_dex, 0);
+  int era = cell_era_of(o.gen, o.gen_certain, nat_dex);
 
   if (era == ERA_GEN2 && s_gb_on && s_gb.icon &&
       m->species >= 1 && m->species <= GEN2_MAX_DEX &&
