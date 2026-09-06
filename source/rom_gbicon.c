@@ -258,6 +258,24 @@ int rom_gbicon_open_loc(RomGbIcon* gi, GbReadFn read, void* ctx, uint32_t size,
   if (loc && loc->id_hash == gi->id_hash && loc->size == size &&
       loc->n >= 8 && loc->n <= ROM_GBICON_MAX_KINDS && loc->icon_bank != 0) {
     int ok = 1;
+    /* D3 (E5 fix, adversarial review): re-check loc->mon_menu_icons too, not just
+     * loc->icon_pointers -- this header comment used to claim the cached path
+     * "re-checks ... every named offset", but it never re-read the menu-icons
+     * window at all, so a stale/tampered mon_menu_icons offset (same id_hash/
+     * size, e.g. a hand-edited RomGbIconLoc, or a future caller that persists the
+     * struct across a ROM edit) would sail through: the icon_pointers sanity net
+     * below decodes graphics from loc->icon_bank/loc->icon_pointers alone and
+     * never touches loc->mon_menu_icons, so a wrong offset there would silently
+     * label every species with the wrong icon KIND while every other check
+     * passed. Runs the SAME shape check locate() runs on a fresh scan:
+     * menu_icons_cb's ten structural invariants plus window_max() matching the
+     * cached n exactly (not just "no larger than" -- a window whose real max
+     * differs from loc->n is not the window this loc came from, even if it
+     * happens to still look like a valid table). */
+    uint8_t menu_window[ROM_GBICON_SPECIES];
+    if (!rd(gi, loc->mon_menu_icons, menu_window, sizeof menu_window)) ok = 0;
+    else if (!menu_icons_cb(menu_window)) ok = 0;
+    else if (window_max(menu_window, sizeof menu_window) != loc->n) ok = 0;
     for (uint32_t k = 1; k <= loc->n && ok; k++) {
       uint8_t raw[2];
       if (!rd(gi, loc->icon_pointers + k * 2u, raw, 2)) { ok = 0; break; }

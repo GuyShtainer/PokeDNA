@@ -71,6 +71,19 @@
  * `DEF NUM_ICONS EQU const_value - 1` (39 constants 0..38, ICON_NULL=0 unused
  * here) -- but the code below never assumes that number, it reads it back.
  *
+ * D7 (E5 fix): "the window's own maximum byte value" equals NUM_ICONS only
+ * because Charizard happens to hold the LAST-assigned kind in both games (its
+ * own row above -- BIGMON -- is what proves its kind is unique, not that it is
+ * the highest one; the two facts coincide in Gold/Silver/Crystal but nothing
+ * here derives one from the other). A hypothetical variant whose top-numbered
+ * kind belonged to some OTHER, unused species would make window_max() read a
+ * value strictly LESS than that variant's true NUM_ICONS. That is not a
+ * mis-location risk: an icon kind window_max() never reports for `n` is simply
+ * a kind this module will refuse to serve (kind > gi->n fails rom_gbicon_tiles/
+ * rom_gbicon_pal's own range check) -- FAIL CLOSED, never mis-locate. The
+ * failure mode is "this one high-numbered species never gets an icon," not
+ * "some species gets the WRONG icon."
+ *
  * IconPointers (data/icon_pointers.asm): N+1 little-endian 16-bit values in
  * 0x4000..0x7FFF (the GB ROMX window). Located BY SHAPE too, using a fact this
  * project discovered rather than one decomp states outright: entries 1..N are
@@ -172,7 +185,13 @@ typedef struct RomGbIcon {
  * and a second, independently-versioned cache file costs nothing extra under
  * PDNA_DIR while carrying zero risk to it). Validate-on-load is automatic:
  * rom_gbicon_open_loc() re-checks id_hash/size and every named offset before
- * trusting the cache, exactly like RomGbSpriteLoc. */
+ * trusting the cache, exactly like RomGbSpriteLoc. (D3, E5 fix: this claim used
+ * to be false for mon_menu_icons -- the cached path re-validated icon_pointers/
+ * icon_bank via the per-kind decode sanity net but never re-read the menu-icons
+ * window at all, so a stale/tampered mon_menu_icons offset with an otherwise
+ * matching id_hash/size would sail through. Fixed: the cached path now re-runs
+ * menu_icons_cb's structural shape check against loc->mon_menu_icons and
+ * requires window_max() to still equal loc->n before accepting it.) */
 typedef struct RomGbIconLoc {
   uint32_t id_hash;
   uint32_t size;

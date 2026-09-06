@@ -215,6 +215,18 @@ static void run_gen2(const char* name, int with_pixel_checks) {
       rom_gbicon_open_loc(&gi3, file_read, &fc, sz, g_scratch, sizeof g_scratch, &bad) &&
       gi3.icon_pointers == gi.icon_pointers && gi3.mon_menu_icons == gi.mon_menu_icons);
 
+  /* D3 (E5 fix): a tampered mon_menu_icons must be caught too -- before this
+   * fix, the cached path never re-read the menu-icons window at all, so this
+   * would have sailed through (icon_pointers/icon_bank still checked out) and
+   * silently mislabeled every species' icon KIND. */
+  RomGbIconLoc bad_menu = loc;
+  bad_menu.mon_menu_icons ^= 0x40;   /* points at the wrong window entirely */
+  RomGbIcon gi3b;
+  chk(name, "D3: a tampered mon_menu_icons is rejected and the full scan re-runs",
+      rom_gbicon_open_loc(&gi3b, file_read, &fc, sz, g_scratch, sizeof g_scratch, &bad_menu) &&
+      gi3b.mon_menu_icons == gi.mon_menu_icons && gi3b.icon_pointers == gi.icon_pointers &&
+      gi3b.n == gi.n && gi3b.icon_bank == gi.icon_bank);
+
   /* 7b) NEGATIVE CONTROL: corrupt MonMenuIcons' own first byte (Bulbasaur's
    * kind) so it no longer matches Ivysaur/Venusaur's -- breaks the very
    * invariant the locator requires, so the whole ROM must refuse to open. */
