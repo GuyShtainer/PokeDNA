@@ -20,17 +20,24 @@
 
 /* E5: the Gen-2 menu-ICON rung's own measured need, parallel to PDNA_GB_FETCH_NEED
  * above but for gb_art_icon_cb -> gb_art_fetch_icon -> rom_gbicon_* -> the SD read
- * tail, instead of the portrait rung's rom_gbsprite_* chain. Expected (and,
- * per this slice's own -fstack-usage measurement -- see gb_art_source.c's
- * gb_art_fetch_icon comment -- confirmed) well under PDNA_GB_FETCH_NEED: there is
- * no in-place mon_decomp aliasing trick to reason about (the icon decode is a
- * tiny 64 B tile buffer on the stack, expanded straight into mon_decomp with no
- * overlap), and RomGbIcon is smaller than RomGbSprite. Kept as its OWN gate
- * (not reusing PDNA_GB_FETCH_NEED) so a chain that cannot clear the bigger
- * portrait gate may still safely clear this smaller one -- the same reasoning
- * pdna_origin_art.h's PDNA_G3X_FETCH_NEED already documents for the cross-game
- * rung. */
-#define PDNA_GB_ICON_NEED 3072
+ * tail, instead of the portrait rung's rom_gbsprite_* chain.
+ *
+ * MEASURED (arm-none-eabi-gcc -O2 -fstack-usage, 2026-09-06), and the number is a
+ * genuine surprise against this slice's own first-draft comment here (which
+ * guessed "far below" PDNA_GB_FETCH_NEED before anything was measured): gb_art_icon_cb's
+ * own total is 5,592 B, essentially TIED with gb_art_pic_cb's 5,632 B, not
+ * meaningfully smaller. The reason is that neither number is dominated by the
+ * decode this slice actually changed -- gb_art_fetch_icon's own frame (3,544 B) is
+ * only marginally under gb_art_fetch's (3,672 B), because BOTH chains bottom out in
+ * the exact same shared FatFs tail (f_open -> dir_register -> dir_find -> dir_read
+ * -> load_xdir -> dir_next -> create_chain -> fill_last_frag, all identical code
+ * either way), which is what actually costs the bulk of the ~5.6 KB, not the
+ * RomGbIcon-vs-RomGbSprite or the aliasing-trick difference this slice expected to
+ * matter. So this is deliberately NOT a smaller gate than PDNA_GB_FETCH_NEED (the
+ * measurement does not support one) -- it is its own named constant, currently
+ * equal, so that if a future change genuinely shrinks one rung's cost independently
+ * of the other, re-measuring only has to touch the constant that actually moved. */
+#define PDNA_GB_ICON_NEED 6144
 
 /*
  * gb_art_source — the FIRST real caller of rom_gbsprite.c (source/rom_gbsprite.h), and
