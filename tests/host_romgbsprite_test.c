@@ -224,6 +224,34 @@ static void run_gen1(const char* file, const G1Want* want, uint32_t nwant) {
     chk(file, "the top-left pixel is background, i.e. transparent", g_rgb[0] == 0);
   }
 
+  /* 6b) rom_gbsprite_pic_buf() + rom_gbsprite_to_rgb15_inplace() (gb_art_source.c's
+   * mon_decomp-sharing path, E3 review fix) must agree PIXEL FOR PIXEL with the
+   * GbSprite + two-buffer path above, for every front in the corpus -- including
+   * whichever dex is 7x7 (56x56 = 3,136 px, the exact worst case the in-place
+   * function's header comment proves is safe: reading px[i] before writing dst[i]
+   * at i == 3,135, where they are the SAME byte). A silent off-by-one here would
+   * corrupt exactly the largest, most visually obvious sprites. */
+  {
+    static uint8_t buf[8192];      /* mon_decomp's own size */
+    int checked = 0, mismatches = 0;
+    for (uint16_t dex = 1; dex <= 151; dex++) {
+      RomGbPic pr, pb;
+      if (!rom_gbsprite_pic(&gs, ROM_GBSPRITE_FRONT, dex, 0, &g_spr, &pr)) continue;
+      if (!rom_gbsprite_to_rgb15(&g_spr, pal, g_rgb, pr.pixels)) continue;
+      memset(buf, 0xAA, sizeof buf);   /* poison: a stale byte must not look right */
+      int ok = rom_gbsprite_pic_buf(&gs, ROM_GBSPRITE_FRONT, dex, 0,
+                                    buf + ROM_GBSPRITE_MAX_PIXELS, buf + 6272, &pb) &&
+              rom_gbsprite_to_rgb15_inplace(buf, ROM_GBSPRITE_MAX_PIXELS, pb.w, pb.h, pal);
+      checked++;
+      if (!ok || pr.w != pb.w || pr.h != pb.h ||
+          memcmp(g_rgb, buf, (size_t)pr.pixels * 2u) != 0)
+        mismatches++;
+    }
+    printf("      in-place vs GbSprite path: %d checked, %d mismatch(es)\n", checked, mismatches);
+    chk(file, "rom_gbsprite_pic_buf + to_rgb15_inplace match the GbSprite path for every front",
+        checked == 151 && mismatches == 0);
+  }
+
   /* 8) NEGATIVE CONTROLS. Corrupt dex 1's BASE_PIC_SIZE byte in flight: the
    *    picture the pointer leads to now disagrees with the base stats, which is
    *    exactly the signal a WRONG SPRITE BANK produces. If this "passes", the
@@ -372,6 +400,46 @@ static void run_gen2(const char* file, const G2Want* want, uint32_t nwant) {
     for (uint32_t i = 0; i < p.pixels; i++)
       if (g_rgb[i] && (g_rgb[i] & 0x7FFFu) != 0x7FFFu) coloured++;
     chk(file, "the expansion actually uses the cartridge's colours", coloured > 0);
+  }
+
+  /* 6b) same in-place cross-check as the Gen-1 test, over every non-Unown front AND
+   * all 26 Unown letters -- Gen 2's front sizes reach 7x7 too (see the "front
+   * sizes" line above), so this corpus also exercises the i == 3,135 coincidence. */
+  {
+    static uint8_t buf[8192];
+    int checked = 0, mismatches = 0;
+    for (uint16_t dex = 1; dex <= 251; dex++) {
+      if (dex == ROM_GBSPRITE_UNOWN_DEX) continue;
+      RomGbPic pr, pb;
+      if (!rom_gbsprite_pic(&gs, ROM_GBSPRITE_FRONT, dex, 0, &g_spr, &pr)) continue;
+      if (!rom_gbsprite_pal(&gs, dex, 0, pal)) continue;
+      if (!rom_gbsprite_to_rgb15(&g_spr, pal, g_rgb, pr.pixels)) continue;
+      memset(buf, 0xAA, sizeof buf);
+      int ok = rom_gbsprite_pic_buf(&gs, ROM_GBSPRITE_FRONT, dex, 0,
+                                    buf + ROM_GBSPRITE_MAX_PIXELS, buf + 6272, &pb) &&
+              rom_gbsprite_to_rgb15_inplace(buf, ROM_GBSPRITE_MAX_PIXELS, pb.w, pb.h, pal);
+      checked++;
+      if (!ok || pr.w != pb.w || pr.h != pb.h ||
+          memcmp(g_rgb, buf, (size_t)pr.pixels * 2u) != 0)
+        mismatches++;
+    }
+    for (uint8_t f = 0; f < ROM_GBSPRITE_UNOWN_FORMS; f++) {
+      RomGbPic pr, pb;
+      if (!rom_gbsprite_pic(&gs, ROM_GBSPRITE_FRONT, ROM_GBSPRITE_UNOWN_DEX, f, &g_spr, &pr)) continue;
+      if (!rom_gbsprite_pal(&gs, ROM_GBSPRITE_UNOWN_DEX, 0, pal)) continue;
+      if (!rom_gbsprite_to_rgb15(&g_spr, pal, g_rgb, pr.pixels)) continue;
+      memset(buf, 0xAA, sizeof buf);
+      int ok = rom_gbsprite_pic_buf(&gs, ROM_GBSPRITE_FRONT, ROM_GBSPRITE_UNOWN_DEX, f,
+                                    buf + ROM_GBSPRITE_MAX_PIXELS, buf + 6272, &pb) &&
+              rom_gbsprite_to_rgb15_inplace(buf, ROM_GBSPRITE_MAX_PIXELS, pb.w, pb.h, pal);
+      checked++;
+      if (!ok || pr.w != pb.w || pr.h != pb.h ||
+          memcmp(g_rgb, buf, (size_t)pr.pixels * 2u) != 0)
+        mismatches++;
+    }
+    printf("      in-place vs GbSprite path: %d checked, %d mismatch(es)\n", checked, mismatches);
+    chk(file, "rom_gbsprite_pic_buf + to_rgb15_inplace match the GbSprite path (fronts + Unown)",
+        checked == 276 && mismatches == 0);
   }
 
   /* 8) NEGATIVE CONTROLS */

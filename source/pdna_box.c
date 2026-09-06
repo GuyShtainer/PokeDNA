@@ -439,6 +439,7 @@ static void wp_blit_tile(const uint16_t* t64, int bx, int by, int rows) {
 
 static bool wp_rom_stage(const RomWallpaper* rw, int wp, uint32_t* tiles_bytes,
                          uint16_t pal[ROM_WP_PAL_BANKS][16], int* retries_io) {
+  artbuf_claim();    /* E3 review BLOCKING 2: about to borrow+overwrite mon_decomp */
   int ok = 0;
   for (int a = 0; a < WP_ROM_RETRIES && !ok; a++) {
     if (!rom_wallpaper_map(rw, wp, s_wp_map)) { (*retries_io)++; continue; }
@@ -1241,6 +1242,23 @@ static void era_cell_icon_back(int slot) {
   boxoam_show_slot(slot);
 }
 
+/* The scale+blit half of one cell, split out (E3 review BLOCKING 1) so its 1,056-B
+ * `cell[]` is NEVER on the stack at the same time as pdna_origin_box_art()'s fetch
+ * chain (gb_art_fetch's own frame, ~3.5 KB, plus its callees) -- era_cell_draw()
+ * below calls this ONLY AFTER that fetch has already returned and popped, so the two
+ * frames never coexist. noinline: an inlined copy would put `cell[]` right back into
+ * era_cell_draw's own frame, silently undoing the split. */
+static void __attribute__((noinline))
+era_cell_blit(int slot, const PdnaArt* a, int cx, int cy) {
+  u16 cell[CELL_W * CELL_H];             /* 1056 B of STACK. Never a static, never
+                                          * EWRAM (hard rule 2) — and never 30 of them. */
+  if (pdna_origin_cell_render(a, cell, CELL_W, CELL_H)) {
+    ui_sprite(cx, cy, CELL_W, CELL_H, cell);
+    s_era_drawn |= 1u << slot;
+    boxoam_hide_slot(slot);              /* or the Gen-3 icon sits ON the Gen-1 sprite */
+  }
+}
+
 /* One cell, both layers. Called only from a full repaint — the picture costs a GB pic
  * decode off the card, so it must never sit on a per-frame path. */
 static void era_cell_draw(int slot) {
@@ -1253,16 +1271,10 @@ static void era_cell_draw(int slot) {
     PdnaArt a;
     /* gen == PDNA_GEN3 means the router fell back (the ROM could not serve this
      * species): leave the ordinary Gen-3 OBJ icon alone rather than blitting the same
-     * picture twice, once badly. */
-    if (pdna_origin_box_art(slot, &g_box[slot], &a) && a.px && a.gen != PDNA_GEN3) {
-      u16 cell[CELL_W * CELL_H];         /* 1056 B of STACK. Never a static, never
-                                          * EWRAM (hard rule 2) — and never 30 of them. */
-      if (pdna_origin_cell_render(&a, cell, CELL_W, CELL_H)) {
-        ui_sprite(cx, cy, CELL_W, CELL_H, cell);
-        s_era_drawn |= 1u << slot;
-        boxoam_hide_slot(slot);          /* or the Gen-3 icon sits ON the Gen-1 sprite */
-      }
-    }
+     * picture twice, once badly. era_cell_blit's own frame (cell[]) is allocated only
+     * for THIS call, after pdna_origin_box_art's fetch chain has already unwound. */
+    if (pdna_origin_box_art(slot, &g_box[slot], &a) && a.px && a.gen != PDNA_GEN3)
+      era_cell_blit(slot, &a, cx, cy);
   }
   era_cell_mark(slot);                   /* layer 2 goes on top of layer 1 */
 }

@@ -263,6 +263,18 @@ void rom_gbsprite_save_loc(const RomGbSprite* gs, RomGbSpriteLoc* out);
 int rom_gbsprite_pic(RomGbSprite* gs, RomGbSide side, uint16_t dex, uint8_t form,
                      GbSprite* out, RomGbPic* info);
 
+/* Same decode, into caller-owned `px` (>= GB_SPRITE_MAX_PX bytes) and `work`
+ * (>= GB_SPRITE_WORK bytes) instead of a GbSprite -- rom_gbsprite_pic() above is now
+ * a thin wrapper over this (out->px, out->work). Exists so a caller can place px/work
+ * inside a buffer it plans to reuse for something else afterward (gb_art_source.c:
+ * both live inside mon_decomp, freeing it from ALSO needing a 3,928 B GbSprite on the
+ * stack -- see the "does NOT work in place" note below, now qualified). `px` and
+ * `work` need not be adjacent and may alias a THIRD region the caller will overwrite
+ * next (rom_gbsprite_to_rgb15_inplace() is what makes that safe). Same
+ * errors/semantics as rom_gbsprite_pic(). */
+int rom_gbsprite_pic_buf(RomGbSprite* gs, RomGbSide side, uint16_t dex, uint8_t form,
+                         uint8_t* px, uint8_t* work, RomGbPic* info);
+
 /*
  * The 4-entry RGB15 palette for that species. Gen 2 reads the cart's own colours
  * (normal or shiny); Gen 1 has none, so it answers the four DMG greys -- which is
@@ -279,10 +291,34 @@ int rom_gbsprite_pal(const RomGbSprite* gs, uint16_t dex, int shiny, uint16_t ds
  * blitter and a Gen-1, Gen-2 and Gen-3 sprite can sit in the same bank row.
  *
  * `dst` needs s->w * s->h entries (3136 at worst, i.e. 6 272 B: mon_decomp
- * holds it). This does NOT work in place -- the GbSprite is the codec's, keep it.
+ * holds it). This does NOT work in place if `dst` is `s->px` reinterpreted --
+ * the general two-buffer case here is unrelated to a SPECIFIC shared-buffer layout
+ * that IS safe; see rom_gbsprite_to_rgb15_inplace() immediately below for that one.
  * A short `dst_pixels` is REFUSED, never truncated. Returns 1, or 0.
  */
 int rom_gbsprite_to_rgb15(const GbSprite* s, const uint16_t pal[4],
                           uint16_t* dst, uint32_t dst_pixels);
+
+/*
+ * The SAME conversion, but IN PLACE within one buffer: RGB15 output at
+ * buf[0 .. 2*w*h), read from indexed pixels at buf[px_off .. px_off + w*h). Safe
+ * IFF px_off >= GB_SPRITE_MAX_PX (3,136) -- the loop runs i = 0 .. w*h-1 ascending
+ * ("front to back" through the destination, reading from "the back" of the shared
+ * buffer), and for every i < w*h-1 the write to buf[2i, 2i+1] lands strictly before
+ * buf[px_off+i] (the pixel it is about to read on some LATER iteration is never
+ * touched by an EARLIER one, because writes only ever reach as far as
+ * 2*(w*h-1)+1 = 2*w*h-1, and px_off - 1 + w*h >= px_off - 1 + i + 1 for the
+ * smallest still-unread index; concretely, with px_off == 3,136 and w*h <= 3,136,
+ * the write frontier 2i+1 never reaches an unread px_off+j for j > i). The single
+ * coincidence is i == w*h-1 at the worst-case size (px_off == GB_SPRITE_MAX_PX,
+ * w*h == 3,136 exactly): buf[px_off+i] and buf[2i+1] are the SAME byte, which is
+ * why the loop body reads px[i] into a local BEFORE writing dst[i] -- ordinary
+ * "read source, then write destination" is already enough; no special-casing that
+ * index is needed, only NOT reordering the two inside one iteration.
+ * `px_off` < GB_SPRITE_MAX_PX is refused (returns 0) -- the margin argument above
+ * requires it. Returns 1, or 0 on bad geometry or a bad pixel value (index > 3).
+ */
+int rom_gbsprite_to_rgb15_inplace(uint8_t* buf, uint32_t px_off, uint8_t w, uint8_t h,
+                                  const uint16_t pal[4]);
 
 #endif /* ROM_GBSPRITE_INCLUDED */

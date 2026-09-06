@@ -541,7 +541,7 @@ static int g1_row(const RomGbSprite* gs, uint16_t dex, uint8_t* row) {
 }
 
 static int g1_pic(RomGbSprite* gs, RomGbSide side, uint16_t dex,
-                  GbSprite* out, RomGbPic* info) {
+                  uint8_t* px, uint8_t* work, RomGbPic* info) {
   uint8_t row[G1_ROW];
   if (!g1_row(gs, dex, row)) return 0;
   uint8_t idx = g1_internal(gs, dex);
@@ -550,8 +550,9 @@ static int g1_pic(RomGbSprite* gs, RomGbSide side, uint16_t dex,
   uint32_t off = bank_off(gs, g1_bank(gs, idx), ptr);
   if (!off) return 0;
 
-  if (gb_sprite_gen1(out, gs->read, gs->ctx, off) != GB_SPRITE_OK) return 0;
-  if (!out->wt || !out->ht || out->wt > 7 || out->ht > 7) return 0;
+  GbSpriteInfo gi;
+  if (gb_sprite_gen1_buf(px, work, gs->read, gs->ctx, off, &gi) != GB_SPRITE_OK) return 0;
+  if (!gi.wt || !gi.ht || gi.wt > 7 || gi.ht > 7) return 0;
 
   /* THE ASSERT THAT MATTERS. A Gen-1 pic carries its own geometry byte, and for
    * a FRONT pic it must equal the base-stats one. A wrong sprite bank hands back
@@ -560,15 +561,15 @@ static int g1_pic(RomGbSprite* gs, RomGbSide side, uint16_t dex,
    * their geometry from the stream too), so they only get the bank-bounds check. */
   if (side == ROM_GBSPRITE_FRONT) {
     uint8_t dim = row[G1_PIC_SIZE];
-    if (out->wt != (uint8_t)(dim >> 4) || out->ht != (uint8_t)(dim & 0x0Fu)) return 0;
+    if (gi.wt != (uint8_t)(dim >> 4) || gi.ht != (uint8_t)(dim & 0x0Fu)) return 0;
   }
   /* and the stream must have ended inside its own 16 KiB bank */
-  if (out->consumed == 0 || out->consumed > bank_end(off) - off) return 0;
+  if (gi.consumed == 0 || gi.consumed > bank_end(off) - off) return 0;
 
-  info->gen = 1; info->wt = out->wt; info->ht = out->ht;
-  info->w = out->w; info->h = out->h;
-  info->pixels = (uint32_t)out->w * out->h;
-  info->consumed = out->consumed;
+  info->gen = 1; info->wt = gi.wt; info->ht = gi.ht;
+  info->w = gi.w; info->h = gi.h;
+  info->pixels = (uint32_t)gi.w * gi.h;
+  info->consumed = gi.consumed;
   return 1;
 }
 
@@ -608,32 +609,33 @@ static int g2_size(const RomGbSprite* gs, uint16_t dex, uint8_t* out) {
  * did happen twice the resolve reports AMBIGUOUS and shows nothing, rather than
  * showing the wrong Pokemon.
  */
-static int g2_plausible(const GbSprite* s, int is_front) {
-  uint32_t w = s->w, h = s->h, n = w * h;
+static int g2_plausible(const uint8_t* px, uint32_t w, uint32_t h, int is_front) {
+  uint32_t n = w * h;
   if (n < 4) return 0;
   uint32_t varied = 0;
-  for (uint32_t i = 1; i < n; i++) if (s->px[i] != s->px[0]) { varied = 1; break; }
+  for (uint32_t i = 1; i < n; i++) if (px[i] != px[0]) { varied = 1; break; }
   if (!varied) return 0;
   uint32_t bt = 0, bz = 0;
   for (uint32_t x = 0; x < w; x++) {
-    bt += 2; bz += (s->px[x] == 0) + (s->px[(h - 1) * w + x] == 0);
+    bt += 2; bz += (px[x] == 0) + (px[(h - 1) * w + x] == 0);
   }
   for (uint32_t y = 1; y + 1 < h; y++) {
-    bt += 2; bz += (s->px[y * w] == 0) + (s->px[y * w + w - 1] == 0);
+    bt += 2; bz += (px[y * w] == 0) + (px[y * w + w - 1] == 0);
   }
   if (!is_front) return bz * 100u >= bt * 55u;
-  int corners = (s->px[0] == 0 && s->px[w - 1] == 0 &&
-                 s->px[(h - 1) * w] == 0 && s->px[n - 1] == 0);
+  int corners = (px[0] == 0 && px[w - 1] == 0 &&
+                 px[(h - 1) * w] == 0 && px[n - 1] == 0);
   return corners ? (bz * 100u >= bt * 55u) : (bz * 100u >= bt * 85u);
 }
 
 static int g2_try(RomGbSprite* gs, uint32_t bank, uint16_t addr,
-                  uint8_t wt, uint8_t ht, int is_front, GbSprite* out) {
+                  uint8_t wt, uint8_t ht, int is_front, uint8_t* px, uint8_t* work) {
   uint32_t off = bank_off(gs, bank, addr);
   if (!off) return 0;
-  if (gb_sprite_gen2(out, gs->read, gs->ctx, off, wt, ht) != GB_SPRITE_OK) return 0;
-  if (out->consumed == 0 || out->consumed > bank_end(off) - off) return 0;
-  return g2_plausible(out, is_front);
+  GbSpriteInfo gi;
+  if (gb_sprite_gen2_buf(px, work, gs->read, gs->ctx, off, wt, ht, &gi) != GB_SPRITE_OK) return 0;
+  if (gi.consumed == 0 || gi.consumed > bank_end(off) - off) return 0;
+  return g2_plausible(px, gi.w, gi.h, is_front);
 }
 
 /* Other entries in PokemonPicPointers that share a stored bank byte, so a
@@ -685,7 +687,7 @@ static uint32_t g2_peers(RomGbSprite* gs, uint8_t stored, uint16_t skip_dex,
  * here renders the wrong Pokemon in a screen whose whole point is provenance.
  */
 static int g2_resolve(RomGbSprite* gs, uint8_t stored, uint16_t dex, uint16_t addr,
-                      uint8_t wt, uint8_t ht, int is_front, GbSprite* work) {
+                      uint8_t wt, uint8_t ht, int is_front, uint8_t* px, uint8_t* work) {
   if (stored < gs->stored_lo) return 0;
   uint32_t i = (uint32_t)stored - gs->stored_lo;
   if (i >= ROM_GBSPRITE_BANKMAP) return 0;
@@ -700,10 +702,10 @@ static int g2_resolve(RomGbSprite* gs, uint8_t stored, uint16_t dex, uint16_t ad
     for (uint32_t b = 1; b < gs->banks; b++) {
       if (pass == 0 && b != first) continue;          /* try the default first */
       if (pass == 1 && b == first) continue;
-      if (!g2_try(gs, b, addr, wt, ht, is_front, work)) continue;
+      if (!g2_try(gs, b, addr, wt, ht, is_front, px, work)) continue;
       uint32_t ok = 1;
       for (uint32_t k = 0; k < np; k++)
-        if (!g2_try(gs, b, peers[k].addr, peers[k].wt, peers[k].ht, peers[k].front, work)) {
+        if (!g2_try(gs, b, peers[k].addr, peers[k].wt, peers[k].ht, peers[k].front, px, work)) {
           ok = 0; break;
         }
       if (!ok) continue;
@@ -720,20 +722,21 @@ static int g2_resolve(RomGbSprite* gs, uint8_t stored, uint16_t dex, uint16_t ad
 }
 
 static int g2_fetch(RomGbSprite* gs, uint8_t stored, uint16_t dex, uint16_t addr,
-                    uint8_t wt, uint8_t ht, int is_front, GbSprite* out) {
-  if (!g2_resolve(gs, stored, dex, addr, wt, ht, is_front, out)) return 0;
+                    uint8_t wt, uint8_t ht, int is_front, uint8_t* px, uint8_t* work,
+                    GbSpriteInfo* info) {
+  if (!g2_resolve(gs, stored, dex, addr, wt, ht, is_front, px, work)) return 0;
   uint32_t bank = gs->bank_map[stored - gs->stored_lo];
   uint32_t off = bank_off(gs, bank, addr);
   if (!off) return 0;
-  if (gb_sprite_gen2(out, gs->read, gs->ctx, off, wt, ht) != GB_SPRITE_OK) return 0;
-  return out->consumed != 0 && out->consumed <= bank_end(off) - off;
+  if (gb_sprite_gen2_buf(px, work, gs->read, gs->ctx, off, wt, ht, info) != GB_SPRITE_OK) return 0;
+  return info->consumed != 0 && info->consumed <= bank_end(off) - off;
 }
 
 /* UnownPicPointers sits at the SAME bank-relative address as PokemonPicPointers,
  * in the bank of "Pics 2" (gfx/pics.asm asserts the first half — "These are
  * assumed to be at the same address in their respective banks" — and layout.link
  * the second). Resolve that bank first, then prove all 26 letters decode. */
-static int g2_unown_table(RomGbSprite* gs, GbSprite* work) {
+static int g2_unown_table(RomGbSprite* gs, uint8_t* px, uint8_t* work) {
   if (gs->unown_ptrs) return 1;
   uint8_t sz;
   if (!g2_size(gs, ROM_GBSPRITE_UNOWN_DEX, &sz)) return 0;
@@ -742,7 +745,7 @@ static int g2_unown_table(RomGbSprite* gs, GbSprite* work) {
   uint8_t stored1 = (uint8_t)(gs->stored_lo + 1);
   G2Peer p[1];
   if (g2_peers(gs, stored1, 0, p, 1) != 1) return 0;
-  if (!g2_resolve(gs, stored1, 0, p[0].addr, p[0].wt, p[0].ht, p[0].front, work)) return 0;
+  if (!g2_resolve(gs, stored1, 0, p[0].addr, p[0].wt, p[0].ht, p[0].front, px, work)) return 0;
   uint32_t bank = gs->bank_map[1];
   if (!bank) return 0;
 
@@ -750,16 +753,17 @@ static int g2_unown_table(RomGbSprite* gs, GbSprite* work) {
   if (off >= gs->size || ROM_GBSPRITE_UNOWN_FORMS * G2_ENTRY > gs->size - off) return 0;
 
   uint8_t e[G2_ENTRY];
+  GbSpriteInfo gi;
   for (uint32_t i = 0; i < ROM_GBSPRITE_UNOWN_FORMS; i++) {
     if (!rd(gs, off + i * G2_ENTRY, e, G2_ENTRY)) return 0;
-    if (!g2_fetch(gs, e[0], 0, rd16(e + 1), sz, sz, 1, work)) return 0;
+    if (!g2_fetch(gs, e[0], 0, rd16(e + 1), sz, sz, 1, px, work, &gi)) return 0;
   }
   gs->unown_ptrs = off;
   return 1;
 }
 
 static int g2_pic(RomGbSprite* gs, RomGbSide side, uint16_t dex, uint8_t form,
-                  GbSprite* out, RomGbPic* info) {
+                  uint8_t* px, uint8_t* work, RomGbPic* info) {
   uint8_t sz;
   if (!g2_size(gs, dex, &sz)) return 0;
   uint8_t tw = sz, th = sz;
@@ -769,7 +773,7 @@ static int g2_pic(RomGbSprite* gs, RomGbSide side, uint16_t dex, uint8_t form,
   uint32_t entry;
   if (dex == ROM_GBSPRITE_UNOWN_DEX) {
     if (form >= ROM_GBSPRITE_UNOWN_FORMS) return 0;
-    if (!g2_unown_table(gs, out)) return 0;
+    if (!g2_unown_table(gs, px, work)) return 0;
     entry = gs->unown_ptrs + (uint32_t)form * G2_ENTRY;
   } else {
     if (form) return 0;
@@ -778,30 +782,48 @@ static int g2_pic(RomGbSprite* gs, RomGbSide side, uint16_t dex, uint8_t form,
   uint8_t e[G2_ENTRY];
   if (!rd(gs, entry, e, G2_ENTRY)) return 0;
   uint32_t k = (side == ROM_GBSPRITE_FRONT) ? 0 : 3;
+  GbSpriteInfo gi;
   if (!g2_fetch(gs, e[k], dex, rd16(e + k + 1), tw, th,
-                side == ROM_GBSPRITE_FRONT, out)) return 0;
-  if (out->wt != tw || out->ht != th) return 0;
+                side == ROM_GBSPRITE_FRONT, px, work, &gi)) return 0;
+  if (gi.wt != tw || gi.ht != th) return 0;
 
   info->gen = 2; info->wt = tw; info->ht = th;
-  info->w = out->w; info->h = out->h;
-  info->pixels = (uint32_t)out->w * out->h;
-  info->consumed = out->consumed;   /* to the end of frame 0, not of the blob */
+  info->w = gi.w; info->h = gi.h;
+  info->pixels = (uint32_t)gi.w * gi.h;
+  info->consumed = gi.consumed;   /* to the end of frame 0, not of the blob */
   return 1;
 }
 
 /* ------------------------------------------------------------------- API */
 
+int rom_gbsprite_pic_buf(RomGbSprite* gs, RomGbSide side, uint16_t dex, uint8_t form,
+                         uint8_t* px, uint8_t* work, RomGbPic* info) {
+  RomGbPic tmp;
+  if (!info) info = &tmp;
+  memset(info, 0, sizeof *info);
+  if (!gs || !gs->ok || !px || !work) return 0;
+  if (side != ROM_GBSPRITE_FRONT && side != ROM_GBSPRITE_BACK) return 0;
+  int r = 0;
+  if (gs->gen == GB_ROM_GEN1)      r = (form == 0) && g1_pic(gs, side, dex, px, work, info);
+  else if (gs->gen == GB_ROM_GEN2) r = g2_pic(gs, side, dex, form, px, work, info);
+  if (!r) memset(info, 0, sizeof *info);
+  return r;
+}
+
 int rom_gbsprite_pic(RomGbSprite* gs, RomGbSide side, uint16_t dex, uint8_t form,
                      GbSprite* out, RomGbPic* info) {
   RomGbPic tmp;
   if (!info) info = &tmp;
-  memset(info, 0, sizeof *info);
-  if (!gs || !gs->ok || !out) return 0;
-  if (side != ROM_GBSPRITE_FRONT && side != ROM_GBSPRITE_BACK) return 0;
-  int r = 0;
-  if (gs->gen == GB_ROM_GEN1)      r = (form == 0) && g1_pic(gs, side, dex, out, info);
-  else if (gs->gen == GB_ROM_GEN2) r = g2_pic(gs, side, dex, form, out, info);
-  if (!r) memset(info, 0, sizeof *info);
+  if (!out) { memset(info, 0, sizeof *info); return 0; }
+  int r = rom_gbsprite_pic_buf(gs, side, dex, form, out->px, out->work, info);
+  /* rom_gbsprite_pic_buf() only fills `info` -- callers of THIS entry point (the
+   * host test's hash_px, e.g.) read out->wt/ht/w/h/consumed too, so mirror them
+   * back for exact behavioural equivalence with the pre-refactor function. */
+  if (r) {
+    out->wt = info->wt; out->ht = info->ht;
+    out->w  = info->w;  out->h  = info->h;
+    out->consumed = info->consumed;
+  }
   return r;
 }
 
@@ -836,6 +858,26 @@ int rom_gbsprite_to_rgb15(const GbSprite* s, const uint16_t pal[4],
    * all three generations side by side in the bank. */
   for (uint32_t i = 0; i < n; i++) {
     uint8_t v = s->px[i];
+    if (v > 3) return 0;
+    dst[i] = v ? (uint16_t)(0x8000u | (pal[v] & 0x7FFFu)) : 0u;
+  }
+  return 1;
+}
+
+int rom_gbsprite_to_rgb15_inplace(uint8_t* buf, uint32_t px_off, uint8_t w, uint8_t h,
+                                  const uint16_t pal[4]) {
+  if (!buf || !pal) return 0;
+  if (!w || !h || w > GB_SPRITE_MAX_W || h > GB_SPRITE_MAX_H) return 0;
+  if (px_off < GB_SPRITE_MAX_PX) return 0;   /* the safety margin the header proves */
+  uint32_t n = (uint32_t)w * h;
+  const uint8_t* px = buf + px_off;
+  uint16_t* dst = (uint16_t*)(void*)buf;
+  /* ASCENDING i: dst[i]'s write never reaches an unread px[j] (j > i) -- see
+   * rom_gbsprite.h's proof. Reading px[i] into `v` before writing dst[i] is what
+   * keeps the i == w*h-1 coincidence (px_off == GB_SPRITE_MAX_PX exactly) correct;
+   * every other i is safe regardless of order. */
+  for (uint32_t i = 0; i < n; i++) {
+    uint8_t v = px[i];
     if (v > 3) return 0;
     dst[i] = v ? (uint16_t)(0x8000u | (pal[v] & 0x7FFFu)) : 0u;
   }

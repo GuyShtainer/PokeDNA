@@ -20,53 +20,93 @@
  * MEMORY, measured against docs/SPRITE-ERA-DESIGN.md Sec 0's numbers (EWRAM 524 B
  * free, stack ~11.5 KB with the portrait-fetch chain already ~3.2 KB deep):
  *
- *   - The GbSprite decode buffer rom_gbsprite.h's own "WHAT IT COSTS" section
- *     recommends app_arena_acquire() for (it and mon_decomp together are ~10 KB) is
- *     UNAVAILABLE here: pdna_gen12_show() holds that exact arena for the ENTIRE GB
- *     save-viewing session (pdna_gen12.c:1895, released only after gb_session_core()
- *     returns), and box_oam.c's OTHER borrowed cache (g_entries, APP_BOX_SWAP_BYTES)
- *     is held for the entire box-screen visit too (boxoam_enter()/exit()) — both of
- *     which are exactly the screens this feature has to work DURING. So the 3,928 B
- *     GbSprite lives on the STACK of the fetch helper instead, alongside the FIL
- *     (600 B), RomGbSprite (~336 B) and the 2,048 B scan window
- *     ROM_GBSPRITE_SCRATCH_MIN rom_gbsprite_open()/open_loc() both require
- *     unconditionally (rom_gbsprite.c:434/468 — NOT only on a cache-miss scan: Gen-2's
- *     own palette verify reads up to G2_PAL_BYTES = 2,016 B through the SAME scratch
- *     even on a loc cache HIT, so this module cannot shrink it to "scan-path only" the
- *     way an earlier design estimate assumed — that assumption did not survive contact
- *     with rom_gbsprite_open_loc()'s real signature and was corrected here).
+ *   - E3 REVIEW BLOCKING 1 (2026-09-06), fixed: the first cut of this module put a
+ *     3,928 B GbSprite on gb_art_decode()'s own stack frame, nested UNDER
+ *     gb_art_fetch()'s (FIL+RomGbSprite+scratch), for 7,640 B of one fetch call --
+ *     and the reviewer's call-graph tool (whole-program .su + disassembly, not a
+ *     per-function guess) proved that plus the real caller chains overran the
+ *     ~11.5 KB user stack by 400-1,800 B depending on which screen. FIXED by decoding
+ *     IN PLACE inside mon_decomp (8,192 B) instead: rom_gbsprite_pic_buf() (new,
+ *     rom_gbsprite.h) writes the indexed pixels at mon_decomp+ROM_GBSPRITE_MAX_PIXELS
+ *     (3,136) and the codec's own work[] scratch right after that
+ *     (mon_decomp+ROM_GBSPRITE_RGB15_BYTES, 6,272), and
+ *     rom_gbsprite_to_rgb15_inplace() (new) expands those SAME bytes back into
+ *     mon_decomp+0 as RGB15 -- see rom_gbsprite.h for the full margin proof (px_off
+ *     must be >= the worst-case pixel count, which GB_SPRITE_MAX_PX exactly is) and
+ *     tests/host_romgbsprite_test.c's 427-picture cross-check against the original
+ *     two-buffer path (every 7x7 sprite in all four of Guy's dumps, the exact
+ *     coincidence boundary). There is now no separate GbSprite at all: gb_art_fetch()
+ *     is ONE noinline frame (FIL 600 B, RomGbSprite ~336 B, RomGbSpriteLoc ~260 B,
+ *     the 2,048 B scan window, the path buffer) -- rom_gbsprite_open()/open_loc()
+ *     require that scratch unconditionally regardless of a loc cache hit (Gen-2's
+ *     palette verify reads up to 2,016 B through it even then), so it could not be
+ *     made scan-path-only the way an earlier estimate assumed.
  *
- *     MEASURED (arm-none-eabi-gcc -O2 -fstack-usage, 2026-09-06): gb_art_fetch() 3,656 B
- *     own frame, gb_art_decode() 3,984 B (the two are nested, not concurrent siblings —
- *     fetch calls decode — so they ADD: 7,640 B for one portrait fetch). Walking the
- *     real box-grid call chain the same way: main() 2,384 B (view_save()/nav_menu()
- *     both single-call-site and inlined into it) -> pdna_box() 488 B -> draw_left()
- *     144 B -> pdna_origin_art_portrait() 128 B (fetch_pic() inlined into it) ->
- *     gb_art_pic_cb() 24 B -> gb_art_fetch()+gb_art_decode() 7,640 B = **10,808 B of
- *     the ~11,600 B user stack** (IWRAM 32,768 B minus the 21,008 B .text/.bss this
- *     build's `main` region uses, minus the linker script's 0xA0 __sp_usr/__sp_irq
- *     reservation; IRQ mode has its own separate 0xA0 B stack per gba_cart.ld, so
- *     interrupts do not add to this). That is a ~792 B margin, not a comfortable one —
- *     summary-screen portrait_redraw() (264 B own frame, shallower callers than
- *     pdna_box()) fares better. **Flagged for hardware-testing-protocol, not asserted
- *     safe from static analysis alone**: this is a per-function sum along the shortest
- *     traced path, not a whole-program worst-case (a deeper nested UI call before the
- *     fetch, or different register allocation at final link, could still eat the
- *     margin). §J of docs/HW-TEST-2026-09-05-GB-ARC.md asks specifically for a box-grid
- *     hover-portrait stress pass (rapid cursor movement across many GB-origin cells)
- *     as the practical test this number can't replace.
- *   - The two registered ROM paths are genuine EWRAM_BSS residents (pdna_main.c),
- *     because cfg_save() rewrites config.cfg FROM RESIDENT STATE on almost every
- *     browser keypress — a path that only round-tripped through a file could not
- *     survive that rewrite. GB_ROM_PATH_MAX is 128, not PATH_MAX's 256: two full-width
- *     slots (512 B) would leave ~12 B of the 524 B EWRAM budget; two half-width slots
- *     (256 B) leave ~268 — the same per-feature-cap idea gb_sidecar.h already uses
- *     (GBSC_PATH_MAX 48). A GB ROM dump living deeper than 128 chars is refused, not
- *     silently truncated (matching e.g. dup_name()'s "no room" convention elsewhere).
+ *     MEASURED (arm-none-eabi-gcc -O2 -fstack-usage + a disassembly call-graph walk,
+ *     2026-09-06, after the fix): gb_art_fetch() 3,672 B own frame (the SD read tail
+ *     inside rom_gbsprite_pic_buf -> gb_art_read -> f_lseek/f_read -> disk_read ->
+ *     ed_sd_dma_to_rom adds ~1.9 KB more when it's the deepest reachable child --
+ *     included below, not a separate number to add). The three real call chains the
+ *     review named: era_cells() [box repaint] 5,872 B, draw_left() [box hover] 5,960
+ *     B, summary_run() [summary portrait] 6,728 B -- all comfortably under the
+ *     ~11.5 KB budget (4.8-5.6 KB margin each), a large improvement on the review's
+ *     own ~8.0-8.5 KB targets for the same three chains once gb_art_have()'s "beside
+ *     the save" fallback was ALSO made a cheap existence check (gb_rom_path_beside()
+ *     alone, 640 B) instead of a full open+identify (2,992 B) -- see gb_art_have()'s
+ *     own comment for why a second full validation there bought nothing: gb_art_fetch
+ *     re-validates for real a moment later regardless.
+ *
+ *     ONE CHAIN REMAINS OVER BUDGET, found independently of the review's three named
+ *     ones while proving them: main()'s absolute worst reachable path is
+ *     Bank -> box -> the party strip overlay -> the mon menu -> Daycare ->
+ *     inspect-a-deposited-mon -> its summary -> the portrait fetch, which the
+ *     call-graph tool measures at 13,208 B (main+pdna_bank_show+pdna_box+
+ *     pcp_open_party_strip+party_strip_overlay+app_party_mon_menu+app_mon_menu+
+ *     pdna_daycare+pdna_inspect = 6,480 B of PRE-EXISTING UI nesting this module
+ *     never touches, + this module's own 6,728 B summary chain) -- 1.7 KB over.
+ *     That 6,480 B UI prefix is not new: it is the SAME depth the OLD Gen-3-only
+ *     rom_portrait() path sat underneath, which never needed FIL/SD-scratch stack at
+ *     all (a persistent already-open RomSprite), so it never pushed this particular
+ *     nesting over the edge before. This is flagged, not fixed here -- restructuring
+ *     Daycare/party-strip/mon-menu's nesting is outside this module's scope and risky
+ *     to attempt blind under this slice's time budget; docs/HW-TEST-2026-09-05-GB-ARC.md
+ *     §J's stress test specifically includes "inspect a GB-origin mon from inside the
+ *     Daycare screen", which is the one path this module cannot yet prove safe.
+ *   - The two registered ROM paths are genuine EWRAM_BSS residents, because
+ *     cfg_save() rewrites config.cfg FROM RESIDENT STATE on almost every browser
+ *     keypress — a path that only round-tripped through a file could not survive
+ *     that rewrite. As of E3 review item 3, they live in the SAME array as the three
+ *     Gen-3 map-screen ROM paths (pdna_main.c's g_rom_path[5][GB_ROM_PATH_MAX], PkGame
+ *     RS/Emerald/FRLG at indices 0-2, PDNA_GEN1/2 at 3-4 via gb_gen_slot()) — merging
+ *     two separate arrays (g_rom_path[3][PATH_MAX] + a since-deleted
+ *     g_gb_rom_path[2][GB_ROM_PATH_MAX], 1,024 B together) into one, ALL FIVE slots
+ *     now capped at GB_ROM_PATH_MAX (128, not PATH_MAX's 256 — the same per-feature-
+ *     cap idea gb_sidecar.h already uses, GBSC_PATH_MAX 48), freed 384 B: measured
+ *     268 -> 652 B EWRAM free. A path too long for any of the five slots is REFUSED
+ *     at set-time (app_rom_path_set()/app_gb_rom_path_set() both return false), never
+ *     silently truncated — cfg_load() rejects (and logs) an over-length saved value
+ *     the same way, instead of the strncpy(..., PATH_MAX-1) it used to silently clip
+ *     with (which would have been an actual out-of-bounds write once the array
+ *     shrank to GB_ROM_PATH_MAX-wide rows).
  *   - The located-table cache (RomGbSpriteLoc, ~260 B) is NOT resident anywhere: it is
  *     read from a small per-gen file at EVERY fetch (a session-scoped path is opened
  *     rarely — the router memoises, so this is once per distinct species view, not
  *     once per frame) rather than costing another 520 B of EWRAM for two copies.
+ *   - HARDWARE-ONLY PERFORMANCE NOTE (E3 review item 9, not a stack or EWRAM
+ *     concern): pdna_box.c's era_cells() calls pdna_origin_box_art() once per GRID
+ *     SLOT on a full box repaint — up to 30 times — and every GB-origin slot with no
+ *     memo hit is a full gb_art_fetch(): f_open() the registered/fallback ROM, read
+ *     its .loc cache, rom_gbsprite_open_loc()'s validation reads, decode, close. In
+ *     the worst case (a box full of DIFFERENT GB-origin species, so the router's
+ *     one-picture memo cannot help) that is up to 30 file opens and their FAT-walk
+ *     cost on ONE repaint. The natural fix — a session-scoped FIL + RomGbSprite kept
+ *     open across the whole box visit instead of opened fresh per fetch — is an I/O
+ *     win only, not a stack win (it does not change gb_art_fetch's own frame size or
+ *     depth), so it is out of scope for this slice's stack-safety fix and left for
+ *     whoever next profiles box-repaint latency on real hardware.
+ *     docs/HW-TEST-2026-09-05-GB-ARC.md §J's box-grid test should include a box FULL
+ *     of distinct GB-origin mons as the worst-case repaint-latency case this note
+ *     predicts, not just a couple of cells.
  */
 
 /* Register (or, with an empty/NULL path, clear) generation `gen`'s (1 or 2) art

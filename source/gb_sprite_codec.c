@@ -157,7 +157,19 @@ static void gb1_undiff(uint8_t *plane, unsigned wt, unsigned H) {
 }
 
 GbSpriteErr gb_sprite_gen1(GbSprite *out, GbReadFn rd, void *ctx, uint32_t off) {
-  if (!out || !rd) return GB_SPRITE_E_ARGS;
+  if (!out) return GB_SPRITE_E_ARGS;
+  GbSpriteInfo info;
+  GbSpriteErr e = gb_sprite_gen1_buf(out->px, out->work, rd, ctx, off, &info);
+  if (e == GB_SPRITE_OK) {
+    out->wt = info.wt; out->ht = info.ht; out->w = info.w; out->h = info.h;
+    out->consumed = info.consumed;
+  }
+  return e;
+}
+
+GbSpriteErr gb_sprite_gen1_buf(uint8_t *px, uint8_t *work, GbReadFn rd, void *ctx,
+                               uint32_t off, GbSpriteInfo *info) {
+  if (!px || !work || !rd || !info) return GB_SPRITE_E_ARGS;
 
   Br br;
   br_init(&br, rd, ctx, off);
@@ -172,9 +184,9 @@ GbSpriteErr gb_sprite_gen1(GbSprite *out, GbReadFn rd, void *ctx, uint32_t off) 
 
   const unsigned W = wt * 8, H = ht * 8;
   const uint32_t plane_sz = (uint32_t)wt * ht * 8u;
-  uint8_t *p0 = out->work;                 /* sSpriteBuffer1 -- the LOW bitplane  */
-  uint8_t *p1 = out->work + plane_sz;      /* sSpriteBuffer2 -- the HIGH bitplane */
-  memset(out->work, 0, plane_sz * 2u);     /* _UncompressSpriteData clears both   */
+  uint8_t *p0 = work;                      /* sSpriteBuffer1 -- the LOW bitplane  */
+  uint8_t *p1 = work + plane_sz;           /* sSpriteBuffer2 -- the HIGH bitplane */
+  memset(work, 0, plane_sz * 2u);          /* _UncompressSpriteData clears both   */
 
   /* The next bit picks which buffer takes the FIRST chunk (BIT_USE_SPRITE_BUFFER_2,
    * uncompress.asm:54). */
@@ -207,7 +219,7 @@ GbSpriteErr gb_sprite_gen1(GbSprite *out, GbReadFn rd, void *ctx, uint32_t off) 
    * byte of each 2bpp row pair, and the even byte of a Game Boy tile row is the
    * LOW bitplane -- so p0 is bit 0 and p1 is bit 1. */
   for (unsigned y = 0; y < H; y++) {
-    uint8_t *dst = out->px + (uint32_t)y * W;
+    uint8_t *dst = px + (uint32_t)y * W;
     for (unsigned x = 0; x < W; x++) {
       const uint32_t i = (uint32_t)(x >> 3) * H + y;
       const unsigned b = 7u - (x & 7u);
@@ -215,9 +227,9 @@ GbSpriteErr gb_sprite_gen1(GbSprite *out, GbReadFn rd, void *ctx, uint32_t off) 
     }
   }
 
-  out->wt = (uint8_t)wt;  out->ht = (uint8_t)ht;
-  out->w = (uint8_t)W;    out->h = (uint8_t)H;
-  out->consumed = br.pos;
+  info->wt = (uint8_t)wt;  info->ht = (uint8_t)ht;
+  info->w = (uint8_t)W;    info->h = (uint8_t)H;
+  info->consumed = br.pos;
   return GB_SPRITE_OK;
 }
 
@@ -314,7 +326,20 @@ static GbSpriteErr lz3(Br *br, uint8_t *out, uint32_t limit, uint32_t *outlen) {
 
 GbSpriteErr gb_sprite_gen2(GbSprite *out, GbReadFn rd, void *ctx, uint32_t off,
                            unsigned wt, unsigned ht) {
-  if (!out || !rd) return GB_SPRITE_E_ARGS;
+  if (!out) return GB_SPRITE_E_ARGS;
+  GbSpriteInfo info;
+  GbSpriteErr e = gb_sprite_gen2_buf(out->px, out->work, rd, ctx, off, wt, ht, &info);
+  if (e == GB_SPRITE_OK) {
+    out->wt = info.wt; out->ht = info.ht; out->w = info.w; out->h = info.h;
+    out->consumed = info.consumed;
+  }
+  return e;
+}
+
+GbSpriteErr gb_sprite_gen2_buf(uint8_t *px, uint8_t *work, GbReadFn rd, void *ctx,
+                               uint32_t off, unsigned wt, unsigned ht,
+                               GbSpriteInfo *info) {
+  if (!px || !work || !rd || !info) return GB_SPRITE_E_ARGS;
   if (wt < 1 || wt > GB_SPRITE_MAX_TILES || ht < 1 || ht > GB_SPRITE_MAX_TILES)
     return GB_SPRITE_E_ARGS;
 
@@ -323,7 +348,7 @@ GbSpriteErr gb_sprite_gen2(GbSprite *out, GbReadFn rd, void *ctx, uint32_t off,
 
   const uint32_t need = (uint32_t)wt * ht * 16u;
   uint32_t got = 0;
-  GbSpriteErr e = lz3(&br, out->work, need, &got);
+  GbSpriteErr e = lz3(&br, work, need, &got);
   if (e) return e;
   if (got < need) return GB_SPRITE_E_DATA;      /* stream ended mid-picture */
 
@@ -333,19 +358,19 @@ GbSpriteErr gb_sprite_gen2(GbSprite *out, GbReadFn rd, void *ctx, uint32_t off,
    * row is two bytes, low bitplane first. */
   const unsigned W = wt * 8, H = ht * 8;
   for (unsigned y = 0; y < H; y++) {
-    uint8_t *dst = out->px + (uint32_t)y * W;
+    uint8_t *dst = px + (uint32_t)y * W;
     for (unsigned x = 0; x < W; x++) {
       const uint32_t t = (uint32_t)(x >> 3) * ht + (y >> 3);
       const uint32_t o = t * 16u + (uint32_t)(y & 7u) * 2u;
       const unsigned b = 7u - (x & 7u);
-      dst[x] = (uint8_t)((((out->work[o + 1] >> b) & 1u) << 1) |
-                         ((out->work[o] >> b) & 1u));
+      dst[x] = (uint8_t)((((work[o + 1] >> b) & 1u) << 1) |
+                         ((work[o] >> b) & 1u));
     }
   }
 
-  out->wt = (uint8_t)wt;  out->ht = (uint8_t)ht;
-  out->w = (uint8_t)W;    out->h = (uint8_t)H;
-  out->consumed = br.pos;
+  info->wt = (uint8_t)wt;  info->ht = (uint8_t)ht;
+  info->w = (uint8_t)W;    info->h = (uint8_t)H;
+  info->consumed = br.pos;
   return GB_SPRITE_OK;
 }
 

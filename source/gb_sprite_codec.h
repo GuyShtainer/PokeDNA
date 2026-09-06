@@ -111,10 +111,29 @@ typedef struct {
   uint8_t  work[GB_SPRITE_WORK];   /* private scratch; contents undefined         */
 } GbSprite;
 
+/* Just the metadata half of GbSprite, for the _buf entry points below -- a caller
+ * supplying its own px/work buffers (gb_art_source.c: both live inside the shared
+ * mon_decomp, not a 3,928 B GbSprite on the stack -- see rom_gbsprite.h's "does NOT
+ * work in place" note, now qualified by rom_gbsprite_to_rgb15_inplace()) still needs
+ * somewhere to receive wt/ht/w/h/consumed. */
+typedef struct {
+  uint8_t  wt, ht, w, h;
+  uint32_t consumed;
+} GbSpriteInfo;
+
 /* Gen 1 (Red/Blue/Yellow). The geometry comes from the stream's own first byte,
  * so `off` is all you need -- it is the address the base-stats entry points at
  * (offset 0x0B front / 0x0D back, in the bank home/pics.asm picks by index). */
 GbSpriteErr gb_sprite_gen1(GbSprite *out, GbReadFn rd, void *ctx, uint32_t off);
+
+/* Same decode, into caller-owned `px` (>= GB_SPRITE_MAX_PX bytes) and `work`
+ * (>= GB_SPRITE_WORK bytes) instead of a GbSprite's embedded arrays -- the two
+ * buffers need not be adjacent, need not come from a GbSprite at all, and may
+ * overlap a THIRD buffer the caller plans to fill afterward (mon_decomp: this is
+ * what makes rom_gbsprite_to_rgb15_inplace() possible). Same errors/semantics as
+ * gb_sprite_gen1(), which is now a thin wrapper over this. */
+GbSpriteErr gb_sprite_gen1_buf(uint8_t *px, uint8_t *work, GbReadFn rd, void *ctx,
+                               uint32_t off, GbSpriteInfo *info);
 
 /* Gen 2 (Gold/Silver/Crystal). `wt`/`ht` must come from the ROM: a front pic is
  * square with the side in either nybble of the base-stats PicSize byte (+0x11 of
@@ -122,6 +141,13 @@ GbSpriteErr gb_sprite_gen1(GbSprite *out, GbReadFn rd, void *ctx, uint32_t off);
  * for a front pic that is animation frame 0, i.e. the static picture. */
 GbSpriteErr gb_sprite_gen2(GbSprite *out, GbReadFn rd, void *ctx, uint32_t off,
                            unsigned wt, unsigned ht);
+
+/* Same decode as gb_sprite_gen2(), into caller-owned px/work -- see
+ * gb_sprite_gen1_buf()'s comment, identical rationale. gb_sprite_gen2() is now a
+ * thin wrapper over this. */
+GbSpriteErr gb_sprite_gen2_buf(uint8_t *px, uint8_t *work, GbReadFn rd, void *ctx,
+                               uint32_t off, unsigned wt, unsigned ht,
+                               GbSpriteInfo *info);
 
 const char *gb_sprite_err(GbSpriteErr e);
 
