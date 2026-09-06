@@ -67,8 +67,8 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     ("s2-edit", "S2 — the editor", ("S2", "S2a", "S2b")),
     ("s3-move-release", "S3 — MOVE TO / RELEASE", ("S3",)),
     ("bag", "Bag — the first-letter erase-column fix", ()),
-    ("summary", "#41 — the native summary editor",
-     ("BACKLOG #41", "BACKLOG #40", "#41", "#40")),
+    ("summary", "#41 — the native summary editor (E1: Gen-3 card design)",
+     ("BACKLOG #41", "BACKLOG #40", "#41", "#40", "BACKLOG #41 slice E1", "E1", "Gen-3 parity")),
     ("s5b-transfer", "S5-B — Gen-3-to-GB transfer (PASTE)", ("S5-B",)),
     ("misc", "Misc — captions without a tracked feature prefix", ()),
 ]
