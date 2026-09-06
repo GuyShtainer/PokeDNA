@@ -195,6 +195,7 @@ static const uint16_t* icon_from_cache(uint16_t species, uint8_t form, uint8_t f
 
   const uint8_t* p = icon_store_row(row);
   if (!p) { PERF_ICON(null_ans); return 0; }
+  artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
   memcpy(mon_decomp, p + (uint32_t)frame * ROM_MON_ICON_BYTES, ROM_MON_ICON_BYTES);
 
   uint16_t pal[16];

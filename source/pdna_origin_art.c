@@ -274,6 +274,13 @@ static const uint16_t* s_memo_px;
 static uint16_t s_memo_dex;
 static uint8_t  s_memo_on, s_memo_gen, s_memo_form, s_memo_back, s_memo_shiny,
                 s_memo_w, s_memo_h;
+/* E3 review BLOCKING 2: the memo's key alone is not enough -- mon_decomp is shared
+ * with every OTHER decoder in the app (artbuf.h's artbuf_claim() list), so a memo
+ * hit on (gen,dex,form,back,shiny) can no longer prove the buffer still holds THESE
+ * pixels once something else has decoded into it in between. Stamping the shared
+ * epoch alongside the memo and rejecting a hit whose epoch has moved on turns that
+ * into an ordinary, correct miss -- 4 more bytes of plain .bss, no EWRAM. */
+static uint32_t s_memo_epoch;
 
 static void memo_clear(void) { s_memo_on = 0; s_memo_px = 0; }
 
@@ -297,7 +304,8 @@ int pdna_origin_art_have(uint8_t gen) {
 static const uint16_t* fetch_pic(uint8_t gen, uint16_t dex, uint8_t form,
                                  uint8_t want_back, uint8_t shiny,
                                  uint8_t* out_w, uint8_t* out_h) {
-  if (s_memo_on && s_memo_gen == gen && s_memo_dex == dex && s_memo_form == form &&
+  if (s_memo_on && s_memo_epoch == artbuf_epoch && s_memo_gen == gen &&
+      s_memo_dex == dex && s_memo_form == form &&
       s_memo_back == want_back && s_memo_shiny == shiny) {
     *out_w = s_memo_w; *out_h = s_memo_h;
     return s_memo_px;
@@ -313,6 +321,9 @@ static const uint16_t* fetch_pic(uint8_t gen, uint16_t dex, uint8_t form,
   s_memo_on = 1; s_memo_gen = gen; s_memo_dex = dex; s_memo_form = form;
   s_memo_back = want_back; s_memo_shiny = shiny;
   s_memo_px = px; s_memo_w = w; s_memo_h = h;
+  s_memo_epoch = artbuf_epoch;    /* the source's pic() call above may itself have
+                                   * bumped this (gb_art_source.c does, before its own
+                                   * decode) -- capture it AFTER the call, not before */
   *out_w = w; *out_h = h;
   return px;
 }
@@ -351,6 +362,7 @@ void pdna_origin_art_set_romsprite(const RomSprite* rs) {
  * buys correctness instead of a plausible-looking corrupted portrait. */
 static const uint16_t* rom_portrait(const PkMon* m, int back) {
   if (!s_romsprite_on || !m) return 0;
+  artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
   RomSpritePic pic;
   RomSpriteSide side = back ? ROM_SPRITE_BACK : ROM_SPRITE_FRONT;
   if (!rom_sprite_pic(&s_romsprite, side, m->species, m->form,

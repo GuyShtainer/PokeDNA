@@ -181,6 +181,7 @@ static RomChromeCard s_chrome_card;
 static BgFrame rom_card_frame(int game, int back, int tier, int female) {
   BgFrame f = { 0, 0, CARD_BG_W };
   if (!s_romchrome || !rom_chrome_card_have(s_romchrome, game)) return f;
+  artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
   if (!rom_chrome_card_load(s_romchrome, game, back, tier, female,
                             (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &s_chrome_card))
     return f;
@@ -283,6 +284,7 @@ static void card_draw_badge(PkGame game, int i, int x, int y) {
 #if !PDNA_CARD_ART_COMPILED
   if (s_romchrome && rom_chrome_card_badges_have(s_romchrome, (int)game)) {
     RomChromeCardBadges b;
+    artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
     if (rom_chrome_card_badges_load(s_romchrome, (int)game,
                                     (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &b)) {
       int16_t ids[4];
@@ -300,6 +302,7 @@ static void card_draw_photo(PkGame game, int female) {
 #if !PDNA_CARD_ART_COMPILED
   if (!s_romchrome || !rom_chrome_card_photo_have(s_romchrome, (int)game)) return;
   RomChromeCardPhoto ph;
+  artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
   if (!rom_chrome_card_photo_load(s_romchrome, (int)game, female,
                                   (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &ph)) return;
   const CardLayout* L = &CARD_LAYOUTS[game];

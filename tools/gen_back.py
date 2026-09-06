@@ -172,6 +172,7 @@ def main():
         c.write("/* Whole back set is embedded (NOR) or streamed from sprites.pak (SD build). */\n")
         c.write("static const uint16_t* back_at(uint32_t o, bool shiny) {\n")
         c.write("  if (o == 0xFFFFFFFFu) return 0;\n")
+        c.write("  artbuf_claim();  /* E3 review BLOCKING 2: about to overwrite mon_decomp */\n")
         c.write("#ifdef PDNA_STREAM_SPRITES\n")
         c.write("  return sprite_stream((shiny ? PAK_BS_BASE : PAK_BN_BASE) + o, mon_decomp);\n")
         c.write("#else\n")

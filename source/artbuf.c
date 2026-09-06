@@ -10,3 +10,8 @@
 #include "sys.h"     /* EWRAM_BSS */
 
 EWRAM_BSS uint16_t mon_decomp[MON_DECOMP_BYTES / 2];
+
+/* Plain (IWRAM) .data, NOT EWRAM_BSS -- 4 bytes, and EWRAM has none to spare
+ * (docs/SPRITE-ERA-DESIGN.md: 524 B free before this arc, 268 after slice E3's two
+ * GB ROM paths). See artbuf.h for the full contract. */
+uint32_t artbuf_epoch = 0;

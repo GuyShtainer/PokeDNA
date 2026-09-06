@@ -30,4 +30,34 @@
                                     * worst-case scratch need */
 extern uint16_t mon_decomp[MON_DECOMP_BYTES / 2];
 
+/*
+ * artbuf_epoch — E3 review BLOCKING 2 fix: pdna_origin_art.c's fetch_pic() memoises
+ * the LAST Game Boy picture it fetched (dex/form/back/shiny -> a pointer into
+ * mon_decomp), and that memo used to trust its key alone. mon_decomp is shared by
+ * EVERY decoder in this list, so a memo hit could hand back pixels a LATER decoder
+ * already overwrote: box grid hover a GB cell (fetch, memo set) -> hover a native
+ * cell (mon_front_for_form decodes into mon_decomp) -> hover the GB cell again ->
+ * the memo's key still matches, so it returns the NATIVE mon's pixels read as if
+ * they were the GB-sized picture. Bumping a shared counter on every write and
+ * storing it alongside the memo turns that into a normal miss.
+ *
+ * THE RULE: any function that writes to mon_decomp calls artbuf_claim() FIRST,
+ * unconditionally, even if the decode that follows might fail (a failed decode may
+ * still have partially overwritten the buffer, so the epoch must already say "this
+ * content is not what it was" before that happens — the exact reasoning
+ * pdna_origin_art.c's own fetch_pic() already applies to ITS memo: "a fetch that
+ * fails may still have written into the source's buffer, so the old pointer stops
+ * being trustworthy the moment we ask"). Known writers (grep mon_decomp for more
+ * before adding a new one): mon_front_for_form/mon_back_for_form (mon_front.c/
+ * mon_back.c), rom_portrait (pdna_origin_art.c), app_type_badge/app_item_icon
+ * (pdna_main.c), icon_from_cache (art_fallbacks.c), gb_art_source.c's own fetch,
+ * the bag/trainer-card chrome decoders (pdna_bag.c, pdna_trainer.c), the box
+ * wallpaper tile compare buffer (pdna_box.c) and rom_wallpaper.c.
+ *
+ * A caller that only ever READS mon_decomp (never decodes into it) does not touch
+ * this. 4 bytes, plain (IWRAM) .data — see artbuf.c for why not EWRAM_BSS.
+ */
+extern uint32_t artbuf_epoch;
+static inline void artbuf_claim(void) { artbuf_epoch++; }
+
 #endif /* ARTBUF_INCLUDED */

@@ -83,6 +83,7 @@ static RomChromeBag s_bag_chrome;
 static BgFrame rom_bag_frame(int game, int female) {
   BgFrame f = { 0, 0, BAG_BG_W };
   if (!s_bag_romchrome || !rom_chrome_bag_have(s_bag_romchrome, game)) return f;
+  artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
   if (!rom_chrome_bag_load(s_bag_romchrome, game, female,
                            (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &s_bag_chrome))
     return f;
@@ -184,6 +185,7 @@ static void rom_bag_sprite_draw(const BagLayout* L, PkGame g, int female, int po
   static const uint8_t k_pocket_frame_frlg[5] = { 2, 3, 1, 2, 2 };
   int frame = (pocket >= 0 && pocket < 5) ? k_pocket_frame_frlg[pocket] : 0;
   RomChromeBagSprite bs;
+  artbuf_claim();          /* E3 review BLOCKING 2: about to overwrite mon_decomp */
   if (!rom_chrome_bag_sprite_load(s_bag_romchrome, (int)g, female,
                                   (uint8_t*)mon_decomp, MON_DECOMP_BYTES, &bs)) return;
   if (frame >= bs.frame_count) frame = 0;

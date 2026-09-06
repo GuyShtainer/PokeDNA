@@ -89,6 +89,7 @@ static bool verify_kind_file(ArtKind k, const ArtIdxKindRow* row, bool deep) {
   bool ok = size_ok;
   if (size_ok && deep) {
     uint32_t fnv = 0;
+    artbuf_claim();   /* E3 review BLOCKING 2: the stream below fills mon_decomp per chunk */
     ok = art_fnv_of_stream(fil_read, &f, row->bytes, (uint8_t*)mon_decomp, 8192u, &fnv) &&
          fnv == row->fnv;
     if (!ok) { s_why = "the kind file failed its FNV check";
