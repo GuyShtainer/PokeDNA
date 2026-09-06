@@ -36,7 +36,11 @@
  * matter. So this is deliberately NOT a smaller gate than PDNA_GB_FETCH_NEED (the
  * measurement does not support one) -- it is its own named constant, currently
  * equal, so that if a future change genuinely shrinks one rung's cost independently
- * of the other, re-measuring only has to touch the constant that actually moved. */
+ * of the other, re-measuring only has to touch the constant that actually moved.
+ * MEASURED at 4aa9de8 (E5 re-verify): the chain below the gate (icon_cb + fetch_icon +
+ * fetch_pic_ex, incl. rom_gbicon_open_loc's 608-B frame after its D3 re-validation
+ * window) is 5,960 B -- only 184 B under this constant. One more 256-B buffer anywhere
+ * under gb_art_fetch_icon breaks the promise: re-measure before adding one. */
 #define PDNA_GB_ICON_NEED 6144
 
 /*

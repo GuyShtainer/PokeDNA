@@ -157,10 +157,13 @@
 #define ROM_GBICON_SCRATCH_MIN   2048   /* same window size as rom_gbsprite.h    */
 #define ROM_GBICON_SPECIES       251    /* MonMenuIcons length                   */
 #define ROM_GBICON_MAX_KINDS     63     /* generous ceiling on N (measured 38)   */
-#define ROM_GBICON_KIND_EGG      28     /* D6: pokecrystal/pokegold's fixed egg
-                                          * icon kind -- present in the ROM, used
-                                          * by no species in MonMenuIcons (see
-                                          * rom_gbicon_kind_egg())               */
+#define ROM_GBICON_KIND_EGG      28     /* D6: the egg icon kind. Derivable by
+                                          * shape, not copied: it is the UNIQUE
+                                          * kind in 1..n that NO species in
+                                          * MonMenuIcons uses (measured set on
+                                          * Gold + Crystal = {1..27, 29..38}); the
+                                          * decomp merely confirms the reading.
+                                          * See rom_gbicon_kind_egg()            */
 #define ROM_GBICON_TILE_BYTES    16u
 #define ROM_GBICON_FRAME_TILES   4u
 #define ROM_GBICON_FRAME_BYTES   (ROM_GBICON_FRAME_TILES * ROM_GBICON_TILE_BYTES) /* 64 */

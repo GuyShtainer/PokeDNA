@@ -774,9 +774,10 @@ int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out) {
    * reads as "give me ICON_EGG" (never a real species -- nat_dex 0 already means
    * "no such species" everywhere else in this router, and se_species_exists(_,0) is
    * false, so no real cell ever reaches this call with dex 0 by accident). Bypasses
-   * the ordinary species-range gate below: an egg's hidden species may be outside
-   * 1..GEN2_MAX_DEX (a Hoenn-only hatch target, say) and still wants the icon --
-   * the egg picture does not depend on it. */
+   * the ordinary species-range gate below on principle (the egg picture does not
+   * depend on the hidden species) -- though in practice a Hoenn-only hatch target
+   * never gets here: the era == ERA_GEN2 precondition already ran through
+   * se_species_exists(GEN2, hidden_dex), so such an egg keeps its Gen-3 OBJ icon. */
   int is_egg = m->isEgg && !m->isBadEgg;
 
   if (era == ERA_GEN2 && s_gb_on && s_gb.icon &&
