@@ -180,6 +180,13 @@ static char        EWRAM_BSS g_rom_path[APP_ROM_SLOTS][GB_ROM_PATH_MAX];
 static int gb_gen_slot(uint8_t gen) {
   return (gen == PDNA_GEN1) ? 3 : (gen == PDNA_GEN2) ? 4 : -1;
 }
+/* E4 (sprite-era, docs/SPRITE-ERA-DESIGN.md): the 5x5 kind x place grid of the
+ * user's chosen art era, persisted via config.cfg's "era_<kind>_<place>=<era>"
+ * lines (sprite_era.h's se_config_write/se_config_apply). 25 B, plain EWRAM_BSS
+ * like g_rom_path above -- zero-initialised, which for this struct IS
+ * se_default()'s NATIVE-everywhere default (SE_ERA_NATIVE == 0), so no explicit
+ * init call is needed for the feature to start invisible on a fresh boot. */
+static SeSetting   EWRAM_BSS g_era;
 static PkMon       EWRAM_BSS g_party[6];                  /* decoded party of the open save  */
 static u8          EWRAM_BSS g_pc[G3_PC_BYTES];           /* reassembled PC storage (boxes)  */
 static u8          EWRAM_BSS g_sb2[G3_SECTOR_DATA_SIZE];   /* SaveBlock2 (trainer card/stats) */
@@ -671,6 +678,17 @@ static void cfg_save(void) {
     n += w;
   }
 
+  /* E4 (sprite-era): up to 20 "era_<kind>_<place>=<era>\n" lines (sprite_era.h's
+   * se_config_write -- only NON-default, applicable cells are ever written, so a
+   * fresh grid costs nothing here). Uses the REMAINING capacity, not a fresh
+   * sizeof(buf), per sprite_era.h's own wiring note. */
+  if (!truncated) {
+    bool era_trunc = false;
+    int w = se_config_write(&g_era, buf + n, (int)sizeof(buf) - n, &era_trunc);
+    n += w;
+    if (era_trunc) truncated = true;
+  }
+
   if (truncated)
     log_line("cfg: config.cfg buffer full -- some settings were NOT saved this write");
 
@@ -732,6 +750,12 @@ static void cfg_load(void) {
         log_line("cfg: romgb1 value too long (>%d), ignored", GB_ROM_PATH_MAX - 1);
       else if (!strcmp(k, "romgb2") && v[0] && !app_gb_rom_path_set(PDNA_GEN2, v))
         log_line("cfg: romgb2 value too long (>%d), ignored", GB_ROM_PATH_MAX - 1);
+      /* E4: "era_<kind>_<place>=<era>" -- se_config_apply() recognises the key
+       * itself (the "era_" prefix + a valid kind/place pair) and returns false for
+       * anything else, so this is a catch-all with no separate strncmp gate. An
+       * unrecognised VALUE (a hand-edited or bit-rotted config) sets that cell to
+       * NATIVE rather than being rejected -- sprite_era.h's own documented rule. */
+      else se_config_apply(&g_era, k, v);
     }
     p = term ? eol + 1 : eol;
   }
@@ -1072,6 +1096,13 @@ static Gen3SaveInfo g_vinfo;
 static int  g_nparty = 0;
 static bool g_frlg = false, g_have_pc = false;
 static PkGame g_game = PK_EMERALD;
+/* E4 (sprite-era): the Gen-3 kind for app_save_kind() -- set alongside g_game the
+ * moment view_save() decides it (below), NOT read from g_game on every call, so a
+ * Game Boy session (which never touches g_game at all) cannot accidentally inherit
+ * whatever Gen-3 kind happened to be open before it. app_save_kind() overrides this
+ * with pdna_gen12_active_kind() while a GB session is live; this is what it falls
+ * back to otherwise. */
+static SeSaveKind g_save_kind = SE_KIND_EM;
 static char   g_path[PATH_MAX];                           /* path of the open save (for commit) */
 static uint16_t g_item_clip = 0;                          /* held-item move clipboard            */
 static bool     g_item_held = false;
@@ -8428,6 +8459,7 @@ static void view_save(const char* path) {
     memcpy(g_sb2, g_save + (uint32_t)g_vinfo.slot * G3_SLOT_BYTES + (uint32_t)s0 * G3_SECTOR_SIZE,
            G3_SECTOR_DATA_SIZE);
   g_game = g_frlg ? PK_FRLG : (g_vinfo.version_guess == G3_VER_RS ? PK_RS : PK_EMERALD);
+  g_save_kind = se_kind_from_game((int)g_game);   /* E4: app_save_kind()'s Gen-3 half */
   /* The FIRST SD access after the read: f_open of the registered game ROM (artless) or
    * a fused-ROM scan. Named apart from the decode steps because it is the only step
    * here that can touch the card, and therefore the only one whose freeze would mean

@@ -6,6 +6,7 @@
 #include "gen3_mon.h"      /* PkMon (app_bank_hide_pending) */
 #include "gen3_trainer.h"  /* PkGame (app_rom_path)         */
 #include "gb_edit.h"       /* GbEditMon (AppSrcOps.copy_native)         */
+#include "sprite_era.h"    /* SeRoms, SeSaveKind (app_era_roms/app_save_kind, E4) */
 
 /* Shared app glue so the party list and box grid can open the editor and persist
  * safely. Implemented in pdna_main.c (which owns the loaded save + path). */
