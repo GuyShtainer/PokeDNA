@@ -69,6 +69,8 @@
 #include "type_icons.h"      /* TYPE_ICON_W/H, ui_type_chip */
 #include "pdna_layout.h"
 #include "snd.h"
+#include "sprite_era.h"       /* SE_PLACE_SUMMARY -- pdna_origin_art_set_place() (E4/D2) */
+#include "pdna_origin_art.h"  /* pdna_origin_art_get_place/set_place */
 
 #define NCARDS       4
 #define CARD_INFO    0
@@ -604,8 +606,9 @@ static bool gbsum_input(GbSumCtx* c, bool* shadow_valid, int* out) {
   return gbsum_view_keys(c, k, fresh, out);
 }
 
-int pdna_gbsummary(GbEditMon* e, bool can_edit, bool start_editing, const char* note,
-                    bool has_sidecar, bool* saved, int* card_io) {
+static int pdna_gbsummary_inner(GbEditMon* e, bool can_edit, bool start_editing,
+                                 const char* note, bool has_sidecar, bool* saved,
+                                 int* card_io) {
   if (saved) *saved = false;
   if (!e) return 0;
 
@@ -680,4 +683,22 @@ int pdna_gbsummary(GbEditMon* e, bool can_edit, bool start_editing, const char* 
     int out;
     if (gbsum_input(&c, &shadow_valid, &out)) return out;
   }
+}
+
+/* D2 (E4): pdna_gbsummary_inner() never set the art-router PLACE at all -- the left
+ * panel's portrait fetch (gbsum_convert_left -> pdna_summary_draw_left ->
+ * pdna_origin_art_portrait) resolved against whatever place a PREVIOUS screen last
+ * set (the box/party grid's PC/BANK/GBGRID/PARTY), never SE_PLACE_SUMMARY. Same
+ * save/restore idiom as pdna_summary.c's summary_run() wrapping summary_run_inner():
+ * this screen's big portrait is always the SUMMARY cell while it is up, and the
+ * caller's own place is restored on the way out so whatever draws next (this screen
+ * is routinely opened from inside another screen's own loop) is unaffected. */
+int pdna_gbsummary(GbEditMon* e, bool can_edit, bool start_editing, const char* note,
+                    bool has_sidecar, bool* saved, int* card_io) {
+  int prev = pdna_origin_art_get_place();
+  pdna_origin_art_set_place(SE_PLACE_SUMMARY);
+  int r = pdna_gbsummary_inner(e, can_edit, start_editing, note, has_sidecar, saved,
+                               card_io);
+  pdna_origin_art_set_place(prev);
+  return r;
 }
