@@ -612,13 +612,23 @@ int pdna_gbsummary(GbEditMon* e, bool can_edit, bool start_editing, const char* 
     bool need = full || record_changed;
 
     if (need) {
-      /* The expensive half (a ROM portrait fetch inside pdna_summary_draw_left)
-       * only on first paint or a real record change — NOT on a bare card flip
-       * or edit-mode toggle, which `full` alone would otherwise also trigger.
-       * pdna_summary_bg() never paints the left panel's own rect, so leaving it
-       * alone here is correct: whatever it showed is still exactly right. */
-      bool reconv = !shadow_valid || record_changed;
-      if (reconv) left_ok = gbsum_convert_left(c.e, &left_mon);
+      /* The expensive half (a ROM portrait fetch inside pdna_summary_draw_left,
+       * plus the type badges it draws) only when the CONVERTED PkMon actually
+       * differs from what is already on screen — not merely whenever the
+       * native record does. gen12_convert() never reads stat exp or current PP
+       * at all (Gb12Mon carries neither field), so a LEFT/RIGHT tick on an SE
+       * cell (SKILLS) or a current-PP cell (MOVES) changes `e` -- and used to
+       * re-run the whole expensive draw for a value the left panel cannot even
+       * show. Re-converting here is cheap (pure computation, no I/O); it is the
+       * DRAW below that costs an SD read + an LZ77 decode, so that is what gets
+       * gated on the real diff. pdna_summary_bg() never paints the left panel's
+       * own rect, so skipping the redraw here is correct: whatever it already
+       * shows is still exactly right. */
+      PkMon conv;
+      bool conv_ok = gbsum_convert_left(c.e, &conv);
+      bool reconv = !shadow_valid || conv_ok != left_ok ||
+                    (conv_ok && memcmp(&conv, &left_mon, sizeof conv) != 0);
+      if (reconv) { left_mon = conv; left_ok = conv_ok; }
 
       render(c.e, &left_mon, left_ok, reconv, c.card, c.editing, c.can_edit,
              c.note, c.has_sidecar, c.slot, &c.nslot);
