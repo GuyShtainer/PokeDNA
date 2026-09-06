@@ -60,6 +60,7 @@
 #include <stdlib.h>
 
 #include "pdna_origin_art.h"
+#include "gb_art_source.h" /* PDNA_GB_FETCH_NEED -- D4's per-rung stack-room need (header-only) */
 #include "sprite_era.h"   /* SeEra/SePlace real values -- Part H */
 #include "gen3_trainer.h" /* PkGame -- Part H checks the cross-game rung's game arg  */
 #include "rom_map.h"      /* RomCtx, rom_open -- Part G */
@@ -141,7 +142,14 @@ static void gb_source_off(void) { pdna_origin_art_register(0); }
 /* E3 review re-verification: a test-injected stack-room hook that always refuses,
  * to prove pdna_origin_art_portrait() degrades to the Gen-3 rung (era still honest)
  * instead of taking the GB one when told there is no room. */
-static int no_room_hook(void) { return 0; }
+static int no_room_hook(int need) { (void)need; return 0; }
+
+/* D4: a hook that always grants room but records the `need` it was called with, so
+ * Part H can prove each rung passes its OWN measured need to the gate (GB rung ->
+ * PDNA_GB_FETCH_NEED, cross-game rung -> PDNA_G3X_FETCH_NEED) rather than one shared
+ * number. */
+static int s_need_last = -1;
+static int need_capture_hook(int need) { s_need_last = need; return 1; }
 
 /* ---- fixture: drive the REAL converter ------------------------------------------- */
 
@@ -652,7 +660,7 @@ static void part_c(void) {
    * serve Gen-3 art instead -- exactly like C5's "ROM not registered" case -- with
    * out->era/era_certain still honest, and must NOT touch the GB source at all
    * (the gate is checked BEFORE the fetch, not as a fallback after a failed one). */
-  CHECK_EQ(pdna_origin_art_stack_room(), 1, "C5b default hook says there is room");
+  CHECK_EQ(pdna_origin_art_stack_room(PDNA_GB_FETCH_NEED), 1, "C5b default hook says there is room");
   pdna_origin_art_set_stack_room_hook(no_room_hook);
   g_gb_calls = 0;
   CHECK(pdna_origin_art_portrait(&m, 0, &a, &o), "C5b should still return art");
@@ -948,20 +956,29 @@ static void part_h(void) {
   pdna_origin_art_set_place(SE_PLACE_SUMMARY);
 
   /* H3: the resolver can OVERRIDE the mon's own (unproven Gen-1) origin -- forcing
-   * GEN2 must ask the GB source for gen 2, not this mon's own gen 1. */
+   * GEN2 must ask the GB source for gen 2, not this mon's own gen 1. Also D4: this
+   * rung's stack-room check must be gated on PDNA_GB_FETCH_NEED. */
   s_h_next_era = SE_ERA_GEN2;
   g_gb_calls = 0;
+  s_need_last = -1;
+  pdna_origin_art_set_stack_room_hook(need_capture_hook);
   CHECK(pdna_origin_art_portrait(&m, 0, &a_res, 0), "H3 should return art");
   CHECK_EQ(g_gb_calls, 1, "H3 exactly one GB fetch");
   CHECK_EQ(g_gb_last_gen, 2, "H3 the GB rung must be asked for the RESOLVER'S era, gen 2");
   CHECK_EQ((int)a_res.gen, 2, "H3 pixels report gen 2");
+  CHECK_EQ(s_need_last, PDNA_GB_FETCH_NEED, "H3 (D4) GB rung gates on PDNA_GB_FETCH_NEED");
+  pdna_origin_art_set_stack_room_hook(0);
 
   /* H4: the resolver names a concrete Gen-3 era -> the NEW cross-game rung, with the
-   * right (game, species, form) triple reaching the stub source. */
+   * right (game, species, form) triple reaching the stub source. Also D4: this rung's
+   * stack-room check must be gated on its OWN, smaller PDNA_G3X_FETCH_NEED -- not the
+   * GB rung's PDNA_GB_FETCH_NEED (the whole point of the fix). */
   PdnaG3CrossSource src = { h3_pic, 0 };
   pdna_origin_art_set_g3cross(&src);
   s_h_next_era = SE_ERA_G3_FRLG;
   s_h3_calls = 0; s_h3_fail = 0;
+  s_need_last = -1;
+  pdna_origin_art_set_stack_room_hook(need_capture_hook);
   CHECK(pdna_origin_art_portrait(&m, 0, &a_res, 0), "H4 should return art");
   CHECK_EQ(s_h3_calls, 1, "H4 the cross-game source must be asked exactly once");
   CHECK_EQ(s_h3_last_game, (int)PK_FRLG, "H4 game arg names FRLG");
@@ -969,6 +986,11 @@ static void part_h(void) {
   CHECK_EQ(a_res.gen, PDNA_GEN3, "H4 pixels report Gen 3");
   CHECK_EQ((int)a_res.game, (int)PK_FRLG + 1, "H4 out->game is PkGame+1");
   CHECK(a_res.px == s_h3_px, "H4 pixels are the cross-game source's own buffer");
+  CHECK_EQ(s_need_last, PDNA_G3X_FETCH_NEED,
+           "H4 (D4) cross-game rung gates on its OWN PDNA_G3X_FETCH_NEED");
+  CHECK(PDNA_G3X_FETCH_NEED != PDNA_GB_FETCH_NEED,
+        "H4 (D4) the two needs are genuinely distinct -- proves this isn't one shared gate");
+  pdna_origin_art_set_stack_room_hook(0);
 
   /* H5: the cross-game source REFUSES (species/form this cart cannot show) -> falls
    * through to gen3_ladder, same NULL-degrades-cleanly contract as every other rung. */

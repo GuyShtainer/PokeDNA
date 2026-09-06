@@ -257,10 +257,23 @@ int pdna_origin_art_have(uint8_t gen);
  * (1) -- exactly today's behaviour, which is what the host build and every existing
  * host test keep getting. The GBA build registers a REAL check (gb_art_source.c,
  * reading the CPU's own SP against the linker's low-water mark) at boot; a host test
- * that wants to exercise the "no room" branch registers its own stub. */
-int pdna_origin_art_stack_room(void);
-typedef int (*PdnaStackRoomFn)(void);
+ * that wants to exercise the "no room" branch registers its own stub.
+ *
+ * D4 (E4 review): the ONE hook used to answer a single fixed PDNA_GB_FETCH_NEED
+ * (6,144 B) for every rung -- correct for the GB fetch it was measured against, but
+ * the cross-game Gen-3 rung's own subtree measures ~2,480 B, and reusing the 6,144-B
+ * gate refused stack room on chains where the SMALLER, real need would have fit. The
+ * hook now takes the caller's own measured need in bytes, so each rung gates on its
+ * own subtree instead of borrowing another rung's number. */
+int pdna_origin_art_stack_room(int need);
+typedef int (*PdnaStackRoomFn)(int need);
 void pdna_origin_art_set_stack_room_hook(PdnaStackRoomFn fn);
+
+/* D4: the cross-game Gen-3 rung's own measured need, parallel to gb_art_source.h's
+ * PDNA_GB_FETCH_NEED (6,144 B) -- 2,480 B measured (g3cross_pic_cb -> g3x_fetch_other/
+ * g3x_decode's own subtree) plus head-room. Declared here (not gb_art_source.h) since
+ * this rung is pdna_origin_art.c's own, not gb_art_source.c's. */
+#define PDNA_G3X_FETCH_NEED 3072
 
 /* ---- (3) THE GEN-3 ROM RUNG (Phase 1, docs/analysis-2026-08-19-rom-art/DESIGN.md
  * Sec 4.3) --------------------------------------------------------------------------

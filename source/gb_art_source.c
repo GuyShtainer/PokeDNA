@@ -340,11 +340,17 @@ static int gb_art_have_cb(void* ctx, uint8_t gen) { (void)ctx; return gb_art_hav
  * is exact only while nothing has malloc'd. True today (0 malloc / ff_memalloc call sites;
  * the tree uses the integer-only siprintf family), but a future malloc or a %f-capable
  * printf would silently eat the ~550 B of slack between the 6,144-B need and the measured
- * 5,592-B fetch subtree. Re-measure with the call-graph tool if either ever appears. */
+ * 5,592-B fetch subtree. Re-measure with the call-graph tool if either ever appears.
+ *
+ * D4 (E4 review): `need` is now the CALLER's own measured requirement, not a fixed
+ * 6,144 B baked in here -- pdna_origin_art.c's portrait router passes
+ * PDNA_GB_FETCH_NEED for its GB-rung call sites and the smaller PDNA_G3X_FETCH_NEED
+ * for the cross-game Gen-3 rung, so each rung gates on its own subtree. This function
+ * itself only ever reads the CPU's SP; it has no opinion on what any rung needs. */
 extern char __iheap_start[];
-static int gb_art_stack_room(void) {
+static int gb_art_stack_room(int need) {
   register char* sp __asm__("sp");
-  return (sp - __iheap_start) > PDNA_GB_FETCH_NEED;
+  return (sp - __iheap_start) > need;
 }
 
 void gb_art_boot_register(void) {

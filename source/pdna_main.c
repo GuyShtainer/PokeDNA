@@ -2154,7 +2154,8 @@ static const uint16_t* g3x_decode(const RomSprite* rs, uint16_t species, uint8_t
  * in a TEMPORARY RomCtx, decode, close. ONE noinline frame (FIL ~600 B + RomCtx +
  * RomSprite, measured with -fstack-usage -- see docs/HW-TEST-2026-09-05-GB-ARC.md §K
  * and the E4 handoff note) so the call-graph tool charges this exact subtree against
- * the SAME stack-room gate the Game Boy rung uses (pdna_origin_art_stack_room()),
+ * the stack-room gate (pdna_origin_art_stack_room()) at its own measured need
+ * (PDNA_G3X_FETCH_NEED, D4 -- smaller than the Game Boy rung's PDNA_GB_FETCH_NEED),
  * rather than folding it into whatever frame happened to call it. */
 static const uint16_t* __attribute__((noinline))
 g3x_fetch_other(PkGame game, uint16_t species, uint8_t form, uint8_t back, uint8_t shiny,

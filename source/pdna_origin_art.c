@@ -19,6 +19,7 @@
 #include "rom_sprite.h"      /* gen3_ladder's third rung -- see pdna_origin_art_set_romsprite */
 #include "artbuf.h"          /* mon_decomp -- the shared 8 KiB decode buffer                 */
 #include "data_tables.h"     /* pk_national_no -- the era resolver hook wants NATIONAL dex   */
+#include "gb_art_source.h"   /* PDNA_GB_FETCH_NEED -- D4: this rung's own measured need      */
 
 /* ---- constants the signature is written against ---------------------------------
  * Every one of these is the value gen12_convert.c actually writes, or a decomp fact,
@@ -307,7 +308,7 @@ static PdnaStackRoomFn s_stack_room_fn = 0;
 
 void pdna_origin_art_set_stack_room_hook(PdnaStackRoomFn fn) { s_stack_room_fn = fn; }
 
-int pdna_origin_art_stack_room(void) { return s_stack_room_fn ? s_stack_room_fn() : 1; }
+int pdna_origin_art_stack_room(int need) { return s_stack_room_fn ? s_stack_room_fn(need) : 1; }
 
 /* ---- (3b) PLACE-AWARE ROUTING (E4) ------------------------------------------------
  * Plain .bss, no EWRAM: a screen-scoped int and a function pointer. See the header
@@ -475,7 +476,7 @@ int pdna_origin_art_portrait(const PkMon* m, int back, PdnaArt* out, PdnaOrigin*
      * by design). Same have()/stack-room pair the NATIVE branch below always used. */
     uint8_t want_gen = (era == ERA_GEN2) ? (uint8_t)PDNA_GEN2 : (uint8_t)PDNA_GEN1;
     if (s_gb_on && s_gb.pic && m->species >= 1 && m->species <= GEN2_MAX_DEX &&
-        pdna_origin_art_have(want_gen) && pdna_origin_art_stack_room()) {
+        pdna_origin_art_have(want_gen) && pdna_origin_art_stack_room(PDNA_GB_FETCH_NEED)) {
       uint8_t form = 0;
       if (m->species == UNOWN_DEX && m->form < UNOWN_LETTERS) form = m->form;
       uint8_t w = 0, h = 0;
@@ -486,7 +487,10 @@ int pdna_origin_art_portrait(const PkMon* m, int back, PdnaArt* out, PdnaOrigin*
     /* Refused or could not serve it -- fall through to gen3_ladder below, same as
      * every other rung's failure. */
   } else if (era == ERA_G3_RS || era == ERA_G3_EM || era == ERA_G3_FRLG) {
-    if (s_g3x_on && s_g3x.pic && pdna_origin_art_stack_room()) {
+    /* D4: this rung's own need, not the GB fetch's 6,144 B -- the cross-game
+     * subtree measures ~2,480 B (PDNA_G3X_FETCH_NEED's own comment), so a chain
+     * that could not clear the GB gate may still safely clear this smaller one. */
+    if (s_g3x_on && s_g3x.pic && pdna_origin_art_stack_room(PDNA_G3X_FETCH_NEED)) {
       int game = (era == ERA_G3_RS) ? 0 : (era == ERA_G3_EM) ? 1 : 2;  /* PkGame */
       uint8_t w = 0, h = 0;
       const uint16_t* px = s_g3x.pic(s_g3x.ctx, game, m->species, m->form,
@@ -501,7 +505,7 @@ int pdna_origin_art_portrait(const PkMon* m, int back, PdnaArt* out, PdnaOrigin*
      * through to gen3_ladder, exactly like every other rung's failure. */
   } else if (o->verdict == PDNA_ORIGIN_GB && s_gb_on && s_gb.pic &&
       m->species >= 1 && m->species <= GEN2_MAX_DEX &&
-      pdna_origin_art_have(o->gen) && pdna_origin_art_stack_room()) {
+      pdna_origin_art_have(o->gen) && pdna_origin_art_stack_room(PDNA_GB_FETCH_NEED)) {
     /* era == ERA_NATIVE: the pre-E4 behaviour, byte for byte. Internal id ==
      * national dex for 1..251 (gen12_convert.c:304-307), so no map. The Unown LETTER
      * is a real part of the picture and the converter went out of its way to

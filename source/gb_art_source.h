@@ -11,8 +11,11 @@
  * rung from pdna_origin_art_portrait() on down (gb_art_pic_cb -> gb_art_fetch ->
  * rom_gbsprite_pic_buf/rom_gbsprite_pal -> gb_art_read -> the SD read tail), read off
  * the call-graph tool as gb_art_pic_cb's own total. Rounded UP from the measured
- * number (not down) -- see gb_art_boot_register()'s stack-room hook, which is the
- * ONLY consumer of this constant, for the exact chains it was checked against. */
+ * number (not down) -- see gb_art_boot_register()'s stack-room hook for the exact
+ * chains it was checked against. D4 (E4 review): pdna_origin_art.c's portrait router
+ * also passes this need directly for its two OWN GB-rung call sites (the era==GEN1/
+ * GEN2 branch and the native-GB-import branch) -- the hook itself is measured per
+ * rung now, not once globally, but both of those rungs cost exactly this GB fetch. */
 #define PDNA_GB_FETCH_NEED 6144
 
 /*
