@@ -1954,10 +1954,18 @@ static void gb_session_core(Gb12Mount* m) {
    * BoxSource.has_start) -- handled by gb_nav_from_start above; 5 when the cursor
    * drops off the bottom row (the PC<->Bank hand-off, which has no PC to hand off to
    * here). All non-zero codes re-enter on the top tabs, so DOWN/START never silently
-   * exit the session. */
+   * exit the session.
+   *
+   * E6 D3: this used to call app_box_start_set(1) unconditionally, which reopens the
+   * grid with the SAVE tab focused (pdna_box.c: st==1 && !s_holding && is_bank ->
+   * s_tab_focus = 2 = SAVE) -- so every trip through the START menu left the cursor
+   * sitting on the exit tab. The Gen-3 nav returns to the plain GRID after its menu,
+   * so START here should match: only r==5 (the PC<->Bank hand-off edge) actually needs
+   * the tabs focused, r==2 (START) does not. Box index still resets to m's start_box
+   * on every re-entry regardless -- BACKLOG #56 tracks remembering the box instead. */
   for (int r; (r = pdna_box(&s)) != 0; ) {
     if (r == 2) gb_nav_from_start(m);
-    app_box_start_set(1);
+    else app_box_start_set(1);
   }
   pdna_origin_box_set_hint(0);
   app_src_readonly_clear();
