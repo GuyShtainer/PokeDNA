@@ -346,36 +346,110 @@ def run_red(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     return s
 
 
+def run_e4_settings(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
+    """E4 (docs/SPRITE-ERA-DESIGN.md): Settings > Game ROM > the Sprites era grid.
+    `rom` is pokedna-delta.gba fused with an ordinary GEN-3 .sav (tools/fuse_sav.py) --
+    NOT a Game Boy image; this is the one path in this script that opens a normal
+    Gen-3 box screen and drives the nav menu, not the GB fork the rest of the file is
+    about. Reachable only as of commit b5788db ("Sprites grid reachable in the
+    emulator build"): before that, PDNA_DELTA's Settings > Game ROM row was a flat
+    "NO SD HERE" refusal with no live sub-screen at all.
+
+    Navigation (session boots straight to the box screen; no info page here, unlike
+    the GB fork's pdna_gen12_show_image): START -> nav menu (two 10-row columns,
+    RIGHT jumps a whole column, sel 0 Party -> RIGHT -> sel 10 Blocks) -> DOWN x7 to
+    NV_SETTINGS (index 17: 10 + 7) -> A -> the Settings list (S_BACKUP..S_CLOSE) ->
+    DOWN x3 to S_ROM -> A -> (PDNA_DELTA only) straight into sprite_settings(), no
+    "Change ROM" popup in the way.
+    """
+    s = Session(core_mod, image_mod, rom, out_dir, "e4_")
+    print("== E4: Settings > Sprites grid (fused Gen-3 save, no GB fork) ==")
+
+    s.tap("START", settle=BIG_SETTLE)      # box screen -> nav menu
+    s.tap("RIGHT")                          # column 0 (Party) -> column 1 (Blocks)
+    s.press_n("DOWN", 7)                    # Blocks -> ... -> Settings (index 17)
+    s.tap("A", settle=BIG_SETTLE)           # nav menu -> Settings list
+    s.press_n("DOWN", 3)                    # Backups -> Animations -> Yard -> Game ROM
+    s.tap("A", settle=BIG_SETTLE)           # S_ROM -> (delta) straight into the grid
+
+    s.shot("01_sprites_default", "E4: Settings > Game ROM > Sprites — default state, "
+           "every cell NATIVE; the GEN1/GEN2 rows show \"-\" under PC (the two dead "
+           "cells se_cell_applies() defines: a Game Boy kind has no Gen-3-style PC box)")
+
+    # No ROM is registered in this fused-save session (there is no second file for the
+    # emulator to have registered), so se_era_next() can only ever offer NATIVE back --
+    # cycling the selected cell with A is a real keypress but a visible no-op. Per the
+    # coordinator's own fallback: also move the cursor so the second shot still differs
+    # from the first, and say so plainly rather than imply a cycle that did not happen.
+    s.tap("A", settle=SETTLE)               # attempt to cycle RS/PC -> stays "Native"
+    s.tap("RIGHT", settle=SETTLE)           # PC -> PTY
+    s.press_n("DOWN", 2, settle=SETTLE)     # RS -> EM -> FRLG
+
+    s.shot("02_sprites_cursor_moved",
+           "E4: A on a cell with no ROM registered leaves it NATIVE (se_era_next has "
+           "nothing else to offer) — cursor moved to FRLG/PTY so this shot still "
+           "differs from the default; cycling to a real era needs a registered ROM, "
+           "which the fused-save emulator session has no second file to provide "
+           "(hardware-only, docs/HW-TEST-2026-09-05-GB-ARC.md §K)")
+
+    s.tap("B", settle=BIG_SETTLE)           # save (cfg_save no-ops: no SD) -> Settings list
+    s.tap("B", settle=BIG_SETTLE)           # Close/B -> back to nav menu or box grid
+    return s
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--gold", required=True, type=Path, help="pokedna-delta.gba fused with Gold.sav (+ --clip)")
-    ap.add_argument("--red", required=True, type=Path, help="pokedna-delta.gba fused with Red.sav")
+    ap.add_argument("--gold", type=Path, help="pokedna-delta.gba fused with Gold.sav (+ --clip)")
+    ap.add_argument("--red", type=Path, help="pokedna-delta.gba fused with Red.sav")
+    ap.add_argument("--e4-emerald", type=Path,
+                     help="pokedna-delta.gba fused with an ordinary Gen-3 .sav "
+                          "(tools/fuse_sav.py) -- E4: Settings > Sprites grid, NOT a "
+                          "Game Boy image")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     a = ap.parse_args(argv)
 
-    for p in (a.gold, a.red):
+    runs = [("gold", a.gold, (run_gold, run_gold_paste)),
+            ("red", a.red, (run_red,)),
+            ("e4-emerald", a.e4_emerald, (run_e4_settings,))]
+    active = [(label, p, fns) for label, p, fns in runs if p is not None]
+    if not active:
+        sys.exit("nothing to do: pass at least one of --gold/--red/--e4-emerald")
+    for label, p, _fns in active:
         if not p.is_file():
-            sys.exit(f"{p}: not a file")
+            sys.exit(f"--{label}: {p}: not a file")
     a.out.mkdir(parents=True, exist_ok=True)
 
     core_mod, image_mod = load_mgba()
 
     ok, skipped = [], []
-    s1 = run_gold(core_mod, image_mod, a.gold, a.out)
-    ok += s1.taken; skipped += s1.skipped
-    s2 = run_gold_paste(core_mod, image_mod, a.gold, a.out)
-    ok += s2.taken; skipped += s2.skipped
-    s3 = run_red(core_mod, image_mod, a.red, a.out)
-    ok += s3.taken; skipped += s3.skipped
+    for _label, p, fns in active:
+        for fn in fns:
+            sess = fn(core_mod, image_mod, p, a.out)
+            ok += sess.taken; skipped += sess.skipped
 
     # A manifest, not just a list printed to stdout: tools/gb_contact_sheet.py reads this
     # so a shot's caption lives in exactly one place (this file) instead of being
     # retyped wherever the sheet gets built.
+    #
+    # MERGED with whatever is already there, not overwritten: a run given only
+    # --e4-emerald (say) must not erase the S1..S5-B entries a separate --gold/--red
+    # run already wrote — this file is the union of every partial run against the
+    # same --out, keyed by filename/name so re-running a given shot updates its own
+    # caption in place instead of duplicating it.
     import json
-    (a.out / "manifest.json").write_text(
-        json.dumps({"shots": [{"file": n, "caption": c} for n, c in ok],
-                    "skipped": [{"name": n, "reason": r} for n, r in skipped]}, indent=2),
+    manifest_path = a.out / "manifest.json"
+    existing = {"shots": [], "skipped": []}
+    if manifest_path.is_file():
+        existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+    by_file = {e["file"]: e for e in existing.get("shots", [])}
+    for n, c in ok:
+        by_file[n] = {"file": n, "caption": c}
+    by_name = {e["name"]: e for e in existing.get("skipped", [])}
+    for n, r in skipped:
+        by_name[n] = {"name": n, "reason": r}
+    manifest_path.write_text(
+        json.dumps({"shots": list(by_file.values()), "skipped": list(by_name.values())}, indent=2),
         encoding="utf-8")
 
     print(f"\n{len(ok)} shot(s) saved to {a.out}")
