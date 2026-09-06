@@ -274,7 +274,12 @@ static void card_info(const GbEditMon* e, GbSlot* slot, int* n) {
 
   if (e->gen == GB_GEN2) {
     field_row(e, GBE_ITEM, PDNA_GBSUM_LBL_ITEM, y, slot, n); y += ROW_H;
-    field_row(e, GBE_FRIEND, PDNA_GBSUM_LBL_FRIEND, y, slot, n); y += ROW_H;
+    /* An Egg stores its hatch counter in this SAME byte (gb_editor.c's own
+     * gbe_label_of: "Egg cycles" for GBE_FRIEND on an egg) — the old flat-list
+     * field_row honoured that; this card's own copy did not, and showed a
+     * hatching egg's countdown as "Friend". */
+    field_row(e, GBE_FRIEND, gb_is_egg(e) ? PDNA_GBSUM_LBL_EGGC : PDNA_GBSUM_LBL_FRIEND,
+              y, slot, n); y += ROW_H;
 
     /* Pokerus (pokecrystal stats_screen.asm:590-604): high nibble strain, low
      * nibble days left (0 with a strain set = immune, past infection); byte 0 =

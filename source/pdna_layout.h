@@ -645,6 +645,10 @@
 #define PDNA_GBSUM_LBL_LV      "Lv"
 #define PDNA_GBSUM_LBL_ITEM    "Item"
 #define PDNA_GBSUM_LBL_FRIEND  "Friend"
+#define PDNA_GBSUM_LBL_EGGC    "Hatch"       /* the SAME GBE_FRIEND byte, on an Egg
+                                              * (gb_editor.c's gbe_label_of: "Egg
+                                              * cycles" there) — 5 cols, inside the
+                                              * 52 px label column */
 #define PDNA_GBSUM_LBL_STATUS  "Status"      /* Gen 1 only — see gb_edit.h, no Gen-2
                                               * status getter exists */
 #define PDNA_GBSUM_LBL_PKRS    "PKRS"        /* Gen 2 only */
