@@ -362,7 +362,7 @@ static void test_resolve_cell(void) {
     s.era[SE_KIND_EM][SE_PLACE_PC] = SE_ERA_GEN1;
     int why = -1;
     SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PC, 1, 1, 1, &all_roms, 1, &why);
-    CHECK(got == SE_ERA_NATIVE,
+    CHECK(got == SE_ERA_G3_EM,
           "Db5: EM/PC/GEN1 cell is refused at PC (no per-species Gen-1 icons) -> the STORE (G3_EM after review D1)");
   }
 
