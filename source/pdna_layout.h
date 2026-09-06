@@ -599,58 +599,77 @@
 #define PDNA_GBEDIT_PICKBOX_NONE_L1    "No other box can be written to."
 
 /* ---------------------------------------------------------------------------
- * BACKLOG #41 (Guy, 2026-09-05): source/pdna_gbsummary.c, the Gen-1/2 twin of
- * pdna_summary.c's pdna_inspect() — "the edit page for gen 2 and 1 should feel the
- * same as gen 3 ... we edit within the summary page". Three cards styled after the
- * retail Gen-1/2 summary screens (pokered/engine/pokemon/status_screen.asm,
- * pokecrystal/engine/pokemon/stats_screen.asm — field ORDER only, clean-room, no
- * ripped art). Fixed sys8 throughout (ui_text, 8 px/glyph — the same convention
- * pdna_gbedit.c's own flat list uses), so every literal here is checked by counting
- * columns rather than measuring proportional pixels; per-record VALUES (a species
- * name, gbe_value's own formatted numbers) are ui_truncate'd to a column width and
- * stay out of host_textfit_test.c by that file's own header rule ("built from data
- * the host cannot see"). PDNA_EDIT_LBL_X/VAL_X (6/118, above) are reused as-is for
- * every single-field row so a label already proven to fit there does not need its
- * own new check. */
+ * BACKLOG #41 slice E1 (Guy, 2026-09-05 -- docs/SPRITE-ERA-DESIGN.md sec 3): the
+ * Game Boy summary restyled to the SAME Gen-3 CARD chrome as pdna_summary.c —
+ * "I prefer the summary edit design to be like we did for gen 3 ... [with] less
+ * editable stats". Replaces the earlier retail-page macro set below (three cards,
+ * fixed sys8 across the FULL 240 px screen): this version shares
+ * PDNA_SUM_CARD_X/W (98/138, above) with the Gen-3 summary, so every card body
+ * lives in the SAME 138 px column pdna_summary.c's own card_info/card_skills do,
+ * NOT the full screen width the old retail-page layout used. Selection is drawn
+ * by the shared MOVING OUTLINE (pdna_summary_sel_frame_*) rather than an inline
+ * per-row highlight box, so — like pdna_summary.c's own card_info/card_skills —
+ * these rows carry no "selected" colour swap of their own.
+ *
+ * Fixed sys8 (ui_text, 8 px/glyph) for short label/value columns, exactly
+ * pdna_summary.c's own card_info/card_skills convention; PROPORTIONAL
+ * (ui_ptext_fit) only for sentence-shaped strings that would not fit a fixed
+ * column at this width (an item name, the EXP line, the box-record note, the
+ * ORIGIN card's two prose lines). Every literal here is checked at its real x
+ * inside the 138 px card by tests/host_textfit_test.c. */
 #define PDNA_GBSUM_VIEW_CHIP   "VIEW"
 #define PDNA_GBSUM_EDIT_CHIP   "EDIT"
 #define PDNA_GBSUM_CARD_INFO   "INFO"
-#define PDNA_GBSUM_CARD_STATS  "STATS"
+#define PDNA_GBSUM_CARD_SKILLS "SKILLS"
 #define PDNA_GBSUM_CARD_MOVES  "MOVES"
-#define PDNA_GBSUM_FOOT_VIEW    "A edit  U/D mon  L/R card  B"
-#define PDNA_GBSUM_FOOT_VIEW_RO "U/D mon  L/R card  B back"
-/* U/D = move the field cursor, <>edit = LEFT/RIGHT adjusts it, A:ok = press (osk/picker/
- * jump-to-extreme), L/R card = flip card, B = back to VIEW (NOT leave the screen — the
- * screen's own B-in-VIEW does that). 26 cols (208 px) at x=4, comfortably inside 240.
- * SELECT (drop to the flat field-list editor, pdna_gbedit.c) does not fit alongside all
- * of the above within budget — documented in pdna_gbsummary.h instead of the footer. */
-#define PDNA_GBSUM_FOOT_EDIT    "U/D <>edit A:ok L/R card B"
+#define PDNA_GBSUM_CARD_ORIGIN "ORIGIN"
+/* U/D = move the field cursor, <>edit = LEFT/RIGHT adjusts it, A = press (osk/
+ * picker/jump-to-extreme), L/R = flip card, B = back to VIEW (NOT leave the
+ * screen — the screen's own B-in-VIEW does that, same two-B contract as before).
+ * SELECT (drop to the flat field-list editor, pdna_gbedit.c) stays documented in
+ * pdna_gbsummary.h rather than the footer, same reason as the old macro set. */
+#define PDNA_GBSUM_FOOT_EDIT    "A ok <>edit U/D L/R card B"
+#define PDNA_GBSUM_FOOT_VIEW    "A edit  U/D mon  L/R  SEL  B"
+#define PDNA_GBSUM_FOOT_VIEW_RO "U/D mon  L/R card  SEL  B"
 
-/* Card 0 (INFO) row labels not already covered by gb_editor.c's own LABEL[] table
- * (gbe_label_of) — species/type/status/sex/shiny/pokerus/EXP are display-only, so
- * they get their own short labels rather than borrowing an editable field's. All at
- * PDNA_EDIT_LBL_X (6); the longest, "PKRS", is 4 columns (32 px), well inside
- * PDNA_EDIT_LBL_W (112 px) — see gbe_label_of's own "Friendship" (10 cols/80 px),
- * already proven to fit the same column by pdna_gbedit's own screen. */
-#define PDNA_GBSUM_LBL_SPECIES "Species"
-/* Shared by both generations — Gen 1's raw type bytes are mapped onto Gen 3's own
- * numbering (source/pdna_gbsummary.c g1_to_g3_type()) so both draw a real ui_type_chip,
- * not a "T14"-style raw id. */
-#define PDNA_GBSUM_LBL_TYPE    "Type"
-#define PDNA_GBSUM_LBL_STATUS  "Status"      /* Gen 1 only (Gen 2's status_screen row has no
-                                              * Gen-2 equivalent this tree can read — see
-                                              * gb_edit.h, no Gen-2 status getter exists) */
+/* Card 0 INFO: label at PDNA_SUM_CARD_X, value at +VAL_DX — the SAME split
+ * IDEA pdna_summary.c's own card_info uses for its 138 px INFO_W, but +52, not
+ * pdna_summary.c's own +48: this card's own labels ("Friend", "Status", and
+ * the Egg relabel "Hatch") are 6 columns (48 px) wide, i.e. EXACTLY 48 px at
+ * PDNA_SUM_CARD_X — flush against a +48 value column with no gap at all.
+ * tests/host_textfit_test.c's own card-0-label check (budgeted to this macro,
+ * not the screen edge) is what caught it; +52 buys a 4 px gap instead. Everything
+ * that already lives on the shared left panel (species, level, gender, type,
+ * shiny/egg/Pokerus tag — pdna_summary_draw_left) is NOT repeated here; nickname
+ * and level keep their rows because THIS is where the edit control lives, the
+ * left panel only displays what they resolve to. */
+#define PDNA_GBSUM_VAL_DX       52
+#define PDNA_GBSUM_LBL_NAME    "Name"
+#define PDNA_GBSUM_LBL_OT      "OT"
+#define PDNA_GBSUM_LBL_ID      "ID"
+#define PDNA_GBSUM_LBL_LV      "Lv"
+#define PDNA_GBSUM_LBL_ITEM    "Item"
+#define PDNA_GBSUM_LBL_FRIEND  "Friend"
+#define PDNA_GBSUM_LBL_EGGC    "Hatch"       /* the SAME GBE_FRIEND byte, on an Egg
+                                              * (gb_editor.c's gbe_label_of: "Egg
+                                              * cycles" there) — 5 cols, inside the
+                                              * 52 px label column */
+#define PDNA_GBSUM_LBL_STATUS  "Status"      /* Gen 1 only — see gb_edit.h, no Gen-2
+                                              * status getter exists */
 #define PDNA_GBSUM_LBL_PKRS    "PKRS"        /* Gen 2 only */
-/* "Sex M  Shiny Yes" — one combined display row (BACKLOG #41's row budget: Card 0
- * has up to 11 rows on Gen 2 and the y=34..150 band is 116 px / 9 px-per-row = ~12,
- * so two single-purpose rows here would leave no margin for Pokerus). Worst case
- * "Sex M  Shiny Yes" is 17 cols (136 px) at x=6, comfortably inside 240. */
-#define PDNA_GBSUM_SEXSHINY_FMT "Sex %s  Shiny %s"
-#define PDNA_GBSUM_SHINY_YES    "Yes"
-#define PDNA_GBSUM_SHINY_NO     "No"
-/* "EXP 1640000  +999999" (worst case) is 21 cols (168 px) at x=6. */
-#define PDNA_GBSUM_EXP_FMT      "EXP %lu  +%lu"
-#define PDNA_GBSUM_EXP_MAX_FMT  "EXP %lu  MAX"
+/* OT/Item/Level/Nickname values go through the shared field_row() -> gbe_value()
+ * path (gb_editor.c's own formatting: plain decimal, "None" for no held item),
+ * the same as every other editable GBE_* row in this tree. ID is drawn
+ * zero-padded instead (matching pdna_summary.c's own "TID %05u" on its ORIGIN
+ * card) — a 16-bit trainer id is always exactly 5 digits at this width, so
+ * there is no separate worst case to check. */
+#define PDNA_GBSUM_ID_FMT      "%05u"
+/* "S15  15d left" (pokecrystal stats_screen.asm:590-604's strain/days split —
+ * both nibbles, so both can be two digits) is 13 cols / 104 px, wider than the
+ * value column has (PDNA_SUM_CARD_W - VAL_DX = 86 px) — drawn PROPORTIONALLY
+ * (ui_ptext_fit), like the EXP line below, so it can only clip itself. */
+#define PDNA_GBSUM_PKRS_DAYS_FMT   "S%u  %ud left"
+#define PDNA_GBSUM_PKRS_IMMUNE_FMT "S%u  immune"
 /* Gen-1 status byte (pokered/constants/battle_constants.asm:62-67): bits 0-2 sleep-
  * turns-left, bit 3 poison, bit 4 burn, bit 5 freeze, bit 6 paralysis. Only ONE ever
  * applies to a legally-obtained Gen-1 mon at a time (a hacked record could set more
@@ -662,51 +681,60 @@
 #define PDNA_GBSUM_ST_BRN  "Burned"
 #define PDNA_GBSUM_ST_FRZ  "Frozen"
 #define PDNA_GBSUM_ST_PAR  "Paralyzed"
+/* "EXP 1640000  +999999" (worst case) proportionally fit to the 138 px card. */
+#define PDNA_GBSUM_EXP_FMT      "EXP %lu  +%lu"
+#define PDNA_GBSUM_EXP_MAX_FMT  "EXP %lu  MAX"
 
-/* Card 1 (STATS): a 4-column grid — label / computed stat / DV / stat exp — none of
- * gbe_label_of's own labels (they are one word each, "DV Atk" etc.) fit this tight a
- * layout, so the stat row gets its own 3-letter names. DV_X - VAL_X leaves 64 px for
- * the widest VAL text, "999/999" (the HP row's cur/max), at 56 px; SE_X - DV_X
- * leaves 44 px for "DV 15" (40 px, the widest DV cell — the HP row's own DV, GBE_DVH,
- * is read-only and drawn dim in the SAME column). Checked directly against these
- * macros, not retyped, in host_textfit_test.c. */
-#define PDNA_GBSUM_STAT_LBL_X   6
-#define PDNA_GBSUM_STAT_VAL_X  34
-#define PDNA_GBSUM_STAT_DV_X   98
-#define PDNA_GBSUM_STAT_SE_X  142
-#define PDNA_GBSUM_HDR_DV      "DV"
-#define PDNA_GBSUM_HDR_SE      "SE"
+/* Card 1 SKILLS: two rows per stat, not the old flat list's one-row 4-column grid
+ * (label/value/DV/stat-exp spanning the whole 240 px screen) — that grid does not
+ * fit 138 px. Row 1 (main): "Atk 999/999" (party) or "Atk -" (box). Row 2
+ * (indented, its own two registered fields): "DV 15" then "SE 65535". */
 #define PDNA_GBSUM_STAT_HP     "HP"
-#define PDNA_GBSUM_STAT_ATK    "ATK"
-#define PDNA_GBSUM_STAT_DEF    "DEF"
-#define PDNA_GBSUM_STAT_SPE    "SPE"
+#define PDNA_GBSUM_STAT_ATK    "Atk"
+#define PDNA_GBSUM_STAT_DEF    "Def"
+#define PDNA_GBSUM_STAT_SPE    "Spe"
 #define PDNA_GBSUM_STAT_SPA    "SpA"
 #define PDNA_GBSUM_STAT_SPD    "SpD"
-#define PDNA_GBSUM_STAT_SPC    "SPC"          /* Gen 1: Special, not split */
-/* "999/999" (party) or "-" (box). "DV 15" / "SE 65535" (worst case, 8 cols/64 px —
- * inside SE_X's own 240 - 142 = 98 px budget). */
+#define PDNA_GBSUM_STAT_SPC    "Spc"          /* Gen 1: Special, not split */
 #define PDNA_GBSUM_STAT_CURMAX_FMT "%u/%u"
 #define PDNA_GBSUM_STAT_DASH       "-"
 #define PDNA_GBSUM_STAT_DV_FMT     "DV %u"
 #define PDNA_GBSUM_STAT_SE_FMT     "SE %u"
-/* Shown once, under the last stat row, for a BOX record only (no live HP/stats exist
- * to show — gb_get_stat/gb_get_current_hp are party-only by contract). 23 cols
- * (184 px) at x=6. */
+/* Row-1 label/value split, from PDNA_SUM_CARD_X: the label ("HP".."SpD", <=3
+ * cols/24 px) then the computed value ("999/999" worst case, 7 cols/56 px, so
+ * VAL_DX needs at least 24 -- 26 leaves a 2 px gap). */
+#define PDNA_GBSUM_STAT_VAL_DX    26
+/* Row-2 offsets from PDNA_SUM_CARD_X. DV at +8 ("DV 15", 5 cols/40 px, ends at
+ * 48); SE at +56 ("SE 65535", 8 cols/64 px, ends at 120) — both inside the
+ * 138 px card with margin either side. */
+#define PDNA_GBSUM_STAT_DV_DX      8
+#define PDNA_GBSUM_STAT_SE_DX     56
+/* Shown once, under the last stat row, for a BOX record only (no live HP/stats
+ * exist to show — gb_get_stat/gb_get_current_hp are party-only by contract). */
 #define PDNA_GBSUM_BOX_STAT_NOTE  "Computed on withdrawal"
 
-/* Card 2 (MOVES): two lines per move — the name at PDNA_EDIT_LBL_X/VAL_X (like every
- * other GBE_K_MOVE row in this tree), then an indented PP/PP-Ups line with its own
- * two sub-fields. "Move 4" is 6 cols (48 px), inside PDNA_EDIT_LBL_W. */
-#define PDNA_GBSUM_LBL_MOVE_FMT "Move %u"
-#define PDNA_GBSUM_PPROW_X      18             /* indented under the move name        */
-#define PDNA_GBSUM_PP_LBL       "PP"
-#define PDNA_GBSUM_PP_VAL_X     40
-/* "Max", not "Ups": gbe_value(GBE_PPU0+i) (gb_editor.c) returns "<max>  Ups <n>" — the
- * FIRST number in that column is the derived max PP, and the row used to read
- * "Ups 35  Ups 0" with both halves labelled the same word. */
-#define PDNA_GBSUM_UPS_LBL      "Max"
-#define PDNA_GBSUM_UPS_LBL_X    96
-#define PDNA_GBSUM_UPS_VAL_X   128
+/* Card 2 MOVES reuses pdna_summary.c's own card_moves geometry and format macros
+ * VERBATIM (PDNA_SUM_PP_X_DX/PP_W/PP_FMT/PP_UPS_FMT, above) — same 74 px name
+ * column, same "PP%u/%u[+%u]" cell registered under GBE_PPU0+i only (pressing it
+ * cycles PP Ups, exactly like Gen 3's F_PPU0+i; current PP is not independently
+ * editable from this card there either). The one difference: a Game Boy record
+ * carries no move TYPE this tree can read (Gen 1's ids differ from Gen 3's own
+ * numbering and gb_editor.c has no accessor for it), so there is no type-badge
+ * line under it. */
+
+/* Card 3 ORIGIN — new in E1 (the old 3-card design had no such card). The honest
+ * "this is a throwaway Gen 3 PREVIEW, not a real transfer" story
+ * (gen12_convert.h: "THERE WAS NEVER AN OFFICIAL GEN 1/2 -> GEN 3 TRANSFER"),
+ * the record's OWN generation (the `note` string every caller already passes —
+ * "Gen 1 record" / "Gen 2 record"), the Gen-1 type-byte chip (Gen 2's own record
+ * carries no type field; its type is read straight off the species table, which
+ * the shared left panel already shows), and the Gen-3-to-Game-Boy sidecar link
+ * status (docs/GEN3-TO-GB-SIDECAR-DESIGN.md). */
+#define PDNA_GBSUM_ORIGIN_ART_L1      "Art: Gen 3 preview only"
+#define PDNA_GBSUM_ORIGIN_ART_L2      "Edits change the GB save"
+#define PDNA_GBSUM_ORIGIN_TYPE_LBL    "Type"
+#define PDNA_GBSUM_ORIGIN_SIDECAR_YES "Sidecar: Yes"
+#define PDNA_GBSUM_ORIGIN_SIDECAR_NO  "Sidecar: No"
 
 /* ---------------------------------------------------------------------------
  * S5-B: the Gen-3 <-> Game Boy sidecar UI (docs/GEN3-TO-GB-SIDECAR-DESIGN.md sec. 10)

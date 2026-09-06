@@ -18,25 +18,29 @@ WHAT THIS DRIVES
 Two fused images (built by the caller, this script does not fuse anything):
   pokedna-delta.gba + Gold.sav (+ --clip, an 80-byte real Gen-3 box record) — the
     Gen-2 run: info page, box grid, mon menu, the native summary (BACKLOG #41,
-    source/pdna_gbsummary.c) in VIEW across all three cards then in EDIT (+ a DV
+    source/pdna_gbsummary.c) in VIEW across all FOUR cards then in EDIT (+ a DV
     edit), the confirm screen, MOVE TO, RELEASE, and — because a clip was seeded —
     PASTE (GB) on an empty cell through to the loss screen.
   pokedna-delta.gba + Red.sav (no clip) — the Gen-1 run: box grid, the native
-    summary VIEW + EDIT (no Item/Friendship rows — gbe_fields() drops them outside
-    GB_GEN2; G1 Type/Status show the STORED bytes, no name table), and the
-    "Gen 1: withdraw it in-game instead" refusal MOVE TO -> Party produces
-    (source/pdna_layout.h PDNA_GBEDIT_MOVE_NEEDSBASE_L2, source/pdna_gen12.c).
+    summary VIEW (card 0 INFO + card 3 ORIGIN, which shows the record's own G1
+    type bytes) + EDIT (no Item/Friendship rows — gbe_fields() drops them outside
+    GB_GEN2), and the "Gen 1: withdraw it in-game instead" refusal MOVE TO -> Party
+    produces (source/pdna_layout.h PDNA_GBEDIT_MOVE_NEEDSBASE_L2, source/pdna_gen12.c).
 
-BACKLOG #41 (2026-09-05, Guy: "the edit page for gen 2 and 1 should feel the same
-as gen 3 ... we edit within the summary page"): VIEW and EDIT on the read-only mon
-menu now BOTH open source/pdna_gbsummary.c over the record in its own generation's
-shape, replacing the old flat field-list screen (pdna_gbedit.c, kept as SELECT's
-fallback) for VIEW and for the entry point into EDIT. Shots 04*/05*/06*/07* below
-were rewritten for the new navigation (L/R now flips CARDS, matching pdna_summary's
-own Gen-3 convention, so the OLD "L x3 = big-step DV" trick is gone — LEFT/RIGHT is
-always a small step here now). BACKLOG #40's four cosmetic nits (box banner capacity,
-Gen-1 box-name spacing, the paste-refusal title, the party-full wording) are also
-visible in several of these captions.
+BACKLOG #41 slice E1 (2026-09-05/06, Guy: "I prefer the summary edit design to be
+like we did for gen 3 ... [with] less editable stats"): source/pdna_gbsummary.c
+restyled to the SAME Gen-3 CARD chrome pdna_summary.c uses — the shared left info
+panel (portrait/name/level/type via the origin-art router), the card dots, and a
+MOVING-OUTLINE selection (pdna_summary_sel_frame_*) instead of the earlier retail-
+page design's inline per-row highlight box — over FOUR cards (INFO / SKILLS /
+MOVES / ORIGIN, the last one new: the honest "this is a Gen 3 preview, not a real
+transfer" story + the sidecar link status) instead of the original BACKLOG #41
+three-card retail-page layout (INFO / STATS / MOVES, "STATS" renamed "SKILLS").
+Shots 04*/05*/06*/07*/12b* below were re-shot for the new chrome and for the new
+ORIGIN card; the navigation itself (L/R flips cards, U/D moves the field cursor)
+was already Gen-3-parity from BACKLOG #41's first landing and is unchanged here.
+BACKLOG #40's four cosmetic nits (box banner capacity, Gen-1 box-name spacing, the
+paste-refusal title, the party-full wording) are also visible in several captions.
 
 Every SD-backed action (a card write, i.e. anything past "confirm") refuses in the
 emulator — mGBA has no flashcart. That refusal is captured too: it is honest
@@ -190,10 +194,16 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.shot("04_view_info", "BACKLOG #41: the native summary, VIEW, card 0 INFO — "
                             "nickname/level/type/OT/item/friendship/EXP")
     s.tap("R", settle=BIG_SETTLE)          # card 0 -> 1
-    s.shot("04b_view_stats", "BACKLOG #41: VIEW, card 1 STATS — HP/Atk/Def/Spe/SpA/SpD "
-                              "with their DV + stat exp columns")
+    s.shot("04b_view_skills", "BACKLOG #41 slice E1: VIEW, card 1 SKILLS — HP/Atk/Def/Spe/"
+                               "SpA/SpD, each a two-row cell (value, then DV + stat exp)")
     s.tap("R", settle=BIG_SETTLE)          # card 1 -> 2
     s.shot("04c_view_moves", "BACKLOG #41: VIEW, card 2 MOVES — 4 moves, PP cur/max, PP Ups")
+    s.tap("R", settle=BIG_SETTLE)          # card 2 -> 3
+    s.shot("04d_view_origin", "BACKLOG #41 slice E1: VIEW, card 3 ORIGIN (new) — the honest "
+                               "\"Gen 3 preview only / edits change the GB save\" story, plus "
+                               "the sidecar link status")
+    s.tap("L", settle=BIG_SETTLE)          # card 3 -> back to 2, so B below leaves from MOVES
+                                            # (matches the pre-E1 script's own exit point)
     s.tap("B", settle=BIG_SETTLE)          # leave (not dirty -> no confirm) -> box grid
 
     # ---- EDIT: Gen-3 parity (BACKLOG #42/#43 batch) retired the standalone EDIT row that
@@ -206,13 +216,13 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.shot("05_edit_info", "Gen-3 parity: A inside the VIEW/EDIT summary flips to edit "
                             "mode, card 0 — the frame on Nickname (fsel resets on entry)")
 
-    s.tap("R", settle=BIG_SETTLE)          # card 0 -> 1 (STATS); fsel resets to 0 (HP's SE)
-    s.tap("DOWN", settle=SETTLE)           # fsel 0 (SE0/HP) -> 1 (DV Atk) — card_stats()'s
+    s.tap("R", settle=BIG_SETTLE)          # card 0 -> 1 (SKILLS); fsel resets to 0 (HP's SE)
+    s.tap("DOWN", settle=SETTLE)           # fsel 0 (SE0/HP) -> 1 (DV Atk) — card_skills()'s
                                             # own registration order, stat_row() called
                                             # HP/ATK/DEF/SPE/SpA/SpD in that order and each
                                             # registers DV-then-SE, so index 1 is ATK's DV.
-    s.shot("05b_edit_stats_dv_atk", "BACKLOG #41: EDIT, card 1 STATS, frame on DV Atk — "
-                                     "the 4th requested shot")
+    s.shot("05b_edit_skills_dv_atk", "BACKLOG #41 slice E1: EDIT, card 1 SKILLS, the moving "
+                                      "outline (not an inline highlight any more) on DV Atk")
     # This Bulbasaur's DV Atk starts at 15 (max). pdna_gbsummary reserves L/R for CARD
     # FLIP (Gen-3 pdna_inspect's own convention — BACKLOG #41 asked for "the same feel
     # as gen 3"), so there is no big-step shoulder adjust here any more (SELECT still
@@ -282,9 +292,14 @@ def run_red(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     # BACKLOG #41: VIEW opens the native summary (card 0 INFO — the requested Gen-1 shot).
     s.tap("A", settle=BIG_SETTLE)          # mon menu
     s.tap("A", settle=BIG_SETTLE)          # VIEW (already selected)
-    s.shot("12b_view_info", "BACKLOG #41: Gen-1 native summary, VIEW, card 0 INFO — G1 Type "
-                             "(the stored bytes, e.g. \"T14\") + Status, no Item/Friendship "
-                             "rows (Gen-1 has neither)")
+    s.shot("12b_view_info", "BACKLOG #41: Gen-1 native summary, VIEW, card 0 INFO — no "
+                             "Item/Friendship rows (Gen-1 has neither)")
+    s.press_n("R", 3, settle=BIG_SETTLE)   # INFO -> SKILLS -> MOVES -> ORIGIN
+    s.shot("12b2_view_origin", "BACKLOG #41 slice E1: Gen-1, card 3 ORIGIN — the Type row "
+                                "reads the record's OWN stored type bytes (g1_to_g3_type()), "
+                                "not the species table the shared left panel's chips use")
+    s.press_n("L", 3, settle=BIG_SETTLE)   # back to INFO, so the B below leaves from the
+                                            # same card the pre-E1 script always did
     s.tap("B", settle=BIG_SETTLE)          # leave -> box grid
 
     s.tap("A", settle=BIG_SETTLE)          # mon menu

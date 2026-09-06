@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "gen3_mon.h"   /* PkMon, for the exported chrome below */
 
 /* Inline VIEW + EDIT of one Pokémon record (the 6 summary cards). Starts in VIEW:
  * A enters edit mode (can_edit only), U/D request the prev/next mon, L/R flip card,
@@ -29,5 +30,42 @@ int pdna_inspect(uint8_t* rec, bool is_party, bool can_edit, uint8_t* out_rec,
  * A green NEW chip replaces the VIEW/EDIT banner so it is obvious the mon is not
  * saved yet. Always returns 0. Editing is always allowed (the caller is Omega-gated). */
 int pdna_inspect_create(uint8_t* rec, uint8_t* out_rec, bool* saved, int* card);
+
+/* ---- shared chrome, exported for pdna_gbsummary.c (BACKLOG #41 slice E1: the Game
+ * Boy summary restyled to this same Gen-3 CARD design, docs/SPRITE-ERA-DESIGN.md sec 3).
+ * Every one of these is a straight export of pdna_summary.c's own static — same body,
+ * same pixels, so the Gen-3 summary's own rendering is provably unchanged. */
+
+/* The whole-screen blue gradient backdrop (card_paint_needed's caller repaints it
+ * every time the card side needs a repaint at all). */
+void pdna_summary_bg(void);
+
+/* The shared left info column: framed sprite (drawn via the origin-art router, so a
+ * Game Boy import shows in ITS OWN generation's art the same way it does inside a
+ * Gen-3 save), dex no., name, level + gender, species, type badges, egg/shiny/Pokerus
+ * tag. `back` selects the front/back sprite exactly like pdna_summary.c's own g_back —
+ * pass false for a screen with no front/back toggle of its own. Unconditional: always
+ * repaints (no I/O-skip memo) — the caller decides WHEN to call this, the same way
+ * pdna_summary.c's own draw_left_conditional wraps the identical static draw_left(). */
+void pdna_summary_draw_left(const PkMon* p, bool back);
+
+/* Same, for a caller that KNOWS the source generation (1 or 2) because it
+ * mounted the GB save itself — the provenance chip reads GB1/GB2 (certain)
+ * instead of draw_left's own best guess ("GB?"). See pdna_summary.c's own
+ * header comment on this function for the full rationale. */
+void pdna_summary_draw_left_hint(const PkMon* p, bool back, uint8_t hint_gen);
+
+/* The card-index dots (n dots, dot `active` lit). */
+void pdna_summary_draw_dots(int x, int y, int n, int active);
+
+/* The selection outline's save-under mechanism. Backed by pdna_summary.c's OWN
+ * s_self_px buffer (588 B, EWRAM_BSS) — safe to share because the Gen-3 summary and
+ * the Game Boy summary are never both on screen at once, and each screen drops the
+ * outline state on its own entry (see pdna_gbsummary.c). Reusing this buffer instead
+ * of declaring a second one is what keeps the Game Boy summary's EWRAM cost at zero
+ * (docs/SPRITE-ERA-DESIGN.md sec 0: "EWRAM 524 B free. No new statics."). */
+void pdna_summary_sel_frame_set(int sx, int sy, int sw);
+void pdna_summary_sel_frame_hide(void);
+void pdna_summary_sel_frame_drop(void);
 
 #endif /* PDNA_SUMMARY_H */

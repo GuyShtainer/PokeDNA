@@ -1,31 +1,56 @@
 /* pdna_gbsummary.c — inline VIEW + EDIT of a Game Boy Pokemon over its NATIVE
- * GbEditMon, styled after the retail Gen-1/2 summary screens. See pdna_gbsummary.h
- * for the contract; docs/GEN12-EDIT-DESIGN.md section 3.3 for why this reads/writes
- * the native record and never the lossy Gen-3-converted copy the box grid shows.
+ * GbEditMon, restyled to the SAME Gen-3 CARD chrome pdna_summary.c uses
+ * (BACKLOG #41 slice E1, docs/SPRITE-ERA-DESIGN.md sec 3 — Guy, 2026-09-05:
+ * "I prefer the summary edit design to be like we did for gen 3 ... [but with]
+ * less editable stats"). See pdna_gbsummary.h for the public contract, which is
+ * UNCHANGED from the earlier retail-page version this replaces.
  *
- * Field ORDER is taken from (clean-room — text placement only, no ripped art):
- *   pokered/engine/pokemon/status_screen.asm:106-169   (page 1: HP/status/type/OT/lvl)
- *                                             :243-314  (page 2: stats box + moves/PP)
- *   pokecrystal/engine/pokemon/stats_screen.asm:590-627 (pink: status/type/pokerus)
- *                                              :629-660  (pink: EXP/level-up)
- *                                              :745-780  (green: item/move list)
- *                                              :788+     (blue: OT info + stats)
- * This screen regroups those fields into its OWN three cards (INFO / STATS / MOVES)
- * rather than reproducing the retail page split byte-for-byte — see pdna_gbsummary.h.
+ * SHARED CHROME, exported from pdna_summary.c (pdna_summary.h): the whole-screen
+ * gradient (pdna_summary_bg), the card-index dots (pdna_summary_draw_dots), the
+ * moving-outline selection (pdna_summary_sel_frame_set/hide/drop, backed by that
+ * file's OWN s_self_px buffer — safe to share because the two summary screens
+ * are never both on screen at once), and — the piece that makes a Game Boy
+ * Pokemon "look like" looking at one — the shared LEFT PANEL painter
+ * (pdna_summary_draw_left): portrait via the origin-art router, dex no., name,
+ * level + gender, species, type badges, egg/shiny/Pokerus tag.
  *
- * NO NEW STATICS (docs/GEN12-EDIT-DESIGN.md 3.4: "EWRAM free at HEAD: 612 bytes").
- * The field registry and the repaint shadow both live on THIS FUNCTION'S OWN STACK
- * FRAME (locals in pdna_gbsummary(), threaded through the static render helpers by
- * pointer) — never file-scope statics, unlike pdna_summary.c's g_slot/g_edit/g_ivh.
+ * THE LEFT PANEL'S POKEMON IS A THROWAWAY CONVERSION, never the record this
+ * screen reads or writes. gen12_convert.h is explicit that there was never an
+ * official Gen 1/2 -> Gen 3 transfer; gbsum_convert_left() below builds one
+ * anyway, purely so the shared painter has a PkMon to draw, and decodes it back
+ * out immediately — it is never committed, never shown to gb_edit_commit, and
+ * never touches the box grid's own identity matching. THE CARDS ON THE RIGHT
+ * read and write the NATIVE `e` exactly as before; the ORIGIN card says so in
+ * plain words (docs/SPRITE-ERA-DESIGN.md sec 3's "honest converted-copy line").
  *
- * Diff-render, review fix: render() takes a `full` flag. A change to the record, an
- * overlay (ui_clear_gen() moved), the card, or edit-mode itself forces `full` — a real
- * ui_clear() plus the VIEW/EDIT chip, the dots, `note` and the footer, none of which
- * change on a bare cursor move. Every OTHER repaint (a d-pad move between fields, or a
- * value edited in place) is partial: only the y=HDR_Y..FOOT_RULE_Y band (the header
- * line, the card title, and the card body) is erased and redrawn — a fill_rect, not a
- * full-screen clear, so the chip/dots/note/footer are left alone and the active
- * display's rows outside that band never repaint on every single keypress. */
+ * LESS EDITABLE, on purpose: four cards (INFO / SKILLS / MOVES / ORIGIN)
+ * against Gen-3's eight — no separate IV/EV cards (Game Boy DVs and stat exp
+ * share one SKILLS grid instead), no contest stats or contest moves (neither
+ * generation has them), no species/type/gender/shiny row on INFO (the shared
+ * left panel already shows all four).
+ *
+ * DIFF-RENDER, matching pdna_summary.c's OWN two-tier idiom rather than the
+ * retail-page version's single erase-band:
+ *   - a bare field-cursor move (fsel changes, nothing else) repaints NOTHING —
+ *     only the moving outline updates (pdna_summary_sel_frame_set's save-under),
+ *     the same "just the outline" behaviour draw_left_conditional's header
+ *     comment in pdna_summary.c measures at ~48x fewer framebuffer bytes and,
+ *     on real hardware, zero extra SD reads;
+ *   - the card body (chip/dots/title/rule/content/footer) repaints in full
+ *     whenever the record changes, the card flips, edit mode toggles, or an
+ *     overlay (the OSK, a picker, the SELECT fallback) painted over the screen
+ *     — via pdna_summary_bg(), which by construction never touches the left
+ *     panel's own rect (0,11)-(92,150);
+ *   - the LEFT PANEL — and the ROM portrait fetch inside it — repaints ONLY
+ *     when the underlying record actually changed (or on first paint / after
+ *     an overlay), independent of a bare card flip: exactly the second, nested
+ *     memo draw_left_conditional keeps in pdna_summary.c, reimplemented here
+ *     from data already on hand (the same GbEditMon `shadow` this file already
+ *     tracked) rather than a second static.
+ * NO NEW STATICS (docs/SPRITE-ERA-DESIGN.md sec 0: "EWRAM 524 B free."): the
+ * field registry, the shadow record and the converted PkMon all live on THIS
+ * FUNCTION'S OWN STACK FRAME.
+ */
 #include <tonc.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,85 +59,47 @@
 #include "pdna_gbsummary.h"
 #include "gb_editor.h"
 #include "pdna_gbedit.h"     /* gbedit_confirm/press/adjust_checked/is_dv_field (shared) */
+#include "pdna_summary.h"    /* the shared Gen-3 card chrome (BACKLOG #41 slice E1) */
+#include "gen12_convert.h"   /* the throwaway left-panel conversion */
+#include "gen3_edit.h"       /* EditMon, gen3_edit_load/commit, gen3_build_mon, em_preview */
+#include "gen3_mon.h"        /* PkMon */
+#include "gen3_box.h"        /* pk_resolve */
 #include "ui.h"
-#include "data_tables.h"     /* pk_species_name, pk_species_type1/2 */
-#include "type_icons.h"      /* TYPE_ICON_W/H */
+#include "data_tables.h"     /* pk_species_name, pk_move_name, pk_species_type1/2 */
+#include "type_icons.h"      /* TYPE_ICON_W/H, ui_type_chip */
 #include "pdna_layout.h"
 #include "snd.h"
 
-#define NCARDS       3
+#define NCARDS       4
 #define CARD_INFO    0
-#define CARD_STATS   1
+#define CARD_SKILLS  1
 #define CARD_MOVES   2
+#define CARD_ORIGIN  3
 
-#define ROW_Y0   34            /* first row, below the y=19 header rule (pdna_gbedit's
-                                 * own convention: title 0..9, header 10..18, rule 19) */
 #define ROW_H     9
-#define TITLE_Y  22
-#define HDR_Y    10
-#define RULE_Y   19
-#define FOOT_RULE_Y 151
-#define FOOT_Y   152
+#define TITLE_Y  14      /* matches pdna_summary.c's own card_info/card_skills title y */
 
-/* Registered editable field slots for the CURRENT card, on the caller's stack. The
- * real worst case across every card is 12 (MOVES: 4 moves x {move, PP, PP Up}); 14
- * leaves headroom without a caller having to reason about the exact count. reg()
- * silently drops anything past this rather than corrupting adjacent memory — safe by
- * construction, since 14 already exceeds every card's real count today. */
+/* Same colour convention as pdna_summary.c's cards ("same title style"). */
+#define C_HDR  UI_TITLE
+#define C_KEY  UI_DIRCLR
+#define C_VAL  UI_TEXT
+#define C_HOT  UI_WARN
+
+/* Registered editable field slots for the CURRENT card, on the caller's stack.
+ * Worst case is SKILLS on a Gen-2 record: HP registers only its stat-exp field
+ * (its DV is GBE_DVH, derived, shown but never editable) = 1, Atk/Def/Spe each
+ * register a DV + a stat-exp field = 6, and Gen 2's SpA/SpD rows each register
+ * the SAME underlying Spc DV/stat-exp fields again = 4 more -- 11 total. 14
+ * leaves headroom without a caller having to reason about the exact count. */
 #define MAX_SLOT 14
 typedef struct { uint8_t field, x, y, w; } GbSlot;
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 
-/* pdna_summary.c's draw_dots, duplicated (not exported: that file's own is static) —
- * a graphical card indicator draws no new string, so it needs no textfit macro. */
-static void draw_dots(int x, int y, int n, int active) {
-  for (int i = 0; i < n; i++) {
-    int cx = x + i * 7;
-    if (i == active) ui_fill_rect(cx, y, 5, 5, UI_TITLE);
-    else { ui_fill_rect(cx, y, 5, 5, UI_PANEL); m3_frame(cx, y, cx + 4, y + 4, UI_BORDER); }
-  }
-}
-
 static void reg(GbSlot* slot, int* n, int field, int x, int y, int w) {
   if (*n < MAX_SLOT) { slot[*n].field = (uint8_t)field; slot[*n].x = (uint8_t)x;
                        slot[*n].y = (uint8_t)y; slot[*n].w = (uint8_t)w; (*n)++; }
 }
-
-/* A single GBE_* field, drawn at the shared PDNA_EDIT_LBL_X/VAL_X columns exactly
- * like pdna_gbedit.c's own row_paint — same label/value split, same truncation.
- * `fsel` is the CURRENTLY selected slot index (into the array being built), known
- * up front by the caller; the row draws its own highlight inline rather than via a
- * second pass, which is what lets this file carry no save-under pixel buffer. */
-static void field_row(const GbEditMon* e, int field, int y, bool editing, int fsel,
-                      GbSlot* slot, int* n) {
-  int idx = *n;
-  bool sel = editing && idx == fsel;
-  char val[GBE_VALUE_MAX], vt[PDNA_EDIT_VAL_COLS * 4 + 1];
-  gbe_value(e, field, val, sizeof val);
-  ui_truncate(vt, val, PDNA_EDIT_VAL_COLS);
-  if (sel) ui_panel(PDNA_EDIT_VAL_X - 2, y - 1, UI_SCR_W - PDNA_EDIT_VAL_X, UI_ROW_H + 1,
-                    UI_SEL, UI_TITLE);
-  ui_text(PDNA_EDIT_LBL_X, y, sel ? UI_SELTEXT : UI_DIM, gbe_label_of(e, field));
-  ui_text(PDNA_EDIT_VAL_X, y, sel ? UI_SELTEXT : UI_TEXT, vt);
-  reg(slot, n, field, PDNA_EDIT_VAL_X, y, UI_SCR_W - PDNA_EDIT_VAL_X);
-}
-
-/* A display-only full-width line (species, type, EXP, ...) — never registered. */
-static void disp_row(int y, u16 col, const char* s) {
-  char t[36];
-  ui_truncate(t, s, 34);
-  ui_text(PDNA_EDIT_LBL_X, y, col, t);
-}
-
-static void val_row(int y, const char* label, u16 col, const char* val) {
-  char vt[PDNA_EDIT_VAL_COLS * 4 + 1];
-  ui_truncate(vt, val, PDNA_EDIT_VAL_COLS);
-  ui_text(PDNA_EDIT_LBL_X, y, UI_DIM, label);
-  ui_text(PDNA_EDIT_VAL_X, y, col, vt);
-}
-
-static const char* gender_sym(int g) { return g == 0 ? "M" : g == 1 ? "F" : "-"; }
 
 /* GBE_DVA/DVD/DVS/DVC -> the GB_* stat index gb_get_dv() takes — the same mapping
  * gb_editor.c's own (private) dv_stat() uses, duplicated here in the 4 lines it
@@ -137,8 +124,8 @@ static const char* gbsum_g1_status_text(uint8_t st) {
 }
 
 /* Gen-1's own type ids are NOT Gen-3's (gb_edit.h's GbGen1Base comment). Mapping onto
- * Gen 3's numbering so a Gen-1 mon draws the SAME ui_type_chip a Gen-2 one does,
- * instead of a raw "T14"-style id:
+ * Gen 3's numbering so the ORIGIN card draws the SAME ui_type_chip a Gen-2 species'
+ * table lookup does, instead of a raw "T14"-style id:
  *   0x00-0x05 NORMAL..ROCK    -> identity (both tables agree here)
  *   0x06                      -> Gen 1's unused BIRD slot: no Gen-3 equivalent
  *   0x07-0x09 BUG/GHOST/STEEL -> t-1  (Gen 3's BUG=6, GHOST=7, STEEL=8)
@@ -152,263 +139,348 @@ static int g1_to_g3_type(uint8_t t) {
   return -1;
 }
 
-/* ---- Card 0: INFO ------------------------------------------------------------- */
-
-static void card_info_top(const GbEditMon* e, bool editing, int fsel, GbSlot* slot,
-                          int* n, int* y_io) {
-  char b[48];
-  int y = *y_io;
-  uint16_t dex = gb_get_species_dex(e);
-
-  siprintf(b, "#%03u %s", (unsigned)dex, dex ? pk_species_name(dex) : "???");
-  val_row(y, PDNA_GBSUM_LBL_SPECIES, UI_TEXT, b);
-  y += ROW_H;
-
-  field_row(e, GBE_NICK, y, editing, fsel, slot, n); y += ROW_H;
-  field_row(e, GBE_LEVEL, y, editing, fsel, slot, n); y += ROW_H;
-
-  /* Both generations now draw real chips (review fix): Gen 1's raw bytes go through
-   * g1_to_g3_type() first; a byte that maps to nothing (0x06, or a corrupt id) simply
-   * draws no chip rather than a wrong one. */
-  uint8_t t1 = 0, t2 = 0;
-  bool has1 = false, has2 = false;
-  if (e->gen == GB_GEN2) {
-    t1 = pk_species_type1(dex); t2 = pk_species_type2(dex);
-    has1 = true; has2 = (t2 != t1);
-  } else {
-    int m1 = g1_to_g3_type(gb_get_gen1_type1(e));
-    int m2 = g1_to_g3_type(gb_get_gen1_type2(e));
-    has1 = m1 >= 0; if (has1) t1 = (uint8_t)m1;
-    has2 = m2 >= 0 && m2 != m1; if (has2) t2 = (uint8_t)m2;
+/* ---- the left panel: a throwaway Gen-3-style conversion ------------------------
+ *
+ * See this file's header comment for why building one is safe. On its own stack
+ * frame (noinline), the same reasoning as gb_persist/gb_has_sidecar's own split
+ * in pdna_gen12.c: a Gb12Mon (~110 B) + an 80-byte record + an EditMon (~165 B)
+ * is well past what pdna_gbsummary()'s own <=700 B frame budget should spend on
+ * a conversion its caller only needs the RESULT of.
+ *
+ * Returns false only when the species itself cannot be resolved at all (a Gen-1
+ * internal index the National Dex table has no entry for — MissingNo and
+ * friends): every OTHER refusal reason (an egg, a held item, a damaged move
+ * list, an out-of-range level) still yields a real, correctly-named PkMon,
+ * exactly the two-tier fallback pdna_gen12.c's own gb_build_slot() uses for the
+ * box grid (a relaxed retry, then a gen3_build_mon placeholder). */
+static bool __attribute__((noinline)) gbsum_convert_left(const GbEditMon* e, PkMon* out) {
+  Gb12Mon in;
+  memset(&in, 0, sizeof in);
+  in.gen = e->gen;
+  in.species_dex = gb_get_species_dex(e);
+  in.exp   = gb_get_exp(e);
+  in.level = gb_get_level(e);
+  in.dv_atk = gb_get_dv(e, GB_ATK);
+  in.dv_def = gb_get_dv(e, GB_DEF);
+  in.dv_spd = gb_get_dv(e, GB_SPE);      /* Gb12Mon's own naming: the "Speed" DV */
+  in.dv_spc = gb_get_dv(e, GB_SPC);
+  for (int i = 0; i < 4; i++) {
+    in.moves[i]  = gb_get_move(e, i);
+    in.pp_ups[i] = gb_get_ppup(e, i);
   }
-  ui_text(PDNA_EDIT_LBL_X, y, UI_DIM, PDNA_GBSUM_LBL_TYPE);
-  if (has1) ui_type_chip(PDNA_EDIT_VAL_X, y - 2, TYPE_ICON_W, TYPE_ICON_H, t1);
-  if (has2) ui_type_chip(PDNA_EDIT_VAL_X + TYPE_ICON_W + 4, y - 2, TYPE_ICON_W, TYPE_ICON_H, t2);
-  y += TYPE_ICON_H + 2;
+  in.ot_id = gb_get_otid(e);
+  gb_get_otname(e, in.ot_name, (int)sizeof in.ot_name);
+  gb_get_nickname(e, in.nickname, (int)sizeof in.nickname);
+  in.held_item  = gb_get_held_item(e);    /* 0 for Gen 1, by gb_edit.c's own contract */
+  in.friendship = gb_get_friendship(e);   /* 0 for Gen 1: gen12_convert then keeps
+                                           * gen3_build_mon's own default of 70 */
+  in.pokerus    = gb_get_pokerus(e);      /* 0 for Gen 1 */
+  in.is_egg     = gb_is_egg(e);           /* always false for Gen 1: no eggs exist there */
+  /* has_caught_data / ot_gender / slot_salt stay 0 -- none of the three affects
+   * anything pdna_summary_draw_left reads (species/level/name/type/gender/shiny
+   * all come from the fields above); they only feed the record's own otGender
+   * byte and the box grid's identity hash, neither of which this throwaway
+   * conversion is ever shown to. */
 
-  if (e->gen == GB_GEN1) {
-    val_row(y, PDNA_GBSUM_LBL_STATUS, gb_get_gen1_status(e) ? UI_WARN : UI_OK,
-            gbsum_g1_status_text(gb_get_gen1_status(e)));
-    y += ROW_H;
+  Gb12Target tgt; memset(&tgt, 0, sizeof tgt);     /* met_game 0 -> Emerald */
+  uint8_t rec[80];
+
+  Gb12Result r = gen12_can_convert(&in);
+  if (r == GB12_ERR_EGG || r == GB12_ERR_HELD_ITEM) {
+    /* A real, identifiable Pokemon; only the (irrelevant, here) transfer rule is
+     * refused -- the same relaxed retry pdna_gen12.c's own gb_presentation()
+     * takes for the box grid, so an egg or an item holder still gets a real
+     * portrait instead of falling all the way to the placeholder tier. */
+    Gb12Mon relaxed = in;
+    relaxed.is_egg = false;
+    relaxed.held_item = 0;
+    if (gen12_can_convert(&relaxed) == GB12_OK) { in = relaxed; r = GB12_OK; }
   }
 
-  {
-    GbDvEffects fx; gb_dv_effects_of(e, &fx);
-    siprintf(b, PDNA_GBSUM_SEXSHINY_FMT, gender_sym(fx.gender),
-             fx.shiny ? PDNA_GBSUM_SHINY_YES : PDNA_GBSUM_SHINY_NO);
-    disp_row(y, fx.shiny ? UI_OK : UI_TEXT, b);
-    y += ROW_H;
+  if (r == GB12_OK && gen12_convert(&in, &tgt, rec, 0) == GB12_OK) {
+    EditMon ed; gen3_edit_load(rec, false, &ed);
+    em_preview(&ed, out); pk_resolve(out);
+    return true;
   }
-  *y_io = y;
+
+  /* Everything else that still names a real species (a damaged move list, an
+   * out-of-range level, the unreachable PID-search failure): a stand-in of the
+   * right species/level/nickname, gen3_build_mon's own defaults for the rest —
+   * not the real mon, which is exactly why it is never written anywhere. Only a
+   * genuinely unresolvable species (dex 0) has nothing to placeholder. */
+  if (in.species_dex >= 1 && in.species_dex <= 251) {
+    uint8_t lv = in.level; if (lv < 1) lv = 1; if (lv > 100) lv = 100;
+    char otname[sizeof in.ot_name], nick[sizeof in.nickname];
+    int i;
+    for (i = 0; i < (int)sizeof otname - 1 && in.ot_name[i]; i++) otname[i] = in.ot_name[i];
+    otname[i] = 0;
+    for (i = 0; i < (int)sizeof nick - 1 && in.nickname[i]; i++) nick[i] = in.nickname[i];
+    nick[i] = 0;
+    gen3_build_mon(in.species_dex, lv, 1u, (uint32_t)in.ot_id, otname, 3, rec);
+    if (nick[0]) {
+      EditMon ed; gen3_edit_load(rec, false, &ed);
+      em_set_nickname(&ed, nick);
+      gen3_edit_commit(&ed, rec);
+    }
+    EditMon ed2; gen3_edit_load(rec, false, &ed2);
+    em_preview(&ed2, out); pk_resolve(out);
+    return true;
+  }
+  return false;
 }
 
-static void card_info_bottom(const GbEditMon* e, bool editing, int fsel, GbSlot* slot,
-                             int* n, int y) {
-  char b[48];
-  field_row(e, GBE_OT, y, editing, fsel, slot, n); y += ROW_H;
-  field_row(e, GBE_OTID, y, editing, fsel, slot, n); y += ROW_H;
+/* No species is resolvable at all (a Gen-1 internal index the National Dex table
+ * has no entry for): draw the same panel frame pdna_summary_draw_left would, with
+ * a plain "?" in place of a portrait it has no PkMon to fetch one for. */
+static void gbsum_draw_left_unknown(void) {
+  ui_panel(0, 11, 92, 139, RGB15(4, 7, 16), UI_BORDER);
+  m3_frame(11, 13, 80, 78, UI_BORDER);
+  ui_text(42, 42, C_HOT, "?");
+  ui_ptext_fit(6, 84, 86, UI_DIM, "Unknown species");
+}
+
+/* ---- Card 0: INFO --------------------------------------------------------------
+ *
+ * Species/type/gender/shiny/egg/Pokerus-tag are NOT repeated here: the shared
+ * left panel already shows all of them for the CONVERTED mon, which resolves to
+ * the same species/level/name/gender this card edits. Nickname and level keep
+ * their own rows because this is where the edit CONTROL lives -- the left panel
+ * only displays what they resolve to, it is not itself editable. */
+
+static void field_row(const GbEditMon* e, int field, const char* label, int y,
+                      GbSlot* slot, int* n) {
+  const int x = PDNA_SUM_CARD_X, vx = x + PDNA_GBSUM_VAL_DX;
+  const int vw = PDNA_SUM_CARD_W - PDNA_GBSUM_VAL_DX;
+  char val[GBE_VALUE_MAX], vt[PDNA_SUM_CARD_W / 8 + 1];
+  gbe_value(e, field, val, sizeof val);
+  ui_truncate(vt, val, vw / 8);
+  ui_text(x, y, C_KEY, label);
+  ui_text(vx, y, C_VAL, vt);
+  reg(slot, n, field, vx, y, vw);
+}
+
+static void card_info(const GbEditMon* e, GbSlot* slot, int* n) {
+  const int x = PDNA_SUM_CARD_X, vx = x + PDNA_GBSUM_VAL_DX;
+  int y = TITLE_Y; char b[48];
+  ui_text(x, y, C_HDR, PDNA_GBSUM_CARD_INFO); y += 12;
+
+  field_row(e, GBE_NICK, PDNA_GBSUM_LBL_NAME, y, slot, n); y += ROW_H;
+  field_row(e, GBE_LEVEL, PDNA_GBSUM_LBL_LV, y, slot, n); y += ROW_H;
+  field_row(e, GBE_OT, PDNA_GBSUM_LBL_OT, y, slot, n); y += ROW_H;
+
+  siprintf(b, PDNA_GBSUM_ID_FMT, (unsigned)gb_get_otid(e));
+  ui_text(x, y, C_KEY, PDNA_GBSUM_LBL_ID); ui_text(vx, y, C_VAL, b);
+  reg(slot, n, GBE_OTID, vx, y, PDNA_SUM_CARD_W - PDNA_GBSUM_VAL_DX); y += ROW_H;
 
   if (e->gen == GB_GEN2) {
-    field_row(e, GBE_ITEM, y, editing, fsel, slot, n); y += ROW_H;
-    field_row(e, GBE_FRIEND, y, editing, fsel, slot, n); y += ROW_H;
+    field_row(e, GBE_ITEM, PDNA_GBSUM_LBL_ITEM, y, slot, n); y += ROW_H;
+    /* An Egg stores its hatch counter in this SAME byte (gb_editor.c's own
+     * gbe_label_of: "Egg cycles" for GBE_FRIEND on an egg) — the old flat-list
+     * field_row honoured that; this card's own copy did not, and showed a
+     * hatching egg's countdown as "Friend". */
+    field_row(e, GBE_FRIEND, gb_is_egg(e) ? PDNA_GBSUM_LBL_EGGC : PDNA_GBSUM_LBL_FRIEND,
+              y, slot, n); y += ROW_H;
 
-    /* Pokerus (pokecrystal stats_screen.asm:590-604): high nibble strain, low nibble
-     * days left (0 with a strain set = immune, past infection); byte 0 = never had it.
-     * Display-only — this tree carries no gb_editor.h row/setter for it. */
+    /* Pokerus (pokecrystal stats_screen.asm:590-604): high nibble strain, low
+     * nibble days left (0 with a strain set = immune, past infection); byte 0 =
+     * never had it. Display-only — this tree carries no gb_editor.h row/setter
+     * for it. */
     uint8_t raw = gb_get_pokerus(e);
     if (raw) {
       unsigned strain = raw >> 4, days = raw & 0x0F;
-      if (days) siprintf(b, "S%u  %ud left", strain, days); else siprintf(b, "S%u  immune", strain);
-      val_row(y, PDNA_GBSUM_LBL_PKRS, UI_OK, b);
+      if (days) siprintf(b, PDNA_GBSUM_PKRS_DAYS_FMT, strain, days);
+      else      siprintf(b, PDNA_GBSUM_PKRS_IMMUNE_FMT, strain);
+      ui_text(x, y, C_KEY, PDNA_GBSUM_LBL_PKRS);
+      ui_ptext_fit(vx, y, PDNA_SUM_CARD_W - PDNA_GBSUM_VAL_DX, UI_OK, b);
       y += ROW_H;
     }
+  } else {
+    ui_text(x, y, C_KEY, PDNA_GBSUM_LBL_STATUS);
+    ui_text(vx, y, gb_get_gen1_status(e) ? UI_WARN : UI_OK, gbsum_g1_status_text(gb_get_gen1_status(e)));
+    y += ROW_H;
   }
 
-  {
-    uint16_t dex = gb_get_species_dex(e);
-    uint32_t exp = gb_get_exp(e);
-    uint8_t lvl = gb_get_level(e);
-    if (lvl >= 100) siprintf(b, PDNA_GBSUM_EXP_MAX_FMT, (unsigned long)exp);
-    else {
-      uint32_t nxt = gb_exp_for_level(dex, (uint8_t)(lvl + 1));
-      siprintf(b, PDNA_GBSUM_EXP_FMT, (unsigned long)exp, (unsigned long)(nxt > exp ? nxt - exp : 0));
-    }
-    disp_row(y, UI_TEXT, b);   /* "EXP " is baked into the _FMT macro itself (the whole
-                               * line needs ~160 px; PDNA_EDIT_VAL_X's own 122 px value
-                               * column does not have it) — full-width, no split label */
+  y += 2;
+  uint16_t dex = gb_get_species_dex(e);
+  uint32_t exp = gb_get_exp(e);
+  uint8_t lvl = gb_get_level(e);
+  if (lvl >= 100) {
+    siprintf(b, PDNA_GBSUM_EXP_MAX_FMT, (unsigned long)exp);
+  } else {
+    uint32_t nxt = gb_exp_for_level(dex, (uint8_t)(lvl + 1));
+    siprintf(b, PDNA_GBSUM_EXP_FMT, (unsigned long)exp, (unsigned long)(nxt > exp ? nxt - exp : 0));
   }
+  ui_ptext_fit(x, y, PDNA_SUM_CARD_W, C_VAL, b);
 }
 
-static void card_info(const GbEditMon* e, bool editing, int fsel, GbSlot* slot, int* n) {
-  int y = ROW_Y0;
-  card_info_top(e, editing, fsel, slot, n, &y);
-  card_info_bottom(e, editing, fsel, slot, n, y);
-}
+/* ---- Card 1: SKILLS --------------------------------------------------------------
+ *
+ * Two rows per stat, not the old flat-list's single 4-column row (label / value /
+ * DV / stat-exp spanning the whole 240 px screen) — that grid does not fit this
+ * card's 138 px. Row 1: "Atk 999/999" (party) or "Atk -" (box). Row 2, indented,
+ * its own two registered fields: "DV 15" then "SE 65535". */
 
-/* ---- Card 1: STATS -------------------------------------------------------------- */
-
-/* One stat's row: label / computed value (or "-" for a box record) / DV (editable,
- * or GBE_DVH dim for HP) / stat exp (editable). `dv_field` may be GBE_DVH (shown,
- * never registered — gb_editor.h: "DERIVED, shown, not editable"). */
 static void stat_row(const GbEditMon* e, const char* label, int stat_i, int dv_field,
-                     int se_field, int y, bool editing, int fsel, GbSlot* slot, int* n) {
-  char b[24];
-  ui_text(PDNA_GBSUM_STAT_LBL_X, y, UI_DIM, label);
-
+                     int se_field, int y, GbSlot* slot, int* n) {
+  const int x = PDNA_SUM_CARD_X;
+  char b[16];
+  ui_text(x, y, C_KEY, label);
   if (e->is_party) {
     if (stat_i == GB_HP) siprintf(b, PDNA_GBSUM_STAT_CURMAX_FMT,
                                   (unsigned)gb_get_current_hp(e), (unsigned)gb_get_stat(e, GB_HP));
     else                 siprintf(b, "%u", (unsigned)gb_get_stat(e, stat_i));
   } else {
-    siprintf(b, "%s", PDNA_GBSUM_STAT_DASH);
+    strcpy(b, PDNA_GBSUM_STAT_DASH);
   }
-  ui_text(PDNA_GBSUM_STAT_VAL_X, y, UI_TEXT, b);
+  ui_text(x + PDNA_GBSUM_STAT_VAL_DX, y, C_VAL, b);
 
+  int y2 = y + ROW_H;
   if (dv_field == GBE_DVH) {
     siprintf(b, PDNA_GBSUM_STAT_DV_FMT, (unsigned)gb_get_dv(e, GB_HP));
-    ui_text(PDNA_GBSUM_STAT_DV_X, y, UI_DIM, b);
+    ui_text(x + PDNA_GBSUM_STAT_DV_DX, y2, UI_DIM, b);   /* derived, shown, not registered */
   } else {
-    int idx = *n;
-    bool sel = editing && idx == fsel;
     siprintf(b, PDNA_GBSUM_STAT_DV_FMT, (unsigned)gb_get_dv(e, dv_stat_of(dv_field)));
-    if (sel) ui_panel(PDNA_GBSUM_STAT_DV_X - 2, y - 1, 40, UI_ROW_H + 1, UI_SEL, UI_TITLE);
-    ui_text(PDNA_GBSUM_STAT_DV_X, y, sel ? UI_SELTEXT : UI_TEXT, b);
-    reg(slot, n, dv_field, PDNA_GBSUM_STAT_DV_X, y, 36);
+    ui_text(x + PDNA_GBSUM_STAT_DV_DX, y2, C_VAL, b);
+    reg(slot, n, dv_field, x + PDNA_GBSUM_STAT_DV_DX, y2,
+        PDNA_GBSUM_STAT_SE_DX - PDNA_GBSUM_STAT_DV_DX);
   }
 
-  {
-    int idx = *n;
-    bool sel = editing && idx == fsel;
-    siprintf(b, PDNA_GBSUM_STAT_SE_FMT, (unsigned)gb_get_statexp(e, se_field));
-    if (sel) ui_panel(PDNA_GBSUM_STAT_SE_X - 2, y - 1, UI_SCR_W - PDNA_GBSUM_STAT_SE_X,
-                      UI_ROW_H + 1, UI_SEL, UI_TITLE);
-    ui_text(PDNA_GBSUM_STAT_SE_X, y, sel ? UI_SELTEXT : UI_TEXT, b);
-    reg(slot, n, GBE_SE0 + se_field, PDNA_GBSUM_STAT_SE_X, y, UI_SCR_W - PDNA_GBSUM_STAT_SE_X);
-  }
+  siprintf(b, PDNA_GBSUM_STAT_SE_FMT, (unsigned)gb_get_statexp(e, se_field));
+  ui_text(x + PDNA_GBSUM_STAT_SE_DX, y2, C_VAL, b);
+  reg(slot, n, GBE_SE0 + se_field, x + PDNA_GBSUM_STAT_SE_DX, y2,
+      PDNA_SUM_CARD_W - PDNA_GBSUM_STAT_SE_DX);
 }
 
-static void card_stats(const GbEditMon* e, bool editing, int fsel, GbSlot* slot, int* n) {
-  int y = ROW_Y0;
-  /* Column mini-headers share the card title's own baseline (TITLE_Y) — they sit far
-   * enough right (x=98/142) of the title text ("STATS", 5 cols/40 px) to never collide. */
-  ui_text(PDNA_GBSUM_STAT_DV_X, TITLE_Y, UI_DIM, PDNA_GBSUM_HDR_DV);
-  ui_text(PDNA_GBSUM_STAT_SE_X, TITLE_Y, UI_DIM, PDNA_GBSUM_HDR_SE);
+static void card_skills(const GbEditMon* e, GbSlot* slot, int* n) {
+  const int x = PDNA_SUM_CARD_X;
+  int y = TITLE_Y;
+  ui_text(x, y, C_HDR, PDNA_GBSUM_CARD_SKILLS); y += 12;
 
-  stat_row(e, PDNA_GBSUM_STAT_HP,  GB_HP,  GBE_DVH, 0, y, editing, fsel, slot, n); y += ROW_H;
-  stat_row(e, PDNA_GBSUM_STAT_ATK, GB_ATK, GBE_DVA, 1, y, editing, fsel, slot, n); y += ROW_H;
-  stat_row(e, PDNA_GBSUM_STAT_DEF, GB_DEF, GBE_DVD, 2, y, editing, fsel, slot, n); y += ROW_H;
-  stat_row(e, PDNA_GBSUM_STAT_SPE, GB_SPE, GBE_DVS, 3, y, editing, fsel, slot, n); y += ROW_H;
+  stat_row(e, PDNA_GBSUM_STAT_HP,  GB_HP,  GBE_DVH, 0, y, slot, n); y += ROW_H * 2;
+  stat_row(e, PDNA_GBSUM_STAT_ATK, GB_ATK, GBE_DVA, 1, y, slot, n); y += ROW_H * 2;
+  stat_row(e, PDNA_GBSUM_STAT_DEF, GB_DEF, GBE_DVD, 2, y, slot, n); y += ROW_H * 2;
+  stat_row(e, PDNA_GBSUM_STAT_SPE, GB_SPE, GBE_DVS, 3, y, slot, n); y += ROW_H * 2;
   if (e->gen == GB_GEN2) {
-    /* Gen 2 splits Special into SpA/SpD in the COMPUTED party stat block only — both
-     * read the same stored Spc DV and Spc stat exp (gb_edit.h's own header comment).
-     * gb_get_stat's party-stat array therefore has indices 4 (SpA) and 5 (SpD); the
-     * DV/stat-exp column intentionally registers the SAME field (GBE_DVC/GBE_SE4)
-     * twice, once per row — editing either row edits the one stored value both use. */
-    stat_row(e, PDNA_GBSUM_STAT_SPA, 4, GBE_DVC, 4, y, editing, fsel, slot, n); y += ROW_H;
-    stat_row(e, PDNA_GBSUM_STAT_SPD, 5, GBE_DVC, 4, y, editing, fsel, slot, n); y += ROW_H;
+    /* Gen 2 splits Special into SpA/SpD in the COMPUTED party stat block only —
+     * both read the same stored Spc DV and Spc stat exp (gb_edit.h's own header
+     * comment). Editing either row edits the one stored value both use. */
+    stat_row(e, PDNA_GBSUM_STAT_SPA, 4, GBE_DVC, 4, y, slot, n); y += ROW_H * 2;
+    stat_row(e, PDNA_GBSUM_STAT_SPD, 5, GBE_DVC, 4, y, slot, n); y += ROW_H * 2;
   } else {
-    stat_row(e, PDNA_GBSUM_STAT_SPC, 4, GBE_DVC, 4, y, editing, fsel, slot, n); y += ROW_H;
+    stat_row(e, PDNA_GBSUM_STAT_SPC, 4, GBE_DVC, 4, y, slot, n); y += ROW_H * 2;
   }
 
-  if (!e->is_party) disp_row(y + 2, UI_DIM, PDNA_GBSUM_BOX_STAT_NOTE);
+  if (!e->is_party) ui_ptext_fit(x, y + 2, PDNA_SUM_CARD_W, UI_DIM, PDNA_GBSUM_BOX_STAT_NOTE);
 }
 
-/* ---- Card 2: MOVES --------------------------------------------------------------- */
+/* ---- Card 2: MOVES ---------------------------------------------------------------
+ *
+ * The SAME row shape as pdna_summary.c's own card_moves (PDNA_SUM_PP_X_DX/PP_W,
+ * PDNA_SUM_PP_FMT/PP_UPS_FMT, reused verbatim): a name column, then a "PP cur/max
+ * [+ups]" cell registered under GBE_PPU0+i only — pressing/adjusting it cycles PP
+ * Ups, exactly like Gen 3's F_PPU0+i; current PP is not independently editable
+ * from this card there either. The one difference: a Game Boy record carries no
+ * move TYPE this tree can read, so there is no type-badge line under it. */
 
-static void move_row(const GbEditMon* e, int i, int y, bool editing, int fsel,
-                     GbSlot* slot, int* n) {
-  char lbl[8];
-  siprintf(lbl, PDNA_GBSUM_LBL_MOVE_FMT, (unsigned)(i + 1));
-  int idx = *n;
-  bool sel = editing && idx == fsel;
-  char val[GBE_VALUE_MAX], vt[PDNA_EDIT_VAL_COLS * 4 + 1];
-  gbe_value(e, GBE_MV0 + i, val, sizeof val);
-  ui_truncate(vt, val, PDNA_EDIT_VAL_COLS);
-  if (sel) ui_panel(PDNA_EDIT_VAL_X - 2, y - 1, UI_SCR_W - PDNA_EDIT_VAL_X, UI_ROW_H + 1,
-                    UI_SEL, UI_TITLE);
-  ui_text(PDNA_EDIT_LBL_X, y, UI_DIM, lbl);
-  ui_text(PDNA_EDIT_VAL_X, y, sel ? UI_SELTEXT : UI_TEXT, vt);
-  reg(slot, n, GBE_MV0 + i, PDNA_EDIT_VAL_X, y, UI_SCR_W - PDNA_EDIT_VAL_X);
+static void move_row(const GbEditMon* e, int i, int y, GbSlot* slot, int* n) {
+  const int x = PDNA_SUM_CARD_X;
+  const int name_w = PDNA_SUM_PP_X_DX - 4;
+  uint8_t mv = gb_get_move(e, i);
+  reg(slot, n, GBE_MV0 + i, x, y, name_w);
+  if (!mv) { ui_text(x, y, UI_DIM, "-"); return; }
+  ui_ptext_fit(x, y, name_w, C_VAL, pk_move_name(mv));
+
+  uint8_t ups = gb_get_ppup(e, i);
+  uint8_t maxpp = gb_max_pp(e->gen, mv, ups);
+  char b[24];
+  if (ups) siprintf(b, PDNA_SUM_PP_UPS_FMT, (unsigned)gb_get_pp(e, i), (unsigned)maxpp, (unsigned)ups);
+  else     siprintf(b, PDNA_SUM_PP_FMT,     (unsigned)gb_get_pp(e, i), (unsigned)maxpp);
+  reg(slot, n, GBE_PPU0 + i, x + PDNA_SUM_PP_X_DX, y, PDNA_SUM_PP_W);
+  ui_ptext_fit(x + PDNA_SUM_PP_X_DX, y, PDNA_SUM_PP_W, UI_DIM, b);
 }
 
-static void pp_row(const GbEditMon* e, int i, int y, bool editing, int fsel,
-                   GbSlot* slot, int* n) {
-  char val[GBE_VALUE_MAX], vt[8 * 4 + 1], vt2[14 * 4 + 1];
-
-  int idx = *n; bool sel = editing && idx == fsel;
-  gbe_value(e, GBE_PP0 + i, val, sizeof val);
-  ui_truncate(vt, val, (PDNA_GBSUM_UPS_LBL_X - PDNA_GBSUM_PP_VAL_X) / 8);
-  if (sel) ui_panel(PDNA_GBSUM_PP_VAL_X - 2, y - 1, PDNA_GBSUM_UPS_LBL_X - PDNA_GBSUM_PP_VAL_X,
-                    UI_ROW_H + 1, UI_SEL, UI_TITLE);
-  ui_text(PDNA_GBSUM_PPROW_X, y, UI_DIM, PDNA_GBSUM_PP_LBL);
-  ui_text(PDNA_GBSUM_PP_VAL_X, y, sel ? UI_SELTEXT : UI_TEXT, vt);
-  reg(slot, n, GBE_PP0 + i, PDNA_GBSUM_PP_VAL_X, y, PDNA_GBSUM_UPS_LBL_X - PDNA_GBSUM_PP_VAL_X);
-
-  idx = *n; sel = editing && idx == fsel;
-  gbe_value(e, GBE_PPU0 + i, val, sizeof val);
-  ui_truncate(vt2, val, (UI_SCR_W - PDNA_GBSUM_UPS_VAL_X) / 8);
-  if (sel) ui_panel(PDNA_GBSUM_UPS_VAL_X - 2, y - 1, UI_SCR_W - PDNA_GBSUM_UPS_VAL_X,
-                    UI_ROW_H + 1, UI_SEL, UI_TITLE);
-  ui_text(PDNA_GBSUM_UPS_LBL_X, y, UI_DIM, PDNA_GBSUM_UPS_LBL);
-  ui_text(PDNA_GBSUM_UPS_VAL_X, y, sel ? UI_SELTEXT : UI_TEXT, vt2);
-  reg(slot, n, GBE_PPU0 + i, PDNA_GBSUM_UPS_VAL_X, y, UI_SCR_W - PDNA_GBSUM_UPS_VAL_X);
+static void card_moves(const GbEditMon* e, GbSlot* slot, int* n) {
+  const int x = PDNA_SUM_CARD_X;
+  int y = TITLE_Y;
+  ui_text(x, y, C_HDR, PDNA_GBSUM_CARD_MOVES); y += 12;
+  for (int i = 0; i < 4; i++) { move_row(e, i, y, slot, n); y += 22; }
 }
 
-static void card_moves(const GbEditMon* e, bool editing, int fsel, GbSlot* slot, int* n) {
-  int y = ROW_Y0;
-  for (int i = 0; i < 4; i++) {
-    move_row(e, i, y, editing, fsel, slot, n); y += ROW_H;
-    pp_row(e, i, y, editing, fsel, slot, n);   y += ROW_H + 1;
-  }
-}
+/* ---- Card 3: ORIGIN --------------------------------------------------------------
+ *
+ * New in E1 (the earlier 3-card design had no such card). Nothing here is
+ * editable. The honest "this is a throwaway preview, not a real transfer" story
+ * (gen12_convert.h), the record's own generation (the same `note` string every
+ * caller already passed to the old top-of-screen corner label — moved here,
+ * where the box grid never collides with the card dots the way it did at the
+ * old fixed top-right position), the Gen-1 type-byte chip (Gen 2's own record
+ * carries no type field — its type comes straight off the species table, which
+ * the shared left panel already shows), and the sidecar link status
+ * (docs/GEN3-TO-GB-SIDECAR-DESIGN.md). */
+static void card_origin(const GbEditMon* e, const char* note, bool has_sidecar) {
+  const int x = PDNA_SUM_CARD_X;
+  int y = TITLE_Y;
+  ui_text(x, y, C_HDR, PDNA_GBSUM_CARD_ORIGIN); y += 12;
 
-/* ---- shell: title/header/rule/footer + the one card ------------------------- */
+  if (note) { ui_text(x, y, C_HOT, note); y += ROW_H + 1; }
 
-static void render(const GbEditMon* e, int card, bool editing, bool can_edit,
-                   const char* note, int fsel, GbSlot* slot, int* n, bool full) {
-  char hdr[40], lt[29 * 4 + 1];
+  ui_ptext_fit(x, y, PDNA_SUM_CARD_W, UI_DIM, PDNA_GBSUM_ORIGIN_ART_L1); y += ROW_H;
+  ui_ptext_fit(x, y, PDNA_SUM_CARD_W, UI_DIM, PDNA_GBSUM_ORIGIN_ART_L2); y += ROW_H + 3;
 
-  if (full) {
-    ui_clear();
-    if (editing) { ui_fill_rect(0, 0, 50, 9, UI_WARN); ui_text(8, 1, UI_PANEL, PDNA_GBSUM_EDIT_CHIP); }
-    else         { ui_text(4, 1, UI_DIM, PDNA_GBSUM_VIEW_CHIP); }
-    /* The dots sit right after the widest of the two VIEW/EDIT chips (the EDIT fill is
-     * 50 px wide) rather than at the top-right corner: `note` ("Gen 1/2 record") is
-     * ALSO drawn there, right-aligned, and a screenshot caught the two overlapping —
-     * the note is on every single visit, not just the sidecar-warning case. */
-    draw_dots(56, 2, NCARDS, card);
-    if (note) ui_ptext_right(UI_SCR_W - 4, 0, UI_WARN, note);
-
-    ui_hline(0, FOOT_RULE_Y, UI_SCR_W, UI_BORDER);
-    const char* foot = editing ? PDNA_GBSUM_FOOT_EDIT
-                     : can_edit ? PDNA_GBSUM_FOOT_VIEW : PDNA_GBSUM_FOOT_VIEW_RO;
-    ui_text(4, FOOT_Y, UI_DIM, foot);
-  } else {
-    /* Partial repaint: only the header line + card title + card body change on a bare
-     * cursor move or an in-place edit. Erasing just this band (not a full ui_clear())
-     * keeps the chip/dots/note/footer from flashing on every keypress. */
-    ui_fill_rect(0, HDR_Y, UI_SCR_W, FOOT_RULE_Y - HDR_Y, UI_BG);
+  if (e->gen == GB_GEN1) {
+    int m1 = g1_to_g3_type(gb_get_gen1_type1(e));
+    int m2 = g1_to_g3_type(gb_get_gen1_type2(e));
+    if (m1 >= 0) {
+      ui_text(x, y, C_KEY, PDNA_GBSUM_ORIGIN_TYPE_LBL);
+      ui_type_chip(x + PDNA_GBSUM_VAL_DX, y - 2, TYPE_ICON_W, TYPE_ICON_H, (uint8_t)m1);
+      if (m2 >= 0 && m2 != m1)
+        ui_type_chip(x + PDNA_GBSUM_VAL_DX + TYPE_ICON_W + 4, y - 2, TYPE_ICON_W, TYPE_ICON_H, (uint8_t)m2);
+      y += TYPE_ICON_H + 3;
+    }
   }
 
-  /* Always inside the erased band above (full or partial), so always redrawn. */
-  gbe_header(e, hdr, sizeof hdr);
-  ui_truncate(lt, hdr, 29);
-  ui_text(4, HDR_Y, UI_DIRCLR, lt);
-  ui_hline(0, RULE_Y, UI_SCR_W, UI_BORDER);
+  ui_text(x, y, has_sidecar ? UI_OK : UI_DIM,
+          has_sidecar ? PDNA_GBSUM_ORIGIN_SIDECAR_YES : PDNA_GBSUM_ORIGIN_SIDECAR_NO);
+}
 
-  const char* title = card == CARD_INFO ? PDNA_GBSUM_CARD_INFO
-                     : card == CARD_STATS ? PDNA_GBSUM_CARD_STATS : PDNA_GBSUM_CARD_MOVES;
-  ui_text(4, TITLE_Y, UI_TITLE, title);
+/* ---- shell: chip/dots/rule + the shared left panel + the one card --------------- */
 
+static void render(const GbEditMon* e, const PkMon* left, bool left_ok, bool draw_left,
+                   int card, bool editing, bool can_edit, const char* note,
+                   bool has_sidecar, GbSlot* slot, int* n) {
+  pdna_summary_bg();                          /* never touches (0,11)-(92,150) */
+  if (editing) { ui_fill_rect(0, 0, 50, 9, UI_WARN); ui_text(8, 1, UI_PANEL, PDNA_GBSUM_EDIT_CHIP); }
+  else         { ui_text(4, 2, UI_DIM, PDNA_GBSUM_VIEW_CHIP); }
+  pdna_summary_draw_dots(150, 2, NCARDS, card);
+  ui_hline(0, 10, UI_SCR_W, UI_BORDER);
+
+  if (draw_left) {
+    /* e->gen (GB_GEN1/GB_GEN2, 1/2) is the CERTAIN source generation -- this
+     * mon was loaded off that mount, not inferred -- so the chip reads GB1/GB2
+     * instead of pdna_origin_of's own best guess. See pdna_summary.c's header
+     * comment on pdna_summary_draw_left_hint (E1-b, 2026-09-06 review). */
+    if (left_ok) pdna_summary_draw_left_hint(left, false, e->gen);
+    else         gbsum_draw_left_unknown();
+  }
+
+  ui_hline(PDNA_SUM_CARD_X, 24, 100, UI_TITLE);
   *n = 0;
   switch (card) {
-    case CARD_INFO:  card_info(e, editing, fsel, slot, n); break;
-    case CARD_STATS: card_stats(e, editing, fsel, slot, n); break;
-    case CARD_MOVES: card_moves(e, editing, fsel, slot, n); break;
+    case CARD_INFO:   card_info(e, slot, n); break;
+    case CARD_SKILLS: card_skills(e, slot, n); break;
+    case CARD_MOVES:  card_moves(e, slot, n); break;
+    case CARD_ORIGIN: card_origin(e, note, has_sidecar); break;
   }
+
+  ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+  const char* foot = editing ? PDNA_GBSUM_FOOT_EDIT
+                   : can_edit ? PDNA_GBSUM_FOOT_VIEW : PDNA_GBSUM_FOOT_VIEW_RO;
+  ui_text(4, PDNA_SUM_FOOTER_Y, UI_DIM, foot);
 }
 
-/* ---- input dispatch, split out of pdna_gbsummary() to keep it under ~60 lines --- */
+/* ---- input dispatch, split out of pdna_gbsummary() so that function stays a
+ * setup + a two-call loop body (the repaint gate, then gbsum_input() below)
+ * instead of one long inline block. ------------------------------------- */
 
 typedef struct {
   GbEditMon* e;
@@ -447,10 +519,9 @@ static bool gbsum_select_fallback(GbSumCtx* c, bool* shadow_valid) {
   return false;
 }
 
-/* EDIT-mode key dispatch. `dirty` is NOT set here any more (review fix): it is derived
- * in pdna_gbsummary()'s own loop from a memcmp against the pre-edit shadow, so a
- * cancelled osk/picker or a clamped no-op LEFT/RIGHT can never mark the record dirty
- * when not one byte actually changed. */
+/* EDIT-mode key dispatch. `dirty` is derived in pdna_gbsummary()'s own loop from a
+ * memcmp against the pre-edit shadow, so a cancelled osk/picker or a clamped no-op
+ * LEFT/RIGHT can never mark the record dirty when not one byte actually changed. */
 static void gbsum_edit_keys(GbSumCtx* c, u16 k) {
   if (k & KEY_B) { c->editing = false; c->fsel = 0; return; }
   if (k & (KEY_L | KEY_R)) {
@@ -476,7 +547,7 @@ static void gbsum_edit_keys(GbSumCtx* c, u16 k) {
 static bool gbsum_view_keys(GbSumCtx* c, u16 k, u16 fresh, int* out) {
   if (k & KEY_A) {
     if (c->can_edit) { c->editing = true; c->fsel = 0; }
-    else snd_deny();          /* review fix: A used to do nothing at all here */
+    else snd_deny();
     return false;
   }
   if ((k & (KEY_L | KEY_R)) || (fresh & (KEY_LEFT | KEY_RIGHT))) {
@@ -497,12 +568,40 @@ static bool gbsum_view_keys(GbSumCtx* c, u16 k, u16 fresh, int* out) {
   return false;
 }
 
-static void gbsum_click(u16 fresh, bool editing) {
+/* `nslot` lets a card with nothing to edit (ORIGIN today) say so: in EDIT mode
+ * with no registered field, A/U/D/LEFT/RIGHT are exactly the keys
+ * gbsum_edit_keys() no-ops on (KEY_B and KEY_L/KEY_R still work regardless --
+ * B always leaves, L/R always flips cards), so playing their NORMAL earcon
+ * (snd_ok for A, snd_move for U/D, snd_edit for LEFT/RIGHT) would tell the
+ * player something happened when nothing did. */
+static void gbsum_click(u16 fresh, bool editing, int nslot) {
+  if (editing && !nslot && (fresh & (KEY_A | KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT))) {
+    snd_deny();
+    return;
+  }
   if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
   else if (fresh & (KEY_L | KEY_R | KEY_SELECT)) snd_tab();
   else if (fresh & KEY_A) snd_ok();
   else if (fresh & KEY_B) snd_back();
   else if (fresh & (KEY_LEFT | KEY_RIGHT)) { if (editing) snd_edit(); else snd_tab(); }
+}
+
+/* Wait for one key, dispatch it, and report whether pdna_gbsummary() should
+ * `return *out` right now (a SELECT commit, or a VIEW-mode leave/nav step) --
+ * everything past "the card and the outline are on screen" in that function. */
+static bool gbsum_input(GbSumCtx* c, bool* shadow_valid, int* out) {
+  u16 k, fresh;
+  do { s_vsync(); fresh = key_hit(KEY_FULL);
+       k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
+  gbsum_click(fresh, c->editing, c->nslot);
+
+  if (fresh & KEY_SELECT) {
+    if (gbsum_select_fallback(c, shadow_valid)) { *out = 0; return true; }
+    return false;
+  }
+
+  if (c->editing) { gbsum_edit_keys(c, k); return false; }
+  return gbsum_view_keys(c, k, fresh, out);
 }
 
 int pdna_gbsummary(GbEditMon* e, bool can_edit, bool start_editing, const char* note,
@@ -520,49 +619,65 @@ int pdna_gbsummary(GbEditMon* e, bool can_edit, bool start_editing, const char* 
   GbEditMon shadow; memset(&shadow, 0, sizeof shadow);
   bool shadow_valid = false;
   uint32_t shadow_gen = 0;
-  int shadow_card = -1, shadow_fsel = -2;
+  int shadow_card = -1;
   bool shadow_edit = false;
+
+  PkMon left_mon; bool left_ok = false;
 
   GbSlot slot[MAX_SLOT];
   c.slot = slot; c.nslot = 0;
 
+  /* Whatever a PREVIOUS screen (the Gen-3 summary, or an earlier visit here) left
+   * mid-outline belongs to a DIFFERENT layout — restoring its save-under pixels
+   * at that stale (x,y) here would corrupt whatever this screen just drew there.
+   * Drop it rather than try to restore it, exactly like pdna_summary.c's own
+   * summary_run() does on its own entry. */
+  pdna_summary_sel_frame_drop();
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
 
   for (;;) {
-    int want_fsel = c.editing ? c.fsel : -1;
     bool full = !shadow_valid || shadow_gen != ui_clear_gen() ||
                 shadow_card != c.card || shadow_edit != c.editing;
-    bool need = full || shadow_fsel != want_fsel || memcmp(&shadow, c.e, sizeof(GbEditMon)) != 0;
+    bool record_changed = shadow_valid && memcmp(&shadow, c.e, sizeof(GbEditMon)) != 0;
+    bool need = full || record_changed;
+
     if (need) {
-      if (shadow_valid && memcmp(&shadow, c.e, sizeof shadow) != 0) c.dirty = true;
-      /* Clamp BEFORE the paint (review): the slot count of the card being redrawn is the
-       * one the previous render counted, so on the same card the frame is drawn at a valid
-       * field. A card change resets fsel to 0 anyway; the post-render clamp stays as the
-       * true bound once nslot is fresh. Unreachable today (U/D is mod nslot) -- defence. */
-      if (c.editing && shadow_valid && shadow_card == c.card && c.nslot && c.fsel >= c.nslot)
-        c.fsel = c.nslot - 1;
-      render(c.e, c.card, c.editing, c.can_edit, c.note, c.fsel, c.slot, &c.nslot, full);
+      /* The expensive half (a ROM portrait fetch inside pdna_summary_draw_left,
+       * plus the type badges it draws) only when the CONVERTED PkMon actually
+       * differs from what is already on screen — not merely whenever the
+       * native record does. gen12_convert() never reads stat exp or current PP
+       * at all (Gb12Mon carries neither field), so a LEFT/RIGHT tick on an SE
+       * cell (SKILLS) or a current-PP cell (MOVES) changes `e` -- and used to
+       * re-run the whole expensive draw for a value the left panel cannot even
+       * show. Re-converting here is cheap (pure computation, no I/O); it is the
+       * DRAW below that costs an SD read + an LZ77 decode, so that is what gets
+       * gated on the real diff. pdna_summary_bg() never paints the left panel's
+       * own rect, so skipping the redraw here is correct: whatever it already
+       * shows is still exactly right. */
+      PkMon conv;
+      bool conv_ok = gbsum_convert_left(c.e, &conv);
+      bool reconv = !shadow_valid || conv_ok != left_ok ||
+                    (conv_ok && memcmp(&conv, &left_mon, sizeof conv) != 0);
+      if (reconv) { left_mon = conv; left_ok = conv_ok; }
+
+      render(c.e, &left_mon, left_ok, reconv, c.card, c.editing, c.can_edit,
+             c.note, c.has_sidecar, c.slot, &c.nslot);
+      pdna_summary_sel_frame_drop();   /* the card body just painted over any outline */
       if (c.editing && c.nslot && c.fsel >= c.nslot) c.fsel = c.nslot - 1;
+
+      if (record_changed) c.dirty = true;
       shadow = *c.e; shadow_gen = ui_clear_gen(); shadow_card = c.card;
-      shadow_edit = c.editing; shadow_fsel = c.editing ? c.fsel : -1;
-      shadow_valid = true;
+      shadow_edit = c.editing; shadow_valid = true;
     }
 
-    u16 k, fresh;
-    do { s_vsync(); fresh = key_hit(KEY_FULL);
-         k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
-    gbsum_click(fresh, c.editing);
-
-    if (fresh & KEY_SELECT) {
-      if (gbsum_select_fallback(&c, &shadow_valid)) return 0;
-      continue;
-    }
-
-    if (c.editing) {
-      gbsum_edit_keys(&c, k);
+    if (c.editing && c.nslot) {
+      if (c.fsel >= c.nslot) c.fsel = c.nslot - 1;
+      pdna_summary_sel_frame_set(c.slot[c.fsel].x, c.slot[c.fsel].y, c.slot[c.fsel].w);
     } else {
-      int out;
-      if (gbsum_view_keys(&c, k, fresh, &out)) return out;
+      pdna_summary_sel_frame_hide();
     }
+
+    int out;
+    if (gbsum_input(&c, &shadow_valid, &out)) return out;
   }
 }
