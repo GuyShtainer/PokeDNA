@@ -2416,9 +2416,21 @@ static void app_icon_rom_open(void) {
     log_line("icons: Sprites setting picked %s for the PC grid (save is %s)",
              want_game == PK_RS ? "RS" : want_game == PK_FRLG ? "FRLG" : "EM",
              g_game == PK_RS ? "RS" : g_game == PK_FRLG ? "FRLG" : "EM");
-  PkGame order[3] = { want_game, PK_EMERALD, PK_FRLG };   /* the chosen game first, then the rest */
-  int no = 1;
-  for (int i = 0; i < 3; i++) { PkGame c = k_try[i]; if (c != want_game && no < 3) order[no++] = c; }
+  /* D5 (E4 review): the fallback order used to be { want_game, PK_EMERALD, PK_FRLG }
+   * UNCONDITIONALLY -- for an R/S save where the Sprites grid asks for a different
+   * game's icons and that ROM turns out unreadable, this skipped the SAVE'S OWN
+   * game (order[1] was always Emerald, order[2] always FRLG, R/S never even a
+   * fallback candidate) before ever trying the ROM the save actually belongs to.
+   * The correct order is the chosen game first, then the save's own game (the one
+   * every screen already assumes is registered), then whichever of the three is
+   * left -- order[1] is only ever overwritten by the loop below when want_game and
+   * g_game are the same slot, so it is never left uninitialised. */
+  PkGame order[3] = { want_game, g_game, PK_EMERALD };
+  int no = (want_game == g_game) ? 1 : 2;
+  for (int i = 0; i < 3; i++) {
+    PkGame c = k_try[i];
+    if (c != want_game && c != g_game && no < 3) order[no++] = c;
+  }
   for (int i = 0; i < 3; i++) {
     const char* path = app_rom_path(order[i]);
     if (!path || !path[0]) continue;
