@@ -2382,9 +2382,32 @@ static void app_icon_rom_open(void) {
 #ifndef PDNA_DELTA
   if (s_iconrom_fil_open) { f_close(&s_iconrom_fil); s_iconrom_fil_open = false; }
   static const PkGame k_try[3] = { PK_EMERALD, PK_FRLG, PK_RS };
-  PkGame order[3] = { g_game, PK_EMERALD, PK_FRLG };      /* save's game first, then the rest */
+  /* E4 (sprite-era): the PC grid's box ICONS (boxoam's per-species OBJ icons, a
+   * separate pipeline from pdna_origin_art.c's per-mon portrait router) all come
+   * from ONE open ROM for the whole session -- there is no per-species icon-ROM
+   * choice the way the portrait router has one. se_store_era() is exactly the
+   * "which era should a WHOLE-STORE choice like this one use" question sprite_era.h
+   * defines for it: a concrete, REGISTERED Gen-3 era (G3_RS/G3_EM/G3_FRLG) for the
+   * PC place wins outright; anything else (NATIVE, or a GEN1/GEN2 cell -- dead here
+   * per se_cell_applies, since app_save_kind() is always a Gen-3 kind at this call
+   * site: this function only ever runs from view_save()'s Gen-3 branch, AFTER
+   * g_save_kind is set and BEFORE any GB session could exist) falls back to
+   * se_native_era's answer, which for a Gen-3 kind is exactly the save's own game --
+   * i.e. today's `g_game` default, unchanged when the user has not touched the grid.
+   * (A GEN1/GEN2 store answer -- unreachable today, see above -- would fall through
+   * to that same native default; wiring a Game Boy PC-grid icon set is E5's job, not
+   * this one's -- sprite_era.h's se_store_era() doc already says so.) */
+  SeRoms eroms = app_era_roms();
+  SeEra want_era = se_store_era(&g_era, app_save_kind(), SE_PLACE_PC, &eroms);
+  PkGame want_game = (want_era == SE_ERA_G3_RS)   ? PK_RS
+                    : (want_era == SE_ERA_G3_FRLG) ? PK_FRLG : PK_EMERALD;
+  if (want_game != g_game)
+    log_line("icons: Sprites setting picked %s for the PC grid (save is %s)",
+             want_game == PK_RS ? "RS" : want_game == PK_FRLG ? "FRLG" : "EM",
+             g_game == PK_RS ? "RS" : g_game == PK_FRLG ? "FRLG" : "EM");
+  PkGame order[3] = { want_game, PK_EMERALD, PK_FRLG };   /* the chosen game first, then the rest */
   int no = 1;
-  for (int i = 0; i < 3; i++) { PkGame c = k_try[i]; if (c != g_game && no < 3) order[no++] = c; }
+  for (int i = 0; i < 3; i++) { PkGame c = k_try[i]; if (c != want_game && no < 3) order[no++] = c; }
   for (int i = 0; i < 3; i++) {
     const char* path = app_rom_path(order[i]);
     if (!path || !path[0]) continue;
