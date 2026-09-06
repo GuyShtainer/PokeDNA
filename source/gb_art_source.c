@@ -9,6 +9,7 @@
 #include "artbuf.h"           /* mon_decomp, MON_DECOMP_BYTES */
 #include "pdna_origin_art.h"  /* PdnaGbArtSource, PDNA_GEN1/2, pdna_origin_art_register */
 #include "rom_gbsprite.h"
+#include "rom_gbicon.h"       /* E5: the 16x16 Gen-2 party/PC menu icon rung          */
 #include "gb_art_source.h"
 
 /* ---- per-gen state -----------------------------------------------------------------
@@ -66,6 +67,45 @@ static void gb_art_save_loc(uint8_t gen, const RomGbSpriteLoc* loc) {
   f_write(&f, loc, (UINT)sizeof *loc, &bw);
   f_close(&f);
   if (bw != sizeof *loc) log_line("gb art: loc cache write short for gen%u", (unsigned)gen);
+}
+
+/* ---- E5: the icon location cache: /PokeDNA/gbicon2.loc ----------------------------
+ * A SEPARATE file from gbart2.loc above, deliberately -- not "the existing format with
+ * a version bump" as a first cut of this comment assumed, because gbart2.loc's raw
+ * single-struct layout is already shipped and tested for the PORTRAIT rung and this
+ * slice has no reason to put that at risk. A second small file under the SAME PDNA_DIR
+ * costs nothing (rule 9's "one folder per tool" is about the FOLDER, and gbart1.loc/
+ * gbart2.loc already prove one tool keeping several small cache files there is normal)
+ * and trivially gets "an old install rescans once" for free: the file simply does not
+ * exist yet, so gb_icon_load_loc() reports no cache and rom_gbicon_open_loc() falls
+ * back to its own full scan on first use, exactly like a first-ever gbart2.loc would.
+ * Only gen 2 ever has one (Gen 1 has no menu icons at all -- rom_gbicon.h), so there is
+ * no gbicon1.loc. Not resident (read fresh at every fetch), same rationale as
+ * gbart*.loc's own comment: two 20 B copies would not be worth EWRAM for a cache that
+ * is only a performance optimisation. */
+static void gb_icon_loc_path(char* out, int cap) {
+  siprintf(out, "%.*s/gbicon2.loc", cap - 13, PDNA_DIR);
+}
+
+static bool gb_icon_load_loc(RomGbIconLoc* out) {
+  char path[40];
+  gb_icon_loc_path(path, (int)sizeof path);
+  FIL f; UINT br = 0;
+  if (f_open(&f, path, FA_READ) != FR_OK) return false;
+  FRESULT fr = f_read(&f, out, (UINT)sizeof *out, &br);
+  f_close(&f);
+  return fr == FR_OK && br == sizeof *out;
+}
+
+static void gb_icon_save_loc(const RomGbIconLoc* loc) {
+  if (!app_can_edit()) return;
+  char path[40];
+  gb_icon_loc_path(path, (int)sizeof path);
+  FIL f; UINT bw = 0;
+  if (f_open(&f, path, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) return;
+  f_write(&f, loc, (UINT)sizeof *loc, &bw);
+  f_close(&f);
+  if (bw != sizeof *loc) log_line("gb art: icon loc cache write short");
 }
 
 /* The one seek+read shim gb_art_open_and_identify()/gb_art_fetch() go through -- same
@@ -283,6 +323,66 @@ gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uint8_t back, uint8_t shin
   return px;
 }
 
+/* ---- E5: the 16x16 Gen-2 menu-icon fetch -------------------------------------------
+ * Deliberately its OWN noinline frame, not folded into gb_art_fetch() above: there is
+ * no in-place-aliasing trick to reason about here (rom_gbicon_tiles() writes a plain
+ * 64 B tile buffer on THIS frame's own stack, nowhere near mon_decomp, and
+ * rom_gbicon_to_rgb15() then expands it straight into mon_decomp with no overlap at
+ * all) and RomGbIcon (~24 B) + RomGbIconLoc (~20 B) are both smaller than their sprite
+ * counterparts, so sharing gb_art_fetch's frame would only inflate ITS measured cost
+ * for a portrait-only caller that never takes this path. MEASURED (arm-none-eabi-gcc
+ * -O2 -fstack-usage): see PDNA_GB_ICON_NEED's own comment (gb_art_source.h) for the
+ * number and how it compares to the portrait rung's PDNA_GB_FETCH_NEED. */
+static const uint16_t* __attribute__((noinline))
+gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
+  if (gen != PDNA_GEN2) return 0;         /* Gen 1 has no menu icons -- rom_gbicon.h */
+
+  char path[GB_ROM_PATH_MAX];
+  if (!gb_art_resolve_path(gen, path, (int)sizeof path)) return 0;
+
+  FIL fil;
+  memset(&fil, 0, sizeof fil);
+  if (f_open(&fil, path, FA_READ) != FR_OK) return 0;
+  FSIZE_t fsz = f_size(&fil);
+  uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+
+  RomGbIconLoc loc;
+  bool have_loc = gb_icon_load_loc(&loc);
+
+  RomGbIcon gi;
+  uint8_t scratch[ROM_GBICON_SCRATCH_MIN];
+  int ok = rom_gbicon_open_loc(&gi, gb_art_read, &fil, sz, scratch, (uint32_t)sizeof scratch,
+                               have_loc ? &loc : 0);
+  /* Same "re-save whenever it does not already match" rule as gb_art_fetch()'s own
+   * loc handling above -- a swapped ROM behind the same path/size must not pay a full
+   * rescan on every fetch forever. */
+  if (ok && (!have_loc || loc.id_hash != gi.id_hash || loc.size != sz)) {
+    RomGbIconLoc fresh;
+    rom_gbicon_save_loc(&gi, &fresh);
+    gb_icon_save_loc(&fresh);
+  }
+  if (!ok) { f_close(&fil); return 0; }
+
+  int kind = rom_gbicon_kind(&gi, dex);
+  const uint16_t* px = 0;
+  if (kind) {
+    uint8_t tile[ROM_GBICON_FRAME_BYTES];      /* 64 B, this frame's OWN stack --
+                                                * never inside mon_decomp           */
+    uint16_t pal[4];
+    /* claim BEFORE the write into mon_decomp below, same rule as gb_art_fetch()'s
+     * own comment (artbuf.h): a fetch that fails partway must still have already
+     * said "this content is not what it was". */
+    artbuf_claim();
+    if (rom_gbicon_tiles(&gi, kind, 0, tile) && rom_gbicon_pal(&gi, kind, pal) &&
+        rom_gbicon_to_rgb15(tile, pal, mon_decomp)) {
+      *out_w = ROM_GBICON_W; *out_h = ROM_GBICON_H;
+      px = mon_decomp;
+    }
+  }
+  f_close(&fil);
+  return px;
+}
+
 #else /* PDNA_DELTA: no SD card at all -- every one of the above is unreachable, so
        * none of it is compiled. The public surface still has to exist (the vtable
        * below references gb_art_pic_cb/have_cb unconditionally), just as
@@ -313,6 +413,11 @@ static const uint16_t* gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uin
   return 0;
 }
 
+static const uint16_t* gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
+  (void)gen; (void)dex; (void)out_w; (void)out_h;
+  return 0;
+}
+
 #endif /* PDNA_DELTA */
 
 /* ---- the PdnaGbArtSource vtable -- compiled in BOTH builds -------------------------- */
@@ -325,6 +430,16 @@ static const uint16_t* gb_art_pic_cb(void* ctx, uint8_t gen, uint16_t dex, uint8
   return gb_art_fetch(gen, dex, form, back, shiny, out_w, out_h);
 }
 static int gb_art_have_cb(void* ctx, uint8_t gen) { (void)ctx; return gb_art_have(gen) ? 1 : 0; }
+
+/* E5: same have()-first-then-fetch shape as gb_art_pic_cb above, restricted to
+ * gen 2 (Gen 1 has no menu icons; gb_art_fetch_icon also refuses this, but
+ * checking here too skips even the resolve-path/f_open attempt for gen 1). */
+static const uint16_t* gb_art_icon_cb(void* ctx, uint8_t gen, uint16_t dex,
+                                      uint8_t* out_w, uint8_t* out_h) {
+  (void)ctx;
+  if (gen != PDNA_GEN2 || !gb_art_have(gen)) return 0;
+  return gb_art_fetch_icon(gen, dex, out_w, out_h);
+}
 
 /* E3 review re-verification: the real stack-headroom check. __iheap_start is the
  * SAME linker symbol gba_cart.ld places right after every static IWRAM .text/.data/
@@ -354,7 +469,7 @@ static int gb_art_stack_room(int need) {
 }
 
 void gb_art_boot_register(void) {
-  static const PdnaGbArtSource src = { gb_art_pic_cb, gb_art_have_cb, 0 };
+  static const PdnaGbArtSource src = { gb_art_pic_cb, gb_art_have_cb, gb_art_icon_cb, 0 };
   pdna_origin_art_register(&src);
   pdna_origin_art_set_stack_room_hook(gb_art_stack_room);
 #ifndef PDNA_DELTA

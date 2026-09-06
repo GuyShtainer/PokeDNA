@@ -18,6 +18,20 @@
  * rung now, not once globally, but both of those rungs cost exactly this GB fetch. */
 #define PDNA_GB_FETCH_NEED 6144
 
+/* E5: the Gen-2 menu-ICON rung's own measured need, parallel to PDNA_GB_FETCH_NEED
+ * above but for gb_art_icon_cb -> gb_art_fetch_icon -> rom_gbicon_* -> the SD read
+ * tail, instead of the portrait rung's rom_gbsprite_* chain. Expected (and,
+ * per this slice's own -fstack-usage measurement -- see gb_art_source.c's
+ * gb_art_fetch_icon comment -- confirmed) well under PDNA_GB_FETCH_NEED: there is
+ * no in-place mon_decomp aliasing trick to reason about (the icon decode is a
+ * tiny 64 B tile buffer on the stack, expanded straight into mon_decomp with no
+ * overlap), and RomGbIcon is smaller than RomGbSprite. Kept as its OWN gate
+ * (not reusing PDNA_GB_FETCH_NEED) so a chain that cannot clear the bigger
+ * portrait gate may still safely clear this smaller one -- the same reasoning
+ * pdna_origin_art.h's PDNA_G3X_FETCH_NEED already documents for the cross-game
+ * rung. */
+#define PDNA_GB_ICON_NEED 3072
+
 /*
  * gb_art_source — the FIRST real caller of rom_gbsprite.c (source/rom_gbsprite.h), and
  * the GB half of pdna_origin_art's `PdnaGbArtSource` vtable (never registered by
