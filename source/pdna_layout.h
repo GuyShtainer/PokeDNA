@@ -1029,7 +1029,16 @@
 #define PDNA_SETSPR_ROW0_Y     28
 #define PDNA_SETSPR_ROW_PITCH  16
 #define PDNA_SETSPR_HELP_Y1   124
-#define PDNA_SETSPR_HELP1     "NATIVE = its own era."
+/* E5b (Guy, 2026-09-06): NATIVE means different things at different places, and this
+ * is the one line of screen budget to say so -- at the box GRID (PC/BANK), it is now
+ * the icon STORE's own picture for every mon (imports included, opt-in required for a
+ * bitmap era cell); everywhere else (PARTY/SUMMARY/a GB save's own GBGRID) it is still
+ * "the record's own era", unchanged. 29 sys8 chars is the hard budget (SCR_W - PDNA_
+ * SET_HELP_X, host_textfit_test.c's "Settings > Sprites grid" section) -- too tight to
+ * spell out both halves, so this line names the GRID (the place this whole screen's
+ * per-mon overlay actually draws on) and leaves party/summary to the unsurprising
+ * default they always had. */
+#define PDNA_SETSPR_HELP1     "NATIVE: PC/BANK = own icons"
 /* D8 (E4 review): a second, honest line -- the box GRID's per-mon overlay can only
  * ever swap in a Game Boy look, never a cross-game Gen-3 one, at BANK/GBGRID (PC is
  * different: it gets its whole icon SET from se_store_era() instead, unaffected).
