@@ -363,7 +363,7 @@ static void test_resolve_cell(void) {
     int why = -1;
     SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PC, 1, 1, 1, &all_roms, 1, &why);
     CHECK(got == SE_ERA_NATIVE,
-          "Db5: EM/PC/GEN1 cell is refused at PC (no per-species Gen-1 icons) -> NATIVE");
+          "Db5: EM/PC/GEN1 cell is refused at PC (no per-species Gen-1 icons) -> the STORE (G3_EM after review D1)");
   }
 
   /* Db6: the SAME GEN1 cell setting, at BANK instead of PC -- se_resolve()'s icon
@@ -421,6 +421,47 @@ static void test_resolve_cell(void) {
     int why = -1;
     SeEra got = se_resolve_cell(&s, SE_KIND_GEN1, SE_PLACE_GBGRID, 1, 1, 1, &all_roms, 1, &why);
     CHECK(got == SE_ERA_GEN1, "Db9b: a Gen-1 save's own GBGRID at NATIVE -> GEN1, unchanged");
+  }
+
+  /* Db10-Db12 (E5b review D1): an EXPLICIT cell that fails one of se_resolve()'s gates
+   * must fall back to the STORE, never to the import's own era -- the pre-E5b bitmap
+   * default that the opt-in retires. Three measured manifestations. */
+  {
+    /* Db10: EM/BANK = GEN2, Gen-2 ROM absent, Gen-1 ROM present, a Gen-1 import. */
+    SeRoms r = all_roms; r.have[SE_ERA_GEN2] = false;
+    SeSetting s; se_default(&s); s.era[SE_KIND_EM][SE_PLACE_BANK] = (uint8_t)SE_ERA_GEN2;
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_BANK, 1, 1, 25, &r, 1, &why);
+    CHECK(got != SE_ERA_GEN1 && got != SE_ERA_GEN2,
+          "Db10: BANK=GEN2 with no Gen-2 ROM + Gen-1 import -> the store, not the Gen-1 portrait");
+  }
+  {
+    /* Db11: EM/PC = GEN1 (config-only: se_era_next never offers it), a Gen-2 import. */
+    SeSetting s; se_default(&s); s.era[SE_KIND_EM][SE_PLACE_PC] = (uint8_t)SE_ERA_GEN1;
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PC, 2, 1, 25, &all_roms, 1, &why);
+    CHECK(got != SE_ERA_GEN1 && got != SE_ERA_GEN2,
+          "Db11: PC=GEN1 (refused) + Gen-2 import -> the store, not Gen-2 icons");
+  }
+  {
+    /* Db12: EM/BANK = G3_FRLG (config-only), only the Gen-1 ROM registered, a Gen-1 import. */
+    SeRoms r; for (int i = 0; i < SE_ERA_N; i++) r.have[i] = false; r.have[SE_ERA_GEN1] = true;
+    SeSetting s; se_default(&s); s.era[SE_KIND_EM][SE_PLACE_BANK] = (uint8_t)SE_ERA_G3_FRLG;
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_BANK, 1, 1, 25, &r, 1, &why);
+    CHECK(got != SE_ERA_GEN1 && got != SE_ERA_GEN2,
+          "Db12: BANK=FRLG with no FRLG ROM + Gen-1 import -> the store, not the Gen-1 portrait");
+  }
+  {
+    /* Db13: the fix must not touch an explicit cell that PASSES its gate. */
+    SeSetting s; se_default(&s); s.era[SE_KIND_EM][SE_PLACE_PC] = (uint8_t)SE_ERA_GEN2;
+    int why = -1;
+    SeEra got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PC, 2, 1, 25, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_GEN2, "Db13: PC=GEN2 with the ROM + Gen-2 import -> GEN2 still");
+    got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PC, 3, 1, 25, &all_roms, 1, &why);
+    CHECK(got == SE_ERA_GEN2, "Db13b: PC=GEN2 with the ROM + native Kanto mon -> GEN2 still");
+    got = se_resolve_cell(&s, SE_KIND_EM, SE_PLACE_PC, 3, 1, 252, &all_roms, 1, &why);
+    CHECK(got != SE_ERA_GEN2, "Db13c: PC=GEN2 + Treecko -> not GEN2");
   }
 
   printf("(Db) se_resolve_cell ok\n");

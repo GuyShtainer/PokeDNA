@@ -158,10 +158,21 @@ SeEra se_resolve_cell(const SeSetting* s, SeSaveKind kind, SePlace place,
    * the two `==`/`kind_is_gen3` checks and falls through to se_resolve() untouched --
    * that function does its own defensive clamping. */
   if (s && (unsigned)kind < SE_KIND_N && (unsigned)place < SE_PLACE_N &&
-      kind_is_gen3(kind) && (place == SE_PLACE_PC || place == SE_PLACE_BANK) &&
-      s->era[kind][place] == (uint8_t)SE_ERA_NATIVE) {
-    if (reason) *reason = SE_WHY_GRID_OPT_IN;
-    return se_native_era(kind, 3, 1);   /* the save's own Gen-3 era -- "the store" */
+      kind_is_gen3(kind) && (place == SE_PLACE_PC || place == SE_PLACE_BANK)) {
+    if (s->era[kind][place] == (uint8_t)SE_ERA_NATIVE) {
+      if (reason) *reason = SE_WHY_GRID_OPT_IN;
+      return se_native_era(kind, 3, 1);   /* the save's own Gen-3 era -- "the store" */
+    }
+    /* E5b hole (adversarial review, 2026-09-06): the opt-in must also cover
+     * se_resolve()'s NATIVE FALLBACK. An explicit cell that fails a gate (PC+GEN1's
+     * NO_ICONS refusal, an absent ROM, a species the era never had) falls back to
+     * se_native_era(kind, origin_gen, ...) -- which for a Game Boy IMPORT is exactly
+     * the pre-E5b bitmap default this slice retires, reached without the user ever
+     * opting in to THAT era. Present the record as a Gen-3 native so the fallback
+     * lands on the store instead. Reachable without editing any file: pick Gen2 for
+     * BANK while the .gbc is registered, then remove the ROM -- se_config_apply()
+     * re-reads the cell without re-checking its legality. */
+    origin_gen = 3; origin_certain = 1;
   }
   return se_resolve(s, kind, place, origin_gen, origin_certain, national_dex, roms,
                      compiled_gen3 ? true : false, reason);
