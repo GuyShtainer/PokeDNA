@@ -1051,7 +1051,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * spell out both halves, so this line names the GRID (the place this whole screen's
  * per-mon overlay actually draws on) and leaves party/summary to the unsurprising
  * default they always had. */
-#define PDNA_SETSPR_HELP1     "NATIVE: PC/BANK = own icons"
+#define PDNA_SETSPR_HELP1     "NATIVE: PC/BANK = game icons"
 /* D8 (E4 review): a second, honest line -- the box GRID's per-mon overlay can only
  * ever swap in a Game Boy look, never a cross-game Gen-3 one, at BANK/GBGRID (PC is
  * different: it gets its whole icon SET from se_store_era() instead, unaffected).

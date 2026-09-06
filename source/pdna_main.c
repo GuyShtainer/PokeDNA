@@ -8116,6 +8116,19 @@ _Static_assert(PDNA_NAV_MH <= UI_FOOTER_Y,
  * translucent panel. 2,256 B of EWRAM buys a menu that is drawn exactly ONCE. */
 static u16 EWRAM_BSS s_nav_band[PDNA_NAV_BAND_W * PDNA_NAV_BAND_H];
 
+/* The whole of BACKLOG #48's new logic, pulled out to one place: item `nv` (an NV_*
+ * id, 0..NV_COUNT-1) is selectable-and-lit iff its bit is set in `mask`. Genuinely
+ * pure (no globals, no I/O) — but NOT host-tested: it lives in pdna_main.c, which
+ * (unlike pdna_gen12.c's PDNA_GEN12_HOST split) has no host-compilable half at all,
+ * every screen in it reaches tonc/vid_mem directly, and there is no existing harness
+ * this one function is worth inventing a new pdna_main.c/host split for. A one-line
+ * bitmask test also has no interesting branches for a unit test to catch — the risk
+ * this whole item guards against is nav_menu()/gb_nav_from_start() disagreeing about
+ * WHICH bits mean what, and that is exactly what the two `1u << NV_*` call sites
+ * sharing pdna_layout.h's ONE enum (rather than two private copies) already rules
+ * out at compile time. */
+static bool nav_item_available(uint32_t mask, int nv) { return (mask & (1u << nv)) != 0; }
+
 /* BACKLOG #48: `avail_mask` is a bitmask of `1u << NV_*` — the item is drawn UI_DIM
  * (instead of UI_TEXT) and, if picked, returns NAV_UNAVAILABLE instead of its own id
  * when its bit is clear. A dimmed row is still fully selectable (the cursor and the
@@ -8154,7 +8167,7 @@ static int nav_menu(uint32_t avail_mask) {
   ui_hline(mx + 2, my + PDNA_NAV_DIV_DY, mw - 4, UI_BORDER);
   for (int i = 0; i < NV_COUNT; i++) {
     int col = i / rows, row = i % rows;
-    u16 ink = (avail_mask & (1u << i)) ? UI_TEXT : UI_DIM;
+    u16 ink = nav_item_available(avail_mask, i) ? UI_TEXT : UI_DIM;
     ui_ptext(mx + PDNA_NAV_PAD + col * cw, my + PDNA_NAV_HEAD + row * rh, ink, L[i]);
   }
   ui_text(mx + PDNA_NAV_PAD, my + mh + PDNA_NAV_HINT_DY, UI_DIM, PDNA_NAV_HINT);
@@ -8192,7 +8205,7 @@ static int nav_menu(uint32_t avail_mask) {
     else if (k & KEY_DOWN)  sel = (sel + 1) % NV_COUNT;
     else if (k & KEY_LEFT)  { if (sel >= rows) sel -= rows; }
     else if (k & KEY_RIGHT) { if (sel + rows < NV_COUNT) sel += rows; }
-    else if (k & KEY_A)    return (avail_mask & (1u << sel)) ? sel : NAV_UNAVAILABLE;
+    else if (k & KEY_A)    return nav_item_available(avail_mask, sel) ? sel : NAV_UNAVAILABLE;
   }
 }
 
