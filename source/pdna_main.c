@@ -7185,15 +7185,12 @@ static void gb_rom_row_action(uint8_t gen) {
   }
 }
 
-/* Settings > Game ROM, once something is registered: a small menu instead of jumping
- * straight to browse-for-ROM, so item 7's detach switch lives ON this same row (not
- * a new one) rather than needing its own PDNA_SET_ROWS slot. "Cancel" mirrors
- * dc_menu's pattern (ui_popup_vfit + a highlighted row list).
- * Calls app_register_rom() (browse-for-ROM), which only exists outside PDNA_DELTA
- * (there is no SD to browse in the emulator build) -- kept inside the SAME
- * #ifndef PDNA_DELTA block as that function (and as this function's only call site,
- * pdna_settings' S_GAMEROM handler below) rather than its own, so it can never again
- * end up compiled where its callee isn't. */
+#endif /* PDNA_DELTA */
+
+/* Compiled in EVERY build (outside the #ifndef PDNA_DELTA block that owns the SD-only
+ * browse/register path): the emulator build reaches this screen straight from the
+ * Settings "Game ROM" row, so the E4 shots can be captured there; nothing it calls
+ * needs a card (cfg_save() already guards itself on app_can_edit()). */
 /* Settings > Game ROM > Sprites (E4): the 5 (kind) x 5 (place) grid of the user's
  * chosen art era per cell. Reached from rom_row_menu (below) rather than its own
  * PDNA_SET_ROWS row -- see pdna_layout.h's header comment on this screen's macros
@@ -7266,6 +7263,17 @@ static void sprite_settings(void) {
     }
   }
 }
+
+#ifndef PDNA_DELTA
+/* Settings > Game ROM, once something is registered: a small menu instead of jumping
+ * straight to browse-for-ROM, so item 7's detach switch lives ON this same row (not
+ * a new one) rather than needing its own PDNA_SET_ROWS slot. "Cancel" mirrors
+ * dc_menu's pattern (ui_popup_vfit + a highlighted row list).
+ * Calls app_register_rom() (browse-for-ROM), which only exists outside PDNA_DELTA
+ * (there is no SD to browse in the emulator build) -- kept inside the SAME
+ * #ifndef PDNA_DELTA block as that function (and as this function's only call site,
+ * pdna_settings' S_GAMEROM handler below) rather than its own, so it can never again
+ * end up compiled where its callee isn't. */
 
 static void rom_row_menu(void) {
   /* Slice E3: two more rows, same menu, same "no new PDNA_SET_ROWS slot" reasoning
@@ -7437,7 +7445,9 @@ static void pdna_settings(void) {
       }
       else if (sel == S_ROM) {
 #ifdef PDNA_DELTA
-        snd_deny(); msg_wait("NO SD HERE", UI_DIM, "Fuse a ROM into this build", "with tools/fuse_rom.py.");
+        /* No SD => nothing to browse or register; the only live sub-screen of this
+         * row in the emulator build is the E4 Sprites grid, so go straight there. */
+        sprite_settings();
 #else
         if (app_any_rom_registered()) rom_row_menu(); else app_register_rom();
 #endif
