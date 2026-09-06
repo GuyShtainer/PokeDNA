@@ -190,6 +190,29 @@ bool app_take_pickup(int* box, int* slot);
 void app_box_start_set(int s);
 int  app_box_start_take(void);
 void app_note_pc_box(int b);              /* PC box screen reports its current box so the app remembers it */
+
+/* BACKLOG #48: pdna_main.c's box-screen START menu (nav_menu, source/pdna_layout.h's
+ * PDNA_NAV_ITEMS), reusable by any caller that owns its own BoxSource + pdna_box()
+ * loop — namely pdna_gen12.c's gb_session_core, which wants the SAME menu for a raw
+ * Game Boy save's own START press, with most rows unavailable (BACKLOG #49/#52 —
+ * they act on Gen-3 SaveBlock state that does not exist in a GB session).
+ *
+ * `avail_mask` is a bitmask of `1u << NV_id`; NV_* itself lives in pdna_layout.h
+ * (the X-macro list), kept OUT of this header so pdna_app.h — included from every
+ * screen — stays free of screen-layout enums. A caller that needs to name a specific
+ * item includes pdna_layout.h too (pdna_gen12.c already does, for its fixed strings).
+ * A bit clear dims that row (still selectable) and makes picking it return
+ * NAV_UNAVAILABLE instead of the item id, so the caller can show one honest message
+ * instead of silently doing nothing. NAV_ALL_AVAILABLE reproduces the Gen-3 box
+ * screen's own call byte-for-byte. */
+#define NAV_ALL_AVAILABLE ((uint32_t)~0u)
+#define NAV_UNAVAILABLE   (-2)     /* distinct from every NV_* id (0..NV_COUNT-1) and
+                                    * from party_overlay/pdna_box's own -1 "cancelled" */
+int  app_nav_menu(uint32_t avail_mask);
+/* pdna_settings() (pdna_main.c) is static; this is its one exported door, for the
+ * same reason app_nav_menu exists — a GB session's "Settings" nav row opens the
+ * IDENTICAL screen, not a copy. */
+void app_nav_settings(void);
 /* Full-screen party screen (Gen-4/5-style: a big slot-1 box + 5 rows). ONLY caller left:
  * NV_PARTY (pdna_main.c) when the open save has NO PC storage at all (g_have_pc false) —
  * there is no box to show behind a strip in that case, so this full-screen browse-only

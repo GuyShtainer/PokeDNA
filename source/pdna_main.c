@@ -8096,11 +8096,12 @@ static void pdna_battle_record(void) {
 /* START-menu destinations over the box (Party + Bank + Daycare are the storage
  * screens; SELECT no longer toggles the party — it cycles the box cursor mode).
  *
- * The entries AND the menu geometry live in pdna_layout.h, because
- * tests/host_textfit_test.c asserts on both (panel height, and every label against the
- * 90 px selection band). A copy of them in the test would guard nothing. */
-#define NV_ENUM_ONE(id, label) id,
-enum { PDNA_NAV_ITEMS(NV_ENUM_ONE) NV_COUNT };
+ * The entries, the enum (every NV_ id, and NV_COUNT) AND the menu geometry all
+ * live in pdna_layout.h now (BACKLOG #48 promoted the enum out of this file so
+ * pdna_gen12.c's gb_session_core can share the same numeric IDs through
+ * app_nav_menu's availability mask) — tests/host_textfit_test.c asserts on the
+ * geometry (panel height, and every label against the 90 px selection band). A
+ * copy of any of it in this file would guard nothing. */
 _Static_assert(NV_COUNT == PDNA_NAV_COUNT, "nav enum and PDNA_NAV_COUNT disagree");
 
 /* Menu HEIGHT, guarded at BUILD time. This menu is fixed-height and drawn exactly once
@@ -8115,7 +8116,15 @@ _Static_assert(PDNA_NAV_MH <= UI_FOOTER_Y,
  * translucent panel. 2,256 B of EWRAM buys a menu that is drawn exactly ONCE. */
 static u16 EWRAM_BSS s_nav_band[PDNA_NAV_BAND_W * PDNA_NAV_BAND_H];
 
-static int nav_menu(void) {
+/* BACKLOG #48: `avail_mask` is a bitmask of `1u << NV_*` — the item is drawn UI_DIM
+ * (instead of UI_TEXT) and, if picked, returns NAV_UNAVAILABLE instead of its own id
+ * when its bit is clear. A dimmed row is still fully selectable (the cursor and the
+ * highlight bar work exactly the same on it) — only its OWN unselected ink and its
+ * A-press outcome change, so a caller can show one honest "not here" message instead
+ * of silently doing nothing. Passing NAV_ALL_AVAILABLE (every bit set) reproduces the
+ * Gen-3 box screen's own call byte-for-byte: every ink stays UI_TEXT and every A-press
+ * returns `sel`, exactly as before this existed. */
+static int nav_menu(uint32_t avail_mask) {
   /* TWO COLUMNS, ten rows each — no scroll, no position counter (NAV_MH guards the fit).
    *
    * DRAWN ONCE. ui_panel_alpha BLENDS with what is already on screen, and this used to
@@ -8145,7 +8154,8 @@ static int nav_menu(void) {
   ui_hline(mx + 2, my + PDNA_NAV_DIV_DY, mw - 4, UI_BORDER);
   for (int i = 0; i < NV_COUNT; i++) {
     int col = i / rows, row = i % rows;
-    ui_ptext(mx + PDNA_NAV_PAD + col * cw, my + PDNA_NAV_HEAD + row * rh, UI_TEXT, L[i]);
+    u16 ink = (avail_mask & (1u << i)) ? UI_TEXT : UI_DIM;
+    ui_ptext(mx + PDNA_NAV_PAD + col * cw, my + PDNA_NAV_HEAD + row * rh, ink, L[i]);
   }
   ui_text(mx + PDNA_NAV_PAD, my + mh + PDNA_NAV_HINT_DY, UI_DIM, PDNA_NAV_HINT);
 
@@ -8182,9 +8192,16 @@ static int nav_menu(void) {
     else if (k & KEY_DOWN)  sel = (sel + 1) % NV_COUNT;
     else if (k & KEY_LEFT)  { if (sel >= rows) sel -= rows; }
     else if (k & KEY_RIGHT) { if (sel + rows < NV_COUNT) sel += rows; }
-    else if (k & KEY_A)    return sel;
+    else if (k & KEY_A)    return (avail_mask & (1u << sel)) ? sel : NAV_UNAVAILABLE;
   }
 }
+
+/* BACKLOG #48: the box screen's own START menu, reachable from OUTSIDE this file —
+ * pdna_gen12.c's gb_session_core wants the identical menu (panel, geometry, labels)
+ * for a Game Boy session's own START press, just with most rows unavailable. Thin
+ * wrappers only: nav_menu/pdna_settings stay static, this is the one door in. */
+int app_nav_menu(uint32_t avail_mask) { return nav_menu(avail_mask); }
+void app_nav_settings(void) { pdna_settings(); }
 
 /* ---- PC-storage BoxSource: the in-save boxes, rendered by the shared box screen.
  * Accessors operate on g_pc (+ g_sb1 for the Emerald Walda wallpaper). ---- */
@@ -8923,7 +8940,7 @@ static void view_save(const char* path) {
     }
     if (r == 2) {                                /* START -> nav menu */
       int refresh_party = 0;
-      switch (nav_menu()) {
+      switch (nav_menu(NAV_ALL_AVAILABLE)) {
         case NV_PARTY:   {                        /* Guy: "I expected to see the party menu
                           * on top of the pc pokemon in the background" -- with a PC box
                           * open, route to the SAME strip-over-the-box popup the box

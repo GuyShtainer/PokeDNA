@@ -58,6 +58,19 @@
 #define PDNA_NAV_COUNT_ONE(id, label) +1
 #define PDNA_NAV_COUNT (0 PDNA_NAV_ITEMS(PDNA_NAV_COUNT_ONE))   /* == NV_COUNT */
 
+/* The nav enum itself, shared: BACKLOG #48 lets a Game Boy session (pdna_gen12.c,
+ * gb_session_core) open the SAME menu pdna_main.c's box screen does (through
+ * app_nav_menu's availability mask), so both translation units need the identical
+ * numeric IDs for NV_SETTINGS/NV_BACK/NV_TRAINER etc. Used to live as a private
+ * enum inside pdna_main.c right above nav_menu() -- moved here, off the same
+ * X-macro that already drives the labels/count above, so there is still exactly
+ * ONE place that lists the items. A plain (non-typedef'd) enum in a header is
+ * fine to include from several .c files: it declares constants, not a symbol, so
+ * every translation unit just gets its own identical copy. */
+#define PDNA_NAV_ENUM_ONE(id, label) id,
+enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
+#undef PDNA_NAV_ENUM_ONE
+
 /* The column is wide enough for "Flags & counters" (85 px in the proportional face) and
  * two of them plus the gutter still clear the 240 px screen. */
 #define PDNA_NAV_COL_W   98
