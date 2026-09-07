@@ -2425,6 +2425,17 @@ static void app_icon_rom_open(void) {
   log_line("rom art: %s (%s registered)", g_rom_art_off ? "DETACHED (testing)" : "attached",
            app_any_rom_registered() ? "a path is" : "no path is");
   if (g_rom_art_off) {
+    /* #47 review D1b: s_iconrom is the ONE ROM handle this function does not reset
+     * above (boxoam_rom_icons(0,0) / art_fallbacks_set_rommon(0) / the memsets cover
+     * every other one), so without this the icon STORE below would still be handed a
+     * live RomMon: on a FUSED build fused_rom_read keeps working and the PC/dex/party
+     * grids draw ROM icons anyway; on an SD build s_iconrom_fil was just closed, so
+     * the store would latch ICON_RUNG_ROM over a dead handle and every row read fails.
+     * Clearing it makes a mid-session flip identical to BOOTING with the switch
+     * already on -- ICON_RUNG_NONE, the genuine "no ROM this session" state -- and
+     * takes the Extract-art row and app_register_rom's auto-extract prompt honestly
+     * dark with it. rom_mon_open() memsets it again on the flip back. */
+    memset(&s_iconrom, 0, sizeof s_iconrom);
     app_icon_cache_resolve(0, false);   /* the same tail every "no ROM this session" path reaches */
     return;
   }
