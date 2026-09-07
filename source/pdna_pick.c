@@ -1311,6 +1311,48 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
   }
 }
 
+/* Gen-1/2 restriction (UX-parity audit, Guy 2026-09-07: "the item row -- Gen 3
+ * uses pick_item with names; if the GB editor adjusts the item id numerically,
+ * switch it to pick_item restricted to the gen's item ids, names '#n' where
+ * the app has none"). The GB editor's held-item field (gb_editor.c's GBE_ITEM)
+ * used to LEFT/RIGHT-step a raw byte 0..255 instead of opening a real picker.
+ *
+ * Unlike pick_species_set_max_dex()'s ceiling, this is not merely "hide ids
+ * above a cutoff": Gen-1/2 items have NO numbering in common with Gen 3 AT
+ * ALL (gen2_save.h's own held_item comment: "Gen-2 item id, no Gen-3
+ * equivalent for many"), so a Gen-3 name/description/icon at the SAME raw
+ * number would be actively WRONG, not merely irrelevant. Restricted mode
+ * therefore also suppresses every Gen-3-specific thing that has no meaning
+ * here: real names (item_label_for below draws "#n"), icons (gb_item_icon_or_none
+ * returns NULL), descriptions (item_desc_for returns a placeholder), and the
+ * category/per-game filters (Gen-3 pocket/availability metadata that says
+ * nothing about a Gen-2 id -- the START filter menu and the L/R view-cycle,
+ * which only ever shows an icon-bearing view, are both no-ops while
+ * restricted; search still works, but by NUMBER, the species picker's own
+ * digit-search idiom, since there is no name to search by).
+ *
+ * "#n" stands in until a future phase reads the real Gen-1/2 item names live
+ * off the user's own cartridge (Guy's own words: "P2 will bring ROM names"),
+ * the same way rom_gblearn.c now reads level-up learnsets -- this SCREEN does
+ * not need to change again when that lands, only where item_label_for's text
+ * comes from. 0 = unrestricted, every existing Gen-3 caller's default. */
+static uint16_t g_item_max_id = 0;
+void pick_item_set_gen1_2_max(uint16_t max_id) { g_item_max_id = max_id; }
+
+static void item_label_for(uint16_t id, char* out, int cap) {
+  if (g_item_max_id) { siprintf(out, "#%u", (unsigned)id); return; }
+  pk_item_label(id, out, cap);
+}
+/* Named gb_item_icon_or_none, not item_icon_for -- item_icons.h already
+ * declares a real, unrelated `item_icon_for()` (a different, lower-level
+ * compiled-art lookup); this name was one collision away from shadowing it. */
+static const uint16_t* gb_item_icon_or_none(uint16_t id) {
+  return g_item_max_id ? NULL : app_item_icon(id);
+}
+static const char* item_desc_for(uint16_t id) {
+  return g_item_max_id ? PDNA_ITEM_NO_DESC_YET : app_item_desc(id);
+}
+
 /* ---- item picker filters (BACKLOG #13, "like the pokedex"): two combinable
  * axes — CATEGORY (via pk_item_pocket) and GAME availability (via the
  * generated pk_item_games mask: bit0 RS, bit1 Emerald, bit2 FRLG). ---- */
@@ -1325,12 +1367,20 @@ static const char* const IGAME_NAME[NIGAME] = { "All", "RS", "Emerald", "FRLG" }
 static int item_build(u16* idx, const char* search, int sort, int cat, int gamef) {
   int n = 0;
   for (int i = 0; i < 377; i++) {
-    if (cat && pk_item_pocket((uint16_t)i) != ICAT_POCKET[cat]) continue;
-    if (gamef && !(pk_item_games((uint16_t)i) & (1 << (gamef - 1)))) continue;
-    if (search[0] && !ci_contains(pk_item_name((uint16_t)i), search)) continue;
+    if (g_item_max_id) {
+      /* Restricted (Gen 1/2): a plain numeric ceiling, no pocket/game filter
+       * (neither has any meaning for this id space) -- search by NUMBER,
+       * since there is no name yet to search by (item_label_for's own "#n"). */
+      if ((uint16_t)i > g_item_max_id) continue;
+      if (search[0] && !num_prefix((unsigned)i, search)) continue;
+    } else {
+      if (cat && pk_item_pocket((uint16_t)i) != ICAT_POCKET[cat]) continue;
+      if (gamef && !(pk_item_games((uint16_t)i) & (1 << (gamef - 1)))) continue;
+      if (search[0] && !ci_contains(pk_item_name((uint16_t)i), search)) continue;
+    }
     idx[n++] = (u16)i;
   }
-  if (sort) {
+  if (sort && !g_item_max_id) {          /* no names to sort by, either */
     for (int i = 1; i < n; i++) {
       u16 v = idx[i]; int j = i - 1;
       while (j >= 0 && strcmp(pk_item_name(idx[j]), pk_item_name(v)) > 0) { idx[j + 1] = idx[j]; j--; }
@@ -1444,12 +1494,13 @@ static void iv_geom(int v, int* cols, int* cw, int* ch, int* x0, int* y0, int* v
 
 /* draw one cell's content (icon at the cell origin, no selection chrome). */
 static void iv_cell(int v, int x, int y, int id) {
-  const uint16_t* ic = app_item_icon((uint16_t)id);   /* compiled art -> the registered ROM */
+  const uint16_t* ic = gb_item_icon_or_none((uint16_t)id);  /* compiled art -> the registered ROM; NULL if restricted */
   char lbl[48];
-  pk_item_label((uint16_t)id, lbl, sizeof lbl);      /* "No26 EARTHQUAKE" for a TM */
+  item_label_for((uint16_t)id, lbl, sizeof lbl);     /* "No26 EARTHQUAKE" for a TM, or "#n" if restricted */
   if (v == IV_LIST) {
     char row[64];
-    siprintf(row, "%3d %s", id, lbl);
+    if (g_item_max_id) siprintf(row, "%s", lbl);     /* lbl is already "#n" -- no separate number column */
+    else                siprintf(row, "%3d %s", id, lbl);
     ui_ptext_fit(x + 2, y, UI_SCR_W - (x + 4), UI_TEXT, row);
   } else if (v == IV_ICONS) {
     if (ic) ui_sprite(x, y, IITEM, IITEM, ic);
@@ -1465,7 +1516,11 @@ static void iv_cell(int v, int x, int y, int id) {
 uint16_t pick_item(uint16_t current) {
   u16* idx = g_idx;
   char search[16] = "";
-  int sort = 0, view = app_item_icon(13) ? IV_SPLIT : IV_LIST, cat = 0, gamef = 0;   /* art-free -> text list (13 = Potion) */
+  /* Restricted (Gen 1/2): always list view -- every OTHER view shows an icon
+   * that would be wrong (gb_item_icon_or_none()'s own comment), and there is no
+   * point offering a mode this session can never leave (L/R is disabled
+   * below while restricted). */
+  int sort = 0, view = g_item_max_id ? IV_LIST : (app_item_icon(13) ? IV_SPLIT : IV_LIST), cat = 0, gamef = 0;
   int n = item_build(idx, search, sort, cat, gamef);
   int sel = 0;
   for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
@@ -1496,13 +1551,17 @@ uint16_t pick_item(uint16_t current) {
     if (full) {
       ui_clear();
       char h[64], ht[40];                          /* active filters live in the header */
-      siprintf(h, "ITEM %s [%s|%s] %s %d", IV_NAME[view], ICAT_NAME[cat], IGAME_NAME[gamef],
+      /* Restricted: no pocket/game filter and no A-Z sort exist (item_build's
+       * own comment), so the bracket that would otherwise show them ("[All|
+       * All] No.") is dropped rather than printed as dead-looking noise. */
+      if (g_item_max_id) siprintf(h, "ITEM %d", n);
+      else siprintf(h, "ITEM %s [%s|%s] %s %d", IV_NAME[view], ICAT_NAME[cat], IGAME_NAME[gamef],
                sort ? "A-Z" : "No.", n);
       ui_truncate(ht, h, 29);
       ui_text(4, 2, UI_TITLE, ht);
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
       ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-      ui_text(4, 152, UI_DIM, "A pick  L/R view  ST  SEL  B");
+      ui_text(4, 152, UI_DIM, g_item_max_id ? PDNA_ITEM_GB_FOOT : "A pick  L/R view  ST  SEL  B");
       if (view == IV_SPLIT) ui_panel(122, 20, 116, 124, UI_PANEL, UI_BORDER);
       for (int i = 0; i < vis && top + i < n; i++)
         iv_cell(view, x0 + (i % cols) * cw, y0 + (i / cols) * ch, idx[top + i]);
@@ -1522,14 +1581,14 @@ uint16_t pick_item(uint16_t current) {
     uint16_t cur = n ? idx[sel] : 0;
     if (view == IV_SPLIT) {
       ui_fill_rect(124, 22, 112, 120, UI_PANEL);
-      { char inm[48]; pk_item_label(cur, inm, sizeof inm);
+      { char inm[48]; item_label_for(cur, inm, sizeof inm);
         ui_ptext_fit(126, 24, 108, UI_TITLE, inm); }
-      ui_ptext_wrap(126, 36, 108, UI_ROW_H, 12, UI_TEXT, app_item_desc(cur));
+      ui_ptext_wrap(126, 36, 108, UI_ROW_H, 12, UI_TEXT, item_desc_for(cur));
     } else {
       ui_fill_rect(0, 138, UI_SCR_W, 8, UI_BG);
       char d[96], nm[48];
-      pk_item_label(cur, nm, sizeof nm);
-      siprintf(d, "%s  %s", nm, app_item_desc(cur));
+      item_label_for(cur, nm, sizeof nm);
+      siprintf(d, "%s  %s", nm, item_desc_for(cur));
       ui_ptext_fit(4, 139, UI_SCR_W - 8, UI_DIM, d);
     }
 
@@ -1543,11 +1602,15 @@ uint16_t pick_item(uint16_t current) {
     else if (k & KEY_DOWN)  sel = clampi(sel + cols, 0, n ? n - 1 : 0);
     else if (k & KEY_LEFT)  { if (cols > 1) sel = clampi(sel - 1, 0, n ? n - 1 : 0); }
     else if (k & KEY_RIGHT) { if (cols > 1) sel = clampi(sel + 1, 0, n ? n - 1 : 0); }
-    else if (k & KEY_L) { view = (view + IV_N - 1) % IV_N; relist = true; }
-    else if (k & KEY_R) { view = (view + 1) % IV_N; relist = true; }
-    else if (k & KEY_START) {                     /* filter menu, like the species picker */
-      item_filter_menu(&cat, &gamef, &sort);
-      n = item_build(idx, search, sort, cat, gamef); sel = 0; toprow = 0; relist = true;
+    else if (k & KEY_L) { if (!g_item_max_id) { view = (view + IV_N - 1) % IV_N; relist = true; } }
+    else if (k & KEY_R) { if (!g_item_max_id) { view = (view + 1) % IV_N; relist = true; } }
+    else if (k & KEY_START) {                     /* filter menu, like the species picker --
+                                                     * a no-op while restricted: no pocket/game
+                                                     * filter exists for this id space. */
+      if (!g_item_max_id) {
+        item_filter_menu(&cat, &gamef, &sort);
+        n = item_build(idx, search, sort, cat, gamef); sel = 0; toprow = 0; relist = true;
+      }
     }
     else if (k & KEY_SELECT) {
       char q[16];

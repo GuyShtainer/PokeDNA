@@ -22,6 +22,13 @@ uint16_t pick_species(uint16_t current_internal);
 void     pick_species_set_max_dex(uint16_t max_dex);
 uint16_t pick_move(uint16_t current_move);
 uint16_t pick_item(uint16_t current_item);
+/* Restricts the NEXT pick_item() call to ids 1..max_id shown as "#n" (no real
+ * name/description/icon -- 0 = unrestricted, the default every existing
+ * caller sees). The Gen-1/2 held-item field's own use (UX-parity audit, Guy
+ * 2026-09-07); see source/pdna_pick.c's header comment on g_item_max_id for
+ * why this is not merely a ceiling the way pick_species_set_max_dex() is.
+ * Set it right before the call and clear it (pass 0) right after. */
+void     pick_item_set_gen1_2_max(uint16_t max_id);
 uint8_t  pick_nature(uint8_t current_nature);
 int      pick_unown_form(int current_form);     /* 0..27 = A..?, -1 cancel */
 

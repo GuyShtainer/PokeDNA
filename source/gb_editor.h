@@ -42,6 +42,9 @@ enum {
   GBE_K_NUM = 0,   /* d-pad adjusts; A jumps to an extreme (see gbe_press)             */
   GBE_K_TEXT,      /* A opens the keyboard; commit through gbe_set_text                 */
   GBE_K_MOVE,      /* A opens the move picker; commit through gbe_set_move              */
+  GBE_K_ITEM,      /* A opens the (restricted, "#n") item picker; d-pad still numeric-
+                     * steps the raw byte, same dual-input shape as GBE_K_MOVE (UX-parity
+                     * audit, Guy 2026-09-07) -- see pdna_gbedit.c's own GBE_K_ITEM branch */
   GBE_K_SHOW       /* read-only row (the derived HP DV)                                 */
 };
 

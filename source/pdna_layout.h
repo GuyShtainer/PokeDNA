@@ -144,7 +144,12 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_LBL_PASTE_HERE  "PASTE HERE"
 #define PDNA_LBL_CANCEL      "CANCEL"
 #define PDNA_LBL_VIEW        "VIEW"           /* read-only popup only, source not editable */
-#define PDNA_LBL_MOVE_TO     "MOVE TO"        /* read-only popup, GB session S3 only */
+/* PDNA_LBL_MOVE_TO ("MOVE TO") used to live here -- the GB read-only popup's
+ * own bespoke wording for its move-to-another-box row. Removed (UX-parity
+ * audit, Guy 2026-09-07): that row now reuses PDNA_LBL_MOVE_TO_BOX, Gen 3's
+ * OWN label for the same shape of action (a destination-box picker), rather
+ * than a third, GB-only phrasing -- see pdna_main.c's app_mon_menu_readonly
+ * for the reasoning. */
 #define PDNA_LBL_PASTE_GB    "PASTE (GB)"     /* read-only popup, empty GB cell, S5-B */
 
 /* Every label either action popup can show, so the host test measures the strings the
@@ -155,7 +160,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
   X(PDNA_LBL_DUPLICATE) X(PDNA_LBL_TO_DAYCARE) X(PDNA_LBL_TO_GAME)                    \
   X(PDNA_LBL_EXPORT_PK) X(PDNA_LBL_TAKE_ITEM) X(PDNA_LBL_GIVE_ITEM)                   \
   X(PDNA_LBL_RELEASE) X(PDNA_LBL_CREATE) X(PDNA_LBL_PASTE_HERE) X(PDNA_LBL_CANCEL)    \
-  X(PDNA_LBL_VIEW) X(PDNA_LBL_MOVE_TO) X(PDNA_LBL_PASTE_GB)
+  X(PDNA_LBL_VIEW) X(PDNA_LBL_PASTE_GB)
 
 /* Read-only source popup: the header grows by one line per explanatory line above the
  * rows (the source's note, and the per-record "why this one is locked"). */
@@ -839,20 +844,30 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * storage box (gb_session.h's own contract) -- the party pseudo-box is refused before
  * gb_paste_write() ever touches the card. */
 #define PDNA_SIDECAR_PARTY_L1        "Storage boxes only, not the party."
-/* BACKLOG #50 (CREATE): pdna_gen12.c's gb_create_hook and its two pickers
- * (gb_create_pick_species/gb_create_pick_level). Short by the same convention
- * as the sidecar titles just above (msg_wait's own ui_ptext_fit clips a long
- * one safely regardless, but these are sized to not need it). */
+/* BACKLOG #50 (CREATE): pdna_gen12.c's gb_create_hook and its refusal panels.
+ * Short by the same convention as the sidecar titles just above (msg_wait's
+ * own ui_ptext_fit clips a long one safely regardless, but these are sized
+ * to not need it). The species/level picker's OWN strings that used to live
+ * here (PDNA_GBCREATE_SPECIES_TITLE/FOOT, PDNA_GBCREATE_LEVEL_TITLE/FOOT)
+ * are gone along with the two bespoke pickers they belonged to
+ * (gb_create_pick_species/gb_create_pick_level, BACKLOG #50 UX-parity,
+ * Guy 2026-09-07): the create flow now opens pdna_pick.c's own pick_species()
+ * (restricted, see pick_species_set_max_dex()) and computes the level via
+ * rom_gblearn_min_level() instead of asking for either. */
 #define PDNA_GBCREATE_TITLE          "CAN'T CREATE"
 #define PDNA_GBCREATE_NOROM_L1       "Needs your Gen 1/2 ROM"
 #define PDNA_GBCREATE_NOROM_L2       "(Settings > Game ROM)."
 #define PDNA_GBCREATE_FULL_TITLE     "BOX FULL"
 #define PDNA_GBCREATE_FULL_L1        "No empty slot here."
 #define PDNA_GBCREATE_BUILDFAIL_L1   "Could not build a legal record."
-#define PDNA_GBCREATE_SPECIES_TITLE  "CREATE - SPECIES"
-#define PDNA_GBCREATE_SPECIES_FOOT   "A pick  B cancel"
-#define PDNA_GBCREATE_LEVEL_TITLE    "CREATE - LEVEL"
-#define PDNA_GBCREATE_LEVEL_FOOT     "L/R +-10  A ok  B cancel"
+/* pdna_pick.c's pick_item(), restricted mode (UX-parity audit, Guy 2026-09-07:
+ * the GB editor's item row now opens the SAME picker the Gen-3 flow uses,
+ * pick_item_set_gen1_2_max(), instead of stepping a raw byte). Gen-1/2 items
+ * have no name source yet -- see that function's own header comment for why
+ * "#n" and this placeholder, not a real Gen-3 name/description, are correct
+ * here rather than merely a gap. */
+#define PDNA_ITEM_NO_DESC_YET  "No description yet (ROM names coming)"
+#define PDNA_ITEM_GB_FOOT      "A pick  SEL find  B cancel"
 #define PDNA_SIDECAR_MKDIR_TITLE     "SIDECAR FOLDER"
 #define PDNA_SIDECAR_FULL_TITLE      "SIDECAR FULL"
 #define PDNA_SIDECAR_FULL_L1         "Too many clones of this Pokemon."

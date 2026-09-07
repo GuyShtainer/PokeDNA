@@ -4139,13 +4139,30 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
     bool editable = g_src_ops && (g_src_ops->editable ? g_src_ops->editable(rec)
                                                        : (g_src_ops->edit && app_can_edit()));
     lab[n] = editable ? PDNA_LBL_VIEW_EDIT : PDNA_LBL_VIEW; act[n++] = RO_VIEW;
-    /* MOVE TO / RELEASE are the GB session's own in-place pipeline (pdna_gen12.c), never
-     * the Gen-3 one: each edits the Game Boy record by address, never the converted copy
-     * this menu was handed. */
-    if (g_src_ops && g_src_ops->move)    { lab[n] = PDNA_LBL_MOVE_TO;   act[n++] = RO_MOVE; }
-    if (g_src_ops && g_src_ops->release) { lab[n] = PDNA_LBL_RELEASE;   act[n++] = RO_RELEASE; }
+    /* UX-parity audit (Guy 2026-09-07): "the GB subset must use the SAME
+     * labels and relative order as Gen 3, with rows that do not apply
+     * omitted, not renamed". app_mon_menu's own occupied-mon order (below,
+     * A_SUMMARY..A_RELEASE) is Summary, Item, Legality, [Hatch], Move/ToBox,
+     * Copy, ..., Release LAST (right before Cancel) -- this row list used to
+     * read View/Edit, MOVE TO, RELEASE, LEGALITY, COPY, i.e. Release 2nd and
+     * Legality 4th, the reverse of Gen 3's own relative order. Reordered to
+     * match: Legality right after the summary row (Gen 3 has no separate
+     * Item row here to sit between them), then Move, then Copy, then Release
+     * last -- same rows, same labels, just Gen 3's own order. MOVE TO /
+     * RELEASE stay the GB session's own in-place pipeline (pdna_gen12.c),
+     * never the Gen-3 one: each edits the Game Boy record by address, never
+     * the converted copy this menu was handed. PDNA_LBL_MOVE_TO ("MOVE TO")
+     * is ALSO relabelled to PDNA_LBL_MOVE_TO_BOX ("MOVE TO BOX") here: GB's
+     * own move (a destination-BOX picker, gb_move_hook -> gb_pick_box) is
+     * the same shape as Gen 3's PARTY-context "move to box" action, not its
+     * BOX-context "move" (an in-box reposition GB has no equivalent of) --
+     * so Gen 3's OWN matching label is the correct one to reuse, not a third,
+     * bespoke wording. The old PDNA_LBL_MOVE_TO macro (pdna_layout.h) is
+     * deleted along with its last caller. */
     lab[n] = PDNA_LBL_LEGALITY; act[n++] = RO_LEGAL;
+    if (g_src_ops && g_src_ops->move) { lab[n] = PDNA_LBL_MOVE_TO_BOX; act[n++] = RO_MOVE; }
     if (!locked) { lab[n] = PDNA_LBL_COPY; act[n++] = RO_COPY; }
+    if (g_src_ops && g_src_ops->release) { lab[n] = PDNA_LBL_RELEASE;   act[n++] = RO_RELEASE; }
   }
   lab[n] = PDNA_LBL_CANCEL;   act[n++] = RO_CANCEL;
 

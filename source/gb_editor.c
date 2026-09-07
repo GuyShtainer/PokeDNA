@@ -74,6 +74,7 @@ const char* gbe_label_of(const GbEditMon* e, int f) {
 int gbe_kind(int f) {
   if (f == GBE_NICK || f == GBE_OT) return GBE_K_TEXT;
   if (f >= GBE_MV0 && f <= GBE_MV3) return GBE_K_MOVE;
+  if (f == GBE_ITEM) return GBE_K_ITEM;
   if (f == GBE_DVH) return GBE_K_SHOW;
   return GBE_K_NUM;
 }
@@ -292,6 +293,12 @@ bool gbe_press(GbEditMon* e, int f) {
   if (!e) return false;
   switch (f) {
     case GBE_LEVEL:  return gb_set_level(e, (uint8_t)(gb_get_level(e) < 100 ? 100 : 1));
+    /* GBE_ITEM is GBE_K_ITEM now, not GBE_K_NUM (UX-parity audit, Guy 2026-09-
+     * 07): pdna_gbedit.c's GBE_K_ITEM branch opens the restricted item picker
+     * on A instead of ever reaching this case -- kept anyway as the pure-C
+     * "clear it" fallback this switch already offers every other field
+     * (a caller that presses without going through the kind dispatch still
+     * gets a defined, useful answer, not a silent no-op). */
     case GBE_ITEM:   return gb_get_held_item(e) ? gb_set_held_item(e, 0) : false;
     case GBE_FRIEND: return gb_set_friendship(e, (uint8_t)(gb_get_friendship(e) == 255 ? 0 : 255));
     case GBE_GENDER: return gbe_flip_gender(e);

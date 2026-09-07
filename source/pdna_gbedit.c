@@ -208,6 +208,24 @@ void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned) {
     else                          msg_wait(PDNA_GBEDIT_MOVE_DUP_TITLE, UI_WARN, PDNA_GBEDIT_MOVE_DUP_L1, PDNA_GBEDIT_MOVE_DUP_L2);
     return;
   }
+  /* UX-parity audit (Guy 2026-09-07): the held-item field used to LEFT/RIGHT-
+   * step a raw byte with no picker at all -- A now opens the SAME pick_item()
+   * screen the Gen-3 flow uses (app_quick_item, pdna_main.c), restricted to
+   * ids 1..255 shown as "#n" (pick_item_set_gen1_2_max()'s own header comment
+   * has the full "why not real names yet" reasoning). Held item has no
+   * move-style validation to fail (any byte is structurally legal), so
+   * unlike GBE_K_MOVE there is no refusal message to show. gb_get_held_item/
+   * gb_set_held_item are gb_edit.h calls, reachable here because gb_editor.h
+   * includes that header itself -- no new wrapper needed, unlike gbe_set_move
+   * (which validates against gb_max_move/move_taken; held_item needs neither). */
+  if (kind == GBE_K_ITEM) {
+    pick_item_set_gen1_2_max(255);
+    uint16_t id = pick_item(gb_get_held_item(e));
+    pick_item_set_gen1_2_max(0);
+    if (id == 0xFFFF) return;
+    if (gb_set_held_item(e, (uint8_t)id)) snd_edit(); else snd_deny();
+    return;
+  }
   if (kind == GBE_K_NUM) { if (gbe_press(e, f)) snd_edit(); else snd_deny(); return; }
   snd_deny();
 }
