@@ -31,6 +31,8 @@ enum {
   GBE_PP0, GBE_PP1, GBE_PP2, GBE_PP3,            /* current PP                          */
   GBE_DVA, GBE_DVD, GBE_DVS, GBE_DVC,            /* Atk / Def / Spe / Spc DVs           */
   GBE_DVH,                                       /* HP DV: DERIVED, shown, not editable */
+  GBE_GENDER,                                    /* Gen 2 only, gender-having species only;
+                                                   * DERIVED from the Atk DV -- see gbe_adjust */
   GBE_SE0, GBE_SE1, GBE_SE2, GBE_SE3, GBE_SE4,   /* stat exp HP/Atk/Def/Spe/Spc        */
   GBE_NUM
 };
@@ -47,6 +49,15 @@ enum {
 
 /* The rows this record shows, in order. Returns the count (<= GBE_NUM). */
 int gbe_fields(const GbEditMon* e, uint8_t out[GBE_NUM]);
+
+/* True iff this record shows GBE_GENDER: Gen 2 only, a resolvable species (dex != 0),
+ * and a gender_ratio that is neither all-male (0x00) nor all-female (0xFE) nor
+ * genderless (0xFF) -- those three have no Attack-DV threshold to flip, so there is
+ * nothing a Gender row could ever change. Gen 1 never shows it: the game itself has no
+ * gender concept, so there is nothing here to edit (see gbe_header's own comment on
+ * what a VC transfer would derive). Exposed because pdna_gbsummary.c's cards hard-code
+ * their own rows rather than iterating gbe_fields() and need the identical gate. */
+bool gbe_has_gender_row(const GbEditMon* e);
 
 const char* gbe_label(int f);
 int         gbe_kind(int f);

@@ -160,9 +160,13 @@ bool gbedit_confirm(const GbEditMon* e) {
  * so editing any of the four stored DVs here moves `e` to a key gbsc_find() will never
  * associate with its current sidecar entry again -- an edit that silently orphans it.
  * GBE_DVH (the derived HP DV) is READ-ONLY (gb_editor.h: "shown, not editable") and is
- * deliberately excluded -- it cannot itself be the edit that orphans anything. */
+ * deliberately excluded -- it cannot itself be the edit that orphans anything.
+ *
+ * GBE_GENDER IS included: flipping it moves the Attack DV exactly like editing GBE_DVA
+ * directly would (gb_editor.c's gbe_flip_gender calls the same gb_set_dv), so it is the
+ * same key-orphaning edit wearing a friendlier control and must warn identically. */
 bool gbedit_is_dv_field(int f) {
-  return f == GBE_DVA || f == GBE_DVD || f == GBE_DVS || f == GBE_DVC;
+  return f == GBE_DVA || f == GBE_DVD || f == GBE_DVS || f == GBE_DVC || f == GBE_GENDER;
 }
 
 /* Shown once per editor visit (has_sidecar's own `*warned` latch), on the FIRST

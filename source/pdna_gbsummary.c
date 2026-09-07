@@ -243,11 +243,18 @@ static void gbsum_draw_left_unknown(void) {
 
 /* ---- Card 0: INFO --------------------------------------------------------------
  *
- * Species/type/gender/shiny/egg/Pokerus-tag are NOT repeated here: the shared
- * left panel already shows all of them for the CONVERTED mon, which resolves to
- * the same species/level/name/gender this card edits. Nickname and level keep
- * their own rows because this is where the edit CONTROL lives -- the left panel
- * only displays what they resolve to, it is not itself editable. */
+ * Species/type/shiny/egg/Pokerus-tag are NOT repeated here: the shared left panel
+ * already shows all of them for the CONVERTED mon, which resolves to the same
+ * species/level/name/gender this card edits. Nickname and level keep their own
+ * rows because this is where the edit CONTROL lives -- the left panel only
+ * displays what they resolve to, it is not itself editable.
+ *
+ * GENDER (BACKLOG #51) is the one exception: the left panel shows the sign but
+ * offers no way to change it, so a directly-editable Gender row lives here,
+ * gated by gbe_has_gender_row() exactly like gbe_fields() gates it for the flat
+ * editor -- Gen 2 only, and only for a species with a real (non-fixed,
+ * non-genderless) gender ratio. LEFT/RIGHT/A all flip it (gb_editor.c's
+ * gbe_flip_gender): there is no "up"/"down" for a two-state field. */
 
 static void field_row(const GbEditMon* e, int field, const char* label, int y,
                       GbSlot* slot, int* n) {
@@ -268,6 +275,9 @@ static void card_info(const GbEditMon* e, GbSlot* slot, int* n) {
 
   field_row(e, GBE_NICK, PDNA_GBSUM_LBL_NAME, y, slot, n); y += ROW_H;
   field_row(e, GBE_LEVEL, PDNA_GBSUM_LBL_LV, y, slot, n); y += ROW_H;
+  if (gbe_has_gender_row(e)) {
+    field_row(e, GBE_GENDER, PDNA_GBSUM_LBL_GENDER, y, slot, n); y += ROW_H;
+  }
   field_row(e, GBE_OT, PDNA_GBSUM_LBL_OT, y, slot, n); y += ROW_H;
 
   siprintf(b, PDNA_GBSUM_ID_FMT, (unsigned)gb_get_otid(e));

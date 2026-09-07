@@ -655,12 +655,19 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * that already lives on the shared left panel (species, level, gender, type,
  * shiny/egg/Pokerus tag — pdna_summary_draw_left) is NOT repeated here; nickname
  * and level keep their rows because THIS is where the edit control lives, the
- * left panel only displays what they resolve to. */
+ * left panel only displays what they resolve to. Gender is the one exception
+ * (BACKLOG #51): the left panel shows the sign but has no control for it (its
+ * mon is a throwaway conversion, gbsum_convert_left), so a Gender row lives
+ * here too, right where the edit control belongs — the SAME "displayed
+ * elsewhere, edited here" split the rest of this comment describes. */
 #define PDNA_GBSUM_VAL_DX       52
 #define PDNA_GBSUM_LBL_NAME    "Name"
 #define PDNA_GBSUM_LBL_OT      "OT"
 #define PDNA_GBSUM_LBL_ID      "ID"
 #define PDNA_GBSUM_LBL_LV      "Lv"
+#define PDNA_GBSUM_LBL_GENDER  "Gender"      /* BACKLOG #51, Gen 2 gender-having species
+                                              * only (gbe_has_gender_row) — 6 cols, exactly
+                                              * the 48 px label budget above */
 #define PDNA_GBSUM_LBL_ITEM    "Item"
 #define PDNA_GBSUM_LBL_FRIEND  "Friend"
 #define PDNA_GBSUM_LBL_EGGC    "Hatch"       /* the SAME GBE_FRIEND byte, on an Egg

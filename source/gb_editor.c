@@ -30,14 +30,35 @@ static const char* const LABEL[GBE_NUM] = {
   "PP 1", "PP 2", "PP 3", "PP 4",
   "DV Atk", "DV Def", "DV Spe", "DV Spc",
   "DV HP",
+  "Gender",
   "StatExp HP", "StatExp Atk", "StatExp Def", "StatExp Spe", "StatExp Spc",
 };
+
+/* dex<=251 IS the Gen-3 internal species index for the whole Gen-1/2 range: Gen 3 kept
+ * the original 251 in National-Dex order and only assigned NEW internal ids (252..411,
+ * Hoenn-ordered) to the Hoenn-native species (data_tables.h's own header: "SPECIES are
+ * keyed by the INTERNAL Gen-3 index (1..411, Hoenn-ordered)"). So pk_species_gender_ratio
+ * -- which the comment there marks "internal" -- takes a bare Gen-2 dex number unchanged
+ * here exactly as gb_dv_effects_of() above already does; there is no separate map to look
+ * up. Gen-2 gender ratios are therefore IDENTICAL to Gen 3's for every one of the 251
+ * species both generations share (same fact gb_edit.h's GbGen1Base comment relies on for
+ * base stats). */
+bool gbe_has_gender_row(const GbEditMon* e) {
+  uint16_t dex;
+  uint8_t ratio;
+  if (!e || e->gen != GB_GEN2) return false;
+  dex = gb_get_species_dex(e);
+  if (dex == 0) return false;
+  ratio = pk_species_gender_ratio(dex);
+  return ratio != 0x00u && ratio != 0xFEu && ratio != 0xFFu;
+}
 
 int gbe_fields(const GbEditMon* e, uint8_t out[GBE_NUM]) {
   int n = 0;
   if (!e || !out) return 0;
   for (int f = 0; f < GBE_NUM; f++) {
     if ((f == GBE_ITEM || f == GBE_FRIEND) && e->gen != GB_GEN2) continue;
+    if (f == GBE_GENDER && !gbe_has_gender_row(e)) continue;
     out[n++] = (uint8_t)f;
   }
   return n;
@@ -88,6 +109,14 @@ void gbe_value(const GbEditMon* e, int f, char* out, int cap) {
     }
     case GBE_FRIEND: put_uint(out, cap, &pos, gb_get_friendship(e)); return;
     case GBE_DVH:    put_uint(out, cap, &pos, gb_get_dv(e, GB_HP)); return;
+    case GBE_GENDER: {
+      GbDvEffects fx;
+      gb_dv_effects_of(e, &fx);
+      /* gbe_has_gender_row() already excludes genderless (fx.gender == 2) from ever
+       * reaching this row; a defensive "M" if it somehow did beats printing nothing. */
+      put_str(out, cap, &pos, fx.gender == 1 ? "F" : "M");
+      return;
+    }
     default: break;
   }
 
@@ -143,6 +172,58 @@ static bool step_move(GbEditMon* e, int i, int dir) {
   return gb_set_move(e, i, (uint8_t)v);
 }
 
+/* GBE_GENDER has no "up"/"down": with only two states, LEFT, RIGHT and A all do the
+ * SAME thing -- flip to the other gender -- by moving the Attack DV (the only DV
+ * gender is derived from, gen2_save.c's g2_gender_from_dv) to the NEAREST value that
+ * (a) yields the other gender and (b) leaves shininess exactly as it was.
+ *
+ * (b) is one equality test, not two special cases, because gb_dv_effects() is itself
+ * the single source of truth for both properties: trying every candidate Atk DV 0..15
+ * through it and keeping only the ones whose fx.shiny matches today's fx.shiny
+ * automatically reproduces both halves of the brief this implements --
+ *   - shiny stays shiny: a shiny mon's Def/Spe/Spc are already 10/10/10 (g2_dv_shiny),
+ *     so a candidate keeps fx.shiny true only by ALSO having its Atk bit 1 set, i.e.
+ *     landing back in {2,3,6,7,10,11,14,15};
+ *   - a non-shiny mon never BECOMES shiny by accident: when Def/Spe/Spc are not all
+ *     10 the filter is a no-op (fx.shiny is false for every candidate, same as today),
+ *     and when they ARE all 10 -- the one configuration where the wrong Atk value
+ *     would create a shiny -- the filter excludes exactly that set.
+ * No separate "is it shiny-eligible" check is needed; the derivation function already
+ * encodes it.
+ *
+ * Ties (two candidates equally far from the current DV) keep the SMALLER value: the
+ * loop only replaces `best` on a STRICTLY shorter distance, and runs v ascending. */
+static bool gbe_flip_gender(GbEditMon* e) {
+  uint8_t cur[4];
+  uint16_t dex;
+  uint8_t ratio;
+  GbDvEffects cur_fx;
+  int target, best = -1, best_dist = 16;
+
+  cur[0] = gb_get_dv(e, GB_ATK);
+  cur[1] = gb_get_dv(e, GB_DEF);
+  cur[2] = gb_get_dv(e, GB_SPE);
+  cur[3] = gb_get_dv(e, GB_SPC);
+  dex   = gb_get_species_dex(e);
+  ratio = dex ? pk_species_gender_ratio(dex) : 0xFFu;
+
+  gb_dv_effects(cur, dex, ratio, &cur_fx);
+  if (cur_fx.gender != 0 && cur_fx.gender != 1) return false;  /* no real gender here */
+  target = cur_fx.gender ^ 1;
+
+  for (int v = 0; v <= 15; v++) {
+    uint8_t cand[4]; GbDvEffects fx; int dist;
+    cand[0] = (uint8_t)v; cand[1] = cur[1]; cand[2] = cur[2]; cand[3] = cur[3];
+    gb_dv_effects(cand, dex, ratio, &fx);
+    if (fx.gender != target || fx.shiny != cur_fx.shiny) continue;
+    dist = v - (int)cur[0]; if (dist < 0) dist = -dist;
+    if (dist < best_dist) { best_dist = dist; best = v; }
+  }
+  if (best < 0) return false;   /* no candidate: cannot happen for a real gender_ratio
+                                  * byte (see gbe_has_gender_row), refuse rather than guess */
+  return gb_set_dv(e, GB_ATK, (uint8_t)best);
+}
+
 bool gbe_adjust(GbEditMon* e, int f, int dir, bool big) {
   if (!e || (dir != -1 && dir != 1)) return false;
   int step = big ? 10 : 1;
@@ -168,6 +249,7 @@ bool gbe_adjust(GbEditMon* e, int f, int dir, bool big) {
       if (v == gb_get_friendship(e)) return false;
       return gb_set_friendship(e, (uint8_t)v);
     }
+    case GBE_GENDER: return gbe_flip_gender(e);
     default: break;
   }
 
@@ -212,6 +294,7 @@ bool gbe_press(GbEditMon* e, int f) {
     case GBE_LEVEL:  return gb_set_level(e, (uint8_t)(gb_get_level(e) < 100 ? 100 : 1));
     case GBE_ITEM:   return gb_get_held_item(e) ? gb_set_held_item(e, 0) : false;
     case GBE_FRIEND: return gb_set_friendship(e, (uint8_t)(gb_get_friendship(e) == 255 ? 0 : 255));
+    case GBE_GENDER: return gbe_flip_gender(e);
     default: break;
   }
   if (f >= GBE_PPU0 && f <= GBE_PPU3) {
