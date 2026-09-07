@@ -105,6 +105,8 @@ typedef enum {
   GEN1W_ERR_TEXT,      /* a name held a glyph the Gen-1 charset cannot represent       */
   GEN1W_ERR_STRUCT,    /* count / terminator / species list is not self-consistent     */
   GEN1W_ERR_VERIFY,    /* it did not read back as intended — WRITE REFUSED             */
+  GEN1W_ERR_RANGE,     /* the write lands outside the header span, or on bytes this    */
+                       /* module reserves for gen1_write_apply / the checksum (P0)     */
 } Gen1WStatus;
 
 const char* gen1_write_status_text(Gen1WStatus st);
@@ -427,5 +429,47 @@ void gen1_write_fix_bank_checksums(uint8_t* img, int bank);
  */
 Gen1WStatus gen1_write_apply(uint8_t* img, uint32_t len, Gen1Save* s,
                              Gen1Op* op, Gen1WriteScratch* scratch);
+
+/* ------------------------------------------------------------------------- */
+/* The generic HEADER patch (BACKLOG #49 P0)                                  */
+/* ------------------------------------------------------------------------- */
+
+/* The Gen-1 twin of gen2_write.h's g2w_write_range — money, badges, the trainer ID, the
+ * player name, the dex flags, an event flag: anything that lives in the main checksummed
+ * block and is NOT a Pokemon. Nothing here ever reaches a box or the party; that stays
+ * gen1_write_apply's job (through gen1_blob_check + gen1_write_verify_op), so a header
+ * patch can never be the thing that skips the structural gate a Pokemon edit goes
+ * through.
+ *
+ * Refuses (docs/GEN12-PARITY-DESIGN.md §4.0, g2w_write_range's refusal set translated):
+ *   - an image that does not already parse as a Western R/B/Y save (GEN1W_ERR_SAVE);
+ *   - `off`/`off+n` outside [0x2598, 0x3522] (GEN1_OFF_PLAYER_NAME..the tile-animation
+ *     byte, i.e. GEN1_SUM_FIRST..GEN1_SUM_LAST — everything the main checksum covers,
+ *     nothing past it) — this alone already excludes both SRAM banks of stored boxes;
+ *   - any overlap with the party blob [GEN1_OFF_PARTY, +GEN1_PARTY_BYTES) or the open
+ *     box's live copy [GEN1_OFF_CURRENT_BOX, +GEN1_BOX_BYTES) — Pokemon change ONLY
+ *     through gen1_write_apply;
+ *   - any overlap with GEN1_OFF_CURRENT_NO — moving the open-box number without moving
+ *     its live copy silently discards a boxful at the next boot (the same reason
+ *     gen2_write.c refuses its current-box-number byte);
+ *   - a range wider than GEN1_WRITE_RANGE_MAX. No P1-P5 field is remotely this size (the
+ *     widest, the Gen-1 item bag body, is ~41 bytes; docs/GEN12-PARITY-DESIGN.md §4.2's
+ *     RAM-anchor table has nothing wider), and this file has no scratch parameter to
+ *     borrow a big rollback buffer from — hard convention #2 forbids a big buffer on the
+ *     IWRAM stack, so the snapshot below is a small fixed array, not one sized to the
+ *     whole (~4 KB) permitted window. A caller that genuinely needs to move more bytes
+ *     than this belongs on the list-surgery path, not here.
+ *
+ * On acceptance: writes `buf` to `img[off..off+n)`, refreshes the main checksum
+ * (gen1_write_fix_main_checksum — Gen 1 has no backup mirror to refresh, unlike Gen 2),
+ * re-opens the image, and refuses (restoring both the bytes and the checksum, GEN1W_ERR_
+ * VERIFY) unless it still parses — the same snapshot-and-restore shape
+ * gb_session.c's gen1_commit already uses for a box commit, applied to a plain byte
+ * range instead of a list blob. `s` is refreshed on success, exactly like
+ * gen1_write_apply. A no-op (the bytes already read back as `buf`) writes nothing at
+ * all, checksum included. */
+#define GEN1_WRITE_RANGE_MAX 64u
+Gen1WStatus gen1_write_range(uint8_t* img, uint32_t len, Gen1Save* s,
+                             uint32_t off, const uint8_t* buf, uint32_t n);
 
 #endif /* GEN1_WRITE_H */

@@ -492,6 +492,34 @@ GbsStatus gbs_move(GbSession* s, int from_box, int from_slot, int to_box, int* t
 }
 
 /* ============================================================================
+ * Generic field read/write (BACKLOG #49 P0, docs/GEN12-PARITY-DESIGN.md §4.0)
+ * ========================================================================== */
+
+GbsStatus gbs_read_field(GbSession* s, uint32_t off, void* buf, uint32_t n) {
+  if (!s || !s->open || !buf || !n) return GBS_ERR_ARG;
+  if (off > s->len || n > s->len - off) return GBS_ERR_ARG;
+  memcpy(buf, s->img + off, n);
+  return GBS_OK;
+}
+
+GbsStatus gbs_write_field(GbSession* s, uint32_t off, const void* buf, uint32_t n) {
+  if (!s || !s->open || !buf || !n) return GBS_ERR_ARG;
+  if (s->gen == GB_GEN1)
+    return map_gen1w(gen1_write_range(s->img, s->len, &s->g1, off,
+                                      (const uint8_t*)buf, n));
+  return map_g2w(g2w_write_range(&s->g2w, off, (const uint8_t*)buf, n));
+}
+
+GbsStatus gbs_finish(GbSession* s) {
+  if (!s || !s->open) return GBS_ERR_ARG;
+  /* Gen 1 has no backup mirror and no deferred checksum: gen1_write_range already fixed
+   * the main checksum and re-verified the image on every gbs_write_field call, so there
+   * is nothing left to close out. */
+  if (s->gen == GB_GEN1) return GBS_OK;
+  return map_g2w(g2w_finish(&s->g2w));
+}
+
+/* ============================================================================
  * S5-B — insert an already-built BOX record (gen3_to_gb's output), no conversion
  * ========================================================================== */
 

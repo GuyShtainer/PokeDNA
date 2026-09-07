@@ -737,6 +737,150 @@ static void test_integrity(const Image* base) {
   free(sc);
 }
 
+/* ------------------------------------------------------------------------- */
+/* 5b. gen1_write_range — the generic HEADER patch (BACKLOG #49 P0)           */
+/* ------------------------------------------------------------------------- */
+
+/* Money: 0x25F3, 3 B big-endian BCD, cap 999999 (docs/GEN12-PARITY-DESIGN.md §1.1,
+ * VERIFIED(4)). No reader in this tree decodes it yet (P1's trainer card is the next
+ * slice), so this test reads the raw bytes back rather than through a decoded API —
+ * exactly what gen1_write_range itself promises: the bytes it was handed, byte for
+ * byte, nothing more. */
+#define TEST_MONEY_OFF 0x25F3u
+
+static void test_write_range(const Image* base) {
+  printf("-- 5b. gen1_write_range: the generic header patch --\n");
+
+  /* ---- every refusal, on a fresh copy each time so one failure cannot mask another */
+  {
+    Image im = *base;
+    Gen1Save s;
+    const uint8_t v3[3] = { 0x12, 0x34, 0x56 };
+    Gen1WStatus st;
+    gen1_open(im.b, im.len, &s);
+
+    CHECK(gen1_write_range(NULL, im.len, &s, TEST_MONEY_OFF, v3, 3) == GEN1W_ERR_ARG,
+          "NULL img refused");
+    CHECK(gen1_write_range(im.b, im.len, NULL, TEST_MONEY_OFF, v3, 3) == GEN1W_ERR_ARG,
+          "NULL Gen1Save* refused");
+    CHECK(gen1_write_range(im.b, im.len, &s, TEST_MONEY_OFF, NULL, 3) == GEN1W_ERR_ARG,
+          "NULL buf refused");
+    CHECK(gen1_write_range(im.b, im.len, &s, TEST_MONEY_OFF, v3, 0) == GEN1W_ERR_ARG,
+          "n == 0 refused");
+    CHECK(gen1_write_range(im.b, GEN1_SAVE_SIZE - 1u, &s, TEST_MONEY_OFF, v3, 3)
+          == GEN1W_ERR_SIZE, "an image shorter than 32 KiB is refused");
+
+    CHECK(gen1_write_range(im.b, im.len, &s, GEN1_SUM_FIRST - 1u, v3, 1) == GEN1W_ERR_RANGE,
+          "one byte before 0x2598 is refused");
+    CHECK(gen1_write_range(im.b, im.len, &s, GEN1_SUM_LAST, v3, 2) == GEN1W_ERR_RANGE,
+          "a write ending one byte past 0x3522 is refused");
+    CHECK(gen1_write_range(im.b, im.len, &s, 0x0000u, v3, 1) == GEN1W_ERR_RANGE,
+          "SRAM bank 0 (well before the header) is refused");
+    CHECK(gen1_write_range(im.b, im.len, &s, GEN1_OFF_BANK2, v3, 1) == GEN1W_ERR_RANGE,
+          "the banked box SRAM (0x4000) is refused — outside [0x2598,0x3522] alone catches it");
+    CHECK(gen1_write_range(im.b, im.len, &s, GEN1_OFF_BANK3, v3, 1) == GEN1W_ERR_RANGE,
+          "the OTHER banked SRAM (0x6000) is refused the same way");
+
+    CHECK(gen1_write_range(im.b, im.len, &s, GEN1_OFF_PARTY, v3, 1) == GEN1W_ERR_RANGE,
+          "the party blob's first byte is refused");
+    CHECK(gen1_write_range(im.b, im.len, &s,
+                           GEN1_OFF_PARTY + GEN1_PARTY_BYTES - 1u, v3, 1) == GEN1W_ERR_RANGE,
+          "the party blob's last byte is refused");
+    CHECK(gen1_write_range(im.b, im.len, &s,
+                           GEN1_OFF_PARTY - 1u, v3, 2) == GEN1W_ERR_RANGE,
+          "a write straddling INTO the party blob is refused");
+
+    CHECK(gen1_write_range(im.b, im.len, &s, GEN1_OFF_CURRENT_BOX, v3, 1) == GEN1W_ERR_RANGE,
+          "the open box's live copy, first byte, is refused");
+    CHECK(gen1_write_range(im.b, im.len, &s,
+                           GEN1_OFF_CURRENT_BOX + GEN1_BOX_BYTES - 1u, v3, 1) == GEN1W_ERR_RANGE,
+          "the open box's live copy, last byte, is refused");
+
+    CHECK(gen1_write_range(im.b, im.len, &s, GEN1_OFF_CURRENT_NO, v3, 1) == GEN1W_ERR_RANGE,
+          "the current-box-number byte is refused (moving it strands the live copy)");
+
+    {
+      uint8_t big[GEN1_WRITE_RANGE_MAX + 1u];
+      memset(big, 0xAA, sizeof big);
+      CHECK(gen1_write_range(im.b, im.len, &s, GEN1_OFF_PLAYER_NAME, big, sizeof big)
+            == GEN1W_ERR_RANGE, "a range wider than GEN1_WRITE_RANGE_MAX is refused");
+    }
+
+    {
+      /* Isolated copy: this is the one refusal that starts by deliberately breaking a
+       * byte, so it must not be the same buffer the "nothing changed" check below relies
+       * on being pristine end to end. */
+      Image bad = im;
+      bad.b[GEN1_OFF_CHECKSUM] ^= 0xFFu;            /* break the save first */
+      st = gen1_write_range(bad.b, bad.len, &s, TEST_MONEY_OFF, v3, 3);
+      CHECK(st == GEN1W_ERR_SAVE,
+            "a save whose checksum does not already validate is refused (got %s)",
+            gen1_write_status_text(st));
+    }
+
+    CHECK(memcmp(im.b, base->b, im.len) == 0,
+          "not one of the refusals above changed a single byte");
+  }
+
+  /* ---- the round trip: write money, re-open, read back, checksum valid ---- */
+  {
+    Image im = *base;
+    Gen1Save s;
+    const uint8_t want[3] = { 0x12, 0x34, 0x56 };   /* 123456, well under the 999999 cap */
+    Gen1Save after;
+    Range ok[1];
+
+    gen1_open(im.b, im.len, &s);
+    CHECK(gen1_write_range(im.b, im.len, &s, TEST_MONEY_OFF, want, 3) == GEN1W_OK,
+          "money write accepted");
+
+    ok[0].from = TEST_MONEY_OFF; ok[0].to = TEST_MONEY_OFF + 3u; ok[0].why = "money";
+    /* Every differing byte must be either the money field or the checksum
+     * (0x3523, refreshed by every accepted write) — checked directly below rather than
+     * through diff_accounted/ok[], so the checksum's own known-fixed offset stays
+     * explicit instead of folded into a second `ok` range. */
+    {
+      bool clean = true;
+      uint32_t o;
+      for (o = 0; o < im.len; o++) {
+        if (im.b[o] == base->b[o]) continue;
+        if (o == GEN1_OFF_CHECKSUM) continue;
+        if (o >= ok[0].from && o < ok[0].to) continue;
+        clean = false;
+        printf("  !! money write: unexplained change at 0x%04X (%02X -> %02X)\n",
+               o, base->b[o], im.b[o]);
+      }
+      CHECK(clean, "a money write changes ONLY the money field and the main checksum");
+    }
+    CHECK(memcmp(im.b + TEST_MONEY_OFF, want, 3) == 0, "the money bytes read back exactly");
+
+    CHECK(gen1_open(im.b, im.len, &after) == GEN1_OK, "the image still parses after the write");
+    CHECK(after.checksum_stored == after.checksum_calc, "the main checksum validates");
+    CHECK(s.checksum_stored == after.checksum_stored && s.checksum_calc == after.checksum_calc,
+          "*s was refreshed to match the image on success");
+
+    /* re-open from scratch (a THIRD parse, independent of `s`/`after`) and read the bytes
+     * back through gen1_write_range's own sibling read path — there isn't a decoded money
+     * reader yet, so this is the direct byte check the primitive itself promises. */
+    {
+      Gen1Save fresh;
+      CHECK(gen1_open(im.b, im.len, &fresh) == GEN1_OK, "a fresh, independent re-open also parses");
+      CHECK(memcmp(im.b + TEST_MONEY_OFF, want, 3) == 0,
+            "…and the money bytes are still exactly what was written");
+    }
+
+    /* a second write of the SAME value must be a true no-op: not the bytes, not the
+     * checksum, matching gen1_write_apply's own "open the editor and press B" rule. */
+    {
+      Image im2 = im;
+      CHECK(gen1_write_range(im2.b, im2.len, &after, TEST_MONEY_OFF, want, 3) == GEN1W_OK,
+            "writing the same money value again is accepted");
+      CHECK(memcmp(im2.b, im.b, im2.len) == 0,
+            "…and changes NOTHING AT ALL — checksum included");
+    }
+  }
+}
+
 /* 6. The gates fire. Each of these would be a silently corrupted save. */
 static void test_gates_fire(const Image* base) {
   Gen1WriteScratch* sc = malloc(sizeof *sc);
@@ -1026,6 +1170,7 @@ int main(void) {
   test_delete(&base);
   test_insert(&base);
   test_integrity(&base);
+  test_write_range(&base);
   test_gates_fire(&base);
 
   printf("\ngen1_write test: %d checks, %d failure(s)\n", g_check, g_fail);

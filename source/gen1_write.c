@@ -34,6 +34,8 @@ const char* gen1_write_status_text(Gen1WStatus st) {
     case GEN1W_ERR_TEXT:     return "that name has a character Gen 1 cannot store";
     case GEN1W_ERR_STRUCT:   return "the box's count/species list is inconsistent";
     case GEN1W_ERR_VERIFY:   return "it did not read back as intended — write refused";
+    case GEN1W_ERR_RANGE:    return "outside the header span, or on bytes this module "
+                                    "reserves for a Pokemon edit or the checksum";
     default:                 return "?";
   }
 }
@@ -743,4 +745,62 @@ Gen1WStatus gen1_write_apply(uint8_t* img, uint32_t len, Gen1Save* s,
   }
   *s = cur;                                    /* the handle now matches the image */
   return GEN1W_OK;
+}
+
+/* ------------------------------------------------------------------------- */
+/* The generic HEADER patch (BACKLOG #49 P0)                                  */
+/* ------------------------------------------------------------------------- */
+
+static bool ranges_overlap(uint32_t a0, uint32_t a1, uint32_t b0, uint32_t b1) {
+  return a0 <= b1 && b0 <= a1;
+}
+
+Gen1WStatus gen1_write_range(uint8_t* img, uint32_t len, Gen1Save* s,
+                             uint32_t off, const uint8_t* buf, uint32_t n) {
+  Gen1Save cur, after;
+  uint32_t last;
+  uint8_t snap[GEN1_WRITE_RANGE_MAX];
+  uint8_t save_checksum;
+
+  if (!img || !s || !buf || !n) return GEN1W_ERR_ARG;
+  if (n > GEN1_WRITE_RANGE_MAX) return GEN1W_ERR_RANGE;
+  if (len < GEN1_SAVE_SIZE) return GEN1W_ERR_SIZE;
+  if (off + n < off) return GEN1W_ERR_RANGE;             /* unsigned wraparound guard */
+  last = off + n - 1u;
+
+  /* Never write into a save we do not already understand — same rule gen1_write_apply
+   * opens with; `s` is treated as OUTPUT, refreshed on success, never trusted as input. */
+  if (gen1_open(img, len, &cur) != GEN1_OK) return GEN1W_ERR_SAVE;
+
+  /* g2w_write_range's refusal set, translated (source/gen2_write.c write_patch /
+   * g2w_write_range; docs/GEN12-PARITY-DESIGN.md §4.0). Confined to the main
+   * checksummed block alone: that single bound already excludes both SRAM box banks
+   * (0x4000.. / 0x6000..), so there is no separate per-box loop to keep in step with
+   * gen1_write_targets the way gen2_write.c must for its 14 Gen-2 boxes. */
+  if (off < GEN1_SUM_FIRST || last > GEN1_SUM_LAST) return GEN1W_ERR_RANGE;
+  if (ranges_overlap(off, last, GEN1_OFF_PARTY, GEN1_OFF_PARTY + GEN1_PARTY_BYTES - 1u))
+    return GEN1W_ERR_RANGE;
+  if (ranges_overlap(off, last, GEN1_OFF_CURRENT_BOX, GEN1_OFF_CURRENT_BOX + GEN1_BOX_BYTES - 1u))
+    return GEN1W_ERR_RANGE;
+  if (ranges_overlap(off, last, GEN1_OFF_CURRENT_NO, GEN1_OFF_CURRENT_NO))
+    return GEN1W_ERR_RANGE;
+
+  /* A no-op writes NOTHING — not the bytes, not the checksum — matching
+   * gen1_write_apply's own rule ("open the editor and press B" must not alter the file). */
+  if (memcmp(img + off, buf, n) == 0) { *s = cur; return GEN1W_OK; }
+
+  memcpy(snap, img + off, n);                  /* the rollback copy                  */
+  save_checksum = img[GEN1_OFF_CHECKSUM];
+
+  memcpy(img + off, buf, n);
+  gen1_write_fix_main_checksum(img);           /* Gen 1 has no backup mirror to fix   */
+
+  if (gen1_open(img, len, &after) == GEN1_OK) {
+    *s = after;                                /* the handle now matches the image   */
+    return GEN1W_OK;
+  }
+
+  memcpy(img + off, snap, n);                  /* put every byte back, checksum too  */
+  img[GEN1_OFF_CHECKSUM] = save_checksum;
+  return GEN1W_ERR_VERIFY;
 }

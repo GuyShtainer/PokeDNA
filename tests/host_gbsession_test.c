@@ -955,6 +955,77 @@ static void rejects_garbage(void) {
         "a NULL image is refused");
 }
 
+/* ============================================================================
+ * gbs_read_field / gbs_write_field / gbs_finish (BACKLOG #49 P0)
+ * ========================================================================== */
+
+/* The lifted API's whole point: the SAME three calls work across both generations. Money
+ * (docs/GEN12-PARITY-DESIGN.md §1.1, VERIFIED(4)): Red/Blue/Yellow 0x25F3 (3 B BE BCD),
+ * Gold/Silver 0x23DB (3 B BE binary) — round-tripped here as raw bytes (this tree has no
+ * decoded money reader yet; P1's trainer card is the next slice), which is exactly the
+ * primitive's own promise: the bytes it was handed, back out unchanged. */
+static void test_field_write(const char* file, uint8_t expect_gen, uint32_t money_off) {
+  uint32_t len = load(file);
+  if (!len) { printf("  -- SKIP %s (field write)\n", file); return; }
+  g_ran++;
+  printf("  -- field write: %s\n", file);
+
+  GbSession s;
+  GbsStatus os = gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch);
+  CHECK(os == GBS_OK, "field write: session opens");
+  if (os != GBS_OK) return;
+  CHECK(s.gen == expect_gen, "field write: right generation detected");
+
+  const uint8_t want[3] = { 0x12, 0x34, 0x56 };
+  uint8_t before[3], back[3];
+  CHECK(gbs_read_field(&s, money_off, before, 3) == GBS_OK, "field write: read money before");
+
+  CHECK(gbs_write_field(&s, money_off, want, 3) == GBS_OK, "field write: money write accepted");
+  CHECK(gbs_finish(&s) == GBS_OK, "field write: gbs_finish accepts it");
+
+  CHECK(gbs_read_field(&s, money_off, back, 3) == GBS_OK, "field write: read money after");
+  CHECK(memcmp(back, want, 3) == 0, "field write: money reads back exactly as written");
+
+  /* Re-open the mutated image FROM SCRATCH — a fresh parse, not the session's cached
+   * view — proving the edit reached the bytes the GAME will read, not just the ones the
+   * session happened to remember, and that BOTH stored checksums (Gen 2) / the main
+   * checksum (Gen 1) still validate. */
+  {
+    GbSession s2;
+    CHECK(gbs_open(&s2, g_img, len, g_scratch2, sizeof g_scratch2) == GBS_OK,
+          "field write: the edited image still parses (checksums valid)");
+    CHECK(s2.gen == expect_gen, "field write: still the same generation after the edit");
+    uint8_t fresh[3];
+    CHECK(gbs_read_field(&s2, money_off, fresh, 3) == GBS_OK, "field write: re-read after reopen");
+    CHECK(memcmp(fresh, want, 3) == 0, "field write: …and it survived a full re-open");
+  }
+
+  /* A no-op — writing back the value already there — must change zero bytes, exactly
+   * gbs_commit_list's own "open a box and back out" guarantee, extended to a field.
+   * Reuses this file's own g_snap global (already sized for a whole image, see its
+   * declaration above) rather than a new stack array of the same size. */
+  memcpy(g_snap, g_img, len);
+  CHECK(gbs_write_field(&s, money_off, want, 3) == GBS_OK,
+        "field write: writing the SAME value again is accepted");
+  CHECK(gbs_finish(&s) == GBS_OK, "field write: gbs_finish on the no-op still accepts");
+  CHECK(memcmp(g_img, g_snap, len) == 0,
+        "field write: a no-op field write changes ZERO bytes, checksums included");
+
+  /* And the refusals carry through the lifted API too — a Pokemon-shaped range is not a
+   * field, on either generation. */
+  {
+    GbsStatus st;
+    uint8_t junk[8] = { 0 };
+    if (s.gen == GB_GEN1) {
+      st = gbs_write_field(&s, GEN1_OFF_PARTY, junk, 4);
+    } else {
+      G2Offsets go; g2_offsets(s.g2w.sv.version, &go);
+      st = gbs_write_field(&s, go.party_list, junk, 4);
+    }
+    CHECK(st != GBS_OK, "field write: the party list is not reachable through gbs_write_field");
+  }
+}
+
 int main(void) {
   printf("gb_session (resident-image edit pipeline)\n");
 
@@ -965,6 +1036,12 @@ int main(void) {
   one_save("Yellow.sav",  GB_GEN1);
   one_save("Gold.sav",    GB_GEN2);   /* 32816 bytes — the 48-byte RTC tail case */
   one_save("Crystal.sav", GB_GEN2);
+
+  /* gbs_read_field / gbs_write_field / gbs_finish (BACKLOG #49 P0): the SAME three calls,
+   * on Red.sav (Gen 1) AND Gold.sav (Gen 2), per docs/GEN12-PARITY-DESIGN.md §1.1's money
+   * offsets (Red/Blue/Yellow 0x25F3, Gold/Silver 0x23DB). */
+  test_field_write("Red.sav",  GB_GEN1, 0x25F3u);
+  test_field_write("Gold.sav", GB_GEN2, 0x23DBu);
 
   /* ---- S3: list surgery -- each helper does its own fresh load(), so none of these
    * can interfere with another's assertions. */

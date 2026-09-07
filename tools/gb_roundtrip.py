@@ -818,22 +818,31 @@ def read_party(gb, rep, out, log=print):
 
 def roundtrip(rom, sav, out, want_party=True, dump_save=None,
               max_frames=4000, log=print, vendor=None, rtc=None,
-              dump_keep_rtc=False):
+              dump_keep_rtc=False, read_mem=None):
     """Drive one save through one game and return (report, driver).
 
     The SRAM diff and the optional dump run on every path, refusals included —
     a run that ends in "corrupted!" is exactly when you want to see what the
     game touched.
+
+    `read_mem`: optional list of (addr, length) pairs read from the emulated GB
+    bus once the overworld is reached (never at reset — TryLoadSaveFile has to
+    have run) and stored in rep["mem"][hex(addr)] = hex bytes. This is the
+    docs/GEN12-PARITY-DESIGN.md §4.2 "RAM assertions" primitive: screen-scraping
+    cannot see money or a fly bit, so a gate case that needs to assert on WRAM
+    directly (not on what the game drew) passes addresses here instead. Empty
+    (nothing read, verdict unaffected) if the run never reaches the overworld.
     """
     rep, gb = _drive(rom, sav, out, want_party=want_party,
-                     max_frames=max_frames, log=log, vendor=vendor, rtc=rtc)
+                     max_frames=max_frames, log=log, vendor=vendor, rtc=rtc,
+                     read_mem=read_mem)
     _report_sram(gb, rep, dump_save, log, dump_keep_rtc=dump_keep_rtc)
     rep["screen_evidence"] = evidence_text(rep)
     return rep, gb
 
 
 def _drive(rom, sav, out, want_party=True, max_frames=4000, log=print,
-           vendor=None, rtc=None):
+           vendor=None, rtc=None, read_mem=None):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     rep = Report()
@@ -918,6 +927,20 @@ def _drive(rom, sav, out, want_party=True, max_frames=4000, log=print,
     rep["frames_to_overworld"] = gb.frames_run
     rep["overworld_screen"] = clean_rows(gb.screen_rows())
     rep.add_shot(gb.screenshot(out / "05-overworld.png"))
+
+    if read_mem:
+        # §4.2 rule 1 (WRAM banking): Gen-2 main data lives in WRAM bank 1, and the
+        # games switch SVBK (0xFF70) to banks 2-7 for scratch, so a 0xD000-0xDFFF read
+        # is only meaningful when SVBK & 7 is 0 or 1 — anything else means this settled
+        # frame happened to land on scratch, and the caller must not report a bank
+        # number as if it were the field it asked for. Gen 1 is DMG-flat, no SVBK.
+        mem = {}
+        svbk = gb.read_mem(0xFF70, 1)[0] & 7 if gb.generation == 2 else None
+        mem["svbk"] = svbk
+        mem["svbk_ok"] = (svbk is None) or svbk in (0, 1)
+        for addr, length in read_mem:
+            mem[f"{addr:#06x}"] = gb.read_mem(addr, length).hex()
+        rep["mem"] = mem
 
     if want_party:
         log("phase 4: reading the party")
@@ -1658,6 +1681,11 @@ def main(argv=None):
                     help="give up if the main menu is not reached by then")
     ap.add_argument("--mgba-vendor",
                     help="directory containing the `mgba` python package")
+    ap.add_argument("--read-mem", action="append", metavar="ADDR:LEN",
+                    help="read LEN bytes at ADDR (hex, e.g. 0xD573:3) from the emulated "
+                         "GB bus once the overworld is reached; repeatable. Stored in "
+                         "the JSON report under 'mem' (plus 'mem.svbk'/'svbk_ok' on "
+                         "Gen 2 — see §4.2's WRAM-banking rule in this file's docstring).")
     ap.add_argument("--rtc", default="2004-09-06 10:00:00",
                     help="pin the cartridge clock (Gen 2 prints the day and "
                          "time on the main menu, so an unpinned clock makes "
@@ -1683,11 +1711,22 @@ def main(argv=None):
                   file=sys.stderr)
             return 2
 
+    read_mem = None
+    if a.read_mem:
+        read_mem = []
+        for spec in a.read_mem:
+            addr_s, _, len_s = spec.partition(":")
+            try:
+                read_mem.append((int(addr_s, 0), int(len_s, 0) if len_s else 1))
+            except ValueError:
+                print(f"ERROR: --read-mem {spec!r} is not ADDR:LEN", file=sys.stderr)
+                return 2
+
     try:
         rep, gb = roundtrip(a.rom, a.sav, a.out, want_party=not a.no_party,
                             dump_save=a.dump_save, max_frames=a.max_frames,
                             log=log, vendor=a.mgba_vendor, rtc=rtc,
-                            dump_keep_rtc=a.dump_keep_rtc)
+                            dump_keep_rtc=a.dump_keep_rtc, read_mem=read_mem)
     except RoundtripError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

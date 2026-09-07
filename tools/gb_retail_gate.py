@@ -113,6 +113,28 @@ MIRROR_NICK = "BAKMIRR"     # distinct from NEW_NICK so a log line is unambiguou
 # is proving the BACKUP survives when the PRIMARY is the one that gets damaged.
 PRIMARY_CKSUM_OFF = {"gs": 0x2D69, "crystal": 0x2D0D}
 
+# BACKLOG #49 P0's field-write primitive (gbs_write_field/gbs_finish), proven with money:
+# the one field docs/GEN12-PARITY-DESIGN.md §4.2 tabulates a post-load WRAM anchor for on
+# every one of the four games. RAM addresses from that table (all VERIFIED the first time
+# this case boots and reads the value it wrote, per the table's own footnote).
+MONEY_VALUE = 123456        # < the 999999 cap; distinct digits so a byte-order bug shows
+MONEY_WRAM = {"red": 0xD347, "yellow": 0xD346, "gold": 0xD573, "crystal": 0xD84E}
+MONEY_LEN = 3                # both encodings are 3 bytes (BCD24 Gen 1 / BE24 Gen 2)
+
+
+def _bcd24_hex(v):
+    """v (0..999999) as 3 BCD bytes, hex-encoded -- which is just its decimal digits,
+    since a BCD nibble IS a decimal digit. Matches tests/host_gbsurgery_tool.c's
+    encode_bcd24 exactly (re-derived here rather than shared, so the two independently
+    agreeing is itself evidence)."""
+    return f"{v:06d}"
+
+
+def _be24_hex(v):
+    """v as 3 big-endian binary bytes, hex-encoded. Matches encode_be24 in the surgery
+    tool the same way."""
+    return f"{v:06x}"
+
 SCRATCH_MARKER = ".gb_retail_gate"   # written into every scratch dir this script creates
 
 
@@ -482,6 +504,46 @@ def run_mirror_case(name, info, rom, sav, work, binary, python, vendor, tally, b
     tally.record("G/S backup rescue (mirror, BACKLOG #49 P0)", ok, detail)
 
 
+def run_money_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #49 P0's field-write primitive, proven the same way every other case here
+    is: a REAL edit through the surgery tool's new `--op money`, which is
+    gbs_write_field() + gbs_finish() and nothing else -- not a Pokemon op -- booted, and
+    checked against what the GAME shows. Unlike every content check above (screen-
+    scraped text), money is not readable off any screen this driver captures, so this is
+    read straight off WRAM (docs/GEN12-PARITY-DESIGN.md §4.2: "screen scraping cannot
+    see money or a fly bit"), which is what --read-mem is for. On Gen 2 the read is
+    gated on SVBK already being bank 0 or 1 (§4.2 rule 1) -- gb_roundtrip.py's own
+    read_mem plumbing computes and reports that, this case only has to check it."""
+    edited = work / "money.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["money", str(MONEY_VALUE)]])
+    if rc != 0:
+        tally.record("money (field write, BACKLOG #49 P0)", False,
+                    f"surgery refused: {err.strip()}")
+        return
+
+    addr = MONEY_WRAM[name]
+    want = _bcd24_hex(MONEY_VALUE) if info["gen"] == 1 else _be24_hex(MONEY_VALUE)
+    rc, rep, out, err = boot(python, rom, edited, work / "money", vendor,
+                             work / "money.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:{MONEY_LEN}"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    money_ok = svbk_ok and got == want
+    ok = (rc == 0) and money_ok
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"{addr:#06x}={got!r} want={want!r}")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("money (field write, BACKLOG #49 P0)", ok, detail)
+
+
 def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     tally = Tally(sav.name)
     work = scratch / name
@@ -525,6 +587,9 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
         run_mirror_case(name, info, rom, sav, work, binary, python, vendor, tally, base_name)
     else:
         tally.skip_case("G/S backup rescue (mirror, BACKLOG #49 P0)", "empty party")
+
+    # ---- 2c. BACKLOG #49 P0 — the field-write primitive, proven with money ----
+    run_money_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
     if party_count0 < 2:
         tally.skip_case("nickname/level/delete/move",

@@ -19,6 +19,12 @@
  *     --op dv BOX SLOT STAT V      STAT in atk|def|spe|spc, V 0..15
  *     --op delete BOX SLOT         gbs_delete
  *     --op move FROM_BOX SLOT TO_BOX   gbs_move (prints the landing slot)
+ *     --op money VALUE             gbs_write_field + gbs_finish (BACKLOG #49 P0's field-
+ *                                   write primitive, not a Pokemon op). VALUE is
+ *                                   0..999999 decimal; encoded BCD for Gen 1 (0x25F3) or
+ *                                   binary for Gen 2 (0x23DB G/S, 0x23DC Crystal) — the
+ *                                   same value reads as the same digits on both,
+ *                                   docs/GEN12-PARITY-DESIGN.md §1.1.
  *   host_gbsurgery_tool --in SAVE --list
  *     print every box: count, and per slot species dex / level / nickname
  *
@@ -88,6 +94,7 @@ static void usage(const char* prog) {
     "  --op dv BOX SLOT STAT V     STAT in atk|def|spe|spc, V 0..15\n"
     "  --op delete BOX SLOT\n"
     "  --op move FROM_BOX SLOT TO_BOX\n"
+    "  --op money VALUE            0..999999, gbs_write_field + gbs_finish\n"
     "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -97,6 +104,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
                       bool* list_mode, Op ops[MAX_OPS], int* nops) {
   static const struct { const char* kind; int n; } shape[] = {
     {"nick", 3}, {"ot", 3}, {"level", 3}, {"dv", 4}, {"delete", 2}, {"move", 3},
+    {"money", 1},
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -269,6 +277,41 @@ static int do_move(GbSession* s, int from_box, int slot, int to_box) {
   return 0;
 }
 
+/* BACKLOG #49 P0 — a field write, not a Pokemon op: exercises gbs_write_field +
+ * gbs_finish end to end (tools/gb_retail_gate.py's "money" case is what proves this
+ * against the real ROM). Money offsets and encodings, docs/GEN12-PARITY-DESIGN.md §1.1:
+ * Red/Blue/Yellow 0x25F3 3B BE BCD; Gold/Silver 0x23DB, Crystal 0x23DC, both 3B BE binary. */
+static void encode_bcd24(uint32_t v, uint8_t out[3]) {
+  out[0] = (uint8_t)((((v / 100000u) % 10u) << 4) | ((v / 10000u) % 10u));
+  out[1] = (uint8_t)((((v /   1000u) % 10u) << 4) | ((v /   100u) % 10u));
+  out[2] = (uint8_t)((((v /     10u) % 10u) << 4) | ( v            % 10u));
+}
+static void encode_be24(uint32_t v, uint8_t out[3]) {
+  out[0] = (uint8_t)(v >> 16); out[1] = (uint8_t)(v >> 8); out[2] = (uint8_t)v;
+}
+
+static int do_money(GbSession* s, const char* vtok) {
+  int v = resolve_uint(vtok, "money");
+  if (v < 0) return 2;
+  if (v > 999999) { fprintf(stderr, "bad money %s (want 0..999999)\n", vtok); return 2; }
+
+  uint32_t off;
+  uint8_t enc[3];
+  if (s->gen == GB_GEN1) {
+    off = 0x25F3u;
+    encode_bcd24((uint32_t)v, enc);
+  } else {
+    off = (s->g2w.sv.version == G2_VER_CRYSTAL) ? 0x23DCu : 0x23DBu;
+    encode_be24((uint32_t)v, enc);
+  }
+
+  GbsStatus ws = gbs_write_field(s, off, enc, sizeof enc);
+  if (ws != GBS_OK) return refuse(gbs_status_text(ws));
+  GbsStatus fs = gbs_finish(s);
+  if (fs != GBS_OK) return refuse(gbs_status_text(fs));
+  return 0;
+}
+
 /* Dispatch one already-shaped Op. Returns 0 ok, 1 refused (reported), 2 usage (reported). */
 static int apply_op(GbSession* s, const Op* o) {
   if (!strcmp(o->kind, "nick") || !strcmp(o->kind, "ot")) {
@@ -301,6 +344,9 @@ static int apply_op(GbSession* s, const Op* o) {
     int to_box = resolve_box(s, o->a[2]);
     if (from_box < 0 || slot < 0 || to_box < 0) return 2;
     return do_move(s, from_box, slot, to_box);
+  }
+  if (!strcmp(o->kind, "money")) {
+    return do_money(s, o->a[0]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;
