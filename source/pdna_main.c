@@ -50,6 +50,7 @@
 #include "pdna_pk.h"     /* pdna_pk_export (.pk3) */
 #include "pdna_bank.h"   /* pdna_bank_show (bank = parallel boxes) */
 #include "gen3_flags.h"    /* event flags */
+#include "flags_fold.h"    /* BACKLOG #2a: pure row-visibility math for the collapsible FLAGS list */
 #include "gen3_dex.h"      /* Pokedex seen/owned flags */
 #include "gen3_pokeblock.h" /* Pokeblock case (RS/Emerald) */
 #include "gen3_daycare.h"  /* daycare breeding compatibility (the man's verdict) */
@@ -4722,8 +4723,7 @@ static void flags_raw_view(bool* dirty, bool* warned) {
  * the state then persists across editor visits until power-off (Guy). Emerald is at
  * 13 headers once "Fly destinations" lands; a u32 mask keeps the ceiling far away
  * (a fold bit past the mask width silently un-folds that section). */
-static uint32_t s_flags_folded = 0xFFFFFFFFu;
-#define NF_MAX_HDRS 32                       /* bits available in s_flags_folded */
+static uint32_t s_flags_folded = 0xFFFFFFFFu;   /* bit width: flags_fold.h's FF_MAX_GROUPS */
 
 /* Owning-header ordinal per row, cached once per table — the naive rescan made
  * nf_visible O(row) and cursor moves near the bottom of the ~490-row Emerald
@@ -4731,31 +4731,29 @@ static uint32_t s_flags_folded = 0xFFFFFFFFu;
  * SIZE RULE: NF_ORD_MAX must stay >= the largest per-game NamedFlag row count in
  * data_tables.c (Emerald ~492 before "Fly destinations", ~530 after). A row past
  * the cap gets ordinal 0, folds under the FIRST header and renders in the wrong
- * section — silently, with no assert. Grow this when a table grows. */
+ * section — silently, with no assert. Grow this when a table grows.
+ *
+ * The actual per-row math (BACKLOG #2a) lives in flags_fold.c/.h, pure C and
+ * host-tested by tests/host_flagsfold_test.c; these four wrappers just keep the
+ * session-lifetime state (which table is cached, the fold mask) that a pure
+ * function cannot own itself. */
 #define NF_ORD_MAX 768
 static const NamedFlag* s_nf_for = 0;
 static uint8_t s_nf_ord[NF_ORD_MAX];
 static void nf_cache(const NamedFlag* nf, int nc) {
   if (s_nf_for == nf) return;
-  int o = -1;
-  for (int i = 0; i < nc && i < NF_ORD_MAX; i++) {
-    if (nf[i].num == NAMED_FLAG_HEADER) o++;
-    s_nf_ord[i] = (uint8_t)(o < 0 ? 0 : (o >= NF_MAX_HDRS ? NF_MAX_HDRS - 1 : o));
-  }
+  ff_build_ord(nf, nc, s_nf_ord, NF_ORD_MAX);
   s_nf_for = nf;
 }
 static int nf_hdr_ord(const NamedFlag* nf, int r) {    /* ordinal of row r's owning header */
   (void)nf;
-  return (r >= 0 && r < NF_ORD_MAX) ? s_nf_ord[r] : 0;
+  return ff_hdr_ord(s_nf_ord, NF_ORD_MAX, r);
 }
 static bool nf_visible(const NamedFlag* nf, int nc, int r) {
-  if (r >= nc || nf[r].num == NAMED_FLAG_HEADER) return true;   /* raw row + headers always */
-  return !((s_flags_folded >> nf_hdr_ord(nf, r)) & 1u);
+  return ff_row_visible(nf, nc, s_nf_ord, NF_ORD_MAX, s_flags_folded, r);
 }
 static int nf_step(const NamedFlag* nf, int nc, int total, int r, int dir) {
-  for (int i = r + dir; i >= 0 && i < total; i += dir)
-    if (nf_visible(nf, nc, i)) return i;
-  return r;                                             /* top/bottom stop */
+  return ff_step(nf, nc, s_nf_ord, NF_ORD_MAX, s_flags_folded, total, r, dir);
 }
 
 /* Draw one flags-list row (raw-browser / section header / flag) at screen y. */
