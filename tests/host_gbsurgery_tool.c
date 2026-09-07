@@ -8,7 +8,7 @@
  *   cc -std=c11 -Wall -Wextra -I source -I tests tests/host_gbsurgery_tool.c \
  *      source/gb_session.c source/gb_editor.c source/gb_edit.c source/gen1_save.c \
  *      source/gen1_write.c source/gen2_save.c source/gen2_write.c \
- *      source/data_tables.c -o /tmp/hgbsurg
+ *      source/data_tables.c source/gb_trainer.c source/gb_fields.c -o /tmp/hgbsurg
  *
  * Usage
  * -----
@@ -25,6 +25,17 @@
  *                                   binary for Gen 2 (0x23DB G/S, 0x23DC Crystal) — the
  *                                   same value reads as the same digits on both,
  *                                   docs/GEN12-PARITY-DESIGN.md §1.1.
+ *     --op badges MASK             BACKLOG #49 P1a, via gb_trainer.h's gbt_read/gbt_write:
+ *                                   MASK (0..255) lands on Gen 1's single BADGES byte, or
+ *                                   on BOTH Gen 2's Johto and Kanto badge bytes. Every
+ *                                   other trainer-card field round-trips unchanged (that
+ *                                   is what tests/host_gbtrainer_test.c's diff check
+ *                                   already proves) — this is a read-modify-write of the
+ *                                   whole GbTrainer, not a raw byte poke.
+ *     --op name TEXT               same gb_trainer.h path: sets the player name. Refused
+ *                                   (exit 1) if TEXT is over GB_OT_GLYPHS (7) glyphs or
+ *                                   has a glyph this generation's GB charset cannot spell
+ *                                   exactly — the same refusal gbt_write documents.
  *   host_gbsurgery_tool --in SAVE --list
  *     print every box: count, and per slot species dex / level / nickname
  *
@@ -69,6 +80,7 @@
 
 #include "gb_session.h"
 #include "gb_editor.h"
+#include "gb_trainer.h"
 
 #define MAX_FILE_BYTES 65536u
 #define MAX_OPS        64
@@ -95,6 +107,8 @@ static void usage(const char* prog) {
     "  --op delete BOX SLOT\n"
     "  --op move FROM_BOX SLOT TO_BOX\n"
     "  --op money VALUE            0..999999, gbs_write_field + gbs_finish\n"
+    "  --op badges MASK            0..255, via gb_trainer.h (Gen 1: BADGES; Gen 2: both)\n"
+    "  --op name TEXT              via gb_trainer.h; refused over 7 glyphs / bad charset\n"
     "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -104,7 +118,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
                       bool* list_mode, Op ops[MAX_OPS], int* nops) {
   static const struct { const char* kind; int n; } shape[] = {
     {"nick", 3}, {"ot", 3}, {"level", 3}, {"dv", 4}, {"delete", 2}, {"move", 3},
-    {"money", 1},
+    {"money", 1}, {"badges", 1}, {"name", 1},
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -312,6 +326,40 @@ static int do_money(GbSession* s, const char* vtok) {
   return 0;
 }
 
+/* BACKLOG #49 P1a — via gb_trainer.h, not a raw byte poke: read the whole trainer
+ * record, change only the field this op names, write the whole record back. Every
+ * other field lands back at its own current value, which is what
+ * tests/host_gbtrainer_test.c's byte-diff round trip already proves is a no-op. */
+static int do_badges(GbSession* s, const char* mtok) {
+  char* end = NULL;
+  long v = strtol(mtok, &end, 0);   /* base 0: accepts "0x.." or decimal */
+  if (end == mtok || *end != '\0' || v < 0 || v > 255) {
+    fprintf(stderr, "bad badges mask %s (want 0..255)\n", mtok);
+    return 2;
+  }
+  GbTrainer t;
+  if (!gbt_read(s, &t)) return refuse("gbt_read failed");
+  if (s->gen == GB_GEN1) {
+    t.badges = (uint8_t)v;
+  } else {
+    t.badges_johto = (uint8_t)v;
+    t.badges_kanto = (uint8_t)v;
+  }
+  GbsStatus st = gbt_write(s, &t);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+static int do_name(GbSession* s, const char* text) {
+  GbTrainer t;
+  if (!gbt_read(s, &t)) return refuse("gbt_read failed");
+  if (strlen(text) >= sizeof t.name) return refuse("name longer than this tool's buffer");
+  strcpy(t.name, text);
+  GbsStatus st = gbt_write(s, &t);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
 /* Dispatch one already-shaped Op. Returns 0 ok, 1 refused (reported), 2 usage (reported). */
 static int apply_op(GbSession* s, const Op* o) {
   if (!strcmp(o->kind, "nick") || !strcmp(o->kind, "ot")) {
@@ -347,6 +395,12 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "money")) {
     return do_money(s, o->a[0]);
+  }
+  if (!strcmp(o->kind, "badges")) {
+    return do_badges(s, o->a[0]);
+  }
+  if (!strcmp(o->kind, "name")) {
+    return do_name(s, o->a[0]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;

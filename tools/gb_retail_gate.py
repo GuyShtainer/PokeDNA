@@ -90,6 +90,7 @@ SURGERY_SRCS = [
     "tests/host_gbsurgery_tool.c", "source/gb_session.c", "source/gb_editor.c",
     "source/gb_edit.c", "source/gen1_save.c", "source/gen1_write.c",
     "source/gen2_save.c", "source/gen2_write.c", "source/data_tables.c",
+    "source/gb_trainer.c", "source/gb_fields.c",
 ]
 
 # gen: 1 = Gen-1 numbering (no primary/backup mirror split in gb_roundtrip's classifier,
@@ -120,6 +121,21 @@ PRIMARY_CKSUM_OFF = {"gs": 0x2D69, "crystal": 0x2D0D}
 MONEY_VALUE = 123456        # < the 999999 cap; distinct digits so a byte-order bug shows
 MONEY_WRAM = {"red": 0xD347, "yellow": 0xD346, "gold": 0xD573, "crystal": 0xD84E}
 MONEY_LEN = 3                # both encodings are 3 bytes (BCD24 Gen 1 / BE24 Gen 2)
+
+# BACKLOG #49 P1a — gb_trainer.h's badges/name setters (source/gb_trainer.c), via the
+# surgery tool's new --op badges / --op name. WRAM anchors from
+# docs/GEN12-PARITY-DESIGN.md §4.2's own table, derived from the pinned `symbols`
+# branches (pret/pokered wPlayerName=D158/wObtainedBadges=D356; pret/pokeyellow same
+# fields -1 byte; pret/pokegold wPlayerName=D1A3, wJohtoBadges=D57C, wKantoBadges=D57D
+# contiguous; pret/pokecrystal wPlayerName=D47D, wJohtoBadges=D857, wKantoBadges=D858
+# contiguous) — each becomes VERIFIED the first time this case boots and reads it back.
+TRAINER_NAME = "GATET"       # <=7 glyphs; distinct from NEW_NICK/MIRROR_NICK so a log
+                             # line is unambiguous about which case produced it
+BADGES_MASK = 0x3F           # 6 of 8 bits set; distinct from 0x00/0xFF so a stuck-bit or
+                             # swapped-byte bug shows on inspection
+NAME_WRAM = {"red": 0xD158, "yellow": 0xD157, "gold": 0xD1A3, "crystal": 0xD47D}
+NAME_LEN = 11
+BADGES_WRAM = {"red": 0xD356, "yellow": 0xD355, "gold": 0xD57C, "crystal": 0xD857}
 
 
 def _bcd24_hex(v):
@@ -591,6 +607,9 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     # ---- 2c. BACKLOG #49 P0 — the field-write primitive, proven with money ----
     run_money_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
+    # ---- 2d. BACKLOG #49 P1a — the trainer-card core, proven with badges + name ----
+    run_trainer_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
     if party_count0 < 2:
         tally.skip_case("nickname/level/delete/move",
                         f"party has only {party_count0} member(s), need >= 2")
@@ -685,6 +704,61 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
             tally.record("party->box", False, f"surgery refused: {err.strip()}")
 
     return tally
+
+
+def run_trainer_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #49 P1a -- gb_trainer.h's gbt_read/gbt_write (source/gb_trainer.c), via
+    the surgery tool's new `--op badges MASK` / `--op name TEXT`. Neither is a raw byte
+    poke: both go through a read-whole-record / change-one-field / write-whole-record
+    cycle, so this case is also an end-to-end proof that every OTHER trainer-card field
+    (money, coins, mom's money, play time) came back out unchanged -- a wrong offset in
+    that path would show up here as a mangled money/coins byte the game refuses to boot
+    on, not just as a wrong badge.
+
+    Badges has no on-screen decimal readout this driver scrapes reliably across all four
+    games, so it is asserted purely off WRAM (--read-mem, docs/GEN12-PARITY-DESIGN.md
+    §4.2's own table) -- gated on SVBK the same way run_money_case's read is. The player
+    name is asserted BOTH ways: off WRAM (exact bytes) and off the continue screen's own
+    PLAYER= label, which gb_roundtrip.py decodes with its OWN independent GB-text reader
+    -- agreement between the two is evidence gb_trainer.c's gb_name_encode did not spell
+    the name in a way the game's own font draws differently."""
+    edited = work / "trainer.sav"
+    rc, out, err = run_surgery(binary, sav, edited,
+                               [["badges", hex(BADGES_MASK)], ["name", TRAINER_NAME]])
+    if rc != 0:
+        tally.record("trainer card (badges+name, BACKLOG #49 P1a)", False,
+                    f"surgery refused: {err.strip()}")
+        return
+
+    badges_addr = BADGES_WRAM[name]
+    badges_len = 1 if info["gen"] == 1 else 2
+    name_addr = NAME_WRAM[name]
+    rc, rep, out, err = boot(python, rom, edited, work / "trainer", vendor,
+                             work / "trainer.json",
+                             extra_args=["--expect", "accept",
+                                         "--expect-name", TRAINER_NAME,
+                                         "--read-mem", f"{badges_addr:#06x}:{badges_len}",
+                                         "--read-mem", f"{name_addr:#06x}:{NAME_LEN}"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    want_badges = (f"{BADGES_MASK:02x}" if info["gen"] == 1
+                  else f"{BADGES_MASK:02x}{BADGES_MASK:02x}")
+    got_badges = mem.get(f"{badges_addr:#06x}")
+    badges_ok = svbk_ok and got_badges == want_badges
+    name_screen_ok = rep.get("player_name") == TRAINER_NAME
+    ok = (rc == 0) and badges_ok and name_screen_ok
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"badges@{badges_addr:#06x}={got_badges!r} want={want_badges!r} "
+             f"player_name={rep.get('player_name')!r} want={TRAINER_NAME!r} "
+             f"name_wram@{name_addr:#06x}={mem.get(f'{name_addr:#06x}')!r}")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("trainer card (badges+name, BACKLOG #49 P1a)", ok, detail)
 
 
 def main(argv=None):
