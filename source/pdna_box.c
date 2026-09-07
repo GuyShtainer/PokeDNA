@@ -2914,6 +2914,7 @@ int pdna_box(BoxSource* src) {
                                if (cur < 0 || cur >= COLS * ROWS) cur = 0; \
                                bob = 0; anim_ctr = 0; \
                                if (!src->is_bank) app_note_pc_box(box); \
+                               if (src->note_box) src->note_box(box); \
                                s_oam_reload = true; need_full = true; paint_over = true; } while (0)
 
   for (;;) {

@@ -45,6 +45,15 @@ typedef struct {
   AppCommitFn commit;                       /* persist the current box now                   */
   void (*mark_dirty)(void);                 /* deferred persist (move-mode drop)             */
   void (*note_add)(const uint8_t* rec);     /* opt: a mon landed here -> register its dex (PC only; NULL on bank) */
+  /* BACKLOG #56: opt, called with the new box every time SWITCH_BOX changes what is
+   * on screen -- the exact same call site as app_note_pc_box() below, just not
+   * gated on `!is_bank` (a GB session sets is_bank true but still wants to hear
+   * this). NULL on the PC and the real Bank (their own re-entry story is
+   * app_note_pc_box()/app_box_start_set() and stays exactly as it was); only
+   * pdna_gen12_source() sets it, to remember which box a re-entry (START -> menu ->
+   * back, or the bank-hand-off edge) should land back on instead of replaying
+   * whatever box the session originally opened on. */
+  void (*note_box)(int box);
   /* BACKLOG #40(a): the box banner's occupancy denominator. NULL (every source before
    * #40) means the Gen-3 grid's own 30 -- the PC/bank's real capacity, unchanged. A GB
    * source's box holds fewer (20 for Gen 2, 12-99 for Gen 1 depending on version) than

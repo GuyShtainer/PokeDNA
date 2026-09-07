@@ -118,6 +118,14 @@ typedef struct {
   int nboxes;                 /* real storage boxes: 12 (Gen 1) / 14 (Gen 2)     */
   int party_box;              /* == nboxes; the party is exposed as one more box */
   int current_box;            /* the box whose LIVE copy is in main data         */
+  /* BACKLOG #56: which box pdna_box() (the box grid) last reported as ON SCREEN
+   * (BoxSource.note_box, fired from SWITCH_BOX), NOT the save's own "live copy"
+   * bookmark above -- current_box is set once at mount from the save's own bytes
+   * and read elsewhere (gb_sidecar_here_count, the ambiguous-G2 tie-break) with
+   * that exact meaning; overloading it with "where the UI last was" would make both
+   * readers wrong. -1 = no box switch has happened yet this mount, so
+   * pdna_gen12_source() falls back to current_box exactly as it always did. */
+  int ui_box;
 
   uint8_t* recs;              /* caller's GB12_RECS_BYTES pc-mini buffer         */
   uint8_t* stage;             /* caller's GB12_STAGE_BYTES list staging buffer   */

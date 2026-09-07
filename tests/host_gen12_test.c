@@ -821,6 +821,23 @@ static void part4_boxsource(GbfGame game, uint32_t rtc_tail) {
         s.can_edit && s.commit && s.mark_dirty, "every hook pdna_box calls is filled");
   CHECK(s.menu_block == recs, "menu_block is the pc-layout buffer (records at +4)");
   CHECK(s.note_add == 0, "no note_add: nothing ever lands in a GB save");
+
+  /* ---- BACKLOG #56: a box switch survives a re-derived BoxSource ---- */
+  {
+    CHECK(s.note_box != 0, "GB source wires note_box (PC/Bank leave it NULL)");
+    int start = gbf_current_box(game);
+    int other = (start + 1) % nb_real;      /* provably a DIFFERENT box */
+    CHECK_EQ(m.ui_box, -1, "ui_box unset before any box switch is ever reported");
+    s.note_box(other);
+    CHECK_EQ(m.ui_box, other, "note_box records the box the grid put on screen");
+    CHECK_EQ(m.current_box, start, "note_box must NOT touch current_box (the save's "
+                                    "own live-copy bookmark, a different field)");
+    BoxSource s3 = pdna_gen12_source(&m);   /* "re-entry": gb_session_core's own fix */
+    CHECK_EQ(s3.start_box, other, "re-deriving the BoxSource lands back on that box, "
+                                   "not the box the session originally opened on");
+    s.note_box(start);                      /* leave ui_box as the test found it */
+    pdna_gen12_source(&m);                  /* g_m is already &m; keeps hooks consistent */
+  }
   CHECK(!s.can_edit(), "can_edit() is false");
   /* commit() MUST be false, not just harmless: pdna_box's cross-scope drop writes the
    * record, calls commit(), and reverts the destination when it fails. */

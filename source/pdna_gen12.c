@@ -355,6 +355,7 @@ bool pdna_gen12_mount(Gb12Mount* m, Gb12ReadFn rd, void* ctx, uint32_t len,
   m->rd = rd; m->ctx = ctx; m->len = len;
   m->recs = recs; m->stage = stage;
   m->loaded = -1;
+  m->ui_box = -1;                             /* BACKLOG #56: no box switch yet this mount */
   m->g2_gender = -1;
   m->tgt.met_game = met_game;
 
@@ -509,6 +510,15 @@ static int gbsrc_capacity(int box) {
   return (g_m->kind == GB12_SAVE_RBY) ? gen1_list_capacity(box) : g2_list_capacity(box);
 }
 
+/* BACKLOG #56: BoxSource.note_box -- fired by pdna_box()'s SWITCH_BOX on every box
+ * the grid puts on screen (is_bank does not gate this the way it gates
+ * app_note_pc_box; that call stays PC-only, this one exists only because this
+ * source sets it). Stores into ui_box, NOT current_box -- see that field's comment
+ * for why the two must not be conflated. */
+static void gbsrc_note_box(int box) {
+  if (g_m && box >= 0 && box <= g_m->party_box) g_m->ui_box = box;
+}
+
 Gb12SaveKind pdna_gen12_active_kind(void) { return g_m ? g_m->kind : GB12_SAVE_NONE; }
 
 BoxSource pdna_gen12_source(Gb12Mount* m) {
@@ -518,7 +528,12 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   g_m = m;
   if (!m || m->kind == GB12_SAVE_NONE) return s;
   s.nboxes     = pdna_gen12_nboxes(m);
-  s.start_box  = (m->current_box >= 0 && m->current_box < s.nboxes) ? m->current_box : 0;
+  /* BACKLOG #56: a re-entry (gb_session_core calling this again after the START
+   * menu, or the bank-hand-off edge) has a ui_box the user actually left the
+   * cursor on; a fresh mount's first call has ui_box == -1 and falls back to
+   * current_box exactly as before this fix. */
+  s.start_box  = (m->ui_box >= 0 && m->ui_box < s.nboxes) ? m->ui_box
+               : (m->current_box >= 0 && m->current_box < s.nboxes) ? m->current_box : 0;
   s.is_bank    = true;                       /* see the header: this is what removes the
                                               * PARTY tab and the PC hand-off edges (codes
                                               * 1/4) -- neither applies to a raw GB save's
@@ -540,6 +555,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   s.commit     = gbsrc_commit;
   s.mark_dirty = gbsrc_mark_dirty;
   s.note_add   = 0;                           /* nothing lands here; nothing to register */
+  s.note_box   = gbsrc_note_box;              /* BACKLOG #56: remember the box for re-entry */
   s.capacity   = gbsrc_capacity;
   return s;
 }
@@ -1975,11 +1991,21 @@ static void gb_session_core(Gb12Mount* m) {
    * s_tab_focus = 2 = SAVE) -- so every trip through the START menu left the cursor
    * sitting on the exit tab. The Gen-3 nav returns to the plain GRID after its menu,
    * so START here should match: only r==5 (the PC<->Bank hand-off edge) actually needs
-   * the tabs focused, r==2 (START) does not. Box index still resets to m's start_box
-   * on every re-entry regardless -- BACKLOG #56 tracks remembering the box instead. */
+   * the tabs focused, r==2 (START) does not.
+   *
+   * BACKLOG #56 fix: `s` is a plain struct copied once above -- s.start_box is read
+   * by pdna_box() only at its own entry (pdna_box.c:2847), so re-calling pdna_box(&s)
+   * with the SAME `s` used to replay whatever box the session originally opened on,
+   * every single re-entry. gbsrc_note_box() (wired as s.note_box) keeps m->ui_box
+   * current for every box the grid actually showed, so re-deriving `s` before each
+   * re-entry picks it back up. Only the BOX is restored, not the cursor CELL within
+   * it: pdna_box() always enters at cur=0 (or wherever app_box_start_take()'s 0..3
+   * directional hint puts it) for the PC/Bank too -- there is no existing "resume
+   * this exact cell" mechanism to mirror, so this does not invent one either. */
   for (int r; (r = pdna_box(&s)) != 0; ) {
     if (r == 2) gb_nav_from_start(m);
     else app_box_start_set(1);
+    s = pdna_gen12_source(m);
   }
   pdna_origin_box_set_hint(0);
   app_src_readonly_clear();
