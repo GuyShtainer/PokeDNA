@@ -212,6 +212,12 @@ bool gb_rom_path_beside(const char* save_path, uint8_t gen, char* out, int cap) 
 
 bool gb_art_have(uint8_t gen) {
   if (gen != PDNA_GEN1 && gen != PDNA_GEN2) return false;
+  /* BACKLOG #47: the detach switch means NO rom art at all, not just Gen-3's -- checked
+   * BEFORE the registration check right below so an explicit Settings registration
+   * cannot override it (same posture as g3cross_pic_cb: the switch always wins over
+   * "is a ROM configured"). The registration itself is untouched by this -- flipping
+   * the switch back on makes this function true again with no re-registration. */
+  if (app_rom_art_off()) return false;
   if (s_reg_checked[gen] && s_reg_have[gen]) return true;   /* an explicit registration always wins */
   if (!app_current_save_is_gb()) return false; /* the fallback only applies to a raw GB session       */
   if (!s_fb_checked[gen]) {
@@ -429,6 +435,12 @@ static const uint16_t* gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out
 static const uint16_t* gb_art_pic_cb(void* ctx, uint8_t gen, uint16_t dex, uint8_t form,
                                      uint8_t back, uint8_t shiny, uint8_t* out_w, uint8_t* out_h) {
   (void)ctx;
+  /* BACKLOG #47: cheap first-line refuse, same posture as g3cross_pic_cb's own
+   * first line -- redundant with gb_art_have()'s own check below (belt-and-braces,
+   * not load-bearing on its own), but every OTHER rung that honours the switch
+   * checks it as its very first statement, and a reader diffing this callback
+   * against that one should not have to trust a call three lines down instead. */
+  if (app_rom_art_off()) return 0;
   /* have() re-checked HERE (24 B own frame), not inside gb_art_fetch (E3
    * re-verification "free partial") -- see gb_art_fetch's own comment. */
   if (!gb_art_have(gen)) return 0;
@@ -442,6 +454,7 @@ static int gb_art_have_cb(void* ctx, uint8_t gen) { (void)ctx; return gb_art_hav
 static const uint16_t* gb_art_icon_cb(void* ctx, uint8_t gen, uint16_t dex,
                                       uint8_t* out_w, uint8_t* out_h) {
   (void)ctx;
+  if (app_rom_art_off()) return 0;   /* BACKLOG #47: see gb_art_pic_cb's own comment */
   if (gen != PDNA_GEN2 || !gb_art_have(gen)) return 0;
   return gb_art_fetch_icon(gen, dex, out_w, out_h);
 }

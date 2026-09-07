@@ -66,6 +66,12 @@
  *      STORE's own picture is now the default for every mon there, imports included)
  *      -- only an EXPLICIT Settings override does. I6-I11 below wire the REAL
  *      se_resolve/se_resolve_cell pair and assert this opt-in directly.
+ *   J. BACKLOG #47 — the "Turn ROM art OFF" switch means NO rom art at all, not just
+ *      Gen-3's: a fake source given the exact shape gb_art_source.c's real
+ *      have()/pic()/icon() now have (a first-line refuse that overrides even a live
+ *      registration, never clears it) proves the router degrades to gen3_ladder/chip
+ *      and the registration survives the flip untouched. gb_art_source.c and
+ *      pdna_main.c themselves stay untested here (see part_j's own comment for why).
  */
 #include <stdio.h>
 #include <string.h>
@@ -129,10 +135,19 @@ static uint16_t g_gbpix[56 * 56];
 static int g_gb1_on = 1, g_gb2_on = 1, g_gb_back_on = 0;
 static int g_gb_calls, g_gb_last_gen, g_gb_last_dex, g_gb_last_form,
            g_gb_last_back, g_gb_last_shiny;
+/* BACKLOG #47: mirrors app_rom_art_off() -- the real gb_art_source.c has
+ * gb_art_have()/gb_art_pic_cb()/gb_art_icon_cb() each check this BEFORE anything
+ * else, even ahead of an otherwise-successful registration (g_gb1_on/g_gb2_on
+ * below are untouched by it, same as the real registration surviving the flip).
+ * This test double copies that exact shape -- checked first, in all three
+ * callbacks -- so part_j can assert the ROUTER's degrade without ever linking
+ * gb_art_source.c itself (see that part's own comment for why). */
+static int g_gb_artoff = 0;
 
 static const uint16_t* fake_pic(void* ctx, uint8_t gen, uint16_t dex, uint8_t form,
                                 uint8_t back, uint8_t shiny, uint8_t* w, uint8_t* h) {
   (void)ctx;
+  if (g_gb_artoff) return 0;   /* BACKLOG #47: cheap first-line refuse, never even counted */
   g_gb_calls++; g_gb_last_gen = gen; g_gb_last_dex = dex; g_gb_last_form = form;
   g_gb_last_back = back; g_gb_last_shiny = shiny;
   if (back && !g_gb_back_on) return 0;
@@ -143,6 +158,7 @@ static const uint16_t* fake_pic(void* ctx, uint8_t gen, uint16_t dex, uint8_t fo
 }
 static int fake_have(void* ctx, uint8_t gen) {
   (void)ctx;
+  if (g_gb_artoff) return 0;   /* BACKLOG #47 */
   return (gen == 1) ? g_gb1_on : (gen == 2) ? g_gb2_on : 0;
 }
 
@@ -155,6 +171,7 @@ static int g_gbicon_on = 0;
 static int g_gbicon_calls, g_gbicon_last_gen, g_gbicon_last_dex;
 static const uint16_t* fake_icon(void* ctx, uint8_t gen, uint16_t dex, uint8_t* w, uint8_t* h) {
   (void)ctx;
+  if (g_gb_artoff) return 0;   /* BACKLOG #47: see fake_pic's own comment */
   g_gbicon_calls++; g_gbicon_last_gen = gen; g_gbicon_last_dex = dex;
   if (gen != 2 || !g_gb2_on) return 0;
   *w = 16; *h = 16;
@@ -1450,6 +1467,68 @@ static void part_i(void) {
   pdna_origin_box_set_hint(0);
 }
 
+/* ---- J. BACKLOG #47: the ROM-art-off switch covers Game Boy art too ---------------
+ * gb_art_source.c and pdna_main.c (app_rom_art_off/app_era_roms/the Settings toggle)
+ * are never compiled into THIS binary -- this file drives the router entirely through
+ * hand-written test doubles (fake_pic/fake_have/fake_icon above), exactly like every
+ * other part here, so the real SD-touching module stays a hardware-testing-protocol
+ * concern (CLAUDE.md rule 7), not a host one. What IS host-testable, and was not
+ * covered by any of A-I above, is the CONTRACT the fix depends on: a source that
+ * reports have()==false/pic()==NULL/icon()==NULL -- for WHATEVER reason, including a
+ * global off-switch overriding an otherwise-live registration -- must make the router
+ * fall all the way through to gen3_ladder/chip, and the registration itself (here,
+ * g_gb1_on/g_gb2_on) must survive the flip untouched. g_gb_artoff above gives the
+ * fakes that exact shape (checked first, ahead of the registration, in all three
+ * callbacks) so that contract is asserted directly rather than merely trusted. */
+static void part_j(void) {
+  printf("J. BACKLOG #47: the off switch covers Game Boy art too\n");
+
+  Gb12Mon g; uint8_t rec[80]; PkMon m;
+  gb1_mon(&g, 1);                                        /* an unproven Gen-1 import */
+  if (!make(&g, rec, &m)) { CHECK(0, "J setup: GB fixture must decode"); return; }
+
+  g_gbicon_on = 0;
+  gb_source_on();
+  g_art_on = 1; g_gb1_on = 1; g_gb2_on = 1; g_gb_artoff = 0;
+  pdna_origin_art_set_era_resolver(0);
+  pdna_origin_art_set_place(SE_PLACE_SUMMARY);
+  pdna_origin_art_invalidate();
+
+  /* J1: sanity, switch off (default) -- a live registration serves the GB picture,
+   * same as part C's own C3. */
+  PdnaArt a; PdnaOrigin o;
+  CHECK(pdna_origin_art_portrait(&m, 0, &a, &o), "J1 should return art with the switch off");
+  CHECK(a.px == g_gbpix, "J1 must be the GB picture with the switch off");
+
+  /* J2: flip the switch on. have() must answer false even though the registration
+   * (g_gb1_on/g_gb2_on) never changed -- the switch overrides it, it does not clear
+   * it -- and the router must degrade all the way to gen3_ladder/chip: with no
+   * compiled Gen-3 art either (the artless posture), that is a flat "no art", the
+   * same NULL-degrades-cleanly result as C2. pic() must never even be attempted. */
+  g_gb_artoff = 1;
+  g_art_on = 0;
+  pdna_origin_art_invalidate();
+  g_gb_calls = 0;
+  CHECK(!fake_have(0, PDNA_GEN1), "J2 have() must answer false while the switch is on");
+  CHECK(!pdna_origin_art_portrait(&m, 0, &a, &o), "J2 router must report no art at all");
+  CHECK(a.px == 0, "J2 px must be NULL so the chip fallback runs, same as C2");
+  CHECK_EQ(g_gb_calls, 0, "J2 pic() must never even attempt a fetch while the switch is on");
+
+  /* J3: flip it back off. The ORIGINAL registration is still exactly as it was --
+   * art comes back immediately, no re-registration needed, matching the toggle's
+   * own "Your ROM path is kept." promise (pdna_main.c). */
+  g_gb_artoff = 0;
+  g_art_on = 1;
+  pdna_origin_art_invalidate();
+  CHECK(pdna_origin_art_portrait(&m, 0, &a, &o), "J3 should return art again");
+  CHECK(a.px == g_gbpix, "J3 must be the GB picture again, no re-registration needed");
+
+  /* leave global state clean for whichever part runs next */
+  g_gb_artoff = 0;
+  pdna_origin_art_set_place(SE_PLACE_SUMMARY);
+  pdna_origin_art_invalidate();
+}
+
 /* ---- F. THE PARALLEL BANK GRID ----------------------------------------------------
  * The half of Guy's request the grid actually draws: every cell in the art of its own
  * generation, all at the same time. Part C proved the ROUTER picks the right picture;
@@ -1982,6 +2061,7 @@ int main(int argc, char** argv) {
   part_g();              /* the Gen-3 ROM rung, against Guy's real Emerald dump */
   part_h();              /* E4: place-aware resolver + the cross-game Gen-3 rung */
   part_i();              /* E5: the Gen-2 menu-icon rung, box grid only */
+  part_j();              /* BACKLOG #47: the off switch covers Game Boy art too */
   part_f();             /* the grid the bank draws */
   part_d(argc, argv);   /* argv[1..] = saves */
   part_e();

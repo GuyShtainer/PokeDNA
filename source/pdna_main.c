@@ -141,13 +141,22 @@ static bool      g_yard_visitors = false;
 /* ROM art detach switch (Settings > Game ROM, item 7): for A/B-testing the artless
  * build with vs without a ROM to draw art from, WITHOUT re-browsing/re-registering a
  * path. OFF (false) by default = normal behaviour (a registered ROM's art rungs are
- * live). ON = app_icon_rom_open() (the single chokepoint every RomMon/RomSprite/
- * RomItemArt/rom_wallpaper/rom_chrome/rom_hand source is opened through) skips
- * opening any ROM this session and leaves every one of those sources at its reset/
- * NULL state, so every consumer sees exactly what it already sees with no ROM
- * registered at all -- the no-ROM fallbacks are the existing, tested ones, nothing
- * new. g_rom_path[] itself is untouched either way, so flipping this back ON needs
- * no re-browse. Persisted in config.cfg ("romoff"). */
+ * live). ON = "no ROM art at all" (BACKLOG #47 made this the explicit contract, not
+ * just the Gen-3 half of it):
+ *   - app_icon_rom_open() (the single chokepoint every RomMon/RomSprite/RomItemArt/
+ *     rom_wallpaper/rom_chrome/rom_hand source is opened through) skips opening any
+ *     ROM this session and leaves every one of those sources at its reset/NULL
+ *     state, and g3cross_pic_cb refuses the cross-game Gen-3 rung too;
+ *   - gb_art_source.c's gb_art_have()/pic()/icon() (the Game Boy portrait + Gen-2
+ *     menu-icon rungs) refuse via app_rom_art_off(), even for an explicit Settings
+ *     registration;
+ *   - app_era_roms() reports every era's ROM as unavailable, so the Sprites grid
+ *     (sprite_era.h) can only offer NATIVE.
+ * Every consumer above degrades to the SAME no-ROM fallbacks a real no-ROM session
+ * already uses and this project already trusts -- nothing new. None of the
+ * REGISTRATIONS themselves (g_rom_path[], the GB slots inside it, config.cfg) are
+ * touched either way, so flipping this back ON needs no re-browse. Persisted in
+ * config.cfg ("romoff"). */
 static bool      g_rom_art_off = false;
 /* Backup mode: 0 = new file each save, 1 = single rolling .bak, 2 = skip. Persisted. */
 static int       g_backup_mode = 0;
@@ -1731,6 +1740,10 @@ bool app_gb_rom_path_set(uint8_t gen, const char* path) {
 }
 bool app_gb_rom_registered(uint8_t gen) { return gb_art_have(gen); }
 
+/* BACKLOG #47: pdna_app.h's own comment has the contract. A plain read of the
+ * file-static toggle -- no side effects, safe from any module at any time. */
+bool app_rom_art_off(void) { return g_rom_art_off; }
+
 /* ---- the currently open save (view_save() sets g_path the moment it opens one) --- */
 const char* app_current_save_path(void) { return g_path; }
 bool app_current_save_is_gb(void) { return pdna_gen12_size_is_gb(g_save_size); }
@@ -1739,6 +1752,15 @@ bool app_current_save_is_gb(void) { return pdna_gen12_size_is_gb(g_save_size); }
 SeRoms app_era_roms(void) {
   SeRoms r;
   memset(&r, 0, sizeof r);
+  /* BACKLOG #47: the detach switch means no ROM art anywhere, so no era may claim a
+   * ROM either -- se_era_next() (sprite_era.c) walks eras by SeRoms.have[] alone and
+   * would otherwise still offer Gen-3 RS/EM/FRLG (their g_rom_path[] entries are
+   * config, untouched by the switch) while gb_art_have() above already refuses the
+   * Gen-1/2 slots. `r` is already all-false from the memset, so returning it here
+   * dims every era in the Sprites grid down to NATIVE, exactly like "nothing
+   * registered" -- the registrations themselves are still there for when the switch
+   * flips back on. */
+  if (app_rom_art_off()) return r;
   r.have[SE_ERA_G3_RS]   = app_rom_path(PK_RS)[0]      != 0;
   r.have[SE_ERA_G3_EM]   = app_rom_path(PK_EMERALD)[0] != 0;
   r.have[SE_ERA_G3_FRLG] = app_rom_path(PK_FRLG)[0]    != 0;
@@ -2386,10 +2408,13 @@ static void app_icon_rom_open(void) {
   if (s_iconrom_fil_open) { f_close(&s_iconrom_fil); s_iconrom_fil_open = false; }
 #endif
   /* TEST INSTRUMENT (item 7): which state this boot/re-open landed in. Checked once
-   * here rather than "sprinkled" at each consumer -- see g_rom_art_off's own comment
-   * for why gating HERE is what makes every consumer downstream see "no ROM"
-   * uniformly, through the SAME no-ROM fallbacks a real no-ROM session already uses
-   * and this project already trusts. */
+   * here for the Gen-3/icon-store rung specifically -- gating HERE is what makes
+   * every Gen-3 consumer downstream see "no ROM" uniformly, through the SAME
+   * no-ROM fallbacks a real no-ROM session already uses and this project already
+   * trusts. BACKLOG #47: the switch is no longer gated ONLY here -- the Game Boy
+   * rung (gb_art_source.c's gb_art_have()/pic()/icon()) and the Sprites-grid era
+   * availability (app_era_roms()) each check g_rom_art_off (via app_rom_art_off())
+   * on their own, because neither one funnels through this function at all. */
   log_line("rom art: %s (%s registered)", g_rom_art_off ? "DETACHED (testing)" : "attached",
            app_any_rom_registered() ? "a path is" : "no path is");
   if (g_rom_art_off) {
@@ -7433,17 +7458,29 @@ static void rom_row_menu(void) {
       int a = act[sel];
       if (a == 0) { app_register_rom(); return; }
       else if (a == 1) {
-        /* One chokepoint (app_icon_rom_open, gated on g_rom_art_off) — everything
-         * downstream (box/party/dex/daycare/bag/trainer card/...) re-reads its icon
-         * source fresh the next time it draws, so this takes effect on the very
-         * next screen entry with no reboot and nothing left holding a stale
-         * pointer into the shared decode buffers. */
+        /* BACKLOG #47: no longer one chokepoint -- the switch means "no ROM art at
+         * all", so it now also gates gb_art_source.c's gb_art_have()/pic()/icon()
+         * (Game Boy portraits + menu icons) and app_era_roms() (the Sprites grid's
+         * era availability), not just app_icon_rom_open's Gen-3 rung and
+         * g3cross_pic_cb's cross-game one. app_icon_rom_open() remains the one call
+         * that rebuilds the box's icon STORE (so the PC grid drops its cache
+         * immediately); the GB/era rungs need no rebuild of their own -- they are
+         * plain reads (gb_art_have, app_era_roms) that answer differently on their
+         * very next call, same as the Gen-3 rungs always have.
+         *
+         * pdna_origin_art_invalidate() + art_session_invalidate() -- the same pair
+         * sprite_settings() calls on its own way out (E4) -- drop the portrait
+         * router's fetch memo so an already-open summary/box screen redraws with
+         * the new verdict on its next repaint instead of showing whatever it last
+         * fetched from the GB source before the flip. */
         g_rom_art_off = !g_rom_art_off;
         cfg_save();
+        pdna_origin_art_invalidate();
+        art_session_invalidate();
         app_icon_rom_open();
         snd_ok();
         msg_wait("ROM ART", g_rom_art_off ? UI_DIM : UI_OK,
-                 g_rom_art_off ? "Detached for testing." : "Reattached.",
+                 g_rom_art_off ? "All ROM art off." : "Reattached.",
                  g_rom_art_off ? "Your ROM path is kept." : "Real art is back on.");
         return;
       }

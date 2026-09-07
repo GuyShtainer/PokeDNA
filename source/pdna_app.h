@@ -448,6 +448,15 @@ bool        app_gb_rom_path_set(uint8_t gen, const char* path);
  * not "the user visited a Settings row", so the fallback counting is deliberate. */
 bool        app_gb_rom_registered(uint8_t gen);
 
+/* BACKLOG #47: Settings > Game ROM's "Turn ROM art OFF" switch (g_rom_art_off,
+ * pdna_main.c) -- "no ROM art at all", not "no Gen-3 ROM art". Exposed here so
+ * gb_art_source.c (a lower module that never reaches into pdna_main.c's statics
+ * directly) can gate gb_art_have()/the pic()+icon() vtable callbacks on it exactly
+ * like the Gen-3 chokepoints (app_icon_rom_open, g3cross_pic_cb) already do. The
+ * registrations themselves (config.cfg's romgb1/romgb2, the Gen-3 g_rom_path[]
+ * slots) are never touched by the switch -- only what THIS function reports. */
+bool        app_rom_art_off(void);
+
 /* The path of the currently open save (g_path — set the moment view_save() opens a
  * file, valid for the whole time a save is open) and whether that save is itself a
  * raw Game Boy battery file rather than a Gen-3 .sav. Both back gb_art_source.c's
