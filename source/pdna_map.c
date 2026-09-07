@@ -228,6 +228,10 @@ static bool pick_rom(char* cwd, int cwd_cap, char* out, int out_cap, PickEnt* en
         pick_row_paint(ents, top + i, 30 + i * 10, top + i == sel);
       if (!n) { char empty[40]; siprintf(empty, "No %s here. B goes up.", s_pick_ext[0]);
                 ui_text(4, 40, UI_DIM, empty); }
+      /* #55 review: the listing is capped (PICK_MAX, or PICK_MAX_ART on the art-buffer
+       * fallback) and the cap drops DIRECTORIES too, so a target in a busy folder can
+       * be unreachable -- say so instead of silently showing a partial list. */
+      if (n >= ent_cap) ui_text(4, 140, UI_WARN, "List full - some files not shown.");
       ui_text(4, 152, UI_DIM, "A pick  B up  START cancel");
     } else if (sel != pv.sel) {
       /* `top` unchanged also proves `sel` (old and new) is still inside the visible
@@ -262,8 +266,17 @@ static bool pick_rom(char* cwd, int cwd_cap, char* out, int out_cap, PickEnt* en
         }
         continue;
       }
+      /* Pre-existing hole (found by the #55 review): the descend guard lets `cwd` grow
+       * to cwd_cap-2, so cwd + '/' + a 63-char name could overrun the caller's `out`
+       * (PATH_MAX 256) by up to 63 bytes. Refuse instead of clipping -- a clipped path
+       * names a different file. */
+      { int nl = l + ((l > 1) ? 1 : 0) + (int)strlen(ents[sel].name);
+        if (nl >= out_cap - 1) {
+          s_msg("PATH TOO LONG", UI_WARN, "That file's path does not fit.",
+                "Move it nearer the root.");
+          continue;               /* s_msg's ui_clear bumps ui_clear_gen -> full repaint */
+        } }
       siprintf(out, "%s%s%s", cwd, (l > 1) ? "/" : "", ents[sel].name);
-      (void)out_cap;
       return true;
     }
   }

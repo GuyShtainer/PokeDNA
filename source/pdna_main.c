@@ -2741,7 +2741,9 @@ static void app_register_gb_rom(uint8_t gen) {
        * pdna_origin_art_invalidate() above, so the box's next entry re-decodes
        * every cell through box_decode instead of trusting a stale cache -- log it
        * so a hardware run can confirm the new sprites actually show up. */
-      log_line("gb art: gen%u ROM registered mid-session, art cache invalidated", (unsigned)gen);
+      log_line(app_arena_held()
+                 ? "gb art: gen%u ROM registered mid-session, art cache invalidated"
+                 : "gb art: gen%u ROM registered, art cache invalidated", (unsigned)gen);
       break;
     }
     case GB_ART_REG_WRONG_GEN:
