@@ -826,6 +826,20 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * storage box (gb_session.h's own contract) -- the party pseudo-box is refused before
  * gb_paste_write() ever touches the card. */
 #define PDNA_SIDECAR_PARTY_L1        "Storage boxes only, not the party."
+/* BACKLOG #50 (CREATE): pdna_gen12.c's gb_create_hook and its two pickers
+ * (gb_create_pick_species/gb_create_pick_level). Short by the same convention
+ * as the sidecar titles just above (msg_wait's own ui_ptext_fit clips a long
+ * one safely regardless, but these are sized to not need it). */
+#define PDNA_GBCREATE_TITLE          "CAN'T CREATE"
+#define PDNA_GBCREATE_NOROM_L1       "Needs your Gen 1/2 ROM"
+#define PDNA_GBCREATE_NOROM_L2       "(Settings > Game ROM)."
+#define PDNA_GBCREATE_FULL_TITLE     "BOX FULL"
+#define PDNA_GBCREATE_FULL_L1        "No empty slot here."
+#define PDNA_GBCREATE_BUILDFAIL_L1   "Could not build a legal record."
+#define PDNA_GBCREATE_SPECIES_TITLE  "CREATE - SPECIES"
+#define PDNA_GBCREATE_SPECIES_FOOT   "A pick  B cancel"
+#define PDNA_GBCREATE_LEVEL_TITLE    "CREATE - LEVEL"
+#define PDNA_GBCREATE_LEVEL_FOOT     "L/R +-10  A ok  B cancel"
 #define PDNA_SIDECAR_MKDIR_TITLE     "SIDECAR FOLDER"
 #define PDNA_SIDECAR_FULL_TITLE      "SIDECAR FULL"
 #define PDNA_SIDECAR_FULL_L1         "Too many clones of this Pokemon."

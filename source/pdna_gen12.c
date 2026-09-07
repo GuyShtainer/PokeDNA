@@ -599,6 +599,8 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
 #include "gba_rtc.h"       /* S5-B: the sidecar entry's transfer-time RTC stamp        */
 #include "rom_gbsprite.h"  /* S5-C: locates BaseStats in the user's own Gen-1 ROM      */
+#include "rom_gblearn.h"   /* BACKLOG #50: level-up learnsets for CREATE               */
+#include "gb_new_mon.h"    /* BACKLOG #50: gb_new_mon/gb_new_mon_g1_moves for CREATE   */
 #include "rom_gbbase.h"    /* S5-C: decodes the 28-byte BaseStats row rom_gbsprite found;
                             * pk_national_no (internal index -> National Dex) comes from
                             * data_tables.h, already included at the top of this file. */
@@ -1901,10 +1903,307 @@ static bool gb_view_hook(uint8_t* rec80) {
   }
 }
 
+/* ============================================================================
+ * BACKLOG #50 -- CREATE: build a legal Pokemon from scratch into an empty cell.
+ * ============================================================================
+ * species -> level -> ROM-derived facts (base stats/growth/moveset) -> gb_new_mon
+ * (pure C, source/gb_new_mon.c) -> the native summary (start_editing, so the
+ * player can tweak DVs/moves/name before it lands) -> gbs_insert -> gb_persist.
+ * Box/bank only: gbs_insert() itself refuses the party pseudo-box ("landing a
+ * converted mon in the party belongs to gbs_move()", gb_session.h) -- the exact
+ * limitation gb_paste_hook's own party guard above exists for, so this checks
+ * gb_box_is_party() first, in the same place, with the same message. */
+
+/* ROM lookup, independent of gb_gen1_locate_rom()/gb_gen1_base_from_rom() above
+ * (PASTE (GB)'s own Gen-1-only, beside-the-save-only pair): CREATE additionally
+ * tries the REGISTERED ROM (Settings > Game ROM, app_gb_rom_path()) first, and
+ * works for either generation. Duplicating ~30 lines of open/scan control flow
+ * costs less than generalizing a shipped, hardware-validated feature to do
+ * something it never needed to. Shares the SAME arena-resident storage
+ * (g_ed->romgs/romfil/romscan/romspath) safely: a session is always ONE
+ * generation, so the two families are never in use at once. No caching --
+ * romgs_ready/romgs_path are left untouched, not read or written here: CREATE
+ * is a rare, deliberate action, not a per-paste hot path, so a fresh scan every
+ * time is the simpler and safer choice. On success, g_ed->romgs holds a located
+ * ROM of exactly `want_gen` and g_ed->romspath names it (the FIL itself is
+ * closed again -- every later read reopens it by that path, same pattern
+ * gb_gen1_base_from_rom's own re-open uses). */
+static bool __attribute__((noinline)) gb_create_locate_rom(uint8_t want_gen) {
+  GbRomGen want = (want_gen == GB_GEN1) ? GB_ROM_GEN1 : GB_ROM_GEN2;
+
+  const char* reg = app_gb_rom_path(want_gen);
+  if (reg && reg[0]) {
+    int i = 0;
+    for (; reg[i] && i < (int)sizeof(g_ed->romspath) - 1; i++) g_ed->romspath[i] = reg[i];
+    g_ed->romspath[i] = 0;
+    memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+    if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) == FR_OK) {
+      FSIZE_t fsz = f_size(&g_ed->romfil);
+      uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+      int ok = rom_gbsprite_open(&g_ed->romgs, gb_read, &g_ed->romfil, sz,
+                                 g_ed->romscan, sizeof g_ed->romscan);
+      f_close(&g_ed->romfil);
+      if (ok && g_ed->romgs.gen == want) {
+        log_line("gen12 create: registered rom %s (gen %u)", g_ed->romspath, want_gen);
+        return true;
+      }
+      log_line("gen12 create: registered rom %s did not open as gen %u", g_ed->romspath, want_gen);
+    }
+  }
+
+  gb_rom_base_path();
+  int baselen = 0; while (g_ed->romspath[baselen]) baselen++;
+  static const char* const kExt[2] = { ".gb", ".gbc" };
+  for (int e = 0; e < 2; e++) {
+    int bp = baselen;
+    const char* ext = kExt[e];
+    for (int i = 0; ext[i] && bp < (int)sizeof(g_ed->romspath) - 1; i++) g_ed->romspath[bp++] = ext[i];
+    g_ed->romspath[bp] = 0;
+    memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+    if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) { g_ed->romspath[baselen] = 0; continue; }
+    FSIZE_t fsz = f_size(&g_ed->romfil);
+    uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+    int ok = rom_gbsprite_open(&g_ed->romgs, gb_read, &g_ed->romfil, sz,
+                               g_ed->romscan, sizeof g_ed->romscan);
+    f_close(&g_ed->romfil);
+    if (ok && g_ed->romgs.gen == want) {
+      log_line("gen12 create: rom beside the save %s (gen %u)", g_ed->romspath, want_gen);
+      return true;
+    }
+    g_ed->romspath[baselen] = 0;
+  }
+  log_line("gen12 create: no gen-%u rom (registered or beside %s)", want_gen, g_ed->path ? g_ed->path : "?");
+  return false;
+}
+
+/* Base stats/growth for `dex` off the ROM gb_create_locate_rom already located --
+ * one small noinline frame per generation rather than one shared by a union, so
+ * neither frame carries the other generation's struct. Reopens g_ed->romfil by
+ * the already-resolved g_ed->romspath (same re-open pattern as gb_gen1_base_
+ * from_rom above), closes it again before returning either way. */
+static bool __attribute__((noinline)) gb_create_base1(uint16_t dex, RomGb1Species* out) {
+  memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+  if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return false;
+  bool ok = rom_gbbase_gen1(&g_ed->romgs, gb_read, &g_ed->romfil, dex, out);
+  f_close(&g_ed->romfil);
+  return ok;
+}
+static bool __attribute__((noinline)) gb_create_base2(uint16_t dex, RomGb2Species* out) {
+  memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+  if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return false;
+  bool ok = rom_gbbase_gen2(&g_ed->romgs, gb_read, &g_ed->romfil, dex, out);
+  f_close(&g_ed->romfil);
+  return ok;
+}
+
+/* The (up to) four moves a level-`level` mon of `dex` would know, off the SAME
+ * located ROM. `g1_start` is rom_gbbase_gen1's own start[4] for a Gen-1 target
+ * (merged in via rom_gblearn_moves_at_seeded -- gb_new_mon_g1_moves does the
+ * identical thing, duplicated here rather than called because that helper wants
+ * an already-open RomGbLearn* and this function is also where one gets opened);
+ * NULL for Gen 2, whose own table already includes the starters. RomGbLearn
+ * itself is a small (~24 B) stack local -- unlike RomGbSprite it carries no big
+ * scratch buffer of its own to justify arena residency. Returns the count
+ * filled (0..4), or -1 on any failure. */
+static int __attribute__((noinline))
+gb_create_moves(uint16_t dex, uint8_t level, const uint8_t g1_start[4], uint8_t out4[4]) {
+  memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+  if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return -1;
+  RomGbLearn rl;
+  int ok = rom_gblearn_open(&rl, g_ed->s.gen, gb_read, &g_ed->romfil, g_ed->romgs.size);
+  int kept = -1;
+  if (ok) {
+    kept = g1_start ? rom_gblearn_moves_at_seeded(&rl, dex, level, g1_start, out4)
+                    : rom_gblearn_moves_at(&rl, dex, level, out4);
+  }
+  f_close(&g_ed->romfil);
+  return kept;
+}
+
+/* Species picker for CREATE: dex-style rows ("No.NNN NAME", pdna_pick.c's own
+ * sp_row visual convention) over dex 1..max_dex ONLY, names only -- no icon grid.
+ * A SEPARATE, small, gen-agnostic picker rather than reusing pdna_pick.c's big
+ * pick_species() (411 species in Hoenn-internal-index order, icon grid, filter
+ * menu, search): that picker's list has no dex-RANGE concept to bolt onto
+ * safely, and drawing a Gen-1/2 mon via its Gen-3 icon would be exactly the
+ * "wrong generation's art" rom_gbsprite.h's own header argues against. Returns
+ * 1..max_dex, or 0 on B (0 is never a real dex). */
+static uint16_t __attribute__((noinline)) gb_create_pick_species(uint8_t max_dex) {
+  enum { ROWS = 15 };            /* 24..156, 9 px pitch: fits inside the hlines below */
+  int sel = 0, top = 0;
+  for (;;) {
+    if (sel < top) top = sel;
+    if (sel >= top + ROWS) top = sel - ROWS + 1;
+
+    ui_clear();
+    ui_text(4, 3, UI_TITLE, PDNA_GBCREATE_SPECIES_TITLE);
+    ui_hline(0, 21, UI_SCR_W, UI_BORDER);
+    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+    ui_text(4, 152, UI_DIM, PDNA_GBCREATE_SPECIES_FOOT);
+    for (int i = 0; i < ROWS; i++) {
+      int dex = top + i + 1;
+      if (dex > max_dex) break;
+      int y = 24 + i * 9;
+      bool s = (top + i == sel);
+      ui_fill_rect(2, y - 1, 236, 9, s ? UI_SEL : UI_BG);
+      char row[16];
+      siprintf(row, "No.%03u", (unsigned)dex);
+      ui_text(6, y, s ? UI_SELTEXT : UI_DIM, row);
+      /* dex <= 251 IS the Gen-3 internal species index for this whole range
+       * (data_tables.h; the same identity gb_editor.c's gbe_has_gender_row
+       * already leans on), so pk_species_name(dex) needs no separate lookup. */
+      ui_ptext_fit(66, y, 130, s ? UI_SELTEXT : UI_TEXT, pk_species_name((uint16_t)dex));
+    }
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
+    if (k & KEY_B) return 0;
+    if (k & KEY_A) return (uint16_t)(sel + 1);
+    if (k & KEY_UP)    sel = (sel > 0) ? sel - 1 : max_dex - 1;
+    else if (k & KEY_DOWN)  sel = (sel + 1) % max_dex;
+    else if (k & KEY_L)     sel = (sel >= ROWS) ? sel - ROWS : 0;
+    else if (k & KEY_R)     sel = (sel + ROWS < max_dex) ? sel + ROWS : max_dex - 1;
+  }
+}
+
+/* Level picker for CREATE: no dedicated "type a number" prompt exists anywhere
+ * in this tree to reuse (osk.h's osk_input is QWERTY text only) -- this is
+ * pdna_main.c's own pick_pokeblock_color() shape (a small LEFT/RIGHT/A/B modal)
+ * adapted to one adjustable number, with gbe_adjust's own GBE_LEVEL step sizes
+ * (gb_editor.c: 1 plain, 10 with L/R) so it feels like every other level control
+ * in this tree. Returns 1..100, or -1 on B. */
+static int __attribute__((noinline)) gb_create_pick_level(uint8_t initial) {
+  int lvl = (initial >= 1 && initial <= 100) ? initial : 5;
+  for (;;) {
+    ui_clear();
+    ui_text(4, 3, UI_TITLE, PDNA_GBCREATE_LEVEL_TITLE);
+    ui_hline(0, 21, UI_SCR_W, UI_BORDER);
+    char b[16]; siprintf(b, "Lv %d", lvl);
+    ui_text(104, 70, UI_TITLE, b);
+    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+    ui_text(4, 152, UI_DIM, PDNA_GBCREATE_LEVEL_FOOT);
+
+    u16 k = s_wait(KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B);
+    if (k & KEY_B) return -1;
+    if (k & KEY_A) return lvl;
+    if (k & KEY_LEFT)       lvl = (lvl > 1)   ? lvl - 1  : 1;
+    else if (k & KEY_RIGHT) lvl = (lvl < 100) ? lvl + 1  : 100;
+    else if (k & KEY_L)     lvl = (lvl > 10)  ? lvl - 10 : 1;
+    else if (k & KEY_R)     lvl = (lvl < 91)  ? lvl + 10 : 100;
+  }
+}
+
+/* AppSrcOps.create. `slot` is unused: gbs_insert() always appends at the box's
+ * own next free slot (gb_session.h), which is where an empty cell the user is
+ * looking at necessarily already is; kept in the signature only because
+ * app_mon_menu_readonly hands both (box, slot) over uniformly (pdna_app.h). */
+static bool gb_create_hook(int box, int slot) {
+  (void)slot;
+  if (gb_box_is_party(g_ed->s.gen, box)) {
+    snd_deny();
+    msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_PARTY_L1, 0);
+    return false;
+  }
+  GbsStatus wr = gbs_box_writable(&g_ed->s, box);
+  if (wr != GBS_OK) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_BOXWR_TITLE, UI_WARN, gbs_status_text(wr),
+             wr == GBS_ERR_UNWRITABLE ? PDNA_GBEDIT_UNWRITABLE_HINT : 0);
+    return false;
+  }
+  GbsStatus ld = gbs_load_list(&g_ed->s, box, g_ed->list);
+  if (ld != GBS_OK) {
+    snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(ld), 0); return false;
+  }
+  int count = gb_list_count(g_ed->s.gen, g_ed->list, box);
+  if (count < 0 || count >= gb_list_capacity(g_ed->s.gen, box)) {
+    snd_deny(); msg_wait(PDNA_GBCREATE_FULL_TITLE, UI_WARN, PDNA_GBCREATE_FULL_L1, 0); return false;
+  }
+
+  uint16_t dex = gb_create_pick_species(gb_max_species(g_ed->s.gen));
+  if (!dex) return false;
+  int lvl = gb_create_pick_level(5);
+  if (lvl < 0) return false;
+
+  if (!gb_create_locate_rom(g_ed->s.gen)) {
+    snd_deny();
+    msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_NOROM_L1, PDNA_GBCREATE_NOROM_L2);
+    return false;
+  }
+
+  GbNewMonSrc src; memset(&src, 0, sizeof src);
+  uint8_t g1_start_buf[4]; const uint8_t* g1_start = NULL;
+  if (g_ed->s.gen == GB_GEN1) {
+    RomGb1Species sp;
+    if (!gb_create_base1(dex, &sp)) {
+      snd_deny(); msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0); return false;
+    }
+    memcpy(src.base, sp.base.base, GB_NSTATS);
+    src.type1 = sp.base.type1; src.type2 = sp.base.type2;
+    src.growth = sp.growth;
+    memcpy(g1_start_buf, sp.start, 4);
+    g1_start = g1_start_buf;
+  } else {
+    RomGb2Species sp;
+    if (!gb_create_base2(dex, &sp)) {
+      snd_deny(); msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0); return false;
+    }
+    src.growth = sp.growth;
+  }
+
+  int kept = gb_create_moves(dex, (uint8_t)lvl, g1_start, src.moves);
+  if (kept < 0) {
+    snd_deny();
+    msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_NOROM_L1, PDNA_GBCREATE_NOROM_L2);
+    return false;
+  }
+
+  src.species_name = pk_species_name(dex);
+  src.ot_name = (g_m && g_m->player[0]) ? g_m->player : 0;
+  src.ot_id = g_m ? g_m->tid : 0;
+
+  GbEditMon party_mon;
+  if (!gb_new_mon(g_ed->s.gen, dex, (uint8_t)lvl, &src, (uint32_t)qran(), &party_mon)) {
+    snd_deny();
+    msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_BUILDFAIL_L1, 0);
+    return false;
+  }
+
+  /* Party -> box, the SAME technique gbs_move() uses for a party->box move
+   * (gb_session.c: "drop the extra bytes... exactly what the game's own deposit
+   * does"): the box-shaped fields are a byte-identical PREFIX of the party-
+   * shaped ones in both generations (gen1_save.h's 33 of 44, gen2_save.h's own
+   * "PC record: species..level" / "+ status, HP and the 5 battle stats"), and
+   * gb_new_mon() already synced Gen 1's box-level byte via gb_set_level() --
+   * nothing left to do but reload the same bytes at the shorter length.
+   * gbs_insert() requires exactly this shape (mon->is_party == false). */
+  GbEditMon box_mon;
+  if (!gb_load_parts(&box_mon, g_ed->s.gen, false, party_mon.rec,
+                     party_mon.otname, party_mon.nick, party_mon.list_species))
+    return false;
+
+  bool saved = false; int card = 0;
+  pdna_gbsummary(&box_mon, true, true, g_ed->s.gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
+                false /* a freshly created mon can never already have a sidecar */,
+                &saved, &card);
+  if (!saved) return false;
+
+  int slot_out = 0;
+  GbsStatus ist = gbs_insert(&g_ed->s, box, &box_mon, &slot_out, g_ed->list);
+  if (ist != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: create insert box %d refused: %s", box, gbs_status_text(ist));
+    snd_error();
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
+    return false;
+  }
+  log_line("=== gb create -> %s box %d slot %d dex %u lv %d ===", g_ed->path, box, slot_out, dex, lvl);
+  return gb_persist("create");
+}
+
 static const AppSrcOps k_gb_ops = {
   .edit = gb_edit_hook, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
-  .editable = gb_editable_hook,
+  .editable = gb_editable_hook, .create = gb_create_hook,
 };
 
 /* Bag/menu review fix (the nav-menu-copy-lossy finding): the read-only nav-menu mount

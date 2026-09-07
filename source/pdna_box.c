@@ -2679,7 +2679,7 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
            * below, so the grabbed mon can be walked back to the panel. */
           start_carry(src, recs, box, gcur);
           play_grab_anim(src, box, gcur);
-        } else if (g_box[gcur].species || app_src_paste_offered()) {   /* GRAB / PASTE (GB):
+        } else if (g_box[gcur].species || app_src_empty_action_offered()) {   /* GRAB / PASTE (GB):
                                             * the box's own action menu, same call the
                                             * outer loop's NORMAL-mode A already makes.
                                             * S5-B review fix (BLOCKING #1): an empty GB
@@ -3273,7 +3273,7 @@ int pdna_box(BoxSource* src) {
        * fix (BLOCKING #1), when a read-only GB source is offering PASTE (GB): that
        * source's can_edit() is always false, so without this OR an empty GB cell never
        * opened the menu PASTE (GB) lives in at all. */
-      if (g_box[cur].species || src->can_edit() || app_src_paste_offered()) {
+      if (g_box[cur].species || src->can_edit() || app_src_empty_action_offered()) {
         uint8_t* rec = recs + (uint32_t)cur * 80;
         int mbox = src->is_bank ? 0 : box;                               /* box index within menu_block */
         boxoam_suspend();                                                /* sprites off while the menu/summary is up */

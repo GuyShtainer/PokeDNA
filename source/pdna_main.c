@@ -4075,9 +4075,17 @@ bool app_src_readonly(void) { return g_src_ro; }
  * source's can_edit() is a constant false, so an empty GB cell never reached the menu
  * PASTE (GB) was added to. This is the same predicate app_mon_menu's own g_src_ro
  * branch already uses to decide whether to offer PASTE (GB) at all -- exposed here so
- * pdna_box.c can OR it into its own gate without duplicating the four-way check. */
-bool app_src_paste_offered(void) {
-  return g_src_ro && g_src_ops && g_src_ops->paste && g_clip.occupied && !g_clip.from_gb;
+ * pdna_box.c can OR it into its own gate without duplicating the four-way check.
+ *
+ * BACKLOG #50 renamed this from app_src_paste_offered: CREATE is the exact same kind
+ * of empty-cell action as PASTE (GB) -- reachable only if this menu gets to OPEN at
+ * all -- so it needed the same OR-in at all three call sites (pdna_box.c's two menu-
+ * open gates, and this function's own g_src_ro-branch use in app_mon_menu below).
+ * A source offering EITHER counts; nothing here assumes both. */
+bool app_src_empty_action_offered(void) {
+  bool paste  = g_src_ro && g_src_ops && g_src_ops->paste  && g_clip.occupied && !g_clip.from_gb;
+  bool create = g_src_ro && g_src_ops && g_src_ops->create;
+  return paste || create;
 }
 
 /* The action menu for a source that is read-only in ITSELF: only actions that cannot
@@ -4095,11 +4103,24 @@ bool app_src_paste_offered(void) {
  * would either dereference a Pokemon that is not there or offer an action ("EDIT" a
  * Pokemon that does not exist) that makes no sense, so the row list collapses to just
  * that one row + CANCEL. See pdna_app.h's AppSrcOps.paste for what the row does. */
-static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, bool empty) {
+/* `box`/`slot` (BACKLOG #50): the empty cell's own grid position, forwarded straight
+ * from app_mon_menu's own parameters -- meaningless for every row except RO_CREATE
+ * (an empty cell has no rec80 to reverse-map through gb_locate() the way edit/move/
+ * release do), so `empty == false` callers may pass anything; both real call sites
+ * below hand over the real values regardless, since threading them through is free. */
+static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, bool empty,
+                                  int box, int slot) {
   const char* locked = (!empty && g_src_why) ? g_src_why(rec) : 0;
-  enum { RO_VIEW, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CANCEL };
+  enum { RO_VIEW, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CREATE, RO_CANCEL };
   int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
   if (empty) {
+    /* CREATE first, PASTE (GB) after -- the same order Gen-3's own empty-cell menu
+     * uses (app_mon_menu's A_CREATE/A_PASTE). Gated on the source actually offering
+     * one (pdna_app.h's AppSrcOps.create) rather than on !is_party the way Gen-3's is:
+     * a GB session's party is just one more box in its own numbering (Gb12Mount's own
+     * "the party is exposed as one more box"), not a structurally different kind of
+     * slot -- gb_create_hook decides for itself whether THIS box can take one. */
+    if (g_src_ops && g_src_ops->create) { lab[n] = PDNA_LBL_CREATE; act[n++] = RO_CREATE; }
     lab[n] = PDNA_LBL_PASTE_GB; act[n++] = RO_PASTE;
   } else {
     /* Gen-3 parity (Guy, 2026-09-05: "make sure the pokemon edit is in the summary for
@@ -4185,8 +4206,9 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
         case RO_RELEASE: return (g_src_ops && g_src_ops->release) ? g_src_ops->release(rec) : false;
         case RO_LEGAL: pdna_legality_show(m0); return false;
         case RO_COPY:  return app_copy(rec, is_party);
-        case RO_PASTE: return (g_src_ops && g_src_ops->paste) ? g_src_ops->paste(rec) : false;
-        default:       return false;
+        case RO_PASTE:  return (g_src_ops && g_src_ops->paste)  ? g_src_ops->paste(rec)   : false;
+        case RO_CREATE: return (g_src_ops && g_src_ops->create) ? g_src_ops->create(box, slot) : false;
+        default:        return false;
       }
     }
   }
@@ -4219,12 +4241,16 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
       /* An empty GB cell offers PASTE (GB) only when this source accepts one AND the
        * clipboard holds a Gen-3 record that did not itself come off a Game Boy source
        * (from_gb) -- pasting a GB-native clip back down would be the wrong direction
-       * and gen3_to_gb() would refuse it anyway (no Gen-3 record to convert). */
-      if (g_src_ops && g_src_ops->paste && g_clip.occupied && !g_clip.from_gb)
-        return app_mon_menu_readonly(rec, is_party, &m0, true);
+       * and gen3_to_gb() would refuse it anyway (no Gen-3 record to convert). CREATE
+       * (BACKLOG #50) needs no such clipboard check -- the source decides for itself,
+       * per empty cell, whether it can build one there. */
+      bool paste_ok  = g_src_ops && g_src_ops->paste && g_clip.occupied && !g_clip.from_gb;
+      bool create_ok = g_src_ops && g_src_ops->create;
+      if (paste_ok || create_ok)
+        return app_mon_menu_readonly(rec, is_party, &m0, true, box, slot);
       return false;                                       /* nothing to create or paste into */
     }
-    return app_mon_menu_readonly(rec, is_party, &m0, false);
+    return app_mon_menu_readonly(rec, is_party, &m0, false, box, slot);
   }
 
   enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_TOBOX, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CREATE, A_HATCH, A_CANCEL };

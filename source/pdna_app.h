@@ -135,6 +135,13 @@ bool app_src_readonly(void);
  * buzz. NULL = no extra gate beyond the cart (app_mon_menu_readonly falls back to the
  * old `edit && app_can_edit()` expression); a source that has a box-level gate of its
  * own (pdna_gen12.c's gb_editable_hook) implements both checks here instead. */
+/* `create` (BACKLOG #50): build a brand-new Pokemon into an EMPTY cell. Unlike every
+ * other hook here it takes no `rec80` -- an empty cell has no record to convert, so
+ * there is nothing to reverse-map through gb_locate() the way edit/move/release do.
+ * The caller instead hands over the (box, slot) app_mon_menu already knows (its own
+ * parameters, threaded through app_mon_menu_readonly rather than re-derived). NULL =
+ * this source offers no CREATE (the empty-cell row simply does not appear); a source
+ * that can build one implements it (pdna_gen12.c's gb_create_hook). */
 typedef struct {
   bool (*edit)(uint8_t* rec80);
   bool (*move)(uint8_t* rec80);
@@ -143,6 +150,7 @@ typedef struct {
   bool (*paste)(uint8_t* rec80);
   bool (*view)(uint8_t* rec80);
   bool (*editable)(const uint8_t* rec80);
+  bool (*create)(int box, int slot);
 } AppSrcOps;
 void app_src_ops_set(const AppSrcOps* ops);
 
@@ -155,15 +163,17 @@ void app_src_ops_set(const AppSrcOps* ops);
  * this speculatively and do not retain the pointer past the hook's return. */
 const uint8_t* app_clip_rec(void);
 
-/* S5-B review fix: would app_mon_menu(rec80, ...) on THIS empty cell right now offer
- * PASTE (GB)? pdna_box.c's grid loop decides whether to call app_mon_menu AT ALL on an
- * empty cell before app_mon_menu ever runs (`g_box[cur].species || src->can_edit()`),
- * and a foreign read-only source's can_edit() is always false -- so without this, an
- * empty GB cell's A press was silently swallowed and PASTE (GB) was unreachable. OR
- * this into that gate. True iff: a read-only source is active, it registered a `paste`
- * hook, and the clipboard holds a Gen-3 record that did not itself come off a Game Boy
- * source (the exact same four-way check app_mon_menu's own g_src_ro branch uses). */
-bool app_src_paste_offered(void);
+/* S5-B review fix, renamed for BACKLOG #50: would app_mon_menu(rec80, ...) on THIS
+ * empty cell right now offer PASTE (GB) OR CREATE? pdna_box.c's grid loop decides
+ * whether to call app_mon_menu AT ALL on an empty cell before app_mon_menu ever runs
+ * (`g_box[cur].species || src->can_edit()`), and a foreign read-only source's
+ * can_edit() is always false -- so without this, an empty GB cell's A press was
+ * silently swallowed and neither action was reachable. OR this into that gate. True
+ * iff a read-only source is active AND EITHER: it registered a `paste` hook and the
+ * clipboard holds a Gen-3 record that did not itself come off a Game Boy source (the
+ * same check this predicate always made); OR it registered a `create` hook (which
+ * decides for itself, per empty cell, whether it can actually build one there). */
+bool app_src_empty_action_offered(void);
 
 /* Bank "Copy to game": inject a stored 80-byte box record into the loaded save's
  * first free PC box slot (and commit). Returns true iff written. Omega-only. */
