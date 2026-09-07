@@ -75,6 +75,15 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     ("e5-icons", "E5 — Gen-2 party/PC menu icons, real ROM art (docs/SPRITE-ERA-DESIGN.md)",
      ("E5",)),
     ("misc", "Misc — captions without a tracked feature prefix", ()),
+    # ---- appended by lane b2 (BACKLOG #15 / #2), tools/g3_shots.py — see that file's
+    # own docstring for the exact navigation each shot drives. Appended after "misc"
+    # rather than inserted earlier in the list so this stays a pure addition with no
+    # existing line touched (multiple lanes edit this file's shot tooling in parallel;
+    # an append-only hunk here is trivial to merge no matter what lands around it). ----
+    ("osk-rename", "#15 — the rename OSK seeds the full name, caret at the end",
+     ("#15",)),
+    ("flags-sections", "#2 — data editor: collapsible flag sections + the honest Elite-Four section",
+     ("#2",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
