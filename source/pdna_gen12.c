@@ -590,6 +590,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "snd.h"
 #include "rmbl.h"
 #include "pdna_app.h"
+#include "sprite_era.h"    /* SE_KIND_GEN1/SE_KIND_GEN2 -- BACKLOG #58's app_nav_refuse */
 #include "gb_session.h"
 #include "gb_editor.h"
 #include "pdna_gbedit.h"
@@ -1939,17 +1940,17 @@ static const AppSrcOps k_gb_ops_ro = {
  * set only by pdna_gen12_source): pdna_box() now genuinely returns 2 for this
  * session, which is what this helper handles.
  *
- * The shared nav menu (app_nav_menu -> pdna_main.c's nav_menu) under a mask that
- * only lights up the two rows honest for a raw Game Boy save: Settings (registers/
- * clears the Gen-1/2 ROM this session's own art reads from) and Trainer (reuses
- * gb_info_page's kind/player/TID line -- it IS this mount's trainer/save info).
- * Everything else on the list acts on Gen-3 SaveBlock state that does not exist
- * here (Bag, Flags, Bases, Frontier, Fly, Map, the real Bank, ...) -- BACKLOG
- * #49/#52 track wiring any of it up for real; until then picking it says so
- * instead of silently doing nothing, the same complaint this item exists to fix. */
+ * BACKLOG #58 (Guy, 2026-09-07): "use the same start button menu in all games... say
+ * 'coming soon' or 'not supported in Gen 2 games'." This used to open the shared nav
+ * menu (app_nav_menu -> pdna_main.c's nav_menu) under a MASK that dimmed every row but
+ * Settings/Trainer/Back and answered one generic "GEN 3 ONLY" for all of them. The menu
+ * is undimmed now (NAV_ALL_AVAILABLE, identical to a Gen-3 save's own), and every row
+ * besides Settings/Trainer/Back goes through app_nav_refuse (pdna_main.c), which
+ * consults source/nav_avail.h's rule table for an honest per-row COMING SOON / NOT IN
+ * GEN 1 / NOT IN GEN 2 answer instead of one blanket message. */
 static void gb_nav_from_start(Gb12Mount* m) {
-  uint32_t mask = (1u << NV_SETTINGS) | (1u << NV_BACK) | (1u << NV_TRAINER);
-  int nv = app_nav_menu(mask);
+  int kind = (m->kind == GB12_SAVE_RBY) ? SE_KIND_GEN1 : SE_KIND_GEN2;
+  int nv = app_nav_menu(NAV_ALL_AVAILABLE);
   if (nv == NV_SETTINGS) {
     app_nav_settings();
     /* Settings can register/clear a Gen-1/2 ROM or flip the Sprites grid. Neither
@@ -1971,18 +1972,15 @@ static void gb_nav_from_start(Gb12Mount* m) {
     pdna_origin_box_set_hint(m->kind == GB12_SAVE_RBY ? PDNA_GEN1 : PDNA_GEN2);
   } else if (nv == NV_TRAINER) {
     (void)gb_info_page(m);      /* A and B both just return to the grid from here */
-  } else if (nv == NAV_UNAVAILABLE) {
-    snd_deny();
-    /* E6 D5: the old text ("See BACKLOG #49/#52.") pointed a player at Guy's own
-     * issue tracker, which they have no access to and no reason to know exists. */
-    msg_wait("GEN 3 ONLY", UI_DIM, "Gen 3 saves only, for now.", 0);
+  } else if (nv != NV_BACK) {
+    app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */
   }
   /* NV_BACK: nothing to do -- the caller re-enters the grid right after this returns.
-   * E6 D4: icon_store.c's backstop (the same call pdna_main.c's `switch (nav_menu())`
-   * makes on every screen exit -- see icon_store.c ~817-823) retires any Tier B icon
-   * plan left over from whatever this menu visited, so a later screen never reads a
-   * stale claim as a yes. It cannot release THIS session's own EWRAM arena: that
-   * arena was acquired directly (app_arena_acquire in pdna_gen12_show), not through
+   * E6 D4: icon_store.c's backstop (the same call pdna_main.c's nav switch makes on
+   * every screen exit -- see icon_store.c ~817-823) retires any Tier B icon plan left
+   * over from whatever this menu visited, so a later screen never reads a stale claim
+   * as a yes. It cannot release THIS session's own EWRAM arena: that arena was
+   * acquired directly (app_arena_acquire in pdna_gen12_show), not through
    * icon_store_borrow(), so icon_store's s_borrow is NULL here and the call is a
    * harmless no-op that only exists to keep the two nav-menu call sites symmetric. */
   icon_store_borrow(false);

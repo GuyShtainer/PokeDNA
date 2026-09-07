@@ -99,6 +99,7 @@
 #include "pdna_romfull.h"   /* the FULL-image verifier screen (boot hold R+SELECT / FILE MENU) */
 #include "ui.h"
 #include "pdna_layout.h"   /* screen geometry + fixed strings, shared with the host text-fit test */
+#include "nav_avail.h"     /* BACKLOG #58: per-row nav availability + honest messages */
 
 /* PDNA_DIR itself now lives in pdna_app.h (S5-B review fix #10: shared, not re-defined
  * per file) -- pdna_app.h is included above, before this point. */
@@ -8314,6 +8315,37 @@ static int nav_menu(uint32_t avail_mask) {
 int app_nav_menu(uint32_t avail_mask) { return nav_menu(avail_mask); }
 void app_nav_settings(void) { pdna_settings(); }
 
+/* BACKLOG #58: see pdna_app.h's own comment for the two call sites. Title comes from
+ * (state, kind) -- kept to <= 12 chars, msg_wait's own x=28 clamp is 184px but a
+ * dialog TITLE reads badly wrapped, so this is a tighter self-imposed budget, same as
+ * every other short title this screen family already uses ("READ-ONLY", "NO ROOM",
+ * ...). The reason line is nav_avail_why()'s own <= 30-char string (host-tested). */
+void app_nav_refuse(int nv_item, int save_kind) {
+  NavAvail av = nav_avail(nv_item, save_kind);
+  const char* why = nav_avail_why(nv_item, save_kind);
+  if (av == NAV_OK || !why || !why[0]) {
+    /* Review D3: both callers only get here having already decided they cannot
+     * dispatch, so NAV_OK / a missing table entry means "I have no message", never
+     * "fine". Silence is the exact bug #58 fixed -- say something generic instead. */
+    snd_deny(); msg_wait("COMING SOON", UI_DIM, "Not available here yet.", 0); return;
+  }
+  const char* title;
+  if (av == NAV_COMING_SOON) {
+    title = "COMING SOON";
+  } else {
+    switch (save_kind) {
+      case SE_KIND_GEN1: title = "NOT IN GEN 1"; break;
+      case SE_KIND_GEN2: title = "NOT IN GEN 2"; break;
+      case SE_KIND_FRLG: title = "NOT IN FRLG";  break;
+      case SE_KIND_RS:   title = "NOT IN RS";    break;
+      case SE_KIND_EM:   title = "NOT IN EM";    break;
+      default:           title = "UNAVAILABLE";  break;
+    }
+  }
+  snd_deny();
+  msg_wait(title, UI_DIM, why, 0);
+}
+
 /* ---- PC-storage BoxSource: the in-save boxes, rendered by the shared box screen.
  * Accessors operate on g_pc (+ g_sb1 for the Emerald Walda wallpaper). ---- */
 static uint8_t* pcsrc_records(int box) { return g_pc + 0x0004 + (uint32_t)box * 30 * 80; }
@@ -9051,7 +9083,23 @@ static void view_save(const char* path) {
     }
     if (r == 2) {                                /* START -> nav menu */
       int refresh_party = 0;
-      switch (nav_menu(NAV_ALL_AVAILABLE)) {
+      int nvsel = nav_menu(NAV_ALL_AVAILABLE);
+      /* BACKLOG #58: consult the SAME rule table a Game Boy session's START menu uses
+       * (gb_nav_from_start, pdna_gen12.c) before dispatching -- a row nav_avail()
+       * marks NOT_IN_GAME (or, defensively, COMING_SOON; no Gen-3 row is today) never
+       * reaches the switch below at all. Most of the six candidates this item looked
+       * at (Pokeblocks/Bases/Frontier/Mirage/Clock fix/Battle Records) already check
+       * the game THEMSELVES and are never intercepted here -- see nav_avail.c's own
+       * header for the exact line of each, cited so this is not just re-asserted. */
+      /* se_kind_from_game(g_game), not app_save_kind(): g_game is written at exactly
+       * one site (view_save's load) and never by a GB session, so it is the open
+       * Gen-3 save's own game with no dependence on the GB-session lifecycle (which
+       * does clear g_m on exit -- pdna_gen12_source(0) -- so app_save_kind() would
+       * also be right today; this is simply the one with nothing to go stale). */
+      const int nvkind = se_kind_from_game((int)g_game);
+      NavAvail nvav = nav_avail(nvsel, nvkind);
+      if (nvav != NAV_OK) { app_nav_refuse(nvsel, nvkind); }
+      else switch (nvsel) {
         case NV_PARTY:   {                        /* Guy: "I expected to see the party menu
                           * on top of the pc pokemon in the background" -- with a PC box
                           * open, route to the SAME strip-over-the-box popup the box
