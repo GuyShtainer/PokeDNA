@@ -100,6 +100,10 @@ int main(int argc, char** argv) {
       printf("(3) reroll: nature=%u shiny=%d (wanted Bold=5, shiny=1)\n", m.nature, m.isShiny);
       CHECK(m.nature == 5, "rerolled nature = Bold");
       CHECK(m.isShiny, "rerolled mon is shiny");
+      /* BACKLOG #46: em_preview decodes into a local scratch[100] that is gone the
+       * instant it returns -- pk_decode_mon() unconditionally sets m.raw to that
+       * dead address, so em_preview must null it back out before handing `m` back. */
+      CHECK(m.raw == NULL, "em_preview never hands out a dangling raw pointer");
     }
   }
 

@@ -42,7 +42,13 @@ typedef struct {
   uint16_t stats[PK_NSTATS];  /* party: plaintext; box: computed                 */
   uint8_t  gender;            /* 0=M, 1=F, 2=genderless (filled by pk_resolve)   */
   uint8_t  form;              /* Unown letter 0..27 (A..?), else 0               */
-  const uint8_t* raw;         /* back-ref to the 80/100-byte record (edit later) */
+  const uint8_t* raw;         /* back-ref to the 80/100-byte record (edit later).
+                               * NULL = the caller's copy is gone; never dereference.
+                               * pk_decode_mon() always sets this to whatever buffer it
+                               * was handed, even a stack scratch buffer the caller is
+                               * about to discard (gen3_edit.c's em_preview, pdna_main.c's
+                               * app_create_mon) -- those callers null it back out right
+                               * after decoding, on purpose (BACKLOG #46). */
 } PkMon;
 
 /* Decode one record. is_party => 100-byte (plaintext stats/level); else 80-byte

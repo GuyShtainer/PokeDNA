@@ -3975,6 +3975,13 @@ static bool app_create_mon(uint8_t* rec, AppCommitFn commit, uint8_t* block) {
   PkMon fin;
   memset(&fin, 0, sizeof fin);
   pk_decode_mon(out, false, &fin);
+  /* BACKLOG #46: fin.raw now points at `out`, a local array this function still owns
+   * -- but the no-egg-route branch just below calls gen3_edit_commit(&e, out), which
+   * rewrites those very bytes out from under fin.raw's nose while fin is still alive.
+   * Null it before that can happen; fin's own fields (already latched above) are all
+   * this function ever reads. See gen3_edit.c's em_preview for the sibling case and
+   * gen3_mon.h's raw comment for the contract. */
+  fin.raw = NULL;
   if (!gen3_species_can_hatch(fin.species) && fin.metLevel == 0 && !fin.isEgg) {
     /* A box record stores no level — it stores EXP — so derive the level the same way
      * the checker does (gen3_legality2.c:406) rather than trusting fin.level, which

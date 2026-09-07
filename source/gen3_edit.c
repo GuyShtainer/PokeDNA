@@ -657,6 +657,12 @@ void em_preview(const EditMon* e, PkMon* out) {
   uint8_t scratch[100];
   gen3_edit_commit(e, scratch);
   pk_decode_mon(scratch, e->is_party, out);
+  /* BACKLOG #46: pk_decode_mon() always sets out->raw = the buffer it was handed --
+   * here, `scratch`, whose frame is gone the instant this function returns. Every
+   * caller only ever reads out's VALUE fields (nature, IVs, PP, ...), never raw, but
+   * "never today" is not a contract; NULL is, and gen3_mon.h documents it that way
+   * next to the field. */
+  out->raw = NULL;
 }
 
 bool gen3_edit_roundtrip_ok(const uint8_t* rec, bool is_party) {
