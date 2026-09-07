@@ -218,36 +218,62 @@ static int gbl_verify(GbReadFn read, void* ctx, uint32_t size, uint32_t table_of
   return with_moves;
 }
 
-typedef struct {
-  GbReadFn read; void* ctx; uint32_t size; uint8_t gen; uint32_t n;
-  uint32_t found; uint32_t good_off; uint8_t good_bank;
-} GblScanState;
+/* Measured on Guy's four dumps: the phase-A+B prefilter (full-N pointer shape,
+ * see full_pointer_shape_ok) leaves exactly 1..4 survivors. 8 is double that
+ * for headroom; MORE than 8 is refused as ambiguous rather than silently
+ * checking only the first 8 -- the same "unique hit or refuse" doctrine as
+ * everywhere else in this module, just applied to the collection step too. */
+#define GBL_MAX_HITS 8u
 
-static void gbl_on_hit(void* user, uint32_t off) {
-  GblScanState* st = (GblScanState*)user;
-  if (!full_pointer_shape_ok(st->read, st->ctx, off, st->n)) return;
+typedef struct { uint32_t off[GBL_MAX_HITS]; uint32_t n; } GblHits;
 
-  /* The primary guess -- the table's own bank -- is what every real ROM this
-   * module has been checked against actually uses (rom_gblearn.h's sanity
-   * addresses); only fall back to a full bank sweep if that guess does not
-   * clear the "real learnset" bar. */
+typedef struct { GbReadFn read; void* ctx; uint32_t n; GblHits* hits; } GblCollectCtx;
+
+/* Phase A's own callback: runs phase B (full_pointer_shape_ok) INLINE -- cheap,
+ * pure arithmetic over 2*n bytes, no big locals of its own -- and only STORES a
+ * survivor of THAT. This is load-bearing, not an optimisation: phase A alone
+ * (prefilter_hit, the first GBL_PREFILTER_K pointers only) lets through
+ * hundreds of coincidental hits over a multi-MB ROM (measured: 370..1364 on
+ * Guy's four dumps); collecting THOSE into GBL_MAX_HITS(8) would overflow the
+ * "too many, refuse" bound on every real ROM before phase B ever narrowed
+ * anything down to the 1..4 it actually leaves. What phase B's own cheap check
+ * does NOT do -- pull in the expensive per-candidate decode (gbl_verify ->
+ * walk_entry, which is what actually reads and parses evolution/move bytes) --
+ * is deferred to AFTER scan_phase_a has returned and its 568 B frame is gone,
+ * the same "cheap scan now, expensive verify later, never both nested" shape
+ * rom_gbsprite.c's own locate()/scan_multi() pair uses. */
+static void gbl_collect_hit(void* user, uint32_t off) {
+  GblCollectCtx* cc = (GblCollectCtx*)user;
+  if (!full_pointer_shape_ok(cc->read, cc->ctx, off, cc->n)) return;
+  GblHits* h = cc->hits;
+  if (h->n < GBL_MAX_HITS) h->off[h->n] = off;
+  h->n++;
+}
+
+/* Phase C for ONE already phase-B-shape-checked candidate (gbl_collect_hit
+ * already ran full_pointer_shape_ok before this was ever stored, so it is not
+ * repeated here): the primary bank guess -- the table's own bank, what every
+ * real ROM this module has been checked against actually uses (rom_gblearn.h's
+ * sanity addresses) -- then a full bank sweep only if that guess does not
+ * clear the "real learnset" bar. Returns 1 and fills `*out_bank` on a hit
+ * clearing the bar, 0 otherwise. */
+static int gbl_verify_candidate(GbReadFn read, void* ctx, uint32_t size, uint32_t off,
+                                uint8_t gen, uint32_t n, uint8_t* out_bank) {
   uint8_t primary = (uint8_t)(off / GB_BANK);
-  int wm = gbl_verify(st->read, st->ctx, st->size, off, primary, st->gen, st->n);
+  int wm = gbl_verify(read, ctx, size, off, primary, gen, n);
   uint8_t bank = primary;
-  if (wm < (int)(st->n / 2u)) {
-    uint32_t banks = st->size / GB_BANK;
+  if (wm < (int)(n / 2u)) {
+    uint32_t banks = size / GB_BANK;
     int best = wm; uint8_t best_bank = primary;
     for (uint32_t b = 1; b < banks; b++) {
-      int wm2 = gbl_verify(st->read, st->ctx, st->size, off, (uint8_t)b, st->gen, st->n);
+      int wm2 = gbl_verify(read, ctx, size, off, (uint8_t)b, gen, n);
       if (wm2 > best) { best = wm2; best_bank = (uint8_t)b; }
     }
     wm = best; bank = best_bank;
   }
-  if (wm >= (int)(st->n / 2u)) {
-    st->found++;
-    st->good_off = off;
-    st->good_bank = bank;
-  }
+  if (wm < (int)(n / 2u)) return 0;
+  *out_bank = bank;
+  return 1;
 }
 
 int rom_gblearn_open(RomGbLearn* rl, uint8_t gen, GbReadFn read, void* ctx, uint32_t size) {
@@ -259,16 +285,25 @@ int rom_gblearn_open(RomGbLearn* rl, uint8_t gen, GbReadFn read, void* ctx, uint
   uint32_t banks = size / GB_BANK;
   if (banks < 2u || banks > 255u) return 0;      /* fixed bank 0 + >=1 switchable */
 
-  GblScanState st;
-  memset(&st, 0, sizeof st);
-  st.read = read; st.ctx = ctx; st.size = size; st.gen = gen;
-  st.n = (gen == GB_GEN1) ? GBL_G1_N : GBL_G2_N;
+  uint32_t n = (gen == GB_GEN1) ? GBL_G1_N : GBL_G2_N;
 
-  scan_phase_a(read, ctx, size, st.n, gbl_on_hit, &st);
-  if (st.found != 1u) return 0;                  /* zero or ambiguous: refuse, cleanly */
+  GblHits hits;
+  memset(&hits, 0, sizeof hits);
+  GblCollectCtx cc; cc.read = read; cc.ctx = ctx; cc.n = n; cc.hits = &hits;
+  scan_phase_a(read, ctx, size, n, gbl_collect_hit, &cc);
+  if (hits.n == 0u || hits.n > GBL_MAX_HITS) return 0;   /* none, or too many to trust */
+
+  uint32_t found = 0, good_off = 0; uint8_t good_bank = 0;
+  for (uint32_t h = 0; h < hits.n; h++) {
+    uint8_t bank;
+    if (gbl_verify_candidate(read, ctx, size, hits.off[h], gen, n, &bank)) {
+      found++; good_off = hits.off[h]; good_bank = bank;
+    }
+  }
+  if (found != 1u) return 0;                     /* zero or ambiguous: refuse, cleanly */
 
   rl->gen = gen; rl->read = read; rl->ctx = ctx; rl->size = size;
-  rl->banks = (uint8_t)banks; rl->table_off = st.good_off; rl->data_bank = st.good_bank;
+  rl->banks = (uint8_t)banks; rl->table_off = good_off; rl->data_bank = good_bank;
   rl->ok = true;
   return 1;
 }
