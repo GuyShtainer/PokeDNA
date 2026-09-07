@@ -391,7 +391,22 @@ G2WStatus g2w_set_box_name(G2Writer* w, int box, const char* utf8);
  * Does NOT refresh the checksums; call g2w_finish when the patches are done. */
 G2WStatus g2w_write_range(G2Writer* w, uint32_t off, const uint8_t* buf, uint32_t len);
 
-/* Recompute and store both checksums, then run the whole-file gate. */
+/* Recompute and store both checksums, then run the whole-file gate.
+ *
+ * NOTE FOR THE P1 OWNER (not P0's job — filed here so it is found before it is
+ * rediscovered the hard way): this function never HEALS a stale mirror region — it
+ * RE-DESCRIBES whatever bytes already sit at the backup destinations. write_patch()
+ * only copies the OVERLAP of an actual write with a mirror region, so a region no
+ * field write ever touches (G/S region 1, sPlayerData2 — map/object/time-of-day
+ * state; no P1-P5 field lives there, docs/GEN12-PARITY-DESIGN.md §1.9) can sit stale
+ * forever through any number of commits, honestly checksummed the whole time. The
+ * retail-faithful behaviour is TryLoadSaveFile's (pokegold/engine/menus/save.asm:
+ * 538-552): copy ALL FIVE primary regions to their backups unconditionally, THEN
+ * recompute the checksum — a real re-sync, not just an honest re-description. A
+ * slice that wants PokeDNA itself to resync a stale region (not merely describe it
+ * correctly) needs that unconditional five-region copy and its own retail-gate case
+ * proving it; P0 review D9 measured that Guy's own Gold.sav already carries a stale
+ * region 1 today, in case a fixture for that gate case is wanted. */
 G2WStatus g2w_finish(G2Writer* w);
 
 /* The gate on its own: re-detect the file and require the same version with both
