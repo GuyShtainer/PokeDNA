@@ -2092,12 +2092,24 @@ static int __attribute__((noinline)) gb_create_pick_level(uint8_t initial) {
   }
 }
 
-/* AppSrcOps.create. `slot` is unused: gbs_insert() always appends at the box's
- * own next free slot (gb_session.h), which is where an empty cell the user is
- * looking at necessarily already is; kept in the signature only because
- * app_mon_menu_readonly hands both (box, slot) over uniformly (pdna_app.h). */
-static bool gb_create_hook(int box, int slot) {
-  (void)slot;
+/* AppSrcOps.create. Takes NO arguments -- see pdna_app.h's own comment on why
+ * app_mon_menu's (box, slot) parameters cannot supply this correctly for an
+ * is_bank source (every GB session): pdna_box.c always computes `mbox = 0` for
+ * one, and gbs_insert() itself makes the other (the empty CELL the cursor was
+ * on) irrelevant, since it always appends at the box's own next free slot.
+ *
+ * The box actually on screen is Gb12Mount.ui_box (BACKLOG #56, kept current by
+ * every L/R box switch via BoxSource.note_box) -- with the EXACT SAME fallback
+ * chain pdna_gen12_source()'s own start_box computation already uses for the
+ * identical "not updated yet this visit" gap: ui_box (a switch happened) ->
+ * current_box (the save's own "live copy" box, read at mount) -> 0. Caught by
+ * hand on a real emulator screenshot before this fix existed: CREATE from box
+ * 13 (17/20, real room) still refused "BOX FULL", because it was silently
+ * targeting box 0 (20/20) instead. */
+static bool gb_create_hook(void) {
+  int box = (g_m->ui_box >= 0 && g_m->ui_box <= g_m->party_box) ? g_m->ui_box
+          : (g_m->current_box >= 0 && g_m->current_box <= g_m->party_box) ? g_m->current_box
+          : 0;
   if (gb_box_is_party(g_ed->s.gen, box)) {
     snd_deny();
     msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_PARTY_L1, 0);

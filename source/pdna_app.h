@@ -136,12 +136,24 @@ bool app_src_readonly(void);
  * old `edit && app_can_edit()` expression); a source that has a box-level gate of its
  * own (pdna_gen12.c's gb_editable_hook) implements both checks here instead. */
 /* `create` (BACKLOG #50): build a brand-new Pokemon into an EMPTY cell. Unlike every
- * other hook here it takes no `rec80` -- an empty cell has no record to convert, so
- * there is nothing to reverse-map through gb_locate() the way edit/move/release do.
- * The caller instead hands over the (box, slot) app_mon_menu already knows (its own
- * parameters, threaded through app_mon_menu_readonly rather than re-derived). NULL =
- * this source offers no CREATE (the empty-cell row simply does not appear); a source
- * that can build one implements it (pdna_gen12.c's gb_create_hook). */
+ * other hook here it takes NO ARGUMENTS AT ALL -- not even the (box, slot) app_mon_
+ * menu itself receives, which turned out to be the wrong source for either: an empty
+ * cell has no rec80 to reverse-map through gb_locate() the way edit/move/release do,
+ * but the naive fix of threading app_mon_menu's own `box`/`slot` parameters through is
+ * ALSO wrong for an is_bank source (every GB session) -- pdna_box.c's own call sites
+ * compute `int mbox = src->is_bank ? 0 : box;` before calling app_mon_menu, so a GB
+ * session's `box` parameter is unconditionally 0 regardless of which box is actually
+ * on screen (caught by hand on real emulator screenshots: CREATE from box 13, 17/20,
+ * still refused "BOX FULL" because it was silently targeting box 0, 20/20). The
+ * correct source is Gb12Mount.ui_box (BACKLOG #56, kept current by every box switch
+ * via BoxSource.note_box) -- pdna_gen12.c's gb_create_hook reads that itself, with the
+ * same "-1 (never switched) falls back to 0" rule pdna_gen12_source()'s own start_box
+ * computation already uses, rather than trust a parameter this menu cannot supply
+ * correctly. `slot` needs no equivalent: gbs_insert() always appends at the box's own
+ * next free slot regardless of which empty cell the cursor was on, so the cell index
+ * was never actually used. NULL = this source offers no CREATE (the empty-cell row
+ * simply does not appear); a source that can build one implements it (pdna_gen12.c's
+ * gb_create_hook). */
 typedef struct {
   bool (*edit)(uint8_t* rec80);
   bool (*move)(uint8_t* rec80);
@@ -150,7 +162,7 @@ typedef struct {
   bool (*paste)(uint8_t* rec80);
   bool (*view)(uint8_t* rec80);
   bool (*editable)(const uint8_t* rec80);
-  bool (*create)(int box, int slot);
+  bool (*create)(void);
 } AppSrcOps;
 void app_src_ops_set(const AppSrcOps* ops);
 

@@ -4103,13 +4103,7 @@ bool app_src_empty_action_offered(void) {
  * would either dereference a Pokemon that is not there or offer an action ("EDIT" a
  * Pokemon that does not exist) that makes no sense, so the row list collapses to just
  * that one row + CANCEL. See pdna_app.h's AppSrcOps.paste for what the row does. */
-/* `box`/`slot` (BACKLOG #50): the empty cell's own grid position, forwarded straight
- * from app_mon_menu's own parameters -- meaningless for every row except RO_CREATE
- * (an empty cell has no rec80 to reverse-map through gb_locate() the way edit/move/
- * release do), so `empty == false` callers may pass anything; both real call sites
- * below hand over the real values regardless, since threading them through is free. */
-static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, bool empty,
-                                  int box, int slot) {
+static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, bool empty) {
   const char* locked = (!empty && g_src_why) ? g_src_why(rec) : 0;
   enum { RO_VIEW, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CREATE, RO_CANCEL };
   int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
@@ -4207,7 +4201,7 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
         case RO_LEGAL: pdna_legality_show(m0); return false;
         case RO_COPY:  return app_copy(rec, is_party);
         case RO_PASTE:  return (g_src_ops && g_src_ops->paste)  ? g_src_ops->paste(rec)   : false;
-        case RO_CREATE: return (g_src_ops && g_src_ops->create) ? g_src_ops->create(box, slot) : false;
+        case RO_CREATE: return (g_src_ops && g_src_ops->create) ? g_src_ops->create() : false;
         default:        return false;
       }
     }
@@ -4247,10 +4241,10 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
       bool paste_ok  = g_src_ops && g_src_ops->paste && g_clip.occupied && !g_clip.from_gb;
       bool create_ok = g_src_ops && g_src_ops->create;
       if (paste_ok || create_ok)
-        return app_mon_menu_readonly(rec, is_party, &m0, true, box, slot);
+        return app_mon_menu_readonly(rec, is_party, &m0, true);
       return false;                                       /* nothing to create or paste into */
     }
-    return app_mon_menu_readonly(rec, is_party, &m0, false, box, slot);
+    return app_mon_menu_readonly(rec, is_party, &m0, false);
   }
 
   enum { A_SUMMARY, A_ITEM, A_MOVES, A_LEGAL, A_MOVE, A_TOBOX, A_COPY, A_PASTE, A_DUP, A_EXPORT, A_TOGAME, A_DAYCARE, A_RELEASE, A_TAKEITEM, A_GIVEITEM, A_CREATE, A_HATCH, A_CANCEL };
