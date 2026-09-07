@@ -68,7 +68,8 @@ NavAvail nav_avail(int nv_item, int save_kind);
  * proportional clamp at a 30-char cap; tests/host_nav_avail_test.c asserts the
  * length on every pair this function can be asked about). Defined for EVERY
  * (nv_item, save_kind) pair, including every NAV_OK one -- app_nav_refuse
- * (pdna_main.c) only ever calls this for the two refusal states, so an OK pair's
+ * (pdna_main.c) calls this for every row it refuses and SHOWS it only for the two
+ * refusal states (an OK pair falls back to a generic line), so an OK pair's
  * reason is never shown to a player, but the contract stays total so nothing that
  * calls this can read back a NULL or empty string. */
 const char* nav_avail_why(int nv_item, int save_kind);
