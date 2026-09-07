@@ -112,6 +112,18 @@ static int full_pointer_shape_ok(GbReadFn read, void* ctx, uint32_t table_off, u
  * flat file offset, inside `bank`'s window). Skips evolutions after validating
  * each method byte; walks the (level, move) pairs keeping a 4-slot FIFO of
  * moves with level <= `level_cap` (oldest dropped first -- see rom_gblearn.h).
+ *
+ * `seed4` (may be NULL), if given, PRE-LOADS the FIFO before the walk starts,
+ * as if those (up to 4, 0 = unused, left-packed) moves were already known --
+ * rom_gblearn_moves_at_seeded()'s whole reason to exist: Gen 1's base-stats
+ * starters are effectively "known before level 1", so a move the table
+ * re-teaches later must dedupe against them the SAME way it dedupes against
+ * an earlier table entry (below), not just against other table entries.
+ * Without this, gb_new_mon_g1_moves() could handed back the SAME move twice
+ * (once as a starter, once from the table) for any species whose table
+ * relists a move it already starts with -- measured: Nidoqueen, Nidoking and
+ * Kabutops all do, in Guy's own Red.gb.
+ *
  * `*total_moves` (may be NULL) gets the count of ALL legal move pairs seen,
  * ignoring `level_cap` -- gbl_verify()'s "does this look like a real learnset"
  * bar, and nothing else. Returns the number of moves kept in `out4` (0..4), or
@@ -121,7 +133,8 @@ static int full_pointer_shape_ok(GbReadFn read, void* ctx, uint32_t table_off, u
  * this module has decoded (2 evolutions, 14 moves) -- real data will never
  * approach them, so hitting one means the data is not what it claims to be. */
 static int walk_entry(GbReadFn read, void* ctx, uint32_t bank_hi, uint32_t off,
-                      uint8_t gen, uint8_t level_cap, uint8_t out4[4], int* total_moves) {
+                      uint8_t gen, uint8_t level_cap, const uint8_t seed4[4],
+                      uint8_t out4[4], int* total_moves) {
   uint32_t cur = off;
   for (int guard = 0; guard < 16; guard++) {
     uint8_t method;
@@ -137,6 +150,7 @@ static int walk_entry(GbReadFn read, void* ctx, uint32_t bank_hi, uint32_t off,
   uint8_t kept_moves[4] = { 0, 0, 0, 0 };
   int maxmove = (int)gb_max_move(gen);
   int kept = 0, seen = 0;
+  if (seed4) while (kept < 4 && seed4[kept]) { kept_moves[kept] = seed4[kept]; kept++; }
   for (int guard = 0; guard < 32; guard++) {
     uint8_t lvl;
     if (cur >= bank_hi || !read(ctx, cur, &lvl, 1)) return -1;
@@ -149,11 +163,24 @@ static int walk_entry(GbReadFn read, void* ctx, uint32_t bank_hi, uint32_t off,
     if (mv < 1u || (int)mv > maxmove) return -1;
     seen++;
     if (lvl <= level_cap) {
-      if (kept < 4) {
-        kept_moves[kept++] = mv;
-      } else {
-        kept_moves[0] = kept_moves[1]; kept_moves[1] = kept_moves[2];
-        kept_moves[2] = kept_moves[3]; kept_moves[3] = mv;
+      /* A handful of real species (Metapod/Kakuna's Harden, Smeargle's Sketch)
+       * genuinely relist the SAME move at a later level -- verified against
+       * Gold.gbc/Crystal.gbc, not a parsing artifact. The real games skip
+       * re-teaching a move already known rather than create a duplicate slot
+       * (well-documented Gen-1/2 engine behaviour), so a move already present
+       * among the CURRENTLY KEPT four is dropped here too. This is deliberately
+       * NOT a check against the whole history: a move bumped out of the four
+       * earlier is, exactly as in the games, treated as forgotten and can be
+       * relearned for real if the table lists it again later. */
+      bool already_known = false;
+      for (int k = 0; k < kept; k++) if (kept_moves[k] == mv) { already_known = true; break; }
+      if (!already_known) {
+        if (kept < 4) {
+          kept_moves[kept++] = mv;
+        } else {
+          kept_moves[0] = kept_moves[1]; kept_moves[1] = kept_moves[2];
+          kept_moves[2] = kept_moves[3]; kept_moves[3] = mv;
+        }
       }
     }
     if (guard == 31) return -1;             /* no real species has 32 level-up moves */
@@ -184,7 +211,7 @@ static int gbl_verify(GbReadFn read, void* ctx, uint32_t size, uint32_t table_of
     if (i == 0) first_target = off;
     else if (off != first_target) distinct = 1;
     int seen = 0;
-    if (walk_entry(read, ctx, bank_hi, off, gen, 255u, NULL, &seen) < 0) return -1;
+    if (walk_entry(read, ctx, bank_hi, off, gen, 255u, NULL, NULL, &seen) < 0) return -1;
     if (seen > 0) with_moves++;
   }
   if (!distinct) return -1;
@@ -246,7 +273,8 @@ int rom_gblearn_open(RomGbLearn* rl, uint8_t gen, GbReadFn read, void* ctx, uint
   return 1;
 }
 
-int rom_gblearn_moves_at(RomGbLearn* rl, uint16_t dex, uint8_t level, uint8_t out4[4]) {
+int rom_gblearn_moves_at_seeded(RomGbLearn* rl, uint16_t dex, uint8_t level,
+                                const uint8_t seed4[4], uint8_t out4[4]) {
   if (!rl || !out4 || !rl->ok) return -1;
   uint32_t n = (rl->gen == GB_GEN1) ? GBL_G1_N : GBL_G2_N;
   uint32_t idx = (rl->gen == GB_GEN1) ? gb_index_from_dex(GB_GEN1, dex) : dex;
@@ -260,6 +288,9 @@ int rom_gblearn_moves_at(RomGbLearn* rl, uint16_t dex, uint8_t level, uint8_t ou
   uint32_t off = bank_lo + (addr - GB_WIN_LO);
   if (off >= rl->size) return -1;
 
-  int kept = walk_entry(rl->read, rl->ctx, bank_lo + GB_BANK, off, rl->gen, level, out4, NULL);
-  return kept;
+  return walk_entry(rl->read, rl->ctx, bank_lo + GB_BANK, off, rl->gen, level, seed4, out4, NULL);
+}
+
+int rom_gblearn_moves_at(RomGbLearn* rl, uint16_t dex, uint8_t level, uint8_t out4[4]) {
+  return rom_gblearn_moves_at_seeded(rl, dex, level, NULL, out4);
 }

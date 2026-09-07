@@ -107,17 +107,37 @@ int rom_gblearn_open(RomGbLearn* rl, uint8_t gen, GbReadFn read, void* ctx, uint
  * straight out of the table `rl` located -- the SAME rule the games use to cap
  * a moveset at four: walk the learnset in increasing level order, keep only
  * entries with level <= `level`, and once a fifth would-be slot arrives drop
- * the OLDEST kept one. `out4` is filled in LEARN ORDER (oldest of the four
- * first, most recent last -- move-slot 1..4 order on a real cartridge); an
- * unused trailing slot is 0, which is also gb_edit.h's own "empty slot" value,
- * so a caller never needs a separate count.
+ * the OLDEST kept one. A move ALREADY among the currently-kept four is not
+ * re-added (the real games skip re-teaching a move already known rather than
+ * duplicate a slot) -- verified against real data: Metapod and Kakuna both
+ * relist Harden, Smeargle relists Sketch four times, in both Gold.gbc and
+ * Crystal.gbc. `out4` is filled in LEARN ORDER (oldest of the four first, most
+ * recent last -- move-slot 1..4 order on a real cartridge); an unused
+ * trailing slot is 0, which is also gb_edit.h's own "empty slot" value, so a
+ * caller never needs a separate count.
  *
  * Returns the number of slots filled (0..4) on success -- 0 is a legitimate
  * answer (a species with no table entry at or under `level`; Gen 1's starting
  * moves live elsewhere, see this file's own header) -- or -1 for a bad
  * argument: a NULL `rl`/`out4`, an `rl` that is not `.ok`, or a `dex` outside
  * 1..gb_max_species(rl->gen). Does not look at Gen-1's base-stats starting
- * moves at all; see gb_new_mon (source/gb_new_mon.c) for the merge. */
+ * moves at all; see gb_new_mon_g1_moves (source/gb_new_mon.h) for the merge --
+ * which is also why THAT merge cannot just concatenate this function's output
+ * with the starters: the same "already known" rule has to apply ACROSS the
+ * two sources too (a species whose table relists a starting move at a higher
+ * level would otherwise come back with that move twice), which is exactly
+ * what rom_gblearn_moves_at_seeded() below is for. */
 int rom_gblearn_moves_at(RomGbLearn* rl, uint16_t dex, uint8_t level, uint8_t out4[4]);
+
+/* Same contract as rom_gblearn_moves_at(), except the 4-slot FIFO starts
+ * PRE-LOADED with `seed4` (0 = unused slot, left-packed, same convention as
+ * `out4`) as if those moves were already known before the table's own walk
+ * begins -- so a table entry that matches one of them is skipped exactly like
+ * a within-table repeat is. `rom_gblearn_moves_at(rl, dex, level, out4)` is
+ * this function with `seed4 = NULL`. gb_new_mon_g1_moves() (source/
+ * gb_new_mon.h) is the one real caller, seeding with Gen 1's base-stats
+ * starters; nothing else in this tree needs a seed. */
+int rom_gblearn_moves_at_seeded(RomGbLearn* rl, uint16_t dex, uint8_t level,
+                                const uint8_t seed4[4], uint8_t out4[4]);
 
 #endif /* ROM_GBLEARN_INCLUDED */
