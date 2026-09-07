@@ -1922,15 +1922,32 @@ static bool gb_view_hook(uint8_t* rec80) {
  * costs less than generalizing a shipped, hardware-validated feature to do
  * something it never needed to. Shares the SAME arena-resident storage
  * (g_ed->romgs/romfil/romscan/romspath) safely: a session is always ONE
- * generation, so the two families are never in use at once. No caching --
- * romgs_ready/romgs_path are left untouched, not read or written here: CREATE
- * is a rare, deliberate action, not a per-paste hot path, so a fresh scan every
- * time is the simpler and safer choice. On success, g_ed->romgs holds a located
- * ROM of exactly `want_gen` and g_ed->romspath names it (the FIL itself is
- * closed again -- every later read reopens it by that path, same pattern
- * gb_gen1_base_from_rom's own re-open uses). */
+ * generation, so the two families are never in use at once.
+ *
+ * DOES NOT USE the cache (romgs_ready) itself -- CREATE is a rare, deliberate
+ * action, not a per-paste hot path, so a fresh scan every time is the simpler
+ * and safer choice -- but it DOES invalidate that cache first (romgs_ready =
+ * false, below), because every branch here overwrites the very fields
+ * (g_ed->romgs/romspath) the cache is a claim ABOUT (G1 review MEDIUM-1: an
+ * earlier version left the flag standing over data this function had already
+ * replaced). On success, g_ed->romgs holds a located ROM of exactly `want_gen`
+ * and g_ed->romspath names it (the FIL itself is closed again -- every later
+ * read reopens it by that path, same pattern gb_gen1_base_from_rom's own
+ * re-open uses). */
 static bool __attribute__((noinline)) gb_create_locate_rom(uint8_t want_gen) {
   GbRomGen want = (want_gen == GB_GEN1) ? GB_ROM_GEN1 : GB_ROM_GEN2;
+  /* G1 review MEDIUM-1 (2026-09-08): this function's own header comment above used
+   * to say "romgs_ready/romgs_path are left untouched, not read or written here" --
+   * true of the FLAG, false of what it guards: every branch below overwrites
+   * g_ed->romgs/romspath directly (the SAME fields gb_gen1_base_from_rom's cache
+   * trusts, line ~1590), without ever invalidating romgs_ready first. A CREATE run
+   * AFTER a Gen-1 PASTE had already cached a valid romgs_ready=true would leave the
+   * flag standing over data CREATE just replaced -- the NEXT PASTE would then trust
+   * stale/wrong-generation base stats as if they were still its own cache, never
+   * re-scanning. Invalidate up front, unconditionally: CREATE is a rare action, so
+   * the cost of the NEXT PASTE doing one extra fresh scan is negligible net of a
+   * silent correctness bug. */
+  g_ed->romgs_ready = false;
 
   const char* reg = app_gb_rom_path(want_gen);
   if (reg && reg[0]) {
@@ -2126,8 +2143,13 @@ static bool gb_create_hook(void) {
   src.ot_name = (g_m && g_m->player[0]) ? g_m->player : 0;
   src.ot_id = g_m ? g_m->tid : 0;
 
+  /* G1 review BLOCKING-2 (2026-09-08): qran() is libtonc's PRNG, whose seed is a
+   * fixed constant (__qran_seed = 42) unless something calls sqran() -- nothing in
+   * this tree does -- so every player's Nth created mon got IDENTICAL DVs/gender/
+   * shininess. app_session_seed() is the SAME counter+TID+RTC entropy
+   * app_create_mon (pdna_main.c) already seeds a Gen-3 create's PID/IVs from. */
   GbEditMon party_mon;
-  if (!gb_new_mon(g_ed->s.gen, dex, lvl, &src, (uint32_t)qran(), &party_mon)) {
+  if (!gb_new_mon(g_ed->s.gen, dex, lvl, &src, app_session_seed(), &party_mon)) {
     snd_deny();
     msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_BUILDFAIL_L1, 0);
     return false;

@@ -24,6 +24,16 @@
 /* Writes are EZ-Flash-Omega-only. */
 bool app_can_edit(void);
 
+/* The session RNG every "create a Pokemon from nothing" caller seeds from (a counter
+ * + this trainer's own TID + the cart RTC when present, NEVER the same across two
+ * players or two carts) -- a thin public wrapper over pdna_main.c's own file-static
+ * dc_seed(), exposed so pdna_gen12.c's gb_create_hook can share the identical
+ * entropy source app_create_mon already uses instead of qran() (libtonc's PRNG,
+ * whose seed is a FIXED constant, __qran_seed = 42, unless something calls sqran()
+ * -- nothing in this tree does -- so every player's Nth created Gen-1/2 mon got the
+ * IDENTICAL DVs/gender/shininess, G1 review BLOCKING-2). */
+uint32_t app_session_seed(void);
+
 /* Flush the RAM log to SD immediately (rmbl-paused). For anomaly evidence that must
  * survive a power-off; main-loop-synchronous callers only. A no-op on anything but
  * an EZ-Flash Omega — writes are Omega-only (hard rule 4), and a failed disk_write

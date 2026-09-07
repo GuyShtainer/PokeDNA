@@ -4108,14 +4108,34 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
   enum { RO_VIEW, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CREATE, RO_CANCEL };
   int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
   if (empty) {
-    /* CREATE first, PASTE (GB) after -- the same order Gen-3's own empty-cell menu
-     * uses (app_mon_menu's A_CREATE/A_PASTE). Gated on the source actually offering
-     * one (pdna_app.h's AppSrcOps.create) rather than on !is_party the way Gen-3's is:
-     * a GB session's party is just one more box in its own numbering (Gb12Mount's own
-     * "the party is exposed as one more box"), not a structurally different kind of
-     * slot -- gb_create_hook decides for itself whether THIS box can take one. */
+    /* CREATE first, PASTE after -- the same order Gen-3's own empty-cell menu uses
+     * (app_mon_menu's A_CREATE/A_PASTE, pdna_main.c:4288-4290). Gated on the source
+     * actually offering one (pdna_app.h's AppSrcOps.create) rather than on !is_party
+     * the way Gen-3's is: a GB session's party is just one more box in its own
+     * numbering (Gb12Mount's own "the party is exposed as one more box"), not a
+     * structurally different kind of slot -- gb_create_hook decides for itself
+     * whether THIS box can take one. */
     if (g_src_ops && g_src_ops->create) { lab[n] = PDNA_LBL_CREATE; act[n++] = RO_CREATE; }
-    lab[n] = PDNA_LBL_PASTE_GB; act[n++] = RO_PASTE;
+    /* G1 REVIEW BLOCKING-1 (2026-09-08): this row used to add PASTE UNCONDITIONALLY
+     * -- the caller's own paste_ok gate (app_mon_menu, "paste_ok = g_src_ops->paste
+     * && g_clip.occupied && !g_clip.from_gb") only decided whether to enter THIS
+     * function at all (paste_ok || create_ok), not which rows it draws once inside.
+     * A create_ok-only visit (clipboard empty, or holding a from_gb clip, or a
+     * source with no ->paste at all) still drew PASTE and, if pressed, called
+     * g_src_ops->paste(rec) regardless -- a Gen-2 COPY (native, from_gb) followed by
+     * PASTE on a DIFFERENT empty cell would have round-tripped a lossy Gen-3-shaped
+     * duplicate back down, exactly what this gate exists to prevent (gen3_to_gb()
+     * cannot even accept a from_gb clip, so the write would have been garbage, not
+     * merely redundant). Re-checking the SAME three terms here, matching Gen 3's own
+     * empty branch exactly (not "trust the caller already checked" -- the caller's
+     * OR can be true for either reason alone). PASTE HERE, not PASTE (GB): Gen-3's
+     * own label, now reused verbatim (see PDNA_LBL_PASTE_GB's removal, pdna_layout.h)
+     * -- the cross-generation conversion note lives in the confirm dialog already
+     * shown before any write, not in this row's own text. */
+    if (g_src_ops && g_src_ops->paste && g_clip.occupied && !g_clip.from_gb) {
+      lab[n] = PDNA_LBL_PASTE_HERE; act[n++] = RO_PASTE;
+    }
+    if (n == 0) return false;
   } else {
     /* Gen-3 parity (Guy, 2026-09-05: "make sure the pokemon edit is in the summary for
      * gen 1 and 2 like gen 3"): the Gen-3 mon menu has ONE row, PDNA_LBL_VIEW_EDIT, that
@@ -5720,6 +5740,12 @@ static uint32_t dc_seed(void) {
   if (gba_rtc_get(&t)) e ^= (uint32_t)(t.second + t.minute * 60 + t.hour * 3600) * 2654435761u;
   return e | 1u;
 }
+
+/* pdna_app.h's public wrapper (G1 review BLOCKING-2): pdna_gen12.c's gb_create_hook
+ * needs this EXACT entropy source (counter + TID + RTC), not qran() -- see the
+ * header's own comment for why. dc_seed() itself stays file-static; every other
+ * caller in this file already reaches it directly. */
+uint32_t app_session_seed(void) { return dc_seed(); }
 
 /* Areas on the daycare scene (icon-CENTRE SCREEN coords; the scene is drawn/blitted
  * starting at screen y 12), TWO mon slots each so two mons in the same area don't

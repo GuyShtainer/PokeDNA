@@ -782,8 +782,10 @@ int main(void) {
       "sidecar confirm: worst case (all 6 flags) clears the panel");
   /* ==== END S5-B sidecar (Part C) ============================================ */
 
-  /* ==== S5-B Part D: PASTE (GB), source/pdna_gen12.c gb_paste_hook/gb_paste_write ===
-   * PDNA_LBL_PASTE_GB is measured through PDNA_MONMENU_LABELS below, not here. */
+  /* ==== S5-B Part D: PASTE, source/pdna_gen12.c gb_paste_hook/gb_paste_write ===
+   * The empty-cell PASTE row now reuses PDNA_LBL_PASTE_HERE (G1 review BLOCKING-1,
+   * 2026-09-08 -- PDNA_LBL_PASTE_GB is gone), measured through PDNA_MONMENU_LABELS
+   * below, not here. */
   PF(PDNA_SIDECAR_GEN1_TITLE,       28, 184);
   PF(PDNA_SIDECAR_GEN1_L1,          28, 184);
   /* S5-C Part B1: the STATIC tail of the "no ROM beside the save" message; the

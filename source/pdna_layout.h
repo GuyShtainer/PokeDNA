@@ -149,8 +149,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * audit, Guy 2026-09-07): that row now reuses PDNA_LBL_MOVE_TO_BOX, Gen 3's
  * OWN label for the same shape of action (a destination-box picker), rather
  * than a third, GB-only phrasing -- see pdna_main.c's app_mon_menu_readonly
- * for the reasoning. */
-#define PDNA_LBL_PASTE_GB    "PASTE (GB)"     /* read-only popup, empty GB cell, S5-B */
+ * for the reasoning. PDNA_LBL_PASTE_GB ("PASTE (GB)") used to live here too --
+ * the empty-cell PASTE row's own bespoke wording. Removed (G1 review
+ * BLOCKING-1, 2026-09-08): that row now reuses PDNA_LBL_PASTE_HERE, Gen 3's
+ * OWN label for the identical empty-cell-paste action, rather than a
+ * cosmetic "(GB)" qualifier -- the cross-generation conversion this paste
+ * performs is explained in the confirm dialog the user sees before any
+ * write, not in the row's own two words. */
 
 /* Every label either action popup can show, so the host test measures the strings the
  * menus actually draw. The X() entries are the macros above, not fresh literals. */
@@ -160,7 +165,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
   X(PDNA_LBL_DUPLICATE) X(PDNA_LBL_TO_DAYCARE) X(PDNA_LBL_TO_GAME)                    \
   X(PDNA_LBL_EXPORT_PK) X(PDNA_LBL_TAKE_ITEM) X(PDNA_LBL_GIVE_ITEM)                   \
   X(PDNA_LBL_RELEASE) X(PDNA_LBL_CREATE) X(PDNA_LBL_PASTE_HERE) X(PDNA_LBL_CANCEL)    \
-  X(PDNA_LBL_VIEW) X(PDNA_LBL_PASTE_GB)
+  X(PDNA_LBL_VIEW)
 
 /* Read-only source popup: the header grows by one line per explanatory line above the
  * rows (the source's note, and the per-record "why this one is locked"). */
