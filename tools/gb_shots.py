@@ -27,6 +27,17 @@ Two fused images (built by the caller, this script does not fuse anything):
     GB_GEN2), and the "Gen 1: withdraw it in-game instead" refusal MOVE TO -> Party
     produces (source/pdna_layout.h PDNA_GBEDIT_MOVE_NEEDSBASE_L2, source/pdna_gen12.c).
 
+BACKLOG #51/#50 (2026-09-07, this session): run_gold_gender() shows the new Gender
+row (source/gb_editor.c's GBE_GENDER) flipping Bulbasaur M -> F live, header and
+all. run_gold_create()/run_red_create() drive the new CREATE action on an empty
+cell (source/pdna_gen12.c's gb_create_hook) through the species picker and level
+picker in BOTH generations, to the honest "Needs your Gen 1/2 ROM" wall
+gb_new_mon()'s own ROM lookup hits with no flashcart in the emulator — the same
+shape 07b_save_refusal/10b_paste_refusal already use for an SD-backed action. The
+species/level pickers and the honest refusal ARE captured; the actual build (the
+new mon's own summary editor, and it landing in the grid) needs a real ROM on a
+real SD card and is hardware-only (docs/HW-TEST-2026-09-05-GB-ARC.md §O).
+
 BACKLOG #41 slice E1 (2026-09-05/06, Guy: "I prefer the summary edit design to be
 like we did for gen 3 ... [with] less editable stats"): source/pdna_gbsummary.c
 restyled to the SAME Gen-3 CARD chrome pdna_summary.c uses — the shared left info
@@ -249,6 +260,92 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     return s
 
 
+def run_gold_gender(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
+    """BACKLOG #51: the Gender row, a fresh boot independent of run_gold()'s own in-place
+    DV edit above (same reasoning as run_gold_paste's own separate boot). Bulbasaur
+    (box slot 0) has a real, non-fixed gender ratio (0x7F, 50/50) — gbe_has_gender_row()
+    shows the row for exactly this reason (source/gb_editor.c)."""
+    s = Session(core_mod, image_mod, rom, out_dir, "gold_")
+    print("== Gold.sav (Gen 2) -- BACKLOG #51 Gender row ==")
+    s.tap("A", settle=BIG_SETTLE)          # info -> box grid
+    s.tap("A", settle=BIG_SETTLE)          # slot 0 (Bulbasaur) -> mon menu
+    s.tap("A", settle=BIG_SETTLE)          # VIEW/EDIT -> the summary, VIEW, card 0 INFO
+    s.tap("A", settle=BIG_SETTLE)          # A inside VIEW -> editing = true
+    s.press_n("DOWN", 2)                   # Name -> Lv -> Gender (card_info's own row order,
+                                            # source/pdna_gbsummary.c: NICK, LEVEL, GENDER, OT...)
+    s.shot("13_gender_before", "#51: the Gender row, field cursor on it — Bulbasaur reads "
+                                "M (Atk DV 15 under this save's own ratio 0x7F)")
+    s.tap("A", settle=BIG_SETTLE)          # gbe_flip_gender: nearest Atk DV of the other gender
+    s.shot("13b_gender_after", "#51: A flips it — Gender now reads F, and the shared left "
+                                "panel's header (name/level/gender chip) updates live in the "
+                                "SAME repaint, same as the old DV-edit demo (06_edit_dv_changed) "
+                                "used to show indirectly")
+    s.tap("B", settle=BIG_SETTLE)          # edit -> view (edits kept, not yet asked to write)
+    s.tap("B", settle=BIG_SETTLE)          # leave; dirty -> gbedit_confirm (not shot here, see 07_confirm)
+    s.tap("B", settle=BIG_SETTLE)          # discard, whichever confirm/summary layer this landed on
+    return s
+
+
+def run_gold_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
+    """BACKLOG #50: CREATE on an empty cell. GB BOX1 (the box the info page always opens
+    into) is 20/20 on this corpus, same as every box run_gold() already notes — box index
+    13 ("GB BOX13" on screen) has real room, 17/20, discovered the same way tools/
+    gb_retail_gate.py's first_room_box() does. This is ALSO the run that caught the
+    box-resolution bug fixed before this file existed in its current form: an EARLIER
+    version of gb_create_hook trusted app_mon_menu's own (box, slot) parameters, which
+    pdna_box.c hard-codes to (0, cur) for every is_bank source regardless of which box is
+    actually on screen — CREATE from box 13 kept refusing "BOX FULL" against box 0's
+    real 20/20, caught by hand on exactly this navigation before the fix (Gb12Mount.ui_box)
+    landed. Species/level pickers need no SD card (pure UI, no file I/O); gb_new_mon's own
+    ROM lookup does, so it is the honest stopping point in an emulator with no flashcart —
+    the SAME "SD-backed action refuses in the emulator, captured as evidence" shape
+    07b_save_refusal/10b_paste_refusal already use."""
+    s = Session(core_mod, image_mod, rom, out_dir, "gold_")
+    print("== Gold.sav (Gen 2) -- BACKLOG #50 CREATE ==")
+    s.tap("A", settle=BIG_SETTLE)          # info -> box grid (GB BOX1, 20/20)
+    s.press_n("R", 13, settle=SETTLE)      # -> GB BOX13, 17/20 (real room)
+    s.press_n("DOWN", 2)
+    s.press_n("RIGHT", 5)                  # cursor -> slot 17, the first real empty slot
+    s.shot("14_cursor_on_empty", "#50: cursor on a real empty slot (GB BOX13, 17/20)")
+
+    s.tap("A", settle=BIG_SETTLE)          # open the empty-cell menu
+    s.shot("14b_empty_menu", "#50: the empty-cell menu now offers CREATE (was PASTE (GB) + "
+                              "CANCEL only, before this backlog item) — CREATE first, "
+                              "matching Gen-3's own empty-cell menu order")
+
+    s.tap("A", settle=BIG_SETTLE)          # select CREATE -> the species picker
+    s.shot("14c_species_picker", "#50: the species picker — dex-style rows (\"No.NNN NAME\"), "
+                                  "names only, no icon grid; a SEPARATE picker from pdna_pick.c's "
+                                  "big pick_species() (see gb_create_pick_species's own comment)")
+
+    s.tap("A", settle=BIG_SETTLE)          # pick Bulbasaur (already selected) -> the level picker
+    s.shot("14d_level_picker", "#50: the level picker — default level 5, LEFT/RIGHT +-1, "
+                                "L/R +-10 (gbe_adjust's own GBE_LEVEL step sizes)")
+
+    s.tap("RIGHT", settle=SETTLE)
+    s.tap("RIGHT", settle=SETTLE)
+    s.shot("14e_level_7", "#50: LEFT/RIGHT adjusts the level — 5 -> 7 after two taps")
+    s.tap("LEFT", settle=SETTLE)
+    s.tap("LEFT", settle=SETTLE)           # back to 5, so the ROM lookup below builds Lv5
+
+    s.tap("A", settle=BIG_SETTLE)          # confirm the level -> gb_create_locate_rom
+    s.shot("14f_no_rom_refusal", "#50: confirmed -> \"Needs your Gen 1/2 ROM\" — honest "
+                                  "evidence, not a bug: mGBA has no flashcart/SD card, so "
+                                  "neither the registered-ROM path (app_gb_rom_path) nor "
+                                  "the beside-the-save fallback can ever find one here")
+    s.skip("14g_new_mon_summary",
+           "gb_new_mon()'s own ROM lookup (rom_gbbase_gen1/2 + rom_gblearn) needs a real "
+           "Gen-1/2 ROM on the SD card, which mGBA's fused-save harness has no flashcart "
+           "to provide (same class of gap as E4's Sprites-era-cycling shot) -- the summary "
+           "editor this backlog item opens over the newly built mon is real, host-tested "
+           "code (tests/host_newmon_test.c, gb_new_mon()) but only reachable with a real "
+           "cartridge. Hardware-only: docs/HW-TEST-2026-09-05-GB-ARC.md §O.")
+    s.skip("14h_mon_in_grid",
+           "downstream of 14g (gbs_insert -> the box grid re-paging with the new mon "
+           "showing) -- same ROM-needs-a-real-SD-card gap, hardware-only.")
+    return s
+
+
 def run_gold_paste(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     """Separate fresh boot for the PASTE (GB) shots: independent of run_gold()'s in-place
     DV edit above, so a failure there can never take these down with it."""
@@ -346,6 +443,44 @@ def run_red(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     return s
 
 
+def run_red_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
+    """BACKLOG #50: CREATE on an empty cell, Gen 1 — the SAME flow run_gold_create() drives,
+    on the generation that has no Gender row (BACKLOG #51 is Gen-2-only, gbe_has_gender_row
+    refuses outright for GB_GEN1) and whose species picker is capped at dex 151, not 251
+    (gb_max_species(GB_GEN1)). "GB BOX5" (R press count 4 from the box grid's own default
+    entry) is 19/20 on this corpus — one real empty slot."""
+    s = Session(core_mod, image_mod, rom, out_dir, "red_")
+    print("== Red.sav (Gen 1) -- BACKLOG #50 CREATE ==")
+    s.tap("A", settle=BIG_SETTLE)          # info -> box grid
+    s.press_n("R", 4, settle=SETTLE)       # -> GB BOX5, 19/20 (one real empty slot)
+    s.press_n("DOWN", 3)
+    s.press_n("RIGHT", 1)                  # cursor -> slot 19, the one real empty slot
+    s.shot("13_cursor_on_empty", "#50: Gen 1 — cursor on the one real empty slot (GB BOX5, 19/20)")
+
+    s.tap("A", settle=BIG_SETTLE)
+    s.shot("13b_empty_menu", "#50: Gen 1's empty-cell menu also offers CREATE — identical "
+                              "row list to Gen 2's (gb_create_hook does not special-case "
+                              "the generation for the menu itself, only for the ROM lookup "
+                              "and the moveset merge behind it)")
+
+    s.tap("A", settle=BIG_SETTLE)          # select CREATE -> the species picker
+    s.shot("13c_species_picker", "#50: Gen 1's species picker — dex 1..151 only "
+                                  "(gb_max_species(GB_GEN1)), same names-only rows as Gen 2's")
+
+    s.tap("A", settle=BIG_SETTLE)          # pick Bulbasaur -> the level picker
+    s.shot("13d_level_picker", "#50: the level picker — identical control for both "
+                                "generations (gb_create_pick_level takes no gen argument)")
+
+    s.tap("A", settle=BIG_SETTLE)          # confirm level 5 -> gb_create_locate_rom
+    s.shot("13e_no_rom_refusal", "#50: Gen 1 hits the same honest \"Needs your Gen 1/2 ROM\" "
+                                  "wall as Gen 2 — mGBA has no flashcart for either generation's "
+                                  "ROM lookup to find one on")
+    s.skip("13f_new_mon_summary",
+           "same gap as Gold's 14g: gb_new_mon()'s ROM lookup needs a real cartridge. "
+           "Hardware-only: docs/HW-TEST-2026-09-05-GB-ARC.md §O.")
+    return s
+
+
 def run_e4_settings(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     """E4 (docs/SPRITE-ERA-DESIGN.md): Settings > Game ROM > the Sprites era grid.
     `rom` is pokedna-delta.gba fused with an ordinary GEN-3 .sav (tools/fuse_sav.py) --
@@ -409,8 +544,8 @@ def main(argv=None) -> int:
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     a = ap.parse_args(argv)
 
-    runs = [("gold", a.gold, (run_gold, run_gold_paste)),
-            ("red", a.red, (run_red,)),
+    runs = [("gold", a.gold, (run_gold, run_gold_paste, run_gold_gender, run_gold_create)),
+            ("red", a.red, (run_red, run_red_create)),
             ("e4-emerald", a.e4_emerald, (run_e4_settings,))]
     active = [(label, p, fns) for label, p, fns in runs if p is not None]
     if not active:
