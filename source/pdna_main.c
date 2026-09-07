@@ -1848,7 +1848,9 @@ static void pdna_era_boot_register(void) {
  * Both halves matter: the setting is the user's choice, the ROM is what makes the
  * choice meaningful. See g_yard_visitors for why they are no longer on by default. */
 static bool app_yard_visitors_ok(void) {
-  return g_yard_visitors && app_any_rom_registered();
+  /* #47: the gate exists so there is real icon art to draw the visitors with; with
+   * the switch on there is none (the cache is dropped too), so they stay home. */
+  return g_yard_visitors && app_any_rom_registered() && !g_rom_art_off;
 }
 
 /* Release a PC box slot as part of a PC->Bank MOVE (multi-select "send to bank" + the
@@ -2365,7 +2367,12 @@ static void icon_rung_log(const RomCtx* rc_ok, bool resolved) {
 static void app_icon_cache_resolve(const RomCtx* rc_ok, bool deep) {
   art_session_invalidate();      /* a ROM re-registration can flip either verdict   */
   icon_frame_cache_invalidate(); /* the file behind icons.bin's path may hold new bytes */
-  bool ready = deep ? art_session_icons_ready(rc_ok) : art_session_icons_ready_shallow(rc_ok);
+  /* BACKLOG #47 review: icons.bin holds pixels EXTRACTED FROM THE USER'S ROM, so
+   * "All ROM art off." has to drop it too, or the PC/dex/party/yard grids keep
+   * drawing ROM art with the switch on. Nothing is deleted -- app_icon_rom_open()
+   * calls this on BOTH edges of the flip, so turning art back on re-resolves it. */
+  bool ready = !g_rom_art_off &&
+               (deep ? art_session_icons_ready(rc_ok) : art_session_icons_ready_shallow(rc_ok));
   if (ready) {
     boxoam_set_icon_cache(art_session_icons_path());
     log_line("icons: cache ready (/PokeDNA/art/icons.bin)");
@@ -7352,8 +7359,12 @@ static void sprite_settings(void) {
         bool sel = (k == kind && p == place);
         bool applies = se_cell_applies((SeSaveKind)k, (SePlace)p);
         const char* txt = applies ? se_era_name((SeEra)g_era.era[k][p]) : PDNA_SETSPR_DEAD;
+        /* A cell parked on an era whose ROM is unavailable (cleared, or every ROM
+         * hidden by "ROM art OFF", #47) keeps its VALUE but is drawn dim: it is not a
+         * live choice until the ROM is back, and se_era_next() will step past it. */
+        bool live = applies && se_era_available((SeEra)g_era.era[k][p], &roms);
         if (sel) ui_panel(x - 2, y - 1, PDNA_SETSPR_COL_PITCH - 2, 13, UI_SEL, UI_TITLE);
-        ui_ptext(x, y, !applies ? UI_DIM : (sel ? UI_SELTEXT : UI_TEXT), txt);
+        ui_ptext(x, y, !live ? UI_DIM : (sel ? UI_SELTEXT : UI_TEXT), txt);
       }
     }
     ui_text(PDNA_SET_HELP_X, PDNA_SETSPR_HELP_Y1, UI_DIM, PDNA_SETSPR_HELP1);
@@ -7480,7 +7491,7 @@ static void rom_row_menu(void) {
         app_icon_rom_open();
         snd_ok();
         msg_wait("ROM ART", g_rom_art_off ? UI_DIM : UI_OK,
-                 g_rom_art_off ? "All ROM art off." : "Reattached.",
+                 g_rom_art_off ? "Pokemon art off (not map)." : "Reattached.",
                  g_rom_art_off ? "Your ROM path is kept." : "Real art is back on.");
         return;
       }
