@@ -198,7 +198,7 @@ bool gbt_read(const GbSession* s, GbTrainer* out) {
   if (gbt_field_present(g, GBF_MOMS_MONEY)) {
     out->has_mom = true;
     if (get_u(s, g, GBF_MOMS_MONEY, &v)) out->moms_money = v;
-    if (get_u(s, g, GBF_MOM_SAVING_FLAG, &v)) out->mom_saving = (v != 0);
+    if (get_u(s, g, GBF_MOM_SAVING_FLAG, &v)) out->mom_saving = (v & 1u) != 0;
   }
 
   if (gbt_field_present(g, GBF_BADGES) && get_u(s, g, GBF_BADGES, &v))
@@ -277,7 +277,14 @@ GbsStatus gbt_write(GbSession* s, const GbTrainer* in) {
     st = set_u(s, g, GBF_MOMS_MONEY, mm);
     if (st != GBS_OK) return st;
     if (gbt_field_present(g, GBF_MOM_SAVING_FLAG)) {
-      st = set_u(s, g, GBF_MOM_SAVING_FLAG, in->mom_saving ? 1u : 0u);
+      /* Read-modify-write BIT 0 ONLY. The corpus shows this byte holding other set
+       * bits (Gold.sav: 0x81) that the design doc (DECOMP confidence, not VERIFIED)
+       * does not explain -- overwriting the whole byte to a bare 0/1 would silently
+       * destroy whatever those bits mean. */
+      uint32_t cur = 0;
+      if (!get_u(s, g, GBF_MOM_SAVING_FLAG, &cur)) return GBS_ERR_ARG;
+      uint32_t next = (cur & ~1u) | (in->mom_saving ? 1u : 0u);
+      st = set_u(s, g, GBF_MOM_SAVING_FLAG, next);
       if (st != GBS_OK) return st;
     }
   }
