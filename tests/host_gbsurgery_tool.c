@@ -106,7 +106,8 @@ static void usage(const char* prog) {
     "  --op dv BOX SLOT STAT V     STAT in atk|def|spe|spc, V 0..15\n"
     "  --op delete BOX SLOT\n"
     "  --op move FROM_BOX SLOT TO_BOX\n"
-    "  --op create BOX DEX LEVEL  needs --rom; box only, not the party\n"
+    "  --op create BOX DEX  needs --rom; box only, not the party; level is the\n"
+    "                       species' own lowest legal one (rom_gblearn_min_level)\n"
     "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -116,7 +117,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
                       bool* list_mode, Op ops[MAX_OPS], int* nops) {
   static const struct { const char* kind; int n; } shape[] = {
     {"nick", 3}, {"ot", 3}, {"level", 3}, {"dv", 4}, {"delete", 2}, {"move", 3},
-    {"create", 3},
+    {"create", 2},
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -304,15 +305,20 @@ static bool tool_rom_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
  * source/pdna_gen12.c). OT name/id are the fixed test values "GATEX"/12345: this
  * tool has no reader for SAVE's own trainer block, and the retail-gate assertion
  * this exists for (does the mon SHOW UP, named and levelled right) does not need
- * a real one. */
-static int do_create(GbSession* s, const char* box_tok, const char* dex_tok,
-                     const char* lvl_tok) {
+ * a real one.
+ *
+ * NO `lvl` ARGUMENT any more (BACKLOG #50 UX-parity, Guy 2026-09-07): the level
+ * picker this used to accept a caller-supplied level for is gone from
+ * gb_create_hook itself, replaced by rom_gblearn_min_level() -- keeping a level
+ * argument HERE after removing it there would let this tool "mirror
+ * gb_create_hook's logic" (this comment's own claim) while silently drifting
+ * from it the moment anyone ran it against a species whose floor isn't 5. This
+ * now computes the SAME way production does. */
+static int do_create(GbSession* s, const char* box_tok, const char* dex_tok) {
   int box = resolve_box(s, box_tok);
   if (box < 0) return 2;
   int dex = resolve_uint(dex_tok, "dex");
   if (dex < 1) return 2;
-  int lvl = resolve_uint(lvl_tok, "level");
-  if (lvl < 1 || lvl > 100) { fprintf(stderr, "bad level %s (want 1..100)\n", lvl_tok); return 2; }
   if (!g_rom_path) { fprintf(stderr, "--op create needs --rom PATH\n"); return 2; }
 
   FILE* rf = fopen(g_rom_path, "rb");
@@ -332,6 +338,7 @@ static int do_create(GbSession* s, const char* box_tok, const char* dex_tok,
   if (!rom_gblearn_open(&rl, s->gen, tool_rom_read, rf, (uint32_t)rsz)) {
     fclose(rf); return refuse("rom_gblearn_open: no learnset table located");
   }
+  int lvl = (int)rom_gblearn_min_level(&rl, (uint16_t)dex);
 
   GbNewMonSrc src;
   memset(&src, 0, sizeof src);
@@ -413,7 +420,7 @@ static int apply_op(GbSession* s, const Op* o) {
     if (from_box < 0 || slot < 0 || to_box < 0) return 2;
     return do_move(s, from_box, slot, to_box);
   }
-  if (!strcmp(o->kind, "create")) return do_create(s, o->a[0], o->a[1], o->a[2]);
+  if (!strcmp(o->kind, "create")) return do_create(s, o->a[0], o->a[1]);
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;
 }

@@ -611,6 +611,7 @@ int main(void) {
 
   T(PDNA_GBSUM_VIEW_CHIP, 4);
   T(PDNA_GBSUM_EDIT_CHIP, 8);
+  T(PDNA_GBSUM_NEW_CHIP,  12);   /* BACKLOG #50 UX-parity: x=12, same as pdna_summary.c's own Gen-3 "NEW" chip */
   /* Card titles: fixed sys8 at PDNA_SUM_CARD_X, must fit the 138 px card itself
    * (not just before the screen edge — checked directly, not via T(), since T()
    * always budgets to the screen edge). */
@@ -625,6 +626,8 @@ int main(void) {
   T(PDNA_GBSUM_FOOT_VIEW,    4);
   T(PDNA_GBSUM_FOOT_VIEW_RO, 4);
   T(PDNA_GBSUM_FOOT_EDIT,    4);
+  T(PDNA_GBSUM_FOOT_CREATE_EDIT, 4);   /* BACKLOG #50 UX-parity */
+  T(PDNA_GBSUM_FOOT_CREATE,      4);
 
   /* Card 0 (INFO): field_row()'s labels at PDNA_SUM_CARD_X, budgeted to
    * PDNA_GBSUM_VAL_DX (the value column's own start) rather than the screen

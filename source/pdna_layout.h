@@ -632,6 +632,12 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * inside the 138 px card by tests/host_textfit_test.c. */
 #define PDNA_GBSUM_VIEW_CHIP   "VIEW"
 #define PDNA_GBSUM_EDIT_CHIP   "EDIT"
+/* CREATE mode's chip (BACKLOG #50 UX-parity, Guy 2026-09-07): the SAME text
+ * and colour as pdna_summary.c's own render_card() draws for a Gen-3 create
+ * ("NEW", UI_OK fill + UI_PANEL text, x=12 -- "NEW" centers narrower than
+ * "EDIT"/"VIEW" in that same 50 px chip, which is why its x differs from
+ * theirs too, matching the Gen-3 chip's own x=12 exactly). */
+#define PDNA_GBSUM_NEW_CHIP    "NEW"
 #define PDNA_GBSUM_CARD_INFO   "INFO"
 #define PDNA_GBSUM_CARD_SKILLS "SKILLS"
 #define PDNA_GBSUM_CARD_MOVES  "MOVES"
@@ -642,6 +648,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * SELECT (drop to the flat field-list editor, pdna_gbedit.c) stays documented in
  * pdna_gbsummary.h rather than the footer, same reason as the old macro set. */
 #define PDNA_GBSUM_FOOT_EDIT    "A ok <>edit U/D L/R card B"
+/* CREATE mode's two footers (BACKLOG #50 UX-parity): no U/D-scroll-to-another-
+ * mon exists (this is the only mon in the visit, same as Gen 3's own create),
+ * and START keeps it from EITHER sub-mode -- mirrors pdna_summary.c's own
+ * PDNA_SUM_FOOT_CREATE_EDIT/PDNA_SUM_FOOT_CREATE text closely (adapted to this
+ * screen's own "L/R card" wording, not Gen 3's card-dot-only convention). */
+#define PDNA_GBSUM_FOOT_CREATE_EDIT "A ok <>edit L/R card START"
+#define PDNA_GBSUM_FOOT_CREATE      "A edit  L/R card  START keep"
 #define PDNA_GBSUM_FOOT_VIEW    "A edit  U/D mon  L/R  SEL  B"
 #define PDNA_GBSUM_FOOT_VIEW_RO "U/D mon  L/R card  SEL  B"
 

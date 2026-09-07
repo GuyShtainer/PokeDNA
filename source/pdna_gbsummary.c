@@ -458,11 +458,16 @@ static void card_origin(const GbEditMon* e, const char* note, bool has_sidecar) 
 /* ---- shell: chip/dots/rule + the shared left panel + the one card --------------- */
 
 static void render(const GbEditMon* e, const PkMon* left, bool left_ok, bool draw_left,
-                   int card, bool editing, bool can_edit, const char* note,
+                   int card, bool editing, bool can_edit, bool create, const char* note,
                    bool has_sidecar, GbSlot* slot, int* n) {
   pdna_summary_bg();                          /* never touches (0,11)-(92,150) */
-  if (editing) { ui_fill_rect(0, 0, 50, 9, UI_WARN); ui_text(8, 1, UI_PANEL, PDNA_GBSUM_EDIT_CHIP); }
-  else         { ui_text(4, 2, UI_DIM, PDNA_GBSUM_VIEW_CHIP); }
+  /* CREATE's own chip (BACKLOG #50 UX-parity) only shows outside active
+   * editing -- same rule pdna_summary.c's own `g_create = create && !editing`
+   * uses -- achieved here by simply checking `editing` FIRST, so the EDIT
+   * chip always wins whenever both are true, with no extra combined flag. */
+  if (editing)      { ui_fill_rect(0, 0, 50, 9, UI_WARN); ui_text(8, 1, UI_PANEL, PDNA_GBSUM_EDIT_CHIP); }
+  else if (create)  { ui_fill_rect(0, 0, 50, 9, UI_OK);   ui_text(12, 1, UI_PANEL, PDNA_GBSUM_NEW_CHIP); }
+  else              { ui_text(4, 2, UI_DIM, PDNA_GBSUM_VIEW_CHIP); }
   pdna_summary_draw_dots(150, 2, NCARDS, card);
   ui_hline(0, 10, UI_SCR_W, UI_BORDER);
 
@@ -485,7 +490,8 @@ static void render(const GbEditMon* e, const PkMon* left, bool left_ok, bool dra
   }
 
   ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-  const char* foot = editing ? PDNA_GBSUM_FOOT_EDIT
+  const char* foot = editing ? (create ? PDNA_GBSUM_FOOT_CREATE_EDIT : PDNA_GBSUM_FOOT_EDIT)
+                   : create  ? PDNA_GBSUM_FOOT_CREATE
                    : can_edit ? PDNA_GBSUM_FOOT_VIEW : PDNA_GBSUM_FOOT_VIEW_RO;
   ui_text(4, PDNA_SUM_FOOTER_Y, UI_DIM, foot);
 }
@@ -496,12 +502,33 @@ static void render(const GbEditMon* e, const PkMon* left, bool left_ok, bool dra
 
 typedef struct {
   GbEditMon* e;
-  bool can_edit, has_sidecar, editing, dirty, dv_warned;
+  bool can_edit, has_sidecar, editing, dirty, dv_warned, create;
   const char* note;
   int card, fsel;
   GbSlot* slot; int nslot;
   bool* saved; int* card_io;
 } GbSumCtx;
+
+/* CREATE's keep-or-discard confirm (BACKLOG #50 UX-parity, Guy 2026-09-07):
+ * reached from START (either sub-mode) or B (browse sub-mode only) -- the
+ * two paths pdna_summary.c's own create flow offers, "the same keep-or-
+ * discard confirm" Guy's parity ask names. Reuses gbedit_confirm() -- the
+ * SAME write gate every other GB commit in this screen already goes through
+ * (gb_check's structural issues, if any) -- rather than porting Gen 3's own
+ * confirm_keep() text: Guy's parity ask names the NEW chip's colour/text
+ * explicitly but not this dialog's, and a freshly created Gen-1/2 record must
+ * clear the SAME legality net a hand-edit here already has to, not a
+ * separate, laxer one. On accept: settles derived stats and reports kept
+ * (matching gbsum_view_keys' own dirty-exit path). On decline: reports not
+ * kept, leaving `*saved` at whatever it already was (false, from
+ * pdna_gbsummary_inner's own setup) -- the caller decides what "not kept"
+ * means (stay open, for START; leave anyway, for B). */
+static bool gbsum_create_keep(GbSumCtx* c) {
+  if (!gbedit_confirm(c->e)) return false;
+  gbe_settle_stats(c->e);
+  if (c->saved) *c->saved = true;
+  return true;
+}
 
 /* SELECT: drop to the reviewed flat field-list editor (pdna_gbedit.c) — kept as the
  * fallback until this screen gets its own hardware pass (design doc, S2b note +
@@ -567,6 +594,22 @@ static bool gbsum_view_keys(GbSumCtx* c, u16 k, u16 fresh, int* out) {
     c->card = (c->card + (fwd ? 1 : NCARDS - 1)) % NCARDS;
     return false;
   }
+  /* CREATE browse sub-mode (BACKLOG #50 UX-parity): no other mon exists to
+   * scroll to (this IS the only mon in the visit), so U/D do nothing here --
+   * B is the other way out, asking the same keep/discard question START
+   * does and leaving EITHER way (kept or discarded), mirroring
+   * pdna_summary.c's own `else if (create) { if (k & KEY_B) {...} }` branch,
+   * which the SAME way pre-empts its generic dirty-exit UP/DOWN/B handling. */
+  if (c->create) {
+    if (k & KEY_B) {
+      gbsum_create_keep(c);                    /* result already folded into *saved */
+      key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);
+      if (c->card_io) *c->card_io = c->card;
+      *out = 0;
+      return true;
+    }
+    return false;
+  }
   if (k & (KEY_UP | KEY_DOWN | KEY_B)) {
     if (c->dirty) {
       if (gbedit_confirm(c->e)) { gbe_settle_stats(c->e); if (c->saved) *c->saved = true; }
@@ -585,15 +628,18 @@ static bool gbsum_view_keys(GbSumCtx* c, u16 k, u16 fresh, int* out) {
  * gbsum_edit_keys() no-ops on (KEY_B and KEY_L/KEY_R still work regardless --
  * B always leaves, L/R always flips cards), so playing their NORMAL earcon
  * (snd_ok for A, snd_move for U/D, snd_edit for LEFT/RIGHT) would tell the
- * player something happened when nothing did. */
-static void gbsum_click(u16 fresh, bool editing, int nslot) {
+ * player something happened when nothing did. `create` adds START to the
+ * "ok" click (BACKLOG #50 UX-parity: pdna_summary.c's own click dispatch
+ * already plays snd_ok() for `KEY_A | KEY_START` together) -- ONLY when
+ * `create`, since START has no meaning at all in a plain edit/view visit. */
+static void gbsum_click(u16 fresh, bool editing, bool create, int nslot) {
   if (editing && !nslot && (fresh & (KEY_A | KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT))) {
     snd_deny();
     return;
   }
   if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
   else if (fresh & (KEY_L | KEY_R | KEY_SELECT)) snd_tab();
-  else if (fresh & KEY_A) snd_ok();
+  else if (fresh & (KEY_A | (create ? KEY_START : 0))) snd_ok();
   else if (fresh & KEY_B) snd_back();
   else if (fresh & (KEY_LEFT | KEY_RIGHT)) { if (editing) snd_edit(); else snd_tab(); }
 }
@@ -605,11 +651,22 @@ static bool gbsum_input(GbSumCtx* c, bool* shadow_valid, int* out) {
   u16 k, fresh;
   do { s_vsync(); fresh = key_hit(KEY_FULL);
        k = fresh | key_repeat(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT); } while (!k);
-  gbsum_click(fresh, c->editing, c->nslot);
+  gbsum_click(fresh, c->editing, c->create, c->nslot);
 
   if (fresh & KEY_SELECT) {
     if (gbsum_select_fallback(c, shadow_valid)) { *out = 0; return true; }
     return false;
+  }
+
+  /* CREATE: START keeps the record from EITHER sub-mode -- checked before the
+   * editing/view split so it works whether or not a field is currently
+   * focused, mirroring pdna_summary.c's own create flow (BACKLOG #50
+   * UX-parity). See gbsum_create_keep()'s own comment for why the dialog
+   * itself reuses gbedit_confirm() rather than porting Gen 3's confirm_keep()
+   * text. */
+  if (c->create && (fresh & KEY_START)) {
+    if (gbsum_create_keep(c)) { *out = 0; return true; }
+    return false;                                /* declined -> keep editing/browsing */
   }
 
   if (c->editing) { gbsum_edit_keys(c, k); return false; }
@@ -617,8 +674,8 @@ static bool gbsum_input(GbSumCtx* c, bool* shadow_valid, int* out) {
 }
 
 static int pdna_gbsummary_inner(GbEditMon* e, bool can_edit, bool start_editing,
-                                 const char* note, bool has_sidecar, bool* saved,
-                                 int* card_io) {
+                                 const char* note, bool has_sidecar, bool create,
+                                 bool* saved, int* card_io) {
   if (saved) *saved = false;
   if (!e) return 0;
 
@@ -626,6 +683,7 @@ static int pdna_gbsummary_inner(GbEditMon* e, bool can_edit, bool start_editing,
   c.e = e; c.can_edit = can_edit; c.has_sidecar = has_sidecar; c.note = note;
   c.card = (card_io && *card_io >= 0 && *card_io < NCARDS) ? *card_io : 0;
   c.editing = can_edit && start_editing;
+  c.create = create;
   c.fsel = 0; c.dirty = false; c.dv_warned = false;
   c.saved = saved; c.card_io = card_io;
 
@@ -673,7 +731,7 @@ static int pdna_gbsummary_inner(GbEditMon* e, bool can_edit, bool start_editing,
                     (conv_ok && memcmp(&conv, &left_mon, sizeof conv) != 0);
       if (reconv) { left_mon = conv; left_ok = conv_ok; }
 
-      render(c.e, &left_mon, left_ok, reconv, c.card, c.editing, c.can_edit,
+      render(c.e, &left_mon, left_ok, reconv, c.card, c.editing, c.can_edit, c.create,
              c.note, c.has_sidecar, c.slot, &c.nslot);
       pdna_summary_sel_frame_drop();   /* the card body just painted over any outline */
       if (c.editing && c.nslot && c.fsel >= c.nslot) c.fsel = c.nslot - 1;
@@ -704,11 +762,11 @@ static int pdna_gbsummary_inner(GbEditMon* e, bool can_edit, bool start_editing,
  * caller's own place is restored on the way out so whatever draws next (this screen
  * is routinely opened from inside another screen's own loop) is unaffected. */
 int pdna_gbsummary(GbEditMon* e, bool can_edit, bool start_editing, const char* note,
-                    bool has_sidecar, bool* saved, int* card_io) {
+                    bool has_sidecar, bool create, bool* saved, int* card_io) {
   int prev = pdna_origin_art_get_place();
   pdna_origin_art_set_place(SE_PLACE_SUMMARY);
-  int r = pdna_gbsummary_inner(e, can_edit, start_editing, note, has_sidecar, saved,
-                               card_io);
+  int r = pdna_gbsummary_inner(e, can_edit, start_editing, note, has_sidecar, create,
+                               saved, card_io);
   pdna_origin_art_set_place(prev);
   return r;
 }

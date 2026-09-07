@@ -599,8 +599,9 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
 #include "gba_rtc.h"       /* S5-B: the sidecar entry's transfer-time RTC stamp        */
 #include "rom_gbsprite.h"  /* S5-C: locates BaseStats in the user's own Gen-1 ROM      */
-#include "rom_gblearn.h"   /* BACKLOG #50: level-up learnsets for CREATE               */
+#include "rom_gblearn.h"   /* BACKLOG #50: level-up learnsets + min-level for CREATE   */
 #include "gb_new_mon.h"    /* BACKLOG #50: gb_new_mon/gb_new_mon_g1_moves for CREATE   */
+#include "pdna_pick.h"     /* BACKLOG #50 UX-parity: pick_species(), the Gen-3 picker  */
 #include "rom_gbbase.h"    /* S5-C: decodes the 28-byte BaseStats row rom_gbsprite found;
                             * pk_national_no (internal index -> National Dex) comes from
                             * data_tables.h, already included at the top of this file. */
@@ -1116,7 +1117,7 @@ static bool gb_edit_hook(uint8_t* rec80) {
   bool has_sidecar = gb_has_sidecar(s->gen, &e);
   bool saved = false; int card = 0;
   pdna_gbsummary(&e, true, true, s->gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
-                 has_sidecar, &saved, &card);
+                 has_sidecar, false, &saved, &card);
   if (!saved) return false;
 
   return gb_edit_commit(box, slot, &e, "edit");
@@ -1894,7 +1895,7 @@ static bool gb_view_hook(uint8_t* rec80) {
     bool saved = false;
     int nav = pdna_gbsummary(&e, can_edit, false,
                              gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
-                             has_sidecar, &saved, &card);
+                             has_sidecar, false, &saved, &card);
     if (saved && !gb_edit_commit(box, slot, &e, "view")) return false;
     if (nav == 0) return false;
 
@@ -1996,100 +1997,39 @@ static bool __attribute__((noinline)) gb_create_base2(uint16_t dex, RomGb2Specie
   return ok;
 }
 
-/* The (up to) four moves a level-`level` mon of `dex` would know, off the SAME
- * located ROM. `g1_start` is rom_gbbase_gen1's own start[4] for a Gen-1 target
- * (merged in via rom_gblearn_moves_at_seeded -- gb_new_mon_g1_moves does the
- * identical thing, duplicated here rather than called because that helper wants
- * an already-open RomGbLearn* and this function is also where one gets opened);
- * NULL for Gen 2, whose own table already includes the starters. RomGbLearn
- * itself is a small (~24 B) stack local -- unlike RomGbSprite it carries no big
- * scratch buffer of its own to justify arena residency. Returns the count
- * filled (0..4), or -1 on any failure. */
+/* Opens the ROM's learnset table ONCE and answers BOTH questions the create
+ * flow needs from it (BACKLOG #50 UX-parity, Guy 2026-09-07): the species'
+ * OWN lowest legal level -- no more separate level PROMPT, matching Gen 3's
+ * own create flow (pdna_main.c's app_create_mon, gen3_build_level: "5 for a
+ * Bulbasaur, 36 for a Charizard", "it must evolve to there") -- and its
+ * level-up moveset at exactly that level. `g1_start` is rom_gbbase_gen1's own
+ * start[4] for a Gen-1 target (merged in via rom_gblearn_moves_at_seeded --
+ * gb_new_mon_g1_moves does the identical thing, duplicated here rather than
+ * called because that helper wants an already-open RomGbLearn* and this
+ * function is also where one gets opened); NULL for Gen 2, whose own table
+ * already includes the starters. RomGbLearn itself is a small (~24 B) stack
+ * local -- unlike RomGbSprite it carries no big scratch buffer of its own to
+ * justify arena residency. `*out_level` is only written on success. Returns
+ * the move count filled (0..4), or -1 on any failure -- the ONE refusal path
+ * left for the create flow's ROM dependency (used to be raised by the old
+ * gb_create_moves() this replaces; the level computation itself never
+ * refuses, see rom_gblearn_min_level()'s own "fails open" contract, so it
+ * cannot newly introduce one here). */
 static int __attribute__((noinline))
-gb_create_moves(uint16_t dex, uint8_t level, const uint8_t g1_start[4], uint8_t out4[4]) {
+gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t* out_level, uint8_t out4[4]) {
   memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
   if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return -1;
   RomGbLearn rl;
   int ok = rom_gblearn_open(&rl, g_ed->s.gen, gb_read, &g_ed->romfil, g_ed->romgs.size);
   int kept = -1;
   if (ok) {
-    kept = g1_start ? rom_gblearn_moves_at_seeded(&rl, dex, level, g1_start, out4)
-                    : rom_gblearn_moves_at(&rl, dex, level, out4);
+    uint8_t lvl = rom_gblearn_min_level(&rl, dex);
+    kept = g1_start ? rom_gblearn_moves_at_seeded(&rl, dex, lvl, g1_start, out4)
+                    : rom_gblearn_moves_at(&rl, dex, lvl, out4);
+    if (kept >= 0 && out_level) *out_level = lvl;
   }
   f_close(&g_ed->romfil);
   return kept;
-}
-
-/* Species picker for CREATE: dex-style rows ("No.NNN NAME", pdna_pick.c's own
- * sp_row visual convention) over dex 1..max_dex ONLY, names only -- no icon grid.
- * A SEPARATE, small, gen-agnostic picker rather than reusing pdna_pick.c's big
- * pick_species() (411 species in Hoenn-internal-index order, icon grid, filter
- * menu, search): that picker's list has no dex-RANGE concept to bolt onto
- * safely, and drawing a Gen-1/2 mon via its Gen-3 icon would be exactly the
- * "wrong generation's art" rom_gbsprite.h's own header argues against. Returns
- * 1..max_dex, or 0 on B (0 is never a real dex). */
-static uint16_t __attribute__((noinline)) gb_create_pick_species(uint8_t max_dex) {
-  enum { ROWS = 15 };            /* 24..156, 9 px pitch: fits inside the hlines below */
-  int sel = 0, top = 0;
-  for (;;) {
-    if (sel < top) top = sel;
-    if (sel >= top + ROWS) top = sel - ROWS + 1;
-
-    ui_clear();
-    ui_text(4, 3, UI_TITLE, PDNA_GBCREATE_SPECIES_TITLE);
-    ui_hline(0, 21, UI_SCR_W, UI_BORDER);
-    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, PDNA_GBCREATE_SPECIES_FOOT);
-    for (int i = 0; i < ROWS; i++) {
-      int dex = top + i + 1;
-      if (dex > max_dex) break;
-      int y = 24 + i * 9;
-      bool s = (top + i == sel);
-      ui_fill_rect(2, y - 1, 236, 9, s ? UI_SEL : UI_BG);
-      char row[16];
-      siprintf(row, "No.%03u", (unsigned)dex);
-      ui_text(6, y, s ? UI_SELTEXT : UI_DIM, row);
-      /* dex <= 251 IS the Gen-3 internal species index for this whole range
-       * (data_tables.h; the same identity gb_editor.c's gbe_has_gender_row
-       * already leans on), so pk_species_name(dex) needs no separate lookup. */
-      ui_ptext_fit(66, y, 130, s ? UI_SELTEXT : UI_TEXT, pk_species_name((uint16_t)dex));
-    }
-
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B);
-    if (k & KEY_B) return 0;
-    if (k & KEY_A) return (uint16_t)(sel + 1);
-    if (k & KEY_UP)    sel = (sel > 0) ? sel - 1 : max_dex - 1;
-    else if (k & KEY_DOWN)  sel = (sel + 1) % max_dex;
-    else if (k & KEY_L)     sel = (sel >= ROWS) ? sel - ROWS : 0;
-    else if (k & KEY_R)     sel = (sel + ROWS < max_dex) ? sel + ROWS : max_dex - 1;
-  }
-}
-
-/* Level picker for CREATE: no dedicated "type a number" prompt exists anywhere
- * in this tree to reuse (osk.h's osk_input is QWERTY text only) -- this is
- * pdna_main.c's own pick_pokeblock_color() shape (a small LEFT/RIGHT/A/B modal)
- * adapted to one adjustable number, with gbe_adjust's own GBE_LEVEL step sizes
- * (gb_editor.c: 1 plain, 10 with L/R) so it feels like every other level control
- * in this tree. Returns 1..100, or -1 on B. */
-static int __attribute__((noinline)) gb_create_pick_level(uint8_t initial) {
-  int lvl = (initial >= 1 && initial <= 100) ? initial : 5;
-  for (;;) {
-    ui_clear();
-    ui_text(4, 3, UI_TITLE, PDNA_GBCREATE_LEVEL_TITLE);
-    ui_hline(0, 21, UI_SCR_W, UI_BORDER);
-    char b[16]; siprintf(b, "Lv %d", lvl);
-    ui_text(104, 70, UI_TITLE, b);
-    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, PDNA_GBCREATE_LEVEL_FOOT);
-
-    u16 k = s_wait(KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_A | KEY_B);
-    if (k & KEY_B) return -1;
-    if (k & KEY_A) return lvl;
-    if (k & KEY_LEFT)       lvl = (lvl > 1)   ? lvl - 1  : 1;
-    else if (k & KEY_RIGHT) lvl = (lvl < 100) ? lvl + 1  : 100;
-    else if (k & KEY_L)     lvl = (lvl > 10)  ? lvl - 10 : 1;
-    else if (k & KEY_R)     lvl = (lvl < 91)  ? lvl + 10 : 100;
-  }
 }
 
 /* AppSrcOps.create. Takes NO arguments -- see pdna_app.h's own comment on why
@@ -2131,10 +2071,19 @@ static bool gb_create_hook(void) {
     snd_deny(); msg_wait(PDNA_GBCREATE_FULL_TITLE, UI_WARN, PDNA_GBCREATE_FULL_L1, 0); return false;
   }
 
-  uint16_t dex = gb_create_pick_species(gb_max_species(g_ed->s.gen));
-  if (!dex) return false;
-  int lvl = gb_create_pick_level(5);
-  if (lvl < 0) return false;
+  /* Species picker: pdna_pick.c's own big icon-grid pick_species(), the EXACT
+   * screen app_create_mon (pdna_main.c) opens for a Gen-3 create, restricted
+   * to this session's own generation (BACKLOG #50 UX-parity, Guy 2026-09-07:
+   * "Pokemon creation is not from the Pokedex view -- fix that") -- see
+   * pick_species_set_max_dex()'s own header comment for why a file-static
+   * ceiling, not a second picker, is what changed. The CANCEL/invalid check
+   * mirrors app_create_mon's own `if (sp == 0xFFFF || sp == 0) return false;`
+   * exactly (0xFFFF is pdna_pick.c's private CANCEL sentinel; a 0 species can
+   * never be legally picked either, but is refused the same defensive way). */
+  pick_species_set_max_dex(gb_max_species(g_ed->s.gen));
+  uint16_t dex = pick_species(1);
+  pick_species_set_max_dex(0);
+  if (dex == 0xFFFFu || dex == 0) return false;
 
   if (!gb_create_locate_rom(g_ed->s.gen)) {
     snd_deny();
@@ -2162,7 +2111,11 @@ static bool gb_create_hook(void) {
     src.growth = sp.growth;
   }
 
-  int kept = gb_create_moves(dex, (uint8_t)lvl, g1_start, src.moves);
+  /* No level PROMPT any more (BACKLOG #50 UX-parity): gb_create_learn()
+   * computes the species' own lowest legal level (rom_gblearn_min_level, off
+   * the SAME ROM) and its moveset at that level together, one ROM open. */
+  uint8_t lvl = 5;
+  int kept = gb_create_learn(dex, g1_start, &lvl, src.moves);
   if (kept < 0) {
     snd_deny();
     msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_NOROM_L1, PDNA_GBCREATE_NOROM_L2);
@@ -2174,7 +2127,7 @@ static bool gb_create_hook(void) {
   src.ot_id = g_m ? g_m->tid : 0;
 
   GbEditMon party_mon;
-  if (!gb_new_mon(g_ed->s.gen, dex, (uint8_t)lvl, &src, (uint32_t)qran(), &party_mon)) {
+  if (!gb_new_mon(g_ed->s.gen, dex, lvl, &src, (uint32_t)qran(), &party_mon)) {
     snd_deny();
     msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_BUILDFAIL_L1, 0);
     return false;
@@ -2196,6 +2149,7 @@ static bool gb_create_hook(void) {
   bool saved = false; int card = 0;
   pdna_gbsummary(&box_mon, true, true, g_ed->s.gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
                 false /* a freshly created mon can never already have a sidecar */,
+                true /* BACKLOG #50 UX-parity: the NEW chip + START-keep confirm */,
                 &saved, &card);
   if (!saved) return false;
 

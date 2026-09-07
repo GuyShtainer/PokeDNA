@@ -263,6 +263,41 @@ static void test_bulbasaur_gen2(const char* file) {
 /* 6. negative controls                                                         */
 /* ============================================================================ */
 
+/* ============================================================================ */
+/* 7. rom_gblearn_min_level -- BACKLOG #50's create-flow level floor            */
+/* ============================================================================ */
+
+/* Seven real evolution chains, cross-checked against pokered's own
+ * data/pokemon/evos_moves.asm and pokecrystal's data/pokemon/evos_attacks.asm
+ * (fetched, reference-only -- rom_gblearn.h's own header comment on
+ * rom_gblearn_min_level cites the exact lines and the propagation rule this
+ * exercises). Crobat is Gen-2 only: dex 169 does not exist in Gen 1's 1..151
+ * range, so it is checked only when `gen == GB_GEN2`. */
+static void test_min_level(const char* file, uint8_t gen) {
+  RomGbLearn rl; RomGbSprite gs; FILE* f;
+  if (!open_rom(file, gen, &rl, &gs, &f)) return;
+
+  static const struct { uint16_t dex; uint8_t want; const char* name; } cases[] = {
+    { 1,   5, "Bulbasaur (base form)" },
+    { 2,  16, "Ivysaur (Bulbasaur->Ivysaur LEVEL 16)" },
+    { 3,  32, "Venusaur (Ivysaur->Venusaur LEVEL 32)" },
+    { 6,  36, "Charizard (Charmander base -> Charmeleon LEVEL 16 -> Charizard LEVEL 36)" },
+    { 26,  5, "Raichu (Pikachu's own floor propagates through the Thunder Stone ITEM evo)" },
+    { 76, 25, "Golem (Geodude->Graveler LEVEL 25, Graveler->Golem TRADE propagates)" },
+  };
+  for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    uint8_t got = rom_gblearn_min_level(&rl, cases[i].dex);
+    CHECK(got == cases[i].want, "%s: min_level(dex %u) = %u, want %u -- %s",
+          file, (unsigned)cases[i].dex, (unsigned)got, (unsigned)cases[i].want, cases[i].name);
+  }
+  if (gen == GB_GEN2) {
+    uint8_t got = rom_gblearn_min_level(&rl, 169);
+    CHECK(got == 22, "%s: min_level(dex 169, Crobat) = %u, want 22 "
+          "(Zubat->Golbat LEVEL 22, Golbat->Crobat HAPPINESS propagates)", file, (unsigned)got);
+  }
+  fclose(f);
+}
+
 static void test_cross_gen_refusal(void) {
   printf("\n== cross-generation refusal ==\n");
   char path[512]; uint32_t sz; FILE* f; RomGbLearn rl;
@@ -349,6 +384,13 @@ static void test_bad_args(void) {
   RomGbLearn unopened; memset(&unopened, 0, sizeof unopened);
   CHECK(rom_gblearn_moves_at(&unopened, 1, 5, out4) == -1, "an unopened rl refused");
 
+  /* min_level never refuses (gb_new_mon always needs SOME legal level) -- its
+   * "bad argument" behaviour is failing open to base level 5, not a sentinel. */
+  CHECK(rom_gblearn_min_level(NULL, 1) == 5, "min_level: NULL rl fails open to 5");
+  CHECK(rom_gblearn_min_level(&unopened, 1) == 5, "min_level: an unopened rl fails open to 5");
+  CHECK(rom_gblearn_min_level(&rl, 0) == 5, "min_level: dex 0 fails open to 5");
+  CHECK(rom_gblearn_min_level(&rl, 999) == 5, "min_level: dex 999 fails open to 5");
+
   RomGbSprite gs; memset(&gs, 0, sizeof gs);
   RomGb2Species sp;
   CHECK(!rom_gbbase_gen2(NULL, file_read, f, 1, &sp), "rom_gbbase_gen2: NULL gs refused");
@@ -369,6 +411,12 @@ int main(void) {
   test_bulbasaur_pikachu_gen1("Yellow.gb");
   test_bulbasaur_gen2("Gold.gbc");
   test_bulbasaur_gen2("Crystal.gbc");
+
+  printf("\n== rom_gblearn_min_level ==\n");
+  test_min_level("Red.gb", GB_GEN1);
+  test_min_level("Yellow.gb", GB_GEN1);
+  test_min_level("Gold.gbc", GB_GEN2);
+  test_min_level("Crystal.gbc", GB_GEN2);
 
   test_cross_gen_refusal();
   test_mutation_negative_control();

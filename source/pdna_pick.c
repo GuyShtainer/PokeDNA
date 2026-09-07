@@ -33,6 +33,37 @@
 static u16 EWRAM_BSS g_list[NSPECIES];   /* internal species ids in display order */
 static int g_n;
 
+/* CREATE restriction (BACKLOG #50 UX-parity, Guy 2026-09-07): pick_species()
+ * is reused UNCHANGED for the Gen-1/2 create flow's species picker (which used
+ * to be a separate, plainer dex-list screen, pdna_gen12.c's now-deleted
+ * gb_create_pick_species) -- but a Gen-1 session must never offer a Gen-2+
+ * species, and a Gen-2 session must never offer a Gen-3+ one: gb_new_mon() has
+ * no base-stat/learnset source for anything past its own generation's ROM
+ * table, and a species this list should never have produced reaching it would
+ * be a silent wrong-generation record, not merely a slow one.
+ *
+ * A file-static ceiling, not a second entry point: build_species() already
+ * combines several independent constraints (the Gen/type/legendary `filter`,
+ * and `search`) with a plain AND, and every one of pick_species()'s OWN
+ * existing callers (the Gen-3 create/edit flows) must see EXACTLY today's
+ * unrestricted list -- a new parameter would touch every call site. 0 (the
+ * default, set by nothing) means "unrestricted", so nothing changes for them.
+ * Set it right before calling pick_species() and clear it right after -- it
+ * must never leak into the NEXT, unrelated call.
+ *
+ * Verified empirically (a one-off host-side sweep of pk_national_no() over
+ * every internal id 1..411, this feature's own commit message) that National
+ * Dex 1..251 maps from EXACTLY ONE internal index each, zero gaps or
+ * duplicates -- so a plain national-dex-number ceiling is sufficient on its
+ * own; no Gen-3-only "form" hides inside that range under a low dex number
+ * needing separate exclusion (Unown, dex 201, IS a real Gen-2 species and is
+ * correctly kept for a Gen-2-restricted list by the ceiling alone -- its
+ * LETTER is decided later, by gb_new_mon's own DVs, the same way pick_species'
+ * OWN Gen-3 caller decides it via a separate pick_unown_form() call AFTER the
+ * species is picked here, not by a distinct list entry). */
+static uint16_t g_species_max_dex = 0;   /* 0 = unrestricted: every existing caller */
+void pick_species_set_max_dex(uint16_t max_dex) { g_species_max_dex = max_dex; }
+
 /* ONE index buffer for every flat list on this screen family — the generic list_pick,
  * the item picker, the ball picker, the met-location picker and the MOVE picker. They
  * are all leaf screens (none opens another), so sharing is safe, and it is what pays
@@ -164,6 +195,7 @@ static void build_species(int filter, int sort, const char* search) {
   for (uint16_t in = 1; in <= 411; in++) {
     uint16_t nat = pk_national_no(in);
     if (!nat) continue;                                  /* skip non-species slots */
+    if (g_species_max_dex && nat > g_species_max_dex) continue;   /* CREATE restriction */
     if (filter == 1 && nat > 151) continue;
     if (filter == 2 && (nat < 152 || nat > 251)) continue;
     if (filter == 3 && nat < 252) continue;
@@ -201,11 +233,31 @@ static void build_species(int filter, int sort, const char* search) {
 #define GY 22
 #define GICON 32
 
+/* True if filter id `f` can select at least one species under the active
+ * create-mode ceiling (pick_species_set_max_dex(), 0 = no ceiling = always
+ * true) -- shared by filter_ids()'s own START-menu list AND the plain L/R
+ * quick-cycle below, so the two can never drift apart: before this, the
+ * ceiling was ONLY consulted by the menu list, so L/R could still cycle onto
+ * a "Gen 2"/"Gen 3" filter guaranteed to page to nothing inside a Gen-1-
+ * restricted create. Type filters (5..22, MYSTERY 14 already excluded
+ * unconditionally) are not similarly audited -- whether a given type has zero
+ * Gen-1 representatives (Steel and Dark do not exist as types before Gen 2)
+ * is a data question this file has no cheap way to answer, so a type filter
+ * can still page to an empty list under a ceiling; that residual is left as
+ * a known, minor rough edge rather than in scope here. */
+static bool filter_usable(int f) {
+  if (f == 5 + 9) return false;                                              /* MYSTERY: unused, always */
+  if (g_species_max_dex && g_species_max_dex <= 151u && f == 2) return false; /* Gen 2: empty under a Gen-1 ceiling */
+  if (g_species_max_dex && g_species_max_dex <= 251u && f == 3) return false; /* Gen 3+: empty under either ceiling */
+  return true;
+}
+
 /* the filter ids selectable in the menu / by L-R (All, Gen1-3, Legendary, types
- * except the unused MYSTERY type 9). */
+ * except the unused MYSTERY type 9, and whatever filter_usable() has ruled
+ * out under the active create-mode ceiling). */
 static int filter_ids(int* out) {
   int n = 0;
-  for (int f = 0; f <= 4; f++) out[n++] = f;
+  for (int f = 0; f <= 4; f++) if (filter_usable(f)) out[n++] = f;
   for (int t = 0; t < 18; t++) if (t != 9) out[n++] = 5 + t;
   return n;
 }
@@ -457,8 +509,8 @@ uint16_t pick_species(uint16_t current) {
     else if (k & KEY_RIGHT) sel = (sel < g_n - 1) ? sel + 1 : sel;
     else if (k & KEY_UP)    { if (sel >= cols) sel -= cols; }
     else if (k & KEY_DOWN)  { if (sel + cols < g_n) sel += cols; }
-    else if (k & KEY_L) { do { filter = (filter + NFILTER - 1) % NFILTER; } while (filter == 5 + 9); build_species(filter, sort, search); sel = 0; relist = true; }
-    else if (k & KEY_R) { do { filter = (filter + 1) % NFILTER; } while (filter == 5 + 9); build_species(filter, sort, search); sel = 0; relist = true; }
+    else if (k & KEY_L) { do { filter = (filter + NFILTER - 1) % NFILTER; } while (!filter_usable(filter)); build_species(filter, sort, search); sel = 0; relist = true; }
+    else if (k & KEY_R) { do { filter = (filter + 1) % NFILTER; } while (!filter_usable(filter)); build_species(filter, sort, search); sel = 0; relist = true; }
     else if (k & KEY_START) { filter_menu(&filter, &sort); build_species(filter, sort, search); sel = 0; relist = true; }
     else if (k & KEY_SELECT) {
       char q[16];

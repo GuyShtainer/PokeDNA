@@ -425,7 +425,15 @@ def edited_case(python, vendor, work, rom, gen, edited_sav, orig_size, dump_name
     return tally.record(label, ok, detail)
 
 
-CREATE_DEX, CREATE_LEVEL, CREATE_NAME = 1, 5, "BULBASAUR"   # the brief's own worked example
+CREATE_DEX, CREATE_LEVEL, CREATE_NAME = 1, 5, "BULBASAUR"
+# dex 1 = Bulbasaur, a base form -- rom_gblearn_min_level() computes 5 for it in
+# BOTH gens (tests/host_romgblearn_test.c pins this exact value against real
+# ROM data). CREATE_LEVEL is the EXPECTED result now, not a --op argument any
+# more (BACKLOG #50 UX-parity, Guy 2026-09-07: the level PICKER this constant
+# used to feed a chosen value into is gone from gb_create_hook, replaced by
+# that same computation -- host_gbsurgery_tool.c's own --op create dropped its
+# LEVEL argument to match, so it keeps mirroring gb_create_hook rather than
+# silently drifting from it).
 
 
 def create_case(python, vendor, work, rom, gen, sav, orig, sections, party_count0,
@@ -459,13 +467,13 @@ def create_case(python, vendor, work, rom, gen, sav, orig, sections, party_count
                                                   # slot 17)
 
     if gen == 1:
-        ops = [["create", str(dst), str(CREATE_DEX), str(CREATE_LEVEL)]]
+        ops = [["create", str(dst), str(CREATE_DEX)]]
         label = f"create dex {CREATE_DEX}@{CREATE_LEVEL} into box {dst} (Gen 1, box only, no on-screen content check)"
         extra_check = None
     else:
         last_idx = party_count0 - 1
         ops = [["delete", "party", str(last_idx)],
-               ["create", str(dst), str(CREATE_DEX), str(CREATE_LEVEL)],
+               ["create", str(dst), str(CREATE_DEX)],
                ["move", str(dst), str(dst_count), "party"]]
         label = f"create dex {CREATE_DEX}@{CREATE_LEVEL} -> party"
         extra_check = check_level_slot(last_idx, gen, CREATE_NAME, CREATE_LEVEL)

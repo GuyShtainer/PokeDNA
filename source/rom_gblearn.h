@@ -140,4 +140,53 @@ int rom_gblearn_moves_at(RomGbLearn* rl, uint16_t dex, uint8_t level, uint8_t ou
 int rom_gblearn_moves_at_seeded(RomGbLearn* rl, uint16_t dex, uint8_t level,
                                 const uint8_t seed4[4], uint8_t out4[4]);
 
+/* The lowest level at which `dex` can legally exist from nothing -- Gen 3's
+ * own create flow answer (gen3_edit.c's gen3_build_level, "5 for a Bulbasaur,
+ * 36 for a Charizard") for THIS generation's own evolution data, read live
+ * off the same ROM this whole file already locates a table in (BACKLOG #50
+ * UX-parity, Guy 2026-09-07: "it must evolve to there" applies just as much
+ * here as it does to a Gen-3 create).
+ *
+ * ALGORITHM. Walk backward from `dex`: find the ONE species (if any) whose
+ * evolution list targets it -- a linear scan of the whole table, since
+ * neither generation's format offers a reverse index -- and recurse onto
+ * that predecessor. A LEVEL edge (method 1 in both gens, or Gen 2's method 5
+ * EVOLVE_STAT, Tyrogue's fixed level-20 Atk-vs-Def split, which carries an
+ * explicit level requirement the same shape a plain level-up does) folds its
+ * own level requirement into a running MAX; every other method (ITEM/TRADE/
+ * Gen 2's HAPPINESS) carries no real level floor of its own and simply
+ * PROPAGATES the predecessor's floor unchanged, even where the row format
+ * still reserves a level-shaped byte (Gen 1's own ITEM entry keeps one --
+ * verified unused by the item-evolution routine itself, not merely assumed).
+ * A species nothing evolves into is a base form: floor 5, the same base
+ * gen3_build_level uses (a Gen-2 hatch level; Gen 1 has no eggs, but 5 still
+ * mirrors the Gen-3 answer for a base form, which is the parity this exists
+ * for) -- and taking the max over the WHOLE backward walk (not just the
+ * nearest level edge) is deliberately more permissive of a hand-crafted/
+ * corrupted ROM than a strict nearest-edge reading would be, while being
+ * IDENTICAL for every real chain, since levels only ever increase going
+ * forward up a real evolution line.
+ *
+ * VERIFIED (clean-room: pokered's data/pokemon/evos_moves.asm and
+ * pokecrystal's data/pokemon/evos_attacks.asm read on the web for these
+ * FACTS, never for an address -- every byte this function actually reads
+ * still comes from the live ROM `rl` already located) against real game
+ * data, both gens where the species exists in both: Bulbasaur 5 (base),
+ * Ivysaur 16, Venusaur 32 (Ivysaur evolves at 16, Venusaur at 32), Charizard
+ * 36 (Charmeleon 16, Charizard 36), Raichu 5 (Pikachu's own predecessor --
+ * Gen 1 none, Gen 2 Pichu by HAPPINESS -- propagates; Pikachu's OWN evolution
+ * into Raichu is an ITEM, Thunder Stone, which also only propagates), Golem
+ * 25 (Geodude->Graveler LEVEL 25, Graveler->Golem TRADE propagates), Crobat
+ * 22 (Gen 2 only: Zubat->Golbat LEVEL 22, Golbat->Crobat HAPPINESS
+ * propagates) -- tests/host_romgblearn_test.c pins all seven.
+ *
+ * Returns a legal level 1..100, defaulting to 5 whenever `rl` is not `.ok`,
+ * `dex` is outside 1..gb_max_species(rl->gen), or a read fails mid-scan
+ * (fails open -- see gen3_edit.c's own G3_BUILD_BASE_LVL comment for why a
+ * missing/unreadable answer must never invent a HIGHER level than the
+ * default, only ever the safe base). Never refuses: unlike
+ * rom_gblearn_moves_at, there is no "bad argument" sentinel, because a
+ * created mon's level always needs SOME legal answer to reach gb_new_mon(). */
+uint8_t rom_gblearn_min_level(RomGbLearn* rl, uint16_t dex);
+
 #endif /* ROM_GBLEARN_INCLUDED */

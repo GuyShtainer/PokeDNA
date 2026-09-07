@@ -12,6 +12,14 @@
  *   a type filter (L) and search (SELECT).
  * pick_item / pick_nature: searchable lists. */
 uint16_t pick_species(uint16_t current_internal);
+/* Restricts the NEXT pick_species() call's list to National Dex 1..max_dex
+ * (0 = unrestricted, the default every existing caller sees) -- the Gen-1/2
+ * create flow's own use, so a Gen-1 session is never offered a Gen-2+
+ * species (BACKLOG #50 UX-parity, source/pdna_pick.c's own header comment
+ * on g_species_max_dex has the full design). Set it right before the call
+ * and clear it (pass 0) right after -- it is a file-static and will
+ * otherwise leak into the next, unrelated pick_species() caller. */
+void     pick_species_set_max_dex(uint16_t max_dex);
 uint16_t pick_move(uint16_t current_move);
 uint16_t pick_item(uint16_t current_item);
 uint8_t  pick_nature(uint8_t current_nature);

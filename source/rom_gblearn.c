@@ -108,9 +108,56 @@ static int full_pointer_shape_ok(GbReadFn read, void* ctx, uint32_t table_off, u
   return 1;
 }
 
+/* Walk the evolution list at `off`, validating every method byte, and return
+ * the offset just past its terminating 0 -- where the move list starts --  or
+ * 0 on any structural violation. Doubles as rom_gblearn_min_level()'s own
+ * predecessor search: when `want_idx` is non-zero, the FIRST entry (if any)
+ * whose OWN target byte equals it also reports whether its method carries a
+ * real level requirement and, if so, what it is (`*found`/`*is_level`/
+ * `*level`; any of the three may be NULL to not ask). This is deliberately
+ * ONE "skip an evolution entry" loop shared by both callers rather than two
+ * parallel copies that could quietly drift apart (this tree's own history:
+ * fccf29d, 16078af) -- walk_entry() below calls this with `want_idx = 0` and
+ * every out-param NULL, which short-circuits the match-check entirely (one
+ * extra NULL test per entry, no extra reads) and is byte-for-byte the
+ * original skip-only loop's behaviour. */
+static uint32_t evo_skip(GbReadFn read, void* ctx, uint32_t bank_hi, uint32_t off,
+                         uint8_t gen, uint32_t want_idx, bool* found,
+                         bool* is_level, uint8_t* level) {
+  uint32_t cur = off;
+  if (found) *found = false;
+  for (int guard = 0; guard < 16; guard++) {
+    uint8_t method;
+    if (cur >= bank_hi || !read(ctx, cur, &method, 1)) return 0;
+    uint32_t entry_off = cur;
+    cur++;
+    if (method == 0) return cur;
+    int len = evo_entry_len(gen, method);
+    if (len < 0) return 0;
+    if (found && !*found && want_idx) {
+      uint8_t last;
+      if (entry_off + (uint32_t)len - 1u >= bank_hi ||
+          !read(ctx, entry_off + (uint32_t)len - 1u, &last, 1)) return 0;
+      if ((uint32_t)last == want_idx) {
+        bool lvl_method = (method == 1u) || (gen == GB_GEN2 && method == 5u);
+        if (is_level) *is_level = lvl_method;
+        if (lvl_method) {
+          uint8_t b1;
+          if (entry_off + 1u >= bank_hi || !read(ctx, entry_off + 1u, &b1, 1)) return 0;
+          if (level) *level = b1;
+        } else if (level) *level = 0;
+        *found = true;
+      }
+    }
+    cur = entry_off + (uint32_t)len;
+    if (guard == 15) return 0;             /* no real species has 16 evolution steps */
+  }
+  return 0;
+}
+
 /* Decode ONE evos+moves/evos+attacks blob at `off` (already resolved into a
- * flat file offset, inside `bank`'s window). Skips evolutions after validating
- * each method byte; walks the (level, move) pairs keeping a 4-slot FIFO of
+ * flat file offset, inside `bank`'s window). Skips evolutions via evo_skip();
+ * walks the (level, move) pairs keeping a 4-slot FIFO of
  * moves with level <= `level_cap` (oldest dropped first -- see rom_gblearn.h).
  *
  * `seed4` (may be NULL), if given, PRE-LOADS the FIFO before the walk starts,
@@ -135,17 +182,8 @@ static int full_pointer_shape_ok(GbReadFn read, void* ctx, uint32_t table_off, u
 static int walk_entry(GbReadFn read, void* ctx, uint32_t bank_hi, uint32_t off,
                       uint8_t gen, uint8_t level_cap, const uint8_t seed4[4],
                       uint8_t out4[4], int* total_moves) {
-  uint32_t cur = off;
-  for (int guard = 0; guard < 16; guard++) {
-    uint8_t method;
-    if (cur >= bank_hi || !read(ctx, cur, &method, 1)) return -1;
-    cur++;
-    if (method == 0) break;
-    int len = evo_entry_len(gen, method);
-    if (len < 0) return -1;
-    cur += (uint32_t)(len - 1);            /* the method byte itself already consumed */
-    if (guard == 15) return -1;             /* no real species has 16 evolution steps */
-  }
+  uint32_t cur = evo_skip(read, ctx, bank_hi, off, gen, 0, NULL, NULL, NULL);
+  if (!cur) return -1;
 
   uint8_t kept_moves[4] = { 0, 0, 0, 0 };
   int maxmove = (int)gb_max_move(gen);
@@ -328,4 +366,39 @@ int rom_gblearn_moves_at_seeded(RomGbLearn* rl, uint16_t dex, uint8_t level,
 
 int rom_gblearn_moves_at(RomGbLearn* rl, uint16_t dex, uint8_t level, uint8_t out4[4]) {
   return rom_gblearn_moves_at_seeded(rl, dex, level, NULL, out4);
+}
+
+/* Guard against a cyclic/corrupt predecessor chain (A evolves into B evolves
+ * into A). No real Gen-1/2 species is more than two evolution steps from its
+ * own base form -- this is double that, for headroom, the same margin every
+ * other guard count in this file uses. */
+#define GBL_MINLV_MAX_HOPS 8
+
+uint8_t rom_gblearn_min_level(RomGbLearn* rl, uint16_t dex) {
+  const uint8_t base = 5u;                     /* G3_BUILD_BASE_LVL's own value, mirrored */
+  if (!rl || !rl->ok) return base;
+  uint32_t n = (rl->gen == GB_GEN1) ? GBL_G1_N : GBL_G2_N;
+  uint32_t cur_idx = (rl->gen == GB_GEN1) ? gb_index_from_dex(GB_GEN1, dex) : dex;
+  if (cur_idx < 1u || cur_idx > n) return base;
+
+  uint32_t bank_lo = (uint32_t)rl->data_bank * GB_BANK, bank_hi = bank_lo + GB_BANK;
+  uint8_t floor = base;
+  for (int hop = 0; hop < GBL_MINLV_MAX_HOPS; hop++) {
+    uint32_t pred_idx = 0; bool pred_is_level = false; uint8_t pred_level = 0;
+    for (uint32_t s = 1; s <= n; s++) {
+      uint8_t p[2];
+      if (!rl->read(rl->ctx, rl->table_off + (s - 1u) * 2u, p, 2)) break;   /* read hiccup: stop, keep floor so far */
+      uint16_t addr = rd16(p);
+      if (addr < GB_WIN_LO || addr >= GB_WIN_HI) continue;
+      uint32_t off = bank_lo + (addr - GB_WIN_LO);
+      if (off >= rl->size) continue;
+      bool found = false, lvlflag = false; uint8_t lvl = 0;
+      evo_skip(rl->read, rl->ctx, bank_hi, off, rl->gen, cur_idx, &found, &lvlflag, &lvl);
+      if (found) { pred_idx = s; pred_is_level = lvlflag; pred_level = lvl; break; }
+    }
+    if (!pred_idx) break;                      /* cur_idx is a base form: stop, keep floor */
+    if (pred_is_level && pred_level > floor) floor = pred_level;
+    cur_idx = pred_idx;
+  }
+  return floor;
 }
