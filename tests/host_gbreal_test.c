@@ -28,9 +28,11 @@
  * bytes 0x3D96..0x3F12 sit 45 bytes inside a wrong-address write covering
  * [0x3D69, 0x3F13), so they read back as the primary shifted by 45; bytes
  * 0x3F13..0x3F3F sit outside that footprint and were never touched by it. This file
- * does not know, and does not claim, WHAT wrote that — gen2_save.c is read-only and
- * BACKLOG #49 P0 is the first PokeDNA slice that writes a Game Boy save at all, so
- * whatever produced this predates this design either way. What IS certain: a real
+ * does not know, and does not claim, WHAT wrote that. Two facts bound it: the corpus
+ * files' mtime (2026-08-09) predates PokeDNA's first Game Boy write path (gen2_write.c,
+ * 2026-08-12), and structurally write_patch() only mirrors the overlap of an actual
+ * write with a region while no PokeDNA op writes sPlayerData2's primary -- so this
+ * code path cannot produce that artifact. What IS certain: a real
  * boot re-syncs it (TryLoadSaveFile rewrites the backup from WRAM on every successful
  * load, pokegold/engine/menus/save.asm:538-552 — and tools/gb_retail_gate.py's own
  * "mirror sync only" report on this exact file shows 256 backup bytes moving on a
