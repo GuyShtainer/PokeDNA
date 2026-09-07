@@ -75,6 +75,11 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     ("e5-icons", "E5 — Gen-2 party/PC menu icons, real ROM art (docs/SPRITE-ERA-DESIGN.md)",
      ("E5",)),
     ("misc", "Misc — captions without a tracked feature prefix", ()),
+    # BACKLOG #58 (append-only: sibling lanes append their own rows the same way, so
+    # this list never needs a mid-file edit that could collide with theirs). Shots
+    # come from tools/n1_shots.py, captions all start "#58:".
+    ("nav-same-menu", "#58 — one identical START menu everywhere, honest per-row messages",
+     ("#58",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
