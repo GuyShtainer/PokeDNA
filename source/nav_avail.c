@@ -46,8 +46,11 @@ typedef struct { NavAvail state; const char* why; } NavCell;
  * bug here, not a safe default: every row of a Game Boy session's menu must say
  * something honest when it cannot do the real thing. */
 static const NavCell GB_TABLE[NV_COUNT][2] = {
-  [NV_PARTY]     = { { NAV_COMING_SOON, "Party editing is coming soon." },
-                     { NAV_COMING_SOON, "Party editing is coming soon." } },
+  /* Review D1: party VIEW/EDIT already works in a Game Boy session -- the party is the
+   * grid's last box (pdna_gen12.c last_box_is_party) -- so this row must not claim the
+   * capability is missing; it points at where it lives instead. */
+  [NV_PARTY]     = { { NAV_COMING_SOON, "The party is the last box." },
+                     { NAV_COMING_SOON, "The party is the last box." } },
   [NV_BANK]      = { { NAV_COMING_SOON, "The Bank is coming soon." },
                      { NAV_COMING_SOON, "The Bank is coming soon." } },
   [NV_DAYCARE]   = { { NAV_COMING_SOON, "The Daycare is coming soon." },
@@ -75,8 +78,10 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Frontier." } },
   [NV_FLY]       = { { NAV_COMING_SOON, "Fly flags are coming soon." },
                      { NAV_COMING_SOON, "Fly flags are coming soon." } },
-  [NV_MAP]       = { { NAV_COMING_SOON, "The map view is coming soon." },
-                     { NAV_COMING_SOON, "The map view is coming soon." } },
+  /* Review D2: GEN12-PARITY-DESIGN.md puts a Game Boy map renderer OUT of scope, so
+   * "coming soon" would promise a date nobody plans; name the blocker instead. */
+  [NV_MAP]       = { { NAV_COMING_SOON, "Needs a Game Boy map viewer." },
+                     { NAV_COMING_SOON, "Needs a Game Boy map viewer." } },
   [NV_GB]        = { { NAV_COMING_SOON, "Comes with the Bank feature." },
                      { NAV_COMING_SOON, "Comes with the Bank feature." } },
   [NV_SETTINGS]  = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
