@@ -23,13 +23,23 @@
  * evidence they are.
  *
  * ONE MORE WRINKLE real data adds that a fixture never would: Guy's own Gold.sav (and
- * its VC twin) has a backup that is genuinely stale AT THE CORRECT ADDRESS right now —
- * region 1 (sPlayerData2, map/object/time-of-day state) holds 253 bytes that disagree
- * with the primary, because nothing in this write surface, including a "no-op" commit,
- * ever touches that region (only a real ROM boot re-syncs it). `stale_regions()` below
- * measures which regions a freshly-loaded file already disagrees on and carries that
- * forward as an accepted baseline, so this suite still catches a NEW mirror bug without
- * being fooled by an old, real, already-known one.
+ * its VC twin) has a backup that disagrees with the primary AT THE CORRECT ADDRESS
+ * right now — region 1 (sPlayerData2, map/object/time-of-day state) holds 253 of 426
+ * bytes that differ. `stale_regions()` below measures which regions a freshly-loaded
+ * file already disagrees on and carries that forward as an accepted baseline, so this
+ * suite still catches a NEW mirror bug without being fooled by an old, real,
+ * already-known one. P0 review D9: an earlier version of this comment called that
+ * staleness unexplained and said only a real ROM boot could have produced it — that
+ * overreached. tests/host_gbreal_test.c's own header has the measured fingerprint
+ * (the region's current bytes are the primary shifted by exactly 45 for 381 of its 426
+ * bytes, and the unshifted tail for the last 45 — the signature a write to the WRONG
+ * 0x3D69 leaves inside the correct region's own footprint); this file does not repeat
+ * that derivation and does not claim who produced it, only that it is not random.
+ * NO commit in THIS file's ordinary test flow (a no-op round trip, a box-name edit, a
+ * party edit) ever writes into region 1's primary side, so none of them can heal or
+ * worsen it — t_mirror_write_path() below is the one exception, and deliberately so
+ * (P0 review D8): it is the first thing in this suite to write into
+ * [0x222F, 0x23D8] through the real write path at all.
  *
  * There is also a section that deliberately BREAKS things — malformed lists, a storage
  * backend that silently drops writes, a post-commit byte flip — because a verification
@@ -1529,37 +1539,52 @@ static void t_mirror_address_matches_symbol(void) {
   }
 }
 
-/* 2. Why a synthetic fixture alone could never have caught this, and how to build one
- *    that WOULD: sPlayerData2's real first 45 bytes are zero on every corpus save (it is
- *    map-object/time-of-day state at the start of a fresh area load), so the WRONG window
- *    45 bytes early — 0x3D69 instead of 0x3D96 — still lines up byte-for-byte against the
- *    primary on REAL data, and a synthetic fixture built from the same wrong constant
- *    agrees with itself either way (source/gen2_save.c's k_gs_mirror comment; this is the
- *    exact trap that let 0x3D69 survive a full green test run).
+/* 2. P0 review D8: the ORIGINAL version of this test was a tautology -- it built its
+ *    "primary" and "mirror" bytes with two memcpy calls of its OWN and then compared
+ *    them, which proves memcpy correctly copies its arguments and nothing about
+ *    gen2_write.c. It also left a real blind spot: no test anywhere in this suite ever
+ *    wrote into [0x222F, 0x23D8] (sPlayerData2, mirror region 1) through the actual
+ *    write path, so g2w_write_range's own mirroring of THIS SPECIFIC region had never
+ *    been exercised.
  *
- *    Build a save whose sPlayerData2 content does NOT start with 45 zero bytes -- the one
- *    kind of fixture only a synthetic image can honestly construct (nobody's real save
- *    happens to differ) -- correctly mirror it to 0x3D96, and require that a plain
- *    memcmp against the OLD wrong window at 0x3D69 does NOT match. That is the direct,
- *    permanent proof that a fixture author who was not fooled by an all-real-saves-happen-
- *    to-start-with-zeros coincidence would have caught 0x3D69 immediately. */
-static void t_mirror_nonzero_leading_bytes_catches_old_window(void) {
-  printf("  -- non-zero-leading-bytes fixture proves the old 0x3D69 window fails a plain compare\n");
-  static uint8_t img[G2_SAVE_SIZE];
-  memset(img, 0, sizeof img);
+ *    Fixed by testing the real write path instead: build the GS fixture, write a
+ *    known payload into the PRIMARY side of region 1 through g2w_write_range (the
+ *    production function, not a hand-rolled memcpy), and require the CORRECT
+ *    destination 0x3D96 now holds it exactly while the OLD wrong destination 0x3D69
+ *    does not. Verified sensitive both ways: passes clean as written below; when
+ *    region 1's mirror copy is deliberately disabled (by commenting out its entry in
+ *    a scratch copy of k_gs_mirror and rebuilding), the 0x3D96 assertion fails as
+ *    expected -- confirming this probe actually depends on write_patch's mirroring
+ *    running, not just on the fixture's own initial bytes. */
+static void t_mirror_write_path(void) {
+  printf("  -- g2w_write_range into region 1 (sPlayerData2) lands at 0x3D96, not 0x3D69\n");
+  Mem m;
+  load_fixture(GBF_GS, &m, 0);
 
   uint8_t payload[426];
-  for (int i = 0; i < 426; i++) payload[i] = (uint8_t)(0x40 + i);   /* NOT zero anywhere, incl. [0..44] */
-  CHECK(payload[0] != 0 && payload[44] != 0, "the synthetic payload's first 45 bytes are non-zero");
+  for (int i = 0; i < 426; i++) payload[i] = (uint8_t)(0x40 + i);   /* not zero anywhere */
 
-  memcpy(img + 0x222F, payload, sizeof payload);           /* the primary, sPlayerData2   */
-  memcpy(img + 0x3D96, payload, sizeof payload);            /* the CORRECT mirror (this fix) */
+  G2Writer w;
+  CHECK_ST(open_w(&w, &m, G2_VER_GS), G2W_OK, "g2w_begin on the GS fixture");
+  if (!w.ready) return;
 
-  CHECK(memcmp(img + 0x222F, img + 0x3D96, sizeof payload) == 0,
-        "the correct 0x3D96 window matches the primary, as g2w_finish would leave it");
-  CHECK(memcmp(img + 0x222F, img + 0x3D69, sizeof payload) != 0,
-        "the OLD WRONG 0x3D69 window does NOT match -- unlike every real corpus save, "
-        "whose leading zero run hid exactly this difference");
+  CHECK_ST(g2w_write_range(&w, 0x222Fu, payload, sizeof payload), G2W_OK,
+           "g2w_write_range accepts a write to sPlayerData2's own primary span");
+
+  CHECK(memcmp(m.buf + 0x222F, payload, sizeof payload) == 0,
+        "the primary itself holds the payload");
+  CHECK(memcmp(m.buf + 0x3D96, payload, sizeof payload) == 0,
+        "the CORRECT mirror destination 0x3D96 holds the payload -- write_patch's own "
+        "mirroring, not a memcmp against bytes this test placed there itself");
+  CHECK(memcmp(m.buf + 0x3D69, payload, sizeof payload) != 0,
+        "the OLD WRONG destination 0x3D69 was never touched by this write");
+
+  CHECK_ST(g2w_finish(&w), G2W_OK, "g2w_finish accepts the result");
+  /* g2w_finish's own re-verify (g2w_verify -> primary_ok AND backup_ok) already proved
+   * the whole file re-parses cleanly with this write in place; assert_mirror_exact
+   * would be redundant here (region 1 is now genuinely exact end to end, but that is
+   * exactly what the three memcmp checks above already established more precisely,
+   * one region at a time, before g2w_finish ever ran). */
 }
 
 /* ============================================ every real box passes the gate ======= */
@@ -1612,7 +1637,7 @@ static void t_real_corpus_structures(void) {
 int main(void) {
   printf("== Gen-2 write path ==\n");
   t_mirror_address_matches_symbol();
-  t_mirror_nonzero_leading_bytes_catches_old_window();
+  t_mirror_write_path();
   t_real_corpus_structures();
   t_noop_roundtrip("Gold.sav", G2_VER_GS);
   t_noop_roundtrip("Crystal.sav", G2_VER_CRYSTAL);
