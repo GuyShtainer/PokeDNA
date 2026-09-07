@@ -292,6 +292,88 @@ static void test_insert_cap_mismatch(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * BACKLOG #15 (Guy 2026-07-27: "truncates it and the rest is lost, instead of
+ * letting me edit from the end"): the rename OSK must seed the FULL current
+ * name (up to NAME_MAX-1 = 63 bytes, pdna_main.c's BrowseEntry.name / the file
+ * browser's own cap -- OSK_MAXLEN mirrors it exactly), start the caret at the
+ * very END of that seeded text, and let BACKSPACE remove from the end -- not
+ * silently drop everything past some short byte count the way the pre-fix
+ * OSK_MAXLEN==16 build did (a plain 23-char save filename like
+ * "POKEMON_EMER_BPEE00.sav" already exceeded that). This mirrors exactly what
+ * osk_core() does at seed time (`len = u8w_copy_capped(buf, icap, initial);
+ * cpos = len;`) using the same two functions, so it is not a second copy of
+ * osk_core's own logic. */
+static void test_seed_full_and_caret_at_end(void) {
+  printf("\n== BACKLOG #15: seeding a long name keeps every glyph, caret at the end ==\n");
+  const int OSK_BUF_CAP = 64;    /* sizeof osk_core's `buf` == OSK_MAXLEN(63) + 1 */
+
+  /* A 40-char name, comfortably past the OLD 16-byte cap this backlog item was
+   * filed against, comfortably under the current 63-byte one. */
+  const char* name40 = "POKEMON_EMERALD_BACKUP_2026_09_07_v2.sav";
+  int n40 = (int)strlen(name40);
+  expect_int("fixture is exactly 40 characters", n40, 40);
+
+  char buf[64];
+  int len = u8w_copy_capped(buf, OSK_BUF_CAP, name40);
+  expect_int("all 40 bytes survive the seed (no truncation)", len, 40);
+  expect_str("seeded buffer is byte-identical to the source name", buf, name40);
+  expect_int("all 40 glyphs present (ASCII: glyph count == byte count)", u8w_count(buf), 40);
+
+  /* osk_core's own next line: `cpos = len;` -- caret starts at the END of the
+   * seeded text, not at 0 (which would make BACKSPACE a no-op / L a no-op and
+   * every keypress edit the FRONT of the name instead of the end Guy typed). */
+  int cpos = len;
+  expect_int("caret starts at the end of the seeded text", cpos, n40);
+  expect_true("caret is at a glyph boundary right after seeding", on_boundary(buf, cpos));
+
+  /* One B (backspace) from there removes the LAST glyph -- '.sav's 'v' here --
+   * proving edits land at the END, matching "letting me edit from the end". */
+  int nl, start = u8w_delete_before(buf, len, cpos, &nl);
+  expect_true("backspace-at-caret succeeds", start >= 0);
+  expect_int("backspace removed exactly one byte (ASCII glyph)", nl, len - 1);
+  expect_str("backspace dropped the trailing 'v', not the leading 'P'",
+             buf, "POKEMON_EMERALD_BACKUP_2026_09_07_v2.sa");
+
+  /* Committing an UNTOUCHED 40-char seed (no edits at all) must round-trip
+   * byte-for-byte -- what f_rename actually receives when the user opens
+   * RENAME and immediately presses START without changing anything. */
+  char buf2[64];
+  int len2 = u8w_copy_capped(buf2, OSK_BUF_CAP, name40);
+  char out[64];
+  u8w_copy_capped(out, (int)sizeof out, buf2);
+  expect_str("untouched 40-char rename commits identical to the original name", out, name40);
+  (void)len2;
+
+  /* Exactly at the cap boundary: a 63-char name (OSK_MAXLEN, one under
+   * NAME_MAX==64) must seed WHOLE, not lose its last character. */
+  char name63[64];
+  for (int i = 0; i < 63; i++) name63[i] = (char)('A' + (i % 26));
+  name63[63] = 0;
+  char bufcap[64];
+  int lencap = u8w_copy_capped(bufcap, OSK_BUF_CAP, name63);
+  expect_int("a 63-char name (the hard cap) seeds in full", lencap, 63);
+  expect_str("63-char seed is byte-identical", bufcap, name63);
+  expect_int("caret-at-end still equals the full 63", lencap, (int)strlen(bufcap));
+
+  /* Past the cap: a FAT LFN longer than the browser's own NAME_MAX (64, i.e. a
+   * name FatFs could in principle hand back, up to FF_MAX_LFN==255) must still
+   * seed WHOLE GLYPHS up to the cap, never a corrupt/overrun buffer -- this is
+   * the browser's own truncation (pdna_main.c's scan_dir, NAME_MAX-1), which
+   * the OSK mirrors exactly (OSK_MAXLEN == NAME_MAX-1) rather than adding a
+   * second, different limit of its own. */
+  char name80[81];
+  for (int i = 0; i < 80; i++) name80[i] = (char)('a' + (i % 26));
+  name80[80] = 0;
+  char bufover[64];
+  int lenover = u8w_copy_capped(bufover, OSK_BUF_CAP, name80);
+  expect_int("an 80-char name (past NAME_MAX) still seeds exactly 63 bytes", lenover, 63);
+  expect_true("no overrun: seeded bytes are a prefix of the source",
+              strncmp(bufover, name80, 63) == 0);
+  expect_int("nothing beyond the cap leaks in: strlen matches the seeded length",
+             (int)strlen(bufover), 63);
+}
+
+/* ---------------------------------------------------------------------------
  * osk_core-level: the pure edit loop (seed / A-insert / B-delete / L-R-caret /
  * commit) via u8w_apply_key + u8w_copy_capped -- the SAME functions osk.c calls,
  * so this is not a second copy of osk.c's dispatch that could drift from it. */
@@ -386,6 +468,7 @@ int main(void) {
   test_copy_capped();
   test_malformed_prev();
   test_insert_cap_mismatch();
+  test_seed_full_and_caret_at_end();
   test_edit_loop_seed_commit();
   test_edit_loop_random();
 
