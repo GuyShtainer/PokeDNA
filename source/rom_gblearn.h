@@ -1,0 +1,123 @@
+#ifndef ROM_GBLEARN_INCLUDED
+#define ROM_GBLEARN_INCLUDED
+
+#include <stdint.h>
+#include <stdbool.h>
+
+#include "gb_sprite_codec.h"   /* GbReadFn */
+#include "gb_edit.h"           /* GB_GEN1 / GB_GEN2, gb_index_from_dex, gb_max_move */
+
+/*
+ * Gen-1/2 LEVEL-UP LEARNSETS, read live out of the user's own Game Boy cartridge
+ * dump -- the piece BACKLOG #50 (create a mon from scratch) needs and this tree
+ * did not have: a legal moveset for a species at a level, sourced from the game
+ * that actually defines it, not guessed or hand-typed. Same posture as
+ * rom_gbbase.c / rom_gbsprite.c: PokeDNA ships NO Game Freak data, this is a
+ * transient read of a file the user already owns.
+ *
+ * PURE C: no tonc, no FatFs, no GBA headers, no statics -- all I/O goes through
+ * the caller's GbReadFn, so tests/host_romgblearn_test.c runs this exact code on
+ * the PC against Red.gb / Yellow.gb / Gold.gbc / Crystal.gbc.
+ *
+ * ---------------------------------------------------------------------------
+ * WHERE THE DATA IS, AND HOW THIS MODULE FINDS IT (clean-room: pokered/
+ * pokecrystal read on the web for the FORMAT below, never for an address -- see
+ * docs/kb/licensing.md and CLAUDE.md's clean-room rule. Every offset this module
+ * actually uses comes from locating the shape in the ROM at runtime.)
+ * ---------------------------------------------------------------------------
+ * GEN 1: pokered's EvosMovesPointerTable, data/pokemon/evos_moves.asm --
+ * 190 bank-relative `dw` pointers (one per INTERNAL species index 1..190, the
+ * same numbering rom_gbsprite.h's PokedexOrder and gb_edit.h's gb_index_from_dex
+ * use -- 151 real species plus 39 MissingNo slots), table and every pointed-to
+ * blob living together in ONE bank (the table's own). Each blob is:
+ *   evolutions: repeating (method, ...params, target-species), 0-terminated.
+ *     method 1 EVOLVE_LEVEL  = 3 B (method, level, species)
+ *     method 2 EVOLVE_ITEM   = 4 B (method, item, min level, species)
+ *     method 3 EVOLVE_TRADE  = 3 B (method, min level, species)
+ *   moves: repeating (level, move) in increasing level order, 0-terminated.
+ * Gen 1's LEVEL-1 starting moves are NOT here -- they are the four bytes at
+ * BaseStats+15..18 (rom_gbbase.h's RomGb1Species.start, added alongside this
+ * module) -- so this table alone under-reports a low-level Gen-1 moveset by
+ * design; a caller building a full one merges both (source/gb_new_mon.c does).
+ *
+ * GEN 2: pokecrystal's EvosAttacksPointers, data/pokemon/evos_attacks_pointers.
+ * asm + evos_attacks.asm -- 251 pointers, ONE PER DEX NUMBER (Gen 2 never
+ * reordered species internally, so index == national dex, same fact
+ * gb_dv_effects_of/gbe_has_gender_row already lean on), same table+data-one-bank
+ * layout. Evolutions gain two more methods over Gen 1's three:
+ *     method 1 EVOLVE_LEVEL     = 3 B (method, level, species)
+ *     method 2 EVOLVE_ITEM      = 3 B (method, item, species)            <-
+ *     method 3 EVOLVE_TRADE     = 3 B (method, held item or -1, species)
+ *     method 4 EVOLVE_HAPPINESS = 3 B (method, time-of-day const, species)
+ *     method 5 EVOLVE_STAT      = 4 B (method, level, Atk-vs-Def const, species)
+ * (Gen 2's EVOLVE_ITEM is 3 B, ONE LESS than Gen 1's -- verified against the
+ * decomp source, not assumed from Gen 1's shape.) Gen 2's moves list DOES
+ * include the level-1 starters (pokecrystal's own BulbasaurEvosAttacks opens
+ * "db 1, TACKLE" / "db 4, GROWL"), so nothing needs merging for Gen 2.
+ *
+ * LOCATING THE TABLE. Neither table's own address is pinned: this module scans
+ * the whole ROM for a run of N (190 or 251) consecutive bank-relative pointers
+ * (each a plain 2-byte LE address in [0x4000,0x8000), the ROMX window) as a
+ * cheap prefilter, then for each survivor tries the table's OWN bank as the
+ * shared data bank first (the layout every one of Guy's four dumps actually
+ * uses) and, only if that fails to fully decode, brute-forces the rest of the
+ * ROM's banks. "Fully decode" means all N entries parse structurally (evolution
+ * methods in range, moves 0-terminated with a legal level 1..100 and a legal
+ * move id 1..gb_max_move(gen)) AND at least half of them carry a real move --
+ * the second bar is what tells a genuine table apart from a coincidental run of
+ * addresses over blank/padding ROM space, where every "entry" trivially
+ * decodes as "0 evolutions, 0 moves" (measured: this DOES happen, an early
+ * version of this locator without that bar found exactly such a false table in
+ * Red.gb). Fails, cleanly, unless EXACTLY ONE (offset, bank) pair clears every
+ * bar -- the same "unique hit or refuse" doctrine rom_gbsprite.c's locate()
+ * uses for every one of its own six tables.
+ *
+ * SANITY-CHECK ADDRESSES (recorded for a human to eyeball; NEVER read as inputs
+ * -- the code above always relocates by shape): on Guy's four dumps, the table
+ * starts and the shared data bank both located were Red.gb 0x03B05C bank 0x0E,
+ * Yellow.gb 0x03B1E5 bank 0x0E, Gold.gbc 0x0427BD bank 0x10, Crystal.gbc
+ * 0x0425B1 bank 0x10 -- and entry 0 (Bulbasaur, both generations) decoded to
+ * evolve-at-16-into-Ivysaur then the exact move/level pairs pokecrystal's own
+ * BulbasaurEvosAttacks source lists, cross-checked against tests/
+ * host_romgblearn_test.c's own independent fixture.
+ */
+
+typedef struct {
+  uint8_t  gen;          /* GB_GEN1 / GB_GEN2 */
+  bool     ok;
+  GbReadFn read;
+  void*    ctx;
+  uint32_t size;
+  uint8_t  banks;         /* size / 0x4000, capped to fit a byte like rom_gbsprite.h's */
+  uint32_t table_off;     /* file offset of the N-pointer table                        */
+  uint8_t  data_bank;     /* the bank every pointer in it resolves against              */
+} RomGbLearn;
+
+/* Locate and verify `gen`'s learnset table in the ROM `read`/`ctx` exposes
+ * (`size` bytes). Returns 1 and an opened `*rl` on a unique, fully-decodable
+ * hit; 0 (with `*rl` zeroed, `.ok` false) for a bad argument, a `size` that is
+ * not a plausible Game Boy ROM (not a positive multiple of 0x4000, or more than
+ * 255 banks), or a ROM that does not contain exactly one such table for `gen`
+ * -- including, cleanly, a Gen-1 ROM asked for as Gen 2 or the reverse: the
+ * wrong entry count and evolution-method shape simply never produces a unique
+ * decodable hit. */
+int rom_gblearn_open(RomGbLearn* rl, uint8_t gen, GbReadFn read, void* ctx, uint32_t size);
+
+/* The (up to) four level-up moves a mon of `dex` would know at `level`,
+ * straight out of the table `rl` located -- the SAME rule the games use to cap
+ * a moveset at four: walk the learnset in increasing level order, keep only
+ * entries with level <= `level`, and once a fifth would-be slot arrives drop
+ * the OLDEST kept one. `out4` is filled in LEARN ORDER (oldest of the four
+ * first, most recent last -- move-slot 1..4 order on a real cartridge); an
+ * unused trailing slot is 0, which is also gb_edit.h's own "empty slot" value,
+ * so a caller never needs a separate count.
+ *
+ * Returns the number of slots filled (0..4) on success -- 0 is a legitimate
+ * answer (a species with no table entry at or under `level`; Gen 1's starting
+ * moves live elsewhere, see this file's own header) -- or -1 for a bad
+ * argument: a NULL `rl`/`out4`, an `rl` that is not `.ok`, or a `dex` outside
+ * 1..gb_max_species(rl->gen). Does not look at Gen-1's base-stats starting
+ * moves at all; see gb_new_mon (source/gb_new_mon.c) for the merge. */
+int rom_gblearn_moves_at(RomGbLearn* rl, uint16_t dex, uint8_t level, uint8_t out4[4]);
+
+#endif /* ROM_GBLEARN_INCLUDED */

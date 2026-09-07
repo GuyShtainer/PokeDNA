@@ -66,7 +66,7 @@
  *   +10     sprite dimension byte                       (unused here)
  *   +11,12  front pic pointer (bank-relative)            (unused here)
  *   +13,14  back pic pointer (bank-relative)             (unused here)
- *   +15..18 four level-1-learnset moves                  (unused here)
+ *   +15..18 four level-1-learnset moves                  (start[0..3], 0 = empty slot)
  *   +19     growth rate (GEN1_GROWTH_* / gen1_write.h's enum, 0..5)
  *   +20..26 seven TM/HM learnset bytes                   (unused here)
  *   +27     padding                                      (unused here)
@@ -78,12 +78,45 @@
  * instead of base_stats + 150*28, the same substitution g1_row() makes. On
  * Yellow (mew_stats == 0) row 151 of the ordinary table already holds Mew.
  *
- * GEN 2 IS DELIBERATELY NOT HERE. gb_edit.h says so directly: "Gen 2 needs none
- * of it: its record has no types and no catch rate, and its base stats are
- * IDENTICAL to Gen 3's for all 251 species ..., so pk_base_stats() serves." A
- * second, unverified 32-byte-row decoder for a table this module has no caller
- * for would be exactly the kind of code Golden Rule 4 warns against carrying
- * "for completeness" -- so it is skipped, not merely deferred.
+ * GEN 2 base stats/growth (BACKLOG #50, 2026-09-07). pk_base_stats() /
+ * pk_species_growth() (data_tables.h, generated from pokeemerald) still serve
+ * the six stats and the growth rate -- gb_edit.h's own gb_growth_rate() already
+ * delegates to pk_species_growth(dex) on that "IDENTICAL to Gen 3's for all 251
+ * species" fact. rom_gbbase_gen2() below exists anyway, for source/gb_new_mon.c
+ * to CROSS-CHECK a ROM-read growth rate against that compiled-in one before
+ * trusting it for a brand-new record (refuse rather than guess if they ever
+ * disagreed -- a generated-table staleness this tree would otherwise have no
+ * way to notice) -- not because the six stats need a second source.
+ *
+ * WHERE GEN 2's ROW IS. rom_gbsprite.c's own locator ALREADY finds it (as
+ * `RomGbSprite.base_data`, verified across all 251 rows -- g2_bd_verify) on the
+ * way to its own pic-size lookups; this module adds nothing to that search, it
+ * only decodes the rest of the 32-byte row rom_gbsprite.c had no reason to.
+ *
+ * ROW LAYOUT (32 bytes, pokecrystal BASE_DATA_SIZE), cross-checked against TWO
+ * fields rom_gbsprite.c already verifies independently on every ROM it opens
+ * (G2_PIC_SIZE=17, G2_BETA_PICS=18..21, both zero) -- the rest is derived by
+ * counting outward from those two known-good anchors, then confirmed by
+ * tests/host_romgblearn_test.c decoding every one of Guy's Gold.gbc/Crystal.gbc
+ * species and cross-checking growth rate + all six stats against
+ * pk_species_growth()/pk_base_stats():
+ *   +0      dex (self-check, same convention as Gen 1's row)
+ *   +1..6   HP, Atk, Def, Spd, SpA, SpD                  (pk_base_stats() order)
+ *   +7,8    type1, type2                                 (unused here)
+ *   +9      catch rate                                   (unused here; Gen-2
+ *           records store no catch-rate byte at all, gb_edit.h's own note)
+ *   +10     base exp                                      (unused here)
+ *   +11,12  item1, item2                                  (unused here)
+ *   +13     gender ratio                                  (unused here; matches
+ *           pk_species_gender_ratio(dex), the identity item 0 already leans on)
+ *   +14..16 unknown, hatch cycles, unknown                (unused here)
+ *   +17     sprite dimension byte                  == G2_PIC_SIZE (verified)
+ *   +18..21 four unused/beta-pic bytes            == G2_BETA_PICS (verified)
+ *   +22     growth rate (GEN1_GROWTH_* -- Gen 1 and Gen 2 share one enum,
+ *           gb_edit.h's own header: "growth curves ... == ...")
+ *   +23     egg groups (packed nibble pair)              (unused here)
+ *   +24..31 eight TM/HM learnset flag bytes               (unused here)
+ * Total 32 bytes -- the same G2_ROW stride rom_gbsprite.c's g2_bd_verify uses.
  */
 
 /* One species' worth of what a Gen-1 target needs, read straight off the
@@ -97,7 +130,25 @@ typedef struct {
   GbGen1Base base;      /* base[GB_HP..GB_SPC], type1, type2 -- Gen-1 raw ids */
   uint8_t    catch_rate;
   uint8_t    growth;     /* GEN1_GROWTH_* (gen1_write.h), 0..5                */
+  /* +15..18: the level-1 starting moveset every Gen-1 game gives a fresh
+   * Pokemon of this species -- 0 = empty slot, left-packed (start[0] is never
+   * 0 unless the species has no starting move at all, which no real one does).
+   * source/rom_gblearn.h's OWN table (EvosMovesPointerTable) does NOT repeat
+   * these; a caller wanting the FULL moveset a new Gen-1 mon would have at a
+   * level merges this with rom_gblearn_moves_at() (source/gb_new_mon.c does). */
+  uint8_t    start[4];
 } RomGb1Species;
+
+/* The subset of Gen-2's BaseData a caller might want straight off the
+ * cartridge -- see this file's "GEN 2 base stats/growth" section above for why
+ * this exists despite pk_base_stats()/pk_species_growth() already covering the
+ * six stats and the growth rate: it is the CROSS-CHECK source, not the primary
+ * one. `base` is HP,Atk,Def,Spe,SpA,SpD, the same six-value order and count as
+ * pk_base_stats()'s own `out[6]`. */
+typedef struct {
+  uint8_t base[6];
+  uint8_t growth;        /* GEN1_GROWTH_* (gen1_write.h), 0..5 -- shared enum */
+} RomGb2Species;
 
 /*
  * Read national dex `dex` (1..151) out of a Gen-1 ROM whose tables rom_gbsprite
@@ -117,5 +168,16 @@ typedef struct {
  * ever handed back). Returns true otherwise. */
 bool rom_gbbase_gen1(const RomGbSprite* gs, GbReadFn read, void* ctx, uint16_t dex,
                      RomGb1Species* out);
+
+/* Same shape for Gen 2: `gs->ok` and `gs->gen == GB_ROM_GEN2`, dex 1..251 (Gen 2
+ * indexes BaseData by dex directly, no PokedexOrder-style indirection -- see
+ * this file's header), self-checked against the row's own dex byte AND the two
+ * fields rom_gbsprite.c's own g2_bd_verify already demanded be a certain shape
+ * (pic-size 4..7, the beta-pic bytes zero) -- belt and suspenders on top of the
+ * table rom_gbsprite already verified once. Returns false, `*out` untouched,
+ * for a NULL argument, a non-Gen-2 `gs`, a dex outside 1..251, a read failure,
+ * or either self-check failing. */
+bool rom_gbbase_gen2(const RomGbSprite* gs, GbReadFn read, void* ctx, uint16_t dex,
+                     RomGb2Species* out);
 
 #endif /* ROM_GBBASE_INCLUDED */
