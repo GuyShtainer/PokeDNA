@@ -213,6 +213,15 @@ int  app_nav_menu(uint32_t avail_mask);
  * same reason app_nav_menu exists — a GB session's "Settings" nav row opens the
  * IDENTICAL screen, not a copy. */
 void app_nav_settings(void);
+/* BACKLOG #58: the shared "why not" for a nav row this save can't run -- consults
+ * source/nav_avail.h's rule table and shows one honest msg_wait("COMING SOON" / "NOT
+ * IN GEN 1" / ..., reason). `save_kind` is an SE_KIND_* value (see nav_avail.h). Two
+ * callers: gb_nav_from_start (pdna_gen12.c) for every Game Boy row besides Settings/
+ * Trainer/Back, and view_save's own Gen-3 nav switch (pdna_main.c) for a row
+ * nav_avail() marks NOT_IN_GAME before it would otherwise dispatch into that row's
+ * screen. A row nav_avail() calls NAV_OK is a caller bug, not a user-facing state --
+ * this is a silent no-op then, not a wrong dialog. */
+void app_nav_refuse(int nv_item, int save_kind);
 /* Full-screen party screen (Gen-4/5-style: a big slot-1 box + 5 rows). ONLY caller left:
  * NV_PARTY (pdna_main.c) when the open save has NO PC storage at all (g_have_pc false) —
  * there is no box to show behind a strip in that case, so this full-screen browse-only
