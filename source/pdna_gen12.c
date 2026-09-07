@@ -142,10 +142,16 @@ static bool g2_header_ranged(Gb12Mount* m) {
 
 /* Read box `box`'s list blob into m->stage. Fills *cap (slots the box can hold) and
  * *count (slots actually used). false = the box could not be read at all, which is
- * shown as an empty box rather than as an error the user cannot act on. */
+ * shown as an empty box rather than as an error the user cannot act on.
+ *
+ * BACKLOG #45: the ONLY writer of m->stage, so also the only place allowed to say
+ * m->staged is true -- defaults to -1 (unknown) up front and is only set to `box`
+ * once the read below has actually succeeded, so a caller that checks it after any
+ * early return sees "not staged", never a stale leftover claim. */
 static bool gb_list_read(Gb12Mount* m, int box, int* cap, int* count) {
   uint32_t off = 0, bytes = 0;
   *cap = 0; *count = 0;
+  m->staged = -1;
   if (box < 0 || box > m->party_box) return false;
 
   if (m->kind == GB12_SAVE_RBY) {
@@ -165,6 +171,7 @@ static bool gb_list_read(Gb12Mount* m, int box, int* cap, int* count) {
   if (n < 0) n = 0;                                  /* malformed list -> "no mons here" */
   if (n > *cap) n = *cap;
   *count = n;
+  m->staged = (int8_t)box;                           /* m->stage genuinely holds this box now */
   return true;
 }
 
@@ -304,7 +311,16 @@ static void gb_build_slot(Gb12Mount* m, int box, int slot, uint8_t* rec, uint8_t
 
 /* Whole-save census: how many Pokemon are here, how many will convert, and WHERE the
  * ones that will not are. Cheap by construction (gen12_can_convert only — no PID
- * search), so mounting stays a couple of SD reads per box. */
+ * search), so mounting stays a couple of SD reads per box.
+ *
+ * WARNING (BACKLOG #45): this walks EVERY box through gb_list_read(), which means
+ * m->stage and m->staged end this loop holding whatever box was scanned LAST
+ * (m->party_box), not whatever box a caller might expect -- and m->loaded is never
+ * touched here at all. Called at mount time (before any box has paged in, so
+ * harmless) and once more after a mid-session edit write-back (immediately followed
+ * by `m->loaded = -1` there, which forces the grid to re-page and self-heals
+ * `loaded`, but does nothing for m->staged -- it is left pointing at party_box until
+ * the next gb_list_read()). Do not add a third call site without re-reading this. */
 static void gb_census(Gb12Mount* m) {
   m->nstored = m->nready = m->nblocked = m->nunreadable = m->nreport = 0;
   for (int b = 0; b <= m->party_box; b++) {
@@ -355,6 +371,7 @@ bool pdna_gen12_mount(Gb12Mount* m, Gb12ReadFn rd, void* ctx, uint32_t len,
   m->rd = rd; m->ctx = ctx; m->len = len;
   m->recs = recs; m->stage = stage;
   m->loaded = -1;
+  m->staged = -1;                             /* BACKLOG #45: stage holds nothing yet */
   m->ui_box = -1;                             /* BACKLOG #56: no box switch yet this mount */
   m->g2_gender = -1;
   m->tgt.met_game = met_game;
@@ -918,13 +935,17 @@ static bool gb_editable_hook(const uint8_t* rec80) {
  *     streams boxes from a FIL and never builds a GbSession at all -- COPY there was
  *     silently, permanently lossy before this fix, with no notice). This path is NOT
  *     actually missing the raw bytes: pdna_gen12_page() already staged `box`'s list
- *     blob into g_m->stage via gb_list_read() the moment the grid paged to it, and
- *     nothing overwrites that buffer until the grid pages to a DIFFERENT box (which
- *     changes g_m->loaded) -- gb_locate_addr() below sets `box` FROM g_m->loaded
- *     itself, so the two can never disagree here. This hook is only ever reached on a
- *     slot app_mon_menu already found OCCUPIED, which (gb_build_slot's own contract)
- *     can only be true because gb_list_read() genuinely succeeded for THIS box, so
- *     g_m->stage is guaranteed fresh -- no GbSession needed at all. */
+ *     blob into g_m->stage via gb_list_read() the moment the grid paged to it. This
+ *     hook is only ever reached on a slot app_mon_menu already found OCCUPIED, which
+ *     (gb_build_slot's own contract) can only be true because gb_list_read()
+ *     genuinely succeeded for THIS box at some point -- but BACKLOG #45: gb_census()
+ *     reuses the SAME m->stage buffer to scan every box (mount time, and again after
+ *     a mid-session edit write-back) without ever touching m->loaded, so "the box
+ *     the grid last paged" and "the box m->stage currently holds" CAN disagree by
+ *     the time this hook runs. m->staged (set only by gb_list_read(), to the exact
+ *     box it just wrote) is what actually answers "is m->stage fresh for `box`" --
+ *     re-stage before trusting it instead of assuming gb_locate_addr()'s box
+ *     (derived from m->loaded) still matches. */
 /* Forward-declared: defined below, and gb_copy_native_hook() (S5-B re-verification
  * NEW-3) needs it to fill its own `has_sidecar` out-param. Does NOT require an open
  * edit session (g_ed) -- it only needs the record's own key and does its own f_stat --
@@ -955,6 +976,13 @@ static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out, bool* has_
   } else {
     if (!g_m || !g_m->stage) return false;
     gen = (g_m->kind == GB12_SAVE_RBY) ? GB_GEN1 : GB_GEN2;
+    /* BACKLOG #45: re-stage rather than trust a possibly-stale m->stage -- see the
+     * hook's own header comment. A failed re-stage means the box genuinely could
+     * not be read right now; fail the copy rather than read garbage. */
+    if (g_m->staged != box) {
+      int rcap = 0, rcount = 0;
+      if (!gb_list_read(g_m, box, &rcap, &rcount)) return false;
+    }
     if (slot >= gb_list_count(gen, g_m->stage, box)) return false;
     ok = gb_load(out, gen, g_m->stage, box, slot);
   }
@@ -1807,13 +1835,17 @@ _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
  * the nav-menu-copy-lossy finding's sibling): an open edit session (g_ed set) reads
  * and can edit through the real GbSession exactly as before; no session (g_ed NULL,
  * the read-only nav-menu mount over a bare FIL) reads the box straight from the
- * mount's already-staged list (g_m->stage -- fresh for the same reason
- * gb_copy_native_hook's own comment gives: gb_build_slot never reaches this hook on a
- * slot whose box didn't just load) and NEVER offers editing -- there is no GbSession
+ * mount's staged list (g_m->stage) and NEVER offers editing -- there is no GbSession
  * to commit an edit through, so `can_edit` is unconditionally false on this path
  * (gb_edit_commit dereferences g_ed unconditionally and would crash if it ever ran
  * here; it can't, because `saved` can only go true when pdna_gbsummary was opened
- * with can_edit true). */
+ * with can_edit true).
+ *
+ * BACKLOG #45: g_m->stage is only guaranteed fresh for the box g_m->staged names --
+ * gb_census() reuses the same buffer to scan every box without touching g_m->loaded
+ * (gb_copy_native_hook's own comment has the full story), so re-stage on a mismatch
+ * rather than trust gb_locate_addr()'s box (from g_m->loaded) still agrees with
+ * whatever g_m->stage happens to hold. */
 static bool gb_view_hook(uint8_t* rec80) {
   int box, slot;
   if (!gb_locate_addr(rec80, &box, &slot)) return false;
@@ -1843,6 +1875,11 @@ static bool gb_view_hook(uint8_t* rec80) {
     } else {
       if (!g_m || !g_m->stage) return false;
       gen = (g_m->kind == GB12_SAVE_RBY) ? GB_GEN1 : GB_GEN2;
+      /* BACKLOG #45: re-stage rather than trust a possibly-stale m->stage. */
+      if (g_m->staged != box) {
+        int rcap = 0, rcount = 0;
+        if (!gb_list_read(g_m, box, &rcap, &rcount)) return false;
+      }
       count = gb_list_count(gen, g_m->stage, box);
       if (count <= 0 || slot >= count) {
         snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;

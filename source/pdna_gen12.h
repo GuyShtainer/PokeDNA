@@ -131,6 +131,16 @@ typedef struct {
   uint8_t* stage;             /* caller's GB12_STAGE_BYTES list staging buffer   */
 
   int      loaded;            /* which box `recs` holds, -1 = none               */
+  /* BACKLOG #45: which box `stage` holds, -1 = none/unknown. A DIFFERENT buffer
+   * from `recs`/`loaded` above, and NOT kept in lockstep with it by construction --
+   * gb_census() (mount time, and again after a mid-session edit write-back) calls
+   * gb_list_read() once per box in a loop purely to COUNT, leaving `stage` holding
+   * whichever box it last scanned without ever touching `loaded`. gb_list_read()
+   * itself is the only writer of `stage` and the only place that may claim this
+   * field true, so callers with no open edit session (gb_view_hook/gb_copy_native_hook's
+   * g_ed-NULL branches) can compare against it instead of trusting `loaded` (a
+   * different buffer's bookmark) to also describe this one. */
+  int8_t   staged;
   uint8_t  capacity;          /* slots the loaded box can hold (20 / 6)          */
   uint8_t  reason[GB12_SLOTS];/* per slot of the loaded box: a Gb12Result        */
 

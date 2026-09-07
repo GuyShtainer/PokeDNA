@@ -812,6 +812,25 @@ static void part4_boxsource(GbfGame game, uint32_t rtc_tail) {
   printf("    %s: %d stored, %d ready, %d locked, %d unreadable, %d SD reads at mount\n",
          pdna_gen12_kind_name(m.kind), m.nstored, m.nready, m.nblocked, m.nunreadable, f.reads);
 
+  /* ---- BACKLOG #45: gb_census() (just ran, inside the mount above) walked every
+   * box through gb_list_read() and left m.stage holding the LAST one it scanned
+   * (m.party_box), while m.loaded is forced to -1 -- the two fields deliberately
+   * disagree here, which is exactly the gap m.staged exists to make checkable
+   * instead of assumed. ---- */
+  CHECK_EQ(m.loaded, -1, "gb_census leaves loaded invalidated (recs no longer trustworthy)");
+  CHECK_EQ(m.staged, m.party_box, "gb_census leaves stage holding the LAST box it scanned");
+  CHECK(m.staged != m.loaded, "staged and loaded disagree right after gb_census -- by design");
+  {
+    /* gb_list_read() itself is static to pdna_gen12.c; pdna_gen12_page() is the
+     * exported entry point that calls it as part of paging a box's records in, so
+     * exercising it through there proves the same contract: after paging box 0,
+     * m.staged must equal 0 (gb_list_read ran and succeeded for exactly that box). */
+    int box0 = 0;
+    (void)pdna_gen12_page(&m, box0);
+    CHECK_EQ(m.staged, box0, "gb_list_read (via pdna_gen12_page) sets staged to the box it staged");
+    CHECK_EQ(m.loaded, box0, "pdna_gen12_page also updates loaded to the same box");
+  }
+
   /* ---- the BoxSource contract (source/pdna_box.h) ---- */
   BoxSource s = pdna_gen12_source(&m);
   CHECK_EQ(s.nboxes, nb_real + 1, "boxes exposed = storage boxes + the party pseudo-box");
