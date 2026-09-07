@@ -3,6 +3,15 @@
 
 Quick viewer, not a build step: run it again after editing the markdown.
     python3 tools/gen_matrix_html.py && open docs/feature-matrix.html
+
+Three source documents feed the page, in this order:
+  1. docs/HW-QUEUE.md   -- the live hardware queue (PASS/FAIL/SKIP per row, "Copy report").
+                            Rendered FIRST, above the feature matrix.
+  2. docs/FEATURE-MATRIX.md -- the traceability matrix (unchanged behaviour/format).
+  3. docs/HW-TEST-2026-09-05-GB-ARC.md -- the step-by-step cart script, rendered AFTER the
+     matrix as a collapsible "Detailed hardware steps" section, one <details> per lettered
+     ("## X. ...") section, with per-step checkboxes.
+Screenshots stay last, exactly as before.
 """
 import base64
 import datetime
@@ -16,6 +25,8 @@ import markdown
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "docs" / "FEATURE-MATRIX.md"
+HWQ = ROOT / "docs" / "HW-QUEUE.md"
+HWTEST = ROOT / "docs" / "HW-TEST-2026-09-05-GB-ARC.md"
 OUT = ROOT / "docs" / "feature-matrix.html"
 # A second copy in a folder that holds ONLY the page: docs/ itself carries fused ROM
 # builds and analysis dumps, so the tailnet server (tools/hosting/) serves docs/site alone.
@@ -50,7 +61,10 @@ TOKENS = {
     "HOST": ("host", "#bc8cff"),
     "DARK": ("dark", "#8b949e"),
     "IDEA": ("idea", "#39c5cf"),
+    "NOT-IN-BUILD": ("notinbuild", "#7d8fa9"),
 }
+
+MD_EXTENSIONS = ["tables", "sane_lists", "attr_list"]
 
 TEMPLATE = """<!doctype html>
 <html lang="en"><head>
@@ -95,6 +109,50 @@ TEMPLATE = """<!doctype html>
   .toolbar .n { opacity:.6; font-variant-numeric:tabular-nums; }
   .hidden { display:none; }
   .foot { margin-top:56px; color:#6e7681; font-size:12.5px; }
+
+  /* --- Hardware queue (docs/HW-QUEUE.md) --- */
+  .hwq-bar { position:sticky; top:42px; z-index:4; background:#0d1117ee; backdrop-filter:blur(6px);
+             border-bottom:1px solid #21262d; padding:8px 24px; margin:10px -24px 14px;
+             display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .hwq-bar button { cursor:pointer; font:inherit; font-size:12.5px; padding:3px 11px;
+                    border-radius:11px; border:1px solid #30363d; background:#161b22; color:#c9d1d9; }
+  .hwq-bar button.on { outline:2px solid #58a6ff; outline-offset:1px; }
+  .hwq-count { opacity:.65; font-size:12.5px; font-variant-numeric:tabular-nums; }
+  .hwq-table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; margin:8px 0 6px;
+                    border:1px solid #21262d; border-radius:8px; }
+  .hwq-table { min-width:960px; font-size:13px; margin:0; }
+  .hwq-table th, .hwq-table td { padding:6px 9px; }
+  .hwbtns { display:flex; gap:4px; flex-wrap:nowrap; }
+  .hwbtn { cursor:pointer; font:inherit; font-size:11px; padding:3px 9px; border-radius:9px;
+           border:1px solid #30363d; background:#161b22; color:#8b949e; white-space:nowrap; }
+  .hwbtn-pass.on { color:#3fb950; border-color:#3fb95088; background:#3fb95022; }
+  .hwbtn-fail.on { color:#f85149; border-color:#f8514988; background:#f8514922; }
+  .hwbtn-skip.on { color:#e3b341; border-color:#e3b34188; background:#e3b34122; }
+  .hwnote { width:100%; min-width:120px; font:inherit; font-size:12px; padding:3px 6px;
+            border-radius:5px; border:1px solid #30363d; background:#0d1117; color:#c9d1d9; }
+  tr.hwrow-pass { background:#3fb9500f !important; }
+  tr.hwrow-fail { background:#f851490f !important; }
+  tr.hwrow-skip { background:#e3b3410f !important; }
+  .hwreport { width:100%; min-height:130px; margin-top:10px;
+              font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+              background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:6px;
+              padding:10px; }
+  .hwq-hint { color:#6e7681; font-size:12px; margin:4px 0 0; }
+
+  /* --- Detailed hardware steps (docs/HW-TEST-....md) --- */
+  .hwtest details { margin:10px 0; border:1px solid #21262d; border-radius:8px;
+                     padding:2px 16px 12px; background:#11161d; }
+  .hwtest summary { cursor:pointer; font-weight:600; color:#e6edf3; padding:10px 0; }
+  .hwtest-intro p { color:#8b949e; }
+  .hwsteps { list-style:none; margin:6px 0 4px; padding:0; }
+  .hwsteps li { padding:7px 2px; border-top:1px solid #21262d; }
+  .hwsteps li:first-child { border-top:none; }
+  .hwsteps label { display:flex; gap:9px; align-items:flex-start; cursor:pointer; }
+  .hwsteps input[type=checkbox] { margin-top:4px; flex:none; }
+  .hwstep-done { opacity:.55; }
+  .hwstep-done label { text-decoration:line-through; }
+  :target { scroll-margin-top:96px; }
+  details:target, li:target { outline:2px solid #58a6ff; outline-offset:3px; border-radius:6px; }
 </style>
 </head><body>
 <div class="toolbar" id="bar">
@@ -103,22 +161,25 @@ TEMPLATE = """<!doctype html>
   <input id="q" type="search" placeholder="filter rows by text...">
 </div>
 <div class="wrap">
+HWQUEUE_HTML
 BODY
+HWTEST_HTML
 SHOTS_HTML
-<p class="foot">Generated from <code>docs/FEATURE-MATRIX.md</code> by
+<p class="foot">Generated from <code>docs/FEATURE-MATRIX.md</code> (+ <code>docs/HW-QUEUE.md</code>,
+<code>docs/HW-TEST-2026-09-05-GB-ARC.md</code>) by
 <code>tools/gen_matrix_html.py</code>. Edit the markdown, re-run the script.</p>
 </div>
 <script>
 var bar = document.getElementById('bar'), q = document.getElementById('q'), tok = '';
 function apply() {
   var text = q.value.trim().toLowerCase();
-  document.querySelectorAll('tbody tr').forEach(function (tr) {
+  document.querySelectorAll('table.matrix tbody tr').forEach(function (tr) {
     var t = tr.textContent;
     var okTok = !tok || (tr.querySelector('.badge-' + tok) !== null);
     var okTxt = !text || t.toLowerCase().indexOf(text) !== -1;
     tr.classList.toggle('hidden', !(okTok && okTxt));
   });
-  document.querySelectorAll('table').forEach(function (tb) {
+  document.querySelectorAll('table.matrix').forEach(function (tb) {
     var any = tb.querySelectorAll('tbody tr:not(.hidden)').length;
     tb.classList.toggle('hidden', any === 0);
   });
@@ -130,27 +191,498 @@ bar.addEventListener('click', function (e) {
   apply();
 });
 q.addEventListener('input', apply);
+
+// --- Hardware queue: PASS/FAIL/SKIP per row, notes, "Show unchecked only", "Copy report" ---
+(function () {
+  var HW_BUILD = HW_BUILD_JS, HW_BUILD_DATE = HW_BUILD_DATE_JS;
+  var table = document.getElementById('hwq-table');
+  if (!table) return;
+  var rows = Array.prototype.slice.call(table.querySelectorAll('tbody tr'));
+
+  function keyFor(id) { return 'pokedna-hw:' + id; }
+  function load(id) {
+    try { return JSON.parse(localStorage.getItem(keyFor(id)) || 'null') || {}; }
+    catch (e) { return {}; }
+  }
+  function save(id, obj) {
+    try { localStorage.setItem(keyFor(id), JSON.stringify(obj)); } catch (e) { /* storage full/blocked */ }
+  }
+  function paintRow(tr, state) {
+    tr.classList.remove('hwrow-pass', 'hwrow-fail', 'hwrow-skip');
+    if (state) tr.classList.add('hwrow-' + state.toLowerCase());
+  }
+  function updateCount() {
+    var done = rows.filter(function (tr) { return !!load(tr.dataset.id).v; }).length;
+    var el = document.getElementById('hwq-count');
+    if (el) el.textContent = done + ' / ' + rows.length + ' checked';
+  }
+
+  rows.forEach(function (tr) {
+    var id = tr.dataset.id;
+    var data = load(id);
+    var btns = Array.prototype.slice.call(tr.querySelectorAll('.hwbtn'));
+    var note = tr.querySelector('.hwnote');
+    if (data.v) {
+      btns.forEach(function (b) { b.classList.toggle('on', b.dataset.v === data.v); });
+      paintRow(tr, data.v);
+    }
+    if (note && data.n) note.value = data.n;
+    btns.forEach(function (b) {
+      b.addEventListener('click', function () {
+        var cur = load(id);
+        var next = (cur.v === b.dataset.v) ? null : b.dataset.v;
+        cur.v = next;
+        save(id, cur);
+        btns.forEach(function (bb) { bb.classList.toggle('on', !!next && bb.dataset.v === next); });
+        paintRow(tr, next);
+        updateCount();
+        applyUncheckedFilter();
+      });
+    });
+    if (note) {
+      note.addEventListener('input', function () {
+        var cur = load(id);
+        cur.n = note.value;
+        save(id, cur);
+      });
+    }
+  });
+  updateCount();
+
+  var uncheckedOnly = false;
+  var btnUnchecked = document.getElementById('hwq-unchecked');
+  var btnCopy = document.getElementById('hwq-copy');
+  var btnReset = document.getElementById('hwq-reset');
+  var reportBox = document.getElementById('hwq-reportbox');
+
+  function applyUncheckedFilter() {
+    rows.forEach(function (tr) {
+      var hide = uncheckedOnly && !!load(tr.dataset.id).v;
+      tr.classList.toggle('hidden', hide);
+    });
+  }
+  if (btnUnchecked) {
+    btnUnchecked.addEventListener('click', function () {
+      uncheckedOnly = !uncheckedOnly;
+      btnUnchecked.classList.toggle('on', uncheckedOnly);
+      applyUncheckedFilter();
+    });
+  }
+  if (btnReset) {
+    btnReset.addEventListener('click', function () {
+      if (!window.confirm('Clear all HW-queue results and step checkboxes on this device?')) return;
+      var toRemove = [];
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (k && (k.indexOf('pokedna-hw:') === 0 || k.indexOf('pokedna-hw-step:') === 0)) toRemove.push(k);
+      }
+      toRemove.forEach(function (k) { localStorage.removeItem(k); });
+      location.reload();
+    });
+  }
+  if (btnCopy) {
+    btnCopy.addEventListener('click', function () {
+      var lines = ['PokeDNA HW report — build ' + HW_BUILD + ' — ' + HW_BUILD_DATE];
+      rows.forEach(function (tr) {
+        var id = tr.dataset.id;
+        var data = load(id);
+        if (!data.v) return;
+        var line = id + ' ' + data.v;
+        if (data.v === 'FAIL' && data.n) line += ': ' + data.n;
+        lines.push(line);
+        if (data.v === 'FAIL') {
+          var sec = tr.dataset.stepsSection;
+          if (sec) {
+            var det = document.getElementById('hw-' + sec);
+            if (det) {
+              var un = Array.prototype.slice.call(det.querySelectorAll('.hwstep-cb'))
+                .filter(function (cb) { return !cb.checked; })
+                .map(function (cb) { return cb.dataset.step; });
+              if (un.length) lines.push('  unchecked in §' + sec + ': ' + un.join(', '));
+            }
+          }
+        }
+      });
+      var text = lines.length > 1 ? lines.join('\\n') : lines[0] + '\\n(no rows marked yet)';
+      if (reportBox) {
+        reportBox.value = text;
+        reportBox.classList.remove('hidden');
+        reportBox.focus();
+        reportBox.select();
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(function () { /* fall back to the textarea above */ });
+      }
+    });
+  }
+  // The mini toolbar is sticky just under the global filter bar -- measure it (it can
+  // wrap to 2-3 lines on a phone) instead of guessing a fixed offset.
+  function stickHwqBar() {
+    var hwqBar = document.getElementById('hwq-bar');
+    if (bar && hwqBar) hwqBar.style.top = bar.offsetHeight + 'px';
+  }
+  window.addEventListener('resize', stickHwqBar);
+  stickHwqBar();
+})();
+
+// --- Detailed hardware steps: per-step checkboxes + open the section named in the URL hash ---
+(function () {
+  document.querySelectorAll('.hwstep-cb').forEach(function (cb) {
+    var key = 'pokedna-hw-step:' + cb.dataset.step;
+    var v;
+    try { v = localStorage.getItem(key); } catch (e) { v = null; }
+    var li = cb.closest('li');
+    if (v === '1') {
+      cb.checked = true;
+      if (li) li.classList.add('hwstep-done');
+    }
+    cb.addEventListener('change', function () {
+      try { localStorage.setItem(key, cb.checked ? '1' : '0'); } catch (e) { /* ignore */ }
+      if (li) li.classList.toggle('hwstep-done', cb.checked);
+    });
+  });
+
+  function openHashTarget() {
+    var h = location.hash.slice(1);
+    if (!h) return;
+    var el = document.getElementById(h);
+    if (!el) return;
+    var det = el.tagName === 'DETAILS' ? el : (el.closest && el.closest('details'));
+    if (det) det.open = true;
+    if (el.scrollIntoView) el.scrollIntoView({ block: 'center' });
+  }
+  window.addEventListener('hashchange', openHashTarget);
+  openHashTarget();
+})();
 </script>
 </body></html>
 """
+
+
+def badge_span(token: str) -> str:
+    cls = TOKENS.get(token)
+    if not cls:
+        return html.escape(token)
+    return '<span class="badge badge-%s">%s</span>' % (cls[0], html.escape(token))
+
+
+def md_inline(text: str) -> str:
+    """Render a short markdown snippet (table-cell text) without the wrapping <p>."""
+    out = markdown.markdown(text or "", extensions=MD_EXTENSIONS).strip()
+    if out.startswith("<p>") and out.endswith("</p>"):
+        out = out[3:-4]
+    return out
+
+
+def demote_headings(text: str, extra: int = 2) -> str:
+    """Push any raw '#' ATX heading in embedded prose down `extra` levels (capped at 6) so
+    it nests visually under this page's own headings instead of competing with <h1>/<h2>."""
+    def repl(m: "re.Match[str]") -> str:
+        return "#" * min(6, len(m.group(1)) + extra) + " "
+    return re.sub(r"(?m)^(#{1,6})[ \t]+", repl, text)
+
+
+def md_block_html(text: str) -> str:
+    return markdown.markdown(demote_headings(text), extensions=MD_EXTENSIONS)
+
+
+# ---------------------------------------------------------------------------
+# docs/HW-QUEUE.md -- a hand-parsed markdown table (not handed to python-markdown) so each
+# row can carry data-id, PASS/FAIL/SKIP buttons and a note <input> that markdown's own
+# table renderer has no hook for.
+# ---------------------------------------------------------------------------
+
+_TABLE_SEP_RE = re.compile(r"^\|?[\s:-]+\|")
+
+
+def _find_table_start(lines: list) -> int:
+    for i in range(len(lines) - 1):
+        if lines[i].strip().startswith("|") and _TABLE_SEP_RE.match(lines[i + 1].strip()):
+            return i
+    return -1
+
+
+def _split_row(line: str) -> list:
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def _parse_md_table(lines: list, start: int):
+    header = _split_row(lines[start])
+    rows = []
+    i = start + 2
+    while i < len(lines) and lines[i].strip().startswith("|"):
+        rows.append(_split_row(lines[i]))
+        i += 1
+    return header, rows
+
+
+def render_hwqueue(path: "pathlib.Path"):
+    """Returns (html, build_hash, build_date). Empty html (and '?' stamps) if the file is
+    missing -- this section is additive, so a temporarily-absent queue must not kill the page."""
+    if not path.is_file():
+        print("note: %s missing, skipping the hardware-queue section" % path, file=sys.stderr)
+        return "", "?", "?"
+    raw = path.read_text(encoding="utf-8")
+    lines = raw.split("\n")
+    ti = _find_table_start(lines)
+    if ti < 0:
+        print("note: no markdown table found in %s" % path, file=sys.stderr)
+        return "", "?", "?"
+
+    preamble_lines = lines[:ti]
+    if preamble_lines and preamble_lines[0].lstrip().startswith("#"):
+        preamble_lines = preamble_lines[1:]  # the page supplies its own <h2> for this section
+    preamble = "\n".join(preamble_lines).strip("\n")
+
+    build_m = re.search(r"Build on OneDrive:\s*`([^`]+)`\s*\(([^,)]+)", preamble)
+    build_hash = build_m.group(1).strip() if build_m else "?"
+    build_date = build_m.group(2).strip() if build_m else "?"
+
+    header_cells, data_rows = _parse_md_table(lines, ti)
+    colidx = {name.strip().lower(): idx for idx, name in enumerate(header_cells)}
+
+    def col(cells: list, name: str) -> str:
+        idx = colidx.get(name)
+        if idx is None or idx >= len(cells):
+            return ""
+        return cells[idx].strip()
+
+    rows_html = []
+    for cells in data_rows:
+        rid = col(cells, "id")
+        if not rid:
+            continue
+        kind = col(cells, "kind")
+        what = col(cells, "what landed")
+        commit = col(cells, "commit")
+        check = col(cells, "check on the cart")
+        expect = col(cells, "expect")
+        steps_raw = col(cells, "steps")
+        status_raw = col(cells, "status")
+
+        sec_m = re.match(r"^§([A-M])", steps_raw)
+        section_letter = sec_m.group(1) if sec_m else ""
+        ref_m = re.match(r"^§([A-Za-z0-9]+)$", steps_raw)
+        if not steps_raw or steps_raw in ("—", "-"):
+            steps_html = "—"
+        elif ref_m:
+            ref = ref_m.group(1)
+            steps_html = '<a href="#hw-%s">§%s</a>' % (html.escape(ref), html.escape(ref))
+        else:
+            steps_html = md_inline(steps_raw)
+
+        status_token = re.sub(r"[`\s]", "", status_raw)
+        status_html = badge_span(status_token) if status_token else ""
+
+        tds = "".join(
+            "<td>%s</td>" % c
+            for c in (
+                md_inline(rid), md_inline(kind), md_inline(what), md_inline(commit),
+                md_inline(check), md_inline(expect), steps_html, status_html,
+            )
+        )
+        buttons = "".join(
+            '<button type="button" class="hwbtn hwbtn-%s" data-v="%s">%s</button>'
+            % (v.lower(), v, v)
+            for v in ("PASS", "FAIL", "SKIP")
+        )
+        tds += '<td><div class="hwbtns">%s</div></td>' % buttons
+        tds += '<td><input type="text" class="hwnote" placeholder="note (esp. on FAIL)"></td>'
+        sec_attr = ' data-steps-section="%s"' % html.escape(section_letter) if section_letter else ""
+        rows_html.append('<tr data-id="%s"%s>%s</tr>' % (html.escape(rid), sec_attr, tds))
+
+    preamble_html = md_block_html(preamble) if preamble.strip() else ""
+    toolbar_html = (
+        '<div class="hwq-bar" id="hwq-bar">'
+        '<button type="button" id="hwq-unchecked">Show unchecked only</button>'
+        '<button type="button" id="hwq-copy">Copy report</button>'
+        '<button type="button" id="hwq-reset">Reset</button>'
+        '<span class="hwq-count" id="hwq-count"></span>'
+        "</div>"
+    )
+    table_html = (
+        '<div class="hwq-table-wrap"><table class="hwq-table" id="hwq-table">'
+        "<thead><tr><th>ID</th><th>Kind</th><th>What landed</th><th>Commit</th>"
+        "<th>Check on the cart</th><th>Expect</th><th>Steps</th><th>Status</th>"
+        "<th>Your result</th><th>Note</th></tr></thead>"
+        "<tbody>" + "".join(rows_html) + "</tbody></table></div>"
+        '<textarea id="hwq-reportbox" class="hwreport hidden" readonly></textarea>'
+        '<p class="hwq-hint">If "Copy report" did not copy automatically (common on iOS '
+        "Safari when a page is served over plain HTTP, which this one is), tap the box "
+        "above, select all, and copy by hand.</p>"
+    )
+    out_html = (
+        '<h2 id="hwqueue">Hardware queue — what to check</h2>'
+        + preamble_html + toolbar_html + table_html
+    )
+    return out_html, build_hash, build_date
+
+
+# ---------------------------------------------------------------------------
+# docs/HW-TEST-2026-09-05-GB-ARC.md -- rendered as collapsible <details> per lettered
+# ("## X. ...") section, with numbered steps (A1., M6b, ...) split into their own
+# checkbox-bearing <li>s. See the module docstring for the two-pass block model this
+# depends on: a blank-line-delimited block is a "steps run" iff ITS FIRST LINE matches the
+# step-label pattern; that is what stops prose asides like "E4 is emulator-blind..." (which
+# start with a letter+digit purely by coincidence, mid-paragraph) from being mis-split.
+# ---------------------------------------------------------------------------
+
+_STEP_RE = re.compile(r"^([A-M]\d{1,2}[a-z]?)(?=[.\s(])")
+_SECTION_HEADER_RE = re.compile(r"^## (.+)$")
+_LETTERED_RE = re.compile(r"^([A-M])\.\s+(.*)$")
+
+
+def _split_hw_sections(md_text: str):
+    """[(header_text_or_None, [body_lines]), ...]; element 0 is always the preamble."""
+    chunks = []
+    cur_header = None
+    cur_lines = []
+    for line in md_text.split("\n"):
+        m = _SECTION_HEADER_RE.match(line)
+        if m:
+            chunks.append((cur_header, cur_lines))
+            cur_header = m.group(1)
+            cur_lines = []
+        else:
+            cur_lines.append(line)
+    chunks.append((cur_header, cur_lines))
+    return chunks
+
+
+def _split_blank_blocks(text: str) -> list:
+    """Split on blank lines only -- the coarse, standard markdown block boundary."""
+    blocks = []
+    cur = []
+    for line in text.split("\n"):
+        if line.strip() == "":
+            if cur:
+                blocks.append(cur)
+                cur = []
+        else:
+            cur.append(line)
+    if cur:
+        blocks.append(cur)
+    return blocks
+
+
+def _parse_section_body(text: str):
+    """-> [{'type':'prose','lines':[...]}, {'type':'step','label':'A1','lines':[...]}, ...]
+
+    Two passes, deliberately not a single per-line scan. A blank-line-delimited block is a
+    "steps run" iff its FIRST line matches the step-label pattern; only then do we re-split
+    it at each subsequent column-0 label. This is what stops prose asides like "E4 is
+    emulator-blind..." or "D4's gate change..." (real sentences inside a "WHY..."/"MEASURED,
+    NOT ASSUMED..." paragraph, starting with a letter+digit purely by coincidence, with no
+    blank line to separate them from the paragraph's first line) from being mis-read as new
+    steps: that paragraph's block starts with "WHY..."/"MEASURED...", which never matches, so
+    the whole block stays one prose entry no matter what its later lines start with. A
+    per-line scan (checking every line in isolation) gets this wrong -- caught by testing
+    section K, whose own review-round cross-references ("D4", "E4") are exactly this trap.
+    """
+    result = []
+    for raw_block in _split_blank_blocks(text):
+        first = raw_block[0]
+        if not first[:1].isspace() and _STEP_RE.match(first):
+            cur = None
+            for line in raw_block:
+                indented = line[:1].isspace()
+                m = None if indented else _STEP_RE.match(line)
+                if not indented and m:
+                    if cur is not None:
+                        result.append(cur)
+                    cur = {"type": "step", "label": m.group(1), "lines": [line]}
+                elif cur is not None:
+                    cur["lines"].append(line)
+                else:  # pragma: no cover -- a block's first line always matches here
+                    cur = {"type": "step", "label": m.group(1) if m else "?", "lines": [line]}
+            if cur is not None:
+                result.append(cur)
+        else:
+            result.append({"type": "prose", "lines": list(raw_block)})
+    return result
+
+
+def _strip_label(text: str, label: str) -> str:
+    return re.sub(r"^" + re.escape(label) + r"[.\s(]?\s*", "", text, count=1)
+
+
+def _render_section_body(blocks: list) -> str:
+    parts = []
+    i, n = 0, len(blocks)
+    while i < n:
+        if blocks[i]["type"] == "step":
+            items = []
+            while i < n and blocks[i]["type"] == "step":
+                label = blocks[i]["label"]
+                joined = " ".join(s.strip() for s in blocks[i]["lines"])
+                text = _strip_label(joined, label)
+                items.append(
+                    '<li id="hw-%s"><label><input type="checkbox" class="hwstep-cb" '
+                    'data-step="%s"> <b>%s.</b> %s</label></li>'
+                    % (html.escape(label, quote=True), html.escape(label, quote=True),
+                       html.escape(label), md_inline(text))
+                )
+                i += 1
+            parts.append('<ul class="hwsteps">' + "".join(items) + "</ul>")
+        else:
+            joined = " ".join(s.strip() for s in blocks[i]["lines"])
+            parts.append(md_block_html(joined))
+            i += 1
+    return "".join(parts)
+
+
+def render_hwtest(path: "pathlib.Path") -> str:
+    if not path.is_file():
+        print("note: %s missing, skipping the detailed hardware-steps section" % path, file=sys.stderr)
+        return ""
+    raw = path.read_text(encoding="utf-8")
+    chunks = _split_hw_sections(raw)
+
+    parts = ['<section class="hwtest"><h2 id="hwtest">Detailed hardware steps</h2>']
+    _, preamble_lines = chunks[0]
+    preamble_text = "\n".join(preamble_lines).strip("\n")
+    if preamble_text.strip():
+        parts.append('<div class="hwtest-intro">'
+                      + md_block_html(demote_headings(preamble_text, extra=2)) + "</div>")
+
+    for header, body_lines in chunks[1:]:
+        body_text = "\n".join(body_lines)
+        blocks = _parse_section_body(body_text)
+        inner = _render_section_body(blocks)
+        m = _LETTERED_RE.match(header or "")
+        if m:
+            letter, title = m.group(1), m.group(2)
+            parts.append(
+                '<details id="hw-%s"><summary>%s. %s</summary><div class="hwsec-body">%s</div>'
+                "</details>" % (letter, letter, html.escape(title), inner)
+            )
+        else:
+            parts.append("<h3>%s</h3>%s" % (html.escape(header or ""), inner))
+    parts.append("</section>")
+    return "".join(parts)
 
 
 def main() -> int:
     if not SRC.exists():
         print("missing " + str(SRC), file=sys.stderr)
         return 1
-    body = markdown.markdown(
-        SRC.read_text(encoding="utf-8"),
-        extensions=["tables", "sane_lists", "attr_list"],
-    )
+    body = markdown.markdown(SRC.read_text(encoding="utf-8"), extensions=MD_EXTENSIONS)
+    # Scope the global filter bar to the feature-matrix's own tables only -- the new
+    # hardware-queue table (below) manages its own PASS/FAIL/SKIP filtering independently
+    # and must not be hidden/shown by the top toolbar's badge/text filters.
+    body = body.replace("<table>", '<table class="matrix">')
 
     # <code>HW-PASS</code> -> a coloured badge, so the status column reads at a glance.
     def badge(m: "re.Match[str]") -> str:
         raw = html.unescape(m.group(1))
-        cls = TOKENS.get(raw)
-        if not cls:
+        if raw not in TOKENS:
             return m.group(0)
-        return '<span class="badge badge-%s">%s</span>' % (cls[0], html.escape(raw))
+        return badge_span(raw)
 
     body = re.sub(r"<code>([^<]+)</code>", badge, body)
 
@@ -211,17 +743,26 @@ def main() -> int:
             if per_feature_html:
                 shots_html += '<h3>Older sheets</h3>'
             shots_html += "".join(older_shots)
+
+    hwqueue_html, hw_build, hw_build_date = render_hwqueue(HWQ)
+    hwtest_html = render_hwtest(HWTEST)
+
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     page = (TEMPLATE.replace("BADGECSS", badgecss)
                     .replace("BUTTONS", buttons)
+                    .replace("HWQUEUE_HTML", hwqueue_html)
                     .replace("BODY", body)
+                    .replace("HWTEST_HTML", hwtest_html)
                     .replace("SHOTS_HTML", shots_html)
+                    .replace("HW_BUILD_JS", json.dumps(hw_build))
+                    .replace("HW_BUILD_DATE_JS", json.dumps(hw_build_date))
                     .replace("</h1>", "</h1><p style=\"color:#8b949e;margin:0 0 18px\">Page generated " + stamp + "</p>", 1))
     OUT.write_text(page, encoding="utf-8")
     SITE.parent.mkdir(parents=True, exist_ok=True)
     SITE.write_text(page, encoding="utf-8")
     print("%s  (%d bytes)" % (OUT, OUT.stat().st_size))
     print("badges: " + ", ".join("%s=%d" % (t, n) for t, n in counts.items()))
+    print("hw-queue build: %s (%s)" % (hw_build, hw_build_date))
     return 0
 
 
