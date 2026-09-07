@@ -78,8 +78,9 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # ---- appended by lane b2 (BACKLOG #15 / #2), tools/g3_shots.py — see that file's
     # own docstring for the exact navigation each shot drives. Appended after "misc"
     # rather than inserted earlier in the list so this stays a pure addition with no
-    # existing line touched (multiple lanes edit this file's shot tooling in parallel;
-    # an append-only hunk here is trivial to merge no matter what lands around it). ----
+    # existing line touched. Sibling lanes append here TOO, so expect a one-hunk
+    # conflict at this tail when merging: keep every block (classification is a dict
+    # lookup, order is cosmetic). ----
     ("osk-rename", "#15 — the rename OSK seeds the full name, caret at the end",
      ("#15",)),
     ("flags-sections", "#2 — data editor: collapsible flag sections + the honest Elite-Four section",

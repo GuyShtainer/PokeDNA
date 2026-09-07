@@ -12,7 +12,9 @@ void ff_build_ord(const NamedFlag* nf, int nc, uint8_t* ord, int ord_cap) {
 
 int ff_hdr_ord(const uint8_t* ord, int ord_cap, int r) {
   if (!ord || r < 0 || r >= ord_cap) return 0;
-  return ord[r];
+  /* ord[] is caller-supplied (flags_fold.h): clamp here too, not only in
+   * ff_build_ord, so a shift by it can never exceed the 32-bit mask (review D5). */
+  return (ord[r] >= FF_MAX_GROUPS) ? FF_MAX_GROUPS - 1 : ord[r];
 }
 
 bool ff_row_visible(const NamedFlag* nf, int nc, const uint8_t* ord, int ord_cap,

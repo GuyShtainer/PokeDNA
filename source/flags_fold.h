@@ -27,10 +27,10 @@
 #define FF_MAX_GROUPS 32   /* bits available in a uint32_t fold mask */
 
 /* Fill ord[0 .. min(nc, ord_cap)) with each row's owning header ordinal,
- * clamped to FF_MAX_GROUPS-1 past that many headers (a row past the cap folds
- * under the LAST group rather than an assert -- matching the "silently
- * un-folds" tradeoff pdna_main.c's own comment documents, since a fold mask
- * only has 32 bits to give out). Rows before the first header (a malformed
+ * clamped to FF_MAX_GROUPS-1 past that many headers (groups 32+ SHARE group
+ * 31's fold bit -- they fold and unfold together -- rather than an assert,
+ * since a fold mask only has 32 bits to give out; unreachable today, the
+ * largest table has 13 headers). Rows before the first header (a malformed
  * table -- every real table starts with a "Badges" header) get ordinal 0. A
  * NULL `nf`/`ord` or ord_cap <= 0 is a no-op. */
 void ff_build_ord(const NamedFlag* nf, int nc, uint8_t* ord, int ord_cap);

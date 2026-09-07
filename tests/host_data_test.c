@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
   }
 
   /* (5) BACKLOG #2b: the Elite-Four question. Guy saw the E4 per-trainer flags OFF
-   * despite having beaten them. Per pokeemerald/pokeruby's hall_of_fame.inc
+   * despite having beaten them. Per pokeemerald's data/scripts/hall_of_fame.inc:7 (`call EverGrandeCity_HallOfFame_EventScript_ResetEliteFour`, read from assets/upstream/pokeemerald, reference only)
    * (ResetEliteFour), the HoF script clears all four member flags so the E4 can be
    * rechallenged -- that is GAME TRUTH, not a PokeDNA bug. What actually records
    * "you beat the league" is FLAG_SYS_GAME_CLEAR (0x864 for every one of the three
@@ -129,10 +129,9 @@ int main(int argc, char** argv) {
     /* Evidence, printed unconditionally: no hard assertion on Guy's own save
      * progress (a fixture .sav that hasn't beaten the E4 yet must not fail this
      * test), but this is exactly the read the backlog item asked for -- "show
-     * which flags are set". FLAG_SYS_GAME_CLEAR resolves to the same 0x864 in
-     * all three games (SYSTEM_FLAGS(E 0x860 / RS,FRLG 0x800) + 4); the four
-     * per-member E4 flags differ per game family, so look them up BY LABEL in
-     * the table just built rather than hard-coding per-game numbers here. */
+     * which flags are set". FLAG_SYS_GAME_CLEAR is 0x864 in Emerald (SYSTEM_FLAGS 0x860 + 0x4), 0x804 in R/S
+     * (0x800 + 0x4) and 0x82C in FR/LG (SYS_FLAGS 0x800 + 0x2C) -- the table carries the
+     * right per-game number, which is why this looks the row up by label (review D3). */
     int game_clear_num = -1;
     printf("(5) Elite Four section (evidence for BACKLOG #2b):\n");
     if (elite_hdr >= 0) {
