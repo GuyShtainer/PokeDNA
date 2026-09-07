@@ -29,14 +29,45 @@ Two fused images (built by the caller, this script does not fuse anything):
 
 BACKLOG #51/#50 (2026-09-07, this session): run_gold_gender() shows the new Gender
 row (source/gb_editor.c's GBE_GENDER) flipping Bulbasaur M -> F live, header and
-all. run_gold_create()/run_red_create() drive the new CREATE action on an empty
-cell (source/pdna_gen12.c's gb_create_hook) through the species picker and level
-picker in BOTH generations, to the honest "Needs your Gen 1/2 ROM" wall
-gb_new_mon()'s own ROM lookup hits with no flashcart in the emulator — the same
-shape 07b_save_refusal/10b_paste_refusal already use for an SD-backed action. The
-species/level pickers and the honest refusal ARE captured; the actual build (the
-new mon's own summary editor, and it landing in the grid) needs a real ROM on a
-real SD card and is hardware-only (docs/HW-TEST-2026-09-05-GB-ARC.md §O).
+all. run_gold_create()/run_red_create() drive the CREATE action on an empty cell
+(source/pdna_gen12.c's gb_create_hook) through the species picker, to the honest
+"Needs your Gen 1/2 ROM" wall gb_create_learn()'s own ROM lookup hits with no
+flashcart in the emulator — the same shape 07b_save_refusal/10b_paste_refusal
+already use for an SD-backed action.
+
+BACKLOG #50 UX-parity re-shoot (2026-09-07/08, Guy: "Pokemon creation is not from
+the Pokedex view -- fix that", "I want the Gen-1/2 versions to look the same from
+the start"): CREATE now opens the SAME pdna_pick.c pick_species() the Gen-3 create
+flow uses (icon grid, filters, search), restricted to the session's own generation
+via pick_species_set_max_dex() -- replacing the earlier bespoke "No.NNN NAME" text
+list this file used to shoot (gb_create_pick_species, deleted). There is also no
+level PROMPT any more (gb_create_pick_level, also deleted): rom_gblearn_min_level()
+computes the species' own lowest legal level, mirroring gen3_build_level's "5 for a
+Bulbasaur, 36 for a Charizard". Two new shots per generation demonstrate the
+restriction itself: cycling the picker's OWN filter with R/L never lands on a
+generation the session's ceiling has already excluded (filter_usable(),
+pdna_pick.c). Filter id 1 ("Gen 1") is never itself excluded, so the first R
+always stops there normally in EITHER session; it is the SECOND R that then jumps
+straight over whatever the ceiling has excluded in one keypress -- "Gen 3+" only,
+for a Gen-2 session's picker (3 presses total to reach Legendary), or BOTH "Gen 2"
+and "Gen 3+" together, for a Gen-1 session's (2 presses total). The species
+picker, the filter-skip demo, and the honest refusal ARE captured; the actual
+build (the new mon's own summary
+editor -- NOW in CREATE mode, the NEW chip + START-keep confirm, also UX-parity --
+and it landing in the grid) needs a real ROM on a real SD card and is
+hardware-only (docs/HW-TEST-2026-09-05-GB-ARC.md §O).
+
+BACKLOG #50 UX-parity audit (2026-09-07, same session): run_gold()'s own
+"03_mon_menu"/"07_move_to_picker"/"08_release_confirm" and run_red()'s own
+"12d_move_to_party_selected" navigation and captions were updated for the
+occupied-mon-menu row reorder + relabel (app_mon_menu_readonly, source/
+pdna_main.c): LEGALITY now sits right after VIEW/EDIT and RELEASE is LAST,
+matching Gen 3's own occupied-mon-menu order, and "MOVE TO" is relabelled "MOVE TO
+BOX" (Gen 3's own label for the same destination-picker shape). Without this fix
+those four shots would have silently captured the WRONG screen (a stale DOWN-count
+landing on a different, since-moved row) -- caught by re-deriving the navigation
+from the new row order before re-running this script, not by a mismatched
+screenshot after the fact.
 
 BACKLOG #41 slice E1 (2026-09-05/06, Guy: "I prefer the summary edit design to be
 like we did for gen 3 ... [with] less editable stats"): source/pdna_gbsummary.c
@@ -181,20 +212,33 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.tap("A", settle=BIG_SETTLE)          # A on slot 0 (Bulbasaur) -> mon menu
     s.shot("03_mon_menu", "S2: the read-only mon menu — Gen-3 parity (BACKLOG #42/#43 batch, "
                           "2026-09-05): VIEW and EDIT are now ONE row (\"VIEW / EDIT\", same "
-                          "label the Gen-3 menu uses), then MOVE TO/RELEASE/LEGALITY/COPY")
+                          "label the Gen-3 menu uses), then LEGALITY/MOVE TO BOX/COPY/RELEASE "
+                          "(UX-parity audit, 2026-09-07: reordered + MOVE TO relabelled MOVE TO "
+                          "BOX to match Gen 3's own row order/labels exactly)")
 
-    # ---- MOVE TO: menu order is now VIEW/EDIT, MOVE TO, RELEASE, LEGALITY, COPY, CANCEL
-    # (one row shorter than before the VIEW/EDIT merge). ----
-    s.press_n("DOWN", 1)                   # VIEW/EDIT -> MOVE TO
+    # ---- MOVE TO BOX: menu order is now VIEW/EDIT, LEGALITY, MOVE TO BOX, COPY,
+    # RELEASE, CANCEL (UX-parity audit, Guy 2026-09-07: Gen 3's own occupied-mon-menu
+    # order is Summary -> Legality -> Move -> Copy -> ... -> Release LAST, and this
+    # row list used to read View/Edit, Move To, Release, Legality, Copy -- Release
+    # 2nd, Legality 4th, the reverse. The row also got a new LABEL: "MOVE TO" is now
+    # "MOVE TO BOX", reusing Gen 3's own PDNA_LBL_MOVE_TO_BOX verbatim instead of a
+    # third, bespoke wording. ----
+    s.press_n("DOWN", 2)                   # VIEW/EDIT -> LEGALITY -> MOVE TO BOX
     s.tap("A", settle=BIG_SETTLE)          # open the box/party picker
-    s.shot("07_move_to_picker", "S3: MOVE TO — the destination box/party picker")
+    s.shot("07_move_to_picker", "S3: MOVE TO BOX — the destination box/party picker "
+                                 "(UX-parity audit: relabelled from \"MOVE TO\" to Gen 3's own "
+                                 "\"MOVE TO BOX\", and moved to sit after LEGALITY, matching "
+                                 "Gen 3's own row order)")
     s.tap("B", settle=BIG_SETTLE)          # cancel — do not actually move anything
 
-    # ---- RELEASE: back at the box grid; A -> menu -> DOWN x2 -> RELEASE ----
+    # ---- RELEASE: back at the box grid; A -> menu -> DOWN x4 -> RELEASE (now LAST,
+    # right before Cancel, matching Gen 3's own occupied-menu order). ----
     s.tap("A", settle=BIG_SETTLE)
-    s.press_n("DOWN", 2)                   # VIEW/EDIT -> MOVE TO -> RELEASE
+    s.press_n("DOWN", 4)                   # VIEW/EDIT -> LEGALITY -> MOVE TO BOX -> COPY -> RELEASE
     s.tap("A", settle=BIG_SETTLE)
-    s.shot("08_release_confirm", "S3: RELEASE — the confirm popup")
+    s.shot("08_release_confirm", "S3: RELEASE — the confirm popup (UX-parity audit: RELEASE "
+                                  "is now the LAST row before CANCEL, matching Gen 3's own "
+                                  "occupied-mon-menu order, not 2nd)")
     s.tap("B", settle=BIG_SETTLE)          # cancel — do not actually release it
 
     # ---- BACKLOG #41: VIEW now opens pdna_gbsummary.c over the NATIVE record (three
@@ -287,21 +331,31 @@ def run_gold_gender(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
 
 
 def run_gold_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
-    """BACKLOG #50: CREATE on an empty cell. GB BOX1 (the box the info page always opens
-    into) is 20/20 on this corpus, same as every box run_gold() already notes — box index
-    13 ("GB BOX13" on screen) has real room, 17/20, discovered the same way tools/
-    gb_retail_gate.py's first_room_box() does. This is ALSO the run that caught the
-    box-resolution bug fixed before this file existed in its current form: an EARLIER
-    version of gb_create_hook trusted app_mon_menu's own (box, slot) parameters, which
-    pdna_box.c hard-codes to (0, cur) for every is_bank source regardless of which box is
-    actually on screen — CREATE from box 13 kept refusing "BOX FULL" against box 0's
-    real 20/20, caught by hand on exactly this navigation before the fix (Gb12Mount.ui_box)
-    landed. Species/level pickers need no SD card (pure UI, no file I/O); gb_new_mon's own
-    ROM lookup does, so it is the honest stopping point in an emulator with no flashcart —
-    the SAME "SD-backed action refuses in the emulator, captured as evidence" shape
+    """BACKLOG #50, re-shot 2026-09-07/08 for the UX-parity rewrite (Guy: "Pokemon
+    creation is not from the Pokedex view -- fix that"): CREATE on an empty cell now
+    opens the SAME pdna_pick.c pick_species() the Gen-3 create flow uses (icon grid,
+    filters, search), restricted to this session's own generation
+    (pick_species_set_max_dex) -- replacing the old bespoke "No.NNN NAME" text list
+    (gb_create_pick_species, deleted). There is also no level PROMPT any more:
+    rom_gblearn_min_level() computes the species' own lowest legal level off the SAME
+    ROM lookup, mirroring gen3_build_level's "5 for a Bulbasaur, 36 for a Charizard".
+
+    GB BOX1 (the box the info page always opens into) is 20/20 on this corpus, same
+    as every box run_gold() already notes — box index 13 ("GB BOX13" on screen) has
+    real room, 17/20, discovered the same way tools/gb_retail_gate.py's
+    first_room_box() does. This is ALSO the run that caught the box-resolution bug
+    fixed before this file existed in its current form: an EARLIER version of
+    gb_create_hook trusted app_mon_menu's own (box, slot) parameters, which
+    pdna_box.c hard-codes to (0, cur) for every is_bank source regardless of which box
+    is actually on screen — CREATE from box 13 kept refusing "BOX FULL" against box
+    0's real 20/20, caught by hand on exactly this navigation before the fix
+    (Gb12Mount.ui_box) landed. The species picker needs no SD card (pure UI, no file
+    I/O); gb_create_learn()'s own ROM lookup (level + moveset, one open) does, so it
+    is the honest stopping point in an emulator with no flashcart — the SAME
+    "SD-backed action refuses in the emulator, captured as evidence" shape
     07b_save_refusal/10b_paste_refusal already use."""
     s = Session(core_mod, image_mod, rom, out_dir, "gold_")
-    print("== Gold.sav (Gen 2) -- BACKLOG #50 CREATE ==")
+    print("== Gold.sav (Gen 2) -- BACKLOG #50 CREATE (UX-parity re-shoot) ==")
     s.tap("A", settle=BIG_SETTLE)          # info -> box grid (GB BOX1, 20/20)
     s.press_n("R", 13, settle=SETTLE)      # -> GB BOX13, 17/20 (real room)
     s.press_n("DOWN", 2)
@@ -309,39 +363,47 @@ def run_gold_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.shot("14_cursor_on_empty", "#50: cursor on a real empty slot (GB BOX13, 17/20)")
 
     s.tap("A", settle=BIG_SETTLE)          # open the empty-cell menu
-    s.shot("14b_empty_menu", "#50: the empty-cell menu now offers CREATE (was PASTE (GB) + "
+    s.shot("14b_empty_menu", "#50: the empty-cell menu offers CREATE (was PASTE (GB) + "
                               "CANCEL only, before this backlog item) — CREATE first, "
                               "matching Gen-3's own empty-cell menu order")
 
-    s.tap("A", settle=BIG_SETTLE)          # select CREATE -> the species picker
-    s.shot("14c_species_picker", "#50: the species picker — dex-style rows (\"No.NNN NAME\"), "
-                                  "names only, no icon grid; a SEPARATE picker from pdna_pick.c's "
-                                  "big pick_species() (see gb_create_pick_species's own comment)")
+    s.tap("A", settle=BIG_SETTLE)          # select CREATE -> pick_species(1), restricted
+    s.shot("14c_species_picker", "#50: UX-parity -- CREATE now opens the SAME pick_species() "
+                                  "screen Gen-3's own app_create_mon uses -- Bulbasaur (dex 1) "
+                                  "pre-selected, header shows the type badge + the restricted "
+                                  "count (pick_species_set_max_dex(251) for a Gen-2 session)")
 
-    s.tap("A", settle=BIG_SETTLE)          # pick Bulbasaur (already selected) -> the level picker
-    s.shot("14d_level_picker", "#50: the level picker — default level 5, LEFT/RIGHT +-1, "
-                                "L/R +-10 (gbe_adjust's own GBE_LEVEL step sizes)")
+    # UX-parity restriction demo: R cycles the filter -- Gen 3+ is skipped outright
+    # (filter_usable(), pdna_pick.c) since this session's own ceiling already excludes
+    # it. All -> Gen 1 -> Gen 2 -> Legendary in 3 presses (Gen 3+ never appears).
+    s.press_n("R", 3, settle=SETTLE)
+    s.shot("14c2_species_filter_skips_gen3", "#50: UX-parity -- 3x R cycles All -> Gen 1 -> "
+                                              "Gen 2 -> Legendary -- \"Gen 3\" never appears in "
+                                              "a Gen-2-restricted create, unlike the unrestricted "
+                                              "Gen-3 picker's own 5-stop cycle")
+    s.press_n("L", 2, settle=SETTLE)       # Legendary -> (skip Gen 3) -> Gen 2 -> Gen 1:
+                                            # back to a filter that includes Bulbasaur again
+    s.shot("14c3_species_filter_back_to_gen1", "#50: UX-parity -- back to the \"Gen 1\" filter "
+                                                "(2x L) -- Bulbasaur (dex 1) is selected again, "
+                                                "the list's own first entry")
 
-    s.tap("RIGHT", settle=SETTLE)
-    s.tap("RIGHT", settle=SETTLE)
-    s.shot("14e_level_7", "#50: LEFT/RIGHT adjusts the level — 5 -> 7 after two taps")
-    s.tap("LEFT", settle=SETTLE)
-    s.tap("LEFT", settle=SETTLE)           # back to 5, so the ROM lookup below builds Lv5
-
-    s.tap("A", settle=BIG_SETTLE)          # confirm the level -> gb_create_locate_rom
-    s.shot("14f_no_rom_refusal", "#50: confirmed -> \"Needs your Gen 1/2 ROM\" — honest "
-                                  "evidence, not a bug: mGBA has no flashcart/SD card, so "
-                                  "neither the registered-ROM path (app_gb_rom_path) nor "
-                                  "the beside-the-save fallback can ever find one here")
-    s.skip("14g_new_mon_summary",
-           "gb_new_mon()'s own ROM lookup (rom_gbbase_gen1/2 + rom_gblearn) needs a real "
+    s.tap("A", settle=BIG_SETTLE)          # pick Bulbasaur -> gb_create_learn (level + moveset)
+    s.shot("14d_no_rom_refusal", "#50: picked -> \"Needs your Gen 1/2 ROM\" — honest evidence, "
+                                  "not a bug: mGBA has no flashcart/SD card, so neither the "
+                                  "registered-ROM path (app_gb_rom_path) nor the beside-the-save "
+                                  "fallback can ever find one here. No level prompt appears any "
+                                  "more (UX-parity: rom_gblearn_min_level would have computed "
+                                  "level 5 for Bulbasaur here, same as Gen 3's own create)")
+    s.skip("14e_new_mon_summary",
+           "gb_create_learn()'s own ROM lookup (rom_gbbase_gen1/2 + rom_gblearn) needs a real "
            "Gen-1/2 ROM on the SD card, which mGBA's fused-save harness has no flashcart "
            "to provide (same class of gap as E4's Sprites-era-cycling shot) -- the summary "
-           "editor this backlog item opens over the newly built mon is real, host-tested "
-           "code (tests/host_newmon_test.c, gb_new_mon()) but only reachable with a real "
-           "cartridge. Hardware-only: docs/HW-TEST-2026-09-05-GB-ARC.md §O.")
-    s.skip("14h_mon_in_grid",
-           "downstream of 14g (gbs_insert -> the box grid re-paging with the new mon "
+           "editor this backlog item opens over the newly built mon (NOW in CREATE mode, the "
+           "NEW chip + START-keep confirm, UX-parity) is real, host-tested code (tests/"
+           "host_newmon_test.c gb_new_mon(); pdna_gbsummary.c's create param) but only "
+           "reachable with a real cartridge. Hardware-only: docs/HW-TEST-2026-09-05-GB-ARC.md §O.")
+    s.skip("14f_mon_in_grid",
+           "downstream of 14e (gbs_insert -> the box grid re-paging with the new mon "
            "showing) -- same ROM-needs-a-real-SD-card gap, hardware-only.")
     return s
 
@@ -409,7 +471,10 @@ def run_red(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.tap("B", settle=BIG_SETTLE)          # back to box grid (no edits made -> no confirm)
 
     s.tap("A", settle=BIG_SETTLE)          # mon menu
-    s.press_n("DOWN", 1)                   # VIEW/EDIT -> MOVE TO
+    s.press_n("DOWN", 2)                   # VIEW/EDIT -> LEGALITY -> MOVE TO BOX
+                                            # (UX-parity audit, 2026-09-07: LEGALITY now sits
+                                            # right after VIEW/EDIT, matching Gen 3's own
+                                            # occupied-mon-menu order -- was DOWN x1)
     s.tap("A", settle=BIG_SETTLE)
     # Party is the LAST row in the box/party picker for a Gen-1 source (gb_edit.c
     # GEN1_PARTY_BOX has the highest box number, so it sorts last). The picker's cursor
@@ -417,7 +482,7 @@ def run_red(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     # UP from the default top-of-list selection always lands on the last entry -- no
     # need to guess how many storage boxes this save has.
     s.tap("UP")
-    s.shot("12d_move_to_party_selected", "S2b: MOVE TO picker, Party selected")
+    s.shot("12d_move_to_party_selected", "S2b: MOVE TO BOX picker, Party selected")
     s.tap("A", settle=BIG_SETTLE)
     # gb_session.c gbs_move() checks capacity (dcount >= gb_list_capacity) BEFORE the
     # Gen-1 box->party GBS_ERR_NEEDS_BASE check ("Gen 1: withdraw it in-game instead",
@@ -444,13 +509,17 @@ def run_red(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
 
 
 def run_red_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
-    """BACKLOG #50: CREATE on an empty cell, Gen 1 — the SAME flow run_gold_create() drives,
-    on the generation that has no Gender row (BACKLOG #51 is Gen-2-only, gbe_has_gender_row
-    refuses outright for GB_GEN1) and whose species picker is capped at dex 151, not 251
-    (gb_max_species(GB_GEN1)). "GB BOX5" (R press count 4 from the box grid's own default
-    entry) is 19/20 on this corpus — one real empty slot."""
+    """BACKLOG #50, re-shot 2026-09-07/08 for the UX-parity rewrite — the SAME flow
+    run_gold_create() drives, on the generation that has no Gender row (BACKLOG #51 is
+    Gen-2-only, gbe_has_gender_row refuses outright for GB_GEN1) and whose pick_species()
+    ceiling is 151, not 251 (pick_species_set_max_dex(gb_max_species(GB_GEN1))). "GB
+    BOX5" (R press count 4 from the box grid's own default entry) is 19/20 on this
+    corpus — one real empty slot. A Gen-1 ceiling excludes TWO filters (Gen 2 AND
+    Gen 3+) instead of Gen-2's one (Gen 3+ only) -- both are skipped together on
+    whichever R press first reaches them, so "All" -> "Gen 1" -> "Legendary" takes
+    only 2 presses here, not the unrestricted picker's 4."""
     s = Session(core_mod, image_mod, rom, out_dir, "red_")
-    print("== Red.sav (Gen 1) -- BACKLOG #50 CREATE ==")
+    print("== Red.sav (Gen 1) -- BACKLOG #50 CREATE (UX-parity re-shoot) ==")
     s.tap("A", settle=BIG_SETTLE)          # info -> box grid
     s.press_n("R", 4, settle=SETTLE)       # -> GB BOX5, 19/20 (one real empty slot)
     s.press_n("DOWN", 3)
@@ -463,20 +532,36 @@ def run_red_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
                               "the generation for the menu itself, only for the ROM lookup "
                               "and the moveset merge behind it)")
 
-    s.tap("A", settle=BIG_SETTLE)          # select CREATE -> the species picker
-    s.shot("13c_species_picker", "#50: Gen 1's species picker — dex 1..151 only "
-                                  "(gb_max_species(GB_GEN1)), same names-only rows as Gen 2's")
+    s.tap("A", settle=BIG_SETTLE)          # select CREATE -> pick_species(1), restricted to 151
+    s.shot("13c_species_picker", "#50: UX-parity -- Gen 1's CREATE also opens pick_species() -- "
+                                  "restricted to dex 1..151 (pick_species_set_max_dex, "
+                                  "gb_max_species(GB_GEN1)), Bulbasaur pre-selected")
 
-    s.tap("A", settle=BIG_SETTLE)          # pick Bulbasaur -> the level picker
-    s.shot("13d_level_picker", "#50: the level picker — identical control for both "
-                                "generations (gb_create_pick_level takes no gen argument)")
+    # UX-parity restriction demo: filter id 1 ("Gen 1") is never excluded by
+    # filter_usable() regardless of the ceiling, so the first R still stops there
+    # normally (All -> Gen 1) -- it is the SECOND R that then jumps straight over
+    # BOTH "Gen 2" (152..251) and "Gen 3" (252+), both empty under a 151 ceiling,
+    # landing on Legendary in one keypress. (An earlier draft of this script/caption
+    # claimed ONE press did this -- caught by actually looking at the screenshot,
+    # which still read "[Gen 1]", not "[Legendary]", after only one R.)
+    s.press_n("R", 2, settle=SETTLE)
+    s.shot("13c2_species_filter_skips_gen2_and_3", "#50: UX-parity -- 2x R cycles All -> Gen 1 -> "
+                                                    "Legendary -- the SECOND press jumps straight "
+                                                    "over both \"Gen 2\" and \"Gen 3\" in one "
+                                                    "keypress, both empty under this Gen-1 ceiling "
+                                                    "(filter_usable(), pdna_pick.c)")
+    s.tap("L", settle=SETTLE)              # Legendary -> (skip Gen 3, Gen 2) -> Gen 1: one L back
+    s.shot("13c3_species_filter_back_to_gen1", "#50: UX-parity -- one L press back to the \"Gen 1\" "
+                                                "filter -- Bulbasaur (dex 1) selected again")
 
-    s.tap("A", settle=BIG_SETTLE)          # confirm level 5 -> gb_create_locate_rom
-    s.shot("13e_no_rom_refusal", "#50: Gen 1 hits the same honest \"Needs your Gen 1/2 ROM\" "
+    s.tap("A", settle=BIG_SETTLE)          # pick Bulbasaur -> gb_create_learn (level + moveset)
+    s.shot("13d_no_rom_refusal", "#50: Gen 1 hits the same honest \"Needs your Gen 1/2 ROM\" "
                                   "wall as Gen 2 — mGBA has no flashcart for either generation's "
-                                  "ROM lookup to find one on")
-    s.skip("13f_new_mon_summary",
-           "same gap as Gold's 14g: gb_new_mon()'s ROM lookup needs a real cartridge. "
+                                  "ROM lookup to find one on. No level prompt any more (UX-parity: "
+                                  "rom_gblearn_min_level would have computed level 5 here)")
+    s.skip("13e_new_mon_summary",
+           "same gap as Gold's 14e: gb_create_learn()'s ROM lookup needs a real cartridge, and "
+           "the summary it would open is now in CREATE mode (NEW chip, UX-parity). "
            "Hardware-only: docs/HW-TEST-2026-09-05-GB-ARC.md §O.")
     return s
 
