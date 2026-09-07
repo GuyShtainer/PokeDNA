@@ -38,6 +38,7 @@
 #include "map_oam.h"
 #include "map_region.h"
 #include "gen3_sbmap.h"
+#include "artbuf.h"
 #include "gen3_sbdecor.h"
 #include "rom_script.h"
 #include "gen3_secretbase.h"
@@ -170,8 +171,12 @@ static void pick_row_paint(const PickEnt* ents, int idx, int y, bool sel) {
 }
 
 /* Browse for a .gba. `cwd` is updated in place. Returns true with the full path in
- * `out`. Entries live in the caller's buffer so this adds no EWRAM of its own. */
-static bool pick_rom(char* cwd, int cwd_cap, char* out, int out_cap, PickEnt* ents) {
+ * `out`. Entries live in the caller's buffer so this adds no EWRAM of its own.
+ * `ent_cap` is the true size of `ents` in ELEMENTS — PICK_MAX for an arena-backed
+ * caller, PICK_MAX_ART for the mon_decomp fallback below (BACKLOG #55): the two
+ * buffers are different sizes, so the scan bound can no longer be the PICK_MAX
+ * constant. */
+static bool pick_rom(char* cwd, int cwd_cap, char* out, int out_cap, PickEnt* ents, int ent_cap) {
   int sel = 0, top = 0, n = 0;
   bool rescan = true;
   const int vis = 11;
@@ -184,7 +189,7 @@ static bool pick_rom(char* cwd, int cwd_cap, char* out, int out_cap, PickEnt* en
       DIR d; FILINFO fi;
       rmbl_pause();
       if (f_opendir(&d, cwd) == FR_OK) {
-        while (n < PICK_MAX && f_readdir(&d, &fi) == FR_OK && fi.fname[0]) {
+        while (n < ent_cap && f_readdir(&d, &fi) == FR_OK && fi.fname[0]) {
           bool isdir = (fi.fattrib & AM_DIR) != 0;
           if (!isdir && !ext_matches(fi.fname)) continue;
           if (fi.fname[0] == '.') continue;
@@ -1806,7 +1811,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         strcpy(cwd, "/");
         ui_clear();
         s_msg("MAP NEEDS YOUR ROM", UI_TITLE, "Pick the .gba you play.", "Nothing is copied.");
-        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents)) { app_arena_release(); return; }
+        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); return; }
       }
 
       /* ---- open + identify. No drawing happens between here and rmbl_resume. ---- */
@@ -1827,7 +1832,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         s_msg("UNSUPPORTED ROM", UI_WARN, l1, "Pick another (A).");
         app_rom_path_set(game, "");           /* forget it so we ask again */
         strcpy(cwd, "/");
-        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents)) { app_arena_release(); return; }
+        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); return; }
         continue;
       }
 
@@ -1839,7 +1844,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         s_msg("WRONG GAME", UI_WARN, l1, "Need this save's game.");
         rmbl_pause(); f_close(&s_rf.f); rmbl_resume(); s_rf.open = false;
         strcpy(cwd, "/");
-        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents)) { app_arena_release(); return; }
+        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); return; }
         continue;
       }
 
@@ -1955,15 +1960,51 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
 }
 
 
-/* Public wrapper for Settings > Game ROM: same picker, arena-backed buffers. */
-bool app_pick_rom(char* out, int out_cap) {
+/* BACKLOG #55 — a picker that also works from INSIDE a Game Boy session, where the
+ * EWRAM arena (g_pc) is held for the session's whole visit (pdna_gen12_show) and
+ * app_arena_acquire() therefore always returns NULL. Falling back to mon_decomp (the
+ * one 8 KiB EWRAM scratch buffer every single-frame sprite decoder shares, artbuf.h)
+ * costs no new EWRAM: the picker is a full-screen modal that paints only text rows
+ * (pick_row_paint above never touches mon_decomp), so nothing else needs the buffer
+ * while it runs, and the next screen re-fetches its art after artbuf_claim() bumps
+ * the epoch and invalidates whatever was memoised there.
+ *
+ * mon_decomp is smaller than the arena's PICK_MAX slice, so the fallback caps the
+ * scan at PICK_MAX_ART entries instead — plenty for a ROM/save folder, and the
+ * _Static_assert below is the host-compilable proof the math holds (there is no
+ * FatFs to host-test against, but this bound needs no hardware).
+ *
+ * PC-dirty is a DIFFERENT acquire failure (unsaved Gen-3 box moves, unrelated to a
+ * GB session) and app_arena_held() stays false for it (app_arena_acquire sets
+ * g_arena_held only on success) — that case still refuses, exactly as before. */
+#define PICK_MAX_ART 120
+_Static_assert(PICK_MAX_ART * sizeof(PickEnt) <= MON_DECOMP_BYTES,
+               "PICK_MAX_ART * sizeof(PickEnt) must fit the shared 8 KiB art buffer");
+
+static PickEnt* pick_mem_acquire(int* cap, bool* from_artbuf) {
   uint8_t* mem = app_arena_acquire(PICK_MAX * (uint32_t)sizeof(PickEnt));
-  if (!mem) return false;                    /* PC dirty or arena held: caller explains */
+  if (mem) { *cap = PICK_MAX; *from_artbuf = false; return (PickEnt*)mem; }
+  if (!app_arena_held()) { *cap = 0; *from_artbuf = false; return NULL; }  /* PC dirty: real refusal */
+  artbuf_claim();          /* about to overwrite mon_decomp -- claim BEFORE the first write */
+  *cap = PICK_MAX_ART; *from_artbuf = true;
+  return (PickEnt*)mon_decomp;
+}
+
+static void pick_mem_release(bool from_artbuf) {
+  if (!from_artbuf) app_arena_release();
+  /* mon_decomp is shared scratch, not reference-counted -- nothing to release. */
+}
+
+/* Public wrapper for Settings > Game ROM: same picker, arena- or artbuf-backed. */
+bool app_pick_rom(char* out, int out_cap) {
+  int cap; bool from_artbuf;
+  PickEnt* ents = pick_mem_acquire(&cap, &from_artbuf);
+  if (!ents) return false;                   /* PC dirty: caller explains */
   char cwd[PATH_MAX];
   strcpy(cwd, "/");
   s_pick_ext[0] = ".gba"; s_pick_ext[1] = 0;
-  bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, (PickEnt*)mem);
-  app_arena_release();
+  bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, ents, cap);
+  pick_mem_release(from_artbuf);
   return ok;
 }
 
@@ -1971,14 +2012,15 @@ bool app_pick_rom(char* out, int out_cap) {
  * tail) and carries no signature in its NAME, so the extension filter is deliberately
  * loose and pdna_gen12_mount does the real identification. */
 bool app_pick_gb_save(char* out, int out_cap) {
-  uint8_t* mem = app_arena_acquire(PICK_MAX * (uint32_t)sizeof(PickEnt));
-  if (!mem) return false;
+  int cap; bool from_artbuf;
+  PickEnt* ents = pick_mem_acquire(&cap, &from_artbuf);
+  if (!ents) return false;
   char cwd[PATH_MAX];
   strcpy(cwd, "/");
   s_pick_ext[0] = ".sav"; s_pick_ext[1] = ".srm"; s_pick_ext[2] = 0;
-  bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, (PickEnt*)mem);
+  bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, ents, cap);
   s_pick_ext[0] = ".gba"; s_pick_ext[1] = 0; s_pick_ext[2] = 0;   /* restore the default */
-  app_arena_release();
+  pick_mem_release(from_artbuf);
   return ok;
 }
 
@@ -1988,13 +2030,14 @@ bool app_pick_gb_save(char* out, int out_cap) {
  * the user's own cartridge, and the caller identifies the ROM by its header before
  * trusting a byte of it. The extension only narrows the list; it proves nothing. */
 bool app_pick_gb_rom(char* out, int out_cap) {
-  uint8_t* mem = app_arena_acquire(PICK_MAX * (uint32_t)sizeof(PickEnt));
-  if (!mem) return false;
+  int cap; bool from_artbuf;
+  PickEnt* ents = pick_mem_acquire(&cap, &from_artbuf);
+  if (!ents) return false;
   char cwd[PATH_MAX];
   strcpy(cwd, "/");
   s_pick_ext[0] = ".gb"; s_pick_ext[1] = ".gbc"; s_pick_ext[2] = 0;
-  bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, (PickEnt*)mem);
+  bool ok = pick_rom(cwd, sizeof cwd, out, out_cap, ents, cap);
   s_pick_ext[0] = ".gba"; s_pick_ext[1] = 0; s_pick_ext[2] = 0;   /* restore the default */
-  app_arena_release();
+  pick_mem_release(from_artbuf);
   return ok;
 }

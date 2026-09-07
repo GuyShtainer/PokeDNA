@@ -2659,13 +2659,11 @@ const char* app_ability_desc(uint16_t id) {
 static void app_register_rom(void) {
   char path[PATH_MAX];
   if (!app_pick_rom(path, sizeof path)) {
-    /* app_pick_rom borrows the SAME EWRAM arena a Gen-1/2 session holds for its whole
-     * visit (app_arena_held()), so from inside one it always returns false here even
-     * though nothing is actually wrong -- tell the user that plainly instead of
-     * silently doing nothing (E6 D1). A picker that does not need the arena is
-     * BACKLOG #55; that is the real fix, this is the honest refusal until then. */
+    /* BACKLOG #55: app_pick_rom() now falls back to the shared art buffer when the
+     * EWRAM arena is held (a Gen-1/2 session's whole visit, app_arena_held()), so a
+     * false return here is either an honest PC-dirty refusal or the user simply
+     * backing out of the picker -- no separate "NOT HERE" case is left to report. */
     if (g_pc_dirty) msg_wait("SAVE FIRST", UI_WARN, "Unsaved box moves pending.", "Commit, then retry.");
-    else if (app_arena_held()) msg_wait("NOT HERE", UI_WARN, "Register from a Gen-3 save,", "or put the ROM beside this one.");
     return;
   }
   /* g_rom_path's slots are GB_ROM_PATH_MAX(128) wide (E3 review item 3) -- refuse up
@@ -2717,12 +2715,10 @@ static void app_register_rom(void) {
 static void app_register_gb_rom(uint8_t gen) {
   char path[PATH_MAX];
   if (!app_pick_gb_rom(path, sizeof path)) {
-    /* Same arena collision as app_register_rom() above (E6 D1): a Gen-1/2 session
-     * holds the EWRAM arena for its whole visit, so the picker always fails here
-     * when called from one. BACKLOG #55 is the real fix (a picker that doesn't
-     * borrow the arena); this is the honest refusal until then. */
+    /* BACKLOG #55: same fallback as app_register_rom() above -- app_pick_gb_rom()
+     * now works from inside a Gen-1/2 session too (mon_decomp-backed picker), so a
+     * false return here is either an honest PC-dirty refusal or a plain user cancel. */
     if (g_pc_dirty) msg_wait("SAVE FIRST", UI_WARN, "Unsaved box moves pending.", "Commit, then retry.");
-    else if (app_arena_held()) msg_wait("NOT HERE", UI_WARN, "Register from a Gen-3 save,", "or put the ROM beside this one.");
     return;
   }
   /* app_gb_rom_path_set() stores into GB_ROM_PATH_MAX(128) slots, not PATH_MAX(256) --
@@ -2740,6 +2736,12 @@ static void app_register_gb_rom(uint8_t gen) {
       cfg_save();
       char l1[40]; siprintf(l1, "Gen %u ROM registered.", (unsigned)gen);
       msg_wait("GAME ROM", UI_OK, l1, "Real Game Boy sprites are ON.");
+      /* BACKLOG #55: this can now happen mid-GB-session (the picker fell back to
+       * mon_decomp to get here). gb_art_register() already called
+       * pdna_origin_art_invalidate() above, so the box's next entry re-decodes
+       * every cell through box_decode instead of trusting a stale cache -- log it
+       * so a hardware run can confirm the new sprites actually show up. */
+      log_line("gb art: gen%u ROM registered mid-session, art cache invalidated", (unsigned)gen);
       break;
     }
     case GB_ART_REG_WRONG_GEN:
