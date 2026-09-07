@@ -561,6 +561,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBEDIT_BUSY_SAVING    "Saving - do not power off"     /* s_busy's own line */
 #define PDNA_GBEDIT_BUSY_BACKUP    "Backing up original..."
 #define PDNA_GBEDIT_BUSY_WRITING   "Writing + verifying..."
+/* G1 review MEDIUM-2 (2026-09-08): CREATE's own ROM scan (gb_create_locate_rom +
+ * gb_create_learn, together up to ~185,000 read() calls on Crystal.gbc, measured)
+ * freezes the screen long enough to look hung -- but s_busy()'s own title
+ * ("Saving - do not power off") would be a LIE here: nothing is written, and
+ * powering off mid-read risks nothing but re-doing the read. A separate title/
+ * line pair, same panel shape as s_busy(), honest text instead. */
+#define PDNA_GBCREATE_BUSY_TITLE   "Reading your ROM..."
+#define PDNA_GBCREATE_BUSY_LINE   "This can take a moment."
 
 #define PDNA_GBEDIT_READONLY_TITLE "READ-ONLY"
 #define PDNA_GBEDIT_NEEDS_OMEGA    "Needs EZ-Flash Omega."

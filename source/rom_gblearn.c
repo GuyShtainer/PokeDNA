@@ -18,6 +18,9 @@
 #define GBL_MAX_DELTA    48u  /* Phase-B/A: max bytes between two consecutive per-
                                * species blobs -- the busiest real blob measured is
                                * ~35 B (14 moves + a 2-method evolution + 2 terms) */
+#define GBL_FPSO_BLK     64u  /* G1 review MEDIUM-2: full_pointer_shape_ok's own
+                               * read-block size (32 pointers/read instead of 1) --
+                               * see that function's own comment */
 
 static uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | ((uint16_t)p[1] << 8)); }
 
@@ -89,21 +92,35 @@ static void scan_phase_a(GbReadFn read, void* ctx, uint32_t size, uint32_t n,
  * pointers (not just the first K) -- still pure arithmetic on the pointer
  * bytes, no evolution/move decode yet, so still cheap. This is what cuts the
  * "38 in the first K happened to line up" survivors of phase A (measured:
- * 370..1364 of them) down to the 1..4 that reach the expensive phase C. Reads
- * two bytes at a time rather than buffering all n*2 -- n tops out at 502 B for
- * Gen 2, which is fine for a stack buffer but this needs none at all. */
+ * 370..1364 of them) down to the 1..4 that reach the expensive phase C.
+ *
+ * G1 review MEDIUM-2 (2026-09-08): used to read two bytes at a time, one
+ * read() call per pointer -- cheap arithmetic, but each call is a real f_read
+ * (a sector-sized fetch on a real cartridge) regardless of how few bytes it
+ * asks for, and this runs over EVERY (offset, n) pair phase A's own cheap
+ * prefilter lets through (hundreds on a real ROM). Measured contribution to
+ * gb_create_hook's own full scan: a large share of the ~118,000 (Gold.gbc) /
+ * ~185,000 (Crystal.gbc) read() calls CREATE used to make. Reads
+ * GBL_FPSO_BLK (64) bytes -- 32 pointers -- per call instead, the same
+ * "buffer through a small stack chunk" idiom scan_phase_a already uses; the
+ * increasing/bounded-delta/in-window checks themselves are byte-for-byte
+ * unchanged, just fed from `blk` instead of a fresh 2-byte read each time. */
 static int full_pointer_shape_ok(GbReadFn read, void* ctx, uint32_t table_off, uint32_t n) {
   uint16_t prev = 0;
-  for (uint32_t i = 0; i < n; i++) {
-    uint8_t p[2];
-    if (!read(ctx, table_off + i * 2u, p, 2)) return 0;
-    uint16_t v = rd16(p);
-    if (v < GB_WIN_LO || v >= GB_WIN_HI) return 0;
-    if (i > 0) {
-      int d = (int)v - (int)prev;
-      if (d < 1 || (uint32_t)d > GBL_MAX_DELTA) return 0;
+  uint8_t blk[GBL_FPSO_BLK];
+  for (uint32_t i = 0; i < n; ) {
+    uint32_t want = n - i;
+    if (want * 2u > GBL_FPSO_BLK) want = GBL_FPSO_BLK / 2u;
+    if (!read(ctx, table_off + i * 2u, blk, want * 2u)) return 0;
+    for (uint32_t j = 0; j < want; j++, i++) {
+      uint16_t v = rd16(blk + j * 2u);
+      if (v < GB_WIN_LO || v >= GB_WIN_HI) return 0;
+      if (i > 0) {
+        int d = (int)v - (int)prev;
+        if (d < 1 || (uint32_t)d > GBL_MAX_DELTA) return 0;
+      }
+      prev = v;
     }
-    prev = v;
   }
   return 1;
 }

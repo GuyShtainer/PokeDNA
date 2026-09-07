@@ -839,6 +839,27 @@ typedef struct {
    * new g_ed is latched (never left as whatever garbage the borrowed arena held). */
   bool        romgs_ready;
   const char* romgs_path;
+  /* G1 review MEDIUM-2 (2026-09-08): CREATE's own learnset-table scan
+   * (rom_gblearn_open, gb_create_learn below) is a SEPARATE full-ROM pass from
+   * romgs's own -- measured, ~118,000 (Gold.gbc) / ~185,000 (Crystal.gbc)
+   * read() calls before this cache and the 64-B block-read fix in
+   * rom_gblearn.c's full_pointer_shape_ok. Cached the SAME way romgs_ready/
+   * romgs_path are, for the identical reason and with the identical
+   * limitation (keyed on g_ed->path, not on which ROM app_gb_rom_path()/the
+   * beside-the-save fallback actually resolved to -- see romgs_path's own
+   * comment): a second CREATE in the same session skips rom_gblearn_open's
+   * scan entirely. `learn.read`/`learn.ctx` are NOT part of the cached
+   * identity (a fresh FIL is opened per gb_create_learn call regardless) --
+   * only `table_off`/`data_bank`/`banks`/`size`/`gen`, the part the scan
+   * exists to find, are trusted across calls. Deliberately NOT invalidated by
+   * gb_create_locate_rom the way romgs_ready now is (MEDIUM-1): that fix
+   * exists because CREATE overwrites romgs/romspath out from under a
+   * DIFFERENT consumer's (PASTE's) cache; this cache belongs to CREATE
+   * itself, and invalidating it at the top of every create would defeat the
+   * whole point of caching across two creates in one session. */
+  RomGbLearn  learn;
+  bool        learn_ready;
+  const char* learn_path;
 } Gb12Edit;
 static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the arena */
 
@@ -847,6 +868,16 @@ static void s_busy(const char* line) {
   ui_panel(16, 60, 208, 48, UI_PANEL, UI_WARN);
   ui_text(28, 70, UI_WARN, PDNA_GBEDIT_BUSY_SAVING);
   ui_text(28, 88, UI_TEXT, line);
+}
+
+/* G1 review MEDIUM-2: CREATE's own busy screen, NOT s_busy() -- see
+ * PDNA_GBCREATE_BUSY_TITLE's own comment (pdna_layout.h) for why "Saving - do
+ * not power off" does not apply to a pure ROM read. Same panel shape. */
+static void s_busy_reading(void) {
+  ui_clear();
+  ui_panel(16, 60, 208, 48, UI_PANEL, UI_WARN);
+  ui_text(28, 70, UI_WARN, PDNA_GBCREATE_BUSY_TITLE);
+  ui_text(28, 88, UI_TEXT, PDNA_GBCREATE_BUSY_LINE);
 }
 
 /* The card refused; put RAM back to what the card holds so the grid never shows an
@@ -2024,25 +2055,40 @@ static bool __attribute__((noinline)) gb_create_base2(uint16_t dex, RomGb2Specie
  * gb_new_mon_g1_moves does the identical thing, duplicated here rather than
  * called because that helper wants an already-open RomGbLearn* and this
  * function is also where one gets opened); NULL for Gen 2, whose own table
- * already includes the starters. RomGbLearn itself is a small (~24 B) stack
- * local -- unlike RomGbSprite it carries no big scratch buffer of its own to
- * justify arena residency. `*out_level` is only written on success. Returns
- * the move count filled (0..4), or -1 on any failure -- the ONE refusal path
- * left for the create flow's ROM dependency (used to be raised by the old
- * gb_create_moves() this replaces; the level computation itself never
- * refuses, see rom_gblearn_min_level()'s own "fails open" contract, so it
- * cannot newly introduce one here). */
+ * already includes the starters. `*out_level` is only written on success.
+ * Returns the move count filled (0..4), or -1 on any failure -- the ONE
+ * refusal path left for the create flow's ROM dependency (used to be raised
+ * by the old gb_create_moves() this replaces; the level computation itself
+ * never refuses, see rom_gblearn_min_level()'s own "fails open" contract, so
+ * it cannot newly introduce one here).
+ *
+ * G1 review MEDIUM-2 (2026-09-08): the table LOCATION (g_ed->learn, arena-
+ * resident -- see its own struct comment for the cache contract) is reused
+ * across calls in the same session instead of re-scanning the whole ROM every
+ * time (rom_gblearn_open's own scan is what drove ~118,000-185,000 read()
+ * calls per create, measured, before this fix). A fresh FIL is still opened
+ * every call regardless -- the located table_off/data_bank are cheap facts
+ * to trust across calls, an open file handle is not. */
 static int __attribute__((noinline))
 gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t* out_level, uint8_t out4[4]) {
   memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
   if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return -1;
-  RomGbLearn rl;
-  int ok = rom_gblearn_open(&rl, g_ed->s.gen, gb_read, &g_ed->romfil, g_ed->romgs.size);
+  int ok;
+  if (g_ed->learn_ready && g_ed->learn_path == g_ed->path && g_ed->learn.gen == g_ed->s.gen) {
+    ok = 1;                                    /* cache hit: skip the scan entirely */
+  } else {
+    ok = rom_gblearn_open(&g_ed->learn, g_ed->s.gen, gb_read, &g_ed->romfil, g_ed->romgs.size);
+    if (ok) { g_ed->learn_ready = true; g_ed->learn_path = g_ed->path; }
+  }
+  /* Either way, `read`/`ctx` must point at THIS call's freshly (re)opened FIL --
+   * a cache hit skips the scan, never the fact that the old FIL is long closed. */
+  g_ed->learn.read = gb_read;
+  g_ed->learn.ctx = &g_ed->romfil;
   int kept = -1;
   if (ok) {
-    uint8_t lvl = rom_gblearn_min_level(&rl, dex);
-    kept = g1_start ? rom_gblearn_moves_at_seeded(&rl, dex, lvl, g1_start, out4)
-                    : rom_gblearn_moves_at(&rl, dex, lvl, out4);
+    uint8_t lvl = rom_gblearn_min_level(&g_ed->learn, dex);
+    kept = g1_start ? rom_gblearn_moves_at_seeded(&g_ed->learn, dex, lvl, g1_start, out4)
+                    : rom_gblearn_moves_at(&g_ed->learn, dex, lvl, out4);
     if (kept >= 0 && out_level) *out_level = lvl;
   }
   f_close(&g_ed->romfil);
@@ -2102,6 +2148,13 @@ static bool gb_create_hook(void) {
   pick_species_set_max_dex(0);
   if (dex == 0xFFFFu || dex == 0) return false;
 
+  /* G1 review MEDIUM-2: gb_create_locate_rom + gb_create_learn together freeze the
+   * screen for a real full-ROM scan (up to ~185,000 read() calls, measured, before
+   * the cache below makes a second create in this session skip it) -- show honest
+   * feedback before either runs, not a still screen a player might mistake for a
+   * hang. Stays up through base1/base2/gb_create_learn too: nothing between here
+   * and the summary/refusal draws anything else. */
+  s_busy_reading();
   if (!gb_create_locate_rom(g_ed->s.gen)) {
     snd_deny();
     msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_NOROM_L1, PDNA_GBCREATE_NOROM_L2);
@@ -2448,8 +2501,11 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
        * whatever last borrowed it -- romgs_ready must start false EVERY session, or
        * a stale true (garbage that happens to survive) plus a coincidentally-equal
        * romgs_path would skip the ROM scan entirely and hand back whatever RomGbSprite
-       * garbage was sitting there. */
+       * garbage was sitting there. learn_ready (G1 review MEDIUM-2) is the identical
+       * risk for the SAME reason: a stale true plus a coincidentally-equal learn_path
+       * would hand a fresh session someone else's located learnset table. */
       ed->romgs_ready = false;
+      ed->learn_ready = false;
       g_ed = ed;
     } else {
       log_line("gen12: edit session refused (%s, gen %d vs mount kind %d): read-only",
