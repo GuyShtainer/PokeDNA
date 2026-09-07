@@ -127,6 +127,26 @@ static void one_save(const char* file, uint8_t expect_gen) {
   const int pb = gbs_party_box(&s);
   CHECK(nb == (expect_gen == GB_GEN1 ? 12 : 14), "box count matches the generation");
 
+  /* Measured BEFORE this test writes anything: does this G/S/Crystal file's stored
+   * backup checksum already disagree with the actual bytes at the mirror destinations?
+   * Guy's own Gold.sav (and its VC twin) genuinely does right now — region 1
+   * (sPlayerData2) carries 253 stale bytes that nothing in this write surface ever
+   * touches (BACKLOG #49 P0; source/gen2_save.c's k_gs_mirror comment has the full
+   * derivation). refresh_checksums() re-DESCRIBES whatever is currently at the mirror
+   * destinations rather than copying bytes there, so on such a file the VERY FIRST
+   * commit below honestly changes the 2-byte backup checksum — a real, one-time,
+   * expected event, not a bug. */
+  bool pre_stale_backup = false;
+  uint32_t backup_off = 0;
+  if (expect_gen == GB_GEN2) {
+    G2Save sv0;
+    g2_detect(g_orig, len, &sv0);
+    if (sv0.version != G2_VER_NONE) {
+      backup_off = g2_checksum_backup_off(sv0.version);
+      pre_stale_backup = !sv0.backup_ok;
+    }
+  }
+
   /* ---- 1. THE NO-OP GUARANTEE, over every box AND the party ---------------
    * Stage a box, hand the very same bytes straight back, and require that the whole
    * image is untouched. This is the composition-level form of the promise gb_edit makes
@@ -142,7 +162,18 @@ static void one_save(const char* file, uint8_t expect_gen) {
   }
   uint32_t first = 0, nd = diff_count(len, &first);
   if (nd) printf("     first differing byte at 0x%04X (%u total)\n", (unsigned)first, (unsigned)nd);
-  CHECK(nd == 0, "NO-OP COMMITS CHANGED ZERO BYTES of the whole image");
+  if (!pre_stale_backup) {
+    CHECK(nd == 0, "NO-OP COMMITS CHANGED ZERO BYTES of the whole image");
+  } else {
+    CHECK(nd == 2 && (first == backup_off || first == backup_off + 1),
+          "no-op commits on a pre-stale backup change ONLY its 2-byte checksum");
+    /* Adopt the honestly-resynced checksum as the reference from here on, so this
+     * already-proven, already-explained difference does not pollute every check below —
+     * they are testing DIFFERENT things (per-slot fidelity, edit surgicalness, undo
+     * exactness), not this one. */
+    memcpy(g_orig + backup_off, g_img + backup_off, 2);
+    nd = diff_count(len, &first);
+  }
   CHECK(noop_boxes > 0, "at least one box was actually exercised");
 
   /* ---- 2. the per-slot lossless guarantee, on real data -------------------
@@ -284,6 +315,21 @@ static bool slot_bytes_equal(uint8_t gen, const uint8_t* la, int boxa, int sa,
  * cannot be made to rewrite a byte by opening a box and backing out. */
 static void s3_noop_after_surgery(GbSession* s, uint32_t len, const char* tag) {
   memcpy(g_snap, g_img, len);
+
+  /* Same pre-existing-staleness exception as one_save() above: if THIS session has not
+   * yet resynced a stale G/S backup (region 1 / sPlayerData2, BACKLOG #49 P0), the first
+   * commit below still will, honestly, by 2 bytes. */
+  bool pre_stale_backup = false;
+  uint32_t backup_off = 0;
+  if (s->gen == GB_GEN2) {
+    G2Save sv0;
+    g2_detect(g_snap, len, &sv0);
+    if (sv0.version != G2_VER_NONE) {
+      backup_off = g2_checksum_backup_off(sv0.version);
+      pre_stale_backup = !sv0.backup_ok;
+    }
+  }
+
   int nb = gbs_nboxes(s), pb = gbs_party_box(s), done = 0;
   for (int box = 0; box <= nb; box++) {
     int b = (box == nb) ? pb : box;
@@ -293,6 +339,7 @@ static void s3_noop_after_surgery(GbSession* s, uint32_t len, const char* tag) {
     CHECK(c == GBS_OK, "S3 post-surgery: a no-op commit is still accepted");
     done++;
   }
+  if (pre_stale_backup) memcpy(g_snap + backup_off, g_img + backup_off, 2);
   CHECK(memcmp(g_img, g_snap, len) == 0, "S3 post-surgery: no-op commits changed zero bytes");
   CHECK(done > 0, tag);
 }

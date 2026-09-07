@@ -13,12 +13,23 @@
  *     something on a machine without the corpus.
  *
  * The distinction matters more than usual in this module. The G/S backup mirror's second
- * region was written as 0x3D96 in both the parser and the fixture — the same transposed
- * digit twice — and every synthetic test passed because the fixture was built from the
- * constant it was supposedly checking. Only the real Gold save caught it. So the
- * strongest assertions below (no-op round trip, mirror exactness, checksum agreement)
- * are the ones aimed at real cartridge data, and the tests that can only be built from
- * our own constants are labelled as the weaker evidence they are.
+ * region (sBackupPlayerData2) was written as 0x3D69 in both the parser and the fixture —
+ * the same wrong constant twice — and every synthetic test passed because the fixture
+ * was built from the constant it was supposedly checking. Only a ROM boot caught it
+ * (BACKLOG #49 P0; tools/gb_roundtrip.py --selftest; source/gen2_save.c's k_gs_mirror
+ * comment has the full derivation). So the strongest assertions below (no-op round trip,
+ * mirror exactness, checksum agreement) are the ones aimed at real cartridge data, and
+ * the tests that can only be built from our own constants are labelled as the weaker
+ * evidence they are.
+ *
+ * ONE MORE WRINKLE real data adds that a fixture never would: Guy's own Gold.sav (and
+ * its VC twin) has a backup that is genuinely stale AT THE CORRECT ADDRESS right now —
+ * region 1 (sPlayerData2, map/object/time-of-day state) holds 253 bytes that disagree
+ * with the primary, because nothing in this write surface, including a "no-op" commit,
+ * ever touches that region (only a real ROM boot re-syncs it). `stale_regions()` below
+ * measures which regions a freshly-loaded file already disagrees on and carries that
+ * forward as an accepted baseline, so this suite still catches a NEW mirror bug without
+ * being fooled by an old, real, already-known one.
  *
  * There is also a section that deliberately BREAKS things — malformed lists, a storage
  * backend that silently drops writes, a post-commit byte flip — because a verification
@@ -79,7 +90,7 @@ static G2WStatus open_w(G2Writer* w, Mem* m, G2Version expect) {
   return g2w_begin(w, mem_rd, mem_wr, m, m->len, g_scratch, sizeof g_scratch, expect);
 }
 
-static Mem g_a, g_b;          /* 64 KiB each — too big for a stack frame */
+static Mem g_a, g_b, g_c;     /* 64 KiB each — too big for a stack frame */
 
 static bool load_real(const char* name, Mem* m) {
   char p[512];
@@ -120,19 +131,45 @@ static void assert_healthy(const Mem* m, G2Version ver, const char* what) {
   CHECK(b_stored == g2_checksum_backup(m->buf, ver), msg);
 }
 
-/* Every byte of the checksummed span must equal its mirror. Done directly, region by
- * region, because two different regions can share a 16-bit sum — a checksum that
- * validates is not proof the mirror is right. */
-static void assert_mirror_exact(const Mem* m, G2Version ver, const char* what) {
+/* Which mirror regions are ALREADY non-exact on `m`, as a bitmask (bit i = region i).
+ * Call this once, right after load_real(), before this file's own code touches anything
+ * — it is the baseline "pre-existing staleness" a real corpus file may already carry
+ * (Guy's own Gold.sav: region 1, sPlayerData2 — see the header comment above), which no
+ * edit in this module's scope ever heals, so every later assert_mirror_exact() in the
+ * same test must keep tolerating exactly this and nothing more. */
+static uint32_t stale_regions(const Mem* m, G2Version ver) {
+  const G2MirrorRegion* mr;
+  int n = g2_mirror_map(ver, &mr);
+  uint32_t mask = 0;
+  for (int i = 0; i < n; i++) {
+    uint32_t len = mr[i].to - mr[i].from + 1;
+    if (memcmp(m->buf + mr[i].from, m->buf + mr[i].dest, len) != 0) mask |= (1u << i);
+  }
+  return mask;
+}
+
+/* Every byte of the checksummed span must equal its mirror, EXCEPT a region whose bit is
+ * set in `stale_ok` (from stale_regions() on the SAME file before this test touched it):
+ * that region is printed, not failed, because this module cannot have healed it and must
+ * not claim to. Done directly, region by region, because two different regions can share
+ * a 16-bit sum — a checksum that validates is not proof the mirror is right. */
+static void assert_mirror_exact(const Mem* m, G2Version ver, const char* what,
+                                uint32_t stale_ok) {
   const G2MirrorRegion* mr;
   int n = g2_mirror_map(ver, &mr);
   CHECK(n > 0, "the version has a mirror map");
   for (int i = 0; i < n; i++) {
     uint32_t len = mr[i].to - mr[i].from + 1;
+    bool exact = memcmp(m->buf + mr[i].from, m->buf + mr[i].dest, len) == 0;
+    if ((stale_ok >> i) & 1u) {
+      if (!exact) printf("     (%s: mirror region %d known-stale on input, not asserted)\n",
+                         what, i);
+      continue;
+    }
     char msg[160];
     snprintf(msg, sizeof msg, "%s: mirror region %d (%04X-%04X -> %04X) byte-exact",
              what, i, mr[i].from, mr[i].to, mr[i].dest);
-    CHECK(memcmp(m->buf + mr[i].from, m->buf + mr[i].dest, len) == 0, msg);
+    CHECK(exact, msg);
   }
 }
 
@@ -191,6 +228,7 @@ static void t_noop_roundtrip(const char* file, G2Version ver) {
   memcpy(&g_b, &g_a, sizeof g_b);          /* the pristine reference */
   printf("  -- no-op round trip: %s (%u bytes, tail %u)\n", file, g_a.len,
          g_a.len - G2_SAVE_SIZE);
+  uint32_t pre_stale = stale_regions(&g_a, ver);   /* measured before this test touches it */
 
   G2Writer w;
   CHECK_ST(open_w(&w, &g_a, ver), G2W_OK, "g2w_begin on a real save");
@@ -209,14 +247,34 @@ static void t_noop_roundtrip(const char* file, G2Version ver) {
   CHECK_ST(g2w_finish(&w), G2W_OK, "g2w_finish");
 
   CHECK(g_a.len == g_b.len, "file length unchanged");
-  CHECK(memcmp(g_a.buf, g_b.buf, g_a.len) == 0,
-        "a no-op edit leaves the save BYTE-IDENTICAL (RTC tail included)");
-  if (memcmp(g_a.buf, g_b.buf, g_a.len) != 0)
-    for (uint32_t k = 0; k < g_a.len; k++)
-      if (g_a.buf[k] != g_b.buf[k]) { printf("     first difference at %04X: %02X -> %02X\n",
-                                             k, g_b.buf[k], g_a.buf[k]); break; }
+  if (!pre_stale) {
+    CHECK(memcmp(g_a.buf, g_b.buf, g_a.len) == 0,
+          "a no-op edit leaves the save BYTE-IDENTICAL (RTC tail included)");
+    if (memcmp(g_a.buf, g_b.buf, g_a.len) != 0)
+      for (uint32_t k = 0; k < g_a.len; k++)
+        if (g_a.buf[k] != g_b.buf[k]) { printf("     first difference at %04X: %02X -> %02X\n",
+                                               k, g_b.buf[k], g_a.buf[k]); break; }
+  } else {
+    /* refresh_checksums() RE-DESCRIBES whatever bytes are currently at the mirror
+     * destinations; it does not copy them there — write_patch() only mirrors the part
+     * of a region an actual write touched, and no box/party commit here touches region 1
+     * (sPlayerData2). So on an input whose backup was already stale (pre_stale != 0), a
+     * "no-op" through this pipeline changes ONLY the 2-byte backup checksum, to the value
+     * that honestly describes the still-stale bytes — it does not, and today cannot,
+     * resync the stale bytes themselves. Prove that precisely: patch the pristine
+     * reference's checksum bytes to the freshly-computed ones, then require everything
+     * else, still, to be byte-identical. */
+    memcpy(&g_c, &g_b, sizeof g_c);
+    uint32_t b_off = g2_checksum_backup_off(ver);
+    memcpy(g_c.buf + b_off, g_a.buf + b_off, 2);
+    CHECK(memcmp(g_a.buf, g_c.buf, g_a.len) == 0,
+          "a no-op edit on an already-stale-backup input changes ONLY the backup checksum");
+    printf("     backup checksum @%04X: %02X%02X -> %02X%02X (input's backup mirror was "
+           "already stale — see the comment above)\n", b_off,
+           g_b.buf[b_off + 1], g_b.buf[b_off], g_a.buf[b_off + 1], g_a.buf[b_off]);
+  }
   assert_healthy(&g_a, ver, "after no-op");
-  assert_mirror_exact(&g_a, ver, "after no-op");
+  assert_mirror_exact(&g_a, ver, "after no-op", pre_stale);
 }
 
 /* ================================================ 2+3. an edit reaches BOTH copies */
@@ -226,6 +284,7 @@ static void t_noop_roundtrip(const char* file, G2Version ver) {
 static void t_edit_mirrors(const char* file, G2Version ver) {
   if (!load_real(file, &g_a)) { printf("  SKIP %s (corpus not present)\n", file); return; }
   printf("  -- mirrored edit: %s\n", file);
+  uint32_t pre_stale = stale_regions(&g_a, ver);   /* measured before this test touches it */
   G2Writer w;
   if (open_w(&w, &g_a, ver) != G2W_OK) { CHECK(0, "g2w_begin"); return; }
 
@@ -246,7 +305,7 @@ static void t_edit_mirrors(const char* file, G2Version ver) {
   CHECK(memcmp(g_a.buf + name_off, g_a.buf + mirror_off, 9) == 0,
         "the box name landed in the PRIMARY and in the MIRROR");
   assert_healthy(&g_a, ver, "after a box-name edit");
-  assert_mirror_exact(&g_a, ver, "after a box-name edit");
+  assert_mirror_exact(&g_a, ver, "after a box-name edit", pre_stale);
 
   /* Same again for a party record, which is a different mirror region in G/S. */
   static uint8_t list[G2_MAX_LIST_SIZE];
@@ -264,7 +323,7 @@ static void t_edit_mirrors(const char* file, G2Version ver) {
   CHECK(g2_box_mon_at(g_a.buf, &sv, &hd, G2_BOX_PARTY, 0, &m) &&
         strcmp(m.nickname, "GATEKEEPER") == 0, "the reader sees the new nickname");
   assert_healthy(&g_a, ver, "after a party edit");
-  assert_mirror_exact(&g_a, ver, "after a party edit");
+  assert_mirror_exact(&g_a, ver, "after a party edit", pre_stale);
 }
 
 /* ==================================== 6. the current box exists twice, and both change */
@@ -507,6 +566,11 @@ static void t_gate_has_teeth(void) {
   {
     if (!load_real("Gold.sav", &g_a)) load_fixture(GBF_GS, &g_a, 0);
     if (open_w(&w, &g_a, ver) != G2W_OK) { CHECK(0, "g2w_begin"); return; }
+    /* g2w_verify's whole-file gate requires BOTH stored checksums to already be
+     * self-consistent; a freshly-loaded real save is not guaranteed to be (BACKLOG #49
+     * P0 — Guy's own Gold.sav has a pre-existing stale G/S backup, see the file header),
+     * so reach a known-good baseline the same way block (c) above does. */
+    CHECK_ST(g2w_finish(&w), G2W_OK, "reach a known-good baseline");
     CHECK_ST(g2w_load_list(&w, 1, list), G2W_OK, "load box 1");
     CHECK_ST(g2w_verify(&w, 1, list), G2W_OK, "verify against the truth passes");
     list[g2_off_record(1, 0) + 0x01] ^= 0xFF;    /* change the held item in the copy */
@@ -569,7 +633,7 @@ static void t_range_guards(void) {
   G2Header hd; g2_read_header(g_a.buf, &sv, &hd);
   CHECK(hd.money == 0x010203u, "the reader reads the patched money back");
   assert_healthy(&g_a, G2_VER_CRYSTAL, "after a header patch");
-  assert_mirror_exact(&g_a, G2_VER_CRYSTAL, "after a header patch");
+  assert_mirror_exact(&g_a, G2_VER_CRYSTAL, "after a header patch", 0);
 }
 
 /* ============================================ list surgery keeps all five in step === */
@@ -1027,7 +1091,16 @@ static void t_atomicity(void) {
 
   /* The save itself was never a party to any of this. */
   CHECK(g_a.writes == 0, "not one byte reached the file — these are pure list ops");
-  assert_healthy(&g_a, w.sv.version, "after a run of refused list ops");
+  /* assert_healthy() would additionally demand sv.backup_ok, which is the wrong question
+   * here: writes == 0 (just proved) already means the file is EXACTLY whatever it was on
+   * load, including Guy's own Gold.sav's pre-existing stale G/S backup (BACKLOG #49 P0,
+   * see the file header) — a fact about the INPUT this function never touched, not
+   * something a run of refused list ops could break. "still parses, primary still valid"
+   * is the real claim to make here. */
+  G2Save sv_after; g2_detect(g_a.buf, g_a.len, &sv_after);
+  CHECK(sv_after.supported && sv_after.version == w.sv.version,
+        "after a run of refused list ops: still parses");
+  CHECK(sv_after.primary_ok, "after a run of refused list ops: PRIMARY checksum valid");
 }
 
 /* ======================== the proof's conclusion, stated over every index there is ==== */
@@ -1198,7 +1271,7 @@ static void t_party_mail_guard(void) {
   CHECK(g2_box_count_at(g_a.buf, &sv, &hd, G2_BOX_PARTY) == n - 1,
         "the reader sees the shorter party");
   assert_healthy(&g_a, G2_VER_CRYSTAL, "after a party delete");
-  assert_mirror_exact(&g_a, G2_VER_CRYSTAL, "after a party delete");
+  assert_mirror_exact(&g_a, G2_VER_CRYSTAL, "after a party delete", 0);
 }
 
 /* ============================================================== text encoding ===== */
@@ -1424,12 +1497,69 @@ static void t_fixture_stale_bank(void) {
     CHECK(agree, "committing the open box brings the banked copy back into line");
 
     assert_healthy(&g_a, ver, "fixture after a commit");
-    assert_mirror_exact(&g_a, ver, "fixture after a commit");
+    assert_mirror_exact(&g_a, ver, "fixture after a commit", 0);
 
     /* The RTC tail is past 0x8000 and nothing here may touch it. */
     uint32_t tail = g_a.len - G2_SAVE_SIZE;
     CHECK(tail == (g ? GBF_RTC_TAIL_64 : GBF_RTC_TAIL_32), "the tail is still there");
   }
+}
+
+/* ===================== BACKLOG #49 P0 — the k_gs_mirror address regression ========= */
+
+/* 1. The .sym-derived value, hard-coded and re-derived in a comment so a reader never has
+ *    to trust this file's prose alone:
+ *
+ *      pokegold/symbols/pokegold.sym (pinned a0dad09): `01:bd96 sBackupPlayerData2`
+ *      GB save-file offset = bank * 0x2000 + (sram_addr - 0xA000)
+ *                           = 1 * 0x2000 + (0xBD96 - 0xA000) = 0x2000 + 0x1D96 = 0x3D96
+ *
+ *    g2_mirror_map() must report exactly that for G/S region 1 (sPlayerData2). */
+static void t_mirror_address_matches_symbol(void) {
+  printf("  -- k_gs_mirror[1].dest matches pokegold.sym's sBackupPlayerData2 (BACKLOG #49 P0)\n");
+  const G2MirrorRegion* mr;
+  int n = g2_mirror_map(G2_VER_GS, &mr);
+  CHECK(n == 5, "G/S has five mirror regions");
+  if (n == 5) {
+    CHECK(mr[1].from == 0x222Fu && mr[1].to == 0x23D8u,
+          "region 1 is sPlayerData2's primary span, 0x222F..0x23D8");
+    CHECK(mr[1].dest == 0x3D96u,
+          "region 1's destination is 0x3D96 (pokegold.sym: 01:bd96 sBackupPlayerData2, "
+          "file = 0x2000 + (0xBD96-0xA000))");
+  }
+}
+
+/* 2. Why a synthetic fixture alone could never have caught this, and how to build one
+ *    that WOULD: sPlayerData2's real first 45 bytes are zero on every corpus save (it is
+ *    map-object/time-of-day state at the start of a fresh area load), so the WRONG window
+ *    45 bytes early — 0x3D69 instead of 0x3D96 — still lines up byte-for-byte against the
+ *    primary on REAL data, and a synthetic fixture built from the same wrong constant
+ *    agrees with itself either way (source/gen2_save.c's k_gs_mirror comment; this is the
+ *    exact trap that let 0x3D69 survive a full green test run).
+ *
+ *    Build a save whose sPlayerData2 content does NOT start with 45 zero bytes -- the one
+ *    kind of fixture only a synthetic image can honestly construct (nobody's real save
+ *    happens to differ) -- correctly mirror it to 0x3D96, and require that a plain
+ *    memcmp against the OLD wrong window at 0x3D69 does NOT match. That is the direct,
+ *    permanent proof that a fixture author who was not fooled by an all-real-saves-happen-
+ *    to-start-with-zeros coincidence would have caught 0x3D69 immediately. */
+static void t_mirror_nonzero_leading_bytes_catches_old_window(void) {
+  printf("  -- non-zero-leading-bytes fixture proves the old 0x3D69 window fails a plain compare\n");
+  static uint8_t img[G2_SAVE_SIZE];
+  memset(img, 0, sizeof img);
+
+  uint8_t payload[426];
+  for (int i = 0; i < 426; i++) payload[i] = (uint8_t)(0x40 + i);   /* NOT zero anywhere, incl. [0..44] */
+  CHECK(payload[0] != 0 && payload[44] != 0, "the synthetic payload's first 45 bytes are non-zero");
+
+  memcpy(img + 0x222F, payload, sizeof payload);           /* the primary, sPlayerData2   */
+  memcpy(img + 0x3D96, payload, sizeof payload);            /* the CORRECT mirror (this fix) */
+
+  CHECK(memcmp(img + 0x222F, img + 0x3D96, sizeof payload) == 0,
+        "the correct 0x3D96 window matches the primary, as g2w_finish would leave it");
+  CHECK(memcmp(img + 0x222F, img + 0x3D69, sizeof payload) != 0,
+        "the OLD WRONG 0x3D69 window does NOT match -- unlike every real corpus save, "
+        "whose leading zero run hid exactly this difference");
 }
 
 /* ============================================ every real box passes the gate ======= */
@@ -1446,7 +1576,11 @@ static void t_real_corpus_structures(void) {
            st == G2W_OK ? w.current_box : -1);
     CHECK_ST(st, G2W_OK, "a real save opens for writing");
     if (st != G2W_OK) continue;
-    assert_mirror_exact(&g_a, w.sv.version, files[f]);
+    /* Nothing below this point writes anything, so this is the file's RAW state — measure
+     * pre-existing staleness rather than assume there is none (Guy's own Gold.sav /
+     * Gold-VC.sav.dat: region 1 is stale right now, see the header comment). */
+    uint32_t pre_stale = stale_regions(&g_a, w.sv.version);
+    assert_mirror_exact(&g_a, w.sv.version, files[f], pre_stale);
     static uint8_t list[G2_MAX_LIST_SIZE];
     int total = 0;
     for (int i = 0; i <= G2_NUM_BOXES; i++) {
@@ -1461,17 +1595,24 @@ static void t_real_corpus_structures(void) {
     CHECK_ST(g2w_calc_checksums(&w, &p, &b), G2W_OK, "stream the checksums");
     /* The cross-oracle: gen2_write derives the summed spans from g2_mirror_map(), while
      * gen2_save keeps its own span table. Agreement is real evidence; it is also the
-     * check that would have caught the transposed 0x3D96. */
+     * check that would have caught the transposed 0x3D69 (BACKLOG #49 P0). */
     CHECK(p == g2_checksum_primary(g_a.buf, w.sv.version),
           "map-derived primary sum == the reader's own");
     CHECK(b == g2_checksum_backup(g_a.buf, w.sv.version),
           "map-derived backup sum == the reader's own");
-    CHECK(p == b, "in Gen 2 the backup mirrors the primary, so the sums are equal");
+    /* True in general ONLY when the backup is current (a save the real game most
+     * recently booted+saved). pre_stale != 0 means this file's backup is a KNOWN
+     * exception (see above) -- assert the honest opposite instead of skipping. */
+    if (!pre_stale) CHECK(p == b, "in Gen 2 the backup mirrors the primary, so the "
+                                  "sums are equal");
+    else CHECK(p != b, "a genuinely stale backup must not look current");
   }
 }
 
 int main(void) {
   printf("== Gen-2 write path ==\n");
+  t_mirror_address_matches_symbol();
+  t_mirror_nonzero_leading_bytes_catches_old_window();
   t_real_corpus_structures();
   t_noop_roundtrip("Gold.sav", G2_VER_GS);
   t_noop_roundtrip("Crystal.sav", G2_VER_CRYSTAL);

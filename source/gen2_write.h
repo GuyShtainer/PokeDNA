@@ -50,9 +50,9 @@
  *     the game boots from the backup if the primary checksum fails. Every byte this file
  *     writes inside that span is written to its mirror in the same call, and both stored
  *     checksums are recomputed. The mirror map is g2_mirror_map()'s, not a second
- *     transcription: region 2's destination is 0x3D69, and the 0x3D96 in the wikis is a
- *     transposed digit that agreed with our own fixture and was only caught by Guy's real
- *     Gold cartridge save.
+ *     transcription: region 2's destination is 0x3D96 (pokegold's own sBackupPlayerData2
+ *     symbol; gen2_save.c's k_gs_mirror comment has the full four-witness derivation,
+ *     including the ROM-boot proof — BACKLOG #49 P0).
  *
  * ---------------------------------------------------------------------------
  * THE SAFETY PROPERTY

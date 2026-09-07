@@ -1,19 +1,31 @@
 /* GROUND TRUTH: the Gen-1/2 parsers against Guy's REAL cartridge saves.
  *
+ *   cc -std=c11 -I source tests/host_gbreal_test.c source/gen1_save.c source/gen2_save.c -o /tmp/hgbr && /tmp/hgbr
+ *
  * Why this file exists, in one sentence: a synthetic fixture built from the same
- * constants as the parser can never falsify those constants. tests/gen12_fixture.c
- * and source/gen2_save.c both carried 0x3D96 as the destination of the G/S backup
- * mirror's second region, agreed with each other perfectly, and were both WRONG —
- * the real value is 0x3D69, a transposed digit. Only a real save could catch it,
- * and it did: four regions mirrored byte-for-byte and one did not, while the stored
- * backup checksum equalled the primary, so the data had to match and the ADDRESS
- * had to be wrong.
+ * constants as the parser can never falsify those constants — a real save, or a real
+ * ROM boot, can. BACKLOG #49 P0 is the worked example: tests/gen12_fixture.c and
+ * source/gen2_save.c both carried 0x3D69 as the destination of the G/S backup mirror's
+ * second region (sBackupPlayerData2), agreed with each other perfectly, and were both
+ * WRONG — the real address, per pokegold's own compiled symbols and a ROM-boot test
+ * (tools/gb_roundtrip.py --selftest; see source/gen2_save.c's k_gs_mirror comment for
+ * all four witnesses), is 0x3D96.
+ *
+ * A REAL SAVE'S BACKUP CAN STILL BE STALE, AND THAT IS NOT A PARSER BUG. Guy's own
+ * Gold.sav (and its VC twin, byte-identical) is a case in point: at the correct 0x3D96,
+ * 253 of the region's 426 bytes disagree with the primary right now (computed backup
+ * sum 0xC03D vs the stored 0x7E6D == 0xAEF9), so g2_detect() correctly reports
+ * backup_ok == false for this file today. That is a true, pre-existing fact about this
+ * one cartridge dump — nothing in PokeDNA has ever written a Gen-1/2 save, so nothing
+ * here could have caused it — and only a real boot re-syncs it (TryLoadSaveFile
+ * rewrites the backup from WRAM on every successful load,
+ * pokegold/engine/menus/save.asm:538-552). The `gen2()` helper below asserts exactly
+ * that state rather than the healthier-looking but false claim "the backup always
+ * validates".
  *
  * These saves are Guy's own cartridge dumps. They live OUTSIDE the repo (gitignored
  * at gba-toolkit/roms/gb/) and are never copied into it, so a missing corpus SKIPS
  * rather than fails — but a corpus that IS present must parse perfectly.
- *
- *   cc -std=c11 -I source tests/host_gbreal_test.c source/gen1_save.c source/gen2_save.c -o /tmp/hgbr && /tmp/hgbr
  */
 #include <stdio.h>
 #include <string.h>
@@ -63,6 +75,12 @@ static void gen1(const char* file) {
   CHECK(decoded > 0, "a played save has at least one boxed Pokemon");
 }
 
+/* expect_backup:  1 = this file's backup must validate (Crystal's undisputed
+ *                     contiguous mirror, or any G/S save known to be freshly healed);
+ *                  0 = this file's backup is KNOWN-STALE right now (Gold.sav and its VC
+ *                     twin — see the file header) and must NOT be reported healthy;
+ *                     pretending otherwise would hide a real silent-discard risk from
+ *                     whoever reads this test's output. */
 static void gen2(const char* file, int expect_backup) {
   char p[512]; snprintf(p, sizeof p, "%s/%s", ROMS, file);
   uint32_t n = load(p);
@@ -79,16 +97,21 @@ static void gen2(const char* file, int expect_backup) {
          sv.supported ? "OK" : (rej ? "REJECT" : "?"), sv.primary_ok, sv.backup_ok);
   CHECK(sv.supported, "a real Gen-2 save must be supported");
   CHECK(sv.primary_ok, "the primary checksum must validate");
-  /* The backup is the assertion that caught the transposed mirror address. */
+  /* The backup is the assertion that caught the transposed mirror address (BACKLOG #49
+   * P0) — asserted both ways, never skipped, so a save with a genuinely stale backup
+   * cannot silently start "passing". */
   if (expect_backup) CHECK(sv.backup_ok, "the BACKUP checksum must validate too");
+  else CHECK(!sv.backup_ok, "this corpus file's backup is KNOWN-stale (see file header) "
+                            "-- a real boot heals it, this parser must not pretend it "
+                            "already has");
 }
 
 int main(void) {
   printf("== real cartridge saves (ground truth for the format constants) ==\n");
   gen1("Red.sav");
-  gen2("Gold.sav", 1);
+  gen2("Gold.sav", 0);              /* known-stale backup on this dump, see gen2() above */
   gen2("Crystal.sav", 1);
-  gen2("Gold-VC.sav.dat", 1);
+  gen2("Gold-VC.sav.dat", 0);       /* same underlying bytes as Gold.sav */
   gen2("Crystal-VC.sav.dat", 1);
   if (!g_ran) { printf("  (no corpus present — nothing verified)\n"); return 0; }
   printf("gb real-save test: %d checks, %d failure(s) over %d save(s)\n", g_check, g_fail, g_ran);

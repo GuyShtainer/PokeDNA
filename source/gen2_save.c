@@ -22,9 +22,9 @@ static uint32_t rd24be(const uint8_t* p) {
  * corresponding byte regions. Checksums are stored as little-endian."
  *
  * G/S:     sum 0x2009-0x2D68                                   -> 0x2D69
- *          sum 0x0C6B-0x17EC + 0x3D69-0x3F12 + 0x7E39-0x7E6C   -> 0x7E6D
- *          (0x3D69, NOT the widely-copied 0x3D96 — verified against a real
- *           Gold cartridge save; see the note on k_gs_mirror below)
+ *          sum 0x0C6B-0x17EC + 0x3D96-0x3F3F + 0x7E39-0x7E6C   -> 0x7E6D
+ *          (0x3D96, NOT 0x3D69 — a PREVIOUS pass here got this backwards; see
+ *           the note on k_gs_mirror below, BACKLOG #49 P0)
  * Crystal: sum 0x2009-0x2B82                                   -> 0x2D0D
  *          sum 0x1209-0x1D82                                   -> 0x1F0D
  * The G/S backup regions are the *destinations* of the five-way scatter map
@@ -48,7 +48,7 @@ static const uint32_t k_stored_off[ST_N] = {
 
 static const struct { uint8_t sum; uint32_t from, to; } k_spans[] = {
   { SUM_GS_P,  0x2009u, 0x2D68u },
-  { SUM_GS_B,  0x0C6Bu, 0x17ECu }, { SUM_GS_B, 0x3D69u, 0x3F12u }, { SUM_GS_B, 0x7E39u, 0x7E6Cu },
+  { SUM_GS_B,  0x0C6Bu, 0x17ECu }, { SUM_GS_B, 0x3D96u, 0x3F3Fu }, { SUM_GS_B, 0x7E39u, 0x7E6Cu },
   { SUM_C_P,   0x2009u, 0x2B82u },
   { SUM_C_B,   0x1209u, 0x1D82u },
   { SUM_JGS_P, 0x2009u, 0x2C8Bu }, { SUM_JGS_B, 0x7209u, 0x7E8Bu },
@@ -56,21 +56,46 @@ static const struct { uint8_t sum; uint32_t from, to; } k_spans[] = {
 };
 #define NSPANS ((int)(sizeof k_spans / sizeof k_spans[0]))
 
-/* The G/S five-way scatter map. Region 2's destination was transcribed from a wiki as
- * 0x3D96; the real value is 0x3D69 — a transposed digit, and the exact failure class the
- * research pass warned these sources carry. It survived every synthetic test because the
- * FIXTURE used the same wrong constant to build its saves, so the map only agreed with
- * itself. Guy's real Gold cartridge save is what caught it: four regions mirrored
- * byte-for-byte and one did not, while the stored backup checksum equalled the primary,
- * so the data had to be identical and the ADDRESS had to be wrong. Searching the image
- * for the 426-byte block found its true copy at 0x3D69, and the backup checksum then
- * computes to the stored AEF9 exactly.
+/* The G/S five-way scatter map. Region 2's destination (sBackupPlayerData2) is 0x3D96 —
+ * BACKLOG #49 P0 (docs/GEN12-PARITY-DESIGN.md §1.9/§2.4) found this file previously said
+ * 0x3D69 here, with a comment claiming a real Gold cartridge save had proved it. That
+ * comment had the direction backwards. Four independent witnesses now agree on 0x3D96:
  *
- * The lesson worth keeping: a fixture built from the same constants as the parser can
- * never falsify them. Only real cartridge data can. */
+ *   1. pokegold's own compiled symbol table (pinned a0dad09, docs/GEN12-PARITY-DESIGN.md's
+ *      pin): `01:bd96 sBackupPlayerData2` -> file 0x2000 + (0xBD96-0xA000) = 0x3D96.
+ *   2. pokegold/ram/sram.asm (same pin, `git show a0dad09:ram/sram.asm`): sBackupPlayerData2
+ *      sits alone in `SECTION "Backup Save 2", SRAM`, physically separate from the other
+ *      four backup regions (which cluster in "Backup Save 1" right after sPlayerData3) —
+ *      exactly why its address looks "far away" and easy to mistranscribe.
+ *   3. pokegold/engine/menus/save.asm's SaveBackupChecksum (~line 495) sums FIVE regions
+ *      into sBackupChecksum, one of them `ld hl, sBackupPlayerData2 / ld bc,
+ *      wPlayerData2End - wPlayerData2`, matching this file's SUM_GS_B span.
+ *   4. THE DECIDING VOTE — a ROM boot, not a byte compare (this module's own
+ *      tools/gb_roundtrip.py rule, since a fixture built from the same constant as the
+ *      parser can never falsify it): break Gold.sav's primary checksum, rebuild the
+ *      backup at each candidate address, recompute that candidate's checksum, boot under
+ *      libmgba. `tools/gb_roundtrip.py --selftest` (re-run 2026-09-07):
+ *        backup rebuilt at 0x3D96 -> ACCEPT, PLAYER=MattiaP  ("the measured G/S mirror
+ *          map rescues the save")
+ *        backup rebuilt at 0x3D69 -> REJECT, "The save file is / corrupted!"  ("k_gs_
+ *          mirror's 0x3D69 does not -- the ROM's verdict on the map")
+ *
+ * Why 0x3D69 looked right for as long as it did: sPlayerData2 opens with 45 zero bytes,
+ * so the window slid back 45 bytes still compares byte-for-byte against the primary on
+ * Guy's own Gold.sav (0/426 differ) AND still sums to the stored backup checksum 0xAEF9
+ * — a fixture rebuilt from that same wrong constant agrees with itself, and even a real
+ * save's RAW BYTES can't break the tie, because the wrong window is a genuine, if
+ * coincidental, byte-perfect copy. The TRUE window at 0x3D96 disagrees with the primary
+ * in 253 of 426 bytes on that same file (computed sum 0xC03D vs the stored 0xAEF9) —
+ * which only means Guy's Gold.sav itself carries a stale G/S backup (§1.9's CONFLICT
+ * note), not that 0x3D96 is wrong. Only booting the actual ROM tells the two apart.
+ *
+ * The lesson worth keeping: a byte compare against one real save narrowed this to two
+ * candidates that both look locally consistent; only the running game could pick between
+ * them. */
 static const G2MirrorRegion k_gs_mirror[5] = {
   { 0x2009u, 0x222Eu, 0x15C7u },
-  { 0x222Fu, 0x23D8u, 0x3D69u },   /* was 0x3D96 — a TRANSPOSED DIGIT, see below */
+  { 0x222Fu, 0x23D8u, 0x3D96u },
   { 0x23D9u, 0x2855u, 0x0C6Bu },
   { 0x2856u, 0x2889u, 0x7E39u },
   { 0x288Au, 0x2D68u, 0x10E8u },

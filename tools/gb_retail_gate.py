@@ -106,6 +106,13 @@ NEW_NICK = "GATEX"          # pure-letter ASCII, well inside GB_NICK_GLYPHS (10)
                              # Game Boy generation's charset can show it as typed
 BOX_CAPACITY = 20           # both generations' storage boxes (gb_edit.c gen1/g2_list_capacity)
 
+MIRROR_NICK = "BAKMIRR"     # distinct from NEW_NICK so a log line is unambiguous about
+                             # which case produced it (BACKLOG #49 P0's mirror-rescue case)
+# LE16 file offset of the STORED PRIMARY checksum, source/gen2_save.c's k_stored_off —
+# the byte this case corrupts on purpose. Not the backup offset: this case's whole point
+# is proving the BACKUP survives when the PRIMARY is the one that gets damaged.
+PRIMARY_CKSUM_OFF = {"gs": 0x2D69, "crystal": 0x2D0D}
+
 SCRATCH_MARKER = ".gb_retail_gate"   # written into every scratch dir this script creates
 
 
@@ -417,6 +424,64 @@ def edited_case(python, vendor, work, rom, gen, edited_sav, orig_size, dump_name
     return tally.record(label, ok, detail)
 
 
+def run_mirror_case(name, info, rom, sav, work, binary, python, vendor, tally, base_name):
+    """BACKLOG #49 P0 — the regression test for source/gen2_save.c's k_gs_mirror fix
+    (0x3D69 -> 0x3D96). The module docstring above already describes doing this by hand
+    once (a reviewer corrupting a Crystal save's primary checksum after an edit); this
+    formalizes the SAME experiment for Gold/Silver, the generation whose mirror address
+    was actually wrong.
+
+    Unlike tools/gb_roundtrip.py --selftest's version of this proof (which hand-builds a
+    candidate backup from the primary), this one edits through this tree's OWN write path
+    — the surgery tool, same gbs_commit_list -> g2w_commit_list -> write_patch /
+    refresh_checksums every other case in this file uses — so the backup being tested is
+    one PokeDNA actually produced, not a synthetic stand-in. Then it corrupts ONLY the
+    stored PRIMARY checksum (simulating damage AFTER that commit: a bad SD sector, a torn
+    write from something else entirely) and boots.
+
+    Pre-fix, this scenario was unrecoverable: g2w_finish() computed the stored BACKUP
+    checksum over the wrong span (k_gs_mirror[1].dest == 0x3D69), and the design doc's
+    ROM-boot experiment proved that map is the one the game REJECTS ("The save file is /
+    corrupted!") — so a G/S save PokeDNA had touched could never survive a damaged
+    primary. Post-fix the game must load the backup PokeDNA wrote and show the edit."""
+    if info["gen"] != 2:
+        return
+    off = PRIMARY_CKSUM_OFF["gs" if name == "gold" else "crystal"]
+
+    committed = work / "mirror_committed.sav"
+    rc, out, err = run_surgery(binary, sav, committed,
+                               [["nick", "party", "0", MIRROR_NICK]])
+    if rc != 0:
+        tally.record("G/S backup rescue (mirror, BACKLOG #49 P0)", False,
+                    f"surgery refused: {err.strip()}")
+        return
+
+    data = bytearray(committed.read_bytes())
+    data[off] ^= 0xFF
+    data[off + 1] ^= 0xFF                      # flip the stored PRIMARY checksum only
+    corrupted = work / "mirror_corrupted.sav"
+    corrupted.write_bytes(bytes(data))
+
+    rc, rep, out, err = boot(python, rom, corrupted, work / "mirror", vendor,
+                             work / "mirror.json",
+                             extra_args=["--expect", "accept",
+                                         "--expect-name", base_name,
+                                         "--expect-party", MIRROR_NICK])
+    slot_ok, slot_detail = check_nick_slot(0, MIRROR_NICK)(rep)
+    ok = (rc == 0) and slot_ok
+    detail = (f"verdict={rep.get('verdict')} {slot_detail} -- primary checksum corrupted "
+             f"AFTER a real PokeDNA commit; the game must recover from the backup that "
+             f"commit wrote")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("G/S backup rescue (mirror, BACKLOG #49 P0)", ok, detail)
+
+
 def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     tally = Tally(sav.name)
     work = scratch / name
@@ -454,6 +519,12 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     else:
         tally.record("pass-through", False,
                     f"surgery rc={rc} identical={identical}: {err.strip()}")
+
+    # ---- 2b. BACKLOG #49 P0 — the G/S backup-rescue regression case ----
+    if party_count0 >= 1:
+        run_mirror_case(name, info, rom, sav, work, binary, python, vendor, tally, base_name)
+    else:
+        tally.skip_case("G/S backup rescue (mirror, BACKLOG #49 P0)", "empty party")
 
     if party_count0 < 2:
         tally.skip_case("nickname/level/delete/move",
