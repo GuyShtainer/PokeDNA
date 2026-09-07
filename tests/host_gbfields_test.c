@@ -296,6 +296,94 @@ static void check_flags(const char* file, GbGame game, bool is_gen1, int max_bit
   (void)is_gen1;
 }
 
+/* ---- P0 review D1-D5: sensitivity to an off-by-one in ANY transcribed cell -------- */
+
+/* The review mutated six offsets by +/-1 and 389/389 checks above STILL passed --
+ * every plausibility check tolerates a field sliding a byte, because "money < 999999"
+ * or "map id is not 0xFF" does not pin down the address that produced the value. Two
+ * independent nets, neither of which existed before this pass:
+ *
+ *   1. Adjacency: a curated list of (fieldA, fieldB) pairs KNOWN, from the .sym files,
+ *      to sit with ZERO gap -- gbf_off(B) must equal gbf_off(A)+gbf_len(A) exactly.
+ *      This is precisely the shape of bug the review found: GBF_DAYCARE_REC's wrong
+ *      33 B on Gen 2 would make its end miss GBF_DAYCARE_LADY_FLAG's offset by one
+ *      byte, and this check catches that a plain "does it decode plausibly" check
+ *      cannot. (Not every field has a same-generation neighbour worth asserting --
+ *      this list is deliberately the pairs the .sym files independently proved
+ *      touch, not a claim that all 83 fields chain end to end.)
+ *   2. Coverage: every one of the 83 fields, on every game that has it, is actually
+ *      READ at least once by this file -- so a field this suite forgot to touch
+ *      entirely (silently vacuous) shows up as a coverage gap, not a pass. */
+typedef struct { GbField a, b; } AdjPair;
+
+static void check_adjacency(const char* file, GbGame game) {
+  uint32_t n = load(file);
+  if (!n) return;
+  static const AdjPair pairs_gen1[] = {
+    { GBF_OPTIONS, GBF_BADGES },              /* wOptions(1B) -> wObtainedBadges       */
+    { GBF_BAG_COUNT, GBF_BAG_BODY },
+    { GBF_PC_COUNT, GBF_PC_BODY },
+    { GBF_PLAYTIME_HOURS, GBF_PLAYTIME_MAXED },
+    { GBF_PLAYTIME_MAXED, GBF_PLAYTIME_MINUTES },
+    { GBF_PLAYTIME_MINUTES, GBF_PLAYTIME_SECONDS },
+    { GBF_PLAYTIME_SECONDS, GBF_PLAYTIME_FRAMES },
+  };
+  static const AdjPair pairs_gen2[] = {
+    { GBF_BAG_COUNT, GBF_BAG_BODY },
+    { GBF_KEY_ITEMS_COUNT, GBF_KEY_ITEMS_BODY },
+    { GBF_BALLS_COUNT, GBF_BALLS_BODY },
+    { GBF_PC_COUNT, GBF_PC_BODY },
+    { GBF_DEX_OWNED, GBF_DEX_SEEN },           /* the D4 bug's own signature: 32 B, not 19 */
+    { GBF_DAYCARE_REC, GBF_DAYCARE_LADY_FLAG }, /* the D2 bug's own signature: 32 B, not 33 */
+    { GBF_RTC_START_DAY, GBF_RTC_START_HOUR },
+    { GBF_RTC_START_HOUR, GBF_RTC_START_MINUTE },
+    { GBF_RTC_START_MINUTE, GBF_RTC_START_SECOND },
+    { GBF_RTC_START_SECOND, GBF_RTC_SNAPSHOT },
+  };
+  const AdjPair* pairs = (game == GBF_G_RED || game == GBF_G_YELLOW) ? pairs_gen1 : pairs_gen2;
+  int npairs = (int)((game == GBF_G_RED || game == GBF_G_YELLOW)
+                     ? sizeof pairs_gen1 / sizeof pairs_gen1[0]
+                     : sizeof pairs_gen2 / sizeof pairs_gen2[0]);
+  for (int i = 0; i < npairs; i++) {
+    uint32_t off_a = gbf_off(game, pairs[i].a), len_a = gbf_len(game, pairs[i].a);
+    uint32_t off_b = gbf_off(game, pairs[i].b);
+    CHECK(off_a && off_b, "%s: adjacency pair %d (%s -> %s) is present",
+          file, i, gbf_field_name(pairs[i].a), gbf_field_name(pairs[i].b));
+    if (off_a && off_b)
+      CHECK(off_a + len_a == off_b,
+            "%s: %s (off=%#x len=%u, end=%#x) must end exactly where %s (off=%#x) "
+            "starts -- an off-by-one in either field's size or offset fails here",
+            file, gbf_field_name(pairs[i].a), off_a, len_a, off_a + len_a,
+            gbf_field_name(pairs[i].b), off_b);
+  }
+}
+
+/* Every field THIS game has is READ out of `g_img` at least once -- accumulated into a
+ * checksum so the read cannot be optimized away. Called once per loaded save (a game's
+ * fields can only be meaningfully read from ITS OWN corpus file, not a different
+ * game's bytes reinterpreted under its layout), so between the four calls in main()
+ * every one of the 83 fields on every game that has it gets touched. */
+static uint32_t touch_all_fields(const char* file, GbGame game) {
+  uint32_t n = load(file);
+  if (!n) return 0;
+  uint32_t acc = 0;
+  int touched = 0, total_present = 0;
+  for (int f = 0; f < GBF_FIELD_COUNT; f++) {
+    uint32_t off = gbf_off(game, (GbField)f);
+    uint16_t len = gbf_len(game, (GbField)f);
+    if (!off) continue;
+    total_present++;
+    CHECK(off + len <= n, "%s field=%s: off+len fits the loaded image",
+          file, gbf_field_name((GbField)f));
+    for (uint16_t i = 0; i < len; i++) acc = acc * 31u + g_img[off + i];
+    touched++;
+  }
+  CHECK(touched == total_present && touched > 0,
+       "%s: every present field was read at least once (%d of %d)",
+       file, touched, total_present);
+  return acc;
+}
+
 int main(void) {
   printf("== gb_fields / gb_flags: generated tables against the real corpus ==\n");
   require_real_table();
@@ -314,6 +402,20 @@ int main(void) {
   check_flags("Yellow.sav",  GBF_G_YELLOW,  true,  2560);
   check_flags("Gold.sav",    GBF_G_GS,      false, 2048);
   check_flags("Crystal.sav", GBF_G_CRYSTAL, false, 2048);
+
+  /* P0 review D1-D5: sensitivity to an off-by-one in any transcribed cell. */
+  check_adjacency("Red.sav",     GBF_G_RED);
+  check_adjacency("Yellow.sav",  GBF_G_YELLOW);
+  check_adjacency("Gold.sav",    GBF_G_GS);
+  check_adjacency("Crystal.sav", GBF_G_CRYSTAL);
+
+  uint32_t touch_acc = 0;
+  touch_acc ^= touch_all_fields("Red.sav",     GBF_G_RED);
+  touch_acc ^= touch_all_fields("Yellow.sav",  GBF_G_YELLOW);
+  touch_acc ^= touch_all_fields("Gold.sav",    GBF_G_GS);
+  touch_acc ^= touch_all_fields("Crystal.sav", GBF_G_CRYSTAL);
+  printf("  (coverage checksum %#010x -- opaque, just proves the reads were not "
+        "optimized away)\n", touch_acc);
 
   if (!g_ran) printf("  (no corpus present — nothing verified)\n");
   printf("gb_fields test: %d checks, %d failure(s) over %d save(s)\n", g_check, g_fail, g_ran);

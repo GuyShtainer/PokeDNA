@@ -8,20 +8,30 @@ says it plainly — "Gold/Silver and Crystal share no field offset past 0x2050 �
 looked up per (game, field) or someone eventually copies a Gold constant onto a Crystal
 save. This script is that lookup, computed from source instead of typed by hand twice.
 
-TWO INDEPENDENT DERIVATIONS, cross-checked against each other:
+THREE INDEPENDENT DERIVATIONS/GUARDS, cross-checked against each other:
 
   1. FIELD OFFSETS. Every field's file offset is `region_file_base + (wram_addr -
      region_wram_start)` — the exact formula docs/GEN12-PARITY-DESIGN.md §1.0 states
-     ("file = region_base + (wram_symbol - region_start)"). Both `wram_addr` and
-     `region_wram_start` are resolved from the pinned `symbols/*.sym` files (see SYM_
-     below), not typed in by hand — a renamed WRAM symbol in a future decomp update
-     makes this script fail loudly (KeyError) instead of silently keeping a stale
-     offset. The region bases themselves (REGIONS below) come from §1.0's own table,
-     and every derived offset in FIELDS is asserted against that section's own cited,
-     corpus-VERIFIED value (see the `check=` argument) — a mismatch is this script's
-     bug, not something to paper over.
+     ("file = region_base + (wram_symbol - region_start)") — or, for the handful of
+     fields living directly in SRAM outside any WRAM-copied region (Crystal's gender,
+     the GS Ball flag, Mystery Gift), `bank*0x2000 + (addr-0xA000)` via sram_file_off().
+     Every address is resolved from the pinned symbols/*.sym files, not typed in by
+     hand — a renamed symbol in a future decomp update fails the build loudly
+     (KeyError). D()/S() below cross-check the result against the design doc's own
+     cited, corpus-VERIFIED offset (`check_off`) and, wherever the doc states a byte
+     count, its cited length too (`check_len`) — a mismatch is this script's bug, not
+     something to paper over.
 
-  2. NAMED EVENT-FLAG INDICES (source/gb_flags.c). §1.3's own warning — "flag NUMBERING
+  2. THE OVERRUN SCAN (P0 review D5). A wrong SIZE does not show up as a wrong offset —
+     GBF_OPTIONS's offset was always right, its claimed 8-byte width on Red/Yellow was
+     not. overrun_scan() resolves every field's own WRAM/SRAM address and asserts no
+     OTHER top-level symbol in that game's .sym file sits strictly inside
+     (addr, addr+size) — the second, size-carrying symbol a wrong width would swallow.
+     _selftest_overrun_scan() proves the scanner would have caught the three review
+     found this way (GBF_OPTIONS on Red/Yellow, GBF_UNLOCKED_UNOWN, GBF_DAYCARE_REC)
+     using their real addresses, before main() trusts it on the live table.
+
+  3. NAMED EVENT-FLAG INDICES (source/gb_flags.c). §1.3's own warning — "flag NUMBERING
      is per-game, not per-generation... EVENT_GOT_RAINBOW_WING is #120 in Gold and #822
      in Crystal" — means these can never be typed in by hand either. Each game's
      `const_def`/`const`/`const_skip`/`const_next` event-constants file is a literal,
@@ -43,6 +53,27 @@ cover a clone that never ran this script):
   source/gb_flags.c    { GbGame x flag index -> our own label text }, four tables
 
 Run from the repo root:  python3 tools/gen_gbfields.py
+
+P0 REVIEW (SHIP WITH CHANGES), findings D1-D5 and D10 addressed in this pass:
+  D1-D4: four fields' sizes were a single value copied across all four games instead
+    of per-game like the offset (GBF_OPTIONS 8B on every game when Red/Yellow's is 1B;
+    GBF_DAYCARE_REC 33B on every game when Gen 2's is 32B; GBF_UNLOCKED_UNOWN 4B when
+    it is 1B; GBF_DEX_OWNED/SEEN 19B on every game when Gen 2's is 32B). Fixed by
+    giving D()/S() an optional per-game `size` override, matching how `check_off`
+    already overrides per game.
+  D5: the overrun scan above, new.
+  D10: all 114 previously hand-transcribed offsets that live inside a tracked region
+    are now D(...) calls (resolved from a real symbol, not typed in); the 6 that live
+    directly in SRAM outside any region are now S(...) calls through the previously
+    unused sram_file_off(). The generated OFFSETS are unchanged by this (every
+    resolved address maps back to the exact same file offset that was already there);
+    only the four D1-D4 SIZES actually change.
+NOTE for the P1 owner (not this slice's job): g2w_finish() never HEALS a stale Gen-2
+mirror region — it re-describes whatever bytes already sit at the backup destinations.
+The retail-faithful behaviour is TryLoadSaveFile's (pokegold/engine/menus/save.asm:
+538-552): copy all five primary regions to their backups, THEN recompute the checksum.
+A slice that wants PokeDNA to actually re-sync a stale region (not just its checksum)
+needs that copy step and its own retail-gate case — tracked as P1 scope, not P0's.
 """
 import os
 import re
@@ -90,8 +121,10 @@ def load_sym(path):
 
 def sram_file_off(bank, addr):
     """A symbol whose address is IN the SRAM window (0xA000-0xBFFF) maps to a save-file
-    offset directly: file = bank*0x2000 + (addr-0xA000). Used for the handful of fields
-    whose own SRAM-side label exists (sOptions) rather than only their WRAM working copy."""
+    offset directly: file = bank*0x2000 + (addr-0xA000). Used for fields whose own
+    SRAM-side label exists (sOptions, sCrystalData, sGSBallFlag, sMysteryGiftItem/
+    Unlocked) rather than only a WRAM working copy this script would have to chase
+    through a region."""
     if not (0xA000 <= addr < 0xC000):
         raise ValueError(f"{addr:#06x} is not in the SRAM window 0xA000-0xBFFF")
     return bank * 0x2000 + (addr - 0xA000)
@@ -159,36 +192,87 @@ U8, U16BE, U24BE, BCD24BE, TEXT, BYTES, BITFIELD = (
     "GBFK_U8", "GBFK_U16BE", "GBFK_U24BE", "GBFK_BCD24BE", "GBFK_TEXT", "GBFK_BYTES",
     "GBFK_BITFIELD")
 
-# One row per field. `off` is either:
-#   ("derive", region_key, wram_symbol)   -- computed via region_off(), then asserted
-#                                             against `check` (the design doc's own
-#                                             corpus-VERIFIED file offset) if given;
-#   an int                                 -- transcribed directly from
-#                                             docs/GEN12-PARITY-DESIGN.md (§1.2/§1.3's
-#                                             bag/PC/flag-base offsets and §1.7's
-#                                             day-care fields, which the doc does not
-#                                             cite a WRAM symbol name for);
-#   None                                   -- the game does not have this field.
-# `size` is in bytes. Citations are the design doc's own section numbers.
-class F:
-    __slots__ = ("name", "kind", "size", "off", "region", "sym", "check")
-    def __init__(self, name, kind, size, off=None, region=None, sym=None, check=None):
-        self.name, self.kind, self.size = name, kind, size
-        self.off, self.region, self.sym, self.check = off, region, sym, check
-
-def D(region, sym, check):
-    """A field this script DERIVES from the .sym files (region + wram symbol), with the
-    design doc's own cited offset as a build-time cross-check."""
-    return ("derive", region, sym, check)
-
 ABSENT = None
 
-# (field_name, kind, size, {game: D(...)|int|ABSENT})
+
+def D(region, sym, check_off, size=None, check_len=None):
+    """A field this script DERIVES from the .sym files (region + wram symbol), with the
+    design doc's own cited offset as a build-time cross-check. `size`, if given,
+    OVERRIDES the field row's default size for this one game (P0 review D1-D4: a
+    field's byte width can differ per game just like its offset can). `check_len`, if
+    given, is an INDEPENDENT cross-check against a byte count the design doc's own
+    prose states (separate from whatever `size`/the row default says) -- a second
+    witness, not a restatement of the first."""
+    return ("derive", region, sym, check_off, size, check_len)
+
+
+def S(sym, check_off, size=None, check_len=None):
+    """A field resolved directly from an SRAM-side symbol (sram_file_off), for the
+    handful that live outside every tracked WRAM-copy region entirely (Crystal's
+    gender byte, the GS Ball flag, Mystery Gift) -- P0 review D10."""
+    return ("sram", sym, check_off, size, check_len)
+
+
+def _assert_off(game, sym, where, off, check_off):
+    if off != check_off:
+        raise AssertionError(
+            f"{game} {sym} ({where}) derived {off:#06x} but "
+            f"docs/GEN12-PARITY-DESIGN.md cites {check_off:#06x} -- the .sym file, this "
+            f"script's region table, or the design doc's own citation disagree; this "
+            f"must be resolved by hand before the table can be trusted")
+
+
+def _assert_len(game, sym, size, check_len):
+    if check_len is not None and size != check_len:
+        raise AssertionError(
+            f"{game} {sym}: this row's size is {size} B but docs/GEN12-PARITY-DESIGN.md's "
+            f"own prose cites {check_len} B -- independently disagreeing witnesses, "
+            f"must be resolved by hand")
+
+
+def resolve_field(symtabs, game, spec, default_size):
+    """spec is a D(...)/S(...) tuple, a plain int (should not remain after P0 review
+    D10 -- kept only as an escape hatch), or None/ABSENT.
+    Returns (off, size, addr) -- addr is (bank, wram_or_sram_addr) for the overrun
+    scan, or None when there is no single symbol behind this cell (a bare literal)."""
+    if spec is ABSENT:
+        return None, None, None
+    if isinstance(spec, int):
+        return spec, default_size, None   # no symbol backing -- exempt from the overrun scan
+
+    kind = spec[0]
+    if kind == "derive":
+        _, region_key, sym, check_off, size_override, check_len = spec
+        region = REGIONS[game][region_key]
+        off = region_off(symtabs[game], region, sym)
+        size = default_size if size_override is None else size_override
+        _assert_off(game, sym, f"region {region_key}", off, check_off)
+        _assert_len(game, sym, size, check_len)
+        bank, addr = symtabs[game][sym]
+        return off, size, (bank, addr)
+
+    if kind == "sram":
+        _, sym, check_off, size_override, check_len = spec
+        bank, addr = symtabs[game][sym]
+        off = sram_file_off(bank, addr)
+        size = default_size if size_override is None else size_override
+        _assert_off(game, sym, "SRAM", off, check_off)
+        _assert_len(game, sym, size, check_len)
+        return off, size, (bank, addr)
+
+    raise ValueError(f"unknown spec kind {kind!r}")
+
+
+# (field_name, kind, default_size, {game: D(...)|S(...)|int|ABSENT})
+#
+# default_size applies to every game whose spec does not override it with size=N.
+# Every present cell below is a D()/S() call (P0 review D10) except the handful the
+# comments call out as a bare literal because no symbol resolves there.
 FIELDS = [
   # ---- 1.1 trainer card -----------------------------------------------------------
   ("PLAYER_NAME", TEXT, 11, {
       "RED": D("player_name", "wPlayerName", 0x2598), "YELLOW": D("player_name", "wPlayerName", 0x2598),
-      "GS": 0x200B, "CRYSTAL": 0x200B}),
+      "GS": D("player_data_1", "wPlayerName", 0x200B), "CRYSTAL": D("player_data", "wPlayerName", 0x200B)}),
   ("TRAINER_ID", U16BE, 2, {
       "RED": D("main_data", "wPlayerID", 0x2605), "YELLOW": D("main_data", "wPlayerID", 0x2605),
       "GS": D("player_data_1", "wPlayerID", 0x2009), "CRYSTAL": D("player_data", "wPlayerID", 0x2009)}),
@@ -199,12 +283,16 @@ FIELDS = [
       "RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("player_data_3", "wMoney", 0x23DB), "CRYSTAL": D("player_data", "wMoney", 0x23DC)}),
   ("COINS", BCD24BE, 2, {   # Gen 1: 2-byte BCD (§1.1: "Gen 1 2 B BCD")
-      "RED": 0x2850, "YELLOW": 0x2850, "GS": ABSENT, "CRYSTAL": ABSENT}),
+      "RED": D("main_data", "wPlayerCoins", 0x2850), "YELLOW": D("main_data", "wPlayerCoins", 0x2850),
+      "GS": ABSENT, "CRYSTAL": ABSENT}),
   ("COINS_BIN", U16BE, 2, {
       "RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("player_data_3", "wCoins", 0x23E2), "CRYSTAL": D("player_data", "wCoins", 0x23E3)}),
-  ("MOMS_MONEY", U24BE, 3, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x23DE, "CRYSTAL": 0x23DF}),
-  ("MOM_SAVING_FLAG", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x23E1, "CRYSTAL": 0x23E2}),
+  ("MOMS_MONEY", U24BE, 3, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wMomsMoney", 0x23DE), "CRYSTAL": D("player_data", "wMomsMoney", 0x23DF)}),
+  ("MOM_SAVING_FLAG", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wMomSavingMoney", 0x23E1),
+      "CRYSTAL": D("player_data", "wMomSavingMoney", 0x23E2)}),
   ("BADGES", BITFIELD, 1, {   # Gen 1: one region, both leagues in one byte
       "RED": D("main_data", "wObtainedBadges", 0x2602), "YELLOW": D("main_data", "wObtainedBadges", 0x2602),
       "GS": ABSENT, "CRYSTAL": ABSENT}),
@@ -215,7 +303,8 @@ FIELDS = [
   ("RIVAL_NAME", TEXT, 11, {
       "RED": D("main_data", "wRivalName", 0x25F6), "YELLOW": D("main_data", "wRivalName", 0x25F6),
       "GS": D("player_data_1", "wRivalName", 0x2021), "CRYSTAL": D("player_data", "wRivalName", 0x2021)}),
-  ("MOTHERS_NAME", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2016, "CRYSTAL": 0x2016}),
+  ("MOTHERS_NAME", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_1", "wMomsName", 0x2016), "CRYSTAL": D("player_data", "wMomsName", 0x2016)}),
   ("PLAYTIME_HOURS", U8, 1, {
       "RED": D("main_data", "wPlayTimeHours", 0x2CED), "YELLOW": D("main_data", "wPlayTimeHours", 0x2CED),
       "GS": ABSENT, "CRYSTAL": ABSENT}),   # Gen-2 play time lives in the clock block, §1.8
@@ -231,37 +320,74 @@ FIELDS = [
   ("PLAYTIME_FRAMES", U8, 1, {
       "RED": D("main_data", "wPlayTimeFrames", 0x2CF1), "YELLOW": D("main_data", "wPlayTimeFrames", 0x2CF1),
       "GS": ABSENT, "CRYSTAL": ABSENT}),
-  ("GENDER", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": ABSENT, "CRYSTAL": 0x3E3D}),  # outside the span
+  # GENDER: outside every checksummed span (§1.9); Crystal's own sCrystalData SRAM
+  # symbol, direct (P0 review D10 -- was a bare literal).
+  ("GENDER", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": ABSENT,
+      "CRYSTAL": S("sCrystalData", 0x3E3D)}),
+  # OPTIONS: P0 review D1 -- Red/Yellow's wOptions is ONE byte (wObtainedBadges sits
+  # immediately after it, measured via the .sym files); only G/S's and Crystal's
+  # SRAM-side sOptions block is genuinely 8 bytes (§1.0: "sOptions ... 8 B").
   ("OPTIONS", BYTES, 8, {
-      "RED": D("main_data", "wOptions", 0x2601), "YELLOW": D("main_data", "wOptions", 0x2601),
+      "RED": D("main_data", "wOptions", 0x2601, size=1), "YELLOW": D("main_data", "wOptions", 0x2601, size=1),
       "GS": D("options", "sOptions", 0x2000), "CRYSTAL": D("options", "sOptions", 0x2000)}),
 
-  # ---- 1.2 bag / PC (transcribed -- the design doc cites no WRAM symbol for these) --
-  ("BAG_COUNT", U8, 1, {"RED": 0x25C9, "YELLOW": 0x25C9, "GS": 0x241F, "CRYSTAL": 0x2420}),
-  ("BAG_BODY", BYTES, 41, {"RED": 0x25CA, "YELLOW": 0x25CA, "GS": 0x2420, "CRYSTAL": 0x2421}),
-  ("KEY_ITEMS_COUNT", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2449, "CRYSTAL": 0x244A}),
-  ("KEY_ITEMS_BODY", BYTES, 26, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x244A, "CRYSTAL": 0x244B}),
-  ("BALLS_COUNT", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2464, "CRYSTAL": 0x2465}),
-  ("BALLS_BODY", BYTES, 25, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2465, "CRYSTAL": 0x2466}),
-  ("TMHM_COUNTS", BYTES, 57, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x23E6, "CRYSTAL": 0x23E7}),
-  ("PC_COUNT", U8, 1, {"RED": 0x27E6, "YELLOW": 0x27E6, "GS": 0x247E, "CRYSTAL": 0x247F}),
-  ("PC_BODY", BYTES, 101, {"RED": 0x27E7, "YELLOW": 0x27E7, "GS": 0x247F, "CRYSTAL": 0x2480}),
+  # ---- 1.2 bag / PC ------------------------------------------------------------------
+  ("BAG_COUNT", U8, 1, {
+      "RED": D("main_data", "wNumBagItems", 0x25C9), "YELLOW": D("main_data", "wNumBagItems", 0x25C9),
+      "GS": D("player_data_3", "wNumItems", 0x241F), "CRYSTAL": D("player_data", "wNumItems", 0x2420)}),
+  ("BAG_BODY", BYTES, 41, {
+      "RED": D("main_data", "wBagItems", 0x25CA), "YELLOW": D("main_data", "wBagItems", 0x25CA),
+      "GS": D("player_data_3", "wItems", 0x2420), "CRYSTAL": D("player_data", "wItems", 0x2421)}),
+  ("KEY_ITEMS_COUNT", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wNumKeyItems", 0x2449), "CRYSTAL": D("player_data", "wNumKeyItems", 0x244A)}),
+  ("KEY_ITEMS_BODY", BYTES, 26, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wKeyItems", 0x244A), "CRYSTAL": D("player_data", "wKeyItems", 0x244B)}),
+  ("BALLS_COUNT", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wNumBalls", 0x2464), "CRYSTAL": D("player_data", "wNumBalls", 0x2465)}),
+  ("BALLS_BODY", BYTES, 25, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wBalls", 0x2465), "CRYSTAL": D("player_data", "wBalls", 0x2466)}),
+  ("TMHM_COUNTS", BYTES, 57, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wTMsHMs", 0x23E6), "CRYSTAL": D("player_data", "wTMsHMs", 0x23E7)}),
+  ("PC_COUNT", U8, 1, {
+      "RED": D("main_data", "wNumBoxItems", 0x27E6), "YELLOW": D("main_data", "wNumBoxItems", 0x27E6),
+      "GS": D("player_data_3", "wNumPCItems", 0x247E), "CRYSTAL": D("player_data", "wNumPCItems", 0x247F)}),
+  ("PC_BODY", BYTES, 101, {
+      "RED": D("main_data", "wBoxItems", 0x27E7), "YELLOW": D("main_data", "wBoxItems", 0x27E7),
+      "GS": D("player_data_3", "wPCItems", 0x247F), "CRYSTAL": D("player_data", "wPCItems", 0x2480)}),
 
   # ---- 1.3 flags/counters base offsets ---------------------------------------------
   ("EVENT_FLAGS_BASE", BYTES, 320, {   # size is per-game; Gen 1 320 B, Gen 2 256 B --
       "RED": D("main_data", "wEventFlags", 0x29F3), "YELLOW": D("main_data", "wEventFlags", 0x29F3),
       "GS": ABSENT, "CRYSTAL": ABSENT}),   # (Red/Blue+Yellow row only; see EVENT_FLAGS_BASE_G2)
   ("EVENT_FLAGS_BASE_G2", BYTES, 256, {"RED": ABSENT, "YELLOW": ABSENT,
-      "GS": D("player_data_3", "wEventFlags", 0x261F), "CRYSTAL": 0x2600}),
-  ("HIDDEN_ITEM_FLAGS", BYTES, 14, {"RED": 0x299C, "YELLOW": 0x299C, "GS": ABSENT, "CRYSTAL": ABSENT}),
-  ("HIDDEN_COIN_FLAGS", BYTES, 2, {"RED": 0x29AA, "YELLOW": 0x29AA, "GS": ABSENT, "CRYSTAL": ABSENT}),
-  ("TOGGLE_OBJ_FLAGS", BYTES, 32, {"RED": 0x2852, "YELLOW": 0x2852, "GS": ABSENT, "CRYSTAL": ABSENT}),
-  ("BIKE_FLAGS", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x27A7, "CRYSTAL": 0x2783}),
-  ("UNLOCKED_UNOWN", BITFIELD, 4, {"RED": ABSENT, "YELLOW": ABSENT,
-      "GS": D("pokemon_data", "wUnlockedUnowns", 0x2AA6), "CRYSTAL": 0x2A81}),
-  ("GS_BALL_FLAG", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": ABSENT, "CRYSTAL": 0x3E3C}),  # outside span
-  ("MYSTERY_GIFT_ITEM", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x0BE2, "CRYSTAL": 0x0BE2}),  # SRAM bank 0
-  ("MYSTERY_GIFT_UNLOCKED", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x0BE3, "CRYSTAL": 0x0BE3}),
+      "GS": D("player_data_3", "wEventFlags", 0x261F),
+      "CRYSTAL": D("player_data", "wEventFlags", 0x2600)}),
+  ("HIDDEN_ITEM_FLAGS", BYTES, 14, {
+      "RED": D("main_data", "wObtainedHiddenItemsFlags", 0x299C),
+      "YELLOW": D("main_data", "wObtainedHiddenItemsFlags", 0x299C),
+      "GS": ABSENT, "CRYSTAL": ABSENT}),
+  ("HIDDEN_COIN_FLAGS", BYTES, 2, {
+      "RED": D("main_data", "wObtainedHiddenCoinsFlags", 0x29AA),
+      "YELLOW": D("main_data", "wObtainedHiddenCoinsFlags", 0x29AA),
+      "GS": ABSENT, "CRYSTAL": ABSENT}),
+  ("TOGGLE_OBJ_FLAGS", BYTES, 32, {
+      "RED": D("main_data", "wToggleableObjectFlags", 0x2852),
+      "YELLOW": D("main_data", "wToggleableObjectFlags", 0x2852),
+      "GS": ABSENT, "CRYSTAL": ABSENT}),
+  ("BIKE_FLAGS", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wBikeFlags", 0x27A7), "CRYSTAL": D("player_data", "wBikeFlags", 0x2783)}),
+  # UNLOCKED_UNOWN: P0 review D3 -- 1 byte, not 4 (wFirstUnownSeen sits immediately
+  # after it in both Gold's and Crystal's own .sym; measured, not guessed at a
+  # 26-letter bitfield's naive minimum byte count).
+  ("UNLOCKED_UNOWN", BITFIELD, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wUnlockedUnowns", 0x2AA6),
+      "CRYSTAL": D("pokemon_data", "wUnlockedUnowns", 0x2A81)}),
+  ("GS_BALL_FLAG", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": ABSENT,
+      "CRYSTAL": S("sGSBallFlag", 0x3E3C)}),   # outside every checksummed span, §1.3
+  ("MYSTERY_GIFT_ITEM", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": S("sMysteryGiftItem", 0x0BE2), "CRYSTAL": S("sMysteryGiftItem", 0x0BE2)}),
+  ("MYSTERY_GIFT_UNLOCKED", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": S("sMysteryGiftUnlocked", 0x0BE3), "CRYSTAL": S("sMysteryGiftUnlocked", 0x0BE3)}),
 
   # ---- 1.4 fly destinations ---------------------------------------------------------
   ("FLY_FLAGS", BITFIELD, 2, {
@@ -295,74 +421,196 @@ FIELDS = [
   ("LAST_MAP", U8, 1, {
       "RED": D("main_data", "wLastMap", 0x2611), "YELLOW": D("main_data", "wLastMap", 0x2611),
       "GS": ABSENT, "CRYSTAL": ABSENT}),
-  ("ESCAPE_WARP", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x285A, "CRYSTAL": 0x2837}),
-  ("ESCAPE_GROUP", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x285B, "CRYSTAL": 0x2838}),
-  ("ESCAPE_NUMBER", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x285C, "CRYSTAL": 0x2839}),
-  ("BACKUP_WARP", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x285D, "CRYSTAL": 0x283A}),
-  ("BACKUP_GROUP", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x285E, "CRYSTAL": 0x283B}),
-  ("BACKUP_NUMBER", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x285F, "CRYSTAL": 0x283C}),
-  ("LAST_SPAWN_MAP", U8, 1, {   # Gen 1: one flat id, like MAP_ID (wLastBlackoutMap)
-      "RED": 0x29C5, "YELLOW": 0x29C5, "GS": ABSENT, "CRYSTAL": ABSENT}),
-  ("LAST_SPAWN_GROUP", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2863, "CRYSTAL": 0x2840}),
-  ("LAST_SPAWN_NUMBER", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2864, "CRYSTAL": 0x2841}),
+  ("ESCAPE_WARP", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("cur_map_data", "wDigWarpNumber", 0x285A), "CRYSTAL": D("cur_map_data", "wDigWarpNumber", 0x2837)}),
+  ("ESCAPE_GROUP", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("cur_map_data", "wDigMapGroup", 0x285B), "CRYSTAL": D("cur_map_data", "wDigMapGroup", 0x2838)}),
+  ("ESCAPE_NUMBER", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("cur_map_data", "wDigMapNumber", 0x285C), "CRYSTAL": D("cur_map_data", "wDigMapNumber", 0x2839)}),
+  ("BACKUP_WARP", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("cur_map_data", "wBackupWarpNumber", 0x285D),
+      "CRYSTAL": D("cur_map_data", "wBackupWarpNumber", 0x283A)}),
+  ("BACKUP_GROUP", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("cur_map_data", "wBackupMapGroup", 0x285E), "CRYSTAL": D("cur_map_data", "wBackupMapGroup", 0x283B)}),
+  ("BACKUP_NUMBER", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("cur_map_data", "wBackupMapNumber", 0x285F),
+      "CRYSTAL": D("cur_map_data", "wBackupMapNumber", 0x283C)}),
+  ("LAST_SPAWN_MAP", U8, 1, {   # Gen 1: one flat id, like MAP_ID
+      "RED": D("main_data", "wLastBlackoutMap", 0x29C5), "YELLOW": D("main_data", "wLastBlackoutMap", 0x29C5),
+      "GS": ABSENT, "CRYSTAL": ABSENT}),
+  ("LAST_SPAWN_GROUP", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("cur_map_data", "wLastSpawnMapGroup", 0x2863),
+      "CRYSTAL": D("cur_map_data", "wLastSpawnMapGroup", 0x2840)}),
+  ("LAST_SPAWN_NUMBER", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("cur_map_data", "wLastSpawnMapNumber", 0x2864),
+      "CRYSTAL": D("cur_map_data", "wLastSpawnMapNumber", 0x2841)}),
 
   # ---- 1.6 pokedex --------------------------------------------------------------------
+  # DEX_OWNED/DEX_SEEN: P0 review D4 -- Gen 2's bitfield is 32 B (251 bits), not 19
+  # (Gen 1's own 151-bit width); wPokedexCaught->wPokedexSeen is exactly 0x20 apart in
+  # both Gold's and Crystal's .sym, and §1.6's own prose already said "32 B" for both.
   ("DEX_OWNED", BITFIELD, 19, {
-      "RED": D("main_data", "wPokedexOwned", 0x25A3), "YELLOW": D("main_data", "wPokedexOwned", 0x25A3),
-      "GS": D("pokemon_data", "wPokedexCaught", 0x2A4C), "CRYSTAL": D("pokemon_data", "wPokedexCaught", 0x2A27)}),
+      "RED": D("main_data", "wPokedexOwned", 0x25A3, check_len=19),
+      "YELLOW": D("main_data", "wPokedexOwned", 0x25A3, check_len=19),
+      "GS": D("pokemon_data", "wPokedexCaught", 0x2A4C, size=32, check_len=32),
+      "CRYSTAL": D("pokemon_data", "wPokedexCaught", 0x2A27, size=32, check_len=32)}),
   ("DEX_SEEN", BITFIELD, 19, {
-      "RED": D("main_data", "wPokedexSeen", 0x25B6), "YELLOW": D("main_data", "wPokedexSeen", 0x25B6),
-      "GS": D("pokemon_data", "wPokedexSeen", 0x2A6C), "CRYSTAL": D("pokemon_data", "wPokedexSeen", 0x2A47)}),
+      "RED": D("main_data", "wPokedexSeen", 0x25B6, check_len=19),
+      "YELLOW": D("main_data", "wPokedexSeen", 0x25B6, check_len=19),
+      "GS": D("pokemon_data", "wPokedexSeen", 0x2A6C, size=32, check_len=32),
+      "CRYSTAL": D("pokemon_data", "wPokedexSeen", 0x2A47, size=32, check_len=32)}),
 
-  # ---- 1.7 day-care (transcribed) ------------------------------------------------------
-  ("DAYCARE_FLAG", U8, 1, {"RED": 0x2CF4, "YELLOW": 0x2CF4, "GS": 0x2AA8, "CRYSTAL": 0x2A83}),
-  ("DAYCARE_NICK", TEXT, 11, {"RED": 0x2CF5, "YELLOW": 0x2CF5, "GS": 0x2AA9, "CRYSTAL": 0x2A84}),
-  ("DAYCARE_OT", TEXT, 11, {"RED": 0x2D00, "YELLOW": 0x2D00, "GS": 0x2AB4, "CRYSTAL": 0x2A8F}),
-  ("DAYCARE_REC", BYTES, 33, {"RED": 0x2D0B, "YELLOW": 0x2D0B, "GS": 0x2ABF, "CRYSTAL": 0x2A9A}),
-  ("DAYCARE_LADY_FLAG", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2ADF, "CRYSTAL": 0x2ABA}),
-  ("DAYCARE_STEPS", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2AE0, "CRYSTAL": 0x2ABB}),
-  ("DAYCARE2_NICK", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2AE2, "CRYSTAL": 0x2ABD}),
-  ("DAYCARE2_OT", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2AED, "CRYSTAL": 0x2AC8}),
-  ("DAYCARE2_REC", BYTES, 32, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2AF8, "CRYSTAL": 0x2AD3}),
-  ("DAYCARE_EGG_NICK", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2B18, "CRYSTAL": 0x2AF3}),
-  ("DAYCARE_EGG_REC", BYTES, 32, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2B2E, "CRYSTAL": 0x2B09}),
+  # ---- 1.7 day-care -------------------------------------------------------------------
+  ("DAYCARE_FLAG", U8, 1, {
+      "RED": D("main_data", "wDayCareInUse", 0x2CF4), "YELLOW": D("main_data", "wDayCareInUse", 0x2CF4),
+      "GS": D("pokemon_data", "wDayCareMan", 0x2AA8), "CRYSTAL": D("pokemon_data", "wDayCareMan", 0x2A83)}),
+  ("DAYCARE_NICK", TEXT, 11, {
+      "RED": D("main_data", "wDayCareMonName", 0x2CF5), "YELLOW": D("main_data", "wDayCareMonName", 0x2CF5),
+      "GS": D("pokemon_data", "wBreedMon1Nickname", 0x2AA9),
+      "CRYSTAL": D("pokemon_data", "wBreedMon1Nickname", 0x2A84)}),
+  ("DAYCARE_OT", TEXT, 11, {
+      "RED": D("main_data", "wDayCareMonOT", 0x2D00), "YELLOW": D("main_data", "wDayCareMonOT", 0x2D00),
+      "GS": D("pokemon_data", "wBreedMon1OT", 0x2AB4), "CRYSTAL": D("pokemon_data", "wBreedMon1OT", 0x2A8F)}),
+  # DAYCARE_REC: P0 review D2 -- Gen 2's box record here is 32 B, not Gen 1's 33
+  # (wBreedMon1->wBreedMon1BoxEnd is exactly 0x20 apart in both Gold's and Crystal's
+  # .sym, and wDayCareLady sits at that same +32 address -- §1.7's own prose already
+  # said "32 B" for G/S and Crystal). Gen 1's 33 is genuinely different
+  # (GEN1_BOX_REC_BYTES) and unaffected.
+  ("DAYCARE_REC", BYTES, 32, {
+      "RED": D("main_data", "wDayCareMon", 0x2D0B, size=33, check_len=33),
+      "YELLOW": D("main_data", "wDayCareMon", 0x2D0B, size=33, check_len=33),
+      "GS": D("pokemon_data", "wBreedMon1", 0x2ABF, check_len=32),
+      "CRYSTAL": D("pokemon_data", "wBreedMon1", 0x2A9A, check_len=32)}),
+  ("DAYCARE_LADY_FLAG", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wDayCareLady", 0x2ADF), "CRYSTAL": D("pokemon_data", "wDayCareLady", 0x2ABA)}),
+  ("DAYCARE_STEPS", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wStepsToEgg", 0x2AE0), "CRYSTAL": D("pokemon_data", "wStepsToEgg", 0x2ABB)}),
+  ("DAYCARE2_NICK", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wBreedMon2Nickname", 0x2AE2),
+      "CRYSTAL": D("pokemon_data", "wBreedMon2Nickname", 0x2ABD)}),
+  ("DAYCARE2_OT", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wBreedMon2OT", 0x2AED), "CRYSTAL": D("pokemon_data", "wBreedMon2OT", 0x2AC8)}),
+  ("DAYCARE2_REC", BYTES, 32, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wBreedMon2", 0x2AF8), "CRYSTAL": D("pokemon_data", "wBreedMon2", 0x2AD3)}),
+  ("DAYCARE_EGG_NICK", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wEggMonNickname", 0x2B18),
+      "CRYSTAL": D("pokemon_data", "wEggMonNickname", 0x2AF3)}),
+  ("DAYCARE_EGG_REC", BYTES, 32, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wEggMon", 0x2B2E), "CRYSTAL": D("pokemon_data", "wEggMon", 0x2B09)}),
 
   # ---- 1.8 Gen-2 clock (Gen 1 has none) -------------------------------------------------
-  ("RTC_START_DAY", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2044, "CRYSTAL": 0x2044}),
-  ("RTC_START_HOUR", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2045, "CRYSTAL": 0x2045}),
-  ("RTC_START_MINUTE", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2046, "CRYSTAL": 0x2046}),
-  ("RTC_START_SECOND", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2047, "CRYSTAL": 0x2047}),
-  ("RTC_SNAPSHOT", BYTES, 4, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2048, "CRYSTAL": 0x2048}),
-  ("RTC_DST", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2050, "CRYSTAL": 0x2050}),
-  ("GAMETIME_HOURS", U16BE, 2, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2053, "CRYSTAL": 0x2052}),
-  ("GAMETIME_MINUTES", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2055, "CRYSTAL": 0x2054}),
-  ("GAMETIME_SECONDS", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2056, "CRYSTAL": 0x2055}),
-  ("GAMETIME_FRAMES", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": 0x2057, "CRYSTAL": 0x2056}),
+  ("RTC_START_DAY", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_1", "wStartDay", 0x2044), "CRYSTAL": D("player_data", "wStartDay", 0x2044)}),
+  ("RTC_START_HOUR", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_1", "wStartHour", 0x2045), "CRYSTAL": D("player_data", "wStartHour", 0x2045)}),
+  ("RTC_START_MINUTE", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_1", "wStartMinute", 0x2046), "CRYSTAL": D("player_data", "wStartMinute", 0x2046)}),
+  ("RTC_START_SECOND", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_1", "wStartSecond", 0x2047), "CRYSTAL": D("player_data", "wStartSecond", 0x2047)}),
+  ("RTC_SNAPSHOT", BYTES, 4, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_1", "wRTC", 0x2048), "CRYSTAL": D("player_data", "wRTC", 0x2048)}),
+  ("RTC_DST", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_1", "wDST", 0x2050), "CRYSTAL": D("player_data", "wDST", 0x2050)}),
+  ("GAMETIME_HOURS", U16BE, 2, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_1", "wGameTimeHours", 0x2053),
+      "CRYSTAL": D("player_data", "wGameTimeHours", 0x2052)}),
+  ("GAMETIME_MINUTES", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_1", "wGameTimeMinutes", 0x2055),
+      "CRYSTAL": D("player_data", "wGameTimeMinutes", 0x2054)}),
+  ("GAMETIME_SECONDS", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_1", "wGameTimeSeconds", 0x2056),
+      "CRYSTAL": D("player_data", "wGameTimeSeconds", 0x2055)}),
+  ("GAMETIME_FRAMES", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_1", "wGameTimeFrames", 0x2057),
+      "CRYSTAL": D("player_data", "wGameTimeFrames", 0x2056)}),
   ("CUR_DAY", U8, 1, {
       "RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("player_data_1", "wCurDay", 0x205A), "CRYSTAL": D("player_data", "wCurDay", 0x2059)}),
 ]
 
 
-def resolve_field(symtabs, game, spec):
-    """spec is a D(...) tuple, a plain int, or None/ABSENT. Returns a file offset
-    (int) or None. A D(...) is both COMPUTED (from the .sym files) and asserted to
-    equal `check` -- the design doc's own corpus-VERIFIED number -- so a stale or
-    mistyped citation fails the build instead of shipping quietly wrong."""
-    if spec is ABSENT:
-        return None
-    if isinstance(spec, int):
-        return spec
-    _, region_key, sym, check = spec
-    region = REGIONS[game][region_key]
-    off = region_off(symtabs[game], region, sym)
-    if off != check:
-        raise AssertionError(
-            f"{game} {sym} (region {region_key}) derived {off:#06x} but "
-            f"docs/GEN12-PARITY-DESIGN.md cites {check:#06x} -- the .sym file, this "
-            f"script's region table, or the design doc's own citation disagree; this "
-            f"must be resolved by hand before the table can be trusted")
-    return off
+# ============================================================== overrun scan (D5) ==
+def build_reverse_index(symtab):
+    """(bank,addr) -> sorted list of names at that exact address, for the overrun
+    scan below."""
+    rev = {}
+    for name, (bank, addr) in symtab.items():
+        rev.setdefault((bank, addr), []).append(name)
+    for key in rev:
+        rev[key].sort()
+    return rev
+
+
+def overrun_scan(symtabs, cells):
+    """`cells`: list of (field_name, game, (bank, addr), size). For every cell whose
+    size > 1, assert no OTHER, UNRELATED top-level symbol in that game's .sym file sits
+    strictly inside (addr, addr+size) -- the second, size-carrying symbol a claimed
+    width that is too wide would swallow. Deliberately open at both ends: a symbol AT
+    addr itself is the field's own start (possibly several aliases, e.g. wBreedMon1 /
+    wBreedMon1Species); a symbol AT addr+size is the NEXT field's own start, adjacent,
+    not an overrun.
+
+    "UNRELATED" excludes any symbol whose name starts with one of the field's OWN
+    names at `addr` as a string prefix -- Pokemon decomps name every field of a struct
+    with the struct's own label as a prefix (wBreedMon1Item, wBreedMon1Moves, ...,
+    all inside wBreedMon1's own 32 bytes; wPartyMon1Species, wPartyMon1HP, ... inside
+    wPartyMon1's own record), so a composite record's LEGITIMATE internal sub-fields
+    would otherwise swamp this scan with false positives on every multi-field struct
+    (measured: DAYCARE_REC alone has 16 such sub-labels). A genuine overrun's
+    intruder does NOT share the field's prefix (wObtainedBadges inside a too-wide
+    wOptions; wDayCareLady inside a too-wide wBreedMon1) -- confirmed by
+    _selftest_overrun_scan() staying sensitive to all three real P0 review D5 bugs
+    even with this exclusion in place. Returns a list of problem strings (empty =
+    clean)."""
+    revs = {}
+    problems = []
+    for name, game, addr_info, size in cells:
+        if addr_info is None or size is None or size <= 1:
+            continue
+        bank, addr = addr_info
+        if game not in revs:
+            revs[game] = build_reverse_index(symtabs[game])
+        own_names = revs[game].get((bank, addr), [])
+        for other_addr in range(addr + 1, addr + size):
+            hit = revs[game].get((bank, other_addr))
+            if not hit:
+                continue
+            foreign = [h for h in hit if not any(h.startswith(o) for o in own_names)]
+            if foreign:
+                problems.append(
+                    f"{game} {name} ({bank:02x}:{addr:04x}, size {size}) overruns into "
+                    f"{'/'.join(foreign)} at {bank:02x}:{other_addr:04x} "
+                    f"(+{other_addr - addr})")
+    return problems
+
+
+def _selftest_overrun_scan(symtabs):
+    """Proves the scanner catches exactly the three real bugs P0 review D5 found
+    (using their REAL addresses, resolved fresh from the .sym files -- not a copy of
+    the numbers above) at their OLD, wrong sizes, one at a time so each is verified
+    independently, and stays clean at the FIXED sizes. Run BEFORE the live table is
+    scanned, so a change to overrun_scan() itself gets caught here first."""
+    cases = [
+        ("OPTIONS", "RED", symtabs["RED"]["wOptions"], 8, 1),          # was 8, really 1
+        ("UNLOCKED_UNOWN", "GS", symtabs["GS"]["wUnlockedUnowns"], 4, 1),  # was 4, really 1
+        ("DAYCARE_REC", "GS", symtabs["GS"]["wBreedMon1"], 33, 32),    # was 33, really 32
+    ]
+    n_flagged = 0
+    for name, game, addr_info, wrong_size, right_size in cases:
+        broken = overrun_scan(symtabs, [(name, game, addr_info, wrong_size)])
+        if not broken:
+            raise AssertionError(
+                f"overrun-scan self-test: {game} {name} at its OLD, wrong size "
+                f"{wrong_size} B must be flagged and was not")
+        n_flagged += len(broken)
+        fixed = overrun_scan(symtabs, [(name, game, addr_info, right_size)])
+        if fixed:
+            raise AssertionError(
+                f"overrun-scan self-test: {game} {name} at its FIXED size {right_size} B "
+                f"must NOT be flagged:\n  " + "\n  ".join(fixed))
+    print(f"  overrun-scan self-test: OLD sizes for OPTIONS(RED)/UNLOCKED_UNOWN(GS)/"
+         f"DAYCARE_REC(GS) each flagged ({n_flagged} finding(s) total); FIXED sizes "
+         f"each clean")
 
 
 # ============================================================== event flags ======
@@ -579,23 +827,26 @@ HEADER = """/* GENERATED by tools/gen_gbfields.py -- DO NOT EDIT BY HAND.
  * Git-ignored (like source/learnsets2.c); source/gb_fields_fallback.c's weak symbols
  * cover a clone that never ran the generator. docs/kb/licensing.md: offsets and flag
  * indices are facts read out of the pinned, reference-only decomp checkouts; nothing
- * here is decomp code or prose. BACKLOG #49 P0.
+ * here is decomp code or prose. BACKLOG #49 P0 (P0 review D1-D5, D10 applied).
  */
 """
 
 
-def emit_fields_c(symtabs):
+def emit_fields_c(symtabs, cells_out):
+    """`cells_out` is filled with (field_name, game, addr_info, size) for every present
+    cell, so main() can feed it straight to overrun_scan() without a second pass."""
     lines = [HEADER, '#include "gb_fields.h"', ""]
     lines.append("static const struct { uint32_t off; uint16_t len; GbFieldKind kind; } "
                  "k_fields[GBF_FIELD_COUNT][GBF_G_COUNT] = {")
-    for name, kind, size, per_game in FIELDS:
+    for name, kind, default_size, per_game in FIELDS:
         row = []
         for game in GAMES:
-            off = resolve_field(symtabs, game, per_game[game])
+            off, size, addr_info = resolve_field(symtabs, game, per_game[game], default_size)
             if off is None:
                 row.append("{0, 0, GBFK_U8}")
             else:
                 row.append(f"{{{off:#06x}, {size}, {kind}}}")
+                cells_out.append((name, game, addr_info, size))
         lines.append(f"  [GBF_{name}] = {{ {', '.join(row)} }},")
     lines.append("};")
     lines.append("")
@@ -686,19 +937,30 @@ def main():
                 print(f"ERROR: {g}: region symbol {region.start_symbol!r} not found "
                      f"in {SYM_PATHS[g]}", file=sys.stderr)
                 sys.exit(1)
-    emit_fields_c(symtabs)
+
+    _selftest_overrun_scan(symtabs)
+
+    cells = []
+    emit_fields_c(symtabs, cells)
+    problems = overrun_scan(symtabs, cells)
+    if problems:
+        print("ERROR: overrun scan found field(s) whose claimed size reaches another "
+             "symbol:", file=sys.stderr)
+        for p in problems:
+            print(f"  {p}", file=sys.stderr)
+        sys.exit(1)
+
     n_derived = sum(1 for _, _, _, pg in FIELDS for game in GAMES
                     if isinstance(pg[game], tuple))
     n_total = sum(1 for _, _, _, pg in FIELDS for game in GAMES if pg[game] is not ABSENT)
     print(f"wrote {FIELDS_OUT}: {len(FIELDS)} fields x {len(GAMES)} games, "
          f"{n_total} present, {n_derived} derived+cross-checked against a live .sym "
-         f"lookup, {n_total - n_derived} transcribed from the design doc")
+         f"lookup, {n_total - n_derived} bare literal(s), overrun scan clean "
+         f"({len(cells)} symbol-backed cells checked)")
 
     const_tables = {g: parse_const_file(EVENT_CONST_PATHS[g]) for g in GAMES}
     _selftest_flag_indices(const_tables)
     emit_flags_c(const_tables)
-    n_flags = sum(len(shortlists) for shortlists in
-                 (SHORTLIST_GEN1, SHORTLIST_GEN1, SHORTLIST_GEN2, SHORTLIST_GEN2))
     print(f"wrote {FLAGS_OUT}: shortlist of {len(SHORTLIST_GEN1)} Gen-1 / "
          f"{len(SHORTLIST_GEN2)} Gen-2 flag names, per-game indices from a live "
          f"const_def/const_skip/const_next replay of each game's own event-constants file")
