@@ -83,6 +83,11 @@ build*/
 /source/evolutions.c
 # per-game move-source tables extracted from the pret decomps (tools/gen_learnsets2.py)
 /source/learnsets2.c
+# per-game Gen-1/2 field-offset + named-event-flag tables (BACKLOG #49 P0,
+# tools/gen_gbfields.py) — source/gb_fields_fallback.c / gb_flags_fallback.c are the
+# COMMITTED weak fallback so a clone that never ran the generator still links.
+/source/gb_fields.c
+/source/gb_flags.c
 /source/wallpapers.c
 /source/daycare_bg_data.h
 
