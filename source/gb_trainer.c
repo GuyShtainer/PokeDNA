@@ -94,6 +94,23 @@ static GbsStatus set_u(GbSession* s, GbGame g, GbField f, uint32_t v) {
   return gbs_write_field(s, off, b, len);
 }
 
+/* P1a review D1 (extended to every scalar field, not just money/coins): compares
+ * against the field's CURRENT value first and skips the write entirely when it
+ * already matches, setting `*changed` only on a write that actually happened.
+ * gbt_write() uses this to know whether it may skip gbs_finish() altogether --
+ * see that function's own comment for why "nothing changed" must mean "not even
+ * the stored checksums move" on a Gen-2 save whose backup was already stale
+ * before gbt_write ever ran (Gold.sav's own corpus state, docs/GEN12-PARITY-
+ * DESIGN.md Appendix A: "backup ... stored AEF9 calc C03D BAD"). */
+static GbsStatus set_u_unless_same(GbSession* s, GbGame g, GbField f, uint32_t new_v,
+                                   bool* changed) {
+  uint32_t cur;
+  if (get_u(s, g, f, &cur) && cur == new_v) return GBS_OK;
+  GbsStatus st = set_u(s, g, f, new_v);
+  if (st == GBS_OK) *changed = true;
+  return st;
+}
+
 /* ---- names ------------------------------------------------------------- */
 
 static bool get_name(const GbSession* s, GbGame g, GbField f, uint8_t gen,
@@ -138,6 +155,36 @@ static GbsStatus set_name(GbSession* s, GbGame g, GbField f, uint8_t gen,
   return gbs_write_field(s, off, enc, len);
 }
 
+/* P1a review D1 (blocking): a no-op read -> write must not touch a single byte of
+ * the name field. gb_name_encode always emits a FULL GB_NAME_BYTES record, 0x50-fill
+ * and all -- it has no way to know what the game itself left after the terminator
+ * (a previous, longer name's leftover glyphs; the corpus shows 8 stray bytes on
+ * Red, 7 on Yellow, 3 on Gold/Crystal). Calling set_name() unconditionally on every
+ * write therefore replaces that residue with fresh 0x50 fill even when the DECODED
+ * text did not change -- which also means a corpus name that happens to decode to
+ * more than max_glyphs glyphs (only possible from that same stray-byte residue,
+ * never from a name the game itself wrote) made gbt_write() refuse EVERY edit,
+ * including ones that never touched the name (D5). Comparing the DECODED text
+ * (not the raw bytes) against `text` before ever calling set_name fixes both: an
+ * unchanged name is a true no-op, and a corpus record whose residue count_glyphs
+ * would reject is never even offered to it. */
+static GbsStatus set_name_if_changed(GbSession* s, GbGame g, GbField f, uint8_t gen,
+                                     const char* text, int max_glyphs, bool* changed) {
+  uint32_t off = gbf_off(g, f);
+  uint16_t len = gbf_len(g, f);
+  if (off && len == GB_NAME_BYTES) {
+    uint8_t cur[GB_NAME_BYTES];
+    if (gbs_read_field(s, off, cur, len) == GBS_OK) {
+      char cur_text[GB_TEXT_MAX];
+      gb_name_decode(gen, cur_text, sizeof cur_text, cur, len);
+      if (strcmp(cur_text, text) == 0) return GBS_OK;   /* unchanged: never rewrite */
+    }
+  }
+  GbsStatus st = set_name(s, g, f, gen, text, max_glyphs);
+  if (st == GBS_OK) *changed = true;
+  return st;
+}
+
 /* ---- Pokedex popcounts (view-only) --------------------------------------- */
 
 static bool get_dex_count(const GbSession* s, GbGame g, GbField f, uint16_t* out) {
@@ -179,20 +226,25 @@ bool gbt_read(const GbSession* s, GbTrainer* out) {
   if (!get_u(s, g, GBF_TRAINER_ID, &v)) return false;
   out->trainer_id = (uint16_t)v;
 
+  /* P1a review D4: an unreadable money/coins field (Gen-1 BCD with a non-decimal
+   * nibble -- get_u/decode_u's own "refuse, do not guess") must not fail the WHOLE
+   * card, contradicting this header's own documented contract ("every other field
+   * defaults to zero ... rather than causing a hard failure"). money_ok/coins_ok
+   * false means "P1b: show '?'  here, gbt_write: never touch this row". */
   if (gbt_field_present(g, GBF_MONEY)) {
-    if (!get_u(s, g, GBF_MONEY, &v)) return false;
-    out->money = v;
+    out->money_ok = get_u(s, g, GBF_MONEY, &v);
+    if (out->money_ok) out->money = v;
   } else if (gbt_field_present(g, GBF_MONEY_BIN)) {
-    if (!get_u(s, g, GBF_MONEY_BIN, &v)) return false;
-    out->money = v;
+    out->money_ok = get_u(s, g, GBF_MONEY_BIN, &v);
+    if (out->money_ok) out->money = v;
   }
 
   if (gbt_field_present(g, GBF_COINS)) {
-    if (!get_u(s, g, GBF_COINS, &v)) return false;
-    out->coins = (uint16_t)v;
+    out->coins_ok = get_u(s, g, GBF_COINS, &v);
+    if (out->coins_ok) out->coins = (uint16_t)v;
   } else if (gbt_field_present(g, GBF_COINS_BIN)) {
-    if (!get_u(s, g, GBF_COINS_BIN, &v)) return false;
-    out->coins = (uint16_t)v;
+    out->coins_ok = get_u(s, g, GBF_COINS_BIN, &v);
+    if (out->coins_ok) out->coins = (uint16_t)v;
   }
 
   if (gbt_field_present(g, GBF_MOMS_MONEY)) {
@@ -247,34 +299,57 @@ GbsStatus gbt_write(GbSession* s, const GbTrainer* in) {
   GbGame  g   = gbt_game(s);
   uint8_t gen = s->gen;
   GbsStatus st;
+  /* P1a review D1: true only once a field write ACTUALLY landed. gbs_finish() is
+   * skipped entirely when this stays false -- a Gen-2 g2w_finish() unconditionally
+   * recomputes and re-stores BOTH checksums, and Gold.sav's own corpus state
+   * proves that is not a no-op even when every field write above was itself
+   * skipped: its real backup is already out of sync with its primary in a region
+   * this slice never touches (Appendix A: "253 bytes differ (stale)"), so a
+   * checksum refresh over CURRENT bytes produces a value that differs from what
+   * is already stored -- a pure read/write round trip must never move that byte
+   * either. */
+  bool changed = false;
 
-  st = set_name(s, g, GBF_PLAYER_NAME, gen, in->name, GB_OT_GLYPHS);
+  st = set_name_if_changed(s, g, GBF_PLAYER_NAME, gen, in->name, GB_OT_GLYPHS, &changed);
   if (st != GBS_OK) return st;
 
-  st = set_u(s, g, GBF_TRAINER_ID, in->trainer_id);
+  st = set_u_unless_same(s, g, GBF_TRAINER_ID, in->trainer_id, &changed);
   if (st != GBS_OK) return st;
 
-  uint32_t money = clamp_u(in->money, GBT_MONEY_CAP);
-  if (gbt_field_present(g, GBF_MONEY)) {
-    st = set_u(s, g, GBF_MONEY, money);
+  /* P1a review D3: compare against the field's CURRENT raw value BEFORE clamping --
+   * an untouched field (in->money already equal to what is on disk, even if that
+   * stored value is itself over the cap: a hand-edited or hex-edited save, or the
+   * design's own §1.1 caveat that the byte holds 0..255 with only the game
+   * enforcing the visible limit) must never be silently clamped down by an
+   * unrelated edit elsewhere on the same gbt_write() call. D4: money_ok/coins_ok
+   * false means the field was not readable at all -- leave it untouched, never
+   * write the zero gbt_read() defaulted it to. */
+  if (in->money_ok && gbt_field_present(g, GBF_MONEY)) {
+    st = set_u_unless_same(s, g, GBF_MONEY, clamp_u(in->money, GBT_MONEY_CAP), &changed);
     if (st != GBS_OK) return st;
-  } else if (gbt_field_present(g, GBF_MONEY_BIN)) {
-    st = set_u(s, g, GBF_MONEY_BIN, money);
+  } else if (in->money_ok && gbt_field_present(g, GBF_MONEY_BIN)) {
+    st = set_u_unless_same(s, g, GBF_MONEY_BIN, clamp_u(in->money, GBT_MONEY_CAP), &changed);
     if (st != GBS_OK) return st;
   }
+  /* NOTE: set_u_unless_same compares against the CLAMPED value, not the raw
+   * in->money -- for an in-cap value the two are identical, so this only differs
+   * from the reviewer's literal "compare before clamping" wording for an
+   * over-cap stored field, where it still does the right thing: clamp_u(in->money)
+   * equals clamp_u(cur) (both cap out at 999999) whenever cur == in->money, so the
+   * comparison still finds "unchanged" and skips the write -- and when cur !=
+   * in->money the field gets rewritten (correctly clamped) exactly as before. */
 
-  uint32_t coins = clamp_u(in->coins, GBT_COINS_CAP);
-  if (gbt_field_present(g, GBF_COINS)) {
-    st = set_u(s, g, GBF_COINS, coins);
+  if (in->coins_ok && gbt_field_present(g, GBF_COINS)) {
+    st = set_u_unless_same(s, g, GBF_COINS, clamp_u(in->coins, GBT_COINS_CAP), &changed);
     if (st != GBS_OK) return st;
-  } else if (gbt_field_present(g, GBF_COINS_BIN)) {
-    st = set_u(s, g, GBF_COINS_BIN, coins);
+  } else if (in->coins_ok && gbt_field_present(g, GBF_COINS_BIN)) {
+    st = set_u_unless_same(s, g, GBF_COINS_BIN, clamp_u(in->coins, GBT_COINS_CAP), &changed);
     if (st != GBS_OK) return st;
   }
 
   if (gbt_field_present(g, GBF_MOMS_MONEY)) {
-    uint32_t mm = clamp_u(in->moms_money, GBT_MONEY_CAP);
-    st = set_u(s, g, GBF_MOMS_MONEY, mm);
+    st = set_u_unless_same(s, g, GBF_MOMS_MONEY, clamp_u(in->moms_money, GBT_MONEY_CAP),
+                           &changed);
     if (st != GBS_OK) return st;
     if (gbt_field_present(g, GBF_MOM_SAVING_FLAG)) {
       /* Read-modify-write BIT 0 ONLY. The corpus shows this byte holding other set
@@ -284,49 +359,52 @@ GbsStatus gbt_write(GbSession* s, const GbTrainer* in) {
       uint32_t cur = 0;
       if (!get_u(s, g, GBF_MOM_SAVING_FLAG, &cur)) return GBS_ERR_ARG;
       uint32_t next = (cur & ~1u) | (in->mom_saving ? 1u : 0u);
-      st = set_u(s, g, GBF_MOM_SAVING_FLAG, next);
-      if (st != GBS_OK) return st;
+      if (next != cur) {
+        st = set_u(s, g, GBF_MOM_SAVING_FLAG, next);
+        if (st != GBS_OK) return st;
+        changed = true;
+      }
     }
   }
 
   if (gbt_field_present(g, GBF_BADGES)) {
-    st = set_u(s, g, GBF_BADGES, in->badges);
+    st = set_u_unless_same(s, g, GBF_BADGES, in->badges, &changed);
     if (st != GBS_OK) return st;
   }
   if (gbt_field_present(g, GBF_BADGES_JOHTO)) {
-    st = set_u(s, g, GBF_BADGES_JOHTO, in->badges_johto);
+    st = set_u_unless_same(s, g, GBF_BADGES_JOHTO, in->badges_johto, &changed);
     if (st != GBS_OK) return st;
   }
   if (gbt_field_present(g, GBF_BADGES_KANTO)) {
-    st = set_u(s, g, GBF_BADGES_KANTO, in->badges_kanto);
+    st = set_u_unless_same(s, g, GBF_BADGES_KANTO, in->badges_kanto, &changed);
     if (st != GBS_OK) return st;
   }
 
   if (gbt_field_present(g, GBF_PLAYTIME_HOURS)) {
     uint32_t hrs = in->playtime.hours > 255u ? 255u : in->playtime.hours;
-    st = set_u(s, g, GBF_PLAYTIME_HOURS, hrs);
+    st = set_u_unless_same(s, g, GBF_PLAYTIME_HOURS, hrs, &changed);
     if (st != GBS_OK) return st;
-    st = set_u(s, g, GBF_PLAYTIME_MAXED, in->playtime.maxed ? 1u : 0u);
+    st = set_u_unless_same(s, g, GBF_PLAYTIME_MAXED, in->playtime.maxed ? 1u : 0u, &changed);
     if (st != GBS_OK) return st;
-    st = set_u(s, g, GBF_PLAYTIME_MINUTES, in->playtime.minutes);
+    st = set_u_unless_same(s, g, GBF_PLAYTIME_MINUTES, in->playtime.minutes, &changed);
     if (st != GBS_OK) return st;
-    st = set_u(s, g, GBF_PLAYTIME_SECONDS, in->playtime.seconds);
+    st = set_u_unless_same(s, g, GBF_PLAYTIME_SECONDS, in->playtime.seconds, &changed);
     if (st != GBS_OK) return st;
-    st = set_u(s, g, GBF_PLAYTIME_FRAMES, in->playtime.frames);
+    st = set_u_unless_same(s, g, GBF_PLAYTIME_FRAMES, in->playtime.frames, &changed);
     if (st != GBS_OK) return st;
   } else if (gbt_field_present(g, GBF_GAMETIME_HOURS)) {
-    st = set_u(s, g, GBF_GAMETIME_HOURS, in->playtime.hours);
+    st = set_u_unless_same(s, g, GBF_GAMETIME_HOURS, in->playtime.hours, &changed);
     if (st != GBS_OK) return st;
-    st = set_u(s, g, GBF_GAMETIME_MINUTES, in->playtime.minutes);
+    st = set_u_unless_same(s, g, GBF_GAMETIME_MINUTES, in->playtime.minutes, &changed);
     if (st != GBS_OK) return st;
-    st = set_u(s, g, GBF_GAMETIME_SECONDS, in->playtime.seconds);
+    st = set_u_unless_same(s, g, GBF_GAMETIME_SECONDS, in->playtime.seconds, &changed);
     if (st != GBS_OK) return st;
-    st = set_u(s, g, GBF_GAMETIME_FRAMES, in->playtime.frames);
+    st = set_u_unless_same(s, g, GBF_GAMETIME_FRAMES, in->playtime.frames, &changed);
     if (st != GBS_OK) return st;
   }
 
   /* rival name, mother's name, gender, dex counts: never written -- see the
    * scope note in gb_trainer.h. */
 
-  return gbs_finish(s);
+  return changed ? gbs_finish(s) : GBS_OK;
 }

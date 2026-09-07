@@ -126,6 +126,34 @@ static void vc_sanity(const char* file, uint16_t expect_tid) {
   CHECKF(t.coins <= 9999u, "%s: coins over cap", file);
 }
 
+/* P1a review D1 (blocking) -- a pure gbt_read -> gbt_write must not change a
+ * single byte, on any corpus save. Before the fix, gbt_write's unconditional
+ * set_name() flattened every real name field's post-terminator residue to 0x50
+ * fill (Red: 8 stray bytes, Yellow: 7, Gold/Crystal: 3) on every write, edited or
+ * not; D5 was a consequence -- a corpus name whose residue happened to decode past
+ * GB_OT_GLYPHS glyphs made gbt_write() refuse EVERY edit, including unrelated
+ * ones. Includes both VC .sav.dat files (same field layout, different tail). */
+static void noop_zero_diff(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+  GbTrainer t;
+  CHECKF(gbt_read(&s, &t), "%s: gbt_read", file);
+
+  GbsStatus st = gbt_write(&s, &t);
+  CHECKF(st == GBS_OK, "%s: no-op gbt_write status %s", file, gbs_status_text(st));
+
+  uint32_t diff = 0, first = 0;
+  for (uint32_t i = 0; i < len; i++)
+    if (g_img[i] != g_orig[i]) { if (!diff) first = i; diff++; }
+  CHECKF(diff == 0,
+        "%s: no-op gbt_write changed %u byte(s), first at 0x%04X (0x%02X -> 0x%02X)",
+        file, diff, first, g_orig[first], g_img[first]);
+}
+
 /* ---------------------------------------------------------------- B: round trip */
 
 /* Mark [off, off+len) protected in g_protect. */
@@ -316,6 +344,14 @@ int main(void) {
   expect_gen2_extras("Crystal.sav", 977199, 1, 0);
   vc_sanity("Gold-VC.sav.dat", 46116);
   vc_sanity("Crystal-VC.sav.dat", 8872);
+
+  printf("== B0: no-op read->write is a zero-byte diff (P1a review D1) ==\n");
+  noop_zero_diff("Red.sav");
+  noop_zero_diff("Yellow.sav");
+  noop_zero_diff("Gold.sav");
+  noop_zero_diff("Crystal.sav");
+  noop_zero_diff("Gold-VC.sav.dat");
+  noop_zero_diff("Crystal-VC.sav.dat");
 
   printf("== B: round trips ==\n");
   roundtrip("Red.sav", GB_GEN1);

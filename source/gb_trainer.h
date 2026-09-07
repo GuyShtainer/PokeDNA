@@ -48,8 +48,16 @@ typedef struct {
   char     name[GB_TEXT_MAX];         /* UTF-8 decoded, <= GB_OT_GLYPHS glyphs       */
   uint16_t trainer_id;
 
-  uint32_t money;                     /* decoded to binary; capped at 999999         */
-  uint16_t coins;                     /* decoded to binary; capped at 9999           */
+  uint32_t money;                     /* decoded RAW (may exceed the cap if the stored
+                                        * bytes do); the WRITE caps to 999999 only when
+                                        * the value actually changes, see gbt_write     */
+  bool     money_ok;                  /* false: Gen-1 BCD decode failed (non-decimal
+                                        * nibble) -- the stored bytes are not readable
+                                        * as a number; P1b must show "?", and gbt_write
+                                        * never touches this row while it is false      */
+  uint16_t coins;                     /* decoded RAW; the WRITE caps to 9999 only when
+                                        * the value actually changes, see gbt_write     */
+  bool     coins_ok;                  /* same meaning as money_ok, for the coins field */
 
   bool     has_mom;                   /* Gen 2 only                                  */
   uint32_t moms_money;                /* Gen 2 only; capped at 999999                */
@@ -90,17 +98,35 @@ bool gbt_field_present(GbGame game, GbField field);
  * (never opened) or a read that could not even reach the player-name field — the
  * one field every supported game has. Every other field defaults to zero and is
  * left absent (has_mom/has_mother/has_gender false, badges fields left at 0 for a
- * game generation that lacks them) rather than causing a hard failure. */
+ * game generation that lacks them) rather than causing a hard failure — including
+ * an unreadable money/coins field (P1a review D4): a Gen-1 save whose money bytes
+ * are not valid BCD sets money_ok/coins_ok false and money/coins to 0 rather than
+ * failing the whole read, exactly as this header always documented for "every
+ * other field". */
 bool gbt_read(const GbSession* s, GbTrainer* out);
 
 /* Write the EDITABLE subset of `in` back into the session (see the scope note
- * above for what is and is not written). Caps money/coins/mom's-money to their
- * design limits before writing; refuses a player name over GB_OT_GLYPHS glyphs or
- * one the target generation's charset cannot store exactly (GBS_ERR_ARG) before a
- * single byte moves. Calls gbs_finish() once at the end of the batch. On any
- * non-GBS_OK return the image may already hold SOME of the intended edits — same
- * contract gb_session.h documents for gbs_write_field/gbs_commit_list: the caller
- * rolls back the whole image from its own pristine copy, this layer does not. */
+ * above for what is and is not written).
+ *
+ * A FIELD THAT DID NOT CHANGE IS NEVER REWRITTEN (P1a review D1/D3/D5) — this is
+ * not an optimisation, it is a correctness requirement (docs/GEN12-PARITY-DESIGN.md
+ * §5.1): the player name is compared, DECODED, against what a fresh gbt_read of
+ * this session would return right now, and the encode/write is skipped entirely
+ * when they already match. Money and coins get the same untouched-is-untouched
+ * treatment: each is compared against its own CURRENT raw value before any cap is
+ * applied, and only clamped-then-written when it actually differs; a round-trip
+ * that never meant to touch money must not (a) silently rewrite a stored name's
+ * post-terminator tail to 0x50 filler, or (b) silently clamp a stored value that
+ * happens to already be over 999999/9999 down to the cap. money/coins are also
+ * skipped outright when money_ok/coins_ok is false (an unreadable field is left
+ * exactly as found, never overwritten with the zero gbt_read defaulted it to).
+ *
+ * Refuses a player name over GB_OT_GLYPHS glyphs or one the target generation's
+ * charset cannot store exactly (GBS_ERR_ARG) before a single byte moves. Calls
+ * gbs_finish() once at the end of the batch. On any non-GBS_OK return the image
+ * may already hold SOME of the intended edits — same contract gb_session.h
+ * documents for gbs_write_field/gbs_commit_list: the caller rolls back the whole
+ * image from its own pristine copy, this layer does not. */
 GbsStatus gbt_write(GbSession* s, const GbTrainer* in);
 
 #endif /* GB_TRAINER_H */
