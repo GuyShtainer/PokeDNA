@@ -12,13 +12,21 @@
  *
  * Usage
  * -----
- *   host_gbsurgery_tool --in SAVE --out EDITED [--op ...]...
+ *   host_gbsurgery_tool --in SAVE --out EDITED [--rom ROM] [--op ...]...
  *     --op nick BOX SLOT TEXT      gb_load -> gbe_set_text(GBE_NICK) -> gb_commit_checked
  *     --op ot BOX SLOT TEXT        same, GBE_OT
  *     --op level BOX SLOT N        gb_set_level(N); party slots also get gbe_settle_stats
  *     --op dv BOX SLOT STAT V      STAT in atk|def|spe|spc, V 0..15
  *     --op delete BOX SLOT         gbs_delete
  *     --op move FROM_BOX SLOT TO_BOX   gbs_move (prints the landing slot)
+ *     --op create BOX DEX LEVEL    BACKLOG #50: gb_new_mon() -> gbs_insert (box only,
+ *                                  same as pdna_gen12.c's own gb_create_hook -- see
+ *                                  its own comment for why the party is refused).
+ *                                  Needs --rom (a Gen-1/2 ROM matching SAVE's own
+ *                                  generation); the OT name/id are the fixed test
+ *                                  values "GATEX"/12345, not SAVE's own trainer --
+ *                                  this tool has no reader for that field and the
+ *                                  retail-gate case this exists for does not need it.
  *   host_gbsurgery_tool --in SAVE --list
  *     print every box: count, and per slot species dex / level / nickname
  *
@@ -63,6 +71,11 @@
 
 #include "gb_session.h"
 #include "gb_editor.h"
+#include "rom_gbsprite.h"
+#include "rom_gbbase.h"
+#include "rom_gblearn.h"
+#include "gb_new_mon.h"
+#include "data_tables.h"
 
 #define MAX_FILE_BYTES 65536u
 #define MAX_OPS        64
@@ -71,16 +84,21 @@ static uint8_t g_img[MAX_FILE_BYTES];
 static uint8_t g_scratch[GBS_SCRATCH_BYTES];
 static uint8_t g_list[GBS_LIST_BYTES];
 static uint8_t g_list2[GBS_LIST_BYTES];
+/* --op create's own scratch: a host tool, so a static 2 KiB is not remotely tight
+ * the way it would be on the GBA build this exercises (pdna_gen12.c's gb_create_
+ * locate_rom reuses arena-resident storage for the identical reason). */
+static uint8_t g_romscratch[ROM_GBSPRITE_SCRATCH_MIN];
+static const char* g_rom_path;   /* set once in main() from --rom, read by do_create */
 
 typedef struct {
-  const char* kind;   /* "nick" / "ot" / "level" / "dv" / "delete" / "move" */
+  const char* kind;   /* "nick" / "ot" / "level" / "dv" / "delete" / "move" / "create" */
   const char* a[4];
   int n;
 } Op;
 
 static void usage(const char* prog) {
   fprintf(stderr,
-    "usage: %s --in SAVE --out EDITED [--op ...]...\n"
+    "usage: %s --in SAVE --out EDITED [--rom ROM] [--op ...]...\n"
     "       %s --in SAVE --list\n"
     "  --op nick BOX SLOT TEXT\n"
     "  --op ot BOX SLOT TEXT\n"
@@ -88,6 +106,7 @@ static void usage(const char* prog) {
     "  --op dv BOX SLOT STAT V     STAT in atk|def|spe|spc, V 0..15\n"
     "  --op delete BOX SLOT\n"
     "  --op move FROM_BOX SLOT TO_BOX\n"
+    "  --op create BOX DEX LEVEL  needs --rom; box only, not the party\n"
     "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -97,11 +116,13 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
                       bool* list_mode, Op ops[MAX_OPS], int* nops) {
   static const struct { const char* kind; int n; } shape[] = {
     {"nick", 3}, {"ot", 3}, {"level", 3}, {"dv", 4}, {"delete", 2}, {"move", 3},
+    {"create", 3},
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--in") && i + 1 < argc) { *in = argv[++i]; continue; }
     if (!strcmp(argv[i], "--out") && i + 1 < argc) { *out = argv[++i]; continue; }
+    if (!strcmp(argv[i], "--rom") && i + 1 < argc) { g_rom_path = argv[++i]; continue; }
     if (!strcmp(argv[i], "--list")) { *list_mode = true; continue; }
     if (!strcmp(argv[i], "--op") && i + 1 < argc) {
       const char* kind = argv[++i];
@@ -269,6 +290,96 @@ static int do_move(GbSession* s, int from_box, int slot, int to_box) {
   return 0;
 }
 
+static bool tool_rom_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
+  FILE* f = (FILE*)ctx;
+  if (fseek(f, (long)off, SEEK_SET) != 0) return false;
+  if (fread(dst, 1, len, f) != len) return false;
+  return true;
+}
+
+/* BACKLOG #50, retail-gate case: build a fresh mon off --rom (rom_gbbase_gen1/2 +
+ * rom_gblearn, the SAME facts pdna_gen12.c's gb_create_hook assembles) and insert
+ * it into `box` -- box only, gbs_insert() itself refuses the party pseudo-box, the
+ * exact limitation gb_create_hook's own party guard exists for (see its comment,
+ * source/pdna_gen12.c). OT name/id are the fixed test values "GATEX"/12345: this
+ * tool has no reader for SAVE's own trainer block, and the retail-gate assertion
+ * this exists for (does the mon SHOW UP, named and levelled right) does not need
+ * a real one. */
+static int do_create(GbSession* s, const char* box_tok, const char* dex_tok,
+                     const char* lvl_tok) {
+  int box = resolve_box(s, box_tok);
+  if (box < 0) return 2;
+  int dex = resolve_uint(dex_tok, "dex");
+  if (dex < 1) return 2;
+  int lvl = resolve_uint(lvl_tok, "level");
+  if (lvl < 1 || lvl > 100) { fprintf(stderr, "bad level %s (want 1..100)\n", lvl_tok); return 2; }
+  if (!g_rom_path) { fprintf(stderr, "--op create needs --rom PATH\n"); return 2; }
+
+  FILE* rf = fopen(g_rom_path, "rb");
+  if (!rf) return refuse("cannot open --rom file");
+  if (fseek(rf, 0, SEEK_END) != 0) { fclose(rf); return refuse("cannot seek --rom file"); }
+  long rsz = ftell(rf);
+  if (rsz <= 0) { fclose(rf); return refuse("empty --rom file"); }
+  rewind(rf);
+
+  RomGbSprite gs;
+  int gsok = rom_gbsprite_open(&gs, tool_rom_read, rf, (uint32_t)rsz,
+                               g_romscratch, sizeof g_romscratch);
+  GbRomGen want = (s->gen == GB_GEN1) ? GB_ROM_GEN1 : GB_ROM_GEN2;
+  if (!gsok || gs.gen != want) { fclose(rf); return refuse("--rom did not open as SAVE's own generation"); }
+
+  RomGbLearn rl;
+  if (!rom_gblearn_open(&rl, s->gen, tool_rom_read, rf, (uint32_t)rsz)) {
+    fclose(rf); return refuse("rom_gblearn_open: no learnset table located");
+  }
+
+  GbNewMonSrc src;
+  memset(&src, 0, sizeof src);
+  uint8_t g1_start[4]; const uint8_t* g1_start_p = NULL;
+  if (s->gen == GB_GEN1) {
+    RomGb1Species sp;
+    if (!rom_gbbase_gen1(&gs, tool_rom_read, rf, (uint16_t)dex, &sp)) {
+      fclose(rf); return refuse("rom_gbbase_gen1: no row for that dex");
+    }
+    memcpy(src.base, sp.base.base, GB_NSTATS);
+    src.type1 = sp.base.type1; src.type2 = sp.base.type2; src.growth = sp.growth;
+    memcpy(g1_start, sp.start, 4);
+    g1_start_p = g1_start;
+  } else {
+    RomGb2Species sp;
+    if (!rom_gbbase_gen2(&gs, tool_rom_read, rf, (uint16_t)dex, &sp)) {
+      fclose(rf); return refuse("rom_gbbase_gen2: no row for that dex");
+    }
+    src.growth = sp.growth;
+  }
+  int kept = g1_start_p
+    ? rom_gblearn_moves_at_seeded(&rl, (uint16_t)dex, (uint8_t)lvl, g1_start_p, src.moves)
+    : rom_gblearn_moves_at(&rl, (uint16_t)dex, (uint8_t)lvl, src.moves);
+  fclose(rf);
+  if (kept < 0) return refuse("rom_gblearn_moves_at: bad dex/level for this table");
+
+  src.species_name = pk_species_name((uint16_t)dex);
+  src.ot_name = "GATEX";
+  src.ot_id = 12345;
+
+  GbEditMon party_mon;
+  if (!gb_new_mon(s->gen, (uint16_t)dex, (uint8_t)lvl, &src, 0xC0FFEEu, &party_mon))
+    return refuse("gb_new_mon refused (growth-rate cross-check, or a bad dex/level)");
+
+  /* party -> box: the byte-identical-prefix technique gb_new_mon.h documents and
+   * pdna_gen12.c's gb_create_hook uses -- gbs_insert() requires is_party == false. */
+  GbEditMon box_mon;
+  if (!gb_load_parts(&box_mon, s->gen, false, party_mon.rec, party_mon.otname,
+                     party_mon.nick, party_mon.list_species))
+    return refuse("gb_load_parts (party -> box) failed");
+
+  int slot_out = 0;
+  GbsStatus ist = gbs_insert(s, box, &box_mon, &slot_out, g_list);
+  if (ist != GBS_OK) return refuse(gbs_status_text(ist));
+  printf("created dex=%d lv=%d into box %d slot %d\n", dex, lvl, box, slot_out);
+  return 0;
+}
+
 /* Dispatch one already-shaped Op. Returns 0 ok, 1 refused (reported), 2 usage (reported). */
 static int apply_op(GbSession* s, const Op* o) {
   if (!strcmp(o->kind, "nick") || !strcmp(o->kind, "ot")) {
@@ -302,6 +413,7 @@ static int apply_op(GbSession* s, const Op* o) {
     if (from_box < 0 || slot < 0 || to_box < 0) return 2;
     return do_move(s, from_box, slot, to_box);
   }
+  if (!strcmp(o->kind, "create")) return do_create(s, o->a[0], o->a[1], o->a[2]);
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;
 }

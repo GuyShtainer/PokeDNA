@@ -90,6 +90,10 @@ SURGERY_SRCS = [
     "tests/host_gbsurgery_tool.c", "source/gb_session.c", "source/gb_editor.c",
     "source/gb_edit.c", "source/gen1_save.c", "source/gen1_write.c",
     "source/gen2_save.c", "source/gen2_write.c", "source/data_tables.c",
+    # BACKLOG #50: --op create's own dependencies (rom_gbsprite/rom_gbbase/rom_gblearn
+    # locate the ROM's tables; gb_new_mon builds the record from what they find).
+    "source/rom_gbsprite.c", "source/gb_sprite_codec.c", "source/rom_gbbase.c",
+    "source/rom_gblearn.c", "source/gb_new_mon.c",
 ]
 
 # gen: 1 = Gen-1 numbering (no primary/backup mirror split in gb_roundtrip's classifier,
@@ -166,9 +170,13 @@ def build_tool(scratch: Path) -> Path:
     return binary
 
 
-def run_surgery(binary: Path, in_path: Path, out_path: Path, op_groups):
-    """op_groups: list of token-lists, one per --op (e.g. ["nick","party","0","GATEX"])."""
+def run_surgery(binary: Path, in_path: Path, out_path: Path, op_groups, rom: Path | None = None):
+    """op_groups: list of token-lists, one per --op (e.g. ["nick","party","0","GATEX"]).
+    `rom` (BACKLOG #50): the Gen-1/2 ROM --op create reads base stats/learnsets off --
+    the SAME rom already booted (GAMES[name]["rom"] under the same corpus)."""
     cmd = [str(binary), "--in", str(in_path), "--out", str(out_path)]
+    if rom is not None:
+        cmd += ["--rom", str(rom)]
     for g in op_groups:
         cmd += ["--op"] + list(g)
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -417,6 +425,62 @@ def edited_case(python, vendor, work, rom, gen, edited_sav, orig_size, dump_name
     return tally.record(label, ok, detail)
 
 
+CREATE_DEX, CREATE_LEVEL, CREATE_NAME = 1, 5, "BULBASAUR"   # the brief's own worked example
+
+
+def create_case(python, vendor, work, rom, gen, sav, orig, sections, party_count0,
+                base_name, binary, tally):
+    """BACKLOG #50, item 4: create a mon via gb_new_mon (host_gbsurgery_tool.c's new
+    --op create -- the SAME rom_gbbase_gen1/2 + rom_gblearn facts and the SAME
+    gb_new_mon() call pdna_gen12.c's gb_create_hook makes) and boot the result.
+
+    Box only: gbs_insert() itself refuses the party pseudo-box (gb_session.h; see
+    gb_create_hook's own comment, source/pdna_gen12.c) -- Gen 2 then gbs_move()s the
+    new box slot into the party (freeing a slot first, EXACTLY case 6 above's own
+    "every corpus party is 6/6" pattern) so the retail game's OWN party screen shows
+    its name+level; gb_roundtrip.py has no PC-box screen reader, only a party one.
+
+    Gen 1 cannot take that second step: gbs_move()'s own box->party conversion
+    refuses Gen 1 UNCONDITIONALLY (needs a Gen-1 base-stat table gbs_move has no
+    parameter for -- the exact wall case 6 above already demonstrates and asserts
+    as CORRECT, not a bug). So a Gen-1 create is asserted structurally instead --
+    verdict=accept, party UNCHANGED, the SRAM-diff/length gates -- proving the
+    created box record boots cleanly and is ACCEPTED by the retail game rather than
+    read off a PC-box screen this harness cannot reach. Recorded as a known gap, not
+    silently narrowed: the case label says "(Gen 1, box only, no on-screen content
+    check)" so a passing run never reads as "the name was confirmed on screen"."""
+    dst = first_room_box(sections)
+    if dst is None:
+        tally.skip_case("create", "every storage box this --list saw is full")
+        return
+    dst_count = sections[f"box{dst}"]["count"]   # gbs_insert() appends here (verified
+                                                  # against the standalone tool: a box
+                                                  # with count=17 lands its new mon at
+                                                  # slot 17)
+
+    if gen == 1:
+        ops = [["create", str(dst), str(CREATE_DEX), str(CREATE_LEVEL)]]
+        label = f"create dex {CREATE_DEX}@{CREATE_LEVEL} into box {dst} (Gen 1, box only, no on-screen content check)"
+        extra_check = None
+    else:
+        last_idx = party_count0 - 1
+        ops = [["delete", "party", str(last_idx)],
+               ["create", str(dst), str(CREATE_DEX), str(CREATE_LEVEL)],
+               ["move", str(dst), str(dst_count), "party"]]
+        label = f"create dex {CREATE_DEX}@{CREATE_LEVEL} -> party"
+        extra_check = check_level_slot(last_idx, gen, CREATE_NAME, CREATE_LEVEL)
+
+    create_sav = work / "create.sav"
+    rc, out, err = run_surgery(binary, sav, create_sav, ops, rom=rom)
+    if rc != 0:
+        tally.record("create", False, f"surgery refused: {err.strip()}")
+        return
+
+    edited_case(python, vendor, work, rom, gen, create_sav, len(orig), "create",
+               ["--expect-name", base_name, "--expect-party-count", str(party_count0)],
+               tally, label, extra_check=extra_check)
+
+
 def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     tally = Tally(sav.name)
     work = scratch / name
@@ -547,6 +611,10 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
                        tally, f"party last -> box {dst}")
         else:
             tally.record("party->box", False, f"surgery refused: {err.strip()}")
+
+    # ---- 8. create a mon from scratch (BACKLOG #50 item 4) ----
+    create_case(python, vendor, work, rom, gen, sav, orig, sections, party_count0,
+               base_name, binary, tally)
 
     return tally
 
