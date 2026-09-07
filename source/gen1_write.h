@@ -441,7 +441,28 @@ Gen1WStatus gen1_write_apply(uint8_t* img, uint32_t len, Gen1Save* s,
  * patch can never be the thing that skips the structural gate a Pokemon edit goes
  * through.
  *
- * Refuses (docs/GEN12-PARITY-DESIGN.md §4.0, g2w_write_range's refusal set translated):
+ * TWO ENTRY POINTS, one contract, P0 review D6 (an earlier draft's cap justification
+ * here was false: source/gb_fields.c has fields up to 320 B — GBF_EVENT_FLAGS_BASE — in
+ * this SAME slice, not "~41 bytes" as this comment used to claim):
+ *
+ *   gen1_write_range_ex(img, len, s, off, buf, n, snap, snap_len)
+ *     The real primitive. `snap`/`snap_len` is the CALLER'S rollback buffer — this file
+ *     owns no scratch of its own, so the cap on `n` is simply `n <= snap_len`, whatever
+ *     the caller can supply. gb_session.c's gbs_write_field passes the session's own
+ *     GBS_SCRATCH_BYTES (1152 B) buffer — already used, at a different time, as
+ *     gen1_commit's box-list rollback copy; the two never run at once on the same
+ *     session, so this is a reused resource, not a new allocation — which comfortably
+ *     covers every field this design defines with room to spare.
+ *   gen1_write_range(img, len, s, off, buf, n)
+ *     A 64-byte convenience wrapper over the above, for a caller who does not want to
+ *     find its own buffer (GEN1_WRITE_RANGE_MAX): supplies a small fixed local array
+ *     and calls gen1_write_range_ex. A caller writing something wider refuses with
+ *     GEN1W_ERR_RANGE and must call _ex directly with a bigger buffer — this file will
+ *     not put a buffer bigger than GEN1_WRITE_RANGE_MAX on the IWRAM stack itself (hard
+ *     convention #2), but it no longer pretends nothing needs one.
+ *
+ * Refuses, on EITHER entry point (docs/GEN12-PARITY-DESIGN.md §4.0, g2w_write_range's
+ * refusal set translated):
  *   - an image that does not already parse as a Western R/B/Y save (GEN1W_ERR_SAVE);
  *   - `off`/`off+n` outside [0x2598, 0x3522] (GEN1_OFF_PLAYER_NAME..the tile-animation
  *     byte, i.e. GEN1_SUM_FIRST..GEN1_SUM_LAST — everything the main checksum covers,
@@ -452,22 +473,22 @@ Gen1WStatus gen1_write_apply(uint8_t* img, uint32_t len, Gen1Save* s,
  *   - any overlap with GEN1_OFF_CURRENT_NO — moving the open-box number without moving
  *     its live copy silently discards a boxful at the next boot (the same reason
  *     gen2_write.c refuses its current-box-number byte);
- *   - a range wider than GEN1_WRITE_RANGE_MAX. No P1-P5 field is remotely this size (the
- *     widest, the Gen-1 item bag body, is ~41 bytes; docs/GEN12-PARITY-DESIGN.md §4.2's
- *     RAM-anchor table has nothing wider), and this file has no scratch parameter to
- *     borrow a big rollback buffer from — hard convention #2 forbids a big buffer on the
- *     IWRAM stack, so the snapshot below is a small fixed array, not one sized to the
- *     whole (~4 KB) permitted window. A caller that genuinely needs to move more bytes
- *     than this belongs on the list-surgery path, not here.
+ *   - `n` wider than the rollback buffer in play (snap_len for _ex, GEN1_WRITE_RANGE_MAX
+ *     for the wrapper).
  *
- * On acceptance: writes `buf` to `img[off..off+n)`, refreshes the main checksum
- * (gen1_write_fix_main_checksum — Gen 1 has no backup mirror to refresh, unlike Gen 2),
- * re-opens the image, and refuses (restoring both the bytes and the checksum, GEN1W_ERR_
- * VERIFY) unless it still parses — the same snapshot-and-restore shape
- * gb_session.c's gen1_commit already uses for a box commit, applied to a plain byte
- * range instead of a list blob. `s` is refreshed on success, exactly like
- * gen1_write_apply. A no-op (the bytes already read back as `buf`) writes nothing at
- * all, checksum included. */
+ * On acceptance: snapshot `img[off..off+n)` AND the stored checksum byte into `snap`
+ * (ATOMIC: both restored together, or neither), write `buf` to `img[off..off+n)`,
+ * refresh the main checksum (gen1_write_fix_main_checksum — Gen 1 has no backup mirror
+ * to refresh, unlike Gen 2), re-open the image, and refuse (restoring both the bytes
+ * and the checksum from `snap`, GEN1W_ERR_VERIFY) unless it still parses — the same
+ * snapshot-and-restore shape gb_session.c's gen1_commit already uses for a box commit,
+ * applied to a plain byte range instead of a list blob. `s` is refreshed on success,
+ * exactly like gen1_write_apply. A no-op (the bytes already read back as `buf`) writes
+ * nothing at all, checksum included — and never touches `snap`. */
+Gen1WStatus gen1_write_range_ex(uint8_t* img, uint32_t len, Gen1Save* s,
+                                uint32_t off, const uint8_t* buf, uint32_t n,
+                                uint8_t* snap, uint32_t snap_len);
+
 #define GEN1_WRITE_RANGE_MAX 64u
 Gen1WStatus gen1_write_range(uint8_t* img, uint32_t len, Gen1Save* s,
                              uint32_t off, const uint8_t* buf, uint32_t n);

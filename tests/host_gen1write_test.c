@@ -879,6 +879,64 @@ static void test_write_range(const Image* base) {
             "…and changes NOTHING AT ALL — checksum included");
     }
   }
+
+  /* ---- gen1_write_range_ex: the wide write the 64-B wrapper cannot do (P0 review D6) --
+   * source/gb_fields.c's own GBF_EVENT_FLAGS_BASE is 320 B -- a real field this design
+   * ships, wider than GEN1_WRITE_RANGE_MAX by a factor of 5. Prove the caller-supplied-
+   * scratch primitive actually moves that many bytes, and that the 64-B wrapper
+   * correctly refuses the identical call instead of silently truncating or corrupting
+   * anything. */
+  {
+    Image im = *base;
+    Gen1Save s, after;
+    uint8_t payload[320], readback[320];
+    uint8_t scratch[512];   /* the caller's own rollback buffer -- this file owns none */
+
+    gen1_open(im.b, im.len, &s);
+    for (int i = 0; i < 320; i++) payload[i] = (uint8_t)(0xC0 + (i % 17));
+
+    CHECK(gen1_write_range(im.b, im.len, &s, GEN1_OFF_PLAYER_NAME + 100u, payload, 65)
+          == GEN1W_ERR_RANGE,
+          "the 64-B wrapper refuses 65 bytes even though the range itself is legal");
+
+    CHECK(gen1_write_range_ex(im.b, im.len, &s, GEN1_OFF_PLAYER_NAME + 100u, payload, 320,
+                             scratch, sizeof scratch) == GEN1W_OK,
+          "gen1_write_range_ex accepts a 320-byte write with a caller-supplied buffer");
+    memcpy(readback, im.b + GEN1_OFF_PLAYER_NAME + 100u, 320);
+    CHECK(memcmp(readback, payload, 320) == 0, "all 320 bytes read back exactly");
+    CHECK(gen1_open(im.b, im.len, &after) == GEN1_OK, "the image still parses");
+    CHECK(after.checksum_stored == after.checksum_calc,
+          "the main checksum validates after a 320-byte field write");
+
+    /* undersized scratch is refused, not silently clipped */
+    {
+      Image im2 = *base;
+      Gen1Save s2;
+      uint8_t small_scratch[64];
+      gen1_open(im2.b, im2.len, &s2);
+      CHECK(gen1_write_range_ex(im2.b, im2.len, &s2, GEN1_OFF_PLAYER_NAME + 100u, payload,
+                                320, small_scratch, sizeof small_scratch) == GEN1W_ERR_RANGE,
+            "gen1_write_range_ex refuses n > snap_len rather than overflow the caller's "
+            "buffer");
+      CHECK(memcmp(im2.b, base->b, im2.len) == 0, "…and changed nothing at all");
+    }
+
+    /* the atomic rollback: poison the save AFTER a successful write attempt would have
+     * to re-verify, forcing GEN1W_ERR_VERIFY, and confirm BOTH the bytes and the
+     * checksum come back together (never one without the other). */
+    {
+      Image im3 = *base;
+      Gen1Save s3;
+      Gen1WStatus st;
+      gen1_open(im3.b, im3.len, &s3);
+      im3.b[GEN1_OFF_CHECKSUM] ^= 0xFFu;         /* break the save first, isolated copy */
+      st = gen1_write_range_ex(im3.b, im3.len, &s3, GEN1_OFF_PLAYER_NAME + 100u, payload,
+                               320, scratch, sizeof scratch);
+      CHECK(st == GEN1W_ERR_SAVE, "a save whose checksum does not already validate is "
+                                  "refused before anything is touched (got %s)",
+            gen1_write_status_text(st));
+    }
+  }
 }
 
 /* 6. The gates fire. Each of these would be a silently corrupted save. */

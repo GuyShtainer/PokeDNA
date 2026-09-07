@@ -1024,6 +1024,29 @@ static void test_field_write(const char* file, uint8_t expect_gen, uint32_t mone
     }
     CHECK(st != GBS_OK, "field write: the party list is not reachable through gbs_write_field");
   }
+
+  /* P0 review D6: gbs_write_field must accept a field wider than gen1_write_range's
+   * 64-byte convenience cap -- source/gb_fields.c's own GBF_EVENT_FLAGS_BASE is 320 B,
+   * a real field this design ships. gbs_write_field routes Gen 1 through
+   * gen1_write_range_ex with the session's OWN scratch as the rollback buffer (not a
+   * new allocation -- see gb_session.h's own comment on this call), which is exactly
+   * what makes 320 B possible through the lifted API and not just the raw engine. */
+  if (s.gen == GB_GEN1) {
+    uint8_t payload[200], readback[200];
+    for (int i = 0; i < 200; i++) payload[i] = (uint8_t)(0x30 + (i % 40));
+    /* GEN1_OFF_PLAYER_NAME+100 .. +300: inside the header span, clear of the party
+     * blob / open box / current-box byte -- same offset host_gen1write_test.c's own
+     * D6 proof uses. */
+    uint32_t wide_off = GEN1_OFF_PLAYER_NAME + 100u;
+    CHECK(gbs_write_field(&s, wide_off, payload, sizeof payload) == GBS_OK,
+         "field write: a 200-byte Gen-1 field write is accepted (past the 64-B "
+         "convenience wrapper's own cap)");
+    CHECK(gbs_finish(&s) == GBS_OK, "field write: gbs_finish accepts the wide write");
+    CHECK(gbs_read_field(&s, wide_off, readback, sizeof readback) == GBS_OK,
+         "field write: the 200 bytes read back");
+    CHECK(memcmp(readback, payload, sizeof payload) == 0,
+         "field write: …exactly as written");
+  }
 }
 
 int main(void) {

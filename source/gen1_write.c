@@ -755,15 +755,17 @@ static bool ranges_overlap(uint32_t a0, uint32_t a1, uint32_t b0, uint32_t b1) {
   return a0 <= b1 && b0 <= a1;
 }
 
-Gen1WStatus gen1_write_range(uint8_t* img, uint32_t len, Gen1Save* s,
-                             uint32_t off, const uint8_t* buf, uint32_t n) {
+Gen1WStatus gen1_write_range_ex(uint8_t* img, uint32_t len, Gen1Save* s,
+                                uint32_t off, const uint8_t* buf, uint32_t n,
+                                uint8_t* snap, uint32_t snap_len) {
   Gen1Save cur, after;
   uint32_t last;
-  uint8_t snap[GEN1_WRITE_RANGE_MAX];
   uint8_t save_checksum;
 
-  if (!img || !s || !buf || !n) return GEN1W_ERR_ARG;
-  if (n > GEN1_WRITE_RANGE_MAX) return GEN1W_ERR_RANGE;
+  if (!img || !s || !buf || !n || !snap) return GEN1W_ERR_ARG;
+  if (n > snap_len) return GEN1W_ERR_RANGE;   /* the caller's rollback buffer is the cap,
+                                               * not a number this file invents (P0
+                                               * review D6) */
   if (len < GEN1_SAVE_SIZE) return GEN1W_ERR_SIZE;
   if (off + n < off) return GEN1W_ERR_RANGE;             /* unsigned wraparound guard */
   last = off + n - 1u;
@@ -789,7 +791,7 @@ Gen1WStatus gen1_write_range(uint8_t* img, uint32_t len, Gen1Save* s,
    * gen1_write_apply's own rule ("open the editor and press B" must not alter the file). */
   if (memcmp(img + off, buf, n) == 0) { *s = cur; return GEN1W_OK; }
 
-  memcpy(snap, img + off, n);                  /* the rollback copy                  */
+  memcpy(snap, img + off, n);                  /* the rollback copy, in the CALLER's buffer */
   save_checksum = img[GEN1_OFF_CHECKSUM];
 
   memcpy(img + off, buf, n);
@@ -803,4 +805,18 @@ Gen1WStatus gen1_write_range(uint8_t* img, uint32_t len, Gen1Save* s,
   memcpy(img + off, snap, n);                  /* put every byte back, checksum too  */
   img[GEN1_OFF_CHECKSUM] = save_checksum;
   return GEN1W_ERR_VERIFY;
+}
+
+Gen1WStatus gen1_write_range(uint8_t* img, uint32_t len, Gen1Save* s,
+                             uint32_t off, const uint8_t* buf, uint32_t n) {
+  /* The 64-byte convenience wrapper (P0 review D6): every field small enough that a
+   * caller would rather not find its own rollback buffer. GEN1_WRITE_RANGE_MAX is
+   * THIS wrapper's cap, not gen1_write_range_ex's — that one is capped by whatever
+   * `snap_len` its caller hands it, which gb_session.c's gbs_write_field sizes to the
+   * session's own scratch (1152 B, comfortably covering every field
+   * source/gb_fields.c defines, up to GBF_EVENT_FLAGS_BASE's 320 B). */
+  uint8_t snap[GEN1_WRITE_RANGE_MAX];
+  /* n > GEN1_WRITE_RANGE_MAX is refused by _ex itself (n > snap_len); not re-checked
+   * here to avoid a second copy of that comparison drifting out of step with it. */
+  return gen1_write_range_ex(img, len, s, off, buf, n, snap, sizeof snap);
 }

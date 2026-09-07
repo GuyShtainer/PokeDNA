@@ -265,18 +265,27 @@ GbsStatus gbs_read_field(GbSession* s, uint32_t off, void* buf, uint32_t n);
 
 /* Write `n` bytes at file offset `off`. Dispatches to whichever engine owns this
  * session's generation and inherits that engine's refusal set exactly:
- *   Gen 1 — gen1_write_range: confined to the main checksummed block, never the party,
- *           the open box's live copy, or the current-box-number byte (Pokemon change
- *           only through gbs_commit_list). Fixes the main checksum and re-verifies the
- *           image on EVERY call — Gen 1 has no backup mirror to defer, so there is
- *           nothing for gbs_finish to do afterward.
+ *   Gen 1 — gen1_write_range_ex (not the 64-byte gen1_write_range convenience
+ *           wrapper — P0 review D6): confined to the main checksummed block, never
+ *           the party, the open box's live copy, or the current-box-number byte
+ *           (Pokemon change only through gbs_commit_list). Fixes the main checksum
+ *           and re-verifies the image on EVERY call — Gen 1 has no backup mirror to
+ *           defer, so there is nothing for gbs_finish to do afterward. NO PER-
+ *           GENERATION CAP DIFFERENCE IS LEFT HERE: the rollback buffer is this
+ *           session's own `scratch` (>= GBS_SCRATCH_BYTES, 1152) — the SAME buffer
+ *           gbs_commit_list's Gen-1 path already borrows for a box-list snapshot,
+ *           reused rather than newly allocated, since a session never runs a box
+ *           commit and a field write in the same call — so a Gen-1 field write
+ *           through THIS function is capped at 1152 bytes, comfortably past every
+ *           field source/gb_fields.c defines (widest: 320 B), not gen1_write_range's
+ *           own 64-byte convenience cap.
  *   Gen 2 — g2w_write_range: confined to the checksummed span, never a Pokemon list,
  *           the current-box-number byte, or either stored checksum / the backup copy.
  *           Mirrors whatever part of the range lies inside the checksummed span
  *           immediately, but deliberately does NOT refresh the stored checksums itself
  *           (gen2_write.h's own contract) — call gbs_finish() once after the LAST field
  *           write in a batch, not after each one, so N field edits cost one whole-file
- *           reparse instead of N.
+ *           reparse instead of N. Capped only by s->len (the whole image).
  * A no-op (the bytes already read back as `buf`) writes nothing at all, on either
  * engine. */
 GbsStatus gbs_write_field(GbSession* s, uint32_t off, const void* buf, uint32_t n);
@@ -286,10 +295,11 @@ GbsStatus gbs_write_field(GbSession* s, uint32_t off, const void* buf, uint32_t 
  *           the whole file, refusing (image restored to whatever g2w_write_range already
  *           landed — see that module's CALLER CONTRACT: point it at a working copy, not
  *           the user's save) unless it comes back exactly as intended.
- *   Gen 1 — a no-op that returns GBS_OK: every gen1_write_range call already fixed the
- *           main checksum and re-verified the image itself, so there is nothing left to
- *           close out. Safe (and cheap) to call unconditionally after a field-write
- *           batch regardless of which generation the session turned out to be. */
+ *   Gen 1 — a no-op that returns GBS_OK: every gen1_write_range_ex call already fixed
+ *           the main checksum and re-verified the image itself, so there is nothing
+ *           left to close out. Safe (and cheap) to call unconditionally after a
+ *           field-write batch regardless of which generation the session turned out
+ *           to be. */
 GbsStatus gbs_finish(GbSession* s);
 
 /* Gen-2 Mail item ids, from the decomp (assets/upstream/pokecrystal/constants/

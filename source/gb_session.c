@@ -505,16 +505,24 @@ GbsStatus gbs_read_field(GbSession* s, uint32_t off, void* buf, uint32_t n) {
 GbsStatus gbs_write_field(GbSession* s, uint32_t off, const void* buf, uint32_t n) {
   if (!s || !s->open || !buf || !n) return GBS_ERR_ARG;
   if (s->gen == GB_GEN1)
-    return map_gen1w(gen1_write_range(s->img, s->len, &s->g1, off,
-                                      (const uint8_t*)buf, n));
+    /* _ex, not the 64-B gen1_write_range wrapper (P0 review D6): GBF_EVENT_FLAGS_BASE
+     * alone is 320 B, past the wrapper's cap. The session's own scratch is the
+     * rollback buffer -- REUSED, not newly allocated: gen1_commit (above) already
+     * borrows this same s->scratch as its box-list snapshot, and a session never runs
+     * a box commit and a field write at the same instant, so the two uses cannot
+     * collide. s->scratch_len is >= GBS_SCRATCH_BYTES (1152, gbs_open's own gate),
+     * comfortably past every field this design defines. */
+    return map_gen1w(gen1_write_range_ex(s->img, s->len, &s->g1, off,
+                                        (const uint8_t*)buf, n,
+                                        s->scratch, s->scratch_len));
   return map_g2w(g2w_write_range(&s->g2w, off, (const uint8_t*)buf, n));
 }
 
 GbsStatus gbs_finish(GbSession* s) {
   if (!s || !s->open) return GBS_ERR_ARG;
-  /* Gen 1 has no backup mirror and no deferred checksum: gen1_write_range already fixed
-   * the main checksum and re-verified the image on every gbs_write_field call, so there
-   * is nothing left to close out. */
+  /* Gen 1 has no backup mirror and no deferred checksum: gen1_write_range_ex already
+   * fixed the main checksum and re-verified the image on every gbs_write_field call, so
+   * there is nothing left to close out. */
   if (s->gen == GB_GEN1) return GBS_OK;
   return map_g2w(g2w_finish(&s->g2w));
 }
