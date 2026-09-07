@@ -97,6 +97,58 @@ int main(int argc, char** argv) {
     }
   }
 
+  /* (5) BACKLOG #2b: the Elite-Four question. Guy saw the E4 per-trainer flags OFF
+   * despite having beaten them. Per pokeemerald/pokeruby's hall_of_fame.inc
+   * (ResetEliteFour), the HoF script clears all four member flags so the E4 can be
+   * rechallenged -- that is GAME TRUTH, not a PokeDNA bug. What actually records
+   * "you beat the league" is FLAG_SYS_GAME_CLEAR (0x864 for every one of the three
+   * games -- SYSTEM_FLAGS+4, same base+offset in E/RS/FRLG). tools/gen_data.py
+   * (commit 1b85e3e) already retitles the section "Elite Four (reset @HoF)" and adds
+   * a "League beaten (HoF)" row for exactly this reason; this pins that the
+   * generated table actually reflects it, and prints the live evidence from
+   * whichever real save the corpus hands us (Emerald.sav sorts first, so this is
+   * Guy's own Emerald file when the 5-game corpus is present -- see
+   * tests/run_host_tests.py). */
+  {
+    const NamedFlag* nf; int nc = pk_named_flags(g, &nf);
+    int elite_hdr = -1, game_clear_row = -1;
+    for (int i = 0; i < nc; i++) {
+      if (nf[i].num == NAMED_FLAG_HEADER && strstr(nf[i].name, "Elite Four")) { elite_hdr = i; break; }
+    }
+    CHECK(elite_hdr >= 0, "an \"Elite Four\" section exists in the named-flag table");
+    if (elite_hdr >= 0) {
+      CHECK(strstr(nf[elite_hdr].name, "HoF") != NULL,
+            "the section is honestly annotated: rechallenge resets it (not a display bug)");
+      for (int i = elite_hdr + 1; i < nc && nf[i].num != NAMED_FLAG_HEADER; i++) {
+        if (strstr(nf[i].name, "League beaten") || strstr(nf[i].name, "HoF")) { game_clear_row = i; break; }
+      }
+      CHECK(game_clear_row >= 0,
+            "a \"League beaten\"/HoF row sits in the Elite Four section (the flag that actually records the win)");
+    }
+
+    /* Evidence, printed unconditionally: no hard assertion on Guy's own save
+     * progress (a fixture .sav that hasn't beaten the E4 yet must not fail this
+     * test), but this is exactly the read the backlog item asked for -- "show
+     * which flags are set". FLAG_SYS_GAME_CLEAR resolves to the same 0x864 in
+     * all three games (SYSTEM_FLAGS(E 0x860 / RS,FRLG 0x800) + 4); the four
+     * per-member E4 flags differ per game family, so look them up BY LABEL in
+     * the table just built rather than hard-coding per-game numbers here. */
+    int game_clear_num = -1;
+    printf("(5) Elite Four section (evidence for BACKLOG #2b):\n");
+    if (elite_hdr >= 0) {
+      for (int i = elite_hdr + 1; i < nc && nf[i].num != NAMED_FLAG_HEADER; i++) {
+        bool set = pk_flag_get(sb1, g, nf[i].num);
+        printf("    0x%03X  %-20s %s\n", nf[i].num, nf[i].name, set ? "ON" : "off");
+        if (strstr(nf[i].name, "League beaten")) game_clear_num = nf[i].num;
+      }
+    }
+    if (game_clear_num >= 0) {
+      bool cleared = pk_flag_get(sb1, g, game_clear_num);
+      printf("    -> League beaten (HoF) = %s; per-member E4 flags are expected OFF once "
+             "this is ON (the game resets them for a rematch)\n", cleared ? "ON" : "off");
+    }
+  }
+
   printf("\n%s: %d failure(s)\n", g_fail ? "FAIL" : "OK", g_fail);
   return g_fail ? 1 : 0;
 }
