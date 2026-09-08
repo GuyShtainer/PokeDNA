@@ -216,13 +216,24 @@ enum {
   J_COUNT
 };
 
-#define SCAN_MAX_HITS 128u   /* the player-pic anchor alone raw-hits ~70-75 */
+/* Only G1-P's raw anchor hits ~70-75 times before the 0x77 filter (see
+ * rom_gbui.h); every other signature here is unique or near-unique in a real
+ * ROM. A single SCAN_MAX_HITS sized for the worst job and applied to ALL 10
+ * jobs cost 5,120 B of locate()'s own stack frame for hit storage NONE of
+ * the other 9 jobs ever use (measured with -fstack-usage, 2026-09-09, before
+ * this fix: locate() was 5,376 B own frame). So each job now owns a
+ * CALLER-SIZED hit array via a pointer+cap instead of a fixed inline one --
+ * 9 small jobs at 8 slots (288 B total) plus the one job that needs more
+ * (96 slots, 384 B) is 672 B, a >4 KB reduction with identical behaviour. */
+#define SCAN_SMALL_CAP  8u
+#define SCAN_PLAYERPIC_CAP 96u
 
 typedef struct {
-  ScanCb   cb;
-  uint32_t look;
-  uint32_t off[SCAN_MAX_HITS];
-  uint32_t n;                 /* > SCAN_MAX_HITS means "too many, fail closed" */
+  ScanCb    cb;
+  uint32_t  look;
+  uint32_t* off;               /* caller-owned, size == cap                 */
+  uint32_t  cap;
+  uint32_t  n;                 /* > cap means "too many, fail closed"       */
 } ScanJob;
 
 static int scan_multi(const Scan* s, ScanJob* jobs, uint32_t njobs) {
@@ -240,7 +251,7 @@ static int scan_multi(const Scan* s, ScanJob* jobs, uint32_t njobs) {
       const uint8_t* p = w + i;
       for (uint32_t j = 0; j < njobs; j++) {
         if (!jobs[j].cb(p)) continue;
-        if (jobs[j].n < SCAN_MAX_HITS) jobs[j].off[jobs[j].n] = base + i;
+        if (jobs[j].n < jobs[j].cap) jobs[j].off[jobs[j].n] = base + i;
         jobs[j].n++;
       }
     }
@@ -385,16 +396,34 @@ static int locate(const Scan* s, LocResult* r) {
 
   ScanJob jobs[J_COUNT];
   memset(jobs, 0, sizeof jobs);
+
+  uint32_t hits_font[SCAN_SMALL_CAP], hits_textbox[SCAN_SMALL_CAP],
+           hits_cardframe[SCAN_SMALL_CAP], hits_badges[SCAN_SMALL_CAP],
+           hits_frame[SCAN_SMALL_CAP], hits_badgeleader[SCAN_SMALL_CAP],
+           hits_cardpic_cm[SCAN_SMALL_CAP], hits_cardpic_gold[SCAN_SMALL_CAP],
+           hits_pack[SCAN_SMALL_CAP];
+  uint32_t hits_playerpic[SCAN_PLAYERPIC_CAP];
+
   jobs[J_G1_FONT        ].cb = g1_font_cb;         jobs[J_G1_FONT        ].look = 18;
+  jobs[J_G1_FONT        ].off = hits_font;         jobs[J_G1_FONT        ].cap = SCAN_SMALL_CAP;
   jobs[J_G1_TEXTBOX     ].cb = g1_textbox_cb;      jobs[J_G1_TEXTBOX     ].look = 18;
+  jobs[J_G1_TEXTBOX     ].off = hits_textbox;      jobs[J_G1_TEXTBOX     ].cap = SCAN_SMALL_CAP;
   jobs[J_G1_CARDFRAME   ].cb = g1_cardframe_cb;    jobs[J_G1_CARDFRAME   ].look = 33;
+  jobs[J_G1_CARDFRAME   ].off = hits_cardframe;    jobs[J_G1_CARDFRAME   ].cap = SCAN_SMALL_CAP;
   jobs[J_G1_BADGES      ].cb = g1_badges_cb;       jobs[J_G1_BADGES      ].look = 8;
+  jobs[J_G1_BADGES      ].off = hits_badges;       jobs[J_G1_BADGES      ].cap = SCAN_SMALL_CAP;
   jobs[J_G1_PLAYERPIC   ].cb = g1_playerpic_cb;    jobs[J_G1_PLAYERPIC   ].look = 6;
+  jobs[J_G1_PLAYERPIC   ].off = hits_playerpic;    jobs[J_G1_PLAYERPIC   ].cap = SCAN_PLAYERPIC_CAP;
   jobs[J_G2_FRAME       ].cb = g2_frame_cb;        jobs[J_G2_FRAME       ].look = 22;
+  jobs[J_G2_FRAME       ].off = hits_frame;        jobs[J_G2_FRAME       ].cap = SCAN_SMALL_CAP;
   jobs[J_G2_BADGELEADER ].cb = g2_badgeleader_cb;  jobs[J_G2_BADGELEADER ].look = 22;
+  jobs[J_G2_BADGELEADER ].off = hits_badgeleader;  jobs[J_G2_BADGELEADER ].cap = SCAN_SMALL_CAP;
   jobs[J_G2_CARDPIC_CM  ].cb = g2_cardpic_cm_cb;   jobs[J_G2_CARDPIC_CM  ].look = 33;
+  jobs[J_G2_CARDPIC_CM  ].off = hits_cardpic_cm;   jobs[J_G2_CARDPIC_CM  ].cap = SCAN_SMALL_CAP;
   jobs[J_G2_CARDPIC_GOLD].cb = g2_cardpic_gold_cb; jobs[J_G2_CARDPIC_GOLD].look = 26;
+  jobs[J_G2_CARDPIC_GOLD].off = hits_cardpic_gold; jobs[J_G2_CARDPIC_GOLD].cap = SCAN_SMALL_CAP;
   jobs[J_G2_PACK        ].cb = g2_pack_cb;         jobs[J_G2_PACK        ].look = 8;
+  jobs[J_G2_PACK        ].off = hits_pack;         jobs[J_G2_PACK        ].cap = SCAN_SMALL_CAP;
   if (!scan_multi(s, jobs, J_COUNT)) return 0;
 
   /* ---------------------------------------------------------- Gen 1 ---- */
@@ -415,7 +444,7 @@ static int locate(const Scan* s, LocResult* r) {
     uint32_t badges;
     if (!try_badges(s, jobs[J_G1_BADGES].off[0], &badges)) break;
 
-    if (jobs[J_G1_PLAYERPIC].n == 0 || jobs[J_G1_PLAYERPIC].n > SCAN_MAX_HITS) break;
+    if (jobs[J_G1_PLAYERPIC].n == 0 || jobs[J_G1_PLAYERPIC].n > SCAN_PLAYERPIC_CAP) break;
     uint32_t pp = 0, pp_found = 0; uint8_t pp_bank = 0;
     for (uint32_t i = 0; i < jobs[J_G1_PLAYERPIC].n; i++) {
       uint32_t cand; uint8_t bk;
