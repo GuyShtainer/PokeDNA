@@ -190,6 +190,10 @@ typedef struct {
   uint32_t id_hash, size;
   uint8_t  gen, pad[3];
   uint32_t off[13];             /* 60 B */
+  uint32_t check;                /* FNV-1a over off[]: catches a corrupted
+                                   * cached offset that would otherwise still
+                                   * pass its own structural re-verification
+                                   * (e.g. font+16 still looks like a font) */
 } RomGbUiLoc;
 
 enum {

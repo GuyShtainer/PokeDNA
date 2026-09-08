@@ -214,6 +214,21 @@ static void run_one(const Want* w) {
       ok4 == 1 && gu4.gen == gu.gen && gu4.font == gu.font);
   if (fc4.f) fclose(fc4.f);
 
+  /* D9: a corrupted off[] survives id_hash/size AND its own field's
+   * structural re-verification (font+16 still passes font_verify) -- only
+   * the `check` FNV over off[] catches it. Must fall back to a full scan
+   * and still land on the correct offsets. */
+  RomGbUiLoc bad_off = loc; bad_off.off[ROM_GBUI_OFF_FONT] += 16;
+  FileCtx fc5; memset(&fc5, 0, sizeof fc5); fc5.f = fopen(path, "rb");
+  RomGbUi gu5;
+  int ok5 = rom_gbui_open_loc(&gu5, file_read, &fc5, file_size(path),
+                              g_scratch, sizeof g_scratch, &bad_off);
+  chk(w->file, "corrupted off[] (stale check): falls back to a full scan, same result",
+      ok5 == 1 && gu5.gen == gu.gen && gu5.font == gu.font);
+  chk(w->file, "corrupted off[]: full-scan cost, not a cache hit",
+      fc5.reads >= fc_full.reads);
+  if (fc5.f) fclose(fc5.f);
+
   /* -------------------------------------------- font glyph sanity */
   if (gu.font) {
     uint16_t px[64];

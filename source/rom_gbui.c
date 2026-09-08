@@ -244,8 +244,12 @@ typedef struct {
 static int scan_multi(const Scan* s, ScanJob* jobs, uint32_t njobs) {
   uint8_t* w = s->scratch;
   uint32_t cap = s->scratch_len;
-  uint32_t look = 0;
-  for (uint32_t j = 0; j < njobs; j++) { jobs[j].n = 0; if (jobs[j].look > look) look = jobs[j].look; }
+  uint32_t look = 0, minlook = 0xFFFFFFFFu;
+  for (uint32_t j = 0; j < njobs; j++) {
+    jobs[j].n = 0;
+    if (jobs[j].look > look) look = jobs[j].look;
+    if (jobs[j].look < minlook) minlook = jobs[j].look;
+  }
   if (!w || cap < look + 16u || s->size < look) return 0;
   uint32_t step = cap - look + 1u;
   for (uint32_t base = 0; base + look <= s->size; base += step) {
@@ -258,6 +262,21 @@ static int scan_multi(const Scan* s, ScanJob* jobs, uint32_t njobs) {
         if (!jobs[j].cb(p)) continue;
         if (jobs[j].n < jobs[j].cap) jobs[j].off[jobs[j].n] = base + i;
         jobs[j].n++;
+      }
+    }
+    /* This window is bounded by the LONGEST pattern (`look`), so a shorter
+     * signature duplicated in the final `look - minlook` bytes of the ROM is
+     * never tested by the loop above. On the last window only, sweep those
+     * remaining starts with each job bounded by its OWN pattern length. */
+    if (base + n >= s->size) {
+      for (uint32_t i = lim + 1; i + minlook <= n; i++) {
+        const uint8_t* p = w + i;
+        for (uint32_t j = 0; j < njobs; j++) {
+          if (i + jobs[j].look > n) continue;
+          if (!jobs[j].cb(p)) continue;
+          if (jobs[j].n < jobs[j].cap) jobs[j].off[jobs[j].n] = base + i;
+          jobs[j].n++;
+        }
       }
     }
   }
@@ -505,14 +524,12 @@ static int locate(const Scan* s, LocResult* r) {
   }
 
   uint32_t pack_m = 0, pack_f = 0;
-  if (jobs[J_G2_PACK].n == 1) {
-    if (!try_pack(s, jobs[J_G2_PACK].off[0], &pack_m)) return 0;
-  } else if (jobs[J_G2_PACK].n == 2) {
-    if (!try_pack(s, jobs[J_G2_PACK].off[0], &pack_m)) return 0;
-    if (!try_pack(s, jobs[J_G2_PACK].off[1], &pack_f)) return 0;
-  } else {
-    return 0;
-  }
+  /* R3: Crystal has the gender branch and exactly 2 tables; Gold has
+   * neither. Tie the count to the shape the card-pic signature already
+   * proved, so a ROM with a stray 2nd table can't invent a pack_f for Gold. */
+  if (jobs[J_G2_PACK].n != (is_crystal_shaped ? 2u : 1u)) return 0;
+  if (!try_pack(s, jobs[J_G2_PACK].off[0], &pack_m)) return 0;
+  if (is_crystal_shaped && !try_pack(s, jobs[J_G2_PACK].off[1], &pack_f)) return 0;
 
   if (is_crystal_shaped && (cardpic_f == 0 || pack_f == 0)) return 0;
 
@@ -574,6 +591,20 @@ int rom_gbui_open(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
   return 1;
 }
 
+/* FNV-1a over a RomGbUiLoc's off[] array (little-endian byte order), so a
+ * single corrupted cached offset -- even one that still slides past its own
+ * field's structural re-verification (font+16 still looks like a font) --
+ * is caught before any offset from the cache is trusted. */
+static uint32_t loc_off_check(const uint32_t off[13]) {
+  uint32_t h = 0x811C9DC5u;
+  for (uint32_t i = 0; i < 13; i++) {
+    uint8_t b[4] = { (uint8_t)off[i], (uint8_t)(off[i] >> 8),
+                      (uint8_t)(off[i] >> 16), (uint8_t)(off[i] >> 24) };
+    h = fnv1a(b, 4, h);
+  }
+  return h;
+}
+
 void rom_gbui_save_loc(const RomGbUi* gu, RomGbUiLoc* out) {
   if (!gu || !out) return;
   memset(out, 0, sizeof *out);
@@ -593,6 +624,7 @@ void rom_gbui_save_loc(const RomGbUi* gu, RomGbUiLoc* out) {
   out->off[ROM_GBUI_OFF_CARDGFX]   = gu->cardgfx;
   out->off[ROM_GBUI_OFF_PACK_M]    = gu->pack_m;
   out->off[ROM_GBUI_OFF_PACK_F]    = gu->pack_f;
+  out->check = loc_off_check(out->off);
 }
 
 /* Re-validate a cached loc against THIS ROM without a full rescan. Every
@@ -665,6 +697,7 @@ int rom_gbui_open_loc(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
   s.banks = banks;
 
   if (loc && loc->id_hash == id_hash && loc->size == size &&
+      loc->check == loc_off_check(loc->off) &&
       (loc->gen == ROM_GBUI_GEN1 || loc->gen == ROM_GBUI_GEN2) &&
       revalidate_loc(&s, loc)) {
     gu->banks = banks; gu->id_hash = id_hash; gu->gen = loc->gen;
