@@ -426,7 +426,13 @@ GbsStatus gbt_write(GbSession* s, const GbTrainer* in) {
     st = set_u_capped_unless_same(s, g, GBF_PLAYTIME_HOURS, in->playtime.hours, 255u,
                                   &changed);
     if (st != GBS_OK) return st;
-    st = set_u_unless_same(s, g, GBF_PLAYTIME_MAXED, maxed ? 0xFFu : 0u, &changed);
+    /* P1a re-verify D12: preserve whatever NONZERO byte is already stored -- the game
+     * only tests nonzero (pokered/engine/play_time.asm `and a; ret nz`), so normalising
+     * a stored 0x01 to 0xFF would rewrite a row this call was never asked to touch. */
+    uint32_t cur_maxed = 0;
+    bool had_maxed = get_u(s, g, GBF_PLAYTIME_MAXED, &cur_maxed) && cur_maxed != 0;
+    uint32_t maxed_byte = maxed ? (had_maxed ? cur_maxed : 0xFFu) : 0u;
+    st = set_u_unless_same(s, g, GBF_PLAYTIME_MAXED, maxed_byte, &changed);
     if (st != GBS_OK) return st;
     st = set_u_unless_same(s, g, GBF_PLAYTIME_MINUTES, in->playtime.minutes, &changed);
     if (st != GBS_OK) return st;
