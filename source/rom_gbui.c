@@ -389,7 +389,7 @@ static int try_pack(const Scan* s, uint32_t hit, uint32_t* out) {
 
 /* --------------------------------------------------------------- locate() */
 
-typedef struct { uint32_t off[ROM_GBUI_OFF_COUNT]; uint8_t gen, playerpic_bank; } LocResult;
+typedef struct { uint32_t off[ROM_GBUI_OFF_COUNT]; uint8_t gen, playerpic_bank, cardpic_colmajor; } LocResult;
 
 static int locate(const Scan* s, LocResult* r) {
   memset(r, 0, sizeof *r);
@@ -521,6 +521,7 @@ static int locate(const Scan* s, LocResult* r) {
   r->off[ROM_GBUI_OFF_CARDGFX] = cardgfx;
   r->off[ROM_GBUI_OFF_PACK_M] = pack_m;
   r->off[ROM_GBUI_OFF_PACK_F] = pack_f;
+  r->cardpic_colmajor = (uint8_t)is_crystal_shaped;
   r->gen = ROM_GBUI_GEN2;
   return 1;
 }
@@ -543,6 +544,7 @@ static void fill_from_result(RomGbUi* gu, const LocResult* r) {
   gu->pack_m      = r->off[ROM_GBUI_OFF_PACK_M];
   gu->pack_f      = r->off[ROM_GBUI_OFF_PACK_F];
   gu->playerpic_bank = r->playerpic_bank;
+  gu->cardpic_colmajor = r->cardpic_colmajor;
 }
 
 int rom_gbui_open(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
@@ -675,6 +677,7 @@ int rom_gbui_open_loc(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
     gu->pack_m      = loc->off[ROM_GBUI_OFF_PACK_M];
     gu->pack_f      = loc->off[ROM_GBUI_OFF_PACK_F];
     if (gu->gen == ROM_GBUI_GEN1) gu->playerpic_bank = (uint8_t)(gu->playerpic / GB_BANK);
+    gu->cardpic_colmajor = (gu->cardpic_f != 0);   /* Crystal-shaped iff cardpic_f present */
     gu->ok = 1;
     return 1;
   }
@@ -706,7 +709,7 @@ int rom_gbui_tile(RomGbUi* gu, uint32_t off, uint32_t index, uint8_t bpp,
 
   for (uint32_t y = 0; y < 8; y++) {
     uint8_t lo = (bpp == 2) ? buf[y * 2] : buf[y];
-    uint8_t hi = (bpp == 2) ? buf[y * 2 + 1] : 0;
+    uint8_t hi = (bpp == 2) ? buf[y * 2 + 1] : lo;  /* 1bpp: both planes, like the games' FarCopy*Double */
     for (uint32_t x = 0; x < 8; x++) {
       uint32_t b = 7u - x;
       uint8_t idx = (uint8_t)(((lo >> b) & 1u) | (((hi >> b) & 1u) << 1));
