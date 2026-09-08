@@ -104,6 +104,16 @@ bool gbb_field_present(GbGame game, GbBagPocket pocket);
  * GBB_POCKET_TMHM (not a list) or a pocket this game lacks. */
 int gbb_pocket_cap(GbGame game, GbBagPocket pocket);
 
+/* Pure accessors onto the pocket <-> field table (gb_bag.c's static k_pocket[]),
+ * exposed so tests can assert the table's cap/entry-shape literals against the
+ * generated field lengths (gbf_len) without duplicating the table. For
+ * GBB_POCKET_TMHM, gbb_body_field returns GBF_TMHM_COUNTS and gbb_count_field
+ * returns GBF_FIELD_COUNT (that pocket has no separate count field — TM/HM is
+ * a fixed 57-byte array, not a counted list). `pocket` out of range returns
+ * GBF_FIELD_COUNT (an invalid/sentinel field) from both. */
+GbField gbb_body_field(GbBagPocket pocket);
+GbField gbb_count_field(GbBagPocket pocket);
+
 /* Highest valid item id for `game` (0xFA for Red/Blue/Yellow, 0xBE for Gold/
  * Silver/Crystal — §1.2). Applies to every list pocket (Items, Key items, Balls,
  * PC store) alike; this core does not maintain a per-pocket item-category table. */

@@ -655,9 +655,52 @@ static void refusals(const char* file, uint8_t expect_gen) {
   }
 }
 
+/* D6: assert the pocket cap/entry-shape literals in gb_bag.c's static k_pocket[]
+ * table against what gb_fields.c actually generated, for every game x every list
+ * pocket the game has. Uses the pure accessors gbb_body_field/gbb_count_field
+ * rather than duplicating k_pocket[] here. */
+static void check_pocket_caps(void) {
+  static const GbGame games[] = { GBF_G_RED, GBF_G_YELLOW, GBF_G_GS, GBF_G_CRYSTAL };
+  static const GbBagPocket pockets[] = {
+    GBB_POCKET_ITEMS, GBB_POCKET_KEY, GBB_POCKET_BALLS, GBB_POCKET_PC
+  };
+  static const char* gname[] = { "RED", "YELLOW", "GS", "CRYSTAL" };
+  static const char* pname[] = { "ITEMS", "KEY", "BALLS", "PC" };
+
+  for (size_t gi = 0; gi < sizeof games / sizeof games[0]; gi++) {
+    GbGame g = games[gi];
+
+    for (size_t pi = 0; pi < sizeof pockets / sizeof pockets[0]; pi++) {
+      GbBagPocket p = pockets[pi];
+      if (!gbb_field_present(g, p)) continue;   /* game lacks the pocket */
+      g_ran++;
+
+      int cap = gbb_pocket_cap(g, p);
+      int esz = (p == GBB_POCKET_KEY) ? 1 : 2;   /* KEY carries no quantity */
+      GbField body = gbb_body_field(p);
+      uint16_t want = (uint16_t)(cap * esz + 1);
+      uint16_t have = gbf_len(g, body);
+      CHECKF(want == have,
+            "%s/%s: cap %d * entry %d + 1 == %u, but gbf_len == %u",
+            gname[gi], pname[pi], cap, esz, want, have);
+    }
+
+    if (gbb_field_present(g, GBB_POCKET_TMHM)) {
+      g_ran++;
+      uint16_t tlen = gbf_len(g, GBF_TMHM_COUNTS);
+      CHECKF(tlen == GBB_TMHM_COUNT,
+            "%s/TMHM: gbf_len == %u, expected GBB_TMHM_COUNT (%d)",
+            gname[gi], tlen, GBB_TMHM_COUNT);
+    }
+  }
+}
+
 /* ---------------------------------------------------------------- main */
 
 int main(void) {
+  printf("== A0: pocket caps vs generated field lengths (D6) ==\n");
+  check_pocket_caps();
+
   printf("== A: reads against docs/GEN12-PARITY-DESIGN.md Appendix A ==\n");
   {
     static const uint8_t red_bag_ids[] = { 0xCD, 0xCE, 0xE3, 0xE5, 0xEB, 0xEC, 0xC5, 0xC6, 0x05, 0x06 };

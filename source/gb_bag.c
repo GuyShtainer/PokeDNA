@@ -33,6 +33,16 @@ int gbb_pocket_cap(GbGame game, GbBagPocket pocket) {
   return k_pocket[pocket].cap;
 }
 
+GbField gbb_body_field(GbBagPocket pocket) {
+  if (pocket < 0 || pocket >= GBB_POCKET_COUNT) return GBF_FIELD_COUNT;
+  return k_pocket[pocket].body_field;
+}
+
+GbField gbb_count_field(GbBagPocket pocket) {
+  if (pocket < 0 || pocket >= GBB_POCKET_COUNT) return GBF_FIELD_COUNT;
+  return k_pocket[pocket].count_field;
+}
+
 uint8_t gbb_max_item_id(GbGame game) {
   return (game == GBF_G_RED || game == GBF_G_YELLOW) ? 0xFAu : 0xBEu;
 }
@@ -81,6 +91,9 @@ bool gbb_read(const GbSession* s, GbBag* out) {
   if (!s || !out || !s->open) return false;
   memset(out, 0, sizeof *out);
 
+  /* Yellow deliberately maps to GBF_G_RED here (as gbt_game in gb_trainer.c does):
+   * its wMainDataStart shifts by one byte and so does the bag, so every bag offset
+   * is identical in the save (review 2026-09-09 re-derived 0x25C9/0x25CA on both). */
   GbGame g = (s->gen == GB_GEN1) ? GBF_G_RED
                                   : ((s->g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL
                                                                             : GBF_G_GS);
@@ -159,6 +172,9 @@ static GbsStatus write_list(GbSession* s, GbGame g, GbBagPocket pocket,
 GbsStatus gbb_write(GbSession* s, const GbBag* in) {
   if (!s || !in || !s->open) return GBS_ERR_ARG;
 
+  /* Yellow deliberately maps to GBF_G_RED here (as gbt_game in gb_trainer.c does):
+   * its wMainDataStart shifts by one byte and so does the bag, so every bag offset
+   * is identical in the save (review 2026-09-09 re-derived 0x25C9/0x25CA on both). */
   GbGame g = (s->gen == GB_GEN1) ? GBF_G_RED
                                   : ((s->g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL
                                                                             : GBF_G_GS);
