@@ -79,6 +79,12 @@ typedef enum {
   GBF_RTC_SNAPSHOT, GBF_RTC_DST, GBF_GAMETIME_HOURS, GBF_GAMETIME_MINUTES,
   GBF_GAMETIME_SECONDS, GBF_GAMETIME_FRAMES, GBF_CUR_DAY,
 
+  /* P1a review D6, appended (not inserted among the others above -- these ids are
+   * an API): Gen 2's wGameTimeCap, the exact analogue of Gen 1's PLAYTIME_MAXED
+   * (§1.1) that gb_trainer.h used to claim did not exist for Gen 2. GS/Crystal
+   * only; bit GAME_TIME_CAPPED (0) of the byte immediately before GBF_GAMETIME_HOURS. */
+  GBF_GAMETIME_CAP,
+
   GBF_FIELD_COUNT
 } GbField;
 
