@@ -93,6 +93,12 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # come from tools/n1_shots.py, captions all start "#58:".
     ("nav-same-menu", "#58 — one identical START menu everywhere, honest per-row messages",
      ("#58",)),
+    # BACKLOG #62 (append-only, same rule as #58 above). Shots come from
+    # tools/dgb_shots.py, run against pokedna-delta-gb.gba (fused with Emerald.sav +
+    # a whole Red/Gold/Crystal ROM+save corpus, tools/fuse_gb.py) rather than mGBA's
+    # usual single-fused-save build; captions all start "#62:".
+    ("delta-gb", "#62 — a delta build fused with a whole GB/GBC corpus (real art via NV_GB)",
+     ("#62",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
