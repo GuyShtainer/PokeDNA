@@ -596,6 +596,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gen2_save.h"     /* G1 review LOW-5: g2_unown_dv_for_letter (CREATE's Unown letter) */
 #include "pdna_gbedit.h"
 #include "pdna_gbsummary.h"   /* BACKLOG #41: the native VIEW/EDIT summary */
+#include "pdna_gbtrainer.h"   /* BACKLOG #49 P1b: the Gen-1/2 trainer card */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
@@ -891,7 +892,7 @@ static void s_busy_reading(void) {
  * documented recovery for gbs_move()'s own atomicity contract (gb_session.h): a failure
  * on the SOURCE half of a move can leave the destination half already committed in RAM,
  * and this is the only way back to a state the card actually holds. */
-static void gb_rollback(void) {
+void gb_rollback(void) {
   memcpy(g_ed->img, g_ed->pristine, g_ed->len);
   gbs_open(&g_ed->s, g_ed->img, g_ed->len, g_ed->scratch, sizeof g_ed->scratch);
   if (g_m) g_m->loaded = -1;
@@ -903,7 +904,7 @@ static void gb_rollback(void) {
  * same attribute for the same reason. Shared by all three hooks now: `what_for_log` is
  * the one-word tag ("edit"/"move"/"release") each hook's own detailed log line already
  * named, so this function's own lines stay generic. */
-static bool __attribute__((noinline)) gb_persist(const char* what_for_log);
+bool __attribute__((noinline)) gb_persist(const char* what_for_log);
 
 /* The address-only half of gb_locate: `rec80`'s ADDRESS inside the paged box (exactly
  * like pdna_gen12_why_locked) resolves to a (box, slot) in the GB session's own
@@ -1779,7 +1780,7 @@ static bool gb_paste_hook(uint8_t* rec80) {
  * confirm sub-screens run. `what_for_log` is the one-word tag ("edit"/"move"/"release"/
  * "paste") the calling hook already logged its own detailed line under, just here to
  * keep THIS function's lines identifiable too. */
-static bool gb_persist(const char* what_for_log) {
+bool gb_persist(const char* what_for_log) {
   char bak[SF_PATH_MAX]; bak[0] = 0;
   s_busy(PDNA_GBEDIT_BUSY_BACKUP);
   rmbl_pause();
@@ -2350,7 +2351,21 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * under Settings' many sub-screens. */
     pdna_origin_box_set_hint(m->kind == GB12_SAVE_RBY ? PDNA_GEN1 : PDNA_GEN2);
   } else if (nv == NV_TRAINER) {
-    (void)gb_info_page(m);      /* A and B both just return to the grid from here */
+    /* BACKLOG #49 P1b: the real trainer card, over the editable session when one is
+     * open (g_ed != NULL -- the resident-image path, pdna_gen12_show_image, whenever
+     * gbs_open succeeded on the same bytes). g_ed->s IS the session the mount itself
+     * was read from (gbs_open ran over the same `img`), so pdna_gbtrainer's edits and
+     * gb_persist's card write land on exactly what this box grid is showing.
+     *
+     * No g_ed (the plain FIL-streaming entry, pdna_gen12_show -- the "import a GB
+     * save while a Gen-3 save is loaded" path): there is no bytes-resident GbSession
+     * here to hand pdna_gbtrainer (a Gen-1/2 save is up to 32816 B and this path's
+     * own arena budget, GB12_ARENA_NEED, has no room left to stage one -- see
+     * GB12_ARENA_NEED's own comment). Falling back to the existing read-only info
+     * page rather than inventing a fragile stage-buffer reuse under this slice's
+     * one-hour budget; flagged for a follow-up slice, not silently worked around. */
+    if (g_ed) pdna_gbtrainer(&g_ed->s, true);
+    else      (void)gb_info_page(m);   /* A and B both just return to the grid */
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */
   }

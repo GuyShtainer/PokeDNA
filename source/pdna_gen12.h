@@ -248,6 +248,18 @@ int pdna_gen12_show(const char* path, uint8_t met_game);
 #define GB12_PRISTINE_OFF 0x10000u   /* a GB image (<= 32816 B) never reaches this */
 int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
                           uint8_t* pristine, uint8_t met_game);
+
+/* ---- shared S2 persist/rollback (BACKLOG #49 P1b) --------------------------
+ * The exact primitives gb_edit_commit()'s own steps 4/5 already use (this file):
+ * gb_rollback() restores g_ed->img from g_ed->pristine and re-latches the session
+ * (loaded/staged left invalid so the box grid re-pages); gb_persist() runs the
+ * verified-write pipeline (sf_backup_rolling, then sf_write_verified's four steps)
+ * and calls gb_rollback() itself on any failure with the honest message the user
+ * needs. Both act on the module's own g_ed -- exported so pdna_gbtrainer.c's START
+ * handler can call them directly on the SAME session it was handed
+ * (gb_nav_from_start passes exactly &g_ed->s, whose enclosing Gb12Edit is g_ed). */
+void gb_rollback(void);
+bool gb_persist(const char* what_for_log);
 #endif
 
 #endif /* PDNA_GEN12_H */
