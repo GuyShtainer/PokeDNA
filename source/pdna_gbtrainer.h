@@ -5,17 +5,23 @@
 
 #include "gb_session.h"   /* GbSession                                            */
 
-/* Gen-1/2 trainer card (BACKLOG #49 P1b, docs/GEN12-PARITY-DESIGN.md sections 1.1,
- * 4.1 P1, 4.3, 4.4). UX-PARITY RULE (Guy): looks and flows like the Gen-3 card
- * (source/pdna_trainer.c) -- same row layout, red selection panel, num_entry, badge
- * toggle screen and key legend, all reused via pdna_trainer.h's exported painters.
+/* Gen-1/2 trainer card (BACKLOG #49 P1b + P1c, docs/GEN12-PARITY-DESIGN.md sections
+ * 1.1, 4.1 P1, 4.3, 4.4). UX-PARITY RULE (Guy): looks and flows like the Gen-3 card
+ * (source/pdna_trainer.c). P1c: when Emerald's own card art is available (the
+ * generated build, or an artless build with a matching ROM open -- card_bg.h's
+ * usual fork), this IS the real Emerald card front/back (card_bg()/CARD_LAYOUTS),
+ * with GB's own field values painted at Emerald's field positions via
+ * pdna_trainer.h's shared card painters (card_front_fields_paint / card_field_one /
+ * card_back_row_paint / ...) -- see pdna_gbtrainer.c's own top comment for the row
+ * lists. When no card art is available at all, this degrades to P1b's plain
+ * row-list page (same red selection panel, num_entry, badge toggle screen and key
+ * legend as before, reused via pdna_trainer.h's exported plain-page painters).
  * Rows that do not exist for this game are OMITTED, never renamed or greyed-out.
  *
- * NO CARD ART: Gen 1/2 have no card front table in the ROM by shape the way Emerald's
- * card_bg.h does (docs/GEN12-PARITY-DESIGN.md 4.4 note); this is always the plain
- * row-list page, never card_bg()/rom_card_frame(). If that ever changes, this screen
- * is where a card_bg(GBF_G_*, ...) branch would go, mirroring pdna_trainer()'s own
- * card_bg(game,...).blob != 0 fork.
+ * Gen 1/2 have no card front table of their OWN in the ROM by shape the way
+ * Emerald's card_bg.h does (docs/GEN12-PARITY-DESIGN.md 4.4 note) -- this screen
+ * always paints on EMERALD's own art/layout (pdna_gbtrainer.c explains why
+ * specifically Emerald), never a per-GB-game frame.
  *
  * Edits are staged in a LOCAL GbTrainer (gbt_read at entry, mutated in place by the
  * row editors) and committed ONLY on START, in one gbt_write() batch -- gbt_write's
