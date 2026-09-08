@@ -97,7 +97,7 @@
  * ---------------------------------------------------------------------------
  * WHAT IT COSTS
  * ---------------------------------------------------------------------------
- * No statics, no globals: RomGbUi is ~76 B, entirely caller-owned (stack or
+ * No statics, no globals: RomGbUi is 88 B, entirely caller-owned (stack or
  * app_arena_acquire()). open()'s scan window is a caller-owned scratch buffer
  * (>= ROM_GBUI_SCRATCH_MIN, 2048 B -- the longest pattern here is 33 B, same
  * generous margin rom_gbsprite.c keeps) used ONLY during open()/open_loc();
@@ -117,38 +117,53 @@ typedef enum {
 #define ROM_GBUI_SCRATCH_MIN  2048u
 
 /* MEASURED (arm-none-eabi-gcc -mcpu=arm7tdmi -mtune=arm7tdmi -O2
- * -mthumb-interwork -marm -mlong-calls -fstack-usage -c source/rom_gbui.c,
- * 2026-09-09, commit range 3b9882f..a4ce595 + this fix): the deepest chain is
- * rom_gbui_open() -> locate() -> distinct_tiles() -> rd(), 112 + 1000 + 1576
- * + 16 = 2,704 B own-frames-summed. No gb_sprite_gen1_buf call is on this
- * path -- the Gen-1 player pic's 0x77 header byte is checked with a
- * single-byte read; decoding is the CALLER's job (the host test does it,
- * a future screen will), never open()'s. rom_gbui_open_loc()'s own
- * fall-to-a-full-scan path (open_loc -> open -> locate -> distinct_tiles ->
- * rd) adds its own 120-B frame on top: 2,824 B -- still rounds to the same
- * 256-B boundary as the direct-open figure once the shell's frame is added,
- * so either entry point is covered.
+ * -mthumb-interwork -mthumb -fstack-usage -c source/rom_gbui.c, 2026-09-09,
+ * after the U1 review fix batch). rom_gbui.c is a plain .c file, not an
+ * .iwram.c one, so it is built with the Makefile's ARCH flags
+ * (-mthumb-interwork -mthumb), NEVER IARCH (-mthumb-interwork -marm
+ * -mlong-calls, reserved for .iwram.c fast-path files) -- an earlier version
+ * of this note measured with IARCH by mistake, which is the wrong compiler
+ * flags for the file that actually ships.
+ *
+ * Per-function own-frame sizes (bytes): rd 16, font_verify 160, block_eq
+ * 160, distinct_tiles 1568, locate 1000, rom_gbui_open 136,
+ * rom_gbui_open_loc 120. sizeof(RomGbUi) = 88, sizeof(RomGbUiLoc) = 68.
+ *
+ * The deepest call chain is rom_gbui_open() -> locate() -> distinct_tiles()
+ * -> rd(): 136 + 1000 + 1568 + 16 = 2,720 B own-frames-summed. font_verify
+ * is NOT on this path (locate() calls it directly, not through
+ * distinct_tiles, and 136+1000+160+16 = 1,312 is smaller) so its own frame
+ * size does not move PDNA_GB_UI_NEED even though D5's batched read grew it
+ * from 40 B (one tile per rd() call) to 160 B (16 tiles per rd() call). No
+ * gb_sprite_gen1_buf call is on this path -- the Gen-1 player pic's 0x77
+ * header byte is checked with a single-byte read; decoding is the CALLER's
+ * job (the host test does it, a future screen will), never open()'s.
+ * rom_gbui_open_loc()'s own fall-to-a-full-scan path (open_loc -> open ->
+ * locate -> distinct_tiles -> rd) adds its own 120-B frame on top: 2,840 B.
  *
  * FIRST MEASUREMENT WAS 5,120 B WORSE: locate()'s own frame was 5,376 B, not
  * the 1,000 B above, because ScanJob's hit array (SCAN_MAX_HITS=128, sized
- * for the ONE signature that needs it -- G1-P's player-pic anchor, ~70-75
- * raw hits before the 0x77 filter) was applied uniformly to all 10 job
+ * for the ONE signature that needs it -- G1-P's player-pic anchor, 71-97
+ * raw hits across the corpus before the 0x77 filter) was applied uniformly
+ * to all 10 job
  * slots: 10 * 128 * 4 B = 5,120 B, when the other 9 signatures are unique or
  * near-unique in a real ROM and never need more than a handful of slots.
- * FIXED (same commit as this measurement) by giving each job a
- * caller-sized pointer+cap instead of a fixed inline array: 9 jobs at
- * SCAN_SMALL_CAP (8 slots, 288 B total) + one at SCAN_PLAYERPIC_CAP (96
- * slots, 384 B) = 672 B, with IDENTICAL located-offset output on all four of
- * Guy's ROMs (re-verified: tests/host_romgbui_test.c, 86/86 checks).
+ * FIXED by giving each job a caller-sized pointer+cap instead of a fixed
+ * inline array: 9 jobs at SCAN_SMALL_CAP (8 slots, 288 B total) + one at
+ * SCAN_PLAYERPIC_CAP (96 slots, 384 B) = 672 B, with IDENTICAL located-offset
+ * output on all four of Guy's ROMs (re-verified: tests/host_romgbui_test.c).
  *
- * PDNA_GB_UI_NEED = 2,704 (this module's own chain) + 3,568 (the shell's
- * planned frame, Sec 3.4: FIL 600 + scan window 2048 + tilemap 360 + src 360
- * + one expanded tile 128 + RomGbUi 72) = 6,272, rounded UP to the next
- * 256-B boundary = 6,400. Matches PDNA_GB_FETCH_NEED/PDNA_GB_ICON_NEED's
- * order of magnitude (both 6,144) with the small excess this module's own
- * bank-sweep (try_cardframe's up-to-256-bank loop, each iteration re-running
- * distinct_tiles) costs over those two simpler chains. */
-#define PDNA_GB_UI_NEED 6400
+ * PDNA_GB_UI_NEED = 2,840 (open_loc's full-scan-fallback chain, the worse of
+ * the two entry points) + 3,568 (the shell's planned frame, Sec 3.4: FIL 600
+ * + scan window 2048 + tilemap 360 + src 360 + one expanded tile 128 +
+ * RomGbUi 72) = 6,408, rounded UP to the next 256-B boundary = 6,656.
+ * PDNA_GB_FETCH_NEED/PDNA_GB_ICON_NEED (both 6,144) being in the same order
+ * of magnitude, and the artless/delta builds' own "EWRAM ok" line, are NOT
+ * evidence this module itself fits within budget while nothing in the build
+ * calls it yet -- gc-sections drops an unreferenced module entirely, so
+ * neither number says anything about rom_gbui.c until a caller links it in
+ * and its own chain is measured again under real linkage. */
+#define PDNA_GB_UI_NEED 6656
 
 typedef struct {
   GbReadFn read;

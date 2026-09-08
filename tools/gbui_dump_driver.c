@@ -105,9 +105,9 @@ int main(int argc, char** argv) {
     dump_block(&gu, outdir, "font", gu.font, 1, 128, 16);
     dump_block(&gu, outdir, "textbox", gu.textbox, 2, 32, 16);
     dump_block(&gu, outdir, "cardframe", gu.cardframe, 2, 40, 8);
-    dump_block(&gu, outdir, "badges", gu.badges, 2, 64, 8);
+    dump_block(&gu, outdir, "badges", gu.badges, 2, 64, 2);
     dump_block(&gu, outdir, "leaders", gu.leaders, 2, 86, 10);
-    dump_block(&gu, outdir, "frames", gu.frames, 1, 54, 6);
+    dump_block(&gu, outdir, "frames", gu.frames, 1, 54, 3);
     dump_block(&gu, outdir, "fontextra", gu.fontextra, 2, 32, 16);
     dump_block(&gu, outdir, "cardpic_m", gu.cardpic_m, 2, 35, 5);
     dump_block(&gu, outdir, "cardpic_f", gu.cardpic_f, 2, 35, 5);

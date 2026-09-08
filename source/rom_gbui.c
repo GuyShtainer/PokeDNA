@@ -221,11 +221,17 @@ enum {
   J_COUNT
 };
 
-/* Only G1-P's raw anchor hits ~70-75 times before the 0x77 filter (see
- * rom_gbui.h); every other signature here is unique or near-unique in a real
- * ROM. A single SCAN_MAX_HITS sized for the worst job and applied to ALL 10
- * jobs cost 5,120 B of locate()'s own stack frame for hit storage NONE of
- * the other 9 jobs ever use (measured with -fstack-usage, 2026-09-09, before
+/* Only G1-P's raw anchor hits this many times before the 0x77 filter (see
+ * rom_gbui.h) -- MEASURED across the corpus: Red 71, Yellow 74, Gold 96,
+ * Crystal 97 (the g1_playerpic pattern still fires spuriously in the Gen-2
+ * ROMs since scan_multi runs every job against every ROM regardless of which
+ * gen it turns out to be; those hits are simply never inspected because the
+ * Gen-1 try-block bails out on J_G1_FONT.n before it ever looks at
+ * J_G1_PLAYERPIC, so 96 slots is plenty even though Crystal's raw count is
+ * 97). Every other signature here is unique or near-unique in a real ROM. A
+ * single SCAN_MAX_HITS sized for the worst job and applied to ALL 10 jobs
+ * cost 5,120 B of locate()'s own stack frame for hit storage NONE of the
+ * other 9 jobs ever use (measured with -fstack-usage, 2026-09-09, before
  * this fix: locate() was 5,376 B own frame). So each job now owns a
  * CALLER-SIZED hit array via a pointer+cap instead of a fixed inline one --
  * 9 small jobs at 8 slots (288 B total) plus the one job that needs more
