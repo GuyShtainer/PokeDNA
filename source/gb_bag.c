@@ -56,7 +56,7 @@ static void read_list(const GbSession* s, GbGame g, GbBagPocket pocket, GbBagLis
   uint8_t cnt = 0;
   if (gbs_read_field(ncs, coff, &cnt, 1) != GBS_OK) return;
 
-  uint8_t body[256];
+  uint8_t body[GBB_MAX_BODY];
   if (blen > sizeof body) blen = sizeof body;   /* defensive; widest field is 101 B */
   if (gbs_read_field(ncs, boff, body, blen) != GBS_OK) return;
 
@@ -117,10 +117,10 @@ static GbsStatus write_list(GbSession* s, GbGame g, GbBagPocket pocket,
   uint32_t boff = gbf_off(g, d->body_field);
   uint16_t blen = gbf_len(g, d->body_field);
   if (!coff || !boff || !blen) return GBS_OK;   /* this game lacks the pocket -- no-op */
-  if (blen > 256) return GBS_ERR_ARG;           /* defensive; widest field is 101 B    */
+  if (blen > GBB_MAX_BODY) return GBS_ERR_ARG;  /* defensive; widest field is 101 B    */
 
   uint8_t cur_cnt = 0;
-  uint8_t cur_body[256];
+  uint8_t cur_body[GBB_MAX_BODY];
   if (gbs_read_field(s, coff, &cur_cnt, 1) != GBS_OK) return GBS_ERR_ARG;
   if (gbs_read_field(s, boff, cur_body, blen) != GBS_OK) return GBS_ERR_ARG;
 
@@ -128,7 +128,7 @@ static GbsStatus write_list(GbSession* s, GbGame g, GbBagPocket pocket,
   int n = in->count;
   if (n > d->cap) n = d->cap;
 
-  uint8_t new_body[256];
+  uint8_t new_body[GBB_MAX_BODY];
   memcpy(new_body, cur_body, blen);   /* start from current -- preserves tail residue */
   int pos = 0;
   for (int i = 0; i < n; i++) {

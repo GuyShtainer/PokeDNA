@@ -394,6 +394,7 @@ static void one_pocket_only(const char* file, uint8_t expect_gen, GbBagPocket po
 
   GbSession s;
   bool open_ok = gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK;
+  CHECKF(!open_ok || s.gen == expect_gen, "%s: opened gen %u, expected %u", file, s.gen, expect_gen);
   CHECKF(open_ok, "%s/%s: open", file, label);
   if (!open_ok) return;
   GbGame g = session_game(&s);

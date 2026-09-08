@@ -34,7 +34,7 @@
  *
  * VALID ITEM IDS (§1.2). Gen 1 (Red/Blue, Yellow): 0x01..0xFA (0xC4..0xFA are the
  * TM01-50/HM01-05 item ids, legitimately bag/PC contents). Gen 2 (Gold/Silver,
- * Crystal): 0x01..0xBE are real items (NUM_ITEMS = 0xBE); 0xBF..0xFA are the TM/HM
+ * Crystal): 0x01..0xBE are real items (NUM_ITEMS = 0xBE); 0xBF..0xF9 are the TM/HM
  * item ids used only by the TM pocket's OWN numbering (the count array above), never
  * a valid id inside an Items/Key/Balls/PC list. 0x00 and 0xFF (the terminator) are
  * never valid ids in either generation.
@@ -69,6 +69,7 @@ typedef enum {
 #define GBB_TMHM_COUNT 57
 #define GBB_QTY_CAP    99   /* "Quantity cap is 99 in both generations", §1.2        */
 #define GBB_TMHM_CAP   99   /* "TM/HM counts 0..99", §4.1 P2 item 1                  */
+#define GBB_MAX_BODY  101   /* widest pocket body: PC store, 50*2+1 (gbf_len GBF_PC_BODY) */
 
 typedef struct {
   uint8_t id;
