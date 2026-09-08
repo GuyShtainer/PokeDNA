@@ -87,6 +87,7 @@ PATCHED_RECORDS = (
     ("g_pdna_fuse", 16, "tools/fuse_rom.py"),
     ("g_pdna_sav", 16, "tools/fuse_sav.py"),
     ("g_pdna_clip", 16, "tools/fuse_sav.py --clip"),
+    ("g_pdna_gbd", 16, "tools/fuse_gb.py"),
 )
 
 MAGIC0 = 0x414E4450             # 'PDNA'

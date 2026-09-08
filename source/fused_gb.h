@@ -43,10 +43,14 @@
  *
  * ---- caching (EWRAM guard) -----------------------------------------------------------
  * The directory is parsed ONCE, on first use, into a small fixed-size array of plain
- * (offset,size,type) triples cached in .bss (IWRAM, NOT EWRAM_BSS — no new EWRAM static
- * budget spent, per the delta-gb brief). FUSED_GB_MAX_ENTRIES bounds it; a build that
- * fuses more payloads than that still round-trips the ones that fit the cache order
- * (first N in directory order) but fused_gb_present() logs if the directory holds more.
+ * (offset,size,type) triples cached in EWRAM_BSS (#62 review D1 moved this cache out of
+ * IWRAM -- the delta build's tight budget is IWRAM/stack headroom, not EWRAM; see
+ * fused_gb.c's own comment). FUSED_GB_MAX_ENTRIES bounds it; a build that fuses more
+ * payloads than that still round-trips the ones that fit the cache order (first N in
+ * directory order), silently dropping the rest -- this module cannot log the drop
+ * itself (it is a pure-C core with no log.h/tonc dependency by design, matching
+ * fused_rom.c/fused_sav.c); a caller that needs to know would have to compare its own
+ * expected payload count against fused_gb_entry_count().
  *
  * ---- legality / privacy --------------------------------------------------------------
  * Same weight as fused_rom.h/fused_sav.h: fused ROMs are commercial Game Boy games,
@@ -66,7 +70,24 @@ typedef struct {
   uint32_t size;         /* the directory block's own length in bytes; 0 => not fused    */
 } PdnaGbdRec;
 
+#ifdef FUSED_GB_TEST
+/* #62 review D9: the host test builds its OWN directory and needs to point this record
+ * at it directly -- `const volatile` (below, the real declaration) is exactly right for
+ * every other translation unit (tools/fuse_gb.py patches this in the compiled ELF/GBA
+ * bytes, never at compile time) but would make that impossible here. Never defined
+ * outside tests/host_fusedgb_test.c's own cc line. */
+extern PdnaGbdRec g_pdna_gbd;
+/* #62 review D9: fused_gb.c's cart_ptr() reads through this instead of CART_BASE+off
+ * when set -- points the parser at a plain host buffer instead of unmapped cartridge
+ * address space. NULL (its zero-init default) means "use the real CART_BASE path",
+ * which is never exercised by this test build at all. */
+extern const uint8_t* g_fused_gb_test_base;
+/* Forces the NEXT parse_once() to re-parse from g_pdna_gbd/g_fused_gb_test_base
+ * instead of serving the previous case's cached result. Test-only. */
+void fused_gb_test_reset(void);
+#else
 extern const volatile PdnaGbdRec g_pdna_gbd;
+#endif
 
 /* Is a GB directory fused into this image? Parses it (once, cached) if so. */
 bool fused_gb_present(void);

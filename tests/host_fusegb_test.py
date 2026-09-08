@@ -147,14 +147,66 @@ def main():
             fail(f"--check did not catch a corrupted payload:\n{so}")
         print("  CRC detection: --check catches a flipped payload byte")
 
-        # Total-size cap: a payload that would push the image past 32 MiB must be refused.
+        # #62 review D9: a single 32 MiB payload is rejected by validate_payload's own
+        # per-file MAX_ROM_SIZE (8 MiB) before the CART_WINDOW total check ever runs --
+        # this covers the per-file cap, not the window cap.
         huge = os.path.join(td, "huge.gb")
         with open(huge, "wb") as fh:
             fh.write(b"\x00" * (32 * 1024 * 1024))
         rc, so, se = run(pokedna, huge, "-o", os.path.join(td, "toobig.gba"))
         if rc == 0:
-            fail("a payload pushing the image past 32 MiB should have been refused")
-        print("  32 MiB cap   : refuses an oversized fuse")
+            fail("a single payload over MAX_ROM_SIZE should have been refused")
+        print("  per-file cap : refuses a single payload over MAX_ROM_SIZE (8 MiB)")
+
+        # #62 review D9: the REAL window-cap case -- several payloads each UNDER
+        # MAX_ROM_SIZE (8 MiB), summing past the 32 MiB CART_WINDOW. The per-file check
+        # above never fires; only the running-total check (fuse_gb.py's own `if total >
+        # CART_WINDOW`) can catch this.
+        under_cap = 7 * 1024 * 1024   # 7 MiB each, < MAX_ROM_SIZE
+        big_roms = []
+        for i in range(5):            # 5 * 7 MiB = 35 MiB > 32 MiB CART_WINDOW
+            p = os.path.join(td, f"big{i}.gb")
+            with open(p, "wb") as fh:
+                fh.write(b"\x00" * under_cap)
+            big_roms.append(p)
+        pokedna2 = os.path.join(td, "fake2.gba")
+        make_fake_pokedna(pokedna2)
+        rc, so, se = run(pokedna2, *big_roms, "-o", os.path.join(td, "toobig2.gba"))
+        if rc == 0:
+            fail("payloads summing past the 32 MiB cartridge window should have been refused")
+        if "cartridge window" not in (so + se):
+            fail(f"window-cap refusal did not name the cartridge window:\n{so}\n{se}")
+        print("  window cap   : refuses payloads that individually pass but sum past 32 MiB")
+
+        # #62 review D7/D9: the documented collision -- an art-blob byte sequence that
+        # coincidentally spells the locator magic, with a NONZERO (offset,size) trailing
+        # it, alongside the real (never-fused) (0,0) record. Deliberately WITHOUT a
+        # fuse_rom.py/fuse_sav.py anchor record nearby, so the OLD code (proximity-only)
+        # would have failed here with "2 occurrences" -- D7's zero-filter must
+        # disambiguate on its own, with no anchor to fall back on.
+        collide = bytearray(b"\xBB" * 8192)
+        real_rec = 512
+        collide[real_rec:real_rec + 8] = MAGIC
+        struct.pack_into("<II", collide, real_rec + 8, 0, 0)          # the real, unfused record
+        decoy_rec = 4096
+        collide[decoy_rec:decoy_rec + 8] = MAGIC
+        struct.pack_into("<II", collide, decoy_rec + 8, 0, 43459)     # BACKLOG #62's own collision shape
+        pokedna3 = os.path.join(td, "collide.gba")
+        with open(pokedna3, "wb") as fh:
+            fh.write(bytes(collide))
+        out3 = os.path.join(td, "collide_out.gba")
+        rc, so, se = run(pokedna3, rom1, sav1, "-o", out3)
+        if rc != 0:
+            fail(f"D7 zero-filter should have disambiguated the collision on its own:\n{so}\n{se}")
+        blob3 = open(out3, "rb").read()
+        off3, size3 = read_record(blob3, real_rec)
+        if not off3 or not size3:
+            fail("collision case: the REAL (0,0) record was not the one patched")
+        # The decoy record must be untouched -- it was never a real locator.
+        decoy_off, decoy_size = struct.unpack_from("<II", blob3, decoy_rec + 8)
+        if (decoy_off, decoy_size) != (0, 43459):
+            fail("collision case: the decoy record was modified -- wrong record was patched")
+        print("  collision    : D7's zero-filter picks the real (0,0) record with no anchor nearby")
 
     print("host_fusegb_test: ALL OK")
     return 0

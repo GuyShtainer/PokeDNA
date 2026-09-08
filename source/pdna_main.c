@@ -8841,6 +8841,11 @@ static void __attribute__((noinline)) gb_reconcile_on_load(void) {
  * a top/window scroll sized by ui_popup_vfit()'s RETURNED visible-row count (not the
  * raw entry count), KEY_B -> return -1, its own footer. */
 static int gb_delta_pick_save(void) {
+  /* #62 review D9: fused_gb_present() had zero callers -- this is its natural one,
+   * the cheap "is anything fused at all" guard ahead of the SAV-specific count below
+   * (both go through the same parse_once() cache, so this costs nothing extra once
+   * fused_gb_save_count() runs its own check anyway). */
+  if (!fused_gb_present()) return -1;
   int n = fused_gb_save_count();
   if (n <= 0) return -1;
   if (n == 1) return 0;

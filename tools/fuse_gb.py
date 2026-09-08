@@ -154,6 +154,18 @@ def locate_record(blob: bytes, what: str) -> int:
             "  This build predates fused-GB support (source/fused_gb.c must define\n"
             "  g_pdna_gbd, const volatile, __attribute__((used, aligned(4)))).")
     if len(hits) > 1:
+        # #62 review D7: filter to (offset,size) == (0,0) candidates FIRST, before the
+        # proximity heuristic below -- a never-fused g_pdna_gbd record is DEFINITIONALLY
+        # magic+0+0 (the struct's own initializer), so this alone disambiguates the
+        # documented collision (a shiny-sprite blob at BACKLOG #62's own real build
+        # spelled PDNAGBD1 + a NONzero (0, 43459) pair right after it -- proximity to
+        # the fuse_rom.py/fuse_sav.py anchor was the only thing that used to catch it,
+        # and only when it happened to land far enough away). If exactly one hit is
+        # zero, that IS the record -- no need to even reach for the anchor.
+        zero = [h for h in hits if read_record(blob, h) == (0, 0)]
+        if zero:
+            hits = zero
+    if len(hits) > 1:
         # A multi-megabyte PokeDNA image carries several MB of compiled (compressed)
         # art; an 8-byte ASCII sequence coincidentally appearing somewhere in it is
         # rare but confirmed to happen in practice (BACKLOG #62: a shiny-sprite blob
@@ -372,27 +384,56 @@ def fuse(pokedna_path: str, payload_paths: list[str], out_path: str, force: bool
     return 0
 
 
+def _record_is_valid_directory(blob: bytes, rec_off: int) -> bool:
+    """True iff the (offset,size) pair stored AT rec_off itself parses as a
+    structurally valid PDNAGBD1 directory (magic/count/trailer all self-consistent,
+    parse_directory() does the real checking) -- the one positive signal `hits[0]`
+    alone never checked at all (#62 review D7)."""
+    try:
+        off, size = read_record(blob, rec_off)
+        if not size:
+            return False
+        parse_directory(blob, off, size)
+        return True
+    except (FuseError, struct.error):
+        return False
+
+
 def locate_record_permissive(blob: bytes, what: str) -> int:
     """Like locate_record(), but for a FUSED file: once a directory is appended, MAGIC
     legitimately occurs at least 3 times (the record itself, the directory block's own
     leading magic, and its trailer's restated magic) -- possibly more if a payload's
-    bytes happen to contain it. The true record is always the FIRST occurrence: it is
-    part of the original PokeDNA image, and every payload plus the directory are
-    appended strictly AFTER it."""
+    bytes happen to contain it (an art-blob collision, same as locate_record()'s own
+    BACKLOG #62 case, is just as possible here).
+
+    #62 review D7: the FIRST occurrence is NOT reliably the true record -- an art
+    collision can land anywhere in the file, including before the real record. Prefer
+    whichever occurrence's own (offset,size) pair parses as a structurally valid
+    directory (_record_is_valid_directory): that is a positive, checkable signal a bare
+    first-hit guess never was. Falls back to proximity-to-anchor disambiguation (same
+    heuristic locate_record() uses), then the first occurrence, only when no candidate
+    validates -- e.g. --check on a not-yet-fused image, where every candidate's size is
+    legitimately 0 and none can parse as a directory."""
     hits = find_records(blob, MAGIC)
     if not hits:
         raise FuseError(f"{what}: no {MAGIC.decode()} locator record found.")
     if len(hits) > 1:
-        anchor = None
-        for m in (FUSE_MAGIC, SAV_MAGIC):
-            h2 = find_records(blob, m)
-            if len(h2) == 1:
-                anchor = h2[0]
-                break
-        if anchor is not None:
-            near = [h for h in hits if abs(h - anchor) < 4096]
-            if len(near) == 1:
-                hits = near
+        valid = [h for h in hits if _record_is_valid_directory(blob, h)]
+        if len(valid) == 1:
+            hits = valid
+        elif not valid:
+            anchor = None
+            for m in (FUSE_MAGIC, SAV_MAGIC):
+                h2 = find_records(blob, m)
+                if len(h2) == 1:
+                    anchor = h2[0]
+                    break
+            if anchor is not None:
+                near = [h for h in hits if abs(h - anchor) < 4096]
+                if len(near) == 1:
+                    hits = near
+        else:
+            hits = valid   # more than one validates -- keep the first, same as before
     off = hits[0]
     if off % 4:
         raise FuseError(f"{what}: locator record at 0x{off:X} is not 4-byte aligned.")

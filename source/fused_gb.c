@@ -13,6 +13,8 @@
  */
 #include <string.h>
 #include "fused_gb.h"
+#include "pdna_romver.h"      /* pdna_rv_crc32* -- #62 D9's per-entry CRC verification;
+                                * pure-C core, same as this file (no tonc/FatFs) */
 
 #define CART_BASE 0x08000000u
 #define CART_SPAN 0x02000000u          /* 32 MiB addressable cartridge window */
@@ -23,10 +25,21 @@
 
 /* `used` survives --gc-sections; `aligned(4)` so tools/fuse_gb.py can patch the two u32s
  * in place. Magic built element-by-element on purpose (see fused_rom.c's own comment):
- * a string literal could be pooled/duplicated and the tool requires it exactly once. */
+ * a string literal could be pooled/duplicated and the tool requires it exactly once.
+ *
+ * #62 review D9: under FUSED_GB_TEST (never defined outside the host test's own cc
+ * line) this is a plain, writable, non-`used`/non-`aligned` global instead -- the host
+ * test builds its own directory and points this record at it directly; `const volatile`
+ * would make that impossible, and neither `used` (no --gc-sections on a host test
+ * binary) nor a patchable-in-the-ELF alignment (nothing patches a host binary) buys
+ * anything here. See fused_gb.h's matching #ifdef on the extern declaration. */
+#ifdef FUSED_GB_TEST
+PdnaGbdRec g_pdna_gbd = { { 'P', 'D', 'N', 'A', 'G', 'B', 'D', '1' }, 0u, 0u };
+#else
 const volatile PdnaGbdRec __attribute__((used, aligned(4))) g_pdna_gbd = {
   { 'P', 'D', 'N', 'A', 'G', 'B', 'D', '1' }, 0u, 0u
 };
+#endif
 
 #ifndef PDNA_DELTA
 
@@ -48,6 +61,25 @@ bool fused_gb_save(int i, const char** name, const uint8_t** base, uint32_t* siz
 
 #else /* PDNA_DELTA */
 
+/* #62 review D9: the one chokepoint every "byte at cartridge offset X" read below goes
+ * through, so a host test can point the parser at a plain heap buffer instead of real
+ * (unmapped, on a host) cartridge address space. uintptr_t-typed deliberately:
+ * CART_BASE + off alone is 32-bit arithmetic, and a real host pointer (64-bit on this
+ * Mac) would be silently truncated by a cast through it. Scoped to the PDNA_DELTA half
+ * (its only callers, below) so a non-delta build never defines an unused static. On the
+ * GBA build (32-bit pointers, FUSED_GB_TEST never defined) this compiles to the exact
+ * same (CART_BASE + off) arithmetic as before -- zero behaviour change there. */
+#ifdef FUSED_GB_TEST
+const uint8_t* g_fused_gb_test_base;   /* host test sets this to a real buffer's start */
+#endif
+
+static const uint8_t* cart_ptr(uint32_t off) {
+#ifdef FUSED_GB_TEST
+  if (g_fused_gb_test_base) return g_fused_gb_test_base + off;
+#endif
+  return (const uint8_t*)((uintptr_t)CART_BASE + off);
+}
+
 /* #62 review D1: moved to EWRAM (528 B) -- the delta build's IWRAM/stack headroom is
  * the tight budget (10,208 B of a 10,920-B stack deep-chain), not EWRAM (1,748 B free
  * here); EWRAM_BSS is tonc/sys.h's name for this GCC section attribute, spelled out
@@ -57,7 +89,14 @@ bool fused_gb_save(int i, const char** name, const uint8_t** base, uint32_t* siz
  * zero-cleared at startup like any .bss, with NO initializer copy, so a nonzero initial
  * value (-1) would silently read back as 0 -- s_parsed/s_count are both correct at their
  * zero-init value (false/0) with no special-cased startup constant needed. */
+#ifdef FUSED_GB_TEST
+/* #62 review D9: ".sbss" is a devkitARM/gba.specs section name -- the host's mach-o
+ * (or ELF-but-not-GBA) toolchain rejects it outright, and a host test has no EWRAM
+ * budget to protect anyway. Plain statics here. */
+#define GBD_EWRAM_BSS
+#else
 #define GBD_EWRAM_BSS __attribute__((section(".sbss")))
+#endif
 
 typedef struct {
   uint32_t type;
@@ -69,6 +108,18 @@ typedef struct {
 static GBD_EWRAM_BSS GbdEntry s_entry[FUSED_GB_MAX_ENTRIES];
 static GBD_EWRAM_BSS bool     s_parsed;   /* false = not parsed yet */
 static GBD_EWRAM_BSS int      s_count;    /* valid once s_parsed is true, 0..N (N clamped) */
+
+#ifdef FUSED_GB_TEST
+/* #62 review D9: the real app never re-fuses mid-session (the corpus is immutable for
+ * a whole boot), so there is deliberately no public "reparse" entry point -- but a host
+ * test that wants a FRESH parse_once() per case (rather than one process per case) needs
+ * exactly that. Test-only, never declared outside FUSED_GB_TEST. */
+void fused_gb_test_reset(void) {
+  s_parsed = false;
+  s_count = 0;
+  memset(s_entry, 0, sizeof s_entry);
+}
+#endif
 
 static bool dir_present_raw(uint32_t* dir_off, uint32_t* dir_size) {
   uint32_t off = g_pdna_gbd.offset;
@@ -94,7 +145,7 @@ static void parse_once(void) {
   uint32_t dir_off, dir_size;
   if (!dir_present_raw(&dir_off, &dir_size)) return;
 
-  const uint8_t* blk = (const uint8_t*)(CART_BASE + dir_off);
+  const uint8_t* blk = cart_ptr(dir_off);
   if (memcmp(blk, "PDNAGBD1", DIR_MAGIC_LEN) != 0) return;
 
   uint32_t count;
@@ -111,20 +162,33 @@ static void parse_once(void) {
   int n = (int)count;
   if (n > FUSED_GB_MAX_ENTRIES) n = FUSED_GB_MAX_ENTRIES;   /* cache the first N; see .h */
 
+  /* #62 review D9: verify each entry's own crc32 field (tools/fuse_gb.py writes
+   * zlib.crc32(payload) at byte 44 of every 48-byte record) against the payload it
+   * actually points at, same standard CRC-32 pdna_romver.c already uses for the whole-
+   * ROM self-check (same polynomial zlib uses -- pdna_rv_crc32() IS zlib.crc32, just a
+   * from-scratch pure-C implementation). One-time cost at boot (parse_once() runs once,
+   * cached): the fused corpus is at most 32 MiB and this only ever runs under
+   * PDNA_DELTA, which never runs on real hardware -- an mGBA/Delta boot pays this once,
+   * not per fetch. Table is local/stack (64 B), not persisted. */
+  uint32_t crc_tab[16];
+  pdna_rv_crc32_table(crc_tab);
+
   for (int i = 0; i < n; i++) {
     const uint8_t* e = blk + 12u + (uint32_t)i * ENTRY_SIZE;
-    uint32_t type, off, size;
+    uint32_t type, off, size, crc;
     memcpy(&type, e + 0, 4);
     memcpy(s_entry[i].name, e + 4, FUSED_GB_NAME_MAX);
     s_entry[i].name[FUSED_GB_NAME_MAX - 1] = 0;   /* defensive: force NUL termination */
     memcpy(&off,  e + 36, 4);
     memcpy(&size, e + 40, 4);
+    memcpy(&crc,  e + 44, 4);
     /* #62 review D6: bounded against dir_off, not the whole 32-MiB CART_SPAN --
      * every fused payload precedes the directory (tools/fuse_gb.py's own layout), so
      * a corrupt/adversarial entry that claims to run PAST the directory (into the
      * directory's own bytes, the trailer, or unmapped cartridge space beyond the
      * fused image) is dropped here instead of being handed to a caller as real. */
     if (off >= dir_off || size > dir_off - off) continue;
+    if (pdna_rv_crc32(crc_tab, cart_ptr(off), size) != crc) continue;   /* #62 D9 */
     s_entry[i].type = type;
     s_entry[i].offset = off;
     s_entry[i].size = size;
@@ -157,7 +221,7 @@ bool fused_gb_rom(uint8_t gen, const uint8_t** base, uint32_t* size) {
   if (!want) return false;
   for (int i = 0; i < s_count; i++) {
     if (s_entry[i].type != want) continue;
-    if (base) *base = (const uint8_t*)(CART_BASE + s_entry[i].offset);
+    if (base) *base = cart_ptr(s_entry[i].offset);
     if (size) *size = s_entry[i].size;
     return true;
   }
@@ -178,7 +242,7 @@ bool fused_gb_save(int i, const char** name, const uint8_t** base, uint32_t* siz
     if (s_entry[k].type != FUSED_GB_SAV) continue;
     if (i-- != 0) continue;
     if (name) *name = s_entry[k].name;
-    if (base) *base = (const uint8_t*)(CART_BASE + s_entry[k].offset);
+    if (base) *base = cart_ptr(s_entry[k].offset);
     if (size) *size = s_entry[k].size;
     return true;
   }
