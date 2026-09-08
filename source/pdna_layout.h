@@ -1548,4 +1548,10 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_PICK_DESC_LINE_BUDGET_PX 127
 #define PDNA_DESC_PLACEHOLDER "(needs ROM)"
 
+/* pdna_gbtrainer.c's gbtr_id_edit_ok() -- the Gen-1/2 mirror of pdna_trainer.c's
+ * id_edit_ok/s_id_warned, gating GBTR_NAME/GBTR_ID (P1b review D6). Same app_confirm
+ * (28, .., 184) proportional clamp as the gbedit popups above. */
+#define PDNA_GBTRAINER_ID_WARN_TITLE "Changes your TRAINER identity"
+#define PDNA_GBTRAINER_ID_WARN_L1    "Your own Pokemon become 'traded'."
+
 #endif /* PDNA_LAYOUT_H */

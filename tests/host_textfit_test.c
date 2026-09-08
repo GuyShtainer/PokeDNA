@@ -530,6 +530,11 @@ int main(void) {
   PF(PDNA_GBEDIT_GENDER_LOCKED_TITLE, 28, 184);   /* G1 review LOW-1 */
   PF(PDNA_GBEDIT_GENDER_LOCKED_L1,    28, 184);
 
+  /* pdna_gbtrainer.c's gbtr_id_edit_ok() -- same app_confirm (28, .., 184) clamp
+   * (P1b review D6). */
+  PF(PDNA_GBTRAINER_ID_WARN_TITLE, 28, 184);
+  PF(PDNA_GBTRAINER_ID_WARN_L1,    28, 184);
+
   /* gb_edit_persist's SF_ERR_RENAME switch + gb_edit_hook's SF_ERR_UNWRITABLE hint —
    * same (28, .., 184) msg_wait clamp. PDNA_GBEDIT_UNCONFIRMED_L2 is deliberately
    * SHORTER than pdna_main.c's own wording for the same case ("Could not re-check the

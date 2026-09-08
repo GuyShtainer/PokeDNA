@@ -18,6 +18,7 @@
 #include "pdna_trainer.h"  /* num_entry / trainer_row_paint / trainer_flag_row_paint /
                             * trainer_key_legend -- the exported Gen-3 card painters */
 #include "pdna_gen12.h"    /* gb_rollback / gb_persist -- the S2 commit primitives   */
+#include "pdna_layout.h"   /* PDNA_GBTRAINER_ID_WARN_* -- measured by host_textfit   */
 #include "ui.h"
 #include "snd.h"
 #include "osk.h"
@@ -108,6 +109,22 @@ static void gbtr_time_editor(GbTrainer* t, bool gen1) {
   t->playtime.seconds = (uint8_t)num_entry("PLAY SECONDS", t->playtime.seconds, 59u);
 }
 
+/* Gen 1/2 disobedience/EXP-boost checks compare the mon's own OT trainer ID against
+ * the PLAYER's live trainer ID (pokered battle/core.asm:3839-3856 disobedience;
+ * pokecrystal core.asm:7084-7096 EXP boost) -- exactly the "is this still my mon"
+ * test Gen 3's record mixing runs (pdna_trainer.c's id_edit_ok comment). Editing NAME
+ * or ID here changes what that test compares against, so every mon already caught
+ * under the old identity becomes foreign the moment this card's edit lands. Warn
+ * once per visit, before the first such edit -- same idiom as pdna_trainer.c's
+ * id_edit_ok/s_id_warned. */
+static bool s_id_warned;
+
+static bool gbtr_id_edit_ok(void) {
+  if (s_id_warned) return true;
+  s_id_warned = true;
+  return app_confirm(PDNA_GBTRAINER_ID_WARN_TITLE, PDNA_GBTRAINER_ID_WARN_L1);
+}
+
 static void gbtr_row_paint(const GbTrainer* t, int row, bool gen1, int y, bool sel) {
   const char* lbl; char val[40]; uint16_t ink = UI_TEXT;
   switch (row) {
@@ -168,11 +185,13 @@ static void gbtr_row_paint(const GbTrainer* t, int row, bool gen1, int y, bool s
 }
 
 void pdna_gbtrainer(GbSession* s, bool can_edit) {
-  GbTrainer t;
+  GbTrainer t, t0;
   if (!s || !gbt_read(s, &t)) {
     msg_wait("TRAINER CARD", UI_WARN, "Could not read this save.", 0);
     return;
   }
+  memcpy(&t0, &t, sizeof t0);        /* snapshot: proves a no-op START at commit time */
+  s_id_warned = false;               /* the identity warning is once per VISIT */
   const bool gen1 = (s->gen == GB_GEN1);
 
   int rows[GBTR_ROW_MAX];
@@ -193,6 +212,8 @@ void pdna_gbtrainer(GbSession* s, bool can_edit) {
 
     if (k & KEY_START) {
       if (!can_edit) continue;
+      if (!memcmp(&t, &t0, sizeof t)) { snd_back(); return; }   /* nothing to write */
+      if (!app_confirm("Save trainer changes?", "Writes the card edits now.")) continue;
       GbsStatus st = gbt_write(s, &t);
       if (st != GBS_OK) {
         /* gbt_write may already have landed SOME of the batch (gb_trainer.h's own
@@ -213,10 +234,14 @@ void pdna_gbtrainer(GbSession* s, bool can_edit) {
     else if ((k & KEY_A) && can_edit) {
       switch (rows[sel]) {
         case GBTR_NAME: {
-          char b[8];
+          if (!gbtr_id_edit_ok()) break;
+          char b[GB_TEXT_MAX];        /* t.name is char[GB_TEXT_MAX]; UTF-8 decoded,
+                                        * a truncated buffer here silently drops glyphs
+                                        * (P1b review D1) */
           if (osk_input("TRAINER NAME", t.name, b, sizeof b)) strcpy(t.name, b);
         } break;
         case GBTR_ID:
+          if (!gbtr_id_edit_ok()) break;
           t.trainer_id = (uint16_t)num_entry("ID No", t.trainer_id, 65535u);
           break;
         case GBTR_MONEY:
