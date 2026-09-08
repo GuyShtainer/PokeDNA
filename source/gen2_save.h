@@ -244,6 +244,16 @@ bool    g2_dv_shiny(const uint8_t dv[4]);
 /* Unown letter 0..25 = A..Z: the middle two bits of each DV nibble in
  * Atk,Def,Spd,Spc order form a byte, divided by 10. Gen 2 has no ! or ?. */
 int     g2_unown_letter(const uint8_t dv[4]);
+/* Inverse of g2_unown_letter() (G1 review LOW-5, 2026-09-08: CREATE picking a
+ * specific Unown letter the same way Gen 3 does, pick_unown_form() BEFORE the
+ * roll -- not by taking whatever letter the seed's own random DVs happen to
+ * land on). Fills `dv` with ONE quad -- deterministically, not searched or
+ * randomised -- that decodes back to `letter` (0..25 = A..Z; false and `dv`
+ * untouched for anything else, including 26/27 -- Gen 2 has no !/? forms).
+ * Each DV's bit 0 (and, at the letter's OWN v-range boundary, occasionally
+ * bit 3) is free and NOT chosen for any other property -- this does not try
+ * to also land on a shiny-capable quad (g2_dv_shiny), only on the letter. */
+bool    g2_unown_dv_for_letter(uint8_t letter, uint8_t dv[4]);
 /* Gender from the Attack DV. `gender_ratio` is the Gen-3 ratio byte
  * (pk_species_gender_ratio): 0 = always male, 0xFE = always female,
  * 0xFF = genderless, else the female threshold in 256ths — the five ratios in

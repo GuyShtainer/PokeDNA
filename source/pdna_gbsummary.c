@@ -512,19 +512,21 @@ typedef struct {
 /* CREATE's keep-or-discard confirm (BACKLOG #50 UX-parity, Guy 2026-09-07):
  * reached from START (either sub-mode) or B (browse sub-mode only) -- the
  * two paths pdna_summary.c's own create flow offers, "the same keep-or-
- * discard confirm" Guy's parity ask names. Reuses gbedit_confirm() -- the
- * SAME write gate every other GB commit in this screen already goes through
- * (gb_check's structural issues, if any) -- rather than porting Gen 3's own
- * confirm_keep() text: Guy's parity ask names the NEW chip's colour/text
- * explicitly but not this dialog's, and a freshly created Gen-1/2 record must
- * clear the SAME legality net a hand-edit here already has to, not a
- * separate, laxer one. On accept: settles derived stats and reports kept
- * (matching gbsum_view_keys' own dirty-exit path). On decline: reports not
- * kept, leaving `*saved` at whatever it already was (false, from
+ * discard confirm" Guy's parity ask names. Uses gbedit_confirm_keep() (G1
+ * review LOW-6, 2026-09-08): Gen 3's OWN create-flow wording ("Keep this
+ * Pokemon?" / "A = write (backup first)" / "B = discard it") with gb_check's
+ * structural-issue lines still shown underneath -- the SAME legality net
+ * every other GB commit in this screen already goes through, just with the
+ * title/verbs a create should actually say instead of the plain-edit
+ * screen's "Write to the save?" (an earlier version of this comment argued
+ * for reusing gbedit_confirm() as-is; the review named this specific gap).
+ * On accept: settles derived stats and reports kept (matching
+ * gbsum_view_keys' own dirty-exit path). On decline: reports not kept,
+ * leaving `*saved` at whatever it already was (false, from
  * pdna_gbsummary_inner's own setup) -- the caller decides what "not kept"
  * means (stay open, for START; leave anyway, for B). */
 static bool gbsum_create_keep(GbSumCtx* c) {
-  if (!gbedit_confirm(c->e)) return false;
+  if (!gbedit_confirm_keep(c->e)) return false;
   gbe_settle_stats(c->e);
   if (c->saved) *c->saved = true;
   return true;
@@ -570,11 +572,13 @@ static void gbsum_edit_keys(GbSumCtx* c, u16 k) {
     gbedit_press(c->e, c->slot[c->fsel].field, c->has_sidecar, &c->dv_warned); return;
   }
   if (c->nslot && (k & KEY_LEFT)) {
-    gbedit_adjust_checked(c->e, c->slot[c->fsel].field, -1, false, c->has_sidecar, &c->dv_warned);
+    if (!gbedit_adjust_checked(c->e, c->slot[c->fsel].field, -1, false, c->has_sidecar, &c->dv_warned))
+      gbedit_adjust_refused(c->slot[c->fsel].field);
     return;
   }
   if (c->nslot && (k & KEY_RIGHT)) {
-    gbedit_adjust_checked(c->e, c->slot[c->fsel].field, +1, false, c->has_sidecar, &c->dv_warned);
+    if (!gbedit_adjust_checked(c->e, c->slot[c->fsel].field, +1, false, c->has_sidecar, &c->dv_warned))
+      gbedit_adjust_refused(c->slot[c->fsel].field);
     return;
   }
   if (k & KEY_UP)   { if (c->nslot) c->fsel = (c->fsel > 0) ? c->fsel - 1 : c->nslot - 1; return; }

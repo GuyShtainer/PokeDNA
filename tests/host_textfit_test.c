@@ -496,6 +496,9 @@ int main(void) {
   T(PDNA_GBEDIT_B_CANCEL, 20);
   T(PDNA_GBEDIT_BAK_L1, 20);
   T(PDNA_GBEDIT_BAK_L2, 20);
+  T(PDNA_GBEDIT_KEEP_TITLE, 20);   /* G1 review LOW-6 */
+  T(PDNA_GBEDIT_KEEP_A, 20);
+  T(PDNA_GBEDIT_KEEP_B, 20);
   {
     /* confirm()'s dynamic prose block draws, worst case: an issue sentence wrapped to
      * PDNA_GBEDIT_CONFIRM_MAXLN lines, the "write anyway?" line + its gap, then a
@@ -524,6 +527,8 @@ int main(void) {
   PF(PDNA_GBEDIT_MOVE_DUP_TITLE,   28, 184);
   PF(PDNA_GBEDIT_MOVE_DUP_L1,      28, 184);
   PF(PDNA_GBEDIT_MOVE_DUP_L2,      28, 184);
+  PF(PDNA_GBEDIT_GENDER_LOCKED_TITLE, 28, 184);   /* G1 review LOW-1 */
+  PF(PDNA_GBEDIT_GENDER_LOCKED_L1,    28, 184);
 
   /* gb_edit_persist's SF_ERR_RENAME switch + gb_edit_hook's SF_ERR_UNWRITABLE hint —
    * same (28, .., 184) msg_wait clamp. PDNA_GBEDIT_UNCONFIRMED_L2 is deliberately

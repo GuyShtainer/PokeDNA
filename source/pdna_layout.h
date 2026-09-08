@@ -521,6 +521,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBEDIT_BAK_L2         "new save verified on write."
 #define PDNA_GBEDIT_BAK_Y1         134
 #define PDNA_GBEDIT_BAK_Y2         144
+/* G1 review LOW-6 (2026-09-08): gbedit_confirm_keep()'s own title/verbs --
+ * Gen 3's OWN create-flow wording, pdna_summary.c's confirm_keep(), verbatim
+ * (that function's own three literals are not shared macros either; these
+ * are an independent byte-for-byte copy, not a cross-file #include). Same
+ * panel positions as PDNA_GBEDIT_CONFIRM_TITLE/A_WRITE/B_CANCEL. */
+#define PDNA_GBEDIT_KEEP_TITLE     "Keep this Pokemon?"
+#define PDNA_GBEDIT_KEEP_A         "A = write (backup first)"
+#define PDNA_GBEDIT_KEEP_B         "B = discard it"
 
 #define PDNA_GBEDIT_BADCHARSET_TITLE "CAN'T STORE THAT"
 #define PDNA_GBEDIT_BADCHARSET_L1    "Not in this game's charset:"
@@ -531,6 +539,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBEDIT_MOVE_DUP_TITLE   "ALREADY KNOWN"
 #define PDNA_GBEDIT_MOVE_DUP_L1      "This Pokemon has that move"
 #define PDNA_GBEDIT_MOVE_DUP_L2      "in another slot."
+/* G1 review LOW-1 (2026-09-08): gbedit_adjust_refused()'s GBE_GENDER message --
+ * a shiny of a heavily-skewed gender ratio can have no Atk DV that both flips
+ * gender AND keeps the sparkle (gbe_flip_gender's own "best < 0" refusal,
+ * gb_editor.c). Worded for either direction (not "always male"/"always
+ * female" specifically), since either can be the one that is unreachable. */
+#define PDNA_GBEDIT_GENDER_LOCKED_TITLE "CAN'T FLIP GENDER"
+#define PDNA_GBEDIT_GENDER_LOCKED_L1    "A shiny here can't flip gender."
 
 /* gb_edit_persist's SF_ERR_RENAME switch (source/pdna_gen12.c): same shape as the
  * Gen-3 path (pdna_main.c app_commit), but the SF_WHERE_TARGET line is SHORTER —

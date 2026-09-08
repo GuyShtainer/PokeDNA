@@ -592,6 +592,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_app.h"
 #include "gb_session.h"
 #include "gb_editor.h"
+#include "gen2_save.h"     /* G1 review LOW-5: g2_unown_dv_for_letter (CREATE's Unown letter) */
 #include "pdna_gbedit.h"
 #include "pdna_gbsummary.h"   /* BACKLOG #41: the native VIEW/EDIT summary */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
@@ -2148,6 +2149,22 @@ static bool gb_create_hook(void) {
   pick_species_set_max_dex(0);
   if (dex == 0xFFFFu || dex == 0) return false;
 
+  /* G1 review LOW-5 (2026-09-08): the Unown letter is chosen the SAME place
+   * and SAME way Gen 3's own create flow does (pdna_main.c's app_create_mon:
+   * "THE UNOWN LETTER IS PART OF THE ROLL, so it has to be asked for BEFORE
+   * it"), not left to whatever letter gb_new_mon's own random DVs happen to
+   * land on. dex 201 (Unown) can only be picked at all in a Gen-2 session --
+   * pick_species_set_max_dex(151) already excludes it from Gen 1's own list,
+   * so no separate generation check is needed here. -1 (B in the prompt, or a
+   * form Gen 2 cannot represent -- 26/27, "!"/"?", Gen-3-only) leaves the DVs
+   * exactly as gb_new_mon() rolls them: "any letter", the same fallback
+   * Gen 3's own B-in-the-prompt path uses. */
+  int unown_letter = -1;
+  if (dex == 201) {
+    int form = pick_unown_form(0);
+    if (form >= 0 && form <= 25) unown_letter = form;
+  }
+
   /* G1 review MEDIUM-2: gb_create_locate_rom + gb_create_learn together freeze the
    * screen for a real full-ROM scan (up to ~185,000 read() calls, measured, before
    * the cache below makes a second create in this session skip it) -- show honest
@@ -2206,6 +2223,22 @@ static bool gb_create_hook(void) {
     snd_deny();
     msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_BUILDFAIL_L1, 0);
     return false;
+  }
+  /* G1 review LOW-5: override the four DVs gb_new_mon() just rolled with the
+   * SPECIFIC quad that decodes (g2_unown_letter) to the letter chosen above --
+   * a direct set, not a search, so this does not try to also land on a
+   * shiny-capable quad (g2_unown_dv_for_letter's own comment). Re-settles
+   * stats since the DVs (which feed the HP DV and, in principle, the derived
+   * stats) just changed out from under gb_new_mon's own settle. */
+  if (unown_letter >= 0) {
+    uint8_t dv4[4];
+    if (g2_unown_dv_for_letter((uint8_t)unown_letter, dv4)) {
+      gb_set_dv(&party_mon, GB_ATK, dv4[0]);
+      gb_set_dv(&party_mon, GB_DEF, dv4[1]);
+      gb_set_dv(&party_mon, GB_SPE, dv4[2]);
+      gb_set_dv(&party_mon, GB_SPC, dv4[3]);
+      gbe_settle_stats(&party_mon);
+    }
   }
 
   /* Party -> box, the SAME technique gbs_move() uses for a party->box move

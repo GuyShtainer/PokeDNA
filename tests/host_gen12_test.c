@@ -1036,6 +1036,33 @@ static void part5_rejection(void) {
   }
 }
 
+/* G1 review LOW-5 (2026-09-08): g2_unown_dv_for_letter() is the inverse of
+ * g2_unown_letter() -- every letter 0..25 must round-trip through both
+ * directions, and every out-of-range input must refuse cleanly. */
+static void part6_unown_dv_for_letter(void) {
+  printf("\n(6) g2_unown_dv_for_letter -- the inverse of g2_unown_letter\n");
+  for (int letter = 0; letter <= 25; letter++) {
+    uint8_t dv[4] = { 99, 99, 99, 99 };
+    CHECK(g2_unown_dv_for_letter((uint8_t)letter, dv),
+          "letter %d: g2_unown_dv_for_letter accepts it", letter);
+    for (int i = 0; i < 4; i++)
+      CHECK(dv[i] <= 15, "letter %d: dv[%d]=%u is a legal nibble", letter, i, dv[i]);
+    int back = g2_unown_letter(dv);
+    CHECK_EQ(back, letter, "letter %d round-trips through the DVs it produced "
+             "(dv=%u,%u,%u,%u)", letter, dv[0], dv[1], dv[2], dv[3]);
+  }
+  /* out of range: 26 ("!"), 27 ("?") and anything past them -- Gen 2 has
+   * neither form (gen12_convert.h's own comment), so this must refuse rather
+   * than silently hand back a DV quad that decodes to some OTHER letter. */
+  for (int letter = 26; letter <= 30; letter++) {
+    uint8_t dv[4] = { 7, 7, 7, 7 };                 /* a value it must NOT touch */
+    CHECK(!g2_unown_dv_for_letter((uint8_t)letter, dv), "letter %d refused", letter);
+    CHECK(dv[0] == 7 && dv[1] == 7 && dv[2] == 7 && dv[3] == 7,
+          "letter %d: dv[] untouched on refusal", letter);
+  }
+  CHECK(!g2_unown_dv_for_letter(200, NULL), "NULL dv refused (200)");
+}
+
 int main(void) {
   printf("== gen 1/2 import: synthetic saves + conversion ==\n");
   part0_oracles();
@@ -1049,6 +1076,7 @@ int main(void) {
   part4_boxsource(GBF_GS, 0);
   part4_boxsource(GBF_CRYSTAL, GBF_RTC_TAIL_64);
   part5_rejection();
+  part6_unown_dv_for_letter();
 
   printf("\n%s: %d checks, %d failure(s)\n", g_fail ? "FAIL" : "OK", g_checks, g_fail);
   return g_fail ? 1 : 0;
