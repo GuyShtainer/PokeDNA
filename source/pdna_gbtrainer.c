@@ -395,7 +395,17 @@ static void gbcard_front_full(const GbTrainer* t, bool gen1, int female,
   bg_restore(bg, 0, 0, CARD_BG_W, CARD_BG_H);
   CardFields cf; gb_cardfields(t, gen1, &cf);
   card_front_fields_paint(PK_EMERALD, &cf);
-  ui_text(4, 152, UI_TEXT, can_edit ? "U/D A edit  SELECT Kanto  L/R flip  START save  B cancel"
+  /* Screen is 240px wide; ui_text at x=4 has room for 29 sys8 chars (236px), not
+   * 30 -- the earlier "U/D A edit  SELECT Kanto  L/R flip  START save  B cancel"
+   * (56 chars) silently clipped past "SELECT Kanto" with nothing past it ever
+   * drawn (P1c review: caught on a real screenshot, tools/p1c_shots.py's own
+   * 01_card_front shot). Dropping "U/D" (implied) and "SELECT Kanto"/"B cancel"
+   * (both standard/discoverable, same omission the plain page's own legend
+   * already makes for U/D) gets this to 28 chars -- comfortably under budget,
+   * same style as pdna_gbtrainer_plain's "A edit  START save  B cancel" (28
+   * chars) just swapping B cancel for L/R flip, the one truly NEW control this
+   * page has that the plain page does not. */
+  ui_text(4, 152, UI_TEXT, can_edit ? "A edit  L/R flip  START save"
                                       : "L/R flip  B back");
   if (can_edit) card_field_sel_frame(PK_EMERALD, cardf[sel], 0);
 }
