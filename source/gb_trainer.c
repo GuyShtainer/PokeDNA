@@ -2,6 +2,15 @@
 
 #include <string.h>
 
+/* ---- caps ------------------------------------------------------------------
+ * Declared up top: set_u_capped_unless_same() (below) needs clamp_u() before any
+ * of the get/set/encode helpers that follow it. */
+
+static uint32_t clamp_u(uint32_t v, uint32_t cap) { return v > cap ? cap : v; }
+
+#define GBT_MONEY_CAP 999999u
+#define GBT_COINS_CAP 9999u
+
 /* ---- game identification --------------------------------------------------- */
 
 GbGame gbt_game(const GbSession* s) {
@@ -111,6 +120,26 @@ static GbsStatus set_u_unless_same(GbSession* s, GbGame g, GbField f, uint32_t n
   return st;
 }
 
+/* P1a re-verify D3: set_u_unless_same() above is wrong for a CAPPED field when the
+ * caller passes an already-clamped `new_v` -- it then compares the field's RAW
+ * stored value against the CLAMPED target, which never matches when the stored
+ * value is itself over the cap (a hex-edited save, or simply a byte the game never
+ * enforces its own visible limit on: measured on Gold.sav, editing only a badge
+ * rewrote money 0xABCDEF -> 0x0F423F, coins 0xFFFF -> 0x270F, mom's money
+ * 0xABCDEF -> 0x0F423F). This is the function every capped field must go through
+ * instead: compare the RAW `want` against the RAW stored value FIRST, and only
+ * clamp on the way OUT, once a real change is already known to be happening. An
+ * untouched over-cap field (want == cur, both uncapped) is therefore left exactly
+ * as found, never silently rewritten down to the cap by an unrelated edit. */
+static GbsStatus set_u_capped_unless_same(GbSession* s, GbGame g, GbField f,
+                                          uint32_t want, uint32_t cap, bool* changed) {
+  uint32_t cur;
+  if (get_u(s, g, f, &cur) && cur == want) return GBS_OK;
+  GbsStatus st = set_u(s, g, f, clamp_u(want, cap));
+  if (st == GBS_OK) *changed = true;
+  return st;
+}
+
 /* ---- names ------------------------------------------------------------- */
 
 static bool get_name(const GbSession* s, GbGame g, GbField f, uint8_t gen,
@@ -202,13 +231,6 @@ static bool get_dex_count(const GbSession* s, GbGame g, GbField f, uint16_t* out
   *out = (uint16_t)count;
   return true;
 }
-
-/* ---- caps ----------------------------------------------------------------- */
-
-static uint32_t clamp_u(uint32_t v, uint32_t cap) { return v > cap ? cap : v; }
-
-#define GBT_MONEY_CAP 999999u
-#define GBT_COINS_CAP 9999u
 
 /* ---- read ------------------------------------------------------------------ */
 
@@ -322,40 +344,35 @@ GbsStatus gbt_write(GbSession* s, const GbTrainer* in) {
   st = set_u_unless_same(s, g, GBF_TRAINER_ID, in->trainer_id, &changed);
   if (st != GBS_OK) return st;
 
-  /* P1a review D3: compare against the field's CURRENT raw value BEFORE clamping --
-   * an untouched field (in->money already equal to what is on disk, even if that
-   * stored value is itself over the cap: a hand-edited or hex-edited save, or the
-   * design's own §1.1 caveat that the byte holds 0..255 with only the game
-   * enforcing the visible limit) must never be silently clamped down by an
-   * unrelated edit elsewhere on the same gbt_write() call. D4: money_ok/coins_ok
-   * false means the field was not readable at all -- leave it untouched, never
-   * write the zero gbt_read() defaulted it to. */
+  /* P1a review D3 (re-verified, previous fix was wrong -- see
+   * set_u_capped_unless_same's own comment): compare against the field's CURRENT
+   * RAW value BEFORE clamping, via set_u_capped_unless_same, not set_u_unless_same
+   * with a pre-clamped argument. An untouched field (in->money already equal to
+   * what is on disk, even if that stored value is itself over the cap: a
+   * hand-edited save, or the design's own §1.1 caveat that the byte holds 0..255
+   * with only the game enforcing the visible limit) must never be silently
+   * clamped down by an unrelated edit elsewhere on the same gbt_write() call. D4:
+   * money_ok/coins_ok false means the field was not readable at all -- leave it
+   * untouched, never write the zero gbt_read() defaulted it to. */
   if (in->money_ok && gbt_field_present(g, GBF_MONEY)) {
-    st = set_u_unless_same(s, g, GBF_MONEY, clamp_u(in->money, GBT_MONEY_CAP), &changed);
+    st = set_u_capped_unless_same(s, g, GBF_MONEY, in->money, GBT_MONEY_CAP, &changed);
     if (st != GBS_OK) return st;
   } else if (in->money_ok && gbt_field_present(g, GBF_MONEY_BIN)) {
-    st = set_u_unless_same(s, g, GBF_MONEY_BIN, clamp_u(in->money, GBT_MONEY_CAP), &changed);
+    st = set_u_capped_unless_same(s, g, GBF_MONEY_BIN, in->money, GBT_MONEY_CAP, &changed);
     if (st != GBS_OK) return st;
   }
-  /* NOTE: set_u_unless_same compares against the CLAMPED value, not the raw
-   * in->money -- for an in-cap value the two are identical, so this only differs
-   * from the reviewer's literal "compare before clamping" wording for an
-   * over-cap stored field, where it still does the right thing: clamp_u(in->money)
-   * equals clamp_u(cur) (both cap out at 999999) whenever cur == in->money, so the
-   * comparison still finds "unchanged" and skips the write -- and when cur !=
-   * in->money the field gets rewritten (correctly clamped) exactly as before. */
 
   if (in->coins_ok && gbt_field_present(g, GBF_COINS)) {
-    st = set_u_unless_same(s, g, GBF_COINS, clamp_u(in->coins, GBT_COINS_CAP), &changed);
+    st = set_u_capped_unless_same(s, g, GBF_COINS, in->coins, GBT_COINS_CAP, &changed);
     if (st != GBS_OK) return st;
   } else if (in->coins_ok && gbt_field_present(g, GBF_COINS_BIN)) {
-    st = set_u_unless_same(s, g, GBF_COINS_BIN, clamp_u(in->coins, GBT_COINS_CAP), &changed);
+    st = set_u_capped_unless_same(s, g, GBF_COINS_BIN, in->coins, GBT_COINS_CAP, &changed);
     if (st != GBS_OK) return st;
   }
 
   if (gbt_field_present(g, GBF_MOMS_MONEY)) {
-    st = set_u_unless_same(s, g, GBF_MOMS_MONEY, clamp_u(in->moms_money, GBT_MONEY_CAP),
-                           &changed);
+    st = set_u_capped_unless_same(s, g, GBF_MOMS_MONEY, in->moms_money, GBT_MONEY_CAP,
+                                  &changed);
     if (st != GBS_OK) return st;
     if (gbt_field_present(g, GBF_MOM_SAVING_FLAG)) {
       /* Read-modify-write bits 0-2 and bit 7 ONLY (P1a review D7: this is not a
@@ -392,13 +409,22 @@ GbsStatus gbt_write(GbSession* s, const GbTrainer* in) {
   }
 
   if (gbt_field_present(g, GBF_PLAYTIME_HOURS)) {
-    /* P1a review D10: retail's own play-time tick writes 0xFF to wPlayTimeMaxed,
-     * not a bare 1 (pokered/engine/play_time.asm:34-35) -- and clamping hours to
-     * 255 here (a caller passing a wider hour count than the byte holds) means the
-     * display would lie about being maxed unless this also sets the flag. */
-    bool maxed = in->playtime.maxed || in->playtime.hours > 255u;
-    uint32_t hrs = in->playtime.hours > 255u ? 255u : in->playtime.hours;
-    st = set_u_unless_same(s, g, GBF_PLAYTIME_HOURS, hrs, &changed);
+    /* P1a review D10 (refined alongside re-verify D3): retail writes 0xFF to
+     * wPlayTimeMaxed, not a bare 1 (pokered/engine/play_time.asm:34-35). Forcing
+     * maxed=true must happen only when the HOURS WRITE ITSELF is what is being
+     * clamped (a caller passing more than the byte holds) -- not whenever the
+     * field's raw stored value already happens to read back over the cap (an
+     * inconsistent/hex-edited state this call was never asked to touch), or a
+     * pure no-op read->write would flip the maxed byte purely because of what
+     * was already on disk -- the same class of bug D3 fixed for money/coins/
+     * mom's money. `hours_unchanged` is computed the same way
+     * set_u_capped_unless_same() judges it internally. */
+    uint32_t cur_hours;
+    bool hours_unchanged = get_u(s, g, GBF_PLAYTIME_HOURS, &cur_hours) &&
+                           cur_hours == in->playtime.hours;
+    bool maxed = in->playtime.maxed || (!hours_unchanged && in->playtime.hours > 255u);
+    st = set_u_capped_unless_same(s, g, GBF_PLAYTIME_HOURS, in->playtime.hours, 255u,
+                                  &changed);
     if (st != GBS_OK) return st;
     st = set_u_unless_same(s, g, GBF_PLAYTIME_MAXED, maxed ? 0xFFu : 0u, &changed);
     if (st != GBS_OK) return st;
@@ -414,9 +440,12 @@ GbsStatus gbt_write(GbSession* s, const GbTrainer* in) {
      * one documented bit (GAME_TIME_CAPPED = 0) but nothing rules out the games
      * using the rest for scratch, so only bit 0 is ever touched. Clamped to 999
      * (this struct's own on-screen budget, not a value the design doc cites). */
-    bool maxed = in->playtime.maxed || in->playtime.hours > 999u;
-    uint32_t hrs = in->playtime.hours > 999u ? 999u : in->playtime.hours;
-    st = set_u_unless_same(s, g, GBF_GAMETIME_HOURS, hrs, &changed);
+    uint32_t cur_ghours;
+    bool ghours_unchanged = get_u(s, g, GBF_GAMETIME_HOURS, &cur_ghours) &&
+                            cur_ghours == in->playtime.hours;
+    bool maxed = in->playtime.maxed || (!ghours_unchanged && in->playtime.hours > 999u);
+    st = set_u_capped_unless_same(s, g, GBF_GAMETIME_HOURS, in->playtime.hours, 999u,
+                                  &changed);
     if (st != GBS_OK) return st;
     if (gbt_field_present(g, GBF_GAMETIME_CAP)) {
       uint32_t cur = 0;

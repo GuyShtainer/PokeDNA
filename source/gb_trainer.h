@@ -124,18 +124,24 @@ bool gbt_read(const GbSession* s, GbTrainer* out);
 /* Write the EDITABLE subset of `in` back into the session (see the scope note
  * above for what is and is not written).
  *
- * A FIELD THAT DID NOT CHANGE IS NEVER REWRITTEN (P1a review D1/D3/D5) — this is
- * not an optimisation, it is a correctness requirement (docs/GEN12-PARITY-DESIGN.md
- * §5.1): the player name is compared, DECODED, against what a fresh gbt_read of
- * this session would return right now, and the encode/write is skipped entirely
- * when they already match. Money and coins get the same untouched-is-untouched
- * treatment: each is compared against its own CURRENT raw value before any cap is
- * applied, and only clamped-then-written when it actually differs; a round-trip
- * that never meant to touch money must not (a) silently rewrite a stored name's
- * post-terminator tail to 0x50 filler, or (b) silently clamp a stored value that
- * happens to already be over 999999/9999 down to the cap. money/coins are also
- * skipped outright when money_ok/coins_ok is false (an unreadable field is left
- * exactly as found, never overwritten with the zero gbt_read defaulted it to).
+ * A FIELD THAT DID NOT CHANGE IS NEVER REWRITTEN (P1a review D1/D3/D5, re-verified
+ * D3) — this is not an optimisation, it is a correctness requirement
+ * (docs/GEN12-PARITY-DESIGN.md §5.1): the player name is compared, DECODED, against
+ * what a fresh gbt_read of this session would return right now, and the
+ * encode/write is skipped entirely when they already match. Every CAPPED field --
+ * money, coins, mom's money, and both generations' play-time hours -- gets the same
+ * untouched-is-untouched treatment via set_u_capped_unless_same() (source/
+ * gb_trainer.c): the field's own CURRENT RAW value is compared against the wanted
+ * RAW value FIRST, and only clamped on the way OUT once a real change is already
+ * known to be happening -- never the other way around (comparing raw-vs-already-
+ * clamped silently rewrites any over-cap stored value to the cap on any unrelated
+ * edit; this was shipped once and is the specific defect re-verify D3 caught and
+ * fixed). A round-trip that never meant to touch money must not (a) silently
+ * rewrite a stored name's post-terminator tail to 0x50 filler, or (b) silently
+ * clamp a stored value that happens to already be over its cap down to that cap.
+ * money/coins are also skipped outright when money_ok/coins_ok is false (an
+ * unreadable field is left exactly as found, never overwritten with the zero
+ * gbt_read defaulted it to).
  *
  * Refuses a player name over GB_OT_GLYPHS glyphs or one the target generation's
  * charset cannot store exactly (GBS_ERR_ARG) before a single byte moves. Calls

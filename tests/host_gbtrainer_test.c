@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "gb_trainer.h"
 
@@ -133,15 +134,53 @@ static void vc_sanity(const char* file, uint16_t expect_tid) {
  * not; D5 was a consequence -- a corpus name whose residue happened to decode past
  * GB_OT_GLYPHS glyphs made gbt_write() refuse EVERY edit, including unrelated
  * ones. Includes both VC .sav.dat files (same field layout, different tail). */
-static void noop_zero_diff(const char* file) {
+/* `plant_overcap`: P1a re-verify D3 -- before the no-op read/write, force
+ * money/coins/mom's-money/play-time-hours to values already OVER their caps
+ * (0xABCDEF, 0xFFFF, 0xABCDEF, 1500h), through gbs_write_field()/gbs_finish() so
+ * the planted state is itself a valid, checksummed save (not just poked bytes),
+ * then re-baseline g_orig to THAT state. The bug this catches: an earlier version
+ * of set_u_unless_same() compared the field's RAW stored value against an
+ * ALREADY-CLAMPED target, so an over-cap stored value never matched and got
+ * rewritten down to the cap by this same "no-op" -- measured on Gold.sav, editing
+ * only a badge silently turned money 0xABCDEF into 0x0F423F. Gen 2 only (Gen 1's
+ * money is BCD, which cannot represent an out-of-cap value without also being
+ * invalid BCD -- money_ok already covers that case, D4). */
+static void noop_zero_diff(const char* file, bool plant_overcap) {
   uint32_t len = load(file);
   if (!len) { printf("  SKIP %s (not present)\n", file); return; }
   g_ran++;
+
+  bool planted = false;
+  if (plant_overcap) {
+    GbSession ps;
+    if (gbs_open(&ps, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK && ps.gen == GB_GEN2) {
+      GbGame pg = gbt_game(&ps);
+      static const uint8_t money_bad[3] = { 0xAB, 0xCD, 0xEF };
+      static const uint8_t coins_bad[2] = { 0xFF, 0xFF };
+      static const uint8_t hours_bad[2] = { 0x05, 0xDC };   /* 1500, over the 999 cap */
+      if (gbt_field_present(pg, GBF_MONEY_BIN))
+        gbs_write_field(&ps, gbf_off(pg, GBF_MONEY_BIN), money_bad, 3);
+      if (gbt_field_present(pg, GBF_COINS_BIN))
+        gbs_write_field(&ps, gbf_off(pg, GBF_COINS_BIN), coins_bad, 2);
+      if (gbt_field_present(pg, GBF_MOMS_MONEY))
+        gbs_write_field(&ps, gbf_off(pg, GBF_MOMS_MONEY), money_bad, 3);
+      if (gbt_field_present(pg, GBF_GAMETIME_HOURS))
+        gbs_write_field(&ps, gbf_off(pg, GBF_GAMETIME_HOURS), hours_bad, 2);
+      CHECKF(gbs_finish(&ps) == GBS_OK, "%s: gbs_finish after planting over-cap values", file);
+      memcpy(g_orig, g_img, len);   /* the planted (valid, checksummed) state IS the baseline */
+      planted = true;
+    }
+  }
 
   GbSession s;
   CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
   GbTrainer t;
   CHECKF(gbt_read(&s, &t), "%s: gbt_read", file);
+
+  if (planted)
+    CHECKF(t.money > 999999u || t.coins > 9999u || t.moms_money > 999999u ||
+          t.playtime.hours > 999u,
+          "%s: planted over-cap values did not read back over-cap (setup broken)", file);
 
   GbsStatus st = gbt_write(&s, &t);
   CHECKF(st == GBS_OK, "%s: no-op gbt_write status %s", file, gbs_status_text(st));
@@ -287,6 +326,185 @@ static void roundtrip(const char* file, uint8_t expect_gen) {
         file, unexplained, first, g_orig[first], g_img[first]);
 }
 
+/* ------------------------------------------------------- B2: single-field write
+ * (P1a re-verify D11)
+ *
+ * The whole no-op/round-trip/clamp story above rests on ONE flag: gbt_write()'s
+ * local `changed`, which gates whether gbs_finish() runs at all (see that
+ * function's own comment -- skipping it is what keeps a true no-op from moving a
+ * Gen-2 save's stored checksums). Nothing before this point actually EXERCISES a
+ * write that changes exactly one field while every set_u_... / set_name_... call for every
+ * OTHER field takes its own "unchanged" early-return -- every roundtrip() case
+ * above changes five-plus fields at once, and so does every retail-gate case, so a
+ * single call site that writes via bare set_u() without ever raising `*changed`
+ * would still pass the whole suite and the gate 38/0 (proven: dropping the flag
+ * from one branch by hand, deliberately, made exactly this test fail with a
+ * failed-to-reopen "stale checksum" error, and nothing else in either suite
+ * noticed). one_field_only() closes that hole: change EXACTLY one field, write,
+ * and require gbs_open() on the same buffer to still succeed (Gen 2: this is
+ * where a skipped gbs_finish() shows up, as a checksum the game would reject) and
+ * a fresh gbt_read() to show the new value. */
+
+static uint32_t g_want_num;
+static bool     g_want_bool;
+static char     g_want_str[GB_TEXT_MAX];
+
+typedef void (*Mutator)(GbTrainer* t);
+typedef bool (*Matcher)(const GbTrainer* t);
+
+static void mut_name(GbTrainer* t) {
+  const char* target = (strcmp(t->name, "ZQXW") == 0) ? "ZQXWY" : "ZQXW";
+  strncpy(g_want_str, target, sizeof g_want_str - 1);
+  g_want_str[sizeof g_want_str - 1] = 0;
+  strcpy(t->name, target);
+}
+static bool match_name(const GbTrainer* t) { return strcmp(t->name, g_want_str) == 0; }
+
+static void mut_tid(GbTrainer* t) { t->trainer_id ^= 1u; g_want_num = t->trainer_id; }
+static bool match_tid(const GbTrainer* t) { return t->trainer_id == g_want_num; }
+
+static void mut_money(GbTrainer* t) {
+  g_want_num = (t->money == 111111u) ? 222222u : 111111u;
+  t->money = g_want_num;
+}
+static bool match_money(const GbTrainer* t) { return t->money == g_want_num; }
+
+static void mut_coins(GbTrainer* t) {
+  g_want_num = (t->coins == 555u) ? 777u : 555u;
+  t->coins = (uint16_t)g_want_num;
+}
+static bool match_coins(const GbTrainer* t) { return t->coins == g_want_num; }
+
+static void mut_moms(GbTrainer* t) {
+  g_want_num = (t->moms_money == 54321u) ? 12345u : 54321u;
+  t->moms_money = g_want_num;
+}
+static bool match_moms(const GbTrainer* t) { return t->moms_money == g_want_num; }
+
+static void mut_mombits(GbTrainer* t) {
+  t->mom_saving_bits = (uint8_t)(t->mom_saving_bits ^ 0x01u);
+  g_want_num = t->mom_saving_bits;
+}
+static bool match_mombits(const GbTrainer* t) { return t->mom_saving_bits == g_want_num; }
+
+static void mut_momactive(GbTrainer* t) { t->mom_active = !t->mom_active; g_want_bool = t->mom_active; }
+static bool match_momactive(const GbTrainer* t) { return t->mom_active == g_want_bool; }
+
+static void mut_badges(GbTrainer* t) {
+  t->badges = (uint8_t)(t->badges ^ 0x01u);
+  g_want_num = t->badges;
+}
+static bool match_badges(const GbTrainer* t) { return t->badges == g_want_num; }
+
+static void mut_johto(GbTrainer* t) {
+  t->badges_johto = (uint8_t)(t->badges_johto ^ 0x01u);
+  g_want_num = t->badges_johto;
+}
+static bool match_johto(const GbTrainer* t) { return t->badges_johto == g_want_num; }
+
+static void mut_kanto(GbTrainer* t) {
+  t->badges_kanto = (uint8_t)(t->badges_kanto ^ 0x01u);
+  g_want_num = t->badges_kanto;
+}
+static bool match_kanto(const GbTrainer* t) { return t->badges_kanto == g_want_num; }
+
+static void mut_hours(GbTrainer* t) {
+  g_want_num = (t->playtime.hours == 5u) ? 6u : 5u;
+  t->playtime.hours = (uint16_t)g_want_num;
+}
+static bool match_hours(const GbTrainer* t) { return t->playtime.hours == g_want_num; }
+
+static void mut_maxed(GbTrainer* t) { t->playtime.maxed = !t->playtime.maxed; g_want_bool = t->playtime.maxed; }
+static bool match_maxed(const GbTrainer* t) { return t->playtime.maxed == g_want_bool; }
+
+static void mut_minutes(GbTrainer* t) {
+  g_want_num = (t->playtime.minutes == 5u) ? 6u : 5u;
+  t->playtime.minutes = (uint8_t)g_want_num;
+}
+static bool match_minutes(const GbTrainer* t) { return t->playtime.minutes == g_want_num; }
+
+static void mut_seconds(GbTrainer* t) {
+  g_want_num = (t->playtime.seconds == 5u) ? 6u : 5u;
+  t->playtime.seconds = (uint8_t)g_want_num;
+}
+static bool match_seconds(const GbTrainer* t) { return t->playtime.seconds == g_want_num; }
+
+static void mut_frames(GbTrainer* t) {
+  g_want_num = (t->playtime.frames == 5u) ? 6u : 5u;
+  t->playtime.frames = (uint8_t)g_want_num;
+}
+static bool match_frames(const GbTrainer* t) { return t->playtime.frames == g_want_num; }
+
+/* `probe_b` is GBF_FIELD_COUNT for a field that has only one possible backing id
+ * across every game (GBF_FIELD_COUNT itself is never a real field, gb_fields.h's
+ * own sentinel-by-construction: it is declared one past every real enumerator). */
+static void one_field(const char* file, const char* label, GbField probe_a, GbField probe_b,
+                      Mutator mutate, Matcher matches) {
+  uint32_t len = load(file);
+  if (!len) return;   /* corpus file absent: other sections already report this */
+  g_ran++;
+
+  GbSession s;
+  bool open_ok = gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK;
+  CHECKF(open_ok, "%s/%s: open", file, label);
+  if (!open_ok) return;
+
+  GbGame g = gbt_game(&s);
+  bool present = gbt_field_present(g, probe_a) ||
+                (probe_b != GBF_FIELD_COUNT && gbt_field_present(g, probe_b));
+  if (!present) return;   /* this generation lacks the field: not a failure */
+
+  GbTrainer t;
+  bool read_ok = gbt_read(&s, &t);
+  CHECKF(read_ok, "%s/%s: gbt_read", file, label);
+  if (!read_ok) return;
+
+  mutate(&t);
+
+  GbsStatus st = gbt_write(&s, &t);
+  CHECKF(st == GBS_OK, "%s/%s: gbt_write status %s", file, label, gbs_status_text(st));
+
+  /* The load-bearing check: a real single-field write that skipped gbs_finish()
+   * (a dropped `changed = true`) leaves a Gen-2 save's stored checksums stale --
+   * gbs_open() on the very same buffer is where that surfaces. */
+  GbSession s2;
+  bool reopen_ok = gbs_open(&s2, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK;
+  CHECKF(reopen_ok, "%s/%s: re-open after single-field write (stale checksum?)", file, label);
+  if (!reopen_ok) return;
+
+  GbTrainer t2;
+  bool reread_ok = gbt_read(&s2, &t2);
+  CHECKF(reread_ok, "%s/%s: gbt_read after single-field write", file, label);
+  if (!reread_ok) return;
+
+  CHECKF(matches(&t2), "%s/%s: the changed field did not read back as changed", file, label);
+}
+
+static void one_field_only(void) {
+  static const char* const files[] = {
+    "Red.sav", "Yellow.sav", "Gold.sav", "Crystal.sav",
+    "Gold-VC.sav.dat", "Crystal-VC.sav.dat"
+  };
+  for (size_t i = 0; i < sizeof files / sizeof files[0]; i++) {
+    const char* file = files[i];
+    one_field(file, "name",        GBF_PLAYER_NAME,      GBF_FIELD_COUNT,     mut_name,      match_name);
+    one_field(file, "TID",         GBF_TRAINER_ID,       GBF_FIELD_COUNT,     mut_tid,       match_tid);
+    one_field(file, "money",       GBF_MONEY,            GBF_MONEY_BIN,       mut_money,     match_money);
+    one_field(file, "coins",       GBF_COINS,            GBF_COINS_BIN,       mut_coins,     match_coins);
+    one_field(file, "mom's money", GBF_MOMS_MONEY,       GBF_FIELD_COUNT,     mut_moms,      match_moms);
+    one_field(file, "mom bits",    GBF_MOM_SAVING_FLAG,  GBF_FIELD_COUNT,     mut_mombits,   match_mombits);
+    one_field(file, "mom active",  GBF_MOM_SAVING_FLAG,  GBF_FIELD_COUNT,     mut_momactive, match_momactive);
+    one_field(file, "badges",      GBF_BADGES,           GBF_FIELD_COUNT,     mut_badges,    match_badges);
+    one_field(file, "Johto",       GBF_BADGES_JOHTO,     GBF_FIELD_COUNT,     mut_johto,     match_johto);
+    one_field(file, "Kanto",       GBF_BADGES_KANTO,     GBF_FIELD_COUNT,     mut_kanto,     match_kanto);
+    one_field(file, "hours",       GBF_PLAYTIME_HOURS,   GBF_GAMETIME_HOURS,  mut_hours,     match_hours);
+    one_field(file, "maxed",       GBF_PLAYTIME_MAXED,   GBF_GAMETIME_CAP,    mut_maxed,     match_maxed);
+    one_field(file, "minutes",     GBF_PLAYTIME_MINUTES, GBF_GAMETIME_MINUTES,mut_minutes,   match_minutes);
+    one_field(file, "seconds",     GBF_PLAYTIME_SECONDS, GBF_GAMETIME_SECONDS,mut_seconds,   match_seconds);
+    one_field(file, "frames",      GBF_PLAYTIME_FRAMES,  GBF_GAMETIME_FRAMES, mut_frames,    match_frames);
+  }
+}
+
 /* ---------------------------------------------------------------- C: refusals */
 
 static void refusals(const char* file, uint8_t expect_gen) {
@@ -360,18 +578,22 @@ int main(void) {
   vc_sanity("Crystal-VC.sav.dat", 8872);
 
   printf("== B0: no-op read->write is a zero-byte diff (P1a review D1) ==\n");
-  noop_zero_diff("Red.sav");
-  noop_zero_diff("Yellow.sav");
-  noop_zero_diff("Gold.sav");
-  noop_zero_diff("Crystal.sav");
-  noop_zero_diff("Gold-VC.sav.dat");
-  noop_zero_diff("Crystal-VC.sav.dat");
+  noop_zero_diff("Red.sav", false);
+  noop_zero_diff("Yellow.sav", false);
+  noop_zero_diff("Gold.sav", false);
+  noop_zero_diff("Crystal.sav", false);
+  noop_zero_diff("Gold-VC.sav.dat", false);
+  noop_zero_diff("Crystal-VC.sav.dat", false);
+  noop_zero_diff("Gold.sav", true);   /* P1a re-verify D3: planted over-cap values */
 
   printf("== B: round trips ==\n");
   roundtrip("Red.sav", GB_GEN1);
   roundtrip("Yellow.sav", GB_GEN1);
   roundtrip("Gold.sav", GB_GEN2);
   roundtrip("Crystal.sav", GB_GEN2);
+
+  printf("== B2: single-field write (P1a re-verify D11) ==\n");
+  one_field_only();
 
   printf("== C: refusals ==\n");
   refusals("Red.sav", GB_GEN1);
