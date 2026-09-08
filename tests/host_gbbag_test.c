@@ -12,6 +12,26 @@
  * here -- every mutation happens on an in-memory copy -- so a missing corpus SKIPS
  * rather than fails, but a corpus that IS present must match the design doc's own
  * VERIFIED numbers (Appendix A) exactly, not approximately.
+ *
+ * D3(d) mid-write failure test: SKIPPED (stop-licence). The prescription was to
+ * shrink the session's `len` so the last pocket's write lands past the end of the
+ * image. Traced against source/gb_session.c/gb_session.h: (1) for Gen 2 sessions
+ * (Gold/Crystal), gbs_write_field's Gen-2 arm calls g2w_write_range(&s->g2w, ...),
+ * which never consults s->len again -- g2w_begin() captured its OWN copy of the
+ * length at gbs_open() time (gb_session.c:69), so mutating s->len post-open has
+ * zero effect on Gen-2 writes. (2) For Gen 1 sessions (Red/Yellow),
+ * gbs_write_field does pass s->len through to gen1_write_range_ex, but the only
+ * check that consults it is `if (len < GEN1_SAVE_SIZE) return GEN1W_ERR_SIZE;`
+ * (source/gen1_write.c:769) -- a blanket floor on the whole file, not a per-field
+ * off+n bound (the actual range check is against fixed constants
+ * GEN1_SUM_FIRST/GEN1_SUM_LAST, independent of len). Shrinking s->len below
+ * GEN1_SAVE_SIZE therefore fails EVERY subsequent gbs_write_field call
+ * identically, including the FIRST pocket (Items) gbb_write touches -- it cannot
+ * selectively fail only the last pocket. Making only the last write fail would
+ * require editing production code (e.g. temporarily corrupting g2w's internal
+ * length copy, or the field table), which the brief said not to do. No other
+ * caller-visible knob makes a single field write fail without editing production
+ * code, so (d) is skipped rather than forced.
  */
 #include <stdio.h>
 #include <string.h>
@@ -233,6 +253,49 @@ static void noop_zero_diff(const char* file) {
   CHECKF(diff == 0,
         "%s: no-op gbb_write changed %u byte(s), first at 0x%04X (0x%02X -> 0x%02X)",
         file, diff, first, g_orig[first], g_img[first]);
+}
+
+/* D3(c) mutation note (verified by hand, not shipped as code): forcing gbb_write's
+ * final `return changed ? gbs_finish(s) : GBS_OK;` to unconditionally call
+ * gbs_finish() is only caught by this test (and by B0's zero-byte-diff test) on
+ * Gold.sav/Crystal.sav. It is NOT caught on Red.sav/Yellow.sav, because Gen 1's
+ * gbs_finish() is a genuine no-op (source/gb_session.c: "Gen 1 has no backup
+ * mirror and no deferred checksum ... there is nothing left to close out" ->
+ * returns GBS_OK without touching the image at all); Gen 1's checksum is instead
+ * fixed inline by gen1_write_range_ex on every actual field write, so calling
+ * gbs_finish an extra time on an already-no-op path has no observable effect for
+ * that generation. 2/4 saves catch this specific mutation; the other 2/4 mutations
+ * prescribed by the review (memset-not-memcpy on new_body, and cnt_changed-only)
+ * are caught on all applicable saves (see the fix-pass report). */
+/* Generation-independent no-op detector (D3c): rather than reading Gold's checksum
+ * byte specifically, ask each generation's own save module where ITS stored
+ * checksum lives (GEN1_OFF_CHECKSUM for Gen 1; g2_checksum_primary_off(version)
+ * for Gen 2), corrupt that one byte, then prove a true no-op gbb_write() never
+ * calls gbs_finish() (which would have repaired it) by asserting the corrupted
+ * byte is STILL corrupt afterwards. Works on all four saves. */
+static void noop_checksum_untouched(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK,
+        "%s: open (checksum no-op)", file);
+  GbBag bag;
+  CHECKF(gbb_read(&s, &bag), "%s: gbb_read (checksum no-op)", file);
+
+  uint32_t off = (s.gen == GB_GEN1) ? GEN1_OFF_CHECKSUM
+                                     : g2_checksum_primary_off(s.g2w.sv.version);
+  uint8_t before = g_img[off];
+  g_img[off] = (uint8_t)~before;   /* corrupt the stored checksum */
+
+  GbsStatus st = gbb_write(&s, &bag);
+  CHECKF(st == GBS_OK, "%s: no-op gbb_write status %s (checksum no-op)",
+        file, gbs_status_text(st));
+  CHECKF(g_img[off] == (uint8_t)~before,
+        "%s: a true no-op must not repair the checksum byte at 0x%04X", file, off);
+
+  g_img[off] = before;   /* restore */
 }
 
 /* ---------------------------------------------------------------- B: round trip */
@@ -580,6 +643,16 @@ static void refusals(const char* file, uint8_t expect_gen) {
         == GBB_ERR_ARG, "%s: remove slot == count refused", file);
   CHECKF(gbb_set_qty(g, &bag, GBB_POCKET_ITEMS, 0, 0u) == GBB_ERR_QTY,
         "%s: set_qty 0 refused", file);
+
+  /* D3(a): slot == count is one past the last occupied slot, out of range */
+  CHECKF(gbb_set_qty(g, &bag, GBB_POCKET_ITEMS, bag.pockets[GBB_POCKET_ITEMS].count, 5u)
+        == GBB_ERR_ARG, "%s: set_qty slot == count refused", file);
+  /* D3(b): gbb_tmhm_get at exactly GBB_TMHM_COUNT is out of range */
+  {
+    uint8_t c;
+    CHECKF(gbb_tmhm_get(&bag, GBB_TMHM_COUNT, &c) == false,
+          "%s: gbb_tmhm_get(GBB_TMHM_COUNT) refused", file);
+  }
 }
 
 /* ---------------------------------------------------------------- main */
@@ -611,6 +684,12 @@ int main(void) {
   noop_zero_diff("Yellow.sav");
   noop_zero_diff("Gold.sav");
   noop_zero_diff("Crystal.sav");
+
+  printf("== B0b: no-op leaves a corrupted stored checksum untouched (all 4 saves) ==\n");
+  noop_checksum_untouched("Red.sav");
+  noop_checksum_untouched("Yellow.sav");
+  noop_checksum_untouched("Gold.sav");
+  noop_checksum_untouched("Crystal.sav");
 
   printf("== B: round trips ==\n");
   roundtrip("Red.sav", GB_GEN1);
