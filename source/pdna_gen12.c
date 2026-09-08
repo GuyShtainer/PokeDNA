@@ -861,6 +861,10 @@ typedef struct {
   RomGbLearn  learn;
   bool        learn_ready;
   const char* learn_path;
+  uint32_t    learn_rom_id;   /* romgs.id_hash of the ROM the cached table was located
+                               * in: the SAVE path alone is not a key -- Settings can
+                               * re-register a different same-generation ROM mid-session
+                               * (G1 re-verify: a stale table built one wrong moveset). */
 } Gb12Edit;
 static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the arena */
 
@@ -2075,11 +2079,13 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t* out_level, uin
   memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
   if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return -1;
   int ok;
-  if (g_ed->learn_ready && g_ed->learn_path == g_ed->path && g_ed->learn.gen == g_ed->s.gen) {
-    ok = 1;                                    /* cache hit: skip the scan entirely */
+  if (g_ed->learn_ready && g_ed->learn_path == g_ed->path && g_ed->learn.gen == g_ed->s.gen &&
+      g_ed->learn_rom_id == g_ed->romgs.id_hash) {
+    ok = 1;                                    /* cache hit: same save, gen AND ROM */
   } else {
     ok = rom_gblearn_open(&g_ed->learn, g_ed->s.gen, gb_read, &g_ed->romfil, g_ed->romgs.size);
-    if (ok) { g_ed->learn_ready = true; g_ed->learn_path = g_ed->path; }
+    if (ok) { g_ed->learn_ready = true; g_ed->learn_path = g_ed->path;
+              g_ed->learn_rom_id = g_ed->romgs.id_hash; }
   }
   /* Either way, `read`/`ctx` must point at THIS call's freshly (re)opened FIL --
    * a cache hit skips the scan, never the fact that the old FIL is long closed. */
@@ -2539,6 +2545,7 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
        * would hand a fresh session someone else's located learnset table. */
       ed->romgs_ready = false;
       ed->learn_ready = false;
+      ed->learn_rom_id = 0;
       g_ed = ed;
     } else {
       log_line("gen12: edit session refused (%s, gen %d vs mount kind %d): read-only",
