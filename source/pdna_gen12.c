@@ -593,6 +593,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "sprite_era.h"    /* SE_KIND_GEN1/SE_KIND_GEN2 -- BACKLOG #58's app_nav_refuse */
 #include "gb_session.h"
 #include "gb_editor.h"
+#include "gen2_save.h"     /* G1 review LOW-5: g2_unown_dv_for_letter (CREATE's Unown letter) */
 #include "pdna_gbedit.h"
 #include "pdna_gbsummary.h"   /* BACKLOG #41: the native VIEW/EDIT summary */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
@@ -600,6 +601,9 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
 #include "gba_rtc.h"       /* S5-B: the sidecar entry's transfer-time RTC stamp        */
 #include "rom_gbsprite.h"  /* S5-C: locates BaseStats in the user's own Gen-1 ROM      */
+#include "rom_gblearn.h"   /* BACKLOG #50: level-up learnsets + min-level for CREATE   */
+#include "gb_new_mon.h"    /* BACKLOG #50: gb_new_mon/gb_new_mon_g1_moves for CREATE   */
+#include "pdna_pick.h"     /* BACKLOG #50 UX-parity: pick_species(), the Gen-3 picker  */
 #include "rom_gbbase.h"    /* S5-C: decodes the 28-byte BaseStats row rom_gbsprite found;
                             * pk_national_no (internal index -> National Dex) comes from
                             * data_tables.h, already included at the top of this file. */
@@ -837,6 +841,31 @@ typedef struct {
    * new g_ed is latched (never left as whatever garbage the borrowed arena held). */
   bool        romgs_ready;
   const char* romgs_path;
+  /* G1 review MEDIUM-2 (2026-09-08): CREATE's own learnset-table scan
+   * (rom_gblearn_open, gb_create_learn below) is a SEPARATE full-ROM pass from
+   * romgs's own -- measured, ~118,000 (Gold.gbc) / ~185,000 (Crystal.gbc)
+   * read() calls before this cache and the 64-B block-read fix in
+   * rom_gblearn.c's full_pointer_shape_ok. Cached the SAME way romgs_ready/
+   * romgs_path are, for the identical reason and with the identical
+   * limitation (keyed on g_ed->path, not on which ROM app_gb_rom_path()/the
+   * beside-the-save fallback actually resolved to -- see romgs_path's own
+   * comment): a second CREATE in the same session skips rom_gblearn_open's
+   * scan entirely. `learn.read`/`learn.ctx` are NOT part of the cached
+   * identity (a fresh FIL is opened per gb_create_learn call regardless) --
+   * only `table_off`/`data_bank`/`banks`/`size`/`gen`, the part the scan
+   * exists to find, are trusted across calls. Deliberately NOT invalidated by
+   * gb_create_locate_rom the way romgs_ready now is (MEDIUM-1): that fix
+   * exists because CREATE overwrites romgs/romspath out from under a
+   * DIFFERENT consumer's (PASTE's) cache; this cache belongs to CREATE
+   * itself, and invalidating it at the top of every create would defeat the
+   * whole point of caching across two creates in one session. */
+  RomGbLearn  learn;
+  bool        learn_ready;
+  const char* learn_path;
+  uint32_t    learn_rom_id;   /* romgs.id_hash of the ROM the cached table was located
+                               * in: the SAVE path alone is not a key -- Settings can
+                               * re-register a different same-generation ROM mid-session
+                               * (G1 re-verify: a stale table built one wrong moveset). */
 } Gb12Edit;
 static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the arena */
 
@@ -845,6 +874,16 @@ static void s_busy(const char* line) {
   ui_panel(16, 60, 208, 48, UI_PANEL, UI_WARN);
   ui_text(28, 70, UI_WARN, PDNA_GBEDIT_BUSY_SAVING);
   ui_text(28, 88, UI_TEXT, line);
+}
+
+/* G1 review MEDIUM-2: CREATE's own busy screen, NOT s_busy() -- see
+ * PDNA_GBCREATE_BUSY_TITLE's own comment (pdna_layout.h) for why "Saving - do
+ * not power off" does not apply to a pure ROM read. Same panel shape. */
+static void s_busy_reading(void) {
+  ui_clear();
+  ui_panel(16, 60, 208, 48, UI_PANEL, UI_WARN);
+  ui_text(28, 70, UI_WARN, PDNA_GBCREATE_BUSY_TITLE);
+  ui_text(28, 88, UI_TEXT, PDNA_GBCREATE_BUSY_LINE);
 }
 
 /* The card refused; put RAM back to what the card holds so the grid never shows an
@@ -1115,7 +1154,7 @@ static bool gb_edit_hook(uint8_t* rec80) {
   bool has_sidecar = gb_has_sidecar(s->gen, &e);
   bool saved = false; int card = 0;
   pdna_gbsummary(&e, true, true, s->gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
-                 has_sidecar, &saved, &card);
+                 has_sidecar, false, &saved, &card);
   if (!saved) return false;
 
   return gb_edit_commit(box, slot, &e, "edit");
@@ -1893,7 +1932,7 @@ static bool gb_view_hook(uint8_t* rec80) {
     bool saved = false;
     int nav = pdna_gbsummary(&e, can_edit, false,
                              gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
-                             has_sidecar, &saved, &card);
+                             has_sidecar, false, &saved, &card);
     if (saved && !gb_edit_commit(box, slot, &e, "view")) return false;
     if (nav == 0) return false;
 
@@ -1902,10 +1941,350 @@ static bool gb_view_hook(uint8_t* rec80) {
   }
 }
 
+/* ============================================================================
+ * BACKLOG #50 -- CREATE: build a legal Pokemon from scratch into an empty cell.
+ * ============================================================================
+ * species -> level -> ROM-derived facts (base stats/growth/moveset) -> gb_new_mon
+ * (pure C, source/gb_new_mon.c) -> the native summary (start_editing, so the
+ * player can tweak DVs/moves/name before it lands) -> gbs_insert -> gb_persist.
+ * Box/bank only: gbs_insert() itself refuses the party pseudo-box ("landing a
+ * converted mon in the party belongs to gbs_move()", gb_session.h) -- the exact
+ * limitation gb_paste_hook's own party guard above exists for, so this checks
+ * gb_box_is_party() first, in the same place, with the same message. */
+
+/* ROM lookup, independent of gb_gen1_locate_rom()/gb_gen1_base_from_rom() above
+ * (PASTE (GB)'s own Gen-1-only, beside-the-save-only pair): CREATE additionally
+ * tries the REGISTERED ROM (Settings > Game ROM, app_gb_rom_path()) first, and
+ * works for either generation. Duplicating ~30 lines of open/scan control flow
+ * costs less than generalizing a shipped, hardware-validated feature to do
+ * something it never needed to. Shares the SAME arena-resident storage
+ * (g_ed->romgs/romfil/romscan/romspath) safely: a session is always ONE
+ * generation, so the two families are never in use at once.
+ *
+ * DOES NOT USE the cache (romgs_ready) itself -- CREATE is a rare, deliberate
+ * action, not a per-paste hot path, so a fresh scan every time is the simpler
+ * and safer choice -- but it DOES invalidate that cache first (romgs_ready =
+ * false, below), because every branch here overwrites the very fields
+ * (g_ed->romgs/romspath) the cache is a claim ABOUT (G1 review MEDIUM-1: an
+ * earlier version left the flag standing over data this function had already
+ * replaced). On success, g_ed->romgs holds a located ROM of exactly `want_gen`
+ * and g_ed->romspath names it (the FIL itself is closed again -- every later
+ * read reopens it by that path, same pattern gb_gen1_base_from_rom's own
+ * re-open uses). */
+static bool __attribute__((noinline)) gb_create_locate_rom(uint8_t want_gen) {
+  GbRomGen want = (want_gen == GB_GEN1) ? GB_ROM_GEN1 : GB_ROM_GEN2;
+  /* G1 review MEDIUM-1 (2026-09-08): this function's own header comment above used
+   * to say "romgs_ready/romgs_path are left untouched, not read or written here" --
+   * true of the FLAG, false of what it guards: every branch below overwrites
+   * g_ed->romgs/romspath directly (the SAME fields gb_gen1_base_from_rom's cache
+   * trusts, line ~1590), without ever invalidating romgs_ready first. A CREATE run
+   * AFTER a Gen-1 PASTE had already cached a valid romgs_ready=true would leave the
+   * flag standing over data CREATE just replaced -- the NEXT PASTE would then trust
+   * stale/wrong-generation base stats as if they were still its own cache, never
+   * re-scanning. Invalidate up front, unconditionally: CREATE is a rare action, so
+   * the cost of the NEXT PASTE doing one extra fresh scan is negligible net of a
+   * silent correctness bug. */
+  g_ed->romgs_ready = false;
+
+  const char* reg = app_gb_rom_path(want_gen);
+  if (reg && reg[0]) {
+    int i = 0;
+    for (; reg[i] && i < (int)sizeof(g_ed->romspath) - 1; i++) g_ed->romspath[i] = reg[i];
+    g_ed->romspath[i] = 0;
+    memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+    if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) == FR_OK) {
+      FSIZE_t fsz = f_size(&g_ed->romfil);
+      uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+      int ok = rom_gbsprite_open(&g_ed->romgs, gb_read, &g_ed->romfil, sz,
+                                 g_ed->romscan, sizeof g_ed->romscan);
+      f_close(&g_ed->romfil);
+      if (ok && g_ed->romgs.gen == want) {
+        log_line("gen12 create: registered rom %s (gen %u)", g_ed->romspath, want_gen);
+        return true;
+      }
+      log_line("gen12 create: registered rom %s did not open as gen %u", g_ed->romspath, want_gen);
+    }
+  }
+
+  gb_rom_base_path();
+  int baselen = 0; while (g_ed->romspath[baselen]) baselen++;
+  static const char* const kExt[2] = { ".gb", ".gbc" };
+  for (int e = 0; e < 2; e++) {
+    int bp = baselen;
+    const char* ext = kExt[e];
+    for (int i = 0; ext[i] && bp < (int)sizeof(g_ed->romspath) - 1; i++) g_ed->romspath[bp++] = ext[i];
+    g_ed->romspath[bp] = 0;
+    memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+    if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) { g_ed->romspath[baselen] = 0; continue; }
+    FSIZE_t fsz = f_size(&g_ed->romfil);
+    uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
+    int ok = rom_gbsprite_open(&g_ed->romgs, gb_read, &g_ed->romfil, sz,
+                               g_ed->romscan, sizeof g_ed->romscan);
+    f_close(&g_ed->romfil);
+    if (ok && g_ed->romgs.gen == want) {
+      log_line("gen12 create: rom beside the save %s (gen %u)", g_ed->romspath, want_gen);
+      return true;
+    }
+    g_ed->romspath[baselen] = 0;
+  }
+  log_line("gen12 create: no gen-%u rom (registered or beside %s)", want_gen, g_ed->path ? g_ed->path : "?");
+  return false;
+}
+
+/* Base stats/growth for `dex` off the ROM gb_create_locate_rom already located --
+ * one small noinline frame per generation rather than one shared by a union, so
+ * neither frame carries the other generation's struct. Reopens g_ed->romfil by
+ * the already-resolved g_ed->romspath (same re-open pattern as gb_gen1_base_
+ * from_rom above), closes it again before returning either way. */
+static bool __attribute__((noinline)) gb_create_base1(uint16_t dex, RomGb1Species* out) {
+  memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+  if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return false;
+  bool ok = rom_gbbase_gen1(&g_ed->romgs, gb_read, &g_ed->romfil, dex, out);
+  f_close(&g_ed->romfil);
+  return ok;
+}
+static bool __attribute__((noinline)) gb_create_base2(uint16_t dex, RomGb2Species* out) {
+  memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+  if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return false;
+  bool ok = rom_gbbase_gen2(&g_ed->romgs, gb_read, &g_ed->romfil, dex, out);
+  f_close(&g_ed->romfil);
+  return ok;
+}
+
+/* Opens the ROM's learnset table ONCE and answers BOTH questions the create
+ * flow needs from it (BACKLOG #50 UX-parity, Guy 2026-09-07): the species'
+ * OWN lowest legal level -- no more separate level PROMPT, matching Gen 3's
+ * own create flow (pdna_main.c's app_create_mon, gen3_build_level: "5 for a
+ * Bulbasaur, 36 for a Charizard", "it must evolve to there") -- and its
+ * level-up moveset at exactly that level. `g1_start` is rom_gbbase_gen1's own
+ * start[4] for a Gen-1 target (merged in via rom_gblearn_moves_at_seeded --
+ * gb_new_mon_g1_moves does the identical thing, duplicated here rather than
+ * called because that helper wants an already-open RomGbLearn* and this
+ * function is also where one gets opened); NULL for Gen 2, whose own table
+ * already includes the starters. `*out_level` is only written on success.
+ * Returns the move count filled (0..4), or -1 on any failure -- the ONE
+ * refusal path left for the create flow's ROM dependency (used to be raised
+ * by the old gb_create_moves() this replaces; the level computation itself
+ * never refuses, see rom_gblearn_min_level()'s own "fails open" contract, so
+ * it cannot newly introduce one here).
+ *
+ * G1 review MEDIUM-2 (2026-09-08): the table LOCATION (g_ed->learn, arena-
+ * resident -- see its own struct comment for the cache contract) is reused
+ * across calls in the same session instead of re-scanning the whole ROM every
+ * time (rom_gblearn_open's own scan is what drove ~118,000-185,000 read()
+ * calls per create, measured, before this fix). A fresh FIL is still opened
+ * every call regardless -- the located table_off/data_bank are cheap facts
+ * to trust across calls, an open file handle is not. */
+static int __attribute__((noinline))
+gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t* out_level, uint8_t out4[4]) {
+  memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
+  if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return -1;
+  int ok;
+  if (g_ed->learn_ready && g_ed->learn_path == g_ed->path && g_ed->learn.gen == g_ed->s.gen &&
+      g_ed->learn_rom_id == g_ed->romgs.id_hash) {
+    ok = 1;                                    /* cache hit: same save, gen AND ROM */
+  } else {
+    ok = rom_gblearn_open(&g_ed->learn, g_ed->s.gen, gb_read, &g_ed->romfil, g_ed->romgs.size);
+    if (ok) { g_ed->learn_ready = true; g_ed->learn_path = g_ed->path;
+              g_ed->learn_rom_id = g_ed->romgs.id_hash; }
+  }
+  /* Either way, `read`/`ctx` must point at THIS call's freshly (re)opened FIL --
+   * a cache hit skips the scan, never the fact that the old FIL is long closed. */
+  g_ed->learn.read = gb_read;
+  g_ed->learn.ctx = &g_ed->romfil;
+  int kept = -1;
+  if (ok) {
+    uint8_t lvl = rom_gblearn_min_level(&g_ed->learn, dex);
+    kept = g1_start ? rom_gblearn_moves_at_seeded(&g_ed->learn, dex, lvl, g1_start, out4)
+                    : rom_gblearn_moves_at(&g_ed->learn, dex, lvl, out4);
+    if (kept >= 0 && out_level) *out_level = lvl;
+  }
+  f_close(&g_ed->romfil);
+  return kept;
+}
+
+/* AppSrcOps.create. Takes NO arguments -- see pdna_app.h's own comment on why
+ * app_mon_menu's (box, slot) parameters cannot supply this correctly for an
+ * is_bank source (every GB session): pdna_box.c always computes `mbox = 0` for
+ * one, and gbs_insert() itself makes the other (the empty CELL the cursor was
+ * on) irrelevant, since it always appends at the box's own next free slot.
+ *
+ * The box actually on screen is Gb12Mount.ui_box (BACKLOG #56, kept current by
+ * every L/R box switch via BoxSource.note_box) -- with the EXACT SAME fallback
+ * chain pdna_gen12_source()'s own start_box computation already uses for the
+ * identical "not updated yet this visit" gap: ui_box (a switch happened) ->
+ * current_box (the save's own "live copy" box, read at mount) -> 0. Caught by
+ * hand on a real emulator screenshot before this fix existed: CREATE from box
+ * 13 (17/20, real room) still refused "BOX FULL", because it was silently
+ * targeting box 0 (20/20) instead. */
+static bool gb_create_hook(void) {
+  int box = (g_m->ui_box >= 0 && g_m->ui_box <= g_m->party_box) ? g_m->ui_box
+          : (g_m->current_box >= 0 && g_m->current_box <= g_m->party_box) ? g_m->current_box
+          : 0;
+  if (gb_box_is_party(g_ed->s.gen, box)) {
+    snd_deny();
+    msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_PARTY_L1, 0);
+    return false;
+  }
+  GbsStatus wr = gbs_box_writable(&g_ed->s, box);
+  if (wr != GBS_OK) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_BOXWR_TITLE, UI_WARN, gbs_status_text(wr),
+             wr == GBS_ERR_UNWRITABLE ? PDNA_GBEDIT_UNWRITABLE_HINT : 0);
+    return false;
+  }
+  GbsStatus ld = gbs_load_list(&g_ed->s, box, g_ed->list);
+  if (ld != GBS_OK) {
+    snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(ld), 0); return false;
+  }
+  int count = gb_list_count(g_ed->s.gen, g_ed->list, box);
+  if (count < 0 || count >= gb_list_capacity(g_ed->s.gen, box)) {
+    snd_deny(); msg_wait(PDNA_GBCREATE_FULL_TITLE, UI_WARN, PDNA_GBCREATE_FULL_L1, 0); return false;
+  }
+
+  /* Species picker: pdna_pick.c's own big icon-grid pick_species(), the EXACT
+   * screen app_create_mon (pdna_main.c) opens for a Gen-3 create, restricted
+   * to this session's own generation (BACKLOG #50 UX-parity, Guy 2026-09-07:
+   * "Pokemon creation is not from the Pokedex view -- fix that") -- see
+   * pick_species_set_max_dex()'s own header comment for why a file-static
+   * ceiling, not a second picker, is what changed. The CANCEL/invalid check
+   * mirrors app_create_mon's own `if (sp == 0xFFFF || sp == 0) return false;`
+   * exactly (0xFFFF is pdna_pick.c's private CANCEL sentinel; a 0 species can
+   * never be legally picked either, but is refused the same defensive way). */
+  pick_species_set_max_dex(gb_max_species(g_ed->s.gen));
+  uint16_t dex = pick_species(1);
+  pick_species_set_max_dex(0);
+  if (dex == 0xFFFFu || dex == 0) return false;
+
+  /* G1 review LOW-5 (2026-09-08): the Unown letter is chosen the SAME place
+   * and SAME way Gen 3's own create flow does (pdna_main.c's app_create_mon:
+   * "THE UNOWN LETTER IS PART OF THE ROLL, so it has to be asked for BEFORE
+   * it"), not left to whatever letter gb_new_mon's own random DVs happen to
+   * land on. dex 201 (Unown) can only be picked at all in a Gen-2 session --
+   * pick_species_set_max_dex(151) already excludes it from Gen 1's own list,
+   * so no separate generation check is needed here. -1 (B in the prompt, or a
+   * form Gen 2 cannot represent -- 26/27, "!"/"?", Gen-3-only) leaves the DVs
+   * exactly as gb_new_mon() rolls them: "any letter", the same fallback
+   * Gen 3's own B-in-the-prompt path uses. */
+  int unown_letter = -1;
+  if (dex == 201) {
+    int form = pick_unown_form(0);
+    if (form >= 0 && form <= 25) unown_letter = form;
+  }
+
+  /* G1 review MEDIUM-2: gb_create_locate_rom + gb_create_learn together freeze the
+   * screen for a real full-ROM scan (up to ~185,000 read() calls, measured, before
+   * the cache below makes a second create in this session skip it) -- show honest
+   * feedback before either runs, not a still screen a player might mistake for a
+   * hang. Stays up through base1/base2/gb_create_learn too: nothing between here
+   * and the summary/refusal draws anything else. */
+  s_busy_reading();
+  if (!gb_create_locate_rom(g_ed->s.gen)) {
+    snd_deny();
+    msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_NOROM_L1, PDNA_GBCREATE_NOROM_L2);
+    return false;
+  }
+
+  GbNewMonSrc src; memset(&src, 0, sizeof src);
+  uint8_t g1_start_buf[4]; const uint8_t* g1_start = NULL;
+  if (g_ed->s.gen == GB_GEN1) {
+    RomGb1Species sp;
+    if (!gb_create_base1(dex, &sp)) {
+      snd_deny(); msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0); return false;
+    }
+    memcpy(src.base, sp.base.base, GB_NSTATS);
+    src.type1 = sp.base.type1; src.type2 = sp.base.type2;
+    src.growth = sp.growth;
+    memcpy(g1_start_buf, sp.start, 4);
+    g1_start = g1_start_buf;
+  } else {
+    RomGb2Species sp;
+    if (!gb_create_base2(dex, &sp)) {
+      snd_deny(); msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0); return false;
+    }
+    src.growth = sp.growth;
+  }
+
+  /* No level PROMPT any more (BACKLOG #50 UX-parity): gb_create_learn()
+   * computes the species' own lowest legal level (rom_gblearn_min_level, off
+   * the SAME ROM) and its moveset at that level together, one ROM open. */
+  uint8_t lvl = 5;
+  int kept = gb_create_learn(dex, g1_start, &lvl, src.moves);
+  if (kept < 0) {
+    snd_deny();
+    msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_NOROM_L1, PDNA_GBCREATE_NOROM_L2);
+    return false;
+  }
+
+  src.species_name = pk_species_name(dex);
+  src.ot_name = (g_m && g_m->player[0]) ? g_m->player : 0;
+  src.ot_id = g_m ? g_m->tid : 0;
+
+  /* G1 review BLOCKING-2 (2026-09-08): qran() is libtonc's PRNG, whose seed is a
+   * fixed constant (__qran_seed = 42) unless something calls sqran() -- nothing in
+   * this tree does -- so every player's Nth created mon got IDENTICAL DVs/gender/
+   * shininess. app_session_seed() is the SAME counter+TID+RTC entropy
+   * app_create_mon (pdna_main.c) already seeds a Gen-3 create's PID/IVs from. */
+  GbEditMon party_mon;
+  if (!gb_new_mon(g_ed->s.gen, dex, lvl, &src, app_session_seed(), &party_mon)) {
+    snd_deny();
+    msg_wait(PDNA_GBCREATE_TITLE, UI_WARN, PDNA_GBCREATE_BUILDFAIL_L1, 0);
+    return false;
+  }
+  /* G1 review LOW-5: override the four DVs gb_new_mon() just rolled with the
+   * SPECIFIC quad that decodes (g2_unown_letter) to the letter chosen above --
+   * a direct set, not a search, so this does not try to also land on a
+   * shiny-capable quad (g2_unown_dv_for_letter's own comment). Re-settles
+   * stats since the DVs (which feed the HP DV and, in principle, the derived
+   * stats) just changed out from under gb_new_mon's own settle. */
+  if (unown_letter >= 0) {
+    uint8_t dv4[4];
+    if (g2_unown_dv_for_letter((uint8_t)unown_letter, dv4)) {
+      gb_set_dv(&party_mon, GB_ATK, dv4[0]);
+      gb_set_dv(&party_mon, GB_DEF, dv4[1]);
+      gb_set_dv(&party_mon, GB_SPE, dv4[2]);
+      gb_set_dv(&party_mon, GB_SPC, dv4[3]);
+      gbe_settle_stats(&party_mon);
+    }
+  }
+
+  /* Party -> box, the SAME technique gbs_move() uses for a party->box move
+   * (gb_session.c: "drop the extra bytes... exactly what the game's own deposit
+   * does"): the box-shaped fields are a byte-identical PREFIX of the party-
+   * shaped ones in both generations (gen1_save.h's 33 of 44, gen2_save.h's own
+   * "PC record: species..level" / "+ status, HP and the 5 battle stats"), and
+   * gb_new_mon() already synced Gen 1's box-level byte via gb_set_level() --
+   * nothing left to do but reload the same bytes at the shorter length.
+   * gbs_insert() requires exactly this shape (mon->is_party == false). */
+  GbEditMon box_mon;
+  if (!gb_load_parts(&box_mon, g_ed->s.gen, false, party_mon.rec,
+                     party_mon.otname, party_mon.nick, party_mon.list_species))
+    return false;
+
+  bool saved = false; int card = 0;
+  pdna_gbsummary(&box_mon, true, true, g_ed->s.gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
+                false /* a freshly created mon can never already have a sidecar */,
+                true /* BACKLOG #50 UX-parity: the NEW chip + START-keep confirm */,
+                &saved, &card);
+  if (!saved) return false;
+
+  int slot_out = 0;
+  GbsStatus ist = gbs_insert(&g_ed->s, box, &box_mon, &slot_out, g_ed->list);
+  if (ist != GBS_OK) {
+    gb_rollback();
+    log_line("gen12: create insert box %d refused: %s", box, gbs_status_text(ist));
+    snd_error();
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN, gbs_status_text(ist), PDNA_GBEDIT_UNCHANGED_L2);
+    return false;
+  }
+  log_line("=== gb create -> %s box %d slot %d dex %u lv %d ===", g_ed->path, box, slot_out, dex, lvl);
+  return gb_persist("create");
+}
+
 static const AppSrcOps k_gb_ops = {
   .edit = gb_edit_hook, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
-  .editable = gb_editable_hook,
+  .editable = gb_editable_hook, .create = gb_create_hook,
 };
 
 /* Bag/menu review fix (the nav-menu-copy-lossy finding): the read-only nav-menu mount
@@ -2159,8 +2538,12 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
        * whatever last borrowed it -- romgs_ready must start false EVERY session, or
        * a stale true (garbage that happens to survive) plus a coincidentally-equal
        * romgs_path would skip the ROM scan entirely and hand back whatever RomGbSprite
-       * garbage was sitting there. */
+       * garbage was sitting there. learn_ready (G1 review MEDIUM-2) is the identical
+       * risk for the SAME reason: a stale true plus a coincidentally-equal learn_path
+       * would hand a fresh session someone else's located learnset table. */
       ed->romgs_ready = false;
+      ed->learn_ready = false;
+      ed->learn_rom_id = 0;
       g_ed = ed;
     } else {
       log_line("gen12: edit session refused (%s, gen %d vs mount kind %d): read-only",

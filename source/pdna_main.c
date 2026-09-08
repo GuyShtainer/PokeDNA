@@ -4077,9 +4077,17 @@ bool app_src_readonly(void) { return g_src_ro; }
  * source's can_edit() is a constant false, so an empty GB cell never reached the menu
  * PASTE (GB) was added to. This is the same predicate app_mon_menu's own g_src_ro
  * branch already uses to decide whether to offer PASTE (GB) at all -- exposed here so
- * pdna_box.c can OR it into its own gate without duplicating the four-way check. */
-bool app_src_paste_offered(void) {
-  return g_src_ro && g_src_ops && g_src_ops->paste && g_clip.occupied && !g_clip.from_gb;
+ * pdna_box.c can OR it into its own gate without duplicating the four-way check.
+ *
+ * BACKLOG #50 renamed this from app_src_paste_offered: CREATE is the exact same kind
+ * of empty-cell action as PASTE (GB) -- reachable only if this menu gets to OPEN at
+ * all -- so it needed the same OR-in at all three call sites (pdna_box.c's two menu-
+ * open gates, and this function's own g_src_ro-branch use in app_mon_menu below).
+ * A source offering EITHER counts; nothing here assumes both. */
+bool app_src_empty_action_offered(void) {
+  bool paste  = g_src_ro && g_src_ops && g_src_ops->paste  && g_clip.occupied && !g_clip.from_gb;
+  bool create = g_src_ro && g_src_ops && g_src_ops->create;
+  return paste || create;
 }
 
 /* The action menu for a source that is read-only in ITSELF: only actions that cannot
@@ -4099,10 +4107,37 @@ bool app_src_paste_offered(void) {
  * that one row + CANCEL. See pdna_app.h's AppSrcOps.paste for what the row does. */
 static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, bool empty) {
   const char* locked = (!empty && g_src_why) ? g_src_why(rec) : 0;
-  enum { RO_VIEW, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CANCEL };
+  enum { RO_VIEW, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CREATE, RO_CANCEL };
   int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
   if (empty) {
-    lab[n] = PDNA_LBL_PASTE_GB; act[n++] = RO_PASTE;
+    /* CREATE first, PASTE after -- the same order Gen-3's own empty-cell menu uses
+     * (app_mon_menu's A_CREATE/A_PASTE, pdna_main.c:4288-4290). Gated on the source
+     * actually offering one (pdna_app.h's AppSrcOps.create) rather than on !is_party
+     * the way Gen-3's is: a GB session's party is just one more box in its own
+     * numbering (Gb12Mount's own "the party is exposed as one more box"), not a
+     * structurally different kind of slot -- gb_create_hook decides for itself
+     * whether THIS box can take one. */
+    if (g_src_ops && g_src_ops->create) { lab[n] = PDNA_LBL_CREATE; act[n++] = RO_CREATE; }
+    /* G1 REVIEW BLOCKING-1 (2026-09-08): this row used to add PASTE UNCONDITIONALLY
+     * -- the caller's own paste_ok gate (app_mon_menu, "paste_ok = g_src_ops->paste
+     * && g_clip.occupied && !g_clip.from_gb") only decided whether to enter THIS
+     * function at all (paste_ok || create_ok), not which rows it draws once inside.
+     * A create_ok-only visit (clipboard empty, or holding a from_gb clip, or a
+     * source with no ->paste at all) still drew PASTE and, if pressed, called
+     * g_src_ops->paste(rec) regardless -- a Gen-2 COPY (native, from_gb) followed by
+     * PASTE on a DIFFERENT empty cell would have round-tripped a lossy Gen-3-shaped
+     * duplicate back down, exactly what this gate exists to prevent (gen3_to_gb()
+     * cannot even accept a from_gb clip, so the write would have been garbage, not
+     * merely redundant). Re-checking the SAME three terms here, matching Gen 3's own
+     * empty branch exactly (not "trust the caller already checked" -- the caller's
+     * OR can be true for either reason alone). PASTE HERE, not PASTE (GB): Gen-3's
+     * own label, now reused verbatim (see PDNA_LBL_PASTE_GB's removal, pdna_layout.h)
+     * -- the cross-generation conversion note lives in the confirm dialog already
+     * shown before any write, not in this row's own text. */
+    if (g_src_ops && g_src_ops->paste && g_clip.occupied && !g_clip.from_gb) {
+      lab[n] = PDNA_LBL_PASTE_HERE; act[n++] = RO_PASTE;
+    }
+    if (n == 0) return false;
   } else {
     /* Gen-3 parity (Guy, 2026-09-05: "make sure the pokemon edit is in the summary for
      * gen 1 and 2 like gen 3"): the Gen-3 mon menu has ONE row, PDNA_LBL_VIEW_EDIT, that
@@ -4126,13 +4161,30 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
     bool editable = g_src_ops && (g_src_ops->editable ? g_src_ops->editable(rec)
                                                        : (g_src_ops->edit && app_can_edit()));
     lab[n] = editable ? PDNA_LBL_VIEW_EDIT : PDNA_LBL_VIEW; act[n++] = RO_VIEW;
-    /* MOVE TO / RELEASE are the GB session's own in-place pipeline (pdna_gen12.c), never
-     * the Gen-3 one: each edits the Game Boy record by address, never the converted copy
-     * this menu was handed. */
-    if (g_src_ops && g_src_ops->move)    { lab[n] = PDNA_LBL_MOVE_TO;   act[n++] = RO_MOVE; }
-    if (g_src_ops && g_src_ops->release) { lab[n] = PDNA_LBL_RELEASE;   act[n++] = RO_RELEASE; }
+    /* UX-parity audit (Guy 2026-09-07): "the GB subset must use the SAME
+     * labels and relative order as Gen 3, with rows that do not apply
+     * omitted, not renamed". app_mon_menu's own occupied-mon order (below,
+     * A_SUMMARY..A_RELEASE) is Summary, Item, Legality, [Hatch], Move/ToBox,
+     * Copy, ..., Release LAST (right before Cancel) -- this row list used to
+     * read View/Edit, MOVE TO, RELEASE, LEGALITY, COPY, i.e. Release 2nd and
+     * Legality 4th, the reverse of Gen 3's own relative order. Reordered to
+     * match: Legality right after the summary row (Gen 3 has no separate
+     * Item row here to sit between them), then Move, then Copy, then Release
+     * last -- same rows, same labels, just Gen 3's own order. MOVE TO /
+     * RELEASE stay the GB session's own in-place pipeline (pdna_gen12.c),
+     * never the Gen-3 one: each edits the Game Boy record by address, never
+     * the converted copy this menu was handed. PDNA_LBL_MOVE_TO ("MOVE TO")
+     * is ALSO relabelled to PDNA_LBL_MOVE_TO_BOX ("MOVE TO BOX") here: GB's
+     * own move (a destination-BOX picker, gb_move_hook -> gb_pick_box) is
+     * the same shape as Gen 3's PARTY-context "move to box" action, not its
+     * BOX-context "move" (an in-box reposition GB has no equivalent of) --
+     * so Gen 3's OWN matching label is the correct one to reuse, not a third,
+     * bespoke wording. The old PDNA_LBL_MOVE_TO macro (pdna_layout.h) is
+     * deleted along with its last caller. */
     lab[n] = PDNA_LBL_LEGALITY; act[n++] = RO_LEGAL;
+    if (g_src_ops && g_src_ops->move) { lab[n] = PDNA_LBL_MOVE_TO_BOX; act[n++] = RO_MOVE; }
     if (!locked) { lab[n] = PDNA_LBL_COPY; act[n++] = RO_COPY; }
+    if (g_src_ops && g_src_ops->release) { lab[n] = PDNA_LBL_RELEASE;   act[n++] = RO_RELEASE; }
   }
   lab[n] = PDNA_LBL_CANCEL;   act[n++] = RO_CANCEL;
 
@@ -4187,8 +4239,9 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
         case RO_RELEASE: return (g_src_ops && g_src_ops->release) ? g_src_ops->release(rec) : false;
         case RO_LEGAL: pdna_legality_show(m0); return false;
         case RO_COPY:  return app_copy(rec, is_party);
-        case RO_PASTE: return (g_src_ops && g_src_ops->paste) ? g_src_ops->paste(rec) : false;
-        default:       return false;
+        case RO_PASTE:  return (g_src_ops && g_src_ops->paste)  ? g_src_ops->paste(rec)   : false;
+        case RO_CREATE: return (g_src_ops && g_src_ops->create) ? g_src_ops->create() : false;
+        default:        return false;
       }
     }
   }
@@ -4221,8 +4274,12 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
       /* An empty GB cell offers PASTE (GB) only when this source accepts one AND the
        * clipboard holds a Gen-3 record that did not itself come off a Game Boy source
        * (from_gb) -- pasting a GB-native clip back down would be the wrong direction
-       * and gen3_to_gb() would refuse it anyway (no Gen-3 record to convert). */
-      if (g_src_ops && g_src_ops->paste && g_clip.occupied && !g_clip.from_gb)
+       * and gen3_to_gb() would refuse it anyway (no Gen-3 record to convert). CREATE
+       * (BACKLOG #50) needs no such clipboard check -- the source decides for itself,
+       * per empty cell, whether it can build one there. */
+      bool paste_ok  = g_src_ops && g_src_ops->paste && g_clip.occupied && !g_clip.from_gb;
+      bool create_ok = g_src_ops && g_src_ops->create;
+      if (paste_ok || create_ok)
         return app_mon_menu_readonly(rec, is_party, &m0, true);
       return false;                                       /* nothing to create or paste into */
     }
@@ -5682,6 +5739,12 @@ static uint32_t dc_seed(void) {
   if (gba_rtc_get(&t)) e ^= (uint32_t)(t.second + t.minute * 60 + t.hour * 3600) * 2654435761u;
   return e | 1u;
 }
+
+/* pdna_app.h's public wrapper (G1 review BLOCKING-2): pdna_gen12.c's gb_create_hook
+ * needs this EXACT entropy source (counter + TID + RTC), not qran() -- see the
+ * header's own comment for why. dc_seed() itself stays file-static; every other
+ * caller in this file already reaches it directly. */
+uint32_t app_session_seed(void) { return dc_seed(); }
 
 /* Areas on the daycare scene (icon-CENTRE SCREEN coords; the scene is drawn/blitted
  * starting at screen y 12), TWO mon slots each so two mons in the same area don't

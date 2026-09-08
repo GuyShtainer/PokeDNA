@@ -29,6 +29,8 @@
 
 #include "gb_editor.h"
 #include "gb_session.h"
+#include "data_tables.h"  /* pk_species_gender_ratio/pk_move_pp/pk_species_growth/
+                            * pk_exp_for_level -- test_gender()'s own record builder */
 #include "pdna_layout.h"   /* PDNA_EDIT_LBL_W -- the label column row_paint draws into */
 #include "ui_font.h"       /* ui_font_w -- the real proportional-font advance table, for
                             * the gb_issue_text/gbe_stale_note wrap check below. Pure
@@ -127,7 +129,14 @@ static void one_slot(GbSession* s, int box, int slot) {
   g_slots++;
   uint8_t rows[GBE_NUM];
   int n = gbe_fields(&e, rows);
-  CHECK(n == (s->gen == GB_GEN2 ? GBE_NUM : GBE_NUM - 2), "Gen 1 hides the two Gen-2 rows");
+  /* Gen 1 hides all three Gen-2-only rows (Item, Friendship, Gender); Gen 2 hides only
+   * Gender, and only for a species with no real gender (gbe_has_gender_row is the same
+   * gate gbe_fields() applies internally, so this doubles as live coverage of
+   * gbe_flip_gender()'s LEFT/RIGHT/A behaviour below against every real Gen-2 mon in
+   * Guy's Gold.sav/Crystal.sav that DOES have one). */
+  int expect_full = s->gen == GB_GEN2 ? GBE_NUM : GBE_NUM - 3;
+  if (s->gen == GB_GEN2 && !gbe_has_gender_row(&e)) expect_full -= 1;
+  CHECK(n == expect_full, "Gen 1 hides the Gen-2 rows; Gen 2 hides Gender where there is none");
   char hdr[64];
   gbe_header(&e, hdr, sizeof hdr);
   CHECK(strstr(hdr, "Lv") != 0, "the header names a level");
@@ -283,6 +292,156 @@ static void label_widths_fit(void) {
   }
 }
 
+/* Same 32-byte Gen-2 BOX record layout as tests/host_gbedit_test.c's own mk_g2_rec
+ * (species at 0x00, one move at 0x02 so the structural gate is happy, that move's PP
+ * at 0x17, the Atk/Def and Spe/Spc DV nibbles at 0x15/0x16, level at 0x1F, EXP at
+ * 0x08-0x0A agreeing with it under the species' own growth curve) -- duplicated
+ * rather than shared because that helper is `static` in a sibling translation unit
+ * this file's own cc line does not link. */
+static void mk_g2_rec(uint8_t rec[GB_MAX_REC], uint8_t species, uint8_t lvl,
+                      uint8_t a, uint8_t d, uint8_t s, uint8_t c) {
+  uint32_t exp;
+  memset(rec, 0, GB_MAX_REC);
+  rec[0x00] = species;
+  rec[0x02] = 1;
+  rec[0x17] = pk_move_pp(1);
+  rec[0x15] = (uint8_t)((a << 4) | d);
+  rec[0x16] = (uint8_t)((s << 4) | c);
+  rec[0x1F] = lvl;
+  exp = pk_exp_for_level(pk_species_growth(species), lvl);
+  rec[0x08] = (uint8_t)(exp >> 16);
+  rec[0x09] = (uint8_t)(exp >> 8);
+  rec[0x0A] = (uint8_t)(exp);
+}
+
+/* BACKLOG #51: GBE_GENDER -- the row, gbe_flip_gender()'s nearest-DV search, and the
+ * row's own presence gate (gbe_has_gender_row). one_slot()'s row-count CHECK already
+ * sweeps this row's presence and gbe_adjust/gbe_press's generic "changed agrees with
+ * the bytes" / "commits touching only its own slot" invariants across every real
+ * Gen-2 mon in Guy's Gold.sav/Crystal.sav; this test pins down the SPECIFIC DV
+ * arithmetic against species/DV combinations chosen so the expected answer is
+ * checkable by hand (ratio 127 = Pikachu, dex 25 -- the same species
+ * tests/host_gbedit_test.c already uses for the identical threshold). */
+static void test_gender(void) {
+  uint8_t rec[GB_MAX_REC], nm[GB_NAME_BYTES];
+  GbEditMon e;
+  char val[GBE_VALUE_MAX];
+  memset(nm, 0x50, sizeof nm);
+
+  /* ---- the value text reuses gb_dv_effects_of, the same derivation gbe_header()
+   * already trusted (gb_editor.c:277-278's fx.gender), not a second copy of the rule. */
+  mk_g2_rec(rec, 25, 20, 7, 0, 0, 0);
+  CHECK(gb_load_parts(&e, GB_GEN2, false, rec, nm, nm, 25), "load Pikachu, Atk DV 7");
+  CHECK(gbe_has_gender_row(&e), "Pikachu (a real gender ratio) shows the Gender row");
+  gbe_value(&e, GBE_GENDER, val, sizeof val);
+  CHECK(strcmp(val, "F") == 0, "ratio 127: Atk DV 7 reads F");
+
+  mk_g2_rec(rec, 25, 20, 8, 0, 0, 0);
+  gb_load_parts(&e, GB_GEN2, false, rec, nm, nm, 25);
+  gbe_value(&e, GBE_GENDER, val, sizeof val);
+  CHECK(strcmp(val, "M") == 0, "ratio 127: Atk DV 8 reads M");
+
+  /* ---- the flip itself: LEFT/RIGHT/A all just call gbe_flip_gender, so one exercises
+   * gbe_adjust and the other gbe_press rather than testing the same call twice. */
+  mk_g2_rec(rec, 25, 20, 7, 0, 0, 0);
+  gb_load_parts(&e, GB_GEN2, false, rec, nm, nm, 25);
+  CHECK(gbe_adjust(&e, GBE_GENDER, 1, false), "RIGHT on Gender changes the record");
+  CHECK(gb_get_dv(&e, GB_ATK) == 8, "F->M from Atk 7 picks the nearest male DV, 8");
+  CHECK(gbe_press(&e, GBE_GENDER), "A flips it back");
+  CHECK(gb_get_dv(&e, GB_ATK) == 7, "M->F from Atk 8 picks the nearest female DV, 7");
+
+  /* ---- shininess survives the flip. Shiny female is Atk in {2,3,6,7} with
+   * Def=Spe=Spc=10 (gen2_save.c's g2_dv_shiny); the nearest SHINY male Atk
+   * (10/11/14/15) to every one of those four is 10, and back from 10 is 7 -- verified
+   * against the real gbe_flip_gender() search, not asserted from the rule alone. */
+  {
+    const uint8_t shiny_f_atk[] = { 2, 3, 6, 7 };
+    for (unsigned i = 0; i < sizeof shiny_f_atk / sizeof shiny_f_atk[0]; i++) {
+      GbDvEffects fx;
+      mk_g2_rec(rec, 25, 20, shiny_f_atk[i], 10, 10, 10);
+      gb_load_parts(&e, GB_GEN2, false, rec, nm, nm, 25);
+      gb_dv_effects_of(&e, &fx);
+      CHECK(fx.shiny && fx.gender == 1, "fixture: shiny female to start");
+      CHECK(gbe_press(&e, GBE_GENDER), "A flips a shiny female");
+      gb_dv_effects_of(&e, &fx);
+      CHECK(fx.shiny && fx.gender == 0, "...lands on a STILL-SHINY male");
+      CHECK(gb_get_dv(&e, GB_ATK) == 10, "...specifically Atk DV 10, the nearest shiny male");
+    }
+    GbDvEffects fxb;
+    mk_g2_rec(rec, 25, 20, 10, 10, 10, 10);
+    gb_load_parts(&e, GB_GEN2, false, rec, nm, nm, 25);
+    CHECK(gbe_press(&e, GBE_GENDER), "A flips a shiny male back");
+    gb_dv_effects_of(&e, &fxb);
+    CHECK(fxb.shiny && fxb.gender == 1, "...lands on a STILL-SHINY female");
+    CHECK(gb_get_dv(&e, GB_ATK) == 7, "...specifically Atk DV 7, the nearest shiny female");
+  }
+
+  /* ---- a NON-shiny mon with Def=Spe=Spc=10 must never land on a shiny Atk value: Atk
+   * 9 is male and non-shiny (bit 1 clear); the closest female Atk overall is 7 (a
+   * shiny value, distance 2) but that would CREATE a shiny, so the search must skip it
+   * for Atk 5 (distance 4, still non-shiny) instead. */
+  {
+    GbDvEffects fx9;
+    mk_g2_rec(rec, 25, 20, 9, 10, 10, 10);
+    gb_load_parts(&e, GB_GEN2, false, rec, nm, nm, 25);
+    gb_dv_effects_of(&e, &fx9);
+    CHECK(!fx9.shiny && fx9.gender == 0, "fixture: non-shiny male, Def/Spe/Spc = 10/10/10");
+    CHECK(gbe_adjust(&e, GBE_GENDER, -1, false), "LEFT flips a near-shiny non-shiny mon");
+    CHECK(gb_get_dv(&e, GB_ATK) == 5, "...never lands on Atk 7 (would create a shiny); picks 5");
+    gb_dv_effects_of(&e, &fx9);
+    CHECK(!fx9.shiny && fx9.gender == 1, "...result is a non-shiny female, not a shiny");
+  }
+
+  /* ---- row presence: a species with no real gender hides the row entirely, both
+   * through the dedicated predicate and through gbe_fields()'s own row list, which
+   * calls the same predicate. All-male (Nidoran-M) / all-female (Nidoran-F) /
+   * genderless (Magnemite) -- there is no DV threshold to flip when the whole species
+   * is one gender or none. */
+  {
+    const struct { uint8_t dex; const char* name; } fixed[] = {
+      { 32, "Nidoran-M (all male, ratio 0x00)" },
+      { 29, "Nidoran-F (all female, ratio 0xFE)" },
+      { 81, "Magnemite (genderless, ratio 0xFF)" },
+    };
+    for (unsigned i = 0; i < sizeof fixed / sizeof fixed[0]; i++) {
+      uint8_t rows[GBE_NUM]; int n; bool present = false;
+      mk_g2_rec(rec, fixed[i].dex, 20, 5, 5, 5, 5);
+      gb_load_parts(&e, GB_GEN2, false, rec, nm, nm, fixed[i].dex);
+      CHECK(!gbe_has_gender_row(&e), fixed[i].name);
+      n = gbe_fields(&e, rows);
+      for (int k = 0; k < n; k++) if (rows[k] == GBE_GENDER) present = true;
+      CHECK(!present, "...and gbe_fields() agrees it is absent");
+    }
+  }
+
+  /* ---- Gen 1 never shows it, on REAL Gen-1 party data (Red.sav): the game itself has
+   * no gender concept (gb_editor.h's own comment), so gbe_has_gender_row()'s very
+   * first check (e->gen != GB_GEN2) refuses before it ever looks at a species. */
+  {
+    uint32_t len = 0;
+    if (load_file("Red.sav", &len)) {
+      GbSession s1;
+      int box1 = -1, cnt1 = 0;
+      if (gbs_open(&s1, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK) box1 = gbs_party_box(&s1);
+      if (box1 >= 0 && gbs_load_list(&s1, box1, g_list) == GBS_OK)
+        cnt1 = gb_list_count(s1.gen, g_list, box1);
+      if (cnt1 > 0) {
+        GbEditMon e1;
+        uint8_t rows1[GBE_NUM]; int n1; bool present1 = false;
+        CHECK(gb_load(&e1, s1.gen, g_list, box1, 0), "load Red.sav's own party slot 0");
+        CHECK(!gbe_has_gender_row(&e1), "Gen 1 never shows Gender, even on real data");
+        n1 = gbe_fields(&e1, rows1);
+        for (int k = 0; k < n1; k++) if (rows1[k] == GBE_GENDER) present1 = true;
+        CHECK(!present1, "...gbe_fields() agrees");
+      } else {
+        printf("  (Red.sav party empty, skipping the Gen-1 row-absence check)\n");
+      }
+    } else {
+      printf("  (Red.sav missing, skipping the Gen-1 row-absence check)\n");
+    }
+  }
+}
+
 int main(void) {
   one_save("Red.sav",     GB_GEN1);
   one_save("Yellow.sav",  GB_GEN1);
@@ -290,6 +449,7 @@ int main(void) {
   one_save("Crystal.sav", GB_GEN2);
   label_widths_fit();
   issue_and_stale_text_fits();
+  test_gender();
   printf("\n%d slots, %d rows, %d mutations; %d checks, %d failed\n",
          g_slots, g_rows, g_changes, g_check, g_fail);
   return g_fail ? 1 : 0;

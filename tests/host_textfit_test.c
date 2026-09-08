@@ -496,6 +496,9 @@ int main(void) {
   T(PDNA_GBEDIT_B_CANCEL, 20);
   T(PDNA_GBEDIT_BAK_L1, 20);
   T(PDNA_GBEDIT_BAK_L2, 20);
+  T(PDNA_GBEDIT_KEEP_TITLE, 20);   /* G1 review LOW-6 */
+  T(PDNA_GBEDIT_KEEP_A, 20);
+  T(PDNA_GBEDIT_KEEP_B, 20);
   {
     /* confirm()'s dynamic prose block draws, worst case: an issue sentence wrapped to
      * PDNA_GBEDIT_CONFIRM_MAXLN lines, the "write anyway?" line + its gap, then a
@@ -524,6 +527,8 @@ int main(void) {
   PF(PDNA_GBEDIT_MOVE_DUP_TITLE,   28, 184);
   PF(PDNA_GBEDIT_MOVE_DUP_L1,      28, 184);
   PF(PDNA_GBEDIT_MOVE_DUP_L2,      28, 184);
+  PF(PDNA_GBEDIT_GENDER_LOCKED_TITLE, 28, 184);   /* G1 review LOW-1 */
+  PF(PDNA_GBEDIT_GENDER_LOCKED_L1,    28, 184);
 
   /* gb_edit_persist's SF_ERR_RENAME switch + gb_edit_hook's SF_ERR_UNWRITABLE hint —
    * same (28, .., 184) msg_wait clamp. PDNA_GBEDIT_UNCONFIRMED_L2 is deliberately
@@ -611,6 +616,7 @@ int main(void) {
 
   T(PDNA_GBSUM_VIEW_CHIP, 4);
   T(PDNA_GBSUM_EDIT_CHIP, 8);
+  T(PDNA_GBSUM_NEW_CHIP,  12);   /* BACKLOG #50 UX-parity: x=12, same as pdna_summary.c's own Gen-3 "NEW" chip */
   /* Card titles: fixed sys8 at PDNA_SUM_CARD_X, must fit the 138 px card itself
    * (not just before the screen edge — checked directly, not via T(), since T()
    * always budgets to the screen edge). */
@@ -625,6 +631,8 @@ int main(void) {
   T(PDNA_GBSUM_FOOT_VIEW,    4);
   T(PDNA_GBSUM_FOOT_VIEW_RO, 4);
   T(PDNA_GBSUM_FOOT_EDIT,    4);
+  T(PDNA_GBSUM_FOOT_CREATE_EDIT, 4);   /* BACKLOG #50 UX-parity */
+  T(PDNA_GBSUM_FOOT_CREATE,      4);
 
   /* Card 0 (INFO): field_row()'s labels at PDNA_SUM_CARD_X, budgeted to
    * PDNA_GBSUM_VAL_DX (the value column's own start) rather than the screen
@@ -779,8 +787,10 @@ int main(void) {
       "sidecar confirm: worst case (all 6 flags) clears the panel");
   /* ==== END S5-B sidecar (Part C) ============================================ */
 
-  /* ==== S5-B Part D: PASTE (GB), source/pdna_gen12.c gb_paste_hook/gb_paste_write ===
-   * PDNA_LBL_PASTE_GB is measured through PDNA_MONMENU_LABELS below, not here. */
+  /* ==== S5-B Part D: PASTE, source/pdna_gen12.c gb_paste_hook/gb_paste_write ===
+   * The empty-cell PASTE row now reuses PDNA_LBL_PASTE_HERE (G1 review BLOCKING-1,
+   * 2026-09-08 -- PDNA_LBL_PASTE_GB is gone), measured through PDNA_MONMENU_LABELS
+   * below, not here. */
   PF(PDNA_SIDECAR_GEN1_TITLE,       28, 184);
   PF(PDNA_SIDECAR_GEN1_L1,          28, 184);
   /* S5-C Part B1: the STATIC tail of the "no ROM beside the save" message; the
@@ -1180,6 +1190,12 @@ int main(void) {
   /* both lists' footers, drawn at x=4 on PDNA_FILT_FOOTER_Y */
   T(PDNA_FILT_FOOT, 4);
   T(PDNA_IFILT_FOOT, 4);
+  /* UX-parity audit (Guy 2026-09-07): pick_item()'s restricted-mode footer,
+   * fixed sys8 at x=4 like the two above. PDNA_ITEM_NO_DESC_YET is drawn only
+   * through proportional ui_ptext_fit/ui_ptext_wrap (clips safely, same as
+   * every other data-driven item description in this screen), so it is not
+   * pinned here the way a fixed-width string would be. */
+  T(PDNA_ITEM_GB_FOOT, 4);
 
   printf("\n== move picker window (source/pdna_pick.c pick_move/mv_row) ==\n");
   /* mv_row (BACKLOG #36 item 7) now paints on the SAME PDNA_FILT_Y0/ROW_H/BAR_* geometry

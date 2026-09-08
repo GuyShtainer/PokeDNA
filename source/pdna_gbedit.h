@@ -54,9 +54,19 @@ bool gbedit_is_dv_field(int f);
  * is true, then never again (`*warned` is the caller's own one-shot latch). */
 void gbedit_dv_orphan_warn(bool has_sidecar, bool* warned);
 /* d-pad/L/R adjust, DV-warning-checked — the shared tail of every LEFT/RIGHT/L/R
- * branch that touches a row: warn once on a DV row, then gbe_adjust(). */
-void gbedit_adjust_checked(GbEditMon* e, int f, int dir, bool big,
+ * branch that touches a row: warn once on a DV row, then gbe_adjust(). Returns
+ * gbe_adjust()'s own result (G1 review LOW-1, 2026-09-08: used to be void, so a
+ * legitimate refusal -- today, only GBE_GENDER: a shiny of a heavily-skewed-
+ * ratio species can have no Atk DV that both flips gender and keeps the sparkle
+ * -- was a silent no-op). false -> the caller should play gbedit_adjust_refused(). */
+bool gbedit_adjust_checked(GbEditMon* e, int f, int dir, bool big,
                             bool has_sidecar, bool* dv_warned);
+/* What a refused gbedit_adjust_checked() sounds/looks like -- shared so both
+ * callers (this file's own pdna_gbedit(), pdna_gbsummary.c's card editor) say
+ * the same thing the same way. Always a deny buzz; GBE_GENDER additionally
+ * explains why (every other field's refusal is presently unreachable in
+ * practice, so a bare buzz is enough for them). */
+void gbedit_adjust_refused(int f);
 /* A on a row: TEXT opens the keyboard, MOVE opens the move picker, NUM presses via
  * gbe_press — each through the DV-warning check first. Reports a refusal (bad
  * charset / an in-a-later-generation or duplicate move) with the same messages this
@@ -67,5 +77,11 @@ void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned);
  * asks A = write / B = cancel. Does NOT call gbe_settle_stats() itself — the caller
  * does that only once A is chosen, exactly like pdna_gbedit()'s own START handler. */
 bool gbedit_confirm(const GbEditMon* e);
+/* Same panel, same gb_check()/gbe_stale_note() lines, Gen 3's OWN create-flow
+ * wording instead (G1 review LOW-6, 2026-09-08): "Keep this Pokemon?" / "A =
+ * write (backup first)" / "B = discard it" -- pdna_summary.c's confirm_keep(),
+ * verbatim. The CREATE path's own keep-or-discard confirm (pdna_gbsummary.c's
+ * gbsum_create_keep) uses this one instead of gbedit_confirm(). */
+bool gbedit_confirm_keep(const GbEditMon* e);
 
 #endif /* PDNA_GBEDIT_H */

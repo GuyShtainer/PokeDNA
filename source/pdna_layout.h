@@ -144,8 +144,18 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_LBL_PASTE_HERE  "PASTE HERE"
 #define PDNA_LBL_CANCEL      "CANCEL"
 #define PDNA_LBL_VIEW        "VIEW"           /* read-only popup only, source not editable */
-#define PDNA_LBL_MOVE_TO     "MOVE TO"        /* read-only popup, GB session S3 only */
-#define PDNA_LBL_PASTE_GB    "PASTE (GB)"     /* read-only popup, empty GB cell, S5-B */
+/* PDNA_LBL_MOVE_TO ("MOVE TO") used to live here -- the GB read-only popup's
+ * own bespoke wording for its move-to-another-box row. Removed (UX-parity
+ * audit, Guy 2026-09-07): that row now reuses PDNA_LBL_MOVE_TO_BOX, Gen 3's
+ * OWN label for the same shape of action (a destination-box picker), rather
+ * than a third, GB-only phrasing -- see pdna_main.c's app_mon_menu_readonly
+ * for the reasoning. PDNA_LBL_PASTE_GB ("PASTE (GB)") used to live here too --
+ * the empty-cell PASTE row's own bespoke wording. Removed (G1 review
+ * BLOCKING-1, 2026-09-08): that row now reuses PDNA_LBL_PASTE_HERE, Gen 3's
+ * OWN label for the identical empty-cell-paste action, rather than a
+ * cosmetic "(GB)" qualifier -- the cross-generation conversion this paste
+ * performs is explained in the confirm dialog the user sees before any
+ * write, not in the row's own two words. */
 
 /* Every label either action popup can show, so the host test measures the strings the
  * menus actually draw. The X() entries are the macros above, not fresh literals. */
@@ -155,7 +165,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
   X(PDNA_LBL_DUPLICATE) X(PDNA_LBL_TO_DAYCARE) X(PDNA_LBL_TO_GAME)                    \
   X(PDNA_LBL_EXPORT_PK) X(PDNA_LBL_TAKE_ITEM) X(PDNA_LBL_GIVE_ITEM)                   \
   X(PDNA_LBL_RELEASE) X(PDNA_LBL_CREATE) X(PDNA_LBL_PASTE_HERE) X(PDNA_LBL_CANCEL)    \
-  X(PDNA_LBL_VIEW) X(PDNA_LBL_MOVE_TO) X(PDNA_LBL_PASTE_GB)
+  X(PDNA_LBL_VIEW)
 
 /* Read-only source popup: the header grows by one line per explanatory line above the
  * rows (the source's note, and the per-record "why this one is locked"). */
@@ -511,6 +521,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBEDIT_BAK_L2         "new save verified on write."
 #define PDNA_GBEDIT_BAK_Y1         134
 #define PDNA_GBEDIT_BAK_Y2         144
+/* G1 review LOW-6 (2026-09-08): gbedit_confirm_keep()'s own title/verbs --
+ * Gen 3's OWN create-flow wording, pdna_summary.c's confirm_keep(), verbatim
+ * (that function's own three literals are not shared macros either; these
+ * are an independent byte-for-byte copy, not a cross-file #include). Same
+ * panel positions as PDNA_GBEDIT_CONFIRM_TITLE/A_WRITE/B_CANCEL. */
+#define PDNA_GBEDIT_KEEP_TITLE     "Keep this Pokemon?"
+#define PDNA_GBEDIT_KEEP_A         "A = write (backup first)"
+#define PDNA_GBEDIT_KEEP_B         "B = discard it"
 
 #define PDNA_GBEDIT_BADCHARSET_TITLE "CAN'T STORE THAT"
 #define PDNA_GBEDIT_BADCHARSET_L1    "Not in this game's charset:"
@@ -521,6 +539,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBEDIT_MOVE_DUP_TITLE   "ALREADY KNOWN"
 #define PDNA_GBEDIT_MOVE_DUP_L1      "This Pokemon has that move"
 #define PDNA_GBEDIT_MOVE_DUP_L2      "in another slot."
+/* G1 review LOW-1 (2026-09-08): gbedit_adjust_refused()'s GBE_GENDER message --
+ * a shiny of a heavily-skewed gender ratio can have no Atk DV that both flips
+ * gender AND keeps the sparkle (gbe_flip_gender's own "best < 0" refusal,
+ * gb_editor.c). Worded for either direction (not "always male"/"always
+ * female" specifically), since either can be the one that is unreachable. */
+#define PDNA_GBEDIT_GENDER_LOCKED_TITLE "CAN'T FLIP GENDER"
+#define PDNA_GBEDIT_GENDER_LOCKED_L1    "A shiny here can't flip gender."
 
 /* gb_edit_persist's SF_ERR_RENAME switch (source/pdna_gen12.c): same shape as the
  * Gen-3 path (pdna_main.c app_commit), but the SF_WHERE_TARGET line is SHORTER —
@@ -551,6 +576,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBEDIT_BUSY_SAVING    "Saving - do not power off"     /* s_busy's own line */
 #define PDNA_GBEDIT_BUSY_BACKUP    "Backing up original..."
 #define PDNA_GBEDIT_BUSY_WRITING   "Writing + verifying..."
+/* G1 review MEDIUM-2 (2026-09-08): CREATE's own ROM scan (gb_create_locate_rom +
+ * gb_create_learn, together up to ~185,000 read() calls on Crystal.gbc, measured)
+ * freezes the screen long enough to look hung -- but s_busy()'s own title
+ * ("Saving - do not power off") would be a LIE here: nothing is written, and
+ * powering off mid-read risks nothing but re-doing the read. A separate title/
+ * line pair, same panel shape as s_busy(), honest text instead. */
+#define PDNA_GBCREATE_BUSY_TITLE   "Reading your ROM..."
+#define PDNA_GBCREATE_BUSY_LINE   "This can take a moment."
 
 #define PDNA_GBEDIT_READONLY_TITLE "READ-ONLY"
 #define PDNA_GBEDIT_NEEDS_OMEGA    "Needs EZ-Flash Omega."
@@ -632,6 +665,12 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * inside the 138 px card by tests/host_textfit_test.c. */
 #define PDNA_GBSUM_VIEW_CHIP   "VIEW"
 #define PDNA_GBSUM_EDIT_CHIP   "EDIT"
+/* CREATE mode's chip (BACKLOG #50 UX-parity, Guy 2026-09-07): the SAME text
+ * and colour as pdna_summary.c's own render_card() draws for a Gen-3 create
+ * ("NEW", UI_OK fill + UI_PANEL text, x=12 -- "NEW" centers narrower than
+ * "EDIT"/"VIEW" in that same 50 px chip, which is why its x differs from
+ * theirs too, matching the Gen-3 chip's own x=12 exactly). */
+#define PDNA_GBSUM_NEW_CHIP    "NEW"
 #define PDNA_GBSUM_CARD_INFO   "INFO"
 #define PDNA_GBSUM_CARD_SKILLS "SKILLS"
 #define PDNA_GBSUM_CARD_MOVES  "MOVES"
@@ -642,6 +681,13 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * SELECT (drop to the flat field-list editor, pdna_gbedit.c) stays documented in
  * pdna_gbsummary.h rather than the footer, same reason as the old macro set. */
 #define PDNA_GBSUM_FOOT_EDIT    "A ok <>edit U/D L/R card B"
+/* CREATE mode's two footers (BACKLOG #50 UX-parity): no U/D-scroll-to-another-
+ * mon exists (this is the only mon in the visit, same as Gen 3's own create),
+ * and START keeps it from EITHER sub-mode -- mirrors pdna_summary.c's own
+ * PDNA_SUM_FOOT_CREATE_EDIT/PDNA_SUM_FOOT_CREATE text closely (adapted to this
+ * screen's own "L/R card" wording, not Gen 3's card-dot-only convention). */
+#define PDNA_GBSUM_FOOT_CREATE_EDIT "A ok <>edit L/R card START"
+#define PDNA_GBSUM_FOOT_CREATE      "A edit  L/R card  START keep"
 #define PDNA_GBSUM_FOOT_VIEW    "A edit  U/D mon  L/R  SEL  B"
 #define PDNA_GBSUM_FOOT_VIEW_RO "U/D mon  L/R card  SEL  B"
 
@@ -655,12 +701,19 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * that already lives on the shared left panel (species, level, gender, type,
  * shiny/egg/Pokerus tag — pdna_summary_draw_left) is NOT repeated here; nickname
  * and level keep their rows because THIS is where the edit control lives, the
- * left panel only displays what they resolve to. */
+ * left panel only displays what they resolve to. Gender is the one exception
+ * (BACKLOG #51): the left panel shows the sign but has no control for it (its
+ * mon is a throwaway conversion, gbsum_convert_left), so a Gender row lives
+ * here too, right where the edit control belongs — the SAME "displayed
+ * elsewhere, edited here" split the rest of this comment describes. */
 #define PDNA_GBSUM_VAL_DX       52
 #define PDNA_GBSUM_LBL_NAME    "Name"
 #define PDNA_GBSUM_LBL_OT      "OT"
 #define PDNA_GBSUM_LBL_ID      "ID"
 #define PDNA_GBSUM_LBL_LV      "Lv"
+#define PDNA_GBSUM_LBL_GENDER  "Gender"      /* BACKLOG #51, Gen 2 gender-having species
+                                              * only (gbe_has_gender_row) — 6 cols, exactly
+                                              * the 48 px label budget above */
 #define PDNA_GBSUM_LBL_ITEM    "Item"
 #define PDNA_GBSUM_LBL_FRIEND  "Friend"
 #define PDNA_GBSUM_LBL_EGGC    "Hatch"       /* the SAME GBE_FRIEND byte, on an Egg
@@ -819,6 +872,30 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * storage box (gb_session.h's own contract) -- the party pseudo-box is refused before
  * gb_paste_write() ever touches the card. */
 #define PDNA_SIDECAR_PARTY_L1        "Storage boxes only, not the party."
+/* BACKLOG #50 (CREATE): pdna_gen12.c's gb_create_hook and its refusal panels.
+ * Short by the same convention as the sidecar titles just above (msg_wait's
+ * own ui_ptext_fit clips a long one safely regardless, but these are sized
+ * to not need it). The species/level picker's OWN strings that used to live
+ * here (PDNA_GBCREATE_SPECIES_TITLE/FOOT, PDNA_GBCREATE_LEVEL_TITLE/FOOT)
+ * are gone along with the two bespoke pickers they belonged to
+ * (gb_create_pick_species/gb_create_pick_level, BACKLOG #50 UX-parity,
+ * Guy 2026-09-07): the create flow now opens pdna_pick.c's own pick_species()
+ * (restricted, see pick_species_set_max_dex()) and computes the level via
+ * rom_gblearn_min_level() instead of asking for either. */
+#define PDNA_GBCREATE_TITLE          "CAN'T CREATE"
+#define PDNA_GBCREATE_NOROM_L1       "Needs your Gen 1/2 ROM"
+#define PDNA_GBCREATE_NOROM_L2       "(Settings > Game ROM)."
+#define PDNA_GBCREATE_FULL_TITLE     "BOX FULL"
+#define PDNA_GBCREATE_FULL_L1        "No empty slot here."
+#define PDNA_GBCREATE_BUILDFAIL_L1   "Could not build a legal record."
+/* pdna_pick.c's pick_item(), restricted mode (UX-parity audit, Guy 2026-09-07:
+ * the GB editor's item row now opens the SAME picker the Gen-3 flow uses,
+ * pick_item_set_gen1_2_max(), instead of stepping a raw byte). Gen-1/2 items
+ * have no name source yet -- see that function's own header comment for why
+ * "#n" and this placeholder, not a real Gen-3 name/description, are correct
+ * here rather than merely a gap. */
+#define PDNA_ITEM_NO_DESC_YET  "No description yet (ROM names coming)"
+#define PDNA_ITEM_GB_FOOT      "A pick  SEL find  B cancel"
 #define PDNA_SIDECAR_MKDIR_TITLE     "SIDECAR FOLDER"
 #define PDNA_SIDECAR_FULL_TITLE      "SIDECAR FULL"
 #define PDNA_SIDECAR_FULL_L1         "Too many clones of this Pokemon."

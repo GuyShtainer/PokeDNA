@@ -109,10 +109,19 @@ static void render(const GbEditMon* e, const uint8_t* rows, int nrows, int sel, 
   pv->valid = true;
 }
 
-/* START: say what will happen, then ask. A hacked record the player already owns is
- * theirs to keep (gb_edit.h, gb_commit_checked), so a structural issue is shown and
- * may be overridden — but never silently. */
-bool gbedit_confirm(const GbEditMon* e) {
+/* Shared body of gbedit_confirm()/gbedit_confirm_keep() (G1 review LOW-6,
+ * 2026-09-08): say what will happen, then ask. A hacked record the player
+ * already owns is theirs to keep (gb_edit.h, gb_commit_checked), so a
+ * structural issue is shown and may be overridden — but never silently.
+ * `title`/`a_verb`/`b_verb` are the only difference between the two public
+ * names: gbedit_confirm_keep() reads Gen 3's own create-flow wording
+ * (pdna_summary.c's confirm_keep -- "Keep this Pokemon?"/"A = write (backup
+ * first)"/"B = discard it") with gb_check's legality lines still shown
+ * underneath, exactly like every other write through this screen; the
+ * ORIGINAL gbedit_confirm() keeps its own "Write to the save?" wording
+ * unchanged for every existing caller (a plain edit is not a create). */
+static bool gbedit_confirm_ex(const GbEditMon* e, const char* title,
+                              const char* a_verb, const char* b_verb) {
   GbIssues iss;
   bool clean = gb_check(e, &iss);
   const char* stale = gbe_stale_note(e);
@@ -134,7 +143,7 @@ bool gbedit_confirm(const GbEditMon* e) {
   gbe_header(e, hdr, sizeof hdr);
   ui_truncate(lt, hdr, 29);
   ui_text(4, 26, UI_DIRCLR, lt);          /* x=4 like render(): 29 cols end at 236, not 252 */
-  ui_text(20, 40, UI_TITLE, PDNA_GBEDIT_CONFIRM_TITLE);
+  ui_text(20, 40, UI_TITLE, title);
   int y = PDNA_GBEDIT_CONFIRM_Y0;
   if (issue) {
     y += ui_ptext_wrap(20, y, PDNA_GBEDIT_CONFIRM_W, PDNA_GBEDIT_CONFIRM_LINE_H,
@@ -148,21 +157,33 @@ bool gbedit_confirm(const GbEditMon* e) {
                         PDNA_GBEDIT_CONFIRM_MAXLN, UI_TEXT, stale)
          * PDNA_GBEDIT_CONFIRM_LINE_H;
   }
-  ui_text(20, y + PDNA_GBEDIT_AB_DY1, UI_TEXT, PDNA_GBEDIT_A_WRITE);
-  ui_text(20, y + PDNA_GBEDIT_AB_DY2, UI_WARN, PDNA_GBEDIT_B_CANCEL);
+  ui_text(20, y + PDNA_GBEDIT_AB_DY1, UI_TEXT, a_verb);
+  ui_text(20, y + PDNA_GBEDIT_AB_DY2, UI_WARN, b_verb);
   ui_text(20, PDNA_GBEDIT_BAK_Y1, UI_DIM, PDNA_GBEDIT_BAK_L1);
   ui_text(20, PDNA_GBEDIT_BAK_Y2, UI_DIM, PDNA_GBEDIT_BAK_L2);
   u16 k = s_wait(KEY_A | KEY_B);
   return (k & KEY_A) != 0;
 }
 
+bool gbedit_confirm(const GbEditMon* e) {
+  return gbedit_confirm_ex(e, PDNA_GBEDIT_CONFIRM_TITLE, PDNA_GBEDIT_A_WRITE, PDNA_GBEDIT_B_CANCEL);
+}
+
+bool gbedit_confirm_keep(const GbEditMon* e) {
+  return gbedit_confirm_ex(e, PDNA_GBEDIT_KEEP_TITLE, PDNA_GBEDIT_KEEP_A, PDNA_GBEDIT_KEEP_B);
+}
+
 /* S5-B Part E: dv4 is part of the sidecar's own fingerprint (gb_sidecar.h gbsc_key),
  * so editing any of the four stored DVs here moves `e` to a key gbsc_find() will never
  * associate with its current sidecar entry again -- an edit that silently orphans it.
  * GBE_DVH (the derived HP DV) is READ-ONLY (gb_editor.h: "shown, not editable") and is
- * deliberately excluded -- it cannot itself be the edit that orphans anything. */
+ * deliberately excluded -- it cannot itself be the edit that orphans anything.
+ *
+ * GBE_GENDER IS included: flipping it moves the Attack DV exactly like editing GBE_DVA
+ * directly would (gb_editor.c's gbe_flip_gender calls the same gb_set_dv), so it is the
+ * same key-orphaning edit wearing a friendlier control and must warn identically. */
 bool gbedit_is_dv_field(int f) {
-  return f == GBE_DVA || f == GBE_DVD || f == GBE_DVS || f == GBE_DVC;
+  return f == GBE_DVA || f == GBE_DVD || f == GBE_DVS || f == GBE_DVC || f == GBE_GENDER;
 }
 
 /* Shown once per editor visit (has_sidecar's own `*warned` latch), on the FIRST
@@ -176,10 +197,17 @@ void gbedit_dv_orphan_warn(bool has_sidecar, bool* warned) {
 
 /* d-pad/L/R adjust, DV-warning-checked -- the shared tail of pdna_gbedit()'s four
  * KEY_LEFT/RIGHT/L/R branches, none of which differ except direction and step size. */
-void gbedit_adjust_checked(GbEditMon* e, int f, int dir, bool big,
+bool gbedit_adjust_checked(GbEditMon* e, int f, int dir, bool big,
                            bool has_sidecar, bool* dv_warned) {
   if (gbedit_is_dv_field(f)) gbedit_dv_orphan_warn(has_sidecar, dv_warned);
-  gbe_adjust(e, f, dir, big);
+  return gbe_adjust(e, f, dir, big);
+}
+
+/* G1 review LOW-1: see pdna_gbedit.h's own comment. */
+void gbedit_adjust_refused(int f) {
+  snd_deny();
+  if (f == GBE_GENDER)
+    msg_wait(PDNA_GBEDIT_GENDER_LOCKED_TITLE, UI_WARN, PDNA_GBEDIT_GENDER_LOCKED_L1, 0);
 }
 
 void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned) {
@@ -202,6 +230,24 @@ void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned) {
     snd_deny();
     if (id > gb_max_move(e->gen)) msg_wait(PDNA_GBEDIT_MOVE_LATE_TITLE, UI_WARN, PDNA_GBEDIT_MOVE_LATE_L1, PDNA_GBEDIT_MOVE_LATE_L2);
     else                          msg_wait(PDNA_GBEDIT_MOVE_DUP_TITLE, UI_WARN, PDNA_GBEDIT_MOVE_DUP_L1, PDNA_GBEDIT_MOVE_DUP_L2);
+    return;
+  }
+  /* UX-parity audit (Guy 2026-09-07): the held-item field used to LEFT/RIGHT-
+   * step a raw byte with no picker at all -- A now opens the SAME pick_item()
+   * screen the Gen-3 flow uses (app_quick_item, pdna_main.c), restricted to
+   * ids 1..255 shown as "#n" (pick_item_set_gen1_2_max()'s own header comment
+   * has the full "why not real names yet" reasoning). Held item has no
+   * move-style validation to fail (any byte is structurally legal), so
+   * unlike GBE_K_MOVE there is no refusal message to show. gb_get_held_item/
+   * gb_set_held_item are gb_edit.h calls, reachable here because gb_editor.h
+   * includes that header itself -- no new wrapper needed, unlike gbe_set_move
+   * (which validates against gb_max_move/move_taken; held_item needs neither). */
+  if (kind == GBE_K_ITEM) {
+    pick_item_set_gen1_2_max(255);
+    uint16_t id = pick_item(gb_get_held_item(e));
+    pick_item_set_gen1_2_max(0);
+    if (id == 0xFFFF) return;
+    if (gb_set_held_item(e, (uint8_t)id)) snd_edit(); else snd_deny();
     return;
   }
   if (kind == GBE_K_NUM) { if (gbe_press(e, f)) snd_edit(); else snd_deny(); return; }
@@ -233,10 +279,10 @@ bool pdna_gbedit(GbEditMon* e, const char* note, bool has_sidecar) {
     else if (k & KEY_UP)    sel = (sel == 0) ? nrows - 1 : sel - 1;
     else if (k & KEY_DOWN)  sel = (sel + 1) % nrows;
     else if (k & KEY_A)     gbedit_press(e, rows[sel], has_sidecar, &dv_warned);
-    else if (k & KEY_LEFT)  gbedit_adjust_checked(e, rows[sel], -1, false, has_sidecar, &dv_warned);
-    else if (k & KEY_RIGHT) gbedit_adjust_checked(e, rows[sel], +1, false, has_sidecar, &dv_warned);
-    else if (k & KEY_L)     gbedit_adjust_checked(e, rows[sel], -1, true,  has_sidecar, &dv_warned);
-    else if (k & KEY_R)     gbedit_adjust_checked(e, rows[sel], +1, true,  has_sidecar, &dv_warned);
+    else if (k & KEY_LEFT)  { if (!gbedit_adjust_checked(e, rows[sel], -1, false, has_sidecar, &dv_warned)) gbedit_adjust_refused(rows[sel]); }
+    else if (k & KEY_RIGHT) { if (!gbedit_adjust_checked(e, rows[sel], +1, false, has_sidecar, &dv_warned)) gbedit_adjust_refused(rows[sel]); }
+    else if (k & KEY_L)     { if (!gbedit_adjust_checked(e, rows[sel], -1, true,  has_sidecar, &dv_warned)) gbedit_adjust_refused(rows[sel]); }
+    else if (k & KEY_R)     { if (!gbedit_adjust_checked(e, rows[sel], +1, true,  has_sidecar, &dv_warned)) gbedit_adjust_refused(rows[sel]); }
   }
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);   /* restore the global repeat set */
   return committed;

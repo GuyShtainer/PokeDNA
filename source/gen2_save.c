@@ -475,6 +475,19 @@ int g2_unown_letter(const uint8_t dv[4]) {
   return v / 10;             /* 0..25 = A..Z; 255/10 == 25, so never out of range */
 }
 
+bool g2_unown_dv_for_letter(uint8_t letter, uint8_t dv[4]) {
+  if (!dv || letter > 25u) return false;
+  /* The lowest v in this letter's own 10-wide range (25's own range is only
+   * 250..255, six wide, since v tops out at 255 -- 25*10 = 250 is still the
+   * right low end, same as g2_unown_letter's own "never out of range" note). */
+  int v = (int)letter * 10;
+  dv[0] = (uint8_t)(((v >> 6) & 3) << 1);   /* Atk: bits 1-2 = this field, bit 0 = 0 */
+  dv[1] = (uint8_t)(((v >> 4) & 3) << 1);   /* Def */
+  dv[2] = (uint8_t)(((v >> 2) & 3) << 1);   /* Spd */
+  dv[3] = (uint8_t)(( v       & 3) << 1);   /* Spc */
+  return true;
+}
+
 int g2_gender_from_dv(uint8_t atk_dv, uint8_t gender_ratio) {
   if (gender_ratio == 0xFF) return 2;                 /* genderless */
   if (gender_ratio == 0xFE) return 1;                 /* always female */

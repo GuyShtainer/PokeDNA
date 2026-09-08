@@ -18,7 +18,7 @@ screens are 240x160; this keeps them crisp, not blurred), a caption band under e
 PER-FEATURE MODE
 -----------------
 Every gb_shots.py caption carries a feature prefix before its first colon — "S1:",
-"S2:"/"S2b:", "S3:", "S5-B:", "BACKLOG #41:" — because that script narrates each
+"S2:"/"S2b:", "S3:", "S5-B:", "BACKLOG #41:", "#51:", "#50:" — because that script narrates each
 screen against docs/FEATURE-MATRIX.md's own rows. FEATURE_TABLE below is the one
 place that prefix -> feature mapping lives; entries whose caption doesn't start
 with a known prefix (e.g. the "Gen-3 parity: ..." shots, which are real screens but
@@ -74,6 +74,9 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
      ("E4",)),
     ("e5-icons", "E5 — Gen-2 party/PC menu icons, real ROM art (docs/SPRITE-ERA-DESIGN.md)",
      ("E5",)),
+    ("gb-gender", "#51 — a Gender row for Gen 2 (source/gb_editor.c GBE_GENDER)", ("#51",)),
+    ("gb-create", "#50 — create a Pokemon from scratch, Gen 1/2 (source/gb_new_mon.c, "
+     "source/pdna_gen12.c gb_create_hook)", ("#50",)),
     ("misc", "Misc — captions without a tracked feature prefix", ()),
     # ---- appended by lane b2 (BACKLOG #15 / #2), tools/g3_shots.py — see that file's
     # own docstring for the exact navigation each shot drives. Appended after "misc"
