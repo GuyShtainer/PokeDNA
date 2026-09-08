@@ -11,6 +11,7 @@
 #include "rom_gbsprite.h"
 #include "rom_gbicon.h"       /* E5: the 16x16 Gen-2 party/PC menu icon rung          */
 #include "gb_art_source.h"
+#include "fused_gb.h"         /* PDNA_DELTA half: read the fuse_gb.py corpus from cart space */
 
 /* ---- per-gen state -----------------------------------------------------------------
  * All plain (non-EWRAM) statics -- a handful of bytes each, the same "goes to IWRAM's
@@ -394,39 +395,101 @@ gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
   return px;
 }
 
-#else /* PDNA_DELTA: no SD card at all -- every one of the above is unreachable, so
-       * none of it is compiled. The public surface still has to exist (the vtable
-       * below references gb_art_pic_cb/have_cb unconditionally), just as
-       * permanently-off stand-ins. */
+#else /* PDNA_DELTA: no SD card at all -- but BACKLOG #62's delta-gb build fuses a
+       * whole Game Boy corpus (ROMs + saves) into cartridge space (tools/fuse_gb.py,
+       * source/fused_gb.h). This half reads THAT instead of a FIL: fused_gb_rom()
+       * hands back a {base,size} slice of cart address space, and
+       * fused_gb_slice_read() is a GbReadFn over it (same signature the SD half's
+       * gb_art_read() implements over a FIL*), so rom_gbsprite_open()/
+       * rom_gbicon_open_loc() and every decode step after them run completely
+       * unmodified. No loc-cache file (nothing to write it to here) -- a fresh scan
+       * every fetch, same cost the SD half pays on a cold cache. */
 
 GbArtRegStatus gb_art_register(uint8_t gen, const char* path) {
   (void)path;
   if (gen != PDNA_GEN1 && gen != PDNA_GEN2) return GB_ART_REG_BAD_ROM;
-  s_reg_have[gen] = false;
+  /* No file browser / SD under PDNA_DELTA to register a path FROM -- the only
+   * source of a generation's ROM here is whatever fuse_gb.py fused in. Report
+   * against that so app_gb_rom_registered() (and Settings' "fused" row) have
+   * something true to say even though this entry point itself is unreachable
+   * (nothing calls it -- there is no Settings > Game ROM file action here). */
+  const uint8_t* base; uint32_t size;
+  bool have = fused_gb_rom(gen, &base, &size);
+  s_reg_have[gen] = have;
   s_reg_checked[gen] = true;
   pdna_origin_art_invalidate();
-  return GB_ART_REG_CANT_OPEN;
+  return have ? GB_ART_REG_OK : GB_ART_REG_CANT_OPEN;
 }
 
 bool gb_art_have(uint8_t gen) {
-  (void)gen;
-  return false;                                 /* no SD, and no open save to sit beside on this build */
+  if (gen != PDNA_GEN1 && gen != PDNA_GEN2) return false;
+  if (app_rom_art_off()) return false;           /* BACKLOG #47: the detach switch still wins */
+  const uint8_t* base; uint32_t size;
+  return fused_gb_rom(gen, &base, &size);
 }
 
 bool gb_rom_path_beside(const char* save_path, uint8_t gen, char* out, int cap) {
   (void)save_path; (void)gen; (void)out; (void)cap;
-  return false;
+  return false;                    /* no SD, no "beside the save" concept under PDNA_DELTA */
 }
 
 static const uint16_t* gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uint8_t back,
                                     uint8_t shiny, uint8_t* out_w, uint8_t* out_h) {
-  (void)gen; (void)dex; (void)form; (void)back; (void)shiny; (void)out_w; (void)out_h;
-  return 0;
+  const uint8_t* base; uint32_t size;
+  if (!fused_gb_rom(gen, &base, &size)) return 0;
+  FusedGbSlice slice = { base, size };
+
+  RomGbSprite gs;
+  uint8_t scratch[ROM_GBSPRITE_SCRATCH_MIN];
+  int ok = rom_gbsprite_open(&gs, fused_gb_slice_read, &slice, size, scratch, (uint32_t)sizeof scratch);
+  if (!ok || (uint8_t)gs.gen != gen) return 0;
+
+  RomGbSide side = back ? ROM_GBSPRITE_BACK : ROM_GBSPRITE_FRONT;
+  RomGbPic info;
+  const uint16_t* px = 0;
+  uint8_t* mdbuf = (uint8_t*)mon_decomp;
+  /* Same in-place layout + claim-before-write rule as the SD half's gb_art_fetch() --
+   * see its own comment above (the #ifndef PDNA_DELTA half of this file). */
+  artbuf_claim();
+  _Static_assert(ROM_GBSPRITE_RGB15_BYTES + GB_SPRITE_WORK <= MON_DECOMP_BYTES,
+                 "GB art in-place layout no longer fits mon_decomp");
+  if (rom_gbsprite_pic_buf(&gs, side, dex, form, mdbuf + ROM_GBSPRITE_MAX_PIXELS,
+                           mdbuf + ROM_GBSPRITE_RGB15_BYTES, &info)) {
+    uint16_t pal[4];
+    if (rom_gbsprite_pal(&gs, dex, shiny ? 1 : 0, pal) &&
+        rom_gbsprite_to_rgb15_inplace(mdbuf, ROM_GBSPRITE_MAX_PIXELS, info.w, info.h, pal)) {
+      *out_w = info.w; *out_h = info.h;
+      px = mon_decomp;
+    }
+  }
+  return px;
 }
 
 static const uint16_t* gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
-  (void)gen; (void)dex; (void)out_w; (void)out_h;
-  return 0;
+  if (gen != PDNA_GEN2) return 0;                /* Gen 1 has no menu icons -- rom_gbicon.h */
+  const uint8_t* base; uint32_t size;
+  if (!fused_gb_rom(gen, &base, &size)) return 0;
+  FusedGbSlice slice = { base, size };
+
+  RomGbIcon gi;
+  uint8_t scratch[ROM_GBICON_SCRATCH_MIN];
+  int ok = rom_gbicon_open_loc(&gi, fused_gb_slice_read, &slice, size, scratch,
+                               (uint32_t)sizeof scratch, 0);
+  if (!ok) return 0;
+
+  int kind = (dex == 0) ? rom_gbicon_kind_egg(&gi) : rom_gbicon_kind(&gi, dex);
+  const uint16_t* px = 0;
+  if (kind) {
+    uint8_t tile[ROM_GBICON_FRAME_BYTES];
+    uint16_t pal[4];
+    artbuf_claim();
+    if (rom_gbicon_tiles(&gi, kind, 0, tile) && rom_gbicon_pal(&gi, kind, pal) &&
+        rom_gbicon_to_rgb15(tile, pal, mon_decomp)) {
+      *out_w = ROM_GBICON_W; *out_h = ROM_GBICON_H;
+      px = mon_decomp;
+    }
+  }
+  return px;
 }
 
 #endif /* PDNA_DELTA */

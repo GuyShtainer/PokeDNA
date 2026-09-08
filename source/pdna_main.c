@@ -80,6 +80,7 @@
 #include "art_icons_extract.h" /* Phase 2: the icons.bin extraction pass                */
 #include "fused_rom.h"
 #include "fused_sav.h"    /* a save fused into the image: the emulator build's fallback */
+#include "fused_gb.h"     /* BACKLOG #62: a whole fused GB ROM+save corpus, delta-gb only */
 #include "gen3_secretbase.h" /* Secret Base records (RS/Emerald) */
 #include "osk.h"           /* osk_search (numeric entry) */
 #include "pdna_pick.h"   /* pick_item, pick_move (PC-menu quick editors) */
@@ -1726,8 +1727,20 @@ bool app_any_rom_registered(void) {
 
 /* ---- per-generation Game Boy ROM path (slice E3, pdna_app.h has the full contract) */
 const char* app_gb_rom_path(uint8_t gen) {
+#ifdef PDNA_DELTA
+  /* BACKLOG #62: no SD, no file browser here -- the only ROM a delta-gb build can ever
+   * have for a generation is whatever tools/fuse_gb.py fused in. This pseudo-path is
+   * DISPLAY-ONLY (Settings' "Gen N ROM: fused" row): every real reader that used to
+   * f_open() this string (gb_create_locate_rom, gb_art_source.c's SD half) branches on
+   * PDNA_DELTA itself and calls fused_gb_rom()/fused_gb_slice_read() directly instead
+   * of ever trying to open this string as a file. */
+  const uint8_t* base; uint32_t size;
+  if (fused_gb_rom(gen, &base, &size)) return (gen == PDNA_GEN1) ? "fused:gen1" : "fused:gen2";
+  return "";
+#else
   int gi = gb_gen_slot(gen);
   return (gi >= 0) ? g_rom_path[gi] : "";
+#endif
 }
 /* Same "refuse, never truncate" rule as app_rom_path_set() -- see its comment. */
 bool app_gb_rom_path_set(uint8_t gen, const char* path) {
@@ -8810,6 +8823,45 @@ static void __attribute__((noinline)) gb_reconcile_on_load(void) {
   app_box_swap_release();
 }
 
+#ifdef PDNA_DELTA
+/* BACKLOG #62: pick ONE of possibly several fused Game Boy saves -- tools/fuse_gb.py's
+ * directory can carry more than the single slot tools/fuse_sav.py --gb supports (the
+ * default delta-gb recipe fuses Red.sav + Gold.sav + Crystal.sav together). Skips the
+ * menu when there is exactly one, matching the single-fused-save fallback's own
+ * "just open it" behaviour. No cancel option: there is no file browser underneath to
+ * fall back to in this build, so a choice is the only way forward. */
+static int gb_delta_pick_save(void) {
+  int n = fused_gb_save_count();
+  if (n <= 0) return -1;
+  if (n == 1) return 0;
+  const char* names[FUSED_GB_MAX_ENTRIES];
+  int m = (n > FUSED_GB_MAX_ENTRIES) ? FUSED_GB_MAX_ENTRIES : n;
+  for (int i = 0; i < m; i++) {
+    const char* nm = 0; const uint8_t* base = 0; uint32_t sz = 0;
+    fused_gb_save(i, &nm, &base, &sz);
+    names[i] = nm ? nm : "?";
+  }
+  int sel = 0;
+  for (;;) {
+    int my, mh;
+    ui_popup_vfit(m, 14, 18, 8, &my, &mh);
+    const int mx = 16, mw = 208;
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, "PICK A SAVE");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < m; i++) {
+      int y = my + 18 + i * 14; bool s = (i == sel);
+      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, names[i]);
+    }
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A);
+    if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : m - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % m;
+    else if (k & KEY_A) return sel;
+  }
+}
+#endif
+
 /* Load the picked save and show it: start in the PC boxes; SELECT toggles to the
  * party list and back; B from either returns to the file browser. */
 static void view_save(const char* path) {
@@ -8911,6 +8963,33 @@ static void view_save(const char* path) {
       perf_span_end();
       s_crumb_shown_armed = false;             /* the box screen paints its own crumb */
       return;
+    } else if (!flash_ok) {
+      /* BACKLOG #62: neither of the single-slot fused payloads (Gen-3 or GB, both
+       * tools/fuse_sav.py) applied -- try the fuse_gb.py directory, which is where
+       * the delta-gb build's whole Red/Gold/Crystal corpus actually lives. Mirrors
+       * the single-fused-GB branch above line for line once a save is picked. */
+      int pick = gb_delta_pick_save();
+      const char* nm = 0; const uint8_t* base = 0; uint32_t psz = 0;
+      if (pick >= 0 && fused_gb_save(pick, &nm, &base, &psz) && pdna_gen12_size_is_gb(psz)) {
+        memcpy(g_save, base, psz);
+        memset(&g_vinfo, 0, sizeof g_vinfo);
+        g_save_size = psz;
+        pdna_box_clear_carry();
+        hb_off();
+        { uint8_t rec80[80]; uint32_t csz = 0;
+          if (fused_clip_present(&csz) && csz == sizeof rec80 && fused_clip_read(rec80, csz) &&
+              pk3_validate(rec80)) {
+            clip_copy_from(&g_clip, rec80, false);
+          }
+        }
+        log_line("save: no single-slot fused save -> using fused GB corpus entry %s (%lu B)",
+                 nm ? nm : "?", (unsigned long)psz);
+        while (pdna_gen12_show_image(path, g_save, psz, g_save + GB12_PRISTINE_OFF, 3)
+               == GB12_ENTER_OK) {}
+        perf_span_end();
+        s_crumb_shown_armed = false;
+        return;
+      }
     }
   }
 #else
