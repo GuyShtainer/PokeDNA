@@ -8,7 +8,8 @@
  *   cc -std=c11 -Wall -Wextra -I source -I tests tests/host_gbsurgery_tool.c \
  *      source/gb_session.c source/gb_editor.c source/gb_edit.c source/gen1_save.c \
  *      source/gen1_write.c source/gen2_save.c source/gen2_write.c \
- *      source/data_tables.c source/gb_trainer.c source/gb_fields.c -o /tmp/hgbsurg
+ *      source/data_tables.c source/gb_trainer.c source/gb_fields.c source/gb_bag.c \
+ *      -o /tmp/hgbsurg
  *
  * Usage
  * -----
@@ -105,6 +106,7 @@
 #include "gb_new_mon.h"
 #include "data_tables.h"
 #include "gb_trainer.h"
+#include "gb_bag.h"
 
 #define MAX_FILE_BYTES 65536u
 #define MAX_OPS        64
@@ -141,6 +143,14 @@ static void usage(const char* prog) {
     "  --op badges MASK            0..255, via gb_trainer.h (Gen 1: BADGES; Gen 2: both)\n"
     "  --op badges2 JOHTO KANTO    Gen 2 only: set the two badge bytes independently\n"
     "  --op name TEXT              via gb_trainer.h; refused over 7 glyphs / bad charset\n"
+    "  --op item POCKET ID QTY     BACKLOG #49 P2a, via gb_bag.h: insert-or-set. POCKET\n"
+    "                               is items|key|balls|pc|tmhm. For tmhm, ID is the\n"
+    "                               0-based TM/HM index and QTY is its count (0..99);\n"
+    "                               every other pocket: if ID already occupies a slot\n"
+    "                               its quantity is SET (not merged) to QTY, else a new\n"
+    "                               entry is inserted with that QTY (both ID and QTY\n"
+    "                               0..255 on the command line; gb_bag.h's own caps\n"
+    "                               apply -- e.g. qty is refused outside 1..99).\n"
     "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -153,6 +163,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"money", 1},
     {"create", 2},
     {"badges", 1}, {"name", 1}, {"badges2", 2},
+    {"item", 3},
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -520,6 +531,84 @@ static int do_name(GbSession* s, const char* text) {
   return 0;
 }
 
+/* BACKLOG #49 P2a — via gb_bag.h, not a raw byte poke: read the whole bag, insert-
+ * or-set one entry (tmhm: set one TM/HM's count), write the whole bag back. Every
+ * OTHER pocket lands back at its own current bytes, which is what
+ * tests/host_gbbag_test.c's pocket-granularity byte-diff round trip already
+ * proves is a no-op -- this op is what tools/gb_retail_gate.py's bag case exercises
+ * against the real ROM. "insert-or-set": gb_bag.h's own gbb_insert() ADDS quantity
+ * into an id already present (the real AddItem-style merge, gb_bag.h's documented
+ * contract); this op instead SETS the slot's quantity outright when the id is
+ * already there, so a gate case that asks for "Potion x7" always lands on exactly
+ * 7 on a corpus save that might already be carrying some Potions, rather than a
+ * merged total that depends on what the corpus happened to hold. */
+static const char* bag_status_text(GbBagOpStatus st) {
+  switch (st) {
+    case GBB_OK:             return "ok";
+    case GBB_ERR_ARG:        return "bad argument";
+    case GBB_ERR_NOT_PRESENT: return "this game does not have that pocket";
+    case GBB_ERR_FULL:       return "pocket is full";
+    case GBB_ERR_BADID:      return "item id out of range";
+    case GBB_ERR_QTY:        return "quantity out of range";
+    default:                 return "unknown gb_bag status";
+  }
+}
+
+static int resolve_pocket(const char* tok, GbBagPocket* out) {
+  static const struct { const char* name; GbBagPocket p; } tbl[] = {
+    { "items", GBB_POCKET_ITEMS }, { "key",   GBB_POCKET_KEY },
+    { "balls", GBB_POCKET_BALLS }, { "tmhm",  GBB_POCKET_TMHM },
+    { "pc",    GBB_POCKET_PC },
+  };
+  for (size_t i = 0; i < sizeof tbl / sizeof tbl[0]; i++)
+    if (!strcmp(tbl[i].name, tok)) { *out = tbl[i].p; return 0; }
+  fprintf(stderr, "bad pocket %s (want items|key|balls|pc|tmhm)\n", tok);
+  return -1;
+}
+
+static int do_item(GbSession* s, const char* pocket_tok, const char* id_tok,
+                   const char* qty_tok) {
+  GbBagPocket pocket;
+  if (resolve_pocket(pocket_tok, &pocket)) return 2;
+  GbGame g = gbt_game(s);   /* identical Gen->GbGame mapping gb_bag.c uses internally */
+  if (!gbb_field_present(g, pocket))
+    return refuse("this game does not have that pocket");
+
+  GbBag bag;
+  if (!gbb_read(s, &bag)) return refuse("gbb_read failed");
+
+  if (pocket == GBB_POCKET_TMHM) {
+    int idx = resolve_uint(id_tok, "tmhm index");
+    int cnt = resolve_uint(qty_tok, "tmhm count");
+    if (idx < 0 || cnt < 0) return 2;
+    if (idx > 255 || cnt > 255) { fprintf(stderr, "index/count must be 0..255\n"); return 2; }
+    GbBagOpStatus ost = gbb_tmhm_set(g, &bag, idx, (uint8_t)cnt);
+    if (ost != GBB_OK) return refuse(bag_status_text(ost));
+  } else {
+    int id = resolve_uint(id_tok, "item id");
+    int qty = resolve_uint(qty_tok, "quantity");
+    if (id < 0 || qty < 0) return 2;
+    if (id > 255 || qty > 255) { fprintf(stderr, "id/qty must be 0..255\n"); return 2; }
+
+    GbBagList* list = &bag.pockets[pocket];
+    int found = -1;
+    for (int i = 0; i < list->count; i++)
+      if (list->entries[i].id == (uint8_t)id) { found = i; break; }
+
+    GbBagOpStatus ost;
+    if (found >= 0) {
+      ost = gbb_set_qty(g, &bag, pocket, found, (uint8_t)qty);
+    } else {
+      ost = gbb_insert(g, &bag, pocket, (uint8_t)id, (uint8_t)qty);
+    }
+    if (ost != GBB_OK) return refuse(bag_status_text(ost));
+  }
+
+  GbsStatus st = gbb_write(s, &bag);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
 /* Dispatch one already-shaped Op. Returns 0 ok, 1 refused (reported), 2 usage (reported). */
 static int apply_op(GbSession* s, const Op* o) {
   if (!strcmp(o->kind, "nick") || !strcmp(o->kind, "ot")) {
@@ -565,6 +654,9 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "badges2")) {
     return do_badges2(s, o->a[0], o->a[1]);
+  }
+  if (!strcmp(o->kind, "item")) {
+    return do_item(s, o->a[0], o->a[1], o->a[2]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;

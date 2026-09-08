@@ -95,6 +95,8 @@ SURGERY_SRCS = [
     "source/rom_gbsprite.c", "source/gb_sprite_codec.c", "source/rom_gbbase.c",
     "source/rom_gblearn.c", "source/gb_new_mon.c",
     "source/gb_trainer.c", "source/gb_fields.c",
+    # BACKLOG #49 P2a: --op item's own dependency (gb_bag.h's pure-C bag/PC-item core).
+    "source/gb_bag.c",
 ]
 
 # gen: 1 = Gen-1 numbering (no primary/backup mirror split in gb_roundtrip's classifier,
@@ -145,6 +147,147 @@ BADGES_MASK_KANTO = 0xF0     # Gen 2: Kanto -- distinct nibble from BADGES_MASK,
 NAME_WRAM = {"red": 0xD158, "yellow": 0xD157, "gold": 0xD1A3, "crystal": 0xD47D}
 NAME_LEN = 11
 BADGES_WRAM = {"red": 0xD356, "yellow": 0xD355, "gold": 0xD57C, "crystal": 0xD857}
+
+# BACKLOG #49 P2a -- gb_bag.h's pure-C bag/PC-item core (source/gb_bag.c), via the
+# surgery tool's new `--op item POCKET ID QTY`. WRAM anchors DERIVED HERE, not copied
+# from the design doc's own table (which only lists the COUNT address for Gen 2's
+# Key items/Balls/PC pockets) -- each is `grep -iE 'wNumBagItems|wBagItems|wNumItems|
+# wItems|wNumBalls|wBalls' assets/upstream/<repo>/symbols/<repo>.sym`:
+#   pokered.sym       00:d31d wNumBagItems   00:d31e wBagItems   (body = count + 1)
+#   pokeyellow.sym     00:d31c wNumBagItems   00:d31d wBagItems
+#   pokegold.sym       01:d5b7 wNumItems      01:d5b8 wItems      01:d5fc wNumBalls  01:d5fd wBalls
+#   pokecrystal.sym    01:d892 wNumItems      01:d893 wItems      01:d8d7 wNumBalls  01:d8d8 wBalls
+# Every count/body pair is contiguous (body starts the byte right after its own count),
+# matching the FILE layout's own "count byte, then body" shape (§1.2) -- WRAM is simply
+# where the live session keeps that same struct while the game runs.
+ITEMS_WRAM = {"red": 0xD31D, "yellow": 0xD31C, "gold": 0xD5B7, "crystal": 0xD892}
+BALLS_WRAM = {"gold": 0xD5FC, "crystal": 0xD8D7}   # Gen 2 only
+
+# The FILE-offset side of the same pockets (Appendix B / this design's own field
+# table, source/gb_fields.c GBF_BAG_COUNT/BODY and GBF_BALLS_COUNT/BODY) -- used to
+# inspect the ORIGINAL save's own bag contents before editing, so this case can tell
+# whether inserting ITEM_ID will APPEND a new entry or MERGE into one already there
+# (docs/GEN12-PARITY-DESIGN.md §1.2's own merge rule, gb_bag.h's gbb_insert) and
+# compute the right WRAM address either way, rather than assuming the corpus save
+# happens to be entry-free of the id this case plants.
+BAG_FILE_OFF = {
+    "red":     {"count": 0x25C9, "body": 0x25CA, "cap": 20},
+    "yellow":  {"count": 0x25C9, "body": 0x25CA, "cap": 20},
+    "gold":    {"count": 0x241F, "body": 0x2420, "cap": 20},
+    "crystal": {"count": 0x2420, "body": 0x2421, "cap": 20},
+}
+BALLS_FILE_OFF = {   # Gen 2 only
+    "gold":    {"count": 0x2464, "body": 0x2465, "cap": 12},
+    "crystal": {"count": 0x2465, "body": 0x2466, "cap": 12},
+}
+
+# POTION (a real item, both generations -- assets/upstream/*/constants/item_constants.asm:
+# pokered POTION = $14; pokegold/pokecrystal POTION = $12, item ids were renumbered for
+# Gen 2). MASTER_BALL ($01, both pokegold/pokecrystal item_constants.asm) for the Balls
+# pocket -- the design's own P2a item asks for "a Potion x7 ... and one Gen-2 Ball".
+POTION_ID = {"red": 0x14, "yellow": 0x14, "gold": 0x12, "crystal": 0x12}
+BALL_ID = 0x01
+POTION_QTY = 7
+BALL_QTY = 3
+
+
+def _find_or_append(orig: bytes, count_off: int, body_off: int, cap: int, item_id: int):
+    """Read the pocket's CURRENT count + (id,qty) entries straight out of the ORIGINAL
+    save bytes (entry size 2: id, qty -- every pocket this case touches has a
+    quantity). Returns (entry_index, new_count): `item_id` already present -> that
+    slot's own index and `new_count == count` (a SET never grows the pocket, do_item's
+    own insert-or-set contract); not present -> a fresh append at `entry_index ==
+    count` and `new_count == count + 1`. The resulting quantity is always exactly
+    what the caller passes to `--op item` (SET, never merged/added)."""
+    count = orig[count_off]
+    n = min(count, cap)
+    for i in range(n):
+        eid = orig[body_off + i * 2]
+        if eid == 0xFF:
+            break
+        if eid == item_id:
+            return i, count
+    return n, count + 1
+
+
+def run_bag_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #49 P2a -- gb_bag.h's gbb_read/gbb_insert/gbb_set_qty/gbb_write (source/
+    gb_bag.c), via the surgery tool's new `--op item POCKET ID QTY` (insert-or-set: SET
+    an id already present, else insert a brand-new entry -- see do_item's own comment).
+    Plants a Potion x7 in the Items pocket on every game, plus one Master Ball in the
+    Balls pocket on the two Gen-2 games (Gen 1 has no separate Balls pocket -- Poke
+    Balls are ordinary bag items there, §1.2).
+
+    Like run_money_case/run_trainer_case, this is not screen-scraped (no bag-pocket
+    screen this driver's content reader reaches) -- it is asserted purely off WRAM,
+    gated on SVBK the same way (§4.2 rule 1), and the exact byte address is computed
+    from the ORIGINAL save's own current bag contents (_find_or_append) so a corpus
+    save that already happens to carry a Potion is a MERGE case (SET at its existing
+    slot) rather than a silently-wrong assumption that every corpus save is Potion-free."""
+    label = "bag item (Potion, BACKLOG #49 P2a)"
+    item_id = POTION_ID[name]
+    off = BAG_FILE_OFF[name]
+    idx, new_count = _find_or_append(sav.read_bytes(), off["count"], off["body"],
+                                     off["cap"], item_id)
+    ops = [["item", "items", str(item_id), str(POTION_QTY)]]
+
+    ball_idx = ball_new_count = None
+    if info["gen"] == 2:
+        boff = BALLS_FILE_OFF[name]
+        ball_idx, ball_new_count = _find_or_append(sav.read_bytes(), boff["count"],
+                                                    boff["body"], boff["cap"], BALL_ID)
+        ops.append(["item", "balls", str(BALL_ID), str(BALL_QTY)])
+
+    edited = work / "bag.sav"
+    rc, out, err = run_surgery(binary, sav, edited, ops)
+    if rc != 0:
+        tally.record(label, False, f"surgery refused: {err.strip()}")
+        return
+
+    items_count_addr = ITEMS_WRAM[name]
+    items_entry_addr = items_count_addr + 1 + idx * 2
+    read_args = ["--read-mem", f"{items_count_addr:#06x}:1",
+                "--read-mem", f"{items_entry_addr:#06x}:2"]
+    if info["gen"] == 2:
+        balls_count_addr = BALLS_WRAM[name]
+        balls_entry_addr = balls_count_addr + 1 + ball_idx * 2
+        read_args += ["--read-mem", f"{balls_count_addr:#06x}:1",
+                     "--read-mem", f"{balls_entry_addr:#06x}:2"]
+
+    rc, rep, out, err = boot(python, rom, edited, work / "bag", vendor, work / "bag.json",
+                             extra_args=["--expect", "accept"] + read_args)
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+
+    want_items_count = f"{new_count:02x}"
+    want_items_entry = f"{item_id:02x}{POTION_QTY:02x}"
+    got_items_count = mem.get(f"{items_count_addr:#06x}")
+    got_items_entry = mem.get(f"{items_entry_addr:#06x}")
+    ok = (rc == 0 and svbk_ok and got_items_count == want_items_count and
+         got_items_entry == want_items_entry)
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"items count@{items_count_addr:#06x}={got_items_count!r} want={want_items_count!r} "
+             f"items entry@{items_entry_addr:#06x}={got_items_entry!r} want={want_items_entry!r}")
+
+    if info["gen"] == 2:
+        want_balls_count = f"{ball_new_count:02x}"
+        want_balls_entry = f"{BALL_ID:02x}{BALL_QTY:02x}"
+        got_balls_count = mem.get(f"{balls_count_addr:#06x}")
+        got_balls_entry = mem.get(f"{balls_entry_addr:#06x}")
+        ok = (ok and got_balls_count == want_balls_count and
+             got_balls_entry == want_balls_entry)
+        detail += (f" | balls count@{balls_count_addr:#06x}={got_balls_count!r} "
+                  f"want={want_balls_count!r} balls entry@{balls_entry_addr:#06x}="
+                  f"{got_balls_entry!r} want={want_balls_entry!r}")
+
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record(label, ok, detail)
 
 
 def _bcd24_hex(v):
@@ -684,6 +827,9 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
 
     # ---- 2d. BACKLOG #49 P1a — the trainer-card core, proven with badges + name ----
     run_trainer_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2e. BACKLOG #49 P2a — the bag/PC-item core, proven with a Potion (+ Ball) ----
+    run_bag_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
     if party_count0 < 2:
         tally.skip_case("nickname/level/delete/move",
