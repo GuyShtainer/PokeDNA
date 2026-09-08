@@ -5,10 +5,26 @@
  * Named *_tool (not *_test) so tests/run_host_tests.py's `host_*_test.c` glob ignores
  * it: this is a driver PROGRAM, not a self-checking test.
  *
- *   cc -std=c11 -Wall -Wextra -I source -I tests tests/host_gbsurgery_tool.c \
- *      source/gb_session.c source/gb_editor.c source/gb_edit.c source/gen1_save.c \
- *      source/gen1_write.c source/gen2_save.c source/gen2_write.c \
- *      source/data_tables.c source/gb_trainer.c source/gb_fields.c source/gb_bag.c \
+ * Build line kept in sync with tools/gb_retail_gate.py's SURGERY_SRCS (same order):
+ *
+ *   cc -std=c11 -Wall -Wextra -I source -I tests \
+ *      tests/host_gbsurgery_tool.c \
+ *      source/gb_session.c \
+ *      source/gb_editor.c \
+ *      source/gb_edit.c \
+ *      source/gen1_save.c \
+ *      source/gen1_write.c \
+ *      source/gen2_save.c \
+ *      source/gen2_write.c \
+ *      source/data_tables.c \
+ *      source/rom_gbsprite.c \
+ *      source/gb_sprite_codec.c \
+ *      source/rom_gbbase.c \
+ *      source/rom_gblearn.c \
+ *      source/gb_new_mon.c \
+ *      source/gb_trainer.c \
+ *      source/gb_fields.c \
+ *      source/gb_bag.c \
  *      -o /tmp/hgbsurg
  *
  * Usage
