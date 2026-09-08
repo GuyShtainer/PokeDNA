@@ -79,12 +79,22 @@ def run_gold_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
                                   "GbTrainer copy — nothing is written to the session yet")
     s.tap("B", settle=BIG_SETTLE)               # back to the card
 
-    s.tap("START", settle=BIG_SETTLE)           # commit: gbt_write -> gb_persist
-    s.shot("04_start_commit", "#49-P1: START commits via gbt_write then gb_persist — "
-                               "whatever this build's own app_can_edit()/sf_write_verified "
-                               "actually do under mGBA (delta build: no real Omega/SD, but "
-                               "the delta save IS a real writable file, so this may be a "
-                               "genuine commit rather than a refusal — see this shot)")
+    s.tap("START", settle=BIG_SETTLE)           # a badge was toggled above, so t != t0:
+                                                  # START now shows the identity-adjacent
+                                                  # "Save trainer changes?" confirm (P1b
+                                                  # review D2) instead of writing straight
+                                                  # away
+    s.shot("04_start_commit", "#49-P1 (D2 recapture): START with a real local edit "
+                               "(the badge toggle above) now asks \"Save trainer "
+                               "changes? / Writes the card edits now.\" before gbt_write "
+                               "ever runs — a no-op START (nothing touched) instead "
+                               "returns silently with no popup at all (see 04b)")
+    s.tap("A", settle=BIG_SETTLE)               # A = yes -> gbt_write -> gb_persist
+    s.shot("04b_start_result", "#49-P1 (D2 recapture): whatever this build's own "
+                                "app_can_edit()/sf_write_verified actually do under mGBA "
+                                "after confirming (delta build: no real Omega/SD, but the "
+                                "delta save IS a real writable file, so this may be a "
+                                "genuine commit rather than a refusal — see this shot)")
     return s
 
 
@@ -105,9 +115,17 @@ def run_red_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.tap("A", settle=BIG_SETTLE)               # open the 8-row badge toggle screen
     s.shot("02_badges", "#49-P1: BADGES opens an 8-row toggle screen (Gen 1: one badge "
                          "byte, no Johto/Kanto split)")
-    s.tap("B", settle=BIG_SETTLE)               # back to the card
+    s.tap("B", settle=BIG_SETTLE)               # back to the card — no badge was toggled,
+                                                  # so `t` still equals the gbt_read snapshot
 
-    s.tap("B", settle=BIG_SETTLE)               # B discards — no gbt_write ever ran
+    s.tap("START", settle=BIG_SETTLE)           # P1b review D2: a no-op START (t == t0)
+                                                  # now returns silently, same as B — no
+                                                  # confirm popup, no gbt_write, no backup
+                                                  # rotation
+    s.shot("03_noop_start", "#49-P1 (D2): START with ZERO local edits returns straight "
+                             "to the nav menu — no \"Save trainer changes?\" popup, no "
+                             "gbt_write, no backup rotation (memcmp(&t,&t0,..) catches "
+                             "it before app_confirm is ever called)")
     return s
 
 

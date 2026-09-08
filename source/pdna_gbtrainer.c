@@ -1,12 +1,18 @@
 /*
  * Gen-1/2 trainer card -- BACKLOG #49 P1b. See pdna_gbtrainer.h for the design note.
  *
- * Rows, in Gen-3 card order where the field exists: NAME, ID, MONEY, COINS,
- * MOM'S MONEY + saving mode (Gen 2), BADGES, PLAY TIME, GENDER (Crystal, view-only),
- * DEX seen/owned (view-only), RIVAL (view-only), MOTHER (Gen 2, view-only). The row
- * list is built once per visit from gbt_read()'s own has_mom/has_gender/has_mother
- * flags -- never a fixed enum-sized array the way Gen 3's TF_NUM is, because which
- * rows exist is a per-GAME fact here, not a per-screen constant.
+ * Row order (P1b review D9: this is NOT the Gen-3 card's own order -- Gen 3's TF_*
+ * is NAME, SEX, ID, SID, MONEY, TIME, BADGE, STARS, and has no COINS/MOM/DEX/RIVAL/
+ * MOTHER at all): NAME, ID, MONEY, COINS, MOM'S MONEY + saving mode (Gen 2), BADGES,
+ * PLAY TIME, GENDER (Crystal only, view-only), DEX seen/owned (view-only), RIVAL
+ * (view-only), MOTHER (Gen 2, view-only). Editable fields come first, view-only
+ * fields last; GENDER sits in the view-only tail rather than up near NAME/ID
+ * because, unlike Gen 3's SEX, it is never user-editable here (Crystal reads it from
+ * the save but nothing in-game lets the player change it, so this screen doesn't
+ * pretend otherwise). The row list is built once per visit from gbt_read()'s own
+ * has_mom/has_gender/has_mother flags -- never a fixed enum-sized array the way
+ * Gen 3's TF_NUM is, because which rows exist is a per-GAME fact here, not a
+ * per-screen constant.
  */
 #include <tonc.h>
 #include <stdio.h>
@@ -144,7 +150,7 @@ static void gbtr_row_paint(const GbTrainer* t, int row, bool gen1, int y, bool s
       lbl = "MOM $"; siprintf(val, "$%lu", (unsigned long)t->moms_money);
       break;
     case GBTR_MOMSAVE: {
-      lbl = "MOM SAVE";
+      lbl = "SAVE";       /* "MOM SAVE" (8 chars) broke the "%-6s %s" label column (D7) */
       const char* m = (t->mom_saving_bits & 0x04u) ? "all"
                     : (t->mom_saving_bits & 0x02u) ? "half"
                     : (t->mom_saving_bits & 0x01u) ? "some" : "off";
@@ -181,7 +187,50 @@ static void gbtr_row_paint(const GbTrainer* t, int row, bool gen1, int y, bool s
       break;
     default: lbl = ""; val[0] = 0;
   }
+  /* D10: NAME/RIVAL/MOTHER can carry a UTF-8 glyph (e-acute, or a Male/Female sign
+   * on a rival/mom name) that trainer_row_paint's sys8 face (ui_text, fixed-width
+   * ASCII cells) cannot draw -- each byte of a multi-byte sequence would print as
+   * its own wrong glyph. Route just the value through ui_ptext instead: it already
+   * decodes the e-acute sequence and degrades any other non-ASCII run to a single
+   * '?' (source/ui.c's pnext), never garbage tiles. */
+  if (row == GBTR_NAME || row == GBTR_RIVAL || row == GBTR_MOTHER) {
+    if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+    else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
+    char lbl6[8]; siprintf(lbl6, "%-6s", lbl);
+    ui_text(6, y, sel ? UI_SELTEXT : UI_TEXT, lbl6);
+    ui_ptext(6 + 7 * UI_SYS8_W, y, sel ? UI_SELTEXT : ink, val);
+    return;
+  }
   trainer_row_paint(y, sel, lbl, val, ink);
+}
+
+/* D5: what is on screen. Every editor reachable below (osk_input/num_entry/
+ * app_confirm/gbtr_badges_editor/gbtr_time_editor/msg_wait) opens with its own
+ * ui_clear() on entry, so ui_clear_gen() alone proves whether an edit ran --
+ * same idiom as pdna_trainer.c's own TCardPaint. That leaves exactly one case
+ * worth special-casing: a plain UP/DOWN cursor move, which touches nothing
+ * outside the two affected rows. Stack-local, not a static: a fresh call
+ * always starts invalid (first pass paints in full). */
+typedef struct { uint32_t gen; int sel; bool valid; } GbtrPaint;
+
+static void gbtr_render(const GbTrainer* t, bool gen1, const int* rows, int nrows,
+                        bool can_edit, int sel, GbtrPaint* pv) {
+  bool full = !pv->valid || pv->gen != ui_clear_gen();
+
+  if (full) {
+    ui_clear();
+    ui_text(4, 2, UI_TITLE, gen1 ? "TRAINER CARD (Gen 1)" : "TRAINER CARD (Gen 2)");
+    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    for (int i = 0; i < nrows; i++)
+      gbtr_row_paint(t, rows[i], gen1, 14 + i * 9, can_edit && i == sel);
+    ui_hline(0, 151, UI_SCR_W, UI_BORDER);
+    trainer_key_legend(can_edit ? "A edit  START save  B cancel" : "B back");
+  } else if (sel != pv->sel) {
+    gbtr_row_paint(t, rows[pv->sel], gen1, 14 + pv->sel * 9, false);
+    gbtr_row_paint(t, rows[sel],     gen1, 14 + sel     * 9, can_edit);
+  }
+
+  pv->sel = sel; pv->gen = ui_clear_gen(); pv->valid = true;
 }
 
 void pdna_gbtrainer(GbSession* s, bool can_edit) {
@@ -198,14 +247,9 @@ void pdna_gbtrainer(GbSession* s, bool can_edit) {
   int nrows = gbtr_build_rows(&t, rows);
 
   int sel = 0;
+  GbtrPaint pv = { 0, 0, false };
   for (;;) {
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, gen1 ? "TRAINER CARD (Red/Blue/Yellow)"
-                                 : "TRAINER CARD (Gold/Silver/Crystal)");
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    for (int i = 0; i < nrows; i++)
-      gbtr_row_paint(&t, rows[i], gen1, 14 + i * 9, can_edit && i == sel);
-    trainer_key_legend(can_edit ? "U/D field  A edit  START save  B back" : "B back");
+    gbtr_render(&t, gen1, rows, nrows, can_edit, sel, &pv);
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_START);
     if (k & KEY_B) return;                       /* discard: `t` was never written */
