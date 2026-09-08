@@ -14,6 +14,7 @@
 
 #include "pdna_gbtrainer.h"
 #include "gb_trainer.h"
+#include "gbtr_rows.h"     /* pure-C row-visibility model, host-tested separately  */
 #include "pdna_trainer.h"  /* num_entry / trainer_row_paint / trainer_flag_row_paint /
                             * trainer_key_legend -- the exported Gen-3 card painters */
 #include "pdna_gen12.h"    /* gb_rollback / gb_persist -- the S2 commit primitives   */
@@ -30,12 +31,6 @@ static u16  s_wait(u16 mask) {
   else if (k & KEY_B) snd_back();
   return k;
 }
-
-enum {
-  GBTR_NAME, GBTR_ID, GBTR_MONEY, GBTR_COINS, GBTR_MOMMONEY, GBTR_MOMSAVE,
-  GBTR_BADGES, GBTR_TIME, GBTR_GENDER, GBTR_DEX, GBTR_RIVAL, GBTR_MOTHER,
-  GBTR_ROW_MAX
-};
 
 static bool gbtr_badge_get(const GbTrainer* t, bool gen1, int i) {
   if (gen1) return ((t->badges >> i) & 1u) != 0;
@@ -180,18 +175,8 @@ void pdna_gbtrainer(GbSession* s, bool can_edit) {
   }
   const bool gen1 = (s->gen == GB_GEN1);
 
-  int rows[GBTR_ROW_MAX]; int nrows = 0;
-  rows[nrows++] = GBTR_NAME;
-  rows[nrows++] = GBTR_ID;
-  rows[nrows++] = GBTR_MONEY;
-  rows[nrows++] = GBTR_COINS;
-  if (t.has_mom)    { rows[nrows++] = GBTR_MOMMONEY; rows[nrows++] = GBTR_MOMSAVE; }
-  rows[nrows++] = GBTR_BADGES;
-  rows[nrows++] = GBTR_TIME;
-  if (t.has_gender) rows[nrows++] = GBTR_GENDER;
-  rows[nrows++] = GBTR_DEX;
-  rows[nrows++] = GBTR_RIVAL;
-  if (t.has_mother) rows[nrows++] = GBTR_MOTHER;
+  int rows[GBTR_ROW_MAX];
+  int nrows = gbtr_build_rows(&t, rows);
 
   int sel = 0;
   for (;;) {

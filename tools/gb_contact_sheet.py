@@ -93,6 +93,10 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # come from tools/n1_shots.py, captions all start "#58:".
     ("nav-same-menu", "#58 — one identical START menu everywhere, honest per-row messages",
      ("#58",)),
+    # BACKLOG #49 P1b (append-only, same reasoning as #58's own note above). Shots
+    # come from tools/p1b_shots.py, captions all start "#49-P1:".
+    ("gb-trainer", "#49-P1 — the Gen-1/2 trainer card (view + edit, over gb_trainer)",
+     ("#49-P1",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
