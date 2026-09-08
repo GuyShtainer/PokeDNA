@@ -1,12 +1,7 @@
 /* Gen-1 / Gen-2 trainer-card and bag UI graphics, located BY SHAPE in the
  * user's own Game Boy cartridge -- see rom_gbui.h for the design, the
  * per-signature citations and the fail-closed rules. Pure C: no tonc, no
- * FatFs, no GBA headers.
- *
- * THIS COMMIT: the five Gen-1 locators (G1-F/T/C/B/P), the tile/glyph
- * expanders and the .loc cache. Gen 2 (G2-*) lands in the next commit --
- * until then rom_gbui_open() on a Gold/Crystal dump fails closed (gen = 0,
- * ok = 0), which is correct, not a bug: nothing here claims to locate it yet. */
+ * FatFs, no GBA headers. */
 #include "rom_gbui.h"
 
 #include <string.h>
@@ -82,7 +77,7 @@ static int parse_header(const Scan* s, uint8_t* out_banks, uint32_t* out_id_hash
 
 static uint32_t distinct_tiles(const Scan* s, uint32_t off, uint8_t bpp, uint32_t ntiles) {
   uint32_t stride = (bpp == 2) ? 16u : 8u;
-  uint8_t tiles[96][16];   /* worst case here is 86 (leaders, next commit); 96 headroom */
+  uint8_t tiles[96][16];   /* worst case here is 86 (leaders); 96 is headroom */
   if (ntiles > 96) return 0;
   if (off + ntiles * stride > s->size) return 0;
   for (uint32_t i = 0; i < ntiles; i++)
@@ -119,6 +114,19 @@ static int any_nonzero(const Scan* s, uint32_t off, uint32_t nbytes) {
     done += chunk;
   }
   return 0;
+}
+
+static int block_eq(const Scan* s, uint32_t a, uint32_t b, uint32_t n) {
+  uint8_t ba[64], bb[64];
+  uint32_t done = 0;
+  while (done < n) {
+    uint32_t chunk = n - done; if (chunk > sizeof ba) chunk = sizeof ba;
+    if (!rd(s, a + done, ba, chunk)) return 0;
+    if (!rd(s, b + done, bb, chunk)) return 0;
+    if (memcmp(ba, bb, chunk) != 0) return 0;
+    done += chunk;
+  }
+  return 1;
 }
 
 /* 1024 B = 128 tiles, 1bpp (Gen 1 Font / Gen 2 Font, same charmap layout). */
@@ -171,8 +179,42 @@ static int g1_badges_cb(const uint8_t* w) {
 static int g1_playerpic_cb(const uint8_t* w) {
   return w[0]==0x11 && w[3]==0x01 && w[4]==0x01;
 }
+static int g2_frame_cb(const uint8_t* w) {
+  return w[0]==0xFA && w[3]==0xE6 && w[4]==0x07 && w[5]==0x01 && w[6]==0x30 && w[7]==0x00 &&
+         w[8]==0x21 && w[11]==0xCD && w[14]==0x54 && w[15]==0x5D && w[16]==0x21 &&
+         w[17]==0x90 && w[18]==0x97 && w[19]==0x01 && w[20]==0x06;
+}
+static int g2_badgeleader_cb(const uint8_t* w) {
+  return w[0]==0x11 && w[3]==0x21 && w[4]==0x90 && w[5]==0x92 && w[6]==0x01 && w[7]==0x56 &&
+         w[9]==0xCD && w[12]==0x11 && w[15]==0x21 && w[16]==0x00 && w[17]==0x80 &&
+         w[18]==0x01 && w[19]==0x2C && w[21]==0xCD;
+}
+static int g2_cardpic_cm_cb(const uint8_t* w) {
+  return w[0]==0x21 && w[3]==0xFA && w[6]==0xCB && w[8]==0x28 && w[10]==0x21 &&
+         w[13]==0x11 && w[14]==0x00 && w[15]==0x90 && w[16]==0x01 && w[17]==0x30 &&
+         w[18]==0x02 && w[19]==0x3E && w[21]==0xCD && w[24]==0x21 &&
+         w[27]==0x11 && w[28]==0x30 && w[29]==0x92 && w[30]==0x01 && w[31]==0x60 && w[32]==0x00;
+}
+static int g2_cardpic_gold_cb(const uint8_t* w) {
+  return w[0]==0x21 && w[3]==0x11 && w[4]==0x00 && w[5]==0x90 && w[6]==0x01 && w[7]==0x90 &&
+         w[8]==0x02 && w[9]==0x3E && w[11]==0xCD && w[14]==0x21 && w[17]==0x11 &&
+         w[18]==0x90 && w[19]==0x92 && w[20]==0x01 && w[21]==0x60 && w[22]==0x05 &&
+         w[23]==0x3E && w[25]==0xCD;
+}
+static int g2_pack_cb(const uint8_t* w) {
+  uint16_t p0 = rd16(w+0), p1 = rd16(w+2), p2 = rd16(w+4), p3 = rd16(w+6);
+  if (p0 < GB_WIN_LO || p0 >= GB_WIN_HI || p1 < GB_WIN_LO || p1 >= GB_WIN_HI ||
+      p2 < GB_WIN_LO || p2 >= GB_WIN_HI || p3 < GB_WIN_LO || p3 >= GB_WIN_HI) return 0;
+  uint16_t base = p2;
+  return p0 == (uint16_t)(base + 240) && p1 == (uint16_t)(base + 720) &&
+         p3 == (uint16_t)(base + 480);
+}
 
-enum { J_G1_FONT = 0, J_G1_TEXTBOX, J_G1_CARDFRAME, J_G1_BADGES, J_G1_PLAYERPIC, J_COUNT };
+enum {
+  J_G1_FONT = 0, J_G1_TEXTBOX, J_G1_CARDFRAME, J_G1_BADGES, J_G1_PLAYERPIC,
+  J_G2_FRAME, J_G2_BADGELEADER, J_G2_CARDPIC_CM, J_G2_CARDPIC_GOLD, J_G2_PACK,
+  J_COUNT
+};
 
 #define SCAN_MAX_HITS 128u   /* the player-pic anchor alone raw-hits ~70-75 */
 
@@ -270,6 +312,70 @@ static int try_playerpic(const Scan* s, uint32_t hit, uint32_t* out, uint8_t* ou
   return 1;
 }
 
+/* --------------------------------------------------------- try_* (Gen 2) */
+
+static int try_frame(const Scan* s, uint32_t hit, uint32_t* out) {
+  uint8_t buf[22];
+  if (!rd(s, hit, buf, sizeof buf)) return 0;
+  uint16_t addr = rd16(buf + 9);
+  uint8_t bank = buf[21];
+  uint32_t off = fileoff(bank, addr);
+  if (off + 9 * 48 > s->size) return 0;
+  if (distinct_tiles(s, off, 1, 54) < 46) return 0;
+  *out = off;
+  return 1;
+}
+
+typedef struct { uint32_t leaders, badges; } BadgeLeaderHit;
+
+static int try_badgeleader_hit(const Scan* s, uint32_t hit, BadgeLeaderHit* out) {
+  (void)s;
+  uint8_t buf[22];
+  if (!rd(s, hit, buf, sizeof buf)) return 0;
+  uint16_t laddr = rd16(buf + 1); uint8_t lbank = buf[8];
+  uint16_t baddr = rd16(buf + 13); uint8_t bbank = buf[20];
+  out->leaders = fileoff(lbank, laddr);
+  out->badges  = fileoff(bbank, baddr);
+  return 1;
+}
+
+static int try_cardpic_crystal(const Scan* s, uint32_t hit,
+                               uint32_t* chris, uint32_t* kris, uint32_t* tcgfx) {
+  uint8_t buf[33];
+  if (!rd(s, hit, buf, sizeof buf)) return 0;
+  uint8_t bank = buf[20];
+  uint32_t co = fileoff(bank, rd16(buf + 1));
+  uint32_t ko = fileoff(bank, rd16(buf + 11));
+  uint32_t to = fileoff(bank, rd16(buf + 25));
+  if (ko < co || ko - co != 0x230u) return 0;
+  if (co + 35 * 16 > s->size || to + 6 * 16 > s->size) return 0;
+  *chris = co; *kris = ko; *tcgfx = to;
+  return 1;
+}
+static int try_cardpic_gold(const Scan* s, uint32_t hit, uint32_t* chris) {
+  uint8_t buf[26];
+  if (!rd(s, hit, buf, sizeof buf)) return 0;
+  uint8_t bank = buf[10];
+  uint32_t co = fileoff(bank, rd16(buf + 1));
+  if (co + 41 * 16 > s->size) return 0;   /* 35 pic + 6 TrainerCardGFX tiles */
+  *chris = co;
+  return 1;
+}
+
+/* PackGFXPointers is a pure numeric fingerprint: the hit offset IS the
+ * pointer-table's own file offset, its bank is hit/GB_BANK, and PackGFX
+ * itself is the table's OWN third entry (p2 == base, see g2_pack_cb). */
+static int try_pack(const Scan* s, uint32_t hit, uint32_t* out) {
+  uint8_t buf[8];
+  if (!rd(s, hit, buf, sizeof buf)) return 0;
+  uint8_t bank = (uint8_t)(hit / GB_BANK);
+  uint16_t base = rd16(buf + 4);
+  uint32_t off = fileoff(bank, base);
+  if (off + 60 * 16 > s->size) return 0;
+  *out = off;
+  return 1;
+}
+
 /* --------------------------------------------------------------- locate() */
 
 typedef struct { uint32_t off[ROM_GBUI_OFF_COUNT]; uint8_t gen, playerpic_bank; } LocResult;
@@ -279,46 +385,114 @@ static int locate(const Scan* s, LocResult* r) {
 
   ScanJob jobs[J_COUNT];
   memset(jobs, 0, sizeof jobs);
-  jobs[J_G1_FONT     ].cb = g1_font_cb;      jobs[J_G1_FONT     ].look = 18;
-  jobs[J_G1_TEXTBOX  ].cb = g1_textbox_cb;   jobs[J_G1_TEXTBOX  ].look = 18;
-  jobs[J_G1_CARDFRAME].cb = g1_cardframe_cb; jobs[J_G1_CARDFRAME].look = 33;
-  jobs[J_G1_BADGES   ].cb = g1_badges_cb;    jobs[J_G1_BADGES   ].look = 8;
-  jobs[J_G1_PLAYERPIC].cb = g1_playerpic_cb; jobs[J_G1_PLAYERPIC].look = 6;
+  jobs[J_G1_FONT        ].cb = g1_font_cb;         jobs[J_G1_FONT        ].look = 18;
+  jobs[J_G1_TEXTBOX     ].cb = g1_textbox_cb;      jobs[J_G1_TEXTBOX     ].look = 18;
+  jobs[J_G1_CARDFRAME   ].cb = g1_cardframe_cb;    jobs[J_G1_CARDFRAME   ].look = 33;
+  jobs[J_G1_BADGES      ].cb = g1_badges_cb;       jobs[J_G1_BADGES      ].look = 8;
+  jobs[J_G1_PLAYERPIC   ].cb = g1_playerpic_cb;    jobs[J_G1_PLAYERPIC   ].look = 6;
+  jobs[J_G2_FRAME       ].cb = g2_frame_cb;        jobs[J_G2_FRAME       ].look = 22;
+  jobs[J_G2_BADGELEADER ].cb = g2_badgeleader_cb;  jobs[J_G2_BADGELEADER ].look = 22;
+  jobs[J_G2_CARDPIC_CM  ].cb = g2_cardpic_cm_cb;   jobs[J_G2_CARDPIC_CM  ].look = 33;
+  jobs[J_G2_CARDPIC_GOLD].cb = g2_cardpic_gold_cb; jobs[J_G2_CARDPIC_GOLD].look = 26;
+  jobs[J_G2_PACK        ].cb = g2_pack_cb;         jobs[J_G2_PACK        ].look = 8;
   if (!scan_multi(s, jobs, J_COUNT)) return 0;
 
-  if (jobs[J_G1_FONT].n != 1) return 0;
-  uint32_t font;
-  if (!try_font(s, jobs[J_G1_FONT].off[0], &font)) return 0;
+  /* ---------------------------------------------------------- Gen 1 ---- */
+  do {
+    if (jobs[J_G1_FONT].n != 1) break;
+    uint32_t font;
+    if (!try_font(s, jobs[J_G1_FONT].off[0], &font)) break;
 
-  if (jobs[J_G1_TEXTBOX].n != 1) return 0;
-  uint32_t textbox;
-  if (!try_textbox(s, jobs[J_G1_TEXTBOX].off[0], &textbox)) return 0;
+    if (jobs[J_G1_TEXTBOX].n != 1) break;
+    uint32_t textbox;
+    if (!try_textbox(s, jobs[J_G1_TEXTBOX].off[0], &textbox)) break;
 
-  if (jobs[J_G1_CARDFRAME].n != 1) return 0;
-  uint32_t cardframe;
-  if (!try_cardframe(s, jobs[J_G1_CARDFRAME].off[0], &cardframe)) return 0;
+    if (jobs[J_G1_CARDFRAME].n != 1) break;
+    uint32_t cardframe;
+    if (!try_cardframe(s, jobs[J_G1_CARDFRAME].off[0], &cardframe)) break;
 
-  if (jobs[J_G1_BADGES].n != 1) return 0;
-  uint32_t badges;
-  if (!try_badges(s, jobs[J_G1_BADGES].off[0], &badges)) return 0;
+    if (jobs[J_G1_BADGES].n != 1) break;
+    uint32_t badges;
+    if (!try_badges(s, jobs[J_G1_BADGES].off[0], &badges)) break;
 
-  if (jobs[J_G1_PLAYERPIC].n == 0 || jobs[J_G1_PLAYERPIC].n > SCAN_MAX_HITS) return 0;
-  uint32_t pp = 0, pp_found = 0; uint8_t pp_bank = 0;
-  for (uint32_t i = 0; i < jobs[J_G1_PLAYERPIC].n; i++) {
-    uint32_t cand; uint8_t bk;
-    if (try_playerpic(s, jobs[J_G1_PLAYERPIC].off[i], &cand, &bk)) {
-      pp_found++; pp = cand; pp_bank = bk;
+    if (jobs[J_G1_PLAYERPIC].n == 0 || jobs[J_G1_PLAYERPIC].n > SCAN_MAX_HITS) break;
+    uint32_t pp = 0, pp_found = 0; uint8_t pp_bank = 0;
+    for (uint32_t i = 0; i < jobs[J_G1_PLAYERPIC].n; i++) {
+      uint32_t cand; uint8_t bk;
+      if (try_playerpic(s, jobs[J_G1_PLAYERPIC].off[i], &cand, &bk)) {
+        pp_found++; pp = cand; pp_bank = bk;
+      }
     }
-  }
-  if (pp_found != 1) return 0;
+    if (pp_found != 1) break;
 
-  r->off[ROM_GBUI_OFF_FONT] = font;
-  r->off[ROM_GBUI_OFF_TEXTBOX] = textbox;
-  r->off[ROM_GBUI_OFF_CARDFRAME] = cardframe;
-  r->off[ROM_GBUI_OFF_BADGES] = badges;
-  r->off[ROM_GBUI_OFF_PLAYERPIC] = pp;
-  r->playerpic_bank = pp_bank;
-  r->gen = ROM_GBUI_GEN1;
+    r->off[ROM_GBUI_OFF_FONT] = font;
+    r->off[ROM_GBUI_OFF_TEXTBOX] = textbox;
+    r->off[ROM_GBUI_OFF_CARDFRAME] = cardframe;
+    r->off[ROM_GBUI_OFF_BADGES] = badges;
+    r->off[ROM_GBUI_OFF_PLAYERPIC] = pp;
+    r->playerpic_bank = pp_bank;
+    r->gen = ROM_GBUI_GEN1;
+    return 1;
+  } while (0);
+
+  /* ---------------------------------------------------------- Gen 2 ---- */
+  memset(r, 0, sizeof *r);
+
+  if (jobs[J_G2_FRAME].n != 1) return 0;
+  uint32_t frames;
+  if (!try_frame(s, jobs[J_G2_FRAME].off[0], &frames)) return 0;
+  if (frames < 1536u + 512u) return 0;          /* font, then fontextra, must exist below it */
+  uint32_t font_off = frames - 1536u;
+  if (!font_verify(s, font_off)) return 0;
+  uint32_t fontextra_off = font_off - 512u;
+  if (distinct_tiles(s, fontextra_off, 2, 32) != 32) return 0;
+
+  if (jobs[J_G2_BADGELEADER].n != 2) return 0;
+  BadgeLeaderHit h0, h1;
+  if (!try_badgeleader_hit(s, jobs[J_G2_BADGELEADER].off[0], &h0)) return 0;
+  if (!try_badgeleader_hit(s, jobs[J_G2_BADGELEADER].off[1], &h1)) return 0;
+  if (h0.badges + 44 * 16 > s->size || h0.leaders + 86 * 16 > s->size) return 0;
+  if (!block_eq(s, h0.badges, h1.badges, 44 * 16)) return 0;
+  if (!block_eq(s, h0.leaders, h1.leaders, 86 * 16)) return 0;
+  if (distinct_tiles(s, h0.badges, 2, 44) != 44) return 0;
+  if (distinct_tiles(s, h0.leaders, 2, 86) < 63) return 0;
+
+  uint32_t cardpic_m = 0, cardpic_f = 0, cardgfx = 0;
+  int is_crystal_shaped = 0;
+  if (jobs[J_G2_CARDPIC_CM].n == 1 &&
+      try_cardpic_crystal(s, jobs[J_G2_CARDPIC_CM].off[0], &cardpic_m, &cardpic_f, &cardgfx)) {
+    is_crystal_shaped = 1;
+  } else if (jobs[J_G2_CARDPIC_GOLD].n == 1 &&
+             try_cardpic_gold(s, jobs[J_G2_CARDPIC_GOLD].off[0], &cardpic_m)) {
+    cardgfx = cardpic_m + 35 * 16;
+    cardpic_f = 0;
+  } else {
+    return 0;
+  }
+
+  uint32_t pack_m = 0, pack_f = 0;
+  if (jobs[J_G2_PACK].n == 1) {
+    if (!try_pack(s, jobs[J_G2_PACK].off[0], &pack_m)) return 0;
+  } else if (jobs[J_G2_PACK].n == 2) {
+    if (!try_pack(s, jobs[J_G2_PACK].off[0], &pack_m)) return 0;
+    if (!try_pack(s, jobs[J_G2_PACK].off[1], &pack_f)) return 0;
+  } else {
+    return 0;
+  }
+
+  if (is_crystal_shaped && (cardpic_f == 0 || pack_f == 0)) return 0;
+
+  r->off[ROM_GBUI_OFF_FRAMES] = frames;
+  r->off[ROM_GBUI_OFF_FONT] = font_off;
+  r->off[ROM_GBUI_OFF_FONTEXTRA] = fontextra_off;
+  r->off[ROM_GBUI_OFF_BADGES] = h0.badges;
+  r->off[ROM_GBUI_OFF_LEADERS] = h0.leaders;
+  r->off[ROM_GBUI_OFF_CARDPIC_M] = cardpic_m;
+  r->off[ROM_GBUI_OFF_CARDPIC_F] = cardpic_f;
+  r->off[ROM_GBUI_OFF_CARDGFX] = cardgfx;
+  r->off[ROM_GBUI_OFF_PACK_M] = pack_m;
+  r->off[ROM_GBUI_OFF_PACK_F] = pack_f;
+  r->gen = ROM_GBUI_GEN2;
   return 1;
 }
 
@@ -386,29 +560,57 @@ void rom_gbui_save_loc(const RomGbUi* gu, RomGbUiLoc* out) {
 }
 
 /* Re-validate a cached loc against THIS ROM without a full rescan. Every
- * field gets the same structural verifier locate() itself used (font,
- * textbox, cardframe, badges); the player pic gets the same one cheap check
- * locate() used (its own 0x77 header byte) rather than a full decode.
- * Anything that fails falls back to rom_gbui_open()'s full scan -- never a
- * partial accept. Gen 2 lands in the next commit. */
+ * field gets the same structural verifier locate() itself used wherever one
+ * exists (font/textbox/cardframe/badges/leaders/frames/fontextra/playerpic);
+ * cardgfx/pack_m/pack_f have no strong shape of their own once separated
+ * from their locating signature, so they get a bounds check plus (for the
+ * gendered pair) the one relation that IS still checkable from the cached
+ * offsets alone (cardpic_f - cardpic_m == 0x230). Anything that fails falls
+ * back to rom_gbui_open()'s full scan -- never a partial accept. */
 static int revalidate_loc(const Scan* s, const RomGbUiLoc* loc) {
-  if (loc->gen != ROM_GBUI_GEN1) return 0;
-  uint32_t font = loc->off[ROM_GBUI_OFF_FONT];
-  uint32_t textbox = loc->off[ROM_GBUI_OFF_TEXTBOX];
-  uint32_t cardframe = loc->off[ROM_GBUI_OFF_CARDFRAME];
-  uint32_t badges = loc->off[ROM_GBUI_OFF_BADGES];
-  uint32_t pp = loc->off[ROM_GBUI_OFF_PLAYERPIC];
-  if (!font_verify(s, font)) return 0;
-  if (textbox + 512 > s->size || distinct_tiles(s, textbox, 2, 32) != 32) return 0;
-  if (cardframe + 640 > s->size) return 0;
-  if (distinct_tiles(s, cardframe, 2, 9) != 9) return 0;
-  if (!all_blank(s, cardframe + 144, 352)) return 0;
-  if (!any_nonzero(s, cardframe + 496, 16)) return 0;
-  if (distinct_tiles(s, cardframe + 512, 2, 8) < 7) return 0;
-  if (badges + 1024 > s->size || distinct_tiles(s, badges, 2, 64) != 64) return 0;
-  uint8_t first;
-  if (!rd(s, pp, &first, 1) || first != 0x77) return 0;
-  return 1;
+  if (loc->gen == ROM_GBUI_GEN1) {
+    uint32_t font = loc->off[ROM_GBUI_OFF_FONT];
+    uint32_t textbox = loc->off[ROM_GBUI_OFF_TEXTBOX];
+    uint32_t cardframe = loc->off[ROM_GBUI_OFF_CARDFRAME];
+    uint32_t badges = loc->off[ROM_GBUI_OFF_BADGES];
+    uint32_t pp = loc->off[ROM_GBUI_OFF_PLAYERPIC];
+    if (!font_verify(s, font)) return 0;
+    if (textbox + 512 > s->size || distinct_tiles(s, textbox, 2, 32) != 32) return 0;
+    if (cardframe + 640 > s->size) return 0;
+    if (distinct_tiles(s, cardframe, 2, 9) != 9) return 0;
+    if (!all_blank(s, cardframe + 144, 352)) return 0;
+    if (!any_nonzero(s, cardframe + 496, 16)) return 0;
+    if (distinct_tiles(s, cardframe + 512, 2, 8) < 7) return 0;
+    if (badges + 1024 > s->size || distinct_tiles(s, badges, 2, 64) != 64) return 0;
+    uint8_t first;
+    if (!rd(s, pp, &first, 1) || first != 0x77) return 0;
+    return 1;
+  }
+  if (loc->gen == ROM_GBUI_GEN2) {
+    uint32_t frames = loc->off[ROM_GBUI_OFF_FRAMES];
+    uint32_t font = loc->off[ROM_GBUI_OFF_FONT];
+    uint32_t fontextra = loc->off[ROM_GBUI_OFF_FONTEXTRA];
+    uint32_t badges = loc->off[ROM_GBUI_OFF_BADGES];
+    uint32_t leaders = loc->off[ROM_GBUI_OFF_LEADERS];
+    uint32_t cardpic_m = loc->off[ROM_GBUI_OFF_CARDPIC_M];
+    uint32_t cardpic_f = loc->off[ROM_GBUI_OFF_CARDPIC_F];
+    uint32_t cardgfx = loc->off[ROM_GBUI_OFF_CARDGFX];
+    uint32_t pack_m = loc->off[ROM_GBUI_OFF_PACK_M];
+    uint32_t pack_f = loc->off[ROM_GBUI_OFF_PACK_F];
+    if (frames + 9 * 48 > s->size || distinct_tiles(s, frames, 1, 54) < 46) return 0;
+    if (!font_verify(s, font)) return 0;
+    if (fontextra + 512 > s->size || distinct_tiles(s, fontextra, 2, 32) != 32) return 0;
+    if (badges + 44 * 16 > s->size || distinct_tiles(s, badges, 2, 44) != 44) return 0;
+    if (leaders + 86 * 16 > s->size || distinct_tiles(s, leaders, 2, 86) < 63) return 0;
+    if (cardpic_m + 35 * 16 > s->size) return 0;
+    if (cardpic_f != 0 && (cardpic_f < cardpic_m || cardpic_f - cardpic_m != 0x230u)) return 0;
+    if (cardgfx + 6 * 16 > s->size) return 0;
+    if (pack_m == 0 || pack_m + 60 * 16 > s->size) return 0;
+    if (pack_f != 0 && pack_f + 60 * 16 > s->size) return 0;
+    if (cardpic_f != 0 && pack_f == 0) return 0;   /* Crystal-shaped needs both */
+    return 1;
+  }
+  return 0;
 }
 
 int rom_gbui_open_loc(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
@@ -426,14 +628,24 @@ int rom_gbui_open_loc(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
   if (!parse_header(&s, &banks, &id_hash)) return 0;
   s.banks = banks;
 
-  if (loc && loc->id_hash == id_hash && loc->size == size && revalidate_loc(&s, loc)) {
+  if (loc && loc->id_hash == id_hash && loc->size == size &&
+      (loc->gen == ROM_GBUI_GEN1 || loc->gen == ROM_GBUI_GEN2) &&
+      revalidate_loc(&s, loc)) {
     gu->banks = banks; gu->id_hash = id_hash; gu->gen = loc->gen;
     gu->font        = loc->off[ROM_GBUI_OFF_FONT];
     gu->textbox     = loc->off[ROM_GBUI_OFF_TEXTBOX];
     gu->cardframe   = loc->off[ROM_GBUI_OFF_CARDFRAME];
     gu->badges      = loc->off[ROM_GBUI_OFF_BADGES];
+    gu->leaders     = loc->off[ROM_GBUI_OFF_LEADERS];
     gu->playerpic   = loc->off[ROM_GBUI_OFF_PLAYERPIC];
-    gu->playerpic_bank = (uint8_t)(gu->playerpic / GB_BANK);
+    gu->frames      = loc->off[ROM_GBUI_OFF_FRAMES];
+    gu->fontextra   = loc->off[ROM_GBUI_OFF_FONTEXTRA];
+    gu->cardpic_m   = loc->off[ROM_GBUI_OFF_CARDPIC_M];
+    gu->cardpic_f   = loc->off[ROM_GBUI_OFF_CARDPIC_F];
+    gu->cardgfx     = loc->off[ROM_GBUI_OFF_CARDGFX];
+    gu->pack_m      = loc->off[ROM_GBUI_OFF_PACK_M];
+    gu->pack_f      = loc->off[ROM_GBUI_OFF_PACK_F];
+    if (gu->gen == ROM_GBUI_GEN1) gu->playerpic_bank = (uint8_t)(gu->playerpic / GB_BANK);
     gu->ok = 1;
     return 1;
   }
