@@ -42,4 +42,67 @@ void trainer_key_legend(const char* text);
  * and committed via the shared verified-write path. B returns. */
 void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame game);
 
+/* ---- shared card-FRONT painter (BACKLOG #49 P1c) ---------------------------
+ * A game-agnostic field model so pdna_gbtrainer.c's Gen-1/2 card can drive the
+ * SAME per-game card_bg()/CARD_LAYOUTS art this file's own card_editor() uses,
+ * instead of duplicating the field-position math. Gen 1/2 have no card art of
+ * their own (card_bg.h's whole layout table is RS/Emerald/FRLG-shaped), so
+ * the GB card always paints on the EMERALD layout/art (card_bg(PK_EMERALD,
+ * ...)) -- see pdna_gbtrainer.c for why Emerald specifically (6 back rows
+ * fits every GB back-row list; badge_x/24*i fits 8 front badge cells). */
+typedef struct {
+  const char* name;         /* already-decoded display name (ASCII/UTF-8)    */
+  uint16_t    id;            /* IDNo. (5 digits)                             */
+  uint32_t    money;
+  uint16_t    play_h;
+  uint8_t     play_m;
+  uint16_t    badges;         /* bit i = badge i owned; the front row draws
+                               * bits 0..7 only (8 slots baked into the art)  */
+  bool        has_dex;
+  uint16_t    dex_caught;     /* dex counts: number caught/owned              */
+  bool        photo;          /* true: the CALLER already drew a real photo
+                               * overlay (Gen-3's card_draw_photo) over the
+                               * SEX rect and this painter leaves it alone;
+                               * false: this painter fills that rect with a
+                               * neutral placeholder box itself (Gen-1/2: no
+                               * GB trainer-sprite locator yet, BACKLOG note) */
+} CardFields;
+
+/* Paint ID/NAME/MONEY/TIME/BADGES(0..7)/DEX(if has_dex)/photo-placeholder(if
+ * !photo) at CARD_LAYOUTS[game]'s own coordinates. SEX (the real photo) and
+ * STARS (Gen-3's card tier) are NOT part of `cf` -- they have no Gen-1/2
+ * analogue -- so a Gen-3 caller still draws those two itself. */
+void card_front_fields_paint(PkGame game, const CardFields* cf);
+
+/* One field of the above (CARDF_ID/NAME/MONEY/TIME/BADGES only -- SEX/STARS
+ * are a no-op here, draw them yourself). Exported so a cursor-move restore
+ * can repaint just the one field that changed. */
+void card_field_one(PkGame game, int f, const CardFields* cf);
+
+/* A CARDF_* field's cursor rect (card_bg.h order; CARDF_BADGES + bsel 0..7
+ * for a single badge cell). */
+void card_field_rect(PkGame game, int f, int bsel, int* x, int* y, int* w, int* h);
+
+/* 2px red selection frame on a field's rect (over the card art). */
+void card_field_sel_frame(PkGame game, int f, int bsel);
+
+/* Restore ONE field's rect from the card bg (tier/female pick which frame)
+ * and repaint it via card_field_one -- the shared cursor-move idiom both
+ * card_editor() and pdna_gbtrainer.c's front card use. */
+void card_field_restore(PkGame game, int f, int bsel, int tier, int female,
+                        const CardFields* cf);
+
+/* ---- shared card-BACK painter (BACKLOG #49 P1c) ----------------------------
+ * Same idea as the front painter above, for the card BACK's row list (HoF/
+ * link-battle-shaped rows on Gen 3; COINS/MOM/RIVAL/MOTHER/GENDER for GB) --
+ * only the GEOMETRY (CARD_BACK_LAYOUTS[game]) and the plain "label / value"
+ * text draw are shared; each caller supplies its own label+value strings
+ * (Gen-3's CBK_* stat lookups stay in pdna_trainer.c, unexported). */
+void card_back_name_paint(PkGame game, const char* name);
+void card_back_rect(PkGame game, int row, int* x, int* y, int* w, int* h);
+void card_back_sel_frame(PkGame game, int row);
+void card_back_row_paint(PkGame game, int row, const char* label, const char* value);
+void card_back_row_restore(int game, int row, int tier, int female,
+                           const char* label, const char* value);
+
 #endif /* PDNA_TRAINER_H */

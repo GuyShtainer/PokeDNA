@@ -370,60 +370,91 @@ static void card_blit(BgFrame bg) {
  * card_draw_stars()'s comment above for why that used to be assumed and was
  * wrong. RS bakes the NAME/IDNo./MONEY/TIME labels into the art
  * (L->labels == 0), so only the bare values are drawn there. */
-static void card_field(int f, PkGame game, int tier, int female, const uint8_t* sb1,
-                       const char* name, uint16_t tid, uint32_t money, uint16_t ph, uint8_t pm) {
+/* P1c: the field-drawing switch, factored to take a game-agnostic CardFields
+ * (pdna_trainer.h) instead of raw sb1/name/tid/money/ph/pm -- so pdna_gbtrainer.c
+ * can drive the exact same field math without a PkGame/sb1 dependency. Exported
+ * as card_field_one(); SEX/STARS are Gen-3-only (no CardFields analogue) and stay
+ * out of the switch below -- card_field() (this file's own caller) still draws
+ * those two itself, unchanged. */
+void card_field_one(PkGame game, int f, const CardFields* cf) {
   const CardLayout* L = &CARD_LAYOUTS[game];
   char line[32];
   switch (f) {
     case CARDF_ID:                           /* E/FRLG write "IDNo." + id; RS
                                               * bakes the label, digits only  */
-      siprintf(line, L->labels ? "IDNo.%05u" : "%05u", (unsigned)tid);
+      siprintf(line, L->labels ? "IDNo.%05u" : "%05u", (unsigned)cf->id);
       if (L->id_w)                           /* Emerald: centered in the box  */
         ui_text(L->id_x + (L->id_w - 8 * (int)strlen(line)) / 2, L->id_y, CINK, line);
       else
         ui_text(L->id_x, L->id_y, CINK, line);
       break;
     case CARDF_NAME:
-      if (L->labels) siprintf(line, "NAME: %s", name);   /* gText_TrainerCardName */
-      else           siprintf(line, "%s", name);
+      if (L->labels) siprintf(line, "NAME: %s", cf->name);   /* gText_TrainerCardName */
+      else           siprintf(line, "%s", cf->name);
       ui_text(L->name_x, L->name_y, CINK, line);
       break;
     case CARDF_MONEY:
       if (L->labels) ui_text(L->lbl_x, L->money_y, CINK, "MONEY");
-      siprintf(line, "$%lu", (unsigned long)money);
+      siprintf(line, "$%lu", (unsigned long)cf->money);
       ui_text(L->val_xr - 8 * (int)strlen(line), L->money_y, CINK, line);
       break;
     case CARDF_TIME:
       if (L->labels) ui_text(L->lbl_x, L->time_y, CINK, "TIME");
-      siprintf(line, "%u:%02u", (unsigned)ph, (unsigned)pm);
+      siprintf(line, "%u:%02u", (unsigned)cf->play_h, (unsigned)cf->play_m);
       ui_text(L->val_xr - 8 * (int)strlen(line), L->time_y, CINK, line);
-      break;
-    case CARDF_SEX:                          /* ROM rung only: repaint the photo
-                                              * this field's rect covers (see the
-                                              * function comment above) */
-      card_draw_photo(game, female);
-      break;
-    case CARDF_STARS:                        /* tier's star row -- NOT baked
-                                              * into the frame (that was a
-                                              * wrong assumption this file
-                                              * carried: the frame only bakes
-                                              * the PALETTE tier/border; the
-                                              * star GLYPHS themselves are a
-                                              * shared tile drawn `tier` times
-                                              * at runtime, exactly as
-                                              * tools/gen_card_bg.py's own
-                                              * draw_star() does at build
-                                              * time for the compiled art). */
-      card_draw_stars(game, tier);
       break;
     case CARDF_BADGES:                       /* badges overlay only when owned
                                               * (the baked empty slots keep the
                                               * games' own 1..8 digit marks) */
       for (int i = 0; i < 8; i++)
-        if (pk_flag_get(sb1, game, pk_badge_flag(game, i)))
+        if ((cf->badges >> i) & 1u)
           card_draw_badge(game, i, L->badge_x + 24 * i, L->badge_y);
       break;
+    default: break;   /* CARDF_SEX / CARDF_STARS: the caller's own art */
   }
+}
+
+/* Full front-card field paint (P1c): every CardFields-backed field, plus the
+ * DEX row (if has_dex) and the photo placeholder (if !photo) -- the pieces
+ * pdna_gbtrainer.c's front card needs that card_field_one() above deliberately
+ * leaves out (they are not part of the CARDF_* cursor, same as Gen-3's own
+ * card_editor() draws its DEX row inline, outside the card_field() switch). */
+void card_front_fields_paint(PkGame game, const CardFields* cf) {
+  card_field_one(game, CARDF_ID, cf);
+  card_field_one(game, CARDF_NAME, cf);
+  card_field_one(game, CARDF_MONEY, cf);
+  card_field_one(game, CARDF_TIME, cf);
+  card_field_one(game, CARDF_BADGES, cf);
+  const CardLayout* L = &CARD_LAYOUTS[game];
+  if (cf->has_dex) {
+    char line[16];
+    if (L->labels) ui_text(L->lbl_x, L->dex_y, CINK, "POKeDEX");
+    siprintf(line, "%d", (int)cf->dex_caught);
+    ui_text(L->val_xr - 8 * (int)strlen(line), L->dex_y, CINK, line);
+  }
+  if (!cf->photo) {                          /* neutral placeholder (BACKLOG:
+                                              * no GB trainer-sprite locator) */
+    int x = L->rect[CARDF_SEX].x, y = L->rect[CARDF_SEX].y;
+    int w = L->rect[CARDF_SEX].w, h = L->rect[CARDF_SEX].h;
+    ui_fill_rect(x + 3, y + 3, w - 6, h - 6, UI_DIM);
+  }
+}
+
+/* Old sb1-based call shape, kept for every Gen-3 call site in this file
+ * (card_editor/card_restore below): builds a CardFields from the live save
+ * buffers and routes CARDF_ID/NAME/MONEY/TIME/BADGES through card_field_one()
+ * above -- byte-identical output, same computation, just staged through the
+ * shared struct first (P1c review: proven with a pixel diff of the Gen-3
+ * card before/after this refactor, tools/g3_shots.py's trainer-card shot). */
+static void card_field(int f, PkGame game, int tier, int female, const uint8_t* sb1,
+                       const char* name, uint16_t tid, uint32_t money, uint16_t ph, uint8_t pm) {
+  if (f == CARDF_SEX)   { card_draw_photo(game, female); return; }
+  if (f == CARDF_STARS) { card_draw_stars(game, tier); return; }
+  CardFields cf = { 0 };
+  cf.name = name; cf.id = tid; cf.money = money; cf.play_h = ph; cf.play_m = pm;
+  for (int i = 0; i < 8; i++)
+    if (pk_flag_get(sb1, game, pk_badge_flag(game, i))) cf.badges |= (uint16_t)(1u << i);
+  card_field_one(game, f, &cf);
 }
 
 /* A field's cursor rect. On the badge row the cursor owns ONE 16x16 badge
@@ -482,6 +513,21 @@ static void card_restore(int f, int bsel, PkGame game, int tier, int female,
   card_field(f, game, tier, female, sb1, name, tid, money, ph, pm);
 }
 
+/* P1c exported wrappers: same geometry/frame primitives, for pdna_gbtrainer.c's
+ * own front-card cursor loop (over a CardFields, not sb1/name/tid/...). */
+void card_field_rect(PkGame game, int f, int bsel, int* x, int* y, int* w, int* h) {
+  card_rect(game, f, bsel, x, y, w, h);
+}
+void card_field_sel_frame(PkGame game, int f, int bsel) {
+  card_sel_frame(game, f, bsel);
+}
+void card_field_restore(PkGame game, int f, int bsel, int tier, int female,
+                        const CardFields* cf) {
+  int x, y, w, h; card_rect(game, f, bsel, &x, &y, &w, &h);
+  bg_restore(card_bg(game, tier, female), x, y, w + 1, h + 1);
+  card_field_one(game, f, cf);
+}
+
 /* ---- the card BACK (L/R flips; geometry + row model in card_bg.h) ---- */
 
 static uint32_t back_stat(const uint8_t* sb1, const uint8_t* sb2, PkGame game, int stat) {
@@ -538,6 +584,37 @@ static void back_restore(BgFrame bg, int row, PkGame game,
   int x, y, w, h; back_rect(game, row, &x, &y, &w, &h);
   bg_restore(bg, x, y, w + 1, h + 1);
   back_row_draw(row, game, sb1, sb2);
+}
+
+/* P1c exported back-page wrappers: the geometry + plain "label / value" text
+ * draw only -- the DATA (what label, what value) is each caller's own; Gen-3's
+ * CBK_* stat lookups (back_row_value above) stay unexported/Gen-3-only. */
+void card_back_rect(PkGame game, int row, int* x, int* y, int* w, int* h) {
+  back_rect(game, row, x, y, w, h);
+}
+void card_back_sel_frame(PkGame game, int row) {
+  back_sel_frame(game, row);
+}
+void card_back_row_paint(PkGame game, int row, const char* label, const char* value) {
+  const CardBackLayout* B = &CARD_BACK_LAYOUTS[game];
+  ui_text(B->lbl_x, B->rows[row].y, CINK, label);
+  ui_text(B->val_xr - 8 * (int)strlen(value), B->rows[row].y, CINK, value);
+}
+void card_back_row_restore(int game, int row, int tier, int female,
+                           const char* label, const char* value) {
+  int x, y, w, h; back_rect((PkGame)game, row, &x, &y, &w, &h);
+  bg_restore(card_bg_back((PkGame)game, tier, female), x, y, w + 1, h + 1);
+  card_back_row_paint((PkGame)game, row, label, value);
+}
+/* The back page's own name line ("NAME's TRAINER CARD" -- FRLG bakes "TRAINER:"
+ * and prints the bare name instead, gated on B->name_right/game==PK_FRLG, same
+ * as card_editor()'s own back-name draw below). */
+void card_back_name_paint(PkGame game, const char* name) {
+  const CardBackLayout* B = &CARD_BACK_LAYOUTS[game];
+  char line[40];
+  siprintf(line, game == PK_FRLG ? "%s" : "%s's TRAINER CARD", name);
+  ui_text(B->name_right ? B->name_x - 8 * (int)strlen(line) : B->name_x,
+          B->name_y, CINK, line);
 }
 
 /* Edit one back row (the front editors' exact prompt style; RAM-only until
