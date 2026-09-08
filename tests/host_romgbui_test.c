@@ -226,6 +226,44 @@ static void run_one(const Want* w) {
     }
   }
 
+  /* -------------------------------------------- D4: grid bounds + colmajor */
+  if (gu.font) {
+    uint16_t px[64];
+    chk(w->file, "font tile 128 (grid 16x8, 128 tiles) is out of grid",
+        rom_gbui_tile(&gu, gu.font, 128, 1, 16u, 8u, 0, px) == 0);
+  }
+  if (gu.badges) {
+    uint16_t px[64];
+    chk(w->file, "badge tile 64 (grid 2x32, 64 tiles) is out of grid",
+        rom_gbui_tile(&gu, gu.badges, 64, 2, 2u, 32u, 0, px) == 0);
+  }
+  if (gu.gen == ROM_GBUI_GEN2 && gu.cardpic_m) {
+    uint16_t disp[64], raw[64];
+    if (gu.cardpic_colmajor) {
+      /* Crystal: display (col,row)=(2,3) -> row-major display index 17;
+       * storage index must be col*grid_h+row = 2*7+3 = 17. */
+      int od = rom_gbui_tile(&gu, gu.cardpic_m, 3 * 5 + 2, 2, 5u, 7u, 1, disp);
+      int or_ = rom_gbui_tile(&gu, gu.cardpic_m, 17, 2, 0, 0, 0, raw);
+      chk(w->file, "Crystal cardpic_m colmajor (2,3): reads ok", od == 1 && or_ == 1);
+      chk(w->file, "Crystal cardpic_m colmajor (2,3) == raw storage tile 17",
+          od && or_ && memcmp(disp, raw, sizeof disp) == 0);
+      /* non-trivial second point: display (col,row)=(1,0) -> display index 1;
+       * storage index = 1*7+0 = 7. */
+      int od2 = rom_gbui_tile(&gu, gu.cardpic_m, 1, 2, 5u, 7u, 1, disp);
+      int or2 = rom_gbui_tile(&gu, gu.cardpic_m, 7, 2, 0, 0, 0, raw);
+      chk(w->file, "Crystal cardpic_m colmajor (1,0): reads ok", od2 == 1 && or2 == 1);
+      chk(w->file, "Crystal cardpic_m colmajor (1,0) == raw storage tile 7",
+          od2 && or2 && memcmp(disp, raw, sizeof disp) == 0);
+    } else {
+      /* Gold: row-major, so display index 17 must equal raw storage tile 17. */
+      int od = rom_gbui_tile(&gu, gu.cardpic_m, 17, 2, 5u, 7u, 0, disp);
+      int or_ = rom_gbui_tile(&gu, gu.cardpic_m, 17, 2, 0, 0, 0, raw);
+      chk(w->file, "Gold cardpic_m row-major index 17: reads ok", od == 1 && or_ == 1);
+      chk(w->file, "Gold cardpic_m row-major index 17 == raw storage tile 17",
+          od && or_ && memcmp(disp, raw, sizeof disp) == 0);
+    }
+  }
+
   fclose(fc.f);
 }
 

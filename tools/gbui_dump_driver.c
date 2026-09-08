@@ -64,7 +64,7 @@ static void dump_block(RomGbUi* gu, const char* outdir, const char* name,
   if (!off || !outdir) return;
   uint16_t* px = (uint16_t*)malloc((size_t)ntiles * 64 * sizeof(uint16_t));
   if (!px) return;
-  for (uint32_t i = 0; i < ntiles; i++) rom_gbui_tile(gu, off, i, bpp, 0, px + i * 64);
+  for (uint32_t i = 0; i < ntiles; i++) rom_gbui_tile(gu, off, i, bpp, 0, 0, 0, px + i * 64);
   char path[600];
   snprintf(path, sizeof path, "%s/%s.ppm", outdir, name);
   write_grid_ppm(path, px, ntiles, cols);

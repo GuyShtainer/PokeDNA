@@ -223,23 +223,19 @@ void rom_gbui_save_loc(const RomGbUi* gu, RomGbUiLoc* out);
 /* Expand one 8x8 tile at ROM `off + index*stride` (stride = 16 for bpp==2,
  * 8 for bpp==1) into `out[64]`, row-major, RGB15, the DMG 4-shade ramp
  * {0xF8,0xA8,0x58,0x10} (8-bit grey, expanded to RGB15 by >>3 per channel).
- * `colmajor_w_tiles` is accepted for the Gen-2 card pics (35 tiles = 5x7)
- * -- but ONLY Crystal's (chris_card.2bpp/kris_card.2bpp) are stored
- * column-major (rgbgfx --columns); Gold's ChrisPicAndTrainerCardGFX pic is
- * plain ROW-major despite sharing the same 5x7 shape (see the new
- * RomGbUi.cardpic_colmajor field, set from which loader signature matched).
- * This function fetches ONE raw tile by its STORAGE index; converting a
- * desired (col,row) display position into that storage index (storage =
- * col*7+row for the column-major case) is the CALLER's job, using
- * cardpic_colmajor to pick row-major vs column-major, done with the fixed
- * 5x7 geometry U2/U3 already know; `colmajor_w_tiles` is accepted here only
- * for API-shape parity with the design doc and asserted against `index` as
- * a bounds sanity check, not used to reorder anything (see rom_gbui_tile's
- * TODO in rom_gbui.c for the real grid-based reorder, D4).
- * Returns 1, or 0 for a NULL/unopened `gu`, a bad bpp, or a read past the
- * end of the ROM. */
+ *
+ * grid_w/grid_h = the block's tile grid; 0,0 = raw storage index, no bound.
+ * colmajor: `index` is a ROW-MAJOR DISPLAY index (row*grid_w+col) and the
+ * storage index is col*grid_h+row (rgbgfx --columns); requires the grid.
+ * Only Crystal's card pics (chris_card.2bpp/kris_card.2bpp, 35 tiles = 5x7)
+ * are stored column-major -- Gold's ChrisPicAndTrainerCardGFX pic shares the
+ * same 5x7 shape but is plain ROW-major (see RomGbUi.cardpic_colmajor,
+ * docs/GB-GAME-SCREENS-DESIGN.md 2.2 G2-P). Every other block this module
+ * locates (font, textbox, frames, badges, leaders, pack) is row-major.
+ * Returns 1, or 0 for a NULL/unopened `gu`, a bad bpp, an out-of-grid
+ * `index`, colmajor requested without a grid, or a read past the ROM. */
 int rom_gbui_tile(RomGbUi* gu, uint32_t off, uint32_t index, uint8_t bpp,
-                  int colmajor_w_tiles, uint16_t out[64]);
+                  uint32_t grid_w, uint32_t grid_h, int colmajor, uint16_t out[64]);
 
 /* One glyph of the located font: `ch` is the GAME's own charmap code (A=0x80,
  * a=0xA0, 0=0xF6 -- constants/charmap.asm), tile = ch - 0x80. Returns 1, or 0

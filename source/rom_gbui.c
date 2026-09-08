@@ -77,16 +77,15 @@ static int parse_header(const Scan* s, uint8_t* out_banks, uint32_t* out_id_hash
 
 static uint32_t distinct_tiles(const Scan* s, uint32_t off, uint8_t bpp, uint32_t ntiles) {
   uint32_t stride = (bpp == 2) ? 16u : 8u;
-  uint8_t tiles[96][16];   /* worst case here is 86 (leaders); 96 is headroom */
+  uint8_t tiles[96 * 16];  /* worst case here is 86 (leaders); 96 is headroom */
   if (ntiles > 96) return 0;
   if (off + ntiles * stride > s->size) return 0;
-  for (uint32_t i = 0; i < ntiles; i++)
-    if (!rd(s, off + i * stride, tiles[i], stride)) return 0;
+  if (!rd(s, off, tiles, ntiles * stride)) return 0;   /* ONE read, not ntiles */
   uint32_t distinct = 0;
   for (uint32_t i = 0; i < ntiles; i++) {
     int dup = 0;
     for (uint32_t j = 0; j < i; j++)
-      if (memcmp(tiles[i], tiles[j], stride) == 0) { dup = 1; break; }
+      if (memcmp(tiles + i * stride, tiles + j * stride, stride) == 0) { dup = 1; break; }
     if (!dup) distinct++;
   }
   return distinct;
@@ -133,13 +132,19 @@ static int block_eq(const Scan* s, uint32_t a, uint32_t b, uint32_t n) {
 static int font_verify(const Scan* s, uint32_t off) {
   if (off + 1024 > s->size) return 0;
   uint32_t solid = 0, blank = 0;
-  for (uint32_t t = 0; t < 128; t++) {
-    uint8_t p[8];
-    if (!rd(s, off + t * 8, p, 8)) return 0;
-    int all_ff = 1, all_00 = 1;
-    for (int i = 0; i < 8; i++) { if (p[i] != 0xFF) all_ff = 0; if (p[i] != 0x00) all_00 = 0; }
-    if (all_ff) solid++;
-    if (all_00) blank++;
+  uint8_t p[128];                                /* 16 tiles per read: 8 reads, not 128 */
+  for (uint32_t c = 0; c < 8; c++) {
+    if (!rd(s, off + c * 128u, p, 128u)) return 0;
+    for (uint32_t t = 0; t < 16; t++) {
+      int all_ff = 1, all_00 = 1;
+      for (int i = 0; i < 8; i++) {
+        uint8_t v = p[t * 8 + i];
+        if (v != 0xFF) all_ff = 0;
+        if (v != 0x00) all_00 = 0;
+      }
+      if (all_ff) solid++;
+      if (all_00) blank++;
+    }
   }
   return solid == 0 && blank <= 40;   /* measured 26-32 blank across the corpus */
 }
@@ -695,10 +700,16 @@ static const uint16_t DMG_SHADE[4] = {
 };
 
 int rom_gbui_tile(RomGbUi* gu, uint32_t off, uint32_t index, uint8_t bpp,
-                  int colmajor_w_tiles, uint16_t out[64]) {
+                  uint32_t grid_w, uint32_t grid_h, int colmajor, uint16_t out[64]) {
   if (!gu || !gu->ok || !out) return 0;
   if (bpp != 1 && bpp != 2) return 0;
-  if (colmajor_w_tiles < 0) return 0;   /* validated only, see rom_gbui.h    */
+  if (grid_w || grid_h) {
+    if (!grid_w || !grid_h) return 0;
+    if (index >= grid_w * grid_h) return 0;
+    if (colmajor) index = (index % grid_w) * grid_h + (index / grid_w);
+  } else if (colmajor) {
+    return 0;                            /* colmajor needs the grid          */
+  }
   uint32_t stride = (bpp == 2) ? 16u : 8u;
   uint32_t toff = off + index * stride;
   if (toff < off) return 0;             /* overflow guard                   */
@@ -723,5 +734,5 @@ int rom_gbui_glyph(RomGbUi* gu, uint8_t ch, uint16_t out[64]) {
   if (!gu || !gu->ok || !gu->font) return 0;
   if (ch < 0x80u) return 0;
   uint32_t tile = (uint32_t)(ch - 0x80u);
-  return rom_gbui_tile(gu, gu->font, tile, 1, 0, out);
+  return rom_gbui_tile(gu, gu->font, tile, 1, 16u, 8u, 0, out);
 }
