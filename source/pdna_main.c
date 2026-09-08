@@ -9403,6 +9403,10 @@ int main(void) {
                             * panel gets exercised before hardware ever sees it */
   bus_late_selftests();   /* no card and no motor here, but the ROM-fetch probe is
                            * the only place this code can be exercised off-hardware */
+  gb_art_boot_register();                    /* #62 D1: without this s_gb_on stays 0 and
+                                               * every delta build draws Gen-3 stand-in art
+                                               * instead of the fused GB corpus */
+  pdna_era_boot_register();                  /* E4: the era resolver + cross-game Gen-3 rung */
   snd_boot();
   for (;;) view_save("");                    /* B just re-enters: there is nowhere to go back to */
   return 0;

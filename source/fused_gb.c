@@ -48,8 +48,17 @@ bool fused_gb_save(int i, const char** name, const uint8_t** base, uint32_t* siz
 
 #else /* PDNA_DELTA */
 
-/* Cached entries, plain .bss (IWRAM) — NOT EWRAM_BSS, per the brief's EWRAM guard (no
- * new EWRAM statics). A handful of small fixed-size structs; parsed once, on first use. */
+/* #62 review D1: moved to EWRAM (528 B) -- the delta build's IWRAM/stack headroom is
+ * the tight budget (10,208 B of a 10,920-B stack deep-chain), not EWRAM (1,748 B free
+ * here); EWRAM_BSS is tonc/sys.h's name for this GCC section attribute, spelled out
+ * directly so this pure-C core stays free of tonc/sys.h per the toolkit's golden
+ * rules (no u8/u16 macro leakage). A handful of small fixed-size structs; parsed once,
+ * on first use. s_parsed replaces the old "s_count == -1" sentinel: EWRAM_BSS is
+ * zero-cleared at startup like any .bss, with NO initializer copy, so a nonzero initial
+ * value (-1) would silently read back as 0 -- s_parsed/s_count are both correct at their
+ * zero-init value (false/0) with no special-cased startup constant needed. */
+#define GBD_EWRAM_BSS __attribute__((section(".sbss")))
+
 typedef struct {
   uint32_t type;
   char     name[FUSED_GB_NAME_MAX];
@@ -57,8 +66,9 @@ typedef struct {
   uint32_t size;
 } GbdEntry;
 
-static GbdEntry s_entry[FUSED_GB_MAX_ENTRIES];
-static int      s_count = -1;          /* -1 = not parsed yet, 0..N = parsed (N clamped) */
+static GBD_EWRAM_BSS GbdEntry s_entry[FUSED_GB_MAX_ENTRIES];
+static GBD_EWRAM_BSS bool     s_parsed;   /* false = not parsed yet */
+static GBD_EWRAM_BSS int      s_count;    /* valid once s_parsed is true, 0..N (N clamped) */
 
 static bool dir_present_raw(uint32_t* dir_off, uint32_t* dir_size) {
   uint32_t off = g_pdna_gbd.offset;
@@ -77,7 +87,8 @@ static bool dir_present_raw(uint32_t* dir_off, uint32_t* dir_size) {
  * tools/fuse_gb.py's own verify pass uses. A malformed directory degrades to
  * s_count == 0 (acts unfused) rather than reading out of bounds. */
 static void parse_once(void) {
-  if (s_count >= 0) return;
+  if (s_parsed) return;
+  s_parsed = true;
   s_count = 0;
 
   uint32_t dir_off, dir_size;
@@ -108,9 +119,12 @@ static void parse_once(void) {
     s_entry[i].name[FUSED_GB_NAME_MAX - 1] = 0;   /* defensive: force NUL termination */
     memcpy(&off,  e + 36, 4);
     memcpy(&size, e + 40, 4);
-    /* Each payload must itself lie fully inside the cartridge window -- a corrupt
-     * entry is dropped (not trusted) rather than handed to a caller as real. */
-    if (off >= CART_SPAN || size > CART_SPAN - off) continue;
+    /* #62 review D6: bounded against dir_off, not the whole 32-MiB CART_SPAN --
+     * every fused payload precedes the directory (tools/fuse_gb.py's own layout), so
+     * a corrupt/adversarial entry that claims to run PAST the directory (into the
+     * directory's own bytes, the trailer, or unmapped cartridge space beyond the
+     * fused image) is dropped here instead of being handed to a caller as real. */
+    if (off >= dir_off || size > dir_off - off) continue;
     s_entry[i].type = type;
     s_entry[i].offset = off;
     s_entry[i].size = size;

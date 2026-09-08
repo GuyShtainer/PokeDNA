@@ -5,6 +5,7 @@
 
 #include "ff.h"
 #include "log.h"
+#include "sys.h"              /* EWRAM_BSS -- #62 D1's in-memory PDNA_DELTA loc caches */
 #include "pdna_app.h"
 #include "artbuf.h"           /* mon_decomp, MON_DECOMP_BYTES */
 #include "pdna_origin_art.h"  /* PdnaGbArtSource, PDNA_GEN1/2, pdna_origin_art_register */
@@ -400,10 +401,26 @@ gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out_w, uint8_t* out_h) {
        * source/fused_gb.h). This half reads THAT instead of a FIL: fused_gb_rom()
        * hands back a {base,size} slice of cart address space, and
        * fused_gb_slice_read() is a GbReadFn over it (same signature the SD half's
-       * gb_art_read() implements over a FIL*), so rom_gbsprite_open()/
+       * gb_art_read() implements over a FIL*), so rom_gbsprite_open_loc()/
        * rom_gbicon_open_loc() and every decode step after them run completely
-       * unmodified. No loc-cache file (nothing to write it to here) -- a fresh scan
-       * every fetch, same cost the SD half pays on a cold cache. */
+       * unmodified.
+       *
+       * #62 review D1: there is no SD to write a loc-cache FILE to, but there is
+       * nothing stopping an in-memory cache -- the fused corpus is immutable for the
+       * whole run (it is baked into the ROM image itself), so a loc discovered on the
+       * first fetch of a generation is valid for every later fetch of that same
+       * generation this session, with no staleness question the SD half's id_hash/size
+       * re-check exists for (that re-check still runs here too; it is cheap and it is
+       * what makes an entry NOT present this session -- e.g. gen unfused -- fail closed
+       * instead of serving a stale hit). Indexed by gen (1 or 2); index 0 unused, same
+       * "gen as array index" convention as s_reg_have/s_fb_have above. EWRAM_BSS per
+       * #62 D1's memory rule (the delta build's tight budget is IWRAM/stack headroom,
+       * not EWRAM: 1,748 B free here easily covers 2 * ~292 B sprite locs + one ~20 B
+       * icon loc). Measured before/after in the commit message. */
+static EWRAM_BSS RomGbSpriteLoc s_dsprite_loc[3];
+static EWRAM_BSS bool           s_dsprite_loc_ok[3];
+static EWRAM_BSS RomGbIconLoc   s_dicon_loc;          /* gen 2 only -- see rom_gbicon.h */
+static EWRAM_BSS bool           s_dicon_loc_ok;
 
 GbArtRegStatus gb_art_register(uint8_t gen, const char* path) {
   (void)path;
@@ -439,9 +456,18 @@ static const uint16_t* gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uin
   if (!fused_gb_rom(gen, &base, &size)) return 0;
   FusedGbSlice slice = { base, size };
 
+  /* #62 D1: the in-memory loc cache -- see s_dsprite_loc's own comment above. Same
+   * "re-save whenever it does not already match this exact ROM" rule as the SD half's
+   * gb_art_fetch(), just against the cached struct instead of a file. */
   RomGbSprite gs;
   uint8_t scratch[ROM_GBSPRITE_SCRATCH_MIN];
-  int ok = rom_gbsprite_open(&gs, fused_gb_slice_read, &slice, size, scratch, (uint32_t)sizeof scratch);
+  bool have_loc = s_dsprite_loc_ok[gen];
+  int ok = rom_gbsprite_open_loc(&gs, fused_gb_slice_read, &slice, size, scratch,
+                                 (uint32_t)sizeof scratch, have_loc ? &s_dsprite_loc[gen] : 0);
+  if (ok && (!have_loc || s_dsprite_loc[gen].id_hash != gs.id_hash || s_dsprite_loc[gen].size != size)) {
+    rom_gbsprite_save_loc(&gs, &s_dsprite_loc[gen]);
+    s_dsprite_loc_ok[gen] = true;
+  }
   if (!ok || (uint8_t)gs.gen != gen) return 0;
 
   RomGbSide side = back ? ROM_GBSPRITE_BACK : ROM_GBSPRITE_FRONT;
@@ -471,10 +497,16 @@ static const uint16_t* gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out
   if (!fused_gb_rom(gen, &base, &size)) return 0;
   FusedGbSlice slice = { base, size };
 
+  /* #62 D1: same in-memory loc cache pattern as gb_art_fetch() above, gen 2 only. */
   RomGbIcon gi;
   uint8_t scratch[ROM_GBICON_SCRATCH_MIN];
+  bool have_loc = s_dicon_loc_ok;
   int ok = rom_gbicon_open_loc(&gi, fused_gb_slice_read, &slice, size, scratch,
-                               (uint32_t)sizeof scratch, 0);
+                               (uint32_t)sizeof scratch, have_loc ? &s_dicon_loc : 0);
+  if (ok && (!have_loc || s_dicon_loc.id_hash != gi.id_hash || s_dicon_loc.size != size)) {
+    rom_gbicon_save_loc(&gi, &s_dicon_loc);
+    s_dicon_loc_ok = true;
+  }
   if (!ok) return 0;
 
   int kind = (dex == 0) ? rom_gbicon_kind_egg(&gi) : rom_gbicon_kind(&gi, dex);
