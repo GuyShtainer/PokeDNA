@@ -36,6 +36,11 @@
  *                                   (exit 1) if TEXT is over GB_OT_GLYPHS (7) glyphs or
  *                                   has a glyph this generation's GB charset cannot spell
  *                                   exactly — the same refusal gbt_write documents.
+ *     --op badges2 JOHTO KANTO     Gen 2 only (refused on Gen 1): sets the Johto and
+ *                                   Kanto badge bytes to two DIFFERENT masks, so a
+ *                                   test driver can tell them apart — --op badges sets
+ *                                   both Gen-2 bytes to the SAME mask, which makes a
+ *                                   byte swap between them invisible (P1a review D8).
  *   host_gbsurgery_tool --in SAVE --list
  *     print every box: count, and per slot species dex / level / nickname
  *
@@ -108,6 +113,7 @@ static void usage(const char* prog) {
     "  --op move FROM_BOX SLOT TO_BOX\n"
     "  --op money VALUE            0..999999, gbs_write_field + gbs_finish\n"
     "  --op badges MASK            0..255, via gb_trainer.h (Gen 1: BADGES; Gen 2: both)\n"
+    "  --op badges2 JOHTO KANTO    Gen 2 only: set the two badge bytes independently\n"
     "  --op name TEXT              via gb_trainer.h; refused over 7 glyphs / bad charset\n"
     "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
@@ -118,7 +124,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
                       bool* list_mode, Op ops[MAX_OPS], int* nops) {
   static const struct { const char* kind; int n; } shape[] = {
     {"nick", 3}, {"ot", 3}, {"level", 3}, {"dv", 4}, {"delete", 2}, {"move", 3},
-    {"money", 1}, {"badges", 1}, {"name", 1},
+    {"money", 1}, {"badges", 1}, {"name", 1}, {"badges2", 2},
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -350,6 +356,35 @@ static int do_badges(GbSession* s, const char* mtok) {
   return 0;
 }
 
+/* P1a review D8: Gen 2's Johto and Kanto badge bytes are independently addressable
+ * (source/gb_fields.c GBF_BADGES_JOHTO/GBF_BADGES_KANTO) but --op badges above sets
+ * both to the SAME mask, which makes a byte-order swap between them invisible to a
+ * gate that only checks "the mask landed somewhere in this pair". This op sets them
+ * to two DIFFERENT masks so tools/gb_retail_gate.py's trainer case can tell. Gen 1
+ * has no such split (one BADGES byte covers all 8 gyms) -- refused there. */
+static int do_badges2(GbSession* s, const char* jtok, const char* ktok) {
+  if (s->gen == GB_GEN1) return refuse("badges2 is Gen 2 only (Gen 1 has one BADGES byte)");
+  char* end = NULL;
+  long jv = strtol(jtok, &end, 0);
+  if (end == jtok || *end != '\0' || jv < 0 || jv > 255) {
+    fprintf(stderr, "bad johto mask %s (want 0..255)\n", jtok);
+    return 2;
+  }
+  end = NULL;
+  long kv = strtol(ktok, &end, 0);
+  if (end == ktok || *end != '\0' || kv < 0 || kv > 255) {
+    fprintf(stderr, "bad kanto mask %s (want 0..255)\n", ktok);
+    return 2;
+  }
+  GbTrainer t;
+  if (!gbt_read(s, &t)) return refuse("gbt_read failed");
+  t.badges_johto = (uint8_t)jv;
+  t.badges_kanto = (uint8_t)kv;
+  GbsStatus st = gbt_write(s, &t);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
 static int do_name(GbSession* s, const char* text) {
   GbTrainer t;
   if (!gbt_read(s, &t)) return refuse("gbt_read failed");
@@ -401,6 +436,9 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "name")) {
     return do_name(s, o->a[0]);
+  }
+  if (!strcmp(o->kind, "badges2")) {
+    return do_badges2(s, o->a[0], o->a[1]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;

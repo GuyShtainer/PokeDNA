@@ -221,24 +221,32 @@ static void roundtrip(const char* file, uint8_t expect_gen) {
   CHECKF(st == GBS_OK, "%s: gbt_write status %s", file, gbs_status_text(st));
 
   /* Re-open a FRESH session over the same (now edited) buffer -- proves the image
-   * still parses and its checksum(s) are valid, exactly like a real reload. */
+   * still parses and its checksum(s) are valid, exactly like a real reload.
+   *
+   * P1a review D9: gate every s2-using CHECK on the open (and read) actually having
+   * succeeded, rather than letting a failed gbs_open()/gbt_read() cascade into a
+   * pile of misleading "did not round-trip" failures on a session that was never
+   * valid to read from in the first place. */
   GbSession s2;
-  CHECKF(gbs_open(&s2, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK,
-        "%s: re-open after edit", file);
+  bool s2_ok = gbs_open(&s2, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK;
+  CHECKF(s2_ok, "%s: re-open after edit", file);
   GbTrainer t2;
-  CHECKF(gbt_read(&s2, &t2), "%s: gbt_read after edit", file);
+  bool t2_ok = s2_ok && gbt_read(&s2, &t2);
+  CHECKF(t2_ok, "%s: gbt_read after edit", file);
 
-  CHECKF(t2.money == 123456, "%s: money did not round-trip", file);
-  CHECKF(t2.coins == 555, "%s: coins did not round-trip", file);
-  CHECKF(t2.playtime.hours == 10 && t2.playtime.minutes == 20 &&
-        t2.playtime.seconds == 30 && t2.playtime.frames == 5,
-        "%s: playtime did not round-trip", file);
-  CHECKF(strcmp(t2.name, "TESTR") == 0, "%s: name did not round-trip ('%s')", file, t2.name);
-  if (expect_gen == GB_GEN1) {
-    CHECKF(t2.badges == 0x3C, "%s: badges did not round-trip", file);
-  } else {
-    CHECKF(t2.badges_johto == 0x0F && t2.badges_kanto == 0xF0,
-          "%s: badges did not round-trip", file);
+  if (t2_ok) {
+    CHECKF(t2.money == 123456, "%s: money did not round-trip", file);
+    CHECKF(t2.coins == 555, "%s: coins did not round-trip", file);
+    CHECKF(t2.playtime.hours == 10 && t2.playtime.minutes == 20 &&
+          t2.playtime.seconds == 30 && t2.playtime.frames == 5,
+          "%s: playtime did not round-trip", file);
+    CHECKF(strcmp(t2.name, "TESTR") == 0, "%s: name did not round-trip ('%s')", file, t2.name);
+    if (expect_gen == GB_GEN1) {
+      CHECKF(t2.badges == 0x3C, "%s: badges did not round-trip", file);
+    } else {
+      CHECKF(t2.badges_johto == 0x0F && t2.badges_kanto == 0xF0,
+            "%s: badges did not round-trip", file);
+    }
   }
 
   /* ---- byte-diff proof: only the written fields (+ mirror + checksum) moved ---- */
@@ -317,15 +325,21 @@ static void refusals(const char* file, uint8_t expect_gen) {
   st = gbt_write(&s, &big);
   CHECKF(st == GBS_OK, "%s: over-cap money/coins should clamp, not refuse (got %s)",
         file, gbs_status_text(st));
+  /* P1a review D9: same open/read guard as roundtrip()'s s2 -- do not chase a
+   * failed gbs_open()/gbt_read() with clamp assertions that would just misreport
+   * "did not clamp" for a session that was never valid to read. */
   GbSession s3;
-  CHECKF(gbs_open(&s3, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK,
-        "%s: re-open after clamp", file);
+  bool s3_ok = gbs_open(&s3, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK;
+  CHECKF(s3_ok, "%s: re-open after clamp", file);
   GbTrainer after;
-  CHECKF(gbt_read(&s3, &after), "%s: gbt_read after clamp", file);
-  CHECKF(after.money == 999999, "%s: money did not clamp to 999999 (got %u)",
-        file, after.money);
-  CHECKF(after.coins == 9999, "%s: coins did not clamp to 9999 (got %u)",
-        file, after.coins);
+  bool after_ok = s3_ok && gbt_read(&s3, &after);
+  CHECKF(after_ok, "%s: gbt_read after clamp", file);
+  if (after_ok) {
+    CHECKF(after.money == 999999, "%s: money did not clamp to 999999 (got %u)",
+          file, after.money);
+    CHECKF(after.coins == 9999, "%s: coins did not clamp to 9999 (got %u)",
+          file, after.coins);
+  }
 }
 
 /* ---------------------------------------------------------------- main */

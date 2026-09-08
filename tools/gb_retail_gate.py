@@ -131,8 +131,13 @@ MONEY_LEN = 3                # both encodings are 3 bytes (BCD24 Gen 1 / BE24 Ge
 # contiguous) — each becomes VERIFIED the first time this case boots and reads it back.
 TRAINER_NAME = "GATET"       # <=7 glyphs; distinct from NEW_NICK/MIRROR_NICK so a log
                              # line is unambiguous about which case produced it
-BADGES_MASK = 0x3F           # 6 of 8 bits set; distinct from 0x00/0xFF so a stuck-bit or
-                             # swapped-byte bug shows on inspection
+# P1a review D8: writing the SAME mask to both Gen-2 badge bytes makes a Johto/Kanto
+# swap invisible to this gate (want_badges would read the same either way). Two
+# distinct masks close that hole; Gen 1's single BADGES byte still just gets
+# BADGES_MASK (there is only one byte to check there).
+BADGES_MASK = 0x0F           # Gen 1: BADGES; Gen 2: Johto
+BADGES_MASK_KANTO = 0xF0     # Gen 2: Kanto -- distinct nibble from BADGES_MASK, so a
+                             # swap reads "f00f" instead of the expected "0ff0"
 NAME_WRAM = {"red": 0xD158, "yellow": 0xD157, "gold": 0xD1A3, "crystal": 0xD47D}
 NAME_LEN = 11
 BADGES_WRAM = {"red": 0xD356, "yellow": 0xD355, "gold": 0xD57C, "crystal": 0xD857}
@@ -708,23 +713,31 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
 
 def run_trainer_case(name, info, rom, sav, work, binary, python, vendor, tally):
     """BACKLOG #49 P1a -- gb_trainer.h's gbt_read/gbt_write (source/gb_trainer.c), via
-    the surgery tool's new `--op badges MASK` / `--op name TEXT`. Neither is a raw byte
-    poke: both go through a read-whole-record / change-one-field / write-whole-record
-    cycle, so this case is also an end-to-end proof that every OTHER trainer-card field
-    (money, coins, mom's money, play time) came back out unchanged -- a wrong offset in
-    that path would show up here as a mangled money/coins byte the game refuses to boot
-    on, not just as a wrong badge.
+    the surgery tool's new `--op badges MASK` (Gen 1) / `--op badges2 JOHTO KANTO`
+    (Gen 2, P1a review D8 -- a single shared mask made a Johto/Kanto swap invisible to
+    this gate) / `--op name TEXT`. Neither is a raw byte poke: both go through a
+    read-whole-record / change-one-field / write-whole-record cycle. This case does NOT
+    itself prove every other trainer-card field (money, coins, mom's money, play time)
+    came back unchanged -- it reads none of them back -- that proof is
+    tests/host_gbtrainer_test.c's full-image byte-diff round trip (P1a review D9); what
+    this case adds on top is that the edit survives a REAL BOOT: a wrong offset in the
+    money/coins path could still corrupt an adjacent byte badly enough that the game
+    refuses to load at all, which host_gbtrainer_test.c's in-memory checks cannot see.
 
     Badges has no on-screen decimal readout this driver scrapes reliably across all four
     games, so it is asserted purely off WRAM (--read-mem, docs/GEN12-PARITY-DESIGN.md
     §4.2's own table) -- gated on SVBK the same way run_money_case's read is. The player
-    name is asserted BOTH ways: off WRAM (exact bytes) and off the continue screen's own
-    PLAYER= label, which gb_roundtrip.py decodes with its OWN independent GB-text reader
-    -- agreement between the two is evidence gb_trainer.c's gb_name_encode did not spell
-    the name in a way the game's own font draws differently."""
+    name is asserted BOTH ways (P1a review D2 -- WRAM was read but never actually
+    compared before this fix): off WRAM (exact bytes -- "GATET" is 0x86 0x80 0x93 0x84
+    0x93 in the GB charset, then 0x50 fill out to NAME_LEN) and off the continue
+    screen's own PLAYER= label, which gb_roundtrip.py decodes with its OWN independent
+    GB-text reader -- agreement between the two is evidence gb_trainer.c's
+    gb_name_encode did not spell the name in a way the game's own font draws
+    differently."""
     edited = work / "trainer.sav"
-    rc, out, err = run_surgery(binary, sav, edited,
-                               [["badges", hex(BADGES_MASK)], ["name", TRAINER_NAME]])
+    badges_op = (["badges", hex(BADGES_MASK)] if info["gen"] == 1
+                else ["badges2", hex(BADGES_MASK), hex(BADGES_MASK_KANTO)])
+    rc, out, err = run_surgery(binary, sav, edited, [badges_op, ["name", TRAINER_NAME]])
     if rc != 0:
         tally.record("trainer card (badges+name, BACKLOG #49 P1a)", False,
                     f"surgery refused: {err.strip()}")
@@ -742,15 +755,20 @@ def run_trainer_case(name, info, rom, sav, work, binary, python, vendor, tally):
     mem = rep.get("mem") or {}
     svbk_ok = bool(mem.get("svbk_ok", True))
     want_badges = (f"{BADGES_MASK:02x}" if info["gen"] == 1
-                  else f"{BADGES_MASK:02x}{BADGES_MASK:02x}")
+                  else f"{BADGES_MASK:02x}{BADGES_MASK_KANTO:02x}")
     got_badges = mem.get(f"{badges_addr:#06x}")
     badges_ok = svbk_ok and got_badges == want_badges
     name_screen_ok = rep.get("player_name") == TRAINER_NAME
-    ok = (rc == 0) and badges_ok and name_screen_ok
+    # "GATET" -> G=0x86 A=0x80 T=0x93 E=0x84 T=0x93, then 0x50-filled to NAME_LEN
+    # (P1a review D2: this WRAM read used to be printed but never actually compared).
+    want_name_wram = "8680938493" + "50" * (NAME_LEN - 5)
+    got_name_wram = mem.get(f"{name_addr:#06x}")
+    name_wram_ok = svbk_ok and got_name_wram == want_name_wram
+    ok = (rc == 0) and badges_ok and name_screen_ok and name_wram_ok
     detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
              f"badges@{badges_addr:#06x}={got_badges!r} want={want_badges!r} "
              f"player_name={rep.get('player_name')!r} want={TRAINER_NAME!r} "
-             f"name_wram@{name_addr:#06x}={mem.get(f'{name_addr:#06x}')!r}")
+             f"name_wram@{name_addr:#06x}={got_name_wram!r} want={want_name_wram!r}")
     if not ok:
         fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
         if fails:
