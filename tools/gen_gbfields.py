@@ -511,6 +511,14 @@ FIELDS = [
       "GS": D("player_data_1", "wRTC", 0x2048), "CRYSTAL": D("player_data", "wRTC", 0x2048)}),
   ("RTC_DST", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("player_data_1", "wDST", 0x2050), "CRYSTAL": D("player_data", "wDST", 0x2050)}),
+  # P1a review D6: Gen 2 is NOT hour-uncapped the way gb_trainer.h used to claim --
+  # wGameTimeCap sits one byte before wGameTimeHours in BOTH games (pokegold.sym
+  # 01:d1ea / pokecrystal.sym 01:d4c3, one byte before wGameTimeHours' own d1eb/d4c4),
+  # bit GAME_TIME_CAPPED = 0 (both ram_constants.asm), set once wGameTimeHours would
+  # overflow (home/game_time.asm). Gen 1's PLAYTIME_MAXED above is the exact analogue.
+  ("GAMETIME_CAP", BITFIELD, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_1", "wGameTimeCap", 0x2052),
+      "CRYSTAL": D("player_data", "wGameTimeCap", 0x2051)}),
   ("GAMETIME_HOURS", U16BE, 2, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("player_data_1", "wGameTimeHours", 0x2053),
       "CRYSTAL": D("player_data", "wGameTimeHours", 0x2052)}),

@@ -250,7 +250,10 @@ bool gbt_read(const GbSession* s, GbTrainer* out) {
   if (gbt_field_present(g, GBF_MOMS_MONEY)) {
     out->has_mom = true;
     if (get_u(s, g, GBF_MOMS_MONEY, &v)) out->moms_money = v;
-    if (get_u(s, g, GBF_MOM_SAVING_FLAG, &v)) out->mom_saving = (v & 1u) != 0;
+    if (get_u(s, g, GBF_MOM_SAVING_FLAG, &v)) {
+      out->mom_saving_bits = (uint8_t)(v & 0x07u);
+      out->mom_active      = (v & 0x80u) != 0;
+    }
   }
 
   if (gbt_field_present(g, GBF_BADGES) && get_u(s, g, GBF_BADGES, &v))
@@ -275,6 +278,9 @@ bool gbt_read(const GbSession* s, GbTrainer* out) {
     if (get_u(s, g, GBF_PLAYTIME_FRAMES, &v))  out->playtime.frames  = (uint8_t)v;
   } else if (gbt_field_present(g, GBF_GAMETIME_HOURS)) {
     if (get_u(s, g, GBF_GAMETIME_HOURS, &v))   out->playtime.hours   = (uint16_t)v;
+    /* P1a review D6: Gen 2's own maxed-out flag, GBF_GAMETIME_CAP bit 0 -- NOT
+     * always false the way this struct used to claim. */
+    if (get_u(s, g, GBF_GAMETIME_CAP, &v))     out->playtime.maxed   = (v & 1u) != 0;
     if (get_u(s, g, GBF_GAMETIME_MINUTES, &v)) out->playtime.minutes = (uint8_t)v;
     if (get_u(s, g, GBF_GAMETIME_SECONDS, &v)) out->playtime.seconds = (uint8_t)v;
     if (get_u(s, g, GBF_GAMETIME_FRAMES, &v))  out->playtime.frames  = (uint8_t)v;
@@ -352,13 +358,18 @@ GbsStatus gbt_write(GbSession* s, const GbTrainer* in) {
                            &changed);
     if (st != GBS_OK) return st;
     if (gbt_field_present(g, GBF_MOM_SAVING_FLAG)) {
-      /* Read-modify-write BIT 0 ONLY. The corpus shows this byte holding other set
-       * bits (Gold.sav: 0x81) that the design doc (DECOMP confidence, not VERIFIED)
-       * does not explain -- overwriting the whole byte to a bare 0/1 would silently
-       * destroy whatever those bits mean. */
+      /* Read-modify-write bits 0-2 and bit 7 ONLY (P1a review D7: this is not a
+       * single bool -- pokegold/pokecrystal define MOM_SAVING_SOME/HALF/ALL_MONEY_F
+       * at bits 0/1/2 and MOM_ACTIVE_F at bit 7). Bits 3-6 are undocumented; the
+       * corpus shows this byte holding other set bits (Gold.sav: 0x81) that predate
+       * this field table, so they are preserved rather than guessed at. The review
+       * that asked for this confirmed it is load-bearing: a whole-byte write here
+       * would have cleared MOM_ACTIVE_F -- the player's bank account going inactive
+       * -- on every commit that touched anything else on the trainer card. */
       uint32_t cur = 0;
       if (!get_u(s, g, GBF_MOM_SAVING_FLAG, &cur)) return GBS_ERR_ARG;
-      uint32_t next = (cur & ~1u) | (in->mom_saving ? 1u : 0u);
+      uint32_t next = (cur & ~(uint32_t)0x87u) | (in->mom_saving_bits & 0x07u) |
+                     (in->mom_active ? 0x80u : 0u);
       if (next != cur) {
         st = set_u(s, g, GBF_MOM_SAVING_FLAG, next);
         if (st != GBS_OK) return st;
@@ -381,10 +392,15 @@ GbsStatus gbt_write(GbSession* s, const GbTrainer* in) {
   }
 
   if (gbt_field_present(g, GBF_PLAYTIME_HOURS)) {
+    /* P1a review D10: retail's own play-time tick writes 0xFF to wPlayTimeMaxed,
+     * not a bare 1 (pokered/engine/play_time.asm:34-35) -- and clamping hours to
+     * 255 here (a caller passing a wider hour count than the byte holds) means the
+     * display would lie about being maxed unless this also sets the flag. */
+    bool maxed = in->playtime.maxed || in->playtime.hours > 255u;
     uint32_t hrs = in->playtime.hours > 255u ? 255u : in->playtime.hours;
     st = set_u_unless_same(s, g, GBF_PLAYTIME_HOURS, hrs, &changed);
     if (st != GBS_OK) return st;
-    st = set_u_unless_same(s, g, GBF_PLAYTIME_MAXED, in->playtime.maxed ? 1u : 0u, &changed);
+    st = set_u_unless_same(s, g, GBF_PLAYTIME_MAXED, maxed ? 0xFFu : 0u, &changed);
     if (st != GBS_OK) return st;
     st = set_u_unless_same(s, g, GBF_PLAYTIME_MINUTES, in->playtime.minutes, &changed);
     if (st != GBS_OK) return st;
@@ -393,8 +409,25 @@ GbsStatus gbt_write(GbSession* s, const GbTrainer* in) {
     st = set_u_unless_same(s, g, GBF_PLAYTIME_FRAMES, in->playtime.frames, &changed);
     if (st != GBS_OK) return st;
   } else if (gbt_field_present(g, GBF_GAMETIME_HOURS)) {
-    st = set_u_unless_same(s, g, GBF_GAMETIME_HOURS, in->playtime.hours, &changed);
+    /* P1a review D6: Gen 2's own maxed flag, GBF_GAMETIME_CAP bit 0 -- read-modify-
+     * write, same discipline as GBF_MOM_SAVING_FLAG below: this byte carries only
+     * one documented bit (GAME_TIME_CAPPED = 0) but nothing rules out the games
+     * using the rest for scratch, so only bit 0 is ever touched. Clamped to 999
+     * (this struct's own on-screen budget, not a value the design doc cites). */
+    bool maxed = in->playtime.maxed || in->playtime.hours > 999u;
+    uint32_t hrs = in->playtime.hours > 999u ? 999u : in->playtime.hours;
+    st = set_u_unless_same(s, g, GBF_GAMETIME_HOURS, hrs, &changed);
     if (st != GBS_OK) return st;
+    if (gbt_field_present(g, GBF_GAMETIME_CAP)) {
+      uint32_t cur = 0;
+      if (!get_u(s, g, GBF_GAMETIME_CAP, &cur)) return GBS_ERR_ARG;
+      uint32_t next = (cur & ~1u) | (maxed ? 1u : 0u);
+      if (next != cur) {
+        st = set_u(s, g, GBF_GAMETIME_CAP, next);
+        if (st != GBS_OK) return st;
+        changed = true;
+      }
+    }
     st = set_u_unless_same(s, g, GBF_GAMETIME_MINUTES, in->playtime.minutes, &changed);
     if (st != GBS_OK) return st;
     st = set_u_unless_same(s, g, GBF_GAMETIME_SECONDS, in->playtime.seconds, &changed);

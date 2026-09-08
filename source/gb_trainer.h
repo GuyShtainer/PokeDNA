@@ -32,11 +32,18 @@
  *     read-only per this slice's brief.
  */
 
-/* Gen 1 has one byte + a boolean "maxed" flag; Gen 2 (both GS and Crystal) has a
- * 16-bit hour count and no maxed flag at all (the design's own table, §1.1) — one
- * struct carries both shapes; `maxed` is always false when read from a Gen-2 save. */
+/* Gen 1 has an 8-bit hour byte + a separate "maxed" byte (wPlayTimeMaxed). Gen 2 has
+ * a 16-bit hour count, but IS ALSO capped: wGameTimeCap (GBF_GAMETIME_CAP, P1a review
+ * D6 -- gb_trainer.h used to claim Gen 2 had no maxed flag at all) sits one byte
+ * before the hour field in both pokegold and pokecrystal, bit GAME_TIME_CAPPED (0),
+ * set once the hour count would overflow (pokegold/pokecrystal home/game_time.asm) --
+ * the exact analogue of Gen 1's own flag, just a bitfield instead of a whole byte.
+ * One struct carries both shapes: `maxed` reads/writes GBF_PLAYTIME_MAXED whole for
+ * Gen 1 and bit 0 of GBF_GAMETIME_CAP for Gen 2. */
 typedef struct {
-  uint16_t hours;
+  uint16_t hours;   /* Gen 2: gbt_write() clamps to 999 -- the field is 16 bits wide
+                     * but nothing else in the design ever cites Gen 2 play time past
+                     * 3 digits, and 999 matches this struct's own on-screen budget */
   bool     maxed;
   uint8_t  minutes;
   uint8_t  seconds;
@@ -61,7 +68,16 @@ typedef struct {
 
   bool     has_mom;                   /* Gen 2 only                                  */
   uint32_t moms_money;                /* Gen 2 only; capped at 999999                */
-  bool     mom_saving;                /* Gen 2 only                                  */
+  /* P1a review D7: wMomSavingMoney is not a bool -- pokegold/pokecrystal
+   * ram_constants.asm defines it as three INDEPENDENT flag bits (mask 0x07:
+   * MOM_SAVING_SOME/HALF/ALL_MONEY_F at bits 0/1/2) plus a separate MOM_ACTIVE_F
+   * at bit 7; bits 3-6 are undocumented. mom_saving_bits carries the low three
+   * bits exactly as stored (0 = not saving; the game sets one of them per the
+   * amount the player chose at the counter, but nothing here assumes they are
+   * mutually exclusive); mom_active is bit 7. gbt_write() preserves bits 3-6
+   * untouched (read-modify-write, same discipline the old single-bit code used). */
+  uint8_t  mom_saving_bits;           /* Gen 2 only; bits 0-2, mask 0x07              */
+  bool     mom_active;                /* Gen 2 only; bit 7                            */
 
   uint8_t  badges;                    /* Gen 1: 8 badge bits, one byte               */
   uint8_t  badges_johto;              /* Gen 2                                       */
