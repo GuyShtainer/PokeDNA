@@ -248,6 +248,19 @@ int pdna_gen12_show(const char* path, uint8_t met_game);
 #define GB12_PRISTINE_OFF 0x10000u   /* a GB image (<= 32816 B) never reaches this */
 int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
                           uint8_t* pristine, uint8_t met_game);
+
+#ifdef PDNA_DELTA
+/* BACKLOG #62: mount fused_gb_save(idx) directly out of cartridge space -- no FIL, no
+ * resident copy, reads go straight through fused_gb_slice_read() the same way CREATE's
+ * ROM lookup already does. This is the reachable path when a Gen-3 save is ALSO fused
+ * (the default delta-gb recipe): the top-level boot fork is monopolized by that Gen-3
+ * save, so NV_GB from within the open Gen-3 session is how a fused GB save is actually
+ * opened, and g_save already holds the live Gen-3 session -- there is no spare 32 KiB
+ * resident buffer to memcpy a GB save into even if there were nothing else fused.
+ * `idx` is a fused_gb_save() index; `met_game` as pdna_gen12_show()'s own comment.
+ * Read-only (no persistence path exists for a cart-space source either way). */
+int pdna_gen12_show_fused(int idx, uint8_t met_game);
+#endif
 #endif
 
 #endif /* PDNA_GEN12_H */

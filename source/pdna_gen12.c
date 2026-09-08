@@ -2566,6 +2566,57 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
   return 0;
 }
 
+#ifdef PDNA_DELTA
+/* BACKLOG #62. See pdna_gen12.h's own comment: same shape as pdna_gen12_show() above,
+ * but mounts directly over cartridge space (fused_gb_slice_read + a persistent
+ * FusedGbSlice) instead of opening a FIL. Own slice, separate from CREATE's
+ * s_gb_create_slice above -- both need to persist for the length of a mount, and while
+ * an import session and a CREATE run inside it never overlap in practice, using two
+ * distinct statics costs nothing and removes any need to reason about that. */
+static FusedGbSlice s_gb_import_slice;
+
+int pdna_gen12_show_fused(int idx, uint8_t met_game) {
+  const char* name = 0; const uint8_t* base = 0; uint32_t size = 0;
+  if (!fused_gb_save(idx, &name, &base, &size)) return 0;
+
+  uint8_t* arena = app_arena_acquire(GB12_ARENA_NEED);
+  if (!arena) {
+    ui_clear();
+    snd_deny();
+    s_msg("NOT NOW", UI_WARN, "Save the Pokemon you moved,", "then open the GB save.");
+    return 0;
+  }
+
+  uint32_t abase  = GB12_A4((uint32_t)(uintptr_t)arena);
+  Gb12Mount* m    = (Gb12Mount*)(uintptr_t)abase;
+  uint8_t* recs   = (uint8_t*)(uintptr_t)(abase + GB12_A4(sizeof(Gb12Mount)) + GB12_A4(sizeof(FIL)));
+  uint8_t* stage  = recs + GB12_RECS_BYTES;
+
+  s_gb_import_slice.base = base;
+  s_gb_import_slice.size = size;
+
+  const char* why = 0;
+  if (!pdna_gen12_mount(m, fused_gb_slice_read, &s_gb_import_slice, size, recs, stage,
+                        met_game, &why)) {
+    log_line("gen12: mount fused %s (%lu bytes) failed: %s", name ? name : "?",
+             (unsigned long)size, why ? why : "?");
+    ui_clear();
+    snd_deny();
+    s_msg("NOT A GB SAVE", UI_WARN, why ? why : "Unrecognised file.", 0);
+    app_arena_release();
+    return 0;
+  }
+  log_line("gen12: fused %s mounted (%s) %d mons, %d ready, %d locked, %d bad",
+           name ? name : "?", pdna_gen12_kind_name(m->kind), m->nstored, m->nready,
+           m->nblocked, m->nunreadable);
+
+  gb_session_core(m);
+
+  app_arena_release();
+  return 0;
+}
+#endif /* PDNA_DELTA */
+
 /* Same session over bytes the caller has already read. `img` must stay put and stay
  * unchanged for the whole call (the mount pages boxes out of it on demand); `len` is
  * the FILE length, RTC tail included, which is what pdna_gen12_size_is_gb() accepted.

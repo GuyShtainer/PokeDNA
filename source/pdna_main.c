@@ -9279,7 +9279,21 @@ static void view_save(const char* path) {
         case NV_MAP:      pdna_map(g_sb1, g_sb2, g_game); break;  /* the user's own ROM: SD file, or fused into this image */
         case NV_GB: {
 #ifdef PDNA_DELTA
-          msg_wait("GB IMPORT", UI_DIM, "Needs the SD card.", "Not available in this build.");
+          /* BACKLOG #62: the reachable path for a fused GB corpus when a Gen-3 save is
+           * ALSO fused (the default delta-gb recipe) -- the top-level boot fork is
+           * monopolized by that Gen-3 save (fused_sav_present() checked first, always
+           * wins when it parses), so this nav row is how the fused Red/Gold/Crystal
+           * saves are actually reached, not view_save()'s own fallback chain (which
+           * only fires when NO Gen-3 save is fused at all). Mounts straight over
+           * cartridge space (pdna_gen12_show_fused) -- g_save already holds the live
+           * Gen-3 session, so there is no spare resident buffer to copy a GB save
+           * into even if one were needed. */
+          int pick = gb_delta_pick_save();
+          if (pick < 0) {
+            msg_wait("GB IMPORT", UI_DIM, "No fused GB saves.", "Rebuild with tools/fuse_gb.py.");
+          } else {
+            pdna_gen12_show_fused(pick, (uint8_t)(g_game == PK_RS ? 1 : g_game == PK_FRLG ? 4 : 3));
+          }
 #else
           /* Browse for a Gen-1/2 .sav and mount it READ-ONLY as a box source. The
            * loaded save's game is stamped as the origin on anything copied out, so a
