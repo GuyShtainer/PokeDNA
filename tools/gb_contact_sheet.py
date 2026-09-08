@@ -97,6 +97,14 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # come from tools/p1b_shots.py, captions all start "#49-P1:".
     ("gb-trainer", "#49-P1 — the Gen-1/2 trainer card (view + edit, over gb_trainer)",
      ("#49-P1",)),
+    # BACKLOG #49 P1c (append-only, same reasoning as #58's own note above). Shots
+    # come from tools/p1c_shots.py, captions all start "#49-P1c:". A DIFFERENT
+    # prefix than "#49-P1" above (exact string match, not startswith -- P1b's own
+    # shots stay classified under "gb-trainer"): P1c is the UX-parity follow-up
+    # ("make the Gen-1/2 card LOOK like the Gen-3 card"), its own row so the two
+    # don't get merged under one caption prefix.
+    ("gb-trainer-card", "#49-P1c — the Gen-1/2 trainer card on the Gen-3 card art "
+     "(front + back, UX parity)", ("#49-P1c",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
