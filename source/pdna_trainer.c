@@ -395,7 +395,8 @@ void card_field_one(PkGame game, int f, const CardFields* cf) {
       break;
     case CARDF_MONEY:
       if (L->labels) ui_text(L->lbl_x, L->money_y, CINK, "MONEY");
-      siprintf(line, "$%lu", (unsigned long)cf->money);
+      if (cf->money_unknown) siprintf(line, "?");
+      else                   siprintf(line, "$%lu", (unsigned long)cf->money);
       ui_text(L->val_xr - 8 * (int)strlen(line), L->money_y, CINK, line);
       break;
     case CARDF_TIME:

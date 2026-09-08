@@ -54,6 +54,11 @@ typedef struct {
   const char* name;         /* already-decoded display name (ASCII/UTF-8)    */
   uint16_t    id;            /* IDNo. (5 digits)                             */
   uint32_t    money;
+  bool        money_unknown; /* true: draw "?" instead of money (Gen-1 BCD
+                              * decode failure); Gen-3 always leaves this
+                              * false (CardFields cf = {0} at its one call
+                              * site, card_field() above) so this is a
+                              * Gen-1/2-only state, P1d */
   uint16_t    play_h;
   uint8_t     play_m;
   uint16_t    badges;         /* bit i = badge i owned; the front row draws

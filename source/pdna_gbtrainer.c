@@ -29,16 +29,18 @@
  * Gen 2; and EITHER Kanto badges (Gold/Silver) OR GENDER (Crystal only, view-
  * only) -- gbtr_rows.c's own comment explains why not both fit).
  *
- * Cursor/edit semantics UNCHANGED from P1b: edits are staged in a LOCAL
- * GbTrainer (gbt_read at entry, mutated in place by the row editors) and
- * committed ONLY on START, in one gbt_write() batch; a no-op START (nothing
- * touched, t == t0) returns silently with no popup; a real edit asks "Save
- * trainer changes?" before gbt_write runs, and any failure rolls the whole
- * image back (gb_rollback) rather than leaving a partial edit. B always
- * discards on the FRONT page (the session's image was never touched unless
- * START already ran and returned) -- "B = cancel" is this screen's own honest
- * adaptation of Gen-3's card key legend, which uses B for "save and exit"
- * there; B on the BACK page instead flips back to the front (same as Gen 3).
+ * Cursor/edit semantics: edits are staged in a LOCAL GbTrainer (gbt_read at
+ * entry, mutated in place by the row editors) and committed in one
+ * gbt_write() batch; a no-op commit (nothing touched, t == t0) returns
+ * silently with no popup; a real edit asks "Save trainer changes?" before
+ * gbt_write runs, and any failure rolls the whole image back (gb_rollback)
+ * rather than leaving a partial edit -- unchanged since P1b. The KEY that
+ * asks for that commit differs by page: the plain row-list fallback (no card
+ * art) still uses START, unchanged from P1b/P1c. The card page (P1c's
+ * Gen-3-look front/back) was changed in P1d to match pdna_trainer.c's own
+ * card_editor() EXACTLY -- there is no START on the card at all; B on the
+ * FRONT page always asks for a commit (the caller's memcmp is the no-op
+ * check), same as Gen 3's card; B on the BACK page flips back to the front.
  */
 #include <tonc.h>
 #include <stdio.h>
@@ -57,6 +59,12 @@
 #include "snd.h"
 #include "osk.h"
 #include "pdna_app.h"      /* msg_wait */
+
+/* P1d: same red as pdna_trainer.c's own CSEL (its file-local #define, not
+ * exported) -- kept in sync by eye since this file's own selection frame for
+ * CARDF_NAME (gbcard_front_full below) has to draw itself, not go through
+ * the shared card_field_sel_frame(). */
+#define GBCARD_CSEL RGB15(26, 4, 3)
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 static u16  s_wait(u16 mask) {
@@ -97,7 +105,8 @@ static uint8_t gbtr_cycle_mom_saving(uint8_t bits) {
 
 /* Badge toggle screen: same look as pdna_trainer.c's flag_set_editor (a scrolling
  * list of trainer_flag_row_paint rows), over this LOCAL GbTrainer's own badge bytes
- * rather than PkGame/pk_flag_get -- nothing here touches the session until START.
+ * rather than PkGame/pk_flag_get -- nothing here touches the session until the
+ * caller's own commit (plain page: START; card front: B, P1d).
  * Reached from BOTH the plain page's BADGES row (A, unchanged from P1b) AND the
  * card front's BADGES field (SELECT, Gen 2 only -- the card's own badge row shows
  * only the 8 Johto icons; this is where Kanto's 8 stay individually toggleable,
@@ -371,13 +380,12 @@ static void gb_cardfields(const GbTrainer* t, bool gen1, CardFields* cf) {
   memset(cf, 0, sizeof *cf);
   cf->name = t->name;
   cf->id = t->trainer_id;
-  /* P1c gap (documented, not fixed here): the shared card painter has no "?"
-   * state for MONEY the way this file's own plain page does (t->money_ok ==
-   * false, a Gen-1 BCD decode failure) -- it always formats "$%lu". Showing 0
-   * here is the honest-enough compromise (the field stays refused for editing
-   * either way, gbtr_edit_row's own money_ok check, unchanged from P1b); a
-   * real "?" on the card face is a BACKLOG follow-up. */
+  /* P1d: closes the P1c gap noted here -- CardFields now has its own
+   * money_unknown flag, so the card face shows "?" the same way the plain
+   * page does on a Gen-1 BCD decode failure. Editing stays refused either
+   * way (gbtr_edit_row's own money_ok check, unchanged from P1b). */
   cf->money = t->money_ok ? t->money : 0;
+  cf->money_unknown = !t->money_ok;
   cf->play_h = t->playtime.hours;
   cf->play_m = t->playtime.minutes;
   for (int i = 0; i < 8; i++) if (gbtr_badge_get(t, gen1, i)) cf->badges |= (uint16_t)(1u << i);
@@ -395,19 +403,32 @@ static void gbcard_front_full(const GbTrainer* t, bool gen1, int female,
   bg_restore(bg, 0, 0, CARD_BG_W, CARD_BG_H);
   CardFields cf; gb_cardfields(t, gen1, &cf);
   card_front_fields_paint(PK_EMERALD, &cf);
-  /* Screen is 240px wide; ui_text at x=4 has room for 29 sys8 chars (236px), not
-   * 30 -- the earlier "U/D A edit  SELECT Kanto  L/R flip  START save  B cancel"
-   * (56 chars) silently clipped past "SELECT Kanto" with nothing past it ever
-   * drawn (P1c review: caught on a real screenshot, tools/p1c_shots.py's own
-   * 01_card_front shot). Dropping "U/D" (implied) and "SELECT Kanto"/"B cancel"
-   * (both standard/discoverable, same omission the plain page's own legend
-   * already makes for U/D) gets this to 28 chars -- comfortably under budget,
-   * same style as pdna_gbtrainer_plain's "A edit  START save  B cancel" (28
-   * chars) just swapping B cancel for L/R flip, the one truly NEW control this
-   * page has that the plain page does not. */
-  ui_text(4, 152, UI_TEXT, can_edit ? "A edit  L/R flip  START save"
+  /* P1d: matches pdna_trainer.c's card_editor() footer VERBATIM (no START key
+   * on this card at all -- Gen 3's own card_editor has none either; B on the
+   * front now exits to the caller's one save prompt, same as Gen 3). */
+  ui_text(4, 152, UI_TEXT, can_edit ? "U/D A edit  L/R flip  B save"
                                       : "L/R flip  B back");
-  if (can_edit) card_field_sel_frame(PK_EMERALD, cardf[sel], 0);
+  if (can_edit) {
+    if (cardf[sel] == CARDF_NAME) {
+      /* P1d: CARD_LAYOUTS' baked NAME rect (card_bg.h:74, Emerald 110px =
+       * "NAME: " + 7 chars) is sized for a Gen-3 name, but a GB name that
+       * decodes a <PK>/<MN> digraph is 8 chars (Gold.sav "MattiaPK") -- the
+       * text still renders in full (card_front_fields_paint's own siprintf
+       * has no truncation) but the shared card_field_sel_frame() would stop
+       * the red frame short of it. Recompute the frame's own width from the
+       * ACTUAL name length here, with the same two m3_frame calls
+       * card_sel_frame() uses in pdna_trainer.c -- never through the shared
+       * Gen-3 path, which always trusts the baked rect. */
+      int x, y, w, h;
+      card_field_rect(PK_EMERALD, CARDF_NAME, 0, &x, &y, &w, &h);
+      int need = 8 * (6 + (int)strlen(cf.name));
+      if (need > w) w = need;
+      m3_frame(x, y, x + w, y + h, GBCARD_CSEL);
+      m3_frame(x + 1, y + 1, x + w - 1, y + h - 1, GBCARD_CSEL);
+    } else {
+      card_field_sel_frame(PK_EMERALD, cardf[sel], 0);
+    }
+  }
 }
 
 static void gbcard_back_full(const GbTrainer* t, bool gen1, int female,
@@ -447,12 +468,14 @@ static void gbcard_back_full(const GbTrainer* t, bool gen1, int female,
   if (can_edit) card_back_sel_frame(PK_EMERALD, row);
 }
 
-/* The card's own editor loop (P1c): SAME shape as pdna_trainer.c's card_editor
- * -- a red selection frame walks the fields ON the card (front) or the row
- * list (back); A edits in place with the same sub-editors gbtr_edit_row above
- * already shares with the plain page. Reads `t`/`t0`/`gen1`/`can_edit` from
- * the caller; returns when the caller should exit (B on the front) or commit
- * (START anywhere) -- `*want_commit` tells the caller which. noinline so this
+/* The card's own editor loop (P1c/P1d): SAME shape as pdna_trainer.c's
+ * card_editor -- a red selection frame walks the fields ON the card (front)
+ * or the row list (back); A edits in place with the same sub-editors
+ * gbtr_edit_row above already shares with the plain page. Reads `t`/`t0`/
+ * `gen1`/`can_edit` from the caller. There is NO START key on this card, same
+ * as Gen 3's own card_editor: B on the front is the one exit, and it always
+ * asks the caller for a commit (`*want_commit = true`) -- the no-op case is
+ * a silent memcmp no-op at the caller, not a discard here. noinline so this
  * function's own (larger) locals never land in pdna_gbtrainer()'s frame. */
 __attribute__((noinline))
 static void pdna_gbtrainer_card(GbTrainer* t, bool gen1, bool can_edit,
@@ -478,17 +501,14 @@ static void pdna_gbtrainer_card(GbTrainer* t, bool gen1, bool can_edit,
     }
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT |
-                   KEY_A | KEY_B | KEY_L | KEY_R | KEY_START | KEY_SELECT);
+                   KEY_A | KEY_B | KEY_L | KEY_R | KEY_SELECT);
     if (k & (KEY_L | KEY_R)) { back = !back; full = true; continue; }
 
-    if (k & KEY_START) {
-      if (!can_edit) continue;
-      *want_commit = true;
-      return;
-    }
     if (k & KEY_B) {
       if (back) { back = false; full = true; continue; }
-      return;                                    /* front: discard, caller B-cancels */
+      *want_commit = true;                        /* front: same as Gen 3's card_editor --
+                                                    * B exits to the caller's save prompt */
+      return;
     }
     if (!can_edit) continue;                      /* read-only: flip/view only */
 
@@ -544,7 +564,7 @@ void pdna_gbtrainer(GbSession* s, bool can_edit) {
     msg_wait("TRAINER CARD", UI_WARN, "Could not read this save.", 0);
     return;
   }
-  memcpy(&t0, &t, sizeof t0);        /* snapshot: proves a no-op START at commit time */
+  memcpy(&t0, &t, sizeof t0);        /* snapshot: proves a no-op commit (memcmp below) */
   s_id_warned = false;               /* the identity warning is once per VISIT */
   const bool gen1 = (s->gen == GB_GEN1);
 
@@ -558,7 +578,10 @@ void pdna_gbtrainer(GbSession* s, bool can_edit) {
   } else {
     want_commit = pdna_gbtrainer_plain(&t, gen1, can_edit);
   }
-  if (!want_commit) return;                                 /* B: discard, unchanged from P1b */
+  if (!want_commit) return;                    /* plain page's B: discard (unchanged from
+                                                  * P1b); the card path (P1d) always asks
+                                                  * here -- the memcmp below is its no-op
+                                                  * check, same as Gen 3's card_editor */
 
   if (!memcmp(&t, &t0, sizeof t)) { snd_back(); return; }   /* nothing to write */
   if (!app_confirm("Save trainer changes?", "Writes the card edits now.")) return;
