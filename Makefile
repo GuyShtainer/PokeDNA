@@ -440,6 +440,31 @@ delta:                 # emulator build (Delta / RetroArch): edits its OWN 128 K
 	@echo "  Put it in your emulator, then copy your Pokemon .sav over pokedna-delta.sav."
 	@echo "  Save type must be Flash 1Mbit (128K). NO BACKUPS in this build."
 
+# BACKLOG #62: the delta build, fused with a Gen-3 save AND a whole Game Boy corpus
+# (ROMs + saves) so the GB half of PokeDNA has real data to read on an emulator with no
+# SD card. GB_ROMS/EMERALD_SAV point at Guy's own local dumps by default (never in this
+# repo -- see docs/kb/pokemon/, roms.sh) and can be overridden: `make delta-gb
+# GB_ROMS=/path/to/gb EMERALD_SAV=/path/to/Emerald.sav`. LOCAL-USE ONLY: the output
+# embeds a personal save and commercial ROMs -- never commit, publish, or share it
+# (fuse_rom.py/fuse_sav.py/fuse_gb.py all say this too; it bears repeating here since
+# this is the one target that runs all three back to back).
+GB_ROMS ?= $(HOME)/VSCodeProjects/gba-toolkit/roms
+EMERALD_SAV ?= $(HOME)/VSCodeProjects/gba-toolkit/roms/Emerald.sav
+
+delta-gb:               # 'delta' fused with Red/Gold/Crystal (ROM+save) + Emerald.sav
+	@$(MAKE) PDNA_TARGET=delta rebuild
+	@python3 tools/fuse_sav.py pokedna-delta.gba $(EMERALD_SAV) -o pokedna-delta-gb.gba --force
+	@python3 tools/fuse_gb.py pokedna-delta-gb.gba \
+	  $(GB_ROMS)/gb/Red.gb $(GB_ROMS)/gb/Red.sav \
+	  $(GB_ROMS)/gb/Gold.gbc $(GB_ROMS)/gb/Gold.sav \
+	  $(GB_ROMS)/gb/Crystal.gbc $(GB_ROMS)/gb/Crystal.sav \
+	  -o pokedna-delta-gb.gba --force
+	@python3 tools/fuse_gb.py --check pokedna-delta-gb.gba
+	@echo ""
+	@echo "  pokedna-delta-gb.gba built -- Emerald.sav seeds the flash save; Red/Gold/"
+	@echo "  Crystal (ROM+save each) are readable by the GB half. Personal-use only:"
+	@echo "  never commit, publish, or share this image."
+
 # --- artless variants -------------------------------------------------------
 # Same code, same source/ tree — the ~21 generated art files are excluded from the BUILD
 # (PDNA_ARTLESS=1: filtered out of CFILES/SFILES, source/embed/ dropped from SRCDIRS, and

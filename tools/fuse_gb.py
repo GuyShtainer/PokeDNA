@@ -99,6 +99,8 @@ import sys
 import zlib
 
 MAGIC = b"PDNAGBD1"                 # 8 bytes, no NUL — the directory's own magic
+FUSE_MAGIC = b"PDNAFUSE"            # fuse_rom.py's own record -- used only to disambiguate
+SAV_MAGIC = b"PDNASAV1"             # fuse_sav.py's own record -- same purpose
 RECORD_SIZE = 16                    # the g_pdna_gbd locator record: magic+offset+size
 ENTRY_SIZE = 48                     # type(4) + name(32) + offset(4) + size(4) + crc32(4)
 NAME_SIZE = 32
@@ -151,6 +153,30 @@ def locate_record(blob: bytes, what: str) -> int:
             f"{what}: no {MAGIC.decode()} locator record found.\n"
             "  This build predates fused-GB support (source/fused_gb.c must define\n"
             "  g_pdna_gbd, const volatile, __attribute__((used, aligned(4)))).")
+    if len(hits) > 1:
+        # A multi-megabyte PokeDNA image carries several MB of compiled (compressed)
+        # art; an 8-byte ASCII sequence coincidentally appearing somewhere in it is
+        # rare but confirmed to happen in practice (BACKLOG #62: a shiny-sprite blob
+        # spelled PDNAGBD1 + 4 zero bytes at a 4-byte-aligned offset in a real build).
+        # Disambiguate using proximity to fuse_rom.py's/fuse_sav.py's OWN locator
+        # records: every g_pdna_* record is a tiny dependency-free const-volatile
+        # struct, and GCC/ld reliably cluster them together in .rodata, while a
+        # coincidental match inside a multi-MB art blob lands far away from that
+        # cluster.
+        anchor = None
+        for m in (FUSE_MAGIC, SAV_MAGIC):
+            h2 = find_records(blob, m)
+            if len(h2) == 1:
+                anchor = h2[0]
+                break
+        if anchor is not None:
+            near = [h for h in hits if abs(h - anchor) < 4096]
+            if len(near) == 1:
+                print(f"  note         : {len(hits)} {MAGIC.decode()} occurrences found; "
+                      f"picked the one at 0x{near[0]:X} (within 4 KiB of the other "
+                      f"g_pdna_* locator records, the rest are presumably coincidental "
+                      f"art-data matches)")
+                hits = near
     if len(hits) > 1:
         listing = ", ".join(f"0x{h:X}" for h in hits)
         raise FuseError(
@@ -356,6 +382,17 @@ def locate_record_permissive(blob: bytes, what: str) -> int:
     hits = find_records(blob, MAGIC)
     if not hits:
         raise FuseError(f"{what}: no {MAGIC.decode()} locator record found.")
+    if len(hits) > 1:
+        anchor = None
+        for m in (FUSE_MAGIC, SAV_MAGIC):
+            h2 = find_records(blob, m)
+            if len(h2) == 1:
+                anchor = h2[0]
+                break
+        if anchor is not None:
+            near = [h for h in hits if abs(h - anchor) < 4096]
+            if len(near) == 1:
+                hits = near
     off = hits[0]
     if off % 4:
         raise FuseError(f"{what}: locator record at 0x{off:X} is not 4-byte aligned.")
