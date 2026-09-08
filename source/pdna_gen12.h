@@ -241,10 +241,13 @@ int pdna_gen12_show(const char* path, uint8_t met_game);
  * read a second time. `img` must remain valid for the whole call and is EDITED IN PLACE
  * when `pristine` is non-NULL: that buffer (>= len bytes, caller-owned, GB12_PRISTINE_OFF
  * into the same 128 KiB save buffer is the intended home) receives a byte-exact copy at
- * entry and is the rollback after a failed card write. NULL = read-only session, no
- * EDIT row. `len` is the FILE length (RTC tail included), and `path` is where an edit is
- * persisted (sf_backup_rolling + sf_write_verified, Omega-only). Design:
- * docs/GEN12-EDIT-DESIGN.md sections 3.2-3.3. */
+ * entry and is the rollback after a failed card write -- EXCEPT under PDNA_DELTA, where
+ * there is no card to roll back to: gb_persist()'s emulator branch re-baselines
+ * `pristine` to the post-edit `img` instead, so a refused persist KEEPS the edit for the
+ * rest of this session rather than discarding it (see gb_persist(), pdna_gen12.c).
+ * NULL = read-only session, no EDIT row. `len` is the FILE length (RTC tail included),
+ * and `path` is where an edit is persisted (sf_backup_rolling + sf_write_verified,
+ * Omega-only). Design: docs/GEN12-EDIT-DESIGN.md sections 3.2-3.3. */
 #define GB12_PRISTINE_OFF 0x10000u   /* a GB image (<= 32816 B) never reaches this */
 int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
                           uint8_t* pristine, uint8_t met_game);
@@ -255,11 +258,25 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
  * (loaded/staged left invalid so the box grid re-pages); gb_persist() runs the
  * verified-write pipeline (sf_backup_rolling, then sf_write_verified's four steps)
  * and calls gb_rollback() itself on any failure with the honest message the user
- * needs. Both act on the module's own g_ed -- exported so pdna_gbtrainer.c's START
+ * needs -- EXCEPT the emulator build (PDNA_DELTA), whose branch has no card to write
+ * to and instead KEEPS the edit in-session (re-baselines pristine; BACKLOG #62 D2). Both act on the module's own g_ed -- exported so pdna_gbtrainer.c's START
  * handler can call them directly on the SAME session it was handed
  * (gb_nav_from_start passes exactly &g_ed->s, whose enclosing Gb12Edit is g_ed). */
 void gb_rollback(void);
 bool gb_persist(const char* what_for_log);
+
+#ifdef PDNA_DELTA
+/* BACKLOG #62: mount fused_gb_save(idx) directly out of cartridge space -- no FIL, no
+ * resident copy, reads go straight through fused_gb_slice_read() the same way CREATE's
+ * ROM lookup already does. This is the reachable path when a Gen-3 save is ALSO fused
+ * (the default delta-gb recipe): the top-level boot fork is monopolized by that Gen-3
+ * save, so NV_GB from within the open Gen-3 session is how a fused GB save is actually
+ * opened, and g_save already holds the live Gen-3 session -- there is no spare 32 KiB
+ * resident buffer to memcpy a GB save into even if there were nothing else fused.
+ * `idx` is a fused_gb_save() index; `met_game` as pdna_gen12_show()'s own comment.
+ * Read-only (no persistence path exists for a cart-space source either way). */
+int pdna_gen12_show_fused(int idx, uint8_t met_game);
+#endif
 #endif
 
 #endif /* PDNA_GEN12_H */

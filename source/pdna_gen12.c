@@ -610,6 +610,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
                             * data_tables.h, already included at the top of this file. */
 #include "pdna_origin_art.h"  /* BACKLOG #53a: pdna_origin_box_set_hint, PDNA_GEN1/GEN2 */
 #include "icon_store.h"    /* E6 D4: icon_store_borrow(false), the every-exit backstop */
+#include "fused_gb.h"       /* BACKLOG #62: delta-gb's cart-space ROM in gb_create_locate_rom */
 
 /* S5-B review fix #10: PDNA_SIDECAR_DIR now lives in pdna_app.h (included above), not
  * duplicated as a local literal here. */
@@ -660,6 +661,17 @@ static bool gb_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
   if (f_read(f, buf, (UINT)len, &br) != FR_OK) return false;
   return br == len;
 }
+
+#ifdef PDNA_DELTA
+/* BACKLOG #62: CREATE's own ROM lookup (gb_create_locate_rom/base1/base2/learn below)
+ * reads a fused Game Boy ROM out of cartridge space instead of a FatFs FIL under
+ * PDNA_DELTA (no SD there at all). One slice, set once by gb_create_locate_rom and
+ * read by every later call in the same CREATE run -- mirrors how g_ed->romspath/
+ * romfil persist across gb_create_base1/base2/gb_create_learn on the SD path, just
+ * without a filesystem underneath. File-scope (not in the arena): a plain {pointer,
+ * length} pair costs nothing worth budgeting against EWRAM either way. */
+static FusedGbSlice s_gb_create_slice;
+#endif
 
 /* The SAME shim against a RESIDENT image instead of a file. The GB session opened
  * from the file browser has already read the whole save into g_save (pdna_main.c) --
@@ -1520,8 +1532,11 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
   }
 
   log_line("=== gb paste -> %s box %d slot %d ===", g_ed->path, box, newslot);
-  bool ok = gb_persist("paste");           /* on failure gb_persist() has already rolled
-                                             * RAM back to what the card holds */
+  /* #62 review D2: "on failure gb_persist() has already rolled RAM back to what the
+   * card holds" is true of the card-write (#else) half only -- the PDNA_DELTA half
+   * REFUSES but KEEPS the edit for the rest of this session (there is no card to roll
+   * back to; see gb_persist's own PDNA_DELTA branch). */
+  bool ok = gb_persist("paste");
   if (!ok) gb_paste_sidecar_undo(path);
   return ok;
 }
@@ -1781,6 +1796,33 @@ static bool gb_paste_hook(uint8_t* rec80) {
  * "paste") the calling hook already logged its own detailed line under, just here to
  * keep THIS function's lines identifiable too. */
 bool gb_persist(const char* what_for_log) {
+#ifdef PDNA_DELTA
+  /* BACKLOG #62: this build's whole "save" is its own 128 KiB flash chip (already
+   * holding the fused Gen-3 save, or blank) -- there is no SD path a GB image could
+   * land on at all. Refuse plainly here rather than let sf_backup_rolling/
+   * sf_write_verified fail below with a generic FatFs status string that would read
+   * like a card error instead of the honest truth: GB edits in this build live only
+   * as long as the current session, same posture the single-fused-GB boot fallback
+   * already documents (view_save's own PDNA_DELTA GB fork). */
+  (void)what_for_log;
+  log_line("gb %s: refused (PDNA_DELTA has no SD for a GB image)", what_for_log);
+  app_log_flush();
+  /* #62 review D2 (BLOCKING): the refusal above is "no card to write to", not "this
+   * edit is void" -- the edit already landed in g_ed->img (every caller applies its
+   * edit to img BEFORE calling gb_persist). Re-baseline pristine to the post-edit
+   * image and re-census so the grid shows what was just edited instead of pre-edit
+   * bytes, and so a LATER gb_rollback() (a different edit failing further down this
+   * same session) rolls back to this edit's own bytes, not discarding it. Without
+   * this, the session was internally inconsistent: the grid painted post-edit bytes
+   * while pristine/rollback still pointed at whatever the card last held. */
+  memcpy(g_ed->pristine, g_ed->img, g_ed->len);
+  gb_census(g_m);
+  g_m->loaded = -1;
+  snd_error();
+  msg_wait("GAME BOY SAVE", UI_WARN, "Edits are in-session only",
+           "in the emulator build.");
+  return false;
+#else
   char bak[SF_PATH_MAX]; bak[0] = 0;
   s_busy(PDNA_GBEDIT_BUSY_BACKUP);
   rmbl_pause();
@@ -1845,6 +1887,7 @@ bool gb_persist(const char* what_for_log) {
   g_m->loaded = -1;                               /* the grid re-pages from the new bytes */
   snd_save();
   return true;
+#endif /* PDNA_DELTA */
 }
 
 /* Arena block for a session whose bytes are already resident: no FIL, and the image
@@ -1987,6 +2030,27 @@ static bool __attribute__((noinline)) gb_create_locate_rom(uint8_t want_gen) {
    * silent correctness bug. */
   g_ed->romgs_ready = false;
 
+#ifdef PDNA_DELTA
+  /* BACKLOG #62: no SD, no registered-path/beside-the-save fallback here -- the only
+   * ROM this build can ever have for `want_gen` is whatever tools/fuse_gb.py fused
+   * into the cartridge image. Reads go through s_gb_create_slice + fused_gb_slice_read
+   * for the rest of this CREATE run (gb_create_base1/base2/gb_create_learn below). */
+  const uint8_t* base; uint32_t size;
+  if (!fused_gb_rom(want_gen, &base, &size)) {
+    log_line("gen12 create: no fused gen-%u rom", want_gen);
+    return false;
+  }
+  s_gb_create_slice.base = base;
+  s_gb_create_slice.size = size;
+  int ok = rom_gbsprite_open(&g_ed->romgs, fused_gb_slice_read, &s_gb_create_slice, size,
+                             g_ed->romscan, sizeof g_ed->romscan);
+  if (ok && g_ed->romgs.gen == want) {
+    log_line("gen12 create: fused rom (gen %u)", want_gen);
+    return true;
+  }
+  log_line("gen12 create: fused gen-%u rom did not open as that gen", want_gen);
+  return false;
+#else
   const char* reg = app_gb_rom_path(want_gen);
   if (reg && reg[0]) {
     int i = 0;
@@ -2030,6 +2094,7 @@ static bool __attribute__((noinline)) gb_create_locate_rom(uint8_t want_gen) {
   }
   log_line("gen12 create: no gen-%u rom (registered or beside %s)", want_gen, g_ed->path ? g_ed->path : "?");
   return false;
+#endif /* PDNA_DELTA */
 }
 
 /* Base stats/growth for `dex` off the ROM gb_create_locate_rom already located --
@@ -2038,18 +2103,26 @@ static bool __attribute__((noinline)) gb_create_locate_rom(uint8_t want_gen) {
  * the already-resolved g_ed->romspath (same re-open pattern as gb_gen1_base_
  * from_rom above), closes it again before returning either way. */
 static bool __attribute__((noinline)) gb_create_base1(uint16_t dex, RomGb1Species* out) {
+#ifdef PDNA_DELTA
+  return rom_gbbase_gen1(&g_ed->romgs, fused_gb_slice_read, &s_gb_create_slice, dex, out);
+#else
   memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
   if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return false;
   bool ok = rom_gbbase_gen1(&g_ed->romgs, gb_read, &g_ed->romfil, dex, out);
   f_close(&g_ed->romfil);
   return ok;
+#endif
 }
 static bool __attribute__((noinline)) gb_create_base2(uint16_t dex, RomGb2Species* out) {
+#ifdef PDNA_DELTA
+  return rom_gbbase_gen2(&g_ed->romgs, fused_gb_slice_read, &s_gb_create_slice, dex, out);
+#else
   memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
   if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return false;
   bool ok = rom_gbbase_gen2(&g_ed->romgs, gb_read, &g_ed->romfil, dex, out);
   f_close(&g_ed->romfil);
   return ok;
+#endif
 }
 
 /* Opens the ROM's learnset table ONCE and answers BOTH questions the create
@@ -2078,6 +2151,30 @@ static bool __attribute__((noinline)) gb_create_base2(uint16_t dex, RomGb2Specie
  * to trust across calls, an open file handle is not. */
 static int __attribute__((noinline))
 gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t* out_level, uint8_t out4[4]) {
+#ifdef PDNA_DELTA
+  /* BACKLOG #62: same cache-hit shape as the SD path below, just against the fused
+   * cart-space slice gb_create_locate_rom already set instead of a FIL. */
+  int ok;
+  if (g_ed->learn_ready && g_ed->learn_path == g_ed->path && g_ed->learn.gen == g_ed->s.gen &&
+      g_ed->learn_rom_id == g_ed->romgs.id_hash) {
+    ok = 1;
+  } else {
+    ok = rom_gblearn_open(&g_ed->learn, g_ed->s.gen, fused_gb_slice_read, &s_gb_create_slice,
+                          g_ed->romgs.size);
+    if (ok) { g_ed->learn_ready = true; g_ed->learn_path = g_ed->path;
+              g_ed->learn_rom_id = g_ed->romgs.id_hash; }
+  }
+  g_ed->learn.read = fused_gb_slice_read;
+  g_ed->learn.ctx = &s_gb_create_slice;
+  int kept = -1;
+  if (ok) {
+    uint8_t lvl = rom_gblearn_min_level(&g_ed->learn, dex);
+    kept = g1_start ? rom_gblearn_moves_at_seeded(&g_ed->learn, dex, lvl, g1_start, out4)
+                    : rom_gblearn_moves_at(&g_ed->learn, dex, lvl, out4);
+    if (kept >= 0 && out_level) *out_level = lvl;
+  }
+  return kept;
+#else
   memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
   if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) return -1;
   int ok;
@@ -2102,6 +2199,7 @@ gb_create_learn(uint16_t dex, const uint8_t g1_start[4], uint8_t* out_level, uin
   }
   f_close(&g_ed->romfil);
   return kept;
+#endif
 }
 
 /* AppSrcOps.create. Takes NO arguments -- see pdna_app.h's own comment on why
@@ -2496,6 +2594,57 @@ int pdna_gen12_show(const char* path, uint8_t met_game) {
   app_arena_release();
   return 0;
 }
+
+#ifdef PDNA_DELTA
+/* BACKLOG #62. See pdna_gen12.h's own comment: same shape as pdna_gen12_show() above,
+ * but mounts directly over cartridge space (fused_gb_slice_read + a persistent
+ * FusedGbSlice) instead of opening a FIL. Own slice, separate from CREATE's
+ * s_gb_create_slice above -- both need to persist for the length of a mount, and while
+ * an import session and a CREATE run inside it never overlap in practice, using two
+ * distinct statics costs nothing and removes any need to reason about that. */
+static FusedGbSlice s_gb_import_slice;
+
+int pdna_gen12_show_fused(int idx, uint8_t met_game) {
+  const char* name = 0; const uint8_t* base = 0; uint32_t size = 0;
+  if (!fused_gb_save(idx, &name, &base, &size)) return 0;
+
+  uint8_t* arena = app_arena_acquire(GB12_ARENA_NEED);
+  if (!arena) {
+    ui_clear();
+    snd_deny();
+    s_msg("NOT NOW", UI_WARN, "Save the Pokemon you moved,", "then open the GB save.");
+    return 0;
+  }
+
+  uint32_t abase  = GB12_A4((uint32_t)(uintptr_t)arena);
+  Gb12Mount* m    = (Gb12Mount*)(uintptr_t)abase;
+  uint8_t* recs   = (uint8_t*)(uintptr_t)(abase + GB12_A4(sizeof(Gb12Mount)) + GB12_A4(sizeof(FIL)));
+  uint8_t* stage  = recs + GB12_RECS_BYTES;
+
+  s_gb_import_slice.base = base;
+  s_gb_import_slice.size = size;
+
+  const char* why = 0;
+  if (!pdna_gen12_mount(m, fused_gb_slice_read, &s_gb_import_slice, size, recs, stage,
+                        met_game, &why)) {
+    log_line("gen12: mount fused %s (%lu bytes) failed: %s", name ? name : "?",
+             (unsigned long)size, why ? why : "?");
+    ui_clear();
+    snd_deny();
+    s_msg("NOT A GB SAVE", UI_WARN, why ? why : "Unrecognised file.", 0);
+    app_arena_release();
+    return 0;
+  }
+  log_line("gen12: fused %s mounted (%s) %d mons, %d ready, %d locked, %d bad",
+           name ? name : "?", pdna_gen12_kind_name(m->kind), m->nstored, m->nready,
+           m->nblocked, m->nunreadable);
+
+  gb_session_core(m);
+
+  app_arena_release();
+  return 0;
+}
+#endif /* PDNA_DELTA */
 
 /* Same session over bytes the caller has already read. `img` must stay put and stay
  * unchanged for the whole call (the mount pages boxes out of it on demand); `len` is

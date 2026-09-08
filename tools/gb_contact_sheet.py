@@ -105,6 +105,12 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # don't get merged under one caption prefix.
     ("gb-trainer-card", "#49-P1c — the Gen-1/2 trainer card on the Gen-3 card art "
      "(front + back, UX parity)", ("#49-P1c",)),
+    # BACKLOG #62 (append-only, same rule as #58 above). Shots come from
+    # tools/dgb_shots.py, run against pokedna-delta-gb.gba (fused with Emerald.sav +
+    # a whole Red/Gold/Crystal ROM+save corpus, tools/fuse_gb.py) rather than mGBA's
+    # usual single-fused-save build; captions all start "#62:".
+    ("delta-gb", "#62 — a delta build fused with a whole GB/GBC corpus (real art via NV_GB)",
+     ("#62",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
