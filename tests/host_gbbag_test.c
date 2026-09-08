@@ -509,6 +509,39 @@ static void refusals(const char* file, uint8_t expect_gen) {
   CHECKF(gbb_insert(g, &full, GBB_POCKET_ITEMS, 0x01u, 5u) == GBB_OK,
         "%s: merging into an existing id in a full pocket still works", file);
 
+  /* saturating merge (D1): inserting more than the remaining headroom sets the
+   * stack to GBB_QTY_CAP and reports GBB_ERR_QTY -- the real games open a
+   * second slot for the overflow; this core does not, so it must not
+   * silently discard the remainder. Built in memory, no session needed. */
+  GbBag sat;
+  memset(&sat, 0, sizeof sat);
+  CHECKF(gbb_insert(g, &sat, GBB_POCKET_ITEMS, 0x14u, 99u) == GBB_OK,
+        "%s: fill a stack to 99", file);
+  CHECKF(gbb_insert(g, &sat, GBB_POCKET_ITEMS, 0x14u, 10u) == GBB_ERR_QTY,
+        "%s: merge into a stack already at 99 saturates and refuses", file);
+  CHECKF(sat.pockets[GBB_POCKET_ITEMS].entries[0].qty == 99u,
+        "%s: saturated stack qty still 99", file);
+  CHECKF(sat.pockets[GBB_POCKET_ITEMS].count == 1,
+        "%s: saturated merge did not add a second entry", file);
+
+  GbBag sat2;
+  memset(&sat2, 0, sizeof sat2);
+  CHECKF(gbb_insert(g, &sat2, GBB_POCKET_ITEMS, 0x14u, 60u) == GBB_OK,
+        "%s: seed a stack of 60", file);
+  CHECKF(gbb_insert(g, &sat2, GBB_POCKET_ITEMS, 0x14u, 50u) == GBB_ERR_QTY,
+        "%s: merge 50 into 60 (over cap) saturates and refuses", file);
+  CHECKF(sat2.pockets[GBB_POCKET_ITEMS].entries[0].qty == 99u,
+        "%s: 60+50 saturated to 99", file);
+
+  GbBag sat3;
+  memset(&sat3, 0, sizeof sat3);
+  CHECKF(gbb_insert(g, &sat3, GBB_POCKET_ITEMS, 0x14u, 60u) == GBB_OK,
+        "%s: seed a stack of 60 (ok merge)", file);
+  CHECKF(gbb_insert(g, &sat3, GBB_POCKET_ITEMS, 0x14u, 30u) == GBB_OK,
+        "%s: merge 30 into 60 (under cap) succeeds", file);
+  CHECKF(sat3.pockets[GBB_POCKET_ITEMS].entries[0].qty == 90u,
+        "%s: 60+30 == 90", file);
+
   /* pocket the game lacks: Gen 1 asking for Key items/Balls/TM-HM */
   if (expect_gen == GB_GEN1) {
     CHECKF(gbb_insert(g, &bag, GBB_POCKET_KEY, 0x01u, 1u) == GBB_ERR_NOT_PRESENT,

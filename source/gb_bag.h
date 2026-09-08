@@ -132,16 +132,21 @@ GbsStatus gbb_write(GbSession* s, const GbBag* in);
 
 /* Insert `id` with quantity `qty` into `pocket`. If `id` already occupies a slot
  * in a quantity-bearing pocket, the quantities are ADDED and clamped to
- * GBB_QTY_CAP (never a second slot for the same id) — mirrors what BuyItem/
- * AddItem do in the decomps (pret's rb "adding to an existing stack", clean-room
- * restated here as a fact about the format, not copied code). GBB_POCKET_KEY
- * entries carry no quantity: `qty` must be 1 (any other value is GBB_ERR_QTY) and
- * a duplicate id is refused outright (GBB_ERR_ARG) rather than silently merged,
- * since a key item is a unique flag, not a stack.
+ * GBB_QTY_CAP. NOTE: the real games instead open a SECOND slot for the
+ * overflow (pokered engine/items/inventory.asm, pokecrystal
+ * engine/items/items.asm — read for the format fact only); this core
+ * deliberately does not, so a merge that would exceed GBB_QTY_CAP SATURATES
+ * the existing stack at the cap and reports GBB_ERR_QTY instead of silently
+ * discarding the remainder. GBB_POCKET_KEY entries carry no quantity: `qty`
+ * must be 1 (any other value is GBB_ERR_QTY) and a duplicate id is refused
+ * outright (GBB_ERR_ARG) rather than silently merged, since a key item is a
+ * unique flag, not a stack.
  *   GBB_ERR_NOT_PRESENT  `game` lacks `pocket` (or pocket == GBB_POCKET_TMHM --
  *                        use gbb_tmhm_set for that one, it is not a list).
  *   GBB_ERR_BADID        id == 0x00, id == 0xFF, or id > gbb_max_item_id(game).
- *   GBB_ERR_QTY          qty outside [1, GBB_QTY_CAP], or a Key-items qty != 1.
+ *   GBB_ERR_QTY          qty outside [1, GBB_QTY_CAP], a Key-items qty != 1,
+ *                        or the merge saturated at GBB_QTY_CAP (the stack was
+ *                        set to the cap).
  *   GBB_ERR_FULL         the pocket already holds gbb_pocket_cap() entries and
  *                        `id` is not already present to merge into. */
 GbBagOpStatus gbb_insert(GbGame game, GbBag* bag, GbBagPocket pocket,

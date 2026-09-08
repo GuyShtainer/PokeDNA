@@ -207,7 +207,11 @@ GbBagOpStatus gbb_insert(GbGame game, GbBag* bag, GbBagPocket pocket,
     if (list->entries[i].id != id) continue;
     if (!d->has_qty) return GBB_ERR_ARG;   /* duplicate key item: refuse, don't merge */
     uint32_t sum = (uint32_t)list->entries[i].qty + qty;
-    list->entries[i].qty = (uint8_t)(sum > GBB_QTY_CAP ? GBB_QTY_CAP : sum);
+    if (sum > GBB_QTY_CAP) {
+      list->entries[i].qty = GBB_QTY_CAP;   /* saturate, but tell the caller */
+      return GBB_ERR_QTY;
+    }
+    list->entries[i].qty = (uint8_t)sum;
     return GBB_OK;
   }
 
