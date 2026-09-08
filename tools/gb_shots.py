@@ -307,8 +307,10 @@ def run_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
 def run_gold_gender(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     """BACKLOG #51: the Gender row, a fresh boot independent of run_gold()'s own in-place
     DV edit above (same reasoning as run_gold_paste's own separate boot). Bulbasaur
-    (box slot 0) has a real, non-fixed gender ratio (0x7F, 50/50) — gbe_has_gender_row()
-    shows the row for exactly this reason (source/gb_editor.c)."""
+    (box slot 0) has a real, non-fixed gender ratio -- 0x1F, 12.5% female (female =
+    Atk DV <= 1), NOT 0x7F/50-50 (G1 review LOW-2, 2026-09-08: this docstring and the
+    caption below both had the wrong ratio) — gbe_has_gender_row() shows the row for
+    exactly this reason (source/gb_editor.c)."""
     s = Session(core_mod, image_mod, rom, out_dir, "gold_")
     print("== Gold.sav (Gen 2) -- BACKLOG #51 Gender row ==")
     s.tap("A", settle=BIG_SETTLE)          # info -> box grid
@@ -318,7 +320,7 @@ def run_gold_gender(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.press_n("DOWN", 2)                   # Name -> Lv -> Gender (card_info's own row order,
                                             # source/pdna_gbsummary.c: NICK, LEVEL, GENDER, OT...)
     s.shot("13_gender_before", "#51: the Gender row, field cursor on it — Bulbasaur reads "
-                                "M (Atk DV 15 under this save's own ratio 0x7F)")
+                                "M (Atk DV 15 under this save's own ratio 0x1F, 12.5% female)")
     s.tap("A", settle=BIG_SETTLE)          # gbe_flip_gender: nearest Atk DV of the other gender
     s.shot("13b_gender_after", "#51: A flips it — Gender now reads F, and the shared left "
                                 "panel's header (name/level/gender chip) updates live in the "
@@ -340,6 +342,12 @@ def run_gold_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     rom_gblearn_min_level() computes the species' own lowest legal level off the SAME
     ROM lookup, mirroring gen3_build_level's "5 for a Bulbasaur, 36 for a Charizard".
 
+    `rom` is the SAME clip-bearing --gold image run_gold()/run_gold_paste() use
+    (this module's own docstring: "+ --clip, an 80-byte real Gen-3 box record") --
+    the empty-cell menu shot below (14b) therefore shows PASTE HERE alongside
+    CREATE, which is the point: BLOCKING-1's fix (G1 review, 2026-09-08) means
+    that row is now gated on the SAME clip actually being present.
+
     GB BOX1 (the box the info page always opens into) is 20/20 on this corpus, same
     as every box run_gold() already notes — box index 13 ("GB BOX13" on screen) has
     real room, 17/20, discovered the same way tools/gb_retail_gate.py's
@@ -349,11 +357,16 @@ def run_gold_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     pdna_box.c hard-codes to (0, cur) for every is_bank source regardless of which box
     is actually on screen — CREATE from box 13 kept refusing "BOX FULL" against box
     0's real 20/20, caught by hand on exactly this navigation before the fix
-    (Gb12Mount.ui_box) landed. The species picker needs no SD card (pure UI, no file
-    I/O); gb_create_learn()'s own ROM lookup (level + moveset, one open) does, so it
-    is the honest stopping point in an emulator with no flashcart — the SAME
-    "SD-backed action refuses in the emulator, captured as evidence" shape
-    07b_save_refusal/10b_paste_refusal already use."""
+    (Gb12Mount.ui_box) landed. The species picker is NOT pure UI with no file I/O
+    (G1 review LOW-7, 2026-09-08: an earlier draft of this docstring claimed it was)
+    -- pick_species()'s own icon draw (mon_icon_for -> icon_store) DOES read the SD
+    card in a full-art build; it is only the ARTLESS build under test here that
+    never touches it (mon_icon_for returns 0 immediately, pick_species's own "art-
+    free -> text list" fallback, pdna_pick.c). gb_create_learn()'s own ROM lookup
+    (level + moveset, one open) is the ROM-lookup refusal captured below regardless
+    of which build this runs against — the SAME "SD-backed action refuses in the
+    emulator, captured as evidence" shape 07b_save_refusal/10b_paste_refusal
+    already use."""
     s = Session(core_mod, image_mod, rom, out_dir, "gold_")
     print("== Gold.sav (Gen 2) -- BACKLOG #50 CREATE (UX-parity re-shoot) ==")
     s.tap("A", settle=BIG_SETTLE)          # info -> box grid (GB BOX1, 20/20)
@@ -363,9 +376,24 @@ def run_gold_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.shot("14_cursor_on_empty", "#50: cursor on a real empty slot (GB BOX13, 17/20)")
 
     s.tap("A", settle=BIG_SETTLE)          # open the empty-cell menu
-    s.shot("14b_empty_menu", "#50: the empty-cell menu offers CREATE (was PASTE (GB) + "
-                              "CANCEL only, before this backlog item) — CREATE first, "
-                              "matching Gen-3's own empty-cell menu order")
+    # G1 review BLOCKING-1 (2026-09-08): this row list used to add PASTE
+    # UNCONDITIONALLY (app_mon_menu_readonly's own empty branch never re-checked
+    # g_src_ops->paste/g_clip.occupied/!g_clip.from_gb once entry was ALSO
+    # allowed by create_ok alone) -- a Gen-2 COPY (native, from_gb) into the
+    # clipboard, then PASTE on a DIFFERENT empty cell, would have round-tripped
+    # a lossy duplicate back down. Fixed to re-check the same three terms Gen 3's
+    # own empty branch does. --gold's own fused image carries a REAL Gen-3 clip
+    # (an 80-byte box record fused via --clip, tools/extract_gen3_record.c --
+    # see this file's own module docstring), so PASTE HERE correctly appears
+    # here (Gen-3's own label, not the deleted PDNA_LBL_PASTE_GB) -- run against
+    # a clip-LESS fused image, this exact same menu correctly shows CREATE and
+    # CANCEL only (verified separately: an ad-hoc no-clip run during this
+    # review response, not re-shot into the canonical set -- rebuilding it needs
+    # a second fused image this script's own --gold/--red pair has no slot for).
+    s.shot("14b_empty_menu", "#50: the empty-cell menu -- CREATE, then PASTE HERE (BLOCKING-1: "
+                              "now correctly gated on g_clip.occupied && !g_clip.from_gb, same as "
+                              "Gen 3's own empty branch; used to show unconditionally), then "
+                              "CANCEL -- CREATE first, matching Gen-3's own empty-cell menu order")
 
     s.tap("A", settle=BIG_SETTLE)          # select CREATE -> pick_species(1), restricted
     s.shot("14c_species_picker", "#50: UX-parity -- CREATE now opens the SAME pick_species() "
@@ -422,9 +450,21 @@ def run_gold_paste(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.shot("09_cursor_on_empty_cell", "S5-B: cursor parked on an empty cell before pressing A")
 
     s.tap("A", settle=BIG_SETTLE)
-    s.shot("09b_paste_gb_popup", "S5-B: an empty cell's action menu — just PASTE (GB) + CANCEL")
+    # G1 review BLOCKING-1 (2026-09-08) side effect: this menu now ALSO offers
+    # CREATE (every empty GB cell does, box 1's own "always empty" cells 20-29
+    # included) -- CREATE, PASTE HERE, CANCEL, not "just PASTE (GB) + CANCEL"
+    # as this caption used to claim. CREATE sits FIRST (matching Gen 3's own
+    # empty-cell order), so the very next tap below now has to move DOWN once
+    # to reach PASTE HERE before pressing A -- an earlier draft of this re-shot
+    # skipped that and silently selected CREATE instead, landing on "BOX FULL"
+    # (this box is 20/20) rather than the loss screen this function is about;
+    # caught by looking at the actual gold_10_loss_screen.png capture, not
+    # assumed from the menu's own row count still being small.
+    s.shot("09b_paste_gb_popup", "S5-B: an empty cell's action menu — CREATE, PASTE HERE "
+                                  "(Gen-3's own label; BLOCKING-1 fix), CANCEL")
 
-    s.tap("A", settle=BIG_SETTLE)          # select PASTE (GB) -> gen3_to_gb() -> the loss screen
+    s.press_n("DOWN", 1)                   # CREATE (selected by default) -> PASTE HERE
+    s.tap("A", settle=BIG_SETTLE)          # select PASTE HERE -> gen3_to_gb() -> the loss screen
     s.shot("10_loss_screen", "S5-B: the Gen-3-to-GB loss screen (what a real transfer would drop)")
 
     # This corpus's GB BOX1 is already at its real Gen-2 capacity (20/20 -- the "20/30"
@@ -527,10 +567,17 @@ def run_red_create(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.shot("13_cursor_on_empty", "#50: Gen 1 — cursor on the one real empty slot (GB BOX5, 19/20)")
 
     s.tap("A", settle=BIG_SETTLE)
-    s.shot("13b_empty_menu", "#50: Gen 1's empty-cell menu also offers CREATE — identical "
-                              "row list to Gen 2's (gb_create_hook does not special-case "
-                              "the generation for the menu itself, only for the ROM lookup "
-                              "and the moveset merge behind it)")
+    # Red.sav's own fused image carries NO clip (run_red()'s own docstring: "no clip"),
+    # so PASTE HERE correctly never appears here regardless of BLOCKING-1's fix --
+    # this shot alone does not demonstrate the fix (the SAME menu construction code
+    # runs either way; only the clip's own presence differs). See gold_14b_empty_menu
+    # for the fix shown BOTH ways (with a real clip present).
+    s.shot("13b_empty_menu", "#50: Gen 1's empty-cell menu -- CREATE, CANCEL (no PASTE HERE: "
+                              "this run's own fused image carries no clip -- see gold_14b_empty_menu "
+                              "for BLOCKING-1's fix shown with one present); row list otherwise "
+                              "identical to Gen 2's (gb_create_hook does not special-case the "
+                              "generation for the menu itself, only for the ROM lookup and the "
+                              "moveset merge behind it)")
 
     s.tap("A", settle=BIG_SETTLE)          # select CREATE -> pick_species(1), restricted to 151
     s.shot("13c_species_picker", "#50: UX-parity -- Gen 1's CREATE also opens pick_species() -- "

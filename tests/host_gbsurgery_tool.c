@@ -19,9 +19,15 @@
  *     --op dv BOX SLOT STAT V      STAT in atk|def|spe|spc, V 0..15
  *     --op delete BOX SLOT         gbs_delete
  *     --op move FROM_BOX SLOT TO_BOX   gbs_move (prints the landing slot)
- *     --op create BOX DEX LEVEL    BACKLOG #50: gb_new_mon() -> gbs_insert (box only,
+ *     --op create BOX DEX          BACKLOG #50: gb_new_mon() -> gbs_insert (box only,
  *                                  same as pdna_gen12.c's own gb_create_hook -- see
- *                                  its own comment for why the party is refused).
+ *                                  its own comment for why the party is refused). NO
+ *                                  level argument (G1 review LOW-3, 2026-09-08: this
+ *                                  line still said "BOX DEX LEVEL" after the UX-parity
+ *                                  rewrite dropped the level picker -- and this tool's
+ *                                  own do_create() to match, see its header comment) --
+ *                                  the level is rom_gblearn_min_level()'s own answer,
+ *                                  computed the same way gb_create_hook computes it.
  *                                  Needs --rom (a Gen-1/2 ROM matching SAVE's own
  *                                  generation); the OT name/id are the fixed test
  *                                  values "GATEX"/12345, not SAVE's own trainer --
