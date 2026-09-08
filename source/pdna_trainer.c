@@ -41,8 +41,9 @@ static u16  s_wait(u16 mask) {
   return k;
 }
 
-/* numeric entry via the on-screen keyboard; returns `cur` on cancel. */
-static uint32_t num_entry(const char* prompt, uint32_t cur, uint32_t maxv) {
+/* numeric entry via the on-screen keyboard; returns `cur` on cancel.
+ * Exported (pdna_trainer.h) for P1b's Gen-1/2 card -- see the header comment. */
+uint32_t num_entry(const char* prompt, uint32_t cur, uint32_t maxv) {
   char init[12], out[12];
   siprintf(init, "%lu", (unsigned long)cur);
   if (!osk_search(prompt, init, out, sizeof(out))) return cur;
@@ -80,11 +81,32 @@ static void flag_row_paint(uint8_t* sb1, PkGame game, int (*flagnum)(PkGame, int
                            const char* const* names, int idx, int y, bool sel) {
   int fn = flagnum(game, idx);
   bool on = fn >= 0 && pk_flag_get(sb1, game, fn);
-  char row[40]; siprintf(row, "%-15s %s", names[idx], on ? "ON" : "off");
+  trainer_flag_row_paint(names[idx], on, y, sel);
+}
+
+/* Exported (pdna_trainer.h): the same "label  ON/off" row this file's own
+ * flag_row_paint above paints, factored out so P1b's Gen-1/2 badge screen can
+ * draw badges with the identical look without a PkGame/pk_flag_get dependency. */
+void trainer_flag_row_paint(const char* label, bool on, int y, bool sel) {
+  char row[40]; siprintf(row, "%-15s %s", label, on ? "ON" : "off");
   if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
   else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
   ui_text(8, y, sel ? UI_SELTEXT : (on ? UI_OK : UI_DIM), row);
 }
+
+/* Exported (pdna_trainer.h): the plain trainer-card page's own "label  value" row,
+ * factored out of tcard_row_paint below so P1b's Gen-1/2 card draws with the
+ * identical look (same rect, same %-6s padding, same selection colors). */
+void trainer_row_paint(int y, bool sel, const char* label, const char* val,
+                       uint16_t val_ink) {
+  if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+  else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
+  char line[64]; siprintf(line, "%-6s %s", label, val);
+  ui_text(6, y, sel ? UI_SELTEXT : val_ink, line);
+}
+
+/* Exported (pdna_trainer.h): the bottom key-legend line every plain page prints. */
+void trainer_key_legend(const char* text) { ui_text(4, 152, UI_DIM, text); }
 
 /* On/off toggler for a set of flags (badges / frontier symbols). Returns true if
  * anything changed. Edits SaveBlock1 flags in place; the caller commits SB1. */
@@ -108,7 +130,7 @@ static bool flag_set_editor(uint8_t* sb1, PkGame game, const char* title,
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
       for (int i = 0; i < vis && top + i < count; i++)
         flag_row_paint(sb1, game, flagnum, names, top + i, 16 + i * 9, top + i == sel);
-      ui_text(4, 152, UI_DIM, "A toggle  U/D  B back");
+      trainer_key_legend("A toggle  U/D  B back");
     } else if (sel != pv.sel) {
       flag_row_paint(sb1, game, flagnum, names, pv.sel, 16 + (pv.sel - top) * 9, false);
       flag_row_paint(sb1, game, flagnum, names, sel,    16 + (sel    - top) * 9, true);
@@ -607,7 +629,7 @@ static int stars_editor(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         star_row_paint(sb1, sb2, game, dex, i, 16 + i * 9, i == sel);
       ui_text(4, 62, UI_DIM, "Each ON = one star (card color).");
       if (!dex) ui_text(4, 72, UI_DIM, "n/a: needs the generated art data.");
-      ui_text(4, 152, UI_DIM, "A toggle  U/D  B back");
+      trainer_key_legend("A toggle  U/D  B back");
     } else {
       if (sel != pv.sel) {
         star_row_paint(sb1, sb2, game, dex, pv.sel, 16 + pv.sel * 9, false);
@@ -833,10 +855,7 @@ static void tcard_row_paint(uint8_t* sb1, uint8_t* sb2, PkGame game, const char*
       break;
     default: lbl = ""; val[0] = 0;
   }
-  if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-  else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
-  char line[64]; siprintf(line, "%-6s %s", lbl, val);
-  ui_text(6, y, sel ? UI_SELTEXT : (idx == TF_MONEY ? UI_OK : UI_TEXT), line);
+  trainer_row_paint(y, sel, lbl, val, idx == TF_MONEY ? UI_OK : UI_TEXT);
 }
 
 static void tcard_render(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
@@ -882,7 +901,7 @@ static void tcard_render(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
     { char lt[40]; ui_truncate(lt, line, 28); ui_text(10, y, UI_TEXT, lt); }
 
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
-    ui_text(4, 152, UI_DIM, edit ? "U/D field  A edit  B save" : "B back");
+    trainer_key_legend(edit ? "U/D field  A edit  B save" : "B back");
   } else if (sel != pv->sel) {
     /* the only thing a plain UP/DOWN moves: the two affected rows. Reachable only in
      * edit mode -- the read-only page exits after this function's one full paint,
