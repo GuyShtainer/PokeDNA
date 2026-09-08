@@ -8828,35 +8828,54 @@ static void __attribute__((noinline)) gb_reconcile_on_load(void) {
  * directory can carry more than the single slot tools/fuse_sav.py --gb supports (the
  * default delta-gb recipe fuses Red.sav + Gold.sav + Crystal.sav together). Skips the
  * menu when there is exactly one, matching the single-fused-save fallback's own
- * "just open it" behaviour. No cancel option: there is no file browser underneath to
- * fall back to in this build, so a choice is the only way forward. */
+ * "just open it" behaviour.
+ *
+ * #62 review D4: was a floating ui_popup_vfit() panel that drew EVERY entry regardless
+ * of what the panel it computed actually fit (rows silently ran off the bottom past
+ * FUSED_GB_MAX_ENTRIES=12's worth of names), and its wait_keys() never listened for
+ * KEY_B at all -- "No cancel option" used to be true (no file browser underneath to
+ * fall back to), but A3's delta-gb-only recipe changed that: this picker is now
+ * revisited from A3's caller loop every time the user backs OUT of a GB session, so a
+ * way to leave the picker itself (not just pick a save) is load-bearing, not optional.
+ * Rebuilt on gb_pick_box's own shape (pdna_gen12.c) instead: full-screen ui_clear(),
+ * a top/window scroll sized by ui_popup_vfit()'s RETURNED visible-row count (not the
+ * raw entry count), KEY_B -> return -1, its own footer. */
 static int gb_delta_pick_save(void) {
   int n = fused_gb_save_count();
   if (n <= 0) return -1;
   if (n == 1) return 0;
+  if (n > FUSED_GB_MAX_ENTRIES) n = FUSED_GB_MAX_ENTRIES;   /* defensive; fuse_gb.py caps this too */
   const char* names[FUSED_GB_MAX_ENTRIES];
-  int m = (n > FUSED_GB_MAX_ENTRIES) ? FUSED_GB_MAX_ENTRIES : n;
-  for (int i = 0; i < m; i++) {
+  for (int i = 0; i < n; i++) {
     const char* nm = 0; const uint8_t* base = 0; uint32_t sz = 0;
     fused_gb_save(i, &nm, &base, &sz);
     names[i] = nm ? nm : "?";
   }
-  int sel = 0;
+  int my, mh;
+  int vis = ui_popup_vfit(n, 14, 18, 8, &my, &mh);   /* rows that actually fit on screen */
+  if (vis < 1) vis = 1;
+  int sel = 0, top = 0;
   for (;;) {
-    int my, mh;
-    ui_popup_vfit(m, 14, 18, 8, &my, &mh);
-    const int mx = 16, mw = 208;
-    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
-    ui_text(mx + 6, my + 4, UI_TITLE, "PICK A SAVE");
-    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
-    for (int i = 0; i < m; i++) {
-      int y = my + 18 + i * 14; bool s = (i == sel);
-      if (s) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
-      ui_text(mx + 10, y, s ? UI_SELTEXT : UI_TEXT, names[i]);
+    if (sel < top) top = sel;
+    if (sel >= top + vis) top = sel - vis + 1;
+
+    ui_clear();
+    ui_text(4, 3, UI_TITLE, "PICK A SAVE");
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    int shown = n - top;
+    if (shown > vis) shown = vis;
+    for (int i = 0; i < shown; i++) {
+      int idx = top + i;
+      int y = 18 + i * 14; bool s = (idx == sel);
+      if (s) ui_panel(2, y - 1, UI_SCR_W - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(10, y, s ? UI_SELTEXT : UI_TEXT, names[idx]);
     }
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A);
-    if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : m - 1;
-    else if (k & KEY_DOWN) sel = (sel + 1) % m;
+    ui_hline(0, 147, UI_SCR_W, UI_BORDER);
+    ui_text(4, 150, UI_DIM, "A pick  B exit");
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return -1;
+    if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % n;
     else if (k & KEY_A) return sel;
   }
 }
@@ -8967,10 +8986,27 @@ static void view_save(const char* path) {
       /* BACKLOG #62: neither of the single-slot fused payloads (Gen-3 or GB, both
        * tools/fuse_sav.py) applied -- try the fuse_gb.py directory, which is where
        * the delta-gb build's whole Red/Gold/Crystal corpus actually lives. Mirrors
-       * the single-fused-GB branch above line for line once a save is picked. */
-      int pick = gb_delta_pick_save();
-      const char* nm = 0; const uint8_t* base = 0; uint32_t psz = 0;
-      if (pick >= 0 && fused_gb_save(pick, &nm, &base, &psz) && pdna_gen12_size_is_gb(psz)) {
+       * the single-fused-GB branch above line for line once a save is picked.
+       *
+       * #62 review A3: gb_delta_pick_save() now lives INSIDE this loop, not called
+       * once before it -- the single-fused-GB branch above can get away with
+       * re-entering the SAME session on every GB12_ENTER_OK (there is only ever one
+       * save there), but with several fused saves that pattern never let the user
+       * reach any save but the first: B backed the session out, GB12_ENTER_OK was
+       * true, and the old `while` immediately re-opened the identical `pick` again
+       * with no way out at all (delta-gb-only's whole reachable session was this
+       * loop). Re-picking on every pass makes B in an open session return to the
+       * picker to choose a different save, and B in the picker itself (gb_delta_pick_
+       * save's own D4 fix) breaks out here -- falling through to the shared "not a
+       * valid Gen-3 .sav" parse-failure path below, exactly like "no pick was ever
+       * possible" already did before this fix. */
+      bool any_picked = false;
+      for (;;) {
+        int pick = gb_delta_pick_save();
+        if (pick < 0) break;
+        const char* nm = 0; const uint8_t* base = 0; uint32_t psz = 0;
+        if (!fused_gb_save(pick, &nm, &base, &psz) || !pdna_gen12_size_is_gb(psz)) break;
+        any_picked = true;
         memcpy(g_save, base, psz);
         memset(&g_vinfo, 0, sizeof g_vinfo);
         g_save_size = psz;
@@ -8984,8 +9020,11 @@ static void view_save(const char* path) {
         }
         log_line("save: no single-slot fused save -> using fused GB corpus entry %s (%lu B)",
                  nm ? nm : "?", (unsigned long)psz);
-        while (pdna_gen12_show_image(path, g_save, psz, g_save + GB12_PRISTINE_OFF, 3)
-               == GB12_ENTER_OK) {}
+        if (pdna_gen12_show_image(path, g_save, psz, g_save + GB12_PRISTINE_OFF, 3) != GB12_ENTER_OK)
+          break;                        /* not a clean back-out -- leave, matching the hardware fork */
+        /* else: user backed all the way out (B) -- loop back to the picker */
+      }
+      if (any_picked) {
         perf_span_end();
         s_crumb_shown_armed = false;
         return;
@@ -9290,7 +9329,11 @@ static void view_save(const char* path) {
            * into even if one were needed. */
           int pick = gb_delta_pick_save();
           if (pick < 0) {
-            msg_wait("GB IMPORT", UI_DIM, "No fused GB saves.", "Rebuild with tools/fuse_gb.py.");
+            /* #62 review D4: pick<0 now also means "the user pressed B in the
+             * picker", not only "nothing is fused" -- only say the latter when it
+             * is actually true, or a cancel would read like a build error. */
+            if (fused_gb_save_count() <= 0)
+              msg_wait("GB IMPORT", UI_DIM, "No fused GB saves.", "Rebuild with tools/fuse_gb.py.");
           } else {
             pdna_gen12_show_fused(pick, (uint8_t)(g_game == PK_RS ? 1 : g_game == PK_FRLG ? 4 : 3));
           }

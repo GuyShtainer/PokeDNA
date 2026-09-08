@@ -465,6 +465,24 @@ delta-gb:               # 'delta' fused with Red/Gold/Crystal (ROM+save) + Emera
 	@echo "  Crystal (ROM+save each) are readable by the GB half. Personal-use only:"
 	@echo "  never commit, publish, or share this image."
 
+# #62 review A3: same GB corpus as delta-gb, but NO fuse_sav.py step -- the flash chip
+# starts blank (no Gen-3 save at all), so the ONLY reachable session is straight into
+# the GB save picker (pdna_main.c's NV_GB path) and the full editable GB session.
+# Verified by review to boot to PICK A SAVE, then VIEW/EDIT/LEGALITY/MOVE TO
+# BOX/COPY/RELEASE/CREATE, with no Gen-3 detour to reach it through.
+delta-gb-only:
+	@$(MAKE) PDNA_TARGET=delta rebuild
+	@python3 tools/fuse_gb.py pokedna-delta.gba \
+	  $(GB_ROMS)/gb/Red.gb $(GB_ROMS)/gb/Red.sav \
+	  $(GB_ROMS)/gb/Gold.gbc $(GB_ROMS)/gb/Gold.sav \
+	  $(GB_ROMS)/gb/Crystal.gbc $(GB_ROMS)/gb/Crystal.sav \
+	  -o pokedna-delta-gb-only.gba --force
+	@python3 tools/fuse_gb.py --check pokedna-delta-gb-only.gba
+	@echo ""
+	@echo "  pokedna-delta-gb-only.gba built -- no Gen-3 save fused, flash chip starts"
+	@echo "  blank. Red/Gold/Crystal (ROM+save each) are readable by the GB half."
+	@echo "  Personal-use only: never commit, publish, or share this image."
+
 # --- artless variants -------------------------------------------------------
 # Same code, same source/ tree — the ~21 generated art files are excluded from the BUILD
 # (PDNA_ARTLESS=1: filtered out of CFILES/SFILES, source/embed/ dropped from SRCDIRS, and
