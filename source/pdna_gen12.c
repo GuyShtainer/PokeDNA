@@ -1531,8 +1531,11 @@ static bool __attribute__((noinline)) gb_paste_write(const GbEditMon* mon, int b
   }
 
   log_line("=== gb paste -> %s box %d slot %d ===", g_ed->path, box, newslot);
-  bool ok = gb_persist("paste");           /* on failure gb_persist() has already rolled
-                                             * RAM back to what the card holds */
+  /* #62 review D2: "on failure gb_persist() has already rolled RAM back to what the
+   * card holds" is true of the card-write (#else) half only -- the PDNA_DELTA half
+   * REFUSES but KEEPS the edit for the rest of this session (there is no card to roll
+   * back to; see gb_persist's own PDNA_DELTA branch). */
+  bool ok = gb_persist("paste");
   if (!ok) gb_paste_sidecar_undo(path);
   return ok;
 }
@@ -1803,6 +1806,17 @@ static bool gb_persist(const char* what_for_log) {
   (void)what_for_log;
   log_line("gb %s: refused (PDNA_DELTA has no SD for a GB image)", what_for_log);
   app_log_flush();
+  /* #62 review D2 (BLOCKING): the refusal above is "no card to write to", not "this
+   * edit is void" -- the edit already landed in g_ed->img (every caller applies its
+   * edit to img BEFORE calling gb_persist). Re-baseline pristine to the post-edit
+   * image and re-census so the grid shows what was just edited instead of pre-edit
+   * bytes, and so a LATER gb_rollback() (a different edit failing further down this
+   * same session) rolls back to this edit's own bytes, not discarding it. Without
+   * this, the session was internally inconsistent: the grid painted post-edit bytes
+   * while pristine/rollback still pointed at whatever the card last held. */
+  memcpy(g_ed->pristine, g_ed->img, g_ed->len);
+  gb_census(g_m);
+  g_m->loaded = -1;
   snd_error();
   msg_wait("GAME BOY SAVE", UI_WARN, "Edits are in-session only",
            "in the emulator build.");

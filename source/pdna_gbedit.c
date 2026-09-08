@@ -157,10 +157,24 @@ static bool gbedit_confirm_ex(const GbEditMon* e, const char* title,
                         PDNA_GBEDIT_CONFIRM_MAXLN, UI_TEXT, stale)
          * PDNA_GBEDIT_CONFIRM_LINE_H;
   }
+  /* #62 review D5: under PDNA_DELTA, gb_persist() always REFUSES the card write (no
+   * SD in the emulator build) and keeps the edit in-session instead -- `a_verb` and
+   * the BAK_L1/L2 pair below both promise a backup + card write that will not happen,
+   * so this build says the true thing instead of the shared SD-half wording. */
+#ifdef PDNA_DELTA
+  (void)a_verb;
+  ui_text(20, y + PDNA_GBEDIT_AB_DY1, UI_TEXT, "A = write (session only)");
+#else
   ui_text(20, y + PDNA_GBEDIT_AB_DY1, UI_TEXT, a_verb);
+#endif
   ui_text(20, y + PDNA_GBEDIT_AB_DY2, UI_WARN, b_verb);
+#ifndef PDNA_DELTA
   ui_text(20, PDNA_GBEDIT_BAK_Y1, UI_DIM, PDNA_GBEDIT_BAK_L1);
   ui_text(20, PDNA_GBEDIT_BAK_Y2, UI_DIM, PDNA_GBEDIT_BAK_L2);
+#else
+  ui_text(20, PDNA_GBEDIT_BAK_Y1, UI_DIM, "Kept for this session only,");
+  ui_text(20, PDNA_GBEDIT_BAK_Y2, UI_DIM, "not written to a card.");
+#endif
   u16 k = s_wait(KEY_A | KEY_B);
   return (k & KEY_A) != 0;
 }

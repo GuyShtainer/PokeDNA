@@ -241,10 +241,13 @@ int pdna_gen12_show(const char* path, uint8_t met_game);
  * read a second time. `img` must remain valid for the whole call and is EDITED IN PLACE
  * when `pristine` is non-NULL: that buffer (>= len bytes, caller-owned, GB12_PRISTINE_OFF
  * into the same 128 KiB save buffer is the intended home) receives a byte-exact copy at
- * entry and is the rollback after a failed card write. NULL = read-only session, no
- * EDIT row. `len` is the FILE length (RTC tail included), and `path` is where an edit is
- * persisted (sf_backup_rolling + sf_write_verified, Omega-only). Design:
- * docs/GEN12-EDIT-DESIGN.md sections 3.2-3.3. */
+ * entry and is the rollback after a failed card write -- EXCEPT under PDNA_DELTA, where
+ * there is no card to roll back to: gb_persist()'s emulator branch re-baselines
+ * `pristine` to the post-edit `img` instead, so a refused persist KEEPS the edit for the
+ * rest of this session rather than discarding it (see gb_persist(), pdna_gen12.c).
+ * NULL = read-only session, no EDIT row. `len` is the FILE length (RTC tail included),
+ * and `path` is where an edit is persisted (sf_backup_rolling + sf_write_verified,
+ * Omega-only). Design: docs/GEN12-EDIT-DESIGN.md sections 3.2-3.3. */
 #define GB12_PRISTINE_OFF 0x10000u   /* a GB image (<= 32816 B) never reaches this */
 int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
                           uint8_t* pristine, uint8_t met_game);
