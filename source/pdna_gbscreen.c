@@ -492,6 +492,90 @@ void gbscr_close(GbScreen* gs) {
   gs->ok = false;   /* no persistent handle to release -- see the header's own note */
 }
 
+/* ---------------------------------------------------------------------------
+ * U2c: the Gen-1 player pic. gb_sprite_gen1_buf() decodes to a plain index
+ * (0..3, 0 = lightest) per pixel, packed row-major with stride `w` -- NOT the
+ * ROM's own bit-plane tile format. gbscr_pack_pic()/the GBSCR_SRC_PIC case
+ * below are this module's OWN pack/unpack pair (never need to match the ROM's
+ * layout, since this code both writes and reads it): 4 pixels/byte, 2 bits
+ * each, LSB-first (leftmost column in the low bits), 2 bytes per tile ROW (8
+ * px), 16 B/tile -- GBSCR_PIC_PACKED_BYTES for the full 7x7 grid. Same DMG
+ * ramp rom_gbui.c's own (static, not exported) DMG_SHADE uses -- duplicated
+ * here rather than exported across a module boundary for four uint16_t.
+ * --------------------------------------------------------------------------- */
+#define GBSCR_PIC_GB8_TO_RGB15(v) ((uint16_t)((((v) >> 3) & 0x1Fu) | \
+                                    ((((v) >> 3) & 0x1Fu) << 5) | ((((v) >> 3) & 0x1Fu) << 10)))
+static const uint16_t kGbscrPicShade[4] = {
+  GBSCR_PIC_GB8_TO_RGB15(0xF8), GBSCR_PIC_GB8_TO_RGB15(0xA8),
+  GBSCR_PIC_GB8_TO_RGB15(0x58), GBSCR_PIC_GB8_TO_RGB15(0x10)
+};
+
+/* `px` is gb_sprite_gen1_buf()'s own output: index 0..3 per pixel, row-major,
+ * stride `w` (info.w, NOT GB_SPRITE_MAX_W). `tiles_w`/`tiles_h` (info.wt/ht,
+ * 1..7) bound which of the 49 tile slots actually get real data -- any tile
+ * beyond the decoded grid (never happens for a 7x7 Gen-1 pic, but Slowbro-
+ * sized smaller pics exist in principle) stays zeroed (index 0, lightest). */
+static void gbscr_pack_pic(const uint8_t* px, int w, int h, int tiles_w, int tiles_h, uint8_t* out) {
+  memset(out, 0, GBSCR_PIC_PACKED_BYTES);
+  if (tiles_w > 7) tiles_w = 7;
+  if (tiles_h > 7) tiles_h = 7;
+  for (int ty = 0; ty < tiles_h; ty++) {
+    for (int tx = 0; tx < tiles_w; tx++) {
+      uint8_t* td = out + (ty * 7 + tx) * 16;
+      for (int ry = 0; ry < 8; ry++) {
+        int py = ty * 8 + ry;
+        uint8_t b0 = 0, b1 = 0;
+        if (py < h) {
+          for (int cx = 0; cx < 4; cx++) {
+            int pxx = tx * 8 + cx;
+            uint8_t v = (pxx < w) ? (uint8_t)(px[py * w + pxx] & 3u) : 0u;
+            b0 = (uint8_t)(b0 | (v << (cx * 2)));
+          }
+          for (int cx = 0; cx < 4; cx++) {
+            int pxx = tx * 8 + 4 + cx;
+            uint8_t v = (pxx < w) ? (uint8_t)(px[py * w + pxx] & 3u) : 0u;
+            b1 = (uint8_t)(b1 | (v << (cx * 2)));
+          }
+        }
+        td[ry * 2 + 0] = b0;
+        td[ry * 2 + 1] = b1;
+      }
+    }
+  }
+}
+
+bool gbscr_decode_pic_gen1(GbScreen* gs, uint8_t* buf, uint32_t buf_len) {
+  if (!gs || !gs->ok || gs->gen != PDNA_GEN1 || !gs->gu.playerpic) return false;
+  if (!buf || buf_len < GBSCR_PIC_TAIL_BYTES) return false;
+
+  uint8_t* pic_out = buf;
+  uint8_t* px = buf + GBSCR_PIC_PACKED_BYTES;
+  uint8_t* work = px + GB_SPRITE_MAX_PX;
+  GbSpriteInfo info;
+  GbSpriteErr err;
+
+#ifndef PDNA_DELTA
+  char path[GB_ROM_PATH_MAX];
+  if (!gbscr_resolve_path(gs->gen, path, (int)sizeof path)) return false;
+  FIL fil;
+  memset(&fil, 0, sizeof fil);
+  if (f_open(&fil, path, FA_READ) != FR_OK) return false;
+  err = gb_sprite_gen1_buf(px, work, gbscr_sd_read, &fil, gs->gu.playerpic, &info);
+  f_close(&fil);
+#else
+  const uint8_t* base; uint32_t size;
+  if (!fused_gb_rom(gs->gen, &base, &size)) return false;
+  FusedGbSlice slice = { base, size };
+  err = gb_sprite_gen1_buf(px, work, fused_gb_slice_read, &slice, gs->gu.playerpic, &info);
+#endif
+  if (err != GB_SPRITE_OK) return false;
+  if (info.wt < 1 || info.wt > 7 || info.ht < 1 || info.ht > 7) return false;
+
+  gbscr_pack_pic(px, info.w, info.h, info.wt, info.ht, pic_out);
+  gs->cache.pic = pic_out;
+  return true;
+}
+
 /* One cell's 8x8 RGB15 pixels, looked up through `local` (a RomGbUi copy whose
  * .ctx/.read the caller has just rebound to gs->cache, the RAM tile bank --
  * U2b item 1, never a live FIL/FusedGbSlice any more). BLANK
@@ -515,9 +599,24 @@ static bool gbscr_tile_pixels(const GbScreen* gs, RomGbUi* local, int idx, uint1
     case GBSCR_SRC_BADGES:
       return rom_gbui_tile(local, local->badges, v, 2, 0, 0, 0, out) != 0;
     case GBSCR_SRC_PIC:
-      /* U2b: the Gen-1 player pic is a separate compressed codec
-       * (gb_sprite_gen1), not a rom_gbui_tile() block. Not implemented here --
-       * U2a never requests this src. Falls through to BLANK. */
+      /* U2c: the Gen-1 player pic -- a separate compressed codec
+       * (gb_sprite_gen1), decoded once by gbscr_decode_pic_gen1() into
+       * gs->cache.pic (OUR OWN packed format, not a rom_gbui_tile() block).
+       * `v` is the tile index (0..48, row-major over the 7x7 grid) gbscr_cell
+       * was given. No cache.pic (never decoded, or Gen 2) or an out-of-range
+       * tile falls through to the same flat BLANK every other unavailable
+       * src uses. */
+      if (gs->cache.pic && v < GBSCR_PIC_TILES) {
+        const uint8_t* td = gs->cache.pic + (uint32_t)v * 16u;
+        for (int ry = 0; ry < 8; ry++) {
+          uint8_t b0 = td[ry * 2 + 0], b1 = td[ry * 2 + 1];
+          for (int cx = 0; cx < 4; cx++) out[ry * 8 + cx] = kGbscrPicShade[(b0 >> (cx * 2)) & 3u];
+          for (int cx = 0; cx < 4; cx++) out[ry * 8 + 4 + cx] = kGbscrPicShade[(b1 >> (cx * 2)) & 3u];
+        }
+        return true;
+      }
+      for (int i = 0; i < 64; i++) out[i] = GBSCR_BLANK_COLOR;
+      return true;
     case GBSCR_SRC_BLANK:
     default:
       for (int i = 0; i < 64; i++) out[i] = GBSCR_BLANK_COLOR;
@@ -625,6 +724,36 @@ void gbscr_flush(GbScreen* gs, const char* legend_extra) {
   }
 
   if (gb_scale_mode != 0) gbscr_paint_legend_stretched(legend_extra);
+}
+
+/* U2c: pixel bounds of a `w`x`h` group of cells starting at (cx,cy), in the
+ * CURRENT gb_scale_mode -- for a screen's own cursor frame, drawn on the
+ * framebuffer directly AFTER gbscr_flush() (never a tile, per design sec
+ * "Cursor" -- a coloured 1-px frame, not part of the tilemap). Uses the SAME
+ * LUTs/formula blit_stretched() itself reads, so the cursor always outlines
+ * exactly the cells it claims to, at either scale -- a screen never has to
+ * know the stretch math to draw a correct highlight. `x1`/`y1` are ONE PAST
+ * the last covered pixel (m3_frame's own convention). */
+void gbscr_cell_rect(int cx, int cy, int w, int h, int* x0, int* y0, int* x1, int* y1) {
+  if (gb_scale_mode == 0) {
+    if (x0) *x0 = GBSCR_ORIGIN_X + cx * 8;
+    if (y0) *y0 = GBSCR_ORIGIN_Y + cy * 8;
+    if (x1) *x1 = GBSCR_ORIGIN_X + (cx + w) * 8;
+    if (y1) *y1 = GBSCR_ORIGIN_Y + (cy + h) * 8;
+    return;
+  }
+  int sx0 = cx * 8, sx1 = (cx + w) * 8 - 1;
+  int sy0 = cy * 8, sy1 = (cy + h) * 8 - 1;
+  int g0 = sx0 >> 1, p0 = sx0 & 1;
+  int dx0 = 3 * g0 + (p0 ? 1 : 0);
+  int g1 = sx1 >> 1, p1 = sx1 & 1;
+  int dx1 = 3 * g1 + (p1 ? 1 : 0) + (p1 ? 2 : 1);   /* one past the last dest col */
+  int dy0 = gbscr_y_dst0[sy0];
+  int dy1 = gbscr_y_dst0[sy1] + gbscr_y_dst_count[sy1];
+  if (x0) *x0 = dx0;
+  if (y0) *y0 = dy0;
+  if (x1) *x1 = dx1;
+  if (y1) *y1 = dy1;
 }
 
 /* ---------------------------------------------------------------------------

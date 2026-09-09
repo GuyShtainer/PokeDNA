@@ -123,6 +123,19 @@ typedef enum {
  * by the caller on top of what need_mask asks gbscr_open() to reserve. */
 #define GBSCR_NEED_TEXTBOX   (1u << GBSCR_SRC_TEXTBOX)
 #define GBSCR_NEED_CARDFRAME (1u << GBSCR_SRC_CARDFRAME)
+
+/* U2c: the Gen-1 player pic, gb_sprite_gen1's own 7x7-tile (56x56 px) decode,
+ * packed into OUR OWN 2-bit-per-pixel format (16 B/tile, NOT the ROM's planar
+ * 2bpp layout -- see gbscr_decode_pic_gen1()'s own comment) so 49 tiles fit
+ * 784 B. GBSCR_PIC_DECODE_SCRATCH is the codec's own transient px+work need
+ * (gb_sprite_codec.h: GB_SPRITE_MAX_PX + GB_SPRITE_WORK) -- freed the moment
+ * gbscr_decode_pic_gen1() returns; a caller sizing one arena-tail slice for
+ * BOTH the shell's cache and the pic (U2b review 0b: one slice, carved) adds
+ * GBSCR_PIC_TAIL_BYTES on top of gbscr_tail_need()'s own result. */
+#define GBSCR_PIC_TILES 49
+#define GBSCR_PIC_PACKED_BYTES (GBSCR_PIC_TILES * 16u)                 /* 784 */
+#define GBSCR_PIC_DECODE_SCRATCH (GB_SPRITE_MAX_PX + GB_SPRITE_WORK)    /* 3,920 */
+#define GBSCR_PIC_TAIL_BYTES (GBSCR_PIC_PACKED_BYTES + GBSCR_PIC_DECODE_SCRATCH) /* 4,704 */
 #define GBSCR_NEED_BADGES    (1u << GBSCR_SRC_BADGES)
 
 /* One located ROM block, bulk-copied into the tail buffer at open: `rom_off` is
@@ -144,6 +157,11 @@ typedef struct {
   const uint8_t* tail;
   GbscrBlock blocks[GBSCR_MAX_BLOCKS];
   int        nblocks;
+  /* U2c: the decoded, packed Gen-1 player pic (GBSCR_PIC_PACKED_BYTES, or NULL
+   * if never decoded / decode failed) -- set by gbscr_decode_pic_gen1(), read
+   * by gbscr_tile_pixels()'s GBSCR_SRC_PIC case. NOT one of `blocks` above (it
+   * is not a rom_gbui block and is not served through gbscr_mem_read()). */
+  const uint8_t* pic;
 } GbscrCache;
 
 /* U2b item 1: pure (no tonc/FatFs) -- host-testable directly (tests/
@@ -244,6 +262,33 @@ bool gbscr_open(uint8_t gen, GbScreen* gs, uint8_t* tail, uint32_t tail_len,
  * leaving it, without every caller having to remember to call cfg_save() itself. */
 void gbscr_close(GbScreen* gs);
 
+/* U2c: decode the Gen-1 player pic ONCE (never per repaint) and expose it to
+ * gbscr_tile_pixels()'s GBSCR_SRC_PIC case via gs->cache.pic. Call this AFTER
+ * a successful gbscr_open(PDNA_GEN1, ...) -- it is a no-op (false) on Gen 2, on
+ * a `gs` that never opened, or when the ROM never located a player-pic offset.
+ *
+ * `buf` (>= GBSCR_PIC_TAIL_BYTES) is caller-owned (the SAME gb12_arena_tail()
+ * slice as `tail`, past the bytes gbscr_open() used -- U2b review item 0b: one
+ * slice, carved, not a second borrow): buf[0 .. GBSCR_PIC_PACKED_BYTES) becomes
+ * the packed pic (retained -- gs->cache.pic points into it and it must stay
+ * alive for the screen's whole visit); the rest is transient codec scratch
+ * (GBSCR_PIC_DECODE_SCRATCH), free to be reused for anything else once this
+ * call returns.
+ *
+ * This does its OWN small ROM read (gbscr_open() already closed its FIL / let
+ * go of the fused slice by the time it returns) -- re-resolves the path (SD
+ * build) or re-slices the fused image (delta build), same helpers gbscr_open()
+ * itself uses. One-time cost at open, never a repaint cost.
+ *
+ * Returns false (gs->cache.pic left NULL -- GBSCR_SRC_PIC cells then paint the
+ * same flat BLANK colour they always did) on any failure: not Gen 1, `gs` not
+ * open, no located playerpic offset, `buf` too small, the ROM could not be
+ * re-opened/re-sliced, or the codec itself failed (a malformed/corrupt pic
+ * blob -- GB_SPRITE_E_HEADER/E_DATA/E_READ/E_ARGS). Never crashes on a bad ROM;
+ * the shell simply shows no pic, same posture as every other GBSCR_SRC_*'s own
+ * fail-closed path. */
+bool gbscr_decode_pic_gen1(GbScreen* gs, uint8_t* buf, uint32_t buf_len);
+
 /* U2b item 3: writes config.cfg (via app_cfg_save(), pdna_app.h) NOW iff
  * gb_scale_mode changed at least once during `gs`'s visit (gs->scale_dirty, set
  * by gbscr_toggle_scale()) -- then clears the flag, so a screen that calls this
@@ -295,6 +340,13 @@ void gbscr_toggle_scale(GbScreen* gs);
  * own A OK / B BACK / SEL SIZE rows. GBA-only (touches vid_mem/tonc); a no-op if
  * `gs` never opened. */
 void gbscr_flush(GbScreen* gs, const char* legend_extra);
+
+/* U2c: pixel bounds (x1/y1 one past the last covered pixel) of a `w`x`h` group
+ * of cells at (cx,cy), in the CURRENT gb_scale_mode -- for a screen's own
+ * cursor frame, drawn on the framebuffer directly after gbscr_flush(). Any of
+ * the four out-pointers may be NULL. GBA-only (reads gb_scale_mode/the LUTs
+ * this shell already carries; not part of the pure host-testable half). */
+void gbscr_cell_rect(int cx, int cy, int w, int h, int* x0, int* y0, int* x1, int* y1);
 
 /* U2a's own DEMO screen: opens the shell for `gen`, draws the located font's
  * whole 128-glyph sheet inside a text-box-tile border plus one line of text, and
