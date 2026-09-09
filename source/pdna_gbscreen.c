@@ -22,6 +22,7 @@
 #include "pdna_app.h"         /* PDNA_DIR, app_can_edit, app_gb_rom_path, ... */
 #include "pdna_origin_art.h"  /* PDNA_GEN1/2, pdna_origin_art_stack_room       */
 #include "ui.h"                /* ui_fill_rect, ui_ptext, ui_ptext_shadow      */
+#include "pdna_layout.h"       /* PDNA_GBSCR_KEY_.. / PDNA_GBSCR_ACT_.. -- D1 fix, measured by host_textfit */
 #ifdef PDNA_DELTA
 #include "fused_gb.h"
 #endif
@@ -712,14 +713,41 @@ static bool gbscr_legend_overridden(const GbScreen* gs) {
  * truncates on a whole-glyph boundary and appends '~' instead of slicing a
  * glyph -- applied here to every 1:1 legend line, base AND override, so
  * "nothing clipped" is actually true rather than merely usually not
- * noticed. */
+ * noticed.
+ *
+ * D1 fix (U2c 2nd re-verify): ui_ptext_fit() only stops a glyph from being
+ * SLICED -- it still truncates ("SEL S~", "START~") because a joined "KEY
+ * ACTION" string never fit 36 px to begin with (measured: A EDIT 31, B SAVE
+ * 33, SEL SIZE 43, START MORE 57 px). The real fix is two columns, one per
+ * side bar the shell already clears and never painted (the right bar, cleared
+ * above since D9 but empty): the LEFT bar takes the KEY name alone (a table
+ * the shell owns, below -- max 30 px, "START"), the RIGHT bar takes the
+ * ACTION word alone (max 24 px, "MORE"/"SIZE") at the mirrored x
+ * (GBSCR_RIGHT_BAR_X). Neither column ever needs ui_ptext_fit's tilde: every
+ * legal key name and action word this tree ships is asserted to fit at
+ * BUILD time (tests/host_gblegend_test.c), so a live truncation here would
+ * mean that test is missing a case, not that the tilde path is "the fix". */
 #define GBSCR_LEGEND_MAXW (GBSCR_ORIGIN_X - 4)
+#define GBSCR_RIGHT_BAR_X (GBSCR_ORIGIN_X + GBSCR_COLS * 8 + 2)
+#define GBSCR_RIGHT_BAR_MAXW (240 - GBSCR_RIGHT_BAR_X - 2)
+
+/* Shell-owned key-name column, fixed per row (row0=A, row1=B, row2=SEL,
+ * row3=START) for BOTH the base legend and any gbscr_set_legend() override --
+ * a screen never supplies a key name, only the action word for the row(s) it
+ * uses (gs->legend[i] == 0 skips that row's key AND action, e.g. view-mode's
+ * unused A row). */
+static const char* const kGbscrLegendKeys[4] = {
+  PDNA_GBSCR_KEY_A, PDNA_GBSCR_KEY_B, PDNA_GBSCR_KEY_SEL, PDNA_GBSCR_KEY_START
+};
+/* Base (no override) action words for the shell's own 3 fixed rows -- was
+ * "A OK" / "B BACK" / "SEL SIZE" as single joined strings; same 3 keys, now
+ * split across the two bars like every override. */
+static const char* const kGbscrBaseActions[3] = {
+  PDNA_GBSCR_ACT_OK, PDNA_GBSCR_ACT_BACK, PDNA_GBSCR_ACT_SIZE
+};
 
 /* Legend rows, 1:1 mode (design sec 1.5: two stacked columns in the 40-px side
- * bars -- kept to ONE column here, the left bar, since the shell's three fixed
- * lines plus one screen-supplied extra fit in 40 px with room to spare and a
- * second column would only matter for a screen with many more keys than any
- * U2..U5 screen actually has). */
+ * bars -- LEFT bar = key name, RIGHT bar = action word, D1 fix above). */
 static void gbscr_paint_legend_1to1(const GbScreen* gs, const char* extra) {
   ui_fill_rect(0, 0, GBSCR_ORIGIN_X, 160, UI_BG);
   ui_fill_rect(GBSCR_ORIGIN_X + GBSCR_COLS * 8, 0,
@@ -731,13 +759,18 @@ static void gbscr_paint_legend_1to1(const GbScreen* gs, const char* extra) {
    * no separate DIM `extra` slot -- every line is a real key hint here). */
   if (gbscr_legend_overridden(gs)) {
     static const int ys[4] = { 20, 30, 40, 52 };
-    for (int i = 0; i < 4; i++)
-      if (gs->legend[i]) ui_ptext_fit(2, ys[i], GBSCR_LEGEND_MAXW, UI_TEXT, gs->legend[i]);
+    for (int i = 0; i < 4; i++) {
+      if (!gs->legend[i]) continue;
+      ui_ptext(2, ys[i], UI_TEXT, kGbscrLegendKeys[i]);
+      ui_ptext(GBSCR_RIGHT_BAR_X, ys[i], UI_TEXT, gs->legend[i]);
+    }
     return;
   }
-  ui_ptext_fit(2, 20, GBSCR_LEGEND_MAXW, UI_TEXT, "A OK");
-  ui_ptext_fit(2, 30, GBSCR_LEGEND_MAXW, UI_TEXT, "B BACK");
-  ui_ptext_fit(2, 40, GBSCR_LEGEND_MAXW, UI_TEXT, "SEL SIZE");
+  static const int base_ys[3] = { 20, 30, 40 };
+  for (int i = 0; i < 3; i++) {
+    ui_ptext(2, base_ys[i], UI_TEXT, kGbscrLegendKeys[i]);
+    ui_ptext(GBSCR_RIGHT_BAR_X, base_ys[i], UI_TEXT, kGbscrBaseActions[i]);
+  }
   if (extra) ui_ptext_fit(2, 52, GBSCR_LEGEND_MAXW, UI_DIM, extra);
 }
 
@@ -753,7 +786,13 @@ static void gbscr_paint_legend_1to1(const GbScreen* gs, const char* extra) {
  * its up-to-4 lines are joined with "  " into ONE string and painted alone
  * (no base keys, no separate `extra`) -- the caller is responsible for
  * keeping the joined width on screen (ui_ptext_w()), same as any other
- * stretched-mode legend text. */
+ * stretched-mode legend text.
+ *
+ * D1 fix (U2c 2nd re-verify): gs->legend[i] is now the action word ALONE (the
+ * D1 side-bar split at 1:1 needs that), so the stretched bottom bar -- which
+ * has no side-bar columns to split across -- re-attaches each slot's key name
+ * (kGbscrLegendKeys[i]) here before joining, so it still reads "A EDIT  B
+ * SAVE  SEL SIZE  START MORE" instead of silently losing the keys. */
 static void gbscr_paint_legend_stretched(const GbScreen* gs, const char* extra) {
   ui_fill_rect(0, 150, 240, 10, RGB15(0, 0, 0));
   if (gbscr_legend_overridden(gs)) {
@@ -766,7 +805,7 @@ static void gbscr_paint_legend_stretched(const GbScreen* gs, const char* extra) 
     for (int i = 0; i < 4; i++) {
       if (!gs->legend[i]) continue;
       int w = sniprintf(joined + n, sizeof(joined) - (size_t)n,
-                        "%s%s", (n > 0) ? "  " : "", gs->legend[i]);
+                        "%s%s %s", (n > 0) ? "  " : "", kGbscrLegendKeys[i], gs->legend[i]);
       if (w > 0) n += w;
       if ((size_t)n >= sizeof joined) break;
     }

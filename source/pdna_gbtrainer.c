@@ -815,9 +815,22 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
    * here, and B SAVES on an editable visit, not "back". Replace it entirely
    * (gbscr_set_legend()) instead of only appending to it: can_edit shows the
    * real A/B meanings; read-only drops the A line (there is nothing to
-   * edit). Both list D8's new START key. */
-  static const char* const kLegendEdit[4] = { "A EDIT", "B SAVE", "SEL SIZE", "START MORE" };
-  static const char* const kLegendView[4] = { "B BACK", "SEL SIZE", "START MORE", 0 };
+   * edit). Both list D8's new START key.
+   *
+   * D1 fix (U2c 2nd re-verify): each slot is now the ACTION WORD ALONE --
+   * gbscr_set_legend()'s fixed row order is A/B/SEL/START (kGbscrLegendKeys,
+   * pdna_gbscreen.c) and the shell paints the key name itself in the left
+   * bar, this array's word in the right bar. The joined "A EDIT"/"START
+   * MORE" strings used to overflow the 36-px side bar (57 px for "START
+   * MORE") and truncate to "START~"; splitting the columns means the widest
+   * word here (MORE/SIZE, 22-24 px) never gets near the 36-px budget. View
+   * mode's row 0 (A) stays 0 -- there is nothing to edit read-only. */
+  static const char* const kLegendEdit[4] = {
+    PDNA_GBTR_ACT_EDIT, PDNA_GBTR_ACT_SAVE, PDNA_GBSCR_ACT_SIZE, PDNA_GBTR_ACT_MORE
+  };
+  static const char* const kLegendView[4] = {
+    0, PDNA_GBSCR_ACT_BACK, PDNA_GBSCR_ACT_SIZE, PDNA_GBTR_ACT_MORE
+  };
   gbscr_set_legend(&gs, can_edit ? kLegendEdit : kLegendView);
 
   int sel = 0;

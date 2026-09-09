@@ -218,10 +218,17 @@ typedef struct {
    * override" -- gbscr_flush() paints its own base legend ("A OK  B BACK
    * SEL SIZE") plus the caller's `legend_extra`, unchanged (every existing
    * caller, e.g. gbscr_run_demo's "EXIT", keeps this look). A screen that
-   * calls gbscr_set_legend() REPLACES the base entirely with up to 4 lines
+   * calls gbscr_set_legend() REPLACES the base entirely with up to 4 slots
    * (NULL entries are skipped) -- for a screen like the Gen-1 trainer card
    * where B does not mean "back" and the base legend would contradict the
-   * screen's own key line ("B BACK" next to "B SAVE"). See gbscr_set_legend(). */
+   * screen's own key line ("B BACK" next to "B SAVE"). See gbscr_set_legend().
+   *
+   * D1 fix (U2c 2nd re-verify): a slot holds the ACTION WORD ONLY now ("EDIT",
+   * not "A EDIT") -- the shell paints the fixed key name (row order A/B/SEL/
+   * START, kGbscrLegendKeys in pdna_gbscreen.c) in the LEFT side bar and this
+   * word in the RIGHT side bar, at the same y. Joining "KEY WORD" into one
+   * string never fit the 36-px bar for "START MORE"/"SEL SIZE" and truncated
+   * with a tilde; two columns give each half its own 36-px budget instead. */
   const char* legend[4];
 } GbScreen;
 
@@ -375,9 +382,14 @@ void gbscr_flush(GbScreen* gs, const char* legend_extra);
 /* D9 (U2c review): let a screen REPLACE the shell's base legend instead of
  * only appending to it -- for a screen whose own key line contradicts the
  * base (e.g. the Gen-1 trainer card's "B SAVE" vs. the base's unconditional
- * "B BACK"). `lines[0..3]` are painted in order (NULL entries skipped): at
- * 1:1, one per side-bar row (the same 4 y-slots the base legend + one extra
- * line used); stretched, joined with "  " into ONE bottom-scrim string (the
+ * "B BACK"). `lines[0..3]` is fixed-slot: row0=A, row1=B, row2=SEL, row3=
+ * START (kGbscrLegendKeys, pdna_gbscreen.c) -- pass the ACTION WORD ALONE
+ * ("EDIT", not "A EDIT"; NULL entries skip that whole row, key included, e.g.
+ * a read-only visit's unused A row). D1 fix (U2c 2nd re-verify): at 1:1 the
+ * shell paints the key name in the LEFT side bar and this word in the RIGHT
+ * side bar (each its own 36-px budget -- the old single joined string, up to
+ * 57 px for "START MORE", truncated); stretched, the shell re-attaches the
+ * key name and joins every row with "  " into ONE bottom-scrim string (the
  * caller is responsible for keeping that joined width under the scrim, same
  * as any other stretched-mode legend text -- measure with ui_ptext_w()).
  * Pass an all-NULL array (or never call this) to keep the shell's own base

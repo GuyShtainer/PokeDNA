@@ -1554,4 +1554,29 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBTRAINER_ID_WARN_TITLE "Changes your TRAINER identity"
 #define PDNA_GBTRAINER_ID_WARN_L1    "Your own Pokemon become 'traded'."
 
+/* D1 fix (U2c 2nd re-verify): the GB-screen shell's 1:1-mode legend used to
+ * join a key name and an action word into ONE string per side-bar row ("A
+ * EDIT", "START MORE") -- past the 36-px side bar for anything longer than
+ * "B BACK", it silently truncated ("SEL S~", "START~"). The fix splits the
+ * two into separate columns (pdna_gbscreen.c's LEFT/RIGHT side bars); these
+ * macros are the ONE copy of every key name and action word that appears in
+ * either column, shared by pdna_gbscreen.c (kGbscrLegendKeys/
+ * kGbscrBaseActions), pdna_gbtrainer.c (kLegendEdit/kLegendView), and
+ * tests/host_textfit_test.c's width check -- so the check binds to the exact
+ * strings painted on screen, never a re-typed copy that could drift.
+ * Budgets: GBSCR_LEGEND_MAXW (left bar) and GBSCR_RIGHT_BAR_MAXW (right bar),
+ * both 36 px today (pdna_gbscreen.c). */
+#define PDNA_GBSCR_KEY_A     "A"
+#define PDNA_GBSCR_KEY_B     "B"
+#define PDNA_GBSCR_KEY_SEL   "SEL"
+#define PDNA_GBSCR_KEY_START "START"
+
+#define PDNA_GBSCR_ACT_OK    "OK"
+#define PDNA_GBSCR_ACT_BACK  "BACK"
+#define PDNA_GBSCR_ACT_SIZE  "SIZE"
+
+#define PDNA_GBTR_ACT_EDIT   "EDIT"
+#define PDNA_GBTR_ACT_SAVE   "SAVE"
+#define PDNA_GBTR_ACT_MORE   "MORE"
+
 #endif /* PDNA_LAYOUT_H */

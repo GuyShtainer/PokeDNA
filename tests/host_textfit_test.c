@@ -54,6 +54,9 @@
                             * mirrored copy of gb_editor.c's own LABEL[] table */
 #include "sprite_era.h"    /* se_era_name/se_kind_name — the Sprites grid's real
                             * strings (E4), not a re-typed copy */
+#include "pdna_gbscreen.h" /* GBSCR_ORIGIN_X/GBSCR_COLS — D1 fix (U2c 2nd re-verify):
+                            * the two-column side-bar legend's real budget, not a
+                            * re-typed "36" */
 
 #define SCR_W   UI_SCR_W
 #define SYS8_W  UI_SYS8_W   /* tonc sys8 advance: fixed 8 px per glyph */
@@ -534,6 +537,32 @@ int main(void) {
    * (P1b review D6). */
   PF(PDNA_GBTRAINER_ID_WARN_TITLE, 28, 184);
   PF(PDNA_GBTRAINER_ID_WARN_L1,    28, 184);
+
+  /* D1 fix (U2c 2nd re-verify): pdna_gbscreen.c's 1:1-mode side-bar legend, split
+   * into a LEFT column (the fixed key name, kGbscrLegendKeys) and a RIGHT column
+   * (the action word -- the base's kGbscrBaseActions, or a screen's own
+   * gbscr_set_legend() override, e.g. pdna_gbtrainer.c's kLegendEdit/kLegendView).
+   * Both bars share the SAME 36-px budget (GBSCR_ORIGIN_X - 4 on the left; on the
+   * right, 240 - (GBSCR_ORIGIN_X + GBSCR_COLS*8) - 2 - 2, which is also 36 with
+   * this shell's own constants) -- checked here at x=0 against that budget rather
+   * than the real x, since only the WIDTH matters for either bar. Every string
+   * that ever reaches gbscr_paint_legend_1to1() must be one of these macros
+   * (pdna_layout.h) -- that is the whole point: a screen cannot invent a new key
+   * or action word that isn't measured here. */
+  {
+    const int left_budget  = GBSCR_ORIGIN_X - 4;
+    const int right_budget = 240 - (GBSCR_ORIGIN_X + GBSCR_COLS * 8) - 2 - 2;
+    PF(PDNA_GBSCR_KEY_A,     0, left_budget);
+    PF(PDNA_GBSCR_KEY_B,     0, left_budget);
+    PF(PDNA_GBSCR_KEY_SEL,   0, left_budget);
+    PF(PDNA_GBSCR_KEY_START, 0, left_budget);
+    PF(PDNA_GBSCR_ACT_OK,    0, right_budget);
+    PF(PDNA_GBSCR_ACT_BACK,  0, right_budget);
+    PF(PDNA_GBSCR_ACT_SIZE,  0, right_budget);
+    PF(PDNA_GBTR_ACT_EDIT,   0, right_budget);
+    PF(PDNA_GBTR_ACT_SAVE,   0, right_budget);
+    PF(PDNA_GBTR_ACT_MORE,   0, right_budget);
+  }
 
   /* gb_edit_persist's SF_ERR_RENAME switch + gb_edit_hook's SF_ERR_UNWRITABLE hint —
    * same (28, .., 184) msg_wait clamp. PDNA_GBEDIT_UNCONFIRMED_L2 is deliberately
