@@ -8981,50 +8981,18 @@ static void view_save(const char* path) {
      * overwrites it with the real SaveBlock1 anyway. See gen3_parse_into's contract --
      * the buffer must NOT be a local, which is the bug this signature exists to stop. */
     bool flash_ok = sz && gen3_parse_into(g_save, sz, &probe, g_sb1) && probe.valid;
-    /* BACKLOG #68a: the combined image (a valid Gen-3 flash save AND a fused GB
-     * corpus) offers a boot picker instead of going straight into the Emerald
-     * session. Mirrors the blank-flash "any_picked" loop below almost line for line
-     * (same fused-save copy into g_save, same full pdna_gen12_show_image mount), but
-     * this g_save also holds the day's real Emerald edits, so every return from a GB
-     * mount reloads it from flash before the picker (or the Emerald fallthrough
-     * below) touches g_save again -- the GB mount is read/write scratch on the SAME
-     * buffer and would otherwise leave stale GB bytes where the Gen-3 parse expects
-     * its save. Gated on flash_ok: if the flash chip is blank/invalid, the existing
-     * !flash_ok chain below already owns the fused corpus (as a fallback save to
-     * open, not a choice to offer), and this block does not run at all. */
-    if (flash_ok && fused_gb_present() && fused_gb_save_count() > 0) {
-      const char* g3_label = "Emerald.sav (Gen 3)";
-      if (probe.version_guess == G3_VER_RS) g3_label = "Ruby/Sapphire.sav (Gen 3)";
-      for (;;) {
-        int bp = gb_delta_boot_pick(g3_label);
-        if (bp == 0) break;                      /* Emerald row (or KEY_B) -- fall through */
-        int pick = bp - 1;
-        const char* nm = 0; const uint8_t* base = 0; uint32_t psz = 0;
-        if (!fused_gb_save(pick, &nm, &base, &psz) || !pdna_gen12_size_is_gb(psz)) break;
-        memcpy(g_save, base, psz);
-        memset(&g_vinfo, 0, sizeof g_vinfo);
-        g_save_size = psz;
-        pdna_box_clear_carry();
-        hb_off();
-        { uint8_t rec80[80]; uint32_t csz = 0;
-          if (fused_clip_present(&csz) && csz == sizeof rec80 && fused_clip_read(rec80, csz) &&
-              pk3_validate(rec80)) {
-            clip_copy_from(&g_clip, rec80, false);
-          }
-        }
-        log_line("save: combined-image boot picker -> fused GB entry %s (%lu B)",
-                 nm ? nm : "?", (unsigned long)psz);
-        pdna_gen12_show_image(path, g_save, psz, g_save + GB12_PRISTINE_OFF, 3);
-        /* Whatever the GB mount returned, g_save now holds GB bytes -- restore the
-         * flash's Emerald save before the picker (or the fallthrough) reads g_save
-         * again. sz is already G3_SAVE_FILE_SIZE here (that is what flash_ok means). */
-        flashsave_read(g_save, G3_SAVE_FILE_SIZE);
-      }
-    }
+    /* BACKLOG #68a's own picker fires on g3_ready, not flash_ok alone -- see the
+     * comment where it is actually shown, below this whole if/else-if chain. Real
+     * flash on a fresh emulator boot (no prior in-app save this session) is BLANK
+     * ("save: flash blank/invalid" in the log every time), so flash_ok is false even
+     * for the combined image; the Gen-3 save Emerald boots into there always comes
+     * through the single-slot fused-.sav fallback immediately below instead. */
+    bool g3_from_fused_sav = false;
     uint32_t fsz = 0;
     if (!flash_ok && fused_sav_present(&fsz) && fsz == (uint32_t)G3_SAVE_FILE_SIZE &&
         fused_sav_read(g_save, fsz)) {
       sz = fsz; err = 0;
+      g3_from_fused_sav = true;
       log_line("save: flash blank/invalid -> using the fused save (%lu B)", (unsigned long)fsz);
     } else if (!flash_ok && fused_sav_present(&fsz) && pdna_gen12_size_is_gb(fsz) &&
                fused_sav_read(g_save, fsz)) {
@@ -9121,6 +9089,51 @@ static void view_save(const char* path) {
         perf_span_end();
         s_crumb_shown_armed = false;
         return;
+      }
+    }
+
+    /* BACKLOG #68a: g_save now holds a real Gen-3 save (g3_ready) whenever EITHER
+     * flash_ok (the real flash chip parsed) OR g3_from_fused_sav (the single-slot
+     * fused-.sav fallback just above ran) is true -- on a fresh emulator boot the
+     * combined image reaches Emerald almost always through the SECOND path (see the
+     * comment on g3_from_fused_sav's declaration), so gating on flash_ok alone would
+     * make this picker unreachable in exactly the scenario it exists for. Offer the
+     * picker instead of falling straight through to the ordinary parse below.
+     *
+     * Mirrors the blank-flash "any_picked" loop above almost line for line (same
+     * fused-GB-save copy into g_save, same full pdna_gen12_show_image mount), but
+     * g_save here also holds the day's real Gen-3 save, so every return from a GB
+     * mount must put it back before the picker (or the Emerald fallthrough below)
+     * touches g_save again -- reloaded from WHICHEVER source supplied it, since a
+     * fused-.sav Gen-3 save has no backing flash bytes to flashsave_read() back. */
+    bool g3_ready = flash_ok || g3_from_fused_sav;
+    if (g3_ready && fused_gb_present() && fused_gb_save_count() > 0) {
+      const char* g3_label = "Emerald.sav (Gen 3)";
+      if (probe.version_guess == G3_VER_RS) g3_label = "Ruby/Sapphire.sav (Gen 3)";
+      for (;;) {
+        int bp = gb_delta_boot_pick(g3_label);
+        if (bp == 0) break;                      /* Emerald row (or KEY_B) -- fall through */
+        int pick = bp - 1;
+        const char* nm = 0; const uint8_t* base = 0; uint32_t psz = 0;
+        if (!fused_gb_save(pick, &nm, &base, &psz) || !pdna_gen12_size_is_gb(psz)) break;
+        memcpy(g_save, base, psz);
+        memset(&g_vinfo, 0, sizeof g_vinfo);
+        g_save_size = psz;
+        pdna_box_clear_carry();
+        hb_off();
+        { uint8_t rec80[80]; uint32_t csz = 0;
+          if (fused_clip_present(&csz) && csz == sizeof rec80 && fused_clip_read(rec80, csz) &&
+              pk3_validate(rec80)) {
+            clip_copy_from(&g_clip, rec80, false);
+          }
+        }
+        log_line("save: combined-image boot picker -> fused GB entry %s (%lu B)",
+                 nm ? nm : "?", (unsigned long)psz);
+        pdna_gen12_show_image(path, g_save, psz, g_save + GB12_PRISTINE_OFF, 3);
+        /* Whatever the GB mount returned, g_save now holds GB bytes -- restore the
+         * Gen-3 save before the picker (or the fallthrough) reads g_save again. */
+        if (flash_ok) flashsave_read(g_save, G3_SAVE_FILE_SIZE);
+        else           fused_sav_read(g_save, fsz);
       }
     }
   }
