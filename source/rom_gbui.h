@@ -154,9 +154,16 @@ typedef enum {
  * output on all four of Guy's ROMs (re-verified: tests/host_romgbui_test.c).
  *
  * PDNA_GB_UI_NEED = 2,840 (open_loc's full-scan-fallback chain, the worse of
- * the two entry points) + 3,568 (the shell's planned frame, Sec 3.4: FIL 600
- * + scan window 2048 + tilemap 360 + src 360 + one expanded tile 128 +
- * RomGbUi 72) = 6,408, rounded UP to the next 256-B boundary = 6,656.
+ * the two entry points) + 3,624 (source/pdna_gbscreen.c's gbscr_open() OWN
+ * frame, MEASURED with -fstack-usage 2026-09-09, U2a: FIL 600 + scratch[2048]
+ * + RomGbUiLoc 68 + char rom_path[128] + locals/padding -- the stack-room
+ * gate lives INSIDE gbscr_open() per the design's own sec 3.1, so `need` is
+ * everything from gbscr_open()'s own entry down, not counting whichever
+ * screen calls it) = 6,464, rounded UP to the next 256-B boundary = 6,656 --
+ * UNCHANGED from the pre-measurement estimate (3,568 also rounds up to the
+ * same 6,656), so no call site needed touching, but this is a genuine
+ * measurement now, not a guess: see pdna_gbscreen.h's own note for the full
+ * -fstack-usage breakdown of every function in that file.
  * PDNA_GB_FETCH_NEED/PDNA_GB_ICON_NEED (both 6,144) being in the same order
  * of magnitude, and the artless/delta builds' own "EWRAM ok" line, are NOT
  * evidence this module itself fits within budget while nothing in the build

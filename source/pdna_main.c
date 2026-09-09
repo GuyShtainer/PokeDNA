@@ -71,6 +71,7 @@
 #endif
 #include "pdna_origin_art.h" /* pdna_origin_art_set_romsprite -- registers the RomSprite */
 #include "gb_art_source.h" /* slice E3: the GB half of the same art router, romgb1/romgb2 */
+#include "pdna_gbscreen.h" /* U2a: the shared GB-screen shell, gb_scale_mode/"gbscale" key */
 #include "artbuf.h"        /* mon_decomp -- the shared 8 KiB decode buffer            */
 #include "item_icons.h"    /* item_icon_for -- the compiled rung app_item_icon() tries first */
 #include "type_icons.h"    /* type_icon_for -- the compiled rung app_type_badge() tries first */
@@ -661,10 +662,10 @@ static void cfg_save(void) {
   if (!app_can_edit()) return;
   char buf[CFG_BUF_BYTES];
   int n = sniprintf(buf, sizeof buf,
-                   "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\nyard=%d\nbak=%d\nromoff=%d\n",
+                   "dir=%s\nsort=%d\nrev=%d\nall=%d\nhidden=%d\nanim=%u\nrumble=%u\nrstr=%d\nrdur=%d\npcbox=%d\nyard=%d\nbak=%d\nromoff=%d\ngbscale=%d\n",
                    g_cwd, (int)g_sort, g_sortrev ? 1 : 0, g_show_all ? 1 : 0, g_show_hidden ? 1 : 0,
                    g_anim_mask, rmbl_get_mask(), rmbl_get_strength(), rmbl_get_duration(), g_pc_last_box,
-                   g_yard_visitors ? 1 : 0, g_backup_mode, g_rom_art_off ? 1 : 0);
+                   g_yard_visitors ? 1 : 0, g_backup_mode, g_rom_art_off ? 1 : 0, (int)gb_scale_mode);
   bool truncated = (n < 0 || n >= (int)sizeof buf);
   if (truncated) n = (int)sizeof buf - 1;
 
@@ -742,6 +743,7 @@ static void cfg_load(void) {
       else if (!strcmp(k, "hidden")) g_show_hidden = (v[0] == '1');
       else if (!strcmp(k, "yard"))   g_yard_visitors = (v[0] == '1');
       else if (!strcmp(k, "romoff")) g_rom_art_off = (v[0] == '1');
+      else if (!strcmp(k, "gbscale")) gb_scale_mode = (v[0] == '1') ? 1 : 0;
       else if (!strcmp(k, "bak"))    { int m = v[0] - '0'; if (m >= 0 && m <= 2) g_backup_mode = m; }
       else if (!strcmp(k, "anim"))   { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); g_anim_mask = m & ((1u << ANIM_COUNT) - 1u); }
       else if (!strcmp(k, "rumble")) { unsigned m = 0; for (const char* d = v; *d >= '0' && *d <= '9'; d++) m = m * 10 + (unsigned)(*d - '0'); rmbl_set_mask(m); }
@@ -7687,8 +7689,17 @@ static void pdna_settings(void) {
     }
     pv_sel = sel; pv_valid = true; pv_gen = ui_clear_gen();
 
-    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) { cfg_save(); return; }
+    u16 k = wait_keys(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_SELECT);
+    /* U2a hidden key: SELECT on Settings opens the GB-screen shell's own demo
+     * (font sheet + a text-box border, docs/GB-GAME-SCREENS-DESIGN.md sec
+     * 3.3) so it can be shot standalone before U2b's real trainer card exists.
+     * Tries Gen 1 first (the only generation with a corpus ROM today), falls
+     * back to Gen 2 if Gen 1 has none registered/beside-the-save. */
+    if (k & KEY_SELECT) {
+      gbscr_run_demo(app_gb_rom_path(PDNA_GEN1)[0] ? PDNA_GEN1 : PDNA_GEN2);
+      pv_valid = false;   /* the demo drew over the whole screen -- force a full repaint */
+    }
+    else if (k & KEY_B) { cfg_save(); return; }
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : S_N - 1;
     else if (k & KEY_DOWN) sel = (sel + 1) % S_N;
     else if (k & KEY_A) {
