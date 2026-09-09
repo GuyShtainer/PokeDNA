@@ -841,6 +841,10 @@ static int revalidate_loc(const Scan* s, const RomGbUiLoc* loc) {
       return 0;
     if (!anchor_pack(s, loc->anchor[ROM_GBUI_ANCH_PACK_M], pack_m)) return 0;
     if (crystal) {
+      /* review D2: both pack anchors are genuine tables, so anchor_pack() alone
+       * would accept pack_f := pack_m or the pair swapped; locate() emits them in
+       * ascending scan order, so a genuine record always has PACK_M < PACK_F. */
+      if (loc->anchor[ROM_GBUI_ANCH_PACK_F] <= loc->anchor[ROM_GBUI_ANCH_PACK_M]) return 0;
       if (!anchor_pack(s, loc->anchor[ROM_GBUI_ANCH_PACK_F], pack_f)) return 0;
     } else if (pack_f != 0 || loc->anchor[ROM_GBUI_ANCH_PACK_F] != 0) {
       return 0;

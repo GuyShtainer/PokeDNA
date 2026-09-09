@@ -139,9 +139,9 @@ typedef enum {
  * flags for the file that actually ships.
  *
  * Per-function own-frame sizes (bytes): rd 16, font_verify 160, block_eq
- * 160, distinct_tiles 1568, rom_gbui_open 1144, rom_gbui_open_loc 176,
- * rom_gbui_save_loc 48, rom_gbui_tile 64, rom_gbui_glyph 32, parse_header
- * 104, anchor_pack 24, try_badgeleader_hit 40. sizeof(RomGbUi) = 128,
+ * 160, distinct_tiles 1568, rom_gbui_open 1160, rom_gbui_open_loc 176,
+ * rom_gbui_save_loc 16, rom_gbui_tile 64, rom_gbui_glyph 32, parse_header
+ * 104, anchor_pack 24, try_badgeleader_hit 40. sizeof(RomGbUi) = 120 on ARM (128 on the host: two 8-B pointers),
  * sizeof(RomGbUiLoc) = 108 (BACKLOG #71 grew both from 88/68: RomGbUi
  * carries an anchor[ROM_GBUI_ANCH_COUNT] the same shape RomGbUiLoc does, see
  * the struct comments). locate(), try_font/try_textbox/try_cardframe/
@@ -156,19 +156,22 @@ typedef enum {
  * inline both.)
  *
  * The deepest call chain is rom_gbui_open() -> distinct_tiles() -> rd():
- * 1,144 + 1,568 + 16 = 2,728 B own-frames-summed (locate() is now INSIDE
- * rom_gbui_open()'s 1,144, per the inlining note above -- this replaces the
+ * 1,160 + 1,568 + 16 = 2,744 B own-frames-summed (locate() is now INSIDE
+ * rom_gbui_open()'s 1,160, per the inlining note above -- this replaces the
  * old rom_gbui_open() -> locate() -> distinct_tiles() -> rd() = 2,720 B
  * three-frame chain with an equivalent two-frame one, 8 B worse from the
  * anchor bookkeeping locate() now does). font_verify is NOT on this path
- * (1,144 + 160 + 16 = 1,320 is smaller).
+ * (1,160 + 160 + 16 = 1,336 is smaller). NOTE (review, 2026-09-09): these
+ * numbers are measured WITH -ffast-math -fno-strict-aliasing, which
+ * Makefile:237 adds to every build of this file; the pre-#71 frames were
+ * insensitive to those two flags, this file's are not (1,144 without them).
  *
  * rom_gbui_open_loc()'s own fall-to-a-full-scan path (open_loc -> open ->
  * distinct_tiles -> rd; verified by objdump that this is a real `bl`, not a
  * sibling/tail call -- open_loc's own frame is still live on the stack while
  * open() runs) adds its 176-B frame (up from 120: revalidate_loc() and every
  * anchor_*() helper it calls are now inlined into it) on top of the 2,728
- * above: 176 + 2,728 = 2,904 B -- 64 B worse than the pre-#71 2,840, entirely
+ * above: 176 + 2,744 = 2,920 B -- 80 B worse than the pre-#71 2,840, entirely
  * from open_loc()'s own frame growing by the same 56 B (120 -> 176) that the
  * newly-inlined anchor re-derivation logic costs.
  *
@@ -185,7 +188,7 @@ typedef enum {
  * (re-verified: tests/host_romgbui_test.c, and again after #71 via
  * tools/gbui_dump.py against the same corpus).
  *
- * PDNA_GB_UI_NEED = 2,904 (open_loc's full-scan-fallback chain, the worse of
+ * PDNA_GB_UI_NEED = 2,920 (open_loc's full-scan-fallback chain, the worse of
  * the two entry points, UP from 2,840 -- see the #71 delta above) + 1,576
  * (source/pdna_gbscreen.c's gbscr_open_inner() OWN frame, UNCHANGED by #71:
  * pdna_gbscreen.c was not touched by this batch) = 4,480 -- PLUS the leg the
@@ -203,7 +206,7 @@ typedef enum {
  * gbscr_cache_block() (the U2b item 1 bulk-copy of FONT + need_mask's blocks
  * into `tail`, called AFTER rom_gbui_open_loc() returns, never nested inside
  * it) adds only 16 B of its own frame plus whichever GbReadFn it calls
- * (gbscr_sd_read: 24 B) -- 40 B, far under the 2,904-B rom_gbui_open_loc chain
+ * (gbscr_sd_read: 24 B) -- 40 B, far under the 2,920-B rom_gbui_open_loc chain
  * this replaces as the deepest path, so it does not move PDNA_GB_UI_NEED.
  *
  * D1/D2 fix (U2a review, 2026-09-09): the gate used to live INSIDE the frame
@@ -213,18 +216,17 @@ typedef enum {
  * artless/SD build's Settings path this made the gate refuse EVERY time on
  * real hardware. The gate lives in a thin `gbscr_open()` wrapper that runs
  * BEFORE the frame exists (the old body is `gbscr_open_inner()`), so
- * PDNA_GB_UI_NEED is the number above taken AS MEASURED -- 5,384 --
+ * PDNA_GB_UI_NEED is the number above taken AS MEASURED -- 5,400 --
  * deliberately NOT rounded up to a 256-B boundary: rounding up here only ever
  * makes the gate MORE conservative than the real chain, and the whole point
  * of this fix is to stop over-refusing on a build that is already tight on
  * stack.
- * PDNA_GB_FETCH_NEED/PDNA_GB_ICON_NEED (both 6,144) being in the same order
- * of magnitude, and the artless/delta builds' own "EWRAM ok" line, are NOT
- * evidence this module itself fits within budget while nothing in the build
- * calls it yet -- gc-sections drops an unreferenced module entirely, so
- * neither number says anything about rom_gbui.c until a caller links it in
- * and its own chain is measured again under real linkage. */
-#define PDNA_GB_UI_NEED 5384
+ * This module IS linked and the gate IS live: source/pdna_gbscreen.c gates on
+ * PDNA_GB_UI_NEED before gbscr_open_inner, and rom_gbui_open/_open_loc/_tile/
+ * _glyph are present in PokeDNA-artless.elf (review, 2026-09-09). The
+ * artless/delta "EWRAM ok" lines say nothing about STACK; only the measured
+ * chain above does. Margins at 5,400: Settings 6,600 B free, nav chain 7,712. */
+#define PDNA_GB_UI_NEED 5400
 
 /* Each entry is the SCAN HIT file offset (where the locator's ScanCb pattern
  * matched), never a located block itself. gen 1 uses FONT/TEXTBOX/CARDFRAME/
