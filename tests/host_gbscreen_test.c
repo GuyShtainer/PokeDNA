@@ -1,8 +1,9 @@
 /* Host test for source/pdna_gbscreen.c's PURE half (U2a, the GB-screen shell) --
  * the charmap mapping gbscr_text()/gbscr_raw() use to decide FONT-vs-BLANK, and the
- * two stretch LUTs (docs/GB-GAME-SCREENS-DESIGN.md sec 1.5). The impure half
- * (gbscr_open/close/flush, ROM I/O + VRAM blit) is compiled OUT here via
- * -DPDNA_GBSCREEN_HOST_TEST -- see pdna_gbscreen.c's own top-of-file note.
+ * stretch-blit tables/formula blit_stretched() actually reads (docs/
+ * GB-GAME-SCREENS-DESIGN.md sec 1.5). The impure half (gbscr_open/close/flush,
+ * ROM I/O + VRAM blit) is compiled OUT here via -DPDNA_GBSCREEN_HOST_TEST --
+ * see pdna_gbscreen.c's own top-of-file note.
  *
  *   cc -std=c11 -I source -DPDNA_GBSCREEN_HOST_TEST tests/host_gbscreen_test.c \
  *      source/pdna_gbscreen.c source/gb_edit.c source/gen1_save.c source/gen2_save.c \
@@ -14,10 +15,13 @@
  *      lands in ONE cell as GBSCR_SRC_FONT with the game's own charmap byte;
  *   2) a space becomes a GBSCR_SRC_BLANK cell, never a FONT tile (the design's own
  *      rule -- charmap 0x7F is a blank cell, not a font glyph to render);
- *   3) gbscr_x_lut has exactly 240 entries covering 0..159 with exactly 80
- *      duplicated values (the "duplicate every 2nd source column" stretch rule);
- *   4) gbscr_y_lut has exactly 160 entries covering 0..143 with exactly 16
- *      duplicated values (the "duplicate every 9th source row" rule);
+ *   3) gbscr_y_dst0/gbscr_y_dst_count (D4 fix -- these are the tables
+ *      blit_stretched() actually reads, not the old unused x_lut/y_lut pair):
+ *      144 entries, counts in {1,2}, exactly 16 twos, and dst0[r]+count[r]
+ *      tiles destination rows 0..159 with every row covered exactly once;
+ *   4) the x formula blit_stretched() actually uses (dx0 = 3*(s>>1) + (s&1),
+ *      dxn = (s&1) ? 2 : 1) tiles destination columns 0..239 exactly once over
+ *      source s = 0..159;
  *   5) gbscr_raw() applies the identical space-is-blank rule to already-GB-encoded
  *      bytes, with no ASCII step.
  */
@@ -116,38 +120,48 @@ int main(void) {
     CHECK(gs.src[2] == GBSCR_SRC_FONT && gs.map[2] == 0x81, "raw cell2");
   }
 
-  /* 3) x LUT: 240 entries, every value in [0,159], exactly 80 duplicated values. */
+  /* 3) gbscr_y_dst0/gbscr_y_dst_count (the tables blit_stretched() actually
+   * reads): 144 entries, every count in {1,2}, exactly 16 twos, and the
+   * (dst0[r], dst0[r]+count[r]) ranges tile destination rows 0..159 with
+   * every row covered exactly once (a mutation to any entry here should be
+   * caught: e.g. gbscr_y_dst0[7] = 99 breaks the tiling check below). */
   {
-    int seen[160] = {0};
-    for (int i = 0; i < 240; i++) {
-      CHECK(gbscr_x_lut[i] <= 159, "x_lut[%d]=%d out of range", i, gbscr_x_lut[i]);
-      seen[gbscr_x_lut[i]]++;
+    int dup = 0;
+    int covered[160] = {0};
+    for (int r = 0; r < 144; r++) {
+      int dst0 = gbscr_y_dst0[r], cnt = gbscr_y_dst_count[r];
+      CHECK(cnt == 1 || cnt == 2, "y_dst_count[%d]=%d, want 1 or 2", r, cnt);
+      if (cnt == 2) dup++;
+      for (int k = 0; k < cnt; k++) {
+        int d = dst0 + k;
+        CHECK(d >= 0 && d < 160, "y_dst0[%d]+%d=%d out of destination range", r, k, d);
+        if (d >= 0 && d < 160) covered[d]++;
+      }
     }
-    int dup = 0, total = 0;
-    for (int v = 0; v < 160; v++) {
-      total += seen[v];
-      if (seen[v] == 2) dup++;
-      else CHECK(seen[v] == 1, "x_lut source col %d seen %d times, want 1 or 2", v, seen[v]);
+    CHECK(dup == 16, "y_dst rows with count 2: %d, want 16", dup);
+    for (int d = 0; d < 160; d++) {
+      CHECK(covered[d] == 1, "destination row %d covered %d times, want exactly 1", d, covered[d]);
     }
-    CHECK(total == 240, "x_lut total entries %d, want 240", total);
-    CHECK(dup == 80, "x_lut duplicated source columns %d, want 80", dup);
   }
 
-  /* 4) y LUT: 160 entries, every value in [0,143], exactly 16 duplicated values. */
+  /* 4) The x formula blit_stretched() actually uses: for source column
+   * s = 0..159, dx0 = 3*(s>>1) + (s&1), dxn = (s&1) ? 2 : 1 -- tiles
+   * destination columns 0..239 exactly once. */
   {
-    int seen[144] = {0};
-    for (int i = 0; i < 160; i++) {
-      CHECK(gbscr_y_lut[i] <= 143, "y_lut[%d]=%d out of range", i, gbscr_y_lut[i]);
-      seen[gbscr_y_lut[i]]++;
+    int covered[240] = {0};
+    for (int s = 0; s < 160; s++) {
+      int g = s >> 1, p = s & 1;
+      int dx0 = 3 * g + (p ? 1 : 0);
+      int dxn = p ? 2 : 1;
+      for (int k = 0; k < dxn; k++) {
+        int d = dx0 + k;
+        CHECK(d >= 0 && d < 240, "x formula s=%d +%d=%d out of destination range", s, k, d);
+        if (d >= 0 && d < 240) covered[d]++;
+      }
     }
-    int dup = 0, total = 0;
-    for (int v = 0; v < 144; v++) {
-      total += seen[v];
-      if (seen[v] == 2) dup++;
-      else CHECK(seen[v] == 1, "y_lut source row %d seen %d times, want 1 or 2", v, seen[v]);
+    for (int d = 0; d < 240; d++) {
+      CHECK(covered[d] == 1, "destination column %d covered %d times, want exactly 1", d, covered[d]);
     }
-    CHECK(total == 160, "y_lut total entries %d, want 160", total);
-    CHECK(dup == 16, "y_lut duplicated source rows %d, want 16", dup);
   }
 
   if (g_fail) { printf("%d FAILED\n", g_fail); return 1; }

@@ -112,15 +112,18 @@ typedef struct {
  * screen; persisted as config.cfg's "gbscale=0|1" key next to romgb1/romgb2. */
 extern uint8_t gb_scale_mode;
 
-/* The two stretch LUTs (design sec 1.5, brief's exact spec): x_lut[240] maps each
- * DESTINATION column (0..239) to the SOURCE column (0..159) it reads, duplicating
- * every 2nd source column (80 duplicates); y_lut[160] maps each destination row
- * (0..159) to the source row (0..143) it reads, duplicating every 9th source row
- * (16 duplicates). Both exact-integer, no runtime division -- literal const
- * tables, not a computed formula. Exposed here (not `static` in the .c) so
- * tests/host_gbscreen_test.c can check them directly. */
-extern const uint8_t gbscr_x_lut[240];
-extern const uint8_t gbscr_y_lut[160];
+/* D4 fix (U2a review): the tables blit_stretched() (pdna_gbscreen.c) ACTUALLY
+ * reads, exposed here (not `static`) so tests/host_gbscreen_test.c checks the
+ * real thing instead of a pair of unused "destination -> source" LUTs the
+ * blit never touched. For source row r (0..143), gbscr_y_dst0[r] is the FIRST
+ * destination row it shows on and gbscr_y_dst_count[r] (1 or 2) how many
+ * consecutive destination rows -- every 9th source row maps to two
+ * destination rows, 16 duplicates, covering destination 0..159 exactly once.
+ * x needs no table: the blit's own period-2 shift/mask formula (dx0 = 3*(s>>1)
+ * + (s&1), dxn = (s&1) ? 2 : 1, for source column s = 0..159) is exact and
+ * division-free already, covering destination 0..239 exactly once. */
+extern const uint8_t gbscr_y_dst0[144];
+extern const uint8_t gbscr_y_dst_count[144];
 
 /* 1:1 canvas origin in the Mode-3 framebuffer (design sec 1.5). */
 #define GBSCR_ORIGIN_X 40

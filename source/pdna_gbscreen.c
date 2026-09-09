@@ -47,50 +47,30 @@ uint8_t gb_scale_mode = 0;
 #endif
 
 /* ---------------------------------------------------------------------------
- * The two stretch LUTs (design sec 1.5 / this slice's brief, exact spec).
- * x_lut[240]: for every group of 2 source columns (2k, 2k+1), 2k maps to ONE
- * destination column and 2k+1 (the "every 2nd source column") maps to TWO --
- * 80 groups cover source 0..159 -> destination 0..239, 80 duplicated values.
- * y_lut[160]: for every group of 9 source rows, the last row of the group
- * (the "every 9th source row") maps to TWO destination rows instead of one --
- * 16 groups cover source 0..143 -> destination 0..159, 16 duplicated values.
- * Both are literal const tables (generated once, by hand, from the formula
- * above -- see this slice's own notes) -- no division anywhere in this file
- * touches them; the per-cell blit below uses its OWN small integer formulas
- * (x: shift/mask, period 2; y: the precomputed y_dst0/y_dst_count tables) so
- * that no runtime division ever falls inside the pixel loop either.
- * --------------------------------------------------------------------------- */
-const uint8_t gbscr_x_lut[240] = {
-  0,1,1,2,3,3,4,5,5,6,7,7,8,9,9,10,11,11,12,13,13,14,15,15,16,17,17,18,19,19,
-  20,21,21,22,23,23,24,25,25,26,27,27,28,29,29,30,31,31,32,33,33,34,35,35,
-  36,37,37,38,39,39,40,41,41,42,43,43,44,45,45,46,47,47,48,49,49,50,51,51,
-  52,53,53,54,55,55,56,57,57,58,59,59,60,61,61,62,63,63,64,65,65,66,67,67,
-  68,69,69,70,71,71,72,73,73,74,75,75,76,77,77,78,79,79,80,81,81,82,83,83,
-  84,85,85,86,87,87,88,89,89,90,91,91,92,93,93,94,95,95,96,97,97,98,99,99,
-  100,101,101,102,103,103,104,105,105,106,107,107,108,109,109,110,111,111,
-  112,113,113,114,115,115,116,117,117,118,119,119,120,121,121,122,123,123,
-  124,125,125,126,127,127,128,129,129,130,131,131,132,133,133,134,135,135,
-  136,137,137,138,139,139,140,141,141,142,143,143,144,145,145,146,147,147,
-  148,149,149,150,151,151,152,153,153,154,155,155,156,157,157,158,159,159
-};
-
-const uint8_t gbscr_y_lut[160] = {
-  0,1,2,3,4,5,6,7,8,8,9,10,11,12,13,14,15,16,17,17,18,19,20,21,22,23,24,25,
-  26,26,27,28,29,30,31,32,33,34,35,35,36,37,38,39,40,41,42,43,44,44,45,46,
-  47,48,49,50,51,52,53,53,54,55,56,57,58,59,60,61,62,62,63,64,65,66,67,68,
-  69,70,71,71,72,73,74,75,76,77,78,79,80,80,81,82,83,84,85,86,87,88,89,89,
-  90,91,92,93,94,95,96,97,98,98,99,100,101,102,103,104,105,106,107,107,108,
-  109,110,111,112,113,114,115,116,116,117,118,119,120,121,122,123,124,125,
-  125,126,127,128,129,130,131,132,133,134,134,135,136,137,138,139,140,141,
-  142,143,143
-};
-
-/* Reverse of gbscr_y_lut above, precomputed so the per-cell blit never divides
- * by 9: for source row r (0..143), y_dst0[r] is the FIRST destination row it
- * shows on, and y_dst_count[r] (1 or 2) how many consecutive destination rows.
- * x needs no equivalent table -- its period is 2, so `s>>1`/`s&1` are exact and
- * division-free already. */
-static const uint8_t y_dst0[144] = {
+ * The stretch-blit tables (design sec 1.5, this slice's exact spec).
+ *
+ * D4 fix (U2a review): this file used to ALSO carry a pair of gbscr_x_lut[240]/
+ * gbscr_y_lut[160] "destination -> source" tables, tested by
+ * tests/host_gbscreen_test.c -- but blit_stretched() below never read them; it
+ * always used the inline x formula and the y_dst0/y_dst_count tables. That
+ * made the LUT tests pure theater (400 B of dead ROM data, "verified" by a
+ * test that could never catch a real bug in the blit). Deleted; the tables
+ * actually used by the blit are exported (not `static`) so the host test can
+ * check THOSE instead -- see this file's own y_dst0/y_dst_count below and the
+ * x formula inline in blit_stretched().
+ *
+ * y_dst0[144]/y_dst_count[144]: reverse of a "source row -> destination rows"
+ * mapping, precomputed so the per-cell blit never divides by 9 -- for source
+ * row r (0..143), y_dst0[r] is the FIRST destination row it shows on, and
+ * y_dst_count[r] (1 or 2) how many consecutive destination rows (every 9th
+ * source row maps to two destination rows instead of one: 16 groups cover
+ * source 0..143 -> destination 0..159). x needs no equivalent table -- its
+ * period is 2, so blit_stretched()'s own `s>>1`/`s&1` formula is exact and
+ * division-free already: for source column s (0..159), group g = s>>1, parity
+ * p = s&1, the two destination columns are dx0 = 3*g + (p?1:0) for dxn = p?2:1
+ * columns (covers destination 0..239 exactly once, duplicating every 2nd
+ * source column, 80 duplicates). */
+const uint8_t gbscr_y_dst0[144] = {
   0,1,2,3,4,5,6,7,8,10,11,12,13,14,15,16,17,18,20,21,22,23,24,25,26,27,28,
   30,31,32,33,34,35,36,37,38,40,41,42,43,44,45,46,47,48,50,51,52,53,54,55,
   56,57,58,60,61,62,63,64,65,66,67,68,70,71,72,73,74,75,76,77,78,80,81,82,
@@ -99,7 +79,7 @@ static const uint8_t y_dst0[144] = {
   127,128,130,131,132,133,134,135,136,137,138,140,141,142,143,144,145,146,
   147,148,150,151,152,153,154,155,156,157,158
 };
-static const uint8_t y_dst_count[144] = {
+const uint8_t gbscr_y_dst_count[144] = {
   1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,
   1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,
   1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,
@@ -358,13 +338,13 @@ static void blit_1to1(int cx, int cy, const uint16_t tile[64]) {
 }
 
 /* Stretched blit: x uses the period-2 shift/mask formula directly (exact,
- * division-free); y uses the precomputed y_dst0/y_dst_count tables above (also
- * division-free) -- no runtime division anywhere in this loop. */
+ * division-free); y uses the precomputed gbscr_y_dst0/gbscr_y_dst_count tables
+ * above (also division-free) -- no runtime division anywhere in this loop. */
 static void blit_stretched(int cx, int cy, const uint16_t tile[64]) {
   int sx0 = cx * 8;
   for (int ly = 0; ly < 8; ly++) {
     int sy = cy * 8 + ly;
-    int dy0 = y_dst0[sy], dyn = y_dst_count[sy];
+    int dy0 = gbscr_y_dst0[sy], dyn = gbscr_y_dst_count[sy];
     const uint16_t* trow = &tile[ly * 8];
     for (int dyi = 0; dyi < dyn; dyi++) {
       u16* row = &vid_mem[(unsigned)(dy0 + dyi) * 240u];
@@ -396,10 +376,21 @@ static void gbscr_paint_legend_1to1(const char* extra) {
   if (extra) ui_ptext(2, 52, UI_DIM, extra);
 }
 
+/* D3 fix (U2a review): stretched mode used to REPLACE the shell's own keys
+ * ("A OK  B BACK  SEL SIZE") with `extra` when a screen supplied one, so a
+ * screen's own key line (e.g. gbscr_run_demo's "EXIT") silently hid the
+ * shell's SELECT-toggle hint. Always paint the shell's keys at x=2; `extra`
+ * (when supplied) goes to its right, its start x computed from the shell
+ * keys' own measured width (plus a fixed gap) so the two strings never
+ * overlap even if a future screen's extra text runs long. */
 static void gbscr_paint_legend_stretched(const char* extra) {
+  static const char* const kShellKeys = "A OK  B BACK  SEL SIZE";
   ui_fill_rect(0, 150, 240, 10, RGB15(0, 0, 0));
-  ui_ptext_shadow(2, 151, UI_TEXT, RGB15(0, 0, 0),
-                  extra ? extra : "A OK  B BACK  SEL SIZE");
+  ui_ptext_shadow(2, 151, UI_TEXT, RGB15(0, 0, 0), kShellKeys);
+  if (extra) {
+    int extra_x = 2 + ui_ptext_w(kShellKeys) + 10;
+    ui_ptext_shadow(extra_x, 151, UI_TEXT, RGB15(0, 0, 0), extra);
+  }
 }
 
 void gbscr_flush(GbScreen* gs, const char* legend_extra) {

@@ -105,16 +105,27 @@ def run_gbscreen_shell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shot
 
     s.tap("SEL", settle=GB_ART_COLD_SETTLE)        # hidden key -> gbscr_run_demo(PDNA_GEN1)
     s.shot("01_1to1", "U2a: the GB-screen shell demo -- Red.gb's own located font, "
-                       "all 128 glyphs (charmap 0x80..0xFF), inside a text-box-tile "
-                       "border, 1:1 centred at (40,8) with the legend in the side "
-                       "bars (default mode, gb_scale_mode=0)")
+                       "all 128 glyphs (charmap 0x80..0xFF), inside a border of "
+                       "RomGbUi.textbox tile 0, 1:1 centred at (40,8) with the "
+                       "legend in the side bars (default mode, gb_scale_mode=0). "
+                       "D9: tile 0 of pokered's TextBoxGraphics "
+                       "(gfx/font/font_extra.2bpp) renders as a bold 'A', not a "
+                       "dialogue-box frame -- the actual frame pieces are tiles "
+                       "~24-31, and painting a proper frame is U2b's job, not "
+                       "this demo's (it only proves the shell fetches and blits "
+                       "a non-font ROM block).")
 
     s.tap("SEL", settle=60)                        # toggle -> stretched
-    s.shot("02_stretched", "U2a: SELECT toggles to stretched (240x160, the two "
-                            "exact-integer LUTs -- x duplicates every 2nd source "
-                            "column, y every 9th source row) -- same font, same "
-                            "border, filling the whole screen, legend as a bottom "
-                            "scrim overlay")
+    s.shot("02_stretched", "U2a: SELECT toggles to stretched (240x160, "
+                            "blit_stretched's own y_dst0/y_dst_count tables + "
+                            "x's period-2 shift/mask formula -- x duplicates "
+                            "every 2nd source column, y every 9th source row) "
+                            "-- same font, same tile-0 'A' border (D9, see "
+                            "01_1to1's caption), filling the whole screen; the "
+                            "bottom scrim now shows the shell's own keys "
+                            "'A OK  B BACK  SEL SIZE' plus this screen's 'EXIT' "
+                            "beside them (D3 fix -- stretched mode used to "
+                            "replace the shell's keys with the screen's own)")
 
     s.tap("SEL", settle=60)                        # toggle back -> 1:1
     s.shot("03_back_1to1", "U2a: SELECT again returns to 1:1 -- a live toggle, not "
