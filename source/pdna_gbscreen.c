@@ -240,11 +240,16 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
                              have_loc ? &loc : 0);
   f_close(&fil);
   if (!ok || (uint8_t)gs->gu.gen != gen) { if (reason) *reason = kReasonOpen; return false; }
-  if (!have_loc || loc.id_hash != gs->gu.id_hash || loc.size != sz) {
-    RomGbUiLoc fresh;
-    rom_gbui_save_loc(&gs->gu, &fresh);
-    gbscr_save_loc(gen, &fresh);
-  }
+  /* D5 fix (U2a review): the old condition here (`!have_loc || id_hash/size
+   * mismatch`) never healed a REJECTED loc -- rom_gbui_open_loc() also falls
+   * back to a full scan on a `check`/gen/revalidate failure inside a
+   * bit-rotted loc that still matches id_hash/size, so that file would fail
+   * the SAME way on every future open forever. Always derive `fresh` from
+   * this open's own successful result and rewrite unless it is BYTE-IDENTICAL
+   * to what was loaded -- a genuine cache hit never touches the card. */
+  RomGbUiLoc fresh;
+  rom_gbui_save_loc(&gs->gu, &fresh);
+  if (!have_loc || memcmp(&fresh, &loc, sizeof fresh) != 0) gbscr_save_loc(gen, &fresh);
   strncpy(gs->rom_path, path, sizeof gs->rom_path - 1);
   gs->rom_path[sizeof gs->rom_path - 1] = 0;
 #else

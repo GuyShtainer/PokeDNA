@@ -7694,9 +7694,15 @@ static void pdna_settings(void) {
      * (font sheet + a text-box border, docs/GB-GAME-SCREENS-DESIGN.md sec
      * 3.3) so it can be shot standalone before U2b's real trainer card exists.
      * Tries Gen 1 first (the only generation with a corpus ROM today), falls
-     * back to Gen 2 if Gen 1 has none registered/beside-the-save. */
+     * back to Gen 2 if Gen 1 has none registered/beside-the-save.
+     * D7 fix (U2a review): app_gb_rom_path(gen)[0] only sees a ROM the user
+     * explicitly REGISTERED -- it never sees gb_art_have()'s own beside-the-
+     * save fallback (a ROM sitting next to the .sav with no registration at
+     * all), so this hidden key wrongly picked Gen 2 whenever a Gen-1 ROM was
+     * only available that way. gb_art_have() is the same "is a ROM actually
+     * usable" check the rest of this shell relies on. */
     if (k & KEY_SELECT) {
-      gbscr_run_demo(app_gb_rom_path(PDNA_GEN1)[0] ? PDNA_GEN1 : PDNA_GEN2);
+      gbscr_run_demo(gb_art_have(PDNA_GEN1) ? PDNA_GEN1 : PDNA_GEN2);
       pv_valid = false;   /* the demo drew over the whole screen -- force a full repaint */
     }
     else if (k & KEY_B) { cfg_save(); return; }
