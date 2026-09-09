@@ -372,8 +372,11 @@ def run_u2c_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
     s.shot("01_card_1to1", "U2c: Red's OWN trainer card, 1:1 centred at (40,8) -- "
                             "NAME/MONEY/TIME painted with the CARDFRAME block's frame "
                             "tiles for the panel border, the player pic (gb_sprite_gen1, "
-                            "left 5 tile columns only, same as the real game), and "
-                            "both 8-badge rows (all unowned: face tiles)")
+                            "4 tile columns x 6 rows -- the real game's own text-box "
+                            "border overwrites pic column 5 and row 7, D1 review fix), "
+                            "and both 8-badge rows -- all shown OWNED (badge tiles, not "
+                            "face tiles): Red.sav's own wObtainedBadges is 0xFF on this "
+                            "save, all 8 badges genuinely owned")
 
     s.tap("SEL", settle=60)                                 # shell-wide toggle -> stretched
     s.shot("02_card_stretched", "U2c: SELECT stretches the SAME card to 240x160 -- "
@@ -393,20 +396,34 @@ def run_u2c_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
     s.tap("DOWN", settle=gb_shots.SETTLE)
     s.shot("06_cursor_badge0", "U2c: DOWN again -> the first badge (row 1, col 0)")
 
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # instant toggle -> owned
-    s.shot("07_badge0_owned", "U2c: A instantly toggles badge 0 owned -- face tile "
-                               "swaps to the badge tile (never a palette change, "
-                               "design's own 'lit vs unlit is not a palette change' rule)")
+    # D10 (review): Red.sav's badge0 starts OWNED (see shot 01's own caption), so A's
+    # FIRST toggle here goes owned -> UNOWNED (face tile), not the other way around --
+    # shots 07/08 were captioned backwards.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # instant toggle -> UNOWNED
+    s.shot("07_badge0_unowned", "U2c: A instantly toggles badge 0 to UNOWNED (it "
+                                 "started owned, Red.sav's own wObtainedBadges = 0xFF) "
+                                 "-- badge tile swaps to a face tile (never a palette "
+                                 "change, design's own 'lit vs unlit is not a palette "
+                                 "change' rule)")
 
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # toggle back -> unowned
-    s.shot("08_badge0_unowned", "U2c: A again toggles it back to unowned (face tile)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # toggle back -> OWNED
+    s.shot("08_badge0_owned", "U2c: A again toggles it back to OWNED (badge tile)")
 
     s.press_n("UP", 3, settle=gb_shots.SETTLE)               # badge0 -> TIME -> MONEY -> NAME
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # open the NAME editor (osk_input)
-    s.shot("09_editor_name", "U2c: A on NAME opens the EXISTING osk_input() pop-up "
-                              "(via gbtr_edit_row, the same sub-editor the plain page "
-                              "and Gen 2's card already share) -- PokeDNA's own "
-                              "on-screen keyboard, not a game-art dialogue")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # A on NAME -> the identity WARNING first
+    s.shot("09_editor_name", "U2c: A on NAME does NOT open the keyboard directly -- "
+                              "gbtr_id_edit_ok() shows the identity-change WARNING "
+                              "first ('Changes your TRAINER identity / Your own "
+                              "Pokemon become traded', A=yes B=no), once per visit; "
+                              "see shot 09b for the actual keyboard")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # confirm the warning -> osk_input opens
+    s.shot("09b_editor_name_keyboard", "U2c: A (yes) on the warning -- NOW the "
+                                        "EXISTING osk_input() pop-up opens (via "
+                                        "gbtr_edit_row, the same sub-editor the plain "
+                                        "page and Gen 2's card already share) -- "
+                                        "PokeDNA's own on-screen keyboard, not a "
+                                        "game-art dialogue")
 
     s.tap("B", settle=gb_shots.BIG_SETTLE)                   # cancel -> back on the card, NAME selected
     s.shot("10_back_on_card", "U2c: B cancels the name editor, back on the card")

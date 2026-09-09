@@ -187,6 +187,20 @@ uint32_t gbscr_tail_need(uint8_t gen, uint16_t need_mask);
 bool     gbscr_cache_plan(uint8_t gen, uint16_t need_mask, const RomGbUi* gu,
                           uint32_t tail_len, GbscrCache* out);
 
+/* U2c: the Gen-1 player pic pack/unpack pair -- pure arithmetic (no tonc/
+ * FatFs), exported (moved above this module's own tonc/FatFs boundary,
+ * minor U2c review) so tests/host_gbscreen_test.c can round-trip them
+ * directly instead of only exercising them through the shipped ROM-decode
+ * path. `px` is gb_sprite_gen1_buf()'s own output shape (index 0..3 per
+ * pixel, row-major, stride `w`) -- see pdna_gbscreen.c's own top-of-block
+ * comment for the exact packed layout (4 px/byte, 2 bits each, LSB-first,
+ * 16 B/tile). `out`/`packed` must be >= GBSCR_PIC_PACKED_BYTES.
+ * gbscr_unpack_pic_px() returns 0 (the same "lightest" value pack's own
+ * zero-fill leaves for an undecoded tile) for any (px_x, px_y) outside the
+ * tiles_w*8 x tiles_h*8 grid, rather than reading past the buffer. */
+void    gbscr_pack_pic(const uint8_t* px, int w, int h, int tiles_w, int tiles_h, uint8_t* out);
+uint8_t gbscr_unpack_pic_px(const uint8_t* packed, int tiles_w, int tiles_h, int px_x, int px_y);
+
 typedef struct {
   RomGbUi   gu;                 /* located offsets; .ctx/.read are STALE between
                                   * calls -- gbscr_flush() rebinds a local copy to

@@ -296,25 +296,52 @@ int main(void) {
       }
     }
 
-    /* Mutation check (D2c): a corrupted plan (ram_off off by a fixed +8) must
-     * be CAUGHT by the cumulative check above, not silently accepted -- proves
-     * the test has teeth rather than just re-deriving the same formula twice.
-     * This block hand-builds a plan the way gbscr_cache_plan() would EXCEPT for
-     * the injected bug, so it does not need to touch the real function. */
-    {
-      GbscrCache bad; memset(&bad, 0, sizeof bad);
-      bad.nblocks = 2;
-      bad.blocks[0] = (GbscrBlock){ .rom_off = gu.font, .ram_off = 0, .len = 1024 };
-      uint32_t wrong_ram_off = 1024 + 8;   /* should be 1024, not +8 */
-      bad.blocks[1] = (GbscrBlock){ .rom_off = gu.textbox, .ram_off = wrong_ram_off, .len = 512 };
-      uint32_t cursor = 0;
-      bool caught = false;
-      for (int i = 0; i < bad.nblocks; i++) {
-        if (bad.blocks[i].ram_off != cursor) caught = true;
-        cursor += bad.blocks[i].len;
-      }
-      CHECK(caught, "mutation (ram_off = cursor + 8) was NOT caught by the cumulative check");
-    }
+    /* Minor (U2c review): a "mutation check" used to live here that hand-built
+     * its OWN `bad` GbscrCache and re-ran its OWN inline copy of the
+     * cumulative-offset loop against it -- it never called gbscr_cache_plan()
+     * at all, so it could only ever test itself, not the real function.
+     * Deleted; the loop above (which DOES call gbscr_cache_plan() for every
+     * gen/mask combination) is the real coverage. */
+  }
+
+  /* Minor (U2c review): gbscr_pack_pic()/gbscr_unpack_pic_px() round trip --
+   * both moved above this module's own tonc/FatFs boundary specifically so
+   * this test can call them directly. A synthetic 4x3-tile (32x24 px) grid,
+   * every pixel a distinct index derived from its own coordinates (mod 4),
+   * must read back byte-for-byte through pack -> unpack. */
+  {
+    const int tiles_w = 4, tiles_h = 3, w = tiles_w * 8, h = tiles_h * 8;
+    uint8_t px[32 * 24];
+    for (int y = 0; y < h; y++)
+      for (int x = 0; x < w; x++)
+        px[y * w + x] = (uint8_t)((x * 3 + y * 7) & 3);
+
+    uint8_t packed[GBSCR_PIC_PACKED_BYTES];
+    gbscr_pack_pic(px, w, h, tiles_w, tiles_h, packed);
+
+    int mismatches = 0;
+    for (int y = 0; y < h; y++)
+      for (int x = 0; x < w; x++)
+        if (gbscr_unpack_pic_px(packed, tiles_w, tiles_h, x, y) != px[y * w + x]) mismatches++;
+    CHECK(mismatches == 0, "pack/unpack round trip: %d of %d pixels mismatched",
+          mismatches, w * h);
+
+    /* Out-of-range coordinates (past the tiles_w*8 x tiles_h*8 grid) must
+     * return 0, not read past `packed`. */
+    CHECK(gbscr_unpack_pic_px(packed, tiles_w, tiles_h, w, 0) == 0, "unpack past width -> 0");
+    CHECK(gbscr_unpack_pic_px(packed, tiles_w, tiles_h, 0, h) == 0, "unpack past height -> 0");
+    CHECK(gbscr_unpack_pic_px(packed, tiles_w, tiles_h, -1, 0) == 0, "unpack negative x -> 0");
+
+    /* A tile beyond the declared tiles_w x tiles_h grid (but still inside the
+     * full 7x7 GBSCR_PIC_TILES packed buffer) stays zero-filled by pack's own
+     * unconditional memset(out, 0, ...) -- unpack must read that back as 0
+     * too, so reading a wider tiles_w/tiles_h than what was actually packed
+     * never surfaces stale data from a previous pack call. */
+    uint8_t stack_px[8 * 8];
+    memset(stack_px, 3, sizeof stack_px);   /* deliberately non-zero */
+    uint8_t packed2[GBSCR_PIC_PACKED_BYTES];
+    gbscr_pack_pic(stack_px, 8, 8, 1, 1, packed2);   /* only tile (0,0) is real */
+    CHECK(gbscr_unpack_pic_px(packed2, 7, 7, 8, 0) == 0, "tile (1,0) beyond 1x1 -> 0");
   }
 
   if (g_fail) { printf("%d FAILED\n", g_fail); return 1; }

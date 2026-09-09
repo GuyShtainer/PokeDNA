@@ -778,6 +778,15 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
   const char* reason = 0;
   bool ok = gbscr_open(PDNA_GEN1, &gs, tail, shell_need,
                        GBSCR_NEED_CARDFRAME | GBSCR_NEED_BADGES | GBSCR_NEED_TEXTBOX, &reason);
+#ifdef PDNA_U2C_FORCE_FALLBACK
+  /* D10 (review): the fallback branch below (no ROM registered / bad ROM /
+   * non-English release / no tile-bank memory) is this function's only
+   * exit path with no shot -- every real corpus ROM this tree ships opens
+   * fine, so the shot harness can never reach it by driving a real save.
+   * A build-time flag forces the refusal so the honest-header fallback
+   * (D7's header contract) gets ONE real shot instead of staying untested. */
+  if (ok) { gbscr_close(&gs); ok = false; reason = "forced (PDNA_U2C_FORCE_FALLBACK)"; }
+#endif
   if (!ok) {
     gb12_arena_tail_release();
     /* D7 (review): kReasonOpen's longest text used to be 65 chars -- into this
@@ -793,7 +802,13 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
   /* Best-effort: a failed pic decode leaves GBSCR_SRC_PIC cells painting the
    * same flat BLANK every other unavailable src uses -- not a hard refusal of
    * the whole card (design: the photo is one field among several). */
-  gbscr_decode_pic_gen1(&gs, tail + shell_need, GBSCR_PIC_TAIL_BYTES);
+  /* Minor (U2c review): `need - shell_need` is the ACTUAL size of the tail
+   * past the shell's own share -- always equal to GBSCR_PIC_TAIL_BYTES today
+   * (need's own formula above), but passing the constant made
+   * gbscr_decode_pic_gen1()'s own `buf_len < GBSCR_PIC_TAIL_BYTES` check a
+   * tautology that could never catch a future mismatch between `need`'s
+   * formula and this call. Passing the derived size makes the check real. */
+  gbscr_decode_pic_gen1(&gs, tail + shell_need, need - shell_need);
 
   /* D9 (review): the shell's own base legend ("A OK  B BACK  SEL SIZE")
    * contradicts this screen's real keys -- there is no A-OK-only meaning
@@ -830,8 +845,15 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
       return pdna_gbtrainer_plain(t, true, can_edit, 0);
     }
     if (k & KEY_B) { want_commit = true; break; }
-    if (!can_edit) continue;
 
+    /* Minor (U2c review): this loop always draws the sel-rect cursor frame
+     * (above, every iteration) regardless of can_edit, but a read-only visit
+     * used to gate EVERY key past this point behind `if (!can_edit) continue`
+     * -- UP/DOWN/LEFT/RIGHT included -- so the cursor was drawn but could
+     * never move: a static highlight frozen on NAME for the whole visit,
+     * which looks broken rather than read-only. Only KEY_A (the actual edit
+     * action) is gated on can_edit now; browsing the card with the cursor
+     * works in both modes. */
     int old_sel = sel;
     if (k & KEY_UP)         sel = (sel > 0) ? sel - 1 : G1C_SEL_MAX - 1;
     else if (k & KEY_DOWN)  sel = (sel + 1) % G1C_SEL_MAX;
@@ -839,7 +861,7 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
       int kk = sel - G1C_BADGE0;
       kk = (kk + ((k & KEY_RIGHT) ? 1 : 7)) & 7;
       sel = G1C_BADGE0 + kk;
-    } else if (k & KEY_A) {
+    } else if (can_edit && (k & KEY_A)) {
       g1card_edit_sel(t, sel);
       g1card_paint(&gs, t);
       gbscr_mark_all_dirty(&gs);       /* the field itself may not have moved a

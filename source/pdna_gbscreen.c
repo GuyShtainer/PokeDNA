@@ -294,6 +294,66 @@ bool gbscr_cache_plan(uint8_t gen, uint16_t need_mask, const RomGbUi* gu,
   return true;
 }
 
+/* ---------------------------------------------------------------------------
+ * U2c: the Gen-1 player pic pack/unpack pair -- pure arithmetic (no tonc/
+ * FatFs), moved up from the impure half below (minor, U2c review) so
+ * tests/host_gbscreen_test.c can exercise the pack format directly instead
+ * of only through the shipped decode path. `px` is gb_sprite_gen1_buf()'s
+ * own output shape: index 0..3 per pixel, row-major, stride `w` -- NOT the
+ * ROM's own bit-plane tile format. This module's OWN pack/unpack pair (never
+ * need to match the ROM's layout, since this code both writes and reads it):
+ * 4 pixels/byte, 2 bits each, LSB-first (leftmost column in the low bits), 2
+ * bytes per tile ROW (8 px), 16 B/tile -- GBSCR_PIC_PACKED_BYTES for the
+ * full 7x7 grid. `tiles_w`/`tiles_h` (1..7) bound which of the 49 tile slots
+ * actually get real data; any tile beyond the decoded grid (never happens
+ * for a 7x7 Gen-1 pic, but Slowbro-sized smaller pics exist in principle)
+ * stays zeroed (index 0, lightest) on pack, and unpack naturally reads back
+ * 0 there too. */
+void gbscr_pack_pic(const uint8_t* px, int w, int h, int tiles_w, int tiles_h, uint8_t* out) {
+  memset(out, 0, GBSCR_PIC_PACKED_BYTES);
+  if (tiles_w > 7) tiles_w = 7;
+  if (tiles_h > 7) tiles_h = 7;
+  for (int ty = 0; ty < tiles_h; ty++) {
+    for (int tx = 0; tx < tiles_w; tx++) {
+      uint8_t* td = out + (ty * 7 + tx) * 16;
+      for (int ry = 0; ry < 8; ry++) {
+        int py = ty * 8 + ry;
+        uint8_t b0 = 0, b1 = 0;
+        if (py < h) {
+          for (int cx = 0; cx < 4; cx++) {
+            int pxx = tx * 8 + cx;
+            uint8_t v = (pxx < w) ? (uint8_t)(px[py * w + pxx] & 3u) : 0u;
+            b0 = (uint8_t)(b0 | (v << (cx * 2)));
+          }
+          for (int cx = 0; cx < 4; cx++) {
+            int pxx = tx * 8 + 4 + cx;
+            uint8_t v = (pxx < w) ? (uint8_t)(px[py * w + pxx] & 3u) : 0u;
+            b1 = (uint8_t)(b1 | (v << (cx * 2)));
+          }
+        }
+        td[ry * 2 + 0] = b0;
+        td[ry * 2 + 1] = b1;
+      }
+    }
+  }
+}
+
+/* The exact inverse of gbscr_pack_pic(): reads back the 2-bit index at pixel
+ * (px_x, px_y) of the tiles_w x tiles_h grid `packed` describes. Out-of-range
+ * coordinates (>= tiles_w*8 or >= tiles_h*8) return 0 (same "lightest" value
+ * pack's own zero-fill leaves there) rather than reading past the buffer --
+ * host_gbscreen_test.c's pack/unpack round trip is the one caller so far. */
+uint8_t gbscr_unpack_pic_px(const uint8_t* packed, int tiles_w, int tiles_h, int px_x, int px_y) {
+  if (tiles_w > 7) tiles_w = 7;
+  if (tiles_h > 7) tiles_h = 7;
+  if (px_x < 0 || px_y < 0 || px_x >= tiles_w * 8 || px_y >= tiles_h * 8) return 0;
+  int tx = px_x / 8, ty = px_y / 8, cx = px_x % 8, ry = px_y % 8;
+  const uint8_t* td = packed + (uint32_t)(ty * 7 + tx) * 16u;
+  uint8_t b = td[ry * 2 + (cx >= 4 ? 1 : 0)];
+  int shift = (cx % 4) * 2;
+  return (uint8_t)((b >> shift) & 3u);
+}
+
 /* ===========================================================================
  * Everything below needs tonc/FatFs: ROM I/O (gbscr_open/close) and the VRAM
  * blit (gbscr_flush). Stubbed out under PDNA_GBSCREEN_HOST_TEST so the pure
@@ -507,15 +567,13 @@ void gbscr_close(GbScreen* gs) {
 }
 
 /* ---------------------------------------------------------------------------
- * U2c: the Gen-1 player pic. gb_sprite_gen1_buf() decodes to a plain index
- * (0..3, 0 = lightest) per pixel, packed row-major with stride `w` -- NOT the
- * ROM's own bit-plane tile format. gbscr_pack_pic()/the GBSCR_SRC_PIC case
- * below are this module's OWN pack/unpack pair (never need to match the ROM's
- * layout, since this code both writes and reads it): 4 pixels/byte, 2 bits
- * each, LSB-first (leftmost column in the low bits), 2 bytes per tile ROW (8
- * px), 16 B/tile -- GBSCR_PIC_PACKED_BYTES for the full 7x7 grid. Same DMG
- * ramp rom_gbui.c's own (static, not exported) DMG_SHADE uses -- duplicated
- * here rather than exported across a module boundary for four uint16_t.
+ * U2c: the Gen-1 player pic -- rendering half. gbscr_pack_pic()/
+ * gbscr_unpack_pic_px() (the actual pack/unpack pair) moved to the pure
+ * section above this file's tonc/FatFs boundary (minor, U2c review) so
+ * tests/host_gbscreen_test.c can round-trip them directly; only the RGB15
+ * shade lookup GBSCR_SRC_PIC's renderer needs stays here. Same DMG ramp
+ * rom_gbui.c's own (static, not exported) DMG_SHADE uses -- duplicated here
+ * rather than exported across a module boundary for four uint16_t.
  * --------------------------------------------------------------------------- */
 #define GBSCR_PIC_GB8_TO_RGB15(v) ((uint16_t)((((v) >> 3) & 0x1Fu) | \
                                     ((((v) >> 3) & 0x1Fu) << 5) | ((((v) >> 3) & 0x1Fu) << 10)))
@@ -523,40 +581,6 @@ static const uint16_t kGbscrPicShade[4] = {
   GBSCR_PIC_GB8_TO_RGB15(0xF8), GBSCR_PIC_GB8_TO_RGB15(0xA8),
   GBSCR_PIC_GB8_TO_RGB15(0x58), GBSCR_PIC_GB8_TO_RGB15(0x10)
 };
-
-/* `px` is gb_sprite_gen1_buf()'s own output: index 0..3 per pixel, row-major,
- * stride `w` (info.w, NOT GB_SPRITE_MAX_W). `tiles_w`/`tiles_h` (info.wt/ht,
- * 1..7) bound which of the 49 tile slots actually get real data -- any tile
- * beyond the decoded grid (never happens for a 7x7 Gen-1 pic, but Slowbro-
- * sized smaller pics exist in principle) stays zeroed (index 0, lightest). */
-static void gbscr_pack_pic(const uint8_t* px, int w, int h, int tiles_w, int tiles_h, uint8_t* out) {
-  memset(out, 0, GBSCR_PIC_PACKED_BYTES);
-  if (tiles_w > 7) tiles_w = 7;
-  if (tiles_h > 7) tiles_h = 7;
-  for (int ty = 0; ty < tiles_h; ty++) {
-    for (int tx = 0; tx < tiles_w; tx++) {
-      uint8_t* td = out + (ty * 7 + tx) * 16;
-      for (int ry = 0; ry < 8; ry++) {
-        int py = ty * 8 + ry;
-        uint8_t b0 = 0, b1 = 0;
-        if (py < h) {
-          for (int cx = 0; cx < 4; cx++) {
-            int pxx = tx * 8 + cx;
-            uint8_t v = (pxx < w) ? (uint8_t)(px[py * w + pxx] & 3u) : 0u;
-            b0 = (uint8_t)(b0 | (v << (cx * 2)));
-          }
-          for (int cx = 0; cx < 4; cx++) {
-            int pxx = tx * 8 + 4 + cx;
-            uint8_t v = (pxx < w) ? (uint8_t)(px[py * w + pxx] & 3u) : 0u;
-            b1 = (uint8_t)(b1 | (v << (cx * 2)));
-          }
-        }
-        td[ry * 2 + 0] = b0;
-        td[ry * 2 + 1] = b1;
-      }
-    }
-  }
-}
 
 bool gbscr_decode_pic_gen1(GbScreen* gs, uint8_t* buf, uint32_t buf_len) {
   if (!gs || !gs->ok || gs->gen != PDNA_GEN1 || !gs->gu.playerpic) return false;
