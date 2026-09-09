@@ -1579,4 +1579,28 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBTR_ACT_SAVE   "SAVE"
 #define PDNA_GBTR_ACT_MORE   "MORE"
 
+/* D2 fix (U2c 2nd re-verify): the GB-screen shell's open-refusal reasons
+ * (pdna_gbscreen.c's kReasonNoRom/kReasonNoStack/kReasonOpen/kReasonBadGen/
+ * kReasonNoTail) used to be concatenated onto the plain trainer page's title
+ * ("GB ART: OFF -- <reason>") and painted as ONE fixed-font (8 px/glyph)
+ * line, which ran the forced-fallback test string off the 240-px screen
+ * ("forced (PDNA_U2C_FORCE_FALLBACK)" alone is 264 px in that font). The
+ * title now stays the short, always-fits PDNA_GBTR_FALLBACK_TITLE; every
+ * reason macro below is its OWN second line in the plain proportional face
+ * (ui_ptext), and must fit GBTR_HEADER2_MAXW there -- checked by
+ * tests/host_textfit_test.c against the real macros, not a re-typed copy. */
+#define PDNA_GBTR_FALLBACK_TITLE  "GB ART: OFF"
+#define GBTR_HEADER2_MAXW 232   /* screen width 240, x=4, 4px right margin */
+
+#define PDNA_GBSCR_REASON_NO_ROM      "no ROM registered"
+#define PDNA_GBSCR_REASON_NO_STACK    "not enough stack"
+#define PDNA_GBSCR_REASON_OPEN        "ROM art unavailable"
+#define PDNA_GBSCR_REASON_BAD_GEN     "not a Gen-1/Gen-2 request"
+#define PDNA_GBSCR_REASON_NO_TAIL     "no tile-bank memory"
+#define PDNA_GBSCR_REASON_UNAVAILABLE "unavailable"
+/* Only reachable under -DPDNA_U2C_FORCE_FALLBACK (a build-time test flag,
+ * pdna_gbtrainer.c) -- included here anyway so the same width test covers
+ * the one shot harness the review actually re-shoots. */
+#define PDNA_GBSCR_REASON_FORCED_TEST "forced (test)"
+
 #endif /* PDNA_LAYOUT_H */

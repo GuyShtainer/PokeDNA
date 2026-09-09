@@ -564,6 +564,19 @@ int main(void) {
     PF(PDNA_GBTR_ACT_MORE,   0, right_budget);
   }
 
+  /* D2 fix (U2c 2nd re-verify): the plain trainer page's fallback header
+   * ("GB ART: OFF") stays on line 1 (ui_text, fixed-width sys8 -- T()
+   * below); every refusal reason is its OWN line 2 (ui_ptext_fit,
+   * proportional face) at x=4 against GBTR_HEADER2_MAXW. */
+  T(PDNA_GBTR_FALLBACK_TITLE, 4);
+  PF(PDNA_GBSCR_REASON_NO_ROM,      4, GBTR_HEADER2_MAXW);
+  PF(PDNA_GBSCR_REASON_NO_STACK,    4, GBTR_HEADER2_MAXW);
+  PF(PDNA_GBSCR_REASON_OPEN,        4, GBTR_HEADER2_MAXW);
+  PF(PDNA_GBSCR_REASON_BAD_GEN,     4, GBTR_HEADER2_MAXW);
+  PF(PDNA_GBSCR_REASON_NO_TAIL,     4, GBTR_HEADER2_MAXW);
+  PF(PDNA_GBSCR_REASON_UNAVAILABLE, 4, GBTR_HEADER2_MAXW);
+  PF(PDNA_GBSCR_REASON_FORCED_TEST, 4, GBTR_HEADER2_MAXW);
+
   /* gb_edit_persist's SF_ERR_RENAME switch + gb_edit_hook's SF_ERR_UNWRITABLE hint —
    * same (28, .., 184) msg_wait clamp. PDNA_GBEDIT_UNCONFIRMED_L2 is deliberately
    * SHORTER than pdna_main.c's own wording for the same case ("Could not re-check the

@@ -364,15 +364,17 @@ uint8_t gbscr_unpack_pic_px(const uint8_t* packed, int tiles_w, int tiles_h, int
 
 #define GBSCR_BLANK_COLOR RGB15(31, 31, 31)   /* DMG's own lightest shade (0xF8) */
 
-static const char* const kReasonNoRom   = "no ROM registered";
-static const char* const kReasonNoStack = "not enough stack";
+static const char* const kReasonNoRom   = PDNA_GBSCR_REASON_NO_ROM;
+static const char* const kReasonNoStack = PDNA_GBSCR_REASON_NO_STACK;
 /* D7 (review) + BACKLOG #79: shortened to <=24 chars so it fits the plain
  * page's single title line (gbtr_plain_render's `header`) without clipping;
  * the longer detail (bad ROM / wrong game / non-English release) lives only
- * in the triple-logger call sites below, not on screen. */
-static const char* const kReasonOpen    = "ROM art unavailable";
-static const char* const kReasonBadGen  = "not a Gen-1/Gen-2 request";
-static const char* const kReasonNoTail  = "no tile-bank memory";
+ * in the triple-logger call sites below, not on screen. D2 fix (U2c 2nd
+ * re-verify): now lives on its OWN second line (`header2`), not appended to
+ * the title -- see PDNA_GBTR_FALLBACK_TITLE/GBTR_HEADER2_MAXW (pdna_layout.h). */
+static const char* const kReasonOpen    = PDNA_GBSCR_REASON_OPEN;
+static const char* const kReasonBadGen  = PDNA_GBSCR_REASON_BAD_GEN;
+static const char* const kReasonNoTail  = PDNA_GBSCR_REASON_NO_TAIL;
 
 #ifndef PDNA_DELTA
 /* ---- SD build: FIL-backed I/O, the /PokeDNA/gbui<gen>.loc cache -----------

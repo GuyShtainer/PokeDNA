@@ -265,24 +265,38 @@ typedef struct { uint32_t gen; int sel; bool valid; } GbtrPaint;
 
 /* `header` (may be NULL): U2c's own honest-fallback line (design sec 3.5), shown
  * INSTEAD of the ordinary title when this page is reached because the GB-screen
- * shell refused (e.g. "GB ART: OFF -- no ROM registered") -- never silently
- * degraded, per the design's own rule. NULL keeps the ordinary title, unchanged
- * from P1b/P1c (Gen 2's own art-unavailable fallback, and any other caller). */
+ * shell refused (e.g. "GB ART: OFF") -- never silently degraded, per the design's
+ * own rule. NULL keeps the ordinary title, unchanged from P1b/P1c (Gen 2's own
+ * art-unavailable fallback, and any other caller).
+ *
+ * `header2` (may be NULL): D2 fix (U2c 2nd re-verify) -- the REASON for a
+ * `header` fallback used to be appended to `header` itself ("GB ART: OFF --
+ * <reason>") and painted as ONE fixed-font title line, which ran off the right
+ * edge of the 240-px screen for any reason text past ~29 chars (the fixed font
+ * is 8 px/glyph; the re-verify's forced-fallback shot showed the tail of
+ * "forced (PDNA_U2C_FORCE_FALLBACK)" cut at the screen edge). `header2`, when
+ * supplied, paints on its OWN line below `header` in the proportional font
+ * (ui_ptext -- see GBTR_HEADER2_MAXW below for the fits-on-screen contract),
+ * and every row + the top hline shift down by one line to make room. */
 static void gbtr_plain_render(const GbTrainer* t, bool gen1, const int* rows, int nrows,
-                              bool can_edit, int sel, GbtrPaint* pv, const char* header) {
+                              bool can_edit, int sel, GbtrPaint* pv, const char* header,
+                              const char* header2) {
   bool full = !pv->valid || pv->gen != ui_clear_gen();
+  int hline_y = header2 ? 20 : 11;
+  int row_y0  = header2 ? 23 : 14;
 
   if (full) {
     ui_clear();
     ui_text(4, 2, UI_TITLE, header ? header : (gen1 ? "TRAINER CARD (Gen 1)" : "TRAINER CARD (Gen 2)"));
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    if (header2) ui_ptext_fit(4, 11, GBTR_HEADER2_MAXW, UI_DIM, header2);
+    ui_hline(0, hline_y, UI_SCR_W, UI_BORDER);
     for (int i = 0; i < nrows; i++)
-      gbtr_row_paint(t, rows[i], gen1, 14 + i * 9, can_edit && i == sel);
+      gbtr_row_paint(t, rows[i], gen1, row_y0 + i * 9, can_edit && i == sel);
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     trainer_key_legend(can_edit ? "A edit  START save  B cancel" : "B back");
   } else if (sel != pv->sel) {
-    gbtr_row_paint(t, rows[pv->sel], gen1, 14 + pv->sel * 9, false);
-    gbtr_row_paint(t, rows[sel],     gen1, 14 + sel     * 9, can_edit);
+    gbtr_row_paint(t, rows[pv->sel], gen1, row_y0 + pv->sel * 9, false);
+    gbtr_row_paint(t, rows[sel],     gen1, row_y0 + sel     * 9, can_edit);
   }
 
   pv->sel = sel; pv->gen = ui_clear_gen(); pv->valid = true;
@@ -345,14 +359,15 @@ static void gbtr_edit_row(GbTrainer* t, bool gen1, int kind) {
  * *want_commit contract) -- this used to ask+write here directly (P1b), but
  * P1c needs the SAME commit path for both faces of the card, not two. */
 __attribute__((noinline))
-static bool pdna_gbtrainer_plain(GbTrainer* t, bool gen1, bool can_edit, const char* header) {
+static bool pdna_gbtrainer_plain(GbTrainer* t, bool gen1, bool can_edit, const char* header,
+                                 const char* header2) {
   int rows[GBTR_ROW_MAX];
   int nrows = gbtr_build_rows(t, rows);
 
   int sel = 0;
   GbtrPaint pv = { 0, 0, false };
   for (;;) {
-    gbtr_plain_render(t, gen1, rows, nrows, can_edit, sel, &pv, header);
+    gbtr_plain_render(t, gen1, rows, nrows, can_edit, sel, &pv, header, header2);
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_START);
     if (k & KEY_B) return false;                  /* discard: `t` was never written */
@@ -785,18 +800,19 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
    * fine, so the shot harness can never reach it by driving a real save.
    * A build-time flag forces the refusal so the honest-header fallback
    * (D7's header contract) gets ONE real shot instead of staying untested. */
-  if (ok) { gbscr_close(&gs); ok = false; reason = "forced (PDNA_U2C_FORCE_FALLBACK)"; }
+  if (ok) { gbscr_close(&gs); ok = false; reason = PDNA_GBSCR_REASON_FORCED_TEST; }
 #endif
   if (!ok) {
     gb12_arena_tail_release();
-    /* D7 (review): kReasonOpen's longest text used to be 65 chars -- into this
-     * "GB ART: OFF -- " (15) + reason buffer that would overflow a 40-byte
-     * hdr by 41 bytes on any open refusal. hdr is now sized for the longest
-     * reason string in this translation unit + the fixed prefix, and
-     * sniprintf (not siprintf) bounds the write regardless. */
-    char hdr[96];
-    sniprintf(hdr, sizeof hdr, "GB ART: OFF -- %s", reason ? reason : "unavailable");
-    return pdna_gbtrainer_plain(t, true, can_edit, hdr);
+    /* D2 fix (U2c 2nd re-verify): the reason used to be concatenated onto the
+     * "GB ART: OFF -- " title and painted as ONE fixed-font line, which ran
+     * off the 240-px screen for any reason past ~29 chars. The title now
+     * stays the short, always-fits "GB ART: OFF"; the reason is its OWN
+     * second line in gbtr_plain_render's proportional font -- see
+     * GBTR_HEADER2_MAXW (this file, below) for the compile-time-checked
+     * width contract every kReason* string in pdna_gbscreen.c must meet. */
+    return pdna_gbtrainer_plain(t, true, can_edit, PDNA_GBTR_FALLBACK_TITLE,
+                                reason ? reason : PDNA_GBSCR_REASON_UNAVAILABLE);
   }
 
   /* Best-effort: a failed pic decode leaves GBSCR_SRC_PIC cells painting the
@@ -855,7 +871,7 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
     if (k & KEY_START) {
       gbscr_close(&gs);
       gb12_arena_tail_release();
-      return pdna_gbtrainer_plain(t, true, can_edit, 0);
+      return pdna_gbtrainer_plain(t, true, can_edit, 0, 0);
     }
     if (k & KEY_B) { want_commit = true; break; }
 
@@ -912,7 +928,7 @@ void pdna_gbtrainer(GbSession* s, bool can_edit) {
   } else if (card_bg(PK_EMERALD, 0, 0).blob != 0) {
     pdna_gbtrainer_card(&t, gen1, can_edit, &want_commit);
   } else {
-    want_commit = pdna_gbtrainer_plain(&t, gen1, can_edit, 0);
+    want_commit = pdna_gbtrainer_plain(&t, gen1, can_edit, 0, 0);
   }
   if (!want_commit) return;                    /* plain page's B: discard (unchanged from
                                                   * P1b); the card path (P1d) always asks
