@@ -571,7 +571,7 @@ def check_only(path: str) -> int:
         return 1
     print(f"entries      : {len(entries)}")
     bad = 0
-    for e in entries:
+    for idx, e in enumerate(entries):
         payload = blob[e["offset"]:e["offset"] + e["size"]]
         crc = zlib.crc32(payload) & 0xFFFFFFFF
         ok = crc == e["crc32"]
@@ -580,7 +580,12 @@ def check_only(path: str) -> int:
         # independent claim (kind/gen/id_hash/rom_size) about the ROM it accompanies --
         # verify that claim against the ACTUAL fused ROM bytes, not just the outer CRC
         # (which only proves the LOC bytes themselves are intact, not that they still
-        # describe the right ROM).
+        # describe the right ROM). Two same-gen ROMs (e.g. delta-gb's Gold.gbc AND
+        # Crystal.gbc) can share the exact same file SIZE, so size alone cannot pick
+        # the right one -- fuse_gb.py always appends a ROM's LOC entries immediately
+        # after that ROM's own payload (see fuse()), so the accompanying ROM is
+        # whichever gen-matching ROM entry appears most recently BEFORE this LOC entry
+        # in directory order, never "the first one of the right size".
         if ok and e["type"] == TYPE_LOC:
             if len(payload) < LOC_HDR_SIZE or payload[:8] != LOC_HDR_MAGIC:
                 ok = False
@@ -594,11 +599,18 @@ def check_only(path: str) -> int:
                     extra = " (rec_size does not match payload length)"
                 else:
                     rom_type = TYPE_ROM_GEN1 if gen == 1 else TYPE_ROM_GEN2
-                    rom_entries = [x for x in entries if x["type"] == rom_type]
-                    match = next((x for x in rom_entries if x["size"] == claimed_size), None)
+                    match = None
+                    for j in range(idx - 1, -1, -1):
+                        if entries[j]["type"] == rom_type:
+                            match = entries[j]
+                            break
                     if match is None:
                         ok = False
-                        extra = f" (no gen-{gen} ROM entry of size {claimed_size})"
+                        extra = f" (no preceding gen-{gen} ROM entry)"
+                    elif match["size"] != claimed_size:
+                        ok = False
+                        extra = (f" (size mismatch vs preceding ROM {match['name']}: "
+                                 f"claimed {claimed_size}, actual {match['size']})")
                     else:
                         rom_bytes = blob[match["offset"]:match["offset"] + match["size"]]
                         real_hash = gb_id_hash(rom_bytes)
