@@ -276,7 +276,9 @@ bool gb_persist(const char* what_for_log);
  * APP_ARENA_BYTES block are unclaimed by anything pdna_gen12.c itself uses for the
  * rest of the session.
  *
- * Returns that tail pointer when (a) g_ed is set (the resident-image mount --
+ * Returns that tail pointer when (a) g_ed is set (a resident-image mount WITH a
+ * live edit session; a read-only resident mount, where gbs_open refused, leaves
+ * g_ed NULL and correctly gets NULL here -- the caller shows its plain page) (--
  * pdna_gbtrainer() is only reachable that way, never the read-only nav-menu FIL
  * mount, whose arena layout has no Gb12Edit at all) and (b) `need` fits inside the
  * measured slack (GB12_ARENA_NEED_IMG is ~11,952 of APP_ARENA_BYTES' 35,712 --

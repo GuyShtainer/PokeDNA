@@ -161,7 +161,14 @@ typedef enum {
  * buffer that made up most of the old 3,624 are both GONE: scratch is now the
  * caller-owned `tail` buffer passed into gbscr_open(), and GbScreen no longer
  * stores a ROM path at all, since the FIL is never reopened after this call)
- * = 4,416.
+ * = 4,416 -- PLUS the leg the call-graph walk cannot follow (U2b review D1,
+ * 2026-09-09): distinct_tiles() calls the GbReadFn INDIRECTLY, and on the SD
+ * build that is gbscr_sd_read 24 -> f_lseek 80 -> create_chain 40 ->
+ * fill_last_frag 16 -> put_fat 32 -> move_window 16 -> disk_read 32 ->
+ * flashcartio_read_sector 40 -> diskRead 24 -> ed_sd_dma_rd 48 ->
+ * ed_sd_dma_to_rom 552 = 904 B (measured, -fstack-usage). 4,416 + 904 = 5,320.
+ * (U2a's 6,464 had the same omission.) Both real call sites keep >= 1,360 B
+ * of margin at this number: Settings 6,680 free, the nav-menu chain 7,792.
  *
  * gbscr_cache_block() (the U2b item 1 bulk-copy of FONT + need_mask's blocks
  * into `tail`, called AFTER rom_gbui_open_loc() returns, never nested inside
@@ -176,7 +183,7 @@ typedef enum {
  * artless/SD build's Settings path this made the gate refuse EVERY time on
  * real hardware. The gate lives in a thin `gbscr_open()` wrapper that runs
  * BEFORE the frame exists (the old body is `gbscr_open_inner()`), so
- * PDNA_GB_UI_NEED is the number above taken AS MEASURED -- 4,416 --
+ * PDNA_GB_UI_NEED is the number above taken AS MEASURED -- 5,320 --
  * deliberately NOT rounded up to a 256-B boundary: rounding up here only ever
  * makes the gate MORE conservative than the real chain, and the whole point
  * of this fix is to stop over-refusing on a build that is already tight on
@@ -187,7 +194,7 @@ typedef enum {
  * calls it yet -- gc-sections drops an unreferenced module entirely, so
  * neither number says anything about rom_gbui.c until a caller links it in
  * and its own chain is measured again under real linkage. */
-#define PDNA_GB_UI_NEED 4416
+#define PDNA_GB_UI_NEED 5320
 
 typedef struct {
   GbReadFn read;

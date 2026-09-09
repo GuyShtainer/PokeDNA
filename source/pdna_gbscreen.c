@@ -595,7 +595,8 @@ void __attribute__((noinline)) gbscr_run_demo(uint8_t gen) {
   uint32_t need = gbscr_tail_need(gen, GBSCR_NEED_TEXTBOX);
   uint8_t* tail = app_arena_acquire(need);
   if (!tail) {
-    msg_wait("GB SCREEN SHELL", UI_WARN, "Not now -- save your moved Pokemon", "first, or close another screen.");
+    snd_deny();   /* the same refusal shape as pdna_gen12.c's arena-busy panel */
+    msg_wait("NOT NOW", UI_WARN, "Save the Pokemon you moved,", "then open the GB screen.");
     return;
   }
   if (!gbscr_open(gen, &gs, tail, need, GBSCR_NEED_TEXTBOX, &reason)) {

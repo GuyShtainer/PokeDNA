@@ -222,6 +222,8 @@ int main(void) {
     /* Overflow safety: a huge len must not wrap `b->len - rel` into a huge
      * unsigned value and pass the bounds check by accident. */
     CHECK(!gbscr_mem_read(&c, 0x1000, buf, 0xFFFFFFFFu), "huge len refused, no overflow");
+    CHECK(!gbscr_mem_read(&c, 0x1010, buf, 0xFFFFFFFFu),
+          "huge len at the block's exact END refused (rel+len WRAPS in a naive check)");
 
     GbscrCache empty; memset(&empty, 0, sizeof empty);
     CHECK(!gbscr_mem_read(&empty, 0x1000, buf, 1), "empty cache (no tail) refused");

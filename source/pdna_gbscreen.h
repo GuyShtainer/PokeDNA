@@ -51,11 +51,16 @@
  * 2,048-B scan scratch and the 128-B rom_path buffer are both gone from this
  * frame -- scratch is now the first 2,048 B of the caller's `tail`, reused
  * afterward for the tile cache, and GbScreen no longer stores a path at all),
- * gbscr_close 0, gbscr_flush 8 (gcc splits the real body into a separate
+ * gbscr_close 8 -- but its CHAIN is now 4,240 B (app_cfg_save -> cfg_save 2,088 ->
+ * sf_write_verified -> file_matches -> FatFs -> ed_sd_dma_to_rom); it runs one
+ * frame ABOVE gbscr_open_inner, so the OPEN gate's guarantee covers it; a screen
+ * that calls gbscr_persist_mode() from a DEEPER frame must gate it itself --
+ * gbscr_flush 8 (gcc splits the real body into a separate
  * gbscr_flush.part.0, 344 -- DOWN from 952: no more FIL/fused-slice locals in
  * this function), gbscr_run_demo 944 (down from 1,016: no more local
  * scratch/loc-cache locals of its own -- app_arena_acquire()'s tail buffer
- * replaces them). sizeof(GbScreen) = 920 B, the SAME for the SD and delta
+ * replaces them). sizeof(GbScreen) = 904 B (RomGbUi 80 + GbscrCache 56 + map 360 + src 360 +
+ * dirty 45 + 3), the SAME for the SD and delta
  * builds now (no more #ifdef PDNA_DELTA branch in the struct) -- GbScreen
  * itself lives on the CALLER's own frame (gbscr_run_demo's 944 B above, or
  * U2b's real card screen's), OUTSIDE the gate; it is never counted in
