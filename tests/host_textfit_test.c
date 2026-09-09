@@ -1973,6 +1973,57 @@ int main(void) {
    * guess. */
   PF(PDNA_LBL_PCP_FOOTER, PDNA_PCP_OCCLUDE_X1 + 2, SCR_W - (PDNA_PCP_OCCLUDE_X1 + 2));
 
+  printf("\n== Type chip abbreviations (BACKLOG #80) ==\n");
+  /* All 18 Pokémon types must fit in the 28px type chip (w-4) budget with the tight
+   * face. The brief provides abbreviated names for the 7 types that overflow even
+   * the tight face. This test verifies that ALL 18 names (original + abbreviated)
+   * fit the 28px budget when measured with ui_ptext_w_tight. */
+  {
+#define PWT(s) pwidth_tight(s)
+#define TYPE_CHIP_MAXW 28
+    /* All 18 type names with their abbreviations (NULL = no abbreviation needed) */
+    static const struct {
+      const char* full;
+      const char* abbrev;
+    } types[18] = {
+      {"NORMAL",    "NORML"},    /* 0 */
+      {"FIGHTING",  "FIGHT"},    /* 1 */
+      {"FLYING",    NULL},       /* 2 */
+      {"POISON",    NULL},       /* 3 */
+      {"GROUND",    "GRND"},     /* 4 */
+      {"ROCK",      NULL},       /* 5 */
+      {"BUG",       NULL},       /* 6 */
+      {"GHOST",     NULL},       /* 7 */
+      {"STEEL",     NULL},       /* 8 */
+      {"MYSTERY",   "MYST"},     /* 9 */
+      {"FIRE",      NULL},       /* 10 */
+      {"WATER",     NULL},       /* 11 */
+      {"GRASS",     NULL},       /* 12 */
+      {"ELECTRIC",  "ELECT"},    /* 13 */
+      {"PSYCHIC",   "PSYCH"},    /* 14 */
+      {"ICE",       NULL},       /* 15 */
+      {"DRAGON",    "DRAGN"},    /* 16 */
+      {"DARK",      NULL}        /* 17 */
+    };
+
+    for (int i = 0; i < 18; i++) {
+      int full_w = PWT(types[i].full);
+      int abbrev_w = types[i].abbrev ? PWT(types[i].abbrev) : full_w;
+      int used_w = abbrev_w < full_w ? abbrev_w : full_w;
+      char msg[128];
+      sprintf(msg, "type %2d %-9s", i, types[i].full);
+      chkv(msg, used_w, TYPE_CHIP_MAXW);
+      printf("  %s: full=%2dpx abbrev=%s (%2dpx) used=%2dpx\n",
+             types[i].full,
+             full_w,
+             types[i].abbrev ? types[i].abbrev : "(none)",
+             types[i].abbrev ? abbrev_w : 0,
+             used_w);
+    }
+#undef TYPE_CHIP_MAXW
+#undef PWT
+  }
+
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }
