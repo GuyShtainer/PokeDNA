@@ -746,8 +746,13 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
                        GBSCR_NEED_CARDFRAME | GBSCR_NEED_BADGES | GBSCR_NEED_TEXTBOX, &reason);
   if (!ok) {
     gb12_arena_tail_release();
-    char hdr[40];
-    siprintf(hdr, "GB ART: OFF -- %s", reason ? reason : "unavailable");
+    /* D7 (review): kReasonOpen's longest text used to be 65 chars -- into this
+     * "GB ART: OFF -- " (15) + reason buffer that would overflow a 40-byte
+     * hdr by 41 bytes on any open refusal. hdr is now sized for the longest
+     * reason string in this translation unit + the fixed prefix, and
+     * sniprintf (not siprintf) bounds the write regardless. */
+    char hdr[96];
+    sniprintf(hdr, sizeof hdr, "GB ART: OFF -- %s", reason ? reason : "unavailable");
     return pdna_gbtrainer_plain(t, true, can_edit, hdr);
   }
 

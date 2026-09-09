@@ -294,8 +294,11 @@ bool gbscr_cache_plan(uint8_t gen, uint16_t need_mask, const RomGbUi* gu,
 
 static const char* const kReasonNoRom   = "no ROM registered";
 static const char* const kReasonNoStack = "not enough stack";
-static const char* const kReasonOpen    =
-  "ROM art unavailable (bad ROM, wrong game, or non-English release)";
+/* D7 (review) + BACKLOG #79: shortened to <=24 chars so it fits the plain
+ * page's single title line (gbtr_plain_render's `header`) without clipping;
+ * the longer detail (bad ROM / wrong game / non-English release) lives only
+ * in the triple-logger call sites below, not on screen. */
+static const char* const kReasonOpen    = "ROM art unavailable";
 static const char* const kReasonBadGen  = "not a Gen-1/Gen-2 request";
 static const char* const kReasonNoTail  = "no tile-bank memory";
 
