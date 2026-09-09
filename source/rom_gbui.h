@@ -154,32 +154,40 @@ typedef enum {
  * output on all four of Guy's ROMs (re-verified: tests/host_romgbui_test.c).
  *
  * PDNA_GB_UI_NEED = 2,840 (open_loc's full-scan-fallback chain, the worse of
- * the two entry points) + 3,624 (source/pdna_gbscreen.c's gbscr_open_inner()
- * OWN frame, MEASURED with -fstack-usage 2026-09-09, U2a: FIL 600 +
- * scratch[2048] + RomGbUiLoc 68 + char rom_path[128] + locals/padding) =
- * 6,464.
+ * the two entry points -- UNCHANGED by U2b item 1: rom_gbui.c itself was not
+ * touched) + 1,576 (source/pdna_gbscreen.c's gbscr_open_inner() OWN frame,
+ * RE-MEASURED with -fstack-usage 2026-09-09, U2b item 1: FIL 600 + RomGbUiLoc
+ * 68 + locals/padding -- the 2,048-B scratch array and the 128-B rom_path
+ * buffer that made up most of the old 3,624 are both GONE: scratch is now the
+ * caller-owned `tail` buffer passed into gbscr_open(), and GbScreen no longer
+ * stores a ROM path at all, since the FIL is never reopened after this call)
+ * = 4,416.
  *
- * D1/D2 fix (U2a review, 2026-09-09): the gate used to live INSIDE the
- * 3,624-B frame it was supposed to be measuring the room FOR (gbscr_open()'s
- * own stack_room() call ran after that frame already existed), which counts
- * the room LEFT UNDER the frame instead of the room the frame NEEDS -- on the
- * artless/SD build's Settings path (~2,992 B free at that point) this made
- * the gate refuse EVERY time on real hardware; the delta build only happened
- * to pass, by 72 B, because it has 2,024 B more stack there. The gate now
- * lives in a thin `gbscr_open()` wrapper that runs BEFORE the frame exists
- * (the old body is `gbscr_open_inner()`), so PDNA_GB_UI_NEED is the number
- * above taken AS MEASURED -- 6,464 -- deliberately NOT rounded up to a
- * 256-B boundary the way the pre-fix value (6,656) was: rounding up here only
- * ever makes the gate MORE conservative than the real chain, and the whole
- * point of this fix is to stop over-refusing on a build that is already tight
- * on stack.
+ * gbscr_cache_block() (the U2b item 1 bulk-copy of FONT + need_mask's blocks
+ * into `tail`, called AFTER rom_gbui_open_loc() returns, never nested inside
+ * it) adds only 16 B of its own frame plus whichever GbReadFn it calls
+ * (gbscr_sd_read: 24 B) -- 40 B, far under the 2,840-B rom_gbui_open_loc chain
+ * this replaces as the deepest path, so it does not move PDNA_GB_UI_NEED.
+ *
+ * D1/D2 fix (U2a review, 2026-09-09): the gate used to live INSIDE the frame
+ * it was supposed to be measuring the room FOR (gbscr_open()'s own
+ * stack_room() call ran after that frame already existed), which counts the
+ * room LEFT UNDER the frame instead of the room the frame NEEDS -- on the
+ * artless/SD build's Settings path this made the gate refuse EVERY time on
+ * real hardware. The gate lives in a thin `gbscr_open()` wrapper that runs
+ * BEFORE the frame exists (the old body is `gbscr_open_inner()`), so
+ * PDNA_GB_UI_NEED is the number above taken AS MEASURED -- 4,416 --
+ * deliberately NOT rounded up to a 256-B boundary: rounding up here only ever
+ * makes the gate MORE conservative than the real chain, and the whole point
+ * of this fix is to stop over-refusing on a build that is already tight on
+ * stack.
  * PDNA_GB_FETCH_NEED/PDNA_GB_ICON_NEED (both 6,144) being in the same order
  * of magnitude, and the artless/delta builds' own "EWRAM ok" line, are NOT
  * evidence this module itself fits within budget while nothing in the build
  * calls it yet -- gc-sections drops an unreferenced module entirely, so
  * neither number says anything about rom_gbui.c until a caller links it in
  * and its own chain is measured again under real linkage. */
-#define PDNA_GB_UI_NEED 6464
+#define PDNA_GB_UI_NEED 4416
 
 typedef struct {
   GbReadFn read;

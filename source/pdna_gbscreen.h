@@ -26,48 +26,67 @@
  *
  * MEMORY: GbScreen itself carries no FIL/FusedGbSlice (that would force this
  * header to pull in ff.h and make the pure host test impossible) -- it stores
- * only plain data (the located RomGbUi, the tilemap, the ROM's resolved path or
- * fused base/size) and gbscr_open()/gbscr_flush() each rebind a LOCAL RomGbUi
- * copy's `ctx`/`read` to a transient FIL (SD build) or FusedGbSlice (delta build)
- * for the duration of that one call, exactly the way rom_gbui_tile()/glyph()'s own
- * caller-owned-ctx contract expects. Nothing here is EWRAM_BSS: GbScreen is meant
- * to live on ONE caller's own stack frame (a `noinline` screen/demo function), the
- * same "one noinline frame" posture gb_art_source.c's gb_art_open_and_identify()
- * and gb_art_fetch() already use.
+ * only plain data (the located RomGbUi, the tilemap, and -- U2b item 1 -- the
+ * GbscrCache table describing where in a CALLER-OWNED `tail` buffer each
+ * cached block lives). It no longer stores a ROM path or fused base/size at
+ * all: since item 1, the FIL/fused slice is opened ONCE inside gbscr_open()
+ * (to bulk-copy FONT + need_mask's blocks into `tail`) and never reopened --
+ * gbscr_flush() reads the tail buffer only. gbscr_flush() rebinds a LOCAL
+ * RomGbUi copy's `ctx`/`read` to `&gs->cache` + gbscr_mem_read() for the
+ * duration of that one call, exactly the way rom_gbui_tile()/glyph()'s own
+ * caller-owned-ctx contract expects -- but that ctx is now RAM, not the SD
+ * card. Nothing here is EWRAM_BSS: GbScreen is meant to live on ONE caller's
+ * own stack frame (a `noinline` screen/demo function), the same "one noinline
+ * frame" posture gb_art_source.c's gb_art_open_and_identify() and
+ * gb_art_fetch() already use; `tail` itself is a SEPARATE caller-owned buffer
+ * (gb12_arena_tail() inside a GB session, or the caller's own
+ * app_arena_acquire() standalone -- see gbscr_open()'s own doc comment).
  *
  * MEASURED (arm-none-eabi-gcc -mcpu=arm7tdmi -mtune=arm7tdmi -O2 -mthumb-interwork
- * -mthumb -fstack-usage -c source/pdna_gbscreen.c, 2026-09-09, U2a fix batch
- * D1/D2/D8): own-frame sizes (bytes) -- gbscr_mark_all_dirty 8, gbscr_cell 16,
- * gbscr_text 56, gbscr_raw 48, gbscr_toggle_scale 8, gbscr_sd_read 24,
- * gbscr_open 16, gbscr_open_inner 3624, gbscr_close 0, gbscr_flush 8 (gcc
- * split the real body into a separate gbscr_flush.part.0, 952 -- corrected
- * from an earlier note's 944), gbscr_run_demo 1016. sizeof(GbScreen) = 976 B
- * (SD build) / 856 B (delta build) -- GbScreen itself lives on the CALLER's
- * own frame (gbscr_run_demo's 1,016 B above, or a future U2b card screen's),
- * OUTSIDE the gate; it is never counted in PDNA_GB_UI_NEED.
+ * -mthumb -fstack-usage -c source/pdna_gbscreen.c, 2026-09-09, U2b item 1):
+ * own-frame sizes (bytes) -- gbscr_mark_all_dirty 8, gbscr_cell 16,
+ * gbscr_text 56, gbscr_raw 48, gbscr_toggle_scale 8, gbscr_block_bytes 0,
+ * gbscr_block_off 0, gbscr_mem_read 40, gbscr_sd_read 24, gbscr_cache_block 16,
+ * gbscr_open 40, gbscr_open_inner 1576 (DOWN from 3,624 pre-item-1: the
+ * 2,048-B scan scratch and the 128-B rom_path buffer are both gone from this
+ * frame -- scratch is now the first 2,048 B of the caller's `tail`, reused
+ * afterward for the tile cache, and GbScreen no longer stores a path at all),
+ * gbscr_close 0, gbscr_flush 8 (gcc splits the real body into a separate
+ * gbscr_flush.part.0, 344 -- DOWN from 952: no more FIL/fused-slice locals in
+ * this function), gbscr_run_demo 944 (down from 1,016: no more local
+ * scratch/loc-cache locals of its own -- app_arena_acquire()'s tail buffer
+ * replaces them). sizeof(GbScreen) = 920 B, the SAME for the SD and delta
+ * builds now (no more #ifdef PDNA_DELTA branch in the struct) -- GbScreen
+ * itself lives on the CALLER's own frame (gbscr_run_demo's 944 B above, or
+ * U2b's real card screen's), OUTSIDE the gate; it is never counted in
+ * PDNA_GB_UI_NEED.
  *
- * D1 fix (review): the stack-room gate used to live INSIDE gbscr_open()'s own
- * frame, so it measured the room LEFT UNDER a 3,624-B frame that already
- * existed by the time the check ran, instead of the room the frame ITSELF
- * needs -- on the artless/SD build this always under-counted by exactly this
- * frame's size and made the gate refuse every time on real hardware. The old
- * body is now `gbscr_open_inner()` (static, noinline, unchanged except the
- * stack_room() call is gone); `gbscr_open()` is a thin (16-B) wrapper that
- * checks pdna_origin_art_stack_room(PDNA_GB_UI_NEED) BEFORE calling it, so the
- * gate now runs before gbscr_open_inner()'s frame is ever allocated. PDNA_GB_
+ * D1 fix (U2a review): the stack-room gate used to live INSIDE gbscr_open()'s
+ * own frame, so it measured the room LEFT UNDER a frame that already existed
+ * by the time the check ran, instead of the room the frame ITSELF needs --
+ * this always under-counted by exactly the frame's size and made the gate
+ * refuse every time on real hardware. The old body is now `gbscr_open_inner()`
+ * (static, noinline); `gbscr_open()` is a thin (40-B) wrapper that checks
+ * pdna_origin_art_stack_room(PDNA_GB_UI_NEED) BEFORE calling it, so the gate
+ * now runs before gbscr_open_inner()'s frame is ever allocated. PDNA_GB_
  * UI_NEED (rom_gbui.h) is measured from gbscr_open_inner()'s OWN entry down --
- * 3,624 (this frame) + 2,840 (rom_gbui_open_loc's own worst nested chain,
- * rom_gbui.h's own measurement) = 6,464 (D2: taken as measured, NOT rounded
- * up -- see rom_gbui.h's own note for why) -- NOT gbscr_run_demo's 1,016 B on
- * top (a different caller, e.g. U2b's real card screen, will have a different
- * frame of its own; the gate is caller-independent by design, exactly like
- * PDNA_GB_FETCH_NEED/PDNA_GB_ICON_NEED are each measured per-rung rather than
- * accumulated across every possible caller).
+ * 1,576 (this frame, U2b item 1's re-measurement) + 2,840 (rom_gbui_open_loc's
+ * own worst nested chain, rom_gbui.h's own measurement, UNCHANGED by item 1)
+ * = 4,416 (taken as measured, NOT rounded up -- see rom_gbui.h's own note for
+ * why) -- NOT gbscr_run_demo's 944 B on top (a different caller, e.g. U2b's
+ * real card screen, will have a different frame of its own; the gate is
+ * caller-independent by design, exactly like PDNA_GB_FETCH_NEED/
+ * PDNA_GB_ICON_NEED are each measured per-rung rather than accumulated across
+ * every possible caller). gbscr_cache_block()'s own chain (16 + its GbReadFn,
+ * <=24 B) runs AFTER rom_gbui_open_loc() returns, never nested inside it, so
+ * it does not add to the gate either.
  * gbscr_flush() carries no separate gate -- it never calls
- * pdna_origin_art_stack_room() -- because its own reachable chain (952 B, plus
- * rom_gbui_tile()/glyph()'s own small per-tile-fetch frames, no locate()/
- * distinct_tiles() on that path) is comfortably smaller and the design (sec
- * 3.4/R9) only requires gating the OPEN path.
+ * pdna_origin_art_stack_room() -- because its own reachable chain
+ * (gbscr_flush.part.0's 344 B, plus rom_gbui_tile()/glyph()'s own small
+ * per-tile-fetch frames and gbscr_mem_read()'s 40 B, no locate()/
+ * distinct_tiles() on that path, no SD/FIL access at all any more) is
+ * comfortably smaller and the design (sec 3.4/R9) only requires gating the
+ * OPEN path.
  */
 
 /* Canvas geometry -- 20x18 tiles, the whole GB screen. */
@@ -91,20 +110,55 @@ typedef enum {
   GBSCR_SRC_PIC
 } GbScrSrc;
 
+/* U2b item 1: which extra located ROM blocks (beyond FONT, always cached) a screen
+ * wants copied into the tail's RAM tile bank at open -- a bitwise-OR of these,
+ * passed as gbscr_open()'s `need_mask`. PIC has no bit here: the Gen-1 player pic
+ * is not a RomGbUi block at all (it is gb_sprite_gen1()'s own compressed codec);
+ * U2b's own player-pic wiring owns a further slice of the SAME tail buffer, sized
+ * by the caller on top of what need_mask asks gbscr_open() to reserve. */
+#define GBSCR_NEED_TEXTBOX   (1u << GBSCR_SRC_TEXTBOX)
+#define GBSCR_NEED_CARDFRAME (1u << GBSCR_SRC_CARDFRAME)
+#define GBSCR_NEED_BADGES    (1u << GBSCR_SRC_BADGES)
+
+/* One located ROM block, bulk-copied into the tail buffer at open: `rom_off` is
+ * where rom_gbui found it in the ROM/fused image, `ram_off` is its offset inside
+ * the SAME tail buffer gbscr_open() was given, `len` is the block's exact byte
+ * length (rom_gbui_tile()'s own tile_count * stride for that block/bpp). */
+typedef struct { uint32_t rom_off, ram_off, len; } GbscrBlock;
+#define GBSCR_MAX_BLOCKS 4   /* FONT + TEXTBOX + CARDFRAME + BADGES: the whole set */
+
+/* U2b item 1: repaints are SD-free. `gbscr_mem_read()` (pdna_gbscreen.c) is a
+ * GbReadFn that serves rom_gbui_tile()/rom_gbui_glyph()'s reads out of `tail`
+ * (the caller-owned buffer gbscr_open() was given) via this table instead of the
+ * SD card -- built ONCE at open, from the located blocks need_mask asked for; the
+ * FIL (SD build) or FusedGbSlice (delta build) is never touched again after
+ * gbscr_open() returns. A read for a ROM range this table has no entry for fails
+ * (returns 0/false) -- the caller's own need_mask must cover every GbScrSrc it
+ * paints, same contract app_arena_acquire()'s callers already carry for sizing. */
 typedef struct {
-  RomGbUi  gu;                 /* located offsets; .ctx/.read are STALE between
-                                 * calls -- gbscr_flush() rebinds a local copy */
-  uint8_t  map[GBSCR_CELLS];   /* per-cell tile index / charmap byte           */
-  uint8_t  src[GBSCR_CELLS];   /* per-cell GbScrSrc                            */
-  uint8_t  dirty[GBSCR_DIRTY_BYTES];
-  uint8_t  gen;                /* PDNA_GEN1 / PDNA_GEN2                        */
-  bool     ok;                 /* gbscr_open() succeeded; gbscr_* are no-ops otherwise */
-#ifndef PDNA_DELTA
-  char     rom_path[GB_ROM_PATH_MAX];
-#else
-  const uint8_t* rom_base;
-  uint32_t rom_size;
-#endif
+  const uint8_t* tail;
+  GbscrBlock blocks[GBSCR_MAX_BLOCKS];
+  int        nblocks;
+} GbscrCache;
+
+/* U2b item 1: pure (no tonc/FatFs) -- host-testable directly (tests/
+ * host_gbscreen_test.c). gbscr_block_bytes()/gbscr_block_off() are the exact
+ * byte-length/located-offset lookup gbscr_open() uses to size and fill the tail
+ * cache; gbscr_mem_read() is the GbReadFn gbscr_flush() binds every repaint to. */
+uint32_t gbscr_block_bytes(uint8_t gen, GbScrSrc src);
+uint32_t gbscr_block_off(const RomGbUi* gu, uint8_t gen, GbScrSrc src);
+bool     gbscr_mem_read(void* ctx, uint32_t off, void* buf, uint32_t len);
+
+typedef struct {
+  RomGbUi   gu;                 /* located offsets; .ctx/.read are STALE between
+                                  * calls -- gbscr_flush() rebinds a local copy to
+                                  * `cache` below, never the ROM/FIL again        */
+  GbscrCache cache;              /* U2b item 1: the RAM tile bank                */
+  uint8_t   map[GBSCR_CELLS];   /* per-cell tile index / charmap byte           */
+  uint8_t   src[GBSCR_CELLS];   /* per-cell GbScrSrc                            */
+  uint8_t   dirty[GBSCR_DIRTY_BYTES];
+  uint8_t   gen;                /* PDNA_GEN1 / PDNA_GEN2                        */
+  bool      ok;                 /* gbscr_open() succeeded; gbscr_* are no-ops otherwise */
 } GbScreen;
 
 /* gb_scale_mode -- the ONE new EWRAM byte this whole shell adds (design sec 1.5/
@@ -135,13 +189,29 @@ extern const uint8_t gbscr_y_dst_count[144];
  * rom_gbui_open_loc() against /PokeDNA/gbui<gen>.loc (written on a miss, Omega-
  * only, SD build only) -> English-release check (rom_gbui_open()'s own G1-C
  * BlankLeaderNames / G2 structural checks already fail closed on a JP ROM, per
- * design R1 -- this function adds no separate check on top).
+ * design R1 -- this function adds no separate check on top) -> U2b item 1: bulk-
+ * copies FONT plus every block `need_mask` names (GBSCR_NEED_*) into `tail`, then
+ * closes the FIL/drops the fused slice -- gbscr_flush() never touches the SD card
+ * again for the life of this `gs`.
+ *
+ * `tail`/`tail_len`: a caller-owned buffer (e.g. gb12_arena_tail(), or the
+ * caller's own app_arena_acquire()) used for BOTH the 2,048-B rom_gbui scan
+ * scratch (first, during the ROM scan/re-validate) and the RAM tile bank the scan
+ * result is then copied into (same bytes, reused after the scan is done with
+ * them) -- required size is 2,048 + FONT(1,024) + the byte length of every block
+ * `need_mask` requests (TEXTBOX 512/432, CARDFRAME 640, BADGES 1,024/704,
+ * Gen1/Gen2 respectively). A `tail_len` too small for that, or a NULL `tail`, is
+ * a clean refusal (kReasonNoTail) -- there is no smaller/slower fallback path
+ * inside gbscr_flush() any more (U2b item 1 deleted the per-tile FIL read): the
+ * screen is expected to fall back to its own plain page instead, per design 3.5.
+ *
  * On success: zeroes the tilemap (every cell BLANK), returns true.
  * On refusal: `*reason` (may be NULL) is set to a short, static, user-facing
  * string ("no ROM registered" / "not enough stack" / "could not open ROM" /
- * "not an English release" / "not a Game Boy ROM"), `gs->ok` is false, and every
- * other gbscr_* call on `gs` is a safe no-op. */
-bool gbscr_open(uint8_t gen, GbScreen* gs, const char** reason);
+ * "not an English release" / "not a Game Boy ROM" / "no tile-bank memory"),
+ * `gs->ok` is false, and every other gbscr_* call on `gs` is a safe no-op. */
+bool gbscr_open(uint8_t gen, GbScreen* gs, uint8_t* tail, uint32_t tail_len,
+                uint16_t need_mask, const char** reason);
 
 /* Release any resources gbscr_open() took (the SD build's FIL is already closed
  * by the time gbscr_open() returns -- this exists for symmetry/future-proofing
@@ -194,8 +264,14 @@ void gbscr_flush(GbScreen* gs, const char* legend_extra);
  * standalone (both scale modes) before any real card (U2b) exists. Reachable
  * from Settings (SELECT, a hidden key -- see pdna_main.c's pdna_settings()) in
  * every build; refuses with a message box on gbscr_open()'s own reason string
- * when no ROM/stack/English release is available. GBA-only (drives wait_keys/
- * msg_wait), not part of the pure host-testable half. */
+ * when no ROM/stack/English release/tile-bank memory is available. GBA-only
+ * (drives wait_keys/msg_wait), not part of the pure host-testable half.
+ *
+ * U2b item 1: this is the standalone (no GB session, no g_ed) caller, so it
+ * takes its own tail buffer via app_arena_acquire()/app_arena_release() rather
+ * than gb12_arena_tail() (that one only ever returns non-NULL inside a resident-
+ * image GB session, which Settings' hidden key is not) -- refuses the same way
+ * a real screen would if the arena is already held or the PC is dirty. */
 void gbscr_run_demo(uint8_t gen);
 
 #endif /* PDNA_GBSCREEN_H */

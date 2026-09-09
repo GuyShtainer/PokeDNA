@@ -164,6 +164,69 @@ int main(void) {
     }
   }
 
+  /* 6) U2b item 1: block byte-length table -- the exact numbers docs/
+   * GB-GAME-SCREENS-DESIGN.md sec 2.1/2.2 give for each block/gen. */
+  {
+    CHECK(gbscr_block_bytes(GB_GEN1, GBSCR_SRC_FONT) == 1024, "G1 font bytes");
+    CHECK(gbscr_block_bytes(GB_GEN2, GBSCR_SRC_FONT) == 1024, "G2 font bytes");
+    CHECK(gbscr_block_bytes(GB_GEN1, GBSCR_SRC_TEXTBOX) == 512, "G1 textbox bytes");
+    CHECK(gbscr_block_bytes(GB_GEN2, GBSCR_SRC_TEXTBOX) == 432, "G2 frames bytes");
+    CHECK(gbscr_block_bytes(GB_GEN1, GBSCR_SRC_CARDFRAME) == 640, "G1 cardframe bytes");
+    CHECK(gbscr_block_bytes(GB_GEN1, GBSCR_SRC_BADGES) == 1024, "G1 badges bytes");
+    CHECK(gbscr_block_bytes(GB_GEN2, GBSCR_SRC_BADGES) == 704, "G2 badges bytes");
+    CHECK(gbscr_block_bytes(GB_GEN1, GBSCR_SRC_PIC) == 0, "PIC has no rom_gbui block size");
+    CHECK(gbscr_block_bytes(GB_GEN1, GBSCR_SRC_BLANK) == 0, "BLANK has no block size");
+  }
+
+  /* 7) U2b item 1: gbscr_block_off() picks the right RomGbUi field per gen --
+   * Gen 1's TEXTBOX reads .textbox, Gen 2's reads .frames (there is no shared
+   * "textbox" field -- see gbscr_tile_pixels()'s own comment in pdna_gbscreen.c). */
+  {
+    RomGbUi gu; memset(&gu, 0, sizeof gu);
+    gu.font = 0x1000; gu.textbox = 0x2000; gu.frames = 0x3000;
+    gu.cardframe = 0x4000; gu.badges = 0x5000;
+    CHECK(gbscr_block_off(&gu, GB_GEN1, GBSCR_SRC_FONT) == 0x1000, "font off");
+    CHECK(gbscr_block_off(&gu, GB_GEN1, GBSCR_SRC_TEXTBOX) == 0x2000, "G1 textbox off");
+    CHECK(gbscr_block_off(&gu, GB_GEN2, GBSCR_SRC_TEXTBOX) == 0x3000, "G2 textbox off -> frames");
+    CHECK(gbscr_block_off(&gu, GB_GEN1, GBSCR_SRC_CARDFRAME) == 0x4000, "cardframe off");
+    CHECK(gbscr_block_off(&gu, GB_GEN1, GBSCR_SRC_BADGES) == 0x5000, "badges off");
+    CHECK(gbscr_block_off(NULL, GB_GEN1, GBSCR_SRC_FONT) == 0, "NULL gu -> 0");
+  }
+
+  /* 8) U2b item 1: gbscr_mem_read() -- the memory-backed GbReadFn every repaint
+   * goes through after gbscr_open(). Two synthetic blocks in one tail buffer,
+   * at DIFFERENT (and non-contiguous) "ROM" offsets, so a bounds bug that reads
+   * across block boundaries would be caught. */
+  {
+    uint8_t tail[64];
+    for (int i = 0; i < 64; i++) tail[i] = (uint8_t)i;
+    GbscrCache c;
+    memset(&c, 0, sizeof c);
+    c.tail = tail;
+    c.blocks[0] = (GbscrBlock){ .rom_off = 0x1000, .ram_off = 0, .len = 16 };
+    c.blocks[1] = (GbscrBlock){ .rom_off = 0x2000, .ram_off = 16, .len = 8 };
+    c.nblocks = 2;
+
+    uint8_t buf[16];
+    CHECK(gbscr_mem_read(&c, 0x1000, buf, 16) && buf[0] == 0 && buf[15] == 15,
+          "read block0 whole");
+    CHECK(gbscr_mem_read(&c, 0x1004, buf, 4) && buf[0] == 4 && buf[3] == 7,
+          "read block0 middle slice, correct ram offset");
+    CHECK(gbscr_mem_read(&c, 0x2000, buf, 8) && buf[0] == 16 && buf[7] == 23,
+          "read block1 whole, correct ram offset (16, not 0)");
+    CHECK(!gbscr_mem_read(&c, 0x1000, buf, 17), "read past block0's own length refused");
+    CHECK(!gbscr_mem_read(&c, 0x1010, buf, 1), "read one byte past block0's end refused");
+    CHECK(!gbscr_mem_read(&c, 0x3000, buf, 1), "read outside every block refused");
+    CHECK(!gbscr_mem_read(&c, 0x1000 - 1, buf, 2),
+          "read straddling INTO block0 from before it refused (off < rom_off)");
+    /* Overflow safety: a huge len must not wrap `b->len - rel` into a huge
+     * unsigned value and pass the bounds check by accident. */
+    CHECK(!gbscr_mem_read(&c, 0x1000, buf, 0xFFFFFFFFu), "huge len refused, no overflow");
+
+    GbscrCache empty; memset(&empty, 0, sizeof empty);
+    CHECK(!gbscr_mem_read(&empty, 0x1000, buf, 1), "empty cache (no tail) refused");
+  }
+
   if (g_fail) { printf("%d FAILED\n", g_fail); return 1; }
   printf("ALL PASSED (host_gbscreen_test)\n");
   return 0;
