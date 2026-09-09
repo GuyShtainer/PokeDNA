@@ -1897,6 +1897,33 @@ bool gb_persist(const char* what_for_log) {
 _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
                "GB import (resident image) no longer fits the borrowed EWRAM arena");
 
+/* U2b item 0: the arena TAIL past Gb12Edit, for a GB screen shell (pdna_gbscreen.c)
+ * riding the resident-image mount. pdna_gen12_show_image()'s own carve-out puts
+ * Gb12Edit LAST in the block (Mount, Gb12Image, recs, stage, Gb12Edit -- see that
+ * function, ~pdna_gen12.c:2671-2711) and nothing else in this file claims arena
+ * bytes past it for the rest of the session: `ed`'s own end IS the arena's used
+ * high-water mark. GB12_ARENA_NEED_IMG (~11,952 of APP_ARENA_BYTES' 35,712) already
+ * counts every byte up to and including Gb12Edit, so the slack below (~23.7 KB) is
+ * exactly what a caller may still take.
+ *
+ * `need <= slack` is the one runtime check; g_ed itself must be non-NULL (the
+ * resident-image mount with a live edit session -- pdna_gbtrainer() is reachable
+ * ONLY that way, never the read-only nav-menu FIL mount, whose own arena layout
+ * (GB12_ARENA_NEED, above) has no Gb12Edit at all and this function correctly
+ * refuses for). No allocation, no assert, no side effect -- a NULL return is an
+ * ordinary "not available right now", same posture as app_arena_acquire() itself. */
+uint8_t* gb12_arena_tail(uint32_t need) {
+  if (!g_ed) return NULL;
+  if (GB12_ARENA_NEED_IMG > (uint32_t)APP_ARENA_BYTES) return NULL;   /* belt: the
+                                            * _Static_assert above already forbids this
+                                            * at compile time, but a caller must never
+                                            * trust an unsigned subtraction that could
+                                            * wrap if that ever regressed */
+  uint32_t slack = (uint32_t)APP_ARENA_BYTES - (uint32_t)GB12_ARENA_NEED_IMG;
+  if (need > slack) return NULL;
+  return (uint8_t*)g_ed + GB12_A4(sizeof(Gb12Edit));
+}
+
 /* S2/S3/S5-B: the resident-image edit pipeline's hooks, registered as one const struct
  * (pdna_app.h's AppSrcOps) rather than five separate setters -- const data lives in
  * ROM, so this costs nothing against the EWRAM guard. */
