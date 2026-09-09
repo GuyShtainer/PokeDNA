@@ -18,6 +18,7 @@
 #include "ff.h"
 #include "log.h"
 #include "sys.h"              /* EWRAM_BSS */
+#include "snd.h"              /* snd_deny() for the NOT NOW refusal (U2b review D4) */
 #include "pdna_app.h"         /* PDNA_DIR, app_can_edit, app_gb_rom_path, ... */
 #include "pdna_origin_art.h"  /* PDNA_GEN1/2, pdna_origin_art_stack_room       */
 #include "ui.h"                /* ui_fill_rect, ui_ptext, ui_ptext_shadow      */
