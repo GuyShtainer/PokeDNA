@@ -383,6 +383,52 @@ int main(void) {
   }
   printf(failed ? "  15-entry capacity (#68b D1): SOME FAILED\n" : "  15-entry capacity (#68b D1): OK\n");
 
+  /* ---- BACKLOG #69(d): a name field with 32 non-NUL bytes (no NUL terminator).
+   * fused_gb_entry() must return the shared empty string "" for it and never read
+   * past the 32-byte field. ---- */
+  {
+    static uint8_t buf[1024];
+    memset(buf, 0xAA, sizeof buf);
+
+    /* Build a minimal directory with one entry whose name is 32 'X' bytes (no NUL). */
+    uint32_t dir_off = 64;
+    uint8_t* d = buf + dir_off;
+    memcpy(d, "PDNAGBD1", 8);
+    uint32_t count = 1;
+    memcpy(d + 8, &count, 4);
+
+    uint8_t* entry = d + 12;
+    memset(entry, 0, ENTRY_SIZE);
+    uint32_t type = FUSED_GB_ROM_GEN1;
+    memcpy(entry + 0, &type, 4);
+    /* Fill all 32 bytes of the name field with 'X' (no NUL) */
+    memset(entry + 4, 'X', 32);
+    uint32_t off = 0, size = 0, crc = 0;
+    memcpy(entry + 36, &off, 4);
+    memcpy(entry + 40, &size, 4);
+    memcpy(entry + 44, &crc, 4);
+
+    uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
+    uint32_t trailer_off = 12 + ENTRY_SIZE * count;
+    memcpy(d + trailer_off, &dir_size, 4);
+    memcpy(d + trailer_off + 4, "PDNAGBD1", 8);
+    uint32_t reserved = 0;
+    memcpy(d + trailer_off + 12, &reserved, 4);
+
+    set_record(buf, dir_off, dir_size);
+
+    uint32_t etype = 0;
+    const char* name = 0;
+    uint32_t esize = 0;
+    CHECK(fused_gb_entry(0, &etype, &name, &esize),
+          "name without NUL: entry should be parseable");
+    CHECK(name != 0, "name without NUL: name pointer should not be NULL");
+    CHECK(strcmp(name, "") == 0,
+          "name without NUL: name should resolve to the shared empty string");
+    CHECK(esize == 0, "name without NUL: size should be 0");
+  }
+  printf(failed ? "  name without NUL (#69d): SOME FAILED\n" : "  name without NUL (#69d): OK\n");
+
   if (failed) { printf("host_fusedgb_test: FAILED\n"); return 1; }
   printf("host_fusedgb_test: ALL OK\n");
   return 0;
