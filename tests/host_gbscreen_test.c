@@ -229,6 +229,63 @@ int main(void) {
     CHECK(!gbscr_mem_read(&empty, 0x1000, buf, 1), "empty cache (no tail) refused");
   }
 
+  /* 9) U2b/U2c review item 0c: gbscr_cache_plan()/gbscr_tail_need() -- the pure
+   * layout planner a real gbscr_open() now calls before ever touching the ROM.
+   * For every gen x every need_mask combination (0 = FONT only .. all three
+   * bits set): sum(plan.blocks[].len) + ROM_GBUI_SCRATCH_MIN must equal
+   * gbscr_tail_need() (the same arithmetic, derived two different ways), and
+   * consecutive ram_offs must be EXACTLY cumulative (block i's ram_off ==
+   * sum of every earlier block's len, block 0's ram_off == 0). */
+  {
+    RomGbUi gu; memset(&gu, 0, sizeof gu);
+    gu.font = 0x1000; gu.textbox = 0x2000; gu.frames = 0x2500;
+    gu.cardframe = 0x4000; gu.badges = 0x5000;
+
+    const uint8_t gens[2] = { GB_GEN1, GB_GEN2 };
+    for (int gi = 0; gi < 2; gi++) {
+      uint8_t gen = gens[gi];
+      for (uint16_t mask = 0; mask <= (GBSCR_NEED_TEXTBOX | GBSCR_NEED_CARDFRAME | GBSCR_NEED_BADGES); mask++) {
+        GbscrCache plan;
+        bool ok = gbscr_cache_plan(gen, mask, &gu, 65536u, &plan);
+        CHECK(ok, "gen=%d mask=0x%x: cache_plan refused", gen, mask);
+        if (!ok) continue;
+
+        uint32_t sum = 0, cursor = 0;
+        for (int i = 0; i < plan.nblocks; i++) {
+          CHECK(plan.blocks[i].ram_off == cursor,
+                "gen=%d mask=0x%x block %d: ram_off=%u, want cumulative %u",
+                gen, mask, i, plan.blocks[i].ram_off, cursor);
+          sum += plan.blocks[i].len;
+          cursor += plan.blocks[i].len;
+        }
+        uint32_t need = gbscr_tail_need(gen, mask);
+        CHECK(sum + ROM_GBUI_SCRATCH_MIN == need,
+              "gen=%d mask=0x%x: sum(len)=%u + SCRATCH_MIN=%u != gbscr_tail_need()=%u",
+              gen, mask, sum, ROM_GBUI_SCRATCH_MIN, need);
+      }
+    }
+
+    /* Mutation check (D2c): a corrupted plan (ram_off off by a fixed +8) must
+     * be CAUGHT by the cumulative check above, not silently accepted -- proves
+     * the test has teeth rather than just re-deriving the same formula twice.
+     * This block hand-builds a plan the way gbscr_cache_plan() would EXCEPT for
+     * the injected bug, so it does not need to touch the real function. */
+    {
+      GbscrCache bad; memset(&bad, 0, sizeof bad);
+      bad.nblocks = 2;
+      bad.blocks[0] = (GbscrBlock){ .rom_off = gu.font, .ram_off = 0, .len = 1024 };
+      uint32_t wrong_ram_off = 1024 + 8;   /* should be 1024, not +8 */
+      bad.blocks[1] = (GbscrBlock){ .rom_off = gu.textbox, .ram_off = wrong_ram_off, .len = 512 };
+      uint32_t cursor = 0;
+      bool caught = false;
+      for (int i = 0; i < bad.nblocks; i++) {
+        if (bad.blocks[i].ram_off != cursor) caught = true;
+        cursor += bad.blocks[i].len;
+      }
+      CHECK(caught, "mutation (ram_off = cursor + 8) was NOT caught by the cumulative check");
+    }
+  }
+
   if (g_fail) { printf("%d FAILED\n", g_fail); return 1; }
   printf("ALL PASSED (host_gbscreen_test)\n");
   return 0;

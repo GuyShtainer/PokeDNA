@@ -210,6 +210,79 @@ bool gbscr_mem_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
   return false;
 }
 
+/* U2b item 1: which order the extra (need_mask) blocks are copied into the tail
+ * cache, right after FONT -- fixed, so the cache-building loop and any test that
+ * inspects a GbscrCache agree on layout. Pure data: moved above the tonc/FatFs
+ * boundary (U2b/U2c review item 0c) so gbscr_cache_plan() below can use it. */
+static const GbScrSrc kCacheOptOrder[3] = {
+  GBSCR_SRC_TEXTBOX, GBSCR_SRC_CARDFRAME, GBSCR_SRC_BADGES
+};
+
+/* Total tail bytes gbscr_open() needs for `need_mask` on generation `gen`:
+ * the 2,048-B rom_gbui scan scratch, reused afterward for FONT (always cached)
+ * plus every block need_mask names. Exported (U2c) so a caller sizing its own
+ * arena-tail request (e.g. the Gen-1 card, on top of its own player-pic bytes)
+ * can call the SAME arithmetic gbscr_open_inner() gates on, rather than
+ * re-deriving it and risking the two falling out of sync. */
+uint32_t gbscr_tail_need(uint8_t gen, uint16_t need_mask) {
+  uint32_t need = ROM_GBUI_SCRATCH_MIN + gbscr_block_bytes(gen, GBSCR_SRC_FONT);
+  for (int i = 0; i < 3; i++)
+    if (need_mask & (1u << kCacheOptOrder[i])) need += gbscr_block_bytes(gen, kCacheOptOrder[i]);
+  return need;
+}
+
+/* U2b/U2c review item 0c: the PURE half of what used to be gbscr_cache_block()'s
+ * loop -- decides WHERE each block (FONT, always, then every need_mask block in
+ * kCacheOptOrder) lands in the tail cache (rom_off/ram_off/len), with NO I/O at
+ * all (gu->read is never called). This is what tests/host_gbscreen_test.c can
+ * drive directly with a synthetic RomGbUi (offsets set, no real ROM file needed)
+ * -- the shot harness cannot see a shifted-glyph corruption from a bad ram_off,
+ * but a host test that recomputes the layout by hand can.
+ *
+ * `gu` need only have its located offset fields set (gu->font, gu->textbox/
+ * frames, gu->cardframe, gu->badges) -- .ok/.read/.ctx are never touched.
+ * Returns false (out->nblocks left at whatever was filled before the failure)
+ * if a needed block has no located offset (off==0) or size (len==0), or the
+ * plan would overrun GBSCR_MAX_BLOCKS -- the same "fail closed" contract the
+ * old gbscr_cache_block() loop had, just without the read. */
+bool gbscr_cache_plan(uint8_t gen, uint16_t need_mask, const RomGbUi* gu,
+                      uint32_t tail_len, GbscrCache* out) {
+  if (!gu || !out) return false;
+  memset(out, 0, sizeof *out);
+  uint32_t cursor = 0;
+
+  /* FONT is always cached, first. */
+  {
+    uint32_t off = gbscr_block_off(gu, gen, GBSCR_SRC_FONT);
+    uint32_t len = gbscr_block_bytes(gen, GBSCR_SRC_FONT);
+    if (!off || !len || out->nblocks >= GBSCR_MAX_BLOCKS) return false;
+    out->blocks[out->nblocks].rom_off = off;
+    out->blocks[out->nblocks].ram_off = cursor;
+    out->blocks[out->nblocks].len = len;
+    out->nblocks++;
+    cursor += len;
+  }
+
+  for (int i = 0; i < 3; i++) {
+    GbScrSrc src = kCacheOptOrder[i];
+    if (!(need_mask & (1u << src))) continue;
+    uint32_t off = gbscr_block_off(gu, gen, src);
+    uint32_t len = gbscr_block_bytes(gen, src);
+    if (!off || !len || out->nblocks >= GBSCR_MAX_BLOCKS) return false;
+    out->blocks[out->nblocks].rom_off = off;
+    out->blocks[out->nblocks].ram_off = cursor;
+    out->blocks[out->nblocks].len = len;
+    out->nblocks++;
+    cursor += len;
+  }
+
+  (void)tail_len;   /* the caller (gbscr_open_inner) already gated on
+                      * gbscr_tail_need() before calling this; a plan never
+                      * needs more than sum(len) <= tail_need - SCRATCH_MIN,
+                      * always true when the caller's own gate passed */
+  return true;
+}
+
 /* ===========================================================================
  * Everything below needs tonc/FatFs: ROM I/O (gbscr_open/close) and the VRAM
  * blit (gbscr_flush). Stubbed out under PDNA_GBSCREEN_HOST_TEST so the pure
@@ -277,41 +350,22 @@ static bool gbscr_resolve_path(uint8_t gen, char* out, int cap) {
 }
 #endif /* !PDNA_DELTA */
 
-/* U2b item 1: which order the extra (need_mask) blocks are copied into the tail
- * cache, right after FONT -- fixed, so the cache-building loop below and any test
- * that inspects a GbscrCache agree on layout. */
-static const GbScrSrc kCacheOptOrder[3] = {
-  GBSCR_SRC_TEXTBOX, GBSCR_SRC_CARDFRAME, GBSCR_SRC_BADGES
-};
-
-/* Total tail bytes gbscr_open() needs for `need_mask` on generation `gen`:
- * the 2,048-B rom_gbui scan scratch, reused afterward for FONT (always cached)
- * plus every block need_mask names. */
-static uint32_t gbscr_tail_need(uint8_t gen, uint16_t need_mask) {
-  uint32_t need = ROM_GBUI_SCRATCH_MIN + gbscr_block_bytes(gen, GBSCR_SRC_FONT);
-  for (int i = 0; i < 3; i++)
-    if (need_mask & (1u << kCacheOptOrder[i])) need += gbscr_block_bytes(gen, kCacheOptOrder[i]);
-  return need;
-}
-
-/* Bulk-copies one block straight from the (still-open) ROM source into the tail
- * cache -- a raw byte range, no tile decode (rom_gbui_tile()/glyph() do that
- * later, out of RAM, at flush time). `gu` must already be open (its own
- * .read/.ctx are what this reads through). Returns false (and leaves `cache`
- * untouched for this block) on a short/failed read or an unlocated (offset 0 for
- * a src the ROM never actually located -- see FAIL CLOSED in rom_gbui.h: `ok`
- * would already be 0 in that case, so this is a belt-and-braces check). */
-static bool gbscr_cache_block(RomGbUi* gu, uint8_t gen, GbScrSrc src,
-                              uint8_t* tail, uint32_t* cursor, GbscrCache* cache) {
-  uint32_t off = gbscr_block_off(gu, gen, src);
-  uint32_t len = gbscr_block_bytes(gen, src);
-  if (!off || !len || cache->nblocks >= GBSCR_MAX_BLOCKS) return false;
-  if (!gu->read(gu->ctx, off, tail + *cursor, len)) return false;
-  cache->blocks[cache->nblocks].rom_off = off;
-  cache->blocks[cache->nblocks].ram_off = *cursor;
-  cache->blocks[cache->nblocks].len = len;
-  cache->nblocks++;
-  *cursor += len;
+/* U2b/U2c review item 0c: the plan (WHERE each block goes) now lives in the
+ * pure gbscr_cache_plan() above the tonc/FatFs boundary; this loop performs
+ * ONLY the I/O (the actual `gu->read()` into `tail`) against a plan already
+ * computed. Returns false (and leaves `cache` at whatever the plan filled,
+ * matching the old gbscr_cache_block() loop's own partial-fill behaviour) on
+ * a short/failed read for any planned block. */
+static bool gbscr_cache_fill(RomGbUi* gu, const GbscrCache* plan, uint8_t* tail,
+                             GbscrCache* cache) {
+  cache->tail = tail;
+  cache->nblocks = plan->nblocks;
+  for (int i = 0; i < plan->nblocks; i++) {
+    cache->blocks[i] = plan->blocks[i];
+    if (!gu->read(gu->ctx, plan->blocks[i].rom_off, tail + plan->blocks[i].ram_off,
+                  plan->blocks[i].len))
+      return false;
+  }
   return true;
 }
 
@@ -366,16 +420,14 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
   rom_gbui_save_loc(&gs->gu, &fresh);
   if (!have_loc || memcmp(&fresh, &loc, sizeof fresh) != 0) gbscr_save_loc(gen, &fresh);
 
-  /* U2b item 1: bulk-copy FONT + every need_mask block into `tail`, reusing the
-   * SAME bytes the scan scratch above just finished with, then close the FIL --
-   * gbscr_flush() never reopens it. gu->read/gu->ctx are still bound to `fil`
-   * here (rom_gbui_open_loc() left them that way on success). */
-  gs->cache.tail = tail;
-  uint32_t cursor = 0;
-  bool cok = gbscr_cache_block(&gs->gu, gen, GBSCR_SRC_FONT, tail, &cursor, &gs->cache);
-  for (int i = 0; cok && i < 3; i++)
-    if (need_mask & (1u << kCacheOptOrder[i]))
-      cok = gbscr_cache_block(&gs->gu, gen, kCacheOptOrder[i], tail, &cursor, &gs->cache);
+  /* U2b item 1 / U2c review 0c: plan (pure) then fill (I/O) FONT + every
+   * need_mask block into `tail`, reusing the SAME bytes the scan scratch above
+   * just finished with, then close the FIL -- gbscr_flush() never reopens it.
+   * gu->read/gu->ctx are still bound to `fil` here (rom_gbui_open_loc() left
+   * them that way on success). */
+  GbscrCache plan;
+  bool cok = gbscr_cache_plan(gen, need_mask, &gs->gu, tail_len, &plan) &&
+             gbscr_cache_fill(&gs->gu, &plan, tail, &gs->cache);
   f_close(&fil);
   if (!cok) { if (reason) *reason = kReasonOpen; return false; }
 #else
@@ -391,12 +443,9 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
   int ok = rom_gbui_open(&gs->gu, fused_gb_slice_read, &slice, size, tail, ROM_GBUI_SCRATCH_MIN);
   if (!ok || (uint8_t)gs->gu.gen != gen) { if (reason) *reason = kReasonOpen; return false; }
 
-  gs->cache.tail = tail;
-  uint32_t cursor = 0;
-  bool cok = gbscr_cache_block(&gs->gu, gen, GBSCR_SRC_FONT, tail, &cursor, &gs->cache);
-  for (int i = 0; cok && i < 3; i++)
-    if (need_mask & (1u << kCacheOptOrder[i]))
-      cok = gbscr_cache_block(&gs->gu, gen, kCacheOptOrder[i], tail, &cursor, &gs->cache);
+  GbscrCache plan;
+  bool cok = gbscr_cache_plan(gen, need_mask, &gs->gu, tail_len, &plan) &&
+             gbscr_cache_fill(&gs->gu, &plan, tail, &gs->cache);
   if (!cok) { if (reason) *reason = kReasonOpen; return false; }
 #endif
 

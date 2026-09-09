@@ -154,6 +154,21 @@ uint32_t gbscr_block_bytes(uint8_t gen, GbScrSrc src);
 uint32_t gbscr_block_off(const RomGbUi* gu, uint8_t gen, GbScrSrc src);
 bool     gbscr_mem_read(void* ctx, uint32_t off, void* buf, uint32_t len);
 
+/* U2b/U2c review item 0c: gbscr_tail_need()'s own byte arithmetic (SCRATCH_MIN +
+ * FONT + every need_mask block), exported so a caller sizing its OWN arena-tail
+ * request (on top of gbscr_open()'s own needs) uses the identical formula
+ * gbscr_open_inner() gates on, rather than re-deriving it. gbscr_cache_plan() is
+ * the pure (no I/O) half of what used to be gbscr_cache_block()'s loop: given an
+ * already-LOCATED RomGbUi (offsets set; .ok/.read/.ctx unused), it decides the
+ * byte layout (rom_off/ram_off/len, in the fixed FONT-then-need_mask order) a
+ * real open() would use, with no ROM read at all -- exactly what
+ * tests/host_gbscreen_test.c needs to catch a shifted-glyph layout bug the shot
+ * harness cannot see. Returns false (fail closed) if a needed block has no
+ * located offset/size, or the plan would overrun GBSCR_MAX_BLOCKS. */
+uint32_t gbscr_tail_need(uint8_t gen, uint16_t need_mask);
+bool     gbscr_cache_plan(uint8_t gen, uint16_t need_mask, const RomGbUi* gu,
+                          uint32_t tail_len, GbscrCache* out);
+
 typedef struct {
   RomGbUi   gu;                 /* located offsets; .ctx/.read are STALE between
                                   * calls -- gbscr_flush() rebinds a local copy to
