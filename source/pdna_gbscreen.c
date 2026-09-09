@@ -377,8 +377,14 @@ static void gbscr_paint_legend_stretched(const char* extra) {
 void gbscr_flush(GbScreen* gs, const char* legend_extra) {
   if (!gs || !gs->ok) return;
 
+  /* 1:1 mode's legend lives entirely in the side/top/bottom bars OUTSIDE the
+   * canvas (x<40, x>=200, y<8, y>=152) -- no cell ever paints there, so order
+   * doesn't matter for it. Stretched mode's legend is a bottom SCRIM overlay
+   * INSIDE the canvas area (the canvas fills the whole screen there), so it
+   * MUST be painted AFTER the cell loop below or a full repaint (every SELECT
+   * toggle) blits straight over it and the scrim/legend silently vanishes --
+   * caught by looking at the U2a shots, not by inspection. */
   if (gb_scale_mode == 0) gbscr_paint_legend_1to1(legend_extra);
-  else                    gbscr_paint_legend_stretched(legend_extra);
 
 #ifndef PDNA_DELTA
   FIL fil; bool fil_open = false;
@@ -418,6 +424,8 @@ void gbscr_flush(GbScreen* gs, const char* legend_extra) {
 #ifndef PDNA_DELTA
   if (fil_open) f_close(&fil);
 #endif
+
+  if (gb_scale_mode != 0) gbscr_paint_legend_stretched(legend_extra);
 }
 
 /* ---------------------------------------------------------------------------
@@ -458,7 +466,11 @@ void __attribute__((noinline)) gbscr_run_demo(uint8_t gen) {
   gbscr_text(&gs, 2, 11, "GB SCREEN SHELL");
 
   for (;;) {
-    gbscr_flush(&gs, "START DONE");
+    /* Short on purpose: the 40-px side bar fits "A OK"/"B BACK"/"SEL SIZE" but
+     * not a longer fourth line -- A/B/START all just exit this demo (there is
+     * nothing to keep/discard, unlike a real screen's commit flow), so "EXIT"
+     * is both accurate and narrow enough not to overflow into the canvas. */
+    gbscr_flush(&gs, "EXIT");
     u32 k;
     do { VBlankIntrWait(); key_poll(); k = key_hit(KEY_A | KEY_B | KEY_START | KEY_SELECT); } while (!k);
     if (k & KEY_SELECT) gbscr_toggle_scale(&gs);

@@ -119,6 +119,12 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # Emerald session it now sits behind; captions all start "#68a:".
     ("delta-gb-picker", "#68a — the combined image's boot picker (Emerald + fused GB "
      "saves, one image, no more delta-gb-only)", ("#68a",)),
+    # U2a (docs/GB-GAME-SCREENS-DESIGN.md, docs/briefs/U2-gb-card-briefs.md): the
+    # shared GB-screen shell's own standalone demo, shot via tools/dgb_shots.py's
+    # run_gbscreen_shell(). Captions all start "U2a:". Appended after "delta-gb-picker"
+    # per this list's own append-only rule.
+    ("gb-screen-shell", "U2a — the shared GB-screen shell (canvas, SELECT 1:1<->stretched)",
+     ("U2a",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

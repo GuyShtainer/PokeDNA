@@ -75,6 +75,59 @@ NV_GB_DOWN_FROM_COL1_TOP = 6
 GB_ART_COLD_SETTLE = 32000
 
 
+def run_gbscreen_shell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """U2a (docs/GB-GAME-SCREENS-DESIGN.md sec 3.3): the shared GB-screen shell's own
+    standalone demo (source/pdna_gbscreen.c gbscr_run_demo()) -- the located font's
+    128-glyph sheet inside a text-box border, reachable via a hidden SELECT key on
+    the Settings list (no card exists yet; that is U2b). This build boots into the
+    normal Emerald Gen-3 box screen (see run_nav_gb()'s own module-docstring note),
+    so navigation up to the Settings list is IDENTICAL to run_e4_settings()'s own
+    (tools/gb_shots.py): START -> nav menu -> RIGHT (col 1) -> DOWN x7 -> A.
+
+    gbscr_open() under PDNA_DELTA does a full, uncached rom_gbui scan every time
+    (this slice's EWRAM budget forbids a new EWRAM loc-cache the way #62 D1 gave
+    gb_art_source.c's own delta half) -- ridden out with the same GB_ART_COLD_SETTLE
+    window dgb_shots.py's own run_nav_gb()/run_standalone() already use for the
+    analogous rom_gbsprite cold scan. Only ONE scan per demo ENTRY: gbscr_run_demo()
+    opens once and loops on SELECT/A/B without re-opening."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "u2a_")
+    print("== U2a: the GB-screen shell demo (Settings > SELECT) ==")
+
+    # Same extra settle run_nav_gb() uses for this SAME image (Emerald.sav + the
+    # whole GB directory boots slower than a plain single-fused-save image --
+    # Session.__init__'s own 180-frame settle is not enough; without this, START
+    # fires mid-load and lands somewhere other than the box screen's own menu).
+    s.run(700)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)   # box screen -> nav menu
+    s.tap("RIGHT")                                 # column 0 (Party) -> column 1 (Blocks)
+    s.press_n("DOWN", 7)                           # Blocks -> ... -> Settings (index 17)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)         # nav menu -> the Settings list
+
+    s.tap("SEL", settle=GB_ART_COLD_SETTLE)        # hidden key -> gbscr_run_demo(PDNA_GEN1)
+    s.shot("01_1to1", "U2a: the GB-screen shell demo -- Red.gb's own located font, "
+                       "all 128 glyphs (charmap 0x80..0xFF), inside a text-box-tile "
+                       "border, 1:1 centred at (40,8) with the legend in the side "
+                       "bars (default mode, gb_scale_mode=0)")
+
+    s.tap("SEL", settle=60)                        # toggle -> stretched
+    s.shot("02_stretched", "U2a: SELECT toggles to stretched (240x160, the two "
+                            "exact-integer LUTs -- x duplicates every 2nd source "
+                            "column, y every 9th source row) -- same font, same "
+                            "border, filling the whole screen, legend as a bottom "
+                            "scrim overlay")
+
+    s.tap("SEL", settle=60)                        # toggle back -> 1:1
+    s.shot("03_back_1to1", "U2a: SELECT again returns to 1:1 -- a live toggle, not "
+                            "a one-way switch")
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)          # leave the demo -> Settings list
+    s.shot("04_settings_after", "U2a: back at the Settings list -- the demo's "
+                                 "content is fully gone (pdna_settings() forces a "
+                                 "full repaint on return), proving the shell does "
+                                 "not leave stray pixels behind on exit")
+    return s
+
+
 def run_nav_gb(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
     """pokedna-delta-gb.gba: boots into #68a's boot picker (row 0 = Emerald.sav, the
     valid flash save; rows 1..3 = the fused GB corpus) -- A on the default Emerald
@@ -306,6 +359,9 @@ def main(argv=None) -> int:
                      help="pokedna-delta-gb.gba -- the ONE combined image (boot picker, "
                           "standalone GB mount, AND the nested NV_GB import all live here "
                           "since BACKLOG #68a retired the separate delta-gb-only image)")
+    ap.add_argument("--shell-only", action="store_true",
+                     help="U2a: only run_gbscreen_shell() against --image, skip the "
+                          "boot-picker/standalone/NV_GB flows")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     a = ap.parse_args(argv)
     if not a.image.is_file():
@@ -315,6 +371,19 @@ def main(argv=None) -> int:
     core_mod, image_mod = gb_shots.load_mgba()
 
     ok, skipped = [], []
+    if a.shell_only:
+        try:
+            sess = run_gbscreen_shell(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] gbscreen shell: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
     try:
         sess = run_standalone(core_mod, image_mod, a.image, a.out)
         ok += sess.taken
