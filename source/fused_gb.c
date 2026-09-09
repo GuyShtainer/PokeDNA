@@ -58,6 +58,11 @@ bool fused_gb_save(int i, const char** name, const uint8_t** base, uint32_t* siz
   (void)i; (void)name; (void)base; (void)size;
   return false;
 }
+bool fused_gb_loc(uint8_t kind, uint8_t gen, const uint8_t** rec, uint32_t* rec_len,
+                  uint32_t* id_hash, uint32_t* rom_size) {
+  (void)kind; (void)gen; (void)rec; (void)rec_len; (void)id_hash; (void)rom_size;
+  return false;
+}
 
 #else /* PDNA_DELTA */
 
@@ -244,6 +249,34 @@ bool fused_gb_save(int i, const char** name, const uint8_t** base, uint32_t* siz
     if (name) *name = s_entry[k].name;
     if (base) *base = cart_ptr(s_entry[k].offset);
     if (size) *size = s_entry[k].size;
+    return true;
+  }
+  return false;
+}
+
+/* BACKLOG #68b: the [header+record] framing tools/gbloc_driver.c writes for each LOC
+ * payload -- magic(8) + kind(1) + gen(1) + rec_size(2, LE) + id_hash(4, LE) +
+ * rom_size(4, LE) = 20 bytes, followed by rec_size bytes of raw struct. Parsed by hand
+ * (memcpy at fixed byte offsets) rather than cast through a C struct, same posture the
+ * directory entries themselves already use above -- no alignment assumption on the
+ * cartridge byte stream either way. */
+#define GB_LOC_HDR_SIZE 20u
+
+bool fused_gb_loc(uint8_t kind, uint8_t gen, const uint8_t** rec, uint32_t* rec_len,
+                  uint32_t* id_hash, uint32_t* rom_size) {
+  parse_once();
+  for (int i = 0; i < s_count; i++) {
+    if (s_entry[i].type != FUSED_GB_LOC) continue;
+    if (s_entry[i].size < GB_LOC_HDR_SIZE) continue;   /* too small to hold the header */
+    const uint8_t* p = cart_ptr(s_entry[i].offset);
+    if (memcmp(p, "PDNALOC1", 8) != 0) continue;
+    if (p[8] != kind || p[9] != gen) continue;
+    uint16_t rsize; memcpy(&rsize, p + 10, 2);
+    if ((uint32_t)GB_LOC_HDR_SIZE + rsize != s_entry[i].size) continue;  /* framing check */
+    if (rec) *rec = p + GB_LOC_HDR_SIZE;
+    if (rec_len) *rec_len = rsize;
+    if (id_hash) { uint32_t v; memcpy(&v, p + 12, 4); *id_hash = v; }
+    if (rom_size) { uint32_t v; memcpy(&v, p + 16, 4); *rom_size = v; }
     return true;
   }
   return false;
