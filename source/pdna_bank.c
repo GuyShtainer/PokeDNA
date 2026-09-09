@@ -60,7 +60,13 @@ static void meta_defaults(void) {
   }
 }
 
-static bool meta_load(void) {
+/* noinline (BACKLOG #81): meta_load's 176-byte buf[] would otherwise be inlined into
+ * every caller and, per -fstack-usage, held for the caller's ENTIRE frame lifetime --
+ * including the deep pdna_box()->...->ed_sd_dma_to_rom chain that runs long after this
+ * function has already returned. buf[] is dead the instant meta_load() returns, so
+ * forcing a real call/return frees those bytes before the deep chain begins. Pure
+ * stack-layout change, no behavior change (same code, same order). */
+static bool __attribute__((noinline)) meta_load(void) {
   uint8_t buf[META_BYTES]; uint32_t sz = 0;
   if (sf_read_full(meta_path(), buf, sizeof buf, &sz) != SF_OK || sz < META_BYTES ||
       memcmp(buf, META_MAGIC, 6) != 0) { meta_defaults(); return false; }
@@ -198,8 +204,17 @@ static bool has_pk_ext(const char* n) {
 }
 
 /* Pack existing .pk3 files into box files in directory order. Non-destructive: the
- * .pk3 files stay; they're simply no longer the store. Omega-only (it writes). */
-static void migrate_flat_pk3(void) {
+ * .pk3 files stay; they're simply no longer the store. Omega-only (it writes).
+ *
+ * noinline (BACKLOG #81): same reasoning as meta_load() above, at far higher stakes --
+ * this function's locals (DIR d, FILINFO fno with its LFN name buffers, path[SF_PATH_MAX],
+ * rec[REC_BYTES]) are the single largest contributor to pdna_bank_show()'s 784-byte
+ * frame, and all of them are dead before pdna_bank_show() ever calls into pdna_box().
+ * Inlined, that dead space still sits under the deepest write chain
+ * (pdna_box->...->app_paste_gb_merge->...->ed_sd_dma_to_rom) for the rest of the
+ * function's lifetime. Forcing a real call/return frees it before that chain runs.
+ * Pure stack-layout change: same code, same order, no write-path semantics touched. */
+static void __attribute__((noinline)) migrate_flat_pk3(void) {
   meta_defaults();
   int box = 0, slot = 0, packed = 0;
   bool box_open = false;
