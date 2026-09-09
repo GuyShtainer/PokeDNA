@@ -111,6 +111,14 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # usual single-fused-save build; captions all start "#62:".
     ("delta-gb", "#62 — a delta build fused with a whole GB/GBC corpus (real art via NV_GB)",
      ("#62",)),
+    # BACKLOG #68a (append-only, same rule as #58/#62 above). Shots come from
+    # tools/dgb_shots.py's run_standalone(), run against the SAME pokedna-delta-gb.gba
+    # image as the #62 row above (the separate blank-flash `delta-gb-only` image is
+    # retired): the boot picker (Emerald row + GB rows), the standalone GB mount
+    # reached through it, and NV_GB's nested import re-verified from inside the
+    # Emerald session it now sits behind; captions all start "#68a:".
+    ("delta-gb-picker", "#68a — the combined image's boot picker (Emerald + fused GB "
+     "saves, one image, no more delta-gb-only)", ("#68a",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

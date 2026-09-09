@@ -451,6 +451,14 @@ delta:                 # emulator build (Delta / RetroArch): edits its OWN 128 K
 GB_ROMS ?= $(HOME)/VSCodeProjects/gba-toolkit/roms
 EMERALD_SAV ?= $(HOME)/VSCodeProjects/gba-toolkit/roms/Emerald.sav
 
+# BACKLOG #68a: this is now the ONLY GB-corpus recipe -- pdna_main.c's boot-time
+# gb_delta_boot_pick() offers a picker over BOTH the fused Emerald.sav and the fused
+# GB corpus in one image, so the old blank-flash `delta-gb-only` target (which existed
+# only to reach the full read/write standalone GB mount with no Gen-3 save in the way)
+# is retired: picking a GB row off this same image's boot picker reaches that exact
+# mount now. Verified by review to boot to the picker, then either continue into the
+# Emerald session or PICK A SAVE -> VIEW/EDIT/LEGALITY/MOVE TO BOX/COPY/RELEASE/CREATE,
+# backing out (B) reloading Emerald from flash and re-showing the same picker.
 delta-gb:               # 'delta' fused with Red/Gold/Crystal (ROM+save) + Emerald.sav
 	@$(MAKE) PDNA_TARGET=delta rebuild
 	@python3 tools/fuse_sav.py pokedna-delta.gba $(EMERALD_SAV) -o pokedna-delta-gb.gba --force
@@ -462,25 +470,7 @@ delta-gb:               # 'delta' fused with Red/Gold/Crystal (ROM+save) + Emera
 	@python3 tools/fuse_gb.py --check pokedna-delta-gb.gba
 	@echo ""
 	@echo "  pokedna-delta-gb.gba built -- Emerald.sav seeds the flash save; Red/Gold/"
-	@echo "  Crystal (ROM+save each) are readable by the GB half. Personal-use only:"
-	@echo "  never commit, publish, or share this image."
-
-# #62 review A3: same GB corpus as delta-gb, but NO fuse_sav.py step -- the flash chip
-# starts blank (no Gen-3 save at all), so the ONLY reachable session is straight into
-# the GB save picker (pdna_main.c's NV_GB path) and the full editable GB session.
-# Verified by review to boot to PICK A SAVE, then VIEW/EDIT/LEGALITY/MOVE TO
-# BOX/COPY/RELEASE/CREATE, with no Gen-3 detour to reach it through.
-delta-gb-only:
-	@$(MAKE) PDNA_TARGET=delta rebuild
-	@python3 tools/fuse_gb.py pokedna-delta.gba \
-	  $(GB_ROMS)/gb/Red.gb $(GB_ROMS)/gb/Red.sav \
-	  $(GB_ROMS)/gb/Gold.gbc $(GB_ROMS)/gb/Gold.sav \
-	  $(GB_ROMS)/gb/Crystal.gbc $(GB_ROMS)/gb/Crystal.sav \
-	  -o pokedna-delta-gb-only.gba --force
-	@python3 tools/fuse_gb.py --check pokedna-delta-gb-only.gba
-	@echo ""
-	@echo "  pokedna-delta-gb-only.gba built -- no Gen-3 save fused, flash chip starts"
-	@echo "  blank. Red/Gold/Crystal (ROM+save each) are readable by the GB half."
+	@echo "  Crystal (ROM+save each) are readable by the GB half via the boot picker."
 	@echo "  Personal-use only: never commit, publish, or share this image."
 
 # --- artless variants -------------------------------------------------------
