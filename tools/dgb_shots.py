@@ -247,16 +247,12 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
                                  "gb_delta_boot_pick() -- the same boot picker as shot 01, not a "
                                  "dead end and not a separate blank-flash build")
     s.tap("B", settle=gb_shots.BIG_SETTLE)                # B in the boot picker -> always = Emerald
-    s.shot("16_picker_b_is_emerald", "#68a: KEY_B on the boot picker always resolves to the "
-                                      "Emerald row -- with a valid flash save on hand there is no "
-                                      "dead end to guard against, unlike gb_delta_pick_save()'s "
-                                      "blank-flash picker (KEY_B there exits to nothing but "
-                                      "itself). This is the ordinary Gen-3 box screen loading.")
-
-    s.run(gb_shots.BIG_SETTLE)
-    s.shot("17_emerald_box", "#68a: picking (or B-ing into) the Emerald row continues into "
-                              "today's normal Gen-3 session -- the box screen, exactly as any "
-                              "delta build without a fused GB corpus would boot straight to")
+    s.shot("16_emerald_box", "#68a: KEY_B on the boot picker always resolves to the Emerald row "
+                              "-- with a valid flash save on hand there is no dead end to guard "
+                              "against, unlike gb_delta_pick_save()'s blank-flash picker (KEY_B "
+                              "there exits to nothing but itself). Lands in the ordinary Gen-3 "
+                              "box screen, exactly as any delta build without a fused GB corpus "
+                              "would boot straight to.")
 
     # NV_GB nested import, exercised from INSIDE this same Emerald session, to prove it
     # is unaffected by #68a's boot picker: same navigation run_nav_gb() below uses, but
@@ -268,13 +264,13 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # NV_GB -> the (separate) nested-import picker
     s.tap("DOWN", settle=gb_shots.SETTLE)                   # Red (index 0) -> Gold (index 1)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # picked -> Gold's own S1 info page
-    s.shot("18_nv_gb_info", "#68a: NV_GB's nested import still works from inside the "
+    s.shot("17_nv_gb_info", "#68a: NV_GB's nested import still works from inside the "
                              "Emerald session after #68a -- Gold.sav's S1 info page via "
                              "pdna_gen12_show_fused(), untouched by the boot-picker change")
     s.tap("A", settle=60)                                   # info -> box grid (COLD fetch, gen2)
     s.run(GB_ART_COLD_SETTLE)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the box's own first mon -> its menu
-    s.shot("19_nv_gb_mon_menu", "#68a: the nested import's occupied-cell menu is still "
+    s.shot("18_nv_gb_mon_menu", "#68a: the nested import's occupied-cell menu is still "
                                  "VIEW / LEGALITY / COPY / CANCEL only -- no EDIT, MOVE TO BOX, "
                                  "or RELEASE (those exist only on the STANDALONE mount reached "
                                  "through the boot picker's GB rows, shots 02-14 above)")
