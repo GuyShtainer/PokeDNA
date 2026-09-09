@@ -18,7 +18,20 @@
  *
  * PokeDNA ships NO Game Freak art. Every graphic here is a transient read of
  * a file the user already owns; nothing is cached to disk except a small
- * table of FILE OFFSETS (RomGbUiLoc).
+ * table of FILE OFFSETS AND their CODE ANCHORS (RomGbUiLoc, 108 B --
+ * BACKLOG #71 grew it from 68 B by adding anchor[ROM_GBUI_ANCH_COUNT], see
+ * that struct's own comment). A cache hit costs a small constant number of
+ * re-reads (one per stored anchor, plus the existing structural checks):
+ * measured on the corpus, Gen 1 26 reads (was 21 before #71), Gen 2 Gold 17
+ * (was 13), Gen 2 Crystal 18 (was 13) -- vs several hundred for a full scan.
+ * PDNA_GB_UI_NEED is NOT unaffected by this growth (correcting an earlier
+ * assumption): it moves from 5,320 to 5,384 (+64 B), because
+ * rom_gbui_open_loc()'s own stack frame grows from 120 to 176 B once
+ * revalidate_loc() and its anchor_*() helpers are inlined into it (each has
+ * exactly one call site inside open_loc(), so -O2 folds them in rather than
+ * keeping revalidate_loc() as a separate frame on the chain) -- see
+ * PDNA_GB_UI_NEED's own comment below for the full -fstack-usage proof and
+ * the two real call sites' margins (both stay >6 KB free after this move).
  *
  * PURE C: no tonc, no FatFs, no GBA headers, no mutable globals. All I/O goes
  * through the caller's GbReadFn, so tests/host_romgbui_test.c runs this exact
