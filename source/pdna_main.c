@@ -9108,8 +9108,11 @@ static void view_save(const char* path) {
      * fused-.sav Gen-3 save has no backing flash bytes to flashsave_read() back. */
     bool g3_ready = flash_ok || g3_from_fused_sav;
     if (g3_ready && fused_gb_present() && fused_gb_save_count() > 0) {
-      const char* g3_label = "Emerald.sav (Gen 3)";
-      if (probe.version_guess == G3_VER_RS) g3_label = "Ruby/Sapphire.sav (Gen 3)";
+      /* #68a review A3: version_guess cannot tell FireRed/LeafGreen from Emerald at
+       * this point (Gen3Version has no FRLG member), so the row names the FAMILY
+       * the guess can vouch for, never a game it cannot. */
+      const char* g3_label = "Gen 3 save (Emerald/FR/LG)";
+      if (probe.version_guess == G3_VER_RS) g3_label = "Gen 3 save (Ruby/Sapphire)";
       for (;;) {
         int bp = gb_delta_boot_pick(g3_label);
         if (bp == 0) break;                      /* Emerald row (or KEY_B) -- fall through */

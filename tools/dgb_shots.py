@@ -12,8 +12,9 @@ a resident buffer): a full read/write-capable mount (VIEW/EDIT combined, MOVE TO
 RELEASE, CREATE on an empty cell). pokedna-delta-gb.gba (tools/fuse_gb.py, BACKLOG #62)
 fuses Emerald.sav (the Gen-3 flash seed) TOGETHER WITH the Red/Gold/Crystal directory.
 
-#68a: view_save() now offers a BOOT PICKER whenever the flash chip holds a valid Gen-3
-save AND a GB corpus is fused in (gb_delta_boot_pick(), source/pdna_main.c) — row 0 is
+#68a: view_save() now offers a BOOT PICKER whenever a Gen-3 save is READY -- the flash
+chip parses, or (the normal case on a fresh emulator boot, where the flash is blank) the
+single-slot fused .sav fallback supplies it -- AND a GB corpus is fused in (gb_delta_boot_pick(), source/pdna_main.c) — row 0 is
 the loaded Gen-3 save, rows 1..n mirror the fused GB saves one for one. Picking the
 Gen-3 row continues into the normal Emerald box screen, where the nav menu's "GB
 import" row (NV_GB) still offers the READ-ONLY nested mount via
@@ -132,8 +133,9 @@ def run_nav_gb(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
 def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """pokedna-delta-gb.gba (the ONLY image now -- BACKLOG #68a retires the separate
     blank-flash `delta-gb-only` recipe): boot lands on gb_delta_boot_pick()'s BOOT
-    PICKER (row 0 = the loaded Emerald.sav, rows 1..3 = Red/Gold/Crystal), because the
-    flash chip holds a valid Gen-3 save AND a GB corpus is fused in. Selecting a GB row
+    PICKER (row 0 = the loaded Gen-3 save, rows 1..3 = Red/Gold/Crystal), because a
+    Gen-3 save is ready (on a fresh emulator boot the flash is blank, so it comes from
+    the fused .sav fallback) AND a GB corpus is fused in. Selecting a GB row
     (here: Red, one DOWN from the default Emerald selection) drives the SAME full
     read/write-capable STANDALONE mount tools/gb_shots.py's own run_gold()/run_red()
     drive against an SD-based single-fused-save image, but here backed by a REAL fused
@@ -159,9 +161,9 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     # fused-save image; this combined build's Emerald.sav + the whole GB directory
     # boots slower (same reasoning as run_nav_gb's own s.run(700) below).
     s.run(700)
-    s.shot("01_boot_picker", "#68a: gb_delta_boot_pick() -- the combined image's flash "
-                              "chip holds a valid Emerald.sav AND a GB corpus is fused "
-                              "in, so boot now offers this picker instead of going "
+    s.shot("01_boot_picker", "#68a: gb_delta_boot_pick() -- the combined image has a Gen-3 "
+                              "save ready (the fused .sav fallback; the flash is blank on a "
+                              "fresh boot) AND a GB corpus fused in, so boot offers this picker instead of going "
                               "straight into the Emerald session: row 0 'Emerald.sav "
                               "(Gen 3)' (default selection) + one row per fused GB save "
                               "(Red/Gold/Crystal)")
@@ -242,7 +244,7 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     # actually leaves.
     s.press_n("B", 3, settle=gb_shots.BIG_SETTLE)
     s.shot("15_back_at_picker", "#68a: backing all the way out of the standalone session (B) "
-                                 "reloads the Emerald save from flash (the GB mount had "
+                                 "reloads the Emerald save from whichever source supplied it (the fused .sav here; the GB mount had "
                                  "overwritten g_save) and returns straight to "
                                  "gb_delta_boot_pick() -- the same boot picker as shot 01, not a "
                                  "dead end and not a separate blank-flash build")
