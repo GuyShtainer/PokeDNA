@@ -422,7 +422,7 @@ endif
 # DIRECTORY and never recurses, so a plain `make` after an edit does nothing and every
 # build has to be a full `make rebuild`. With it, the inner make does normal incremental
 # compilation and only the touched objects are rebuilt.
-.PHONY: $(BUILD) all clean rebuild sd delta artless sd-artless delta-artless retail-gate
+.PHONY: $(BUILD) all clean rebuild sd delta artless sd-artless delta-artless retail-gate loc-layout delta-gb
 rebuild:
 	@$(MAKE) clean
 	@$(MAKE) $(BUILD)
@@ -459,7 +459,20 @@ EMERALD_SAV ?= $(HOME)/VSCodeProjects/gba-toolkit/roms/Emerald.sav
 # mount now. Verified by review to boot to the picker, then either continue into the
 # Emerald session or PICK A SAVE -> VIEW/EDIT/LEGALITY/MOVE TO BOX/COPY/RELEASE/CREATE,
 # backing out (B) reloading Emerald from flash and re-showing the same picker.
-delta-gb:               # 'delta' fused with Red/Gold/Crystal (ROM+save) + Emerald.sav
+# #68b review D3: the ARM-side half of tests/host_gbloc_layout_test.c's layout proof
+# (RomGbSpriteLoc/RomGbIconLoc/RomGbUiLoc offsetof/sizeof _Static_assert lines) --
+# -fsyntax-only, no link, no output file. The host half already runs in
+# tests/run_host_tests.py; this catches the same struct drifting on the OTHER
+# compiler that actually reads the fused LOC bytes on real hardware/an emulator.
+# Standalone target so it can be run on its own; also gated INTO delta-gb below so a
+# layout drift fails that build instead of silently mis-shaping every LOC payload it
+# fuses.
+loc-layout:
+	@"$(DEVKITARM)/bin/$(CC)" -mcpu=arm7tdmi -mthumb -mthumb-interwork -I source \
+	  -fsyntax-only tests/host_gbloc_layout_test.c
+	@echo "  loc-layout ok: RomGbSpriteLoc/RomGbIconLoc/RomGbUiLoc match on ARM"
+
+delta-gb: loc-layout    # 'delta' fused with Red/Gold/Crystal (ROM+save) + Emerald.sav
 	@$(MAKE) PDNA_TARGET=delta rebuild
 	@python3 tools/fuse_sav.py pokedna-delta.gba $(EMERALD_SAV) -o pokedna-delta-gb.gba --force
 	@python3 tools/fuse_gb.py pokedna-delta-gb.gba \
