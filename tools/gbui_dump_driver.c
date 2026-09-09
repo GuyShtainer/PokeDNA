@@ -60,11 +60,13 @@ static void write_grid_ppm(const char* path, const uint16_t* px, uint32_t ntiles
 }
 
 static void dump_block(RomGbUi* gu, const char* outdir, const char* name,
-                       uint32_t off, uint8_t bpp, uint32_t ntiles, uint32_t cols) {
+                       uint32_t off, uint8_t bpp, uint32_t ntiles, uint32_t cols,
+                       uint32_t grid_w, uint32_t grid_h, int colmajor) {
   if (!off || !outdir) return;
   uint16_t* px = (uint16_t*)malloc((size_t)ntiles * 64 * sizeof(uint16_t));
   if (!px) return;
-  for (uint32_t i = 0; i < ntiles; i++) rom_gbui_tile(gu, off, i, bpp, 0, 0, 0, px + i * 64);
+  for (uint32_t i = 0; i < ntiles; i++)
+    rom_gbui_tile(gu, off, i, bpp, grid_w, grid_h, colmajor, px + i * 64);
   char path[600];
   snprintf(path, sizeof path, "%s/%s.ppm", outdir, name);
   write_grid_ppm(path, px, ntiles, cols);
@@ -102,18 +104,20 @@ int main(int argc, char** argv) {
   printf("RESULT\t%s\n", ok ? "OK" : "FAIL");
 
   if (outdir) {
-    dump_block(&gu, outdir, "font", gu.font, 1, 128, 16);
-    dump_block(&gu, outdir, "textbox", gu.textbox, 2, 32, 16);
-    dump_block(&gu, outdir, "cardframe", gu.cardframe, 2, 40, 8);
-    dump_block(&gu, outdir, "badges", gu.badges, 2, 64, 2);
-    dump_block(&gu, outdir, "leaders", gu.leaders, 2, 86, 10);
-    dump_block(&gu, outdir, "frames", gu.frames, 1, 54, 3);
-    dump_block(&gu, outdir, "fontextra", gu.fontextra, 2, 32, 16);
-    dump_block(&gu, outdir, "cardpic_m", gu.cardpic_m, 2, 35, 5);
-    dump_block(&gu, outdir, "cardpic_f", gu.cardpic_f, 2, 35, 5);
-    dump_block(&gu, outdir, "cardgfx", gu.cardgfx, 2, 6, 6);
-    dump_block(&gu, outdir, "pack_m", gu.pack_m, 2, 60, 5);
-    dump_block(&gu, outdir, "pack_f", gu.pack_f, 2, 60, 5);
+    dump_block(&gu, outdir, "font", gu.font, 1, 128, 16, 0, 0, 0);
+    dump_block(&gu, outdir, "textbox", gu.textbox, 2, 32, 16, 0, 0, 0);
+    dump_block(&gu, outdir, "cardframe", gu.cardframe, 2, 40, 8, 0, 0, 0);
+    dump_block(&gu, outdir, "badges", gu.badges, 2, 64, 2, 0, 0, 0);
+    dump_block(&gu, outdir, "leaders", gu.leaders, 2, 86, 10, 0, 0, 0);
+    dump_block(&gu, outdir, "frames", gu.frames, 1, 54, 3, 0, 0, 0);
+    dump_block(&gu, outdir, "fontextra", gu.fontextra, 2, 32, 16, 0, 0, 0);
+    /* review D11: the two card pics are the only blocks whose storage order is
+     * game-dependent (Crystal = rgbgfx --columns); render them as DISPLAYED. */
+    dump_block(&gu, outdir, "cardpic_m", gu.cardpic_m, 2, 35, 5, 5, 7, gu.cardpic_colmajor);
+    dump_block(&gu, outdir, "cardpic_f", gu.cardpic_f, 2, 35, 5, 5, 7, gu.cardpic_colmajor);
+    dump_block(&gu, outdir, "cardgfx", gu.cardgfx, 2, 6, 6, 0, 0, 0);
+    dump_block(&gu, outdir, "pack_m", gu.pack_m, 2, 60, 5, 0, 0, 0);
+    dump_block(&gu, outdir, "pack_f", gu.pack_f, 2, 60, 5, 0, 0, 0);
 
     if (gu.playerpic) {
       static GbSprite spr;
