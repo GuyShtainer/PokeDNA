@@ -187,6 +187,202 @@ int main(void) {
   }
   printf(failed ? "  oversized entry: SOME FAILED\n" : "  oversized entry -> rejected: OK\n");
 
+  /* ---- BACKLOG #68b: fused_gb_loc() over a directory carrying a LOC entry.
+   * Builds [ROM_GEN1 payload][LOC payload][directory], where the LOC payload is
+   * itself [header(20B): magic+kind+gen+rec_size+id_hash+rom_size][record bytes] --
+   * exactly tools/gbloc_driver.c's own framing (see fused_gb.h's fused_gb_loc() doc
+   * comment). The "record" here is an arbitrary byte pattern; fused_gb_loc() never
+   * interprets it, only hands back a pointer/length, so a real RomGbSpriteLoc is not
+   * needed to exercise the parser. ---- */
+  {
+    static uint8_t buf[4096];
+    uint32_t crc_tab[16];
+    pdna_rv_crc32_table(crc_tab);
+    memset(buf, 0xAA, sizeof buf);
+
+    uint32_t rom_off = 64, rom_size = 128;
+    for (uint32_t i = 0; i < rom_size; i++) buf[rom_off + i] = (uint8_t)(i * 7);
+    uint32_t rom_crc = pdna_rv_crc32(crc_tab, buf + rom_off, rom_size);
+
+    /* LOC payload: header(20) + a 16-byte fake "record". */
+    uint32_t loc_off = rom_off + rom_size;
+    uint8_t rec_bytes[16];
+    for (int i = 0; i < 16; i++) rec_bytes[i] = (uint8_t)(0xC0 + i);
+    uint16_t rec_size = sizeof rec_bytes;
+    uint32_t claimed_id_hash = 0x11223344u;
+    memcpy(buf + loc_off, "PDNALOC1", 8);
+    buf[loc_off + 8] = 1;    /* kind = sprite */
+    buf[loc_off + 9] = 1;    /* gen = 1 */
+    memcpy(buf + loc_off + 10, &rec_size, 2);
+    memcpy(buf + loc_off + 12, &claimed_id_hash, 4);
+    memcpy(buf + loc_off + 16, &rom_size, 4);
+    memcpy(buf + loc_off + 20, rec_bytes, sizeof rec_bytes);
+    uint32_t loc_size = 20u + rec_size;
+    uint32_t loc_crc = pdna_rv_crc32(crc_tab, buf + loc_off, loc_size);
+
+    uint32_t dir_off = loc_off + loc_size;
+    uint8_t* d = buf + dir_off;
+    memcpy(d, "PDNAGBD1", 8);
+    uint32_t count = 2;
+    memcpy(d + 8, &count, 4);
+    put_entry(d + 12 + 0 * ENTRY_SIZE, FUSED_GB_ROM_GEN1, "Red.gb", rom_off, rom_size, rom_crc);
+    put_entry(d + 12 + 1 * ENTRY_SIZE, FUSED_GB_LOC, "LOC.sprite.g1", loc_off, loc_size, loc_crc);
+    uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
+    uint32_t trailer_off = 12 + ENTRY_SIZE * count;
+    memcpy(d + trailer_off, &dir_size, 4);
+    memcpy(d + trailer_off + 4, "PDNAGBD1", 8);
+    uint32_t reserved = 0;
+    memcpy(d + trailer_off + 12, &reserved, 4);
+
+    set_record(buf, dir_off, dir_size);
+
+    const uint8_t* rec = 0; uint32_t rlen = 0, idh = 0, rsz = 0;
+    CHECK(fused_gb_loc(1, 1, &rec, &rlen, &idh, &rsz),
+          "LOC good: fused_gb_loc(sprite, gen1) should resolve");
+    CHECK(rec == buf + loc_off + 20, "LOC good: *rec should point past the 20-byte header");
+    CHECK(rlen == rec_size, "LOC good: *rec_len should be the record size");
+    CHECK(idh == claimed_id_hash, "LOC good: *id_hash should be the header's claimed id_hash");
+    CHECK(rsz == rom_size, "LOC good: *rom_size should be the header's claimed rom_size");
+
+    /* Wrong kind/gen must not match this entry. */
+    rec = 0;
+    CHECK(!fused_gb_loc(2, 1, &rec, 0, 0, 0), "LOC wrong kind: must not resolve");
+    CHECK(!fused_gb_loc(1, 2, &rec, 0, 0, 0), "LOC wrong gen: must not resolve");
+
+    /* No LOC entry present at all for a kind/gen this directory never fused. */
+    CHECK(!fused_gb_loc(3, 2, &rec, 0, 0, 0), "LOC absent: ui/gen2 was never fused");
+  }
+  printf(failed ? "  fused_gb_loc good/absent: SOME FAILED\n" : "  fused_gb_loc good/absent: OK\n");
+
+  /* ---- BACKLOG #68b: a LOC entry whose own inner rec_size does not match the
+   * directory-recorded entry size (truncated/corrupted framing) must be rejected by
+   * fused_gb_loc()'s own framing check, even though the outer per-entry CRC still
+   * passes (the CRC covers exactly the bytes present -- it cannot know they were
+   * supposed to be longer). ---- */
+  {
+    static uint8_t buf[4096];
+    uint32_t crc_tab[16];
+    pdna_rv_crc32_table(crc_tab);
+    memset(buf, 0xAA, sizeof buf);
+
+    uint32_t loc_off = 64;
+    uint8_t rec_bytes[16];
+    for (int i = 0; i < 16; i++) rec_bytes[i] = (uint8_t)(0xD0 + i);
+    uint16_t claimed_rec_size = 999;   /* LIES about how long the record is */
+    uint32_t fake_id = 1, fake_size = 2;
+    memcpy(buf + loc_off, "PDNALOC1", 8);
+    buf[loc_off + 8] = 1; buf[loc_off + 9] = 1;
+    memcpy(buf + loc_off + 10, &claimed_rec_size, 2);
+    memcpy(buf + loc_off + 12, &fake_id, 4);
+    memcpy(buf + loc_off + 16, &fake_size, 4);
+    memcpy(buf + loc_off + 20, rec_bytes, sizeof rec_bytes);
+    /* the actual on-disk entry is only 20+16 bytes, NOT 20+999 */
+    uint32_t loc_size = 20u + (uint32_t)sizeof rec_bytes;
+    uint32_t loc_crc = pdna_rv_crc32(crc_tab, buf + loc_off, loc_size);
+
+    uint32_t dir_off = loc_off + loc_size;
+    uint8_t* d = buf + dir_off;
+    memcpy(d, "PDNAGBD1", 8);
+    uint32_t count = 1;
+    memcpy(d + 8, &count, 4);
+    put_entry(d + 12, FUSED_GB_LOC, "LOC.bad", loc_off, loc_size, loc_crc);
+    uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
+    uint32_t trailer_off = 12 + ENTRY_SIZE * count;
+    memcpy(d + trailer_off, &dir_size, 4);
+    memcpy(d + trailer_off + 4, "PDNAGBD1", 8);
+    uint32_t reserved = 0;
+    memcpy(d + trailer_off + 12, &reserved, 4);
+
+    set_record(buf, dir_off, dir_size);
+
+    const uint8_t* rec = 0;
+    CHECK(!fused_gb_loc(1, 1, &rec, 0, 0, 0),
+          "LOC bad framing: rec_size lying about its own length must be rejected");
+  }
+  printf(failed ? "  fused_gb_loc bad framing: SOME FAILED\n" : "  fused_gb_loc bad framing: OK\n");
+
+  /* ---- BACKLOG #68b review D1: a 15-entry directory (more than the OLD
+   * FUSED_GB_MAX_ENTRIES==12) must parse ALL 15 entries, and in particular a SAV
+   * entry placed after a run of LOC entries -- past where the old 12-entry cache cap
+   * would have silently truncated it -- must still be visible and resolve to its
+   * real payload bytes. This is the exact shape of the bug the review caught: the
+   * real delta-gb recipe (3 ROM + 3 SAV + 8 LOC = 14 entries) put Crystal's own SAV
+   * entry (#14, 0-indexed #13) past the old cap, and fused_gb_save_count() silently
+   * reported 2 instead of 3. ---- */
+  {
+    static uint8_t buf[8192];
+    uint32_t crc_tab[16];
+    pdna_rv_crc32_table(crc_tab);
+    memset(buf, 0xAA, sizeof buf);
+
+    struct { uint32_t type; const char* name; } spec[15] = {
+      { FUSED_GB_ROM_GEN1, "Red.gb" },
+      { FUSED_GB_SAV,      "Red.sav" },
+      { FUSED_GB_ROM_GEN2, "Gold.gbc" },
+      { FUSED_GB_SAV,      "Gold.sav" },
+      { FUSED_GB_LOC,      "LOC.sprite.g2" },
+      { FUSED_GB_LOC,      "LOC.icon.g2" },
+      { FUSED_GB_LOC,      "LOC.ui.g2" },
+      { FUSED_GB_ROM_GEN2, "Crystal.gbc" },
+      { FUSED_GB_SAV,      "Crystal.sav" },
+      { FUSED_GB_LOC,      "LOC.sprite.g2c" },
+      { FUSED_GB_LOC,      "LOC.icon.g2c" },
+      { FUSED_GB_LOC,      "LOC.ui.g2c" },
+      { FUSED_GB_LOC,      "extra1" },
+      { FUSED_GB_LOC,      "extra2" },
+      { FUSED_GB_SAV,      "Crystal2.sav" },
+    };
+    const int N = 15;
+    const uint32_t psize = 8;
+    uint32_t offs[15];
+    uint32_t crcs[15];
+    uint32_t cur = 64;
+    for (int i = 0; i < N; i++) {
+      for (uint32_t k = 0; k < psize; k++) buf[cur + k] = (uint8_t)((i + 1) * 3 + k);
+      offs[i] = cur;
+      crcs[i] = pdna_rv_crc32(crc_tab, buf + cur, psize);
+      cur += psize;
+    }
+    uint32_t dir_off = cur;
+    uint8_t* d = buf + dir_off;
+    memcpy(d, "PDNAGBD1", 8);
+    uint32_t count = (uint32_t)N;
+    memcpy(d + 8, &count, 4);
+    for (int i = 0; i < N; i++) {
+      put_entry(d + 12 + (uint32_t)i * ENTRY_SIZE, spec[i].type, spec[i].name,
+                offs[i], psize, crcs[i]);
+    }
+    uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
+    uint32_t trailer_off = 12 + ENTRY_SIZE * count;
+    memcpy(d + trailer_off, &dir_size, 4);
+    memcpy(d + trailer_off + 4, "PDNAGBD1", 8);
+    uint32_t reserved = 0;
+    memcpy(d + trailer_off + 12, &reserved, 4);
+
+    set_record(buf, dir_off, dir_size);
+
+    CHECK(fused_gb_present(), "15-entry fixture: directory should be present");
+    CHECK(fused_gb_entry_count() == 15,
+          "15-entry fixture: expected all 15 entries visible (#68b D1 capacity fix)");
+
+    int sav_count = fused_gb_save_count();
+    CHECK(sav_count == 4,
+          "15-entry fixture: expected 4 SAV entries (Red/Gold/Crystal/Crystal2)");
+    const char* name = 0; const uint8_t* base = 0; uint32_t size = 0;
+    bool found_last = false;
+    for (int i = 0; i < sav_count; i++) {
+      name = 0; base = 0; size = 0;
+      if (fused_gb_save(i, &name, &base, &size) && name && strcmp(name, "Crystal2.sav") == 0) {
+        found_last = true;
+        CHECK(base == buf + offs[14] && size == psize,
+              "15-entry fixture: Crystal2.sav should resolve to its real payload bytes");
+      }
+    }
+    CHECK(found_last,
+          "15-entry fixture: the SAV entry after the run of LOC records must be visible");
+  }
+  printf(failed ? "  15-entry capacity (#68b D1): SOME FAILED\n" : "  15-entry capacity (#68b D1): OK\n");
+
   if (failed) { printf("host_fusedgb_test: FAILED\n"); return 1; }
   printf("host_fusedgb_test: ALL OK\n");
   return 0;

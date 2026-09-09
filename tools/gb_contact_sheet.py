@@ -119,6 +119,11 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # Emerald session it now sits behind; captions all start "#68a:".
     ("delta-gb-picker", "#68a — the combined image's boot picker (Emerald + fused GB "
      "saves, one image, no more delta-gb-only)", ("#68a",)),
+    # BACKLOG #68b (append-only, same rule as #58/#62/#68a above). Shots come from
+    # tools/dgb_shots.py's run_cold_start_compare(), comparing pokedna-delta-gb.gba
+    # fused WITH vs WITHOUT the rom_gb*_open_loc() records; captions all start "#68b:".
+    ("delta-gb-loc", "#68b — the delta-gb cold-start scan replaced by a fused loc record",
+     ("#68b",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

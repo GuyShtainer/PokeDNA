@@ -58,6 +58,11 @@ bool fused_gb_save(int i, const char** name, const uint8_t** base, uint32_t* siz
   (void)i; (void)name; (void)base; (void)size;
   return false;
 }
+bool fused_gb_loc(uint8_t kind, uint8_t gen, const uint8_t** rec, uint32_t* rec_len,
+                  uint32_t* id_hash, uint32_t* rom_size) {
+  (void)kind; (void)gen; (void)rec; (void)rec_len; (void)id_hash; (void)rom_size;
+  return false;
+}
 
 #else /* PDNA_DELTA */
 
@@ -98,11 +103,16 @@ static const uint8_t* cart_ptr(uint32_t off) {
 #define GBD_EWRAM_BSS __attribute__((section(".sbss")))
 #endif
 
+/* #68b review D1: `name` is a raw pointer into cartridge address space (see fused_gb.h's
+ * caching comment), not a 32-byte copy -- the directory block the pointer targets stays
+ * resident for the program's whole life, so nothing needs copying. Shrinks one cached
+ * entry from 44 bytes to 16, making room for FUSED_GB_MAX_ENTRIES 12->24 at a net
+ * DECREASE in total cache footprint. */
 typedef struct {
-  uint32_t type;
-  char     name[FUSED_GB_NAME_MAX];
-  uint32_t offset;
-  uint32_t size;
+  uint32_t    type;
+  uint32_t    offset;
+  uint32_t    size;
+  const char* name;
 } GbdEntry;
 
 static GBD_EWRAM_BSS GbdEntry s_entry[FUSED_GB_MAX_ENTRIES];
@@ -177,8 +187,6 @@ static void parse_once(void) {
     const uint8_t* e = blk + 12u + (uint32_t)i * ENTRY_SIZE;
     uint32_t type, off, size, crc;
     memcpy(&type, e + 0, 4);
-    memcpy(s_entry[i].name, e + 4, FUSED_GB_NAME_MAX);
-    s_entry[i].name[FUSED_GB_NAME_MAX - 1] = 0;   /* defensive: force NUL termination */
     memcpy(&off,  e + 36, 4);
     memcpy(&size, e + 40, 4);
     memcpy(&crc,  e + 44, 4);
@@ -189,9 +197,20 @@ static void parse_once(void) {
      * fused image) is dropped here instead of being handed to a caller as real. */
     if (off >= dir_off || size > dir_off - off) continue;
     if (pdna_rv_crc32(crc_tab, cart_ptr(off), size) != crc) continue;   /* #62 D9 */
+    /* #68b review D1: name is cached as a pointer straight at e+4 (still inside the
+     * resident directory block cart_ptr() already resolved `e` from) instead of a
+     * copy. A well-formed entry (tools/fuse_gb.py always NUL-pads) has a NUL within
+     * its 32 bytes; a hand-edited/corrupt one that doesn't gets the shared empty
+     * string instead of an unbounded read past the field. */
+    const uint8_t* name_field = e + 4;
+    bool name_nul = false;
+    for (uint32_t k = 0; k < FUSED_GB_NAME_MAX; k++) {
+      if (name_field[k] == 0) { name_nul = true; break; }
+    }
     s_entry[i].type = type;
     s_entry[i].offset = off;
     s_entry[i].size = size;
+    s_entry[i].name = name_nul ? (const char*)name_field : "";
   }
   s_count = n;
 }
@@ -244,6 +263,34 @@ bool fused_gb_save(int i, const char** name, const uint8_t** base, uint32_t* siz
     if (name) *name = s_entry[k].name;
     if (base) *base = cart_ptr(s_entry[k].offset);
     if (size) *size = s_entry[k].size;
+    return true;
+  }
+  return false;
+}
+
+/* BACKLOG #68b: the [header+record] framing tools/gbloc_driver.c writes for each LOC
+ * payload -- magic(8) + kind(1) + gen(1) + rec_size(2, LE) + id_hash(4, LE) +
+ * rom_size(4, LE) = 20 bytes, followed by rec_size bytes of raw struct. Parsed by hand
+ * (memcpy at fixed byte offsets) rather than cast through a C struct, same posture the
+ * directory entries themselves already use above -- no alignment assumption on the
+ * cartridge byte stream either way. */
+#define GB_LOC_HDR_SIZE 20u
+
+bool fused_gb_loc(uint8_t kind, uint8_t gen, const uint8_t** rec, uint32_t* rec_len,
+                  uint32_t* id_hash, uint32_t* rom_size) {
+  parse_once();
+  for (int i = 0; i < s_count; i++) {
+    if (s_entry[i].type != FUSED_GB_LOC) continue;
+    if (s_entry[i].size < GB_LOC_HDR_SIZE) continue;   /* too small to hold the header */
+    const uint8_t* p = cart_ptr(s_entry[i].offset);
+    if (memcmp(p, "PDNALOC1", 8) != 0) continue;
+    if (p[8] != kind || p[9] != gen) continue;
+    uint16_t rsize; memcpy(&rsize, p + 10, 2);
+    if ((uint32_t)GB_LOC_HDR_SIZE + rsize != s_entry[i].size) continue;  /* framing check */
+    if (rec) *rec = p + GB_LOC_HDR_SIZE;
+    if (rec_len) *rec_len = rsize;
+    if (id_hash) { uint32_t v; memcpy(&v, p + 12, 4); *id_hash = v; }
+    if (rom_size) { uint32_t v; memcpy(&v, p + 16, 4); *rom_size = v; }
     return true;
   }
   return false;

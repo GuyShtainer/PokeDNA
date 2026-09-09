@@ -279,6 +279,163 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     return s
 
 
+
+# ---------------------------------------------------------------------------------
+# BACKLOG #68b: cold-start timing, WITH vs WITHOUT the fused LOC payloads.
+# ---------------------------------------------------------------------------------
+# The rest of this file drives NAVIGATION (a fixed settle after each tap, calibrated
+# by hand). This section instead MEASURES the thing those settles have to be
+# generous enough to survive: the actual frame cost of the box grid's first,
+# possibly-cold, art fetch. mGBA's Python binding has no "render finished" signal,
+# so "stopped changing for a while" is the proxy -- same posture GB_ART_COLD_SETTLE's
+# own 32,000-frame constant was hand-calibrated against.
+GBA_FPS = 59.7275006103515625   # GBA's real refresh rate: 2^24 Hz / 280,896 cycles/frame
+_MAX_FRAMES = 40000    # generous ceiling over GB_ART_COLD_SETTLE's own 32,000
+_SAMPLE_EVERY = 5      # frames between crop samples while polling for "real paint"
+_STABLE_WINDOW = 15    # a candidate crop must persist this many frames (3 samples) to count
+
+# The left-panel "currently selected mon" portrait, in screen pixels (240x160) -- the
+# ONE region gb_art_fetch()'s cold scan (BACKLOG #62/#68b) actually gates on Red.sav:
+# the box grid's own small cell icons come from a separate, always-cheap source and
+# are not gated by this backlog item -- but they paint on their OWN schedule, not
+# immediately: measured empirically (BACKLOG #68b review D2), the icon cell is blank
+# through frame 10, starts painting by frame 15, and is stable by frame 30, on both
+# the LOC-seeded and --no-loc builds alike. With the LOC seed's ~10-20-frame portrait
+# time, the portrait can appear BEFORE the box-grid icon finishes painting -- the two
+# are independent races, not "icon first, portrait second". Measured empirically
+# (BACKLOG #68b evidence run, 2026-09): on the SLOWER (--no-loc) build the box grid's
+# shell paints almost immediately but this rectangle shows a "loading" checkerboard
+# placeholder (colours (231,231,247)/(189,189,206)) for >14,000 frames before the
+# real 4-shade Game Boy portrait replaces it; on the faster (default, LOC-seeded)
+# build this same rectangle already shows the real portrait within ~20 frames, with
+# no checkerboard phase ever observed at this script's sampling granularity.
+_PORTRAIT_CROP = (5, 15, 70, 80)
+
+
+def _crop_bytes(screen, box: tuple[int, int, int, int] = _PORTRAIT_CROP) -> bytes:
+    return screen.to_pil().convert("RGB").crop(box).tobytes()
+
+
+def _derive_checkerboard_ref(core_mod, image_mod, rom: Path) -> bytes:
+    """Boots the SLOWER (--no-loc) image and captures _PORTRAIT_CROP's own "loading"
+    placeholder, 300 frames after the box grid is requested -- confirmed by a manual
+    probe (BACKLOG #68b) to still read as the placeholder that far in, and to stay
+    that way for >14,000 further frames on Guy's own Red.gb corpus, i.e. nowhere near
+    the real cold-scan actually finishing. Used as one of the two "not real art yet"
+    references _measure_box_grid_cold_start() rules out before declaring victory."""
+    s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), "measure_ref_")
+    s.run(700)
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=60)
+    s.tap("A", settle=300)
+    return _crop_bytes(s.screen)
+
+
+def _measure_box_grid_cold_start(core_mod, image_mod, rom: Path,
+                                 checkerboard_ref: bytes) -> tuple[int, bytes]:
+    """Boots `rom`, drives the boot picker down to Red.sav (row 1), picks it, opens the
+    S1 info page, then starts a frame-accurate timer at the exact frame the box grid
+    is REQUESTED (right after the key-up edge of the second A press) and polls
+    _PORTRAIT_CROP every _SAMPLE_EVERY frames until it stops matching EITHER of two
+    "not real art yet" references: the S1 info page's own crop (still mid-transition)
+    and `checkerboard_ref` (the "loading" placeholder) -- whichever a given build
+    actually shows on its way to the real portrait, this is the first frame that is
+    neither. Returns (frames_to_first_paint, final_screen_rgb_bytes) -- the second
+    value is for a caller to diff the LOC-seeded and scanned paths' full final frames
+    against each other (they must render the identical picture, portrait included)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, Path("/tmp"), "measure_")
+    s.run(700)
+    s.tap("DOWN", settle=gb_shots.SETTLE)   # boot picker: Emerald row (0) -> Red row (1)
+    s.tap("A", settle=60)                   # pick Red -> S1 info page
+    info_page_crop = _crop_bytes(s.screen)
+
+    # Same key-down/HOLD/key-up edge tap() uses, but WITHOUT its trailing settle --
+    # the timer below starts counting from the exact frame the key-up edge lands,
+    # which is the earliest frame the box-grid request could possibly begin.
+    s.core.set_keys(raw=gb_shots.KEY["A"])
+    s.run(gb_shots.HOLD)
+    s.core.set_keys(raw=0)
+
+    # A frame or two of blank/transitional content between "info page" and "real
+    # portrait" is normal (the redraw is not atomic) -- a candidate crop value must
+    # persist for _STABLE_WINDOW frames once it stops being either "not painted yet"
+    # reference before it counts as the real paint, so a one-sample flicker (observed
+    # in practice, BACKLOG #68b evidence run) is not mistaken for it.
+    frame = 0
+    candidate = None
+    candidate_since = 0
+    while frame < _MAX_FRAMES:
+        s.core.run_frame()
+        frame += 1
+        if frame % _SAMPLE_EVERY:
+            continue
+        cur = _crop_bytes(s.screen)
+        if cur == info_page_crop or cur == checkerboard_ref:
+            candidate = None
+            continue
+        if cur == candidate:
+            if frame - candidate_since >= _STABLE_WINDOW:
+                return candidate_since, s.screen.to_pil().convert("RGB").tobytes()
+        else:
+            candidate = cur
+            candidate_since = frame
+    raise RuntimeError(f"{rom}: box grid portrait never left its pre-paint state "
+                       f"within {_MAX_FRAMES} frames")
+
+
+def run_cold_start_compare(core_mod, image_mod, loc_image: Path, noloc_image: Path,
+                           out_dir: Path) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """BACKLOG #68b: measures and reports the cold-start frame cost of opening Red.sav's
+    box grid on `loc_image` (fused WITH the rom_gb*_open_loc() records,
+    tools/fuse_gb.py's default) versus `noloc_image` (the same build fused with
+    --no-loc, i.e. today's behaviour before this backlog item) -- and proves the two
+    images paint the IDENTICAL picture (a byte-diff of the final frame, expected 0)."""
+    print("== #68b: cold-start timing, WITH vs WITHOUT the fused LOC payloads ==")
+    checkerboard_ref = _derive_checkerboard_ref(core_mod, image_mod, noloc_image)
+    loc_frames, loc_px = _measure_box_grid_cold_start(core_mod, image_mod, loc_image, checkerboard_ref)
+    print(f"  WITH LOC   : {loc_frames} frames ({loc_frames / GBA_FPS:.2f} s emulated) "
+          f"(+/- {_SAMPLE_EVERY} frames sampling granularity)")
+    noloc_frames, noloc_px = _measure_box_grid_cold_start(core_mod, image_mod, noloc_image, checkerboard_ref)
+    print(f"  WITHOUT LOC: {noloc_frames} frames ({noloc_frames / GBA_FPS:.2f} s emulated) "
+          f"(+/- {_SAMPLE_EVERY} frames sampling granularity)")
+
+    diff_bytes = sum(1 for a, b in zip(loc_px, noloc_px) if a != b)
+    if len(loc_px) != len(noloc_px):
+        diff_bytes += abs(len(loc_px) - len(noloc_px))
+    print(f"  full-frame diff  : {diff_bytes} byte(s) differ between the two final frames")
+
+    # The ART this backlog item actually gates on is _PORTRAIT_CROP (the currently
+    # selected mon's big portrait, rendered by gb_art_fetch()) -- the rest of the box
+    # grid (small cell icons, cursor) animates/updates on its own schedule, unrelated
+    # to the cold-scan being measured here, so a whole-frame diff can show a handful
+    # of incidental bytes even though the two paths are proven to load through the
+    # SAME validated rom_gbsprite_open_loc() call either way. Isolate the claim this
+    # backlog item actually makes: is the PORTRAIT itself pixel-identical.
+    x0, y0, x1, y1 = _PORTRAIT_CROP
+    from PIL import Image
+    loc_crop = Image.frombytes("RGB", (240, 160), loc_px).crop(_PORTRAIT_CROP).tobytes()
+    noloc_crop = Image.frombytes("RGB", (240, 160), noloc_px).crop(_PORTRAIT_CROP).tobytes()
+    portrait_diff = sum(1 for a, b in zip(loc_crop, noloc_crop) if a != b)
+    print(f"  portrait-only diff (the {x1 - x0}x{y1 - y0} region gb_art_fetch() actually "
+          f"renders): {portrait_diff} byte(s) differ "
+          f"({'IDENTICAL' if portrait_diff == 0 else 'MISMATCH'})")
+
+    # Save both final frames as shots, captioned for gb_contact_sheet.py's "#68b:"
+    # prefix match (FEATURE_TABLE's own new "delta-gb-loc" row, appended separately).
+    ok: list[tuple[str, str]] = []
+    from PIL import Image
+    for label, px, frames in (("loc", loc_px, loc_frames), ("noloc", noloc_px, noloc_frames)):
+        name = f"dgb_coldstart_{label}.png"
+        path = out_dir / name
+        Image.frombytes("RGB", (240, 160), px).save(path)
+        caption = (f"#68b: Red.sav box grid, cold start {'WITH' if label == 'loc' else 'WITHOUT'} "
+                   f"the fused rom_gb*_open_loc() record -- {frames} frames "
+                   f"({frames / GBA_FPS:.2f} s emulated) to first stable paint")
+        ok.append((name, caption))
+        print(f"  [ok]   {name:32s} {caption}")
+    return ok, []
+
+
 def _write_manifest(out_dir: Path, ok: list[tuple[str, str]], skipped: list[tuple[str, str]]) -> None:
     """Same merge-by-file/merge-by-name block tools/gb_shots.py's own main() uses
     (BACKLOG #62 review D3: this script never wrote one at all before). Merged, not
@@ -302,17 +459,37 @@ def _write_manifest(out_dir: Path, ok: list[tuple[str, str]], skipped: list[tupl
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--image", type=Path, required=True,
+    ap.add_argument("--image", type=Path,
                      help="pokedna-delta-gb.gba -- the ONE combined image (boot picker, "
                           "standalone GB mount, AND the nested NV_GB import all live here "
                           "since BACKLOG #68a retired the separate delta-gb-only image)")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
+    ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
+                     help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
+                          "on LOC_IMAGE (fused with the default rom_gb*_open_loc() records) "
+                          "vs NOLOC_IMAGE (fused with `fuse_gb.py --no-loc`), diff their final "
+                          "frames, and write both as shots into --out. Skips the normal "
+                          "--image shot run entirely.")
     a = ap.parse_args(argv)
-    if not a.image.is_file():
-        sys.exit(f"--image: {a.image}: not a file")
     a.out.mkdir(parents=True, exist_ok=True)
 
     core_mod, image_mod = gb_shots.load_mgba()
+
+    if a.cold_start_compare:
+        loc_image, noloc_image = a.cold_start_compare
+        if not loc_image.is_file():
+            sys.exit(f"--cold-start-compare: {loc_image}: not a file")
+        if not noloc_image.is_file():
+            sys.exit(f"--cold-start-compare: {noloc_image}: not a file")
+        ok, skipped = run_cold_start_compare(core_mod, image_mod, loc_image, noloc_image, a.out)
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        return 0
+
+    if not a.image:
+        ap.error("--image is required unless --cold-start-compare is given")
+    if not a.image.is_file():
+        sys.exit(f"--image: {a.image}: not a file")
 
     ok, skipped = [], []
     try:

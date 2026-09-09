@@ -52,6 +52,16 @@
  * fused_rom.c/fused_sav.c); a caller that needs to know would have to compare its own
  * expected payload count against fused_gb_entry_count().
  *
+ * #68b review D1: each cached entry stores `name` as a raw pointer straight into
+ * cartridge address space (validated at parse time to contain a NUL within its 32-byte
+ * field, else the pointer is a shared empty-string literal) rather than a 32-byte
+ * local copy -- the directory block itself stays resident in cartridge address space
+ * for the program's whole lifetime, so there is nothing to copy FROM defensively. This
+ * shrinks one cached entry from 44 bytes (type+name[32]+offset+size) to 16
+ * (type+offset+size+name pointer), so raising FUSED_GB_MAX_ENTRIES 12->24 to cover
+ * delta-gb's own recipe is a net DECREASE in cache footprint (12*44=528 B -> 24*16=384
+ * B), not a cost to budget against.
+ *
  * ---- legality / privacy --------------------------------------------------------------
  * Same weight as fused_rom.h/fused_sav.h: fused ROMs are commercial Game Boy games,
  * fused saves are personal play data. Never commit, publish, or transmit a fused image.
@@ -60,8 +70,26 @@
 #define FUSED_GB_ROM_GEN1 1u
 #define FUSED_GB_ROM_GEN2 2u
 #define FUSED_GB_SAV      3u
+#define FUSED_GB_LOC      4u   /* BACKLOG #68b: a fused rom_gb*_open_loc() record --
+                                * see the block comment below and tools/gbloc_driver.c
+                                * for the [header+record] payload this directory entry's
+                                * offset/size point at */
 
-#define FUSED_GB_MAX_ENTRIES 12   /* generous headroom over the default 6-payload recipe */
+/* BACKLOG #68b: the FUSED_GB_LOC payload's own sub-selector -- one directory entry per
+ * (kind, generation) pair, since a single ROM satisfies up to three different locators
+ * (sprite always, icon Gen-2 only, ui always). Matches tools/fuse_gb.py's LOC_KIND
+ * constants (LOC_KIND_SPRITE etc, and LOC_KIND_NAMES) and tools/gbloc_driver.c's
+ * identical values -- kept in three places on purpose (C header the GBA build links,
+ * the Python tool, and the host driver) rather than a generated shared file, same
+ * posture FUSED_GB_ROM_GEN1/2/SAV already have across this header and fuse_gb.py. */
+#define FUSED_GB_LOC_SPRITE 1u
+#define FUSED_GB_LOC_ICON   2u
+#define FUSED_GB_LOC_UI     3u
+
+#define FUSED_GB_MAX_ENTRIES 24   /* #68b review D1: headroom over delta-gb's OWN default
+                                   * recipe: 3 ROMs x (1 ROM + 1 SAV + up to 3 LOC) = 15
+                                   * entries -- the prior 12 silently dropped Crystal's
+                                   * save and one LOC record with no error anywhere */
 #define FUSED_GB_NAME_MAX    32
 
 typedef struct {
@@ -122,5 +150,35 @@ typedef struct {
 } FusedGbSlice;
 
 bool fused_gb_slice_read(void* ctx, uint32_t off, void* dst, uint32_t len);
+
+/* BACKLOG #68b: the FIRST fused LOC record matching (kind, gen) -- `kind` is one of
+ * FUSED_GB_LOC_SPRITE/ICON/UI, `gen` is FUSED_GB_ROM_GEN1/2 (same numbering
+ * fused_gb_rom() uses). Mirrors fused_gb_rom()'s own "first entry of this generation"
+ * convention deliberately: tools/fuse_gb.py appends each ROM's LOC entries
+ * immediately after that ROM's own payload, in the same command-line order, so the
+ * FIRST (kind,gen) match in directory order always belongs to the SAME ROM
+ * fused_gb_rom(gen) itself would return -- e.g. delta-gb's Gold.gbc+Crystal.gbc are
+ * both Gen 2, but fused_gb_rom(2) answers Gold (fused first) and this answers Gold's
+ * loc too, never Crystal's stale one.
+ *
+ * `*rec` points directly at the record bytes (RomGbSpriteLoc / RomGbIconLoc /
+ * RomGbUiLoc, exactly as tools/gbloc_driver.c wrote them) inside cartridge address
+ * space -- read-only, valid for the process lifetime like every other fused_gb_*
+ * pointer. `*id_hash`/`*rom_size` are the record's OWN claimed id_hash/ROM-size
+ * (redundant cross-checks a caller can compare against the ROM it actually opened
+ * before trusting the record, exactly the belt-and-braces posture
+ * rom_gbsprite_open_loc()/etc. already apply to loc->id_hash/loc->size themselves --
+ * this is one layer further out, catching "wrong ROM's loc" before the record's own
+ * fields are even inspected).
+ *
+ * Returns false (any out param left untouched) if no fused directory, no matching
+ * entry, or the entry's own [header+record] framing does not check out (bad magic,
+ * rec_size not matching the entry's own directory-recorded size) -- the CRC-32 every
+ * directory entry already carries (parse_once()'s own per-entry check, run
+ * unconditionally regardless of type) has ALREADY been verified before an entry is
+ * even visible here, same as every other fused_gb_* lookup. Either out param may be
+ * NULL. */
+bool fused_gb_loc(uint8_t kind, uint8_t gen, const uint8_t** rec, uint32_t* rec_len,
+                  uint32_t* id_hash, uint32_t* rom_size);
 
 #endif /* FUSED_GB_H */
