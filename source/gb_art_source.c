@@ -450,21 +450,59 @@ bool gb_rom_path_beside(const char* save_path, uint8_t gen, char* out, int cap) 
   return false;                    /* no SD, no "beside the save" concept under PDNA_DELTA */
 }
 
+/* BACKLOG #68b: seeds an EWRAM loc cache slot from the fused corpus's own
+ * precomputed locator record (tools/fuse_gb.py + tools/gbloc_driver.c ran the
+ * SAME rom_gb*_open_loc()/save_loc() this file calls, once, on the PC, at fuse
+ * time), instead of paying the whole-ROM scan again on this session's first
+ * fetch of the generation. Purely advisory: `dst` is copied UNVALIDATED, and the
+ * caller's own rom_gb*_open_loc() still re-checks id_hash/size and every field's
+ * own structural signature before trusting it, exactly as it already does for a
+ * same-session cache hit -- a stale, hand-edited, or wrong-ROM fused record just
+ * falls back to the ordinary full scan (rom_gb*_open_loc()'s existing fallback
+ * path), never a wrong picture. The `claimed_rom_size`/`rec_len` checks here are a
+ * cheap pre-filter only (avoids handing a wrong-sized blob to memcpy); they are
+ * NOT the security boundary -- that is entirely open_loc()'s job. Returns true iff
+ * a record was copied into `dst`. */
+static bool gb_art_loc_seed(uint8_t kind, uint8_t gen, uint32_t rom_size,
+                            void* dst, uint32_t dst_size) {
+  const uint8_t* rec; uint32_t rec_len, claimed_rom_size;
+  /* id_hash intentionally not requested (NULL): it is redundant with the real
+   * validation open_loc() performs against the ROM it actually opened -- rom_size
+   * is enough of a pre-filter here to avoid handing a wrong-sized blob to memcpy. */
+  if (!fused_gb_loc(kind, gen, &rec, &rec_len, NULL, &claimed_rom_size)) return false;
+  if (claimed_rom_size != rom_size || rec_len != dst_size) return false;
+  memcpy(dst, rec, dst_size);
+  return true;
+}
+
 static const uint16_t* gb_art_fetch(uint8_t gen, uint16_t dex, uint8_t form, uint8_t back,
                                     uint8_t shiny, uint8_t* out_w, uint8_t* out_h) {
   const uint8_t* base; uint32_t size;
   if (!fused_gb_rom(gen, &base, &size)) return 0;
   FusedGbSlice slice = { base, size };
 
-  /* #62 D1: the in-memory loc cache -- see s_dsprite_loc's own comment above. Same
-   * "re-save whenever it does not already match this exact ROM" rule as the SD half's
-   * gb_art_fetch(), just against the cached struct instead of a file. */
+  /* #62 D1 (extended by #68b): the in-memory loc cache -- see s_dsprite_loc's own
+   * comment above. A same-session hit (s_dsprite_loc_ok[gen]) is tried first; on a
+   * cold cache, gb_art_loc_seed() tries the FUSED record next (BACKLOG #68b -- this
+   * is what removes the cold-start whole-ROM scan under PDNA_DELTA); either way
+   * rom_gbsprite_open_loc() re-validates before trusting it and falls back to a full
+   * scan on any mismatch. */
   RomGbSprite gs;
   uint8_t scratch[ROM_GBSPRITE_SCRATCH_MIN];
   bool have_loc = s_dsprite_loc_ok[gen];
+  if (!have_loc)
+    have_loc = gb_art_loc_seed(FUSED_GB_LOC_SPRITE, gen, size, &s_dsprite_loc[gen],
+                               (uint32_t)sizeof s_dsprite_loc[gen]);
   int ok = rom_gbsprite_open_loc(&gs, fused_gb_slice_read, &slice, size, scratch,
                                  (uint32_t)sizeof scratch, have_loc ? &s_dsprite_loc[gen] : 0);
-  if (ok && (!have_loc || s_dsprite_loc[gen].id_hash != gs.id_hash || s_dsprite_loc[gen].size != size)) {
+  if (ok) {
+    /* Always (re)snapshot what open_loc() actually validated on success -- cheap (a
+     * 260 B struct copy) and simpler than tracking "did this particular open come
+     * from the session cache, the fused seed, or a fresh full scan": all three leave
+     * gs holding a fully validated loc, and this makes s_dsprite_loc_ok[gen] true
+     * the FIRST time any of them succeeds, including the fused-seed path above
+     * (which must not be reported as "cached" until open_loc() has actually
+     * re-validated it). */
     rom_gbsprite_save_loc(&gs, &s_dsprite_loc[gen]);
     s_dsprite_loc_ok[gen] = true;
   }
@@ -497,13 +535,18 @@ static const uint16_t* gb_art_fetch_icon(uint8_t gen, uint16_t dex, uint8_t* out
   if (!fused_gb_rom(gen, &base, &size)) return 0;
   FusedGbSlice slice = { base, size };
 
-  /* #62 D1: same in-memory loc cache pattern as gb_art_fetch() above, gen 2 only. */
+  /* #62 D1 (extended by #68b): same in-memory loc cache pattern as gb_art_fetch()
+   * above, gen 2 only -- session cache first, then the fused seed, then a full scan;
+   * see gb_art_fetch()'s own comment for why the resave is unconditional on success. */
   RomGbIcon gi;
   uint8_t scratch[ROM_GBICON_SCRATCH_MIN];
   bool have_loc = s_dicon_loc_ok;
+  if (!have_loc)
+    have_loc = gb_art_loc_seed(FUSED_GB_LOC_ICON, gen, size, &s_dicon_loc,
+                               (uint32_t)sizeof s_dicon_loc);
   int ok = rom_gbicon_open_loc(&gi, fused_gb_slice_read, &slice, size, scratch,
                                (uint32_t)sizeof scratch, have_loc ? &s_dicon_loc : 0);
-  if (ok && (!have_loc || s_dicon_loc.id_hash != gi.id_hash || s_dicon_loc.size != size)) {
+  if (ok) {
     rom_gbicon_save_loc(&gi, &s_dicon_loc);
     s_dicon_loc_ok = true;
   }
