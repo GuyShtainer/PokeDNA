@@ -340,6 +340,41 @@ static void run_one(const Want* w) {
   printf("  %-12s cache-hit reads=%u (full scan=%u)\n", w->file, fc2.reads, fc_full.reads);
   chk(w->file, "cache-hit read count stays a small constant (<=32)", fc2.reads <= 32u);
 
+  /* -------------------------------------------- BACKLOG #82: reject other-gen slots */
+  /* Gen-1 record with a corrupted Gen-2-only slot (frames=0xDEADBEEF): should
+   * rescan and fall back to a full scan, since the loc is rejected. */
+  if (w->gen == ROM_GBUI_GEN1) {
+    RomGbUiLoc bad_gen2 = loc;
+    bad_gen2.off[ROM_GBUI_OFF_FRAMES] = 0xDEADBEEFu;
+    bad_gen2.check = test_loc_check(&bad_gen2);
+    FileCtx fcx; memset(&fcx, 0, sizeof fcx); fcx.f = fopen(path, "rb");
+    RomGbUi gux;
+    int okx = rom_gbui_open_loc(&gux, file_read, &fcx, file_size(path),
+                                g_scratch, sizeof g_scratch, &bad_gen2);
+    chk(w->file, "Gen-1 with Gen-2-only slot (frames): cache rejected, rescans",
+        okx == 1 && gux.gen == gu.gen && gux.font == gu.font);
+    chk(w->file, "Gen-1 with Gen-2-only slot (frames): full-scan cost",
+        fcx.reads >= fc_full.reads);
+    if (fcx.f) fclose(fcx.f);
+  }
+
+  /* Gen-2 record with a corrupted Gen-1-only slot (cardframe=0xDEADBEEF): should
+   * rescan and fall back to a full scan, since the loc is rejected. */
+  if (w->gen == ROM_GBUI_GEN2) {
+    RomGbUiLoc bad_gen1 = loc;
+    bad_gen1.off[ROM_GBUI_OFF_CARDFRAME] = 0xDEADBEEFu;
+    bad_gen1.check = test_loc_check(&bad_gen1);
+    FileCtx fcx; memset(&fcx, 0, sizeof fcx); fcx.f = fopen(path, "rb");
+    RomGbUi gux;
+    int okx = rom_gbui_open_loc(&gux, file_read, &fcx, file_size(path),
+                                g_scratch, sizeof g_scratch, &bad_gen1);
+    chk(w->file, "Gen-2 with Gen-1-only slot (cardframe): cache rejected, rescans",
+        okx == 1 && gux.gen == gu.gen && gux.font == gu.font);
+    chk(w->file, "Gen-2 with Gen-1-only slot (cardframe): full-scan cost",
+        fcx.reads >= fc_full.reads);
+    if (fcx.f) fclose(fcx.f);
+  }
+
   /* -------------------------------------------- font glyph sanity */
   if (gu.font) {
     uint16_t px[64];

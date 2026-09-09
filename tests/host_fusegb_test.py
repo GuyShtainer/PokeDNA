@@ -332,6 +332,49 @@ def main():
             fail("a refused fuse must not leave an output file behind")
         print("  over-cap     : 25 entries refused by fuse_gb.py before writing anything")
 
+        # BACKLOG #69(e): Build an internally consistent directory with MORE than
+        # FUSED_GB_MAX_ENTRIES entries by calling fuse_gb.py's internals directly,
+        # bypassing the fuse() guard. Then run --check to verify it rejects the
+        # over-cap directory.
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import fuse_gb
+        pokedna8 = os.path.join(td, "fake8.gba")
+        rec_off8 = make_fake_pokedna(pokedna8)
+
+        # Build base blob from the fake pokedna
+        blob8 = bytearray(open(pokedna8, "rb").read())
+        entries8 = []
+
+        # Create 25 entries (more than FUSED_GB_MAX_ENTRIES=24)
+        for i in range(25):
+            name = f"sav{i:02d}.sav"
+            data = bytes((i * 17 + j) & 0xFF for j in range(256))
+            fuse_gb._append_payload(blob8, entries8, 3, name, data)  # type 3 = SAV
+
+        # Build directory with all 25 entries
+        dir_bytes = fuse_gb.build_directory(entries8)
+
+        # Append directory to blob
+        blob8.extend(dir_bytes)
+
+        # Update the locator record to point at the directory
+        dir_off = len(blob8) - len(dir_bytes)
+        dir_size = len(dir_bytes)
+        fuse_gb.write_record(blob8, rec_off8, dir_off, dir_size)
+
+        # Write to output
+        out8 = os.path.join(td, "over_cap.gba")
+        with open(out8, "wb") as fh:
+            fh.write(blob8)
+
+        # Now run --check, which should reject it
+        rc, so, se = run("--check", out8)
+        if rc == 0:
+            fail("--check should reject a directory exceeding FUSED_GB_MAX_ENTRIES")
+        if "exceeds FUSED_GB_MAX_ENTRIES" not in (so + se):
+            fail(f"--check did not report exceeds FUSED_GB_MAX_ENTRIES:\n{so}\n{se}")
+        print("  --check reject: 25 entries rejected as exceeding FUSED_GB_MAX_ENTRIES (#69e)")
+
     print("host_fusegb_test: ALL OK")
     return 0
 
