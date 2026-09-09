@@ -1171,8 +1171,18 @@ static int item_home(void) {
  * every full-region repaint carries the labels for free. */
 static void artless_cells(void) {
   if (boxoam_icons_available()) return;   /* compiled art OR the user's registered ROM */
+  /* PARITY-AUDIT-2026-09 #75: this session-wide gate only rules out the Gen-3 icon
+   * SOURCES (compiled art / the SD icon cache / a registered Gen-3 ROM) -- it knows
+   * nothing about a Game Boy session's own art (gb_art_source.h's PdnaGbArtSource
+   * vtable), which era_cells() (called BEFORE this function now, see render_full/
+   * move_cursor/chunk_draw) already painted straight to the BG bitmap for every cell
+   * it could actually decode a picture for, tracked one bit per grid slot in
+   * s_era_drawn. Skip the chip PER CELL for exactly those slots -- a cell whose GB
+   * fetch failed (stack gate refusal, an undecodable species) leaves its s_era_drawn
+   * bit clear and still gets the chip below, same as before this fix. */
   for (int i = 0; i < 30; i++) {
     if (!g_box[i].species) continue;
+    if (s_era_drawn & (1u << i)) continue;  /* era_cells() already drew a real picture here */
     int cx = GRID_X + (i % COLS) * CELL_W, cy = GRID_Y + (i / COLS) * CELL_H;
     if (g_box[i].isEgg && !g_box[i].isBadEgg)
       ui_name_chip(cx, cy + 5, CELL_W - 2, 12, 0x2A7A, 0x0000, "EGG");
@@ -1398,8 +1408,11 @@ static void render_full(BoxSource* src, int box, int cur, bool on_title, bool mo
   draw_left((on_title && s_tab_focus < 0) ? 0 : &g_box[cur]);   /* see draw_box_banner */
 
   draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
-  artless_cells();
+  /* PARITY-AUDIT-2026-09 #75: era_cells() BEFORE artless_cells() -- it has to run
+   * first so s_era_drawn is populated for THIS box before artless_cells() reads it
+   * to decide, per cell, whether the chip is still needed. */
   era_cells();                  /* each cell in the art of the era it came from */
+  artless_cells();
   draw_box_banner(src, box, on_title);
   draw_footer(src->is_bank, on_title, moving);
 
@@ -1507,14 +1520,18 @@ static void move_cursor(BoxSource* src, int box, int old_cur, bool old_title,
                         int cur, bool on_title) {
   if (on_title != old_title) {                        /* entering/leaving the title row */
     draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
-    artless_cells();                                  /* clear stale title frame */
     /* The wallpaper repaint above wipes the BG, and the era layer LIVES in the BG — so it
      * has to be redrawn here too. Leaving it out cost every era marker on the first press
      * of UP, permanently: moving onto the box title is how you change boxes, i.e. the
      * core interaction of the screen this feature exists for, and nothing else repaints
      * the layer. The rule is simply that artless_cells() and era_cells() are the two BG
-     * cell layers and every site that repaints the wallpaper owes both. */
+     * cell layers and every site that repaints the wallpaper owes both.
+     *
+     * PARITY-AUDIT-2026-09 #75: era_cells() now runs FIRST (same reorder as
+     * render_full/chunk_draw) so artless_cells()'s per-cell s_era_drawn check sees
+     * this box's fresh state, not the previous box's. */
     era_cells();
+    artless_cells();                                  /* clear stale title frame */
     draw_box_banner(src, box, on_title);
     draw_footer(src->is_bank, on_title, false);
   }
@@ -1576,8 +1593,10 @@ static void chunk_draw(BoxSource* src, int box, bool clear) {
   draw_left(&rep);                                    /* the panel shows what you're carrying */
 
   draw_wallpaper(src->get_wp(box), WP_X, WP_Y, WP_W, WP_H);
-  artless_cells();
+  /* PARITY-AUDIT-2026-09 #75: same reorder as render_full/move_cursor -- era_cells()
+   * first so artless_cells()'s per-cell s_era_drawn check is fresh. */
   era_cells();                     /* same pairing as move_cursor: BG repaint owes both */
+  artless_cells();
   draw_box_banner(src, box, false);
 
   /* no footprint frame — the block itself carries the fit cue (whitened/darkened).
@@ -2348,18 +2367,6 @@ static void pcp_draw_slot(int idx, const PkMon* p, bool addslot, bool selected) 
                                                      * this function group's own top-of-
                                                      * block comment). */
   bool egg = p->isEgg && !p->isBadEgg;
-  if (!boxoam_icons_available()) {                 /* MUST-FIX 3: artless build — no OBJ/
-                                                     * bitmap icon exists to draw here at
-                                                     * all. Same fallback convention as the
-                                                     * box grid's own artless_cells(): an
-                                                     * original name chip so a party member
-                                                     * is at least IDENTIFIABLE, instead of
-                                                     * six indistinguishable blank tiles. */
-    int cw = (x1 - x0 + 1) - 2, ch = 12, cy = y0 + 5;
-    if (egg) ui_name_chip(x0 + 1, cy, cw, ch, 0x2A7A, 0x0000, "EGG");
-    else     ui_name_chip(x0 + 1, cy, cw, ch, UI_PANEL, UI_TEXT, pk_species_name(p->species));
-    return;
-  }
   /* CHANGE 1 (2026-08-20, "make sure the pokemon are not trimmed" -- see
    * PDNA_PCP_ICON_DX/DY's own comment, pdna_layout.h, for the measurement this
    * replaces MUST-FIX 5's centring formula with): retail's real, fixed icon anchor,
@@ -2417,7 +2424,19 @@ static void pcp_draw_slot(int idx, const PkMon* p, bool addslot, bool selected) 
   int cy0 = y0 + PDNA_PCP_ICON_DY;                 /* up to 8px overflow above, EVERY tile; */
   if (cy0 < PDNA_PCP_FILL_Y0) cy0 = PDNA_PCP_FILL_Y0;  /* ...bounded only by the panel's own
                                                          * top edge, never by a neighbour. */
-  boxoam_icon_blit_clip(ix, iy, cx0, cy0, cx1, cy1, p->species, p->form, egg);
+  /* PARITY-AUDIT-2026-09 #75: the chip is a PER-CELL fallback, keyed to the actual
+   * icon draw's own result (boxoam_icon_blit_clip already returns 0/1 -- no new
+   * per-cell state needed), not the session-wide boxoam_icons_available() gate this
+   * used to short-circuit on. Same fallback convention as the box grid's own
+   * artless_cells(): an original name chip so a party member stays IDENTIFIABLE
+   * whenever this particular slot's icon genuinely failed to draw (artless with no
+   * icon source at all, an SD hiccup, a species the store can't serve) — never for a
+   * slot whose icon DID draw, session-wide art availability aside. */
+  if (!boxoam_icon_blit_clip(ix, iy, cx0, cy0, cx1, cy1, p->species, p->form, egg)) {
+    int cw = (x1 - x0 + 1) - 2, ch = 12, cy = y0 + 5;
+    if (egg) ui_name_chip(x0 + 1, cy, cw, ch, 0x2A7A, 0x0000, "EGG");
+    else     ui_name_chip(x0 + 1, cy, cw, ch, UI_PANEL, UI_TEXT, pk_species_name(p->species));
+  }
 }
 
 /* CANCEL pill: retail's flat/dithered chrome vocabulary (pale-blue body, WHITE glyph

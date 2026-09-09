@@ -609,11 +609,34 @@ static const u16 k_type_col[18] = {   /* literal RGB15 (RGB15() is not a constan
   0x714D, /* Dragon   */ 0x210A, /* Dark     */
 };
 
+/* PARITY-AUDIT-2026-09 #76: chip_label()'s hard 28px (w-4) clip silently cut every
+ * type name past ~5 capitals ("POISON" -> "POISO", "PSYCHIC" -> "PSYC", "GRASS" ->
+ * "GRAS") in the art-free ui_type_chip() fallback -- real information loss, not a
+ * font-style change. Fixed WITHOUT moving the surrounding layout (the two GB
+ * summary badges, pdna_gbsummary.c, sit only 4px apart, so widening a chip risks
+ * colliding with its neighbour): try the normal proportional face first, then the
+ * TIGHT face (ui_ptext_w_tight/ui_ptext_tight, 1px/glyph narrower, ui.h:215-218),
+ * both centred in the fixed-width chip; only a name neither face can fit at all
+ * falls back to the tight face's own '~'-truncated ui_ptext_fit_tight, left-inset
+ * 2px like ui_name_chip's own convention, same as before this fix (just denser).
+ *
+ * Measured against all 18 pk_type_name() entries at TYPE_ICON_W=32 (maxw=28):
+ * BUG/FIRE/ICE/ROCK/DARK already fit the normal face untouched. FLYING/POISON/
+ * GRASS/WATER/GHOST/STEEL now render their FULL name via the tight face (were
+ * truncated before). NORMAL/GROUND/DRAGON (over by ~2px) and FIGHTING/PSYCHIC/
+ * ELECTRIC/MYSTERY (over by 5-10px; MYSTERY is the unused internal slot) still
+ * exceed even the tight face and fall back to the '~' truncation -- an accepted
+ * residual documented here rather than chased with a wider chip. */
 void ui_type_chip(int x, int y, int w, int h, uint8_t type_id) {
   if (type_id >= 18) return;
   ui_fill_rect(x, y, w, h, k_type_col[type_id]);
   m3_frame(x, y, x + w - 1, y + h - 1, UI_BORDER);
-  char t[12]; t[0] = 0; chip_label(t, pk_type_name(type_id), w - 4);
-  int tw = ui_ptext_w(t);
-  ui_ptext(x + (w - tw) / 2, y + (h - 8) / 2 + 1, 0x7FFF, t);
+  const char* name = pk_type_name(type_id);
+  int maxw = w - 4;
+  int ty = y + (h - 8) / 2 + 1;
+  int nw = ui_ptext_w(name);
+  if (nw <= maxw) { ui_ptext(x + (w - nw) / 2, ty, 0x7FFF, name); return; }
+  int tnw = ui_ptext_w_tight(name);
+  if (tnw <= maxw) { ui_ptext_tight(x + (w - tnw) / 2, ty, 0x7FFF, name); return; }
+  ui_ptext_fit_tight(x + 2, ty, maxw, 0x7FFF, name);
 }
