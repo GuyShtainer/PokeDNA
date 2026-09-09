@@ -301,6 +301,88 @@ int main(void) {
   }
   printf(failed ? "  fused_gb_loc bad framing: SOME FAILED\n" : "  fused_gb_loc bad framing: OK\n");
 
+  /* ---- BACKLOG #68b review D1: a 15-entry directory (more than the OLD
+   * FUSED_GB_MAX_ENTRIES==12) must parse ALL 15 entries, and in particular a SAV
+   * entry placed after a run of LOC entries -- past where the old 12-entry cache cap
+   * would have silently truncated it -- must still be visible and resolve to its
+   * real payload bytes. This is the exact shape of the bug the review caught: the
+   * real delta-gb recipe (3 ROM + 3 SAV + 8 LOC = 14 entries) put Crystal's own SAV
+   * entry (#14, 0-indexed #13) past the old cap, and fused_gb_save_count() silently
+   * reported 2 instead of 3. ---- */
+  {
+    static uint8_t buf[8192];
+    uint32_t crc_tab[16];
+    pdna_rv_crc32_table(crc_tab);
+    memset(buf, 0xAA, sizeof buf);
+
+    struct { uint32_t type; const char* name; } spec[15] = {
+      { FUSED_GB_ROM_GEN1, "Red.gb" },
+      { FUSED_GB_SAV,      "Red.sav" },
+      { FUSED_GB_ROM_GEN2, "Gold.gbc" },
+      { FUSED_GB_SAV,      "Gold.sav" },
+      { FUSED_GB_LOC,      "LOC.sprite.g2" },
+      { FUSED_GB_LOC,      "LOC.icon.g2" },
+      { FUSED_GB_LOC,      "LOC.ui.g2" },
+      { FUSED_GB_ROM_GEN2, "Crystal.gbc" },
+      { FUSED_GB_SAV,      "Crystal.sav" },
+      { FUSED_GB_LOC,      "LOC.sprite.g2c" },
+      { FUSED_GB_LOC,      "LOC.icon.g2c" },
+      { FUSED_GB_LOC,      "LOC.ui.g2c" },
+      { FUSED_GB_LOC,      "extra1" },
+      { FUSED_GB_LOC,      "extra2" },
+      { FUSED_GB_SAV,      "Crystal2.sav" },
+    };
+    const int N = 15;
+    const uint32_t psize = 8;
+    uint32_t offs[15];
+    uint32_t crcs[15];
+    uint32_t cur = 64;
+    for (int i = 0; i < N; i++) {
+      for (uint32_t k = 0; k < psize; k++) buf[cur + k] = (uint8_t)((i + 1) * 3 + k);
+      offs[i] = cur;
+      crcs[i] = pdna_rv_crc32(crc_tab, buf + cur, psize);
+      cur += psize;
+    }
+    uint32_t dir_off = cur;
+    uint8_t* d = buf + dir_off;
+    memcpy(d, "PDNAGBD1", 8);
+    uint32_t count = (uint32_t)N;
+    memcpy(d + 8, &count, 4);
+    for (int i = 0; i < N; i++) {
+      put_entry(d + 12 + (uint32_t)i * ENTRY_SIZE, spec[i].type, spec[i].name,
+                offs[i], psize, crcs[i]);
+    }
+    uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
+    uint32_t trailer_off = 12 + ENTRY_SIZE * count;
+    memcpy(d + trailer_off, &dir_size, 4);
+    memcpy(d + trailer_off + 4, "PDNAGBD1", 8);
+    uint32_t reserved = 0;
+    memcpy(d + trailer_off + 12, &reserved, 4);
+
+    set_record(buf, dir_off, dir_size);
+
+    CHECK(fused_gb_present(), "15-entry fixture: directory should be present");
+    CHECK(fused_gb_entry_count() == 15,
+          "15-entry fixture: expected all 15 entries visible (#68b D1 capacity fix)");
+
+    int sav_count = fused_gb_save_count();
+    CHECK(sav_count == 4,
+          "15-entry fixture: expected 4 SAV entries (Red/Gold/Crystal/Crystal2)");
+    const char* name = 0; const uint8_t* base = 0; uint32_t size = 0;
+    bool found_last = false;
+    for (int i = 0; i < sav_count; i++) {
+      name = 0; base = 0; size = 0;
+      if (fused_gb_save(i, &name, &base, &size) && name && strcmp(name, "Crystal2.sav") == 0) {
+        found_last = true;
+        CHECK(base == buf + offs[14] && size == psize,
+              "15-entry fixture: Crystal2.sav should resolve to its real payload bytes");
+      }
+    }
+    CHECK(found_last,
+          "15-entry fixture: the SAV entry after the run of LOC records must be visible");
+  }
+  printf(failed ? "  15-entry capacity (#68b D1): SOME FAILED\n" : "  15-entry capacity (#68b D1): OK\n");
+
   if (failed) { printf("host_fusedgb_test: FAILED\n"); return 1; }
   printf("host_fusedgb_test: ALL OK\n");
   return 0;

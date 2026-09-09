@@ -257,6 +257,81 @@ def main():
         else:
             print(f"  LOC (real ROM): skipped -- {red_gb} not present on this machine")
 
+        # BACKLOG #68b review D1: fuse the REAL default delta-gb recipe (Red+Gold+
+        # Crystal, ROM+SAV+LOC each -- exactly what the Makefile's delta-gb target
+        # runs) and confirm the C READER, not just fuse_gb.py's own verify pass, sees
+        # all three saves. This is the exact bug the review caught: 14 entries against
+        # an unbumped FUSED_GB_MAX_ENTRIES==12 made fused_gb_save_count() return 2 and
+        # the boot picker never offered Crystal, while --check still said "looks
+        # consistent" because the Python side never checked the C reader's own cap.
+        gold_gbc = os.path.join(corpus, "gb", "Gold.gbc")
+        gold_sav = os.path.join(corpus, "gb", "Gold.sav")
+        crystal_gbc = os.path.join(corpus, "gb", "Crystal.gbc")
+        crystal_sav = os.path.join(corpus, "gb", "Crystal.sav")
+        red_sav = os.path.join(corpus, "gb", "Red.sav")
+        if all(os.path.isfile(p) for p in
+               (red_gb, red_sav, gold_gbc, gold_sav, crystal_gbc, crystal_sav)):
+            pokedna6 = os.path.join(td, "fake6.gba")
+            rec_off6 = make_fake_pokedna(pokedna6)
+            out6 = os.path.join(td, "delta_gb_out.gba")
+            rc, so, se = run(pokedna6, red_gb, red_sav, gold_gbc, gold_sav,
+                              crystal_gbc, crystal_sav, "-o", out6)
+            if rc != 0:
+                fail(f"fusing the real default delta-gb recipe failed:\n{so}\n{se}")
+            blob6 = open(out6, "rb").read()
+            off6, size6 = read_record(blob6, rec_off6)
+            entries6 = parse_directory(blob6, off6, size6)
+            sav_names = sorted(e[1] for e in entries6 if e[0] == 3)
+            if sav_names != ["Crystal.sav", "Gold.sav", "Red.sav"]:
+                fail(f"expected 3 SAV entries in the directory, got {sav_names}")
+            print(f"  real recipe  : {len(entries6)} directory entries, "
+                  f"{len(sav_names)} SAV entries (python-side)")
+
+            probe_bin = os.path.join(td, "probe")
+            probe_src = os.path.join(ROOT, "tests", "fusedgb_probe.c")
+            fused_gb_c = os.path.join(ROOT, "source", "fused_gb.c")
+            romver_c = os.path.join(ROOT, "source", "pdna_romver.c")
+            src_inc = os.path.join(ROOT, "source")
+            cc = subprocess.run(
+                ["cc", "-std=c11", "-Wall", "-DPDNA_DELTA", "-DFUSED_GB_TEST",
+                 "-I", src_inc, probe_src, fused_gb_c, romver_c, "-o", probe_bin],
+                capture_output=True, text=True)
+            if cc.returncode != 0:
+                fail(f"building fusedgb_probe failed:\n{cc.stdout}\n{cc.stderr}")
+            pr = subprocess.run([probe_bin, out6, str(rec_off6)],
+                                 capture_output=True, text=True)
+            if pr.returncode != 0:
+                fail(f"fusedgb_probe failed:\n{pr.stdout}\n{pr.stderr}")
+            if "save_count=3" not in pr.stdout:
+                fail(f"C reader (fused_gb.c) did not see 3 saves -- capacity bug is "
+                     f"back:\n{pr.stdout}")
+            if "Crystal.sav" not in pr.stdout:
+                fail(f"C reader did not see Crystal.sav specifically:\n{pr.stdout}")
+            print(f"  C-reader probe: {pr.stdout.strip()}")
+        else:
+            print("  real recipe  : skipped -- full Red/Gold/Crystal corpus not present")
+
+        # BACKLOG #68b review D1: a directory with MORE entries than the reader's
+        # FUSED_GB_MAX_ENTRIES must be REFUSED by fuse_gb.py itself, loudly, rather than
+        # silently written and later silently truncated by the C reader.
+        pokedna7 = os.path.join(td, "fake7.gba")
+        make_fake_pokedna(pokedna7)
+        many_savs = []
+        for i in range(25):
+            p = os.path.join(td, f"over{i}.sav")
+            with open(p, "wb") as fh:
+                fh.write(bytes((i * 17 + j) & 0xFF for j in range(0x2000)))
+            many_savs.append(p)
+        out7 = os.path.join(td, "over_out.gba")
+        rc, so, se = run(pokedna7, *many_savs, "-o", out7)
+        if rc == 0:
+            fail("25 entries (over FUSED_GB_MAX_ENTRIES) should have been refused")
+        if "FUSED_GB_MAX_ENTRIES" not in (so + se):
+            fail(f"refusal did not name FUSED_GB_MAX_ENTRIES:\n{so}\n{se}")
+        if os.path.exists(out7):
+            fail("a refused fuse must not leave an output file behind")
+        print("  over-cap     : 25 entries refused by fuse_gb.py before writing anything")
+
     print("host_fusegb_test: ALL OK")
     return 0
 

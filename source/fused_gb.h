@@ -52,6 +52,16 @@
  * fused_rom.c/fused_sav.c); a caller that needs to know would have to compare its own
  * expected payload count against fused_gb_entry_count().
  *
+ * #68b review D1: each cached entry stores `name` as a raw pointer straight into
+ * cartridge address space (validated at parse time to contain a NUL within its 32-byte
+ * field, else the pointer is a shared empty-string literal) rather than a 32-byte
+ * local copy -- the directory block itself stays resident in cartridge address space
+ * for the program's whole lifetime, so there is nothing to copy FROM defensively. This
+ * shrinks one cached entry from 44 bytes (type+name[32]+offset+size) to 16
+ * (type+offset+size+name pointer), so raising FUSED_GB_MAX_ENTRIES 12->24 to cover
+ * delta-gb's own recipe is a net DECREASE in cache footprint (12*44=528 B -> 24*16=384
+ * B), not a cost to budget against.
+ *
  * ---- legality / privacy --------------------------------------------------------------
  * Same weight as fused_rom.h/fused_sav.h: fused ROMs are commercial Game Boy games,
  * fused saves are personal play data. Never commit, publish, or transmit a fused image.
@@ -76,7 +86,10 @@
 #define FUSED_GB_LOC_ICON   2u
 #define FUSED_GB_LOC_UI     3u
 
-#define FUSED_GB_MAX_ENTRIES 12   /* generous headroom over the default 6-payload recipe */
+#define FUSED_GB_MAX_ENTRIES 24   /* #68b review D1: headroom over delta-gb's OWN default
+                                   * recipe: 3 ROMs x (1 ROM + 1 SAV + up to 3 LOC) = 15
+                                   * entries -- the prior 12 silently dropped Crystal's
+                                   * save and one LOC record with no error anywhere */
 #define FUSED_GB_NAME_MAX    32
 
 typedef struct {

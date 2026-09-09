@@ -109,6 +109,13 @@ SAV_MAGIC = b"PDNASAV1"             # fuse_sav.py's own record -- same purpose
 RECORD_SIZE = 16                    # the g_pdna_gbd locator record: magic+offset+size
 ENTRY_SIZE = 48                     # type(4) + name(32) + offset(4) + size(4) + crc32(4)
 NAME_SIZE = 32
+# #68b review D1: mirrors source/fused_gb.h's FUSED_GB_MAX_ENTRIES -- same posture as
+# MAGIC/ENTRY_SIZE/RECORD_SIZE above (kept in sync by hand, not generated). The C reader
+# caches only the first FUSED_GB_MAX_ENTRIES directory entries; a directory built with
+# more than that would silently lose payloads at runtime with no error anywhere (the
+# exact bug the review caught: 14 entries against an unnoticed 12-entry cap dropped
+# Crystal's own save). fuse() below REFUSES to write such a directory.
+FUSED_GB_MAX_ENTRIES = 24
 TRAILER_SIZE = 16                   # dir_size(4) + magic(8) + reserved(4)
 ALIGN = 256                         # every payload (and the directory) starts aligned
 CART_WINDOW = 0x02000000            # 32 MiB — the GBA cartridge address window
@@ -438,6 +445,20 @@ def fuse(pokedna_path: str, payload_paths: list[str], out_path: str, force: bool
     if not entries:
         raise FuseError("no payloads given")
 
+    # #68b review D1: the C reader (source/fused_gb.c) caches only the first
+    # FUSED_GB_MAX_ENTRIES directory entries and has no way to report a drop at
+    # runtime (pure-C core, no log.h) -- writing a directory the reader can't fully
+    # parse would silently lose payloads with --check still saying "looks consistent"
+    # (exactly what happened before this fix: 14 entries against an unbumped 12-entry
+    # cap). Refuse here instead, loudly, before any bytes are written.
+    if len(entries) > FUSED_GB_MAX_ENTRIES:
+        raise FuseError(
+            f"{len(entries)} directory entries, but the GBA reader's own "
+            f"FUSED_GB_MAX_ENTRIES caps its cache at {FUSED_GB_MAX_ENTRIES} -- entries "
+            f"past that limit would be silently invisible at runtime with no error "
+            f"anywhere. Drop a payload, or raise FUSED_GB_MAX_ENTRIES in both "
+            f"source/fused_gb.h and this constant.")
+
     dir_pad = (-len(base)) % ALIGN
     base.extend(b"\xFF" * dir_pad)
     dir_off = len(base)
@@ -569,7 +590,10 @@ def check_only(path: str) -> int:
     except FuseError as e:
         print(f"PROBLEMS: {e}")
         return 1
-    print(f"entries      : {len(entries)}")
+    over_cap = len(entries) > FUSED_GB_MAX_ENTRIES
+    print(f"entries      : {len(entries)} / {FUSED_GB_MAX_ENTRIES} (FUSED_GB_MAX_ENTRIES)"
+          + ("  *** OVER CAP -- the GBA reader would silently drop the rest ***"
+             if over_cap else ""))
     bad = 0
     for idx, e in enumerate(entries):
         payload = blob[e["offset"]:e["offset"] + e["size"]]
@@ -626,6 +650,10 @@ def check_only(path: str) -> int:
               f"{'OK' if ok else 'CRC MISMATCH'}{extra}")
     if bad:
         print(f"PROBLEMS: {bad} payload(s) failed CRC")
+        return 1
+    if over_cap:
+        print(f"PROBLEMS: {len(entries)} entries exceeds FUSED_GB_MAX_ENTRIES="
+              f"{FUSED_GB_MAX_ENTRIES} -- the GBA reader would silently drop the rest")
         return 1
     print("looks consistent")
     return 0

@@ -103,11 +103,16 @@ static const uint8_t* cart_ptr(uint32_t off) {
 #define GBD_EWRAM_BSS __attribute__((section(".sbss")))
 #endif
 
+/* #68b review D1: `name` is a raw pointer into cartridge address space (see fused_gb.h's
+ * caching comment), not a 32-byte copy -- the directory block the pointer targets stays
+ * resident for the program's whole life, so nothing needs copying. Shrinks one cached
+ * entry from 44 bytes to 16, making room for FUSED_GB_MAX_ENTRIES 12->24 at a net
+ * DECREASE in total cache footprint. */
 typedef struct {
-  uint32_t type;
-  char     name[FUSED_GB_NAME_MAX];
-  uint32_t offset;
-  uint32_t size;
+  uint32_t    type;
+  uint32_t    offset;
+  uint32_t    size;
+  const char* name;
 } GbdEntry;
 
 static GBD_EWRAM_BSS GbdEntry s_entry[FUSED_GB_MAX_ENTRIES];
@@ -182,8 +187,6 @@ static void parse_once(void) {
     const uint8_t* e = blk + 12u + (uint32_t)i * ENTRY_SIZE;
     uint32_t type, off, size, crc;
     memcpy(&type, e + 0, 4);
-    memcpy(s_entry[i].name, e + 4, FUSED_GB_NAME_MAX);
-    s_entry[i].name[FUSED_GB_NAME_MAX - 1] = 0;   /* defensive: force NUL termination */
     memcpy(&off,  e + 36, 4);
     memcpy(&size, e + 40, 4);
     memcpy(&crc,  e + 44, 4);
@@ -194,9 +197,20 @@ static void parse_once(void) {
      * fused image) is dropped here instead of being handed to a caller as real. */
     if (off >= dir_off || size > dir_off - off) continue;
     if (pdna_rv_crc32(crc_tab, cart_ptr(off), size) != crc) continue;   /* #62 D9 */
+    /* #68b review D1: name is cached as a pointer straight at e+4 (still inside the
+     * resident directory block cart_ptr() already resolved `e` from) instead of a
+     * copy. A well-formed entry (tools/fuse_gb.py always NUL-pads) has a NUL within
+     * its 32 bytes; a hand-edited/corrupt one that doesn't gets the shared empty
+     * string instead of an unbounded read past the field. */
+    const uint8_t* name_field = e + 4;
+    bool name_nul = false;
+    for (uint32_t k = 0; k < FUSED_GB_NAME_MAX; k++) {
+      if (name_field[k] == 0) { name_nul = true; break; }
+    }
     s_entry[i].type = type;
     s_entry[i].offset = off;
     s_entry[i].size = size;
+    s_entry[i].name = name_nul ? (const char*)name_field : "";
   }
   s_count = n;
 }
