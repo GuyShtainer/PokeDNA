@@ -475,6 +475,12 @@ bool        app_rom_path_set(PkGame game, const char* path);
  * that need real art to mean anything (Day-Care yard visitors). */
 bool        app_any_rom_registered(void);
 
+/* BACKLOG #77: open the Gen-3 ROM wallpaper rung once for a GB session, artless
+ * builds only -- a no-op if it is already open (nested import) or in the normal
+ * build (the compiled wallpapers.c already serves the GB grid there). See the
+ * definition in pdna_main.c for the full reasoning. */
+void        app_gb_wallpaper_rom_open(void);
+
 /* ---- Game Boy cartridge ROMs (Settings > Game ROM, slice E3) -----------------------
  * Same shape as app_rom_path()/app_rom_path_set() above, one slot per generation
  * (`gen` is PDNA_GEN1==1 or PDNA_GEN2==2, pdna_origin_art.h) instead of one per Gen-3

@@ -2605,6 +2605,43 @@ static void app_icon_rom_open(void) {
   app_icon_cache_resolve(0, false); /* boot path: shallow (size-only) check */
 }
 
+/* BACKLOG #77: pdna_box.c's draw_wallpaper()/draw_wallpaper_rom() has no session-kind
+ * gate at all -- a GB session's own box grid (gbsrc_get_wp, pdna_gen12.c) draws
+ * through the EXACT SAME rung a Gen-3 session's PC/Bank grid does. The only reason it
+ * never lit up there is that nothing in a GB session's entry point ever calls
+ * app_icon_rom_open() -- the one place that opens the Gen-3 ROM handle
+ * app_wallpaper_rom() serves from. view_save() and app_register_rom() are its only
+ * two callers, both Gen-3-only, so a pure GB session (a standalone mount, or a nested
+ * NV_GB import reached WITHOUT visiting a Gen-3 save first this boot) never gets a
+ * chance to stream the real wallpaper even with a fused/registered Gen-3 ROM on hand,
+ * and silently falls to the procedural grass every time (pdna_box.c:174's own
+ * documented fallback, working exactly as designed for the "no ROM" case -- the bug
+ * is that a REGISTERED ROM never got the chance).
+ *
+ * Fix: call the SAME chokepoint once, on GB session entry, unless it already ran
+ * this boot (a nested import reached from an already-open Gen-3 session has always
+ * called it via view_save before nesting -- s_romwallpaper.ok is already true then,
+ * so this is a no-op, not a redundant re-open). app_icon_rom_open() already defends
+ * being invoked while app_save_kind() reads GEN1/GEN2 (see its own "E6 D7" comment a
+ * few screens up: se_store_era()'s PC-grid choice falls back to g_game rather than
+ * guessing when the current kind isn't Gen-3) -- this is a genuinely anticipated
+ * call shape, not a new hazard.
+ *
+ * No new EWRAM: s_iconrom_ctx/s_iconrom/s_romwallpaper/etc. are the SAME file-scope
+ * statics app_icon_rom_open() already owns, entirely separate from the GB session's
+ * own app_arena_acquire()'d Gb12Mount block -- there is no arena-tail budget question
+ * here. Compiled to an empty function in the normal build (PDNA_ARTLESS=0): the
+ * compiled wallpapers.c already serves wp==GB12_WALLPAPER there, so draw_wallpaper()
+ * never reaches the ROM rung and this call would only cost SD/ROM I/O for no visible
+ * change -- kept out entirely so the normal build's session-entry behaviour is
+ * unchanged, not just its pixels. */
+void app_gb_wallpaper_rom_open(void) {
+#if PDNA_ARTLESS
+  if (s_romwallpaper.ok) return;   /* already open (nested import, or a prior call this boot) */
+  app_icon_rom_open();
+#endif
+}
+
 /* ---- items + type badges: compiled art first, then the registered ROM (Phase 1,
  * docs/analysis-2026-08-19-rom-art/DESIGN.md Sec 4.7) -----------------------------
  * Same ladder discipline as pdna_origin_art.c's gen3_ladder, but no cache and no
