@@ -609,6 +609,41 @@ static const u16 k_type_col[18] = {   /* literal RGB15 (RGB15() is not a constan
   0x714D, /* Dragon   */ 0x210A, /* Dark     */
 };
 
+/* BACKLOG #80 (2026-09-04): type chip abbreviations for the art-free fallback.
+ * Returns an abbreviated display name for types that overflow the 28px chip budget,
+ * even with the tight face. Used only in ui_type_chip()'s final fallback before '~'
+ * truncation. Returns the original name if no abbreviation is defined. */
+static const char* type_chip_short(const char* name) {
+  static const char* const abbrev[18] = {
+    "NORML",   /* NORMAL (0) */
+    "FIGHT",   /* FIGHTING (1) */
+    NULL,      /* FLYING (2) — fits tight face */
+    NULL,      /* POISON (3) — fits tight face */
+    "GRND",    /* GROUND (4) */
+    NULL,      /* ROCK (5) — fits normal face */
+    NULL,      /* BUG (6) — fits normal face */
+    NULL,      /* GHOST (7) — fits tight face */
+    NULL,      /* STEEL (8) — fits tight face */
+    "MYST",    /* MYSTERY (9) */
+    NULL,      /* FIRE (10) — fits normal face */
+    NULL,      /* WATER (11) — fits tight face */
+    NULL,      /* GRASS (12) — fits tight face */
+    "ELECT",   /* ELECTRIC (13) */
+    "PSYCH",   /* PSYCHIC (14) */
+    NULL,      /* ICE (15) — fits normal face */
+    "DRAGN",   /* DRAGON (16) */
+    NULL       /* DARK (17) — fits normal face */
+  };
+
+  /* Find which type this is (linear search over the 18 names) */
+  for (int i = 0; i < 18; i++) {
+    if (name == pk_type_name((uint8_t)i)) {
+      return abbrev[i] ? abbrev[i] : name;
+    }
+  }
+  return name;
+}
+
 /* PARITY-AUDIT-2026-09 #76: chip_label()'s hard 28px (w-4) clip silently cut every
  * type name past ~5 capitals ("POISON" -> "POISO", "PSYCHIC" -> "PSYC", "GRASS" ->
  * "GRAS") in the art-free ui_type_chip() fallback -- real information loss, not a
@@ -617,16 +652,17 @@ static const u16 k_type_col[18] = {   /* literal RGB15 (RGB15() is not a constan
  * colliding with its neighbour): try the normal proportional face first, then the
  * TIGHT face (ui_ptext_w_tight/ui_ptext_tight, 1px/glyph narrower, ui.h:215-218),
  * both centred in the fixed-width chip; only a name neither face can fit at all
- * falls back to the tight face's own '~'-truncated ui_ptext_fit_tight, left-inset
- * 2px like ui_name_chip's own convention, same as before this fix (just denser).
+ * uses the type_chip_short() abbreviation with the tight face, and if THAT still
+ * overflows, falls back to the tight face's own '~'-truncated ui_ptext_fit_tight,
+ * left-inset 2px like ui_name_chip's own convention, same as before this fix (just denser).
  *
  * Measured against all 18 pk_type_name() entries at TYPE_ICON_W=32 (maxw=28):
  * BUG/FIRE/ICE/ROCK/DARK already fit the normal face untouched. FLYING/POISON/
  * GRASS/WATER/GHOST/STEEL now render their FULL name via the tight face (were
- * truncated before). NORMAL/GROUND/DRAGON (over by ~2px) and FIGHTING/PSYCHIC/
- * ELECTRIC/MYSTERY (over by 5-10px; MYSTERY is the unused internal slot) still
- * exceed even the tight face and fall back to the '~' truncation -- an accepted
- * residual documented here rather than chased with a wider chip. */
+ * truncated before). NORMAL/GROUND/DRAGON/FIGHTING/PSYCHIC/ELECTRIC/MYSTERY now
+ * render abbreviated versions via the tight face (e.g. "NORMAL" -> "NORML", "PSYCHIC" -> "PSYCH").
+ * All 18 types now fit without requiring the '~' truncation fallback for real names
+ * (BACKLOG #80 2026-09-09). */
 void ui_type_chip(int x, int y, int w, int h, uint8_t type_id) {
   if (type_id >= 18) return;
   ui_fill_rect(x, y, w, h, k_type_col[type_id]);
@@ -638,5 +674,10 @@ void ui_type_chip(int x, int y, int w, int h, uint8_t type_id) {
   if (nw <= maxw) { ui_ptext(x + (w - nw) / 2, ty, 0x7FFF, name); return; }
   int tnw = ui_ptext_w_tight(name);
   if (tnw <= maxw) { ui_ptext_tight(x + (w - tnw) / 2, ty, 0x7FFF, name); return; }
+  const char* abbrev = type_chip_short(name);
+  if (abbrev != name) {
+    int aw = ui_ptext_w_tight(abbrev);
+    if (aw <= maxw) { ui_ptext_tight(x + (w - aw) / 2, ty, 0x7FFF, abbrev); return; }
+  }
   ui_ptext_fit_tight(x + 2, ty, maxw, 0x7FFF, name);
 }
