@@ -30,6 +30,14 @@
  *      signature makes that whole open() fail closed: gen 0, every offset 0,
  *      ok 0. If this ever passes silently, the locator isn't checking what
  *      it claims to.
+ *   6) BACKLOG #71 (MUT-D5b) -- a shifted-but-recomputed-check loc (off[]
+ *      shifted, `check` recomputed to match, exactly what a corrupted-yet-
+ *      internally-consistent cache record would contain) is REJECTED by
+ *      anchor re-derivation, not just accepted because the shifted block
+ *      still happens to look font/tile-shaped: off[FONT]+16, off[FONT]+4096,
+ *      a Gen-2 badges shift, and a poisoned anchor BYTE in the ROM itself
+ *      (not the cache) all force a rescan; a genuine cache hit still costs a
+ *      small constant number of reads (reported before/after this fix).
  *
  * ROMs are Guy's own dumps: they live OUTSIDE the repo and are never copied
  * into it, so a missing corpus SKIPS rather than failing.
@@ -79,6 +87,32 @@ static uint32_t file_size(const char* p) {
 }
 
 static uint8_t g_scratch[ROM_GBUI_SCRATCH_MIN];
+
+/* Independent re-implementation of rom_gbui.c's static loc_check(), so this
+ * test can produce a loc whose `check` is CORRECTLY recomputed after
+ * corrupting off[] -- exactly what an attacker (or bit rot plus a naive
+ * re-save) would produce, and exactly the shape id_hash/size/check alone
+ * cannot catch (BACKLOG #71 MUT-D5b). Deliberately duplicated rather than
+ * exposed from rom_gbui.c: this is testing the PUBLIC contract (a corrupted
+ * loc must be rejected), not reusing the implementation's own internals. */
+static uint32_t test_fnv1a(const uint8_t* p, uint32_t n, uint32_t h) {
+  for (uint32_t i = 0; i < n; i++) { h ^= p[i]; h *= 0x01000193u; }
+  return h;
+}
+static uint32_t test_loc_check(const RomGbUiLoc* l) {
+  uint32_t h = 0x811C9DC5u;
+  for (uint32_t i = 0; i < 13; i++) {
+    uint8_t b[4] = { (uint8_t)l->off[i], (uint8_t)(l->off[i] >> 8),
+                      (uint8_t)(l->off[i] >> 16), (uint8_t)(l->off[i] >> 24) };
+    h = test_fnv1a(b, 4, h);
+  }
+  for (uint32_t i = 0; i < ROM_GBUI_ANCH_COUNT; i++) {
+    uint8_t b[4] = { (uint8_t)l->anchor[i], (uint8_t)(l->anchor[i] >> 8),
+                      (uint8_t)(l->anchor[i] >> 16), (uint8_t)(l->anchor[i] >> 24) };
+    h = test_fnv1a(b, 4, h);
+  }
+  return h;
+}
 
 static int open_rom(RomGbUi* gu, FileCtx* fc, const char* path) {
   memset(fc, 0, sizeof *fc);
@@ -228,6 +262,83 @@ static void run_one(const Want* w) {
   chk(w->file, "corrupted off[]: full-scan cost, not a cache hit",
       fc5.reads >= fc_full.reads);
   if (fc5.f) fclose(fc5.f);
+
+  /* -------------------------------------------- BACKLOG #71 (MUT-D5b) */
+  /* Sanity: our re-implementation of the check hash must agree with the
+   * shipped one on an UNCORRUPTED loc, or every test below is meaningless. */
+  chk(w->file, "test_loc_check agrees with the shipped loc_check on a clean loc",
+      test_loc_check(&loc) == loc.check);
+
+  /* (a)/(b): shift off[FONT] by +16 and by +4096, recomputing `check` each
+   * time so id_hash/size/check alone cannot catch it -- only anchor
+   * re-derivation's exact fileoff(bank,addr)==off comparison can. Must
+   * rescan (full-scan read cost) and still land on the correct offsets. */
+  {
+    static const uint32_t shifts[2] = { 16u, 4096u };
+    for (int si = 0; si < 2; si++) {
+      RomGbUiLoc bad = loc;
+      bad.off[ROM_GBUI_OFF_FONT] += shifts[si];
+      bad.check = test_loc_check(&bad);
+      FileCtx fcx; memset(&fcx, 0, sizeof fcx); fcx.f = fopen(path, "rb");
+      RomGbUi gux;
+      int okx = rom_gbui_open_loc(&gux, file_read, &fcx, file_size(path),
+                                  g_scratch, sizeof g_scratch, &bad);
+      char l1[96], l2[96];
+      snprintf(l1, sizeof l1,
+              "font off+%u (recomputed check): rescans, correct offsets", shifts[si]);
+      snprintf(l2, sizeof l2,
+              "font off+%u (recomputed check): full-scan cost, not a cache hit", shifts[si]);
+      chk(w->file, l1, okx == 1 && gux.gen == gu.gen && gux.font == gu.font);
+      chk(w->file, l2, fcx.reads >= fc_full.reads);
+      if (fcx.f) fclose(fcx.f);
+    }
+  }
+
+  /* (c): same attack against a Gen-2 badges offset. */
+  if (w->gen == ROM_GBUI_GEN2) {
+    RomGbUiLoc bad = loc;
+    bad.off[ROM_GBUI_OFF_BADGES] += 16u;
+    bad.check = test_loc_check(&bad);
+    FileCtx fcx; memset(&fcx, 0, sizeof fcx); fcx.f = fopen(path, "rb");
+    RomGbUi gux;
+    int okx = rom_gbui_open_loc(&gux, file_read, &fcx, file_size(path),
+                                g_scratch, sizeof g_scratch, &bad);
+    chk(w->file, "Gen-2 badges off+16 (recomputed check): rescans, correct offsets",
+        okx == 1 && gux.gen == gu.gen && gux.badges == gu.badges);
+    chk(w->file, "Gen-2 badges off+16 (recomputed check): full-scan cost",
+        fcx.reads >= fc_full.reads);
+    if (fcx.f) fclose(fcx.f);
+  }
+
+  /* (d): the loc record itself is UNTOUCHED (still the correct, valid
+   * check) -- instead one byte of the ANCHOR's own signature is flipped in
+   * the ROM. revalidate_loc() must refuse (the anchor no longer matches its
+   * signature), forcing a rescan; since the byte is really corrupted, the
+   * rescan itself then fails closed too (this is genuine bit rot, not a
+   * cache problem -- the correct behaviour is REJECT, not "recover"). */
+  {
+    uint32_t font_anchor = loc.anchor[ROM_GBUI_ANCH_FONT];
+    uint32_t frames_anchor = loc.anchor[ROM_GBUI_ANCH_FRAMES];
+    uint32_t poison = (w->gen == ROM_GBUI_GEN1) ? font_anchor : frames_anchor;
+    chk(w->file, "have a non-zero anchor to poison", poison != 0);
+    FileCtx fcx; memset(&fcx, 0, sizeof fcx); fcx.f = fopen(path, "rb");
+    fcx.poison_off = poison; fcx.poison_xor = 0xFFu;
+    RomGbUi gux;
+    int okx = rom_gbui_open_loc(&gux, file_read, &fcx, file_size(path),
+                                g_scratch, sizeof g_scratch, &loc);
+    chk(w->file, "poisoned anchor byte in the ROM: cache rejected (rescans, then fails closed)",
+        okx == 0 && gux.ok == 0 && gux.gen == ROM_GBUI_NONE);
+    chk(w->file, "poisoned anchor byte: NOT a cheap cache hit (rescan cost, not ~20 reads)",
+        fcx.reads > 30u);
+    if (fcx.f) fclose(fcx.f);
+  }
+
+  /* (e): a genuine cache hit is still cheap. Report the exact number so a
+   * future change to the anchor set can be compared against this fix's
+   * own before/after (measured separately: Gen 1 21->26, Gen 2 Gold 13->17,
+   * Gen 2 Crystal 13->18 reads -- one extra short read per stored anchor). */
+  printf("  %-12s cache-hit reads=%u (full scan=%u)\n", w->file, fc2.reads, fc_full.reads);
+  chk(w->file, "cache-hit read count stays a small constant (<=32)", fc2.reads <= 32u);
 
   /* -------------------------------------------- font glyph sanity */
   if (gu.font) {
