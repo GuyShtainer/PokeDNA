@@ -200,6 +200,15 @@ typedef struct {
   bool      scale_dirty;        /* U2b item 3: gb_scale_mode changed during THIS
                                   * screen's visit -- gbscr_persist_mode()/close()
                                   * writes config.cfg once iff this is set        */
+  /* D9 (U2c review): all-NULL (gbscr_open()'s own memset-to-0) means "no
+   * override" -- gbscr_flush() paints its own base legend ("A OK  B BACK
+   * SEL SIZE") plus the caller's `legend_extra`, unchanged (every existing
+   * caller, e.g. gbscr_run_demo's "EXIT", keeps this look). A screen that
+   * calls gbscr_set_legend() REPLACES the base entirely with up to 4 lines
+   * (NULL entries are skipped) -- for a screen like the Gen-1 trainer card
+   * where B does not mean "back" and the base legend would contradict the
+   * screen's own key line ("B BACK" next to "B SAVE"). See gbscr_set_legend(). */
+  const char* legend[4];
 } GbScreen;
 
 /* gb_scale_mode -- the ONE new EWRAM byte this whole shell adds (design sec 1.5/
@@ -343,9 +352,26 @@ void gbscr_toggle_scale(GbScreen* gs);
  * then draw the legend (design sec 1.5: two stacked side-bar columns at 1:1, a
  * bottom scrim overlay when stretched) and clear the dirty bitmap. `legend_extra`
  * (may be NULL) is one more screen-supplied key line appended after the shell's
- * own A OK / B BACK / SEL SIZE rows. GBA-only (touches vid_mem/tonc); a no-op if
- * `gs` never opened. */
+ * own A OK / B BACK / SEL SIZE rows, UNLESS the screen called gbscr_set_legend()
+ * (below), in which case `legend_extra` is ignored and the override lines are
+ * painted instead -- see gbscr_set_legend()'s own doc comment. GBA-only
+ * (touches vid_mem/tonc); a no-op if `gs` never opened. */
 void gbscr_flush(GbScreen* gs, const char* legend_extra);
+
+/* D9 (U2c review): let a screen REPLACE the shell's base legend instead of
+ * only appending to it -- for a screen whose own key line contradicts the
+ * base (e.g. the Gen-1 trainer card's "B SAVE" vs. the base's unconditional
+ * "B BACK"). `lines[0..3]` are painted in order (NULL entries skipped): at
+ * 1:1, one per side-bar row (the same 4 y-slots the base legend + one extra
+ * line used); stretched, joined with "  " into ONE bottom-scrim string (the
+ * caller is responsible for keeping that joined width under the scrim, same
+ * as any other stretched-mode legend text -- measure with ui_ptext_w()).
+ * Pass an all-NULL array (or never call this) to keep the shell's own base
+ * legend, e.g. gbscr_run_demo's "EXIT" line. Takes effect on the very next
+ * gbscr_flush(); does not itself mark anything dirty (call
+ * gbscr_mark_all_dirty() too if the legend must repaint before anything else
+ * does). */
+void gbscr_set_legend(GbScreen* gs, const char* const lines[4]);
 
 /* U2c: pixel bounds (x1/y1 one past the last covered pixel) of a `w`x`h` group
  * of cells at (cx,cy), in the CURRENT gb_scale_mode -- for a screen's own

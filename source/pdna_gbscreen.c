@@ -667,22 +667,54 @@ static void blit_stretched(int cx, int cy, const uint16_t tile[64]) {
   }
 }
 
+/* D9 (U2c review): a screen-owned override for the shell's base legend --
+ * see gbscr_set_legend()'s own header doc comment for the contract. */
+void gbscr_set_legend(GbScreen* gs, const char* const lines[4]) {
+  if (!gs) return;
+  for (int i = 0; i < 4; i++) gs->legend[i] = lines ? lines[i] : 0;
+}
+
+static bool gbscr_legend_overridden(const GbScreen* gs) {
+  return gs && (gs->legend[0] || gs->legend[1] || gs->legend[2] || gs->legend[3]);
+}
+
+/* D9 (U2c review) footnote: the 40-px side bar's own claimed "room to spare"
+ * was never actually true past ~36 px of text -- a bare ui_ptext() draws past
+ * GBSCR_ORIGIN_X (40) and the canvas's own first tile column then paints
+ * straight over the tail, splitting a glyph in half (proven: the shell's OWN
+ * pre-existing "SEL SIZE" line, 43 px wide, already lost the last stroke of
+ * its 'E' before this fix -- /tmp/crop_selsize.png). ui_ptext_fit() (already
+ * used elsewhere in this tree) is the fix: past `GBSCR_LEGEND_MAXW` it
+ * truncates on a whole-glyph boundary and appends '~' instead of slicing a
+ * glyph -- applied here to every 1:1 legend line, base AND override, so
+ * "nothing clipped" is actually true rather than merely usually not
+ * noticed. */
+#define GBSCR_LEGEND_MAXW (GBSCR_ORIGIN_X - 4)
+
 /* Legend rows, 1:1 mode (design sec 1.5: two stacked columns in the 40-px side
  * bars -- kept to ONE column here, the left bar, since the shell's three fixed
  * lines plus one screen-supplied extra fit in 40 px with room to spare and a
  * second column would only matter for a screen with many more keys than any
  * U2..U5 screen actually has). */
-static void gbscr_paint_legend_1to1(const char* extra) {
+static void gbscr_paint_legend_1to1(const GbScreen* gs, const char* extra) {
   ui_fill_rect(0, 0, GBSCR_ORIGIN_X, 160, UI_BG);
   ui_fill_rect(GBSCR_ORIGIN_X + GBSCR_COLS * 8, 0,
               240 - (GBSCR_ORIGIN_X + GBSCR_COLS * 8), 160, UI_BG);
   ui_fill_rect(0, 0, 240, GBSCR_ORIGIN_Y, UI_BG);
   ui_fill_rect(0, GBSCR_ORIGIN_Y + GBSCR_ROWS * 8, 240,
               160 - (GBSCR_ORIGIN_Y + GBSCR_ROWS * 8), UI_BG);
-  ui_ptext(2, 20, UI_TEXT, "A OK");
-  ui_ptext(2, 30, UI_TEXT, "B BACK");
-  ui_ptext(2, 40, UI_TEXT, "SEL SIZE");
-  if (extra) ui_ptext(2, 52, UI_DIM, extra);
+  /* D9: an override REPLACES all 4 rows (no base "A OK/B BACK/SEL SIZE",
+   * no separate DIM `extra` slot -- every line is a real key hint here). */
+  if (gbscr_legend_overridden(gs)) {
+    static const int ys[4] = { 20, 30, 40, 52 };
+    for (int i = 0; i < 4; i++)
+      if (gs->legend[i]) ui_ptext_fit(2, ys[i], GBSCR_LEGEND_MAXW, UI_TEXT, gs->legend[i]);
+    return;
+  }
+  ui_ptext_fit(2, 20, GBSCR_LEGEND_MAXW, UI_TEXT, "A OK");
+  ui_ptext_fit(2, 30, GBSCR_LEGEND_MAXW, UI_TEXT, "B BACK");
+  ui_ptext_fit(2, 40, GBSCR_LEGEND_MAXW, UI_TEXT, "SEL SIZE");
+  if (extra) ui_ptext_fit(2, 52, GBSCR_LEGEND_MAXW, UI_DIM, extra);
 }
 
 /* D3 fix (U2a review): stretched mode used to REPLACE the shell's own keys
@@ -691,10 +723,33 @@ static void gbscr_paint_legend_1to1(const char* extra) {
  * shell's SELECT-toggle hint. Always paint the shell's keys at x=2; `extra`
  * (when supplied) goes to its right, its start x computed from the shell
  * keys' own measured width (plus a fixed gap) so the two strings never
- * overlap even if a future screen's extra text runs long. */
-static void gbscr_paint_legend_stretched(const char* extra) {
-  static const char* const kShellKeys = "A OK  B BACK  SEL SIZE";
+ * overlap even if a future screen's extra text runs long.
+ *
+ * D9 (U2c review): UNLESS the screen called gbscr_set_legend(), in which case
+ * its up-to-4 lines are joined with "  " into ONE string and painted alone
+ * (no base keys, no separate `extra`) -- the caller is responsible for
+ * keeping the joined width on screen (ui_ptext_w()), same as any other
+ * stretched-mode legend text. */
+static void gbscr_paint_legend_stretched(const GbScreen* gs, const char* extra) {
   ui_fill_rect(0, 150, 240, 10, RGB15(0, 0, 0));
+  if (gbscr_legend_overridden(gs)) {
+    /* Bounded join: sniprintf against the REMAINING capacity at each step,
+     * never a raw strcat (this file's own golden-rules posture) -- same
+     * pattern pdna_main.c's log-line builder uses. */
+    char joined[64];
+    int n = 0;
+    joined[0] = 0;
+    for (int i = 0; i < 4; i++) {
+      if (!gs->legend[i]) continue;
+      int w = sniprintf(joined + n, sizeof(joined) - (size_t)n,
+                        "%s%s", (n > 0) ? "  " : "", gs->legend[i]);
+      if (w > 0) n += w;
+      if ((size_t)n >= sizeof joined) break;
+    }
+    ui_ptext_shadow(2, 151, UI_TEXT, RGB15(0, 0, 0), joined);
+    return;
+  }
+  static const char* const kShellKeys = "A OK  B BACK  SEL SIZE";
   ui_ptext_shadow(2, 151, UI_TEXT, RGB15(0, 0, 0), kShellKeys);
   if (extra) {
     int extra_x = 2 + ui_ptext_w(kShellKeys) + 10;
@@ -712,7 +767,7 @@ void gbscr_flush(GbScreen* gs, const char* legend_extra) {
    * MUST be painted AFTER the cell loop below or a full repaint (every SELECT
    * toggle) blits straight over it and the scrim/legend silently vanishes --
    * caught by looking at the U2a shots, not by inspection. */
-  if (gb_scale_mode == 0) gbscr_paint_legend_1to1(legend_extra);
+  if (gb_scale_mode == 0) gbscr_paint_legend_1to1(gs, legend_extra);
 
   /* U2b item 1: no FIL, no FusedGbSlice, no SD/cart-space read of any kind here
    * any more -- every dirty cell is served from the RAM tile cache gbscr_open()
@@ -737,7 +792,7 @@ void gbscr_flush(GbScreen* gs, const char* legend_extra) {
     }
   }
 
-  if (gb_scale_mode != 0) gbscr_paint_legend_stretched(legend_extra);
+  if (gb_scale_mode != 0) gbscr_paint_legend_stretched(gs, legend_extra);
 }
 
 /* U2c: pixel bounds of a `w`x`h` group of cells starting at (cx,cy), in the

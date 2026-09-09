@@ -795,11 +795,21 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
    * the whole card (design: the photo is one field among several). */
   gbscr_decode_pic_gen1(&gs, tail + shell_need, GBSCR_PIC_TAIL_BYTES);
 
+  /* D9 (review): the shell's own base legend ("A OK  B BACK  SEL SIZE")
+   * contradicts this screen's real keys -- there is no A-OK-only meaning
+   * here, and B SAVES on an editable visit, not "back". Replace it entirely
+   * (gbscr_set_legend()) instead of only appending to it: can_edit shows the
+   * real A/B meanings; read-only drops the A line (there is nothing to
+   * edit). Both list D8's new START key. */
+  static const char* const kLegendEdit[4] = { "A EDIT", "B SAVE", "SEL SIZE", "START MORE" };
+  static const char* const kLegendView[4] = { "B BACK", "SEL SIZE", "START MORE", 0 };
+  gbscr_set_legend(&gs, can_edit ? kLegendEdit : kLegendView);
+
   int sel = 0;
   bool want_commit = false;
   g1card_paint(&gs, t);
   for (;;) {
-    gbscr_flush(&gs, can_edit ? "A EDIT  B SAVE" : "B BACK");
+    gbscr_flush(&gs, 0);   /* legend_extra is ignored once gbscr_set_legend() ran */
 
     int cx, cy, cw, ch;
     g1card_sel_rect(sel, &cx, &cy, &cw, &ch);
@@ -807,8 +817,18 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
     gbscr_cell_rect(cx, cy, cw, ch, &px0, &py0, &px1, &py1);
     m3_frame(px0, py0, px1, py1, GBCARD_CSEL);
 
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_SELECT);
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_SELECT | KEY_START);
     if (k & KEY_SELECT) { gbscr_toggle_scale(&gs); continue; }   /* shell owns this */
+    /* D8 (review): START reaches the full Gen-1 row list (ID No./COINS/the
+     * back page -- gbtr_build_rows()'s complete field set) that this card
+     * front does not show; the plain page is the one that already has all
+     * of it. Regardless of can_edit -- a read-only visit can still WANT to
+     * see the fields this card leaves off. */
+    if (k & KEY_START) {
+      gbscr_close(&gs);
+      gb12_arena_tail_release();
+      return pdna_gbtrainer_plain(t, true, can_edit, 0);
+    }
     if (k & KEY_B) { want_commit = true; break; }
     if (!can_edit) continue;
 
