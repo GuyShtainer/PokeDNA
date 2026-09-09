@@ -1912,8 +1912,19 @@ _Static_assert(GB12_ARENA_NEED_IMG <= APP_ARENA_BYTES,
  * (GB12_ARENA_NEED, above) has no Gb12Edit at all and this function correctly
  * refuses for). No allocation, no assert, no side effect -- a NULL return is an
  * ordinary "not available right now", same posture as app_arena_acquire() itself. */
+/* U2b review item 0b: gb12_arena_tail() used to be a bare pointer -- any two
+ * callers in the same visit (the shell's own cache AND, say, a future second
+ * consumer) could unknowingly overlap the SAME bytes. One slice at a time: a
+ * caller takes the tail, uses it for the whole time it is "open" (the shell +
+ * U2c's own player-pic decode share ONE slice, taken once), then releases it
+ * explicitly. Cleared beside EVERY `g_ed = 0` (pdna_gen12.c's own two sites)
+ * so a stale `true` from a previous session's arena block can never survive
+ * into a new one that never itself called the release fn. */
+static bool g_tail_lent = false;
+
 uint8_t* gb12_arena_tail(uint32_t need) {
   if (!g_ed) return NULL;
+  if (g_tail_lent) return NULL;          /* already out on loan this visit    */
   if (GB12_ARENA_NEED_IMG > (uint32_t)APP_ARENA_BYTES) return NULL;   /* belt: the
                                             * _Static_assert above already forbids this
                                             * at compile time, but a caller must never
@@ -1921,7 +1932,15 @@ uint8_t* gb12_arena_tail(uint32_t need) {
                                             * wrap if that ever regressed */
   uint32_t slack = (uint32_t)APP_ARENA_BYTES - (uint32_t)GB12_ARENA_NEED_IMG;
   if (need > slack) return NULL;
+  g_tail_lent = true;
   return (uint8_t*)g_ed + GB12_A4(sizeof(Gb12Edit));
+}
+
+/* U2b review item 0b: give the slice back. Safe to call even when nothing was
+ * ever lent (a plain no-op) -- same "no assert, no side effect on a mismatched
+ * call" posture as app_arena_release() itself. */
+void gb12_arena_tail_release(void) {
+  g_tail_lent = false;
 }
 
 /* S2/S3/S5-B: the resident-image edit pipeline's hooks, registered as one const struct
@@ -2727,6 +2746,7 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
    * (Gen 2 first, then Gen 1); the mount just succeeded on the same image, so a refusal
    * here is news worth logging — and the session simply stays read-only. */
   g_ed = 0;
+  g_tail_lent = false;      /* U2b review 0b: a fresh visit never starts on loan */
   if (pristine && path) {
     memcpy(pristine, img, len);
     GbsStatus st = gbs_open(&ed->s, img, len, ed->scratch, sizeof ed->scratch);
@@ -2752,6 +2772,9 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
   gb_session_core(m);
 
   g_ed = 0;                                       /* the arena block is about to go */
+  g_tail_lent = false;      /* U2b review 0b: the whole block goes away next line anyway,
+                              * but a caller that checks the flag before that must see it
+                              * cleared, not stale-true from this visit */
   app_arena_release();
   return GB12_ENTER_OK;
 }
