@@ -43,27 +43,64 @@
  * app_arena_acquire() standalone -- see gbscr_open()'s own doc comment).
  *
  * MEASURED (arm-none-eabi-gcc -mcpu=arm7tdmi -mtune=arm7tdmi -O2 -mthumb-interwork
- * -mthumb -fstack-usage -c source/pdna_gbscreen.c, 2026-09-09, U2b item 1):
- * own-frame sizes (bytes) -- gbscr_mark_all_dirty 8, gbscr_cell 16,
- * gbscr_text 56, gbscr_raw 48, gbscr_toggle_scale 8, gbscr_block_bytes 0,
- * gbscr_block_off 0, gbscr_mem_read 40, gbscr_sd_read 24, gbscr_cache_block 16,
- * gbscr_open 40, gbscr_open_inner 1576 (DOWN from 3,624 pre-item-1: the
- * 2,048-B scan scratch and the 128-B rom_path buffer are both gone from this
- * frame -- scratch is now the first 2,048 B of the caller's `tail`, reused
- * afterward for the tile cache, and GbScreen no longer stores a path at all),
- * gbscr_close 8 -- but its CHAIN is now 4,240 B (app_cfg_save -> cfg_save 2,088 ->
- * sf_write_verified -> file_matches -> FatFs -> ed_sd_dma_to_rom); it runs one
- * frame ABOVE gbscr_open_inner, so the OPEN gate's guarantee covers it; a screen
- * that calls gbscr_persist_mode() from a DEEPER frame must gate it itself --
- * gbscr_flush 8 (gcc splits the real body into a separate
- * gbscr_flush.part.0, 344 -- DOWN from 952: no more FIL/fused-slice locals in
- * this function), gbscr_run_demo 944 (down from 1,016: no more local
- * scratch/loc-cache locals of its own -- app_arena_acquire()'s tail buffer
- * replaces them). sizeof(GbScreen) = 904 B (RomGbUi 80 + GbscrCache 56 + map 360 + src 360 +
- * dirty 45 + 3), the SAME for the SD and delta
- * builds now (no more #ifdef PDNA_DELTA branch in the struct) -- GbScreen
- * itself lives on the CALLER's own frame (gbscr_run_demo's 944 B above, or
- * U2b's real card screen's), OUTSIDE the gate; it is never counted in
+ * -mthumb -fstack-usage, 2026-09-09, U2c 2nd re-verify D3 fix): the SD/artless
+ * and delta builds compile pdna_gbscreen.c/pdna_gbtrainer.c under DIFFERENT
+ * flags (artless: -DPDNA_STREAM_SPRITES + the PDNA_ARTLESS art gates, real
+ * FIL-backed I/O in gbscr_open_inner; delta: -DPDNA_DELTA, fused-save reads,
+ * no FIL at all) and that changes several frames enough to need BOTH numbers,
+ * not one shared figure -- the table below replaces the old single-column
+ * write-up (which was already stale: it undercounted GbScreen and quoted a
+ * since-superseded PDNA_GB_UI_NEED derivation).
+ *
+ *   own-frame size (bytes)      SD/artless   delta
+ *   gbscr_open                  40           40
+ *   gbscr_open_inner            1,656        128     (SD keeps the FIL +
+ *                                                      f_open/f_read locals;
+ *                                                      delta reads straight
+ *                                                      out of the fused slice)
+ *   gbscr_close                 8            8
+ *   gbscr_flush                 8            8
+ *   gbscr_flush.part.0          448          448     (gcc splits the real
+ *                                                      body out; identical --
+ *                                                      no FIL on this path in
+ *                                                      either build)
+ *   gbscr_run_demo               1,008        1,008   (unchanged by D1/D2 --
+ *                                                      no gbscr_set_legend()
+ *                                                      call, see its own doc)
+ *   gbscr_decode_pic_gen1        768          56      (SD's tile-cache locals
+ *                                                      vs delta's direct
+ *                                                      fused-slice read)
+ *   pdna_gbtrainer_gen1_card     1,056        1,056   (DOWN from a pre-D2
+ *                                                      1,144: D2 removed the
+ *                                                      local `char hdr[96]` +
+ *                                                      its sniprintf() call --
+ *                                                      the header/reason split
+ *                                                      is now two `const
+ *                                                      char*` args, no local
+ *                                                      buffer at all)
+ *   pdna_gbtrainer               472          472     (unchanged by D1/D2)
+ *   pdna_gbtrainer_plain         120          120     (gbtr_plain_render
+ *                                                      inlines into this; the
+ *                                                      D2 header2/row_y0 locals
+ *                                                      add 2 ints, no measurable
+ *                                                      change at this frame)
+ *
+ * Every other pure-half function (gbscr_cell 16, gbscr_text 56, gbscr_raw 56,
+ * gbscr_mark_all_dirty 8, gbscr_toggle_scale 8, gbscr_mem_read 40,
+ * gbscr_cache_plan 32, gbscr_tail_need 20, gbscr_pack_pic 88,
+ * gbscr_unpack_pic_px 8, gbscr_cell_rect 16, gbscr_persist_mode 8,
+ * gbscr_set_legend 0) is identical between the two builds and stays under
+ * 90 B -- not gated, not worth its own table row.
+ *
+ * sizeof(GbScreen) = 964 B (RomGbUi 120 + GbscrCache 60 + map 360 + src 360 +
+ * dirty 45 + gen/ok/scale_dirty 3, no padding before legend[4] since the
+ * struct is already 4-byte aligned at that offset + legend[4] 16 B), SAME for
+ * the SD and delta builds (no #ifdef PDNA_DELTA branch in the struct) --
+ * measured directly (arm-none-eabi-nm -S on a probe translation unit), not
+ * hand-added, and it grew by 60 B from the previously documented 904: the D1
+ * fix's `legend[4]` field (this header, above) is the whole delta. GbScreen
+ * itself lives on the CALLER's own frame (gbscr_run_demo's 1,008 B above, or
+ * a real card screen's), OUTSIDE the gate; it is never counted in
  * PDNA_GB_UI_NEED.
  *
  * D1 fix (U2a review): the stack-room gate used to live INSIDE gbscr_open()'s
@@ -74,20 +111,41 @@
  * (static, noinline); `gbscr_open()` is a thin (40-B) wrapper that checks
  * pdna_origin_art_stack_room(PDNA_GB_UI_NEED) BEFORE calling it, so the gate
  * now runs before gbscr_open_inner()'s frame is ever allocated. PDNA_GB_
- * UI_NEED (rom_gbui.h) is measured from gbscr_open_inner()'s OWN entry down --
- * 1,576 (this frame, U2b item 1's re-measurement) + 2,840 (rom_gbui_open_loc's
- * own worst nested chain, rom_gbui.h's own measurement, UNCHANGED by item 1)
- * = 4,416 (taken as measured, NOT rounded up -- see rom_gbui.h's own note for
- * why) -- NOT gbscr_run_demo's 944 B on top (a different caller, e.g. U2b's
- * real card screen, will have a different frame of its own; the gate is
- * caller-independent by design, exactly like PDNA_GB_FETCH_NEED/
- * PDNA_GB_ICON_NEED are each measured per-rung rather than accumulated across
- * every possible caller). gbscr_cache_block()'s own chain (16 + its GbReadFn,
- * <=24 B) runs AFTER rom_gbui_open_loc() returns, never nested inside it, so
- * it does not add to the gate either.
+ * UI_NEED (rom_gbui.h) is derived from the SD/artless numbers above (the
+ * TIGHT build -- delta's smaller gbscr_open_inner/gbscr_decode_pic_gen1
+ * frames are never the binding case, so the gate is sized for the build that
+ * actually needs it): rom_gbui.h's own comment currently states 5,400 as the
+ * measured total (gbscr_open_inner's SD frame + rom_gbui_open_loc's own
+ * worst chain + the indirect SD-read leg, taken as measured, not rounded up
+ * -- see that header's own note; unaffected by this slice, since neither D1
+ * nor D2 touches rom_gbui.c or gbscr_open_inner's own body).
+ *
+ * Nav-chain margin (U2c's real call path into this gate, freshly re-walked
+ * this pass with -fstack-usage on pdna_gen12.c/pdna_gbtrainer.c, SD/artless
+ * build): pdna_gen12_show_image 80 -> gb_session_core.part.0 160
+ * (gb_nav_from_start inlines into it) -> pdna_gbtrainer 472 ->
+ * pdna_gbtrainer_gen1_card 1,056 -> gbscr_open 40 = 1,808 B from that entry
+ * point down to the gate call. The OUTER frames above pdna_gen12_show_image
+ * (pdna_main.c's own
+ * nav-menu dispatch chain) were NOT re-measured this pass -- pdna_main.c is
+ * outside this slice's touched files and is 446 KB, so re-walking it end to
+ * end is its own task, not a one-line recompute; a prior pass had put that
+ * outer chain at roughly 2,368 B, which this pass did not re-verify and is
+ * NOT asserted here. What IS verified: D2's hdr[96]+sniprintf removal made
+ * pdna_gbtrainer_gen1_card's own frame 88 B SMALLER (1,144 -> 1,056) than
+ * whatever number an earlier pass measured, so this slice can only have
+ * INCREASED the real margin at the gate, never shrunk it -- D1 added no new
+ * per-call stack (kGbscrLegendKeys/kGbscrBaseActions are `static const`, data
+ * segment, not stack) and D2's `header2`/`row_y0`/`hline_y` are a handful of
+ * extra int locals inside pdna_gbtrainer_plain (120 B total, unaffected per
+ * the table above) -- neither touches the gen1_card/gbscr_open chain in the
+ * direction that would matter (growing it).
+ * gbscr_cache_block()'s own chain (16 + its GbReadFn, <=24 B) runs AFTER
+ * rom_gbui_open_loc() returns, never nested inside it, so it does not add to
+ * the gate either.
  * gbscr_flush() carries no separate gate -- it never calls
  * pdna_origin_art_stack_room() -- because its own reachable chain
- * (gbscr_flush.part.0's 344 B, plus rom_gbui_tile()/glyph()'s own small
+ * (gbscr_flush.part.0's 448 B, plus rom_gbui_tile()/glyph()'s own small
  * per-tile-fetch frames and gbscr_mem_read()'s 40 B, no locate()/
  * distinct_tiles() on that path, no SD/FIL access at all any more) is
  * comfortably smaller and the design (sec 3.4/R9) only requires gating the
