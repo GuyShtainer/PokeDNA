@@ -2516,7 +2516,6 @@ static void gb_session_core(Gb12Mount* m) {
    * open the Gen-3 ROM wallpaper rung (artless builds only, no-op if already open)
    * so the box grid below can stream the real wallpaper instead of the procedural
    * grass when a Gen-3 ROM is fused/registered. See app_gb_wallpaper_rom_open(). */
-  app_gb_wallpaper_rom_open();
   /* Tell app_mon_menu that the ACTIVE box source is read-only, so its destructive
    * actions (PASTE / DUPLICATE / CREATE) are not offered on a source that cannot
    * accept them. This also suppresses the bank's deferred-delete bookkeeping for these
@@ -2529,6 +2528,9 @@ static void gb_session_core(Gb12Mount* m) {
    * twin so VIEW and (lossless) COPY still work with no GbSession to write through. */
   app_src_ops_set(g_ed ? &k_gb_ops : &k_gb_ops_ro);  /* S2/S3: EDIT / MOVE TO / RELEASE */
   BoxSource s = pdna_gen12_source(m);
+  /* #77 (review, 2026-09-09): AFTER pdna_gen12_source() sets g_m, so app_save_kind()
+   * reports GEN1/GEN2 when app_icon_rom_open()'s kind check runs. */
+  app_gb_wallpaper_rom_open();
   /* BACKLOG #53a: this session's box grid is a RAW Game Boy save's OWN box -- unlike a
    * Gen-3 save's PC/BANK, every occupied, non-egg cell here genuinely IS m->kind's
    * generation, no signature needed. Tell the cell cache so (era_cell_mark/box_gb/
