@@ -315,10 +315,16 @@ void gbscr_cell(GbScreen* gs, int x, int y, GbScrSrc src, uint8_t tile);
 void gbscr_text(GbScreen* gs, int x, int y, const char* ascii);
 
 /* Names already stored in GB encoding (gb_trainer's name_raw) go straight in, one
- * byte per cell, no ASCII step -- same 0x7F-is-blank rule as gbscr_text(). Stops
- * at `n` bytes (the caller's own field width); does NOT stop at the 0x50
- * terminator (a raw name field is exactly `n` bytes on a real cartridge, callers
- * that need to stop early should pass the trimmed length). */
+ * byte per cell, no ASCII step -- same 0x7F-is-blank rule as gbscr_text(). Paints
+ * exactly `n` cells (the caller's own field width) -- but once it sees the 0x50
+ * terminator, or any other byte that is not a real font tile (every real GB
+ * font tile is 0x7F or >= 0x80; the terminator and every other control byte is
+ * < 0x80 and != 0x7F), that byte AND every byte after it paint BLANK instead of
+ * whatever value they actually hold. This clears stale tail bytes left over
+ * from a longer PREVIOUS name on a shorter repaint (PlaceString itself stops
+ * at 0x50 and never touches the tail, so on real hardware a shorter new name
+ * only looks right because VRAM was already blank there once; this shell
+ * reuses cells across repaints and must blank the tail itself). */
 void gbscr_raw(GbScreen* gs, int x, int y, const uint8_t* bytes, int n);
 
 /* Mark every cell dirty (a full repaint) -- used after gbscr_toggle_scale() and

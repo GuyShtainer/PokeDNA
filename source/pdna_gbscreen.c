@@ -132,12 +132,23 @@ void gbscr_text(GbScreen* gs, int x, int y, const char* ascii) {
   }
 }
 
+/* D2 (review): 0x50 is the GB text terminator (PlaceString stops there) --
+ * this shell used to blit every byte in `bytes` regardless, so a shorter new
+ * name left old tail bytes from a longer previous name on screen ("ASH" +
+ * 0x50 + stale "JACK" tail read as "ASH<blank>JAC"). Once the terminator (or
+ * any other byte that is not a real font tile, i.e. < 0x80 and not 0x7F) is
+ * seen, every remaining byte -- including the terminator itself -- paints
+ * BLANK, so the field is fully cleared on repaint instead of only up to the
+ * terminator. */
 void gbscr_raw(GbScreen* gs, int x, int y, const uint8_t* bytes, int n) {
   if (!gs || !gs->ok || !bytes) return;
+  bool blank_tail = false;
   for (int i = 0; i < n; i++) {
     int cx = x + i;
     if (cx >= GBSCR_COLS) break;
-    gbscr_put_byte(gs, cx, y, bytes[i]);
+    uint8_t b = bytes[i];
+    if (!blank_tail && b < 0x80u && b != 0x7Fu) blank_tail = true;
+    gbscr_put_byte(gs, cx, y, blank_tail ? 0x7Fu : b);
   }
 }
 

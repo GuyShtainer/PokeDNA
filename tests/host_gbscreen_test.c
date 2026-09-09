@@ -120,6 +120,37 @@ int main(void) {
     CHECK(gs.src[2] == GBSCR_SRC_FONT && gs.map[2] == 0x81, "raw cell2");
   }
 
+  /* 5b) D2 (review): gbscr_raw blanks the 0x50 terminator AND every byte after
+   * it, so a shorter new name fully erases a longer previous name's tail
+   * instead of leaving stale glyphs on screen ("ASH" + 0x50 + stale "JACK"
+   * used to read as "ASH<blank>JAC"). */
+  {
+    GbScreen gs = mk();
+    /* "AB" (0x80,0x81) then terminator (0x50) then leftover "JACK" bytes from
+     * a previous, longer name still sitting in the buffer. */
+    uint8_t bytes[7] = { 0x80, 0x81, 0x50, 0x8A, 0x80, 0x82, 0x8A };
+    gbscr_raw(&gs, 0, 0, bytes, 7);
+    CHECK(gs.src[0] == GBSCR_SRC_FONT && gs.map[0] == 0x80, "term cell0 'A'");
+    CHECK(gs.src[1] == GBSCR_SRC_FONT && gs.map[1] == 0x81, "term cell1 'B'");
+    CHECK(gs.src[2] == GBSCR_SRC_BLANK, "term cell2 (0x50 itself -> blank)");
+    CHECK(gs.src[3] == GBSCR_SRC_BLANK, "term cell3 (tail byte -> blank)");
+    CHECK(gs.src[4] == GBSCR_SRC_BLANK, "term cell4 (tail byte -> blank)");
+    CHECK(gs.src[5] == GBSCR_SRC_BLANK, "term cell5 (tail byte -> blank)");
+    CHECK(gs.src[6] == GBSCR_SRC_BLANK, "term cell6 (tail byte -> blank)");
+  }
+
+  /* 5c) D2: no terminator at all (a full 11-byte field with no 0x50) leaves
+   * every byte painted as its own font tile -- the blank-tail rule must not
+   * fire on real content. */
+  {
+    GbScreen gs = mk();
+    uint8_t bytes[3] = { 0x80, 0x81, 0x82 };   /* "ABC", no terminator */
+    gbscr_raw(&gs, 0, 0, bytes, 3);
+    CHECK(gs.src[0] == GBSCR_SRC_FONT && gs.map[0] == 0x80, "noterm cell0");
+    CHECK(gs.src[1] == GBSCR_SRC_FONT && gs.map[1] == 0x81, "noterm cell1");
+    CHECK(gs.src[2] == GBSCR_SRC_FONT && gs.map[2] == 0x82, "noterm cell2");
+  }
+
   /* 3) gbscr_y_dst0/gbscr_y_dst_count (the tables blit_stretched() actually
    * reads): 144 entries, every count in {1,2}, exactly 16 twos, and the
    * (dst0[r], dst0[r]+count[r]) ranges tile destination rows 0..159 with

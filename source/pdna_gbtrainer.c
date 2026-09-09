@@ -588,17 +588,23 @@ static void pdna_gbtrainer_card(GbTrainer* t, bool gen1, bool can_edit,
 enum {
   G1F_BOTTOM = 0, G1F_RIGHT = 1, G1F_UL = 2, G1F_TOP = 3,
   G1F_UR = 4, G1F_LEFT = 5, G1F_BL = 6, G1F_BR = 7,
+  /* D4 (review): the real ROM's TrainerInfo_DrawVerticalLine draws the
+   * screen-background dither pattern for the two side rules between the
+   * upper and lower panel ($d7 = the CARDFRAME block's own index 8 by the
+   * same "block's first tile past the 7 named roles" reading G1F_BOTTOM
+   * uses -- confirmed against the real tilemap capture, celldiff.py) --
+   * NOT a TEXTBOX tile, and not one row tall: it is drawn per source row
+   * for the full 8-row gap (screen rows 10..17). */
+  G1F_BG = 8,
   G1F_CIRCLE = 31,            /* the block's 32nd tile: 9 frame + 22 blank names */
   G1F_BADGENUM0 = 32          /* badge k's number tile = G1F_BADGENUM0 + k       */
 };
 
 /* TEXTBOX block (G1-T, 32 tiles): the design names tile 13 as the ':' colon
- * ("TextBoxGraphics + 13 tiles"). It does not separately name the vertical-
- * rule tile ($d7, TrainerInfo_DrawVerticalLine) by ROM index, only by the
- * adjacent VRAM id ($d7 = $d6 + 1) -- index 14 (one past the colon) is the
- * natural reading and is what this screen uses; same "flag for the shot
- * comparison" caveat as G1F_BOTTOM above. */
-enum { G1T_COLON = 13, G1T_VRULE = 14 };
+ * ("TextBoxGraphics + 13 tiles"). G1T_VRULE (index 14, "one past the colon")
+ * was this screen's own guess at the side-rule tile before the real tilemap
+ * capture -- wrong (see G1F_BG above) and now unused; deleted. */
+enum { G1T_COLON = 13 };
 
 /* Cursor slots, in UP/DOWN cycle order: NAME, MONEY, TIME, then the 8 badges
  * row-major (0-3 top row, 4-7 bottom row) -- matches the card's own on-screen
@@ -639,33 +645,61 @@ static void g1card_paint(GbScreen* gs, const GbTrainer* t) {
   gbscr_text(gs, 2, 2, "NAME/");
   gbscr_raw(gs, 7, 2, t->name_raw, GB_OT_GLYPHS);
 
+  /* D5 (review): the real PrintBCDNumber call uses LEADING_ZEROES|LEFT_ALIGN
+   * with MONEY_SIGN, which places the sign right before the first
+   * significant digit and prints NO leading zeros (money 0 -> "$0", not
+   * "$000000") -- "$%06lu" was this screen's own wrong guess. Cursor rect
+   * stays the fixed 7-wide field (sel_rect, unchanged); blank the residue
+   * cells past the shorter string so a later edit that SHRINKS the digit
+   * count doesn't leave stale digits from a longer previous value (same
+   * defect class as D2's name-field terminator fix, D6's time fix below). */
   gbscr_text(gs, 2, 4, "MONEY/");
   char buf[16];
-  if (t->money_ok) siprintf(buf, "$%06lu", (unsigned long)t->money);
+  if (t->money_ok) siprintf(buf, "$%lu", (unsigned long)t->money);
   else             siprintf(buf, "?");
   gbscr_text(gs, 8, 4, buf);
+  for (int cx = 8 + (int)strlen(buf); cx < 15; cx++) gbscr_cell(gs, cx, 4, GBSCR_SRC_BLANK, 0);
 
+  /* D6 (review): the real screen left-aligns hours and writes the colon
+   * wherever it lands (no fixed col-12 colon, no zero/space-padded hours) --
+   * this screen's own "%3u" + fixed-column colon was wrong. Blank the
+   * residue out to column 14 (the field's own max width, sel_rect w=6 from
+   * x=9) so a later edit that shrinks the hour count doesn't leave a stale
+   * colon or stale minute digits behind. */
   gbscr_text(gs, 2, 6, "TIME/");
-  siprintf(buf, "%3u", (unsigned)t->playtime.hours);
+  int hw = siprintf(buf, "%u", (unsigned)t->playtime.hours);
   gbscr_text(gs, 9, 6, buf);
-  gbscr_cell(gs, 12, 6, GBSCR_SRC_TEXTBOX, G1T_COLON);
+  gbscr_cell(gs, 9 + hw, 6, GBSCR_SRC_TEXTBOX, G1T_COLON);
   siprintf(buf, "%02u", (unsigned)t->playtime.minutes);
-  gbscr_text(gs, 13, 6, buf);
+  gbscr_text(gs, 10 + hw, 6, buf);
+  for (int cx = 12 + hw; cx <= 14; cx++) gbscr_cell(gs, cx, 6, GBSCR_SRC_BLANK, 0);
 
-  /* Player pic: the LEFT 5 tile columns only (design's own "the game erases
-   * columns 6-7" rule) -- tile index = row-major over the FULL 7x7 decode
-   * (ty*7+tx), even though only tx 0..4 are ever painted, matching
-   * gbscr_decode_pic_gen1()'s own packing order. */
-  for (int ty = 0; ty < 7; ty++)
-    for (int tx = 0; tx < 5; tx++)
+  /* D1 (review): the real game draws the pic BEFORE the text box, so the
+   * lower-right corner of the upper panel's own border overwrites pic
+   * column 5 (screen col 20, off-map -- N/A here) and pic row 7 (screen row
+   * 7, the panel's bottom border) -- net visible area is 4 tile COLUMNS x 6
+   * ROWS (tx 0..3, ty 0..5), not the previously-drawn 5x7. Tile index is
+   * still row-major over the FULL 7x7 decode (ty*7+tx), matching
+   * gbscr_decode_pic_gen1()'s own packing order -- only the painted subrange
+   * shrank. */
+  for (int ty = 0; ty < 6; ty++)
+    for (int tx = 0; tx < 4; tx++)
       gbscr_cell(gs, 15 + tx, 1 + ty, GBSCR_SRC_PIC, (uint8_t)(ty * 7 + tx));
 
   gbscr_cell(gs, 6, 9, GBSCR_SRC_CARDFRAME, G1F_CIRCLE);
   gbscr_text(gs, 7, 9, "BADGES");
-  gbscr_cell(gs, 14, 9, GBSCR_SRC_CARDFRAME, G1F_CIRCLE);
+  /* D3 (review): the right BADGES circle is at column 13, not 14 (confirmed
+   * against the real tilemap capture). */
+  gbscr_cell(gs, 13, 9, GBSCR_SRC_CARDFRAME, G1F_CIRCLE);
 
-  gbscr_cell(gs, 0, 10, GBSCR_SRC_TEXTBOX, G1T_VRULE);
-  gbscr_cell(gs, 19, 10, GBSCR_SRC_TEXTBOX, G1T_VRULE);
+  /* D4 (review): the two side rules between the panels are the
+   * screen-background dither (CARDFRAME index G1F_BG), drawn per row for the
+   * full 8-row gap (screen rows 10..17) at columns 0 and 19 -- not a single
+   * TEXTBOX tile on row 10. */
+  for (int ry = 10; ry <= 17; ry++) {
+    gbscr_cell(gs, 0, ry, GBSCR_SRC_CARDFRAME, G1F_BG);
+    gbscr_cell(gs, 19, ry, GBSCR_SRC_CARDFRAME, G1F_BG);
+  }
 
   g1card_panel(gs, 1, 10, 18, 17);                      /* lower panel */
 
