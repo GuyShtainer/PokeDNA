@@ -297,9 +297,14 @@ _STABLE_WINDOW = 15    # a candidate crop must persist this many frames (3 sampl
 # The left-panel "currently selected mon" portrait, in screen pixels (240x160) -- the
 # ONE region gb_art_fetch()'s cold scan (BACKLOG #62/#68b) actually gates on Red.sav:
 # the box grid's own small cell icons come from a separate, always-cheap source and
-# paint immediately regardless of this backlog item. Measured empirically (BACKLOG
-# #68b evidence run, 2026-09): on the SLOWER (--no-loc) build the box grid's shell
-# paints almost immediately but this rectangle shows a "loading" checkerboard
+# are not gated by this backlog item -- but they paint on their OWN schedule, not
+# immediately: measured empirically (BACKLOG #68b review D2), the icon cell is blank
+# through frame 10, starts painting by frame 15, and is stable by frame 30, on both
+# the LOC-seeded and --no-loc builds alike. With the LOC seed's ~10-20-frame portrait
+# time, the portrait can appear BEFORE the box-grid icon finishes painting -- the two
+# are independent races, not "icon first, portrait second". Measured empirically
+# (BACKLOG #68b evidence run, 2026-09): on the SLOWER (--no-loc) build the box grid's
+# shell paints almost immediately but this rectangle shows a "loading" checkerboard
 # placeholder (colours (231,231,247)/(189,189,206)) for >14,000 frames before the
 # real 4-shade Game Boy portrait replaces it; on the faster (default, LOC-seeded)
 # build this same rectangle already shows the real portrait within ~20 frames, with
