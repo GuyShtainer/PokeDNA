@@ -419,7 +419,11 @@ static int try_pack(const Scan* s, uint32_t hit, uint32_t* out) {
 
 /* --------------------------------------------------------------- locate() */
 
-typedef struct { uint32_t off[ROM_GBUI_OFF_COUNT]; uint8_t gen, playerpic_bank, cardpic_colmajor; } LocResult;
+typedef struct {
+  uint32_t off[ROM_GBUI_OFF_COUNT];
+  uint32_t anchor[ROM_GBUI_ANCH_COUNT];
+  uint8_t  gen, playerpic_bank, cardpic_colmajor;
+} LocResult;
 
 static int locate(const Scan* s, LocResult* r) {
   memset(r, 0, sizeof *r);
@@ -475,11 +479,11 @@ static int locate(const Scan* s, LocResult* r) {
     if (!try_badges(s, jobs[J_G1_BADGES].off[0], &badges)) break;
 
     if (jobs[J_G1_PLAYERPIC].n == 0 || jobs[J_G1_PLAYERPIC].n > SCAN_PLAYERPIC_CAP) break;
-    uint32_t pp = 0, pp_found = 0; uint8_t pp_bank = 0;
+    uint32_t pp = 0, pp_found = 0, pp_anchor = 0; uint8_t pp_bank = 0;
     for (uint32_t i = 0; i < jobs[J_G1_PLAYERPIC].n; i++) {
       uint32_t cand; uint8_t bk;
       if (try_playerpic(s, jobs[J_G1_PLAYERPIC].off[i], &cand, &bk)) {
-        pp_found++; pp = cand; pp_bank = bk;
+        pp_found++; pp = cand; pp_bank = bk; pp_anchor = jobs[J_G1_PLAYERPIC].off[i];
       }
     }
     if (pp_found != 1) break;
@@ -490,6 +494,11 @@ static int locate(const Scan* s, LocResult* r) {
     r->off[ROM_GBUI_OFF_BADGES] = badges;
     r->off[ROM_GBUI_OFF_PLAYERPIC] = pp;
     r->playerpic_bank = pp_bank;
+    r->anchor[ROM_GBUI_ANCH_FONT] = jobs[J_G1_FONT].off[0];
+    r->anchor[ROM_GBUI_ANCH_TEXTBOX] = jobs[J_G1_TEXTBOX].off[0];
+    r->anchor[ROM_GBUI_ANCH_CARDFRAME] = jobs[J_G1_CARDFRAME].off[0];
+    r->anchor[ROM_GBUI_ANCH_BADGES] = jobs[J_G1_BADGES].off[0];
+    r->anchor[ROM_GBUI_ANCH_PLAYERPIC] = pp_anchor;
     r->gen = ROM_GBUI_GEN1;
     return 1;
   } while (0);
@@ -516,15 +525,17 @@ static int locate(const Scan* s, LocResult* r) {
   if (distinct_tiles(s, h0.badges, 2, 44) != 44) return 0;
   if (distinct_tiles(s, h0.leaders, 2, 86) < 63) return 0;
 
-  uint32_t cardpic_m = 0, cardpic_f = 0, cardgfx = 0;
+  uint32_t cardpic_m = 0, cardpic_f = 0, cardgfx = 0, cardpic_anchor = 0;
   int is_crystal_shaped = 0;
   if (jobs[J_G2_CARDPIC_CM].n == 1 &&
       try_cardpic_crystal(s, jobs[J_G2_CARDPIC_CM].off[0], &cardpic_m, &cardpic_f, &cardgfx)) {
     is_crystal_shaped = 1;
+    cardpic_anchor = jobs[J_G2_CARDPIC_CM].off[0];
   } else if (jobs[J_G2_CARDPIC_GOLD].n == 1 &&
              try_cardpic_gold(s, jobs[J_G2_CARDPIC_GOLD].off[0], &cardpic_m)) {
     cardgfx = cardpic_m + 35 * 16;
     cardpic_f = 0;
+    cardpic_anchor = jobs[J_G2_CARDPIC_GOLD].off[0];
   } else {
     return 0;
   }
@@ -550,6 +561,11 @@ static int locate(const Scan* s, LocResult* r) {
   r->off[ROM_GBUI_OFF_PACK_M] = pack_m;
   r->off[ROM_GBUI_OFF_PACK_F] = pack_f;
   r->cardpic_colmajor = (uint8_t)is_crystal_shaped;
+  r->anchor[ROM_GBUI_ANCH_FRAMES] = jobs[J_G2_FRAME].off[0];
+  r->anchor[ROM_GBUI_ANCH_BADGELEADER] = jobs[J_G2_BADGELEADER].off[0];
+  r->anchor[ROM_GBUI_ANCH_CARDPIC] = cardpic_anchor;
+  r->anchor[ROM_GBUI_ANCH_PACK_M] = jobs[J_G2_PACK].off[0];
+  r->anchor[ROM_GBUI_ANCH_PACK_F] = is_crystal_shaped ? jobs[J_G2_PACK].off[1] : 0u;
   r->gen = ROM_GBUI_GEN2;
   return 1;
 }
@@ -573,6 +589,7 @@ static void fill_from_result(RomGbUi* gu, const LocResult* r) {
   gu->pack_f      = r->off[ROM_GBUI_OFF_PACK_F];
   gu->playerpic_bank = r->playerpic_bank;
   gu->cardpic_colmajor = r->cardpic_colmajor;
+  memcpy(gu->anchor, r->anchor, sizeof gu->anchor);
 }
 
 int rom_gbui_open(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
@@ -597,15 +614,23 @@ int rom_gbui_open(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
   return 1;
 }
 
-/* FNV-1a over a RomGbUiLoc's off[] array (little-endian byte order), so a
- * single corrupted cached offset -- even one that still slides past its own
- * field's structural re-verification (font+16 still looks like a font) --
- * is caught before any offset from the cache is trusted. */
-static uint32_t loc_off_check(const uint32_t off[13]) {
+/* FNV-1a over a RomGbUiLoc's off[] array THEN its anchor[] array (little-
+ * endian byte order), so a single corrupted cached offset OR a single
+ * corrupted cached anchor -- even one that still slides past its own field's
+ * structural re-verification (font+16 still looks like a font) -- is caught
+ * before any offset from the cache is trusted. anchor[] alone is what makes
+ * revalidate_loc() EXACT rather than statistical (BACKLOG #71): see the
+ * struct's own comment in rom_gbui.h. */
+static uint32_t loc_check(const uint32_t off[13], const uint32_t anchor[ROM_GBUI_ANCH_COUNT]) {
   uint32_t h = 0x811C9DC5u;
   for (uint32_t i = 0; i < 13; i++) {
     uint8_t b[4] = { (uint8_t)off[i], (uint8_t)(off[i] >> 8),
                       (uint8_t)(off[i] >> 16), (uint8_t)(off[i] >> 24) };
+    h = fnv1a(b, 4, h);
+  }
+  for (uint32_t i = 0; i < ROM_GBUI_ANCH_COUNT; i++) {
+    uint8_t b[4] = { (uint8_t)anchor[i], (uint8_t)(anchor[i] >> 8),
+                      (uint8_t)(anchor[i] >> 16), (uint8_t)(anchor[i] >> 24) };
     h = fnv1a(b, 4, h);
   }
   return h;
@@ -630,17 +655,139 @@ void rom_gbui_save_loc(const RomGbUi* gu, RomGbUiLoc* out) {
   out->off[ROM_GBUI_OFF_CARDGFX]   = gu->cardgfx;
   out->off[ROM_GBUI_OFF_PACK_M]    = gu->pack_m;
   out->off[ROM_GBUI_OFF_PACK_F]    = gu->pack_f;
-  out->check = loc_off_check(out->off);
+  memcpy(out->anchor, gu->anchor, sizeof out->anchor);
+  out->check = loc_check(out->off, out->anchor);
 }
 
-/* Re-validate a cached loc against THIS ROM without a full rescan. Every
- * field gets the same structural verifier locate() itself used wherever one
- * exists (font/textbox/cardframe/badges/leaders/frames/fontextra/playerpic);
- * cardgfx/pack_m/pack_f have no strong shape of their own once separated
- * from their locating signature, so they get a bounds check plus (for the
- * gendered pair) the one relation that IS still checkable from the cached
- * offsets alone (cardpic_f - cardpic_m == 0x230). Anything that fails falls
- * back to rom_gbui_open()'s full scan -- never a partial accept. */
+/* ------------------------------------------------- anchor re-derivation */
+/* BACKLOG #71. Each of these re-reads a SHORT, FIXED-SIZE run at the cached
+ * ANCHOR file offset (never the block itself), confirms it is still
+ * byte-for-byte the same ScanCb signature locate() originally matched there,
+ * decodes the exact same address/bank operand(s) the matching try_*()
+ * function decodes, and rejects unless that recomputation lands EXACTLY on
+ * the cached block offset -- never a plausibility check on the block's own
+ * bytes (font_verify/distinct_tiles below still do that separately, as a
+ * second, independent layer). A corrupted off[] with a recomputed `check`
+ * cannot pass these: the ROM's own code bytes would have to independently
+ * agree with the corruption, which means forging the cartridge, not the
+ * cache record. One short read per call (the signature's own `look` bytes,
+ * <= 33 B) -- see the header's cost note for the per-open() total. */
+
+static int anchor_addr_bank(const Scan* s, ScanCb cb, uint32_t look,
+                            uint32_t anchor, uint32_t addr_off, uint32_t bank_off,
+                            uint32_t expect) {
+  uint8_t w[40];
+  if (look > sizeof w) return 0;
+  if (anchor + look > s->size) return 0;
+  if (!rd(s, anchor, w, look)) return 0;
+  if (!cb(w)) return 0;
+  uint16_t addr = rd16(w + addr_off);
+  uint8_t bank = w[bank_off];
+  return fileoff(bank, addr) == expect;
+}
+
+/* G1-C: the card-frame's bank is chosen at SCAN time by a uniqueness sweep
+ * across every bank, not encoded in the opcode -- but off = bank*0x4000 +
+ * (addr-0x4000) is a bijection for a fixed addr, so the bank is exactly
+ * RECOVERABLE from the cached off and the freshly-read addr, then
+ * re-verified with the identical fileoff() math locate() used. No sweep
+ * needed at revalidation time at all (cheaper than the original scan). */
+static int anchor_cardframe(const Scan* s, uint32_t anchor, uint32_t expect) {
+  uint8_t w[33];
+  if (anchor + 33 > s->size) return 0;
+  if (!rd(s, anchor, w, 33)) return 0;
+  if (!g1_cardframe_cb(w)) return 0;
+  uint16_t addr = rd16(w + 1);
+  if (addr < GB_WIN_LO) return 0;
+  uint32_t rel = expect + GB_WIN_LO;
+  if (rel < addr) return 0;
+  rel -= addr;
+  if (rel % GB_BANK) return 0;
+  uint32_t bank = rel / GB_BANK;
+  if (bank >= 256u) return 0;
+  return fileoff((uint8_t)bank, addr) == expect;
+}
+
+/* G1-B: the anchor IS the 8-byte .FaceBadgeTiles data table itself (a data
+ * signature, not a code one -- see g1_badges_cb); badges = anchor+8 exactly. */
+static int anchor_g1_badges(const Scan* s, uint32_t anchor, uint32_t expect) {
+  uint8_t w[8];
+  if (anchor + 8 > s->size) return 0;
+  if (!rd(s, anchor, w, 8)) return 0;
+  if (!g1_badges_cb(w)) return 0;
+  return anchor + 8 == expect;
+}
+
+/* G2-B/L: TrainerCard_Page2_LoadGFX's own (page-2) call site derives BOTH
+ * leaders and badges from the ONE stored anchor -- the page-3 INCBIN's
+ * byte-identity was a scan-time disambiguation rule (locate() needed it to
+ * pick the canonical hit out of two candidates); once a specific offset is
+ * cached, re-deriving it exactly from its own anchor is the strictly
+ * stronger check, so no second anchor is stored for the page-3 copy. */
+static int anchor_badgeleader(const Scan* s, uint32_t anchor,
+                              uint32_t expect_leaders, uint32_t expect_badges) {
+  uint8_t w[22];
+  if (anchor + 22 > s->size) return 0;
+  if (!rd(s, anchor, w, 22)) return 0;
+  if (!g2_badgeleader_cb(w)) return 0;
+  uint16_t laddr = rd16(w + 1); uint8_t lbank = w[8];
+  uint16_t baddr = rd16(w + 13); uint8_t bbank = w[20];
+  if (fileoff(lbank, laddr) != expect_leaders) return 0;
+  if (fileoff(bbank, baddr) != expect_badges) return 0;
+  return 1;
+}
+
+/* G2-P: GetCardPic (Crystal, colmajor) or Gold's own loader -- `crystal`
+ * picks which signature/layout to re-check, exactly as locate() picked
+ * which job matched (RomGbUiLoc has no separate flag for this: cardpic_f!=0
+ * iff Crystal-shaped, the same rule rom_gbui_open_loc() already uses).
+ * cardgfx and (Crystal only) cardpic_f are re-derived from the SAME anchor,
+ * never a second one -- their addresses live in the same opcode run. */
+static int anchor_cardpic(const Scan* s, uint32_t anchor, int crystal,
+                          uint32_t expect_m, uint32_t expect_f, uint32_t expect_gfx) {
+  if (crystal) {
+    uint8_t w[33];
+    if (anchor + 33 > s->size) return 0;
+    if (!rd(s, anchor, w, 33)) return 0;
+    if (!g2_cardpic_cm_cb(w)) return 0;
+    uint8_t bank = w[20];
+    uint32_t co = fileoff(bank, rd16(w + 1));
+    uint32_t ko = fileoff(bank, rd16(w + 11));
+    uint32_t to = fileoff(bank, rd16(w + 25));
+    return co == expect_m && ko == expect_f && to == expect_gfx;
+  }
+  uint8_t w[26];
+  if (anchor + 26 > s->size) return 0;
+  if (!rd(s, anchor, w, 26)) return 0;
+  if (!g2_cardpic_gold_cb(w)) return 0;
+  uint8_t bank = w[10];
+  uint32_t co = fileoff(bank, rd16(w + 1));
+  return co == expect_m && expect_f == 0 && (co + 35u * 16u) == expect_gfx;
+}
+
+/* G2-K: the anchor IS PackGFXPointers' own file offset -- its bank is
+ * anchor/GB_BANK, the identical relation try_pack() uses at scan time
+ * (never a sweep, never stored separately). */
+static int anchor_pack(const Scan* s, uint32_t anchor, uint32_t expect) {
+  uint8_t w[8];
+  if (anchor + 8 > s->size) return 0;
+  if (!rd(s, anchor, w, 8)) return 0;
+  if (!g2_pack_cb(w)) return 0;
+  uint8_t bank = (uint8_t)(anchor / GB_BANK);
+  uint16_t base = rd16(w + 4);
+  return fileoff(bank, base) == expect;
+}
+
+/* Re-validate a cached loc against THIS ROM without a full rescan. Two
+ * independent layers, BOTH required: (1) anchor re-derivation above --
+ * exact, closes BACKLOG #71's MUT-D5b hole; (2) the same structural
+ * verifier locate() itself used wherever one exists (font_verify/
+ * distinct_tiles/all_blank/any_nonzero), kept as defense in depth against a
+ * signature collision this module hasn't anticipated. Derived fields
+ * (font/fontextra in Gen 2, cardgfx, cardpic_f) are checked for being
+ * EXACTLY what their anchor derives, not merely in-bounds. Anything that
+ * fails falls back to rom_gbui_open()'s full scan -- never a partial
+ * accept. */
 static int revalidate_loc(const Scan* s, const RomGbUiLoc* loc) {
   if (loc->gen == ROM_GBUI_GEN1) {
     uint32_t font = loc->off[ROM_GBUI_OFF_FONT];
@@ -648,6 +795,16 @@ static int revalidate_loc(const Scan* s, const RomGbUiLoc* loc) {
     uint32_t cardframe = loc->off[ROM_GBUI_OFF_CARDFRAME];
     uint32_t badges = loc->off[ROM_GBUI_OFF_BADGES];
     uint32_t pp = loc->off[ROM_GBUI_OFF_PLAYERPIC];
+
+    if (!anchor_addr_bank(s, g1_font_cb, 18, loc->anchor[ROM_GBUI_ANCH_FONT], 7, 16, font))
+      return 0;
+    if (!anchor_addr_bank(s, g1_textbox_cb, 18, loc->anchor[ROM_GBUI_ANCH_TEXTBOX], 7, 16, textbox))
+      return 0;
+    if (!anchor_cardframe(s, loc->anchor[ROM_GBUI_ANCH_CARDFRAME], cardframe)) return 0;
+    if (!anchor_g1_badges(s, loc->anchor[ROM_GBUI_ANCH_BADGES], badges)) return 0;
+    if (!anchor_addr_bank(s, g1_playerpic_cb, 6, loc->anchor[ROM_GBUI_ANCH_PLAYERPIC], 1, 5, pp))
+      return 0;
+
     if (!font_verify(s, font)) return 0;
     if (textbox + 512 > s->size || distinct_tiles(s, textbox, 2, 32) != 32) return 0;
     if (cardframe + 640 > s->size) return 0;
@@ -671,6 +828,28 @@ static int revalidate_loc(const Scan* s, const RomGbUiLoc* loc) {
     uint32_t cardgfx = loc->off[ROM_GBUI_OFF_CARDGFX];
     uint32_t pack_m = loc->off[ROM_GBUI_OFF_PACK_M];
     uint32_t pack_f = loc->off[ROM_GBUI_OFF_PACK_F];
+    int crystal = (cardpic_f != 0);   /* Crystal-shaped iff cardpic_f present */
+
+    if (!anchor_addr_bank(s, g2_frame_cb, 22, loc->anchor[ROM_GBUI_ANCH_FRAMES], 9, 21, frames))
+      return 0;
+    if (frames < 1536u + 512u || frames - 1536u != font) return 0;
+    if (font < 512u || font - 512u != fontextra) return 0;
+    if (!anchor_badgeleader(s, loc->anchor[ROM_GBUI_ANCH_BADGELEADER], leaders, badges))
+      return 0;
+    if (!anchor_cardpic(s, loc->anchor[ROM_GBUI_ANCH_CARDPIC], crystal,
+                        cardpic_m, cardpic_f, cardgfx))
+      return 0;
+    if (!anchor_pack(s, loc->anchor[ROM_GBUI_ANCH_PACK_M], pack_m)) return 0;
+    if (crystal) {
+      /* review D2: both pack anchors are genuine tables, so anchor_pack() alone
+       * would accept pack_f := pack_m or the pair swapped; locate() emits them in
+       * ascending scan order, so a genuine record always has PACK_M < PACK_F. */
+      if (loc->anchor[ROM_GBUI_ANCH_PACK_F] <= loc->anchor[ROM_GBUI_ANCH_PACK_M]) return 0;
+      if (!anchor_pack(s, loc->anchor[ROM_GBUI_ANCH_PACK_F], pack_f)) return 0;
+    } else if (pack_f != 0 || loc->anchor[ROM_GBUI_ANCH_PACK_F] != 0) {
+      return 0;
+    }
+
     if (frames + 9 * 48 > s->size || distinct_tiles(s, frames, 1, 54) < 46) return 0;
     if (!font_verify(s, font)) return 0;
     if (fontextra + 512 > s->size || distinct_tiles(s, fontextra, 2, 32) != 32) return 0;
@@ -681,7 +860,7 @@ static int revalidate_loc(const Scan* s, const RomGbUiLoc* loc) {
     if (cardgfx + 6 * 16 > s->size) return 0;
     if (pack_m == 0 || pack_m + 60 * 16 > s->size) return 0;
     if (pack_f != 0 && pack_f + 60 * 16 > s->size) return 0;
-    if (cardpic_f != 0 && pack_f == 0) return 0;   /* Crystal-shaped needs both */
+    if (crystal && pack_f == 0) return 0;   /* Crystal-shaped needs both */
     return 1;
   }
   return 0;
@@ -703,7 +882,7 @@ int rom_gbui_open_loc(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
   s.banks = banks;
 
   if (loc && loc->id_hash == id_hash && loc->size == size &&
-      loc->check == loc_off_check(loc->off) &&
+      loc->check == loc_check(loc->off, loc->anchor) &&
       (loc->gen == ROM_GBUI_GEN1 || loc->gen == ROM_GBUI_GEN2) &&
       revalidate_loc(&s, loc)) {
     gu->banks = banks; gu->id_hash = id_hash; gu->gen = loc->gen;
@@ -722,6 +901,7 @@ int rom_gbui_open_loc(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
     gu->pack_f      = loc->off[ROM_GBUI_OFF_PACK_F];
     if (gu->gen == ROM_GBUI_GEN1) gu->playerpic_bank = (uint8_t)(gu->playerpic / GB_BANK);
     gu->cardpic_colmajor = (gu->cardpic_f != 0);   /* Crystal-shaped iff cardpic_f present */
+    memcpy(gu->anchor, loc->anchor, sizeof gu->anchor);
     gu->ok = 1;
     return 1;
   }
