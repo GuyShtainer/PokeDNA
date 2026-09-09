@@ -159,6 +159,9 @@ typedef struct {
   uint8_t   dirty[GBSCR_DIRTY_BYTES];
   uint8_t   gen;                /* PDNA_GEN1 / PDNA_GEN2                        */
   bool      ok;                 /* gbscr_open() succeeded; gbscr_* are no-ops otherwise */
+  bool      scale_dirty;        /* U2b item 3: gb_scale_mode changed during THIS
+                                  * screen's visit -- gbscr_persist_mode()/close()
+                                  * writes config.cfg once iff this is set        */
 } GbScreen;
 
 /* gb_scale_mode -- the ONE new EWRAM byte this whole shell adds (design sec 1.5/
@@ -216,8 +219,20 @@ bool gbscr_open(uint8_t gen, GbScreen* gs, uint8_t* tail, uint32_t tail_len,
 /* Release any resources gbscr_open() took (the SD build's FIL is already closed
  * by the time gbscr_open() returns -- this exists for symmetry/future-proofing
  * and to make the shell's own lifetime explicit at call sites). Safe on a `gs`
- * that never opened successfully. */
+ * that never opened successfully. U2b item 3: also calls gbscr_persist_mode()
+ * (below), so a scale change made anywhere during this screen's visit survives
+ * leaving it, without every caller having to remember to call cfg_save() itself. */
 void gbscr_close(GbScreen* gs);
+
+/* U2b item 3: writes config.cfg (via app_cfg_save(), pdna_app.h) NOW iff
+ * gb_scale_mode changed at least once during `gs`'s visit (gs->scale_dirty, set
+ * by gbscr_toggle_scale()) -- then clears the flag, so a screen that calls this
+ * mid-session (rather than waiting for gbscr_close()) never double-writes for
+ * the same toggle. Safe on a `gs` that never opened / never toggled (a no-op).
+ * The shell owns this so entering/leaving a GB screen from the nav menu
+ * persists the mode -- Settings' own B path is unaffected (it already called
+ * the same writer directly, before this existed, and still does). */
+void gbscr_persist_mode(GbScreen* gs);
 
 /* Write one cell. `tile` is a raw tile index for TEXTBOX/CARDFRAME/BADGES/PIC, or
  * the game's own charmap byte for FONT (0x80..0xFF), ignored for BLANK. Out-of-
@@ -245,9 +260,12 @@ void gbscr_raw(GbScreen* gs, int x, int y, const uint8_t* bytes, int n);
  * on a screen's first flush. */
 void gbscr_mark_all_dirty(GbScreen* gs);
 
-/* Flip gb_scale_mode, persist it is the CALLER's job (pdna_main.c's cfg_save());
- * this only flips the in-memory flag and marks the whole canvas dirty so the very
- * next gbscr_flush() repaints everything in the new mode. */
+/* Flip gb_scale_mode and mark the whole canvas dirty so the very next
+ * gbscr_flush() repaints everything in the new mode. U2b item 3: also sets
+ * `gs->scale_dirty` so gbscr_close()/gbscr_persist_mode() know to write
+ * config.cfg -- persisting the value itself still happens later (at close, or
+ * whenever a screen calls gbscr_persist_mode()), never on every single
+ * keypress. */
 void gbscr_toggle_scale(GbScreen* gs);
 
 /* Repaint every dirty cell into the Mode-3 framebuffer in the CURRENT gb_scale_mode,

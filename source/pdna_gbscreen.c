@@ -142,7 +142,7 @@ void gbscr_raw(GbScreen* gs, int x, int y, const uint8_t* bytes, int n) {
 
 void gbscr_toggle_scale(GbScreen* gs) {
   gb_scale_mode = gb_scale_mode ? 0 : 1;
-  if (gs) gbscr_mark_all_dirty(gs);
+  if (gs) { gbscr_mark_all_dirty(gs); gs->scale_dirty = true; }
 }
 
 /* ---------------------------------------------------------------------------
@@ -428,13 +428,23 @@ bool __attribute__((noinline)) gbscr_open(uint8_t gen, GbScreen* gs, uint8_t* ta
   return gbscr_open_inner(gen, gs, tail, tail_len, need_mask, reason);
 }
 
+/* U2b item 3: config.cfg NOW, iff gb_scale_mode changed during this `gs`'s
+ * visit -- see the header's own doc comment for the full contract. */
+void gbscr_persist_mode(GbScreen* gs) {
+  if (!gs || !gs->scale_dirty) return;
+  gs->scale_dirty = false;
+  app_cfg_save();
+}
+
 void gbscr_close(GbScreen* gs) {
   if (!gs) return;
+  gbscr_persist_mode(gs);
   gs->ok = false;   /* no persistent handle to release -- see the header's own note */
 }
 
 /* One cell's 8x8 RGB15 pixels, looked up through `local` (a RomGbUi copy whose
- * .ctx/.read the caller has just rebound to a live FIL/FusedGbSlice). BLANK
+ * .ctx/.read the caller has just rebound to gs->cache, the RAM tile bank --
+ * U2b item 1, never a live FIL/FusedGbSlice any more). BLANK
  * never touches the ROM at all. */
 static bool gbscr_tile_pixels(const GbScreen* gs, RomGbUi* local, int idx, uint16_t out[64]) {
   GbScrSrc s = (GbScrSrc)gs->src[idx];

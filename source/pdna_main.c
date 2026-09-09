@@ -720,6 +720,13 @@ static void cfg_save(void) {
   if (cst != SF_OK) log_line("cfg: save failed (%s)", sf_status_str(cst));
 }
 
+/* U2b item 3: exported so the GB-screen shell (pdna_gbscreen.c) can persist a
+ * SELECT scale-mode change from ANY GB screen's own exit path, not just
+ * Settings' own B key (which already called the file-local cfg_save() directly
+ * and is unaffected by this). Same function, same app_can_edit() gate -- no new
+ * write path, just a second caller. */
+void app_cfg_save(void) { cfg_save(); }
+
 /* Restore prefs saved by cfg_save (best-effort): a missing/unparsable file just
  * leaves the compiled defaults. The saved folder is adopted only if it still
  * exists, else we fall back to root — a moved SD card can't strand the browser. */
