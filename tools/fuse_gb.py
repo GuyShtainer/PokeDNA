@@ -95,8 +95,13 @@ from __future__ import annotations
 import argparse
 import os
 import struct
+import subprocess
 import sys
+import tempfile
 import zlib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
 
 MAGIC = b"PDNAGBD1"                 # 8 bytes, no NUL — the directory's own magic
 FUSE_MAGIC = b"PDNAFUSE"            # fuse_rom.py's own record -- used only to disambiguate
@@ -112,9 +117,88 @@ CART_BASE = 0x08000000
 TYPE_ROM_GEN1 = 1
 TYPE_ROM_GEN2 = 2
 TYPE_SAV = 3
-TYPE_NAMES = {TYPE_ROM_GEN1: "ROM_GEN1", TYPE_ROM_GEN2: "ROM_GEN2", TYPE_SAV: "SAV"}
+TYPE_LOC = 4                         # BACKLOG #68b: a fused rom_gb*_open_loc() record,
+                                      # see LOC_HDR_* below for the payload's own header
+TYPE_NAMES = {TYPE_ROM_GEN1: "ROM_GEN1", TYPE_ROM_GEN2: "ROM_GEN2", TYPE_SAV: "SAV",
+              TYPE_LOC: "LOC"}
 
 EXT_TYPE = {".gb": TYPE_ROM_GEN1, ".gbc": TYPE_ROM_GEN2, ".sav": TYPE_SAV}
+
+# BACKLOG #68b: tools/gbloc_driver.c runs the SHIPPED rom_gbsprite.c/rom_gbicon.c/
+# rom_gbui.c locators against a fused ROM at fuse time and writes one of these small
+# payloads per locator the ROM satisfies. See gbloc_driver.c's own header comment for
+# the exact byte layout; kept in sync here only for --check's independent re-verify.
+LOC_HDR_MAGIC = b"PDNALOC1"
+LOC_HDR_SIZE = 20                    # magic(8)+kind(1)+gen(1)+rec_size(2)+id_hash(4)+rom_size(4)
+LOC_KIND_SPRITE = 1
+LOC_KIND_ICON = 2
+LOC_KIND_UI = 3
+LOC_KIND_NAMES = {LOC_KIND_SPRITE: "sprite", LOC_KIND_ICON: "icon", LOC_KIND_UI: "ui"}
+
+
+def fnv1a32(data: bytes, h: int = 0x811C9DC5) -> int:
+    """The exact FNV-1a rom_gbsprite.c/rom_gbicon.c/rom_gbui.c each define locally
+    (`fnv1a`, seed 0x811C9DC5, prime 0x01000193) -- reimplemented here ONLY so
+    --check can independently recompute a ROM's id_hash from its own header bytes
+    and cross-verify a fused LOC payload's claim, rather than trusting whatever
+    gbloc_driver wrote about itself."""
+    for b in data:
+        h ^= b
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return h
+
+
+def gb_id_hash(rom_bytes: bytes) -> int:
+    """id_hash as every rom_gb*.c computes it: FNV-1a over the 0x100..0x14F header
+    window (0x50 bytes)."""
+    return fnv1a32(rom_bytes[0x100:0x150])
+
+
+def build_gbloc_driver(bin_path: Path) -> None:
+    cmd = ["cc", "-std=c11", "-Wall", "-Wextra", "-I", str(ROOT / "source"),
+           str(ROOT / "tools" / "gbloc_driver.c"),
+           str(ROOT / "source" / "rom_gbsprite.c"),
+           str(ROOT / "source" / "rom_gbicon.c"),
+           str(ROOT / "source" / "rom_gbui.c"),
+           str(ROOT / "source" / "gb_sprite_codec.c"),
+           "-o", str(bin_path)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise FuseError(f"failed to build tools/gbloc_driver.c:\n{r.stdout}\n{r.stderr}")
+
+
+def gbloc_payloads(driver_bin: Path, rom_path: str) -> list[bytes]:
+    """Runs the compiled gbloc_driver against `rom_path` and splits its combined
+    output into individual [header+record] payload chunks, in the order the driver
+    wrote them (sprite, then icon if Gen 2, then ui) -- see gbloc_driver.c's own
+    header comment for the exact per-payload layout this parses."""
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        out_path = tmp.name
+    try:
+        r = subprocess.run([str(driver_bin), rom_path, out_path],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            # Not fatal: a ROM the shipped locators cannot place any table in just
+            # gets no LOC entries -- the delta build scans it as it does today.
+            print(f"  ! gbloc_driver could not locate anything in {rom_path} "
+                  f"(rc={r.returncode}); no LOC payload fused for it.")
+            return []
+        blob = open(out_path, "rb").read()
+    finally:
+        os.unlink(out_path)
+
+    chunks = []
+    pos = 0
+    while pos < len(blob):
+        if blob[pos:pos + 8] != LOC_HDR_MAGIC:
+            raise FuseError(f"gbloc_driver output for {rom_path} is malformed at byte {pos}")
+        rec_size = struct.unpack_from("<H", blob, pos + 10)[0]
+        total = LOC_HDR_SIZE + rec_size
+        chunks.append(blob[pos:pos + total])
+        pos += total
+    if pos != len(blob):
+        raise FuseError(f"gbloc_driver output for {rom_path} has a trailing partial payload")
+    return chunks
 
 # Valid GB/GBC ROM sizes: 32 KiB * 2^n, n=0..8 (32 KiB .. 8 MiB), per the cartridge
 # header's own ROM-size byte encoding (0x148). Accepted range is generous on purpose —
@@ -287,7 +371,23 @@ def parse_directory(blob: bytes, dir_off: int, dir_size: int) -> list[dict]:
     return entries
 
 
-def fuse(pokedna_path: str, payload_paths: list[str], out_path: str, force: bool) -> int:
+def _append_payload(base: bytearray, entries: list[dict], t: int, name: str, data: bytes) -> None:
+    """Appends one payload (real file bytes or a synthetic LOC chunk -- both are just
+    bytes to the fused image) at the current 256-aligned end of `base` and records its
+    directory entry. Shared by the real ROM/SAV payloads and the BACKLOG #68b LOC
+    payloads below so both go through the identical align/offset/crc bookkeeping."""
+    pad = (-len(base)) % ALIGN
+    base.extend(b"\xFF" * pad)
+    off = len(base)
+    base.extend(data)
+    crc = zlib.crc32(data) & 0xFFFFFFFF
+    entries.append({"type": t, "path": name, "offset": off, "size": len(data), "crc32": crc})
+    print(f"  + {TYPE_NAMES[t]:9s} {os.path.basename(name):16s} "
+          f"{len(data):>9,} B  @ 0x{off:08X}  crc={crc:08X}")
+
+
+def fuse(pokedna_path: str, payload_paths: list[str], out_path: str, force: bool,
+        skip_loc: bool = False) -> int:
     base = bytearray(open(pokedna_path, "rb").read())
     rec_off = locate_record(bytes(base), pokedna_path)
     cur_off, cur_size = read_record(bytes(base), rec_off)
@@ -306,20 +406,34 @@ def fuse(pokedna_path: str, payload_paths: list[str], out_path: str, force: bool
 
     entries = []
     print(f"base image   : {pokedna_path} ({len(base):,} bytes)")
+
+    # BACKLOG #68b: built lazily, once, on the first ROM payload -- payloads with no
+    # .gb/.gbc never need it, and --no-loc / a payload list with no ROM in it never pay
+    # the compile cost at all.
+    driver_bin = None
+    driver_tmpdir = None
+
     for p in payload_paths:
         if not os.path.isfile(p):
             raise FuseError(f"{p}: not a file")
         t = classify(p)
         data = open(p, "rb").read()
         validate_payload(p, t, data)
-        pad = (-len(base)) % ALIGN
-        base.extend(b"\xFF" * pad)
-        off = len(base)
-        base.extend(data)
-        crc = zlib.crc32(data) & 0xFFFFFFFF
-        entries.append({"type": t, "path": p, "offset": off, "size": len(data), "crc32": crc})
-        print(f"  + {TYPE_NAMES[t]:9s} {os.path.basename(p):16s} "
-              f"{len(data):>9,} B  @ 0x{off:08X}  crc={crc:08X}")
+        _append_payload(base, entries, t, p, data)
+
+        if t in (TYPE_ROM_GEN1, TYPE_ROM_GEN2) and not skip_loc:
+            if driver_bin is None:
+                driver_tmpdir = tempfile.TemporaryDirectory()
+                driver_bin = Path(driver_tmpdir.name) / "gbloc_driver"
+                build_gbloc_driver(driver_bin)
+            for chunk in gbloc_payloads(driver_bin, p):
+                kind = chunk[8]
+                gen = chunk[9]
+                name = f"LOC.{LOC_KIND_NAMES.get(kind, kind)}.g{gen}"
+                _append_payload(base, entries, TYPE_LOC, name, chunk)
+
+    if driver_tmpdir is not None:
+        driver_tmpdir.cleanup()
 
     if not entries:
         raise FuseError("no payloads given")
@@ -461,10 +575,43 @@ def check_only(path: str) -> int:
         payload = blob[e["offset"]:e["offset"] + e["size"]]
         crc = zlib.crc32(payload) & 0xFFFFFFFF
         ok = crc == e["crc32"]
+        extra = ""
+        # BACKLOG #68b: a LOC entry's own [header+record] payload carries a second,
+        # independent claim (kind/gen/id_hash/rom_size) about the ROM it accompanies --
+        # verify that claim against the ACTUAL fused ROM bytes, not just the outer CRC
+        # (which only proves the LOC bytes themselves are intact, not that they still
+        # describe the right ROM).
+        if ok and e["type"] == TYPE_LOC:
+            if len(payload) < LOC_HDR_SIZE or payload[:8] != LOC_HDR_MAGIC:
+                ok = False
+                extra = " (malformed LOC header)"
+            else:
+                kind, gen = payload[8], payload[9]
+                rec_size = struct.unpack_from("<H", payload, 10)[0]
+                claimed_hash, claimed_size = struct.unpack_from("<II", payload, 12)
+                if LOC_HDR_SIZE + rec_size != len(payload):
+                    ok = False
+                    extra = " (rec_size does not match payload length)"
+                else:
+                    rom_type = TYPE_ROM_GEN1 if gen == 1 else TYPE_ROM_GEN2
+                    rom_entries = [x for x in entries if x["type"] == rom_type]
+                    match = next((x for x in rom_entries if x["size"] == claimed_size), None)
+                    if match is None:
+                        ok = False
+                        extra = f" (no gen-{gen} ROM entry of size {claimed_size})"
+                    else:
+                        rom_bytes = blob[match["offset"]:match["offset"] + match["size"]]
+                        real_hash = gb_id_hash(rom_bytes)
+                        if real_hash != claimed_hash:
+                            ok = False
+                            extra = f" (id_hash mismatch vs {match['name']})"
+                        else:
+                            extra = (f" ({LOC_KIND_NAMES.get(kind, kind)} gen={gen} "
+                                     f"-> {match['name']})")
         bad += not ok
         print(f"  {TYPE_NAMES.get(e['type'], '?'):9s} {e['name']:16s} "
               f"{e['size']:>9,} B  @ 0x{e['offset']:08X}  crc={e['crc32']:08X}  "
-              f"{'OK' if ok else 'CRC MISMATCH'}")
+              f"{'OK' if ok else 'CRC MISMATCH'}{extra}")
     if bad:
         print(f"PROBLEMS: {bad} payload(s) failed CRC")
         return 1
@@ -479,6 +626,10 @@ def main(argv=None) -> int:
     ap.add_argument("-o", "--output")
     ap.add_argument("--check", metavar="FUSED.GBA")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--no-loc", action="store_true",
+                    help="BACKLOG #68b: skip computing/fusing rom_gb*_open_loc() records "
+                         "for the fused ROM(s) -- used to build the cold-start comparison "
+                         "image for tools/dgb_shots.py")
     a = ap.parse_args(argv)
 
     try:
@@ -488,7 +639,7 @@ def main(argv=None) -> int:
             ap.error("need <pokedna.gba> PAY [PAY ...] -o <out.gba>, or --check FILE")
         if not os.path.isfile(a.pokedna):
             sys.exit(f"{a.pokedna}: not a file")
-        return fuse(a.pokedna, a.payloads, a.output, a.force)
+        return fuse(a.pokedna, a.payloads, a.output, a.force, skip_loc=a.no_loc)
     except FuseError as e:
         sys.exit(str(e))
 

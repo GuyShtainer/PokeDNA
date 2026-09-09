@@ -208,6 +208,55 @@ def main():
             fail("collision case: the decoy record was modified -- wrong record was patched")
         print("  collision    : D7's zero-filter picks the real (0,0) record with no anchor nearby")
 
+        # BACKLOG #68b: round-trip a REAL Game Boy ROM through fuse_gb.py's new LOC
+        # payload path (tools/gbloc_driver.c, compiled on demand). Uses the local
+        # corpus if present; skips (not a failure) on a machine without it, same
+        # posture tests/run_host_tests.py takes for its own .sav corpus.
+        corpus = os.environ.get(
+            "ROMS", "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms")
+        red_gb = os.path.join(corpus, "gb", "Red.gb")
+        if os.path.isfile(red_gb):
+            pokedna4 = os.path.join(td, "fake4.gba")
+            make_fake_pokedna(pokedna4)
+            out4 = os.path.join(td, "loc_out.gba")
+            rc, so, se = run(pokedna4, red_gb, "-o", out4)
+            if rc != 0:
+                fail(f"fusing a real GB ROM with LOC computation failed:\n{so}\n{se}")
+            blob4 = open(out4, "rb").read()
+            rec_off4 = 512
+            off4, size4 = read_record(blob4, rec_off4)
+            entries4 = parse_directory(blob4, off4, size4)
+            loc_entries = [e for e in entries4 if e[0] == 4]
+            # Red.gb is Gen 1: sprite + ui locators apply, no icon (Gen-2 only).
+            if len(loc_entries) != 2:
+                fail(f"expected 2 LOC entries for a Gen-1 ROM (sprite+ui), got "
+                     f"{len(loc_entries)}: {loc_entries}")
+            print(f"  LOC (real ROM): {len(loc_entries)} entries fused for Red.gb (sprite+ui)")
+
+            rc, so, se = run("--check", out4)
+            if rc != 0 or "id_hash mismatch" in so:
+                fail(f"--check should accept the real ROM's LOC entries:\n{so}\n{se}")
+            if so.count("gen=1 ->") < 2:
+                fail(f"--check did not report both LOC entries resolved against their "
+                     f"ROM:\n{so}")
+            print("  LOC --check   : both entries cross-verify against Red.gb's own id_hash")
+
+            # --no-loc must skip the driver entirely -- no LOC entries at all.
+            out5 = os.path.join(td, "noloc_out.gba")
+            pokedna5 = os.path.join(td, "fake5.gba")
+            make_fake_pokedna(pokedna5)
+            rc, so, se = run(pokedna5, red_gb, "-o", out5, "--no-loc")
+            if rc != 0:
+                fail(f"--no-loc fuse failed:\n{so}\n{se}")
+            blob5 = open(out5, "rb").read()
+            off5, size5 = read_record(blob5, rec_off4)
+            entries5 = parse_directory(blob5, off5, size5)
+            if any(e[0] == 4 for e in entries5):
+                fail("--no-loc should not have fused any LOC entries")
+            print("  --no-loc     : skips LOC computation entirely")
+        else:
+            print(f"  LOC (real ROM): skipped -- {red_gb} not present on this machine")
+
     print("host_fusegb_test: ALL OK")
     return 0
 
