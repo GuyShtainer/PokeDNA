@@ -231,13 +231,17 @@ static bool gbscr_resolve_path(uint8_t gen, char* out, int cap) {
 }
 #endif /* !PDNA_DELTA */
 
-bool __attribute__((noinline)) gbscr_open(uint8_t gen, GbScreen* gs, const char** reason) {
-  if (reason) *reason = 0;
-  if (!gs) return false;
+/* D1 fix (U2a review): the stack-room gate must run BEFORE this function's own
+ * frame (FIL + 2048-B scratch + RomGbUiLoc + rom_path -- 3,624 B, see the
+ * header's MEASURED note) exists, not from inside it -- gating from inside
+ * measures the room LEFT UNDER the frame, not the room the frame itself needs,
+ * which on the artless/SD build's Settings path always under-counts by exactly
+ * this frame's own size and so ALWAYS refuses on real hardware. `gbscr_open()`
+ * below is the thin (~104 B) gate; this is the renamed original body, unchanged
+ * except that its own stack_room check is gone (the caller already made it). */
+static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs, const char** reason) {
   memset(gs, 0, sizeof *gs);
   gs->gen = gen;
-  if (gen != PDNA_GEN1 && gen != PDNA_GEN2) { if (reason) *reason = kReasonBadGen; return false; }
-  if (!pdna_origin_art_stack_room(PDNA_GB_UI_NEED)) { if (reason) *reason = kReasonNoStack; return false; }
 
 #ifndef PDNA_DELTA
   char path[GB_ROM_PATH_MAX];
@@ -282,6 +286,30 @@ bool __attribute__((noinline)) gbscr_open(uint8_t gen, GbScreen* gs, const char*
   gs->ok = true;
   gbscr_mark_all_dirty(gs);
   return true;
+}
+
+/* The thin gate (D1): validates `gen` and checks the stack-room budget BEFORE
+ * gbscr_open_inner()'s own 3,624-B frame is ever allocated, then tail-calls
+ * into it. Both refusal branches leave `gs` zeroed with `gs->gen` set, same
+ * observable state gbscr_open_inner() used to leave on the same refusals, so
+ * every existing caller (gbscr_run_demo(), a future U2b card) sees no change
+ * in behaviour -- only in WHEN the stack is actually charged for the frame. */
+bool __attribute__((noinline)) gbscr_open(uint8_t gen, GbScreen* gs, const char** reason) {
+  if (reason) *reason = 0;
+  if (!gs) return false;
+  if (gen != PDNA_GEN1 && gen != PDNA_GEN2) {
+    memset(gs, 0, sizeof *gs);
+    gs->gen = gen;
+    if (reason) *reason = kReasonBadGen;
+    return false;
+  }
+  if (!pdna_origin_art_stack_room(PDNA_GB_UI_NEED)) {
+    memset(gs, 0, sizeof *gs);
+    gs->gen = gen;
+    if (reason) *reason = kReasonNoStack;
+    return false;
+  }
+  return gbscr_open_inner(gen, gs, reason);
 }
 
 void gbscr_close(GbScreen* gs) {

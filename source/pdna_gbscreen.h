@@ -36,21 +36,35 @@
  * and gb_art_fetch() already use.
  *
  * MEASURED (arm-none-eabi-gcc -mcpu=arm7tdmi -mtune=arm7tdmi -O2 -mthumb-interwork
- * -mthumb -fstack-usage -c source/pdna_gbscreen.c, 2026-09-09, U2a): own-frame
- * sizes (bytes) -- gbscr_mark_all_dirty 8, gbscr_cell 16, gbscr_text 56,
- * gbscr_raw 48, gbscr_toggle_scale 8, gbscr_sd_read 24, gbscr_open 3624,
- * gbscr_close 0, gbscr_flush 8 (gcc split the real body into a separate
- * gbscr_flush.part.0, 944), gbscr_run_demo 1016. The stack-room gate lives
- * INSIDE gbscr_open() itself (design sec 3.1: "gbscr_open(gen) = stack-room
- * gate -> ..."), so PDNA_GB_UI_NEED (rom_gbui.h) is measured from gbscr_open()'s
- * OWN entry down -- 3,624 (this frame) + 2,840 (rom_gbui_open_loc's own worst
- * nested chain, rom_gbui.h's own measurement) = 6,464, rounded up to 6,656 --
- * NOT gbscr_run_demo's 1,016 B on top (a different caller, e.g. U2b's real card
- * screen, will have a different frame of its own; the gate is caller-
- * independent by design, exactly like PDNA_GB_FETCH_NEED/PDNA_GB_ICON_NEED are
- * each measured per-rung rather than accumulated across every possible caller).
+ * -mthumb -fstack-usage -c source/pdna_gbscreen.c, 2026-09-09, U2a fix batch
+ * D1/D2/D8): own-frame sizes (bytes) -- gbscr_mark_all_dirty 8, gbscr_cell 16,
+ * gbscr_text 56, gbscr_raw 48, gbscr_toggle_scale 8, gbscr_sd_read 24,
+ * gbscr_open 16, gbscr_open_inner 3624, gbscr_close 0, gbscr_flush 8 (gcc
+ * split the real body into a separate gbscr_flush.part.0, 952 -- corrected
+ * from an earlier note's 944), gbscr_run_demo 1016. sizeof(GbScreen) = 976 B
+ * (SD build) / 856 B (delta build) -- GbScreen itself lives on the CALLER's
+ * own frame (gbscr_run_demo's 1,016 B above, or a future U2b card screen's),
+ * OUTSIDE the gate; it is never counted in PDNA_GB_UI_NEED.
+ *
+ * D1 fix (review): the stack-room gate used to live INSIDE gbscr_open()'s own
+ * frame, so it measured the room LEFT UNDER a 3,624-B frame that already
+ * existed by the time the check ran, instead of the room the frame ITSELF
+ * needs -- on the artless/SD build this always under-counted by exactly this
+ * frame's size and made the gate refuse every time on real hardware. The old
+ * body is now `gbscr_open_inner()` (static, noinline, unchanged except the
+ * stack_room() call is gone); `gbscr_open()` is a thin (16-B) wrapper that
+ * checks pdna_origin_art_stack_room(PDNA_GB_UI_NEED) BEFORE calling it, so the
+ * gate now runs before gbscr_open_inner()'s frame is ever allocated. PDNA_GB_
+ * UI_NEED (rom_gbui.h) is measured from gbscr_open_inner()'s OWN entry down --
+ * 3,624 (this frame) + 2,840 (rom_gbui_open_loc's own worst nested chain,
+ * rom_gbui.h's own measurement) = 6,464 (D2: taken as measured, NOT rounded
+ * up -- see rom_gbui.h's own note for why) -- NOT gbscr_run_demo's 1,016 B on
+ * top (a different caller, e.g. U2b's real card screen, will have a different
+ * frame of its own; the gate is caller-independent by design, exactly like
+ * PDNA_GB_FETCH_NEED/PDNA_GB_ICON_NEED are each measured per-rung rather than
+ * accumulated across every possible caller).
  * gbscr_flush() carries no separate gate -- it never calls
- * pdna_origin_art_stack_room() -- because its own reachable chain (944 B, plus
+ * pdna_origin_art_stack_room() -- because its own reachable chain (952 B, plus
  * rom_gbui_tile()/glyph()'s own small per-tile-fetch frames, no locate()/
  * distinct_tiles() on that path) is comfortably smaller and the design (sec
  * 3.4/R9) only requires gating the OPEN path.
