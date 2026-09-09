@@ -79,9 +79,11 @@ def run_gbscreen_shell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shot
     """U2a (docs/GB-GAME-SCREENS-DESIGN.md sec 3.3): the shared GB-screen shell's own
     standalone demo (source/pdna_gbscreen.c gbscr_run_demo()) -- the located font's
     128-glyph sheet inside a text-box border, reachable via a hidden SELECT key on
-    the Settings list (no card exists yet; that is U2b). This build boots into the
-    normal Emerald Gen-3 box screen (see run_nav_gb()'s own module-docstring note),
-    so navigation up to the Settings list is IDENTICAL to run_e4_settings()'s own
+    the Settings list (no card exists yet; that is U2b). This build boots into
+    #68a's own boot picker first (see run_nav_gb()'s own module-docstring note --
+    row 0 is the Emerald save, rows 1..n the fused GB corpus); A on the default
+    Emerald selection continues into the normal Gen-3 box screen, from which
+    navigation up to the Settings list is IDENTICAL to run_e4_settings()'s own
     (tools/gb_shots.py): START -> nav menu -> RIGHT (col 1) -> DOWN x7 -> A.
 
     gbscr_open() under PDNA_DELTA does a full, uncached rom_gbui scan every time
@@ -98,6 +100,7 @@ def run_gbscreen_shell(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shot
     # Session.__init__'s own 180-frame settle is not enough; without this, START
     # fires mid-load and lands somewhere other than the box screen's own menu).
     s.run(700)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)        # #68a boot picker, Emerald row (default) -> box
     s.tap("START", settle=gb_shots.BIG_SETTLE)   # box screen -> nav menu
     s.tap("RIGHT")                                 # column 0 (Party) -> column 1 (Blocks)
     s.press_n("DOWN", 7)                           # Blocks -> ... -> Settings (index 17)
