@@ -265,6 +265,30 @@ int pdna_gen12_show_image(const char* path, uint8_t* img, uint32_t len,
 void gb_rollback(void);
 bool gb_persist(const char* what_for_log);
 
+/* ---- U2b item 0: the arena TAIL, for a GB screen shell riding the resident-image
+ * mount ----------------------------------------------------------------------
+ * pdna_gen12_show_image()'s own arena layout (pdna_gen12.c) puts Gb12Edit LAST:
+ * Mount, Gb12Image, recs, stage, then Gb12Edit (`ed`, latched into the module's
+ * `g_ed` when an edit session opened -- see pdna_gen12_show_image()'s own carve-out,
+ * ~pdna_gen12.c:2671-2711). Nothing else lives past Gb12Edit in that arena block --
+ * that is the invariant this function trusts: the bytes from
+ * `(uint8_t*)g_ed + sizeof(Gb12Edit)` (4-aligned) to the end of the borrowed
+ * APP_ARENA_BYTES block are unclaimed by anything pdna_gen12.c itself uses for the
+ * rest of the session.
+ *
+ * Returns that tail pointer when (a) g_ed is set (a resident-image mount WITH a
+ * live edit session; a read-only resident mount, where gbs_open refused, leaves
+ * g_ed NULL and correctly gets NULL here -- the caller shows its plain page) (--
+ * pdna_gbtrainer() is only reachable that way, never the read-only nav-menu FIL
+ * mount, whose arena layout has no Gb12Edit at all) and (b) `need` fits inside the
+ * measured slack (GB12_ARENA_NEED_IMG is ~11,952 of APP_ARENA_BYTES' 35,712 --
+ * ~23.7 KB tail, pdna_gen12.c's own comment above GB12_ARENA_NEED_IMG has the exact
+ * figure). Returns NULL otherwise -- g_ed NULL (no resident session), or a `need`
+ * that would run the tail past the arena's own end. Never allocates, never asserts:
+ * a NULL here is an ordinary "not available right now", same posture as
+ * app_arena_acquire() itself. */
+uint8_t* gb12_arena_tail(uint32_t need);
+
 #ifdef PDNA_DELTA
 /* BACKLOG #62: mount fused_gb_save(idx) directly out of cartridge space -- no FIL, no
  * resident copy, reads go straight through fused_gb_slice_read() the same way CREATE's

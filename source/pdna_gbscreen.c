@@ -142,7 +142,71 @@ void gbscr_raw(GbScreen* gs, int x, int y, const uint8_t* bytes, int n) {
 
 void gbscr_toggle_scale(GbScreen* gs) {
   gb_scale_mode = gb_scale_mode ? 0 : 1;
-  if (gs) gbscr_mark_all_dirty(gs);
+  if (gs) { gbscr_mark_all_dirty(gs); gs->scale_dirty = true; }
+}
+
+/* ---------------------------------------------------------------------------
+ * U2b item 1: the RAM tile bank -- pure (no tonc/FatFs), so the memory-backed
+ * read fn and the block-size/offset tables are host-testable exactly like the
+ * rest of this half of the file.
+ * --------------------------------------------------------------------------- */
+
+/* Exact byte length of one located block, by generation -- rom_gbui_tile()'s own
+ * tile_count * stride for that block/bpp (docs/GB-GAME-SCREENS-DESIGN.md sec 2.1/
+ * 2.2): FONT 128 tiles * 8 B (1bpp) both gens; TEXTBOX is Gen 1's own 32-tile 2bpp
+ * block (512 B) or Gen 2's 54-tile 1bpp frame set (432 B, G2-R: "9 frames x 6
+ * tiles x 8 B"); CARDFRAME is Gen 1 only (40 tiles, 2bpp, 640 B -- 9+22+1+8 per
+ * G1-C); BADGES is Gen 1's 64-tile (1,024 B) or Gen 2's 44-tile (704 B) block,
+ * both 2bpp. PIC has no entry here -- it is not a RomGbUi block (see
+ * GBSCR_NEED_* in pdna_gbscreen.h). */
+uint32_t gbscr_block_bytes(uint8_t gen, GbScrSrc src) {
+  switch (src) {
+    case GBSCR_SRC_FONT:      return 128u * 8u;
+    case GBSCR_SRC_TEXTBOX:   return (gen == PDNA_GEN1) ? 32u * 16u : 54u * 8u;
+    case GBSCR_SRC_CARDFRAME: return 40u * 16u;
+    case GBSCR_SRC_BADGES:    return (gen == PDNA_GEN1) ? 64u * 16u : 44u * 16u;
+    default:                  return 0;
+  }
+}
+
+/* The located ROM/fused-image offset of one block, out of an already-open
+ * RomGbUi -- mirrors gbscr_tile_pixels()'s own per-src field choice (Gen 1's
+ * TEXTBOX src reads `gu->textbox`, Gen 2's reads `gu->frames` -- see that
+ * function's own comment for why there is no single "textbox" field). Returns 0
+ * (a real ROM never starts its own image there -- offset 0 is the GB header,
+ * never a target of one of THESE locators) for FONT's caller-supplied cases /
+ * PIC / an unrecognised src. */
+uint32_t gbscr_block_off(const RomGbUi* gu, uint8_t gen, GbScrSrc src) {
+  if (!gu) return 0;
+  switch (src) {
+    case GBSCR_SRC_FONT:      return gu->font;
+    case GBSCR_SRC_TEXTBOX:   return (gen == PDNA_GEN1) ? gu->textbox : gu->frames;
+    case GBSCR_SRC_CARDFRAME: return gu->cardframe;
+    case GBSCR_SRC_BADGES:    return gu->badges;
+    default:                  return 0;
+  }
+}
+
+/* The GbReadFn gbscr_flush() binds every repaint to (U2b item 1): serves
+ * rom_gbui_tile()/rom_gbui_glyph()'s reads out of `ctx`'s (a GbscrCache*) `tail`
+ * buffer, built ONCE at gbscr_open() time -- no SD card, no FIL, ever, after
+ * open() returns. A read whose [off, off+len) is not fully covered by exactly one
+ * cached block fails closed (0/false) -- same "the caller's need_mask must cover
+ * every src it paints" contract app_arena_acquire() callers already carry for
+ * sizing; this is what a host test can drive directly with a synthetic
+ * GbscrCache, no ROM file needed. */
+bool gbscr_mem_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
+  const GbscrCache* c = (const GbscrCache*)ctx;
+  if (!c || !c->tail || !buf) return false;
+  for (int i = 0; i < c->nblocks; i++) {
+    const GbscrBlock* b = &c->blocks[i];
+    if (off < b->rom_off) continue;
+    uint32_t rel = off - b->rom_off;
+    if (rel > b->len || len > b->len - rel) continue;   /* overflow-safe bound check */
+    memcpy(buf, c->tail + b->ram_off + rel, len);
+    return true;
+  }
+  return false;
 }
 
 /* ===========================================================================
@@ -159,6 +223,7 @@ static const char* const kReasonNoStack = "not enough stack";
 static const char* const kReasonOpen    =
   "ROM art unavailable (bad ROM, wrong game, or non-English release)";
 static const char* const kReasonBadGen  = "not a Gen-1/Gen-2 request";
+static const char* const kReasonNoTail  = "no tile-bank memory";
 
 #ifndef PDNA_DELTA
 /* ---- SD build: FIL-backed I/O, the /PokeDNA/gbui<gen>.loc cache -----------
@@ -211,17 +276,68 @@ static bool gbscr_resolve_path(uint8_t gen, char* out, int cap) {
 }
 #endif /* !PDNA_DELTA */
 
+/* U2b item 1: which order the extra (need_mask) blocks are copied into the tail
+ * cache, right after FONT -- fixed, so the cache-building loop below and any test
+ * that inspects a GbscrCache agree on layout. */
+static const GbScrSrc kCacheOptOrder[3] = {
+  GBSCR_SRC_TEXTBOX, GBSCR_SRC_CARDFRAME, GBSCR_SRC_BADGES
+};
+
+/* Total tail bytes gbscr_open() needs for `need_mask` on generation `gen`:
+ * the 2,048-B rom_gbui scan scratch, reused afterward for FONT (always cached)
+ * plus every block need_mask names. */
+static uint32_t gbscr_tail_need(uint8_t gen, uint16_t need_mask) {
+  uint32_t need = ROM_GBUI_SCRATCH_MIN + gbscr_block_bytes(gen, GBSCR_SRC_FONT);
+  for (int i = 0; i < 3; i++)
+    if (need_mask & (1u << kCacheOptOrder[i])) need += gbscr_block_bytes(gen, kCacheOptOrder[i]);
+  return need;
+}
+
+/* Bulk-copies one block straight from the (still-open) ROM source into the tail
+ * cache -- a raw byte range, no tile decode (rom_gbui_tile()/glyph() do that
+ * later, out of RAM, at flush time). `gu` must already be open (its own
+ * .read/.ctx are what this reads through). Returns false (and leaves `cache`
+ * untouched for this block) on a short/failed read or an unlocated (offset 0 for
+ * a src the ROM never actually located -- see FAIL CLOSED in rom_gbui.h: `ok`
+ * would already be 0 in that case, so this is a belt-and-braces check). */
+static bool gbscr_cache_block(RomGbUi* gu, uint8_t gen, GbScrSrc src,
+                              uint8_t* tail, uint32_t* cursor, GbscrCache* cache) {
+  uint32_t off = gbscr_block_off(gu, gen, src);
+  uint32_t len = gbscr_block_bytes(gen, src);
+  if (!off || !len || cache->nblocks >= GBSCR_MAX_BLOCKS) return false;
+  if (!gu->read(gu->ctx, off, tail + *cursor, len)) return false;
+  cache->blocks[cache->nblocks].rom_off = off;
+  cache->blocks[cache->nblocks].ram_off = *cursor;
+  cache->blocks[cache->nblocks].len = len;
+  cache->nblocks++;
+  *cursor += len;
+  return true;
+}
+
 /* D1 fix (U2a review): the stack-room gate must run BEFORE this function's own
- * frame (FIL + 2048-B scratch + RomGbUiLoc + rom_path -- 3,624 B, see the
- * header's MEASURED note) exists, not from inside it -- gating from inside
- * measures the room LEFT UNDER the frame, not the room the frame itself needs,
- * which on the artless/SD build's Settings path always under-counts by exactly
- * this frame's own size and so ALWAYS refuses on real hardware. `gbscr_open()`
- * below is the thin (~104 B) gate; this is the renamed original body, unchanged
- * except that its own stack_room check is gone (the caller already made it). */
-static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs, const char** reason) {
+ * frame exists, not from inside it -- gating from inside measures the room LEFT
+ * UNDER the frame, not the room the frame itself needs, which on the artless/SD
+ * build's Settings path always under-counts by exactly this frame's own size and
+ * so ALWAYS refuses on real hardware. `gbscr_open()` below is the thin gate;
+ * this is the renamed original body, unchanged in that respect.
+ *
+ * U2b item 1: the 2,048-B rom_gbui scan scratch is no longer a local array here
+ * (that was this frame's single biggest cost) -- it is the FIRST 2,048 B of the
+ * caller-owned `tail` buffer, reused for the RAM tile cache once the scan is
+ * done with it (rom_gbui_open_loc() returns before this function touches `tail`
+ * again). `rom_path` also drops off this frame (GbScreen no longer stores a
+ * path at all -- the FIL/fused slice is never reopened after this call, see
+ * gbscr_flush()'s own note), leaving FIL + RomGbUiLoc + a couple of locals. */
+static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs,
+                                                        uint8_t* tail, uint32_t tail_len,
+                                                        uint16_t need_mask, const char** reason) {
   memset(gs, 0, sizeof *gs);
   gs->gen = gen;
+
+  if (!tail || tail_len < gbscr_tail_need(gen, need_mask)) {
+    if (reason) *reason = kReasonNoTail;
+    return false;
+  }
 
 #ifndef PDNA_DELTA
   char path[GB_ROM_PATH_MAX];
@@ -233,13 +349,11 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
   FSIZE_t fsz = f_size(&fil);
   uint32_t sz = (fsz > (FSIZE_t)0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)fsz;
 
-  uint8_t scratch[ROM_GBUI_SCRATCH_MIN];
   RomGbUiLoc loc;
   bool have_loc = gbscr_load_loc(gen, &loc);
-  int ok = rom_gbui_open_loc(&gs->gu, gbscr_sd_read, &fil, sz, scratch, (uint32_t)sizeof scratch,
+  int ok = rom_gbui_open_loc(&gs->gu, gbscr_sd_read, &fil, sz, tail, ROM_GBUI_SCRATCH_MIN,
                              have_loc ? &loc : 0);
-  f_close(&fil);
-  if (!ok || (uint8_t)gs->gu.gen != gen) { if (reason) *reason = kReasonOpen; return false; }
+  if (!ok || (uint8_t)gs->gu.gen != gen) { f_close(&fil); if (reason) *reason = kReasonOpen; return false; }
   /* D5 fix (U2a review): the old condition here (`!have_loc || id_hash/size
    * mismatch`) never healed a REJECTED loc -- rom_gbui_open_loc() also falls
    * back to a full scan on a `check`/gen/revalidate failure inside a
@@ -250,22 +364,39 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
   RomGbUiLoc fresh;
   rom_gbui_save_loc(&gs->gu, &fresh);
   if (!have_loc || memcmp(&fresh, &loc, sizeof fresh) != 0) gbscr_save_loc(gen, &fresh);
-  strncpy(gs->rom_path, path, sizeof gs->rom_path - 1);
-  gs->rom_path[sizeof gs->rom_path - 1] = 0;
+
+  /* U2b item 1: bulk-copy FONT + every need_mask block into `tail`, reusing the
+   * SAME bytes the scan scratch above just finished with, then close the FIL --
+   * gbscr_flush() never reopens it. gu->read/gu->ctx are still bound to `fil`
+   * here (rom_gbui_open_loc() left them that way on success). */
+  gs->cache.tail = tail;
+  uint32_t cursor = 0;
+  bool cok = gbscr_cache_block(&gs->gu, gen, GBSCR_SRC_FONT, tail, &cursor, &gs->cache);
+  for (int i = 0; cok && i < 3; i++)
+    if (need_mask & (1u << kCacheOptOrder[i]))
+      cok = gbscr_cache_block(&gs->gu, gen, kCacheOptOrder[i], tail, &cursor, &gs->cache);
+  f_close(&fil);
+  if (!cok) { if (reason) *reason = kReasonOpen; return false; }
 #else
   const uint8_t* base; uint32_t size;
   if (!fused_gb_rom(gen, &base, &size)) { if (reason) *reason = kReasonNoRom; return false; }
   FusedGbSlice slice = { base, size };
-  uint8_t scratch[ROM_GBUI_SCRATCH_MIN];
   /* #62's own posture (fused corpus is immutable for the whole run): no EWRAM
    * loc cache here -- this slice's memory budget forbids any new EWRAM static
    * beyond gb_scale_mode, so a delta-build gbscr_open() always does the full
    * scan. Rare (a screen entry, not a per-frame cost); a future slice may add
    * an EWRAM cache the same way gb_art_source.c's #62 D1 did IF the budget is
    * revisited. */
-  int ok = rom_gbui_open(&gs->gu, fused_gb_slice_read, &slice, size, scratch, (uint32_t)sizeof scratch);
+  int ok = rom_gbui_open(&gs->gu, fused_gb_slice_read, &slice, size, tail, ROM_GBUI_SCRATCH_MIN);
   if (!ok || (uint8_t)gs->gu.gen != gen) { if (reason) *reason = kReasonOpen; return false; }
-  gs->rom_base = base; gs->rom_size = size;
+
+  gs->cache.tail = tail;
+  uint32_t cursor = 0;
+  bool cok = gbscr_cache_block(&gs->gu, gen, GBSCR_SRC_FONT, tail, &cursor, &gs->cache);
+  for (int i = 0; cok && i < 3; i++)
+    if (need_mask & (1u << kCacheOptOrder[i]))
+      cok = gbscr_cache_block(&gs->gu, gen, kCacheOptOrder[i], tail, &cursor, &gs->cache);
+  if (!cok) { if (reason) *reason = kReasonOpen; return false; }
 #endif
 
   gs->ok = true;
@@ -274,12 +405,12 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
 }
 
 /* The thin gate (D1): validates `gen` and checks the stack-room budget BEFORE
- * gbscr_open_inner()'s own 3,624-B frame is ever allocated, then tail-calls
- * into it. Both refusal branches leave `gs` zeroed with `gs->gen` set, same
- * observable state gbscr_open_inner() used to leave on the same refusals, so
- * every existing caller (gbscr_run_demo(), a future U2b card) sees no change
- * in behaviour -- only in WHEN the stack is actually charged for the frame. */
-bool __attribute__((noinline)) gbscr_open(uint8_t gen, GbScreen* gs, const char** reason) {
+ * gbscr_open_inner()'s own frame is ever allocated, then tail-calls into it.
+ * Both refusal branches leave `gs` zeroed with `gs->gen` set, same observable
+ * state gbscr_open_inner() used to leave on the same refusals. */
+bool __attribute__((noinline)) gbscr_open(uint8_t gen, GbScreen* gs, uint8_t* tail,
+                                          uint32_t tail_len, uint16_t need_mask,
+                                          const char** reason) {
   if (reason) *reason = 0;
   if (!gs) return false;
   if (gen != PDNA_GEN1 && gen != PDNA_GEN2) {
@@ -294,16 +425,26 @@ bool __attribute__((noinline)) gbscr_open(uint8_t gen, GbScreen* gs, const char*
     if (reason) *reason = kReasonNoStack;
     return false;
   }
-  return gbscr_open_inner(gen, gs, reason);
+  return gbscr_open_inner(gen, gs, tail, tail_len, need_mask, reason);
+}
+
+/* U2b item 3: config.cfg NOW, iff gb_scale_mode changed during this `gs`'s
+ * visit -- see the header's own doc comment for the full contract. */
+void gbscr_persist_mode(GbScreen* gs) {
+  if (!gs || !gs->scale_dirty) return;
+  gs->scale_dirty = false;
+  app_cfg_save();
 }
 
 void gbscr_close(GbScreen* gs) {
   if (!gs) return;
+  gbscr_persist_mode(gs);
   gs->ok = false;   /* no persistent handle to release -- see the header's own note */
 }
 
 /* One cell's 8x8 RGB15 pixels, looked up through `local` (a RomGbUi copy whose
- * .ctx/.read the caller has just rebound to a live FIL/FusedGbSlice). BLANK
+ * .ctx/.read the caller has just rebound to gs->cache, the RAM tile bank --
+ * U2b item 1, never a live FIL/FusedGbSlice any more). BLANK
  * never touches the ROM at all. */
 static bool gbscr_tile_pixels(const GbScreen* gs, RomGbUi* local, int idx, uint16_t out[64]) {
   GbScrSrc s = (GbScrSrc)gs->src[idx];
@@ -410,31 +551,19 @@ void gbscr_flush(GbScreen* gs, const char* legend_extra) {
    * caught by looking at the U2a shots, not by inspection. */
   if (gb_scale_mode == 0) gbscr_paint_legend_1to1(legend_extra);
 
-#ifndef PDNA_DELTA
-  FIL fil; bool fil_open = false;
-#else
-  FusedGbSlice slice = { gs->rom_base, gs->rom_size };
-#endif
+  /* U2b item 1: no FIL, no FusedGbSlice, no SD/cart-space read of any kind here
+   * any more -- every dirty cell is served from the RAM tile cache gbscr_open()
+   * built. `local` is a per-call copy of gs->gu with .read/.ctx rebound to that
+   * cache (gs->gu's own .read/.ctx are stale between calls, same as before). */
+  RomGbUi local = gs->gu;
+  local.read = gbscr_mem_read;
+  local.ctx = &gs->cache;
 
   for (int cy = 0; cy < GBSCR_ROWS; cy++) {
     for (int cx = 0; cx < GBSCR_COLS; cx++) {
       int idx = cy * GBSCR_COLS + cx;
       if (!dirty_test(gs, idx)) continue;
 
-      bool need_rom = (GbScrSrc)gs->src[idx] != GBSCR_SRC_BLANK;
-      RomGbUi local = gs->gu;
-#ifndef PDNA_DELTA
-      if (need_rom) {
-        if (!fil_open) {
-          memset(&fil, 0, sizeof fil);
-          fil_open = (f_open(&fil, gs->rom_path, FA_READ) == FR_OK);
-        }
-        if (!fil_open) { dirty_clear(gs, idx); continue; }
-        local.read = gbscr_sd_read; local.ctx = &fil;
-      }
-#else
-      if (need_rom) { local.read = fused_gb_slice_read; local.ctx = &slice; }
-#endif
       uint16_t tile[64];
       bool ok = gbscr_tile_pixels(gs, &local, idx, tile);
       if (!ok) { dirty_clear(gs, idx); continue; }
@@ -444,10 +573,6 @@ void gbscr_flush(GbScreen* gs, const char* legend_extra) {
       dirty_clear(gs, idx);
     }
   }
-
-#ifndef PDNA_DELTA
-  if (fil_open) f_close(&fil);
-#endif
 
   if (gb_scale_mode != 0) gbscr_paint_legend_stretched(legend_extra);
 }
@@ -461,7 +586,21 @@ void gbscr_flush(GbScreen* gs, const char* legend_extra) {
 void __attribute__((noinline)) gbscr_run_demo(uint8_t gen) {
   GbScreen gs;
   const char* reason = 0;
-  if (!gbscr_open(gen, &gs, &reason)) {
+
+  /* U2b item 1: this demo is reached from Settings (no GB session, no g_ed), so
+   * it takes its OWN tail buffer via app_arena_acquire() rather than
+   * gb12_arena_tail() (which only ever returns non-NULL inside a resident-image
+   * GB session) -- released before returning either way. TEXTBOX is the only
+   * extra block this demo's own border needs; FONT is always cached. */
+  uint32_t need = gbscr_tail_need(gen, GBSCR_NEED_TEXTBOX);
+  uint8_t* tail = app_arena_acquire(need);
+  if (!tail) {
+    snd_deny();   /* the same refusal shape as pdna_gen12.c's arena-busy panel */
+    msg_wait("NOT NOW", UI_WARN, "Save the Pokemon you moved,", "then open the GB screen.");
+    return;
+  }
+  if (!gbscr_open(gen, &gs, tail, need, GBSCR_NEED_TEXTBOX, &reason)) {
+    app_arena_release();
     msg_wait("GB SCREEN SHELL", UI_WARN, reason ? reason : "unavailable", 0);
     return;
   }
@@ -501,6 +640,7 @@ void __attribute__((noinline)) gbscr_run_demo(uint8_t gen) {
     else break;
   }
   gbscr_close(&gs);
+  app_arena_release();
 }
 
 #endif /* !PDNA_GBSCREEN_HOST_TEST */

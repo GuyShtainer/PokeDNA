@@ -350,6 +350,13 @@ bool app_set_walda(uint8_t pattern);
 /* Shared framed yes/no confirm (A = yes, B = no). */
 bool app_confirm(const char* title, const char* l1);
 
+/* U2b item 3: writes config.cfg NOW (Omega-only, same app_can_edit() gate every
+ * config write already carries) -- the GB-screen shell calls this from its own
+ * close path when gb_scale_mode changed during that screen's visit, so SELECT's
+ * 1:1<->stretched toggle survives leaving ANY GB screen (not just Settings' own
+ * B key, which already called this same writer directly before this existed). */
+void app_cfg_save(void);
+
 /* Per-place "moving sprites" toggles (Settings, persisted in config.cfg). Each
  * screen's idle bob/wiggle is gated on its own flag, so the user can calm one place
  * without killing the rest. Box/Party/Dex/Daycare default ON; the summary portrait
