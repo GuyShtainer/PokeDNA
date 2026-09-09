@@ -181,7 +181,7 @@ Output: `PokeDNA.gba`. Copy it to the flashcart SD next to your `.sav` files and
 
 **A fresh clone has no game art (see below) — `./build.sh`/`make rebuild` will stop and tell you
 to either generate it or run `make artless` instead.** `make artless` needs nothing under
-`assets/` and builds out of the box; see *Build variants* and *Graphics assets* below.
+`assets/` and builds out of the box; run `tools/gen_data.py` once after cloning (it generates the gitignored name/stat tables every variant needs). See *Build variants* and *Graphics assets* below.
 
 ### Build variants
 
@@ -209,6 +209,7 @@ them, and `make`/`make sd`/`make delta` (the full-art targets) expect them to be
 that's the normal, IP-clean state of every public checkout, not a broken tree.
 
 **Run `make artless` for a fresh clone to build out of the box, with nothing under `assets/`.**
+First run `tools/gen_data.py` once after cloning (it generates the gitignored name/stat tables every variant needs).
 Every art module has a weak fallback (`source/art_fallbacks.c`): `make artless` (or
 `sd-artless`/`delta-artless`) excludes the generated art from the build entirely and gives you a
 fully working image with original stand-ins — name chips in the PC grid, text lists for the
