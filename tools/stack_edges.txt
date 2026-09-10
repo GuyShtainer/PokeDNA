@@ -9,6 +9,13 @@
 # so THIS FILE is the ground truth, derived by reading every assignment site in source
 # (2026-09-10, BACKLOG #84b).
 #
+# D7 (BACKLOG #84b fourth pass): `-fstack-usage` is unconditional in the Makefile's base
+# CFLAGS (set before any PDNA_TARGET-specific `ifeq` branch, so every one of artless/
+# normal/delta compiles with it) -- the measured ELF IS the shipped ELF, not a separate
+# instrumented build. An earlier pass's "the walker's number might be 4 B off .rodata
+# against a non-instrumented build" caveat is therefore moot: there is no non-instrumented
+# build to be off against.
+#
 # FORMAT (D1 fix -- BACKLOG #84b review found the OLD `caller -> impls` shape exempted
 # every indirect site in a function once ANY one class was declared for it; a new,
 # undeclared function pointer in a multi-class caller like pdna_box passed silently):
