@@ -67,6 +67,19 @@ export OBJCOPY := $(PREFIX)objcopy
 # _EZFO_writeSectors. Reads still worked, so it looked like a save bug.
 # There is no linker-script or _Static_assert way to catch this; it has to be post-link.
 	@e=`$(NM) $@ | awk '/ A __eheap_start$$/{print $$1}'`; 	 if [ -z "$$e" ]; then echo "*** FATAL: no __eheap_start symbol"; rm -f $@; exit 1; fi; 	 v=`printf '%d' 0x$$e`; lim=`printf '%d' 0x02040000`; 	 if [ $$v -gt $$lim ]; then 	   echo "*** FATAL: EWRAM OVERFLOW — .sbss/heap starts at 0x$$e, $$(($$v-$$lim)) bytes past"; 	   echo "***        the end of EWRAM (0x02040000). EWRAM mirrors every 256 KiB, so this"; 	   echo "***        corrupts the flashcart driver at 0x02000000 and breaks every SD write."; 	   echo "***        Shrink a static buffer. Largest EWRAM symbols:"; 	   $(NM) -Sn $@ | awk '$$3=="b"||$$3=="B"||$$3=="d"||$$3=="D"' | sort -k2 -r | head -8; 	   rm -f $@; exit 1; 	 fi; 	 echo "  EWRAM ok: $$(($$lim-$$v)) bytes free below 0x02040000"
+# STACK BUDGET GUARD. There is one user stack (__sp_usr down to __iheap_start) and no MMU
+# guard page: an overrun corrupts the newlib heap and .bss silently. tools/stack_budget.py
+# walks the .su + objdump call graph from main() (handling Thumb-1's intra-function long
+# `bl`, bx-rN indirect thunks, linker veneers, and .constprop/.isra .su name mismatches --
+# see its own header) and fails the build if the deepest chain + 64 B of ISR reentry would
+# leave less than 1024 B of headroom. PDNA_STACK_CHECK=0 skips it (e.g. a throwaway host
+# experiment with no devkitARM objdump on PATH).
+	@if [ "$(PDNA_STACK_CHECK)" = "0" ]; then \
+	   echo "  STACK skip (PDNA_STACK_CHECK=0)"; \
+	 else \
+	   python3 $(dir $(OUTPUT))tools/stack_budget.py --elf $@ --builddir . --root main \
+	     || { rm -f $@; exit 1; }; \
+	 fi
 	$(NM) -Sn $@ > $(basename $(notdir $@)).map
 
 %.a :
@@ -235,6 +248,7 @@ CFLAGS := -mcpu=arm7tdmi -mtune=arm7tdmi -O2 -DFLASHCARTIO_ED_ENABLE=1 -DFLASHCA
 CFLAGS += -Wall
 CFLAGS += $(INCLUDE)
 CFLAGS += -ffast-math -fno-strict-aliasing
+CFLAGS += -fstack-usage         # emits .o-adjacent .su files; tools/stack_budget.py's post-link guard reads them
 ifeq ($(PDNA_TARGET),sd)
 CFLAGS += -DPDNA_STREAM_SPRITES      # SD build: mon_front/mon_back stream shiny+back from the card
 endif

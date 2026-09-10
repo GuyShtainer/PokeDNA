@@ -1,0 +1,84 @@
+# tools/stack_edges.txt - declared indirect-call targets for tools/stack_budget.py
+#
+# Every entry here resolves ONE class of unresolved `bl <bx-rN thunk>` site the call-graph
+# walker in stack_budget.py finds inside the named caller. These are genuine runtime
+# function-pointer dispatches (BoxSource's per-source hooks, source/pdna_box.h:19-63, and
+# the AppCommitFn `commit` parameter threaded through app_mon_menu/app_paste_gb_merge/
+# app_take_item/app_give_item/app_commit_with_dex, source/pdna_app.h:52) — a disassembly
+# walk cannot see through a value loaded from a struct field or a stack-spilled parameter,
+# so THIS FILE is the ground truth, derived by reading every assignment site in source
+# (2026-09-10, BACKLOG #84b):
+#
+#   BoxSource.records    -> pdna_bank.c:295 pdna_gen12.c:565 pdna_main.c:8509  (3 sources)
+#   BoxSource.get_name   -> pdna_bank.c:297 pdna_gen12.c:567 pdna_main.c:8511
+#   BoxSource.set_name   -> pdna_bank.c:298 pdna_gen12.c:568 pdna_main.c:8512
+#   BoxSource.get_wp     -> pdna_bank.c:299 pdna_gen12.c:569 pdna_main.c:8513
+#   BoxSource.set_wp     -> pdna_bank.c:300 pdna_gen12.c:570 pdna_main.c:8514
+#   BoxSource.can_edit   -> pdna_bank.c:301 pdna_gen12.c:571 pdna_main.c:8515
+#   BoxSource.commit     -> pdna_bank.c:302 pdna_gen12.c:572 pdna_main.c:8516 (+ app_commit_sb1,
+#                           pdna_main.c:3431/4749, passed as the SAME AppCommitFn parameter to
+#                           app_mon_menu for party call sites — not a BoxSource field, but the
+#                           identical indirect-call class: the `commit` argument threaded through
+#                           app_mon_menu -> app_take_item/app_give_item -> `commit ? commit() : 0`,
+#                           and app_paste_gb_merge -> app_paste_gb_commit -> app_commit_with_dex
+#                           (inlined) -> `commit ? commit() : 0`)
+#   BoxSource.mark_dirty -> pdna_bank.c:303 pdna_gen12.c:573 pdna_main.c:8517
+#   BoxSource.note_add   -> pdna_main.c:8518 (pcsrc_note_add; the bank leaves it NULL, the GB
+#                           source sets it to 0 explicitly, pdna_gen12.c:574 — every call site
+#                           in pdna_box.c is `if (src->note_add) src->note_add(...)`, so only
+#                           the one live implementation matters)
+#   BoxSource.note_box   -> pdna_gen12.c:575 (gbsrc_note_box; guarded the same way, only the
+#                           GB source sets it — pdna_bank.c/pdna_main.c never do)
+#   BoxSource.capacity   -> pdna_gen12.c:576 (gbsrc_capacity; guarded the same way)
+#
+# Grep that reproduces this list: `grep -rn "\.records *=\|\.get_name *=\|\.set_name *=\|
+# \.get_wp *=\|\.set_wp *=\|\.can_edit *=\|\.commit *=\|\.mark_dirty *=\|\.note_add *=\|
+# \.note_box *=\|\.capacity *=" source/` finds exactly these assignment sites and no others
+# (checked against source/pdna_bank.c, source/pdna_gen12.c, source/pdna_main.c — the only
+# three files that ever populate a BoxSource). `AppSrcOps`/`g_src_ops` (k_gb_ops/k_gb_ops_ro,
+# pdna_gen12.c:2429/2452) is a SEPARATE dispatch table but is not reached from any function on
+# the top-5 chains today (app_mon_menu's RO_VIEW/RO_MOVE/RO_RELEASE/RO_PASTE/RO_CREATE cases
+# call it, but those cases are not on the deepest-chain path) — add it here the day a chain
+# grows to include one of those cases; the guard's own consistency check (any bx-thunk site
+# in a chain function with no line below) will name the function if that ever happens instead
+# of silently trusting a stale list.
+#
+# Format: one class per non-comment line, `caller_function -> impl1 impl2 ...` (space-
+# separated, order doesn't matter). The guard takes the MAX su/estimated frame among the
+# listed implementations for each declared caller (conservative: whichever indirect target
+# turns out to be the deepest is the one charged).
+
+pdna_box -> banksrc_records gbsrc_records pcsrc_records
+pdna_box -> banksrc_get_name gbsrc_get_name pcsrc_get_name
+pdna_box -> banksrc_set_name gbsrc_set_name pcsrc_set_name
+pdna_box -> banksrc_get_wp gbsrc_get_wp pcsrc_get_wp
+pdna_box -> banksrc_set_wp gbsrc_set_wp pcsrc_set_wp
+pdna_box -> banksrc_can_edit gbsrc_can_edit app_can_edit
+pdna_box -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+pdna_box -> banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty
+pdna_box -> pcsrc_note_add
+pdna_box -> gbsrc_note_box
+pdna_box -> gbsrc_capacity
+
+party_strip_overlay -> banksrc_records gbsrc_records pcsrc_records
+
+app_mon_menu -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+app_paste_gb_merge -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+
+# LOWER-CONFIDENCE (newlib internal, not our source -- found 2026-09-10 while certifying G2
+# on the full-art delta/normal builds, where this chain ranks in the top 5 only because the
+# write-path chain above is smaller there than on artless): _svfiprintf_r's own compiled body
+# (the `siprintf`/`sniprintf` family's integer-only backend -- S4/#84a's replacement for the
+# float-pulling `snprintf`/`vsnprintf`) contains one `bl <bx r5 thunk>` right after a call to
+# `__locale_mb_cur_max`, with r5 loaded from a RUNTIME table indexed off `_reent` -- the
+# classic newlib per-reentrant-struct `_mbtowc` hook used by wide/multibyte conversion
+# specifiers. `__utf8_mbtowc` is the ONLY mbtowc-shaped symbol anywhere in this link (no
+# `__ascii_mbtowc` -- this devkitARM newlib build is UTF-8-only), and nothing in this
+# codebase ever calls setlocale()/mbtowctowc-family setters, so the hook can only ever hold
+# the one value newlib's reentrant-struct initializer gives it. Declared on that inference,
+# NOT verified against newlib source (not present in this environment/devkitPro install --
+# no libc source to grep the initializer against). __utf8_mbtowc is a 2-push, no-`bl` leaf
+# (est. ~32 B), nowhere near large enough to change which chain is deepest (chain #1 here is
+# 7,824 B; this one tops out at 1,960 B even before adding it) -- re-verify against newlib
+# source the day someone has it, or if a future build ever makes this chain rank #1.
+_svfiprintf_r -> __utf8_mbtowc
