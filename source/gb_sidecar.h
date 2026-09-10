@@ -47,7 +47,21 @@
  *   +32   4   exp_written
  *   +36   4   rtc_epoch of the transfer (0 if the RTC was absent)
  *   +40   80  ORIGINAL Gen-3 record (the box-shaped 80-byte core)
- *   +120  6   pad (0)
+ *   +120  1   written_level (BACKLOG #104 R1) -- the level ACTUALLY WRITTEN to the
+ *             Game Boy record at transfer time (gb_get_level() of `written`, the
+ *             same object species_written/exp_written already come from). 0 is a
+ *             SENTINEL, not a real level (no Game Boy Pokemon is ever level 0):
+ *             it means "this entry predates R1" -- every entry gbsc_add() wrote
+ *             before this field existed has this byte at its old pad value, 0,
+ *             because gbsc_add() memset()s the whole entry to 0 before filling it.
+ *             gbsc_merge_up()'s merge_species_and_level() reads 0 as "fall back to
+ *             comparing against the ORIGINAL's own decoded level" (today's exact,
+ *             pre-R1 behaviour), and a nonzero value as "compare against THIS
+ *             instead" -- the fix that lets a MAKE-LEGAL level correction (which
+ *             changes what is written without changing what the ORIGINAL was) be
+ *             told apart from a genuine in-game level-up. See gb_sidecar.c's
+ *             merge_species_and_level() for the comparison itself.
+ *   +121  5   pad (0)
  *   +126  2   entry crc16 (CRC-16/CCITT-FALSE over bytes +0..+125)
  *
  * ---- THE FINGERPRINT ---------------------------------------------------------
@@ -112,6 +126,12 @@ typedef struct {
    * field back into a GbaRtcTime today, so the ambiguity has no consequence yet. */
   uint32_t rtc_epoch;
   uint8_t  original80[80];
+  uint8_t  written_level;                /* BACKLOG #104 R1 -- 0 == pre-R1 entry, see
+                                           * the entry layout comment above. Placed
+                                           * LAST (not next to exp_written) so it adds
+                                           * no internal struct padding a whole-struct
+                                           * memcmp (host_gen3gb_test.c's own sidecar-
+                                           * roundtrip check) would trip on. */
 } GbscEntry;
 
 /* Fills every field of `e` from the record `gen3_to_gb` just built (`written`) and the
@@ -184,7 +204,8 @@ int gbsc_remove(uint8_t* buf, uint32_t* len, int idx);
  * reproduces the original 80 bytes byte for byte. */
 typedef struct {
   bool evolved;          /* species differs from species_written                     */
-  bool level_changed;     /* EXP differs from exp_written                             */
+  bool level_changed;     /* level differs from written_level (or, for a pre-R1 entry
+                            * with written_level == 0, from the ORIGINAL's own level) */
   bool moves_changed;     /* any of the 4 moves or their PP Ups differ                */
   bool renamed;           /* nickname bytes differ and the new text was applied       */
   bool rename_refused;    /* nickname bytes differ but decoded to something the

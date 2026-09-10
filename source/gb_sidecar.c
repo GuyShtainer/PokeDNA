@@ -92,6 +92,7 @@ void gbsc_entry_from(GbscEntry* e, const GbEditMon* written, const uint8_t* orig
   memcpy(e->otname_written, written->otname, GB_NAME_BYTES);
   memcpy(e->nick_written,   written->nick,   GB_NAME_BYTES);
   e->exp_written = gb_get_exp(written);
+  e->written_level = gb_get_level(written);   /* BACKLOG #104 R1 */
   e->rtc_epoch   = rtc_epoch;
   memcpy(e->original80, original80, 80);
 }
@@ -100,7 +101,9 @@ void gbsc_entry_from(GbscEntry* e, const GbEditMon* written, const uint8_t* orig
  * Entry byte layout (GBSC_ENTRY == 128), see gb_sidecar.h for the field table. */
 enum {
   E_GEN = 0, E_CLAIMED = 1, E_SPECIES = 2, E_OTID = 4, E_DV4 = 6,
-  E_OTNAME = 10, E_NICK = 21, E_EXP = 32, E_RTC = 36, E_ORIG80 = 40, E_CRC = 126
+  E_OTNAME = 10, E_NICK = 21, E_EXP = 32, E_RTC = 36, E_ORIG80 = 40,
+  E_LEVEL = 120,   /* BACKLOG #104 R1 -- 1 byte of the old 6-byte pad, see gb_sidecar.h */
+  E_CRC = 126
 };
 
 int gbsc_init(uint8_t* buf, uint64_t key) {
@@ -150,7 +153,7 @@ int gbsc_add(uint8_t* buf, uint32_t* len, uint32_t cap, const GbscEntry* e) {
   wr32(dst + E_EXP, e->exp_written);
   wr32(dst + E_RTC, e->rtc_epoch);
   memcpy(dst + E_ORIG80, e->original80, 80);
-  /* bytes [120..125]: pad, already zero */
+  dst[E_LEVEL] = e->written_level;   /* BACKLOG #104 R1 -- bytes [121..125]: pad, zero */
   wr16(dst + E_CRC, crc16(dst, GBSC_ENTRY - 2));
 
   buf[5] = (uint8_t)(count + 1);
@@ -162,6 +165,16 @@ int gbsc_add(uint8_t* buf, uint32_t* len, uint32_t cap, const GbscEntry* e) {
 bool gbsc_get(const uint8_t* buf, uint32_t len, int idx, GbscEntry* out) {
   int count = gbsc_count(buf, len);
   if (count < 0 || !out || idx < 0 || idx >= count) return false;
+  /* BACKLOG #104 R1: written_level's placement (last field, after original80[80])
+   * leaves 3 bytes of trailing struct alignment padding this function never wrote
+   * a single byte at, since every field above is explicitly assigned rather than
+   * memcpy'd whole. Zeroing `out` first (matching gbsc_entry_from()'s own first
+   * line) means two independently-built GbscEntry values with identical field
+   * content are also identical BYTE FOR BYTE, including padding -- the exact thing
+   * host_gen3gb_test.c's own whole-struct memcmp("sidecar entry decodes back
+   * exactly") already assumed was true and, before this field added any padding at
+   * all, happened to be true by accident. */
+  memset(out, 0, sizeof *out);
   const uint8_t* e = buf + GBSC_HEADER + (uint32_t)idx * GBSC_ENTRY;
   out->gen             = e[E_GEN];
   out->claimed         = e[E_CLAIMED];
@@ -171,6 +184,7 @@ bool gbsc_get(const uint8_t* buf, uint32_t len, int idx, GbscEntry* out) {
   memcpy(out->otname_written, e + E_OTNAME, GB_NAME_BYTES);
   memcpy(out->nick_written,   e + E_NICK,   GB_NAME_BYTES);
   out->exp_written = rd32(e + E_EXP);
+  out->written_level = e[E_LEVEL];   /* BACKLOG #104 R1 -- 0 on any pre-R1 entry */
   out->rtc_epoch   = rd32(e + E_RTC);
   memcpy(out->original80, e + E_ORIG80, 80);
   return true;
@@ -269,9 +283,33 @@ static void merge_species_and_level(EditMon* em, const GbscEntry* e, const GbEdi
    * it, and there is nothing else to write. So a same-level EXP change on the Game
    * Boy is simply not applied — the Gen-3 side keeps its own precise EXP — and only
    * an actual level change (the one thing the player can see and this merge can
-   * therefore know really happened) moves it. */
-  if (have_orig && gb_get_level(now) != orig->level) {
-    em_set_level(em, gb_get_level(now));
+   * therefore know really happened) moves it.
+   *
+   * BACKLOG #104 R1: the baseline this compares against is `e->written_level`, NOT
+   * `orig->level`, whenever written_level is present (nonzero). Without this, a MAKE
+   * LEGAL correction (which raises the level ACTUALLY WRITTEN to the Game Boy record,
+   * while the ORIGINAL Gen-3 record it can still restore is deliberately left at its
+   * true, uncorrected level — docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c, "the
+   * ledger is written from KEEP AS IS's candidate, ALWAYS") would be indistinguishable
+   * from a genuine in-game level-up the moment the mon merges back up with no further
+   * Game-Boy-side edit: `now` (the corrected write) would differ from `orig->level`
+   * (the true original) and this function would fold the correction into the merged
+   * Gen-3 record instead of restoring the true original byte for byte. written_level
+   * is what was ACTUALLY written (gbsc_entry_from() reads it off the same `written`
+   * object species_written/exp_written already come from, so it already reflects a
+   * MAKE LEGAL correction if one was applied before the write) — comparing against it
+   * means "no further change since the write" reads as level_changed == false, and
+   * the original 80 bytes come back untouched. written_level == 0 is a entry-format
+   * sentinel (no Game Boy Pokemon is ever level 0): every entry gbsc_add() wrote
+   * before this field existed has that byte at its old pad value, 0, so those entries
+   * fall back to the exact pre-R1 comparison against `orig->level` — unchanged
+   * behaviour for every sidecar file already on a user's card. */
+  uint8_t level_now = gb_get_level(now);
+  uint8_t baseline = e->written_level;
+  bool have_baseline = (baseline != 0);
+  if (!have_baseline && have_orig) { baseline = (uint8_t)orig->level; have_baseline = true; }
+  if (have_baseline && level_now != baseline) {
+    em_set_level(em, level_now);
     rep->level_changed = true;
   }
 }

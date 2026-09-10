@@ -2,6 +2,7 @@
 #include "gen3_mon.h"      /* PkMon, pk_decode_mon, pk_resolve, PK_* stat order */
 #include "gen3_box.h"      /* pk_resolve — fills level/gender for a BOX record */
 #include "data_tables.h"   /* pk_national_no, pk_species_ability, growth/exp tables */
+#include "evolutions.h"    /* pk_evo_have_data/pk_evo_min_level — BACKLOG #104 R1 */
 #include <string.h>
 
 /* ---- status text ----------------------------------------------------------- */
@@ -246,4 +247,20 @@ G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1bas
 
   *out = e;
   return G3GB_OK;
+}
+
+/* ---- BACKLOG #104 R1: the MAKE LEGAL correction --------------------------------
+ * See gen3_to_gb.h for the contract. */
+bool gen3_to_gb_evo_needs_fix(const GbEditMon* out, uint8_t* from_level, uint8_t* to_level) {
+  if (!out) return false;
+  if (!pk_evo_have_data()) return false;         /* "no data" never manufactures a fix */
+  uint16_t dex = gb_get_species_dex(out);
+  if (dex == 0) return false;
+  int min_lvl = pk_evo_min_level(dex);
+  if (min_lvl == PK_EVO_NO_DATA || min_lvl <= 1) return false;
+  uint8_t cur = gb_get_level(out);
+  if (cur >= (uint8_t)min_lvl) return false;
+  if (from_level) *from_level = cur;
+  if (to_level)   *to_level   = (uint8_t)min_lvl;
+  return true;
 }
