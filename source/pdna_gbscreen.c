@@ -178,19 +178,21 @@ uint32_t gbscr_block_bytes(uint8_t gen, GbScrSrc src) {
     case GBSCR_SRC_TEXTBOX:   return (gen == PDNA_GEN1) ? 32u * 16u : 54u * 8u;
     case GBSCR_SRC_CARDFRAME: return 40u * 16u;
     case GBSCR_SRC_BADGES:    return (gen == PDNA_GEN1) ? 64u * 16u : 44u * 16u;
-    /* U3: Gen 2's own card blocks (docs/GB-GAME-SCREENS-DESIGN.md sec 2.2,
-     * cross-checked against the real tilemap captures -- tools/ dumps at
-     * /tmp/u3/real/{gold,crystal}/tilemap_p{1,2}.json): FONTEXTRA 32 tiles
-     * 2bpp (512 B, only 2 used -- ID/No); LEADERS 86 tiles 2bpp (1,376 B: 80
-     * for the 8 gym-leader faces + 6 for the "BADGES" page-2 word, only 5
-     * used); CARDGFX 6 tiles 2bpp (96 B, only 5 used -- the "STATUS" page-1
-     * word); CARDPIC_M/F 35 tiles 2bpp (560 B, the 5x7 card photo). */
+    /* U3 (re-anchored, see the STATUSWORD/CARDGFX comment on
+     * gbscr_block_off() below): FONTEXTRA 32 tiles 2bpp (512 B, unused by
+     * the fixed painter, kept for other callers); LEADERS 86 tiles 2bpp
+     * (1,376 B: 80 for the 8 gym-leader faces + 6 for the "BADGES" page-2
+     * word, only 5 used); CARDGFX 6 tiles 2bpp (96 B: border fill, notch,
+     * divider fill, divider cap, "ID", "No" -- all 6 used); CARDPIC_M/F 35
+     * tiles 2bpp (560 B, the 5x7 card photo); STATUSWORD 6 tiles 2bpp
+     * (96 B: the 5 "STATUS" glyphs + the play-time colon, immediately
+     * before LEADERS). */
     case GBSCR_SRC_FONTEXTRA: return 32u * 16u;
     case GBSCR_SRC_LEADERS:   return 86u * 16u;
     case GBSCR_SRC_CARDGFX:   return 6u * 16u;
     case GBSCR_SRC_CARDPIC_M: return 35u * 16u;
     case GBSCR_SRC_CARDPIC_F: return 35u * 16u;
-    case GBSCR_SRC_STATUSWORD: return 11u * 16u;
+    case GBSCR_SRC_STATUSWORD: return 6u * 16u;
     default:                  return 0;
   }
 }
@@ -214,7 +216,7 @@ uint32_t gbscr_block_off(const RomGbUi* gu, uint8_t gen, GbScrSrc src) {
     case GBSCR_SRC_CARDGFX:   return gu->cardgfx;
     case GBSCR_SRC_CARDPIC_M: return gu->cardpic_m;
     case GBSCR_SRC_CARDPIC_F: return gu->cardpic_f;
-    case GBSCR_SRC_STATUSWORD: return gu->leaders ? gu->leaders - 176u : 0u;
+    case GBSCR_SRC_STATUSWORD: return gu->leaders ? gu->leaders - 96u : 0u;
     default:                  return 0;
   }
 }
@@ -679,7 +681,7 @@ static bool gbscr_tile_pixels(const GbScreen* gs, RomGbUi* local, int idx, uint1
     case GBSCR_SRC_CARDPIC_F:
       return rom_gbui_tile(local, local->cardpic_f, v, 2, 5, 7, local->cardpic_colmajor, out) != 0;
     case GBSCR_SRC_STATUSWORD: {
-      uint32_t off = local->leaders ? local->leaders - 176u : 0u;
+      uint32_t off = local->leaders ? local->leaders - 96u : 0u;
       return rom_gbui_tile(local, off, v, 2, 0, 0, 0, out) != 0;
     }
     case GBSCR_SRC_PIC:

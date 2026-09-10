@@ -743,22 +743,19 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
 enum { G2C_NAME = 0, G2C_ID, G2C_MONEY, G2C_TIME, G2C_P1_MAX };
 enum { G2C_BADGE0 = 0, G2C_P2_MAX = 8 };
 
-/* Border fill only -- the one TEXTBOX(frames)-relative tile this card still
- * uses directly. */
-enum { G2F_FILL = 0 };
-/* GBSCR_SRC_STATUSWORD-relative indices (see that source's own header
- * comment for how these 11 tiles were found -- byte-searching the ROM for
- * each tile's own REAL VRAM pattern, captured live, not guessed): the
- * border notch, the divider, "ID"/"No", the 5 "STATUS"-word tiles, then the
- * play-time colon -- one contiguous run immediately before LEADERS. Two
- * earlier hypotheses (FontExtra, TrainerCardGFX/CARDGFX) both painted wrong
- * content and were caught by looking at the actual mGBA shot, not by the
- * celldiff model (which only checks tile-ID CLASSIFICATION consistency, not
- * whether the chosen ROM block's bytes are the real content). */
-enum {
-  G2X_NOTCH = 0, G2X_DIVFILL = 1, G2X_DIVCAP = 2, G2X_ID = 3, G2X_NO = 4,
-  G2X_STATUS0 = 5, G2X_COLON = 10
-};
+/* U3 re-anchor (found by byte-searching the ROM for each tile's own REAL
+ * VRAM pattern, captured live, not guessed -- the celldiff model only
+ * checks tile-ID CLASSIFICATION consistency, not whether the chosen block's
+ * bytes are the real content, so two earlier hypotheses both painted wrong
+ * content and were only caught by looking at the actual mGBA shot). Real
+ * tiles $23-$28 (border/body checkerboard fill, the border notch, the
+ * divider fill, the divider cap, "ID", "No") all come from CARDGFX, the
+ * card's own small 6-tile block, indices 0..5. Real tiles $29-$2E (the 5
+ * "STATUS"-word tiles, then the play-time colon) are a 6-tile run
+ * immediately before LEADERS -- GBSCR_SRC_STATUSWORD is anchored there
+ * (gbscr_block_off()/gbscr_block_bytes()), indices 0..5. */
+enum { G2G_FILL = 0, G2G_NOTCH = 1, G2G_DIVFILL = 2, G2G_DIVCAP = 3, G2G_ID = 4, G2G_NO = 5 };
+enum { G2X_STATUS0 = 0, G2X_COLON = 5 };
 /* The card lists the 8 leaders in GYM order (row-major k=0..7), but the
  * badge byte's bits are in BADGE order (Zephyr..Rising, which does not match
  * gym order for the last four gyms) -- Storm Badge is bit 5 and lights the
@@ -782,18 +779,31 @@ static uint16_t g2_frame_ctr;
 
 static void g2card_border(GbScreen* gs) {
   for (int x = 0; x < 20; x++) {
-    gbscr_cell(gs, x, 0, GBSCR_SRC_TEXTBOX, G2F_FILL);
-    gbscr_cell(gs, x, 17, GBSCR_SRC_TEXTBOX, G2F_FILL);
+    gbscr_cell(gs, x, 0, GBSCR_SRC_CARDGFX, G2G_FILL);
+    gbscr_cell(gs, x, 17, GBSCR_SRC_CARDGFX, G2G_FILL);
   }
   for (int y = 0; y < 18; y++) {
-    gbscr_cell(gs, 0, y, GBSCR_SRC_TEXTBOX, G2F_FILL);
-    gbscr_cell(gs, 19, y, GBSCR_SRC_TEXTBOX, G2F_FILL);
+    gbscr_cell(gs, 0, y, GBSCR_SRC_CARDGFX, G2G_FILL);
+    gbscr_cell(gs, 19, y, GBSCR_SRC_CARDGFX, G2G_FILL);
   }
-  gbscr_cell(gs, 1, 7, GBSCR_SRC_STATUSWORD, G2X_NOTCH);
-  gbscr_cell(gs, 1, 16, GBSCR_SRC_STATUSWORD, G2X_NOTCH);
+  gbscr_cell(gs, 1, 7, GBSCR_SRC_CARDGFX, G2G_NOTCH);
   /* row 8 (the STATUS/BADGES strip) is border-fill EXCEPT the word graphic --
    * g2card_paint() overwrites cols 2-6 with STATUSWORD/LEADERS right after this. */
-  for (int x = 1; x < 19; x++) gbscr_cell(gs, x, 8, GBSCR_SRC_TEXTBOX, G2F_FILL);
+  for (int x = 1; x < 19; x++) gbscr_cell(gs, x, 8, GBSCR_SRC_CARDGFX, G2G_FILL);
+  /* U3 fix (D1): the body (rows 9-16, cols 1-18) is NOT re-painted by either
+   * page's cell set in full -- page 1 leaves the badge grid's cells blank
+   * and page 2 leaves POKeDEX/PLAY TIME's cells blank, so without an
+   * explicit clear here a page flip leaks the other page's content into
+   * those cells (55 cells, confirmed via leak.py against the real capture).
+   * Both g2card_paint_page1() and g2card_paint_page2() call this border
+   * function before painting their own body, so blanking here runs on
+   * every flip regardless of which page is being entered. Runs BEFORE the
+   * bottom notch below: the notch at row 16 sits inside this blanked range
+   * and must be drawn after the sweep, not before it. */
+  for (int y = 9; y <= 16; y++)
+    for (int x = 1; x <= 18; x++)
+      gbscr_cell(gs, x, y, GBSCR_SRC_BLANK, 0);
+  gbscr_cell(gs, 1, 16, GBSCR_SRC_CARDGFX, G2G_NOTCH);
 }
 
 /* The upper half (NAME/ID/MONEY/pic/divider) is IDENTICAL on both pages --
@@ -802,8 +812,8 @@ static void g2card_paint_upper(GbScreen* gs, const GbTrainer* t, bool female) {
   gbscr_text(gs, 2, 2, "NAME/");
   gbscr_raw(gs, 7, 2, t->name_raw, GB_OT_GLYPHS);
 
-  gbscr_cell(gs, 2, 4, GBSCR_SRC_STATUSWORD, G2X_ID);
-  gbscr_cell(gs, 3, 4, GBSCR_SRC_STATUSWORD, G2X_NO);
+  gbscr_cell(gs, 2, 4, GBSCR_SRC_CARDGFX, G2G_ID);
+  gbscr_cell(gs, 3, 4, GBSCR_SRC_CARDGFX, G2G_NO);
   char buf[16];
   siprintf(buf, "%05u", (unsigned)t->trainer_id);
   gbscr_text(gs, 5, 4, buf);
@@ -821,8 +831,8 @@ static void g2card_paint_upper(GbScreen* gs, const GbTrainer* t, bool female) {
       gbscr_cell(gs, 14 + tx, 1 + ty, pic_src, (uint8_t)(ty * 5 + tx));
   gbscr_cell(gs, 18, 9, pic_src, 4);   /* the repeat cell -- see file comment */
 
-  for (int x = 1; x <= 12; x++) gbscr_cell(gs, x, 3, GBSCR_SRC_STATUSWORD, G2X_DIVFILL);
-  gbscr_cell(gs, 13, 3, GBSCR_SRC_STATUSWORD, G2X_DIVCAP);
+  for (int x = 1; x <= 12; x++) gbscr_cell(gs, x, 3, GBSCR_SRC_CARDGFX, G2G_DIVFILL);
+  gbscr_cell(gs, 13, 3, GBSCR_SRC_CARDGFX, G2G_DIVCAP);
 }
 
 static void g2card_paint_page1(GbScreen* gs, const GbTrainer* t, bool female) {
@@ -918,7 +928,7 @@ static void g2card_edit_sel(GbTrainer* t, int page, int sel) {
 __attribute__((noinline))
 static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
   uint16_t pic_need = female ? GBSCR_NEED_CARDPIC_F : GBSCR_NEED_CARDPIC_M;
-  uint16_t need_mask = GBSCR_NEED_TEXTBOX | GBSCR_NEED_STATUSWORD |
+  uint16_t need_mask = GBSCR_NEED_CARDGFX | GBSCR_NEED_STATUSWORD |
                        GBSCR_NEED_LEADERS | GBSCR_NEED_BADGES | pic_need;
   uint32_t shell_need = gbscr_tail_need(PDNA_GEN2, need_mask);
   uint8_t* tail = gb12_arena_tail(shell_need);
