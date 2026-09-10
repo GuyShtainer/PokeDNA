@@ -618,11 +618,13 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         s.tap("DOWN", settle=gb_shots.SETTLE)                # row 3 -> row 4 (still visible)
         s.tap("DOWN", settle=gb_shots.SETTLE)                # row 4 -> scrolls: the window
                                                                 # shifts down one row per press
-        s.shot("04_scrolled", "U4: DOWN past the 4th visible row scrolls the whole "
-                               "window down one row (verified against the real cart: "
-                               "6 DOWN presses on a 19-item Items pocket shift the "
-                               "visible names by exactly one each press, no tile-visible "
-                               "scroll marker on either build)")
+        s.shot("04_scrolled", "U4: DOWN past the 4th visible row scrolls the window; "
+                               "the cursor stays PINNED at the 3rd visible row (D3, "
+                               "U4 review) and a down-scroll marker (font tile 0xEE) "
+                               "BLINKS at (18,11) while more of the list is below -- it "
+                               "is a real, visible tile (an earlier draft of this "
+                               "caption claimed no marker exists at all; it does, this "
+                               "shot's own blink phase just happened to land OFF)")
 
         s.tap("LEFT", settle=gb_shots.BIG_SETTLE)             # Items -> the PC store (same box)
         s.shot("05_pc_store", "U4: LEFT/RIGHT switches Items <-> the PC item store -- "
@@ -653,7 +655,10 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         s.shot("08_add_item_id", "U4: ADD ITEM asks for a raw item id (1-250) -- no "
                                   "item-name table this slice (time-boxed, see "
                                   "pdna_gbbag.h); the list itself already prints "
-                                  "'ITEM #n' for the same reason")
+                                  "'ITEM-n' for the same reason ('-' not '#': "
+                                  "'#' has no Gen-1 glyph, D9). Cancelling either "
+                                  "prompt now aborts the whole ADD (num_entry_opt, D5) "
+                                  "instead of silently inserting id 1 x1.")
 
         # osk_search's own key contract (source/osk.c): A INSERTS the on-screen
         # keyboard's currently-highlighted glyph (row 0 is the digit row "1234567890",
@@ -680,19 +685,28 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
         s.tap("A", settle=gb_shots.SETTLE)                     # type '5'
         s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm qty=5 -> gbb_insert(...,77,5)
         s.shot("09_saturation_refusal", "U4: merging qty 5 into id 77 (already at the "
-                                         "99 cap) saturates and refuses -- "
-                                         "gbb_insert() clamps the stack at 99 and "
-                                         "returns GBB_ERR_QTY; gbbag_start_menu's own "
-                                         "msg_wait('SATURATED', ...) reports it, and "
-                                         "the list is left UNCHANGED (id 77 still "
-                                         "shows qty 99, not 104) -- host_gbbag_test's "
-                                         "own 'merge into a stack already at 99 "
-                                         "saturates and refuses' case is the same "
-                                         "logic, host-side")
+                                         "99 cap) saturates and refuses -- gbb_insert() "
+                                         "SETS the existing stack to the cap (99) and "
+                                         "returns GBB_ERR_QTY (gb_bag.c's own 'sum > "
+                                         "cap' branch WRITES list->entries[i].qty = "
+                                         "GBB_QTY_CAP, it does not merely refuse); "
+                                         "gbbag_start_menu's own msg_wait('SATURATED', "
+                                         "...) reports it. In THIS capture id 77 was "
+                                         "already at 99, so the write is a no-op you "
+                                         "cannot see on screen -- that is a property of "
+                                         "the starting value, not of the mechanism.")
         s.tap("A", settle=gb_shots.BIG_SETTLE)                 # dismiss the msg_wait -- back on the list
-        s.shot("09b_after_add", "U4: after dismissing the refusal, back on the list -- "
-                                 "id 77's own row (scroll down to see it) still reads "
-                                 "x99, confirming the saturation refusal made no write")
+        # D6 (U4 review): the OLD version of this shot left the cursor on the list's
+        # LAST slot (id 16, index 18) -- id 77 (index 10) was never actually in
+        # frame despite the caption claiming "id 77's own row (scroll down to see
+        # it)". Scroll the cursor back up onto id 77's own row so the claim in the
+        # caption is what the pixels actually show.
+        s.press_n("UP", 8, settle=gb_shots.SETTLE)             # index 18 -> index 10 (id 77)
+        s.shot("09b_after_add", "U4: after dismissing the refusal, cursor moved back "
+                                 "up onto id 77's own row -- it reads x99, confirming "
+                                 "the saturating write landed exactly where it started "
+                                 "(99 -> 99, see the 09 caption above)")
+        s.press_n("DOWN", 8, settle=gb_shots.SETTLE)           # back to index 18 for REMOVE below
 
         # The saturation refusal above made NO byte change (99 -> clamped-to-99 is a
         # true no-op), so B here would take the silent memcmp-no-op path, not the

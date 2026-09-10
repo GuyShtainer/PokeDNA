@@ -10,8 +10,12 @@
  *
  * Ground truth (mGBA `tools/gb_roundtrip.py`'s own `_drive()` driving Red.gb +
  * Red.sav and Yellow.gb + Yellow.sav to START > ITEM, dumping the window
- * tilemap at 0x9C00 -- LCDC=0xE3: bit6=1 selects window map 0x9C00, bit4=1
- * selects UNSIGNED $8000 tile addressing, WX=7/WY=0 = full-screen window):
+ * tilemap at 0x9C00 -- LCDC=0xE3: bit6=1 selects window map 0x9C00, bit4
+ * CLEAR selects SIGNED $8800 tile addressing (U4 fix-pass review, D6: the
+ * previous wording here had this bit backwards -- "bit4=1 selects UNSIGNED
+ * $8000" -- 0xE3's bit4 is 0, and the real cartridge's own tile ids for this
+ * screen, e.g. TEXTBOX-relative 25-31, only decode correctly under SIGNED
+ * $8800 addressing), WX=7/WY=0 = full-screen window):
  *
  *  - The list box is (4,2)-(19,12) inclusive (LIST_MENU_BOX), on the WINDOW
  *    layer -- NOT the BG map the design doc's own §1.3 table guessed; matches
@@ -35,26 +39,35 @@
  *    (SCREEN_WIDTH+8 from the name's own start, exactly matching the design
  *    doc's citation) -- confirmed on Yellow that a key item (BICYCLE, SUPER
  *    ROD) leaves that row BLANK, a regular item (ESCAPE ROPE, MASTER BALL)
- *    fills it, matching "key items print no quantity".
- *  - Scrolling: pressing DOWN past the 4th visible row shifts the whole
- *    window down by one row per press (verified across 6 DOWN presses on a
- *    19-item Items pocket) with NO tile-visible scroll marker at (5,3) or
- *    anywhere else this shell's tilemap oracle can see -- the design doc's
- *    own "(5,3) scroll-up marker" either does not exist as a BG/window tile
- *    or (more likely, given U3's precedent: the Gen-2 badge overlay is a
- *    sprite the same oracle cannot see either) is an OAM sprite. This shell
- *    has no sprites (same posture as every other GB screen here), so no
- *    scroll marker is drawn; an accepted deviation, not a bug.
+ *    fills it, matching "key items print no quantity" (implemented via
+ *    gbb_is_g1_key_item(), gb_bag.h -- see that function's own comment for
+ *    the "documented fallback, not a located ROM table" note).
+ *  - The list is `count` real entries PLUS a trailing, cursor-selectable
+ *    CANCEL row (index == count) -- confirmed by scrolling a 19-item Items
+ *    pocket all the way down: the 20th "row" reads CANCEL and A on it does
+ *    the same "leave" action as B. Scrolling CLAMPS at both ends (no wrap:
+ *    UP at the first row stays put, DOWN at CANCEL stays put) and PINS the
+ *    cursor at the 3rd visible row (screen row 8) once scrolled two rows
+ *    past the top -- verified with a 52-press real-cartridge trace (26x
+ *    DOWN then 26x UP) whose per-press cursor ROW sequence matches this
+ *    shell's own gbbag_clamp_scroll() exactly (pdna_gbbag.c). A down-scroll
+ *    marker (font tile 0xEE) BLINKS at screen cell (18,11) exactly while
+ *    more of the list sits below the 4 visible rows -- it IS a real,
+ *    visible tile on the window layer, contrary to an earlier draft of
+ *    this comment that guessed it must be an invisible-to-this-oracle OAM
+ *    sprite; that guess was wrong, not the tool.
  *  - Below the list, a SEPARATE nested text box at (10,12)-(19,15) holds
  *    "EXIT" (not "CANCEL" -- the design doc's own guess) at row 14, cols
  *    12-15; its top edge (row 12, cols 10-19) is literally the SAME cells as
  *    the main box's own bottom divider row, which spans the full (4,12)-
  *    (19,12) width using the divider-corner tiles 29/30 at its own ends.
- *    This screen does not make "EXIT" independently cursor-selectable (no
- *    capture exercised moving the cursor onto it, and it is drawn as a
- *    visually separate box, not a 5th list row) -- B does the equivalent
- *    "leave" action instead, the same contract every other GB screen's own
- *    B key already carries here.
+ *    This box is the LEFTOVER real-cartridge START MENU widget still
+ *    resident under the list (the real game's own Items screen sits on top
+ *    of an already-drawn START menu) -- it is NOT this item screen's own
+ *    cancel mechanism (that is the list's own trailing CANCEL row above);
+ *    this shell keeps drawing it purely for visual parity with the real
+ *    capture, not because it does anything here. It is not independently
+ *    cursor-selectable on this shell either way.
  *  - The PC item store re-uses the IDENTICAL box/list routine over a
  *    different pocket (design doc's own citation: "ITEMLISTMENU again, over
  *    wNumBoxItems") -- not independently pixel-dumped in this slice (reaching
@@ -64,12 +77,20 @@
  *  - SWAP (the game's SELECT-to-swap feature) is NOT bound to SELECT here --
  *    SELECT is the shell's own 1:1<->stretched toggle (design sec 1.5,
  *    required on every GB screen) -- it lives on the START menu instead,
- *    alongside ADD ITEM / REMOVE / TOSS.
+ *    alongside ADD ITEM / REMOVE / TOSS. It is pick-source-then-destination,
+ *    matching the real game: START > SWAP arms the row the cursor was on,
+ *    the list is shown again, A on a different real row swaps the two and
+ *    disarms, B disarms without leaving the screen. No real-cartridge
+ *    capture exists for the armed source row's own marker glyph in this
+ *    slice -- this shell re-uses the cursor tile (0xED) there, a documented
+ *    deviation pending a real capture, not a verified fact.
  *  - Item names: NOT located by this slice (time-boxed, brief's own
- *    permission) -- every item prints "ITEM #n" (n = the raw id byte) rather
- *    than a real name; ships no names table, no decoded pixel/text data. The
- *    dump's own on-screen names ("TM10", "BICYCLE", ...) are quoted in this
- *    comment purely as ground truth for the CELL LAYOUT, never as shipped data.
+ *    permission) -- every item prints "ITEM-n" (n = the raw id byte; '-'
+ *    because '#' has no Gen-1 glyph and silently rendered as a blank space)
+ *    rather than a real name; ships no names table, no decoded pixel/text
+ *    data. The dump's own on-screen names ("TM05", "BICYCLE", ...) are
+ *    quoted in this comment purely as ground truth for the CELL LAYOUT,
+ *    never as shipped data.
  *
  * `s` must already be open (gbs_open, Gen-1 only -- gbb_field_present() gates
  * every pocket this game lacks, but the whole screen itself is Gen-1 ONLY;

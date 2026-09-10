@@ -213,9 +213,24 @@ def render_sheet(entries: list[tuple[Path, str]], out_path: Path, *,
                       fill=(248, 81, 73), font=font)
             continue
         img = Image.open(path).convert("RGB")
-        img = img.resize((img.width * scale, img.height * scale), Image.NEAREST)
-        sheet.paste(img, (cx + PAD, cy + PAD))
-        draw.rectangle([cx + PAD, cy + PAD, cx + PAD + img.width - 1, cy + PAD + img.height - 1],
+        # D6 (U4 review): this used to unconditionally resize by `scale` and
+        # paste at native size -- correct for a plain GBA (240x160) capture,
+        # but a REAL_*.png ground-truth capture is a Game Boy screenshot
+        # ALREADY pre-scaled by the driving script (oracle.py's own
+        # gb.screenshot(..., scale=3), 160x144 -> 480x432); multiplying that
+        # by `scale` again produced an image far bigger than the cell box, so
+        # it overflowed into neighbouring cells and malformed whatever row it
+        # landed on. Fit-to-box (preserve aspect, center) instead of assuming
+        # every input is native GBA resolution -- this never overflows the
+        # fixed cell regardless of the source image's own size.
+        iw, ih = img.width, img.height
+        fit = min(frame_w / iw, frame_h / ih)
+        new_w, new_h = max(1, round(iw * fit)), max(1, round(ih * fit))
+        img = img.resize((new_w, new_h), Image.NEAREST)
+        paste_x = cx + PAD + (frame_w - new_w) // 2
+        paste_y = cy + PAD + (frame_h - new_h) // 2
+        sheet.paste(img, (paste_x, paste_y))
+        draw.rectangle([cx + PAD, cy + PAD, cx + PAD + frame_w - 1, cy + PAD + frame_h - 1],
                         outline=BORDER)
         ty = cy + PAD + frame_h + 4
         for line in wrap(caption, font, frame_w, draw)[:3]:
