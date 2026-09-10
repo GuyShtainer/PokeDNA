@@ -37,6 +37,13 @@
  * rule exists for. */
 #define PERF_EWRAM __attribute__((section(".sbss")))
 
+/* D2 (BACKLOG #84b fifth pass): the build-dir stamp tools/stack_budget.py's --builddir
+ * cross-check reads back out of the linked ELF (by symbol, via nm -- see the guard's
+ * own main()). Plain .rodata (ROM), NOT EWRAM -- this is a fixed string baked in at
+ * link time, never written at runtime, so it costs zero bytes of the 256 KiB EWRAM
+ * budget the golden rules are strict about. See perf.h's PDNA_BUILD_DIR comment. */
+const char pdna_build_dir[] = PDNA_BUILD_DIR;
+
 /* ---- the session clock (always compiled -- see perf.h) --------------------------- */
 
 /* s_acc carries ticks from any previous EPOCH of the hardware counter. There is only
