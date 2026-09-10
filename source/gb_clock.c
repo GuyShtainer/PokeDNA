@@ -98,9 +98,10 @@ bool gbc_read(const GbSession* s, GbClock* out) {
  * so a shift can move the clock backward too. */
 static uint8_t wrap_add(int32_t cur, int32_t delta, int32_t mod, int32_t* carry) {
   int32_t v = cur + delta;
-  int32_t c = 0;
-  while (v < 0)    { v += mod; c--; }
-  while (v >= mod) { v -= mod; c++; }
+  /* Constant time: a stray large delta must not spin |delta|/mod iterations on a
+   * 16 MHz ARM7 (gbdata re-verify R6). Same arithmetic as the loops it replaces. */
+  int32_t c = (v < 0) ? -((-v + mod - 1) / mod) : v / mod;
+  v -= c * mod;
   *carry = c;
   return (uint8_t)v;
 }

@@ -98,7 +98,7 @@ static void gold_ground_truth(void) {
 }
 
 /* ---- C: no-op read is stable (calling gbd_read twice agrees) -- there is no gbd_write
- * for a bare "unchanged" case the way gbt_write/gbc_write have one, since deposit/
+ * for a bare "unchanged" case the way gbt_write/gbc_shift have one, since deposit/
  * withdraw are the only mutators and both are exercised for real below; this instead
  * proves a plain read never itself mutates the image. ---- */
 

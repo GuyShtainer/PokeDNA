@@ -142,6 +142,11 @@ GbsStatus gbd_deposit(GbSession* s, int slot, const GbEditMon* mon) {
    * than trusting the caller. */
   GbIssues iss;
   if (!gb_check(mon, &iss)) return GBS_ERR_STRUCT;
+  /* Retail refuses an egg outright (pokecrystal engine/events/daycare.asm:~127-150,
+   * DAYCARETEXT_CANT_BREED_EGG); the record itself is a legal mon, so gb_check()
+   * cannot see it -- the egg-ness lives in list_species (G2_LIST_EGG). Accepting one
+   * would board its underlying species and drop the egg (gbdata re-verify R1). */
+  if (gb_is_egg(mon)) return GBS_ERR_ARG;
 
   uint8_t rec[GB_MAX_REC], otname[GB_NAME_BYTES], nick[GB_NAME_BYTES];
   gb_commit_parts(mon, rec, otname, nick, NULL);
