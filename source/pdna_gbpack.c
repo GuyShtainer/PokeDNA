@@ -328,6 +328,18 @@ static int gbpack_start_menu(GbBag* bag, GbBagPocket pocket, GbGame game, int* s
 
     const GbBagList* l = &bag->pockets[pocket];
     if (csel == 0) {   /* ADD ITEM */
+      /* Per-item pocket membership (which pocket a given item id legally
+       * belongs to) was NOT located this slice (time-boxed, per the brief's
+       * own permission) -- fall back to the brief's own sanctioned rule:
+       * ADD ITEM only works from the Items pocket; Balls/Key items refuse
+       * outright (a real id typed here might genuinely belong to a DIFFERENT
+       * pocket than the one open, and this core has no table to tell that
+       * apart -- refusing is honest, silently accepting into the wrong
+       * pocket would not be). */
+      if (pocket != GBB_POCKET_ITEMS) {
+        msg_wait("WRONG POCKET", UI_WARN, "Add items from the Items pocket.", 0);
+        continue;
+      }
       uint32_t id, qty;
       if (!num_entry_opt("ITEM ID", 1, 999, &id)) continue;
       uint8_t id8 = (uint8_t)(id > 0xFFu ? 0xFFu : id);

@@ -75,12 +75,11 @@
  *    shipped as data.
  *  - Per-item pocket membership (which pocket a given item id legally belongs to) was
  *    NOT located this slice (time-boxed, per the brief's own fallback permission) --
- *    ADD ITEM accepts any valid id (1..gbb_max_item_id) into WHICHEVER pocket the
- *    list is currently showing (Items/Balls/Key items all share this rule; TM/HM has
- *    its own separate count-array editor, see below) rather than refusing a
- *    wrong-pocket id -- a documented, honest simplification, not a silent
- *    misclassification (gb_bag.c's own gbb_insert() still refuses an out-of-range id
- *    for the GAME, just not for the SPECIFIC pocket).
+ *    ADD ITEM works ONLY from the Items pocket (the brief's own sanctioned "fall back
+ *    to Items only" rule); START > ADD ITEM on Balls or Key items refuses outright
+ *    ("WRONG POCKET") rather than silently accepting an id this core cannot verify
+ *    belongs there. TM/HM has no ADD ITEM at all -- its own separate count-array
+ *    editor (A on a row) is the only way to change it, see below.
  *  - Kris's own PackFGFX (pack_f) is not painted this slice -- pdna_gbscreen.h's own
  *    GBSCR_SRC_PACK_M always uses pack_m (Chris's pack), even for a Crystal save with
  *    a female trainer -- a documented, cosmetic-only simplification.
