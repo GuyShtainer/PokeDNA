@@ -567,10 +567,24 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * textfit exists to catch). Two pairs, not one template, because there is no on-device
  * sprintf for "was %s, now %s" and either direction can be the one that is unreachable
  * (same reasoning as GENDER_LOCKED_L1 above). */
+/* gbmon C12: with the gender-ratio table this tree actually ships (Gen-3's five ratio
+ * bytes read through pk_species_gender_ratio -> g2_gender_from_dv), the shiny Atk-DV
+ * search in gb_editor.c's gbe_flip_shiny only ever picks from the 8 candidates with
+ * bit 1 set {2,3,6,7,10,11,14,15} -- the minimum is 2, so a species whose FEMALE
+ * threshold is dv<=1 (ratio 31, "7:1 male") has NO female candidate and is always
+ * forced to male; every other real ratio (63/127/191/225) keeps a male candidate at
+ * dv 14/15 even at its most female-skewed, so "forced to female" (the FEMALE_L1/L2
+ * pair below) cannot fire against today's data -- confirmed by exhaustive check over
+ * all five ratio bytes. Kept anyway, defensively, per the ORIGINAL author's own
+ * comment above ("either direction can be the one that is unreachable"): a species
+ * table for a different generation/ratio scheme could reintroduce the reverse case,
+ * and there is no second call site to keep in sync if that ever happens -- the two
+ * pairs are cheap (four short strings) next to the cost of a silently wrong message
+ * if the unreachable direction ever becomes reachable again. */
 #define PDNA_GBEDIT_SHINY_FORCED_TITLE   "GENDER FORCED"
 #define PDNA_GBEDIT_SHINY_FORCED_MALE_L1   "No shiny female exists for"
 #define PDNA_GBEDIT_SHINY_FORCED_MALE_L2   "this species; it is now male."
-#define PDNA_GBEDIT_SHINY_FORCED_FEMALE_L1 "No shiny male exists for"
+#define PDNA_GBEDIT_SHINY_FORCED_FEMALE_L1 "No shiny male exists for"   /* unreachable today, kept defensively -- see comment above */
 #define PDNA_GBEDIT_SHINY_FORCED_FEMALE_L2 "this species; it is now female."
 
 /* BACKLOG #95 review C4: this tree tracks no mailbox, so a Mail item set through the

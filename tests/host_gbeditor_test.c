@@ -517,6 +517,15 @@ static void test_shiny(void) {
     CHECK(fx.gender == 0, "...but forced to MALE -- no shiny female exists at ratio 31");
     CHECK(e.shiny_gender_forced, "shiny_gender_forced is set");
     CHECK(gbe_shiny_forced_gender(&e) == 0, "...and reports MALE, matching the record");
+
+    /* gbmon C9 re-verify, sticky-flag case: the forced flip above set the flag; an
+     * UNRELATED edit (a plain level bump, not another GBE_SHINY) must clear it on
+     * entry (gbe_adjust's own "clear on every entry" comment above) so pdna_gbedit.c's
+     * post-edit popup check cannot re-fire the "gender forced" message on a row that
+     * has nothing to do with shininess or gender. */
+    CHECK(gbe_adjust(&e, GBE_LEVEL, 1, false), "an unrelated level bump");
+    CHECK(!e.shiny_gender_forced, "the unrelated edit cleared shiny_gender_forced");
+    CHECK(gbe_shiny_forced_gender(&e) == -1, "...and the reader agrees: nothing to report");
   }
 
   /* ---- OFF leaves the HP DV alone (review C3): the derived HP DV is bit 0 of each

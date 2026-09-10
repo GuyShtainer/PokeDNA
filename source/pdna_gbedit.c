@@ -220,6 +220,10 @@ void gbedit_dv_orphan_warn(bool has_sidecar, bool* warned) {
 static void gbedit_shiny_forced_note(const GbEditMon* e) {
   int g = gbe_shiny_forced_gender(e);
   if (g < 0) return;
+  /* gbmon C12: g == 1 (forced to female) does not fire against this tree's own
+   * gender-ratio data (pdna_layout.h's PDNA_GBEDIT_SHINY_FORCED_FEMALE_* comment has
+   * the exhaustive check across all five ratio bytes) -- kept defensively rather than
+   * dropped, same reasoning as keeping both string pairs. */
   if (g == 1) msg_wait(PDNA_GBEDIT_SHINY_FORCED_TITLE, UI_WARN,
                         PDNA_GBEDIT_SHINY_FORCED_FEMALE_L1, PDNA_GBEDIT_SHINY_FORCED_FEMALE_L2);
   else        msg_wait(PDNA_GBEDIT_SHINY_FORCED_TITLE, UI_WARN,
