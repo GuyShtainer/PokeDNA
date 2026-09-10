@@ -1264,6 +1264,65 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     return s
 
 
+def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #90: the Gen-1/2 Fly-destination screen (source/pdna_gbfly.c) over
+    gb_fly.h's bitfield core -- the same shape as run_u4_bag()/run_u5_pack() above,
+    reused for a plain (non-gbscreen-shell) list screen. `rom` must be a ONE-ROM
+    fused image (Red-only for `which == "red"`, Crystal-only for `which ==
+    "crystal"` -- same BACKLOG #98 harness-gap reasoning as U4/U5's own images), so
+    the boot picker is skipped (gb_delta_pick_save()'s `if (n == 1) return 0`) and
+    one A tap reaches S1 info -> box grid directly.
+
+    Nav: A (S1 info) -> box grid -> START -> nav menu -> DOWN x14 (Party=0, Bank=1,
+    Daycare=2, Trainer=3, Clock fix=4, Mirage=5, Pokedex=6, Bag=7, Flags&counters=8,
+    Bases=9, Blocks=10, Tickets=11, Records=12, Frontier=13, Fly=14 -- PDNA_NAV_ITEMS
+    order, source/pdna_layout.h) -> A -> pdna_gb_fly()."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b90_{which}_")
+    print(f"== BACKLOG #90: {which}'s own Fly destinations (single-ROM image -> "
+          "standalone -> Fly) ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 14)                                    # Party -> ... -> Fly (index 14)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Fly -> pdna_gb_fly()
+    s.shot("01_list", f"BACKLOG #90: {which}'s own Fly destinations -- the "
+                       "ON/x count header, one row per gbfy_count() destination, "
+                       "cursor on row 1")
+
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("02_row2", "BACKLOG #90: DOWN moves the cursor to row 2")
+
+    s.tap("A", settle=gb_shots.SETTLE)                      # toggle the selected row
+    s.shot("03_toggled", "BACKLOG #90: A toggles the selected destination -- the "
+                          "row's ON/off text and the header count both flip; "
+                          "rmbl_fire(RCUE_EDIT) is the same edit haptic every "
+                          "other GB screen's own field edits use")
+
+    if which == "crystal":
+        # Gen 2 only: scroll to a spawn-only row (index 0/1/17/27 -- HOME/DEBUG/
+        # UNION_CAVE/FAST_SHIP, see pdna_gbfly.h's own header note) and show its
+        # "spn" tag plus the footer legend explaining it.
+        s.press_n("UP", 2, settle=gb_shots.SETTLE)          # row 2 -> row 0 (Spawn: Home)
+        s.shot("04_spawn_only_tag", "BACKLOG #90: row 0 (Spawn: Home) carries the "
+                                     "'spn' tag and the footer legend 'spn = not a "
+                                     "Town Map stop' -- flypoints.asm's own Fly menu "
+                                     "never offers this bit as a destination even "
+                                     "though wVisitedSpawns has a real bit for it")
+        s.press_n("DOWN", 2, settle=gb_shots.SETTLE)        # back to row 2 (the toggled row)
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B with a real pending edit -> commit prompt
+    s.shot("05_commit_prompt", "BACKLOG #90: B with a real pending edit -> 'Save "
+                                "fly destinations?' (app_confirm), the same dialog "
+                                "every other GB screen's own commit uses")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # confirm -> gb_persist("fly")
+    s.shot("06_confirmed", "BACKLOG #90: A confirms -- gb_persist writes the "
+                            "fused image's SAV payload, back at the box grid")
+
+    return s
+
+
 def run_d7_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """N6(f): Gold's own START > BAG refusal, from a COMMITTED driver (`rom` must
     be a Gold-only fused image, tools/fuse_gb.py fed Gold.gbc+Gold.sav -- the
@@ -1510,6 +1569,12 @@ def main(argv=None) -> int:
     ap.add_argument("--d7-gold", action="store_true",
                      help="N6(f): only run_d7_gold() against --image -- --image "
                           "MUST be a Gold-only fused image (Gold.gbc+Gold.sav)")
+    ap.add_argument("--b90-fly", choices=("red", "crystal"),
+                     help="BACKLOG #90: only run_b90_fly() against --image for the "
+                          "named game (Red's or Crystal's own Fly-destination "
+                          "screen) -- --image MUST be a ONE-ROM fused image "
+                          "matching this choice (same BACKLOG #98 harness-gap "
+                          "reasoning as --u4-bag/--u5-pack)")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -1598,6 +1663,19 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] u5 pack ({a.u5_pack}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b90_fly:
+        try:
+            sess = run_b90_fly(core_mod, image_mod, a.image, a.out, a.b90_fly)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b90 fly ({a.b90_fly}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

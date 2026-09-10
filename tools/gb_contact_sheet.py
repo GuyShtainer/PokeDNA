@@ -172,6 +172,13 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # rule.
     ("gb-pack-gen2", "U5 — Gold/Silver/Crystal's own Pack + PC store on the shell "
      "(Gen-2 saves)", ("U5",)),
+    # BACKLOG #90 (docs/kb/pokemon/, this slice): the Gen-1/2 Fly-destination screen
+    # (source/pdna_gbfly.c) over gb_fly.h's bitfield core -- a plain list screen, not
+    # the gbscreen shell U2a-U5 above ride on. Shots come from tools/dgb_shots.py's
+    # run_b90_fly(), captions all start "BACKLOG #90:". Appended after "gb-pack-gen2"
+    # per this list's own append-only rule.
+    ("gb-fly", "BACKLOG #90 — the Gen-1/2 Fly-destination screen (list, toggle, "
+     "save prompt)", ("BACKLOG #90",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
