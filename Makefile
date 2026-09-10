@@ -539,8 +539,9 @@ sd-artless:            # SD-streaming build, no compiled art (composes 'sd' + 'a
 # libmgba-py is vendored under rec2mp4/ and /usr/local/bin/python3 is the interpreter
 # that can import it -- the system python3 has neither mgba nor markdown). On another
 # machine, run `python3 tools/gb_retail_gate.py --mgba-vendor <path>` directly instead.
-retail-gate:
+retail-gate:   # per-worktree scratch: the shared default raced between parallel lanes (BACKLOG #101)
 	@/usr/local/bin/python3 tools/gb_retail_gate.py \
-		--mgba-vendor /Users/guyshtainer/VSCodeProjects/gba-toolkit/projects/rec2mp4/vendor
+		--mgba-vendor /Users/guyshtainer/VSCodeProjects/gba-toolkit/projects/rec2mp4/vendor \
+		--scratch /tmp/gb_retail_gate-$(notdir $(CURDIR))
 
 # EOF
