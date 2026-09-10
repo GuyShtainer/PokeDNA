@@ -1389,6 +1389,38 @@ static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* l
   return (k & KEY_A) != 0;
 }
 
+/* BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL, shown ONLY when gen3_to_gb_evo_needs_fix()
+ * found a correction to offer -- most transfers never see this screen at all. A
+ * SEPARATE screen from gb_paste_loss_screen (see the PDNA_SIDECAR_LEGAL_* comment in
+ * pdna_layout.h for why), reusing the exact same primitives/hint convention. B here
+ * means "cancel the whole transfer, nothing written" -- gb_paste_hook has already let
+ * the earlier loss screen's own B do that once; this is a second, independent chance
+ * to back out, not a redefinition of what B means. */
+typedef enum { GB_XFER_CANCEL = 0, GB_XFER_KEEP, GB_XFER_MAKE_LEGAL } GbXferChoice;
+
+static GbXferChoice __attribute__((noinline))
+gb_paste_legal_screen(uint8_t from_lvl, uint8_t to_lvl) {
+  ui_clear();
+  ui_text(4, 3, UI_TITLE, PDNA_SIDECAR_LEGAL_TITLE);
+  ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+
+  int y = PDNA_SIDECAR_LOSS_ROW_Y0;
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, PDNA_SIDECAR_LEGAL_KEEP_ROW);
+  y += PDNA_SIDECAR_LOSS_ROW_H;
+
+  char l2[40];
+  siprintf(l2, PDNA_SIDECAR_LEGAL_FIX_FMT, (unsigned)from_lvl, (unsigned)to_lvl);
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, l2);
+  y += PDNA_SIDECAR_LOSS_ROW_H;
+
+  y += PDNA_SIDECAR_LOSS_ROW_H / 2;
+  ui_text(4, y, UI_DIM, PDNA_SIDECAR_LOSS_B_CANCEL);
+
+  u16 k = s_wait(KEY_A | KEY_SELECT | KEY_B);
+  if (k & KEY_B) return GB_XFER_CANCEL;
+  return (k & KEY_SELECT) ? GB_XFER_MAKE_LEGAL : GB_XFER_KEEP;
+}
+
 /* Best-effort cleanup after gbs_insert()/gb_persist() refused a paste whose sidecar
  * entry already landed on the card: remove that entry (it is always the LAST one --
  * gbsc_add() appends, and nothing else touches this file between gb_paste_write()'s own
@@ -1750,6 +1782,23 @@ static bool gb_paste_hook(uint8_t* rec80) {
   }
 
   if (!gb_paste_loss_screen(&loss)) return false;                           /* 4 */
+
+  /* BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4): KEEP AS IS vs
+   * MAKE LEGAL, additive between the loss screen and the box-writable check -- most
+   * transfers never trigger gen3_to_gb_evo_needs_fix() and this whole block is a
+   * no-op. MAKE LEGAL's one correction is the level; gb_set_level() (gb_edit.h,
+   * already shipped) also recomputes EXP under the target generation's own growth
+   * rate, so level and EXP stay consistent. `mon` is corrected HERE, before
+   * gb_paste_write() runs, so its own gbsc_entry_from() call (unchanged) captures
+   * the CORRECTED level as written_level while original80 (from app_clip_rec(),
+   * also unchanged) stays the true, uncorrected Gen-3 original -- see
+   * gb_sidecar.c's merge_species_and_level() for why that distinction matters. */
+  uint8_t fix_from = 0, fix_to = 0;
+  if (gen3_to_gb_evo_needs_fix(&mon, &fix_from, &fix_to)) {
+    GbXferChoice ch = gb_paste_legal_screen(fix_from, fix_to);
+    if (ch == GB_XFER_CANCEL) return false;
+    if (ch == GB_XFER_MAKE_LEGAL) gb_set_level(&mon, fix_to);
+  }
 
   GbsStatus wst = gbs_box_writable(&g_ed->s, box);                          /* 5 */
   if (wst != GBS_OK) {

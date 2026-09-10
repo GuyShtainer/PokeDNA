@@ -936,6 +936,22 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_LOSS_STAYS      "The copy in your Gen-3 save stays."
 #define PDNA_SIDECAR_LOSS_A_TRANSFER "A = transfer"
 #define PDNA_SIDECAR_LOSS_B_CANCEL   "B = cancel"
+
+/* BACKLOG #104 R1: the KEEP AS IS / MAKE LEGAL choice, gb_paste_legal_screen
+ * (pdna_gen12.c) -- a SEPARATE, additive screen shown only when
+ * gen3_to_gb_evo_needs_fix() finds a correction to offer (most transfers never see
+ * it). Not folded into gb_paste_loss_screen's own rows: that screen's worst-case
+ * height (all 10 loss flags + the fixed lines) already lands exactly on the last
+ * pixel the display has (host_textfit_test.c's own "loss screen worst-case height"
+ * check) -- there is no room left to add a row there. This screen gets its own full
+ * ui_clear() budget instead, reusing the SAME primitives (ui_text/ui_ptext_fit/
+ * s_wait) and the SAME "A = .../B = cancel" hint convention gb_paste_loss_screen
+ * already ships -- not a new screen kind, one more instance of the same shape. The
+ * third choice reuses this codebase's own established third-action key (KEY_SELECT,
+ * e.g. pdna_gen12.c:798) rather than "X", which does not exist on a GBA pad. */
+#define PDNA_SIDECAR_LEGAL_TITLE      "SEND TO GAME BOY"
+#define PDNA_SIDECAR_LEGAL_KEEP_ROW   "A = KEEP AS IS"
+#define PDNA_SIDECAR_LEGAL_FIX_FMT    "SELECT = MAKE LEGAL (%u -> %u)"
 /* Full-screen list (gb_pick_box's own geometry: title y=3, rule y=13), not a scrolling
  * picker -- rows are drawn only for flags actually set, so the common case is much
  * shorter than the worst case the host test pins: 10 conditional Gen3ToGbLoss lines +
