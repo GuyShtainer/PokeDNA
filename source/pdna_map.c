@@ -1814,6 +1814,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
           siprintf(l1, "Fused ROM is %s.", rom_kind_name(rc.kind));
           s_msg("WRONG GAME", UI_WARN, l1, "Re-fuse with this game.");
           app_arena_release();
+          perf_span_end();   /* the "map" span must not outlive this early exit (b73 review) */
           return;
         }
       }
@@ -1830,7 +1831,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         strcpy(cwd, "/");
         ui_clear();
         s_msg("MAP NEEDS YOUR ROM", UI_TITLE, "Pick the .gba you play.", "Nothing is copied.");
-        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); return; }
+        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); perf_span_end(); return; }
       }
 
       /* ---- open + identify. No drawing happens between here and rmbl_resume. ---- */
@@ -1851,7 +1852,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         s_msg("UNSUPPORTED ROM", UI_WARN, l1, "Pick another (A).");
         app_rom_path_set(game, "");           /* forget it so we ask again */
         strcpy(cwd, "/");
-        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); return; }
+        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); perf_span_end(); return; }
         continue;
       }
 
@@ -1863,7 +1864,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         s_msg("WRONG GAME", UI_WARN, l1, "Need this save's game.");
         rmbl_pause(); f_close(&s_rf.f); rmbl_resume(); s_rf.open = false;
         strcpy(cwd, "/");
-        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); return; }
+        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); perf_span_end(); return; }
         continue;
       }
 
