@@ -51,6 +51,7 @@
 #include "sys.h"          /* EWRAM_BSS (after tonc.h so the u8 macro is safe) */
 #include "log.h"
 #include "pdna_app.h"
+#include "perf.h"          /* BACKLOG #73: screen-enter span, this screen had none */
 
 #ifndef PATH_MAX
 #define PATH_MAX 256
@@ -1782,6 +1783,11 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
   static char EWRAM_BSS path[PATH_MAX];
   RomCtx rc;
   bool have = false;
+  /* BACKLOG #73 (speed parity): map had no perf span. Enter cost = ROM lookup/open
+   * (fused-ROM path in the emulator, SD picker on hardware) through the FIRST info-page
+   * paint below, closed just before the first key wait. */
+  bool perf_first_paint = true;
+  perf_span_begin("map");
 
   /* The picker's entry list lives INSIDE the borrowed arena — no new EWRAM. */
   PickEnt* ents = (PickEnt*)arena;
@@ -1808,6 +1814,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
           siprintf(l1, "Fused ROM is %s.", rom_kind_name(rc.kind));
           s_msg("WRONG GAME", UI_WARN, l1, "Re-fuse with this game.");
           app_arena_release();
+          perf_span_end();   /* the "map" span must not outlive this early exit (b73 review) */
           return;
         }
       }
@@ -1824,7 +1831,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         strcpy(cwd, "/");
         ui_clear();
         s_msg("MAP NEEDS YOUR ROM", UI_TITLE, "Pick the .gba you play.", "Nothing is copied.");
-        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); return; }
+        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); perf_span_end(); return; }
       }
 
       /* ---- open + identify. No drawing happens between here and rmbl_resume. ---- */
@@ -1845,7 +1852,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         s_msg("UNSUPPORTED ROM", UI_WARN, l1, "Pick another (A).");
         app_rom_path_set(game, "");           /* forget it so we ask again */
         strcpy(cwd, "/");
-        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); return; }
+        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); perf_span_end(); return; }
         continue;
       }
 
@@ -1857,7 +1864,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
         s_msg("WRONG GAME", UI_WARN, l1, "Need this save's game.");
         rmbl_pause(); f_close(&s_rf.f); rmbl_resume(); s_rf.open = false;
         strcpy(cwd, "/");
-        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); return; }
+        if (!pick_rom(cwd, PATH_MAX, path, PATH_MAX, ents, PICK_MAX)) { app_arena_release(); perf_span_end(); return; }
         continue;
       }
 
@@ -1948,6 +1955,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
     ui_hline(0, 140, UI_SCR_W, UI_BORDER);
     ui_text(4, 144, UI_DIM, "A view map  SEL change ROM");
     ui_text(4, 152, UI_DIM, "B back");
+    if (perf_first_paint) { perf_first_paint = false; perf_span_end(); }
 
     u16 k = s_wait(KEY_A | KEY_B | KEY_SELECT);
     if ((k & KEY_A) && hdr_ok && lay_ok) {
