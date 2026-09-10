@@ -1720,6 +1720,16 @@ int main(void) {
       /* the Region row's value is a region name, and the longest is "Sevii Isles" */
       chk("edit region value", PDNA_EDIT_VAL_X, PDNA_EDIT_VAL_COLS * SYS8_W,
           (int)strlen("Sevii Isles") * SYS8_W, "Sevii Isles");
+      /* Contest ribbon rank rows (BACKLOG #60) — the longest labels in the whole field list. */
+      { const char* rlbl[5] = { PDNA_EDIT_RIB_COOL_LBL, PDNA_EDIT_RIB_BEAUTY_LBL,
+                                 PDNA_EDIT_RIB_CUTE_LBL, PDNA_EDIT_RIB_SMART_LBL,
+                                 PDNA_EDIT_RIB_TOUGH_LBL };
+        for (int i = 0; i < 5; i++)
+          chk("edit label", PDNA_EDIT_LBL_X, PDNA_EDIT_LBL_W,
+              (int)strlen(rlbl[i]) * SYS8_W, rlbl[i]);
+        chk("edit ribbon value", PDNA_EDIT_VAL_X, PDNA_EDIT_VAL_COLS * SYS8_W,
+            (int)strlen("Master") * SYS8_W, "Master");   /* the longest rank name */
+      }
     }
     chkv("edit value column's budget fits the screen",
          PDNA_EDIT_VAL_X + PDNA_EDIT_VAL_COLS * SYS8_W, SCR_W);

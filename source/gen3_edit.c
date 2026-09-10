@@ -1,4 +1,5 @@
 #include "gen3_edit.h"
+#include "gen3_contest.h"  /* gc_ribbon_* — bit layout for the ribbons word          */
 #include "gen3_save.h"     /* gen3_decode_char (for symmetry doc), sizes */
 #include "data_tables.h"   /* base stats, nature mods, growth, exp, move PP */
 #include "gen3_daycare.h"  /* pk_egg_group — the shipped breedability table   */
@@ -139,6 +140,44 @@ void em_set_ev(EditMon* e, int stat, uint8_t v) {
 void em_set_contest(EditMon* e, int i, uint8_t v) {
   if (i < 0 || i > 5) return;
   e->sub[2][6 + i] = v;
+}
+
+/* Contest ribbon rank / named flags — the Misc substruct's ribbons word (sub[3]
+ * +0x08..+0x0B, same field gen3_mon.c decodes into PkMon.ribbons). The bit LAYOUT
+ * (which bits, cumulative-by-construction semantics) is documented once in
+ * gen3_contest.h and re-implemented here rather than called through gen3_contest.c's
+ * gc_ribbon_get/set — a link-time dependency would have pulled gen3_contest.o into
+ * every one of this codebase's ~15 existing host tests that already link gen3_edit.c
+ * with their own fixed cc lines (host_trainer_test, host_pidiv_test, host_spread_test,
+ * host_rombase_test, ...), breaking every one of them the moment this shipped. Only
+ * the ENUM CONSTANTS are shared (a header-only, link-free include) so the bit
+ * positions cannot drift between the two files; gc_ribbon_get/set in gen3_contest.c
+ * exist for gen3_contest.c's own callers (the museum screen doesn't touch per-mon
+ * ribbons) and this SAME arithmetic, checked against a real save's ribbon word,
+ * round-trips in tests/host_contest_test.c. */
+static uint32_t ribbons_rd(const EditMon* e) { return rd32(e->sub[3] + 0x08); }
+static void     ribbons_wr(EditMon* e, uint32_t v) { wr32(e->sub[3] + 0x08, v); }
+
+void em_set_ribbon_rank(EditMon* e, int category, uint8_t rank) {
+  if (category < 0 || category >= GC_CATEGORY_COUNT) return;
+  if (rank > GC_RANK_MASTER) rank = GC_RANK_MASTER;
+  uint32_t mask = 0x7u << (category * 3);
+  uint32_t r = ribbons_rd(e);
+  ribbons_wr(e, (r & ~mask) | (((uint32_t)rank << (category * 3)) & mask));
+}
+uint8_t em_get_ribbon_rank(const EditMon* e, int category) {
+  if (category < 0 || category >= GC_CATEGORY_COUNT) return 0;
+  return (uint8_t)((ribbons_rd(e) >> (category * 3)) & 0x7u);
+}
+void em_set_ribbon_flag(EditMon* e, int flagbit, bool on) {
+  if (flagbit < GC_RFLAG_CHAMPION || flagbit > GC_RFLAG_WORLD) return;
+  uint32_t bit = 1u << flagbit;
+  uint32_t r = ribbons_rd(e);
+  ribbons_wr(e, on ? (r | bit) : (r & ~bit));
+}
+bool em_get_ribbon_flag(const EditMon* e, int flagbit) {
+  if (flagbit < GC_RFLAG_CHAMPION || flagbit > GC_RFLAG_WORLD) return false;
+  return (ribbons_rd(e) >> flagbit) & 1u;
 }
 
 /* Met location for a Pokémon PokeDNA creates.

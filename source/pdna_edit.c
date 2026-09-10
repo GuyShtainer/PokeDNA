@@ -21,6 +21,7 @@
 #include "ui.h"
 #include "gen3_mon.h"
 #include "gen3_edit.h"
+#include "gen3_contest.h"  /* gc_ribbon_get/set — F_RIB0..4 rank rows (BACKLOG #60) */
 #include "gen3_box.h"      /* pk_resolve */
 #include "gen3_places.h"   /* met-location region + per-game scoping */
 #include "data_tables.h"
@@ -40,6 +41,8 @@ static const char* const FLABEL[F_NUM] = {
   "PP 1", "PP 2", "PP 3", "PP 4", "OT Name",
   "Ball", PDNA_EDIT_REGION_LBL, "Met Loc", "Met Lv", "Met Game",
   "Cool", "Beauty", "Cute", "Smart", "Tough", "Sheen",
+  PDNA_EDIT_RIB_COOL_LBL, PDNA_EDIT_RIB_BEAUTY_LBL, PDNA_EDIT_RIB_CUTE_LBL,
+  PDNA_EDIT_RIB_SMART_LBL, PDNA_EDIT_RIB_TOUGH_LBL,
 };
 
 /* Gen-3 origin-game id -> name. */
@@ -79,6 +82,8 @@ static uint8_t pp_max(const PkMon* c, int i) {
 static uint8_t pp_ups(const PkMon* c, int i) { return (uint8_t)((c->ppBonuses >> (i * 2)) & 3); }
 
 /* format a field's current value into buf */
+static const char* const RIB_RANK_NAME[5] = { "None", "Normal", "Super", "Hyper", "Master" };
+
 static void field_value(int f, const PkMon* c, char* buf) {
   switch (f) {
     case F_SPECIES: siprintf(buf, "%s", pk_species_name(c->species)); break;
@@ -118,6 +123,8 @@ static void field_value(int f, const PkMon* c, char* buf) {
     case F_METGAME: siprintf(buf, "%s", pk_metgame_name(c->metGame)); break;
     case F_CT0: case F_CT1: case F_CT2: case F_CT3: case F_CT4: case F_CT5:
       siprintf(buf, "%u", (unsigned)c->contest[f - F_CT0]); break;
+    case F_RIB0: case F_RIB1: case F_RIB2: case F_RIB3: case F_RIB4:
+      siprintf(buf, "%s", RIB_RANK_NAME[gc_ribbon_get(c->ribbons, f - F_RIB0)]); break;
     default:        buf[0] = 0;
   }
 }
@@ -358,6 +365,11 @@ void em_field_adjust(int f, int dir, bool big, EditMon* e, const PkMon* c) {
     case F_METGAME:  { int v = c->metGame + dir; if (v < 0) v = 15; if (v > 15) v = 0; em_set_metgame(e, (uint8_t)v); break; }
     case F_CT0: case F_CT1: case F_CT2: case F_CT3: case F_CT4: case F_CT5:
       em_set_contest(e, f - F_CT0, (uint8_t)clampi(c->contest[f - F_CT0] + dir * s, 0, 255)); break;
+    case F_RIB0: case F_RIB1: case F_RIB2: case F_RIB3: case F_RIB4: {
+      int cat = f - F_RIB0;
+      em_set_ribbon_rank(e, cat, (uint8_t)clampi(gc_ribbon_get(c->ribbons, cat) + dir, 0, 4));
+      break;
+    }
     default: break;   /* names: use A */
   }
 }
@@ -419,6 +431,11 @@ void em_field_press(int f, EditMon* e, const PkMon* c) {
     case F_CT0: case F_CT1: case F_CT2: case F_CT3: case F_CT4: case F_CT5: {    /* cycle 0/128/255 */
       uint8_t v = c->contest[f - F_CT0];
       em_set_contest(e, f - F_CT0, v < 128 ? 128 : v < 255 ? 255 : 0);
+      break;
+    }
+    case F_RIB0: case F_RIB1: case F_RIB2: case F_RIB3: case F_RIB4: {   /* 0 <-> Master */
+      int cat = f - F_RIB0;
+      em_set_ribbon_rank(e, cat, gc_ribbon_get(c->ribbons, cat) ? 0 : (uint8_t)GC_RANK_MASTER);
       break;
     }
     default: break;
