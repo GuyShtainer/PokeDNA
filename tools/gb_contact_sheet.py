@@ -151,6 +151,20 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # "gb-card-gen2" per this list's own append-only rule.
     ("gb-bag-gen1", "U4 — Red/Yellow's own Item bag + PC store on the shell "
      "(Gen-1 saves)", ("U4",)),
+    # U4 shots-and-captions REVIEW pass (this slice): N4 reworks the saturation
+    # demo onto an ORDINARY item (POTION, not a Gen-1 key item); N6 adds the
+    # armed-SWAP state, BAD ID / BAD QUANTITY refusals, the gbscr_open()
+    # forced-failure fallback page, the empty-Items-pocket screen (+ its real-
+    # cartridge oracle capture), and Gold's own Bag refusal from a committed
+    # driver. Shots come from tools/dgb_shots.py's run_u4_bag()/run_u4_empty()/
+    # run_d7_gold(); captions start "U4:" (folded into "gb-bag-gen1" above,
+    # same feature) or "N4:"/"N5:"/"N6(a-f):" for the parts that are their own
+    # capture, not an addition to an existing U4 shot. Appended after
+    # "gb-bag-gen1" per this list's own append-only rule.
+    ("u4-review-n6", "U4 review N4/N6 — saturation on an ordinary item, armed "
+     "SWAP, BAD ID/QUANTITY refusals, the forced-failure fallback page, the "
+     "empty pocket (+ real-cartridge oracle), Gold's own Bag refusal",
+     ("N6(d)", "N6(e)", "N6(f)")),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
