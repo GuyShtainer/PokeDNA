@@ -743,12 +743,25 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
 enum { G2C_NAME = 0, G2C_ID, G2C_MONEY, G2C_TIME, G2C_P1_MAX };
 enum { G2C_BADGE0 = 0, G2C_P2_MAX = 8 };
 
-/* FRAMES-block-relative indices (VRAM id - 0x23, see the file comment above). */
-enum { G2F_FILL = 0, G2F_NOTCH = 1, G2F_DIVFILL = 2, G2F_DIVCAP = 3, G2F_COLON = 11 };
+/* Border fill only -- the one TEXTBOX(frames)-relative tile this card still
+ * uses directly. */
+enum { G2F_FILL = 0 };
+/* GBSCR_SRC_STATUSWORD-relative indices (see that source's own header
+ * comment for how these 11 tiles were found -- byte-searching the ROM for
+ * each tile's own REAL VRAM pattern, captured live, not guessed): the
+ * border notch, the divider, "ID"/"No", the 5 "STATUS"-word tiles, then the
+ * play-time colon -- one contiguous run immediately before LEADERS. Two
+ * earlier hypotheses (FontExtra, TrainerCardGFX/CARDGFX) both painted wrong
+ * content and were caught by looking at the actual mGBA shot, not by the
+ * celldiff model (which only checks tile-ID CLASSIFICATION consistency, not
+ * whether the chosen ROM block's bytes are the real content). */
+enum {
+  G2X_NOTCH = 0, G2X_DIVFILL = 1, G2X_DIVCAP = 2, G2X_ID = 3, G2X_NO = 4,
+  G2X_STATUS0 = 5, G2X_COLON = 10
+};
 /* LEADERS-block-relative index where the "BADGES" word graphic starts
  * (page 2 row 8) -- 8 faces * 10 tiles = 80, LEADERS' own declared size is
- * 86 (80 + 6 word tiles, 5 used, matching CARDGFX's own 6-tiles/5-used shape
- * for "STATUS" on page 1). */
+ * 86 (80 + 6 word tiles, 5 used) -- confirmed correct by the same shot. */
 enum { G2L_BADGES_WORD = 80 };
 
 /* One frame counter, this screen's own -- toggles the play-time colon every
@@ -768,10 +781,10 @@ static void g2card_border(GbScreen* gs) {
     gbscr_cell(gs, 0, y, GBSCR_SRC_TEXTBOX, G2F_FILL);
     gbscr_cell(gs, 19, y, GBSCR_SRC_TEXTBOX, G2F_FILL);
   }
-  gbscr_cell(gs, 1, 7, GBSCR_SRC_TEXTBOX, G2F_NOTCH);
-  gbscr_cell(gs, 1, 16, GBSCR_SRC_TEXTBOX, G2F_NOTCH);
+  gbscr_cell(gs, 1, 7, GBSCR_SRC_STATUSWORD, G2X_NOTCH);
+  gbscr_cell(gs, 1, 16, GBSCR_SRC_STATUSWORD, G2X_NOTCH);
   /* row 8 (the STATUS/BADGES strip) is border-fill EXCEPT the word graphic --
-   * g2card_paint() overwrites cols 2-6 with CARDGFX/LEADERS right after this. */
+   * g2card_paint() overwrites cols 2-6 with STATUSWORD/LEADERS right after this. */
   for (int x = 1; x < 19; x++) gbscr_cell(gs, x, 8, GBSCR_SRC_TEXTBOX, G2F_FILL);
 }
 
@@ -781,8 +794,8 @@ static void g2card_paint_upper(GbScreen* gs, const GbTrainer* t, bool female) {
   gbscr_text(gs, 2, 2, "NAME/");
   gbscr_raw(gs, 7, 2, t->name_raw, GB_OT_GLYPHS);
 
-  gbscr_cell(gs, 2, 4, GBSCR_SRC_FONTEXTRA, 0);   /* "ID" */
-  gbscr_cell(gs, 3, 4, GBSCR_SRC_FONTEXTRA, 1);   /* "No" */
+  gbscr_cell(gs, 2, 4, GBSCR_SRC_STATUSWORD, G2X_ID);
+  gbscr_cell(gs, 3, 4, GBSCR_SRC_STATUSWORD, G2X_NO);
   char buf[16];
   siprintf(buf, "%05u", (unsigned)t->trainer_id);
   gbscr_text(gs, 5, 4, buf);
@@ -800,15 +813,15 @@ static void g2card_paint_upper(GbScreen* gs, const GbTrainer* t, bool female) {
       gbscr_cell(gs, 14 + tx, 1 + ty, pic_src, (uint8_t)(ty * 5 + tx));
   gbscr_cell(gs, 18, 9, pic_src, 4);   /* the repeat cell -- see file comment */
 
-  for (int x = 1; x <= 12; x++) gbscr_cell(gs, x, 3, GBSCR_SRC_TEXTBOX, G2F_DIVFILL);
-  gbscr_cell(gs, 13, 3, GBSCR_SRC_TEXTBOX, G2F_DIVCAP);
+  for (int x = 1; x <= 12; x++) gbscr_cell(gs, x, 3, GBSCR_SRC_STATUSWORD, G2X_DIVFILL);
+  gbscr_cell(gs, 13, 3, GBSCR_SRC_STATUSWORD, G2X_DIVCAP);
 }
 
 static void g2card_paint_page1(GbScreen* gs, const GbTrainer* t, bool female) {
   g2card_border(gs);
   g2card_paint_upper(gs, t, female);
 
-  for (int i = 0; i < 5; i++) gbscr_cell(gs, 2 + i, 8, GBSCR_SRC_CARDGFX, (uint8_t)i);
+  for (int i = 0; i < 5; i++) gbscr_cell(gs, 2 + i, 8, GBSCR_SRC_STATUSWORD, (uint8_t)(G2X_STATUS0 + i));
 
   gbscr_text(gs, 2, 10, "POK\xC3\xA9""DEX");
   char buf[16];
@@ -819,7 +832,7 @@ static void g2card_paint_page1(GbScreen* gs, const GbTrainer* t, bool female) {
   int hw = siprintf(buf, "%u", (unsigned)t->playtime.hours);
   gbscr_text(gs, 13, 12, buf);
   bool colon_on = ((g2_frame_ctr >> 5) & 1u) != 0;
-  if (colon_on) gbscr_cell(gs, 13 + hw, 12, GBSCR_SRC_TEXTBOX, G2F_COLON);
+  if (colon_on) gbscr_cell(gs, 13 + hw, 12, GBSCR_SRC_STATUSWORD, G2X_COLON);
   else          gbscr_cell(gs, 13 + hw, 12, GBSCR_SRC_BLANK, 0);
   siprintf(buf, "%02u", (unsigned)t->playtime.minutes);
   gbscr_text(gs, 14 + hw, 12, buf);
@@ -897,7 +910,7 @@ static void g2card_edit_sel(GbTrainer* t, int page, int sel) {
 __attribute__((noinline))
 static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
   uint16_t pic_need = female ? GBSCR_NEED_CARDPIC_F : GBSCR_NEED_CARDPIC_M;
-  uint16_t need_mask = GBSCR_NEED_TEXTBOX | GBSCR_NEED_FONTEXTRA | GBSCR_NEED_CARDGFX |
+  uint16_t need_mask = GBSCR_NEED_TEXTBOX | GBSCR_NEED_STATUSWORD |
                        GBSCR_NEED_LEADERS | GBSCR_NEED_BADGES | pic_need;
   uint32_t shell_need = gbscr_tail_need(PDNA_GEN2, need_mask);
   uint8_t* tail = gb12_arena_tail(shell_need);
@@ -952,7 +965,7 @@ static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
         bool colon_on = ((g2_frame_ctr >> 5) & 1u) != 0;
         char buf[16];
         int hw = siprintf(buf, "%u", (unsigned)t->playtime.hours);
-        if (colon_on) gbscr_cell(&gs, 13 + hw, 12, GBSCR_SRC_TEXTBOX, G2F_COLON);
+        if (colon_on) gbscr_cell(&gs, 13 + hw, 12, GBSCR_SRC_STATUSWORD, G2X_COLON);
         else          gbscr_cell(&gs, 13 + hw, 12, GBSCR_SRC_BLANK, 0);
         gbscr_flush(&gs, 0);
       }
