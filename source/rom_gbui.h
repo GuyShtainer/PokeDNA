@@ -210,80 +210,25 @@ typedef enum {
  * (re-verified: tests/host_romgbui_test.c, and again after #71 via
  * tools/gbui_dump.py against the same corpus).
  *
- * NOTE (b99 review NIT-1): the three chain sums below are main's PRE-#99 numbers,
- * deliberately not updated here -- BACKLOG #84b owns this constant and re-measures
- * it with tools/stack_budget.py on the merged tree (measured 5,544 + 64 ISR = 5,608
- * once #99's larger RomGbUiLoc lands). The per-function frames above ARE current.
- * PDNA_GB_UI_NEED = 2,920 (open_loc's full-scan-fallback chain, the worse of
- * the two entry points, UP from 2,840 -- see the #71 delta above) + 1,576
- * (source/pdna_gbscreen.c's gbscr_open_inner() OWN frame, UNCHANGED by #71:
- * pdna_gbscreen.c was not touched by this batch) = 4,480 -- PLUS the leg the
- * call-graph walk cannot follow (U2b review D1, 2026-09-09): distinct_tiles()
- * calls the GbReadFn INDIRECTLY, and on the SD build that is gbscr_sd_read
- * 24 -> f_lseek 80 -> create_chain 40 -> fill_last_frag 16 -> put_fat 32 ->
- * move_window 16 -> disk_read 32 -> flashcartio_read_sector 40 -> diskRead
- * 24 -> ed_sd_dma_rd 48 -> ed_sd_dma_to_rom 552 = 904 B (measured,
- * -fstack-usage, UNCHANGED by #71). 4,480 + 904 = 5,384. Both real call
- * sites' OLD margins (measured at 5,320) were Settings 6,680 free and the
- * nav-menu chain 7,792 free; PDNA_GB_UI_NEED moving by +64 moves each margin
- * by the same -64 (6,616 / 7,728 free) -- neither call site was touched by
- * this batch, so this is arithmetic, not a re-measurement of them.
+ * RE-MEASURED (BACKLOG #84b, EIGHTH pass, 2026-09-10) on the tree with #99 merged
+ * (rom_gbui_open/_open_loc's argsites bumped 7->8 / 9->10 for the new
+ * load_g1_keyitems_bits() call, its own indirect site declared) and gb_edit_hook's
+ * dead addrtaken-ok exemption removed:
  *
- * gbscr_cache_block() (the U2b item 1 bulk-copy of FONT + need_mask's blocks
- * into `tail`, called AFTER rom_gbui_open_loc() returns, never nested inside
- * it) adds only 16 B of its own frame plus whichever GbReadFn it calls
- * (gbscr_sd_read: 24 B) -- 40 B, far under the 2,920-B rom_gbui_open_loc chain
- * this replaces as the deepest path, so it does not move PDNA_GB_UI_NEED.
+ *   python3 tools/stack_budget.py --elf PokeDNA-artless.elf --builddir
+ *       "$(pwd)/build-artless" --root gbscr_open_inner --top 1
  *
- * D1/D2 fix (U2a review, 2026-09-09): the gate used to live INSIDE the frame
- * it was supposed to be measuring the room FOR (gbscr_open()'s own
- * stack_room() call ran after that frame already existed), which counts the
- * room LEFT UNDER the frame instead of the room the frame NEEDS -- on the
- * artless/SD build's Settings path this made the gate refuse EVERY time on
- * real hardware. The gate lives in a thin `gbscr_open()` wrapper that runs
- * BEFORE the frame exists (the old body is `gbscr_open_inner()`), so
- * PDNA_GB_UI_NEED is the number above taken AS MEASURED -- 5,400 --
- * deliberately NOT rounded up to a 256-B boundary: rounding up here only ever
- * makes the gate MORE conservative than the real chain, and the whole point
- * of this fix is to stop over-refusing on a build that is already tight on
- * stack.
- * This module IS linked and the gate IS live: source/pdna_gbscreen.c gates on
- * PDNA_GB_UI_NEED before gbscr_open_inner, and rom_gbui_open/_open_loc/_tile/
- * _glyph are present in PokeDNA-artless.elf (review, 2026-09-09). The
- * artless/delta "EWRAM ok" lines say nothing about STACK; only the measured
- * chain above does. Margins at 5,400: Settings 6,600 B free, nav chain 7,712.
- *
- * RE-MEASURED (BACKLOG #84b, FOURTH pass, 2026-09-10) after D4's whole-graph
- * blind-spot sweep + its walker fixes (tools/stack_budget.py's own trap #1/#5/#6/
- * #7/#8): `python3 tools/stack_budget.py --elf PokeDNA-artless.elf --builddir
- * "$(pwd)/build-artless" --root gbscr_open_inner --top 1` reported 5,672 B
- * (+64 ISR = 5,736), 336 B above the 5,400 this constant held. Unlike
- * PDNA_PARTY_STRIP_NEED's re-measurement in source/pdna_box.c (a clean,
- * previously-blind-spot branch this same pass declared), this chain's own
- * components were ALREADY fully declared before this pass -- RomGbUi.read@0's
- * gb_art_read/fused_gb_slice_read/gbscr_sd_read union predates it -- so the +336
- * was NOT attributable to a blind spot this pass closed; gbscr_open_inner's own
- * measured frame moved from the 1,576 the #71 batch measured to 1,656 today,
- * for a reason this pass did not track down (an unrelated source change between
- * the two measurements is the likely explanation, not a walker defect).
- *
- * RE-MEASURED AGAIN (BACKLOG #84b, SEVENTH pass, 2026-09-10) after D5a's per-
- * caller field-declaration rewrite (this same tools/stack_budget.py commit):
- * the same command now reports 5,464 B (+64 ISR = 5,528), 208 B BELOW the
- * 5,736 the fourth pass measured. This is a genuine drop, not a regression in
- * the walker's own soundness -- the fourth-pass number was measured against a
- * tree where several offset classes were still globally unioned (D5a's whole
- * point); once RomGbUi.read@0 stopped inheriting implementations that belong
- * to an unrelated offset-0 struct sharing that bare number with it elsewhere
- * in the file, this chain's own credited implementation set (and therefore
- * its measured deepest continuation through rom_gbui_open/distinct_tiles) got
- * narrower and honest, not wider. AS MEASURED, matching this constant's own
- * established convention -- the constant equals its own derivation:
- * 5,464 + 64 = 5,528. The Settings-path/nav-menu-chain DERIVED margins two
- * paragraphs up are stale from the fourth pass and NOT re-verified here;
- * do not trust them without independently re-running this same command
- * against those two call sites before relying on either number. */
-#define PDNA_GB_UI_NEED 5528
+ * reported 5,544 B (+64 ISR = 5,608). AS MEASURED, matching this constant's own
+ * established convention -- the constant equals its own derivation. Superseds the
+ * SEVENTH-pass 5,528 (the pre-#99 number the b99 lane deliberately left stale,
+ * NIT-1): the +80 is #99's new key-item locate step (rom_gbui_open's own frame
+ * grew 1,160 -> 1,224, the comment above) plus the new declared
+ * load_g1_keyitems_bits/g1_keyitems_verify sites joining the same RomGbUi.read@0
+ * union already on this chain. The Settings-path/nav-menu-chain margins earlier
+ * in this comment are stale from the FOURTH pass and NOT re-verified here; do not
+ * trust them without independently re-running this same command against those
+ * two call sites first. */
+#define PDNA_GB_UI_NEED 5608
 
 /* Each entry is the SCAN HIT file offset (where the locator's ScanCb pattern
  * matched), never a located block itself. gen 1 uses FONT/TEXTBOX/CARDFRAME/

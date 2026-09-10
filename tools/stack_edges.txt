@@ -480,8 +480,8 @@ rom_mon_icon_at argsites=1 -> gb_art_read fused_gb_slice_read gb_read
 # puts the read-function pointer itself in a register the AAPCS argument
 # registers don't cover, spilled to the stack across the locator's own scan
 # calls). Verified identical (7 / 9) across all three build variants.
-rom_gbui_open argsites=7 -> gbscr_sd_read fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
-rom_gbui_open_loc argsites=9 -> gbscr_sd_read fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
+rom_gbui_open argsites=8 -> gbscr_sd_read fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g1_keyitem_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
+rom_gbui_open_loc argsites=10 -> gbscr_sd_read fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g1_keyitem_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
 # F1/F2 (BACKLOG #84b seventh pass): widened to include rom_gbui.c's 10 `ScanJob.cb`
 # job-table callbacks (g1_*_cb/g2_*_cb, previously `addrtaken-ok` below). rom_gbui.c's
 # OWN file-local `locate`/`scan_multi` (rom_gbui.c:278/458) are BOTH fully inlined into
@@ -517,7 +517,19 @@ Scan.read @0 in all_blank.constprop.0,any_nonzero.constprop.0,block_eq,cardgfx_v
 # file-local helpers of that exact name (disambiguated @rom_gbui by the D5b symbol
 # census, since rom_gbicon.c/rom_gbsprite.c each define their OWN same-named statics).
 
-RomGbUi.read @0 in rom_gbui_open,rom_gbui_open_loc,rom_gbui_tile,gbscr_open_inner -> gbscr_sd_read fused_gb_slice_read gb_art_read gbscr_mem_read
+RomGbUi.read @0 in rom_gbui_open,rom_gbui_open_loc,rom_gbui_tile,gbscr_open_inner,g1_keyitems_verify -> gbscr_sd_read fused_gb_slice_read gb_art_read gbscr_mem_read
+# g1_keyitems_verify (BACKLOG #99, source/rom_gbui.c:197) added by p84b item 4: it takes
+# `const Scan* s` but rom_gbui.c:25's Scan and RomGbUi both put `read` at offset 0
+# (D5a's contested-offset-0 note above), and g1_keyitems_verify's own `rd(s, ...)` call
+# is inlined into it at -O2, exposing the s->read(...) dispatch directly in its own
+# disassembly rather than staying behind rd@rom_gbui's already-declared site.
+#
+# load_g1_keyitems_bits (BACKLOG #99, source/rom_gbui.c:713) is the SAME shape one level
+# up: it calls rd(s, gu->g1_keyitems, ...) directly, inlined at -O2 into a single
+# s->read(...) site in its own disassembly -- a new indirect-call site rom_gbui_open/
+# rom_gbui_open_loc's own inlining of load_g1_keyitems_bits (the count bump above, 7->8
+# / 9->10) does not absorb, since load_g1_keyitems_bits still shows its own symbol.
+load_g1_keyitems_bits argsites=1 -> gbscr_sd_read fused_gb_slice_read gb_art_read gbscr_mem_read
 # gbscr_mem_read (pdna_gbscreen.c:211, registered pdna_gbscreen.c:842 `local.read =
 # gbscr_mem_read;` where `local` is a per-call RomGbUi copy with .read/.ctx rebound to
 # the RAM tile cache gbscr_open() built) -- a FOURTH RomGbUi.read implementation the
