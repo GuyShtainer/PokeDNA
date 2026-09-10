@@ -183,6 +183,18 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # "gb-pack-gen2" per this list's own append-only rule.
     ("xfer-r1-make-legal", "BACKLOG #104 R1 — KEEP AS IS / MAKE LEGAL on a Gen 3 -> "
      "Game Boy paste (an underlevelled evolved species)", ("BACKLOG #104 R1",)),
+    # BACKLOG #92 (append-only, same rule as every row above): a held ITEM row on
+    # the Gen-2 mon-menu popup (app_mon_menu_readonly, pdna_main.c), Gen 1 omitted.
+    # Shots come from tools/dgb_shots.py's run_gbmon(); captions all start "#92:".
+    ("gb-mon-item", "#92 — held ITEM row on the Gen-2 mon menu (Gen 1: NOT IN GEN 1)",
+     ("#92",)),
+    # BACKLOG #95 (append-only, same rule as every row above): the summary-field
+    # parity audit's closed gaps -- Shiny, Egg, and Met Time/Level/Loc/OT Gender,
+    # Gen 2 only. Shots come from tools/dgb_shots.py's run_gbmon() (the SAME
+    # function as the #92 row above, continuing past its shot 08); captions all
+    # start "#95:".
+    ("gb-mon-summary-parity", "#95 — summary-field parity audit: Shiny, Egg, Met "
+     "Time/Level/Loc/OT Gender rows closed for Gen 2", ("#95",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
