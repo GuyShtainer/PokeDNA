@@ -311,7 +311,7 @@ static void test_lossy_name(void) {
   uint8_t rec[80];
   gen3_build_mon(1 /* Bulbasaur */, 10, 0x87654321u, 0xBEEF0003u, "OTNAME", 3, rec);
   GbEditMon out; Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, true, NULL, &out, &loss);
   CHECK(st == G3GB_OK, "plain-name synthetic mon converts (%s)", g3gb_status_text(st));
   if (st == G3GB_OK) {
     CHECK(!loss.nick_lossy, "a plain name is not lossy");
@@ -342,7 +342,7 @@ static void test_stat_exp_and_ivs(void) {
   gen3_edit_commit(&em, rec);
 
   GbEditMon out; Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, true, NULL, &out, &loss);
   CHECK(st == G3GB_OK, "EV/IV synthetic mon converts (%s)", g3gb_status_text(st));
   if (st == G3GB_OK) {
     CHECK(gb_get_statexp(&out, GB_HP)  == (uint16_t)(4u   * 257u), "stat exp HP = ev*257");
@@ -359,7 +359,7 @@ static void test_stat_exp_and_ivs(void) {
   em_set_iv(&em, PK_SPA, 18);
   em_set_iv(&em, PK_SPD, 18);
   gen3_edit_commit(&em, rec);
-  st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  st = gen3_to_gb(rec, GB_GEN2, true, NULL, &out, &loss);
   CHECK(st == G3GB_OK, "all-even synthetic mon converts (%s)", g3gb_status_text(st));
   if (st == G3GB_OK)
     CHECK(!loss.ivs_halved, "all-even IVs with SpA==SpD -> ivs_halved is false");
@@ -376,7 +376,7 @@ static void test_rename_refused(void) {
   gen3_build_mon(1 /* Bulbasaur */, 10, 0x12345678u, 0xABCD0001u, "TESTER", 3, rec);
 
   GbEditMon out; Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, true, NULL, &out, &loss);
   CHECK(st == G3GB_OK, "synthetic mon converts for Gen 2 (%s)", g3gb_status_text(st));
   if (st != G3GB_OK) return;
 
@@ -446,7 +446,7 @@ static void check_conversion(const uint8_t* rec, uint8_t gen, const GbGen1Base* 
 
   g_tested[gen]++;
   GbEditMon out; Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(rec, gen, base, &out, &loss);
+  G3GbStatus st = gen3_to_gb(rec, gen, true, base, &out, &loss);
   g_refused[gen][st]++;
   if (st != G3GB_OK) return;
   g_accepted[gen]++;

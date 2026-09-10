@@ -599,6 +599,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbtrainer.h"   /* BACKLOG #49 P1b: the Gen-1/2 trainer card */
 #include "pdna_gbbag.h"       /* U4, BACKLOG #67: Red/Yellow's own Item bag */
 #include "pdna_gbpack.h"      /* U5, BACKLOG #67: Gold/Silver/Crystal's own Pack */
+#include "pdna_pick.h"        /* BACKLOG #92: pick_item / pick_item_set_gen1_2_max */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
@@ -973,6 +974,17 @@ static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
  * so it must never pop a message box or make a sound. Requires an open edit session for
  * the same reason EDIT/MOVE/RELEASE do (no GbSession to gate against otherwise); k_gb_ops_ro
  * (the nav-menu mount, g_ed NULL) leaves this NULL. */
+/* BACKLOG #95 (gbmon re-verify C1): the capture record at 0x1D/0x1E is CRYSTAL-only;
+ * gb_load() leaves has_caught false by construction, so every entry point that hands a
+ * record to the editor/summary must say whether this session is Crystal. The resident
+ * session knows from its detected save version; the nested mount from its kind. */
+static void gb_mark_caught(GbEditMon* e, uint8_t gen) {
+  if (gen != GB_GEN2) return;
+  bool crystal = g_ed ? gb_session_is_crystal(&g_ed->s)
+                      : (g_m && g_m->kind == GB12_SAVE_CRYSTAL);
+  gb_set_caught_available(e, crystal);
+}
+
 static bool gb_editable_hook(const uint8_t* rec80) {
   int box, slot;
   if (!g_ed) return false;
@@ -1028,6 +1040,7 @@ static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out, bool* has_
     if (slot >= gb_list_count(s->gen, g_ed->list, box)) return false;
     gen = s->gen;
     ok = gb_load(out, gen, g_ed->list, box, slot);
+    if (ok) gb_mark_caught(out, gen);
   } else {
     if (!g_m || !g_m->stage) return false;
     gen = (g_m->kind == GB12_SAVE_RBY) ? GB_GEN1 : GB_GEN2;
@@ -1040,6 +1053,7 @@ static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out, bool* has_
     }
     if (slot >= gb_list_count(gen, g_m->stage, box)) return false;
     ok = gb_load(out, gen, g_m->stage, box, slot);
+    if (ok) gb_mark_caught(out, gen);
   }
   if (ok && has_sidecar) *has_sidecar = gb_has_sidecar(gen, out);
   return ok;
@@ -1707,7 +1721,12 @@ static bool gb_paste_hook(uint8_t* rec80) {
 
   GbEditMon mon;
   Gen3ToGbLoss loss;
-  G3GbStatus cst = gen3_to_gb(app_clip_rec(), g_ed->s.gen, NULL, &mon, &loss);   /* 2 */
+  /* BACKLOG #95 review C11: the capture record at 0x1D/0x1E is Crystal-only real data;
+   * gb_session_is_crystal() is the single source of truth this and gb_mark_caught both
+   * call, so the live editor and this synthesis path cannot disagree about which target
+   * saves get a synthetic Met record. */
+  bool crystal = gb_session_is_crystal(&g_ed->s);
+  G3GbStatus cst = gen3_to_gb(app_clip_rec(), g_ed->s.gen, crystal, NULL, &mon, &loss);   /* 2 */
   if (cst == G3GB_ERR_NEEDS_BASE) {          /* Gen 1 only -- everything else about this
                                               * mon already checked out (gen3_to_gb.c's
                                               * screen() reaches this check LAST) */
@@ -1724,7 +1743,7 @@ static bool gb_paste_hook(uint8_t* rec80) {
       msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0);
       return false;
     }
-    cst = gen3_to_gb(app_clip_rec(), g_ed->s.gen, &g1base, &mon, &loss);   /* 3 */
+    cst = gen3_to_gb(app_clip_rec(), g_ed->s.gen, crystal, &g1base, &mon, &loss);   /* 3 */
   }
   if (cst != G3GB_OK) {
     snd_deny();
@@ -1985,6 +2004,7 @@ static bool gb_view_hook(uint8_t* rec80) {
       }
       gen = s->gen;
       if (!gb_load(&e, gen, g_ed->list, box, slot)) { snd_deny(); return false; }
+      gb_mark_caught(&e, gen);   /* the LIVE editor path (VIEW/EDIT -> summary -> editor), gbmon re-verify C8 */
       can_edit = app_can_edit() && gbs_box_writable(s, box) == GBS_OK;
     } else {
       if (!g_m || !g_m->stage) return false;
@@ -1999,6 +2019,7 @@ static bool gb_view_hook(uint8_t* rec80) {
         snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
       }
       if (!gb_load(&e, gen, g_m->stage, box, slot)) { snd_deny(); return false; }
+      gb_mark_caught(&e, gen);   /* nested import: the same live path, gbmon re-verify C8 */
       can_edit = false;
     }
     bool has_sidecar = gb_has_sidecar(gen, &e);
@@ -2410,10 +2431,66 @@ static bool gb_create_hook(void) {
   return gb_persist("create");
 }
 
-static const AppSrcOps k_gb_ops = {
+/* app_src_ops_set() hook: ITEM on the read-only mon menu (BACKLOG #92). Gen 2 only --
+ * only k_gb_ops_gen2 below installs this; k_gb_ops_gen1 leaves it NULL, so the row
+ * never appears for a Gen-1 mount rather than appearing and refusing every press
+ * (pdna_app.h's own `item` comment). Mirrors Gen 3's own quick-item action
+ * (app_quick_item, pdna_main.c): the SAME pick_item() screen gb_editor.c's own
+ * GBE_ITEM row already opens (pdna_gbedit.c's GBE_K_ITEM branch), restricted to ids
+ * 0..255 shown as "#n" (#0 = no item, the way to remove one) via pick_item_set_gen1_2_max() -- no separate legality gate:
+ * any byte is structurally legal for this field (that branch's own comment: "Held
+ * item has no move-style validation to fail"). Same load/commit shape as EDIT
+ * (gb_edit_hook above), just loading one field's picker instead of opening the full
+ * summary screen. */
+static bool gb_item_hook(uint8_t* rec80) {
+  int box, slot;
+  if (!gb_locate(rec80, &box, &slot)) return false;
+  GbSession* s = &g_ed->s;
+
+  GbsStatus st = gbs_load_list(s, box, g_ed->list);
+  if (st != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(st), 0); return false; }
+  if (slot >= gb_list_count(s->gen, g_ed->list, box)) {
+    snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
+  }
+
+  GbEditMon e;
+  if (!gb_load(&e, s->gen, g_ed->list, box, slot)) { snd_deny(); return false; }
+
+  pick_item_set_gen1_2_max(255);
+  uint16_t id = pick_item(gb_get_held_item(&e));
+  pick_item_set_gen1_2_max(0);
+  if (id == 0xFFFF) return false;                      /* cancel */
+  /* BACKLOG #95 review C5: an Egg cannot hold an item at all (pack.asm
+   * AnEggCantHoldAnItemText) -- checked here, ahead of gb_set_held_item's own
+   * refusal, purely to say WHY instead of a bare deny beep. */
+  if (id != 0 && gb_is_egg(&e)) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_EGG_ITEM_TITLE, UI_WARN, PDNA_GBEDIT_EGG_ITEM_L1, 0);
+    return false;
+  }
+  /* BACKLOG #95 review C4: this tree tracks no mailbox, so a Mail item set here
+   * leaves gbs_delete/gbs_move (gb_session.h, gbs_is_mail_item) refusing the
+   * WHOLE PARTY the moment they see this mon -- confirm before committing. */
+  if (id != 0 && gbs_is_mail_item((uint8_t)id)
+      && !app_confirm(PDNA_GBEDIT_MAIL_TITLE, PDNA_GBEDIT_MAIL_L1))
+    return false;                                        /* declined */
+  if (!gb_set_held_item(&e, (uint8_t)id)) { snd_deny(); return false; }
+
+  return gb_edit_commit(box, slot, &e, "item");
+}
+
+/* Split in two (BACKLOG #92) so `item` can be NULL for a Gen-1 mount and
+ * gb_item_hook for a Gen-2 one -- gb_session_core picks between them off
+ * g_ed->s.gen, same idea as k_gb_ops vs k_gb_ops_ro picking off g_ed itself. */
+static const AppSrcOps k_gb_ops_gen1 = {
   .edit = 0, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook,
+};
+static const AppSrcOps k_gb_ops_gen2 = {
+  .edit = 0, .move = gb_move_hook, .release = gb_release_hook,
+  .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
+  .editable = gb_editable_hook, .create = gb_create_hook, .item = gb_item_hook,
 };
 
 /* Bag/menu review fix (the nav-menu-copy-lossy finding): the read-only nav-menu mount
@@ -2554,7 +2631,10 @@ static void gb_session_core(Gb12Mount* m) {
    * app_src_ops_set() entirely, leaving g_src_ops NULL -- so COPY there never reached
    * copy_native and silently pasted the lossy converted bytes. Register the read-only
    * twin so VIEW and (lossless) COPY still work with no GbSession to write through. */
-  app_src_ops_set(g_ed ? &k_gb_ops : &k_gb_ops_ro);  /* S2/S3: EDIT / MOVE TO / RELEASE */
+  /* BACKLOG #92: the live-session table also picks Gen1-vs-Gen2 now, so ITEM
+   * (gb_item_hook) is only ever installed for a Gen-2 mount. */
+  app_src_ops_set(!g_ed ? &k_gb_ops_ro
+                        : (g_ed->s.gen == GB_GEN2 ? &k_gb_ops_gen2 : &k_gb_ops_gen1));
   BoxSource s = pdna_gen12_source(m);
   /* #77 (review, 2026-09-09): AFTER pdna_gen12_source() sets g_m, so app_save_kind()
    * reports GEN1/GEN2 when app_icon_rom_open()'s kind check runs. */

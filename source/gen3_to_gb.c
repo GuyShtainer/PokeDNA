@@ -167,8 +167,8 @@ static G3GbStatus set_names(GbEditMon* e, uint8_t gen, const PkMon* m, Gen3ToGbL
  * just bytes 0x1D/0x1E, so writing it on a G/S target is harmless dead data rather
  * than a corruption. RTC-less time slot (0 = "not recorded") and location 0 (no
  * Gen-3 -> Gen-2 location map exists) — only the level and OT gender carry over. */
-static G3GbStatus set_gen2_only_fields(GbEditMon* e, uint8_t gen, const PkMon* m,
-                                       Gen3ToGbLoss* loss) {
+static G3GbStatus set_gen2_only_fields(GbEditMon* e, uint8_t gen, bool caught_available,
+                                       const PkMon* m, Gen3ToGbLoss* loss) {
   if (gen != GB_GEN2) {
     loss->friendship_dropped = true;   /* Gen 1 has no friendship byte at all */
     loss->pokerus_dropped    = (m->pokerus != 0);
@@ -177,7 +177,16 @@ static G3GbStatus set_gen2_only_fields(GbEditMon* e, uint8_t gen, const PkMon* m
   if (!gb_set_friendship(e, m->friendship)) return G3GB_ERR_GLITCH;
   if (!gb_set_pokerus(e, m->pokerus)) return G3GB_ERR_GLITCH;
   uint8_t caught_level = (m->metLevel > 63) ? 63 : m->metLevel;
-  if (!gb_set_caught(e, 0, caught_level, 0, m->otGender)) return G3GB_ERR_GLITCH;
+  /* BACKLOG #95 review C11: on a Gold/Silver target (caught_available false) this write
+   * is refused by gb_set_caught's own has_caught gate (e->has_caught was set to
+   * caught_available below, in gen3_to_gb) -- that is expected, not a conversion
+   * failure, so the refusal is discarded rather than propagated. loss->met_data (set in
+   * set_remaining_loss_flags) already reports the met-data loss this represents. */
+  if (caught_available) {
+    if (!gb_set_caught(e, 0, caught_level, 0, m->otGender)) return G3GB_ERR_GLITCH;
+  } else {
+    (void)gb_set_caught(e, 0, caught_level, 0, m->otGender);
+  }
   return G3GB_OK;
 }
 
@@ -207,8 +216,8 @@ static void set_remaining_loss_flags(const GbEditMon* e, const uint8_t* rec80,
 /* Every field is built into a LOCAL record and only copied to `out` on the final
  * G3GB_OK — never into the caller's `out` directly — so "on refusal `out` is untouched"
  * holds even for a defensive mid-function refusal, not only for the up-front screening. */
-G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1base,
-                     GbEditMon* out, Gen3ToGbLoss* loss) {
+G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, bool caught_available,
+                     const GbGen1Base* g1base, GbEditMon* out, Gen3ToGbLoss* loss) {
   Gen3ToGbLoss local_loss;
   if (!loss) loss = &local_loss;
   memset(loss, 0, sizeof *loss);
@@ -226,6 +235,15 @@ G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1bas
   memset(rec, 0, sizeof rec);
   memset(nm, 0x50, sizeof nm);
   if (!gb_load_parts(&e, gen, false, rec, nm, nm, 0)) return G3GB_ERR_ARG;
+  /* BACKLOG #95 review C1, then C11 (gbmon lane): this is a FRESHLY SYNTHESIZED
+   * record, not a real save's own bytes -- gb_set_caught's has_caught gate (gb_edit.h)
+   * exists to stop the LIVE EDITOR writing into a real Gold/Silver save's Unused1/
+   * Unused2 bytes, and it was never meant to block this module's own capture-record
+   * write outright (C1's fix). But C1's fix went too far the other way: it opened the
+   * gate unconditionally, so EVERY Gen-2 target got a synthetic capture record even
+   * when the target save is Gold/Silver, where those bytes are read as arbitrary
+   * Unused1/Unused2, not a capture record -- the caller now says which is true. */
+  if (gen == GB_GEN2) gb_set_caught_available(&e, caught_available);
 
   st = set_identity_and_level(&e, &m, dex, g1base, loss);
   if (st != G3GB_OK) return st;
@@ -239,7 +257,7 @@ G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1bas
   st = set_names(&e, gen, &m, loss);
   if (st != G3GB_OK) return st;
 
-  st = set_gen2_only_fields(&e, gen, &m, loss);
+  st = set_gen2_only_fields(&e, gen, caught_available, &m, loss);
   if (st != G3GB_OK) return st;
 
   set_remaining_loss_flags(&e, rec80, &m, loss);

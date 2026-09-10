@@ -236,7 +236,7 @@ static void try_convert(const RomGbSprite* gs, FILE* f, const uint8_t* rec) {
 
   GbEditMon out;
   Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(rec, GB_GEN1, &sp.base, &out, &loss);
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN1, false, &sp.base, &out, &loss);
   if (st != G3GB_OK) {
     /* A handful of species legitimately refuse for reasons unrelated to the base
      * table (a move Gen 1 does not have, an isEgg, ...); only report if the failure

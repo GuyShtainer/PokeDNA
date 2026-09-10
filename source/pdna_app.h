@@ -164,6 +164,19 @@ bool app_src_readonly(void);
  * was never actually used. NULL = this source offers no CREATE (the empty-cell row
  * simply does not appear); a source that can build one implements it (pdna_gen12.c's
  * gb_create_hook). */
+/* `item` (BACKLOG #92, Gen 2 only): adds an ITEM row to the read-only popup, right
+ * after VIEW/EDIT and before LEGALITY -- the same relative position Gen 3's own
+ * app_mon_menu uses for its A_ITEM row (pdna_main.c). Opens the SAME pick_item()
+ * screen app_quick_item uses, restricted to ids 0..255 shown as "#n"
+ * (pick_item_set_gen1_2_max(), the mode gb_editor.c's own GBE_ITEM row already
+ * uses) -- #0 is NO_ITEM and REMOVES the held item, same as every other item
+ * picker in this tree; it is not excluded, and doing so would make "take the
+ * item off" unreachable from this row -- then commits through the identical
+ * steps 3-5 EDIT does (BACKLOG #95 review C4/C5: gb_item_hook also refuses a
+ * non-zero item on an Egg and confirms before setting Mail, since this tree
+ * tracks no mailbox). NULL = this source has no held-item concept (Gen 1 --
+ * gb_session_core installs a Gen-1 table with this left unset, so the row
+ * never appears rather than appearing and refusing every press). */
 typedef struct {
   bool (*edit)(uint8_t* rec80);
   bool (*move)(uint8_t* rec80);
@@ -173,6 +186,7 @@ typedef struct {
   bool (*view)(uint8_t* rec80);
   bool (*editable)(const uint8_t* rec80);
   bool (*create)(void);
+  bool (*item)(uint8_t* rec80);
 } AppSrcOps;
 void app_src_ops_set(const AppSrcOps* ops);
 

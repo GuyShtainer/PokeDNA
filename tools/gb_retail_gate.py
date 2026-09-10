@@ -130,6 +130,33 @@ MONEY_VALUE = 123456        # < the 999999 cap; distinct digits so a byte-order 
 MONEY_WRAM = {"red": 0xD347, "yellow": 0xD346, "gold": 0xD573, "crystal": 0xD84E}
 MONEY_LEN = 3                # both encodings are 3 bytes (BCD24 Gen 1 / BE24 Gen 2)
 
+# BACKLOG #95 review gate case: the held-item write (--op helditem, gb_set_held_item)
+# proven the SAME way as money above -- boot it and read the byte back off WRAM,
+# because a held item is not readable off any screen this driver scrapes either.
+# Gold and Crystal only (review's own ask): party slot 0's record starts at wPartyMon1
+# and record offset 0x01 is R2_ITEM (source/gb_edit.c, R2_ITEM = 0x01) --
+#   Gold:    wPartyMon1 = bank 01, $DA2A (assets/upstream/pokegold/symbols/pokegold.sym)
+#   Crystal: wPartyMon1 = bank 01, $DCDF (assets/upstream/pokecrystal/symbols/pokecrystal.sym)
+# so the held-item byte is $DA2B / $DCE0. Both addresses are in the $D000-$DFFF banked
+# region, same as MONEY_WRAM's own gold/crystal entries -- read_mem's svbk_ok gate
+# (already exercised by run_money_case) covers this the same way.
+HELDITEM_VALUE = 0x05        # Potion -- distinct from 0 (None) and any real party item
+HELDITEM_WRAM = {"gold": 0xDA2B, "crystal": 0xDCE0}
+
+# gbmon lane, BACKLOG #95 review C11's own binding test: --op caught (source/gen3_to_gb.c
+# / source/pdna_gen12.c's gb_mark_caught / source/gb_session.c's gb_session_is_crystal)
+# writes wPartyMon1CaughtLevel -- (time_of_day<<6)|level packed into ONE byte, verified
+# against pokecrystal/engine/pokemon/caught_data.asm's SetBoxmonOrEggmonCaughtData
+# (`ld a, [wTimeOfDay] / rrca / rrca ... or [wCurPartyLevel] ... ld [hli], a`). Symbol
+# verified against assets/upstream/pokecrystal/symbols/pokecrystal.sym:
+#   01:dcfc wPartyMon1CaughtLevel
+# Crystal only -- Gold/Silver has no such symbol (those two bytes are Unused1/Unused2,
+# gen2_save.c:493-497) and the surgery step itself refuses before there is anything to
+# boot, so CAUGHT_WRAM has no "gold" entry (mirrors HELDITEM_WRAM's Gen-1 absence).
+CAUGHT_TIME, CAUGHT_LEVEL, CAUGHT_LOC, CAUGHT_GENDER = 1, 40, 5, 0   # 1 = morning
+CAUGHT_WANT_BYTE = (CAUGHT_TIME << 6) | CAUGHT_LEVEL                 # 0x68
+CAUGHT_WRAM = {"crystal": 0xDCFC}
+
 # BACKLOG #49 P1a — gb_trainer.h's badges/name setters (source/gb_trainer.c), via the
 # surgery tool's new --op badges / --op name. WRAM anchors from
 # docs/GEN12-PARITY-DESIGN.md §4.2's own table, derived from the pinned `symbols`
@@ -986,6 +1013,113 @@ def run_boxname_case(name, info, rom, sav, work, binary, python, vendor, tally):
     tally.record("boxname (BACKLOG #94)", ok, detail)
 
 
+def run_helditem_case(name, info, rom, sav, work, binary, python, vendor, tally,
+                      party_count0):
+    """BACKLOG #95 review gate case: proves --op helditem's write (gb_set_held_item)
+    reached the BOOTED game, not just the .sav bytes on disk -- the review's own ask,
+    since nothing upstream of this file exercised a Gen-2 setter against a live boot.
+    Gold and Crystal only: HELDITEM_WRAM has no Red/Yellow entries (party slot 0's
+    record offset 0x01 is current HP in Gen 1, not an item -- gb_set_held_item refuses
+    it outright, tests/host_gbsurgery_tool.c's do_helditem already proves that refusal
+    on the host; nothing left to boot for those two games)."""
+    if info["gen"] == 1:
+        tally.skip_case("held item (BACKLOG #95 review gate)",
+                        "Gen 1 has no held-item field; gb_set_held_item refuses it")
+        return
+    if party_count0 < 1:
+        tally.skip_case("held item (BACKLOG #95 review gate)", "empty party")
+        return
+    edited = work / "helditem.sav"
+    rc, out, err = run_surgery(binary, sav, edited,
+                               [["helditem", "party", "0", str(HELDITEM_VALUE)]])
+    if rc != 0:
+        tally.record("held item (BACKLOG #95 review gate)", False,
+                    f"surgery refused: {err.strip()}")
+        return
+
+    addr = HELDITEM_WRAM[name]
+    want = f"{HELDITEM_VALUE:02x}"
+    rc, rep, out, err = boot(python, rom, edited, work / "helditem", vendor,
+                             work / "helditem.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:1"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == want
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"{addr:#06x}={got!r} want={want!r}")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("held item (BACKLOG #95 review gate)", ok, detail)
+
+
+def run_caught_case(name, info, rom, sav, work, binary, python, vendor, tally,
+                    party_count0):
+    """gbmon lane, BACKLOG #95 review C11's own binding test: proves --op caught's write
+    (gb_set_caught, gated by gb_session_is_crystal -- the SAME function
+    source/pdna_gen12.c's gb_mark_caught calls, so this case cannot pass by exercising
+    a decision the live editor does not actually make) reaches the BOOTED game on
+    Crystal, and is REFUSED outright by the surgery step itself on Gold -- proving the
+    C11 fix's whole point (a Gen-2 target no longer gets a synthetic capture record
+    just because it is Gen 2; it has to actually BE Crystal). Gen 1 has no capture
+    record at all (gb_set_caught's own gen == GB_GEN2 check), so this case is Gen-2
+    only, same posture as held item and box names."""
+    if info["gen"] == 1:
+        tally.skip_case("caught (BACKLOG #95 review gate, C11)",
+                        "Gen 1 has no capture record; gb_set_caught refuses it")
+        return
+    if party_count0 < 1:
+        tally.skip_case("caught (BACKLOG #95 review gate, C11)", "empty party")
+        return
+
+    packed = f"{CAUGHT_TIME}:{CAUGHT_LEVEL}:{CAUGHT_LOC}:{CAUGHT_GENDER}"
+    edited = work / "caught.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["caught", "party", "0", packed]])
+
+    if name == "gold":
+        # ---- the refusal case: no boot, the surgery step itself must say no ----
+        ok = rc != 0
+        detail = f"surgery rc={rc} (expected non-zero: has_caught gated false on Gold)"
+        if not ok:
+            detail += f" | stderr: {stderr_tail(err)}"
+        tally.record("caught (BACKLOG #95 review gate, C11)", ok, detail)
+        return
+
+    # ---- Crystal: the surgery must succeed and the booted game's own WRAM byte must
+    # read back exactly (time<<6)|level, per caught_data.asm's SetBoxmonOrEggmonCaughtData ----
+    if rc != 0:
+        tally.record("caught (BACKLOG #95 review gate, C11)", False,
+                    f"surgery refused on Crystal (expected accept): {err.strip()}")
+        return
+
+    addr = CAUGHT_WRAM[name]
+    want = f"{CAUGHT_WANT_BYTE:02x}"
+    rc, rep, out, err = boot(python, rom, edited, work / "caught", vendor,
+                             work / "caught.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:1"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == want
+    detail = (f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} "
+             f"{addr:#06x}={got!r} want={want!r} (wPartyMon1CaughtLevel)")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("caught (BACKLOG #95 review gate, C11)", ok, detail)
+
+
 CREATE_DEX, CREATE_LEVEL, CREATE_NAME = 1, 5, "BULBASAUR"
 # dex 1 = Bulbasaur, a base form -- rom_gblearn_min_level() computes 5 for it in
 # BOTH gens (tests/host_romgblearn_test.c pins this exact value against real
@@ -1096,6 +1230,15 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
 
     # ---- 2c. BACKLOG #49 P0 — the field-write primitive, proven with money ----
     run_money_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2c2. BACKLOG #95 review gate case — the held-item Pokemon-setter write ----
+    run_helditem_case(name, info, rom, sav, work, binary, python, vendor, tally,
+                      party_count0)
+
+    # ---- 2c3. gbmon lane, BACKLOG #95 review C11 — the caught/capture-record write,
+    # gated on gb_session_is_crystal so this proves the LIVE EDITOR's own decision ----
+    run_caught_case(name, info, rom, sav, work, binary, python, vendor, tally,
+                    party_count0)
 
     # ---- 2d. BACKLOG #49 P1a — the trainer-card core, proven with badges + name ----
     run_trainer_case(name, info, rom, sav, work, binary, python, vendor, tally)

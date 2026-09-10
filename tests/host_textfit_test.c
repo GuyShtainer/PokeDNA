@@ -533,6 +533,27 @@ int main(void) {
   PF(PDNA_GBEDIT_GENDER_LOCKED_TITLE, 28, 184);   /* G1 review LOW-1 */
   PF(PDNA_GBEDIT_GENDER_LOCKED_L1,    28, 184);
 
+  /* BACKLOG #95 review C2: msg_wait's (28, .., 184) clamp again -- these are pre-
+   * split across l1/l2 rather than wrapped (msg_wait's l1/l2 are each a single
+   * ui_ptext_fit, not a wrap), exactly the failure mode this whole file exists to
+   * catch if they had been handed over as one long sentence instead. */
+  PF(PDNA_GBEDIT_SHINY_FORCED_TITLE,     28, 184);
+  PF(PDNA_GBEDIT_SHINY_FORCED_MALE_L1,   28, 184);
+  PF(PDNA_GBEDIT_SHINY_FORCED_MALE_L2,   28, 184);
+  PF(PDNA_GBEDIT_SHINY_FORCED_FEMALE_L1, 28, 184);
+  PF(PDNA_GBEDIT_SHINY_FORCED_FEMALE_L2, 28, 184);
+
+  /* BACKLOG #95 review C4: app_confirm's own (28, 54, 184) title clamp / (28, 74, 184)
+   * wrap -- same shape as every other app_confirm caller this file already measures
+   * (e.g. the sidecar-corruption confirms below), so the same (28, 184) numbers. */
+  PF(PDNA_GBEDIT_MAIL_TITLE, 28, 184);
+  PF(PDNA_GBEDIT_MAIL_L1,    28, 184);
+
+  /* BACKLOG #95 review C5: msg_wait's (28, .., 184) clamp, shared by both the Egg and
+   * the Egg-holding-an-item refusals (gb_item_hook, pdna_gbedit.c). */
+  PF(PDNA_GBEDIT_EGG_ITEM_TITLE, 28, 184);
+  PF(PDNA_GBEDIT_EGG_ITEM_L1,    28, 184);
+
   /* pdna_gbtrainer.c's gbtr_id_edit_ok() -- same app_confirm (28, .., 184) clamp
    * (P1b review D6). */
   PF(PDNA_GBTRAINER_ID_WARN_TITLE, 28, 184);

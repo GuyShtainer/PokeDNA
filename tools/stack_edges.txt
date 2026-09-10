@@ -103,7 +103,11 @@
 # "BoxSource.records @20 in" / "BoxSource.get_name @28 in") instead of living here
 # unqualified, which the D5a parser now refuses the moment a second struct shares
 # the same bare offset.
-BoxSource.set_name   @32 -> banksrc_set_name gbsrc_set_name pcsrc_set_name
+BoxSource.set_name   @32 in box_options_menu,pdna_box -> banksrc_set_name gbsrc_set_name pcsrc_set_name
+# gbmon (#92): the held-item hook's address lives in k_gb_ops_gen2; its call is absorbed by -O2
+# (no @32 site), so the sweep sees it address-taken -- declare it (its chain runs through
+# pick_item, over the 256-B exemption cap). Callers of set_name qualified for the same reason.
+AppSrcOps.item       @32 in app_mon_menu_readonly -> gb_item_hook
 BoxSource.get_wp     @36 -> banksrc_get_wp gbsrc_get_wp pcsrc_get_wp
 BoxSource.set_wp     @40 -> banksrc_set_wp gbsrc_set_wp pcsrc_set_wp
 BoxSource.can_edit   @44 -> banksrc_can_edit gbsrc_can_edit app_can_edit
