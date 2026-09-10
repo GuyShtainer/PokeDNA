@@ -62,6 +62,22 @@
 # cases are not on the deepest-chain path) -- add it here the day a chain grows to include
 # one of those cases; the guard's per-SITE blind-spot check will name the function if that
 # ever happens instead of silently trusting a stale list.
+#
+# WHY A NAMED IMPLEMENTATION MISSING FROM THE ELF IS A WARNING, NOT A FATAL (BACKLOG #84b,
+# third pass, 2026-09-10): if one of the impl names listed after a `->` above is not found
+# in the built ELF's disassembly (stack_budget.py's own "names implementation(s) not found"
+# message -- seen live for `fused_gb_slice_read`, a declared implementation this build no
+# longer links), that only means the reachable call graph SHRANK -- one fewer concrete
+# function the walker could have attributed a dispatch to. It can never make the guard's
+# worst-case total an UNDER-count: every other declared implementation for that same site
+# is still exempted and still contributes its own (measured or estimated) frame size to
+# the deepest-chain search, so the bound the guard reports is still sound, just possibly
+# no longer tight against a function that no longer exists to be on any chain. Treating it
+# as FATAL would make the guard fail every time an implementation is deleted, refactored
+# away, or link-time-GC'd for an unrelated reason -- exactly the kind of noise that trains
+# people to stop reading FATALs. Compare: a NEW, UNDECLARED implementation or an offset
+# that no longer matches the struct header (verify_field_declarations) IS fatal, because
+# those directions genuinely risk an under-count.
 
 BoxSource.records    @20 -> banksrc_records gbsrc_records pcsrc_records
 BoxSource.get_name   @28 -> banksrc_get_name gbsrc_get_name pcsrc_get_name
