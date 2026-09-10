@@ -829,6 +829,17 @@ def main(argv):
         print(f"*** stack_budget: no such ELF: {args.elf}", file=sys.stderr)
         return 1
 
+    # D3 (BACKLOG #84b review): a wrong --builddir silently finds zero .su files, so
+    # every function falls back to the prologue estimator -- no crash, no obviously
+    # wrong number, just a report that LOOKS legitimate and certifies nothing. Fail
+    # loud instead of guessing the directory is fine.
+    if not glob.glob(os.path.join(args.builddir, "*.su")):
+        print(f"*** stack_budget: 0 .su files under --builddir {args.builddir!r} -- "
+              "wrong directory? (every function would silently fall back to the prologue "
+              "estimator, which is not a build failure this guard could ever surface)",
+              file=sys.stderr)
+        return 1
+
     fp = _elf_fingerprint(args.elf, args.builddir)
     cache_file = _cache_path(args.elf)
     cached = None

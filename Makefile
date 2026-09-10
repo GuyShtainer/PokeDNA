@@ -73,11 +73,15 @@ export OBJCOPY := $(PREFIX)objcopy
 # `bl`, bx-rN indirect thunks, linker veneers, and .constprop/.isra .su name mismatches --
 # see its own header) and fails the build if the deepest chain + 64 B of ISR reentry would
 # leave less than 1024 B of headroom. PDNA_STACK_CHECK=0 skips it (e.g. a throwaway host
-# experiment with no devkitARM objdump on PATH).
+# experiment with no devkitARM objdump on PATH). --builddir is $(CURDIR), not a bare "."
+# (BACKLOG #84b D3): this recipe runs inside the $(BUILD)-dir submake, so "." happens to
+# be correct today, but an absolute path can never be silently wrong if that ever changes
+# -- the guard itself now also refuses a --builddir with zero .su files instead of quietly
+# falling back to the prologue estimator for every function.
 	@if [ "$(PDNA_STACK_CHECK)" = "0" ]; then \
 	   echo "  STACK skip (PDNA_STACK_CHECK=0)"; \
 	 else \
-	   python3 $(dir $(OUTPUT))tools/stack_budget.py --elf $@ --builddir . --root main \
+	   python3 $(dir $(OUTPUT))tools/stack_budget.py --elf $@ --builddir $(CURDIR) --root main \
 	     || { rm -f $@; exit 1; }; \
 	 fi
 	$(NM) -Sn $@ > $(basename $(notdir $@)).map
