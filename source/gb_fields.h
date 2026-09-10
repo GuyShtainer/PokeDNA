@@ -85,6 +85,27 @@ typedef enum {
    * only; bit GAME_TIME_CAPPED (0) of the byte immediately before GBF_GAMETIME_HOURS. */
   GBF_GAMETIME_CAP,
 
+  /* BACKLOG #94, appended (same API-id rule as GBF_GAMETIME_CAP above): sBoxNames, the
+   * 14 x 9-byte GB-encoded box-name table. GS/Crystal only -- Gen 1's boxes are unnamed
+   * (banner always "BOX n"). One field covers all 14 names (126 B); gb_boxnames.c
+   * indexes into it per box rather than the generator emitting 14 separate field ids. */
+  GBF_BOXNAMES,
+
+  /* BACKLOG #86, appended (same rule): sRTCStatusFlags, the "RTC has been reset / clock
+   * is unreliable" flag §1.8 documents -- SRAM bank 0, addr 0xAC60, OUTSIDE both
+   * checksummed spans (design doc §1.8: "sRTCStatusFlags ... SRAM bank 0, OUTSIDE both
+   * checksummed spans"), so it cannot be a D() region field the way the rest of the
+   * clock block is; resolved via sram_file_off() like GBF_GENDER/GBF_GS_BALL_FLAG.
+   * GS/Crystal only; Gen 1 has no RTC at all. */
+  GBF_RTC_STATUS_FLAGS,
+
+  /* P1a review D3, appended (same API-id rule as GBF_GAMETIME_CAP/GBF_BOXNAMES/
+   * GBF_RTC_STATUS_FLAGS above): wEggMonOT, the day-care egg's own OT name -- without
+   * this a withdrawn egg lost its OT (and, via gbd_withdraw_egg's list_species, its
+   * EGG-ness). GS/Crystal only, sits between wEggMonNickname and wEggMon (the record)
+   * in both games' .sym, same as GBF_DAYCARE_OT does for the boarded mon. */
+  GBF_DAYCARE_EGG_OT,
+
   GBF_FIELD_COUNT
 } GbField;
 
