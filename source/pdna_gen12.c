@@ -598,6 +598,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbsummary.h"   /* BACKLOG #41: the native VIEW/EDIT summary */
 #include "pdna_gbtrainer.h"   /* BACKLOG #49 P1b: the Gen-1/2 trainer card */
 #include "pdna_gbbag.h"       /* U4, BACKLOG #67: Red/Yellow's own Item bag */
+#include "pdna_gbpack.h"      /* U5, BACKLOG #67: Gold/Silver/Crystal's own Pack */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
@@ -2508,6 +2509,15 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * the `else if (nv != NV_BACK)` branch below, which calls
      * app_nav_refuse() and shows nav_avail's own honest message instead. */
     if (g_ed) pdna_gbbag(&g_ed->s, true);
+    else      (void)gb_info_page(m);
+  } else if (nv == NV_BAG && kind == SE_KIND_GEN2) {
+    /* U5 (BACKLOG #67): Gold/Silver/Crystal's own Pack + PC store, mirroring
+     * U4's own gate one branch up -- same "needs a live GbSession to write
+     * through" rule (pdna_gbpack() itself refuses a NULL/non-Gen-2 session,
+     * but g_ed's resident image is the only path that HAS one here; the
+     * plain FIL-streaming entry falls back to the read-only info page, same
+     * reasoning as NV_TRAINER above). */
+    if (g_ed) pdna_gbpack(&g_ed->s, true);
     else      (void)gb_info_page(m);
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */

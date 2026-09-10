@@ -165,6 +165,13 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
      "SWAP, BAD ID/QUANTITY refusals, the forced-failure fallback page, the "
      "empty pocket (+ real-cartridge oracle), Gold's own Bag refusal",
      ("N6(d)", "N6(e)", "N6(f)")),
+    # U5 (docs/briefs/U5-gen2-pack-brief.md, BACKLOG #67): Gold/Silver/Crystal's own
+    # Pack (item bag) + PC item store drawn on the shared shell, the Gen-2 sibling of
+    # U4's own Gen-1 bag. Shots come from tools/dgb_shots.py's run_u5_pack(), captions
+    # all start "U5:". Appended after "u4-review-n6" per this list's own append-only
+    # rule.
+    ("gb-pack-gen2", "U5 — Gold/Silver/Crystal's own Pack + PC store on the shell "
+     "(Gen-2 saves)", ("U5",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

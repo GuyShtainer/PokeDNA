@@ -292,6 +292,54 @@ def run_bag_case(name, info, rom, sav, work, binary, python, vendor, tally):
     tally.record(label, ok, detail)
 
 
+# U5 (BACKLOG #67, Gen-2's own Pack): a TM/HM count-array case -- Gen 2 only (Gen 1
+# has no TM/HM pocket at all, gb_bag.h's own table). `wTMsHMs`, grep -iE 'wTMsHMs'
+# assets/upstream/<repo>/symbols/<repo>.sym: pokegold.sym 01:d57e, pokecrystal.sym
+# 01:d859 (a flat 57-byte array, index = TM/HM number - 1, no count/body split unlike
+# every other pocket -- gb_bag.h's own GBB_POCKET_TMHM comment). File offset from
+# source/gb_fields.c's own GBF_TMHM_COUNTS row (gold 0x23e6, crystal 0x23e7, 57 B).
+TMHM_WRAM = {"gold": 0xD57E, "crystal": 0xD859}
+TMHM_FILE_OFF = {"gold": 0x23E6, "crystal": 0x23E7}
+TMHM_INDEX = 0     # TM01
+TMHM_COUNT = 42
+
+
+def run_tmhm_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """gb_bag.h's gbb_tmhm_get/gbb_tmhm_set (source/gb_bag.c), via the surgery tool's
+    `--op item tmhm INDEX COUNT` (do_item's own TMHM branch, tests/host_gbsurgery_
+    tool.c) -- sets TM01's own count to 42 and asserts the exact WRAM byte, the same
+    WRAM-not-screen-scraped posture run_bag_case above uses (no TM/HM-pocket screen
+    this driver's content reader reaches either)."""
+    label = "TM/HM count (TM01, U5, BACKLOG #67)"
+    ops = [["item", "tmhm", str(TMHM_INDEX), str(TMHM_COUNT)]]
+    edited = work / "tmhm.sav"
+    rc, out, err = run_surgery(binary, sav, edited, ops)
+    if rc != 0:
+        tally.record(label, False, f"surgery refused: {err.strip()}")
+        return
+
+    tmhm_addr = TMHM_WRAM[name] + TMHM_INDEX
+    read_args = ["--read-mem", f"{tmhm_addr:#06x}:1"]
+    rc, rep, out, err = boot(python, rom, edited, work / "tmhm", vendor, work / "tmhm.json",
+                             extra_args=["--expect", "accept"] + read_args)
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+
+    want = f"{TMHM_COUNT:02x}"
+    got = mem.get(f"{tmhm_addr:#06x}")
+    ok = (rc == 0 and svbk_ok and got == want)
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"TM01 count@{tmhm_addr:#06x}={got!r} want={want!r}")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record(label, ok, detail)
+
+
 def _bcd24_hex(v):
     """v (0..999999) as 3 BCD bytes, hex-encoded -- which is just its decimal digits,
     since a BCD nibble IS a decimal digit. Matches tests/host_gbsurgery_tool.c's
@@ -1054,6 +1102,10 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
 
     # ---- 2e. BACKLOG #49 P2a — the bag/PC-item core, proven with a Potion (+ Ball) ----
     run_bag_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2f. U5 (BACKLOG #67) — the TM/HM count array, Gen 2 only ----
+    if info["gen"] == 2:
+        run_tmhm_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
     # ---- lane gbdata dispatch (BACKLOG #85/#86/#90/#94) — steps 2g-2j, deliberately
     # left a gap after 2e/2f so u5's own TM/HM case (2f) can land ahead of this block
