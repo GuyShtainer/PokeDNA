@@ -191,6 +191,11 @@ static void usage(const char* prog) {
     "                               sets sRTCStatusFlags = RTC_RESET so the next\n"
     "                               CONTINUE runs the game's own clock-set prompt.\n"
     "                               Gen 1 refused (no clock).\n"
+    "  --op clockclear               BACKLOG #86/#108, via gb_clock.h's\n"
+    "                               gbc_clear_status_flags: zeroes sRTCStatusFlags,\n"
+    "                               dismissing the clock-error banner only (a dead\n"
+    "                               battery raises it again next boot). Gen 1\n"
+    "                               refused (no clock).\n"
     "  --op fly INDEX              BACKLOG #90, via gb_fly.h: sets fly-destination\n"
     "                               bit INDEX visited. INDEX is 0..gbfy_count()-1 for\n"
     "                               this save's own generation.\n"
@@ -209,7 +214,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"create", 2},
     {"badges", 1}, {"name", 1}, {"badges2", 2},
     {"item", 3},
-    {"daycare", 2}, {"clockshift", 4}, {"clockreset", 0}, {"fly", 1}, {"boxname", 2},
+    {"daycare", 2}, {"clockshift", 4}, {"clockreset", 0}, {"clockclear", 0}, {"fly", 1}, {"boxname", 2},
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -729,6 +734,15 @@ static int do_clockreset(GbSession* s) {
   return 0;
 }
 
+/* BACKLOG #86/#108 -- via gb_clock.h's gbc_clear_status_flags. Dismisses the
+ * clock-error banner only (does not fix a dead battery, see gb_clock.h's own
+ * header note); Gen 1 refused the same way clockshift/clockreset are. */
+static int do_clockclear(GbSession* s) {
+  GbsStatus st = gbc_clear_status_flags(s);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
 /* BACKLOG #90 -- via gb_fly.h. Sets one fly-destination bit visited. */
 static int do_fly(GbSession* s, const char* idx_tok) {
   int idx = resolve_uint(idx_tok, "fly index");
@@ -805,6 +819,9 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "clockreset")) {
     return do_clockreset(s);
+  }
+  if (!strcmp(o->kind, "clockclear")) {
+    return do_clockclear(s);
   }
   if (!strcmp(o->kind, "fly")) {
     return do_fly(s, o->a[0]);
