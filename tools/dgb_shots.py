@@ -1057,7 +1057,26 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.shot("04_tmhm", "U5: RIGHT again -> TM/HM -- the two-digit TM/HM number "
                        "prefix (cols 5-6, before the cursor) plus a 'TMnn'-style "
                        "fallback name (no move-name table this slice) and its "
-                       "own count column")
+                       "own count column. Also D4's own fix: every row here is "
+                       "an OWNED TM/HM (this save's TM09 is missing and never "
+                       "appears as a blank or zero-count row, matching the "
+                       "real cartridge's TMHM_DisplayPocketItems)")
+
+    # D3 fix (review-opus ac9ffc0): the cursor walks all ROWS_VISIBLE (5) rows
+    # before `top` moves, matching the real cartridge's own gold_down4 ground
+    # truth -- NOT Gen 1's bag-style pin-at-slot-2 the earlier draft borrowed.
+    # This save's TM/HM pocket has 56 owned entries (D4), plenty to scroll.
+    s.press_n("DOWN", 4, settle=gb_shots.SETTLE)
+    s.shot("04b_scrolled_unpinned", "U5 D3 fix: TM/HM, 4 DOWNs from the top -- "
+                                     "the cursor is on the FIFTH visible row "
+                                     "and the list has NOT scrolled yet (`top` "
+                                     "is still 0) -- the cursor walks the whole "
+                                     "visible page before scrolling starts")
+    s.press_n("DOWN", 4, settle=gb_shots.SETTLE)
+    s.shot("04c_scrolled_further", "U5 D3: four MORE DOWNs (8 total) -- now "
+                                    "the list has actually scrolled, `top` "
+                                    "tracking the cursor one row at a time")
+    s.press_n("UP", 8, settle=gb_shots.SETTLE)              # back to row 0 for the rest of the flow
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (TM/HM: PC STORE/CANCEL only,
                                                               # csel starts on PC STORE, no DOWN needed)
@@ -1065,10 +1084,34 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.shot("05_pc_store", "U5: START > PC STORE toggles to the PC item store -- "
                            "reuses the Items pocket's own art column (not "
                            "independently pixel-dumped this slice, see "
-                           "pdna_gbpack.h)")
-    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU again (now over the PC pocket,
-                                                              # which has edit ops too -- PACK is opts[3],
-                                                              # after ADD ITEM/REMOVE/SWAP)
+                           "pdna_gbpack.h). D6 fix: the description box now "
+                           "prints 'PC ITEM STORE' -- the earlier draft's "
+                           "empty box left the store visually identical to "
+                           "the Items pocket")
+
+    # D7 fix (review-opus ac9ffc0): ADD ITEM from the PC store is no longer
+    # refused -- it is its own undifferentiated list, not one of the four
+    # real bag pockets the Items-only fallback rule was meant to guard. This
+    # save's PC store is already at capacity (BAG FULL on a completed add is
+    # a real, expected refusal -- a full pocket, not a wrong one) so the demo
+    # only needs to show the id-ENTRY screen opening (proof ADD ITEM is no
+    # longer refused outright), then cancel out with SELECT (osk_search's own
+    # cancel, same as shot 08's qty editor) rather than complete the insert --
+    # osk_search's `continue` lands back in the SAME open PACK MENU (csel
+    # still 0), so no extra START tap is needed before the DOWN x3 below.
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (PC store, csel=0=ADD ITEM)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry (seeded "1")
+    s.shot("05b_pc_store_add_item", "U5 D7 fix: START > ADD ITEM from the PC "
+                                     "ITEM STORE opens the id entry instead of "
+                                     "refusing 'WRONG POCKET' (the earlier "
+                                     "draft's behaviour) -- this save's PC "
+                                     "store happens to already be full, so "
+                                     "this demo cancels out rather than "
+                                     "complete an insert that would correctly "
+                                     "show BAG FULL, a different, expected "
+                                     "refusal")
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # osk_search: SELECT cancels -> back in the menu
+
     s.press_n("DOWN", 3, settle=gb_shots.SETTLE)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle back -> Pack (still on TM/HM's own cyc)
     s.shot("06_back_to_pack", "U5: START > PACK toggles back")

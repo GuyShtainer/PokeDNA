@@ -43,6 +43,21 @@ static GbGame g2pack_game(const GbSession* s) {
   return (s->g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL : GBF_G_GS;
 }
 
+/* D-Kris fix (review-opus ac9ffc0): a female Crystal save (Kris) still showed the
+ * boy's (Chris's) pack picture -- 13/15 pic tiles differ on the real cartridge.
+ * `s->img` is the whole resident save image (gb_session.h: "CALLER-OWNED, must
+ * outlive the session"), so the gender byte g2_offsets() locates (G/S: 0, not
+ * stored, always false; Crystal: file offset 0x3E3D, bit 0) is read directly out
+ * of it -- the SAME field the trainer card already reads via gbt_read()'s own
+ * has_gender/gender pair, just fetched here without pulling in the whole
+ * GbTrainer struct for one bit. */
+static bool g2pack_is_female(const GbSession* s) {
+  G2Offsets o;
+  if (!g2_offsets(s->g2w.sv.version, &o) || !o.player_gender) return false;
+  if (o.player_gender >= s->len) return false;
+  return (s->img[o.player_gender] & 1u) != 0;
+}
+
 /* ============================================================================
  * ---- the plain row-list fallback (BACKLOG #67's own "no dead end" rule) --
  * same shape as pdna_gbbag.c's own pdna_gbbag_plain(), over the four real
@@ -53,16 +68,49 @@ static const char* const kPocketNames[5] = { "ITEMS", "BALLS", "KEY ITEMS", "TM/
 static const GbBagPocket kUiPocket[4] = { GBB_POCKET_ITEMS, GBB_POCKET_BALLS,
                                           GBB_POCKET_KEY, GBB_POCKET_TMHM };
 
+/* D4 fix (review-opus ac9ffc0): tmhm.asm's own TMHM_DisplayPocketItems skips any
+ * TM/HM whose stored count is 0 -- the real TM/HM pocket lists ONLY OWNED
+ * entries, not a fixed 57-row list (a save with TM01 zeroed opens the pocket
+ * directly on "02 HEADBUTT", confirmed live). `g2_tm_owned[i]` is the raw
+ * tmhm_index (0..GBB_TMHM_COUNT-1) of the i-th OWNED TM/HM, in ROM order;
+ * `g2_tm_n` is how many are owned. Rebuilt UNCONDITIONALLY by every
+ * g2pack_row_total() call for the TM/HM pocket (O(57) resident array reads, no
+ * SD I/O) rather than tracked via separate invalidation at each pocket-switch/
+ * edit call site -- always in sync with the live bag, by construction, at the
+ * cost of one redundant rebuild for callers that already have a fresh one
+ * (immaterial next to a single SD sector). */
+static uint8_t g2_tm_owned[GBB_TMHM_COUNT];
+static int     g2_tm_n;
+
+static void g2_tm_rebuild(const GbBag* bag) {
+  g2_tm_n = 0;
+  for (int i = 0; i < GBB_TMHM_COUNT; i++) {
+    uint8_t c = 0;
+    gbb_tmhm_get(bag, i, &c);
+    if (c > 0) g2_tm_owned[g2_tm_n++] = (uint8_t)i;
+  }
+}
+
 static int g2pack_row_total(const GbBag* bag, GbBagPocket pocket) {
-  if (pocket == GBB_POCKET_TMHM) return GBB_TMHM_COUNT + 1;   /* +CANCEL */
+  if (pocket == GBB_POCKET_TMHM) { g2_tm_rebuild(bag); return g2_tm_n + 1; }  /* +CANCEL */
   return bag->pockets[pocket].count + 1;                       /* +CANCEL */
 }
 
+/* D5 fix (review-opus ac9ffc0): tmhm.asm skips the quantity column for an HM row
+ * entirely (HMs are never consumed, so the game never prints a count next to
+ * one) -- `tmhm_index` here is the RAW index (0..56), post g2_tm_owned mapping,
+ * not the owned-list position. */
+static bool g2pack_is_hm(int tmhm_index) { return tmhm_index >= 50; }
+
+/* `idx` is the owned-list POSITION (0..g2_tm_n-1) for the TM/HM pocket, a real
+ * entry index for every other pocket -- callers must have just called
+ * g2pack_row_total() for the same pocket so g2_tm_owned/g2_tm_n are fresh. */
 static void g2pack_row_label(const GbBag* bag, char* buf, int bufsz, GbBagPocket pocket, int idx) {
   (void)bufsz;
   if (pocket == GBB_POCKET_TMHM) {
-    int num = (idx < 50) ? idx + 1 : idx - 50 + 1;
-    siprintf(buf, "%s%02u", (idx < 50) ? "TM" : "HM", (unsigned)num);
+    int real = (idx >= 0 && idx < g2_tm_n) ? g2_tm_owned[idx] : 0;
+    int num = g2pack_is_hm(real) ? real - 50 + 1 : real + 1;
+    siprintf(buf, "%s%02u", g2pack_is_hm(real) ? "HM" : "TM", (unsigned)num);
   } else {
     siprintf(buf, "ITEM-%u", (unsigned)bag->pockets[pocket].entries[idx].id);
   }
@@ -77,8 +125,9 @@ static void gbpack_row_paint(const GbBag* bag, GbBagPocket pocket, int row, int 
     g2pack_row_label(bag, lbl, sizeof lbl, pocket, row);
     if (pocket == GBB_POCKET_KEY) siprintf(val, "-");
     else if (pocket == GBB_POCKET_TMHM) {
-      uint8_t c = 0; gbb_tmhm_get(bag, row, &c);
-      siprintf(val, "x%u", (unsigned)c);
+      int real = g2_tm_owned[row];
+      if (g2pack_is_hm(real)) val[0] = 0;
+      else { uint8_t c = 0; gbb_tmhm_get(bag, real, &c); siprintf(val, "x%u", (unsigned)c); }
     } else siprintf(val, "x%u", (unsigned)bag->pockets[pocket].entries[row].qty);
   }
   if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
@@ -127,9 +176,16 @@ static bool pdna_gbpack_plain(GbBag* bag, bool can_edit, const char* header, con
     else if (can_edit && sel < total - 1 && (k & KEY_A)) {
       if (pocket == GBB_POCKET_KEY) { /* no qty to edit */ }
       else if (pocket == GBB_POCKET_TMHM) {
-        uint8_t cur = 0; gbb_tmhm_get(bag, sel, &cur);
-        uint32_t q = num_entry("COUNT", cur, GBB_TMHM_CAP);
-        gbb_tmhm_set(GBF_G_CRYSTAL, bag, sel, (uint8_t)q);
+        /* D4/D5: `sel` is an owned-list POSITION here (row_total() just above
+         * rebuilt g2_tm_owned for this pocket) -- map to the real tmhm_index.
+         * HMs (D5) have no count to edit at all -- matches the real cartridge's
+         * own "no x column" posture; A on an HM row is a no-op here. */
+        int real = g2_tm_owned[sel];
+        if (!g2pack_is_hm(real)) {
+          uint8_t cur = 0; gbb_tmhm_get(bag, real, &cur);
+          uint32_t q = num_entry("COUNT", cur, GBB_TMHM_CAP);
+          gbb_tmhm_set(GBF_G_CRYSTAL, bag, real, (uint8_t)q);
+        }
       } else {
         uint32_t q = num_entry("QUANTITY", bag->pockets[pocket].entries[sel].qty, GBB_QTY_CAP);
         if (q < 1) q = 1;
@@ -163,23 +219,39 @@ static const uint8_t kLabelIds[4][5] = {
   { 0x10, 0x11, 0x12, 0x13, 0x14 },   /* TM/HM */
 };
 
-enum { G2I_UL = 25, G2I_H = 26, G2I_UR = 27, G2I_V = 28, G2I_DL = 29, G2I_DR = 30,
-       G2I_BLANK = 31 };
+/* D1 fix (adversarial review, review-opus ac9ffc0): GBSCR_SRC_TEXTBOX on Gen 2
+ * resolves to RomGbUi.frames (9 frames x 6 tiles, 1bpp, pdna_gbscreen.c's own
+ * gbscr_tile_pixels() GBSCR_SRC_TEXTBOX case: `rom_gbui_tile(local, local->frames,
+ * v, 1, ...)`, v = the raw linear tile index) -- NOT Gen 1's textbox block, and
+ * NOT the earlier draft's borrowed Gen-1 indices (25-31). Frame 0's own six tiles
+ * (linear index 0..5) are the real box corners/edges -- confirmed by PIXELS
+ * against RomGbUi.frames on both Gold and Crystal (VRAM 0x79-0x7E in the capture,
+ * matched uniquely, not by the stale "textbox tile t -> 0x60+t" Gen-1 identity
+ * tools/gb_oracle/README.md's harness convention assumes -- see that file's own
+ * new note). The interior is GBSCR_SRC_BLANK (a flat fill, VRAM 0x7F) -- there is
+ * no "blank frame tile" in the frames block at all, so G2I_BLANK never named a
+ * real thing. */
+enum { G2I_UL = 0, G2I_H = 1, G2I_UR = 2, G2I_V = 3, G2I_DL = 4, G2I_DR = 5 };
 
-/* D2-style blinking down-scroll marker, same idiom pdna_gbbag.c's own
- * g1_frame_ctr/g1bag_scroll_marker_on() use -- NOT independently re-verified
- * against a real scrolled Gen-2 capture this slice (every captured pocket fit
- * in 5 rows), a documented assumption pending a real 6+-entry capture. */
-static uint16_t g2_pack_frame_ctr;
-static bool g2pack_scroll_marker_on(void) { return ((g2_pack_frame_ctr >> 5) & 1u) != 0; }
+/* D2 fix (review-opus ac9ffc0): the earlier draft invented a blinking down-scroll
+ * marker at (18,11) (a g1bag-style idiom borrowed without independent verification
+ * against a real scrolled Gen-2 capture) -- the real cartridge sets no
+ * SCROLLINGMENU_DISPLAY_ARROWS for this screen at all; the up/down triangle glyphs
+ * visible on a real Pack screen are STATIC tiles already baked into row 0's own
+ * header strip (g2pack_pic_column()'s own 0x28-0x3B run), never repainted. The
+ * invented marker overwrote the bottom visible row's own tens-digit quantity cell
+ * (u5_gold_04_tmhm.png showed "x▼1" where the real screen shows "x01") -- deleted
+ * outright, no replacement painting. */
 
 static bool g2_pack_swap_active;
 static int  g2_pack_swap_src;
 
-/* The description box's own frame (rows 12-17), textbox-relative ids 25-31 --
- * SAME absolute VRAM ids (0x79-0x7E) as Gen 1's own EXIT box, confirmed live.
- * No text painted inside it (the description-pointer table was not located
- * this slice, per the brief's own permission -- a documented, honest blank). */
+/* The description box's own frame (rows 12-17), Gen 2's own frames-block ids
+ * (D1 fix above) -- SAME absolute VRAM ids (0x79-0x7E) as Gen 1's own EXIT box,
+ * confirmed live. No item-description TEXT painted inside it (the description-
+ * pointer table was not located this slice, per the brief's own permission --
+ * a documented, honest blank) -- but see g2pack_desc_label() just below for the
+ * ONE piece of prose this slice does own: the PC-store disambiguation line. */
 static void g2pack_desc_box(GbScreen* gs) {
   gbscr_cell(gs, 0, 12, GBSCR_SRC_TEXTBOX, G2I_UL);
   gbscr_cell(gs, 19, 12, GBSCR_SRC_TEXTBOX, G2I_UR);
@@ -187,27 +259,45 @@ static void g2pack_desc_box(GbScreen* gs) {
   for (int y = 13; y <= 16; y++) {
     gbscr_cell(gs, 0, y, GBSCR_SRC_TEXTBOX, G2I_V);
     gbscr_cell(gs, 19, y, GBSCR_SRC_TEXTBOX, G2I_V);
-    for (int x = 1; x < 19; x++) gbscr_cell(gs, x, y, GBSCR_SRC_TEXTBOX, G2I_BLANK);
+    for (int x = 1; x < 19; x++) gbscr_cell(gs, x, y, GBSCR_SRC_BLANK, 0);
   }
   gbscr_cell(gs, 0, 17, GBSCR_SRC_TEXTBOX, G2I_DL);
   gbscr_cell(gs, 19, 17, GBSCR_SRC_TEXTBOX, G2I_DR);
   for (int x = 1; x < 19; x++) gbscr_cell(gs, x, 17, GBSCR_SRC_TEXTBOX, G2I_H);
 }
 
+/* D6 fix (review-opus ac9ffc0): the PC item store paints the EXACT same picture
+ * column + nameplate as the ITEMS pocket (g2pack_pic_column()'s own `in_pc ?
+ * kPackRomIdx[0] : ...` -- both resolve to the Items picture), so nothing on
+ * screen told the two apart. The real cartridge prints its own prose at hlcoord
+ * (1,14) while in the PC store; this slice has no item-description text (D1's
+ * own honest gap), so a short disambiguating label stands in at the SAME cell
+ * origin instead of nothing. Cleared (blank row) the moment the screen leaves
+ * the PC store, so a stale label never survives a toggle back to the Pack. */
+static void g2pack_desc_label(GbScreen* gs, bool in_pc) {
+  if (in_pc) gbscr_text(gs, 1, 14, "PC ITEM STORE");
+  else       for (int x = 1; x < 19; x++) gbscr_cell(gs, x, 14, GBSCR_SRC_BLANK, 0);
+}
+
 /* Row 0 (static header) + the pic/label column (cols 0-4, rows 1-11). `cyc`
  * is the UI cycle position (0..3); `in_pc` (PC store mode) reuses cyc's own
  * art (Items' column) since the PC store was not independently pixel-dumped
- * this slice -- pdna_gbpack.h's own header comment documents this. */
-static void g2pack_pic_column(GbScreen* gs, int cyc, bool in_pc) {
+ * this slice -- pdna_gbpack.h's own header comment documents this. `female`
+ * (D-Kris fix, review-opus ac9ffc0) picks PACK_F over PACK_M for the 15-tile
+ * picture only -- everything else in the column (header strip, filler,
+ * nameplate border/label) is gender-invariant, confirmed by the reviewer's
+ * own Gold-vs-Crystal-vs-Kris diff (13/15 pic tiles differ, none of the rest). */
+static void g2pack_pic_column(GbScreen* gs, int cyc, bool in_pc, bool female) {
   for (int c = 0; c < 20; c++) gbscr_cell(gs, c, 0, GBSCR_SRC_PACKMENU, (uint8_t)(0x28 + c));
   for (int c = 0; c < 5; c++) {
     gbscr_cell(gs, c, 1, GBSCR_SRC_PACKMENU, 0x24);
     gbscr_cell(gs, c, 2, GBSCR_SRC_PACKMENU, 0x24);
   }
   int rom_idx = kPackRomIdx[in_pc ? 0 : cyc];
+  GbScrSrc pic_src = female ? GBSCR_SRC_PACK_F : GBSCR_SRC_PACK_M;
   for (int r = 0; r < 3; r++)
     for (int c = 0; c < 5; c++)
-      gbscr_cell(gs, c, 3 + r, GBSCR_SRC_PACK_M, (uint8_t)(rom_idx * 15 + r * 5 + c));
+      gbscr_cell(gs, c, 3 + r, pic_src, (uint8_t)(rom_idx * 15 + r * 5 + c));
   for (int c = 0; c < 5; c++) gbscr_cell(gs, c, 6, GBSCR_SRC_PACKMENU, 0x24);
   static const uint8_t kTop[5] = { 0x00, 0x04, 0x04, 0x04, 0x01 };
   static const uint8_t kBot[5] = { 0x02, 0x05, 0x05, 0x05, 0x03 };
@@ -241,11 +331,23 @@ static void g2pack_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket
     bool is_swap_src = g2_pack_swap_active && has && !is_cancel &&
                        idx == g2_pack_swap_src && !is_sel;
 
-    gbscr_cell(gs, CURSOR_COL, ny, (is_sel || is_swap_src) ? GBSCR_SRC_FONT : GBSCR_SRC_BLANK,
-              (is_sel || is_swap_src) ? 0xED : 0);
+    /* The cursor is ▶ FONT 0xED; an ARMED SWAP source is the cartridge's own
+     * ▷ FONT 0xEC (a distinct, hollow-triangle glyph the real game uses for
+     * exactly this "marked, waiting for its swap partner" state) -- NOT the
+     * same tile as the cursor, which the earlier draft used for both. Gen 2
+     * has this glyph (unlike Gen 1's own font, which may lack it -- this mark
+     * is Gen-2-only code, so that gap never applies here). */
+    GbScrSrc mark_src = is_sel ? GBSCR_SRC_FONT : (is_swap_src ? GBSCR_SRC_FONT : GBSCR_SRC_BLANK);
+    uint8_t  mark_tile = is_sel ? 0xED : (is_swap_src ? 0xEC : 0);
+    gbscr_cell(gs, CURSOR_COL, ny, mark_src, mark_tile);
+
+    /* D4: `idx` is an owned-list POSITION for the TM/HM pocket (row_total()
+     * above just rebuilt g2_tm_owned/g2_tm_n for this pocket) -- `real` is the
+     * raw tmhm_index it maps to, only meaningful while tmhm && has && !is_cancel. */
+    int real = (tmhm && has && !is_cancel) ? g2_tm_owned[idx] : 0;
 
     if (tmhm && has && !is_cancel) {
-      int num = (idx < 50) ? idx + 1 : idx - 50 + 1;
+      int num = g2pack_is_hm(real) ? real - 50 + 1 : real + 1;
       siprintf(buf, "%02u", (unsigned)num);
       gbscr_text(gs, TMNUM_COL, ny, buf);
     } else {
@@ -264,32 +366,41 @@ static void g2pack_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket
     for (int cx = NAME_COL + (int)strlen(buf); cx < QTY_COL; cx++)
       gbscr_cell(gs, cx, ny, GBSCR_SRC_BLANK, 0);
 
-    bool has_qty = has && !is_cancel && !key;
+    /* D5: HM rows have no count column at all (tmhm.asm never prints one). */
+    bool has_qty = has && !is_cancel && !key && !(tmhm && g2pack_is_hm(real));
     if (has_qty) {
       gbscr_text(gs, QTY_COL, qy, "\xC3\x97");   /* U+00D7 -> 0xF1 */
       unsigned q = 0;
-      if (tmhm) { uint8_t c = 0; gbb_tmhm_get(bag, idx, &c); q = c; }
+      if (tmhm) { uint8_t c = 0; gbb_tmhm_get(bag, real, &c); q = c; }
       else      q = bag->pockets[pocket].entries[idx].qty;
-      siprintf(buf, "%2u", q);
+      /* D8: a stored count/qty this core did not itself write (a foreign or
+       * corrupt save) could exceed GBB_QTY_CAP/GBB_TMHM_CAP (both 99) -- "%2u"
+       * on a 3-digit value would silently print its first two digits, a wrong
+       * number rather than a visible "something is off" signal. */
+      if (q > 99u) siprintf(buf, "**");
+      else         siprintf(buf, "%2u", q);
       gbscr_text(gs, QTY_COL + 1, qy, buf);
     } else {
       for (int cx = QTY_COL; cx <= QTY_COL + 2; cx++)
         gbscr_cell(gs, cx, qy, GBSCR_SRC_BLANK, 0);
     }
   }
-
-  bool more_below = (top + ROWS_VISIBLE) < total;
-  bool marker_on = more_below && g2pack_scroll_marker_on();
-  gbscr_cell(gs, 18, 11, marker_on ? GBSCR_SRC_FONT : GBSCR_SRC_BLANK,
-            marker_on ? 0xEE : 0);
 }
 
+/* D3 fix (review-opus ac9ffc0): the earlier clamp pinned the cursor at slot
+ * ROWS_VISIBLE-2 (row 4 of 5) as soon as it scrolled, matching Gen 1's own bag
+ * (4 visible rows, pinned at slot 2) but NOT the real Gen-2 Pack's own ground
+ * truth (gold_down4: four DOWNs from the top of a 26-entry list leave the
+ * cursor on the FIFTH visible row, unscrolled -- the cursor walks all five rows
+ * before the list starts moving, matching the "sel >= top+ROWS_VISIBLE" clamp
+ * every other N-visible-row picker in this shell uses when the cursor is truly
+ * free to reach the last row). */
 static void gbpack_clamp_scroll(int total, int* sel, int* top) {
   if (total <= 0) { *sel = 0; *top = 0; return; }
   if (*sel >= total) *sel = total - 1;
   if (*sel < 0) *sel = 0;
   if (*sel < *top) *top = *sel;
-  if (*sel >= *top + ROWS_VISIBLE - 1) *top = *sel - (ROWS_VISIBLE - 2);
+  if (*sel >= *top + ROWS_VISIBLE) *top = *sel - (ROWS_VISIBLE - 1);
   if (*top < 0) *top = 0;
 }
 
@@ -335,9 +446,22 @@ static int gbpack_start_menu(GbBag* bag, GbBagPocket pocket, GbGame game, int* s
        * outright (a real id typed here might genuinely belong to a DIFFERENT
        * pocket than the one open, and this core has no table to tell that
        * apart -- refusing is honest, silently accepting into the wrong
-       * pocket would not be). */
-      if (pocket != GBB_POCKET_ITEMS) {
-        msg_wait("WRONG POCKET", UI_WARN, "Add items from the Items pocket.", 0);
+       * pocket would not be).
+       *
+       * D7 fix (review-opus ac9ffc0): the PC ITEM STORE is its own separate,
+       * UNDIFFERENTIATED list, not one of the four real bag pockets with its
+       * own membership rule -- the real cartridge lets you deposit ANY item
+       * id into it (that is the store's whole job; gbb_insert()'s own id8
+       * range check is what actually bounds a bad id, same as every other
+       * pocket). Refusing ADD ITEM here was over-applying the Items-only
+       * fallback to a pocket the fallback's own reasoning never covered. */
+      if (pocket != GBB_POCKET_ITEMS && pocket != GBB_POCKET_PC) {
+        /* D9 fix (review-opus ac9ffc0): this refusal is a known gap in THIS
+         * core (no per-item pocket-membership table located yet), not a rule
+         * of the real game -- say so, rather than let the message read as if
+         * the cartridge itself refused. */
+        msg_wait("WRONG POCKET", UI_WARN, "Add items from the Items pocket.",
+                "No per-item pocket table yet.");
         continue;
       }
       uint32_t id, qty;
@@ -374,7 +498,8 @@ static int gbpack_start_menu(GbBag* bag, GbBagPocket pocket, GbGame game, int* s
 }
 
 __attribute__((noinline))
-static bool pdna_gbpack_gen2_screen(GbScreen* gs, GbBag* bag, GbGame game, bool can_edit) {
+static bool pdna_gbpack_gen2_screen(GbScreen* gs, GbBag* bag, GbGame game, bool can_edit,
+                                    bool female) {
   static const char* const kLegendEdit[4] = {
     PDNA_GBTR_ACT_EDIT, PDNA_GBTR_ACT_SAVE, PDNA_GBSCR_ACT_SIZE, PDNA_GBTR_ACT_MORE
   };
@@ -387,12 +512,12 @@ static bool pdna_gbpack_gen2_screen(GbScreen* gs, GbBag* bag, GbGame game, bool 
   bool in_pc = false;
   int sel = 0, top = 0;
   bool want_commit = false;
-  g2_pack_frame_ctr = 0;
   g2_pack_swap_active = false;
 
   GbBagPocket pocket = in_pc ? GBB_POCKET_PC : kUiPocket[cyc];
-  g2pack_pic_column(gs, cyc, in_pc);
+  g2pack_pic_column(gs, cyc, in_pc, female);
   g2pack_desc_box(gs);
+  g2pack_desc_label(gs, in_pc);
   g2pack_paint_list(gs, bag, pocket, top, sel);
   for (;;) {
     gbscr_flush(gs, 0);
@@ -400,11 +525,6 @@ static bool pdna_gbpack_gen2_screen(GbScreen* gs, GbBag* bag, GbGame game, bool 
     u16 k = 0;
     for (;;) {
       s_vsync();
-      g2_pack_frame_ctr++;
-      if ((g2_pack_frame_ctr & 31u) == 0) {
-        g2pack_paint_list(gs, bag, pocket, top, sel);
-        gbscr_flush(gs, 0);
-      }
       k = key_hit(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B |
                   KEY_SELECT | KEY_START);
       if (k) break;
@@ -431,7 +551,7 @@ static bool pdna_gbpack_gen2_screen(GbScreen* gs, GbBag* bag, GbGame game, bool 
         pocket = kUiPocket[cyc];
         sel = 0; top = 0;
         g2_pack_swap_active = false;
-        g2pack_pic_column(gs, cyc, in_pc);
+        g2pack_pic_column(gs, cyc, in_pc, female);
         g2pack_paint_list(gs, bag, pocket, top, sel);
         gbscr_mark_all_dirty(gs);
       }
@@ -447,7 +567,8 @@ static bool pdna_gbpack_gen2_screen(GbScreen* gs, GbBag* bag, GbGame game, bool 
           in_pc = !in_pc;
           pocket = in_pc ? GBB_POCKET_PC : kUiPocket[cyc];
           sel = 0; top = 0;
-          g2pack_pic_column(gs, cyc, in_pc);
+          g2pack_pic_column(gs, cyc, in_pc, female);
+          g2pack_desc_label(gs, in_pc);
         }
         g2pack_paint_list(gs, bag, pocket, top, sel);
         gbscr_mark_all_dirty(gs);
@@ -483,9 +604,20 @@ static bool pdna_gbpack_gen2_screen(GbScreen* gs, GbBag* bag, GbGame game, bool 
           /* no quantity field to edit -- matches the real cartridge's own
            * "key items have no ×N" posture. */
         } else if (pocket == GBB_POCKET_TMHM) {
-          uint8_t cur = 0; gbb_tmhm_get(bag, sel, &cur);
-          uint32_t q = num_entry("COUNT", cur, GBB_TMHM_CAP);
-          gbb_tmhm_set(game, bag, sel, (uint8_t)q);
+          /* D4/D5: `sel` is an owned-list POSITION (the `total` computed just
+           * above this switch already rebuilt g2_tm_owned for this pocket).
+           * HMs have no count to edit (D5) -- A is a no-op on an HM row. A
+           * count set to 0 REMOVES the row (the real cartridge's own rule),
+           * so the list can shrink under the cursor -- re-clamp afterward,
+           * same as UP/DOWN already does, rather than leaving `sel`/`top`
+           * pointing past the new (shorter) total. */
+          int real = g2_tm_owned[sel];
+          if (!g2pack_is_hm(real)) {
+            uint8_t cur = 0; gbb_tmhm_get(bag, real, &cur);
+            uint32_t q = num_entry("COUNT", cur, GBB_TMHM_CAP);
+            gbb_tmhm_set(game, bag, real, (uint8_t)q);
+            gbpack_clamp_scroll(g2pack_row_total(bag, pocket), &sel, &top);
+          }
           g2pack_paint_list(gs, bag, pocket, top, sel);
           gbscr_mark_all_dirty(gs);
         } else {
@@ -526,13 +658,24 @@ void pdna_gbpack(GbSession* s, bool can_edit) {
   memcpy(t0, bag, sizeof *t0);
 
   GbGame game = g2pack_game(s);
+  bool female = g2pack_is_female(s);
+  uint16_t pic_need = female ? GBSCR_NEED_PACK_F : GBSCR_NEED_PACK;
+  uint16_t need_mask = GBSCR_NEED_TEXTBOX | GBSCR_NEED_PACKMENU | pic_need;
   GbScreen gs;
   const char* reason = 0;
-  bool ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need,
-                       GBSCR_NEED_TEXTBOX | GBSCR_NEED_PACKMENU | GBSCR_NEED_PACK, &reason);
+  bool ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, &reason);
+  if (!ok && female) {
+    /* Same fail-safe pdna_gbtrainer.c's own gen2 card uses: a save claims
+     * female on a ROM whose pack_f rom_gbui somehow failed to locate should
+     * not happen (rom_gbui.c ties it to the same anchor as pack_m) -- retry
+     * once as Chris rather than refuse the whole screen over one picture. */
+    female = false;
+    need_mask = (need_mask & ~(uint16_t)GBSCR_NEED_PACK_F) | GBSCR_NEED_PACK;
+    ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, &reason);
+  }
   bool want_commit;
   if (ok) {
-    want_commit = pdna_gbpack_gen2_screen(&gs, bag, game, can_edit);
+    want_commit = pdna_gbpack_gen2_screen(&gs, bag, game, can_edit, female);
     gbscr_close(&gs);
   } else {
     want_commit = pdna_gbpack_plain(bag, can_edit, PDNA_GBTR_FALLBACK_TITLE,
