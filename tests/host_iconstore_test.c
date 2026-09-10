@@ -2,7 +2,7 @@
  * REAL lib/fatfs on a RAM disk, counting REAL disk_read sectors, and over Guy's real
  * cartridge dumps for the ROM rung.
  *
- *   cc -std=c11 -DFF_USE_MKFS=1 -Dsiprintf=sprintf -I tests/hostfat -I lib/fatfs -I source \
+ *   cc -std=c11 -DFF_USE_MKFS=1 -Dsiprintf=sprintf -Dsniprintf=snprintf -Dvsniprintf=vsnprintf -I tests/hostfat -I lib/fatfs -I source \
  *      tests/host_iconstore_test.c source/icon_store.c source/art_icons_cache.c \
  *      source/fastseek.c source/rom_mon.c source/rom_map.c source/log.c lib/fatfs/ff.c \
  *      lib/fatfs/ffunicode.c tests/hostfat/ramdisk.c -o /tmp/his

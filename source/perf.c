@@ -20,7 +20,9 @@
 #include "perf.h"
 
 #include <stddef.h>  /* offsetof -- span_flip walks PerfSd's uint32 prefix only */
-#include <stdio.h>   /* snprintf -- never sprintf (c-coding-guideline Sec 0.13) */
+#include <stdio.h>   /* sniprintf -- never sprintf/snprintf (c-coding-guideline Sec 0.13;
+                        BACKLOG #84a S4: snprintf pulls newlib's float-capable
+                        _svfprintf_r -> _dtoa_r -> _malloc_r) */
 #include <string.h>
 
 #include "ff.h"
@@ -378,7 +380,7 @@ void perf_fs_facts(const void* fatfs) {
   unsigned long freec = (unsigned long)fs->free_clst;
   char fb[16];
   if (freec == 0xFFFFFFFFul) { fb[0] = '?'; fb[1] = 0; }
-  else snprintf(fb, sizeof fb, "%lu", freec);
+  else sniprintf(fb, sizeof fb, "%lu", freec);
   log_line("fs: %s, cluster %u sect (%lu KiB), 512 B/sect, %lu clusters, free %s",
            t, (unsigned)fs->csize,
            (unsigned long)(((uint32_t)fs->csize * 512u) >> 10),

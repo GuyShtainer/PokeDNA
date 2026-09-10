@@ -1,6 +1,6 @@
 /* Host test for source/log.c's append/watermark accounting and boot rotation.
  *
- *   cc -std=c11 -I tests/hostff -I source tests/host_log_test.c source/log.c -o /tmp/hl
+ *   cc -std=c11 -Dsniprintf=snprintf -Dvsniprintf=vsnprintf -I tests/hostff -I source tests/host_log_test.c source/log.c -o /tmp/hl
  *
  * log.c includes only "ff.h" and "sys.h", both shimmed by include path in
  * tests/hostff/, so the file under test compiles here UNCHANGED.

@@ -139,7 +139,7 @@ void log_line(const char* fmt, ...) {
   char tmp[256];
   va_list ap;
   va_start(ap, fmt);
-  vsnprintf(tmp, sizeof(tmp), fmt, ap);
+  vsniprintf(tmp, sizeof(tmp), fmt, ap);
   va_end(ap);
 
   mgba_emit(tmp);
@@ -311,7 +311,7 @@ static int commit_bytes(const char* path, int urgent, UINT* wrote,
 
   if (s_lost) {                                /* the ring ate un-written text */
     char m[48]; UINT bx = 0;
-    int n = snprintf(m, sizeof m, "[%u log bytes lost before flush]\n", s_lost);
+    int n = sniprintf(m, sizeof m, "[%u log bytes lost before flush]\n", s_lost);
     if (n > 0) f_write(&f, m, (UINT)n, &bx);   /* best-effort marker */
   }
 
@@ -451,25 +451,25 @@ void log_health_str(char* out, unsigned cap) {
   switch (log_health()) {
     case LOG_HEALTH_LOST:
       /* The badge for the state that used to paint "log 1" in dim grey. */
-      snprintf(out, cap, "LOG LOST");
+      sniprintf(out, cap, "LOG LOST");
       break;
     case LOG_HEALTH_UNVERIF:
-      snprintf(out, cap, "LOG ?e%d", s_vfr);
+      sniprintf(out, cap, "LOG ?e%d", s_vfr);
       break;
     case LOG_HEALTH_CAPPED:
-      snprintf(out, cap, "LOG FULL");
+      sniprintf(out, cap, "LOG FULL");
       break;
     case LOG_HEALTH_OFF:
-      snprintf(out, cap, "LOG OFF e%d", s_last);
+      sniprintf(out, cap, "LOG OFF e%d", s_last);
       break;
     case LOG_HEALTH_FAILING:
-      snprintf(out, cap, "LOG ERR e%d", s_last);
+      sniprintf(out, cap, "LOG ERR e%d", s_last);
       break;
     default:
       /* Rotation is worth one glyph of its own: "log R" says the previous run's file was
        * moved aside (so log.prev1.txt is the run Guy wants), "log !R" says the card
        * refused the rename -- an early warning that writes are in trouble. */
-      snprintf(out, cap, "log %s%lu",
+      sniprintf(out, cap, "log %s%lu",
                (s_rot == LOG_ROT_DONE) ? "R " : (s_rot == LOG_ROT_REFUSED) ? "!R " : "",
                s_okn);
       break;

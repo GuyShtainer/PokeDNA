@@ -1,7 +1,7 @@
 /* source/art_session.c -- the app-level "is this kind's cache ready" resolver -- over
  * the REAL lib/fatfs on a RAM disk.
  *
- *   cc -std=c11 -DFF_USE_MKFS=1 -Dsiprintf=sprintf -I tests/hostfat -I lib/fatfs -I source \
+ *   cc -std=c11 -DFF_USE_MKFS=1 -Dsiprintf=sprintf -Dsniprintf=snprintf -Dvsniprintf=vsnprintf -I tests/hostfat -I lib/fatfs -I source \
  *      tests/host_artsession_test.c source/art_session.c source/art_cache.c \
  *      source/artbuf.c source/log.c lib/fatfs/ff.c lib/fatfs/ffunicode.c \
  *      tests/hostfat/ramdisk.c -o /tmp/has && /tmp/has

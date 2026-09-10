@@ -608,9 +608,19 @@ static const uint16_t* gb_art_icon_cb(void* ctx, uint8_t gen, uint16_t dex,
  * (delta included; harmless there since gb_art_have() is already false with no SD),
  * so this is not wrapped in #ifndef PDNA_DELTA.
  * ASSUMES AN EMPTY HEAP: newlib's heap grows UP from this same symbol, so the subtraction
- * is exact only while nothing has malloc'd. True today (0 malloc / ff_memalloc call sites;
- * the tree uses the integer-only siprintf family), but a future malloc or a %f-capable
- * printf would silently eat the ~550 B of slack between the 6,144-B need and the measured
+ * is exact only while nothing has malloc'd. CORRECTED 2026-09-10 (BACKLOG #84a S4): this
+ * comment used to claim "0 malloc / ff_memalloc call sites" -- false at the time, because
+ * four sites (commit_bytes/log_health_str/perf_fs_facts's snprintf, log_line's vsnprintf)
+ * pulled newlib's FLOAT-capable _svfprintf_r (816 B) -> _dtoa_r -> _Balloc -> _malloc_r,
+ * plus the mprec assert leg (_svfprintf_r/_dtoa_r/_malloc_r were all present in the linked
+ * ELF). Switching those four to sniprintf/vsniprintf removed _svfprintf_r and _dtoa_r
+ * entirely (0 hits in `nm`) -- the float/mprec path and its ~11 KB worst-case chain are
+ * gone. _malloc_r is STILL reachable, though: newlib's OWN s*printf-family glue
+ * (_svfiprintf_r's one-time __sfp() FILE-slot allocation) mallocs regardless of the
+ * integer/float variant, so "0 malloc sites" remains not quite true -- it is a small,
+ * one-time init allocation now, not a per-call stack-heavy float-conversion chain. A
+ * future malloc, ff_memalloc, or a %f-capable printf reintroducing the float chain would
+ * still silently eat the ~550 B of slack between the 6,144-B need and the measured
  * 5,592-B fetch subtree. Re-measure with the call-graph tool if either ever appears.
  *
  * D4 (E4 review): `need` is now the CALLER's own measured requirement, not a fixed

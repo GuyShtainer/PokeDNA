@@ -1,7 +1,7 @@
 /* source/fastseek.c -- the ONE owner of FatFs' per-FIL cluster link map -- over the
  * REAL lib/fatfs on a RAM disk, with FF_USE_FASTSEEK now 1.
  *
- *   cc -std=c11 -DFF_USE_MKFS=1 -Dsiprintf=sprintf -I tests/hostfat -I lib/fatfs -I source \
+ *   cc -std=c11 -DFF_USE_MKFS=1 -Dsiprintf=sprintf -Dsniprintf=snprintf -Dvsniprintf=vsnprintf -I tests/hostfat -I lib/fatfs -I source \
  *      tests/host_fastseek_test.c source/fastseek.c source/log.c lib/fatfs/ff.c \
  *      lib/fatfs/ffunicode.c tests/hostfat/ramdisk.c -o /tmp/hfs
  *

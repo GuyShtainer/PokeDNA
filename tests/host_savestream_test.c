@@ -2,7 +2,7 @@
  * the ROM-art extractor (source/art_icons_extract.c writes icons.bin, ~450 KB, through
  * exactly this) -- over the REAL lib/fatfs, on a RAM disk, with a flashcart's failures.
  *
- *   cc -std=c11 -DFF_USE_MKFS=1 -Dsiprintf=sprintf -I tests/hostfat -I lib/fatfs -I source \
+ *   cc -std=c11 -DFF_USE_MKFS=1 -Dsiprintf=sprintf -Dsniprintf=snprintf -Dvsniprintf=vsnprintf -I tests/hostfat -I lib/fatfs -I source \
  *      tests/host_savestream_test.c source/savefile.c source/log.c lib/fatfs/ff.c \
  *      lib/fatfs/ffunicode.c tests/hostfat/ramdisk.c -o /tmp/hss
  *
