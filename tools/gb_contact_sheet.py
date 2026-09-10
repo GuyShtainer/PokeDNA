@@ -172,6 +172,14 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # rule.
     ("gb-pack-gen2", "U5 — Gold/Silver/Crystal's own Pack + PC store on the shell "
      "(Gen-2 saves)", ("U5",)),
+    # BACKLOG #85: the Gen-1/2 Day-Care screen (source/pdna_gbdaycare.c) over
+    # gb_daycare.h's core -- the Gen-1/2 twin of pdna_main.c's pdna_daycare().
+    # Shots come from tools/dgb_shots.py's run_b85_daycare(), captions all start
+    # "BACKLOG #85:". Appended after "gb-pack-gen2" per this list's own
+    # append-only rule.
+    ("gb-daycare-gen12", "BACKLOG #85 — the Day-Care screen over gb_daycare "
+     "(Gen 1: one boarder, level-up only; Gen 2: two boarders + compatibility "
+     "+ Egg)", ("BACKLOG #85",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

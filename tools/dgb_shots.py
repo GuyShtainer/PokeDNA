@@ -1264,6 +1264,98 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     return s
 
 
+def run_b85_daycare(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #85 (source/pdna_gbdaycare.c): the Gen-1/2 Day-Care screen over
+    gb_daycare.h's core -- the Gen-1/2 twin of pdna_main.c's pdna_daycare(). `rom`
+    must be a ONE-ROM fused image (tools/fuse_gb.py fed only Red.gb+Red.sav for
+    `which="red"`, or only Gold.gbc+Gold.sav for `which="gold"` -- same single-ROM
+    requirement run_u4_bag()/run_u5_pack() document, BACKLOG #98's known harness gap).
+
+    Nav: S1 info -> A -> box grid (rom_gbsprite cold scan) -> START -> nav menu ->
+    DOWN x2 (Party->Bank->Daycare, PDNA_NAV_ITEMS index 2) -> A -> pdna_gbdaycare().
+    The screen itself draws no icons (this slice's own header note: the animated
+    yard art is Gen-3-only, private to pdna_main.c, out of this file list's reach),
+    so BIG_SETTLE covers every transition inside it -- no GB_ART_COLD_SETTLE needed
+    past the box-grid entry.
+
+    The egg case is NOT attempted here: producing an `egg_ready` state means
+    actually breeding two compatible Pokemon in-game (steps of overworld movement),
+    which neither this script nor host_gbsurgery_tool.c's `--op daycare` (deposit
+    only) can fabricate without new surgery-tool support outside this slice's file
+    list -- flagged as hardware/gameplay-only rather than faked with an edited
+    fixture this script cannot itself produce."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b85_{which}_")
+    print(f"== BACKLOG #85: {which}'s own Day Care ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 2)                                     # Party -> Bank -> Daycare (index 2)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Daycare -> pdna_gbdaycare()
+    s.shot("01_screen", f"BACKLOG #85: {which}'s own Day Care on entry -- the "
+                        "panel/menu shape mirrored from pdna_daycare(), no yard art")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on slot 0 -> the action popup
+    s.shot("02_menu_slot0", "BACKLOG #85: the per-slot action popup on slot 0 (View/Edit + "
+                             "Take out if occupied, or Put in if empty, Cancel)")
+
+    # Slot 0 starts empty on both fixtures (Red.sav/Gold.sav's own Day Care), so
+    # the popup's first row is "Put in" -- A opens the box-0 picker (gbdc_pick).
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Put in -> gbdc_pick over box 0
+    s.shot("03_pick_list", "BACKLOG #85: the deposit picker -- box 0's own occupied, "
+                            "non-Egg slots (gbdc_pick, the smallest 'pick one "
+                            "owned mon' list this slice could build, since "
+                            "gb_daycare's own gbd_deposit() requires a "
+                            "box-shaped record -- see pdna_gbdaycare.h)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick the top row -> gbd_deposit() -> gb_persist()
+    s.shot("04_persist_notice", "BACKLOG #85: gb_persist()'s own PDNA_DELTA branch: 'Edits "
+                                 "are in-session only in the emulator build' -- "
+                                 "this build has no SD card, so every write shows "
+                                 "this notice; NOT specific to this screen")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the notice -> back at the Day Care screen
+    s.shot("05_deposited", "BACKLOG #85: back at the Day Care screen -- slot 0 now shows the "
+                            "deposited Pokemon (species + level), the status "
+                            "panel's own wording updated")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the now-occupied slot 0
+    s.shot("06_menu_occupied", "BACKLOG #85: the action popup on an OCCUPIED slot -- now "
+                                "View/Edit + Take out, no Put in row")
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # View/Edit -> Take out
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Take out -> gbdc_take: withdraw ok, gbs_insert refused
+    s.shot("07_take_out_refused", "BACKLOG #85: the REFUSAL case: gbdc_take() lands back in "
+                                   "`cur_box` (box 0) -- the SAME box the picker "
+                                   "drew from -- and gbd_deposit() never removed "
+                                   "the source (it is a paste, matching Gen 3's "
+                                   "own daycare semantics), so box 0 was already "
+                                   "full before this Take Out even started. "
+                                   "gbs_insert() refuses GBS_ERR_FULL, gb_rollback() "
+                                   "restores the withdraw -- nothing lost")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> back at the Day Care screen
+    s.shot("08_unchanged", "BACKLOG #85: back at the Day Care screen -- slot 0 is UNCHANGED "
+                            "(still SLOWBRO) because gb_rollback() undid the "
+                            "withdraw after the landing refused")
+
+    if which != "red":
+        # Back at the main screen (slot 0 still SLOWBRO -- unchanged, see 08 above),
+        # no popup open.
+        s.tap("DOWN", settle=gb_shots.SETTLE)               # slot 0 -> slot 1 (the Lady's)
+        s.shot("10_slot1_cursor", "BACKLOG #85: Gen 2 only: DOWN moves the row cursor to the "
+                                   "second slot -- Gen 1 has no second slot to move to")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # A on slot 1 -> its own popup
+        s.shot("11_menu_slot1", "BACKLOG #85: the same action popup, now targeting slot 1 -- "
+                                 "still empty, so Put in only")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # Put in -> gbdc_pick over box 0 again
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # pick the (same) top row -> deposit -> gb_persist()
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # dismiss the emulator-build notice
+        s.shot("12_slot1_deposited", "BACKLOG #85: slot 1 deposited too -- with BOTH slots "
+                                      "occupied the status panel now shows "
+                                      "gb_daycare's own compatibility read "
+                                      "(the game's flag, not an on-the-fly calc)")
+
+    return s
+
+
 def run_d7_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """N6(f): Gold's own START > BAG refusal, from a COMMITTED driver (`rom` must
     be a Gold-only fused image, tools/fuse_gb.py fed Gold.gbc+Gold.sav -- the
@@ -1510,6 +1602,12 @@ def main(argv=None) -> int:
     ap.add_argument("--d7-gold", action="store_true",
                      help="N6(f): only run_d7_gold() against --image -- --image "
                           "MUST be a Gold-only fused image (Gold.gbc+Gold.sav)")
+    ap.add_argument("--b85-daycare", choices=("red", "gold"),
+                     help="BACKLOG #85: only run_b85_daycare() against --image for "
+                          "the named game (Red's one-slot Day Care, or Gold's "
+                          "two-slot Day Care + compatibility) -- --image MUST be a "
+                          "ONE-ROM fused image matching this choice (same "
+                          "single-ROM harness gap as --u4-bag/--u5-pack)")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -1624,6 +1722,19 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] d7 gold: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b85_daycare:
+        try:
+            sess = run_b85_daycare(core_mod, image_mod, a.image, a.out, a.b85_daycare)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b85 daycare ({a.b85_daycare}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
