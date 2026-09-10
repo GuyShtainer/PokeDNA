@@ -473,7 +473,16 @@ def analyze(dump_text, addr_unique_name=None):
     }
 
 
-FIELD_LINE_RE = re.compile(r'^(\w+)\.(\w+)\s*@(\d+)$')
+FIELD_LINE_RE = re.compile(r'^(\w+)\.(\w+)\s*@(\d+)(?:\s+in\s+([\w.@]+(?:\s*,\s*[\w.@]+)*))?$')
+# D5b's `@tu`-qualified caller names (a disambiguated duplicate static, e.g.
+# `parse_header@rom_gbui`) can appear in the `in <caller>,...` list, so the caller
+# character class includes `@` alongside `\w` and `.` (the .constprop/.isra/.part
+# clone-suffix characters).
+# D5a (BACKLOG #84b seventh pass): the optional trailing `in caller1,caller2,...`
+# qualifies a field declaration to a SET OF CALLERS instead of the bare offset --
+# see load_extra_edges()'s own doc for why (two unrelated structs sharing a numeric
+# offset used to get UNIONED into one class, so ANY site at that offset in ANY
+# caller was credited BOTH structs' implementations, real or not).
 # D6 (BACKLOG #84b fourth pass): a bare `\w+` caller name silently rejects any
 # `.constprop.N`/`.isra.N`/`.part.N`/`.cold` GCC clone suffix (draw_wallpaper.
 # constprop.0, fetch_pic_ex.constprop.0, ...) -- and load_extra_edges() doesn't
@@ -500,6 +509,7 @@ def load_extra_edges(path):
     (D1, BACKLOG #84b review, fixing the per-FUNCTION blind-spot exemption defect):
 
       Struct.field @OFFSET -> impl1 impl2 ...
+      Struct.field @OFFSET in caller1,caller2,... -> impl1 impl2 ...
         A struct-field indirect-call class (BoxSource.records, RomGbUi.read, ...).
         OFFSET is checked against the field's ACTUAL offset (computed from the
         struct's own header via struct_field_offsets()) before it is trusted --
@@ -507,6 +517,24 @@ def load_extra_edges(path):
         to a class by the offset the disassembly loads, not by which function they
         sit in, so an undeclared field added to a struct with ten declared fields
         gets no free pass from its ten siblings.
+
+        D5a (BACKLOG #84b seventh pass): the OLD matching was GLOBAL by bare offset
+        -- two unrelated structs sharing offset 20 (BoxSource.records and
+        AppSrcOps.view, say) got UNIONED into one class, so a BoxSource.records()
+        site in a pdna_box.c caller was silently credited AppSrcOps.view's
+        implementations too (a false PASS: a chain through the BoxSource caller
+        could "reach" gb_view_hook, a function it never actually calls). The
+        trailing `in caller1,caller2,...` qualifies a declaration to the exact set
+        of callers it is honest for; resolution now keys on (offset, caller), not
+        offset alone. The bare (unqualified) form stays legal ONLY when no OTHER
+        struct.field declares that same offset anywhere in this file -- the parser
+        raises "offset N is claimed by A.x and B.y -- qualify by caller" the
+        moment a second struct.field shows up at an offset that already has (or
+        gains) an unqualified declaration. Two DIFFERENT structs genuinely
+        dereferenced at the same offset by the SAME caller (a caller that legally
+        uses both) list both impl sets for that (caller, off) pair -- not a
+        conflict, just two declarations sharing a key, which ACCUMULATE like any
+        other repeated declaration.
 
       caller argsites=N -> impl1 impl2 ...
         A parameter/register-threaded dispatch class (AppCommitFn's `commit`
@@ -560,9 +588,18 @@ def load_extra_edges(path):
         itself a FATAL (a real question -- which is right? -- not a silent pick).
 
     Multiple lines per caller/struct ACCUMULATE (pdna_box has eleven field lines).
-    Returns (field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls,
-             addrtaken_ok, recursion_decls):
-      field_decls      : {(struct, field): (offset, {impls})}
+    Returns (field_decls, field_offset_index, argsite_decls, whole_func_decls,
+             frame_overrides, isr_decls, addrtaken_ok, recursion_decls):
+      field_decls        : {(struct, field): (offset, {impls})}  -- for header
+                            verification ONLY (verify_field_declarations()); it
+                            unions every impl regardless of caller qualification,
+                            since the offset a field lives at never depends on who
+                            calls it.
+      field_offset_index  : (qualified, unqualified) -- the per-caller resolution
+                            structure D5a introduces:
+                              qualified   : {(offset, caller): {impls}}
+                              unqualified : {offset: {impls}}  -- only for offsets
+                                            no OTHER struct.field also claims
       argsite_decls     : {caller: (N, {impls})}
       whole_func_decls  : {caller: {impls}}
       frame_overrides   : {fn: bytes}
@@ -571,6 +608,7 @@ def load_extra_edges(path):
       recursion_decls    : {fn: depth}
     """
     field_decls = {}
+    field_site_decls = []   # [(struct, field, offset, callers_frozenset_or_None, {impls})]
     argsite_decls = {}
     whole_func_decls = collections.defaultdict(set)
     frame_overrides = {}
@@ -578,7 +616,7 @@ def load_extra_edges(path):
     addrtaken_ok = set()
     recursion_decls = {}
     if not path or not os.path.exists(path):
-        return (field_decls, argsite_decls, whole_func_decls, frame_overrides,
+        return (field_decls, ({}, {}), argsite_decls, whole_func_decls, frame_overrides,
                 isr_decls, addrtaken_ok, recursion_decls)
     with open(path) as f:
         for lineno, raw in enumerate(f, 1):
@@ -614,6 +652,9 @@ def load_extra_edges(path):
             fm2 = FIELD_LINE_RE.match(lhs)
             if fm2:
                 struct, field, off = fm2.group(1), fm2.group(2), int(fm2.group(3))
+                callers_str = fm2.group(4)
+                callers = (frozenset(c.strip() for c in callers_str.split(','))
+                           if callers_str else None)
                 key = (struct, field)
                 if key in field_decls:
                     prev_off, prev_impls = field_decls[key]
@@ -623,6 +664,7 @@ def load_extra_edges(path):
                     field_decls[key] = (off, prev_impls | impls)
                 else:
                     field_decls[key] = (off, impls)
+                field_site_decls.append((struct, field, off, callers, impls))
                 continue
             am = ARGSITE_LINE_RE.match(lhs)
             if am:
@@ -637,8 +679,31 @@ def load_extra_edges(path):
                     argsite_decls[caller] = (n, impls)
                 continue
             whole_func_decls[lhs].update(impls)
-    return (field_decls, argsite_decls, dict(whole_func_decls), frame_overrides,
-            isr_decls, addrtaken_ok, recursion_decls)
+
+    # D5a: build the per-caller resolution index and enforce the "qualify by caller
+    # the moment a second struct.field shares your offset" rule -- one pass over
+    # every parsed field-site line, now that the whole file has been read (the
+    # ambiguity is a property of the FILE, not any one line).
+    offset_owners = collections.defaultdict(set)
+    for struct, field, off, _callers, _impls in field_site_decls:
+        offset_owners[off].add((struct, field))
+    qualified = collections.defaultdict(set)
+    unqualified = collections.defaultdict(set)
+    for struct, field, off, callers, impls in field_site_decls:
+        if callers is None:
+            if len(offset_owners[off]) > 1:
+                owners = ', '.join(f"{s}.{f}" for s, f in sorted(offset_owners[off]))
+                raise ValueError(
+                    f"{path}: offset {off} is claimed by {owners} -- qualify "
+                    f"'{struct}.{field} @{off}' with 'in <caller>[,<caller>...]'")
+            unqualified[off] |= impls
+        else:
+            for c in callers:
+                qualified[(off, c)] |= impls
+    field_offset_index = (dict(qualified), dict(unqualified))
+
+    return (field_decls, field_offset_index, argsite_decls, dict(whole_func_decls),
+            frame_overrides, isr_decls, addrtaken_ok, recursion_decls)
 
 
 # === struct-field offsets, computed from the header (D1) ==============================
@@ -691,7 +756,17 @@ def struct_field_offsets(header_text, struct_name):
     header change this walker doesn't understand FAILS the build instead of
     silently keeping a stale offset (D1, the header-drift half of the fix)."""
     t = _strip_c_comments(header_text)
-    m = (re.search(r'typedef\s+struct\s*\{(.*?)\}\s*' + re.escape(struct_name) + r'\s*;',
+    # D5a (BACKLOG #84b seventh pass): a THIRD shape -- `typedef struct RomGbIcon {
+    # ... } RomGbIcon;` (the tag name repeated after typedef, source/rom_gbicon.h /
+    # rom_gbsprite.h) -- neither of the two existing patterns matched it: the first
+    # requires an ANONYMOUS `struct {` (no tag), the second's `\};` requires the
+    # closing brace to be followed immediately by `;` with no ` StructName` in
+    # between. Tried before the anonymous pattern so a struct using BOTH a tag and a
+    # typedef alias of the same name is matched precisely (no risk of accidentally
+    # matching a nested/unrelated anonymous struct first).
+    m = (re.search(r'typedef\s+struct\s+' + re.escape(struct_name) + r'\s*\{(.*?)\}\s*'
+                    + re.escape(struct_name) + r'\s*;', t, re.S)
+         or re.search(r'typedef\s+struct\s*\{(.*?)\}\s*' + re.escape(struct_name) + r'\s*;',
                     t, re.S)
          or re.search(r'struct\s+' + re.escape(struct_name) + r'\s*\{(.*?)\};', t, re.S))
     if not m:
@@ -707,30 +782,42 @@ def struct_field_offsets(header_text, struct_name):
     return offsets
 
 
+_HAND_VERIFIED = object()   # sentinel: STRUCT_HEADERS[struct] is None on purpose --
+                             # no local header exists to check against (e.g. TTC, a
+                             # libtonc struct this devkitPro install ships no .c/.h
+                             # body for), the offset is verified by hand against the
+                             # disassembly instead -- not the same as "unregistered".
+
+
 def verify_field_declarations(field_decls, source_dir, struct_headers):
     """Cross-check every declared `Struct.field @OFF` against the offset the header
     actually gives that field today. struct_headers maps struct name -> header
-    filename under source_dir. Returns a list of human-readable mismatch strings
-    (empty = all declarations are honest); the caller treats ANY entry as fatal."""
+    filename under source_dir, OR to None for a struct this walker cannot verify
+    from a header at all (hand-verified against the disassembly instead -- see
+    _HAND_VERIFIED). Returns a list of human-readable mismatch strings (empty = all
+    declarations are honest); the caller treats ANY entry as fatal."""
     problems = []
     cache = {}
     for (struct, field), (decl_off, _impls) in sorted(field_decls.items()):
         if struct not in cache:
-            hdr = struct_headers.get(struct)
-            if hdr is None:
+            if struct not in struct_headers:
                 problems.append(f"{struct}.{field}: no header registered for struct "
                                  f"{struct!r} (add it to STRUCT_HEADERS)")
                 continue
-            path = os.path.join(source_dir, hdr)
-            try:
-                with open(path) as f:
-                    cache[struct] = struct_field_offsets(f.read(), struct)
-            except (OSError, ValueError) as e:
-                problems.append(f"{struct}.{field}: {e}")
-                cache[struct] = None
-                continue
+            hdr = struct_headers[struct]
+            if hdr is None:
+                cache[struct] = _HAND_VERIFIED
+            else:
+                path = os.path.join(source_dir, hdr)
+                try:
+                    with open(path) as f:
+                        cache[struct] = struct_field_offsets(f.read(), struct)
+                except (OSError, ValueError) as e:
+                    problems.append(f"{struct}.{field}: {e}")
+                    cache[struct] = None
+                    continue
         real = cache[struct]
-        if real is None:
+        if real is None or real is _HAND_VERIFIED:
             continue
         if field not in real:
             problems.append(f"{struct}.{field}: no such field in {struct_headers[struct]} "
@@ -741,15 +828,42 @@ def verify_field_declarations(field_decls, source_dir, struct_headers):
     return problems
 
 
-# struct name -> header file (under --source-dir) this walker knows how to size.
-# Every struct named on the LHS of a `Struct.field @OFF` line in stack_edges.txt
-# must be listed here, or verify_field_declarations() fails loudly instead of
-# trusting an unverifiable offset.
+# struct name -> header file (under --source-dir) this walker knows how to size, OR
+# None for a struct this walker cannot verify from a header at all (see
+# _HAND_VERIFIED) -- every struct named on the LHS of a `Struct.field @OFF` line in
+# stack_edges.txt must be listed here, or verify_field_declarations() fails loudly
+# instead of trusting an unverifiable offset.
 STRUCT_HEADERS = {
     "BoxSource": "pdna_box.h",
     "RomGbUi": "rom_gbui.h",
     "Scan": "rom_gbui.c",     # file-local struct; struct_field_offsets() greps .c too
     "AppSrcOps": "pdna_app.h",
+    "RomGbIcon": "rom_gbicon.h",
+    "RomGbLearn": "rom_gblearn.h",
+    "Br": "gb_sprite_codec.c",
+    # D5a (BACKLOG #84b seventh pass): the structs below are declared HAND-VERIFIED
+    # (None), not wired to a header -- struct_field_offsets()'s two-regex struct
+    # finder anchors on `typedef struct {` (or `struct NAME {`) and lazily extends to
+    # the FIRST `} NAME;` it can find; in a header/TU with SEVERAL anonymous/other
+    # typedef structs before the target one (rom_gbsprite.h, pdna_gen12.h, gen2_write.h,
+    # art_icons_extract.h, rom_map.h all have this shape), the lazy match can span
+    # across unrelated intervening struct/enum bodies and misparse -- confirmed live
+    # (RomGbSprite/Gb12Mount/G2Writer/RomCtx/ArtIconsGen all raised "unknown field
+    # type" against text that was never really their own struct body). Teaching
+    # struct_field_offsets() to disambiguate multiple same-shaped typedefs in one
+    # file is a real fix but out of this pass's time budget -- these offsets are
+    # instead verified BY HAND against the header source (see each declaration site
+    # in stack_edges.txt for the exact struct/line cited) and re-checked with the
+    # standalone struct_field_offsets() probe this pass ran for RomGbIcon/RomGbLearn/
+    # Br (which DID parse cleanly, so those three get real header verification).
+    "RomGbSprite": None,
+    "Gb12Mount": None,
+    "G2Writer": None,
+    "RomCtx": None,
+    "ArtIconsGen": None,
+    "TTC": None,     # libtonc's tte_write dispatch table -- no .c/.h source shipped
+                      # in this devkitPro install to grep (see the `recursion
+                      # tte_write depth=2` declaration's own comment).
 }
 
 
@@ -1139,9 +1253,15 @@ def estimate_frames(fn_lines):
     return est
 
 
-def resolve_all_sites(analysis, field_decls, argsite_decls, whole_func_decls):
+def resolve_all_sites(analysis, field_offset_index, argsite_decls, whole_func_decls):
     """Classify every indirect-call site the walker found and decide which ones are
-    exempted by a declaration (D1). Returns:
+    exempted by a declaration (D1). `field_offset_index` is the (qualified,
+    unqualified) pair load_extra_edges() builds (D5a): a 'field' site first checks
+    (offset, caller) in `qualified`, then falls back to `offset` in `unqualified`
+    (legal only when the offset has exactly one struct.field owner, enforced at
+    parse time) -- two structs sharing a numeric offset no longer merge their
+    implementation sets for a caller that only genuinely dispatches through one of
+    them. Returns:
       edges_to_add     : {caller: {impl, ...}} to union into analysis["edges"]
       blind[fn]         : [(addr, ins, detail), ...] sites NOT exempted by anything --
                            a struct-field load at an undeclared offset, or a
@@ -1153,9 +1273,7 @@ def resolve_all_sites(analysis, field_decls, argsite_decls, whole_func_decls):
                            now has more than one indirect site (needs a structured decl)
     Never trusts a caller-wide declaration for MULTIPLE sites unless every one of
     them is individually accounted for -- the whole point of D1."""
-    field_offset_impls = collections.defaultdict(set)
-    for (_struct, _field), (off, impls) in field_decls.items():
-        field_offset_impls[off] |= impls
+    qualified_offset_impls, unqualified_offset_impls = field_offset_index
 
     fn_insn_seq = analysis["fn_insn_seq"]
     edges_to_add = collections.defaultdict(set)
@@ -1175,11 +1293,15 @@ def resolve_all_sites(analysis, field_decls, argsite_decls, whole_func_decls):
         for addr, ins, reg in sites:
             kind, off = resolve_indirect_site(fn_insn_seq.get(fn, []), int(addr, 16), reg)
             if kind == 'field':
-                if off in field_offset_impls:
-                    edges_to_add[fn] |= field_offset_impls[off]
+                impls = qualified_offset_impls.get((off, fn))
+                if impls is None:
+                    impls = unqualified_offset_impls.get(off)
+                if impls:
+                    edges_to_add[fn] |= impls
                 else:
                     blind[fn].append((addr, ins, f"struct-field load @{off}, no "
-                                       "declared field at that offset"))
+                                       f"declared field at that offset for caller {fn!r} "
+                                       "(and no unqualified owner of that offset)"))
             else:
                 nonfield_sites.append((addr, ins))
         if fn in argsite_decls:
@@ -1193,6 +1315,47 @@ def resolve_all_sites(analysis, field_decls, argsite_decls, whole_func_decls):
                 blind[fn].append((addr, ins, "parameter/register dispatch, no "
                                    "argsites declaration for this caller"))
     return dict(edges_to_add), dict(blind), count_mismatches, legacy_ambiguous
+
+
+def dump_sites(analysis, field_offset_index, argsite_decls, whole_func_decls):
+    """D5a diagnostic (--dump-sites): print every indirect-call site this walker's
+    disassembly walk found, one line each, with how it resolves TODAY -- ground
+    truth for converting stack_edges.txt's declarations to the honest per-caller
+    form, instead of guessing from source reading alone which callers a bare-offset
+    declaration was actually covering."""
+    qualified_offset_impls, unqualified_offset_impls = field_offset_index
+    fn_insn_seq = analysis["fn_insn_seq"]
+    for fn in sorted(analysis["indirect_sites"]):
+        sites = analysis["indirect_sites"][fn]
+        total = len(sites)
+        if fn in whole_func_decls and total <= 1:
+            for addr, ins, reg in sites:
+                print(f"{fn}  {addr}  whole-function -> "
+                      f"{' '.join(sorted(whole_func_decls[fn]))}")
+            continue
+        nonfield_i = 0
+        for addr, ins, reg in sites:
+            kind, off = resolve_indirect_site(fn_insn_seq.get(fn, []), int(addr, 16), reg)
+            if kind == 'field':
+                impls = qualified_offset_impls.get((off, fn))
+                src = "qualified"
+                if impls is None:
+                    impls = unqualified_offset_impls.get(off)
+                    src = "unqualified"
+                if impls:
+                    print(f"{fn}  {addr}  field @{off} ({src}) -> "
+                          f"{' '.join(sorted(impls))}")
+                else:
+                    print(f"{fn}  {addr}  field @{off} -> BLIND")
+            else:
+                nonfield_i += 1
+                if fn in argsite_decls:
+                    n, impls = argsite_decls[fn]
+                    print(f"{fn}  {addr}  argsite {nonfield_i}/{total} "
+                          f"(declared N={n}) -> {' '.join(sorted(impls))}")
+                else:
+                    print(f"{fn}  {addr}  argsite {nonfield_i}/{total} -> BLIND "
+                          "(no argsites declaration)")
 
 
 def frame_of(name, su_sizes, estimated, overrides=None):
@@ -1649,6 +1812,13 @@ def main(argv):
     ap.add_argument("--sccs", action="store_true",
                      help="D5b: print the Tarjan SCCs (real recursion only) over the "
                           "graph reachable from --root, instead of running the guard")
+    ap.add_argument("--dump-sites", action="store_true",
+                     help="D5a: print every indirect-call site this walker found -- "
+                          "caller, address, offset (for a 'field' site), and how it "
+                          "resolved (qualified/unqualified field, argsites, whole-"
+                          "function, or BLIND) -- instead of running the guard. Used to "
+                          "convert stack_edges.txt's declarations to the honest "
+                          "per-caller form.")
     ap.add_argument("--edges-file",
                      default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                            "stack_edges.txt"),
@@ -1731,10 +1901,10 @@ def main(argv):
               file=sys.stderr)
         return 1
 
-    (field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls,
-     addrtaken_ok, recursion_decls) = (
+    (field_decls, field_offset_index, argsite_decls, whole_func_decls, frame_overrides,
+     isr_decls, addrtaken_ok, recursion_decls) = (
         load_extra_edges(args.edges_file) if args.edges_file
-        else ({}, {}, {}, {}, set(), set(), {}))
+        else ({}, ({}, {}), {}, {}, {}, set(), set(), {}))
 
     # D1 header-drift check: every declared Struct.field @OFFSET is checked against
     # the offset the struct's OWN header gives that field today, before anything
@@ -1763,9 +1933,13 @@ def main(argv):
         return 1
 
     edges_to_add, blind, count_mismatches, legacy_ambiguous = resolve_all_sites(
-        analysis, field_decls, argsite_decls, whole_func_decls)
+        analysis, field_offset_index, argsite_decls, whole_func_decls)
     for caller, impls in edges_to_add.items():
         analysis["edges"][caller] |= impls
+
+    if args.dump_sites:
+        dump_sites(analysis, field_offset_index, argsite_decls, whole_func_decls)
+        return 0
 
     if args.sccs:
         # Diagnostic-only: run over the fully-declared graph (every indirect site

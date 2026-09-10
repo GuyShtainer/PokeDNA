@@ -97,16 +97,45 @@
 # the direction that genuinely risks an under-count, same as the offset-mismatch case
 # right above it.
 
-BoxSource.records    @20 -> banksrc_records gbsrc_records pcsrc_records
-BoxSource.get_name   @28 -> banksrc_get_name gbsrc_get_name pcsrc_get_name
+# records@20/get_name@28 moved below (BACKLOG #84b seventh pass): offset 20 is ALSO
+# AppSrcOps.view (app_mon_menu_readonly/pdna_dex_screen) and offset 28 is ALSO
+# AppSrcOps.create -- both are now qualified per-caller further down (search
+# "BoxSource.records @20 in" / "BoxSource.get_name @28 in") instead of living here
+# unqualified, which the D5a parser now refuses the moment a second struct shares
+# the same bare offset.
 BoxSource.set_name   @32 -> banksrc_set_name gbsrc_set_name pcsrc_set_name
 BoxSource.get_wp     @36 -> banksrc_get_wp gbsrc_get_wp pcsrc_get_wp
 BoxSource.set_wp     @40 -> banksrc_set_wp gbsrc_set_wp pcsrc_set_wp
 BoxSource.can_edit   @44 -> banksrc_can_edit gbsrc_can_edit app_can_edit
 BoxSource.commit     @48 -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
 BoxSource.mark_dirty @52 -> banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty
-BoxSource.note_add   @56 -> pcsrc_note_add
-BoxSource.note_box   @60 -> gbsrc_note_box
+BoxSource.note_add @56 in drop_held -> pcsrc_note_add
+# D5a (BACKLOG #84b seventh pass): qualified to drop_held (pdna_box.c) -- offset 56
+# is ALSO where libtonc's TTC.drawgProc lands (tte_putc/tte_write below), a genuine
+# collision the old global-offset union used to silently merge.
+BoxSource.note_box @60 in pdna_box -> gbsrc_note_box
+# BoxSource.note_box has no field@60 site of its own anywhere in THIS build (the
+# SWITCH_BOX macro's `src->note_box(box)` call, pdna_box.c's own body, produces zero
+# indirect_sites entries at all for the `pdna_box` symbol -- every one of its 15
+# BoxSource dispatches is either fully devirtualized or absorbed into a callee this
+# pass could not further trace within its time budget; left qualified to `pdna_box`
+# anyway, harmlessly inert until/unless a future build gives it a real site, per the
+# same "declare, never leave silently exempted" posture as the rest of this file).
+
+# libtonc's TTC (tonc_tte.h -- no .c/.h source shipped in this devkitPro install to
+# grep, offsets read BY HAND from the disassembly and cross-checked against which
+# `tte_init_*` calls this codebase actually makes; see STRUCT_HEADERS["TTC"]=None).
+# drawgProc/eraseProc sit at +56/+60 in TTC (source-verified indirectly: the shared
+# bx-rN thunk both `tte_putc`/`tte_write` (drawgProc) and `tte_cmd_default`/`tte_
+# erase_line`/`tte_erase_rect`/`tte_erase_screen` (eraseProc) dispatch through lands
+# on the SAME numeric offsets BoxSource.note_add/note_box already occupy). This
+# project makes exactly two `tte_init_*` calls (grepped): `tte_init_se(0, ...)`
+# (map_gfx.c:144, HUD text over a tiled BG) and `tte_init_bmp(DCNT_MODE3, &sys8Font,
+# NULL)` (ui.c:9, the Mode-3 bitmap font) -- installing libtonc's se/bmp16 surface
+# vtable entries as the live drawgProc/eraseProc. F1: se_drawg_s/se_erase/
+# bmp16_drawg_b1cts/bmp16_erase moved here from addrtaken-ok (see that list's own note).
+TTC.drawgProc @56 in tte_putc,tte_write -> se_drawg_s bmp16_drawg_b1cts
+TTC.eraseProc @60 in tte_cmd_default,tte_erase_line,tte_erase_rect,tte_erase_screen -> se_erase bmp16_erase
 BoxSource.capacity   @64 -> gbsrc_capacity
 
 # The commit parameter threaded through app_mon_menu (party call sites) and
@@ -200,7 +229,25 @@ pdna_dex_screen argsites=4 -> dex_state dex_set_state dex_get_national dex_set_n
 # whole global-offset mechanism, at which point these two lines get re-derived
 # properly instead of patched around the collision.
 pdna_origin_art_have argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
-pdna_origin_art_portrait argsites=3 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+pdna_origin_art_portrait argsites=3 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb era_resolver_cb era_resolver_cell_cb g3cross_pic_cb
+# F1 (BACKLOG #84b seventh pass): era_resolver_cb, era_resolver_cell_cb and
+# g3cross_pic_cb widened into THIS declaration's impl list -- they were wrongly
+# `addrtaken-ok` before this pass. pdna_origin_art_portrait itself directly calls
+# `s_era_resolver(...)` (pdna_origin_art.c:519, era_resolver_cb's sole registration
+# per pdna_main.c:1867) and `s_g3x.pic(...)` (pdna_origin_art.c:547, g3cross_pic_cb's
+# sole registration per pdna_main.c:2296) -- both inside THIS function, among its 3
+# already-counted nonfield sites (argsite_decls doesn't distinguish which of the 3
+# a given site targets, so the union is the honest/safe declaration, same principle
+# already used for the dex-screen and origin-art collisions above). era_resolver_
+# cell_cb (registered for s_era_resolver_cell, pdna_main.c:1868) is dispatched via
+# cell_era_of() (pdna_origin_art.c:363-364, `f = s_era_resolver_cell ? : s_era_
+# resolver; f(...)`) -- cell_era_of has NO symbol of its own in this artless ELF (a
+# tiny static helper, fully inlined at -O2); widened in HERE too on the working
+# assumption it inlines into the same cell-resolution logic this function owns
+# (BEST READING per stop-licence, not independently re-traced through the inlined
+# body -- a future pass with more time should confirm cell_era_of's actual inline
+# site by hand, or in the normal/delta builds where the reviewer's own build found
+# this on the deepest chain at 2,112 B).
 pdna_origin_art_stack_room argsites=1 -> gb_art_stack_room
 # D1 (BACKLOG #84b fifth pass) fix: this line previously read
 # "argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb" -- WRONG. The site inside
@@ -249,7 +296,11 @@ rom_gbbase_gen1 argsites=1 -> fused_gb_slice_read gb_read
 g1_bs_verify argsites=1 -> gb_art_read fused_gb_slice_read gb_read
 g2_bd_verify argsites=1 -> gb_art_read fused_gb_slice_read gb_read
 g2_pp_verify argsites=1 -> gb_art_read fused_gb_slice_read gb_read
-scan_one.constprop.0 argsites=1 -> gb_art_read fused_gb_slice_read
+scan_one.constprop.0 argsites=1 -> gb_art_read fused_gb_slice_read icon_ptrs_cb
+# widened (BACKLOG #84b seventh pass) to include icon_ptrs_cb -- can't cheaply tell
+# whether THIS nonfield site or the RomGbIcon.read@0 field site (declared above) is
+# the real `cb(...)` dispatch; unioned into both for safety, same as the RomGbIcon.
+# read@0/RomGbSprite.read@0/rom_gbui_open widenings above.
 block_eq argsites=1 -> gbscr_sd_read fused_gb_slice_read
 
 # rom_map.c's OWN rom_open(RomCtx* c, RomReadFn read, ...) (rom_map.c:137) is the
@@ -371,6 +422,50 @@ g2_detect_ranged argsites=1 -> img_rd gb_read fused_gb_slice_read gb_img_read
 # verified against this build's disassembly (1).
 pdna_gen12_mount argsites=1 -> gb_read fused_gb_slice_read gb_img_read
 
+# D5a (BACKLOG #84b seventh pass): pdna_gen12_mount ALSO has 4 genuine field@4 sites
+# of its own (source/pdna_gen12.h: `Gb12ReadFn rd;` is Gb12Mount's SECOND member,
+# after `kind`, so rd@4) -- register-pressure across this big function's several
+# nested calls (g2_detect_ranged/gen1_open_ranged/gb_list_read/gb_census) makes the
+# compiler reload `m->rd` from the struct instead of keeping the `rd` parameter live
+# in a register for every use, so most of pdna_gen12_mount's own dispatches present
+# as a clean field load rather than the register-threaded shape the argsites=1 line
+# above covers (that one's still real -- 1 nonfield site remains, matching declared
+# N=1). Same implementation family as everywhere else `rd`/`m->rd` is threaded.
+Gb12Mount.rd @4 in pdna_gen12_mount -> gb_read fused_gb_slice_read gb_img_read
+# gb_list_read (pdna_gen12.c:151, `static bool gb_list_read(Gb12Mount* m, ...)`) is
+# ALSO a Gb12Mount.rd@4 dispatch -- this is the SITE the recursion `gb_persist
+# depth=1` declaration below used to attribute to AppSrcOps.move@4 (a pure offset
+# coincidence, per the old global-offset union) and, on tracing the real callee, it
+# turns out to be gb_list_read's OWN `m->rd(...)` call, not AppSrcOps.move at all.
+# The apparent gb_move_hook -> ... -> gb_list_read -> gb_move_hook cycle the old
+# recursion declaration worked around should be GONE once this offset is qualified
+# per caller -- re-run `--sccs` after this commit and delete the recursion line if so.
+Gb12Mount.rd @4 in gb_list_read.constprop.0 -> gb_read fused_gb_slice_read gb_img_read
+
+# gen2_write.h's G2Writer.wr (wr@4, img_wr -- the SAME single registration site,
+# gb_session.c:69, as G2Writer.rd@0 above) is what refresh_checksums/write_patch.
+# part.0 actually dispatch through (both take `G2Writer* w` and write out a patched
+# region -- read side already covered by G2Writer.rd@0 above for THIS caller's
+# sibling reads).
+G2Writer.wr @4 in refresh_checksums,write_patch.part.0 -> img_wr
+
+# rom_gblearn.h's RomGbLearn.read (read@4 -- `uint8_t gen; bool ok; GbReadFn read;`
+# packs `read` to offset 4 after the two 1-byte fields, verified by header). rom_
+# gblearn_moves_at_seeded (rom_gblearn.c:366, `RomGbLearn* rl`) is a NEW caller this
+# class was never declared for -- same implementation family as rom_gblearn_open/
+# walk_entry/gbl_verify above (all the same struct).
+RomGbLearn.read @4 in rom_gblearn_moves_at_seeded -> fused_gb_slice_read gb_read
+
+# art_icons_extract.h's ArtIconsGen.progress (progress@4, `const RomMon* rm;
+# ArtIconsProgressFn progress;`) -- art_icons_stream's TWO `g->progress(...)` calls
+# (art_icons_extract.c, the write-pass and verify-pass branches) both resolve here.
+# Sole registration site: pdna_main.c:7268 `art_icons_gen_init(..., art_extract_
+# progress, 0)`. F1 (BACKLOG #84b seventh pass): art_extract_progress was WRONGLY
+# `addrtaken-ok` before this pass -- its address IS taken (the registration above)
+# AND it IS dispatched (these two sites), the exact false-pass class the reviewer's
+# second review flagged; removed from the addrtaken-ok list below.
+ArtIconsGen.progress @4 in art_icons_stream -> art_extract_progress
+
 # rom_map.c's RomCtx.read (rom_map.c:140, `c->read = read` -- the SAME `read`
 # parameter rom_open's own argsites declaration above already covers) is threaded by
 # pointer (`rc`) into every rom_*.c module that shares one mounted ROM, including
@@ -385,8 +480,18 @@ rom_mon_icon_at argsites=1 -> gb_art_read fused_gb_slice_read gb_read
 # puts the read-function pointer itself in a register the AAPCS argument
 # registers don't cover, spilled to the stack across the locator's own scan
 # calls). Verified identical (7 / 9) across all three build variants.
-rom_gbui_open argsites=7 -> gbscr_sd_read fused_gb_slice_read gb_art_read
-rom_gbui_open_loc argsites=9 -> gbscr_sd_read fused_gb_slice_read gb_art_read
+rom_gbui_open argsites=7 -> gbscr_sd_read fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
+rom_gbui_open_loc argsites=9 -> gbscr_sd_read fused_gb_slice_read gb_art_read g1_cardframe_cb g1_font_cb g1_textbox_cb g1_badges_cb g1_playerpic_cb g2_badgeleader_cb g2_cardpic_cm_cb g2_cardpic_gold_cb g2_frame_cb g2_pack_cb
+# F1/F2 (BACKLOG #84b seventh pass): widened to include rom_gbui.c's 10 `ScanJob.cb`
+# job-table callbacks (g1_*_cb/g2_*_cb, previously `addrtaken-ok` below). rom_gbui.c's
+# OWN file-local `locate`/`scan_multi` (rom_gbui.c:278/458) are BOTH fully inlined into
+# rom_gbui_open/rom_gbui_open_loc in this build (neither shows its own symbol in the
+# ELF) -- their `jobs[j].cb(p)` dispatches (10 jobs, rom_gbui.c:441-459) land among
+# these SAME 7/9 spilled sites rather than getting their own distinct ones (a J_COUNT-
+# sized small loop -O2 is free to unroll/merge with the surrounding scan-call spill
+# shape). Can't cheaply tell which of the 7/9 sites is which without re-deriving the
+# unrolled loop by hand; the safe, already-established convention in this file is the
+# UNION (never an under-count).
 
 # RomGbUi.read / the file-local Scan.read (source/rom_gbui.h:246, source/rom_gbui.c:25) --
 # both structs put their GbReadFn `read` hook as the FIRST member (offset 0), so `rd()`,
@@ -395,13 +500,100 @@ rom_gbui_open_loc argsites=9 -> gbscr_sd_read fused_gb_slice_read gb_art_read
 # leg fused_gb_slice_read, and the ROM-resident leg gb_art_read -- source/pdna_gbscreen.c:486/
 # 520, source/pdna_gen12.c:2213) is COUNTED in any chain that reaches it, instead of being a
 # blind spot that just happens not to be on today's top-5.
-Scan.read    @0 -> gbscr_sd_read fused_gb_slice_read gb_art_read
-RomGbUi.read @0 -> gbscr_sd_read fused_gb_slice_read gb_art_read gbscr_mem_read
+#
+# D5a (BACKLOG #84b seventh pass): offset 0 is the single most contested offset in the
+# whole codebase -- EVERY struct whose first member is a function pointer lands here
+# (Scan, RomGbUi, RomGbIcon, RomGbSprite, RomCtx, G2Writer.rd, gb_sprite_codec.c's Br,
+# ...). Before this pass, field_offset_impls[0] was one GLOBAL union of every impl ever
+# declared at offset 0 -- so a G2Writer.rd dispatch in gen2_write.c's own helpers was
+# silently exempted using Scan/RomGbUi's read implementations (gbscr_sd_read etc, which
+# G2Writer never calls), and vice versa: a real false PASS, not just noise. Every class
+# below is now qualified to the exact callers `--dump-sites` (against a real artless
+# ELF, empty --edges-file so classification is declaration-independent) showed actually
+# resolve a 'field @0' site, cross-checked by reading each caller's own parameter type.
+Scan.read @0 in all_blank.constprop.0,any_nonzero.constprop.0,block_eq,cardgfx_verify,distinct_tiles,font_verify,try_badgeleader_hit,try_pack.constprop.0,anchor_pack,rd@rom_gbui,parse_header@rom_gbui -> gbscr_sd_read fused_gb_slice_read gb_art_read
+# Each of the callers above takes `const Scan* s` (source/rom_gbui.c, grepped: every
+# one of them) and calls `s->read(...)`; `rd`/`parse_header` are rom_gbui.c's own
+# file-local helpers of that exact name (disambiguated @rom_gbui by the D5b symbol
+# census, since rom_gbicon.c/rom_gbsprite.c each define their OWN same-named statics).
+
+RomGbUi.read @0 in rom_gbui_open,rom_gbui_open_loc,rom_gbui_tile,gbscr_open_inner -> gbscr_sd_read fused_gb_slice_read gb_art_read gbscr_mem_read
 # gbscr_mem_read (pdna_gbscreen.c:211, registered pdna_gbscreen.c:842 `local.read =
 # gbscr_mem_read;` where `local` is a per-call RomGbUi copy with .read/.ctx rebound to
 # the RAM tile cache gbscr_open() built) -- a FOURTH RomGbUi.read implementation the
 # D1 address-taken sweep (BACKLOG #84b fifth pass) found genuinely taken but missing
-# from this declaration's impl list.
+# from this declaration's impl list. gbscr_open_inner (pdna_gbscreen.c) holds its own
+# RomGbUi as GbScreen's first embedded member (same offset-0 shape) and dispatches the
+# same way while filling it in.
+
+RomGbIcon.read @0 in parse_header@rom_gbicon,rom_gbicon_kind,rom_gbicon_open_loc,rom_gbicon_tiles -> gb_art_read fused_gb_slice_read gb_read
+RomGbIcon.read @0 in locate@rom_gbicon,scan_one.constprop.0 -> gb_art_read fused_gb_slice_read gb_read icon_ptrs_cb
+# locate@rom_gbicon/scan_one.constprop.0 widened to include icon_ptrs_cb (rom_gbicon.c:
+# 187, `scan_one(gi, icon_ptrs_cb, ...)`, previously `addrtaken-ok` below) -- rom_
+# gbicon.c's scan_one() takes the callback as a PARAMETER (not a struct field) but its
+# ONE call site is inlined here alongside gi->read(...), and this build's field@0 sites
+# for these two callers don't split cleanly between the two dispatches; unioned in
+# rather than guessed apart, same convention as the rom_gbui_open widening above.
+# source/rom_gbicon.h:174-176: `GbReadFn read;` is RomGbIcon's first member. Every
+# caller above takes `RomGbIcon*`/`const RomGbIcon*` (grepped rom_gbicon.c). Impl set
+# matches the already-declared rom_gbicon_open_loc registration sites (gb_art_source.c:
+# 362/547) plus gb_read (pdna_gen12.c's own mount path for a fused image).
+
+RomGbSprite.read @0 in parse_header@rom_gbsprite,g1_mew_verify,g2_pal_verify,g2_peers,g2_size,rom_gbsprite_pal,rom_gbsprite_pic_buf -> gb_art_read fused_gb_slice_read gb_read
+RomGbSprite.read @0 in locate@rom_gbsprite -> gb_art_read fused_gb_slice_read gb_read g1_bs_cb g1_dex_cb g1_mew_cb g2_bd_cb g2_pal_cb g2_pp_cb
+# locate@rom_gbsprite widened to include rom_gbsprite.c's 6 `ScanJob.cb` job-table
+# callbacks (g1_bs_cb/g1_dex_cb/g1_mew_cb/g2_bd_cb/g2_pal_cb/g2_pp_cb, previously
+# `addrtaken-ok` below) -- rom_gbsprite.c's OWN file-local scan_multi (rom_gbsprite.c:
+# 136) is fully inlined into locate (no symbol of its own in this ELF); same
+# can't-cheaply-split-the-merge reasoning as rom_gbui_open/RomGbIcon.read above.
+# source/rom_gbsprite.h:173-174: `GbReadFn read;` is RomGbSprite's first member. Every
+# caller above takes `RomGbSprite*`/`const RomGbSprite*` (grepped rom_gbsprite.c).
+
+Br.rd @0 in br_byte -> gb_art_read fused_gb_slice_read gb_read
+# gb_sprite_codec.c's own file-local `Br` bit-reader (line ~28): `GbReadFn rd;` is its
+# first member, filled in by br_init() from whichever GbReadFn its own caller (rom_
+# gbsprite.c's Gen-1/Gen-2 pic decoders) was given -- same implementation family as
+# RomGbSprite.read above (the codec always decodes bytes rom_gbsprite.c already read
+# through that same class).
+
+RomCtx.read @0 in read_entry.constprop.0,read_small,read_verified.constprop.0,stage_and_expand,mr_region_enter,mr_region_next_view,rom_mon_open,rom_sprite_open,rom_text_open,art_icons_stream -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconrom_fatfs_read
+# tileset_to_vram (map_gfx.c:225) is declared SEPARATELY: it dispatches its own
+# `rom` parameter's RomCtx.read directly (line 243, the plain ROM-resident legs) AND
+# `mr_lz77(&shim, ...)`'s file-local, one-call-site body -- inlined here at -O2 --
+# which was handed a LOCAL RomCtx copy with `shim.read = mem_read;` (map_gfx.c:246-
+# 247, a memory-backed LZ77 window shim, not a ROM/SD read at all). F1 (BACKLOG #84b
+# seventh pass): mem_read was WRONGLY `addrtaken-ok` before this pass ("dispatch site
+# not yet traced") -- traced now; removed from the addrtaken-ok list below.
+RomCtx.read @0 in tileset_to_vram -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconrom_fatfs_read mem_read
+# A two-level-indirect dispatch, the SAME shape rom_mon_icon_at's own declaration
+# above already documents: RomSprite/RomMon/RomHand (source/rom_sprite.h:94-95,
+# rom_mon.h, rom_hand.h) each put `const RomCtx* rc;` as their OWN first member, and
+# RomCtx.read (source/rom_map.h:72-73) is ALSO its struct's first member -- so
+# `rs->rc->read(...)` chases straight through to offset 0 regardless of the outer
+# struct's own field name. read_entry/read_small/read_verified take RomSprite*/
+# RomMon*/RomHand* respectively; tileset_to_vram/rom_mon_open/rom_sprite_open/
+# rom_text_open take `const RomCtx*` directly; stage_and_expand/mr_region_enter/
+# mr_region_next_view take `const RgnMap* rg` whose OWN first member is `const
+# RomCtx* rom` (source/region_map.h:148-149) -- offset 0 of offset 0, same target.
+# art_icons_stream's own @0 site is fill_row()/fill_tail() (art_icons_extract.c,
+# each one-call-site file-local, inlined at -O2) dereferencing their `const RomMon*
+# rm` parameter the same way as read_small.
+
+G2Writer.rd @0 in cmp_regions,g2w_calc_checksums,g2w_commit_list,g2w_load_list,readback_cmp -> img_rd
+# source/gen2_write.h: `G2ReadFn rd;` is G2Writer's first member (rd@0, wr@4 -- see
+# the already-declared G2Writer.wr class below). Every caller above takes `G2Writer*
+# w` (grepped gen2_write.c) and calls `w->rd(...)`.
+
+# icon_store.c's run_fill() calls cache_fill_rows()/rom_fill_row() directly (no visible
+# function-pointer parameter of its own) -- both are one-call-site file-local helpers
+# -O2 inlines into run_fill, and THEIR indirect dispatch (a RomMon-family ROM read for
+# the ROM-resident rung, a plain SD/cache read for the cache rung) is what actually
+# resolves to offset 0 here. Declared as the CONSERVATIVE UNION of both plausible
+# families rather than picked apart further -- this is the one D5a site this pass could
+# not pin to a single struct within its time budget (best reading, not a guess dressed
+# up as certainty; a future pass with more time should un-inline cache_fill_rows/
+# rom_fill_row by hand or read icon_store.c's own struct wiring to narrow this).
+RomCtx.read @0 in run_fill -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconrom_fatfs_read gb_art_read fused_gb_slice_read gb_read
 
 # wait_keys_bob_p's `redraw` parameter (source/pdna_main.c:297-298): the honest D2
 # prologue estimator moved _svfiprintf_r's frame (728 B -> its real size), which
@@ -437,33 +629,72 @@ wait_keys_bob_p argsites=1 -> party_overlay_bob
 #   view        k_gb_ops=gb_view_hook        k_gb_ops_ro=gb_view_hook       (same)
 #   editable    k_gb_ops=gb_editable_hook    k_gb_ops_ro=0
 #   create      k_gb_ops=gb_create_hook      k_gb_ops_ro=(unset, NULL)
-AppSrcOps.move        @4  -> gb_move_hook
-# release/view/editable/create (offsets 8/20/24/28) ALSO carry pdna_pick.c's dex-
-# screen family (dex_state/dex_set_state/dex_get_national/dex_set_national -- the
-# file-static DexGetState/DexSetState/DexGetNat/DexSetNat globals set once by
-# pdna_dex_screen, pdna_pick.c:546-547, same declared elsewhere in this file). This
-# is a GENUINE offset collision between two unrelated globals, not a mistake: the
-# resolver correctly refuses to trust these particular dex-screen call sites as
-# section-anchor globals (`_base_is_section_anchor` only chases through a `mov`
-# register-to-register copy, never through a stack SPILL -- and in these 11 sites
-# the anchor pointer itself gets spilled to the stack and reloaded before being
-# promoted into `sl`/`fp`, one hop further than the check is willing to follow,
-# exactly the same "spilled field, don't chase it" caution pdna_box's own declared
-# argsites=4 class above already applies), so they present as genuine 'field' hits
-# at these same 4 numeric offsets. Since field_offset_impls is a GLOBAL union keyed
-# by offset alone (not by struct), the fix is not to make the resolver guess which
-# struct a given site belongs to -- it's to union BOTH real implementation sets
-# into each offset bucket: this can only make the guard's worst-case search wider
-# (a superset of candidates, never fewer), never unsound, and the guard still FAILS
-# loud on any offset this file has not yet accounted for. Site counts verified
-# against BOTH artless and normal builds (identical: 11 field sites at 8/20/24/28,
-# split 8:3 20:2 24:3 28:3 in each build -- delta not yet re-checked, see D5 proof).
-AppSrcOps.release     @8  -> gb_release_hook dex_state dex_set_state dex_get_national dex_set_national
-AppSrcOps.copy_native @12 -> gb_copy_native_hook
-AppSrcOps.paste       @16 -> gb_paste_hook
-AppSrcOps.view        @20 -> gb_view_hook dex_state dex_set_state dex_get_national dex_set_national
-AppSrcOps.editable    @24 -> gb_editable_hook dex_state dex_set_state dex_get_national dex_set_national
-AppSrcOps.create      @28 -> gb_create_hook dex_state dex_set_state dex_get_national dex_set_national
+# D5a (BACKLOG #84b seventh pass) REWRITE of the whole AppSrcOps/dex-screen/origin-art
+# offset-collision family: this used to be a GLOBAL union keyed by bare offset (field_
+# offset_impls[off] |= impls, independent of which function the site was IN) -- so a
+# BoxSource.records() site in release_box_all (offset 20, a pdna_box.c caller) was
+# silently credited AppSrcOps.view's implementations too, letting the deepest-chain
+# search "reach" gb_view_hook through a caller that never calls it -- the exact false
+# PASS the third review pass caught (STACK ok: deepest 13,624 riding an infeasible
+# edge). Every line below is now qualified to the EXACT callers `--dump-sites` showed
+# resolve a 'field' site at that offset (empty --edges-file, so classification comes
+# from the disassembly alone, not from what happened to already be declared).
+#
+# `move` (offset 4) turned out to have NO field site of its own in app_mon_menu_
+# readonly: the RO_MOVE and RO_PASTE switch cases each load their own field ([r3,#4]
+# and [r3,#16]) then `bne` INTO release's shared tail block (the same `movs r0,r5; bl
+# <thunk>` instruction release's own native fallthrough uses) -- a genuine -O2
+# cross-jump/tail-merge that unifies THREE different field offsets onto ONE physical
+# call instruction (confirmed by objdump: `803ca6c: ldr r3,[r3,#4]` and `803ca94: ldr
+# r3,[r3,#16]` both `bne.n 803ca5a`, the same address release's own `803ca56: bne.n
+# 803ca5a` falls into). The linear-disassembly resolver can only see ONE definition
+# for that physical instruction (release's, the one adjacent in instruction order) --
+# so the honest declaration is release's offset carrying ALL THREE real
+# implementations, not just its own; declaring `AppSrcOps.move @4` for this caller
+# would be dead (no such site exists here) and would UNDER-count the two merged paths.
+AppSrcOps.release @8 in app_mon_menu_readonly -> gb_release_hook gb_move_hook gb_paste_hook
+AppSrcOps.release @8 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
+AppSrcOps.copy_native @12 in app_copy.isra.0 -> gb_copy_native_hook
+AppSrcOps.view @20 in app_mon_menu_readonly -> gb_view_hook
+AppSrcOps.view @20 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
+BoxSource.records @20 in clear_origin,export_box_all,party_strip_overlay,release_box_all -> banksrc_records gbsrc_records pcsrc_records
+# release_box_all's offset-20 site is the exact one the third review pass named:
+# BoxSource.records(), never AppSrcOps.view -- this is the fix for "release_box_all no
+# longer reaches gb_view_hook".
+AppSrcOps.editable @24 in app_mon_menu_readonly -> gb_editable_hook
+AppSrcOps.editable @24 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
+# fetch_pic_ex.constprop.0's two offset-24 sites are the SAME "spilled section-anchor,
+# coincidental numeric offset" shape as the dex-screen family (pdna_origin_art.c's
+# static `s_gb` PdnaGbArtSource, not AppSrcOps -- piggybacked on AppSrcOps.editable's
+# REAL header offset the same way dex-screen already was, since there is no separate
+# struct to name a spilled-global collision after). D9's own note above already
+# predicted this: "D5's per-caller rewrite... replaces this whole global-offset
+# mechanism, at which point these two lines get re-derived properly".
+AppSrcOps.editable @24 in fetch_pic_ex.constprop.0 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+AppSrcOps.create @28 in app_mon_menu_readonly -> gb_create_hook
+AppSrcOps.create @28 in pdna_dex_screen -> dex_state dex_set_state dex_get_national dex_set_national
+AppSrcOps.create @28 in pdna_origin_box_art,pdna_origin_box_art_wanted -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+BoxSource.get_name @28 in draw_box_banner -> banksrc_get_name gbsrc_get_name pcsrc_get_name
+BoxSource.can_edit @44 in pdna_origin_art_portrait,pdna_origin_box_art -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+# BoxSource.can_edit@44 has no field site of its OWN anywhere in this build (every
+# real can_edit() dispatch goes through pdna_box's declared argsites=4 spilled class
+# below) -- the offset is real (source/pdna_box.h, verified against the header) but
+# its only 'field'-classified users today are this origin-art spill, piggybacked here
+# the same way as offset 24/28 above.
+# AppSrcOps.paste (offset 16): the artless build's app_mon_menu_readonly has NO
+# field@16 site of its own (paste's only real path there is the release@8 tail-merge
+# above) -- but the DELTA build's codegen differs (confirmed live: `make delta`
+# reported a genuine `struct-field load @16` BLIND spot in app_mon_menu_readonly
+# before this line existed) so it IS a real, separate site on that variant. Offset 16
+# has no other struct claiming it, so this stays UNQUALIFIED (matches any caller that
+# ever presents a clean field@16 site -- today, app_mon_menu_readonly on normal/delta).
+AppSrcOps.paste @16 -> gb_paste_hook
+# AppSrcOps.move (offset 4) has no field site of its own anywhere in ANY of the three
+# variants checked (artless/normal/delta) -- its only real path is the release@8
+# tail-merge above -- left undeclared as a field on purpose: a stale declaration that
+# matches nothing is honest-but-noisy, and if a future build gives it a real site, the
+# guard's per-caller lookup will correctly report it BLIND (fatal) rather than
+# silently matching a leftover declaration.
 
 # g_src_why (pdna_main.c:4123, `static const char* (*g_src_why)(const uint8_t*)`) is a
 # bare global function-pointer variable, NOT a struct field -- app_mon_menu_readonly's
@@ -529,30 +760,16 @@ isr pwm_isr
 #   raise, and re-derive it from the actual string, not guess.
 recursion tte_write depth=2
 
-# recursion gb_persist depth=1
-#   NOT real per-execution recursion -- read the actual callees (BACKLOG #84b sixth
-#   pass, D5b/D4 investigation): gb_move_hook calls gb_persist (pdna_gen12.c:1286) and
-#   gb_move_hook calls gbs_move (pdna_gen12.c:1252); gb_persist calls gb_census
-#   (pdna_gen12.c:1819/1886), which calls gb_list_read (pdna_gen12.c:328). Nothing in
-#   that real call chain ever calls back into gb_move_hook. The apparent cycle-closing
-#   edges (gb_list_read/refresh_checksums/write_patch.part.0 -> gb_move_hook) are a
-#   PRE-EXISTING, SEPARATE bug in resolve_all_sites(): field_offset_impls is keyed by
-#   bare numeric OFFSET across every declared struct, so G2Writer.wr @4 (img_wr, see
-#   below) and AppSrcOps.move @4 (gb_move_hook, see the AppSrcOps block below) collide
-#   on offset 4 and get UNIONED -- any indirect site the walker resolves to offset 4,
-#   regardless of which struct it actually dispatches through, is credited with BOTH
-#   implementation lists. That is a design property of this file's field-offset
-#   matching (documented above: "matched to a class by the offset ... not by which
-#   function they sit in"), not something this pass changes.
-#   Declared conservatively anyway, rather than "fixed" by narrowing the offset match
-#   (which risks the unsafe direction -- silently DROPPING a real edge -- for a
-#   change outside this pass's brief): depth=1 x (sum of every frame in the
-#   component) is a valid, safe upper bound for a strongly-connected set entered any
-#   number of times, real or not -- visiting every member once, in the worst real
-#   order, can never exceed that sum. If resolve_all_sites() is ever taught to key
-#   field declarations by struct as well as offset, re-run `--sccs`; this component
-#   should disappear on its own and this line can be deleted.
-recursion gb_persist depth=1
+# F6/D5a (BACKLOG #84b seventh pass): `recursion gb_persist depth=1` DELETED -- it was
+# a conservative workaround for a false cycle caused by the OLD global-offset-4 union
+# (G2Writer.wr/img_wr and AppSrcOps.move/gb_move_hook colliding on bare offset 4,
+# crediting gb_list_read/refresh_checksums/write_patch.part.0 with an edge to gb_move_
+# hook they never really have). Now that offset 4 is qualified per caller (Gb12Mount.rd
+# @4 in gb_list_read.constprop.0, G2Writer.wr@4 in refresh_checksums/write_patch.part.0,
+# AppSrcOps.move's real dispatch folded into the release@8 tail-merge -- none of them
+# share (offset, caller) with gb_move_hook's real site), the cycle is genuinely gone:
+# `--sccs` now finds exactly {tte_cmd_default, tte_write} reachable from main(), nothing
+# else. Confirmed live on the artless build after this pass's rewrite.
 
 # D1 (BACKLOG #84b fifth pass) address-taken sweep triage, batch 1: devkitARM/newlib
 # CRT and compiler-runtime symbols. Their addresses are taken by the toolchain's own
@@ -589,8 +806,6 @@ addrtaken-ok m4_surface
 addrtaken-ok m5_surface
 addrtaken-ok dummy_drawg
 addrtaken-ok dummy_erase
-addrtaken-ok bmp16_drawg_b1cts
-addrtaken-ok bmp16_erase
 addrtaken-ok bmp8_drawg_b1cts
 addrtaken-ok bmp8_erase
 addrtaken-ok sbmp16_blit
@@ -602,8 +817,12 @@ addrtaken-ok sbmp16_line
 addrtaken-ok sbmp16_plot
 addrtaken-ok sbmp16_rect
 addrtaken-ok sbmp16_vline
-addrtaken-ok se_drawg_s
-addrtaken-ok se_erase
+# F1 (BACKLOG #84b seventh pass): se_drawg_s/se_erase/bmp16_drawg_b1cts/bmp16_erase
+# REMOVED from this list -- they ARE dispatched (TTC.drawgProc@56/eraseProc@60 below,
+# the two tte_init calls this project actually makes: tte_init_se (map_gfx.c:144) and
+# tte_init_bmp(DCNT_MODE3, ...) (ui.c:9), which installs libtonc's se/bmp16 surface
+# vtable entries as the active drawgProc/eraseProc). bmp8_*/dummy_*/sbmp16_* stay --
+# no tte_init_chr4c or other-bpp path is ever called in this codebase (grepped).
 
 # D1 (BACKLOG #84b fifth pass) address-taken sweep triage, batch 3: genuine, verified,
 # pre-existing single-registration callback hooks whose CALLING side is not yet
@@ -615,12 +834,19 @@ addrtaken-ok se_erase
 # the whole codebase, so there is no ambiguity about which implementation is real; the
 # gap is in modeling the CALL path, not in identifying the callee.
 addrtaken-ok gb_edit_hook          # AppSrcOps.edit -- assigned but never dispatched, see the AppSrcOps note above
-addrtaken-ok mem_read              # map_gfx.c:249 shim.read = mem_read (RomCtx, memory-backed LZ77 shim); mr_lz77 fully inlines away, dispatch site not yet traced
-addrtaken-ok fil_read              # art_session.c:93 art_fnv_of_stream(fil_read, ...), sole registration
-addrtaken-ok art_extract_progress  # pdna_main.c:7268 art_icons_gen_init(..., art_extract_progress, 0), sole registration
-addrtaken-ok era_resolver_cb       # pdna_main.c:1867 pdna_origin_art_set_era_resolver(era_resolver_cb), sole registration
-addrtaken-ok era_resolver_cell_cb  # pdna_main.c:1868 pdna_origin_art_set_era_resolver_cell(era_resolver_cell_cb), sole registration
-addrtaken-ok g3cross_pic_cb        # pdna_main.c:2296 static PdnaG3CrossSource{g3cross_pic_cb,0}, sole registration
+# F1 (BACKLOG #84b seventh pass): mem_read/art_extract_progress/era_resolver_cb/
+# era_resolver_cell_cb/g3cross_pic_cb REMOVED from this list -- all five ARE
+# dispatched (RomCtx.read@0 in tileset_to_vram / ArtIconsGen.progress@4 in
+# art_icons_stream / the pdna_origin_art_portrait widening, all declared above).
+# fil_read: NOT reachable from any call in THIS artless build (no `bl fil_read`
+# anywhere in the disassembly -- art_session_kind_ready/_shallow aren't on this
+# variant's reachable set), but its address IS taken (the literal load that would
+# pass it as art_fnv_of_stream's argument, wherever that call lives) and the
+# reviewer's second review found it genuinely dispatched on at least one other
+# build variant -- declared below rather than left exempted, so a build where it
+# IS reachable gets it counted instead of silently trusting an exemption that
+# happened to be harmless only by coincidence on this particular variant.
+art_fnv_of_stream argsites=1 -> fil_read
 addrtaken-ok rumble_bus_probe_raw        # pdna_main.c:437 flashcartio_bus_probe_gpio(rumble_bus_probe_raw), sole registration
 addrtaken-ok rumble_bus_probe_bracketed  # pdna_main.c:438 flashcartio_bus_probe_gpio(rumble_bus_probe_bracketed), sole registration
 
@@ -636,15 +862,7 @@ addrtaken-ok rumble_bus_probe_bracketed  # pdna_main.c:438 flashcartio_bus_probe
 # duplicate-static-name defect this file's own header now documents), so a single
 # `scan_multi argsites=N` declaration cannot safely key both without the (address,
 # name) graph keying D5 introduces. Deferred rather than guessed at.
-addrtaken-ok g1_badges_cb      # rom_gbui.c:447 jobs[J_G1_BADGES].cb
-addrtaken-ok g1_bs_cb          # rom_gbsprite.c:341 jobs[J_G1_BS].cb
-addrtaken-ok g1_dex_cb         # rom_gbsprite.c:342 jobs[J_G1_DEX].cb
-addrtaken-ok g1_mew_cb         # rom_gbsprite.c:343 jobs[J_G1_MEW].cb
-addrtaken-ok g1_playerpic_cb   # rom_gbui.c:449 jobs[J_G1_PLAYERPIC].cb
-addrtaken-ok g2_bd_cb          # rom_gbsprite.c:344 jobs[J_G2_BD].cb
-addrtaken-ok g2_pal_cb         # rom_gbsprite.c:346 jobs[J_G2_PAL].cb
-addrtaken-ok g2_pp_cb          # rom_gbsprite.c:345 jobs[J_G2_PP].cb
-addrtaken-ok icon_ptrs_cb      # rom_gbicon.c:187 scan_one(gi, icon_ptrs_cb, ...)
+# F1 (BACKLOG #84b seventh pass): all 17 ScanCb job-table callbacks REMOVED from this file's addrtaken-ok lists -- every one is now dispatched (rom_gbui_open/rom_gbui_open_loc/locate@rom_gbsprite/RomGbIcon.read's widened declarations above).
 
 # D1 (BACKLOG #84b fifth pass) address-taken sweep triage, batch 5: delta-build-only
 # orphans (this variant links Gold/Silver/Crystal-era ROM scanner code the artless/
@@ -658,14 +876,6 @@ addrtaken-ok _EZFO_reboot         # same false-match class, called directly (fla
 addrtaken-ok flashcartio_activate # RV_ANCHOR'd into pdna_romver_data.c's ROM self-check
                                    # window table (symbol address used to LOCATE a CRC
                                    # window, not to call through) -- pdna_romver_data.c:75/106
-addrtaken-ok g1_cardframe_cb      # rom_gbui.c:445 jobs[J_G1_CARDFRAME].cb
-addrtaken-ok g1_font_cb           # rom_gbui.c:441 jobs[J_G1_FONT].cb
-addrtaken-ok g1_textbox_cb        # rom_gbui.c:443 jobs[J_G1_TEXTBOX].cb
-addrtaken-ok g2_badgeleader_cb    # rom_gbui.c:453 jobs[J_G2_BADGELEADER].cb
-addrtaken-ok g2_cardpic_cm_cb     # rom_gbui.c:455 jobs[J_G2_CARDPIC_CM].cb
-addrtaken-ok g2_cardpic_gold_cb   # rom_gbui.c:457 jobs[J_G2_CARDPIC_GOLD].cb
-addrtaken-ok g2_frame_cb          # rom_gbui.c:451 jobs[J_G2_FRAME].cb
-addrtaken-ok g2_pack_cb           # rom_gbui.c:459 jobs[J_G2_PACK].cb
 addrtaken-ok g2_box_mon_at        # gen2_save.c:603/gen2_save.h:233 -- grepped: no call site
                                    # or function-pointer assignment found anywhere in source/;
                                    # either a genuinely unused public function or another

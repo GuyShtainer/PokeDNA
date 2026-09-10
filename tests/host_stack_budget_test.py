@@ -59,6 +59,20 @@ def check(name, cond, detail=""):
         FAILURES.append(name)
 
 
+def field_index(field_decls):
+    """D5a (BACKLOG #84b seventh pass): resolve_all_sites() now takes a (qualified,
+    unqualified) field_offset_index pair instead of a flat field_decls dict -- this
+    test file's fixtures build the OLD flat shape ({(struct, field): (off, impls)}),
+    a single struct per offset with no caller qualification needed, so every entry
+    becomes an UNQUALIFIED offset owner (exactly what load_extra_edges() itself would
+    produce for a file with no `in <caller>` clauses)."""
+    unqualified = {}
+    for (_struct, _field), (off, impls) in field_decls.items():
+        unqualified.setdefault(off, set())
+        unqualified[off] |= impls
+    return ({}, unqualified)
+
+
 # === (a) prologue estimator: no stale-register explosion ==============================
 
 def fn_lines_epilogue_ldrpc_form():
@@ -214,7 +228,7 @@ def test_b_blind_spot_per_site():
     argsite_decls = {}
     whole_func_decls = {}
     edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
-        analysis, field_decls, argsite_decls, whole_func_decls)
+        analysis, field_index(field_decls), argsite_decls, whole_func_decls)
     check("(b) declared offset (20) exempted -> edge added",
           edges_to_add.get("caller_a") == {"impl_handler"}, edges_to_add)
     check("(b) no false positives on the declared sites",
@@ -355,7 +369,7 @@ def test_c_argsites_count_mismatch():
     argsite_decls = {"caller_b": (2, {"impl_x", "impl_y"})}
     whole_func_decls = {}
     edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
-        analysis, field_decls, argsite_decls, whole_func_decls)
+        analysis, field_index(field_decls), argsite_decls, whole_func_decls)
     check("(c) argsites mismatch reported (declared 2, found 3)",
           count_mismatches == [("caller_b", 2, 3)], count_mismatches)
     check("(c) no edge added on a mismatched declaration (don't trust it either)",
@@ -381,7 +395,7 @@ def test_c_argsites_count_match_is_clean():
     }
     argsite_decls = {"caller_c": (2, {"impl_z"})}
     edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
-        analysis, {}, argsite_decls, {})
+        analysis, ({}, {}), argsite_decls, {})
     check("(c) matching argsites count -> no mismatch, edge added",
           count_mismatches == [] and edges_to_add.get("caller_c") == {"impl_z"})
 
@@ -429,8 +443,9 @@ def test_d_load_extra_edges_parses_frame_override():
         f.write("caller_b argsites=2 -> impl_x impl_y\n")
         path = f.name
     try:
-        field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls, \
-            addrtaken_ok, _recursion_decls = sb.load_extra_edges(path)
+        field_decls, _field_offset_index, argsite_decls, whole_func_decls, \
+            frame_overrides, isr_decls, addrtaken_ok, _recursion_decls = \
+            sb.load_extra_edges(path)
         check("(d) frame override line parsed", frame_overrides == {"leaf": 40},
               frame_overrides)
         check("(d) field-offset line parsed alongside it",
@@ -454,8 +469,9 @@ def test_d6_argsites_accepts_a_dotted_gcc_clone_name():
         f.write("draw_wallpaper.constprop.0 argsites=3 -> impl_a impl_b\n")
         path = f.name
     try:
-        field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls, \
-            addrtaken_ok, _recursion_decls = sb.load_extra_edges(path)
+        field_decls, _field_offset_index, argsite_decls, whole_func_decls, \
+            frame_overrides, isr_decls, addrtaken_ok, _recursion_decls = \
+            sb.load_extra_edges(path)
         check("(D6) dotted caller name parsed into argsite_decls, not swallowed whole",
               argsite_decls == {"draw_wallpaper.constprop.0": (3, {"impl_a", "impl_b"})},
               argsite_decls)
@@ -519,7 +535,7 @@ def test_d1_load_extra_edges_parses_isr_and_addrtaken_ok():
         f.write("addrtaken-ok some_table_entry  # compiler-generated, never called\n")
         path = f.name
     try:
-        _fd, _ad, _wd, _fo, isr_decls, addrtaken_ok, _rd = sb.load_extra_edges(path)
+        _fd, _fi, _ad, _wd, _fo, isr_decls, addrtaken_ok, _rd = sb.load_extra_edges(path)
         check("(D1) isr lines parsed", isr_decls == {"hb_isr", "pwm_isr"}, isr_decls)
         check("(D1) addrtaken-ok line parsed", addrtaken_ok == {"some_table_entry"},
               addrtaken_ok)
@@ -771,7 +787,7 @@ def test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain():
 
     # no declaration for offset 99 -> resolve_all_sites must name it a blind spot
     edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
-        analysis, {}, {}, {})
+        analysis, ({}, {}), {}, {})
     check("(D4) undeclared site has no edge added", edges_to_add == {}, edges_to_add)
 
     reachable = sb.reachable_from("root", edges)
@@ -787,7 +803,7 @@ def test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged():
     analysis, edges, su_sizes, estimated = _d4_graph()
     field_decls = {("Widget", "handler"): (99, {"impl_handler"})}
     edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
-        analysis, field_decls, {}, {})
+        analysis, field_index(field_decls), {}, {})
     check("(D4) declared offset 99 -> edge added, no blind entries left",
           edges_to_add.get("shallow") == {"impl_handler"} and blind == {}, (edges_to_add, blind))
 
@@ -973,6 +989,120 @@ def test_d10_trap6_base_literal_loaded_far_before_its_use():
           (kind, off) == ("nonfield", None), (kind, off))
 
 
+# === (D5a, seventh pass) per-caller field declarations =================================
+
+def test_d5a_shared_offset_two_structs_two_callers():
+    """The core D5a fixture: two DIFFERENT structs sharing the SAME numeric offset,
+    each qualified to its own caller -- resolve_all_sites() must credit each caller
+    ONLY its own struct's implementations, never the other's (the exact false-PASS
+    class the third review pass found: release_box_all's BoxSource.records@20 site
+    used to inherit AppSrcOps.view's gb_view_hook through the global offset-20
+    union)."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("Alpha.x @20 in caller_alpha -> impl_alpha\n")
+        f.write("Beta.y @20 in caller_beta -> impl_beta\n")
+        path = f.name
+    try:
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd = \
+            sb.load_extra_edges(path)
+        analysis = {
+            "indirect_sites": {
+                "caller_alpha": [("0x1000", "bl\t9000 <thunk>", "r3")],
+                "caller_beta": [("0x2000", "bl\t9000 <thunk>", "r3")],
+            },
+            "fn_insn_seq": {
+                "caller_alpha": [(0x0ffc, "ldr\tr3, [r4, #20]")],
+                "caller_beta": [(0x1ffc, "ldr\tr3, [r4, #20]")],
+            },
+        }
+        edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
+            analysis, field_offset_index, {}, {})
+        check("(D5a) caller_alpha credited ONLY impl_alpha, not impl_beta",
+              edges_to_add.get("caller_alpha") == {"impl_alpha"}, edges_to_add)
+        check("(D5a) caller_beta credited ONLY impl_beta, not impl_alpha",
+              edges_to_add.get("caller_beta") == {"impl_beta"}, edges_to_add)
+        check("(D5a) no blind spots, no mismatches",
+              blind == {} and count_mismatches == [] and legacy_ambiguous == [])
+    finally:
+        os.unlink(path)
+
+
+def test_d5a_two_structs_same_caller_both_credited():
+    """A caller that genuinely dereferences TWO different structs at the same
+    offset (declared explicitly for that one caller) gets the union of both --
+    not a conflict, just two declarations sharing a (offset, caller) key, which
+    ACCUMULATE like any other repeated declaration in this file."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("Alpha.x @8 in shared_caller -> impl_alpha\n")
+        f.write("Beta.y @8 in shared_caller -> impl_beta\n")
+        path = f.name
+    try:
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd = \
+            sb.load_extra_edges(path)
+        analysis = {
+            "indirect_sites": {"shared_caller": [("0x1000", "bl\t9000 <thunk>", "r3")]},
+            "fn_insn_seq": {"shared_caller": [(0x0ffc, "ldr\tr3, [r4, #8]")]},
+        }
+        edges_to_add, blind, _cm, _la = sb.resolve_all_sites(
+            analysis, field_offset_index, {}, {})
+        check("(D5a) a caller declared against BOTH structs at one offset gets the union",
+              edges_to_add.get("shared_caller") == {"impl_alpha", "impl_beta"}, edges_to_add)
+    finally:
+        os.unlink(path)
+
+
+def test_d5a_unqualified_on_a_shared_offset_is_a_parse_error():
+    """The parser-time guard: the moment a SECOND struct.field claims an offset,
+    every declaration at that offset must be qualified with `in <caller>` -- a bare
+    (unqualified) line sharing that offset is a FATAL parse error, not a silent
+    global merge (the exact defect this whole pass exists to close)."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("Alpha.x @12 -> impl_alpha\n")          # unqualified
+        f.write("Beta.y @12 in caller_beta -> impl_beta\n")   # qualified, but Alpha.x
+                                                                # already claims 12 bare
+        path = f.name
+    raised = False
+    msg = ""
+    try:
+        sb.load_extra_edges(path)
+    except ValueError as e:
+        raised = True
+        msg = str(e)
+    finally:
+        os.unlink(path)
+    check("(D5a) an unqualified declaration on a now-shared offset is a parse error",
+          raised, msg)
+    check("(D5a) the error names the offset and both struct.field owners",
+          raised and "offset 12" in msg and "Alpha.x" in msg and "Beta.y" in msg, msg)
+
+
+def test_d5a_single_owner_offset_stays_legal_unqualified():
+    """Sanity check: an offset only ONE struct.field ever claims stays legal
+    unqualified (the common case -- most of stack_edges.txt's own BoxSource fields
+    never collide with anything), applying to ANY caller that presents a 'field'
+    site at that offset."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("Alpha.x @16 -> impl_alpha\n")
+        path = f.name
+    try:
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd = \
+            sb.load_extra_edges(path)
+        analysis = {
+            "indirect_sites": {"any_caller": [("0x1000", "bl\t9000 <thunk>", "r3")]},
+            "fn_insn_seq": {"any_caller": [(0x0ffc, "ldr\tr3, [r4, #16]")]},
+        }
+        edges_to_add, blind, _cm, _la = sb.resolve_all_sites(
+            analysis, field_offset_index, {}, {})
+        check("(D5a) a single-owner offset stays legal unqualified, matches any caller",
+              edges_to_add.get("any_caller") == {"impl_alpha"}, edges_to_add)
+    finally:
+        os.unlink(path)
+
+
 def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
@@ -1002,6 +1132,10 @@ def main():
     test_d10_trap5_literal_call_target_resolved_vs_table_index_blind_spot()
     test_d10_trap6_base_literal_loaded_far_before_its_use()
     test_boxsource_offsets_match_real_header()
+    test_d5a_shared_offset_two_structs_two_callers()
+    test_d5a_two_structs_same_caller_both_credited()
+    test_d5a_unqualified_on_a_shared_offset_is_a_parse_error()
+    test_d5a_single_owner_offset_stays_legal_unqualified()
     print()
     if FAILURES:
         print(f"host_stack_budget_test: {len(FAILURES)} FAILED: {', '.join(FAILURES)}")
