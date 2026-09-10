@@ -71,6 +71,7 @@ bool fused_gb_loc(uint8_t kind, uint8_t gen, const uint8_t** rec, uint32_t* rec_
 void fused_gb_set_active_save(int idx) { (void)idx; }
 int  fused_gb_get_active_save(void) { return -1; }
 bool fused_gb_lookup_was_ambiguous(void) { return false; }
+FusedGbFailReason fused_gb_lookup_failed_reason(void) { return FUSED_GB_FAIL_NONE; }
 
 #else /* PDNA_DELTA */
 
@@ -160,9 +161,14 @@ static GBD_EWRAM_BSS bool s_active_save_set;  /* true once fused_gb_set_active_s
                                                * actually been called -- the zero-init
                                                * sentinel s_active_save itself cannot
                                                * carry (0 is a valid save index). */
-static GBD_EWRAM_BSS bool s_lookup_ambiguous; /* fused_gb_lookup_was_ambiguous()'s backing
-                                               * store -- reset at the start of every
-                                               * fused_gb_rom()/fused_gb_loc() call. */
+static GBD_EWRAM_BSS FusedGbFailReason s_lookup_fail_reason; /* fused_gb_lookup_failed_
+                                               * reason()'s backing store -- reset to
+                                               * FUSED_GB_FAIL_NONE (== 0, so EWRAM_BSS's
+                                               * own zero-init already starts it right)
+                                               * at the top of every fused_gb_rom()/
+                                               * fused_gb_loc() call. fused_gb_lookup_
+                                               * was_ambiguous() is a thin wrapper over
+                                               * this == FUSED_GB_FAIL_AMBIGUOUS. */
 
 #ifdef FUSED_GB_TEST
 /* #62 review D9: the real app never re-fuses mid-session (the corpus is immutable for
@@ -176,7 +182,7 @@ void fused_gb_test_reset(void) {
   memset(s_pair, CACHE_NO_PAIR, sizeof s_pair);
   s_active_save = 0;
   s_active_save_set = false;
-  s_lookup_ambiguous = false;
+  s_lookup_fail_reason = FUSED_GB_FAIL_NONE;
 }
 #endif
 
@@ -296,30 +302,51 @@ static bool pair_in_range(uint8_t pair) {
   return pair != CACHE_NO_PAIR && (int)pair < s_count;
 }
 
-/* BACKLOG #98: resolves the directory index of the ROM entry paired with the CURRENTLY
- * ACTIVE save (fused_gb_set_active_save()), requiring that ROM entry's own `type` be
- * exactly `want_type` (FUSED_GB_ROM_GEN1/2) -- a mismatch (e.g. the active save is a
- * Gen-1 Red.sav but the caller asked fused_gb_rom(2, ...) for Gen-2 art) is reported as
- * "did not resolve", not an error: that gen's ROM was simply never this save's pairing
- * business, and the caller falls back to resolve_single_rom_idx() same as if no active
- * save were set at all. Returns false (leaving *out_idx untouched) if there is no
- * active save, the active save's own index is out of range for the SAV entries
- * actually present, its `pair` is FUSED_GB_NO_PAIR/out-of-range, or the paired entry's
- * type does not match. */
-static bool resolve_active_rom_idx(uint32_t want_type, int* out_idx) {
-  if (!s_active_save_set || s_active_save < 0) return false;
+/* BACKLOG #98 D1 review fix: the old bool-returning version collapsed THREE distinct
+ * cases into one "did not resolve" and let the caller treat all of them the same --
+ * fall back to resolve_single_idx(), the "exactly one ROM of this generation" rule.
+ * That fallback is only ever correct for the first case below: it is the ONE-ROM,
+ * no-picker-needed scenario the pre-#98 code always handled. The other two cases mean
+ * an active save genuinely WAS chosen and its own pairing is broken -- falling back
+ * there is exactly the #98 bug (an orphaned Gold.sav silently borrowing a lone
+ * Crystal.gbc that has nothing to do with it). So this now returns a tri-state:
+ *
+ *   ACTIVE_RESOLVE_NONE      no active save is set, OR the active save's own index
+ *                            doesn't match any SAV entry actually present (defensive;
+ *                            should not happen from a real picker, but degrades the
+ *                            same as "no active save" rather than a hard failure) --
+ *                            the single-entry fallback is the right next step.
+ *   ACTIVE_RESOLVE_OK        the active save resolved to *out_idx, an entry of exactly
+ *                            `want_type`.
+ *   ACTIVE_RESOLVE_ORPHANED  the active save's `pair` is FUSED_GB_NO_PAIR or out of
+ *                            range -- it was never fused with any ROM.
+ *   ACTIVE_RESOLVE_MISMATCH  the active save's `pair` resolves to a real entry, but
+ *                            that entry's own type isn't `want_type` (e.g. the active
+ *                            save is Gen-1 but the caller asked for Gen-2 art).
+ *
+ * Callers MUST NOT run the single-entry fallback for ORPHANED/MISMATCH -- only NONE. */
+typedef enum {
+  ACTIVE_RESOLVE_NONE = 0,
+  ACTIVE_RESOLVE_OK,
+  ACTIVE_RESOLVE_ORPHANED,
+  ACTIVE_RESOLVE_MISMATCH,
+} ActiveResolveResult;
+
+static ActiveResolveResult resolve_active_rom_idx(uint32_t want_type, int* out_idx) {
+  if (!s_active_save_set || s_active_save < 0) return ACTIVE_RESOLVE_NONE;
   int seen = -1;
   for (int i = 0; i < s_count; i++) {
     if (s_entry[i].type != FUSED_GB_SAV) continue;
     seen++;
     if (seen != s_active_save) continue;
     uint8_t pair = s_pair[i];
-    if (!pair_in_range(pair)) return false;
-    if (s_entry[pair].type != want_type) return false;
+    if (!pair_in_range(pair)) return ACTIVE_RESOLVE_ORPHANED;
+    if (s_entry[pair].type != want_type) return ACTIVE_RESOLVE_MISMATCH;
     *out_idx = (int)pair;
-    return true;
+    return ACTIVE_RESOLVE_OK;
   }
-  return false;   /* s_active_save is past the last SAV entry actually present */
+  return ACTIVE_RESOLVE_NONE;   /* s_active_save is past the last SAV entry actually
+                                 * present -- same posture as "no active save". */
 }
 
 /* BACKLOG #98: the pre-#98 fallback -- when EXACTLY ONE entry of `want_type` is fused,
@@ -349,8 +376,12 @@ int fused_gb_get_active_save(void) {
   return s_active_save_set ? s_active_save : -1;
 }
 
+FusedGbFailReason fused_gb_lookup_failed_reason(void) {
+  return s_lookup_fail_reason;
+}
+
 bool fused_gb_lookup_was_ambiguous(void) {
-  return s_lookup_ambiguous;
+  return s_lookup_fail_reason == FUSED_GB_FAIL_AMBIGUOUS;
 }
 
 bool fused_gb_present(void) {
@@ -374,20 +405,26 @@ bool fused_gb_entry(int i, uint32_t* type, const char** name, uint32_t* size) {
 
 bool fused_gb_rom(uint8_t gen, const uint8_t** base, uint32_t* size) {
   parse_once();
-  s_lookup_ambiguous = false;
+  s_lookup_fail_reason = FUSED_GB_FAIL_NONE;
   uint32_t want = (gen == 1) ? FUSED_GB_ROM_GEN1 : (gen == 2) ? FUSED_GB_ROM_GEN2 : 0u;
   if (!want) return false;
 
-  int idx, count = 0;
-  /* BACKLOG #98: the active save's own pairing wins when it applies; otherwise fall
-   * back to "exactly one ROM of this generation" (still unambiguous); otherwise this
-   * is a genuine multi-ROM-same-generation image with no way to tell them apart --
-   * fail rather than silently answering "the first one" (the #98 bug). Ambiguous
-   * only when count > 1 -- "no ROM of this generation at all" (count == 0) is a
-   * plain not-found, not an ambiguity. */
-  if (!resolve_active_rom_idx(want, &idx) && !resolve_single_idx(want, &idx, &count)) {
-    if (count > 1) s_lookup_ambiguous = true;
-    return false;
+  int idx;
+  /* BACKLOG #98 D1 review fix: the active save's own pairing wins when it applies. An
+   * ORPHANED/MISMATCH result means an active save genuinely WAS chosen and its own
+   * pairing is broken -- that must fail loudly, NOT fall back to the single-entry
+   * heuristic (that heuristic answering "the only ROM of this generation" would be
+   * some OTHER, unrelated ROM in exactly the case this review caught). The fallback
+   * only ever runs for ACTIVE_RESOLVE_NONE -- no active save to resolve at all. */
+  ActiveResolveResult ar = resolve_active_rom_idx(want, &idx);
+  if (ar == ACTIVE_RESOLVE_ORPHANED) { s_lookup_fail_reason = FUSED_GB_FAIL_ORPHANED; return false; }
+  if (ar == ACTIVE_RESOLVE_MISMATCH) { s_lookup_fail_reason = FUSED_GB_FAIL_GEN_MISMATCH; return false; }
+  if (ar != ACTIVE_RESOLVE_OK) {
+    int count = 0;
+    if (!resolve_single_idx(want, &idx, &count)) {
+      if (count > 1) s_lookup_fail_reason = FUSED_GB_FAIL_AMBIGUOUS;
+      return false;
+    }
   }
   if (base) *base = cart_ptr(s_entry[idx].offset);
   if (size) *size = s_entry[idx].size;
@@ -453,20 +490,26 @@ static bool find_loc_for_rom(int rom_idx, uint8_t kind, uint8_t gen,
 bool fused_gb_loc(uint8_t kind, uint8_t gen, const uint8_t** rec, uint32_t* rec_len,
                   uint32_t* id_hash, uint32_t* rom_size) {
   parse_once();
-  s_lookup_ambiguous = false;
+  s_lookup_fail_reason = FUSED_GB_FAIL_NONE;
   uint32_t want = (gen == 1) ? FUSED_GB_ROM_GEN1 : (gen == 2) ? FUSED_GB_ROM_GEN2 : 0u;
   if (!want) return false;
 
-  int rom_idx, count = 0;
-  /* BACKLOG #98: resolve WHICH ROM's LOC entry we want, same two-tier rule
-   * fused_gb_rom() uses (active-save pairing, else exactly-one-of-this-generation) --
-   * see that function's own comment. Once rom_idx is known, find_loc_for_rom() does
+  int rom_idx;
+  /* BACKLOG #98 D1 review fix: resolve WHICH ROM's LOC entry we want, same tri-state
+   * rule fused_gb_rom() uses (active-save pairing wins; ORPHANED/MISMATCH fails loudly
+   * instead of falling back; the single-entry fallback only for ACTIVE_RESOLVE_NONE)
+   * -- see that function's own comment. Once rom_idx is known, find_loc_for_rom() does
    * the actual (kind,gen) search; "no LOC entry for this ROM" is a plain false, not
    * an ambiguity -- only "could not even tell which ROM" is. */
-  if (!resolve_active_rom_idx(want, &rom_idx) &&
-      !resolve_single_idx(want, &rom_idx, &count)) {
-    if (count > 1) s_lookup_ambiguous = true;
-    return false;
+  ActiveResolveResult ar = resolve_active_rom_idx(want, &rom_idx);
+  if (ar == ACTIVE_RESOLVE_ORPHANED) { s_lookup_fail_reason = FUSED_GB_FAIL_ORPHANED; return false; }
+  if (ar == ACTIVE_RESOLVE_MISMATCH) { s_lookup_fail_reason = FUSED_GB_FAIL_GEN_MISMATCH; return false; }
+  if (ar != ACTIVE_RESOLVE_OK) {
+    int count = 0;
+    if (!resolve_single_idx(want, &rom_idx, &count)) {
+      if (count > 1) s_lookup_fail_reason = FUSED_GB_FAIL_AMBIGUOUS;
+      return false;
+    }
   }
   return find_loc_for_rom(rom_idx, kind, gen, rec, rec_len, id_hash, rom_size);
 }

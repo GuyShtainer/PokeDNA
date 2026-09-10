@@ -172,24 +172,60 @@ void fused_gb_set_active_save(int idx);
  * called, or if fused_gb_set_active_save(-1) explicitly cleared it). */
 int fused_gb_get_active_save(void);
 
+/* BACKLOG #98 D1 review fix: WHY the most recent fused_gb_rom()/fused_gb_loc() call
+ * returned false -- a bare bool could not tell "genuinely ambiguous" apart from "the
+ * active save's own pairing is broken", and the old code treated both the same way
+ * (silently falling back to the single-entry-of-this-generation heuristic, which is
+ * exactly the bug: an orphaned active save borrowed some OTHER game's ROM). Reset to
+ * FUSED_GB_FAIL_NONE at the start of every fused_gb_rom()/fused_gb_loc() call.
+ *
+ *   FUSED_GB_FAIL_NONE         the most recent call succeeded (or nothing was ever
+ *                              looked up yet).
+ *   FUSED_GB_FAIL_AMBIGUOUS    no active save resolved (none set, or its own index
+ *                              didn't match any SAV entry present) AND more than one
+ *                              entry of the requested generation/kind exists -- the
+ *                              single-entry fallback genuinely cannot tell them apart.
+ *   FUSED_GB_FAIL_ORPHANED     an active save WAS resolved to a specific save, but its
+ *                              `pair` is FUSED_GB_NO_PAIR or out of range -- that save
+ *                              was never fused with a ROM at all. The single-entry
+ *                              fallback must NOT run here: an orphaned save has no
+ *                              business borrowing some unrelated ROM just because it
+ *                              happens to be the only one of that generation.
+ *   FUSED_GB_FAIL_GEN_MISMATCH the active save's `pair` resolves to a real entry, but
+ *                              that entry's own type isn't the generation/kind asked
+ *                              for -- same "do not guess" posture as ORPHANED.
+ *
+ * This module is a dependency-free pure-C core (no log.h/tonc, so it cannot log this
+ * itself, same posture as the EWRAM-cache-drop case above) -- a caller that wants this
+ * surfaced in the log or shown in the UI can check this and do so itself. */
+typedef enum {
+  FUSED_GB_FAIL_NONE = 0,
+  FUSED_GB_FAIL_AMBIGUOUS,
+  FUSED_GB_FAIL_ORPHANED,
+  FUSED_GB_FAIL_GEN_MISMATCH,
+} FusedGbFailReason;
+
+FusedGbFailReason fused_gb_lookup_failed_reason(void);
+
 /* True iff the MOST RECENT fused_gb_rom()/fused_gb_loc() call returned false
  * specifically because more than one entry of the requested generation existed and
  * neither the active save's own pairing nor the single-entry fallback could resolve
  * which one to use -- as opposed to "nothing fused at all" or "no entry of this
- * generation/kind exists". This module is a dependency-free pure-C core (no log.h/
- * tonc, so it cannot log this itself, same posture as the EWRAM-cache-drop case
- * above) -- a caller that wants this surfaced in the log can check this flag and do
- * so itself. Reset to false at the start of every fused_gb_rom()/fused_gb_loc() call
- * (so it always reflects only the most recent one, never a stale prior failure). */
+ * generation/kind exists". Thin wrapper over fused_gb_lookup_failed_reason() ==
+ * FUSED_GB_FAIL_AMBIGUOUS, kept for existing callers/tests. */
 bool fused_gb_lookup_was_ambiguous(void);
 
 /* The fused ROM of generation `gen` (FUSED_GB_ROM_GEN1/2 — same numeric value as
  * PDNA_GEN1/PDNA_GEN2, see pdna_origin_art.h) paired with the active save
  * (fused_gb_set_active_save()) when one is set and its pairing resolves to an entry
  * of this generation; otherwise the single fused ROM of this generation when exactly
- * one exists (today's old behaviour, still unambiguous in that case); otherwise
- * false (see fused_gb_lookup_was_ambiguous()) -- BACKLOG #98, this no longer silently
- * picks "the first one" when the choice is genuinely ambiguous. `*base` is a pointer
+ * one exists AND no active save is set (today's old behaviour, still unambiguous in
+ * that case); otherwise false (see fused_gb_lookup_failed_reason()) -- BACKLOG #98,
+ * this no longer silently picks "the first one" when the choice is genuinely
+ * ambiguous, NOR when the active save's own pairing is broken (an orphaned save or
+ * one paired to the wrong generation never falls back to the single-entry heuristic --
+ * that heuristic only ever applies when there is no active save to resolve at all).
+ * `*base` is a pointer
  * directly into cartridge address space (0x08000000 + offset); `*size` its length.
  * Either out param may be NULL. */
 bool fused_gb_rom(uint8_t gen, const uint8_t** base, uint32_t* size);
@@ -219,9 +255,11 @@ bool fused_gb_slice_read(void* ctx, uint32_t off, void* dst, uint32_t len);
  * of this generation, this returns the (kind,gen) LOC entry whose OWN `pair` points
  * at that same ROM entry (each LOC entry is recorded, at fuse time, against the ROM
  * it was generated from -- see tools/fuse_gb.py's fuse()); otherwise, when exactly
- * one ROM entry of this generation is fused, the (kind,gen) LOC entry paired with
- * THAT one (still unambiguous); otherwise false (see fused_gb_lookup_was_ambiguous())
- * -- this used to silently answer "the first (kind,gen) match in directory order",
+ * one ROM entry of this generation is fused AND no active save is set, the (kind,gen)
+ * LOC entry paired with THAT one (still unambiguous); otherwise false (see
+ * fused_gb_lookup_failed_reason()) -- same broken-pairing-never-falls-back posture as
+ * fused_gb_rom() above. This used to silently answer "the first (kind,gen) match in
+ * directory order",
  * which was wrong the moment two same-generation ROMs were fused (e.g. delta-gb's
  * Gold.gbc+Crystal.gbc: fused_gb_rom(2) always answered Gold, and this always
  * answered Gold's loc too, even with Crystal's save open).

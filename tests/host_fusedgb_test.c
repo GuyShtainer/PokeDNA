@@ -554,11 +554,15 @@ int main(void) {
           "two-ROM, no active save: fused_gb_rom(gen2) must fail (ambiguous), not guess");
     CHECK(fused_gb_lookup_was_ambiguous(),
           "two-ROM, no active save: fused_gb_rom(gen2) failure must be flagged ambiguous");
+    CHECK(fused_gb_lookup_failed_reason() == FUSED_GB_FAIL_AMBIGUOUS,
+          "two-ROM, no active save: fused_gb_rom(gen2) reason must be FUSED_GB_FAIL_AMBIGUOUS");
     const uint8_t* rec = 0;
     CHECK(!fused_gb_loc(1, 2, &rec, 0, 0, 0),
           "two-ROM, no active save: fused_gb_loc(sprite,gen2) must fail (ambiguous)");
     CHECK(fused_gb_lookup_was_ambiguous(),
           "two-ROM, no active save: fused_gb_loc(sprite,gen2) failure must be ambiguous");
+    CHECK(fused_gb_lookup_failed_reason() == FUSED_GB_FAIL_AMBIGUOUS,
+          "two-ROM, no active save: fused_gb_loc(sprite,gen2) reason must be FUSED_GB_FAIL_AMBIGUOUS");
 
     /* A generation with ZERO ROMs at all (gen 1, never fused here) must fail WITHOUT
      * the ambiguous flag -- "nothing exists" is not "cannot tell which one". */
@@ -575,6 +579,8 @@ int main(void) {
           "two-ROM, active=Gold.sav: fused_gb_rom(gen2) should resolve to Gold.gbc");
     CHECK(!fused_gb_lookup_was_ambiguous(),
           "two-ROM, active=Gold.sav: a resolved lookup must not be flagged ambiguous");
+    CHECK(fused_gb_lookup_failed_reason() == FUSED_GB_FAIL_NONE,
+          "two-ROM, active=Gold.sav: a resolved lookup's reason must be FUSED_GB_FAIL_NONE");
     rec = 0; uint32_t rlen = 0, idh = 0, rsz = 0;
     CHECK(fused_gb_loc(1, 2, &rec, &rlen, &idh, &rsz) && rec == buf + gold_loc_off + 20 &&
           idh == gold_claimed_hash && rsz == gold_claimed_size,
@@ -603,6 +609,9 @@ int main(void) {
           "two-ROM, active save out of range: must fail rather than guess");
     CHECK(fused_gb_lookup_was_ambiguous(),
           "two-ROM, active save out of range: failure must be flagged ambiguous");
+    CHECK(fused_gb_lookup_failed_reason() == FUSED_GB_FAIL_AMBIGUOUS,
+          "two-ROM, active save out of range: reason must be FUSED_GB_FAIL_AMBIGUOUS "
+          "(an out-of-range index degrades to NO_ACTIVE, same as none set)");
 
     /* Clearing back to "no active save" (-1) restores the original ambiguous-fail
      * behaviour -- fused_gb_set_active_save() is not a one-way ratchet. */
@@ -614,6 +623,131 @@ int main(void) {
   }
   printf(failed ? "  #98 active-save pairing (two ROMs, same gen): SOME FAILED\n"
                 : "  #98 active-save pairing (two ROMs, same gen): OK\n");
+
+  /* ---- BACKLOG #98 D1 review fix: ORPHANED active save. The review's exact
+   * reproduction -- an active save whose own `pair` is FUSED_GB_NO_PAIR (it was never
+   * fused with a ROM at all), alongside a LONE ROM of the generation being asked for.
+   * The pre-fix code fell back to "exactly one ROM of this generation" here and
+   * silently handed Gold's session Crystal's ROM; the fix must fail instead, flagged
+   * ORPHANED, never touching Crystal at all. Directory: Gold.sav(0, orphaned,
+   * pair=NO_PAIR), Crystal.gbc(1, the lone Gen-2 ROM, unpaired). ---- */
+  {
+    static uint8_t buf[2048];
+    uint32_t crc_tab[16];
+    pdna_rv_crc32_table(crc_tab);
+    memset(buf, 0xAA, sizeof buf);
+
+    uint32_t gold_sav_off = 64, gold_sav_size = 16;
+    for (uint32_t i = 0; i < gold_sav_size; i++) buf[gold_sav_off + i] = (uint8_t)(i * 5 + 2);
+    uint32_t gold_sav_crc = pdna_rv_crc32(crc_tab, buf + gold_sav_off, gold_sav_size);
+
+    uint32_t crys_rom_off = gold_sav_off + gold_sav_size, crys_rom_size = 40;
+    for (uint32_t i = 0; i < crys_rom_size; i++) buf[crys_rom_off + i] = (uint8_t)(i * 7 + 4);
+    uint32_t crys_rom_crc = pdna_rv_crc32(crc_tab, buf + crys_rom_off, crys_rom_size);
+
+    uint32_t dir_off = crys_rom_off + crys_rom_size;
+    uint8_t* d = buf + dir_off;
+    memcpy(d, "PDNAGBD2", 8);
+    uint32_t count = 2;
+    memcpy(d + 8, &count, 4);
+    put_entry(d + 12 + 0 * ENTRY_SIZE, FUSED_GB_SAV, "Gold.sav",
+             gold_sav_off, gold_sav_size, gold_sav_crc, FUSED_GB_NO_PAIR);
+    put_entry(d + 12 + 1 * ENTRY_SIZE, FUSED_GB_ROM_GEN2, "Crystal.gbc",
+             crys_rom_off, crys_rom_size, crys_rom_crc, FUSED_GB_NO_PAIR);
+    uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
+    uint32_t trailer_off = 12 + ENTRY_SIZE * count;
+    memcpy(d + trailer_off, &dir_size, 4);
+    memcpy(d + trailer_off + 4, "PDNAGBD2", 8);
+    uint32_t reserved = 0;
+    memcpy(d + trailer_off + 12, &reserved, 4);
+    set_record(buf, dir_off, dir_size);
+
+    fused_gb_set_active_save(0);   /* Gold.sav, the only SAV entry -> save index 0 */
+    CHECK(fused_gb_get_active_save() == 0, "orphaned: active save getter reflects the setter");
+    const uint8_t* base = 0; uint32_t size = 0;
+    CHECK(!fused_gb_rom(2, &base, &size),
+          "orphaned active save + lone Crystal.gbc: fused_gb_rom(gen2) must NOT borrow Crystal");
+    CHECK(fused_gb_lookup_failed_reason() == FUSED_GB_FAIL_ORPHANED,
+          "orphaned active save: reason must be FUSED_GB_FAIL_ORPHANED, not AMBIGUOUS "
+          "or a silent success");
+    CHECK(!fused_gb_lookup_was_ambiguous(),
+          "orphaned active save: the legacy ambiguous wrapper must be false (this is a "
+          "DIFFERENT failure than genuine ambiguity)");
+    const uint8_t* rec = 0;
+    CHECK(!fused_gb_loc(1, 2, &rec, 0, 0, 0),
+          "orphaned active save: fused_gb_loc(sprite,gen2) must also fail, not borrow Crystal's");
+    CHECK(fused_gb_lookup_failed_reason() == FUSED_GB_FAIL_ORPHANED,
+          "orphaned active save: fused_gb_loc's reason must also be FUSED_GB_FAIL_ORPHANED");
+  }
+  printf(failed ? "  #98 D1: orphaned active save must not borrow another ROM: SOME FAILED\n"
+                : "  #98 D1: orphaned active save must not borrow another ROM: OK\n");
+
+  /* ---- BACKLOG #98 D1 review fix: GENERATION-MISMATCHED active save. The active
+   * save's `pair` resolves to a REAL entry, but that entry is the WRONG generation
+   * (e.g. a corrupt/foreign directory pairing a save with the wrong ROM type) --
+   * must fail as GEN_MISMATCH, and must NOT fall back to "the lone ROM of the
+   * generation actually asked for" either. Directory: Red.gbc(0, Gen-1), Gold.sav
+   * (1, paired with entry 0 -- i.e. paired with a Gen-1 ROM), Crystal.gbc(2, the lone
+   * Gen-2 ROM, unpaired). Asking fused_gb_rom(2) (Gen-2) with Gold.sav active must
+   * fail rather than resolve to Crystal.gbc; asking fused_gb_rom(1) (Gen-1) must
+   * still resolve normally (the pairing DOES match that generation). ---- */
+  {
+    static uint8_t buf[2048];
+    uint32_t crc_tab[16];
+    pdna_rv_crc32_table(crc_tab);
+    memset(buf, 0xAA, sizeof buf);
+
+    uint32_t red_rom_off = 64, red_rom_size = 32;
+    for (uint32_t i = 0; i < red_rom_size; i++) buf[red_rom_off + i] = (uint8_t)(i * 3 + 1);
+    uint32_t red_rom_crc = pdna_rv_crc32(crc_tab, buf + red_rom_off, red_rom_size);
+
+    uint32_t gold_sav_off = red_rom_off + red_rom_size, gold_sav_size = 16;
+    for (uint32_t i = 0; i < gold_sav_size; i++) buf[gold_sav_off + i] = (uint8_t)(i * 5 + 2);
+    uint32_t gold_sav_crc = pdna_rv_crc32(crc_tab, buf + gold_sav_off, gold_sav_size);
+
+    uint32_t crys_rom_off = gold_sav_off + gold_sav_size, crys_rom_size = 40;
+    for (uint32_t i = 0; i < crys_rom_size; i++) buf[crys_rom_off + i] = (uint8_t)(i * 7 + 4);
+    uint32_t crys_rom_crc = pdna_rv_crc32(crc_tab, buf + crys_rom_off, crys_rom_size);
+
+    uint32_t dir_off = crys_rom_off + crys_rom_size;
+    uint8_t* d = buf + dir_off;
+    memcpy(d, "PDNAGBD2", 8);
+    uint32_t count = 3;
+    memcpy(d + 8, &count, 4);
+    put_entry(d + 12 + 0 * ENTRY_SIZE, FUSED_GB_ROM_GEN1, "Red.gbc",
+             red_rom_off, red_rom_size, red_rom_crc, FUSED_GB_NO_PAIR);
+    put_entry(d + 12 + 1 * ENTRY_SIZE, FUSED_GB_SAV, "Gold.sav",
+             gold_sav_off, gold_sav_size, gold_sav_crc, 0 /* paired with Red.gbc, Gen-1 */);
+    put_entry(d + 12 + 2 * ENTRY_SIZE, FUSED_GB_ROM_GEN2, "Crystal.gbc",
+             crys_rom_off, crys_rom_size, crys_rom_crc, FUSED_GB_NO_PAIR);
+    uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
+    uint32_t trailer_off = 12 + ENTRY_SIZE * count;
+    memcpy(d + trailer_off, &dir_size, 4);
+    memcpy(d + trailer_off + 4, "PDNAGBD2", 8);
+    uint32_t reserved = 0;
+    memcpy(d + trailer_off + 12, &reserved, 4);
+    set_record(buf, dir_off, dir_size);
+
+    fused_gb_set_active_save(0);   /* Gold.sav, the only SAV entry -> save index 0 */
+    const uint8_t* base = 0; uint32_t size = 0;
+    CHECK(!fused_gb_rom(2, &base, &size),
+          "gen-mismatched active save: fused_gb_rom(gen2) must NOT borrow Crystal.gbc");
+    CHECK(fused_gb_lookup_failed_reason() == FUSED_GB_FAIL_GEN_MISMATCH,
+          "gen-mismatched active save: reason must be FUSED_GB_FAIL_GEN_MISMATCH");
+    CHECK(!fused_gb_lookup_was_ambiguous(),
+          "gen-mismatched active save: the legacy ambiguous wrapper must be false");
+
+    /* The SAME active save's pairing DOES resolve for the generation it actually
+     * matches (Gen-1) -- gen-mismatch is scoped to the mismatching request only. */
+    base = 0; size = 0;
+    CHECK(fused_gb_rom(1, &base, &size) && base == buf + red_rom_off && size == red_rom_size,
+          "gen-mismatched active save: fused_gb_rom(gen1) should still resolve to Red.gbc "
+          "(the generation the pairing actually matches)");
+    CHECK(fused_gb_lookup_failed_reason() == FUSED_GB_FAIL_NONE,
+          "gen-mismatched active save: a resolved gen1 lookup's reason must be FUSED_GB_FAIL_NONE");
+  }
+  printf(failed ? "  #98 D1: gen-mismatched active save must not borrow another ROM: SOME FAILED\n"
+                : "  #98 D1: gen-mismatched active save must not borrow another ROM: OK\n");
 
   if (failed) { printf("host_fusedgb_test: FAILED\n"); return 1; }
   printf("host_fusedgb_test: ALL OK\n");
