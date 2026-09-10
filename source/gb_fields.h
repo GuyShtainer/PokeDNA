@@ -91,6 +91,14 @@ typedef enum {
    * indexes into it per box rather than the generator emitting 14 separate field ids. */
   GBF_BOXNAMES,
 
+  /* BACKLOG #86, appended (same rule): sRTCStatusFlags, the "RTC has been reset / clock
+   * is unreliable" flag §1.8 documents -- SRAM bank 0, addr 0xAC60, OUTSIDE both
+   * checksummed spans (design doc §1.8: "sRTCStatusFlags ... SRAM bank 0, OUTSIDE both
+   * checksummed spans"), so it cannot be a D() region field the way the rest of the
+   * clock block is; resolved via sram_file_off() like GBF_GENDER/GBF_GS_BALL_FLAG.
+   * GS/Crystal only; Gen 1 has no RTC at all. */
+  GBF_RTC_STATUS_FLAGS,
+
   GBF_FIELD_COUNT
 } GbField;
 

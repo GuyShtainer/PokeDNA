@@ -547,6 +547,12 @@ FIELDS = [
   ("BOXNAMES", BYTES, 126, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("player_data_3", "wBoxNames", 0x2727, check_len=126),
       "CRYSTAL": D("player_data", "wBoxNames", 0x2703, check_len=126)}),
+
+  # ---- BACKLOG #86: Gen-2 RTC status flags (outside every checksummed span) -----------
+  # sRTCStatusFlags: bank 0, addr 0xAC60 in both pokegold.sym and pokecrystal.sym --
+  # sram_file_off(0, 0xAC60) = 0x0C60, matching §1.8's own cited offset exactly.
+  ("RTC_STATUS_FLAGS", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": S("sRTCStatusFlags", 0x0C60), "CRYSTAL": S("sRTCStatusFlags", 0x0C60)}),
 ]
 
 
