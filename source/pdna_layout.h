@@ -1622,4 +1622,33 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * the one shot harness the review actually re-shoots. */
 #define PDNA_GBSCR_REASON_FORCED_TEST "forced (test)"
 
+/* pdna_gbclock.c -- BACKLOG #86/#108's Gen-2 "Clock fix" screen, over source/
+ * gb_clock.h's honest core (see that header for why this is NOT an absolute-time
+ * sync/set the way pdna_clock()'s Gen-3 screen is). Every app_confirm title/l1 here
+ * goes through the SAME (28, 184) proportional clamp as every other GB-screen confirm
+ * (PDNA_GBTRAINER_ID_WARN_* above) -- checked in tests/host_textfit_test.c. The three
+ * row labels are drawn with ui_text (tonc sys8, 8 px/glyph) at x=6 on the 240 px
+ * screen, same budget pdna_mirage()'s own party rows use (234 px = 29 cols; all three
+ * measure under that, see the .c file's own row list). */
+#define PDNA_GBCLOCK_TITLE "GEN 2 CLOCK"
+
+#define PDNA_GBCLOCK_ROW_RESET "Ask for the time at next load"
+#define PDNA_GBCLOCK_ROW_SHIFT "Shift the clock"
+#define PDNA_GBCLOCK_ROW_CLEAR "Clear the clock-error flag"
+
+#define PDNA_GBCLOCK_CONFIRM_RESET_TITLE "Ask for the time at next load?"
+#define PDNA_GBCLOCK_CONFIRM_RESET_L1 \
+  "Asks for the time on the next CONTINUE, like a dead battery would."
+
+#define PDNA_GBCLOCK_CONFIRM_CLEAR_TITLE "Clear the clock-error flag?"
+#define PDNA_GBCLOCK_CONFIRM_CLEAR_L1 \
+  "Dismisses the banner; a dead battery raises it again next boot."
+
+#define PDNA_GBCLOCK_CONFIRM_SHIFT_TITLE "Shift the clock by this much?"
+
+/* Gen 1 / a GS-without-the-field fallback (nav_avail already keeps this row out of
+ * reach in both cases, but the screen stays honest if it is ever reached anyway --
+ * same posture as pdna_clock()'s own FRLG fallback, pdna_main.c). */
+#define PDNA_GBCLOCK_NOCLOCK_L1 "This save has no clock to fix."
+
 #endif /* PDNA_LAYOUT_H */

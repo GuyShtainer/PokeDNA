@@ -81,15 +81,16 @@ static void test_trainer_ok_on_gb(void) {
 }
 
 /* ---- (E) Clock fix: the one row whose STATE (not just its wording) differs between
- * Gen 1 (no RTC ever existed) and Gen 2 (Gold/Silver/Crystal have one; PokeDNA just
- * has not wired the fix up for a raw Game Boy save yet). ---------------------------- */
+ * Gen 1 (no RTC ever existed) and Gen 2 (Gold/Silver/Crystal have one -- BACKLOG
+ * #86/#108 wired pdna_gbclock.c up over it, gb_nav_from_start's own NV_CLOCK/
+ * SE_KIND_GEN2 branch). ---------------------------------------------------------- */
 static void test_clock_fix_splits_gen1_gen2(void) {
   CHECK(nav_avail(NV_CLOCK, SE_KIND_GEN1) == NAV_NOT_IN_GAME, "Clock fix: Gen 1 has no RTC at all");
-  CHECK(nav_avail(NV_CLOCK, SE_KIND_GEN2) == NAV_COMING_SOON, "Clock fix: Gen 2 has an RTC, just not wired up yet");
+  CHECK(nav_avail(NV_CLOCK, SE_KIND_GEN2) == NAV_OK, "Clock fix: Gen 2's own Clock screen is wired (BACKLOG #86/#108)");
   const char* w1 = nav_avail_why(NV_CLOCK, SE_KIND_GEN1);
   const char* w2 = nav_avail_why(NV_CLOCK, SE_KIND_GEN2);
   CHECK(strcmp(w1, w2) != 0, "Clock fix: Gen 1 and Gen 2 reasons are worded differently");
-  printf("(E) Clock fix: NOT_IN_GAME on Gen 1, COMING_SOON on Gen 2\n");
+  printf("(E) Clock fix: NOT_IN_GAME on Gen 1, OK on Gen 2\n");
 }
 
 /* ---- (F) a representative COMING_SOON row and a representative NOT_IN_GAME row,
@@ -142,15 +143,19 @@ static void test_every_row_covered(void) {
     CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack are NAV_OK");
   }
 
-  /* 8 NOT_IN_GAME (gen1-list, Clock counted once, + BACKLOG #60's NV_CONTEST) + 8
-   * COMING_SOON-both + 4 OK-both (Trainer/Settings/Back/Bag -- U5 made the Bag OK on
-   * Gen 2 too) + Clock's own Gen-2 COMING_SOON (already counted above via a separate
-   * assertion) == 20 rows -- the classification is EXHAUSTIVE, not a sample, so a row
-   * silently added to PDNA_NAV_ITEMS without a matching GB_TABLE entry cannot hide
-   * behind rows this test never asked about. */
+  /* Gen 1's own 20-row classification is exhaustive: 8 NOT_IN_GAME (not_in_game_gen1,
+   * Clock included -- Gen 1 never gets a clock) + 8 COMING_SOON-both + 4 OK-both
+   * (Trainer/Settings/Back/Bag) == 20. Gen 2 differs from Gen 1 in EXACTLY one cell
+   * (BACKLOG #86/#108: Clock moved from Gen 1's NOT_IN_GAME to Gen 2's own NAV_OK,
+   * checked explicitly by test (E) above) -- so Gen 2's own count is 7 NOT_IN_GAME +
+   * 8 COMING_SOON-both + 5 OK (the 4 ok_both rows + Clock) == 20 too, without needing
+   * a second full row-by-row list here. A row silently added to PDNA_NAV_ITEMS
+   * without a matching GB_TABLE entry still cannot hide: test (A) requires every
+   * (item, kind) pair to answer one of the three defined states with a real reason,
+   * and NV_COUNT itself is asserted against the row count below. */
   CHECK(8 + 8 + 4 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
   printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 8 COMING_SOON-both + "
-        "4 OK-both == %d)\n", NV_COUNT);
+        "4 OK-both == %d; Gen 2 differs only at Clock, see test E)\n", NV_COUNT);
 }
 
 /* ---- (H) defensive: out-of-range nv_item / save_kind never misbehaves -------------- */

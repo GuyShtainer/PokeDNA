@@ -967,3 +967,24 @@ addrtaken-ok __aeabi_d2iz
 # does not distinguish data words from pointers). Bounded by the 256-B cap. Found on the r1 lane
 # 2026-09-10 (main's link places it at 0x0800ffa0, no match).
 addrtaken-ok encode_checked
+
+# lib/everdrivegbax5/everdrive.c's ed_get_fpga_ver (frame 0 B, a leaf function) is never
+# called and its address is never stored anywhere PokeDNA's own source controls -- grepped
+# `ed_get_fpga_ver` across source/ and lib/: the only two hits are its own definition
+# (everdrive.c:484) and prototype (everdrive.h:80), no struct field, no dispatch table, no
+# indirect call site. Adding source/pdna_gbclock.c (BACKLOG #86/#108) shifted this lane's
+# link layout enough that its linked address now coincides with SOME data word elsewhere in
+# the image (which one was not independently pinned down, unlike encode_checked's ROM-span
+# match above, but frame=0 bounds the worst case at 0 B regardless of what that word is) --
+# same "the sweep does not distinguish data words from pointers" class as encode_checked/
+# __aeabi_d2iz/_EZFO_startUp. Found on the b86 lane, 2026-09-10.
+addrtaken-ok ed_get_fpga_ver
+
+# libgcc's __aeabi_dmul (double-precision multiply runtime helper, frame 16 B) -- the
+# SAME class as __aeabi_d2iz/__udivmoddi4 above, on the delta-artless build specifically.
+# source/pdna_gbclock.c (BACKLOG #86/#108) uses no `double` anywhere (grepped) and takes
+# no function pointer of its own; confirmed the baseline branch (this branch's tip minus
+# the gbclock slice) links delta-artless clean, so this is the same link-layout shift the
+# artless build's ed_get_fpga_ver entry above already documents, not a new dispatch this
+# slice introduced. Bounded by the 256-B cap. Found on the b86 lane, 2026-09-10.
+addrtaken-ok __aeabi_dmul
