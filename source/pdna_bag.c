@@ -45,6 +45,7 @@
 #include "rom_chrome_gate.h"
 #include "rom_chrome.h"      /* the ROM rung: rom_chrome_bag_have/_load */
 #include "artbuf.h"          /* mon_decomp -- the shared 8 KiB decode buffer */
+#include "perf.h"            /* BACKLOG #73: screen-enter span, this screen had none */
 
 /* Strong bag_bg()/bag_anim() come from the GENERATED bag_bg.c (git-ignored
  * ripped art); these weak NULLs keep an art-free clone building — data_editor
@@ -378,6 +379,10 @@ bool bag_screen(uint8_t* sb1, const uint8_t* sb2, PkGame game, int female) {
   const BagLayout* L = &BAG_LAYOUTS[game];
   int pocket = 0, sel = 0, top = 0, prev_sel = -1, desc_pg = 0;
   bool dirty = false, full = true, list = true, desc = true;
+  /* BACKLOG #73 (speed parity): bag had no perf span. Enter cost = the whole first
+   * pass below (chrome blit + list + desc), closed just before the first key wait. */
+  bool perf_first_paint = true;
+  perf_span_begin("bag");
 
   for (;;) {
     int cap = pk_pocket_cap(game, pocket);
@@ -397,6 +402,7 @@ bool bag_screen(uint8_t* sb1, const uint8_t* sb2, PkGame game, int female) {
     else if (sel != prev_sel) { draw_cursor(bag_bg(game, female), L, top, sel); desc = true; }
     if (desc) { desc_pg = 0; draw_desc(bag_bg(game, female), L, sb1, game, pocket, sel, desc_pg); desc = false; }
     prev_sel = sel;
+    if (perf_first_paint) { perf_first_paint = false; perf_span_end(); }
 
     /* s_wait, inlined so idle frames can AUTO-PAGE an overflowing description
      * (12d): every BAG_DESC_FLIP frames without input, show the next page —

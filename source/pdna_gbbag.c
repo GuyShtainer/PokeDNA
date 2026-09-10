@@ -11,6 +11,7 @@
 
 #include "pdna_gbbag.h"
 #include "gb_bag.h"
+#include "log.h"
 #include "pdna_gen12.h"     /* gb_rollback / gb_persist / gb12_arena_tail(_release)   */
 #include "pdna_gbscreen.h"  /* the shared GB-screen shell                             */
 #include "pdna_origin_art.h" /* PDNA_GEN1                                             */
@@ -19,6 +20,32 @@
 #include "ui.h"
 #include "snd.h"
 #include "pdna_app.h"       /* msg_wait / app_confirm                                 */
+
+/* BACKLOG #99: decide which of the two "is this a Gen-1 key item" answers is
+ * live -- the ROM-LOCATED table (rom_gbui_g1_key_item(), exact for ids
+ * 1..120 including the previously-unswept 81..120 block) when the shell has
+ * the ROM open and located it, else gb_bag.c's documented factual id list
+ * (gbb_is_g1_key_item(), the ONLY option available to the plain row-list
+ * fallback page below -- it never has a GbScreen/RomGbUi at all). `gu` is
+ * NULL from that fallback path on purpose. GBB_POCKET_KEY (Gen 2's own
+ * pocket) is unconditionally key -- unaffected by either table. */
+static bool s_ki_fallback_logged;   /* one log line per screen visit (b99 review P2) */
+static bool bag_is_key_item(const RomGbUi* gu, GbBagPocket pocket, uint8_t id) {
+  if (pocket == GBB_POCKET_KEY) return true;
+  /* IsKeyItem_ (pokered engine/items/item_effects.asm:~2616) branches to
+   * IsItemHM BEFORE it ever touches KeyItemFlags: an id >= HM01 never reaches
+   * the table, and HM01..HM05 are key by THAT path (home/names.asm:~110). The
+   * located table is silent there by construction -- gbb_g1_key_item_compose()
+   * (source/gb_bag.c, pure C + host-tested) checks that range first, before
+   * ever consulting the table (b99 review P0: routing HMs through the table
+   * showed them a quantity). */
+  bool have_table = gu && gu->ok && gu->gen == ROM_GBUI_GEN1 && gu->g1_keyitems != 0;
+  if (!have_table && gu && gu->ok && gu->gen == ROM_GBUI_GEN1 && !s_ki_fallback_logged) {
+    s_ki_fallback_logged = true;
+    log_line("gbbag: key items via the id list (no located table)");
+  }
+  return gbb_g1_key_item_compose(have_table, have_table ? gu->g1_keyitems_bits : 0, id);
+}
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 static u16  s_wait(u16 mask) {
@@ -48,9 +75,12 @@ static void gbbag_row_paint(const GbBag* bag, GbBagPocket pocket, int row, int y
     siprintf(lbl, "ITEM-%u", (unsigned)e->id);
     /* R2 (re-verify 3, decided): the plain page agrees with the GB-shell page
      * -- a Gen-1 key item shows no quantity here either (its stored qty byte
-     * is not user-meaningful; the cartridge never prints it). */
-    if (pocket == GBB_POCKET_KEY || gbb_is_g1_key_item(e->id)) siprintf(val, "-");
-    else                                                       siprintf(val, "x%u", (unsigned)e->qty);
+     * is not user-meaningful; the cartridge never prints it). This page never
+     * has a GbScreen/RomGbUi (it is what runs when the shell itself refused
+     * to open) -- `gu=NULL` always resolves to the factual id list, see
+     * bag_is_key_item()'s own comment and this page's own header2 note. */
+    if (bag_is_key_item(0, pocket, e->id)) siprintf(val, "-");
+    else                                   siprintf(val, "x%u", (unsigned)e->qty);
   }
   if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
   else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
@@ -250,14 +280,16 @@ static void g1bag_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket,
     for (int cx = NAME_COL + (int)strlen(buf); cx <= QTY_COL; cx++)
       gbscr_cell(gs, cx, ny, GBSCR_SRC_TEXTBOX, G1I_BLANK);
 
-    /* D1 (review): a Gen-1 key item (HM01-05 plus the fixed key-item id set,
-     * gbb_is_g1_key_item()) prints NO quantity on the real cartridge, exactly
-     * like GBB_POCKET_KEY already does not (Gen 2's separate Key-items
-     * pocket) -- the old `pocket != GBB_POCKET_KEY` test alone always passed
-     * for pocket==GBB_POCKET_ITEMS, so every Gen-1 key item showed its
-     * stored qty (always 1) instead of a blank field. */
+    /* D1 (review): a Gen-1 key item prints NO quantity on the real cartridge,
+     * exactly like GBB_POCKET_KEY already does not (Gen 2's separate
+     * Key-items pocket) -- the old `pocket != GBB_POCKET_KEY` test alone
+     * always passed for pocket==GBB_POCKET_ITEMS, so every Gen-1 key item
+     * showed its stored qty (always 1) instead of a blank field. BACKLOG #99:
+     * bag_is_key_item() prefers the ROM-located table (`gs->gu`, exact for
+     * ids 1..120) and falls back to gbb_is_g1_key_item()'s factual id list
+     * only when this shell's own ROM wasn't opened or didn't locate one. */
     bool is_key = has && !is_cancel &&
-                  (pocket == GBB_POCKET_KEY || gbb_is_g1_key_item(l->entries[idx].id));
+                  bag_is_key_item(&gs->gu, pocket, l->entries[idx].id);
     /* D4 (review): the qty field is a 2-wide "%2u" column (QTY_COL+1,
      * QTY_COL+2), but nothing ever blanked QTY_COL+3 -- a defensively out-
      * of-spec 3-digit qty (this core clamps every WRITE to GBB_QTY_CAP=99,
@@ -534,6 +566,7 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
 }
 
 void pdna_gbbag(GbSession* s, bool can_edit) {
+  s_ki_fallback_logged = false;   /* b99 review P2: one log line per visit */
   if (!s || s->gen != GB_GEN1) {
     msg_wait("ITEM", UI_WARN, "This screen is Gen-1 only.", 0);
     return;
@@ -576,8 +609,15 @@ void pdna_gbbag(GbSession* s, bool can_edit) {
     want_commit = pdna_gbbag_gen1_screen(&gs, bag, can_edit);
     gbscr_close(&gs);
   } else {
-    want_commit = pdna_gbbag_plain(bag, can_edit, PDNA_GBTR_FALLBACK_TITLE,
-                                   reason ? reason : PDNA_GBSCR_REASON_UNAVAILABLE);
+    /* BACKLOG #99: this page never has a RomGbUi (the shell itself refused
+     * to open, `reason` says why) -- it always shows key items via
+     * gbb_is_g1_key_item()'s factual list (see gbbag_row_paint /
+     * bag_is_key_item(0, ...) above), never the located table. Say so on the
+     * same reason line the shell-refusal message already uses. */
+    char reason2[80];   /* %.40s + the suffix + NUL: bounded (b99 review P1) */
+    siprintf(reason2, "%.40s (key ids: list)",
+            reason ? reason : PDNA_GBSCR_REASON_UNAVAILABLE);
+    want_commit = pdna_gbbag_plain(bag, can_edit, PDNA_GBTR_FALLBACK_TITLE, reason2);
   }
 
   /* `bag` points INTO `tail` -- do every read of it (the memcmp, gbb_write)
