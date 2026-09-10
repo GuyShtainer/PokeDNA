@@ -43,12 +43,14 @@ static const char* const RANK_NAME[5] = { "Normal", "Super", "Hyper", "Master", 
 
 /* ---- the donor picker: source (party / one of 14 boxes), then a mon in it -------
  *
- * PickRow deliberately does NOT cache the decoded PkMon (120 B) per row: 30 of those
- * overflowed EWRAM by 2,444 B in the delta build (rows[30] alone was 3,840 B — the
- * largest static this slice added). Only `species` (the list label) and `slot` (which
- * record to re-decode if chosen) are kept; the chosen row's PkMon is decoded ONCE,
- * on A, straight from sb1/pc — the same source/slot this list already walked. */
-typedef struct { uint16_t species; uint8_t slot; char nick[11]; } PickRow;
+ * PickRow caches NOTHING decoded, only `slot` (which record to re-decode) -- caching
+ * species+nickname per row (14 B) put rows[30] at 420 B, the whole -424 B this slice
+ * took EWRAM below the artless bar; there is no arena buffer available here to grow
+ * into (app_arena_acquire hands out g_pc, the very buffer this picker walks). Every
+ * row's label re-decodes its record from sb1/pc via redecode() on each keypress
+ * (<=12 on-screen rows redrawn per frame, pick_list blocks in s_wait between them --
+ * cheap, not a hot loop). */
+typedef struct { uint8_t slot; } PickRow;
 
 /* List up to G3_IN_BOX (30) occupied slots of `source` (-1 = party, 0..13 = box) into
  * `rows`; returns how many. Bounded loop — party is <=6, a box is exactly G3_IN_BOX. */
@@ -59,27 +61,22 @@ static int list_source(const uint8_t* sb1, const uint8_t* pc, int source, PickRo
     if (cnt > G3_PARTY_SIZE) cnt = G3_PARTY_SIZE;
     for (int i = 0; i < cnt; i++) {
       PkMon m;
-      if (pk_decode_mon(sb1 + SB1_OFF_PARTY + (uint32_t)i * 100, true, &m) && m.species) {
-        rows[n].species = m.species; rows[n].slot = (uint8_t)i;
-        memcpy(rows[n].nick, m.nickname, sizeof rows[n].nick);
-        n++;
-      }
+      if (pk_decode_mon(sb1 + SB1_OFF_PARTY + (uint32_t)i * 100, true, &m) && m.species)
+        rows[n++].slot = (uint8_t)i;
     }
   } else {
     const uint8_t* recs = pc + 0x0004 + (uint32_t)source * G3_IN_BOX * 80;
     for (int i = 0; i < G3_IN_BOX; i++) {
       PkMon m;
-      if (pk_decode_mon(recs + (uint32_t)i * 80, false, &m) && m.species) {
-        rows[n].species = m.species; rows[n].slot = (uint8_t)i;
-        memcpy(rows[n].nick, m.nickname, sizeof rows[n].nick);
-        n++;
-      }
+      if (pk_decode_mon(recs + (uint32_t)i * 80, false, &m) && m.species)
+        rows[n++].slot = (uint8_t)i;
     }
   }
   return n;
 }
 
-/* Re-decode the record a PickRow points at — called once, only for the chosen row. */
+/* Re-decode the record a PickRow points at — called for every visible row's label,
+ * and once more for the chosen row on A. */
 static bool redecode(const uint8_t* sb1, const uint8_t* pc, int source, const PickRow* row,
                      PkMon* out) {
   if (source < 0) return pk_decode_mon(sb1 + SB1_OFF_PARTY + (uint32_t)row->slot * 100, true, out);
@@ -125,10 +122,16 @@ static void source_label(int i, char* out, int cap) {
   siprintf(out, "%.*s", cap - 1, nm[0] ? nm : "Box");
 }
 
-static PickRow* g_pick_rows;
+static PickRow*      g_pick_rows;
+static const uint8_t* g_pick_sb1;
+static int            g_pick_source;
 static void mon_label(int i, char* out, int cap) {
-  siprintf(out, "%-11s%.*s", pk_species_name(g_pick_rows[i].species), cap - 12,
-          g_pick_rows[i].nick[0] ? g_pick_rows[i].nick : "");
+  PkMon m;
+  if (!redecode(g_pick_sb1, g_pick_pc, g_pick_source, &g_pick_rows[i], &m)) {
+    siprintf(out, "?"); return;
+  }
+  siprintf(out, "%-11s%.*s", pk_species_name(m.species), cap - 12,
+          m.nickname[0] ? m.nickname : "");
 }
 
 /* Returns true and fills *out on a real pick; false on B at either level. */
@@ -138,9 +141,9 @@ static bool pick_donor(const uint8_t* sb1, const uint8_t* pc, PkMon* out) {
     int src = pick_list("PICK A POKEMON — SOURCE", 1 + G3_TOTAL_BOXES, source_label, 0);
     if (src < 0) return false;
     int source = src - 1;                        /* -1 = party */
-    static EWRAM_BSS PickRow rows[30];            /* ~480 B: EWRAM, not the IWRAM stack */
+    static EWRAM_BSS PickRow rows[30];            /* 30 B: EWRAM, not the IWRAM stack */
     int n = list_source(sb1, pc, source, rows);
-    g_pick_rows = rows;
+    g_pick_rows = rows; g_pick_sb1 = sb1; g_pick_source = source;
     int m = pick_list(source < 0 ? "PICK A POKEMON — PARTY" : "PICK A POKEMON — BOX",
                       n, mon_label, 0);
     if (m < 0) continue;                          /* B here: back to source list */
