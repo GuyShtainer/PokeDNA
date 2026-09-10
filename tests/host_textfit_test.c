@@ -577,6 +577,26 @@ int main(void) {
   PF(PDNA_GBSCR_REASON_UNAVAILABLE, 4, GBTR_HEADER2_MAXW);
   PF(PDNA_GBSCR_REASON_FORCED_TEST, 4, GBTR_HEADER2_MAXW);
 
+  /* BACKLOG #99 (b99 review P2): pdna_gbbag.c's plain-page fallback appends
+   * " (key ids: list)" to whichever reason macro is live (siprintf("%.40s
+   * (key ids: list)", reason), source/pdna_gbbag.c) -- that COMPOSED string
+   * is what actually paints on line 2, not the bare macro measured above, so
+   * it must be measured too, against the same GBTR_HEADER2_MAXW budget, for
+   * every PDNA_GBSCR_REASON_* macro that can reach it. */
+  {
+    static const char* const reasons[] = {
+      PDNA_GBSCR_REASON_NO_ROM,      PDNA_GBSCR_REASON_NO_STACK,
+      PDNA_GBSCR_REASON_OPEN,        PDNA_GBSCR_REASON_BAD_GEN,
+      PDNA_GBSCR_REASON_NO_TAIL,     PDNA_GBSCR_REASON_UNAVAILABLE,
+      PDNA_GBSCR_REASON_FORCED_TEST,
+    };
+    for (unsigned i = 0; i < sizeof reasons / sizeof reasons[0]; i++) {
+      char reason2[80];
+      snprintf(reason2, sizeof reason2, "%.40s (key ids: list)", reasons[i]);
+      PF(reason2, 4, GBTR_HEADER2_MAXW);
+    }
+  }
+
   /* gb_edit_persist's SF_ERR_RENAME switch + gb_edit_hook's SF_ERR_UNWRITABLE hint —
    * same (28, .., 184) msg_wait clamp. PDNA_GBEDIT_UNCONFIRMED_L2 is deliberately
    * SHORTER than pdna_main.c's own wording for the same case ("Could not re-check the

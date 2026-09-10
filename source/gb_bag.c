@@ -76,6 +76,16 @@ bool gbb_is_g1_key_item(uint8_t id) {
   return false;
 }
 
+bool gbb_g1_key_item_compose(bool have_table, const uint8_t bits[15], uint8_t id) {
+  if (id >= 0xC4u) return id <= 0xC8u;   /* HM01..HM05 key; TM01+ not (the game's own path) */
+  if (have_table) {
+    if (id == 0u || id > 120u) return false;   /* the table's own code-bound length */
+    unsigned i = (unsigned)id - 1u;
+    return (bits[i >> 3] >> (i & 7u)) & 1u;
+  }
+  return gbb_is_g1_key_item(id);
+}
+
 /* ---- read -------------------------------------------------------------------- */
 
 static void read_list(const GbSession* s, GbGame g, GbBagPocket pocket, GbBagList* out) {
