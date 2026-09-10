@@ -427,7 +427,15 @@ int rom_gbui_glyph(RomGbUi* gu, uint8_t ch, uint16_t out[64]);
  * is 0 or beyond the table's own code-bound length (120 = 15 B * 8 bits --
  * ld bc,$000F in IsKeyItem_ itself, not the "11 bytes actually used" comment
  * NUM_ITEMS derives: this locator trusts what the ROM's own CopyData call
- * bounds, not a public-knowledge item count). */
+ * bounds, not a public-knowledge item count). This function makes no HM
+ * exception: ids 0xC4..0xC8 (HM01..HM05) are past the 120-id bound and so
+ * always return false here too, even though the real game treats them as
+ * key items via a path that never touches KeyItemFlags at all (IsKeyItem_
+ * branches to IsItemHM first, pokered engine/items/item_effects.asm:~2616).
+ * Deciding the HM range is the CALLER's job (see source/gb_bag.c's
+ * gbb_g1_key_item_compose(), which checks it before ever asking this
+ * function) -- the table is silent above id 120 by construction and this
+ * locator does not special-case anything it didn't locate. */
 bool rom_gbui_g1_key_item(const RomGbUi* gu, uint8_t id);
 
 #endif /* ROM_GBUI_INCLUDED */

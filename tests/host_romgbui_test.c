@@ -231,6 +231,22 @@ static void run_one(const Want* w) {
     chk(w->file, "g1_keyitems: POKe BALL (4) is not a key item", !rom_gbui_g1_key_item(&gu, 4));
     chk(w->file, "g1_keyitems: POTION (20) is not a key item", !rom_gbui_g1_key_item(&gu, 20));
     chk(w->file, "g1_keyitems: ESCAPE ROPE (29) is not a key item", !rom_gbui_g1_key_item(&gu, 29));
+
+    /* BACKLOG #99 (b99 review item 4): rom_gbui_g1_key_item()'s own CONTRACT,
+     * not the HM/TM composition (that decision belongs to the caller --
+     * source/gb_bag.c's gbb_g1_key_item_compose(), covered in
+     * tests/host_gbbag_test.c). This locator is silent above its own
+     * code-bound length (120): ids 196..200 (HM01..HM05, 0xC4..0xC8) and
+     * 201..250 (TM01..TM50, 0xC9..0xFA) both fall outside 1..120 and so
+     * must come back false here even though HM01..HM05 ARE key items in
+     * the real game -- documenting that the caller, not this function,
+     * owns that range (see the function's own doc comment, rom_gbui.h). */
+    for (unsigned id = 196; id <= 200; id++)
+      chk(w->file, "g1_keyitems: id 196..200 (HM range) is false at this layer -- caller's job",
+          !rom_gbui_g1_key_item(&gu, (uint8_t)id));
+    for (unsigned id = 201; id <= 250; id++)
+      chk(w->file, "g1_keyitems: id 201..250 (TM range) is false at this layer",
+          !rom_gbui_g1_key_item(&gu, (uint8_t)id));
   } else if (w->gen == ROM_GBUI_GEN1) {
     chk(w->file, "g1_keyitems: NULL gu is never a key item (fail-closed)",
         !rom_gbui_g1_key_item(NULL, 21));

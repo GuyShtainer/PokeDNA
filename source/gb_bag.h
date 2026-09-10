@@ -151,6 +151,23 @@ uint8_t gbb_max_item_id(GbGame game);
  * such classification -- this function is Gen-1 (Red/Blue/Yellow) only. */
 bool gbb_is_g1_key_item(uint8_t id);
 
+/* BACKLOG #99 (b99 review P0/P2): the FULL Gen-1 "is this a key item" decision,
+ * pure C so it is testable without a GBA build (source/pdna_gbbag.c's
+ * bag_is_key_item() is the GBA-only caller -- it just forwards to this).
+ *
+ * Order matters and mirrors IsKeyItem_'s own control flow (pokered engine/
+ * items/item_effects.asm:~2616, read for the branch shape only): HM01-HM05
+ * are decided by the game's OWN path BEFORE it ever reaches KeyItemFlags, so
+ * that range is checked first and unconditionally, table or no table.
+ *   id >= 0xC4 (TM01..HM07's id range): true iff id <= 0xC8 (HM01..HM05).
+ *   else, `have_table`: the located KeyItemFlags bit for `id` (bit (id-1)&7
+ *     of byte (id-1)>>3 of `bits`, LSB-first -- same shape as rom_gbui.c's
+ *     keyitem_bit()/rom_gbui_g1_key_item()); id outside 1..120 is false (the
+ *     table's own code-bound length, never a guess).
+ *   else (no table): gbb_is_g1_key_item(id), the documented factual list.
+ * `bits` is unread when `have_table` is false (may be NULL). */
+bool gbb_g1_key_item_compose(bool have_table, const uint8_t bits[15], uint8_t id);
+
 /* Fill `out` from the session's resident image. Every pocket this game lacks (per
  * gbb_field_present) is left zeroed (count 0, no entries) rather than causing a
  * hard failure. A pocket whose stored count exceeds its cap, or whose entries hit

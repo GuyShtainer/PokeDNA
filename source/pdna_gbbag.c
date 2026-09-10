@@ -35,16 +35,16 @@ static bool bag_is_key_item(const RomGbUi* gu, GbBagPocket pocket, uint8_t id) {
   /* IsKeyItem_ (pokered engine/items/item_effects.asm:~2616) branches to
    * IsItemHM BEFORE it ever touches KeyItemFlags: an id >= HM01 never reaches
    * the table, and HM01..HM05 are key by THAT path (home/names.asm:~110). The
-   * located table is silent there by construction -- ask it only below
-   * (b99 review P0: routing HMs through the table showed them a quantity). */
-  if (id >= 0xC4u) return id <= 0xC8u;   /* HM01..HM05 key; TM01+ not */
-  if (gu && gu->ok && gu->gen == ROM_GBUI_GEN1 && gu->g1_keyitems != 0)
-    return rom_gbui_g1_key_item(gu, id);
-  if (gu && gu->ok && gu->gen == ROM_GBUI_GEN1 && !s_ki_fallback_logged) {
+   * located table is silent there by construction -- gbb_g1_key_item_compose()
+   * (source/gb_bag.c, pure C + host-tested) checks that range first, before
+   * ever consulting the table (b99 review P0: routing HMs through the table
+   * showed them a quantity). */
+  bool have_table = gu && gu->ok && gu->gen == ROM_GBUI_GEN1 && gu->g1_keyitems != 0;
+  if (!have_table && gu && gu->ok && gu->gen == ROM_GBUI_GEN1 && !s_ki_fallback_logged) {
     s_ki_fallback_logged = true;
     log_line("gbbag: key items via the id list (no located table)");
   }
-  return gbb_is_g1_key_item(id);
+  return gbb_g1_key_item_compose(have_table, have_table ? gu->g1_keyitems_bits : 0, id);
 }
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
