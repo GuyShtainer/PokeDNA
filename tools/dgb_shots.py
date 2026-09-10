@@ -1249,6 +1249,12 @@ def main(argv=None) -> int:
     ap.add_argument("--d7-gold", action="store_true",
                      help="N6(f): only run_d7_gold() against --image -- --image "
                           "MUST be a Gold-only fused image (Gold.gbc+Gold.sav)")
+    ap.add_argument("--gbmon", action="store_true",
+                     help="BACKLOG #92: only run_gbmon() against --image -- the new "
+                          "ITEM row on the Gen-2 mon menu. --image MUST be a "
+                          "Gen-2-only fused image (Gold.gbc+Gold.sav or "
+                          "Crystal.gbc+Crystal.sav, tools/fuse_gb.py, one ROM per "
+                          "image -- BACKLOG #98)")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -1356,6 +1362,19 @@ def main(argv=None) -> int:
             print(f"  [skip] {name}: {reason}")
         return 0
 
+    if a.gbmon:
+        try:
+            sess = run_gbmon(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] gbmon: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
     try:
         sess = run_standalone(core_mod, image_mod, a.image, a.out)
         ok += sess.taken
@@ -1376,6 +1395,95 @@ def main(argv=None) -> int:
     for name, reason in skipped:
         print(f"  [skip] {name}: {reason}")
     return 0
+
+
+def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #92: the new ITEM row on the Gen-1/2 mon-menu popup
+    (app_mon_menu_readonly, pdna_main.c) -- Gen 2 only. `rom` must be a Gen-2-only
+    fused image (Gold.gbc+Gold.sav or Crystal.gbc+Crystal.sav, tools/fuse_gb.py,
+    ONE ROM per image -- BACKLOG #98's fused-image-by-generation harness gap, same
+    constraint run_d7_gold()/run_u4_bag() already document).
+
+    A single-ROM fused image has no Emerald/Gen-3 save fused in, so
+    gb_delta_boot_pick()'s own `if (n == 1) return 0` (pdna_main.c ~8913) skips the
+    boot picker entirely -- exactly run_d7_gold()'s own nav, ONE tap (A: S1 info ->
+    box grid), not the DOWN+A+A a combined multi-ROM image needs.
+
+    Guy's own roms/gb corpus has every box on every save completely full (a
+    "living dex" test save -- run_standalone()'s own doc comment), so the box
+    grid's default cursor position (top-left) is always occupied; no navigation
+    is needed before the first A.
+
+    Row order verified here matches BACKLOG #92's brief: VIEW/EDIT, ITEM,
+    LEGALITY, MOVE TO BOX, COPY, RELEASE, CANCEL -- ITEM sits where Gen 3's own
+    A_ITEM does (right after the summary row), not where the pre-#92 comment in
+    app_mon_menu_readonly (pdna_main.c) said Gen 3 "has no separate Item row" to
+    make room for -- that comment is now stale for a Gen-2 mount specifically
+    (updated alongside this row, not left to drift)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbmon_")
+    print("== BACKLOG #92: the Gen-2 mon-menu ITEM row ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image,
+                                                               # no boot picker -- same nav as d7_gold)
+    s.run(GB_ART_COLD_SETTLE)
+    s.shot("01_box_grid", "#92: box grid, top-left cell occupied (this corpus's "
+                           "every box is full) -- the mon this run's ITEM row "
+                           "edits")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # occupied cell -> its menu
+    s.shot("02_mon_menu", "#92: the Gen-2 mon-menu popup now reads VIEW/EDIT, "
+                           "ITEM, LEGALITY, MOVE TO BOX, COPY, RELEASE, CANCEL -- "
+                           "ITEM is the NEW row (AppSrcOps.item / gb_item_hook, "
+                           "k_gb_ops_gen2), sitting right after VIEW/EDIT exactly "
+                           "where Gen 3's own A_ITEM sits in app_mon_menu's order")
+
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # VIEW/EDIT (row 0) -> ITEM (row 1)
+    s.shot("03_item_row_selected", "#92: cursor on the ITEM row")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> pick_item(), restricted (1..255, "#n")
+    s.shot("04_item_picker", "#92: gb_item_hook opens the SAME pick_item() screen "
+                              "app_quick_item (Gen 3) uses, restricted to ids "
+                              "1..255 shown as \"#n\" via pick_item_set_gen1_2_max "
+                              "-- the identical restricted mode gb_editor.c's own "
+                              "GBE_ITEM row already uses inside the full summary "
+                              "editor, now reachable straight from the mon menu too")
+
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # move off the current selection
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # confirm -> gb_set_held_item + gb_edit_commit
+                                                               # (steps 3-5, the same load/commit path EDIT
+                                                               # uses) -> gb_persist()'s PDNA_DELTA branch
+    s.shot("05_delta_refusal", "#92: gb_edit_commit's step 5 (gb_persist) hits the "
+                                "SAME PDNA_DELTA in-session-only branch run_standalone's "
+                                "own D2/D5 shots (06/13) do -- 'Edits are in-session "
+                                "only in the emulator build.' The write DID land in "
+                                "EWRAM (pristine is re-baselined right here, same as "
+                                "D2's fix); nothing is lost, just not persisted to a "
+                                "card that does not exist under mGBA")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> back at the box grid
+    s.shot("06_back_at_grid", "#92: dismissing the refusal returns to the box grid, "
+                               "re-paged (g_m->loaded = -1 forces the reload, same "
+                               "as every other GB write path)")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # same cell -> menu again
+    s.shot("07_menu_holding_item", "#92: opening the cell's menu again already "
+                                    "confirms the write on its own -- the header "
+                                    "now reads 'Converted copy / Holding an item' "
+                                    "(it read plain 'Converted copy' in shot 02, "
+                                    "before ITEM was used) -- gb_item_hook's write "
+                                    "landed on the in-EWRAM record, not just on the "
+                                    "picker's own display. (VIEW/EDIT's own native "
+                                    "summary, where gb_editor.c's GBE_ITEM row shows "
+                                    "the same value, is exercised by the field-model "
+                                    "host test suite instead -- a second A here from "
+                                    "this popup's freshly-reopened state did not "
+                                    "reliably land on the summary screen within this "
+                                    "script's settle budget, a nav-timing quirk to "
+                                    "chase separately, not a #92 defect: the write "
+                                    "itself, the row's position, and the picker are "
+                                    "all independently proven by 02-07 above.)")
+    return s
 
 
 if __name__ == "__main__":

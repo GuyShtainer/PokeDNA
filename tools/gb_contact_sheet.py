@@ -165,6 +165,11 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
      "SWAP, BAD ID/QUANTITY refusals, the forced-failure fallback page, the "
      "empty pocket (+ real-cartridge oracle), Gold's own Bag refusal",
      ("N6(d)", "N6(e)", "N6(f)")),
+    # BACKLOG #92 (append-only, same rule as every row above): a held ITEM row on
+    # the Gen-2 mon-menu popup (app_mon_menu_readonly, pdna_main.c), Gen 1 omitted.
+    # Shots come from tools/dgb_shots.py's run_gbmon(); captions all start "#92:".
+    ("gb-mon-item", "#92 — held ITEM row on the Gen-2 mon menu (Gen 1: NOT IN GEN 1)",
+     ("#92",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
