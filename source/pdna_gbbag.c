@@ -41,7 +41,11 @@ static void gbbag_row_paint(const GbBag* bag, GbBagPocket pocket, int row, int y
   if (row >= l->count) { lbl[0] = 0; val[0] = 0; }
   else {
     const GbBagEntry* e = &l->entries[row];
-    siprintf(lbl, "ITEM #%u", (unsigned)e->id);
+    /* D9 (review): '#' has no Gen-1 glyph (gb_edit.c's enc_one() has no case
+     * for it, so it renders as a blank space on the GB screen) -- this plain
+     * PokeDNA-font fallback page uses '-' instead too, purely for the SAME
+     * wording everywhere this shell shows a raw item id. */
+    siprintf(lbl, "ITEM-%u", (unsigned)e->id);
     if (pocket == GBB_POCKET_KEY) siprintf(val, "-");
     else                          siprintf(val, "x%u", (unsigned)e->qty);
   }
@@ -208,7 +212,11 @@ static void g1bag_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket,
     if (is_cancel) {
       siprintf(buf, "CANCEL");
     } else if (has) {
-      siprintf(buf, "ITEM #%u", (unsigned)l->entries[idx].id);
+      /* D9 (review): '#' has no Gen-1 glyph -- gb_edit.c's enc_one() (the GB
+       * text encoder this screen's own gbscr_text() calls) has no case for
+       * it, so it silently rendered as a blank space; '-' (0xE3) is a real
+       * Gen-1 glyph and reads unambiguously as "item id N". */
+      siprintf(buf, "ITEM-%u", (unsigned)l->entries[idx].id);
     } else {
       buf[0] = 0;
     }
@@ -234,14 +242,22 @@ static void g1bag_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket,
      * stored qty (always 1) instead of a blank field. */
     bool is_key = has && !is_cancel &&
                   (pocket == GBB_POCKET_KEY || gbb_is_g1_key_item(l->entries[idx].id));
+    /* D4 (review): the qty field is a 2-wide "%2u" column (QTY_COL+1,
+     * QTY_COL+2), but nothing ever blanked QTY_COL+3 -- a defensively out-
+     * of-spec 3-digit qty (this core clamps every WRITE to GBB_QTY_CAP=99,
+     * but a stored value can only be as trustworthy as the save it was
+     * read from) would print into QTY_COL+3 leaking a stale digit glyph
+     * there on the NEXT repaint once the value drops back to 1-2 digits.
+     * Blank sweep now always covers up to QTY_COL+3, both branches. */
     if (has && !is_cancel && !is_key) {
       gbscr_text(gs, QTY_COL, qy, "\xC3\x97");   /* U+00D7, gb_char_encode -> 0xF1 */
       siprintf(buf, "%2u", (unsigned)l->entries[idx].qty);
       gbscr_text(gs, QTY_COL + 1, qy, buf);
+      for (int cx = QTY_COL + 1 + (int)strlen(buf); cx <= QTY_COL + 3; cx++)
+        gbscr_cell(gs, cx, qy, GBSCR_SRC_TEXTBOX, G1I_BLANK);
     } else {
-      gbscr_cell(gs, QTY_COL, qy, GBSCR_SRC_TEXTBOX, G1I_BLANK);
-      gbscr_cell(gs, QTY_COL + 1, qy, GBSCR_SRC_TEXTBOX, G1I_BLANK);
-      gbscr_cell(gs, QTY_COL + 2, qy, GBSCR_SRC_TEXTBOX, G1I_BLANK);
+      for (int cx = QTY_COL; cx <= QTY_COL + 3; cx++)
+        gbscr_cell(gs, cx, qy, GBSCR_SRC_TEXTBOX, G1I_BLANK);
     }
   }
 
@@ -301,14 +317,38 @@ static void gbbag_start_menu(GbBag* bag, GbBagPocket pocket, int* sel, int* top)
     const GbBagList* l = &bag->pockets[pocket];
     if (csel == 3) return;
     if (csel == 0) {
+      /* D5 (review): num_entry() returns `cur` on OSK cancel, indistinguishable
+       * from "the user typed the same value" -- ADD ITEM used to insert id 1
+       * x1 whenever B'd out of either prompt. num_entry_opt() (pdna_trainer.h)
+       * tells cancel apart, and both prompts now abort the whole ADD on it.
+       * QUANTITY's own maxv is deliberately NOT GBB_QTY_CAP: clamping the OSK
+       * value to 99 up front would make a typed 100 silently become 99 and
+       * never reach gbb_insert()'s own validation, so an out-of-range type-in
+       * could never be told apart from a legal saturating merge below. */
       uint32_t maxid = gbb_max_item_id(GBF_G_RED);
-      uint32_t id = num_entry("ITEM ID", 1, maxid);
-      uint32_t qty = num_entry("QUANTITY", 1, GBB_QTY_CAP);
-      GbBagOpStatus st = gbb_insert(GBF_G_RED, bag, pocket, (uint8_t)id, (uint8_t)qty);
+      uint32_t id, qty;
+      if (!num_entry_opt("ITEM ID", 1, maxid, &id)) continue;
+      if (!num_entry_opt("QUANTITY", 1, 999, &qty)) continue;
+      bool qty_in_range = qty >= 1u && qty <= GBB_QTY_CAP;
+      uint8_t qty8 = (uint8_t)(qty > 0xFFu ? 0xFFu : qty);
+      GbBagOpStatus st = gbb_insert(GBF_G_RED, bag, pocket, (uint8_t)id, qty8);
       if (st == GBB_ERR_FULL)
         msg_wait("BAG FULL", UI_WARN, "This pocket has no free slot.", 0);
-      else if (st == GBB_ERR_QTY)
-        msg_wait("SATURATED", UI_WARN, "Quantity clamped to the cap.", 0);
+      else if (st == GBB_ERR_BADID)
+        msg_wait("BAD ID", UI_WARN, "That item id does not exist.", 0);
+      else if (st == GBB_ERR_QTY) {
+        /* Two distinct GBB_ERR_QTY causes (gb_bag.h's own gbb_insert()
+         * contract): a typed quantity outside [1,99] is refused outright
+         * (nothing changed); a typed quantity that was itself legal but
+         * overflowed an EXISTING stack on merge gets that stack SATURATED
+         * to the cap and written (gb_bag.c gbb_insert(), the "sum > cap"
+         * branch) -- `qty_in_range` (the typed value, before gbb_insert
+         * ever ran) is exactly what tells the two apart here. */
+        if (qty_in_range)
+          msg_wait("SATURATED", UI_WARN, "Quantity clamped to the cap.", 0);
+        else
+          msg_wait("BAD QUANTITY", UI_WARN, "Quantity must be 1-99.", 0);
+      }
       *sel = l->count > 0 ? l->count - 1 : 0;
     } else if (csel == 1) {
       if (l->count > 0) gbb_remove(GBF_G_RED, bag, pocket, *sel);
