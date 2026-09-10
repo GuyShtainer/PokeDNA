@@ -1467,9 +1467,24 @@ def main(argv):
     # function reachable from --root (the same set whole_graph_blind_spots() already
     # uses for the same reason) catches an UNKNOWN sitting on a branch that never
     # prints, not just one unlucky enough to land on the printed #1..#N chains.
+    # A declared implementation NAME that isn't actually LINKED into this build variant
+    # (stack_edges.txt's own "WHY A NAMED IMPLEMENTATION MISSING FROM THE ELF IS A
+    # WARNING, NOT A FATAL" note already covers this -- e.g. fused_gb_slice_read on the
+    # artless build) still gets unioned into `analysis["edges"]` as a bare STRING by
+    # `edges_to_add`, with no existence check -- so it becomes a phantom node that
+    # `reachable_from()` happily walks to. Such a name has no .su entry and no
+    # `estimated` entry (both are keyed off REAL disassembled functions), so frame_of()
+    # falls through to its "unknown" default -- a false positive this whole-reachable
+    # sweep must not report, since a name that isn't linked at all can never actually
+    # be called and contributes exactly 0 B, not an unbounded unknown. Confirmed live:
+    # the delta build's rom_open declaration names iconrom_fatfs_read/g3x_fatfs_read/
+    # gb_art_read/gbscr_sd_read, several of which this variant never links -- before
+    # this filter, D8's own sweep (this same commit's sibling fix) FATALed the delta
+    # build on phantom names instead of real, unclassifiable frames.
     unknown_reachable = sorted(
         fn for fn in reachable
-        if frame_of(fn, su_sizes, estimated, frame_overrides)[1] == "unknown")
+        if fn in analysis["funcs"]
+        and frame_of(fn, su_sizes, estimated, frame_overrides)[1] == "unknown")
 
     print(f"ELF: {args.elf}")
     print(f"root: {args.root}")

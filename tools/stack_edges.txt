@@ -602,3 +602,31 @@ addrtaken-ok g2_bd_cb          # rom_gbsprite.c:344 jobs[J_G2_BD].cb
 addrtaken-ok g2_pal_cb         # rom_gbsprite.c:346 jobs[J_G2_PAL].cb
 addrtaken-ok g2_pp_cb          # rom_gbsprite.c:345 jobs[J_G2_PP].cb
 addrtaken-ok icon_ptrs_cb      # rom_gbicon.c:187 scan_one(gi, icon_ptrs_cb, ...)
+
+# D1 (BACKLOG #84b fifth pass) address-taken sweep triage, batch 5: delta-build-only
+# orphans (this variant links Gold/Silver/Crystal-era ROM scanner code the artless/
+# normal builds' reachable set doesn't exercise the same way).
+addrtaken-ok _EZFO_startUp        # linked at EWRAM 0x02000000, which COINCIDES with the
+                                   # unrelated CART_SPAN=0x02000000u constant (fused_gb.c/
+                                   # fused_rom.c/fused_sav.c) -- a literal-pool false match,
+                                   # not a real function-pointer dispatch; _EZFO_startUp is
+                                   # called directly (lib/flashcartio.c:333 `_EZFO_startUp()`)
+addrtaken-ok _EZFO_reboot         # same false-match class, called directly (flashcartio.c:393)
+addrtaken-ok flashcartio_activate # RV_ANCHOR'd into pdna_romver_data.c's ROM self-check
+                                   # window table (symbol address used to LOCATE a CRC
+                                   # window, not to call through) -- pdna_romver_data.c:75/106
+addrtaken-ok g1_cardframe_cb      # rom_gbui.c:445 jobs[J_G1_CARDFRAME].cb
+addrtaken-ok g1_font_cb           # rom_gbui.c:441 jobs[J_G1_FONT].cb
+addrtaken-ok g1_textbox_cb        # rom_gbui.c:443 jobs[J_G1_TEXTBOX].cb
+addrtaken-ok g2_badgeleader_cb    # rom_gbui.c:453 jobs[J_G2_BADGELEADER].cb
+addrtaken-ok g2_cardpic_cm_cb     # rom_gbui.c:455 jobs[J_G2_CARDPIC_CM].cb
+addrtaken-ok g2_cardpic_gold_cb   # rom_gbui.c:457 jobs[J_G2_CARDPIC_GOLD].cb
+addrtaken-ok g2_frame_cb          # rom_gbui.c:451 jobs[J_G2_FRAME].cb
+addrtaken-ok g2_pack_cb           # rom_gbui.c:459 jobs[J_G2_PACK].cb
+addrtaken-ok g2_box_mon_at        # gen2_save.c:603/gen2_save.h:233 -- grepped: no call site
+                                   # or function-pointer assignment found anywhere in source/;
+                                   # either a genuinely unused public function or another
+                                   # literal-pool coincidence (see _EZFO_startUp above) --
+                                   # flagged here rather than silently trusted; worth a
+                                   # follow-up look, not a stack-budget risk either way
+                                   # (its own frame is 16 B and it calls nothing declared).

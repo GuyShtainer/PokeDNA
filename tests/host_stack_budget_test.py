@@ -667,6 +667,27 @@ def test_d8_unknown_frame_off_the_deepest_chain_still_fatal():
           unknown_reachable2 == [], unknown_reachable2)
 
 
+def test_d8_phantom_declared_name_not_linked_is_not_a_false_unknown():
+    """A declared implementation NAME that isn't actually linked into this build
+    variant (stack_edges.txt's own documented, non-fatal case) becomes a phantom
+    node once it's unioned into `edges` by name alone -- it has no .su/estimated
+    entry, so frame_of() calls it 'unknown'. The whole-reachable D8 sweep must
+    exclude names that aren't in analysis['funcs'] at all (never linked, therefore
+    never actually callable, therefore never an unbounded risk) -- reproduced live
+    on the delta build, where rom_open's declared impl list names a fatfs_read
+    variant that build doesn't link."""
+    edges = {"root": {"real_child", "phantom_unlinked_impl"}}
+    su_sizes = {"root": 10, "real_child": 5}
+    estimated = {}
+    funcs = {"root", "real_child"}   # phantom_unlinked_impl is NOT a real function here
+    reachable = sb.reachable_from("root", edges)
+    unknown_reachable = sorted(
+        fn for fn in reachable
+        if fn in funcs and sb.frame_of(fn, su_sizes, estimated)[1] == "unknown")
+    check("(D8) phantom, never-linked name is excluded from the unknown-reachable set",
+          unknown_reachable == [], unknown_reachable)
+
+
 # === (D3, fifth pass) su_frame(): a clone's frame is the max over its OWN .su keys ======
 
 def test_d3_su_frame_takes_max_not_bare_base_first():
@@ -800,6 +821,7 @@ def main():
     test_d3_su_frame_takes_max_not_bare_base_first()
     test_d7_pop_redefines_its_register_list()
     test_d8_unknown_frame_off_the_deepest_chain_still_fatal()
+    test_d8_phantom_declared_name_not_linked_is_not_a_false_unknown()
     test_d1_load_extra_edges_parses_isr_and_addrtaken_ok()
     test_d1_words_from_objdump_s_text_byte_order()
     test_d1_orphan_detection_catches_the_planted_function()
