@@ -303,10 +303,29 @@ static void t_rolling_backup_sweep(void) {
  * unlink itself). Retaining a known-good copy is defense in depth here, not a reproduced
  * data loss -- see the note in sf_backup_rolling. */
 static void t_rolling_keeps_the_verified_copy(void) {
-  long k;
+  long k, span;
   int saw_rescue = 0;
   fill(s_old, SAVE_BYTES, 11);
-  for (k = 0; k < 300; k++) {
+
+  /* How many sectors does an honest rolling backup cost? Sweep a little past it, same
+   * pattern as t_rename_hole_sweep above -- a hardcoded bound here (previously 300) is
+   * exactly the kind of number that silently stops covering the rescue position once
+   * savefile.c's own I/O chunk size changes the write-op count (BACKLOG #84a S1: halving
+   * s_cmp/bufb 2048 -> 1024 raised this call's sector-write count ~332 -> ~396). */
+  fresh_card(4096);
+  CHECK(write_raw(SAV, s_old, SAVE_BYTES), "keep: calibration setup");
+  CHECK(write_raw(BAK, s_old, SAVE_BYTES), "keep: calibration prior backup");
+  rd_writes = 0;
+  {
+    char cal_bak[SF_PATH_MAX];
+    cal_bak[0] = 0;
+    CHECK(sf_backup_rolling(SAV, cal_bak, sizeof cal_bak) == SF_OK,
+          "keep: calibration rolling backup failed");
+  }
+  span = (long)rd_writes + 8;
+  CHECK(span > 260, "keep: a rolling backup only cost %ld sectors?", span);
+
+  for (k = 0; k < span; k++) {
     SfStatus st;
     char bak[SF_PATH_MAX];
     fresh_card(4096);

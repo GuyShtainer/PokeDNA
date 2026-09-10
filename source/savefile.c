@@ -7,11 +7,32 @@
 #include "log.h"
 #include "sys.h"   /* EWRAM_BSS */
 
-/* Shared 4 KiB compare/copy chunk in EWRAM (.bss), never on the IWRAM stack. */
-/* 2 KiB, not 4: EWRAM is genuinely full since the map feature landed, and this only
+/* Shared compare/copy chunk in EWRAM (.bss), never on the IWRAM stack. */
+/* 1 KiB, not 2: EWRAM is genuinely full since the map feature landed, and this only
  * affects copy/compare throughput on a 128 KiB file. Must stay >= 512 and 4-byte aligned
- * so copy_file keeps hitting disk_write's DIRECT path instead of the bounce buffer. */
-static uint8_t EWRAM_BSS s_cmp[2048];
+ * so copy_file keeps hitting disk_write's DIRECT path instead of the bounce buffer.
+ * (BACKLOG #84a S1, 2026-09-10: halved 2048 -> 1024 to help fund moving files_equal's/
+ * copy_file's FIL handles off the IWRAM stack; still well above the 512-B DIRECT floor.) */
+static uint8_t EWRAM_BSS s_cmp[1024];
+
+/* BACKLOG #84a S1: files_equal and copy_file each kept TWO FatFs FIL structs
+ * (sizeof(FIL) ~= 600 with FF_FS_TINY 0) on the IWRAM stack -- 1,232 B / 1,224 B frames
+ * on the write path's deepest chain (sf_backup -> copy_file -> files_equal). Both
+ * functions are static (file-local, only called from this file) and every caller in
+ * this file (sf_backup, sf_backup_rolling, sf_copy) calls copy_file() to completion
+ * -- it returns -- before calling files_equal(): never nested, never concurrent, no
+ * recursion. So one static EWRAM pair can be shared; s_fil_busy is a latch that
+ * REFUSES (never silently aliases two unrelated file handles) if that reasoning is
+ * ever violated -- kept unconditional (not #ifndef NDEBUG) because these release
+ * builds compile with -DNDEBUG. */
+static FIL EWRAM_BSS s_fil[2];
+static bool s_fil_busy = false;
+#define SF_FIL_ACQUIRE(caller) \
+  do { \
+    if (s_fil_busy) { log_line("savefile: s_fil re-entered in %s", (caller)); return SF_ERR_LAYOUT; } \
+    s_fil_busy = true; \
+  } while (0)
+#define SF_FIL_RELEASE() do { s_fil_busy = false; } while (0)
 
 const char* sf_status_str(SfStatus s) {
   switch (s) {
@@ -44,47 +65,54 @@ SfStatus sf_read_full(const char* path, uint8_t* buf, uint32_t cap,
 /* Compare two open files byte-for-byte using the shared compare buffer. */
 static SfStatus files_equal(const char* a, const char* b, bool* equal) {
   *equal = false;
-  FIL fa, fb;
-  if (f_open(&fa, a, FA_READ) != FR_OK) return SF_ERR_OPEN;
-  if (f_open(&fb, b, FA_READ) != FR_OK) { f_close(&fa); return SF_ERR_OPEN; }
+  SF_FIL_ACQUIRE("files_equal");
+  FIL* fa = &s_fil[0];
+  FIL* fb = &s_fil[1];
+  if (f_open(fa, a, FA_READ) != FR_OK) { SF_FIL_RELEASE(); return SF_ERR_OPEN; }
+  if (f_open(fb, b, FA_READ) != FR_OK) { f_close(fa); SF_FIL_RELEASE(); return SF_ERR_OPEN; }
 
-  static uint8_t EWRAM_BSS bufb[2048];   /* see the note on s_cmp */
+  static uint8_t EWRAM_BSS bufb[1024];   /* see the note on s_cmp */
   SfStatus st = SF_OK;
   bool same = true;
-  if (f_size(&fa) != f_size(&fb)) same = false;
+  if (f_size(fa) != f_size(fb)) same = false;
 
   while (same) {
     UINT ra = 0, rb = 0;
-    if (f_read(&fa, s_cmp, sizeof(s_cmp), &ra) != FR_OK) { st = SF_ERR_READ; break; }
-    if (f_read(&fb, bufb, sizeof(bufb), &rb) != FR_OK)   { st = SF_ERR_READ; break; }
+    if (f_read(fa, s_cmp, sizeof(s_cmp), &ra) != FR_OK) { st = SF_ERR_READ; break; }
+    if (f_read(fb, bufb, sizeof(bufb), &rb) != FR_OK)   { st = SF_ERR_READ; break; }
     if (ra != rb) { same = false; break; }
     if (ra == 0) break; /* both EOF */
     if (memcmp(s_cmp, bufb, ra) != 0) { same = false; break; }
   }
-  f_close(&fa);
-  f_close(&fb);
+  f_close(fa);
+  f_close(fb);
+  SF_FIL_RELEASE();
   if (st != SF_OK) return st;
   *equal = same;
   return SF_OK;
 }
 
-/* Copy src -> dst in 4 KiB chunks. */
+/* Copy src -> dst in 1 KiB chunks. */
 static SfStatus copy_file(const char* src, const char* dst) {
-  FIL fs, fd;
-  if (f_open(&fs, src, FA_READ) != FR_OK) return SF_ERR_OPEN;
-  if (f_open(&fd, dst, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
-    f_close(&fs);
+  SF_FIL_ACQUIRE("copy_file");
+  FIL* fs = &s_fil[0];
+  FIL* fd = &s_fil[1];
+  if (f_open(fs, src, FA_READ) != FR_OK) { SF_FIL_RELEASE(); return SF_ERR_OPEN; }
+  if (f_open(fd, dst, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+    f_close(fs);
+    SF_FIL_RELEASE();
     return SF_ERR_OPEN;
   }
   SfStatus st = SF_OK;
   for (;;) {
     UINT br = 0, bw = 0;
-    if (f_read(&fs, s_cmp, sizeof(s_cmp), &br) != FR_OK) { st = SF_ERR_READ; break; }
+    if (f_read(fs, s_cmp, sizeof(s_cmp), &br) != FR_OK) { st = SF_ERR_READ; break; }
     if (br == 0) break;
-    if (f_write(&fd, s_cmp, br, &bw) != FR_OK || bw != br) { st = SF_ERR_WRITE; break; }
+    if (f_write(fd, s_cmp, br, &bw) != FR_OK || bw != br) { st = SF_ERR_WRITE; break; }
   }
-  f_close(&fs);
-  if (f_close(&fd) != FR_OK && st == SF_OK) st = SF_ERR_WRITE;
+  f_close(fs);
+  if (f_close(fd) != FR_OK && st == SF_OK) st = SF_ERR_WRITE;
+  SF_FIL_RELEASE();
   return st;
 }
 
