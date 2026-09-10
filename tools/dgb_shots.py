@@ -1547,6 +1547,43 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
                                   "generically, so the six new rows this slice adds "
                                   "appear here with zero screen-side code")
 
+    # ---------------------------------------------------------------------------
+    # gbmon C4 reshoot: the Mail confirm. ITEM is row 4 (NICK=0,OT=1,OTID=2,LEVEL=3,
+    # ITEM=4) -- a short detour off row 0, back to row 0 before the 29-DOWN scroll
+    # below (which is calibrated to start there). item_build()'s restricted-mode
+    # search is a NUMERIC PREFIX match (source/pdna_pick.c, item_build's own
+    # comment), so typing "158" through osk_search finds item id 158 (G2_MAIL_FLOWER,
+    # source/gb_session.c) directly rather than paging one id at a time. Declined
+    # (B = no, source/pdna_main.c's app_confirm) so the record's held item stays at
+    # #2 (set back in shot 05) -- an ACCEPT here would zero out gb_set_egg's own
+    # "no item" precondition for the later Egg-refusal shot below, which depends on
+    # the item staying non-zero.
+    # ---------------------------------------------------------------------------
+    s.press_n("DOWN", 4, settle=60)                         # NICK (0) -> ITEM (4)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> pick_item(), current = #2
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # -> osk_search
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '1' (row0 col0, no seed to clear)
+    s.press_n("RIGHT", 4, settle=gb_shots.SETTLE)           # col0 '1' -> col4 '5'
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '5' -> field "15"
+    s.press_n("RIGHT", 3, settle=gb_shots.SETTLE)           # col4 '5' -> col7 '8'
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '8' -> field "158"
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm search -> filtered to id 158
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # select id 158 (G2_MAIL_FLOWER) ->
+                                                              # gbs_is_mail_item(158) true, no Egg yet
+                                                              # -> app_confirm(PDNA_GBEDIT_MAIL_TITLE)
+    s.shot("mail_confirm", "#95: gbmon C4 reshoot: picking a Mail id (158, G2_MAIL_FLOWER) "
+                            "on the ITEM row triggers app_confirm(PDNA_GBEDIT_MAIL_TITLE, "
+                            "PDNA_GBEDIT_MAIL_L1) -- 'SET THIS MAIL ITEM? / No mailbox: "
+                            "locks Move/Release.' -- since this tree tracks no mailbox "
+                            "(gbs_is_mail_item, gb_session.h)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # decline -> item unchanged (#2)
+    s.shot("mail_declined", "#95: gbmon C4 reshoot: B declines -- back on the ITEM row, "
+                             "unchanged (still '#2' from shot 05); a declined confirm "
+                             "must not silently set the item anyway")
+    s.press_n("UP", 4, settle=60)                           # ITEM (4) -> NICK (0), back where
+                                                              # the 29-DOWN scroll below expects
+                                                              # to start
+
     # NICK,OT,OTID,LEVEL,ITEM,FRIEND (6) + MV0-3 (4) + PPU0-3 (4) + PP0-3 (4) +
     # DVA,DVD,DVS,DVC,DVH (5) + GENDER (1, Bulbasaur has a real gender ratio) = 24
     # rows before SHINY -- 29 DOWNs lands on Met OT Gender (row 29), scrolling the
@@ -1564,44 +1601,126 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
     s.press_n("DOWN", 10, settle=60)
     s.shot("10b_scrolling", "#95: 20 DOWNs in -- cursor on DV Spe, Gender/Shiny/Egg/"
                              "Met just a few rows further down")
+    # gbmon C11 reshoot: the four Met rows (gb_editor.c's gbe_fields) are gated on
+    # e->has_caught, which gb_mark_caught (source/pdna_gen12.c) only ever sets true
+    # for a Crystal session (gb_session_is_crystal) -- Gold/Silver never gets them.
+    # "gold" appears in every Gold-only fused image this script builds and nowhere
+    # in a Crystal one (crystal_only.gba / crystal_forced.gba), so this is an exact
+    # discriminator for THIS harness's own naming convention, not a guess.
+    is_crystal = "gold" not in rom.name.lower()
     s.press_n("DOWN", 9, settle=60)
-    s.shot("10_new_rows_visible", "#95: 29 DOWNs in -- Shiny and Egg both 'No', and "
-                                   "the four Met fields already carry this real "
-                                   "Crystal.sav mon's own capture record (Met Time "
-                                   "'Morning', a level, Met Loc '#16', Met OT Gender "
-                                   "'M') -- decoded, not invented, sitting right "
-                                   "where Gen 3's own F_SHINY and F_MET* rows sit in "
-                                   "pdna_edit.c's row order")
+    if is_crystal:
+        s.shot("10_new_rows_visible", "#95: C11 reshoot: 29 DOWNs in -- Shiny and Egg "
+                                       "both 'No', and the four Met fields VISIBLE, "
+                                       "carrying this real Crystal.sav mon's own "
+                                       "capture record (Met Time 'Morning', a level, "
+                                       "Met Loc '#16', Met OT Gender 'M') -- decoded, "
+                                       "not invented, sitting right where Gen 3's own "
+                                       "F_SHINY and F_MET* rows sit in pdna_edit.c's "
+                                       "row order. gb_mark_caught set has_caught=true "
+                                       "for this Crystal session (gb_session_is_crystal)")
+    else:
+        s.shot("10_new_rows_visible", "#95: C11 reshoot: 29 DOWNs in on a GOLD-only image -- "
+                                       "count the rows: Shiny, Egg, then StatExp HP/"
+                                       "Atk/Def/Spe -- the four Met rows are ABSENT. "
+                                       "gb_mark_caught (source/pdna_gen12.c) never sets "
+                                       "has_caught true for a Gold/Silver session "
+                                       "(gb_session_is_crystal returns false), and "
+                                       "gbe_fields() (gb_editor.c) skips GBE_METTIME/"
+                                       "METLEVEL/METLOC/METOTGENDER outright when "
+                                       "!e->has_caught -- the C11 fix's own point: a "
+                                       "Gen-2 target no longer gets a capture record "
+                                       "just because it is Gen 2")
 
+    # This fused image's top-left cell may or may not be the Atk-DV-forced-female
+    # Bulbasaur (crystal_forced.gba only, built specifically so this species' 7:1-
+    # male ratio has NO shiny candidate in its current gender -- see gbmon's own
+    # BACKLOG #95 item 4 brief). Every OTHER fused image (Gold, the plain Crystal
+    # corpus) has this same box-0-slot-0 Bulbasaur at its REAL corpus gender
+    # (already male in both, so Shiny ON keeps it male trivially -- no popup at
+    # all): detect by filename, per this file's own d7_gold precedent, rather
+    # than probing the frame, so the two paths cannot silently diverge on a typo.
+    forced_gender_image = "forced" in rom.name.lower()
     s.press_n("UP", 5, settle=60)                           # Met OT Gender (29) -> Shiny (24)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle ON
-    s.shot("11_shiny_on", "#95: A on Shiny flips it to 'Yes' -- gbe_flip_shiny() "
-                           "forcing Def/Spe/Spc to 10 and searching Atk for a bit-1 "
-                           "value that keeps this mon's current gender, the same "
-                           "DV-search shape gbe_flip_gender() already used for the "
-                           "Gender row above it")
+    if forced_gender_image:
+        s.shot("11_shiny_on", "#95: gbmon C3 reshoot: this fused image's top-left cell is "
+                               "Bulbasaur with Atk DV forced to 1 (gender ratio 31, 7:1 "
+                               "male) -- currently FEMALE, and none of the 8 shiny Atk-DV "
+                               "candidates {2,3,6,7,10,11,14,15} is in the female range "
+                               "(dv<=1) at that ratio, so A on Shiny is FORCED to move "
+                               "gender: gbe_flip_shiny() sets shiny_gender_forced and "
+                               "pdna_gbedit.c's gbedit_shiny_forced_note() pops the "
+                               "PDNA_GBEDIT_SHINY_FORCED_TITLE/MALE_L1/L2 message "
+                               "immediately ('GENDER FORCED / No shiny female exists for "
+                               "this species; it is now male.') -- gb_editor.c's own C2 "
+                               "case, now shown live instead of only host-tested")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # dismiss the forced-gender popup
+        s.shot("11b_shiny_on_dismissed", "#95: gbmon C3 reshoot: A dismisses the popup, back "
+                                          "on the flat editor -- Shiny now reads 'Yes' and "
+                                          "the Gender row above it (not shown in this crop) "
+                                          "now reads male, matching the forced result")
+    else:
+        s.shot("11_shiny_on", "#95: A on Shiny flips it to 'Yes' -- this corpus mon is "
+                               "already male and a male shiny Atk-DV candidate exists "
+                               "(gbe_flip_shiny() keeps the current gender when it can), "
+                               "so no forced-gender popup fires here -- see the gbmon "
+                               "C3 reshoot's own crystal_forced image for that case, "
+                               "built with Atk DV set to 1 specifically so no shiny "
+                               "candidate shares this 7:1-male species' female gender")
 
     s.tap("DOWN", settle=60)                                # Shiny -> Egg
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle ON
-    s.shot("12_egg_on", "#95: A on Egg flips it to 'Yes' (gb_set_egg -- the species-"
-                         "LIST byte, not a record field) -- the header's own 'EGG' "
-                         "prefix and the Friendship row's 'Egg cycles' relabel "
-                         "(gbe_label_of) both already exercise gb_is_egg() elsewhere; "
-                         "this row is the first thing that can SET it after CREATE")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle ON -- refused: this record
+                                                              # already holds item #2 (shot 05)
+    s.shot("12_egg_refused", "#95: gbmon C10 reshoot: A on Egg is REFUSED, not silently "
+                              "ignored -- this record already holds item #2 (planted "
+                              "back in shot 05 via the mon-menu ITEM row), and "
+                              "gb_set_egg(e, true) refuses outright while the held-item "
+                              "field is non-zero (review C5, gb_edit.c). C10 wires the "
+                              "refusal to a real message: gbedit_adjust_refused's "
+                              "GBE_EGG case pops PDNA_GBEDIT_EGG_ITEM_TITLE/L1 -- 'EGG "
+                              "CAN'T HOLD ITEMS / Remove the held item first.' -- the "
+                              "SAME message pdna_gbedit.c's GBE_K_ITEM branch shows for "
+                              "the other direction (a non-zero item picked while the "
+                              "record IS an Egg), reused rather than duplicated")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -- Egg never moved,
+                                                              # cursor still on the Egg row
+    s.shot("12b_egg_refused_dismissed", "#95: gbmon C10 reshoot: A dismisses the message; "
+                                         "back on the flat editor with Egg still 'No' -- "
+                                         "the refusal left the record untouched, exactly "
+                                         "like every other GBE_K_NUM refusal in this row")
 
-    s.tap("DOWN", settle=60)                                # Egg -> Met Time
-    s.tap("RIGHT", settle=60)                               # None -> Morning
-    s.tap("RIGHT", settle=60)                               # Morning -> Day
-    s.tap("RIGHT", settle=60)                               # Day -> Night
-    s.tap("DOWN", settle=60)                                # Met Time -> Met Level
-    s.press_n("RIGHT", 5, settle=60)                        # Met Level 0 -> 5
-    s.shot("13_met_edited", "#95: Met Time cycled to 'Night' and Met Level bumped by "
-                             "+5 (RIGHT x5) to whatever this real Crystal.sav record's "
-                             "own original level was + 5 -- gb_set_caught() repacking "
-                             "bytes 0x1D/0x1E one field at a time via the new "
-                             "gb_get_caught_* readers, the same 'read the other three, "
-                             "write all four back' shape Gen 3's own F_METLEVEL/"
-                             "F_METGAME rows use over metLocation/metGame")
+    if is_crystal:
+        s.tap("DOWN", settle=60)                            # Egg -> Met Time
+        s.tap("RIGHT", settle=60)                           # None -> Morning
+        s.tap("RIGHT", settle=60)                           # Morning -> Day
+        s.tap("RIGHT", settle=60)                           # Day -> Night
+        s.tap("DOWN", settle=60)                            # Met Time -> Met Level
+        s.press_n("RIGHT", 5, settle=60)                    # Met Level 0 -> 5
+        s.shot("13_met_edited", "#95: Met Time cycled to 'Night' and Met Level bumped "
+                                 "by +5 (RIGHT x5) to whatever this real Crystal.sav "
+                                 "record's own original level was + 5 -- gb_set_caught() "
+                                 "repacking bytes 0x1D/0x1E one field at a time via the "
+                                 "new gb_get_caught_* readers, the same 'read the other "
+                                 "three, write all four back' shape Gen 3's own "
+                                 "F_METLEVEL/F_METGAME rows use over metLocation/metGame")
+    else:
+        # No Met rows exist to edit on Gold -- the row right after Egg is StatExp HP
+        # (gbe_fields()'s next entry once METTIME..METOTGENDER are skipped). Edited
+        # anyway (same DOWN/RIGHT shape) so this run still ends on a real edited-field
+        # shot rather than stopping short, and to keep this function's tap count
+        # identical between the two branches (only the CAPTION differs, matching what
+        # is actually on screen -- see the C11 reshoot comment above shot 10).
+        s.tap("DOWN", settle=60)                            # Egg -> StatExp HP
+        s.press_n("RIGHT", 3, settle=60)
+        s.tap("DOWN", settle=60)                            # StatExp HP -> StatExp Atk
+        s.press_n("RIGHT", 5, settle=60)
+        s.shot("13_statexp_edited", "#95: C11 reshoot: with no Met rows to land on, the "
+                                     "same DOWN/RIGHT taps instead land on StatExp HP "
+                                     "then StatExp Atk (gbe_fields()'s next entries "
+                                     "after Egg on a Gold session) -- proof the row "
+                                     "list genuinely reflows around the absent Met "
+                                     "rows rather than leaving a gap or a stale cursor")
     return s
 
 
