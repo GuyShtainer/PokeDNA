@@ -534,6 +534,19 @@ FIELDS = [
   ("CUR_DAY", U8, 1, {
       "RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("player_data_1", "wCurDay", 0x205A), "CRYSTAL": D("player_data", "wCurDay", 0x2059)}),
+
+  # ---- BACKLOG #94: Gen-2 box names ----------------------------------------------------
+  # sBoxNames: 14 x BOX_NAME_LENGTH(9) GB-encoded, 0x50-terminated names (pret's
+  # constants/text_constants.asm: BOX_NAME_LENGTH EQU 9; engine/menus/intro_menu.asm
+  # SetDefaultBoxNames writes "BOX1".."BOX14" at wBoxNames on a new game -- the exact
+  # bytes this generator's own check_off below cross-checks against Gold.sav/Crystal.sav,
+  # both still holding the untouched defaults). wBoxNames is bank-1 0xD8BF in pokegold.sym
+  # (falls inside GS's own player_data_3 region, wPlayerData3=0xD571) and bank-1 0xDB75 in
+  # pokecrystal.sym (inside Crystal's single player_data region, wPlayerData=0xD47B). Gen 1
+  # has no such table (boxes stay "BOX n" -- gb_fields.h's own comment on GBF_BOXNAMES).
+  ("BOXNAMES", BYTES, 126, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wBoxNames", 0x2727, check_len=126),
+      "CRYSTAL": D("player_data", "wBoxNames", 0x2703, check_len=126)}),
 ]
 
 

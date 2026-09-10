@@ -85,6 +85,12 @@ typedef enum {
    * only; bit GAME_TIME_CAPPED (0) of the byte immediately before GBF_GAMETIME_HOURS. */
   GBF_GAMETIME_CAP,
 
+  /* BACKLOG #94, appended (same API-id rule as GBF_GAMETIME_CAP above): sBoxNames, the
+   * 14 x 9-byte GB-encoded box-name table. GS/Crystal only -- Gen 1's boxes are unnamed
+   * (banner always "BOX n"). One field covers all 14 names (126 B); gb_boxnames.c
+   * indexes into it per box rather than the generator emitting 14 separate field ids. */
+  GBF_BOXNAMES,
+
   GBF_FIELD_COUNT
 } GbField;
 
