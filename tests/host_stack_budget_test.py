@@ -14,19 +14,26 @@ test of a pure-Python tool, nothing to compile). Run directly:
 Also wired into the `stack-check` Makefile target (`make stack-check`), which runs
 this file then the real guard against every already-built ELF it finds.
 
-Four cases, each named after the defect class it guards against regressing:
+Cases, each named after the defect class it guards against regressing:
 
-  (a) estimate_frames() on a fixture reproducing mgfx_zoom_optimise's two false-pass
-      shapes -- a stale `ldr rN,[pc,#imm]` from an UNRELATED earlier use must not
-      leak into a later, unrelated `add sp, rN` (the review's literal reproduction:
-      728 B become a wildly wrong number when a stale value is picked up). Both the
-      ldr-pc/add-sp idiom and the movs/lsls/add-sp idiom independently compute the
-      same 596 B frame with no explosion, and the interposed stale ldr changes
-      nothing.
+  (a) estimate_frames() on fixtures reproducing (1) mgfx_zoom_optimise's stale-
+      register false-pass -- a stale `ldr rN,[pc,#imm]` from an UNRELATED earlier
+      use must not leak into a later, unrelated `add sp, rN` -- and (2, D2/third
+      pass) _svfiprintf_r's double-count: a `movs rN,#k; lsls rN,rN,#s; add sp,rN`
+      epilogue is BY CONSTRUCTION a deallocation (Thumb-1 cannot encode a negative
+      magnitude that way) and must contribute 0 B, not its magnitude, even when it
+      mirrors an allocation made earlier via a negative-literal ldr+add-sp or a
+      direct sub sp -- adding it anyway took _svfiprintf_r from 728 real B to
+      1,420 reported. A movs/lsls dealloc with NO recognized allocation event
+      anywhere in the function reports unknown rather than guessing.
   (b) resolve_all_sites()'s blind-spot check on a synthetic analysis: a caller with
       one declared field-load site and one undeclared site -- the declared one is
       exempted, the undeclared one is named as a blind spot (D1: a function with
       SOME declared classes gets no free pass for an undeclared one).
+  (b2) _base_is_section_anchor() (D1, third pass): a `str rX,[sp,#N]` spill that
+      READS the base register must not be treated as a redefinition that hides
+      the register's true origin (a PC-relative section-anchor load) -- resolves
+      nonfield, not a coincidental field hit.
   (c) resolve_all_sites()'s argsites count check: 2 declared, 3 found in the
       disassembly -- FATAL (a count_mismatch entry naming the caller), not a
       silent re-use of the stale declaration.
@@ -81,11 +88,19 @@ def fn_lines_epilogue_ldrpc_form():
 
 
 def fn_lines_epilogue_movslsls_form():
-    """Same 596 B target via the SECOND legal Thumb-1 idiom
-    (movs rN,#k; lsls rN,rN,#s; add sp,rN = k<<s), with a stale, WRONG-looking
-    earlier ldr r3 (a huge value) that a naive reg-tracking dict would have no
-    reason to distinguish from the real one -- must not affect the result at all,
-    since this idiom never consults ldr_pending in the first place."""
+    """D2 (BACKLOG #84b, third pass): a movs/lsls `add sp,rN` is BY CONSTRUCTION
+    a deallocation (Thumb-1 cannot encode a negative magnitude that way) and must
+    contribute 0 B, not its magnitude -- adding it is exactly the bug that took
+    _svfiprintf_r from 728 real B to 1,420 reported (see
+    fn_lines_svfiprintf_shape below for that literal reproduction). This fixture
+    keeps the original stale-register trap (a stale, WRONG-looking earlier ldr r3
+    with a huge value that a naive reg-tracking dict would have no reason to
+    distinguish from a real one -- must not affect the result at all, since this
+    idiom never consults ldr_pending in the first place) but the expected total
+    is now push(20) + sub sp(100) = 120 B, NOT 596: the movs/lsls epilogue's
+    476 B (238<<1) is a deallocation of the SAME sub-sp-allocated frame and must
+    not be added on top of it. Not unknown either -- sub sp,#100 is a recognized
+    allocation event, so the deallocation has something to match."""
     return [
         " 2000:\tb5f0      \tpush\t{r4, r5, r6, r7, lr}",
         " 2002:\tb0e1      \tsub\tsp, #100",
@@ -102,18 +117,66 @@ def fn_lines_epilogue_movslsls_form():
     ]
 
 
+def fn_lines_svfiprintf_shape():
+    """The reviewer's literal reproduction of _svfiprintf_r's real shape (the
+    numbers are the exact ones read out of the built PokeDNA-artless.elf on
+    2026-09-10): push{r4-r7,lr}(20) + push{r5-r7,lr}(16) = 36 B of pushes, a
+    negative-literal `ldr r4,[pc]=-692; add sp,r4` prologue allocation (692 B),
+    and a `movs r3,#173; lsls r3,r3,#2; add sp,r3` epilogue restoring the SAME
+    692 B (173<<2=692). Real frame is 36+692 = 728 B; the pre-fix walker
+    reported 1,420 B (36+692+692) by adding the epilogue's 692 B a second
+    time."""
+    return [
+        " 3000:\tb5f0      \tpush\t{r4, r5, r6, r7, lr}",
+        " 3002:\tb5e0      \tpush\t{r5, r6, r7, lr}",
+        " 3004:\t4c03      \tldr\tr4, [pc, #12]\t@ (3014 <h+0x14>)",
+        " 3006:\t44a5      \tadd\tsp, r4",
+        " 3008:\t23ad      \tmovs\tr3, #173",
+        " 300a:\t009b      \tlsls\tr3, r3, #2",
+        " 300c:\t449d      \tadd\tsp, r3",
+        " 300e:\tbcf0      \tpop\t{r4, r5, r6, r7}",
+        " 3010:\tbc01      \tpop\t{r0}",
+        " 3012:\t4700      \tbx\tr0",
+        " 3014:\tfffffd4c  \t.word\t0xfffffd4c",   # -692
+    ]
+
+
+def fn_lines_shift_only_no_alloc():
+    """No sub sp and no negative-literal ldr+add-sp anywhere in this function --
+    the ONLY stack-adjusting instruction is a movs/lsls deallocation. Whatever
+    allocated the frame this restores was done by a form this walker does not
+    recognize; the frame must come out UNKNOWN, never a guessed magnitude."""
+    return [
+        " 4000:\tb5f0      \tpush\t{r4, r5, r6, r7, lr}",
+        " 4002:\t23ad      \tmovs\tr3, #173",
+        " 4004:\t009b      \tlsls\tr3, r3, #2",
+        " 4006:\t449d      \tadd\tsp, r3",
+        " 4008:\tbcf0      \tpop\t{r4, r5, r6, r7}",
+        " 400a:\tbc01      \tpop\t{r0}",
+        " 400c:\t4700      \tbx\tr0",
+    ]
+
+
 def test_a_estimator_no_explosion():
     fn_lines = {
         "epilogue_ldrpc_form": fn_lines_epilogue_ldrpc_form(),
         "epilogue_movslsls_form": fn_lines_epilogue_movslsls_form(),
+        "svfiprintf_shape": fn_lines_svfiprintf_shape(),
+        "shift_only_no_alloc": fn_lines_shift_only_no_alloc(),
     }
     est = sb.estimate_frames(fn_lines)
     check("(a) ldr-pc epilogue idiom = 596 B, not exploded",
           est["epilogue_ldrpc_form"] == {"bytes": 596, "unknown": False},
           est["epilogue_ldrpc_form"])
-    check("(a) movs/lsls epilogue idiom = 596 B, stale ldr ignored",
-          est["epilogue_movslsls_form"] == {"bytes": 596, "unknown": False},
+    check("(a/D2) movs/lsls epilogue is a dealloc, contributes 0 -> 120 B, stale ldr ignored",
+          est["epilogue_movslsls_form"] == {"bytes": 120, "unknown": False},
           est["epilogue_movslsls_form"])
+    check("(a/D2) _svfiprintf_r shape = 728 B, not double-counted to 1,420",
+          est["svfiprintf_shape"] == {"bytes": 728, "unknown": False},
+          est["svfiprintf_shape"])
+    check("(a/D2) movs/lsls dealloc with no allocation event anywhere -> unknown",
+          est["shift_only_no_alloc"]["unknown"] is True,
+          est["shift_only_no_alloc"])
 
 
 # === (b) per-site blind spot: one declared, one undeclared =============================

@@ -563,15 +563,36 @@ def estimate_frames(fn_lines):
     for something else entirely; _svfiprintf_r's reported 728 B was right only by
     the bit pattern of unrelated data, not by the walker actually tracking anything.
 
-    Fix: track exactly ONE pending (reg, value), set by `ldr rN, [pc, #imm]` and
-    consumed ONLY by an add-sp for the SAME register with nothing but other
-    push/sub-sp/ldr-pc lines in between; ANY other instruction invalidates it. The
-    `movs rN, #k; lsls rN, rN, #s; add sp, rN` idiom (the second legal Thumb-1 form
-    for a stack deallocation too large for `sub sp`'s 7-bit immediate) gets its own
-    tracked (reg, k<<s) pending value with the same single-slot, immediately-
-    consumed-or-invalidated discipline. An `add sp, rN` that matches NEITHER
-    pending state marks the whole function unknown -- one unaccountable
-    deallocation makes the running total untrustworthy, not just that one term."""
+    Fix (stale-register class, kept): track exactly ONE pending (reg, value), set
+    by `ldr rN, [pc, #imm]` and consumed ONLY by an add-sp for the SAME register
+    with nothing but other push/sub-sp/ldr-pc lines in between; ANY other
+    instruction invalidates it. The `movs rN, #k; lsls rN, rN, #s; add sp, rN`
+    idiom gets its own tracked (reg, k<<s) pending value with the same
+    single-slot, immediately-consumed-or-invalidated discipline.
+
+    D2's SEPARATE bug (BACKLOG #84b review, third pass): `add sp, rN` has TWO
+    distinct meanings depending on which idiom fed rN, and the walker was
+    treating both as allocations. A `movs rN,#k; lsls rN,rN,#s` value is, by
+    Thumb-1 construction, always a small non-negative literal shifted left --
+    there is no way to encode a negative magnitude that way -- so
+    `add sp, rN` fed by that idiom always INCREASES sp: it is a DEALLOCATION
+    (an epilogue restoring a frame the prologue already allocated), never a
+    second allocation on top of one. Likewise a POSITIVE `ldr rN,[pc,#imm]`
+    literal fed into `add sp, rN` is also a deallocation. Only a NEGATIVE
+    `ldr`-literal `add sp, rN` (sp decreases) and a direct `sub sp, #imm` are
+    real allocations, and get summed into the frame total alongside the pushes.
+    Counting a deallocation as if it were additional allocation is exactly how
+    `_svfiprintf_r` came out at 1,420 B (728 real): its prologue allocates 692 B
+    via a negative-literal `ldr+add sp`, and its epilogue restores the SAME
+    692 B via the movs/lsls form -- the old code added both.
+
+    If a movs/lsls-fed `add sp, rN` deallocation is seen but the function had NO
+    allocation event at all (no `sub sp,#imm`, no negative-literal `ldr+add sp`),
+    the function is UNKNOWN: something else must have done the allocation this
+    walker does not recognize, and treating the deallocation's magnitude as the
+    frame size would be pure guesswork. An `add sp, rN` matching NEITHER pending
+    state is still an unconditional unknown, as before -- an unaccountable
+    deallocation makes the running total untrustworthy."""
     est = {}
     for fn, raw_lines in fn_lines.items():
         word = {}
@@ -579,7 +600,9 @@ def estimate_frames(fn_lines):
             m = re.match(r'^\s*([0-9a-f]+):\t([0-9a-f ]+)\t\.word\s+0x([0-9a-f]+)', l)
             if m:
                 word[int(m.group(1), 16)] = int(m.group(3), 16)
-        total = 0
+        total = 0              # push bytes + genuine allocation events (summed)
+        saw_alloc_event = False
+        saw_shift_dealloc = False
         unknown = False
         ldr_pending = None    # (reg, value) from the most recent `ldr rN, [pc, #imm]`
         shift_pending = None  # (reg, k<<s so far) from `movs rN,#k` / `lsls rN,rN,#s`
@@ -596,6 +619,7 @@ def estimate_frames(fn_lines):
             sm = SUBSP_RE.match(ins)
             if sm:
                 total += int(sm.group(1))
+                saw_alloc_event = True
                 continue                               # allowed too
             lm = LDRPC_RE.match(m.group(2).strip())
             if lm:
@@ -609,12 +633,15 @@ def estimate_frames(fn_lines):
                 if ldr_pending is not None and ldr_pending[0] == reg:
                     v = ldr_pending[1]
                     if v & 0x80000000:
-                        total += (0x100000000 - v)
-                    else:
-                        unknown = True                 # a positive "constant" add sp makes no
-                                                         # sense for this idiom -- don't guess
+                        total += (0x100000000 - v)     # negative literal: allocation
+                        saw_alloc_event = True
+                    # else: positive literal fed into add sp -- a deallocation,
+                    # contributes nothing (ignored, not unknown)
                 elif shift_pending is not None and shift_pending[0] == reg:
-                    total += shift_pending[1]
+                    # movs/lsls can only produce a non-negative literal -- this
+                    # add sp is by construction a deallocation, never a second
+                    # allocation on top of the prologue's; ignore its magnitude
+                    saw_shift_dealloc = True
                 else:
                     unknown = True                      # unaccountable deallocation
                 ldr_pending = None
@@ -634,6 +661,8 @@ def estimate_frames(fn_lines):
             # clobbered the register or simply means the value is no longer "just set"
             ldr_pending = None
             shift_pending = None
+        if saw_shift_dealloc and not saw_alloc_event:
+            unknown = True    # deallocation seen with no recognized allocation to match it
         est[fn] = {"bytes": total, "unknown": unknown}
     return est
 
