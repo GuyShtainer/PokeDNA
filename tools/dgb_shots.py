@@ -877,21 +877,11 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
                                   "exist.')")
         s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss
 
-        # N6(b) part 2 -- WHAT THE BRIEF ASKED FOR vs WHAT THE SHIPPED CODE DOES:
-        # the brief wants "ADD ITEM id 251" to reproduce the SAME 'BAD ID' refusal
-        # as id 0. It cannot: gbbag_start_menu's own ADD-ITEM id prompt is
-        # `num_entry_opt("ITEM ID", 1, maxid, &id)` with maxid = gbb_max_item_id()
-        # == 250 for Gen 1 (source/pdna_gbbag.c ~line 352) -- and num_entry_opt()
-        # ITSELF clamps its return value to that maxv (source/pdna_trainer.c:59-67,
-        # `*out_v = v > maxv ? maxv : v;`) BEFORE gbb_insert() ever runs. Typing
-        # "251" on the OSK therefore never reaches gbb_insert() as 251 at all -- it
-        # comes back as 250 (TM50, a LEGAL ordinary id), and the insert SUCCEEDS.
-        # gb_bag.c's own GBB_ERR_BADID high-id branch (id > gbb_max_item_id) is
-        # real and correct, but UNREACHABLE from this prompt -- only id==0 (an
-        # emptied field, shot 14 above) is a live BAD ID refusal through this UI.
-        # Captured here as what actually happens, not as the refusal the brief
-        # assumed; the REMOVE afterward undoes the real insert so N6(c) below
-        # starts clean.
+        # N6(b) part 2 -- id 251: one past Gen 1's last legal id (250). R1 (the
+        # re-verify-3 one-liner): the ID prompt's OSK cap is 999 and the value is
+        # clamped to 0xFF, so 251 reaches gbb_insert() as 251 and lands on its own
+        # GBB_ERR_BADID branch -> the same 'BAD ID' dialog as id 0. (Before R1 the
+        # prompt clamped to 250 = TM50 and INSERTED it silently.)
         s.tap("START", settle=gb_shots.BIG_SETTLE)              # item menu again
         s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry, seeded "1", cursor col0
         s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> field empty, cursor col0
@@ -904,26 +894,16 @@ def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
                                                                  # source/osk.c line 223 -- the digit row is
                                                                  # 10-wide, so RIGHT wraps circularly)
         s.tap("A", settle=gb_shots.SETTLE)                      # type '1' -> field "251"
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm -- num_entry_opt clamps 251 -> 250
-                                                                 # before gbb_insert() ever sees it -> QUANTITY
-                                                                 # prompt next (seeded "1")
-        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=1 -> gbb_insert(id=250, qty=1) runs
-        s.shot("15_id251_clamped_to_250", "U4: N6(b) -- typing id 251 does NOT "
-                                           "reproduce the id-0 'BAD ID' refusal: "
-                                           "num_entry_opt()'s own maxv=250 clamp "
-                                           "(source/pdna_trainer.c) rewrites 251 to "
-                                           "250 BEFORE gbb_insert() runs, and 250 "
-                                           "(TM50) is a legal id -- the insert "
-                                           "SUCCEEDS, landing a new 'ITEM-250' row. "
-                                           "gb_bag.c's own high-id GBB_ERR_BADID "
-                                           "branch is real but unreachable from "
-                                           "this prompt; only id 0 (shot 14) is a "
-                                           "live refusal through this UI.")
-        # Undo the real insert (250 landed on the list's last row, ADD ITEM's own
-        # `*sel = l->count - 1` rule) so N6(c) below starts from the pristine list.
-        s.tap("START", settle=gb_shots.BIG_SETTLE)
-        s.tap("DOWN", settle=gb_shots.SETTLE)                   # ADD ITEM -> REMOVE
-        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # REMOVE id 250
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id "251" -> QUANTITY prompt (seeded "1")
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=1 -> gbb_insert(id=251) -> GBB_ERR_BADID
+        s.shot("15_id251_bad_id", "U4: N6(b) -- typing id 251 (one past Gen 1's last "
+                                   "legal id) now reaches gbb_insert() unchanged and is "
+                                   "refused with the same 'BAD ID / That item id does not "
+                                   "exist.' dialog as id 0 -- this frame is pixel-identical "
+                                   "to shot 14 BY DESIGN (the dialog never echoes the typed "
+                                   "id; allow_same) -- R1: the ID prompt no longer clamps "
+                                   "to 250; nothing was inserted.", allow_same=True)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss; nothing to undo
 
         # N6(c): BAD QUANTITY refusals -- qty 0 and qty 100 (valid range 1..99).
         # A valid id is needed to reach the quantity prompt at all; id 20 (POTION,

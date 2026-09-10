@@ -164,7 +164,10 @@ class Session:
         for _ in range(n):
             self.tap(name, settle=settle)
 
-    def shot(self, name: str, caption: str, settle: int = 0) -> Path:
+    def shot(self, name: str, caption: str, settle: int = 0, allow_same: bool = False) -> Path:
+        # allow_same: the caller KNOWS this frame is expected to equal the previous
+        # shot (e.g. the same refusal dialog reached by a different input) and says
+        # so in the caption; the identical-frame guard below is then skipped.
         if settle:
             self.run(settle)
         img = self.screen.to_pil().convert("RGB")
@@ -181,7 +184,7 @@ class Session:
                 f"(value {lo}) -- the emulator is very unlikely to be showing a real "
                 f"screen; a settle/press was probably too short or landed mid-transition.")
         raw = img.tobytes()
-        if self._last_shot is not None and raw == self._last_shot[1]:
+        if not allow_same and self._last_shot is not None and raw == self._last_shot[1]:
             raise RuntimeError(
                 f"{self.prefix}{name}: pixel-identical to the previous shot "
                 f"({self._last_shot[0]}) -- the tap(s) between them had no visible "

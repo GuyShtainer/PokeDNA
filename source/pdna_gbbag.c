@@ -46,8 +46,11 @@ static void gbbag_row_paint(const GbBag* bag, GbBagPocket pocket, int row, int y
      * PokeDNA-font fallback page uses '-' instead too, purely for the SAME
      * wording everywhere this shell shows a raw item id. */
     siprintf(lbl, "ITEM-%u", (unsigned)e->id);
-    if (pocket == GBB_POCKET_KEY) siprintf(val, "-");
-    else                          siprintf(val, "x%u", (unsigned)e->qty);
+    /* R2 (re-verify 3, decided): the plain page agrees with the GB-shell page
+     * -- a Gen-1 key item shows no quantity here either (its stored qty byte
+     * is not user-meaningful; the cartridge never prints it). */
+    if (pocket == GBB_POCKET_KEY || gbb_is_g1_key_item(e->id)) siprintf(val, "-");
+    else                                                       siprintf(val, "x%u", (unsigned)e->qty);
   }
   if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
   else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
@@ -347,13 +350,19 @@ static bool gbbag_start_menu(GbBag* bag, GbBagPocket pocket, int* sel, int* top,
        * value to 99 up front would make a typed 100 silently become 99 and
        * never reach gbb_insert()'s own validation, so an out-of-range type-in
        * could never be told apart from a legal saturating merge below. */
-      uint32_t maxid = gbb_max_item_id(GBF_G_RED);
+      /* R1 (re-verify 3): the ID prompt used to pass gbb_max_item_id() as the
+       * OSK cap, so a typed 251 was rewritten to 250 (TM50, a legal item) and
+       * INSERTED -- the same silent-rewrite class as the quantity case above.
+       * Same cure: a wide cap, then clamp to 0xFF (never a plain (uint8_t)
+       * truncation -- 300 would become 44, a different legal item) so every
+       * out-of-range id reaches gbb_insert()'s own BAD ID refusal. */
       uint32_t id, qty;
-      if (!num_entry_opt("ITEM ID", 1, maxid, &id)) continue;
+      if (!num_entry_opt("ITEM ID", 1, 999, &id)) continue;
+      uint8_t id8 = (uint8_t)(id > 0xFFu ? 0xFFu : id);
       if (!num_entry_opt("QUANTITY", 1, 999, &qty)) continue;
       bool qty_in_range = qty >= 1u && qty <= GBB_QTY_CAP;
       uint8_t qty8 = (uint8_t)(qty > 0xFFu ? 0xFFu : qty);
-      GbBagOpStatus st = gbb_insert(GBF_G_RED, bag, pocket, (uint8_t)id, qty8);
+      GbBagOpStatus st = gbb_insert(GBF_G_RED, bag, pocket, id8, qty8);
       if (st == GBB_ERR_FULL)
         msg_wait("BAG FULL", UI_WARN, "This pocket has no free slot.", 0);
       else if (st == GBB_ERR_BADID)
