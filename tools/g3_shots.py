@@ -147,6 +147,14 @@ def run_contests(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.shot("02_museum_list", "#60: the 5 Lilycove Art Museum painting slots -- category, "
                               "current species (or \"(empty)\"), and rank")
 
+    s.tap("R", settle=BIG_SETTLE)          # L/R flips page: MUSEUM -> HALL
+    s.shot("02b_hall", "#60: the Contest Hall page on Guy's own Emerald save -- 6 "
+                        "populated rows; the D2 fix is visible here (slot 3, Tough/"
+                        "Plusle, reads Master -- with the old RANK_NAME table indexed "
+                        "by the ribbon-word scale instead of CONTEST_RANK_*, this same "
+                        "byte (3) would have displayed as \"Hyper\")")
+    s.tap("L", settle=BIG_SETTLE)          # HALL -> back to MUSEUM, sel still 0 (Cool)
+
     s.tap("A", settle=BIG_SETTLE)          # A on Cool -> donor picker, source list
     s.shot("03_picker_source", "#60: donor picker, level 1 -- Party, then the 14 PC boxes")
 
@@ -166,6 +174,19 @@ def run_contests(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     s.tap("A", settle=BIG_SETTLE)          # dismiss the "SAVED / Flash written" msg_wait
     s.shot("06_museum_written", "#60: back on the museum list -- the Cool painting now "
                                  "shows the donor's species and Master rank")
+
+    # D1 regression: the SAME donor, a DIFFERENT category, on the confirm line that
+    # used to overflow l1[32] for a 10-char species + Beauty ("Show TYRANITAR as
+    # Beauty winner?" is 33 B including the NUL; l1 is 48 B now).
+    s.press_n("DOWN", 1)                   # Cool(0) -> Beauty(1)
+    s.tap("A", settle=BIG_SETTLE)          # -> donor picker, source list
+    s.tap("A", settle=BIG_SETTLE)          # Party -> mon list
+    s.tap("A", settle=BIG_SETTLE)          # first party mon -> confirm dialog
+    s.shot("05b_confirm_beauty", "#60/D1: the write confirm for Beauty -- the exact "
+                                  "species+category combination the review found "
+                                  "overflowing l1[32]; fits comfortably in l1[48] now")
+    s.tap("A", settle=400)                 # write it (same flash-write path as Cool above)
+    s.tap("A", settle=BIG_SETTLE)          # dismiss the "SAVED" msg_wait
 
     s.tap("B", settle=BIG_SETTLE)          # leave Contests -> box screen
 
