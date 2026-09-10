@@ -165,6 +165,17 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
      "SWAP, BAD ID/QUANTITY refusals, the forced-failure fallback page, the "
      "empty pocket (+ real-cartridge oracle), Gold's own Bag refusal",
      ("N6(d)", "N6(e)", "N6(f)")),
+    # BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4, append-only,
+    # same rule as every row above): the KEEP AS IS / MAKE LEGAL choice
+    # gb_paste_hook now offers on a Gen 3 -> Game Boy paste whose species is
+    # standing below its evolution's minimum level. Shots come from
+    # tools/dgb_shots.py's run_r1_xfer() (--r1-xfer), run against a Gold-fused
+    # image (NOT Red -- see that function's own docstring for why: Red/Gen-1's
+    # base-stats-ROM lookup is SD-card-only and always refuses in this harness,
+    # independent of R1); captions all start "BACKLOG #104 R1:". Appended after
+    # "u4-review-n6" per this list's own append-only rule.
+    ("xfer-r1-make-legal", "BACKLOG #104 R1 — KEEP AS IS / MAKE LEGAL on a Gen 3 -> "
+     "Game Boy paste (an underlevelled evolved species)", ("BACKLOG #104 R1",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
