@@ -429,8 +429,8 @@ def test_d_load_extra_edges_parses_frame_override():
         f.write("caller_b argsites=2 -> impl_x impl_y\n")
         path = f.name
     try:
-        field_decls, argsite_decls, whole_func_decls, frame_overrides = \
-            sb.load_extra_edges(path)
+        field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls, \
+            addrtaken_ok = sb.load_extra_edges(path)
         check("(d) frame override line parsed", frame_overrides == {"leaf": 40},
               frame_overrides)
         check("(d) field-offset line parsed alongside it",
@@ -454,8 +454,8 @@ def test_d6_argsites_accepts_a_dotted_gcc_clone_name():
         f.write("draw_wallpaper.constprop.0 argsites=3 -> impl_a impl_b\n")
         path = f.name
     try:
-        field_decls, argsite_decls, whole_func_decls, frame_overrides = \
-            sb.load_extra_edges(path)
+        field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls, \
+            addrtaken_ok = sb.load_extra_edges(path)
         check("(D6) dotted caller name parsed into argsite_decls, not swallowed whole",
               argsite_decls == {"draw_wallpaper.constprop.0": (3, {"impl_a", "impl_b"})},
               argsite_decls)
@@ -507,6 +507,68 @@ def test_d7_pop_redefines_its_register_list():
     check("(D7) _expand_reglist handles an r3-r5 range like _reg_count does",
           sb._expand_reglist("{r3-r5, lr}") == {"r3", "r4", "r5", "lr"},
           sb._expand_reglist("{r3-r5, lr}"))
+
+
+# === (D1, fifth pass) the address-taken sweep ===========================================
+
+def test_d1_load_extra_edges_parses_isr_and_addrtaken_ok():
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("isr hb_isr\n")
+        f.write("isr pwm_isr\n")
+        f.write("addrtaken-ok some_table_entry  # compiler-generated, never called\n")
+        path = f.name
+    try:
+        _fd, _ad, _wd, _fo, isr_decls, addrtaken_ok = sb.load_extra_edges(path)
+        check("(D1) isr lines parsed", isr_decls == {"hb_isr", "pwm_isr"}, isr_decls)
+        check("(D1) addrtaken-ok line parsed", addrtaken_ok == {"some_table_entry"},
+              addrtaken_ok)
+    finally:
+        os.unlink(path)
+
+
+def test_d1_words_from_objdump_s_text_byte_order():
+    """A synthetic `objdump -s` section dump: one line holding two 4-byte groups. The
+    first group's bytes, read in ADDRESS order (0x00,0x00,0x01,0x08) and interpreted
+    little-endian, is 0x08010000 -- a Thumb function pointer (bit 0 set) whose real
+    entry is 0x08010000. The second group is a plain data word, 0xdeadbeef, not a
+    function address at all."""
+    text = " 8072380 01000108 efbeadde  " + "." * 8 + "\n"
+    words = list(sb._words_from_objdump_s_text(text))
+    check("(D1) two words parsed from one dump line", len(words) == 2, words)
+    check("(D1) first word decoded little-endian, not as a raw hex string",
+          words[0] == 0x08010001, hex(words[0]) if words else None)
+    check("(D1) second word decoded correctly too",
+          words[1] == 0xdeadbeef, hex(words[1]) if len(words) > 1 else None)
+    check("(D1) masking the Thumb bit off the first word gives the real entry",
+          (words[0] & ~1) == 0x08010000, hex(words[0] & ~1))
+
+
+def test_d1_orphan_detection_catches_the_planted_function():
+    """The reviewer's exact attack, modeled at the set-arithmetic level (the real
+    scan runs over an actual ELF's objdump -s output -- see the report's `make
+    artless` proof for the live version): a function whose address is TAKEN (found
+    by the sweep) but that is in none of {declared implementations, reachable-by-
+    ordinary-graph, declared ISR handlers, addrtaken-ok escapes} must be named as an
+    orphan. A legitimately-declared implementation, and a genuinely reachable
+    function whose address also happens to be taken (e.g. stored in a second,
+    unrelated table), must NOT be flagged."""
+    taken = {"rv_deep_records", "pcsrc_records", "hb_isr", "app_mon_menu"}
+    all_impls = {"pcsrc_records", "banksrc_records", "gbsrc_records"}
+    reachable = {"app_mon_menu", "main"}
+    isr_decls = {"hb_isr", "pwm_isr"}
+    addrtaken_ok = set()
+    declared_or_reachable = all_impls | reachable | isr_decls | addrtaken_ok
+    orphans = sorted(taken - declared_or_reachable)
+    check("(D1) the planted, undeclared function is the ONLY orphan",
+          orphans == ["rv_deep_records"], orphans)
+
+    # Now the escape hatch: declaring it addrtaken-ok clears it.
+    addrtaken_ok2 = {"rv_deep_records"}
+    declared_or_reachable2 = all_impls | reachable | isr_decls | addrtaken_ok2
+    orphans2 = sorted(taken - declared_or_reachable2)
+    check("(D1) addrtaken-ok clears a genuine false positive",
+          orphans2 == [], orphans2)
 
 
 # === (D8, fifth pass) UNKNOWN frames are checked over the whole reachable set ===========
@@ -676,6 +738,9 @@ def main():
     test_d3_su_frame_takes_max_not_bare_base_first()
     test_d7_pop_redefines_its_register_list()
     test_d8_unknown_frame_off_the_deepest_chain_still_fatal()
+    test_d1_load_extra_edges_parses_isr_and_addrtaken_ok()
+    test_d1_words_from_objdump_s_text_byte_order()
+    test_d1_orphan_detection_catches_the_planted_function()
     test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain()
     test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged()
     test_boxsource_offsets_match_real_header()

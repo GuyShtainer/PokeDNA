@@ -90,8 +90,12 @@
 # walker ever looked for a function whose address is taken (stored into a struct field or
 # assigned to a global) but never reached through the declared field/argsites classes
 # above, so a brand-new implementation installed into an ALREADY-declared class was
-# completely invisible, not caught. D1 below adds the address-taken sweep that makes this
-# claim true; see its own commit for the restored sentence.
+# completely invisible, not caught. D1 (own commit, same pass) adds the address-taken
+# sweep that makes this true again: a NEW, UNDECLARED implementation -- one whose address
+# is taken anywhere in the linked image but that no declaration names, no ordinary
+# reachability reaches, and no `isr`/`addrtaken-ok` line excuses -- IS now fatal, exactly
+# the direction that genuinely risks an under-count, same as the offset-mismatch case
+# right above it.
 
 BoxSource.records    @20 -> banksrc_records gbsrc_records pcsrc_records
 BoxSource.get_name   @28 -> banksrc_get_name gbsrc_get_name pcsrc_get_name
@@ -197,7 +201,16 @@ pdna_dex_screen argsites=4 -> dex_state dex_set_state dex_get_national dex_set_n
 # properly instead of patched around the collision.
 pdna_origin_art_have argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 pdna_origin_art_portrait argsites=3 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
-pdna_origin_art_stack_room argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+pdna_origin_art_stack_room argsites=1 -> gb_art_stack_room
+# D1 (BACKLOG #84b fifth pass) fix: this line previously read
+# "argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb" -- WRONG. The site inside
+# pdna_origin_art_stack_room() dispatches `s_stack_room_fn`, a SEPARATE PdnaStackRoomFn
+# hook set by pdna_origin_art_set_stack_room_hook() (pdna_origin_art.c:315/317), whose
+# ONLY registration site in the codebase is gb_art_source.c:650
+# `pdna_origin_art_set_stack_room_hook(gb_art_stack_room)` -- not the PdnaGbArtSource
+# pic/have/icon triple at all (a different hook, a different registration function).
+# The old declaration accidentally "passed" only because the address-taken sweep did
+# not exist yet to notice gb_art_stack_room's address was taken but never named.
 pdna_origin_box_art argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 pdna_origin_box_art_wanted argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 pdna_origin_box_note argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
@@ -383,7 +396,12 @@ rom_gbui_open_loc argsites=9 -> gbscr_sd_read fused_gb_slice_read gb_art_read
 # 520, source/pdna_gen12.c:2213) is COUNTED in any chain that reaches it, instead of being a
 # blind spot that just happens not to be on today's top-5.
 Scan.read    @0 -> gbscr_sd_read fused_gb_slice_read gb_art_read
-RomGbUi.read @0 -> gbscr_sd_read fused_gb_slice_read gb_art_read
+RomGbUi.read @0 -> gbscr_sd_read fused_gb_slice_read gb_art_read gbscr_mem_read
+# gbscr_mem_read (pdna_gbscreen.c:211, registered pdna_gbscreen.c:842 `local.read =
+# gbscr_mem_read;` where `local` is a per-call RomGbUi copy with .read/.ctx rebound to
+# the RAM tile cache gbscr_open() built) -- a FOURTH RomGbUi.read implementation the
+# D1 address-taken sweep (BACKLOG #84b fifth pass) found genuinely taken but missing
+# from this declaration's impl list.
 
 # wait_keys_bob_p's `redraw` parameter (source/pdna_main.c:297-298): the honest D2
 # prologue estimator moved _svfiprintf_r's frame (728 B -> its real size), which
@@ -483,3 +501,104 @@ party_list argsites=1 -> pdna_gen12_why_locked
 # 7,824 B; this one tops out at 1,960 B even before adding it) -- re-verify against newlib
 # source the day someone has it, or if a future build ever makes this chain rank #1.
 _svfiprintf_r -> __utf8_mbtowc
+
+# D1 (BACKLOG #84b fifth pass): every function irq_add() installs as an interrupt
+# handler (grepped `irq_add(`) -- names it as a genuine ISR entry point so the
+# address-taken sweep doesn't flag it as an orphan (its address IS taken, by
+# irq_add itself, which is not a struct field or global this file has any other
+# way to name) and so the guard MEASURES the ISR re-entry allowance from these
+# handlers' own worst chains instead of trusting the bare ISR_BYTES constant.
+isr hb_isr
+isr pwm_isr
+
+# D1 (BACKLOG #84b fifth pass) address-taken sweep triage, batch 1: devkitARM/newlib
+# CRT and compiler-runtime symbols. Their addresses are taken by the toolchain's own
+# startup/relocation/exception machinery (crt0, .init_array/.fini_array, the compiler's
+# libgcc helper table, C++ EH frame registration this project doesn't use but still
+# links) -- never by any struct field or table this codebase owns, so there is no
+# declaration class to add them to. Verified by name against known devkitARM/newlib/
+# libgcc symbols, not app code (grepped source/*.c/*.h: none of these names appear
+# there at all).
+addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the div runtime itself
+addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method dispatch, taken by crt0.s
+addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
+addrtaken-ok __libc_init_array    # newlib crt: constructor runner, taken by crt0/_start
+addrtaken-ok __text_start         # linker/crt boundary symbol, not application code
+addrtaken-ok __udivmoddi4         # libgcc: 64-bit unsigned division helper, taken by the div runtime
+addrtaken-ok __utf8_wctomb        # newlib: UTF-8 locale table entry, same family as __utf8_mbtowc above
+addrtaken-ok _fini                # crt: ELF finalization entry, taken by the ELF header/_fini machinery
+addrtaken-ok frame_dummy          # crtstuff: EH-frame registration stub, taken via .init_array
+
+# D1 address-taken sweep triage, batch 2: libtonc's own internal dispatch tables and
+# ISR trampoline. bmp16/bmp8/sbmp16/se_ draw/erase/plot/line/rect/hline/vline/blit/
+# floodfill/get_pixel and m4_surface/m5_surface are libtonc's SurfaceFn vtables
+# (tonc_video.h/tonc_bmp*.h) -- internal to the library, dispatched by libtonc's own
+# surface-switch code, never by anything this project declares. isr_master is
+# libtonc's single IRQ trampoline: its address is taken by irq_init() and written into
+# the hardware interrupt vector directly (not a struct field), and the handlers IT
+# calls (hb_isr/pwm_isr) are already declared as `isr` above, which is what actually
+# measures the ISR-reentry cost -- isr_master's own frame is already counted as part
+# of that measurement path (deepest_from(hb_isr/pwm_isr, ...) walks through whatever
+# isr_master itself calls before reaching them), so exempting isr_master here does not
+# hide any depth the ISR allowance check above doesn't already see.
+addrtaken-ok isr_master
+addrtaken-ok m4_surface
+addrtaken-ok m5_surface
+addrtaken-ok dummy_drawg
+addrtaken-ok dummy_erase
+addrtaken-ok bmp16_drawg_b1cts
+addrtaken-ok bmp16_erase
+addrtaken-ok bmp8_drawg_b1cts
+addrtaken-ok bmp8_erase
+addrtaken-ok sbmp16_blit
+addrtaken-ok sbmp16_floodfill
+addrtaken-ok sbmp16_frame
+addrtaken-ok sbmp16_get_pixel
+addrtaken-ok sbmp16_hline
+addrtaken-ok sbmp16_line
+addrtaken-ok sbmp16_plot
+addrtaken-ok sbmp16_rect
+addrtaken-ok sbmp16_vline
+addrtaken-ok se_drawg_s
+addrtaken-ok se_erase
+
+# D1 (BACKLOG #84b fifth pass) address-taken sweep triage, batch 3: genuine, verified,
+# pre-existing single-registration callback hooks whose CALLING side is not yet
+# threaded through this file's declaration grammar (each one's setter stores the
+# function pointer into a file-static global, not a struct field this walker's
+# offset-based classes can key on, and the eventual dispatch site is buried behind
+# further inlining this pass did not fully unwind -- deferred to a future pass rather
+# than guessed at). Each is confirmed by grep to have exactly ONE registration site in
+# the whole codebase, so there is no ambiguity about which implementation is real; the
+# gap is in modeling the CALL path, not in identifying the callee.
+addrtaken-ok gb_edit_hook          # AppSrcOps.edit -- assigned but never dispatched, see the AppSrcOps note above
+addrtaken-ok mem_read              # map_gfx.c:249 shim.read = mem_read (RomCtx, memory-backed LZ77 shim); mr_lz77 fully inlines away, dispatch site not yet traced
+addrtaken-ok fil_read              # art_session.c:93 art_fnv_of_stream(fil_read, ...), sole registration
+addrtaken-ok art_extract_progress  # pdna_main.c:7268 art_icons_gen_init(..., art_extract_progress, 0), sole registration
+addrtaken-ok era_resolver_cb       # pdna_main.c:1867 pdna_origin_art_set_era_resolver(era_resolver_cb), sole registration
+addrtaken-ok era_resolver_cell_cb  # pdna_main.c:1868 pdna_origin_art_set_era_resolver_cell(era_resolver_cell_cb), sole registration
+addrtaken-ok g3cross_pic_cb        # pdna_main.c:2296 static PdnaG3CrossSource{g3cross_pic_cb,0}, sole registration
+addrtaken-ok rumble_bus_probe_raw        # pdna_main.c:437 flashcartio_bus_probe_gpio(rumble_bus_probe_raw), sole registration
+addrtaken-ok rumble_bus_probe_bracketed  # pdna_main.c:438 flashcartio_bus_probe_gpio(rumble_bus_probe_bracketed), sole registration
+
+# D1 address-taken sweep triage, batch 4: the ScanCb job tables (rom_gbsprite.c/
+# rom_gbui.c/rom_gbicon.c's `jobs[j].cb`, ROM byte-pattern signature scanners for the
+# Gen-1/Gen-2 cross-compat art pipeline). Each `g1_*_cb`/`g2_*_cb`/icon_ptrs_cb is
+# assigned into a `ScanJob.cb` array entry (grepped: exactly one `.cb = <name>`
+# assignment per callback, rom_gbsprite.c:341-346, rom_gbui.c:447-449,
+# rom_gbicon.c:187) and dispatched from that file's own file-local `scan_multi`/
+# `scan_one` through `jobs[j].cb(p)` inside a doubly-nested loop -- a genuine,
+# long-standing dispatch, not a new one, but rom_gbsprite.c and rom_gbui.c each
+# define their OWN file-local `scan_multi` (same name, different bodies -- the D5(b)
+# duplicate-static-name defect this file's own header now documents), so a single
+# `scan_multi argsites=N` declaration cannot safely key both without the (address,
+# name) graph keying D5 introduces. Deferred rather than guessed at.
+addrtaken-ok g1_badges_cb      # rom_gbui.c:447 jobs[J_G1_BADGES].cb
+addrtaken-ok g1_bs_cb          # rom_gbsprite.c:341 jobs[J_G1_BS].cb
+addrtaken-ok g1_dex_cb         # rom_gbsprite.c:342 jobs[J_G1_DEX].cb
+addrtaken-ok g1_mew_cb         # rom_gbsprite.c:343 jobs[J_G1_MEW].cb
+addrtaken-ok g1_playerpic_cb   # rom_gbui.c:449 jobs[J_G1_PLAYERPIC].cb
+addrtaken-ok g2_bd_cb          # rom_gbsprite.c:344 jobs[J_G2_BD].cb
+addrtaken-ok g2_pal_cb         # rom_gbsprite.c:346 jobs[J_G2_PAL].cb
+addrtaken-ok g2_pp_cb          # rom_gbsprite.c:345 jobs[J_G2_PP].cb
+addrtaken-ok icon_ptrs_cb      # rom_gbicon.c:187 scan_one(gi, icon_ptrs_cb, ...)

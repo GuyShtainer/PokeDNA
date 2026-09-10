@@ -308,6 +308,7 @@ def analyze(dump_text):
 
     return {
         "funcs": set(name_at.values()),
+        "name_at": dict(name_at),   # D1 (BACKLOG #84b fifth pass): the address-taken sweep
         "edges": edges,
         "indirect_sites": dict(indirect_sites),
         "weird": weird,
@@ -332,6 +333,9 @@ FIELD_LINE_RE = re.compile(r'^(\w+)\.(\w+)\s*@(\d+)$')
 # match and falls through exactly as before.
 ARGSITE_LINE_RE = re.compile(r'^([\w.]+)\s+argsites=(\d+)$')
 FRAME_LINE_RE = re.compile(r'^frame\s+(\S+)\s*=\s*(\d+)\b')
+# D1 (BACKLOG #84b fifth pass): two more declaration shapes, for the address-taken sweep.
+ISR_LINE_RE = re.compile(r'^isr\s+(\S+)$')
+ADDRTAKEN_OK_RE = re.compile(r'^addrtaken-ok\s+(\S+)$')
 
 
 def load_extra_edges(path):
@@ -365,19 +369,41 @@ def load_extra_edges(path):
         when the prologue estimator can't classify it, so an honest UNKNOWN
         doesn't fail the build forever.
 
+      isr fn
+        D1 (BACKLOG #84b fifth pass): names a function installed as an interrupt
+        handler (via `irq_add`) -- the guard measures the ISR re-entry allowance
+        from every declared handler's own worst chain instead of trusting a bare
+        constant, and a declared handler is exempt from the address-taken FATAL
+        (its address is taken by `irq_add` itself, not a struct field/global this
+        file has any other way to name).
+
+      addrtaken-ok fn
+        D1's escape hatch: `fn`'s address is genuinely taken somewhere in the
+        linked image (a real function pointer this walker's sweep will find) but
+        is a confirmed false positive -- e.g. a compiler-generated table entry
+        with no runtime call path this project's code ever exercises. Each use
+        should carry a one-line reason in a trailing comment; the sweep still
+        finds and reports these functions, they are just not fatal.
+
     Multiple lines per caller/struct ACCUMULATE (pdna_box has eleven field lines).
-    Returns (field_decls, argsite_decls, whole_func_decls, frame_overrides):
+    Returns (field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls,
+             addrtaken_ok):
       field_decls      : {(struct, field): (offset, {impls})}
       argsite_decls     : {caller: (N, {impls})}
       whole_func_decls  : {caller: {impls}}
       frame_overrides   : {fn: bytes}
+      isr_decls         : {fn, ...}
+      addrtaken_ok      : {fn, ...}
     """
     field_decls = {}
     argsite_decls = {}
     whole_func_decls = collections.defaultdict(set)
     frame_overrides = {}
+    isr_decls = set()
+    addrtaken_ok = set()
     if not path or not os.path.exists(path):
-        return field_decls, argsite_decls, whole_func_decls, frame_overrides
+        return (field_decls, argsite_decls, whole_func_decls, frame_overrides,
+                isr_decls, addrtaken_ok)
     with open(path) as f:
         for lineno, raw in enumerate(f, 1):
             line = raw.split('#', 1)[0].strip()
@@ -386,6 +412,14 @@ def load_extra_edges(path):
             fm = FRAME_LINE_RE.match(line)
             if fm:
                 frame_overrides[fm.group(1)] = int(fm.group(2))
+                continue
+            im = ISR_LINE_RE.match(line)
+            if im:
+                isr_decls.add(im.group(1))
+                continue
+            aok = ADDRTAKEN_OK_RE.match(line)
+            if aok:
+                addrtaken_ok.add(aok.group(1))
                 continue
             if '->' not in line:
                 raise ValueError(f"{path}:{lineno}: unrecognized line: {raw!r}")
@@ -418,7 +452,8 @@ def load_extra_edges(path):
                     argsite_decls[caller] = (n, impls)
                 continue
             whole_func_decls[lhs].update(impls)
-    return field_decls, argsite_decls, dict(whole_func_decls), frame_overrides
+    return (field_decls, argsite_decls, dict(whole_func_decls), frame_overrides,
+            isr_decls, addrtaken_ok)
 
 
 # === struct-field offsets, computed from the header (D1) ==============================
@@ -1134,6 +1169,92 @@ def format_num(n):
     return f"{n:,}"
 
 
+# === D1 (BACKLOG #84b fifth pass): the address-taken sweep ===========================
+#
+# Every declaration class above (Struct.field/argsites/whole-function) exempts a call
+# SITE the disassembly walk found -- but none of them ever asks the opposite question:
+# is there a function in this linked image whose address is stored somewhere (a struct
+# instance, a dispatch table, a literal pool) that NO declared class names as a possible
+# implementation, and that the call graph never reaches any other way? A brand-new
+# implementation slotted into an ALREADY-declared class (the reviewer's own plant: a
+# `static uint8_t* rv_deep_records(int box)` with a giant stack frame, installed as
+# `s.records = (g_pc_last_box == 12345) ? rv_deep_records : pcsrc_records`) is exactly
+# that: its address is taken (assigned into BoxSource.records) but nothing in
+# stack_edges.txt names it, and the disassembly walk that builds `edges` only ever
+# reasons about DECLARED implementations, never about "what else could this dispatch
+# reach." This sweep closes that hole by finding every function address stored ANYWHERE
+# in the linked image, independent of the declaration grammar, and refusing to build
+# unless each one is accounted for by a declaration, by being reachable through the
+# ordinary call graph, or by a declared ISR handler / `addrtaken-ok` escape line.
+
+_ALLOC_LOAD_HDR_RE = re.compile(r'^\s*\d+\s+(\S+)\s+([0-9a-f]+)\s')
+
+
+def alloc_load_sections(elf):
+    """Section names with real on-disk CONTENTS that are ALLOC+LOAD -- i.e. every
+    section whose bytes actually land in the shipped image (.text/.rodata/.data/
+    .iwram/.init_array/...). .bss/.sbss are ALLOC but NOT LOAD (zero-initialized,
+    no CONTENTS line) -- they cannot hold a literal function-pointer byte pattern
+    on disk, so scanning them would either error out or read stale objdump noise;
+    skipped on purpose, not an oversight."""
+    out = subprocess.run([OBJDUMP, "-h", elf], capture_output=True, text=True,
+                          check=True).stdout
+    lines = out.splitlines()
+    sections = []
+    for i, line in enumerate(lines):
+        m = _ALLOC_LOAD_HDR_RE.match(line)
+        if not m or int(m.group(2), 16) == 0:
+            continue
+        flags = lines[i + 1] if i + 1 < len(lines) else ""
+        if "CONTENTS" in flags and "ALLOC" in flags and "LOAD" in flags:
+            sections.append(m.group(1))
+    return sections
+
+
+_OBJDUMP_S_LINE_RE = re.compile(r'^\s([0-9a-f]+) ((?:[0-9a-f]{2,8} ?){1,4})')
+
+
+def _words_from_objdump_s_text(text):
+    """Pure parsing half of the address-taken sweep (split out from scan_address_taken()
+    so a fixture can exercise the byte-order/masking logic without a real objdump or
+    ELF -- see the fixture in host_stack_budget_test.py). Yields every 4-byte-aligned
+    little-endian word found in one `objdump -s` section's text. `objdump -s` prints
+    raw bytes in ADDRESS order regardless of target endianness -- interpreting a
+    4-byte group as this (little-endian ARM) target's word requires reading the hex
+    pairs in the order printed (byte 0 is the low byte), i.e. int.from_bytes(...,
+    'little') on the parsed bytes, NOT a naive int(hexstring, 16) (which would read
+    them as if BIG-endian and silently check the wrong address for every single word)."""
+    for line in text.splitlines():
+        m = _OBJDUMP_S_LINE_RE.match(line)
+        if not m:
+            continue
+        for g in m.group(2).split():
+            if len(g) != 8:
+                continue            # a short trailing group at section end: not a full word
+            yield int.from_bytes(bytes.fromhex(g), byteorder="little")
+
+
+def scan_address_taken(elf, name_at, sections):
+    """Every function in `name_at` (address -> name, from analyze()) whose address
+    appears as a 4-byte-aligned little-endian word anywhere in `sections`' on-disk
+    bytes. A Thumb function's address always carries bit 0 set wherever it's stored
+    as a callable pointer (the interworking bit BX/BLX read) -- masked off before
+    the name_at lookup, exactly like the veneer-literal and trap-#5 literal-call
+    resolvers above already do."""
+    taken = set()
+    for sec in sections:
+        try:
+            out = subprocess.run([OBJDUMP, "-s", "-j", sec, elf],
+                                  capture_output=True, text=True, check=True).stdout
+        except subprocess.CalledProcessError:
+            continue
+        for w in _words_from_objdump_s_text(out):
+            fn = name_at.get(w & ~1)
+            if fn:
+                taken.add(fn)
+    return taken
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1210,9 +1331,9 @@ def main(argv):
               file=sys.stderr)
         return 1
 
-    field_decls, argsite_decls, whole_func_decls, frame_overrides = (
+    field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls, addrtaken_ok = (
         load_extra_edges(args.edges_file) if args.edges_file
-        else ({}, {}, {}, {}))
+        else ({}, {}, {}, {}, set(), set()))
 
     # D1 header-drift check: every declared Struct.field @OFFSET is checked against
     # the offset the struct's OWN header gives that field today, before anything
@@ -1346,6 +1467,64 @@ def main(argv):
               "indirect call site a resolvable target (devirtualize / annotate), or "
               "declare it in stack_edges.txt ('Struct.field @OFF -> impls' or "
               "'caller argsites=N -> impls').")
+        return 1
+
+    # D1 (BACKLOG #84b fifth pass): the ISR allowance is now a MEASUREMENT, not a bare
+    # trusted constant. Every `isr fn` declaration in stack_edges.txt names a real
+    # installed handler (irq_add); its own worst chain (deepest_from(fn, ...), which
+    # already includes the handler's own frame) plus the 8 B libtonc's isr_master pushes
+    # onto the user stack per nesting level to reach it is summed across every declared
+    # handler -- see ISR_BYTES's own comment for why summing (not maxing) is the right
+    # worst case (two DIFFERENT lines nesting, not one line re-entering itself). If that
+    # measured sum ever exceeds the 64 B this guard actually charges every chain above,
+    # the constant is stale and must be raised by hand -- refusing loudly here is exactly
+    # what keeps ISR_BYTES honest instead of a number nobody re-derives.
+    isr_allowance = 0
+    isr_chain_details = []
+    for handler in sorted(isr_decls):
+        if handler not in analysis["funcs"]:
+            print(f"*** stack_budget: {args.edges_file} declares isr {handler!r} but no "
+                  f"such function exists in {args.elf}'s disassembly", file=sys.stderr)
+            return 1
+        h_total, _h_path, _h_cyc = deepest_from(handler, analysis["edges"], su_sizes,
+                                                 estimated, overrides=frame_overrides)
+        isr_chain_details.append((handler, h_total))
+        isr_allowance += 8 + h_total
+    if isr_allowance > ISR_BYTES:
+        print(f"\n*** STACK_BUDGET ISR ALLOWANCE EXCEEDED: the measured worst-case ISR "
+              f"re-entry cost is {format_num(isr_allowance)} B, more than the "
+              f"{ISR_BYTES} B every chain above is charged:")
+        for handler, h_total in isr_chain_details:
+            print(f"***   {handler}: 8 B entry + {format_num(h_total)} B own chain")
+        print("*** Raise ISR_BYTES to match (and re-derive its own header comment), or "
+              "shrink the named handler's chain.")
+        return 1
+
+    # D1 (BACKLOG #84b fifth pass): the address-taken sweep. A function whose address is
+    # taken ANYWHERE in the linked image but is not (a) named by some declared class
+    # above, (b) reachable through the ordinary call graph, (c) a declared ISR handler,
+    # or (d) an explicit `addrtaken-ok` escape is a function this guard's whole reasoning
+    # never accounted for at all -- a brand-new implementation slotted into an
+    # ALREADY-declared class (the false-pass class D1 exists to close) looks EXACTLY
+    # like this: its address is taken (assigned into the struct field/table) but no
+    # declaration names it and the graph never reaches it any other way.
+    sections = alloc_load_sections(args.elf)
+    taken = scan_address_taken(args.elf, analysis["name_at"], sections)
+    declared_or_reachable = all_impls | reachable | isr_decls | addrtaken_ok
+    orphans = sorted(taken - declared_or_reachable)
+    if orphans:
+        print("\n*** STACK_BUDGET ADDRESS-TAKEN, UNREACHED, UNDECLARED:")
+        for fn in orphans:
+            b, _src = frame_of(fn, su_sizes, estimated, frame_overrides)
+            print(f"***   {fn} frame {b}")
+        print("*** This function's address is stored somewhere in the linked image (a "
+              "struct field, a dispatch table, a literal pool) but it is named by no "
+              "declaration in stack_edges.txt, not reachable through the ordinary call "
+              "graph, and not a declared ISR handler. It could be a brand-new "
+              "implementation silently slotted into an existing dispatch class -- the "
+              "exact false pass this sweep exists to catch. Add it to the right "
+              "declaration's implementation list, or (if it is a genuine false positive) "
+              "an `addrtaken-ok fn  (reason)` line.")
         return 1
 
     guarded_total = deepest_total + ISR_BYTES
