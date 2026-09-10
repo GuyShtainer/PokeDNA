@@ -1055,20 +1055,25 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     # ---- 2e. BACKLOG #49 P2a — the bag/PC-item core, proven with a Potion (+ Ball) ----
     run_bag_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
-    # ---- 2f. BACKLOG #85 — the day-care core, proven with a deposit ----
+    # ---- lane gbdata dispatch (BACKLOG #85/#86/#90/#94) — steps 2g-2j, deliberately
+    # left a gap after 2e/2f so u5's own TM/HM case (2f) can land ahead of this block
+    # without renumbering either lane: if 2f already exists above this marker when the
+    # two lanes merge, renumber the four cases below it to 2h-2k instead of editing
+    # around u5's insertion point. P1a review D10. ----
+    # ---- 2g. BACKLOG #85 — the day-care core, proven with a deposit ----
     run_daycare_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
-    # ---- 2g. BACKLOG #86 — the Gen-2 clock core (Gen 1 has no clock: no case) ----
+    # ---- 2h. BACKLOG #86 — the Gen-2 clock core (Gen 1 has no clock: no case) ----
     if gen == 2:
         run_clock_case(name, info, rom, sav, work, binary, python, vendor, tally)
     else:
         tally.skip_case("clock (BACKLOG #86)", "Gen 1 has no clock")
 
-    # ---- 2h. BACKLOG #90 — the fly-destination bitfield core (run_fly_case itself
+    # ---- 2i. BACKLOG #90 — the fly-destination bitfield core (run_fly_case itself
     # skips Gen 1 -- every real destination is already visited in the corpus, D6) ----
     run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
-    # ---- 2i. BACKLOG #94 — the Gen-2 box-name core (Gen 1 has no box names: no case) ----
+    # ---- 2j. BACKLOG #94 — the Gen-2 box-name core (Gen 1 has no box names: no case) ----
     if gen == 2:
         run_boxname_case(name, info, rom, sav, work, binary, python, vendor, tally)
     else:
