@@ -818,6 +818,24 @@ static int anchor_pack(const Scan* s, uint32_t anchor, uint32_t expect) {
  * EXACTLY what their anchor derives, not merely in-bounds. Anything that
  * fails falls back to rom_gbui_open()'s full scan -- never a partial
  * accept. */
+/* O(1) structural check: every off[] slot belonging to the OTHER generation
+ * must be zero. Cheap (13 field reads, no ROM access) -- must run BEFORE
+ * revalidate_loc()'s anchor reread (BACKLOG #83), not after: a record with a
+ * corrupted other-gen slot is rejected without paying for the reread. */
+static int loc_other_gen_clear(const RomGbUiLoc* loc) {
+  if (loc->gen == ROM_GBUI_GEN1) {
+    return !(loc->off[ROM_GBUI_OFF_FRAMES] || loc->off[ROM_GBUI_OFF_FONTEXTRA] ||
+             loc->off[ROM_GBUI_OFF_LEADERS] || loc->off[ROM_GBUI_OFF_CARDPIC_M] ||
+             loc->off[ROM_GBUI_OFF_CARDPIC_F] || loc->off[ROM_GBUI_OFF_CARDGFX] ||
+             loc->off[ROM_GBUI_OFF_PACK_M] || loc->off[ROM_GBUI_OFF_PACK_F]);
+  }
+  if (loc->gen == ROM_GBUI_GEN2) {
+    return !(loc->off[ROM_GBUI_OFF_TEXTBOX] || loc->off[ROM_GBUI_OFF_CARDFRAME] ||
+             loc->off[ROM_GBUI_OFF_PLAYERPIC]);
+  }
+  return 0;
+}
+
 static int revalidate_loc(const Scan* s, const RomGbUiLoc* loc) {
   if (loc->gen == ROM_GBUI_GEN1) {
     uint32_t font = loc->off[ROM_GBUI_OFF_FONT];
@@ -911,29 +929,14 @@ int rom_gbui_open_loc(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
   if (!parse_header(&s, &banks, &id_hash)) return 0;
   s.banks = banks;
 
-  /* Validate that other-generation slots are zero */
+  /* Other-generation-slots-zero (O(1)) runs BEFORE revalidate_loc's anchor
+   * reread -- short-circuit && rejects a corrupted other-gen slot without
+   * paying for the reread (BACKLOG #83). */
   int valid_loc = loc && loc->id_hash == id_hash && loc->size == size &&
       loc->check == loc_check(loc->off, loc->anchor) &&
       (loc->gen == ROM_GBUI_GEN1 || loc->gen == ROM_GBUI_GEN2) &&
+      loc_other_gen_clear(loc) &&
       revalidate_loc(&s, loc);
-
-  if (valid_loc) {
-    if (loc->gen == ROM_GBUI_GEN1) {
-      /* Gen-1-only: reject if any Gen-2-only slot is non-zero */
-      if (loc->off[ROM_GBUI_OFF_FRAMES] || loc->off[ROM_GBUI_OFF_FONTEXTRA] ||
-          loc->off[ROM_GBUI_OFF_LEADERS] || loc->off[ROM_GBUI_OFF_CARDPIC_M] ||
-          loc->off[ROM_GBUI_OFF_CARDPIC_F] || loc->off[ROM_GBUI_OFF_CARDGFX] ||
-          loc->off[ROM_GBUI_OFF_PACK_M] || loc->off[ROM_GBUI_OFF_PACK_F]) {
-        valid_loc = 0;  /* rescan */
-      }
-    } else if (loc->gen == ROM_GBUI_GEN2) {
-      /* Gen-2-only: reject if any Gen-1-only slot is non-zero */
-      if (loc->off[ROM_GBUI_OFF_TEXTBOX] || loc->off[ROM_GBUI_OFF_CARDFRAME] ||
-          loc->off[ROM_GBUI_OFF_PLAYERPIC]) {
-        valid_loc = 0;  /* rescan */
-      }
-    }
-  }
 
   if (valid_loc) {
     gu->banks = banks; gu->id_hash = id_hash; gu->gen = loc->gen;
