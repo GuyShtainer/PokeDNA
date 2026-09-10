@@ -115,7 +115,7 @@ static void audit_gen3_roundtrip_one(FieldTally* t, const uint8_t rec80[80]) {
 
   GbEditMon down;
   Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(rec80, GB_GEN2, NULL, &down, &loss);
+  G3GbStatus st = gen3_to_gb(rec80, GB_GEN2, true, NULL, &down, &loss);
   if (st != G3GB_OK) {
     /* A REAL, expected outcome for a Hoenn species or a post-Gen-2 move, not a
      * pipeline bug -- gen3_to_gb's own documented refusal table. Tallied, not
@@ -225,7 +225,7 @@ static void audit_gb_roundtrip_one(FieldTally* t, const Gb12Mon* in, uint8_t gen
    * "needs base" gate; Gen 2 needs none, and is a legal paste target either way). */
   GbEditMon back;
   Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(rec80, GB_GEN2, NULL, &back, &loss);
+  G3GbStatus st = gen3_to_gb(rec80, GB_GEN2, true, NULL, &back, &loss);
   if (st != G3GB_OK) { tally_mark(t, "(refused back down)"); return; }
 
   char back_nick[64] = {0}, back_ot[64] = {0};

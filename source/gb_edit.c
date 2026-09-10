@@ -449,6 +449,18 @@ uint8_t gb_get_gen1_status(const GbEditMon* e) {
 bool gb_is_egg(const GbEditMon* e) {
   return e && e->gen == GB_GEN2 && e->list_species == G2_LIST_EGG;
 }
+uint8_t gb_get_caught_time(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN2) ? (uint8_t)(e->rec[R2_CAUGHT0] >> 6) : 0;
+}
+uint8_t gb_get_caught_level(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN2) ? (uint8_t)(e->rec[R2_CAUGHT0] & 0x3Fu) : 0;
+}
+uint8_t gb_get_caught_loc(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN2) ? (uint8_t)(e->rec[R2_CAUGHT1] & 0x7Fu) : 0;
+}
+uint8_t gb_get_caught_ot_gender(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN2) ? (uint8_t)(e->rec[R2_CAUGHT1] >> 7) : 0;
+}
 int gb_get_nickname(const GbEditMon* e, char* out, int cap) {
   if (!e || !out || cap <= 0) return 0;
   return gb_name_decode(e->gen, out, cap, e->nick, GB_NAME_BYTES);
@@ -1153,6 +1165,7 @@ void gb_set_otname_raw(GbEditMon* e, const uint8_t b[GB_NAME_BYTES]) {
 
 bool gb_set_held_item(GbEditMon* e, uint8_t item) {
   if (!e || e->gen != GB_GEN2) return false;   /* Gen-1 +0x01 is current HP, not an item */
+  if (item != 0 && gb_is_egg(e)) return false; /* an Egg cannot hold an item */
   e->rec[R2_ITEM] = item;
   return true;
 }
@@ -1171,14 +1184,19 @@ bool gb_set_pokerus(GbEditMon* e, uint8_t p) {
 }
 bool gb_set_caught(GbEditMon* e, uint8_t time, uint8_t level, uint8_t loc, uint8_t ot_gender) {
   if (!e || e->gen != GB_GEN2) return false;
+  if (!e->has_caught) return false;   /* Gold/Silver: these two bytes are Unused1/Unused2 */
   if (time > 3 || level > 63 || loc > 127 || ot_gender > 1) return false;
   e->rec[R2_CAUGHT0] = (uint8_t)((time << 6) | level);
   e->rec[R2_CAUGHT1] = (uint8_t)((ot_gender << 7) | loc);
   return true;
 }
+void gb_set_caught_available(GbEditMon* e, bool available) {
+  if (e) e->has_caught = available;
+}
 bool gb_set_egg(GbEditMon* e, bool egg) {
   if (!e || e->gen != GB_GEN2) return false;   /* Gen 1 has no eggs at all */
   if (egg) {
+    if (gb_get_held_item(e) != 0) return false;  /* an Egg cannot hold an item */
     e->list_species = G2_LIST_EGG;
   } else if (e->list_species == G2_LIST_EGG) {
     e->list_species = e->rec[R2_SPECIES];      /* the record kept the real species */

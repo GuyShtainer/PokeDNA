@@ -4168,7 +4168,7 @@ bool app_src_empty_action_offered(void) {
  * that one row + CANCEL. See pdna_app.h's AppSrcOps.paste for what the row does. */
 static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, bool empty) {
   const char* locked = (!empty && g_src_why) ? g_src_why(rec) : 0;
-  enum { RO_VIEW, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CREATE, RO_CANCEL };
+  enum { RO_VIEW, RO_ITEM, RO_MOVE, RO_RELEASE, RO_LEGAL, RO_COPY, RO_PASTE, RO_CREATE, RO_CANCEL };
   int act[PDNA_ROMENU_MAX]; const char* lab[PDNA_ROMENU_MAX]; int n = 0;
   if (empty) {
     /* CREATE first, PASTE after -- the same order Gen-3's own empty-cell menu uses
@@ -4241,7 +4241,17 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
      * BOX-context "move" (an in-box reposition GB has no equivalent of) --
      * so Gen 3's OWN matching label is the correct one to reuse, not a third,
      * bespoke wording. The old PDNA_LBL_MOVE_TO macro (pdna_layout.h) is
-     * deleted along with its last caller. */
+     * deleted along with its last caller.
+     *
+     * BACKLOG #92 (2026-09-10): the "Gen 3 has no separate Item row here to
+     * sit between them" half of the note above is now stale for a Gen-2
+     * mount -- g_src_ops->item is non-NULL there (pdna_gen12.c's
+     * k_gb_ops_gen2), so ITEM slots in right after Summary, matching A_ITEM's
+     * own position in Gen 3's occupied-mon order above. A Gen-1 mount's table
+     * (k_gb_ops_gen1) leaves `item` NULL, so this row still does not appear
+     * there -- "NOT IN GEN 1" via the existing omitted-row pattern, not a
+     * shown-then-refused row. */
+    if (g_src_ops && g_src_ops->item) { lab[n] = PDNA_LBL_ITEM; act[n++] = RO_ITEM; }
     lab[n] = PDNA_LBL_LEGALITY; act[n++] = RO_LEGAL;
     if (g_src_ops && g_src_ops->move) { lab[n] = PDNA_LBL_MOVE_TO_BOX; act[n++] = RO_MOVE; }
     if (!locked) { lab[n] = PDNA_LBL_COPY; act[n++] = RO_COPY; }
@@ -4296,6 +4306,7 @@ static bool app_mon_menu_readonly(uint8_t* rec, bool is_party, const PkMon* m0, 
           if (g_src_ops && g_src_ops->view) { g_src_ops->view(rec); return false; }
           { uint8_t d[100]; int card = 0;
             pdna_inspect(rec, is_party, false, d, 0, &card); return false; }
+        case RO_ITEM:    return (g_src_ops && g_src_ops->item)    ? g_src_ops->item(rec)    : false;
         case RO_MOVE:    return (g_src_ops && g_src_ops->move)    ? g_src_ops->move(rec)    : false;
         case RO_RELEASE: return (g_src_ops && g_src_ops->release) ? g_src_ops->release(rec) : false;
         case RO_LEGAL: pdna_legality_show(m0); return false;
