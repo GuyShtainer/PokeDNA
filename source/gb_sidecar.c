@@ -306,7 +306,8 @@ static void merge_species_and_level(EditMon* em, const GbscEntry* e, const GbEdi
    * behaviour for every sidecar file already on a user's card. */
   uint8_t level_now = gb_get_level(now);
   uint8_t baseline = e->written_level;
-  bool have_baseline = (baseline != 0);
+  bool have_baseline = (baseline >= 1 && baseline <= 100);   /* out of range == pre-R1 or garbage:
+                                                             * fall back, never manufacture a level change (r1 review D2) */
   if (!have_baseline && have_orig) { baseline = (uint8_t)orig->level; have_baseline = true; }
   if (have_baseline && level_now != baseline) {
     em_set_level(em, level_now);

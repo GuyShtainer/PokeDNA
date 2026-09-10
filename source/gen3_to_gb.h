@@ -68,13 +68,14 @@ G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1bas
 /* ---- BACKLOG #104 R1: the MAKE LEGAL correction (evolution-minimum level) ------
  * docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c: MAKE LEGAL's ONLY correction beyond
  * what KEEP AS IS already keeps is raising an under-levelled EVOLVED species to its
- * evolution's minimum level (evolutions.h's own forward table — already shipped,
+ * the lowest level the species can legally stand at (evolutions.h's own forward table — already shipped,
  * unrelated to this feature). Nothing else is corrected here.
  *
  * `out` must be a just-converted, ACCEPTED record (gen3_to_gb() returned G3GB_OK).
  * Species is read via gb_get_species_dex(out), always in 1..251 for anything
  * gen3_to_gb() accepted (see the species-mapping note above this file's header
- * comment), so it is handed to pk_evo_min_level() directly — no lookup table needed.
+ * comment), so it is handed to pk_evo_floor() directly (the checker's floor, not the builder's
+ * minimum) — no lookup table needed.
  *
  * Read-only: never mutates `out`. Returns true and fills from_level/to_level with
  * the correction MAKE LEGAL would apply when the mon is standing below its species'

@@ -1104,9 +1104,7 @@ def run_r1_xfer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
     re-confirmed a second time) -- "the choice dialog" and "the MAKE LEGAL row with
     a concrete level" are the SAME single screen (05 below); there is no separate
     "confirm" screen to shoot distinctly from it -- selecting SELECT commits
-    directly, matching the brief's own "additive, no new screen kind" design. The
-    GB box after (06/07) is the confirmation that actually matters: the corrected
-    level landed in the real GB record, not just in dialog text."""
+    directly, matching the brief's own "additive, no new screen kind" design. The write itself is proven by the host tests (host_gen3gb_test / host_xfer_roundtrip_test); PDNA_DELTA has no SD., not just in dialog text."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "r1_")
     print("== BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL on a Gen 3 -> Game Boy paste ==")
 
