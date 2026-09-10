@@ -207,7 +207,14 @@ static void g1bag_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket,
     for (int cx = NAME_COL + (int)strlen(buf); cx <= QTY_COL; cx++)
       gbscr_cell(gs, cx, ny, GBSCR_SRC_TEXTBOX, G1I_BLANK);
 
-    if (has && pocket != GBB_POCKET_KEY) {
+    /* D1 (review): a Gen-1 key item (HM01-05 plus the fixed key-item id set,
+     * gbb_is_g1_key_item()) prints NO quantity on the real cartridge, exactly
+     * like GBB_POCKET_KEY already does not (Gen 2's separate Key-items
+     * pocket) -- the old `pocket != GBB_POCKET_KEY` test alone always passed
+     * for pocket==GBB_POCKET_ITEMS, so every Gen-1 key item showed its
+     * stored qty (always 1) instead of a blank field. */
+    bool is_key = has && (pocket == GBB_POCKET_KEY || gbb_is_g1_key_item(l->entries[idx].id));
+    if (has && !is_key) {
       gbscr_text(gs, QTY_COL, qy, "\xC3\x97");   /* U+00D7, gb_char_encode -> 0xF1 */
       siprintf(buf, "%2u", (unsigned)l->entries[idx].qty);
       gbscr_text(gs, QTY_COL + 1, qy, buf);

@@ -119,6 +119,26 @@ GbField gbb_count_field(GbBagPocket pocket);
  * PC store) alike; this core does not maintain a per-pocket item-category table. */
 uint8_t gbb_max_item_id(GbGame game);
 
+/* True iff `id` is one of Gen 1's (Red/Blue/Yellow) KEY items -- the ones the
+ * real cartridge's own Items-pocket list prints with NO quantity/no "x NN"
+ * field (U4 review D1: this shell used to show a quantity on every row,
+ * including key items, which is wrong -- the cartridge's ITEMLISTMENU knows a
+ * per-item "is key item" bit and skips the qty column for it entirely).
+ *
+ * SHIPPED PATH (U4 fix pass): a documented FACTUAL id list, not a table
+ * located inside the user's ROM -- locating Gen 1's key-item bit table by
+ * shape (the `(id-1)>>3` / `(id-1)&7` bit-test routine's own operand table)
+ * was time-boxed at 1.5 h and not completed in this pass; this is the
+ * brief's own sanctioned fallback. The ids below are public Pokemon Red/
+ * Blue/Yellow item-id facts (the item's real in-game id number and its
+ * "cannot be tossed/sold" status are both visible from ordinary play and
+ * documented on public wikis), written here from that public knowledge --
+ * never copied from any decomp/ROM data file. HM01-HM05 (0xC4-0xC8) are
+ * always key items in both games; the rest is the fixed id set below.
+ * Gen 2 has its own separate Key-items POCKET (GBB_POCKET_KEY) that needs no
+ * such classification -- this function is Gen-1 (Red/Blue/Yellow) only. */
+bool gbb_is_g1_key_item(uint8_t id);
+
 /* Fill `out` from the session's resident image. Every pocket this game lacks (per
  * gbb_field_present) is left zeroed (count 0, no entries) rather than causing a
  * hard failure. A pocket whose stored count exceeds its cap, or whose entries hit
