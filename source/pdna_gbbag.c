@@ -194,7 +194,17 @@ static void g1bag_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket,
       buf[0] = 0;
     }
     gbscr_text(gs, NAME_COL, ny, buf);
-    for (int cx = NAME_COL + (int)strlen(buf); cx < QTY_COL; cx++)
+    /* D1 (self-review, live shot): "ITEM #n" runs up to 9 glyphs wide for a
+     * 3-digit id ("ITEM #250"), reaching column NAME_COL+9-1 == QTY_COL (14)
+     * -- QTY_COL is also a legitimate NAME-row content column (it is only the
+     * QTY ROW below that reserves it for the "x" glyph), so the blank sweep
+     * must cover THAT column too, not stop one short of it. The old `cx <
+     * QTY_COL` bound left column 14 unrepainted whenever a shorter id
+     * followed a 3-digit one on the same row slot (e.g. Items' "ITEM #205"
+     * scrolling into a 2-digit PC entry) -- a stale glyph leak, caught by
+     * looking at the PC-store shot, not by any diff-count check (leak/scroll
+     * correctness must be shown from the compiled binary, per review). */
+    for (int cx = NAME_COL + (int)strlen(buf); cx <= QTY_COL; cx++)
       gbscr_cell(gs, cx, ny, GBSCR_SRC_TEXTBOX, G1I_BLANK);
 
     if (has && pocket != GBB_POCKET_KEY) {

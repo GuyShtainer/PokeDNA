@@ -145,6 +145,12 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # rule.
     ("gb-card-gen2", "U3 — Gold/Silver/Crystal's own trainer card on the shell "
      "(Gen-2 saves, both pages)", ("U3",)),
+    # U4 (docs/briefs/U4-gen1-bag-brief.md, BACKLOG #67): Red/Yellow's own Item bag
+    # + PC item store drawn on the shared shell. Shots come from
+    # tools/dgb_shots.py's run_u4_bag(), captions all start "U4:". Appended after
+    # "gb-card-gen2" per this list's own append-only rule.
+    ("gb-bag-gen1", "U4 — Red/Yellow's own Item bag + PC store on the shell "
+     "(Gen-1 saves)", ("U4",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
