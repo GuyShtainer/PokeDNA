@@ -31,6 +31,8 @@ static const char* const LABEL[GBE_NUM] = {
   "DV Atk", "DV Def", "DV Spe", "DV Spc",
   "DV HP",
   "Gender",
+  "Shiny", "Egg",
+  "Met Time", "Met Level", "Met Loc", "Met OT Gender",
   "StatExp HP", "StatExp Atk", "StatExp Def", "StatExp Spe", "StatExp Spc",
 };
 
@@ -59,6 +61,16 @@ int gbe_fields(const GbEditMon* e, uint8_t out[GBE_NUM]) {
   for (int f = 0; f < GBE_NUM; f++) {
     if ((f == GBE_ITEM || f == GBE_FRIEND) && e->gen != GB_GEN2) continue;
     if (f == GBE_GENDER && !gbe_has_gender_row(e)) continue;
+    /* BACKLOG #95: SHINY/EGG/MET* are Gen 2 only, same as ITEM/FRIEND above --
+     * none of the four MET rows has a Gen-1 equivalent (gb_set_caught refuses a
+     * Gen-1 record outright: no such field exists there), EGG is the species-LIST
+     * byte Gen 1 never has (gb_set_egg's own "Gen 1 has no eggs at all"), and
+     * SHINY -- though structurally just a DV combination, same as Gen 1's DVs --
+     * mirrors Gen 3's F_SHINY row, which the "no separate feature Gen 3 lacks"
+     * half of the parity rule (#61) would refuse to invent for Gen 1 anyway
+     * (Gen 1 itself has no shiny concept at all, pokered has no such derivation). */
+    if ((f == GBE_SHINY || f == GBE_EGG || f == GBE_METTIME || f == GBE_METLEVEL
+         || f == GBE_METLOC || f == GBE_METOTGENDER) && e->gen != GB_GEN2) continue;
     out[n++] = (uint8_t)f;
   }
   return n;
@@ -76,7 +88,8 @@ int gbe_kind(int f) {
   if (f >= GBE_MV0 && f <= GBE_MV3) return GBE_K_MOVE;
   if (f == GBE_ITEM) return GBE_K_ITEM;
   if (f == GBE_DVH) return GBE_K_SHOW;
-  return GBE_K_NUM;
+  return GBE_K_NUM;   /* SHINY/EGG/GENDER: LEFT/RIGHT/A all just toggle, same shape
+                        * GENDER already uses (gbe_adjust's own dir-independent branches) */
 }
 
 /* ---- values ------------------------------------------------------------------- */
@@ -118,6 +131,21 @@ void gbe_value(const GbEditMon* e, int f, char* out, int cap) {
       put_str(out, cap, &pos, fx.gender == 1 ? "F" : "M");
       return;
     }
+    case GBE_SHINY: {
+      GbDvEffects fx;
+      gb_dv_effects_of(e, &fx);
+      put_str(out, cap, &pos, fx.shiny ? "Yes" : "No");
+      return;
+    }
+    case GBE_EGG: put_str(out, cap, &pos, gb_is_egg(e) ? "Yes" : "No"); return;
+    case GBE_METTIME: {
+      static const char* const T[4] = { "None", "Morning", "Day", "Night" };
+      put_str(out, cap, &pos, T[gb_get_caught_time(e) & 3]);
+      return;
+    }
+    case GBE_METLEVEL: put_uint(out, cap, &pos, gb_get_caught_level(e)); return;
+    case GBE_METLOC: put_ch(out, cap, &pos, '#'); put_uint(out, cap, &pos, gb_get_caught_loc(e)); return;
+    case GBE_METOTGENDER: put_str(out, cap, &pos, gb_get_caught_ot_gender(e) ? "F" : "M"); return;
     default: break;
   }
 
@@ -225,6 +253,49 @@ static bool gbe_flip_gender(GbEditMon* e) {
   return gb_set_dv(e, GB_ATK, (uint8_t)best);
 }
 
+/* GBE_SHINY has no "up"/"down" either -- LEFT, RIGHT and A all flip shininess, the
+ * same dir-independent shape GBE_GENDER already uses. Turning shiny ON needs
+ * Def=Spe=Spc=10 (g2_dv_shiny's own precondition) PLUS an Atk DV with bit 1 set;
+ * Def/Spe/Spc feed NOTHING else (gbe_flip_gender's own header: gender is Atk-only),
+ * so forcing them to 10 has no side effect on gender -- only Atk needs a search, run
+ * exactly like gbe_flip_gender's own (prefer keeping today's gender, else nearest,
+ * else smallest). Turning shiny OFF is simpler and never touches gender: the
+ * precondition needs all three of Def/Spe/Spc at 10, so nudging just Def away
+ * (10 -> 9, the smallest possible move) un-shinies it with nothing else disturbed. */
+static bool gbe_flip_shiny(GbEditMon* e) {
+  uint8_t cur[4];
+  uint16_t dex; uint8_t ratio;
+  GbDvEffects cur_fx;
+  bool any;
+
+  cur[0] = gb_get_dv(e, GB_ATK); cur[1] = gb_get_dv(e, GB_DEF);
+  cur[2] = gb_get_dv(e, GB_SPE); cur[3] = gb_get_dv(e, GB_SPC);
+  dex = gb_get_species_dex(e);
+  ratio = dex ? pk_species_gender_ratio(dex) : 0xFFu;
+  gb_dv_effects(cur, dex, ratio, &cur_fx);
+
+  if (cur_fx.shiny) return gb_set_dv(e, GB_DEF, 9);   /* OFF */
+
+  /* ON: Def/Spe/Spc -> 10 first (free), then search Atk among the 8 bit-1-set values. */
+  any = gb_set_dv(e, GB_DEF, 10);
+  any = gb_set_dv(e, GB_SPE, 10) || any;
+  any = gb_set_dv(e, GB_SPC, 10) || any;
+
+  int target = cur_fx.gender, best = -1, best_dist = 16;
+  for (int pass = 0; pass < 2 && best < 0; pass++) {   /* pass 0: keep gender; pass 1: any */
+    for (int v = 0; v <= 15; v++) {
+      if (!(v & 2)) continue;
+      uint8_t cand[4] = { (uint8_t)v, 10, 10, 10 };
+      GbDvEffects fx; gb_dv_effects(cand, dex, ratio, &fx);
+      if (pass == 0 && fx.gender != target) continue;
+      int dist = v - (int)cur[0]; if (dist < 0) dist = -dist;
+      if (dist < best_dist) { best_dist = dist; best = v; }
+    }
+  }
+  if (best >= 0) any = gb_set_dv(e, GB_ATK, (uint8_t)best) || any;
+  return any;
+}
+
 bool gbe_adjust(GbEditMon* e, int f, int dir, bool big) {
   if (!e || (dir != -1 && dir != 1)) return false;
   int step = big ? 10 : 1;
@@ -251,6 +322,31 @@ bool gbe_adjust(GbEditMon* e, int f, int dir, bool big) {
       return gb_set_friendship(e, (uint8_t)v);
     }
     case GBE_GENDER: return gbe_flip_gender(e);
+    case GBE_SHINY:  return gbe_flip_shiny(e);
+    case GBE_EGG:    return gb_set_egg(e, !gb_is_egg(e));
+    case GBE_METTIME: {
+      int v = clampi((int)gb_get_caught_time(e) + dir, 0, 3);
+      if (v == gb_get_caught_time(e)) return false;
+      return gb_set_caught(e, (uint8_t)v, gb_get_caught_level(e),
+                            gb_get_caught_loc(e), gb_get_caught_ot_gender(e));
+    }
+    case GBE_METLEVEL: {
+      int v = clampi((int)gb_get_caught_level(e) + dir * step, 0, 63);
+      if (v == gb_get_caught_level(e)) return false;
+      return gb_set_caught(e, gb_get_caught_time(e), (uint8_t)v,
+                            gb_get_caught_loc(e), gb_get_caught_ot_gender(e));
+    }
+    case GBE_METLOC: {
+      int v = clampi((int)gb_get_caught_loc(e) + dir * step, 0, 127);
+      if (v == gb_get_caught_loc(e)) return false;
+      return gb_set_caught(e, gb_get_caught_time(e), gb_get_caught_level(e),
+                            (uint8_t)v, gb_get_caught_ot_gender(e));
+    }
+    case GBE_METOTGENDER: {
+      uint8_t v = gb_get_caught_ot_gender(e) ? 0 : 1;
+      return gb_set_caught(e, gb_get_caught_time(e), gb_get_caught_level(e),
+                            gb_get_caught_loc(e), v);
+    }
     default: break;
   }
 
@@ -302,6 +398,20 @@ bool gbe_press(GbEditMon* e, int f) {
     case GBE_ITEM:   return gb_get_held_item(e) ? gb_set_held_item(e, 0) : false;
     case GBE_FRIEND: return gb_set_friendship(e, (uint8_t)(gb_get_friendship(e) == 255 ? 0 : 255));
     case GBE_GENDER: return gbe_flip_gender(e);
+    case GBE_SHINY:  return gbe_flip_shiny(e);
+    case GBE_EGG:    return gb_set_egg(e, !gb_is_egg(e));
+    case GBE_METTIME: return gb_set_caught(e, (uint8_t)(gb_get_caught_time(e) == 3 ? 0 : 3),
+                                            gb_get_caught_level(e), gb_get_caught_loc(e),
+                                            gb_get_caught_ot_gender(e));
+    case GBE_METLEVEL: return gb_set_caught(e, gb_get_caught_time(e),
+                                             (uint8_t)(gb_get_caught_level(e) >= 63 ? 0 : 63),
+                                             gb_get_caught_loc(e), gb_get_caught_ot_gender(e));
+    case GBE_METLOC: return gb_set_caught(e, gb_get_caught_time(e), gb_get_caught_level(e),
+                                           (uint8_t)(gb_get_caught_loc(e) >= 127 ? 0 : 127),
+                                           gb_get_caught_ot_gender(e));
+    case GBE_METOTGENDER: return gb_set_caught(e, gb_get_caught_time(e), gb_get_caught_level(e),
+                                                gb_get_caught_loc(e),
+                                                (uint8_t)(gb_get_caught_ot_gender(e) ? 0 : 1));
     default: break;
   }
   if (f >= GBE_PPU0 && f <= GBE_PPU3) {

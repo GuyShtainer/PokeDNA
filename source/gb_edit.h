@@ -290,6 +290,16 @@ uint8_t  gb_get_gen1_status(const GbEditMon* e);
  * Read-only — this tree has no setter or row for it yet. */
 uint8_t  gb_get_pokerus(const GbEditMon* e);
 bool     gb_is_egg(const GbEditMon* e);           /* Gen 2 list byte 0xFD                 */
+/* Gen-2-only readers for the capture record gb_set_caught() writes (record bytes
+ * 0x1D/0x1E, same packing gen2_save.c:493-497 unpacks): 0 for a Gen-1 record (no such
+ * field there). BACKLOG #95 (summary-field parity audit): added alongside gb_editor.c's
+ * new GBE_MET* rows -- gb_set_caught already existed and is tested (host_gbedit_test.c),
+ * these are read-only companions so a row can show the CURRENT value before an edit
+ * changes just one of the four packed fields. */
+uint8_t  gb_get_caught_time(const GbEditMon* e);       /* 0..3: none/morning/day/night   */
+uint8_t  gb_get_caught_level(const GbEditMon* e);      /* 0..63 (1 == "hatched from an Egg" to the Poke Seer) */
+uint8_t  gb_get_caught_loc(const GbEditMon* e);        /* 0..127, raw id -- no name table in this tree yet */
+uint8_t  gb_get_caught_ot_gender(const GbEditMon* e);  /* 0 = male, 1 = female            */
 /* Editable text — see NAMES.
  *
  * USE A GB_TEXT_MAX BUFFER. A smaller `cap` truncates (on a glyph boundary, never

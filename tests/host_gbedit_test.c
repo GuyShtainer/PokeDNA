@@ -725,6 +725,12 @@ static void edit_and_verify(uint8_t gen, uint8_t* list, int box, const char* wha
   if (gen == GB_GEN2) {
     CHECK(gb_get_held_item(&back) == 0x2A, "held item survived");
     CHECK(back.rec[0x1B] == 200 && back.rec[0x1C] == 0x34, "friendship and pokerus survived");
+    /* BACKLOG #95: the new read-only companions to gb_set_caught(2, 41, 12, 1) above --
+     * same round trip, through the getters a new GBE_MET* row will actually call. */
+    CHECK(gb_get_caught_time(&back) == 2, "caught time survived");
+    CHECK(gb_get_caught_level(&back) == 41, "caught level survived");
+    CHECK(gb_get_caught_loc(&back) == 12, "caught location survived");
+    CHECK(gb_get_caught_ot_gender(&back) == 1, "caught OT gender survived");
   }
   printf("  %s: all setters verified through the shipping parser\n", what);
 }

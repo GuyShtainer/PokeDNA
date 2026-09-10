@@ -33,6 +33,28 @@ enum {
   GBE_DVH,                                       /* HP DV: DERIVED, shown, not editable */
   GBE_GENDER,                                    /* Gen 2 only, gender-having species only;
                                                    * DERIVED from the Atk DV -- see gbe_adjust */
+  GBE_SHINY,                                      /* Gen 2 only, every species (shininess has
+                                                   * no gender_ratio gate); DERIVED from all
+                                                   * four DVs -- see gbe_adjust's DV search,
+                                                   * the same "toggle -> nearest DV combo"
+                                                   * shape gbe_flip_gender already uses for
+                                                   * GENDER (BACKLOG #95 parity: mirrors Gen
+                                                   * 3's F_SHINY quick toggle, pdna_edit.c) */
+  GBE_EGG,                                        /* Gen 2 only: the species-LIST byte, not a
+                                                   * record field -- see gb_set_egg (BACKLOG
+                                                   * #95 parity: Gen 3 has no discrete egg
+                                                   * toggle of its own; this one exists because
+                                                   * gb_set_egg already did, unlike Gen 3 where
+                                                   * eggs are the CREATE flow's own species
+                                                   * choice, not a later toggle) */
+  GBE_METTIME, GBE_METLEVEL, GBE_METLOC, GBE_METOTGENDER,  /* Gen 2 only: the capture record
+                                                   * gb_set_caught() packs into 0x1D/0x1E --
+                                                   * BACKLOG #95 parity with Gen 3's own
+                                                   * F_METGAME/F_METREGION/F_METLOC/F_METLEVEL
+                                                   * rows (pdna_edit.c). No location NAME
+                                                   * table for Gen 2 exists in this tree yet
+                                                   * (same "#n" gap GBE_ITEM already has) --
+                                                   * METLOC shows the raw id. */
   GBE_SE0, GBE_SE1, GBE_SE2, GBE_SE3, GBE_SE4,   /* stat exp HP/Atk/Def/Spe/Spc        */
   GBE_NUM
 };

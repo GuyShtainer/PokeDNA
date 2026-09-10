@@ -449,6 +449,18 @@ uint8_t gb_get_gen1_status(const GbEditMon* e) {
 bool gb_is_egg(const GbEditMon* e) {
   return e && e->gen == GB_GEN2 && e->list_species == G2_LIST_EGG;
 }
+uint8_t gb_get_caught_time(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN2) ? (uint8_t)(e->rec[R2_CAUGHT0] >> 6) : 0;
+}
+uint8_t gb_get_caught_level(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN2) ? (uint8_t)(e->rec[R2_CAUGHT0] & 0x3Fu) : 0;
+}
+uint8_t gb_get_caught_loc(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN2) ? (uint8_t)(e->rec[R2_CAUGHT1] & 0x7Fu) : 0;
+}
+uint8_t gb_get_caught_ot_gender(const GbEditMon* e) {
+  return (e && e->gen == GB_GEN2) ? (uint8_t)(e->rec[R2_CAUGHT1] >> 7) : 0;
+}
 int gb_get_nickname(const GbEditMon* e, char* out, int cap) {
   if (!e || !out || cap <= 0) return 0;
   return gb_name_decode(e->gen, out, cap, e->nick, GB_NAME_BYTES);

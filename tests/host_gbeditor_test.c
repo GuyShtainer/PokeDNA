@@ -129,12 +129,13 @@ static void one_slot(GbSession* s, int box, int slot) {
   g_slots++;
   uint8_t rows[GBE_NUM];
   int n = gbe_fields(&e, rows);
-  /* Gen 1 hides all three Gen-2-only rows (Item, Friendship, Gender); Gen 2 hides only
+  /* Gen 1 hides all nine Gen-2-only rows (Item, Friendship, Gender, Shiny, Egg, Met
+   * Time/Level/Loc/OT-Gender -- BACKLOG #95 added the last six); Gen 2 hides only
    * Gender, and only for a species with no real gender (gbe_has_gender_row is the same
    * gate gbe_fields() applies internally, so this doubles as live coverage of
    * gbe_flip_gender()'s LEFT/RIGHT/A behaviour below against every real Gen-2 mon in
    * Guy's Gold.sav/Crystal.sav that DOES have one). */
-  int expect_full = s->gen == GB_GEN2 ? GBE_NUM : GBE_NUM - 3;
+  int expect_full = s->gen == GB_GEN2 ? GBE_NUM : GBE_NUM - 9;
   if (s->gen == GB_GEN2 && !gbe_has_gender_row(&e)) expect_full -= 1;
   CHECK(n == expect_full, "Gen 1 hides the Gen-2 rows; Gen 2 hides Gender where there is none");
   char hdr[64];
