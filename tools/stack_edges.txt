@@ -7,63 +7,119 @@
 # app_take_item/app_give_item/app_commit_with_dex, source/pdna_app.h:52) — a disassembly
 # walk cannot see through a value loaded from a struct field or a stack-spilled parameter,
 # so THIS FILE is the ground truth, derived by reading every assignment site in source
-# (2026-09-10, BACKLOG #84b):
+# (2026-09-10, BACKLOG #84b).
 #
-#   BoxSource.records    -> pdna_bank.c:295 pdna_gen12.c:565 pdna_main.c:8509  (3 sources)
-#   BoxSource.get_name   -> pdna_bank.c:297 pdna_gen12.c:567 pdna_main.c:8511
-#   BoxSource.set_name   -> pdna_bank.c:298 pdna_gen12.c:568 pdna_main.c:8512
-#   BoxSource.get_wp     -> pdna_bank.c:299 pdna_gen12.c:569 pdna_main.c:8513
-#   BoxSource.set_wp     -> pdna_bank.c:300 pdna_gen12.c:570 pdna_main.c:8514
-#   BoxSource.can_edit   -> pdna_bank.c:301 pdna_gen12.c:571 pdna_main.c:8515
-#   BoxSource.commit     -> pdna_bank.c:302 pdna_gen12.c:572 pdna_main.c:8516 (+ app_commit_sb1,
-#                           pdna_main.c:3431/4749, passed as the SAME AppCommitFn parameter to
-#                           app_mon_menu for party call sites — not a BoxSource field, but the
-#                           identical indirect-call class: the `commit` argument threaded through
-#                           app_mon_menu -> app_take_item/app_give_item -> `commit ? commit() : 0`,
-#                           and app_paste_gb_merge -> app_paste_gb_commit -> app_commit_with_dex
-#                           (inlined) -> `commit ? commit() : 0`)
-#   BoxSource.mark_dirty -> pdna_bank.c:303 pdna_gen12.c:573 pdna_main.c:8517
-#   BoxSource.note_add   -> pdna_main.c:8518 (pcsrc_note_add; the bank leaves it NULL, the GB
-#                           source sets it to 0 explicitly, pdna_gen12.c:574 — every call site
-#                           in pdna_box.c is `if (src->note_add) src->note_add(...)`, so only
-#                           the one live implementation matters)
-#   BoxSource.note_box   -> pdna_gen12.c:575 (gbsrc_note_box; guarded the same way, only the
-#                           GB source sets it — pdna_bank.c/pdna_main.c never do)
-#   BoxSource.capacity   -> pdna_gen12.c:576 (gbsrc_capacity; guarded the same way)
+# FORMAT (D1 fix -- BACKLOG #84b review found the OLD `caller -> impls` shape exempted
+# every indirect site in a function once ANY one class was declared for it; a new,
+# undeclared function pointer in a multi-class caller like pdna_box passed silently):
 #
-# Grep that reproduces this list: `grep -rn "\.records *=\|\.get_name *=\|\.set_name *=\|
-# \.get_wp *=\|\.set_wp *=\|\.can_edit *=\|\.commit *=\|\.mark_dirty *=\|\.note_add *=\|
-# \.note_box *=\|\.capacity *=" source/` finds exactly these assignment sites and no others
-# (checked against source/pdna_bank.c, source/pdna_gen12.c, source/pdna_main.c — the only
-# three files that ever populate a BoxSource). `AppSrcOps`/`g_src_ops` (k_gb_ops/k_gb_ops_ro,
-# pdna_gen12.c:2429/2452) is a SEPARATE dispatch table but is not reached from any function on
-# the top-5 chains today (app_mon_menu's RO_VIEW/RO_MOVE/RO_RELEASE/RO_PASTE/RO_CREATE cases
-# call it, but those cases are not on the deepest-chain path) — add it here the day a chain
-# grows to include one of those cases; the guard's own consistency check (any bx-thunk site
-# in a chain function with no line below) will name the function if that ever happens instead
-# of silently trusting a stale list.
+#   Struct.field @OFFSET -> impl1 impl2 ...
+#     A struct-field dispatch. stack_budget.py resolves each site to the offset its
+#     `ldr rN, [rY, #OFFSET]` loads (the instruction immediately feeding the `bl <bx-rN
+#     thunk>`) and only exempts a site whose OFFSET is declared here -- an eleventh,
+#     undeclared BoxSource field pointer does NOT inherit exemption from the other ten.
+#     OFFSET is cross-checked at guard time against the struct's OWN header (computed
+#     with the same natural ARM EABI layout GCC uses) -- a stale offset here (header
+#     changed, this file didn't) is a FATAL, not a silent pass.
 #
-# Format: one class per non-comment line, `caller_function -> impl1 impl2 ...` (space-
-# separated, order doesn't matter). The guard takes the MAX su/estimated frame among the
-# listed implementations for each declared caller (conservative: whichever indirect target
-# turns out to be the deepest is the one charged).
+#   caller argsites=N -> impl1 impl2 ...
+#     A parameter-threaded dispatch (no struct field to key on -- AppCommitFn's `commit`
+#     argument). N is the number of such sites in `caller` TODAY, counted by reading the
+#     source; if the disassembly's count ever differs (a site appeared or vanished), the
+#     guard FAILS naming the caller instead of silently re-using a stale exemption.
+#
+# BoxSource field offsets (source/pdna_box.h, natural ARM EABI packing, verified against
+# this build's own objdump -- e.g. `ldr r3,[r6,#20]` before pdna_box's `records()` calls,
+# `ldr r3,[r3,#60]` before its `note_box()` calls):
+#   nboxes=0 last_box_is_party=4 start_box=8 is_bank=12 has_start=13 wp_count=16
+#   records=20 menu_block=24 get_name=28 set_name=32 get_wp=36 set_wp=40 can_edit=44
+#   commit=48 mark_dirty=52 note_add=56 note_box=60 capacity=64
+#
+# Assignment sites (grep that reproduces this list: `grep -rn "\.records *=\|\.get_name *=\|
+# \.set_name *=\|\.get_wp *=\|\.set_wp *=\|\.can_edit *=\|\.commit *=\|\.mark_dirty *=\|
+# \.note_add *=\|\.note_box *=\|\.capacity *=" source/` finds exactly these and no others --
+# checked against source/pdna_bank.c, source/pdna_gen12.c, source/pdna_main.c, the only
+# three files that ever populate a BoxSource):
+#   records    -> pdna_bank.c:295 pdna_gen12.c:565 pdna_main.c:8509  (3 sources)
+#   get_name   -> pdna_bank.c:297 pdna_gen12.c:567 pdna_main.c:8511
+#   set_name   -> pdna_bank.c:298 pdna_gen12.c:568 pdna_main.c:8512
+#   get_wp     -> pdna_bank.c:299 pdna_gen12.c:569 pdna_main.c:8513
+#   set_wp     -> pdna_bank.c:300 pdna_gen12.c:570 pdna_main.c:8514
+#   can_edit   -> pdna_bank.c:301 pdna_gen12.c:571 pdna_main.c:8515
+#   commit     -> pdna_bank.c:302 pdna_gen12.c:572 pdna_main.c:8516
+#   mark_dirty -> pdna_bank.c:303 pdna_gen12.c:573 pdna_main.c:8517
+#   note_add   -> pdna_main.c:8518 (pcsrc_note_add; the bank leaves it NULL, the GB source
+#                 sets it to 0 explicitly, pdna_gen12.c:574 -- every call site in pdna_box.c
+#                 is `if (src->note_add) src->note_add(...)`, so only the one live
+#                 implementation matters)
+#   note_box   -> pdna_gen12.c:575 (gbsrc_note_box; guarded the same way, only the GB
+#                 source sets it -- pdna_bank.c/pdna_main.c never do)
+#   capacity   -> pdna_gen12.c:576 (gbsrc_capacity; guarded the same way)
+#
+# `AppSrcOps`/`g_src_ops` (k_gb_ops/k_gb_ops_ro, pdna_gen12.c:2429/2452) is a SEPARATE
+# dispatch table but is not reached from any function on the top-5 chains today
+# (app_mon_menu's RO_VIEW/RO_MOVE/RO_RELEASE/RO_PASTE/RO_CREATE cases call it, but those
+# cases are not on the deepest-chain path) -- add it here the day a chain grows to include
+# one of those cases; the guard's per-SITE blind-spot check will name the function if that
+# ever happens instead of silently trusting a stale list.
 
-pdna_box -> banksrc_records gbsrc_records pcsrc_records
-pdna_box -> banksrc_get_name gbsrc_get_name pcsrc_get_name
-pdna_box -> banksrc_set_name gbsrc_set_name pcsrc_set_name
-pdna_box -> banksrc_get_wp gbsrc_get_wp pcsrc_get_wp
-pdna_box -> banksrc_set_wp gbsrc_set_wp pcsrc_set_wp
-pdna_box -> banksrc_can_edit gbsrc_can_edit app_can_edit
-pdna_box -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
-pdna_box -> banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty
-pdna_box -> pcsrc_note_add
-pdna_box -> gbsrc_note_box
-pdna_box -> gbsrc_capacity
+BoxSource.records    @20 -> banksrc_records gbsrc_records pcsrc_records
+BoxSource.get_name   @28 -> banksrc_get_name gbsrc_get_name pcsrc_get_name
+BoxSource.set_name   @32 -> banksrc_set_name gbsrc_set_name pcsrc_set_name
+BoxSource.get_wp     @36 -> banksrc_get_wp gbsrc_get_wp pcsrc_get_wp
+BoxSource.set_wp     @40 -> banksrc_set_wp gbsrc_set_wp pcsrc_set_wp
+BoxSource.can_edit   @44 -> banksrc_can_edit gbsrc_can_edit app_can_edit
+BoxSource.commit     @48 -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+BoxSource.mark_dirty @52 -> banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty
+BoxSource.note_add   @56 -> pcsrc_note_add
+BoxSource.note_box   @60 -> gbsrc_note_box
+BoxSource.capacity   @64 -> gbsrc_capacity
 
-party_strip_overlay -> banksrc_records gbsrc_records pcsrc_records
+# The commit parameter threaded through app_mon_menu (party call sites) and
+# app_paste_gb_merge -> app_paste_gb_commit -> app_commit_with_dex (inlined) -> `commit ?
+# commit() : 0` (source/pdna_app.h:52, source/pdna_main.c:1931/3132-3148/3243/3256/3275-3285/
+# 4107-4118/4431-4432) is the SAME AppCommitFn class as BoxSource.commit above, but it is
+# NOT a struct-field load (it's a parameter carried in a register/stack slot across the
+# function), so it is declared by SITE COUNT instead of by offset: app_mon_menu has 3
+# distinct `commit(...)` call sites today (the A_TAKEITEM/A_GIVEITEM cases plus one more
+# app_commit_with_dex instantiation the compiler didn't merge); app_paste_gb_merge has 1.
+app_mon_menu argsites=3 -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+app_paste_gb_merge argsites=1 -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
 
-app_mon_menu -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
-app_paste_gb_merge -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
+# pdna_box: 4 sites (all through the same bx-r2/bx-r3 shared thunks as the eleven
+# declared field classes above) where the field value is SPILLED to the stack (the
+# resolver's `ldr reg, [sp, #K]` case) and reloaded past an intervening `bl` --
+# get_wp()/draw_wallpaper's audit path (wp_audit(), pdna_box.c:885-899, inlined at
+# its one call site pdna_box.c:3083) and similar wallpaper-preview call shapes
+# reuse stack slots the resolver can't safely trace through a store/reload pair
+# without risking attributing the WRONG store in a 2,000+ line function with heavy
+# stack-slot reuse across unrelated code regions (confirmed by hand: a naive
+# store-chase landed on an unrelated `s_wp_map` literal-pool load at the SAME
+# offset from a different part of the function -- exactly the false-attribution
+# risk that makes chasing stack spills automatically a worse idea than declaring
+# the count here). Conservatively declared as the union of every BoxSource field
+# implementation already declared above (the guard's MAX-frame rule still charges
+# the true worst case even without knowing exactly which field each site is).
+# Verified identical (4) across all three build variants (artless/full/delta).
+pdna_box argsites=4 -> banksrc_records gbsrc_records pcsrc_records banksrc_get_name gbsrc_get_name pcsrc_get_name banksrc_set_name gbsrc_set_name pcsrc_set_name banksrc_get_wp gbsrc_get_wp pcsrc_get_wp banksrc_set_wp gbsrc_set_wp pcsrc_set_wp banksrc_can_edit gbsrc_can_edit app_can_edit banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1 banksrc_mark_dirty gbsrc_mark_dirty app_mark_pc_dirty pcsrc_note_add gbsrc_note_box gbsrc_capacity
+
+# rom_gbui_open / rom_gbui_open_loc: the SAME spill-across-a-call shape for
+# Scan.read/RomGbUi.read (the ctx/off/dst/len marshaling before `s->read(...)`
+# puts the read-function pointer itself in a register the AAPCS argument
+# registers don't cover, spilled to the stack across the locator's own scan
+# calls). Verified identical (7 / 9) across all three build variants.
+rom_gbui_open argsites=7 -> gbscr_sd_read fused_gb_slice_read gb_art_read
+rom_gbui_open_loc argsites=9 -> gbscr_sd_read fused_gb_slice_read gb_art_read
+
+# RomGbUi.read / the file-local Scan.read (source/rom_gbui.h:246, source/rom_gbui.c:25) --
+# both structs put their GbReadFn `read` hook as the FIRST member (offset 0), so `rd()`,
+# rom_gbui_open(), rom_gbui_open_loc(), and rom_gbui_tile()'s `gu->read(...)`/`s->read(...)`
+# calls all resolve to offset 0. Declared so the SD-backed leg (gbscr_sd_read, the fused-GB
+# leg fused_gb_slice_read, and the ROM-resident leg gb_art_read -- source/pdna_gbscreen.c:486/
+# 520, source/pdna_gen12.c:2213) is COUNTED in any chain that reaches it, instead of being a
+# blind spot that just happens not to be on today's top-5.
+Scan.read    @0 -> gbscr_sd_read fused_gb_slice_read gb_art_read
+RomGbUi.read @0 -> gbscr_sd_read fused_gb_slice_read gb_art_read
 
 # LOWER-CONFIDENCE (newlib internal, not our source -- found 2026-09-10 while certifying G2
 # on the full-art delta/normal builds, where this chain ranks in the top 5 only because the
@@ -77,8 +133,11 @@ app_paste_gb_merge -> banksrc_commit gbsrc_commit app_commit_pc app_commit_sb1
 # codebase ever calls setlocale()/mbtowctowc-family setters, so the hook can only ever hold
 # the one value newlib's reentrant-struct initializer gives it. Declared on that inference,
 # NOT verified against newlib source (not present in this environment/devkitPro install --
-# no libc source to grep the initializer against). __utf8_mbtowc is a 2-push, no-`bl` leaf
-# (est. ~32 B), nowhere near large enough to change which chain is deepest (chain #1 here is
+# no libc source to grep the initializer against). This caller has exactly ONE indirect
+# site (no other newlib mbtowc-shaped dispatch exists in this TU), so the legacy
+# whole-function form is still safe here -- the guard itself refuses this form the moment a
+# SECOND site ever appears in the same caller. __utf8_mbtowc is a 2-push, no-`bl` leaf (est.
+# ~32 B), nowhere near large enough to change which chain is deepest (chain #1 here is
 # 7,824 B; this one tops out at 1,960 B even before adding it) -- re-verify against newlib
 # source the day someone has it, or if a future build ever makes this chain rank #1.
 _svfiprintf_r -> __utf8_mbtowc

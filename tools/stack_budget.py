@@ -194,9 +194,11 @@ def analyze(dump_text):
         return name_at[starts[i]] if i >= 0 else None
 
     edges = collections.defaultdict(set)
-    indirect_sites = collections.defaultdict(list)   # func -> [(addr, insn_text), ...]
+    indirect_sites = collections.defaultdict(list)   # func -> [(addr, insn_text, bx_reg), ...]
+    fn_insn_seq = collections.defaultdict(list)       # func -> [(addr, insn_text), ...] in order
     weird = []
     for fn, a, ins in lines:
+        fn_insn_seq[fn].append((a, ins))
         m = TGT_RE.match(ins)
         if not m:
             if re.match(r'^(bl|blx)\s', ins):
@@ -207,8 +209,12 @@ def analyze(dump_text):
         if op not in ("bl", "blx", "b", "b.n", "b.w"):
             continue                                    # conditional branch = intra-function
         tgt_ins = insn.get(t, "")
-        if re.match(r'^bx\s+\w', tgt_ins) and t not in name_at:
-            indirect_sites[fn].append((hex(a), ins))     # trap #2: bx-rN thunk, unresolved
+        bxm = re.match(r'^bx\s+(\w+)', tgt_ins)
+        if bxm and t not in name_at:
+            # trap #2: bx-rN thunk, unresolved -- record which register it dispatches
+            # through so the caller can try to resolve the site to a declared struct
+            # field (D1: BACKLOG #84b review).
+            indirect_sites[fn].append((hex(a), ins, bxm.group(1)))
             continue
         own = owner(t)
         if own == fn:
@@ -242,29 +248,300 @@ def analyze(dump_text):
         "weird": weird,
         "veneers": veneers,
         "fn_lines": fn_lines,
+        "fn_insn_seq": dict(fn_insn_seq),
     }
 
 
+FIELD_LINE_RE = re.compile(r'^(\w+)\.(\w+)\s*@(\d+)$')
+ARGSITE_LINE_RE = re.compile(r'^(\w+)\s+argsites=(\d+)$')
+FRAME_LINE_RE = re.compile(r'^frame\s+(\S+)\s*=\s*(\d+)\b')
+
+
 def load_extra_edges(path):
-    """Parse tools/stack_edges.txt: `caller -> impl1 impl2 ...` per non-comment line.
-    Multiple lines for the same caller (one BoxSource field each) ACCUMULATE -- a
-    caller with several indirect-call classes (pdna_box has eleven) just gets more
-    lines, all unioned into that caller's declared target set."""
-    extra = collections.defaultdict(set)
+    """Parse tools/stack_edges.txt. Three declaration shapes, one non-comment line each
+    (D1, BACKLOG #84b review, fixing the per-FUNCTION blind-spot exemption defect):
+
+      Struct.field @OFFSET -> impl1 impl2 ...
+        A struct-field indirect-call class (BoxSource.records, RomGbUi.read, ...).
+        OFFSET is checked against the field's ACTUAL offset (computed from the
+        struct's own header via struct_field_offsets()) before it is trusted --
+        a stale/wrong OFFSET here is a FATAL, not a silent pass. Sites are matched
+        to a class by the offset the disassembly loads, not by which function they
+        sit in, so an undeclared field added to a struct with ten declared fields
+        gets no free pass from its ten siblings.
+
+      caller argsites=N -> impl1 impl2 ...
+        A parameter/register-threaded dispatch class (AppCommitFn's `commit`
+        argument, not a struct field -- the walker can't see a field offset for
+        it). N is the number of such sites the reviewer counted BY READING THE
+        SOURCE; if the disassembly's count for `caller` ever differs, that is a
+        FATAL naming the caller (a new one appeared, or one vanished/inlined away).
+
+      caller -> impl1 impl2 ...  (legacy, single-site callers only)
+        Whole-function exemption. Only accepted when `caller` has AT MOST ONE
+        indirect-call site in the disassembly (checked in main(), not here) --
+        multi-site callers must use one of the structured forms above so a new,
+        undeclared site cannot hide behind an old one's declaration.
+
+      frame fn = BYTES  (freeform trailing text, e.g. "(measured by hand, date)")
+        D2's UNKNOWN-frame override: certifies a function's frame size by hand
+        when the prologue estimator can't classify it, so an honest UNKNOWN
+        doesn't fail the build forever.
+
+    Multiple lines per caller/struct ACCUMULATE (pdna_box has eleven field lines).
+    Returns (field_decls, argsite_decls, whole_func_decls, frame_overrides):
+      field_decls      : {(struct, field): (offset, {impls})}
+      argsite_decls     : {caller: (N, {impls})}
+      whole_func_decls  : {caller: {impls}}
+      frame_overrides   : {fn: bytes}
+    """
+    field_decls = {}
+    argsite_decls = {}
+    whole_func_decls = collections.defaultdict(set)
+    frame_overrides = {}
     if not path or not os.path.exists(path):
-        return extra
+        return field_decls, argsite_decls, whole_func_decls, frame_overrides
     with open(path) as f:
-        for raw in f:
+        for lineno, raw in enumerate(f, 1):
             line = raw.split('#', 1)[0].strip()
             if not line:
                 continue
-            if '->' not in line:
+            fm = FRAME_LINE_RE.match(line)
+            if fm:
+                frame_overrides[fm.group(1)] = int(fm.group(2))
                 continue
-            caller, rhs = line.split('->', 1)
-            caller = caller.strip()
-            impls = rhs.split()
-            extra[caller].update(impls)
-    return extra
+            if '->' not in line:
+                raise ValueError(f"{path}:{lineno}: unrecognized line: {raw!r}")
+            lhs, rhs = line.split('->', 1)
+            lhs = lhs.strip()
+            impls = set(rhs.split())
+            fm2 = FIELD_LINE_RE.match(lhs)
+            if fm2:
+                struct, field, off = fm2.group(1), fm2.group(2), int(fm2.group(3))
+                key = (struct, field)
+                if key in field_decls:
+                    prev_off, prev_impls = field_decls[key]
+                    if prev_off != off:
+                        raise ValueError(f"{path}:{lineno}: {struct}.{field} declared at "
+                                          f"two different offsets ({prev_off} and {off})")
+                    field_decls[key] = (off, prev_impls | impls)
+                else:
+                    field_decls[key] = (off, impls)
+                continue
+            am = ARGSITE_LINE_RE.match(lhs)
+            if am:
+                caller, n = am.group(1), int(am.group(2))
+                if caller in argsite_decls:
+                    prev_n, prev_impls = argsite_decls[caller]
+                    if prev_n != n:
+                        raise ValueError(f"{path}:{lineno}: {caller} argsites declared "
+                                          f"twice with different counts ({prev_n} and {n})")
+                    argsite_decls[caller] = (n, prev_impls | impls)
+                else:
+                    argsite_decls[caller] = (n, impls)
+                continue
+            whole_func_decls[lhs].update(impls)
+    return field_decls, argsite_decls, dict(whole_func_decls), frame_overrides
+
+
+# === struct-field offsets, computed from the header (D1) ==============================
+
+_STRUCT_FIELD_RE = re.compile(r'\(\*(\w+)\)\(')
+_KNOWN_PTR_TYPEDEFS = {"AppCommitFn", "GbReadFn", "Gb12ReadFn", "G2ReadFn", "Gen1ReadFn",
+                        "ArtReadFn", "G2WriteFn"}
+_KNOWN_VALUE_TYPES = {"bool": 1, "int": 4, "int32_t": 4, "uint32_t": 4, "int16_t": 2,
+                       "uint16_t": 2, "int8_t": 1, "uint8_t": 1}
+
+
+def _strip_c_comments(text):
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+    text = re.sub(r'//[^\n]*', '', text)
+    return text
+
+
+def _classify_field(stmt):
+    """(name, size, align) for one struct-member declaration, or raise ValueError if
+    the type isn't one this walker knows how to size -- an unrecognized type must
+    FAIL the offset computation, never guess a size (stop-licence)."""
+    stmt = ' '.join(stmt.split())
+    m = _STRUCT_FIELD_RE.search(stmt)
+    if m:
+        return m.group(1), 4, 4                      # function pointer field
+    parts = stmt.rsplit(None, 1)
+    if len(parts) != 2:
+        raise ValueError(f"can't parse struct member: {stmt!r}")
+    typ, name = parts[0].strip(), parts[1].strip()
+    if name.startswith('*'):
+        return name.lstrip('*'), 4, 4                 # `Type* name` split by whitespace
+    if typ.endswith('*'):
+        return name, 4, 4                             # `Type* name` glued to the type
+    if typ in _KNOWN_PTR_TYPEDEFS:
+        return name, 4, 4
+    if typ in _KNOWN_VALUE_TYPES:
+        sz = _KNOWN_VALUE_TYPES[typ]
+        return name, sz, sz
+    raise ValueError(f"unknown field type {typ!r} for member {name!r} -- teach "
+                      "_classify_field about it or this offset can't be trusted")
+
+
+def struct_field_offsets(header_text, struct_name):
+    """Field name -> byte offset within `struct_name`, computed by walking the
+    header's own `typedef struct { ... } <struct_name>;` (or `struct <struct_name>
+    { ... };`) with natural ARM EABI alignment (no #pragma pack anywhere in this
+    codebase) -- the SAME layout arm-none-eabi-gcc gives the real struct, so a
+    stack_edges.txt offset can be checked against reality instead of trusted on
+    faith. Raises ValueError if the struct/a field can't be found or sized, so a
+    header change this walker doesn't understand FAILS the build instead of
+    silently keeping a stale offset (D1, the header-drift half of the fix)."""
+    t = _strip_c_comments(header_text)
+    m = (re.search(r'typedef\s+struct\s*\{(.*?)\}\s*' + re.escape(struct_name) + r'\s*;',
+                    t, re.S)
+         or re.search(r'struct\s+' + re.escape(struct_name) + r'\s*\{(.*?)\};', t, re.S))
+    if not m:
+        raise ValueError(f"struct {struct_name!r} not found")
+    stmts = [s.strip() for s in m.group(1).split(';') if s.strip()]
+    offsets = {}
+    off = 0
+    for s in stmts:
+        name, size, align = _classify_field(s)
+        off = (off + align - 1) // align * align
+        offsets[name] = off
+        off += size
+    return offsets
+
+
+def verify_field_declarations(field_decls, source_dir, struct_headers):
+    """Cross-check every declared `Struct.field @OFF` against the offset the header
+    actually gives that field today. struct_headers maps struct name -> header
+    filename under source_dir. Returns a list of human-readable mismatch strings
+    (empty = all declarations are honest); the caller treats ANY entry as fatal."""
+    problems = []
+    cache = {}
+    for (struct, field), (decl_off, _impls) in sorted(field_decls.items()):
+        if struct not in cache:
+            hdr = struct_headers.get(struct)
+            if hdr is None:
+                problems.append(f"{struct}.{field}: no header registered for struct "
+                                 f"{struct!r} (add it to STRUCT_HEADERS)")
+                continue
+            path = os.path.join(source_dir, hdr)
+            try:
+                with open(path) as f:
+                    cache[struct] = struct_field_offsets(f.read(), struct)
+            except (OSError, ValueError) as e:
+                problems.append(f"{struct}.{field}: {e}")
+                cache[struct] = None
+                continue
+        real = cache[struct]
+        if real is None:
+            continue
+        if field not in real:
+            problems.append(f"{struct}.{field}: no such field in {struct_headers[struct]} "
+                             "today -- header changed, stack_edges.txt did not")
+        elif real[field] != decl_off:
+            problems.append(f"{struct}.{field}: declared @{decl_off}, header says "
+                             f"@{real[field]} today -- header changed, stack_edges.txt did not")
+    return problems
+
+
+# struct name -> header file (under --source-dir) this walker knows how to size.
+# Every struct named on the LHS of a `Struct.field @OFF` line in stack_edges.txt
+# must be listed here, or verify_field_declarations() fails loudly instead of
+# trusting an unverifiable offset.
+STRUCT_HEADERS = {
+    "BoxSource": "pdna_box.h",
+    "RomGbUi": "rom_gbui.h",
+    "Scan": "rom_gbui.c",     # file-local struct; struct_field_offsets() greps .c too
+}
+
+
+BRANCH_MNEM_RE = re.compile(
+    r'^(b|bx|beq|bne|bcs|bcc|bmi|bpl|bvs|bvc|bhi|bls|bge|blt|bgt|ble)'
+    r'(\.[nw])?(\s|$)')
+CALL_MNEM_RE = re.compile(r'^(bl|blx)(\.[nw])?(\s|$)')
+STORE_MNEM_RE = re.compile(r'^(str\w*|stm\w*|push)\b')
+CMP_MNEM_RE = re.compile(r'^(cmp|cmn|tst|teq)\b')
+MOV_REG_RE = re.compile(r'^movs?\s+(r\d+|ip)\s*,\s*(r\d+|ip)\s*$')
+DEST_REG_RE = re.compile(r'^[a-z][a-z0-9]*\s+(r\d+|ip)\b')
+LDR_FIELD_RE = re.compile(
+    r'^ldr\w*\s+(r\d+|ip)\s*,\s*\[\s*(r\d+|ip|sp|pc)\s*,\s*#(-?\d+)\s*\]')
+CALLER_SAVED_REGS = frozenset(('r0', 'r1', 'r2', 'r3', 'ip'))   # AAPCS scratch registers
+
+
+BASE_LITERAL_WINDOW = 8   # instructions to look back for the base register's own origin
+
+
+def _base_is_section_anchor(fn_insn_seq, ldr_idx, base_reg):
+    """True if `base_reg` (the rY in `ldr rN, [rY, #off]`) was ITSELF just materialized
+    from a PC-relative literal (`ldr rY, [pc, #imm]`) within the last BASE_LITERAL_WINDOW
+    instructions, with nothing redefining it in between. That shape -- literal-load a
+    fixed address, then immediately index off it -- is GCC's `-fsection-anchors` codegen
+    for a STATIC/global variable (default at -O2 for this target): every small static in
+    a section shares ONE base register and reaches each other by a small #offset, which
+    is byte-for-byte indistinguishable from a struct-field dereference UNLESS the base's
+    own origin is checked. None of BoxSource/RomGbUi/Scan is ever addressed as a global
+    in this codebase (always a parameter, spilled or in a register) -- a base fed by a
+    fresh literal is therefore a global/anchor access, not an instance field, and must
+    NOT be trusted as 'field' (confirmed empirically: a planted global function-pointer
+    dispatch compiled to exactly this shape and, without this check, silently matched a
+    declared field offset by coincidence -- a real false-pass, not a hypothetical one)."""
+    lo = max(0, ldr_idx - BASE_LITERAL_WINDOW)
+    for _addr, ins in reversed(fn_insn_seq[lo:ldr_idx]):
+        ins_clean = ins.split('@')[0].strip()
+        m = LDR_FIELD_RE.match(ins_clean)
+        if m and m.group(1) == base_reg:
+            return m.group(2) == 'pc'
+        dm = DEST_REG_RE.match(ins_clean)
+        if dm and dm.group(1) == base_reg:
+            return False                    # base redefined by something else first
+    return False
+
+
+def resolve_indirect_site(fn_insn_seq, site_addr, reg):
+    """Scan `fn`'s instructions backward from just before `site_addr` for the origin
+    of the value dispatched through `reg`. Returns ('field', offset) if it traces to
+    `ldr rN, [rY, #offset]` with rY not pc/lr/sp AND rY itself not a fresh literal
+    load (a struct-field load through a genuine instance pointer, chasing plain
+    `mov rX, rY` register-to-register copies on the way -- the compiler routinely
+    loads a struct field into one register and copies it before the call); otherwise
+    ('nonfield', None) -- set by anything else, never reassigned in this function (a
+    parameter/register argument, e.g. AppCommitFn's `commit`), a section-anchor/global
+    access (see _base_is_section_anchor), or CLOBBERED by an intervening `bl`/`blx`
+    while held in a caller-saved register (r0-r3/ip survive a call only by accident,
+    never by the ABI -- attributing a post-call value to a pre-call load would be a
+    genuine lie, not a conservative guess). Erring toward 'nonfield' is the safe
+    direction: an unmatched nonfield site with no argsites declaration is a blind spot
+    and FAILS the build, so a misclassified field load costs a loud failure, never a
+    silent pass."""
+    idx = bisect.bisect_left(fn_insn_seq, (site_addr, ''))
+    for i in range(idx - 1, -1, -1):
+        _addr, ins = fn_insn_seq[i]
+        ins_clean = ins.split('@')[0].strip()
+        if CALL_MNEM_RE.match(ins_clean):
+            if reg in CALLER_SAVED_REGS:
+                return ('nonfield', None)              # clobbered by the call
+            continue                                    # callee-saved reg survives a call
+        if BRANCH_MNEM_RE.match(ins_clean):
+            continue
+        m = LDR_FIELD_RE.match(ins_clean)
+        if m:
+            if m.group(1) != reg:
+                continue
+            if m.group(2) in ('pc', 'lr', 'sp'):
+                return ('nonfield', None)              # literal/stack-spilled param, not a field
+            if _base_is_section_anchor(fn_insn_seq, i, m.group(2)):
+                return ('nonfield', None)              # global/section-anchor access, not a field
+            return ('field', int(m.group(3)))
+        if STORE_MNEM_RE.match(ins_clean) or CMP_MNEM_RE.match(ins_clean):
+            continue
+        mv = MOV_REG_RE.match(ins_clean)
+        if mv and mv.group(1) == reg:
+            reg = mv.group(2)                           # chase the copy, keep scanning
+            continue
+        dm = DEST_REG_RE.match(ins_clean)
+        if dm and dm.group(1) == reg:
+            return ('nonfield', None)                  # set by something not ldr-offset/mov
+    return ('nonfield', None)                           # never reassigned: a parameter
 
 
 def estimate_frames(fn_lines):
@@ -309,6 +586,62 @@ def estimate_frames(fn_lines):
                 continue
         est[fn] = total
     return est
+
+
+def resolve_all_sites(analysis, field_decls, argsite_decls, whole_func_decls):
+    """Classify every indirect-call site the walker found and decide which ones are
+    exempted by a declaration (D1). Returns:
+      edges_to_add     : {caller: {impl, ...}} to union into analysis["edges"]
+      blind[fn]         : [(addr, ins, detail), ...] sites NOT exempted by anything --
+                           a struct-field load at an undeclared offset, or a
+                           parameter-style dispatch with no argsites/whole-function
+                           declaration covering it
+      count_mismatches  : [(caller, declared_n, found_n), ...] argsites declarations
+                           whose count no longer matches the disassembly
+      legacy_ambiguous  : [caller, ...] whole-function declarations on a caller that
+                           now has more than one indirect site (needs a structured decl)
+    Never trusts a caller-wide declaration for MULTIPLE sites unless every one of
+    them is individually accounted for -- the whole point of D1."""
+    field_offset_impls = collections.defaultdict(set)
+    for (_struct, _field), (off, impls) in field_decls.items():
+        field_offset_impls[off] |= impls
+
+    fn_insn_seq = analysis["fn_insn_seq"]
+    edges_to_add = collections.defaultdict(set)
+    blind = collections.defaultdict(list)
+    count_mismatches = []
+    legacy_ambiguous = []
+
+    for fn, sites in analysis["indirect_sites"].items():
+        total = len(sites)
+        if fn in whole_func_decls:
+            if total > 1:
+                legacy_ambiguous.append(fn)
+            else:
+                edges_to_add[fn] |= whole_func_decls[fn]
+                continue      # every site (there's at most one) is exempted
+        nonfield_sites = []
+        for addr, ins, reg in sites:
+            kind, off = resolve_indirect_site(fn_insn_seq.get(fn, []), int(addr, 16), reg)
+            if kind == 'field':
+                if off in field_offset_impls:
+                    edges_to_add[fn] |= field_offset_impls[off]
+                else:
+                    blind[fn].append((addr, ins, f"struct-field load @{off}, no "
+                                       "declared field at that offset"))
+            else:
+                nonfield_sites.append((addr, ins))
+        if fn in argsite_decls:
+            n, impls = argsite_decls[fn]
+            if len(nonfield_sites) != n:
+                count_mismatches.append((fn, n, len(nonfield_sites)))
+            else:
+                edges_to_add[fn] |= impls
+        else:
+            for addr, ins in nonfield_sites:
+                blind[fn].append((addr, ins, "parameter/register dispatch, no "
+                                   "argsites declaration for this caller"))
+    return dict(edges_to_add), dict(blind), count_mismatches, legacy_ambiguous
 
 
 def frame_of(name, su_sizes, estimated):
@@ -424,6 +757,11 @@ def main(argv):
                      help="declared indirect-call targets, 'caller -> impl1 impl2 ...' "
                           "per line (default: tools/stack_edges.txt next to this script; "
                           "pass an empty string to disable)")
+    ap.add_argument("--source-dir",
+                     default=os.path.join(os.path.dirname(os.path.dirname(
+                         os.path.abspath(__file__))), "source"),
+                     help="where struct-field @OFFSET declarations are checked against "
+                          "the real header (default: source/ next to tools/)")
     args = ap.parse_args(argv)
 
     if not os.path.exists(args.elf):
@@ -470,39 +808,73 @@ def main(argv):
               file=sys.stderr)
         return 1
 
-    extra_edges = load_extra_edges(args.edges_file) if args.edges_file else {}
-    for caller, impls in extra_edges.items():
+    field_decls, argsite_decls, whole_func_decls, frame_overrides = (
+        load_extra_edges(args.edges_file) if args.edges_file
+        else ({}, {}, {}, {}))
+
+    # D1 header-drift check: every declared Struct.field @OFFSET is checked against
+    # the offset the struct's OWN header gives that field today, before anything
+    # else runs. A stale offset (header changed, this file didn't) is fatal -- it
+    # would otherwise let a site silently match the WRONG field's implementation
+    # list, or (worse) stop matching a real field and turn into a spurious blind spot.
+    field_problems = verify_field_declarations(field_decls, args.source_dir, STRUCT_HEADERS)
+    if field_problems:
+        print(f"*** stack_budget: {args.edges_file} has stale struct-field declaration(s):",
+              file=sys.stderr)
+        for p in field_problems:
+            print(f"***   {p}", file=sys.stderr)
+        return 1
+
+    edges_to_add, blind, count_mismatches, legacy_ambiguous = resolve_all_sites(
+        analysis, field_decls, argsite_decls, whole_func_decls)
+    for caller, impls in edges_to_add.items():
         analysis["edges"][caller] |= impls
-    unknown_impls = sorted({impl for impls in extra_edges.values() for impl in impls}
-                            - analysis["funcs"])
+
+    all_impls = ({impl for impls in field_decls.values() for impl in impls[1]}
+                 | {impl for _n, impls in argsite_decls.values() for impl in impls}
+                 | {impl for impls in whole_func_decls.values() for impl in impls})
+    unknown_impls = sorted(all_impls - analysis["funcs"])
     if unknown_impls:
         print(f"*** stack_budget: WARNING -- {args.edges_file} names implementation(s) not "
               f"found in {args.elf}: {unknown_impls} (stale declaration? typo? inlined away?)")
 
+    # A caller declared with `argsites=N` whose disassembly count no longer matches N
+    # is a stale declaration -- FATAL immediately, independent of the top-N chains
+    # (the whole point is to catch a NEW site the reviewer never counted).
+    if count_mismatches:
+        print(f"*** stack_budget: {args.edges_file} argsites count(s) no longer match "
+              "the disassembly:", file=sys.stderr)
+        for caller, n, found in count_mismatches:
+            print(f"***   {caller}: declared argsites={n}, disassembly has {found} -- "
+                  "a site appeared or vanished; re-read the source and update the count",
+                  file=sys.stderr)
+        return 1
+    if legacy_ambiguous:
+        print(f"*** stack_budget: {args.edges_file} declares a whole-function exemption "
+              "for a caller that now has MORE THAN ONE indirect-call site -- that is "
+              "exactly the per-function blind-spot defect (BACKLOG #84b D1); split it "
+              "into structured 'Struct.field @OFF' / 'caller argsites=N' declarations:",
+              file=sys.stderr)
+        for fn in sorted(legacy_ambiguous):
+            print(f"***   {fn}", file=sys.stderr)
+        return 1
+
     chains = top_n_chains(args.root, analysis["edges"], su_sizes, estimated, n=args.top)
     deepest_total, deepest_path, cycles = chains[0][0], chains[0][1], chains[0][2]
 
-    # STOP-LICENCE check: any unresolved indirect-call site inside a function that
-    # appears on ANY of the top-N chains means the walker could not see a possible deeper
-    # continuation past that point -- surface it instead of silently trusting the number,
-    # UNLESS that caller has a declared entry in --edges-file (ground truth read out of the
-    # source, tools/stack_edges.txt's own header explains how). A caller with NO declared
-    # edges gets no free pass just because SOME of its indirect sites might be harmless --
-    # every bx-thunk site in every function on a reported chain must be accounted for, so a
-    # future new BoxSource field (or a new AppCommitFn-shaped parameter) cannot silently
-    # slip through uncharged.
+    # STOP-LICENCE check: any indirect-call site inside a function on the top-N chains
+    # that resolve_all_sites() could not tie to a declared struct field or argsites
+    # class means the walker could not see a possible deeper continuation past that
+    # point -- surface it instead of silently trusting the number. Per-SITE, not
+    # per-function (D1): a function with ten declared field classes gets no free pass
+    # for an eleventh, undeclared one.
     blind_spots = []
     on_chain = set()
     for _tot, path, _cyc in chains:
         on_chain |= {name for name, _b, _s in path}
     for fn in sorted(on_chain):
-        sites = analysis["indirect_sites"].get(fn, [])
-        if not sites:
-            continue
-        if fn in extra_edges:
-            continue   # declared -- the caller's edge set now includes every known target
-        for addr, ins in sites:
-            blind_spots.append((fn, addr, ins))
+        for addr, ins, detail in blind.get(fn, []):
+            blind_spots.append((fn, addr, ins, detail))
 
     print(f"ELF: {args.elf}")
     print(f"root: {args.root}")
@@ -527,11 +899,12 @@ def main(argv):
         print("\n*** STACK_BUDGET BLIND SPOT: unresolved indirect call(s) inside a function "
               "on the deepest chain -- the true depth past this point is UNKNOWN, not "
               "bounded by this report:")
-        for fn, addr, ins in blind_spots[:10]:
-            print(f"***   {fn} @ {addr}: {ins}")
+        for fn, addr, ins, detail in blind_spots[:10]:
+            print(f"***   {fn} @ {addr}: {ins}  [{detail}]")
         print("*** Refusing to certify a number the walker cannot back. Fix: give the "
-              "indirect call site a resolvable target (devirtualize / annotate), or add "
-              "an explicit --extra-edge if the true target is known out-of-band.")
+              "indirect call site a resolvable target (devirtualize / annotate), or "
+              "declare it in stack_edges.txt ('Struct.field @OFF -> impls' or "
+              "'caller argsites=N -> impls').")
         return 1
 
     guarded_total = deepest_total + ISR_BYTES
