@@ -608,9 +608,22 @@ static const uint16_t* gb_art_icon_cb(void* ctx, uint8_t gen, uint16_t dex,
  * (delta included; harmless there since gb_art_have() is already false with no SD),
  * so this is not wrapped in #ifndef PDNA_DELTA.
  * ASSUMES AN EMPTY HEAP: newlib's heap grows UP from this same symbol, so the subtraction
- * is exact only while nothing has malloc'd. True today (0 malloc / ff_memalloc call sites;
- * the tree uses the integer-only siprintf family), but a future malloc or a %f-capable
- * printf would silently eat the ~550 B of slack between the 6,144-B need and the measured
+ * is exact only while nothing has malloc'd. CORRECTED 2026-09-10 (BACKLOG #84a S4): this
+ * comment used to claim "0 malloc / ff_memalloc call sites" -- false at the time, because
+ * four sites (commit_bytes/log_health_str/perf_fs_facts's snprintf, log_line's vsnprintf)
+ * pulled newlib's FLOAT-capable _svfprintf_r (816 B) -> _dtoa_r -> _Balloc -> _malloc_r,
+ * plus the mprec assert leg (_svfprintf_r/_dtoa_r/_malloc_r were all present in the linked
+ * ELF). Switching those four to sniprintf/vsniprintf removed _svfprintf_r and _dtoa_r
+ * entirely (0 hits in `nm`) -- the float/mprec path and its ~11 KB worst-case chain are
+ * gone. _malloc_r is still LINKED but is NOT reachable (review #84a, 2026-09-10, reverse
+ * call graph over the whole ELF): _svfiprintf_r's two _malloc_r sites are guarded by __SMBF
+ * (asprintf-grown buffers) and by the %ls/%lc wide-char conversion, and __ssputs_r's by
+ * __SOPT|__SMBF -- none of which an sniprintf/vsniprintf stack FILE ever sets; __sfp is
+ * called by nobody. The heap is therefore genuinely empty and this subtraction exact. The
+ * ONE thing that would break it: a %ls/%lc (or a %f/%g/%e, which relinks the float chain)
+ * in any log_line/sniprintf format string -- grep for those before trusting this. A
+ * future malloc, ff_memalloc, or a %f-capable printf reintroducing the float chain would
+ * still silently eat the ~550 B of slack between the 6,144-B need and the measured
  * 5,592-B fetch subtree. Re-measure with the call-graph tool if either ever appears.
  *
  * D4 (E4 review): `need` is now the CALLER's own measured requirement, not a fixed

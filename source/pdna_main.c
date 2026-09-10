@@ -78,7 +78,8 @@
 #include "box_oam.h"       /* boxoam_rom_icons registration */
 #include "art_cache.h"     /* Phase 2 (ROM-art cache): art.idx format + FNV            */
 #include "art_session.h"   /* Phase 2: the once-per-session cache/rom resolver          */
-#include "art_icons_extract.h" /* Phase 2: the icons.bin extraction pass                */
+#include "art_icons_extract.h"
+_Static_assert(ART_ICONS_ROW_BYTES <= SF_STREAM_CHUNK_MAX, "icon extraction streams one row per verified-write chunk (review #84a P1)"); /* Phase 2: the icons.bin extraction pass                */
 #include "fused_rom.h"
 #include "fused_sav.h"    /* a save fused into the image: the emulator build's fallback */
 #include "fused_gb.h"     /* BACKLOG #62: a whole fused GB ROM+save corpus, delta-gb only */

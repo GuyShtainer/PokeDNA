@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* review #84a P1: the byte-compare buffer is 1024 B, so every chunked stream write is capped here;
+ * savefile.c asserts sizeof(s_cmp) >= this and the icon extractor asserts its row size <= this. */
+#define SF_STREAM_CHUNK_MAX 1024u
+
 /* Safe save-file I/O primitives (the never-corrupt-user-data layer).
  *
  * Trimmed from the record-mixer's savefile.* to the generic, reusable core:
@@ -81,7 +85,7 @@ typedef bool (*SfStreamFn)(void* ctx, uint32_t off, uint8_t* dst, uint32_t want)
  * `src` reads from a re-readable ROM, this doubles as read-twice-and-compare
  * verification on the SOURCE side too, for zero extra plumbing.
  *
- * `chunk` bytes at a time, must be > 0 and <= 2048 (the internal compare buffer's
+ * `chunk` bytes at a time, must be > 0 and <= SF_STREAM_CHUNK_MAX (the internal compare buffer's
  * size, matching s_cmp elsewhere in this file); `scratch` must hold at least `chunk`
  * bytes and is the ONLY RAM this function asks the caller for — no buffer here scales
  * with `len`. `src` is called with off = 0, chunk, 2*chunk, ... twice over (once per
