@@ -126,6 +126,15 @@ enum {
 static int name_row(int slot) { return BOX_Y0 + 2 + slot * 2; }   /* 4,6,8,10 */
 static int qty_row(int slot)  { return name_row(slot) + 1; }       /* 5,7,9,11 */
 
+/* D2 (review): the down-scroll marker at (18,11) BLINKS on the real
+ * cartridge -- same frame-counter idiom pdna_gbtrainer.c's play-time colon
+ * already uses (toggle every 32 VBlanks; not persisted, a fresh visit
+ * always starts on the OFF phase, matching that file's own documented
+ * choice). Driving the counter is the main loop's job (pdna_gbbag_gen1_screen
+ * below); this file-static is read-only from g1bag_paint_list(). */
+static uint16_t g1_frame_ctr;
+static bool g1bag_scroll_marker_on(void) { return ((g1_frame_ctr >> 5) & 1u) != 0; }
+
 static void g1bag_border(GbScreen* gs) {
   gbscr_cell(gs, BOX_X0, BOX_Y0, GBSCR_SRC_TEXTBOX, G1I_UL);
   gbscr_cell(gs, BOX_X1, BOX_Y0, GBSCR_SRC_TEXTBOX, G1I_UR);
@@ -176,19 +185,29 @@ static void g1bag_border(GbScreen* gs) {
  * per-item key-item classification without a names/kind table -- a real key
  * item's row will show its stored qty, always 1, rather than the real game's
  * blank field; a documented, read-only-display deviation). */
+/* D3 (review): the real cartridge's list is `count` real entries PLUS a
+ * trailing, cursor-selectable CANCEL row (idx == l->count) -- A on it takes
+ * the same "leave" path B already does. `has` used to stop at l->count
+ * (real entries only); it now runs one further so CANCEL paints too. Every
+ * caller now passes `sel`/`top` against a TOTAL of l->count+1 (see
+ * gbbag_clamp_scroll below), so idx can legitimately equal l->count here. */
 static void g1bag_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket, int top, int sel) {
   const GbBagList* l = &bag->pockets[pocket];
+  int total = l->count + 1;   /* + the CANCEL row */
   char buf[16];
   for (int slot = 0; slot < ROWS_VISIBLE; slot++) {
     int idx = top + slot;
     int ny = name_row(slot), qy = qty_row(slot);
-    bool has = idx < l->count;
+    bool has = idx < total;
+    bool is_cancel = has && idx == l->count;
     bool is_sel = has && idx == sel;
 
     gbscr_cell(gs, CURSOR_COL, ny, is_sel ? GBSCR_SRC_FONT : GBSCR_SRC_TEXTBOX,
               is_sel ? 0xED : G1I_BLANK);
 
-    if (has) {
+    if (is_cancel) {
+      siprintf(buf, "CANCEL");
+    } else if (has) {
       siprintf(buf, "ITEM #%u", (unsigned)l->entries[idx].id);
     } else {
       buf[0] = 0;
@@ -213,8 +232,9 @@ static void g1bag_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket,
      * pocket) -- the old `pocket != GBB_POCKET_KEY` test alone always passed
      * for pocket==GBB_POCKET_ITEMS, so every Gen-1 key item showed its
      * stored qty (always 1) instead of a blank field. */
-    bool is_key = has && (pocket == GBB_POCKET_KEY || gbb_is_g1_key_item(l->entries[idx].id));
-    if (has && !is_key) {
+    bool is_key = has && !is_cancel &&
+                  (pocket == GBB_POCKET_KEY || gbb_is_g1_key_item(l->entries[idx].id));
+    if (has && !is_cancel && !is_key) {
       gbscr_text(gs, QTY_COL, qy, "\xC3\x97");   /* U+00D7, gb_char_encode -> 0xF1 */
       siprintf(buf, "%2u", (unsigned)l->entries[idx].qty);
       gbscr_text(gs, QTY_COL + 1, qy, buf);
@@ -224,16 +244,33 @@ static void g1bag_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket,
       gbscr_cell(gs, QTY_COL + 2, qy, GBSCR_SRC_TEXTBOX, G1I_BLANK);
     }
   }
+
+  /* D2 (review): a down-scroll marker (font tile 0xEE) blinks at (18,11)
+   * exactly while there is more list below the 4 visible rows -- BLINKING
+   * is g1bag_scroll_marker_on()'s job (driven off the same frame-counter
+   * idiom pdna_gbtrainer.c's play-time colon uses, see the file comment on
+   * g1_frame_ctr below); this function only decides WHETHER the marker slot
+   * shows the glyph or the plain TEXTBOX blank for the current phase. */
+  bool more_below = (top + ROWS_VISIBLE) < total;
+  bool marker_on = more_below && g1bag_scroll_marker_on();
+  gbscr_cell(gs, 18, 11, marker_on ? GBSCR_SRC_FONT : GBSCR_SRC_TEXTBOX,
+            marker_on ? 0xEE : G1I_BLANK);
 }
 
-static void gbbag_clamp_scroll(int count, int* sel, int* top) {
-  if (count <= 0) { *sel = 0; *top = 0; return; }
-  if (*sel >= count) *sel = count - 1;
+/* D3: `total` is l->count + 1 (the CANCEL row) -- every caller passes that,
+ * never the raw pocket count, so sel can legitimately land on CANCEL.
+ * D3: the real cartridge CLAMPS at both ends (no wrap) and, while scrolling,
+ * PINS the cursor at visible slot 2 (screen row 8) -- `*top = *sel - 2` once
+ * `sel` has scrolled two rows past `top`; there is deliberately no `maxtop`
+ * clamp any more, so `top` keeps climbing right up to `total - 1`, which is
+ * what leaves the real 4th (bottom) row BLANK once CANCEL itself is pinned
+ * at slot 2 (verified against the review's real 26-press DOWN/UP log). */
+static void gbbag_clamp_scroll(int total, int* sel, int* top) {
+  if (total <= 0) { *sel = 0; *top = 0; return; }
+  if (*sel >= total) *sel = total - 1;
   if (*sel < 0) *sel = 0;
   if (*sel < *top) *top = *sel;
-  if (*sel >= *top + ROWS_VISIBLE) *top = *sel - ROWS_VISIBLE + 1;
-  int maxtop = count > ROWS_VISIBLE ? count - ROWS_VISIBLE : 0;
-  if (*top > maxtop) *top = maxtop;
+  if (*sel >= *top + ROWS_VISIBLE - 1) *top = *sel - (ROWS_VISIBLE - 2);
   if (*top < 0) *top = 0;
 }
 
@@ -283,7 +320,7 @@ static void gbbag_start_menu(GbBag* bag, GbBagPocket pocket, int* sel, int* top)
         bag->pockets[pocket].entries[other] = tmp;
       }
     }
-    gbbag_clamp_scroll(bag->pockets[pocket].count, sel, top);
+    gbbag_clamp_scroll(bag->pockets[pocket].count + 1, sel, top);
     return;
   }
 }
@@ -301,18 +338,39 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
   GbBagPocket pocket = GBB_POCKET_ITEMS;
   int sel = 0, top = 0;
   bool want_commit = false;
+  g1_frame_ctr = 0;
 
   g1bag_border(gs);
   g1bag_paint_list(gs, bag, pocket, top, sel);
   for (;;) {
     gbscr_flush(gs, 0);
 
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B |
-                   KEY_SELECT | KEY_START);
+    /* D2 (review): drive the scroll-marker blink the SAME way
+     * pdna_gbtrainer.c's play-time colon does -- a per-frame counter ticked
+     * while this screen blocks for a keypress, repainting (idempotently)
+     * and reflushing every 32 VBlanks so the marker's phase actually
+     * changes on screen instead of only at the next keypress. */
+    u16 k = 0;
+    for (;;) {
+      s_vsync();
+      g1_frame_ctr++;
+      if ((g1_frame_ctr & 31u) == 0) {
+        g1bag_paint_list(gs, bag, pocket, top, sel);
+        gbscr_flush(gs, 0);
+      }
+      k = key_hit(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B |
+                  KEY_SELECT | KEY_START);
+      if (k) break;
+    }
+    if      (k & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) snd_move();
+    else if (k & KEY_A) snd_ok();
+    else if (k & KEY_B) snd_back();
+
     if (k & KEY_SELECT) { gbscr_toggle_scale(gs); continue; }
     if (k & KEY_B) { want_commit = true; break; }
 
     const GbBagList* l = &bag->pockets[pocket];
+    int total = l->count + 1;   /* D3: + the CANCEL row */
     if (k & (KEY_LEFT | KEY_RIGHT)) {
       pocket = (pocket == GBB_POCKET_ITEMS) ? GBB_POCKET_PC : GBB_POCKET_ITEMS;
       sel = 0; top = 0;
@@ -328,22 +386,28 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
       }
       continue;
     }
-    if (l->count > 0 && (k & KEY_UP)) {
-      sel = (sel > 0) ? sel - 1 : l->count - 1;
-      gbbag_clamp_scroll(l->count, &sel, &top);
+    /* D3: CLAMP, not wrap -- UP at row 0 stays at row 0, DOWN at the last
+     * row (CANCEL) stays on CANCEL. */
+    if (k & KEY_UP) {
+      if (sel > 0) sel--;
+      gbbag_clamp_scroll(total, &sel, &top);
       g1bag_paint_list(gs, bag, pocket, top, sel);
       gbscr_mark_all_dirty(gs);
-    } else if (l->count > 0 && (k & KEY_DOWN)) {
-      sel = (sel + 1) % l->count;
-      gbbag_clamp_scroll(l->count, &sel, &top);
+    } else if (k & KEY_DOWN) {
+      if (sel < total - 1) sel++;
+      gbbag_clamp_scroll(total, &sel, &top);
       g1bag_paint_list(gs, bag, pocket, top, sel);
       gbscr_mark_all_dirty(gs);
-    } else if (can_edit && l->count > 0 && (k & KEY_A)) {
-      uint32_t q = num_entry("QUANTITY", l->entries[sel].qty, GBB_QTY_CAP);
-      if (q < 1) q = 1;
-      gbb_set_qty(GBF_G_RED, bag, pocket, sel, (uint8_t)q);
-      g1bag_paint_list(gs, bag, pocket, top, sel);
-      gbscr_mark_all_dirty(gs);
+    } else if (k & KEY_A) {
+      /* D3: A on the CANCEL row is the same "leave" path as B. */
+      if (sel == l->count) { want_commit = true; break; }
+      if (can_edit && l->count > 0) {
+        uint32_t q = num_entry("QUANTITY", l->entries[sel].qty, GBB_QTY_CAP);
+        if (q < 1) q = 1;
+        gbb_set_qty(GBF_G_RED, bag, pocket, sel, (uint8_t)q);
+        g1bag_paint_list(gs, bag, pocket, top, sel);
+        gbscr_mark_all_dirty(gs);
+      }
     }
   }
 
