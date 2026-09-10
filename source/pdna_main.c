@@ -9129,6 +9129,9 @@ static void view_save(const char* path) {
         if (pick < 0) break;
         const char* nm = 0; const uint8_t* base = 0; uint32_t psz = 0;
         if (!fused_gb_save(pick, &nm, &base, &psz) || !pdna_gen12_size_is_gb(psz)) break;
+        fused_gb_set_active_save(pick);   /* BACKLOG #98: so fused_gb_rom()/fused_gb_loc()
+                                            * resolve THIS save's own paired ROM instead of
+                                            * guessing by generation alone */
         any_picked = true;
         memcpy(g_save, base, psz);
         memset(&g_vinfo, 0, sizeof g_vinfo);
@@ -9181,6 +9184,9 @@ static void view_save(const char* path) {
         int pick = bp - 1;
         const char* nm = 0; const uint8_t* base = 0; uint32_t psz = 0;
         if (!fused_gb_save(pick, &nm, &base, &psz) || !pdna_gen12_size_is_gb(psz)) break;
+        fused_gb_set_active_save(pick);   /* BACKLOG #98: so fused_gb_rom()/fused_gb_loc()
+                                            * resolve THIS save's own paired ROM instead of
+                                            * guessing by generation alone */
         memcpy(g_save, base, psz);
         memset(&g_vinfo, 0, sizeof g_vinfo);
         g_save_size = psz;
