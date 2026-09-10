@@ -104,11 +104,32 @@ def load_su(builddir):
 
     A function can appear more than once (inlined-then-reinstantiated clones, or two
     TUs defining a static of the same name) -- take the max, as the reviewer's cg2.py
-    did, since we want the WORST case, not an arbitrary one.
+    did, since we want the WORST case, not an arbitrary one, for the bare (unqualified)
+    key.
+
+    D5b (BACKLOG #84b sixth pass): ALSO store `name@tu` for every name that shows up
+    in more than one .su FILE -- tu being the .su file's own basename with the
+    trailing ".su" stripped, exactly the TU key read_symbol_census() derives from the
+    ELF's STT_FILE marker (both come from the same GCC-emitted "<sourcefile>.c" ->
+    "<sourcefile>" transform) -- so a duplicated static's unique node name
+    ("validate@region_map") resolves to ITS OWN TU's frame, not the cross-TU max the
+    bare key still (harmlessly) carries for anything that never needed disambiguating.
+    Restricted to only the ~dozens of genuinely multi-file names (not every one of the
+    thousands of .su entries) on purpose: su_frame()'s fallback path is an O(len(sizes))
+    scan over every key sharing a stripped base, run on every cache miss -- doubling
+    `sizes`' size by tagging every entry, tried first, measured a real ~40% slowdown
+    across the whole guard (2,700+ su_frame() calls per run) for zero benefit on the
+    huge majority of names that were never ambiguous in the first place.
     """
     sizes = {}
     dup = collections.defaultdict(set)
+    name_files = collections.defaultdict(set)
+    tu_entries = []   # (name, tu, n) -- only replayed into `sizes` for multi-file names
     for f in glob.glob(os.path.join(builddir, "*.su")):
+        tu = os.path.basename(f)
+        if tu.endswith(".su"):
+            tu = tu[:-3]
+        base = os.path.basename(f)
         for line in open(f):
             parts = line.rstrip("\n").split("\t")
             if len(parts) < 3:
@@ -118,8 +139,14 @@ def load_su(builddir):
                 n = int(parts[1])
             except ValueError:
                 continue
-            dup[name].add((os.path.basename(f), n, parts[2]))
+            dup[name].add((base, n, parts[2]))
             sizes[name] = max(sizes.get(name, 0), n)
+            name_files[name].add(base)
+            tu_entries.append((name, tu, n))
+    multi_file = {name for name, files in name_files.items() if len(files) > 1}
+    for name, tu, n in tu_entries:
+        if name in multi_file:
+            sizes[f"{name}@{tu}"] = n
     dupes = {k: v for k, v in dup.items() if len({x[1] for x in v}) > 1}
     return sizes, dupes
 
@@ -186,11 +213,134 @@ def disassemble(elf):
                            check=True).stdout
 
 
-def analyze(dump_text):
+# === D5b (BACKLOG #84b sixth pass): duplicate static names are distinct nodes ========
+#
+# `objdump -d` labels every function block with its bare symbol NAME, and two static
+# functions in two different TUs sharing a name (FatFs's tiny `validate` vs
+# region_map.c's much larger `validate`, ten `s_wait`s, three `read_verified`s, ...)
+# print as the SAME `<name>:` label at two different addresses. analyze() used to key
+# `edges`/`name_at` purely by that string, which UNIONS the two functions' callees
+# into one fictional node and can manufacture a cycle out of two unrelated call
+# chains that happen to pass through same-named statics (the "f_lseek -> validate ->
+# mr_lz77_size" ghost edge: FatFs's f_lseek really calls FatFs's validate, which never
+# calls mr_lz77_size; region_map's validate is a different function two frames over
+# on a DIFFERENT chain that also happens to call f_lseek deeper in, and the merged
+# node made it look like validate calls back into its own caller's caller).
+#
+# The fix is a pre-pass over the ELF's OWN symbol table (`objdump -t`, not the
+# disassembly): find every local FUNC symbol name with more than one distinct entry
+# address, and give each address its own name, `<name>@<tu>`, tu being the source
+# file that most recently preceded it (an STT_FILE / `df *ABS*` marker -- objdump -t
+# lists local symbols grouped after the file that defines them, in link order).
+# `<tu>` matches a `*.su` file's own basename (load_su() derives the exact same key),
+# so the disambiguated node's frame is looked up in ITS OWN TU's .su output, not a
+# cross-TU max. A local symbol with no preceding file marker at all (should not
+# happen for a normal C build, but not asserted away) falls back to `<name>@<addr>`.
+
+
+def dump_symbol_table(elf):
+    return subprocess.run([OBJDUMP, "-t", elf], capture_output=True, text=True,
+                           check=True).stdout
+
+
+def parse_symbol_census(out):
+    """Parse `objdump -t <elf>`'s own text (see dump_symbol_table()) into
+    (addr_unique_name, dup_names, entries). Split out from read_symbol_census() so
+    main() can cache the raw `objdump -t` text alongside the `objdump -d` disassembly
+    text it already caches (both are the slow steps; this parse itself is cheap) and
+    so a fixture can exercise the parsing logic without shelling out at all.
+
+    addr_unique_name : {addr:int -> node name}, node name is the bare symbol name
+                        UNLESS that name has more than one distinct entry address
+                        anywhere in the table, in which case it is qualified
+                        "<name>@<tu>" (tu = the preceding STT_FILE marker's
+                        basename with a trailing ".c" stripped, or the address in
+                        hex if no file marker precedes this symbol at all).
+    dup_names        : {name, ...} bare names with more than one distinct address --
+                        stack_edges.txt must never reference one of these unqualified.
+    entries           : [(addr, name, tu_or_None), ...] in objdump -t's own order, for
+                         diagnostics/tests.
+
+    objdump -t's line shape (binutils, this target): a TAB separates the flags+section
+    +size half from the name half, e.g.
+        "08056e9c l     F .text\\t0000027c validate"
+        "00000000 l    df *ABS*\\t00000000 region_map.c"
+    -- split once on the tab, then whitespace-split each half; the left half's 3rd+
+    token(s) carry the symbol type ("F" function, "df" file), the right half is
+    "<size> <name>".
+    """
+    entries = []
+    cur_tu = None
+    for line in out.splitlines():
+        if "\t" not in line:
+            continue
+        left, right = line.split("\t", 1)
+        lparts = left.split()
+        rparts = right.split(None, 1)
+        if len(lparts) < 2 or len(rparts) < 2:
+            continue
+        try:
+            addr = int(lparts[0], 16)
+        except ValueError:
+            continue
+        rest = lparts[2:]
+        name = rparts[1].strip()
+        # objdump -t prefixes a non-default-visibility symbol's NAME with a literal
+        # ".hidden "/".internal "/".protected " marker (only in -t's output, never in
+        # -d's block labels) -- strip it so this census's names match what analyze()
+        # reads out of the disassembly for the same address (".hidden __udivmoddi4"
+        # in -t vs plain "__udivmoddi4" in -d); left unstripped, the census's name
+        # never matches any disassembly label and scan_address_taken() reports a
+        # perfectly ordinary, perfectly reachable libgcc helper as an undeclared
+        # orphan on every build.
+        name = re.sub(r'^\.(hidden|internal|protected)\s+', '', name)
+        if "df" in rest:
+            cur_tu = name
+            continue
+        if "F" not in rest:
+            continue
+        entries.append((addr, name, cur_tu))
+
+    name_addrs = collections.defaultdict(set)
+    for addr, name, _tu in entries:
+        name_addrs[name].add(addr)
+    dup_names = {n for n, addrs in name_addrs.items() if len(addrs) > 1}
+
+    # Only addresses whose NAME the census found duplicated get an entry here -- the
+    # opposite shape (one address, several DIFFERENT weak-alias names, e.g. libgcc's
+    # __aeabi_idiv0/__aeabi_ldiv0 both naming the same 2-byte stub) is not this
+    # function's problem: objdump -d already resolves that case to one consistent
+    # label for every use of the address (the bl-target lookup and the disassembly
+    # block header agree), so leaving those addresses OUT of this dict and letting
+    # analyze() fall back to the disassembly's own m.group(2) name keeps that existing,
+    # correct behaviour untouched. Populating this dict for every address (picking
+    # whichever alias objdump -t happened to list first) would silently substitute a
+    # DIFFERENT name than the one the call graph and address-taken scan already agree
+    # on, for no reason connected to D5b's actual bug.
+    addr_unique_name = {}
+    for addr, name, tu in entries:
+        if name not in dup_names:
+            continue
+        if tu is not None:
+            tu_key = tu[:-2] if tu.endswith(".c") else tu
+            addr_unique_name[addr] = f"{name}@{tu_key}"
+        else:
+            addr_unique_name[addr] = f"{name}@{addr:08x}"
+    return addr_unique_name, dup_names, entries
+
+
+def read_symbol_census(elf):
+    """Convenience wrapper: shell out to `objdump -t` and parse it in one call (used
+    by tests and any non-main() caller that doesn't need the caching main() does)."""
+    return parse_symbol_census(dump_symbol_table(elf))
+
+
+def analyze(dump_text, addr_unique_name=None):
     """One pass over the disassembly: (a) build the call graph with traps #1-#3
     handled, (b) collect raw instruction lines per function for the prologue
     estimator, (c) record indirect-call sites (unresolved targets) so the caller can
     check whether one falls on the reported deepest chain."""
+    addr_unique_name = addr_unique_name or {}
     starts = []
     name_at = {}
     insn = {}
@@ -202,7 +352,12 @@ def analyze(dump_text):
         m = FUNC_RE.match(s)
         if m:
             a = int(m.group(1), 16)
-            cur = m.group(2)
+            # D5b: use the census's disambiguated name for this address when the
+            # bare disassembly label is one objdump -t found duplicated elsewhere in
+            # the image -- everything downstream (name_at, edges, fn_lines,
+            # fn_insn_seq, indirect_sites) is keyed off `cur`, so this one
+            # substitution is enough to make every duplicated static a distinct node.
+            cur = addr_unique_name.get(a, m.group(2))
             starts.append(a)
             name_at[a] = cur
             fn_lines[cur].append(raw)
@@ -1099,6 +1254,103 @@ def reachable_from(root, edges):
     return seen
 
 
+def check_ambiguous_declarations(dup_names, addr_unique_name, field_decls, argsite_decls,
+                                  whole_func_decls, frame_overrides, isr_decls,
+                                  addrtaken_ok):
+    """D5b: any stack_edges.txt reference to a NAME the census found duplicated
+    (`dup_names`, from read_symbol_census()) without its `@tu` qualifier is ambiguous
+    -- it could silently resolve to whichever instance's node happens to exist under
+    that bare string (today: none, since analyze() never emits an unqualified name for
+    a duplicated symbol any more, so an unqualified reference here is dead on arrival
+    and would misleadingly warn "not found in the ELF" instead of naming the real
+    problem). Returns a list of human-readable error strings; empty = clean."""
+    candidates_by_name = collections.defaultdict(set)
+    for uniq in addr_unique_name.values():
+        if "@" in uniq:
+            base = uniq.rsplit("@", 1)[0]
+            candidates_by_name[base].add(uniq)
+
+    problems = []
+
+    def check(name, where):
+        if name in dup_names:
+            cands = ", ".join(sorted(candidates_by_name.get(name, set()))) or "(none linked)"
+            problems.append(f"{where}: {name!r} is a duplicated static name -- qualify "
+                             f"it as one of: {cands}")
+
+    for (struct, field), (off, impls) in sorted(field_decls.items()):
+        for impl in sorted(impls):
+            check(impl, f"{struct}.{field} @{off} ->")
+    for caller, (n, impls) in sorted(argsite_decls.items()):
+        check(caller, "argsites caller")
+        for impl in sorted(impls):
+            check(impl, f"{caller} argsites={n} ->")
+    for caller, impls in sorted(whole_func_decls.items()):
+        check(caller, "whole-function caller")
+        for impl in sorted(impls):
+            check(impl, f"{caller} ->")
+    for fn in sorted(frame_overrides):
+        check(fn, "frame override")
+    for fn in sorted(isr_decls):
+        check(fn, "isr")
+    for fn in sorted(addrtaken_ok):
+        check(fn, "addrtaken-ok")
+    return problems
+
+
+def tarjan_sccs(root, edges):
+    """D5b (`--sccs`): strongly-connected components (Tarjan) over the subgraph
+    reachable from `root`. A component is reported only when it names REAL recursion
+    -- more than one function, or a single function with a genuine self-edge (after
+    trap #1 already strips same-function long jumps, a surviving self-edge is a
+    function that calls itself). Before the duplicate-name fix (D5b, this same
+    commit), a merged same-named node could manufacture a component that was really
+    two unrelated chains; after it, this list should contain only real recursion --
+    the diagnostic this flag exists to prove."""
+    reachable = reachable_from(root, edges)
+    index_counter = [0]
+    index = {}
+    lowlink = {}
+    on_stack = {}
+    stack = []
+    result = []
+    old_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(old_limit, len(reachable) * 4 + 1000))
+
+    def strongconnect(v):
+        index[v] = index_counter[0]
+        lowlink[v] = index_counter[0]
+        index_counter[0] += 1
+        stack.append(v)
+        on_stack[v] = True
+        for w in sorted(edges.get(v, ())):
+            if w not in reachable:
+                continue
+            if w not in index:
+                strongconnect(w)
+                lowlink[v] = min(lowlink[v], lowlink[w])
+            elif on_stack.get(w):
+                lowlink[v] = min(lowlink[v], index[w])
+        if lowlink[v] == index[v]:
+            comp = []
+            while True:
+                w = stack.pop()
+                on_stack[w] = False
+                comp.append(w)
+                if w == v:
+                    break
+            if len(comp) > 1 or v in edges.get(v, ()):
+                result.append(comp)
+
+    try:
+        for v in sorted(reachable):
+            if v not in index:
+                strongconnect(v)
+    finally:
+        sys.setrecursionlimit(old_limit)
+    return result
+
+
 def whole_graph_blind_spots(reachable, blind):
     """Every undeclared indirect-call site inside a function reachable from root,
     independent of whether that function ever lands on a printed top-N chain
@@ -1317,6 +1569,9 @@ def main(argv):
     ap.add_argument("--root", default="main")
     ap.add_argument("--margin", type=int, default=SAFETY_MARGIN)
     ap.add_argument("--top", type=int, default=5)
+    ap.add_argument("--sccs", action="store_true",
+                     help="D5b: print the Tarjan SCCs (real recursion only) over the "
+                          "graph reachable from --root, instead of running the guard")
     ap.add_argument("--edges-file",
                      default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                            "stack_edges.txt"),
@@ -1357,19 +1612,33 @@ def main(argv):
         except (json.JSONDecodeError, OSError):
             cached = None
 
+    need_write = cached is None
     if cached is not None:
         dump_text = cached["dump_text"]
+        sym_text = cached.get("sym_text")   # absent in a cache written before D5b
     else:
         dump_text = disassemble(args.elf)
+        sym_text = None
+    if sym_text is None:
+        sym_text = dump_symbol_table(args.elf)
+        need_write = True                   # upgrade an old cache to carry sym_text too
 
-    analysis = analyze(dump_text)
+    # D5b: the symbol-table census runs BEFORE analyze() so the disassembly walk can
+    # substitute a disambiguated "<name>@<tu>" node the moment it sees a duplicated
+    # static's block header, instead of ever building the merged/ambiguous graph and
+    # trying to fix it up after the fact. `objdump -t` is cached alongside `objdump -d`
+    # for the same reason the latter already was: both are the slow steps, re-run only
+    # when the ELF/.su fingerprint changes.
+    addr_unique_name, dup_names, _sym_entries = parse_symbol_census(sym_text)
+    analysis = analyze(dump_text, addr_unique_name)
     su_sizes, su_dupes = load_su(args.builddir)
     estimated = estimate_frames(analysis["fn_lines"])
 
-    if cached is None:
+    if need_write:
         try:
             with open(cache_file, "w") as f:
-                json.dump({"fingerprint": fp, "dump_text": dump_text}, f)
+                json.dump({"fingerprint": fp, "dump_text": dump_text,
+                           "sym_text": sym_text}, f)
         except OSError:
             pass   # caching is an optimization, never a hard requirement
 
@@ -1402,10 +1671,36 @@ def main(argv):
             print(f"***   {p}", file=sys.stderr)
         return 1
 
+    # D5b: every name stack_edges.txt references (as a caller or an implementation)
+    # must be unambiguous -- a bare name the census found duplicated across TUs is an
+    # ERROR listing the qualified candidates, never a silent pick of "whichever one".
+    ambiguous = check_ambiguous_declarations(
+        dup_names, addr_unique_name, field_decls, argsite_decls, whole_func_decls,
+        frame_overrides, isr_decls, addrtaken_ok)
+    if ambiguous:
+        print(f"*** stack_budget: {args.edges_file} references a duplicated static "
+              "name without a '@tu' qualifier:", file=sys.stderr)
+        for p in ambiguous:
+            print(f"***   {p}", file=sys.stderr)
+        return 1
+
     edges_to_add, blind, count_mismatches, legacy_ambiguous = resolve_all_sites(
         analysis, field_decls, argsite_decls, whole_func_decls)
     for caller, impls in edges_to_add.items():
         analysis["edges"][caller] |= impls
+
+    if args.sccs:
+        # Diagnostic-only: run over the fully-declared graph (every indirect site
+        # resolve_all_sites() could tie to a declaration is unioned in above) so a
+        # recursive edge hidden behind a struct-field/argsites declaration still
+        # shows up here, even though --sccs doesn't itself enforce the blind-spot/
+        # count-mismatch checks below (those are the guard's job, not this flag's).
+        sccs = tarjan_sccs(args.root, analysis["edges"])
+        print(f"SCCs reachable from {args.root}() (real recursion only, "
+              f"{len(sccs)} found):")
+        for comp in sccs:
+            print(f"  {{{', '.join(sorted(comp))}}}")
+        return 0
 
     all_impls = ({impl for impls in field_decls.values() for impl in impls[1]}
                  | {impl for _n, impls in argsite_decls.values() for impl in impls}
