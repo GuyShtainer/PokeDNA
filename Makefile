@@ -342,6 +342,26 @@ export VPATH  := \
 
 export DEPSDIR := $(CURDIR)/$(BUILD)
 
+# BACKLOG #109: source/gb_fields.c + gb_flags.c are GENERATED (tools/gen_gbfields.py) and
+# git-ignored, but had no Makefile rule -- a checkout could silently build against a
+# stale copy (it bit the gbdata merge: 22/170 fresh objects, three core tests failed
+# until the generator was re-run by hand). CFILES below is a $(wildcard) evaluated at
+# PARSE time, so a target-prerequisite rule (like check-art/check-data-tables further
+# down) is too late for a file that doesn't exist on disk yet -- this has to run BEFORE
+# the wildcard, hence a $(shell ...) at parse time, not a prerequisite. Runs once per
+# top-level `make` invocation (this branch is the OUTER one; the recursive submake in
+# $(BUILD) below takes the other branch of this ifneq and never re-triggers it).
+# tools/ensure_gbfields.sh is idempotent (a handful of stat(2) calls when the table is
+# already fresh), and NEVER fatal for a missing decomp reference (assets/upstream/*/
+# symbols/*.sym is git-ignored, local-only material absent on a fresh clone -- it falls
+# back to the COMMITTED weak symbols in source/gb_fields_fallback.c / gb_flags_fallback.c
+# instead, loudly). It IS fatal when regeneration was actually needed and the generator
+# itself failed, so a stale table is never silently kept.
+GBFIELDS_RC := $(strip $(shell ./tools/ensure_gbfields.sh >&2; echo $$?))
+ifneq ($(GBFIELDS_RC),0)
+$(error tools/ensure_gbfields.sh failed (exit $(GBFIELDS_RC)) -- see the FATAL text above)
+endif
+
 CFILES   := $(foreach dir, $(SRCDIRS) , $(notdir $(wildcard $(dir)/*.c)))
 CPPFILES := $(foreach dir, $(SRCDIRS) , $(notdir $(wildcard $(dir)/*.cpp)))
 SFILES   := $(foreach dir, $(SRCDIRS) , $(notdir $(wildcard $(dir)/*.s)))
