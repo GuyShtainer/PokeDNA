@@ -819,11 +819,16 @@ static void g2card_paint_upper(GbScreen* gs, const GbTrainer* t, bool female) {
   gbscr_text(gs, 5, 4, buf);
 
   gbscr_text(gs, 2, 6, "MONEY");
-  gbscr_cell(gs, 7, 6, GBSCR_SRC_FONT, 0xF0);     /* the currency sign */
-  if (t->money_ok) siprintf(buf, "%06lu", (unsigned long)t->money);
-  else             siprintf(buf, "?");
-  gbscr_text(gs, 8, 6, buf);
-  for (int cx = 8 + (int)strlen(buf); cx < 14; cx++) gbscr_cell(gs, cx, 6, GBSCR_SRC_BLANK, 0);
+  /* D6: the real card space-pads and RIGHT-aligns the value with the
+   * currency sign immediately before the first digit (verified against the
+   * real cart at 999999 / 1234 / 90 -- Gold_e1.sav/Gold_e2.sav), not a
+   * fixed-width field with the currency sign always at col 7. */
+  int mlen;
+  if (t->money_ok) mlen = siprintf(buf, "%lu", (unsigned long)t->money);
+  else             { siprintf(buf, "?"); mlen = 1; }
+  for (int cx = 7; cx <= 12 - mlen; cx++) gbscr_cell(gs, cx, 6, GBSCR_SRC_BLANK, 0);
+  gbscr_cell(gs, 13 - mlen, 6, GBSCR_SRC_FONT, 0xF0);     /* the currency sign */
+  gbscr_text(gs, 14 - mlen, 6, buf);
 
   GbScrSrc pic_src = female ? GBSCR_SRC_CARDPIC_F : GBSCR_SRC_CARDPIC_M;
   for (int ty = 0; ty < 7; ty++)
@@ -847,28 +852,38 @@ static void g2card_paint_page1(GbScreen* gs, const GbTrainer* t, bool female) {
   gbscr_text(gs, 15, 10, buf);
 
   gbscr_text(gs, 2, 12, "PLAY TIME");
-  int hw = siprintf(buf, "%u", (unsigned)t->playtime.hours);
-  gbscr_text(gs, 13, 12, buf);
+  /* D7: hours are RIGHT-aligned in a 4-wide field (cols 11-14), the colon
+   * is at a FIXED column (15), and minutes are a fixed 2-digit field
+   * (cols 16-17) -- verified against the real cart (Gold_e1.sav hours=7,
+   * Gold_e2.sav hours=123). The body-wide blank in g2card_border() already
+   * clears row 12 before this runs, so the unused cells left of a short
+   * hours value need no separate blanking. */
+  int hlen = siprintf(buf, "%u", (unsigned)t->playtime.hours);
+  if (hlen > 4) hlen = 4;   /* clamp to the field width */
+  gbscr_text(gs, 15 - hlen, 12, buf);
   bool colon_on = ((g2_frame_ctr >> 5) & 1u) != 0;
-  if (colon_on) gbscr_cell(gs, 13 + hw, 12, GBSCR_SRC_STATUSWORD, G2X_COLON);
-  else          gbscr_cell(gs, 13 + hw, 12, GBSCR_SRC_BLANK, 0);
+  if (colon_on) gbscr_cell(gs, 15, 12, GBSCR_SRC_STATUSWORD, G2X_COLON);
+  else          gbscr_cell(gs, 15, 12, GBSCR_SRC_BLANK, 0);
   siprintf(buf, "%02u", (unsigned)t->playtime.minutes);
-  gbscr_text(gs, 14 + hw, 12, buf);
-  for (int cx = 16 + hw; cx <= 17; cx++) gbscr_cell(gs, cx, 12, GBSCR_SRC_BLANK, 0);
+  gbscr_text(gs, 16, 12, buf);
 
   gbscr_text(gs, 12, 15, "BADGES");
   gbscr_cell(gs, 18, 15, GBSCR_SRC_FONT, 0xED);   /* the (r) hint arrow */
 }
 
-static void g2card_paint_page2(GbScreen* gs, const GbTrainer* t) {
+static void g2card_paint_page2(GbScreen* gs, const GbTrainer* t, bool female) {
   g2card_border(gs);
   /* the upper half is repainted here too -- U2b's dirty-cell idempotence
    * means this costs nothing extra to blit, and it is what lets L/R flip
-   * pages on the SAME gbscr_open() without a second decode of the pic. */
-  g2card_paint_upper(gs, t, false);   /* female arg only matters for the pic src,
-                                       * which pdna_gbtrainer_gen2_card() re-paints
-                                       * itself right after calling this -- see
-                                       * there for why page 2 alone never needs it */
+   * pages on the SAME gbscr_open() without a second decode of the pic.
+   * `female` must be the SAME value page 1 was painted with -- it was
+   * hardcoded false here (U3 bug: Kris on Crystal saw Chris's photo on
+   * page 2). No oracle exists for Kris (Gold has no gender branch, and no
+   * captured Crystal save uses her), so this is fixed by reading the call
+   * site rather than a pixel compare: pdna_gbtrainer_gen2_card()'s own
+   * `female` local (post fail-safe retry) is threaded through instead of a
+   * literal false. */
+  g2card_paint_upper(gs, t, female);
 
   for (int i = 0; i < 5; i++) gbscr_cell(gs, 2 + i, 8, GBSCR_SRC_LEADERS, (uint8_t)(G2L_BADGES_WORD + i));
 
@@ -886,7 +901,7 @@ static void g2card_paint_page2(GbScreen* gs, const GbTrainer* t) {
       int base2 = 4 * kG2BadgeBit[k];
       for (int dy = 0; dy < 2; dy++)
         for (int dx = 0; dx < 2; dx++)
-          gbscr_cell(gs, c0 + 1 + dx, y0 + 1 + dy, GBSCR_SRC_BADGES, (uint8_t)(base2 + dy * 2 + dx));
+          gbscr_cell(gs, c0 + dx, y0 + 1 + dy, GBSCR_SRC_BADGES, (uint8_t)(base2 + dy * 2 + dx));
     }
   }
 }
@@ -897,7 +912,7 @@ static void g2card_sel_rect(int page, int sel, int* x, int* y, int* w, int* h) {
       case G2C_NAME:  *x = 7;  *y = 2;  *w = GB_OT_GLYPHS; *h = 1; break;
       case G2C_ID:    *x = 5;  *y = 4;  *w = 5;             *h = 1; break;
       case G2C_MONEY: *x = 8;  *y = 6;  *w = 6;             *h = 1; break;
-      default:        *x = 13; *y = 12; *w = 6;             *h = 1; break;   /* TIME */
+      default:        *x = 11; *y = 12; *w = 7;             *h = 1; break;   /* TIME */
     }
   } else {
     int row = sel / 4, col = sel % 4;
@@ -981,11 +996,15 @@ static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
       g2_frame_ctr++;
       if (page == 0 && (g2_frame_ctr & 31u) == 0) {
         bool colon_on = ((g2_frame_ctr >> 5) & 1u) != 0;
-        char buf[16];
-        int hw = siprintf(buf, "%u", (unsigned)t->playtime.hours);
-        if (colon_on) gbscr_cell(&gs, 13 + hw, 12, GBSCR_SRC_STATUSWORD, G2X_COLON);
-        else          gbscr_cell(&gs, 13 + hw, 12, GBSCR_SRC_BLANK, 0);
+        /* D7: the colon is a FIXED column (15), not hours-length-dependent. */
+        if (colon_on) gbscr_cell(&gs, 15, 12, GBSCR_SRC_STATUSWORD, G2X_COLON);
+        else          gbscr_cell(&gs, 15, 12, GBSCR_SRC_BLANK, 0);
         gbscr_flush(&gs, 0);
+        /* D8: gbscr_flush() repaints every dirty tile cell, which erases the
+         * m3_frame() cursor rect drawn below the main loop's own flush (that
+         * rect is not part of the tile buffer) -- redraw it every blink so
+         * the cursor survives instead of vanishing on the OFF-phase tick. */
+        m3_frame(px0, py0, px1, py1, GBCARD_CSEL);
       }
       k = key_hit(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_SELECT | KEY_START);
       if (k) break;
@@ -1006,7 +1025,7 @@ static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
       page ^= 1;
       sel = 0;
       if (page == 0) g2card_paint_page1(&gs, t, female);
-      else           g2card_paint_page2(&gs, t);
+      else           g2card_paint_page2(&gs, t, female);
       gbscr_mark_all_dirty(&gs);
       continue;
     }
@@ -1018,7 +1037,7 @@ static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
     else if (can_edit && (k & KEY_A)) {
       g2card_edit_sel(t, page, sel);
       if (page == 0) g2card_paint_page1(&gs, t, female);
-      else           g2card_paint_page2(&gs, t);
+      else           g2card_paint_page2(&gs, t, female);
       gbscr_mark_all_dirty(&gs);
     }
     if (sel != old_sel) gbscr_mark_all_dirty(&gs);
