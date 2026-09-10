@@ -1739,7 +1739,12 @@ static bool gb_paste_hook(uint8_t* rec80) {
 
   GbEditMon mon;
   Gen3ToGbLoss loss;
-  G3GbStatus cst = gen3_to_gb(app_clip_rec(), g_ed->s.gen, NULL, &mon, &loss);   /* 2 */
+  /* BACKLOG #95 review C11: the capture record at 0x1D/0x1E is Crystal-only real data;
+   * gb_session_is_crystal() is the single source of truth this and gb_mark_caught both
+   * call, so the live editor and this synthesis path cannot disagree about which target
+   * saves get a synthetic Met record. */
+  bool crystal = gb_session_is_crystal(&g_ed->s);
+  G3GbStatus cst = gen3_to_gb(app_clip_rec(), g_ed->s.gen, crystal, NULL, &mon, &loss);   /* 2 */
   if (cst == G3GB_ERR_NEEDS_BASE) {          /* Gen 1 only -- everything else about this
                                               * mon already checked out (gen3_to_gb.c's
                                               * screen() reaches this check LAST) */
@@ -1756,7 +1761,7 @@ static bool gb_paste_hook(uint8_t* rec80) {
       msg_wait(PDNA_SIDECAR_XFER_TITLE, UI_WARN, PDNA_SIDECAR_GEN1_BADROM_L1, 0);
       return false;
     }
-    cst = gen3_to_gb(app_clip_rec(), g_ed->s.gen, &g1base, &mon, &loss);   /* 3 */
+    cst = gen3_to_gb(app_clip_rec(), g_ed->s.gen, crystal, &g1base, &mon, &loss);   /* 3 */
   }
   if (cst != G3GB_OK) {
     snd_deny();
