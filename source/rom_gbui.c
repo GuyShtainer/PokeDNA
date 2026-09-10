@@ -712,8 +712,9 @@ static void fill_from_result(RomGbUi* gu, const LocResult* r) {
  * returns. */
 static void load_g1_keyitems_bits(const Scan* s, RomGbUi* gu) {
   memset(gu->g1_keyitems_bits, 0, sizeof gu->g1_keyitems_bits);
-  if (gu->gen == ROM_GBUI_GEN1 && gu->g1_keyitems != 0)
-    rd(s, gu->g1_keyitems, gu->g1_keyitems_bits, sizeof gu->g1_keyitems_bits);
+  if (gu->gen == ROM_GBUI_GEN1 && gu->g1_keyitems != 0 &&
+      !rd(s, gu->g1_keyitems, gu->g1_keyitems_bits, sizeof gu->g1_keyitems_bits))
+    gu->g1_keyitems = 0;   /* read failed: the caller falls back to the id list (b99 review P2) */
 }
 
 int rom_gbui_open(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,

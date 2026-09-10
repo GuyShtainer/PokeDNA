@@ -11,6 +11,7 @@
 
 #include "pdna_gbbag.h"
 #include "gb_bag.h"
+#include "log.h"
 #include "pdna_gen12.h"     /* gb_rollback / gb_persist / gb12_arena_tail(_release)   */
 #include "pdna_gbscreen.h"  /* the shared GB-screen shell                             */
 #include "pdna_origin_art.h" /* PDNA_GEN1                                             */
@@ -28,10 +29,21 @@
  * fallback page below -- it never has a GbScreen/RomGbUi at all). `gu` is
  * NULL from that fallback path on purpose. GBB_POCKET_KEY (Gen 2's own
  * pocket) is unconditionally key -- unaffected by either table. */
+static bool s_ki_fallback_logged;   /* one log line per screen visit (b99 review P2) */
 static bool bag_is_key_item(const RomGbUi* gu, GbBagPocket pocket, uint8_t id) {
   if (pocket == GBB_POCKET_KEY) return true;
+  /* IsKeyItem_ (pokered engine/items/item_effects.asm:~2616) branches to
+   * IsItemHM BEFORE it ever touches KeyItemFlags: an id >= HM01 never reaches
+   * the table, and HM01..HM05 are key by THAT path (home/names.asm:~110). The
+   * located table is silent there by construction -- ask it only below
+   * (b99 review P0: routing HMs through the table showed them a quantity). */
+  if (id >= 0xC4u) return id <= 0xC8u;   /* HM01..HM05 key; TM01+ not */
   if (gu && gu->ok && gu->gen == ROM_GBUI_GEN1 && gu->g1_keyitems != 0)
     return rom_gbui_g1_key_item(gu, id);
+  if (gu && gu->ok && gu->gen == ROM_GBUI_GEN1 && !s_ki_fallback_logged) {
+    s_ki_fallback_logged = true;
+    log_line("gbbag: key items via the id list (no located table)");
+  }
   return gbb_is_g1_key_item(id);
 }
 
@@ -554,6 +566,7 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
 }
 
 void pdna_gbbag(GbSession* s, bool can_edit) {
+  s_ki_fallback_logged = false;   /* b99 review P2: one log line per visit */
   if (!s || s->gen != GB_GEN1) {
     msg_wait("ITEM", UI_WARN, "This screen is Gen-1 only.", 0);
     return;
@@ -601,8 +614,8 @@ void pdna_gbbag(GbSession* s, bool can_edit) {
      * gbb_is_g1_key_item()'s factual list (see gbbag_row_paint /
      * bag_is_key_item(0, ...) above), never the located table. Say so on the
      * same reason line the shell-refusal message already uses. */
-    char reason2[64];
-    siprintf(reason2, "%.40s (key items: id list, not ROM-located)",
+    char reason2[80];   /* %.40s + the suffix + NUL: bounded (b99 review P1) */
+    siprintf(reason2, "%.40s (key ids: list)",
             reason ? reason : PDNA_GBSCR_REASON_UNAVAILABLE);
     want_commit = pdna_gbbag_plain(bag, can_edit, PDNA_GBTR_FALLBACK_TITLE, reason2);
   }
