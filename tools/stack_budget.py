@@ -210,17 +210,55 @@ def analyze(dump_text):
         t = int(m.group(3), 16)
         if op not in ("bl", "blx", "b", "b.n", "b.w"):
             continue                                    # conditional branch = intra-function
-        tgt_ins = insn.get(t, "")
-        bxm = re.match(r'^bx\s+(\w+)', tgt_ins)
-        if bxm and t not in name_at:
-            # trap #2: bx-rN thunk, unresolved -- record which register it dispatches
-            # through so the caller can try to resolve the site to a declared struct
-            # field (D1: BACKLOG #84b review).
-            indirect_sites[fn].append((hex(a), ins, bxm.group(1)))
-            continue
+        # Trap #1 MUST be checked before trap #2 (D4/D6, BACKLOG #84b fourth pass): a
+        # `bl`/`b.n` long jump that stays WITHIN the same function is intra-function
+        # control flow no matter what instruction its target happens to be -- and a
+        # function that returns via `pop {rN}; bx rN` (extremely common: GCC's own
+        # shared-epilogue idiom for a function with more than one exit) puts a real
+        # `bx rN` instruction right where every internal long branch to "the epilogue"
+        # naturally lands. Checking the bx-thunk shape FIRST (the order this used to
+        # run in) misclassified every one of those self-jumps as an unresolved
+        # cross-function indirect-call site -- invisible under the old on-chain blind-
+        # spot filter (it only ever looked at functions on the printed deepest chain),
+        # but D4's whole-graph sweep walks every reachable function, so this ordering
+        # bug alone produced 300+ false "blind spots" the moment the sweep went live
+        # (memcpy16's own `bl <own pop{r3};bx r3>` byte-copy tail, pk_species_name's
+        # `b.n <own bx lr>` early-return tail, and so on). own(t) is cheap to compute
+        # (a bisect) so there is no reason not to check it first.
         own = owner(t)
         if own == fn:
             continue                                     # trap #1: intra-function long jump
+        tgt_ins = insn.get(t, "")
+        bxm = re.match(r'^bx\s+(\w+)', tgt_ins)
+        if bxm and t not in name_at:
+            # trap #5 (D6, BACKLOG #84b fourth pass): before treating this as an
+            # unresolved indirect site, check whether the dispatch register was fed
+            # by an UNINTERRUPTED PC-relative literal load right here in `fn` -- if
+            # so, the "indirect" call is to a build-time CONSTANT, not a genuine
+            # runtime-varying target. This is how every call from ROM code into an
+            # IWRAM_CODE-resident helper compiles on ARMv4T (icopy_verified/
+            # memcpy32/memset32/wp_copy_verified/hb_draw/fcio_sum_ag and friends):
+            # `bl <label>` can't reach across the ROM/IWRAM boundary directly, so
+            # GCC loads the helper's known address into a register and `bl`s to a
+            # shared `bx rN` thunk -- byte-for-byte the same shape as a genuine
+            # struct-field/vtable dispatch, but the register's value never varies.
+            # D4's whole-graph sweep turned up ~100 of these (previously invisible
+            # because they were never on a printed top-N chain); resolving them
+            # here, generically, is far sounder than hand-declaring each IWRAM
+            # helper's dozens of call sites in stack_edges.txt one by one. Only a
+            # literal that lands EXACTLY on a function's entry address resolves --
+            # anything else (a field load, a stack spill, a literal pointing at
+            # DATA rather than a function start) still falls through to the
+            # indirect_sites list below, unresolved, exactly as before.
+            lit_target = _literal_call_target(fn_insn_seq[fn], insn, name_at, bxm.group(1))
+            if lit_target is not None:
+                edges[fn].add(lit_target)
+                continue
+            # trap #2: bx-rN thunk in ANOTHER function, unresolved -- record which
+            # register it dispatches through so the caller can try to resolve the
+            # site to a declared struct field (D1: BACKLOG #84b review).
+            indirect_sites[fn].append((hex(a), ins, bxm.group(1)))
+            continue
         if t in name_at:
             edges[fn].add(own)
         else:
@@ -468,6 +506,57 @@ DEST_REG_RE = re.compile(r'^[a-z][a-z0-9]*\s+(r\d+|ip)\b')
 LDR_FIELD_RE = re.compile(
     r'^ldr\w*\s+(r\d+|ip)\s*,\s*\[\s*(r\d+|ip|sp|pc)\s*,\s*#(-?\d+)\s*\]')
 CALLER_SAVED_REGS = frozenset(('r0', 'r1', 'r2', 'r3', 'ip'))   # AAPCS scratch registers
+
+
+def _literal_call_target(fn_insn_seq, insn_map, name_at_map, reg):
+    """Trap #5 (D6, BACKLOG #84b fourth pass): scan `fn_insn_seq` (this function's own
+    instructions, in order, with the `bl <bx-rN thunk>` call itself as the LAST entry)
+    backward for the origin of `reg`. Returns the target function's name if `reg` was
+    set by an uninterrupted `ldr reg, [pc, #imm]` whose literal word -- read back out
+    of `insn_map`, Thumb bit masked off -- lands EXACTLY on a function's entry address
+    in `name_at_map`; otherwise None (a struct-field/parameter dispatch, a literal
+    pointing at data rather than code, or a shape this tracker can't follow -- the
+    caller keeps treating it as a genuine indirect site in all of those cases).
+
+    Same clobber-tracking discipline as resolve_indirect_site (chase `mov`
+    register-to-register copies, allow push/sub-sp/cmp/store lines to pass through
+    unless they redefine `reg`, treat a caller-saved `reg` as clobbered by an
+    intervening `bl`/`blx`) -- this is the SAME register-origin question, just
+    answered against the raw disassembly's own literal pool instead of a declared
+    struct layout, so it must be exactly as conservative: erring toward "can't
+    resolve" costs one more (harmless, correctly-reported) blind spot, never a
+    silent wrong attribution."""
+    for i in range(len(fn_insn_seq) - 2, -1, -1):
+        a, ins = fn_insn_seq[i]
+        ins_clean = ins.split('@')[0].strip()
+        if CALL_MNEM_RE.match(ins_clean):
+            if reg in CALLER_SAVED_REGS:
+                return None                            # clobbered by the call
+            continue                                    # callee-saved reg survives a call
+        if BRANCH_MNEM_RE.match(ins_clean):
+            continue
+        m = LDR_FIELD_RE.match(ins_clean)
+        if m:
+            if m.group(1) != reg:
+                continue
+            if m.group(2) != 'pc':
+                return None                            # field/stack/lr load, not a literal
+            lit_addr = (a & ~3) + 4 + int(m.group(3))   # Thumb PC-relative: align, +4 pipeline
+            word_ins = insn_map.get(lit_addr, "")
+            wm = re.match(r'^\.word\s+0x([0-9a-f]+)$', word_ins)
+            if not wm:
+                return None
+            return name_at_map.get(int(wm.group(1), 16) & ~1)   # mask the Thumb bit
+        if STORE_MNEM_RE.match(ins_clean) or CMP_MNEM_RE.match(ins_clean):
+            continue
+        mv = MOV_REG_RE.match(ins_clean)
+        if mv and mv.group(1) == reg:
+            reg = mv.group(2)
+            continue
+        dm = DEST_REG_RE.match(ins_clean)
+        if dm and dm.group(1) == reg:
+            return None                                # set by something not ldr-pc/mov
+    return None                                         # never (re)defined in this function
 
 
 BASE_LITERAL_WINDOW = 8   # instructions to look back for the base register's own origin
@@ -790,6 +879,46 @@ def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None)
     return total, path, cycles
 
 
+def reachable_from(root, edges):
+    """Every function reachable from `root` over the call graph, visited ONCE (D4,
+    BACKLOG #84b fourth pass): a plain iterative DFS with a `seen` set, so a
+    recursive edge back to an already-visited function just stops descending that
+    branch instead of looping forever. This is deliberately separate from
+    deepest_from()'s memoized search -- that one exists to find the HEAVIEST
+    chain, this one exists to find EVERY function reachable at all, because a
+    blind spot (an undeclared indirect-call site) can hide on a branch that never
+    wins the deepest-chain comparison yet still needs to be caught."""
+    seen = set()
+    stack = [root]
+    while stack:
+        fn = stack.pop()
+        if fn in seen:
+            continue
+        seen.add(fn)
+        for c in edges.get(fn, ()):
+            if c not in seen:
+                stack.append(c)
+    return seen
+
+
+def whole_graph_blind_spots(reachable, blind):
+    """Every undeclared indirect-call site inside a function reachable from root,
+    independent of whether that function ever lands on a printed top-N chain
+    (D4). The previous check filtered `blind` down to `on_chain` (the union of
+    the printed chains' paths) -- unsound, because the deepest-chain search only
+    descends the single heaviest branch at each fan-out; an undeclared site on a
+    shallower sibling branch can hide an arbitrarily deep continuation that
+    branch's own subtree never gets a chance to print. Confirmed live: a planted
+    +6,000 B frame on banksrc_records surfaced a genuine, PRE-EXISTING blind spot
+    in app_mon_menu_readonly that had been off every previously-reported deepest
+    chain and so had never once failed the build."""
+    out = []
+    for fn in sorted(reachable):
+        for addr, ins, detail in blind.get(fn, []):
+            out.append((fn, addr, ins, detail))
+    return out
+
+
 def top_n_chains(root, edges, su_sizes, estimated, n=5, overrides=None):
     """Top-N distinct chains from root, ranked by root's direct callees' subtree
     weight (each callee's own heaviest chain, prefixed with root's frame)."""
@@ -973,21 +1102,23 @@ def main(argv):
                            n=args.top, overrides=frame_overrides)
     deepest_total, deepest_path, cycles = chains[0][0], chains[0][1], chains[0][2]
 
-    # STOP-LICENCE check: any indirect-call site inside a function on the top-N chains
-    # that resolve_all_sites() could not tie to a declared struct field or argsites
-    # class means the walker could not see a possible deeper continuation past that
-    # point -- surface it instead of silently trusting the number. Per-SITE, not
-    # per-function (D1): a function with ten declared field classes gets no free pass
-    # for an eleventh, undeclared one.
-    blind_spots = []
+    # STOP-LICENCE check (D4, BACKLOG #84b fourth pass): any indirect-call site inside
+    # a function REACHABLE FROM --root that resolve_all_sites() could not tie to a
+    # declared struct field or argsites class means the walker could not see a
+    # possible deeper continuation past that point -- surface it instead of silently
+    # trusting the number. This is now a WHOLE-GRAPH sweep, not just the printed top-N
+    # chains: the deepest-chain search only descends the single heaviest branch at
+    # each fan-out, so an undeclared site on a shallower sibling can hide an
+    # arbitrarily deep continuation that branch's own subtree never gets printed to
+    # reveal. Per-SITE, not per-function (D1): a function with ten declared field
+    # classes gets no free pass for an eleventh, undeclared one.
     on_chain = set()
     unknown_on_chain = set()
     for _tot, path, _cyc in chains:
         on_chain |= {name for name, _b, _s in path}
         unknown_on_chain |= {name for name, _b, s in path if s == "unknown"}
-    for fn in sorted(on_chain):
-        for addr, ins, detail in blind.get(fn, []):
-            blind_spots.append((fn, addr, ins, detail))
+    reachable = reachable_from(args.root, analysis["edges"])
+    blind_spots = whole_graph_blind_spots(reachable, blind)
 
     print(f"ELF: {args.elf}")
     print(f"root: {args.root}")

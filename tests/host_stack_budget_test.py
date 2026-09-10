@@ -393,6 +393,79 @@ def test_boxsource_offsets_match_real_header():
           {k: v for k, v in offsets.items() if expected.get(k) != v})
 
 
+# === (D4) blind spots over the WHOLE reachable graph, not just the deepest chain =======
+
+def _d4_graph():
+    """root fans out to two branches:
+      root -> shallow            (ONE indirect-call site, offset 99)
+      root -> mid -> deep        (no indirect sites, but a big .su frame on `deep`
+                                   that makes THIS the reported deepest chain)
+    `shallow`'s site is never on the deepest chain (20 B vs 520 B) -- exactly the
+    shape the old on-chain filter missed."""
+    analysis = {
+        "indirect_sites": {
+            "shallow": [("0x1020", "bl\t2000 <thunk1>", "r3")],   # -> ldr r3,[r4,#99]
+        },
+        "fn_insn_seq": {
+            "shallow": [
+                (0x101a, "ldr\tr4, [sp, #4]"),
+                (0x101c, "ldr\tr3, [r4, #99]"),
+                (0x101e, "nop"),
+            ],
+        },
+    }
+    edges = {"root": {"shallow", "mid"}, "mid": {"deep"}}
+    su_sizes = {"root": 10, "shallow": 10, "mid": 10, "deep": 500}
+    estimated = {}
+    return analysis, edges, su_sizes, estimated
+
+
+def test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain():
+    analysis, edges, su_sizes, estimated = _d4_graph()
+    # confirm the deepest chain really doesn't pass through `shallow` at all --
+    # otherwise this fixture wouldn't be testing what it claims to.
+    total, path, _cyc = sb.deepest_from("root", edges, su_sizes, estimated)
+    on_chain = {name for name, _b, _s in path}
+    check("(D4 setup) deepest chain is root->mid->deep, NOT through shallow",
+          on_chain == {"root", "mid", "deep"} and total == 520, (on_chain, total))
+
+    # no declaration for offset 99 -> resolve_all_sites must name it a blind spot
+    edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
+        analysis, {}, {}, {})
+    check("(D4) undeclared site has no edge added", edges_to_add == {}, edges_to_add)
+
+    reachable = sb.reachable_from("root", edges)
+    check("(D4) `shallow` is reachable from root even though never on-chain",
+          "shallow" in reachable and "shallow" not in on_chain, reachable)
+
+    spots = sb.whole_graph_blind_spots(reachable, blind)
+    check("(D4) whole-graph sweep FAILS on the shallow, off-chain undeclared site",
+          len(spots) == 1 and spots[0][0] == "shallow" and "@99" in spots[0][3], spots)
+
+
+def test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged():
+    analysis, edges, su_sizes, estimated = _d4_graph()
+    field_decls = {("Widget", "handler"): (99, {"impl_handler"})}
+    edges_to_add, blind, count_mismatches, legacy_ambiguous = sb.resolve_all_sites(
+        analysis, field_decls, {}, {})
+    check("(D4) declared offset 99 -> edge added, no blind entries left",
+          edges_to_add.get("shallow") == {"impl_handler"} and blind == {}, (edges_to_add, blind))
+
+    merged_edges = {k: set(v) for k, v in edges.items()}
+    for caller, impls in edges_to_add.items():
+        merged_edges.setdefault(caller, set()).update(impls)
+
+    reachable = sb.reachable_from("root", merged_edges)
+    spots = sb.whole_graph_blind_spots(reachable, blind)
+    check("(D4) whole-graph sweep is clean once the site is declared", spots == [], spots)
+
+    # `impl_handler` has no .su/edges of its own here, so it contributes 0 B --
+    # the reported deepest total must still be the deep branch's number, 520.
+    total, path, _cyc = sb.deepest_from("root", merged_edges, su_sizes, estimated)
+    check("(D4) deepest total is still the deep branch's number after declaring",
+          total == 520, total)
+
+
 def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
@@ -402,6 +475,8 @@ def main():
     test_c_argsites_count_match_is_clean()
     test_d_unknown_frame_fails_unless_overridden()
     test_d_load_extra_edges_parses_frame_override()
+    test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain()
+    test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged()
     test_boxsource_offsets_match_real_header()
     print()
     if FAILURES:
