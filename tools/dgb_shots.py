@@ -1009,6 +1009,183 @@ def run_u4_empty(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sess
     return s
 
 
+def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """U5 (BACKLOG #67, docs/GB-GAME-SCREENS-DESIGN.md sec 1.4): Gold/Silver/
+    Crystal's OWN Pack + PC store on the shared GB-screen shell -- the Gen-2
+    sibling of run_u4_bag() above. `rom` must be a ONE-Gen-2-ROM fused image
+    (tools/fuse_gb.py fed only Gold.gbc+Gold.sav, or only Crystal.gbc+
+    Crystal.sav -- BACKLOG #98's known harness gap, same reasoning as U4's own
+    single-ROM requirement). A single-ROM image skips the boot picker entirely
+    (gb_delta_pick_save()'s own `if (n == 1) return 0`, same as run_d7_gold()'s
+    own doc comment) -- one A tap reaches S1 info -> box grid directly.
+
+    Nav: A (S1 info) -> box grid (rom_gbsprite cold scan) -> START -> nav menu
+    -> DOWN x7 (Party->Bank->Daycare->Trainer->Clock fix->Mirage->Pokedex->Bag,
+    PDNA_NAV_ITEMS index 7, SAME row order as Gen 1 -- nav_avail's GB_TABLE has
+    one row per NV_* id with a per-generation COLUMN) -> A -> pdna_gbpack_gen2_
+    screen() (gbscr_open()'s OWN cold rom_gbui scan)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"u5_{which}_")
+    print(f"== U5: {which}'s own Pack (single-ROM image -> standalone -> Pack) ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 7)                                     # Party -> ... -> Bag (index 7)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbpack_gen2_screen()
+    s.shot("01_items", f"U5: {which}'s OWN Pack, ITEMS pocket, 1:1 -- the "
+                        "pocket picture (PackGFX/pack_m, real ROM art) and the "
+                        "static header/nameplate art (the derived PACKMENU "
+                        "block), 5 item rows visible, cursor on row 1")
+
+    s.tap("SEL", settle=60)
+    s.shot("01b_stretched", "U5: SELECT stretches the same list to 240x160")
+    s.tap("SEL", settle=60)
+    s.shot("01c_1to1_again", "U5: SELECT again returns to 1:1")
+
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls
+    s.shot("02_balls", "U5: RIGHT cycles to the BALLS pocket -- a different "
+                        "nameplate label + pocket picture slice (PackGFX ROM "
+                        "index 3), the CANCEL row (real-cartridge fact, corrects "
+                        "an earlier design-doc guess that Gen 2 has no CANCEL "
+                        "row -- confirmed live on this exact save)")
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Balls -> Key items
+    s.shot("03_key_items", "U5: RIGHT again -> KEY ITEMS -- no quantity column "
+                            "at all (blank, not '-'), matching the real "
+                            "cartridge's own posture for this pocket")
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Key items -> TM/HM
+    s.shot("04_tmhm", "U5: RIGHT again -> TM/HM -- the two-digit TM/HM number "
+                       "prefix (cols 5-6, before the cursor) plus a 'TMnn'-style "
+                       "fallback name (no move-name table this slice) and its "
+                       "own count column")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (TM/HM: PC STORE/CANCEL only,
+                                                              # csel starts on PC STORE, no DOWN needed)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle -> PC store
+    s.shot("05_pc_store", "U5: START > PC STORE toggles to the PC item store -- "
+                           "reuses the Items pocket's own art column (not "
+                           "independently pixel-dumped this slice, see "
+                           "pdna_gbpack.h)")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU again (now over the PC pocket,
+                                                              # which has edit ops too -- PACK is opts[3],
+                                                              # after ADD ITEM/REMOVE/SWAP)
+    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle back -> Pack (still on TM/HM's own cyc)
+    s.shot("06_back_to_pack", "U5: START > PACK toggles back")
+
+    s.tap("LEFT", settle=gb_shots.BIG_SETTLE)               # TM/HM -> Key items
+    s.tap("LEFT", settle=gb_shots.BIG_SETTLE)               # Key items -> Balls
+    s.tap("LEFT", settle=gb_shots.BIG_SETTLE)               # Balls -> Items
+    s.shot("07_left_wraps_to_items", "U5: LEFT cycles the other way -- back on "
+                                      "ITEMS")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the selected item -> qty editor
+    s.shot("08_qty_editor", "U5: A on the selected item opens the existing "
+                             "numeric editor (num_entry, 1-99) -- the SAME "
+                             "pop-up every other GB screen's own field edits "
+                             "use")
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # osk_search: SELECT cancels
+
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (ADD ITEM/REMOVE/SWAP/PC STORE/CANCEL)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM on Balls -> WRONG POCKET refusal
+    s.shot("09_wrong_pocket_refusal", "U5: START > ADD ITEM from the BALLS "
+                                       "pocket refuses outright -- 'WRONG "
+                                       "POCKET' / 'Add items from the Items "
+                                       "pocket.' (per-item pocket membership "
+                                       "was not located this slice; the "
+                                       "brief's own sanctioned fallback is "
+                                       "Items-only ADD ITEM, not a silent "
+                                       "wrong-pocket accept)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> back in the PACK MENU (msg_wait's
+                                                              # own `continue` loops the menu, does NOT
+                                                              # close it -- gbpack_start_menu's own ADD ITEM
+                                                              # branch, csel unchanged at 0)
+    s.press_n("DOWN", 4, settle=gb_shots.SETTLE)            # ADD ITEM -> REMOVE -> SWAP -> PC STORE -> CANCEL
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CANCEL -> back to the list (still Balls)
+    s.tap("LEFT", settle=gb_shots.BIG_SETTLE)               # Balls -> Items
+
+    # Saturation refusal on an ORDINARY item: ADD ITEM the currently-selected
+    # pocket's own id 1 (not present yet) at qty 99 (a SILENT success -- no
+    # message, gbb_insert() returns GBB_OK -- so the menu loop's own `continue`
+    # lands right back on ADD ITEM with NO extra tap needed), then ADD ITEM id
+    # 1 again at qty 5, which MERGES into the fresh 99 stack and overflows the
+    # cap -- THIS one does show SATURATED. osk_search's own contract: row 0 is
+    # the digit row "1234567890", cursor starts at (0,0) == '1', A inserts the
+    # highlighted glyph, B backspaces, START confirms, SELECT cancels (U4's
+    # own precedent, run_u4_bag() above).
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (Items, csel=0=ADD ITEM)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry (seeded "1")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id=1 -> quantity entry
+    s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1"
+    s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)           # col0 -> col8 '9'
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '9'
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '9' again -> field "99"
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=99 -> gbb_insert(id=1,99): FREE-SLOT
+                                                              # path, GBB_OK, NO message -- gbpack_start_menu's
+                                                              # own ADD ITEM branch falls through to `return 0`
+                                                              # unconditionally after a COMPLETED add (success
+                                                              # OR an error message dismissed), closing the
+                                                              # menu straight back to the LIST -- only the
+                                                              # WRONG-POCKET early-refuse `continue`s and stays
+                                                              # in the menu; this is NOT that case.
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU again (fresh open, csel=0=ADD ITEM)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM AGAIN -> id entry (seeded "1")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id=1 -> quantity entry
+    s.tap("B", settle=gb_shots.SETTLE)
+    s.press_n("RIGHT", 4, settle=gb_shots.SETTLE)           # col0 -> col4 '5'
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '5'
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=5 -> merge overflows 99 -> SATURATED
+    s.shot("10_saturation_refusal", "U5: re-adding id 1 at qty 5 merges into "
+                                     "the existing (already-99) stack -- "
+                                     "gbb_insert() saturates it at the cap and "
+                                     "reports SATURATED (same mechanism as "
+                                     "U4's own N6(c))")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> gbpack_start_menu's own ADD ITEM
+                                                              # branch falls through to `return 0` after this
+                                                              # (a COMPLETED add, message or not) -- back at
+                                                              # the LIST, not the menu.
+
+    # SWAP: arm row 0, move down, confirm the destination. The cursor is
+    # currently on the LAST real row (the fresh id-1 insert, ADD ITEM's own
+    # `*sel = l->count - 1` rule) -- move it UP first so SWAP arms a row with
+    # a REAL row below it, not the trailing CANCEL row (arming the last real
+    # row and pressing DOWN would land on CANCEL, which the destination guard
+    # correctly refuses -- sel < cnt is false for it -- but that is a
+    # different, less illustrative demo than an actual two-item swap).
+    s.press_n("UP", 2, settle=gb_shots.SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> PACK MENU (fresh open, csel=0=ADD ITEM)
+    s.press_n("DOWN", 2, settle=gb_shots.SETTLE)            # ADD ITEM -> REMOVE -> SWAP
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # SWAP: arms row 0, returns to the list
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # cursor off the source row
+    s.shot("11_swap_armed", "U5: SWAP arms row 0 (the mark stays lit there) "
+                             "and returns to the list -- pick-source-then-"
+                             "destination, same semantic as U4's own Gen-1 "
+                             "SWAP")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the destination -> the actual swap
+    s.shot("11b_swap_done", "U5: A on the destination performs the swap -- "
+                             "both rows traded places, the mark is gone")
+    # Arm again and drop with B instead of swapping.
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 2, settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # re-arm on the current row
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B drops the mark, nothing moves
+    s.shot("11c_swap_dropped", "U5: B drops an armed SWAP mark without leaving "
+                                "the screen or moving anything -- the row's own "
+                                "0xED marker is gone, no entries changed")
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B with a real pending edit -> commit prompt
+    s.shot("12_commit_prompt", "U5: B with a real pending edit -> 'Save pack "
+                                "changes?' (app_confirm), the same dialog "
+                                "every other GB screen's own commit uses")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # decline
+    s.shot("13_declined", "U5: declining discards the edit -- gbb_write never "
+                           "ran, back at the box grid")
+
+    return s
+
+
 def run_d7_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """N6(f): Gold's own START > BAG refusal, from a COMMITTED driver (`rom` must
     be a Gold-only fused image, tools/fuse_gb.py fed Gold.gbc+Gold.sav -- the
@@ -1246,6 +1423,12 @@ def main(argv=None) -> int:
                      help="N6(e): only run_u4_empty() against --image -- --image "
                           "MUST be fused with a Red save whose Items pocket was "
                           "zeroed by docs/shots/rvu4/mkbag.c (count 0)")
+    ap.add_argument("--u5-pack", choices=("gold", "crystal"),
+                     help="U5: only run_u5_pack() against --image for the named "
+                          "game (Gold's or Crystal's own Pack + PC store) -- "
+                          "--image MUST be a ONE-Gen-2-ROM fused image matching "
+                          "this choice (BACKLOG #98's fused-image-by-generation-"
+                          "only harness gap, same as --u4-bag)")
     ap.add_argument("--d7-gold", action="store_true",
                      help="N6(f): only run_d7_gold() against --image -- --image "
                           "MUST be a Gold-only fused image (Gold.gbc+Gold.sav)")
@@ -1324,6 +1507,19 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] u4 bag ({a.u4_bag}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.u5_pack:
+        try:
+            sess = run_u5_pack(core_mod, image_mod, a.image, a.out, a.u5_pack)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] u5 pack ({a.u5_pack}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
