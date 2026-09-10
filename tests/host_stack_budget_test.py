@@ -509,6 +509,40 @@ def test_d7_pop_redefines_its_register_list():
           sb._expand_reglist("{r3-r5, lr}"))
 
 
+# === (D8, fifth pass) UNKNOWN frames are checked over the whole reachable set ===========
+
+def test_d8_unknown_frame_off_the_deepest_chain_still_fatal():
+    """root fans out to `shallow` (frame UNKNOWN, i.e. unbounded) and to
+    mid->deep (a big MEASURED frame). Because an unknown frame scores 0 B in the
+    chain-ranking comparison, `shallow` can never win against `deep`'s 500 B and so
+    never appears on the printed top-N chains -- but its true weight is genuinely
+    unknown, not 0, so this must still be caught. Checking only the printed chains
+    (the pre-D8 behavior) would miss it entirely, exactly the same failure shape D4
+    already fixed for blind spots."""
+    edges = {"root": {"shallow", "mid"}, "mid": {"deep"}}
+    su_sizes = {"root": 10, "mid": 10, "deep": 500}
+    estimated = {"shallow": {"bytes": 0, "unknown": True}}
+
+    total, path, _cyc = sb.deepest_from("root", edges, su_sizes, estimated)
+    on_chain = {name for name, _b, _s in path}
+    check("(D8 setup) deepest chain is root->mid->deep, NOT through shallow",
+          on_chain == {"root", "mid", "deep"} and total == 520, (on_chain, total))
+
+    reachable = sb.reachable_from("root", edges)
+    unknown_reachable = sorted(
+        fn for fn in reachable if sb.frame_of(fn, su_sizes, estimated)[1] == "unknown")
+    check("(D8) `shallow` is reachable and UNKNOWN even though never on-chain",
+          unknown_reachable == ["shallow"], unknown_reachable)
+
+    # A frame_overrides entry for `shallow` must clear it, same as the on-chain case.
+    overrides = {"shallow": 5}
+    unknown_reachable2 = sorted(
+        fn for fn in reachable
+        if sb.frame_of(fn, su_sizes, estimated, overrides)[1] == "unknown")
+    check("(D8) a frame override clears the reachable-set unknown, same as on-chain",
+          unknown_reachable2 == [], unknown_reachable2)
+
+
 # === (D3, fifth pass) su_frame(): a clone's frame is the max over its OWN .su keys ======
 
 def test_d3_su_frame_takes_max_not_bare_base_first():
@@ -641,6 +675,7 @@ def main():
     test_d6_argsites_accepts_a_dotted_gcc_clone_name()
     test_d3_su_frame_takes_max_not_bare_base_first()
     test_d7_pop_redefines_its_register_list()
+    test_d8_unknown_frame_off_the_deepest_chain_still_fatal()
     test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain()
     test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged()
     test_boxsource_offsets_match_real_header()

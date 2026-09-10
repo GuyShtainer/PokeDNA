@@ -1257,12 +1257,25 @@ def main(argv):
     # reveal. Per-SITE, not per-function (D1): a function with ten declared field
     # classes gets no free pass for an eleventh, undeclared one.
     on_chain = set()
-    unknown_on_chain = set()
     for _tot, path, _cyc in chains:
         on_chain |= {name for name, _b, _s in path}
-        unknown_on_chain |= {name for name, _b, s in path if s == "unknown"}
     reachable = reachable_from(args.root, analysis["edges"])
     blind_spots = whole_graph_blind_spots(reachable, blind)
+
+    # D8 (BACKLOG #84b fifth pass): UNKNOWN frames are checked over the WHOLE
+    # REACHABLE set, not just the printed top-N chains. An UNKNOWN frame contributes
+    # 0 B to deepest_from()'s search (frame_of() returns 0 for it) -- so a function
+    # whose TRUE frame is unknown, and therefore unbounded, can never win the "heaviest
+    # child" comparison against a sibling with any measured weight at all. It loses
+    # the chain race precisely because the walker doesn't know how heavy it really is,
+    # which is exactly backwards: an unknown frame must never be allowed to hide by
+    # being invisible to the ranking that decides what gets printed. Sweeping every
+    # function reachable from --root (the same set whole_graph_blind_spots() already
+    # uses for the same reason) catches an UNKNOWN sitting on a branch that never
+    # prints, not just one unlucky enough to land on the printed #1..#N chains.
+    unknown_reachable = sorted(
+        fn for fn in reachable
+        if frame_of(fn, su_sizes, estimated, frame_overrides)[1] == "unknown")
 
     print(f"ELF: {args.elf}")
     print(f"root: {args.root}")
@@ -1288,11 +1301,14 @@ def main(argv):
     # own header) is UNKNOWN, not a trustworthy 0 -- one on a top-N chain means the
     # printed total above is not actually bounded. FATAL unless stack_edges.txt
     # carries a `frame fn = BYTES` hand-measured override for it.
-    if unknown_on_chain:
+    if unknown_reachable:
         print(f"\n*** STACK_BUDGET UNKNOWN FRAME: the prologue estimator could not classify "
-              "the stack frame of the following function(s), which sit on a top-N chain above "
-              "-- the printed chain totals are NOT bounded past this point:")
-        for fn in sorted(unknown_on_chain):
+              "the stack frame of the following function(s), reachable from "
+              f"{args.root}() -- an unknown frame contributes 0 B to the chain search and "
+              "can therefore never win the ranking that decides what gets printed above, "
+              "so the printed chain totals are NOT bounded even when none of these names "
+              "appear on them:")
+        for fn in unknown_reachable:
             print(f"***   {fn}")
         print("*** Refusing to certify a number the walker cannot back. Fix: add a "
               "`frame fn = BYTES  (measured by hand, date)` line to "
