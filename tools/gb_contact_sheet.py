@@ -137,6 +137,14 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # append-only rule.
     ("gb-card-gen1", "U2c — Red's own trainer card on the shell (Gen-1 saves)",
      ("U2c",)),
+    # U3 (docs/briefs/U3-gen2-card-brief.md, BACKLOG #66): Gold/Silver/Crystal's OWN
+    # trainer card (both pages) drawn on the shared shell, replacing Emerald's card
+    # art for Gen-2 saves too -- the Emerald-art path is now fully retired for BOTH
+    # generations. Shots come from tools/dgb_shots.py's run_u3_trainer(), captions
+    # all start "U3:". Appended after "gb-card-gen1" per this list's own append-only
+    # rule.
+    ("gb-card-gen2", "U3 — Gold/Silver/Crystal's own trainer card on the shell "
+     "(Gen-2 saves, both pages)", ("U3",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

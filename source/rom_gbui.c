@@ -115,6 +115,34 @@ static int any_nonzero(const Scan* s, uint32_t off, uint32_t nbytes) {
   return 0;
 }
 
+/* Gen 2 U3 (D2): a structural check over the two most distinctive CARDGFX
+ * tiles, so a locator that moved the block one tile off (or onto some other
+ * ROM table entirely) fails closed to the plain row-list page instead of
+ * painting garbage. Both are shape rules, not literal-byte matches, so they
+ * hold across Gold and Crystal alike: tile 0 (the border/body checkerboard
+ * fill) has every one of its 8 rows' lo/hi 2bpp planes exactly
+ * bit-complementary (lo ^ hi == 0xFF -- every pixel is shade 1 or 2, never
+ * shade 0 or 3) and is not a single flat shade; tile 2 (the header-divider
+ * fill) is literally blank/blank/blank/solid/solid/blank/blank/blank across
+ * its 8 rows on both planes. */
+static int cardgfx_verify(const Scan* s, uint32_t off) {
+  uint8_t t0[16], t2[16];
+  if (!rd(s, off, t0, sizeof t0)) return 0;
+  if (!rd(s, off + 2 * 16, t2, sizeof t2)) return 0;
+  int saw_lo0 = 0, saw_lo1 = 0;
+  for (int y = 0; y < 8; y++) {
+    uint8_t lo = t0[y * 2], hi = t0[y * 2 + 1];
+    if ((uint8_t)(lo ^ hi) != 0xFF) return 0;
+    if (lo == 0x00) saw_lo0 = 1; else saw_lo1 = 1;
+  }
+  if (!saw_lo0 || !saw_lo1) return 0;   /* reject a flat single-shade tile */
+  for (int y = 0; y < 8; y++) {
+    uint8_t want = (y == 3 || y == 4) ? 0xFF : 0x00;
+    if (t2[y * 2] != want || t2[y * 2 + 1] != want) return 0;
+  }
+  return 1;
+}
+
 static int block_eq(const Scan* s, uint32_t a, uint32_t b, uint32_t n) {
   uint8_t ba[64], bb[64];
   uint32_t done = 0;
@@ -390,6 +418,7 @@ static int try_cardpic_crystal(const Scan* s, uint32_t hit,
   uint32_t to = fileoff(bank, rd16(buf + 25));
   if (ko < co || ko - co != 0x230u) return 0;
   if (co + 35 * 16 > s->size || to + 6 * 16 > s->size) return 0;
+  if (!cardgfx_verify(s, to)) return 0;
   *chris = co; *kris = ko; *tcgfx = to;
   return 1;
 }
@@ -399,6 +428,7 @@ static int try_cardpic_gold(const Scan* s, uint32_t hit, uint32_t* chris) {
   uint8_t bank = buf[10];
   uint32_t co = fileoff(bank, rd16(buf + 1));
   if (co + 41 * 16 > s->size) return 0;   /* 35 pic + 6 TrainerCardGFX tiles */
+  if (!cardgfx_verify(s, co + 35 * 16)) return 0;
   *chris = co;
   return 1;
 }
@@ -857,7 +887,7 @@ static int revalidate_loc(const Scan* s, const RomGbUiLoc* loc) {
     if (leaders + 86 * 16 > s->size || distinct_tiles(s, leaders, 2, 86) < 63) return 0;
     if (cardpic_m + 35 * 16 > s->size) return 0;
     if (cardpic_f != 0 && (cardpic_f < cardpic_m || cardpic_f - cardpic_m != 0x230u)) return 0;
-    if (cardgfx + 6 * 16 > s->size) return 0;
+    if (cardgfx + 6 * 16 > s->size || !cardgfx_verify(s, cardgfx)) return 0;
     if (pack_m == 0 || pack_m + 60 * 16 > s->size) return 0;
     if (pack_f != 0 && pack_f + 60 * 16 > s->size) return 0;
     if (crystal && pack_f == 0) return 0;   /* Crystal-shaped needs both */

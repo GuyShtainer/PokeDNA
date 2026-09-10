@@ -454,6 +454,122 @@ def run_u2c_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
 
 
 
+def run_u3_trainer(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """U3 (BACKLOG #66, docs/GB-GAME-SCREENS-DESIGN.md sec 1.2): Gold/Silver/Crystal's
+    OWN trainer card on the shared GB-screen shell -- the Gen-2 sibling of
+    run_u2c_trainer() above. Boot picker DOWN x(PICK_INDEX[which]+1) -> `which` row ->
+    A -> S1 info -> A -> box grid (cold rom_gbsprite scan) -> START -> nav menu ->
+    DOWN x3 -> Trainer -> A -> pdna_gbtrainer_gen2_card() (gbscr_open()'s OWN separate
+    cold rom_gbui scan, same GB_ART_COLD_SETTLE ride-out run_u2c_trainer() needs)."""
+    idx = PICK_INDEX[which]
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"u3_{which}_")
+    print(f"== U3: {which}'s own trainer card (boot picker -> standalone -> Trainer) ==")
+
+    s.run(700)
+    s.press_n("DOWN", idx + 1, settle=gb_shots.SETTLE)      # Emerald (row 0) -> `which` row
+    s.tap("A", settle=60)                                    # pick -> S1 info
+    s.tap("A", settle=60)                                    # -> box grid (rom_gbsprite cold fetch)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box grid -> nav menu
+    s.press_n("DOWN", 3)                                       # Party -> Bank -> Daycare -> Trainer
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                    # Trainer -> pdna_gbtrainer_gen2_card()
+                                                                # (gbscr_open's OWN cold rom_gbui scan)
+    s.shot("01_page1_1to1", f"U3: {which}'s own trainer card, page 1, 1:1 -- NAME/ID No/"
+                             "MONEY, the 5x7 card pic (row-major on Gold, column-major on "
+                             "Crystal via rom_gbui_tile's own colmajor reorder), the STATUS "
+                             "strip, #DEX (dex_owned popcount), PLAY TIME (colon currently "
+                             "off-phase), and the BADGES(r) page hint")
+
+    s.tap("SEL", settle=60)                                   # shell-wide toggle -> stretched
+    s.shot("02_page1_stretched", "U3: SELECT stretches the SAME page to 240x160 -- the "
+                                  "shell's own scale toggle, not a card-specific key")
+    s.tap("SEL", settle=60)                                   # back to 1:1
+    s.shot("03_page1_1to1_again", "U3: SELECT again returns to 1:1")
+
+    # Cursor cycle order page 1 (G2C_*): NAME(0) ID(1) MONEY(2) TIME(3).
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("04_cursor_id", "U3: DOWN moves the cursor from NAME to ID No.")
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("05_cursor_money", "U3: DOWN again -> MONEY")
+
+    s.tap("UP", settle=gb_shots.SETTLE)                        # MONEY -> ID
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                     # A on ID -> identity WARNING first
+    s.shot("06_editor_id_warning", "U3: A on ID No. shows the identity-change WARNING "
+                                    "first (gbtr_id_edit_ok(), the SAME sub-editor gate "
+                                    "Gen 1's card and the plain page already share) -- "
+                                    "ID has no cursor slot on Gen 1's own card at all, "
+                                    "new to a GB card here")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                     # confirm -> num_entry opens
+    s.shot("06b_editor_id_popup", "U3: A (yes) on the warning -- num_entry()'s existing "
+                                   "pop-up opens (GBTR_ID, the same sub-editor "
+                                   "pdna_gbtrainer_plain's own ID row uses); this is "
+                                   "osk_search()'s own search-style keyboard, not a "
+                                   "numeric keypad -- B is DELETE here (osk_core's own "
+                                   "legend), SELECT cancels, START confirms")
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                   # SELECT cancels osk_core (NOT B -- B deletes)
+    s.shot("07_back_on_card", "U3: SELECT cancels the ID editor (osk_core's own cancel "
+                               "key), back on page 1, ID selected, unchanged")
+
+    # RIGHT flips to page 2 -- unlike Gen 1's card, this key pages rather than
+    # cycling badges (the real game's own binding, design sec 1.2).
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.shot("08_page2_1to1", "U3: RIGHT flips to page 2 -- the BADGES strip and the 8 "
+                             "gym-leader faces (10 tiles each, 4 across the top row then "
+                             "3+3 below); cursor lands on badge 0")
+
+    s.tap("SEL", settle=60)
+    s.shot("09_page2_stretched", "U3: page 2 stretched to 240x160")
+    s.tap("SEL", settle=60)
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                     # instant toggle badge 0
+    s.shot("10_badge0_toggled", "U3: A instantly toggles badge 0 (the accepted "
+                                 "deviation: a STATIC 2x2 BADGES-block overlay over the "
+                                 "face's centre when owned -- the real game draws this "
+                                 "as an animated OAM sprite the BG-tilemap oracle used "
+                                 "to build this card cannot see at all)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                     # toggle back (no residual edit)
+    s.shot("11_badge0_back", "U3: A again toggles badge 0 back")
+
+    s.tap("LEFT", settle=gb_shots.SETTLE)                      # back to page 1
+    s.shot("12_page1_again", "U3: LEFT flips back to page 1")
+
+    # A REAL edit (a Johto badge left toggled) so B's commit prompt actually fires --
+    # same reasoning as U2c's own shots 11/12/13: stays in this SAME visit rather than
+    # re-entering the nav menu, which does not reliably land back on Trainer.
+    s.tap("RIGHT", settle=gb_shots.SETTLE)                     # page 1 -> page 2
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                     # toggle badge 0 -- a REAL change
+    s.shot("13_real_edit", "U3: badge 0 toggled and LEFT changed (unlike shots 10/11's "
+                            "toggle-and-back, this one stays changed)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                     # B -> the actual commit prompt
+    s.shot("14_commit_prompt", "U3: B with a real pending edit -> 'Save trainer "
+                                "changes?' (app_confirm), the SAME dialog Gen 1's own "
+                                "card and Gen 3's own card_editor use")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                     # decline -- discard the real edit too
+    # The trainer screen (a nav-menu item, reached over the box grid) leaves an extra
+    # UI layer or two behind it on the way back down -- same reasoning as
+    # run_standalone()'s own "3x B to fully unwind" comment for its post-CREATE grid.
+    # One extra B here is enough by hand-calibration; verified by shot 15 itself
+    # showing the bare box grid, not a mon submenu.
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    s.shot("15_declined", "U3: declining a REAL edit also discards it -- the save was "
+                           "never written (gbt_write never ran), back at the box grid")
+
+    # Re-enter the card fresh for the START/plain-page shots (B on the front page above
+    # exits the card entirely, same contract as U2c's own B).
+    s.tap("START", settle=gb_shots.BIG_SETTLE)                 # box grid -> nav menu
+    s.press_n("DOWN", 3)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                      # Trainer -> the card again
+    s.tap("START", settle=gb_shots.BIG_SETTLE)                 # -> the plain field-complete page
+    s.shot("16_plain_page", "U3: START reaches the full plain row-list page (coins, "
+                             "mom's money/save, rival, mother, Kanto badges -- everything "
+                             "not on the card face itself, unchanged data model)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                     # B on the plain page: discard, no commit
+    s.shot("17_after_plain_back", "U3: B on the plain page discards (P1b's own rule) -- "
+                                   "back at the box grid, not back on the card (the plain "
+                                   "page is its own top-level fallback screen)")
+    return s
+
+
 # ---------------------------------------------------------------------------------
 # BACKLOG #68b: cold-start timing, WITH vs WITHOUT the fused LOC payloads.
 # ---------------------------------------------------------------------------------
@@ -643,6 +759,10 @@ def main(argv=None) -> int:
     ap.add_argument("--u2c-trainer", action="store_true",
                      help="U2c: only run_u2c_trainer() against --image (Red's own "
                           "trainer card), skip the other flows")
+    ap.add_argument("--u3-trainer", choices=("gold", "crystal"),
+                     help="U3: only run_u3_trainer() against --image for the named "
+                          "game (Gold's or Crystal's own trainer card), skip the "
+                          "other flows")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -692,6 +812,19 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] u2c trainer: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.u3_trainer:
+        try:
+            sess = run_u3_trainer(core_mod, image_mod, a.image, a.out, a.u3_trainer)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] u3 trainer ({a.u3_trainer}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
