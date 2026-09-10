@@ -230,22 +230,34 @@ typedef enum {
  * RE-MEASURED (BACKLOG #84b, FOURTH pass, 2026-09-10) after D4's whole-graph
  * blind-spot sweep + its walker fixes (tools/stack_budget.py's own trap #1/#5/#6/
  * #7/#8): `python3 tools/stack_budget.py --elf PokeDNA-artless.elf --builddir
- * "$(pwd)/build-artless" --root gbscr_open_inner --top 1` now reports 5,672 B
+ * "$(pwd)/build-artless" --root gbscr_open_inner --top 1` reported 5,672 B
  * (+64 ISR = 5,736), 336 B above the 5,400 this constant held. Unlike
  * PDNA_PARTY_STRIP_NEED's re-measurement in source/pdna_box.c (a clean,
  * previously-blind-spot branch this same pass declared), this chain's own
  * components were ALREADY fully declared before this pass -- RomGbUi.read@0's
  * gb_art_read/fused_gb_slice_read/gbscr_sd_read union predates it -- so the +336
- * is NOT attributable to a blind spot this pass closed; gbscr_open_inner's own
+ * was NOT attributable to a blind spot this pass closed; gbscr_open_inner's own
  * measured frame moved from the 1,576 the #71 batch measured to 1,656 today,
  * for a reason this pass did not track down (an unrelated source change between
- * the two measurements is the likely explanation, not a walker defect). Taken
- * AS MEASURED, matching this constant's own established convention -- but the
- * Settings-path/nav-menu-chain DERIVED margins two paragraphs up (6,600 / 7,712)
- * are NOT re-verified by this pass (their own --root points were not re-measured
- * here); do not trust them without independently re-running this same command
+ * the two measurements is the likely explanation, not a walker defect).
+ *
+ * RE-MEASURED AGAIN (BACKLOG #84b, SEVENTH pass, 2026-09-10) after D5a's per-
+ * caller field-declaration rewrite (this same tools/stack_budget.py commit):
+ * the same command now reports 5,464 B (+64 ISR = 5,528), 208 B BELOW the
+ * 5,736 the fourth pass measured. This is a genuine drop, not a regression in
+ * the walker's own soundness -- the fourth-pass number was measured against a
+ * tree where several offset classes were still globally unioned (D5a's whole
+ * point); once RomGbUi.read@0 stopped inheriting implementations that belong
+ * to an unrelated offset-0 struct sharing that bare number with it elsewhere
+ * in the file, this chain's own credited implementation set (and therefore
+ * its measured deepest continuation through rom_gbui_open/distinct_tiles) got
+ * narrower and honest, not wider. AS MEASURED, matching this constant's own
+ * established convention -- the constant equals its own derivation:
+ * 5,464 + 64 = 5,528. The Settings-path/nav-menu-chain DERIVED margins two
+ * paragraphs up are stale from the fourth pass and NOT re-verified here;
+ * do not trust them without independently re-running this same command
  * against those two call sites before relying on either number. */
-#define PDNA_GB_UI_NEED 5736
+#define PDNA_GB_UI_NEED 5528
 
 /* Each entry is the SCAN HIT file offset (where the locator's ScanCb pattern
  * matched), never a located block itself. gen 1 uses FONT/TEXTBOX/CARDFRAME/

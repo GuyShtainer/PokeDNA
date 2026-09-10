@@ -611,7 +611,12 @@ def test_d2_read_build_dir_stamp_extracts_the_nul_terminated_string():
     payload = "build-artless".encode("ascii") + b"\x00" + b"\xAB"
     hexstr = payload.hex()
     groups = [hexstr[i:i + 8] for i in range(0, len(hexstr), 8)]
-    objdump_line = " 8072400 " + " ".join(groups) + "   ...\n"
+    # F7 (BACKLOG #84b seventh pass): the real (combined, multi -j) `objdump -s`
+    # output prefixes each section's hex lines with a `Contents of section NAME:`
+    # header -- dump_alloc_load_sections() splits on it, so the fake response must
+    # carry one too.
+    objdump_line = ("Contents of section .rodata:\n"
+                     " 8072400 " + " ".join(groups) + "   ...\n")
 
     real_run = _subprocess.run
 
@@ -888,6 +893,40 @@ def test_d4_undeclared_scc_is_fatal_declared_disagreement_is_fatal():
           depths3 == {2}, depths3)
 
 
+# === F5 (BACKLOG #84b seventh pass): tarjan_sccs() is iterative ========================
+
+def test_f5_tarjan_sccs_iterative_3000_node_chain():
+    """F5: tarjan_sccs() used to recurse one Python call frame per DFS-stack node
+    (raising sys.setrecursionlimit() to compensate) -- a sufficiently long real call
+    chain would still blow the interpreter's C stack, not just the tracked recursion
+    counter. This build's own reachable graph from main() already has chains 30+
+    functions deep; a fabricated 3,000-node straight chain (no cycles at all) proves
+    the now-iterative version handles a chain two orders of magnitude longer than
+    anything this codebase has today without crashing, and reports it correctly (an
+    empty SCC list -- a straight chain has no real recursion)."""
+    edges = {"root": {"n0"}}
+    for i in range(3000):
+        edges[f"n{i}"] = {f"n{i + 1}"}
+    edges["n3000"] = set()
+    sccs = sb.tarjan_sccs("root", edges)
+    check("(F5) a 3,000-node straight chain reports zero SCCs, no crash",
+          sccs == [], len(sccs))
+
+
+def test_f5_tarjan_sccs_small_graph_matches_known_components():
+    """Sanity check against a hand-verified small graph: a genuine 2-node cycle
+    {a, b}, a genuine self-edge {d}, and a node with no cycle at all (root, c) --
+    proves the iterative rewrite still finds the SAME components the recursive
+    version did (same lowlink propagation, same self-edge rule)."""
+    edges = {"root": {"a"}, "a": {"b"}, "b": {"a", "c"}, "c": {"d"}, "d": {"d"}}
+    sccs = sb.tarjan_sccs("root", edges)
+    comps = {frozenset(c) for c in sccs}
+    check("(F5) finds the 2-node cycle {a, b}", frozenset({"a", "b"}) in comps, sccs)
+    check("(F5) finds the self-edge {d}", frozenset({"d"}) in comps, sccs)
+    check("(F5) exactly two real components (root/c are not cycles)",
+          len(sccs) == 2, sccs)
+
+
 # === D10 (BACKLOG #84b sixth pass): traps #1, #5, #6, fixture-proved =================
 
 def test_d10_trap1_bl_to_own_pop_bx_tail_is_zero_indirect_sites():
@@ -1136,6 +1175,8 @@ def main():
     test_d5a_two_structs_same_caller_both_credited()
     test_d5a_unqualified_on_a_shared_offset_is_a_parse_error()
     test_d5a_single_owner_offset_stays_legal_unqualified()
+    test_f5_tarjan_sccs_iterative_3000_node_chain()
+    test_f5_tarjan_sccs_small_graph_matches_known_components()
     print()
     if FAILURES:
         print(f"host_stack_budget_test: {len(FAILURES)} FAILED: {', '.join(FAILURES)}")

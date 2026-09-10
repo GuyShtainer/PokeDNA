@@ -1545,7 +1545,22 @@ def tarjan_sccs(root, edges):
     function that calls itself). Before the duplicate-name fix (D5b, this same
     commit), a merged same-named node could manufacture a component that was really
     two unrelated chains; after it, this list should contain only real recursion --
-    the diagnostic this flag exists to prove."""
+    the diagnostic this flag exists to prove.
+
+    F5 (BACKLOG #84b seventh pass): ITERATIVE, not recursive -- the previous version
+    used Python's own call stack (one strongconnect() frame per node on the deepest
+    DFS path) and raised sys.setrecursionlimit() to compensate, which only pushes the
+    ceiling higher rather than removing it; a sufficiently long real call chain (this
+    codebase's own reachable graph from main() already has chains 30+ functions deep,
+    and a future one could easily exceed whatever limit was chosen) would still blow
+    the interpreter's C stack, not just Python's tracked recursion counter, crashing
+    the guard instead of reporting a real cycle. This version keeps its own explicit
+    `work_stack` of (node, remaining-children-iterator) frames -- one dict lookup and
+    one iterator per stack frame instead of one C stack frame -- so it scales with the
+    heap, not a hard-coded/derived limit. Produces IDENTICAL output to the recursive
+    version for the same graph (same child visit order via `sorted(edges.get(v, ()))`,
+    same lowlink propagation, same component/self-edge rule) -- verified by the D5a/F5
+    fixture (a fabricated 3,000-node straight chain, host_stack_budget_test.py)."""
     reachable = reachable_from(root, edges)
     index_counter = [0]
     index = {}
@@ -1553,40 +1568,53 @@ def tarjan_sccs(root, edges):
     on_stack = {}
     stack = []
     result = []
-    old_limit = sys.getrecursionlimit()
-    sys.setrecursionlimit(max(old_limit, len(reachable) * 4 + 1000))
 
-    def strongconnect(v):
-        index[v] = index_counter[0]
-        lowlink[v] = index_counter[0]
+    for start in sorted(reachable):
+        if start in index:
+            continue
+        index[start] = index_counter[0]
+        lowlink[start] = index_counter[0]
         index_counter[0] += 1
-        stack.append(v)
-        on_stack[v] = True
-        for w in sorted(edges.get(v, ())):
-            if w not in reachable:
-                continue
-            if w not in index:
-                strongconnect(w)
-                lowlink[v] = min(lowlink[v], lowlink[w])
-            elif on_stack.get(w):
-                lowlink[v] = min(lowlink[v], index[w])
-        if lowlink[v] == index[v]:
-            comp = []
-            while True:
-                w = stack.pop()
-                on_stack[w] = False
-                comp.append(w)
-                if w == v:
-                    break
-            if len(comp) > 1 or v in edges.get(v, ()):
-                result.append(comp)
+        stack.append(start)
+        on_stack[start] = True
+        # work_stack[i] = (node, iterator over that node's still-unprocessed children)
+        work_stack = [(start, iter(sorted(edges.get(start, ()))))]
 
-    try:
-        for v in sorted(reachable):
-            if v not in index:
-                strongconnect(v)
-    finally:
-        sys.setrecursionlimit(old_limit)
+        while work_stack:
+            v, child_iter = work_stack[-1]
+            descended = False
+            for w in child_iter:
+                if w not in reachable:
+                    continue
+                if w not in index:
+                    index[w] = index_counter[0]
+                    lowlink[w] = index_counter[0]
+                    index_counter[0] += 1
+                    stack.append(w)
+                    on_stack[w] = True
+                    work_stack.append((w, iter(sorted(edges.get(w, ())))))
+                    descended = True
+                    break
+                elif on_stack.get(w):
+                    lowlink[v] = min(lowlink[v], index[w])
+            if descended:
+                continue      # new frame pushed; resume from its own children next
+            # this node's children are exhausted -- pop it and fold its lowlink
+            # into its parent (the recursive version's post-recursion-call line)
+            work_stack.pop()
+            if work_stack:
+                parent = work_stack[-1][0]
+                lowlink[parent] = min(lowlink[parent], lowlink[v])
+            if lowlink[v] == index[v]:
+                comp = []
+                while True:
+                    w = stack.pop()
+                    on_stack[w] = False
+                    comp.append(w)
+                    if w == v:
+                        break
+                if len(comp) > 1 or v in edges.get(v, ()):
+                    result.append(comp)
     return result
 
 
@@ -1726,19 +1754,63 @@ def _words_from_objdump_s_text(text):
             yield int.from_bytes(bytes.fromhex(g), byteorder="little")
 
 
-def scan_address_taken(elf, name_at, sections):
+_OBJDUMP_S_SECTION_HDR_RE = re.compile(r'^Contents of section ([^:]+):\s*$')
+
+
+def dump_alloc_load_sections(elf, sections):
+    """F7 (BACKLOG #84b seventh pass): ONE `objdump -s` invocation covering every
+    named section (repeated `-j sec` flags -- binutils accepts as many as given),
+    instead of one subprocess per section. scan_address_taken()/read_build_dir_stamp()
+    used to each shell out to `objdump -s -j <sec>` once PER SECTION (this build's own
+    ELF has 9 ALLOC+LOAD sections), and main() calls scan_address_taken() once --
+    9 extra process spawns just for that one sweep, on top of everything else objdump
+    already does. `objdump -s` prints one `Contents of section NAME:` header per
+    section in the combined dump; splitting on that header re-derives exactly the
+    same per-section text each caller used to get from its own separate invocation,
+    at 1/9th the process-spawn cost. Returns {section_name: text}."""
+    args = [OBJDUMP, "-s"]
+    for sec in sections:
+        args += ["-j", sec]
+    args.append(elf)
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, check=True).stdout
+    except subprocess.CalledProcessError:
+        return {}
+    result = {}
+    cur = None
+    lines = []
+    for line in out.splitlines():
+        m = _OBJDUMP_S_SECTION_HDR_RE.match(line)
+        if m:
+            if cur is not None:
+                result[cur] = "\n".join(lines)
+            cur = m.group(1)
+            lines = []
+            continue
+        if cur is not None:
+            lines.append(line)
+    if cur is not None:
+        result[cur] = "\n".join(lines)
+    return result
+
+
+def scan_address_taken(elf, name_at, sections, section_dumps=None):
     """Every function in `name_at` (address -> name, from analyze()) whose address
     appears as a 4-byte-aligned little-endian word anywhere in `sections`' on-disk
     bytes. A Thumb function's address always carries bit 0 set wherever it's stored
     as a callable pointer (the interworking bit BX/BLX read) -- masked off before
     the name_at lookup, exactly like the veneer-literal and trap-#5 literal-call
-    resolvers above already do."""
+    resolvers above already do. `section_dumps` (F7), when given, is the
+    dump_alloc_load_sections() result -- avoids re-running objdump per section when
+    the caller (main()) already fetched it once for read_build_dir_stamp() too; falls
+    back to one objdump call per section (the old behaviour) when omitted, so a direct
+    caller/test doesn't have to know about the new shared-dump plumbing."""
+    if section_dumps is None:
+        section_dumps = dump_alloc_load_sections(elf, sections)
     taken = set()
     for sec in sections:
-        try:
-            out = subprocess.run([OBJDUMP, "-s", "-j", sec, elf],
-                                  capture_output=True, text=True, check=True).stdout
-        except subprocess.CalledProcessError:
+        out = section_dumps.get(sec)
+        if out is None:
             continue
         for w in _words_from_objdump_s_text(out):
             fn = name_at.get(w & ~1)
@@ -1759,13 +1831,17 @@ def scan_address_taken(elf, name_at, sections):
 # handed) lets the guard read the ELF's OWN opinion of which build dir it came from
 # and refuse when it disagrees with the one on the command line.
 
-def read_build_dir_stamp(elf, sections):
+def read_build_dir_stamp(elf, sections, section_dumps=None):
     """The NUL-terminated string content of the `pdna_build_dir` symbol, read straight
     out of the linked ELF's own bytes (nm for the address, objdump -s for the bytes --
     the same two tools every other check in this file already shells out to). Returns
     None if the symbol is absent (an ELF built before this stamp existed, or a
     hand-rolled compile outside the Makefile) -- absence alone is never fatal, only
-    a MISMATCH once both sides have an opinion (see main())."""
+    a MISMATCH once both sides have an opinion (see main()). `section_dumps` (F7): see
+    scan_address_taken()'s own note -- the same shared dump, avoiding a second
+    per-section objdump sweep when main() already fetched one."""
+    if section_dumps is None:
+        section_dumps = dump_alloc_load_sections(elf, sections)
     out = subprocess.run([NM, elf], capture_output=True, text=True, check=True).stdout
     addr = None
     for line in out.splitlines():
@@ -1776,10 +1852,8 @@ def read_build_dir_stamp(elf, sections):
     if addr is None:
         return None
     for sec in sections:
-        try:
-            dump = subprocess.run([OBJDUMP, "-s", "-j", sec, elf],
-                                   capture_output=True, text=True, check=True).stdout
-        except subprocess.CalledProcessError:
+        dump = section_dumps.get(sec)
+        if dump is None:
             continue
         data = {}
         for line in dump.splitlines():
@@ -2098,6 +2172,31 @@ def main(argv):
     # gb_art_read/gbscr_sd_read, several of which this variant never links -- before
     # this filter, D8's own sweep (this same commit's sibling fix) FATALed the delta
     # build on phantom names instead of real, unclassifiable frames.
+    # F4 (BACKLOG #84b seventh pass): the BUILDDIR MISMATCH check moved HERE -- before
+    # the unknown-frame check below (and every other content-dependent FATAL) -- since
+    # a wrong --builddir means every number downstream (including which frames are
+    # "unknown") is being computed against the WRONG variant's .su files in the first
+    # place; printing "UNKNOWN FRAME" or "BLIND SPOT" first would send someone chasing
+    # a phantom problem instead of the actual one-line fix (pass the right --builddir).
+    sections = alloc_load_sections(args.elf)
+    # F7 (BACKLOG #84b seventh pass): ONE objdump -s sweep, shared by both the
+    # BUILDDIR-stamp read (right below) and the address-taken scan (further down) --
+    # see dump_alloc_load_sections()'s own note.
+    section_dumps = dump_alloc_load_sections(args.elf, sections)
+    stamp = read_build_dir_stamp(args.elf, sections, section_dumps)
+    builddir_basename = os.path.basename(os.path.normpath(args.builddir))
+    if stamp is None:
+        print(f"WARNING: {args.elf} has no pdna_build_dir stamp (pre-D2 ELF, or a "
+              "hand-rolled compile) -- the --builddir/ELF pairing cannot be cross-checked.")
+    elif stamp != builddir_basename:
+        print(f"\n*** STACK_BUDGET BUILDDIR MISMATCH: {args.elf} was linked from build "
+              f"dir {stamp!r}, but --builddir names {builddir_basename!r} -- the .su "
+              "files being read almost certainly belong to a DIFFERENT variant than "
+              "this ELF, so any number this run reports is meaningless.", file=sys.stderr)
+        print("*** Pass the matching --builddir, or rebuild the ELF you actually meant "
+              "to certify.", file=sys.stderr)
+        return 1
+
     unknown_reachable = sorted(
         fn for fn in reachable
         if fn in analysis["funcs"]
@@ -2195,30 +2294,11 @@ def main(argv):
     # never accounted for at all -- a brand-new implementation slotted into an
     # ALREADY-declared class (the false-pass class D1 exists to close) looks EXACTLY
     # like this: its address is taken (assigned into the struct field/table) but no
-    # declaration names it and the graph never reaches it any other way.
-    sections = alloc_load_sections(args.elf)
+    # declaration names it and the graph never reaches it any other way. (D2's own
+    # BUILDDIR MISMATCH check that used to live here moved up before the unknown-frame
+    # check, F4 BACKLOG #84b seventh pass -- `sections`/`stamp` are already computed.)
 
-    # D2 (BACKLOG #84b fifth pass): the ELF names the build dir it was linked from --
-    # refuse a --builddir that disagrees with the ELF's own pdna_build_dir stamp
-    # instead of silently certifying a number computed against the WRONG variant's
-    # .su files. Absence of the stamp (an ELF from before it existed, or a hand-rolled
-    # compile outside the Makefile) is a WARNING, not fatal -- there is nothing to
-    # compare against, not a known-wrong comparison.
-    stamp = read_build_dir_stamp(args.elf, sections)
-    builddir_basename = os.path.basename(os.path.normpath(args.builddir))
-    if stamp is None:
-        print(f"WARNING: {args.elf} has no pdna_build_dir stamp (pre-D2 ELF, or a "
-              "hand-rolled compile) -- the --builddir/ELF pairing cannot be cross-checked.")
-    elif stamp != builddir_basename:
-        print(f"\n*** STACK_BUDGET BUILDDIR MISMATCH: {args.elf} was linked from build "
-              f"dir {stamp!r}, but --builddir names {builddir_basename!r} -- the .su "
-              "files being read almost certainly belong to a DIFFERENT variant than "
-              "this ELF, so any number this run reports is meaningless.", file=sys.stderr)
-        print("*** Pass the matching --builddir, or rebuild the ELF you actually meant "
-              "to certify.", file=sys.stderr)
-        return 1
-
-    taken = scan_address_taken(args.elf, analysis["name_at"], sections)
+    taken = scan_address_taken(args.elf, analysis["name_at"], sections, section_dumps)
     declared_or_reachable = all_impls | reachable | isr_decls | addrtaken_ok
     orphans = sorted(taken - declared_or_reachable)
     if orphans:
