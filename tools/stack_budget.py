@@ -135,6 +135,8 @@ PUSH_RE = re.compile(r'^(push|stmfd\s+sp!|stmdb\s+sp!)\s*(\{[^}]*\})')
 SUBSP_RE = re.compile(r'^sub\s+sp,(?: sp,)? #(\d+)')
 LDRPC_RE = re.compile(r'^ldr\s+(r\d+|ip), \[pc, #\d+\]\s*@ \(?([0-9a-f]+)')
 ADDSP_RE = re.compile(r'^add\s+sp, (r\d+|ip)$')
+MOVS_IMM_RE = re.compile(r'^movs?\s+(r\d+|ip)\s*,\s*#(\d+)\s*$')
+LSLS_RE = re.compile(r'^lsls?\s+(r\d+|ip)\s*,\s*(r\d+|ip)\s*,\s*#(\d+)\s*$')
 REG_ORDER = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9', 'sl', 'fp',
              'ip', 'sp', 'lr', 'pc']
 
@@ -546,9 +548,28 @@ def resolve_indirect_site(fn_insn_seq, site_addr, reg):
 
 def estimate_frames(fn_lines):
     """Prologue-shape estimate for functions with no .su entry (newlib, statically
-    linked, compiled without -fstack-usage). Exact on the two GCC push/sub-sp idioms
-    this build actually emits; anything else is left unestimated (0, tagged unknown)
-    rather than guessed."""
+    linked, compiled without -fstack-usage). Exact on the three GCC push/sub-sp
+    idioms this build actually emits; anything else marks the function UNKNOWN
+    (D2, BACKLOG #84b review) rather than silently contributing 0 or a wrong number.
+
+    D2's bug: the old walker kept a `regs[reg] = value` dict that lived for the
+    WHOLE function, so an unrelated LATER `add sp, rN` (a different epilogue, a
+    different basic block reusing the same register name) could consume a STALE
+    value from an EARLIER, unrelated `ldr rN, [pc, #imm]` -- reproduced live:
+    mgfx_zoom_optimise exploded to 2,080,375,400 B in one run because a later,
+    unrelated `add sp, r3` picked up a stale r3 loaded many instructions earlier
+    for something else entirely; _svfiprintf_r's reported 728 B was right only by
+    the bit pattern of unrelated data, not by the walker actually tracking anything.
+
+    Fix: track exactly ONE pending (reg, value), set by `ldr rN, [pc, #imm]` and
+    consumed ONLY by an add-sp for the SAME register with nothing but other
+    push/sub-sp/ldr-pc lines in between; ANY other instruction invalidates it. The
+    `movs rN, #k; lsls rN, rN, #s; add sp, rN` idiom (the second legal Thumb-1 form
+    for a stack deallocation too large for `sub sp`'s 7-bit immediate) gets its own
+    tracked (reg, k<<s) pending value with the same single-slot, immediately-
+    consumed-or-invalidated discipline. An `add sp, rN` that matches NEITHER
+    pending state marks the whole function unknown -- one unaccountable
+    deallocation makes the running total untrustworthy, not just that one term."""
     est = {}
     for fn, raw_lines in fn_lines.items():
         word = {}
@@ -557,7 +578,9 @@ def estimate_frames(fn_lines):
             if m:
                 word[int(m.group(1), 16)] = int(m.group(3), 16)
         total = 0
-        regs = {}
+        unknown = False
+        ldr_pending = None    # (reg, value) from the most recent `ldr rN, [pc, #imm]`
+        shift_pending = None  # (reg, k<<s so far) from `movs rN,#k` / `lsls rN,rN,#s`
         for l in raw_lines:
             m = re.match(r'^\s*([0-9a-f]+):\t[0-9a-f ]+\t(.*)$', l)
             if not m:
@@ -567,24 +590,49 @@ def estimate_frames(fn_lines):
             pm = PUSH_RE.match(ins)
             if pm:
                 total += _reg_count(pm.group(2)) * 4
-                continue
+                continue                               # allowed between a pending ldr/movs and its use
             sm = SUBSP_RE.match(ins)
             if sm:
                 total += int(sm.group(1))
-                continue
+                continue                               # allowed too
             lm = LDRPC_RE.match(m.group(2).strip())
             if lm:
                 w = word.get(int(lm.group(2), 16))
-                if w is not None:
-                    regs[lm.group(1)] = w
+                ldr_pending = (lm.group(1), w) if w is not None else None
+                shift_pending = None
                 continue
             am = ADDSP_RE.match(ins)
             if am:
-                v = regs.get(am.group(1))
-                if v is not None and v & 0x80000000:
-                    total += (0x100000000 - v)
+                reg = am.group(1)
+                if ldr_pending is not None and ldr_pending[0] == reg:
+                    v = ldr_pending[1]
+                    if v & 0x80000000:
+                        total += (0x100000000 - v)
+                    else:
+                        unknown = True                 # a positive "constant" add sp makes no
+                                                         # sense for this idiom -- don't guess
+                elif shift_pending is not None and shift_pending[0] == reg:
+                    total += shift_pending[1]
+                else:
+                    unknown = True                      # unaccountable deallocation
+                ldr_pending = None
+                shift_pending = None
                 continue
-        est[fn] = total
+            mim = MOVS_IMM_RE.match(ins)
+            if mim:
+                shift_pending = (mim.group(1), int(mim.group(2)))
+                ldr_pending = None
+                continue
+            lsm = LSLS_RE.match(ins)
+            if lsm and shift_pending is not None and shift_pending[0] == lsm.group(2) \
+                    and lsm.group(1) == lsm.group(2):
+                shift_pending = (lsm.group(1), shift_pending[1] << int(lsm.group(3)))
+                continue
+            # any other instruction invalidates both pending states -- it may have
+            # clobbered the register or simply means the value is no longer "just set"
+            ldr_pending = None
+            shift_pending = None
+        est[fn] = {"bytes": total, "unknown": unknown}
     return est
 
 
@@ -644,17 +692,29 @@ def resolve_all_sites(analysis, field_decls, argsite_decls, whole_func_decls):
     return dict(edges_to_add), dict(blind), count_mismatches, legacy_ambiguous
 
 
-def frame_of(name, su_sizes, estimated):
-    """Return (bytes, source) where source in {"su", "estimated", "unknown"}."""
+def frame_of(name, su_sizes, estimated, overrides=None):
+    """Return (bytes, source) where source in {"su", "override", "estimated", "unknown"}.
+    D2: a function the prologue estimator could not classify (an `add sp, rN` with no
+    provably-correct pending value) is "unknown", NOT a silently-trusted 0 -- it stays
+    0 here (nothing else to report) but is tagged so the caller can refuse to certify
+    a chain that passes through it, unless `overrides` (stack_edges.txt's `frame fn =
+    BYTES` lines) names it."""
     v = su_frame(su_sizes, name)
     if v is not None:
         return v, "su"
-    if name in estimated:
-        return estimated[name], "estimated"
+    entry = estimated.get(name)
+    if entry is not None and entry.get("unknown"):
+        if overrides and name in overrides:
+            return overrides[name], "override"
+        return 0, "unknown"
+    if entry is not None:
+        return entry["bytes"], "estimated"
+    if overrides and name in overrides:
+        return overrides[name], "override"
     return 0, "unknown"
 
 
-def deepest_from(root, edges, su_sizes, estimated, blacklist=()):
+def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None):
     """Heaviest root..leaf chain by DFS with memoization; returns (total, path, cycles).
     path is a list of (name, frame_bytes, source)."""
     memo = {}
@@ -669,7 +729,7 @@ def deepest_from(root, edges, su_sizes, estimated, blacklist=()):
             cycles.append(fn)
             return 0
         onstack.add(fn)
-        own, _src = frame_of(fn, su_sizes, estimated)
+        own, _src = frame_of(fn, su_sizes, estimated, overrides)
         bc, bn = 0, None
         for c in sorted(edges.get(fn, ())):
             if c in blacklist:
@@ -686,22 +746,23 @@ def deepest_from(root, edges, su_sizes, estimated, blacklist=()):
     path = []
     cur = root
     while cur is not None:
-        b, src = frame_of(cur, su_sizes, estimated)
+        b, src = frame_of(cur, su_sizes, estimated, overrides)
         path.append((cur, b, src))
         cur = best_child.get(cur)
     return total, path, cycles
 
 
-def top_n_chains(root, edges, su_sizes, estimated, n=5):
+def top_n_chains(root, edges, su_sizes, estimated, n=5, overrides=None):
     """Top-N distinct chains from root, ranked by root's direct callees' subtree
     weight (each callee's own heaviest chain, prefixed with root's frame)."""
-    root_frame, root_src = frame_of(root, su_sizes, estimated)
+    root_frame, root_src = frame_of(root, su_sizes, estimated, overrides)
     children = sorted(edges.get(root, ()),
-                       key=lambda c: deepest_from(c, edges, su_sizes, estimated)[0],
+                       key=lambda c: deepest_from(c, edges, su_sizes, estimated,
+                                                   overrides=overrides)[0],
                        reverse=True)
     chains = []
     for c in children[:n]:
-        tot, path, cycles = deepest_from(c, edges, su_sizes, estimated)
+        tot, path, cycles = deepest_from(c, edges, su_sizes, estimated, overrides=overrides)
         chains.append((root_frame + tot, [(root, root_frame, root_src)] + path, cycles))
     if not chains:
         chains = [(root_frame, [(root, root_frame, root_src)], [])]
@@ -859,7 +920,8 @@ def main(argv):
             print(f"***   {fn}", file=sys.stderr)
         return 1
 
-    chains = top_n_chains(args.root, analysis["edges"], su_sizes, estimated, n=args.top)
+    chains = top_n_chains(args.root, analysis["edges"], su_sizes, estimated,
+                           n=args.top, overrides=frame_overrides)
     deepest_total, deepest_path, cycles = chains[0][0], chains[0][1], chains[0][2]
 
     # STOP-LICENCE check: any indirect-call site inside a function on the top-N chains
@@ -870,8 +932,10 @@ def main(argv):
     # for an eleventh, undeclared one.
     blind_spots = []
     on_chain = set()
+    unknown_on_chain = set()
     for _tot, path, _cyc in chains:
         on_chain |= {name for name, _b, _s in path}
+        unknown_on_chain |= {name for name, _b, s in path if s == "unknown"}
     for fn in sorted(on_chain):
         for addr, ins, detail in blind.get(fn, []):
             blind_spots.append((fn, addr, ins, detail))
@@ -890,10 +954,27 @@ def main(argv):
         print(f"\n  #{i}  total {format_num(tot)} B"
               + ("  (+64 B ISR = the guarded value below)" if i == 1 else ""))
         for name, b, src in path:
-            tag = {"su": "", "estimated": " (estimated)", "unknown": " (UNKNOWN, counted 0)"}[src]
+            tag = {"su": "", "estimated": " (estimated)", "unknown": " (UNKNOWN, counted 0)",
+                   "override": " (frame override, hand-measured)"}[src]
             print(f"      {b:6,d}  {name}{tag}")
         if cyc:
             print(f"      WARNING: recursion excluded at: {cyc}")
+
+    # D2: a frame the prologue estimator could not classify (see estimate_frames'
+    # own header) is UNKNOWN, not a trustworthy 0 -- one on a top-N chain means the
+    # printed total above is not actually bounded. FATAL unless stack_edges.txt
+    # carries a `frame fn = BYTES` hand-measured override for it.
+    if unknown_on_chain:
+        print(f"\n*** STACK_BUDGET UNKNOWN FRAME: the prologue estimator could not classify "
+              "the stack frame of the following function(s), which sit on a top-N chain above "
+              "-- the printed chain totals are NOT bounded past this point:")
+        for fn in sorted(unknown_on_chain):
+            print(f"***   {fn}")
+        print("*** Refusing to certify a number the walker cannot back. Fix: add a "
+              "`frame fn = BYTES  (measured by hand, date)` line to "
+              f"{args.edges_file}, or figure out why the estimator's known prologue "
+              "idioms don't match this function's epilogue.")
+        return 1
 
     if blind_spots:
         print("\n*** STACK_BUDGET BLIND SPOT: unresolved indirect call(s) inside a function "

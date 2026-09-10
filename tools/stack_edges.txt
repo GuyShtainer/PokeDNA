@@ -121,6 +121,15 @@ rom_gbui_open_loc argsites=9 -> gbscr_sd_read fused_gb_slice_read gb_art_read
 Scan.read    @0 -> gbscr_sd_read fused_gb_slice_read gb_art_read
 RomGbUi.read @0 -> gbscr_sd_read fused_gb_slice_read gb_art_read
 
+# wait_keys_bob_p's `redraw` parameter (source/pdna_main.c:297-298): the honest D2
+# prologue estimator moved _svfiprintf_r's frame (728 B -> its real size), which
+# reshuffled which chains rank in the delta build's top-5 and brought this caller
+# into view for the first time. wait_keys_bob_p has exactly ONE call site in the
+# whole codebase (pdna_main.c:3935, the comment at pdna_main.c:311-313 confirms
+# wait_keys_bob() itself has no callers -- wait_keys() always passes redraw=NULL),
+# and that one site always passes the same function.
+wait_keys_bob_p argsites=1 -> party_overlay_bob
+
 # LOWER-CONFIDENCE (newlib internal, not our source -- found 2026-09-10 while certifying G2
 # on the full-art delta/normal builds, where this chain ranks in the top 5 only because the
 # write-path chain above is smaller there than on artless): _svfiprintf_r's own compiled body
