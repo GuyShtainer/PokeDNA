@@ -37,7 +37,7 @@ assets/upstream/pokecrystal/symbols/pokecrystal.sym"
 
 mtime() {
   # BSD stat (macOS) first, then GNU stat (Linux / the Docker build).
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+  stat -L -f %m "$1" 2>/dev/null || stat -L -c %Y "$1" 2>/dev/null
 }
 
 missing_sym=0

@@ -366,9 +366,11 @@ export DEPSDIR := $(CURDIR)/$(BUILD)
 # back to the COMMITTED weak symbols in source/gb_fields_fallback.c / gb_flags_fallback.c
 # instead, loudly). It IS fatal when regeneration was actually needed and the generator
 # itself failed, so a stale table is never silently kept.
+ifeq (,$(filter clean,$(MAKECMDGOALS)))
 GBFIELDS_RC := $(strip $(shell ./tools/ensure_gbfields.sh >&2; echo $$?))
 ifneq ($(GBFIELDS_RC),0)
 $(error tools/ensure_gbfields.sh failed (exit $(GBFIELDS_RC)) -- see the FATAL text above)
+endif
 endif
 
 CFILES   := $(foreach dir, $(SRCDIRS) , $(notdir $(wildcard $(dir)/*.c)))
