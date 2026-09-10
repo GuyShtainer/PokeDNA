@@ -51,6 +51,7 @@
 #include "sys.h"          /* EWRAM_BSS (after tonc.h so the u8 macro is safe) */
 #include "log.h"
 #include "pdna_app.h"
+#include "perf.h"          /* BACKLOG #73: screen-enter span, this screen had none */
 
 #ifndef PATH_MAX
 #define PATH_MAX 256
@@ -1782,6 +1783,11 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
   static char EWRAM_BSS path[PATH_MAX];
   RomCtx rc;
   bool have = false;
+  /* BACKLOG #73 (speed parity): map had no perf span. Enter cost = ROM lookup/open
+   * (fused-ROM path in the emulator, SD picker on hardware) through the FIRST info-page
+   * paint below, closed just before the first key wait. */
+  bool perf_first_paint = true;
+  perf_span_begin("map");
 
   /* The picker's entry list lives INSIDE the borrowed arena — no new EWRAM. */
   PickEnt* ents = (PickEnt*)arena;
@@ -1948,6 +1954,7 @@ void pdna_map(uint8_t* sb1, uint8_t* sb2, PkGame game) {
     ui_hline(0, 140, UI_SCR_W, UI_BORDER);
     ui_text(4, 144, UI_DIM, "A view map  SEL change ROM");
     ui_text(4, 152, UI_DIM, "B back");
+    if (perf_first_paint) { perf_first_paint = false; perf_span_end(); }
 
     u16 k = s_wait(KEY_A | KEY_B | KEY_SELECT);
     if ((k & KEY_A) && hdr_ok && lay_ok) {
