@@ -66,7 +66,7 @@ THE BUDGET
 
 COST (G7, BACKLOG #84b eighth pass)
     One normal (non -j) build variant's post-link run costs low single-digit seconds
-    wall (~3.15 s on the reviewer's machine, ~1.4 s measured here -- objdump -d over
+    wall (artless/delta ~1.4-1.6 s; the 7.7 MB normal image ~3.2 s (the address-taken sweep scales with the image) -- objdump -d over
     .text plus objdump -s over every alloc/load section dominate and both scale with
     disk/CPU speed; parsing the .su files and walking the graph itself is a small
     fraction of that). Paid once per linked ELF, at the very end of the link step --

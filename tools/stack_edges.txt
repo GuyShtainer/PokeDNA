@@ -923,6 +923,10 @@ addrtaken-ok _EZFO_reboot         # same false-match class, called directly (fla
 # RV_ANCHOR literal (pdna_romver_data.c:75/106) the ORIGINAL reason described.
 # Restored rather than improvised around, per the stop-licence -- flagged in the
 # session report instead.
+# DELTA-ONLY load-bearing: on artless/normal this function is called directly and reachable
+# (the line is redundant there); on the delta build those call sites are compiled out and the
+# only taker is the ROM self-check window table g_pdna_romver (RV_ANCHOR) -- deleting this line
+# FATALs `make delta`. Own deepest chain 120 B (<= the 256-B cap).
 addrtaken-ok flashcartio_activate # RV_ANCHOR'd into pdna_romver_data.c's ROM self-check
                                    # window table (symbol address used to LOCATE a CRC
                                    # window, not to call through) -- pdna_romver_data.c:75/106.
