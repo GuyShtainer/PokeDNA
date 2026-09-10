@@ -208,7 +208,7 @@ void pdna_contest(uint8_t* sb1, uint8_t* pc, PkGame game) {
       if (!app_can_edit()) { snd_deny(); msg_wait("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0); continue; }
       PkMon donor;
       if (!pick_donor(sb1, pc, &donor)) continue;
-      char l1[32]; siprintf(l1, "Show %s as %s winner?", pk_species_name(donor.species), CAT_NAME[sel]);
+      char l1[48]; siprintf(l1, "Show %s as %s winner?", pk_species_name(donor.species), CAT_NAME[sel]);
       if (!app_confirm("SET PAINTING", l1)) continue;
       uint32_t off = gc_museum_offset(game, sel);
       uint8_t before[GC_RECORD_BYTES]; memcpy(before, sb1 + off, GC_RECORD_BYTES);
