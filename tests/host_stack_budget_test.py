@@ -872,6 +872,107 @@ def test_d4_undeclared_scc_is_fatal_declared_disagreement_is_fatal():
           depths3 == {2}, depths3)
 
 
+# === D10 (BACKLOG #84b sixth pass): traps #1, #5, #6, fixture-proved =================
+
+def test_d10_trap1_bl_to_own_pop_bx_tail_is_zero_indirect_sites():
+    """Trap #1's own regression proof, through analyze() end to end (not a lower-level
+    helper): a function `foo` with an early-return branch whose `bl` is really a long
+    Thumb-1 jump to foo's OWN shared epilogue -- `pop {r3}; bx r3` -- the exact idiom
+    GCC emits for a function with more than one exit. `own(t) == fn` (trap #1) MUST be
+    checked before the bx-thunk shape (trap #2/#5): the tail's `bx r3` is real, and the
+    jump's target is neither foo's own start address nor a name in name_at, so if
+    trap #1 didn't fire first this would misclassify a same-function jump as an
+    unresolved cross-function indirect-call site. Must produce ZERO edges and ZERO
+    indirect sites for foo -- the whole point of trap #1."""
+    dump_text = (
+        "08000000 <foo>:\n"
+        "   8000000:\t2800      \tcmp\tr0, #0\n"
+        "   8000002:\td101      \tbne.n\t8000008 <foo+0x8>\n"
+        "   8000004:\tf000 f802 \tbl\t800000c <foo+0xc>\n"
+        "   8000008:\t2000      \tmovs\tr0, #0\n"
+        "   800000a:\t4770      \tbx\tlr\n"
+        "   800000c:\tbc08      \tpop\t{r3}\n"
+        "   800000e:\t4718      \tbx\tr3\n"
+        "08000010 <bar>:\n"
+        "   8000010:\t4770      \tbx\tlr\n"
+    )
+    analysis = sb.analyze(dump_text)
+    check("(D10 trap 1) a bl to foo's own pop{r3};bx r3 tail adds NO edge",
+          analysis["edges"].get("foo", set()) == set(), analysis["edges"].get("foo"))
+    check("(D10 trap 1) ... and is not recorded as an indirect site either",
+          analysis["indirect_sites"].get("foo", []) == [], analysis["indirect_sites"].get("foo"))
+    check("(D10 trap 1) nothing lands in `weird` for this function",
+          all(fn != "foo" for fn, _a, _i in analysis["weird"]), analysis["weird"])
+
+
+def test_d10_trap5_literal_call_target_resolved_vs_table_index_blind_spot():
+    """Trap #5's own regression proof, at the `_literal_call_target()` level (the same
+    granularity the existing D6/D7/D8 tests already use for the sibling traps):
+
+      (a) resolved -- `ldr r3, [pc, #imm]` feeds the `bl <bx-r3 thunk>` call with an
+          UNINTERRUPTED literal load whose word, masked of the Thumb bit, lands EXACTLY
+          on a real function's entry address -- this is the IWRAM-helper call shape
+          (icopy_verified/memcpy32/... called from ROM code, D6's own docstring) and
+          must resolve to that function's name.
+      (b) table-index variant, still a blind spot -- the SAME shape except the
+          register is fed by `ldr r3, [r2, r1, lsl #2]` (a runtime jump-table index,
+          not a PC-relative literal): `_literal_call_target` must return None so the
+          caller keeps treating it as a genuine, unresolved indirect site -- a table
+          index is a real runtime-varying target, not a build-time constant, and
+          resolving it would be a false pass in the unsafe direction."""
+    insn_map_resolved = {0x1008: ".word 0x00002001"}   # target_fn's entry (0x2000) | thumb bit
+    name_at = {0x2000: "target_fn"}
+    fn_insn_seq_resolved = [
+        # Thumb PC-relative: literal addr = (insn_addr & ~3) + 4 + #imm = (0x1000&~3)+4+4 = 0x1008
+        (0x1000, "ldr\tr3, [pc, #4]\t@ (1008 <caller+0x8>)"),
+        (0x1002, "movs\tr0, #0"),
+        (0x1004, "bl\t2010 <__bx_r3_thunk>"),   # last entry: the call itself
+    ]
+    target = sb._literal_call_target(fn_insn_seq_resolved, insn_map_resolved, name_at, "r3")
+    check("(D10 trap 5a) an uninterrupted ldr-pc literal landing on a function entry resolves",
+          target == "target_fn", target)
+
+    fn_insn_seq_table = [
+        (0x1000, "ldr\tr2, [pc, #8]\t@ (100c <caller2+0xc>)"),   # table BASE, not the call target
+        (0x1002, "lsls\tr1, r1, #2"),
+        (0x1004, "ldr\tr3, [r2, r1]"),        # runtime table index -- NOT a pc-relative literal
+        (0x1006, "movs\tr0, #0"),
+        (0x1008, "bl\t2010 <__bx_r3_thunk>"),
+    ]
+    target2 = sb._literal_call_target(fn_insn_seq_table, {}, name_at, "r3")
+    check("(D10 trap 5b) a runtime table-index dispatch is NOT resolved (stays a blind spot)",
+          target2 is None, target2)
+
+
+def test_d10_trap6_base_literal_loaded_far_before_its_use():
+    """Trap #6's own regression proof: `_base_is_section_anchor` must chase back
+    THROUGH 30+ unrelated instructions to find the `ldr rY, [pc, #imm]` that
+    materialized the base register, exactly like dex_build/pdna_dex_screen's real
+    `dstate()` shape (a file-static function pointer loaded once outside a loop, used
+    once per element far below it) -- the OLD, bounded-window version defaulted to
+    False (mistaking a global/section-anchor access for a genuine struct field) the
+    moment it ran out of window. 34 filler instructions (none of which touch r5) sit
+    between the literal load and the field dereference that uses it."""
+    fn_insn_seq = [(0x1000, "ldr\tr5, [pc, #200]\t@ (10cc <f+0xcc>)")]  # index 0: the anchor load
+    addr = 0x1002
+    for i in range(34):                          # indices 1..34: unrelated filler
+        fn_insn_seq.append((addr, f"movs\tr0, #{i % 8}"))
+        addr += 2
+    ldr_idx = len(fn_insn_seq)                    # the field-load instruction's own index
+    fn_insn_seq.append((addr, "ldr\tr3, [r5, #8]"))
+    check("(D10 trap 6) far-away setup: at least 30 instructions between anchor and use",
+          ldr_idx - 0 >= 30, ldr_idx)
+    anchor = sb._base_is_section_anchor(fn_insn_seq, ldr_idx, "r5")
+    check("(D10 trap 6) a base literal loaded 30+ instructions earlier is still found",
+          anchor is True, anchor)
+
+    # Sibling check: resolve_indirect_site must therefore classify the WHOLE site as
+    # nonfield (a global/anchor access), not a genuine struct-field hit at offset 8.
+    kind, off = sb.resolve_indirect_site(fn_insn_seq, addr, "r3")
+    check("(D10 trap 6) ... so resolve_indirect_site reports nonfield, not field @8",
+          (kind, off) == ("nonfield", None), (kind, off))
+
+
 def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
@@ -897,6 +998,9 @@ def main():
     test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged()
     test_d4_scc_declared_depth_multiplies_and_is_entry_independent()
     test_d4_undeclared_scc_is_fatal_declared_disagreement_is_fatal()
+    test_d10_trap1_bl_to_own_pop_bx_tail_is_zero_indirect_sites()
+    test_d10_trap5_literal_call_target_resolved_vs_table_index_blind_spot()
+    test_d10_trap6_base_literal_loaded_far_before_its_use()
     test_boxsource_offsets_match_real_header()
     print()
     if FAILURES:
