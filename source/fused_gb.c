@@ -20,7 +20,8 @@
 #define CART_SPAN 0x02000000u          /* 32 MiB addressable cartridge window */
 
 #define DIR_MAGIC_LEN 8
-#define ENTRY_SIZE    48u             /* type(4) + name(32) + offset(4) + size(4) + crc32(4) */
+#define ENTRY_SIZE    52u             /* BACKLOG #98 format v2: type(4) + name(32) + offset(4)
+                                       * + size(4) + crc32(4) + pair(4) */
 #define TRAILER_SIZE  16u
 
 /* `used` survives --gc-sections; `aligned(4)` so tools/fuse_gb.py can patch the two u32s
@@ -63,6 +64,14 @@ bool fused_gb_loc(uint8_t kind, uint8_t gen, const uint8_t** rec, uint32_t* rec_
   (void)kind; (void)gen; (void)rec; (void)rec_len; (void)id_hash; (void)rom_size;
   return false;
 }
+/* BACKLOG #98: harmless no-ops outside PDNA_DELTA -- nothing above ever answers
+ * fused_gb_present()==true here, so no caller's lookup outcome can depend on these,
+ * but every call site (the delta-gb save-pick code in pdna_main.c) compiles
+ * unconditionally and must still link. */
+void fused_gb_set_active_save(int idx) { (void)idx; }
+int  fused_gb_get_active_save(void) { return -1; }
+bool fused_gb_lookup_was_ambiguous(void) { return false; }
+FusedGbFailReason fused_gb_lookup_failed_reason(void) { return FUSED_GB_FAIL_NONE; }
 
 #else /* PDNA_DELTA */
 
@@ -106,8 +115,8 @@ static const uint8_t* cart_ptr(uint32_t off) {
 /* #68b review D1: `name` is a raw pointer into cartridge address space (see fused_gb.h's
  * caching comment), not a 32-byte copy -- the directory block the pointer targets stays
  * resident for the program's whole life, so nothing needs copying. Shrinks one cached
- * entry from 44 bytes to 16, making room for FUSED_GB_MAX_ENTRIES 12->24 at a net
- * DECREASE in total cache footprint. */
+ * entry from 44 bytes to a (type,offset,size,name-pointer) tuple, making room for
+ * FUSED_GB_MAX_ENTRIES 12->24 at a net DECREASE in total cache footprint. */
 typedef struct {
   uint32_t    type;
   uint32_t    offset;
@@ -119,6 +128,48 @@ static GBD_EWRAM_BSS GbdEntry s_entry[FUSED_GB_MAX_ENTRIES];
 static GBD_EWRAM_BSS bool     s_parsed;   /* false = not parsed yet */
 static GBD_EWRAM_BSS int      s_count;    /* valid once s_parsed is true, 0..N (N clamped) */
 
+/* BACKLOG #98: `pair` cached as its own tightly-packed uint8_t[] parallel to s_entry[],
+ * NOT a 5th GbdEntry field -- a uint32_t `pair` member would cost a full 4 bytes per
+ * entry (96 B over FUSED_GB_MAX_ENTRIES=24) AND, because GbdEntry's trailing pointer
+ * already forces 4-byte struct alignment, even a uint8_t member embedded in the struct
+ * would be padded right back up to the same 4-byte cost -- only pulling it OUT into its
+ * own byte array actually avoids the padding tax (24 B total, no padding between
+ * elements). CACHE_NO_PAIR (0xFF) is this array's OWN "no pairing" sentinel -- distinct
+ * from the on-disk FUSED_GB_NO_PAIR (0xFFFFFFFF): parse_once() below is the one place
+ * that translates between them, collapsing an out-of-range on-disk `pair` (either the
+ * real NO_PAIR, or a corrupt/foreign value past FUSED_GB_MAX_ENTRIES-1 that could never
+ * fit a byte anyway) to CACHE_NO_PAIR rather than truncating it into looking like some
+ * OTHER, wrong, in-range index. FUSED_GB_MAX_ENTRIES (24) is nowhere near 0xFF (255),
+ * so every real index has room. */
+#define CACHE_NO_PAIR 0xFFu
+static GBD_EWRAM_BSS uint8_t s_pair[FUSED_GB_MAX_ENTRIES];
+
+/* BACKLOG #98: which fused_gb_save() index is "active" (-1 = none) -- set by
+ * fused_gb_set_active_save(), read by fused_gb_rom()/fused_gb_loc() to resolve
+ * through the active save's own `pair` field instead of guessing by generation
+ * alone. Independent of s_parsed/s_count: a caller may set this before parse_once()
+ * has ever run (e.g. at boot-picker time, before any other fused_gb_* call this
+ * session), so it is never cleared by parse_once() itself. */
+static GBD_EWRAM_BSS int  s_active_save;      /* 0-init means "none set" is WRONG here --
+                                               * see fused_gb_set_active_save()'s own
+                                               * comment for how the true default (-1)
+                                               * is established despite EWRAM_BSS's
+                                               * zero-init, same s_parsed sentinel
+                                               * problem parse_once()'s own comment
+                                               * documents. */
+static GBD_EWRAM_BSS bool s_active_save_set;  /* true once fused_gb_set_active_save() has
+                                               * actually been called -- the zero-init
+                                               * sentinel s_active_save itself cannot
+                                               * carry (0 is a valid save index). */
+static GBD_EWRAM_BSS FusedGbFailReason s_lookup_fail_reason; /* fused_gb_lookup_failed_
+                                               * reason()'s backing store -- reset to
+                                               * FUSED_GB_FAIL_NONE (== 0, so EWRAM_BSS's
+                                               * own zero-init already starts it right)
+                                               * at the top of every fused_gb_rom()/
+                                               * fused_gb_loc() call. fused_gb_lookup_
+                                               * was_ambiguous() is a thin wrapper over
+                                               * this == FUSED_GB_FAIL_AMBIGUOUS. */
+
 #ifdef FUSED_GB_TEST
 /* #62 review D9: the real app never re-fuses mid-session (the corpus is immutable for
  * a whole boot), so there is deliberately no public "reparse" entry point -- but a host
@@ -128,6 +179,10 @@ void fused_gb_test_reset(void) {
   s_parsed = false;
   s_count = 0;
   memset(s_entry, 0, sizeof s_entry);
+  memset(s_pair, CACHE_NO_PAIR, sizeof s_pair);
+  s_active_save = 0;
+  s_active_save_set = false;
+  s_lookup_fail_reason = FUSED_GB_FAIL_NONE;
 }
 #endif
 
@@ -156,7 +211,13 @@ static void parse_once(void) {
   if (!dir_present_raw(&dir_off, &dir_size)) return;
 
   const uint8_t* blk = cart_ptr(dir_off);
-  if (memcmp(blk, "PDNAGBD1", DIR_MAGIC_LEN) != 0) return;
+  /* BACKLOG #98: "PDNAGBD2" -- the DIRECTORY BLOCK's own magic, deliberately distinct
+   * from g_pdna_gbd's "PDNAGBD1" locator magic above (which tools/fuse_gb.py's
+   * locate_record() still searches the UN-fused binary for, unchanged): this is the
+   * entry-FORMAT version signal. A v1 directory (48-byte entries, no `pair` field)
+   * fails this check and parses as unfused rather than being misread through the v2
+   * field layout below. */
+  if (memcmp(blk, "PDNAGBD2", DIR_MAGIC_LEN) != 0) return;
 
   uint32_t count;
   memcpy(&count, blk + 8, 4);
@@ -167,7 +228,7 @@ static void parse_once(void) {
   uint32_t t_size;
   memcpy(&t_size, blk + trailer_off, 4);
   if (t_size != dir_size) return;
-  if (memcmp(blk + trailer_off + 4, "PDNAGBD1", DIR_MAGIC_LEN) != 0) return;
+  if (memcmp(blk + trailer_off + 4, "PDNAGBD2", DIR_MAGIC_LEN) != 0) return;
 
   int n = (int)count;
   if (n > FUSED_GB_MAX_ENTRIES) n = FUSED_GB_MAX_ENTRIES;   /* cache the first N; see .h */
@@ -185,11 +246,17 @@ static void parse_once(void) {
 
   for (int i = 0; i < n; i++) {
     const uint8_t* e = blk + 12u + (uint32_t)i * ENTRY_SIZE;
-    uint32_t type, off, size, crc;
+    uint32_t type, off, size, crc, pair;
     memcpy(&type, e + 0, 4);
     memcpy(&off,  e + 36, 4);
     memcpy(&size, e + 40, 4);
     memcpy(&crc,  e + 44, 4);
+    memcpy(&pair, e + 48, 4);   /* BACKLOG #98: format v2's new field -- NOT part of the
+                                 * crc32 (crc32 still covers only the PAYLOAD bytes, same
+                                 * as v1), so a corrupt `pair` alone cannot be caught by
+                                 * the CRC check below; it is bounds-checked on its own
+                                 * (against `n`, the clamped entry count) wherever it is
+                                 * actually resolved, never trusted blindly. */
     /* #62 review D6: bounded against dir_off, not the whole 32-MiB CART_SPAN --
      * every fused payload precedes the directory (tools/fuse_gb.py's own layout), so
      * a corrupt/adversarial entry that claims to run PAST the directory (into the
@@ -211,8 +278,110 @@ static void parse_once(void) {
     s_entry[i].offset = off;
     s_entry[i].size = size;
     s_entry[i].name = name_nul ? (const char*)name_field : "";
+    /* BACKLOG #98: collapse the on-disk pair to the cache's own byte-sized sentinel
+     * -- see s_pair[]'s own comment for why this lives in a parallel array instead
+     * of a 5th GbdEntry field. Any value that cannot possibly be a real cached
+     * index (the real NO_PAIR, or anything >= FUSED_GB_MAX_ENTRIES -- including a
+     * corrupt/foreign directory's `pair` that happens to collide with the byte
+     * 0xFF by chance) becomes CACHE_NO_PAIR, never silently truncated into looking
+     * like some OTHER in-range index. */
+    s_pair[i] = (pair < (uint32_t)FUSED_GB_MAX_ENTRIES) ? (uint8_t)pair : CACHE_NO_PAIR;
   }
   s_count = n;
+}
+
+/* BACKLOG #98: true iff a cached s_pair[] value points at an entry actually within the
+ * (clamped) parsed range -- a directory built by a tool other than tools/fuse_gb.py (or
+ * corrupted) could claim a pair index the cache never even held (parse_once() already
+ * collapses anything >= FUSED_GB_MAX_ENTRIES to CACHE_NO_PAIR, but s_count can be
+ * SMALLER than FUSED_GB_MAX_ENTRIES too -- e.g. a 6-entry directory with a stray pair
+ * byte of 20). Every resolver below calls this before trusting a cached pair value, so
+ * an out-of-range claim degrades to "no pairing" (falls through to the single-entry
+ * fallback / ambiguous-fail path) instead of an out-of-bounds s_entry[] read. */
+static bool pair_in_range(uint8_t pair) {
+  return pair != CACHE_NO_PAIR && (int)pair < s_count;
+}
+
+/* BACKLOG #98 D1 review fix: the old bool-returning version collapsed THREE distinct
+ * cases into one "did not resolve" and let the caller treat all of them the same --
+ * fall back to resolve_single_idx(), the "exactly one ROM of this generation" rule.
+ * That fallback is only ever correct for the first case below: it is the ONE-ROM,
+ * no-picker-needed scenario the pre-#98 code always handled. The other two cases mean
+ * an active save genuinely WAS chosen and its own pairing is broken -- falling back
+ * there is exactly the #98 bug (an orphaned Gold.sav silently borrowing a lone
+ * Crystal.gbc that has nothing to do with it). So this now returns a tri-state:
+ *
+ *   ACTIVE_RESOLVE_NONE      no active save is set, OR the active save's own index
+ *                            doesn't match any SAV entry actually present (defensive;
+ *                            should not happen from a real picker, but degrades the
+ *                            same as "no active save" rather than a hard failure) --
+ *                            the single-entry fallback is the right next step.
+ *   ACTIVE_RESOLVE_OK        the active save resolved to *out_idx, an entry of exactly
+ *                            `want_type`.
+ *   ACTIVE_RESOLVE_ORPHANED  the active save's `pair` is FUSED_GB_NO_PAIR or out of
+ *                            range -- it was never fused with any ROM.
+ *   ACTIVE_RESOLVE_MISMATCH  the active save's `pair` resolves to a real entry, but
+ *                            that entry's own type isn't `want_type` (e.g. the active
+ *                            save is Gen-1 but the caller asked for Gen-2 art).
+ *
+ * Callers MUST NOT run the single-entry fallback for ORPHANED/MISMATCH -- only NONE. */
+typedef enum {
+  ACTIVE_RESOLVE_NONE = 0,
+  ACTIVE_RESOLVE_OK,
+  ACTIVE_RESOLVE_ORPHANED,
+  ACTIVE_RESOLVE_MISMATCH,
+} ActiveResolveResult;
+
+static ActiveResolveResult resolve_active_rom_idx(uint32_t want_type, int* out_idx) {
+  if (!s_active_save_set || s_active_save < 0) return ACTIVE_RESOLVE_NONE;
+  int seen = -1;
+  for (int i = 0; i < s_count; i++) {
+    if (s_entry[i].type != FUSED_GB_SAV) continue;
+    seen++;
+    if (seen != s_active_save) continue;
+    uint8_t pair = s_pair[i];
+    if (!pair_in_range(pair)) return ACTIVE_RESOLVE_ORPHANED;
+    if (s_entry[pair].type != want_type) return ACTIVE_RESOLVE_MISMATCH;
+    *out_idx = (int)pair;
+    return ACTIVE_RESOLVE_OK;
+  }
+  return ACTIVE_RESOLVE_NONE;   /* s_active_save is past the last SAV entry actually
+                                 * present -- same posture as "no active save". */
+}
+
+/* BACKLOG #98: the pre-#98 fallback -- when EXACTLY ONE entry of `want_type` is fused,
+ * that one is unambiguous regardless of any active-save pairing (this is what keeps
+ * every existing single-ROM-per-generation image working unchanged). Returns false
+ * (leaving *out_idx untouched) if there are zero or more than one; `*out_count` (if
+ * non-NULL) always gets the real count either way, so a caller can tell "nothing of
+ * this generation exists" (0) apart from "genuinely ambiguous" (>1) -- only the
+ * latter is a fail-loudly case. */
+static bool resolve_single_idx(uint32_t want_type, int* out_idx, int* out_count) {
+  int idx = -1, count = 0;
+  for (int i = 0; i < s_count; i++) {
+    if (s_entry[i].type == want_type) { idx = i; count++; }
+  }
+  if (out_count) *out_count = count;
+  if (count != 1) return false;
+  *out_idx = idx;
+  return true;
+}
+
+void fused_gb_set_active_save(int idx) {
+  s_active_save = idx;
+  s_active_save_set = true;
+}
+
+int fused_gb_get_active_save(void) {
+  return s_active_save_set ? s_active_save : -1;
+}
+
+FusedGbFailReason fused_gb_lookup_failed_reason(void) {
+  return s_lookup_fail_reason;
+}
+
+bool fused_gb_lookup_was_ambiguous(void) {
+  return s_lookup_fail_reason == FUSED_GB_FAIL_AMBIGUOUS;
 }
 
 bool fused_gb_present(void) {
@@ -236,15 +405,30 @@ bool fused_gb_entry(int i, uint32_t* type, const char** name, uint32_t* size) {
 
 bool fused_gb_rom(uint8_t gen, const uint8_t** base, uint32_t* size) {
   parse_once();
+  s_lookup_fail_reason = FUSED_GB_FAIL_NONE;
   uint32_t want = (gen == 1) ? FUSED_GB_ROM_GEN1 : (gen == 2) ? FUSED_GB_ROM_GEN2 : 0u;
   if (!want) return false;
-  for (int i = 0; i < s_count; i++) {
-    if (s_entry[i].type != want) continue;
-    if (base) *base = cart_ptr(s_entry[i].offset);
-    if (size) *size = s_entry[i].size;
-    return true;
+
+  int idx;
+  /* BACKLOG #98 D1 review fix: the active save's own pairing wins when it applies. An
+   * ORPHANED/MISMATCH result means an active save genuinely WAS chosen and its own
+   * pairing is broken -- that must fail loudly, NOT fall back to the single-entry
+   * heuristic (that heuristic answering "the only ROM of this generation" would be
+   * some OTHER, unrelated ROM in exactly the case this review caught). The fallback
+   * only ever runs for ACTIVE_RESOLVE_NONE -- no active save to resolve at all. */
+  ActiveResolveResult ar = resolve_active_rom_idx(want, &idx);
+  if (ar == ACTIVE_RESOLVE_ORPHANED) { s_lookup_fail_reason = FUSED_GB_FAIL_ORPHANED; return false; }
+  if (ar == ACTIVE_RESOLVE_MISMATCH) { s_lookup_fail_reason = FUSED_GB_FAIL_GEN_MISMATCH; return false; }
+  if (ar != ACTIVE_RESOLVE_OK) {
+    int count = 0;
+    if (!resolve_single_idx(want, &idx, &count)) {
+      if (count > 1) s_lookup_fail_reason = FUSED_GB_FAIL_AMBIGUOUS;
+      return false;
+    }
   }
-  return false;
+  if (base) *base = cart_ptr(s_entry[idx].offset);
+  if (size) *size = s_entry[idx].size;
+  return true;
 }
 
 int fused_gb_save_count(void) {
@@ -276,11 +460,18 @@ bool fused_gb_save(int i, const char** name, const uint8_t** base, uint32_t* siz
  * cartridge byte stream either way. */
 #define GB_LOC_HDR_SIZE 20u
 
-bool fused_gb_loc(uint8_t kind, uint8_t gen, const uint8_t** rec, uint32_t* rec_len,
-                  uint32_t* id_hash, uint32_t* rom_size) {
-  parse_once();
+/* BACKLOG #98: scans for the (kind,gen) LOC entry paired (via its own `pair` field)
+ * with directory index `rom_idx`. Shared by both branches of fused_gb_loc() below --
+ * once a ROM's directory index is known (however it was resolved), finding ITS LOC
+ * entry is identical either way. Returns false (no ambiguity implied -- a ROM the
+ * shipped locators could not place this table in just has no such entry, see
+ * tools/fuse_gb.py's gbloc_payloads() comment) if none matches. */
+static bool find_loc_for_rom(int rom_idx, uint8_t kind, uint8_t gen,
+                             const uint8_t** rec, uint32_t* rec_len,
+                             uint32_t* id_hash, uint32_t* rom_size) {
   for (int i = 0; i < s_count; i++) {
     if (s_entry[i].type != FUSED_GB_LOC) continue;
+    if (s_pair[i] != (uint8_t)rom_idx) continue;
     if (s_entry[i].size < GB_LOC_HDR_SIZE) continue;   /* too small to hold the header */
     const uint8_t* p = cart_ptr(s_entry[i].offset);
     if (memcmp(p, "PDNALOC1", 8) != 0) continue;
@@ -294,6 +485,33 @@ bool fused_gb_loc(uint8_t kind, uint8_t gen, const uint8_t** rec, uint32_t* rec_
     return true;
   }
   return false;
+}
+
+bool fused_gb_loc(uint8_t kind, uint8_t gen, const uint8_t** rec, uint32_t* rec_len,
+                  uint32_t* id_hash, uint32_t* rom_size) {
+  parse_once();
+  s_lookup_fail_reason = FUSED_GB_FAIL_NONE;
+  uint32_t want = (gen == 1) ? FUSED_GB_ROM_GEN1 : (gen == 2) ? FUSED_GB_ROM_GEN2 : 0u;
+  if (!want) return false;
+
+  int rom_idx;
+  /* BACKLOG #98 D1 review fix: resolve WHICH ROM's LOC entry we want, same tri-state
+   * rule fused_gb_rom() uses (active-save pairing wins; ORPHANED/MISMATCH fails loudly
+   * instead of falling back; the single-entry fallback only for ACTIVE_RESOLVE_NONE)
+   * -- see that function's own comment. Once rom_idx is known, find_loc_for_rom() does
+   * the actual (kind,gen) search; "no LOC entry for this ROM" is a plain false, not
+   * an ambiguity -- only "could not even tell which ROM" is. */
+  ActiveResolveResult ar = resolve_active_rom_idx(want, &rom_idx);
+  if (ar == ACTIVE_RESOLVE_ORPHANED) { s_lookup_fail_reason = FUSED_GB_FAIL_ORPHANED; return false; }
+  if (ar == ACTIVE_RESOLVE_MISMATCH) { s_lookup_fail_reason = FUSED_GB_FAIL_GEN_MISMATCH; return false; }
+  if (ar != ACTIVE_RESOLVE_OK) {
+    int count = 0;
+    if (!resolve_single_idx(want, &rom_idx, &count)) {
+      if (count > 1) s_lookup_fail_reason = FUSED_GB_FAIL_AMBIGUOUS;
+      return false;
+    }
+  }
+  return find_loc_for_rom(rom_idx, kind, gen, rec, rec_len, id_hash, rom_size);
 }
 
 #endif /* PDNA_DELTA */
