@@ -255,6 +255,79 @@ def test_b2_spill_is_not_redefinition():
           (kind, off) == ("nonfield", None), (kind, off))
 
 
+# === D6 trap #7: `ldmia rX!, {reglist}` redefines every register it loads =============
+
+def test_d6_ldm_redefines_every_loaded_register():
+    """The reviewer's literal reproduction of rom_mon_icon_at's real false-attribution
+    (BACKLOG #84b fourth pass): `ldrb r3, [r1, #5]` (loc->ok, a plain uint8_t flag,
+    NOT a pointer of any kind) sits several instructions before `ldmia r0!, {r3, r4}`
+    (rc->read/rc->ctx, RomCtx offsets 0/4 -- the REAL dispatch value), which is
+    immediately copied into r5 and dispatched. Before this fix, the backward scan hit
+    the `ldmia` and, because plain DEST_REG_RE only recognises the WRITEBACK base
+    (r0) as a destination, walked straight past it without noticing r3/r4 were also
+    just redefined -- landing on the earlier, unrelated `ldrb r3, [r1, #5]` and
+    reporting 'field @5', not even a real field. Must resolve to ('nonfield', None)."""
+    fn_insn_seq = {
+        "icon_at": [
+            (0x0f00, "ldrb\tr3, [r1, #5]"),           # loc->ok -- NOT the dispatch value
+            (0x0f02, "cmp\tr3, #0"),
+            (0x0f04, "ldr\tr0, [r0, #0]"),             # r0 = rm->rc
+            (0x0f06, "ldmia\tr0!, {r3, r4}"),           # r3 = rc->read (offset 0), r4 = rc->ctx
+            (0x0f08, "movs\tr5, r3"),
+            (0x0f0a, "nop"),
+        ],
+    }
+    kind, off = sb.resolve_indirect_site(fn_insn_seq["icon_at"], 0x0f0c, "r5")
+    check("(D6 trap 7) ldmia-loaded dispatch resolves nonfield, not a stale field @5",
+          (kind, off) == ("nonfield", None), (kind, off))
+
+    # Sanity check: a register the ldm does NOT touch (r6) must scan straight past it
+    # to whatever set r6 earlier, not get flagged by the ldm at all.
+    fn_insn_seq2 = {
+        "icon_at2": [
+            (0x0f00, "ldr\tr6, [r2, #12]"),             # a genuine field load for r6
+            (0x0f02, "ldmia\tr0!, {r3, r4}"),            # unrelated -- doesn't touch r6
+            (0x0f04, "movs\tr5, r6"),
+            (0x0f06, "nop"),
+        ],
+    }
+    kind2, off2 = sb.resolve_indirect_site(fn_insn_seq2["icon_at2"], 0x0f08, "r5")
+    check("(D6 trap 7) ldm not touching the chased register is skipped, not a stop",
+          (kind2, off2) == ("field", 12), (kind2, off2))
+
+
+# === D6 trap #8: hi-register alias names (sl/fp) must chase like any other reg =========
+
+def test_d6_hi_register_aliases_chase_through_mov():
+    """The reviewer's literal reproduction of pdna_dex_screen's real false-attribution
+    on the FULL-art build (BACKLOG #84b fourth pass): a section-anchor base is loaded
+    into r5 via `ldr r5, [pc, #N]`, promoted into `sl` (callee-saved, so it survives
+    two intervening `bl`s) with `mov sl, r5`, then copied back into r3 with
+    `mov r3, sl` right before `ldr r3, [r3, #8]` feeds the dispatch. Before this fix,
+    every register-matching regex in the chase (`MOV_REG_RE`, `DEST_REG_RE`,
+    `LDR_FIELD_RE`) only recognised `r\\d+` or literally `ip` -- `sl` (objdump's name
+    for r10, the same way it prints r12 as `ip`) matched NONE of them, so the
+    `mov r3, sl` step was invisible to the mov-chase and fell through to
+    DEST_REG_RE's generic "redefined by something else, stop" case -- reporting a
+    section-anchor global access as a genuine field at whatever offset the anchor
+    gave it. Must resolve to ('nonfield', None), not ('field', 8)."""
+    fn_insn_seq = {
+        "dex_screen_shape": [
+            (0x1000, "ldr\tr5, [pc, #100]\t@ (1068 <f+0x68>)"),  # section anchor
+            (0x1002, "str\tr0, [r5, #8]"),                        # populate s_dget etc.
+            (0x1004, "mov\tsl, r5"),                              # promote to callee-saved
+            (0x1006, "bl\t2000 <build_species>"),                 # sl survives (callee-saved)
+            (0x1008, "bl\t2004 <memset>"),                        # sl survives again
+            (0x100a, "mov\tr3, sl"),                              # copy back down
+            (0x100c, "ldr\tr3, [r3, #8]"),                        # -> s_dget itself
+            (0x100e, "nop"),
+        ],
+    }
+    kind, off = sb.resolve_indirect_site(fn_insn_seq["dex_screen_shape"], 0x1010, "r3")
+    check("(D6 trap 8) sl-promoted section-anchor base resolves nonfield, not field @8",
+          (kind, off) == ("nonfield", None), (kind, off))
+
+
 # === (c) argsites count mismatch ========================================================
 
 def test_c_argsites_count_mismatch():
@@ -368,6 +441,30 @@ def test_d_load_extra_edges_parses_frame_override():
         os.unlink(path)
 
 
+def test_d6_argsites_accepts_a_dotted_gcc_clone_name():
+    """D6 (BACKLOG #84b fourth pass): a `.constprop.N`/`.isra.N`/`.part.0` GCC clone
+    suffix in the CALLER name must parse as a real argsites declaration, not
+    silently fall through to the whole_func_decls catch-all as a dead, never-
+    matching key (the old `\\w+`-only ARGSITE_LINE_RE's failure mode -- found live
+    when draw_wallpaper.constprop.0/fetch_pic_ex.constprop.0's own argsites=3
+    declarations parsed with zero effect: `argsite_decls` stayed empty and the two
+    sites kept reporting as blind spots even after being 'declared')."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("draw_wallpaper.constprop.0 argsites=3 -> impl_a impl_b\n")
+        path = f.name
+    try:
+        field_decls, argsite_decls, whole_func_decls, frame_overrides = \
+            sb.load_extra_edges(path)
+        check("(D6) dotted caller name parsed into argsite_decls, not swallowed whole",
+              argsite_decls == {"draw_wallpaper.constprop.0": (3, {"impl_a", "impl_b"})},
+              argsite_decls)
+        check("(D6) nothing leaked into whole_func_decls as a bogus dead key",
+              whole_func_decls == {}, whole_func_decls)
+    finally:
+        os.unlink(path)
+
+
 # === struct_field_offsets(): the D1 header-drift check, against the real header =========
 
 def test_boxsource_offsets_match_real_header():
@@ -471,10 +568,13 @@ def main():
     test_a_estimator_no_explosion()
     test_b_blind_spot_per_site()
     test_b2_spill_is_not_redefinition()
+    test_d6_ldm_redefines_every_loaded_register()
+    test_d6_hi_register_aliases_chase_through_mov()
     test_c_argsites_count_mismatch()
     test_c_argsites_count_match_is_clean()
     test_d_unknown_frame_fails_unless_overridden()
     test_d_load_extra_edges_parses_frame_override()
+    test_d6_argsites_accepts_a_dotted_gcc_clone_name()
     test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain()
     test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged()
     test_boxsource_offsets_match_real_header()

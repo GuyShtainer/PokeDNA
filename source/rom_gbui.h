@@ -225,8 +225,27 @@ typedef enum {
  * PDNA_GB_UI_NEED before gbscr_open_inner, and rom_gbui_open/_open_loc/_tile/
  * _glyph are present in PokeDNA-artless.elf (review, 2026-09-09). The
  * artless/delta "EWRAM ok" lines say nothing about STACK; only the measured
- * chain above does. Margins at 5,400: Settings 6,600 B free, nav chain 7,712. */
-#define PDNA_GB_UI_NEED 5400
+ * chain above does. Margins at 5,400: Settings 6,600 B free, nav chain 7,712.
+ *
+ * RE-MEASURED (BACKLOG #84b, FOURTH pass, 2026-09-10) after D4's whole-graph
+ * blind-spot sweep + its walker fixes (tools/stack_budget.py's own trap #1/#5/#6/
+ * #7/#8): `python3 tools/stack_budget.py --elf PokeDNA-artless.elf --builddir
+ * "$(pwd)/build-artless" --root gbscr_open_inner --top 1` now reports 5,672 B
+ * (+64 ISR = 5,736), 336 B above the 5,400 this constant held. Unlike
+ * PDNA_PARTY_STRIP_NEED's re-measurement in source/pdna_box.c (a clean,
+ * previously-blind-spot branch this same pass declared), this chain's own
+ * components were ALREADY fully declared before this pass -- RomGbUi.read@0's
+ * gb_art_read/fused_gb_slice_read/gbscr_sd_read union predates it -- so the +336
+ * is NOT attributable to a blind spot this pass closed; gbscr_open_inner's own
+ * measured frame moved from the 1,576 the #71 batch measured to 1,656 today,
+ * for a reason this pass did not track down (an unrelated source change between
+ * the two measurements is the likely explanation, not a walker defect). Taken
+ * AS MEASURED, matching this constant's own established convention -- but the
+ * Settings-path/nav-menu-chain DERIVED margins two paragraphs up (6,600 / 7,712)
+ * are NOT re-verified by this pass (their own --root points were not re-measured
+ * here); do not trust them without independently re-running this same command
+ * against those two call sites before relying on either number. */
+#define PDNA_GB_UI_NEED 5736
 
 /* Each entry is the SCAN HIT file offset (where the locator's ScanCb pattern
  * matched), never a located block itself. gen 1 uses FONT/TEXTBOX/CARDFRAME/

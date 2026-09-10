@@ -293,7 +293,19 @@ def analyze(dump_text):
 
 
 FIELD_LINE_RE = re.compile(r'^(\w+)\.(\w+)\s*@(\d+)$')
-ARGSITE_LINE_RE = re.compile(r'^(\w+)\s+argsites=(\d+)$')
+# D6 (BACKLOG #84b fourth pass): a bare `\w+` caller name silently rejects any
+# `.constprop.N`/`.isra.N`/`.part.N`/`.cold` GCC clone suffix (draw_wallpaper.
+# constprop.0, fetch_pic_ex.constprop.0, ...) -- and load_extra_edges() doesn't
+# error out when that happens: ARGSITE_LINE_RE simply fails to match, so the line
+# falls through to the whole_func_decls catch-all with the ENTIRE "name argsites=N"
+# string as a bogus caller key that can never match a real function -- a silently
+# DEAD declaration, no error, no warning, the exact opposite of this file's own
+# stop-licence. Found live: draw_wallpaper.constprop.0/fetch_pic_ex.constprop.0
+# argsites=3 declarations (added this same pass) parsed with zero effect until this
+# fix. `[\w.]+` allows the dotted clone suffix while still anchoring on whitespace
+# before `argsites=`, so a real typo (stray text before the keyword) still fails to
+# match and falls through exactly as before.
+ARGSITE_LINE_RE = re.compile(r'^([\w.]+)\s+argsites=(\d+)$')
 FRAME_LINE_RE = re.compile(r'^frame\s+(\S+)\s*=\s*(\d+)\b')
 
 
@@ -492,6 +504,7 @@ STRUCT_HEADERS = {
     "BoxSource": "pdna_box.h",
     "RomGbUi": "rom_gbui.h",
     "Scan": "rom_gbui.c",     # file-local struct; struct_field_offsets() greps .c too
+    "AppSrcOps": "pdna_app.h",
 }
 
 
@@ -501,11 +514,57 @@ BRANCH_MNEM_RE = re.compile(
 CALL_MNEM_RE = re.compile(r'^(bl|blx)(\.[nw])?(\s|$)')
 STORE_MNEM_RE = re.compile(r'^(str\w*|stm\w*|push)\b')
 CMP_MNEM_RE = re.compile(r'^(cmp|cmn|tst|teq)\b')
-MOV_REG_RE = re.compile(r'^movs?\s+(r\d+|ip)\s*,\s*(r\d+|ip)\s*$')
-DEST_REG_RE = re.compile(r'^[a-z][a-z0-9]*\s+(r\d+|ip)\b')
+# Trap #8 (D6, BACKLOG #84b fourth pass): objdump prints r10/r11 by their ARM alias
+# names `sl`/`fp` (never "r10"/"r11"), the same way it already prints r12 as `ip` --
+# a bare `r\d+|ip` alternation silently fails to match `mov r3, sl` / `ldr r8, [fp,
+# #12]` at all, so a hi-register carrying the CHASE (the compiler routinely promotes
+# a value live across multiple `bl`s -- e.g. a global's section-anchor base -- into
+# sl/fp specifically because they're callee-saved) makes the mov-chase in
+# resolve_indirect_site/_base_is_section_anchor silently give up and fall through to
+# DEST_REG_RE's generic "redefined by something else" stop, reporting whatever the
+# scan happened to be looking at as a genuine field. Confirmed live: pdna_dex_screen
+# (the FULL-art build only -- its extra icon-rendering code pushes the s_dget/s_dset
+# anchor into `sl` across two `bl`s the artless build's shorter code never needed)
+# misclassified 15 genuine global/section-anchor dispatches as 'field' hits at
+# offsets 8/20/24/28 -- offsets that happen to collide with this file's own declared
+# AppSrcOps.release/.view/.editable/.create, which would have silently (and
+# wrongly) exempted them. `REG_TOK` is the same register-name alternation used
+# everywhere a Thumb/ARM register operand is matched in the indirect-call chase
+# (NOT the separate estimate_frames prologue-idiom regexes above/below this point --
+# Thumb-1 push/pop and the sub-sp/add-sp idioms they estimate never reach r8-r12,
+# so those are unaffected and untouched).
+REG_TOK = r'r\d+|sl|fp|ip'
+MOV_REG_RE = re.compile(rf'^movs?\s+({REG_TOK})\s*,\s*({REG_TOK})\s*$')
+DEST_REG_RE = re.compile(rf'^[a-z][a-z0-9]*\s+({REG_TOK})\b')
 LDR_FIELD_RE = re.compile(
-    r'^ldr\w*\s+(r\d+|ip)\s*,\s*\[\s*(r\d+|ip|sp|pc)\s*,\s*#(-?\d+)\s*\]')
+    rf'^ldr\w*\s+({REG_TOK})\s*,\s*\[\s*({REG_TOK}|sp|pc)\s*,\s*#(-?\d+)\s*\]')
 CALLER_SAVED_REGS = frozenset(('r0', 'r1', 'r2', 'r3', 'ip'))   # AAPCS scratch registers
+LDM_RE = re.compile(rf'^ldm\w*\s+({REG_TOK})(!?)\s*,\s*\{{([^}}]*)\}}')
+
+
+def _ldm_defines(ins_clean, reg):
+    """True if `ins_clean` is an `ldm` (load-multiple) that (re)defines `reg` --
+    either as one of the loaded destination registers, or as the base register
+    itself when writeback (`!`) is present. Trap #7 (D6, BACKLOG #84b fourth
+    pass): `ldmia rX!, {r3, r4}` is GCC's shape for two-or-more back-to-back
+    struct-field loads (e.g. RomCtx's `read`+`ctx`, offsets 0/4), and the plain
+    DEST_REG_RE catch-all only recognizes the BASE register as a destination
+    (its `!` suffix still satisfies `\\b`, so `dm.group(1)` comes back "r0" for
+    `ldmia r0!, {r3, r4}`) -- it has no idea r3/r4 are ALSO freshly defined.
+    Without this check the backward scan walks straight past the true
+    definition to whatever STALE, unrelated instruction last wrote that
+    register number earlier in the function. Confirmed live: rom_mon_icon_at's
+    real dispatch (`rc->read`, RomCtx offset 0, loaded via `ldmia r0!,
+    {r3, r4}`) got misattributed to `loc->ok`'s `ldrb r3, [r1, #5]` many
+    instructions earlier in the SAME function, purely because both happen to
+    target r3 -- reported as 'struct-field load @5', which is not even a real
+    field (RomMonLoc.ok is a plain uint8_t flag, not a pointer of any kind)."""
+    m = LDM_RE.match(ins_clean)
+    if not m:
+        return False
+    if m.group(2) == '!' and m.group(1) == reg:
+        return True
+    return reg in {p.strip() for p in m.group(3).split(',')}
 
 
 def _literal_call_target(fn_insn_seq, insn_map, name_at_map, reg):
@@ -547,6 +606,10 @@ def _literal_call_target(fn_insn_seq, insn_map, name_at_map, reg):
             if not wm:
                 return None
             return name_at_map.get(int(wm.group(1), 16) & ~1)   # mask the Thumb bit
+        if _ldm_defines(ins_clean, reg):                # trap #7: ldm redefines it, not a literal
+            return None
+        if LDM_RE.match(ins_clean):
+            continue                                    # ldm, but doesn't touch `reg`
         if STORE_MNEM_RE.match(ins_clean) or CMP_MNEM_RE.match(ins_clean):
             continue
         mv = MOV_REG_RE.match(ins_clean)
@@ -559,35 +622,69 @@ def _literal_call_target(fn_insn_seq, insn_map, name_at_map, reg):
     return None                                         # never (re)defined in this function
 
 
-BASE_LITERAL_WINDOW = 8   # instructions to look back for the base register's own origin
-
-
 def _base_is_section_anchor(fn_insn_seq, ldr_idx, base_reg):
-    """True if `base_reg` (the rY in `ldr rN, [rY, #off]`) was ITSELF just materialized
-    from a PC-relative literal (`ldr rY, [pc, #imm]`) within the last BASE_LITERAL_WINDOW
-    instructions, with nothing redefining it in between. That shape -- literal-load a
-    fixed address, then immediately index off it -- is GCC's `-fsection-anchors` codegen
-    for a STATIC/global variable (default at -O2 for this target): every small static in
-    a section shares ONE base register and reaches each other by a small #offset, which
-    is byte-for-byte indistinguishable from a struct-field dereference UNLESS the base's
-    own origin is checked. None of BoxSource/RomGbUi/Scan is ever addressed as a global
-    in this codebase (always a parameter, spilled or in a register) -- a base fed by a
-    fresh literal is therefore a global/anchor access, not an instance field, and must
-    NOT be trusted as 'field' (confirmed empirically: a planted global function-pointer
-    dispatch compiled to exactly this shape and, without this check, silently matched a
-    declared field offset by coincidence -- a real false-pass, not a hypothetical one)."""
-    lo = max(0, ldr_idx - BASE_LITERAL_WINDOW)
-    for _addr, ins in reversed(fn_insn_seq[lo:ldr_idx]):
+    """True if `base_reg` (the rY in `ldr rN, [rY, #off]`) was ITSELF materialized
+    from a PC-relative literal (`ldr rY, [pc, #imm]`) with nothing redefining it in
+    between (chasing `mov rX, rY` copies the same way resolve_indirect_site does, and
+    treating a call as clobbering base_reg only if it's caller-saved). That shape --
+    literal-load a fixed address, then index off it -- is GCC's `-fsection-anchors`
+    codegen for a STATIC/global variable (default at -O2 for this target): every
+    small static in a section shares ONE base register and reaches each other by a
+    small #offset, which is byte-for-byte indistinguishable from a struct-field
+    dereference UNLESS the base's own origin is checked. None of BoxSource/RomGbUi/
+    Scan is ever addressed as a global in this codebase (always a parameter, spilled
+    or in a register) -- a base fed by a fresh literal is therefore a global/anchor
+    access, not an instance field, and must NOT be trusted as 'field' (confirmed
+    empirically: a planted global function-pointer dispatch compiled to exactly this
+    shape and, without this check, silently matched a declared field offset by
+    coincidence -- a real false-pass, not a hypothetical one).
+
+    Trap #6 (D6, BACKLOG #84b fourth pass): this used to stop after a fixed
+    BASE_LITERAL_WINDOW=8 instructions and default to False (treat as a genuine
+    field) the moment it ran out of window -- but a base register loaded ONCE
+    before a loop and reused across every iteration (an extremely common shape:
+    dex_build/pdna_dex_screen's inlined `dstate()` -> `s_dget(nat)`, a file-static
+    global function pointer, loaded outside a `for` loop and called once per
+    element inside it) routinely sits far more than 8 instructions before its use.
+    The bounded window silently misclassified that shape as 'field' at whatever
+    offset the anchor gave it -- invisible as long as nothing else declared a real
+    field at that same offset, but the moment AppSrcOps.release/.editable (offsets
+    8/24, genuinely declared elsewhere in this file) came along, those SAME
+    numeric offsets silently and WRONGLY exempted the dex-screen sites too,
+    attributing gb_release_hook/gb_editable_hook as if they were possible values
+    of s_dget/s_dset -- a real, live false-pass, not a hypothetical one. There is
+    no principled reason for this check to use a SMALLER search window than
+    resolve_indirect_site's own unbounded backward scan for the dispatch register
+    right next to it; matching that discipline (chase mov copies, unbounded) is
+    the fix, not a wider constant that would just move the same failure further
+    out."""
+    reg = base_reg
+    for i in range(ldr_idx - 1, -1, -1):
+        _addr, ins = fn_insn_seq[i]
         ins_clean = ins.split('@')[0].strip()
+        if CALL_MNEM_RE.match(ins_clean):
+            if reg in CALLER_SAVED_REGS:
+                return False                    # clobbered by the call, not an anchor base
+            continue
+        if BRANCH_MNEM_RE.match(ins_clean):
+            continue
         m = LDR_FIELD_RE.match(ins_clean)
-        if m and m.group(1) == base_reg:
+        if m and m.group(1) == reg:
             return m.group(2) == 'pc'
+        if _ldm_defines(ins_clean, reg):        # trap #7: ldm redefines it, not a literal
+            return False
+        if LDM_RE.match(ins_clean):
+            continue                            # ldm, but doesn't touch base_reg
         if STORE_MNEM_RE.match(ins_clean) or CMP_MNEM_RE.match(ins_clean):
             continue                            # a spill/compare READS base_reg, doesn't redefine it
+        mv = MOV_REG_RE.match(ins_clean)
+        if mv and mv.group(1) == reg:
+            reg = mv.group(2)                   # chase the copy, keep scanning
+            continue
         dm = DEST_REG_RE.match(ins_clean)
-        if dm and dm.group(1) == base_reg:
+        if dm and dm.group(1) == reg:
             return False                    # base redefined by something else first
-    return False
+    return False                            # never (re)defined earlier in this function: a parameter
 
 
 def resolve_indirect_site(fn_insn_seq, site_addr, reg):
@@ -625,6 +722,10 @@ def resolve_indirect_site(fn_insn_seq, site_addr, reg):
             if _base_is_section_anchor(fn_insn_seq, i, m.group(2)):
                 return ('nonfield', None)              # global/section-anchor access, not a field
             return ('field', int(m.group(3)))
+        if _ldm_defines(ins_clean, reg):                # trap #7: ldm redefines it, not a spilled field
+            return ('nonfield', None)
+        if LDM_RE.match(ins_clean):
+            continue                                    # ldm, but doesn't touch `reg`
         if STORE_MNEM_RE.match(ins_clean) or CMP_MNEM_RE.match(ins_clean):
             continue
         mv = MOV_REG_RE.match(ins_clean)
