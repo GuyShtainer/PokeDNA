@@ -973,6 +973,17 @@ static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
  * so it must never pop a message box or make a sound. Requires an open edit session for
  * the same reason EDIT/MOVE/RELEASE do (no GbSession to gate against otherwise); k_gb_ops_ro
  * (the nav-menu mount, g_ed NULL) leaves this NULL. */
+/* BACKLOG #95 (gbmon re-verify C1): the capture record at 0x1D/0x1E is CRYSTAL-only;
+ * gb_load() leaves has_caught false by construction, so every entry point that hands a
+ * record to the editor/summary must say whether this session is Crystal. The resident
+ * session knows from its detected save version; the nested mount from its kind. */
+static void gb_mark_caught(GbEditMon* e, uint8_t gen) {
+  if (gen != GB_GEN2) return;
+  bool crystal = g_ed ? (g_ed->s.g2w.sv.version == G2_VER_CRYSTAL)
+                      : (g_m && g_m->kind == GB12_SAVE_CRYSTAL);
+  gb_set_caught_available(e, crystal);
+}
+
 static bool gb_editable_hook(const uint8_t* rec80) {
   int box, slot;
   if (!g_ed) return false;
@@ -1028,6 +1039,7 @@ static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out, bool* has_
     if (slot >= gb_list_count(s->gen, g_ed->list, box)) return false;
     gen = s->gen;
     ok = gb_load(out, gen, g_ed->list, box, slot);
+    if (ok) gb_mark_caught(out, gen);
   } else {
     if (!g_m || !g_m->stage) return false;
     gen = (g_m->kind == GB12_SAVE_RBY) ? GB_GEN1 : GB_GEN2;
@@ -1040,6 +1052,7 @@ static bool gb_copy_native_hook(const uint8_t* rec80, GbEditMon* out, bool* has_
     }
     if (slot >= gb_list_count(gen, g_m->stage, box)) return false;
     ok = gb_load(out, gen, g_m->stage, box, slot);
+    if (ok) gb_mark_caught(out, gen);
   }
   if (ok && has_sidecar) *has_sidecar = gb_has_sidecar(gen, out);
   return ok;
@@ -1166,6 +1179,7 @@ static bool gb_edit_hook(uint8_t* rec80) {
 
   GbEditMon e;
   if (!gb_load(&e, s->gen, g_ed->list, box, slot)) { snd_deny(); return false; }
+  gb_mark_caught(&e, s->gen);
   bool has_sidecar = gb_has_sidecar(s->gen, &e);
   bool saved = false; int card = 0;
   pdna_gbsummary(&e, true, true, s->gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
