@@ -209,13 +209,19 @@ typedef enum {
    * located, 60 tiles = 4 pockets * 15 tiles, ROM order KEY/ITEMS/TM-HM/BALLS
    * per docs/GB-GAME-SCREENS-DESIGN.md sec 1.4 -- gbscr_cell()'s own `tile`
    * argument for a PACK_M cell is `pocket_rom_index*15 + local_tile(0..14)`,
-   * the caller's job, not this src's). Kris's own PackFGFX (pack_f) is NOT
-   * wired this slice -- a documented, cosmetic-only simplification (a Crystal
-   * save always paints Chris's pack_m art, even for a female trainer); adding
-   * PACK_F later is a pure additive change (one more GbScrSrc case + need bit),
-   * never touches this one. */
+   * the caller's job, not this src's). PACK_F (U5 D-Kris fix, review-opus
+   * ac9ffc0): Kris's own PackFGFX, RomGbUi.pack_f, already located by
+   * rom_gbui.c (Crystal only, cross-checked against the SAME anchor as
+   * pack_m) -- wired exactly the pure-additive way this comment always said
+   * it would be: one more GbScrSrc + need bit, same 60-tile/16-B-per-tile
+   * shape as PACK_M, mutually exclusive with it at any one gbscr_open() (a
+   * Crystal save's own gender picks ONE, same duality CARDPIC_M/CARDPIC_F
+   * already established for the trainer card two srcs up). The caller (Kris's
+   * OT gender byte) decides which need bit to ask for -- this src never
+   * inspects the save itself. */
   GBSCR_SRC_PACKMENU,
   GBSCR_SRC_PACK_M,
+  GBSCR_SRC_PACK_F,
   GBSCR_SRC_PIC
 } GbScrSrc;
 
@@ -238,6 +244,9 @@ typedef enum {
  * see the GBSCR_SRC_PACKMENU/PACK_M enum comment above for what each holds. */
 #define GBSCR_NEED_PACKMENU  (1u << GBSCR_SRC_PACKMENU)
 #define GBSCR_NEED_PACK      (1u << GBSCR_SRC_PACK_M)
+/* U5 D-Kris: Crystal's own female pack picture, requested INSTEAD of
+ * GBSCR_NEED_PACK for a female save -- see the GBSCR_SRC_PACK_F enum comment. */
+#define GBSCR_NEED_PACK_F    (1u << GBSCR_SRC_PACK_F)
 
 /* U2c: the Gen-1 player pic, gb_sprite_gen1's own 7x7-tile (56x56 px) decode,
  * packed into OUR OWN 2-bit-per-pixel format (16 B/tile, NOT the ROM's planar

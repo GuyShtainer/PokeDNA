@@ -201,6 +201,9 @@ uint32_t gbscr_block_bytes(uint8_t gen, GbScrSrc src) {
      * argument indexes into, this src caches the whole block). */
     case GBSCR_SRC_PACKMENU:  return 80u * 16u;
     case GBSCR_SRC_PACK_M:    return 60u * 16u;
+    /* U5 D-Kris: pack_f is the same 60-tile/16-B shape as pack_m (Crystal
+     * only; rom_gbui.c's own locator requires it exactly PackGFX-shaped). */
+    case GBSCR_SRC_PACK_F:    return 60u * 16u;
     default:                  return 0;
   }
 }
@@ -250,6 +253,7 @@ uint32_t gbscr_block_off(const RomGbUi* gu, uint8_t gen, GbScrSrc src) {
       return gu->pack_m - 1280u;
     }
     case GBSCR_SRC_PACK_M:    return gu->pack_m;
+    case GBSCR_SRC_PACK_F:    return gu->pack_f;
     default:                  return 0;
   }
 }
@@ -280,15 +284,17 @@ bool gbscr_mem_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
  * cache, right after FONT -- fixed, so the cache-building loop and any test that
  * inspects a GbscrCache agree on layout. Pure data: moved above the tonc/FatFs
  * boundary (U2b/U2c review item 0c) so gbscr_cache_plan() below can use it. */
-static const GbScrSrc kCacheOptOrder[11] = {
+static const GbScrSrc kCacheOptOrder[12] = {
   GBSCR_SRC_TEXTBOX, GBSCR_SRC_CARDFRAME, GBSCR_SRC_BADGES,
   /* U3: Gen 2's own card additions. */
   GBSCR_SRC_FONTEXTRA, GBSCR_SRC_LEADERS, GBSCR_SRC_CARDGFX,
   GBSCR_SRC_CARDPIC_M, GBSCR_SRC_CARDPIC_F, GBSCR_SRC_STATUSWORD,
-  /* U5: Gen 2's own Pack. */
-  GBSCR_SRC_PACKMENU, GBSCR_SRC_PACK_M
+  /* U5: Gen 2's own Pack (PACK_F added by the D-Kris fix, review-opus
+   * ac9ffc0 -- mutually exclusive with PACK_M at any one open(), same as
+   * CARDPIC_M/CARDPIC_F two rows up). */
+  GBSCR_SRC_PACKMENU, GBSCR_SRC_PACK_M, GBSCR_SRC_PACK_F
 };
-#define GBSCR_CACHE_OPT_N 11
+#define GBSCR_CACHE_OPT_N 12
 
 /* Total tail bytes gbscr_open() needs for `need_mask` on generation `gen`:
  * the 2,048-B rom_gbui scan scratch, reused afterward for FONT (always cached)
@@ -733,6 +739,8 @@ static bool gbscr_tile_pixels(const GbScreen* gs, RomGbUi* local, int idx, uint1
     }
     case GBSCR_SRC_PACK_M:
       return rom_gbui_tile(local, local->pack_m, v, 2, 0, 0, 0, out) != 0;
+    case GBSCR_SRC_PACK_F:
+      return rom_gbui_tile(local, local->pack_f, v, 2, 0, 0, 0, out) != 0;
     case GBSCR_SRC_PIC:
       /* U2c: the Gen-1 player pic -- a separate compressed codec
        * (gb_sprite_gen1), decoded once by gbscr_decode_pic_gen1() into
