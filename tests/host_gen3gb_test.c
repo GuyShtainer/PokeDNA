@@ -979,6 +979,44 @@ static void test_make_legal(void) {
             "Eevee (no level-gated evolution) is never offered a fix");
     }
   }
+
+  /* (f5) R1 review D1's own regression: a species standing AT or ABOVE its
+   * CHECKER floor (pk_evo_floor) must never be offered a fix, even though its
+   * TRUE evolution level (pk_evo_min_level) is higher -- these are exactly the
+   * species evolutions.h calls out as catchable below their own evolution level
+   * (Sootopolis' Super Rod Gyarados at L5, FireRed's Safari Zone Poliwhirl at
+   * L20). "4 of 5 offers on Guy's own saves were false" is what pk_evo_floor
+   * (not pk_evo_min_level) exists to fix; this pins the two measured examples
+   * directly rather than trusting the comment. */
+  {
+    /* Gyarados (species 130): pk_evo_min_level == 20 (Magikarp evolves at 20),
+     * but pk_evo_floor == 5 (the Super Rod's own L5 Gyarados) -- a L5 Gyarados is
+     * legally caught, not under-evolved, and must not be flagged. */
+    uint8_t rec3[80];
+    gen3_build_mon(130, 5, 0x77778888u, 0xDDDD0005u, "GYAOK", 3, rec3);
+    GbEditMon out3; Gen3ToGbLoss loss3;
+    G3GbStatus st3 = gen3_to_gb(rec3, GB_GEN2, NULL, &out3, &loss3);
+    CHECK(st3 == G3GB_OK, "Gyarados L5 converts (%s)", g3gb_status_text(st3));
+    if (st3 == G3GB_OK) {
+      uint8_t fl = 0, tl = 0;
+      CHECK(!gen3_to_gb_evo_needs_fix(&out3, &fl, &tl),
+            "Gyarados L5 (at its wild floor, below its evolution level) is not offered a fix");
+    }
+
+    /* Seaking (species 119): pk_evo_min_level == 33 (Goldeen evolves at 33), but
+     * pk_evo_floor == 20 (a wild floor below that) -- a L30 Seaking sits above
+     * ITS floor and below the true evolution level, the same shape as Gyarados. */
+    uint8_t rec4[80];
+    gen3_build_mon(119, 30, 0x9999AAAAu, 0xEEEE0006u, "SEAOK", 3, rec4);
+    GbEditMon out4; Gen3ToGbLoss loss4;
+    G3GbStatus st4 = gen3_to_gb(rec4, GB_GEN2, NULL, &out4, &loss4);
+    CHECK(st4 == G3GB_OK, "Seaking L30 converts (%s)", g3gb_status_text(st4));
+    if (st4 == G3GB_OK) {
+      uint8_t fl = 0, tl = 0;
+      CHECK(!gen3_to_gb_evo_needs_fix(&out4, &fl, &tl),
+            "Seaking L30 (above its own floor, below its evolution level) is not offered a fix");
+    }
+  }
 }
 
 /* ============================================================================ */
