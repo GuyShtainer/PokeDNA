@@ -138,13 +138,13 @@ static void mon_label(int i, char* out, int cap) {
 static bool pick_donor(const uint8_t* sb1, const uint8_t* pc, PkMon* out) {
   for (;;) {
     g_pick_pc = pc;
-    int src = pick_list("PICK A POKEMON — SOURCE", 1 + G3_TOTAL_BOXES, source_label, 0);
+    int src = pick_list("PICK A POKEMON - SOURCE", 1 + G3_TOTAL_BOXES, source_label, 0);
     if (src < 0) return false;
     int source = src - 1;                        /* -1 = party */
     static EWRAM_BSS PickRow rows[30];            /* 30 B: EWRAM, not the IWRAM stack */
     int n = list_source(sb1, pc, source, rows);
     g_pick_rows = rows; g_pick_sb1 = sb1; g_pick_source = source;
-    int m = pick_list(source < 0 ? "PICK A POKEMON — PARTY" : "PICK A POKEMON — BOX",
+    int m = pick_list(source < 0 ? "PICK A POKEMON - PARTY" : "PICK A POKEMON - BOX",
                       n, mon_label, 0);
     if (m < 0) continue;                          /* B here: back to source list */
     if (!redecode(sb1, pc, source, &rows[m], out)) continue;   /* should not happen: it was just listed */

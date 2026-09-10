@@ -143,31 +143,20 @@ void em_set_contest(EditMon* e, int i, uint8_t v) {
 }
 
 /* Contest ribbon rank / named flags — the Misc substruct's ribbons word (sub[3]
- * +0x08..+0x0B, same field gen3_mon.c decodes into PkMon.ribbons). The bit LAYOUT
- * (which bits, cumulative-by-construction semantics) is documented once in
- * gen3_contest.h and re-implemented here rather than called through gen3_contest.c's
- * gc_ribbon_get/set — a link-time dependency would have pulled gen3_contest.o into
- * every one of this codebase's ~15 existing host tests that already link gen3_edit.c
- * with their own fixed cc lines (host_trainer_test, host_pidiv_test, host_spread_test,
- * host_rombase_test, ...), breaking every one of them the moment this shipped. Only
- * the ENUM CONSTANTS are shared (a header-only, link-free include) so the bit
- * positions cannot drift between the two files; gc_ribbon_get/set in gen3_contest.c
- * exist for gen3_contest.c's own callers (the museum screen doesn't touch per-mon
- * ribbons) and this SAME arithmetic, checked against a real save's ribbon word,
- * round-trips in tests/host_contest_test.c. */
+ * +0x08..+0x0B, same field gen3_mon.c decodes into PkMon.ribbons). The rank helpers
+ * call gc_ribbon_get/set directly (gen3_contest.h, static inline — header-only, so
+ * there is no .o link dependency on gen3_contest.c to worry about, and the bit
+ * arithmetic exists in exactly one place); this SAME arithmetic, checked against a
+ * real save's ribbon word, round-trips in tests/host_contest_test.c. The named-flag
+ * helpers below stay a local bit test/set — gc_ribbon_flag_get/set are not inline. */
 static uint32_t ribbons_rd(const EditMon* e) { return rd32(e->sub[3] + 0x08); }
 static void     ribbons_wr(EditMon* e, uint32_t v) { wr32(e->sub[3] + 0x08, v); }
 
 void em_set_ribbon_rank(EditMon* e, int category, uint8_t rank) {
-  if (category < 0 || category >= GC_CATEGORY_COUNT) return;
-  if (rank > GC_RANK_MASTER) rank = GC_RANK_MASTER;
-  uint32_t mask = 0x7u << (category * 3);
-  uint32_t r = ribbons_rd(e);
-  ribbons_wr(e, (r & ~mask) | (((uint32_t)rank << (category * 3)) & mask));
+  ribbons_wr(e, gc_ribbon_set(ribbons_rd(e), category, rank));
 }
 uint8_t em_get_ribbon_rank(const EditMon* e, int category) {
-  if (category < 0 || category >= GC_CATEGORY_COUNT) return 0;
-  return (uint8_t)((ribbons_rd(e) >> (category * 3)) & 0x7u);
+  return gc_ribbon_get(ribbons_rd(e), category);
 }
 void em_set_ribbon_flag(EditMon* e, int flagbit, bool on) {
   if (flagbit < GC_RFLAG_CHAMPION || flagbit > GC_RFLAG_WORLD) return;

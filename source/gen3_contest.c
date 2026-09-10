@@ -33,18 +33,8 @@ static void wr32(uint8_t* p, uint32_t v) {
   p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
 }
 
-/* ---- ribbon rank (3-bit fields starting at bit 0, one per category) ------------ */
-uint8_t gc_ribbon_get(uint32_t ribbons, int category) {
-  if (category < 0 || category >= GC_CATEGORY_COUNT) return 0;
-  return (uint8_t)((ribbons >> (category * 3)) & 0x7u);
-}
-
-uint32_t gc_ribbon_set(uint32_t ribbons, int category, uint8_t rank) {
-  if (category < 0 || category >= GC_CATEGORY_COUNT) return ribbons;
-  if (rank > GC_RANK_MASTER) rank = GC_RANK_MASTER;
-  uint32_t mask = 0x7u << (category * 3);
-  return (ribbons & ~mask) | (((uint32_t)rank << (category * 3)) & mask);
-}
+/* ---- ribbon rank: gc_ribbon_get/set are static inline in gen3_contest.h now -----
+ * (see there — header-only so gen3_edit.c can call them with no .o dependency). --- */
 
 bool gc_ribbon_flag_get(uint32_t ribbons, int flagbit) {
   if (flagbit < GC_RFLAG_CHAMPION || flagbit > GC_RFLAG_WORLD) return false;

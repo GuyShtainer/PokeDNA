@@ -74,10 +74,22 @@ enum { GC_RANK_NONE = 0, GC_RANK_NORMAL, GC_RANK_SUPER, GC_RANK_HYPER, GC_RANK_M
 enum { CONTEST_RANK_NORMAL = 0, CONTEST_RANK_SUPER, CONTEST_RANK_HYPER, CONTEST_RANK_MASTER,
        CONTEST_RANK_LINK };
 
-/* ---- per-mon ribbon word helpers (operate on the raw 32-bit Misc-substruct word;
- * gen3_edit.c wraps these around EditMon.sub[3] for the summary editor). ---------- */
-uint8_t  gc_ribbon_get(uint32_t ribbons, int category);               /* 0..4, clamped */
-uint32_t gc_ribbon_set(uint32_t ribbons, int category, uint8_t rank);  /* rank clamped 0..4 */
+/* ---- per-mon ribbon word helpers (operate on the raw 32-bit Misc-substruct word).
+ * static inline, header-only: gen3_edit.c's em_get/set_ribbon_rank call these directly
+ * around EditMon.sub[3] instead of re-implementing the shift/mask, with no .o link
+ * dependency on gen3_contest.c (the reason that duplication existed in the first
+ * place — a link-time pull-in would have broken every host test that links
+ * gen3_edit.c with its own fixed cc line but not gen3_contest.c). ---------------- */
+static inline uint8_t gc_ribbon_get(uint32_t ribbons, int category) {   /* 0..4, clamped */
+  if (category < 0 || category >= GC_CATEGORY_COUNT) return 0;
+  return (uint8_t)((ribbons >> (category * 3)) & 0x7u);
+}
+static inline uint32_t gc_ribbon_set(uint32_t ribbons, int category, uint8_t rank) {
+  if (category < 0 || category >= GC_CATEGORY_COUNT) return ribbons;    /* rank clamped 0..4 */
+  if (rank > GC_RANK_MASTER) rank = GC_RANK_MASTER;
+  uint32_t mask = 0x7u << (category * 3);
+  return (ribbons & ~mask) | (((uint32_t)rank << (category * 3)) & mask);
+}
 
 enum {
   GC_RFLAG_CHAMPION = 15, GC_RFLAG_WINNING, GC_RFLAG_VICTORY, GC_RFLAG_ARTIST,
@@ -123,8 +135,9 @@ bool gc_museum_set(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32_t p
 
 /* SB1 byte offset + length (always GC_STRIDE, 32) of one museum slot's record — so a
  * caller can snapshot just that record before a gc_museum_set() call and memcmp after,
- * instead of copying the whole 15,872-byte SaveBlock1 (which would not fit the 32 KiB
- * IWRAM stack anyway). Returns 0 on FRLG or a bad `cat` (never a valid record there). */
+ * instead of copying the whole SaveBlock1 (sections 1-4 carry 15,752 B of data, section
+ * 4 alone 3,848 B -- either way it would not fit the 32 KiB IWRAM stack). Returns 0 on
+ * FRLG or a bad `cat` (never a valid record there). */
 uint32_t gc_museum_offset(PkGame g, int cat);
 #define GC_RECORD_BYTES 32
 
