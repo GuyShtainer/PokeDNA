@@ -910,6 +910,315 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
   return want_commit;
 }
 
+/* ---------------------------------------------------------------------------
+ * U3: Gold/Silver/Crystal's OWN trainer card (BACKLOG #66), on the SAME
+ * shared shell g1card_paint() uses above -- retires the Emerald-art card for
+ * Gen 2 (pdna_gbtrainer_card/gbcard_front_full/gbcard_back_full/card_bg
+ * below, dead now that BOTH generations have their own real card).
+ *
+ * Ground truth: tools/gb_roundtrip.py's own `_drive()` driving Gold.gbc +
+ * Gold.sav and Crystal.gbc + Crystal.sav to the trainer card (START, 4x DOWN
+ * to the player's own name row, A), dumping the BG tilemap (LCDC bit 3
+ * selects 0x9800/0x9C00 -- Gen 2 draws this card on the BG layer, not the
+ * window Red used) for both pages -- 4 dumps, MISMATCHED CELLS: 0 of 360 on
+ * every one against the model below (no female/Kris save in this corpus'
+ * Crystal.sav to dump a fifth/sixth oracle -- the cardpic_f/GBSCR_SRC_CARDPIC_F
+ * path is the SAME mechanism already proven for cardpic_m/CARDPIC_M, just an
+ * unverified offset choice, not a new code path).
+ *
+ * VRAM tile-id chain both pages share (adjacent located blocks land in
+ * contiguous VRAM char ids after the always-loaded pic): 0x00-0x22 (35) =
+ * CARDPIC display index (row-major on Gold, rom_gbui_tile's own colmajor
+ * reorder handles Crystal's column-major storage); 0x23-0x26 (4) = FRAMES-
+ * relative 0=border fill, 1=the one asymmetric notch tile (col1, one row
+ * above the STATUS/BADGES strip AND one row above the bottom border -- the
+ * real game's own choice, not a corner/edge tile set the way Gen 1's
+ * CARDFRAME has one), 2=divider fill (x12), 3=divider cap, 11=the play-time
+ * colon (0x2E, captured by sampling 70 frames -- toggles OFF/ON, this shell's
+ * own repaint just needs the ON tile); 0x27-0x28 (2) = FONTEXTRA-relative
+ * "ID"/"No"; page 1 only: 0x29-0x2D (5 of CARDGFX's 6) = the "STATUS" word
+ * graphic; page 2 only: 0x29-0x78 (80 of LEADERS' 86) = the 8 gym-leader
+ * faces (10 tiles each: 4 across the top row then 3+3 below, column stride
+ * 4), 0x79-0x7D (5 more of LEADERS) = the "BADGES" word graphic -- LEADERS'
+ * declared 86-tile size is exactly 80 faces + 6 word tiles, confirming this
+ * is ONE block, not two. The repeat cell at screen (18,9) is literally the
+ * pic's own display index 4 (top-right corner) painted a second time, one
+ * row below the picture -- not a separate tile.
+ *
+ * The real game draws the OWNED-badge overlay as an animated OAM sprite over
+ * the gym leader's face, never as a BG tile -- the BG-tilemap oracle above
+ * cannot see it at all (every dump's LEADERS range is the unbroken 0-79
+ * sequence regardless of which badges this save owns). This shell has no
+ * sprites, so g2card_paint() draws a STATIC 2x2 BADGES-block overlay over an
+ * owned face's centre instead -- an accepted deviation from the real
+ * (animated, sprite-layered) game, not something the tilemap oracle could
+ * ever confirm either way; called out again in the U3 report/HW-QUEUE row.
+ */
+
+/* Cursor slots -- page 1: NAME, ID, MONEY, TIME (UP/DOWN cycles); page 2: the
+ * 8 Johto badges (UP/DOWN cycles 0-7, row-major like the on-screen 4x2 grid).
+ * LEFT/RIGHT always flips the page (the real game's own binding) and resets
+ * the cursor to slot 0 of whichever page it lands on -- Gen 1's own card
+ * instead uses LEFT/RIGHT to step within its one-page badge row, which is
+ * not available here since the real Gen-2 card spends that key on paging. */
+enum { G2C_NAME = 0, G2C_ID, G2C_MONEY, G2C_TIME, G2C_P1_MAX };
+enum { G2C_BADGE0 = 0, G2C_P2_MAX = 8 };
+
+/* FRAMES-block-relative indices (VRAM id - 0x23, see the file comment above). */
+enum { G2F_FILL = 0, G2F_NOTCH = 1, G2F_DIVFILL = 2, G2F_DIVCAP = 3, G2F_COLON = 11 };
+/* LEADERS-block-relative index where the "BADGES" word graphic starts
+ * (page 2 row 8) -- 8 faces * 10 tiles = 80, LEADERS' own declared size is
+ * 86 (80 + 6 word tiles, 5 used, matching CARDGFX's own 6-tiles/5-used shape
+ * for "STATUS" on page 1). */
+enum { G2L_BADGES_WORD = 80 };
+
+/* One frame counter, this screen's own -- toggles the play-time colon every
+ * 32 VBlanks (the real game's own period, captured: 70 sampled frames showed
+ * exactly 2 distinct tile ids, ~half on / half off). Not persisted; a fresh
+ * visit always starts on the OFF phase, matching every captured dump (which
+ * all happened to land on OFF -- this shell's own choice of start phase is
+ * not itself something the oracle can confirm, only that both phases exist). */
+static uint16_t g2_frame_ctr;
+
+static void g2card_border(GbScreen* gs) {
+  for (int x = 0; x < 20; x++) {
+    gbscr_cell(gs, x, 0, GBSCR_SRC_TEXTBOX, G2F_FILL);
+    gbscr_cell(gs, x, 17, GBSCR_SRC_TEXTBOX, G2F_FILL);
+  }
+  for (int y = 0; y < 18; y++) {
+    gbscr_cell(gs, 0, y, GBSCR_SRC_TEXTBOX, G2F_FILL);
+    gbscr_cell(gs, 19, y, GBSCR_SRC_TEXTBOX, G2F_FILL);
+  }
+  gbscr_cell(gs, 1, 7, GBSCR_SRC_TEXTBOX, G2F_NOTCH);
+  gbscr_cell(gs, 1, 16, GBSCR_SRC_TEXTBOX, G2F_NOTCH);
+  /* row 8 (the STATUS/BADGES strip) is border-fill EXCEPT the word graphic --
+   * g2card_paint() overwrites cols 2-6 with CARDGFX/LEADERS right after this. */
+  for (int x = 1; x < 19; x++) gbscr_cell(gs, x, 8, GBSCR_SRC_TEXTBOX, G2F_FILL);
+}
+
+/* The upper half (NAME/ID/MONEY/pic/divider) is IDENTICAL on both pages --
+ * confirmed byte-for-byte across all four dumps -- so both callers share it. */
+static void g2card_paint_upper(GbScreen* gs, const GbTrainer* t, bool female) {
+  gbscr_text(gs, 2, 2, "NAME/");
+  gbscr_raw(gs, 7, 2, t->name_raw, GB_OT_GLYPHS);
+
+  gbscr_cell(gs, 2, 4, GBSCR_SRC_FONTEXTRA, 0);   /* "ID" */
+  gbscr_cell(gs, 3, 4, GBSCR_SRC_FONTEXTRA, 1);   /* "No" */
+  char buf[16];
+  siprintf(buf, "%05u", (unsigned)t->trainer_id);
+  gbscr_text(gs, 5, 4, buf);
+
+  gbscr_text(gs, 2, 6, "MONEY");
+  gbscr_cell(gs, 7, 6, GBSCR_SRC_FONT, 0xF0);     /* the currency sign */
+  if (t->money_ok) siprintf(buf, "%06lu", (unsigned long)t->money);
+  else             siprintf(buf, "?");
+  gbscr_text(gs, 8, 6, buf);
+  for (int cx = 8 + (int)strlen(buf); cx < 14; cx++) gbscr_cell(gs, cx, 6, GBSCR_SRC_BLANK, 0);
+
+  GbScrSrc pic_src = female ? GBSCR_SRC_CARDPIC_F : GBSCR_SRC_CARDPIC_M;
+  for (int ty = 0; ty < 7; ty++)
+    for (int tx = 0; tx < 5; tx++)
+      gbscr_cell(gs, 14 + tx, 1 + ty, pic_src, (uint8_t)(ty * 5 + tx));
+  gbscr_cell(gs, 18, 9, pic_src, 4);   /* the repeat cell -- see file comment */
+
+  for (int x = 1; x <= 12; x++) gbscr_cell(gs, x, 3, GBSCR_SRC_TEXTBOX, G2F_DIVFILL);
+  gbscr_cell(gs, 13, 3, GBSCR_SRC_TEXTBOX, G2F_DIVCAP);
+}
+
+static void g2card_paint_page1(GbScreen* gs, const GbTrainer* t, bool female) {
+  g2card_border(gs);
+  g2card_paint_upper(gs, t, female);
+
+  for (int i = 0; i < 5; i++) gbscr_cell(gs, 2 + i, 8, GBSCR_SRC_CARDGFX, (uint8_t)i);
+
+  gbscr_text(gs, 2, 10, "POK\xC3\xA9""DEX");
+  char buf[16];
+  siprintf(buf, "%3u", (unsigned)t->dex_owned);
+  gbscr_text(gs, 15, 10, buf);
+
+  gbscr_text(gs, 2, 12, "PLAY TIME");
+  int hw = siprintf(buf, "%u", (unsigned)t->playtime.hours);
+  gbscr_text(gs, 13, 12, buf);
+  bool colon_on = ((g2_frame_ctr >> 5) & 1u) != 0;
+  if (colon_on) gbscr_cell(gs, 13 + hw, 12, GBSCR_SRC_TEXTBOX, G2F_COLON);
+  else          gbscr_cell(gs, 13 + hw, 12, GBSCR_SRC_BLANK, 0);
+  siprintf(buf, "%02u", (unsigned)t->playtime.minutes);
+  gbscr_text(gs, 14 + hw, 12, buf);
+  for (int cx = 16 + hw; cx <= 17; cx++) gbscr_cell(gs, cx, 12, GBSCR_SRC_BLANK, 0);
+
+  gbscr_text(gs, 12, 15, "BADGES");
+  gbscr_cell(gs, 18, 15, GBSCR_SRC_FONT, 0xED);   /* the (r) hint arrow */
+}
+
+static void g2card_paint_page2(GbScreen* gs, const GbTrainer* t) {
+  g2card_border(gs);
+  /* the upper half is repainted here too -- U2b's dirty-cell idempotence
+   * means this costs nothing extra to blit, and it is what lets L/R flip
+   * pages on the SAME gbscr_open() without a second decode of the pic. */
+  g2card_paint_upper(gs, t, false);   /* female arg only matters for the pic src,
+                                       * which pdna_gbtrainer_gen2_card() re-paints
+                                       * itself right after calling this -- see
+                                       * there for why page 2 alone never needs it */
+
+  for (int i = 0; i < 5; i++) gbscr_cell(gs, 2 + i, 8, GBSCR_SRC_LEADERS, (uint8_t)(G2L_BADGES_WORD + i));
+
+  for (int k = 0; k < 8; k++) {
+    int row = k / 4, col = k % 4;
+    int c0 = 2 + col * 4, y0 = 10 + row * 3;
+    int base = 10 * k;
+    for (int i = 0; i < 4; i++) gbscr_cell(gs, c0 + i, y0, GBSCR_SRC_LEADERS, (uint8_t)(base + i));
+    for (int i = 0; i < 3; i++) gbscr_cell(gs, c0 + 1 + i, y0 + 1, GBSCR_SRC_LEADERS, (uint8_t)(base + 4 + i));
+    for (int i = 0; i < 3; i++) gbscr_cell(gs, c0 + 1 + i, y0 + 2, GBSCR_SRC_LEADERS, (uint8_t)(base + 7 + i));
+    /* U3 accepted deviation (see file comment): a STATIC 2x2 BADGES overlay
+     * over the face's centre when owned -- the real game animates this as an
+     * OAM sprite instead. */
+    if (gbtr_badge_get(t, false, k)) {
+      int base2 = 4 * k;
+      for (int dy = 0; dy < 2; dy++)
+        for (int dx = 0; dx < 2; dx++)
+          gbscr_cell(gs, c0 + 1 + dx, y0 + 1 + dy, GBSCR_SRC_BADGES, (uint8_t)(base2 + dy * 2 + dx));
+    }
+  }
+}
+
+static void g2card_sel_rect(int page, int sel, int* x, int* y, int* w, int* h) {
+  if (page == 0) {
+    switch (sel) {
+      case G2C_NAME:  *x = 7;  *y = 2;  *w = GB_OT_GLYPHS; *h = 1; break;
+      case G2C_ID:    *x = 5;  *y = 4;  *w = 5;             *h = 1; break;
+      case G2C_MONEY: *x = 8;  *y = 6;  *w = 6;             *h = 1; break;
+      default:        *x = 13; *y = 12; *w = 6;             *h = 1; break;   /* TIME */
+    }
+  } else {
+    int row = sel / 4, col = sel % 4;
+    *x = 2 + col * 4; *y = 10 + row * 3; *w = 4; *h = 3;
+  }
+}
+
+static void g2card_edit_sel(GbTrainer* t, int page, int sel) {
+  if (page == 0) {
+    switch (sel) {
+      case G2C_NAME:  gbtr_edit_row(t, false, GBTR_NAME);  break;
+      case G2C_ID:    gbtr_edit_row(t, false, GBTR_ID);    break;
+      case G2C_MONEY: gbtr_edit_row(t, false, GBTR_MONEY); break;
+      default:        gbtr_edit_row(t, false, GBTR_TIME);  break;
+    }
+  } else {
+    gbtr_badge_toggle(t, false, sel);
+  }
+}
+
+/* Gold/Silver/Crystal's own trainer card -- the Gen-2 sibling of
+ * pdna_gbtrainer_gen1_card() above; same contract (returns true iff B asked
+ * for a commit, falls back to the plain row-list page with an honest header
+ * on any shell refusal). `female` (Chris vs Kris) comes from the save's own
+ * gender field (has_gender && gender) -- Gold has no gender branch (its
+ * cardpic_f is always 0, so `female` is forced false regardless of what the
+ * caller passes, same fail-safe cardpic_colmajor already gives rom_gbui.c). */
+__attribute__((noinline))
+static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
+  uint16_t pic_need = female ? GBSCR_NEED_CARDPIC_F : GBSCR_NEED_CARDPIC_M;
+  uint16_t need_mask = GBSCR_NEED_TEXTBOX | GBSCR_NEED_FONTEXTRA | GBSCR_NEED_CARDGFX |
+                       GBSCR_NEED_LEADERS | GBSCR_NEED_BADGES | pic_need;
+  uint32_t shell_need = gbscr_tail_need(PDNA_GEN2, need_mask);
+  uint8_t* tail = gb12_arena_tail(shell_need);
+
+  GbScreen gs;
+  const char* reason = 0;
+  bool ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, &reason);
+  if (!ok && female) {
+    /* A save claims female on a ROM whose cardpic_f rom_gbui somehow failed
+     * to locate (should not happen once cardpic_f is non-zero -- rom_gbui.c's
+     * own cross-check ties it to the SAME anchor as cardpic_m -- but this is
+     * the fail-safe: retry once as Chris rather than refuse the whole card
+     * over a photo). */
+    female = false;
+    need_mask = (need_mask & ~(uint16_t)GBSCR_NEED_CARDPIC_F) | GBSCR_NEED_CARDPIC_M;
+    shell_need = gbscr_tail_need(PDNA_GEN2, need_mask);
+    ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, &reason);
+  }
+  if (!ok) {
+    gb12_arena_tail_release();
+    return pdna_gbtrainer_plain(t, false, can_edit, PDNA_GBTR_FALLBACK_TITLE,
+                                reason ? reason : PDNA_GBSCR_REASON_UNAVAILABLE);
+  }
+
+  static const char* const kLegendEdit[4] = {
+    PDNA_GBTR_ACT_EDIT, PDNA_GBTR_ACT_SAVE, PDNA_GBSCR_ACT_SIZE, PDNA_GBTR_ACT_MORE
+  };
+  static const char* const kLegendView[4] = {
+    0, PDNA_GBSCR_ACT_BACK, PDNA_GBSCR_ACT_SIZE, PDNA_GBTR_ACT_MORE
+  };
+  gbscr_set_legend(&gs, can_edit ? kLegendEdit : kLegendView);
+
+  int page = 0, sel = 0;
+  bool want_commit = false;
+  g2_frame_ctr = 0;
+  g2card_paint_page1(&gs, t, female);
+
+  for (;;) {
+    gbscr_flush(&gs, 0);
+
+    int cx, cy, cw, ch;
+    g2card_sel_rect(page, sel, &cx, &cy, &cw, &ch);
+    int px0, py0, px1, py1;
+    gbscr_cell_rect(cx, cy, cw, ch, &px0, &py0, &px1, &py1);
+    m3_frame(px0, py0, px1, py1, GBCARD_CSEL);
+
+    u16 k = 0;
+    for (;;) {
+      s_vsync();
+      g2_frame_ctr++;
+      if (page == 0 && (g2_frame_ctr & 31u) == 0) {
+        bool colon_on = ((g2_frame_ctr >> 5) & 1u) != 0;
+        char buf[16];
+        int hw = siprintf(buf, "%u", (unsigned)t->playtime.hours);
+        if (colon_on) gbscr_cell(&gs, 13 + hw, 12, GBSCR_SRC_TEXTBOX, G2F_COLON);
+        else          gbscr_cell(&gs, 13 + hw, 12, GBSCR_SRC_BLANK, 0);
+        gbscr_flush(&gs, 0);
+      }
+      k = key_hit(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_SELECT | KEY_START);
+      if (k) break;
+    }
+    if      (k & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) snd_move();
+    else if (k & KEY_A) snd_ok();
+    else if (k & KEY_B) snd_back();
+
+    if (k & KEY_SELECT) { gbscr_toggle_scale(&gs); continue; }
+    if (k & KEY_START) {
+      gbscr_close(&gs);
+      gb12_arena_tail_release();
+      return pdna_gbtrainer_plain(t, false, can_edit, 0, 0);
+    }
+    if (k & KEY_B) { want_commit = true; break; }
+
+    if (k & (KEY_LEFT | KEY_RIGHT)) {
+      page ^= 1;
+      sel = 0;
+      if (page == 0) g2card_paint_page1(&gs, t, female);
+      else           g2card_paint_page2(&gs, t);
+      gbscr_mark_all_dirty(&gs);
+      continue;
+    }
+
+    int old_sel = sel;
+    int selmax = (page == 0) ? G2C_P1_MAX : G2C_P2_MAX;
+    if (k & KEY_UP)        sel = (sel > 0) ? sel - 1 : selmax - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % selmax;
+    else if (can_edit && (k & KEY_A)) {
+      g2card_edit_sel(t, page, sel);
+      if (page == 0) g2card_paint_page1(&gs, t, female);
+      else           g2card_paint_page2(&gs, t);
+      gbscr_mark_all_dirty(&gs);
+    }
+    if (sel != old_sel) gbscr_mark_all_dirty(&gs);
+  }
+
+  gbscr_close(&gs);
+  gb12_arena_tail_release();
+  return want_commit;
+}
+
 void pdna_gbtrainer(GbSession* s, bool can_edit) {
   GbTrainer t, t0;
   if (!s || !gbt_read(s, &t)) {
@@ -920,20 +1229,21 @@ void pdna_gbtrainer(GbSession* s, bool can_edit) {
   s_id_warned = false;               /* the identity warning is once per VISIT */
   const bool gen1 = (s->gen == GB_GEN1);
 
-  /* U2c: Gen 1 always tries Red's own card first (the GB-screen shell over the
-   * user's own ROM), falling back to the plain row-list page (with an honest
-   * header naming the refusal) only when the shell itself refuses -- design
-   * sec 3.5. Gen 2 is UNCHANGED: Emerald's card art (or its own weak-NULL/
-   * ROM-rung fallback -- see card_bg.h) present -> the card IS the whole
-   * screen (P1c); absent -> P1b's plain row-list page. Mirrors pdna_trainer()'s
-   * own `card_bg(game, 0, gender).blob != 0` fork exactly. */
+  /* U3: BOTH generations now try their OWN real card first (the GB-screen
+   * shell over the user's own ROM), falling back to the plain row-list page
+   * (with an honest header naming the refusal) only when the shell itself
+   * refuses -- design sec 3.5. The Emerald-art card (pdna_gbtrainer_card,
+   * card_bg-gated) is retired for Gen 2 along with it -- see that function's
+   * own comment. Crystal's `female` (Chris vs Kris) comes straight from the
+   * save's own gender field; Gold has no gender branch, so `t.gender` is
+   * whatever gbt_read() left it at (false unless has_gender, which Gold never
+   * sets) and pdna_gbtrainer_gen2_card()'s own cardpic_f-missing fail-safe
+   * covers the rest. */
   bool want_commit = false;
   if (gen1) {
     want_commit = pdna_gbtrainer_gen1_card(&t, can_edit);
-  } else if (card_bg(PK_EMERALD, 0, 0).blob != 0) {
-    pdna_gbtrainer_card(&t, gen1, can_edit, &want_commit);
   } else {
-    want_commit = pdna_gbtrainer_plain(&t, gen1, can_edit, 0, 0);
+    want_commit = pdna_gbtrainer_gen2_card(&t, can_edit, t.has_gender && t.gender != 0);
   }
   if (!want_commit) return;                    /* plain page's B: discard (unchanged from
                                                   * P1b); the card path (P1d) always asks
