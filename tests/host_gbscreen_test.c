@@ -304,6 +304,69 @@ int main(void) {
      * gen/mask combination) is the real coverage. */
   }
 
+  /* 9b (U3): the 5 Gen-2 card blocks added alongside BADGES above -- same
+   * exhaustive plan-arithmetic check, but scoped to just the new bits (the
+   * full cross product with TEXTBOX/CARDFRAME/BADGES would push some
+   * combinations past GBSCR_MAX_BLOCKS' 7-block cap and legitimately refuse,
+   * which the item-9 loop's unconditional CHECK(ok, ...) does not expect).
+   * Also proves the EXACT combination pdna_gbtrainer_gen2_card() opens with
+   * (TEXTBOX|FONTEXTRA|CARDGFX|LEADERS|BADGES|one of CARDPIC_M/F = 7 blocks
+   * with FONT) fits GBSCR_MAX_BLOCKS exactly, on both generations. */
+  {
+    RomGbUi gu; memset(&gu, 0, sizeof gu);
+    gu.font = 0x1000; gu.textbox = 0x2000; gu.frames = 0x2500;
+    gu.cardframe = 0x4000; gu.badges = 0x5000;
+    gu.fontextra = 0x6000; gu.leaders = 0x7000; gu.cardgfx = 0x8000;
+    gu.cardpic_m = 0x9000; gu.cardpic_f = 0xA000;
+
+    /* Every SUBSET of just the 5 new bits (32 combinations, max 5 optional +
+     * FONT = 6 blocks (this sub-block alone never reaches the 7-block cap --
+     * that combination is the SEPARATE check right below). A raw
+     * integer range 0..OR-of-bits (item 9's own idiom above) does not work
+     * here: these bit VALUES are higher than TEXTBOX/CARDFRAME/BADGES', so
+     * the range 0..992 also walks every combination of those THREE older
+     * bits too, some of which push nblocks past 6 -- a real refusal, not a
+     * test bug, but not what this block means to exercise. */
+    static const uint16_t kNewBits[5] = {
+      GBSCR_NEED_FONTEXTRA, GBSCR_NEED_LEADERS, GBSCR_NEED_CARDGFX,
+      GBSCR_NEED_CARDPIC_M, GBSCR_NEED_CARDPIC_F
+    };
+    const uint8_t gens[2] = { GB_GEN1, GB_GEN2 };
+    for (int gi = 0; gi < 2; gi++) {
+      uint8_t gen = gens[gi];
+      for (int sub = 0; sub < 32; sub++) {
+        uint16_t mask = 0;
+        for (int b = 0; b < 5; b++) if (sub & (1 << b)) mask |= kNewBits[b];
+        GbscrCache plan;
+        bool ok = gbscr_cache_plan(gen, mask, &gu, 65536u, &plan);
+        CHECK(ok, "gen=%d mask=0x%x (new bits): cache_plan refused", gen, mask);
+        if (!ok) continue;
+        uint32_t sum = 0, cursor = 0;
+        for (int i = 0; i < plan.nblocks; i++) {
+          CHECK(plan.blocks[i].ram_off == cursor,
+                "gen=%d mask=0x%x block %d: ram_off=%u, want cumulative %u",
+                gen, mask, i, plan.blocks[i].ram_off, cursor);
+          sum += plan.blocks[i].len;
+          cursor += plan.blocks[i].len;
+        }
+        uint32_t need = gbscr_tail_need(gen, mask);
+        CHECK(sum + ROM_GBUI_SCRATCH_MIN == need,
+              "gen=%d mask=0x%x (new bits): sum(len)=%u + SCRATCH_MIN=%u != gbscr_tail_need()=%u",
+              gen, mask, sum, ROM_GBUI_SCRATCH_MIN, need);
+      }
+
+      /* the real Gen-2 card's own exact combination (7 blocks incl. FONT and
+       * BADGES -- the page-2 badge-icon overlay). */
+      uint16_t card_mask = GBSCR_NEED_TEXTBOX | GBSCR_NEED_FONTEXTRA | GBSCR_NEED_CARDGFX |
+                           GBSCR_NEED_LEADERS | GBSCR_NEED_BADGES | GBSCR_NEED_CARDPIC_M;
+      GbscrCache plan;
+      bool ok = gbscr_cache_plan(gen, card_mask, &gu, 65536u, &plan);
+      CHECK(ok, "gen=%d: the real Gen-2 card's own 7-block combo was refused", gen);
+      CHECK(plan.nblocks == 7, "gen=%d: the real Gen-2 card's combo planned %d blocks, want 7",
+            gen, plan.nblocks);
+    }
+  }
+
   /* Minor (U2c review): gbscr_pack_pic()/gbscr_unpack_pic_px() round trip --
    * both moved above this module's own tonc/FatFs boundary specifically so
    * this test can call them directly. A synthetic 4x3-tile (32x24 px) grid,

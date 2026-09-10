@@ -170,6 +170,19 @@ typedef enum {
   GBSCR_SRC_TEXTBOX,
   GBSCR_SRC_CARDFRAME,
   GBSCR_SRC_BADGES,
+  /* U3: Gen-2's own trainer-card blocks -- located by rom_gbui already (see
+   * RomGbUi.fontextra/leaders/cardgfx/cardpic_m/cardpic_f), just never
+   * plumbed into the tail cache/gbscr_cell() pipeline until now. Each is a
+   * PLAIN rom_gbui_tile() block like BADGES -- no special codec -- so they
+   * slot into the SAME cache-plan/mem-read machinery as every other
+   * GbScrSrc; CARDPIC_M/CARDPIC_F are split (rather than one gender-aware
+   * src) because gbscr_block_off() takes no gender flag and a single open()
+   * only ever needs the ONE the save's own gender picks. */
+  GBSCR_SRC_FONTEXTRA,
+  GBSCR_SRC_LEADERS,
+  GBSCR_SRC_CARDGFX,
+  GBSCR_SRC_CARDPIC_M,
+  GBSCR_SRC_CARDPIC_F,
   GBSCR_SRC_PIC
 } GbScrSrc;
 
@@ -181,6 +194,12 @@ typedef enum {
  * by the caller on top of what need_mask asks gbscr_open() to reserve. */
 #define GBSCR_NEED_TEXTBOX   (1u << GBSCR_SRC_TEXTBOX)
 #define GBSCR_NEED_CARDFRAME (1u << GBSCR_SRC_CARDFRAME)
+/* U3: Gen-2's own card, added alongside GBSCR_NEED_BADGES below. */
+#define GBSCR_NEED_FONTEXTRA (1u << GBSCR_SRC_FONTEXTRA)
+#define GBSCR_NEED_LEADERS   (1u << GBSCR_SRC_LEADERS)
+#define GBSCR_NEED_CARDGFX   (1u << GBSCR_SRC_CARDGFX)
+#define GBSCR_NEED_CARDPIC_M (1u << GBSCR_SRC_CARDPIC_M)
+#define GBSCR_NEED_CARDPIC_F (1u << GBSCR_SRC_CARDPIC_F)
 
 /* U2c: the Gen-1 player pic, gb_sprite_gen1's own 7x7-tile (56x56 px) decode,
  * packed into OUR OWN 2-bit-per-pixel format (16 B/tile, NOT the ROM's planar
@@ -201,7 +220,16 @@ typedef enum {
  * the SAME tail buffer gbscr_open() was given, `len` is the block's exact byte
  * length (rom_gbui_tile()'s own tile_count * stride for that block/bpp). */
 typedef struct { uint32_t rom_off, ram_off, len; } GbscrBlock;
-#define GBSCR_MAX_BLOCKS 4   /* FONT + TEXTBOX + CARDFRAME + BADGES: the whole set */
+/* U3: Gen 2's own card caches FONT + FRAMES(=TEXTBOX) + FONTEXTRA + CARDGFX +
+ * LEADERS + BADGES (the badge-icon overlay, page 2) + one of CARDPIC_M/
+ * CARDPIC_F simultaneously (both card pages share ONE gbscr_open(), L/R just
+ * flips which cells are painted) -- 7 blocks, the new high-water mark
+ * (Gen 1's own card only ever needs 4: FONT + TEXTBOX + CARDFRAME + BADGES).
+ * tests/host_gbscreen_test.c's own "the real Gen-2 card's own combo" check
+ * caught this at 6 (one short) -- gbscr_cache_plan() failed closed and every
+ * card silently fell back to the plain page, the SAME failure mode as a
+ * missing ROM. */
+#define GBSCR_MAX_BLOCKS 7
 
 /* U2b item 1: repaints are SD-free. `gbscr_mem_read()` (pdna_gbscreen.c) is a
  * GbReadFn that serves rom_gbui_tile()/rom_gbui_glyph()'s reads out of `tail`

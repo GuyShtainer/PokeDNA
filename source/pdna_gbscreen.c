@@ -178,6 +178,18 @@ uint32_t gbscr_block_bytes(uint8_t gen, GbScrSrc src) {
     case GBSCR_SRC_TEXTBOX:   return (gen == PDNA_GEN1) ? 32u * 16u : 54u * 8u;
     case GBSCR_SRC_CARDFRAME: return 40u * 16u;
     case GBSCR_SRC_BADGES:    return (gen == PDNA_GEN1) ? 64u * 16u : 44u * 16u;
+    /* U3: Gen 2's own card blocks (docs/GB-GAME-SCREENS-DESIGN.md sec 2.2,
+     * cross-checked against the real tilemap captures -- tools/ dumps at
+     * /tmp/u3/real/{gold,crystal}/tilemap_p{1,2}.json): FONTEXTRA 32 tiles
+     * 2bpp (512 B, only 2 used -- ID/No); LEADERS 86 tiles 2bpp (1,376 B: 80
+     * for the 8 gym-leader faces + 6 for the "BADGES" page-2 word, only 5
+     * used); CARDGFX 6 tiles 2bpp (96 B, only 5 used -- the "STATUS" page-1
+     * word); CARDPIC_M/F 35 tiles 2bpp (560 B, the 5x7 card photo). */
+    case GBSCR_SRC_FONTEXTRA: return 32u * 16u;
+    case GBSCR_SRC_LEADERS:   return 86u * 16u;
+    case GBSCR_SRC_CARDGFX:   return 6u * 16u;
+    case GBSCR_SRC_CARDPIC_M: return 35u * 16u;
+    case GBSCR_SRC_CARDPIC_F: return 35u * 16u;
     default:                  return 0;
   }
 }
@@ -196,6 +208,11 @@ uint32_t gbscr_block_off(const RomGbUi* gu, uint8_t gen, GbScrSrc src) {
     case GBSCR_SRC_TEXTBOX:   return (gen == PDNA_GEN1) ? gu->textbox : gu->frames;
     case GBSCR_SRC_CARDFRAME: return gu->cardframe;
     case GBSCR_SRC_BADGES:    return gu->badges;
+    case GBSCR_SRC_FONTEXTRA: return gu->fontextra;
+    case GBSCR_SRC_LEADERS:   return gu->leaders;
+    case GBSCR_SRC_CARDGFX:   return gu->cardgfx;
+    case GBSCR_SRC_CARDPIC_M: return gu->cardpic_m;
+    case GBSCR_SRC_CARDPIC_F: return gu->cardpic_f;
     default:                  return 0;
   }
 }
@@ -226,9 +243,13 @@ bool gbscr_mem_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
  * cache, right after FONT -- fixed, so the cache-building loop and any test that
  * inspects a GbscrCache agree on layout. Pure data: moved above the tonc/FatFs
  * boundary (U2b/U2c review item 0c) so gbscr_cache_plan() below can use it. */
-static const GbScrSrc kCacheOptOrder[3] = {
-  GBSCR_SRC_TEXTBOX, GBSCR_SRC_CARDFRAME, GBSCR_SRC_BADGES
+static const GbScrSrc kCacheOptOrder[8] = {
+  GBSCR_SRC_TEXTBOX, GBSCR_SRC_CARDFRAME, GBSCR_SRC_BADGES,
+  /* U3: Gen 2's own card additions. */
+  GBSCR_SRC_FONTEXTRA, GBSCR_SRC_LEADERS, GBSCR_SRC_CARDGFX,
+  GBSCR_SRC_CARDPIC_M, GBSCR_SRC_CARDPIC_F
 };
+#define GBSCR_CACHE_OPT_N 8
 
 /* Total tail bytes gbscr_open() needs for `need_mask` on generation `gen`:
  * the 2,048-B rom_gbui scan scratch, reused afterward for FONT (always cached)
@@ -238,7 +259,7 @@ static const GbScrSrc kCacheOptOrder[3] = {
  * re-deriving it and risking the two falling out of sync. */
 uint32_t gbscr_tail_need(uint8_t gen, uint16_t need_mask) {
   uint32_t need = ROM_GBUI_SCRATCH_MIN + gbscr_block_bytes(gen, GBSCR_SRC_FONT);
-  for (int i = 0; i < 3; i++)
+  for (int i = 0; i < GBSCR_CACHE_OPT_N; i++)
     if (need_mask & (1u << kCacheOptOrder[i])) need += gbscr_block_bytes(gen, kCacheOptOrder[i]);
   return need;
 }
@@ -275,7 +296,7 @@ bool gbscr_cache_plan(uint8_t gen, uint16_t need_mask, const RomGbUi* gu,
     cursor += len;
   }
 
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < GBSCR_CACHE_OPT_N; i++) {
     GbScrSrc src = kCacheOptOrder[i];
     if (!(need_mask & (1u << src))) continue;
     uint32_t off = gbscr_block_off(gu, gen, src);
