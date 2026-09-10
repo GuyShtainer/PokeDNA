@@ -63,10 +63,10 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
   [NV_DEX]       = { { NAV_COMING_SOON, "The Pokedex is coming soon." },
                      { NAV_COMING_SOON, "The Pokedex is coming soon." } },
   /* U4 (BACKLOG #67): Red/Yellow's own Item bag + PC store are wired
-   * (pdna_gbbag.c) -- Gen 1 only; Gen 2's Pack (design sec 1.4) is a later
-   * slice. */
+   * (pdna_gbbag.c) -- Gen 1. U5: Gold/Silver/Crystal's own Pack + PC store
+   * are wired too (pdna_gbpack.c, design sec 1.4) -- Gen 2. */
   [NV_BAG]       = { { NAV_OK, "OK" },
-                     { NAV_COMING_SOON, "The Bag is coming soon." } },
+                     { NAV_OK, "OK" } },
   [NV_DATA]      = { { NAV_COMING_SOON, "Flags/counters coming soon." },
                      { NAV_COMING_SOON, "Flags/counters coming soon." } },
   [NV_SECRET]    = { { NAV_NOT_IN_GAME, "Gen 1 games have no Bases." },
@@ -81,6 +81,8 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Frontier." } },
   [NV_FLY]       = { { NAV_COMING_SOON, "Fly flags are coming soon." },
                      { NAV_COMING_SOON, "Fly flags are coming soon." } },
+  [NV_CONTEST]   = { { NAV_NOT_IN_GAME, "Gen 1 games have no Contests." },
+                     { NAV_NOT_IN_GAME, "Gen 2 games have no Contests." } },
   /* Review D2: GEN12-PARITY-DESIGN.md puts a Game Boy map renderer OUT of scope, so
    * "coming soon" would promise a date nobody plans; name the blocker instead. */
   [NV_MAP]       = { { NAV_COMING_SOON, "Needs a Game Boy map viewer." },

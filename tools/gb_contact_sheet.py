@@ -165,6 +165,13 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
      "SWAP, BAD ID/QUANTITY refusals, the forced-failure fallback page, the "
      "empty pocket (+ real-cartridge oracle), Gold's own Bag refusal",
      ("N6(d)", "N6(e)", "N6(f)")),
+    # U5 (docs/briefs/U5-gen2-pack-brief.md, BACKLOG #67): Gold/Silver/Crystal's own
+    # Pack (item bag) + PC item store drawn on the shared shell, the Gen-2 sibling of
+    # U4's own Gen-1 bag. Shots come from tools/dgb_shots.py's run_u5_pack(), captions
+    # all start "U5:". Appended after "u4-review-n6" per this list's own append-only
+    # rule.
+    ("gb-pack-gen2", "U5 — Gold/Silver/Crystal's own Pack + PC store on the shell "
+     "(Gen-2 saves)", ("U5",)),
     # BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4, append-only,
     # same rule as every row above): the KEEP AS IS / MAKE LEGAL choice
     # gb_paste_hook now offers on a Gen 3 -> Game Boy paste whose species is
@@ -173,7 +180,7 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # image (NOT Red -- see that function's own docstring for why: Red/Gen-1's
     # base-stats-ROM lookup is SD-card-only and always refuses in this harness,
     # independent of R1); captions all start "BACKLOG #104 R1:". Appended after
-    # "u4-review-n6" per this list's own append-only rule.
+    # "gb-pack-gen2" per this list's own append-only rule.
     ("xfer-r1-make-legal", "BACKLOG #104 R1 — KEEP AS IS / MAKE LEGAL on a Gen 3 -> "
      "Game Boy paste (an underlevelled evolved species)", ("BACKLOG #104 R1",)),
 ]

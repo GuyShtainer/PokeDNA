@@ -47,10 +47,11 @@ ITEM_NOTES = {
     "cardgfx": "6 tiles, 2bpp (TrainerCardGFX)",
     "pack_m": "60 tiles, 2bpp (PackGFX)",
     "pack_f": "60 tiles, 2bpp (PackFGFX, Crystal only)",
+    "g1_keyitems": "BACKLOG #99: IsKeyItem_'s KeyItemFlags, 15 B (ids 1..120), Gen 1 only, OPTIONAL",
 }
 ORDER = ["gen", "banks", "font", "textbox", "cardframe", "badges", "leaders",
          "playerpic", "playerpic_bank", "frames", "fontextra",
-         "cardpic_m", "cardpic_f", "cardgfx", "pack_m", "pack_f"]
+         "cardpic_m", "cardpic_f", "cardgfx", "pack_m", "pack_f", "g1_keyitems"]
 
 
 def build_driver(bin_path: Path) -> None:
@@ -113,6 +114,11 @@ def main() -> int:
         located = v not in ("0x0",)
         note = ITEM_NOTES.get(k, "")
         print(f"  {k:<16} {v:<10} {'located' if located else '-':<9} {note}")
+    if "g1_keyitems_bitmap" in fields:
+        bm = fields["g1_keyitems_bitmap"]
+        ids = [str(i + 1) for i in range(len(bm)) if bm[i] == "1"]
+        print(f"  g1_keyitems_bitmap ({len(bm)} ids, {len(ids)} set):")
+        print(f"    set ids: {' '.join(ids)}")
     if out_dir:
         n = len(list(out_dir.glob("*.ppm")))
         print(f"  wrote {n} .ppm file(s) to {out_dir}")

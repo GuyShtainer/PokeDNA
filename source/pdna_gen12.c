@@ -598,6 +598,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbsummary.h"   /* BACKLOG #41: the native VIEW/EDIT summary */
 #include "pdna_gbtrainer.h"   /* BACKLOG #49 P1b: the Gen-1/2 trainer card */
 #include "pdna_gbbag.h"       /* U4, BACKLOG #67: Red/Yellow's own Item bag */
+#include "pdna_gbpack.h"      /* U5, BACKLOG #67: Gold/Silver/Crystal's own Pack */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
@@ -1147,32 +1148,14 @@ static bool gb_edit_commit(int box, int slot, const GbEditMon* e, const char* wh
   return gb_persist(what_for_log);                                          /* 5 */
 }
 
-/* app_src_ops_set() hook: EDIT on the read-only mon menu. BACKLOG #41: opens the SAME
- * native summary screen VIEW does (pdna_gbsummary.c), just straight into edit mode
- * (`start_editing`) -- no separate flat-list screen for this row any more. pdna_gbedit.c
- * stays in the tree, reachable via SELECT inside the summary, as the reviewed fallback
- * until the summary screen itself has had a hardware pass (docs/GEN12-EDIT-DESIGN.md). */
-static bool gb_edit_hook(uint8_t* rec80) {
-  int box, slot;
-  if (!gb_locate(rec80, &box, &slot)) return false;
-  GbSession* s = &g_ed->s;
-
-  GbsStatus st = gbs_load_list(s, box, g_ed->list);
-  if (st != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(st), 0); return false; }
-  if (slot >= gb_list_count(s->gen, g_ed->list, box)) {
-    snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
-  }
-
-  GbEditMon e;
-  if (!gb_load(&e, s->gen, g_ed->list, box, slot)) { snd_deny(); return false; }
-  bool has_sidecar = gb_has_sidecar(s->gen, &e);
-  bool saved = false; int card = 0;
-  pdna_gbsummary(&e, true, true, s->gen == GB_GEN1 ? "Gen 1 record" : "Gen 2 record",
-                 has_sidecar, false, &saved, &card);
-  if (!saved) return false;
-
-  return gb_edit_commit(box, slot, &e, "edit");
-}
+/* gb_edit_hook (the AppSrcOps.edit hook: EDIT on the read-only mon menu) was retired by
+ * BACKLOG #48's Gen-3-parity change (pdna_main.c: the standalone EDIT row is gone, its
+ * only caller) and removed here (stack-budget p84b item 2): its address was still taken
+ * by k_gb_ops's `.edit = gb_edit_hook` below even with zero call sites, which is exactly
+ * the "assigned but never dispatched" shape the addrtaken-ok exemption existed to cover.
+ * Deleting the assignment and the function means nothing takes its address, so no
+ * exemption is needed. VIEW (gb_view_hook) already reaches the same summary screen in
+ * edit mode when app_can_edit() allows it -- see pdna_main.c's Gen-3-parity comment. */
 
 /* MOVE TO's destination picker: every box the session knows, party last (S3 design,
  * docs/GEN12-EDIT-DESIGN.md section 6). `exclude` (the box the mon already lives in) is
@@ -2477,7 +2460,7 @@ static bool gb_create_hook(void) {
 }
 
 static const AppSrcOps k_gb_ops = {
-  .edit = gb_edit_hook, .move = gb_move_hook, .release = gb_release_hook,
+  .edit = 0, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook,
 };
@@ -2575,6 +2558,15 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * the `else if (nv != NV_BACK)` branch below, which calls
      * app_nav_refuse() and shows nav_avail's own honest message instead. */
     if (g_ed) pdna_gbbag(&g_ed->s, true);
+    else      (void)gb_info_page(m);
+  } else if (nv == NV_BAG && kind == SE_KIND_GEN2) {
+    /* U5 (BACKLOG #67): Gold/Silver/Crystal's own Pack + PC store, mirroring
+     * U4's own gate one branch up -- same "needs a live GbSession to write
+     * through" rule (pdna_gbpack() itself refuses a NULL/non-Gen-2 session,
+     * but g_ed's resident image is the only path that HAS one here; the
+     * plain FIL-streaming entry falls back to the read-only info page, same
+     * reasoning as NV_TRAINER above). */
+    if (g_ed) pdna_gbpack(&g_ed->s, true);
     else      (void)gb_info_page(m);
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */

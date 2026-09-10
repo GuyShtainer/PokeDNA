@@ -507,8 +507,15 @@ FIELDS = [
       "GS": D("player_data_1", "wStartMinute", 0x2046), "CRYSTAL": D("player_data", "wStartMinute", 0x2046)}),
   ("RTC_START_SECOND", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("player_data_1", "wStartSecond", 0x2047), "CRYSTAL": D("player_data", "wStartSecond", 0x2047)}),
+  # P1a review D11 (view-only, LOW): wRTC is NOT the same width on both games. GS's own
+  # .sym shows wRTC (4 B, d1e0-d1e3) followed by four SEPARATE wDSTBackupDay/Hours/
+  # Minutes/Seconds bytes (d1e4-d1e7) before wDST proper at d1e8 -- wRTC itself is 4 B.
+  # Crystal's .sym has no such separately-named backup quartet: wRTC (d4ba) runs
+  # straight to wDST (d4c2) with nothing named in between, so Crystal's wRTC field is
+  # genuinely 8 B (folds what GS keeps as four separate bytes into the same span).
   ("RTC_SNAPSHOT", BYTES, 4, {"RED": ABSENT, "YELLOW": ABSENT,
-      "GS": D("player_data_1", "wRTC", 0x2048), "CRYSTAL": D("player_data", "wRTC", 0x2048)}),
+      "GS": D("player_data_1", "wRTC", 0x2048, size=4),
+      "CRYSTAL": D("player_data", "wRTC", 0x2048, size=8)}),
   ("RTC_DST", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("player_data_1", "wDST", 0x2050), "CRYSTAL": D("player_data", "wDST", 0x2050)}),
   # P1a review D6: Gen 2 is NOT hour-uncapped the way gb_trainer.h used to claim --
@@ -534,6 +541,35 @@ FIELDS = [
   ("CUR_DAY", U8, 1, {
       "RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("player_data_1", "wCurDay", 0x205A), "CRYSTAL": D("player_data", "wCurDay", 0x2059)}),
+
+  # ---- BACKLOG #94: Gen-2 box names ----------------------------------------------------
+  # sBoxNames: 14 x BOX_NAME_LENGTH(9) GB-encoded, 0x50-terminated names (pret's
+  # constants/text_constants.asm: BOX_NAME_LENGTH EQU 9; engine/menus/intro_menu.asm
+  # SetDefaultBoxNames writes "BOX1".."BOX14" at wBoxNames on a new game -- the exact
+  # bytes this generator's own check_off below cross-checks against Gold.sav/Crystal.sav,
+  # both still holding the untouched defaults). wBoxNames is bank-1 0xD8BF in pokegold.sym
+  # (falls inside GS's own player_data_3 region, wPlayerData3=0xD571) and bank-1 0xDB75 in
+  # pokecrystal.sym (inside Crystal's single player_data region, wPlayerData=0xD47B). Gen 1
+  # has no such table (boxes stay "BOX n" -- gb_fields.h's own comment on GBF_BOXNAMES).
+  ("BOXNAMES", BYTES, 126, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wBoxNames", 0x2727, check_len=126),
+      "CRYSTAL": D("player_data", "wBoxNames", 0x2703, check_len=126)}),
+
+  # ---- BACKLOG #86: Gen-2 RTC status flags (outside every checksummed span) -----------
+  # sRTCStatusFlags: bank 0, addr 0xAC60 in both pokegold.sym and pokecrystal.sym --
+  # sram_file_off(0, 0xAC60) = 0x0C60, matching §1.8's own cited offset exactly.
+  ("RTC_STATUS_FLAGS", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": S("sRTCStatusFlags", 0x0C60), "CRYSTAL": S("sRTCStatusFlags", 0x0C60)}),
+
+  # ---- P1a review D3: the day-care egg's own OT name --------------------------------
+  # wEggMonOT sits between wEggMonNickname (11 B, ends where this starts) and wEggMon
+  # (the record, starts where this ends) in both .sym files -- GS bank 01:dcbb =
+  # 0x2B23 (wEggMonNickname 0x2B18 + 11), Crystal bank 01:df70 = 0x2AFE
+  # (wEggMonNickname 0x2AF3 + 11); both agree with wEggMon's own 0x2B2E/0x2B09 starting
+  # exactly 11 B later. Without this field a withdrawn egg had no OT to read.
+  ("DAYCARE_EGG_OT", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wEggMonOT", 0x2B23),
+      "CRYSTAL": D("pokemon_data", "wEggMonOT", 0x2AFE)}),
 ]
 
 

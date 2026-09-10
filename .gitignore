@@ -5,6 +5,7 @@
 # build*/pdna_git.h (the build stamp), which does not. The trailing slash keeps build.sh out.
 build*/
 *.elf
+*.elf.stackcache.json
 *.gba
 *.map
 *.o

@@ -198,6 +198,30 @@ typedef enum {
    * 1=divider fill, 2=divider cap, 3="ID", 4="No", 5-9=the 5 "STATUS"-word
    * tiles, 10=the play-time colon. */
   GBSCR_SRC_STATUSWORD,
+  /* U5 (BACKLOG #67, Gen 2's OWN Pack): both derived from RomGbUi.pack_m the
+   * SAME way STATUSWORD is derived from .leaders above (a byte-search-verified
+   * offset, not a scan job of its own -- see pdna_gbscreen.c's own comment on
+   * gbscr_block_off()'s GBSCR_SRC_PACKMENU case). PACKMENU is the static
+   * background/border/pocket-label art (pack_menu.2bpp, 80 tiles, sits exactly
+   * 1,280 B -- 80 tiles * 16 B/tile -- BEFORE pack_m in ROM on both Gold and
+   * Crystal, confirmed by a direct VRAM-pixel-bytes-vs-ROM-bytes search, not
+   * assumed); PACK_M is the per-pocket picture block itself (PackGFX, already
+   * located, 60 tiles = 4 pockets * 15 tiles, ROM order KEY/ITEMS/TM-HM/BALLS
+   * per docs/GB-GAME-SCREENS-DESIGN.md sec 1.4 -- gbscr_cell()'s own `tile`
+   * argument for a PACK_M cell is `pocket_rom_index*15 + local_tile(0..14)`,
+   * the caller's job, not this src's). PACK_F (U5 D-Kris fix, review-opus
+   * ac9ffc0): Kris's own PackFGFX, RomGbUi.pack_f, already located by
+   * rom_gbui.c (Crystal only, cross-checked against the SAME anchor as
+   * pack_m) -- wired exactly the pure-additive way this comment always said
+   * it would be: one more GbScrSrc + need bit, same 60-tile/16-B-per-tile
+   * shape as PACK_M, mutually exclusive with it at any one gbscr_open() (a
+   * Crystal save's own gender picks ONE, same duality CARDPIC_M/CARDPIC_F
+   * already established for the trainer card two srcs up). The caller (Kris's
+   * OT gender byte) decides which need bit to ask for -- this src never
+   * inspects the save itself. */
+  GBSCR_SRC_PACKMENU,
+  GBSCR_SRC_PACK_M,
+  GBSCR_SRC_PACK_F,
   GBSCR_SRC_PIC
 } GbScrSrc;
 
@@ -216,6 +240,13 @@ typedef enum {
 #define GBSCR_NEED_CARDPIC_M (1u << GBSCR_SRC_CARDPIC_M)
 #define GBSCR_NEED_CARDPIC_F (1u << GBSCR_SRC_CARDPIC_F)
 #define GBSCR_NEED_STATUSWORD (1u << GBSCR_SRC_STATUSWORD)
+/* U5: both required together by pdna_gbpack.c (BACKLOG #67, Gen 2's own Pack) --
+ * see the GBSCR_SRC_PACKMENU/PACK_M enum comment above for what each holds. */
+#define GBSCR_NEED_PACKMENU  (1u << GBSCR_SRC_PACKMENU)
+#define GBSCR_NEED_PACK      (1u << GBSCR_SRC_PACK_M)
+/* U5 D-Kris: Crystal's own female pack picture, requested INSTEAD of
+ * GBSCR_NEED_PACK for a female save -- see the GBSCR_SRC_PACK_F enum comment. */
+#define GBSCR_NEED_PACK_F    (1u << GBSCR_SRC_PACK_F)
 
 /* U2c: the Gen-1 player pic, gb_sprite_gen1's own 7x7-tile (56x56 px) decode,
  * packed into OUR OWN 2-bit-per-pixel format (16 B/tile, NOT the ROM's planar

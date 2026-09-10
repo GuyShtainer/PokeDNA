@@ -69,6 +69,20 @@ Build it with any C compiler (`clang -O0 -o harness harness.c`) — it is a thro
 per-review build artifact, not something this directory ships (no compiled binaries,
 no `body.inc` snippets of any given review's source, checked in here).
 
+**WARNING (U5 D1, found by review-opus ac9ffc0):** the `SRC_TEXTBOX` tile *t* →
+`0x60 + t` identity above is a **Gen-1-only** convention — `oracle.py`'s own grid
+resolves `GBSCR_SRC_TEXTBOX` through `gu->textbox` (Gen 1's real 2bpp textbox block)
+for a Gen-1 capture, but Gen 2 has no such block: `pdna_gbscreen.c`'s own
+`gbscr_tile_pixels()` reads `GBSCR_SRC_TEXTBOX` cells through `gu->frames` on Gen 2
+(9 frames x 6 tiles, 1bpp, G2-R) instead. A Gen-2 harness/sketch using the `0x60+t`
+shortcut will silently compare the WRONG tile identity and can miss a real defect
+(this is exactly how U5's own first draft shipped Gen 1's box-corner indices, 25-31,
+against a Gen-2 screen that never had them). **Never use the `0x60+t` identity for a
+Gen-2 `SRC_TEXTBOX` cell** — resolve it by PIXELS instead: read the six candidate
+tiles of `RomGbUi.frames`'s frame 0 (linear index 0..5) via `rom_gbui_tile()` and
+compare pixel-for-pixel against the captured cell, the same way `celldiff.py` already
+treats `SRC_PIC`/codec cells it cannot express as one flat index.
+
 ## Usage
 
 ```sh

@@ -101,7 +101,7 @@ static uint32_t test_fnv1a(const uint8_t* p, uint32_t n, uint32_t h) {
 }
 static uint32_t test_loc_check(const RomGbUiLoc* l) {
   uint32_t h = 0x811C9DC5u;
-  for (uint32_t i = 0; i < 13; i++) {
+  for (uint32_t i = 0; i < ROM_GBUI_OFF_COUNT; i++) {
     uint8_t b[4] = { (uint8_t)l->off[i], (uint8_t)(l->off[i] >> 8),
                       (uint8_t)(l->off[i] >> 16), (uint8_t)(l->off[i] >> 24) };
     h = test_fnv1a(b, 4, h);
@@ -128,21 +128,26 @@ typedef struct {
   uint8_t     gen;
   uint32_t    font, textbox, cardframe, badges, leaders, playerpic;
   uint32_t    frames, fontextra, cardpic_m, cardpic_f, cardgfx, pack_m, pack_f;
+  uint32_t    g1_keyitems;   /* BACKLOG #99: 0 = not expected to locate       */
 } Want;
 
 static const Want WANT[] = {
   { "Red.gb",    1,
     0x11A80, 0x12288, 0x2FB98, 0xEA9E, 0, 0x12EDE,
-    0, 0, 0, 0, 0, 0, 0 },
+    0, 0, 0, 0, 0, 0, 0,
+    0xE799 },
   { "Yellow.gb", 1,
     0x10600, 0x10E18, 0xF5C24, 0xE91B, 0, 0x11A97,
-    0, 0, 0, 0, 0, 0, 0 },
+    0, 0, 0, 0, 0, 0, 0,
+    0xE6DD },
   { "Gold.gbc",  2,
     0, 0, 0, 0x2622F, 0x2576F, 0,
-    0xF88F2, 0xF80F2, 0x2547F, 0, 0x256AF, 0x11431, 0 },
+    0xF88F2, 0xF80F2, 0x2547F, 0, 0x256AF, 0x11431, 0,
+    0 },
   { "Crystal.gbc", 2,
     0, 0, 0, 0x26043, 0x25583, 0,
-    0xF8800, 0xF8000, 0x88365, 0x88595, 0x887C5, 0x11016, 0x48E9B },
+    0xF8800, 0xF8000, 0x88365, 0x88595, 0x887C5, 0x11016, 0x48E9B,
+    0 },
 };
 #define NWANT (sizeof WANT / sizeof WANT[0])
 
@@ -154,6 +159,8 @@ static void check_offsets(const char* file, const RomGbUi* gu, const Want* w) {
     chk(file, "cardframe", gu->cardframe == w->cardframe);
     chk(file, "badges",    gu->badges    == w->badges);
     chk(file, "playerpic", gu->playerpic == w->playerpic);
+    chk(file, "g1_keyitems (BACKLOG #99, located by shape)",
+        gu->g1_keyitems == w->g1_keyitems);
   } else if (w->gen == ROM_GBUI_GEN2) {
     chk(file, "frames",    gu->frames    == w->frames);
     chk(file, "font",      gu->font      == w->fontextra + 512u);
@@ -184,6 +191,66 @@ static void run_one(const Want* w) {
   printf("  %-12s ok=%d gen=%d banks=%d\n", w->file, gu.ok, gu.gen, gu.banks);
   chk(w->file, "ok", gu.ok == 1);
   check_offsets(w->file, &gu, w);
+
+  /* -------------------------------------------- BACKLOG #99: g1_keyitems */
+  if (w->gen == ROM_GBUI_GEN1 && w->g1_keyitems != 0) {
+    /* Independent re-derivation: read the table's own 15 bytes straight off
+     * disk (not through rom_gbui.c) and bit-test them by hand, exactly the
+     * shape IsKeyItem_ itself uses -- (id-1)>>3 / (id-1)&7, LSB-first. If
+     * this disagrees with rom_gbui_g1_key_item() anywhere in 1..120, either
+     * the cached bits or the exposed function's own math is wrong. */
+    uint8_t tbl[15];
+    FILE* rf = fopen(path, "rb");
+    fseek(rf, (long)w->g1_keyitems, SEEK_SET);
+    size_t nrd = fread(tbl, 1, sizeof tbl, rf);
+    fclose(rf);
+    chk(w->file, "g1_keyitems: read the 15-byte table", nrd == sizeof tbl);
+    int mismatches = 0;
+    for (unsigned id = 1; id <= 120; id++) {
+      unsigned i = id - 1;
+      bool want_bit = ((tbl[i >> 3] >> (i & 7u)) & 1u) != 0;
+      bool got = rom_gbui_g1_key_item(&gu, (uint8_t)id);
+      if (want_bit != got) mismatches++;
+    }
+    chk(w->file, "g1_keyitems: rom_gbui_g1_key_item matches an independent byte-for-byte re-decode (ids 1..120)",
+        mismatches == 0);
+    /* Out-of-table ids never claim a false positive. */
+    chk(w->file, "g1_keyitems: id 0 is never a key item", !rom_gbui_g1_key_item(&gu, 0));
+    chk(w->file, "g1_keyitems: id 121 (beyond the code-bound table) is never a key item",
+        !rom_gbui_g1_key_item(&gu, 121));
+    chk(w->file, "g1_keyitems: id 255 is never a key item", !rom_gbui_g1_key_item(&gu, 255));
+    /* Public facts (badges, TOWN MAP, BICYCLE, SAFARI BALL, POKeDEX set;
+     * POTION, POKe BALL clear) via the SHIPPED function, same set
+     * g1_keyitems_verify() itself checks structurally at locate time. */
+    for (unsigned id = 21; id <= 28; id++)
+      chk(w->file, "g1_keyitems: badge is a key item", rom_gbui_g1_key_item(&gu, (uint8_t)id));
+    chk(w->file, "g1_keyitems: TOWN MAP (5) is a key item", rom_gbui_g1_key_item(&gu, 5));
+    chk(w->file, "g1_keyitems: BICYCLE (6) is a key item", rom_gbui_g1_key_item(&gu, 6));
+    chk(w->file, "g1_keyitems: SAFARI BALL (8) is a key item", rom_gbui_g1_key_item(&gu, 8));
+    chk(w->file, "g1_keyitems: POKeDEX (9) is a key item", rom_gbui_g1_key_item(&gu, 9));
+    chk(w->file, "g1_keyitems: POKe BALL (4) is not a key item", !rom_gbui_g1_key_item(&gu, 4));
+    chk(w->file, "g1_keyitems: POTION (20) is not a key item", !rom_gbui_g1_key_item(&gu, 20));
+    chk(w->file, "g1_keyitems: ESCAPE ROPE (29) is not a key item", !rom_gbui_g1_key_item(&gu, 29));
+
+    /* BACKLOG #99 (b99 review item 4): rom_gbui_g1_key_item()'s own CONTRACT,
+     * not the HM/TM composition (that decision belongs to the caller --
+     * source/gb_bag.c's gbb_g1_key_item_compose(), covered in
+     * tests/host_gbbag_test.c). This locator is silent above its own
+     * code-bound length (120): ids 196..200 (HM01..HM05, 0xC4..0xC8) and
+     * 201..250 (TM01..TM50, 0xC9..0xFA) both fall outside 1..120 and so
+     * must come back false here even though HM01..HM05 ARE key items in
+     * the real game -- documenting that the caller, not this function,
+     * owns that range (see the function's own doc comment, rom_gbui.h). */
+    for (unsigned id = 196; id <= 200; id++)
+      chk(w->file, "g1_keyitems: id 196..200 (HM range) is false at this layer -- caller's job",
+          !rom_gbui_g1_key_item(&gu, (uint8_t)id));
+    for (unsigned id = 201; id <= 250; id++)
+      chk(w->file, "g1_keyitems: id 201..250 (TM range) is false at this layer",
+          !rom_gbui_g1_key_item(&gu, (uint8_t)id));
+  } else if (w->gen == ROM_GBUI_GEN1) {
+    chk(w->file, "g1_keyitems: NULL gu is never a key item (fail-closed)",
+        !rom_gbui_g1_key_item(NULL, 21));
+  }
 
   /* -------------------------------------------- Gen-1 player-pic decode */
   if (w->gen == ROM_GBUI_GEN1) {
@@ -292,6 +359,49 @@ static void run_one(const Want* w) {
       chk(w->file, l2, fcx.reads >= fc_full.reads);
       if (fcx.f) fclose(fcx.f);
     }
+  }
+
+  /* -------------------------------------------- BACKLOG #99: mutations */
+  if (w->gen == ROM_GBUI_GEN1 && w->g1_keyitems != 0) {
+    /* (1) shift the cached table pointer by 16 (check recomputed to match,
+     * same MUT-D5b shape as the font attack above): anchor_g1_keyitems()'s
+     * own operand math still lands on the ORIGINAL offset, disagreeing with
+     * the shifted off[] -> the whole Gen-1 record is rejected and a full
+     * rescan lands back on the correct (unshifted) table. */
+    RomGbUiLoc bad_ptr = loc;
+    bad_ptr.off[ROM_GBUI_OFF_G1_KEYITEMS] += 16u;
+    bad_ptr.check = test_loc_check(&bad_ptr);
+    FileCtx fcx; memset(&fcx, 0, sizeof fcx); fcx.f = fopen(path, "rb");
+    RomGbUi gux;
+    int okx = rom_gbui_open_loc(&gux, file_read, &fcx, file_size(path),
+                                g_scratch, sizeof g_scratch, &bad_ptr);
+    chk(w->file, "g1_keyitems off+16 (recomputed check): rescans, correct table offset",
+        okx == 1 && gux.gen == gu.gen && gux.g1_keyitems == gu.g1_keyitems);
+    chk(w->file, "g1_keyitems off+16 (recomputed check): full-scan cost, not a cache hit",
+        fcx.reads >= fc_full.reads);
+    if (fcx.f) fclose(fcx.f);
+
+    /* (2) forge one bit of the table ITSELF (not the cache): flip the badge-21
+     * bit in the ROM (byte 2, bit 4 of the 15-byte table). g1_keyitems_verify()
+     * must reject -- both on the cached-loc revalidation path (whole Gen-1
+     * record rescans) and on the rescan's own fresh locate() (the table is
+     * genuinely corrupted, so it comes back unlocated: g1_keyitems == 0, but
+     * every REQUIRED Gen-1 field -- font/textbox/cardframe/badges/playerpic,
+     * untouched by this poison -- still locates fine, so `ok` stays 1). */
+    FileCtx fcy; memset(&fcy, 0, sizeof fcy); fcy.f = fopen(path, "rb");
+    fcy.poison_off = w->g1_keyitems + 2u; fcy.poison_xor = 0x10u;  /* clears badge id 21's bit */
+    RomGbUi guy;
+    int oky = rom_gbui_open_loc(&guy, file_read, &fcy, file_size(path),
+                                g_scratch, sizeof g_scratch, &loc);
+    chk(w->file, "g1_keyitems: one forged bit rejects the cached table (rescans)",
+        oky == 1 && guy.ok == 1 && guy.gen == ROM_GBUI_GEN1);
+    chk(w->file, "g1_keyitems: forged-bit rescan comes back unlocated (fails closed, not a guess)",
+        oky == 1 && guy.g1_keyitems == 0);
+    chk(w->file, "g1_keyitems: forged-bit rescan still finds every REQUIRED Gen-1 field",
+        oky == 1 && guy.font == gu.font && guy.textbox == gu.textbox &&
+        guy.cardframe == gu.cardframe && guy.badges == gu.badges &&
+        guy.playerpic == gu.playerpic);
+    if (fcy.f) fclose(fcy.f);
   }
 
   /* (c): same attack against a Gen-2 badges offset. */

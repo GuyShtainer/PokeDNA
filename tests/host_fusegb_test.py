@@ -23,8 +23,9 @@ import zlib
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FUSE_GB = os.path.join(ROOT, "tools", "fuse_gb.py")
 
-MAGIC = b"PDNAGBD1"
-ENTRY_SIZE = 48
+MAGIC = b"PDNAGBD1"        # the g_pdna_gbd LOCATOR record's own magic (unchanged by #98)
+DIR_MAGIC = b"PDNAGBD2"    # BACKLOG #98: the DIRECTORY BLOCK's own magic (format v2)
+ENTRY_SIZE = 52            # BACKLOG #98 format v2: + pair(4)
 
 
 def fail(msg):
@@ -55,17 +56,17 @@ def read_record(blob, rec_off):
 
 def parse_directory(blob, off, size):
     block = blob[off:off + size]
-    assert block[:8] == MAGIC
+    assert block[:8] == DIR_MAGIC
     count = struct.unpack_from("<I", block, 8)[0]
     entries = []
     for i in range(count):
         o = 12 + i * ENTRY_SIZE
-        typ, name, eoff, esize, crc = struct.unpack_from("<I32sIII", block, o)
-        entries.append((typ, name.rstrip(b"\x00").decode(), eoff, esize, crc))
+        typ, name, eoff, esize, crc, pair = struct.unpack_from("<I32sIIII", block, o)
+        entries.append((typ, name.rstrip(b"\x00").decode(), eoff, esize, crc, pair))
     trailer_off = 12 + ENTRY_SIZE * count
     t_size, t_magic, _ = struct.unpack_from("<I8sI", block, trailer_off)
     assert t_size == size, f"trailer size {t_size} != record size {size}"
-    assert t_magic == MAGIC, "trailer magic mismatch"
+    assert t_magic == DIR_MAGIC, "trailer magic mismatch"
     assert blob[-16:] == block[-16:], "trailer is not the last 16 bytes of the file"
     return entries
 
@@ -109,7 +110,7 @@ def main():
             (2, "Gold.gbc", open(rom2, "rb").read()),
             (3, "Gold.sav", open(sav2, "rb").read()),
         ]
-        for (typ, name, eoff, esize, crc), (wtyp, wname, wdata) in zip(entries, want):
+        for (typ, name, eoff, esize, crc, _pair), (wtyp, wname, wdata) in zip(entries, want):
             if typ != wtyp or name != wname or esize != len(wdata):
                 fail(f"entry mismatch: got ({typ},{name},{esize}) want ({wtyp},{wname},{len(wdata)})")
             payload = blob[eoff:eoff + esize]
@@ -126,6 +127,15 @@ def main():
         if so.count("OK") < 4:
             fail(f"--check did not report 4 OK entries:\n{so}")
         print("  --check      : reports all 4 payloads OK")
+
+        # BACKLOG #98: --check must print each SAV entry's resolved ROM pairing (not
+        # just "OK") -- proof that the directory-index pairing recorded at fuse time
+        # (ROM then SAV on the command line) round-trips and is human-inspectable.
+        if "pair -> Red.gb" not in so:
+            fail(f"--check did not report Red.sav's pairing to Red.gb:\n{so}")
+        if "pair -> Gold.gbc" not in so:
+            fail(f"--check did not report Gold.sav's pairing to Gold.gbc:\n{so}")
+        print("  --check pairs: Red.sav -> Red.gb, Gold.sav -> Gold.gbc, both printed")
 
         # Re-fusing without --force must refuse.
         rc, so, se = run(pokedna if False else out, rom1, "-o", out + "2")

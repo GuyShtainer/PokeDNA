@@ -2830,8 +2830,56 @@ out:
  * sitting on need_full==true from its own fresh entry (this function's only other
  * caller always had it already false, from its own prior paint) does not repeat
  * that paint a second time for no reason. */
-static void pcp_open_party_strip(BoxSource* src, int box, int* cur, bool* need_full) {
-  if (src->is_bank) { snd_deny(); return; }
+/* D1-style split (gbscr_open/gbscr_open_inner precedent, source/pdna_gbscreen.c:463-556,
+ * rom_gbui.h:213-224's own note on why the OTHER order is wrong): the stack-room gate has
+ * to run BEFORE this function's own frame exists. Gating from inside the frame measures
+ * the room LEFT UNDER it, not the room the frame (plus everything it calls) NEEDS -- on a
+ * build already tight on stack that under-counts by exactly this frame's own size and
+ * refuses when it shouldn't, or (worse here) fails to refuse when it should. The renamed
+ * original body is `pcp_open_party_strip_inner()`; this file's `pcp_open_party_strip()`
+ * below is the thin wrapper that gates first, then tail-calls into it.
+ *
+ * PDNA_PARTY_STRIP_NEED is the tail BELOW this wrapper's own (tiny, is_bank-check-only)
+ * frame, as measured by tools/stack_budget.py on the artless build (BACKLOG #84b,
+ * FOURTH pass, 2026-09-10, after D4's whole-graph blind-spot sweep + the walker fixes
+ * that made it usable -- traps #1/#5/#6/#7/#8 in tools/stack_budget.py's own docstring):
+ *
+ *   python3 tools/stack_budget.py --elf PokeDNA-artless.elf \
+ *       --builddir "$(pwd)/build-artless" --root pcp_open_party_strip_inner --top 3
+ *
+ * deepest chain is now a DIFFERENT, DEEPER branch than the one the THIRD pass measured
+ * (party_strip_overlay -> app_party_mon_menu -> app_mon_menu -> pdna_daycare ->
+ * pdna_inspect -> summary_run_inner -> draw_left_ex -> pdna_origin_art_portrait ->
+ * fetch_pic_ex.constprop.0 -> gb_art_pic_cb -> gb_art_fetch -> gb_art_save_loc ->
+ * log_line -> vsniprintf -> ... -> newlib's malloc/free chain) = 9,720 B AS MEASURED --
+ * NOT a code change, a VISIBILITY change: pdna_origin_art_portrait's dispatch through
+ * PdnaGbArtSource (source/pdna_origin_art.h's s_gb.pic/have/icon) was an undeclared
+ * indirect-call BLIND SPOT until this pass declared it (tools/stack_edges.txt), so
+ * every prior measurement of this gate -- including the THIRD pass's 6,784 -- was
+ * silently unable to see this branch at all and reported the room the OLD SD-write
+ * branch (app_commit_sb1 -> app_save_finalize -> ... -> ed_sd_dma_to_rom) needed
+ * instead, because that was the only branch the walker could see a path down. The
+ * true worst case for this call site has been ~9,784 B all along; the number just
+ * caught up to reality. +64 B for the ISR reentry onto the same stack (libtonc's
+ * isr_master runs handlers on __sp_usr too) = 9,784. Taken exactly, not rounded up,
+ * matching this file's own established convention (rounding here only ever makes the
+ * gate MORE conservative, and inflating a tripwire that should never fire on a
+ * healthy build just hides how much room a future regression actually has left).
+ *
+ * With #84a's stack room at ~15,200-15,752 B (tools/stack_budget.py's own "STACK ok" line,
+ * all three build variants) this gate should NEVER fire on today's tree -- margin 5,416 B
+ * at 9,784, comfortably above the 1,024 B floor the static per-build guard itself
+ * requires -- it is a tripwire against a future regression eating most of that margin,
+ * not a live constraint. Proved by: (a) shooting the party strip once in mGBA
+ * (tools/g3_shots.py/n1_shots.py) and confirming it still opens; (b) a scratch build
+ * with PDNA_PARTY_STRIP_NEED raised above the measured room, confirming the refusal
+ * appears instead of a silent overrun -- NOT re-run this pass (hardware/emulator
+ * sign-off is outside a tooling-only change; flag for hardware-testing-protocol if
+ * this constant is ever load-bearing on a build closer to its ceiling). */
+#define PDNA_PARTY_STRIP_NEED 9792   /* re-measured on the merged tree 2026-09-10: 9728 + 64 ISR (was 9784) */
+
+static void __attribute__((noinline)) pcp_open_party_strip_inner(BoxSource* src, int box,
+                                                                  int* cur, bool* need_full) {
   uint8_t grab[80]; int gslot = -1;
   /* empty-handed: A opens the action menu (Move to box -> grab). The popup's own
    * GRID focus, if the user crosses into it, moves the box cursor and hands the new
@@ -2851,6 +2899,21 @@ static void pcp_open_party_strip(BoxSource* src, int box, int* cur, bool* need_f
                                       * grid (rr==0 not holding, rr==0 still holding a
                                       * GRID-grabbed box mon, or rr==1 already placed --
                                       * all three want the same fresh redraw) */
+}
+
+static void __attribute__((noinline)) pcp_open_party_strip(BoxSource* src, int box, int* cur,
+                                                            bool* need_full) {
+  if (src->is_bank) { snd_deny(); return; }
+  if (!pdna_origin_art_stack_room(PDNA_PARTY_STRIP_NEED)) {   /* tripwire, see comment above */
+    snd_deny();
+    boxoam_suspend();
+    msg_wait("NOT ENOUGH STACK", UI_WARN, "Back out one screen, then retry.", 0);
+    boxoam_resume();
+    *need_full = true;
+    return;                                     /* refuse BEFORE party_strip_overlay's frame
+                                                  * (and every write beneath it) ever exists */
+  }
+  pcp_open_party_strip_inner(src, box, cur, need_full);
 }
 
 int pdna_box(BoxSource* src) {

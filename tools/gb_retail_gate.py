@@ -97,6 +97,8 @@ SURGERY_SRCS = [
     "source/gb_trainer.c", "source/gb_fields.c",
     # BACKLOG #49 P2a: --op item's own dependency (gb_bag.h's pure-C bag/PC-item core).
     "source/gb_bag.c",
+    # BACKLOG #85/#86/#90/#94: --op daycare/clock/fly/boxname's own dependencies.
+    "source/gb_daycare.c", "source/gb_clock.c", "source/gb_fly.c", "source/gb_boxnames.c",
 ]
 
 # gen: 1 = Gen-1 numbering (no primary/backup mirror split in gb_roundtrip's classifier,
@@ -280,6 +282,54 @@ def run_bag_case(name, info, rom, sav, work, binary, python, vendor, tally):
                   f"want={want_balls_count!r} balls entry@{balls_entry_addr:#06x}="
                   f"{got_balls_entry!r} want={want_balls_entry!r}")
 
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record(label, ok, detail)
+
+
+# U5 (BACKLOG #67, Gen-2's own Pack): a TM/HM count-array case -- Gen 2 only (Gen 1
+# has no TM/HM pocket at all, gb_bag.h's own table). `wTMsHMs`, grep -iE 'wTMsHMs'
+# assets/upstream/<repo>/symbols/<repo>.sym: pokegold.sym 01:d57e, pokecrystal.sym
+# 01:d859 (a flat 57-byte array, index = TM/HM number - 1, no count/body split unlike
+# every other pocket -- gb_bag.h's own GBB_POCKET_TMHM comment). File offset from
+# source/gb_fields.c's own GBF_TMHM_COUNTS row (gold 0x23e6, crystal 0x23e7, 57 B).
+TMHM_WRAM = {"gold": 0xD57E, "crystal": 0xD859}
+TMHM_FILE_OFF = {"gold": 0x23E6, "crystal": 0x23E7}
+TMHM_INDEX = 0     # TM01
+TMHM_COUNT = 42
+
+
+def run_tmhm_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """gb_bag.h's gbb_tmhm_get/gbb_tmhm_set (source/gb_bag.c), via the surgery tool's
+    `--op item tmhm INDEX COUNT` (do_item's own TMHM branch, tests/host_gbsurgery_
+    tool.c) -- sets TM01's own count to 42 and asserts the exact WRAM byte, the same
+    WRAM-not-screen-scraped posture run_bag_case above uses (no TM/HM-pocket screen
+    this driver's content reader reaches either)."""
+    label = "TM/HM count (TM01, U5, BACKLOG #67)"
+    ops = [["item", "tmhm", str(TMHM_INDEX), str(TMHM_COUNT)]]
+    edited = work / "tmhm.sav"
+    rc, out, err = run_surgery(binary, sav, edited, ops)
+    if rc != 0:
+        tally.record(label, False, f"surgery refused: {err.strip()}")
+        return
+
+    tmhm_addr = TMHM_WRAM[name] + TMHM_INDEX
+    read_args = ["--read-mem", f"{tmhm_addr:#06x}:1"]
+    rc, rep, out, err = boot(python, rom, edited, work / "tmhm", vendor, work / "tmhm.json",
+                             extra_args=["--expect", "accept"] + read_args)
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+
+    want = f"{TMHM_COUNT:02x}"
+    got = mem.get(f"{tmhm_addr:#06x}")
+    ok = (rc == 0 and svbk_ok and got == want)
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"TM01 count@{tmhm_addr:#06x}={got!r} want={want!r}")
     if not ok:
         fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
         if fails:
@@ -714,6 +764,228 @@ def run_money_case(name, info, rom, sav, work, binary, python, vendor, tally):
         if tail:
             detail += " | stderr: " + tail
     tally.record("money (field write, BACKLOG #49 P0)", ok, detail)
+
+
+# BACKLOG #85/#86/#90/#94 — WRAM anchors, one .sym lookup each, same posture as
+# MONEY_WRAM above (a live symbol address, not a save-file offset): the save-file
+# offsets these four cores already use (source/gb_fields.c) live in SRAM/the file;
+# --read-mem reads the RUNNING GAME'S WRAM, which is a different address space
+# entirely and has to be resolved from the .sym files on its own, exactly like
+# MONEY_WRAM/BADGE_WRAM/NAME_WRAM already are.
+DAYCARE_FLAG_WRAM = {"red": 0xDA48, "yellow": 0xDA47, "gold": 0xDC40, "crystal": 0xDEF5}
+FLY_FLAGS_WRAM = {"red": 0xD70B, "yellow": 0xD70A, "gold": 0xD9EE, "crystal": 0xDCA5}
+FLY_FLAGS_LEN = {"red": 2, "yellow": 2, "gold": 4, "crystal": 4}
+BOXNAMES_WRAM = {"gold": 0xD8BF, "crystal": 0xDB75}          # Gen 1: no box names, no case
+
+
+def run_daycare_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #85, via gb_daycare.h's gbd_deposit -- --op daycare 0 <dex> deposits a
+    fixed-stat test mon into day-care slot 0 (the Day-Care Man; Gen 1's only slot) and
+    checks the occupancy bit in WRAM. Not screen-scraped: gb_roundtrip.py has no
+    day-care-screen reader (the design doc's own §4.2 rule -- only a title/party
+    screen this driver can read), so this is read straight off WRAM like money is.
+    Gen 1: gbd_deposit writes the WHOLE flag byte to 1, so the check is an exact
+    match. Gen 2: it only ever SETS bit 0 (read-modify-write, gb_daycare.c's own
+    discipline), so the check masks for that bit rather than assuming the baseline
+    byte was 0 -- Guy's own Gold.sav shows the corpus baseline can already hold other
+    bits (the intro-seen bit, gb_daycare.h's own header note)."""
+    edited = work / "daycare.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["daycare", "0", "25"]])   # dex 25 = Pikachu
+    if rc != 0:
+        tally.record("daycare (BACKLOG #85)", False, f"surgery refused: {err.strip()}")
+        return
+
+    addr = DAYCARE_FLAG_WRAM[name]
+    rc, rep, out, err = boot(python, rom, edited, work / "daycare", vendor,
+                             work / "daycare.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:1"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    got_val = int(got, 16) if isinstance(got, str) else None
+    occupied = got_val is not None and (
+        got_val == 0x01 if info["gen"] == 1 else (got_val & 0x01) == 0x01)
+    ok = (rc == 0) and svbk_ok and occupied
+    detail = (f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} {addr:#06x}={got!r} "
+             f"occupied={occupied}")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("daycare (BACKLOG #85)", ok, detail)
+
+
+CLOCK_HHOURS_HRAM = {"gold": 0xFF96, "crystal": 0xFF94}   # Gen 1: no clock, no case
+# Fixed so the two boots below (baseline / +2h-shifted) see the SAME hardware RTC
+# reading and only the offset shift can move hHours -- an unpinned (real-time) RTC
+# would make the delta depend on wall-clock skew between the two mGBA runs.
+CLOCK_RTC_PIN = "2026-01-01 12:00:00"
+
+
+def run_clock_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #86, P1a review D1/D8 -- gb_clock.h no longer claims the in-game clock is
+    an absolute time it can set (it is hardware RTC + a stored offset, see gb_clock.h's
+    header note), so this case asserts on what the GAME's own FixTime computes, not on
+    the offset bytes: boot the UNTOUCHED save and the +2h-SHIFTED save under the exact
+    same pinned --rtc and read hHours (home/time.asm's FixTime output) off HRAM in both;
+    (after - before) mod 24 must be exactly 2. A second sub-case proves --op clockreset:
+    the main menu's own continue-game-info row prints the literal "TIME NOT SET" string
+    (engine/menus/main_menu.asm) once sRTCStatusFlags reads RTC_RESET, which
+    gb_roundtrip.py's main-menu scrape (rep["main_menu"]) already captures."""
+    addr = CLOCK_HHOURS_HRAM[name]
+
+    # ---- sub-case A: +2h shift moves the GAME's own computed hour by exactly 2 -------
+    rc, rep_before, out, err = boot(python, rom, sav, work / "clock_before", vendor,
+                                    work / "clock_before.json",
+                                    extra_args=["--expect", "accept", "--rtc", CLOCK_RTC_PIN,
+                                                "--read-mem", f"{addr:#06x}:1"])
+    before_mem = rep_before.get("mem") or {}
+    before = before_mem.get(f"{addr:#06x}")
+    before_val = int(before, 16) if isinstance(before, str) else None
+
+    shifted = work / "clock_shift.sav"
+    rc2, out2, err2 = run_surgery(binary, sav, shifted, [["clockshift", "0", "2", "0", "0"]])
+    if rc2 != 0:
+        tally.record("clock shift (BACKLOG #86)", False, f"surgery refused: {err2.strip()}")
+    else:
+        rc3, rep_after, out3, err3 = boot(python, rom, shifted, work / "clock_after", vendor,
+                                          work / "clock_after.json",
+                                          extra_args=["--expect", "accept", "--rtc", CLOCK_RTC_PIN,
+                                                      "--read-mem", f"{addr:#06x}:1"])
+        after_mem = rep_after.get("mem") or {}
+        after = after_mem.get(f"{addr:#06x}")
+        after_val = int(after, 16) if isinstance(after, str) else None
+        have_both = before_val is not None and after_val is not None
+        delta_mod24 = ((after_val - before_val) % 24) if have_both else None
+        delta_ok = have_both and delta_mod24 == 2
+        ok = (rc == 0) and (rc3 == 0) and delta_ok
+        detail = (f"before hHours@{addr:#06x}={before!r} after={after!r} "
+                 f"delta_mod24={delta_mod24}")
+        if not ok:
+            fails = [f.strip() for f in out3.splitlines() if f.strip().startswith("FAIL:")]
+            if fails:
+                detail += " | " + "; ".join(fails)
+            tail = stderr_tail(err3)
+            if tail:
+                detail += " | stderr: " + tail
+        tally.record("clock shift (BACKLOG #86)", ok, detail)
+
+    # ---- sub-case B: clockreset makes the main menu show "TIME NOT SET" -------------
+    reset = work / "clock_reset.sav"
+    rc4, out4, err4 = run_surgery(binary, sav, reset, [["clockreset"]])
+    if rc4 != 0:
+        tally.record("clock reset (BACKLOG #86)", False, f"surgery refused: {err4.strip()}")
+        return
+
+    rc5, rep5, out5, err5 = boot(python, rom, reset, work / "clock_reset", vendor,
+                                 work / "clock_reset.json",
+                                 extra_args=["--expect", "accept", "--rtc", CLOCK_RTC_PIN])
+    menu_rows = rep5.get("main_menu") or []
+    time_not_set = any("TIME NOT SET" in row for row in menu_rows)
+    ok5 = (rc5 == 0) and time_not_set
+    detail5 = f"verdict={rep5.get('verdict')} main_menu={menu_rows!r} time_not_set={time_not_set}"
+    if not ok5:
+        fails = [f.strip() for f in out5.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail5 += " | " + "; ".join(fails)
+        tail = stderr_tail(err5)
+        if tail:
+            detail5 += " | stderr: " + tail
+    tally.record("clock reset (BACKLOG #86)", ok5, detail5)
+
+
+def run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #90, P1a review D6/D7 -- the old case set bit 5, which every corpus save
+    in this suite ALREADY had set: 0 bytes written, verdict=accept regardless of
+    whether gbfy_set works at all. gbfy_count()'s own destination-count fix (D7) makes
+    this checkable: Gold/Crystal bit 6 = SPAWN_ROCK_TUNNEL (pokecrystal constants/
+    map_data_constants.asm), confirmed CLEAR on both corpus saves, so this case now
+    FAILS outright if the surgery output is byte-identical to the input (the gate D6
+    asks for) and separately confirms the booted game's own WRAM byte actually moved.
+    Gen 1: every one of Red/Yellow's own 11 real destinations (bits 0..10, NUM_CITY_MAPS)
+    is ALREADY visited in this corpus -- there is no clear bit below the real count to
+    flip, so this case is SKIPPED for Gen 1 rather than faked with a bit past the real
+    count (which gbfy_set now correctly refuses, D7's whole point)."""
+    if info["gen"] == 1:
+        tally.skip_case("fly (BACKLOG #90)", "every real destination (bit 0..10, "
+                        "NUM_CITY_MAPS) is already visited in this corpus -- no clear "
+                        "bit below the real count to prove a real change with")
+        return
+
+    bit = 6   # SPAWN_ROCK_TUNNEL -- confirmed CLEAR on both Gold.sav and Crystal.sav
+    base = FLY_FLAGS_WRAM[name]
+    addr = base + (bit // 8)
+
+    edited = work / "fly.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["fly", str(bit)]])
+    if rc != 0:
+        tally.record("fly (BACKLOG #90)", False, f"surgery refused: {err.strip()}")
+        return
+
+    identical = edited.read_bytes() == sav.read_bytes()
+    if identical:
+        tally.record("fly (BACKLOG #90)", False,
+                    f"gate D6: surgery wrote 0 bytes for bit {bit} -- either it was "
+                    "already set (corpus assumption wrong) or gbfy_set is a no-op")
+        return
+
+    rc, rep, out, err = boot(python, rom, edited, work / "fly", vendor,
+                             work / "fly.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:1"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    got_val = int(got, 16) if isinstance(got, str) else None
+    visited = got_val is not None and (got_val & (1 << (bit % 8))) != 0
+    ok = (rc == 0) and svbk_ok and visited
+    detail = f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} {addr:#06x}={got!r} visited={visited} bit={bit}"
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("fly (BACKLOG #90)", ok, detail)
+
+
+def run_boxname_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #94, via gb_boxnames.h's gbbn_rename -- Gen 2 only (gbbn_rename refuses
+    Gen 1, and this function is never called for a Gen-1 GAMES entry). Renames box 0
+    to "GATE" and checks the first 4 GB-encoded bytes in WRAM ('A'=0x80, so
+    "GATE" -> 86 80 94 84 -- G=0x86, A=0x80, T=0x93, E=0x84)."""
+    edited = work / "boxname.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["boxname", "0", "GATE"]])
+    if rc != 0:
+        tally.record("boxname (BACKLOG #94)", False, f"surgery refused: {err.strip()}")
+        return
+
+    addr = BOXNAMES_WRAM[name]
+    want = "86809384"   # G A T E, GB charset (0x80 = 'A')
+    rc, rep, out, err = boot(python, rom, edited, work / "boxname", vendor,
+                             work / "boxname.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:4"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == want
+    detail = f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} {addr:#06x}={got!r} want={want!r}"
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("boxname (BACKLOG #94)", ok, detail)
+
+
 CREATE_DEX, CREATE_LEVEL, CREATE_NAME = 1, 5, "BULBASAUR"
 # dex 1 = Bulbasaur, a base form -- rom_gblearn_min_level() computes 5 for it in
 # BOTH gens (tests/host_romgblearn_test.c pins this exact value against real
@@ -830,6 +1102,34 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
 
     # ---- 2e. BACKLOG #49 P2a — the bag/PC-item core, proven with a Potion (+ Ball) ----
     run_bag_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2f. U5 (BACKLOG #67) — the TM/HM count array, Gen 2 only ----
+    if info["gen"] == 2:
+        run_tmhm_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- lane gbdata dispatch (BACKLOG #85/#86/#90/#94) — steps 2g-2j, deliberately
+    # left a gap after 2e/2f so u5's own TM/HM case (2f) can land ahead of this block
+    # without renumbering either lane: if 2f already exists above this marker when the
+    # two lanes merge, renumber the four cases below it to 2h-2k instead of editing
+    # around u5's insertion point. P1a review D10. ----
+    # ---- 2g. BACKLOG #85 — the day-care core, proven with a deposit ----
+    run_daycare_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2h. BACKLOG #86 — the Gen-2 clock core (Gen 1 has no clock: no case) ----
+    if gen == 2:
+        run_clock_case(name, info, rom, sav, work, binary, python, vendor, tally)
+    else:
+        tally.skip_case("clock (BACKLOG #86)", "Gen 1 has no clock")
+
+    # ---- 2i. BACKLOG #90 — the fly-destination bitfield core (run_fly_case itself
+    # skips Gen 1 -- every real destination is already visited in the corpus, D6) ----
+    run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2j. BACKLOG #94 — the Gen-2 box-name core (Gen 1 has no box names: no case) ----
+    if gen == 2:
+        run_boxname_case(name, info, rom, sav, work, binary, python, vendor, tally)
+    else:
+        tally.skip_case("boxname (BACKLOG #94)", "Gen 1 has no box names")
 
     if party_count0 < 2:
         tally.skip_case("nickname/level/delete/move",
