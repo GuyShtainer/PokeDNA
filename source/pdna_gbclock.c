@@ -142,8 +142,14 @@ static void gbclock_shift_editor(GbSession* s) {
       ui_text(4, 4, UI_TITLE, "SHIFT THE CLOCK");
       ui_hline(0, 14, UI_SCR_W, UI_BORDER);
       for (int i = 0; i < SF_N; i++) shift_field_paint(i, v[i], i == f);
-      ui_text(6, 120, UI_DIM, "Adds this to the clock's own");
-      ui_text(6, 130, UI_DIM, "offset -- never an absolute time.");
+      /* D1 (b86 shots review): the old 2-line wrap's second line ("offset -- never an
+       * absolute time.", 33 chars) ran off the 240 px screen at x=6 -- ui_text is the
+       * fixed 8 px/glyph sys8 face (29-char budget at this x, same as pdna_mirage()'s
+       * own party rows, source/pdna_main.c) and clips SILENTLY on hardware, not with
+       * an ellipsis. Three shorter lines instead, each measured to fit (28/23/14 chars). */
+      ui_text(6, 118, UI_DIM, "Adds this to the clock's own");
+      ui_text(6, 128, UI_DIM, "offset -- never sets an");
+      ui_text(6, 138, UI_DIM, "absolute time.");
       ui_text(4, 152, UI_DIM, "U/D change  L/R field  A set  B");
     } else {
       for (int i = 0; i < SF_N; i++) {
