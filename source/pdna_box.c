@@ -2876,7 +2876,7 @@ out:
  * appears instead of a silent overrun -- NOT re-run this pass (hardware/emulator
  * sign-off is outside a tooling-only change; flag for hardware-testing-protocol if
  * this constant is ever load-bearing on a build closer to its ceiling). */
-#define PDNA_PARTY_STRIP_NEED 9784
+#define PDNA_PARTY_STRIP_NEED 9792   /* re-measured on the merged tree 2026-09-10: 9728 + 64 ISR (was 9784) */
 
 static void __attribute__((noinline)) pcp_open_party_strip_inner(BoxSource* src, int box,
                                                                   int* cur, bool* need_full) {

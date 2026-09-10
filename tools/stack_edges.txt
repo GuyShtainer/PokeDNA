@@ -936,3 +936,7 @@ addrtaken-ok g2_box_mon_at        # gen2_save.c:603/gen2_save.h:233 -- grepped: 
                                    # flagged here rather than silently trusted; worth a
                                    # follow-up look, not a stack-budget risk either way
                                    # (its own frame is 16 B and it calls nothing declared).
+
+# b60 (Contests): the donor picker's label callback (source_label / mon_label) --
+# resolved as one argsite (verified with --dump-sites by the b60 reviewer).
+pick_list.constprop.0 argsites=1 -> source_label mon_label
