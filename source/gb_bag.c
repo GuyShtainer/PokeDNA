@@ -52,6 +52,30 @@ static bool is_valid_id(GbGame game, uint8_t id) {
   return id <= gbb_max_item_id(game);
 }
 
+/* See gb_bag.h for the full contract and the "documented fallback, not a
+ * located ROM table" note. KNOWN INCOMPLETE: the unused id block 81..195 was
+ * never swept on the cart (U4 review N2, 2026-09-10); only a ROM-located
+ * key-item bit table can settle it -- BACKLOG. Sorted so a future ROM-locate swap can keep this
+ * shape (linear scan; the list is short enough that a binary search buys
+ * nothing and would only add an unproven "must stay sorted" invariant). */
+bool gbb_is_g1_key_item(uint8_t id) {
+  if (id >= 0xC4u && id <= 0xC8u) return true;   /* HM01..HM05 */
+  if (id >= 21u && id <= 28u) return true;       /* the 8 badges: all KEY, verified on the cart (U4 review N2) */
+  static const uint8_t kKeyIds[] = {
+    5,   /* TOWN MAP     */  6,   /* BICYCLE      */  7,  /* ????? (unused, KEY on the cart) */
+    8,   /* SAFARI BALL  */  9,   /* POKeDEX      */
+    31,  /* OLD AMBER    */  41,  /* DOME FOSSIL  */  42, /* HELIX FOSSIL */
+    43,  /* SECRET KEY   */  44,  /* ????? (unused, KEY on the cart) */  45,  /* BIKE VOUCHER */
+    48,  /* CARD KEY     */  63,  /* S.S.TICKET   */  64, /* GOLD TEETH   */
+    69,  /* COIN CASE    */  70,  /* OAK'S PARCEL */  71, /* ITEMFINDER   */
+    72,  /* SILPH SCOPE  */  73,  /* POKE FLUTE   */  74, /* LIFT KEY     */
+    76,  /* OLD ROD      */  77,  /* GOOD ROD     */  78, /* SUPER ROD    */
+  };
+  for (unsigned i = 0; i < sizeof kKeyIds / sizeof kKeyIds[0]; i++)
+    if (kKeyIds[i] == id) return true;
+  return false;
+}
+
 /* ---- read -------------------------------------------------------------------- */
 
 static void read_list(const GbSession* s, GbGame g, GbBagPocket pocket, GbBagList* out) {

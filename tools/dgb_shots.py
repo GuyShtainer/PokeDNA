@@ -454,6 +454,596 @@ def run_u2c_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
 
 
 
+def run_u3_trainer(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """U3 (BACKLOG #66, docs/GB-GAME-SCREENS-DESIGN.md sec 1.2): Gold/Silver/Crystal's
+    OWN trainer card on the shared GB-screen shell -- the Gen-2 sibling of
+    run_u2c_trainer() above. Boot picker DOWN x(PICK_INDEX[which]+1) -> `which` row ->
+    A -> S1 info -> A -> box grid (cold rom_gbsprite scan) -> START -> nav menu ->
+    DOWN x3 -> Trainer -> A -> pdna_gbtrainer_gen2_card() (gbscr_open()'s OWN separate
+    cold rom_gbui scan, same GB_ART_COLD_SETTLE ride-out run_u2c_trainer() needs)."""
+    idx = PICK_INDEX[which]
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"u3_{which}_")
+    print(f"== U3: {which}'s own trainer card (boot picker -> standalone -> Trainer) ==")
+
+    s.run(700)
+    s.press_n("DOWN", idx + 1, settle=gb_shots.SETTLE)      # Emerald (row 0) -> `which` row
+    s.tap("A", settle=60)                                    # pick -> S1 info
+    s.tap("A", settle=60)                                    # -> box grid (rom_gbsprite cold fetch)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box grid -> nav menu
+    s.press_n("DOWN", 3)                                       # Party -> Bank -> Daycare -> Trainer
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                    # Trainer -> pdna_gbtrainer_gen2_card()
+                                                                # (gbscr_open's OWN cold rom_gbui scan)
+    s.shot("01_page1_1to1", f"U3: {which}'s own trainer card, page 1, 1:1 -- NAME/ID No/"
+                             "MONEY, the 5x7 card pic (row-major on Gold, column-major on "
+                             "Crystal via rom_gbui_tile's own colmajor reorder), the STATUS "
+                             "strip, #DEX (dex_owned popcount), PLAY TIME (colon currently "
+                             "off-phase), and the BADGES(r) page hint")
+
+    s.tap("SEL", settle=60)                                   # shell-wide toggle -> stretched
+    s.shot("02_page1_stretched", "U3: SELECT stretches the SAME page to 240x160 -- the "
+                                  "shell's own scale toggle, not a card-specific key")
+    s.tap("SEL", settle=60)                                   # back to 1:1
+    s.shot("03_page1_1to1_again", "U3: SELECT again returns to 1:1")
+
+    # Cursor cycle order page 1 (G2C_*): NAME(0) ID(1) MONEY(2) TIME(3).
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("04_cursor_id", "U3: DOWN moves the cursor from NAME to ID No.")
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("05_cursor_money", "U3: DOWN again -> MONEY")
+
+    s.tap("UP", settle=gb_shots.SETTLE)                        # MONEY -> ID
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                     # A on ID -> identity WARNING first
+    s.shot("06_editor_id_warning", "U3: A on ID No. shows the identity-change WARNING "
+                                    "first (gbtr_id_edit_ok(), the SAME sub-editor gate "
+                                    "Gen 1's card and the plain page already share) -- "
+                                    "ID has no cursor slot on Gen 1's own card at all, "
+                                    "new to a GB card here")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                     # confirm -> num_entry opens
+    s.shot("06b_editor_id_popup", "U3: A (yes) on the warning -- num_entry()'s existing "
+                                   "pop-up opens (GBTR_ID, the same sub-editor "
+                                   "pdna_gbtrainer_plain's own ID row uses); this is "
+                                   "osk_search()'s own search-style keyboard, not a "
+                                   "numeric keypad -- B is DELETE here (osk_core's own "
+                                   "legend), SELECT cancels, START confirms")
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                   # SELECT cancels osk_core (NOT B -- B deletes)
+    s.shot("07_back_on_card", "U3: SELECT cancels the ID editor (osk_core's own cancel "
+                               "key), back on page 1, ID selected, unchanged")
+
+    # RIGHT flips to page 2 -- unlike Gen 1's card, this key pages rather than
+    # cycling badges (the real game's own binding, design sec 1.2).
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.shot("08_page2_1to1", "U3: RIGHT flips to page 2 -- the BADGES strip and the 8 "
+                             "gym-leader faces (10 tiles each, 4 across the top row then "
+                             "3+3 below); cursor lands on badge 0")
+
+    s.tap("SEL", settle=60)
+    s.shot("09_page2_stretched", "U3: page 2 stretched to 240x160")
+    s.tap("SEL", settle=60)
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                     # instant toggle badge 0
+    s.shot("10_badge0_toggled", "U3: A instantly toggles badge 0 (the accepted "
+                                 "deviation: a STATIC 2x2 BADGES-block overlay over the "
+                                 "face's centre when owned -- the real game draws this "
+                                 "as an animated OAM sprite the BG-tilemap oracle used "
+                                 "to build this card cannot see at all)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                     # toggle back (no residual edit)
+    s.shot("11_badge0_back", "U3: A again toggles badge 0 back")
+
+    s.tap("LEFT", settle=gb_shots.SETTLE)                      # back to page 1
+    s.shot("12_page1_again", "U3: LEFT flips back to page 1")
+
+    # A REAL edit (a Johto badge left toggled) so B's commit prompt actually fires --
+    # same reasoning as U2c's own shots 11/12/13: stays in this SAME visit rather than
+    # re-entering the nav menu, which does not reliably land back on Trainer.
+    s.tap("RIGHT", settle=gb_shots.SETTLE)                     # page 1 -> page 2
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                     # toggle badge 0 -- a REAL change
+    s.shot("13_real_edit", "U3: badge 0 toggled and LEFT changed (unlike shots 10/11's "
+                            "toggle-and-back, this one stays changed)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                     # B -> the actual commit prompt
+    s.shot("14_commit_prompt", "U3: B with a real pending edit -> 'Save trainer "
+                                "changes?' (app_confirm), the SAME dialog Gen 1's own "
+                                "card and Gen 3's own card_editor use")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                     # decline -- discard the real edit too
+    # The trainer screen (a nav-menu item, reached over the box grid) leaves an extra
+    # UI layer or two behind it on the way back down -- same reasoning as
+    # run_standalone()'s own "3x B to fully unwind" comment for its post-CREATE grid.
+    # One extra B here is enough by hand-calibration; verified by shot 15 itself
+    # showing the bare box grid, not a mon submenu.
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    s.shot("15_declined", "U3: declining a REAL edit also discards it -- the save was "
+                           "never written (gbt_write never ran), back at the box grid")
+
+    # Re-enter the card fresh for the START/plain-page shots (B on the front page above
+    # exits the card entirely, same contract as U2c's own B).
+    s.tap("START", settle=gb_shots.BIG_SETTLE)                 # box grid -> nav menu
+    s.press_n("DOWN", 3)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                      # Trainer -> the card again
+    s.tap("START", settle=gb_shots.BIG_SETTLE)                 # -> the plain field-complete page
+    s.shot("16_plain_page", "U3: START reaches the full plain row-list page (coins, "
+                             "mom's money/save, rival, mother, Kanto badges -- everything "
+                             "not on the card face itself, unchanged data model)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                     # B on the plain page: discard, no commit
+    s.shot("17_after_plain_back", "U3: B on the plain page discards (P1b's own rule) -- "
+                                   "back at the box grid, not back on the card (the plain "
+                                   "page is its own top-level fallback screen)")
+    return s
+
+
+def run_u4_bag(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """U4 (BACKLOG #67, docs/GB-GAME-SCREENS-DESIGN.md sec 1.3): Red/Yellow's OWN
+    Item bag + PC store on the shared GB-screen shell. `rom` must be a ONE-Gen-1-ROM
+    fused image (tools/fuse_gb.py fed only Red.gb+Red.sav, or only Yellow.gb+
+    Yellow.sav -- BACKLOG #98's known harness gap: the fused image lookup is keyed by
+    GENERATION only, so a Red+Yellow-both image would serve whichever ROM the cache
+    happens to answer with, not deterministically the one this run asked for). The
+    boot picker therefore has exactly ONE GB row (index 1) regardless of `which` --
+    same DOWN x1 -> A as run_u2c_trainer()'s own Red-only path, just generalised to
+    a caption-only `which` label (no PICK_INDEX lookup needed with a single-ROM image).
+
+    Nav: boot picker DOWN -> the GB row -> A -> S1 info -> A -> box grid (rom_gbsprite
+    cold scan) -> START -> nav menu -> DOWN x7 (Party->Bank->Daycare->Trainer->Clock
+    fix->Mirage->Pokedex->Bag, PDNA_NAV_ITEMS index 7) -> A -> pdna_gbbag() -- Gen 1,
+    so this lands on pdna_gbbag_gen1_screen() (gbscr_open()'s own cold rom_gbui scan,
+    separate cache from rom_gbsprite's box-grid one)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"u4_{which}_")
+    print(f"== U4: {which}'s own Item bag (boot picker -> standalone -> Bag) ==")
+
+    s.run(700)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # Emerald (row 0) -> the GB row (row 1)
+    s.tap("A", settle=60)                                   # pick it -> S1 info
+    s.tap("A", settle=60)                                   # -> box grid (rom_gbsprite cold fetch)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 7)                                     # Party -> ... -> Bag (index 7)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbbag_gen1_screen()
+                                                              # (gbscr_open's OWN cold rom_gbui scan)
+    s.shot("01_items_row1", f"U4: {which}'s OWN Item bag, 1:1 centred -- the TEXTBOX "
+                             "block's frame tiles (25-31, not tile 0 -- U2a's own "
+                             "finding, re-confirmed here), 4 item rows visible (NOT "
+                             "3 -- the design doc's own 'wMaxMenuItem=2' guess was "
+                             "wrong), cursor on row 1 (the first entry)")
+
+    s.tap("SEL", settle=60)                                     # shell-wide toggle -> stretched
+    s.shot("01b_stretched", "U4: SELECT stretches the same list to 240x160 -- the "
+                             "shell's own scale toggle, not a bag-specific key")
+    s.tap("SEL", settle=60)                                     # back to 1:1
+    s.shot("01c_1to1_again", "U4: SELECT again returns to 1:1")
+
+    if which == "red":
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+        s.shot("02_items_row2", "U4: DOWN moves the cursor to row 2")
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+        s.shot("03_items_row3", "U4: DOWN again -> row 3")
+        s.tap("DOWN", settle=gb_shots.SETTLE)                # row 3 -> row 4 (still visible)
+        s.tap("DOWN", settle=gb_shots.SETTLE)                # row 4 -> scrolls: the window
+                                                                # shifts down one row per press
+        s.shot("04_scrolled", "U4: DOWN past the 4th visible row scrolls the window; "
+                               "the cursor stays PINNED at the 3rd visible row (D3, "
+                               "U4 review) and a down-scroll marker (font tile 0xEE) "
+                               "BLINKS at (18,11) while more of the list is below -- it "
+                               "is a real, visible tile (an earlier draft of this "
+                               "caption claimed no marker exists at all; it does, this "
+                               "shot's own blink phase just happened to land OFF)")
+
+        s.tap("LEFT", settle=gb_shots.BIG_SETTLE)             # Items -> the PC store (same box)
+        s.shot("05_pc_store", "U4: LEFT/RIGHT switches Items <-> the PC item store -- "
+                               "the IDENTICAL box/list routine over a different pocket "
+                               "(design doc's own citation: 'ITEMLISTMENU again, over "
+                               "wNumBoxItems'); NOT independently pixel-dumped against "
+                               "the real cart this slice (reaching a Pokemon Center PC "
+                               "needs overworld navigation, out of this slice's time box)")
+        s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)            # back to Items
+        s.shot("05b_back_to_items", "U4: RIGHT switches back to Items")
+
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # A on the selected item -> qty editor
+        s.shot("06_qty_editor", "U4: A on the selected item opens the existing "
+                                 "numeric editor (num_entry, 1-99) -- the SAME pop-up "
+                                 "every other GB screen's own field edits use, not a "
+                                 "game-art dialogue")
+        s.tap("SEL", settle=gb_shots.BIG_SETTLE)              # osk_search: SELECT cancels
+                                                                # (B is backspace, NOT cancel --
+                                                                # p1c_shots.py's own precedent)
+
+        s.tap("START", settle=gb_shots.BIG_SETTLE)            # -> the ITEM MENU (ADD/REMOVE/SWAP)
+        s.shot("07_item_menu", "U4: START opens the item menu -- ADD ITEM / REMOVE / "
+                                "SWAP / CANCEL; SWAP does NOT swap the row it was "
+                                "opened on with the next one -- it ARMS a mark on "
+                                "that row (the list's own 0xED cursor glyph, D10) and "
+                                "returns to the list, where the game itself works: "
+                                "move the cursor to a second row and A swaps the two, "
+                                "or B drops the mark with nothing moved (see the "
+                                "armed-SWAP shots below)")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                # ADD ITEM -> id entry (osk_search)
+        s.shot("08_add_item_id", "U4: ADD ITEM asks for a raw item id (1-250) -- no "
+                                  "item-name table this slice (time-boxed, see "
+                                  "pdna_gbbag.h); the list itself already prints "
+                                  "'ITEM-n' for the same reason ('-' not '#': "
+                                  "'#' has no Gen-1 glyph, D9). Cancelling either "
+                                  "prompt now aborts the whole ADD (num_entry_opt, D5) "
+                                  "instead of silently inserting id 1 x1.")
+
+        # osk_search's own key contract (source/osk.c): A INSERTS the on-screen
+        # keyboard's currently-highlighted glyph (row 0 is the digit row "1234567890",
+        # cursor starts at (0,0) == '1'), B is BACKSPACE, START confirms, SELECT
+        # cancels -- NOT "A confirms" (an earlier version of this script got that
+        # wrong and silently mistyped every field; caught by looking at shot 07,
+        # which showed the bag list with a corrupted quantity instead of the item
+        # menu). N4 (review): the ORIGINAL version of this demo used id 77 (GOOD
+        # ROD), already at qty 99 in Red.sav -- but id 77 is a Gen-1 KEY item
+        # (gbb_is_g1_key_item(), 4a1afc8), so its row prints NO quantity at all;
+        # "09b shows the row reading x99" was never true of that capture. id 20
+        # (POTION) is an ORDINARY item, not in Red.sav's pocket yet -- ADD ITEM it
+        # straight in at qty 99 below (typed directly, the brief's "qty editor, or
+        # an edge save" alternative is not needed since ADD ITEM's own num_entry
+        # IS a qty editor), so the saturating merge right after lands on a row
+        # that actually prints a quantity.
+        s.tap("B", settle=gb_shots.SETTLE)                     # clear the seeded "1"
+        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)          # keyboard cursor: col0 '1' -> col1 '2'
+        s.tap("A", settle=gb_shots.SETTLE)                     # type '2' -> field "2"
+        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)          # col1 '2' -> col9 '0' (no B: '2' must stay typed)
+        s.tap("A", settle=gb_shots.SETTLE)                     # type '0' -> field "20"
+        s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm id=20 (POTION) -> quantity entry
+        s.shot("08b_add_item_qty", "U4: then a quantity (1-99), the same num_entry -- "
+                                    "id 20 (POTION, an ORDINARY item) typed via the "
+                                    "digit row")
+        s.tap("B", settle=gb_shots.SETTLE)                     # clear the seeded "1"
+        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)          # '1' -> '9' (row 0, col 8)
+        s.tap("A", settle=gb_shots.SETTLE)                     # type '9' -> field "9"
+        s.tap("A", settle=gb_shots.SETTLE)                     # type '9' again (cursor unmoved) -> field "99"
+        s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm qty=99 -> gbb_insert(...,20,99): new entry
+        s.shot("08c_potion_planted", "U4: id 20 (POTION) inserted fresh at qty 99 -- "
+                                      "gbb_insert() takes the FREE-SLOT path (no "
+                                      "existing id-20 entry to merge into), landing "
+                                      "on the list's own last row; the qty editor "
+                                      "step the N4 brief also allows (A on a row) is "
+                                      "therefore not separately needed here -- ADD "
+                                      "ITEM was typed straight to the cap")
+
+        s.tap("START", settle=gb_shots.BIG_SETTLE)             # -> the item menu again, cursor still on POTION
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                 # ADD ITEM -> id entry again
+        s.tap("B", settle=gb_shots.SETTLE)                     # clear seeded "1"
+        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)          # col0 -> col1 '2'
+        s.tap("A", settle=gb_shots.SETTLE)                     # type '2' -> field "2"
+        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)          # col1 -> col9 '0' (no B: keep the '2')
+        s.tap("A", settle=gb_shots.SETTLE)                     # type '0' -> field "20" again
+        s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm id=20 -> quantity entry
+        s.tap("B", settle=gb_shots.SETTLE)                     # clear seeded "1"
+        s.press_n("RIGHT", 4, settle=gb_shots.SETTLE)          # '1' -> '5' (row 0, col 4)
+        s.tap("A", settle=gb_shots.SETTLE)                     # type '5'
+        s.tap("START", settle=gb_shots.BIG_SETTLE)             # confirm qty=5 -> gbb_insert(...,20,5): MERGE path
+        s.shot("09_saturation_refusal", "U4: merging qty 5 into id 20/POTION (already "
+                                         "at the 99 cap from the ADD above) saturates "
+                                         "and refuses -- gbb_insert() SETS the "
+                                         "existing stack to the cap (99) and returns "
+                                         "GBB_ERR_QTY (gb_bag.c's own 'sum > cap' "
+                                         "branch WRITES list->entries[i].qty = "
+                                         "GBB_QTY_CAP, it does not merely refuse); "
+                                         "gbbag_start_menu's own msg_wait('SATURATED', "
+                                         "...) reports it. The WRITE still happens "
+                                         "here (99 -> 99) -- it is a no-op only "
+                                         "because POTION was already at the cap; nothing "
+                                         "about the mechanism itself skips the write.")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                 # dismiss the msg_wait -- back on the list
+        # ADD ITEM's own `*sel = l->count - 1` leaves the cursor on the LAST entry --
+        # POTION is that last entry (it was appended fresh above and nothing since
+        # has added/removed a row), so it is already in frame with no scrolling.
+        s.shot("09b_after_add", "U4: after dismissing the refusal, the cursor is "
+                                 "already on POTION's own row (ADD ITEM's own "
+                                 "'*sel = last entry' rule, unchanged since POTION "
+                                 "was appended) -- it reads x99, confirming the "
+                                 "saturating write landed exactly where it started "
+                                 "(99 -> 99, see the 09 caption above); an ORDINARY "
+                                 "item's row, unlike id 77/GOOD ROD (a Gen-1 KEY "
+                                 "item, prints no quantity at all).")
+
+        # The saturation refusal above made NO byte change (99 -> clamped-to-99 is a
+        # true no-op), so B here would take the silent memcmp-no-op path, not the
+        # commit prompt -- a REAL edit is needed first. REMOVE the currently selected
+        # entry (POTION, left selected by the ADD ITEM path above) via the item menu.
+        s.tap("START", settle=gb_shots.BIG_SETTLE)             # -> the item menu again
+        s.tap("DOWN", settle=gb_shots.SETTLE)                  # ADD ITEM -> REMOVE
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                 # REMOVE the selected entry -- a REAL change
+        s.shot("09c_removed", "U4: REMOVE deletes POTION -- a real, "
+                               "persisted-if-confirmed change (unlike the saturation "
+                               "attempt above)")
+
+        s.tap("B", settle=gb_shots.BIG_SETTLE)                # B -> the commit prompt (a real edit pending)
+        s.shot("10_commit_prompt", "U4: B with a real pending edit -> 'Save bag "
+                                    "changes?' (app_confirm), the same dialog every "
+                                    "other GB screen's own commit uses")
+        s.tap("B", settle=gb_shots.BIG_SETTLE)                # decline -- discard the edit
+        s.shot("11_declined", "U4: declining discards the edit -- gbb_write never ran, "
+                               "back at the box grid")
+
+        # N6(a): the armed-SWAP state (D10) -- START > SWAP on a row ARMS a mark,
+        # it does not swap on the spot. Re-enter the bag screen (declining above
+        # never persisted anything, so gbb_read() below re-reads the ORIGINAL
+        # unedited pocket -- row 0/row 1 are back to their pristine ids).
+        # D-reentry (this pass, empirically): BIG_SETTLE alone is NOT enough idle
+        # time for the box grid to accept a fresh START right after RETURNING
+        # from the bag screen -- measured with a throwaway diagnostic script: the
+        # very next START press was silently swallowed (no menu opened, same
+        # frame) with only BIG_SETTLE=40 frames of idle first, but succeeded with
+        # 250. The FIRST entry into the bag screen (this function's own opening
+        # sequence, above) never hits this because it follows a `run(GB_ART_COLD_
+        # SETTLE)` (32,000 frames) already, not a bare BIG_SETTLE return.
+        s.run(250)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+        s.press_n("DOWN", 7, settle=gb_shots.SETTLE)            # Party -> ... -> Bag (index 7)
+        s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbbag_gen1_screen()
+        s.shot("12_reentry_pristine", "U4: N6(a) setup -- re-entering the bag screen "
+                                       "after declining shows the ORIGINAL, unedited "
+                                       "Items list (the 09c/10/11 REMOVE was never "
+                                       "written)")
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> item menu, cursor on row 0
+        s.press_n("DOWN", 2, settle=gb_shots.SETTLE)            # ADD ITEM -> REMOVE -> SWAP (csel 2)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # SWAP: arms row 0 as swap_src, returns
+        s.tap("DOWN", settle=gb_shots.SETTLE)                   # move the cursor OFF the source row --
+                                                                 # only now does row 0's own 0xED marker
+                                                                 # stop being hidden behind is_sel
+        s.shot("12_swap_armed", "U4: SWAP arms row 0 (the mark glyph -- the list's "
+                                 "own 0xED cursor tile, D10 -- stays lit on row 0) "
+                                 "and returns to the list; the cursor itself is now "
+                                 "on row 1 (its OWN 0xED), so TWO rows show the same "
+                                 "glyph at once -- this is the armed state, not a "
+                                 "swap that already happened")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the destination -> the actual swap
+        s.shot("12b_swap_done", "U4: A on the destination (row 1) performs the swap "
+                                 "-- row 0 and row 1's entries have traded places; "
+                                 "the mark is gone (g1_swap_active cleared) and "
+                                 "neither row shows a stray 0xED anymore")
+
+        # Undo this real edit so the B-cancel proof below starts from a clean diff
+        # baseline: swap row 0/row 1 back, then leave. The cursor is CURRENTLY on
+        # row 1 (12b_swap_done's own A-on-destination left `sel` there, unchanged
+        # by the swap itself) -- SWAP arms whatever row the cursor is ON, so
+        # arming here grabs row 1 (id 206, post-swap) as the source; move UP to
+        # row 0 (id 205) as the destination, not DOWN, to swap the SAME pair back.
+        s.tap("START", settle=gb_shots.BIG_SETTLE)
+        s.press_n("DOWN", 2, settle=gb_shots.SETTLE)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # re-arm SWAP on row 1 (cursor's current row)
+        s.tap("UP", settle=gb_shots.SETTLE)                     # cursor -> row 0 (the OTHER half of the pair)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # swap back -> pristine order restored
+        s.tap("B", settle=gb_shots.BIG_SETTLE)                  # -> the no-op path: two swaps of the SAME
+                                                                 # pair restore identical bytes, memcmp(bag,t0)
+                                                                 # == 0 again, straight back to the box grid
+        s.shot("12c_swap_undone", "U4: swapping row 0/row 1 back and leaving -- two "
+                                   "swaps of the same pair restore the identical "
+                                   "bytes (memcmp(bag,t0)==0), so this is the SAME "
+                                   "silent no-op path as an unedited visit, straight "
+                                   "back to the box grid, no confirm dialog")
+
+        # N6(a) part 2: B drops an armed mark WITHOUT moving anything -- the KEY_B
+        # handler's own g1_swap_active branch never touches bag->pockets at all
+        # (source/pdna_gbbag.c pdna_gbbag_gen1_screen, the `if (g1_swap_active) {
+        # g1_swap_active = false; ...; continue; }` arm under KEY_B) -- a true
+        # 0-byte change, provable from the code path itself: that branch contains
+        # no assignment to any bag field, only the repaint. Demonstrated here by
+        # what the emulator CAN show: leaving the screen right after affords no
+        # confirm dialog at all, the same silent path 12c above takes for a real
+        # no-op -- if B-drop-mark had mutated anything, `want_commit && memcmp(...)
+        # != 0` would have popped 'Save bag changes?' instead.
+        # 12c_swap_undone above already LEFT the bag screen (its own B fell
+        # through to the box grid, the same "no-op path" 11_declined took) -- a
+        # full re-entry is needed here, not just an item-menu re-open.
+        s.run(250)                                              # re-entry idle (see the D-reentry note above)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+        s.press_n("DOWN", 7, settle=gb_shots.SETTLE)            # Party -> ... -> Bag (index 7)
+        s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbbag_gen1_screen()
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> item menu, cursor back on row 0
+        s.press_n("DOWN", 2, settle=gb_shots.SETTLE)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # arm SWAP on row 0
+        s.tap("DOWN", settle=gb_shots.SETTLE)                   # cursor -> row 1 (source's mark visible)
+        s.shot("13_swap_armed_again", "U4: N6(a) part 2 setup -- SWAP armed on row 0 "
+                                       "again, cursor moved to row 1")
+        s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B: drop the mark, nothing moves
+        s.shot("13b_mark_dropped", "U4: B drops the armed mark -- row 0's own 0xED "
+                                    "is gone, row 1 still shows the cursor's own "
+                                    "0xED, and NEITHER row's underlying entry "
+                                    "changed (compare against 12_swap_armed above: "
+                                    "same ids, same quantities, same order)")
+        s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B again (nothing armed) -> leave
+        s.shot("13c_left_no_prompt", "U4: leaving right after -- straight back to "
+                                      "the box grid, no 'Save bag changes?' prompt "
+                                      "at all. That prompt only ever fires when "
+                                      "memcmp(bag,t0)!=0 (pdna_gbbag() below "
+                                      "pdna_gbbag_gen1_screen); its absence here IS "
+                                      "the byte-compare proof for the B-cancel-mark "
+                                      "path: 0 bytes changed, not merely 'looks "
+                                      "unchanged on screen'.")
+
+        # N6(b): BAD ID refusals -- ADD ITEM with id 0 and id 251 (Gen 1's own
+        # range is 0x01..0xFA == 1..250, gb_bag.h's own VALID ITEM IDS comment;
+        # 0 and 0xFB==251 are both one step outside either edge).
+        s.run(250)                                              # re-entry idle (see the D-reentry note above)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> nav menu
+        s.press_n("DOWN", 7, settle=gb_shots.SETTLE)
+        s.tap("A", settle=GB_ART_COLD_SETTLE)                   # back into the bag screen
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> item menu (csel 0 == ADD ITEM)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry, seeded "1"
+        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> field empty
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id="" -- num_entry_opt treats an
+                                                                 # empty field as 0, the refused id below --
+                                                                 # -> QUANTITY prompt next (seeded "1", already
+                                                                 # valid; gbb_insert() only runs after BOTH
+                                                                 # prompts confirm, so id alone shows nothing yet)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=1 (seeded, unedited) -> NOW
+                                                                 # gbb_insert(id=0, qty=1) actually runs
+        s.shot("14_bad_id_zero", "U4: N6(b) -- ADD ITEM with id 0 (the field left "
+                                  "empty, which num_entry_opt reads back as 0) -> "
+                                  "gbb_insert() returns GBB_ERR_BADID -- "
+                                  "msg_wait('BAD ID', ..., 'That item id does not "
+                                  "exist.')")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss
+
+        # N6(b) part 2 -- id 251: one past Gen 1's last legal id (250). R1 (the
+        # re-verify-3 one-liner): the ID prompt's OSK cap is 999 and the value is
+        # clamped to 0xFF, so 251 reaches gbb_insert() as 251 and lands on its own
+        # GBB_ERR_BADID branch -> the same 'BAD ID' dialog as id 0. (Before R1 the
+        # prompt clamped to 250 = TM50 and INSERTED it silently.)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # item menu again
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry, seeded "1", cursor col0
+        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> field empty, cursor col0
+        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)           # col0 -> col1 '2'
+        s.tap("A", settle=gb_shots.SETTLE)                      # type '2' -> field "2"
+        s.press_n("RIGHT", 3, settle=gb_shots.SETTLE)           # col1 -> col4 '5'
+        s.tap("A", settle=gb_shots.SETTLE)                      # type '5' -> field "25"
+        s.press_n("RIGHT", 6, settle=gb_shots.SETTLE)           # col4 -> col10 mod 10 == col0 '1' (osk.c's
+                                                                 # own KEY_RIGHT wraps `(cc + 1) % rowlen`,
+                                                                 # source/osk.c line 223 -- the digit row is
+                                                                 # 10-wide, so RIGHT wraps circularly)
+        s.tap("A", settle=gb_shots.SETTLE)                      # type '1' -> field "251"
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm id "251" -> QUANTITY prompt (seeded "1")
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=1 -> gbb_insert(id=251) -> GBB_ERR_BADID
+        s.shot("15_id251_bad_id", "U4: N6(b) -- typing id 251 (one past Gen 1's last "
+                                   "legal id) now reaches gbb_insert() unchanged and is "
+                                   "refused with the same 'BAD ID / That item id does not "
+                                   "exist.' dialog as id 0 -- this frame is pixel-identical "
+                                   "to shot 14 BY DESIGN (the dialog never echoes the typed "
+                                   "id; allow_same) -- R1: the ID prompt no longer clamps "
+                                   "to 250; nothing was inserted.", allow_same=True)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss; nothing to undo
+
+        # N6(c): BAD QUANTITY refusals -- qty 0 and qty 100 (valid range 1..99).
+        # A valid id is needed to reach the quantity prompt at all; id 20 (POTION,
+        # not currently in the pocket, same id N4 used) keeps this an INSERT, not
+        # a merge, so the refusal is unambiguously about the typed quantity.
+        s.tap("START", settle=gb_shots.BIG_SETTLE)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry
+        s.tap("B", settle=gb_shots.SETTLE)
+        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)           # -> '2'
+        s.tap("A", settle=gb_shots.SETTLE)
+        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)           # -> '0'
+        s.tap("A", settle=gb_shots.SETTLE)                      # id "20"
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> quantity entry
+        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> empty (reads back as 0)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=0
+        s.shot("16_bad_qty_zero", "U4: N6(c) -- qty 0 (the field left empty) -> "
+                                   "gbb_insert() returns GBB_ERR_QTY, and because "
+                                   "the TYPED value (0) was itself outside 1..99 "
+                                   "(qty_in_range false), gbbag_start_menu's own "
+                                   "branch reports 'BAD QUANTITY' / 'Quantity must "
+                                   "be 1-99.' -- NOT 'SATURATED' (that wording is "
+                                   "reserved for a legal typed value that overflowed "
+                                   "an existing stack on merge, see the N4 shots)")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss
+        s.run(80)                                               # extra margin -- this stretch flaked during
+                                                                 # authoring under BIG_SETTLE alone (mGBA
+                                                                 # timing, the same class the 04/blink-marker
+                                                                 # caption already documents)
+
+        s.tap("START", settle=gb_shots.BIG_SETTLE)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ADD ITEM -> id entry
+        s.tap("B", settle=gb_shots.SETTLE)
+        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)
+        s.tap("A", settle=gb_shots.SETTLE)
+        s.press_n("RIGHT", 8, settle=gb_shots.SETTLE)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # id "20" again
+        s.run(80)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # -> quantity entry, seeded "1", cursor col0
+        s.tap("B", settle=gb_shots.SETTLE)                      # clear seeded "1" -> field empty, cursor col0
+        s.tap("A", settle=gb_shots.SETTLE)                      # col0 IS '1' -- type it directly -> "1"
+        s.press_n("RIGHT", 9, settle=gb_shots.SETTLE)           # col0 -> col9 '0'
+        s.tap("A", settle=gb_shots.SETTLE)                      # type '0' -> "10"
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # cursor unmoved (still col9 '0') -> "100"
+        s.shot("17_bad_qty_100_typed", "U4: N6(c) -- '100' typed into the SAME "
+                                        "quantity prompt as 16 (one past the 99 "
+                                        "cap, not clamped by the OSK -- num_entry_"
+                                        "opt's own maxv for THIS prompt is 999, "
+                                        "not 99, exactly so a typed 100 reaches "
+                                        "gbb_insert()'s own validation instead of "
+                                        "being silently clamped first, D5)")
+        s.run(80)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm qty=100 -> gbb_insert() returns
+                                                                 # GBB_ERR_QTY, qty_in_range false again -- the
+                                                                 # SAME 'BAD QUANTITY' / 'Quantity must be
+                                                                 # 1-99.' dialog as 16 (msg_wait's own text
+                                                                 # never echoes the typed value, so the two
+                                                                 # dialogs are PIXEL-IDENTICAL -- not
+                                                                 # re-captured here on purpose: gb_shots.py's
+                                                                 # own Session.shot() refuses a pixel-identical
+                                                                 # repeat as a likely driver bug, and here it
+                                                                 # would be right to be suspicious of a NEW
+                                                                 # bug except this one really is the same
+                                                                 # dialog by design; 17_bad_qty_100_typed above
+                                                                 # is the honest proof of what was actually
+                                                                 # typed instead)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss (msg_wait's own "Press A")
+        s.tap("B", settle=gb_shots.BIG_SETTLE)                  # leave -- every refusal above made no edit,
+                                                                 # so this is the silent no-op path again
+        s.shot("18_left_after_refusals", "U4: leaving after every N6(b)/(c) refusal "
+                                          "-- no confirm dialog, same no-op-path "
+                                          "proof as 13c above: none of the BAD ID / "
+                                          "BAD QUANTITY attempts wrote anything")
+
+    return s
+
+
+def run_u4_empty(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """N6(e): Red's own Item bag with an EMPTY Items pocket (count 0) -- `rom` must
+    be fused with a Red save whose Items pocket was zeroed by docs/shots/rvu4/
+    mkbag.c (no ids given on argv -- gbb_write() then persists count=0). Same nav
+    as run_u4_bag()'s own red case: boot picker DOWN -> A -> A -> box grid -> START
+    -> nav DOWN x7 -> A."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "u4_empty_")
+    print("== N6(e): Red's own Item bag, Items pocket count == 0 ==")
+    s.run(700)
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=60)
+    s.tap("A", settle=60)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 7)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)
+    s.shot("01_empty_pocket", "N6(e): Items pocket count == 0 -- the list is CANCEL "
+                               "alone (D3's own '+ the CANCEL row' rule over a "
+                               "0-entry pocket: total = 0 + 1 = 1 row), cursor "
+                               "pinned on it. Byte-for-byte oracle proof: the real "
+                               "cartridge on the SAME save (docs/shots/rvu4/"
+                               "oracle.py --tag red_empty) reads grid[4][5] == "
+                               "0xed (the cursor glyph) and grid[4][6..11] == "
+                               "0x82,0x80,0x8d,0x82,0x84,0x8b ('C','A','N','C','E',"
+                               "'L') at the SAME screen position -- see this run's "
+                               "own paste in the U4 report.")
+    return s
+
+
+def run_d7_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """N6(f): Gold's own START > BAG refusal, from a COMMITTED driver (`rom` must
+    be a Gold-only fused image, tools/fuse_gb.py fed Gold.gbc+Gold.sav -- the
+    earlier docs/shots/u4/d7_gold_01_bag_refusal.png came from an ad-hoc,
+    non-driver capture; this reproduces it from code). Gen 2's NV_BAG row is
+    NAV_COMING_SOON (source/nav_avail.c: 'The Bag is coming soon.') -- Gen-1's own
+    Bag screen (pdna_gbbag.c) is Gen-1 only, Gen 2's Pack is a later slice.
+    Nav: gb_delta_pick_save()'s own `if (n == 1) return 0` (source/pdna_main.c
+    ~8913) means a SINGLE-ROM fused image (this one -- only Gold, no Emerald/
+    Gen-3 save fused, so gb_delta_boot_pick()'s own picker never triggers either,
+    same gate) skips straight to the GB save's S1 info page with NO boot-picker
+    taps at all -- unlike run_u4_bag()'s own doc comment above (which describes
+    the combined multi-ROM image's picker), this image needs exactly ONE tap
+    (A: S1 info -> box grid), not DOWN+A+A. Then: START -> nav DOWN x7
+    (Party->Bank->Daycare->Trainer->Clock->Mirage->Pokedex->Bag, SAME NV_* row
+    order as Gen 1 -- nav_avail's GB_TABLE has one row per NV_* id with a
+    per-generation COLUMN, not a per-generation row order) -> A -> app_nav_refuse()."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "d7_gold_")
+    print("== N6(f): Gold's own START > BAG refusal ==")
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (no DOWN/second A needed)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 7)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("01_bag_refusal", "N6(f): Gold, START > (nav DOWN x7) > Bag -> "
+                              "app_nav_refuse() -- 'COMING SOON' / 'The Bag is "
+                              "coming soon.' (nav_avail.c's own GB_TABLE[NV_BAG][1] "
+                              "for SE_KIND_GEN2). Gen-1's own pdna_gbbag.c screen "
+                              "is Gen-1 only (pdna_gbbag() itself refuses "
+                              "s->gen != GB_GEN1); Gen 2's Pack is a later slice, "
+                              "not this one.")
+    return s
+
+
 # ---------------------------------------------------------------------------------
 # BACKLOG #68b: cold-start timing, WITH vs WITHOUT the fused LOC payloads.
 # ---------------------------------------------------------------------------------
@@ -643,6 +1233,22 @@ def main(argv=None) -> int:
     ap.add_argument("--u2c-trainer", action="store_true",
                      help="U2c: only run_u2c_trainer() against --image (Red's own "
                           "trainer card), skip the other flows")
+    ap.add_argument("--u3-trainer", choices=("gold", "crystal"),
+                     help="U3: only run_u3_trainer() against --image for the named "
+                          "game (Gold's or Crystal's own trainer card), skip the "
+                          "other flows")
+    ap.add_argument("--u4-bag", choices=("red", "yellow"),
+                     help="U4: only run_u4_bag() against --image for the named game "
+                          "(Red's or Yellow's own Item bag) -- --image MUST be a "
+                          "ONE-Gen-1-ROM fused image matching this choice (BACKLOG "
+                          "#98's fused-image-by-generation-only harness gap)")
+    ap.add_argument("--u4-empty", action="store_true",
+                     help="N6(e): only run_u4_empty() against --image -- --image "
+                          "MUST be fused with a Red save whose Items pocket was "
+                          "zeroed by docs/shots/rvu4/mkbag.c (count 0)")
+    ap.add_argument("--d7-gold", action="store_true",
+                     help="N6(f): only run_d7_gold() against --image -- --image "
+                          "MUST be a Gold-only fused image (Gold.gbc+Gold.sav)")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -692,6 +1298,58 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] u2c trainer: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.u3_trainer:
+        try:
+            sess = run_u3_trainer(core_mod, image_mod, a.image, a.out, a.u3_trainer)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] u3 trainer ({a.u3_trainer}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.u4_bag:
+        try:
+            sess = run_u4_bag(core_mod, image_mod, a.image, a.out, a.u4_bag)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] u4 bag ({a.u4_bag}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.u4_empty:
+        try:
+            sess = run_u4_empty(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] u4 empty: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.d7_gold:
+        try:
+            sess = run_d7_gold(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] d7 gold: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

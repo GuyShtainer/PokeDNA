@@ -178,6 +178,21 @@ uint32_t gbscr_block_bytes(uint8_t gen, GbScrSrc src) {
     case GBSCR_SRC_TEXTBOX:   return (gen == PDNA_GEN1) ? 32u * 16u : 54u * 8u;
     case GBSCR_SRC_CARDFRAME: return 40u * 16u;
     case GBSCR_SRC_BADGES:    return (gen == PDNA_GEN1) ? 64u * 16u : 44u * 16u;
+    /* U3 (re-anchored, see the STATUSWORD/CARDGFX comment on
+     * gbscr_block_off() below): FONTEXTRA 32 tiles 2bpp (512 B, unused by
+     * the fixed painter, kept for other callers); LEADERS 86 tiles 2bpp
+     * (1,376 B: 80 for the 8 gym-leader faces + 6 for the "BADGES" page-2
+     * word, only 5 used); CARDGFX 6 tiles 2bpp (96 B: border fill, notch,
+     * divider fill, divider cap, "ID", "No" -- all 6 used); CARDPIC_M/F 35
+     * tiles 2bpp (560 B, the 5x7 card photo); STATUSWORD 6 tiles 2bpp
+     * (96 B: the 5 "STATUS" glyphs + the play-time colon, immediately
+     * before LEADERS). */
+    case GBSCR_SRC_FONTEXTRA: return 32u * 16u;
+    case GBSCR_SRC_LEADERS:   return 86u * 16u;
+    case GBSCR_SRC_CARDGFX:   return 6u * 16u;
+    case GBSCR_SRC_CARDPIC_M: return 35u * 16u;
+    case GBSCR_SRC_CARDPIC_F: return 35u * 16u;
+    case GBSCR_SRC_STATUSWORD: return 6u * 16u;
     default:                  return 0;
   }
 }
@@ -196,6 +211,12 @@ uint32_t gbscr_block_off(const RomGbUi* gu, uint8_t gen, GbScrSrc src) {
     case GBSCR_SRC_TEXTBOX:   return (gen == PDNA_GEN1) ? gu->textbox : gu->frames;
     case GBSCR_SRC_CARDFRAME: return gu->cardframe;
     case GBSCR_SRC_BADGES:    return gu->badges;
+    case GBSCR_SRC_FONTEXTRA: return gu->fontextra;
+    case GBSCR_SRC_LEADERS:   return gu->leaders;
+    case GBSCR_SRC_CARDGFX:   return gu->cardgfx;
+    case GBSCR_SRC_CARDPIC_M: return gu->cardpic_m;
+    case GBSCR_SRC_CARDPIC_F: return gu->cardpic_f;
+    case GBSCR_SRC_STATUSWORD: return gu->leaders ? gu->leaders - 96u : 0u;
     default:                  return 0;
   }
 }
@@ -226,9 +247,13 @@ bool gbscr_mem_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
  * cache, right after FONT -- fixed, so the cache-building loop and any test that
  * inspects a GbscrCache agree on layout. Pure data: moved above the tonc/FatFs
  * boundary (U2b/U2c review item 0c) so gbscr_cache_plan() below can use it. */
-static const GbScrSrc kCacheOptOrder[3] = {
-  GBSCR_SRC_TEXTBOX, GBSCR_SRC_CARDFRAME, GBSCR_SRC_BADGES
+static const GbScrSrc kCacheOptOrder[9] = {
+  GBSCR_SRC_TEXTBOX, GBSCR_SRC_CARDFRAME, GBSCR_SRC_BADGES,
+  /* U3: Gen 2's own card additions. */
+  GBSCR_SRC_FONTEXTRA, GBSCR_SRC_LEADERS, GBSCR_SRC_CARDGFX,
+  GBSCR_SRC_CARDPIC_M, GBSCR_SRC_CARDPIC_F, GBSCR_SRC_STATUSWORD
 };
+#define GBSCR_CACHE_OPT_N 9
 
 /* Total tail bytes gbscr_open() needs for `need_mask` on generation `gen`:
  * the 2,048-B rom_gbui scan scratch, reused afterward for FONT (always cached)
@@ -238,7 +263,7 @@ static const GbScrSrc kCacheOptOrder[3] = {
  * re-deriving it and risking the two falling out of sync. */
 uint32_t gbscr_tail_need(uint8_t gen, uint16_t need_mask) {
   uint32_t need = ROM_GBUI_SCRATCH_MIN + gbscr_block_bytes(gen, GBSCR_SRC_FONT);
-  for (int i = 0; i < 3; i++)
+  for (int i = 0; i < GBSCR_CACHE_OPT_N; i++)
     if (need_mask & (1u << kCacheOptOrder[i])) need += gbscr_block_bytes(gen, kCacheOptOrder[i]);
   return need;
 }
@@ -275,7 +300,7 @@ bool gbscr_cache_plan(uint8_t gen, uint16_t need_mask, const RomGbUi* gu,
     cursor += len;
   }
 
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < GBSCR_CACHE_OPT_N; i++) {
     GbScrSrc src = kCacheOptOrder[i];
     if (!(need_mask & (1u << src))) continue;
     uint32_t off = gbscr_block_off(gu, gen, src);
@@ -639,6 +664,26 @@ static bool gbscr_tile_pixels(const GbScreen* gs, RomGbUi* local, int idx, uint1
       return rom_gbui_tile(local, local->cardframe, v, 2, 0, 0, 0, out) != 0;
     case GBSCR_SRC_BADGES:
       return rom_gbui_tile(local, local->badges, v, 2, 0, 0, 0, out) != 0;
+    /* U3: Gen 2's own card blocks -- plain rom_gbui_tile() reads, like BADGES
+     * above (no special codec). CARDPIC_M/F pass the 5x7 grid + the located
+     * cardpic_colmajor flag so rom_gbui_tile() applies Crystal's own column-
+     * major reorder (Gold's cardpic_m is row-major, grid_w/grid_h make that a
+     * no-op transform either way -- rom_gbui_tile only reorders when
+     * `colmajor` is true). */
+    case GBSCR_SRC_FONTEXTRA:
+      return rom_gbui_tile(local, local->fontextra, v, 2, 0, 0, 0, out) != 0;
+    case GBSCR_SRC_LEADERS:
+      return rom_gbui_tile(local, local->leaders, v, 2, 0, 0, 0, out) != 0;
+    case GBSCR_SRC_CARDGFX:
+      return rom_gbui_tile(local, local->cardgfx, v, 2, 0, 0, 0, out) != 0;
+    case GBSCR_SRC_CARDPIC_M:
+      return rom_gbui_tile(local, local->cardpic_m, v, 2, 5, 7, local->cardpic_colmajor, out) != 0;
+    case GBSCR_SRC_CARDPIC_F:
+      return rom_gbui_tile(local, local->cardpic_f, v, 2, 5, 7, local->cardpic_colmajor, out) != 0;
+    case GBSCR_SRC_STATUSWORD: {
+      uint32_t off = local->leaders ? local->leaders - 96u : 0u;
+      return rom_gbui_tile(local, off, v, 2, 0, 0, 0, out) != 0;
+    }
     case GBSCR_SRC_PIC:
       /* U2c: the Gen-1 player pic -- a separate compressed codec
        * (gb_sprite_gen1), decoded once by gbscr_decode_pic_gen1() into

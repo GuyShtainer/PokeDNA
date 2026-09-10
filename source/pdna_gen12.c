@@ -597,6 +597,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbedit.h"
 #include "pdna_gbsummary.h"   /* BACKLOG #41: the native VIEW/EDIT summary */
 #include "pdna_gbtrainer.h"   /* BACKLOG #49 P1b: the Gen-1/2 trainer card */
+#include "pdna_gbbag.h"       /* U4, BACKLOG #67: Red/Yellow's own Item bag */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
@@ -2510,6 +2511,22 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * one-hour budget; flagged for a follow-up slice, not silently worked around. */
     if (g_ed) pdna_gbtrainer(&g_ed->s, true);
     else      (void)gb_info_page(m);   /* A and B both just return to the grid */
+  } else if (nv == NV_BAG && kind == SE_KIND_GEN1) {
+    /* U4 (BACKLOG #67): Red/Yellow's own Item bag + PC store, same "needs a
+     * live GbSession to write through" gate as NV_TRAINER above. D7 (U4
+     * review): this branch used to dispatch to pdna_gbbag() for EVERY kind,
+     * including Gen 2 -- nav_avail's own GB_TABLE says COMING_SOON for
+     * SE_KIND_GEN2 (Gen 2's Pack is a later slice), but app_nav_menu() here
+     * is called with NAV_ALL_AVAILABLE, so a Gen-2 session's NV_BAG press
+     * never even reached nav_avail's rule table; it silently opened the
+     * Gen-1-shaped bag screen (which then refused with its own generic
+     * "This screen is Gen-1 only" message -- functionally harmless, but not
+     * the DESIGNED "coming soon" text nav_avail already has for this exact
+     * row). Gating on `kind` here lets a Gen-2 NV_BAG press fall through to
+     * the `else if (nv != NV_BACK)` branch below, which calls
+     * app_nav_refuse() and shows nav_avail's own honest message instead. */
+    if (g_ed) pdna_gbbag(&g_ed->s, true);
+    else      (void)gb_info_page(m);
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */
   }

@@ -62,7 +62,10 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Mirage." } },
   [NV_DEX]       = { { NAV_COMING_SOON, "The Pokedex is coming soon." },
                      { NAV_COMING_SOON, "The Pokedex is coming soon." } },
-  [NV_BAG]       = { { NAV_COMING_SOON, "The Bag is coming soon." },
+  /* U4 (BACKLOG #67): Red/Yellow's own Item bag + PC store are wired
+   * (pdna_gbbag.c) -- Gen 1 only; Gen 2's Pack (design sec 1.4) is a later
+   * slice. */
+  [NV_BAG]       = { { NAV_OK, "OK" },
                      { NAV_COMING_SOON, "The Bag is coming soon." } },
   [NV_DATA]      = { { NAV_COMING_SOON, "Flags/counters coming soon." },
                      { NAV_COMING_SOON, "Flags/counters coming soon." } },

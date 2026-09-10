@@ -137,6 +137,34 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # append-only rule.
     ("gb-card-gen1", "U2c — Red's own trainer card on the shell (Gen-1 saves)",
      ("U2c",)),
+    # U3 (docs/briefs/U3-gen2-card-brief.md, BACKLOG #66): Gold/Silver/Crystal's OWN
+    # trainer card (both pages) drawn on the shared shell, replacing Emerald's card
+    # art for Gen-2 saves too -- the Emerald-art path is now fully retired for BOTH
+    # generations. Shots come from tools/dgb_shots.py's run_u3_trainer(), captions
+    # all start "U3:". Appended after "gb-card-gen1" per this list's own append-only
+    # rule.
+    ("gb-card-gen2", "U3 — Gold/Silver/Crystal's own trainer card on the shell "
+     "(Gen-2 saves, both pages)", ("U3",)),
+    # U4 (docs/briefs/U4-gen1-bag-brief.md, BACKLOG #67): Red/Yellow's own Item bag
+    # + PC item store drawn on the shared shell. Shots come from
+    # tools/dgb_shots.py's run_u4_bag(), captions all start "U4:". Appended after
+    # "gb-card-gen2" per this list's own append-only rule.
+    ("gb-bag-gen1", "U4 — Red/Yellow's own Item bag + PC store on the shell "
+     "(Gen-1 saves)", ("U4",)),
+    # U4 shots-and-captions REVIEW pass (this slice): N4 reworks the saturation
+    # demo onto an ORDINARY item (POTION, not a Gen-1 key item); N6 adds the
+    # armed-SWAP state, BAD ID / BAD QUANTITY refusals, the gbscr_open()
+    # forced-failure fallback page, the empty-Items-pocket screen (+ its real-
+    # cartridge oracle capture), and Gold's own Bag refusal from a committed
+    # driver. Shots come from tools/dgb_shots.py's run_u4_bag()/run_u4_empty()/
+    # run_d7_gold(); captions start "U4:" (folded into "gb-bag-gen1" above,
+    # same feature) or "N4:"/"N5:"/"N6(a-f):" for the parts that are their own
+    # capture, not an addition to an existing U4 shot. Appended after
+    # "gb-bag-gen1" per this list's own append-only rule.
+    ("u4-review-n6", "U4 review N4/N6 — saturation on an ordinary item, armed "
+     "SWAP, BAD ID/QUANTITY refusals, the forced-failure fallback page, the "
+     "empty pocket (+ real-cartridge oracle), Gold's own Bag refusal",
+     ("N6(d)", "N6(e)", "N6(f)")),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
@@ -199,9 +227,24 @@ def render_sheet(entries: list[tuple[Path, str]], out_path: Path, *,
                       fill=(248, 81, 73), font=font)
             continue
         img = Image.open(path).convert("RGB")
-        img = img.resize((img.width * scale, img.height * scale), Image.NEAREST)
-        sheet.paste(img, (cx + PAD, cy + PAD))
-        draw.rectangle([cx + PAD, cy + PAD, cx + PAD + img.width - 1, cy + PAD + img.height - 1],
+        # D6 (U4 review): this used to unconditionally resize by `scale` and
+        # paste at native size -- correct for a plain GBA (240x160) capture,
+        # but a REAL_*.png ground-truth capture is a Game Boy screenshot
+        # ALREADY pre-scaled by the driving script (oracle.py's own
+        # gb.screenshot(..., scale=3), 160x144 -> 480x432); multiplying that
+        # by `scale` again produced an image far bigger than the cell box, so
+        # it overflowed into neighbouring cells and malformed whatever row it
+        # landed on. Fit-to-box (preserve aspect, center) instead of assuming
+        # every input is native GBA resolution -- this never overflows the
+        # fixed cell regardless of the source image's own size.
+        iw, ih = img.width, img.height
+        fit = min(frame_w / iw, frame_h / ih)
+        new_w, new_h = max(1, round(iw * fit)), max(1, round(ih * fit))
+        img = img.resize((new_w, new_h), Image.NEAREST)
+        paste_x = cx + PAD + (frame_w - new_w) // 2
+        paste_y = cy + PAD + (frame_h - new_h) // 2
+        sheet.paste(img, (paste_x, paste_y))
+        draw.rectangle([cx + PAD, cy + PAD, cx + PAD + frame_w - 1, cy + PAD + frame_h - 1],
                         outline=BORDER)
         ty = cy + PAD + frame_h + 4
         for line in wrap(caption, font, frame_w, draw)[:3]:
