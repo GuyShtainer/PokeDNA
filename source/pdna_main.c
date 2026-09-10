@@ -6213,6 +6213,10 @@ static void pdna_daycare(void) {
   int n = dc_rescan(base, stride, recs, dc, phys, dcx, dcy, &off, &to_check);
   int sel = 0, frame = 0, ctr = 0;
   bool redraw = true, rescan = false;
+  /* BACKLOG #73 (speed parity): screen-enter span, same idiom as pdna_box.c/pdna_pick.c/
+   * pdna_main.c's party/dex spans -- closed at the end of the first `redraw` paint below. */
+  bool perf_first_paint = true;
+  perf_span_begin("daycare");
   for (;;) {
     if (rescan) {                                /* after a put/take: re-read the daycare */
       n = dc_rescan(base, stride, recs, dc, phys, dcx, dcy, &off, &to_check);
@@ -6293,6 +6297,7 @@ static void pdna_daycare(void) {
       /* "your 2" is doing the disambiguating work: only the boarders are pickable. */
       ui_ptext(4, PDNA_DCY_FOOTER_Y, UI_DIM, n ? PDNA_DCY_HINT_PAIR
                                  : (g_clip.occupied ? PDNA_DCY_HINT_PUT : "B back"));
+      if (perf_first_paint) { perf_first_paint = false; perf_span_end(); }
     }
     u16 k, fresh;
     do { VBlankIntrWait(); snd_vblank(); key_poll();
