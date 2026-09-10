@@ -106,6 +106,10 @@
  *          signature hit rather than Gold's), additionally cardpic_f, pack_f.
  * A ROM that matches neither gen's full requirement set gets `gen = 0`,
  * every offset 0, `ok = 0`.
+ * ONE slot is deliberately OUTSIDE this requirement set: BACKLOG #99's Gen-1
+ * key-item bit table (RomGbUi.g1_keyitems / rom_gbui_g1_key_item()). A miss
+ * there never fails `ok` -- the caller (source/pdna_gbbag.c) falls back to
+ * gbb_is_g1_key_item()'s factual id list and says so on its reason line.
  *
  * ---------------------------------------------------------------------------
  * WHAT IT COSTS
@@ -138,11 +142,29 @@ typedef enum {
  * of this note measured with IARCH by mistake, which is the wrong compiler
  * flags for the file that actually ships.
  *
+ * BACKLOG #99 (2026-09-10) re-measured with the same exact command after
+ * adding the optional Gen-1 key-item locate step: rom_gbui_open grew 1160 ->
+ * 1224 (+64: the new try_g1_keyitems()/g1_keyitems_verify() call, plus `ki`/
+ * `ki_anchor` bookkeeping, folds into locate()'s already-inlined frame the
+ * same way every other try_*() does); rom_gbui_open_loc held at 176 B exactly
+ * (anchor_g1_keyitems()'s own frame folds into the same inlined budget
+ * revalidate_loc()'s other anchor_*() helpers already use -- one more `if`
+ * block costs no extra stack once inlined). g1_keyitems_verify itself is a
+ * new 32-B own-frame (single call site inside try_g1_keyitems(), which is
+ * itself single-call-site inside locate() -- both fold into rom_gbui_open()).
+ *
  * Per-function own-frame sizes (bytes): rd 16, font_verify 160, block_eq
- * 160, distinct_tiles 1568, rom_gbui_open 1160, rom_gbui_open_loc 176,
+ * 160, distinct_tiles 1568, rom_gbui_open 1224, rom_gbui_open_loc 176,
  * rom_gbui_save_loc 16, rom_gbui_tile 64, rom_gbui_glyph 32, parse_header
- * 104, anchor_pack 24, try_badgeleader_hit 40. sizeof(RomGbUi) = 120 on ARM (128 on the host: two 8-B pointers),
- * sizeof(RomGbUiLoc) = 108 (BACKLOG #71 grew both from 88/68: RomGbUi
+ * 104, anchor_pack 24, try_badgeleader_hit 40, g1_keyitems_verify 32.
+ * sizeof(RomGbUi) = 144 on ARM (152 on the host: two 8-B pointers vs ARM's
+ * two 4-B ones) -- BACKLOG #99 grew this from 120/128 (+24: g1_keyitems
+ * uint32_t + g1_keyitems_bits[15], rounded up to a 4-B struct boundary;
+ * MEASURED via sizeof() on both a host build and an arm-none-eabi-gcc
+ * compile, not assumed),
+ * sizeof(RomGbUiLoc) = 116 (BACKLOG #99 grew this from 108: one new
+ * off[]/anchor[] slot pair, 4+4 B; BACKLOG #71 grew both RomGbUi/RomGbUiLoc
+ * from 88/68: RomGbUi
  * carries an anchor[ROM_GBUI_ANCH_COUNT] the same shape RomGbUiLoc does, see
  * the struct comments). locate(), try_font/try_textbox/try_cardframe/
  * try_badges/try_playerpic/try_frame/try_cardpic_crystal/try_cardpic_gold,
@@ -156,24 +178,22 @@ typedef enum {
  * inline both.)
  *
  * The deepest call chain is rom_gbui_open() -> distinct_tiles() -> rd():
- * 1,160 + 1,568 + 16 = 2,744 B own-frames-summed (locate() is now INSIDE
- * rom_gbui_open()'s 1,160, per the inlining note above -- this replaces the
- * old rom_gbui_open() -> locate() -> distinct_tiles() -> rd() = 2,720 B
- * three-frame chain with an equivalent two-frame one, 8 B worse from the
- * anchor bookkeeping locate() now does). font_verify is NOT on this path
- * (1,160 + 160 + 16 = 1,336 is smaller). NOTE (review, 2026-09-09): these
+ * 1,224 + 1,568 + 16 = 2,808 B own-frames-summed (locate() is now INSIDE
+ * rom_gbui_open()'s 1,224, per the inlining note above; #99 moved this from
+ * 2,744 -- see the #99 delta note above). font_verify is NOT on this path
+ * (1,224 + 160 + 16 = 1,400 is smaller). NOTE (review, 2026-09-09): these
  * numbers are measured WITH -ffast-math -fno-strict-aliasing, which
  * Makefile:237 adds to every build of this file; the pre-#71 frames were
- * insensitive to those two flags, this file's are not (1,144 without them).
+ * insensitive to those two flags, this file's are not (1,144 without them,
+ * pre-#99).
  *
  * rom_gbui_open_loc()'s own fall-to-a-full-scan path (open_loc -> open ->
  * distinct_tiles -> rd; verified by objdump that this is a real `bl`, not a
  * sibling/tail call -- open_loc's own frame is still live on the stack while
- * open() runs) adds its 176-B frame (up from 120: revalidate_loc() and every
- * anchor_*() helper it calls are now inlined into it) on top of the 2,728
- * above: 176 + 2,744 = 2,920 B -- 80 B worse than the pre-#71 2,840, entirely
- * from open_loc()'s own frame growing by the same 56 B (120 -> 176) that the
- * newly-inlined anchor re-derivation logic costs.
+ * open() runs) adds its 176-B frame (UNCHANGED by #99, see the delta note
+ * above) on top of the 2,808 above: 176 + 2,808 = 2,984 B -- 64 B worse than
+ * the pre-#99 2,920, entirely from rom_gbui_open()'s own frame growing by the
+ * same 64 B the new optional locate step costs.
  *
  * FIRST MEASUREMENT WAS 5,120 B WORSE (pre-U1): locate()'s own frame was
  * 5,376 B, not ~1,000 B, because ScanJob's hit array (SCAN_MAX_HITS=128,
@@ -188,25 +208,29 @@ typedef enum {
  * (re-verified: tests/host_romgbui_test.c, and again after #71 via
  * tools/gbui_dump.py against the same corpus).
  *
- * PDNA_GB_UI_NEED = 2,920 (open_loc's full-scan-fallback chain, the worse of
- * the two entry points, UP from 2,840 -- see the #71 delta above) + 1,576
- * (source/pdna_gbscreen.c's gbscr_open_inner() OWN frame, UNCHANGED by #71:
- * pdna_gbscreen.c was not touched by this batch) = 4,480 -- PLUS the leg the
- * call-graph walk cannot follow (U2b review D1, 2026-09-09): distinct_tiles()
- * calls the GbReadFn INDIRECTLY, and on the SD build that is gbscr_sd_read
+ * PDNA_GB_UI_NEED = 2,984 (open_loc's full-scan-fallback chain, the worse of
+ * the two entry points, UP from 2,920 -- see the #99 delta above) + 1,576
+ * (source/pdna_gbscreen.c's gbscr_open_inner() OWN frame, UNCHANGED by #99:
+ * pdna_gbscreen.c was not touched by this batch -- source/rom_gbui.{c,h} are
+ * the only files this batch owns) = 4,560 -- PLUS the leg the call-graph walk
+ * cannot follow (U2b review D1, 2026-09-09): distinct_tiles() calls the
+ * GbReadFn INDIRECTLY, and on the SD build that is gbscr_sd_read
  * 24 -> f_lseek 80 -> create_chain 40 -> fill_last_frag 16 -> put_fat 32 ->
  * move_window 16 -> disk_read 32 -> flashcartio_read_sector 40 -> diskRead
  * 24 -> ed_sd_dma_rd 48 -> ed_sd_dma_to_rom 552 = 904 B (measured,
- * -fstack-usage, UNCHANGED by #71). 4,480 + 904 = 5,384. Both real call
- * sites' OLD margins (measured at 5,320) were Settings 6,680 free and the
- * nav-menu chain 7,792 free; PDNA_GB_UI_NEED moving by +64 moves each margin
- * by the same -64 (6,616 / 7,728 free) -- neither call site was touched by
- * this batch, so this is arithmetic, not a re-measurement of them.
+ * -fstack-usage, UNCHANGED by #99). 4,560 + 904 = 5,464. Both real call
+ * sites' OLD margins (measured at 5,400) were Settings 6,600 free and the
+ * nav-menu chain 7,712 free; PDNA_GB_UI_NEED moving by +64 moves each margin
+ * by the same -64 (6,536 / 7,648 free) -- neither call site was touched by
+ * this batch (source/pdna_gbscreen.c is out of scope for #99), so this is
+ * arithmetic, not a re-measurement of them -- an independent review should
+ * confirm both margins against a fresh artless ELF before this number is
+ * trusted on hardware.
  *
  * gbscr_cache_block() (the U2b item 1 bulk-copy of FONT + need_mask's blocks
  * into `tail`, called AFTER rom_gbui_open_loc() returns, never nested inside
  * it) adds only 16 B of its own frame plus whichever GbReadFn it calls
- * (gbscr_sd_read: 24 B) -- 40 B, far under the 2,920-B rom_gbui_open_loc chain
+ * (gbscr_sd_read: 24 B) -- 40 B, far under the 2,984-B rom_gbui_open_loc chain
  * this replaces as the deepest path, so it does not move PDNA_GB_UI_NEED.
  *
  * D1/D2 fix (U2a review, 2026-09-09): the gate used to live INSIDE the frame
@@ -225,8 +249,9 @@ typedef enum {
  * PDNA_GB_UI_NEED before gbscr_open_inner, and rom_gbui_open/_open_loc/_tile/
  * _glyph are present in PokeDNA-artless.elf (review, 2026-09-09). The
  * artless/delta "EWRAM ok" lines say nothing about STACK; only the measured
- * chain above does. Margins at 5,400: Settings 6,600 B free, nav chain 7,712. */
-#define PDNA_GB_UI_NEED 5400
+ * chain above does. Margins at 5,464 (BACKLOG #99): Settings 6,536 B free,
+ * nav chain 7,648. */
+#define PDNA_GB_UI_NEED 5464
 
 /* Each entry is the SCAN HIT file offset (where the locator's ScanCb pattern
  * matched), never a located block itself. gen 1 uses FONT/TEXTBOX/CARDFRAME/
@@ -239,7 +264,13 @@ enum {
   ROM_GBUI_ANCH_FONT = 0, ROM_GBUI_ANCH_TEXTBOX, ROM_GBUI_ANCH_CARDFRAME,
   ROM_GBUI_ANCH_BADGES, ROM_GBUI_ANCH_PLAYERPIC,
   ROM_GBUI_ANCH_FRAMES, ROM_GBUI_ANCH_BADGELEADER, ROM_GBUI_ANCH_CARDPIC,
-  ROM_GBUI_ANCH_PACK_M, ROM_GBUI_ANCH_PACK_F, ROM_GBUI_ANCH_COUNT
+  ROM_GBUI_ANCH_PACK_M, ROM_GBUI_ANCH_PACK_F,
+  /* BACKLOG #99: IsKeyItem_'s own `cp HM01` / `push af` / `ld hl,KeyItemFlags`
+   * scan hit (Gen 1 only). OPTIONAL -- unlike every other slot, a miss here
+   * does not fail Gen 1's `ok` (see ROM_GBUI_OFF_G1_KEYITEMS below); the
+   * caller falls back to gbb_is_g1_key_item()'s factual id list. */
+  ROM_GBUI_ANCH_G1_KEYITEMS,
+  ROM_GBUI_ANCH_COUNT
 };
 
 typedef struct {
@@ -266,6 +297,20 @@ typedef struct {
   uint32_t cardgfx;              /* G2-P: TrainerCardGFX, 6 tiles, 2bpp      */
   uint32_t pack_m;                /* G2-K: PackGFX, 60 tiles, 2bpp            */
   uint32_t pack_f;                /* G2-K: PackFGFX (Crystal only), else 0    */
+
+  /* BACKLOG #99: Gen 1's key-item bit table (IsKeyItem_'s KeyItemFlags),
+   * located BY SHAPE the same way every other slot here is -- NOT a required
+   * slot: 0 means "not located this open()", and the caller
+   * (source/pdna_gbbag.c) falls back to gbb_is_g1_key_item()'s factual id
+   * list. `g1_keyitems` is the table's own file offset (kept for save_loc()/
+   * revalidation, mirrors every other off[]-style field); `g1_keyitems_bits`
+   * is the CopyData-bounded 15 B (120 bits, ids 1..120 -- ld bc,$000F is
+   * part of the anchor signature itself) read out of it once at open()/
+   * open_loc() time, so rom_gbui_g1_key_item() below needs no live ROM read
+   * (gu->read/ctx are not guaranteed live at every call site that wants a
+   * key-item answer -- see pdna_gbscreen.h's own "STALE between..." note). */
+  uint32_t g1_keyitems;
+  uint8_t  g1_keyitems_bits[15];
 
   uint8_t  playerpic_bank;       /* the bank playerpic's blob lives in       */
   uint8_t  cardpic_colmajor;     /* 1 = Crystal-shaped (rgbgfx --columns), 0 = Gold (row-major) */
@@ -306,24 +351,31 @@ typedef struct {
  * cardpic_f=cardpic_m+0x230, cardgfx from the same cardpic anchor, G1's
  * badges=anchor+8): revalidate_loc() re-derives those from the anchor that
  * does exist rather than storing a redundant anchor for them. */
-typedef struct {
-  uint32_t id_hash, size;
-  uint8_t  gen, pad[3];
-  uint32_t off[13];             /* 52 B */
-  uint32_t anchor[ROM_GBUI_ANCH_COUNT];  /* 40 B; unused (gen-inapplicable)
-                                           * slots are 0 */
-  uint32_t check;                /* FNV-1a over off[] THEN anchor[]: catches a
-                                   * corrupted cached offset OR a corrupted
-                                   * cached anchor before either is trusted */
-} RomGbUiLoc;
-
 enum {
   ROM_GBUI_OFF_FONT = 0, ROM_GBUI_OFF_TEXTBOX, ROM_GBUI_OFF_CARDFRAME,
   ROM_GBUI_OFF_BADGES, ROM_GBUI_OFF_LEADERS, ROM_GBUI_OFF_PLAYERPIC,
   ROM_GBUI_OFF_FRAMES, ROM_GBUI_OFF_FONTEXTRA, ROM_GBUI_OFF_CARDPIC_M,
   ROM_GBUI_OFF_CARDPIC_F, ROM_GBUI_OFF_CARDGFX, ROM_GBUI_OFF_PACK_M,
-  ROM_GBUI_OFF_PACK_F, ROM_GBUI_OFF_COUNT
+  ROM_GBUI_OFF_PACK_F,
+  /* BACKLOG #99: Gen 1's key-item bit table, optional (see RomGbUi.g1_keyitems
+   * above -- a miss does not fail Gen 1's `ok`). */
+  ROM_GBUI_OFF_G1_KEYITEMS,
+  ROM_GBUI_OFF_COUNT
 };
+
+typedef struct {
+  uint32_t id_hash, size;
+  uint8_t  gen, pad[3];
+  uint32_t off[ROM_GBUI_OFF_COUNT];     /* 56 B (BACKLOG #99 grew this from
+                                          * 52: one new optional G1_KEYITEMS
+                                          * slot) */
+  uint32_t anchor[ROM_GBUI_ANCH_COUNT];  /* 44 B (BACKLOG #99 grew this from
+                                           * 40); unused (gen-inapplicable)
+                                           * slots are 0 */
+  uint32_t check;                /* FNV-1a over off[] THEN anchor[]: catches a
+                                   * corrupted cached offset OR a corrupted
+                                   * cached anchor before either is trusted */
+} RomGbUiLoc;
 
 /* Identify the ROM and locate its UI tables. `scratch` is the caller's scan
  * window (>= ROM_GBUI_SCRATCH_MIN; bigger scans faster) and is used ONLY
@@ -367,5 +419,18 @@ int rom_gbui_tile(RomGbUi* gu, uint32_t off, uint32_t index, uint8_t bpp,
  * if `gu` has no font (Gen 1 & Gen 2 both do when `ok`) or `ch` is outside
  * 0x80..0xFF. */
 int rom_gbui_glyph(RomGbUi* gu, uint8_t ch, uint16_t out[64]);
+
+/* BACKLOG #99. True iff `id` (1-based Gen-1 item id) sets its bit in the
+ * LOCATED KeyItemFlags table (see RomGbUi.g1_keyitems_bits above). Needs no
+ * live ROM read (the table was cached at open()/open_loc() time) -- the byte
+ * test is exactly IsKeyItem_'s own shape: bit (id-1)&7 of byte (id-1)>>3,
+ * LSB-first. Returns false (never a guess) when `gu` is NULL, not Gen 1, not
+ * `ok`, has no located table (g1_keyitems == 0 -- the caller's own job is to
+ * fall back to gbb_is_g1_key_item() in that case, not this function), or `id`
+ * is 0 or beyond the table's own code-bound length (120 = 15 B * 8 bits --
+ * ld bc,$000F in IsKeyItem_ itself, not the "11 bytes actually used" comment
+ * NUM_ITEMS derives: this locator trusts what the ROM's own CopyData call
+ * bounds, not a public-knowledge item count). */
+bool rom_gbui_g1_key_item(const RomGbUi* gu, uint8_t id);
 
 #endif /* ROM_GBUI_INCLUDED */

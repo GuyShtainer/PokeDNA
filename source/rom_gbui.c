@@ -10,6 +10,12 @@
 #define GB_WIN_LO 0x4000u
 #define GB_WIN_HI 0x8000u
 
+/* BACKLOG #99: IsKeyItem_'s own `ld bc,$000F` -- the exact number of bytes
+ * its CopyData call reads out of KeyItemFlags, i.e. the table's CODE-bound
+ * length (120 bits = ids 1..120), independent of RomGbUi.g1_keyitems_bits'
+ * own array size (kept equal on purpose -- see that field's comment). */
+#define GB_G1_KEYITEMS_LEN 15u
+
 static uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | ((uint16_t)p[1] << 8)); }
 
 static uint32_t fileoff(uint8_t bank, uint16_t addr) {
@@ -177,6 +183,32 @@ static int font_verify(const Scan* s, uint32_t off) {
   return solid == 0 && blank <= 40;   /* measured 26-32 blank across the corpus */
 }
 
+/* BACKLOG #99: structural check on a candidate KeyItemFlags table -- the
+ * facts BACKLOG #99 itself gives (all public, ordinary-play knowledge, same
+ * posture as gb_bag.c's own factual list): the 8 badges (ids 21..28) are all
+ * KEY, and so are TOWN MAP (5), BICYCLE (6), SAFARI BALL (8) and POKeDEX (9);
+ * POTION (20), POKe BALL (4) and ESCAPE ROPE (29) are all NOT key. A table
+ * that gets any of these eleven bits wrong is not IsKeyItem_'s own table,
+ * whatever the code anchor matched. */
+static int keyitem_bit(const uint8_t tbl[GB_G1_KEYITEMS_LEN], unsigned id) {
+  unsigned i = id - 1u;
+  return (tbl[i >> 3] >> (i & 7u)) & 1u;
+}
+static int g1_keyitems_verify(const Scan* s, uint32_t off) {
+  if (off + GB_G1_KEYITEMS_LEN > s->size) return 0;
+  uint8_t tbl[GB_G1_KEYITEMS_LEN];
+  if (!rd(s, off, tbl, sizeof tbl)) return 0;
+  for (unsigned id = 21; id <= 28; id++) if (!keyitem_bit(tbl, id)) return 0;   /* 8 badges */
+  if (!keyitem_bit(tbl, 5)) return 0;    /* TOWN MAP    */
+  if (!keyitem_bit(tbl, 6)) return 0;    /* BICYCLE     */
+  if (!keyitem_bit(tbl, 8)) return 0;    /* SAFARI BALL */
+  if (!keyitem_bit(tbl, 9)) return 0;    /* POKeDEX     */
+  if (keyitem_bit(tbl, 4))  return 0;    /* POKe BALL   */
+  if (keyitem_bit(tbl, 20)) return 0;    /* POTION      */
+  if (keyitem_bit(tbl, 29)) return 0;    /* ESCAPE ROPE */
+  return 1;
+}
+
 /* -------------------------------------------------------- pattern matchers */
 /* Each cb reads only the scan window (no ROM re-read); `look` is how many
  * window bytes it inspects. Struct-address relations that need only the
@@ -234,6 +266,28 @@ static int g2_cardpic_gold_cb(const uint8_t* w) {
          w[18]==0x90 && w[19]==0x92 && w[20]==0x01 && w[21]==0x60 && w[22]==0x05 &&
          w[23]==0x3E && w[25]==0xCD;
 }
+/* BACKLOG #99: IsKeyItem_'s own opening shape (engine/items/item_effects.asm,
+ * pokered) --
+ *   cp   HM01        FE C4
+ *   jr   nc, .hm      30 xx        (xx: don't-care displacement)
+ *   push af           F5
+ *   ld   hl, KeyItemFlags   21 lo hi
+ *   ld   de, wBuffer        11 lo hi
+ *   ld   bc, $000F          01 0F 00
+ *   call CopyData            CD lo hi
+ * Verified against Guy's Red.gb/Yellow.gb (see tools/gbui_dump.py output +
+ * the #99 commit message): EXACTLY 1 hit in each, bank = hit/GB_BANK (the
+ * table sits in the SAME bank as the code -- INCLUDEd right after the
+ * routine -- so no separate bank byte is coded, unlike G1-P's cross-bank
+ * `11 lo hi 01 01 bank`). `ld bc,$000F` is itself the table's own CODE-BOUND
+ * length: 15 B copied into wBuffer = 120 bits = ids 1..120 (NOT the "11 bytes
+ * actually used" comment's NUM_ITEMS bound -- that undercounts what the ROM's
+ * own instruction actually reads). */
+static int g1_keyitem_cb(const uint8_t* w) {
+  return w[0]==0xFE && w[1]==0xC4 && w[2]==0x30 && w[4]==0xF5 && w[5]==0x21 &&
+         w[8]==0x11 && w[11]==0x01 && w[12]==0x0F && w[13]==0x00 && w[14]==0xCD;
+}
+
 static int g2_pack_cb(const uint8_t* w) {
   uint16_t p0 = rd16(w+0), p1 = rd16(w+2), p2 = rd16(w+4), p3 = rd16(w+6);
   if (p0 < GB_WIN_LO || p0 >= GB_WIN_HI || p1 < GB_WIN_LO || p1 >= GB_WIN_HI ||
@@ -245,6 +299,7 @@ static int g2_pack_cb(const uint8_t* w) {
 
 enum {
   J_G1_FONT = 0, J_G1_TEXTBOX, J_G1_CARDFRAME, J_G1_BADGES, J_G1_PLAYERPIC,
+  J_G1_KEYITEMS,
   J_G2_FRAME, J_G2_BADGELEADER, J_G2_CARDPIC_CM, J_G2_CARDPIC_GOLD, J_G2_PACK,
   J_COUNT
 };
@@ -381,6 +436,20 @@ static int try_playerpic(const Scan* s, uint32_t hit, uint32_t* out, uint8_t* ou
   return 1;
 }
 
+/* BACKLOG #99: KeyItemFlags is in the SAME bank as IsKeyItem_ itself (plain
+ * INCLUDE right after the routine, no far-copy) -- the bank is `hit / GB_BANK`
+ * the same way try_pack() derives PackGFX's, not a coded bank byte. */
+static int try_g1_keyitems(const Scan* s, uint32_t hit, uint32_t* out) {
+  uint8_t buf[17];
+  if (!rd(s, hit, buf, sizeof buf)) return 0;
+  uint16_t addr = rd16(buf + 6);
+  uint8_t bank = (uint8_t)(hit / GB_BANK);
+  uint32_t off = fileoff(bank, addr);
+  if (!g1_keyitems_verify(s, off)) return 0;
+  *out = off;
+  return 1;
+}
+
 /* --------------------------------------------------------- try_* (Gen 2) */
 
 static int try_frame(const Scan* s, uint32_t hit, uint32_t* out) {
@@ -463,6 +532,7 @@ static int locate(const Scan* s, LocResult* r) {
 
   uint32_t hits_font[SCAN_SMALL_CAP], hits_textbox[SCAN_SMALL_CAP],
            hits_cardframe[SCAN_SMALL_CAP], hits_badges[SCAN_SMALL_CAP],
+           hits_keyitems[SCAN_SMALL_CAP],
            hits_frame[SCAN_SMALL_CAP], hits_badgeleader[SCAN_SMALL_CAP],
            hits_cardpic_cm[SCAN_SMALL_CAP], hits_cardpic_gold[SCAN_SMALL_CAP],
            hits_pack[SCAN_SMALL_CAP];
@@ -478,6 +548,8 @@ static int locate(const Scan* s, LocResult* r) {
   jobs[J_G1_BADGES      ].off = hits_badges;       jobs[J_G1_BADGES      ].cap = SCAN_SMALL_CAP;
   jobs[J_G1_PLAYERPIC   ].cb = g1_playerpic_cb;    jobs[J_G1_PLAYERPIC   ].look = 6;
   jobs[J_G1_PLAYERPIC   ].off = hits_playerpic;    jobs[J_G1_PLAYERPIC   ].cap = SCAN_PLAYERPIC_CAP;
+  jobs[J_G1_KEYITEMS    ].cb = g1_keyitem_cb;      jobs[J_G1_KEYITEMS    ].look = 17;
+  jobs[J_G1_KEYITEMS    ].off = hits_keyitems;     jobs[J_G1_KEYITEMS    ].cap = SCAN_SMALL_CAP;
   jobs[J_G2_FRAME       ].cb = g2_frame_cb;        jobs[J_G2_FRAME       ].look = 22;
   jobs[J_G2_FRAME       ].off = hits_frame;        jobs[J_G2_FRAME       ].cap = SCAN_SMALL_CAP;
   jobs[J_G2_BADGELEADER ].cb = g2_badgeleader_cb;  jobs[J_G2_BADGELEADER ].look = 22;
@@ -517,6 +589,17 @@ static int locate(const Scan* s, LocResult* r) {
       }
     }
     if (pp_found != 1) break;
+
+    /* BACKLOG #99: OPTIONAL -- unlike every field above, a miss here does not
+     * `break` (fail Gen 1's `ok`). off/anchor stay 0 (r was memset at entry)
+     * and rom_gbui_g1_key_item()'s caller falls back to the factual id list. */
+    if (jobs[J_G1_KEYITEMS].n == 1) {
+      uint32_t ki;
+      if (try_g1_keyitems(s, jobs[J_G1_KEYITEMS].off[0], &ki)) {
+        r->off[ROM_GBUI_OFF_G1_KEYITEMS] = ki;
+        r->anchor[ROM_GBUI_ANCH_G1_KEYITEMS] = jobs[J_G1_KEYITEMS].off[0];
+      }
+    }
 
     r->off[ROM_GBUI_OFF_FONT] = font;
     r->off[ROM_GBUI_OFF_TEXTBOX] = textbox;
@@ -617,9 +700,20 @@ static void fill_from_result(RomGbUi* gu, const LocResult* r) {
   gu->cardgfx     = r->off[ROM_GBUI_OFF_CARDGFX];
   gu->pack_m      = r->off[ROM_GBUI_OFF_PACK_M];
   gu->pack_f      = r->off[ROM_GBUI_OFF_PACK_F];
+  gu->g1_keyitems = r->off[ROM_GBUI_OFF_G1_KEYITEMS];
   gu->playerpic_bank = r->playerpic_bank;
   gu->cardpic_colmajor = r->cardpic_colmajor;
   memcpy(gu->anchor, r->anchor, sizeof gu->anchor);
+}
+
+/* BACKLOG #99: cache the located (or unlocated -- left all-zero) key-item
+ * table bytes into `gu` so rom_gbui_g1_key_item() needs no live read later.
+ * `s` is only valid during open()/open_loc(); this must run before either
+ * returns. */
+static void load_g1_keyitems_bits(const Scan* s, RomGbUi* gu) {
+  memset(gu->g1_keyitems_bits, 0, sizeof gu->g1_keyitems_bits);
+  if (gu->gen == ROM_GBUI_GEN1 && gu->g1_keyitems != 0)
+    rd(s, gu->g1_keyitems, gu->g1_keyitems_bits, sizeof gu->g1_keyitems_bits);
 }
 
 int rom_gbui_open(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
@@ -640,6 +734,7 @@ int rom_gbui_open(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
   LocResult r;
   if (!locate(&s, &r)) { gu->gen = ROM_GBUI_NONE; return 0; }
   fill_from_result(gu, &r);
+  load_g1_keyitems_bits(&s, gu);
   gu->ok = 1;
   return 1;
 }
@@ -651,9 +746,9 @@ int rom_gbui_open(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
  * before any offset from the cache is trusted. anchor[] alone is what makes
  * revalidate_loc() EXACT rather than statistical (BACKLOG #71): see the
  * struct's own comment in rom_gbui.h. */
-static uint32_t loc_check(const uint32_t off[13], const uint32_t anchor[ROM_GBUI_ANCH_COUNT]) {
+static uint32_t loc_check(const uint32_t off[ROM_GBUI_OFF_COUNT], const uint32_t anchor[ROM_GBUI_ANCH_COUNT]) {
   uint32_t h = 0x811C9DC5u;
-  for (uint32_t i = 0; i < 13; i++) {
+  for (uint32_t i = 0; i < ROM_GBUI_OFF_COUNT; i++) {
     uint8_t b[4] = { (uint8_t)off[i], (uint8_t)(off[i] >> 8),
                       (uint8_t)(off[i] >> 16), (uint8_t)(off[i] >> 24) };
     h = fnv1a(b, 4, h);
@@ -685,6 +780,7 @@ void rom_gbui_save_loc(const RomGbUi* gu, RomGbUiLoc* out) {
   out->off[ROM_GBUI_OFF_CARDGFX]   = gu->cardgfx;
   out->off[ROM_GBUI_OFF_PACK_M]    = gu->pack_m;
   out->off[ROM_GBUI_OFF_PACK_F]    = gu->pack_f;
+  out->off[ROM_GBUI_OFF_G1_KEYITEMS] = gu->g1_keyitems;
   memcpy(out->anchor, gu->anchor, sizeof out->anchor);
   out->check = loc_check(out->off, out->anchor);
 }
@@ -713,6 +809,19 @@ static int anchor_addr_bank(const Scan* s, ScanCb cb, uint32_t look,
   if (!cb(w)) return 0;
   uint16_t addr = rd16(w + addr_off);
   uint8_t bank = w[bank_off];
+  return fileoff(bank, addr) == expect;
+}
+
+/* BACKLOG #99: same posture as anchor_addr_bank(), but the bank is derived
+ * from the anchor's OWN file offset (try_g1_keyitems()'s `hit / GB_BANK`),
+ * not a coded byte -- mirrors try_pack()'s bank derivation. */
+static int anchor_g1_keyitems(const Scan* s, uint32_t anchor, uint32_t expect) {
+  uint8_t w[17];
+  if (anchor + sizeof w > s->size) return 0;
+  if (!rd(s, anchor, w, sizeof w)) return 0;
+  if (!g1_keyitem_cb(w)) return 0;
+  uint16_t addr = rd16(w + 6);
+  uint8_t bank = (uint8_t)(anchor / GB_BANK);
   return fileoff(bank, addr) == expect;
 }
 
@@ -831,7 +940,7 @@ static int loc_other_gen_clear(const RomGbUiLoc* loc) {
   }
   if (loc->gen == ROM_GBUI_GEN2) {
     return !(loc->off[ROM_GBUI_OFF_TEXTBOX] || loc->off[ROM_GBUI_OFF_CARDFRAME] ||
-             loc->off[ROM_GBUI_OFF_PLAYERPIC]);
+             loc->off[ROM_GBUI_OFF_PLAYERPIC] || loc->off[ROM_GBUI_OFF_G1_KEYITEMS]);
   }
   return 0;
 }
@@ -863,6 +972,20 @@ static int revalidate_loc(const Scan* s, const RomGbUiLoc* loc) {
     if (badges + 1024 > s->size || distinct_tiles(s, badges, 2, 64) != 64) return 0;
     uint8_t first;
     if (!rd(s, pp, &first, 1) || first != 0x77) return 0;
+
+    /* BACKLOG #99: OPTIONAL slot -- 0/0 (never located, or the shell never
+     * had one to cache) is a valid loc; anything else must revalidate
+     * exactly like every required field above (anchor reread -> operand
+     * math -> exact-offset match -> structural check), never a partial
+     * accept. off and anchor must agree on presence -- one zero and the
+     * other not is a corrupted record either way. */
+    uint32_t ki = loc->off[ROM_GBUI_OFF_G1_KEYITEMS];
+    uint32_t ki_anchor = loc->anchor[ROM_GBUI_ANCH_G1_KEYITEMS];
+    if (ki != 0 || ki_anchor != 0) {
+      if (ki == 0 || ki_anchor == 0) return 0;
+      if (!anchor_g1_keyitems(s, ki_anchor, ki)) return 0;
+      if (!g1_keyitems_verify(s, ki)) return 0;
+    }
     return 1;
   }
   if (loc->gen == ROM_GBUI_GEN2) {
@@ -953,9 +1076,11 @@ int rom_gbui_open_loc(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
     gu->cardgfx     = loc->off[ROM_GBUI_OFF_CARDGFX];
     gu->pack_m      = loc->off[ROM_GBUI_OFF_PACK_M];
     gu->pack_f      = loc->off[ROM_GBUI_OFF_PACK_F];
+    gu->g1_keyitems = loc->off[ROM_GBUI_OFF_G1_KEYITEMS];
     if (gu->gen == ROM_GBUI_GEN1) gu->playerpic_bank = (uint8_t)(gu->playerpic / GB_BANK);
     gu->cardpic_colmajor = (gu->cardpic_f != 0);   /* Crystal-shaped iff cardpic_f present */
     memcpy(gu->anchor, loc->anchor, sizeof gu->anchor);
+    load_g1_keyitems_bits(&s, gu);
     gu->ok = 1;
     return 1;
   }
@@ -1008,4 +1133,10 @@ int rom_gbui_glyph(RomGbUi* gu, uint8_t ch, uint16_t out[64]) {
   if (ch < 0x80u) return 0;
   uint32_t tile = (uint32_t)(ch - 0x80u);
   return rom_gbui_tile(gu, gu->font, tile, 1, 16u, 8u, 0, out);
+}
+
+bool rom_gbui_g1_key_item(const RomGbUi* gu, uint8_t id) {
+  if (!gu || !gu->ok || gu->gen != ROM_GBUI_GEN1 || gu->g1_keyitems == 0) return false;
+  if (id == 0 || id > (uint8_t)(GB_G1_KEYITEMS_LEN * 8u)) return false;
+  return keyitem_bit(gu->g1_keyitems_bits, id) != 0;
 }

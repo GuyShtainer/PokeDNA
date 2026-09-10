@@ -125,20 +125,28 @@ uint8_t gbb_max_item_id(GbGame game);
  * including key items, which is wrong -- the cartridge's ITEMLISTMENU knows a
  * per-item "is key item" bit and skips the qty column for it entirely).
  *
- * SHIPPED PATH (U4 fix pass): a documented FACTUAL id list, not a table
- * located inside the user's ROM -- locating Gen 1's key-item bit table by
- * shape (the `(id-1)>>3` / `(id-1)&7` bit-test routine's own operand table)
- * was time-boxed at 1.5 h and not completed in this pass; this is the
- * brief's own sanctioned fallback. The ids below are public Pokemon Red/
- * Blue/Yellow item-id facts (the item's real in-game id number and its
- * "cannot be tossed/sold" status are both visible from ordinary play and
- * documented on public wikis), written here from that public knowledge --
- * never copied from any decomp/ROM data file. HM01-HM05 (0xC4-0xC8) are
- * always key items in both games, and so are the eight badges (21..28); the
- * rest is the id list in gb_bag.c -- KNOWN INCOMPLETE: a cart sweep (U4
- * review N2, 2026-09-10) added SAFARI BALL 8, POKeDEX 9, the badges and the
- * two unused slots 7/44; the unused id block 81..195 was never swept, so
- * only the ROM-located bit table (BACKLOG) can make this exact.
+ * BACKLOG #99 (2026-09-10): this is now the FALLBACK ONLY. The ROM's own
+ * IsKeyItem_ bit table is located BY SHAPE (source/rom_gbui.c's
+ * g1_keyitem_cb/try_g1_keyitems/rom_gbui_g1_key_item -- same posture as
+ * every other rom_gbui.c signature: anchor on the CODE that consumes the
+ * table, never a public-knowledge id list) and is EXACT for ids 1..120 (the
+ * table's own code-bound length, `ld bc,$000F` in IsKeyItem_ itself) --
+ * including the unused id block 81..120 this list below never swept. This
+ * function is only reached when the shell has no ROM open or didn't locate
+ * that table (see source/pdna_gbbag.c's bag_is_key_item()); it stays exactly
+ * as it was for that case, and remains the ONLY option ids 121..195 have
+ * (out of the located table's own code bound -- see rom_gbui_g1_key_item()'s
+ * own comment for why this module never guesses there either).
+ *
+ * A documented FACTUAL id list, not a table located inside the user's ROM.
+ * The ids below are public Pokemon Red/Blue/Yellow item-id facts (the item's
+ * real in-game id number and its "cannot be tossed/sold" status are both
+ * visible from ordinary play and documented on public wikis), written here
+ * from that public knowledge -- never copied from any decomp/ROM data file.
+ * HM01-HM05 (0xC4-0xC8) are always key items in both games, and so are the
+ * eight badges (21..28); the rest is the id list in gb_bag.c -- KNOWN
+ * INCOMPLETE for ids 81..195 by design (this function makes no claim to be
+ * exact there; only the located table can be, and only up to id 120).
  * Gen 2 has its own separate Key-items POCKET (GBB_POCKET_KEY) that needs no
  * such classification -- this function is Gen-1 (Red/Blue/Yellow) only. */
 bool gbb_is_g1_key_item(uint8_t id);

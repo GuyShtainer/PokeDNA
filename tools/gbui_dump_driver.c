@@ -101,6 +101,19 @@ int main(int argc, char** argv) {
   printf("cardgfx\t0x%X\n", gu.cardgfx);
   printf("pack_m\t0x%X\n", gu.pack_m);
   printf("pack_f\t0x%X\n", gu.pack_f);
+  printf("g1_keyitems\t0x%X\n", gu.g1_keyitems);
+  /* BACKLOG #99: the located key-item table as a 0/1 bitmap over every id
+   * 1..250 (the current shipped ADD ITEM range), not just the 1..120 the
+   * table's own code bound covers -- ids 121..250 are ALWAYS printed 0
+   * (rom_gbui_g1_key_item() itself is fail-closed there), which is the
+   * point: this line is the ground truth for proof (2)'s id/predicted/real
+   * table, spelling out exactly where the located table stops speaking. */
+  if (gu.gen == ROM_GBUI_GEN1) {
+    printf("g1_keyitems_bitmap\t");
+    for (unsigned id = 1; id <= 250; id++)
+      putchar(rom_gbui_g1_key_item(&gu, (uint8_t)id) ? '1' : '0');
+    putchar('\n');
+  }
   printf("RESULT\t%s\n", ok ? "OK" : "FAIL");
 
   if (outdir) {
