@@ -210,6 +210,10 @@ typedef enum {
  * (re-verified: tests/host_romgbui_test.c, and again after #71 via
  * tools/gbui_dump.py against the same corpus).
  *
+ * NOTE (b99 review NIT-1): the three chain sums below are main's PRE-#99 numbers,
+ * deliberately not updated here -- BACKLOG #84b owns this constant and re-measures
+ * it with tools/stack_budget.py on the merged tree (measured 5,544 + 64 ISR = 5,608
+ * once #99's larger RomGbUiLoc lands). The per-function frames above ARE current.
  * PDNA_GB_UI_NEED = 2,920 (open_loc's full-scan-fallback chain, the worse of
  * the two entry points, UP from 2,840 -- see the #71 delta above) + 1,576
  * (source/pdna_gbscreen.c's gbscr_open_inner() OWN frame, UNCHANGED by #71:
