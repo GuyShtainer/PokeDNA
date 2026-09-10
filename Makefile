@@ -445,7 +445,7 @@ endif
 # DIRECTORY and never recurses, so a plain `make` after an edit does nothing and every
 # build has to be a full `make rebuild`. With it, the inner make does normal incremental
 # compilation and only the touched objects are rebuilt.
-.PHONY: $(BUILD) all clean rebuild sd delta artless sd-artless delta-artless retail-gate loc-layout delta-gb
+.PHONY: $(BUILD) all clean rebuild sd delta artless sd-artless delta-artless retail-gate loc-layout delta-gb stack-check
 rebuild:
 	@$(MAKE) clean
 	@$(MAKE) $(BUILD)
@@ -560,5 +560,22 @@ sd-artless:            # SD-streaming build, no compiled art (composes 'sd' + 'a
 retail-gate:
 	@/usr/local/bin/python3 tools/gb_retail_gate.py \
 		--mgba-vendor /Users/guyshtainer/VSCodeProjects/gba-toolkit/projects/rec2mp4/vendor
+
+# STACK-BUDGET GUARD SELF-TEST (BACKLOG #84b). Unit tests for tools/stack_budget.py
+# itself (tests/host_stack_budget_test.py -- not picked up by run_host_tests.py, which
+# only builds/runs the C tests), then a re-run of the real guard against every ELF this
+# tree already has built, so "did I break the guard" and "does today's build still pass
+# it" are one command.
+stack-check:
+	@python3 tests/host_stack_budget_test.py
+	@for e in PokeDNA-artless.elf:build-artless PokeDNA.elf:build pokedna-delta.elf:build-delta; do \
+		elf=$${e%%:*}; bd=$${e##*:}; \
+		if [ -f "$$elf" ] && [ -d "$$bd" ]; then \
+			echo "-- $$elf --"; \
+			python3 tools/stack_budget.py --elf "$$elf" --builddir "$(CURDIR)/$$bd" --root main || exit 1; \
+		else \
+			echo "-- $$elf -- skipped (not built)"; \
+		fi; \
+	done
 
 # EOF

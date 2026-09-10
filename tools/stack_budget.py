@@ -735,7 +735,14 @@ def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None)
             if c in blacklist:
                 continue
             v = go(c)
-            if v > bc:
+            # >= , not > (D2 hardening): a sole child weighing 0 B -- which is
+            # exactly what an UNKNOWN frame looks like before it's tagged -- must
+            # still become best_child so it's VISIBLE in the printed path and can
+            # be caught by the on-chain UNKNOWN check. `>` left it as `bn = None`,
+            # silently dropping the child from the reported chain (the sum stayed
+            # correct, since 0 contributes nothing, but "was this walked through
+            # an UNKNOWN frame" became unanswerable from the output alone).
+            if v >= bc:
                 bc, bn = v, c
         onstack.discard(fn)
         memo[fn] = own + bc
