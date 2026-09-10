@@ -1597,6 +1597,18 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBSCR_REASON_OPEN        "ROM art unavailable"
 #define PDNA_GBSCR_REASON_BAD_GEN     "not a Gen-1/Gen-2 request"
 #define PDNA_GBSCR_REASON_NO_TAIL     "no tile-bank memory"
+/* BACKLOG #98 D2 (review-sonnet ab81b56): the delta-gb fused-ROM lookup
+ * (source/fused_gb.c's fused_gb_lookup_failed_reason()) can now fail for two
+ * reasons more specific than a plain "no ROM registered" -- an active save that
+ * genuinely has no fused ROM of its own (ORPHANED) vs. one where the fused
+ * directory itself is ambiguous (two ROMs of the same generation, ambiguous, no
+ * active-save pairing to break the tie). pdna_gbscreen.c's gbscr_open_inner()
+ * (delta build only) maps FusedGbFailReason to one of these instead of the
+ * generic kReasonNoRom, so the fallback page says WHY, not just THAT. Measured
+ * against GBTR_HEADER2_MAXW in tests/host_textfit_test.c, same as every other
+ * reason string here. */
+#define PDNA_GBSCR_REASON_AMBIGUOUS_ROM "two ROMs of this game fused; pick a save"
+#define PDNA_GBSCR_REASON_ORPHANED_ROM  "this save's ROM is not fused"
 #define PDNA_GBSCR_REASON_UNAVAILABLE "unavailable"
 /* Only reachable under -DPDNA_U2C_FORCE_FALLBACK (a build-time test flag,
  * pdna_gbtrainer.c) -- included here anyway so the same width test covers

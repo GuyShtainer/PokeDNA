@@ -400,6 +400,13 @@ static const char* const kReasonNoStack = PDNA_GBSCR_REASON_NO_STACK;
 static const char* const kReasonOpen    = PDNA_GBSCR_REASON_OPEN;
 static const char* const kReasonBadGen  = PDNA_GBSCR_REASON_BAD_GEN;
 static const char* const kReasonNoTail  = PDNA_GBSCR_REASON_NO_TAIL;
+#ifdef PDNA_DELTA
+/* BACKLOG #98 D2: distinct fallback-page reasons for the two fused_gb_rom()
+ * failure modes fused_gb_lookup_failed_reason() can now report that
+ * kReasonNoRom used to swallow indistinguishably from "nothing fused at all". */
+static const char* const kReasonAmbiguousRom = PDNA_GBSCR_REASON_AMBIGUOUS_ROM;
+static const char* const kReasonOrphanedRom  = PDNA_GBSCR_REASON_ORPHANED_ROM;
+#endif
 
 #ifndef PDNA_DELTA
 /* ---- SD build: FIL-backed I/O, the /PokeDNA/gbui<gen>.loc cache -----------
@@ -534,7 +541,22 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
   if (!cok) { if (reason) *reason = kReasonOpen; return false; }
 #else
   const uint8_t* base; uint32_t size;
-  if (!fused_gb_rom(gen, &base, &size)) { if (reason) *reason = kReasonNoRom; return false; }
+  if (!fused_gb_rom(gen, &base, &size)) {
+    /* BACKLOG #98 D2: say WHY, not just THAT -- an orphaned active save or a
+     * genuinely ambiguous fused directory are both actionable ("open the picker
+     * and choose a save" / "this save was never fused with a ROM"), unlike the
+     * generic kReasonNoRom ("no ROM registered" -- implies nothing is fused at
+     * all, which is misleading when something IS fused, just not resolvably). */
+    if (reason) {
+      switch (fused_gb_lookup_failed_reason()) {
+        case FUSED_GB_FAIL_AMBIGUOUS:    *reason = kReasonAmbiguousRom; break;
+        case FUSED_GB_FAIL_ORPHANED:     *reason = kReasonOrphanedRom;  break;
+        case FUSED_GB_FAIL_GEN_MISMATCH: *reason = kReasonOrphanedRom;  break;
+        default:                         *reason = kReasonNoRom;       break;
+      }
+    }
+    return false;
+  }
   FusedGbSlice slice = { base, size };
   /* #62's own posture (fused corpus is immutable for the whole run): no EWRAM
    * loc cache here -- this slice's memory budget forbids any new EWRAM static

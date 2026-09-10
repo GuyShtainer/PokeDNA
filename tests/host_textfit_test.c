@@ -576,6 +576,10 @@ int main(void) {
   PF(PDNA_GBSCR_REASON_NO_TAIL,     4, GBTR_HEADER2_MAXW);
   PF(PDNA_GBSCR_REASON_UNAVAILABLE, 4, GBTR_HEADER2_MAXW);
   PF(PDNA_GBSCR_REASON_FORCED_TEST, 4, GBTR_HEADER2_MAXW);
+  /* BACKLOG #98 D2: the two new fused-ROM-specific reasons (source/fused_gb.c's
+   * FusedGbFailReason mapped in pdna_gbscreen.c's gbscr_open_inner()). */
+  PF(PDNA_GBSCR_REASON_AMBIGUOUS_ROM, 4, GBTR_HEADER2_MAXW);
+  PF(PDNA_GBSCR_REASON_ORPHANED_ROM,  4, GBTR_HEADER2_MAXW);
 
   /* gb_edit_persist's SF_ERR_RENAME switch + gb_edit_hook's SF_ERR_UNWRITABLE hint —
    * same (28, .., 184) msg_wait clamp. PDNA_GBEDIT_UNCONFIRMED_L2 is deliberately
