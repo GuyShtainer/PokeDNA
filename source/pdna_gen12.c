@@ -598,6 +598,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbsummary.h"   /* BACKLOG #41: the native VIEW/EDIT summary */
 #include "pdna_gbtrainer.h"   /* BACKLOG #49 P1b: the Gen-1/2 trainer card */
 #include "pdna_gbbag.h"       /* U4, BACKLOG #67: Red/Yellow's own Item bag */
+#include "pdna_pick.h"        /* BACKLOG #92: pick_item / pick_item_set_gen1_2_max */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
@@ -2427,10 +2428,52 @@ static bool gb_create_hook(void) {
   return gb_persist("create");
 }
 
-static const AppSrcOps k_gb_ops = {
+/* app_src_ops_set() hook: ITEM on the read-only mon menu (BACKLOG #92). Gen 2 only --
+ * only k_gb_ops_gen2 below installs this; k_gb_ops_gen1 leaves it NULL, so the row
+ * never appears for a Gen-1 mount rather than appearing and refusing every press
+ * (pdna_app.h's own `item` comment). Mirrors Gen 3's own quick-item action
+ * (app_quick_item, pdna_main.c): the SAME pick_item() screen gb_editor.c's own
+ * GBE_ITEM row already opens (pdna_gbedit.c's GBE_K_ITEM branch), restricted to ids
+ * 1..255 shown as "#n" via pick_item_set_gen1_2_max() -- no separate legality gate:
+ * any byte is structurally legal for this field (that branch's own comment: "Held
+ * item has no move-style validation to fail"). Same load/commit shape as EDIT
+ * (gb_edit_hook above), just loading one field's picker instead of opening the full
+ * summary screen. */
+static bool gb_item_hook(uint8_t* rec80) {
+  int box, slot;
+  if (!gb_locate(rec80, &box, &slot)) return false;
+  GbSession* s = &g_ed->s;
+
+  GbsStatus st = gbs_load_list(s, box, g_ed->list);
+  if (st != GBS_OK) { snd_deny(); msg_wait(PDNA_GBEDIT_BOXRD_TITLE, UI_WARN, gbs_status_text(st), 0); return false; }
+  if (slot >= gb_list_count(s->gen, g_ed->list, box)) {
+    snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
+  }
+
+  GbEditMon e;
+  if (!gb_load(&e, s->gen, g_ed->list, box, slot)) { snd_deny(); return false; }
+
+  pick_item_set_gen1_2_max(255);
+  uint16_t id = pick_item(gb_get_held_item(&e));
+  pick_item_set_gen1_2_max(0);
+  if (id == 0xFFFF) return false;                      /* cancel */
+  if (!gb_set_held_item(&e, (uint8_t)id)) { snd_deny(); return false; }
+
+  return gb_edit_commit(box, slot, &e, "item");
+}
+
+/* Split in two (BACKLOG #92) so `item` can be NULL for a Gen-1 mount and
+ * gb_item_hook for a Gen-2 one -- gb_session_core picks between them off
+ * g_ed->s.gen, same idea as k_gb_ops vs k_gb_ops_ro picking off g_ed itself. */
+static const AppSrcOps k_gb_ops_gen1 = {
   .edit = gb_edit_hook, .move = gb_move_hook, .release = gb_release_hook,
   .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
   .editable = gb_editable_hook, .create = gb_create_hook,
+};
+static const AppSrcOps k_gb_ops_gen2 = {
+  .edit = gb_edit_hook, .move = gb_move_hook, .release = gb_release_hook,
+  .copy_native = gb_copy_native_hook, .paste = gb_paste_hook, .view = gb_view_hook,
+  .editable = gb_editable_hook, .create = gb_create_hook, .item = gb_item_hook,
 };
 
 /* Bag/menu review fix (the nav-menu-copy-lossy finding): the read-only nav-menu mount
@@ -2562,7 +2605,10 @@ static void gb_session_core(Gb12Mount* m) {
    * app_src_ops_set() entirely, leaving g_src_ops NULL -- so COPY there never reached
    * copy_native and silently pasted the lossy converted bytes. Register the read-only
    * twin so VIEW and (lossless) COPY still work with no GbSession to write through. */
-  app_src_ops_set(g_ed ? &k_gb_ops : &k_gb_ops_ro);  /* S2/S3: EDIT / MOVE TO / RELEASE */
+  /* BACKLOG #92: the live-session table also picks Gen1-vs-Gen2 now, so ITEM
+   * (gb_item_hook) is only ever installed for a Gen-2 mount. */
+  app_src_ops_set(!g_ed ? &k_gb_ops_ro
+                        : (g_ed->s.gen == GB_GEN2 ? &k_gb_ops_gen2 : &k_gb_ops_gen1));
   BoxSource s = pdna_gen12_source(m);
   /* #77 (review, 2026-09-09): AFTER pdna_gen12_source() sets g_m, so app_save_kind()
    * reports GEN1/GEN2 when app_icon_rom_open()'s kind check runs. */
