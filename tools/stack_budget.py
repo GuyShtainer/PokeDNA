@@ -1255,6 +1255,60 @@ def scan_address_taken(elf, name_at, sections):
     return taken
 
 
+# === D2 (BACKLOG #84b fifth pass): the ELF names the build dir it was linked from =====
+#
+# `--builddir` is a command-line argument with no link to the ELF at all -- nothing
+# stopped `--elf PokeDNA-artless.elf --builddir build-delta` from silently reading the
+# WRONG variant's .su files and printing a plausible-looking "STACK ok" for a number
+# that has nothing to do with the ELF actually being certified (confirmed live: this
+# exact mismatched invocation printed "STACK ok 10,120" against artless's true 13,752).
+# perf.c's `pdna_build_dir[]` (a plain .rodata NUL-terminated string, stamped by the
+# Makefile from the same $(BUILD) variable that names the --builddir the guard is
+# handed) lets the guard read the ELF's OWN opinion of which build dir it came from
+# and refuse when it disagrees with the one on the command line.
+
+def read_build_dir_stamp(elf, sections):
+    """The NUL-terminated string content of the `pdna_build_dir` symbol, read straight
+    out of the linked ELF's own bytes (nm for the address, objdump -s for the bytes --
+    the same two tools every other check in this file already shells out to). Returns
+    None if the symbol is absent (an ELF built before this stamp existed, or a
+    hand-rolled compile outside the Makefile) -- absence alone is never fatal, only
+    a MISMATCH once both sides have an opinion (see main())."""
+    out = subprocess.run([NM, elf], capture_output=True, text=True, check=True).stdout
+    addr = None
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[-1] == "pdna_build_dir":
+            addr = int(parts[0], 16)
+            break
+    if addr is None:
+        return None
+    for sec in sections:
+        try:
+            dump = subprocess.run([OBJDUMP, "-s", "-j", sec, elf],
+                                   capture_output=True, text=True, check=True).stdout
+        except subprocess.CalledProcessError:
+            continue
+        data = {}
+        for line in dump.splitlines():
+            m = _OBJDUMP_S_LINE_RE.match(line)
+            if not m:
+                continue
+            line_addr = int(m.group(1), 16)
+            raw = bytes.fromhex(m.group(2).replace(" ", ""))
+            for i, b in enumerate(raw):
+                data[line_addr + i] = b
+        if addr not in data:
+            continue
+        out_bytes = bytearray()
+        a = addr
+        while data.get(a, 0) != 0:
+            out_bytes.append(data[a])
+            a += 1
+        return out_bytes.decode("ascii", errors="replace")
+    return None
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1509,6 +1563,27 @@ def main(argv):
     # like this: its address is taken (assigned into the struct field/table) but no
     # declaration names it and the graph never reaches it any other way.
     sections = alloc_load_sections(args.elf)
+
+    # D2 (BACKLOG #84b fifth pass): the ELF names the build dir it was linked from --
+    # refuse a --builddir that disagrees with the ELF's own pdna_build_dir stamp
+    # instead of silently certifying a number computed against the WRONG variant's
+    # .su files. Absence of the stamp (an ELF from before it existed, or a hand-rolled
+    # compile outside the Makefile) is a WARNING, not fatal -- there is nothing to
+    # compare against, not a known-wrong comparison.
+    stamp = read_build_dir_stamp(args.elf, sections)
+    builddir_basename = os.path.basename(os.path.normpath(args.builddir))
+    if stamp is None:
+        print(f"WARNING: {args.elf} has no pdna_build_dir stamp (pre-D2 ELF, or a "
+              "hand-rolled compile) -- the --builddir/ELF pairing cannot be cross-checked.")
+    elif stamp != builddir_basename:
+        print(f"\n*** STACK_BUDGET BUILDDIR MISMATCH: {args.elf} was linked from build "
+              f"dir {stamp!r}, but --builddir names {builddir_basename!r} -- the .su "
+              "files being read almost certainly belong to a DIFFERENT variant than "
+              "this ELF, so any number this run reports is meaningless.", file=sys.stderr)
+        print("*** Pass the matching --builddir, or rebuild the ELF you actually meant "
+              "to certify.", file=sys.stderr)
+        return 1
+
     taken = scan_address_taken(args.elf, analysis["name_at"], sections)
     declared_or_reachable = all_impls | reachable | isr_decls | addrtaken_ok
     orphans = sorted(taken - declared_or_reachable)

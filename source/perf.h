@@ -83,6 +83,18 @@ uint32_t perf_us(uint32_t ticks);     /* ticks -> microseconds (exact: *15625 >>
 #define PDNA_GIT_HASH ""
 #endif
 
+/* D2 (BACKLOG #84b fifth pass): the SAME generated $(BUILD)/pdna_git.h stamps which
+ * per-variant build directory (build/build-artless/build-delta/...) this ELF was
+ * linked from -- tools/stack_budget.py reads it back out of the built ELF and
+ * refuses to certify a stack budget computed against a MISMATCHED --builddir (the
+ * .su files from a DIFFERENT variant, silently giving a wrong-but-plausible-looking
+ * number -- BACKLOG #84b review, D2). Empty/absent is not an error, same posture as
+ * PDNA_GIT_HASH above -- a hand-rolled compile outside the Makefile still builds,
+ * just without the cross-check. */
+#ifndef PDNA_BUILD_DIR
+#define PDNA_BUILD_DIR ""
+#endif
+
 #if PDNA_PERF
 
 /* ---- the SD choke-point counters ------------------------------------------------

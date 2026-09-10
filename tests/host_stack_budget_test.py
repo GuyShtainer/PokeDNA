@@ -571,6 +571,68 @@ def test_d1_orphan_detection_catches_the_planted_function():
           orphans2 == [], orphans2)
 
 
+# === (D2, fifth pass) the ELF names the build dir it was linked from ====================
+
+class _FakeCompleted:
+    def __init__(self, stdout):
+        self.stdout = stdout
+
+
+def test_d2_read_build_dir_stamp_extracts_the_nul_terminated_string():
+    """Monkeypatch subprocess.run so this exercises read_build_dir_stamp()'s own
+    address-lookup + byte-extraction logic without needing a real ELF/toolchain --
+    every other test in this file about the actual sweep mechanics does the same
+    (fixtures over the parsing functions, the report's `make artless` proof covers
+    the real ELF end to end)."""
+    import subprocess as _subprocess
+    nm_out = (
+        "030043a0 D __iheap_start\n"
+        "08072400 D pdna_build_dir\n"
+        "08072410 D some_other_symbol\n"
+    )
+    # "build-artless\0" then one byte of the next symbol's data, in objdump -s's
+    # address-order hex-pair format.
+    payload = "build-artless".encode("ascii") + b"\x00" + b"\xAB"
+    hexstr = payload.hex()
+    groups = [hexstr[i:i + 8] for i in range(0, len(hexstr), 8)]
+    objdump_line = " 8072400 " + " ".join(groups) + "   ...\n"
+
+    real_run = _subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == sb.NM:
+            return _FakeCompleted(nm_out)
+        if cmd[0] == sb.OBJDUMP and "-s" in cmd:
+            return _FakeCompleted(objdump_line)
+        return real_run(cmd, **kwargs)
+
+    _subprocess.run = fake_run
+    try:
+        stamp = sb.read_build_dir_stamp("fake.elf", [".rodata"])
+    finally:
+        _subprocess.run = real_run
+    check("(D2) stamp read back matches the planted string, stops at the NUL",
+          stamp == "build-artless", stamp)
+
+
+def test_d2_read_build_dir_stamp_absent_symbol_returns_none():
+    import subprocess as _subprocess
+    real_run = _subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == sb.NM:
+            return _FakeCompleted("030043a0 D __iheap_start\n")
+        return real_run(cmd, **kwargs)
+
+    _subprocess.run = fake_run
+    try:
+        stamp = sb.read_build_dir_stamp("fake.elf", [".rodata"])
+    finally:
+        _subprocess.run = real_run
+    check("(D2) no pdna_build_dir symbol -> None, not a false mismatch",
+          stamp is None, stamp)
+
+
 # === (D8, fifth pass) UNKNOWN frames are checked over the whole reachable set ===========
 
 def test_d8_unknown_frame_off_the_deepest_chain_still_fatal():
@@ -741,6 +803,8 @@ def main():
     test_d1_load_extra_edges_parses_isr_and_addrtaken_ok()
     test_d1_words_from_objdump_s_text_byte_order()
     test_d1_orphan_detection_catches_the_planted_function()
+    test_d2_read_build_dir_stamp_extracts_the_nul_terminated_string()
+    test_d2_read_build_dir_stamp_absent_symbol_returns_none()
     test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain()
     test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged()
     test_boxsource_offsets_match_real_header()
