@@ -19,6 +19,7 @@
 #include "gen3_edit.h"     /* gen3_build_mon, em_set_egg, em_set_nickname */
 #include "gen3_mon.h"
 #include "data_tables.h"   /* pk_species_name (report list) */
+#include "evolutions.h"    /* pk_evo_floor/pk_evo_min_level -- BACKLOG #104 R1 D3 */
 
 /* ================================================================= pure core */
 
@@ -1382,21 +1383,42 @@ static bool __attribute__((noinline)) gb_paste_loss_screen(const Gen3ToGbLoss* l
 typedef enum { GB_XFER_CANCEL = 0, GB_XFER_KEEP, GB_XFER_MAKE_LEGAL } GbXferChoice;
 
 static GbXferChoice __attribute__((noinline))
-gb_paste_legal_screen(uint8_t from_lvl, uint8_t to_lvl) {
+gb_paste_legal_screen(uint16_t dex, uint8_t from_lvl, uint8_t to_lvl) {
   ui_clear();
   ui_text(4, 3, UI_TITLE, PDNA_SIDECAR_LEGAL_TITLE);
   ui_hline(0, 13, UI_SCR_W, UI_BORDER);
 
   int y = PDNA_SIDECAR_LOSS_ROW_Y0;
+
+  /* D3: the WHY row, first. to_lvl is always pk_evo_floor(dex) (that is what
+   * gen3_to_gb_evo_needs_fix() corrects to) -- "evolves at" is only true when that
+   * floor equals the true evolution floor (pk_evo_min_level); when it is instead the
+   * lower wild-caught floor, say "legal from" so the claim stays honest. */
+  char l2[64];
+  int floor = pk_evo_floor(dex);
+  int min_lvl = pk_evo_min_level(dex);
+  bool is_true_evo_lvl = (floor != PK_EVO_NO_DATA && min_lvl != PK_EVO_NO_DATA &&
+                           floor == min_lvl);
+  siprintf(l2, is_true_evo_lvl ? PDNA_SIDECAR_LEGAL_WHY_FMT
+                                : PDNA_SIDECAR_LEGAL_WHY_FLOOR_FMT,
+           pk_species_name(dex), (unsigned)to_lvl, (unsigned)from_lvl);
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, l2);
+  y += PDNA_SIDECAR_LOSS_ROW_H;
+
   ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, PDNA_SIDECAR_LEGAL_KEEP_ROW);
   y += PDNA_SIDECAR_LOSS_ROW_H;
 
-  char l2[40];
   siprintf(l2, PDNA_SIDECAR_LEGAL_FIX_FMT, (unsigned)from_lvl, (unsigned)to_lvl);
   ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, l2);
   y += PDNA_SIDECAR_LOSS_ROW_H;
 
   y += PDNA_SIDECAR_LOSS_ROW_H / 2;
+  /* Proportional fit, not fixed sys8 ui_text: "Either way it comes back unchanged."
+   * is a full sentence (36 chars), far past what an 8px/glyph fixed font leaves room
+   * for at x=4 -- the same reason every prose row on this screen goes through
+   * ui_ptext_fit rather than ui_text (reserved for the short fixed hints). */
+  ui_ptext_fit(4, y, UI_SCR_W - 8, UI_DIM, PDNA_SIDECAR_LEGAL_BACK);
+  y += PDNA_SIDECAR_LOSS_ROW_H;
   ui_text(4, y, UI_DIM, PDNA_SIDECAR_LOSS_B_CANCEL);
 
   u16 k = s_wait(KEY_A | KEY_SELECT | KEY_B);
@@ -1778,7 +1800,7 @@ static bool gb_paste_hook(uint8_t* rec80) {
    * gb_sidecar.c's merge_species_and_level() for why that distinction matters. */
   uint8_t fix_from = 0, fix_to = 0;
   if (gen3_to_gb_evo_needs_fix(&mon, &fix_from, &fix_to)) {
-    GbXferChoice ch = gb_paste_legal_screen(fix_from, fix_to);
+    GbXferChoice ch = gb_paste_legal_screen(gb_get_species_dex(&mon), fix_from, fix_to);
     if (ch == GB_XFER_CANCEL) return false;
     if (ch == GB_XFER_MAKE_LEGAL) gb_set_level(&mon, fix_to);
   }

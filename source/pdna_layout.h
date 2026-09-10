@@ -957,6 +957,22 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * third choice reuses this codebase's own established third-action key (KEY_SELECT,
  * e.g. pdna_gen12.c:798) rather than "X", which does not exist on a GBA pad. */
 #define PDNA_SIDECAR_LEGAL_TITLE      "SEND TO GAME BOY"
+/* D3 (UX parity with gb_paste_loss_screen, its Gen-3 twin -- that screen names every
+ * loss and reassures the copy comes back unchanged; this screen owed the same two
+ * things: WHY it is asking, and the same promise). Two WHY wordings, not one:
+ * gen3_to_gb_evo_needs_fix() always corrects to pk_evo_floor()'s answer, and that
+ * floor is sometimes the true evolution level (pk_evo_floor == pk_evo_min_level) and
+ * sometimes the lower wild-caught floor for one of the 23 species evolutions.h lists
+ * that are catchable below their own evolution level (Sootopolis' Super Rod Gyarados
+ * at L5). "Evolves at L20" would be a false claim for a species whose real evolution
+ * level is higher than the floor being offered -- gb_paste_legal_screen picks between
+ * the two at runtime by comparing the two floors, never says "evolves at" unless that
+ * is literally true. WHY_FMT's wording mirrors the checker's own phrasing (the
+ * SUSPECT text in gen3_legality_hooks.c pk2_hook_evolution, "Evolves at L36, this one
+ * is L5" -- dictionary discipline, one phrase for one fact everywhere it appears). */
+#define PDNA_SIDECAR_LEGAL_WHY_FMT       "%s evolves at L%u; this one is L%u."
+#define PDNA_SIDECAR_LEGAL_WHY_FLOOR_FMT "%s legal from L%u; this one is L%u."
+#define PDNA_SIDECAR_LEGAL_BACK       "Either way it comes back unchanged."
 #define PDNA_SIDECAR_LEGAL_KEEP_ROW   "A = KEEP AS IS"
 #define PDNA_SIDECAR_LEGAL_FIX_FMT    "SELECT = MAKE LEGAL (%u -> %u)"
 /* Full-screen list (gb_pick_box's own geometry: title y=3, rule y=13), not a scrolling
