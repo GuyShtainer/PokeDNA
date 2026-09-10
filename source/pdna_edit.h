@@ -22,6 +22,11 @@ enum {
   /* Region sits ABOVE the place it scopes, and editing it re-homes the met location. */
   F_BALL, F_METREGION, F_METLOC, F_METLEVEL, F_METGAME,
   F_CT0, F_CT1, F_CT2, F_CT3, F_CT4, F_CT5,   /* contest condition: cool/beauty/cute/smart/tough/sheen */
+  /* Contest RIBBON rank (BACKLOG #60) — highest rank won per category, 0..4
+   * (GC_RANK_NONE..MASTER, gen3_contest.h). Distinct from F_CT0..4 above, which are
+   * the condition STATS (raised by Pokeblocks) the mon enters a contest WITH; these
+   * are the RESULT — what it has already WON. */
+  F_RIB0, F_RIB1, F_RIB2, F_RIB3, F_RIB4,     /* cool/beauty/cute/smart/tough rank */
   F_NUM
 };
 

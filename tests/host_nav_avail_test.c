@@ -116,11 +116,12 @@ static void test_every_row_covered(void) {
    * classification instead: every row is EITHER coming-soon-or-ok (never refused as
    * NOT_IN_GAME) except the six Hoenn/Frontier-shaped features and half of Clock fix. */
   static const int not_in_game_gen1[] = {
-    NV_CLOCK, NV_MIRAGE, NV_SECRET, NV_POKEBLOCK, NV_EVENTS, NV_BATTLEREC, NV_FRONTIER
+    NV_CLOCK, NV_MIRAGE, NV_SECRET, NV_POKEBLOCK, NV_EVENTS, NV_BATTLEREC, NV_FRONTIER,
+    NV_CONTEST   /* BACKLOG #60: RSE-only, same shape as the other 7 */
   };
   for (int i = 0; i < (int)(sizeof not_in_game_gen1 / sizeof not_in_game_gen1[0]); i++)
     CHECK(nav_avail(not_in_game_gen1[i], SE_KIND_GEN1) == NAV_NOT_IN_GAME,
-          "Gen 1: every Hoenn/Frontier-shaped row (+Clock) is NOT_IN_GAME");
+          "Gen 1: every Hoenn/Frontier-shaped row (+Clock/Contest) is NOT_IN_GAME");
 
   /* U4: NV_BAG left this list on Gen 1 (now NAV_OK there) -- checked separately
    * below, alongside Gen 2 where it is still COMING_SOON. */
@@ -142,13 +143,13 @@ static void test_every_row_covered(void) {
   }
   CHECK(nav_avail(NV_BAG, SE_KIND_GEN1) == NAV_OK, "Gen 1: Bag is NAV_OK (U4, BACKLOG #67)");
 
-  /* 7 NOT_IN_GAME(gen1-list, Clock counted once) + 8 COMING_SOON-both + 1 Gen1-only-OK
-   * (NV_BAG) + 3 OK + Clock's own Gen-2 COMING_SOON (already counted above via a
-   * separate assertion) == 19 rows -- the classification is EXHAUSTIVE, not a sample,
-   * so a row silently added to PDNA_NAV_ITEMS without a matching GB_TABLE entry cannot
-   * hide behind rows this test never asked about. */
-  CHECK(7 + 8 + 1 + 3 == NV_COUNT, "row classification accounts for all 19 PDNA_NAV_ITEMS");
-  printf("(G) every PDNA_NAV_ITEMS row is classified (7 NOT_IN_GAME + 8 COMING_SOON-both + "
+  /* 8 NOT_IN_GAME (gen1-list, Clock counted once, + BACKLOG #60's NV_CONTEST) + 8
+   * COMING_SOON-both + 1 Gen1-only-OK (NV_BAG) + 3 OK + Clock's own Gen-2 COMING_SOON
+   * (already counted above via a separate assertion) == 20 rows -- the classification
+   * is EXHAUSTIVE, not a sample, so a row silently added to PDNA_NAV_ITEMS without a
+   * matching GB_TABLE entry cannot hide behind rows this test never asked about. */
+  CHECK(8 + 8 + 1 + 3 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
+  printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 8 COMING_SOON-both + "
         "1 Gen1-only-OK + 3 OK == %d)\n", NV_COUNT);
 }
 

@@ -34,6 +34,17 @@ void em_set_iv(EditMon* e, int stat, uint8_t v);             /* 0..31  */
 void em_set_ev(EditMon* e, int stat, uint8_t v);             /* 0..255 */
 void em_set_contest(EditMon* e, int i, uint8_t v);          /* condition i=0..5: cool/beauty/cute/smart/tough/sheen */
 
+/* Contest RIBBON rank (BACKLOG #60) — the Misc substruct's ribbons word, bytes
+ * +0x08..+0x0B of sub[3]. category = GC_COOL..GC_TOUGH (gen3_contest.h); rank is
+ * clamped 0..4 (GC_RANK_NONE..MASTER) by gen3_contest.c's gc_ribbon_set, which owns
+ * the bit layout. Cosmetic (no stat recompute), same as em_set_contest. */
+void     em_set_ribbon_rank(EditMon* e, int category, uint8_t rank);
+uint8_t  em_get_ribbon_rank(const EditMon* e, int category);
+/* Named toggle ribbons (Champion/Winning/.../World) — same word, gen3_contest.h's
+ * GC_RFLAG_*. */
+void     em_set_ribbon_flag(EditMon* e, int flagbit, bool on);
+bool     em_get_ribbon_flag(const EditMon* e, int flagbit);
+
 /* The level a NEWLY CREATED Pokémon of this species should start at: 5 — the level a
  * Gen-3 egg hatches at — unless the species cannot stand there, in which case its own
  * pk_evo_floor (evolutions.h). A created Charizard is L36, not a L5 Charizard the

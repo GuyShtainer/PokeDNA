@@ -126,6 +126,102 @@ def run_flags_sections(core_mod, image_mod, rom: Path, out_dir: Path) -> Session
     return s
 
 
+def run_contests(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
+    """BACKLOG #60: the CONTESTS nav row, the museum painting list, the donor picker
+    (party -> mon), the write confirm, and the summary's own RIBBONS card after a
+    Master-rank ribbon edit on the same donor.
+
+    Nav order: source/pdna_layout.h's PDNA_NAV_ITEMS puts Contests at index 15
+    (Party=0 .. Fly=14, Contests=15) -- DOWN x15 from the menu's default Party
+    selection lands there directly (nav_menu's DOWN walks the full enum order,
+    wrapping columns, so a column-relative count would be wrong)."""
+    s = Session(core_mod, image_mod, rom, out_dir, "b60_")
+    print("== BACKLOG #60: Contests (museum paintings + donor picker + ribbons) ==")
+
+    s.tap("START", settle=BIG_SETTLE)      # box screen -> nav menu
+    s.press_n("DOWN", 15)                  # Party(0) .. Fly(14) -> Contests(15)
+    s.shot("01_nav_row", "#60: the START menu's new \"Contests\" row, same panel/format "
+                          "as every other row (BACKLOG #58 parity)")
+
+    s.tap("A", settle=BIG_SETTLE)          # -> pdna_contest, museum page, sel=0 (Cool)
+    s.shot("02_museum_list", "#60: the 5 Lilycove Art Museum painting slots -- category, "
+                              "current species (or \"(empty)\"), and rank")
+
+    s.tap("R", settle=BIG_SETTLE)          # L/R flips page: MUSEUM -> HALL
+    s.shot("02b_hall", "#60: the Contest Hall page on Guy's own Emerald save -- 6 "
+                        "populated rows; the D2 fix is visible here (slot 3, Tough/"
+                        "Plusle, reads Master -- with the old RANK_NAME table indexed "
+                        "by the ribbon-word scale instead of CONTEST_RANK_*, this same "
+                        "byte (3) would have displayed as \"Hyper\")")
+    s.tap("L", settle=BIG_SETTLE)          # HALL -> back to MUSEUM, sel still 0 (Cool)
+
+    s.tap("A", settle=BIG_SETTLE)          # A on Cool -> donor picker, source list
+    s.shot("03_picker_source", "#60: donor picker, level 1 -- Party, then the 14 PC boxes")
+
+    s.tap("A", settle=BIG_SETTLE)          # A on Party -> mon list
+    s.shot("04_picker_mons", "#60: donor picker, level 2 -- the party's occupied slots "
+                              "(species + nickname)")
+
+    s.tap("A", settle=BIG_SETTLE)          # A on the first party mon -> confirm dialog
+    s.shot("05_confirm", "#60: the write confirm -- names the donor and the category "
+                          "before touching the save (verified-write pipeline, hard rule 3)")
+
+    s.tap("A", settle=400)                 # A -> gc_museum_set + app_commit_sb1: a real flash
+                                            # write (flashsave.c byte-by-byte toggle-bit polling
+                                            # over up to 4 sectors) + a 12-vsync grow_in flourish
+                                            # -- empirically ~150-250 frames wall time in mGBA,
+                                            # nowhere near landed by BIG_SETTLE (40) alone
+    s.tap("A", settle=BIG_SETTLE)          # dismiss the "SAVED / Flash written" msg_wait
+    s.shot("06_museum_written", "#60: back on the museum list -- the Cool painting now "
+                                 "shows the donor's species and Master rank")
+
+    # D1 regression: the SAME donor, a DIFFERENT category, on the confirm line that
+    # used to overflow l1[32] for a 10-char species + Beauty ("Show TYRANITAR as
+    # Beauty winner?" is 33 B including the NUL; l1 is 48 B now).
+    s.press_n("DOWN", 1)                   # Cool(0) -> Beauty(1)
+    s.tap("A", settle=BIG_SETTLE)          # -> donor picker, source list
+    s.tap("A", settle=BIG_SETTLE)          # Party -> mon list
+    s.tap("A", settle=BIG_SETTLE)          # first party mon -> confirm dialog
+    s.shot("05b_confirm_beauty", "#60/D1: the write confirm for Beauty -- the exact "
+                                  "species+category combination the review found "
+                                  "overflowing l1[32]; fits comfortably in l1[48] now")
+    s.tap("A", settle=400)                 # write it (same flash-write path as Cool above)
+    s.tap("A", settle=BIG_SETTLE)          # dismiss the "SAVED" msg_wait
+
+    s.tap("B", settle=BIG_SETTLE)          # leave Contests -> box screen
+
+    # Open a mon's summary and set + show its own RIBBONS card. The museum write above
+    # is a SEPARATE SaveBlock1 record (the painting) -- it does NOT touch any mon's own
+    # ribbons word (gen3_contest.h's header explains why: (a) per-mon ribbons and (b)
+    # the museum record are deliberately independent data), so this is its own edit,
+    # showing the OTHER half of BACKLOG #60. Re-entering pdna_box() after Contests
+    # resets s_cur_mode to CM_NORMAL and the cursor to the grid's cell 0 (pdna_box.c)
+    # -- SEL there CYCLES cursor mode (NORMAL->MOVE->ITEM), it does NOT switch to
+    # party (that is the top tabs' PARTY entry, a nested overlay popup) -- so this
+    # flow uses the box grid's own cell 0 directly, plain A, no SEL.
+    s.tap("A", settle=BIG_SETTLE)          # cell 0 (CM_NORMAL) -> mon menu (View/Edit first)
+    s.tap("A", settle=BIG_SETTLE)          # View/Edit -> summary opens in VIEW mode, card 0 (INFO)
+    s.press_n("R", 8, settle=SETTLE)       # INFO(0)..CONDITION(7) -> RIBBONS(8) -- L/R flips
+                                            # cards in VIEW mode too, so this works before editing
+    s.tap("A", settle=BIG_SETTLE)          # VIEW mode: A enters EDIT (pdna_summary.c's
+                                            # documented "Summary opens in VIEW, A inside enters
+                                            # edit" -- same key, does NOT touch a field yet
+    s.shot("07_ribbons_view", "#60: the summary's new RIBBONS card, entering EDIT -- Cool "
+                               "starts at None (the museum write above only touched the "
+                               "SEPARATE SaveBlock1 painting record, not this mon's own "
+                               "ribbons word)")
+
+    s.tap("A", settle=BIG_SETTLE)          # EDIT mode, fsel=0 (Cool) -> em_field_press: 0<->Master
+    s.shot("08_ribbons_master", "#60: A on the Cool row toggles None<->Master (em_field_press, "
+                                 "pdna_edit.c) -- the per-mon ribbon rank editor, independent "
+                                 "of the museum painting")
+
+    s.tap("B", settle=BIG_SETTLE)          # EDIT -> VIEW (keeps the pending edit, dirty=true)
+    s.tap("B", settle=BIG_SETTLE)          # leaving with a dirty edit -> "Save changes?" confirm
+    s.tap("A", settle=BIG_SETTLE)          # A = write (verified-write pipeline, same as everywhere)
+    return s
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -145,7 +241,7 @@ def main(argv=None) -> int:
     core_mod, image_mod = load_mgba()
 
     ok, skipped = [], []
-    for fn in (run_osk_rename, run_flags_sections):
+    for fn in (run_osk_rename, run_flags_sections, run_contests):
         sess = fn(core_mod, image_mod, a.emerald, a.out)
         ok += sess.taken
         skipped += sess.skipped
