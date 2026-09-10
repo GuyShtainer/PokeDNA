@@ -1044,6 +1044,75 @@ def run_u4_empty(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sess
     return s
 
 
+def run_m1_map(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """M1 (BACKLOG #91, docs/GB-MAP-DESIGN.md): Red's OWN current-map view,
+    read-only, on the shared GB-screen shell. `rom` must be a Red-only fused image
+    (tools/fuse_gb.py fed only Red.gb+Red.sav -- BACKLOG #98's fused-image-by-
+    generation-only gap, same reason run_u4_bag()/run_u5_pack() require a single-
+    ROM image).
+
+    Nav: boot picker DOWN -> A -> A -> box grid (rom_gbsprite cold scan) -> START
+    -> nav menu -> DOWN x16 (Party->Bank->Daycare->Trainer->Clock fix->Mirage->
+    Pokedex->Bag->Flags & counters->Bases->Blocks->Tickets->Records->Frontier->
+    Fly->Contests->Map, PDNA_NAV_ITEMS index 16) -> A -> pdna_gbmap_gen1() (gbscr_
+    open()'s own cold rom_gbui scan, separate cache from rom_gbsprite's box-grid
+    one, PLUS rom_gbmap.c's own separate locate pass over the same ROM)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_")
+    print("== M1: Red's own current-map view (boot picker -> standalone -> Map) ==")
+
+    s.run(700)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                    # Emerald (row 0) -> the GB row (row 1)
+    s.tap("A", settle=60)                                    # pick it -> S1 info
+    s.tap("A", settle=60)                                    # -> box grid (rom_gbsprite cold fetch)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box grid -> nav menu
+    s.press_n("DOWN", 16)                                     # Party -> ... -> Map (index 16)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                    # Map -> pdna_gbmap_gen1()
+    s.shot("01_map_1to1", "M1: the player's own current map at 1:1, centred on a "
+                           "5x5-block viewport clamped to the map's own bounds "
+                           "(no connections/stitching -- that is M2), a red frame "
+                           "marking the player's own block")
+
+    s.tap("SEL", settle=60)                                  # shell-wide toggle -> stretched
+    s.shot("01b_stretched", "M1: SELECT stretches the same view to 240x160 -- the "
+                             "shell's own scale toggle, not a map-specific key")
+    s.tap("SEL", settle=60)                                  # back to 1:1
+    s.shot("01c_1to1_again", "M1: SELECT again returns to 1:1")
+
+    # VIRIDIAN_POKECENTER (Red.sav's real player map) is 7x4 blocks; the
+    # viewport is 5x5 blocks, centred on the player at open -- vertically the
+    # WHOLE map already fits (height 4 <= VBH 5, so vby is pinned at 0 the
+    # entire visit: no vertical pan is possible on THIS map, not a bug) and
+    # horizontally the player's own real x lands the initial view already at
+    # the west clamp (vbx=0). RIGHT is therefore the only axis with real
+    # room to demonstrate (0 -> 1 -> 2, width 7 - VBW 5 = 2 steps of slack).
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.shot("02_panned_right", "M1: RIGHT pans the viewport one block right -- the "
+                               "player's own marker frame is no longer centred, "
+                               "still inside the loaded viewport")
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.shot("03_panned_right_to_east_clamp", "M1: RIGHT again reaches the east clamp "
+                                             "(width 7 - the 5-block viewport = 2 "
+                                             "steps of slack, both now used) -- a "
+                                             "THIRD RIGHT press from here would be a "
+                                             "true no-op (already proved by this "
+                                             "screen's own vertical axis: height 4 "
+                                             "<= the 5-block viewport, so vby never "
+                                             "moves off 0 the whole visit, on purpose)")
+    s.tap("L", settle=gb_shots.SETTLE)
+    s.shot("04_panned_back_via_L", "M1: L pans left one block (same axis as the "
+                                    "D-pad LEFT binding, the brief's own 'L/R or "
+                                    "the D-pad to pan') -- real movement, not the "
+                                    "clamp: proves L/R drive the same viewport "
+                                    "state the D-pad does, not a separate mode")
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # close -> back to the box grid
+    s.shot("05_closed_back_to_grid", "M1: B closes the map screen -- back to the "
+                                      "box grid, no write ever happened")
+
+    return s
+
+
 def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
     """U5 (BACKLOG #67, docs/GB-GAME-SCREENS-DESIGN.md sec 1.4): Gold/Silver/
     Crystal's OWN Pack + PC store on the shared GB-screen shell -- the Gen-2
@@ -1510,6 +1579,9 @@ def main(argv=None) -> int:
     ap.add_argument("--d7-gold", action="store_true",
                      help="N6(f): only run_d7_gold() against --image -- --image "
                           "MUST be a Gold-only fused image (Gold.gbc+Gold.sav)")
+    ap.add_argument("--m1-map", action="store_true",
+                     help="M1 (BACKLOG #91): only run_m1_map() against --image -- "
+                          "--image MUST be a Red-only fused image (Red.gb+Red.sav)")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -1624,6 +1696,19 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] d7 gold: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.m1_map:
+        try:
+            sess = run_m1_map(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] m1 map: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

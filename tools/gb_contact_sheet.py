@@ -172,6 +172,13 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # rule.
     ("gb-pack-gen2", "U5 — Gold/Silver/Crystal's own Pack + PC store on the shell "
      "(Gen-2 saves)", ("U5",)),
+    # M1 (BACKLOG #91, docs/GB-MAP-DESIGN.md): Red/Yellow's own current-map view,
+    # read-only, on the shared shell -- the first slice of the Gen-1/2 Map screen
+    # (M2 all-maps browser and M3 teleport are later slices). Shots come from
+    # tools/dgb_shots.py's run_m1_map(), captions all start "M1:". Appended after
+    # "gb-pack-gen2" per this list's own append-only rule.
+    ("gb-map-gen1", "M1 — Red's own current-map view on the shell, read-only "
+     "(Gen-1 saves)", ("M1",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
