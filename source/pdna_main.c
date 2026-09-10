@@ -9512,6 +9512,7 @@ static void view_save(const char* path) {
             if (fused_gb_save_count() <= 0)
               msg_wait("GB IMPORT", UI_DIM, "No fused GB saves.", "Rebuild with tools/fuse_gb.py.");
           } else {
+            fused_gb_set_active_save(pick);   /* the third pick site: the nested import (b98 re-verify) */
             pdna_gen12_show_fused(pick, (uint8_t)(g_game == PK_RS ? 1 : g_game == PK_FRLG ? 4 : 3));
           }
 #else
