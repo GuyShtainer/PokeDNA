@@ -463,6 +463,7 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
     if (k & KEY_START) {
       if (can_edit) {
         int swap_src = 0;
+        g1_swap_active = false;   /* any START-menu visit disarms; only SWAP re-arms (N1) */
         if (gbbag_start_menu(bag, pocket, &sel, &top, &swap_src)) {
           g1_swap_active = true;
           g1_swap_src = swap_src;
@@ -490,7 +491,7 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
        * source itself. Picking the source row again is a no-op cancel
        * (nothing to swap with itself), matching B's own cancel path. */
       if (g1_swap_active) {
-        if (sel < l->count && sel != g1_swap_src) {
+        if (sel < l->count && g1_swap_src < l->count && sel != g1_swap_src) {
           GbBagEntry tmp = bag->pockets[pocket].entries[sel];
           bag->pockets[pocket].entries[sel] = bag->pockets[pocket].entries[g1_swap_src];
           bag->pockets[pocket].entries[g1_swap_src] = tmp;
