@@ -599,6 +599,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbtrainer.h"   /* BACKLOG #49 P1b: the Gen-1/2 trainer card */
 #include "pdna_gbbag.h"       /* U4, BACKLOG #67: Red/Yellow's own Item bag */
 #include "pdna_gbpack.h"      /* U5, BACKLOG #67: Gold/Silver/Crystal's own Pack */
+#include "pdna_gbfly.h"       /* BACKLOG #90: Fly destinations, both generations */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
@@ -2518,6 +2519,11 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * plain FIL-streaming entry falls back to the read-only info page, same
      * reasoning as NV_TRAINER above). */
     if (g_ed) pdna_gbpack(&g_ed->s, true);
+    else      (void)gb_info_page(m);
+  } else if (nv == NV_FLY) {
+    /* BACKLOG #90: gb_fly.h has a real bit for both generations (see its own header)
+     * -- same "needs a live GbSession to write through" gate as NV_TRAINER above. */
+    if (g_ed) pdna_gb_fly(&g_ed->s, true);
     else      (void)gb_info_page(m);
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */

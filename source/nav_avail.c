@@ -79,8 +79,9 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Records." } },
   [NV_FRONTIER]  = { { NAV_NOT_IN_GAME, "Gen 1 games have no Frontier." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Frontier." } },
-  [NV_FLY]       = { { NAV_COMING_SOON, "Fly flags are coming soon." },
-                     { NAV_COMING_SOON, "Fly flags are coming soon." } },
+  /* BACKLOG #90: gb_fly.h's bitfield core + pdna_gbfly.c's screen are wired for
+   * both generations now. */
+  [NV_FLY]       = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   [NV_CONTEST]   = { { NAV_NOT_IN_GAME, "Gen 1 games have no Contests." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Contests." } },
   /* Review D2: GEN12-PARITY-DESIGN.md puts a Game Boy map renderer OUT of scope, so
