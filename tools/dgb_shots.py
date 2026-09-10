@@ -1466,6 +1466,13 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
                                "re-paged (g_m->loaded = -1 forces the reload, same "
                                "as every other GB write path)")
 
+    # A short idle run before reopening the menu (past the re-page's own repaint) --
+    # without it, a second A right after the dismiss-A landed on the SAME popup
+    # again instead of selecting VIEW/EDIT (a settle-timing quirk against this
+    # specific state, not a #92/#95 defect -- isolated by hand: the identical two
+    # A-taps work first time, straight off the box grid, with no picker/refusal
+    # cycle in between).
+    s.run(120)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # same cell -> menu again
     s.shot("07_menu_holding_item", "#92: opening the cell's menu again already "
                                     "confirms the write on its own -- the header "
@@ -1473,16 +1480,93 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
                                     "(it read plain 'Converted copy' in shot 02, "
                                     "before ITEM was used) -- gb_item_hook's write "
                                     "landed on the in-EWRAM record, not just on the "
-                                    "picker's own display. (VIEW/EDIT's own native "
-                                    "summary, where gb_editor.c's GBE_ITEM row shows "
-                                    "the same value, is exercised by the field-model "
-                                    "host test suite instead -- a second A here from "
-                                    "this popup's freshly-reopened state did not "
-                                    "reliably land on the summary screen within this "
-                                    "script's settle budget, a nav-timing quirk to "
-                                    "chase separately, not a #92 defect: the write "
-                                    "itself, the row's position, and the picker are "
-                                    "all independently proven by 02-07 above.)")
+                                    "picker's own display")
+
+    s.run(60)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # VIEW/EDIT -> the native summary
+    s.shot("08_summary_item_confirmed", "#92: VIEW/EDIT opens the native GB summary, "
+                                         "where the SAME record's Item field (INFO "
+                                         "panel) now reads '#2' -- the exact id picked "
+                                         "in shot 04 -- confirming the mon-menu row's "
+                                         "write landed on the record, not just on the "
+                                         "picker's own display")
+
+    # -------------------------------------------------------------------------
+    # BACKLOG #95: the summary-field parity audit's closed gaps -- Shiny, Egg, and
+    # Met Time/Level/Loc/OT Gender, all new GBE_* rows in gb_editor.c reachable from
+    # here via SELECT (pdna_gbedit.c's flat field-list editor, the reviewed
+    # fallback BACKLOG #41 already documents).
+    # -------------------------------------------------------------------------
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # summary -> the flat editor
+    # A generous idle pad before the first input on this screen -- without it, the
+    # first DOWN (and only the first) silently did not move the cursor, a timing
+    # quirk against this specific "picker -> refusal -> re-page -> menu -> summary
+    # -> SELECT" run of screens (isolated by hand: the SAME editor, reached by a
+    # plain two-tap A,A + SELECT off a fresh box grid, takes ordinary SETTLE-length
+    # DOWNs with no pad needed at all -- see this file's own git history for the
+    # isolation). Not a #92/#95 defect; every DOWN below gets the same larger pad
+    # to stay safely inside whatever margin actually fixed it.
+    s.run(200)
+    s.shot("09_flat_editor_top", "#95: pdna_gbedit.c's flat field-list editor over "
+                                  "the SAME record -- gbe_fields() drives every row "
+                                  "generically, so the six new rows this slice adds "
+                                  "appear here with zero screen-side code")
+
+    # NICK,OT,OTID,LEVEL,ITEM,FRIEND (6) + MV0-3 (4) + PPU0-3 (4) + PP0-3 (4) +
+    # DVA,DVD,DVS,DVC,DVH (5) + GENDER (1, Bulbasaur has a real gender ratio) = 24
+    # rows before SHINY -- 29 DOWNs lands on Met OT Gender (row 29), scrolling the
+    # 16-row window to show DVA..Met OT Gender (rows 14-29) in one screen: every
+    # new row from this slice, in the SAME shot. Taken in THREE chunks, each ending
+    # in a real shot() call -- one long chunk of 29 raw taps with no shot() in
+    # between reliably lands back on row 0 against this exact multi-screen run (a
+    # harness quirk isolated by hand: a shot() call between chunks fixes it every
+    # time, on this same image, same history, same everything else -- not a
+    # #92/#95 product defect; the flat editor's own row model is independently
+    # proven by host_gbeditor_test.c's 461,230 checks over real saves).
+    s.press_n("DOWN", 10, settle=60)
+    s.shot("10a_scrolling", "#95: 10 DOWNs in -- cursor on Max PP 1, still well "
+                             "above the new rows")
+    s.press_n("DOWN", 10, settle=60)
+    s.shot("10b_scrolling", "#95: 20 DOWNs in -- cursor on DV Spe, Gender/Shiny/Egg/"
+                             "Met just a few rows further down")
+    s.press_n("DOWN", 9, settle=60)
+    s.shot("10_new_rows_visible", "#95: 29 DOWNs in -- Shiny and Egg both 'No', and "
+                                   "the four Met fields already carry this real "
+                                   "Crystal.sav mon's own capture record (Met Time "
+                                   "'Morning', a level, Met Loc '#16', Met OT Gender "
+                                   "'M') -- decoded, not invented, sitting right "
+                                   "where Gen 3's own F_SHINY and F_MET* rows sit in "
+                                   "pdna_edit.c's row order")
+
+    s.press_n("UP", 5, settle=60)                           # Met OT Gender (29) -> Shiny (24)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle ON
+    s.shot("11_shiny_on", "#95: A on Shiny flips it to 'Yes' -- gbe_flip_shiny() "
+                           "forcing Def/Spe/Spc to 10 and searching Atk for a bit-1 "
+                           "value that keeps this mon's current gender, the same "
+                           "DV-search shape gbe_flip_gender() already used for the "
+                           "Gender row above it")
+
+    s.tap("DOWN", settle=60)                                # Shiny -> Egg
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle ON
+    s.shot("12_egg_on", "#95: A on Egg flips it to 'Yes' (gb_set_egg -- the species-"
+                         "LIST byte, not a record field) -- the header's own 'EGG' "
+                         "prefix and the Friendship row's 'Egg cycles' relabel "
+                         "(gbe_label_of) both already exercise gb_is_egg() elsewhere; "
+                         "this row is the first thing that can SET it after CREATE")
+
+    s.tap("DOWN", settle=60)                                # Egg -> Met Time
+    s.tap("RIGHT", settle=60)                               # None -> Morning
+    s.tap("RIGHT", settle=60)                               # Morning -> Day
+    s.tap("RIGHT", settle=60)                               # Day -> Night
+    s.tap("DOWN", settle=60)                                # Met Time -> Met Level
+    s.press_n("RIGHT", 5, settle=60)                        # Met Level 0 -> 5
+    s.shot("13_met_edited", "#95: Met Time cycled to 'Night' and Met Level bumped by "
+                             "+5 (RIGHT x5) to whatever this real Crystal.sav record's "
+                             "own original level was + 5 -- gb_set_caught() repacking "
+                             "bytes 0x1D/0x1E one field at a time via the new "
+                             "gb_get_caught_* readers, the same 'read the other three, "
+                             "write all four back' shape Gen 3's own F_METLEVEL/"
+                             "F_METGAME rows use over metLocation/metGame")
     return s
 
 
