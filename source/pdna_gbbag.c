@@ -122,9 +122,6 @@ enum {
 #define ROWS_VISIBLE 4
 #define CURSOR_COL 5
 #define NAME_COL   6
-#define NAME_W     8    /* cols 6..13 -- measured against Yellow's "ESCAPE ROPE"/
-                          * "MASTER BALL" captures, which run to col 16; this
-                          * shell's own "ITEM #n" text never needs more than 8. */
 #define QTY_COL    14
 
 static int name_row(int slot) { return BOX_Y0 + 2 + slot * 2; }   /* 4,6,8,10 */
@@ -138,6 +135,14 @@ static int qty_row(int slot)  { return name_row(slot) + 1; }       /* 5,7,9,11 *
  * below); this file-static is read-only from g1bag_paint_list(). */
 static uint16_t g1_frame_ctr;
 static bool g1bag_scroll_marker_on(void) { return ((g1_frame_ctr >> 5) & 1u) != 0; }
+
+/* D10 (review): SWAP's own pick-source-then-destination state -- read-only
+ * from g1bag_paint_list() below (same out-of-band idiom as g1_frame_ctr
+ * above, kept off g1bag_paint_list()'s own parameter list so its signature
+ * stays the one every existing caller already uses). Not persisted; always
+ * false on a fresh screen visit. */
+static bool g1_swap_active;
+static int  g1_swap_src;
 
 static void g1bag_border(GbScreen* gs) {
   gbscr_cell(gs, BOX_X0, BOX_Y0, GBSCR_SRC_TEXTBOX, G1I_UL);
@@ -205,9 +210,17 @@ static void g1bag_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket,
     bool has = idx < total;
     bool is_cancel = has && idx == l->count;
     bool is_sel = has && idx == sel;
+    /* D10: the SWAP source row gets its own marker when it is not also the
+     * row the cursor is currently sitting on (once the cursor moves onto
+     * it, `is_sel`'s own 0xED already says "this is the row A confirms").
+     * No real-cartridge capture exists for this exact glyph in this slice
+     * (SWAP was never pixel-dumped) -- 0xED is the game's own confirmed
+     * cursor tile, so re-using it here (rather than inventing an unverified
+     * tile id) is the documented, deliberate choice pending a real capture. */
+    bool is_swap_src = g1_swap_active && has && !is_cancel && idx == g1_swap_src && !is_sel;
 
-    gbscr_cell(gs, CURSOR_COL, ny, is_sel ? GBSCR_SRC_FONT : GBSCR_SRC_TEXTBOX,
-              is_sel ? 0xED : G1I_BLANK);
+    gbscr_cell(gs, CURSOR_COL, ny, (is_sel || is_swap_src) ? GBSCR_SRC_FONT : GBSCR_SRC_TEXTBOX,
+              (is_sel || is_swap_src) ? 0xED : G1I_BLANK);
 
     if (is_cancel) {
       siprintf(buf, "CANCEL");
@@ -294,9 +307,18 @@ static void gbbag_clamp_scroll(int total, int* sel, int* top) {
  * wording). No item-name table (see pdna_gbbag.h), so ADD ITEM asks for a raw
  * id 1..gbb_max_item_id() via num_entry -- the same honest "ITEM #n" posture
  * the list itself uses, not a fabricated picker over data this slice does not
- * have. */
+ * have.
+ *
+ * D10 (review): SWAP used to just swap *sel with the NEXT entry on the spot
+ * -- the real game's own semantic is pick-source-then-destination (mark the
+ * row SWAP was opened on, return to the list, move the cursor, A on the
+ * destination swaps, B cancels the mark). This function only ARMS that:
+ * `*swap_src_out` is set to the current `*sel` and true is returned so the
+ * caller (pdna_gbbag_gen1_screen) enters swap-pick mode on the list itself;
+ * the actual swap happens there. */
 __attribute__((noinline))
-static void gbbag_start_menu(GbBag* bag, GbBagPocket pocket, int* sel, int* top) {
+static bool gbbag_start_menu(GbBag* bag, GbBagPocket pocket, int* sel, int* top,
+                             int* swap_src_out) {
   static const char* const kOpts[4] = { "ADD ITEM", "REMOVE", "SWAP", "CANCEL" };
   int csel = 0;
   for (;;) {
@@ -309,13 +331,13 @@ static void gbbag_start_menu(GbBag* bag, GbBagPocket pocket, int* sel, int* top)
     }
     trainer_key_legend("A choose  U/D  B cancel");
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return;
+    if (k & KEY_B) return false;
     if (k & KEY_UP)   csel = (csel > 0) ? csel - 1 : 3;
     if (k & KEY_DOWN) csel = (csel + 1) % 4;
     if (!(k & KEY_A)) continue;
 
     const GbBagList* l = &bag->pockets[pocket];
-    if (csel == 3) return;
+    if (csel == 3) return false;
     if (csel == 0) {
       /* D5 (review): num_entry() returns `cur` on OSK cancel, indistinguishable
        * from "the user typed the same value" -- ADD ITEM used to insert id 1
@@ -353,15 +375,18 @@ static void gbbag_start_menu(GbBag* bag, GbBagPocket pocket, int* sel, int* top)
     } else if (csel == 1) {
       if (l->count > 0) gbb_remove(GBF_G_RED, bag, pocket, *sel);
     } else if (csel == 2) {
-      if (l->count > 1) {
-        int other = (*sel + 1) % l->count;
-        GbBagEntry tmp = bag->pockets[pocket].entries[*sel];
-        bag->pockets[pocket].entries[*sel] = bag->pockets[pocket].entries[other];
-        bag->pockets[pocket].entries[other] = tmp;
+      /* Arm swap-pick mode on whatever row is currently selected -- a
+       * CANCEL-row or empty-pocket selection has nothing to swap, so those
+       * just close the menu with nothing armed (the caller only enters
+       * swap-pick mode when this returns true). */
+      if (l->count > 1 && *sel < l->count) {
+        *swap_src_out = *sel;
+        return true;
       }
+      return false;
     }
     gbbag_clamp_scroll(bag->pockets[pocket].count + 1, sel, top);
-    return;
+    return false;
   }
 }
 
@@ -370,8 +395,13 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
   static const char* const kLegendEdit[4] = {
     PDNA_GBTR_ACT_EDIT, PDNA_GBTR_ACT_SAVE, PDNA_GBSCR_ACT_SIZE, PDNA_GBTR_ACT_MORE
   };
+  /* D10 (review): the KEY_START handler below only calls gbbag_start_menu()
+   * when can_edit -- in view mode START is a dead key (`continue`, no
+   * action), so promising "START MORE" in the legend would be a lie the
+   * player could act on for nothing; drop it the same way row 0 (A) is
+   * already 0 here for "nothing to do read-only". */
   static const char* const kLegendView[4] = {
-    0, PDNA_GBSCR_ACT_BACK, PDNA_GBSCR_ACT_SIZE, PDNA_GBTR_ACT_MORE
+    0, PDNA_GBSCR_ACT_BACK, PDNA_GBSCR_ACT_SIZE, 0
   };
   gbscr_set_legend(gs, can_edit ? kLegendEdit : kLegendView);
 
@@ -379,6 +409,7 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
   int sel = 0, top = 0;
   bool want_commit = false;
   g1_frame_ctr = 0;
+  g1_swap_active = false;
 
   g1bag_border(gs);
   g1bag_paint_list(gs, bag, pocket, top, sel);
@@ -407,20 +438,35 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
     else if (k & KEY_B) snd_back();
 
     if (k & KEY_SELECT) { gbscr_toggle_scale(gs); continue; }
-    if (k & KEY_B) { want_commit = true; break; }
+    if (k & KEY_B) {
+      /* D10: B cancels an armed SWAP mark without leaving the screen --
+       * only when nothing is armed does B fall through to "leave". */
+      if (g1_swap_active) {
+        g1_swap_active = false;
+        g1bag_paint_list(gs, bag, pocket, top, sel);
+        gbscr_mark_all_dirty(gs);
+        continue;
+      }
+      want_commit = true; break;
+    }
 
     const GbBagList* l = &bag->pockets[pocket];
     int total = l->count + 1;   /* D3: + the CANCEL row */
     if (k & (KEY_LEFT | KEY_RIGHT)) {
       pocket = (pocket == GBB_POCKET_ITEMS) ? GBB_POCKET_PC : GBB_POCKET_ITEMS;
       sel = 0; top = 0;
+      g1_swap_active = false;   /* a mark from the OTHER pocket makes no sense */
       g1bag_paint_list(gs, bag, pocket, top, sel);
       gbscr_mark_all_dirty(gs);
       continue;
     }
     if (k & KEY_START) {
       if (can_edit) {
-        gbbag_start_menu(bag, pocket, &sel, &top);
+        int swap_src = 0;
+        if (gbbag_start_menu(bag, pocket, &sel, &top, &swap_src)) {
+          g1_swap_active = true;
+          g1_swap_src = swap_src;
+        }
         g1bag_paint_list(gs, bag, pocket, top, sel);
         gbscr_mark_all_dirty(gs);
       }
@@ -439,6 +485,21 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
       g1bag_paint_list(gs, bag, pocket, top, sel);
       gbscr_mark_all_dirty(gs);
     } else if (k & KEY_A) {
+      /* D10: A while a SWAP source is armed picks the DESTINATION -- the
+       * current row, if it is a real (non-CANCEL) row other than the
+       * source itself. Picking the source row again is a no-op cancel
+       * (nothing to swap with itself), matching B's own cancel path. */
+      if (g1_swap_active) {
+        if (sel < l->count && sel != g1_swap_src) {
+          GbBagEntry tmp = bag->pockets[pocket].entries[sel];
+          bag->pockets[pocket].entries[sel] = bag->pockets[pocket].entries[g1_swap_src];
+          bag->pockets[pocket].entries[g1_swap_src] = tmp;
+        }
+        g1_swap_active = false;
+        g1bag_paint_list(gs, bag, pocket, top, sel);
+        gbscr_mark_all_dirty(gs);
+        continue;
+      }
       /* D3: A on the CANCEL row is the same "leave" path as B. */
       if (sel == l->count) { want_commit = true; break; }
       if (can_edit && l->count > 0) {
@@ -451,8 +512,14 @@ static bool pdna_gbbag_gen1_screen(GbScreen* gs, GbBag* bag, bool can_edit) {
     }
   }
 
-  gbscr_close(gs);
-  gb12_arena_tail_release();
+  /* D8 (review): gbscr_close()/gb12_arena_tail_release() are the CALLER's
+   * own (pdna_gbbag() below, ~gbscr_close(&gs) / ~gb12_arena_tail_release())
+   * -- this function used to call BOTH again here, so gb12_arena_tail_release()
+   * ran a second time before pdna_gbbag() ever read `bag` back for its own
+   * memcmp()/gbb_write() (bag points INTO the tail slice this just marked
+   * free for reuse). Nothing else claimed that slice in between on this
+   * screen's own call path, so it has not bitten yet -- but it is exactly
+   * the live stale-pointer trap the caller's own comment warns about. */
   return want_commit;
 }
 
@@ -463,27 +530,32 @@ void pdna_gbbag(GbSession* s, bool can_edit) {
   }
 
   /* GbBag lives in the arena tail slice, never a stack local (gb_bag.h's own
-   * rule, 562 B) -- ONE slice sized for the shell's own tile bank PLUS this
-   * bag, carved the same way U2c's own pic buffer is (gb12_arena_tail's "one
-   * slice at a time, carve your own sub-regions" contract). shell_need is a
-   * pure size computation (gbscr_tail_need never opens anything), so it is
-   * safe to take even on the fallback path -- the plain page needs the SAME
-   * `bag` pointer, just not the shell part of the slice. */
+   * rule, 562 B) -- ONE slice sized for the shell's own tile bank PLUS TWO
+   * GbBags (D10, review: the no-op snapshot `t0` used to be a 562 B stack
+   * local -- pdna_gbbag_gen1_screen() below is __attribute__((noinline)) and
+   * this function itself is not tiny either, so that stack local rode on
+   * top of everything else this call chain already uses; it now lives in
+   * the SAME arena slice as `bag`, right after it), carved the same way
+   * U2c's own pic buffer is (gb12_arena_tail's "one slice at a time, carve
+   * your own sub-regions" contract). shell_need is a pure size computation
+   * (gbscr_tail_need never opens anything), so it is safe to take even on
+   * the fallback path -- the plain page needs the SAME `bag` pointer, just
+   * not the shell part of the slice. */
   uint32_t shell_need = gbscr_tail_need(PDNA_GEN1, GBSCR_NEED_TEXTBOX);
-  uint32_t need = shell_need + (uint32_t)sizeof(GbBag);
+  uint32_t need = shell_need + 2u * (uint32_t)sizeof(GbBag);
   uint8_t* tail = gb12_arena_tail(need);
   if (!tail) {
     msg_wait("ITEM", UI_WARN, "Not enough memory right now.", 0);
     return;
   }
   GbBag* bag = (GbBag*)(tail + shell_need);
+  GbBag* t0  = (GbBag*)(tail + shell_need + sizeof(GbBag));
   if (!gbb_read(s, bag)) {
     gb12_arena_tail_release();
     msg_wait("ITEM", UI_WARN, "Could not read this save.", 0);
     return;
   }
-  GbBag t0;
-  memcpy(&t0, bag, sizeof t0);   /* the one-time no-op snapshot, same idiom
+  memcpy(t0, bag, sizeof *t0);   /* the one-time no-op snapshot, same idiom
                                   * pdna_gbtrainer()'s own t/t0 pair uses. */
 
   GbScreen gs;
@@ -505,7 +577,7 @@ void pdna_gbbag(GbSession* s, bool can_edit) {
    * releasing early here would be a live stale-pointer trap for the NEXT
    * change to this file, not a bug today -- keep the release last on purpose. */
   bool commit_ok = true;
-  if (want_commit && memcmp(bag, &t0, sizeof t0) != 0) {
+  if (want_commit && memcmp(bag, t0, sizeof *t0) != 0) {
     if (app_confirm("Save bag changes?", "Writes the item edits now.")) {
       GbsStatus st = gbb_write(s, bag);
       if (st != GBS_OK) {
