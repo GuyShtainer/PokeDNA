@@ -491,6 +491,8 @@ FRAME_LINE_RE = re.compile(r'^frame\s+(\S+)\s*=\s*(\d+)\b')
 # D1 (BACKLOG #84b fifth pass): two more declaration shapes, for the address-taken sweep.
 ISR_LINE_RE = re.compile(r'^isr\s+(\S+)$')
 ADDRTAKEN_OK_RE = re.compile(r'^addrtaken-ok\s+(\S+)$')
+# D4 (BACKLOG #84b sixth pass): a declared depth for a real recursive SCC.
+RECURSION_LINE_RE = re.compile(r'^recursion\s+(\S+)\s+depth=(\d+)$')
 
 
 def load_extra_edges(path):
@@ -540,15 +542,33 @@ def load_extra_edges(path):
         should carry a one-line reason in a trailing comment; the sweep still
         finds and reports these functions, they are just not fatal.
 
+      recursion fn depth=N
+        D4 (BACKLOG #84b sixth pass): `fn` sits in a real strongly-connected
+        component of the call graph (found by tarjan_sccs() over --root's reachable
+        set) -- the OLD walker silently truncated any such cycle to 0 B and
+        memoized that 0, so the printed total secretly depended on which function
+        happened to be visited FIRST (top_n_chains and deepest_from could disagree
+        by hundreds of bytes on the exact same ELF). This declares how many times
+        the component's OWN worst internal cycle can genuinely re-enter at runtime;
+        the guard charges N times the SUM OF EVERY FRAME IN THE COMPONENT (not just
+        the frames on one particular cycle through it) at the component's entry --
+        conservative on purpose, since which internal path is "the" worst one can
+        change as the code does. A reachable SCC with NO member declared here is a
+        FATAL: an undeclared cycle is not a bound this walker can vouch for. One
+        declaration per component is enough (any single member); declaring more
+        than one member of the same component must agree on N or that PAIR is
+        itself a FATAL (a real question -- which is right? -- not a silent pick).
+
     Multiple lines per caller/struct ACCUMULATE (pdna_box has eleven field lines).
     Returns (field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls,
-             addrtaken_ok):
+             addrtaken_ok, recursion_decls):
       field_decls      : {(struct, field): (offset, {impls})}
       argsite_decls     : {caller: (N, {impls})}
       whole_func_decls  : {caller: {impls}}
       frame_overrides   : {fn: bytes}
       isr_decls         : {fn, ...}
       addrtaken_ok      : {fn, ...}
+      recursion_decls    : {fn: depth}
     """
     field_decls = {}
     argsite_decls = {}
@@ -556,9 +576,10 @@ def load_extra_edges(path):
     frame_overrides = {}
     isr_decls = set()
     addrtaken_ok = set()
+    recursion_decls = {}
     if not path or not os.path.exists(path):
         return (field_decls, argsite_decls, whole_func_decls, frame_overrides,
-                isr_decls, addrtaken_ok)
+                isr_decls, addrtaken_ok, recursion_decls)
     with open(path) as f:
         for lineno, raw in enumerate(f, 1):
             line = raw.split('#', 1)[0].strip()
@@ -575,6 +596,15 @@ def load_extra_edges(path):
             aok = ADDRTAKEN_OK_RE.match(line)
             if aok:
                 addrtaken_ok.add(aok.group(1))
+                continue
+            rm = RECURSION_LINE_RE.match(line)
+            if rm:
+                fn, depth = rm.group(1), int(rm.group(2))
+                if fn in recursion_decls and recursion_decls[fn] != depth:
+                    raise ValueError(f"{path}:{lineno}: recursion {fn} declared twice "
+                                      f"with different depths ({recursion_decls[fn]} "
+                                      f"and {depth})")
+                recursion_decls[fn] = depth
                 continue
             if '->' not in line:
                 raise ValueError(f"{path}:{lineno}: unrecognized line: {raw!r}")
@@ -608,7 +638,7 @@ def load_extra_edges(path):
                 continue
             whole_func_decls[lhs].update(impls)
     return (field_decls, argsite_decls, dict(whole_func_decls), frame_overrides,
-            isr_decls, addrtaken_ok)
+            isr_decls, addrtaken_ok, recursion_decls)
 
 
 # === struct-field offsets, computed from the header (D1) ==============================
@@ -1187,17 +1217,50 @@ def frame_of(name, su_sizes, estimated, overrides=None):
     return 0, "unknown"
 
 
-def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None):
+def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None,
+                  scc_of=None):
     """Heaviest root..leaf chain by DFS with memoization; returns (total, path, cycles).
-    path is a list of (name, frame_bytes, source)."""
+    path is a list of (name, frame_bytes, source).
+
+    D4 (BACKLOG #84b sixth pass): `scc_of`, when given, is {node -> (charge_bytes,
+    members_frozenset)} for every node inside a REAL, DECLARED recursive SCC (built by
+    main() from tarjan_sccs() + stack_edges.txt's `recursion fn depth=N` lines --
+    charge_bytes = N * sum of every frame in the component). A node with a `scc_of`
+    entry is treated as an ATOMIC unit: go() charges the whole component's declared
+    bytes exactly once, walks ONLY the edges leaving the component (an edge to a
+    fellow member is absorbed into the charge, not walked -- walking it would just
+    re-enter the same component), and every member memoizes to the SAME total/exit
+    child, since which member happens to be entered first cannot change the
+    component's worst case. This replaces the old truncate-to-0-and-memoize behaviour,
+    which made the printed total secretly depend on DFS visitation order (the very
+    defect D4 exists to fix) -- with `scc_of=None` (every existing caller that never
+    passes it, and every test fixture without a real cycle) this function's behaviour
+    is untouched, onstack/cycles included, for backward compatibility."""
     memo = {}
     best_child = {}
     onstack = set()
     cycles = []
+    scc_of = scc_of or {}
 
     def go(fn):
         if fn in memo:
             return memo[fn]
+        comp = scc_of.get(fn)
+        if comp is not None:
+            charge, members = comp
+            bc, bn = 0, None
+            for m in members:
+                for c in sorted(edges.get(m, ())):
+                    if c in members or c in blacklist:
+                        continue          # internal edge: absorbed into `charge` already
+                    v = go(c)
+                    if v >= bc:
+                        bc, bn = v, c
+            total_here = charge + bc
+            for m in members:
+                memo[m] = total_here
+                best_child[m] = bn
+            return total_here
         if fn in onstack:
             cycles.append(fn)
             return 0
@@ -1225,7 +1288,18 @@ def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None)
     total = go(root)
     path = []
     cur = root
+    printed_scc = set()
     while cur is not None:
+        comp = scc_of.get(cur)
+        if comp is not None:
+            charge, members = comp
+            key = frozenset(members)
+            if key not in printed_scc:
+                printed_scc.add(key)
+                name = "{" + ",".join(sorted(members)) + "}"
+                path.append((name, charge, "recursion"))
+            cur = best_child.get(cur)
+            continue
         b, src = frame_of(cur, su_sizes, estimated, overrides)
         path.append((cur, b, src))
         cur = best_child.get(cur)
@@ -1256,7 +1330,7 @@ def reachable_from(root, edges):
 
 def check_ambiguous_declarations(dup_names, addr_unique_name, field_decls, argsite_decls,
                                   whole_func_decls, frame_overrides, isr_decls,
-                                  addrtaken_ok):
+                                  addrtaken_ok, recursion_decls=()):
     """D5b: any stack_edges.txt reference to a NAME the census found duplicated
     (`dup_names`, from read_symbol_census()) without its `@tu` qualifier is ambiguous
     -- it could silently resolve to whichever instance's node happens to exist under
@@ -1295,6 +1369,8 @@ def check_ambiguous_declarations(dup_names, addr_unique_name, field_decls, argsi
         check(fn, "isr")
     for fn in sorted(addrtaken_ok):
         check(fn, "addrtaken-ok")
+    for fn in sorted(recursion_decls):
+        check(fn, "recursion")
     return problems
 
 
@@ -1369,17 +1445,18 @@ def whole_graph_blind_spots(reachable, blind):
     return out
 
 
-def top_n_chains(root, edges, su_sizes, estimated, n=5, overrides=None):
+def top_n_chains(root, edges, su_sizes, estimated, n=5, overrides=None, scc_of=None):
     """Top-N distinct chains from root, ranked by root's direct callees' subtree
     weight (each callee's own heaviest chain, prefixed with root's frame)."""
     root_frame, root_src = frame_of(root, su_sizes, estimated, overrides)
     children = sorted(edges.get(root, ()),
                        key=lambda c: deepest_from(c, edges, su_sizes, estimated,
-                                                   overrides=overrides)[0],
+                                                   overrides=overrides, scc_of=scc_of)[0],
                        reverse=True)
     chains = []
     for c in children[:n]:
-        tot, path, cycles = deepest_from(c, edges, su_sizes, estimated, overrides=overrides)
+        tot, path, cycles = deepest_from(c, edges, su_sizes, estimated,
+                                          overrides=overrides, scc_of=scc_of)
         chains.append((root_frame + tot, [(root, root_frame, root_src)] + path, cycles))
     if not chains:
         chains = [(root_frame, [(root, root_frame, root_src)], [])]
@@ -1654,9 +1731,10 @@ def main(argv):
               file=sys.stderr)
         return 1
 
-    field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls, addrtaken_ok = (
+    (field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls,
+     addrtaken_ok, recursion_decls) = (
         load_extra_edges(args.edges_file) if args.edges_file
-        else ({}, {}, {}, {}, set(), set()))
+        else ({}, {}, {}, {}, set(), set(), {}))
 
     # D1 header-drift check: every declared Struct.field @OFFSET is checked against
     # the offset the struct's OWN header gives that field today, before anything
@@ -1676,7 +1754,7 @@ def main(argv):
     # ERROR listing the qualified candidates, never a silent pick of "whichever one".
     ambiguous = check_ambiguous_declarations(
         dup_names, addr_unique_name, field_decls, argsite_decls, whole_func_decls,
-        frame_overrides, isr_decls, addrtaken_ok)
+        frame_overrides, isr_decls, addrtaken_ok, recursion_decls)
     if ambiguous:
         print(f"*** stack_budget: {args.edges_file} references a duplicated static "
               "name without a '@tu' qualifier:", file=sys.stderr)
@@ -1731,8 +1809,47 @@ def main(argv):
             print(f"***   {fn}", file=sys.stderr)
         return 1
 
+    # D4 (BACKLOG #84b sixth pass): every REAL strongly-connected component reachable
+    # from --root must be declared -- the old walker truncated a cycle to 0 B and
+    # memoized that, which made the printed total secretly depend on which function a
+    # DFS happened to reach first (top_n_chains's root-children-first order could
+    # disagree with a plain deepest_from(root, ...) call by hundreds of bytes on the
+    # exact same ELF). An undeclared component is a FATAL naming it; a component whose
+    # declared members disagree on the depth is also a FATAL (a real question -- which
+    # one is right? -- not a silent pick of either).
+    real_sccs = tarjan_sccs(args.root, analysis["edges"])
+    scc_of = {}
+    recursion_problems = []
+    for comp in real_sccs:
+        declared = sorted({(m, recursion_decls[m]) for m in comp if m in recursion_decls})
+        depths = {d for _m, d in declared}
+        if not declared:
+            recursion_problems.append(
+                f"{{{', '.join(sorted(comp))}}}: no member has a `recursion fn "
+                "depth=N` declaration in " + args.edges_file)
+            continue
+        if len(depths) > 1:
+            recursion_problems.append(
+                f"{{{', '.join(sorted(comp))}}}: declared members disagree on depth: "
+                + ", ".join(f"{m} depth={d}" for m, d in declared))
+            continue
+        depth = depths.pop()
+        charge = depth * sum(frame_of(m, su_sizes, estimated, frame_overrides)[0]
+                              for m in comp)
+        fs = frozenset(comp)
+        for m in comp:
+            scc_of[m] = (charge, fs)
+    if recursion_problems:
+        print("\n*** STACK_BUDGET UNDECLARED RECURSION: a static walk cannot bound an "
+              "undeclared recursive chain -- every real cycle reachable from "
+              f"{args.root}() needs a `recursion fn depth=N` line in {args.edges_file}:",
+              file=sys.stderr)
+        for p in recursion_problems:
+            print(f"***   {p}", file=sys.stderr)
+        return 1
+
     chains = top_n_chains(args.root, analysis["edges"], su_sizes, estimated,
-                           n=args.top, overrides=frame_overrides)
+                           n=args.top, overrides=frame_overrides, scc_of=scc_of)
     deepest_total, deepest_path, cycles = chains[0][0], chains[0][1], chains[0][2]
 
     # STOP-LICENCE check (D4, BACKLOG #84b fourth pass): any indirect-call site inside
@@ -1796,7 +1913,8 @@ def main(argv):
               + ("  (+64 B ISR = the guarded value below)" if i == 1 else ""))
         for name, b, src in path:
             tag = {"su": "", "estimated": " (estimated)", "unknown": " (UNKNOWN, counted 0)",
-                   "override": " (frame override, hand-measured)"}[src]
+                   "override": " (frame override, hand-measured)",
+                   "recursion": " (declared recursion, charged once)"}[src]
             print(f"      {b:6,d}  {name}{tag}")
         if cyc:
             print(f"      WARNING: recursion excluded at: {cyc}")
@@ -1851,7 +1969,8 @@ def main(argv):
                   f"such function exists in {args.elf}'s disassembly", file=sys.stderr)
             return 1
         h_total, _h_path, _h_cyc = deepest_from(handler, analysis["edges"], su_sizes,
-                                                 estimated, overrides=frame_overrides)
+                                                 estimated, overrides=frame_overrides,
+                                                 scc_of=scc_of)
         isr_chain_details.append((handler, h_total))
         isr_allowance += 8 + h_total
     if isr_allowance > ISR_BYTES:

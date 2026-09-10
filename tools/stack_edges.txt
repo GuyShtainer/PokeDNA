@@ -511,6 +511,49 @@ _svfiprintf_r -> __utf8_mbtowc
 isr hb_isr
 isr pwm_isr
 
+# D4 (BACKLOG #84b sixth pass): every REAL strongly-connected component the guard's
+# `--sccs` flag finds reachable from main() must be declared here with a depth, or the
+# build is FATAL (an undeclared cycle used to silently truncate to 0 B and memoize
+# that, which made the printed total secretly depend on DFS visitation order).
+#
+# recursion tte_write depth=2
+#   libtonc's TTE #{...} escape-command parser (tonc_tte.h; no .c source shipped in
+#   this devkitPro install to grep directly, so this is read from the disassembly's
+#   own call edges, confirmed live: tte_write's callee set includes tte_cmd_default
+#   AND tte_write itself; tte_cmd_default's includes tte_write). This project's own
+#   tte_write() call sites (grep `tte_write(`) never pass a string containing a SECOND
+#   `#{...}` escape inside the command text of a first one -- one level of nesting is
+#   the deepest this codebase's own strings can reach, so depth=2 (root call + one
+#   re-entry) is the honest bound for what this code actually does, not an arbitrary
+#   safety pad. If a future string nests two commands deep, this depth is the thing to
+#   raise, and re-derive it from the actual string, not guess.
+recursion tte_write depth=2
+
+# recursion gb_persist depth=1
+#   NOT real per-execution recursion -- read the actual callees (BACKLOG #84b sixth
+#   pass, D5b/D4 investigation): gb_move_hook calls gb_persist (pdna_gen12.c:1286) and
+#   gb_move_hook calls gbs_move (pdna_gen12.c:1252); gb_persist calls gb_census
+#   (pdna_gen12.c:1819/1886), which calls gb_list_read (pdna_gen12.c:328). Nothing in
+#   that real call chain ever calls back into gb_move_hook. The apparent cycle-closing
+#   edges (gb_list_read/refresh_checksums/write_patch.part.0 -> gb_move_hook) are a
+#   PRE-EXISTING, SEPARATE bug in resolve_all_sites(): field_offset_impls is keyed by
+#   bare numeric OFFSET across every declared struct, so G2Writer.wr @4 (img_wr, see
+#   below) and AppSrcOps.move @4 (gb_move_hook, see the AppSrcOps block below) collide
+#   on offset 4 and get UNIONED -- any indirect site the walker resolves to offset 4,
+#   regardless of which struct it actually dispatches through, is credited with BOTH
+#   implementation lists. That is a design property of this file's field-offset
+#   matching (documented above: "matched to a class by the offset ... not by which
+#   function they sit in"), not something this pass changes.
+#   Declared conservatively anyway, rather than "fixed" by narrowing the offset match
+#   (which risks the unsafe direction -- silently DROPPING a real edge -- for a
+#   change outside this pass's brief): depth=1 x (sum of every frame in the
+#   component) is a valid, safe upper bound for a strongly-connected set entered any
+#   number of times, real or not -- visiting every member once, in the worst real
+#   order, can never exceed that sum. If resolve_all_sites() is ever taught to key
+#   field declarations by struct as well as offset, re-run `--sccs`; this component
+#   should disappear on its own and this line can be deleted.
+recursion gb_persist depth=1
+
 # D1 (BACKLOG #84b fifth pass) address-taken sweep triage, batch 1: devkitARM/newlib
 # CRT and compiler-runtime symbols. Their addresses are taken by the toolchain's own
 # startup/relocation/exception machinery (crt0, .init_array/.fini_array, the compiler's

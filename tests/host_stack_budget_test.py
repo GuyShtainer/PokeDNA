@@ -430,7 +430,7 @@ def test_d_load_extra_edges_parses_frame_override():
         path = f.name
     try:
         field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls, \
-            addrtaken_ok = sb.load_extra_edges(path)
+            addrtaken_ok, _recursion_decls = sb.load_extra_edges(path)
         check("(d) frame override line parsed", frame_overrides == {"leaf": 40},
               frame_overrides)
         check("(d) field-offset line parsed alongside it",
@@ -455,7 +455,7 @@ def test_d6_argsites_accepts_a_dotted_gcc_clone_name():
         path = f.name
     try:
         field_decls, argsite_decls, whole_func_decls, frame_overrides, isr_decls, \
-            addrtaken_ok = sb.load_extra_edges(path)
+            addrtaken_ok, _recursion_decls = sb.load_extra_edges(path)
         check("(D6) dotted caller name parsed into argsite_decls, not swallowed whole",
               argsite_decls == {"draw_wallpaper.constprop.0": (3, {"impl_a", "impl_b"})},
               argsite_decls)
@@ -519,7 +519,7 @@ def test_d1_load_extra_edges_parses_isr_and_addrtaken_ok():
         f.write("addrtaken-ok some_table_entry  # compiler-generated, never called\n")
         path = f.name
     try:
-        _fd, _ad, _wd, _fo, isr_decls, addrtaken_ok = sb.load_extra_edges(path)
+        _fd, _ad, _wd, _fo, isr_decls, addrtaken_ok, _rd = sb.load_extra_edges(path)
         check("(D1) isr lines parsed", isr_decls == {"hb_isr", "pwm_isr"}, isr_decls)
         check("(D1) addrtaken-ok line parsed", addrtaken_ok == {"some_table_entry"},
               addrtaken_ok)
@@ -806,6 +806,72 @@ def test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged():
           total == 520, total)
 
 
+def test_d4_scc_declared_depth_multiplies_and_is_entry_independent():
+    """D4 (BACKLOG #84b sixth pass): a real 2-node cycle a<->b, each with its own
+    frame, reached from `root`, with an external continuation `tail` past the cycle.
+    `scc_of` (as main() would build it from a `recursion a depth=N` declaration) must
+    charge N * (frame(a)+frame(b)) exactly once at the cycle's entry, then continue
+    into `tail` -- and the total must be the SAME whether the DFS happens to enter the
+    cycle via `a` or via `b` (the exact bug D4 exists to fix: the old code memoized
+    whichever node the DFS reached FIRST, so the reported total secretly depended on
+    edge-iteration order)."""
+    su_sizes = {"root": 10, "a": 20, "b": 30, "tail": 5}
+    estimated = {}
+    edges_ab = {"root": {"a"}, "a": {"b", "tail"}, "b": {"a"}, "tail": set()}
+    edges_ba = {"root": {"b"}, "b": {"a", "tail"}, "a": {"b"}, "tail": set()}
+    charge = 3 * (20 + 30)   # depth=3 * sum of every frame in the component
+    fs = frozenset({"a", "b"})
+    scc_of = {"a": (charge, fs), "b": (charge, fs)}
+
+    total_ab, path_ab, cyc_ab = sb.deepest_from("root", edges_ab, su_sizes, estimated,
+                                                 scc_of=scc_of)
+    total_ba, path_ba, cyc_ba = sb.deepest_from("root", edges_ba, su_sizes, estimated,
+                                                 scc_of=scc_of)
+    want = 10 + charge + 5   # root's own frame + the declared SCC charge + tail
+    check("(D4) declared depth multiplies the component's summed frames",
+          total_ab == want, total_ab)
+    check("(D4) the total does not depend on which member the DFS enters first "
+          "(entering via a vs via b)", total_ab == total_ba, (total_ab, total_ba))
+    check("(D4) no cycle is reported once the SCC is declared (scc_of absorbs it)",
+          cyc_ab == [] and cyc_ba == [], (cyc_ab, cyc_ba))
+    scc_names = [name for name, _b, src in path_ab if src == "recursion"]
+    check("(D4) the SCC prints as one atomic path entry, not expanded member-by-member",
+          scc_names == ["{a,b}"], scc_names)
+    scc_bytes = [b for _n, b, src in path_ab if src == "recursion"][0]
+    check("(D4) the printed SCC entry carries the declared charge, not a per-member frame",
+          scc_bytes == charge, scc_bytes)
+
+
+def test_d4_undeclared_scc_is_fatal_declared_disagreement_is_fatal():
+    """D4: main()'s own FATAL logic (reproduced here at the unit level, since main()
+    itself needs a real ELF) -- an SCC with NO declared member must be refused, and an
+    SCC whose declared members disagree on depth must also be refused (never a silent
+    pick of either)."""
+    edges = {"root": {"a"}, "a": {"b"}, "b": {"a"}}
+    comp = ["a", "b"]
+
+    # Fixture 1: nobody declared -- matches main()'s `if not declared:` branch.
+    recursion_decls = {}
+    declared = sorted({(m, recursion_decls[m]) for m in comp if m in recursion_decls})
+    check("(D4) an undeclared 2-node cycle has no declared member (main() would FATAL)",
+          declared == [], declared)
+
+    # Fixture 2: a and b disagree on depth -- matches main()'s `if len(depths) > 1:`
+    # branch.
+    recursion_decls = {"a": 2, "b": 3}
+    declared2 = sorted({(m, recursion_decls[m]) for m in comp if m in recursion_decls})
+    depths2 = {d for _m, d in declared2}
+    check("(D4) disagreeing declared depths on the same component are detected",
+          len(depths2) > 1, depths2)
+
+    # Fixture 3: both agree -- clean, main() would proceed with depth=2.
+    recursion_decls = {"a": 2, "b": 2}
+    declared3 = sorted({(m, recursion_decls[m]) for m in comp if m in recursion_decls})
+    depths3 = {d for _m, d in declared3}
+    check("(D4) agreeing declared depths on the same component resolve cleanly",
+          depths3 == {2}, depths3)
+
+
 def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
@@ -829,6 +895,8 @@ def main():
     test_d2_read_build_dir_stamp_absent_symbol_returns_none()
     test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain()
     test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged()
+    test_d4_scc_declared_depth_multiplies_and_is_entry_independent()
+    test_d4_undeclared_scc_is_fatal_declared_disagreement_is_fatal()
     test_boxsource_offsets_match_real_header()
     print()
     if FAILURES:
