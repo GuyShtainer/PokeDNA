@@ -615,10 +615,13 @@ static const uint16_t* gb_art_icon_cb(void* ctx, uint8_t gen, uint16_t dex,
  * plus the mprec assert leg (_svfprintf_r/_dtoa_r/_malloc_r were all present in the linked
  * ELF). Switching those four to sniprintf/vsniprintf removed _svfprintf_r and _dtoa_r
  * entirely (0 hits in `nm`) -- the float/mprec path and its ~11 KB worst-case chain are
- * gone. _malloc_r is STILL reachable, though: newlib's OWN s*printf-family glue
- * (_svfiprintf_r's one-time __sfp() FILE-slot allocation) mallocs regardless of the
- * integer/float variant, so "0 malloc sites" remains not quite true -- it is a small,
- * one-time init allocation now, not a per-call stack-heavy float-conversion chain. A
+ * gone. _malloc_r is still LINKED but is NOT reachable (review #84a, 2026-09-10, reverse
+ * call graph over the whole ELF): _svfiprintf_r's two _malloc_r sites are guarded by __SMBF
+ * (asprintf-grown buffers) and by the %ls/%lc wide-char conversion, and __ssputs_r's by
+ * __SOPT|__SMBF -- none of which an sniprintf/vsniprintf stack FILE ever sets; __sfp is
+ * called by nobody. The heap is therefore genuinely empty and this subtraction exact. The
+ * ONE thing that would break it: a %ls/%lc (or a %f/%g/%e, which relinks the float chain)
+ * in any log_line/sniprintf format string -- grep for those before trusting this. A
  * future malloc, ff_memalloc, or a %f-capable printf reintroducing the float chain would
  * still silently eat the ~550 B of slack between the 6,144-B need and the measured
  * 5,592-B fetch subtree. Re-measure with the call-graph tool if either ever appears.

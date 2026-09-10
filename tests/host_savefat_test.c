@@ -311,7 +311,8 @@ static void t_rolling_keeps_the_verified_copy(void) {
    * pattern as t_rename_hole_sweep above -- a hardcoded bound here (previously 300) is
    * exactly the kind of number that silently stops covering the rescue position once
    * savefile.c's own I/O chunk size changes the write-op count (BACKLOG #84a S1: halving
-   * s_cmp/bufb 2048 -> 1024 raised this call's sector-write count ~332 -> ~396). */
+   * s_cmp/bufb 2048 -> 1024 raised this call's sector-write count 290 -> 312, measured on
+   * this test's own fresh_card(4096) with a prior .bak; review #84a). */
   fresh_card(4096);
   CHECK(write_raw(SAV, s_old, SAVE_BYTES), "keep: calibration setup");
   CHECK(write_raw(BAK, s_old, SAVE_BYTES), "keep: calibration prior backup");

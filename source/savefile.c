@@ -13,7 +13,8 @@
  * so copy_file keeps hitting disk_write's DIRECT path instead of the bounce buffer.
  * (BACKLOG #84a S1, 2026-09-10: halved 2048 -> 1024 to help fund moving files_equal's/
  * copy_file's FIL handles off the IWRAM stack; still well above the 512-B DIRECT floor.) */
-static uint8_t EWRAM_BSS s_cmp[1024];
+static uint8_t EWRAM_BSS __attribute__((aligned(4))) s_cmp[1024];   /* review #84a P2: diskio_write.c's DIRECT path needs 4-byte alignment; enforce it, do not rely on GCC's size heuristic */
+_Static_assert(sizeof(s_cmp) >= SF_STREAM_CHUNK_MAX, "s_cmp shrank below SF_STREAM_CHUNK_MAX");
 
 /* BACKLOG #84a S1: files_equal and copy_file each kept TWO FatFs FIL structs
  * (sizeof(FIL) ~= 600 with FF_FS_TINY 0) on the IWRAM stack -- 1,232 B / 1,224 B frames
@@ -71,7 +72,7 @@ static SfStatus files_equal(const char* a, const char* b, bool* equal) {
   if (f_open(fa, a, FA_READ) != FR_OK) { SF_FIL_RELEASE(); return SF_ERR_OPEN; }
   if (f_open(fb, b, FA_READ) != FR_OK) { f_close(fa); SF_FIL_RELEASE(); return SF_ERR_OPEN; }
 
-  static uint8_t EWRAM_BSS bufb[1024];   /* see the note on s_cmp */
+  static uint8_t EWRAM_BSS __attribute__((aligned(4))) bufb[1024];   /* see the note on s_cmp */
   SfStatus st = SF_OK;
   bool same = true;
   if (f_size(fa) != f_size(fb)) same = false;
