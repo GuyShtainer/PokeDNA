@@ -470,6 +470,166 @@ static void t_small_file_like_config(void) {
   (void)saw_ok;
 }
 
+/* The static FIL latch s_fil_busy must release on every fault path, otherwise the next
+ * sf_copy (or sf_backup or sf_backup_rolling) that tries to use s_fil will hit
+ * SF_ERR_LAYOUT instead of proceeding. This test sweeps faults across sf_backup,
+ * sf_backup_rolling, and sf_copy, clearing all knobs after each fault, and verifies that
+ * a fresh_card + subsequent sf_copy always succeeds. A stuck latch shows up as
+ * SF_ERR_LAYOUT. */
+static void t_latch_never_sticks(void) {
+  char bak[SF_PATH_MAX];
+  fill(s_old, SAVE_BYTES, 13);
+
+  /* Test 1: sf_backup with various faults */
+  {
+    /* rd_protect: card is write-protected */
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: backup setup (protect)");
+    rd_protect = 1;
+    sf_backup(SAV, bak, sizeof bak);
+    rd_protect = 0;
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: recreate SAV after protect");
+    CHECK(sf_copy(SAV, "/PokeDNA/probe.sav") == SF_OK, "latch: after backup+protect");
+
+    /* rd_fail_all_writes: all writes fail */
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: backup setup (fail_all)");
+    rd_fail_all_writes = 1;
+    sf_backup(SAV, bak, sizeof bak);
+    rd_fail_all_writes = 0;
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: recreate SAV after fail_all");
+    CHECK(sf_copy(SAV, "/PokeDNA/probe.sav") == SF_OK, "latch: after backup+fail_all");
+
+    /* missing source file */
+    fresh_card(4096);
+    sf_backup("/PokeDNA/nonexistent.sav", bak, sizeof bak);
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: recreate SAV after missing");
+    CHECK(sf_copy(SAV, "/PokeDNA/probe.sav") == SF_OK, "latch: after backup+missing");
+
+    /* full card (skip - setup itself would fail to write the save) */
+  }
+
+  /* Test 2: sf_backup_rolling with various faults */
+  {
+    /* rd_protect: card is write-protected */
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: rolling setup (protect)");
+    rd_protect = 1;
+    bak[0] = 0;
+    sf_backup_rolling(SAV, bak, sizeof bak);
+    rd_protect = 0;
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: recreate SAV after rolling+protect");
+    CHECK(sf_copy(SAV, "/PokeDNA/probe.sav") == SF_OK, "latch: after rolling+protect");
+
+    /* rd_fail_all_writes: all writes fail */
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: rolling setup (fail_all)");
+    rd_fail_all_writes = 1;
+    bak[0] = 0;
+    sf_backup_rolling(SAV, bak, sizeof bak);
+    rd_fail_all_writes = 0;
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: recreate SAV after rolling+fail_all");
+    CHECK(sf_copy(SAV, "/PokeDNA/probe.sav") == SF_OK, "latch: after rolling+fail_all");
+
+    /* missing source file */
+    fresh_card(4096);
+    bak[0] = 0;
+    sf_backup_rolling("/PokeDNA/nonexistent.sav", bak, sizeof bak);
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: recreate SAV after rolling+missing");
+    CHECK(sf_copy(SAV, "/PokeDNA/probe.sav") == SF_OK, "latch: after rolling+missing");
+
+    /* full card (skip - setup itself would fail to write the save) */
+  }
+
+  /* Test 3: sf_copy with various faults */
+  {
+    /* rd_protect: card is write-protected */
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: copy setup (protect)");
+    rd_protect = 1;
+    sf_copy(SAV, "/PokeDNA/copy.sav");
+    rd_protect = 0;
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: recreate SAV after copy+protect");
+    CHECK(sf_copy(SAV, "/PokeDNA/probe.sav") == SF_OK, "latch: after copy+protect");
+
+    /* rd_fail_all_writes: all writes fail */
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: copy setup (fail_all)");
+    rd_fail_all_writes = 1;
+    sf_copy(SAV, "/PokeDNA/copy.sav");
+    rd_fail_all_writes = 0;
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: recreate SAV after copy+fail_all");
+    CHECK(sf_copy(SAV, "/PokeDNA/probe.sav") == SF_OK, "latch: after copy+fail_all");
+
+    /* missing source file */
+    fresh_card(4096);
+    sf_copy("/PokeDNA/nonexistent.sav", "/PokeDNA/copy.sav");
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "latch: recreate SAV after copy+missing");
+    CHECK(sf_copy(SAV, "/PokeDNA/probe.sav") == SF_OK, "latch: after copy+missing");
+
+    /* full card (skip - setup itself would fail to write the save) */
+  }
+}
+
+/* sf_copy must round-trip files of various sizes: 0 bytes, 1 byte, partial cluster
+ * boundaries, and full 128 KiB. Each file is copied and compared byte-for-byte. */
+static void t_odd_sizes(void) {
+  static const unsigned sizes[] = {
+    0, 1, 513, 1023, 1024, 1025, 1537, 32769, 131072
+  };
+  int i;
+
+  for (i = 0; i < (int)(sizeof sizes / sizeof sizes[0]); i++) {
+    unsigned n = sizes[i];
+    fresh_card(4096);
+    if (n > 0) {
+      fill(s_old, n, (unsigned)(100 + i));
+      CHECK(write_raw(SAV, s_old, n), "odd_sizes[%u]: setup", n);
+    } else {
+      /* Create a zero-byte file explicitly */
+      FIL f;
+      CHECK(f_open(&f, SAV, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK, "odd_sizes[%u]: open", n);
+      CHECK(f_close(&f) == FR_OK, "odd_sizes[%u]: close", n);
+    }
+    CHECK(sf_copy(SAV, "/PokeDNA/copy.sav") == SF_OK, "odd_sizes[%u]: copy failed", n);
+    remount();
+    CHECK(holds("/PokeDNA/copy.sav", s_old, n), "odd_sizes[%u]: copy does not match", n);
+  }
+}
+
+/* sf_copy's verify pass must catch a single-byte difference at any position. Plant a
+ * destination file that differs in exactly one byte, set rd_lie_after = 0 (the verify
+ * pass must re-read), and verify that sf_copy rejects it. */
+static void t_one_byte_differs(void) {
+  static const unsigned offsets[] = {1023, 1536, 130000, 131071};  /* 131071 is last valid index */
+  int i;
+
+  fill(s_old, SAVE_BYTES, 14);
+
+  for (i = 0; i < (int)(sizeof offsets / sizeof offsets[0]); i++) {
+    unsigned offset = offsets[i];
+    memcpy(s_new, s_old, SAVE_BYTES);
+    s_new[offset] ^= 0xFF;  /* flip all bits at that byte */
+
+    fresh_card(4096);
+    CHECK(write_raw(SAV, s_old, SAVE_BYTES), "one_byte k=%u: setup good", offset);
+    CHECK(write_raw("/PokeDNA/copy.sav", s_new, SAVE_BYTES), "one_byte k=%u: setup corrupt dest", offset);
+    rd_lie_after = 0;  /* force the verify pass to re-read */
+    SfStatus st = sf_copy(SAV, "/PokeDNA/copy.sav");
+    rd_lie_after = -1;
+    CHECK(st != SF_OK, "one_byte k=%u: sf_copy reported success on a corrupt destination", offset);
+  }
+}
+
 int main(void) {
   t_happy_path();
   t_small_file_like_config();
@@ -480,6 +640,9 @@ int main(void) {
   t_rolling_keeps_the_verified_copy();
   t_open_failure_keeps_the_tmp();
   t_full_card();
+  t_latch_never_sticks();
+  t_odd_sizes();
+  t_one_byte_differs();
   f_mount(0, "", 0);
   rd_free();
   if (fails) { printf("host_savefat_test: %d FAILURE(S)\n", fails); return 1; }
