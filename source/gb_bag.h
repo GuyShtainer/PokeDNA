@@ -134,7 +134,11 @@ uint8_t gbb_max_item_id(GbGame game);
  * "cannot be tossed/sold" status are both visible from ordinary play and
  * documented on public wikis), written here from that public knowledge --
  * never copied from any decomp/ROM data file. HM01-HM05 (0xC4-0xC8) are
- * always key items in both games; the rest is the fixed id set below.
+ * always key items in both games, and so are the eight badges (21..28); the
+ * rest is the id list in gb_bag.c -- KNOWN INCOMPLETE: a cart sweep (U4
+ * review N2, 2026-09-10) added SAFARI BALL 8, POKeDEX 9, the badges and the
+ * two unused slots 7/44; the unused id block 81..195 was never swept, so
+ * only the ROM-located bit table (BACKLOG) can make this exact.
  * Gen 2 has its own separate Key-items POCKET (GBB_POCKET_KEY) that needs no
  * such classification -- this function is Gen-1 (Red/Blue/Yellow) only. */
 bool gbb_is_g1_key_item(uint8_t id);
