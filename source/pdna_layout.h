@@ -48,6 +48,7 @@
   X(NV_BATTLEREC,  "Records")                   \
   X(NV_FRONTIER,   "Frontier")                  \
   X(NV_FLY,        "Fly")                       \
+  X(NV_CONTEST,    "Contests")                  \
   /* Present in the emulator build too: when a Pokemon ROM has been fused into this   */ \
   /* image (tools/fuse_rom.py) the map reads it from cartridge space, no SD needed.   */ \
   X(NV_MAP,        "Map")                       \
@@ -489,6 +490,12 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_EDIT_LBL_W     (PDNA_EDIT_VAL_X - PDNA_EDIT_LBL_X)
 #define PDNA_EDIT_MAXPP_LBL(n)  "Max PP " #n
 #define PDNA_EDIT_REGION_LBL    "Region"
+/* Contest ribbon rank rows (BACKLOG #60) — the longest labels the field list has: */
+#define PDNA_EDIT_RIB_COOL_LBL   "Cool Ribbon"
+#define PDNA_EDIT_RIB_BEAUTY_LBL "Beauty Ribbon"
+#define PDNA_EDIT_RIB_CUTE_LBL   "Cute Ribbon"
+#define PDNA_EDIT_RIB_SMART_LBL  "Smart Ribbon"
+#define PDNA_EDIT_RIB_TOUGH_LBL  "Tough Ribbon"
 /* "35  Ups 3": the derived maximum, then the PP-Up count that bought it. */
 #define PDNA_EDIT_MAXPP_FMT     "%u  Ups %u"
 #define PDNA_EDIT_FOOT          "L/R+- A:pick B:exit ST:save"

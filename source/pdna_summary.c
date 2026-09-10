@@ -17,6 +17,7 @@
 #include "ui.h"
 #include "gen3_mon.h"
 #include "gen3_edit.h"
+#include "gen3_contest.h"  /* gc_ribbon_get — the RIBBONS card (BACKLOG #60)        */
 #include "gen3_places.h"   /* g3_region_of / g3_region_name for the Region row */
 #include "gen3_box.h"      /* pk_resolve */
 #include "data_tables.h"
@@ -33,7 +34,7 @@
 #include "gen3_ivroll.h"  /* the IV reroll: one shared roller, an undo/redo list */
 #include "pdna_layout.h"  /* the reroll row's geometry + every string it draws */
 
-#define NCARDS 8
+#define NCARDS 9   /* +1: RIBBONS card (BACKLOG #60) */
 
 /* Summary portrait animation (the Emerald entrance/idle wiggle). Compiled in, but
  * gated at runtime on the ANIM_SUMMARY toggle (Settings > Animations > Summary),
@@ -606,6 +607,26 @@ static void card_condition(const PkMon* p) {
   ui_text(x, y, UI_DIM, "Sheen: blocks fed");   /* 17 cols; the full phrase wrapped onto the portrait */
 }
 
+/* CONTEST RIBBON card (BACKLOG #60) — the highest rank WON per category so far, distinct
+ * from card_condition's raw condition STATS above (what it enters a contest WITH). Same
+ * editable-row shape as card_condition; the value is the rank NAME (RIB_RANK_NAME,
+ * pdna_edit.c) since the range is only 0..4 — a numeric "3" would need a legend anyway. */
+static void card_ribbons(const PkMon* p) {
+  static const char* const CTL[5] = { "Cool", "Beauty", "Cute", "Smart", "Tough" };
+  static const char* const RN[5]  = { "None", "Normal", "Super", "Hyper", "Master" };
+  int x = 98, y = 14; char b[16];
+  ui_text(x, y, C_HDR, "RIBBONS"); y += 12;
+  for (int i = 0; i < 5; i++) {
+    int v = gc_ribbon_get(p->ribbons, i);
+    reg(F_RIB0 + i, x, y, 138);
+    ui_text(x, y, C_KEY, CTL[i]);
+    siprintf(b, "%s", RN[v]); ui_text(x + 60, y, v ? C_VAL : UI_DIM, b);
+    y += 12;
+  }
+  y += 4;
+  ui_text(x, y, UI_DIM, "A: none<->Master");
+}
+
 /* ---- the WHOLE CARD, made conditional -- and its selection frame, made movable -----
  *
  * THE BUG (Guy, 2026-08-23): "the scroll is still very slow, and when editing the numbers
@@ -779,6 +800,7 @@ static bool render_card(const PkMon* p, int card) {
     case 5: card_moves(p, true);   break;
     case 6: card_origin(p);        break;
     case 7: card_condition(p);     break;
+    case 8: card_ribbons(p);       break;
   }
   return dl_ran;
 }
