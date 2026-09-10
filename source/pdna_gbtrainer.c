@@ -759,6 +759,14 @@ enum {
   G2X_NOTCH = 0, G2X_DIVFILL = 1, G2X_DIVCAP = 2, G2X_ID = 3, G2X_NO = 4,
   G2X_STATUS0 = 5, G2X_COLON = 10
 };
+/* The card lists the 8 leaders in GYM order (row-major k=0..7), but the
+ * badge byte's bits are in BADGE order (Zephyr..Rising, which does not match
+ * gym order for the last four gyms) -- Storm Badge is bit 5 and lights the
+ * 5th face (Chuck, k=4), Mineral Badge is bit 4 and lights the 6th face
+ * (Jasmine, k=5). Confirmed against the real cart with Gold_bit4.sav (6th
+ * face lit) and Gold_bit5.sav (5th face lit). Index by face k to get the
+ * real badge bit. */
+static const uint8_t kG2BadgeBit[8] = { 0, 1, 2, 3, 5, 4, 6, 7 };
 /* LEADERS-block-relative index where the "BADGES" word graphic starts
  * (page 2 row 8) -- 8 faces * 10 tiles = 80, LEADERS' own declared size is
  * 86 (80 + 6 word tiles, 5 used) -- confirmed correct by the same shot. */
@@ -864,8 +872,8 @@ static void g2card_paint_page2(GbScreen* gs, const GbTrainer* t) {
     /* U3 accepted deviation (see file comment): a STATIC 2x2 BADGES overlay
      * over the face's centre when owned -- the real game animates this as an
      * OAM sprite instead. */
-    if (gbtr_badge_get(t, false, k)) {
-      int base2 = 4 * k;
+    if (gbtr_badge_get(t, false, kG2BadgeBit[k])) {
+      int base2 = 4 * kG2BadgeBit[k];
       for (int dy = 0; dy < 2; dy++)
         for (int dx = 0; dx < 2; dx++)
           gbscr_cell(gs, c0 + 1 + dx, y0 + 1 + dy, GBSCR_SRC_BADGES, (uint8_t)(base2 + dy * 2 + dx));
@@ -896,7 +904,7 @@ static void g2card_edit_sel(GbTrainer* t, int page, int sel) {
       default:        gbtr_edit_row(t, false, GBTR_TIME);  break;
     }
   } else {
-    gbtr_badge_toggle(t, false, sel);
+    gbtr_badge_toggle(t, false, kG2BadgeBit[sel]);
   }
 }
 
