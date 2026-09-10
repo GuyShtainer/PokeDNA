@@ -507,8 +507,15 @@ FIELDS = [
       "GS": D("player_data_1", "wStartMinute", 0x2046), "CRYSTAL": D("player_data", "wStartMinute", 0x2046)}),
   ("RTC_START_SECOND", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("player_data_1", "wStartSecond", 0x2047), "CRYSTAL": D("player_data", "wStartSecond", 0x2047)}),
+  # P1a review D11 (view-only, LOW): wRTC is NOT the same width on both games. GS's own
+  # .sym shows wRTC (4 B, d1e0-d1e3) followed by four SEPARATE wDSTBackupDay/Hours/
+  # Minutes/Seconds bytes (d1e4-d1e7) before wDST proper at d1e8 -- wRTC itself is 4 B.
+  # Crystal's .sym has no such separately-named backup quartet: wRTC (d4ba) runs
+  # straight to wDST (d4c2) with nothing named in between, so Crystal's wRTC field is
+  # genuinely 8 B (folds what GS keeps as four separate bytes into the same span).
   ("RTC_SNAPSHOT", BYTES, 4, {"RED": ABSENT, "YELLOW": ABSENT,
-      "GS": D("player_data_1", "wRTC", 0x2048), "CRYSTAL": D("player_data", "wRTC", 0x2048)}),
+      "GS": D("player_data_1", "wRTC", 0x2048, size=4),
+      "CRYSTAL": D("player_data", "wRTC", 0x2048, size=8)}),
   ("RTC_DST", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("player_data_1", "wDST", 0x2050), "CRYSTAL": D("player_data", "wDST", 0x2050)}),
   # P1a review D6: Gen 2 is NOT hour-uncapped the way gb_trainer.h used to claim --

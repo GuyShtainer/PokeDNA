@@ -55,7 +55,14 @@ bool gbc_read(const GbSession* s, GbClock* out) {
 
   uint32_t soff = gbf_off(g, GBF_RTC_SNAPSHOT);
   uint16_t slen = gbf_len(g, GBF_RTC_SNAPSHOT);
-  if (soff && slen == 4) {
+  /* P1a review D11: GBF_RTC_SNAPSHOT is 4 B on GS but 8 B on Crystal (tools/
+   * gen_gbfields.py's own citation -- Crystal's wRTC runs straight into wDST with no
+   * separately-named backup quartet the way GS has). This struct's own rtc_snapshot[4]
+   * only ever wants the leading 4 bytes (the actual RTC day/hour/min/sec snapshot,
+   * identical on both games) regardless of how wide the field itself is, so `>= 4`,
+   * not `== 4`, keeps Crystal's (now correctly wider) field from silently reading as
+   * all zeros here. */
+  if (soff && slen >= 4) {
     GbSession* ncs = (GbSession*)(const void*)s;
     gbs_read_field(ncs, soff, out->rtc_snapshot, 4);   /* leaves zeros on failure */
   }
