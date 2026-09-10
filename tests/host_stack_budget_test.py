@@ -465,6 +465,50 @@ def test_d6_argsites_accepts_a_dotted_gcc_clone_name():
         os.unlink(path)
 
 
+# === (D7, fifth pass) pop {reglist} redefines every register it loads ===================
+
+def test_d7_pop_redefines_its_register_list():
+    """The reviewer's fixture: a genuine field load into r3 (`ldr r3,[r4,#20]`),
+    then a `pop {r3, r4}` that redefines r3 with something unrelated (an epilogue's
+    saved-register restore, the shape objdump ALWAYS prints as `pop`, never
+    `ldmia sp!`), then the dispatch through r3. Before the fix, LDM_RE (anchored on
+    the `ldm` mnemonic) never matched `pop` at all, so the backward scan walked
+    straight through it and landed on the stale field load -- reporting
+    ('field', 20), a real field's value that was never actually live at the
+    dispatch. Must resolve to ('nonfield', None): r3's true origin (the pop) does
+    not trace to a struct-field load."""
+    fn_insn_seq = {
+        "pop_shape": [
+            (0x0f00, "ldr\tr3, [r4, #20]"),   # a genuine, but STALE, field load
+            (0x0f02, "bl\t2000 <some_helper>"),
+            (0x0f06, "pop\t{r3, r4}"),         # redefines r3 -- the field load no longer applies
+            (0x0f08, "nop"),
+        ],
+    }
+    kind, off = sb.resolve_indirect_site(fn_insn_seq["pop_shape"], 0x0f0a, "r3")
+    check("(D7) pop {r3,r4} redefines r3 -> nonfield, not a stale field @20",
+          (kind, off) == ("nonfield", None), (kind, off))
+
+    # Sanity: a pop that does NOT touch the chased register must be transparent,
+    # exactly like an ldm that doesn't touch it.
+    fn_insn_seq2 = {
+        "pop_shape2": [
+            (0x0f00, "ldr\tr3, [r4, #20]"),
+            (0x0f02, "pop\t{r5, r6}"),          # unrelated -- doesn't touch r3
+            (0x0f04, "nop"),
+        ],
+    }
+    kind2, off2 = sb.resolve_indirect_site(fn_insn_seq2["pop_shape2"], 0x0f06, "r3")
+    check("(D7) pop not touching the chased register is transparent, not a stop",
+          (kind2, off2) == ("field", 20), (kind2, off2))
+
+    # Range form: `pop {r3-r5}` must expand exactly the same way _reg_count's byte
+    # tally does (r3, r4, r5), not just the endpoints.
+    check("(D7) _expand_reglist handles an r3-r5 range like _reg_count does",
+          sb._expand_reglist("{r3-r5, lr}") == {"r3", "r4", "r5", "lr"},
+          sb._expand_reglist("{r3-r5, lr}"))
+
+
 # === (D3, fifth pass) su_frame(): a clone's frame is the max over its OWN .su keys ======
 
 def test_d3_su_frame_takes_max_not_bare_base_first():
@@ -596,6 +640,7 @@ def main():
     test_d_load_extra_edges_parses_frame_override()
     test_d6_argsites_accepts_a_dotted_gcc_clone_name()
     test_d3_su_frame_takes_max_not_bare_base_first()
+    test_d7_pop_redefines_its_register_list()
     test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain()
     test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged()
     test_boxsource_offsets_match_real_header()

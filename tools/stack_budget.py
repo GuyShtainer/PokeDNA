@@ -546,31 +546,68 @@ LDR_FIELD_RE = re.compile(
     rf'^ldr\w*\s+({REG_TOK})\s*,\s*\[\s*({REG_TOK}|sp|pc)\s*,\s*#(-?\d+)\s*\]')
 CALLER_SAVED_REGS = frozenset(('r0', 'r1', 'r2', 'r3', 'ip'))   # AAPCS scratch registers
 LDM_RE = re.compile(rf'^ldm\w*\s+({REG_TOK})(!?)\s*,\s*\{{([^}}]*)\}}')
+POP_RE = re.compile(r'^pop\s*(\{[^}]*\})')
+
+
+def _expand_reglist(reglist):
+    """`{r3, r4-r7, lr}` -> {'r3', 'r4', 'r5', 'r6', 'r7', 'lr'}, using the same
+    REG_ORDER range expansion _reg_count() already does for its byte-count tally --
+    reused here (D7, BACKLOG #84b fifth pass) because a `pop {reglist}` range has
+    the exact same shape and needs the same names-not-just-a-count answer."""
+    regs = set()
+    for part in reglist.strip('{}').split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            a, b = part.split('-')
+            if a in REG_ORDER and b in REG_ORDER:
+                ia, ib = REG_ORDER.index(a), REG_ORDER.index(b)
+                regs.update(REG_ORDER[ia:ib + 1])
+            else:
+                regs.add(a)
+                regs.add(b)
+        else:
+            regs.add(part)
+    return regs
 
 
 def _ldm_defines(ins_clean, reg):
-    """True if `ins_clean` is an `ldm` (load-multiple) that (re)defines `reg` --
-    either as one of the loaded destination registers, or as the base register
-    itself when writeback (`!`) is present. Trap #7 (D6, BACKLOG #84b fourth
-    pass): `ldmia rX!, {r3, r4}` is GCC's shape for two-or-more back-to-back
-    struct-field loads (e.g. RomCtx's `read`+`ctx`, offsets 0/4), and the plain
-    DEST_REG_RE catch-all only recognizes the BASE register as a destination
-    (its `!` suffix still satisfies `\\b`, so `dm.group(1)` comes back "r0" for
-    `ldmia r0!, {r3, r4}`) -- it has no idea r3/r4 are ALSO freshly defined.
-    Without this check the backward scan walks straight past the true
-    definition to whatever STALE, unrelated instruction last wrote that
-    register number earlier in the function. Confirmed live: rom_mon_icon_at's
+    """True if `ins_clean` is an `ldm` (load-multiple) OR a `pop` (D7, BACKLOG #84b
+    fifth pass) that (re)defines `reg` -- either as one of the loaded destination
+    registers, or (ldm only) as the base register itself when writeback (`!`) is
+    present. Trap #7 (D6, BACKLOG #84b fourth pass): `ldmia rX!, {r3, r4}` is GCC's
+    shape for two-or-more back-to-back struct-field loads (e.g. RomCtx's
+    `read`+`ctx`, offsets 0/4), and the plain DEST_REG_RE catch-all only recognizes
+    the BASE register as a destination (its `!` suffix still satisfies `\\b`, so
+    `dm.group(1)` comes back "r0" for `ldmia r0!, {r3, r4}`) -- it has no idea r3/r4
+    are ALSO freshly defined. Without this check the backward scan walks straight
+    past the true definition to whatever STALE, unrelated instruction last wrote
+    that register number earlier in the function. Confirmed live: rom_mon_icon_at's
     real dispatch (`rc->read`, RomCtx offset 0, loaded via `ldmia r0!,
     {r3, r4}`) got misattributed to `loc->ok`'s `ldrb r3, [r1, #5]` many
     instructions earlier in the SAME function, purely because both happen to
     target r3 -- reported as 'struct-field load @5', which is not even a real
-    field (RomMonLoc.ok is a plain uint8_t flag, not a pointer of any kind)."""
+    field (RomMonLoc.ok is a plain uint8_t flag, not a pointer of any kind).
+
+    D7 (BACKLOG #84b fifth pass): `pop {reglist}` is `ldmia sp!, {reglist}` in every
+    way that matters here EXCEPT that objdump/GCC's Thumb-1 assembler syntax always
+    prints it as `pop`, never `ldmia sp!` -- so LDM_RE, anchored on the `ldm` mnemonic,
+    never matched it at all, and a `pop {r3, r4}` sitting between a genuine field
+    load and its dispatch was invisible to this whole trap: the backward scan walked
+    straight through it as if it were a no-op, exactly the stale-register hazard
+    trap #7 exists to close. `pop` never has explicit writeback syntax (the base is
+    always the implicit `sp`, which nothing here dispatches through), so only the
+    loaded-register-list half of the ldm check applies."""
     m = LDM_RE.match(ins_clean)
-    if not m:
-        return False
-    if m.group(2) == '!' and m.group(1) == reg:
-        return True
-    return reg in {p.strip() for p in m.group(3).split(',')}
+    if m:
+        if m.group(2) == '!' and m.group(1) == reg:
+            return True
+        return reg in {p.strip() for p in m.group(3).split(',')}
+    pm = POP_RE.match(ins_clean)
+    if pm:
+        return reg in _expand_reglist(pm.group(1))
+    return False
 
 
 def _literal_call_target(fn_insn_seq, insn_map, name_at_map, reg):
