@@ -695,6 +695,75 @@ static void check_pocket_caps(void) {
   }
 }
 
+/* ---------------------------------------------------------------- P0: key-item
+ * composition (BACKLOG #99, b99 review P0). No corpus needed -- gbb_g1_key_item_
+ * compose() is pure C over a synthetic bitmap, not a real ROM read. The bitmap
+ * mirrors the real cartridge's own shape (review N2/this review): badges 21..28
+ * set, ids 4/20/29 clear (neighbours of the badge run), ids 89/104/111 set (the
+ * "unswept 81..120 block" the located table settled), id 97 clear. */
+static void set_ki_bit(uint8_t bits[15], unsigned id) {
+  unsigned i = id - 1u;
+  bits[i >> 3] |= (uint8_t)(1u << (i & 7u));
+}
+
+static void key_item_compose(void) {
+  g_ran++;
+  uint8_t bits[15];
+  memset(bits, 0, sizeof bits);
+  for (unsigned id = 21; id <= 28; id++) set_ki_bit(bits, id);   /* 8 badges */
+  set_ki_bit(bits, 89);
+  set_ki_bit(bits, 104);
+  set_ki_bit(bits, 111);
+
+  /* Explicit spot checks (the ids the review named). */
+  CHECK(gbb_g1_key_item_compose(true, bits, 21) == true, "table: badge 21 is key");
+  CHECK(gbb_g1_key_item_compose(true, bits, 28) == true, "table: badge 28 is key");
+  CHECK(gbb_g1_key_item_compose(true, bits, 4)  == false, "table: id 4 is not key");
+  CHECK(gbb_g1_key_item_compose(true, bits, 20) == false, "table: id 20 is not key");
+  CHECK(gbb_g1_key_item_compose(true, bits, 29) == false, "table: id 29 is not key");
+  CHECK(gbb_g1_key_item_compose(true, bits, 89)  == true, "table: id 89 is key (located)");
+  CHECK(gbb_g1_key_item_compose(true, bits, 104) == true, "table: id 104 is key (located)");
+  CHECK(gbb_g1_key_item_compose(true, bits, 111) == true, "table: id 111 is key (located)");
+  CHECK(gbb_g1_key_item_compose(true, bits, 97)  == false, "table: id 97 is not key");
+
+  for (unsigned tbl = 0; tbl <= 1; tbl++) {
+    bool have_table = tbl != 0;
+    for (unsigned id = 0x00; id <= 0xFF; id++) {
+      bool got = gbb_g1_key_item_compose(have_table, bits, (uint8_t)id);
+      if (id >= 0xC4 && id <= 0xC8) {
+        /* HM01..HM05: key on BOTH paths, the game's own path never reaches
+         * the table either way. */
+        CHECKF(got == true, "id 0x%02X (HM): expected key on BOTH paths (have_table=%d)",
+              id, (int)have_table);
+      } else if (id >= 0xC9) {
+        /* TM01..TM50 (0xC9..0xFA) plus the rest of the byte range up to
+         * 0xFF: all >= 0xC4 and not an HM id, so compose()'s own first
+         * branch returns false unconditionally, table or not. */
+        CHECKF(got == false, "id 0x%02X (>= HM range, not an HM): expected NOT key (have_table=%d)",
+              id, (int)have_table);
+      } else if (id == 0x00) {
+        CHECKF(got == false, "id 0x00: expected NOT key (have_table=%d)", (int)have_table);
+      } else if (have_table && id >= 121 && id <= 195) {
+        CHECKF(got == false, "id 0x%02X (>120, table path): expected NOT key", id);
+      } else if (!have_table && id >= 121 && id <= 195) {
+        bool want = gbb_is_g1_key_item((uint8_t)id);
+        CHECKF(got == want, "id 0x%02X (list path): expected to match gbb_is_g1_key_item (%d)",
+              id, (int)want);
+      } else if (have_table) {
+        /* 1..120, outside 0xC4..0xFA: the synthetic table bit, computed the
+         * same way set_ki_bit wrote it. */
+        unsigned i = id - 1u;
+        bool want = (bits[i >> 3] >> (i & 7u)) & 1u;
+        CHECKF(got == want, "id 0x%02X (table path, 1..120): expected the table bit", id);
+      } else {
+        bool want = gbb_is_g1_key_item((uint8_t)id);
+        CHECKF(got == want, "id 0x%02X (list path, 1..120): expected to match gbb_is_g1_key_item",
+              id);
+      }
+    }
+  }
+}
+
 /* ---------------------------------------------------------------- main */
 
 int main(void) {
@@ -721,6 +790,9 @@ int main(void) {
                gold_key_ids, 14, gold_ball_ids, gold_ball_qty, 4);
     expect_gen2("Crystal.sav", GB_GEN2, 11, 16, 11, 32, NULL, 0, NULL, NULL, 0);
   }
+
+  printf("== P0: Gen-1 key-item composition (BACKLOG #99) ==\n");
+  key_item_compose();
 
   printf("== B0: no-op read->write is a zero-byte diff ==\n");
   noop_zero_diff("Red.sav");

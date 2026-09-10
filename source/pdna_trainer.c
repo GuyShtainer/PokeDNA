@@ -26,6 +26,7 @@
 #include "gen3_stars.h"   /* star achievements (the card's tier)  */
 #include "card_bg.h"      /* real Emerald card front (weak NULLs) */
 #include "rumble.h"       /* io-suspend around the big bg DMA     */
+#include "perf.h"         /* BACKLOG #73: screen-enter span, this screen had none  */
 #include "rom_chrome_gate.h"
 #if !PDNA_CARD_ART_COMPILED
 #include "rom_chrome.h"   /* the ROM rung -- see rom_chrome.h for scope/why       */
@@ -790,6 +791,11 @@ static void card_editor(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
   int sel = CARDF_NAME, bsel = 0, brow = 0, tier = 0;
   bool back = false, full = true;
   BgFrame bg = { 0, 0, CARD_BG_W };
+  /* BACKLOG #73 (speed parity): trainer had no perf span -- this is the enter cost of
+   * the real-art card front (card_bg blit + all CARDF_NUM overlays), closed at the end
+   * of the FIRST full repaint below (same first-paint idiom as pdna_box.c's "box"/"bank"). */
+  bool perf_first_paint = true;
+  perf_span_begin("trainer");
   for (;;) {
     if (full) {                              /* (re)blit + all overlays */
       tier = pk_star_count(sb1, sb2, game, card_hoenn_dex());
@@ -825,6 +831,7 @@ static void card_editor(uint8_t* sb1, uint8_t* sb2, PkGame game, bool edit,
         if (edit) back_sel_frame(game, brow);
       }
       full = false;
+      if (perf_first_paint) { perf_first_paint = false; perf_span_end(); }
     }
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT |
@@ -1051,8 +1058,13 @@ void pdna_trainer(uint8_t* sb1, uint8_t* sb2, const Gen3SaveInfo* info, PkGame g
 
   TCardPaint pv;
   memset(&pv, 0, sizeof pv);           /* .valid = false: the first pass paints in full */
+  /* BACKLOG #73 (speed parity): the art-free plain-page fallback -- same idiom as the
+   * card_bg branch above, closed after the first tcard_render() pass. */
+  bool perf_first_paint = true;
+  perf_span_begin("trainer");
   for (;;) {
     tcard_render(sb1, sb2, game, edit, name, gender, tid, sid, money, ph, pm, sel, &pv);
+    if (perf_first_paint) { perf_first_paint = false; perf_span_end(); }
 
     if (!edit) { do { s_vsync(); } while (!key_hit(KEY_B)); snd_back(); return; }
 
