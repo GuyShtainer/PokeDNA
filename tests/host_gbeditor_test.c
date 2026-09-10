@@ -126,18 +126,27 @@ static void one_row(const GbEditMon* base, int box, int slot, int f) {
 static void one_slot(GbSession* s, int box, int slot) {
   GbEditMon e;
   if (!gb_load(&e, s->gen, g_list, box, slot)) { CHECK(0, "gb_load"); return; }
+  /* BACKLOG #95 review C1 (blocker): has_caught defaults false out of gb_load (see
+   * GbEditMon.has_caught, gb_edit.h) -- a real caller sets it from the SAVE HEADER's
+   * own version, `s->g2w.sv.version`, exactly as this test does here, right after the
+   * load a real screen would also do it after. On a Gold/Silver mount this stays
+   * false and the four GBE_MET* rows must not appear below (record bytes 0x1D/0x1E
+   * are Unused1/Unused2 there, not a capture record). */
+  if (s->gen == GB_GEN2) gb_set_caught_available(&e, s->g2w.sv.version == G2_VER_CRYSTAL);
   g_slots++;
   uint8_t rows[GBE_NUM];
   int n = gbe_fields(&e, rows);
   /* Gen 1 hides all nine Gen-2-only rows (Item, Friendship, Gender, Shiny, Egg, Met
-   * Time/Level/Loc/OT-Gender -- BACKLOG #95 added the last six); Gen 2 hides only
-   * Gender, and only for a species with no real gender (gbe_has_gender_row is the same
-   * gate gbe_fields() applies internally, so this doubles as live coverage of
+   * Time/Level/Loc/OT-Gender -- BACKLOG #95 added the last six); Gen 2 hides Gender
+   * for a species with no real gender (gbe_has_gender_row is the same gate
+   * gbe_fields() applies internally, so this doubles as live coverage of
    * gbe_flip_gender()'s LEFT/RIGHT/A behaviour below against every real Gen-2 mon in
-   * Guy's Gold.sav/Crystal.sav that DOES have one). */
+   * Guy's Gold.sav/Crystal.sav that DOES have one), and hides all four Met rows on a
+   * Gold/Silver mount (review C1 above). */
   int expect_full = s->gen == GB_GEN2 ? GBE_NUM : GBE_NUM - 9;
   if (s->gen == GB_GEN2 && !gbe_has_gender_row(&e)) expect_full -= 1;
-  CHECK(n == expect_full, "Gen 1 hides the Gen-2 rows; Gen 2 hides Gender where there is none");
+  if (s->gen == GB_GEN2 && !e.has_caught) expect_full -= 4;
+  CHECK(n == expect_full, "Gen 1 hides the Gen-2 rows; Gen 2 hides Gender/Met where there is none");
   char hdr[64];
   gbe_header(&e, hdr, sizeof hdr);
   CHECK(strstr(hdr, "Lv") != 0, "the header names a level");
@@ -443,6 +452,94 @@ static void test_gender(void) {
   }
 }
 
+/* BACKLOG #95 review C2/C3: gbe_flip_shiny() (gb_editor.c). C2 -- turning shiny ON
+ * can be forced to move gender when no shiny Atk DV shares the current gender; the
+ * flag (GbEditMon.shiny_gender_forced) and its screen-facing reader
+ * (gbe_shiny_forced_gender) must say so, and must NOT say so when a gender-preserving
+ * shiny Atk exists. C3 -- turning shiny OFF must nudge Def 10 -> 8, not 10 -> 9, so
+ * the derived HP DV (bit 0 of each stored DV, g2_hp_dv) is left alone.
+ *
+ * Every expected Atk DV below is HAND-COMPUTED from g2_gender_from_dv's own formula
+ * (gen2_save.c: female iff ((atk_dv&0xF)<<4 | 0xF) <= gender_ratio), not re-derived
+ * through gbe_flip_shiny itself -- a self-referential check would pass the exact
+ * mutations this test exists to catch:
+ *   mutation 1 ("remove gender preservation" -- search all 8 shiny Atk values for the
+ *     nearest to `cur`, ignoring which gender each yields): Pikachu fixture below
+ *     starts at Atk 8 (male, ratio 127); mutation-1's nearest-overall answer is Atk 7
+ *     (distance 1, but FEMALE), while the real gender-preserving search must land on
+ *     Atk 10 (distance 2, the nearest MALE shiny value) -- these two answers differ,
+ *     so the test only passes for the real code.
+ *   mutation 2 (10 -> 9 instead of 10 -> 8 for OFF): asserted directly via the HP DV
+ *     check after the OFF flip below. */
+static void test_shiny(void) {
+  uint8_t rec[GB_MAX_REC], nm[GB_NAME_BYTES];
+  GbEditMon e;
+  GbDvEffects fx;
+  memset(nm, 0x50, sizeof nm);
+  printf("\n== gbe_flip_shiny: gender-preserving where possible, forced-and-reported "
+         "where not, OFF leaves the HP DV alone ==\n");
+
+  /* ---- ON, gender preserved: Pikachu (ratio 127), starting male at Atk 8. The
+   * male-only shiny candidates are {10,11,14,15} (composites 175/191/239/255, all
+   * > 127); nearest to 8 is 10. Mutation 1's nearest-OVERALL answer among all eight
+   * shiny values {2,3,6,7,10,11,14,15} would be 7 (distance 1, but female) -- this
+   * is exactly the case that tells the two answers apart. */
+  mk_g2_rec(rec, 25, 20, 8, 3, 4, 5);
+  CHECK(gb_load_parts(&e, GB_GEN2, false, rec, nm, nm, 25), "load Pikachu, Atk DV 8");
+  gb_dv_effects_of(&e, &fx);
+  CHECK(!fx.shiny && fx.gender == 0, "fixture: non-shiny male to start");
+  CHECK(gbe_press(&e, GBE_SHINY), "A turns Shiny on");
+  gb_dv_effects_of(&e, &fx);
+  CHECK(fx.shiny && fx.gender == 0, "now shiny, gender preserved (male)");
+  CHECK(gb_get_dv(&e, GB_ATK) == 10, "...Atk DV 10 -- the nearest MALE shiny value, not 7");
+  CHECK(gb_get_dv(&e, GB_DEF) == 10 && gb_get_dv(&e, GB_SPE) == 10 && gb_get_dv(&e, GB_SPC) == 10,
+        "Def/Spe/Spc forced to 10");
+  CHECK(!e.shiny_gender_forced, "gender was NOT forced -- a male shiny existed");
+  CHECK(gbe_shiny_forced_gender(&e) == -1, "...and the screen-facing reader agrees");
+
+  /* ---- ON, gender FORCED: Bulbasaur, ratio 31 (12.5% female) -- composite(atk) =
+   * (atk<<4)|0xF, and the smallest composite among the 8 shiny Atk values is 47
+   * (atk=2); 47 > 31, so EVERY shiny Atk value is male. A female Bulbasaur turning
+   * shiny therefore has no shiny-female Atk to search for at all -- must be forced
+   * to male, and shiny_gender_forced must report exactly that. */
+  {
+    /* female iff ((atk<<4)|0xF) <= 31: atk=0 -> 0x0F=15 <= 31 (female); atk=1 ->
+     * 0x1F=31 <= 31 (female, boundary); atk=2 -> 0x2F=47 > 31 (male). Use Atk 1. */
+    uint8_t atk_f = 1;
+    GbDvEffects f0;
+    mk_g2_rec(rec, 1, 20, atk_f, 3, 4, 5);
+    CHECK(gb_load_parts(&e, GB_GEN2, false, rec, nm, nm, 1), "load Bulbasaur, Atk DV 1 (female)");
+    gb_dv_effects_of(&e, &f0);
+    CHECK(!f0.shiny && f0.gender == 1, "fixture: non-shiny female to start (ratio 31)");
+    CHECK(gbe_adjust(&e, GBE_SHINY, 1, false), "RIGHT turns Shiny on");
+    gb_dv_effects_of(&e, &fx);
+    CHECK(fx.shiny, "now shiny");
+    CHECK(fx.gender == 0, "...but forced to MALE -- no shiny female exists at ratio 31");
+    CHECK(e.shiny_gender_forced, "shiny_gender_forced is set");
+    CHECK(gbe_shiny_forced_gender(&e) == 0, "...and reports MALE, matching the record");
+  }
+
+  /* ---- OFF leaves the HP DV alone (review C3): the derived HP DV is bit 0 of each
+   * of Atk/Def/Spe/Spc (g2_hp_dv, gen2_save.c); Def 10 (0b1010, bit0=0) must go to 8
+   * (0b1000, bit0=0), NOT 9 (0b1001, bit0=1) -- mutation 2 flips this exact bit. */
+  {
+    uint8_t hp_before, hp_after;
+    mk_g2_rec(rec, 25, 20, 10, 10, 10, 10);   /* shiny male, Atk bit1 set */
+    CHECK(gb_load_parts(&e, GB_GEN2, false, rec, nm, nm, 25), "load a shiny Pikachu");
+    gb_dv_effects_of(&e, &fx);
+    CHECK(fx.shiny, "fixture: shiny to start");
+    hp_before = gb_get_dv(&e, GB_HP);
+    CHECK(gbe_press(&e, GBE_SHINY), "A turns Shiny off");
+    gb_dv_effects_of(&e, &fx);
+    CHECK(!fx.shiny, "no longer shiny");
+    CHECK(gb_get_dv(&e, GB_DEF) == 8, "Def DV is 8, not 9 (mutation 2's own value)");
+    hp_after = gb_get_dv(&e, GB_HP);
+    CHECK(hp_after == hp_before, "the derived HP DV did not move");
+    CHECK(!e.shiny_gender_forced, "OFF never forces gender; the flag is cleared");
+    CHECK(gbe_shiny_forced_gender(&e) == -1, "...and the reader agrees");
+  }
+}
+
 int main(void) {
   one_save("Red.sav",     GB_GEN1);
   one_save("Yellow.sav",  GB_GEN1);
@@ -451,6 +548,7 @@ int main(void) {
   label_widths_fit();
   issue_and_stale_text_fits();
   test_gender();
+  test_shiny();
   printf("\n%d slots, %d rows, %d mutations; %d checks, %d failed\n",
          g_slots, g_rows, g_changes, g_check, g_fail);
   return g_fail ? 1 : 0;

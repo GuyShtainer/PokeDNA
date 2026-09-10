@@ -226,6 +226,16 @@ G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1bas
   memset(rec, 0, sizeof rec);
   memset(nm, 0x50, sizeof nm);
   if (!gb_load_parts(&e, gen, false, rec, nm, nm, 0)) return G3GB_ERR_ARG;
+  /* BACKLOG #95 review C1 (out-of-scope one-liner, flagged in the gbmon report): this
+   * is a FRESHLY SYNTHESIZED record, not a real save's own bytes -- gb_set_caught's
+   * new has_caught gate (gb_edit.h) exists to stop the LIVE EDITOR writing into a real
+   * Gold/Silver save's Unused1/Unused2 bytes; it was never meant to block this
+   * module's own deliberate choice, unchanged since this file's own header comment
+   * above, to always populate the capture record on a Gen-2 target ("harmless dead
+   * data" on G/S, real data on Crystal). Without this line every gen3_to_gb() call
+   * for a Gen-2 target started failing G3GB_ERR_GLITCH the moment the gate shipped
+   * (host_gbsession_test's S8, host_gen3gb_test's synthetic-mon conversions). */
+  if (gen == GB_GEN2) gb_set_caught_available(&e, true);
 
   st = set_identity_and_level(&e, &m, dex, g1base, loss);
   if (st != G3GB_OK) return st;

@@ -126,6 +126,16 @@ void gbe_header(const GbEditMon* e, char* out, int cap);
  * (no base-stat table in this tree), and the sentence says so. */
 const char* gbe_stale_note(const GbEditMon* e);
 
+/* -1 == the last gbe_adjust/gbe_press(GBE_SHINY) did not have to move gender to turn
+ * shininess ON; 0/1 == it did, and this is the gender (male/female) the Pokemon ended
+ * up as (some gender ratios have no shiny combination for one of the two sexes, so
+ * turning shiny ON can force the other one). The underlying flag is
+ * GbEditMon.shiny_gender_forced (gb_edit.h) — this reads the record's CURRENT
+ * gender rather than remembering which way the search went. Meant for an immediate
+ * message right after the toggle (pdna_gbedit.c), not the write confirm screen: see
+ * pdna_layout.h's PDNA_GBEDIT_SHINY_FORCED_* comment for why (BACKLOG #95 review C2). */
+int gbe_shiny_forced_gender(const GbEditMon* e);
+
 /* Recompute party stats where this tree can (Gen 2). Returns true iff the record is
  * now not stale — also true when there was nothing to do. */
 bool gbe_settle_stats(GbEditMon* e);

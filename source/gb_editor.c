@@ -71,6 +71,14 @@ int gbe_fields(const GbEditMon* e, uint8_t out[GBE_NUM]) {
      * (Gen 1 itself has no shiny concept at all, pokered has no such derivation). */
     if ((f == GBE_SHINY || f == GBE_EGG || f == GBE_METTIME || f == GBE_METLEVEL
          || f == GBE_METLOC || f == GBE_METOTGENDER) && e->gen != GB_GEN2) continue;
+    /* BACKLOG #95 review C1 (blocker): the four MET rows pack into record bytes
+     * 0x1D/0x1E, which are a real capture record ONLY in Crystal -- in Gold/Silver
+     * the same two bytes are Unused1/Unused2 (see GbEditMon.has_caught, gb_edit.h).
+     * A Gen-2 record whose caller never proved Crystal-ness (has_caught defaults
+     * false) simply does not get these rows, exactly like GBE_ITEM/FRIEND above
+     * refuse a Gen-1 record it cannot tell apart from a Gen-2 one on gen alone. */
+    if ((f == GBE_METTIME || f == GBE_METLEVEL || f == GBE_METLOC || f == GBE_METOTGENDER)
+        && !e->has_caught) continue;
     out[n++] = (uint8_t)f;
   }
   return n;
@@ -260,8 +268,14 @@ static bool gbe_flip_gender(GbEditMon* e) {
  * so forcing them to 10 has no side effect on gender -- only Atk needs a search, run
  * exactly like gbe_flip_gender's own (prefer keeping today's gender, else nearest,
  * else smallest). Turning shiny OFF is simpler and never touches gender: the
- * precondition needs all three of Def/Spe/Spc at 10, so nudging just Def away
- * (10 -> 9, the smallest possible move) un-shinies it with nothing else disturbed. */
+ * precondition needs all three of Def/Spe/Spc at 10, so nudging just Def away is
+ * enough to un-shiny it -- but the nudge has to be 10 -> 8, not 10 -> 9: the derived
+ * HP DV is assembled from BIT 0 of each of the four stored DVs (g2_hp_dv, gen2_save.c
+ * -- Def's bit 0 is worth 4 there), and 10 (0b1010) and 9 (0b1001) differ in bit 0 as
+ * well as bit 1, so 9 silently moves the HP DV by +/-4 in every one of the 8 shiny Atk
+ * combinations. 8 (0b1000) shares bit 0 with 10 -- only bit 1 differs -- so it breaks
+ * the "Def == 10" precondition (un-shinies) while leaving the HP DV, and everything
+ * else, untouched. */
 static bool gbe_flip_shiny(GbEditMon* e) {
   uint8_t cur[4];
   uint16_t dex; uint8_t ratio;
@@ -274,14 +288,17 @@ static bool gbe_flip_shiny(GbEditMon* e) {
   ratio = dex ? pk_species_gender_ratio(dex) : 0xFFu;
   gb_dv_effects(cur, dex, ratio, &cur_fx);
 
-  if (cur_fx.shiny) return gb_set_dv(e, GB_DEF, 9);   /* OFF */
+  if (cur_fx.shiny) {
+    e->shiny_gender_forced = false;
+    return gb_set_dv(e, GB_DEF, 8);   /* OFF -- see the header comment for why 8, not 9 */
+  }
 
   /* ON: Def/Spe/Spc -> 10 first (free), then search Atk among the 8 bit-1-set values. */
   any = gb_set_dv(e, GB_DEF, 10);
   any = gb_set_dv(e, GB_SPE, 10) || any;
   any = gb_set_dv(e, GB_SPC, 10) || any;
 
-  int target = cur_fx.gender, best = -1, best_dist = 16;
+  int target = cur_fx.gender, best = -1, best_dist = 16, found_pass = -1;
   for (int pass = 0; pass < 2 && best < 0; pass++) {   /* pass 0: keep gender; pass 1: any */
     for (int v = 0; v <= 15; v++) {
       if (!(v & 2)) continue;
@@ -289,10 +306,13 @@ static bool gbe_flip_shiny(GbEditMon* e) {
       GbDvEffects fx; gb_dv_effects(cand, dex, ratio, &fx);
       if (pass == 0 && fx.gender != target) continue;
       int dist = v - (int)cur[0]; if (dist < 0) dist = -dist;
-      if (dist < best_dist) { best_dist = dist; best = v; }
+      if (dist < best_dist) { best_dist = dist; best = v; found_pass = pass; }
     }
   }
   if (best >= 0) any = gb_set_dv(e, GB_ATK, (uint8_t)best) || any;
+  /* found_pass == 1: no candidate kept the original gender, so this species has no
+   * shiny combination for that gender at all -- gbe_shiny_note() reports it. */
+  e->shiny_gender_forced = (found_pass == 1);
   return any;
 }
 
@@ -484,6 +504,20 @@ const char* gbe_stale_note(const GbEditMon* e) {
   if (!e || !e->is_party || !e->stats_stale) return 0;
   if (e->gen == GB_GEN2) return "Party stats will be recalculated.";
   return "Gen 1: stats refresh on level-up or box withdrawal.";
+}
+
+/* BACKLOG #95 review C2: -1 == gbe_flip_shiny() did not just force a gender move; 0/1
+ * == it did, and this is the gender (0 male, 1 female) the Pokemon ended up as -- read
+ * off the record itself (gb_dv_effects_of), not remembered from the search, so it is
+ * always the ACTUAL current gender. e->shiny_gender_forced is the flag itself
+ * (host_gbeditor_test.c's test_shiny asserts that one directly); this is the
+ * screen-facing form pdna_gbedit.c's msg_wait call needs to pick which of the two
+ * PDNA_GBEDIT_SHINY_FORCED_MALE/FEMALE_L1/L2 pairs to show. */
+int gbe_shiny_forced_gender(const GbEditMon* e) {
+  GbDvEffects fx;
+  if (!e || !e->shiny_gender_forced) return -1;
+  gb_dv_effects_of(e, &fx);
+  return fx.gender == 1 ? 1 : 0;
 }
 
 bool gbe_settle_stats(GbEditMon* e) {

@@ -16,6 +16,7 @@
 #include "sys.h"
 #include "pdna_gbedit.h"
 #include "gb_editor.h"
+#include "gb_session.h"    /* gbs_is_mail_item (BACKLOG #95 review C4) */
 #include "ui.h"
 #include "osk.h"
 #include "pdna_pick.h"
@@ -209,12 +210,29 @@ void gbedit_dv_orphan_warn(bool has_sidecar, bool* warned) {
   msg_wait(PDNA_SIDECAR_DV_TITLE, UI_WARN, PDNA_SIDECAR_DV_L1, PDNA_SIDECAR_DV_L2);
 }
 
+/* BACKLOG #95 review C2: shown the moment gbe_flip_shiny() had to move gender to turn
+ * shininess ON -- see pdna_layout.h's PDNA_GBEDIT_SHINY_FORCED_* comment for why this
+ * is an immediate popup rather than a line in the write confirm screen (no room left
+ * there). Checked unconditionally after every adjust/press below: cheap (one int
+ * read), and gbe_shiny_forced_gender() only ever returns >= 0 right after a GBE_SHINY
+ * toggle actually forced one, never for any other row. */
+static void gbedit_shiny_forced_note(const GbEditMon* e) {
+  int g = gbe_shiny_forced_gender(e);
+  if (g < 0) return;
+  if (g == 1) msg_wait(PDNA_GBEDIT_SHINY_FORCED_TITLE, UI_WARN,
+                        PDNA_GBEDIT_SHINY_FORCED_FEMALE_L1, PDNA_GBEDIT_SHINY_FORCED_FEMALE_L2);
+  else        msg_wait(PDNA_GBEDIT_SHINY_FORCED_TITLE, UI_WARN,
+                        PDNA_GBEDIT_SHINY_FORCED_MALE_L1, PDNA_GBEDIT_SHINY_FORCED_MALE_L2);
+}
+
 /* d-pad/L/R adjust, DV-warning-checked -- the shared tail of pdna_gbedit()'s four
  * KEY_LEFT/RIGHT/L/R branches, none of which differ except direction and step size. */
 bool gbedit_adjust_checked(GbEditMon* e, int f, int dir, bool big,
                            bool has_sidecar, bool* dv_warned) {
   if (gbedit_is_dv_field(f)) gbedit_dv_orphan_warn(has_sidecar, dv_warned);
-  return gbe_adjust(e, f, dir, big);
+  bool changed = gbe_adjust(e, f, dir, big);
+  if (changed) gbedit_shiny_forced_note(e);
+  return changed;
 }
 
 /* G1 review LOW-1: see pdna_gbedit.h's own comment. */
@@ -222,6 +240,22 @@ void gbedit_adjust_refused(int f) {
   snd_deny();
   if (f == GBE_GENDER)
     msg_wait(PDNA_GBEDIT_GENDER_LOCKED_TITLE, UI_WARN, PDNA_GBEDIT_GENDER_LOCKED_L1, 0);
+  /* BACKLOG #95 review C5: gb_set_egg(e, true) now refuses while the record holds a
+   * non-zero item (gb_edit.c) -- an Egg cannot hold one. Both GBE_K_NUM paths land
+   * here on a false return: gbe_press (A) and gbe_adjust (LEFT/RIGHT/L/R, all of
+   * which just flip EGG the same dir-independent way GENDER/SHINY do).
+   *
+   * NOT extended to GBE_ITEM's own LEFT/RIGHT numeric step: gbe_adjust(GBE_ITEM)
+   * also returns false on the ORDINARY "already at 0/255" clamp no-op (clampi),
+   * which this function cannot tell apart from an Egg refusal without `e` (its
+   * signature is `(int f)` only, shared with pdna_gbsummary.c's own two call sites
+   * this pass does not touch) -- a message here would misfire on every plain clamp.
+   * The A-press item PICKER already gets the real message, with `e` in scope, at
+   * the two sites that made this call (gb_item_hook, this file's GBE_K_ITEM branch
+   * above); this is the same "silent deny beep, no prose" shape every other numeric
+   * clamp in this row already has. */
+  else if (f == GBE_EGG)
+    msg_wait(PDNA_GBEDIT_EGG_ITEM_TITLE, UI_WARN, PDNA_GBEDIT_EGG_ITEM_L1, 0);
 }
 
 void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned) {
@@ -249,22 +283,40 @@ void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned) {
   /* UX-parity audit (Guy 2026-09-07): the held-item field used to LEFT/RIGHT-
    * step a raw byte with no picker at all -- A now opens the SAME pick_item()
    * screen the Gen-3 flow uses (app_quick_item, pdna_main.c), restricted to
-   * ids 1..255 shown as "#n" (pick_item_set_gen1_2_max()'s own header comment
-   * has the full "why not real names yet" reasoning). Held item has no
-   * move-style validation to fail (any byte is structurally legal), so
-   * unlike GBE_K_MOVE there is no refusal message to show. gb_get_held_item/
+   * ids 0..255 shown as "#n" (pick_item_set_gen1_2_max()'s own header comment
+   * has the full "why not real names yet" reasoning; #0 is NO_ITEM and removes
+   * the item, same as every other slot's item picker). gb_get_held_item/
    * gb_set_held_item are gb_edit.h calls, reachable here because gb_editor.h
    * includes that header itself -- no new wrapper needed, unlike gbe_set_move
-   * (which validates against gb_max_move/move_taken; held_item needs neither). */
+   * (which validates against gb_max_move/move_taken; held_item needs neither).
+   * BACKLOG #95 review C4/C5: two refusals ADDED here since that comment was
+   * written -- an Egg cannot hold an item at all (pack.asm
+   * AnEggCantHoldAnItemText; gb_set_held_item's own refusal would silently
+   * no-op without a message, so this checks first to say why), and Mail needs
+   * an explicit confirm (this tree tracks no mailbox, so gbs_delete/gbs_move
+   * would refuse the whole party the moment this mon carries one, gb_session.h
+   * gbs_is_mail_item). */
   if (kind == GBE_K_ITEM) {
     pick_item_set_gen1_2_max(255);
     uint16_t id = pick_item(gb_get_held_item(e));
     pick_item_set_gen1_2_max(0);
-    if (id == 0xFFFF) return;
+    if (id == 0xFFFF) return;                              /* cancel */
+    if (id != 0 && gb_is_egg(e)) {
+      snd_deny();
+      msg_wait(PDNA_GBEDIT_EGG_ITEM_TITLE, UI_WARN, PDNA_GBEDIT_EGG_ITEM_L1, 0);
+      return;
+    }
+    if (id != 0 && gbs_is_mail_item((uint8_t)id)
+        && !app_confirm(PDNA_GBEDIT_MAIL_TITLE, PDNA_GBEDIT_MAIL_L1))
+      return;                                                /* declined */
     if (gb_set_held_item(e, (uint8_t)id)) snd_edit(); else snd_deny();
     return;
   }
-  if (kind == GBE_K_NUM) { if (gbe_press(e, f)) snd_edit(); else snd_deny(); return; }
+  if (kind == GBE_K_NUM) {
+    if (gbe_press(e, f)) { snd_edit(); gbedit_shiny_forced_note(e); }
+    else snd_deny();
+    return;
+  }
   snd_deny();
 }
 

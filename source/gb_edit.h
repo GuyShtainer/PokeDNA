@@ -131,6 +131,27 @@ typedef struct {
   /* A stat-affecting setter ran and gb_recalc_stats() has not been called since. Only
    * meaningful for a party record (box records store no stats). gb_check() reports it. */
   bool     stats_stale;
+  /* Whether record bytes 0x1D/0x1E (R2_CAUGHT0/1) are a REAL capture record. They are
+   * ONLY that in Crystal — in Gold/Silver the identical two bytes are Unused1/Unused2
+   * (pokegold/macros/ram.asm:22-23) and the save format gives a bare record no way to
+   * tell the two apart; the SAVE HEADER's version does (gen2_save.h G2Save.version),
+   * which gb_load() never sees. FALSE by construction here (gb_load/gb_load_parts both
+   * memset the whole struct to 0 first, so a caller that never calls the setter below
+   * gets the safe answer) — a caller that HAS mounted a Crystal save and knows it must
+   * call gb_set_caught_available(e, true) itself after gb_load, e.g. from
+   * `s->g2w.sv.version == G2_VER_CRYSTAL` where `s` is its GbSession. Gates the four
+   * GBE_MET* rows (gb_editor.c's gbe_fields) and gb_set_caught() itself, so a Gold/
+   * Silver mount that never calls the setter can neither see nor write into its own
+   * Unused1/Unused2 bytes through this editor (BACKLOG #95 review C1). */
+  bool     has_caught;
+  /* Set by gb_editor.c's gbe_flip_shiny() the moment it turns shininess ON by moving
+   * the Attack DV to a value that does NOT keep the record's current gender (only
+   * possible when every bit-1-set Atk DV maps to the other gender for this species'
+   * gender_ratio — some ratios have no shiny combination for one of the two sexes).
+   * Cleared by every other write, including OFF. gbe_shiny_note() turns this into the
+   * sentence the screen shows (BACKLOG #95 review C2). Not meant to be read or set by
+   * anything other than gb_editor.c and gb_load/gb_load_parts (which zero it). */
+  bool     shiny_gender_forced;
 } GbEditMon;
 
 /* ---- list geometry (so the caller never re-derives it) -------------------- */
@@ -442,15 +463,28 @@ void gb_set_otname_raw(GbEditMon* e, const uint8_t b[GB_NAME_BYTES]);
 
 /* Gen-2-only fields. Each returns false on a Gen-1 record rather than writing to the
  * byte that happens to sit at that offset — in Gen 1, record+0x01 is current HP and
- * +0x07 is the catch rate, not an item. */
+ * +0x07 is the catch rate, not an item. Also refuses a non-zero item on an Egg (the
+ * games refuse this too, pack.asm AnEggCantHoldAnItemText) — clearing to 0 is always
+ * allowed, an Egg just cannot hold anything real. */
 bool gb_set_held_item(GbEditMon* e, uint8_t item);
 bool gb_set_friendship(GbEditMon* e, uint8_t f);
 bool gb_set_pokerus(GbEditMon* e, uint8_t p);
 /* Crystal's capture record: time 0..3 (0 none, 1 morning, 2 day, 3 night), level 0..63
  * (1 means "hatched from an Egg" to the Poke Seer), location 0..127, ot_gender 0/1.
- * Packed into record bytes 0x1D/0x1E exactly as gen2_save.c:493-497 unpacks them. */
+ * Packed into record bytes 0x1D/0x1E exactly as gen2_save.c:493-497 unpacks them.
+ * Refuses unless e->has_caught — on Gold/Silver those same two bytes are Unused1/
+ * Unused2, not a capture record, and this module has no way to tell the two apart
+ * from the record alone (see GbEditMon.has_caught, gb_edit.h). */
 bool gb_set_caught(GbEditMon* e, uint8_t time, uint8_t level, uint8_t loc, uint8_t ot_gender);
-/* Egg-ness is the species-LIST byte, not a record field. */
+/* Whether e->has_caught is set — see GbEditMon.has_caught's own comment for who is
+ * meant to call this and when (a caller that knows its mount is Crystal, right after
+ * gb_load). Always legal to call, including on a Gen-1 record (where it is simply
+ * inert: gb_set_caught still refuses Gen 1 outright on the generation check alone). */
+void gb_set_caught_available(GbEditMon* e, bool available);
+/* Egg-ness is the species-LIST byte, not a record field. Turning it ON is refused
+ * while the record holds a non-zero item — an Egg cannot hold one (see
+ * gb_set_held_item) — rather than silently clearing it out from under the player;
+ * remove the item first. Turning it OFF is unaffected (never touches the item). */
 bool gb_set_egg(GbEditMon* e, bool egg);
 
 /* Gen-1-only: install base data for the CURRENT species (writes type1/type2 into the

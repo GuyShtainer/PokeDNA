@@ -2457,6 +2457,20 @@ static bool gb_item_hook(uint8_t* rec80) {
   uint16_t id = pick_item(gb_get_held_item(&e));
   pick_item_set_gen1_2_max(0);
   if (id == 0xFFFF) return false;                      /* cancel */
+  /* BACKLOG #95 review C5: an Egg cannot hold an item at all (pack.asm
+   * AnEggCantHoldAnItemText) -- checked here, ahead of gb_set_held_item's own
+   * refusal, purely to say WHY instead of a bare deny beep. */
+  if (id != 0 && gb_is_egg(&e)) {
+    snd_deny();
+    msg_wait(PDNA_GBEDIT_EGG_ITEM_TITLE, UI_WARN, PDNA_GBEDIT_EGG_ITEM_L1, 0);
+    return false;
+  }
+  /* BACKLOG #95 review C4: this tree tracks no mailbox, so a Mail item set here
+   * leaves gbs_delete/gbs_move (gb_session.h, gbs_is_mail_item) refusing the
+   * WHOLE PARTY the moment they see this mon -- confirm before committing. */
+  if (id != 0 && gbs_is_mail_item((uint8_t)id)
+      && !app_confirm(PDNA_GBEDIT_MAIL_TITLE, PDNA_GBEDIT_MAIL_L1))
+    return false;                                        /* declined */
   if (!gb_set_held_item(&e, (uint8_t)id)) { snd_deny(); return false; }
 
   return gb_edit_commit(box, slot, &e, "item");
