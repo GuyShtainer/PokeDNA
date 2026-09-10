@@ -95,10 +95,11 @@ static void test_clock_fix_splits_gen1_gen2(void) {
 /* ---- (F) a representative COMING_SOON row and a representative NOT_IN_GAME row,
  * both Game Boy kinds, matching the brief's own worked examples verbatim. ------------ */
 static void test_representative_rows(void) {
-  /* U4 (BACKLOG #67): Red/Yellow's own Item bag is wired -- Gen 1 is NAV_OK now;
-   * Gen 2's Pack (design sec 1.4) is a later slice, still COMING_SOON. */
+  /* U4 (BACKLOG #67): Red/Yellow's own Item bag is wired -- Gen 1 is NAV_OK.
+   * U5: Gold/Silver/Crystal's own Pack (design sec 1.4) is wired too -- Gen 2
+   * is NAV_OK now as well. */
   CHECK(nav_avail(NV_BAG, SE_KIND_GEN1) == NAV_OK, "Bag: wired up on Gen 1 (U4, BACKLOG #67)");
-  CHECK(nav_avail(NV_BAG, SE_KIND_GEN2) == NAV_COMING_SOON, "Bag: not wired up yet on Gen 2 (COMING_SOON)");
+  CHECK(nav_avail(NV_BAG, SE_KIND_GEN2) == NAV_OK, "Pack: wired up on Gen 2 too (U5, BACKLOG #67)");
   CHECK(nav_avail(NV_POKEBLOCK, SE_KIND_GEN1) == NAV_NOT_IN_GAME, "Blocks: Gen 1 never had Pokeblocks");
   CHECK(nav_avail(NV_POKEBLOCK, SE_KIND_GEN2) == NAV_NOT_IN_GAME, "Blocks: Gen 2 never had Pokeblocks");
   /* Per-gen wording, not one shared string copy-pasted across both kinds. */
@@ -122,8 +123,8 @@ static void test_every_row_covered(void) {
     CHECK(nav_avail(not_in_game_gen1[i], SE_KIND_GEN1) == NAV_NOT_IN_GAME,
           "Gen 1: every Hoenn/Frontier-shaped row (+Clock) is NOT_IN_GAME");
 
-  /* U4: NV_BAG left this list on Gen 1 (now NAV_OK there) -- checked separately
-   * below, alongside Gen 2 where it is still COMING_SOON. */
+  /* U5: NV_BAG is now NAV_OK on BOTH kinds (Gen 1's own Item bag, U4; Gen 2's
+   * own Pack, U5) -- checked separately below, alongside the OK-on-both rows. */
   static const int coming_soon_both[] = {
     NV_PARTY, NV_BANK, NV_DAYCARE, NV_DEX, NV_DATA, NV_FLY, NV_MAP, NV_GB
   };
@@ -133,23 +134,21 @@ static void test_every_row_covered(void) {
     CHECK(nav_avail(coming_soon_both[i], SE_KIND_GEN2) == NAV_COMING_SOON,
           "Gen 2: every not-yet-wired row is COMING_SOON");
   }
-  CHECK(nav_avail(NV_BAG, SE_KIND_GEN2) == NAV_COMING_SOON, "Gen 2: Bag is still COMING_SOON (Pack is a later slice)");
 
-  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK };
+  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG };
   for (int i = 0; i < (int)(sizeof ok_both / sizeof ok_both[0]); i++) {
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back are NAV_OK");
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack are NAV_OK");
   }
-  CHECK(nav_avail(NV_BAG, SE_KIND_GEN1) == NAV_OK, "Gen 1: Bag is NAV_OK (U4, BACKLOG #67)");
 
-  /* 7 NOT_IN_GAME(gen1-list, Clock counted once) + 8 COMING_SOON-both + 1 Gen1-only-OK
-   * (NV_BAG) + 3 OK + Clock's own Gen-2 COMING_SOON (already counted above via a
-   * separate assertion) == 19 rows -- the classification is EXHAUSTIVE, not a sample,
-   * so a row silently added to PDNA_NAV_ITEMS without a matching GB_TABLE entry cannot
-   * hide behind rows this test never asked about. */
-  CHECK(7 + 8 + 1 + 3 == NV_COUNT, "row classification accounts for all 19 PDNA_NAV_ITEMS");
+  /* 7 NOT_IN_GAME(gen1-list, Clock counted once) + 8 COMING_SOON-both + 4 OK-both
+   * (Trainer/Settings/Back/Bag) + Clock's own Gen-2 COMING_SOON (already counted
+   * above via a separate assertion) == 19 rows -- the classification is
+   * EXHAUSTIVE, not a sample, so a row silently added to PDNA_NAV_ITEMS without a
+   * matching GB_TABLE entry cannot hide behind rows this test never asked about. */
+  CHECK(7 + 8 + 4 == NV_COUNT, "row classification accounts for all 19 PDNA_NAV_ITEMS");
   printf("(G) every PDNA_NAV_ITEMS row is classified (7 NOT_IN_GAME + 8 COMING_SOON-both + "
-        "1 Gen1-only-OK + 3 OK == %d)\n", NV_COUNT);
+        "4 OK-both == %d)\n", NV_COUNT);
 }
 
 /* ---- (H) defensive: out-of-range nv_item / save_kind never misbehaves -------------- */
