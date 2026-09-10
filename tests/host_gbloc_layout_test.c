@@ -65,26 +65,26 @@ _Static_assert(offsetof(RomGbIconLoc, icon_bank)       == 17, "RomGbIconLoc.icon
 _Static_assert(offsetof(RomGbIconLoc, pad)             == 18, "RomGbIconLoc.pad");
 _Static_assert(sizeof(((RomGbIconLoc*)0)->pad) == 2, "RomGbIconLoc.pad size");
 
-/* ---- RomGbUiLoc (108 B) -- source/rom_gbui.h ------------------------------------
+/* ---- RomGbUiLoc (116 B) -- source/rom_gbui.h ------------------------------------
  * BACKLOG #71 grew this from 68 to 108 B: 10 code-anchor file offsets
  * (anchor[ROM_GBUI_ANCH_COUNT]) were inserted between off[] and check so
  * revalidate_loc() can re-derive each field EXACTLY from the ROM's own code
  * bytes instead of trusting a structurally-plausible-but-corrupted off[]. */
-_Static_assert(sizeof(RomGbUiLoc) == 108, "RomGbUiLoc size drifted");
+_Static_assert(sizeof(RomGbUiLoc) == 116, "RomGbUiLoc size drifted");  /* #99: +1 off + +1 anchor (the Gen-1 key-item table) */
 _Static_assert(offsetof(RomGbUiLoc, id_hash) == 0,  "RomGbUiLoc.id_hash");
 _Static_assert(offsetof(RomGbUiLoc, size)    == 4,  "RomGbUiLoc.size");
 _Static_assert(offsetof(RomGbUiLoc, gen)     == 8,  "RomGbUiLoc.gen");
 _Static_assert(offsetof(RomGbUiLoc, pad)     == 9,  "RomGbUiLoc.pad");
 _Static_assert(sizeof(((RomGbUiLoc*)0)->pad) == 3,  "RomGbUiLoc.pad size");
 _Static_assert(offsetof(RomGbUiLoc, off)     == 12, "RomGbUiLoc.off");
-_Static_assert(sizeof(((RomGbUiLoc*)0)->off) == 52, "RomGbUiLoc.off size (off[13])");
-_Static_assert(offsetof(RomGbUiLoc, anchor)  == 64, "RomGbUiLoc.anchor");
-_Static_assert(sizeof(((RomGbUiLoc*)0)->anchor) == 40,
-               "RomGbUiLoc.anchor size (anchor[ROM_GBUI_ANCH_COUNT], COUNT==10)");
-_Static_assert(offsetof(RomGbUiLoc, check)   == 104, "RomGbUiLoc.check");
+_Static_assert(sizeof(((RomGbUiLoc*)0)->off) == 56, "RomGbUiLoc.off size (off[14])");
+_Static_assert(offsetof(RomGbUiLoc, anchor)  == 68, "RomGbUiLoc.anchor");
+_Static_assert(sizeof(((RomGbUiLoc*)0)->anchor) == 44,
+               "RomGbUiLoc.anchor size (anchor[ROM_GBUI_ANCH_COUNT], COUNT==11)");
+_Static_assert(offsetof(RomGbUiLoc, check)   == 112, "RomGbUiLoc.check");
 
 int main(void) {
-  _Static_assert(ROM_GBUI_ANCH_COUNT == 10, "ROM_GBUI_ANCH_COUNT drifted");
+  _Static_assert(ROM_GBUI_ANCH_COUNT == 11, "ROM_GBUI_ANCH_COUNT drifted");
   printf("host_gbloc_layout_test: ALL OK "
          "(RomGbSpriteLoc=%zu RomGbIconLoc=%zu RomGbUiLoc=%zu)\n",
          sizeof(RomGbSpriteLoc), sizeof(RomGbIconLoc), sizeof(RomGbUiLoc));

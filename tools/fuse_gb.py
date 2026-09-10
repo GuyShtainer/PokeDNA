@@ -24,15 +24,18 @@ it survives --gc-sections and cannot be constant-folded away)
     point at the DIRECTORY BLOCK below (not at any one payload) — the app reads
     the block once at the recorded offset/size and finds every payload inside.
 
-    directory block layout (all fields little-endian, 4-byte aligned):
+    directory block layout (all fields little-endian, 4-byte aligned). BACKLOG #98
+    bumped this to format v2 (52-byte entries, a new `pair` field) -- see below.
 
         offset  size  field
-        +0       8    magic  : ASCII "PDNAGBD1" (redundant with the locator's own
-                                magic — a second independent check that the
-                                block itself was not truncated/corrupted)
+        +0       8    magic  : ASCII "PDNAGBD2" (the DIRECTORY BLOCK's own magic --
+                                deliberately DIFFERENT from the locator record's own
+                                "PDNAGBD1" above: this is the entry-format version
+                                signal, so a v1 image is never misread through v2
+                                field offsets)
         +8       4    count  : number of entries
-        +12    48*N   entries[count], each:
-                          +0   4   type   : 1=ROM_GEN1  2=ROM_GEN2  3=SAV
+        +12    52*N   entries[count], each:
+                          +0   4   type   : 1=ROM_GEN1  2=ROM_GEN2  3=SAV  4=LOC
                           +4  32   name   : ASCII, NUL-padded (e.g. "Red.gb")
                           +36  4   offset : u32, byte offset from the START of
                                             the fused FILE (not from the
@@ -43,12 +46,26 @@ it survives --gc-sections and cannot be constant-folded away)
                                             math
                           +40  4   size   : u32, payload length in bytes
                           +44  4   crc32  : zlib CRC-32 of the payload bytes
-        +12+48*N 4    dir_size : u32, total directory-block length INCLUDING
-                                  this trailer (i.e. 12 + 48*count + 16) — lets
+                          +48  4   pair   : BACKLOG #98 -- the directory INDEX
+                                            (0-based, into this same entries array)
+                                            of the ROM entry this one was fused
+                                            BESIDE, or NO_PAIR (0xFFFFFFFF). The
+                                            command line pairs a ROM with the SAV
+                                            that follows it (ROM then SAV) and with
+                                            the LOC records generated from it
+                                            (immediately after it); a ROM entry's
+                                            own `pair` is always NO_PAIR. Lets the
+                                            reader resolve "which ROM does THIS
+                                            save/LOC belong to" without guessing by
+                                            generation alone (two same-generation
+                                            ROMs, e.g. Gold.gbc + Crystal.gbc, are
+                                            otherwise indistinguishable that way).
+        +12+52*N 4    dir_size : u32, total directory-block length INCLUDING
+                                  this trailer (i.e. 12 + 52*count + 16) — lets
                                   the app sanity-check its own record's `size`
                                   field before trusting `count`
-        +16+48*N 8    magic (again) : ASCII "PDNAGBD1"
-        +24+48*N 4    reserved (0)
+        +16+52*N 8    magic (again) : ASCII "PDNAGBD2"
+        +24+52*N 4    reserved (0)
 
     The trailing 16 bytes (dir_size + magic + reserved) are ALSO, deliberately,
     exactly the last 16 bytes of the whole fused image (payloads are appended
@@ -103,12 +120,25 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-MAGIC = b"PDNAGBD1"                 # 8 bytes, no NUL — the directory's own magic
+MAGIC = b"PDNAGBD1"                 # 8 bytes, no NUL — the g_pdna_gbd LOCATOR record's
+                                     # own magic (compiled into the binary; what
+                                     # locate_record()/locate_record_permissive() search
+                                     # the raw file for). NOT the directory block's own
+                                     # magic (see DIR_MAGIC, BACKLOG #98) -- kept separate
+                                     # on purpose so the two never collide post-fuse.
+DIR_MAGIC = b"PDNAGBD2"              # BACKLOG #98: the DIRECTORY BLOCK's own magic (its
+                                     # leading 8 bytes and its trailer's restated 8
+                                     # bytes) -- the format-v2 version signal. Distinct
+                                     # from MAGIC above so a v1-vs-v2 directory can never
+                                     # be confused with "which occurrence is the locator".
 FUSE_MAGIC = b"PDNAFUSE"            # fuse_rom.py's own record -- used only to disambiguate
 SAV_MAGIC = b"PDNASAV1"             # fuse_sav.py's own record -- same purpose
 RECORD_SIZE = 16                    # the g_pdna_gbd locator record: magic+offset+size
-ENTRY_SIZE = 48                     # type(4) + name(32) + offset(4) + size(4) + crc32(4)
+ENTRY_SIZE = 52                     # BACKLOG #98 format v2: type(4) + name(32) +
+                                     # offset(4) + size(4) + crc32(4) + pair(4)
 NAME_SIZE = 32
+NO_PAIR = 0xFFFFFFFF                 # BACKLOG #98: mirrors source/fused_gb.h's
+                                     # FUSED_GB_NO_PAIR -- "this entry has no paired ROM"
 # #68b review D1: mirrors source/fused_gb.h's FUSED_GB_MAX_ENTRIES -- same posture as
 # MAGIC/ENTRY_SIZE/RECORD_SIZE above (kept in sync by hand, not generated). The C reader
 # caches only the first FUSED_GB_MAX_ENTRIES directory entries; a directory built with
@@ -332,15 +362,16 @@ def pack_name(path: str) -> bytes:
 
 def build_directory(entries: list[dict]) -> bytes:
     body = bytearray()
-    body += MAGIC
+    body += DIR_MAGIC
     body += struct.pack("<I", len(entries))
     for e in entries:
         body += struct.pack("<I", e["type"])
         body += pack_name(e["path"])
-        body += struct.pack("<III", e["offset"], e["size"], e["crc32"])
+        body += struct.pack("<IIII", e["offset"], e["size"], e["crc32"],
+                            e.get("pair", NO_PAIR))
     dir_size = len(body) + TRAILER_SIZE
     body += struct.pack("<I", dir_size)
-    body += MAGIC
+    body += DIR_MAGIC
     body += struct.pack("<I", 0)
     assert len(body) == dir_size
     return bytes(body)
@@ -350,8 +381,8 @@ def parse_directory(blob: bytes, dir_off: int, dir_size: int) -> list[dict]:
     if dir_off + dir_size > len(blob):
         raise FuseError("directory record points past the end of the file")
     block = blob[dir_off:dir_off + dir_size]
-    if block[:8] != MAGIC:
-        raise FuseError("directory block does not start with PDNAGBD1")
+    if block[:8] != DIR_MAGIC:
+        raise FuseError(f"directory block does not start with {DIR_MAGIC.decode()}")
     count = struct.unpack_from("<I", block, 8)[0]
     expect = 12 + ENTRY_SIZE * count + TRAILER_SIZE
     if expect != dir_size:
@@ -359,7 +390,7 @@ def parse_directory(blob: bytes, dir_off: int, dir_size: int) -> list[dict]:
             f"directory size mismatch: record says {dir_size}, {count} entries "
             f"implies {expect}")
     t_dir_size, t_magic, _ = struct.unpack_from("<I8sI", block, 12 + ENTRY_SIZE * count)
-    if t_magic != MAGIC or t_dir_size != dir_size:
+    if t_magic != DIR_MAGIC or t_dir_size != dir_size:
         raise FuseError("directory trailer does not match (size or magic mismatch)")
     # The trailer must also be the literal last 16 bytes of the file (see header doc).
     if blob[-TRAILER_SIZE:] != block[-TRAILER_SIZE:]:
@@ -367,30 +398,38 @@ def parse_directory(blob: bytes, dir_off: int, dir_size: int) -> list[dict]:
     entries = []
     for i in range(count):
         o = 12 + i * ENTRY_SIZE
-        typ, name, off, size, crc = struct.unpack_from("<I32sIII", block, o)
+        typ, name, off, size, crc, pair = struct.unpack_from("<I32sIIII", block, o)
         entries.append({
             "type": typ,
             "name": name.rstrip(b"\x00").decode("ascii", "replace"),
             "offset": off,
             "size": size,
             "crc32": crc,
+            "pair": pair,
         })
     return entries
 
 
-def _append_payload(base: bytearray, entries: list[dict], t: int, name: str, data: bytes) -> None:
+def _append_payload(base: bytearray, entries: list[dict], t: int, name: str, data: bytes,
+                    pair: int = NO_PAIR) -> None:
     """Appends one payload (real file bytes or a synthetic LOC chunk -- both are just
     bytes to the fused image) at the current 256-aligned end of `base` and records its
     directory entry. Shared by the real ROM/SAV payloads and the BACKLOG #68b LOC
-    payloads below so both go through the identical align/offset/crc bookkeeping."""
+    payloads below so both go through the identical align/offset/crc bookkeeping.
+
+    `pair` (BACKLOG #98): the directory index of the ROM entry this payload was fused
+    beside, or NO_PAIR (the default -- what every ROM entry itself gets). `fuse()`
+    below is the only caller that ever passes something else."""
     pad = (-len(base)) % ALIGN
     base.extend(b"\xFF" * pad)
     off = len(base)
     base.extend(data)
     crc = zlib.crc32(data) & 0xFFFFFFFF
-    entries.append({"type": t, "path": name, "offset": off, "size": len(data), "crc32": crc})
+    entries.append({"type": t, "path": name, "offset": off, "size": len(data), "crc32": crc,
+                    "pair": pair})
+    pair_note = f"  pair=#{pair}" if pair != NO_PAIR else ""
     print(f"  + {TYPE_NAMES[t]:9s} {os.path.basename(name):16s} "
-          f"{len(data):>9,} B  @ 0x{off:08X}  crc={crc:08X}")
+          f"{len(data):>9,} B  @ 0x{off:08X}  crc={crc:08X}{pair_note}")
 
 
 def fuse(pokedna_path: str, payload_paths: list[str], out_path: str, force: bool,
@@ -420,13 +459,30 @@ def fuse(pokedna_path: str, payload_paths: list[str], out_path: str, force: bool
     driver_bin = None
     driver_tmpdir = None
 
+    # BACKLOG #98: the fuse command line pairs a ROM with whatever SAV/LOC payloads
+    # describe it -- a ROM, then (optionally) the SAV that follows it, and its own LOC
+    # records (generated immediately after it, below). `last_rom_idx` tracks the
+    # directory index of the MOST RECENTLY appended ROM entry; a SAV payload takes
+    # whatever that is at the moment it is appended (NO_PAIR if no ROM has been fused
+    # yet on this command line). This is recorded once, here, instead of re-derived by
+    # "nearest preceding ROM entry" guesswork at read time.
+    last_rom_idx: int | None = None
+
     for p in payload_paths:
         if not os.path.isfile(p):
             raise FuseError(f"{p}: not a file")
         t = classify(p)
         data = open(p, "rb").read()
         validate_payload(p, t, data)
-        _append_payload(base, entries, t, p, data)
+
+        if t in (TYPE_ROM_GEN1, TYPE_ROM_GEN2):
+            _append_payload(base, entries, t, p, data)
+            last_rom_idx = len(entries) - 1
+        elif t == TYPE_SAV:
+            _append_payload(base, entries, t, p, data,
+                            pair=last_rom_idx if last_rom_idx is not None else NO_PAIR)
+        else:
+            _append_payload(base, entries, t, p, data)
 
         if t in (TYPE_ROM_GEN1, TYPE_ROM_GEN2) and not skip_loc:
             if driver_bin is None:
@@ -437,7 +493,7 @@ def fuse(pokedna_path: str, payload_paths: list[str], out_path: str, force: bool
                 kind = chunk[8]
                 gen = chunk[9]
                 name = f"LOC.{LOC_KIND_NAMES.get(kind, kind)}.g{gen}"
-                _append_payload(base, entries, TYPE_LOC, name, chunk)
+                _append_payload(base, entries, TYPE_LOC, name, chunk, pair=last_rom_idx)
 
     if driver_tmpdir is not None:
         driver_tmpdir.cleanup()
@@ -499,8 +555,8 @@ def fuse(pokedna_path: str, payload_paths: list[str], out_path: str, force: bool
         problems.append(f"directory did not round-trip: {e}")
         back_entries = []
     for want, got in zip(entries, back_entries):
-        if (got["type"], got["offset"], got["size"], got["crc32"]) != \
-           (want["type"], want["offset"], want["size"], want["crc32"]):
+        if (got["type"], got["offset"], got["size"], got["crc32"], got["pair"]) != \
+           (want["type"], want["offset"], want["size"], want["crc32"], want["pair"]):
             problems.append(f"entry {want['path']} did not round-trip")
         payload = back[got["offset"]:got["offset"] + got["size"]]
         if (zlib.crc32(payload) & 0xFFFFFFFF) != want["crc32"]:
@@ -521,9 +577,9 @@ def fuse(pokedna_path: str, payload_paths: list[str], out_path: str, force: bool
 
 def _record_is_valid_directory(blob: bytes, rec_off: int) -> bool:
     """True iff the (offset,size) pair stored AT rec_off itself parses as a
-    structurally valid PDNAGBD1 directory (magic/count/trailer all self-consistent,
-    parse_directory() does the real checking) -- the one positive signal `hits[0]`
-    alone never checked at all (#62 review D7)."""
+    structurally valid directory (magic/count/trailer all self-consistent -- checked
+    against DIR_MAGIC, not MAGIC: parse_directory() does the real checking) -- the one
+    positive signal `hits[0]` alone never checked at all (#62 review D7)."""
     try:
         off, size = read_record(blob, rec_off)
         if not size:
@@ -600,17 +656,29 @@ def check_only(path: str) -> int:
         crc = zlib.crc32(payload) & 0xFFFFFFFF
         ok = crc == e["crc32"]
         extra = ""
-        # BACKLOG #68b: a LOC entry's own [header+record] payload carries a second,
-        # independent claim (kind/gen/id_hash/rom_size) about the ROM it accompanies --
-        # verify that claim against the ACTUAL fused ROM bytes, not just the outer CRC
-        # (which only proves the LOC bytes themselves are intact, not that they still
-        # describe the right ROM). Two same-gen ROMs (e.g. delta-gb's Gold.gbc AND
-        # Crystal.gbc) can share the exact same file SIZE, so size alone cannot pick
-        # the right one -- fuse_gb.py always appends a ROM's LOC entries immediately
-        # after that ROM's own payload (see fuse()), so the accompanying ROM is
-        # whichever gen-matching ROM entry appears most recently BEFORE this LOC entry
-        # in directory order, never "the first one of the right size".
-        if ok and e["type"] == TYPE_LOC:
+        pair = e["pair"]
+
+        def pair_ident(p=pair) -> str:
+            """BACKLOG #98: resolves e['pair'] to a human-readable identity string
+            for --check's output -- 'none' (NO_PAIR), 'entry #N (OUT OF RANGE / not a
+            ROM)', or 'name.ext (id_hash=0x........)' for a ROM the id actually
+            recomputes against (same fnv1a32 every rom_gb*.c/this tool itself use)."""
+            if p == NO_PAIR:
+                return "none"
+            if p >= len(entries) or entries[p]["type"] not in (TYPE_ROM_GEN1, TYPE_ROM_GEN2):
+                return f"entry #{p} (OUT OF RANGE / not a ROM)"
+            rom = entries[p]
+            rom_bytes = blob[rom["offset"]:rom["offset"] + rom["size"]]
+            return f"{rom['name']} (id_hash=0x{gb_id_hash(rom_bytes):08X})"
+
+        # BACKLOG #98: a SAV or LOC entry's `pair` is RECORDED at fuse time (see
+        # fuse()'s last_rom_idx tracking), not re-derived by "nearest preceding ROM
+        # entry" guesswork -- print what it resolves to for both types, so `--check`
+        # answers "which save goes with which ROM" the same way the C reader now
+        # will at runtime (fused_gb_set_active_save()).
+        if e["type"] == TYPE_SAV:
+            extra = f"  pair -> {pair_ident()}"
+        elif ok and e["type"] == TYPE_LOC:
             if len(payload) < LOC_HDR_SIZE or payload[:8] != LOC_HDR_MAGIC:
                 ok = False
                 extra = " (malformed LOC header)"
@@ -623,17 +691,14 @@ def check_only(path: str) -> int:
                     extra = " (rec_size does not match payload length)"
                 else:
                     rom_type = TYPE_ROM_GEN1 if gen == 1 else TYPE_ROM_GEN2
-                    match = None
-                    for j in range(idx - 1, -1, -1):
-                        if entries[j]["type"] == rom_type:
-                            match = entries[j]
-                            break
+                    match = (entries[pair] if pair != NO_PAIR and pair < len(entries)
+                             and entries[pair]["type"] == rom_type else None)
                     if match is None:
                         ok = False
-                        extra = f" (no preceding gen-{gen} ROM entry)"
+                        extra = f" (pair -> {pair_ident()}, not a gen-{gen} ROM entry)"
                     elif match["size"] != claimed_size:
                         ok = False
-                        extra = (f" (size mismatch vs preceding ROM {match['name']}: "
+                        extra = (f" (size mismatch vs paired ROM {match['name']}: "
                                  f"claimed {claimed_size}, actual {match['size']})")
                     else:
                         rom_bytes = blob[match["offset"]:match["offset"] + match["size"]]

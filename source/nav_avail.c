@@ -81,6 +81,8 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Frontier." } },
   [NV_FLY]       = { { NAV_COMING_SOON, "Fly flags are coming soon." },
                      { NAV_COMING_SOON, "Fly flags are coming soon." } },
+  [NV_CONTEST]   = { { NAV_NOT_IN_GAME, "Gen 1 games have no Contests." },
+                     { NAV_NOT_IN_GAME, "Gen 2 games have no Contests." } },
   /* Review D2: GEN12-PARITY-DESIGN.md puts a Game Boy map renderer OUT of scope, so
    * "coming soon" would promise a date nobody plans; name the blocker instead. */
   [NV_MAP]       = { { NAV_COMING_SOON, "Needs a Game Boy map viewer." },

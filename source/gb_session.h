@@ -119,6 +119,14 @@ GbsStatus gbs_open(GbSession* s, uint8_t* img, uint32_t len,
 int gbs_nboxes(const GbSession* s);
 int gbs_party_box(const GbSession* s);
 
+/* BACKLOG #95 (gbmon C11/C2 wiring): is this an open Gen-2 session on western Crystal —
+ * the only Gen-2 version with a capture record (0x1D/0x1E)? False on a closed session,
+ * a Gen-1 session, or Gold/Silver. The single source of truth for "does this save get a
+ * synthetic Met record": both the live editor (pdna_gen12.c's gb_mark_caught) and any
+ * tool driving gb_session directly (tools/gb_retail_gate.py's --op caught case) call
+ * this rather than re-deriving the version check, so they cannot diverge. */
+bool gb_session_is_crystal(const GbSession* s);
+
 /* May this box be committed to at all? Answers BEFORE the user starts editing, so a UI
  * can grey the box out rather than refusing after the work. The Gen-1 answer is the
  * interesting one: with bit 7 of 0x284C clear the eleven banked boxes are un-erased SRAM

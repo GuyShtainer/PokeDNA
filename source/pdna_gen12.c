@@ -979,7 +979,7 @@ static bool gb_locate(uint8_t* rec80, int* box, int* slot) {
  * session knows from its detected save version; the nested mount from its kind. */
 static void gb_mark_caught(GbEditMon* e, uint8_t gen) {
   if (gen != GB_GEN2) return;
-  bool crystal = g_ed ? (g_ed->s.g2w.sv.version == G2_VER_CRYSTAL)
+  bool crystal = g_ed ? gb_session_is_crystal(&g_ed->s)
                       : (g_m && g_m->kind == GB12_SAVE_CRYSTAL);
   gb_set_caught_available(e, crystal);
 }

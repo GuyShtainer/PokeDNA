@@ -48,6 +48,7 @@
   X(NV_BATTLEREC,  "Records")                   \
   X(NV_FRONTIER,   "Frontier")                  \
   X(NV_FLY,        "Fly")                       \
+  X(NV_CONTEST,    "Contests")                  \
   /* Present in the emulator build too: when a Pokemon ROM has been fused into this   */ \
   /* image (tools/fuse_rom.py) the map reads it from cartridge space, no SD needed.   */ \
   X(NV_MAP,        "Map")                       \
@@ -490,6 +491,12 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_EDIT_LBL_W     (PDNA_EDIT_VAL_X - PDNA_EDIT_LBL_X)
 #define PDNA_EDIT_MAXPP_LBL(n)  "Max PP " #n
 #define PDNA_EDIT_REGION_LBL    "Region"
+/* Contest ribbon rank rows (BACKLOG #60) — the longest labels the field list has: */
+#define PDNA_EDIT_RIB_COOL_LBL   "Cool Ribbon"
+#define PDNA_EDIT_RIB_BEAUTY_LBL "Beauty Ribbon"
+#define PDNA_EDIT_RIB_CUTE_LBL   "Cute Ribbon"
+#define PDNA_EDIT_RIB_SMART_LBL  "Smart Ribbon"
+#define PDNA_EDIT_RIB_TOUGH_LBL  "Tough Ribbon"
 /* "35  Ups 3": the derived maximum, then the PP-Up count that bought it. */
 #define PDNA_EDIT_MAXPP_FMT     "%u  Ups %u"
 #define PDNA_EDIT_FOOT          "L/R+- A:pick B:exit ST:save"
@@ -1633,6 +1640,18 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBSCR_REASON_OPEN        "ROM art unavailable"
 #define PDNA_GBSCR_REASON_BAD_GEN     "not a Gen-1/Gen-2 request"
 #define PDNA_GBSCR_REASON_NO_TAIL     "no tile-bank memory"
+/* BACKLOG #98 D2 (review-sonnet ab81b56): the delta-gb fused-ROM lookup
+ * (source/fused_gb.c's fused_gb_lookup_failed_reason()) can now fail for two
+ * reasons more specific than a plain "no ROM registered" -- an active save that
+ * genuinely has no fused ROM of its own (ORPHANED) vs. one where the fused
+ * directory itself is ambiguous (two ROMs of the same generation, ambiguous, no
+ * active-save pairing to break the tie). pdna_gbscreen.c's gbscr_open_inner()
+ * (delta build only) maps FusedGbFailReason to one of these instead of the
+ * generic kReasonNoRom, so the fallback page says WHY, not just THAT. Measured
+ * against GBTR_HEADER2_MAXW in tests/host_textfit_test.c, same as every other
+ * reason string here. */
+#define PDNA_GBSCR_REASON_AMBIGUOUS_ROM "two ROMs of this game fused; pick a save"
+#define PDNA_GBSCR_REASON_ORPHANED_ROM  "this save's ROM is not fused"
 #define PDNA_GBSCR_REASON_UNAVAILABLE "unavailable"
 /* Only reachable under -DPDNA_U2C_FORCE_FALLBACK (a build-time test flag,
  * pdna_gbtrainer.c) -- included here anyway so the same width test covers

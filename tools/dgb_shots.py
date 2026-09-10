@@ -47,6 +47,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import sys
 from pathlib import Path
@@ -54,12 +55,45 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import gb_shots  # noqa: E402 -- Session, load_mgba, KEY, HOLD/SETTLE/BIG_SETTLE
+import fuse_gb   # noqa: E402 -- BACKLOG #98 D3: reads the fused image's OWN directory
+                 # (locate_record_permissive/read_record/parse_directory, the same
+                 # code path `fuse_gb.py --check` uses) instead of assuming a fixed
+                 # fuse order.
 
-# fuse_gb.py preserves command-line order; the Makefile's delta-gb recipe fuses
-# Red.sav, Gold.sav, Crystal.sav in that order -> directory SAV-only indices 0, 1, 2
-# (fused_gb_save() enumerates SAV entries only, in directory order). The #68a boot
-# picker's GB rows use this same order, offset by +1 (row 0 is the Gen-3 save).
-PICK_INDEX = {"red": 0, "gold": 1, "crystal": 2}
+
+@functools.lru_cache(maxsize=None)
+def gb_save_pick_index(image: Path) -> dict[str, int]:
+    """BACKLOG #98 D3 (review-sonnet ab81b56): the boot picker's GB rows mirror
+    fused_gb_save()'s own enumeration order -- SAV-type directory entries, in
+    directory order, offset by +1 (row 0 is the Gen-3 save) -- so the picker row
+    for a given save NAME depends on the fuse ORDER of THIS image, not some fixed
+    Red/Gold/Crystal assumption. The old PICK_INDEX = {"red": 0, "gold": 1,
+    "crystal": 2} hardcoded the Makefile's delta-gb recipe order and silently
+    drove the wrong row against any image fused in a different order (e.g. a
+    Crystal-first multi-ROM harness image built to reproduce BACKLOG #98 D1).
+
+    Reads `image`'s own fused directory the same way `fuse_gb.py --check` does
+    (locate_record_permissive -> read_record -> parse_directory) and maps each
+    SAV entry's filename stem, lowercased, to its enumeration index -- e.g.
+    {"gold": 0, "crystal": 1} for a Crystal-first two-save image, independent of
+    what generation/order the caller expects. Memoized per image path: this
+    script calls it once per shot, and the image never changes mid-run.
+    """
+    blob = image.read_bytes()
+    rec_off = fuse_gb.locate_record_permissive(blob, str(image))
+    off, size = fuse_gb.read_record(blob, rec_off)
+    if not size:
+        return {}
+    entries = fuse_gb.parse_directory(blob, off, size)
+    out: dict[str, int] = {}
+    idx = 0
+    for e in entries:
+        if e["type"] != fuse_gb.TYPE_SAV:
+            continue
+        stem = Path(e["name"]).stem.lower()
+        out[stem] = idx
+        idx += 1
+    return out
 
 # source/pdna_layout.h PDNA_NAV_ITEMS: two 10-row columns, Party at (col0, row0).
 # NV_GB is column 1, row 6 (Blocks=row0 of col1 .. GB import=row6) -- same arithmetic
@@ -150,7 +184,7 @@ def run_nav_gb(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_
     captures what the nested-import mount actually shows: the info page, the box grid
     (real Game Boy art -- BACKLOG #62's whole point, cold-fetched the first time), the
     occupied-cell menu, and VIEW (a real portrait via the shared origin-art router)."""
-    idx = PICK_INDEX[which]
+    idx = gb_save_pick_index(rom)[which]
     # "dgb_" prefix: tools/gb_shots.py's own run_gold()/run_red() already claim
     # gold_01_info.png etc. for the single-fused-save build's standalone S1..S5 flow --
     # this build's shots are a DIFFERENT screen (the nested NV_GB import mount, see
@@ -457,11 +491,12 @@ def run_u2c_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
 def run_u3_trainer(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
     """U3 (BACKLOG #66, docs/GB-GAME-SCREENS-DESIGN.md sec 1.2): Gold/Silver/Crystal's
     OWN trainer card on the shared GB-screen shell -- the Gen-2 sibling of
-    run_u2c_trainer() above. Boot picker DOWN x(PICK_INDEX[which]+1) -> `which` row ->
-    A -> S1 info -> A -> box grid (cold rom_gbsprite scan) -> START -> nav menu ->
-    DOWN x3 -> Trainer -> A -> pdna_gbtrainer_gen2_card() (gbscr_open()'s OWN separate
-    cold rom_gbui scan, same GB_ART_COLD_SETTLE ride-out run_u2c_trainer() needs)."""
-    idx = PICK_INDEX[which]
+    run_u2c_trainer() above. Boot picker DOWN x(gb_save_pick_index(rom)[which]+1) ->
+    `which` row -> A -> S1 info -> A -> box grid (cold rom_gbsprite scan) -> START ->
+    nav menu -> DOWN x3 -> Trainer -> A -> pdna_gbtrainer_gen2_card() (gbscr_open()'s
+    OWN separate cold rom_gbui scan, same GB_ART_COLD_SETTLE ride-out
+    run_u2c_trainer() needs)."""
+    idx = gb_save_pick_index(rom)[which]
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"u3_{which}_")
     print(f"== U3: {which}'s own trainer card (boot picker -> standalone -> Trainer) ==")
 

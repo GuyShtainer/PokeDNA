@@ -39,6 +39,7 @@
 #include "gen3_frontier.h"  /* g3f_streak_get/g3f_modes/g3f_mode_name for the record screen's streaks page */
 #include "pdna_frontier.h"  /* Battle Frontier win-streak viewer/editor (SaveBlock2) */
 #include "pdna_fly.h"       /* Fly-destination (visited-town) flags (SaveBlock1)     */
+#include "pdna_contest.h"   /* Museum paintings + Contest Hall winners (BACKLOG #60) */
 #include "pdna_map.h"       /* overworld map, read from the user's own Pokemon ROM   */
 #include "pdna_trainer.h"
 #include "pdna_edit.h"
@@ -9145,6 +9146,9 @@ static void view_save(const char* path) {
         if (pick < 0) break;
         const char* nm = 0; const uint8_t* base = 0; uint32_t psz = 0;
         if (!fused_gb_save(pick, &nm, &base, &psz) || !pdna_gen12_size_is_gb(psz)) break;
+        fused_gb_set_active_save(pick);   /* BACKLOG #98: so fused_gb_rom()/fused_gb_loc()
+                                            * resolve THIS save's own paired ROM instead of
+                                            * guessing by generation alone */
         any_picked = true;
         memcpy(g_save, base, psz);
         memset(&g_vinfo, 0, sizeof g_vinfo);
@@ -9197,6 +9201,9 @@ static void view_save(const char* path) {
         int pick = bp - 1;
         const char* nm = 0; const uint8_t* base = 0; uint32_t psz = 0;
         if (!fused_gb_save(pick, &nm, &base, &psz) || !pdna_gen12_size_is_gb(psz)) break;
+        fused_gb_set_active_save(pick);   /* BACKLOG #98: so fused_gb_rom()/fused_gb_loc()
+                                            * resolve THIS save's own paired ROM instead of
+                                            * guessing by generation alone */
         memcpy(g_save, base, psz);
         memset(&g_vinfo, 0, sizeof g_vinfo);
         g_save_size = psz;
@@ -9502,6 +9509,7 @@ static void view_save(const char* path) {
         case NV_BATTLEREC: pdna_battle_record(); break;  /* viewing is free; export gates on Omega inside */
         case NV_FRONTIER: pdna_frontier(g_sb1, g_sb2, g_game); break;   /* viewing free; editing gates on Omega inside */
         case NV_FLY:      pdna_fly(g_sb1, g_game); break;        /* viewing free; editing gates on Omega inside */
+        case NV_CONTEST:  pdna_contest(g_sb1, g_pc, g_game); break;  /* viewing free; editing gates on Omega inside */
         case NV_MAP:      pdna_map(g_sb1, g_sb2, g_game); break;  /* the user's own ROM: SD file, or fused into this image */
         case NV_GB: {
 #ifdef PDNA_DELTA
@@ -9522,6 +9530,7 @@ static void view_save(const char* path) {
             if (fused_gb_save_count() <= 0)
               msg_wait("GB IMPORT", UI_DIM, "No fused GB saves.", "Rebuild with tools/fuse_gb.py.");
           } else {
+            fused_gb_set_active_save(pick);   /* the third pick site: the nested import (b98 re-verify) */
             pdna_gen12_show_fused(pick, (uint8_t)(g_game == PK_RS ? 1 : g_game == PK_FRLG ? 4 : 3));
           }
 #else

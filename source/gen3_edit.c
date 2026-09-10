@@ -1,4 +1,5 @@
 #include "gen3_edit.h"
+#include "gen3_contest.h"  /* gc_ribbon_* — bit layout for the ribbons word          */
 #include "gen3_save.h"     /* gen3_decode_char (for symmetry doc), sizes */
 #include "data_tables.h"   /* base stats, nature mods, growth, exp, move PP */
 #include "gen3_daycare.h"  /* pk_egg_group — the shipped breedability table   */
@@ -139,6 +140,33 @@ void em_set_ev(EditMon* e, int stat, uint8_t v) {
 void em_set_contest(EditMon* e, int i, uint8_t v) {
   if (i < 0 || i > 5) return;
   e->sub[2][6 + i] = v;
+}
+
+/* Contest ribbon rank / named flags — the Misc substruct's ribbons word (sub[3]
+ * +0x08..+0x0B, same field gen3_mon.c decodes into PkMon.ribbons). The rank helpers
+ * call gc_ribbon_get/set directly (gen3_contest.h, static inline — header-only, so
+ * there is no .o link dependency on gen3_contest.c to worry about, and the bit
+ * arithmetic exists in exactly one place); this SAME arithmetic, checked against a
+ * real save's ribbon word, round-trips in tests/host_contest_test.c. The named-flag
+ * helpers below stay a local bit test/set — gc_ribbon_flag_get/set are not inline. */
+static uint32_t ribbons_rd(const EditMon* e) { return rd32(e->sub[3] + 0x08); }
+static void     ribbons_wr(EditMon* e, uint32_t v) { wr32(e->sub[3] + 0x08, v); }
+
+void em_set_ribbon_rank(EditMon* e, int category, uint8_t rank) {
+  ribbons_wr(e, gc_ribbon_set(ribbons_rd(e), category, rank));
+}
+uint8_t em_get_ribbon_rank(const EditMon* e, int category) {
+  return gc_ribbon_get(ribbons_rd(e), category);
+}
+void em_set_ribbon_flag(EditMon* e, int flagbit, bool on) {
+  if (flagbit < GC_RFLAG_CHAMPION || flagbit > GC_RFLAG_WORLD) return;
+  uint32_t bit = 1u << flagbit;
+  uint32_t r = ribbons_rd(e);
+  ribbons_wr(e, on ? (r | bit) : (r & ~bit));
+}
+bool em_get_ribbon_flag(const EditMon* e, int flagbit) {
+  if (flagbit < GC_RFLAG_CHAMPION || flagbit > GC_RFLAG_WORLD) return false;
+  return (ribbons_rd(e) >> flagbit) & 1u;
 }
 
 /* Met location for a Pokémon PokeDNA creates.
