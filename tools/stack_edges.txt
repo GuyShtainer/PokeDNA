@@ -959,3 +959,11 @@ addrtaken-ok tte_cmd_skip
 # holds it and nothing in PokeDNA calls it indirectly. Own chain 0 B (<= the 256-B cap).
 # Merged 2026-09-10 (u5, normal build).
 addrtaken-ok __aeabi_d2iz
+
+# gen2_write.c's static encode_checked (frame 72 B) is called DIRECTLY by g2w_set_nickname /
+# g2w_set_otname / g2w_set_box_name (4 bl sites) and is never dispatched. On some links it lands
+# at exactly 0x08010000, which pdna_romfull_screen's literal pool and s_fam (.rodata) hold as a
+# ROM-span constant, so the address-taken sweep sees a coincidence (BACKLOG #106 G2: the sweep
+# does not distinguish data words from pointers). Bounded by the 256-B cap. Found on the r1 lane
+# 2026-09-10 (main's link places it at 0x0800ffa0, no match).
+addrtaken-ok encode_checked
