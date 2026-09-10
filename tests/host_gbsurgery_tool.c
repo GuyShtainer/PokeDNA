@@ -25,6 +25,10 @@
  *      source/gb_trainer.c \
  *      source/gb_fields.c \
  *      source/gb_bag.c \
+ *      source/gb_daycare.c \
+ *      source/gb_clock.c \
+ *      source/gb_fly.c \
+ *      source/gb_boxnames.c \
  *      -o /tmp/hgbsurg
  *
  * Usage
@@ -123,6 +127,10 @@
 #include "data_tables.h"
 #include "gb_trainer.h"
 #include "gb_bag.h"
+#include "gb_daycare.h"
+#include "gb_clock.h"
+#include "gb_fly.h"
+#include "gb_boxnames.h"
 
 #define MAX_FILE_BYTES 65536u
 #define MAX_OPS        64
@@ -167,6 +175,20 @@ static void usage(const char* prog) {
     "                               entry is inserted with that QTY (both ID and QTY\n"
     "                               0..255 on the command line; gb_bag.h's own caps\n"
     "                               apply -- e.g. qty is refused outside 1..99).\n"
+    "  --op daycare SLOT DEX       BACKLOG #85, via gb_daycare.h: deposit a fixed-stat\n"
+    "                               test mon (level 5, nick TESTMON, OT TESTER; Gen 1\n"
+    "                               uses a fixed placeholder GbGen1Base -- no --rom\n"
+    "                               needed) into day-care slot 0 (Gen 1's only slot,\n"
+    "                               or Gen 2's Day-Care Man) or 1 (Gen 2's Day-Care\n"
+    "                               Lady, refused on Gen 1). Refused if occupied.\n"
+    "  --op clock DAY HOUR MIN SEC BACKLOG #86, via gb_clock.h: sets wStartDay/Hour/\n"
+    "                               Minute/Second and clears the RTC-reset status\n"
+    "                               flag. Gen 1 refused (no clock).\n"
+    "  --op fly INDEX              BACKLOG #90, via gb_fly.h: sets fly-destination\n"
+    "                               bit INDEX visited. INDEX is 0..gbfy_count()-1 for\n"
+    "                               this save's own generation.\n"
+    "  --op boxname BOX TEXT       BACKLOG #94, via gb_boxnames.h: renames box BOX\n"
+    "                               (0..13). Gen 1 refused (no box names).\n"
     "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -180,6 +202,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"create", 2},
     {"badges", 1}, {"name", 1}, {"badges2", 2},
     {"item", 3},
+    {"daycare", 2}, {"clock", 4}, {"fly", 1}, {"boxname", 2},
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -625,6 +648,83 @@ static int do_item(GbSession* s, const char* pocket_tok, const char* id_tok,
   return 0;
 }
 
+/* BACKLOG #85 -- via gb_daycare.h. A fixed-stat test mon (never --rom, unlike --op
+ * create): Gen 2 needs no base-stat table at all (gb_set_species(NULL) works, same as
+ * --op create's Gen-2 path); Gen 1 gets a FIXED placeholder GbGen1Base (Bulbasaur's
+ * real Gen-1 base stats/types, docs/kb/pokemon -- HP45/Atk49/Def49/Spe45/Spc65,
+ * GRASS/POISON) regardless of which dex is asked for, since the retail-gate case this
+ * exists for only needs a record that decodes without corrupting the save, not an
+ * accurate stat line for an arbitrary species. */
+static int do_daycare(GbSession* s, const char* slot_tok, const char* dex_tok) {
+  int slot = resolve_uint(slot_tok, "daycare slot");
+  int dex = resolve_uint(dex_tok, "dex");
+  if (slot < 0 || dex < 0) return 2;
+
+  GbEditMon mon;
+  memset(&mon, 0, sizeof mon);
+  mon.gen = s->gen;
+  mon.rec_len = (uint8_t)gb_rec_size(s->gen, false);
+  mon.is_party = false;
+  static const GbGen1Base g1_placeholder = {
+    .base = { 45, 49, 49, 45, 65 }, .type1 = 0x16, .type2 = 0x03
+  };
+  if (!gb_set_species(&mon, (uint16_t)dex, s->gen == GB_GEN1 ? &g1_placeholder : NULL))
+    return refuse("gb_set_species refused (bad dex for this generation?)");
+  if (!gb_set_level(&mon, 5)) return refuse("gb_set_level refused");
+  if (!gb_set_nickname(&mon, "TESTMON")) return refuse("gb_set_nickname refused");
+  if (!gb_set_otname(&mon, "TESTER")) return refuse("gb_set_otname refused");
+
+  GbsStatus st = gbd_deposit(s, slot, &mon);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  printf("deposited dex=%d lv=5 into day-care slot %d\n", dex, slot);
+  return 0;
+}
+
+/* BACKLOG #86 -- via gb_clock.h. Sets the RTC-epoch fields and clears the "reset"
+ * status flag unconditionally (clear_status_flags=true). Gen 1 refused (gbc_write's
+ * own GBS_ERR_ARG, no clock at all). */
+static int do_clock(GbSession* s, const char* day_tok, const char* hour_tok,
+                    const char* min_tok, const char* sec_tok) {
+  int day = resolve_uint(day_tok, "clock day");
+  int hour = resolve_uint(hour_tok, "clock hour");
+  int min = resolve_uint(min_tok, "clock minute");
+  int sec = resolve_uint(sec_tok, "clock second");
+  if (day < 0 || hour < 0 || min < 0 || sec < 0) return 2;
+  if (day > 255 || hour > 255 || min > 255 || sec > 255) {
+    fprintf(stderr, "clock fields must be 0..255\n");
+    return 2;
+  }
+  GbClock c;
+  if (!gbc_read(s, &c)) return refuse("gbc_read failed");
+  if (!c.present) return refuse("this generation has no clock (Gen 1)");
+  c.start_day = (uint8_t)day;
+  c.start_hour = (uint8_t)hour;
+  c.start_minute = (uint8_t)min;
+  c.start_second = (uint8_t)sec;
+  GbsStatus st = gbc_write(s, &c, true);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* BACKLOG #90 -- via gb_fly.h. Sets one fly-destination bit visited. */
+static int do_fly(GbSession* s, const char* idx_tok) {
+  int idx = resolve_uint(idx_tok, "fly index");
+  if (idx < 0) return 2;
+  GbsStatus st = gbfy_set(s, idx, true);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* BACKLOG #94 -- via gb_boxnames.h. Gen 1 refused (gbbn_rename's own GBS_ERR_ARG, no
+ * box names at all). */
+static int do_boxname(GbSession* s, const char* box_tok, const char* text) {
+  int box = resolve_uint(box_tok, "box");
+  if (box < 0) return 2;
+  GbsStatus st = gbbn_rename(s, box, text);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
 /* Dispatch one already-shaped Op. Returns 0 ok, 1 refused (reported), 2 usage (reported). */
 static int apply_op(GbSession* s, const Op* o) {
   if (!strcmp(o->kind, "nick") || !strcmp(o->kind, "ot")) {
@@ -673,6 +773,18 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "item")) {
     return do_item(s, o->a[0], o->a[1], o->a[2]);
+  }
+  if (!strcmp(o->kind, "daycare")) {
+    return do_daycare(s, o->a[0], o->a[1]);
+  }
+  if (!strcmp(o->kind, "clock")) {
+    return do_clock(s, o->a[0], o->a[1], o->a[2], o->a[3]);
+  }
+  if (!strcmp(o->kind, "fly")) {
+    return do_fly(s, o->a[0]);
+  }
+  if (!strcmp(o->kind, "boxname")) {
+    return do_boxname(s, o->a[0], o->a[1]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;
