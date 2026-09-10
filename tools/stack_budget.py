@@ -493,6 +493,8 @@ def _base_is_section_anchor(fn_insn_seq, ldr_idx, base_reg):
         m = LDR_FIELD_RE.match(ins_clean)
         if m and m.group(1) == base_reg:
             return m.group(2) == 'pc'
+        if STORE_MNEM_RE.match(ins_clean) or CMP_MNEM_RE.match(ins_clean):
+            continue                            # a spill/compare READS base_reg, doesn't redefine it
         dm = DEST_REG_RE.match(ins_clean)
         if dm and dm.group(1) == base_reg:
             return False                    # base redefined by something else first

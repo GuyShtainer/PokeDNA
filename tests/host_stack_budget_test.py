@@ -165,6 +165,33 @@ def test_b_blind_spot_per_site():
               addr == "0x1020" and "@28" in detail, caller_blind[0])
 
 
+# === (b2) D1: a spilled base register is still a section anchor ========================
+
+def test_b2_spill_is_not_redefinition():
+    """The reviewer's synthetic reproduction: `ldr r3,[pc,#40]` materializes a
+    section-anchor base, `str r3,[sp,#24]` SPILLS it (reads r3, does not redefine
+    it), then `ldr r3,[r3,#20]` indexes off it -- byte-for-byte the same shape as a
+    genuine `ldr r3,[r3,#20]` struct-field dereference through an instance pointer.
+    Before the fix, _base_is_section_anchor()'s backward scan hit the `str` first
+    and, because DEST_REG_RE also matches a str's first operand, treated it as a
+    redefinition of r3 and stopped looking -- so it never saw the earlier
+    `ldr r3,[pc,#40]` and returned False (not a section anchor), and the call site
+    resolved to a false 'field' hit that could coincide with a declared field
+    (e.g. BoxSource.records @20) and silently exempt an unrelated global/thunk
+    dispatch. Must resolve to ('nonfield', None) -- a blind spot, not a field."""
+    fn_insn_seq = {
+        "spill_then_index": [
+            (0x0f00, "ldr\tr3, [pc, #40]\t@ (0f2c <spill_then_index+0x2c>)"),
+            (0x0f02, "str\tr3, [sp, #24]"),
+            (0x0f04, "ldr\tr3, [r3, #20]"),
+            (0x0f06, "nop"),
+        ],
+    }
+    kind, off = sb.resolve_indirect_site(fn_insn_seq["spill_then_index"], 0x0f08, "r3")
+    check("(b2) spilled section-anchor base resolves nonfield, not field @20",
+          (kind, off) == ("nonfield", None), (kind, off))
+
+
 # === (c) argsites count mismatch ========================================================
 
 def test_c_argsites_count_mismatch():
@@ -307,6 +334,7 @@ def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
     test_b_blind_spot_per_site()
+    test_b2_spill_is_not_redefinition()
     test_c_argsites_count_mismatch()
     test_c_argsites_count_match_is_clean()
     test_d_unknown_frame_fails_unless_overridden()
