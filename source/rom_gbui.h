@@ -188,33 +188,44 @@ typedef enum {
  * (re-verified: tests/host_romgbui_test.c, and again after #71 via
  * tools/gbui_dump.py against the same corpus).
  *
+ * PDNA_GB_UI_NEED = 2,920 (open_loc's full-scan-fallback chain, the worse of
+ * the two entry points, UP from 2,840 -- see the #71 delta above) + 1,576
+ * (source/pdna_gbscreen.c's gbscr_open_inner() OWN frame, UNCHANGED by #71:
+ * pdna_gbscreen.c was not touched by this batch) = 4,480 -- PLUS the leg the
+ * call-graph walk cannot follow (U2b review D1, 2026-09-09): distinct_tiles()
+ * calls the GbReadFn INDIRECTLY, and on the SD build that is gbscr_sd_read
+ * 24 -> f_lseek 80 -> create_chain 40 -> fill_last_frag 16 -> put_fat 32 ->
+ * move_window 16 -> disk_read 32 -> flashcartio_read_sector 40 -> diskRead
+ * 24 -> ed_sd_dma_rd 48 -> ed_sd_dma_to_rom 552 = 904 B (measured,
+ * -fstack-usage, UNCHANGED by #71). 4,480 + 904 = 5,384. Both real call
+ * sites' OLD margins (measured at 5,320) were Settings 6,680 free and the
+ * nav-menu chain 7,792 free; PDNA_GB_UI_NEED moving by +64 moves each margin
+ * by the same -64 (6,616 / 7,728 free) -- neither call site was touched by
+ * this batch, so this is arithmetic, not a re-measurement of them.
+ *
+ * gbscr_cache_block() (the U2b item 1 bulk-copy of FONT + need_mask's blocks
+ * into `tail`, called AFTER rom_gbui_open_loc() returns, never nested inside
+ * it) adds only 16 B of its own frame plus whichever GbReadFn it calls
+ * (gbscr_sd_read: 24 B) -- 40 B, far under the 2,920-B rom_gbui_open_loc chain
+ * this replaces as the deepest path, so it does not move PDNA_GB_UI_NEED.
+ *
  * D1/D2 fix (U2a review, 2026-09-09): the gate used to live INSIDE the frame
  * it was supposed to be measuring the room FOR (gbscr_open()'s own
  * stack_room() call ran after that frame already existed), which counts the
  * room LEFT UNDER the frame instead of the room the frame NEEDS -- on the
  * artless/SD build's Settings path this made the gate refuse EVERY time on
  * real hardware. The gate lives in a thin `gbscr_open()` wrapper that runs
- * BEFORE the frame exists (the old body is `gbscr_open_inner()`).
- *
- * U4 review (D10, 2026-09-10): this comment used to walk a call-graph
- * derivation that CLAIMED to sum to 5,400 exactly (2,920 + 1,576 + 904 =
- * 5,384, "taken as measured -- 5,400"); that arithmetic does not actually
- * total 5,400 and was never re-checked against a real -fstack-usage run
- * after being copied forward through several edits -- a fake sum, not a
- * derivation. The real, independently re-measured (-fstack-usage) worst
- * chain under gbscr_open_inner (rom_gbui_open_loc's own full-scan-fallback
- * path plus the indirect GbReadFn leg the call-graph walker cannot follow,
- * same call sites this comment used to name) is 4,572 B; the ISR that can
- * preempt anywhere in that chain adds a further 64 B; MEASURED total: 4,636
- * B. PDNA_GB_UI_NEED is kept at 5,400 anyway -- a DELIBERATE margin over the
- * measured 4,636 (764 B of headroom), not a rounding of it, and not itself
- * re-derived from any sub-call breakdown here any more; a future change to
- * this call chain must re-run -fstack-usage rather than edit this comment's
- * arithmetic by hand.
+ * BEFORE the frame exists (the old body is `gbscr_open_inner()`), so
+ * PDNA_GB_UI_NEED is the number above taken AS MEASURED -- 5,400 --
+ * deliberately NOT rounded up to a 256-B boundary: rounding up here only ever
+ * makes the gate MORE conservative than the real chain, and the whole point
+ * of this fix is to stop over-refusing on a build that is already tight on
+ * stack.
  * This module IS linked and the gate IS live: source/pdna_gbscreen.c gates on
  * PDNA_GB_UI_NEED before gbscr_open_inner, and rom_gbui_open/_open_loc/_tile/
- * _glyph are present in PokeDNA-artless.elf. The artless/delta "EWRAM ok"
- * lines say nothing about STACK; only a real -fstack-usage measurement does. */
+ * _glyph are present in PokeDNA-artless.elf (review, 2026-09-09). The
+ * artless/delta "EWRAM ok" lines say nothing about STACK; only the measured
+ * chain above does. Margins at 5,400: Settings 6,600 B free, nav chain 7,712. */
 #define PDNA_GB_UI_NEED 5400
 
 /* Each entry is the SCAN HIT file offset (where the locator's ScanCb pattern
