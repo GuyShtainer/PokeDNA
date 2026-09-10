@@ -22,10 +22,13 @@
  * towns (that is BACKLOG #91's map-viewer job, "own design doc" per the backlog entry,
  * and a Town-Map-visited bit is not necessarily the same set as a fly-able spawn point
  * either way — the two decomps do not document that distinction identically). It
- * exposes the bitfield BY BIT INDEX, 0..gbfy_count(game)-1 (== gbf_len(game,field)*8),
- * matching this module's own brief ("set/clear per destination index with the per-game
- * destination count"); a screen that wants names supplies its own table and asks this
- * core only to flip the bit.
+ * exposes the bitfield BY BIT INDEX, 0..gbfy_count(game)-1 -- P1a review D7:
+ * gbfy_count() is the GAME's own destination count (11 for Gen 1's NUM_CITY_MAPS, 28
+ * for Gen 2's NUM_SPAWNS, gb_fly.c's own citations), NOT the field's bit WIDTH
+ * (gbf_len(game,field)*8 == 16/32) -- the field has trailing unused bits past the real
+ * destinations on both generations, and gbfy_set() must never let a caller set one of
+ * those. A screen that wants names supplies its own table and asks this core only to
+ * flip the bit.
  *
  * Endianness: the field decodes/encodes MSB-first byte order (byte 0 holds bits
  * 7..0 of destinations 0..7, byte 1 holds 15..8, ...) — the same big-endian
@@ -36,7 +39,8 @@
  * bit-tested in the decomp (`bit n, [hl]` on the untouched byte, LSB-first per RGBDS'
  * own `bit` convention) — destination 0 is bit 0 of byte 0, not bit 7. */
 
-/* Bits present for this game's fly-flags field (0 on a malformed game/session). */
+/* This game's real destination count -- 11 (Gen 1) or 28 (Gen 2), NOT the fly-flags
+ * field's own bit width (16/32, see the header note above). 0 on a malformed game. */
 int gbfy_count(GbGame game);
 
 GbGame gbfy_game(const GbSession* s);

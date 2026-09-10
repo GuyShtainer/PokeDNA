@@ -851,18 +851,40 @@ def run_clock_case(name, info, rom, sav, work, binary, python, vendor, tally):
 
 
 def run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally):
-    """BACKLOG #90, via gb_fly.h's gbfy_set -- sets fly-destination bit 5 and checks
-    the owning WRAM byte's bit 5 (not the whole byte: the other bits are whatever the
-    corpus save already had visited, same masked-check reasoning as the day-care
-    occupancy bit above)."""
+    """BACKLOG #90, P1a review D6/D7 -- the old case set bit 5, which every corpus save
+    in this suite ALREADY had set: 0 bytes written, verdict=accept regardless of
+    whether gbfy_set works at all. gbfy_count()'s own destination-count fix (D7) makes
+    this checkable: Gold/Crystal bit 6 = SPAWN_ROCK_TUNNEL (pokecrystal constants/
+    map_data_constants.asm), confirmed CLEAR on both corpus saves, so this case now
+    FAILS outright if the surgery output is byte-identical to the input (the gate D6
+    asks for) and separately confirms the booted game's own WRAM byte actually moved.
+    Gen 1: every one of Red/Yellow's own 11 real destinations (bits 0..10, NUM_CITY_MAPS)
+    is ALREADY visited in this corpus -- there is no clear bit below the real count to
+    flip, so this case is SKIPPED for Gen 1 rather than faked with a bit past the real
+    count (which gbfy_set now correctly refuses, D7's whole point)."""
+    if info["gen"] == 1:
+        tally.skip_case("fly (BACKLOG #90)", "every real destination (bit 0..10, "
+                        "NUM_CITY_MAPS) is already visited in this corpus -- no clear "
+                        "bit below the real count to prove a real change with")
+        return
+
+    bit = 6   # SPAWN_ROCK_TUNNEL -- confirmed CLEAR on both Gold.sav and Crystal.sav
+    base = FLY_FLAGS_WRAM[name]
+    addr = base + (bit // 8)
+
     edited = work / "fly.sav"
-    rc, out, err = run_surgery(binary, sav, edited, [["fly", "5"]])
+    rc, out, err = run_surgery(binary, sav, edited, [["fly", str(bit)]])
     if rc != 0:
         tally.record("fly (BACKLOG #90)", False, f"surgery refused: {err.strip()}")
         return
 
-    base = FLY_FLAGS_WRAM[name]
-    addr = base + (5 // 8)   # bit 5 lives in byte 0 for every game this table covers
+    identical = edited.read_bytes() == sav.read_bytes()
+    if identical:
+        tally.record("fly (BACKLOG #90)", False,
+                    f"gate D6: surgery wrote 0 bytes for bit {bit} -- either it was "
+                    "already set (corpus assumption wrong) or gbfy_set is a no-op")
+        return
+
     rc, rep, out, err = boot(python, rom, edited, work / "fly", vendor,
                              work / "fly.json",
                              extra_args=["--expect", "accept",
@@ -871,9 +893,9 @@ def run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally):
     svbk_ok = bool(mem.get("svbk_ok", True))
     got = mem.get(f"{addr:#06x}")
     got_val = int(got, 16) if isinstance(got, str) else None
-    visited = got_val is not None and (got_val & (1 << (5 % 8))) != 0
+    visited = got_val is not None and (got_val & (1 << (bit % 8))) != 0
     ok = (rc == 0) and svbk_ok and visited
-    detail = f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} {addr:#06x}={got!r} visited={visited}"
+    detail = f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} {addr:#06x}={got!r} visited={visited} bit={bit}"
     if not ok:
         fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
         if fails:
@@ -1042,7 +1064,8 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     else:
         tally.skip_case("clock (BACKLOG #86)", "Gen 1 has no clock")
 
-    # ---- 2h. BACKLOG #90 — the fly-destination bitfield core ----
+    # ---- 2h. BACKLOG #90 — the fly-destination bitfield core (run_fly_case itself
+    # skips Gen 1 -- every real destination is already visited in the corpus, D6) ----
     run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
     # ---- 2i. BACKLOG #94 — the Gen-2 box-name core (Gen 1 has no box names: no case) ----

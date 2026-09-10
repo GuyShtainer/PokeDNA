@@ -11,8 +11,18 @@ static GbField fly_field(GbGame g) {
 }
 
 int gbfy_count(GbGame game) {
-  uint16_t len = gbf_len(game, fly_field(game));
-  return (int)len * 8;
+  GbField f = fly_field(game);
+  if (!gbf_off(game, f)) return 0;
+  /* P1a review D7: this used to return gbf_len()*8 -- the field's own BIT WIDTH (16 for
+   * Gen 1, 32 for Gen 2), not how many of those bits are real destinations. The real
+   * counts, per each game's own decomp constant:
+   *   Gen 1 (Red/Blue/Yellow) -- pokered constants/map_constants.asm: NUM_CITY_MAPS =
+   *     11 (PALLET_TOWN..SAFFRON_CITY, the Town Map's own town list); wTownVisitedFlag
+   *     is 2 B / 16 bits wide, but only the first 11 are real (bits 11-15 are unused).
+   *   Gen 2 (GS/Crystal) -- pokecrystal constants/map_data_constants.asm: NUM_SPAWNS =
+   *     28 (SPAWN_HOME..SPAWN_FAST_SHIP); wVisitedSpawns is 4 B / 32 bits wide, but only
+   *     the first 28 are real. */
+  return (game == GBF_G_GS || game == GBF_G_CRYSTAL) ? 28 : 11;
 }
 
 bool gbfy_read(const GbSession* s, uint8_t* bits, int cap) {

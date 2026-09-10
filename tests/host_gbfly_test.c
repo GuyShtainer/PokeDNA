@@ -47,7 +47,14 @@ static void read_matches(const char* file, int nbytes, const uint8_t* expect_byt
   CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
 
   GbGame g = gbfy_game(&s);
-  CHECKF(gbfy_count(g) == nbytes * 8, "%s: count %d != %d", file, gbfy_count(g), nbytes * 8);
+  /* P1a review D7: gbfy_count() is the GAME's real destination count (11/NUM_CITY_MAPS
+   * for Gen 1, 28/NUM_SPAWNS for Gen 2), NOT the field's own bit width (nbytes*8 ==
+   * 16/32) -- the field has trailing unused bits past the real destinations on both
+   * generations (see gb_fly.c's own citations). */
+  int want_count = (g == GBF_G_GS || g == GBF_G_CRYSTAL) ? 28 : 11;
+  CHECKF(gbfy_count(g) == want_count, "%s: count %d != %d", file, gbfy_count(g), want_count);
+  CHECKF(gbfy_count(g) <= nbytes * 8, "%s: count %d must not exceed the field's own bit "
+        "width %d", file, gbfy_count(g), nbytes * 8);
 
   uint8_t bits[4] = { 0 };
   CHECKF(gbfy_read(&s, bits, (int)sizeof bits), "%s: gbfy_read", file);
@@ -74,9 +81,20 @@ static void set_clear_roundtrip(const char* file) {
   GbGame g = gbfy_game(&s);
   int n = gbfy_count(g);
 
-  /* pick an index that starts false (Red/Gold/Crystal all have unset high bits) */
-  int idx = n - 1;
-  CHECKF(!gbfy_get(&s, idx), "%s: fixture index %d must start unvisited", file, idx);
+  /* P1a review D6/D7: pick the first REAL destination (0..n-1, n now the game's actual
+   * count) that reads unvisited -- Guy's own Red/Yellow corpus has every one of its 11
+   * real destinations already visited (bits 11-15 are clear, but those are past the
+   * real count and gbfy_set() must refuse them, so they cannot be used here either),
+   * so this SKIPS rather than silently testing nothing (the old idx = n-1 = 15/31
+   * picked a bit past the real destinations before D7's fix, making this whole case
+   * vacuous). */
+  int idx = -1;
+  for (int i = 0; i < n; i++) if (!gbfy_get(&s, i)) { idx = i; break; }
+  if (idx < 0) {
+    printf("  SKIP %s (every real destination 0..%d is already visited in this corpus)\n",
+          file, n - 1);
+    return;
+  }
 
   /* B0: a no-op set (already false, ask for false) must not touch a byte */
   GbsStatus st0 = gbfy_set(&s, idx, false);
@@ -112,6 +130,27 @@ static void set_clear_roundtrip(const char* file) {
   CHECKF(!gbfy_get(&s2, idx), "%s: bit did not clear back", file);
 }
 
+/* ---- C: P1a review D7 -- an index past the real count, but still within the field's
+ * own bit width, is refused (the exact bug: gbfy_count() used to answer the field
+ * width, letting a caller "set" a bit that is not a real destination at all) ---- */
+
+static void set_past_real_count_refused(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+  GbGame g = gbfy_game(&s);
+  int n = gbfy_count(g);   /* 11 or 28 */
+
+  GbsStatus st = gbfy_set(&s, n, true);   /* one past the real count */
+  CHECKF(st == GBS_ERR_ARG, "%s: gbfy_set(%d) (past the real count) must refuse (got %s)",
+        file, n, gbs_status_text(st));
+  uint32_t diff = 0;
+  for (uint32_t i = 0; i < len; i++) if (g_img[i] != g_orig[i]) diff++;
+  CHECKF(diff == 0, "%s: a refused out-of-count set must not move any byte", file);
+}
+
 int main(void) {
   static const uint8_t red_bytes[2] = { 0xFF, 0x07 };
   static const uint8_t g2_bytes[4]  = { 0xBC, 0xFF, 0xFD, 0x07 };
@@ -126,6 +165,13 @@ int main(void) {
   set_clear_roundtrip("Red.sav");
   set_clear_roundtrip("Gold.sav");
   set_clear_roundtrip("Crystal.sav");
+
+  printf("== C: setting past the real count is refused, not silently accepted (P1a "
+        "review D7) ==\n");
+  set_past_real_count_refused("Red.sav");
+  set_past_real_count_refused("Yellow.sav");
+  set_past_real_count_refused("Gold.sav");
+  set_past_real_count_refused("Crystal.sav");
 
   printf("\n%d checks, %d failed, %d file(s) exercised\n", g_check, g_fail, g_ran);
   if (g_ran == 0) { printf("NOTE: corpus not found at %s -- every case skipped\n", ROMS); }
