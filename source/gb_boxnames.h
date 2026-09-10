@@ -4,13 +4,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "gb_fields.h"    /* GbGame                                                     */
-#include "gb_session.h"   /* GbSession, GbsStatus                                       */
-#include "gen2_save.h"    /* G2_NUM_BOXES, G2_BOXNAME_CHARS, g2_box_name_at             */
+#include "gb_fields.h"    /* GbGame, GbField, gbf_off/len                              */
+#include "gb_session.h"   /* GbSession, GbsStatus, gbs_read_field/gbs_write_field/finish */
+#include "gen2_save.h"    /* G2_NUM_BOXES, G2_BOXNAME_CHARS                            */
 
 /* gb_boxnames — pure-C Gen-2 box-name core (BACKLOG #94, docs/GEN12-PARITY-DESIGN.md
- * §1.0's own region table + gen2_write.h's g2w_set_box_name, which this core is a thin
- * wrapper around rather than a re-derivation).
+ * §1.0's own region table).
  *
  * GEN 1 IS NOT APPLICABLE: pokered/pokeyellow have no per-box name table at all (every
  * box banner is always literally "BOX n") — gbbn_read()/gbbn_rename() both refuse a
@@ -18,48 +17,59 @@
  * asks gbbn_supported(session) BEFORE it ever offers the rename row, the same shape
  * gbt_field_present()/gbc_field_present() use elsewhere in this family.
  *
- * WHY THIS WRAPS EXISTING PRIMITIVES INSTEAD OF GOING THROUGH gbs_read_field/
- * gbs_write_field THE WAY THE OTHER THREE #85-#95 CORES DO: gen2_save.c already ships a
- * whole-image reader (g2_box_name_at, decoding through g2_offsets().box_names) and
- * gen2_write.c already ships a purpose-built, self-verifying writer
- * (g2w_set_box_name) that validates the glyph count/charset, patches the field,
- * mirrors it, refreshes both checksums AND re-verifies the whole file in one call —
- * exactly gbf_off(GBF_BOXNAMES)'s own offset (0x2727 GS / 0x2703 Crystal, cross-checked
- * against gen2_save.c's o.box_names in the same commit that added the field), just
- * already built and already reviewed. Re-deriving a second encode/write path over the
- * generic field primitive would race the same bytes through two different validators
- * for no benefit; GBF_BOXNAMES itself still exists (for a reader that wants the raw
- * 126-byte blob without decoding, or a future screen doing its own paging) and this
- * core's own host test cross-checks gbf_off(..., GBF_BOXNAMES) against
- * g2_offsets().box_names to keep the two from silently drifting apart.
+ * P1a review D4 (this replaces an earlier "thin wrapper over gen2_save.c/gen2_write.c"
+ * design): the earlier gbbn_read went through g2_box_name_at(), which decodes with the
+ * LOSSY g2_decode_text() (the display decoder — collapses <PK>/<MN>/the accented
+ * letters/multiplication sign to spaces, gb_edit.h's own NAMES block), and gbbn_rename's
+ * "unchanged" guard compared against THAT lossy read — so a name containing one of
+ * those glyphs always looked "changed" (or, on a re-save of an unmodified name, quietly
+ * dropped the special glyph). And the write went through g2w_set_box_name(), whose own
+ * encode_checked() calls g2w_encode_text(), which has no "{XX}" hex-escape support at
+ * all (gen2_write.c's enc_step() has a fixed multi-char table, not gb_char_encode's
+ * escape mechanism) — a name containing an escaped byte could never be spelled at all.
+ *
+ * This core now reads/writes the 9 raw bytes at gbf_off(GBF_BOXNAMES) + box*9 directly
+ * (the generic field primitive, gbs_read_field/gbs_write_field/gbs_finish — the same
+ * shape gb_trainer.c's set_name()/get_name() use for every other name field in this
+ * tree) and decodes/encodes with gb_name_decode/gb_name_encode, the SEQUENCE-SAFE pair
+ * that adds the "{XX}" escaping needed to make Gen 2's charset genuinely reversible
+ * (gb_edit.h's own NAMES block: "decode whole fields with gb_name_decode... USE
+ * gb_name_decode, NOT a loop over gb_char_decode"). gbf_off(GBF_BOXNAMES) is
+ * cross-checked against gen2_save.c's own g2_offsets().box_names by this core's host
+ * test, so the two table sources cannot silently drift apart even though this core no
+ * longer calls into gen2_save.c/gen2_write.c for the box-name path itself.
  */
 
 #define GB_BOXNAME_GLYPHS G2_BOXNAME_CHARS   /* 8 -- BOX_NAME_LENGTH(9) minus the
                                               * terminator, same convention as gb_trainer.h's
                                               * GB_OT_GLYPHS */
+#define GB_BOXNAME_BYTES  (GB_BOXNAME_GLYPHS + 1)   /* 9, BOX_NAME_LENGTH */
 
 /* Is this session's generation one Gen 2 saves ever have box names for at all? False
  * for a Gen-1 session or a malformed one. */
 bool gbbn_supported(const GbSession* s);
 
 /* Read box `box`'s (0..G2_NUM_BOXES-1) name into `out` (UTF-8, `cap` >= GB_TEXT_MAX to
- * be safe, same convention as gb_trainer.h's name fields). False on a Gen-1 session, a
- * bad box index, or a malformed session -- `out[0]` is left 0 in every false case. */
+ * be safe, same convention as gb_trainer.h's name fields), via gb_name_decode — so a
+ * name holding <PK>/<MN>/an accented letter/an escaped byte reads back exactly, never
+ * as blank spaces. False on a Gen-1 session, a bad box index, or a malformed session --
+ * `out[0]` is left 0 in every false case. */
 bool gbbn_read(const GbSession* s, int box, char* out, int cap);
 
 /* Rename box `box`. Refuses (GBS_ERR_ARG) before a single byte moves when: the session
- * is Gen 1 (gbbn_supported false), `box` is out of range, `utf8` is over
- * GB_BOXNAME_GLYPHS glyphs, or the target generation's charset cannot store it exactly
- * -- g2w_set_box_name's own encode_checked() is the single source of truth for that
- * refusal, not a second hand-rolled check here.
+ * is Gen 1 (gbbn_supported false), `box` is out of range, `utf8` is empty or all spaces
+ * (P1a review D5 -- retail's own home/string.asm _InitString restores the OLD name
+ * rather than ever storing a blank one, so accepting an empty string here would quietly
+ * diverge from what the game itself does), `utf8` is over GB_BOXNAME_GLYPHS glyphs, or
+ * this generation's charset cannot spell it exactly (gb_text_lossy(), the same charset
+ * gate gb_trainer.c's set_name() uses).
  *
- * UNCHANGED IS UNTOUCHED: compares the DECODED current name against `utf8` first (same
- * discipline gb_trainer.c's set_name_if_changed() documents — a GB-encoded field can
- * carry stray residue past its own terminator that a blind re-encode would overwrite
- * even when nothing the player can see changed) and skips the whole write, including
- * gen2_write.c's own checksum refresh, when they already match. Otherwise delegates to
- * g2w_set_box_name(), which mirrors, refreshes both stored checksums and re-verifies
- * the whole file itself -- no separate gbs_finish() call is needed or made. */
+ * UNCHANGED IS UNTOUCHED: decodes the CURRENT raw bytes with gb_name_decode and compares
+ * against `utf8` first — the sequence-safe decoder, not the lossy display one — and
+ * skips the write, including the checksum refresh, when they already match. Otherwise
+ * encodes with gb_name_encode (which supports the "{XX}" escape, unlike
+ * g2w_encode_text) and writes through gbs_write_field + gbs_finish, the same generic
+ * field-write primitive every other core in this family uses. */
 GbsStatus gbbn_rename(GbSession* s, int box, const char* utf8);
 
 #endif /* GB_BOXNAMES_H */

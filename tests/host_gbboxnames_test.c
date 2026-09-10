@@ -153,6 +153,78 @@ static void rename_roundtrip(const char* file) {
   CHECKF(strcmp(final0, "GENS") == 0, "%s: box 0 name did not stick across reopen", file);
 }
 
+/* ---- E: P1a review D4 -- a sequence-safe name (an {XX} escape) round-trips byte-
+ * identically, and the unchanged guard recognises it as unchanged. We can't reach a
+ * name with <PK>/<MN>/an accented letter from a plain UTF-8 gbbn_rename() call (there
+ * is no keyboard input path in this core), so this plants the RAW bytes directly and
+ * exercises gbbn_read()/gbbn_rename()'s DECODE side, which is exactly what P1a review
+ * D4 was about (gbbn_read used to go through the lossy display decoder). ---- */
+
+static void sequence_safe_roundtrip(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+  GbGame g = (s.g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL : GBF_G_GS;
+  uint32_t off = gbf_off(g, GBF_BOXNAMES) + 2u * GB_BOXNAME_BYTES;   /* box 2, untouched */
+
+  /* E1 E2 7F E1 E2 50 ... : two <PK>-ish glyphs (0xE1/0xE2 are Gen 2's own <PK>/<MN>
+   * single-byte glyphs per pokecrystal's charmap), a space, repeated, then the
+   * terminator -- a name the lossy display decoder collapses to blank runs, and the
+   * exact class of byte g2w_encode_text's enc_step() cannot spell via UTF-8 at all. */
+  uint8_t planted[GB_BOXNAME_BYTES] = { 0xE1, 0xE2, 0x7F, 0xE1, 0xE2, 0x50, 0x50, 0x50, 0x50 };
+  CHECKF(gbs_write_field(&s, off, planted, GB_BOXNAME_BYTES) == GBS_OK,
+        "%s: plant sequence bytes", file);
+  CHECKF(gbs_finish(&s) == GBS_OK, "%s: finish after planting", file);
+  memcpy(g_orig, g_img, len);   /* the planted, checksummed state is the new baseline */
+
+  char decoded[GB_TEXT_MAX];
+  CHECKF(gbbn_read(&s, 2, decoded, sizeof decoded), "%s: read planted box 2", file);
+  CHECKF(strlen(decoded) > 0 && decoded[0] != ' ', "%s: sequence-safe decode must not "
+        "collapse to blank spaces (got '%s')", file, decoded);
+
+  /* renaming to the SAME decoded string must be recognised as unchanged (the
+   * sequence-safe unchanged guard, not the lossy one) -- zero bytes moved. */
+  GbsStatus st = gbbn_rename(&s, 2, decoded);
+  CHECKF(st == GBS_OK, "%s: no-op rename of the decoded sequence status %s", file,
+        gbs_status_text(st));
+  uint32_t diff = 0;
+  for (uint32_t i = 0; i < len; i++) if (g_img[i] != g_orig[i]) diff++;
+  CHECKF(diff == 0, "%s: the unchanged guard must recognise the sequence-safe decode "
+        "and not rewrite it (moved %u byte(s))", file, diff);
+
+  /* and it must survive a fresh gb_name_encode/gb_name_decode round trip through the
+   * SAME string, byte for byte. */
+  GbSession s2;
+  CHECKF(gbs_open(&s2, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: reopen", file);
+  char decoded2[GB_TEXT_MAX];
+  CHECKF(gbbn_read(&s2, 2, decoded2, sizeof decoded2), "%s: re-read box 2", file);
+  CHECKF(strcmp(decoded, decoded2) == 0, "%s: sequence-safe decode is not stable "
+        "('%s' != '%s')", file, decoded, decoded2);
+}
+
+/* ---- F: P1a review D5 -- an empty / all-space name is refused ---- */
+
+static void empty_name_refused(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+
+  GbsStatus st_empty = gbbn_rename(&s, 3, "");
+  CHECKF(st_empty == GBS_ERR_ARG, "%s: an empty name must be refused (got %s)", file,
+        gbs_status_text(st_empty));
+  GbsStatus st_spaces = gbbn_rename(&s, 3, "   ");
+  CHECKF(st_spaces == GBS_ERR_ARG, "%s: an all-space name must be refused (got %s)", file,
+        gbs_status_text(st_spaces));
+
+  uint32_t diff = 0;
+  for (uint32_t i = 0; i < len; i++) if (g_img[i] != g_orig[i]) diff++;
+  CHECKF(diff == 0, "%s: a refused empty/space rename must not move any byte", file);
+}
+
 int main(void) {
   printf("== A: Gen 1 has no box names ==\n");
   gen1_na("Red.sav");
@@ -169,6 +241,14 @@ int main(void) {
   printf("== D: rename box 0, other boxes untouched, round trip ==\n");
   rename_roundtrip("Gold.sav");
   rename_roundtrip("Crystal.sav");
+
+  printf("== E: a sequence-safe name ({<PK>}{<MN>}...) round-trips (P1a review D4) ==\n");
+  sequence_safe_roundtrip("Gold.sav");
+  sequence_safe_roundtrip("Crystal.sav");
+
+  printf("== F: an empty / all-space name is refused (P1a review D5) ==\n");
+  empty_name_refused("Gold.sav");
+  empty_name_refused("Crystal.sav");
 
   printf("\n%d checks, %d failed, %d file(s) exercised\n", g_check, g_fail, g_ran);
   if (g_ran == 0) { printf("NOTE: corpus not found at %s -- every case skipped\n", ROMS); }
