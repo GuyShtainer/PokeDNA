@@ -15,9 +15,15 @@
  *
  * Builds a directory BY HAND in the exact byte layout tools/fuse_gb.py writes (see
  * fused_gb.h's own doc comment): magic(8) + count(4) + count*[type(4)+name(32)+
- * offset(4)+size(4)+crc32(4)] + trailer[size(4)+magic(8)+reserved(4)]. Covers what the
- * PARSER itself must catch on its own -- fuse_gb.py's --check (host_fusegb_test.py)
- * already covers the tool side of this same format. */
+ * offset(4)+size(4)+crc32(4)+pair(4)] + trailer[size(4)+magic(8)+reserved(4)]. Covers
+ * what the PARSER itself must catch on its own -- fuse_gb.py's --check
+ * (host_fusegb_test.py) already covers the tool side of this same format.
+ *
+ * BACKLOG #98: format v2 -- the directory block's own magic is "PDNAGBD2" (distinct
+ * from the g_pdna_gbd LOCATOR record's "PDNAGBD1", which set_record() below still
+ * writes unchanged: that struct is unrelated to the entry-format version), entries are
+ * 52 bytes (the new `pair` field at +48), and put_entry() below takes an explicit
+ * `pair` argument (FUSED_GB_NO_PAIR when a fixture does not care about pairing). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,17 +37,18 @@ static int failed = 0;
     if (!(cond)) { printf("FAIL: %s\n", msg); failed = 1; } \
   } while (0)
 
-#define ENTRY_SIZE 48u
+#define ENTRY_SIZE 52u
 #define TRAILER_SIZE 16u
 
 static void put_entry(uint8_t* e, uint32_t type, const char* name,
-                      uint32_t off, uint32_t size, uint32_t crc) {
+                      uint32_t off, uint32_t size, uint32_t crc, uint32_t pair) {
   memset(e, 0, ENTRY_SIZE);
   memcpy(e + 0, &type, 4);
   strncpy((char*)(e + 4), name, 31);
   memcpy(e + 36, &off, 4);
   memcpy(e + 40, &size, 4);
   memcpy(e + 44, &crc, 4);
+  memcpy(e + 48, &pair, 4);
 }
 
 /* Builds: [pad][payload0][payload1][directory]. Payload bytes are `pattern`-filled so
@@ -65,15 +72,17 @@ static void build_fixture(uint8_t* buf, uint32_t buf_cap,
 
   uint32_t dir_off = p1_off + p1_size;
   uint8_t* d = buf + dir_off;
-  memcpy(d, "PDNAGBD1", 8);
+  memcpy(d, "PDNAGBD2", 8);
   uint32_t count = 2;
   memcpy(d + 8, &count, 4);
-  put_entry(d + 12 + 0 * ENTRY_SIZE, FUSED_GB_ROM_GEN1, "Red.gb", p0_off, p0_size, crc0);
-  put_entry(d + 12 + 1 * ENTRY_SIZE, FUSED_GB_SAV, "Red.sav", p1_off, p1_size, crc1);
+  put_entry(d + 12 + 0 * ENTRY_SIZE, FUSED_GB_ROM_GEN1, "Red.gb", p0_off, p0_size, crc0,
+           FUSED_GB_NO_PAIR);
+  put_entry(d + 12 + 1 * ENTRY_SIZE, FUSED_GB_SAV, "Red.sav", p1_off, p1_size, crc1,
+           0 /* BACKLOG #98: paired with the ROM entry at directory index 0 */);
   uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
   uint32_t trailer_off = 12 + ENTRY_SIZE * count;
   memcpy(d + trailer_off, &dir_size, 4);
-  memcpy(d + trailer_off + 4, "PDNAGBD1", 8);
+  memcpy(d + trailer_off + 4, "PDNAGBD2", 8);
   uint32_t reserved = 0;
   memcpy(d + trailer_off + 12, &reserved, 4);
 
@@ -222,15 +231,17 @@ int main(void) {
 
     uint32_t dir_off = loc_off + loc_size;
     uint8_t* d = buf + dir_off;
-    memcpy(d, "PDNAGBD1", 8);
+    memcpy(d, "PDNAGBD2", 8);
     uint32_t count = 2;
     memcpy(d + 8, &count, 4);
-    put_entry(d + 12 + 0 * ENTRY_SIZE, FUSED_GB_ROM_GEN1, "Red.gb", rom_off, rom_size, rom_crc);
-    put_entry(d + 12 + 1 * ENTRY_SIZE, FUSED_GB_LOC, "LOC.sprite.g1", loc_off, loc_size, loc_crc);
+    put_entry(d + 12 + 0 * ENTRY_SIZE, FUSED_GB_ROM_GEN1, "Red.gb", rom_off, rom_size, rom_crc,
+             FUSED_GB_NO_PAIR);
+    put_entry(d + 12 + 1 * ENTRY_SIZE, FUSED_GB_LOC, "LOC.sprite.g1", loc_off, loc_size, loc_crc,
+             0 /* BACKLOG #98: paired with the ROM entry at directory index 0 */);
     uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
     uint32_t trailer_off = 12 + ENTRY_SIZE * count;
     memcpy(d + trailer_off, &dir_size, 4);
-    memcpy(d + trailer_off + 4, "PDNAGBD1", 8);
+    memcpy(d + trailer_off + 4, "PDNAGBD2", 8);
     uint32_t reserved = 0;
     memcpy(d + trailer_off + 12, &reserved, 4);
 
@@ -265,7 +276,16 @@ int main(void) {
     pdna_rv_crc32_table(crc_tab);
     memset(buf, 0xAA, sizeof buf);
 
-    uint32_t loc_off = 64;
+    /* BACKLOG #98: fused_gb_loc() now resolves WHICH ROM's loc it wants before ever
+     * looking at a LOC entry's own bytes -- give this fixture a real (single, so
+     * unambiguous-by-fallback) ROM_GEN1 entry to pair the bad LOC entry against,
+     * otherwise the lookup would fail at the "no gen-1 ROM at all" stage and never
+     * reach the framing check this case exists to exercise. */
+    uint32_t rom_off = 64, rom_size = 32;
+    for (uint32_t i = 0; i < rom_size; i++) buf[rom_off + i] = (uint8_t)(i * 5 + 3);
+    uint32_t rom_crc = pdna_rv_crc32(crc_tab, buf + rom_off, rom_size);
+
+    uint32_t loc_off = rom_off + rom_size;
     uint8_t rec_bytes[16];
     for (int i = 0; i < 16; i++) rec_bytes[i] = (uint8_t)(0xD0 + i);
     uint16_t claimed_rec_size = 999;   /* LIES about how long the record is */
@@ -282,14 +302,16 @@ int main(void) {
 
     uint32_t dir_off = loc_off + loc_size;
     uint8_t* d = buf + dir_off;
-    memcpy(d, "PDNAGBD1", 8);
-    uint32_t count = 1;
+    memcpy(d, "PDNAGBD2", 8);
+    uint32_t count = 2;
     memcpy(d + 8, &count, 4);
-    put_entry(d + 12, FUSED_GB_LOC, "LOC.bad", loc_off, loc_size, loc_crc);
+    put_entry(d + 12 + 0 * ENTRY_SIZE, FUSED_GB_ROM_GEN1, "Red.gb", rom_off, rom_size, rom_crc,
+             FUSED_GB_NO_PAIR);
+    put_entry(d + 12 + 1 * ENTRY_SIZE, FUSED_GB_LOC, "LOC.bad", loc_off, loc_size, loc_crc, 0);
     uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
     uint32_t trailer_off = 12 + ENTRY_SIZE * count;
     memcpy(d + trailer_off, &dir_size, 4);
-    memcpy(d + trailer_off + 4, "PDNAGBD1", 8);
+    memcpy(d + trailer_off + 4, "PDNAGBD2", 8);
     uint32_t reserved = 0;
     memcpy(d + trailer_off + 12, &reserved, 4);
 
@@ -345,17 +367,20 @@ int main(void) {
     }
     uint32_t dir_off = cur;
     uint8_t* d = buf + dir_off;
-    memcpy(d, "PDNAGBD1", 8);
+    memcpy(d, "PDNAGBD2", 8);
     uint32_t count = (uint32_t)N;
     memcpy(d + 8, &count, 4);
     for (int i = 0; i < N; i++) {
+      /* Pairing is irrelevant to this fixture's own assertions (entry_count/
+       * save_count/save() lookups only, no fused_gb_rom()/fused_gb_loc() call) --
+       * FUSED_GB_NO_PAIR throughout. */
       put_entry(d + 12 + (uint32_t)i * ENTRY_SIZE, spec[i].type, spec[i].name,
-                offs[i], psize, crcs[i]);
+                offs[i], psize, crcs[i], FUSED_GB_NO_PAIR);
     }
     uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
     uint32_t trailer_off = 12 + ENTRY_SIZE * count;
     memcpy(d + trailer_off, &dir_size, 4);
-    memcpy(d + trailer_off + 4, "PDNAGBD1", 8);
+    memcpy(d + trailer_off + 4, "PDNAGBD2", 8);
     uint32_t reserved = 0;
     memcpy(d + trailer_off + 12, &reserved, 4);
 
@@ -393,7 +418,7 @@ int main(void) {
     /* Build a minimal directory with one entry whose name is 32 'X' bytes (no NUL). */
     uint32_t dir_off = 64;
     uint8_t* d = buf + dir_off;
-    memcpy(d, "PDNAGBD1", 8);
+    memcpy(d, "PDNAGBD2", 8);
     uint32_t count = 1;
     memcpy(d + 8, &count, 4);
 
@@ -411,7 +436,7 @@ int main(void) {
     uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
     uint32_t trailer_off = 12 + ENTRY_SIZE * count;
     memcpy(d + trailer_off, &dir_size, 4);
-    memcpy(d + trailer_off + 4, "PDNAGBD1", 8);
+    memcpy(d + trailer_off + 4, "PDNAGBD2", 8);
     uint32_t reserved = 0;
     memcpy(d + trailer_off + 12, &reserved, 4);
 
@@ -428,6 +453,167 @@ int main(void) {
     CHECK(esize == 0, "name without NUL: size should be 0");
   }
   printf(failed ? "  name without NUL (#69d): SOME FAILED\n" : "  name without NUL (#69d): OK\n");
+
+  /* ---- BACKLOG #98: TWO ROMs of the SAME generation (Gold.gbc + Crystal.gbc, both
+   * Gen 2), each with its own paired SAV and sprite LOC entry -- exactly the shape
+   * the #98 bug lived in (fused_gb_rom(2)/fused_gb_loc(sprite,2) used to always
+   * answer Gold's, even with Crystal's save open). Directory order: Gold.gbc(0),
+   * Gold.sav(1,pair=0), LOC.sprite.g2(2,pair=0), Crystal.gbc(3), Crystal.sav
+   * (4,pair=3), LOC.sprite.g2c(5,pair=3) -- fused_gb_save() enumerates SAV-type
+   * entries only, so Gold.sav is save index 0 and Crystal.sav is save index 1. ---- */
+  {
+    static uint8_t buf[8192];
+    uint32_t crc_tab[16];
+    pdna_rv_crc32_table(crc_tab);
+    memset(buf, 0xAA, sizeof buf);
+
+    uint32_t gold_rom_off = 64, gold_rom_size = 32;
+    uint32_t cur = gold_rom_off;
+    for (uint32_t i = 0; i < gold_rom_size; i++) buf[cur + i] = (uint8_t)(i * 3 + 1);
+    uint32_t gold_rom_crc = pdna_rv_crc32(crc_tab, buf + cur, gold_rom_size);
+    cur += gold_rom_size;
+
+    uint32_t gold_sav_off = cur, gold_sav_size = 16;
+    for (uint32_t i = 0; i < gold_sav_size; i++) buf[cur + i] = (uint8_t)(i * 5 + 2);
+    uint32_t gold_sav_crc = pdna_rv_crc32(crc_tab, buf + cur, gold_sav_size);
+    cur += gold_sav_size;
+
+    uint32_t gold_loc_off = cur;
+    uint8_t gold_rec[8]; for (int i = 0; i < 8; i++) gold_rec[i] = (uint8_t)(0xA0 + i);
+    memcpy(buf + gold_loc_off, "PDNALOC1", 8);
+    buf[gold_loc_off + 8] = 1;   /* kind = sprite */
+    buf[gold_loc_off + 9] = 2;   /* gen = 2 */
+    uint16_t gold_rec_size = sizeof gold_rec;
+    memcpy(buf + gold_loc_off + 10, &gold_rec_size, 2);
+    uint32_t gold_claimed_hash = 0xDEAD0001u, gold_claimed_size = gold_rom_size;
+    memcpy(buf + gold_loc_off + 12, &gold_claimed_hash, 4);
+    memcpy(buf + gold_loc_off + 16, &gold_claimed_size, 4);
+    memcpy(buf + gold_loc_off + 20, gold_rec, sizeof gold_rec);
+    uint32_t gold_loc_size = 20u + gold_rec_size;
+    uint32_t gold_loc_crc = pdna_rv_crc32(crc_tab, buf + gold_loc_off, gold_loc_size);
+    cur += gold_loc_size;
+
+    uint32_t crys_rom_off = cur, crys_rom_size = 40;
+    for (uint32_t i = 0; i < crys_rom_size; i++) buf[cur + i] = (uint8_t)(i * 7 + 4);
+    uint32_t crys_rom_crc = pdna_rv_crc32(crc_tab, buf + cur, crys_rom_size);
+    cur += crys_rom_size;
+
+    uint32_t crys_sav_off = cur, crys_sav_size = 24;
+    for (uint32_t i = 0; i < crys_sav_size; i++) buf[cur + i] = (uint8_t)(i * 9 + 6);
+    uint32_t crys_sav_crc = pdna_rv_crc32(crc_tab, buf + cur, crys_sav_size);
+    cur += crys_sav_size;
+
+    uint32_t crys_loc_off = cur;
+    uint8_t crys_rec[8]; for (int i = 0; i < 8; i++) crys_rec[i] = (uint8_t)(0xC0 + i);
+    memcpy(buf + crys_loc_off, "PDNALOC1", 8);
+    buf[crys_loc_off + 8] = 1;   /* kind = sprite */
+    buf[crys_loc_off + 9] = 2;   /* gen = 2 */
+    uint16_t crys_rec_size = sizeof crys_rec;
+    memcpy(buf + crys_loc_off + 10, &crys_rec_size, 2);
+    uint32_t crys_claimed_hash = 0xDEAD0002u, crys_claimed_size = crys_rom_size;
+    memcpy(buf + crys_loc_off + 12, &crys_claimed_hash, 4);
+    memcpy(buf + crys_loc_off + 16, &crys_claimed_size, 4);
+    memcpy(buf + crys_loc_off + 20, crys_rec, sizeof crys_rec);
+    uint32_t crys_loc_size = 20u + crys_rec_size;
+    uint32_t crys_loc_crc = pdna_rv_crc32(crc_tab, buf + crys_loc_off, crys_loc_size);
+    cur += crys_loc_size;
+
+    uint32_t dir_off = cur;
+    uint8_t* d = buf + dir_off;
+    memcpy(d, "PDNAGBD2", 8);
+    uint32_t count = 6;
+    memcpy(d + 8, &count, 4);
+    put_entry(d + 12 + 0 * ENTRY_SIZE, FUSED_GB_ROM_GEN2, "Gold.gbc",
+             gold_rom_off, gold_rom_size, gold_rom_crc, FUSED_GB_NO_PAIR);
+    put_entry(d + 12 + 1 * ENTRY_SIZE, FUSED_GB_SAV, "Gold.sav",
+             gold_sav_off, gold_sav_size, gold_sav_crc, 0);
+    put_entry(d + 12 + 2 * ENTRY_SIZE, FUSED_GB_LOC, "LOC.sprite.g2",
+             gold_loc_off, gold_loc_size, gold_loc_crc, 0);
+    put_entry(d + 12 + 3 * ENTRY_SIZE, FUSED_GB_ROM_GEN2, "Crystal.gbc",
+             crys_rom_off, crys_rom_size, crys_rom_crc, FUSED_GB_NO_PAIR);
+    put_entry(d + 12 + 4 * ENTRY_SIZE, FUSED_GB_SAV, "Crystal.sav",
+             crys_sav_off, crys_sav_size, crys_sav_crc, 3);
+    put_entry(d + 12 + 5 * ENTRY_SIZE, FUSED_GB_LOC, "LOC.sprite.g2c",
+             crys_loc_off, crys_loc_size, crys_loc_crc, 3);
+    uint32_t dir_size = 12 + ENTRY_SIZE * count + TRAILER_SIZE;
+    uint32_t trailer_off = 12 + ENTRY_SIZE * count;
+    memcpy(d + trailer_off, &dir_size, 4);
+    memcpy(d + trailer_off + 4, "PDNAGBD2", 8);
+    uint32_t reserved = 0;
+    memcpy(d + trailer_off + 12, &reserved, 4);
+
+    set_record(buf, dir_off, dir_size);
+
+    /* No active save set (fresh set_record()/fused_gb_test_reset() default: -1) --
+     * two Gen-2 ROMs, genuinely ambiguous, must FAIL rather than silently pick
+     * Gold (the pre-#98 bug). */
+    CHECK(fused_gb_get_active_save() == -1,
+          "two-ROM: no active save set yet by default");
+    const uint8_t* base = 0; uint32_t size = 0;
+    CHECK(!fused_gb_rom(2, &base, &size),
+          "two-ROM, no active save: fused_gb_rom(gen2) must fail (ambiguous), not guess");
+    CHECK(fused_gb_lookup_was_ambiguous(),
+          "two-ROM, no active save: fused_gb_rom(gen2) failure must be flagged ambiguous");
+    const uint8_t* rec = 0;
+    CHECK(!fused_gb_loc(1, 2, &rec, 0, 0, 0),
+          "two-ROM, no active save: fused_gb_loc(sprite,gen2) must fail (ambiguous)");
+    CHECK(fused_gb_lookup_was_ambiguous(),
+          "two-ROM, no active save: fused_gb_loc(sprite,gen2) failure must be ambiguous");
+
+    /* A generation with ZERO ROMs at all (gen 1, never fused here) must fail WITHOUT
+     * the ambiguous flag -- "nothing exists" is not "cannot tell which one". */
+    CHECK(!fused_gb_rom(1, &base, &size),
+          "two-ROM fixture: gen1 was never fused, fused_gb_rom(1) should just fail");
+    CHECK(!fused_gb_lookup_was_ambiguous(),
+          "two-ROM fixture: gen1 absence must NOT be flagged ambiguous");
+
+    /* Active save = Gold.sav (fused_gb_save() index 0) -> Gold's ROM and LOC. */
+    fused_gb_set_active_save(0);
+    CHECK(fused_gb_get_active_save() == 0, "two-ROM: active save getter reflects the setter");
+    base = 0; size = 0;
+    CHECK(fused_gb_rom(2, &base, &size) && base == buf + gold_rom_off && size == gold_rom_size,
+          "two-ROM, active=Gold.sav: fused_gb_rom(gen2) should resolve to Gold.gbc");
+    CHECK(!fused_gb_lookup_was_ambiguous(),
+          "two-ROM, active=Gold.sav: a resolved lookup must not be flagged ambiguous");
+    rec = 0; uint32_t rlen = 0, idh = 0, rsz = 0;
+    CHECK(fused_gb_loc(1, 2, &rec, &rlen, &idh, &rsz) && rec == buf + gold_loc_off + 20 &&
+          idh == gold_claimed_hash && rsz == gold_claimed_size,
+          "two-ROM, active=Gold.sav: fused_gb_loc(sprite,gen2) should resolve to Gold's LOC");
+
+    /* Active save = Crystal.sav (fused_gb_save() index 1) -> Crystal's ROM and LOC,
+     * off the exact same directory/active-save mechanism, nothing else changed --
+     * this is the #98 proof: switching which save is active switches which ROM/LOC
+     * comes back, from the SAME two-ROM image. */
+    fused_gb_set_active_save(1);
+    CHECK(fused_gb_get_active_save() == 1, "two-ROM: active save getter reflects the setter");
+    base = 0; size = 0;
+    CHECK(fused_gb_rom(2, &base, &size) && base == buf + crys_rom_off && size == crys_rom_size,
+          "two-ROM, active=Crystal.sav: fused_gb_rom(gen2) should resolve to Crystal.gbc");
+    rec = 0; rlen = 0; idh = 0; rsz = 0;
+    CHECK(fused_gb_loc(1, 2, &rec, &rlen, &idh, &rsz) && rec == buf + crys_loc_off + 20 &&
+          idh == crys_claimed_hash && rsz == crys_claimed_size,
+          "two-ROM, active=Crystal.sav: fused_gb_loc(sprite,gen2) should resolve to Crystal's LOC");
+
+    /* An active save index past the last SAV entry actually present must NOT crash
+     * and must NOT silently pick one -- falls through to the (still ambiguous, 2
+     * ROMs) ordinary case. */
+    fused_gb_set_active_save(99);
+    base = 0; size = 0;
+    CHECK(!fused_gb_rom(2, &base, &size),
+          "two-ROM, active save out of range: must fail rather than guess");
+    CHECK(fused_gb_lookup_was_ambiguous(),
+          "two-ROM, active save out of range: failure must be flagged ambiguous");
+
+    /* Clearing back to "no active save" (-1) restores the original ambiguous-fail
+     * behaviour -- fused_gb_set_active_save() is not a one-way ratchet. */
+    fused_gb_set_active_save(-1);
+    CHECK(fused_gb_get_active_save() == -1, "two-ROM: active save can be cleared back to -1");
+    base = 0; size = 0;
+    CHECK(!fused_gb_rom(2, &base, &size),
+          "two-ROM, active save cleared: back to ambiguous-fail");
+  }
+  printf(failed ? "  #98 active-save pairing (two ROMs, same gen): SOME FAILED\n"
+                : "  #98 active-save pairing (two ROMs, same gen): OK\n");
 
   if (failed) { printf("host_fusedgb_test: FAILED\n"); return 1; }
   printf("host_fusedgb_test: ALL OK\n");
