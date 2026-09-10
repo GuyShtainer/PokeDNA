@@ -61,8 +61,17 @@ const char* g3gb_status_text(G3GbStatus st);
  * bytes) into a brand-new Game Boy BOX record. `out` is completely rebuilt from zero —
  * this is not a patch of an existing GbEditMon — and is left untouched unless the
  * return value is G3GB_OK. `g1base` is required (and used) only for gen == GB_GEN1;
- * pass NULL for GB_GEN2. `loss` may be NULL if the caller does not want the report. */
-G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, const GbGen1Base* g1base,
-                     GbEditMon* out, Gen3ToGbLoss* loss);
+ * pass NULL for GB_GEN2. `loss` may be NULL if the caller does not want the report.
+ *
+ * `caught_available` (BACKLOG #95 review C11, gbmon lane): the 0x1D/0x1E capture
+ * record this module can synthesize is CRYSTAL-only real data -- on a Gold/Silver
+ * target those two bytes are Unused1/Unused2, so writing them is "harmless dead data"
+ * for a target save that already holds arbitrary garbage there, but is WRONG to claim
+ * for a freshly synthesized target the caller is about to commit as a real record.
+ * Pass true only when the target save is confirmed Crystal (gb_session_is_crystal());
+ * false leaves the two bytes untouched (0x00) and the write is silently skipped, not
+ * an error -- gen == GB_GEN1 ignores this argument entirely (no capture record at all). */
+G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, bool caught_available,
+                     const GbGen1Base* g1base, GbEditMon* out, Gen3ToGbLoss* loss);
 
 #endif /* GEN3_TO_GB_H */
