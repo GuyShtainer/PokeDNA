@@ -130,6 +130,13 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # per this list's own append-only rule.
     ("gb-screen-shell", "U2a — the shared GB-screen shell (canvas, SELECT 1:1<->stretched)",
      ("U2a",)),
+    # U2c (docs/GB-GAME-SCREENS-DESIGN.md sec 1.1, docs/briefs/U2-gb-card-briefs.md):
+    # Red's OWN trainer card drawn on the shared shell, replacing Emerald's card art
+    # for Gen-1 saves. Shots come from tools/dgb_shots.py's run_u2c_trainer(),
+    # captions all start "U2c:". Appended after "gb-screen-shell" per this list's own
+    # append-only rule.
+    ("gb-card-gen1", "U2c — Red's own trainer card on the shell (Gen-1 saves)",
+     ("U2c",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

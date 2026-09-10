@@ -346,6 +346,113 @@ def run_standalone(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Se
     return s
 
 
+def run_u2c_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """U2c (docs/GB-GAME-SCREENS-DESIGN.md sec 1.1): Red's OWN trainer card on the
+    shared GB-screen shell, over the STANDALONE mount (boot picker DOWN -> Red row ->
+    A -> S1 info -- same path run_standalone()'s own shots 01-02 use), then A -> box
+    grid (rides out rom_gbsprite's cold scan the same way run_standalone()'s own
+    03_box_grid does), START -> nav menu, DOWN x3 -> Trainer -> A ->
+    pdna_gbtrainer() -- Gen 1, so this lands on pdna_gbtrainer_gen1_card(), NOT the
+    Emerald-art path tools/p1c_shots.py's run_gold_card() shoots (that one is Gen-2-
+    only as of this slice). gbscr_open()'s own rom_gbui scan is a SEPARATE cold scan
+    from rom_gbsprite's box-grid one (different locator, different ROM regions), so
+    entering the card the first time gets its own GB_ART_COLD_SETTLE ride-out."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "u2c_")
+    print("== U2c: Red's own trainer card (Red.sav, boot picker -> standalone -> Trainer) ==")
+
+    s.run(700)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                  # Emerald (row 0) -> Red (row 1)
+    s.tap("A", settle=60)                                  # pick Red -> S1 info
+    s.tap("A", settle=60)                                  # -> box grid (rom_gbsprite cold fetch)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 3)                                     # Party -> Bank -> Daycare -> Trainer
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Trainer -> pdna_gbtrainer_gen1_card()
+                                                              # (gbscr_open's OWN cold rom_gbui scan)
+    s.shot("01_card_1to1", "U2c: Red's OWN trainer card, 1:1 centred at (40,8) -- "
+                            "NAME/MONEY/TIME painted with the CARDFRAME block's frame "
+                            "tiles for the panel border, the player pic (gb_sprite_gen1, "
+                            "4 tile columns x 6 rows -- the real game's own text-box "
+                            "border overwrites pic column 5 and row 7, D1 review fix), "
+                            "and both 8-badge rows -- all shown OWNED (badge tiles, not "
+                            "face tiles): Red.sav's own wObtainedBadges is 0xFF on this "
+                            "save, all 8 badges genuinely owned")
+
+    s.tap("SEL", settle=60)                                 # shell-wide toggle -> stretched
+    s.shot("02_card_stretched", "U2c: SELECT stretches the SAME card to 240x160 -- "
+                                 "the shell's own scale toggle (gb_scale_mode), not a "
+                                 "card-specific key; the legend overlays the bottom row")
+
+    s.tap("SEL", settle=60)                                 # back to 1:1
+    s.shot("03_card_1to1_again", "U2c: SELECT again returns to 1:1 -- a live toggle")
+
+    # Cursor cycle order (G1C_*): NAME(0) MONEY(1) TIME(2) then the 8 badges row-major.
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("04_cursor_money", "U2c: DOWN moves the cursor from NAME to MONEY")
+
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("05_cursor_time", "U2c: DOWN again -> TIME")
+
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("06_cursor_badge0", "U2c: DOWN again -> the first badge (row 1, col 0)")
+
+    # D10 (review): Red.sav's badge0 starts OWNED (see shot 01's own caption), so A's
+    # FIRST toggle here goes owned -> UNOWNED (face tile), not the other way around --
+    # shots 07/08 were captioned backwards.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # instant toggle -> UNOWNED
+    s.shot("07_badge0_unowned", "U2c: A instantly toggles badge 0 to UNOWNED (it "
+                                 "started owned, Red.sav's own wObtainedBadges = 0xFF) "
+                                 "-- badge tile swaps to a face tile (never a palette "
+                                 "change, design's own 'lit vs unlit is not a palette "
+                                 "change' rule)")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # toggle back -> OWNED
+    s.shot("08_badge0_owned", "U2c: A again toggles it back to OWNED (badge tile)")
+
+    s.press_n("UP", 3, settle=gb_shots.SETTLE)               # badge0 -> TIME -> MONEY -> NAME
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # A on NAME -> the identity WARNING first
+    s.shot("09_editor_name", "U2c: A on NAME does NOT open the keyboard directly -- "
+                              "gbtr_id_edit_ok() shows the identity-change WARNING "
+                              "first ('Changes your TRAINER identity / Your own "
+                              "Pokemon become traded', A=yes B=no), once per visit; "
+                              "see shot 09b for the actual keyboard")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # confirm the warning -> osk_input opens
+    s.shot("09b_editor_name_keyboard", "U2c: A (yes) on the warning -- NOW the "
+                                        "EXISTING osk_input() pop-up opens (via "
+                                        "gbtr_edit_row, the same sub-editor the plain "
+                                        "page and Gen 2's card already share) -- "
+                                        "PokeDNA's own on-screen keyboard, not a "
+                                        "game-art dialogue")
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # cancel -> back on the card, NAME selected
+    s.shot("10_back_on_card", "U2c: B cancels the name editor, back on the card")
+
+    # A REAL edit (badge0 toggled, LEFT changed) so B's commit prompt actually fires
+    # -- stays in this SAME visit (never exits the card) rather than re-entering the
+    # nav menu a second time, which left the game in an unexpected state (the nav
+    # menu's own remembered row is not "Trainer" the way a fresh A-press assumes --
+    # an earlier version of this script re-entered and landed on a mon's own
+    # VIEW/EDIT menu instead; caught by looking at the screenshot, not by the
+    # harness's own pixel-diff check, which only flags an IDENTICAL pair).
+    s.press_n("DOWN", 3, settle=gb_shots.SETTLE)               # NAME -> MONEY -> TIME -> badge0
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                     # toggle badge0 -- a REAL change
+    s.shot("11_real_edit", "U2c: badge0 toggled and LEFT changed (unlike shots "
+                            "06-08's toggle-and-back, this one stays changed)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                     # B -> the actual commit prompt
+    s.shot("12_commit_prompt", "U2c: B with a real pending edit -> "
+                                "'Save trainer changes?' (app_confirm), the SAME "
+                                "dialog Gen 3's own card_editor uses -- shot 10's "
+                                "own B (nothing changed, t == t0) instead took the "
+                                "silent memcmp no-op path straight back to the "
+                                "card, which is why this shot needed a real edit")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                     # decline -- discard the real edit too
+    s.shot("13_declined", "U2c: declining a REAL edit also discards it -- the "
+                           "save was never written (gbt_write never ran), back "
+                           "at the box grid")
+    return s
+
+
 
 # ---------------------------------------------------------------------------------
 # BACKLOG #68b: cold-start timing, WITH vs WITHOUT the fused LOC payloads.
@@ -533,6 +640,9 @@ def main(argv=None) -> int:
     ap.add_argument("--shell-only", action="store_true",
                      help="U2a: only run_gbscreen_shell() against --image, skip the "
                           "boot-picker/standalone/NV_GB flows")
+    ap.add_argument("--u2c-trainer", action="store_true",
+                     help="U2c: only run_u2c_trainer() against --image (Red's own "
+                          "trainer card), skip the other flows")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -569,6 +679,19 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] gbscreen shell: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.u2c_trainer:
+        try:
+            sess = run_u2c_trainer(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] u2c trainer: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

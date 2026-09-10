@@ -1554,4 +1554,53 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBTRAINER_ID_WARN_TITLE "Changes your TRAINER identity"
 #define PDNA_GBTRAINER_ID_WARN_L1    "Your own Pokemon become 'traded'."
 
+/* D1 fix (U2c 2nd re-verify): the GB-screen shell's 1:1-mode legend used to
+ * join a key name and an action word into ONE string per side-bar row ("A
+ * EDIT", "START MORE") -- past the 36-px side bar for anything longer than
+ * "B BACK", it silently truncated ("SEL S~", "START~"). The fix splits the
+ * two into separate columns (pdna_gbscreen.c's LEFT/RIGHT side bars); these
+ * macros are the ONE copy of every key name and action word that appears in
+ * either column, shared by pdna_gbscreen.c (kGbscrLegendKeys/
+ * kGbscrBaseActions), pdna_gbtrainer.c (kLegendEdit/kLegendView), and
+ * tests/host_textfit_test.c's width check -- so the check binds to the exact
+ * strings painted on screen, never a re-typed copy that could drift.
+ * Budgets: GBSCR_LEGEND_MAXW (left bar) and GBSCR_RIGHT_BAR_MAXW (right bar),
+ * both 36 px today (pdna_gbscreen.c). */
+#define PDNA_GBSCR_KEY_A     "A"
+#define PDNA_GBSCR_KEY_B     "B"
+#define PDNA_GBSCR_KEY_SEL   "SEL"
+#define PDNA_GBSCR_KEY_START "START"
+
+#define PDNA_GBSCR_ACT_OK    "OK"
+#define PDNA_GBSCR_ACT_BACK  "BACK"
+#define PDNA_GBSCR_ACT_SIZE  "SIZE"
+
+#define PDNA_GBTR_ACT_EDIT   "EDIT"
+#define PDNA_GBTR_ACT_SAVE   "SAVE"
+#define PDNA_GBTR_ACT_MORE   "MORE"
+
+/* D2 fix (U2c 2nd re-verify): the GB-screen shell's open-refusal reasons
+ * (pdna_gbscreen.c's kReasonNoRom/kReasonNoStack/kReasonOpen/kReasonBadGen/
+ * kReasonNoTail) used to be concatenated onto the plain trainer page's title
+ * ("GB ART: OFF -- <reason>") and painted as ONE fixed-font (8 px/glyph)
+ * line, which ran the forced-fallback test string off the 240-px screen
+ * ("forced (PDNA_U2C_FORCE_FALLBACK)" alone is 264 px in that font). The
+ * title now stays the short, always-fits PDNA_GBTR_FALLBACK_TITLE; every
+ * reason macro below is its OWN second line in the plain proportional face
+ * (ui_ptext), and must fit GBTR_HEADER2_MAXW there -- checked by
+ * tests/host_textfit_test.c against the real macros, not a re-typed copy. */
+#define PDNA_GBTR_FALLBACK_TITLE  "GB ART: OFF"
+#define GBTR_HEADER2_MAXW 232   /* screen width 240, x=4, 4px right margin */
+
+#define PDNA_GBSCR_REASON_NO_ROM      "no ROM registered"
+#define PDNA_GBSCR_REASON_NO_STACK    "not enough stack"
+#define PDNA_GBSCR_REASON_OPEN        "ROM art unavailable"
+#define PDNA_GBSCR_REASON_BAD_GEN     "not a Gen-1/Gen-2 request"
+#define PDNA_GBSCR_REASON_NO_TAIL     "no tile-bank memory"
+#define PDNA_GBSCR_REASON_UNAVAILABLE "unavailable"
+/* Only reachable under -DPDNA_U2C_FORCE_FALLBACK (a build-time test flag,
+ * pdna_gbtrainer.c) -- included here anyway so the same width test covers
+ * the one shot harness the review actually re-shoots. */
+#define PDNA_GBSCR_REASON_FORCED_TEST "forced (test)"
+
 #endif /* PDNA_LAYOUT_H */

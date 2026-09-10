@@ -53,7 +53,10 @@
                             * trainer_key_legend / card_* shared card painters (P1c) */
 #include "card_bg.h"       /* CARD_LAYOUTS / CARD_BACK_LAYOUTS / card_bg() -- always
                             * PK_EMERALD's, see the file comment above for why       */
-#include "pdna_gen12.h"    /* gb_rollback / gb_persist -- the S2 commit primitives   */
+#include "pdna_gen12.h"    /* gb_rollback / gb_persist -- the S2 commit primitives;
+                            * gb12_arena_tail/gb12_arena_tail_release (U2c)          */
+#include "pdna_gbscreen.h" /* U2c: the shared GB-screen shell -- Red's own card      */
+#include "pdna_origin_art.h" /* PDNA_GEN1 -- gbscr_open()'s own `gen` constant        */
 #include "pdna_layout.h"   /* PDNA_GBTRAINER_ID_WARN_* -- measured by host_textfit   */
 #include "ui.h"
 #include "snd.h"
@@ -260,21 +263,40 @@ static void gbtr_row_paint(const GbTrainer* t, int row, bool gen1, int y, bool s
 
 typedef struct { uint32_t gen; int sel; bool valid; } GbtrPaint;
 
+/* `header` (may be NULL): U2c's own honest-fallback line (design sec 3.5), shown
+ * INSTEAD of the ordinary title when this page is reached because the GB-screen
+ * shell refused (e.g. "GB ART: OFF") -- never silently degraded, per the design's
+ * own rule. NULL keeps the ordinary title, unchanged from P1b/P1c (Gen 2's own
+ * art-unavailable fallback, and any other caller).
+ *
+ * `header2` (may be NULL): D2 fix (U2c 2nd re-verify) -- the REASON for a
+ * `header` fallback used to be appended to `header` itself ("GB ART: OFF --
+ * <reason>") and painted as ONE fixed-font title line, which ran off the right
+ * edge of the 240-px screen for any reason text past ~29 chars (the fixed font
+ * is 8 px/glyph; the re-verify's forced-fallback shot showed the tail of
+ * "forced (PDNA_U2C_FORCE_FALLBACK)" cut at the screen edge). `header2`, when
+ * supplied, paints on its OWN line below `header` in the proportional font
+ * (ui_ptext -- see GBTR_HEADER2_MAXW below for the fits-on-screen contract),
+ * and every row + the top hline shift down by one line to make room. */
 static void gbtr_plain_render(const GbTrainer* t, bool gen1, const int* rows, int nrows,
-                              bool can_edit, int sel, GbtrPaint* pv) {
+                              bool can_edit, int sel, GbtrPaint* pv, const char* header,
+                              const char* header2) {
   bool full = !pv->valid || pv->gen != ui_clear_gen();
+  int hline_y = header2 ? 20 : 11;
+  int row_y0  = header2 ? 23 : 14;
 
   if (full) {
     ui_clear();
-    ui_text(4, 2, UI_TITLE, gen1 ? "TRAINER CARD (Gen 1)" : "TRAINER CARD (Gen 2)");
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+    ui_text(4, 2, UI_TITLE, header ? header : (gen1 ? "TRAINER CARD (Gen 1)" : "TRAINER CARD (Gen 2)"));
+    if (header2) ui_ptext_fit(4, 11, GBTR_HEADER2_MAXW, UI_DIM, header2);
+    ui_hline(0, hline_y, UI_SCR_W, UI_BORDER);
     for (int i = 0; i < nrows; i++)
-      gbtr_row_paint(t, rows[i], gen1, 14 + i * 9, can_edit && i == sel);
+      gbtr_row_paint(t, rows[i], gen1, row_y0 + i * 9, can_edit && i == sel);
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     trainer_key_legend(can_edit ? "A edit  START save  B cancel" : "B back");
   } else if (sel != pv->sel) {
-    gbtr_row_paint(t, rows[pv->sel], gen1, 14 + pv->sel * 9, false);
-    gbtr_row_paint(t, rows[sel],     gen1, 14 + sel     * 9, can_edit);
+    gbtr_row_paint(t, rows[pv->sel], gen1, row_y0 + pv->sel * 9, false);
+    gbtr_row_paint(t, rows[sel],     gen1, row_y0 + sel     * 9, can_edit);
   }
 
   pv->sel = sel; pv->gen = ui_clear_gen(); pv->valid = true;
@@ -337,14 +359,15 @@ static void gbtr_edit_row(GbTrainer* t, bool gen1, int kind) {
  * *want_commit contract) -- this used to ask+write here directly (P1b), but
  * P1c needs the SAME commit path for both faces of the card, not two. */
 __attribute__((noinline))
-static bool pdna_gbtrainer_plain(GbTrainer* t, bool gen1, bool can_edit) {
+static bool pdna_gbtrainer_plain(GbTrainer* t, bool gen1, bool can_edit, const char* header,
+                                 const char* header2) {
   int rows[GBTR_ROW_MAX];
   int nrows = gbtr_build_rows(t, rows);
 
   int sel = 0;
   GbtrPaint pv = { 0, 0, false };
   for (;;) {
-    gbtr_plain_render(t, gen1, rows, nrows, can_edit, sel, &pv);
+    gbtr_plain_render(t, gen1, rows, nrows, can_edit, sel, &pv, header, header2);
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B | KEY_START);
     if (k & KEY_B) return false;                  /* discard: `t` was never written */
@@ -558,6 +581,335 @@ static void pdna_gbtrainer_card(GbTrainer* t, bool gen1, bool can_edit,
   }
 }
 
+/* ============================================================================
+ * ---- U2c: Red's OWN trainer card, over the shared GB-screen shell -- Gen 1
+ * ONLY (docs/GB-GAME-SCREENS-DESIGN.md sec 1.1). Retires the Emerald-art card
+ * (gbcard_front_full/gbcard_back_full/pdna_gbtrainer_card/gb_cardfields, all
+ * above, UNCHANGED) for Gen-1 saves -- Gen 2 still reaches them, unaffected.
+ * ============================================================================ */
+
+/* CARDFRAME block tile indices (docs/GB-GAME-SCREENS-DESIGN.md sec 2.1 G1-C:
+ * "9 + 22 + 1 + 8 tiles" contiguous, in the gfx/trainer_card.asm file order --
+ * trainer_info(9), blank_leader_names(22), circle_tile(1), badge_numbers(8)).
+ * The design table names 7 of the 9 frame roles by their VRAM id ($77-based --
+ * DrawTrainerInfo loads tile 0 of this block to vChars2 $77, so ROM index =
+ * VRAM id - $77): $78 right(1), $79 UL(2), $7a top(3), $7b UR(4), $7c left(5),
+ * $7d BL(6), $7e BR(7). It does not separately name a "bottom edge" tile --
+ * index 0 ($77 itself, the block's own first tile) is the only one of the 9
+ * left over once the 7 named roles are assigned indices 1-7, so this is used
+ * as the bottom edge here (index 8, $7f, stays unused -- 9 tiles reserved, 8
+ * roles filled). Flagged for the item-2 shot comparison against the real ROM,
+ * not proven by a decomp opcode the way the block's own OWN offset is. */
+enum {
+  G1F_BOTTOM = 0, G1F_RIGHT = 1, G1F_UL = 2, G1F_TOP = 3,
+  G1F_UR = 4, G1F_LEFT = 5, G1F_BL = 6, G1F_BR = 7,
+  /* D4 (review): the real ROM's TrainerInfo_DrawVerticalLine draws the
+   * screen-background dither pattern for the two side rules between the
+   * upper and lower panel ($d7 = the CARDFRAME block's own index 8 by the
+   * same "block's first tile past the 7 named roles" reading G1F_BOTTOM
+   * uses -- confirmed against the real tilemap capture, celldiff.py) --
+   * NOT a TEXTBOX tile, and not one row tall: it is drawn per source row
+   * for the full 8-row gap (screen rows 10..17). */
+  G1F_BG = 8,
+  G1F_CIRCLE = 31,            /* the block's 32nd tile: 9 frame + 22 blank names */
+  G1F_BADGENUM0 = 32          /* badge k's number tile = G1F_BADGENUM0 + k       */
+};
+
+/* TEXTBOX block (G1-T, 32 tiles): the design names tile 13 as the ':' colon
+ * ("TextBoxGraphics + 13 tiles"). G1T_VRULE (index 14, "one past the colon")
+ * was this screen's own guess at the side-rule tile before the real tilemap
+ * capture -- wrong (see G1F_BG above) and now unused; deleted. */
+enum { G1T_COLON = 13 };
+
+/* Cursor slots, in UP/DOWN cycle order: NAME, MONEY, TIME, then the 8 badges
+ * row-major (0-3 top row, 4-7 bottom row) -- matches the card's own on-screen
+ * order top to bottom. */
+enum { G1C_NAME = 0, G1C_MONEY, G1C_TIME, G1C_BADGE0, G1C_SEL_MAX = G1C_BADGE0 + 8 };
+
+/* Draws one bordered panel (design sec 1.1's own two TrainerInfo_DrawTextBox
+ * calls): corners + edges from CARDFRAME; the interior is left BLANK (the
+ * design's own rule -- the game's interior fill tile, vChars1 $57, is outside
+ * this block and this shell has no located source for it, so a flat colour
+ * stands in, same posture as every other "no ROM source for this exact
+ * pixel" case in the tree). `x1`/`y1` are inclusive (last border column/row,
+ * NOT one-past, matching the design table's own "(0,0)-(19,7)" notation). */
+static void g1card_panel(GbScreen* gs, int x0, int y0, int x1, int y1) {
+  gbscr_cell(gs, x0, y0, GBSCR_SRC_CARDFRAME, G1F_UL);
+  gbscr_cell(gs, x1, y0, GBSCR_SRC_CARDFRAME, G1F_UR);
+  gbscr_cell(gs, x0, y1, GBSCR_SRC_CARDFRAME, G1F_BL);
+  gbscr_cell(gs, x1, y1, GBSCR_SRC_CARDFRAME, G1F_BR);
+  for (int x = x0 + 1; x < x1; x++) {
+    gbscr_cell(gs, x, y0, GBSCR_SRC_CARDFRAME, G1F_TOP);
+    gbscr_cell(gs, x, y1, GBSCR_SRC_CARDFRAME, G1F_BOTTOM);
+  }
+  for (int y = y0 + 1; y < y1; y++) {
+    gbscr_cell(gs, x0, y, GBSCR_SRC_CARDFRAME, G1F_LEFT);
+    gbscr_cell(gs, x1, y, GBSCR_SRC_CARDFRAME, G1F_RIGHT);
+  }
+}
+
+/* One full-card repaint -- gbscr_cell()/gbscr_text() are all idempotent (a
+ * cell that already holds this exact tile is never marked dirty), so calling
+ * this every time ANYTHING changes (a field edit, or just forcing a redraw to
+ * erase the previous cursor frame) is cheap: gbscr_flush() only re-blits what
+ * actually changed, and gbscr_mark_all_dirty() (called by the cursor-move path
+ * below, not here) forces a full re-blit when only the cursor moved. */
+static void g1card_paint(GbScreen* gs, const GbTrainer* t) {
+  g1card_panel(gs, 0, 0, 19, 7);                        /* upper panel */
+
+  gbscr_text(gs, 2, 2, "NAME/");
+  gbscr_raw(gs, 7, 2, t->name_raw, GB_OT_GLYPHS);
+
+  /* D5 (review): the real PrintBCDNumber call uses LEADING_ZEROES|LEFT_ALIGN
+   * with MONEY_SIGN, which places the sign right before the first
+   * significant digit and prints NO leading zeros (money 0 -> "$0", not
+   * "$000000") -- "$%06lu" was this screen's own wrong guess. Cursor rect
+   * stays the fixed 7-wide field (sel_rect, unchanged); blank the residue
+   * cells past the shorter string so a later edit that SHRINKS the digit
+   * count doesn't leave stale digits from a longer previous value (same
+   * defect class as D2's name-field terminator fix, D6's time fix below). */
+  gbscr_text(gs, 2, 4, "MONEY/");
+  char buf[16];
+  if (t->money_ok) siprintf(buf, "$%lu", (unsigned long)t->money);
+  else             siprintf(buf, "?");
+  gbscr_text(gs, 8, 4, buf);
+  for (int cx = 8 + (int)strlen(buf); cx < 15; cx++) gbscr_cell(gs, cx, 4, GBSCR_SRC_BLANK, 0);
+
+  /* D6 (review): the real screen left-aligns hours and writes the colon
+   * wherever it lands (no fixed col-12 colon, no zero/space-padded hours) --
+   * this screen's own "%3u" + fixed-column colon was wrong. Blank the
+   * residue out to column 14 (the field's own max width, sel_rect w=6 from
+   * x=9) so a later edit that shrinks the hour count doesn't leave a stale
+   * colon or stale minute digits behind. */
+  gbscr_text(gs, 2, 6, "TIME/");
+  int hw = siprintf(buf, "%u", (unsigned)t->playtime.hours);
+  gbscr_text(gs, 9, 6, buf);
+  gbscr_cell(gs, 9 + hw, 6, GBSCR_SRC_TEXTBOX, G1T_COLON);
+  siprintf(buf, "%02u", (unsigned)t->playtime.minutes);
+  gbscr_text(gs, 10 + hw, 6, buf);
+  for (int cx = 12 + hw; cx <= 14; cx++) gbscr_cell(gs, cx, 6, GBSCR_SRC_BLANK, 0);
+
+  /* D1 (review): the real game draws the pic BEFORE the text box, so the
+   * lower-right corner of the upper panel's own border overwrites pic
+   * column 5 (screen col 20, off-map -- N/A here) and pic row 7 (screen row
+   * 7, the panel's bottom border) -- net visible area is 4 tile COLUMNS x 6
+   * ROWS (tx 0..3, ty 0..5), not the previously-drawn 5x7. Tile index is
+   * still row-major over the FULL 7x7 decode (ty*7+tx), matching
+   * gbscr_decode_pic_gen1()'s own packing order -- only the painted subrange
+   * shrank. */
+  for (int ty = 0; ty < 6; ty++)
+    for (int tx = 0; tx < 4; tx++)
+      gbscr_cell(gs, 15 + tx, 1 + ty, GBSCR_SRC_PIC, (uint8_t)(ty * 7 + tx));
+
+  gbscr_cell(gs, 6, 9, GBSCR_SRC_CARDFRAME, G1F_CIRCLE);
+  gbscr_text(gs, 7, 9, "BADGES");
+  /* D3 (review): the right BADGES circle is at column 13, not 14 (confirmed
+   * against the real tilemap capture). */
+  gbscr_cell(gs, 13, 9, GBSCR_SRC_CARDFRAME, G1F_CIRCLE);
+
+  /* D4 (review): the two side rules between the panels are the
+   * screen-background dither (CARDFRAME index G1F_BG), drawn per row for the
+   * full 8-row gap (screen rows 10..17) at columns 0 and 19 -- not a single
+   * TEXTBOX tile on row 10. */
+  for (int ry = 10; ry <= 17; ry++) {
+    gbscr_cell(gs, 0, ry, GBSCR_SRC_CARDFRAME, G1F_BG);
+    gbscr_cell(gs, 19, ry, GBSCR_SRC_CARDFRAME, G1F_BG);
+  }
+
+  g1card_panel(gs, 1, 10, 18, 17);                      /* lower panel */
+
+  /* Badges: row 1 at y=11, row 2 at y=14 (design sec 1.1), column stride 4.
+   * For UNOWNED badges: draw leader-name tiles at (c+1, r) and (c+2, r) using
+   * CARDFRAME block indices 9+2k and 10+2k, matching the real game's behavior.
+   * For OWNED badges: leader-name cells stay BLANK. Every cell starts BLANK
+   * per gbscr_open()'s own zeroing (English release: erased in the ROM). */
+  for (int k = 0; k < 8; k++) {
+    int row = k / 4, col = k % 4;
+    int c = 2 + col * 4, r = 11 + row * 3;
+    gbscr_cell(gs, c, r, GBSCR_SRC_CARDFRAME, (uint8_t)(G1F_BADGENUM0 + k));
+    bool owned = gbtr_badge_get(t, true, k);
+    if (!owned) {
+      gbscr_cell(gs, c + 1, r, GBSCR_SRC_CARDFRAME, (uint8_t)(9 + 2 * k));
+      gbscr_cell(gs, c + 2, r, GBSCR_SRC_CARDFRAME, (uint8_t)(10 + 2 * k));
+    }
+    int base = 8 * k + (owned ? 4 : 0);
+    for (int dy = 0; dy < 2; dy++)
+      for (int dx = 0; dx < 2; dx++)
+        gbscr_cell(gs, c + 1 + dx, r + 1 + dy, GBSCR_SRC_BADGES, (uint8_t)(base + dy * 2 + dx));
+  }
+}
+
+/* Cursor cell-group for one G1C_* slot -- (x,y,w,h) in tile units, matching
+ * exactly the cells g1card_paint() painted for that field, so the highlight
+ * always outlines real content. */
+static void g1card_sel_rect(int sel, int* x, int* y, int* w, int* h) {
+  switch (sel) {
+    case G1C_NAME:  *x = 7;  *y = 2; *w = GB_OT_GLYPHS; *h = 1; break;
+    case G1C_MONEY: *x = 8;  *y = 4; *w = 7;             *h = 1; break;   /* "$"+6 digits */
+    case G1C_TIME:  *x = 9;  *y = 6; *w = 6;             *h = 1; break;   /* "HHH:MM"     */
+    default: {
+      int k = sel - G1C_BADGE0;
+      int row = k / 4, col = k % 4;
+      *x = 2 + col * 4; *y = 11 + row * 3; *w = 3; *h = 3;   /* number + 2x2 pic */
+    } break;
+  }
+}
+
+/* The card's own editor dispatch: NAME/MONEY/TIME reuse the SAME whole-screen
+ * sub-editors gbtr_edit_row() already shares with the plain page and Gen 2's
+ * card; badges toggle INSTANTLY (no pop-up), same as Gen 2's own card front
+ * badge row -- Gen 1 shows all 8 badges on the card itself, unlike Gen 2's
+ * Kanto half, so there is no "more badges than fit" case needing the
+ * full-screen gbtr_badges_editor() here. */
+static void g1card_edit_sel(GbTrainer* t, int sel) {
+  switch (sel) {
+    case G1C_NAME:  gbtr_edit_row(t, true, GBTR_NAME);  break;
+    case G1C_MONEY: gbtr_edit_row(t, true, GBTR_MONEY); break;
+    case G1C_TIME:  gbtr_edit_row(t, true, GBTR_TIME);  break;
+    default:        gbtr_badge_toggle(t, true, sel - G1C_BADGE0); break;
+  }
+}
+
+/* Red's own trainer card, drawn on the shared shell. Returns true (want a
+ * commit prompt) exactly when B was pressed -- same "always ask, the caller's
+ * memcmp is the no-op check" contract pdna_gbtrainer_card()'s own front page
+ * uses, so a read-only visit (can_edit false, t untouched) silently no-ops at
+ * the caller rather than ever prompting. Falls back to the plain row-list
+ * page (with an HONEST header naming the refusal, design sec 3.5) when the
+ * shell cannot open -- no ROM registered, not enough stack, a non-English
+ * release, or no tile-bank memory. */
+__attribute__((noinline))
+static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
+  uint32_t shell_need = gbscr_tail_need(PDNA_GEN1,
+      GBSCR_NEED_CARDFRAME | GBSCR_NEED_BADGES | GBSCR_NEED_TEXTBOX);
+  /* U2b review 0b: ONE slice -- the shell's own tile cache AND this screen's
+   * player-pic decode share it; the pic's bytes are carved out past what the
+   * shell itself uses (gbscr_tail_need()'s own result), never a second
+   * gb12_arena_tail() call. GBSCR_PIC_TAIL_BYTES (4,704 B: 784 B kept +
+   * 3,920 B transient codec scratch) is bigger than the brief's own "+784"
+   * shorthand -- that number covers only the KEPT packed pic, not
+   * gb_sprite_gen1_buf()'s own px[3,136]+work[784] decode scratch, which has
+   * nowhere else to live (far too big for the stack budget this screen's own
+   * frame is gated against) and is not reused for anything after this call. */
+  uint32_t need = shell_need + GBSCR_PIC_TAIL_BYTES;
+  uint8_t* tail = gb12_arena_tail(need);
+
+  GbScreen gs;
+  const char* reason = 0;
+  bool ok = gbscr_open(PDNA_GEN1, &gs, tail, shell_need,
+                       GBSCR_NEED_CARDFRAME | GBSCR_NEED_BADGES | GBSCR_NEED_TEXTBOX, &reason);
+#ifdef PDNA_U2C_FORCE_FALLBACK
+  /* D10 (review): the fallback branch below (no ROM registered / bad ROM /
+   * non-English release / no tile-bank memory) is this function's only
+   * exit path with no shot -- every real corpus ROM this tree ships opens
+   * fine, so the shot harness can never reach it by driving a real save.
+   * A build-time flag forces the refusal so the honest-header fallback
+   * (D7's header contract) gets ONE real shot instead of staying untested. */
+  if (ok) { gbscr_close(&gs); ok = false; reason = PDNA_GBSCR_REASON_FORCED_TEST; }
+#endif
+  if (!ok) {
+    gb12_arena_tail_release();
+    /* D2 fix (U2c 2nd re-verify): the reason used to be concatenated onto the
+     * "GB ART: OFF -- " title and painted as ONE fixed-font line, which ran
+     * off the 240-px screen for any reason past ~29 chars. The title now
+     * stays the short, always-fits "GB ART: OFF"; the reason is its OWN
+     * second line in gbtr_plain_render's proportional font -- see
+     * GBTR_HEADER2_MAXW (this file, below) for the compile-time-checked
+     * width contract every kReason* string in pdna_gbscreen.c must meet. */
+    return pdna_gbtrainer_plain(t, true, can_edit, PDNA_GBTR_FALLBACK_TITLE,
+                                reason ? reason : PDNA_GBSCR_REASON_UNAVAILABLE);
+  }
+
+  /* Best-effort: a failed pic decode leaves GBSCR_SRC_PIC cells painting the
+   * same flat BLANK every other unavailable src uses -- not a hard refusal of
+   * the whole card (design: the photo is one field among several). */
+  /* Minor (U2c review): `need - shell_need` is the ACTUAL size of the tail
+   * past the shell's own share -- always equal to GBSCR_PIC_TAIL_BYTES today
+   * (need's own formula above), but passing the constant made
+   * gbscr_decode_pic_gen1()'s own `buf_len < GBSCR_PIC_TAIL_BYTES` check a
+   * tautology that could never catch a future mismatch between `need`'s
+   * formula and this call. Passing the derived size makes the check real. */
+  gbscr_decode_pic_gen1(&gs, tail + shell_need, need - shell_need);
+
+  /* D9 (review): the shell's own base legend ("A OK  B BACK  SEL SIZE")
+   * contradicts this screen's real keys -- there is no A-OK-only meaning
+   * here, and B SAVES on an editable visit, not "back". Replace it entirely
+   * (gbscr_set_legend()) instead of only appending to it: can_edit shows the
+   * real A/B meanings; read-only drops the A line (there is nothing to
+   * edit). Both list D8's new START key.
+   *
+   * D1 fix (U2c 2nd re-verify): each slot is now the ACTION WORD ALONE --
+   * gbscr_set_legend()'s fixed row order is A/B/SEL/START (kGbscrLegendKeys,
+   * pdna_gbscreen.c) and the shell paints the key name itself in the left
+   * bar, this array's word in the right bar. The joined "A EDIT"/"START
+   * MORE" strings used to overflow the 36-px side bar (57 px for "START
+   * MORE") and truncate to "START~"; splitting the columns means the widest
+   * word here (MORE/SIZE, 22-24 px) never gets near the 36-px budget. View
+   * mode's row 0 (A) stays 0 -- there is nothing to edit read-only. */
+  static const char* const kLegendEdit[4] = {
+    PDNA_GBTR_ACT_EDIT, PDNA_GBTR_ACT_SAVE, PDNA_GBSCR_ACT_SIZE, PDNA_GBTR_ACT_MORE
+  };
+  static const char* const kLegendView[4] = {
+    0, PDNA_GBSCR_ACT_BACK, PDNA_GBSCR_ACT_SIZE, PDNA_GBTR_ACT_MORE
+  };
+  gbscr_set_legend(&gs, can_edit ? kLegendEdit : kLegendView);
+
+  int sel = 0;
+  bool want_commit = false;
+  g1card_paint(&gs, t);
+  for (;;) {
+    gbscr_flush(&gs, 0);   /* legend_extra is ignored once gbscr_set_legend() ran */
+
+    int cx, cy, cw, ch;
+    g1card_sel_rect(sel, &cx, &cy, &cw, &ch);
+    int px0, py0, px1, py1;
+    gbscr_cell_rect(cx, cy, cw, ch, &px0, &py0, &px1, &py1);
+    m3_frame(px0, py0, px1, py1, GBCARD_CSEL);
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_SELECT | KEY_START);
+    if (k & KEY_SELECT) { gbscr_toggle_scale(&gs); continue; }   /* shell owns this */
+    /* D8 (review): START reaches the full Gen-1 row list (ID No./COINS/the
+     * back page -- gbtr_build_rows()'s complete field set) that this card
+     * front does not show; the plain page is the one that already has all
+     * of it. Regardless of can_edit -- a read-only visit can still WANT to
+     * see the fields this card leaves off. */
+    if (k & KEY_START) {
+      gbscr_close(&gs);
+      gb12_arena_tail_release();
+      return pdna_gbtrainer_plain(t, true, can_edit, 0, 0);
+    }
+    if (k & KEY_B) { want_commit = true; break; }
+
+    /* Minor (U2c review): this loop always draws the sel-rect cursor frame
+     * (above, every iteration) regardless of can_edit, but a read-only visit
+     * used to gate EVERY key past this point behind `if (!can_edit) continue`
+     * -- UP/DOWN/LEFT/RIGHT included -- so the cursor was drawn but could
+     * never move: a static highlight frozen on NAME for the whole visit,
+     * which looks broken rather than read-only. Only KEY_A (the actual edit
+     * action) is gated on can_edit now; browsing the card with the cursor
+     * works in both modes. */
+    int old_sel = sel;
+    if (k & KEY_UP)         sel = (sel > 0) ? sel - 1 : G1C_SEL_MAX - 1;
+    else if (k & KEY_DOWN)  sel = (sel + 1) % G1C_SEL_MAX;
+    else if ((k & (KEY_LEFT | KEY_RIGHT)) && sel >= G1C_BADGE0) {
+      int kk = sel - G1C_BADGE0;
+      kk = (kk + ((k & KEY_RIGHT) ? 1 : 7)) & 7;
+      sel = G1C_BADGE0 + kk;
+    } else if (can_edit && (k & KEY_A)) {
+      g1card_edit_sel(t, sel);
+      g1card_paint(&gs, t);
+      gbscr_mark_all_dirty(&gs);       /* the field itself may not have moved a
+                                        * cell but the cursor frame drawn last
+                                        * loop must be erased under real content */
+    }
+    if (sel != old_sel) gbscr_mark_all_dirty(&gs);   /* erase the old cursor frame */
+  }
+
+  gbscr_close(&gs);
+  gb12_arena_tail_release();
+  return want_commit;
+}
+
 void pdna_gbtrainer(GbSession* s, bool can_edit) {
   GbTrainer t, t0;
   if (!s || !gbt_read(s, &t)) {
@@ -568,15 +920,20 @@ void pdna_gbtrainer(GbSession* s, bool can_edit) {
   s_id_warned = false;               /* the identity warning is once per VISIT */
   const bool gen1 = (s->gen == GB_GEN1);
 
-  /* Emerald's card art (or its own weak-NULL/ROM-rung fallback -- see card_bg.h):
-   * present -> the card IS the whole screen (P1c); absent (artless build, no
-   * matching ROM open) -> P1b's plain row-list page, unchanged. Mirrors
-   * pdna_trainer()'s own `card_bg(game, 0, gender).blob != 0` fork exactly. */
+  /* U2c: Gen 1 always tries Red's own card first (the GB-screen shell over the
+   * user's own ROM), falling back to the plain row-list page (with an honest
+   * header naming the refusal) only when the shell itself refuses -- design
+   * sec 3.5. Gen 2 is UNCHANGED: Emerald's card art (or its own weak-NULL/
+   * ROM-rung fallback -- see card_bg.h) present -> the card IS the whole
+   * screen (P1c); absent -> P1b's plain row-list page. Mirrors pdna_trainer()'s
+   * own `card_bg(game, 0, gender).blob != 0` fork exactly. */
   bool want_commit = false;
-  if (card_bg(PK_EMERALD, 0, 0).blob != 0) {
+  if (gen1) {
+    want_commit = pdna_gbtrainer_gen1_card(&t, can_edit);
+  } else if (card_bg(PK_EMERALD, 0, 0).blob != 0) {
     pdna_gbtrainer_card(&t, gen1, can_edit, &want_commit);
   } else {
-    want_commit = pdna_gbtrainer_plain(&t, gen1, can_edit);
+    want_commit = pdna_gbtrainer_plain(&t, gen1, can_edit, 0, 0);
   }
   if (!want_commit) return;                    /* plain page's B: discard (unchanged from
                                                   * P1b); the card path (P1d) always asks

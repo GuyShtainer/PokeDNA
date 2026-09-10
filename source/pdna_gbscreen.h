@@ -43,27 +43,64 @@
  * app_arena_acquire() standalone -- see gbscr_open()'s own doc comment).
  *
  * MEASURED (arm-none-eabi-gcc -mcpu=arm7tdmi -mtune=arm7tdmi -O2 -mthumb-interwork
- * -mthumb -fstack-usage -c source/pdna_gbscreen.c, 2026-09-09, U2b item 1):
- * own-frame sizes (bytes) -- gbscr_mark_all_dirty 8, gbscr_cell 16,
- * gbscr_text 56, gbscr_raw 48, gbscr_toggle_scale 8, gbscr_block_bytes 0,
- * gbscr_block_off 0, gbscr_mem_read 40, gbscr_sd_read 24, gbscr_cache_block 16,
- * gbscr_open 40, gbscr_open_inner 1576 (DOWN from 3,624 pre-item-1: the
- * 2,048-B scan scratch and the 128-B rom_path buffer are both gone from this
- * frame -- scratch is now the first 2,048 B of the caller's `tail`, reused
- * afterward for the tile cache, and GbScreen no longer stores a path at all),
- * gbscr_close 8 -- but its CHAIN is now 4,240 B (app_cfg_save -> cfg_save 2,088 ->
- * sf_write_verified -> file_matches -> FatFs -> ed_sd_dma_to_rom); it runs one
- * frame ABOVE gbscr_open_inner, so the OPEN gate's guarantee covers it; a screen
- * that calls gbscr_persist_mode() from a DEEPER frame must gate it itself --
- * gbscr_flush 8 (gcc splits the real body into a separate
- * gbscr_flush.part.0, 344 -- DOWN from 952: no more FIL/fused-slice locals in
- * this function), gbscr_run_demo 944 (down from 1,016: no more local
- * scratch/loc-cache locals of its own -- app_arena_acquire()'s tail buffer
- * replaces them). sizeof(GbScreen) = 904 B (RomGbUi 80 + GbscrCache 56 + map 360 + src 360 +
- * dirty 45 + 3), the SAME for the SD and delta
- * builds now (no more #ifdef PDNA_DELTA branch in the struct) -- GbScreen
- * itself lives on the CALLER's own frame (gbscr_run_demo's 944 B above, or
- * U2b's real card screen's), OUTSIDE the gate; it is never counted in
+ * -mthumb -fstack-usage, 2026-09-09, U2c 2nd re-verify D3 fix): the SD/artless
+ * and delta builds compile pdna_gbscreen.c/pdna_gbtrainer.c under DIFFERENT
+ * flags (artless: -DPDNA_STREAM_SPRITES + the PDNA_ARTLESS art gates, real
+ * FIL-backed I/O in gbscr_open_inner; delta: -DPDNA_DELTA, fused-save reads,
+ * no FIL at all) and that changes several frames enough to need BOTH numbers,
+ * not one shared figure -- the table below replaces the old single-column
+ * write-up (which was already stale: it undercounted GbScreen and quoted a
+ * since-superseded PDNA_GB_UI_NEED derivation).
+ *
+ *   own-frame size (bytes)      SD/artless   delta
+ *   gbscr_open                  40           40
+ *   gbscr_open_inner            1,656        128     (SD keeps the FIL +
+ *                                                      f_open/f_read locals;
+ *                                                      delta reads straight
+ *                                                      out of the fused slice)
+ *   gbscr_close                 8            8
+ *   gbscr_flush                 8            8
+ *   gbscr_flush.part.0          448          448     (gcc splits the real
+ *                                                      body out; identical --
+ *                                                      no FIL on this path in
+ *                                                      either build)
+ *   gbscr_run_demo               1,008        1,008   (unchanged by D1/D2 --
+ *                                                      no gbscr_set_legend()
+ *                                                      call, see its own doc)
+ *   gbscr_decode_pic_gen1        768          56      (SD's tile-cache locals
+ *                                                      vs delta's direct
+ *                                                      fused-slice read)
+ *   pdna_gbtrainer_gen1_card     1,056        1,056   (DOWN from a pre-D2
+ *                                                      1,144: D2 removed the
+ *                                                      local `char hdr[96]` +
+ *                                                      its sniprintf() call --
+ *                                                      the header/reason split
+ *                                                      is now two `const
+ *                                                      char*` args, no local
+ *                                                      buffer at all)
+ *   pdna_gbtrainer               472          472     (unchanged by D1/D2)
+ *   pdna_gbtrainer_plain         120          120     (gbtr_plain_render
+ *                                                      inlines into this; the
+ *                                                      D2 header2/row_y0 locals
+ *                                                      add 2 ints, no measurable
+ *                                                      change at this frame)
+ *
+ * Every other pure-half function (gbscr_cell 16, gbscr_text 56, gbscr_raw 56,
+ * gbscr_mark_all_dirty 8, gbscr_toggle_scale 8, gbscr_mem_read 40,
+ * gbscr_cache_plan 32, gbscr_tail_need 20, gbscr_pack_pic 88,
+ * gbscr_unpack_pic_px 8, gbscr_cell_rect 16, gbscr_persist_mode 8,
+ * gbscr_set_legend 0) is identical between the two builds and stays under
+ * 90 B -- not gated, not worth its own table row.
+ *
+ * sizeof(GbScreen) = 964 B (RomGbUi 120 + GbscrCache 60 + map 360 + src 360 +
+ * dirty 45 + gen/ok/scale_dirty 3, no padding before legend[4] since the
+ * struct is already 4-byte aligned at that offset + legend[4] 16 B), SAME for
+ * the SD and delta builds (no #ifdef PDNA_DELTA branch in the struct) --
+ * measured directly (arm-none-eabi-nm -S on a probe translation unit), not
+ * hand-added, and it grew by 60 B from the previously documented 904: the D1
+ * fix's `legend[4]` field (this header, above) is the whole delta. GbScreen
+ * itself lives on the CALLER's own frame (gbscr_run_demo's 1,008 B above, or
+ * a real card screen's), OUTSIDE the gate; it is never counted in
  * PDNA_GB_UI_NEED.
  *
  * D1 fix (U2a review): the stack-room gate used to live INSIDE gbscr_open()'s
@@ -74,20 +111,41 @@
  * (static, noinline); `gbscr_open()` is a thin (40-B) wrapper that checks
  * pdna_origin_art_stack_room(PDNA_GB_UI_NEED) BEFORE calling it, so the gate
  * now runs before gbscr_open_inner()'s frame is ever allocated. PDNA_GB_
- * UI_NEED (rom_gbui.h) is measured from gbscr_open_inner()'s OWN entry down --
- * 1,576 (this frame, U2b item 1's re-measurement) + 2,840 (rom_gbui_open_loc's
- * own worst nested chain, rom_gbui.h's own measurement, UNCHANGED by item 1)
- * = 4,416 (taken as measured, NOT rounded up -- see rom_gbui.h's own note for
- * why) -- NOT gbscr_run_demo's 944 B on top (a different caller, e.g. U2b's
- * real card screen, will have a different frame of its own; the gate is
- * caller-independent by design, exactly like PDNA_GB_FETCH_NEED/
- * PDNA_GB_ICON_NEED are each measured per-rung rather than accumulated across
- * every possible caller). gbscr_cache_block()'s own chain (16 + its GbReadFn,
- * <=24 B) runs AFTER rom_gbui_open_loc() returns, never nested inside it, so
- * it does not add to the gate either.
+ * UI_NEED (rom_gbui.h) is derived from the SD/artless numbers above (the
+ * TIGHT build -- delta's smaller gbscr_open_inner/gbscr_decode_pic_gen1
+ * frames are never the binding case, so the gate is sized for the build that
+ * actually needs it): rom_gbui.h's own comment currently states 5,400 as the
+ * measured total (gbscr_open_inner's SD frame + rom_gbui_open_loc's own
+ * worst chain + the indirect SD-read leg, taken as measured, not rounded up
+ * -- see that header's own note; unaffected by this slice, since neither D1
+ * nor D2 touches rom_gbui.c or gbscr_open_inner's own body).
+ *
+ * Nav-chain margin (U2c's real call path into this gate, freshly re-walked
+ * this pass with -fstack-usage on pdna_gen12.c/pdna_gbtrainer.c, SD/artless
+ * build): pdna_gen12_show_image 80 -> gb_session_core.part.0 160
+ * (gb_nav_from_start inlines into it) -> pdna_gbtrainer 472 ->
+ * pdna_gbtrainer_gen1_card 1,056 -> gbscr_open 40 = 1,808 B from that entry
+ * point down to the gate call. The OUTER frames above pdna_gen12_show_image
+ * (pdna_main.c's own
+ * nav-menu dispatch chain) were NOT re-measured this pass -- pdna_main.c is
+ * outside this slice's touched files and is 446 KB, so re-walking it end to
+ * end is its own task, not a one-line recompute; a prior pass had put that
+ * outer chain at roughly 2,368 B, which this pass did not re-verify and is
+ * NOT asserted here. What IS verified: D2's hdr[96]+sniprintf removal made
+ * pdna_gbtrainer_gen1_card's own frame 88 B SMALLER (1,144 -> 1,056) than
+ * whatever number an earlier pass measured, so this slice can only have
+ * INCREASED the real margin at the gate, never shrunk it -- D1 added no new
+ * per-call stack (kGbscrLegendKeys/kGbscrBaseActions are `static const`, data
+ * segment, not stack) and D2's `header2`/`row_y0`/`hline_y` are a handful of
+ * extra int locals inside pdna_gbtrainer_plain (120 B total, unaffected per
+ * the table above) -- neither touches the gen1_card/gbscr_open chain in the
+ * direction that would matter (growing it).
+ * gbscr_cache_block()'s own chain (16 + its GbReadFn, <=24 B) runs AFTER
+ * rom_gbui_open_loc() returns, never nested inside it, so it does not add to
+ * the gate either.
  * gbscr_flush() carries no separate gate -- it never calls
  * pdna_origin_art_stack_room() -- because its own reachable chain
- * (gbscr_flush.part.0's 344 B, plus rom_gbui_tile()/glyph()'s own small
+ * (gbscr_flush.part.0's 448 B, plus rom_gbui_tile()/glyph()'s own small
  * per-tile-fetch frames and gbscr_mem_read()'s 40 B, no locate()/
  * distinct_tiles() on that path, no SD/FIL access at all any more) is
  * comfortably smaller and the design (sec 3.4/R9) only requires gating the
@@ -123,6 +181,19 @@ typedef enum {
  * by the caller on top of what need_mask asks gbscr_open() to reserve. */
 #define GBSCR_NEED_TEXTBOX   (1u << GBSCR_SRC_TEXTBOX)
 #define GBSCR_NEED_CARDFRAME (1u << GBSCR_SRC_CARDFRAME)
+
+/* U2c: the Gen-1 player pic, gb_sprite_gen1's own 7x7-tile (56x56 px) decode,
+ * packed into OUR OWN 2-bit-per-pixel format (16 B/tile, NOT the ROM's planar
+ * 2bpp layout -- see gbscr_decode_pic_gen1()'s own comment) so 49 tiles fit
+ * 784 B. GBSCR_PIC_DECODE_SCRATCH is the codec's own transient px+work need
+ * (gb_sprite_codec.h: GB_SPRITE_MAX_PX + GB_SPRITE_WORK) -- freed the moment
+ * gbscr_decode_pic_gen1() returns; a caller sizing one arena-tail slice for
+ * BOTH the shell's cache and the pic (U2b review 0b: one slice, carved) adds
+ * GBSCR_PIC_TAIL_BYTES on top of gbscr_tail_need()'s own result. */
+#define GBSCR_PIC_TILES 49
+#define GBSCR_PIC_PACKED_BYTES (GBSCR_PIC_TILES * 16u)                 /* 784 */
+#define GBSCR_PIC_DECODE_SCRATCH (GB_SPRITE_MAX_PX + GB_SPRITE_WORK)    /* 3,920 */
+#define GBSCR_PIC_TAIL_BYTES (GBSCR_PIC_PACKED_BYTES + GBSCR_PIC_DECODE_SCRATCH) /* 4,704 */
 #define GBSCR_NEED_BADGES    (1u << GBSCR_SRC_BADGES)
 
 /* One located ROM block, bulk-copied into the tail buffer at open: `rom_off` is
@@ -144,6 +215,11 @@ typedef struct {
   const uint8_t* tail;
   GbscrBlock blocks[GBSCR_MAX_BLOCKS];
   int        nblocks;
+  /* U2c: the decoded, packed Gen-1 player pic (GBSCR_PIC_PACKED_BYTES, or NULL
+   * if never decoded / decode failed) -- set by gbscr_decode_pic_gen1(), read
+   * by gbscr_tile_pixels()'s GBSCR_SRC_PIC case. NOT one of `blocks` above (it
+   * is not a rom_gbui block and is not served through gbscr_mem_read()). */
+  const uint8_t* pic;
 } GbscrCache;
 
 /* U2b item 1: pure (no tonc/FatFs) -- host-testable directly (tests/
@@ -153,6 +229,35 @@ typedef struct {
 uint32_t gbscr_block_bytes(uint8_t gen, GbScrSrc src);
 uint32_t gbscr_block_off(const RomGbUi* gu, uint8_t gen, GbScrSrc src);
 bool     gbscr_mem_read(void* ctx, uint32_t off, void* buf, uint32_t len);
+
+/* U2b/U2c review item 0c: gbscr_tail_need()'s own byte arithmetic (SCRATCH_MIN +
+ * FONT + every need_mask block), exported so a caller sizing its OWN arena-tail
+ * request (on top of gbscr_open()'s own needs) uses the identical formula
+ * gbscr_open_inner() gates on, rather than re-deriving it. gbscr_cache_plan() is
+ * the pure (no I/O) half of what used to be gbscr_cache_block()'s loop: given an
+ * already-LOCATED RomGbUi (offsets set; .ok/.read/.ctx unused), it decides the
+ * byte layout (rom_off/ram_off/len, in the fixed FONT-then-need_mask order) a
+ * real open() would use, with no ROM read at all -- exactly what
+ * tests/host_gbscreen_test.c needs to catch a shifted-glyph layout bug the shot
+ * harness cannot see. Returns false (fail closed) if a needed block has no
+ * located offset/size, or the plan would overrun GBSCR_MAX_BLOCKS. */
+uint32_t gbscr_tail_need(uint8_t gen, uint16_t need_mask);
+bool     gbscr_cache_plan(uint8_t gen, uint16_t need_mask, const RomGbUi* gu,
+                          uint32_t tail_len, GbscrCache* out);
+
+/* U2c: the Gen-1 player pic pack/unpack pair -- pure arithmetic (no tonc/
+ * FatFs), exported (moved above this module's own tonc/FatFs boundary,
+ * minor U2c review) so tests/host_gbscreen_test.c can round-trip them
+ * directly instead of only exercising them through the shipped ROM-decode
+ * path. `px` is gb_sprite_gen1_buf()'s own output shape (index 0..3 per
+ * pixel, row-major, stride `w`) -- see pdna_gbscreen.c's own top-of-block
+ * comment for the exact packed layout (4 px/byte, 2 bits each, LSB-first,
+ * 16 B/tile). `out`/`packed` must be >= GBSCR_PIC_PACKED_BYTES.
+ * gbscr_unpack_pic_px() returns 0 (the same "lightest" value pack's own
+ * zero-fill leaves for an undecoded tile) for any (px_x, px_y) outside the
+ * tiles_w*8 x tiles_h*8 grid, rather than reading past the buffer. */
+void    gbscr_pack_pic(const uint8_t* px, int w, int h, int tiles_w, int tiles_h, uint8_t* out);
+uint8_t gbscr_unpack_pic_px(const uint8_t* packed, int tiles_w, int tiles_h, int px_x, int px_y);
 
 typedef struct {
   RomGbUi   gu;                 /* located offsets; .ctx/.read are STALE between
@@ -167,6 +272,22 @@ typedef struct {
   bool      scale_dirty;        /* U2b item 3: gb_scale_mode changed during THIS
                                   * screen's visit -- gbscr_persist_mode()/close()
                                   * writes config.cfg once iff this is set        */
+  /* D9 (U2c review): all-NULL (gbscr_open()'s own memset-to-0) means "no
+   * override" -- gbscr_flush() paints its own base legend ("A OK  B BACK
+   * SEL SIZE") plus the caller's `legend_extra`, unchanged (every existing
+   * caller, e.g. gbscr_run_demo's "EXIT", keeps this look). A screen that
+   * calls gbscr_set_legend() REPLACES the base entirely with up to 4 slots
+   * (NULL entries are skipped) -- for a screen like the Gen-1 trainer card
+   * where B does not mean "back" and the base legend would contradict the
+   * screen's own key line ("B BACK" next to "B SAVE"). See gbscr_set_legend().
+   *
+   * D1 fix (U2c 2nd re-verify): a slot holds the ACTION WORD ONLY now ("EDIT",
+   * not "A EDIT") -- the shell paints the fixed key name (row order A/B/SEL/
+   * START, kGbscrLegendKeys in pdna_gbscreen.c) in the LEFT side bar and this
+   * word in the RIGHT side bar, at the same y. Joining "KEY WORD" into one
+   * string never fit the 36-px bar for "START MORE"/"SEL SIZE" and truncated
+   * with a tilde; two columns give each half its own 36-px budget instead. */
+  const char* legend[4];
 } GbScreen;
 
 /* gb_scale_mode -- the ONE new EWRAM byte this whole shell adds (design sec 1.5/
@@ -229,6 +350,33 @@ bool gbscr_open(uint8_t gen, GbScreen* gs, uint8_t* tail, uint32_t tail_len,
  * leaving it, without every caller having to remember to call cfg_save() itself. */
 void gbscr_close(GbScreen* gs);
 
+/* U2c: decode the Gen-1 player pic ONCE (never per repaint) and expose it to
+ * gbscr_tile_pixels()'s GBSCR_SRC_PIC case via gs->cache.pic. Call this AFTER
+ * a successful gbscr_open(PDNA_GEN1, ...) -- it is a no-op (false) on Gen 2, on
+ * a `gs` that never opened, or when the ROM never located a player-pic offset.
+ *
+ * `buf` (>= GBSCR_PIC_TAIL_BYTES) is caller-owned (the SAME gb12_arena_tail()
+ * slice as `tail`, past the bytes gbscr_open() used -- U2b review item 0b: one
+ * slice, carved, not a second borrow): buf[0 .. GBSCR_PIC_PACKED_BYTES) becomes
+ * the packed pic (retained -- gs->cache.pic points into it and it must stay
+ * alive for the screen's whole visit); the rest is transient codec scratch
+ * (GBSCR_PIC_DECODE_SCRATCH), free to be reused for anything else once this
+ * call returns.
+ *
+ * This does its OWN small ROM read (gbscr_open() already closed its FIL / let
+ * go of the fused slice by the time it returns) -- re-resolves the path (SD
+ * build) or re-slices the fused image (delta build), same helpers gbscr_open()
+ * itself uses. One-time cost at open, never a repaint cost.
+ *
+ * Returns false (gs->cache.pic left NULL -- GBSCR_SRC_PIC cells then paint the
+ * same flat BLANK colour they always did) on any failure: not Gen 1, `gs` not
+ * open, no located playerpic offset, `buf` too small, the ROM could not be
+ * re-opened/re-sliced, or the codec itself failed (a malformed/corrupt pic
+ * blob -- GB_SPRITE_E_HEADER/E_DATA/E_READ/E_ARGS). Never crashes on a bad ROM;
+ * the shell simply shows no pic, same posture as every other GBSCR_SRC_*'s own
+ * fail-closed path. */
+bool gbscr_decode_pic_gen1(GbScreen* gs, uint8_t* buf, uint32_t buf_len);
+
 /* U2b item 3: writes config.cfg (via app_cfg_save(), pdna_app.h) NOW iff
  * gb_scale_mode changed at least once during `gs`'s visit (gs->scale_dirty, set
  * by gbscr_toggle_scale()) -- then clears the flag, so a screen that calls this
@@ -255,10 +403,16 @@ void gbscr_cell(GbScreen* gs, int x, int y, GbScrSrc src, uint8_t tile);
 void gbscr_text(GbScreen* gs, int x, int y, const char* ascii);
 
 /* Names already stored in GB encoding (gb_trainer's name_raw) go straight in, one
- * byte per cell, no ASCII step -- same 0x7F-is-blank rule as gbscr_text(). Stops
- * at `n` bytes (the caller's own field width); does NOT stop at the 0x50
- * terminator (a raw name field is exactly `n` bytes on a real cartridge, callers
- * that need to stop early should pass the trimmed length). */
+ * byte per cell, no ASCII step -- same 0x7F-is-blank rule as gbscr_text(). Paints
+ * exactly `n` cells (the caller's own field width) -- but once it sees the 0x50
+ * terminator, or any other byte that is not a real font tile (every real GB
+ * font tile is 0x7F or >= 0x80; the terminator and every other control byte is
+ * < 0x80 and != 0x7F), that byte AND every byte after it paint BLANK instead of
+ * whatever value they actually hold. This clears stale tail bytes left over
+ * from a longer PREVIOUS name on a shorter repaint (PlaceString itself stops
+ * at 0x50 and never touches the tail, so on real hardware a shorter new name
+ * only looks right because VRAM was already blank there once; this shell
+ * reuses cells across repaints and must blank the tail itself). */
 void gbscr_raw(GbScreen* gs, int x, int y, const uint8_t* bytes, int n);
 
 /* Mark every cell dirty (a full repaint) -- used after gbscr_toggle_scale() and
@@ -277,9 +431,38 @@ void gbscr_toggle_scale(GbScreen* gs);
  * then draw the legend (design sec 1.5: two stacked side-bar columns at 1:1, a
  * bottom scrim overlay when stretched) and clear the dirty bitmap. `legend_extra`
  * (may be NULL) is one more screen-supplied key line appended after the shell's
- * own A OK / B BACK / SEL SIZE rows. GBA-only (touches vid_mem/tonc); a no-op if
- * `gs` never opened. */
+ * own A OK / B BACK / SEL SIZE rows, UNLESS the screen called gbscr_set_legend()
+ * (below), in which case `legend_extra` is ignored and the override lines are
+ * painted instead -- see gbscr_set_legend()'s own doc comment. GBA-only
+ * (touches vid_mem/tonc); a no-op if `gs` never opened. */
 void gbscr_flush(GbScreen* gs, const char* legend_extra);
+
+/* D9 (U2c review): let a screen REPLACE the shell's base legend instead of
+ * only appending to it -- for a screen whose own key line contradicts the
+ * base (e.g. the Gen-1 trainer card's "B SAVE" vs. the base's unconditional
+ * "B BACK"). `lines[0..3]` is fixed-slot: row0=A, row1=B, row2=SEL, row3=
+ * START (kGbscrLegendKeys, pdna_gbscreen.c) -- pass the ACTION WORD ALONE
+ * ("EDIT", not "A EDIT"; NULL entries skip that whole row, key included, e.g.
+ * a read-only visit's unused A row). D1 fix (U2c 2nd re-verify): at 1:1 the
+ * shell paints the key name in the LEFT side bar and this word in the RIGHT
+ * side bar (each its own 36-px budget -- the old single joined string, up to
+ * 57 px for "START MORE", truncated); stretched, the shell re-attaches the
+ * key name and joins every row with "  " into ONE bottom-scrim string (the
+ * caller is responsible for keeping that joined width under the scrim, same
+ * as any other stretched-mode legend text -- measure with ui_ptext_w()).
+ * Pass an all-NULL array (or never call this) to keep the shell's own base
+ * legend, e.g. gbscr_run_demo's "EXIT" line. Takes effect on the very next
+ * gbscr_flush(); does not itself mark anything dirty (call
+ * gbscr_mark_all_dirty() too if the legend must repaint before anything else
+ * does). */
+void gbscr_set_legend(GbScreen* gs, const char* const lines[4]);
+
+/* U2c: pixel bounds (x1/y1 one past the last covered pixel) of a `w`x`h` group
+ * of cells at (cx,cy), in the CURRENT gb_scale_mode -- for a screen's own
+ * cursor frame, drawn on the framebuffer directly after gbscr_flush(). Any of
+ * the four out-pointers may be NULL. GBA-only (reads gb_scale_mode/the LUTs
+ * this shell already carries; not part of the pure host-testable half). */
+void gbscr_cell_rect(int cx, int cy, int w, int h, int* x0, int* y0, int* x1, int* y1);
 
 /* U2a's own DEMO screen: opens the shell for `gen`, draws the located font's
  * whole 128-glyph sheet inside a text-box-tile border plus one line of text, and

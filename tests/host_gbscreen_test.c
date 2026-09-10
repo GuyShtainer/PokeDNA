@@ -120,6 +120,37 @@ int main(void) {
     CHECK(gs.src[2] == GBSCR_SRC_FONT && gs.map[2] == 0x81, "raw cell2");
   }
 
+  /* 5b) D2 (review): gbscr_raw blanks the 0x50 terminator AND every byte after
+   * it, so a shorter new name fully erases a longer previous name's tail
+   * instead of leaving stale glyphs on screen ("ASH" + 0x50 + stale "JACK"
+   * used to read as "ASH<blank>JAC"). */
+  {
+    GbScreen gs = mk();
+    /* "AB" (0x80,0x81) then terminator (0x50) then leftover "JACK" bytes from
+     * a previous, longer name still sitting in the buffer. */
+    uint8_t bytes[7] = { 0x80, 0x81, 0x50, 0x8A, 0x80, 0x82, 0x8A };
+    gbscr_raw(&gs, 0, 0, bytes, 7);
+    CHECK(gs.src[0] == GBSCR_SRC_FONT && gs.map[0] == 0x80, "term cell0 'A'");
+    CHECK(gs.src[1] == GBSCR_SRC_FONT && gs.map[1] == 0x81, "term cell1 'B'");
+    CHECK(gs.src[2] == GBSCR_SRC_BLANK, "term cell2 (0x50 itself -> blank)");
+    CHECK(gs.src[3] == GBSCR_SRC_BLANK, "term cell3 (tail byte -> blank)");
+    CHECK(gs.src[4] == GBSCR_SRC_BLANK, "term cell4 (tail byte -> blank)");
+    CHECK(gs.src[5] == GBSCR_SRC_BLANK, "term cell5 (tail byte -> blank)");
+    CHECK(gs.src[6] == GBSCR_SRC_BLANK, "term cell6 (tail byte -> blank)");
+  }
+
+  /* 5c) D2: no terminator at all (a full 11-byte field with no 0x50) leaves
+   * every byte painted as its own font tile -- the blank-tail rule must not
+   * fire on real content. */
+  {
+    GbScreen gs = mk();
+    uint8_t bytes[3] = { 0x80, 0x81, 0x82 };   /* "ABC", no terminator */
+    gbscr_raw(&gs, 0, 0, bytes, 3);
+    CHECK(gs.src[0] == GBSCR_SRC_FONT && gs.map[0] == 0x80, "noterm cell0");
+    CHECK(gs.src[1] == GBSCR_SRC_FONT && gs.map[1] == 0x81, "noterm cell1");
+    CHECK(gs.src[2] == GBSCR_SRC_FONT && gs.map[2] == 0x82, "noterm cell2");
+  }
+
   /* 3) gbscr_y_dst0/gbscr_y_dst_count (the tables blit_stretched() actually
    * reads): 144 entries, every count in {1,2}, exactly 16 twos, and the
    * (dst0[r], dst0[r]+count[r]) ranges tile destination rows 0..159 with
@@ -227,6 +258,90 @@ int main(void) {
 
     GbscrCache empty; memset(&empty, 0, sizeof empty);
     CHECK(!gbscr_mem_read(&empty, 0x1000, buf, 1), "empty cache (no tail) refused");
+  }
+
+  /* 9) U2b/U2c review item 0c: gbscr_cache_plan()/gbscr_tail_need() -- the pure
+   * layout planner a real gbscr_open() now calls before ever touching the ROM.
+   * For every gen x every need_mask combination (0 = FONT only .. all three
+   * bits set): sum(plan.blocks[].len) + ROM_GBUI_SCRATCH_MIN must equal
+   * gbscr_tail_need() (the same arithmetic, derived two different ways), and
+   * consecutive ram_offs must be EXACTLY cumulative (block i's ram_off ==
+   * sum of every earlier block's len, block 0's ram_off == 0). */
+  {
+    RomGbUi gu; memset(&gu, 0, sizeof gu);
+    gu.font = 0x1000; gu.textbox = 0x2000; gu.frames = 0x2500;
+    gu.cardframe = 0x4000; gu.badges = 0x5000;
+
+    const uint8_t gens[2] = { GB_GEN1, GB_GEN2 };
+    for (int gi = 0; gi < 2; gi++) {
+      uint8_t gen = gens[gi];
+      for (uint16_t mask = 0; mask <= (GBSCR_NEED_TEXTBOX | GBSCR_NEED_CARDFRAME | GBSCR_NEED_BADGES); mask++) {
+        GbscrCache plan;
+        bool ok = gbscr_cache_plan(gen, mask, &gu, 65536u, &plan);
+        CHECK(ok, "gen=%d mask=0x%x: cache_plan refused", gen, mask);
+        if (!ok) continue;
+
+        uint32_t sum = 0, cursor = 0;
+        for (int i = 0; i < plan.nblocks; i++) {
+          CHECK(plan.blocks[i].ram_off == cursor,
+                "gen=%d mask=0x%x block %d: ram_off=%u, want cumulative %u",
+                gen, mask, i, plan.blocks[i].ram_off, cursor);
+          sum += plan.blocks[i].len;
+          cursor += plan.blocks[i].len;
+        }
+        uint32_t need = gbscr_tail_need(gen, mask);
+        CHECK(sum + ROM_GBUI_SCRATCH_MIN == need,
+              "gen=%d mask=0x%x: sum(len)=%u + SCRATCH_MIN=%u != gbscr_tail_need()=%u",
+              gen, mask, sum, ROM_GBUI_SCRATCH_MIN, need);
+      }
+    }
+
+    /* Minor (U2c review): a "mutation check" used to live here that hand-built
+     * its OWN `bad` GbscrCache and re-ran its OWN inline copy of the
+     * cumulative-offset loop against it -- it never called gbscr_cache_plan()
+     * at all, so it could only ever test itself, not the real function.
+     * Deleted; the loop above (which DOES call gbscr_cache_plan() for every
+     * gen/mask combination) is the real coverage. */
+  }
+
+  /* Minor (U2c review): gbscr_pack_pic()/gbscr_unpack_pic_px() round trip --
+   * both moved above this module's own tonc/FatFs boundary specifically so
+   * this test can call them directly. A synthetic 4x3-tile (32x24 px) grid,
+   * every pixel a distinct index derived from its own coordinates (mod 4),
+   * must read back byte-for-byte through pack -> unpack. */
+  {
+    const int tiles_w = 4, tiles_h = 3, w = tiles_w * 8, h = tiles_h * 8;
+    uint8_t px[32 * 24];
+    for (int y = 0; y < h; y++)
+      for (int x = 0; x < w; x++)
+        px[y * w + x] = (uint8_t)((x * 3 + y * 7) & 3);
+
+    uint8_t packed[GBSCR_PIC_PACKED_BYTES];
+    gbscr_pack_pic(px, w, h, tiles_w, tiles_h, packed);
+
+    int mismatches = 0;
+    for (int y = 0; y < h; y++)
+      for (int x = 0; x < w; x++)
+        if (gbscr_unpack_pic_px(packed, tiles_w, tiles_h, x, y) != px[y * w + x]) mismatches++;
+    CHECK(mismatches == 0, "pack/unpack round trip: %d of %d pixels mismatched",
+          mismatches, w * h);
+
+    /* Out-of-range coordinates (past the tiles_w*8 x tiles_h*8 grid) must
+     * return 0, not read past `packed`. */
+    CHECK(gbscr_unpack_pic_px(packed, tiles_w, tiles_h, w, 0) == 0, "unpack past width -> 0");
+    CHECK(gbscr_unpack_pic_px(packed, tiles_w, tiles_h, 0, h) == 0, "unpack past height -> 0");
+    CHECK(gbscr_unpack_pic_px(packed, tiles_w, tiles_h, -1, 0) == 0, "unpack negative x -> 0");
+
+    /* A tile beyond the declared tiles_w x tiles_h grid (but still inside the
+     * full 7x7 GBSCR_PIC_TILES packed buffer) stays zero-filled by pack's own
+     * unconditional memset(out, 0, ...) -- unpack must read that back as 0
+     * too, so reading a wider tiles_w/tiles_h than what was actually packed
+     * never surfaces stale data from a previous pack call. */
+    uint8_t stack_px[8 * 8];
+    memset(stack_px, 3, sizeof stack_px);   /* deliberately non-zero */
+    uint8_t packed2[GBSCR_PIC_PACKED_BYTES];
+    gbscr_pack_pic(stack_px, 8, 8, 1, 1, packed2);   /* only tile (0,0) is real */
+    CHECK(gbscr_unpack_pic_px(packed2, 7, 7, 8, 0) == 0, "tile (1,0) beyond 1x1 -> 0");
   }
 
   if (g_fail) { printf("%d FAILED\n", g_fail); return 1; }

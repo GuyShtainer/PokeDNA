@@ -286,8 +286,22 @@ bool gb_persist(const char* what_for_log);
  * figure). Returns NULL otherwise -- g_ed NULL (no resident session), or a `need`
  * that would run the tail past the arena's own end. Never allocates, never asserts:
  * a NULL here is an ordinary "not available right now", same posture as
- * app_arena_acquire() itself. */
+ * app_arena_acquire() itself.
+ *
+ * U2b review item 0b: the tail is lent ONE SLICE AT A TIME (a file-local
+ * `g_tail_lent` flag, cleared beside every `g_ed = 0` in pdna_gen12.c) -- a
+ * second call before the first slice is released also returns NULL, so two
+ * callers in the same visit can never unknowingly overlap the same bytes. A
+ * screen that needs more than one region (U2c: the shell's own tile cache AND
+ * the Gen-1 player-pic decode) takes ONE slice sized for everything it needs
+ * and carves its own sub-regions out of it -- it does not call this twice. */
 uint8_t* gb12_arena_tail(uint32_t need);
+
+/* Give the slice back (U2b review item 0b). Safe to call even when nothing was
+ * ever lent this visit -- a plain no-op, same posture as app_arena_release()
+ * on an arena that was never acquired. Call this on EVERY exit path out of a
+ * screen that took a tail slice, success or refusal alike. */
+void gb12_arena_tail_release(void);
 
 #ifdef PDNA_DELTA
 /* BACKLOG #62: mount fused_gb_save(idx) directly out of cartridge space -- no FIL, no
