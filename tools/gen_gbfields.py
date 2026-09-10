@@ -553,6 +553,16 @@ FIELDS = [
   # sram_file_off(0, 0xAC60) = 0x0C60, matching §1.8's own cited offset exactly.
   ("RTC_STATUS_FLAGS", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": S("sRTCStatusFlags", 0x0C60), "CRYSTAL": S("sRTCStatusFlags", 0x0C60)}),
+
+  # ---- P1a review D3: the day-care egg's own OT name --------------------------------
+  # wEggMonOT sits between wEggMonNickname (11 B, ends where this starts) and wEggMon
+  # (the record, starts where this ends) in both .sym files -- GS bank 01:dcbb =
+  # 0x2B23 (wEggMonNickname 0x2B18 + 11), Crystal bank 01:df70 = 0x2AFE
+  # (wEggMonNickname 0x2AF3 + 11); both agree with wEggMon's own 0x2B2E/0x2B09 starting
+  # exactly 11 B later. Without this field a withdrawn egg had no OT to read.
+  ("DAYCARE_EGG_OT", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wEggMonOT", 0x2B23),
+      "CRYSTAL": D("pokemon_data", "wEggMonOT", 0x2AFE)}),
 ]
 
 

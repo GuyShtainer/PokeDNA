@@ -143,6 +143,10 @@ static void deposit_withdraw_roundtrip(const char* file, int slot) {
   CHECKF(gb_set_level(&mon, 5), "%s: gb_set_level", file);
   CHECKF(gb_set_nickname(&mon, "TESTMON"), "%s: gb_set_nickname", file);
   CHECKF(gb_set_otname(&mon, "TESTER"), "%s: gb_set_otname", file);
+  /* P1a review D2: gbd_deposit now gates on gb_check(), which refuses a moveless record
+   * (move slot 0 empty is "the game has no such Pokemon") -- give it move 1 (Pound, the
+   * same move id every generation this table covers has). */
+  CHECKF(gb_set_move(&mon, 0, 1), "%s: gb_set_move", file);
 
   /* refuse a party-shaped mon before any byte moves */
   GbEditMon party_mon = mon;
@@ -191,6 +195,159 @@ static void deposit_withdraw_roundtrip(const char* file, int slot) {
         "must refuse", file);
 }
 
+/* ---- E: P1a review D2 -- an all-zero (structurally unsound) record is refused ---- */
+
+static void deposit_all_zero_refused(const char* file, int slot) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+  GbDaycare before;
+  CHECKF(gbd_read(&s, &before), "%s: pre-read", file);
+  if (slot == 1 && !before.has_slot2) { printf("  SKIP %s slot 1 (no second slot)\n", file); return; }
+  if (before.slot[slot].occupied) {
+    printf("  SKIP %s slot %d (already occupied by the fixture)\n", file, slot);
+    return;
+  }
+
+  GbEditMon zero;
+  memset(&zero, 0, sizeof zero);
+  zero.gen = s.gen;
+  zero.rec_len = (uint8_t)gb_rec_size(s.gen, false);
+  zero.is_party = false;
+
+  GbsStatus st = gbd_deposit(&s, slot, &zero);
+  CHECKF(st == GBS_ERR_STRUCT, "%s: an all-zero record must be refused as structurally "
+        "unsound (got %s)", file, gbs_status_text(st));
+
+  uint32_t diff = 0;
+  for (uint32_t i = 0; i < len; i++) if (g_img[i] != g_orig[i]) diff++;
+  CHECKF(diff == 0, "%s: a refused all-zero deposit must not move any byte (moved %u)",
+        file, diff);
+}
+
+/* ---- F: P1a review D9 -- withdraw clears DAYCAREMAN_MONS_COMPATIBLE_F (slot 0 only) --
+ * gbd_withdraw already clears bit 5 alongside bit 0 (gb_daycare.c's own next_flag mask),
+ * but nothing exercised that before this: a mutation that dropped the compat-bit clear
+ * would still pass every other case in this file. */
+
+static void withdraw_clears_compat_bit(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+  GbDaycare before;
+  CHECKF(gbd_read(&s, &before), "%s: pre-read", file);
+  if (before.slot[0].occupied) {
+    printf("  SKIP %s slot 0 (already occupied by the fixture)\n", file);
+    return;
+  }
+
+  GbEditMon mon;
+  memset(&mon, 0, sizeof mon);
+  mon.gen = s.gen;
+  mon.rec_len = (uint8_t)gb_rec_size(s.gen, false);
+  mon.is_party = false;
+  CHECKF(gb_set_species(&mon, 1, NULL), "%s: gb_set_species", file);
+  CHECKF(gb_set_level(&mon, 5), "%s: gb_set_level", file);
+  CHECKF(gb_set_nickname(&mon, "TESTMON"), "%s: gb_set_nickname", file);
+  CHECKF(gb_set_otname(&mon, "TESTER"), "%s: gb_set_otname", file);
+  CHECKF(gb_set_move(&mon, 0, 1), "%s: gb_set_move", file);
+  CHECKF(gbd_deposit(&s, 0, &mon) == GBS_OK, "%s: gbd_deposit slot 0", file);
+
+  /* plant the compatibility bit (bit 5) directly -- gbd_deposit never sets it (see its
+   * own header note), so we have to, to exercise the clear-on-withdraw path at all. */
+  GbGame g = gbd_game(&s);
+  uint8_t flag = 0;
+  CHECKF(gbs_read_field(&s, gbf_off(g, GBF_DAYCARE_FLAG), &flag, 1) == GBS_OK,
+        "%s: read flag before planting compat bit", file);
+  flag |= (1u << 5);
+  CHECKF(gbs_write_field(&s, gbf_off(g, GBF_DAYCARE_FLAG), &flag, 1) == GBS_OK,
+        "%s: plant compat bit", file);
+  CHECKF(gbs_finish(&s) == GBS_OK, "%s: finish after planting compat bit", file);
+
+  GbDaycare planted;
+  CHECKF(gbd_read(&s, &planted), "%s: read after planting", file);
+  CHECKF(planted.compatible, "%s: compat bit did not read back set", file);
+
+  GbEditMon out;
+  CHECKF(gbd_withdraw(&s, 0, &out) == GBS_OK, "%s: gbd_withdraw slot 0", file);
+
+  uint8_t flag_after = 0xFF;
+  CHECKF(gbs_read_field(&s, gbf_off(g, GBF_DAYCARE_FLAG), &flag_after, 1) == GBS_OK,
+        "%s: read flag after withdraw", file);
+  CHECKF((flag_after & (1u << 5)) == 0, "%s: withdraw must clear the compatibility bit "
+        "(flag=0x%02X)", file, flag_after);
+}
+
+/* ---- G: P1a review D3 -- a synthetic egg's OT and egg-ness survive withdraw_egg ---- */
+
+static void egg_withdraw_ot_and_eggness(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+  GbGame g = gbd_game(&s);
+
+  /* build a plain record to stand in for the egg's own record bytes */
+  GbEditMon mon;
+  memset(&mon, 0, sizeof mon);
+  mon.gen = s.gen;
+  mon.rec_len = (uint8_t)gb_rec_size(s.gen, false);
+  mon.is_party = false;
+  CHECKF(gb_set_species(&mon, 1, NULL), "%s: gb_set_species", file);
+  CHECKF(gb_set_level(&mon, 5), "%s: gb_set_level", file);
+  CHECKF(gb_set_move(&mon, 0, 1), "%s: gb_set_move", file);
+
+  uint8_t rec[GB_MAX_REC], otname_unused[GB_NAME_BYTES], nick_unused[GB_NAME_BYTES];
+  gb_commit_parts(&mon, rec, otname_unused, nick_unused, NULL);
+
+  uint8_t nick_raw[GB_NAME_BYTES], ot_raw[GB_NAME_BYTES];
+  gb_name_encode(s.gen, nick_raw, sizeof nick_raw, 10, "EGGNICK");
+  gb_name_encode(s.gen, ot_raw, sizeof ot_raw, 7, "EGGOT");
+
+  uint16_t rec_len = gbf_len(g, GBF_DAYCARE_EGG_REC);
+  CHECKF(gbs_write_field(&s, gbf_off(g, GBF_DAYCARE_EGG_REC), rec, rec_len) == GBS_OK,
+        "%s: plant egg record", file);
+  CHECKF(gbs_write_field(&s, gbf_off(g, GBF_DAYCARE_EGG_NICK), nick_raw, GB_NAME_BYTES) == GBS_OK,
+        "%s: plant egg nickname", file);
+  CHECKF(gbs_write_field(&s, gbf_off(g, GBF_DAYCARE_EGG_OT), ot_raw, GB_NAME_BYTES) == GBS_OK,
+        "%s: plant egg OT", file);
+
+  uint8_t flag = 0;
+  CHECKF(gbs_read_field(&s, gbf_off(g, GBF_DAYCARE_FLAG), &flag, 1) == GBS_OK,
+        "%s: read flag before planting egg-ready bit", file);
+  flag |= (1u << 6);   /* DAYCAREMAN_HAS_EGG_F */
+  CHECKF(gbs_write_field(&s, gbf_off(g, GBF_DAYCARE_FLAG), &flag, 1) == GBS_OK,
+        "%s: plant egg-ready bit", file);
+  CHECKF(gbs_finish(&s) == GBS_OK, "%s: finish after planting the egg", file);
+
+  GbDaycare dc;
+  CHECKF(gbd_read(&s, &dc), "%s: read after planting egg", file);
+  CHECKF(dc.has_egg, "%s: has_egg must read true after planting bit 6", file);
+  CHECKF(strcmp(dc.egg_ot, "EGGOT") == 0, "%s: gbd_read egg OT mismatch (%s)", file,
+        dc.egg_ot);
+
+  GbEditMon out;
+  CHECKF(gbd_withdraw_egg(&s, &out) == GBS_OK, "%s: gbd_withdraw_egg", file);
+  CHECKF(gb_is_egg(&out), "%s: withdrawn egg must still read as an egg", file);
+
+  char ot_check[GB_TEXT_MAX];
+  gb_name_decode(s.gen, ot_check, sizeof ot_check, out.otname, GB_NAME_BYTES);
+  CHECKF(strcmp(ot_check, "EGGOT") == 0, "%s: withdrawn egg OT mismatch (%s)", file,
+        ot_check);
+
+  /* the egg-ready bit must now be clear */
+  uint8_t flag_after = 0xFF;
+  CHECKF(gbs_read_field(&s, gbf_off(g, GBF_DAYCARE_FLAG), &flag_after, 1) == GBS_OK,
+        "%s: read flag after egg withdraw", file);
+  CHECKF((flag_after & (1u << 6)) == 0, "%s: withdraw_egg must clear the egg-ready bit "
+        "(flag=0x%02X)", file, flag_after);
+}
+
 int main(void) {
   printf("== A: Gen 1 shape (one slot, no breeding) ==\n");
   gen1_shape("Red.sav");
@@ -210,6 +367,20 @@ int main(void) {
   deposit_withdraw_roundtrip("Gold.sav", 1);
   deposit_withdraw_roundtrip("Crystal.sav", 0);
   deposit_withdraw_roundtrip("Crystal.sav", 1);
+
+  printf("== E: an all-zero record is refused (P1a review D2) ==\n");
+  deposit_all_zero_refused("Red.sav", 0);
+  deposit_all_zero_refused("Gold.sav", 0);
+  deposit_all_zero_refused("Gold.sav", 1);
+  deposit_all_zero_refused("Crystal.sav", 0);
+
+  printf("== F: withdraw clears the compatibility bit (P1a review D9) ==\n");
+  withdraw_clears_compat_bit("Gold.sav");
+  withdraw_clears_compat_bit("Crystal.sav");
+
+  printf("== G: a synthetic egg keeps its OT and its egg-ness (P1a review D3) ==\n");
+  egg_withdraw_ot_and_eggness("Gold.sav");
+  egg_withdraw_ot_and_eggness("Crystal.sav");
 
   printf("\n%d checks, %d failed, %d file(s)/case(s) exercised\n", g_check, g_fail, g_ran);
   if (g_ran == 0) { printf("NOTE: corpus not found at %s -- every case skipped\n", ROMS); }

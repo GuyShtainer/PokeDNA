@@ -68,6 +68,13 @@ typedef struct {
   GbEditMon     egg;
   uint8_t       egg_nick_raw[GB_NAME_BYTES];
   char          egg_nick[GB_TEXT_MAX];
+  /* P1a review D3: the egg's own OT (GBF_DAYCARE_EGG_OT, wEggMonOT), distinct from the
+   * nickname -- an earlier revision reused the nickname bytes for both, so a withdrawn
+   * egg's "OT" was always its nickname. `egg.list_species` is loaded as G2_LIST_EGG
+   * (see gb_edit.h) so the egg also reads as an egg (gb_is_egg()), not as whatever
+   * raw species its record byte happens to hold. */
+  uint8_t       egg_ot_raw[GB_NAME_BYTES];
+  char          egg_ot[GB_TEXT_MAX];
 } GbDaycare;
 
 GbGame gbd_game(const GbSession* s);

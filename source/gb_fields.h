@@ -99,6 +99,13 @@ typedef enum {
    * GS/Crystal only; Gen 1 has no RTC at all. */
   GBF_RTC_STATUS_FLAGS,
 
+  /* P1a review D3, appended (same API-id rule as GBF_GAMETIME_CAP/GBF_BOXNAMES/
+   * GBF_RTC_STATUS_FLAGS above): wEggMonOT, the day-care egg's own OT name -- without
+   * this a withdrawn egg lost its OT (and, via gbd_withdraw_egg's list_species, its
+   * EGG-ness). GS/Crystal only, sits between wEggMonNickname and wEggMon (the record)
+   * in both games' .sym, same as GBF_DAYCARE_OT does for the boarded mon. */
+  GBF_DAYCARE_EGG_OT,
+
   GBF_FIELD_COUNT
 } GbField;
 

@@ -693,6 +693,9 @@ static int do_daycare(GbSession* s, const char* slot_tok, const char* dex_tok) {
   if (!gb_set_level(&mon, 5)) return refuse("gb_set_level refused");
   if (!gb_set_nickname(&mon, "TESTMON")) return refuse("gb_set_nickname refused");
   if (!gb_set_otname(&mon, "TESTER")) return refuse("gb_set_otname refused");
+  /* P1a review D2: gbd_deposit now gates on gb_check(), which refuses a moveless record
+   * -- give it move 1 (Pound), same as host_gbdaycare_test.c's own fixture. */
+  if (!gb_set_move(&mon, 0, 1)) return refuse("gb_set_move refused");
 
   GbsStatus st = gbd_deposit(s, slot, &mon);
   if (st != GBS_OK) return refuse(gbs_status_text(st));

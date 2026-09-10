@@ -85,10 +85,19 @@ bool gbd_read(const GbSession* s, GbDaycare* out) {
   if (out->has_egg && present(g, GBF_DAYCARE_EGG_NICK)) {
     uint16_t rec_len = gbf_len(g, GBF_DAYCARE_EGG_REC);
     uint8_t rec[GB_MAX_REC];
+    bool have_ot = present(g, GBF_DAYCARE_EGG_OT) &&
+                  read_bytes(s, g, GBF_DAYCARE_EGG_OT, out->egg_ot_raw, GB_NAME_BYTES);
     if (rec_len && rec_len <= sizeof rec && read_bytes(s, g, GBF_DAYCARE_EGG_REC, rec, rec_len) &&
        read_bytes(s, g, GBF_DAYCARE_EGG_NICK, out->egg_nick_raw, GB_NAME_BYTES)) {
       gb_name_decode(gen, out->egg_nick, sizeof out->egg_nick, out->egg_nick_raw, GB_NAME_BYTES);
-      gb_load_parts(&out->egg, gen, false, rec, out->egg_nick_raw, out->egg_nick_raw, 0);
+      if (have_ot)
+        gb_name_decode(gen, out->egg_ot, sizeof out->egg_ot, out->egg_ot_raw, GB_NAME_BYTES);
+      /* P1a review D3: G2_LIST_EGG as the list species, not 0 -- the egg reads as an
+       * egg (gb_is_egg()) rather than whatever raw byte its record happens to hold, and
+       * the OT is the egg's own OT field, not its nickname reused. */
+      gb_load_parts(&out->egg, gen, false, rec,
+                    have_ot ? out->egg_ot_raw : out->egg_nick_raw, out->egg_nick_raw,
+                    G2_LIST_EGG);
     }
   }
 
@@ -124,6 +133,15 @@ GbsStatus gbd_deposit(GbSession* s, int slot, const GbEditMon* mon) {
   bool occupied = (gen == GB_GEN1) ? (flag_field_cur != 0)
                                    : ((flag_field_cur & (1u << DC_HAS_MON_BIT)) != 0);
   if (occupied) return GBS_ERR_FULL;
+
+  /* P1a review D2: refuse a structurally-broken record BEFORE it lands. Without this
+   * gate an all-zero GbEditMon (never run through gb_set_species/gb_set_level/...) was
+   * accepted and its 98 zero bytes were written straight into the slot -- gb_check is
+   * the single structural gate this whole tree uses (gen1_write.c / gen2_write.c call
+   * it before every commit, gb_edit.h's own header), so day-care gets it too rather
+   * than trusting the caller. */
+  GbIssues iss;
+  if (!gb_check(mon, &iss)) return GBS_ERR_STRUCT;
 
   uint8_t rec[GB_MAX_REC], otname[GB_NAME_BYTES], nick[GB_NAME_BYTES];
   gb_commit_parts(mon, rec, otname, nick, NULL);
@@ -189,11 +207,20 @@ GbsStatus gbd_withdraw_egg(GbSession* s, GbEditMon* out) {
   if ((man_flag & (1u << DC_HAS_EGG_BIT)) == 0) return GBS_ERR_SLOT;
 
   uint16_t rec_len = gbf_len(g, GBF_DAYCARE_EGG_REC);
-  uint8_t rec[GB_MAX_REC], nick[GB_NAME_BYTES];
+  uint8_t rec[GB_MAX_REC], nick[GB_NAME_BYTES], ot[GB_NAME_BYTES];
   if (rec_len == 0 || rec_len > sizeof rec) return GBS_ERR_SLOT;
   if (!read_bytes(s, g, GBF_DAYCARE_EGG_REC, rec, rec_len)) return GBS_ERR_SLOT;
   if (!read_bytes(s, g, GBF_DAYCARE_EGG_NICK, nick, GB_NAME_BYTES)) return GBS_ERR_SLOT;
-  if (!gb_load_parts(out, gen, false, rec, nick, nick, 0)) return GBS_ERR_SLOT;
+  /* P1a review D3: the egg's own OT field, not the nickname reused -- falls back to the
+   * nickname only if this game/session somehow lacks GBF_DAYCARE_EGG_OT (never true for
+   * GS/Crystal, both define it, but a caller handed a malformed session should still
+   * get a record rather than a refusal here). */
+  bool have_ot = present(g, GBF_DAYCARE_EGG_OT) &&
+                read_bytes(s, g, GBF_DAYCARE_EGG_OT, ot, GB_NAME_BYTES);
+  if (!have_ot) memcpy(ot, nick, GB_NAME_BYTES);
+  /* G2_LIST_EGG, not 0: the withdrawn record stays an egg (gb_is_egg()), not whatever
+   * raw species byte the record happens to hold. */
+  if (!gb_load_parts(out, gen, false, rec, ot, nick, G2_LIST_EGG)) return GBS_ERR_SLOT;
 
   uint8_t next_flag = (uint8_t)(man_flag & ~(1u << DC_HAS_EGG_BIT));
   GbsStatus st = gbs_write_field(s, gbf_off(g, GBF_DAYCARE_FLAG), &next_flag, 1);
