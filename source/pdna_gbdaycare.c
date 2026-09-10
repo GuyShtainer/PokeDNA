@@ -1,0 +1,377 @@
+#include <tonc.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "pdna_gbdaycare.h"
+#include "gb_daycare.h"
+#include "gb_edit.h"
+#include "pdna_gen12.h"      /* gb_rollback / gb_persist / gb12_arena_tail(_release) */
+#include "pdna_gbsummary.h"  /* the View/Edit screen (BACKLOG #41's own Gen-1/2 card) */
+#include "pdna_layout.h"     /* PDNA_DCY_*, PDNA_DCPOP_* -- the SAME geometry pdna_daycare() uses */
+#include "data_tables.h"     /* pk_species_name */
+#include "ui.h"
+#include "snd.h"
+#include "pdna_app.h"        /* msg_wait / app_confirm */
+
+/* See pdna_gbdaycare.h for the shape this mirrors and the two documented scope
+ * reductions (no yard art; deposit/withdraw touch `cur_box` only, never the party). */
+
+#define GBDC_A4(n)  (((uint32_t)(n) + 3u) & ~3u)
+
+/* wait_keys() is static to pdna_main.c -- every other GB screen (pdna_gbbag.c,
+ * pdna_gbpack.c) carries its own copy of this exact idiom rather than exporting it;
+ * this file does the same. */
+static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
+static u16  s_wait(u16 mask) {
+  u16 k; do { s_vsync(); k = key_hit(mask); } while (!k);
+  if      (k & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R)) snd_move();
+  else if (k & KEY_A) snd_ok();
+  else if (k & KEY_B) snd_back();
+  return k;
+}
+
+/* GEN1_BOX_CAPACITY == G2_BOX_CAPACITY == 20 (gen1_save.h / gen2_save.h) -- the widest
+ * either generation's storage box ever holds, so the picker's index array is sized to
+ * this fixed bound rather than a VLA. */
+#define GBDC_BOX_MAX     20
+#define GBDC_PICK_VROWS  10
+
+/* ---- the deposit picker: cur_box's occupied, non-Egg slots, box-shaped by
+ * construction (a storage box never holds a party-shaped record) -- see the header's
+ * own note on why the party is never a source here. Mirrors pdna_pick.c's list idiom
+ * (scrollable rows, U/D + A/B), the smallest shape that fits gb_daycare's own
+ * is_party constraint (BACKLOG #107: no reusable "pick one owned mon" screen exists
+ * yet). `list` is the caller's GBS_LIST_BYTES staging buffer (arena-carved, not a
+ * stack local -- see pdna_gbdaycare() below). Returns true with `out` filled on A,
+ * false on B or when the box has nothing pickable. */
+static bool gbdc_pick(GbSession* s, int cur_box, uint8_t* list, GbEditMon* out) {
+  GbsStatus lst = gbs_load_list(s, cur_box, list);
+  if (lst != GBS_OK) { snd_deny(); msg_wait("PUT IN", UI_WARN, gbs_status_text(lst), 0); return false; }
+  int count = gb_list_count(s->gen, list, cur_box);
+  if (count > GBDC_BOX_MAX) count = GBDC_BOX_MAX;   /* defensive; never true today */
+
+  int idx[GBDC_BOX_MAX], n = 0;
+  for (int i = 0; i < count; i++) {
+    GbEditMon e;
+    if (!gb_load(&e, s->gen, list, cur_box, i)) continue;
+    /* gbd_deposit() itself refuses an Egg (gb_daycare.c's own structural gate) --
+     * filtered here too so the picker never offers a row that would just bounce
+     * back with a refusal message. */
+    if (gb_is_egg(&e)) continue;
+    idx[n++] = i;
+  }
+  if (n == 0) {
+    snd_deny();
+    msg_wait("PUT IN", UI_DIM, "That box has nothing to put in.", "(no Eggs -- deposit those in-game)");
+    return false;
+  }
+
+  int sel = 0, top = 0;
+  for (;;) {
+    if (sel < top) top = sel;
+    if (sel >= top + GBDC_PICK_VROWS) top = sel - GBDC_PICK_VROWS + 1;
+
+    ui_clear();
+    ui_text(4, 3, UI_TITLE, "PUT IN - PICK A POKEMON");
+    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
+    int shown = n - top; if (shown > GBDC_PICK_VROWS) shown = GBDC_PICK_VROWS;
+    for (int r = 0; r < shown; r++) {
+      int i = idx[top + r];
+      GbEditMon e;
+      const char* nm = "?";
+      char nick[GB_TEXT_MAX]; nick[0] = 0;
+      uint8_t lvl = 0;
+      if (gb_load(&e, s->gen, list, cur_box, i)) {
+        gb_get_nickname(&e, nick, sizeof nick);
+        uint16_t dex = gb_get_species_dex(&e);
+        nm = nick[0] ? nick : ((dex >= 1 && dex <= 251) ? pk_species_name(dex) : "?");
+        lvl = gb_get_level(&e);
+      }
+      int y = 18 + r * 12; bool sh = (top + r == sel);
+      if (sh) ui_panel(2, y - 1, UI_SCR_W - 4, 12, UI_SEL, UI_TITLE);
+      char row[12]; siprintf(row, "Lv.%-3u", (unsigned)lvl);
+      ui_text(6, y, sh ? UI_SELTEXT : UI_DIM, row);
+      ui_ptext_fit(56, y, 176, sh ? UI_SELTEXT : UI_TEXT, nm);
+    }
+    ui_text(4, 152, UI_DIM, "A pick  B cancel");
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return false;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : n - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % n;
+    else if (k & KEY_A) {
+      if (!gb_load(out, s->gen, list, cur_box, idx[sel])) {
+        snd_error(); msg_wait("PUT IN", UI_WARN, "Could not read that slot.", 0);
+        return false;
+      }
+      return true;
+    }
+  }
+}
+
+/* The per-slot action popup -- the Gen-1/2 twin of pdna_main.c's dc_menu(). `occupied`
+ * picks the row set (View/Edit + Take out, vs Put in); Cancel is always last. */
+static int gbdc_menu(bool occupied, bool can_put_here, bool can_take) {
+  const char* rows[PDNA_DCPOP_MAX]; int act[PDNA_DCPOP_MAX], nr = 0;
+  if (occupied) {
+    rows[nr] = "View / Edit"; act[nr++] = 0;
+    if (can_take) { rows[nr] = "Take out"; act[nr++] = 1; }
+  } else if (can_put_here) {
+    rows[nr] = "Put in (from this box)"; act[nr++] = 2;
+  }
+  rows[nr] = "Cancel"; act[nr++] = -1;
+  if (nr == 1) return -1;   /* nothing offered but Cancel -- no point opening the popup */
+
+  int sel = 0;
+  for (;;) {
+    int my, mh;
+    ui_popup_vfit(nr, PDNA_DCPOP_ROW_H, PDNA_DCPOP_HEAD, PDNA_DCPOP_FOOT, &my, &mh);
+    const int mx = 30, mw = 190;
+    ui_panel(mx, my, mw, mh, UI_PANEL, UI_BORDER);
+    ui_text(mx + 6, my + 4, UI_TITLE, "DAY-CARE");
+    ui_hline(mx + 2, my + 15, mw - 4, UI_BORDER);
+    for (int i = 0; i < nr; i++) {
+      int y = my + PDNA_DCPOP_HEAD + i * PDNA_DCPOP_ROW_H; bool sh = (i == sel);
+      if (sh) ui_panel(mx + 2, y - 1, mw - 4, 13, UI_SEL, UI_TITLE);
+      ui_text(mx + 10, y, sh ? UI_SELTEXT : UI_TEXT, rows[i]);
+    }
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+    if (k & KEY_B) return -1;
+    else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : nr - 1;
+    else if (k & KEY_DOWN) sel = (sel + 1) % nr;
+    else if (k & KEY_A)    return act[sel];
+  }
+}
+
+/* Take `slot` out, landing it in `cur_box` (see the header's own note on why the
+ * party is never the destination here). gbd_withdraw() commits to RAM first; if the
+ * landing gbs_insert() then refuses (box full/unwritable), gb_rollback() restores the
+ * whole image from pristine -- the withdraw and the insert are never left half-done
+ * on the card, only (briefly) in RAM, exactly the atomicity contract gb_session.h's
+ * own gbs_move() documents for the same two-commit shape. */
+static void gbdc_take(GbSession* s, int slot, int cur_box, uint8_t* list) {
+  GbEditMon mon;
+  GbsStatus wst = gbd_withdraw(s, slot, &mon);
+  if (wst != GBS_OK) { snd_error(); msg_wait("TAKE OUT", UI_WARN, gbs_status_text(wst), 0); return; }
+
+  int slot_out = -1;
+  GbsStatus ist = gbs_insert(s, cur_box, &mon, &slot_out, list);
+  if (ist != GBS_OK) {
+    gb_rollback();
+    snd_deny();
+    msg_wait("TAKE OUT", UI_WARN, gbs_status_text(ist), "Nothing was changed.");
+    return;
+  }
+  if (!gb_persist("daycare-take")) return;   /* gb_persist already reported any refusal */
+  snd_ok();
+  msg_wait("TAKEN OUT", UI_OK, "Placed in the box you came from.", "Saved.");
+}
+
+/* Take the Egg out (Gen 2 only), landing it in `cur_box` -- same shape as gbdc_take().
+ * gbd_withdraw_egg()'s own `out` is already Egg-shaped (list_species == G2_LIST_EGG,
+ * gb_daycare.h's own header note), so gbs_insert() lands a real Egg, not the species
+ * underneath it. */
+static void gbdc_take_egg(GbSession* s, int cur_box, uint8_t* list) {
+  if (!app_confirm("TAKE THE EGG?", "Places it in the box you came from.")) return;
+  GbEditMon egg;
+  GbsStatus wst = gbd_withdraw_egg(s, &egg);
+  if (wst != GBS_OK) { snd_error(); msg_wait("EGG", UI_WARN, gbs_status_text(wst), 0); return; }
+
+  int slot_out = -1;
+  GbsStatus ist = gbs_insert(s, cur_box, &egg, &slot_out, list);
+  if (ist != GBS_OK) {
+    gb_rollback();
+    snd_deny();
+    msg_wait("EGG", UI_WARN, gbs_status_text(ist), "Nothing was changed.");
+    return;
+  }
+  if (!gb_persist("daycare-egg")) return;
+  snd_ok();
+  msg_wait("EGG TAKEN", UI_OK, "Placed in the box you came from.", "Saved.");
+}
+
+/* Put a box-picked mon into `slot`. gbd_deposit() itself refuses an occupied slot,
+ * an Egg, or a party-shaped record -- all three are already impossible to reach here
+ * (the caller only offers this action on an empty slot; gbdc_pick already filters
+ * Eggs and only ever reads box-shaped storage), so any refusal here is a genuine,
+ * user-visible surprise worth reporting rather than a dead branch. */
+static void gbdc_deposit(GbSession* s, int slot, int cur_box, uint8_t* list) {
+  GbEditMon mon;
+  if (!gbdc_pick(s, cur_box, list, &mon)) return;
+  GbsStatus st = gbd_deposit(s, slot, &mon);
+  if (st != GBS_OK) { snd_deny(); msg_wait("PUT IN", UI_WARN, gbs_status_text(st), 0); return; }
+  if (!gb_persist("daycare-put")) return;
+  snd_ok();
+  msg_wait("LEFT AT DAY CARE", UI_OK, "Saved.", 0);
+}
+
+/* View/Edit `start_slot`, Gen-3-parity shape (pdna_daycare()'s own card-editor loop):
+ * pdna_gbsummary() over a THROWAWAY copy; U/D (when there IS a second slot) scrolls to
+ * it, exactly like pdna_inspect()'s own `nav` contract. A PURE VIEW (never saved)
+ * makes ZERO writes to the session -- no withdraw, no redeposit -- so the slot's own
+ * compatibility bit (Gen 2 slot 0 only) is never disturbed by opening this screen.
+ * Only a CONFIRMED edit pays for the withdraw+redeposit round-trip gbd_deposit()
+ * needs (there is no lower-level "rewrite just the record" entry point in
+ * gb_daycare.h) -- and that round-trip clears the slot's own compatibility bit
+ * (gbd_withdraw()'s own documented side effect on slot 0), which is the right call:
+ * an edited Pokemon's compatibility has to be recomputed by the game itself anyway,
+ * exactly the same "let retail recompute it" posture gbd_deposit()'s own header
+ * comment already takes for every fresh deposit. */
+static void gbdc_view_edit(GbSession* s, GbDaycare* dc, int start_slot, bool can_edit) {
+  int nrows = dc->gen1 ? 1 : 2;
+  int slot = start_slot;
+  GbEditMon edited = dc->slot[slot].mon;
+  int nav;
+  do {
+    char note[40];
+    siprintf(note, "Day-Care %s", dc->gen1 ? "boarder" : (slot == 0 ? "Man's Pokemon" : "Lady's Pokemon"));
+    bool saved = false;
+    nav = pdna_gbsummary(&edited, can_edit, false, note, false, false, &saved, 0);
+    if (saved) {
+      GbEditMon original;
+      GbsStatus wst = gbd_withdraw(s, slot, &original);
+      if (wst != GBS_OK) {
+        snd_error(); msg_wait("DAY CARE", UI_WARN, gbs_status_text(wst), 0);
+      } else {
+        GbsStatus dst = gbd_deposit(s, slot, &edited);
+        if (dst != GBS_OK) {
+          gb_rollback();
+          snd_error();
+          msg_wait("DAY CARE", UI_WARN, gbs_status_text(dst), "Nothing was changed.");
+        } else if (gb_persist("daycare-edit")) {
+          snd_ok();
+          dc->slot[slot].mon = edited;
+          dc->slot[slot].occupied = true;
+        }
+      }
+    }
+    if (nrows > 1 && nav != 0) { slot ^= 1; edited = dc->slot[slot].mon; }
+  } while (nav != 0 && nrows > 1);
+}
+
+/* The status/compatibility panel -- SAME geometry pdna_daycare() uses (PDNA_DCY_*,
+ * pdna_layout.h), Gen 1/2's own flag-based read swapped in for Gen 3's on-the-fly
+ * pk_daycare_compat() calculation (gb_daycare.h's `compatible`/`egg_ready` are what
+ * the game itself already computed, not this tree's guess). */
+static void gbdc_panel(const GbDaycare* dc, int n) {
+  const int dcy0 = PDNA_DCY_ROW0_Y, dcyp = PDNA_DCY_ROW_PITCH, dcx = PDNA_DCY_TEXT_X;
+  ui_panel(PDNA_DCY_PANEL_X, PDNA_DCY_PANEL_Y, PDNA_DCY_PANEL_W, PDNA_DCY_PANEL_H, UI_PANEL, UI_BORDER);
+  if (dc->gen1) {
+    ui_ptext(dcx, dcy0, UI_DIM, n ? "Leveling up your Pokemon." : "No Pokemon is boarding.");
+    ui_ptext(dcx, dcy0 + dcyp, UI_DIM, "Gen 1 Day Care has no breeding.");
+  } else if (n == 2) {
+    ui_ptext(dcx, dcy0, dc->compatible ? UI_OK : UI_DIM,
+             dc->compatible ? "They get along very well!" : "They'd rather be elsewhere.");
+    if (dc->has_egg) {
+      ui_ptext(dcx, dcy0 + dcyp, UI_OK, "An EGG is ready to collect!");
+    } else {
+      char l[48]; siprintf(l, "Steps to next egg check: %u", (unsigned)dc->steps_to_egg);
+      ui_ptext(dcx, dcy0 + dcyp, UI_DIM, l);
+    }
+  } else if (n == 1) {
+    ui_ptext(dcx, dcy0, UI_DIM, "One Pokemon is boarding.");
+    if (dc->has_egg) ui_ptext(dcx, dcy0 + dcyp, UI_OK, "An EGG is ready to collect!");
+  } else {
+    ui_ptext(dcx, dcy0, dc->has_egg ? UI_OK : UI_DIM,
+             dc->has_egg ? "An EGG is ready to collect!" : "No Pokemon are boarding.");
+  }
+}
+
+static void gbdc_paint(const GbDaycare* dc, int sel) {
+  ui_clear();
+  ui_fill_rect(0, 0, UI_SCR_W, 11, UI_BG);
+  ui_text(4, 2, UI_TITLE, "DAY CARE");
+  int n = (dc->slot[0].occupied ? 1 : 0) + (!dc->gen1 && dc->slot[1].occupied ? 1 : 0);
+  char sl[16]; siprintf(sl, "Boarding %d/%d", n, dc->gen1 ? 1 : 2);
+  ui_ptext_right(236, 2, UI_DIM, sl);
+  ui_hline(0, 11, UI_SCR_W, UI_BORDER);
+
+  int y = 18;
+  int nslots = dc->gen1 ? 1 : 2;
+  for (int i = 0; i < nslots; i++) {
+    bool sh = (sel == i);
+    if (sh) ui_panel(2, y - 2, 236, 16, UI_SEL, UI_TITLE);
+    const char* label = dc->gen1 ? "Boarder:" : (i == 0 ? "Man:" : "Lady:");
+    ui_text(6, y, sh ? UI_SELTEXT : UI_DIM, label);
+    const GbDaycareSlot* s = &dc->slot[i];
+    if (s->occupied) {
+      uint16_t dex = gb_get_species_dex(&s->mon);
+      const char* spn = (dex >= 1 && dex <= 251) ? pk_species_name(dex) : "?";
+      const char* nm = s->nick[0] ? s->nick : spn;
+      char lvl[12]; siprintf(lvl, "Lv.%u", (unsigned)gb_get_level(&s->mon));
+      ui_ptext_fit(70, y, 120, sh ? UI_SELTEXT : UI_TEXT, nm);
+      ui_ptext_right(230, y, sh ? UI_SELTEXT : UI_DIM, lvl);
+    } else {
+      ui_text(70, y, sh ? UI_SELTEXT : UI_DIM, "-- empty --");
+    }
+    y += 18;
+  }
+  if (!dc->gen1 && dc->has_egg) {
+    bool sh = (sel == 2);
+    if (sh) ui_panel(2, y - 2, 236, 16, UI_SEL, UI_TITLE);
+    ui_text(6, y, sh ? UI_SELTEXT : UI_OK, "Egg:");
+    ui_text(70, y, sh ? UI_SELTEXT : UI_OK, "An Egg is ready!");
+  }
+
+  gbdc_panel(dc, n);
+  ui_fill_rect(0, PDNA_DCY_FOOTER_Y, UI_SCR_W, 8, UI_BG);
+  ui_ptext(4, PDNA_DCY_FOOTER_Y, UI_DIM, "A menu  U/D move  B back");
+}
+
+void pdna_gbdaycare(GbSession* s, int cur_box, bool can_edit) {
+  if (!s || !s->open) { snd_deny(); msg_wait("DAY CARE", UI_WARN, "No save is open.", 0); return; }
+
+  /* GbDaycare (616 B) and the GBS_LIST_BYTES (1152 B) staging buffer the deposit/
+   * withdraw picker needs both live in the GB12 arena tail -- never a static (this
+   * screen may be entered on an emulator/hardware run where the same struct would
+   * otherwise sit in EWRAM for the rest of the app's life) and never a stack local
+   * (this call chain is already several frames deep off gb_nav_from_start). One
+   * slice, one call, carved into two sub-regions -- same idiom pdna_gbbag.c's own
+   * `bag`/`t0` pair uses. */
+  uint32_t need = GBDC_A4(sizeof(GbDaycare)) + GBS_LIST_BYTES;
+  uint8_t* tail = gb12_arena_tail(need);
+  if (!tail) { snd_deny(); msg_wait("DAY CARE", UI_WARN, "Not enough memory right now.", 0); return; }
+  GbDaycare* dc = (GbDaycare*)tail;
+  uint8_t* list = tail + GBDC_A4(sizeof(GbDaycare));
+
+  int sel = 0;
+  bool redraw = true;
+  for (;;) {
+    if (!gbd_read(s, dc)) {
+      snd_error(); msg_wait("DAY CARE", UI_WARN, "Could not read this save.", 0);
+      break;
+    }
+    int nrows = dc->gen1 ? 1 : (dc->has_egg ? 3 : 2);
+    if (sel >= nrows) sel = nrows - 1;
+
+    if (redraw) { redraw = false; gbdc_paint(dc, sel); }
+
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);   /* plays its own move/ok/back sound */
+    if (k & KEY_B) break;
+    else if (k & KEY_UP)   { sel = (sel > 0) ? sel - 1 : nrows - 1; redraw = true; }
+    else if (k & KEY_DOWN) { sel = (sel + 1) % nrows; redraw = true; }
+    else if (k & KEY_A) {
+      if (!dc->gen1 && dc->has_egg && sel == 2) {
+        gbdc_take_egg(s, cur_box, list);
+      } else {
+        int slot = sel;   /* 0 or 1 */
+        bool occ = dc->slot[slot].occupied;
+        bool can_put_here = can_edit && !occ;
+        bool can_take_here = can_edit && occ;
+        if (!occ && !can_put_here) {
+          /* Read-only cart, empty slot: nothing this menu could offer at all --
+           * say so directly instead of opening a popup with only Cancel in it. */
+          snd_deny();
+          msg_wait("DAY CARE", UI_WARN, "Read-only cart.", "Writes need an Omega.");
+        } else {
+          int act = gbdc_menu(occ, can_put_here, can_take_here);
+          if (act == 0)      gbdc_view_edit(s, dc, slot, can_edit);
+          else if (act == 1) gbdc_take(s, slot, cur_box, list);
+          else if (act == 2) gbdc_deposit(s, slot, cur_box, list);
+        }
+      }
+      redraw = true;
+    }
+  }
+  gb12_arena_tail_release();
+}

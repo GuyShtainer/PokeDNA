@@ -599,6 +599,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbtrainer.h"   /* BACKLOG #49 P1b: the Gen-1/2 trainer card */
 #include "pdna_gbbag.h"       /* U4, BACKLOG #67: Red/Yellow's own Item bag */
 #include "pdna_gbpack.h"      /* U5, BACKLOG #67: Gold/Silver/Crystal's own Pack */
+#include "pdna_gbdaycare.h"   /* BACKLOG #85: the Gen-1/2 Day-Care screen */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
@@ -2518,6 +2519,24 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * plain FIL-streaming entry falls back to the read-only info page, same
      * reasoning as NV_TRAINER above). */
     if (g_ed) pdna_gbpack(&g_ed->s, true);
+    else      (void)gb_info_page(m);
+  } else if (nv == NV_DAYCARE) {
+    /* BACKLOG #85: same "needs a live GbSession to write through" gate as
+     * NV_TRAINER/NV_BAG/NV_BAG above -- gbd_read()/gbd_deposit()/gbd_withdraw()
+     * (gb_daycare.h) all take a GbSession*, which only the resident-image path
+     * (g_ed) has. `m->current_box` is the box the grid was actually showing
+     * (gbsrc_note_box() keeps it current on every box switch, BACKLOG #56) --
+     * the deposit/withdraw source+destination pdna_gbdaycare.h's own header
+     * documents (never the party; see that file for why).
+     *
+     * app_can_edit() here, NOT a bare `true` (unlike this branch's three
+     * siblings above): pdna_gbdaycare's own `can_edit` is the ONLY gate its
+     * deposit/withdraw/edit-commit paths check before writing (it has no
+     * internal app_can_edit() call of its own, mirroring pdna_gbbag.c/
+     * pdna_gbpack.c/pdna_gbtrainer.c, which also trust their caller) -- since
+     * this is a NEW call site, passing the real cart state rather than
+     * copying the sibling literal is the hard-rule-4-safe choice. */
+    if (g_ed) pdna_gbdaycare(&g_ed->s, m->current_box, app_can_edit());
     else      (void)gb_info_page(m);
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */
