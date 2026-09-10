@@ -1934,6 +1934,37 @@ def main(argv):
 
     edges_to_add, blind, count_mismatches, legacy_ambiguous = resolve_all_sites(
         analysis, field_offset_index, argsite_decls, whole_func_decls)
+
+    # F1(b) (BACKLOG #84b seventh pass): an `addrtaken-ok` exemption is CHECKED, not
+    # trusted -- the reviewer's second review found several (era_resolver_cb, g3cross_
+    # pic_cb, the 17 ScanCb entries, ...) that were genuinely dispatched despite being
+    # declared "never called", a false-pass class just as real as an undeclared field.
+    # Any name this run's resolve_all_sites() actually resolved a real site TO (i.e. it
+    # is now one of the exempted implementations backing a genuine caller's edge) can no
+    # longer also claim "never dispatched" -- FATAL, naming the caller that dispatches
+    # it, so the fix is to move the entry into a real declaration (as this pass's own
+    # stack_edges.txt rewrite did for every one the reviewer found) instead of silently
+    # re-trusting a stale exemption. This does not (yet) chase the harder half of F1(b)
+    # -- "or whose address is loaded as a literal that reaches a call/blx in reachable
+    # code" -- which needs tracing literal loads across the whole reachable set, not
+    # just the sites resolve_all_sites() already classified; left for a future pass,
+    # noted honestly rather than claimed done.
+    expired_exemptions = []
+    for caller, impls in sorted(edges_to_add.items()):
+        hit = sorted(impls & addrtaken_ok)
+        if hit:
+            expired_exemptions.append((caller, hit))
+    if expired_exemptions:
+        print(f"\n*** STACK_BUDGET EXEMPTION EXPIRED: an `addrtaken-ok` function in "
+              f"{args.edges_file} is genuinely dispatched -- it can no longer claim "
+              "never to be called:", file=sys.stderr)
+        for caller, hit in expired_exemptions:
+            print(f"***   {caller} dispatches: {', '.join(hit)}", file=sys.stderr)
+        print("*** Fix: move each name into a real 'Struct.field @OFF in <caller> -> "
+              "...' or 'caller argsites=N -> ...' declaration naming the caller above, "
+              "and delete its addrtaken-ok line.", file=sys.stderr)
+        return 1
+
     for caller, impls in edges_to_add.items():
         analysis["edges"][caller] |= impls
 
