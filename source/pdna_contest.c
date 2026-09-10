@@ -36,7 +36,10 @@ static u16  s_wait(u16 mask) {
 }
 
 static const char* const CAT_NAME[GC_CATEGORY_COUNT] = { "Cool", "Beauty", "Cute", "Smart", "Tough" };
-static const char* const RANK_NAME[5] = { "None", "Normal", "Super", "Hyper", "Master" };
+/* GcWinner.rank is CONTEST_RANK_* (gen3_contest.h), not the ribbon word's GC_RANK_*:
+ * no "None" -- a winner record only exists once something has won -- and index 4 is
+ * a real Link Contest win, not an overflow value. */
+static const char* const RANK_NAME[5] = { "Normal", "Super", "Hyper", "Master", "Link" };
 
 /* ---- the donor picker: source (party / one of 14 boxes), then a mon in it -------
  *

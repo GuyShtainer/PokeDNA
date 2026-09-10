@@ -62,7 +62,17 @@
 
 enum { GC_COOL = 0, GC_BEAUTY, GC_CUTE, GC_SMART, GC_TOUGH, GC_CATEGORY_COUNT };
 
+/* The per-mon RIBBON word's scale (has a "None" the save-file rank byte does not).
+ * ONLY for gc_ribbon_get/set and the ribbon-flag word below. */
 enum { GC_RANK_NONE = 0, GC_RANK_NORMAL, GC_RANK_SUPER, GC_RANK_HYPER, GC_RANK_MASTER };
+
+/* The SB1 ContestWinner.contestRank / GcWinner.rank scale -- pokeemerald
+ * include/constants/contest.h:15-19. DISTINCT from GC_RANK_* above: no "None" (a
+ * winner record only exists once something has won), and Master sits at 3, not 4.
+ * CONTEST_RANK_LINK (4) is a real value the retail game can write for a Link Contest
+ * win -- this reader/writer surfaces it as-is, never collapses it to Master. */
+enum { CONTEST_RANK_NORMAL = 0, CONTEST_RANK_SUPER, CONTEST_RANK_HYPER, CONTEST_RANK_MASTER,
+       CONTEST_RANK_LINK };
 
 /* ---- per-mon ribbon word helpers (operate on the raw 32-bit Misc-substruct word;
  * gen3_edit.c wraps these around EditMon.sub[3] for the summary editor). ---------- */
@@ -85,7 +95,9 @@ typedef struct {
   uint8_t  category;     /* GC_COOL..GC_TOUGH                                  */
   char     monName[11];  /* decoded ASCII, NUL-terminated, <=10 chars          */
   char     trainerName[8];
-  uint8_t  rank;         /* CONTEST_RANK_*; always GC_RANK_MASTER on RS (no field) */
+  uint8_t  rank;         /* CONTEST_RANK_* (NOT GC_RANK_*) -- on RS, a museum slot has
+                          * no rank field (always CONTEST_RANK_MASTER) and a hall slot's
+                          * rank is derived from its own slot index (RS_SLOT_RANK) */
 } GcWinner;
 
 bool gc_supported(PkGame g);          /* false for FRLG only                        */
@@ -100,7 +112,7 @@ bool gc_hall_get(const uint8_t* sb1, PkGame g, int idx, GcWinner* out);
 bool gc_museum_get(const uint8_t* sb1, PkGame g, int cat, GcWinner* out);
 
 /* Write a museum painting: species/personality/otId/names from the chosen donor,
- * category fixed to the slot's own `cat`, rank forced to GC_RANK_MASTER (Emerald
+ * category fixed to the slot's own `cat`, rank forced to CONTEST_RANK_MASTER (Emerald
  * only — matches ShouldReadyContestArtist: only a Master win with 800+ points ever
  * reaches the museum). Names are given as ASCII (<=10 / <=7 chars) and encoded here.
  * A byte-identical write (donor already occupies this slot) is a true no-op — the

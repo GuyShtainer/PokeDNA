@@ -101,8 +101,15 @@ static void encode_name(uint8_t* dst, const char* ascii, int len) {
  * stop-licence flagged; verified, not assumed. */
 #define GC_PAINTING_VARIANTS 3
 
+/* RS has no contestRank field in ContestWinner -- GetContestWinnerSaveIdx (pokeruby
+ * src/contest_2.c:4130-4155) picks WHICH of the 8 hall slots a win lands in FROM the
+ * rank, so on read the rank must be recovered the same way, from the slot index:
+ * Normal->0, Super->1, Hyper->2..4, Master->5..7. A museum slot has no such mapping
+ * (no slot varies by rank) -- ShouldReadyContestArtist gates it to Master, always. */
+static const uint8_t RS_SLOT_RANK[8] = { 0, 1, 2, 2, 2, 3, 3, 3 };
+
 static bool read_winner(const uint8_t* sb1, uint32_t off, bool has_rank, bool museum,
-                        GcWinner* out) {
+                        int rs_slot, GcWinner* out) {
   const uint8_t* w = sb1 + off;
   memset(out, 0, sizeof(*out));
   out->personality = rd32(w + 0);
@@ -111,7 +118,12 @@ static bool read_winner(const uint8_t* sb1, uint32_t off, bool has_rank, bool mu
   out->category    = museum ? (uint8_t)(w[10] / GC_PAINTING_VARIANTS) : w[10];
   decode_name(out->monName, w + 11, 10);
   decode_name(out->trainerName, w + 22, 7);
-  out->rank = has_rank ? w[30] : (uint8_t)GC_RANK_MASTER;
+  /* Emerald's stored byte IS the CONTEST_RANK_* scale already (contestRank field) --
+   * read it raw, never remapped. RS has no such byte: a museum slot is always Master,
+   * a hall slot's rank is implied by which of the 8 slots it occupies. */
+  if (has_rank)      out->rank = w[30];
+  else if (museum)   out->rank = (uint8_t)CONTEST_RANK_MASTER;
+  else               out->rank = RS_SLOT_RANK[rs_slot];
   return true;
 }
 
@@ -119,13 +131,15 @@ bool gc_hall_get(const uint8_t* sb1, PkGame g, int idx, GcWinner* out) {
   if (!sb1 || !out || !gc_supported(g)) return false;
   int n = gc_hall_count(g);
   if (idx < 0 || idx >= n) return false;
-  return read_winner(sb1, hall_base(g) + (uint32_t)idx * GC_STRIDE, g == PK_EMERALD, false, out);
+  return read_winner(sb1, hall_base(g) + (uint32_t)idx * GC_STRIDE, g == PK_EMERALD, false,
+                     idx, out);
 }
 
 bool gc_museum_get(const uint8_t* sb1, PkGame g, int cat, GcWinner* out) {
   if (!sb1 || !out || !gc_supported(g)) return false;
   if (cat < 0 || cat >= GC_CATEGORY_COUNT) return false;
-  return read_winner(sb1, museum_base(g) + (uint32_t)cat * GC_STRIDE, g == PK_EMERALD, true, out);
+  return read_winner(sb1, museum_base(g) + (uint32_t)cat * GC_STRIDE, g == PK_EMERALD, true,
+                     0, out);
 }
 
 bool gc_museum_set(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32_t personality,
@@ -144,7 +158,7 @@ bool gc_museum_set(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32_t p
   rec[10] = (uint8_t)(cat * GC_PAINTING_VARIANTS);
   encode_name(rec + 11, monName_ascii, 11);
   encode_name(rec + 22, trainerName_ascii, 8);
-  if (g == PK_EMERALD) rec[30] = (uint8_t)GC_RANK_MASTER;
+  if (g == PK_EMERALD) rec[30] = (uint8_t)CONTEST_RANK_MASTER;
 
   uint8_t* w = sb1 + museum_base(g) + (uint32_t)cat * GC_STRIDE;
   memcpy(w, rec, sizeof(rec));   /* memcpy, not per-field writes: a byte-identical

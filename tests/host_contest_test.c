@@ -79,6 +79,28 @@ static void one(const char* path) {
     CHECK(w.category < GC_CATEGORY_COUNT, "hall category is plain 0..4 (not a caption id)");
     CHECK(w.rank <= 4, "hall rank is 0..4");
   }
+
+  /* ---- (1b) D2 regression: the hall/museum rank scale is CONTEST_RANK_*, not
+   * GC_RANK_* -- and on RS a hall slot's rank comes from ITS OWN SLOT INDEX
+   * (RS_SLOT_RANK), not a stored field. Pinned against Guy's own saves' real bytes,
+   * not synthetic ones, so a regression that puts the ribbon scale (with its extra
+   * "None") back in place, or drops the RS slot-index mapping, fails here. */
+  if (strstr(path, "Emerald.sav")) {
+    static const uint8_t want[6] = { 0, 2, 0, 3, 1, 2 };  /* Normal/Hyper/Normal/Master/Super/Hyper */
+    for (int i = 0; i < 6; i++) {
+      GcWinner w; gc_hall_get(g_sb1, game, i, &w);
+      CHECK(w.rank == want[i], "Emerald hall rank matches the raw contestRank byte");
+      if (i == 3) printf("  (D2) Emerald hall slot 3 = rank %u (want 3, Master)\n", (unsigned)w.rank);
+    }
+  }
+  if (strstr(path, "Ruby.sav")) {
+    GcWinner w0, w5;
+    gc_hall_get(g_sb1, game, 0, &w0);
+    gc_hall_get(g_sb1, game, 5, &w5);
+    CHECK(w0.rank == (uint8_t)CONTEST_RANK_NORMAL, "Ruby hall slot 0 -> rank 0 (Normal, RS_SLOT_RANK)");
+    CHECK(w5.rank == (uint8_t)CONTEST_RANK_MASTER, "Ruby hall slot 5 -> rank 3 (Master, RS_SLOT_RANK)");
+  }
+
   bool found_museum_win = false;
   for (int c = 0; c < GC_MUSEUM_COUNT; c++) {
     GcWinner w;
@@ -144,8 +166,11 @@ static void one(const char* path) {
   GcWinner check;
   gc_museum_get(sb1_reread, game, cat, &check);
   CHECK(check.species == donor.species, "the re-read painting shows the donor species");
-  CHECK(check.rank == (game == PK_EMERALD ? GC_RANK_MASTER : 4),
-       "the re-read painting is Master rank");
+  /* CONTEST_RANK_MASTER is 3, not GC_RANK_MASTER's 4 -- the ribbon word's scale has an
+   * extra "None" at 0 that the save-file rank byte does not (D2). On Emerald this is
+   * the literal contestRank byte gc_museum_set just wrote; on RS there is no field at
+   * all, so gc_museum_get always reports Master for a museum slot. */
+  CHECK(check.rank == (uint8_t)CONTEST_RANK_MASTER, "the re-read painting is Master rank (3)");
 
   /* ---- (4) a byte-identical re-write is a true no-op ---- */
   uint8_t sb1_snap[G3_SAVEBLOCK1_BYTES];
