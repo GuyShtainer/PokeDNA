@@ -127,7 +127,7 @@ static void test_every_row_covered(void) {
   /* U5: NV_BAG is now NAV_OK on BOTH kinds (Gen 1's own Item bag, U4; Gen 2's
    * own Pack, U5) -- checked separately below, alongside the OK-on-both rows. */
   static const int coming_soon_both[] = {
-    NV_PARTY, NV_BANK, NV_DAYCARE, NV_DEX, NV_DATA, NV_FLY, NV_MAP, NV_GB
+    NV_PARTY, NV_BANK, NV_DEX, NV_DATA, NV_FLY, NV_MAP, NV_GB
   };
   for (int i = 0; i < (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]); i++) {
     CHECK(nav_avail(coming_soon_both[i], SE_KIND_GEN1) == NAV_COMING_SOON,
@@ -136,21 +136,24 @@ static void test_every_row_covered(void) {
           "Gen 2: every not-yet-wired row is COMING_SOON");
   }
 
-  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG };
+  /* BACKLOG #85: NV_DAYCARE moved from coming-soon to OK-both -- gb_daycare.c's core
+   * is wired up on both Gen 1 (one slot, level-up only) and Gen 2 (two slots +
+   * compatibility + egg). */
+  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE };
   for (int i = 0; i < (int)(sizeof ok_both / sizeof ok_both[0]); i++) {
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag are NAV_OK");
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare are NAV_OK");
   }
 
-  /* 8 NOT_IN_GAME (gen1-list, Clock counted once, + BACKLOG #60's NV_CONTEST) + 8
-   * COMING_SOON-both + 4 OK-both (Trainer/Settings/Back/Bag -- U5 made the Bag OK on
-   * Gen 2 too) + Clock's own Gen-2 COMING_SOON (already counted above via a separate
-   * assertion) == 20 rows -- the classification is EXHAUSTIVE, not a sample, so a row
-   * silently added to PDNA_NAV_ITEMS without a matching GB_TABLE entry cannot hide
-   * behind rows this test never asked about. */
-  CHECK(8 + 8 + 4 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
-  printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 8 COMING_SOON-both + "
-        "4 OK-both == %d)\n", NV_COUNT);
+  /* 8 NOT_IN_GAME (gen1-list, Clock counted once, + BACKLOG #60's NV_CONTEST) + 7
+   * COMING_SOON-both + 5 OK-both (Trainer/Settings/Back/Bag/Daycare -- U5 made the Bag
+   * OK on Gen 2 too, #85 made Daycare OK on both) + Clock's own Gen-2 COMING_SOON
+   * (already counted above via a separate assertion) == 20 rows -- the classification
+   * is EXHAUSTIVE, not a sample, so a row silently added to PDNA_NAV_ITEMS without a
+   * matching GB_TABLE entry cannot hide behind rows this test never asked about. */
+  CHECK(8 + 7 + 5 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
+  printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 7 COMING_SOON-both + "
+        "5 OK-both == %d)\n", NV_COUNT);
 }
 
 /* ---- (H) defensive: out-of-range nv_item / save_kind never misbehaves -------------- */

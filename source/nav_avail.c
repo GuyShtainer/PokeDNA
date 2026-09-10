@@ -53,8 +53,11 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
                      { NAV_COMING_SOON, "The party is the last box." } },
   [NV_BANK]      = { { NAV_COMING_SOON, "The Bank is coming soon." },
                      { NAV_COMING_SOON, "The Bank is coming soon." } },
-  [NV_DAYCARE]   = { { NAV_COMING_SOON, "The Daycare is coming soon." },
-                     { NAV_COMING_SOON, "The Daycare is coming soon." } },
+  /* BACKLOG #85: gb_daycare.c (the pure core) is merged on main; this UI slice wires
+   * it up on BOTH kinds -- Gen 1 gets the one-slot, level-up-only version (no
+   * breeding, no compatibility line -- the format's own limit, not a missing
+   * feature), Gen 2 gets both slots + compatibility + the egg. */
+  [NV_DAYCARE]   = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   [NV_TRAINER]   = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   [NV_CLOCK]     = { { NAV_NOT_IN_GAME, "Gen 1 games have no clock." },
                      { NAV_COMING_SOON, "Gen 2 games have a clock too." } },
