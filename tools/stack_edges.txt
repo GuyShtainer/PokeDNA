@@ -134,8 +134,19 @@ BoxSource.note_box @60 in pdna_box -> gbsrc_note_box
 # NULL)` (ui.c:9, the Mode-3 bitmap font) -- installing libtonc's se/bmp16 surface
 # vtable entries as the live drawgProc/eraseProc. F1: se_drawg_s/se_erase/
 # bmp16_drawg_b1cts/bmp16_erase moved here from addrtaken-ok (see that list's own note).
-TTC.drawgProc @56 in tte_putc,tte_write -> se_drawg_s bmp16_drawg_b1cts
-TTC.eraseProc @60 in tte_cmd_default,tte_erase_line,tte_erase_rect,tte_erase_screen -> se_erase bmp16_erase
+#
+# G6 (BACKLOG #84b eighth pass): bmp8_drawg_b1cts/bmp8_erase ALSO widened in here from
+# addrtaken-ok. objdump proof: their linked addresses (0806f3c9/0806d825, thumb-bit set)
+# sit in the LITERAL POOL between tte_init_bmp (0806d874) and tte_init_se (0806d958) --
+# tte_init_bmp() is one shared library function that picks bmp16_* or bmp8_* by the bpp
+# it's called with, so BOTH addresses are compiled into its pool even though this
+# codebase's one tte_init_bmp(DCNT_MODE3, ...) call always selects the bmp16 branch at
+# runtime. The walker can't see which literal a runtime argument picks, so the honest
+# declaration is the UNION, same convention as every other widened offset in this file --
+# not a `tte_init_chr4c` call (there isn't one; the earlier note above was wrong about
+# WHY bmp8 is reachable, right that it needed a declaration).
+TTC.drawgProc @56 in tte_putc,tte_write -> se_drawg_s bmp16_drawg_b1cts bmp8_drawg_b1cts
+TTC.eraseProc @60 in tte_cmd_default,tte_erase_line,tte_erase_rect,tte_erase_screen -> se_erase bmp16_erase bmp8_erase
 BoxSource.capacity   @64 -> gbsrc_capacity
 
 # The commit parameter threaded through app_mon_menu (party call sites) and
@@ -801,25 +812,34 @@ addrtaken-ok __utf8_wctomb        # newlib: UTF-8 locale table entry, same famil
 addrtaken-ok _fini                # crt: ELF finalization entry, taken by the ELF header/_fini machinery
 addrtaken-ok frame_dummy          # crtstuff: EH-frame registration stub, taken via .init_array
 
-# D1 address-taken sweep triage, batch 2: libtonc's own internal dispatch tables and
-# ISR trampoline. bmp16/bmp8/sbmp16/se_ draw/erase/plot/line/rect/hline/vline/blit/
-# floodfill/get_pixel and m4_surface/m5_surface are libtonc's SurfaceFn vtables
-# (tonc_video.h/tonc_bmp*.h) -- internal to the library, dispatched by libtonc's own
-# surface-switch code, never by anything this project declares. isr_master is
-# libtonc's single IRQ trampoline: its address is taken by irq_init() and written into
-# the hardware interrupt vector directly (not a struct field), and the handlers IT
-# calls (hb_isr/pwm_isr) are already declared as `isr` above, which is what actually
-# measures the ISR-reentry cost -- isr_master's own frame is already counted as part
-# of that measurement path (deepest_from(hb_isr/pwm_isr, ...) walks through whatever
-# isr_master itself calls before reaching them), so exempting isr_master here does not
-# hide any depth the ISR allowance check above doesn't already see.
+# D1 address-taken sweep triage, batch 2: libtonc's own internal dispatch tables,
+# vtable-adjacent DATA objects, and the ISR trampoline.
+#
+# G6 (BACKLOG #84b eighth pass): sbmp16_* are libtonc's public grpSbmp16 API
+# (tonc_surface.h) AND entries in libtonc's own const TSurfaceProcTab bmp16_tab
+# (tonc_surface.h:190) -- that table's initializer takes each one's address as a
+# compile-time constant, so the sweep finds them "address taken", but nothing in
+# THIS codebase ever dispatches through bmp16_tab itself (grepped: no `.plot(`/
+# `.line(` etc. call through it anywhere) -- a genuine non-dispatch, not a
+# dispatch this file failed to model. m4_surface/m5_surface are NOT functions at
+# all: `extern EWRAM_DATA TSurface m4_surface`/`m5_surface` (tonc_surface.h:
+# 187-188) are Mode-4/5 surface DESCRIPTOR objects (pointer/pitch/width/height/
+# bpp fields) -- the sweep's function-symbol-address match mislabelled them as
+# addrtaken FUNCTIONS because something legitimately holds `&m4_surface`/
+# `&m5_surface` as a data pointer, never as a call target. isr_master is
+# libtonc's single IRQ trampoline: its address is taken by irq_init() and written
+# into the hardware interrupt vector directly (not a struct field), and the
+# handlers IT calls (hb_isr/pwm_isr) are already declared as `isr` above, which
+# is what actually measures the ISR-reentry cost -- isr_master's own frame is
+# already counted as part of that measurement path (deepest_from(hb_isr/pwm_isr,
+# ...) walks through whatever isr_master itself calls before reaching them), so
+# exempting isr_master here does not hide any depth the ISR allowance check
+# above doesn't already see.
 addrtaken-ok isr_master
-addrtaken-ok m4_surface
-addrtaken-ok m5_surface
+addrtaken-ok m4_surface           # TSurface DATA object, not a function -- see the note above
+addrtaken-ok m5_surface           # TSurface DATA object, not a function -- see the note above
 addrtaken-ok dummy_drawg
 addrtaken-ok dummy_erase
-addrtaken-ok bmp8_drawg_b1cts
-addrtaken-ok bmp8_erase
 addrtaken-ok sbmp16_blit
 addrtaken-ok sbmp16_floodfill
 addrtaken-ok sbmp16_frame
@@ -833,8 +853,14 @@ addrtaken-ok sbmp16_vline
 # REMOVED from this list -- they ARE dispatched (TTC.drawgProc@56/eraseProc@60 below,
 # the two tte_init calls this project actually makes: tte_init_se (map_gfx.c:144) and
 # tte_init_bmp(DCNT_MODE3, ...) (ui.c:9), which installs libtonc's se/bmp16 surface
-# vtable entries as the active drawgProc/eraseProc). bmp8_*/dummy_*/sbmp16_* stay --
-# no tte_init_chr4c or other-bpp path is ever called in this codebase (grepped).
+# vtable entries as the active drawgProc/eraseProc).
+# G6 (BACKLOG #84b eighth pass): bmp8_drawg_b1cts/bmp8_erase ALSO REMOVED from this
+# list -- the seventh-pass note above ("no tte_init_chr4c or other-bpp path is ever
+# called") was wrong about WHY they stayed exempted: objdump shows their addresses
+# compiled into tte_init_bmp's own literal pool (it picks bmp16_* or bmp8_* by the bpp
+# argument at runtime), so they widen the SAME TTC.drawgProc@56/eraseProc@60
+# declaration bmp16_drawg_b1cts/bmp16_erase already use, not a separate exemption.
+# dummy_drawg/dummy_erase/sbmp16_* stay -- dummy_*/sbmp16_* are not in that pool.
 
 # D1 (BACKLOG #84b fifth pass) address-taken sweep triage, batch 3: genuine, verified,
 # pre-existing single-registration callback hooks whose CALLING side is not yet
@@ -885,9 +911,24 @@ addrtaken-ok _EZFO_startUp        # linked at EWRAM 0x02000000, which COINCIDES 
                                    # not a real function-pointer dispatch; _EZFO_startUp is
                                    # called directly (lib/flashcartio.c:333 `_EZFO_startUp()`)
 addrtaken-ok _EZFO_reboot         # same false-match class, called directly (flashcartio.c:393)
+# G6 (BACKLOG #84b eighth pass) CONTRADICTION FOUND, kept as-is: the brief for this
+# item said to delete `addrtaken-ok flashcartio_activate` because it is "called
+# directly and reachable" (true on the artless/normal builds: source/pdna_main.c:
+# 9642/9658 call it directly, outside `#ifdef PDNA_DELTA`). Deleting it broke `make
+# delta` (STACK_BUDGET ADDRESS-TAKEN on flashcartio_activate) -- on the delta
+# (emulator) build those same two call sites are compiled OUT (they sit in
+# pdna_main.c's `#else` branch of `#ifdef PDNA_DELTA`, main.c:9607-9627: the
+# emulator build boots straight into the flash save, no flashcart/SD at all), so on
+# THAT variant flashcartio_activate really is unreached except through the
+# RV_ANCHOR literal (pdna_romver_data.c:75/106) the ORIGINAL reason described.
+# Restored rather than improvised around, per the stop-licence -- flagged in the
+# session report instead.
 addrtaken-ok flashcartio_activate # RV_ANCHOR'd into pdna_romver_data.c's ROM self-check
                                    # window table (symbol address used to LOCATE a CRC
-                                   # window, not to call through) -- pdna_romver_data.c:75/106
+                                   # window, not to call through) -- pdna_romver_data.c:75/106.
+                                   # Reachable directly (source/pdna_main.c:9642/9658) ONLY on
+                                   # the non-delta builds; #ifdef PDNA_DELTA compiles those
+                                   # call sites out, so the exemption is load-bearing there.
 addrtaken-ok g2_box_mon_at        # gen2_save.c:603/gen2_save.h:233 -- grepped: no call site
                                    # or function-pointer assignment found anywhere in source/;
                                    # either a genuinely unused public function or another

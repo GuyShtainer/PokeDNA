@@ -63,6 +63,14 @@ THE BUDGET
     That 1024 B is not a measured number -- it is a chosen safety margin against
     anything this walker cannot see (an indirect call this build's graph didn't reach,
     a future newlib prologue shape the estimator doesn't recognize yet).
+
+COST (G7, BACKLOG #84b eighth pass)
+    One normal (non -j) build variant's post-link run costs low single-digit seconds
+    wall (~3.15 s on the reviewer's machine, ~1.4 s measured here -- objdump -d over
+    .text plus objdump -s over every alloc/load section dominate and both scale with
+    disk/CPU speed; parsing the .su files and walking the graph itself is a small
+    fraction of that). Paid once per linked ELF, at the very end of the link step --
+    not per .o, and not per -j worker.
 """
 import argparse
 import bisect
