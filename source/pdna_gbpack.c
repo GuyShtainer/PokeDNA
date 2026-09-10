@@ -348,7 +348,10 @@ static void g2pack_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket
 
     if (tmhm && has && !is_cancel) {
       int num = g2pack_is_hm(real) ? real - 50 + 1 : real + 1;
-      siprintf(buf, "%02u", (unsigned)num);
+      /* tmhm.asm: an HM row prints a literal 'H' then a left-aligned digit ('H3'),
+       * a TM row its two-digit number (U5 re-verify N1). */
+      if (g2pack_is_hm(real)) siprintf(buf, "H%u", (unsigned)num);
+      else                    siprintf(buf, "%02u", (unsigned)num);
       gbscr_text(gs, TMNUM_COL, ny, buf);
     } else {
       gbscr_cell(gs, TMNUM_COL, ny, GBSCR_SRC_BLANK, 0);
@@ -377,7 +380,7 @@ static void g2pack_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket
        * corrupt save) could exceed GBB_QTY_CAP/GBB_TMHM_CAP (both 99) -- "%2u"
        * on a 3-digit value would silently print its first two digits, a wrong
        * number rather than a visible "something is off" signal. */
-      if (q > 99u) siprintf(buf, "**");
+      if (q > 99u) siprintf(buf, "??");   /* '*' is not in the GB charmap (encodes to a blank); '?' is 0xE6 (U5 re-verify N2) */
       else         siprintf(buf, "%2u", q);
       gbscr_text(gs, QTY_COL + 1, qy, buf);
     } else {
