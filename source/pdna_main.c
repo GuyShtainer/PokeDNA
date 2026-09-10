@@ -39,6 +39,7 @@
 #include "gen3_frontier.h"  /* g3f_streak_get/g3f_modes/g3f_mode_name for the record screen's streaks page */
 #include "pdna_frontier.h"  /* Battle Frontier win-streak viewer/editor (SaveBlock2) */
 #include "pdna_fly.h"       /* Fly-destination (visited-town) flags (SaveBlock1)     */
+#include "pdna_contest.h"   /* Museum paintings + Contest Hall winners (BACKLOG #60) */
 #include "pdna_map.h"       /* overworld map, read from the user's own Pokemon ROM   */
 #include "pdna_trainer.h"
 #include "pdna_edit.h"
@@ -9486,6 +9487,7 @@ static void view_save(const char* path) {
         case NV_BATTLEREC: pdna_battle_record(); break;  /* viewing is free; export gates on Omega inside */
         case NV_FRONTIER: pdna_frontier(g_sb1, g_sb2, g_game); break;   /* viewing free; editing gates on Omega inside */
         case NV_FLY:      pdna_fly(g_sb1, g_game); break;        /* viewing free; editing gates on Omega inside */
+        case NV_CONTEST:  pdna_contest(g_sb1, g_pc, g_game); break;  /* viewing free; editing gates on Omega inside */
         case NV_MAP:      pdna_map(g_sb1, g_sb2, g_game); break;  /* the user's own ROM: SD file, or fused into this image */
         case NV_GB: {
 #ifdef PDNA_DELTA
