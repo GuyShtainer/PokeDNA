@@ -97,6 +97,16 @@ SAFETY_MARGIN = 1024   # B of headroom demanded below (__sp_usr - __iheap_start)
 # asserting it stays true.
 ISR_BYTES = 64         # libtonc isr_master runs handlers on __sp_usr too (see above)
 
+# G1 (BACKLOG #84b eighth pass, merge-blocker): an `addrtaken-ok fn (reason)` line is a
+# claim nobody re-verifies -- the reviewer's own comment attached to it (the sweep just
+# trusts the text) -- so bound what a WRONG one can cost instead of letting it hide an
+# arbitrarily heavy chain behind a one-line exemption. 256 B is generous next to every
+# legitimate exemption on file today (all <= 128 B, grep `addrtaken-ok` in
+# tools/stack_edges.txt) while still catching the reviewer's planted fixture: a literal
+# stored to a global then reloaded and called through a register (trap #5) whose own
+# worst chain is thousands of bytes.
+EXEMPT_MAX_DEEPEST = 256
+
 # === .su parsing (exact, compiler-measured frames) ===================================
 
 def load_su(builddir):
@@ -2297,23 +2307,61 @@ def main(argv):
     # declaration names it and the graph never reaches it any other way. (D2's own
     # BUILDDIR MISMATCH check that used to live here moved up before the unknown-frame
     # check, F4 BACKLOG #84b seventh pass -- `sections`/`stamp` are already computed.)
+    #
+    # G3 (BACKLOG #84b eighth pass): (b)'s `reachable` set is reachable_from(args.root,
+    # ...) -- for the real entry point (--root main) that is every function the whole
+    # linked image can reach, so an orphan really is unaccounted for. The two documented
+    # re-measurement commands (source/pdna_box.c, rom_gbui.h) pass a SUB-root
+    # (gbscr_open_inner, pcp_open_party_strip_inner) to re-derive one chain's number in
+    # isolation -- `reachable` from a sub-root is a small subset of main's, so a
+    # function that is address-taken and genuinely reachable only from OTHER parts of
+    # main's graph looks like a spurious orphan here even though the real (--root main)
+    # sweep already accounts for it. The sweep is a property of the whole image, not of
+    # whichever root a re-measurement happens to pass, so it only runs for --root main.
+    if args.root == "main":
+        taken = scan_address_taken(args.elf, analysis["name_at"], sections, section_dumps)
+        declared_or_reachable = all_impls | reachable | isr_decls | addrtaken_ok
+        orphans = sorted(taken - declared_or_reachable)
+        if orphans:
+            print("\n*** STACK_BUDGET ADDRESS-TAKEN, UNREACHED, UNDECLARED:")
+            for fn in orphans:
+                b, _src = frame_of(fn, su_sizes, estimated, frame_overrides)
+                print(f"***   {fn} frame {b}")
+            print("*** This function's address is stored somewhere in the linked image (a "
+                  "struct field, a dispatch table, a literal pool) but it is named by no "
+                  "declaration in stack_edges.txt, not reachable through the ordinary call "
+                  "graph, and not a declared ISR handler. It could be a brand-new "
+                  "implementation silently slotted into an existing dispatch class -- the "
+                  "exact false pass this sweep exists to catch. Add it to the right "
+                  "declaration's implementation list, or (if it is a genuine false positive) "
+                  "an `addrtaken-ok fn  (reason)` line.")
+            return 1
 
-    taken = scan_address_taken(args.elf, analysis["name_at"], sections, section_dumps)
-    declared_or_reachable = all_impls | reachable | isr_decls | addrtaken_ok
-    orphans = sorted(taken - declared_or_reachable)
-    if orphans:
-        print("\n*** STACK_BUDGET ADDRESS-TAKEN, UNREACHED, UNDECLARED:")
-        for fn in orphans:
-            b, _src = frame_of(fn, su_sizes, estimated, frame_overrides)
-            print(f"***   {fn} frame {b}")
-        print("*** This function's address is stored somewhere in the linked image (a "
-              "struct field, a dispatch table, a literal pool) but it is named by no "
-              "declaration in stack_edges.txt, not reachable through the ordinary call "
-              "graph, and not a declared ISR handler. It could be a brand-new "
-              "implementation silently slotted into an existing dispatch class -- the "
-              "exact false pass this sweep exists to catch. Add it to the right "
-              "declaration's implementation list, or (if it is a genuine false positive) "
-              "an `addrtaken-ok fn  (reason)` line.")
+    # G1 (BACKLOG #84b eighth pass, merge-blocker): an `addrtaken-ok` claim is never
+    # re-verified above -- it just removes `fn` from the orphans check. That is fine
+    # for a genuinely tiny dispatch shim, but nothing stops a heavy function from being
+    # exempted by a wrong or stale comment. Bound the damage: every addrtaken-ok
+    # function actually present in this ELF must have its OWN worst chain (as if it
+    # were --root) no heavier than EXEMPT_MAX_DEEPEST, independent of whether anything
+    # calls it in this build.
+    heavy_exemptions = []
+    for fn in sorted(addrtaken_ok):
+        if fn not in analysis["funcs"]:
+            continue
+        own_total, _own_path, _own_cycles = deepest_from(
+            fn, analysis["edges"], su_sizes, estimated,
+            overrides=frame_overrides, scc_of=scc_of)
+        if own_total > EXEMPT_MAX_DEEPEST:
+            heavy_exemptions.append((fn, own_total))
+    if heavy_exemptions:
+        print(f"\n*** STACK_BUDGET EXEMPTION TOO HEAVY: an `addrtaken-ok` exemption in "
+              f"{args.edges_file} may only cover functions whose own worst chain is <= "
+              f"{EXEMPT_MAX_DEEPEST} B (an unverified `addrtaken-ok` claim must not be "
+              "able to hide an arbitrarily heavy chain):", file=sys.stderr)
+        for fn, own_total in heavy_exemptions:
+            print(f"***   {fn}: own worst chain {format_num(own_total)} B", file=sys.stderr)
+        print("*** Fix: give it a real Struct.field @OFF in <caller> -> ... declaration.",
+              file=sys.stderr)
         return 1
 
     guarded_total = deepest_total + ISR_BYTES

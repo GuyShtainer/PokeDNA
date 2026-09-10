@@ -587,6 +587,48 @@ def test_d1_orphan_detection_catches_the_planted_function():
           orphans2 == [], orphans2)
 
 
+def test_g1_addrtaken_ok_exemption_capped_at_own_deepest_chain():
+    """G1 (BACKLOG #84b eighth pass, merge-blocker): an `addrtaken-ok` line clears the
+    D1 orphan check above on the strength of nothing but the comment next to it -- the
+    sweep never verifies the claim, so a WRONG or stale one could hide an arbitrarily
+    heavy function forever. The reviewer's exact plant (rv_hidden -- a literal stored
+    to a global then reloaded and called through a register, trap-#5-proof, sitting
+    next to a real declared caller `app_nav_settings argsites=1 -> pdna_settings`) is
+    modeled here at the deepest_from() level -- the same call main() itself makes for
+    every addrtaken_ok name once D1's orphan check clears -- and must trip the
+    EXEMPT_MAX_DEEPEST cap: its own worst chain (rv_hidden -> rv_hidden_helper, 4,096 +
+    64 B) is thousands of bytes over the 256 B cap. A short, genuine dispatch shim
+    (128 B, no children) must NOT trip it."""
+    edges = {
+        "app_nav_settings": {"pdna_settings"},
+        "pdna_settings": set(),
+        "rv_hidden": {"rv_hidden_helper"},
+        "rv_hidden_helper": set(),
+        "short_shim": set(),
+    }
+    su_sizes = {
+        "app_nav_settings": 32, "pdna_settings": 40,
+        "rv_hidden": 4096, "rv_hidden_helper": 64,
+        "short_shim": 128,
+    }
+    estimated = {}
+    addrtaken_ok = {"rv_hidden", "short_shim"}
+    funcs = set(edges) | {"short_shim"}
+
+    heavy = []
+    for fn in sorted(addrtaken_ok):
+        if fn not in funcs:
+            continue
+        total, _path, _cycles = sb.deepest_from(fn, edges, su_sizes, estimated)
+        if total > sb.EXEMPT_MAX_DEEPEST:
+            heavy.append((fn, total))
+
+    check("(G1) the heavy plant (rv_hidden, 4,160 B own chain) trips the 256 B cap",
+          heavy == [("rv_hidden", 4160)], heavy)
+    check("(G1) a genuinely tiny exemption (short_shim, 128 B) does not",
+          "short_shim" not in [fn for fn, _t in heavy], heavy)
+
+
 # === (D2, fifth pass) the ELF names the build dir it was linked from ====================
 
 class _FakeCompleted:
@@ -1161,6 +1203,7 @@ def main():
     test_d1_load_extra_edges_parses_isr_and_addrtaken_ok()
     test_d1_words_from_objdump_s_text_byte_order()
     test_d1_orphan_detection_catches_the_planted_function()
+    test_g1_addrtaken_ok_exemption_capped_at_own_deepest_chain()
     test_d2_read_build_dir_stamp_extracts_the_nul_terminated_string()
     test_d2_read_build_dir_stamp_absent_symbol_returns_none()
     test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain()
