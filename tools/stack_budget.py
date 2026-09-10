@@ -109,16 +109,22 @@ _SUFFIX_RE = re.compile(r'\.(isra|constprop|part|cold|lto_priv)(\.\d+)*$')
 
 
 def su_frame(sizes, name):
-    """Trap #4: exact name, else the name with every clone suffix stripped, else any
-    .su key sharing that stripped base (handles a mismatched suffix on either side)."""
+    """Trap #4: exact name wins outright. Otherwise (D3, BACKLOG #84b fifth pass) the
+    frame is the MAX over every .su key sharing the stripped base -- NOT the bare
+    stripped name alone. The bare-name-first version silently under-counted: a clone
+    like `validate.constprop.0` strips to `validate`, and when FatFs's own tiny
+    `validate` (136 B) ALSO exists as a .su key, `if base in sizes: return sizes[base]`
+    returned 136 and never looked at `validate.constprop`'s real 560 B -- a live
+    424 B under-count the guard could not see. Collecting every key whose stripped
+    base matches (the exact base itself included) and taking the max is the same
+    "worst case, not an arbitrary one" rule load_su() already applies to duplicate
+    exact names; this closes the same hole for the fallback path."""
     if name in sizes:
         return sizes[name]
     base = _SUFFIX_RE.sub('', name)
-    if base in sizes:
-        return sizes[base]
-    for k in sizes:
-        if k.split('.')[0] == base:
-            return sizes[k]
+    candidates = [v for k, v in sizes.items() if k == base or k.split('.')[0] == base]
+    if candidates:
+        return max(candidates)
     return None
 
 

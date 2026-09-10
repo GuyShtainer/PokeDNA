@@ -465,6 +465,26 @@ def test_d6_argsites_accepts_a_dotted_gcc_clone_name():
         os.unlink(path)
 
 
+# === (D3, fifth pass) su_frame(): a clone's frame is the max over its OWN .su keys ======
+
+def test_d3_su_frame_takes_max_not_bare_base_first():
+    """The reviewer's exact plant: `validate.constprop.0` has no exact .su entry, but
+    BOTH `validate` (FatFs's own, 136 B) and `validate.constprop` (the real clone,
+    560 B) do. The bare-base-first version returned 136 (a live 424 B under-count);
+    the fix must return the max, 560."""
+    sizes = {"validate": 136, "validate.constprop": 560, "read_verified": 32,
+              "read_verified.constprop": 48}
+    check("(D3) validate.constprop.0 -> max(136, 560) = 560, not the bare base 136",
+          sb.su_frame(sizes, "validate.constprop.0") == 560,
+          sb.su_frame(sizes, "validate.constprop.0"))
+    check("(D3) read_verified.constprop.0 -> max(32, 48) = 48, not the bare base 32",
+          sb.su_frame(sizes, "read_verified.constprop.0") == 48,
+          sb.su_frame(sizes, "read_verified.constprop.0"))
+    check("(D3) an exact name match still wins outright, no max involved",
+          sb.su_frame({"foo": 10, "foo.isra": 999}, "foo") == 10,
+          sb.su_frame({"foo": 10, "foo.isra": 999}, "foo"))
+
+
 # === struct_field_offsets(): the D1 header-drift check, against the real header =========
 
 def test_boxsource_offsets_match_real_header():
@@ -575,6 +595,7 @@ def main():
     test_d_unknown_frame_fails_unless_overridden()
     test_d_load_extra_edges_parses_frame_override()
     test_d6_argsites_accepts_a_dotted_gcc_clone_name()
+    test_d3_su_frame_takes_max_not_bare_base_first()
     test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain()
     test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged()
     test_boxsource_offsets_match_real_header()
