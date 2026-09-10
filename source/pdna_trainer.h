@@ -23,6 +23,15 @@ void pdna_trainer_set_romchrome(const RomChrome* rch);
  * message on an out-of-range entry (Gen 3 never had one; P1b keeps it that way). */
 uint32_t num_entry(const char* prompt, uint32_t cur, uint32_t maxv);
 
+/* Same OSK, but for a caller that must tell "the user typed `cur`" apart from
+ * "the user cancelled" (num_entry()'s own "return cur on cancel" contract makes
+ * those indistinguishable -- D5, U4 review: pdna_gbbag.c's ADD ITEM used
+ * num_entry() for a fresh insert, so cancelling out of the id/qty prompt
+ * silently inserted id 1 x1 instead of aborting). Every existing num_entry()
+ * caller is untouched; this is purely additive. Returns false (and leaves
+ * `*out` unwritten) on cancel; true (and `*out` = the clamped value) otherwise. */
+bool num_entry_opt(const char* prompt, uint32_t cur, uint32_t maxv, uint32_t* out);
+
 /* One "label   value" row, red/blue selection panel when `sel`, plain background
  * otherwise -- the exact look of the plain trainer-card page's rows (2,y-1,236,9). */
 void trainer_row_paint(int y, bool sel, const char* label, const char* val,

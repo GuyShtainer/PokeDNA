@@ -52,6 +52,20 @@ uint32_t num_entry(const char* prompt, uint32_t cur, uint32_t maxv) {
   return v > maxv ? maxv : v;
 }
 
+/* See pdna_trainer.h: the cancel-distinguishing twin of num_entry() above.
+ * Deliberately NOT implemented in terms of num_entry() (that would need a
+ * sentinel value disjoint from every legal `cur`, which does not exist in
+ * general) -- it duplicates the same three lines instead. */
+bool num_entry_opt(const char* prompt, uint32_t cur, uint32_t maxv, uint32_t* out_v) {
+  char init[12], out[12];
+  siprintf(init, "%lu", (unsigned long)cur);
+  if (!osk_search(prompt, init, out, sizeof(out))) return false;
+  uint32_t v = 0;
+  for (const char* p = out; *p >= '0' && *p <= '9'; p++) v = v * 10 + (uint32_t)(*p - '0');
+  *out_v = v > maxv ? maxv : v;
+  return true;
+}
+
 /* badges (0..7) then the Emerald Battle-Frontier symbols (8..21). */
 static const char* const BADGEFRONT_LBL[22] = {
   "Badge 1", "Badge 2", "Badge 3", "Badge 4", "Badge 5", "Badge 6", "Badge 7", "Badge 8",
