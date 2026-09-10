@@ -1408,12 +1408,39 @@ def run_r1_xfer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
                                "a SEPARATE screen (not a row squeezed onto the loss "
                                "screen, which has no room left -- see the layout "
                                "comment in source/pdna_layout.h). Title 'SEND TO "
-                               "GAME BOY'; row 'A = KEEP AS IS'; row 'SELECT = MAKE "
-                               "LEGAL (20 -> 36)' -- the concrete level this specific "
-                               "underlevelled Charizard needs (pk_evo_min_level(6) == "
-                               "36); 'B = cancel' below. This is also the shot for "
-                               "'the MAKE LEGAL row with a concrete level' -- same "
-                               "screen, same row.")
+                               "GAME BOY'; D3 review row 'CHARIZARD evolves at L36; "
+                               "this one is L20.' first (Charizard's checker floor "
+                               "IS its true evolution level, so 'evolves at' is the "
+                               "honest wording here); row 'A = KEEP AS IS'; row "
+                               "'SELECT = MAKE LEGAL (20 -> 36)' -- the concrete "
+                               "level this specific underlevelled Charizard needs "
+                               "(pk_evo_min_level(6) == 36); D3 review row 'Either "
+                               "way it comes back unchanged.' in dim text; 'B = "
+                               "cancel' below. This is also the shot for 'the MAKE "
+                               "LEGAL row with a concrete level' -- same screen, "
+                               "same row.")
+
+    # D3 review: the B-cancel path the review took directly, not just claimed by the
+    # dialog's own "B = cancel" hint text -- pressing B here must return to the box
+    # grid with NO SIDECAR dialog (gb_paste_hook's own "B here cancels the whole
+    # transfer, nothing written" contract, pdna_gen12.c's own comment on this
+    # screen), and the cell must still be empty (the sidecar/gbs_insert/gb_persist
+    # sequence never ran). Re-entered immediately after so the SAME probe run also
+    # covers the MAKE LEGAL path (05/06 below) -- a screenshot session cannot resolve
+    # a single dialog instance two different ways.
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # cancel -> back to the box grid
+    s.shot("04b_b_cancel", "BACKLOG #104 R1 review: B on the choice screen cancels "
+                            "the WHOLE transfer -- back at the box grid, cell 17 "
+                            "still the empty-cell action menu (CREATE / PASTE HERE "
+                            "/ CANCEL), no SIDECAR dialog and nothing written. "
+                            "Re-entering the same cell below to also exercise MAKE "
+                            "LEGAL (05/06) -- a single dialog instance cannot be "
+                            "resolved both ways.")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # same empty cell -> action menu again
+    s.press_n("DOWN", 1, settle=80)                         # CREATE (default) -> PASTE HERE
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # PASTE HERE -> gen3_to_gb() -> loss screen (again)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # proceed -> the R1 screen (again)
 
     s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # choose MAKE LEGAL -> gb_paste_write()
     s.shot("05_sd_refusal_hardware_only", "BACKLOG #104 R1: SELECT registered cleanly "
