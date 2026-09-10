@@ -178,22 +178,24 @@ typedef enum {
  * inline both.)
  *
  * The deepest call chain is rom_gbui_open() -> distinct_tiles() -> rd():
- * 1,224 + 1,568 + 16 = 2,808 B own-frames-summed (locate() is now INSIDE
- * rom_gbui_open()'s 1,224, per the inlining note above; #99 moved this from
- * 2,744 -- see the #99 delta note above). font_verify is NOT on this path
- * (1,224 + 160 + 16 = 1,400 is smaller). NOTE (review, 2026-09-09): these
+ * 1,160 + 1,568 + 16 = 2,744 B own-frames-summed (locate() is now INSIDE
+ * rom_gbui_open()'s 1,160, per the inlining note above -- this replaces the
+ * old rom_gbui_open() -> locate() -> distinct_tiles() -> rd() = 2,720 B
+ * three-frame chain with an equivalent two-frame one, 8 B worse from the
+ * anchor bookkeeping locate() now does). font_verify is NOT on this path
+ * (1,160 + 160 + 16 = 1,336 is smaller). NOTE (review, 2026-09-09): these
  * numbers are measured WITH -ffast-math -fno-strict-aliasing, which
  * Makefile:237 adds to every build of this file; the pre-#71 frames were
- * insensitive to those two flags, this file's are not (1,144 without them,
- * pre-#99).
+ * insensitive to those two flags, this file's are not (1,144 without them).
  *
  * rom_gbui_open_loc()'s own fall-to-a-full-scan path (open_loc -> open ->
  * distinct_tiles -> rd; verified by objdump that this is a real `bl`, not a
  * sibling/tail call -- open_loc's own frame is still live on the stack while
- * open() runs) adds its 176-B frame (UNCHANGED by #99, see the delta note
- * above) on top of the 2,808 above: 176 + 2,808 = 2,984 B -- 64 B worse than
- * the pre-#99 2,920, entirely from rom_gbui_open()'s own frame growing by the
- * same 64 B the new optional locate step costs.
+ * open() runs) adds its 176-B frame (up from 120: revalidate_loc() and every
+ * anchor_*() helper it calls are now inlined into it) on top of the 2,728
+ * above: 176 + 2,744 = 2,920 B -- 80 B worse than the pre-#71 2,840, entirely
+ * from open_loc()'s own frame growing by the same 56 B (120 -> 176) that the
+ * newly-inlined anchor re-derivation logic costs.
  *
  * FIRST MEASUREMENT WAS 5,120 B WORSE (pre-U1): locate()'s own frame was
  * 5,376 B, not ~1,000 B, because ScanJob's hit array (SCAN_MAX_HITS=128,
@@ -208,29 +210,25 @@ typedef enum {
  * (re-verified: tests/host_romgbui_test.c, and again after #71 via
  * tools/gbui_dump.py against the same corpus).
  *
- * PDNA_GB_UI_NEED = 2,984 (open_loc's full-scan-fallback chain, the worse of
- * the two entry points, UP from 2,920 -- see the #99 delta above) + 1,576
- * (source/pdna_gbscreen.c's gbscr_open_inner() OWN frame, UNCHANGED by #99:
- * pdna_gbscreen.c was not touched by this batch -- source/rom_gbui.{c,h} are
- * the only files this batch owns) = 4,560 -- PLUS the leg the call-graph walk
- * cannot follow (U2b review D1, 2026-09-09): distinct_tiles() calls the
- * GbReadFn INDIRECTLY, and on the SD build that is gbscr_sd_read
+ * PDNA_GB_UI_NEED = 2,920 (open_loc's full-scan-fallback chain, the worse of
+ * the two entry points, UP from 2,840 -- see the #71 delta above) + 1,576
+ * (source/pdna_gbscreen.c's gbscr_open_inner() OWN frame, UNCHANGED by #71:
+ * pdna_gbscreen.c was not touched by this batch) = 4,480 -- PLUS the leg the
+ * call-graph walk cannot follow (U2b review D1, 2026-09-09): distinct_tiles()
+ * calls the GbReadFn INDIRECTLY, and on the SD build that is gbscr_sd_read
  * 24 -> f_lseek 80 -> create_chain 40 -> fill_last_frag 16 -> put_fat 32 ->
  * move_window 16 -> disk_read 32 -> flashcartio_read_sector 40 -> diskRead
  * 24 -> ed_sd_dma_rd 48 -> ed_sd_dma_to_rom 552 = 904 B (measured,
- * -fstack-usage, UNCHANGED by #99). 4,560 + 904 = 5,464. Both real call
- * sites' OLD margins (measured at 5,400) were Settings 6,600 free and the
- * nav-menu chain 7,712 free; PDNA_GB_UI_NEED moving by +64 moves each margin
- * by the same -64 (6,536 / 7,648 free) -- neither call site was touched by
- * this batch (source/pdna_gbscreen.c is out of scope for #99), so this is
- * arithmetic, not a re-measurement of them -- an independent review should
- * confirm both margins against a fresh artless ELF before this number is
- * trusted on hardware.
+ * -fstack-usage, UNCHANGED by #71). 4,480 + 904 = 5,384. Both real call
+ * sites' OLD margins (measured at 5,320) were Settings 6,680 free and the
+ * nav-menu chain 7,792 free; PDNA_GB_UI_NEED moving by +64 moves each margin
+ * by the same -64 (6,616 / 7,728 free) -- neither call site was touched by
+ * this batch, so this is arithmetic, not a re-measurement of them.
  *
  * gbscr_cache_block() (the U2b item 1 bulk-copy of FONT + need_mask's blocks
  * into `tail`, called AFTER rom_gbui_open_loc() returns, never nested inside
  * it) adds only 16 B of its own frame plus whichever GbReadFn it calls
- * (gbscr_sd_read: 24 B) -- 40 B, far under the 2,984-B rom_gbui_open_loc chain
+ * (gbscr_sd_read: 24 B) -- 40 B, far under the 2,920-B rom_gbui_open_loc chain
  * this replaces as the deepest path, so it does not move PDNA_GB_UI_NEED.
  *
  * D1/D2 fix (U2a review, 2026-09-09): the gate used to live INSIDE the frame
@@ -249,9 +247,8 @@ typedef enum {
  * PDNA_GB_UI_NEED before gbscr_open_inner, and rom_gbui_open/_open_loc/_tile/
  * _glyph are present in PokeDNA-artless.elf (review, 2026-09-09). The
  * artless/delta "EWRAM ok" lines say nothing about STACK; only the measured
- * chain above does. Margins at 5,464 (BACKLOG #99): Settings 6,536 B free,
- * nav chain 7,648. */
-#define PDNA_GB_UI_NEED 5464
+ * chain above does. Margins at 5,400: Settings 6,600 B free, nav chain 7,712. */
+#define PDNA_GB_UI_NEED 5400
 
 /* Each entry is the SCAN HIT file offset (where the locator's ScanCb pattern
  * matched), never a located block itself. gen 1 uses FONT/TEXTBOX/CARDFRAME/
