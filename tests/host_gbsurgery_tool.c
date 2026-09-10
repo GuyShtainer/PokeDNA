@@ -180,6 +180,10 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"create", 2},
     {"badges", 1}, {"name", 1}, {"badges2", 2},
     {"item", 3},
+    /* -- append new ops HERE, last, one per line, with a marker comment (u5/gbdata
+     * lanes append here too -- keeping new entries at the tail keeps concurrent
+     * additions from the other lanes a clean append-only diff instead of a conflict). */
+    {"helditem", 3},   /* BACKLOG #95 review gate case: BOX SLOT ID */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -625,6 +629,31 @@ static int do_item(GbSession* s, const char* pocket_tok, const char* id_tok,
   return 0;
 }
 
+/* BACKLOG #95 review gate case: the held-item field on ONE mon, box-shaped exactly
+ * like do_level/do_text above (gbs_load_list -> gb_load -> setter -> gb_commit_checked
+ * -> gbs_commit_list). gb_set_held_item itself refuses a Gen-1 record (rec+0x01 is
+ * current HP there, not an item) and a non-zero item on a Gen-2 Egg (review C5) --
+ * both surface here as an ordinary refusal, not a crash, so tools/gb_retail_gate.py
+ * can drive this against a real Gold AND a real Crystal boot and read back the WRAM
+ * party struct to prove the write actually reached the booted game. */
+static int do_helditem(GbSession* s, int box, int slot, const char* id_tok) {
+  int id = resolve_uint(id_tok, "held item id");
+  if (id < 0) return 2;
+  if (id > 255) { fprintf(stderr, "held item id must be 0..255\n"); return 2; }
+  GbsStatus ls = gbs_load_list(s, box, g_list);
+  if (ls != GBS_OK) return refuse(gbs_status_text(ls));
+  GbEditMon e;
+  if (!gb_load(&e, s->gen, g_list, box, slot))
+    return refuse("gb_load: bad box/slot for this generation");
+  if (!gb_set_held_item(&e, (uint8_t)id))
+    return refuse("gb_set_held_item refused (Gen 1, or a non-zero item on an Egg)");
+  if (!gb_commit_checked(&e, g_list, box, slot))
+    return refuse("gb_commit_checked: the write did not verify");
+  GbsStatus cs = gbs_commit_list(s, box, g_list);
+  if (cs != GBS_OK) return refuse(gbs_status_text(cs));
+  return 0;
+}
+
 /* Dispatch one already-shaped Op. Returns 0 ok, 1 refused (reported), 2 usage (reported). */
 static int apply_op(GbSession* s, const Op* o) {
   if (!strcmp(o->kind, "nick") || !strcmp(o->kind, "ot")) {
@@ -673,6 +702,13 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "item")) {
     return do_item(s, o->a[0], o->a[1], o->a[2]);
+  }
+  /* -- append new dispatch cases HERE, last (see the shape[] append note above). */
+  if (!strcmp(o->kind, "helditem")) {
+    int box = resolve_box(s, o->a[0]);
+    int slot = resolve_slot(o->a[1]);
+    if (box < 0 || slot < 0) return 2;
+    return do_helditem(s, box, slot, o->a[2]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;
