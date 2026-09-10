@@ -7,11 +7,16 @@
 
 PokeDNA has ONE user stack (__sp_usr down to __iheap_start; libtonc's isr_master
 switches to SYSTEM mode, so IRQ handlers also run on THIS stack, +64 B). There is no
-MMU and no guard page: an overrun silently corrupts whatever newlib's heap put right
-below __iheap_start, then the .bss beyond it -- the closest thing GBA homebrew has to a
-segfault is "the save file went strange three screens later." The EWRAM guard above
-this one in the Makefile catches the sibling failure (.sbss overrunning EWRAM); this one
-catches the stack overrunning ITS ceiling, one function-call chain at a time.
+MMU and no guard page: an overrun silently corrupts whatever sits right below
+__iheap_start (D9, BACKLOG #84b fifth pass: NOT newlib's heap -- newlib's heap grows
+UP from __eheap_start, which is in EWRAM, an entirely different region; what actually
+sits below __iheap_start in IWRAM is __iwram_overlay_end, the tail of the .iwram.c
+fast-path code -- the flashcart SD I/O routines this project keeps out of the stack's
+own region on purpose, see the golden rules), then the .bss beyond THAT -- the closest
+thing GBA homebrew has to a segfault is "SD reads started returning garbage three
+screens later." The EWRAM guard above this one in the Makefile catches the sibling
+failure (.sbss overrunning EWRAM); this one catches the stack overrunning ITS ceiling,
+one function-call chain at a time.
 
 WHY THIS CANNOT BE `ulimit -s` OR A LINKER CHECK
     GCC's -fstack-usage tells us each function's OWN frame, not the worst call chain --
@@ -76,7 +81,21 @@ OBJDUMP = os.path.join(DEVKITARM, "bin", "arm-none-eabi-objdump")
 NM = os.path.join(DEVKITARM, "bin", "arm-none-eabi-nm")
 
 SAFETY_MARGIN = 1024   # B of headroom demanded below (__sp_usr - __iheap_start)
-ISR_BYTES = 64         # libtonc isr_master runs handlers on __sp_usr too
+# D9 (BACKLOG #84b fifth pass): where 64 comes from, spelled out once instead of
+# asserted. libtonc's isr_master (the one IRQ vector every installed handler runs
+# through) pushes {r2,r3,ip,lr} on the __sp_irq IRQ-mode stack -- a SEPARATE stack
+# above __sp_usr, never this project's user-stack room -- then switches to SYSTEM
+# mode (which shares __sp_usr with normal execution) and pushes {r0,lr}, 8 B, onto
+# THIS stack per nesting level, before calling the installed handler. Two handlers
+# are installed in this codebase (grep `irq_add`): hb_isr (pdna_main.c:1275, VBlank,
+# whose own call chain measures 24 B) and pwm_isr (rumble.c:163, TIMER2, 8 B). The
+# same IRQ line can't re-enter itself (isr_master masks its own line for the
+# duration), so the worst nesting is one of each: 2 x 8 B system-mode entry + hb_isr's
+# 24 B + pwm_isr's 8 B = 48 B <= the 64 B charged here. 64 is therefore a safety
+# margin over the measured 48, not itself a measurement -- D1 below turns "the
+# handlers fit under 64" into an ACTUAL guard-time check instead of a comment
+# asserting it stays true.
+ISR_BYTES = 64         # libtonc isr_master runs handlers on __sp_usr too (see above)
 
 # === .su parsing (exact, compiler-measured frames) ===================================
 
@@ -1318,7 +1337,8 @@ def main(argv):
 
     if blind_spots:
         print("\n*** STACK_BUDGET BLIND SPOT: unresolved indirect call(s) inside a function "
-              "on the deepest chain -- the true depth past this point is UNKNOWN, not "
+              "reachable from the root (D9: this is a whole-graph sweep, not just the "
+              "printed chains) -- the true depth past this point is UNKNOWN, not "
               "bounded by this report:")
         for fn, addr, ins, detail in blind_spots[:10]:
             print(f"***   {fn} @ {addr}: {ins}  [{detail}]")

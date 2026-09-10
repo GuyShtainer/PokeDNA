@@ -607,8 +607,15 @@ static const uint16_t* gb_art_icon_cb(void* ctx, uint8_t gen, uint16_t dex,
  * Makefile) -- same idiom, other end of memory. Valid in any GBA-target build
  * (delta included; harmless there since gb_art_have() is already false with no SD),
  * so this is not wrapped in #ifndef PDNA_DELTA.
- * ASSUMES AN EMPTY HEAP: newlib's heap grows UP from this same symbol, so the subtraction
- * is exact only while nothing has malloc'd. CORRECTED 2026-09-10 (BACKLOG #84a S4): this
+ * NOT NEWLIB'S HEAP (D9, BACKLOG #84b fifth pass, correcting the line below): newlib's
+ * heap grows UP from __eheap_start, a SEPARATE symbol in EWRAM -- __iheap_start (this
+ * function's own symbol) is IWRAM's __iwram_overlay_end, the tail of the .iwram.c
+ * fast-path code (the flashcart SD I/O routines). What an overrun actually corrupts is
+ * that fast-path code, not a heap. ASSUMES NOTHING HAS MALLOC'D EWRAM'S HEAP EITHER,
+ * for the separate reason below (the subtraction here is still exact regardless -- it
+ * measures real, always-present IWRAM code, not heap growth -- this note is about a
+ * DIFFERENT assumption the surrounding budget arithmetic relies on). CORRECTED
+ * 2026-09-10 (BACKLOG #84a S4): this
  * comment used to claim "0 malloc / ff_memalloc call sites" -- false at the time, because
  * four sites (commit_bytes/log_health_str/perf_fs_facts's snprintf, log_line's vsnprintf)
  * pulled newlib's FLOAT-capable _svfprintf_r (816 B) -> _dtoa_r -> _Balloc -> _malloc_r,

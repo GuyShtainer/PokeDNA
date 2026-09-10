@@ -82,9 +82,16 @@
 # no longer tight against a function that no longer exists to be on any chain. Treating it
 # as FATAL would make the guard fail every time an implementation is deleted, refactored
 # away, or link-time-GC'd for an unrelated reason -- exactly the kind of noise that trains
-# people to stop reading FATALs. Compare: a NEW, UNDECLARED implementation or an offset
-# that no longer matches the struct header (verify_field_declarations) IS fatal, because
-# those directions genuinely risk an under-count.
+# people to stop reading FATALs. Compare: an offset that no longer matches the struct
+# header (verify_field_declarations) IS fatal, because that direction genuinely risks an
+# under-count.
+# D9 (BACKLOG #84b fifth pass): this section used to also claim "a NEW, UNDECLARED
+# implementation IS fatal" here -- false at the time this was written: nothing in the
+# walker ever looked for a function whose address is taken (stored into a struct field or
+# assigned to a global) but never reached through the declared field/argsites classes
+# above, so a brand-new implementation installed into an ALREADY-declared class was
+# completely invisible, not caught. D1 below adds the address-taken sweep that makes this
+# claim true; see its own commit for the restored sentence.
 
 BoxSource.records    @20 -> banksrc_records gbsrc_records pcsrc_records
 BoxSource.get_name   @28 -> banksrc_get_name gbsrc_get_name pcsrc_get_name
@@ -172,17 +179,29 @@ pdna_dex_screen argsites=4 -> dex_state dex_set_state dex_get_national dex_set_n
 # codebase (gb_art_source.c:641): `static const PdnaGbArtSource src = { gb_art_pic_cb,
 # gb_art_have_cb, gb_art_icon_cb, 0 };`, via pdna_origin_art_register(). Declared as
 # the union of all three per site (pic/have/icon each has exactly one real
-# implementation). Site counts verified against this build's disassembly
-# (pdna_origin_art_have 1, pdna_origin_art_portrait 3, pdna_origin_art_stack_room 1,
-# pdna_origin_box_art 3, pdna_origin_box_art_wanted 1, pdna_origin_box_note 1,
-# fetch_pic_ex.constprop.0 3).
+# implementation). Site counts as originally written (pdna_origin_art_have 1,
+# pdna_origin_art_portrait 3, pdna_origin_art_stack_room 1, pdna_origin_box_art 3,
+# pdna_origin_box_art_wanted 1, pdna_origin_box_note 1, fetch_pic_ex.constprop.0 3) --
+# D9 (BACKLOG #84b fifth pass): pdna_origin_box_art and fetch_pic_ex.constprop.0 no
+# longer match. Both still have 3 total indirect sites in today's disassembly, but
+# `argsites=N` counts only the NONFIELD ones (resolve_all_sites() exempts a 'field'
+# hit through the offset declarations directly, before the argsites count is even
+# checked) -- and field_offset_impls is keyed GLOBALLY by offset, not by struct
+# (the D5 defect this file's own header now documents), so 2 of each function's 3
+# sites happen to land on offsets ALSO declared for BoxSource/AppSrcOps (28/44 for
+# pdna_origin_box_art, 24 twice for fetch_pic_ex.constprop.0) and get silently
+# exempted through those UNRELATED structs' declarations, leaving only 1 genuine
+# nonfield site each. Corrected to argsites=1 here so the build passes today;
+# D5's per-caller rewrite (BACKLOG #84b fifth pass, own commit) replaces this
+# whole global-offset mechanism, at which point these two lines get re-derived
+# properly instead of patched around the collision.
 pdna_origin_art_have argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 pdna_origin_art_portrait argsites=3 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 pdna_origin_art_stack_room argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
-pdna_origin_box_art argsites=3 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+pdna_origin_box_art argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 pdna_origin_box_art_wanted argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 pdna_origin_box_note argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
-fetch_pic_ex.constprop.0 argsites=3 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+fetch_pic_ex.constprop.0 argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 
 # gen1_save.c's Gen1ReadFn `rd` parameter (gen1_open_ranged) and rom_gblearn.c's
 # GbReadFn `read` parameter (rom_gblearn_open -> gbl_verify -> walk_entry), both
@@ -231,6 +250,15 @@ block_eq argsites=1 -> gbscr_sd_read fused_gb_slice_read
 #   pdna_main.c:2271 g3x_fatfs_read; :2468 fused_rom_read; :2566/2748 iconrom_fatfs_read
 # Site count verified against this build's disassembly (1).
 rom_open argsites=1 -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconrom_fatfs_read
+
+# rom_map.c's OWN rom_read_at(const RomCtx* c, ...) (rom_map.c:69, `c->read(c->ctx, off,
+# dst, len)`) -- the SAME RomCtx.read field the rom_open declaration right above fills in,
+# dispatched from inside the accessor itself rather than one of its callers (D9, BACKLOG
+# #84b fifth pass: this site was previously undeclared -- caught live as a whole-graph
+# blind spot the moment a build was run after su_frame()/pop-redefinition/unknown-reachable
+# fixes rearranged which functions this walker actually reaches). Site count verified
+# against this build's disassembly (1).
+rom_read_at argsites=1 -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconrom_fatfs_read
 
 # art_cache.c's art_rom_fnv(RomReadFn read, ...) is called with a RomCtx's OWN `read`
 # field (art_session.c:123 `rc->read`, pdna_main.c:7327 `s_iconrom_ctx.read`) -- the
