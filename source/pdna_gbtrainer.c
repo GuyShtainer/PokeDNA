@@ -719,14 +719,19 @@ static void g1card_paint(GbScreen* gs, const GbTrainer* t) {
   g1card_panel(gs, 1, 10, 18, 17);                      /* lower panel */
 
   /* Badges: row 1 at y=11, row 2 at y=14 (design sec 1.1), column stride 4.
-   * Leader-name tiles (c+1..c+2, same row as the number) stay BLANK --
-   * gbscr_cell() is simply never called there, and every cell starts BLANK
+   * For UNOWNED badges: draw leader-name tiles at (c+1, r) and (c+2, r) using
+   * CARDFRAME block indices 9+2k and 10+2k, matching the real game's behavior.
+   * For OWNED badges: leader-name cells stay BLANK. Every cell starts BLANK
    * per gbscr_open()'s own zeroing (English release: erased in the ROM). */
   for (int k = 0; k < 8; k++) {
     int row = k / 4, col = k % 4;
     int c = 2 + col * 4, r = 11 + row * 3;
     gbscr_cell(gs, c, r, GBSCR_SRC_CARDFRAME, (uint8_t)(G1F_BADGENUM0 + k));
     bool owned = gbtr_badge_get(t, true, k);
+    if (!owned) {
+      gbscr_cell(gs, c + 1, r, GBSCR_SRC_CARDFRAME, (uint8_t)(9 + 2 * k));
+      gbscr_cell(gs, c + 2, r, GBSCR_SRC_CARDFRAME, (uint8_t)(10 + 2 * k));
+    }
     int base = 8 * k + (owned ? 4 : 0);
     for (int dy = 0; dy < 2; dy++)
       for (int dx = 0; dx < 2; dx++)
