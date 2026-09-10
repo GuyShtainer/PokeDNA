@@ -317,6 +317,10 @@ static bool gbe_flip_shiny(GbEditMon* e) {
 }
 
 bool gbe_adjust(GbEditMon* e, int f, int dir, bool big) {
+  /* Only gbe_flip_shiny() ever sets this, and only for the toggle that just ran;
+   * clear it on every entry so pdna_gbedit.c's post-edit check cannot re-show the
+   * popup on every later row (gbmon re-verify C9). */
+  if (e) e->shiny_gender_forced = false;
   if (!e || (dir != -1 && dir != 1)) return false;
   int step = big ? 10 : 1;
 
@@ -406,6 +410,10 @@ bool gbe_adjust(GbEditMon* e, int f, int dir, bool big) {
 }
 
 bool gbe_press(GbEditMon* e, int f) {
+  /* Only gbe_flip_shiny() ever sets this, and only for the toggle that just ran;
+   * clear it on every entry so pdna_gbedit.c's post-edit check cannot re-show the
+   * popup on every later row (gbmon re-verify C9). */
+  if (e) e->shiny_gender_forced = false;
   if (!e) return false;
   switch (f) {
     case GBE_LEVEL:  return gb_set_level(e, (uint8_t)(gb_get_level(e) < 100 ? 100 : 1));

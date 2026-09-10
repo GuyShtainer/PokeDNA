@@ -148,7 +148,8 @@ typedef struct {
    * the Attack DV to a value that does NOT keep the record's current gender (only
    * possible when every bit-1-set Atk DV maps to the other gender for this species'
    * gender_ratio — some ratios have no shiny combination for one of the two sexes).
-   * Cleared by every other write, including OFF. gbe_shiny_note() turns this into the
+   * Cleared on entry to gbe_adjust()/gbe_press() (gbmon re-verify C9), so it is >= 0
+   * only right after the SHINY toggle that forced it. gbe_shiny_note() turns this into the
    * sentence the screen shows (BACKLOG #95 review C2). Not meant to be read or set by
    * anything other than gb_editor.c and gb_load/gb_load_parts (which zero it). */
   bool     shiny_gender_forced;

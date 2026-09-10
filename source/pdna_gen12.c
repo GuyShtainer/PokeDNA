@@ -2017,6 +2017,7 @@ static bool gb_view_hook(uint8_t* rec80) {
       }
       gen = s->gen;
       if (!gb_load(&e, gen, g_ed->list, box, slot)) { snd_deny(); return false; }
+      gb_mark_caught(&e, gen);   /* the LIVE editor path (VIEW/EDIT -> summary -> editor), gbmon re-verify C8 */
       can_edit = app_can_edit() && gbs_box_writable(s, box) == GBS_OK;
     } else {
       if (!g_m || !g_m->stage) return false;
@@ -2031,6 +2032,7 @@ static bool gb_view_hook(uint8_t* rec80) {
         snd_deny(); msg_wait(PDNA_GBEDIT_EMPTYSLOT_TITLE, UI_WARN, PDNA_GBEDIT_EMPTYSLOT_L1, 0); return false;
       }
       if (!gb_load(&e, gen, g_m->stage, box, slot)) { snd_deny(); return false; }
+      gb_mark_caught(&e, gen);   /* nested import: the same live path, gbmon re-verify C8 */
       can_edit = false;
     }
     bool has_sidecar = gb_has_sidecar(gen, &e);
@@ -2448,7 +2450,7 @@ static bool gb_create_hook(void) {
  * (pdna_app.h's own `item` comment). Mirrors Gen 3's own quick-item action
  * (app_quick_item, pdna_main.c): the SAME pick_item() screen gb_editor.c's own
  * GBE_ITEM row already opens (pdna_gbedit.c's GBE_K_ITEM branch), restricted to ids
- * 1..255 shown as "#n" via pick_item_set_gen1_2_max() -- no separate legality gate:
+ * 0..255 shown as "#n" (#0 = no item, the way to remove one) via pick_item_set_gen1_2_max() -- no separate legality gate:
  * any byte is structurally legal for this field (that branch's own comment: "Held
  * item has no move-style validation to fail"). Same load/commit shape as EDIT
  * (gb_edit_hook above), just loading one field's picker instead of opening the full

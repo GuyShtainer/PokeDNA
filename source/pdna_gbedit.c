@@ -214,7 +214,8 @@ void gbedit_dv_orphan_warn(bool has_sidecar, bool* warned) {
  * shininess ON -- see pdna_layout.h's PDNA_GBEDIT_SHINY_FORCED_* comment for why this
  * is an immediate popup rather than a line in the write confirm screen (no room left
  * there). Checked unconditionally after every adjust/press below: cheap (one int
- * read), and gbe_shiny_forced_gender() only ever returns >= 0 right after a GBE_SHINY
+ * read), and gbe_shiny_forced_gender() returns >= 0 only right after a GBE_SHINY (the
+ * dispatchers clear the flag on entry -- gbmon re-verify C9), i.e. right after a GBE_SHINY
  * toggle actually forced one, never for any other row. */
 static void gbedit_shiny_forced_note(const GbEditMon* e) {
   int g = gbe_shiny_forced_gender(e);
@@ -314,7 +315,7 @@ void gbedit_press(GbEditMon* e, int f, bool has_sidecar, bool* dv_warned) {
   }
   if (kind == GBE_K_NUM) {
     if (gbe_press(e, f)) { snd_edit(); gbedit_shiny_forced_note(e); }
-    else snd_deny();
+    else gbedit_adjust_refused(f);   /* the same prose LEFT/RIGHT already gets (gbmon re-verify C10) */
     return;
   }
   snd_deny();
