@@ -597,6 +597,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbedit.h"
 #include "pdna_gbsummary.h"   /* BACKLOG #41: the native VIEW/EDIT summary */
 #include "pdna_gbtrainer.h"   /* BACKLOG #49 P1b: the Gen-1/2 trainer card */
+#include "pdna_gbbag.h"       /* U4, BACKLOG #67: Red/Yellow's own Item bag */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
 #include "gen3_to_gb.h"    /* S5-B: the Gen-3 -> Game Boy down converter               */
@@ -2510,6 +2511,13 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * one-hour budget; flagged for a follow-up slice, not silently worked around. */
     if (g_ed) pdna_gbtrainer(&g_ed->s, true);
     else      (void)gb_info_page(m);   /* A and B both just return to the grid */
+  } else if (nv == NV_BAG) {
+    /* U4 (BACKLOG #67): Red/Yellow's own Item bag + PC store, same "needs a
+     * live GbSession to write through" gate as NV_TRAINER above -- nav_avail's
+     * GB_TABLE only offers this row at all for a Gen-1 kind (Gen 2's Pack is a
+     * later slice), so `kind == SE_KIND_GEN1` always holds here. */
+    if (g_ed) pdna_gbbag(&g_ed->s, true);
+    else      (void)gb_info_page(m);
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */
   }
