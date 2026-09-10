@@ -83,9 +83,12 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
                      { NAV_COMING_SOON, "Fly flags are coming soon." } },
   [NV_CONTEST]   = { { NAV_NOT_IN_GAME, "Gen 1 games have no Contests." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Contests." } },
-  /* Review D2: GEN12-PARITY-DESIGN.md puts a Game Boy map renderer OUT of scope, so
-   * "coming soon" would promise a date nobody plans; name the blocker instead. */
-  [NV_MAP]       = { { NAV_COMING_SOON, "Needs a Game Boy map viewer." },
+  /* BACKLOG #91 M1: Gen 1's read-only current-map view is wired
+   * (pdna_gbmap_gen1(), gb_nav_from_start's NV_MAP branch). Gen 2's own map
+   * (a later M-slice, different SRAM offsets/table shapes) stays
+   * COMING_SOON -- the design doc's own phased plan never promised both
+   * generations land together. */
+  [NV_MAP]       = { { NAV_OK, "OK" },
                      { NAV_COMING_SOON, "Needs a Game Boy map viewer." } },
   [NV_GB]        = { { NAV_COMING_SOON, "Comes with the Bank feature." },
                      { NAV_COMING_SOON, "Comes with the Bank feature." } },

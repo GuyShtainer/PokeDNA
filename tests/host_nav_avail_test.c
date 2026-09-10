@@ -106,6 +106,10 @@ static void test_representative_rows(void) {
   CHECK(strcmp(nav_avail_why(NV_POKEBLOCK, SE_KIND_GEN1), nav_avail_why(NV_POKEBLOCK, SE_KIND_GEN2)) != 0,
         "Blocks: Gen 1 and Gen 2 reasons name their own generation");
   CHECK(nav_avail(NV_GB, SE_KIND_GEN1) == NAV_COMING_SOON, "GB import row on a Gen 1 save: coming with the Bank");
+  /* BACKLOG #91 M1: Map splits like Bag once did -- Gen 1's read-only current-map
+   * view is wired (NAV_OK); Gen 2's own map is a later slice (COMING_SOON). */
+  CHECK(nav_avail(NV_MAP, SE_KIND_GEN1) == NAV_OK, "Map: wired up on Gen 1 (M1, BACKLOG #91)");
+  CHECK(nav_avail(NV_MAP, SE_KIND_GEN2) == NAV_COMING_SOON, "Map: Gen 2's own map is a later slice");
   printf("(F) representative COMING_SOON / NOT_IN_GAME rows match the brief\n");
 }
 
@@ -125,9 +129,12 @@ static void test_every_row_covered(void) {
           "Gen 1: every Hoenn/Frontier-shaped row (+Clock/Contest) is NOT_IN_GAME");
 
   /* U5: NV_BAG is now NAV_OK on BOTH kinds (Gen 1's own Item bag, U4; Gen 2's
-   * own Pack, U5) -- checked separately below, alongside the OK-on-both rows. */
+   * own Pack, U5) -- checked separately below, alongside the OK-on-both rows.
+   * BACKLOG #91 M1: NV_MAP moved OUT of this list -- it now splits per-gen
+   * like NV_CLOCK does (checked in its own assertion below), not COMING_SOON
+   * on both any more. */
   static const int coming_soon_both[] = {
-    NV_PARTY, NV_BANK, NV_DAYCARE, NV_DEX, NV_DATA, NV_FLY, NV_MAP, NV_GB
+    NV_PARTY, NV_BANK, NV_DAYCARE, NV_DEX, NV_DATA, NV_FLY, NV_GB
   };
   for (int i = 0; i < (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]); i++) {
     CHECK(nav_avail(coming_soon_both[i], SE_KIND_GEN1) == NAV_COMING_SOON,
@@ -142,15 +149,23 @@ static void test_every_row_covered(void) {
     CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack are NAV_OK");
   }
 
-  /* 8 NOT_IN_GAME (gen1-list, Clock counted once, + BACKLOG #60's NV_CONTEST) + 8
+  /* NV_MAP: OK on Gen 1, COMING_SOON on Gen 2 -- same per-gen-split shape as
+   * NV_CLOCK (checked in test_clock_fix_splits_gen1_gen2 / test_representative_rows
+   * above), counted here as its own single row rather than folded into either
+   * all-COMING_SOON or all-OK list. */
+  CHECK(nav_avail(NV_MAP, SE_KIND_GEN1) == NAV_OK, "Gen 1: Map is NAV_OK (M1, BACKLOG #91)");
+  CHECK(nav_avail(NV_MAP, SE_KIND_GEN2) == NAV_COMING_SOON, "Gen 2: Map is still COMING_SOON");
+
+  /* 8 NOT_IN_GAME (gen1-list, Clock counted once, + BACKLOG #60's NV_CONTEST) + 7
    * COMING_SOON-both + 4 OK-both (Trainer/Settings/Back/Bag -- U5 made the Bag OK on
    * Gen 2 too) + Clock's own Gen-2 COMING_SOON (already counted above via a separate
-   * assertion) == 20 rows -- the classification is EXHAUSTIVE, not a sample, so a row
-   * silently added to PDNA_NAV_ITEMS without a matching GB_TABLE entry cannot hide
-   * behind rows this test never asked about. */
-  CHECK(8 + 8 + 4 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
-  printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 8 COMING_SOON-both + "
-        "4 OK-both == %d)\n", NV_COUNT);
+   * assertion) + Map's own per-gen split (this assertion) == 20 rows -- the
+   * classification is EXHAUSTIVE, not a sample, so a row silently added to
+   * PDNA_NAV_ITEMS without a matching GB_TABLE entry cannot hide behind rows this
+   * test never asked about. */
+  CHECK(8 + 7 + 4 + 1 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
+  printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 7 COMING_SOON-both + "
+        "4 OK-both + 1 Map-split == %d)\n", NV_COUNT);
 }
 
 /* ---- (H) defensive: out-of-range nv_item / save_kind never misbehaves -------------- */

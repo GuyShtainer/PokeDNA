@@ -858,6 +858,10 @@ STRUCT_HEADERS = {
     "AppSrcOps": "pdna_app.h",
     "RomGbIcon": "rom_gbicon.h",
     "RomGbLearn": "rom_gblearn.h",
+    "RomGbMap1": "rom_gbmap.h",   # BACKLOG #91 M1 -- one typedef struct before it in the
+                                  # header (RomReadFn's own typedef, a function pointer,
+                                  # not a struct), so struct_field_offsets()'s lazy
+                                  # `typedef struct {...} NAME;` match lands on the right body.
     "Br": "gb_sprite_codec.c",
     # D5a (BACKLOG #84b seventh pass): the structs below are declared HAND-VERIFIED
     # (None), not wired to a header -- struct_field_offsets()'s two-regex struct

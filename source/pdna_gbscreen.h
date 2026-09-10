@@ -222,7 +222,17 @@ typedef enum {
   GBSCR_SRC_PACKMENU,
   GBSCR_SRC_PACK_M,
   GBSCR_SRC_PACK_F,
-  GBSCR_SRC_PIC
+  GBSCR_SRC_PIC,
+  /* BACKLOG #91 M1: the Gen-1 MAP screen's own tile cache -- raw GB planar
+   * 2bpp tiles (16 B/tile, the SAME format rgm1_tile2bpp() reads straight
+   * out of the ROM, no repacking), resolved by rom_gbmap.c (a SEPARATE
+   * locator from rom_gbui.c -- a map's tile graphics are not a fixed
+   * RomGbUi block, they change with the player's current map) and copied by
+   * the caller into gs->cache.maptiles BEFORE the first gbscr_cell() call
+   * that references this src. Not one of `blocks[]` (never served through
+   * gbscr_mem_read()/a rom_off match) -- same "separate cache.pic pointer"
+   * shape GBSCR_SRC_PIC already established for a non-rom_gbui source. */
+  GBSCR_SRC_MAPTILES
 } GbScrSrc;
 
 /* U2b item 1: which extra located ROM blocks (beyond FONT, always cached) a screen
@@ -299,6 +309,13 @@ typedef struct {
    * by gbscr_tile_pixels()'s GBSCR_SRC_PIC case. NOT one of `blocks` above (it
    * is not a rom_gbui block and is not served through gbscr_mem_read()). */
   const uint8_t* pic;
+  /* BACKLOG #91 M1: the Gen-1 MAP screen's own raw-2bpp tile cache (see
+   * GBSCR_SRC_MAPTILES's enum comment) -- caller-owned, caller-filled, NULL
+   * until a map screen sets it. `maptiles_n` bounds a cell's `tile` index
+   * (gbscr_tile_pixels() falls back to flat BLANK, same as every other
+   * unavailable src, for an out-of-range index or a NULL pointer). */
+  const uint8_t* maptiles;
+  uint16_t        maptiles_n;
 } GbscrCache;
 
 /* U2b item 1: pure (no tonc/FatFs) -- host-testable directly (tests/
