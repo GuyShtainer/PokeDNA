@@ -944,3 +944,15 @@ addrtaken-ok g2_box_mon_at        # gen2_save.c:603/gen2_save.h:233 -- grepped: 
 # b60 (Contests): the donor picker's label callback (source_label / mon_label) --
 # resolved as one argsite (verified with --dump-sites by the b60 reviewer).
 pick_list.constprop.0 argsites=1 -> source_label mon_label
+
+# libtonc's TTE command parser keeps tte_cmd_skip in its own dispatch table (a literal-pool
+# entry, address-taken, frame 0 B); it entered the image with the Gen-2 Pack screen's text
+# and is reached only through tte_cmd_default's declared recursion class. Own chain 0 B
+# (<= the 256-B cap). Merged 2026-09-10 (u5).
+addrtaken-ok tte_cmd_skip
+
+# libgcc's double->int runtime helper (frame 0 B): its address matched a word in the FULL-ART
+# image only (compiled art data -- a literal coincidence, the #106 G2 class), no dispatch table
+# holds it and nothing in PokeDNA calls it indirectly. Own chain 0 B (<= the 256-B cap).
+# Merged 2026-09-10 (u5, normal build).
+addrtaken-ok __aeabi_d2iz
