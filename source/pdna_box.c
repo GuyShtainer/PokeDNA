@@ -2830,8 +2830,35 @@ out:
  * sitting on need_full==true from its own fresh entry (this function's only other
  * caller always had it already false, from its own prior paint) does not repeat
  * that paint a second time for no reason. */
-static void pcp_open_party_strip(BoxSource* src, int box, int* cur, bool* need_full) {
-  if (src->is_bank) { snd_deny(); return; }
+/* D1-style split (gbscr_open/gbscr_open_inner precedent, source/pdna_gbscreen.c:463-556,
+ * rom_gbui.h:213-224's own note on why the OTHER order is wrong): the stack-room gate has
+ * to run BEFORE this function's own frame exists. Gating from inside the frame measures
+ * the room LEFT UNDER it, not the room the frame (plus everything it calls) NEEDS -- on a
+ * build already tight on stack that under-counts by exactly this frame's own size and
+ * refuses when it shouldn't, or (worse here) fails to refuse when it should. The renamed
+ * original body is `pcp_open_party_strip_inner()`; this file's `pcp_open_party_strip()`
+ * below is the thin wrapper that gates first, then tail-calls into it.
+ *
+ * PDNA_PARTY_STRIP_NEED is the tail BELOW this wrapper's own (tiny, is_bank-check-only)
+ * frame, as measured by tools/stack_budget.py on the artless build (BACKLOG #84b, 2026-09-10):
+ * pcp_open_party_strip_inner's own frame + its full callee subtree down to the SD write
+ * (party_strip_overlay -> app_party_mon_menu -> app_mon_menu -> app_paste_gb_merge ->
+ * app_commit_all -> app_save_finalize -> ... -> ed_sd_dma_to_rom) = 6,544 B AS MEASURED,
+ * taken exactly, not rounded up -- rounding here only ever makes the gate MORE
+ * conservative, and inflating a tripwire that should never fire on a healthy build just
+ * hides how much room a future regression actually has left. +64 B for the ISR reentry
+ * onto the same stack (libtonc's isr_master runs handlers on __sp_usr too) = 6,608.
+ *
+ * With #84a's stack room at ~15,200-15,752 B (tools/stack_budget.py's own "STACK ok" line,
+ * all three build variants) this gate should NEVER fire on today's tree -- it is a
+ * tripwire against a future regression eating most of that margin, not a live constraint.
+ * Proved by: (a) shooting the party strip once in mGBA (tools/g3_shots.py/n1_shots.py) and
+ * confirming it still opens; (b) a scratch build with PDNA_PARTY_STRIP_NEED raised above
+ * the measured room, confirming the refusal appears instead of a silent overrun. */
+#define PDNA_PARTY_STRIP_NEED 6608
+
+static void __attribute__((noinline)) pcp_open_party_strip_inner(BoxSource* src, int box,
+                                                                  int* cur, bool* need_full) {
   uint8_t grab[80]; int gslot = -1;
   /* empty-handed: A opens the action menu (Move to box -> grab). The popup's own
    * GRID focus, if the user crosses into it, moves the box cursor and hands the new
@@ -2851,6 +2878,21 @@ static void pcp_open_party_strip(BoxSource* src, int box, int* cur, bool* need_f
                                       * grid (rr==0 not holding, rr==0 still holding a
                                       * GRID-grabbed box mon, or rr==1 already placed --
                                       * all three want the same fresh redraw) */
+}
+
+static void __attribute__((noinline)) pcp_open_party_strip(BoxSource* src, int box, int* cur,
+                                                            bool* need_full) {
+  if (src->is_bank) { snd_deny(); return; }
+  if (!pdna_origin_art_stack_room(PDNA_PARTY_STRIP_NEED)) {   /* tripwire, see comment above */
+    snd_deny();
+    boxoam_suspend();
+    msg_wait("NOT ENOUGH STACK", UI_WARN, "Back out one screen, then retry.", 0);
+    boxoam_resume();
+    *need_full = true;
+    return;                                     /* refuse BEFORE party_strip_overlay's frame
+                                                  * (and every write beneath it) ever exists */
+  }
+  pcp_open_party_strip_inner(src, box, cur, need_full);
 }
 
 int pdna_box(BoxSource* src) {
