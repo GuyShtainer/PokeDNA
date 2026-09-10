@@ -181,9 +181,16 @@ static void usage(const char* prog) {
     "                               needed) into day-care slot 0 (Gen 1's only slot,\n"
     "                               or Gen 2's Day-Care Man) or 1 (Gen 2's Day-Care\n"
     "                               Lady, refused on Gen 1). Refused if occupied.\n"
-    "  --op clock DAY HOUR MIN SEC BACKLOG #86, via gb_clock.h: sets wStartDay/Hour/\n"
-    "                               Minute/Second and clears the RTC-reset status\n"
-    "                               flag. Gen 1 refused (no clock).\n"
+    "  --op clockshift DAYS HOURS MINUTES SECONDS\n"
+    "                               BACKLOG #86, P1a review D1, via gb_clock.h's\n"
+    "                               gbc_shift: adds a SIGNED delta to the RTC-offset\n"
+    "                               fields (the in-game clock is hardware RTC + this\n"
+    "                               offset, never an absolute time -- see gb_clock.h).\n"
+    "                               Gen 1 refused (no clock).\n"
+    "  --op clockreset              BACKLOG #86, via gb_clock.h's gbc_request_time_reset:\n"
+    "                               sets sRTCStatusFlags = RTC_RESET so the next\n"
+    "                               CONTINUE runs the game's own clock-set prompt.\n"
+    "                               Gen 1 refused (no clock).\n"
     "  --op fly INDEX              BACKLOG #90, via gb_fly.h: sets fly-destination\n"
     "                               bit INDEX visited. INDEX is 0..gbfy_count()-1 for\n"
     "                               this save's own generation.\n"
@@ -202,7 +209,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"create", 2},
     {"badges", 1}, {"name", 1}, {"badges2", 2},
     {"item", 3},
-    {"daycare", 2}, {"clock", 4}, {"fly", 1}, {"boxname", 2},
+    {"daycare", 2}, {"clockshift", 4}, {"clockreset", 0}, {"fly", 1}, {"boxname", 2},
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -283,6 +290,19 @@ static int resolve_uint(const char* tok, const char* what) {
   if (end == tok || *end != '\0' || v < 0) {
     fprintf(stderr, "bad %s %s\n", what, tok);
     return -1;
+  }
+  return (int)v;
+}
+
+/* Signed counterpart of resolve_uint, for clockshift's deltas (a shift can move the
+ * clock backward). No range clamp here -- gbc_shift() itself does the wrap/carry math,
+ * this just has to get a plain "-2"/"3" token into an int32_t. */
+static int resolve_int(const char* tok, const char* what) {
+  char* end = NULL;
+  long v = strtol(tok, &end, 10);
+  if (end == tok || *end != '\0') {
+    fprintf(stderr, "bad %s %s\n", what, tok);
+    return INT32_MIN;
   }
   return (int)v;
 }
@@ -680,28 +700,28 @@ static int do_daycare(GbSession* s, const char* slot_tok, const char* dex_tok) {
   return 0;
 }
 
-/* BACKLOG #86 -- via gb_clock.h. Sets the RTC-epoch fields and clears the "reset"
- * status flag unconditionally (clear_status_flags=true). Gen 1 refused (gbc_write's
- * own GBS_ERR_ARG, no clock at all). */
-static int do_clock(GbSession* s, const char* day_tok, const char* hour_tok,
-                    const char* min_tok, const char* sec_tok) {
-  int day = resolve_uint(day_tok, "clock day");
-  int hour = resolve_uint(hour_tok, "clock hour");
-  int min = resolve_uint(min_tok, "clock minute");
-  int sec = resolve_uint(sec_tok, "clock second");
-  if (day < 0 || hour < 0 || min < 0 || sec < 0) return 2;
-  if (day > 255 || hour > 255 || min > 255 || sec > 255) {
-    fprintf(stderr, "clock fields must be 0..255\n");
+/* BACKLOG #86, P1a review D1 -- via gb_clock.h. gb_clock no longer offers a "set an
+ * absolute time" op (it cannot: the in-game clock is the hardware RTC plus a stored
+ * OFFSET, see gb_clock.h's header note) -- --op clock is replaced by --op clockshift
+ * (adds a signed delta to the offset, the same thing a player does by hand with no
+ * password) and --op clockreset (asks the game to re-run its own clock-set prompt at
+ * next CONTINUE, the same effect the password-protected reset has). Gen 1 refused
+ * either way (gbc_shift/gbc_request_time_reset's own GBS_ERR_ARG, no clock at all). */
+static int do_clockshift(GbSession* s, const char* days_tok, const char* hours_tok,
+                         const char* min_tok, const char* sec_tok) {
+  int days = resolve_int(days_tok, "clockshift days");
+  int hours = resolve_int(hours_tok, "clockshift hours");
+  int min = resolve_int(min_tok, "clockshift minutes");
+  int sec = resolve_int(sec_tok, "clockshift seconds");
+  if (days == INT32_MIN || hours == INT32_MIN || min == INT32_MIN || sec == INT32_MIN)
     return 2;
-  }
-  GbClock c;
-  if (!gbc_read(s, &c)) return refuse("gbc_read failed");
-  if (!c.present) return refuse("this generation has no clock (Gen 1)");
-  c.start_day = (uint8_t)day;
-  c.start_hour = (uint8_t)hour;
-  c.start_minute = (uint8_t)min;
-  c.start_second = (uint8_t)sec;
-  GbsStatus st = gbc_write(s, &c, true);
+  GbsStatus st = gbc_shift(s, days, hours, min, sec);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+static int do_clockreset(GbSession* s) {
+  GbsStatus st = gbc_request_time_reset(s);
   if (st != GBS_OK) return refuse(gbs_status_text(st));
   return 0;
 }
@@ -777,8 +797,11 @@ static int apply_op(GbSession* s, const Op* o) {
   if (!strcmp(o->kind, "daycare")) {
     return do_daycare(s, o->a[0], o->a[1]);
   }
-  if (!strcmp(o->kind, "clock")) {
-    return do_clock(s, o->a[0], o->a[1], o->a[2], o->a[3]);
+  if (!strcmp(o->kind, "clockshift")) {
+    return do_clockshift(s, o->a[0], o->a[1], o->a[2], o->a[3]);
+  }
+  if (!strcmp(o->kind, "clockreset")) {
+    return do_clockreset(s);
   }
   if (!strcmp(o->kind, "fly")) {
     return do_fly(s, o->a[0]);

@@ -48,10 +48,10 @@ bool gbc_read(const GbSession* s, GbClock* out) {
   if (!out->present) return true;   /* Gen 1: a successful "there is no clock" read */
 
   uint8_t v;
-  if (get_u8(s, g, GBF_RTC_START_DAY, &v))    out->start_day    = v;
-  if (get_u8(s, g, GBF_RTC_START_HOUR, &v))   out->start_hour   = v;
-  if (get_u8(s, g, GBF_RTC_START_MINUTE, &v)) out->start_minute = v;
-  if (get_u8(s, g, GBF_RTC_START_SECOND, &v)) out->start_second = v;
+  if (get_u8(s, g, GBF_RTC_START_DAY, &v))    out->rtc_offset_day    = v;
+  if (get_u8(s, g, GBF_RTC_START_HOUR, &v))   out->rtc_offset_hour   = v;
+  if (get_u8(s, g, GBF_RTC_START_MINUTE, &v)) out->rtc_offset_minute = v;
+  if (get_u8(s, g, GBF_RTC_START_SECOND, &v)) out->rtc_offset_second = v;
 
   uint32_t soff = gbf_off(g, GBF_RTC_SNAPSHOT);
   uint16_t slen = gbf_len(g, GBF_RTC_SNAPSHOT);
@@ -75,7 +75,7 @@ bool gbc_read(const GbSession* s, GbClock* out) {
   if (get_u8(s, g, GBF_GAMETIME_FRAMES, &v))  out->gametime_frames  = v;
   if (get_u8(s, g, GBF_GAMETIME_CAP, &v))     out->gametime_capped  = (v & 1u) != 0;
 
-  if (get_u8(s, g, GBF_CUR_DAY, &v)) out->cur_day = v;
+  if (get_u8(s, g, GBF_CUR_DAY, &v)) out->day_count = v;
 
   out->status_flags_ok = get_u8(s, g, GBF_RTC_STATUS_FLAGS, &v);
   if (out->status_flags_ok) out->status_flags = v;
@@ -83,52 +83,86 @@ bool gbc_read(const GbSession* s, GbClock* out) {
   return true;
 }
 
-/* ---- write ------------------------------------------------------------------------ */
+/* ---- shift ------------------------------------------------------------------------ */
 
-GbsStatus gbc_write(GbSession* s, const GbClock* in, bool clear_status_flags) {
-  if (!s || !in || !s->open) return GBS_ERR_ARG;
+/* Adds `delta` to `cur` modulo `mod` (mod > 0), returning the wrapped result and
+ * leaving the whole (possibly negative or >=1) quotient in *carry -- the same
+ * borrow/carry shape FixTime's own addition chain uses, generalised to signed deltas
+ * so a shift can move the clock backward too. */
+static uint8_t wrap_add(int32_t cur, int32_t delta, int32_t mod, int32_t* carry) {
+  int32_t v = cur + delta;
+  int32_t c = 0;
+  while (v < 0)    { v += mod; c--; }
+  while (v >= mod) { v -= mod; c++; }
+  *carry = c;
+  return (uint8_t)v;
+}
 
+GbsStatus gbc_shift(GbSession* s, int32_t d_days, int32_t d_hours, int32_t d_minutes,
+                    int32_t d_seconds) {
+  if (!s || !s->open) return GBS_ERR_ARG;
   GbGame g = gbc_game(s);
   if (!gbc_field_present(g, GBF_RTC_START_DAY)) return GBS_ERR_ARG;   /* Gen 1: N/A */
 
+  uint8_t cur_day, cur_hour, cur_min, cur_sec;
+  if (!get_u8(s, g, GBF_RTC_START_DAY, &cur_day))    return GBS_ERR_ARG;
+  if (!get_u8(s, g, GBF_RTC_START_HOUR, &cur_hour))  return GBS_ERR_ARG;
+  if (!get_u8(s, g, GBF_RTC_START_MINUTE, &cur_min)) return GBS_ERR_ARG;
+  if (!get_u8(s, g, GBF_RTC_START_SECOND, &cur_sec)) return GBS_ERR_ARG;
+
+  int32_t carry;
+  uint8_t new_sec = wrap_add(cur_sec, d_seconds, 60, &carry);
+  d_minutes += carry;
+  uint8_t new_min = wrap_add(cur_min, d_minutes, 60, &carry);
+  d_hours += carry;
+  uint8_t new_hour = wrap_add(cur_hour, d_hours, 24, &carry);
+  d_days += carry;
+  uint8_t new_day = wrap_add(cur_day, d_days, 256, &carry);   /* the byte's own width */
+
   bool changed = false;
   GbsStatus st;
-
-  st = set_u8_unless_same(s, g, GBF_RTC_START_DAY, in->start_day, &changed);
+  st = set_u8_unless_same(s, g, GBF_RTC_START_DAY, new_day, &changed);
   if (st != GBS_OK) return st;
-  st = set_u8_unless_same(s, g, GBF_RTC_START_HOUR, in->start_hour, &changed);
+  st = set_u8_unless_same(s, g, GBF_RTC_START_HOUR, new_hour, &changed);
   if (st != GBS_OK) return st;
-  st = set_u8_unless_same(s, g, GBF_RTC_START_MINUTE, in->start_minute, &changed);
+  st = set_u8_unless_same(s, g, GBF_RTC_START_MINUTE, new_min, &changed);
   if (st != GBS_OK) return st;
-  st = set_u8_unless_same(s, g, GBF_RTC_START_SECOND, in->start_second, &changed);
+  st = set_u8_unless_same(s, g, GBF_RTC_START_SECOND, new_sec, &changed);
   if (st != GBS_OK) return st;
 
-  if (gbc_field_present(g, GBF_RTC_DST)) {
-    /* Compare as a BOOL, not a raw byte: the corpus stores 0x80 for "on" (not a bare 1),
-     * and gbc_read() only ever exposes `(v != 0)` -- comparing the wanted bool against
-     * the CURRENT bool first means an untouched dst (in->dst still matches whatever
-     * gbc_read filled it with) never gets its nonstandard stored byte normalised down
-     * to 0/1 by an unrelated edit elsewhere in the same gbc_write() call (same class of
-     * bug set_u_capped_unless_same's own comment in gb_trainer.c documents for money/
-     * coins). Only an ACTUAL toggle writes a plain 1/0. */
-    uint8_t cur = 0;
-    bool cur_ok = get_u8(s, g, GBF_RTC_DST, &cur);
-    if (!cur_ok || (cur != 0) != in->dst) {
-      st = set_u8_unless_same(s, g, GBF_RTC_DST, in->dst ? 1u : 0u, &changed);
-      if (st != GBS_OK) return st;
-    }
-  }
+  return changed ? gbs_finish(s) : GBS_OK;
+}
 
-  if (clear_status_flags && gbc_field_present(g, GBF_RTC_STATUS_FLAGS)) {
-    uint8_t cur = 0;
-    if (get_u8(s, g, GBF_RTC_STATUS_FLAGS, &cur) && cur != 0) {
-      st = set_u8_unless_same(s, g, GBF_RTC_STATUS_FLAGS, 0, &changed);
-      if (st != GBS_OK) return st;
-    }
-  }
+/* ---- reset / clear ----------------------------------------------------------------- */
 
-  /* rtc_snapshot, game time, gametime_capped, cur_day: never written -- see the
-   * VIEW-ONLY notes in gb_clock.h. */
+#define RTC_RESET_BIT 0x80u   /* pokecrystal constants/ram_constants.asm: RTC_RESET, bit 7 */
 
+GbsStatus gbc_request_time_reset(GbSession* s) {
+  if (!s || !s->open) return GBS_ERR_ARG;
+  GbGame g = gbc_game(s);
+  if (!gbc_field_present(g, GBF_RTC_START_DAY)) return GBS_ERR_ARG;   /* Gen 1: N/A */
+  if (!gbc_field_present(g, GBF_RTC_STATUS_FLAGS)) return GBS_ERR_ARG;
+
+  uint8_t cur = 0;
+  if (get_u8(s, g, GBF_RTC_STATUS_FLAGS, &cur) && cur == RTC_RESET_BIT) return GBS_OK;
+
+  bool changed = false;
+  GbsStatus st = set_u8_unless_same(s, g, GBF_RTC_STATUS_FLAGS, RTC_RESET_BIT, &changed);
+  if (st != GBS_OK) return st;
+  return changed ? gbs_finish(s) : GBS_OK;
+}
+
+GbsStatus gbc_clear_status_flags(GbSession* s) {
+  if (!s || !s->open) return GBS_ERR_ARG;
+  GbGame g = gbc_game(s);
+  if (!gbc_field_present(g, GBF_RTC_START_DAY)) return GBS_ERR_ARG;   /* Gen 1: N/A */
+  if (!gbc_field_present(g, GBF_RTC_STATUS_FLAGS)) return GBS_OK;     /* nothing to clear */
+
+  uint8_t cur = 0;
+  if (!get_u8(s, g, GBF_RTC_STATUS_FLAGS, &cur) || cur == 0) return GBS_OK;
+
+  bool changed = false;
+  GbsStatus st = set_u8_unless_same(s, g, GBF_RTC_STATUS_FLAGS, 0, &changed);
+  if (st != GBS_OK) return st;
   return changed ? gbs_finish(s) : GBS_OK;
 }

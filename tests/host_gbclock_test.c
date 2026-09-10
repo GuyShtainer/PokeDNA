@@ -9,6 +9,12 @@
  *
  * Corpus: Guy's own cartridge dumps (gitignored, gba-toolkit/roms/gb/). A missing
  * corpus SKIPS rather than fails.
+ *
+ * P1a review D1: this core no longer claims the in-game clock is an absolute time it
+ * can set -- wStartDay/Hour/Minute/Second are OFFSETS added to the hardware RTC by
+ * FixTime, so the write surface is gbc_shift() (a signed delta), gbc_request_time_
+ * reset() (asks the game to re-run its own clock-set prompt) and gbc_clear_status_
+ * flags() (dismisses the error banner only). See gb_clock.h's header note.
  */
 #include <stdio.h>
 #include <string.h>
@@ -37,7 +43,13 @@ static uint32_t load(const char* file) {
   return n;
 }
 
-/* ---- A: Gen 1 -- present must be false, gbc_write must refuse ---- */
+static uint32_t diff_count(uint32_t len) {
+  uint32_t d = 0;
+  for (uint32_t i = 0; i < len; i++) if (g_img[i] != g_orig[i]) d++;
+  return d;
+}
+
+/* ---- A: Gen 1 -- present must be false, every write op must refuse ---- */
 
 static void gen1_not_applicable(const char* file) {
   uint32_t len = load(file);
@@ -51,19 +63,26 @@ static void gen1_not_applicable(const char* file) {
   CHECKF(gbc_read(&s, &c), "%s: gbc_read", file);
   CHECKF(!c.present, "%s: Gen 1 must report present=false", file);
 
-  GbsStatus st = gbc_write(&s, &c, true);
-  CHECKF(st == GBS_ERR_ARG, "%s: gbc_write on Gen 1 must refuse (got %s)", file,
+  GbsStatus st = gbc_shift(&s, 1, 0, 0, 0);
+  CHECKF(st == GBS_ERR_ARG, "%s: gbc_shift on Gen 1 must refuse (got %s)", file,
         gbs_status_text(st));
+  CHECKF(diff_count(len) == 0, "%s: a refused shift must not move any byte", file);
 
-  uint32_t diff = 0;
-  for (uint32_t i = 0; i < len; i++) if (g_img[i] != g_orig[i]) diff++;
-  CHECKF(diff == 0, "%s: a refused write must not move any byte", file);
+  st = gbc_request_time_reset(&s);
+  CHECKF(st == GBS_ERR_ARG, "%s: gbc_request_time_reset on Gen 1 must refuse (got %s)",
+        file, gbs_status_text(st));
+  CHECKF(diff_count(len) == 0, "%s: a refused reset must not move any byte", file);
+
+  st = gbc_clear_status_flags(&s);
+  CHECKF(st == GBS_ERR_ARG, "%s: gbc_clear_status_flags on Gen 1 must refuse (got %s)",
+        file, gbs_status_text(st));
+  CHECKF(diff_count(len) == 0, "%s: a refused clear must not move any byte", file);
 }
 
 /* ---- B: Gen 2 read matches the corpus (design doc §1.8, hand-verified) ---- */
 
-static void gen2_read(const char* file, uint8_t start_day, uint8_t start_hour,
-                      uint8_t start_min, uint8_t start_sec, uint32_t rtc_snapshot_be,
+static void gen2_read(const char* file, uint8_t off_day, uint8_t off_hour,
+                      uint8_t off_min, uint8_t off_sec, uint32_t rtc_snapshot_be,
                       uint8_t dst_raw, uint8_t status_flags) {
   uint32_t len = load(file);
   if (!len) { printf("  SKIP %s (not present)\n", file); return; }
@@ -75,10 +94,14 @@ static void gen2_read(const char* file, uint8_t start_day, uint8_t start_hour,
   GbClock c;
   CHECKF(gbc_read(&s, &c), "%s: gbc_read", file);
   CHECKF(c.present, "%s: Gen 2 must report present=true", file);
-  CHECKF(c.start_day == start_day, "%s: start_day 0x%02X != 0x%02X", file, c.start_day, start_day);
-  CHECKF(c.start_hour == start_hour, "%s: start_hour 0x%02X != 0x%02X", file, c.start_hour, start_hour);
-  CHECKF(c.start_minute == start_min, "%s: start_minute 0x%02X != 0x%02X", file, c.start_minute, start_min);
-  CHECKF(c.start_second == start_sec, "%s: start_second 0x%02X != 0x%02X", file, c.start_second, start_sec);
+  CHECKF(c.rtc_offset_day == off_day, "%s: rtc_offset_day 0x%02X != 0x%02X", file,
+        c.rtc_offset_day, off_day);
+  CHECKF(c.rtc_offset_hour == off_hour, "%s: rtc_offset_hour 0x%02X != 0x%02X", file,
+        c.rtc_offset_hour, off_hour);
+  CHECKF(c.rtc_offset_minute == off_min, "%s: rtc_offset_minute 0x%02X != 0x%02X", file,
+        c.rtc_offset_minute, off_min);
+  CHECKF(c.rtc_offset_second == off_sec, "%s: rtc_offset_second 0x%02X != 0x%02X", file,
+        c.rtc_offset_second, off_sec);
   uint32_t got = ((uint32_t)c.rtc_snapshot[0] << 24) | ((uint32_t)c.rtc_snapshot[1] << 16) |
                 ((uint32_t)c.rtc_snapshot[2] << 8) | c.rtc_snapshot[3];
   CHECKF(got == rtc_snapshot_be, "%s: rtc_snapshot 0x%08X != 0x%08X", file, got, rtc_snapshot_be);
@@ -88,7 +111,7 @@ static void gen2_read(const char* file, uint8_t start_day, uint8_t start_hour,
         c.status_flags, status_flags);
 }
 
-/* ---- C: no-op read->write is a zero-byte diff ---- */
+/* ---- C: no-op is a zero-byte diff (shift by nothing; clear an already-0 flag) ---- */
 
 static void noop_zero_diff(const char* file) {
   uint32_t len = load(file);
@@ -96,26 +119,121 @@ static void noop_zero_diff(const char* file) {
   g_ran++;
   GbSession s;
   CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+
+  GbsStatus st = gbc_shift(&s, 0, 0, 0, 0);
+  CHECKF(st == GBS_OK, "%s: no-op gbc_shift status %s", file, gbs_status_text(st));
+  CHECKF(diff_count(len) == 0, "%s: a zero-delta shift must not move any byte", file);
+
   GbClock c;
   CHECKF(gbc_read(&s, &c), "%s: gbc_read", file);
-  GbsStatus st = gbc_write(&s, &c, false);
-  CHECKF(st == GBS_OK, "%s: no-op gbc_write status %s", file, gbs_status_text(st));
-  uint32_t diff = 0, first = 0;
-  for (uint32_t i = 0; i < len; i++)
-    if (g_img[i] != g_orig[i]) { if (!diff) first = i; diff++; }
-  CHECKF(diff == 0, "%s: no-op gbc_write changed %u byte(s), first at 0x%04X (0x%02X -> 0x%02X)",
-        file, diff, first, g_orig[first], g_img[first]);
+  if (c.status_flags_ok && c.status_flags == 0) {
+    st = gbc_clear_status_flags(&s);
+    CHECKF(st == GBS_OK, "%s: clearing an already-0 flag status %s", file,
+          gbs_status_text(st));
+    CHECKF(diff_count(len) == 0, "%s: clearing an already-0 flag must not move any byte",
+          file);
+  }
 }
 
-/* ---- D: edit start_day/hour/minute/second + clear status flags, verify exactly the
- * claimed bytes moved, re-open and read back ---- */
+/* ---- D: shift by +2h wraps correctly and moves ONLY the hour byte (no borrow) ---- */
 
-static void edit_roundtrip(const char* file) {
+static void shift_plus_2h(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+  GbClock before;
+  CHECKF(gbc_read(&s, &before), "%s: gbc_read before", file);
+
+  GbsStatus st = gbc_shift(&s, 0, 2, 0, 0);
+  CHECKF(st == GBS_OK, "%s: gbc_shift(+2h) status %s", file, gbs_status_text(st));
+
+  GbGame g = gbc_game(&s);
+  uint8_t new_hour_raw;
+  CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_HOUR), &new_hour_raw, 1) == GBS_OK,
+        "%s: read back new hour", file);
+  uint8_t want_hour = (uint8_t)((before.rtc_offset_hour + 2) % 24);
+  CHECKF(new_hour_raw == want_hour, "%s: hour offset moved by exactly 2 with wrap "
+        "(%u -> %u, want %u)", file, before.rtc_offset_hour, new_hour_raw, want_hour);
+
+  /* No carry expected into the day byte when the hour did not wrap past 23. */
+  bool hour_wrapped = (before.rtc_offset_hour + 2) >= 24;
+  uint8_t new_day_raw;
+  CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_DAY), &new_day_raw, 1) == GBS_OK,
+        "%s: read back day", file);
+  uint8_t want_day = hour_wrapped ? (uint8_t)(before.rtc_offset_day + 1) : before.rtc_offset_day;
+  CHECKF(new_day_raw == want_day, "%s: day offset carry (%u -> %u, want %u, wrapped=%d)",
+        file, before.rtc_offset_day, new_day_raw, want_day, hour_wrapped);
+
+  /* re-open and read back through the public API too */
+  GbSession s2;
+  CHECKF(gbs_open(&s2, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: reopen", file);
+  GbClock after;
+  CHECKF(gbc_read(&s2, &after), "%s: reread", file);
+  CHECKF(after.rtc_offset_hour == want_hour, "%s: gbc_read hour did not stick", file);
+  CHECKF(after.rtc_offset_minute == before.rtc_offset_minute,
+        "%s: minute must be untouched by an hour-only shift", file);
+  CHECKF(after.rtc_offset_second == before.rtc_offset_second,
+        "%s: second must be untouched by an hour-only shift", file);
+}
+
+/* ---- E: request_time_reset writes exactly 0x0C60 = 0x80, no other byte ---- */
+
+static void request_reset(const char* file) {
   uint32_t len = load(file);
   if (!len) { printf("  SKIP %s (not present)\n", file); return; }
   g_ran++;
 
-  /* plant a nonzero status_flags byte first so clear_status_flags has something to do */
+  /* Prime the checksums first, same discipline clear_flags() below already uses: a
+   * genuine gbs_finish() cycle can "fix" a stale BACKUP checksum some corpus saves
+   * carry from years of untouched retail play (the same class of staleness
+   * gb_retail_gate.py's own mirror-rescue case documents; Guy's own Gold.sav has one).
+   * Diffing against a freshly-finished baseline isolates what THIS call moves instead
+   * of also catching that one-time, pre-existing fix. */
+  GbSession ps;
+  CHECKF(gbs_open(&ps, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: prime open", file);
+  GbGame pg = gbc_game(&ps);
+  uint8_t cur_flags = 0;
+  CHECKF(gbs_read_field(&ps, gbf_off(pg, GBF_RTC_STATUS_FLAGS), &cur_flags, 1) == GBS_OK,
+        "%s: prime read", file);
+  CHECKF(gbs_write_field(&ps, gbf_off(pg, GBF_RTC_STATUS_FLAGS), &cur_flags, 1) == GBS_OK,
+        "%s: prime write-back (same value)", file);
+  CHECKF(gbs_finish(&ps) == GBS_OK, "%s: prime finish", file);
+  memcpy(g_orig, g_img, len);   /* the primed, freshly-checksummed state is the baseline */
+
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+
+  GbsStatus st = gbc_request_time_reset(&s);
+  CHECKF(st == GBS_OK, "%s: gbc_request_time_reset status %s", file, gbs_status_text(st));
+
+  uint32_t diff = 0, only_off = 0xFFFFFFFFu;
+  for (uint32_t i = 0; i < len; i++)
+    if (g_img[i] != g_orig[i]) { diff++; only_off = i; }
+  CHECKF(diff == 1, "%s: request_time_reset must move exactly 1 byte (moved %u)", file, diff);
+  CHECKF(only_off == 0x0C60u, "%s: the moved byte must be sRTCStatusFlags at 0x0C60 "
+        "(moved 0x%04X)", file, only_off);
+  CHECKF(g_img[0x0C60] == 0x80u, "%s: 0x0C60 must read 0x80 (RTC_RESET), got 0x%02X",
+        file, g_img[0x0C60]);
+
+  /* idempotent: a second call on the same state is a true no-op */
+  st = gbc_request_time_reset(&s);
+  CHECKF(st == GBS_OK, "%s: second request_time_reset status %s", file, gbs_status_text(st));
+  diff = 0;
+  for (uint32_t i = 0; i < len; i++) if (g_img[i] != g_orig[i]) diff++;
+  CHECKF(diff == 1, "%s: a repeat request_time_reset must not move any further byte "
+        "(now %u total)", file, diff);
+}
+
+/* ---- F: clear_status_flags zeroes a nonzero flag and nothing else ---- */
+
+static void clear_flags(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+
+  /* plant a nonzero status_flags byte first */
   GbSession ps;
   CHECKF(gbs_open(&ps, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: plant open", file);
   GbGame pg = gbc_game(&ps);
@@ -131,23 +249,17 @@ static void edit_roundtrip(const char* file) {
   CHECKF(gbc_read(&s, &c), "%s: gbc_read", file);
   CHECKF(c.status_flags == 1, "%s: planted status_flags did not read back", file);
 
-  uint8_t new_day = (uint8_t)(c.start_day + 1);
-  c.start_day = new_day;
-  GbsStatus st = gbc_write(&s, &c, true);   /* also clears status_flags */
-  CHECKF(st == GBS_OK, "%s: gbc_write status %s", file, gbs_status_text(st));
+  GbsStatus st = gbc_clear_status_flags(&s);
+  CHECKF(st == GBS_OK, "%s: gbc_clear_status_flags status %s", file, gbs_status_text(st));
 
-  uint32_t diff = 0;
-  for (uint32_t i = 0; i < len; i++) if (g_img[i] != g_orig[i]) diff++;
-  CHECKF(diff > 0, "%s: edit must change at least one byte", file);
-
-  /* re-open on the same buffer and read back */
-  GbSession s2;
-  CHECKF(gbs_open(&s2, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: reopen", file);
-  GbClock c2;
-  CHECKF(gbc_read(&s2, &c2), "%s: reread", file);
-  CHECKF(c2.start_day == new_day, "%s: start_day did not stick (%u != %u)", file,
-        c2.start_day, new_day);
-  CHECKF(c2.status_flags_ok && c2.status_flags == 0, "%s: status_flags not cleared", file);
+  uint32_t diff = 0, only_off = 0xFFFFFFFFu;
+  for (uint32_t i = 0; i < len; i++)
+    if (g_img[i] != g_orig[i]) { diff++; only_off = i; }
+  CHECKF(diff == 1, "%s: clear_status_flags must move exactly 1 byte (moved %u)", file, diff);
+  CHECKF(only_off == 0x0C60u, "%s: the moved byte must be sRTCStatusFlags (moved 0x%04X)",
+        file, only_off);
+  CHECKF(g_img[0x0C60] == 0, "%s: 0x0C60 must read 0 after clear, got 0x%02X", file,
+        g_img[0x0C60]);
 }
 
 int main(void) {
@@ -159,13 +271,21 @@ int main(void) {
   gen2_read("Gold.sav", 0x05, 0x17, 0x00, 0x02, 0x6b0c1a38u, 0x80, 0x00);
   gen2_read("Crystal.sav", 0x06, 0x17, 0x12, 0x0a, 0x1114381bu, 0x80, 0x00);
 
-  printf("== C: no-op read->write is a zero-byte diff ==\n");
+  printf("== C: no-op is a zero-byte diff ==\n");
   noop_zero_diff("Gold.sav");
   noop_zero_diff("Crystal.sav");
 
-  printf("== D: edit start_day + clear status flags, round trip ==\n");
-  edit_roundtrip("Gold.sav");
-  edit_roundtrip("Crystal.sav");
+  printf("== D: shift +2h wraps correctly, no unexpected carry ==\n");
+  shift_plus_2h("Gold.sav");
+  shift_plus_2h("Crystal.sav");
+
+  printf("== E: request_time_reset writes exactly 0x0C60 = 0x80 ==\n");
+  request_reset("Gold.sav");
+  request_reset("Crystal.sav");
+
+  printf("== F: clear_status_flags zeroes exactly the one byte ==\n");
+  clear_flags("Gold.sav");
+  clear_flags("Crystal.sav");
 
   printf("\n%d checks, %d failed, %d file(s) exercised\n", g_check, g_fail, g_ran);
   if (g_ran == 0) { printf("NOTE: corpus not found at %s -- every case skipped\n", ROMS); }

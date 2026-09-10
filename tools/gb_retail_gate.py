@@ -725,7 +725,6 @@ def run_money_case(name, info, rom, sav, work, binary, python, vendor, tally):
 # entirely and has to be resolved from the .sym files on its own, exactly like
 # MONEY_WRAM/BADGE_WRAM/NAME_WRAM already are.
 DAYCARE_FLAG_WRAM = {"red": 0xDA48, "yellow": 0xDA47, "gold": 0xDC40, "crystal": 0xDEF5}
-CLOCK_START_DAY_WRAM = {"gold": 0xD1DC, "crystal": 0xD4B6}   # Gen 1: no clock, no case
 FLY_FLAGS_WRAM = {"red": 0xD70B, "yellow": 0xD70A, "gold": 0xD9EE, "crystal": 0xDCA5}
 FLY_FLAGS_LEN = {"red": 2, "yellow": 2, "gold": 4, "crystal": 4}
 BOXNAMES_WRAM = {"gold": 0xD8BF, "crystal": 0xDB75}          # Gen 1: no box names, no case
@@ -772,37 +771,83 @@ def run_daycare_case(name, info, rom, sav, work, binary, python, vendor, tally):
     tally.record("daycare (BACKLOG #85)", ok, detail)
 
 
+CLOCK_HHOURS_HRAM = {"gold": 0xFF96, "crystal": 0xFF94}   # Gen 1: no clock, no case
+# Fixed so the two boots below (baseline / +2h-shifted) see the SAME hardware RTC
+# reading and only the offset shift can move hHours -- an unpinned (real-time) RTC
+# would make the delta depend on wall-clock skew between the two mGBA runs.
+CLOCK_RTC_PIN = "2026-01-01 12:00:00"
+
+
 def run_clock_case(name, info, rom, sav, work, binary, python, vendor, tally):
-    """BACKLOG #86, via gb_clock.h's gbc_write -- Gen 2 only (gbc_write refuses Gen 1
-    outright, and this function is never called for a Gen-1 GAMES entry, see the
-    dispatch table). --op clock sets wStartDay/Hour/Minute/Second; checked by reading
-    wStartDay back off WRAM (screen-scraping the in-game clock is not something
-    gb_roundtrip.py's reader does, same "not on any screen this driver reads" class
-    as money/daycare/fly above)."""
-    edited = work / "clock.sav"
-    rc, out, err = run_surgery(binary, sav, edited, [["clock", "3", "14", "20", "5"]])
-    if rc != 0:
-        tally.record("clock (BACKLOG #86)", False, f"surgery refused: {err.strip()}")
+    """BACKLOG #86, P1a review D1/D8 -- gb_clock.h no longer claims the in-game clock is
+    an absolute time it can set (it is hardware RTC + a stored offset, see gb_clock.h's
+    header note), so this case asserts on what the GAME's own FixTime computes, not on
+    the offset bytes: boot the UNTOUCHED save and the +2h-SHIFTED save under the exact
+    same pinned --rtc and read hHours (home/time.asm's FixTime output) off HRAM in both;
+    (after - before) mod 24 must be exactly 2. A second sub-case proves --op clockreset:
+    the main menu's own continue-game-info row prints the literal "TIME NOT SET" string
+    (engine/menus/main_menu.asm) once sRTCStatusFlags reads RTC_RESET, which
+    gb_roundtrip.py's main-menu scrape (rep["main_menu"]) already captures."""
+    addr = CLOCK_HHOURS_HRAM[name]
+
+    # ---- sub-case A: +2h shift moves the GAME's own computed hour by exactly 2 -------
+    rc, rep_before, out, err = boot(python, rom, sav, work / "clock_before", vendor,
+                                    work / "clock_before.json",
+                                    extra_args=["--expect", "accept", "--rtc", CLOCK_RTC_PIN,
+                                                "--read-mem", f"{addr:#06x}:1"])
+    before_mem = rep_before.get("mem") or {}
+    before = before_mem.get(f"{addr:#06x}")
+    before_val = int(before, 16) if isinstance(before, str) else None
+
+    shifted = work / "clock_shift.sav"
+    rc2, out2, err2 = run_surgery(binary, sav, shifted, [["clockshift", "0", "2", "0", "0"]])
+    if rc2 != 0:
+        tally.record("clock shift (BACKLOG #86)", False, f"surgery refused: {err2.strip()}")
+    else:
+        rc3, rep_after, out3, err3 = boot(python, rom, shifted, work / "clock_after", vendor,
+                                          work / "clock_after.json",
+                                          extra_args=["--expect", "accept", "--rtc", CLOCK_RTC_PIN,
+                                                      "--read-mem", f"{addr:#06x}:1"])
+        after_mem = rep_after.get("mem") or {}
+        after = after_mem.get(f"{addr:#06x}")
+        after_val = int(after, 16) if isinstance(after, str) else None
+        have_both = before_val is not None and after_val is not None
+        delta_mod24 = ((after_val - before_val) % 24) if have_both else None
+        delta_ok = have_both and delta_mod24 == 2
+        ok = (rc == 0) and (rc3 == 0) and delta_ok
+        detail = (f"before hHours@{addr:#06x}={before!r} after={after!r} "
+                 f"delta_mod24={delta_mod24}")
+        if not ok:
+            fails = [f.strip() for f in out3.splitlines() if f.strip().startswith("FAIL:")]
+            if fails:
+                detail += " | " + "; ".join(fails)
+            tail = stderr_tail(err3)
+            if tail:
+                detail += " | stderr: " + tail
+        tally.record("clock shift (BACKLOG #86)", ok, detail)
+
+    # ---- sub-case B: clockreset makes the main menu show "TIME NOT SET" -------------
+    reset = work / "clock_reset.sav"
+    rc4, out4, err4 = run_surgery(binary, sav, reset, [["clockreset"]])
+    if rc4 != 0:
+        tally.record("clock reset (BACKLOG #86)", False, f"surgery refused: {err4.strip()}")
         return
 
-    addr = CLOCK_START_DAY_WRAM[name]
-    rc, rep, out, err = boot(python, rom, edited, work / "clock", vendor,
-                             work / "clock.json",
-                             extra_args=["--expect", "accept",
-                                         "--read-mem", f"{addr:#06x}:1"])
-    mem = rep.get("mem") or {}
-    svbk_ok = bool(mem.get("svbk_ok", True))
-    got = mem.get(f"{addr:#06x}")
-    ok = (rc == 0) and svbk_ok and got == "03"
-    detail = f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} {addr:#06x}={got!r} want='03'"
-    if not ok:
-        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+    rc5, rep5, out5, err5 = boot(python, rom, reset, work / "clock_reset", vendor,
+                                 work / "clock_reset.json",
+                                 extra_args=["--expect", "accept", "--rtc", CLOCK_RTC_PIN])
+    menu_rows = rep5.get("main_menu") or []
+    time_not_set = any("TIME NOT SET" in row for row in menu_rows)
+    ok5 = (rc5 == 0) and time_not_set
+    detail5 = f"verdict={rep5.get('verdict')} main_menu={menu_rows!r} time_not_set={time_not_set}"
+    if not ok5:
+        fails = [f.strip() for f in out5.splitlines() if f.strip().startswith("FAIL:")]
         if fails:
-            detail += " | " + "; ".join(fails)
-        tail = stderr_tail(err)
+            detail5 += " | " + "; ".join(fails)
+        tail = stderr_tail(err5)
         if tail:
-            detail += " | stderr: " + tail
-    tally.record("clock (BACKLOG #86)", ok, detail)
+            detail5 += " | stderr: " + tail
+    tally.record("clock reset (BACKLOG #86)", ok5, detail5)
 
 
 def run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally):
