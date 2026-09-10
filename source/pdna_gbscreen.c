@@ -193,6 +193,14 @@ uint32_t gbscr_block_bytes(uint8_t gen, GbScrSrc src) {
     case GBSCR_SRC_CARDPIC_M: return 35u * 16u;
     case GBSCR_SRC_CARDPIC_F: return 35u * 16u;
     case GBSCR_SRC_STATUSWORD: return 6u * 16u;
+    /* U5: PACKMENU 80 tiles 2bpp (1,280 B, the static Pack background/border/
+     * pocket-label art -- pack_menu.2bpp, verified by a direct VRAM-pixel-vs-
+     * ROM-bytes search, see gbscr_block_off()'s own comment); PACK_M 60 tiles
+     * 2bpp (960 B, PackGFX -- all 4 pockets' own pictures, already located as
+     * RomGbUi.pack_m; the caller picks which 15-tile slice a cell's `tile`
+     * argument indexes into, this src caches the whole block). */
+    case GBSCR_SRC_PACKMENU:  return 80u * 16u;
+    case GBSCR_SRC_PACK_M:    return 60u * 16u;
     default:                  return 0;
   }
 }
@@ -217,6 +225,31 @@ uint32_t gbscr_block_off(const RomGbUi* gu, uint8_t gen, GbScrSrc src) {
     case GBSCR_SRC_CARDPIC_M: return gu->cardpic_m;
     case GBSCR_SRC_CARDPIC_F: return gu->cardpic_f;
     case GBSCR_SRC_STATUSWORD: return gu->leaders ? gu->leaders - 96u : 0u;
+    /* U5: PACKMENU's offset is DERIVED from pack_m, the same "byte-search the
+     * live VRAM pixel content against the ROM, then express the found offset
+     * as a fixed delta off an already-trusted anchor" method U3's STATUSWORD
+     * used against .leaders -- confirmed on BOTH Gold.gbc and Crystal.gbc
+     * (tools/gb_roundtrip.py's own GbDriver, START>PACK, VRAM tile ids
+     * 0x00-0x3B read at their signed-$8800 pattern addresses, byte-searched
+     * against the raw ROM file): the 80-tile pack_menu.2bpp block sits
+     * EXACTLY 1,280 B (80*16) before PackGFX in both ROMs (Gold: found
+     * 0x10f31, pack_m 0x11431, delta 0x500; Crystal: found 0x10b16, pack_m
+     * 0x11016, delta 0x500 -- identical). Guarded against a same-GB-bank
+     * underflow (a real ROM's own bank is 0x4000 B; pack_m sitting within the
+     * first 1,280 B of its bank would make `- 1280` read into the PREVIOUS
+     * bank's unrelated bytes) -- both measured ROMs land safely inside their
+     * bank (Gold offset-in-bank 0x1431, Crystal 0x1016, both > 1280), but a
+     * ROM where PackGFX starts within 1,280 B of its own bank's first byte
+     * would trip this guard and the PACKMENU block fails closed (0), same
+     * "no smaller ROM never proven a fact" posture every other derived offset
+     * in this file already carries. */
+    case GBSCR_SRC_PACKMENU: {
+      if (!gu->pack_m || gu->pack_m < 1280u) return 0u;
+      uint32_t off_in_bank = gu->pack_m % 0x4000u;
+      if (off_in_bank < 1280u) return 0u;   /* would cross into the previous bank */
+      return gu->pack_m - 1280u;
+    }
+    case GBSCR_SRC_PACK_M:    return gu->pack_m;
     default:                  return 0;
   }
 }
@@ -247,13 +280,15 @@ bool gbscr_mem_read(void* ctx, uint32_t off, void* buf, uint32_t len) {
  * cache, right after FONT -- fixed, so the cache-building loop and any test that
  * inspects a GbscrCache agree on layout. Pure data: moved above the tonc/FatFs
  * boundary (U2b/U2c review item 0c) so gbscr_cache_plan() below can use it. */
-static const GbScrSrc kCacheOptOrder[9] = {
+static const GbScrSrc kCacheOptOrder[11] = {
   GBSCR_SRC_TEXTBOX, GBSCR_SRC_CARDFRAME, GBSCR_SRC_BADGES,
   /* U3: Gen 2's own card additions. */
   GBSCR_SRC_FONTEXTRA, GBSCR_SRC_LEADERS, GBSCR_SRC_CARDGFX,
-  GBSCR_SRC_CARDPIC_M, GBSCR_SRC_CARDPIC_F, GBSCR_SRC_STATUSWORD
+  GBSCR_SRC_CARDPIC_M, GBSCR_SRC_CARDPIC_F, GBSCR_SRC_STATUSWORD,
+  /* U5: Gen 2's own Pack. */
+  GBSCR_SRC_PACKMENU, GBSCR_SRC_PACK_M
 };
-#define GBSCR_CACHE_OPT_N 9
+#define GBSCR_CACHE_OPT_N 11
 
 /* Total tail bytes gbscr_open() needs for `need_mask` on generation `gen`:
  * the 2,048-B rom_gbui scan scratch, reused afterward for FONT (always cached)
@@ -684,6 +719,20 @@ static bool gbscr_tile_pixels(const GbScreen* gs, RomGbUi* local, int idx, uint1
       uint32_t off = local->leaders ? local->leaders - 96u : 0u;
       return rom_gbui_tile(local, off, v, 2, 0, 0, 0, out) != 0;
     }
+    /* U5: PACKMENU's own located offset (derived from pack_m, see
+     * gbscr_block_off()'s comment) -- re-derived here rather than cached,
+     * same idiom STATUSWORD already uses one case above. PACK_M reads the
+     * cached 60-tile block directly: `v` is the caller's own
+     * pocket_rom_index*15 + local_tile(0..14) (pdna_gbpack.c's job). */
+    case GBSCR_SRC_PACKMENU: {
+      uint32_t off = 0u;
+      if (local->pack_m && local->pack_m >= 1280u &&
+          (local->pack_m % 0x4000u) >= 1280u)
+        off = local->pack_m - 1280u;
+      return rom_gbui_tile(local, off, v, 2, 0, 0, 0, out) != 0;
+    }
+    case GBSCR_SRC_PACK_M:
+      return rom_gbui_tile(local, local->pack_m, v, 2, 0, 0, 0, out) != 0;
     case GBSCR_SRC_PIC:
       /* U2c: the Gen-1 player pic -- a separate compressed codec
        * (gb_sprite_gen1), decoded once by gbscr_decode_pic_gen1() into
