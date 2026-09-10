@@ -418,6 +418,9 @@ write_patch.part.0 argsites=1 -> img_rd img_wr
 boxoam_chunk_carry argsites=1 -> memcpy32
 boxoam_load_box argsites=1 -> memcpy32
 dc_icon_over_bg.part.0 argsites=1 -> memcpy32
+# The same site when source/daycare_bg_data.h (gitignored art) is ABSENT: gcc emits the
+# .constprop.0 clone instead -- every fresh worktree builds this shape (r1 review, 2026-09-10).
+dc_icon_over_bg.part.0.constprop.0 argsites=1 -> memcpy32
 
 # gen2_save.c's g2_detect_ranged(G2ReadFn rd, ...): three forwarding paths in the
 # codebase (grepped) -- gen2_write.c:951 (g2w_begin's own `rd` parameter, = img_rd,
