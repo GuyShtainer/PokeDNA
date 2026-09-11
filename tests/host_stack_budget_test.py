@@ -43,6 +43,7 @@ Cases, each named after the defect class it guards against regressing:
       (tagged "override") instead.
 """
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
@@ -796,6 +797,131 @@ def test_boxsource_offsets_match_real_header():
           {k: v for k, v in offsets.items() if expected.get(k) != v})
 
 
+# === BACKLOG #106 G4: struct_field_offsets() by brace depth, not a lazy forward regex ==
+
+_G4_TWO_TYPEDEFS_HEADER = """
+typedef enum {
+  KIND_A = 0,
+  KIND_B
+} FooKind;
+
+/* An unrelated struct that used to poison the OLD lazy regex: anything searching
+   forward from the FIRST `typedef struct {` in this file and stopping at the FIRST
+   `} NAME;` after it would span from Foo's own opening brace all the way to Bar's
+   closing one whenever Bar is looked up. */
+typedef struct {
+  uint32_t unrelated_a;
+  uint32_t unrelated_b;
+  uint32_t unrelated_c;
+} Foo;
+
+typedef struct {
+  FooKind  kind;      /* local enum member -- must size as 4 (AAPCS, no -fshort-enums) */
+  void*    handler;
+  Foo      nested;    /* local nested struct member -- must recurse to its real size */
+  uint8_t  table[BAR_TABLE_LEN];
+} Bar;
+
+#define BAR_TABLE_LEN 4
+"""
+
+
+def test_g4_multiple_anonymous_typedefs_in_one_file_parse_correctly():
+    """The core G4 fixture: TWO anonymous typedef structs in one file (Foo, then
+    Bar) -- Bar's own fields must be found, not a misparse spanning across Foo's
+    body (the live bug RomGbSprite/Gb12Mount/G2Writer/RomCtx/ArtIconsGen all hit).
+    Bar's second member also exercises a local ENUM member (FooKind, sized 4) and
+    third a local NESTED STRUCT member (Foo, sized 12 -- recursed, not guessed),
+    proving both parts of the fix together."""
+    offsets = sb.struct_field_offsets(_G4_TWO_TYPEDEFS_HEADER, "Bar")
+    expected = {"kind": 0, "handler": 4, "nested": 8, "table": 20}
+    check("(G4) Bar's own fields, not Foo's, are found (kind/handler/nested/table)",
+          offsets == expected, offsets)
+
+    foo_offsets = sb.struct_field_offsets(_G4_TWO_TYPEDEFS_HEADER, "Foo")
+    check("(G4) Foo (defined BEFORE Bar) still parses correctly on its own",
+          foo_offsets == {"unrelated_a": 0, "unrelated_b": 4, "unrelated_c": 8}, foo_offsets)
+
+
+def test_g4_mutation_old_lazy_regex_would_have_misparsed_bar():
+    """Mutation: replay the OLD (pre-G4) lazy-forward-regex struct finder against
+    the SAME two-typedef header and show it spans across Foo into Bar -- the
+    live defect this fix removes, not a hypothetical one."""
+    t = sb._strip_c_comments(_G4_TWO_TYPEDEFS_HEADER)
+    old_style = re.search(r'typedef\s+struct\s*\{(.*?)\}\s*Bar\s*;', t, re.S)
+    check("(G4 mutation) the old lazy regex's match starts at Foo's brace, not Bar's",
+          old_style is not None and "unrelated_a" in old_style.group(1), old_style)
+
+
+def test_g4_mutation_inserted_field_shifts_a_declared_offset():
+    """Mutation named directly in the brief: inserting a u16 ABOVE a declared field
+    shifts every offset below it -- verify_field_declarations() must report the
+    now-stale declaration as a mismatch (FATAL at build time), not silently keep
+    trusting it."""
+    header = """
+typedef struct {
+  uint32_t a;
+  uint32_t b;
+} Mut;
+"""
+    field_decls = {("Mut", "b"): (4, {"some_caller"})}
+    struct_headers = {"Mut": "mut.h"}
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "mut.h"), "w") as f:
+            f.write(header)
+        problems = sb.verify_field_declarations(field_decls, d, struct_headers)
+        check("(G4 mutation setup) the un-mutated header matches the declared offset",
+              problems == [], problems)
+
+        mutated = header.replace("uint32_t a;", "uint32_t a;\n  uint16_t inserted;")
+        with open(os.path.join(d, "mut.h"), "w") as f:
+            f.write(mutated)
+        problems2 = sb.verify_field_declarations(field_decls, d, struct_headers)
+        check("(G4 mutation) inserting a field above 'b' makes the @4 declaration FATAL",
+              len(problems2) == 1 and "Mut.b" in problems2[0] and "@4" in problems2[0]
+              and "@8" in problems2[0], problems2)
+
+
+def test_g4_array_count_resolved_from_a_same_file_macro():
+    """An array member's element count, when it's a plain integer macro defined in
+    the SAME header, is resolved to its REAL size (not the 4-byte external-type
+    fallback) -- BAR_TABLE_LEN=4 * uint8_t makes Bar's `table` land at offset 20
+    (8 + sizeof(Foo)=12) with a real 4-byte size, already exercised by the main
+    G4 fixture above; this test isolates just the macro-resolution step."""
+    macros = sb._parse_int_macros(sb._strip_c_comments(_G4_TWO_TYPEDEFS_HEADER))
+    check("(G4) BAR_TABLE_LEN resolves to 4 from the header's own #define",
+          macros.get("BAR_TABLE_LEN") == 4, macros)
+    check("(G4) an unresolvable expression/foreign macro resolves to None (documented fallback)",
+          sb._resolve_int_literal_or_macro("SOME_OTHER_FILES_MACRO", macros) is None, None)
+
+
+def test_g4_all_six_reregistered_structs_parse_against_their_real_headers():
+    """Not a fixture -- reads the REAL headers shipped in this repo for the six
+    structs G4 moved off the _HAND_VERIFIED escape, checking every offset this
+    project's own stack_edges.txt actually declares against them. If this ever
+    fails, either a header changed (update stack_edges.txt) or the brace-depth
+    parser regressed."""
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "source")
+    cases = [
+        ("RomGbSprite", "rom_gbsprite.h", {"read": 0}),
+        ("RomCtx", "rom_map.h", {"read": 0}),
+        ("Gb12Mount", "pdna_gen12.h", {"rd": 4}),
+        ("G2Writer", "gen2_write.h", {"rd": 0, "wr": 4}),
+        ("ArtIconsGen", "art_icons_extract.h", {"progress": 4}),
+    ]
+    for struct_name, header_name, expected in cases:
+        path = os.path.join(base, header_name)
+        if not os.path.exists(path):
+            print(f"  (skip) source/{header_name} not found from this working directory")
+            continue
+        with open(path) as f:
+            offsets = sb.struct_field_offsets(f.read(), struct_name)
+        got = {k: offsets.get(k) for k in expected}
+        check(f"(G4) {struct_name} matches its real header ({header_name})",
+              got == expected, got)
+
+
 # === (D4) blind spots over the WHOLE reachable graph, not just the deepest chain =======
 
 def _d4_graph():
@@ -1476,6 +1602,11 @@ def main():
     test_d10_trap5_literal_call_target_resolved_vs_table_index_blind_spot()
     test_d10_trap6_base_literal_loaded_far_before_its_use()
     test_boxsource_offsets_match_real_header()
+    test_g4_multiple_anonymous_typedefs_in_one_file_parse_correctly()
+    test_g4_mutation_old_lazy_regex_would_have_misparsed_bar()
+    test_g4_mutation_inserted_field_shifts_a_declared_offset()
+    test_g4_array_count_resolved_from_a_same_file_macro()
+    test_g4_all_six_reregistered_structs_parse_against_their_real_headers()
     test_d5a_shared_offset_two_structs_two_callers()
     test_d5a_two_structs_same_caller_both_credited()
     test_d5a_unqualified_on_a_shared_offset_is_a_parse_error()

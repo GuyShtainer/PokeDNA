@@ -785,9 +785,9 @@ def load_extra_edges(path):
 
 _STRUCT_FIELD_RE = re.compile(r'\(\*(\w+)\)\(')
 _KNOWN_PTR_TYPEDEFS = {"AppCommitFn", "GbReadFn", "Gb12ReadFn", "G2ReadFn", "Gen1ReadFn",
-                        "ArtReadFn", "G2WriteFn"}
+                        "ArtReadFn", "G2WriteFn", "RomReadFn", "ArtIconsProgressFn"}
 _KNOWN_VALUE_TYPES = {"bool": 1, "int": 4, "int32_t": 4, "uint32_t": 4, "int16_t": 2,
-                       "uint16_t": 2, "int8_t": 1, "uint8_t": 1}
+                       "uint16_t": 2, "int8_t": 1, "uint8_t": 1, "char": 1}
 
 
 def _strip_c_comments(text):
@@ -796,64 +796,248 @@ def _strip_c_comments(text):
     return text
 
 
-def _classify_field(stmt):
-    """(name, size, align) for one struct-member declaration, or raise ValueError if
-    the type isn't one this walker knows how to size -- an unrecognized type must
-    FAIL the offset computation, never guess a size (stop-licence)."""
+# === G4 (BACKLOG #106): parse a struct by BRACE DEPTH, not a lazy forward regex =========
+#
+# The old struct_field_offsets() searched for `typedef struct { ... } NAME;` with a
+# non-greedy `.*?` body -- which matches from the FIRST `typedef struct {` anywhere
+# earlier in the file to the FIRST `} NAME;` after it, spanning every unrelated
+# anonymous struct in between whenever more than one precedes the target (confirmed
+# live: RomGbSprite/Gb12Mount/G2Writer/RomCtx/ArtIconsGen all misparsed this way,
+# hence the six `STRUCT_HEADERS[...] = None` hand-verified escapes this fix removes).
+# The replacement locates the struct/enum by BRACE-DEPTH matching instead: a tagged
+# form (`struct NAME {`) is found directly; an anonymous typedef form is found by its
+# ENDING (`} NAME;`, unique to that one struct) and walked BACKWARD to its true
+# opening brace -- immune to however many other structs sit in between either way.
+
+def _matching_close_brace(text, open_pos):
+    """Index of the `}` that closes the `{` at `text[open_pos]`, or None if the
+    braces from there on are unbalanced."""
+    depth = 0
+    for i in range(open_pos, len(text)):
+        c = text[i]
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _struct_or_enum_body(text, name):
+    """(kind, body_text) for `name`'s struct/enum definition in `text` -- 'struct'
+    or 'enum', and the text strictly between its braces. Tries a TAGGED opening
+    (`struct NAME {` / `enum NAME {`) first; falls back to an ANONYMOUS typedef's
+    ENDING (`} NAME;`) walked backward via brace-depth counting to its real
+    opening brace, checking that a bare `typedef struct`/`typedef enum` (nothing
+    else) immediately precedes that brace so an unrelated `}` earlier in the file
+    can never be mistaken for this struct's own open. Returns None if `name` is
+    defined nowhere in `text` this way (an external type, or a shape this walker
+    doesn't recognize -- e.g. a plain untagged, non-typedef'd struct)."""
+    esc = re.escape(name)
+    m = re.search(r'\b(struct|enum)\s+' + esc + r'\s*\{', text)
+    if m:
+        open_pos = m.end() - 1
+        close_pos = _matching_close_brace(text, open_pos)
+        if close_pos is not None:
+            return m.group(1), text[open_pos + 1:close_pos]
+    for end_m in re.finditer(r'\}\s*' + esc + r'\s*;', text):
+        close_pos = end_m.start()
+        depth = 1
+        open_pos = None
+        for i in range(close_pos - 1, -1, -1):
+            c = text[i]
+            if c == '}':
+                depth += 1
+            elif c == '{':
+                depth -= 1
+                if depth == 0:
+                    open_pos = i
+                    break
+        if open_pos is None:
+            continue
+        prefix_m = re.search(r'typedef\s+(struct|enum)\s*\Z', text[:open_pos].rstrip())
+        if prefix_m:
+            return prefix_m.group(1), text[open_pos + 1:close_pos]
+    return None
+
+
+_DEFINE_INT_RE = re.compile(r'^\s*#\s*define\s+(\w+)\s+(0[xX][0-9a-fA-F]+|\d+)\s*[uUlL]*\s*$',
+                             re.M)
+
+
+def _parse_int_macros(text):
+    """{macro_name: int} for every simple `#define NAME 123` / `#define NAME
+    0x20u` in `text` -- resolves an array member's element count ONLY when it is
+    a plain integer macro defined in the SAME header (ROM_MAX_GROUPS,
+    GB12_REPORT_MAX, ...). A macro defined elsewhere, or an arithmetic expression
+    (`G2_NUM_BOXES * 9`), is intentionally out of scope -- see _classify_member's
+    external-type fallback, which the same 4-byte documented approximation covers."""
+    out = {}
+    for m in _DEFINE_INT_RE.finditer(text):
+        try:
+            out[m.group(1)] = int(m.group(2), 0)
+        except ValueError:
+            continue
+    return out
+
+
+def _split_top_level_commas(s):
+    """Split `s` on commas that are not nested inside (), [], or {} -- so a
+    multi-declarator member (`uint32_t a, b, c;`) splits into per-name pieces
+    without also splitting an (unused-in-practice-here, but not assumed absent)
+    array size expression that itself contains a comma."""
+    depth = 0
+    parts = []
+    cur = []
+    for ch in s:
+        if ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth -= 1
+        if ch == ',' and depth == 0:
+            parts.append(''.join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append(''.join(cur))
+    return parts
+
+
+_ARRAY_SUFFIX_RE = re.compile(r'^(\w+)\s*\[\s*([^\]]*?)\s*\]$')
+
+
+def _resolve_int_literal_or_macro(expr, macros):
+    """int for `expr` if it is a plain literal or a macro this header defines,
+    else None (an arithmetic expression, or a macro from elsewhere -- both
+    intentionally out of scope, see _parse_int_macros())."""
+    expr = expr.strip()
+    if not expr:
+        return None
+    try:
+        return int(expr, 0)
+    except ValueError:
+        return macros.get(expr)
+
+
+def _sized_local_type(text, type_name, macros, size_cache):
+    """(size, align) for `type_name` if it is ALSO a struct/enum this SAME header
+    defines (recurses into _layout_members() for a real, computed size -- not a
+    guess), memoized in `size_cache` for the duration of one top-level
+    struct_field_offsets() call (a member type can recur, e.g. an array of
+    records). Returns None if `type_name` is not locally defined at all (an
+    external type from another header/TU) -- the caller's documented 4-byte
+    fallback applies then."""
+    if type_name in size_cache:
+        return size_cache[type_name]
+    found = _struct_or_enum_body(text, type_name)
+    if found is None:
+        return None
+    kind, body = found
+    if kind == 'enum':
+        # ARM EABI/AAPCS: an enum is int-sized unless the compiler is told
+        # -fshort-enums (verified absent from this project's CFLAGS, Makefile:260-296).
+        size_cache[type_name] = (4, 4)
+    else:
+        _offsets, total, align = _layout_members(text, body, macros, size_cache)
+        size_cache[type_name] = (total, align)
+    return size_cache[type_name]
+
+
+def _classify_member(stmt, macros, text, size_cache):
+    """[(name, size, align), ...] for one struct-member declaration -- a list
+    because a multi-declarator member (`uint32_t a, b, c;`) names several fields
+    at once. Raises ValueError for a shape this walker refuses to guess at (a
+    bitfield -- none appear in the six structs this fix registers, and silently
+    sizing one wrong is worse than failing loudly). An array/nested-struct/
+    external-type member that cannot be sized exactly falls back to 4 B
+    (documented, BACKLOG #106 G4's scope limit) rather than raising, so a field
+    the walker DOES need (always earlier in these six structs, verified in the
+    fix's own report) is never blocked by one it doesn't."""
     stmt = ' '.join(stmt.split())
+    if re.search(r':\s*\d+$', stmt) and '(' not in stmt:
+        raise ValueError(f"bitfield member not supported: {stmt!r}")
     m = _STRUCT_FIELD_RE.search(stmt)
     if m:
-        return m.group(1), 4, 4                      # function pointer field
-    parts = stmt.rsplit(None, 1)
-    if len(parts) != 2:
+        return [(m.group(1), 4, 4)]                  # function pointer field
+    parts = _split_top_level_commas(stmt)
+    first = parts[0].rsplit(None, 1)
+    if len(first) != 2:
         raise ValueError(f"can't parse struct member: {stmt!r}")
-    typ, name = parts[0].strip(), parts[1].strip()
-    if name.startswith('*'):
-        return name.lstrip('*'), 4, 4                 # `Type* name` split by whitespace
-    if typ.endswith('*'):
-        return name, 4, 4                             # `Type* name` glued to the type
-    if typ in _KNOWN_PTR_TYPEDEFS:
-        return name, 4, 4
-    if typ in _KNOWN_VALUE_TYPES:
-        sz = _KNOWN_VALUE_TYPES[typ]
-        return name, sz, sz
-    raise ValueError(f"unknown field type {typ!r} for member {name!r} -- teach "
-                      "_classify_field about it or this offset can't be trusted")
+    base_type = first[0].strip()
+    declarators = [first[1].strip()] + [p.strip() for p in parts[1:]]
+
+    out = []
+    for decl in declarators:
+        decl = decl.strip()
+        is_ptr = False
+        while decl.startswith('*'):
+            is_ptr = True
+            decl = decl[1:].strip()
+        name = decl
+        has_array = False
+        arr_count = None
+        am = _ARRAY_SUFFIX_RE.match(decl)
+        if am:
+            has_array = True
+            name = am.group(1)
+            arr_count = _resolve_int_literal_or_macro(am.group(2), macros)
+
+        if is_ptr or base_type.endswith('*') or base_type in _KNOWN_PTR_TYPEDEFS:
+            out.append((name, 4, 4))
+            continue
+        if base_type in _KNOWN_VALUE_TYPES:
+            elem_size = elem_align = _KNOWN_VALUE_TYPES[base_type]
+        else:
+            sized = _sized_local_type(text, base_type, macros, size_cache)
+            if sized is None:
+                out.append((name, 4, 4))              # external type -- documented fallback
+                continue
+            elem_size, elem_align = sized
+        if has_array:
+            if arr_count is None:
+                out.append((name, 4, 4))              # unresolvable count -- documented fallback
+            else:
+                out.append((name, elem_size * arr_count, elem_align))
+        else:
+            out.append((name, elem_size, elem_align))
+    return out
+
+
+def _layout_members(text, body, macros, size_cache):
+    """(offsets: {name: off}, total_size, max_align) for a struct's own `body`
+    text (between its braces), with natural ARM EABI alignment (no #pragma pack
+    anywhere in this codebase) -- the same layout arm-none-eabi-gcc gives the
+    real struct."""
+    stmts = [s.strip() for s in body.split(';') if s.strip()]
+    offsets = {}
+    off = 0
+    max_align = 1
+    for s in stmts:
+        for name, size, align in _classify_member(s, macros, text, size_cache):
+            off = (off + align - 1) // align * align
+            offsets[name] = off
+            off += size
+            max_align = max(max_align, align)
+    total = (off + max_align - 1) // max_align * max_align
+    return offsets, total, max_align
 
 
 def struct_field_offsets(header_text, struct_name):
     """Field name -> byte offset within `struct_name`, computed by walking the
-    header's own `typedef struct { ... } <struct_name>;` (or `struct <struct_name>
-    { ... };`) with natural ARM EABI alignment (no #pragma pack anywhere in this
-    codebase) -- the SAME layout arm-none-eabi-gcc gives the real struct, so a
-    stack_edges.txt offset can be checked against reality instead of trusted on
-    faith. Raises ValueError if the struct/a field can't be found or sized, so a
-    header change this walker doesn't understand FAILS the build instead of
-    silently keeping a stale offset (D1, the header-drift half of the fix)."""
+    header's own struct definition (see _struct_or_enum_body() for how it's
+    located) with natural ARM EABI alignment. Raises ValueError if the struct
+    can't be found or a field can't be parsed at all, so a header change this
+    walker doesn't understand FAILS the build instead of silently keeping a
+    stale offset (D1, the header-drift half of the fix; G4 extends it to
+    multi-typedef headers, arrays, multi-declarators, and locally-nested
+    struct/enum members)."""
     t = _strip_c_comments(header_text)
-    # D5a (BACKLOG #84b seventh pass): a THIRD shape -- `typedef struct RomGbIcon {
-    # ... } RomGbIcon;` (the tag name repeated after typedef, source/rom_gbicon.h /
-    # rom_gbsprite.h) -- neither of the two existing patterns matched it: the first
-    # requires an ANONYMOUS `struct {` (no tag), the second's `\};` requires the
-    # closing brace to be followed immediately by `;` with no ` StructName` in
-    # between. Tried before the anonymous pattern so a struct using BOTH a tag and a
-    # typedef alias of the same name is matched precisely (no risk of accidentally
-    # matching a nested/unrelated anonymous struct first).
-    m = (re.search(r'typedef\s+struct\s+' + re.escape(struct_name) + r'\s*\{(.*?)\}\s*'
-                    + re.escape(struct_name) + r'\s*;', t, re.S)
-         or re.search(r'typedef\s+struct\s*\{(.*?)\}\s*' + re.escape(struct_name) + r'\s*;',
-                    t, re.S)
-         or re.search(r'struct\s+' + re.escape(struct_name) + r'\s*\{(.*?)\};', t, re.S))
-    if not m:
+    found = _struct_or_enum_body(t, struct_name)
+    if found is None or found[0] != 'struct':
         raise ValueError(f"struct {struct_name!r} not found")
-    stmts = [s.strip() for s in m.group(1).split(';') if s.strip()]
-    offsets = {}
-    off = 0
-    for s in stmts:
-        name, size, align = _classify_field(s)
-        off = (off + align - 1) // align * align
-        offsets[name] = off
-        off += size
+    macros = _parse_int_macros(t)
+    offsets, _total, _align = _layout_members(t, found[1], macros, {})
     return offsets
 
 
@@ -916,29 +1100,24 @@ STRUCT_HEADERS = {
     "RomGbIcon": "rom_gbicon.h",
     "RomGbLearn": "rom_gblearn.h",
     "Br": "gb_sprite_codec.c",
-    # D5a (BACKLOG #84b seventh pass): the structs below are declared HAND-VERIFIED
-    # (None), not wired to a header -- struct_field_offsets()'s two-regex struct
-    # finder anchors on `typedef struct {` (or `struct NAME {`) and lazily extends to
-    # the FIRST `} NAME;` it can find; in a header/TU with SEVERAL anonymous/other
-    # typedef structs before the target one (rom_gbsprite.h, pdna_gen12.h, gen2_write.h,
-    # art_icons_extract.h, rom_map.h all have this shape), the lazy match can span
-    # across unrelated intervening struct/enum bodies and misparse -- confirmed live
-    # (RomGbSprite/Gb12Mount/G2Writer/RomCtx/ArtIconsGen all raised "unknown field
-    # type" against text that was never really their own struct body). Teaching
-    # struct_field_offsets() to disambiguate multiple same-shaped typedefs in one
-    # file is a real fix but out of this pass's time budget -- these offsets are
-    # instead verified BY HAND against the header source (see each declaration site
-    # in stack_edges.txt for the exact struct/line cited) and re-checked with the
-    # standalone struct_field_offsets() probe this pass ran for RomGbIcon/RomGbLearn/
-    # Br (which DID parse cleanly, so those three get real header verification).
-    "RomGbSprite": None,
-    "Gb12Mount": None,
-    "G2Writer": None,
-    "RomCtx": None,
-    "ArtIconsGen": None,
+    # BACKLOG #106 G4: these six used to be HAND_VERIFIED (None) escapes -- the OLD
+    # lazy forward regex anchored on the FIRST `typedef struct {` in the file and
+    # matched to the FIRST `} NAME;` after it, so a header with SEVERAL anonymous
+    # typedef structs before the target one (all five headers below have this shape)
+    # silently parsed the WRONG struct's body. struct_field_offsets() now locates a
+    # struct by brace-depth matching on its OWN ending (`} NAME;`, unique to it) or
+    # tagged opening, immune to how many unrelated structs precede it -- all six
+    # parse cleanly now and get the same real header verification as the seven
+    # above (see tests/host_stack_budget_test.py's fixture + mutation for the fix).
+    "RomGbSprite": "rom_gbsprite.h",
+    "Gb12Mount": "pdna_gen12.h",
+    "G2Writer": "gen2_write.h",
+    "RomCtx": "rom_map.h",
+    "ArtIconsGen": "art_icons_extract.h",
     "TTC": None,     # libtonc's tte_write dispatch table -- no .c/.h source shipped
                       # in this devkitPro install to grep (see the `recursion
-                      # tte_write depth=2` declaration's own comment).
+                      # tte_write depth=2` declaration's own comment). Still
+                      # genuinely HAND_VERIFIED: no header, not a parser limitation.
 }
 
 
