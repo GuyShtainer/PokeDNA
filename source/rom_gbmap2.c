@@ -376,10 +376,23 @@ bool rgm2_tileset(const RomGbMap2* g, uint8_t tileset_id, GbMap2Tileset* out) {
    * decode/parse fine, they just cannot use the Coll-Meta subtraction).
    * For those, fall back to a boundary scan: the smallest OTHER row's own
    * Meta address in the SAME bank that is greater than this row's Meta
-   * address, capped at 2048 (the retail max) -- reproduces the Coll-Meta
-   * figure EXACTLY on all 61 rows where both methods are checkable (0
-   * mismatches), and lands the 6 edge rows on 1024 or 2048, never a third,
-   * implausible value. Never trusts data outside the located table. */
+   * address, capped at 2048 (the retail max).
+   *
+   * review-opus correction: an earlier version of this comment claimed the
+   * boundary scan "reproduces the Coll-Meta figure EXACTLY on all 61 rows
+   * (0 mismatches)". That claim was FALSE -- independently re-measured by
+   * running the SAME scan against every SAME-bank row (where the Coll-Meta
+   * subtraction is the ground truth) and comparing: 24/28 mismatches on
+   * Gold, 27/32 on Crystal. The scan is only ever REACHED by this `else`
+   * branch on the 6 rows where Meta and Coll do NOT share a bank (1 Gold,
+   * 5 Crystal) -- it is never applied to a same-bank row in shipped code,
+   * so this mismatch count does not affect production behaviour, but the
+   * comment's own accuracy claim was wrong and is corrected here. On the 6
+   * rows it IS reached for, the scan is CONSERVATIVE, not exact: it lands
+   * each on a valid retail size (1024 or 2048, never a third, implausible
+   * value, never a crash), but is not independently verified byte-exact
+   * there -- no ground truth exists for a cross-bank row's true length.
+   * Never trusts data outside the located table. */
   uint32_t meta_len = 0;
   if (meta_bank == coll_bank && coll_off > meta_off) {
     meta_len = coll_off - meta_off;
