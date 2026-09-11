@@ -172,6 +172,17 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # rule.
     ("gb-pack-gen2", "U5 — Gold/Silver/Crystal's own Pack + PC store on the shell "
      "(Gen-2 saves)", ("U5",)),
+    # BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4, append-only,
+    # same rule as every row above): the KEEP AS IS / MAKE LEGAL choice
+    # gb_paste_hook now offers on a Gen 3 -> Game Boy paste whose species is
+    # standing below its legality floor (pk_evo_floor). Shots come from
+    # tools/dgb_shots.py's run_r1_xfer() (--r1-xfer), run against a Gold-fused
+    # image (NOT Red -- see that function's own docstring for why: Red/Gen-1's
+    # base-stats-ROM lookup is SD-card-only and always refuses in this harness,
+    # independent of R1); captions all start "BACKLOG #104 R1:". Appended after
+    # "gb-pack-gen2" per this list's own append-only rule.
+    ("xfer-r1-make-legal", "BACKLOG #104 R1 — KEEP AS IS / MAKE LEGAL on a Gen 3 -> "
+     "Game Boy paste (an underlevelled evolved species)", ("BACKLOG #104 R1",)),
     # M1 (BACKLOG #91, docs/GB-MAP-DESIGN.md): Red/Yellow's own current-map view,
     # read-only, on the shared shell -- the first slice of the Gen-1/2 Map screen
     # (M2 all-maps browser and M3 teleport are later slices). Shots come from

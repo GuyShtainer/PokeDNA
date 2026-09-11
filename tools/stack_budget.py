@@ -117,6 +117,63 @@ EXEMPT_MAX_DEEPEST = 256
 
 # === .su parsing (exact, compiler-measured frames) ===================================
 
+_ASM_SOURCE_EXTS = (".s", ".S")
+
+
+def _object_source_is_asm(obj):
+    """True when `obj`'s own .d file (written by -MMD alongside every compile, C or
+    asm) says its source is a bare assembler file (.s/.S). Those compile via `$(CC) -x
+    assembler-with-cpp $(ASFLAGS)` -- no -fstack-usage on that line at all (it's a
+    CFLAGS/CXXFLAGS-only flag) -- so GCC never emits a .su for them, by construction,
+    same as PokeDNA's own several hand-written *_data.s .incbin blobs (pure data, no
+    function with a stack frame in them at all). Returns False (i.e. "expect a .su")
+    when the .d is missing or unreadable -- an absent .d is itself a sign of a
+    stale/broken object, not a reason to exempt it."""
+    d = obj[:-2] + ".d"
+    try:
+        with open(d, encoding="utf-8", errors="replace") as f:
+            head = f.read(4096)
+    except OSError:
+        return False
+    # First dependency line looks like "foo.o: /path/to/foo.c [...]" (-MMD/-MF's own
+    # format; the Makefile always names the target bare, matching $@ in that recipe).
+    colon = head.find(":")
+    if colon < 0:
+        return False
+    # make's line-continuation backslash ("foo.o: \\\n src.s") is its own whitespace-
+    # separated token after a plain .split() -- skip it to reach the real first source
+    # path instead of testing the extension of a bare "\".
+    rest = [tok for tok in head[colon + 1:].split() if tok != "\\"]
+    if not rest:
+        return False
+    src = rest[0]
+    return os.path.splitext(src)[1] in _ASM_SOURCE_EXTS
+
+
+def find_objects_missing_su(builddir):
+    """BACKLOG #110: every *.o directly under --builddir compiled from C/C++ MUST
+    carry a same-basename *.su (the Makefile always passes -fstack-usage on those
+    compile lines) -- a STALE build directory can hold .o's compiled before that flag
+    was on CFLAGS (or under an older CFLAGS entirely), whose frames would otherwise
+    silently fall back to the prologue ESTIMATOR and print as merely "(estimated)"
+    instead of the FATAL this deserves. Returns the sorted list of offending .o paths
+    (empty when every C/C++ .o has its .su, including when there are no .o's at all --
+    callers check that separately). Two classes are correctly exempt, both detected by
+    origin rather than assumed: (1) newlib/libgcc/libtonc archive members never live
+    under --builddir at all (they come from .a's under $(LIBDIRS)/lib and devkitARM's
+    own lib/gcc tree); (2) a bare-assembler .o (source_is_asm(), the several
+    *_data.s .incbin art/data blobs) compiles with no -fstack-usage on its own command
+    line by construction, so it never gets a .su even fresh off today's build."""
+    missing = []
+    for obj in sorted(glob.glob(os.path.join(builddir, "*.o"))):
+        if os.path.exists(obj[:-2] + ".su"):
+            continue
+        if _object_source_is_asm(obj):
+            continue
+        missing.append(obj)
+    return missing
+
+
 def load_su(builddir):
     """basename -> worst-case frame size, from every *.su GCC emitted alongside the .o's.
 
@@ -1932,15 +1989,38 @@ def main(argv):
         print(f"*** stack_budget: no such ELF: {args.elf}", file=sys.stderr)
         return 1
 
-    # D3 (BACKLOG #84b review): a wrong --builddir silently finds zero .su files, so
-    # every function falls back to the prologue estimator -- no crash, no obviously
-    # wrong number, just a report that LOOKS legitimate and certifies nothing. Fail
-    # loud instead of guessing the directory is fine.
-    if not glob.glob(os.path.join(args.builddir, "*.su")):
-        print(f"*** stack_budget: 0 .su files under --builddir {args.builddir!r} -- "
+    # D3 (BACKLOG #84b review): a wrong --builddir has no .o files under it at all, so
+    # every function would silently fall back to the prologue estimator -- no crash, no
+    # obviously wrong number, just a report that LOOKS legitimate and certifies nothing.
+    # Fail loud instead of guessing the directory is fine.
+    builddir_objs = sorted(glob.glob(os.path.join(args.builddir, "*.o")))
+    if not builddir_objs:
+        print(f"*** stack_budget: 0 .o files under --builddir {args.builddir!r} -- "
               "wrong directory? (every function would silently fall back to the prologue "
               "estimator, which is not a build failure this guard could ever surface)",
               file=sys.stderr)
+        return 1
+
+    # BACKLOG #110: a STALE build directory can hold .o files compiled before
+    # -fstack-usage was on CFLAGS (or under a different CFLAGS set entirely) -- their
+    # frames then silently fall back to the same prologue estimator, printed as merely
+    # "(estimated)" instead of the FATAL this deserves. It bit the p84b merge: main's
+    # build/ had 22 .su files for 170 objects, so eight functions came out UNKNOWN and
+    # the normal build FATALed only because those particular frames didn't match any
+    # estimator idiom -- a different eight could just as easily have matched one and
+    # printed a plausible, under-counted "STACK ok". See find_objects_missing_su()'s own
+    # docstring for why an object under --builddir must always have one and archive
+    # members are correctly exempt.
+    missing_su = find_objects_missing_su(args.builddir)
+    if missing_su:
+        print(f"*** stack_budget: {len(missing_su)} object(s) under --builddir "
+              f"{args.builddir!r} have no matching .su (stale build directory -- "
+              "compiled before -fstack-usage was added, or under different CFLAGS):",
+              file=sys.stderr)
+        for obj in missing_su:
+            print(f"***   {obj}", file=sys.stderr)
+        print("*** Fix: `make rebuild` so every object in this build dir is compiled "
+              "fresh, with -fstack-usage, under today's CFLAGS.", file=sys.stderr)
         return 1
 
     fp = _elf_fingerprint(args.elf, args.builddir)
