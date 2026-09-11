@@ -3314,7 +3314,7 @@ int pdna_box(BoxSource* src) {
          * parameter for no real gain. `cur`/`buf` are LOCAL to this block only: this
          * function's outer `cur` is the int grid cursor, so a same-named `char cur[12]`
          * here would shadow it -- named `bxname`/`bxnew` instead to keep that impossible. */
-        if (src->can_edit()) {
+        if (src->can_rename ? src->can_rename() : src->can_edit()) {
           boxoam_suspend();                                              /* full-screen sub-view — own bracket, see box_oam.h */
           char bxname[12]; src->get_name(box, bxname);
           char bxnew[12];
