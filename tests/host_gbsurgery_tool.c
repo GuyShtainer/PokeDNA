@@ -221,7 +221,8 @@ static void usage(const char* prog) {
     "  --op hofclear                BACKLOG #89: gbh_clear() -- erase every recorded\n"
     "                               Hall of Fame team + the lifetime win counter.\n"
     "  --op hofcount N               BACKLOG #89: gbh_set_count(N) -- the lifetime\n"
-    "                               win counter (clamped Gen 1 <=255, Gen 2 <=200).\n"
+    "                               win counter (Gen 1 clamped to the teams present,\n"
+    "                               <= 50; Gen 2 <= 200).\n"
 "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -490,10 +491,10 @@ static int do_hofclear(GbSession* s) {
 }
 
 /* BACKLOG #89 retail gate: gbh_set_count() -- the SET COUNT screen action, gated the
- * same clamp gbh_set_count() itself enforces (Gen 1 <=255, Gen 2 <=200); this tool
- * does not re-clamp the token itself so an over-range value still exercises the
- * core's own clamp end to end, rather than being rejected here before it ever
- * reaches gbh_set_count(). */
+ * same clamp gbh_set_count() itself enforces (Gen 1 clamped to the teams present,
+ * <= 50; Gen 2 <= 200); this tool does not re-clamp the token itself so an
+ * over-range value still exercises the core's own clamp end to end, rather than
+ * being rejected here before it ever reaches gbh_set_count(). */
 static int do_hofcount(GbSession* s, const char* n_tok) {
   int n = resolve_uint(n_tok, "hof count");
   if (n < 0) return 2;
