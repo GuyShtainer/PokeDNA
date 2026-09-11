@@ -180,6 +180,29 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # "gb-pack-gen2" per this list's own append-only rule.
     ("gb-clock-gen2", "BACKLOG #86/#108 — the Gen-2 Clock screen (ask / shift / "
      "clear, never an absolute time)", ("BACKLOG #86/#108",)),
+    # BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4, append-only,
+    # same rule as every row above): the KEEP AS IS / MAKE LEGAL choice
+    # gb_paste_hook now offers on a Gen 3 -> Game Boy paste whose species is
+    # standing below its legality floor (pk_evo_floor). Shots come from
+    # tools/dgb_shots.py's run_r1_xfer() (--r1-xfer), run against a Gold-fused
+    # image (NOT Red -- see that function's own docstring for why: Red/Gen-1's
+    # base-stats-ROM lookup is SD-card-only and always refuses in this harness,
+    # independent of R1); captions all start "BACKLOG #104 R1:". Appended after
+    # "gb-pack-gen2" per this list's own append-only rule.
+    ("xfer-r1-make-legal", "BACKLOG #104 R1 — KEEP AS IS / MAKE LEGAL on a Gen 3 -> "
+     "Game Boy paste (an underlevelled evolved species)", ("BACKLOG #104 R1",)),
+    # BACKLOG #92 (append-only, same rule as every row above): a held ITEM row on
+    # the Gen-2 mon-menu popup (app_mon_menu_readonly, pdna_main.c), Gen 1 omitted.
+    # Shots come from tools/dgb_shots.py's run_gbmon(); captions all start "#92:".
+    ("gb-mon-item", "#92 — held ITEM row on the Gen-2 mon menu (Gen 1: NOT IN GEN 1)",
+     ("#92",)),
+    # BACKLOG #95 (append-only, same rule as every row above): the summary-field
+    # parity audit's closed gaps -- Shiny, Egg, and Met Time/Level/Loc/OT Gender,
+    # Gen 2 only. Shots come from tools/dgb_shots.py's run_gbmon() (the SAME
+    # function as the #92 row above, continuing past its shot 08); captions all
+    # start "#95:".
+    ("gb-mon-summary-parity", "#95 — summary-field parity audit: Shiny, Egg, Met "
+     "Time/Level/Loc/OT Gender rows closed for Gen 2", ("#95",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

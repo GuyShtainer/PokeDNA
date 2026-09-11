@@ -3,11 +3,17 @@
  * format + the merge back up). docs/GEN3-TO-GB-SIDECAR-DESIGN.md is the design.
  *
  *   cc -std=c11 -Wall -Wextra -I source tests/host_gen3gb_test.c \
- *      source/gen3_to_gb.c source/gb_sidecar.c \
+ *      source/gen3_to_gb.c source/gb_sidecar.c source/evolutions.c \
  *      source/gen3_save.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c \
  *      source/gen3_daycare.c source/data_tables.c \
  *      source/gb_edit.c source/gb_session.c source/gen1_save.c source/gen1_write.c \
  *      source/gen2_save.c source/gen2_write.c -o /tmp/hg3gb
+ *
+ * source/evolutions.c is GENERATED and gitignored (`python3 tools/gen_evolutions.py
+ * --from-rom`, evolutions.h) -- section 5 (BACKLOG #104 R1, MAKE LEGAL's level
+ * correction) needs it linked in to exercise a real evolution floor; every other
+ * section still runs (evolutions.h's own weak fallbacks answer "no data") if it is
+ * absent, section 5 SKIPping rather than failing.
  *   /tmp/hg3gb /Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/ (.sav files)
  *
  * Two independent corpora, exactly like the modules under test:
@@ -35,6 +41,7 @@
 #include "gen3_edit.h"
 #include "data_tables.h"
 #include "gen3_to_gb.h"
+#include "evolutions.h"
 #include "gb_sidecar.h"
 #include "gb_session.h"
 #include "gen1_write.h"
@@ -311,7 +318,7 @@ static void test_lossy_name(void) {
   uint8_t rec[80];
   gen3_build_mon(1 /* Bulbasaur */, 10, 0x87654321u, 0xBEEF0003u, "OTNAME", 3, rec);
   GbEditMon out; Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, true, NULL, &out, &loss);
   CHECK(st == G3GB_OK, "plain-name synthetic mon converts (%s)", g3gb_status_text(st));
   if (st == G3GB_OK) {
     CHECK(!loss.nick_lossy, "a plain name is not lossy");
@@ -342,7 +349,7 @@ static void test_stat_exp_and_ivs(void) {
   gen3_edit_commit(&em, rec);
 
   GbEditMon out; Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, true, NULL, &out, &loss);
   CHECK(st == G3GB_OK, "EV/IV synthetic mon converts (%s)", g3gb_status_text(st));
   if (st == G3GB_OK) {
     CHECK(gb_get_statexp(&out, GB_HP)  == (uint16_t)(4u   * 257u), "stat exp HP = ev*257");
@@ -359,7 +366,7 @@ static void test_stat_exp_and_ivs(void) {
   em_set_iv(&em, PK_SPA, 18);
   em_set_iv(&em, PK_SPD, 18);
   gen3_edit_commit(&em, rec);
-  st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  st = gen3_to_gb(rec, GB_GEN2, true, NULL, &out, &loss);
   CHECK(st == G3GB_OK, "all-even synthetic mon converts (%s)", g3gb_status_text(st));
   if (st == G3GB_OK)
     CHECK(!loss.ivs_halved, "all-even IVs with SpA==SpD -> ivs_halved is false");
@@ -376,7 +383,7 @@ static void test_rename_refused(void) {
   gen3_build_mon(1 /* Bulbasaur */, 10, 0x12345678u, 0xABCD0001u, "TESTER", 3, rec);
 
   GbEditMon out; Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, true, NULL, &out, &loss);
   CHECK(st == G3GB_OK, "synthetic mon converts for Gen 2 (%s)", g3gb_status_text(st));
   if (st != G3GB_OK) return;
 
@@ -446,7 +453,7 @@ static void check_conversion(const uint8_t* rec, uint8_t gen, const GbGen1Base* 
 
   g_tested[gen]++;
   GbEditMon out; Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(rec, gen, base, &out, &loss);
+  G3GbStatus st = gen3_to_gb(rec, gen, true, base, &out, &loss);
   g_refused[gen][st]++;
   if (st != G3GB_OK) return;
   g_accepted[gen]++;
@@ -842,6 +849,177 @@ static void test_engine_gen1(const char* file) {
 }
 
 /* ============================================================================ */
+/* 5. BACKLOG #104 R1: MAKE LEGAL's evolution-level correction + written_level. */
+/* ============================================================================ */
+
+static void test_make_legal(void) {
+  printf("== 5. BACKLOG #104 R1: MAKE LEGAL level correction + written_level ==\n");
+  if (!pk_evo_have_data()) { printf("  SKIP (no evolutions table linked)\n"); return; }
+
+  /* Charizard (species 6): the chain (Charmander -> L16 Charmeleon -> L36
+   * Charizard) makes pk_evo_min_level(6) == 36 -- a real, if synthetic, "an
+   * underlevelled evolved pokemon" (Guy's own example). */
+  uint8_t rec[80];
+  gen3_build_mon(6, 20, 0x33334444u, 0xBBBB0003u, "MLTEST", 3, rec);
+
+  GbEditMon out; Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, true, NULL, &out, &loss);
+  CHECK(st == G3GB_OK, "Charizard L20 converts (%s)", g3gb_status_text(st));
+  if (st != G3GB_OK) return;
+
+  uint8_t from_lvl = 0, to_lvl = 0;
+  bool need_fix = gen3_to_gb_evo_needs_fix(&out, &from_lvl, &to_lvl);
+  CHECK(need_fix, "an underlevelled Charizard needs the MAKE LEGAL fix");
+  CHECK(from_lvl == 20, "from_level reported as 20 (got %u)", from_lvl);
+  CHECK(to_lvl == 36, "to_level reported as 36 (got %u)", to_lvl);
+
+  /* KEEP AS IS: no correction applied -- written_level is just the original's own
+   * level, same as every conversion section 2 already measured. */
+  {
+    GbEditMon keep = out;
+    GbscEntry e; gbsc_entry_from(&e, &keep, rec, 0);
+    CHECK(e.written_level == 20,
+          "KEEP AS IS: written_level == the original level (got %u)", e.written_level);
+
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &keep, back80, &rep), "KEEP AS IS: merge up (no GB edit) succeeds");
+    CHECK(!rep.level_changed, "KEEP AS IS: no GB-side edit -> level_changed is false");
+    CHECK(memcmp(back80, rec, 80) == 0, "KEEP AS IS: byte-identical to the original 80 bytes");
+  }
+
+  /* MAKE LEGAL: gb_paste_hook's own sequence -- probe (already done above), then
+   * apply exactly the level gen3_to_gb_evo_needs_fix() reported, via gb_set_level
+   * (already shipped, gb_edit.h), same as the UI slice does. */
+  GbEditMon fixed = out;
+  CHECK(gb_set_level(&fixed, to_lvl), "MAKE LEGAL: gb_set_level raises the level");
+  CHECK(gb_get_level(&fixed) == 36, "MAKE LEGAL: the GB record now shows level 36");
+
+  GbscEntry e2; gbsc_entry_from(&e2, &fixed, rec, 0);   /* rec: the TRUE original,
+                                                          * level 20, untouched --
+                                                          * design doc section 3c's
+                                                          * own rule. */
+  CHECK(e2.written_level == 36,
+        "MAKE LEGAL: written_level records the level ACTUALLY WRITTEN (got %u)", e2.written_level);
+  CHECK(memcmp(e2.original80, rec, 80) == 0,
+        "MAKE LEGAL: the sidecar's original80 is the TRUE, uncorrected original");
+
+  /* (f1) merge-up with NO further Game-Boy-side change: must restore the ORIGINAL
+   * 80 bytes EXACTLY -- the whole point of this fix. Before it, comparing against
+   * the original's own level (20) instead of written_level (36) would have read
+   * the correction as a genuine level-up and folded level 36 into the merged
+   * record instead of restoring level 20. */
+  {
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e2, &fixed, back80, &rep), "MAKE LEGAL, no further edit: merge up succeeds");
+    CHECK(!rep.level_changed, "MAKE LEGAL, no further edit: level_changed is false (this is the fix)");
+    CHECK(memcmp(back80, rec, 80) == 0,
+          "MAKE LEGAL, no further edit: restores the ORIGINAL 80 bytes exactly");
+  }
+
+  /* (f2) a REAL level-up abroad after MAKE LEGAL (36 -> 40): must still be
+   * reported and merged, exactly like today's ordinary level_changed path --
+   * MAKE LEGAL must not make genuine in-game progress invisible. */
+  {
+    GbEditMon leveled = fixed;
+    CHECK(gb_set_level(&leveled, 40), "level up further, abroad, to 40");
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e2, &leveled, back80, &rep), "MAKE LEGAL + a real level-up: merge up succeeds");
+    CHECK(rep.level_changed, "MAKE LEGAL + a real level-up: level_changed is true");
+    PkMon merged; CHECK(pk_decode_mon(back80, false, &merged), "merged record decodes");
+    pk_resolve(&merged);
+    CHECK(merged.level == 40, "the merged level reflects the real level-up (got %u)", merged.level);
+  }
+
+  /* (f3) a PRE-R1 entry (written_level == 0, the sentinel: every entry gbsc_add()
+   * wrote before this field existed has that byte at its old pad value) falls
+   * back to comparing against the ORIGINAL's own decoded level -- today's exact,
+   * unchanged behaviour, proven directly rather than assumed. A caller with an old
+   * sidecar entry and a MAKE-LEGAL-shaped write gets the pre-R1 behaviour (level
+   * folded in as a "level-up"), not a silent original-bytes restore it never had
+   * the data to promise. */
+  {
+    GbscEntry old = e2;
+    old.written_level = 0;                 /* simulate a file written before R1 */
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&old, &fixed, back80, &rep),
+          "pre-R1 entry (written_level==0): merge up succeeds");
+    CHECK(rep.level_changed,
+          "pre-R1 entry: falls back to the original's own level (unchanged pre-R1 behaviour)");
+    PkMon merged; CHECK(pk_decode_mon(back80, false, &merged), "pre-R1 entry: merged record decodes");
+    pk_resolve(&merged);
+    CHECK(merged.level == 36, "pre-R1 entry: the merged level reflects the GB value (got %u)", merged.level);
+
+    /* Same sentinel entry, but with NO level difference at all (both at the
+     * ORIGINAL's own level) -- the pre-R1 "untouched" case this field must never
+     * break. */
+    GbEditMon untouched = out;   /* level 20, same as `rec`'s own level -- never corrected */
+    GbscEntry old2; gbsc_entry_from(&old2, &untouched, rec, 0);
+    old2.written_level = 0;
+    uint8_t back80b[80]; GbscMergeReport rep2;
+    CHECK(gbsc_merge_up(&old2, &untouched, back80b, &rep2),
+          "pre-R1 entry, untouched: merge up succeeds");
+    CHECK(!rep2.level_changed, "pre-R1 entry, untouched: level_changed is false");
+    CHECK(memcmp(back80b, rec, 80) == 0,
+          "pre-R1 entry, untouched: still byte-identical (unchanged pre-R1 behaviour)");
+  }
+
+  /* (f4) a species with NO level-gated evolution constraint must never be offered
+   * a fix -- "no constraint" must never manufacture a correction. Eevee (species
+   * 133) evolves only by stone/friendship (no PK_EVO_LEVEL link), so
+   * pk_evo_min_level() reports 1 regardless of how low its own level is. */
+  {
+    uint8_t rec2[80];
+    gen3_build_mon(133, 5, 0x55556666u, 0xCCCC0004u, "NOFIX", 3, rec2);
+    GbEditMon out2; Gen3ToGbLoss loss2;
+    G3GbStatus st2 = gen3_to_gb(rec2, GB_GEN2, true, NULL, &out2, &loss2);
+    CHECK(st2 == G3GB_OK, "Eevee L5 converts (%s)", g3gb_status_text(st2));
+    if (st2 == G3GB_OK) {
+      uint8_t fl = 0, tl = 0;
+      CHECK(!gen3_to_gb_evo_needs_fix(&out2, &fl, &tl),
+            "Eevee (no level-gated evolution) is never offered a fix");
+    }
+  }
+
+  /* (f5) R1 review D1's own regression: a species standing AT or ABOVE its
+   * CHECKER floor (pk_evo_floor) must never be offered a fix, even though its
+   * TRUE evolution level (pk_evo_min_level) is higher -- these are exactly the
+   * species evolutions.h calls out as catchable below their own evolution level
+   * (Sootopolis' Super Rod Gyarados at L5, FireRed's Safari Zone Poliwhirl at
+   * L20). "4 of 5 offers on Guy's own saves were false" is what pk_evo_floor
+   * (not pk_evo_min_level) exists to fix; this pins the two measured examples
+   * directly rather than trusting the comment. */
+  {
+    /* Gyarados (species 130): pk_evo_min_level == 20 (Magikarp evolves at 20),
+     * but pk_evo_floor == 5 (the Super Rod's own L5 Gyarados) -- a L5 Gyarados is
+     * legally caught, not under-evolved, and must not be flagged. */
+    uint8_t rec3[80];
+    gen3_build_mon(130, 5, 0x77778888u, 0xDDDD0005u, "GYAOK", 3, rec3);
+    GbEditMon out3; Gen3ToGbLoss loss3;
+    G3GbStatus st3 = gen3_to_gb(rec3, GB_GEN2, true, NULL, &out3, &loss3);
+    CHECK(st3 == G3GB_OK, "Gyarados L5 converts (%s)", g3gb_status_text(st3));
+    if (st3 == G3GB_OK) {
+      uint8_t fl = 0, tl = 0;
+      CHECK(!gen3_to_gb_evo_needs_fix(&out3, &fl, &tl),
+            "Gyarados L5 (at its wild floor, below its evolution level) is not offered a fix");
+    }
+
+    /* Seaking (species 119): pk_evo_min_level == 33 (Goldeen evolves at 33), but
+     * pk_evo_floor == 20 (a wild floor below that) -- a L30 Seaking sits above
+     * ITS floor and below the true evolution level, the same shape as Gyarados. */
+    uint8_t rec4[80];
+    gen3_build_mon(119, 30, 0x9999AAAAu, 0xEEEE0006u, "SEAOK", 3, rec4);
+    GbEditMon out4; Gen3ToGbLoss loss4;
+    G3GbStatus st4 = gen3_to_gb(rec4, GB_GEN2, true, NULL, &out4, &loss4);
+    CHECK(st4 == G3GB_OK, "Seaking L30 converts (%s)", g3gb_status_text(st4));
+    if (st4 == G3GB_OK) {
+      uint8_t fl = 0, tl = 0;
+      CHECK(!gen3_to_gb_evo_needs_fix(&out4, &fl, &tl),
+            "Seaking L30 (above its own floor, below its evolution level) is not offered a fix");
+    }
+  }
+}
+
+/* ============================================================================ */
 
 int main(int argc, char** argv) {
   test_format();
@@ -875,6 +1053,7 @@ int main(int argc, char** argv) {
   }
 
   test_gb_side_changes();
+  test_make_legal();
 
   printf("== 4. engine acceptance ==\n");
   test_engine_gen2("Gold.sav");

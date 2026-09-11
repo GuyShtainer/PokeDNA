@@ -103,7 +103,11 @@
 # "BoxSource.records @20 in" / "BoxSource.get_name @28 in") instead of living here
 # unqualified, which the D5a parser now refuses the moment a second struct shares
 # the same bare offset.
-BoxSource.set_name   @32 -> banksrc_set_name gbsrc_set_name pcsrc_set_name
+BoxSource.set_name   @32 in box_options_menu,pdna_box -> banksrc_set_name gbsrc_set_name pcsrc_set_name
+# gbmon (#92): the held-item hook's address lives in k_gb_ops_gen2; its call is absorbed by -O2
+# (no @32 site), so the sweep sees it address-taken -- declare it (its chain runs through
+# pick_item, over the 256-B exemption cap). Callers of set_name qualified for the same reason.
+AppSrcOps.item       @32 in app_mon_menu_readonly -> gb_item_hook
 BoxSource.get_wp     @36 -> banksrc_get_wp gbsrc_get_wp pcsrc_get_wp
 BoxSource.set_wp     @40 -> banksrc_set_wp gbsrc_set_wp pcsrc_set_wp
 BoxSource.can_edit   @44 -> banksrc_can_edit gbsrc_can_edit app_can_edit
@@ -145,7 +149,7 @@ BoxSource.note_box @60 in pdna_box -> gbsrc_note_box
 # declaration is the UNION, same convention as every other widened offset in this file --
 # not a `tte_init_chr4c` call (there isn't one; the earlier note above was wrong about
 # WHY bmp8 is reachable, right that it needed a declaration).
-TTC.drawgProc @56 in tte_putc,tte_write -> se_drawg_s bmp16_drawg_b1cts bmp8_drawg_b1cts
+TTC.drawgProc @56 in tte_putc,tte_write -> se_drawg_s bmp16_drawg_b1cts bmp8_drawg_b1cts se_drawg_w8h16   # the 8x16 SE glyph renderer entered the full-art image with the gbmon merge (2026-09-10)
 TTC.eraseProc @60 in tte_cmd_default,tte_erase_line,tte_erase_rect,tte_erase_screen -> se_erase bmp16_erase bmp8_erase
 BoxSource.capacity   @64 -> gbsrc_capacity
 
@@ -967,3 +971,9 @@ addrtaken-ok __aeabi_d2iz
 # does not distinguish data words from pointers). Bounded by the 256-B cap. Found on the r1 lane
 # 2026-09-10 (main's link places it at 0x0800ffa0, no match).
 addrtaken-ok encode_checked
+
+# gen3_edit.c's em_get_ribbon_flag (frame 0 B) has NO callers today (b60 added it as API beside
+# em_get_ribbon_rank); its address matched a data word in the full-art image after the gbmon
+# merge (the #106 G2 coincidence class). Bounded by the 256-B cap; delete the function or
+# declare its site when a caller appears.
+addrtaken-ok em_get_ribbon_flag

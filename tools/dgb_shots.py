@@ -1401,6 +1401,177 @@ def run_b86_clock_gen1_fallback(core_mod, image_mod, rom: Path, out_dir: Path) -
 
 
 # ---------------------------------------------------------------------------------
+# BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL on a Gen 3 -> Game Boy paste.
+# ---------------------------------------------------------------------------------
+
+def run_r1_xfer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4): the KEEP AS
+    IS / MAKE LEGAL choice gb_paste_hook now offers between the existing loss screen
+    and the box-writable check, for a paste whose species is standing below its
+    evolution's minimum level.
+
+    `rom` must be `pokedna-delta-artless.gba` fused with THREE payloads, in this
+    order (tools/fuse_sav.py then tools/fuse_gb.py, --check confirms all four
+    directory entries land): an ordinary Gen-3 .sav (any works; its own contents are
+    never read by this flow -- it only exists so the boot picker has a row 0 to skip
+    past), an 80-byte raw Gen-3 box record via `fuse_sav.py --clip` (screenshot-only
+    hook, docs already ship: "so PASTE (GB) on an empty cell reachable without a
+    Gen-3 session ever having been open") built with a REAL species standing below
+    its own evolution floor (Charizard, species 6, at level 20 -- pk_evo_min_level(6)
+    == 36, walking Charmander -> L16 Charmeleon -> L36 Charizard), and ONE Game Boy
+    ROM+save via `fuse_gb.py` ("one ROM per image" per the R1 brief).
+
+    GOLD, NOT RED -- a deliberate substitution from the brief's own "Red-only"
+    wording, found and documented rather than silently swapped: gb_paste_hook's
+    Gen-1 branch needs a base-stats ROM (`GbGen1Base`, species types/catch rate --
+    Gen-1 records carry none of that themselves), and its ONLY lookup path
+    (`gb_gen1_locate_rom`, pdna_gen12.c) is an `f_open()` for "<save's own path,
+    minus extension>.gb/.gbc" -- an SD-CARD-RELATIVE FatFs open, completely
+    independent of the fused-image ROM the box grid's own art reads. PDNA_DELTA has
+    no SD card at all, so this lookup ALWAYS fails for a Gen-1 target under this
+    harness (G3GB_ERR_NEEDS_BASE -> "NO GEN-1 ROM / Put .gb here..."), before the
+    loss screen even renders -- confirmed by actually running this flow against a
+    Red-only fused image first and hitting exactly that screen, not an R1 bug.
+    Gen 2 needs no base-stats table at all (`gen3_to_gb(..., NULL, ...)` for
+    GB_GEN2), so Gold sidesteps the gap entirely and still fully exercises R1's own
+    code (the choice/correction logic does not care which Game Boy generation the
+    target is).
+
+    Nav: boot picker (row 0 Emerald, row 1 the fused Gen-2 game -- DOWN x1 -> A ->
+    S1 info -> A -> box grid, same shape as run_u4_bag()'s own boot-picker
+    sequence) -> R x13 (0-based box index 12) to reach the first box with real
+    room on Guy's own Gold.sav -- 17/20, confirmed directly against the save's own
+    bytes (tests/host_gbsurgery_tool.c --list). R needs a GENEROUS 200-frame
+    settle here, not the usual SETTLE/BIG_SETTLE -- confirmed empirically: shorter
+    settles intermittently dropped/misregistered a press with no visible sign
+    anything was wrong, landing one or more boxes short of the intended one (an
+    early draft of this same probe found a near-empty box mid-search purely by
+    accident) -> cursor to slot 17 (one of this box's 3 genuinely-empty real
+    slots) -> A -> the empty-cell action menu (CREATE / PASTE HERE / CANCEL)
+    -> DOWN x1 -> A -> gen3_to_gb() runs against the clip-seeded Charizard L20 ->
+    the EXISTING loss screen (unchanged by R1) -> A (proceed) -> the NEW R1 screen
+    (gb_paste_legal_screen): "A = KEEP AS IS" / "SELECT = MAKE LEGAL (20 -> 36)" /
+    "B = cancel" -> SELECT -> gb_set_level() raises the level, gb_paste_write()
+    commits -> back to the box grid with the corrected Charizard sitting in the
+    cell -> VIEW it to show LEVEL 36 landed for real, not just claimed by the dialog.
+
+    R1's own scope note: there is no THIRD screen between the choice and the write
+    (the design's #3e "Safety" section: the write is verified/backed-up, not
+    re-confirmed a second time) -- "the choice dialog" and "the MAKE LEGAL row with
+    a concrete level" are the SAME single screen (05 below); there is no separate
+    "confirm" screen to shoot distinctly from it -- selecting SELECT commits
+    directly, matching the brief's own "additive, no new screen kind" design. The write itself is proven by the host tests (host_gen3gb_test / host_xfer_roundtrip_test); PDNA_DELTA has no SD., not just in dialog text."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "r1_")
+    print("== BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL on a Gen 3 -> Game Boy paste ==")
+
+    s.run(700)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # Emerald (row 0) -> Gold (row 1)
+    s.tap("A", settle=60)                                   # pick it -> S1 info
+    s.tap("A", settle=60)                                   # -> box grid (rom_gbsprite cold fetch)
+    s.run(GB_ART_COLD_SETTLE)
+    s.shot("01_box_grid", "BACKLOG #104 R1: Gold's box grid, boot-picker -> standalone "
+                           "(g_clip pre-seeded with a Charizard at L20 -- fuse_sav.py "
+                           "--clip, screenshot-only, no Gen-3 session ever opened). "
+                           "BOX1, 20/20 -- no room here, see the R x13 below.")
+
+    # BOX1..BOX12 (0-based box index 0..11) are all 20/20 on Guy's own Gold.sav;
+    # BOX13 (0-based index 12) is the first with room -- count=17, slots 17..19
+    # genuinely empty within its own 20-slot capacity (confirmed directly: the host
+    # surgery tool's --list against the real Gold.sav shows "box 12: count=17,
+    # slot 0: dex=241 ... MILTANK", matching what this same R x13 lands on below,
+    # species-by-species). R needs a GENEROUS 200-frame settle here, confirmed by a
+    # direct probe against known box contents -- shorter settles (BIG_SETTLE=40, or
+    # even 80) intermittently dropped presses, landing one or more boxes short with
+    # no visible sign anything was wrong (an earlier draft of this same flow found
+    # a near-empty box mid-probe purely by accident, not by design).
+    s.press_n("R", 13, settle=200)
+    # Same drop-prone input path as R above -- DOWN/RIGHT also need a settle well
+    # past SETTLE (12 frames): a probe at the default settle landed on slot 13
+    # (GYARADOS, still occupied) instead of the intended slot 17, one of THREE
+    # RIGHT presses having been swallowed silently. 80 frames, confirmed directly
+    # against the known slot contents (slot 16 = LAPRAS, the last occupant; slot
+    # 17 = the first empty one), is reliable.
+    s.press_n("DOWN", 2, settle=80)
+    s.press_n("RIGHT", 5, settle=80)                        # slot 17 -- empty (count=17 here)
+    s.shot("02_cursor_on_empty_cell", "BACKLOG #104 R1: BOX13 (R x13 from BOX1, "
+                                       "17/20 -- the first box with room), cursor "
+                                       "parked on an empty cell before pressing A")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # empty-cell action menu
+    s.press_n("DOWN", 1, settle=80)                         # CREATE (default) -> PASTE HERE
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # PASTE HERE -> gen3_to_gb() -> loss screen
+    s.shot("03_loss_screen", "BACKLOG #104 R1: the EXISTING loss screen, unchanged -- "
+                              "what a Gen3->GB transfer drops regardless of which "
+                              "choice R1 adds after it")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # proceed -> the NEW R1 screen
+    s.shot("04_legal_choice", "BACKLOG #104 R1: the KEEP AS IS / MAKE LEGAL choice, "
+                               "a SEPARATE screen (not a row squeezed onto the loss "
+                               "screen, which has no room left -- see the layout "
+                               "comment in source/pdna_layout.h). Title 'SEND TO "
+                               "GAME BOY'; D3 review row 'CHARIZARD evolves at L36; "
+                               "this one is L20.' first (Charizard's checker floor "
+                               "IS its true evolution level, so 'evolves at' is the "
+                               "honest wording here); row 'A = KEEP AS IS'; row "
+                               "'SELECT = MAKE LEGAL (20 -> 36)' -- the concrete "
+                               "level this specific underlevelled Charizard needs "
+                               "(pk_evo_min_level(6) == 36); D3 review row 'Either "
+                               "way it comes back unchanged.' in dim text; 'B = "
+                               "cancel' below. This is also the shot for 'the MAKE "
+                               "LEGAL row with a concrete level' -- same screen, "
+                               "same row.")
+
+    # D3 review: the B-cancel path the review took directly, not just claimed by the
+    # dialog's own "B = cancel" hint text -- pressing B here must return to the box
+    # grid with NO SIDECAR dialog (gb_paste_hook's own "B here cancels the whole
+    # transfer, nothing written" contract, pdna_gen12.c's own comment on this
+    # screen), and the cell must still be empty (the sidecar/gbs_insert/gb_persist
+    # sequence never ran). Re-entered immediately after so the SAME probe run also
+    # covers the MAKE LEGAL path (05/06 below) -- a screenshot session cannot resolve
+    # a single dialog instance two different ways.
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # cancel -> back to the box grid
+    s.shot("04b_b_cancel", "BACKLOG #104 R1 review: B on the choice screen cancels "
+                            "the WHOLE transfer -- back at the box grid, cell 17 "
+                            "still the empty-cell action menu (CREATE / PASTE HERE "
+                            "/ CANCEL), no SIDECAR dialog and nothing written. "
+                            "Re-entering the same cell below to also exercise MAKE "
+                            "LEGAL (05/06) -- a single dialog instance cannot be "
+                            "resolved both ways.")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # same empty cell -> action menu again
+    s.press_n("DOWN", 1, settle=80)                         # CREATE (default) -> PASTE HERE
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # PASTE HERE -> gen3_to_gb() -> loss screen (again)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # proceed -> the R1 screen (again)
+
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # choose MAKE LEGAL -> gb_paste_write()
+    s.shot("05_sd_refusal_hardware_only", "BACKLOG #104 R1: SELECT registered cleanly "
+                           "(no crash, no corruption) and gb_paste_write() ran -- but "
+                           "PDNA_DELTA has NO SD card at all, so f_mkdir(PDNA_SIDECAR_DIR) "
+                           "always fails here ('SIDECAR FOLDER / Nothing transferred.') -- "
+                           "the SAME refusal ANY Gen3->GB write hits in this build, "
+                           "pre-existing and unrelated to R1 (the brief's own words: "
+                           "'the delta build's in-session refusal keep today's behaviour "
+                           "-- the dialog still shows; the refusal follows as before'). "
+                           "The actual WRITE landing with the corrected level (36, not "
+                           "20) is proven byte-for-byte by the host test instead -- "
+                           "tests/host_gen3gb_test.c section 5 and "
+                           "tests/host_xfer_roundtrip_test.c section C -- HARDWARE/HOST-"
+                           "ONLY proof, flagged per the standing convention, not faked "
+                           "here by pretending this emulator wrote to a card it does "
+                           "not have.")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> back to the box grid
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # the SAME cell -> still the empty-cell menu
+    s.shot("06_cell_still_empty_no_corruption", "BACKLOG #104 R1: the cell is STILL "
+                           "the empty-cell action menu (CREATE / PASTE HERE / CANCEL), "
+                           "not a half-written mon -- the refused write left nothing "
+                           "behind, matching the sidecar-first safety pattern (hard "
+                           "rule 3): a write that cannot land refuses cleanly rather "
+                           "than partially committing.")
+    return s
+
+
+# ---------------------------------------------------------------------------------
 # BACKLOG #68b: cold-start timing, WITH vs WITHOUT the fused LOC payloads.
 # ---------------------------------------------------------------------------------
 # The rest of this file drives NAVIGATION (a fixed settle after each tap, calibrated
@@ -1618,6 +1789,19 @@ def main(argv=None) -> int:
                           "matching this choice (Crystal.gbc+Crystal.sav, or "
                           "Red.gb+Red.sav for the Gen-1 fallback shot), same "
                           "single-ROM posture as --d7-gold")
+    ap.add_argument("--r1-xfer", action="store_true",
+                     help="BACKLOG #104 R1: only run_r1_xfer() against --image -- "
+                          "--image MUST be pokedna-delta-artless.gba fused with an "
+                          "ordinary Gen-3 .sav, an 80-byte clip record for an "
+                          "underlevelled evolved species (fuse_sav.py --clip), and "
+                          "Gold.gbc+Gold.sav (fuse_gb.py, ONE Game Boy ROM -- GOLD, "
+                          "not Red: see run_r1_xfer()'s own docstring for why)")
+    ap.add_argument("--gbmon", action="store_true",
+                     help="BACKLOG #92: only run_gbmon() against --image -- the new "
+                          "ITEM row on the Gen-2 mon menu. --image MUST be a "
+                          "Gen-2-only fused image (Gold.gbc+Gold.sav or "
+                          "Crystal.gbc+Crystal.sav, tools/fuse_gb.py, one ROM per "
+                          "image -- BACKLOG #98)")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -1748,6 +1932,20 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b86 clock ({a.b86_clock}): {e}")
+    if a.r1_xfer:
+        try:
+            sess = run_r1_xfer(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] r1 xfer: {e}")
+    if a.gbmon:
+        try:
+            sess = run_gbmon(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] gbmon: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -1774,6 +1972,298 @@ def main(argv=None) -> int:
     for name, reason in skipped:
         print(f"  [skip] {name}: {reason}")
     return 0
+
+
+def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #92: the new ITEM row on the Gen-1/2 mon-menu popup
+    (app_mon_menu_readonly, pdna_main.c) -- Gen 2 only. `rom` must be a Gen-2-only
+    fused image (Gold.gbc+Gold.sav or Crystal.gbc+Crystal.sav, tools/fuse_gb.py,
+    ONE ROM per image -- BACKLOG #98's fused-image-by-generation harness gap, same
+    constraint run_d7_gold()/run_u4_bag() already document).
+
+    A single-ROM fused image has no Emerald/Gen-3 save fused in, so
+    gb_delta_boot_pick()'s own `if (n == 1) return 0` (pdna_main.c ~8913) skips the
+    boot picker entirely -- exactly run_d7_gold()'s own nav, ONE tap (A: S1 info ->
+    box grid), not the DOWN+A+A a combined multi-ROM image needs.
+
+    Guy's own roms/gb corpus has every box on every save completely full (a
+    "living dex" test save -- run_standalone()'s own doc comment), so the box
+    grid's default cursor position (top-left) is always occupied; no navigation
+    is needed before the first A.
+
+    Row order verified here matches BACKLOG #92's brief: VIEW/EDIT, ITEM,
+    LEGALITY, MOVE TO BOX, COPY, RELEASE, CANCEL -- ITEM sits where Gen 3's own
+    A_ITEM does (right after the summary row), not where the pre-#92 comment in
+    app_mon_menu_readonly (pdna_main.c) said Gen 3 "has no separate Item row" to
+    make room for -- that comment is now stale for a Gen-2 mount specifically
+    (updated alongside this row, not left to drift)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbmon_")
+    print("== BACKLOG #92: the Gen-2 mon-menu ITEM row ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image,
+                                                               # no boot picker -- same nav as d7_gold)
+    s.run(GB_ART_COLD_SETTLE)
+    s.shot("01_box_grid", "#92: box grid, top-left cell occupied (this corpus's "
+                           "every box is full) -- the mon this run's ITEM row "
+                           "edits")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # occupied cell -> its menu
+    s.shot("02_mon_menu", "#92: the Gen-2 mon-menu popup now reads VIEW/EDIT, "
+                           "ITEM, LEGALITY, MOVE TO BOX, COPY, RELEASE, CANCEL -- "
+                           "ITEM is the NEW row (AppSrcOps.item / gb_item_hook, "
+                           "k_gb_ops_gen2), sitting right after VIEW/EDIT exactly "
+                           "where Gen 3's own A_ITEM sits in app_mon_menu's order")
+
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # VIEW/EDIT (row 0) -> ITEM (row 1)
+    s.shot("03_item_row_selected", "#92: cursor on the ITEM row")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> pick_item(), restricted (1..255, "#n")
+    s.shot("04_item_picker", "#92: gb_item_hook opens the SAME pick_item() screen "
+                              "app_quick_item (Gen 3) uses, restricted to ids "
+                              "1..255 shown as \"#n\" via pick_item_set_gen1_2_max "
+                              "-- the identical restricted mode gb_editor.c's own "
+                              "GBE_ITEM row already uses inside the full summary "
+                              "editor, now reachable straight from the mon menu too")
+
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # move off the current selection
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # confirm -> gb_set_held_item + gb_edit_commit
+                                                               # (steps 3-5, the same load/commit path EDIT
+                                                               # uses) -> gb_persist()'s PDNA_DELTA branch
+    s.shot("05_delta_refusal", "#92: gb_edit_commit's step 5 (gb_persist) hits the "
+                                "SAME PDNA_DELTA in-session-only branch run_standalone's "
+                                "own D2/D5 shots (06/13) do -- 'Edits are in-session "
+                                "only in the emulator build.' The write DID land in "
+                                "EWRAM (pristine is re-baselined right here, same as "
+                                "D2's fix); nothing is lost, just not persisted to a "
+                                "card that does not exist under mGBA")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> back at the box grid
+    s.shot("06_back_at_grid", "#92: dismissing the refusal returns to the box grid, "
+                               "re-paged (g_m->loaded = -1 forces the reload, same "
+                               "as every other GB write path)")
+
+    # A short idle run before reopening the menu (past the re-page's own repaint) --
+    # without it, a second A right after the dismiss-A landed on the SAME popup
+    # again instead of selecting VIEW/EDIT (a settle-timing quirk against this
+    # specific state, not a #92/#95 defect -- isolated by hand: the identical two
+    # A-taps work first time, straight off the box grid, with no picker/refusal
+    # cycle in between).
+    s.run(120)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # same cell -> menu again
+    s.shot("07_menu_holding_item", "#92: opening the cell's menu again already "
+                                    "confirms the write on its own -- the header "
+                                    "now reads 'Converted copy / Holding an item' "
+                                    "(it read plain 'Converted copy' in shot 02, "
+                                    "before ITEM was used) -- gb_item_hook's write "
+                                    "landed on the in-EWRAM record, not just on the "
+                                    "picker's own display")
+
+    s.run(60)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # VIEW/EDIT -> the native summary
+    s.shot("08_summary_item_confirmed", "#92: VIEW/EDIT opens the native GB summary, "
+                                         "where the SAME record's Item field (INFO "
+                                         "panel) now reads '#2' -- the exact id picked "
+                                         "in shot 04 -- confirming the mon-menu row's "
+                                         "write landed on the record, not just on the "
+                                         "picker's own display")
+
+    # -------------------------------------------------------------------------
+    # BACKLOG #95: the summary-field parity audit's closed gaps -- Shiny, Egg, and
+    # Met Time/Level/Loc/OT Gender, all new GBE_* rows in gb_editor.c reachable from
+    # here via SELECT (pdna_gbedit.c's flat field-list editor, the reviewed
+    # fallback BACKLOG #41 already documents).
+    # -------------------------------------------------------------------------
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # summary -> the flat editor
+    # A generous idle pad before the first input on this screen -- without it, the
+    # first DOWN (and only the first) silently did not move the cursor, a timing
+    # quirk against this specific "picker -> refusal -> re-page -> menu -> summary
+    # -> SELECT" run of screens (isolated by hand: the SAME editor, reached by a
+    # plain two-tap A,A + SELECT off a fresh box grid, takes ordinary SETTLE-length
+    # DOWNs with no pad needed at all -- see this file's own git history for the
+    # isolation). Not a #92/#95 defect; every DOWN below gets the same larger pad
+    # to stay safely inside whatever margin actually fixed it.
+    s.run(200)
+    s.shot("09_flat_editor_top", "#95: pdna_gbedit.c's flat field-list editor over "
+                                  "the SAME record -- gbe_fields() drives every row "
+                                  "generically, so the six new rows this slice adds "
+                                  "appear here with zero screen-side code")
+
+    # ---------------------------------------------------------------------------
+    # gbmon C4 reshoot: the Mail confirm. ITEM is row 4 (NICK=0,OT=1,OTID=2,LEVEL=3,
+    # ITEM=4) -- a short detour off row 0, back to row 0 before the 29-DOWN scroll
+    # below (which is calibrated to start there). item_build()'s restricted-mode
+    # search is a NUMERIC PREFIX match (source/pdna_pick.c, item_build's own
+    # comment), so typing "158" through osk_search finds item id 158 (G2_MAIL_FLOWER,
+    # source/gb_session.c) directly rather than paging one id at a time. Declined
+    # (B = no, source/pdna_main.c's app_confirm) so the record's held item stays at
+    # #2 (set back in shot 05) -- an ACCEPT here would zero out gb_set_egg's own
+    # "no item" precondition for the later Egg-refusal shot below, which depends on
+    # the item staying non-zero.
+    # ---------------------------------------------------------------------------
+    s.press_n("DOWN", 4, settle=60)                         # NICK (0) -> ITEM (4)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> pick_item(), current = #2
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                # -> osk_search
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '1' (row0 col0, no seed to clear)
+    s.press_n("RIGHT", 4, settle=gb_shots.SETTLE)           # col0 '1' -> col4 '5'
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '5' -> field "15"
+    s.press_n("RIGHT", 3, settle=gb_shots.SETTLE)           # col4 '5' -> col7 '8'
+    s.tap("A", settle=gb_shots.SETTLE)                      # type '8' -> field "158"
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # confirm search -> filtered to id 158
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # select id 158 (G2_MAIL_FLOWER) ->
+                                                              # gbs_is_mail_item(158) true, no Egg yet
+                                                              # -> app_confirm(PDNA_GBEDIT_MAIL_TITLE)
+    s.shot("mail_confirm", "#95: gbmon C4 reshoot: picking a Mail id (158, G2_MAIL_FLOWER) "
+                            "on the ITEM row triggers app_confirm(PDNA_GBEDIT_MAIL_TITLE, "
+                            "PDNA_GBEDIT_MAIL_L1) -- 'SET THIS MAIL ITEM? / No mailbox: "
+                            "locks Move/Release.' -- since this tree tracks no mailbox "
+                            "(gbs_is_mail_item, gb_session.h)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # decline -> item unchanged (#2)
+    s.shot("mail_declined", "#95: gbmon C4 reshoot: B declines -- back on the ITEM row, "
+                             "unchanged (still '#2' from shot 05); a declined confirm "
+                             "must not silently set the item anyway")
+    s.press_n("UP", 4, settle=60)                           # ITEM (4) -> NICK (0), back where
+                                                              # the 29-DOWN scroll below expects
+                                                              # to start
+
+    # NICK,OT,OTID,LEVEL,ITEM,FRIEND (6) + MV0-3 (4) + PPU0-3 (4) + PP0-3 (4) +
+    # DVA,DVD,DVS,DVC,DVH (5) + GENDER (1, Bulbasaur has a real gender ratio) = 24
+    # rows before SHINY -- 29 DOWNs lands on Met OT Gender (row 29), scrolling the
+    # 16-row window to show DVA..Met OT Gender (rows 14-29) in one screen: every
+    # new row from this slice, in the SAME shot. Taken in THREE chunks, each ending
+    # in a real shot() call -- one long chunk of 29 raw taps with no shot() in
+    # between reliably lands back on row 0 against this exact multi-screen run (a
+    # harness quirk isolated by hand: a shot() call between chunks fixes it every
+    # time, on this same image, same history, same everything else -- not a
+    # #92/#95 product defect; the flat editor's own row model is independently
+    # proven by host_gbeditor_test.c's 461,230 checks over real saves).
+    s.press_n("DOWN", 10, settle=60)
+    s.shot("10a_scrolling", "#95: 10 DOWNs in -- cursor on Max PP 1, still well "
+                             "above the new rows")
+    s.press_n("DOWN", 10, settle=60)
+    s.shot("10b_scrolling", "#95: 20 DOWNs in -- cursor on DV Spe, Gender/Shiny/Egg/"
+                             "Met just a few rows further down")
+    # gbmon C11 reshoot: the four Met rows (gb_editor.c's gbe_fields) are gated on
+    # e->has_caught, which gb_mark_caught (source/pdna_gen12.c) only ever sets true
+    # for a Crystal session (gb_session_is_crystal) -- Gold/Silver never gets them.
+    # "gold" appears in every Gold-only fused image this script builds and nowhere
+    # in a Crystal one (crystal_only.gba / crystal_forced.gba), so this is an exact
+    # discriminator for THIS harness's own naming convention, not a guess.
+    is_crystal = "gold" not in rom.name.lower()
+    s.press_n("DOWN", 9, settle=60)
+    if is_crystal:
+        s.shot("10_new_rows_visible", "#95: C11 reshoot: 29 DOWNs in -- Shiny and Egg "
+                                       "both 'No', and the four Met fields VISIBLE, "
+                                       "carrying this real Crystal.sav mon's own "
+                                       "capture record (Met Time 'Morning', a level, "
+                                       "Met Loc '#16', Met OT Gender 'M') -- decoded, "
+                                       "not invented, sitting right where Gen 3's own "
+                                       "F_SHINY and F_MET* rows sit in pdna_edit.c's "
+                                       "row order. gb_mark_caught set has_caught=true "
+                                       "for this Crystal session (gb_session_is_crystal)")
+    else:
+        s.shot("10_new_rows_visible", "#95: C11 reshoot: 29 DOWNs in on a GOLD-only image -- "
+                                       "count the rows: Shiny, Egg, then StatExp HP/"
+                                       "Atk/Def/Spe -- the four Met rows are ABSENT. "
+                                       "gb_mark_caught (source/pdna_gen12.c) never sets "
+                                       "has_caught true for a Gold/Silver session "
+                                       "(gb_session_is_crystal returns false), and "
+                                       "gbe_fields() (gb_editor.c) skips GBE_METTIME/"
+                                       "METLEVEL/METLOC/METOTGENDER outright when "
+                                       "!e->has_caught -- the C11 fix's own point: a "
+                                       "Gen-2 target no longer gets a capture record "
+                                       "just because it is Gen 2")
+
+    # This fused image's top-left cell may or may not be the Atk-DV-forced-female
+    # Bulbasaur (crystal_forced.gba only, built specifically so this species' 7:1-
+    # male ratio has NO shiny candidate in its current gender -- see gbmon's own
+    # BACKLOG #95 item 4 brief). Every OTHER fused image (Gold, the plain Crystal
+    # corpus) has this same box-0-slot-0 Bulbasaur at its REAL corpus gender
+    # (already male in both, so Shiny ON keeps it male trivially -- no popup at
+    # all): detect by filename, per this file's own d7_gold precedent, rather
+    # than probing the frame, so the two paths cannot silently diverge on a typo.
+    forced_gender_image = "forced" in rom.name.lower()
+    s.press_n("UP", 5, settle=60)                           # Met OT Gender (29) -> Shiny (24)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle ON
+    if forced_gender_image:
+        s.shot("11_shiny_on", "#95: gbmon C3 reshoot: this fused image's top-left cell is "
+                               "Bulbasaur with Atk DV forced to 1 (gender ratio 31, 7:1 "
+                               "male) -- currently FEMALE, and none of the 8 shiny Atk-DV "
+                               "candidates {2,3,6,7,10,11,14,15} is in the female range "
+                               "(dv<=1) at that ratio, so A on Shiny is FORCED to move "
+                               "gender: gbe_flip_shiny() sets shiny_gender_forced and "
+                               "pdna_gbedit.c's gbedit_shiny_forced_note() pops the "
+                               "PDNA_GBEDIT_SHINY_FORCED_TITLE/MALE_L1/L2 message "
+                               "immediately ('GENDER FORCED / No shiny female exists for "
+                               "this species; it is now male.') -- gb_editor.c's own C2 "
+                               "case, now shown live instead of only host-tested")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # dismiss the forced-gender popup
+        s.shot("11b_shiny_on_dismissed", "#95: gbmon C3 reshoot: A dismisses the popup, back "
+                                          "on the flat editor -- Shiny now reads 'Yes' and "
+                                          "the Gender row above it (not shown in this crop) "
+                                          "now reads male, matching the forced result")
+    else:
+        s.shot("11_shiny_on", "#95: A on Shiny flips it to 'Yes' -- this corpus mon is "
+                               "already male and a male shiny Atk-DV candidate exists "
+                               "(gbe_flip_shiny() keeps the current gender when it can), "
+                               "so no forced-gender popup fires here -- see the gbmon "
+                               "C3 reshoot's own crystal_forced image for that case, "
+                               "built with Atk DV set to 1 specifically so no shiny "
+                               "candidate shares this 7:1-male species' female gender")
+
+    s.tap("DOWN", settle=60)                                # Shiny -> Egg
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle ON -- refused: this record
+                                                              # already holds item #2 (shot 05)
+    s.shot("12_egg_refused", "#95: gbmon C10 reshoot: A on Egg is REFUSED, not silently "
+                              "ignored -- this record already holds item #2 (planted "
+                              "back in shot 05 via the mon-menu ITEM row), and "
+                              "gb_set_egg(e, true) refuses outright while the held-item "
+                              "field is non-zero (review C5, gb_edit.c). C10 wires the "
+                              "refusal to a real message: gbedit_adjust_refused's "
+                              "GBE_EGG case pops PDNA_GBEDIT_EGG_ITEM_TITLE/L1 -- 'EGG "
+                              "CAN'T HOLD ITEMS / Remove the held item first.' -- the "
+                              "SAME message pdna_gbedit.c's GBE_K_ITEM branch shows for "
+                              "the other direction (a non-zero item picked while the "
+                              "record IS an Egg), reused rather than duplicated")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -- Egg never moved,
+                                                              # cursor still on the Egg row
+    s.shot("12b_egg_refused_dismissed", "#95: gbmon C10 reshoot: A dismisses the message; "
+                                         "back on the flat editor with Egg still 'No' -- "
+                                         "the refusal left the record untouched, exactly "
+                                         "like every other GBE_K_NUM refusal in this row")
+
+    if is_crystal:
+        s.tap("DOWN", settle=60)                            # Egg -> Met Time
+        s.tap("RIGHT", settle=60)                           # None -> Morning
+        s.tap("RIGHT", settle=60)                           # Morning -> Day
+        s.tap("RIGHT", settle=60)                           # Day -> Night
+        s.tap("DOWN", settle=60)                            # Met Time -> Met Level
+        s.press_n("RIGHT", 5, settle=60)                    # Met Level 0 -> 5
+        s.shot("13_met_edited", "#95: Met Time cycled to 'Night' and Met Level bumped "
+                                 "by +5 (RIGHT x5) to whatever this real Crystal.sav "
+                                 "record's own original level was + 5 -- gb_set_caught() "
+                                 "repacking bytes 0x1D/0x1E one field at a time via the "
+                                 "new gb_get_caught_* readers, the same 'read the other "
+                                 "three, write all four back' shape Gen 3's own "
+                                 "F_METLEVEL/F_METGAME rows use over metLocation/metGame")
+    else:
+        # No Met rows exist to edit on Gold -- the row right after Egg is StatExp HP
+        # (gbe_fields()'s next entry once METTIME..METOTGENDER are skipped). Edited
+        # anyway (same DOWN/RIGHT shape) so this run still ends on a real edited-field
+        # shot rather than stopping short, and to keep this function's tap count
+        # identical between the two branches (only the CAPTION differs, matching what
+        # is actually on screen -- see the C11 reshoot comment above shot 10).
+        s.tap("DOWN", settle=60)                            # Egg -> StatExp HP
+        s.press_n("RIGHT", 3, settle=60)
+        s.tap("DOWN", settle=60)                            # StatExp HP -> StatExp Atk
+        s.press_n("RIGHT", 5, settle=60)
+        s.shot("13_statexp_edited", "#95: C11 reshoot: with no Met rows to land on, the "
+                                     "same DOWN/RIGHT taps instead land on StatExp HP "
+                                     "then StatExp Atk (gbe_fields()'s next entries "
+                                     "after Egg on a Gold session) -- proof the row "
+                                     "list genuinely reflows around the absent Met "
+                                     "rows rather than leaving a gap or a stale cursor")
+    return s
 
 
 if __name__ == "__main__":

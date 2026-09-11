@@ -660,8 +660,11 @@ static const GbGen1Base* g1_base_for(uint16_t dex) {
 }
 
 /* Apply a battery of edits to slot 0 of `box`, commit, and prove with the SHIPPING
- * parser that every one of them landed where it was meant to. */
-static void edit_and_verify(uint8_t gen, uint8_t* list, int box, const char* what) {
+ * parser that every one of them landed where it was meant to. `crystal` only matters
+ * for gen == GB_GEN2: whether this fixture's own save is Crystal (gb_set_caught may
+ * write) or G/S (it must refuse -- BACKLOG #95 review C1, GbEditMon.has_caught). */
+static void edit_and_verify(uint8_t gen, uint8_t* list, int box, const char* what,
+                            bool crystal) {
   GbEditMon e, back;
   GbIssues iss;
   uint16_t new_dex = (gen == GB_GEN1) ? 3u : 251u;
@@ -670,6 +673,17 @@ static void edit_and_verify(uint8_t gen, uint8_t* list, int box, const char* wha
 
   if (!gb_load(&e, gen, list, box, 0)) { CHECK(0, "load slot 0"); return; }
   CHECK(gb_roundtrip_ok(gen, list, box, 0), "load -> commit must be byte-identical");
+
+  if (gen == GB_GEN2) {
+    gb_set_caught_available(&e, crystal);
+    /* Box 5 slot 0 of this fixture is an adversarial Egg (TOGEPI, GBF_F_EGG,
+     * tests/gen12_fixture.c) -- gb_set_held_item now refuses a non-zero item on an
+     * Egg (BACKLOG #95 review C5), so un-egg it first: this generic battery is
+     * about every OTHER setter, and test_egg() below already covers the Egg case
+     * on its own, including that it refuses an item. */
+    if (gb_is_egg(&e))
+      CHECK(gb_set_egg(&e, false), "un-egg for the generic setter battery");
+  }
 
   CHECK(gb_set_species(&e, new_dex, g1_base_for(new_dex)), "set species");
   CHECK(gb_set_level(&e, 57), "set level");
@@ -692,7 +706,11 @@ static void edit_and_verify(uint8_t gen, uint8_t* list, int box, const char* wha
     CHECK(gb_set_held_item(&e, 0x2A), "held item");
     CHECK(gb_set_friendship(&e, 200), "friendship");
     CHECK(gb_set_pokerus(&e, 0x34), "pokerus");
-    CHECK(gb_set_caught(&e, 2, 41, 12, 1), "caught data");
+    if (crystal)
+      CHECK(gb_set_caught(&e, 2, 41, 12, 1), "caught data");
+    else
+      REFUSED(gb_set_caught(&e, 2, 41, 12, 1),
+              "Gold/Silver: bytes 0x1D/0x1E are Unused1/Unused2, not a capture record");
     REFUSED(gb_set_gen1_base(&e, g1_base_for(3)), "Gen-1 base data on a Gen-2 record");
   } else {
     REFUSED(gb_set_held_item(&e, 5), "a Gen-1 record has no held item");
@@ -725,6 +743,18 @@ static void edit_and_verify(uint8_t gen, uint8_t* list, int box, const char* wha
   if (gen == GB_GEN2) {
     CHECK(gb_get_held_item(&back) == 0x2A, "held item survived");
     CHECK(back.rec[0x1B] == 200 && back.rec[0x1C] == 0x34, "friendship and pokerus survived");
+    /* BACKLOG #95: the new read-only companions to gb_set_caught(2, 41, 12, 1) above --
+     * same round trip, through the getters a new GBE_MET* row will actually call.
+     * Crystal-only: the set itself was refused on G/S above, so there is nothing to
+     * have survived (the getters still just read whatever bytes are there -- they
+     * are not has_caught-gated, only the setter is -- but asserting specific values
+     * against a refused write would be asserting fixture noise, not this module). */
+    if (crystal) {
+      CHECK(gb_get_caught_time(&back) == 2, "caught time survived");
+      CHECK(gb_get_caught_level(&back) == 41, "caught level survived");
+      CHECK(gb_get_caught_loc(&back) == 12, "caught location survived");
+      CHECK(gb_get_caught_ot_gender(&back) == 1, "caught OT gender survived");
+    }
   }
   printf("  %s: all setters verified through the shipping parser\n", what);
 }
@@ -738,8 +768,8 @@ static void test_setters_on_fixture(void) {
     uint32_t n = gbf_build(GBF_RBY, g_img, 0);
     CHECK(gen1_open(g_img, n, &s) == GEN1_OK, "the fixture's R/B/Y save parses");
     edit_and_verify(GB_GEN1, g_img + gen1_list_offset(&s, gbf_current_box(GBF_RBY)),
-                    gbf_current_box(GBF_RBY), "Gen 1, the live current box");
-    edit_and_verify(GB_GEN1, g_img + GEN1_OFF_PARTY, GEN1_PARTY_BOX, "Gen 1, the party");
+                    gbf_current_box(GBF_RBY), "Gen 1, the live current box", false);
+    edit_and_verify(GB_GEN1, g_img + GEN1_OFF_PARTY, GEN1_PARTY_BOX, "Gen 1, the party", false);
   }
   /* --- Gen 2, both versions --- */
   {
@@ -750,14 +780,15 @@ static void test_setters_on_fixture(void) {
       G2Save sv; G2Header hd;
       uint32_t n = gbf_build(games[gi], g_img, 0);
       char buf[64];
+      bool crystal = (games[gi] == GBF_CRYSTAL);
       CHECK(g2_detect(g_img, n, &sv), "the fixture's Gen-2 save parses");
       CHECK(g2_read_header(g_img, &sv, &hd), "read the Gen-2 header");
       snprintf(buf, sizeof buf, "%s, the live current box", nm[gi]);
       edit_and_verify(GB_GEN2, g_img + g2_list_offset(&sv, hd.current_box, hd.current_box),
-                      hd.current_box, buf);
+                      hd.current_box, buf, crystal);
       snprintf(buf, sizeof buf, "%s, the party", nm[gi]);
       edit_and_verify(GB_GEN2, g_img + g2_list_offset(&sv, G2_BOX_PARTY, hd.current_box),
-                      G2_BOX_PARTY, buf);
+                      G2_BOX_PARTY, buf, crystal);
     }
   }
 }

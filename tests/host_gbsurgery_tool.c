@@ -201,6 +201,16 @@ static void usage(const char* prog) {
     "                               this save's own generation.\n"
     "  --op boxname BOX TEXT       BACKLOG #94, via gb_boxnames.h: renames box BOX\n"
     "                               (0..13). Gen 1 refused (no box names).\n"
+    "  --op helditem BOX SLOT ID   BACKLOG #95 review gate case: sets the held-item\n"
+    "                               field on one mon (0..255). Gen 1 refused (rec+0x01\n"
+    "                               is current HP there); a non-zero item on an Egg\n"
+    "                               refused.\n"
+    "  --op caught BOX SLOT T:L:LOC:G\n"
+    "                               BACKLOG #95 review gate case: writes the capture\n"
+    "                               record (time/level/loc/OT-gender, each 0..255,\n"
+    "                               colon-separated) through the SAME Crystal-only gate\n"
+    "                               the live editor uses (gb_session_is_crystal). Gen 1\n"
+    "                               and Gold/Silver both refused.\n"
     "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -214,7 +224,13 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"create", 2},
     {"badges", 1}, {"name", 1}, {"badges2", 2},
     {"item", 3},
-    {"daycare", 2}, {"clockshift", 4}, {"clockreset", 0}, {"clockclear", 0}, {"fly", 1}, {"boxname", 2},
+    {"daycare", 2}, {"clockshift", 4}, {"clockreset", 0}, {"fly", 1}, {"boxname", 2},
+    /* -- append new ops HERE, last, one per line, with a marker comment (u5/gbdata
+     * lanes append here too -- keeping new entries at the tail keeps concurrent
+     * additions from the other lanes a clean append-only diff instead of a conflict). */
+    {"helditem", 3},   /* BACKLOG #95 review gate case: BOX SLOT ID */
+    {"caught", 3},     /* BACKLOG #95 review gate case: BOX SLOT time:level:loc:gender */
+    {"clockclear", 0}, /* BACKLOG #86/#108: dismiss the clock-error banner */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -762,6 +778,69 @@ static int do_boxname(GbSession* s, const char* box_tok, const char* text) {
   return 0;
 }
 
+/* BACKLOG #95 review gate case: the held-item field on ONE mon, box-shaped exactly
+ * like do_level/do_text above (gbs_load_list -> gb_load -> setter -> gb_commit_checked
+ * -> gbs_commit_list). gb_set_held_item itself refuses a Gen-1 record (rec+0x01 is
+ * current HP there, not an item) and a non-zero item on a Gen-2 Egg (review C5) --
+ * both surface here as an ordinary refusal, not a crash, so tools/gb_retail_gate.py
+ * can drive this against a real Gold AND a real Crystal boot and read back the WRAM
+ * party struct to prove the write actually reached the booted game. */
+static int do_helditem(GbSession* s, int box, int slot, const char* id_tok) {
+  int id = resolve_uint(id_tok, "held item id");
+  if (id < 0) return 2;
+  if (id > 255) { fprintf(stderr, "held item id must be 0..255\n"); return 2; }
+  GbsStatus ls = gbs_load_list(s, box, g_list);
+  if (ls != GBS_OK) return refuse(gbs_status_text(ls));
+  GbEditMon e;
+  if (!gb_load(&e, s->gen, g_list, box, slot))
+    return refuse("gb_load: bad box/slot for this generation");
+  if (!gb_set_held_item(&e, (uint8_t)id))
+    return refuse("gb_set_held_item refused (Gen 1, or a non-zero item on an Egg)");
+  if (!gb_commit_checked(&e, g_list, box, slot))
+    return refuse("gb_commit_checked: the write did not verify");
+  GbsStatus cs = gbs_commit_list(s, box, g_list);
+  if (cs != GBS_OK) return refuse(gbs_status_text(cs));
+  return 0;
+}
+
+/* BACKLOG #95 review gate case, gbmon C11 fix's own binding test: --op caught proves
+ * the PRODUCTION wiring, not just gb_set_caught in isolation -- host_gbeditor_test.c's
+ * existing coverage sets has_caught ITSELF (the review's own complaint: it could not
+ * see a missing caller), so it could not catch source/pdna_gen12.c ever forgetting to
+ * call gb_mark_caught. This op goes through the EXACT SAME decision the live editor
+ * uses (gb_mark_caught, source/pdna_gen12.c) -- gb_session_is_crystal(s), the one
+ * function both the editor and this tool call so they cannot diverge -- rather than
+ * re-deriving "is this Crystal" a third way. PACKED is "time:level:loc:gender", one
+ * argument so the op keeps do_helditem's box-shaped 3-argument style (--op caught BOX
+ * SLOT PACKED) instead of growing Op.a past its [4] capacity. Refuses on a Gold/
+ * Silver target (has_caught stays false, gb_set_caught's own gate) and succeeds on
+ * Crystal -- tools/gb_retail_gate.py drives both against a real boot. */
+static int do_caught(GbSession* s, int box, int slot, const char* packed) {
+  int time, level, loc, gender;
+  if (sscanf(packed, "%d:%d:%d:%d", &time, &level, &loc, &gender) != 4) {
+    fprintf(stderr, "bad caught PACKED %s (want time:level:loc:gender)\n", packed);
+    return 2;
+  }
+  if (time < 0 || time > 255 || level < 0 || level > 255 ||
+      loc < 0 || loc > 255 || gender < 0 || gender > 255) {
+    fprintf(stderr, "caught PACKED fields must each be 0..255: %s\n", packed);
+    return 2;
+  }
+  GbsStatus ls = gbs_load_list(s, box, g_list);
+  if (ls != GBS_OK) return refuse(gbs_status_text(ls));
+  GbEditMon e;
+  if (!gb_load(&e, s->gen, g_list, box, slot))
+    return refuse("gb_load: bad box/slot for this generation");
+  gb_set_caught_available(&e, gb_session_is_crystal(s));   /* the live editor's own gate */
+  if (!gb_set_caught(&e, (uint8_t)time, (uint8_t)level, (uint8_t)loc, (uint8_t)gender))
+    return refuse("gb_set_caught refused (Gen 1, Gold/Silver, or an out-of-range field)");
+  if (!gb_commit_checked(&e, g_list, box, slot))
+    return refuse("gb_commit_checked: the write did not verify");
+  GbsStatus cs = gbs_commit_list(s, box, g_list);
+  if (cs != GBS_OK) return refuse(gbs_status_text(cs));
+  return 0;
+}
+
 /* Dispatch one already-shaped Op. Returns 0 ok, 1 refused (reported), 2 usage (reported). */
 static int apply_op(GbSession* s, const Op* o) {
   if (!strcmp(o->kind, "nick") || !strcmp(o->kind, "ot")) {
@@ -828,6 +907,19 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "boxname")) {
     return do_boxname(s, o->a[0], o->a[1]);
+  }
+  /* -- append new dispatch cases HERE, last (see the shape[] append note above). */
+  if (!strcmp(o->kind, "helditem")) {
+    int box = resolve_box(s, o->a[0]);
+    int slot = resolve_slot(o->a[1]);
+    if (box < 0 || slot < 0) return 2;
+    return do_helditem(s, box, slot, o->a[2]);
+  }
+  if (!strcmp(o->kind, "caught")) {
+    int box = resolve_box(s, o->a[0]);
+    int slot = resolve_slot(o->a[1]);
+    if (box < 0 || slot < 0) return 2;
+    return do_caught(s, box, slot, o->a[2]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;
