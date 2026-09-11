@@ -967,3 +967,12 @@ addrtaken-ok __aeabi_d2iz
 # does not distinguish data words from pointers). Bounded by the 256-B cap. Found on the r1 lane
 # 2026-09-10 (main's link places it at 0x0800ffa0, no match).
 addrtaken-ok encode_checked
+
+# lib/everdrivegbax5/everdrive.c's ed_set_eep_size (frame 0 B) is called DIRECTLY and ONLY by
+# ed_init (everdrive.c:72, itself reached from flashcartio.c:309); its address is taken nowhere
+# in the tree (one declaration, one definition, one bl). The b90 lane's ~872 B of new code
+# (pdna_gb_fly) shifts the link until it lands at 0x08070604, whose Thumb form 0x08070605 is
+# byte-identical to the leading word of gb_bag.c's kKeyIds (.rodata @0x08083318: the Key-Item
+# ids 05 06 07 08) -- the same data-word-vs-pointer coincidence BACKLOG #106 G2 and
+# encode_checked above describe (proved by the b90 review). Zero frame, so there is nothing to bound.
+addrtaken-ok ed_set_eep_size

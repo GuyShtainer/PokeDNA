@@ -50,7 +50,7 @@ static const char* const kGen2Names[28] = {
   "Celadon City", "Fuchsia City", "Cinnabar Island", "Indigo Plateau",
   "New Bark Town", "Cherrygrove City", "Violet City", "Union Cave", "Azalea Town",
   "Cianwood City", "Goldenrod City", "Olivine City", "Ecruteak City", "Mahogany Town",
-  "Lake of Rage", "Blackthorn City", "Mt. Silver", "Fast Ship",
+  "Lake of Rage", "Blackthorn City", "Silver Cave", "Fast Ship",
 };
 
 static bool gen2_is_flypoint(int idx) {
@@ -74,8 +74,10 @@ typedef struct { uint32_t gen; int top, sel; bool valid; } GbFlyPaint;
 static void gbfly_row_paint(const GbSession* s, bool gen1, int idx, int y, bool sel) {
   bool set = gbfy_get(s, idx);
   char l[48];
-  /* Same 15+4+3 = 22-column budget as pdna_fly.c's own row (x=4, 232 px wide). */
-  siprintf(l, "%-16.15s%-4s%s", fly_name(gen1, idx), set ? "ON" : "off", fly_tag(gen1, idx));
+  /* 17 + 4 + 3 = 24 columns at x=4 -> 192 px, inside the 240 px screen. The precision
+   * TRUNCATES: Gen 2's longest name is "Cherrygrove City" (16), so .15 cut it to
+   * "Cherrygrove Cit" (b90 review D2). pdna_fly.c's row carries the same widening. */
+  siprintf(l, "%-18.17s%-4s%s", fly_name(gen1, idx), set ? "ON" : "off", fly_tag(gen1, idx));
   ui_fill_rect(4, y, 232, UI_ROW_H, UI_BG);
   ui_text_sel(4, y, 232, sel, set ? UI_OK : UI_DIM, l);
 }
@@ -126,7 +128,7 @@ void pdna_gb_fly(GbSession* s, bool can_edit) {
 
       ui_hline(0, 140, UI_SCR_W, UI_BORDER);
       if (!gen1)
-        ui_text(4, 144, UI_DIM, "spn = not a Town Map stop");
+        ui_text(4, 144, UI_DIM, "spn = no effect in game");
       ui_text(4, 152, UI_DIM, can_edit ? "A toggle  B save+back" : "read-only (Omega)  B back");
     } else {
       if (sel != pv.sel) {

@@ -25,9 +25,10 @@
  * them without being told they are Town Map stops when the cartridge itself never
  * offers them as one.
  *
- * `can_edit`: true for the editable session (gb_nav_from_start passes &g_ed->s,
- * true, same convention as pdna_gbtrainer.h), false for a view-only visit -- U/D
- * still scrolls so every destination can be read, A does nothing. Commits via
+ * `can_edit`: every call site today passes true (g_ed exists only for a session that
+ * opened for editing -- gb_nav_from_start passes &g_ed->s, true, same convention as
+ * pdna_gbtrainer.h); the false path (U/D still scrolls, A does nothing) is kept for a
+ * future view-only caller and is currently unreached (b90 review D8). Commits via
  * gb_persist() (pdna_gen12.h) on B, only when at least one bit actually changed. */
 void pdna_gb_fly(GbSession* s, bool can_edit);
 
