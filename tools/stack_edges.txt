@@ -856,11 +856,22 @@ recursion tte_write depth=2
 # declaration class to add them to. Verified by name against known devkitARM/newlib/
 # libgcc symbols, not app code (grepped source/*.c/*.h: none of these names appear
 # there at all).
+#
+# D5 (BACKLOG #106): __boot_method and __text_start below are DATA objects, not
+# functions, exactly like m4_surface/m5_surface further down (see that paragraph) --
+# they only ever show up in this file's `addrtaken-ok` list at all because
+# analyze()'s name_at is built from objdump -d's disassembly LABELS, and objdump
+# disassembles and labels EVERY symbol placed inside a section it treats as code
+# (.text always, .ewram here because EWRAM_CODE functions share it with EWRAM_DATA
+# objects) whether or not that symbol is actually a function. __boot_method is
+# crt0's boot-method BYTE (a data flag multiboot.s reads, not a dispatch target
+# itself), and __text_start is a zero-size linker boundary symbol -- disassembling
+# "at" either one still produces a labelled block objdump calls a function.
 addrtaken-ok __aeabi_idiv0        # libgcc: division-by-zero trap, taken by the div runtime itself
-addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method dispatch, taken by crt0.s
+addrtaken-ok __boot_method        # crt0: multiboot/cart boot-method DATA byte, not a function -- see the D5 note above
 addrtaken-ok __do_global_dtors_aux # crtstuff: static-destructor runner, taken via .fini_array
 addrtaken-ok __libc_init_array    # newlib crt: constructor runner, taken by crt0/_start
-addrtaken-ok __text_start         # linker/crt boundary symbol, not application code
+addrtaken-ok __text_start         # linker/crt boundary symbol, a zero-size DATA marker, not application code -- see the D5 note above
 addrtaken-ok __udivmoddi4         # libgcc: 64-bit unsigned division helper, taken by the div runtime
 addrtaken-ok __utf8_wctomb        # newlib: UTF-8 locale table entry, same family as __utf8_mbtowc above
 addrtaken-ok _fini                # crt: ELF finalization entry, taken by the ELF header/_fini machinery
@@ -880,7 +891,11 @@ addrtaken-ok frame_dummy          # crtstuff: EH-frame registration stub, taken 
 # 187-188) are Mode-4/5 surface DESCRIPTOR objects (pointer/pitch/width/height/
 # bpp fields) -- the sweep's function-symbol-address match mislabelled them as
 # addrtaken FUNCTIONS because something legitimately holds `&m4_surface`/
-# `&m5_surface` as a data pointer, never as a call target. isr_master is
+# `&m5_surface` as a data pointer, never as a call target. (D5, BACKLOG #106: they
+# are registered as "functions" AT ALL, in the first place, for the same reason
+# __boot_method/__text_start above are -- objdump -d labels every symbol placed in
+# a code-flagged section, and EWRAM_DATA objects share .ewram with EWRAM_CODE
+# functions.) isr_master is
 # libtonc's single IRQ trampoline: its address is taken by irq_init() and written
 # into the hardware interrupt vector directly (not a struct field), and the
 # handlers IT calls (hb_isr/pwm_isr) are already declared as `isr` above, which
