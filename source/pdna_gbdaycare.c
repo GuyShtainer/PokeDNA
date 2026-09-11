@@ -365,7 +365,19 @@ static void gbdc_panel(const GbDaycare* dc, int n, bool visitors_ok, int n_visit
       ui_ptext(dcx, dcy0 + dcyp, UI_DIM, l);
     }
   } else if (n == 1) {
-    ui_ptext(dcx, dcy0, UI_DIM, "One Pokemon is boarding.");
+    char l[48];
+    const GbEditMon* mon = &dc->slot[0].mon;
+    const char* nick = dc->slot[0].nick[0] ? dc->slot[0].nick : pk_species_name(gb_get_species_dex(mon));
+    const char* species = pk_species_name(gb_get_species_dex(mon));
+    uint8_t level = gb_get_level(mon);
+
+    /* Try the full format with species name first */
+    siprintf(l, "%s (%s) Lv.%u is boarding.", nick, species, (unsigned)level);
+    if (ui_ptext_w(l) > PDNA_DCY_NAME_W) {
+      /* Does not fit: drop the species name, keeping the nick */
+      siprintf(l, "%s Lv.%u is boarding.", nick, (unsigned)level);
+    }
+    ui_ptext(dcx, dcy0, UI_DIM, l);
     if (dc->has_egg) ui_ptext(dcx, dcy0 + dcyp, UI_OK, "An EGG is ready to collect!");
   } else {
     ui_ptext(dcx, dcy0, dc->has_egg ? UI_OK : UI_DIM,
