@@ -1044,6 +1044,156 @@ def run_u4_empty(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sess
     return s
 
 
+def run_m1_map(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """M1 (BACKLOG #91, docs/GB-MAP-DESIGN.md): Red's OWN current-map view,
+    read-only, on the shared GB-screen shell. `rom` must be a Red-only fused image
+    (tools/fuse_gb.py fed only Red.gb+Red.sav -- BACKLOG #98's fused-image-by-
+    generation-only gap, same reason run_u4_bag()/run_u5_pack() require a single-
+    ROM image).
+
+    Nav: boot picker DOWN -> A -> A -> box grid (rom_gbsprite cold scan) -> START
+    -> nav menu -> DOWN x16 (Party->Bank->Daycare->Trainer->Clock fix->Mirage->
+    Pokedex->Bag->Flags & counters->Bases->Blocks->Tickets->Records->Frontier->
+    Fly->Contests->Map, PDNA_NAV_ITEMS index 16) -> A -> pdna_gbmap_gen1() (gbscr_
+    open()'s own cold rom_gbui scan, separate cache from rom_gbsprite's box-grid
+    one, PLUS rom_gbmap.c's own separate locate pass over the same ROM).
+
+    m1 review D6/D1 correction: L/R are the shell's own SIZE toggle here (same as
+    SELECT) -- the D-pad ALONE pans. wXCoord/wYCoord (Red.sav's real x=6/y=4) are
+    ONE halving from a block (gbmap_block_of(), rom_gbmap.h), giving block (3,2),
+    NOT (1,2) -- an earlier draft of this file said the player's real x already
+    sat at the west clamp (vbx=0); with the corrected halving it does not: width 7
+    - the 5-block viewport = 2 steps of slack, and the marker's own block (3) is
+    NOT at either edge, so the initial vbx is 1 (clampi(3 - 5//2, 0, 2)), one step
+    of room on EACH side."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_")
+    print("== M1: Red's own current-map view (boot picker -> standalone -> Map) ==")
+
+    s.run(700)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                    # Emerald (row 0) -> the GB row (row 1)
+    s.tap("A", settle=60)                                    # pick it -> S1 info
+    s.tap("A", settle=60)                                    # -> box grid (rom_gbsprite cold fetch)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box grid -> nav menu
+    s.press_n("DOWN", 16)                                     # Party -> ... -> Map (index 16)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                    # Map -> pdna_gbmap_gen1()
+    s.shot("01_map_1to1", "M1: the player's own current map at 1:1, centred on a "
+                           "5x5-block viewport clamped to the map's own bounds "
+                           "(no connections/stitching -- that is M2); the red frame "
+                           "marks the player's own block (3,2) -- the open floor "
+                           "block, roughly centred on the 7-wide map -- NOT the PC "
+                           "counter two rows up (D1: block = coord >> 1, one "
+                           "halving, not two)")
+
+    s.tap("SEL", settle=60)                                  # shell-wide toggle -> stretched
+    s.shot("01b_stretched", "M1: SELECT stretches the same view to 240x160 -- the "
+                             "shell's own scale toggle, not a map-specific key")
+    s.tap("SEL", settle=60)                                  # back to 1:1
+    s.shot("01c_1to1_again", "M1: SELECT again returns to 1:1")
+
+    s.tap("L", settle=60)                                    # D6: L is ALSO the scale toggle here
+    s.shot("01d_stretched_via_L", "M1 D6: L is the SAME scale toggle as SELECT on "
+                                   "this screen (it does not pan) -- stretched again")
+    s.tap("R", settle=60)                                    # R toggles it right back
+    s.shot("01e_1to1_via_R", "M1 D6: R toggles it back to 1:1 -- L and R both drive "
+                              "the one shared gb_scale_mode, same as SELECT, matching "
+                              "the shell-wide 'L/R or SELECT' convention every other "
+                              "GB screen uses")
+
+    # VIRIDIAN_POKECENTER (Red.sav's real player map) is 7x4 blocks; the viewport
+    # is 5x5 blocks. Vertically the WHOLE map already fits (height 4 <= VBH 5, so
+    # vby is pinned at 0 the entire visit: no vertical pan is possible on THIS
+    # map, not a bug -- Route 17's own vertical-clamp demo below covers that
+    # axis). Horizontally the initial vbx is 1 (see the docstring's own D1
+    # correction), one step of slack on EACH side: RIGHT once reaches the east
+    # clamp (vbx=2, width 7 - VBW 5), a second RIGHT is a true no-op, then the
+    # D-pad's LEFT (not L -- D6) walks it all the way back to the west clamp
+    # (vbx=0), two presses, and a third LEFT is a true no-op there too.
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.shot("02_panned_right_to_east_clamp", "M1: RIGHT once reaches the east clamp "
+                                             "(vbx=1 -> 2, width 7 - the 5-block "
+                                             "viewport = 2) -- the marker is no "
+                                             "longer centred, now one block from "
+                                             "the viewport's own LEFT edge (its "
+                                             "fixed map block stayed put; the "
+                                             "viewport panned right past it)")
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.shot("03_east_clamp_no_op", "M1: a second RIGHT from the east clamp is a "
+                                   "true no-op -- pixel-identical to the previous "
+                                   "shot (vby also never moves off 0 this whole "
+                                   "visit: height 4 <= the 5-block viewport)",
+           allow_same=True)
+    s.tap("LEFT", settle=gb_shots.SETTLE)
+    s.shot("04_panned_left_via_dpad", "M1 D6: the D-PAD's own LEFT pans the "
+                                       "viewport one block left (vbx=2 -> 1) -- L "
+                                       "no longer does this (it is the SIZE "
+                                       "toggle, shot 01d above)")
+    s.tap("LEFT", settle=gb_shots.SETTLE)
+    s.shot("05_west_clamp", "M1: LEFT again reaches the west clamp (vbx=0) -- the "
+                             "marker is now near the viewport's own RIGHT edge "
+                             "(three blocks from the left), the mirror image of "
+                             "shot 02's east-clamp position")
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # close -> back to the box grid
+    s.shot("06_closed_back_to_grid", "M1: B closes the map screen -- back to the "
+                                      "box grid. No save byte is ever written by "
+                                      "this read-only screen; the shell's shared "
+                                      "SIZE preference (gb_scale_mode, toggled "
+                                      "twice above via L/R) still persists to "
+                                      "config.cfg on close, exactly as on every "
+                                      "other GB screen")
+
+    return s
+
+
+def run_m1_map_vclamp(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """M1 (BACKLOG #91) vertical-clamp demo: VIRIDIAN_POKECENTER (Red.sav's real
+    starting map) is only 4 blocks tall, shorter than the 5-block viewport, so
+    run_m1_map() above can never move vby off 0 -- it has no vertical clamp to
+    show. `rom` must be a Red-only fused image built from a save WARPED onto
+    Route 17 (map id 28, 10x72 blocks -- tests/host_gbsurgery_tool.c's own
+    `--op warp 28 8 68`, landing on block (4, 34): vby's own clamp range is
+    [0, 72-5=67], and block 34 sits far enough from BOTH ends that a few UP/DOWN
+    presses reach each one without an absurd number of taps.
+
+    Nav: identical to run_m1_map() (same nav menu index, same screen) -- this is
+    the SAME pdna_gbmap_gen1() reached from a differently-positioned save."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_vclamp_")
+    print("== M1: vertical clamp on Route 17 (warped save) ==")
+
+    s.run(700)
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=60)
+    s.tap("A", settle=60)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 16)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)
+    s.shot("01_route17_mid", "M1 vclamp: Route 17 (10x72 blocks), warped to block "
+                              "(4,34) -- vby starts at 32 (34 - 5//2), comfortably "
+                              "clamped on neither end")
+
+    s.press_n("UP", 32, settle=gb_shots.SETTLE)
+    s.shot("02_north_clamp", "M1 vclamp: 32 UPs reach the north clamp (vby=0)")
+    s.tap("UP", settle=gb_shots.SETTLE)
+    s.shot("03_north_clamp_no_op", "M1 vclamp: one more UP is a true no-op at the "
+                                    "north clamp -- pixel-identical to the previous "
+                                    "shot", allow_same=True)
+
+    s.press_n("DOWN", 67, settle=gb_shots.SETTLE)
+    s.shot("04_south_clamp", "M1 vclamp: 67 DOWNs from the north clamp reach the "
+                              "south clamp (vby=67, height 72 - the 5-block "
+                              "viewport)")
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("05_south_clamp_no_op", "M1 vclamp: one more DOWN is a true no-op at "
+                                    "the south clamp", allow_same=True)
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    s.shot("06_closed", "M1 vclamp: B closes the map screen, same as run_m1_map()")
+
+    return s
+
+
 def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
     """U5 (BACKLOG #67, docs/GB-GAME-SCREENS-DESIGN.md sec 1.4): Gold/Silver/
     Crystal's OWN Pack + PC store on the shared GB-screen shell -- the Gen-2
@@ -1458,6 +1608,105 @@ def run_b85_daycare(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
                                       "unrelated to this pass's D1/D6/D8 fixes and was "
                                       "already exercised by BOTH slots occupied in this "
                                       "same file's earlier BACKLOG #85 shot list")
+
+    return s
+
+
+def run_b114_yard(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #114: the Day-Care YARD on the Gen-1/2 screen (source/pdna_gbdaycare.c,
+    pdna_yard.h) -- dc_scene()/dc_icon_over_bg()/dc_pointer() now draw underneath the
+    SAME status panel BACKLOG #85's own shots already covered mechanically (Put in /
+    Take out / the confirm prompts); this run is about the SCENE, not the mechanics.
+
+    `rom` must be a ONE-ROM fused image, same requirement as run_b85_daycare (no Gen-3
+    ROM is ever registered in a PDNA_DELTA build -- app_register_rom(), the browse-for-
+    ROM flow, is `#ifndef PDNA_DELTA` entirely, since there is no SD to browse in the
+    emulator; confirmed by direct probe, not assumed). app_yard_visitors_ok() is
+    therefore ALWAYS false here (g_yard_visitors also defaults off), so every shot
+    below shows the "No visitors: register a Gen-3 ROM" panel row and NO invented
+    visitor icons -- the brief's own sanctioned fallback ("visitors present ... else
+    the 'no visitors' line"). The Gen-1 visitor cap (<=151, vs Gen 2/3's 251) is
+    proven on the host instead (tests/host_yard_test.c), the same posture every other
+    "cannot fabricate this state in the emulator" case in this file already takes.
+
+    Real boarder icons ALSO do not render here (mon_icon_for_form_frame's Gen-3-keyed
+    icon cache has no source without a registered Gen-3 ROM -- a DIFFERENT lookup path
+    than the GB-native rom_gbicon one the box grid already proves works in this same
+    fused image, BACKLOG #85's own 00_box_before shot) -- the yard degrades to its
+    plain background with no icon, never a blank screen, exactly BACKLOG #114's own
+    acceptance line for the artless/no-ROM case.
+
+    Same box-index-to-reach-a-free-slot setup as run_b85_daycare (box 4/HITMONLEE for
+    Red, box 12/MILTANK for Gold)."""
+    box_index = 4 if which == "red" else 12
+    box_label = "BOX5" if which == "red" else "BOX13"
+
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b114yard_{which}_")
+    print(f"== BACKLOG #114: {which}'s own Day-Care YARD ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid
+    s.run(GB_ART_COLD_SETTLE)
+    s.press_n("R", box_index, settle=300)                   # -> the box with a free slot (see run_b85_daycare)
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 2)                                     # Party -> Bank -> Daycare (index 2)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Daycare -> pdna_gbdaycare()
+    s.shot("01_yard_empty", f"#114: {which}'s own Day-Care yard on entry, both slots "
+                             "empty -- dc_scene()'s background (the procedural scene "
+                             "in this artless image) fills the screen where the two "
+                             "text rows used to be; the panel's third row already "
+                             "reads 'No visitors: register a Gen-3 ROM' (no ROM is "
+                             "ever registered in this emulator build); the footer "
+                             f"names the selected empty slot ('{'Boarder' if which == 'red' else 'Man'} "
+                             "(empty)') since there is no icon in the yard to point at")
+
+    # NOTE (brief's step 6 asked for a "SELECT scale both ways" shot): checked and
+    # dropped -- gb_scale_mode's SELECT toggle (source/pdna_gbscreen.c:157) belongs
+    # to the gbscr_run_demo SHELL (the font/card/pack tile-blit viewers reached via
+    # Settings' hidden SELECT key, see run_gbscreen_shell() above), which pdna_gbdaycare
+    # never routes through -- it draws with ui_*/Mode-3 calls directly and its own key
+    # mask has never included KEY_SELECT, before or after this backlog item. Pressing
+    # SEL here produced a pixel-IDENTICAL frame (verified: this script's own
+    # consecutive-differ check caught it), confirming there is no scale toggle on this
+    # screen to demonstrate -- adding one would be a new feature outside BACKLOG #114's
+    # six described steps, not a screenshot of existing behaviour.
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the selected empty slot -> the popup
+    s.shot("02_popup_over_yard", "#114: the per-slot action popup (gbdc_menu) drawn "
+                                  "OVER the yard scene -- the popup geometry is "
+                                  "unchanged (PDNA_DCPOP_*), it now sits on top of "
+                                  "background art instead of a blank fill")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Put in -> gbdc_pick over cur_box
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick the top row -> the confirm
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ACCEPT -> deposit + delete -> gb_persist()
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the emulator-build notice
+    s.shot("03_one_boarder", f"#114: {box_label}'s own mon deposited -- 'Boarding "
+                              f"1/{'1' if which == 'red' else '2'}' up top and the "
+                              "footer drops '(empty)' now that the selected slot is "
+                              "occupied, even though the icon itself does not render "
+                              "here (no registered Gen-3 ROM -- see this function's "
+                              "own header comment); the yard degrades gracefully, "
+                              "it does not go blank")
+
+    if which != "red":
+        s.tap("B", settle=120)                              # back to the box grid (same settle
+                                                              # note as run_b85_daycare's own re-entries)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)
+        s.press_n("DOWN", 2)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # back into the Day Care
+        s.tap("DOWN", settle=gb_shots.SETTLE)               # Man's slot -> Lady's slot
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # A on the Lady's empty slot -> popup
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # Put in -> gbdc_pick over cur_box
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # pick the top row -> the confirm
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # ACCEPT -> deposit + gb_persist()
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # dismiss the emulator-build notice
+        s.shot("04_two_boarders", "#114 Gen 2 only: both slots now occupied -- "
+                                   "'Boarding 2/2', the panel reads the game's own "
+                                   "compatibility flag instead of the single-boarder "
+                                   "text, and the footer names whichever slot is "
+                                   "currently selected as occupied (no more "
+                                   "'(empty)')")
 
     return s
 
@@ -1993,6 +2242,12 @@ def main(argv=None) -> int:
                           "two-slot Day Care + compatibility) -- --image MUST be a "
                           "ONE-ROM fused image matching this choice (same "
                           "single-ROM harness gap as --u4-bag/--u5-pack)")
+    ap.add_argument("--b114-yard", choices=("red", "gold"),
+                     help="BACKLOG #114: only run_b114_yard() against --image for the "
+                          "named game (the Day-Care YARD scene, not the D1/D6 "
+                          "mechanics --b85-daycare already covers) -- --image MUST be "
+                          "a ONE-ROM fused image matching this choice (same "
+                          "single-ROM harness gap as --b85-daycare)")
     ap.add_argument("--r1-xfer", action="store_true",
                      help="BACKLOG #104 R1: only run_r1_xfer() against --image -- "
                           "--image MUST be pokedna-delta-artless.gba fused with an "
@@ -2000,6 +2255,15 @@ def main(argv=None) -> int:
                           "underlevelled evolved species (fuse_sav.py --clip), and "
                           "Gold.gbc+Gold.sav (fuse_gb.py, ONE Game Boy ROM -- GOLD, "
                           "not Red: see run_r1_xfer()'s own docstring for why)")
+    ap.add_argument("--m1-map", action="store_true",
+                     help="M1 (BACKLOG #91): only run_m1_map() against --image -- "
+                          "--image MUST be a Red-only fused image (Red.gb+Red.sav)")
+    ap.add_argument("--m1-map-vclamp", action="store_true",
+                     help="M1 (BACKLOG #91) vertical-clamp demo: only "
+                          "run_m1_map_vclamp() against --image -- --image MUST be a "
+                          "Red-only fused image built from a save WARPED onto Route 17 "
+                          "(tests/host_gbsurgery_tool.c's --op warp 28 8 68, see that "
+                          "function's own docstring for why)")
     ap.add_argument("--gbmon", action="store_true",
                      help="BACKLOG #92: only run_gbmon() against --image -- the new "
                           "ITEM row on the Gen-2 mon menu. --image MUST be a "
@@ -2148,6 +2412,18 @@ def main(argv=None) -> int:
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
         return 0
+    if a.b114_yard:
+        try:
+            sess = run_b114_yard(core_mod, image_mod, a.image, a.out, a.b114_yard)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b114 yard ({a.b114_yard}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
 
     if a.r1_xfer:
         try:
@@ -2156,6 +2432,32 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] r1 xfer: {e}")
+    if a.m1_map:
+        try:
+            sess = run_m1_map(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] m1 map: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.m1_map_vclamp:
+        try:
+            sess = run_m1_map_vclamp(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] m1 map vclamp: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
     if a.gbmon:
         try:
             sess = run_gbmon(core_mod, image_mod, a.image, a.out)

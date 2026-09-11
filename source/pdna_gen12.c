@@ -602,6 +602,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbpack.h"      /* U5, BACKLOG #67: Gold/Silver/Crystal's own Pack */
 #include "pdna_gbclock.h"     /* BACKLOG #86/#108: Gen-2's own Clock fix screen */
 #include "pdna_gbdaycare.h"   /* BACKLOG #85: the Gen-1/2 Day-Care screen */
+#include "pdna_gbmap.h"       /* M1, BACKLOG #91: Gen 1's read-only current-map view */
 #include "pdna_pick.h"        /* BACKLOG #92: pick_item / pick_item_set_gen1_2_max */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
@@ -2717,6 +2718,15 @@ static void gb_nav_from_start(Gb12Mount* m) {
     } else {
       (void)gb_info_page(m);
     }
+  } else if (nv == NV_MAP && kind == SE_KIND_GEN1) {
+    /* M1 (BACKLOG #91): read-only current-map view, same "needs a live
+     * GbSession to read the ROM's own tile bank through" gate every other
+     * real-art Gen-1/2 screen on this menu uses (Trainer/Bag/Pack above) --
+     * g_ed->s is the same resident session those already read/write
+     * through gb12_arena_tail(). The plain FIL-streaming mount (no g_ed)
+     * falls back to the read-only info page, same as Trainer/Bag/Pack. */
+    if (g_ed) pdna_gbmap_gen1(&g_ed->s);
+    else      (void)gb_info_page(m);
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */
   }

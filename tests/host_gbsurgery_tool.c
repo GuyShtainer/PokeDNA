@@ -211,6 +211,11 @@ static void usage(const char* prog) {
     "                               colon-separated) through the SAME Crystal-only gate\n"
     "                               the live editor uses (gb_session_is_crystal). Gen 1\n"
     "                               and Gold/Silver both refused.\n"
+    "  --op warp MAP X Y            m1 (BACKLOG #91) shot-retake gate: pokes the\n"
+    "                               player's own current map/position (gb_fields.c's\n"
+    "                               GBF_MAP_ID/GBF_POS_X/GBF_POS_Y + the two block-half\n"
+    "                               bytes, X&1/Y&1) and refreshes the checksum. Gen 1\n"
+    "                               only.\n"
     "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -231,6 +236,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"helditem", 3},   /* BACKLOG #95 review gate case: BOX SLOT ID */
     {"caught", 3},     /* BACKLOG #95 review gate case: BOX SLOT time:level:loc:gender */
     {"clockclear", 0}, /* BACKLOG #86/#108: dismiss the clock-error banner */
+    {"warp", 3},       /* m1 (BACKLOG #91) shot-retake gate: MAP X Y, Gen 1 only */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -428,6 +434,37 @@ static void encode_bcd24(uint32_t v, uint8_t out[3]) {
 }
 static void encode_be24(uint32_t v, uint8_t out[3]) {
   out[0] = (uint8_t)(v >> 16); out[1] = (uint8_t)(v >> 8); out[2] = (uint8_t)v;
+}
+
+/* m1 (BACKLOG #91) shot-retake gate: reposition the player's own current map/
+ * position for the Map screen's shot harness -- a warp, not a Pokemon op, same
+ * "raw field write via gbs_write_field + one gbs_finish" shape do_money() above
+ * uses. Offsets are gb_fields.c's own GBF_MAP_ID/GBF_POS_X/GBF_POS_Y/
+ * GBF_POS_XBLOCK/GBF_POS_YBLOCK table (0x260a/0x260e/0x260d/0x2610/0x260f --
+ * Red and Yellow share this block, per that table's own first two columns),
+ * not re-derived here: the BLOCK-half bytes are simply (x & 1)/(y & 1), the
+ * exact relation rom_gbmap.h's own gbmap_block_of() doc comment cites
+ * (engine/overworld/tilesets.asm:49). Gen 1 only -- Gen 2's own current-map
+ * fields live at different offsets this tool has no need for yet. */
+static int do_warp(GbSession* s, const char* map_tok, const char* x_tok, const char* y_tok) {
+  if (s->gen != GB_GEN1) return refuse("warp is Gen 1 only");
+  int map = resolve_uint(map_tok, "warp map");
+  int x = resolve_uint(x_tok, "warp x");
+  int y = resolve_uint(y_tok, "warp y");
+  if (map < 0 || x < 0 || y < 0) return 2;
+  if (map > 255 || x > 255 || y > 255) { fprintf(stderr, "warp MAP/X/Y must each be 0..255\n"); return 2; }
+
+  uint8_t map_b = (uint8_t)map, x_b = (uint8_t)x, y_b = (uint8_t)y;
+  uint8_t xblock_b = (uint8_t)(x_b & 1u), yblock_b = (uint8_t)(y_b & 1u);
+
+  GbsStatus st;
+  if ((st = gbs_write_field(s, 0x260au, &map_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x260eu, &x_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x260du, &y_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x2610u, &xblock_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, 0x260fu, &yblock_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_finish(s)) != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
 }
 
 static int do_money(GbSession* s, const char* vtok) {
@@ -920,6 +957,9 @@ static int apply_op(GbSession* s, const Op* o) {
     int slot = resolve_slot(o->a[1]);
     if (box < 0 || slot < 0) return 2;
     return do_caught(s, box, slot, o->a[2]);
+  }
+  if (!strcmp(o->kind, "warp")) {
+    return do_warp(s, o->a[0], o->a[1], o->a[2]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;

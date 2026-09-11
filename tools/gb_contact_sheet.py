@@ -199,6 +199,17 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # "gb-pack-gen2" per this list's own append-only rule.
     ("xfer-r1-make-legal", "BACKLOG #104 R1 — KEEP AS IS / MAKE LEGAL on a Gen 3 -> "
      "Game Boy paste (an underlevelled evolved species)", ("BACKLOG #104 R1",)),
+    # M1 (BACKLOG #91, docs/GB-MAP-DESIGN.md): Red/Yellow's own current-map view,
+    # read-only, on the shared shell -- the first slice of the Gen-1/2 Map screen
+    # (M2 all-maps browser and M3 teleport are later slices). Shots come from
+    # tools/dgb_shots.py's run_m1_map() (captions start "M1:") and, for the
+    # vertical-clamp coverage VIRIDIAN_POKECENTER's own 4-block height can't reach,
+    # run_m1_map_vclamp() (captions start "M1 vclamp:" -- a SEPARATE prefix, since
+    # feature_for_caption() matches the text before the first colon exactly, not a
+    # startswith). Appended after "gb-pack-gen2" per this list's own append-only
+    # rule.
+    ("gb-map-gen1", "M1 — Red's own current-map view on the shell, read-only "
+     "(Gen-1 saves)", ("M1", "M1 vclamp")),
     # BACKLOG #92 (append-only, same rule as every row above): a held ITEM row on
     # the Gen-2 mon-menu popup (app_mon_menu_readonly, pdna_main.c), Gen 1 omitted.
     # Shots come from tools/dgb_shots.py's run_gbmon(); captions all start "#92:".
@@ -211,6 +222,16 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # start "#95:".
     ("gb-mon-summary-parity", "#95 — summary-field parity audit: Shiny, Egg, Met "
      "Time/Level/Loc/OT Gender rows closed for Gen 2", ("#95",)),
+    # BACKLOG #114 (append-only, same rule as every row above): the Day-Care YARD
+    # scene (dc_scene/dc_icon_over_bg/dc_pointer, source/pdna_yard.h) now draws on
+    # the Gen-1/2 screen instead of the two/three text rows BACKLOG #85's own
+    # "gb-daycare-gen12" row above shows -- gen-correct random visitors (151 species
+    # cap on Gen 1, 251 on Gen 2/3) placed the same way pdna_daycare()'s own Gen-3
+    # yard already does. Shots come from tools/dgb_shots.py's run_b114_yard()
+    # (--b114-yard), captions all start "#114:". Appended after "gb-mon-summary-
+    # parity" per this list's own append-only rule.
+    ("gb-daycare-yard", "#114 — the Day-Care YARD scene on Gen 1/2 (real boarder "
+     "icons + gen-correct random visitors, same placement as Gen 3)", ("#114",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

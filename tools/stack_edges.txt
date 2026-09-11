@@ -319,7 +319,7 @@ gbl_verify argsites=1 -> fused_gb_slice_read gb_read
 # already said in words, just not what the OLD linear resolver could actually see.
 # Site counts verified against this build's disassembly (rom_gbbase_gen1 1).
 rom_gbbase_gen1 argsites=1 -> fused_gb_slice_read gb_read
-scan_one.constprop.0 argsites=1 -> gb_art_read fused_gb_slice_read icon_ptrs_cb
+scan_one.constprop.0@rom_gbicon argsites=1 -> gb_art_read fused_gb_slice_read icon_ptrs_cb
 # widened (BACKLOG #84b seventh pass) to include icon_ptrs_cb -- can't cheaply tell
 # whether THIS nonfield site or the RomGbIcon.read@0 field site (declared above) is
 # the real `cb(...)` dispatch; unioned into both for safety, same as the RomGbIcon.
@@ -422,7 +422,6 @@ mgfx_zoom_build argsites=1 -> fused_rom_read rom_fatfs_read g3x_fatfs_read iconr
 # G5's per-predecessor chase is precise enough here to tell rd from wr where the
 # old spilled/nonfield classification could not).
 g2w_begin argsites=1 -> img_rd img_wr
-refresh_checksums argsites=1 -> img_rd img_wr
 write_patch.part.0 argsites=1 -> img_rd img_wr
 
 # box_oam.c's memcpy32 (libtonc's IWRAM_CODE LDMIA/STMIA word copy, box_oam.c:1247's
@@ -444,6 +443,17 @@ dc_icon_over_bg.part.0 argsites=1 -> memcpy32
 # The same site when source/daycare_bg_data.h (gitignored art) is ABSENT: gcc emits the
 # .constprop.0 clone instead -- every fresh worktree builds this shape (r1 review, 2026-09-10).
 dc_icon_over_bg.part.0.constprop.0 argsites=1 -> memcpy32
+# BACKLOG #114 (2026-09-11): dc_icon_over_bg moved out of pdna_main.c into its own TU
+# (source/pdna_yard.c) -- same call, same spilled-literal-then-bx-rN thunk shape (r3
+# loaded from the PC-relative literal at dc_icon_over_bg+0x164 = memcpy32's real
+# IWRAM address 0x03000380, unchanged across the intervening bl), but gcc no longer
+# needs to partial-inline a `.part.0`/`.part.0.constprop.0` clone now that the whole
+# function is its own TU -- the artless build links it as the plain, unsuffixed
+# `dc_icon_over_bg` symbol (pinned via objdump on this worktree's PokeDNA-artless.elf:
+# 0805cfb0 <dc_icon_over_bg>, bl @0x805d0ee -> 0x805d39c, which disassembles as
+# `bx r3` immediately before the next symbol, perf_ticks.part.0 -- literal-pool tail
+# of dc_rescan, not real code reached any other way). Site count verified (1).
+dc_icon_over_bg argsites=1 -> memcpy32
 
 # gen2_save.c's g2_detect_ranged(G2ReadFn rd, ...): three forwarding paths in the
 # codebase (grepped) -- gen2_write.c:951 (g2w_begin's own `rd` parameter, = img_rd,
@@ -554,7 +564,7 @@ Scan.read @0 in all_blank.constprop.0,any_nonzero.constprop.0,block_eq,cardgfx_v
 # file-local helpers of that exact name (disambiguated @rom_gbui by the D5b symbol
 # census, since rom_gbicon.c/rom_gbsprite.c each define their OWN same-named statics).
 
-RomGbUi.read @0 in rom_gbui_open,rom_gbui_open_loc,rom_gbui_tile,gbscr_open_inner,g1_keyitems_verify -> gbscr_sd_read fused_gb_slice_read gb_art_read gbscr_mem_read
+RomGbUi.read @0 in rom_gbui_open,rom_gbui_open_loc,rom_gbui_tile,gbscr_open_inner,g1_keyitems_verify,load_g1_keyitems_bits -> gbscr_sd_read fused_gb_slice_read gb_art_read gbscr_mem_read
 # g1_keyitems_verify (BACKLOG #99, source/rom_gbui.c:197) added by p84b item 4: it takes
 # `const Scan* s` but rom_gbui.c:25's Scan and RomGbUi both put `read` at offset 0
 # (D5a's contested-offset-0 note above), and g1_keyitems_verify's own `rd(s, ...)` call
@@ -566,7 +576,6 @@ RomGbUi.read @0 in rom_gbui_open,rom_gbui_open_loc,rom_gbui_tile,gbscr_open_inne
 # s->read(...) site in its own disassembly -- a new indirect-call site rom_gbui_open/
 # rom_gbui_open_loc's own inlining of load_g1_keyitems_bits (the count bump above, 7->8
 # / 9->10) does not absorb, since load_g1_keyitems_bits still shows its own symbol.
-load_g1_keyitems_bits argsites=1 -> gbscr_sd_read fused_gb_slice_read gb_art_read gbscr_mem_read
 # gbscr_mem_read (pdna_gbscreen.c:211, registered pdna_gbscreen.c:842 `local.read =
 # gbscr_mem_read;` where `local` is a per-call RomGbUi copy with .read/.ctx rebound to
 # the RAM tile cache gbscr_open() built) -- a FOURTH RomGbUi.read implementation the
@@ -576,7 +585,7 @@ load_g1_keyitems_bits argsites=1 -> gbscr_sd_read fused_gb_slice_read gb_art_rea
 # same way while filling it in.
 
 RomGbIcon.read @0 in parse_header@rom_gbicon,rom_gbicon_kind,rom_gbicon_open_loc,rom_gbicon_tiles -> gb_art_read fused_gb_slice_read gb_read
-RomGbIcon.read @0 in locate@rom_gbicon,scan_one.constprop.0 -> gb_art_read fused_gb_slice_read gb_read icon_ptrs_cb
+RomGbIcon.read @0 in locate@rom_gbicon,scan_one.constprop.0@rom_gbicon -> gb_art_read fused_gb_slice_read gb_read icon_ptrs_cb
 # locate@rom_gbicon/scan_one.constprop.0 widened to include icon_ptrs_cb (rom_gbicon.c:
 # 187, `scan_one(gi, icon_ptrs_cb, ...)`, previously `addrtaken-ok` below) -- rom_
 # gbicon.c's scan_one() takes the callback as a PARAMETER (not a struct field) but its
@@ -606,6 +615,39 @@ RomGbSprite.read @0 in locate@rom_gbsprite -> gb_art_read fused_gb_slice_read gb
 # can't-cheaply-split-the-merge reasoning as rom_gbui_open/RomGbIcon.read above.
 # source/rom_gbsprite.h:173-174: `GbReadFn read;` is RomGbSprite's first member. Every
 # caller above takes `RomGbSprite*`/`const RomGbSprite*` (grepped rom_gbsprite.c).
+
+# BACKLOG #91 M1: source/rom_gbmap.h's `GbReadFn read;` is RomGbMap1's first member
+# (rom_gbmap.h: "GbReadFn read;" at offset 0). Every caller below takes a
+# `const RomGbMap1*`/`RomGbMap1*` and dereferences it through `rdg()` (rom_gbmap.c),
+# which the compiler inlines into each -- same "no separate accessor symbol in this
+# ELF" shape rom_gbui.c's own `rd()` already has (RomGbUi.read@0 above).
+# gbmap_load_viewport_blocks (source/pdna_gbmap.c) calls `st->g.read(...)` directly on
+# its own GbMapState.g field (a RomGbMap1, embedded at GbMapState offset 0 -- same
+# struct, same field offset 0). Implementations, from every rgm1_open() call site
+# (grepped pdna_gbmap.c): gbmap_sd_read (SD/artless build) and fused_gb_slice_read
+# (delta build, #ifdef PDNA_DELTA).
+RomGbMap1.read @0 in rgm1_header,rgm1_tileset,rgm1_block,rgm1_tile2bpp,gbmap_load_viewport_blocks -> gbmap_sd_read fused_gb_slice_read
+# rgm1_open's OWN scan (rom_gbmap.c's file-local `rd()`/`scan_one()`, both inlined into
+# rgm1_open -- no separate symbol) dispatches through a LOCAL `Scan.read` struct built
+# on rgm1_open's own stack frame, not a heap/argument struct field the walker can key an
+# offset on this deep into the inlined chain -- same "falls to register dispatch" shape
+# noted for rom_gbui.c's Scan.read@0 entry above, but rgm1_open's OWN 3 call sites (the
+# MapHeaderBanks/MapHeaderPointers/Tilesets scans, one each) show up unqualified rather
+# than under a Scan.read@0 class. Site count verified against this build's disassembly
+# (4: the MapHeaderBanks/MapHeaderPointers/Tilesets scans, one `rd()` each, PLUS the
+# Yellow-shaped indirect branch's own follow-up `rd()` into GetMapHeaderPointer's
+# function body -- all inlined into rgm1_open, no separate symbols).
+rgm1_open argsites=4 -> gbmap_sd_read fused_gb_slice_read
+# rom_gbmap.c's OWN file-local `scan_one()` (called 3 times inside rgm1_open, for the
+# MapHeaderBanks/MapHeaderPointers/Tilesets anchors -- 3+ call sites is why GCC keeps
+# it as its own symbol rather than inlining, same "stays separate" rule rom_gbui.c's
+# own anchor_pack/try_badgeleader_hit note documents above). Two indirect sites inside
+# it: `s->read(...)` (Scan.read@0, the SAME field-0 shape rom_gbui.c's own Scan struct
+# already has -- a different translation unit's struct of the same name/shape, offset
+# still 0) and `cb(w + i)` (the ScanCb callback PARAMETER, one call site -- rom_gbmap.c's
+# 3 ScanCb implementations: cb_banks/cb_hdr/cb_ts).
+Scan.read @0 in scan_one.constprop.0@rom_gbmap -> gbmap_sd_read fused_gb_slice_read
+scan_one.constprop.0@rom_gbmap argsites=1 -> cb_banks cb_hdr cb_ts
 
 Br.rd @0 in br_byte -> gb_art_read fused_gb_slice_read gb_read
 # gb_sprite_codec.c's own file-local `Br` bit-reader (line ~28): `GbReadFn rd;` is its
