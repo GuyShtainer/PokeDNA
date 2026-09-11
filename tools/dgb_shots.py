@@ -1749,6 +1749,141 @@ def run_b86_clock_gen1_fallback(core_mod, image_mod, rom: Path, out_dir: Path) -
 
 
 # ---------------------------------------------------------------------------------
+# BACKLOG #87: the shared Pokedex screen on Gen 1/2.
+# ---------------------------------------------------------------------------------
+
+def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #87: pdna_gbdex()'s Pokedex screen (item 3) -- reached via the standalone
+    mount's nav menu, NV_DEX (index 6, column 0: Party->Bank->Daycare->Trainer->Clock
+    fix->Mirage->Pokedex, DOWN x6 from a fresh menu, same PDNA_NAV_ROWS==10 arithmetic
+    run_b86_clock's own docstring explains -- index 6 stays in column 0, no RIGHT).
+
+    `rom` MUST be a ONE-ROM fused image (tools/fuse_gb.py, same posture as every other
+    single-ROM shot function here): Red.gb+Red.sav for `which="red"`, or
+    Crystal.gbc+ a Crystal.sav that has had `--op dexset 100 0` applied first (this
+    file's own corpus is a fully-completed dex -- host_gbdex_test.c's own popcount
+    proof already established that -- so dex #100 is pre-cleared here purely so the
+    'A cycles one cell through seen/caught/none' shot has a real none->seen->caught
+    transition to show, not a caught->none->seen one; item 6's own retail-gate proves
+    the write path against real WRAM, this is only a visual demo) for `which="crystal"`.
+
+    Red (Gen 1, no Unown): pdna_gbdex() opens the shared pdna_dex_screen() directly,
+    no chooser. Crystal (Gen 2): pdna_gbdex() shows its own entry chooser first
+    ("Pokedex" / "Unown forms") -- BOTH sub-screens get their own shots here.
+
+    Captures (per item 7): the grid at 1:1 (species cap visible -- Red stops at #151,
+    Crystal at #251, no row past it), the list view (L), A cycling dex #100 through
+    none/seen/caught, the START menu (dex_menu -- filter/sort/status/"Mark all..."),
+    Catch ALL + Undo (dex_bulk, the "Mark all..." row), B -> the shared screen's own
+    exit, on Crystal only: the Unown forms 26-row toggle list from the chooser's
+    second row, B -> confirm ("Save Pokedex changes?")."""
+    tag = f"b87_dex_{which}_"
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, tag)
+    print(f"== BACKLOG #87: the Pokedex screen ({which}) ==")
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box screen -> nav menu
+    s.press_n("DOWN", 6)                                       # Party -> ... -> Pokedex (col 0, row 6)
+    s.shot("01_nav_menu", "#87: the nav menu with 'Pokedex' selected -- "
+                           "NAV_OK on both generations now (nav_avail.c's GB_TABLE), "
+                           "column 0 row 6, no RIGHT press needed")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> pdna_gbdex()
+
+    if which == "crystal":
+        s.shot("02_chooser", "#87: Gen 2's own entry chooser -- "
+                              "'Pokedex' / 'Unown forms', Pokedex row selected")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # chooser row 0 -> pdna_dex_screen()
+
+    # ARTLESS DEFAULT IS LIST, not grid: pdna_dex_screen's own `view = mon_icon_for(1)
+    # ? DV_GRID : DV_LIST` (pdna_pick.c) -- mon_icon_for(1) is NULL in this (art-free,
+    # delta-artless) shot vehicle, so the FIRST screen this session sees is DV_LIST.
+    s.shot("03_list_default", "#87: The shared pdna_dex_screen(), DV_LIST (this artless "
+                               "shot vehicle's own default when no icon art is "
+                               "compiled -- pdna_pick.c's `view = mon_icon_for(1) ? "
+                               "DV_GRID : DV_LIST`), item 1's species cap applied "
+                               f"({'151' if which == 'red' else '251'} species, no "
+                               "row past it, S/C counts in the header) -- "
+                               "pdna_pick.c UNCHANGED, same screen Gen 3 uses")
+
+    s.tap("L", settle=gb_shots.BIG_SETTLE)                   # DV_LIST(1) -> DV_GRID(0)
+    s.shot("04_grid", "#87: L once -> DV_GRID -- the icon grid (art-free build: name "
+                       "chips, per dex_cell_grid's own art-free fallback), same cap")
+
+    s.tap("R", settle=gb_shots.BIG_SETTLE)                   # DV_GRID(0) -> DV_LIST(1), back where item 5/6's cursor math below assumes
+
+    # A cycles the selected cell through none/seen/caught (dex_state's own state
+    # 0/1/2 = none/seen/caught cycle, pdna_pick.c's `(s_dget(nat)+1) % 3`). Species #1
+    # (Bulbasaur, list top) starts CAUGHT on this fully-completed corpus.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("05_cycle_a", "#87: A pressed once on the selected cell -- state advanced "
+                          "one step (dex_state's own 0/1/2 -> +1 mod 3 cycle; "
+                          "starts CAUGHT on this fully-completed corpus, so this "
+                          "step lands on 'none')")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("06_cycle_b", "#87: A pressed a second time -- one more step around the "
+                          "cycle ('none' -> 'seen')")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # back to CAUGHT -- leave the cell as the corpus found it
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # -> dex_menu()
+    s.shot("07_start_menu", "#87: KEY_START -> dex_menu() -- sort/status toggles + "
+                             "'Mark all...' (can_edit) + the filter list, UNCHANGED "
+                             "from Gen 3's own screen")
+
+    s.press_n("DOWN", 2)                                        # row 0 sort, row 1 status, row 2 "Mark all..."
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> dex_bulk() overlay ("stay open": dex_menu itself does not close)
+    s.shot("08_bulk_menu", "#87: dex_bulk()'s own overlay, opened from dex_menu's "
+                            "'Mark all...' row -- Catch/See/Wipe ALL, the "
+                            "National-Dex toggle row HIDDEN (setnat is NULL on GB, "
+                            "item 3's own contract), Undo not yet available")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # Catch ALL -> its own app_confirm
+    s.shot("09_catch_all_confirm", "#87: Catch ALL's own app_confirm -- the bulk-confirm "
+                                    "text now reads the LIVE cap ('All 151.'/'All "
+                                    "251.'), item 1's siprintf fix, not a hardcoded "
+                                    "386")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # confirm -> every species caught, snapshot taken -- dex_menu's own loop is still open (dex_bulk's "stay open" contract)
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # dex_menu -> B closes it, back to pdna_dex_screen's own grid/list
+    s.shot("10_after_catch_all", "#87: back at the list after Catch ALL -- every cell "
+                                  "now shows CAUGHT")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # dex_menu reopens fresh, cursor back at row 0
+    s.press_n("DOWN", 2)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> dex_bulk() again
+    s.shot("11_undo_available", "#87: dex_bulk() reopened -- 'Undo last' now offered "
+                                 "(s_dex_snap_valid from the Catch ALL above), no "
+                                 "National-Dex row (Catch/See/Wipe ALL, Undo last, "
+                                 "Cancel -- 5 rows, not 6: setnat is NULL on GB)")
+
+    # Undo is row index 3 (Catch=0, See=1, Wipe=2, Undo=3, Cancel=4 -- no National-Dex
+    # row on GB, setnat NULL) -- 3 DOWN presses from the overlay's own default sel=0.
+    s.press_n("DOWN", 3)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # Undo -> restores the pre-Catch-ALL snapshot; dex_menu's own loop is STILL open
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # dex_menu -> B closes it, back to the list
+    s.shot("12_after_undo", "#87: back at the list after Undo -- restored to exactly the "
+                             "pre-Catch-ALL state (dex_bulk's s_dex_snap[386], "
+                             "byte-exact per the acceptance gate) -- compare against "
+                             "03_list_default")
+
+    if which == "crystal":
+        s.tap("B", settle=gb_shots.BIG_SETTLE)               # dex screen -> back to the chooser
+        s.tap("DOWN", settle=gb_shots.SETTLE)                # chooser row 1: Unown forms
+        s.shot("13_chooser_unown_row", "#87: the chooser with 'Unown forms' selected")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # -> unown_forms_screen()
+        s.shot("14_unown_list", "#87: the 26-row Unown A..Z toggle list -- item 3's own "
+                                 "plain-list idiom over gb_dex.h's wUnownDex core")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # toggle letter A
+        s.shot("15_unown_toggled", "#87: letter A toggled -- trainer_flag_row_paint's own "
+                                    "ON/off text flips")
+        s.tap("B", settle=gb_shots.BIG_SETTLE)               # Unown list -> back to the chooser
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # chooser (or dex screen, Red) -> pdna_gbdex()'s own confirm
+    s.shot("16_save_confirm", "#87: 'Save Pokedex changes?' -- item 3's own end-of-visit "
+                               "confirm (gbs_finish + gb_persist('dex') on A)")
+    return s
+
+
+# ---------------------------------------------------------------------------------
 # BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL on a Gen 3 -> Game Boy paste.
 # ---------------------------------------------------------------------------------
 
@@ -2137,6 +2272,12 @@ def main(argv=None) -> int:
                           "matching this choice (Crystal.gbc+Crystal.sav, or "
                           "Red.gb+Red.sav for the Gen-1 fallback shot), same "
                           "single-ROM posture as --d7-gold")
+    ap.add_argument("--b87-dex", choices=("red", "crystal"),
+                     help="BACKLOG #87: only run_b87_dex() against --image for the "
+                          "named game -- --image MUST be a ONE-ROM fused image "
+                          "matching this choice (Red.gb+Red.sav, or Crystal.gbc + a "
+                          "Crystal.sav that has had `--op dexset 100 0` applied "
+                          "first -- see run_b87_dex()'s own docstring for why)")
     ap.add_argument("--b85-daycare", choices=("red", "gold"),
                      help="BACKLOG #85: only run_b85_daycare() against --image for "
                           "the named game (Red's one-slot Day Care, or Gold's "
@@ -2295,6 +2436,18 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b86 clock ({a.b86_clock}): {e}")
+    if a.b87_dex:
+        try:
+            sess = run_b87_dex(core_mod, image_mod, a.image, a.out, a.b87_dex)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b87 dex ({a.b87_dex}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
     if a.b85_daycare:
         try:
             sess = run_b85_daycare(core_mod, image_mod, a.image, a.out, a.b85_daycare)

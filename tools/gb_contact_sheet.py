@@ -222,6 +222,12 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # start "#95:".
     ("gb-mon-summary-parity", "#95 — summary-field parity audit: Shiny, Egg, Met "
      "Time/Level/Loc/OT Gender rows closed for Gen 2", ("#95",)),
+    # BACKLOG #87 (append-only, same rule as every row above): the Pokedex (seen/
+    # caught) for Gen 1/2 on the SHARED dex screen (pdna_pick.c's pdna_dex_screen,
+    # reused unchanged under a species cap) + Gen 2's own Unown-forms toggle list.
+    # Shots come from tools/dgb_shots.py's run_b87_dex(); captions all start "#87:".
+    ("gb-dex", "#87 — the Pokedex (seen/caught) for Gen 1/2 on the shared dex "
+     "screen, + Gen 2 Unown forms", ("#87",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
