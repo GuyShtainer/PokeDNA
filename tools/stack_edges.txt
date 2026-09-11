@@ -1166,3 +1166,36 @@ pr_build.constprop.0 argsites=3 -> lp_key_cb mon_key
 # pre-extraction -- an empty declared impl set does NOT mean "provably dead" to
 # this walker, it is treated identically to no declaration at all).
 LpCtx.name_fn @0 in lp_row_cb,lp_key_cb -> nature16
+
+# BACKLOG #102: the two GB-rung art descents pdna_origin_art.c's portrait/icon
+# routers only ever ENTER after their own runtime pdna_origin_art_stack_room()
+# check has already passed (source/pdna_origin_art.c:530,559 for the portrait
+# rung, :836 for the icon rung) -- a re-derivation of an OUTER caller's own
+# stack-room constant (e.g. source/pdna_box.c's PDNA_PARTY_STRIP_NEED, via
+# `--root pcp_open_party_strip_inner`) does not need to additively reserve room
+# for these subtrees on top of its own chain, because they are independently,
+# freshly re-guarded against the LIVE stack pointer at the exact moment they
+# run -- see tools/stack_budget.py's load_extra_edges() docstring and
+# deepest_from()'s own BACKLOG #102 note for the full mechanics (measured <= N
+# excludes the subtree from a --root-other-than-main re-derivation; measured > N
+# is a FATAL, since the declaration would then be an unproven, unsafe bound).
+# --root main (the whole-program guard) is UNAFFECTED either way -- gated
+# subtrees always stay fully, ungated included in that number.
+#
+# N is the LITERAL numeric value of the runtime constant each gate call site
+# actually passes, read from its #define (not a macro name -- the walker has no
+# C preprocessor): PDNA_GB_FETCH_NEED = 6144 (source/gb_art_source.h:19) and
+# PDNA_GB_ICON_NEED = 6144 (source/gb_art_source.h:44). Both currently equal;
+# see gb_art_source.h's own comments for why they are declared as two separate
+# named constants rather than one shared literal.
+#
+# gb_art_fetch_icon carries a GCC `.constprop.0` clone suffix in BOTH the
+# artless and normal builds' disassembly (`arm-none-eabi-nm PokeDNA{-artless,}.elf
+# | grep gb_art_fetch` on 2026-09-11) -- the bare, unqualified name is not a
+# linked symbol and would silently fall through to load_extra_edges()'s
+# unrecognized-line-shape branch were GATED_LINE_RE not anchored on `\S+`
+# (which does match the dotted suffix, unlike ARGSITE_LINE_RE's older `\w+`
+# mistake this same file's own D6 note documents -- this line was checked
+# against that exact trap before being added).
+gated gb_art_fetch need=6144
+gated gb_art_fetch_icon.constprop.0 need=6144
