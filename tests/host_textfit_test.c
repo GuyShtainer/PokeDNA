@@ -2187,6 +2187,11 @@ int main(void) {
   T(PDNA_GBCLOCK_ROW_SHIFT, 6);
   T(PDNA_GBCLOCK_ROW_CLEAR, 6);
   T(PDNA_GBCLOCK_TITLE, 4);
+  /* D6 (b86 review): the read-only branch's two explanatory lines, verbatim from
+   * the Gen-3 "SAVE CLOCK / RTC" screen's own !can branch (pdna_main.c), same x=6
+   * fixed sys8 column. */
+  T("Read-only cart - fixing needs", 6);
+  T("an EZ-Flash Omega.", 6);
 
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;

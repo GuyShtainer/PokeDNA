@@ -154,8 +154,21 @@ static void test_every_row_covered(void) {
    * (item, kind) pair to answer one of the three defined states with a real reason,
    * and NV_COUNT itself is asserted against the row count below. */
   CHECK(8 + 8 + 4 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
+
+  /* D6 review (b86): the comment above NARRATED "Gen 2's own count is 7 NOT_IN_GAME +
+   * 8 + 5" but nothing actually checked the Gen-2 cells for the other 7
+   * not_in_game_gen1 rows (only Clock, via test (E), and ok_both, via the loop above,
+   * were ever asked with SE_KIND_GEN2). Assert it for real. */
+  for (int i = 0; i < (int)(sizeof not_in_game_gen1 / sizeof not_in_game_gen1[0]); i++) {
+    if (not_in_game_gen1[i] == NV_CLOCK) continue;   /* Gen 2's one differing cell, test (E) */
+    CHECK(nav_avail(not_in_game_gen1[i], SE_KIND_GEN2) == NAV_NOT_IN_GAME,
+          "Gen 2: every Hoenn/Frontier-shaped row except Clock stays NOT_IN_GAME");
+  }
+  CHECK(7 + 8 + 5 == NV_COUNT,
+        "Gen 2's row classification (7 NOT_IN_GAME + 8 COMING_SOON-both + 5 OK) accounts for all rows too");
+
   printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 8 COMING_SOON-both + "
-        "4 OK-both == %d; Gen 2 differs only at Clock, see test E)\n", NV_COUNT);
+        "4 OK-both == %d; Gen 2 differs only at Clock, checked here + test E)\n", NV_COUNT);
 }
 
 /* ---- (H) defensive: out-of-range nv_item / save_kind never misbehaves -------------- */

@@ -73,6 +73,13 @@ static void gbclock_render(const GbClock* c, int sel, bool can_edit, ClockPaint*
     ui_clear();
     gbclock_header(c);
     for (int i = 0; i < ROW_N; i++) gbclock_row_paint(i, 60 + i * 16, i == sel);
+    if (!can_edit) {
+      /* D6 (b86 review): mirror the Gen-3 read-only branch (pdna_main.c's
+       * "SAVE CLOCK / RTC" screen) verbatim -- same two lines, same x=6 column,
+       * same posture (viewing rows is still fine; A is refused, not offered). */
+      ui_text(6, 112, UI_DIM, "Read-only cart - fixing needs");
+      ui_text(6, 122, UI_DIM, "an EZ-Flash Omega.");
+    }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     trainer_key_legend(can_edit ? "U/D select  A choose  B back" : "U/D select  B back");
   } else if (sel != pv->sel) {
@@ -213,7 +220,12 @@ void pdna_gbclock(GbSession* s, bool can_edit) {
     if (k & KEY_B) return;
     else if (k & KEY_UP)   sel = (sel > 0) ? sel - 1 : ROW_N - 1;
     else if (k & KEY_DOWN) sel = (sel + 1) % ROW_N;
-    else if ((k & KEY_A) && can_edit) {
+    else if (k & KEY_A) {
+      /* D6 (b86 review): A used to be a silent dead key here when !can_edit (s_wait
+       * already played its generic snd_ok() on the raw hit, which lies -- nothing
+       * happened). Swallow it with the same refusal cue pdna_contest.c's read-only
+       * A-press uses (snd_deny() layered right after s_wait's snd_ok()). */
+      if (!can_edit) { snd_deny(); continue; }
       switch (sel) {
         case ROW_RESET: gbclock_do_reset(s);    break;
         case ROW_SHIFT: gbclock_shift_editor(s); break;
