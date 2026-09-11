@@ -1664,6 +1664,15 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBSCR_ACT_BACK  "BACK"
 #define PDNA_GBSCR_ACT_SIZE  "SIZE"
 
+/* M1 (BACKLOG #91) Gen-1 Map screen: L/R are the shell's own SIZE toggle
+ * (same as SELECT) on this screen -- the D-pad alone pans -- so there is no
+ * legend slot for it (gbscr_set_legend's fixed A/B/SEL/START rows, m1 review
+ * D6). This one-line hint is drawn INTO the map's own body (gbscr_text,
+ * pdna_gbmap.c's gbmap_paint) instead, at GBSCR_ROWS-1 -- must fit
+ * GBSCR_COLS (20) columns at 1:1 AND stretched (the same cell-coordinate
+ * text, just a different pixel scale -- see tests/host_textfit_test.c). */
+#define PDNA_GBMAP_HINT      "D-PAD PAN"
+
 #define PDNA_GBTR_ACT_EDIT   "EDIT"
 #define PDNA_GBTR_ACT_SAVE   "SAVE"
 #define PDNA_GBTR_ACT_MORE   "MORE"

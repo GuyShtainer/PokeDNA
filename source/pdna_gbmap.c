@@ -124,6 +124,10 @@ static void gbmap_paint(GbScreen* gs, GbMapState* st, uint8_t* maptiles) {
       gbscr_cell(gs, sx, sy, GBSCR_SRC_MAPTILES, tile_id);
     }
   }
+  /* L/R are this screen's SIZE toggle, not a pan key (m1 review D6) -- there
+   * is no legend slot for that, so the hint lives in the map's own body,
+   * overlaid on the last row every repaint. */
+  gbscr_text(gs, 0, GBSCR_ROWS - 1, PDNA_GBMAP_HINT);
 }
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -258,13 +262,18 @@ void pdna_gbmap_gen1(GbSession* s) {
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R | KEY_B | KEY_SELECT);
     if (k & KEY_B) break;
-    if (k & KEY_SELECT) { gbscr_toggle_scale(&gs); continue; }
+    /* L/R are the shell's own SIZE toggle here (same as SELECT), matching
+     * the shell-wide "L/R or SELECT" scale convention every other GB screen
+     * uses -- the D-pad ALONE pans this screen, not a separate mode (m1
+     * review D6; pdna_map.c's L/R zoom-out/in is Guy's own Gen-3 mapping and
+     * stays exactly as-is, this is Gen-1's own screen). */
+    if (k & (KEY_SELECT | KEY_L | KEY_R)) { gbscr_toggle_scale(&gs); continue; }
 
     int nvbx = st.vbx, nvby = st.vby;
-    if (k & (KEY_LEFT | KEY_L))  nvbx--;
-    if (k & (KEY_RIGHT | KEY_R)) nvbx++;
-    if (k & KEY_UP)   nvby--;
-    if (k & KEY_DOWN) nvby++;
+    if (k & KEY_LEFT)  nvbx--;
+    if (k & KEY_RIGHT) nvbx++;
+    if (k & KEY_UP)    nvby--;
+    if (k & KEY_DOWN)  nvby++;
     nvbx = clampi(nvbx, 0, st.hdr.width  > VBW ? st.hdr.width  - VBW : 0);
     nvby = clampi(nvby, 0, st.hdr.height > VBH ? st.hdr.height - VBH : 0);
     if (nvbx != st.vbx || nvby != st.vby) {

@@ -2159,6 +2159,16 @@ int main(void) {
 #undef PWT
   }
 
+  /* M1 (BACKLOG #91) D6: the Gen-1 Map screen's own "D-PAD PAN" hint is
+   * drawn with gbscr_text() (pdna_gbmap.c's gbmap_paint), the GB-screen
+   * shell's own fixed one-glyph-per-cell font -- not ui_ptext/sys8 -- so the
+   * budget is a CHARACTER count against GBSCR_COLS (20), the same cell grid
+   * both gb_scale_mode=0 (1:1) and gb_scale_mode=1 (stretched) draw through
+   * (gbscr_cell() takes cell coordinates, not pixels -- the scale mode only
+   * changes how a cell is blitted, never how many fit per row). */
+  chkv("PDNA_GBMAP_HINT fits GBSCR_COLS (1:1 and stretched)",
+       (int)strlen(PDNA_GBMAP_HINT), GBSCR_COLS);
+
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }
