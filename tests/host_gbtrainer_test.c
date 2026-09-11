@@ -505,6 +505,50 @@ static void one_field_only(void) {
   }
 }
 
+/* ---------------------------------------------------------- B3: BACKLOG #126b */
+
+/* has_pokedex must fail OPEN on Gen 2, not closed: a session whose
+ * GBF_STATUS_FLAGS byte is unreadable (present in the field table, but out
+ * of THIS session's own bounds) must leave has_pokedex at its default
+ * (true), never silently flip it to false and hide a real save's #DEX row.
+ *
+ * No corpus file needed -- a synthetic GbSession built directly (not through
+ * gbs_open(), which would refuse a buffer too short for Gen 2's own checksum
+ * coverage) with `len` cut short right after PLAYER_NAME/TRAINER_ID (both
+ * near 0x2009-0x2016 on GS/Crystal) but well before GBF_STATUS_FLAGS
+ * (0x23d9/0x23da): gbt_field_present() still reports it present (a static
+ * per-game table lookup, independent of any one session's buffer size), so
+ * get_u() is the thing that fails here, exactly the "field IS present but
+ * this read failed" case the brief distinguishes from "this game lacks the
+ * field entirely" (which correctly stays false via has_gender's own
+ * identical posture, untouched by this fix). */
+static void has_pokedex_fail_open(void) {
+  g_ran++;
+  static uint8_t buf[0x2100];
+  memset(buf, 0, sizeof buf);   /* PLAYER_NAME/TRAINER_ID content is unchecked by
+                                  * get_name/get_u -- any bytes decode */
+
+  GbSession s;
+  memset(&s, 0, sizeof s);
+  s.img = buf;
+  s.len = sizeof buf;           /* covers TRAINER_ID (0x2009+2) and PLAYER_NAME
+                                  * (0x200b+11) but NOT GBF_STATUS_FLAGS (0x23d9/
+                                  * 0x23da) -- deliberately short of the real
+                                  * checksum-covered length gbs_open() would demand */
+  s.open = true;
+  s.gen  = GB_GEN2;              /* g2w left zeroed: gbt_game() reads .version == 0,
+                                  * != G2_VER_CRYSTAL, so this is the GS field row --
+                                  * same STATUS_FLAGS-past-len shape as Crystal's row */
+
+  GbTrainer t;
+  bool ok = gbt_read(&s, &t);
+  CHECK(ok, "fail-open: gbt_read (only hard-required fields, both in-bounds)");
+  if (ok) {
+    CHECK(t.has_pokedex, "fail-open: has_pokedex stays true when GBF_STATUS_FLAGS "
+                          "is present but out of this session's bounds (BACKLOG #126b)");
+  }
+}
+
 /* ---------------------------------------------------------------- C: refusals */
 
 static void refusals(const char* file, uint8_t expect_gen) {
@@ -594,6 +638,9 @@ int main(void) {
 
   printf("== B2: single-field write (P1a re-verify D11) ==\n");
   one_field_only();
+
+  printf("== B3: has_pokedex fails open, not closed (BACKLOG #126b) ==\n");
+  has_pokedex_fail_open();
 
   printf("== C: refusals ==\n");
   refusals("Red.sav", GB_GEN1);

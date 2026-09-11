@@ -1,9 +1,12 @@
 /* Host test for source/g2card_cells.c -- the Gen-2 trainer card's pure
- * static graphical cell table (BACKLOG #96 D11). Asserts every cell the
- * table can emit resolves inside its located block's byte length (the same
- * bound gbscr_flush()'s VRAM blit relies on to never read past the cached
- * tail buffer), and pins the three facts the brief names as having survived
- * mutation before: the (18,9) corner cell is display index 4 (Gold-correct; wrong on Crystal, BACKLOG #125);
+ * static graphical cell table (BACKLOG #96 D11 / #125). Asserts every cell
+ * the table can emit resolves inside its located block's byte length (the
+ * same bound gbscr_flush()'s VRAM blit relies on to never read past the
+ * cached tail buffer), and pins the facts the brief names as having survived
+ * mutation before: on Gold, both right-corner cells ((18,1) and (18,9)) are
+ * pic_src display index 4 (Gold has no separate CardRightCornerGFX block --
+ * pixel-exact as-is); on Crystal, both resolve through GBSCR_SRC_CARDCORNER
+ * index 0 (CardRightCornerGFX = badges + 88 tiles, BACKLOG #125, fixed);
  * GBSCR_SRC_STATUSWORD is located at gu->leaders - 96; G2L_BADGES_WORD is 80.
  *
  *   cc -std=c11 -Wall -Wextra -I source -DPDNA_GBSCREEN_HOST_TEST \
@@ -60,7 +63,17 @@ static RomGbUi fake_gu(void) {
   gu.cardpic_m  = 0x30000;              /* 35 tiles, 560 B */
   gu.cardpic_f  = 0x30230;              /* Kris = Chris + 0x230, D9's own invariant */
   gu.badges     = 0x40000;              /* Gen 2: 44 tiles, 704 B */
+  gu.cardcorner = 0;                    /* Gold: no separate corner block */
   gu.ok = 1;
+  return gu;
+}
+
+/* BACKLOG #125: Crystal-shaped -- same as fake_gu() but with cardcorner set
+ * (badges + 88 tiles, mirroring rom_gbui.c's own derivation), a distinct 16-B
+ * block, non-overlapping with any of the above. */
+static RomGbUi fake_gu_crystal(void) {
+  RomGbUi gu = fake_gu();
+  gu.cardcorner = gu.badges + 88u * 16u;   /* 0x40580, well past badges' own 704 B */
   return gu;
 }
 
@@ -112,15 +125,25 @@ static int check_cells(const char* what, const RomGbUi* gu, uint8_t gen,
 
 int main(void) {
   RomGbUi gu = fake_gu();
+  RomGbUi gu_crystal = fake_gu_crystal();
 
-  /* -- bounds: every cell g2card_cells.c can emit, on both genders/pages -- */
+  /* -- bounds: every cell g2card_cells.c can emit, on both genders/pages,
+   * both Gold (has_corner=false) and Crystal (has_corner=true) -- */
   G2CardCell upper_m[G2CARD_UPPER_CELLS], upper_f[G2CARD_UPPER_CELLS];
-  int nu_m = g2card_build_upper_cells(false, upper_m);
-  int nu_f = g2card_build_upper_cells(true, upper_f);
+  int nu_m = g2card_build_upper_cells(false, false, upper_m);
+  int nu_f = g2card_build_upper_cells(true, false, upper_f);
   expect_int("upper cell count (male)", nu_m, G2CARD_UPPER_CELLS);
   expect_int("upper cell count (female)", nu_f, G2CARD_UPPER_CELLS);
   check_cells("upper(male)", &gu, 2, upper_m, nu_m);
   check_cells("upper(female)", &gu, 2, upper_f, nu_f);
+
+  G2CardCell upper_m_c[G2CARD_UPPER_CELLS], upper_f_c[G2CARD_UPPER_CELLS];
+  int nu_m_c = g2card_build_upper_cells(false, true, upper_m_c);
+  int nu_f_c = g2card_build_upper_cells(true, true, upper_f_c);
+  expect_int("upper cell count (male, Crystal)", nu_m_c, G2CARD_UPPER_CELLS);
+  expect_int("upper cell count (female, Crystal)", nu_f_c, G2CARD_UPPER_CELLS);
+  check_cells("upper(male,Crystal)", &gu_crystal, 2, upper_m_c, nu_m_c);
+  check_cells("upper(female,Crystal)", &gu_crystal, 2, upper_f_c, nu_f_c);
 
   G2CardCell p1[G2CARD_PAGE1_CELLS];
   int np1 = g2card_build_page1_cells(p1);
@@ -144,19 +167,60 @@ int main(void) {
   expect_int("page2 cell count (one owned)", np2o, 85 + 4);
   check_cells("page2(one owned)", &gu, 2, p2o, np2o);
 
-  /* -- the three pinned facts -- */
+  /* -- the pinned facts -- */
 
-  /* fact 1: the (18,9) corner cell is display index 4 (Gold-correct; Crystal needs CardRightCornerGFX, BACKLOG #125). */
+  /* fact 1a (Gold, has_corner=false): BOTH right-corner cells -- (18,1) (part
+   * of the 5x7 grid loop, tx=4/ty=0) and (18,9) (the explicit cell) -- are
+   * pic_src display index 4. Gold has no separate CardRightCornerGFX block,
+   * so this is pixel-exact as-is (BACKLOG #125, fixed state: the fact is
+   * unconditional now, not "correct today, wrong on Crystal"). */
   {
-    bool found = false;
-    for (int i = 0; i < nu_m; i++)
-      if (upper_m[i].x == 18 && upper_m[i].y == 9) {
-        found = true;
-        expect_int("corner cell (18,9) src", upper_m[i].src, GBSCR_SRC_CARDPIC_M);
-        expect_int("(18,9) corner cell index -- GOLD-correct, WRONG on Crystal (BACKLOG #125)",
-                   upper_m[i].index, 4);
+    bool found18_1 = false, found18_9 = false;
+    for (int i = 0; i < nu_m; i++) {
+      if (upper_m[i].x == 18 && upper_m[i].y == 1) {
+        found18_1 = true;
+        expect_int("Gold (18,1) src", upper_m[i].src, GBSCR_SRC_CARDPIC_M);
+        expect_int("Gold (18,1) index", upper_m[i].index, 4);
       }
-    expect_true("corner cell (18,9) present", found);
+      if (upper_m[i].x == 18 && upper_m[i].y == 9) {
+        found18_9 = true;
+        expect_int("Gold (18,9) src", upper_m[i].src, GBSCR_SRC_CARDPIC_M);
+        expect_int("Gold (18,9) index", upper_m[i].index, 4);
+      }
+    }
+    expect_true("Gold (18,1) present", found18_1);
+    expect_true("Gold (18,9) present", found18_9);
+  }
+
+  /* fact 1b (Crystal, has_corner=true): BOTH right-corner cells resolve
+   * through GBSCR_SRC_CARDCORNER index 0 instead -- the grid's own (18,1)
+   * cell (tx=4/ty=0) is OVERRIDDEN, not duplicated (still exactly
+   * G2CARD_UPPER_CELLS cells total, asserted above). */
+  {
+    bool found18_1 = false, found18_9 = false;
+    for (int i = 0; i < nu_m_c; i++) {
+      if (upper_m_c[i].x == 18 && upper_m_c[i].y == 1) {
+        found18_1 = true;
+        expect_int("Crystal (18,1) src", upper_m_c[i].src, GBSCR_SRC_CARDCORNER);
+        expect_int("Crystal (18,1) index", upper_m_c[i].index, 0);
+      }
+      if (upper_m_c[i].x == 18 && upper_m_c[i].y == 9) {
+        found18_9 = true;
+        expect_int("Crystal (18,9) src", upper_m_c[i].src, GBSCR_SRC_CARDCORNER);
+        expect_int("Crystal (18,9) index", upper_m_c[i].index, 0);
+      }
+    }
+    expect_true("Crystal (18,1) present", found18_1);
+    expect_true("Crystal (18,9) present", found18_9);
+
+    /* review attack: the (18,1) override really REPLACES the grid's own
+     * cell, it does not append a duplicate -- every (x,y) pair in the
+     * Crystal upper-cell set must be distinct. */
+    int dup = 0;
+    for (int i = 0; i < nu_m_c; i++)
+      for (int j = i + 1; j < nu_m_c; j++)
+        if (upper_m_c[i].x == upper_m_c[j].x && upper_m_c[i].y == upper_m_c[j].y) dup++;
+    expect_int("Crystal upper cells: duplicate (x,y) pairs", dup, 0);
   }
 
   /* fact 2: STATUSWORD == leaders - 96. */

@@ -799,6 +799,109 @@ def run_money_case(name, info, rom, sav, work, binary, python, vendor, tally):
     tally.record("money (field write, BACKLOG #49 P0)", ok, detail)
 
 
+# BACKLOG #126c — wStatusFlags/wPlayerGender WRAM anchors, one .sym lookup each,
+# same posture as MONEY_WRAM above: --op statusflags/--op gender (tests/
+# host_gbsurgery_tool.c's do_statusflags/do_gender, BACKLOG #96 D10/Kris) already
+# write the SAVE-FILE bytes and were already proven on the host, but neither one had
+# a gate case proving the write reaches a BOOTED game's WRAM.
+#   Gold:    wStatusFlags = bank 01, $D571 (assets/upstream/pokegold/symbols/
+#            pokegold.sym:42364)
+#   Crystal: wStatusFlags = bank 01, $D84C (assets/upstream/pokecrystal/symbols/
+#            pokecrystal.sym:57091)
+# Gen 1 has no equivalent field (do_statusflags refuses it outright) -- no "red"/
+# "yellow" entries, same absence shape HELDITEM_WRAM already has for Gen 1.
+STATUSFLAGS_VALUE = 0x05   # distinct bit pattern (bits 0+2), not a trivial 0/1 that
+                           # could accidentally match a real save's own flags byte
+STATUSFLAGS_WRAM = {"gold": 0xD571, "crystal": 0xD84C}
+
+# wPlayerGender is Crystal-only (Gold/Silver's card has no gender concept, source/
+# gb_fields.c's own GBF_GENDER row is 0 for both G1 rows and the GS row) -- symbol:
+#   Crystal: wPlayerGender = bank 01, $D472 (assets/upstream/pokecrystal/symbols/
+#            pokecrystal.sym:56364)
+GENDER_VALUE = 1   # female (Kris) -- 0 is every save's own default, so 1 is the one
+                   # value that PROVES the write reached the booted game
+GENDER_WRAM = {"crystal": 0xD472}
+
+
+def run_statusflags_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #126c: --op statusflags's write (do_statusflags, BACKLOG #96 D10),
+    proven the same shape as run_money_case -- boot it and read wStatusFlags back off
+    WRAM. Gen 2 only (Gold and Crystal); Gen 1 has no such field and the surgery tool
+    itself refuses before there is anything to boot, same posture run_helditem_case's
+    own Gen-1 skip already has."""
+    if info["gen"] == 1:
+        tally.skip_case("statusflags (field write, BACKLOG #126c)",
+                        "Gen 1 has no GBF_STATUS_FLAGS field; do_statusflags refuses it")
+        return
+    edited = work / "statusflags.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["statusflags", str(STATUSFLAGS_VALUE)]])
+    if rc != 0:
+        tally.record("statusflags (field write, BACKLOG #126c)", False,
+                    f"surgery refused: {err.strip()}")
+        return
+
+    addr = STATUSFLAGS_WRAM[name]
+    want = f"{STATUSFLAGS_VALUE:02x}"
+    rc, rep, out, err = boot(python, rom, edited, work / "statusflags", vendor,
+                             work / "statusflags.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:1"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == want
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"{addr:#06x}={got!r} want={want!r}")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("statusflags (field write, BACKLOG #126c)", ok, detail)
+
+
+def run_gender_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #126c: --op gender's write (do_gender, BACKLOG #96 Kris), proven the
+    same shape as run_money_case -- boot it and read wPlayerGender back off WRAM.
+    Crystal only: Gold/Silver's card has no gender concept and do_gender refuses
+    anything that is not a Crystal session outright (same "the surgery step itself
+    refuses before there is anything to boot" posture run_helditem_case's own Gen-1
+    skip already documents); Red/Yellow skip for the same reason."""
+    if name != "crystal":
+        tally.skip_case("gender (field write, BACKLOG #126c)",
+                        "gender is Crystal only; do_gender refuses every other game")
+        return
+    edited = work / "gender.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["gender", str(GENDER_VALUE)]])
+    if rc != 0:
+        tally.record("gender (field write, BACKLOG #126c)", False,
+                    f"surgery refused: {err.strip()}")
+        return
+
+    addr = GENDER_WRAM[name]
+    want = f"{GENDER_VALUE:02x}"
+    rc, rep, out, err = boot(python, rom, edited, work / "gender", vendor,
+                             work / "gender.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:1"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == want
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"{addr:#06x}={got!r} want={want!r}")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("gender (field write, BACKLOG #126c)", ok, detail)
+
+
 # BACKLOG #89 — the Hall of Fame gate: gbh_clear()/gbh_set_count() proven the same way
 # money is above (a real edit through --op hofclear/hofcount, booted, read straight off
 # WRAM). wNumHoFTeams/wHallOfFameCount's WRAM addresses are the SAME symbol addresses
@@ -1770,7 +1873,11 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     # ---- 2c. BACKLOG #49 P0 — the field-write primitive, proven with money ----
     run_money_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
-    # ---- 2c1. BACKLOG #89 — the Hall of Fame: clear then a plain count set ----
+    # ---- 2c1. BACKLOG #126c — statusflags/gender writes, proven the same shape ----
+    run_statusflags_case(name, info, rom, sav, work, binary, python, vendor, tally)
+    run_gender_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2c1b. BACKLOG #89 — the Hall of Fame: clear then a plain count set ----
     run_hofclear_case(name, info, rom, sav, work, binary, python, vendor, tally)
     run_hofcount_case(name, info, rom, sav, work, binary, python, vendor, tally)
 

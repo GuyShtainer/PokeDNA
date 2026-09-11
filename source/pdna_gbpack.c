@@ -440,7 +440,12 @@ void pdna_gbpack(GbSession* s, bool can_edit) {
   bool female = g2pack_is_female(s);
   int frame = g2pack_frame(s, game);
   uint16_t pic_need = female ? GBSCR_NEED_PACK_F : GBSCR_NEED_PACK;
-  uint16_t need_mask = GBSCR_NEED_TEXTBOX | GBSCR_NEED_PACKMENU | pic_need;
+  /* BACKLOG #125 review: uint32_t for consistency with every other need_mask
+   * local now that gbscr_open()/gbscr_tail_need()/gbscr_cache_plan() take
+   * uint32_t -- this call site's own bits (PACKMENU/PACK/PACK_F/TEXTBOX) are
+   * all < 16 today, but a uint16_t local here would silently re-truncate a
+   * FUTURE need bit >= 16 the same way GBSCR_NEED_CARDCORNER just did. */
+  uint32_t need_mask = GBSCR_NEED_TEXTBOX | GBSCR_NEED_PACKMENU | pic_need;
   GbScreen gs;
   const char* reason = 0;
   bool ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, &reason);

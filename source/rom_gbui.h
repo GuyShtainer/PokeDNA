@@ -291,6 +291,12 @@ typedef struct {
 
   uint8_t  playerpic_bank;       /* the bank playerpic's blob lives in       */
   uint8_t  cardpic_colmajor;     /* 1 = Crystal-shaped (rgbgfx --columns), 0 = Gold (row-major) */
+  /* BACKLOG #125: Crystal's TrainerCard_InitBorder overwrites vTiles2 tile
+   * $1c (storage tile 4 of the card-pic block) with CardRightCornerGFX after
+   * GetCardPic -- CardRightCornerGFX = BadgeGFX + 88 tiles (0x26043 + 0x580 =
+   * 0x265c3 in pokecrystal.sym, constant across all six .sym revisions). 0 on
+   * Gold (badges' storage tile 4 IS the corner there; no separate block). */
+  uint32_t cardcorner;
   int      ok;
 
   /* BACKLOG #71: the scan-hit file offset that DERIVED each off[]-equivalent

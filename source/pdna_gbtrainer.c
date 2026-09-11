@@ -723,7 +723,10 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
  * declared 86-tile size is exactly 80 faces + 6 word tiles, confirming this
  * is ONE block, not two. Screen (18,1)/(18,9) are the card's right-corner
  * chamfer, written by the game's own TrainerCard_InitBorder; on Crystal its
- * pixels come from CardRightCornerGFX, not from the pic (BACKLOG #125).
+ * pixels come from CardRightCornerGFX, not from the pic -- this shell now
+ * routes both cells through GBSCR_SRC_CARDCORNER (RomGbUi.cardcorner =
+ * badges + 88 tiles) when the located ROM is Crystal-shaped (BACKLOG #125,
+ * fixed; see pdna_gbtrainer_gen2_card()'s own has_corner comment below).
  *
  * The real game draws the OWNED-badge overlay as an animated OAM sprite over
  * the gym leader's face, never as a BG tile -- the BG-tilemap oracle above
@@ -802,7 +805,7 @@ static void g2card_border(GbScreen* gs) {
 
 /* The upper half (NAME/ID/MONEY/pic/divider) is IDENTICAL on both pages --
  * confirmed byte-for-byte across all four dumps -- so both callers share it. */
-static void g2card_paint_upper(GbScreen* gs, const GbTrainer* t, bool female) {
+static void g2card_paint_upper(GbScreen* gs, const GbTrainer* t, bool female, bool has_corner) {
   gbscr_text(gs, 2, 2, "NAME/");
   gbscr_raw(gs, 7, 2, t->name_raw, GB_OT_GLYPHS);
 
@@ -828,14 +831,14 @@ static void g2card_paint_upper(GbScreen* gs, const GbTrainer* t, bool female) {
    * host_gbcard_cells_test.c bounds-checks every one of these 51 cells
    * against the located block it reads from. */
   G2CardCell cells[G2CARD_UPPER_CELLS];
-  int ncells = g2card_build_upper_cells(female, cells);
+  int ncells = g2card_build_upper_cells(female, has_corner, cells);
   for (int i = 0; i < ncells; i++)
     gbscr_cell(gs, cells[i].x, cells[i].y, cells[i].src, cells[i].index);
 }
 
-static void g2card_paint_page1(GbScreen* gs, const GbTrainer* t, bool female) {
+static void g2card_paint_page1(GbScreen* gs, const GbTrainer* t, bool female, bool has_corner) {
   g2card_border(gs);
-  g2card_paint_upper(gs, t, female);
+  g2card_paint_upper(gs, t, female, has_corner);
 
   /* BACKLOG #96 D11: the 5 STATUSWORD tiles + the FONT hint arrow, from the
    * same pure cell table (the blinking colon cell below stays inline --
@@ -879,7 +882,7 @@ static void g2card_paint_page1(GbScreen* gs, const GbTrainer* t, bool female) {
   /* the (r) hint arrow at (18,15) is in the page-1 cell table above */
 }
 
-static void g2card_paint_page2(GbScreen* gs, const GbTrainer* t, bool female) {
+static void g2card_paint_page2(GbScreen* gs, const GbTrainer* t, bool female, bool has_corner) {
   g2card_border(gs);
   /* the upper half is repainted here too -- U2b's dirty-cell idempotence
    * means this costs nothing extra to blit, and it is what lets L/R flip
@@ -890,8 +893,9 @@ static void g2card_paint_page2(GbScreen* gs, const GbTrainer* t, bool female) {
    * captured Crystal save uses her), so this is fixed by reading the call
    * site rather than a pixel compare: pdna_gbtrainer_gen2_card()'s own
    * `female` local (post fail-safe retry) is threaded through instead of a
-   * literal false. */
-  g2card_paint_upper(gs, t, female);
+   * literal false. Same for `has_corner` (BACKLOG #125) -- the caller's post-
+   * retry local, not re-derived here. */
+  g2card_paint_upper(gs, t, female, has_corner);
 
   /* BACKLOG #96 D11: the LEADERS "BADGES" word, the 8-leader diploma grid,
    * and the per-badge 2x2 overlay (U3 accepted deviation -- a STATIC overlay
@@ -943,7 +947,12 @@ static void g2card_edit_sel(GbTrainer* t, int page, int sel) {
 __attribute__((noinline))
 static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
   uint16_t pic_need = female ? GBSCR_NEED_CARDPIC_F : GBSCR_NEED_CARDPIC_M;
-  uint16_t need_mask = GBSCR_NEED_CARDGFX | GBSCR_NEED_STATUSWORD |
+  /* BACKLOG #125 review: uint32_t, not uint16_t -- GBSCR_NEED_CARDCORNER is
+   * 1u<<16, which silently truncated to 0 in a uint16_t need_mask (the actual
+   * bug: the retry below never added the bit, the block was never cached,
+   * and the corner cells painted whatever stale pixels were already there
+   * instead of the chamfer). See pdna_gbscreen.h's GBSCR_SRC_COUNT assert. */
+  uint32_t need_mask = GBSCR_NEED_CARDGFX | GBSCR_NEED_STATUSWORD |
                        GBSCR_NEED_LEADERS | GBSCR_NEED_BADGES | pic_need;
   uint32_t shell_need = gbscr_tail_need(PDNA_GEN2, need_mask);
   uint8_t* tail = gb12_arena_tail(shell_need);
@@ -962,6 +971,26 @@ static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
     shell_need = gbscr_tail_need(PDNA_GEN2, need_mask);
     ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, &reason);
   }
+  /* BACKLOG #125: gbscr_open() locates gu (rom_gbui_open[_loc]()) BEFORE it
+   * plans the tail cache, so gs.gu.cardcorner is only known once the open
+   * above has already succeeded -- need_mask could not ask for the corner
+   * block up front. Retry once more (same "screen entry, not a per-frame
+   * cost" posture as the female fail-safe just above; gbscr_open() just
+   * wrote a fresh loc, so this retry takes the CHEAP cached-loc revalidate
+   * path, not a full rescan) with GBSCR_NEED_CARDCORNER added whenever the
+   * located ROM is Crystal-shaped. Without this the block is never cached
+   * and both right-corner cells paint BLANK -- gbscr_mem_read() bounds every
+   * read to the cached tail, and GBSCR_SRC_BADGES index 88 does NOT
+   * substitute (BADGES' block_bytes is 704, not a separate 16-B block). */
+  bool has_corner = ok && gs.gu.cardcorner != 0;
+  if (has_corner) {
+    need_mask |= GBSCR_NEED_CARDCORNER;
+    shell_need = gbscr_tail_need(PDNA_GEN2, need_mask);
+    gb12_arena_tail_release();
+    tail = gb12_arena_tail(shell_need);
+    ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, &reason);
+    has_corner = ok && gs.gu.cardcorner != 0;
+  }
   if (!ok) {
     gb12_arena_tail_release();
     return pdna_gbtrainer_plain(t, false, can_edit, PDNA_GBTR_FALLBACK_TITLE,
@@ -979,7 +1008,7 @@ static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
   int page = 0, sel = 0;
   bool want_commit = false;
   g2_frame_ctr = 0;
-  g2card_paint_page1(&gs, t, female);
+  g2card_paint_page1(&gs, t, female, has_corner);
 
   for (;;) {
     gbscr_flush(&gs, 0);
@@ -1024,8 +1053,8 @@ static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
     if (k & (KEY_LEFT | KEY_RIGHT)) {
       page ^= 1;
       sel = 0;
-      if (page == 0) g2card_paint_page1(&gs, t, female);
-      else           g2card_paint_page2(&gs, t, female);
+      if (page == 0) g2card_paint_page1(&gs, t, female, has_corner);
+      else           g2card_paint_page2(&gs, t, female, has_corner);
       gbscr_mark_all_dirty(&gs);
       continue;
     }
@@ -1036,8 +1065,8 @@ static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
     else if (k & KEY_DOWN) sel = (sel + 1) % selmax;
     else if (can_edit && (k & KEY_A)) {
       g2card_edit_sel(t, page, sel);
-      if (page == 0) g2card_paint_page1(&gs, t, female);
-      else           g2card_paint_page2(&gs, t, female);
+      if (page == 0) g2card_paint_page1(&gs, t, female, has_corner);
+      else           g2card_paint_page2(&gs, t, female, has_corner);
       gbscr_mark_all_dirty(&gs);
     }
     if (sel != old_sel) gbscr_mark_all_dirty(&gs);
