@@ -232,7 +232,14 @@ typedef enum {
    * that references this src. Not one of `blocks[]` (never served through
    * gbscr_mem_read()/a rom_off match) -- same "separate cache.pic pointer"
    * shape GBSCR_SRC_PIC already established for a non-rom_gbui source. */
-  GBSCR_SRC_MAPTILES
+  GBSCR_SRC_MAPTILES,
+  /* BACKLOG #125: Crystal's TrainerCard_InitBorder overwrites the card-pic
+   * block's own storage tile 4 (used by BOTH right-corner cells) with
+   * CardRightCornerGFX after GetCardPic -- a separate 16-B block, RomGbUi.
+   * cardcorner (0 on Gold, where storage tile 4 IS the corner already).
+   * Single-tile block (index always 0), same plain rom_gbui_tile() shape as
+   * every other src here. */
+  GBSCR_SRC_CARDCORNER
 } GbScrSrc;
 
 /* U2b item 1: which extra located ROM blocks (beyond FONT, always cached) a screen
@@ -271,6 +278,10 @@ typedef enum {
 #define GBSCR_PIC_DECODE_SCRATCH (GB_SPRITE_MAX_PX + GB_SPRITE_WORK)    /* 3,920 */
 #define GBSCR_PIC_TAIL_BYTES (GBSCR_PIC_PACKED_BYTES + GBSCR_PIC_DECODE_SCRATCH) /* 4,704 */
 #define GBSCR_NEED_BADGES    (1u << GBSCR_SRC_BADGES)
+/* BACKLOG #125: Crystal's own right-corner block -- see the GBSCR_SRC_CARDCORNER
+ * enum comment. 0 on Gold (RomGbUi.cardcorner == 0), so callers gate the bit on
+ * that, not on gen alone. */
+#define GBSCR_NEED_CARDCORNER (1u << GBSCR_SRC_CARDCORNER)
 
 /* One located ROM block, bulk-copied into the tail buffer at open: `rom_off` is
  * where rom_gbui found it in the ROM/fused image, `ram_off` is its offset inside
