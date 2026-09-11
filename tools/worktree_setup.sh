@@ -28,24 +28,38 @@ if [[ "$DEST_COMMON" != "$MAIN_COMMON" ]]; then
   exit 1
 fi
 
+# The main checkout is the current working directory (where the script is called from)
+MAIN_REPO=$(git rev-parse --show-toplevel)
+
 # Copy gitignored generated sources and fixtures
 COPIED=0
 git ls-files -o -i --exclude-standard source/ tests/fixtures/ | while read -r FILE; do
   DEST_FILE="$DEST/$FILE"
-  
+
   # Skip if file exists and --force not given
   if [[ -f "$DEST_FILE" ]] && [[ "$FORCE" == false ]]; then
     continue
   fi
-  
+
   # Create directory
   mkdir -p "$(dirname "$DEST_FILE")"
-  
+
   # Copy with preservation of permissions/timestamps
   cp -p "$FILE" "$DEST_FILE"
-  
+
   echo "copied: $FILE"
 done
+
+# Copy the generator's .sym and .asm input directories (never symlink — copy via cp -R)
+# assets/upstream/*/symbols/, assets/upstream/*/constants/, assets/upstream/*/data/
+if [[ -d "$MAIN_REPO/assets/upstream" ]]; then
+  mkdir -p "$DEST/assets"
+  cp -R "$MAIN_REPO/assets/upstream" "$DEST/assets/upstream"
+fi
+
+# Run ensure_gbfields.sh to generate fresh tables in the worktree
+cd "$DEST"
+./tools/ensure_gbfields.sh
 
 # Print total count
 TOTAL=$(git ls-files -o -i --exclude-standard source/ tests/fixtures/ | wc -l)
