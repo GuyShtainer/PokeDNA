@@ -586,6 +586,8 @@ ISR_LINE_RE = re.compile(r'^isr\s+(\S+)$')
 ADDRTAKEN_OK_RE = re.compile(r'^addrtaken-ok\s+(\S+)$')
 # D4 (BACKLOG #84b sixth pass): a declared depth for a real recursive SCC.
 RECURSION_LINE_RE = re.compile(r'^recursion\s+(\S+)\s+depth=(\d+)$')
+# BACKLOG #102: a runtime-gated subtree with its declared conservative bound.
+GATED_LINE_RE = re.compile(r'^gated\s+(\S+)\s+need=(\d+)$')
 
 
 def load_extra_edges(path):
@@ -671,9 +673,31 @@ def load_extra_edges(path):
         than one member of the same component must agree on N or that PAIR is
         itself a FATAL (a real question -- which is right? -- not a silent pick).
 
+      gated fn need=N
+        BACKLOG #102: `fn`'s subtree (fn's own frame plus everything it calls) is
+        entered at runtime ONLY after a call to `pdna_origin_art_stack_room(N)`
+        (or the numerically-identical PDNA_* constant it mirrors) has already
+        succeeded -- e.g. `gated gb_art_fetch need=6144` mirrors
+        `pdna_origin_art_stack_room(PDNA_GB_FETCH_NEED)` guarding every call site
+        that can reach gb_art_fetch (source/pdna_origin_art.c). Two DIFFERENT
+        semantics depending on which --root this run measures (tools/
+        stack_budget.py's deepest_from()/top_n_chains(), BACKLOG #102 design):
+          - measuring from --root main (the whole-program guard): a gated
+            subtree stays fully, ungated INCLUDED in the worst-case walk --
+            the guard's own worst-case number must never get smaller just
+            because some OTHER, unrelated re-derivation declared a gate here.
+          - measuring from any OTHER --root (a re-derivation, e.g. `--root
+            pcp_open_party_strip_inner`): the gated subtree is charged its
+            declared N ONLY IF its real, ungated measured size is <= N --
+            otherwise the run FATALs (`gated subtree fn measures M > declared
+            need N: the runtime gate would not protect it`), because the whole
+            point of declaring N here is that it must be a provably
+            conservative bound on what the runtime gate actually lets through.
+        Example: `gated gb_art_fetch need=6144`.
+
     Multiple lines per caller/struct ACCUMULATE (pdna_box has eleven field lines).
     Returns (field_decls, field_offset_index, argsite_decls, whole_func_decls,
-             frame_overrides, isr_decls, addrtaken_ok, recursion_decls):
+             frame_overrides, isr_decls, addrtaken_ok, recursion_decls, gated_decls):
       field_decls        : {(struct, field): (offset, {impls})}  -- for header
                             verification ONLY (verify_field_declarations()); it
                             unions every impl regardless of caller qualification,
@@ -690,6 +714,7 @@ def load_extra_edges(path):
       isr_decls         : {fn, ...}
       addrtaken_ok      : {fn, ...}
       recursion_decls    : {fn: depth}
+      gated_decls        : {fn: need}
     """
     field_decls = {}
     field_site_decls = []   # [(struct, field, offset, callers_frozenset_or_None, {impls})]
@@ -699,9 +724,10 @@ def load_extra_edges(path):
     isr_decls = set()
     addrtaken_ok = set()
     recursion_decls = {}
+    gated_decls = {}
     if not path or not os.path.exists(path):
         return (field_decls, ({}, {}), argsite_decls, whole_func_decls, frame_overrides,
-                isr_decls, addrtaken_ok, recursion_decls)
+                isr_decls, addrtaken_ok, recursion_decls, gated_decls)
     with open(path) as f:
         for lineno, raw in enumerate(f, 1):
             line = raw.split('#', 1)[0].strip()
@@ -727,6 +753,15 @@ def load_extra_edges(path):
                                       f"with different depths ({recursion_decls[fn]} "
                                       f"and {depth})")
                 recursion_decls[fn] = depth
+                continue
+            gm = GATED_LINE_RE.match(line)
+            if gm:
+                fn, need = gm.group(1), int(gm.group(2))
+                if fn in gated_decls and gated_decls[fn] != need:
+                    raise ValueError(f"{path}:{lineno}: gated {fn} declared twice "
+                                      f"with different needs ({gated_decls[fn]} "
+                                      f"and {need})")
+                gated_decls[fn] = need
                 continue
             if '->' not in line:
                 raise ValueError(f"{path}:{lineno}: unrecognized line: {raw!r}")
@@ -787,7 +822,7 @@ def load_extra_edges(path):
     field_offset_index = (dict(qualified), dict(unqualified))
 
     return (field_decls, field_offset_index, argsite_decls, dict(whole_func_decls),
-            frame_overrides, isr_decls, addrtaken_ok, recursion_decls)
+            frame_overrides, isr_decls, addrtaken_ok, recursion_decls, gated_decls)
 
 
 # === struct-field offsets, computed from the header (D1) ==============================
@@ -2129,7 +2164,7 @@ def reachable_from(root, edges):
 
 def check_ambiguous_declarations(dup_names, addr_unique_name, field_decls, argsite_decls,
                                   whole_func_decls, frame_overrides, isr_decls,
-                                  addrtaken_ok, recursion_decls=()):
+                                  addrtaken_ok, recursion_decls=(), gated_decls=()):
     """D5b: any stack_edges.txt reference to a NAME the census found duplicated
     (`dup_names`, from read_symbol_census()) without its `@tu` qualifier is ambiguous
     -- it could silently resolve to whichever instance's node happens to exist under
@@ -2170,6 +2205,8 @@ def check_ambiguous_declarations(dup_names, addr_unique_name, field_decls, argsi
         check(fn, "addrtaken-ok")
     for fn in sorted(recursion_decls):
         check(fn, "recursion")
+    for fn in sorted(gated_decls):
+        check(fn, "gated")
     return problems
 
 
@@ -3009,9 +3046,9 @@ def main(argv):
         return 1
 
     (field_decls, field_offset_index, argsite_decls, whole_func_decls, frame_overrides,
-     isr_decls, addrtaken_ok, recursion_decls) = (
+     isr_decls, addrtaken_ok, recursion_decls, gated_decls) = (
         load_extra_edges(args.edges_file) if args.edges_file
-        else ({}, ({}, {}), {}, {}, {}, set(), set(), {}))
+        else ({}, ({}, {}), {}, {}, {}, set(), set(), {}, {}))
 
     # D1 header-drift check: every declared Struct.field @OFFSET is checked against
     # the offset the struct's OWN header gives that field today, before anything
@@ -3031,7 +3068,7 @@ def main(argv):
     # ERROR listing the qualified candidates, never a silent pick of "whichever one".
     ambiguous = check_ambiguous_declarations(
         dup_names, addr_unique_name, field_decls, argsite_decls, whole_func_decls,
-        frame_overrides, isr_decls, addrtaken_ok, recursion_decls)
+        frame_overrides, isr_decls, addrtaken_ok, recursion_decls, gated_decls)
     if ambiguous:
         print(f"*** stack_budget: {args.edges_file} references a duplicated static "
               "name without a '@tu' qualifier:", file=sys.stderr)
@@ -3094,7 +3131,12 @@ def main(argv):
 
     all_impls = ({impl for impls in field_decls.values() for impl in impls[1]}
                  | {impl for _n, impls in argsite_decls.values() for impl in impls}
-                 | {impl for impls in whole_func_decls.values() for impl in impls})
+                 | {impl for impls in whole_func_decls.values() for impl in impls}
+                 # BACKLOG #102: a `gated fn need=N` line absent from THIS build's ELF
+                 # (a variant that never links the gated fn at all) is exactly the same
+                 # "stale declaration? typo? inlined away?" situation as any other
+                 # declared name -- same WARNING path, not a new one.
+                 | set(gated_decls))
     unknown_impls = sorted(all_impls - analysis["funcs"])
     if unknown_impls:
         print(f"*** stack_budget: WARNING -- {args.edges_file} names implementation(s) not "

@@ -445,8 +445,8 @@ def test_d_load_extra_edges_parses_frame_override():
         path = f.name
     try:
         field_decls, _field_offset_index, argsite_decls, whole_func_decls, \
-            frame_overrides, isr_decls, addrtaken_ok, _recursion_decls = \
-            sb.load_extra_edges(path)
+            frame_overrides, isr_decls, addrtaken_ok, _recursion_decls, \
+            _gated_decls = sb.load_extra_edges(path)
         check("(d) frame override line parsed", frame_overrides == {"leaf": 40},
               frame_overrides)
         check("(d) field-offset line parsed alongside it",
@@ -471,8 +471,8 @@ def test_d6_argsites_accepts_a_dotted_gcc_clone_name():
         path = f.name
     try:
         field_decls, _field_offset_index, argsite_decls, whole_func_decls, \
-            frame_overrides, isr_decls, addrtaken_ok, _recursion_decls = \
-            sb.load_extra_edges(path)
+            frame_overrides, isr_decls, addrtaken_ok, _recursion_decls, \
+            _gated_decls = sb.load_extra_edges(path)
         check("(D6) dotted caller name parsed into argsite_decls, not swallowed whole",
               argsite_decls == {"draw_wallpaper.constprop.0": (3, {"impl_a", "impl_b"})},
               argsite_decls)
@@ -536,7 +536,7 @@ def test_d1_load_extra_edges_parses_isr_and_addrtaken_ok():
         f.write("addrtaken-ok some_table_entry  # compiler-generated, never called\n")
         path = f.name
     try:
-        _fd, _fi, _ad, _wd, _fo, isr_decls, addrtaken_ok, _rd = sb.load_extra_edges(path)
+        _fd, _fi, _ad, _wd, _fo, isr_decls, addrtaken_ok, _rd, _gd = sb.load_extra_edges(path)
         check("(D1) isr lines parsed", isr_decls == {"hb_isr", "pwm_isr"}, isr_decls)
         check("(D1) addrtaken-ok line parsed", addrtaken_ok == {"some_table_entry"},
               addrtaken_ok)
@@ -1640,7 +1640,7 @@ def test_d5a_shared_offset_two_structs_two_callers():
         f.write("Beta.y @20 in caller_beta -> impl_beta\n")
         path = f.name
     try:
-        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd = \
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd = \
             sb.load_extra_edges(path)
         analysis = {
             "indirect_sites": {
@@ -1675,7 +1675,7 @@ def test_d5a_two_structs_same_caller_both_credited():
         f.write("Beta.y @8 in shared_caller -> impl_beta\n")
         path = f.name
     try:
-        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd = \
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd = \
             sb.load_extra_edges(path)
         analysis = {
             "indirect_sites": {"shared_caller": [("0x1000", "bl\t9000 <thunk>", "r3")]},
@@ -1725,7 +1725,7 @@ def test_d5a_single_owner_offset_stays_legal_unqualified():
         f.write("Alpha.x @16 -> impl_alpha\n")
         path = f.name
     try:
-        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd = \
+        _fd, field_offset_index, _ad, _wd, _fo, _isr, _aok, _rd, _gd = \
             sb.load_extra_edges(path)
         analysis = {
             "indirect_sites": {"any_caller": [("0x1000", "bl\t9000 <thunk>", "r3")]},
