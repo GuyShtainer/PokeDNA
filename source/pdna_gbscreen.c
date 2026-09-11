@@ -752,7 +752,11 @@ static bool gbscr_tile_pixels(const GbScreen* gs, RomGbUi* local, int idx, uint1
     case GBSCR_SRC_CARDPIC_F:
       return rom_gbui_tile(local, local->cardpic_f, v, 2, 5, 7, local->cardpic_colmajor, out) != 0;
     case GBSCR_SRC_STATUSWORD: {
-      uint32_t off = local->leaders ? local->leaders - 96u : 0u;
+      /* BACKLOG #126a: one derivation, not two -- gbscr_block_off() (the one
+       * the D11 host test pins) used to be reimplemented here inline; now
+       * this case just calls it, so a future change to the leaders-96
+       * offset can never drift between the two copies again. */
+      uint32_t off = gbscr_block_off(local, gs->gen, GBSCR_SRC_STATUSWORD);
       return rom_gbui_tile(local, off, v, 2, 0, 0, 0, out) != 0;
     }
     /* U5: PACKMENU's own located offset (derived from pack_m, see
