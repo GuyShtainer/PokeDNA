@@ -126,6 +126,36 @@ def run_flags_sections(core_mod, image_mod, rom: Path, out_dir: Path) -> Session
     return s
 
 
+def run_daycare(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
+    """BACKLOG #114's own pixel-parity proof: pdna_daycare() (source/pdna_main.c),
+    the Gen-3 Day-Care yard scene, BEFORE and AFTER the yard's extraction into
+    source/pdna_yard.{c,h}. Not itself a feature shot -- run this exact script
+    against a pre-extraction build and a post-extraction build of the SAME fused
+    Emerald save and `cmp` the two 01_yard PNGs byte-for-byte: identical, or the
+    extraction changed real behaviour (STOP per the brief).
+
+    Nav: box screen -> START (nav menu) -> DOWN x2 (Party(0) -> Bank(1) ->
+    Daycare(2), PDNA_NAV_ITEMS order, same idiom every other g3_shots.py run_*
+    uses) -> A (pdna_daycare()). One shot only -- the yard's own idle-bob timer
+    and per-visit RNG (dc_seed: a session counter + the cart RTC, absent in
+    mGBA) are otherwise deterministic across two runs of this same script
+    against two builds that only differ in which .c file owns the code, so a
+    single frame is enough for the cmp; no keys are pressed inside the screen
+    that could let the two runs diverge on timing."""
+    s = Session(core_mod, image_mod, rom, out_dir, "b114yard_")
+    print("== BACKLOG #114: Day-Care yard scene (pixel-parity proof) ==")
+
+    s.tap("START", settle=BIG_SETTLE)      # box screen -> nav menu
+    s.press_n("DOWN", 2)                   # Party(0) -> Bank(1) -> Daycare(2)
+    s.tap("A", settle=BIG_SETTLE)          # NV_DAYCARE -> pdna_daycare()
+    s.shot("01_yard", "#114: the Gen-3 Day-Care yard scene -- the pixel-parity "
+                       "reference this same shot must cmp byte-identical against "
+                       "before and after the yard's extraction into pdna_yard.c")
+
+    s.tap("B", settle=BIG_SETTLE)          # leave Day-Care -> box screen
+    return s
+
+
 def run_contests(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     """BACKLOG #60: the CONTESTS nav row, the museum painting list, the donor picker
     (party -> mon), the write confirm, and the summary's own RIBBONS card after a
@@ -232,6 +262,10 @@ def main(argv=None) -> int:
                      help="SAME dir tools/gb_shots.py writes to, so the shared "
                           "manifest.json / tools/gb_contact_sheet.py --per-feature "
                           "(default --shots) picks these up with no extra flags")
+    ap.add_argument("--only", choices=("osk", "flags", "contests", "daycare"), default=None,
+                     help="run just ONE of this script's shot functions (BACKLOG #114's "
+                          "pixel-parity proof uses --only daycare against a private --out "
+                          "so the before/after cmp never touches the shared manifest.json)")
     a = ap.parse_args(argv)
 
     if not a.emerald.is_file():
@@ -240,8 +274,12 @@ def main(argv=None) -> int:
 
     core_mod, image_mod = load_mgba()
 
+    fn_by_name = {"osk": run_osk_rename, "flags": run_flags_sections,
+                  "contests": run_contests, "daycare": run_daycare}
+    fns = (fn_by_name[a.only],) if a.only else (run_osk_rename, run_flags_sections, run_contests)
+
     ok, skipped = [], []
-    for fn in (run_osk_rename, run_flags_sections, run_contests):
+    for fn in fns:
         sess = fn(core_mod, image_mod, a.emerald, a.out)
         ok += sess.taken
         skipped += sess.skipped

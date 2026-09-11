@@ -34,6 +34,12 @@ bool app_can_edit(void);
  * IDENTICAL DVs/gender/shininess, G1 review BLOCKING-2). */
 uint32_t app_session_seed(void);
 
+/* g_vinfo.tid_public, narrowly exposed (BACKLOG #114): pdna_yard.c's dc_seed() moved
+ * out of pdna_main.c and needs this ONE field without pdna_main.c exposing the whole
+ * Gen3SaveInfo g_vinfo (golden rule 6, smallest scope -- the same posture app_session_seed
+ * itself already takes for dc_seed as a whole). */
+uint16_t app_tid_public(void);
+
 /* Flush the RAM log to SD immediately (rmbl-paused). For anomaly evidence that must
  * survive a power-off; main-loop-synchronous callers only. A no-op on anything but
  * an EZ-Flash Omega — writes are Omega-only (hard rule 4), and a failed disk_write
