@@ -81,15 +81,16 @@ static void test_trainer_ok_on_gb(void) {
 }
 
 /* ---- (E) Clock fix: the one row whose STATE (not just its wording) differs between
- * Gen 1 (no RTC ever existed) and Gen 2 (Gold/Silver/Crystal have one; PokeDNA just
- * has not wired the fix up for a raw Game Boy save yet). ---------------------------- */
+ * Gen 1 (no RTC ever existed) and Gen 2 (Gold/Silver/Crystal have one -- BACKLOG
+ * #86/#108 wired pdna_gbclock.c up over it, gb_nav_from_start's own NV_CLOCK/
+ * SE_KIND_GEN2 branch). ---------------------------------------------------------- */
 static void test_clock_fix_splits_gen1_gen2(void) {
   CHECK(nav_avail(NV_CLOCK, SE_KIND_GEN1) == NAV_NOT_IN_GAME, "Clock fix: Gen 1 has no RTC at all");
-  CHECK(nav_avail(NV_CLOCK, SE_KIND_GEN2) == NAV_COMING_SOON, "Clock fix: Gen 2 has an RTC, just not wired up yet");
+  CHECK(nav_avail(NV_CLOCK, SE_KIND_GEN2) == NAV_OK, "Clock fix: Gen 2's own Clock screen is wired (BACKLOG #86/#108)");
   const char* w1 = nav_avail_why(NV_CLOCK, SE_KIND_GEN1);
   const char* w2 = nav_avail_why(NV_CLOCK, SE_KIND_GEN2);
   CHECK(strcmp(w1, w2) != 0, "Clock fix: Gen 1 and Gen 2 reasons are worded differently");
-  printf("(E) Clock fix: NOT_IN_GAME on Gen 1, COMING_SOON on Gen 2\n");
+  printf("(E) Clock fix: NOT_IN_GAME on Gen 1, OK on Gen 2\n");
 }
 
 /* ---- (F) a representative COMING_SOON row and a representative NOT_IN_GAME row,
@@ -151,14 +152,26 @@ static void test_every_row_covered(void) {
   /* 8 NOT_IN_GAME (gen1-list, Clock counted once, + BACKLOG #60's NV_CONTEST) + the
    * COMING_SOON-both and OK-both arrays' own sizes, derived instead of hand-tallied so
    * a row silently added to PDNA_NAV_ITEMS without a matching GB_TABLE entry cannot
-   * hide behind a stale literal count. b85/b86 will move DAYCARE/CLOCK's Gen-2 half
-   * out of coming_soon_both when they land -- this check tracks the arrays, not a
-   * frozen number. */
+   * hide behind a stale literal count. This tracks the arrays, not a frozen number. */
   const int n_coming = (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]);
   const int n_ok = (int)(sizeof ok_both / sizeof ok_both[0]);
   CHECK(8 + n_coming + n_ok == NV_COUNT, "row classification accounts for all PDNA_NAV_ITEMS");
   printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + %d COMING_SOON-both + "
         "%d OK-both == %d)\n", n_coming, n_ok, NV_COUNT);
+
+  /* Gen 2 differs from Gen 1 in EXACTLY one cell (BACKLOG #86/#108: Clock moved from
+   * Gen 1's NOT_IN_GAME to Gen 2's own NAV_OK, checked explicitly by test (E) above),
+   * so Gen 2's own count is 7 NOT_IN_GAME + the same derived COMING_SOON-both and
+   * OK-both sizes == NV_COUNT too. D6 review (b86): don't just narrate it -- actually
+   * check the Gen-2 cells for the other 7 not_in_game_gen1 rows (only Clock, via test
+   * (E), and ok_both, via the loop above, were ever asked with SE_KIND_GEN2). */
+  for (int i = 0; i < (int)(sizeof not_in_game_gen1 / sizeof not_in_game_gen1[0]); i++) {
+    if (not_in_game_gen1[i] == NV_CLOCK) continue;   /* Gen 2's one differing cell, test (E) */
+    CHECK(nav_avail(not_in_game_gen1[i], SE_KIND_GEN2) == NAV_NOT_IN_GAME,
+          "Gen 2: every Hoenn/Frontier-shaped row except Clock stays NOT_IN_GAME");
+  }
+  CHECK(7 + n_coming + n_ok + 1 == NV_COUNT,
+        "Gen 2's row classification (7 NOT_IN_GAME + COMING_SOON-both + OK-both + Clock) accounts for all rows too");
 }
 
 /* ---- (H) defensive: out-of-range nv_item / save_kind never misbehaves -------------- */

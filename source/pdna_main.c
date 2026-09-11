@@ -6806,7 +6806,7 @@ static void clock_manual_entry(GbaRtcTime live) {
       for (int i = 0; i < F_N; i++) ck_field_paint(i, LBL[i], v[i], i == F_Y, i == f);
       ui_text(6, 120, UI_DIM, "Becomes the game's current");
       ui_text(6, 130, UI_DIM, "date/time; resumes events.");
-      ui_text(4, 152, UI_DIM, "U/D change  L/R field  A set  B");
+      ui_text(4, 152, UI_DIM, PDNA_GBCLOCK_SHIFT_KEYS);   /* the Gen-3 stepper: same clipped 31-ch legend (b86 review D2) */
     } else {
       for (int i = 0; i < F_N; i++) {
         bool s = (i == f), os = (i == pv_f);

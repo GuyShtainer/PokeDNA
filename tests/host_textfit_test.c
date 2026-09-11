@@ -2172,6 +2172,40 @@ int main(void) {
   T("A toggle  B save+back", 4);
   T("read-only (Omega)  B back", 4);
 
+  printf("\n== BACKLOG #86/#108: the Gen-2 Clock screen (source/pdna_gbclock.c) ==\n");
+  /* Confirm titles go through app_confirm's own ui_ptext_fit(28, 54, 184, ...) (one
+   * line, clipped); L1 bodies go through ui_ptext_wrap(28, 74, 184, ROW_H+2, 2, ...)
+   * (wrapped, up to 2 lines) -- same split as the S5-C reconcile checks above. */
+  T(PDNA_GBCLOCK_SHIFT_KEYS, 4);   /* the stepper legend of both clock screens */
+  PF(PDNA_GBCLOCK_CONFIRM_RESET_TITLE, 28, 184);
+  PF(PDNA_GBCLOCK_CONFIRM_CLEAR_TITLE, 28, 184);
+  PF(PDNA_GBCLOCK_CONFIRM_SHIFT_TITLE, 28, 184);
+  PF(PDNA_GBCLOCK_NOCLOCK_L1, 28, 184);
+  checks++;
+  { int ln = wrap_lines(PDNA_GBCLOCK_CONFIRM_RESET_L1, 184);
+    int ok = (ln <= 2);
+    if (!ok) fails++;
+    printf("  %-4s %-46.46s          lines=%-4d limit=%-4d %s\n",
+           ok ? "ok" : "FAIL", PDNA_GBCLOCK_CONFIRM_RESET_L1, ln, 2, "ptext_wrap"); }
+  checks++;
+  { int ln = wrap_lines(PDNA_GBCLOCK_CONFIRM_CLEAR_L1, 184);
+    int ok = (ln <= 2);
+    if (!ok) fails++;
+    printf("  %-4s %-46.46s          lines=%-4d limit=%-4d %s\n",
+           ok ? "ok" : "FAIL", PDNA_GBCLOCK_CONFIRM_CLEAR_L1, ln, 2, "ptext_wrap"); }
+  /* The three row labels are drawn with tonc's fixed sys8 face (ui_text), not the
+   * proportional face -- T() (this file's own fixed-width checker) at x=6, the same
+   * column pdna_mirage()'s own party rows use (source/pdna_main.c). */
+  T(PDNA_GBCLOCK_ROW_RESET, 6);
+  T(PDNA_GBCLOCK_ROW_SHIFT, 6);
+  T(PDNA_GBCLOCK_ROW_CLEAR, 6);
+  T(PDNA_GBCLOCK_TITLE, 4);
+  /* D6 (b86 review): the read-only branch's two explanatory lines, verbatim from
+   * the Gen-3 "SAVE CLOCK / RTC" screen's own !can branch (pdna_main.c), same x=6
+   * fixed sys8 column. */
+  T("Read-only cart - fixing needs", 6);
+  T("an EZ-Flash Omega.", 6);
+
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
 }

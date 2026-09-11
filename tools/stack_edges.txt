@@ -986,3 +986,19 @@ addrtaken-ok ed_set_eep_size
 # merge (the #106 G2 coincidence class). Bounded by the 256-B cap; delete the function or
 # declare its site when a caller appears.
 addrtaken-ok em_get_ribbon_flag
+
+# gen2_write.c's g2w_set_otname (frame 24 B): one prototype, one definition, no call site or
+# table anywhere in source/ (grepped on the b86 fix pass) -- its address is never stored by
+# PokeDNA's own code. After the b86 lane merged main (1afb7d4) the NORMAL image's link layout
+# put its Thumb address on a data word (BACKLOG #106 G2 class: the sweep does not distinguish
+# data words from pointers). Bounded by the 256-B cap; retire this line when #106 G2 lands
+# (the EXPIRED check will flag it).
+addrtaken-ok g2w_set_otname
+
+# libtonc's tte_set_color (frame 0 B): a plain setter (tonc_tte.h), never stored in a TTC
+# field (drawgProc/eraseProc are the only function-pointer fields, declared above). It
+# appeared on SOME clean rebuilds of the normal image and not others on the b86 lane --
+# link-order-dependent, i.e. a data-word coincidence (#106 G2 class). Zero frame; nothing to
+# bound. Retire with #106.
+addrtaken-ok tte_set_color
+
