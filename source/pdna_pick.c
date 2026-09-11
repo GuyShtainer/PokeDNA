@@ -548,6 +548,17 @@ static DexSetState s_dset;
 static DexGetNat   s_getnat;   /* national-dex live? (may be NULL) */
 static DexSetNat   s_setnat;   /* enable/disable national dex (may be NULL) */
 
+/* Species cap for the shared screen (BACKLOG #87): the Gen-3 dex is a fixed 386,
+ * but Gen 1 (151) / Gen 2 (251) sessions reuse this same screen and must not see or
+ * bulk-touch species past their generation's dex. Reset to 386 by every caller on
+ * entry (pdna_dex_edit in pdna_main.c) so a prior GB visit can never leak into the
+ * next Gen-3 one — this file never assumes the previous session cleaned up after
+ * itself. 0 is never a valid value (see the clamp below); default is the full 386. */
+static int s_dex_max = DEX_NAT_MAX;
+void pdna_dex_set_max(int max_dex) {
+  s_dex_max = (max_dex > 0 && max_dex <= DEX_NAT_MAX) ? max_dex : DEX_NAT_MAX;
+}
+
 /* Snapshot of every species' dex state before the last bulk op, so a mistaken
  * "Catch/See/Wipe ALL" can be undone in one step (the changes aren't written to the
  * SD until the user confirms the dex save, so this RAM revert fully restores it). */
@@ -561,6 +572,12 @@ static int dstate(uint16_t internal) { return s_dget((int)pk_national_no(interna
  * -> (Type view only) a stable sort by primary type. */
 static void dex_build(int filter, int sort, const char* search, int status, int view) {
   build_species(filter, sort, search);                 /* g_list/g_n by No. or A-Z */
+  if (s_dex_max < DEX_NAT_MAX) {                        /* GB session: hide species past the cap */
+    int w = 0;
+    for (int i = 0; i < g_n; i++)
+      if (pk_national_no(g_list[i]) <= (uint16_t)s_dex_max) g_list[w++] = g_list[i];
+    g_n = w;
+  }
   if (status != DS_ALL) {                              /* keep only the matching states */
     int w = 0;
     for (int i = 0; i < g_n; i++) {
@@ -583,7 +600,7 @@ static void dex_build(int filter, int sort, const char* search, int status, int 
 
 static void dex_counts(int* seen, int* caught) {
   int s = 0, c = 0;
-  for (int nat = 1; nat <= DEX_NAT_MAX; nat++) { int st = s_dget(nat); if (st >= 1) s++; if (st >= 2) c++; }
+  for (int nat = 1; nat <= s_dex_max; nat++) { int st = s_dget(nat); if (st >= 1) s++; if (st >= 2) c++; }
   *seen = s; *caught = c;
 }
 
@@ -717,18 +734,19 @@ static bool dex_bulk(void) {
         return true;
       }
       if (a == -1) {                                              /* Undo the last bulk op */
-        for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dset(nat, s_dex_snap[nat - 1]);
+        for (int nat = 1; nat <= s_dex_max; nat++) s_dset(nat, s_dex_snap[nat - 1]);
         if (s_setnat && s_getnat && s_getnat() != s_dex_snap_natl)
           s_setnat(s_dex_snap_natl);                              /* Catch ALL auto-unlocked natl -> revert too */
         s_dex_snap_valid = false;
         return true;
       }
-      if (!app_confirm(a == 2 ? "Catch every species?" : a == 1 ? "See every species?" : "Wipe the whole dex?",
-                       "All 386. (Undo available.)")) return false;
-      for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dex_snap[nat - 1] = (int8_t)s_dget(nat);   /* snapshot first */
+      { char amsg[24]; siprintf(amsg, "All %d. (Undo available.)", s_dex_max);
+        if (!app_confirm(a == 2 ? "Catch every species?" : a == 1 ? "See every species?" : "Wipe the whole dex?",
+                         amsg)) return false; }
+      for (int nat = 1; nat <= s_dex_max; nat++) s_dex_snap[nat - 1] = (int8_t)s_dget(nat);   /* snapshot first */
       s_dex_snap_natl = (s_getnat && s_getnat());                 /* incl. the National-Dex state */
       s_dex_snap_valid = true;
-      for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dset(nat, a);
+      for (int nat = 1; nat <= s_dex_max; nat++) s_dset(nat, a);
       /* Catching every species is meaningless without National mode (the dex caps at the
        * regional list otherwise), so unlock it too — matches the user's expectation. */
       if (a == 2 && s_setnat) s_setnat(true);

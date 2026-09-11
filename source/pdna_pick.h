@@ -75,4 +75,12 @@ typedef void (*DexSetNat)(bool on);
 bool pdna_dex_screen(DexGetState get, DexSetState set,
                      DexGetNat getnat, DexSetNat setnat, bool can_edit);
 
+/* Species cap for the shared dex screen above (BACKLOG #87): species with a
+ * National no. past `max_dex` are hidden from every view, excluded from the
+ * seen/caught header counts, and skipped by the bulk Catch/See/Wipe-ALL loops.
+ * Default (and the value on 0/out-of-range input) is the full 386 — Gen-3 callers
+ * must call this with 386 on EVERY entry (never rely on a previous reset) so a
+ * prior Gen-1/2 visit's 151/251 cap cannot leak into a Gen-3 session. */
+void pdna_dex_set_max(int max_dex);
+
 #endif /* PDNA_PICK_H */

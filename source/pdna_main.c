@@ -5206,6 +5206,7 @@ static void dex_set_national(bool on) { pk_dex_set_national(g_sb1, g_sb2, g_game
  * anything changed; we then offer the verified dex write. */
 static bool pdna_dex_edit(void) {
   key_repeat_mask(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT);   /* grid needs L/R repeat; leave this default set */
+  pdna_dex_set_max(386);   /* every Gen-3 entry resets the cap: a prior GB visit must not leak (BACKLOG #87) */
   bool dirty = pdna_dex_screen(dex_state, dex_set_state, dex_get_national, dex_set_national, app_can_edit());
   if (dirty && app_confirm("Save Pokedex changes?", "Writes the dex now.")) return app_commit_dex();
   return false;

@@ -213,12 +213,21 @@ wp_fold_region argsites=1 -> banksrc_records gbsrc_records pcsrc_records banksrc
 dex_build argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national
 dex_cell_grid argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national
 dex_cell_list argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national
-# pdna_dex_screen itself has 4 nonfield sites (not 1 -- corrected after trap #8, the
-# hi-register-alias fix below, revealed the true shape: 11 MORE sites in this same
-# function are 'field' hits at offsets 8/20/24/28, declared as part of the AppSrcOps
-# collision note further down, not here -- those are a SEPARATE declaration class).
-# Verified identical (4) on both artless and normal builds.
-pdna_dex_screen argsites=4 -> dex_state dex_set_state dex_get_national dex_set_national
+# pdna_dex_screen: BACKLOG #87 item 1 (the species cap, pdna_pick.c's s_dex_max /
+# pdna_dex_set_max()) rewrote dex_counts()'s and dex_bulk()'s three ALL-loops from a
+# fixed DEX_NAT_MAX bound to the runtime s_dex_max variable and replaced the literal
+# "All 386." string with a siprintf -- register pressure/scheduling in those callees
+# shifted enough that -O2 now classifies 3 of the previously-bare dispatch
+# instructions as 'field @N' hits (the AppSrcOps.records/view/editable/create classes
+# declared just below) instead of bare argsites. The TOTAL nonfield+field indirect-
+# call count through dex_state/dex_set_state/dex_get_national/dex_set_national inside
+# this function is unchanged (15: was 4 bare + 11 field, now 1 bare + 14 field --
+# `--dump-sites` on this build confirms 14 field hits at offsets 8/20/24/28), so the
+# set of exempted implementations and the guard's worst-case bound are unaffected;
+# only which bucket 3 sites fall in moved. Verified against THIS build's disassembly
+# (both artless and normal) after the #87 item-1 edit -- re-verify if pdna_pick.c's
+# dex_counts/dex_bulk/dex_build shapes change again.
+pdna_dex_screen argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national
 
 # pdna_origin_art.c's PdnaGbArtSource (source/pdna_origin_art.h:215-251, s_gb --
 # pic/have/icon function-pointer fields, accessed through fetch_pic_ex()'s s_gb.pic/
