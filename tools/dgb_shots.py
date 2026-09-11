@@ -1294,8 +1294,12 @@ def run_m1_map_gen2_wrong_game(core_mod, image_mod, rom: Path, out_dir: Path) ->
 def run_m1_map_gen2_no_rom(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """M1-G2 (BACKLOG #91) no-ROM refusal: `rom` MUST be a fused image carrying
     a Gen-2 save (Gold.sav) with NO Gen-2 ROM fused at all -- app_gb_rom_path()/
-    gb_rom_path_beside() both fail, so pdna_gbmap_gen2() must refuse cleanly
-    ("Could not open the ROM.") rather than crash or hang."""
+    gb_rom_path_beside() both fail. The shell's own gbscr_open() catches this
+    BEFORE pdna_gbmap2.c's own "Could not open the ROM." fallback path is ever
+    reached (that fallback covers a narrower case gbscr_open() itself does not
+    catch) -- the real caption on this build is gbscr_open()'s own
+    PDNA_GBSCR_REASON_ORPHANED_ROM message, "this save's ROM is not fused"
+    (confirmed by the actual screenshot, not assumed)."""
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_g2_norom_")
     print("== M1-G2: no-ROM refusal (Gold save, no Gen-2 ROM fused) ==")
 
@@ -1306,8 +1310,11 @@ def run_m1_map_gen2_no_rom(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_
     s.press_n("DOWN", 16)
     s.tap("A", settle=GB_ART_COLD_SETTLE)
     s.shot("01_no_rom_refusal", "M1-G2: no Gen-2 ROM fused at all -- a clean "
-                                 "'Could not open the ROM.' refusal, not a "
-                                 "crash or hang")
+                                 "'this save's ROM is not fused' refusal "
+                                 "(gbscr_open()'s own PDNA_GBSCR_REASON_"
+                                 "ORPHANED_ROM, fired before pdna_gbmap2.c's "
+                                 "own narrower fallback is ever reached), not "
+                                 "a crash or hang")
     return s
 
 
