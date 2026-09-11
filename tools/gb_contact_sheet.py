@@ -180,6 +180,17 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     ("gb-daycare-gen12", "BACKLOG #85 — the Day-Care screen over gb_daycare "
      "(Gen 1: one boarder, level-up only; Gen 2: two boarders + compatibility "
      "+ Egg)", ("BACKLOG #85",)),
+    # BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4, append-only,
+    # same rule as every row above): the KEEP AS IS / MAKE LEGAL choice
+    # gb_paste_hook now offers on a Gen 3 -> Game Boy paste whose species is
+    # standing below its legality floor (pk_evo_floor). Shots come from
+    # tools/dgb_shots.py's run_r1_xfer() (--r1-xfer), run against a Gold-fused
+    # image (NOT Red -- see that function's own docstring for why: Red/Gen-1's
+    # base-stats-ROM lookup is SD-card-only and always refuses in this harness,
+    # independent of R1); captions all start "BACKLOG #104 R1:". Appended after
+    # "gb-pack-gen2" per this list's own append-only rule.
+    ("xfer-r1-make-legal", "BACKLOG #104 R1 — KEEP AS IS / MAKE LEGAL on a Gen 3 -> "
+     "Game Boy paste (an underlevelled evolved species)", ("BACKLOG #104 R1",)),
     # BACKLOG #92 (append-only, same rule as every row above): a held ITEM row on
     # the Gen-2 mon-menu popup (app_mon_menu_readonly, pdna_main.c), Gen 1 omitted.
     # Shots come from tools/dgb_shots.py's run_gbmon(); captions all start "#92:".

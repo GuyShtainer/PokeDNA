@@ -1184,6 +1184,76 @@ def test_d5a_single_owner_offset_stays_legal_unqualified():
         os.unlink(path)
 
 
+def test_g110_missing_su_is_named():
+    """BACKLOG #110: a STALE build directory can hold .o files compiled before
+    -fstack-usage was on CFLAGS -- find_objects_missing_su() must name every .o that
+    has no same-basename .su next to it, and stay clean when every .o does (the
+    normal, freshly-built case)."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        for base in ("alpha", "beta", "gamma"):
+            open(os.path.join(d, base + ".o"), "w").close()
+        # gamma.o's .su is missing on purpose; alpha/beta both have theirs.
+        for base in ("alpha", "beta"):
+            open(os.path.join(d, base + ".su"), "w").close()
+        missing = sb.find_objects_missing_su(d)
+        check("(G110) exactly gamma.o is reported missing its .su",
+              missing == [os.path.join(d, "gamma.o")], missing)
+
+    with tempfile.TemporaryDirectory() as d:
+        for base in ("alpha", "beta"):
+            open(os.path.join(d, base + ".o"), "w").close()
+            open(os.path.join(d, base + ".su"), "w").close()
+        missing = sb.find_objects_missing_su(d)
+        check("(G110) a fully-fresh build dir (every .o has its .su) reports nothing",
+              missing == [], missing)
+
+    with tempfile.TemporaryDirectory() as d:
+        # No .o's at all: nothing to report missing (the "wrong/empty --builddir"
+        # case is main()'s own separate check, not this helper's job).
+        missing = sb.find_objects_missing_su(d)
+        check("(G110) an empty build dir reports no missing .su (not this helper's job)",
+              missing == [], missing)
+
+    with tempfile.TemporaryDirectory() as d:
+        # A bare-assembler-sourced .o (the several *_data.s .incbin art/data blobs)
+        # never gets a .su even on a perfectly fresh build -- ASFLAGS carries no
+        # -fstack-usage at all -- so its .d saying the source is a .s file must EXEMPT
+        # it, not flag it as stale. delta.o has no .su AND no .d at all (simulating a
+        # genuinely stale/broken object, not an asm one) and must still be flagged.
+        open(os.path.join(d, "mon_front_data.o"), "w").close()
+        with open(os.path.join(d, "mon_front_data.d"), "w") as f:
+            f.write("mon_front_data.o: /some/where/source/mon_front_data.s\n")
+        open(os.path.join(d, "pdna_main.o"), "w").close()
+        open(os.path.join(d, "pdna_main.su"), "w").close()
+        with open(os.path.join(d, "pdna_main.d"), "w") as f:
+            f.write("pdna_main.o: /some/where/source/pdna_main.c \\\n"
+                    " /some/where/tonc.h\n")
+        open(os.path.join(d, "delta.o"), "w").close()
+        missing = sb.find_objects_missing_su(d)
+        check("(G110) a .s-sourced object with no .su is exempt, not flagged",
+              os.path.join(d, "mon_front_data.o") not in missing, missing)
+        check("(G110) the .c-sourced object with its .su present is clean",
+              os.path.join(d, "pdna_main.o") not in missing, missing)
+        check("(G110) a genuinely stale object (no .su, no .d at all) is still flagged",
+              missing == [os.path.join(d, "delta.o")], missing)
+
+    with tempfile.TemporaryDirectory() as d:
+        # devkitARM's -MMD/-MF wraps the target line as "foo.o: \\\n <src>" whenever
+        # there's more than one dependency to follow -- a bare .split() then yields a
+        # literal "\\" as rest[0], NOT the source path, and would wrongly test THAT
+        # token's (nonexistent) extension. mon_front_shiny_data.o/mon_icons_oam_data.o
+        # hit exactly this in the real `make delta` build (both are single-dependency
+        # embed/*.s blobs, but devkitARM still wraps the line).
+        open(os.path.join(d, "mon_front_shiny_data.o"), "w").close()
+        with open(os.path.join(d, "mon_front_shiny_data.d"), "w") as f:
+            f.write("mon_front_shiny_data.o: \\\n"
+                    " /some/where/source/embed/mon_front_shiny_data.s\n")
+        missing = sb.find_objects_missing_su(d)
+        check("(G110) a wrapped 'foo.o: \\\\n src.s' .d line still exempts the asm object",
+              missing == [], missing)
+
+
 def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
@@ -1220,6 +1290,7 @@ def main():
     test_d5a_single_owner_offset_stays_legal_unqualified()
     test_f5_tarjan_sccs_iterative_3000_node_chain()
     test_f5_tarjan_sccs_small_graph_matches_known_components()
+    test_g110_missing_su_is_named()
     print()
     if FAILURES:
         print(f"host_stack_budget_test: {len(FAILURES)} FAILED: {', '.join(FAILURES)}")

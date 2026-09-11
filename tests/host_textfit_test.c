@@ -930,6 +930,44 @@ int main(void) {
       PDNA_SIDECAR_LOSS_ROW_Y0 + 14 * PDNA_SIDECAR_LOSS_ROW_H +
         2 * (PDNA_SIDECAR_LOSS_ROW_H / 2) + UI_ROW_H - 1,
       "loss screen: worst case (all 10 loss flags) clears the screen");
+
+  /* BACKLOG #104 R1: gb_paste_legal_screen, a SEPARATE full-screen dialog (own
+   * ui_clear budget, unrelated to the loss screen's own tight fit above) --
+   * KEEP AS IS / MAKE LEGAL, shown only when a correction is offered. Same
+   * x=4/UI_SCR_W-8 proportional-row convention as the loss screen. */
+  T(PDNA_SIDECAR_LEGAL_TITLE, 4);
+  { /* D3: the WHY row, siprintf'd at runtime with pk_species_name(dex) and the two
+     * level numbers (1..100). Worst-case species name among the 251 species this
+     * screen can ever name is 10 chars (CHARMANDER/CHARMELEON/... -- s_species,
+     * data_tables.c) at L100/L100; measure BOTH wordings the screen can pick
+     * between (gb_paste_legal_screen compares pk_evo_floor to pk_evo_min_level),
+     * not just the one that happens to run first. */
+    char row[64];
+    snprintf(row, sizeof row, PDNA_SIDECAR_LEGAL_WHY_FMT, "CHARMANDER", 100u, 100u);
+    chk("ptext_fit", 4, UI_SCR_W - 8, pwidth(row), row);
+    snprintf(row, sizeof row, PDNA_SIDECAR_LEGAL_WHY_FLOOR_FMT, "CHARMANDER", 100u, 100u);
+    chk("ptext_fit", 4, UI_SCR_W - 8, pwidth(row), row);
+  }
+  PF(PDNA_SIDECAR_LEGAL_KEEP_ROW, 4, UI_SCR_W - 8);
+  { /* PDNA_SIDECAR_LEGAL_FIX_FMT is siprintf'd at runtime with the two level
+     * numbers (1..100); "100 -> 100" is the true worst-case width -- format the
+     * SAME string the screen would and measure that, not the bare template. */
+    char row[48];
+    snprintf(row, sizeof row, PDNA_SIDECAR_LEGAL_FIX_FMT, 100u, 100u);
+    chk("ptext_fit", 4, UI_SCR_W - 8, pwidth(row), row);
+  }
+  PF(PDNA_SIDECAR_LEGAL_BACK, 4, UI_SCR_W - 8);  /* D3: same promise the loss screen makes */
+  T(PDNA_SIDECAR_LOSS_B_CANCEL, 4);   /* reused verbatim on this screen too */
+  /* Worst case: title + WHY row + 2 choice rows + one ROW_H/2 gap + the BACK line +
+   * the B line, then the last line's own ink -- mirrors gb_paste_legal_screen's
+   * exact y sequence (D3 added the WHY row before KEEP and the BACK row before B).
+   * Nowhere near the loss screen's own budget (this screen gets a fresh
+   * ui_clear()), but proven rather than assumed. */
+  chk("legal screen worst-case height", 0,
+      UI_SCR_H - 1,
+      PDNA_SIDECAR_LOSS_ROW_Y0 + 4 * PDNA_SIDECAR_LOSS_ROW_H +
+        2 * (PDNA_SIDECAR_LOSS_ROW_H / 2) + UI_ROW_H - 1,   /* + the WHY-row gap */
+      "legal screen: worst case (WHY + BACK rows) clears the screen");
   /* ==== END S5-B sidecar (Part D) ============================================ */
 
   /* ==== S5-B Part E: the DV-orphan warning (source/pdna_gbedit.c dv_orphan_warn) ==== */

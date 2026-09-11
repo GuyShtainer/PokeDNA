@@ -93,27 +93,36 @@ export OBJCOPY := $(PREFIX)objcopy
 
 # === OBJECTIFY =======================================================
 
-%.iwram.o : %.iwram.cpp
+# BACKLOG #110: every object below now carries $(DEPSDIR)/cflags.stamp as a real
+# (non-order-only) prerequisite, so a plain `make CFLAGS+=...`-style flag change forces
+# a full recompile instead of make's normal incremental logic trusting untouched .c/.o
+# mtimes and linking objects built under DIFFERENT flags into one .elf (the exact
+# stale-build-dir shape #110's stack-guard fix above refuses to link over). The stamp
+# is written once per $(BUILD) invocation, see the $(BUILD) rule further down, and only
+# actually touched (new mtime) when its CONTENT changed -- same cmp -s trick as
+# pdna_git.h just above it -- so an unrelated touch of one .c file does not force every
+# OTHER object to "look" stale too.
+%.iwram.o : %.iwram.cpp $(DEPSDIR)/cflags.stamp
 	@echo $(notdir $<)
 	$(CXX) -MMD -MP -MF $(DEPSDIR)/$*.d $(CXXFLAGS) $(IARCH) -c $< -o $@
 
-%.iwram.o : %.iwram.c
+%.iwram.o : %.iwram.c $(DEPSDIR)/cflags.stamp
 	@echo $(notdir $<)
 	$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d $(CFLAGS) $(IARCH) -c $< -o $@
 
-%.o : %.cpp
+%.o : %.cpp $(DEPSDIR)/cflags.stamp
 	@echo $(notdir $<)
 	$(CXX) -MMD -MP -MF $(DEPSDIR)/$*.d $(CXXFLAGS) $(RARCH) -c $< -o $@
 
-%.o : %.c
+%.o : %.c $(DEPSDIR)/cflags.stamp
 	@echo $(notdir $<)
 	$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d $(CFLAGS) $(RARCH) -c $< -o $@
 
-%.o : %.s
+%.o : %.s $(DEPSDIR)/cflags.stamp
 	@echo $(notdir $<)
 	$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d -x assembler-with-cpp $(ASFLAGS) -c $< -o $@
 
-%.o : %.S
+%.o : %.S $(DEPSDIR)/cflags.stamp
 	@echo $(notdir $<)
 	$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d -x assembler-with-cpp $(ASFLAGS) -c $< -o $@
 
@@ -342,6 +351,28 @@ export VPATH  := \
 
 export DEPSDIR := $(CURDIR)/$(BUILD)
 
+# BACKLOG #109: source/gb_fields.c + gb_flags.c are GENERATED (tools/gen_gbfields.py) and
+# git-ignored, but had no Makefile rule -- a checkout could silently build against a
+# stale copy (it bit the gbdata merge: 22/170 fresh objects, three core tests failed
+# until the generator was re-run by hand). CFILES below is a $(wildcard) evaluated at
+# PARSE time, so a target-prerequisite rule (like check-art/check-data-tables further
+# down) is too late for a file that doesn't exist on disk yet -- this has to run BEFORE
+# the wildcard, hence a $(shell ...) at parse time, not a prerequisite. Runs once per
+# top-level `make` invocation (this branch is the OUTER one; the recursive submake in
+# $(BUILD) below takes the other branch of this ifneq and never re-triggers it).
+# tools/ensure_gbfields.sh is idempotent (a handful of stat(2) calls when the table is
+# already fresh), and NEVER fatal for a missing decomp reference (assets/upstream/*/
+# symbols/*.sym is git-ignored, local-only material absent on a fresh clone -- it falls
+# back to the COMMITTED weak symbols in source/gb_fields_fallback.c / gb_flags_fallback.c
+# instead, loudly). It IS fatal when regeneration was actually needed and the generator
+# itself failed, so a stale table is never silently kept.
+ifeq (,$(filter clean,$(MAKECMDGOALS)))
+GBFIELDS_RC := $(strip $(shell ./tools/ensure_gbfields.sh >&2; echo $$?))
+ifneq ($(GBFIELDS_RC),0)
+$(error tools/ensure_gbfields.sh failed (exit $(GBFIELDS_RC)) -- see the FATAL text above)
+endif
+endif
+
 CFILES   := $(foreach dir, $(SRCDIRS) , $(notdir $(wildcard $(dir)/*.c)))
 CPPFILES := $(foreach dir, $(SRCDIRS) , $(notdir $(wildcard $(dir)/*.cpp)))
 SFILES   := $(foreach dir, $(SRCDIRS) , $(notdir $(wildcard $(dir)/*.s)))
@@ -388,6 +419,15 @@ $(BUILD):
 	                '#define PDNA_BUILD_DIR "$(BUILD)"' > $@/pdna_git.h.tmp
 	@cmp -s $@/pdna_git.h.tmp $@/pdna_git.h 2>/dev/null && rm -f $@/pdna_git.h.tmp \
 	  || mv -f $@/pdna_git.h.tmp $@/pdna_git.h
+# BACKLOG #110: cflags.stamp is the FLAGS side of the same staleness class pdna_git.h
+# guards on the identity side. Written once per $(BUILD) invocation, content-compared
+# (cmp -s, same trick as pdna_git.h above) so its mtime only moves when CFLAGS/CXXFLAGS/
+# ASFLAGS actually changed -- every %.o/%.iwram.o pattern rule up top now carries
+# $(DEPSDIR)/cflags.stamp as a real prerequisite, so a moved stamp forces every object
+# to recompile, and an untouched one forces nothing extra.
+	@printf '%s\n' "$(CFLAGS)" "$(CXXFLAGS)" "$(ASFLAGS)" > $@/cflags.stamp.tmp
+	@cmp -s $@/cflags.stamp.tmp $@/cflags.stamp 2>/dev/null && rm -f $@/cflags.stamp.tmp \
+	  || mv -f $@/cflags.stamp.tmp $@/cflags.stamp
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 all : $(BUILD)
