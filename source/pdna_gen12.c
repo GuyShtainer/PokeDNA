@@ -2673,10 +2673,22 @@ static void gb_nav_from_start(Gb12Mount* m) {
     /* BACKLOG #85: same "needs a live GbSession to write through" gate as
      * NV_TRAINER/NV_BAG/NV_BAG above -- gbd_read()/gbd_deposit()/gbd_withdraw()
      * (gb_daycare.h) all take a GbSession*, which only the resident-image path
-     * (g_ed) has. `m->current_box` is the box the grid was actually showing
-     * (gbsrc_note_box() keeps it current on every box switch, BACKLOG #56) --
-     * the deposit/withdraw source+destination pdna_gbdaycare.h's own header
-     * documents (never the party; see that file for why).
+     * (g_ed) has. The deposit/withdraw source+destination is the box the grid
+     * was ACTUALLY showing -- pdna_gbdaycare.h's own header documents this
+     * (never the party; see that file for why).
+     *
+     * BACKLOG #85 review fix: a bare `m->current_box` here is the SAME
+     * "not updated yet this visit" bug gb_create_hook() above already found and
+     * fixed (its own header note: "CREATE from box 13 (17/20, real room) still
+     * refused BOX FULL, because it was silently targeting box 0 (20/20)").
+     * gbsrc_note_box() stores the box the grid switched to into `m->ui_box`,
+     * NOT `m->current_box` (that field is only ever the save's own "live copy"
+     * box, read once at mount) -- so this call site needs the EXACT SAME
+     * ui_box-first fallback chain gb_create_hook() uses, not a direct read of
+     * current_box. Caught by hand navigating the box grid to a box with a free
+     * slot before entering the Day Care in an emulator screenshot: the
+     * deposit/withdraw picker kept showing box 0's own mons regardless of
+     * which box the grid had actually switched to.
      *
      * app_can_edit() here, NOT a bare `true` (unlike this branch's three
      * siblings above): pdna_gbdaycare's own `can_edit` is the ONLY gate its
@@ -2685,8 +2697,14 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * pdna_gbpack.c/pdna_gbtrainer.c, which also trust their caller) -- since
      * this is a NEW call site, passing the real cart state rather than
      * copying the sibling literal is the hard-rule-4-safe choice. */
-    if (g_ed) pdna_gbdaycare(&g_ed->s, m->current_box, app_can_edit());
-    else      (void)gb_info_page(m);
+    if (g_ed) {
+      int box = (m->ui_box >= 0 && m->ui_box <= m->party_box) ? m->ui_box
+              : (m->current_box >= 0 && m->current_box <= m->party_box) ? m->current_box
+              : 0;
+      pdna_gbdaycare(&g_ed->s, box, app_can_edit());
+    } else {
+      (void)gb_info_page(m);
+    }
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */
   }
