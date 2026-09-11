@@ -687,12 +687,21 @@ def load_extra_edges(path):
             the guard's own worst-case number must never get smaller just
             because some OTHER, unrelated re-derivation declared a gate here.
           - measuring from any OTHER --root (a re-derivation, e.g. `--root
-            pcp_open_party_strip_inner`): the gated subtree is charged its
-            declared N ONLY IF its real, ungated measured size is <= N --
+            pcp_open_party_strip_inner`): the gated subtree is excluded
+            entirely -- charged 0 B -- ONLY IF its real, ungated measured size
+            is <= N (it is independently, freshly re-guarded by its own
+            runtime gate at the moment it actually runs, so an ancestor
+            --root's own budget must not additively reserve room for it too);
             otherwise the run FATALs (`gated subtree fn measures M > declared
             need N: the runtime gate would not protect it`), because the whole
             point of declaring N here is that it must be a provably
             conservative bound on what the runtime gate actually lets through.
+            D3 (review-opus fix pass, BACKLOG #102): an earlier draft of this
+            comment said "charged its declared N" -- that design was tried
+            first and REJECTED (see deepest_from()'s own BACKLOG #102 note and
+            the commit history) because it INCREASES a re-derived number
+            instead of shrinking it; "charged 0 B" below is what is actually
+            implemented.
         Example: `gated gb_art_fetch need=6144`.
 
     Multiple lines per caller/struct ACCUMULATE (pdna_box has eleven field lines).
@@ -2186,10 +2195,12 @@ def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None,
     printed_scc = set()
     while cur is not None:
         if enforce_gates and cur in gated:
-            # The gated branch in go() always memoizes cur to the declared need and
-            # leaves best_child[cur] = None (an atomic leaf for printing purposes) --
-            # true unconditionally for any cur reaching this point, since that branch
-            # runs before scc_of/onstack are even consulted.
+            # The gated branch in go() always memoizes cur to 0 (D3: NOT the
+            # declared need -- an earlier draft of this comment said that; see
+            # go()'s own BACKLOG #102 docstring for why 0 is what's implemented)
+            # and leaves best_child[cur] = None (an atomic leaf for printing
+            # purposes) -- true unconditionally for any cur reaching this point,
+            # since that branch runs before scc_of/onstack are even consulted.
             path.append((cur, memo[cur], "gated"))
             break
         comp = scc_of.get(cur)
