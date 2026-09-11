@@ -2076,7 +2076,7 @@ def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
     confirm; they differ in which FLAGS-tab HEADER sits first (Red's own group order,
     tools/gen_gbfields.py's GROUPS_GEN1, starts with "Key events" -- an ordinary
     GBFL_KIND_TOGGLE section, so Red's own toggle/CAUTION shots come from there;
-    Crystal's GROUPS_GEN2 starts with "Key items (grant via the Bag)" -- a
+    Crystal's GROUPS_GEN2 starts with "Key items (grant in Bag)" -- a
     GBFL_KIND_BAG_GRANT section, so Crystal's own run captures the read-only bag-grant
     row instead of toggling anything in it (SELECT jumps to "Key events", the next
     section, TOGGLE-kind, for Crystal's own toggle/CAUTION shots)."""
@@ -2127,13 +2127,13 @@ def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
                               "straight into the session's own RAM image")
         jump_presses = 6   # from inside header 0's group: h1,h2,h3,h4,h5,raw
     else:
-        # Crystal's header 0 IS "Key items (grant via the Bag)" -- show its read-only
+        # Crystal's header 0 IS "Key items (grant in Bag)" -- show its read-only
         # row, then SELECT-jump to the next (TOGGLE-kind) section for the toggle/
         # CAUTION shots.
         s.tap("DOWN", settle=gb_shots.SETTLE)
-        s.shot("06_bag_grant_row", "BACKLOG #88: the first member row of 'Key items (grant via "
-                                    "the Bag)' selected -- GBFL_KIND_BAG_GRANT, drawn "
-                                    "dim with the '(bag)' suffix")
+        s.shot("06_bag_grant_row", "BACKLOG #88: the first member row of 'Key items (grant "
+                                    "in Bag)' selected -- GBFL_KIND_BAG_GRANT, the "
+                                    "'(bag)' suffix; unselected bag rows below are dim")
         s.tap("A", settle=gb_shots.BIG_SETTLE)
         s.shot("07_bag_grant_message", "BACKLOG #88: A on a bag-grant row -- 'Grant this from the "
                                         "Bag screen, not here.' (no flag is ever "
@@ -2146,7 +2146,10 @@ def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
         s.shot("08_caution", "BACKLOG #88: 'Key events' (GBFL_KIND_TOGGLE): the one-time CAUTION "
                               "on its first real toggle")
         s.tap("A", settle=gb_shots.BIG_SETTLE)               # dismiss -> the toggle lands
-        s.shot("08b_toggled", "BACKLOG #88: the flag toggled -- gbfl_set wrote the bit")
+        s.shot("08b_toggled", "BACKLOG #88: the flag toggled -- gbfl_set wrote the bit; the "
+                               "row's ON/off state is now visible (D3's "
+                               "'%-16s %-3s %s' row format -- the old "
+                               "'%-18s %s %s' shape truncated it off-screen)")
         jump_presses = 5   # from inside header 1's group: h2,h3,h4,h5,raw
 
     # SELECT-jump around to the trailing raw-browser row, then open it. The jump
@@ -2168,6 +2171,74 @@ def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
     s.shot("11_save_confirm", "BACKLOG #88: B with unsaved edits -- 'Save data changes?' / 'Edits "
                                "write immediately.' (app_confirm, before the one "
                                "gbs_finish()+gb_persist('gbflags') commit)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # decline: this run never actually commits
+    return s
+
+
+def run_b88_flags_d6(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #88 D3/D4 review, D6 evidence: the two row KINDS run_b88_flags() never
+    reaches on Crystal -- GBFL_KIND_WARN's own confirm (the Kanto section, D4's fixed
+    wording) and GBFL_KIND_READONLY's own message ("STORY FLAG"). `rom` MUST be a
+    Crystal-only fused image (Crystal.gbc+Crystal.sav), same single-ROM posture as
+    run_b88_flags's own "crystal" branch.
+
+    GROUPS_GEN2 header order (tools/gen_gbfields.py): 0 Key items (grant in Bag),
+    1 Key events, 2 Gym Leaders, 3 Elite Four, 4 Story (READONLY), 5 Kanto
+    (post-game) (WARN) -- SELECT from header 0 steps forward one header per press."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b88_flags_d6_")
+    print("== BACKLOG #88 D6: WARN confirm + READONLY message (crystal) ==")
+    s.run(700)
+    s.tap("A", settle=60)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 8)                                     # -> Flags & counters row
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> pdna_gbflags(), COUNTERS tab
+    s.tap("R", settle=gb_shots.BIG_SETTLE)                   # -> FLAGS tab, all folded, header 0 selected
+
+    # SELECT x4 -> header 4 "Story" (READONLY), unfold it, step onto its first member row.
+    for _ in range(4):
+        s.tap("SEL", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # unfold "Story"
+    s.tap("DOWN", settle=gb_shots.SETTLE)                    # onto its first member row
+    s.shot("01_story_row_selected", "BACKLOG #88: D6 -- 'Story' section unfolded, its first "
+                                     "GBFL_KIND_READONLY row selected -- the '(sty)' "
+                                     "suffix (D3's shortened kind_suffix)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("02_story_flag_message", "BACKLOG #88: D6 -- A on a READONLY row -- 'STORY FLAG' / "
+                                     "'This is a display-only / progress flag.' "
+                                     "(msg_wait, no flag touched)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # dismiss
+
+    # SELECT x1 more -> header 5 "Kanto (post-game)" (WARN), unfold, step onto its one row.
+    # NOTE: Guy's own Crystal.sav corpus already has EVENT_RESTORED_POWER_TO_KANTO ON
+    # (a progressed save, not fresh) -- the first toggle attempted below is therefore
+    # the ON->OFF direction, not OFF->ON; captions below describe what the emulator
+    # actually showed, not the direction originally assumed when this flow was written.
+    s.tap("SEL", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # unfold "Kanto (post-game)"
+    s.tap("DOWN", settle=gb_shots.SETTLE)                    # onto EVENT_RESTORED_POWER_TO_KANTO
+    s.shot("03_kanto_row_selected", "BACKLOG #88: D6 -- 'Kanto (post-game)' unfolded, its one "
+                                     "GBFL_KIND_WARN row selected -- ON on this corpus "
+                                     "save (already progressed past this event)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # CAUTION fires first (D4: reordered ahead of the WARN confirm)
+    s.shot("04_caution_before_warn", "BACKLOG #88: D6 (D4 fix) -- the generic CAUTION now fires "
+                                      "BEFORE the WARN-specific confirm on the very "
+                                      "first toggle of a WARN row")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # dismiss CAUTION -> the WARN confirm itself
+    s.shot("05_warn_confirm_remove", "BACKLOG #88: D6 (D4 fix) -- the WARN confirm's ON->OFF "
+                                      "direction (row starts ON here) -- 'Remove Kanto "
+                                      "power?' / 'Kanto becomes unreachable.' (used to "
+                                      "show the SAME 'Restore power' text on this path "
+                                      "before D4)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # confirm removal -> flag now OFF
+    s.shot("06_kanto_off", "BACKLOG #88: D6 -- confirmed -- the row now reads off")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # toggle again: now OFF, going ON
+    s.shot("07_warn_confirm_restore", "BACKLOG #88: D6 (D4 fix) -- the WARN confirm's OTHER "
+                                       "direction, OFF->ON -- 'Restore power to Kanto?' "
+                                       "/ 'Lets Kanto be reached early.' (the ORIGINAL, "
+                                       "still-correct wording for this direction)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # decline: leave Kanto off (as toggled above), don't commit
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # back out to the commit confirm
     s.tap("B", settle=gb_shots.BIG_SETTLE)                   # decline: this run never actually commits
     return s
 
@@ -2572,6 +2643,12 @@ def main(argv=None) -> int:
                           "named game (pdna_gbflags.c's own Flags & counters screen) "
                           "-- --image MUST be a ONE-ROM fused image matching this "
                           "choice, same single-ROM posture as --b86-clock")
+    ap.add_argument("--b88-flags-d6", action="store_true",
+                     help="BACKLOG #88 D6 review: only run_b88_flags_d6() against "
+                          "--image -- the WARN confirm (both directions) and the "
+                          "READONLY 'STORY FLAG' message, neither reached by "
+                          "--b88-flags crystal's own flow -- --image MUST be a "
+                          "Crystal-only fused image (Crystal.gbc+Crystal.sav)")
     ap.add_argument("--b114-yard", choices=("red", "gold"),
                      help="BACKLOG #114: only run_b114_yard() against --image for the "
                           "named game (the Day-Care YARD scene, not the D1/D6 "
@@ -2800,6 +2877,19 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b88 flags ({a.b88_flags}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b88_flags_d6:
+        try:
+            sess = run_b88_flags_d6(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b88 flags d6: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

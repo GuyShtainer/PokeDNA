@@ -827,6 +827,15 @@ FLAGS_CASE_NAME = {"red": "EVENT_GOT_TOWN_MAP", "yellow": "EVENT_GOT_TOWN_MAP",
                    "gold": "EVENT_MADE_UNOWN_APPEAR_IN_RUINS",
                    "crystal": "EVENT_MADE_UNOWN_APPEAR_IN_RUINS"}
 BOXNAMES_WRAM = {"gold": 0xD8BF, "crystal": 0xDB75}          # Gen 1: no box names, no case
+# D6 (BACKLOG #88 review): the COUNTERS tab's Gen-2 "lucky number already shown today"
+# flag (GBF_LUCKY_NUMBER_SHOW_FLAG, --op counter lucky) as a clean boot-verifiable
+# WRAM byte -- wLuckyNumberShowFlag, bank 01, verified against each game's own .sym
+# (assets/upstream/pokegold/symbols/pokegold.sym:42501 "01:d9e7 wLuckyNumberShowFlag",
+# assets/upstream/pokecrystal/symbols/pokecrystal.sym:57291 "01:dc9d
+# wLuckyNumberShowFlag"). Gen 1 has no lucky-number system at all (--op counter lucky
+# refuses outright, GBF_LUCKY_NUMBER_SHOW_FLAG's Gen-1 gbf_off() is 0) -- Gold/Crystal
+# only, same posture as clock/boxname.
+LUCKY_WRAM = {"gold": 0xD9E7, "crystal": 0xDC9D}
 
 
 def run_daycare_case(name, info, rom, sav, work, binary, python, vendor, tally):
@@ -1169,6 +1178,66 @@ def run_flags_case(name, info, rom, sav, work, binary, python, vendor, tally):
     tally.record(f"flags (BACKLOG #88, {FLAGS_CASE_NAME[name]})", ok, detail)
 
 
+LUCKY_FILE_OFF = {"gold": 0x284F, "crystal": 0x282B}   # source/gb_fields.c's own
+                                                        # GBF_LUCKY_NUMBER_SHOW_FLAG cells
+
+
+def run_counter_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """D6 (BACKLOG #88 review): --op counter lucky <0|1> writes
+    GBF_LUCKY_NUMBER_SHOW_FLAG (gb_fields.c) through gbs_write_field + gbs_finish, the
+    COUNTERS tab's own write path for the "already shown today" byte -- proves it
+    reaches the BOOTED game's own wLuckyNumberShowFlag (LUCKY_WRAM), not just the .sav
+    bytes on disk. Same read-current-flip discipline as run_flags_case (the fly-case
+    D6 lesson): reads the CURRENT byte straight out of the corpus .sav first and flips
+    it, so a corpus that already has the flag set does not make surgery write 0 bytes
+    and pass vacuously. Gold/Crystal only -- Gen 1 has no lucky-number system at all
+    (GBF_LUCKY_NUMBER_SHOW_FLAG's Gen-1 gbf_off() is 0, do_counter's own gbf_off
+    check refuses it outright)."""
+    if info["gen"] != 2:
+        tally.skip_case("counter (BACKLOG #88 D6, lucky)", "Gen 1 has no lucky-number system")
+        return
+
+    file_off = LUCKY_FILE_OFF[name]
+    raw = sav.read_bytes()
+    cur = raw[file_off]
+    want_val = 0 if cur else 1
+
+    edited = work / "counter.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["counter", "lucky", str(want_val)]])
+    if rc != 0:
+        tally.record("counter (BACKLOG #88 D6, lucky)", False,
+                    f"surgery refused: {err.strip()}")
+        return
+
+    identical = edited.read_bytes() == raw
+    if identical:
+        tally.record("counter (BACKLOG #88 D6, lucky)", False,
+                    f"gate D6 class: surgery wrote 0 bytes (cur={cur} want={want_val}) "
+                    f"-- counter lucky is a no-op")
+        return
+
+    addr = LUCKY_WRAM[name]
+    want = f"{want_val:02x}"
+    rc, rep, out, err = boot(python, rom, edited, work / "counter", vendor,
+                             work / "counter.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:1"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == want
+    detail = (f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} {addr:#06x}={got!r} "
+             f"want={want!r} cur={cur}")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("counter (BACKLOG #88 D6, lucky)", ok, detail)
+
+
 def run_helditem_case(name, info, rom, sav, work, binary, python, vendor, tally,
                       party_count0):
     """BACKLOG #95 review gate case: proves --op helditem's write (gb_set_held_item)
@@ -1434,6 +1503,10 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     # (gbfl_set) on all four games (run_flags_case itself picks the flag index and
     # WRAM anchor per game, Table FLAGS_CASE_INDEX/EVENT_FLAGS_WRAM above) ----
     run_flags_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2l. D6 (BACKLOG #88 review) — the COUNTERS tab's lucky-number show flag,
+    # Gen 2 only (run_counter_case itself skips Gen 1) ----
+    run_counter_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
     if party_count0 < 2:
         tally.skip_case("nickname/level/delete/move",
