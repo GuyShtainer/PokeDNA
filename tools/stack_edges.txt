@@ -1021,4 +1021,11 @@ addrtaken-ok CpuFastFill
 # table that produced the bmp16_plot coincidence. #106 G2 class (the sweep masks bit 0 and does not
 # distinguish data words from pointers); retire with #106.
 addrtaken-ok ed_reg_wr
+# libgba/tonc's MultiBoot (frame 0 B, the BIOS SVC wrapper) is named nowhere in source/ or lib/'s
+# .c files (0 references) -- it links only as library baggage. On the b111 lane's NORMAL image it
+# lands at 0x08070300, and mon_anim.c's s_fam[] holds that exact word at s_fam+0xdc (.rodata
+# 0x08091494; pinned by objdump) -- the SAME data word that matched ed_reg_wr on main's artless
+# image and bmp16_plot on b105: whatever leaf the linker places at 0x08070300 trips it. #106 G2
+# class (the sweep masks bit 0 and does not distinguish data words from pointers); retire with #106.
+addrtaken-ok MultiBoot
 
