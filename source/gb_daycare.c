@@ -191,13 +191,35 @@ GbsStatus gbd_withdraw(GbSession* s, int slot, GbEditMon* out) {
   if (!read_bytes(s, g, nick_f, nick, GB_NAME_BYTES)) return GBS_ERR_SLOT;
   if (!gb_load_parts(out, gen, false, rec, otname, nick, 0)) return GBS_ERR_SLOT;
 
-  uint8_t next_flag = (gen == GB_GEN1) ? 0u
-                     : (uint8_t)(flag_cur & ~((1u << DC_HAS_MON_BIT) |
-                                              (1u << DC_COMPAT_BIT)));
-  if (next_flag == flag_cur) return GBS_OK;   /* already clear (defensive; occupied
-                                               * already refused this above) */
-  GbsStatus st = gbs_write_field(s, gbf_off(g, flag_f), &next_flag, 1);
-  if (st != GBS_OK) return st;
+  /* BACKLOG #85 D2 (re-derived): the compatibility bit (bit 5) lives ONLY on
+   * wDayCareMan, even for a slot-1 (Lady's) withdrawal -- verified against BOTH
+   * pokecrystal (engine/events/daycare.asm:79-81, DayCareLady.AskWithdrawMon:
+   * `ld hl, wDayCareLady \ res DAYCARELADY_HAS_MON_F, [hl]` THEN, on a separate byte,
+   * `ld hl, wDayCareMan \ res DAYCAREMAN_MONS_COMPATIBLE_F, [hl]`) and pokegold
+   * (engine/events/daycare.asm:87-90, identical shape). So slot 0's withdraw clears
+   * both bits on the SAME byte (flag_f == GBF_DAYCARE_FLAG already), but slot 1's
+   * withdraw must clear bit 0 on GBF_DAYCARE_LADY_FLAG and bit 5 on GBF_DAYCARE_FLAG
+   * as TWO SEPARATE writes -- an earlier revision applied both bits to `flag_f`
+   * unconditionally, which is a no-op for the compat bit on slot 1 (the Lady's own
+   * byte's bit 5 is not the flag retail or gbd_read() ever look at). */
+  uint8_t clear_mask = (1u << DC_HAS_MON_BIT);
+  if (slot == 0) clear_mask |= (1u << DC_COMPAT_BIT);   /* same byte as flag_f here */
+  uint8_t next_flag = (gen == GB_GEN1) ? 0u : (uint8_t)(flag_cur & ~clear_mask);
+  if (next_flag != flag_cur) {
+    GbsStatus st = gbs_write_field(s, gbf_off(g, flag_f), &next_flag, 1);
+    if (st != GBS_OK) return st;
+  }
+
+  if (gen == GB_GEN2 && slot != 0) {
+    uint8_t man_flag = 0;
+    if (!read_u8(s, g, GBF_DAYCARE_FLAG, &man_flag)) return GBS_ERR_SLOT;
+    uint8_t man_next = (uint8_t)(man_flag & ~(1u << DC_COMPAT_BIT));
+    if (man_next != man_flag) {
+      GbsStatus st = gbs_write_field(s, gbf_off(g, GBF_DAYCARE_FLAG), &man_next, 1);
+      if (st != GBS_OK) return st;
+    }
+  }
+
   return gbs_finish(s);
 }
 
