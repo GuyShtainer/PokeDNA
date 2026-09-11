@@ -3,16 +3,28 @@
  *   cc -std=c11 -Wall -Wextra -I source tests/host_xfer_roundtrip_test.c \
  *      source/gen3_to_gb.c source/gb_sidecar.c source/gen12_convert.c \
  *      source/gen3_save.c source/gen3_mon.c source/gen3_box.c source/gen3_edit.c \
- *      source/gen3_daycare.c source/data_tables.c \
+ *      source/gen3_daycare.c source/data_tables.c source/evolutions.c \
  *      source/gb_edit.c source/gen1_save.c source/gen2_save.c \
  *      -o /tmp/hxfer
  *   /tmp/hxfer /Users/guyshtainer/VSCodeProjects/gba-toolkit/roms/ (.sav files)
  *
+ * source/evolutions.c is GENERATED and gitignored (BACKLOG #104 R1's own MAKE LEGAL
+ * edge case, section C below, needs a real evolution floor; evolutions.h's own weak
+ * fallbacks answer "no data" and that section SKIPs, rather than failing, if it is
+ * absent).
+ *
  * NO ASSERTIONS ON EQUALITY -- this is an AUDIT, not a regression pin (the sibling
  * tests host_gen3gb_test.c and host_gen12_test.c already pin the two converters'
- * documented behaviour). This file only runs the real pipelines against Guy's own
- * save corpus and PRINTS a per-field loss table, exactly as the #104 brief asks.
- * The only thing CHECK() below guards is "the code path ran and produced a record"
+ * documented behaviour), EXCEPT for two additions BACKLOG #104 R1 makes on top of
+ * the original audit (both still additive -- section A's own per-field tally is
+ * unchanged): a hard CHECK that KEEP AS IS (no GB-side edit) is byte-identical to
+ * the original across the WHOLE real corpus (the "80 bytes" tally already measured
+ * this; the R1 brief asks for it ASSERTED, not just counted), and section C, a
+ * dedicated MAKE LEGAL edge case built from a REAL corpus record with its level
+ * artificially lowered on a /tmp-local copy (never touching the read-only corpus
+ * file) via the Gen-3 edit core (gen3_edit.c) already shipped for exactly this
+ * kind of synthetic-from-real test record.
+ * The only other thing CHECK() below guards is "the code path ran and produced a record"
  * -- never "the round trip was lossless".
  *
  * TWO DIRECTIONS, on real mons (party + box 0 of every save the corpus has):
@@ -51,6 +63,8 @@
 #include "gen3_save.h"
 #include "gen3_mon.h"
 #include "gen3_box.h"
+#include "gen3_edit.h"
+#include "evolutions.h"
 #include "gen3_to_gb.h"
 #include "gb_sidecar.h"
 #include "gen12_convert.h"
@@ -107,6 +121,15 @@ static void audit_field_a(FieldTally* t, const char* name, bool same) {
   if (!same) tally_mark(t, name);
 }
 
+/* BACKLOG #104 R1: the first REAL corpus record found that (a) converts cleanly to
+ * Gen 2 and (b) is an evolved species with a level-gated evolution floor
+ * (pk_evo_min_level() > 1) -- so section C below has a genuine, non-synthetic
+ * "an underlevelled evolved pokemon" to build its edge case from, per the brief's
+ * own wording ("edge save on a /tmp copy via the Gen-3 tools: lower an evolved
+ * mon's level below its minimum"), not a fully invented record. */
+static bool    g_have_evo_sample = false;
+static uint8_t g_evo_sample_rec[80];
+
 static void audit_gen3_roundtrip_one(FieldTally* t, const uint8_t rec80[80]) {
   PkMon orig;
   if (!pk_decode_mon(rec80, false, &orig)) return;      /* empty slot */
@@ -161,6 +184,24 @@ static void audit_gen3_roundtrip_one(FieldTally* t, const uint8_t rec80[80]) {
   audit_field_a(t, "contest",     memcmp(merged.contest, orig.contest, sizeof orig.contest) == 0);
   audit_field_a(t, "ribbons",     merged.ribbons == orig.ribbons);
   audit_field_a(t, "80 bytes",    memcmp(back80, rec80, 80) == 0);
+  /* BACKLOG #104 R1: KEEP AS IS's own contract, ASSERTED rather than only tallied --
+   * "the no-correction case (KEEP AS IS = today's bytes, byte-identical on all
+   * corpus mons)". This is the SAME comparison "80 bytes" tallies above; the CHECK
+   * here turns it into a hard regression pin across the whole real Gen-3 corpus,
+   * which the tally-only style deliberately never did before this. */
+  CHECK(memcmp(back80, rec80, 80) == 0,
+        "KEEP AS IS: merge-up with no GB-side edit is byte-identical to the original (species %u)",
+        orig.species);
+
+  /* Capture the first real, cleanly-converting, evolved (level-gated) mon this
+   * corpus offers, for section C's MAKE LEGAL edge case below. */
+  if (!g_have_evo_sample && pk_evo_have_data()) {
+    int min_lvl = pk_evo_min_level(orig.species);
+    if (min_lvl != PK_EVO_NO_DATA && min_lvl > 1) {
+      g_have_evo_sample = true;
+      memcpy(g_evo_sample_rec, rec80, 80);
+    }
+  }
 }
 
 static void run_gen3_corpus_file(FieldTally* t, const char* path) {
@@ -324,6 +365,99 @@ static void run_gen2_file(FieldTally* t, const char* path) {
 }
 
 /* ============================================================================ */
+/* C. BACKLOG #104 R1: MAKE LEGAL's level correction, on a REAL corpus record.   */
+/* ============================================================================ */
+
+static void test_make_legal_edge_case(void) {
+  printf("== C. BACKLOG #104 R1: MAKE LEGAL, an underlevelled evolved mon ==\n");
+  if (!g_have_evo_sample) {
+    printf("  SKIP (no real corpus record with a level-gated evolution found)\n");
+    return;
+  }
+  if (!pk_evo_have_data()) { printf("  SKIP (no evolutions table linked)\n"); return; }
+
+  PkMon base;
+  bool base_ok = pk_decode_mon(g_evo_sample_rec, false, &base);
+  CHECK(base_ok, "the captured sample decodes");
+  if (!base_ok) return;
+
+  int min_lvl = pk_evo_min_level(base.species);
+  CHECK(min_lvl != PK_EVO_NO_DATA && min_lvl > 1,
+        "the captured sample has a level-gated evolution floor (got %d)", min_lvl);
+  if (min_lvl == PK_EVO_NO_DATA || min_lvl <= 1) return;
+
+  /* Lower the level well below the floor, on a /tmp-local COPY -- gen3_edit.c is
+   * the same "Gen-3 tools" every other edit screen in this tree uses, never the
+   * read-only corpus file itself (which is never re-opened by this test at all;
+   * `sample` lives only in this function's own stack/locals). */
+  uint8_t sample[80];
+  memcpy(sample, g_evo_sample_rec, 80);
+  uint8_t low_level = (min_lvl > 5) ? (uint8_t)(min_lvl - 5) : 1;
+  EditMon em;
+  gen3_edit_load(sample, false, &em);
+  em_set_level(&em, low_level);
+  gen3_edit_commit(&em, sample);
+
+  PkMon edge;
+  CHECK(pk_decode_mon(sample, false, &edge), "the lowered-level edge case decodes");
+  pk_resolve(&edge);   /* box record: level comes from EXP+growth-rate, gen3_box.c */
+  CHECK(edge.level == low_level, "the edge case's level was actually lowered (got %u want %u)",
+        edge.level, low_level);
+  CHECK(edge.species == base.species, "the edge case's species is unchanged by the level edit");
+
+  GbEditMon down;
+  Gen3ToGbLoss loss;
+  G3GbStatus st = gen3_to_gb(sample, GB_GEN2, true, NULL, &down, &loss);
+  CHECK(st == G3GB_OK, "the underlevelled edge case converts (species %u, %s)",
+        base.species, g3gb_status_text(st));
+  if (st != G3GB_OK) return;
+
+  /* KEEP AS IS: this specific edge case must still round-trip byte-identically,
+   * same as every other untouched conversion -- the mechanism above must not have
+   * broken the common path for the species it happens to be exercising. */
+  {
+    GbscEntry e; gbsc_entry_from(&e, &down, sample, 0);
+    uint8_t back80[80]; GbscMergeReport rep;
+    CHECK(gbsc_merge_up(&e, &down, back80, &rep), "KEEP AS IS: merge up (no GB edit) succeeds");
+    CHECK(!rep.level_changed, "KEEP AS IS: no GB-side edit -> level_changed is false");
+    CHECK(memcmp(back80, sample, 80) == 0,
+          "KEEP AS IS: the edge case still round-trips byte-identically");
+  }
+
+  /* MAKE LEGAL: gb_paste_hook's own sequence, exactly as the shipped UI slice runs
+   * it -- probe, then apply the reported level via gb_set_level(). */
+  uint8_t from_lvl = 0, to_lvl = 0;
+  bool need_fix = gen3_to_gb_evo_needs_fix(&down, &from_lvl, &to_lvl);
+  CHECK(need_fix, "the underlevelled edge case is offered the MAKE LEGAL fix");
+  CHECK(from_lvl == low_level, "from_level matches the lowered level (got %u want %u)",
+        from_lvl, low_level);
+  CHECK(to_lvl == (uint8_t)min_lvl, "to_level matches the evolution floor (got %u want %d)",
+        to_lvl, min_lvl);
+
+  GbEditMon fixed = down;
+  CHECK(gb_set_level(&fixed, to_lvl), "MAKE LEGAL: gb_set_level raises the level");
+
+  GbscEntry e2; gbsc_entry_from(&e2, &fixed, sample, 0);   /* sample: the true, lowered
+                                                             * original -- unchanged by
+                                                             * the correction. */
+  CHECK(e2.written_level == to_lvl,
+        "MAKE LEGAL: written_level records the level ACTUALLY WRITTEN (got %u want %u)",
+        e2.written_level, to_lvl);
+  CHECK(memcmp(e2.original80, sample, 80) == 0,
+        "MAKE LEGAL: the sidecar's original80 is the true, uncorrected (lowered-level) original");
+
+  /* The whole point: merge-up with no further Game-Boy-side change restores the
+   * ORIGINAL 80 bytes (the lowered-level record) EXACTLY, on a REAL corpus mon's
+   * own bytes -- not just the fully synthetic case host_gen3gb_test.c's own
+   * section 5 already covers. */
+  uint8_t back80[80]; GbscMergeReport rep;
+  CHECK(gbsc_merge_up(&e2, &fixed, back80, &rep), "MAKE LEGAL, no further edit: merge up succeeds");
+  CHECK(!rep.level_changed, "MAKE LEGAL, no further edit: level_changed is false (the fix)");
+  CHECK(memcmp(back80, sample, 80) == 0,
+        "MAKE LEGAL, no further edit: restores the original (lowered-level) 80 bytes exactly");
+}
+
+/* ============================================================================ */
 
 int main(int argc, char** argv) {
   printf("== BACKLOG #104 audit: cross-generation round-trip field survey ==\n");
@@ -335,6 +469,9 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; i++) { run_gen3_corpus_file(&ta, argv[i]); gen3_files++; }
   if (!gen3_files) printf("  (no Gen-3 saves given on argv -- section A empty)\n");
   tally_report(&ta, "A. Gen3->GB->Gen3 (existing sidecar path)");
+
+  printf("\n");
+  test_make_legal_edge_case();
 
   printf("\n-- B. GB -> Gen 3 -> GB, with NO journal (gen12_convert + gen3_to_gb) --\n");
   FieldTally tb; tally_init(&tb);

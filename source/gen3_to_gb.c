@@ -2,6 +2,7 @@
 #include "gen3_mon.h"      /* PkMon, pk_decode_mon, pk_resolve, PK_* stat order */
 #include "gen3_box.h"      /* pk_resolve — fills level/gender for a BOX record */
 #include "data_tables.h"   /* pk_national_no, pk_species_ability, growth/exp tables */
+#include "evolutions.h"    /* pk_evo_have_data/pk_evo_floor — BACKLOG #104 R1 */
 #include <string.h>
 
 /* ---- status text ----------------------------------------------------------- */
@@ -264,4 +265,27 @@ G3GbStatus gen3_to_gb(const uint8_t* rec80, uint8_t gen, bool caught_available,
 
   *out = e;
   return G3GB_OK;
+}
+
+/* ---- BACKLOG #104 R1: the MAKE LEGAL correction --------------------------------
+ * See gen3_to_gb.h for the contract. */
+bool gen3_to_gb_evo_needs_fix(const GbEditMon* out, uint8_t* from_level, uint8_t* to_level) {
+  if (!out) return false;
+  if (!pk_evo_have_data()) return false;         /* "no data" never manufactures a fix */
+  uint16_t dex = gb_get_species_dex(out);
+  if (dex == 0) return false;
+  /* pk_evo_FLOOR, not pk_evo_min_level: 20 of the 100 offer-capable species are catchable
+   * wild BELOW their own evolution level (Sootopolis' Super Rod gives a L5 Gyarados),
+   * pk_evo_floor is what this tool's OWN checker judges against (gen3_legality_hooks.c
+   * pk2_evo_floor) and what the create flow builds at (gen3_edit.c gen3_build_level).
+   * Offering to 'fix' a mon the checker calls legal is the over-correction gen3_edit.c
+   * names as the one direction this project forbids (r1 review D1: 4 of 5 offers on
+   * Guy's own saves were false). */
+  int min_lvl = pk_evo_floor(dex);
+  if (min_lvl == PK_EVO_NO_DATA || min_lvl <= 1) return false;
+  uint8_t cur = gb_get_level(out);
+  if (cur >= (uint8_t)min_lvl) return false;
+  if (from_level) *from_level = cur;
+  if (to_level)   *to_level   = (uint8_t)min_lvl;
+  return true;
 }
