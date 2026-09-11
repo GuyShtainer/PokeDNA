@@ -128,10 +128,12 @@ bool gbh_team(const GbSession* s, int i, GbHofTeam* out);
 GbsStatus gbh_clear(GbSession* s);
 
 /* Set the lifetime counter directly (the "SET COUNT" screen action). Clamped to the
- * field's real range: Gen 1 <= 255 (its natural u8 ceiling — AnimateHallOfFame's own
- * saturate-at-255 rule), Gen 2 <= 200 (the game's own cap). A no-op (n already equals
- * the stored value) writes nothing, same convention as every gbs_write_field caller.
- * `n` < 0 is clamped to 0. GBS_ERR_ARG on a closed/malformed session. */
+ * field's real range: Gen 1 <= the teams actually in the blob (gbh_slots_in_blob(),
+ * never past GBH_G1_CAPACITY; the raw scan, NOT gbh_team_count_present() — see R1)
+ * — a count past the stored teams makes the real League PC decode empty slots.
+ * Gen 2 <= 200 (the game's own cap). A no-op (n already equals the stored value)
+ * writes nothing, same convention as every gbs_write_field caller. `n` < 0 is
+ * clamped to 0. GBS_ERR_ARG on a closed/malformed session. */
 GbsStatus gbh_set_count(GbSession* s, int n);
 
 #endif /* GB_HOF_H */
