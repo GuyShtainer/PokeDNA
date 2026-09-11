@@ -360,15 +360,55 @@ static void test_colour(const char* rom_file, const char* name,
     chk(name, "palette $00 color3 R7 G7 B7", (w3 & 0x1F) == 7 && ((w3 >> 5) & 0x1F) == 7 && ((w3 >> 10) & 0x1F) == 7);
     (void)out4; (void)bg_idx;
 
-    uint16_t roof_day = 0;
-    bool rok = rgm2_colour_roof(&c, rd_mem, &m, m.len, /*TOWN*/1, /*group 1 Olivine*/1, &roof_day);
-    chk(name, "Olivine roof day resolves", rok);
-    if (rok)
-      chk(name, "Olivine roof day R7 G11 B15",
-          (roof_day & 0x1F) == 7 && ((roof_day >> 5) & 0x1F) == 11 && ((roof_day >> 10) & 0x1F) == 15);
+    /* review-opus D2: LoadMapPals copies BOTH roof words (`ld bc, 4`) into
+     * palette slot 6's colours 1 and 2 -- assert both, not just the one
+     * this test used to check. Olivine (group 1): morn R14/G17/B31, day
+     * R7/G11/B15 (design §7.4's own oracle). New Bark's own group (24):
+     * word0 R20/G31/B14, word1 R11/G23/B5 -- an independent second data
+     * point so a future regression that swaps/drops a word cannot hide
+     * behind Olivine alone. */
+    uint16_t roof1[2] = { 0, 0 };
+    bool rok1 = rgm2_colour_roof(&c, rd_mem, &m, m.len, /*TOWN*/1, /*group 1 Olivine*/1, roof1);
+    chk(name, "Olivine roof resolves", rok1);
+    if (rok1) {
+      chk(name, "Olivine roof word0 (morn) R14 G17 B31",
+          (roof1[0] & 0x1F) == 14 && ((roof1[0] >> 5) & 0x1F) == 17 && ((roof1[0] >> 10) & 0x1F) == 31);
+      chk(name, "Olivine roof word1 (day) R7 G11 B15",
+          (roof1[1] & 0x1F) == 7 && ((roof1[1] >> 5) & 0x1F) == 11 && ((roof1[1] >> 10) & 0x1F) == 15);
+    }
+
+    uint16_t roof24[2] = { 0, 0 };
+    bool rok24 = rgm2_colour_roof(&c, rd_mem, &m, m.len, /*TOWN*/1, /*group 24 New Bark*/24, roof24);
+    chk(name, "New Bark roof resolves", rok24);
+    if (rok24) {
+      chk(name, "New Bark roof word0 R20 G31 B14",
+          (roof24[0] & 0x1F) == 20 && ((roof24[0] >> 5) & 0x1F) == 31 && ((roof24[0] >> 10) & 0x1F) == 14);
+      chk(name, "New Bark roof word1 R11 G23 B5",
+          (roof24[1] & 0x1F) == 11 && ((roof24[1] >> 5) & 0x1F) == 23 && ((roof24[1] >> 10) & 0x1F) == 5);
+    }
 
     chk(name, "roof refuses outside TOWN/ROUTE",
-        !rgm2_colour_roof(&c, rd_mem, &m, m.len, /*INDOOR*/3, 1, &roof_day));
+        !rgm2_colour_roof(&c, rd_mem, &m, m.len, /*INDOOR*/3, 1, roof1));
+
+    /* review-opus D1 regression guard: the override must gate on the PalMap
+     * NIBBLE (the loop index gbmap2_colour_setup() iterates, 0-7), never on
+     * bg_idx (the outdoor DAY row is $08,$09,$0a,$28,$0c,$0d,$0e,$0f -- 6 is
+     * never among them, so a bg_idx==6 gate is permanently dead on every
+     * TOWN/ROUTE map). This test can't reach into pdna_gbmap2.c's own
+     * static function, so it re-asserts the FACT the fix depends on: no
+     * palette_index in 0-7 resolves to bg_idx 6 under New Bark's own TOWN
+     * environment on either ROM -- confirming a bg_idx==6 gate really is
+     * unreachable, and the fix's own p==6 gate is the only correct one. */
+    {
+      int any_bg_idx_6 = 0;
+      for (uint8_t pidx = 0; pidx < 8; pidx++) {
+        uint16_t tmp4[4]; uint8_t bg_idx = 0;
+        if (rgm2_colour_palette(&c, rd_mem, &m, m.len, /*TOWN*/1, pidx, tmp4, &bg_idx) && bg_idx == 6u)
+          any_bg_idx_6 = 1;
+      }
+      chk(name, "D1 regression guard: bg_idx==6 never occurs under TOWN (confirms the old gate was dead)",
+          !any_bg_idx_6);
+    }
   }
 
   /* Mutate the PalMap-consumer anchor's own first concrete byte (its own

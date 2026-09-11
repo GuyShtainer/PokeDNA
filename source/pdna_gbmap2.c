@@ -124,12 +124,22 @@ static bool gbmap2_colour_setup(GbMap2State* st, uint8_t* scratch, uint32_t scra
       memset(&st->colour, 0, sizeof st->colour);
       return false;
     }
-    if (bg_idx == 6u && (st->map.environment == 1u || st->map.environment == 2u)) {
-      uint16_t roof_day = 0;
+    /* review-opus D1: PAL_BG_ROOF (=6) is the DESTINATION palette slot --
+     * the PalMap NIBBLE `p`, the loop index this function is already
+     * iterating over -- not `bg_idx` (the source row into TilesetBGPalette,
+     * which the outdoor DAY row never sets to 6: $08,$09,$0a,$28,$0c,$0d,
+     * $0e,$0f). Gating on bg_idx made this branch dead on every TOWN/ROUTE
+     * map in both games. */
+    if (p == 6 && (st->map.environment == 1u || st->map.environment == 2u)) {
+      uint16_t roof_day[2] = { 0, 0 };
       if (rgm2_colour_roof(&st->colour, st->g.read, st->g.ctx, st->g.size,
-                            st->map.environment, st->map.group, &roof_day)) {
-        st->colour_pal[p * 4 + 1] = roof_day;
-        st->colour_pal[p * 4 + 2] = roof_day;
+                            st->map.environment, st->map.group, roof_day)) {
+        /* review-opus D2: LoadMapPals copies BOTH roof words (`ld bc, 4`)
+         * into slot 6's colours 1 and 2 -- word0 (morn) -> colour 1,
+         * word1 (day) -> colour 2. Writing one value into both dropped
+         * the entry's own first colour. */
+        st->colour_pal[p * 4 + 1] = roof_day[0];
+        st->colour_pal[p * 4 + 2] = roof_day[1];
       }
     }
   }

@@ -502,14 +502,20 @@ bool rgm2_colour_palette(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uin
 }
 
 bool rgm2_colour_roof(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
-                       uint8_t environment, uint8_t group, uint16_t* out_day) {
-  *out_day = 0;
+                       uint8_t environment, uint8_t group, uint16_t out_day[2]) {
+  out_day[0] = 0; out_day[1] = 0;
   if (!c->ok || !read) return false;
   if (!(environment == 1u || environment == 2u)) return false;   /* TOWN(1)/ROUTE(2) only */
 
   uint32_t entry_off = c->roof_pals_off + 8u * (uint32_t)group;   /* 1-based, NO decrement */
   uint8_t e8[8];
   if (entry_off >= size || size - entry_off < 8u || !read(ctx, entry_off, e8, 8)) return false;
-  *out_day = rd16(e8 + 2);   /* first 4 bytes = morn(0-1)+day(2-3) */
+  /* LoadMapPals (engine/gfx/color.asm) copies TWO RGB15 words (`ld bc, 4`)
+   * unconditionally into palette slot PAL_BG_ROOF's own colours 1 and 2 --
+   * word0 (morn) -> colour 1, word1 (day) -> colour 2. Dropping word0 was
+   * review-opus D2's own catch: the first colour is NOT the same as the
+   * second, and both are real, both get written. */
+  out_day[0] = rd16(e8 + 0);
+  out_day[1] = rd16(e8 + 2);
   return true;
 }
