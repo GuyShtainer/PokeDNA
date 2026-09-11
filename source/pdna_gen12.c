@@ -506,7 +506,31 @@ static uint8_t* gbsrc_records(int box) {
   return r ? r : (g_m ? g_m->recs + 0x0004 : 0);
 }
 static void gbsrc_get_name(int box, char out[12]) { pdna_gen12_box_name(g_m, box, out); }
-static void gbsrc_set_name(int box, const char* s) { (void)box; (void)s; }   /* read-only */
+
+/* F1 (BACKLOG #94): the real rename/can_rename bodies need g_ed, app_can_edit,
+ * gbbn_rename/gbbn_supported and gb_persist, all of which live below the
+ * PDNA_GEN12_HOST guard (this fill function does not) -- tests/host_gen12_test.c
+ * compiles everything ABOVE the guard with -DPDNA_GEN12_HOST and no GBA glue at all.
+ * These two thin shims keep BoxSource's fill pure-C-compilable; the real work is in
+ * the _impl pair defined below the guard, in the GBA-only half of this file. */
+#ifndef PDNA_GEN12_HOST
+static void gbsrc_set_name_impl(int box, const char* s);
+static bool gbsrc_can_rename_impl(void);
+#endif
+static void gbsrc_set_name(int box, const char* s) {
+#ifndef PDNA_GEN12_HOST
+  gbsrc_set_name_impl(box, s);
+#else
+  (void)box; (void)s;
+#endif
+}
+static bool gbsrc_can_rename(void) {
+#ifndef PDNA_GEN12_HOST
+  return gbsrc_can_rename_impl();
+#else
+  return false;
+#endif
+}
 static int  gbsrc_get_wp(int box) { (void)box; return GB12_WALLPAPER; }
 static void gbsrc_set_wp(int box, int wp) { (void)box; (void)wp; }           /* read-only */
 static bool gbsrc_can_edit(void) { return false; }
@@ -567,6 +591,11 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
   s.menu_block = m->recs;                    /* records at +0x0004; menu box index = 0 */
   s.get_name   = gbsrc_get_name;
   s.set_name   = gbsrc_set_name;
+  s.can_rename = gbsrc_can_rename;   /* BACKLOG #94: rename gated separately from can_edit
+                                      * (gbsrc_can_edit() is hardwired false -- see its own
+                                      * comment; the box banner's own commit()-return path
+                                      * never actually inspects the boolean either way, see
+                                      * the _impl pair's header note below the guard) */
   s.get_wp     = gbsrc_get_wp;
   s.set_wp     = gbsrc_set_wp;
   s.can_edit   = gbsrc_can_edit;
@@ -602,6 +631,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbpack.h"      /* U5, BACKLOG #67: Gold/Silver/Crystal's own Pack */
 #include "pdna_gbfly.h"       /* BACKLOG #90: Fly destinations, both generations */
 #include "pdna_gbclock.h"     /* BACKLOG #86/#108: Gen-2's own Clock fix screen */
+#include "gb_boxnames.h"      /* BACKLOG #94: gbbn_rename/gbbn_supported -- the box banner's rename */
 #include "pdna_pick.h"        /* BACKLOG #92: pick_item / pick_item_set_gen1_2_max */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
@@ -887,6 +917,53 @@ typedef struct {
                                * (G1 re-verify: a stale table built one wrong moveset). */
 } Gb12Edit;
 static Gb12Edit* g_ed;        /* pointer only: the block itself lives in the arena */
+
+/* F1 (BACKLOG #94): gbsrc_set_name/gbsrc_can_rename's real bodies (declared as thin
+ * shims above the PDNA_GEN12_HOST guard, since g_ed, app_can_edit, gbbn_rename,
+ * gbbn_supported and gb_persist all live down here in the GBA-glue half of this file).
+ *
+ * gbsrc_can_rename_impl mirrors gb_editable_hook's own "cart AND box" shape (below)
+ * but asks gbbn_supported() instead of the generic gbs_box_writable() -- Gen 1 has
+ * no box-name table at all (gbbn_supported refuses it outright), so a Gen-1 banner's
+ * A press must snd_deny(), never call through a NULL-shaped path. No g_ed (the plain
+ * FIL-streaming entry) also refuses: there is no live GbSession to write through,
+ * same reasoning pdna_gbtrainer's own g_ed gate documents. */
+static bool gbsrc_can_rename_impl(void) {
+  return g_ed && app_can_edit() && gbbn_supported(&g_ed->s);
+}
+
+/* Writes through gbbn_rename() (the verified field write + checksum fix-up gb_boxnames.c
+ * itself does), then persists via gb_persist("boxname") -- the same commit path every
+ * other Gen-1/2 write in this file uses. Two notes tie this to pdna_box.c's own call
+ * sites (box_options_menu's rename case and the direct-A-on-banner path, both
+ * `src->set_name(box, buf); src->commit();`):
+ *
+ *   (a) src->commit() (gbsrc_commit(), just above the guard) is HARDWIRED to return
+ *       false -- neither call site inspects that return value for the rename path, so
+ *       a rename that already persisted here via gb_persist() never gets a false
+ *       "commit failed" surfaced to the player. Traced both sites; nothing to fix.
+ *   (b) a Gen-1 save: gbbn_supported() is false, so gbsrc_can_rename_impl() above
+ *       already refused before src->set_name() is ever called -- pdna_box.c's A-on-
+ *       banner path takes the `else snd_deny()` branch instead. This function's own
+ *       `if (!g_ed || !s) return;` guard is pure defense-in-depth (no crash if it were
+ *       ever reached anyway), not the actual gate.
+ *   (c) an Everdrive session: app_can_edit() is false (hard rule 4, write is
+ *       Omega-only), so the SAME can_rename_impl() check above refuses first.
+ *
+ * gbsrc_get_name() (above the guard) reads m->g2names, a raw-byte snapshot
+ * g2_header_ranged() cached ONCE at mount time -- without a refresh here the box
+ * banner would keep showing the pre-rename name until the next full remount even
+ * though the save itself is already correct. g_ed->s and g_m read through the SAME
+ * bytes (the resident-image path opens gbs_open over the mount's own `img` -- see
+ * gb_nav_from_start's own NV_TRAINER comment), so re-running the exact read
+ * g2_header_ranged() did is a cheap, correct refresh, not a second decode of stale
+ * data. */
+static void gbsrc_set_name_impl(int box, const char* s) {
+  if (!g_ed || !s) return;
+  if (gbbn_rename(&g_ed->s, box, s) != GBS_OK) { snd_error(); return; }
+  if (g_m) (void)g_m->rd(g_m->ctx, g_m->g2o.box_names, g_m->g2names, sizeof g_m->g2names);
+  gb_persist("boxname");
+}
 
 static void s_busy(const char* line) {
   ui_clear();
