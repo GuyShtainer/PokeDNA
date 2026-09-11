@@ -76,18 +76,25 @@ static int cb_hdr(const uint8_t* w) {
   return w[0]==0xCB && w[1]==0x78 && w[2]==0xC0;
 }
 
-/* ---- Tilesets: LD E,A / LD HL,Tilesets (5F 21 lo hi) -------------------- */
-static int cb_ts(const uint8_t* w) {
-  return w[0]==0x5F && w[1]==0x21;
-}
-
-/* Structural filter for a cb_ts() raw hit: one-or-more ADD HL,DE (0x19) then
+/* Structural filter for a cb_ts() raw hit -- forward-declared so cb_ts()
+ * itself can fold it in (m1 review D7): one-or-more ADD HL,DE (0x19) then
  * LD DE,imm16 (0x11 lo hi) whose operand looks like a WRAM address
  * (0xC000-0xDFFF, wTilesetBank) -- this is what collapses dozens of raw
  * `5F 21` hits down to exactly one real Tilesets reference (verified on
  * both Red and Yellow: 1 candidate survives in each, landing on the
  * decomp's own Tilesets symbol byte-for-byte). `w` has >= 12 bytes (the
  * scan's own `look`). */
+static int ts_filter_ok(const uint8_t* w);
+
+/* ---- Tilesets: LD E,A / LD HL,Tilesets (5F 21 lo hi), structurally
+ * filtered in-callback (m1 review D7) so scan_one()'s own `cap` counts real
+ * candidates, not raw 2-byte-prefix hits -- a raw scan finds dozens of `5F
+ * 21` occurrences, so capping the raw hit array at a small `cap` used to
+ * risk truncating before the one real candidate was even seen. ---------- */
+static int cb_ts(const uint8_t* w) {
+  return w[0]==0x5F && w[1]==0x21 && ts_filter_ok(w);
+}
+
 static int ts_filter_ok(const uint8_t* w) {
   uint32_t j = 4; int n19 = 0;
   while (j < 8 && w[j] == 0x19) { n19++; j++; }
@@ -165,24 +172,19 @@ bool rgm1_open(RomGbMap1* g, GbReadFn read, void* ctx, uint32_t size,
     }
   }
 
-  /* Tilesets: raw `5F 21` scan, then the n19/LD-DE-WRAM structural filter
-   * picks the one real candidate out of many raw hits. */
+  /* Tilesets: the structural filter is now IN cb_ts() itself (m1 review D7),
+   * so scan_one()'s own hit cap counts real (filtered) candidates instead of
+   * raw `5F 21` prefix hits -- exactly 1 is required, same as the other two
+   * tables' own anchors. */
   {
-    uint32_t thit[64];
-    uint32_t tn = scan_one(&s, cb_ts, 12, thit, 64);
-    if (tn > 64) return fail_closed(g);              /* fail closed: too many raw hits */
-    uint32_t found = 0; uint32_t found_off = 0;
-    for (uint32_t i = 0; i < tn; i++) {
-      uint8_t w[12];
-      if (!rd(&s, thit[i], w, sizeof w)) continue;
-      if (!ts_filter_ok(w)) continue;
-      uint16_t addr = rd16(w + 2);
-      uint32_t bank = thit[i] / GB_BANK;    /* same bank as this code, see header note */
-      uint32_t off = fileoff(bank, addr);
-      found++; found_off = off;
-    }
-    if (found != 1) return fail_closed(g);
-    g->tilesets_off = found_off;
+    uint32_t thit[2];
+    uint32_t tn = scan_one(&s, cb_ts, 12, thit, 2);
+    if (tn != 1) return fail_closed(g);
+    uint8_t w[12];
+    if (!rd(&s, thit[0], w, sizeof w)) return fail_closed(g);
+    uint16_t addr = rd16(w + 2);
+    uint32_t bank = thit[0] / GB_BANK;    /* same bank as this code, see header note */
+    g->tilesets_off = fileoff(bank, addr);
   }
 
   /* Structural cross-check (design §6): map id 0 must parse to a plausible

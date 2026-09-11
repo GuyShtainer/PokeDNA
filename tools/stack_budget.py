@@ -570,7 +570,16 @@ FIELD_LINE_RE = re.compile(r'^(\w+)\.(\w+)\s*@(\d+)(?:\s+in\s+([\w.@]+(?:\s*,\s*
 # fix. `[\w.]+` allows the dotted clone suffix while still anchoring on whitespace
 # before `argsites=`, so a real typo (stray text before the keyword) still fails to
 # match and falls through exactly as before.
-ARGSITE_LINE_RE = re.compile(r'^([\w.]+)\s+argsites=(\d+)$')
+#
+# m1 review D7 fix (2026-09): a caller name can ALSO need the D5b `@tu` qualifier
+# FIELD_LINE_RE's own caller-list already allows (`[\w.@]+`) -- rom_gbmap.c's
+# scan_one() and rom_gbicon.c's scan_one() both fully specialize to the identical
+# clone name `scan_one.constprop.0` once every call site in a TU shares the same
+# constant argument, so an argsite declaration for either needs `@rom_gbmap`/
+# `@rom_gbicon` to stay unambiguous -- and hit the EXACT SAME silent-dead-declaration
+# bug the comment above documents for `.constprop.N`: `@` fell outside `[\w.]+`, so
+# the qualified line fell through to whole_func_decls with a bogus caller key.
+ARGSITE_LINE_RE = re.compile(r'^([\w.@]+)\s+argsites=(\d+)$')
 FRAME_LINE_RE = re.compile(r'^frame\s+(\S+)\s*=\s*(\d+)\b')
 # D1 (BACKLOG #84b fifth pass): two more declaration shapes, for the address-taken sweep.
 ISR_LINE_RE = re.compile(r'^isr\s+(\S+)$')

@@ -359,6 +359,30 @@ static void test_route_headers(const char* rom_file) {
   fclose(fc.f);
 }
 
+/* m1 review D7: cb_ts()'s structural filter now runs INSIDE the scan
+ * callback, so scan_one()'s own hit cap (now 2, was 64) counts real
+ * candidates -- this is the negative side of that change: a Gen-2/Gen-3 ROM
+ * must still produce EITHER 0 filtered `5F 21` hits or more than 1 (never
+ * exactly 1), so rgm1_open() fails closed on every non-Gen-1 ROM, not just
+ * on Red/Yellow's own corrupted anchors. Emerald.gba lives one directory up
+ * from ROMS (roms/, not roms/gb/). */
+static void test_offgame_fails_closed(const char* dir, const char* file) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/%s", dir, file);
+  long n = file_size(path);
+  if (n <= 0) { printf("SKIP off-game control %s: corpus not present\n", file); return; }
+  g_ran++;
+
+  FileCtx fc; fc.f = fopen(path, "rb");
+  chk(file, "fopen", fc.f != NULL);
+  if (!fc.f) return;
+  RomGbMap1 g;
+  bool ok = rgm1_open(&g, file_read, &fc, (uint32_t)n, g_scratch, sizeof g_scratch);
+  chk(file, "rgm1_open fails closed on a non-Gen-1 ROM", !ok);
+  if (!ok) chk(file, "failed open zeroes every offset", g.banks_off == 0 && g.ptrs_off == 0 && g.tilesets_off == 0 && g.ok == 0);
+  fclose(fc.f);
+}
+
 int main(void) {
   for (int i = 0; i < NWANT; i++) test_locate_and_pallet(&WANT[i]);
   test_player_map("Red.gb", "Red.sav");
@@ -367,6 +391,9 @@ int main(void) {
   test_route_headers("Red.gb");
   test_route_headers("Yellow.gb");
   test_negative_controls();
+  test_offgame_fails_closed(ROMS, "Gold.gbc");
+  test_offgame_fails_closed(ROMS, "Crystal.gbc");
+  test_offgame_fails_closed(ROMS "/..", "Emerald.gba");
 
   printf("host_romgbmap_test: %d checks, %d failed, %d ROM(s)/pair(s) exercised\n",
          g_check, g_fail, g_ran);

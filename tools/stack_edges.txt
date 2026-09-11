@@ -311,7 +311,7 @@ rom_gbbase_gen1 argsites=1 -> fused_gb_slice_read gb_read
 g1_bs_verify argsites=1 -> gb_art_read fused_gb_slice_read gb_read
 g2_bd_verify argsites=1 -> gb_art_read fused_gb_slice_read gb_read
 g2_pp_verify argsites=1 -> gb_art_read fused_gb_slice_read gb_read
-scan_one.constprop.0 argsites=1 -> gb_art_read fused_gb_slice_read icon_ptrs_cb
+scan_one.constprop.0@rom_gbicon argsites=1 -> gb_art_read fused_gb_slice_read icon_ptrs_cb
 # widened (BACKLOG #84b seventh pass) to include icon_ptrs_cb -- can't cheaply tell
 # whether THIS nonfield site or the RomGbIcon.read@0 field site (declared above) is
 # the real `cb(...)` dispatch; unioned into both for safety, same as the RomGbIcon.
@@ -557,7 +557,7 @@ load_g1_keyitems_bits argsites=1 -> gbscr_sd_read fused_gb_slice_read gb_art_rea
 # same way while filling it in.
 
 RomGbIcon.read @0 in parse_header@rom_gbicon,rom_gbicon_kind,rom_gbicon_open_loc,rom_gbicon_tiles -> gb_art_read fused_gb_slice_read gb_read
-RomGbIcon.read @0 in locate@rom_gbicon,scan_one.constprop.0 -> gb_art_read fused_gb_slice_read gb_read icon_ptrs_cb
+RomGbIcon.read @0 in locate@rom_gbicon,scan_one.constprop.0@rom_gbicon -> gb_art_read fused_gb_slice_read gb_read icon_ptrs_cb
 # locate@rom_gbicon/scan_one.constprop.0 widened to include icon_ptrs_cb (rom_gbicon.c:
 # 187, `scan_one(gi, icon_ptrs_cb, ...)`, previously `addrtaken-ok` below) -- rom_
 # gbicon.c's scan_one() takes the callback as a PARAMETER (not a struct field) but its
@@ -609,8 +609,8 @@ rgm1_open argsites=4 -> gbmap_sd_read fused_gb_slice_read
 # already has -- a different translation unit's struct of the same name/shape, offset
 # still 0) and `cb(w + i)` (the ScanCb callback PARAMETER, one call site -- rom_gbmap.c's
 # 3 ScanCb implementations: cb_banks/cb_hdr/cb_ts).
-Scan.read @0 in scan_one -> gbmap_sd_read fused_gb_slice_read
-scan_one argsites=1 -> cb_banks cb_hdr cb_ts
+Scan.read @0 in scan_one.constprop.0@rom_gbmap -> gbmap_sd_read fused_gb_slice_read
+scan_one.constprop.0@rom_gbmap argsites=1 -> cb_banks cb_hdr cb_ts
 
 Br.rd @0 in br_byte -> gb_art_read fused_gb_slice_read gb_read
 # gb_sprite_codec.c's own file-local `Br` bit-reader (line ~28): `GbReadFn rd;` is its
