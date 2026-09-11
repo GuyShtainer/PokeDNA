@@ -222,6 +222,29 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # start "#95:".
     ("gb-mon-summary-parity", "#95 — summary-field parity audit: Shiny, Egg, Met "
      "Time/Level/Loc/OT Gender rows closed for Gen 2", ("#95",)),
+    # BACKLOG #114 (append-only, same rule as every row above): the Day-Care YARD
+    # scene (dc_scene/dc_icon_over_bg/dc_pointer, source/pdna_yard.h) now draws on
+    # the Gen-1/2 screen instead of the two/three text rows BACKLOG #85's own
+    # "gb-daycare-gen12" row above shows -- gen-correct random visitors (151 species
+    # cap on Gen 1, 251 on Gen 2/3) placed the same way pdna_daycare()'s own Gen-3
+    # yard already does. Shots come from tools/dgb_shots.py's run_b114_yard()
+    # (--b114-yard), captions all start "#114:". Appended after "gb-mon-summary-
+    # parity" per this list's own append-only rule.
+    ("gb-daycare-yard", "#114 — the Day-Care YARD scene on Gen 1/2 (real boarder "
+     "icons + gen-correct random visitors, same placement as Gen 3)", ("#114",)),
+    # BACKLOG #90 (docs/kb/pokemon/, this slice): the Gen-1/2 Fly-destination screen
+    # (source/pdna_gbfly.c) over gb_fly.h's bitfield core -- a plain list screen, not
+    # the gbscreen shell U2a-U5 above ride on. Shots come from tools/dgb_shots.py's
+    # run_b90_fly(), captions all start "BACKLOG #90:". Appended after
+    # "gb-mon-summary-parity" per this list's own append-only rule.
+    ("gb-fly", "BACKLOG #90 — the Gen-1/2 Fly-destination screen (list, toggle, "
+     "save prompt)", ("BACKLOG #90",)),
+    # BACKLOG #94 (F1 step 3, this slice): the Gen-2 box-rename banner over
+    # gb_boxnames.h. Shots come from tools/dgb_shots.py's run_b90_boxname(),
+    # captions all start "BACKLOG #94:". Appended after "gb-fly" per this list's
+    # own append-only rule.
+    ("gb-boxname", "BACKLOG #94 — the Gen-2 box-rename banner (osk_input, "
+     "gbbn_rename)", ("BACKLOG #94",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

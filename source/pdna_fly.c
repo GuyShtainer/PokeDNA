@@ -81,8 +81,10 @@ static void fly_row_paint(const G3FlyDest* t, uint8_t* sb1, PkGame game, int idx
   bool set = g3fly_get(sb1, game, idx);
   const G3FlyDest* d = &t[idx];
   char l[48];
-  /* 15 + 4 + 3 = 22 columns at x=4 -> 180 px, inside the 240 px screen. */
-  siprintf(l, "%-16.15s%-4s%s", d->name, set ? "ON" : "off", kind_tag(d->kind));
+  /* 17 + 4 + 3 = 24 columns at x=4 -> 192 px, inside the 240 px screen. .15 truncated
+   * "Ever Grande City" (16) and "Sevii map 4-5-6-7" (17) -- b90 review D2, same as the
+   * Game Boy twin in pdna_gbfly.c. */
+  siprintf(l, "%-18.17s%-4s%s", d->name, set ? "ON" : "off", kind_tag(d->kind));
   ui_fill_rect(4, y, 232, UI_ROW_H, UI_BG);
   ui_text_sel(4, y, 232, sel, set ? UI_OK : UI_DIM, l);
 }
