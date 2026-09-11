@@ -632,6 +632,8 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbfly.h"       /* BACKLOG #90: Fly destinations, both generations */
 #include "pdna_gbclock.h"     /* BACKLOG #86/#108: Gen-2's own Clock fix screen */
 #include "gb_boxnames.h"      /* BACKLOG #94: gbbn_rename/gbbn_supported -- the box banner's rename */
+#include "pdna_gbdaycare.h"   /* BACKLOG #85: the Gen-1/2 Day-Care screen */
+#include "pdna_gbmap.h"       /* M1, BACKLOG #91: Gen 1's read-only current-map view */
 #include "pdna_pick.h"        /* BACKLOG #92: pick_item / pick_item_set_gen1_2_max */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
@@ -2761,6 +2763,52 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * take, so a stray Gen-1 press falls through to app_nav_refuse()'s honest
      * message instead of silently opening a Gen-2-shaped screen. */
     if (g_ed) pdna_gbclock(&g_ed->s, true);
+    else      (void)gb_info_page(m);
+  } else if (nv == NV_DAYCARE) {
+    /* BACKLOG #85: same "needs a live GbSession to write through" gate as
+     * NV_TRAINER/NV_BAG/NV_BAG above -- gbd_read()/gbd_deposit()/gbd_withdraw()
+     * (gb_daycare.h) all take a GbSession*, which only the resident-image path
+     * (g_ed) has. The deposit/withdraw source+destination is the box the grid
+     * was ACTUALLY showing -- pdna_gbdaycare.h's own header documents this
+     * (never the party; see that file for why).
+     *
+     * BACKLOG #85 review fix: a bare `m->current_box` here is the SAME
+     * "not updated yet this visit" bug gb_create_hook() above already found and
+     * fixed (its own header note: "CREATE from box 13 (17/20, real room) still
+     * refused BOX FULL, because it was silently targeting box 0 (20/20)").
+     * gbsrc_note_box() stores the box the grid switched to into `m->ui_box`,
+     * NOT `m->current_box` (that field is only ever the save's own "live copy"
+     * box, read once at mount) -- so this call site needs the EXACT SAME
+     * ui_box-first fallback chain gb_create_hook() uses, not a direct read of
+     * current_box. Caught by hand navigating the box grid to a box with a free
+     * slot before entering the Day Care in an emulator screenshot: the
+     * deposit/withdraw picker kept showing box 0's own mons regardless of
+     * which box the grid had actually switched to.
+     *
+     * app_can_edit() here, NOT a bare `true` (unlike this branch's three
+     * siblings above): pdna_gbdaycare's own `can_edit` is the ONLY gate its
+     * deposit/withdraw/edit-commit paths check before writing (it has no
+     * internal app_can_edit() call of its own, mirroring pdna_gbbag.c/
+     * pdna_gbpack.c/pdna_gbtrainer.c, which also trust their caller) -- since
+     * this is a NEW call site, passing the real cart state rather than
+     * copying the sibling literal is the hard-rule-4-safe choice. */
+    if (g_ed) {
+      int box = (m->ui_box >= 0 && m->ui_box <= m->party_box) ? m->ui_box
+              : (m->current_box >= 0 && m->current_box <= m->party_box) ? m->current_box
+              : 0;
+      if (gb_box_is_party(g_ed->s.gen, box)) box = 0;   /* the party is never a Day-Care source or landing (re-verify N1) */
+      pdna_gbdaycare(&g_ed->s, box, app_can_edit());
+    } else {
+      (void)gb_info_page(m);
+    }
+  } else if (nv == NV_MAP && kind == SE_KIND_GEN1) {
+    /* M1 (BACKLOG #91): read-only current-map view, same "needs a live
+     * GbSession to read the ROM's own tile bank through" gate every other
+     * real-art Gen-1/2 screen on this menu uses (Trainer/Bag/Pack above) --
+     * g_ed->s is the same resident session those already read/write
+     * through gb12_arena_tail(). The plain FIL-streaming mount (no g_ed)
+     * falls back to the read-only info page, same as Trainer/Bag/Pack. */
+    if (g_ed) pdna_gbmap_gen1(&g_ed->s);
     else      (void)gb_info_page(m);
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */

@@ -36,8 +36,9 @@ void em_set_contest(EditMon* e, int i, uint8_t v);          /* condition i=0..5:
 
 /* Contest RIBBON rank (BACKLOG #60) — the Misc substruct's ribbons word, bytes
  * +0x08..+0x0B of sub[3]. category = GC_COOL..GC_TOUGH (gen3_contest.h); rank is
- * clamped 0..4 (GC_RANK_NONE..MASTER) by gen3_contest.c's gc_ribbon_set, which owns
- * the bit layout. Cosmetic (no stat recompute), same as em_set_contest. */
+ * clamped 0..4 (GC_RANK_NONE..MASTER) by gen3_contest.h's gc_ribbon_set (a static
+ * inline there, not gen3_contest.c — see its `if (rank > GC_RANK_MASTER)` line),
+ * which owns the bit layout. Cosmetic (no stat recompute), same as em_set_contest. */
 void     em_set_ribbon_rank(EditMon* e, int category, uint8_t rank);
 uint8_t  em_get_ribbon_rank(const EditMon* e, int category);
 /* Named toggle ribbons (Champion/Winning/.../World) — same word, gen3_contest.h's

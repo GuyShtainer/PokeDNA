@@ -319,7 +319,7 @@ rom_gbbase_gen1 argsites=1 -> fused_gb_slice_read gb_read
 g1_bs_verify argsites=1 -> gb_art_read fused_gb_slice_read gb_read
 g2_bd_verify argsites=1 -> gb_art_read fused_gb_slice_read gb_read
 g2_pp_verify argsites=1 -> gb_art_read fused_gb_slice_read gb_read
-scan_one.constprop.0 argsites=1 -> gb_art_read fused_gb_slice_read icon_ptrs_cb
+scan_one.constprop.0@rom_gbicon argsites=1 -> gb_art_read fused_gb_slice_read icon_ptrs_cb
 # widened (BACKLOG #84b seventh pass) to include icon_ptrs_cb -- can't cheaply tell
 # whether THIS nonfield site or the RomGbIcon.read@0 field site (declared above) is
 # the real `cb(...)` dispatch; unioned into both for safety, same as the RomGbIcon.
@@ -574,7 +574,7 @@ load_g1_keyitems_bits argsites=1 -> gbscr_sd_read fused_gb_slice_read gb_art_rea
 # same way while filling it in.
 
 RomGbIcon.read @0 in parse_header@rom_gbicon,rom_gbicon_kind,rom_gbicon_open_loc,rom_gbicon_tiles -> gb_art_read fused_gb_slice_read gb_read
-RomGbIcon.read @0 in locate@rom_gbicon,scan_one.constprop.0 -> gb_art_read fused_gb_slice_read gb_read icon_ptrs_cb
+RomGbIcon.read @0 in locate@rom_gbicon,scan_one.constprop.0@rom_gbicon -> gb_art_read fused_gb_slice_read gb_read icon_ptrs_cb
 # locate@rom_gbicon/scan_one.constprop.0 widened to include icon_ptrs_cb (rom_gbicon.c:
 # 187, `scan_one(gi, icon_ptrs_cb, ...)`, previously `addrtaken-ok` below) -- rom_
 # gbicon.c's scan_one() takes the callback as a PARAMETER (not a struct field) but its
@@ -595,6 +595,39 @@ RomGbSprite.read @0 in locate@rom_gbsprite -> gb_art_read fused_gb_slice_read gb
 # can't-cheaply-split-the-merge reasoning as rom_gbui_open/RomGbIcon.read above.
 # source/rom_gbsprite.h:173-174: `GbReadFn read;` is RomGbSprite's first member. Every
 # caller above takes `RomGbSprite*`/`const RomGbSprite*` (grepped rom_gbsprite.c).
+
+# BACKLOG #91 M1: source/rom_gbmap.h's `GbReadFn read;` is RomGbMap1's first member
+# (rom_gbmap.h: "GbReadFn read;" at offset 0). Every caller below takes a
+# `const RomGbMap1*`/`RomGbMap1*` and dereferences it through `rdg()` (rom_gbmap.c),
+# which the compiler inlines into each -- same "no separate accessor symbol in this
+# ELF" shape rom_gbui.c's own `rd()` already has (RomGbUi.read@0 above).
+# gbmap_load_viewport_blocks (source/pdna_gbmap.c) calls `st->g.read(...)` directly on
+# its own GbMapState.g field (a RomGbMap1, embedded at GbMapState offset 0 -- same
+# struct, same field offset 0). Implementations, from every rgm1_open() call site
+# (grepped pdna_gbmap.c): gbmap_sd_read (SD/artless build) and fused_gb_slice_read
+# (delta build, #ifdef PDNA_DELTA).
+RomGbMap1.read @0 in rgm1_header,rgm1_tileset,rgm1_block,rgm1_tile2bpp,gbmap_load_viewport_blocks -> gbmap_sd_read fused_gb_slice_read
+# rgm1_open's OWN scan (rom_gbmap.c's file-local `rd()`/`scan_one()`, both inlined into
+# rgm1_open -- no separate symbol) dispatches through a LOCAL `Scan.read` struct built
+# on rgm1_open's own stack frame, not a heap/argument struct field the walker can key an
+# offset on this deep into the inlined chain -- same "falls to register dispatch" shape
+# noted for rom_gbui.c's Scan.read@0 entry above, but rgm1_open's OWN 3 call sites (the
+# MapHeaderBanks/MapHeaderPointers/Tilesets scans, one each) show up unqualified rather
+# than under a Scan.read@0 class. Site count verified against this build's disassembly
+# (4: the MapHeaderBanks/MapHeaderPointers/Tilesets scans, one `rd()` each, PLUS the
+# Yellow-shaped indirect branch's own follow-up `rd()` into GetMapHeaderPointer's
+# function body -- all inlined into rgm1_open, no separate symbols).
+rgm1_open argsites=4 -> gbmap_sd_read fused_gb_slice_read
+# rom_gbmap.c's OWN file-local `scan_one()` (called 3 times inside rgm1_open, for the
+# MapHeaderBanks/MapHeaderPointers/Tilesets anchors -- 3+ call sites is why GCC keeps
+# it as its own symbol rather than inlining, same "stays separate" rule rom_gbui.c's
+# own anchor_pack/try_badgeleader_hit note documents above). Two indirect sites inside
+# it: `s->read(...)` (Scan.read@0, the SAME field-0 shape rom_gbui.c's own Scan struct
+# already has -- a different translation unit's struct of the same name/shape, offset
+# still 0) and `cb(w + i)` (the ScanCb callback PARAMETER, one call site -- rom_gbmap.c's
+# 3 ScanCb implementations: cb_banks/cb_hdr/cb_ts).
+Scan.read @0 in scan_one.constprop.0@rom_gbmap -> gbmap_sd_read fused_gb_slice_read
+scan_one.constprop.0@rom_gbmap argsites=1 -> cb_banks cb_hdr cb_ts
 
 Br.rd @0 in br_byte -> gb_art_read fused_gb_slice_read gb_read
 # gb_sprite_codec.c's own file-local `Br` bit-reader (line ~28): `GbReadFn rd;` is its
@@ -886,6 +919,20 @@ addrtaken-ok sbmp16_vline
 # declaration bmp16_drawg_b1cts/bmp16_erase already use, not a separate exemption.
 # dummy_drawg/dummy_erase/sbmp16_* stay -- dummy_*/sbmp16_* are not in that pool.
 
+# BACKLOG #105: bmp16_plot (the plain, non-"s" libtonc plotter above, NOT one of the
+# sbmp16_* dispatch members already exempted) flagged only after gen3_stars.c's museum
+# caption-id fix shifted mon_anim.c's s_fam[] species-family table to a new link
+# address. Confirmed a coincidental 4-byte data match, not a real pointer: (1) no file
+# under source/ names bmp16_plot at all (grep -rn across the tree comes up empty --
+# nothing in this codebase can take its address); (2) the matching word's bit 0 is
+# clear, but a genuine Thumb-callable pointer to this function is stored with the
+# interworking bit set, which this word is not; (3) objdump on the built ELF shows the
+# match sits at s_fam+0x64, inside the array's own species-id bytes (00 00 07 08),
+# which is exactly the kind of content this table has been holding all along -- the
+# bytes did not change, only the address they landed at did. A future edit anywhere in
+# the link can just as easily move this table off the collision again.
+addrtaken-ok bmp16_plot
+
 # D1 (BACKLOG #84b fifth pass) address-taken sweep triage, batch 3: genuine, verified,
 # pre-existing single-registration callback hooks whose CALLING side is not yet
 # threaded through this file's declaration grammar (each one's setter stores the
@@ -1018,6 +1065,34 @@ addrtaken-ok g2w_set_otname
 # link-order-dependent, i.e. a data-word coincidence (#106 G2 class). Zero frame; nothing to
 # bound. Retire with #106.
 addrtaken-ok tte_set_color
+# tonc_bios.h's CpuFastFill (frame 4 B, an 8-byte SVC wrapper: push r0; svc 12; bx lr) is named
+# nowhere in source/ lib/ tools/ (grep empty) -- it links only as libtonc object-file baggage. The
+# b105 edit shifted the NORMAL image's link layout so mon_front_blob (source/mon_front_data.s, the
+# embedded front-sprite pixel bytes) holds a coincidental word 0x080701a9 at blob+0x19E04
+# (0x0820a76c); the neighbouring words are not addresses at all (pinned by the b105 re-verify).
+# #106 G2 class (the sweep does not distinguish data words from pointers); retire with #106.
+addrtaken-ok CpuFastFill
+
+# lib/everdrivegbax5/everdrive.c's ed_reg_wr (frame 0 B, a register-write leaf): 28 references in
+# lib/ and source/, every one a direct call -- its address is stored nowhere. After the b105 merge
+# the ARTLESS image links it at 0x08070300, and mon_anim.c's s_fam[] species-family table holds
+# that exact word at s_fam+0xdc (.rodata 0x0808d85c; pinned by objdump on main 128f85b) -- the same
+# table that produced the bmp16_plot coincidence. #106 G2 class (the sweep masks bit 0 and does not
+# distinguish data words from pointers); retire with #106.
+addrtaken-ok ed_reg_wr
+# libgba/tonc's MultiBoot (frame 0 B, the BIOS SVC wrapper) is named nowhere in source/ or lib/'s
+# .c files (0 references) -- it links only as library baggage. On the b111 lane's NORMAL image it
+# lands at 0x08070300, and mon_anim.c's s_fam[] holds that exact word at s_fam+0xdc (.rodata
+# 0x08091494; pinned by objdump) -- the SAME data word that matched ed_reg_wr on main's artless
+# image and bmp16_plot on b105: whatever leaf the linker places at 0x08070300 trips it. #106 G2
+# class (the sweep masks bit 0 and does not distinguish data words from pointers); retire with #106.
+addrtaken-ok MultiBoot
+
+# libtonc's key_wait_till_hit (frame 16 B, a key-polling helper) has no non-call reference in source/ or lib/
+# (grepped). On main's NORMAL image after the b85 merge it links at 0x08070500, and the word
+# 0x08070500 sits inside s_egg_cnt (+0x70, .rodata 0x0808d374; pinned by objdump) -- data, not a
+# pointer. #106 G2 class (the sweep does not distinguish data words from pointers); retire with #106.
+addrtaken-ok key_wait_till_hit
 
 # lib/everdrivegbax5/everdrive.c's ed_rtc_off (frame 0 B): one prototype, one definition,
 # ZERO call sites anywhere in source/ or lib/ (grepped on the b90 merge pass) -- never even

@@ -782,6 +782,29 @@ static bool gbscr_tile_pixels(const GbScreen* gs, RomGbUi* local, int idx, uint1
       }
       for (int i = 0; i < 64; i++) out[i] = GBSCR_BLANK_COLOR;
       return true;
+    case GBSCR_SRC_MAPTILES:
+      /* BACKLOG #91 M1: raw GB planar 2bpp, the SAME bit layout/shade ramp
+       * rom_gbui_tile()'s own bpp==2 case uses (rom_gbui.c: bit = 7-x, idx =
+       * lo-bit | hi-bit<<1, DMG_SHADE) -- duplicated inline rather than
+       * routed through rom_gbui_tile() because these tiles are not a
+       * rom_gbui-located block (no gu->read/ctx bound to them at all; they
+       * live in gs->cache.maptiles, a caller-owned buffer this shell never
+       * reads through gbscr_mem_read()). `v` out of range or no cache set
+       * falls through to flat BLANK, same posture as GBSCR_SRC_PIC above. */
+      if (gs->cache.maptiles && v < gs->cache.maptiles_n) {
+        const uint8_t* td = gs->cache.maptiles + (uint32_t)v * 16u;
+        for (int ry = 0; ry < 8; ry++) {
+          uint8_t lo = td[ry * 2], hi = td[ry * 2 + 1];
+          for (int cx = 0; cx < 8; cx++) {
+            int b = 7 - cx;
+            uint8_t idx = (uint8_t)(((lo >> b) & 1u) | (((hi >> b) & 1u) << 1));
+            out[ry * 8 + cx] = kGbscrPicShade[idx];
+          }
+        }
+        return true;
+      }
+      for (int i = 0; i < 64; i++) out[i] = GBSCR_BLANK_COLOR;
+      return true;
     case GBSCR_SRC_BLANK:
     default:
       for (int i = 0; i < 64; i++) out[i] = GBSCR_BLANK_COLOR;

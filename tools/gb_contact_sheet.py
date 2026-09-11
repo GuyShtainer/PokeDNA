@@ -180,6 +180,14 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # "gb-pack-gen2" per this list's own append-only rule.
     ("gb-clock-gen2", "BACKLOG #86/#108 — the Gen-2 Clock screen (ask / shift / "
      "clear, never an absolute time)", ("BACKLOG #86/#108",)),
+    # BACKLOG #85: the Gen-1/2 Day-Care screen (source/pdna_gbdaycare.c) over
+    # gb_daycare.h's core -- the Gen-1/2 twin of pdna_main.c's pdna_daycare().
+    # Shots come from tools/dgb_shots.py's run_b85_daycare(), captions all start
+    # "BACKLOG #85:". Appended after "gb-pack-gen2" per this list's own
+    # append-only rule.
+    ("gb-daycare-gen12", "BACKLOG #85 — the Day-Care screen over gb_daycare "
+     "(Gen 1: one boarder, level-up only; Gen 2: two boarders + compatibility "
+     "+ Egg)", ("BACKLOG #85",)),
     # BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4, append-only,
     # same rule as every row above): the KEEP AS IS / MAKE LEGAL choice
     # gb_paste_hook now offers on a Gen 3 -> Game Boy paste whose species is
@@ -191,6 +199,17 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # "gb-pack-gen2" per this list's own append-only rule.
     ("xfer-r1-make-legal", "BACKLOG #104 R1 — KEEP AS IS / MAKE LEGAL on a Gen 3 -> "
      "Game Boy paste (an underlevelled evolved species)", ("BACKLOG #104 R1",)),
+    # M1 (BACKLOG #91, docs/GB-MAP-DESIGN.md): Red/Yellow's own current-map view,
+    # read-only, on the shared shell -- the first slice of the Gen-1/2 Map screen
+    # (M2 all-maps browser and M3 teleport are later slices). Shots come from
+    # tools/dgb_shots.py's run_m1_map() (captions start "M1:") and, for the
+    # vertical-clamp coverage VIRIDIAN_POKECENTER's own 4-block height can't reach,
+    # run_m1_map_vclamp() (captions start "M1 vclamp:" -- a SEPARATE prefix, since
+    # feature_for_caption() matches the text before the first colon exactly, not a
+    # startswith). Appended after "gb-pack-gen2" per this list's own append-only
+    # rule.
+    ("gb-map-gen1", "M1 — Red's own current-map view on the shell, read-only "
+     "(Gen-1 saves)", ("M1", "M1 vclamp")),
     # BACKLOG #92 (append-only, same rule as every row above): a held ITEM row on
     # the Gen-2 mon-menu popup (app_mon_menu_readonly, pdna_main.c), Gen 1 omitted.
     # Shots come from tools/dgb_shots.py's run_gbmon(); captions all start "#92:".

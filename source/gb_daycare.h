@@ -106,7 +106,7 @@ GbsStatus gbd_deposit(GbSession* s, int slot, const GbEditMon* mon);
  * scope note uses: "the core never places" -- gbd_withdraw() never touches a box or
  * party, only the caller decides where `out` lands, e.g. via gbs_insert()/gbs_move()).
  *   GBS_ERR_SLOT  `slot` is not occupied, or out of range for this generation.
- * Clears the occupancy bit and, slot 0 only, the compatibility bit too -- exactly what
+ * Clears the occupancy bit and the compatibility bit (on EITHER slot: both games' withdrawal routines reset DAYCAREMAN_MONS_COMPATIBLE_F for the Lady too) -- exactly what
  * engine/events/daycare.asm's .AskWithdrawMon does (`res DAYCAREMAN_HAS_MON_F` +
  * `res DAYCAREMAN_MONS_COMPATIBLE_F`). The record bytes themselves are left exactly as
  * found (retail leaves residue too, per the header's own Gold.sav witness) -- a caller

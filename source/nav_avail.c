@@ -53,8 +53,11 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
                      { NAV_COMING_SOON, "The party is the last box." } },
   [NV_BANK]      = { { NAV_COMING_SOON, "The Bank is coming soon." },
                      { NAV_COMING_SOON, "The Bank is coming soon." } },
-  [NV_DAYCARE]   = { { NAV_COMING_SOON, "The Daycare is coming soon." },
-                     { NAV_COMING_SOON, "The Daycare is coming soon." } },
+  /* BACKLOG #85: gb_daycare.c (the pure core) is merged on main; this UI slice wires
+   * it up on BOTH kinds -- Gen 1 gets the one-slot, level-up-only version (no
+   * breeding, no compatibility line -- the format's own limit, not a missing
+   * feature), Gen 2 gets both slots + compatibility + the egg. */
+  [NV_DAYCARE]   = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   [NV_TRAINER]   = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   /* BACKLOG #86/#108: Gen 2's own Clock fix screen (pdna_gbclock.c) is wired --
    * gb_nav_from_start's own NV_CLOCK/SE_KIND_GEN2 branch. Gen 1 has no clock at all
@@ -88,9 +91,12 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
   [NV_FLY]       = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   [NV_CONTEST]   = { { NAV_NOT_IN_GAME, "Gen 1 games have no Contests." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Contests." } },
-  /* Review D2: GEN12-PARITY-DESIGN.md puts a Game Boy map renderer OUT of scope, so
-   * "coming soon" would promise a date nobody plans; name the blocker instead. */
-  [NV_MAP]       = { { NAV_COMING_SOON, "Needs a Game Boy map viewer." },
+  /* BACKLOG #91 M1: Gen 1's read-only current-map view is wired
+   * (pdna_gbmap_gen1(), gb_nav_from_start's NV_MAP branch). Gen 2's own map
+   * (a later M-slice, different SRAM offsets/table shapes) stays
+   * COMING_SOON -- the design doc's own phased plan never promised both
+   * generations land together. */
+  [NV_MAP]       = { { NAV_OK, "OK" },
                      { NAV_COMING_SOON, "Needs a Game Boy map viewer." } },
   [NV_GB]        = { { NAV_COMING_SOON, "Comes with the Bank feature." },
                      { NAV_COMING_SOON, "Comes with the Bank feature." } },
