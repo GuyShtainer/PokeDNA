@@ -26,8 +26,11 @@
  *   - gender (Crystal's sCrystalData bit 0) — the design settles this explicitly
  *     ("P1's trainer-card gender row is display-only for Crystal (0x3E3D) — the
  *     *mon* gender work is g1's", §4.1). It also lives OUTSIDE every checksummed
- *     span (§1.9), so writing it would need a plain-byte path this slice does not
- *     build; refused by omission rather than half-built.
+ *     span (§1.9). BACKLOG #96 Kris: still VIEW-ONLY through this UI-facing
+ *     gbt_write() (no live-editor row writes it), but WRITABLE by
+ *     tests/host_gbsurgery_tool.c's `--op gender 0|1` — a raw gbs_write_field()
+ *     poke of the same plain byte this comment used to say "would need a path
+ *     this slice does not build", now built as a gate-only tool, not a UI field.
  *   - Pokedex owned/seen counts — popcounts of the dex bitfields, explicitly
  *     read-only per this slice's brief.
  */
