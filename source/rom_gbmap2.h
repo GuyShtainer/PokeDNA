@@ -97,4 +97,64 @@ bool rgm2_map(const RomGbMap2* g, uint8_t group, uint8_t number, GbMap2Map* out)
 /* Resolve tileset_id's tileset row. false on any bounds failure. */
 bool rgm2_tileset(const RomGbMap2* g, uint8_t tileset_id, GbMap2Tileset* out);
 
+/*
+ * ---------------------------------------------------------------- colour --
+ * M1-G2 colour (BACKLOG #91, design doc §7): DAY palettes + roofs, located
+ * by shape same as the map tables above. Two anchors:
+ *   PalMap consumer   gives the PalMap's own hosting BANK (per-game,
+ *                      Gold $02 / Crystal $13, stated nowhere in ROM data --
+ *                      must be discovered, never hard-coded). Expect
+ *                      EXACTLY 2 hits (two genuine call sites), both
+ *                      resolving to the SAME bank -- the "exactly 1 hit"
+ *                      rule the map anchors use does NOT apply here.
+ *   env/palette idiom  a proximity-gated PAIR of idioms (neither alone is
+ *                      unique) recovers EnvironmentColorsPointers (LD HL)
+ *                      and TilesetBGPalette (LD DE) together. Exactly 1
+ *                      combined hit. RoofPals sits ~60-70 bytes further
+ *                      inside the SAME located routine -- no separate
+ *                      search, just the second occurrence of the same
+ *                      chained x8 idiom within the routine's own window.
+ *
+ * Fallback discipline: either anchor returning anything other than its
+ * expected hit count means "this ROM does not match my model" -- the
+ * caller's own job is to fall back to the fixed grey ramp for the WHOLE
+ * screen, never to guess an address (rgm2_colour_open() simply returns
+ * false, ok=0, every field zeroed, same fail-closed contract as rgm2_open).
+ */
+typedef struct {
+  uint32_t env_ptrs_off;    /* EnvironmentColorsPointers, file offset       */
+  uint32_t bg_pal_off;      /* TilesetBGPalette, file offset                */
+  uint32_t roof_pals_off;   /* RoofPals, file offset                        */
+  uint8_t  palmap_bank;     /* PalMap's own hosting bank (per-game)         */
+  int      ok;
+} RomGbMap2Colour;
+
+bool rgm2_colour_open(RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
+                       uint8_t* scratch, uint32_t scratch_len);
+
+/* PalMap's own nibble for a RAW tile id (one nibble per raw id, 2 ids/byte,
+ * low nibble for even ids -- design §7.2). `pal_off` is the tileset's own
+ * GbMap2Tileset.pal_off (a bare dw; dereferenced in `c`'s own palmap_bank).
+ * `c` must have c->ok. */
+bool rgm2_colour_nibble(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
+                         uint32_t pal_off, uint8_t raw_tile_id, uint8_t* out_nibble);
+
+/* Resolve `palette_index` (0-7, a PalMap nibble already masked with & 0x07)
+ * under `environment` (a Map record's own byte 0x02) into 4 RGB15 colours,
+ * DAY only (design §7.1/§7.5/§7.8) -- already GBA-native, no conversion
+ * (§7.3). Also returns the resolved bg_idx (the TilesetBGPalette row
+ * index) so the caller can test it against PAL_BG_ROOF (6) for the roof
+ * override. `c` must have c->ok. */
+bool rgm2_colour_palette(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
+                          uint8_t environment, uint8_t palette_index,
+                          uint16_t out4[4], uint8_t* out_bg_idx);
+
+/* Roof colours (design §7.4): only when environment is TOWN(1)/ROUTE(2);
+ * `group` is the map's own 1-based group id, indexed DIRECTLY (no
+ * decrement). Returns the single DAY roof colour (the routine's own
+ * "first 4 bytes = morn+day" pair, second colour) to apply to BOTH
+ * colours 1 and 2 of palette slot 6 (PAL_BG_ROOF). `c` must have c->ok. */
+bool rgm2_colour_roof(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
+                       uint8_t environment, uint8_t group, uint16_t* out_day);
+
 #endif /* ROM_GBMAP2_H */

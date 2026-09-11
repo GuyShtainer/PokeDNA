@@ -316,6 +316,19 @@ typedef struct {
    * unavailable src, for an out-of-range index or a NULL pointer). */
   const uint8_t* maptiles;
   uint16_t        maptiles_n;
+  /* M1-G2 (BACKLOG #91) colour, design doc §7.8: caller-owned, caller-filled,
+   * NULL until the Gen-2 MAP screen sets them (both NULL = the fixed 4-shade
+   * grey ramp, same as today -- a runtime safety net, not a design tier, see
+   * pdna_gbmap2.c's own anchor-miss fallback). `maptiles_pal` is up to 8
+   * palettes x 4 RGB15 colours (already GBA-native, no conversion, design
+   * §7.3); `maptiles_palidx` is ONE byte per screen cell (GBSCR_COLS*
+   * GBSCR_ROWS == 360 B), indexed the SAME way gbscr_tile_pixels()'s own
+   * `idx` parameter already is (cy*GBSCR_COLS+cx) -- selects which of the up
+   * to 8 palettes that cell's MAPTILES tile paints with. Touches ONLY the
+   * GBSCR_SRC_MAPTILES case in gbscr_tile_pixels(); every other GbScrSrc is
+   * unaffected (containment rule, design §7.8). */
+  const uint16_t* maptiles_pal;
+  const uint8_t*  maptiles_palidx;
 } GbscrCache;
 
 /* U2b item 1: pure (no tonc/FatFs) -- host-testable directly (tests/

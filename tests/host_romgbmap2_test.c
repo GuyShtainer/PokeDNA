@@ -319,6 +319,81 @@ static void test_bank_boundary_mutation(void) {
   free(m.buf);
 }
 
+/* Step 7 (BACKLOG #91) colour: both anchors hit their expected counts on
+ * both ROMs and recover the expected addresses; the PalMap bank comes out
+ * $02 on Gold and $13 on Crystal; palette $00 decodes identically in both
+ * ROMs; Olivine (group 1) roof day decodes to R7/G11/B15; a mutated anchor
+ * byte falls back cleanly (ok=0, every field zeroed), never a guessed
+ * address. */
+static void test_colour(const char* rom_file, const char* name,
+                         uint32_t want_env_ptrs, uint32_t want_bg_pal, uint8_t want_bank,
+                         uint32_t palmap_anchor_off) {
+  char path[512]; snprintf(path, sizeof path, "%s/%s", ROMS, rom_file);
+  Mem m = load_file(path);
+  if (!m.buf) { printf("  [%s] SKIP colour (corpus absent)\n", name); return; }
+  g_ran = 1;
+  static uint8_t scratch[4096];
+
+  RomGbMap2Colour c;
+  bool ok = rgm2_colour_open(&c, rd_mem, &m, m.len, scratch, sizeof scratch);
+  chk(name, "colour anchors open", ok);
+  if (ok) {
+    chk(name, "env_ptrs_off matches oracle", c.env_ptrs_off == want_env_ptrs);
+    chk(name, "bg_pal_off matches oracle", c.bg_pal_off == want_bg_pal);
+    chk(name, "palmap_bank matches oracle", c.palmap_bank == want_bank);
+
+    uint16_t out4[4]; uint8_t bg_idx;
+    /* Force bg_idx=0 indirectly is not possible without walking the real
+     * chain; instead cross-check TilesetBGPalette[0] directly (design §7.3's
+     * own oracle: R28/G31/B16, R21/G21/B21, R13/G13/B13, R7/G7/B7,
+     * byte-identical in both ROMs), bypassing rgm2_colour_palette()'s own
+     * environment indirection so this assertion is independent of it. */
+    uint8_t pal0[8];
+    chk(name, "TilesetBGPalette[0] reads", rd_mem(&m, c.bg_pal_off, pal0, 8));
+    uint16_t w0 = (uint16_t)(pal0[0] | (pal0[1] << 8));
+    uint16_t w1 = (uint16_t)(pal0[2] | (pal0[3] << 8));
+    uint16_t w2 = (uint16_t)(pal0[4] | (pal0[5] << 8));
+    uint16_t w3 = (uint16_t)(pal0[6] | (pal0[7] << 8));
+    chk(name, "palette $00 color0 R28 G31 B16", (w0 & 0x1F) == 28 && ((w0 >> 5) & 0x1F) == 31 && ((w0 >> 10) & 0x1F) == 16);
+    chk(name, "palette $00 color1 R21 G21 B21", (w1 & 0x1F) == 21 && ((w1 >> 5) & 0x1F) == 21 && ((w1 >> 10) & 0x1F) == 21);
+    chk(name, "palette $00 color2 R13 G13 B13", (w2 & 0x1F) == 13 && ((w2 >> 5) & 0x1F) == 13 && ((w2 >> 10) & 0x1F) == 13);
+    chk(name, "palette $00 color3 R7 G7 B7", (w3 & 0x1F) == 7 && ((w3 >> 5) & 0x1F) == 7 && ((w3 >> 10) & 0x1F) == 7);
+    (void)out4; (void)bg_idx;
+
+    uint16_t roof_day = 0;
+    bool rok = rgm2_colour_roof(&c, rd_mem, &m, m.len, /*TOWN*/1, /*group 1 Olivine*/1, &roof_day);
+    chk(name, "Olivine roof day resolves", rok);
+    if (rok)
+      chk(name, "Olivine roof day R7 G11 B15",
+          (roof_day & 0x1F) == 7 && ((roof_day >> 5) & 0x1F) == 11 && ((roof_day >> 10) & 0x1F) == 15);
+
+    chk(name, "roof refuses outside TOWN/ROUTE",
+        !rgm2_colour_roof(&c, rd_mem, &m, m.len, /*INDOOR*/3, 1, &roof_day));
+  }
+
+  /* Mutate the PalMap-consumer anchor's own first concrete byte (its own
+   * `21` opcode, at the oracle offset the caller passes -- independently
+   * re-derived, same posture as test_negative_controls' hardcoded a1_off/
+   * a3_off) -- must fall back cleanly, every field zeroed, never a guessed
+   * address. This anchor's "exactly 2 hits, same bank" rule means mutating
+   * ONE of the two copies drops the count to 1, which must ALSO refuse
+   * (not silently accept the surviving one). */
+  if (palmap_anchor_off < m.len) {
+    static uint8_t scratch2[4096];
+    uint8_t save = m.buf[palmap_anchor_off];
+    m.buf[palmap_anchor_off] ^= 0xFFu;
+    RomGbMap2Colour cm;
+    bool mok = rgm2_colour_open(&cm, rd_mem, &m, m.len, scratch2, sizeof scratch2);
+    chk(name, "mutated PalMap-consumer anchor (1 of 2) falls back cleanly", !mok);
+    chk(name, "mutated PalMap-consumer anchor zeros every field",
+        cm.env_ptrs_off == 0 && cm.bg_pal_off == 0 && cm.roof_pals_off == 0 &&
+        cm.palmap_bank == 0 && cm.ok == 0);
+    m.buf[palmap_anchor_off] = save;
+  }
+
+  free(m.buf);
+}
+
 int main(void) {
   test_one_rom("Gold.gbc", "Gold", 0x940ed, 0x156be, 26, 29, 368);
   test_one_rom("Crystal.gbc", "Crystal", 0x94000, 0x4d596, 26, 37, 388);
@@ -327,6 +402,8 @@ int main(void) {
   test_negative_controls("Crystal.gbc", "Crystal", 0x2bed, 0x2d27);
   test_offgame_refusal();
   test_bank_boundary_mutation();
+  test_colour("Gold.gbc", "Gold", 0x0b6ce, 0x0b75e, 0x02, 0x8010);
+  test_colour("Crystal.gbc", "Crystal", 0x0b279, 0x0b319, 0x13, 0x4c011);
 
   if (!g_ran) { printf("host_romgbmap2_test: SKIP (no corpus)\n"); return 0; }
   printf("host_romgbmap2_test: %d checks, %d failed\n", g_check, g_fail);

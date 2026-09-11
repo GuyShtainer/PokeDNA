@@ -93,7 +93,48 @@ typedef struct {
   GbMap2Tileset ts;
   int           vbx, vby;               /* viewport origin, in BLOCKS       */
   uint8_t       block_ids[VBW * VBH];   /* this viewport's own block ids    */
+  /* M1-G2 colour (BACKLOG #91, design §7.8) -- all NULL/0/false until
+   * gbmap2_colour_setup() succeeds; the fixed grey ramp is the fallback
+   * whenever it does not (anchor-miss or off-game, never a guess). Both
+   * live on the STACK, as GbScreen itself does (see the fresh sizeof
+   * measurements in this commit's own report). */
+  RomGbMap2Colour colour;
+  int             colour_ok;
+  uint16_t        colour_pal[8 * 4];                    /* up to 8 palettes x 4 RGB15 */
+  uint8_t         colour_palidx[GBSCR_COLS * GBSCR_ROWS]; /* one palette slot per cell  */
 } GbMap2State;
+
+/* Locate the 2 colour anchors and precompute up to 8 DAY palettes for
+ * `st->map.environment` (fixed for the whole visit -- design §7.5/§7.8
+ * pins DAY, no per-frame re-resolution). Applies the roof override
+ * (design §7.4) to whichever precomputed palette's own bg_idx is 6
+ * (PAL_BG_ROOF), iff the map's environment is TOWN/ROUTE. `scratch` is the
+ * SAME buffer rgm2_open()'s own anchor scan already used and is about to
+ * become the blockset cache -- colour locate runs strictly BEFORE that
+ * reuse, same sequential-reuse argument the blockset cache itself already
+ * documents. Returns false (colour_ok stays 0) on any anchor-miss -- never
+ * a partial/guessed palette. */
+static bool gbmap2_colour_setup(GbMap2State* st, uint8_t* scratch, uint32_t scratch_len) {
+  if (!rgm2_colour_open(&st->colour, st->g.read, st->g.ctx, st->g.size, scratch, scratch_len))
+    return false;
+  for (int p = 0; p < 8; p++) {
+    uint8_t bg_idx = 0;
+    if (!rgm2_colour_palette(&st->colour, st->g.read, st->g.ctx, st->g.size,
+                              st->map.environment, (uint8_t)p, st->colour_pal + p * 4, &bg_idx)) {
+      memset(&st->colour, 0, sizeof st->colour);
+      return false;
+    }
+    if (bg_idx == 6u && (st->map.environment == 1u || st->map.environment == 2u)) {
+      uint16_t roof_day = 0;
+      if (rgm2_colour_roof(&st->colour, st->g.read, st->g.ctx, st->g.size,
+                            st->map.environment, st->map.group, &roof_day)) {
+        st->colour_pal[p * 4 + 1] = roof_day;
+        st->colour_pal[p * 4 + 2] = roof_day;
+      }
+    }
+  }
+  return true;
+}
 
 /* Read the VBW*VBH block ids for the CURRENT viewport into st->block_ids.
  * Out-of-map cells get the map's OWN border block (design §9's "visible
@@ -123,11 +164,25 @@ static void gbmap2_paint(GbScreen* gs, GbMap2State* st, const uint8_t* meta_cach
     int by = sy / 4, ty = sy % 4;
     for (int sx = 0; sx < GBSCR_COLS; sx++) {
       int bx = sx / 4, tx = sx % 4;
+      int cell = sy * GBSCR_COLS + sx;
       uint8_t block_id = st->block_ids[by * VBW + bx];
       uint32_t block_off = (uint32_t)block_id * 16u;
       if (block_off + 16u > meta_len) { gbscr_cell(gs, sx, sy, GBSCR_SRC_BLANK, 0); continue; }
       uint8_t raw_id = meta_cache[block_off + (uint32_t)(ty * 4 + tx)];
       uint16_t blob_tile = gbmap2_blob_tile(raw_id);
+      /* M1-G2 colour (design §7.8): one PalMap read per painted cell to
+       * resolve which of the up to 8 precomputed palettes this cell uses
+       * (design §7.2: palette_index = palmap_nibble(RAW tile id) & 7 --
+       * the raw id, NOT the §6-remapped blob index, since bit 3 of the
+       * nibble is the same VRAM-bank selector the remap already encodes).
+       * Only runs when colour located; otherwise the shell's own grey-ramp
+       * fallback is unaffected. */
+      if (st->colour_ok) {
+        uint8_t nib = 0;
+        rgm2_colour_nibble(&st->colour, st->g.read, st->g.ctx, st->g.size,
+                            st->ts.pal_off, raw_id, &nib);
+        st->colour_palidx[cell] = (uint8_t)(nib & 0x07u);
+      }
       gbscr_cell(gs, sx, sy, GBSCR_SRC_MAPTILES, (uint8_t)(blob_tile & 0xFFu));
     }
   }
@@ -250,6 +305,15 @@ void pdna_gbmap_gen2(GbSession* s) {
    * reads (design §9). */
   uint32_t gfx_len = gb_lz_decode(st.g.read, st.g.ctx, st.ts.gfx_off,
                                    st.g.size - st.ts.gfx_off, gfx_cache, GBMAP2_GFX_CACHE_BYTES);
+
+  /* M1-G2 colour (BACKLOG #91, design §7.8): locate + precompute BEFORE the
+   * blockset cache overwrites `meta_cache` -- this is the SAME
+   * scratch-then-cache sequential reuse rgm2_open()'s own anchor scan
+   * already establishes, extended by one more sequential user. Anchor-miss
+   * (wrong ROM shape) leaves colour_ok false and the shell's own fixed
+   * grey ramp paints instead -- never a guessed address. */
+  st.colour_ok = gbmap2_colour_setup(&st, meta_cache, scratch_len) ? 1 : 0;
+
   /* Cache the WHOLE blockset (<=2048 B) too -- block -> 16 tile ids becomes
    * a memory index, not an SD read (design §4/§9). */
   bool meta_ok = st.ts.meta_len > 0 && st.ts.meta_len <= scratch_len &&
@@ -269,6 +333,10 @@ void pdna_gbmap_gen2(GbSession* s) {
 
   gs.cache.maptiles = gfx_cache;
   gs.cache.maptiles_n = (uint16_t)(gfx_len / 16u);
+  if (st.colour_ok) {
+    gs.cache.maptiles_pal = st.colour_pal;
+    gs.cache.maptiles_palidx = st.colour_palidx;
+  }
 
   int block_px = gbmap_block_of(px), block_py = gbmap_block_of(py);
   st.vbx = clampi(block_px - VBW / 2, 0, st.map.width  > VBW ? st.map.width  - VBW : 0);

@@ -708,7 +708,23 @@ RomGbMap2.read @0 in rgm2_map,rgm2_tileset,gbmap2_load_viewport_blocks -> gbmap2
 # 3 constprop clones) -- one shared `scan_one` symbol dispatches through its own
 # Scan.read@0 field AND the `cb(w + i)` ScanCb callback parameter (cb_a1/cb_a2/cb_a3).
 Scan.read @0 in scan_one -> gbmap2_sd_read fused_gb_slice_read
-scan_one argsites=1 -> cb_a1 cb_a2 cb_a3
+scan_one argsites=1 -> cb_a1 cb_a2 cb_a3 cb_palmap cb_env1 cb_env2
+
+# BACKLOG #91 M1-G2 colour (Step 7): rom_gbmap2.c's colour anchors/resolve
+# functions dispatch through their own GbReadFn `read` PARAMETER (not a
+# struct field -- rgm2_colour_palette()/rgm2_colour_nibble()/rgm2_colour_
+# roof() take `GbReadFn read` directly, and at -O2 the compiler fully
+# register-allocates rgm2_open()'s/rgm2_colour_open()'s own inlined rd()
+# calls too, past the point where the walker still sees a struct-field
+# load -- same posture rom_gbmap.c's own `rgm1_open argsites=4` line
+# already documents for Gen 1. Counts match the exact blind-spot addresses
+# reported at this landing (one line per DISTINCT call site inside each
+# caller, not a guess).
+rgm2_open argsites=8 -> gbmap2_sd_read fused_gb_slice_read
+rgm2_colour_open argsites=3 -> gbmap2_sd_read fused_gb_slice_read
+rgm2_colour_palette argsites=3 -> gbmap2_sd_read fused_gb_slice_read
+rgm2_colour_nibble argsites=1 -> gbmap2_sd_read fused_gb_slice_read
+rgm2_colour_roof argsites=1 -> gbmap2_sd_read fused_gb_slice_read
 
 Br.rd @0 in br_byte -> gb_art_read fused_gb_slice_read gb_read
 # gb_sprite_codec.c's own file-local `Br` bit-reader (line ~28): `GbReadFn rd;` is its

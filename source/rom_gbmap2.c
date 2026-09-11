@@ -355,3 +355,161 @@ bool rgm2_tileset(const RomGbMap2* g, uint8_t tileset_id, GbMap2Tileset* out) {
   out->pal_off = pal_a;
   return true;
 }
+
+/* ------------------------------------------------------------ colour ---- */
+
+/* PalMap consumer: 21 ?? ?? 86 6F FA ?? ?? CE 00 67 7E E6 0F -- expect
+ * EXACTLY 2 hits (two genuine call sites), both resolving to the same bank
+ * (design §7.7). */
+static int cb_palmap(const uint8_t* w) {
+  return w[0]==0x21 && w[3]==0x86 && w[4]==0x6F && w[5]==0xFA && w[8]==0xCE &&
+         w[9]==0x00 && w[10]==0x67 && w[11]==0x7E && w[12]==0xE6 && w[13]==0x0F;
+}
+#define CB_PALMAP_LOOK 14
+
+/* Environment/palette idiom 1 (NOT unique alone -- 59/90 hits): 21 ?? ?? 19
+ * 19 2A 66 6F. */
+static int cb_env1(const uint8_t* w) {
+  return w[0]==0x21 && w[3]==0x19 && w[4]==0x19 && w[5]==0x2A && w[6]==0x66 && w[7]==0x6F;
+}
+#define CB_ENV1_LOOK 8
+
+/* Idiom 2 (NOT unique alone -- 10/9 hits): 29 29 29 11 ?? ?? 19. */
+static int cb_env2(const uint8_t* w) {
+  return w[0]==0x29 && w[1]==0x29 && w[2]==0x29 && w[3]==0x11 && w[6]==0x19;
+}
+#define CB_ENV2_LOOK 7
+
+static bool fail_closed_colour(RomGbMap2Colour* c) {
+  memset(c, 0, sizeof *c);
+  return false;
+}
+
+bool rgm2_colour_open(RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
+                       uint8_t* scratch, uint32_t scratch_len) {
+  memset(c, 0, sizeof *c);
+  if (!read || size == 0 || !scratch || scratch_len < ROM_GBMAP2_SCRATCH_MIN) return false;
+
+  Scan s = { read, ctx, size, scratch, scratch_len };
+
+  /* PalMap consumer: exactly 2 hits, both the SAME bank. */
+  uint32_t hp[4];
+  uint32_t np = scan_one(&s, cb_palmap, CB_PALMAP_LOOK, hp, 4);
+  if (np != 2) return fail_closed_colour(c);
+  uint32_t bank0 = hp[0] / GB_BANK, bank1 = hp[1] / GB_BANK;
+  if (bank0 != bank1) return fail_closed_colour(c);
+
+  /* Env/palette idiom: proximity-gated pair, exactly 1 combined hit. */
+  uint32_t h1[128];
+  uint32_t n1 = scan_one(&s, cb_env1, CB_ENV1_LOOK, h1, 128);
+  uint32_t h2[32];
+  uint32_t n2 = scan_one(&s, cb_env2, CB_ENV2_LOOK, h2, 32);
+  if (n1 == 0 || n1 > 128 || n2 == 0 || n2 > 32) return fail_closed_colour(c);
+
+  uint32_t combined_a = 0, combined_b = 0, n_combined = 0;
+  for (uint32_t i = 0; i < n1; i++) {
+    for (uint32_t j = 0; j < n2; j++) {
+      if (h2[j] >= h1[i] && h2[j] - h1[i] <= 60u) {
+        combined_a = h1[i]; combined_b = h2[j]; n_combined++;
+      }
+    }
+  }
+  if (n_combined != 1) return fail_closed_colour(c);
+
+  uint8_t wa[CB_ENV1_LOOK];
+  if (!rd(&s, combined_a, wa, sizeof wa)) return fail_closed_colour(c);
+  uint8_t wb[CB_ENV2_LOOK];
+  if (!rd(&s, combined_b, wb, sizeof wb)) return fail_closed_colour(c);
+
+  uint16_t env_addr = rd16(wa + 1);
+  uint16_t bgp_addr = rd16(wb + 4);
+  uint32_t routine_bank = combined_a / GB_BANK;
+  uint32_t env_off = fileoff(routine_bank, env_addr);
+  uint32_t bgp_off = fileoff(routine_bank, bgp_addr);
+  if (env_off >= size || bgp_off >= size) return fail_closed_colour(c);
+
+  /* RoofPals: the SECOND occurrence of the cb_env2 idiom within the same
+   * routine's own window (~60-70 bytes further, design §7.7) -- no
+   * separate search. */
+  uint8_t win[128];
+  uint32_t wlen = 128;
+  if (combined_b + wlen > size) wlen = size - combined_b;
+  if (wlen < CB_ENV2_LOOK + 8u || !rd(&s, combined_b, win, wlen)) return fail_closed_colour(c);
+  uint32_t roof_off = 0; int have_roof = 0;
+  for (uint32_t off = 1; off + CB_ENV2_LOOK <= wlen; off++) {
+    if (cb_env2(win + off)) {
+      uint16_t roof_addr = rd16(win + off + 4);
+      roof_off = fileoff(routine_bank, roof_addr);
+      have_roof = roof_off < size;
+      break;
+    }
+  }
+  if (!have_roof) return fail_closed_colour(c);
+
+  c->env_ptrs_off = env_off;
+  c->bg_pal_off = bgp_off;
+  c->roof_pals_off = roof_off;
+  c->palmap_bank = (uint8_t)bank0;
+  c->ok = 1;
+  return true;
+}
+
+bool rgm2_colour_nibble(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
+                         uint32_t pal_off, uint8_t raw_tile_id, uint8_t* out_nibble) {
+  *out_nibble = 0;
+  if (!c->ok || !read) return false;
+  /* pal_off is the tileset row's own RAW GB address (GbMap2Tileset.pal_off,
+   * a bare dw with no bank byte -- design §7.2); dereferenced in c's own
+   * palmap_bank, the SAME "bank discovered from the anchor, never
+   * hard-coded" rule every other table in this file follows. */
+  uint16_t raw_addr = (uint16_t)(pal_off + (uint32_t)(raw_tile_id >> 1));
+  uint32_t byte_off = fileoff(c->palmap_bank, raw_addr);
+  if (byte_off >= size) return false;
+  uint8_t b;
+  if (!read(ctx, byte_off, &b, 1)) return false;
+  *out_nibble = (raw_tile_id & 1u) ? (uint8_t)((b >> 4) & 0x0Fu) : (uint8_t)(b & 0x0Fu);
+  return true;
+}
+
+bool rgm2_colour_palette(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
+                          uint8_t environment, uint8_t palette_index,
+                          uint16_t out4[4], uint8_t* out_bg_idx) {
+  if (out_bg_idx) *out_bg_idx = 0;
+  out4[0] = out4[1] = out4[2] = out4[3] = 0;
+  if (!c->ok || !read) return false;
+
+  uint32_t sub_ptr_off = c->env_ptrs_off + 2u * (uint32_t)(environment & 0x07u);
+  uint8_t p2[2];
+  if (sub_ptr_off >= size || size - sub_ptr_off < 2u || !read(ctx, sub_ptr_off, p2, 2)) return false;
+  uint16_t subtable = rd16(p2);
+  /* subtable is a raw address in the SAME bank family as env_ptrs_off's own
+   * routine -- resolved via the SAME fileoff() rule (home bank if <0x4000,
+   * else the routine's own bank, which env_ptrs_off/bg_pal_off already
+   * baked into their own file offsets, so we reuse their bank here too). */
+  uint32_t routine_bank = c->env_ptrs_off / GB_BANK;
+  uint32_t row_off = fileoff(routine_bank, (uint16_t)(subtable + 8u * 1u));  /* DAY = row 1 */
+  if (row_off >= size) return false;
+  uint8_t bg_idx;
+  uint32_t idx_off = row_off + (uint32_t)(palette_index & 0x07u);
+  if (idx_off >= size || !read(ctx, idx_off, &bg_idx, 1)) return false;
+
+  uint32_t pal_addr_off = c->bg_pal_off + 8u * (uint32_t)bg_idx;
+  uint8_t pal8[8];
+  if (pal_addr_off >= size || size - pal_addr_off < 8u || !read(ctx, pal_addr_off, pal8, 8)) return false;
+  for (int i = 0; i < 4; i++) out4[i] = rd16(pal8 + i * 2);
+  if (out_bg_idx) *out_bg_idx = bg_idx;
+  return true;
+}
+
+bool rgm2_colour_roof(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
+                       uint8_t environment, uint8_t group, uint16_t* out_day) {
+  *out_day = 0;
+  if (!c->ok || !read) return false;
+  if (!(environment == 1u || environment == 2u)) return false;   /* TOWN(1)/ROUTE(2) only */
+
+  uint32_t entry_off = c->roof_pals_off + 8u * (uint32_t)group;   /* 1-based, NO decrement */
+  uint8_t e8[8];
+  if (entry_off >= size || size - entry_off < 8u || !read(ctx, entry_off, e8, 8)) return false;
+  *out_day = rd16(e8 + 2);   /* first 4 bytes = morn(0-1)+day(2-3) */
+  return true;
+}
