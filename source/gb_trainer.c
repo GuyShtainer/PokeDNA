@@ -316,9 +316,15 @@ bool gbt_read(const GbSession* s, GbTrainer* out) {
   get_dex_count(s, g, GBF_DEX_OWNED, &out->dex_owned);
   get_dex_count(s, g, GBF_DEX_SEEN,  &out->dex_seen);
 
-  /* BACKLOG #96 D10: STATUSFLAGS_POKEDEX_F is bit 0 of GBF_STATUS_FLAGS
-   * (constants/ram_constants.asm) -- Gen 2 only, ABSENT (and so false) on
-   * Gen 1, same posture as has_gender above. */
+  /* BACKLOG #96 D10 / #126b: STATUSFLAGS_POKEDEX_F is bit 0 of GBF_STATUS_FLAGS
+   * (constants/ram_constants.asm) -- Gen 2 only, ABSENT (and so left at its
+   * memset(0)/false default) on Gen 1, same posture as has_gender above.
+   * Gen 2 fails OPEN, not closed: default true (the field is present on
+   * every real Gen-2 save), and clear it ONLY on a SUCCESSFUL read whose
+   * bit 0 is 0 -- a failed get_u() on a field that IS present (a transient
+   * read glitch, not "this game lacks it") must never silently hide a real
+   * save's #DEX row the way the old unconditional-false default did. */
+  if (gen == GB_GEN2) out->has_pokedex = true;
   if (gbt_field_present(g, GBF_STATUS_FLAGS) && get_u(s, g, GBF_STATUS_FLAGS, &v))
     out->has_pokedex = (v & 1u) != 0;
 
