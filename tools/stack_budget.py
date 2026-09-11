@@ -794,9 +794,9 @@ def load_extra_edges(path):
 
 _STRUCT_FIELD_RE = re.compile(r'\(\*(\w+)\)\(')
 _KNOWN_PTR_TYPEDEFS = {"AppCommitFn", "GbReadFn", "Gb12ReadFn", "G2ReadFn", "Gen1ReadFn",
-                        "ArtReadFn", "G2WriteFn"}
+                        "ArtReadFn", "G2WriteFn", "RomReadFn", "ArtIconsProgressFn"}
 _KNOWN_VALUE_TYPES = {"bool": 1, "int": 4, "int32_t": 4, "uint32_t": 4, "int16_t": 2,
-                       "uint16_t": 2, "int8_t": 1, "uint8_t": 1}
+                       "uint16_t": 2, "int8_t": 1, "uint8_t": 1, "char": 1}
 
 
 def _strip_c_comments(text):
@@ -805,64 +805,365 @@ def _strip_c_comments(text):
     return text
 
 
-def _classify_field(stmt):
-    """(name, size, align) for one struct-member declaration, or raise ValueError if
-    the type isn't one this walker knows how to size -- an unrecognized type must
-    FAIL the offset computation, never guess a size (stop-licence)."""
+# === G4 (BACKLOG #106): parse a struct by BRACE DEPTH, not a lazy forward regex =========
+#
+# The old struct_field_offsets() searched for `typedef struct { ... } NAME;` with a
+# non-greedy `.*?` body -- which matches from the FIRST `typedef struct {` anywhere
+# earlier in the file to the FIRST `} NAME;` after it, spanning every unrelated
+# anonymous struct in between whenever more than one precedes the target (confirmed
+# live: RomGbSprite/Gb12Mount/G2Writer/RomCtx/ArtIconsGen all misparsed this way,
+# hence the six `STRUCT_HEADERS[...] = None` hand-verified escapes this fix removes).
+# The replacement locates the struct/enum by BRACE-DEPTH matching instead: a tagged
+# form (`struct NAME {`) is found directly; an anonymous typedef form is found by its
+# ENDING (`} NAME;`, unique to that one struct) and walked BACKWARD to its true
+# opening brace -- immune to however many other structs sit in between either way.
+
+def _matching_close_brace(text, open_pos):
+    """Index of the `}` that closes the `{` at `text[open_pos]`, or None if the
+    braces from there on are unbalanced."""
+    depth = 0
+    for i in range(open_pos, len(text)):
+        c = text[i]
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _struct_or_enum_body(text, name):
+    """(kind, body_text) for `name`'s struct/enum definition in `text` -- 'struct'
+    or 'enum', and the text strictly between its braces. Tries a TAGGED opening
+    (`struct NAME {` / `enum NAME {`) first; falls back to an ANONYMOUS typedef's
+    ENDING (`} NAME;`) walked backward via brace-depth counting to its real
+    opening brace, checking that a bare `typedef struct`/`typedef enum` (nothing
+    else) immediately precedes that brace so an unrelated `}` earlier in the file
+    can never be mistaken for this struct's own open. Returns None if `name` is
+    defined nowhere in `text` this way (an external type, or a shape this walker
+    doesn't recognize -- e.g. a plain untagged, non-typedef'd struct)."""
+    esc = re.escape(name)
+    m = re.search(r'\b(struct|enum)\s+' + esc + r'\s*\{', text)
+    if m:
+        open_pos = m.end() - 1
+        close_pos = _matching_close_brace(text, open_pos)
+        if close_pos is not None:
+            return m.group(1), text[open_pos + 1:close_pos]
+    for end_m in re.finditer(r'\}\s*' + esc + r'\s*;', text):
+        close_pos = end_m.start()
+        depth = 1
+        open_pos = None
+        for i in range(close_pos - 1, -1, -1):
+            c = text[i]
+            if c == '}':
+                depth += 1
+            elif c == '{':
+                depth -= 1
+                if depth == 0:
+                    open_pos = i
+                    break
+        if open_pos is None:
+            continue
+        prefix_m = re.search(r'typedef\s+(struct|enum)\s*\Z', text[:open_pos].rstrip())
+        if prefix_m:
+            return prefix_m.group(1), text[open_pos + 1:close_pos]
+    return None
+
+
+_DEFINE_INT_RE = re.compile(r'^\s*#\s*define\s+(\w+)\s+(0[xX][0-9a-fA-F]+|\d+)\s*[uUlL]*\s*$',
+                             re.M)
+
+
+def _parse_int_macros(text):
+    """{macro_name: int} for every simple `#define NAME 123` / `#define NAME
+    0x20u` in `text` -- resolves an array member's element count ONLY when it is
+    a plain integer macro defined in the SAME header (ROM_MAX_GROUPS,
+    GB12_REPORT_MAX, ...). A macro defined elsewhere, or an arithmetic expression
+    (`G2_NUM_BOXES * 9`), is intentionally out of scope -- see _classify_member's
+    external-type fallback, which the same 4-byte documented approximation covers."""
+    out = {}
+    for m in _DEFINE_INT_RE.finditer(text):
+        try:
+            out[m.group(1)] = int(m.group(2), 0)
+        except ValueError:
+            continue
+    return out
+
+
+def _split_top_level_commas(s):
+    """Split `s` on commas that are not nested inside (), [], or {} -- so a
+    multi-declarator member (`uint32_t a, b, c;`) splits into per-name pieces
+    without also splitting an (unused-in-practice-here, but not assumed absent)
+    array size expression that itself contains a comma."""
+    depth = 0
+    parts = []
+    cur = []
+    for ch in s:
+        if ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth -= 1
+        if ch == ',' and depth == 0:
+            parts.append(''.join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append(''.join(cur))
+    return parts
+
+
+_ARRAY_SUFFIX_RE = re.compile(r'^(\w+)\s*\[\s*([^\]]*?)\s*\]$')
+
+# D1 (BACKLOG #106 G4 fix pass): a struct-member declarator, with or without an array
+# suffix -- anything a member name can legally be. _classify_member() raises ValueError
+# for a declarator that doesn't match this instead of silently mis-splitting it (the
+# live bug: `uint8_t g2names[G2_NUM_BOXES * 9];` rsplit(None, 1) on the LAST space in
+# the whole normalized statement landed INSIDE the array-size expression and produced a
+# member literally named "9]" -- see the array-suffix carve-out in _classify_member).
+_DECLARATOR_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z_0-9]*(\[[^\]]*\])?$')
+
+# D1: the leading "type ... name[expr]" split, done BEFORE any whitespace-based
+# type/name split runs -- so an array-size expression containing internal spaces
+# (`[G2_NUM_BOXES * 9]`) never lands inside the split. Non-greedy on the prefix so a
+# trailing array suffix (if any) is isolated first; declarators with no array suffix
+# don't match and fall through to the plain rsplit(None, 1) unaffected.
+_FIRST_DECL_ARRAY_RE = re.compile(r'^(.*?)\s*\[\s*([^\]]*)\s*\]\s*$')
+
+
+def _resolve_int_literal_or_macro(expr, macros):
+    """int for `expr` if it is a plain literal or a macro this header defines,
+    else None (an arithmetic expression, or a macro from elsewhere -- both
+    intentionally out of scope, see _parse_int_macros())."""
+    expr = expr.strip()
+    if not expr:
+        return None
+    try:
+        return int(expr, 0)
+    except ValueError:
+        return macros.get(expr)
+
+
+def _sized_local_type(text, type_name, macros, size_cache):
+    """(size, align, exact) for `type_name` if it is ALSO a struct/enum this SAME
+    header defines (recurses into _layout_members() for a real, computed size --
+    not a guess), memoized in `size_cache` for the duration of one top-level
+    struct_field_offsets() call (a member type can recur, e.g. an array of
+    records). `exact` is False when the size is only a best-effort guess (an
+    enum whose enumerator values this walker couldn't resolve, or a nested
+    struct that itself bottomed out on an inexact member) -- see
+    _classify_member()'s break_here handling of the exact flag. Returns None if
+    `type_name` is not locally defined at all (an external type from another
+    header/TU) -- the caller's documented 4-byte fallback applies then, marked
+    NOT exact."""
+    if type_name in size_cache:
+        return size_cache[type_name]
+    found = _struct_or_enum_body(text, type_name)
+    if found is None:
+        return None
+    kind, body = found
+    if kind == 'enum':
+        size_cache[type_name] = _enum_layout(body, macros)
+    else:
+        _offsets, total, align, all_exact = _layout_members(text, body, macros, size_cache)
+        size_cache[type_name] = (total, align, all_exact)
+    return size_cache[type_name]
+
+
+_ENUM_ITEM_RE = re.compile(r'^\s*([A-Za-z_]\w*)\s*(?:=\s*(.+))?$')
+
+
+def _enum_layout(body, macros):
+    """(size, align, exact) for a LOCAL enum's body text, sized the way this
+    project's actual toolchain sizes it -- NOT "int-sized unless -fshort-enums"
+    (that claim was backwards and cost BACKLOG #106 G4 four silent false-PASSes:
+    RomCtx.version, RomGbSprite.id_hash, G2Writer.ready, Gb12Mount.nboxes were all
+    declared at the wrong offset because every enum member before them was sized
+    4 B). Verified with an offsetof() probe against arm-none-eabi-gcc (this
+    project's actual CFLAGS, Makefile:260-296, pass neither -fshort-enums nor
+    -fno-short-enums): `-fshort-enums` IS the arm-eabi target's default --
+    __ARM_SIZEOF_MINIMAL_ENUM is predefined, and a plain `typedef enum {A,B,C} E;`
+    measured sizeof(E)==1. The flag whose ABSENCE would matter here is
+    -fno-short-enums, not -fshort-enums. Per AAPCS short-enum packing, GCC picks
+    the smallest of {1,2,4} bytes that represents every enumerator value.
+    `exact` is False when an enumerator's value can't be resolved from this
+    file alone (an expression, or a macro this header doesn't define) -- the
+    4-byte fallback then matches the OLD (wrong-reasoning, but at least
+    conservative) behaviour, and _layout_members()'s break_here stops trusting
+    anything after it."""
+    items = _split_top_level_commas(body)
+    values = []
+    cur = -1
+    resolvable = True
+    saw_any = False
+    for item in items:
+        item = item.strip()
+        if not item:
+            continue
+        saw_any = True
+        m = _ENUM_ITEM_RE.match(item)
+        if not m:
+            resolvable = False
+            continue
+        expr = m.group(2)
+        if expr is None:
+            cur += 1
+        else:
+            v = _resolve_int_literal_or_macro(expr.strip(), macros)
+            if v is None:
+                resolvable = False
+                continue
+            cur = v
+        values.append(cur)
+    if not saw_any or not resolvable or not values:
+        return (4, 4, False)          # can't resolve every enumerator -- documented fallback
+    lo, hi = min(values), max(values)
+    if lo >= 0:
+        size = 1 if hi <= 0xFF else 2 if hi <= 0xFFFF else 4
+    else:
+        size = 1 if (lo >= -128 and hi <= 127) else 2 if (lo >= -32768 and hi <= 32767) else 4
+    return (size, size, True)
+
+
+def _classify_member(stmt, macros, text, size_cache):
+    """[(name, size, align, exact), ...] for one struct-member declaration -- a
+    list because a multi-declarator member (`uint32_t a, b, c;`) names several
+    fields at once. `exact` is False for a size this walker had to GUESS at
+    (an external type's or an unresolvable array count's 4-byte fallback, or an
+    enum whose enumerator values it couldn't resolve) -- see _layout_members()'s
+    break_here, which stops trusting any offset after the first inexact member
+    (D1, BACKLOG #106 G4's false-PASS fix: the old code sized every guess as if
+    it were certain, which is how RomCtx.version/RomGbSprite.id_hash/
+    G2Writer.ready/Gb12Mount.nboxes all got declared at the wrong offset and
+    still verified clean). Raises ValueError for a shape this walker refuses to
+    guess at (a bitfield -- none appear in the six structs this fix registers,
+    and silently sizing one wrong is worse than failing loudly), or for a
+    declarator that doesn't match _DECLARATOR_NAME_RE (the "9]" trap: an array
+    member whose size is an EXPRESSION with internal spaces, e.g.
+    `uint8_t g2names[G2_NUM_BOXES * 9];`, used to be split on the last space in
+    the whole normalized statement -- landing inside the expression and naming
+    the member "9]" -- rather than between the type and the name)."""
     stmt = ' '.join(stmt.split())
+    if re.search(r':\s*\d+$', stmt) and '(' not in stmt:
+        raise ValueError(f"bitfield member not supported: {stmt!r}")
     m = _STRUCT_FIELD_RE.search(stmt)
     if m:
-        return m.group(1), 4, 4                      # function pointer field
-    parts = stmt.rsplit(None, 1)
-    if len(parts) != 2:
+        return [(m.group(1), 4, 4, True)]             # function pointer field
+
+    parts = _split_top_level_commas(stmt)
+    # D1: carve any trailing array suffix off the FIRST declarator BEFORE the
+    # type/name whitespace split runs, so an array-size expression with internal
+    # spaces never lands inside the split (the "9]" trap).
+    first_raw = parts[0]
+    first_arr_m = _FIRST_DECL_ARRAY_RE.match(first_raw)
+    if first_arr_m:
+        first_pre, first_arr_expr = first_arr_m.group(1), first_arr_m.group(2)
+    else:
+        first_pre, first_arr_expr = first_raw, None
+    first = first_pre.rsplit(None, 1)
+    if len(first) != 2:
         raise ValueError(f"can't parse struct member: {stmt!r}")
-    typ, name = parts[0].strip(), parts[1].strip()
-    if name.startswith('*'):
-        return name.lstrip('*'), 4, 4                 # `Type* name` split by whitespace
-    if typ.endswith('*'):
-        return name, 4, 4                             # `Type* name` glued to the type
-    if typ in _KNOWN_PTR_TYPEDEFS:
-        return name, 4, 4
-    if typ in _KNOWN_VALUE_TYPES:
-        sz = _KNOWN_VALUE_TYPES[typ]
-        return name, sz, sz
-    raise ValueError(f"unknown field type {typ!r} for member {name!r} -- teach "
-                      "_classify_field about it or this offset can't be trusted")
+    base_type = first[0].strip()
+    first_name = first[1].strip()
+    first_declarator = f"{first_name}[{first_arr_expr}]" if first_arr_expr is not None else first_name
+    declarators = [first_declarator] + [p.strip() for p in parts[1:]]
+
+    out = []
+    for decl in declarators:
+        decl = decl.strip()
+        is_ptr = False
+        while decl.startswith('*'):
+            is_ptr = True
+            decl = decl[1:].strip()
+        if not _DECLARATOR_NAME_RE.match(decl):
+            raise ValueError(f"can't parse struct member declarator: {decl!r} in {stmt!r}")
+        name = decl
+        has_array = False
+        arr_count = None
+        am = _ARRAY_SUFFIX_RE.match(decl)
+        if am:
+            has_array = True
+            name = am.group(1)
+            arr_count = _resolve_int_literal_or_macro(am.group(2), macros)
+
+        if is_ptr or base_type.endswith('*') or base_type in _KNOWN_PTR_TYPEDEFS:
+            out.append((name, 4, 4, True))
+            continue
+        if base_type in _KNOWN_VALUE_TYPES:
+            elem_size = elem_align = _KNOWN_VALUE_TYPES[base_type]
+            elem_exact = True
+        else:
+            sized = _sized_local_type(text, base_type, macros, size_cache)
+            if sized is None:
+                out.append((name, 4, 4, False))       # external type -- documented fallback, NOT exact
+                continue
+            elem_size, elem_align, elem_exact = sized
+        if has_array:
+            if arr_count is None:
+                out.append((name, 4, 4, False))       # unresolvable count -- documented fallback, NOT exact
+            else:
+                out.append((name, elem_size * arr_count, elem_align, elem_exact))
+        else:
+            out.append((name, elem_size, elem_align, elem_exact))
+    return out
+
+
+def _layout_members(text, body, macros, size_cache):
+    """(offsets: {name: off}, total_size, max_align, all_exact) for a struct's
+    own `body` text (between its braces), with natural ARM EABI alignment (no
+    #pragma pack anywhere in this codebase) -- the same layout arm-none-eabi-gcc
+    gives the real struct, UP TO the first member this walker can't size for
+    certain. D1 (BACKLOG #106 G4's false-PASS fix): once a member comes back
+    inexact (an external type, an unresolvable array count, or an unresolvable
+    enum -- see _classify_member()), its OWN offset is still recorded (every
+    member before it was exact, so the running `off` up to and including this
+    one is trustworthy) but nothing AFTER it is -- the walk stops there
+    (`all_exact=False`). struct_field_offsets() surfaces this as a normal
+    'no such field' FATAL for any declaration below the break, instead of the
+    old behaviour of silently keeping every field 'found' at a guessed offset."""
+    stmts = [s.strip() for s in body.split(';') if s.strip()]
+    offsets = {}
+    off = 0
+    max_align = 1
+    all_exact = True
+    stop = False
+    for s in stmts:
+        if stop:
+            break
+        for name, size, align, exact in _classify_member(s, macros, text, size_cache):
+            off = (off + align - 1) // align * align
+            offsets[name] = off
+            off += size
+            max_align = max(max_align, align)
+            if not exact:
+                all_exact = False
+                stop = True
+                break              # break_here -- nothing declared below an
+                                    # imprecise member's own (trustworthy) offset
+                                    # can be trusted; see the docstring above.
+    total = (off + max_align - 1) // max_align * max_align
+    return offsets, total, max_align, all_exact
 
 
 def struct_field_offsets(header_text, struct_name):
     """Field name -> byte offset within `struct_name`, computed by walking the
-    header's own `typedef struct { ... } <struct_name>;` (or `struct <struct_name>
-    { ... };`) with natural ARM EABI alignment (no #pragma pack anywhere in this
-    codebase) -- the SAME layout arm-none-eabi-gcc gives the real struct, so a
-    stack_edges.txt offset can be checked against reality instead of trusted on
-    faith. Raises ValueError if the struct/a field can't be found or sized, so a
-    header change this walker doesn't understand FAILS the build instead of
-    silently keeping a stale offset (D1, the header-drift half of the fix)."""
+    header's own struct definition (see _struct_or_enum_body() for how it's
+    located) with natural ARM EABI alignment. Raises ValueError if the struct
+    can't be found or a field can't be parsed at all, so a header change this
+    walker doesn't understand FAILS the build instead of silently keeping a
+    stale offset (D1, the header-drift half of the fix; G4 extends it to
+    multi-typedef headers, arrays, multi-declarators, and locally-nested
+    struct/enum members). A field below the first inexact member (see
+    _layout_members()) is simply ABSENT from the returned dict -- the caller
+    (verify_field_declarations()) already FATALs on a declared field that
+    isn't in this dict, so an imprecise header region fails loudly instead of
+    verifying a guessed offset."""
     t = _strip_c_comments(header_text)
-    # D5a (BACKLOG #84b seventh pass): a THIRD shape -- `typedef struct RomGbIcon {
-    # ... } RomGbIcon;` (the tag name repeated after typedef, source/rom_gbicon.h /
-    # rom_gbsprite.h) -- neither of the two existing patterns matched it: the first
-    # requires an ANONYMOUS `struct {` (no tag), the second's `\};` requires the
-    # closing brace to be followed immediately by `;` with no ` StructName` in
-    # between. Tried before the anonymous pattern so a struct using BOTH a tag and a
-    # typedef alias of the same name is matched precisely (no risk of accidentally
-    # matching a nested/unrelated anonymous struct first).
-    m = (re.search(r'typedef\s+struct\s+' + re.escape(struct_name) + r'\s*\{(.*?)\}\s*'
-                    + re.escape(struct_name) + r'\s*;', t, re.S)
-         or re.search(r'typedef\s+struct\s*\{(.*?)\}\s*' + re.escape(struct_name) + r'\s*;',
-                    t, re.S)
-         or re.search(r'struct\s+' + re.escape(struct_name) + r'\s*\{(.*?)\};', t, re.S))
-    if not m:
+    found = _struct_or_enum_body(t, struct_name)
+    if found is None or found[0] != 'struct':
         raise ValueError(f"struct {struct_name!r} not found")
-    stmts = [s.strip() for s in m.group(1).split(';') if s.strip()]
-    offsets = {}
-    off = 0
-    for s in stmts:
-        name, size, align = _classify_field(s)
-        off = (off + align - 1) // align * align
-        offsets[name] = off
-        off += size
+    macros = _parse_int_macros(t)
+    offsets, _total, _align, _all_exact = _layout_members(t, found[1], macros, {})
     return offsets
 
 
@@ -929,29 +1230,24 @@ STRUCT_HEADERS = {
                                   # not a struct), so struct_field_offsets()'s lazy
                                   # `typedef struct {...} NAME;` match lands on the right body.
     "Br": "gb_sprite_codec.c",
-    # D5a (BACKLOG #84b seventh pass): the structs below are declared HAND-VERIFIED
-    # (None), not wired to a header -- struct_field_offsets()'s two-regex struct
-    # finder anchors on `typedef struct {` (or `struct NAME {`) and lazily extends to
-    # the FIRST `} NAME;` it can find; in a header/TU with SEVERAL anonymous/other
-    # typedef structs before the target one (rom_gbsprite.h, pdna_gen12.h, gen2_write.h,
-    # art_icons_extract.h, rom_map.h all have this shape), the lazy match can span
-    # across unrelated intervening struct/enum bodies and misparse -- confirmed live
-    # (RomGbSprite/Gb12Mount/G2Writer/RomCtx/ArtIconsGen all raised "unknown field
-    # type" against text that was never really their own struct body). Teaching
-    # struct_field_offsets() to disambiguate multiple same-shaped typedefs in one
-    # file is a real fix but out of this pass's time budget -- these offsets are
-    # instead verified BY HAND against the header source (see each declaration site
-    # in stack_edges.txt for the exact struct/line cited) and re-checked with the
-    # standalone struct_field_offsets() probe this pass ran for RomGbIcon/RomGbLearn/
-    # Br (which DID parse cleanly, so those three get real header verification).
-    "RomGbSprite": None,
-    "Gb12Mount": None,
-    "G2Writer": None,
-    "RomCtx": None,
-    "ArtIconsGen": None,
+    # BACKLOG #106 G4: these six used to be HAND_VERIFIED (None) escapes -- the OLD
+    # lazy forward regex anchored on the FIRST `typedef struct {` in the file and
+    # matched to the FIRST `} NAME;` after it, so a header with SEVERAL anonymous
+    # typedef structs before the target one (all five headers below have this shape)
+    # silently parsed the WRONG struct's body. struct_field_offsets() now locates a
+    # struct by brace-depth matching on its OWN ending (`} NAME;`, unique to it) or
+    # tagged opening, immune to how many unrelated structs precede it -- all six
+    # parse cleanly now and get the same real header verification as the seven
+    # above (see tests/host_stack_budget_test.py's fixture + mutation for the fix).
+    "RomGbSprite": "rom_gbsprite.h",
+    "Gb12Mount": "pdna_gen12.h",
+    "G2Writer": "gen2_write.h",
+    "RomCtx": "rom_map.h",
+    "ArtIconsGen": "art_icons_extract.h",
     "TTC": None,     # libtonc's tte_write dispatch table -- no .c/.h source shipped
                       # in this devkitPro install to grep (see the `recursion
-                      # tte_write depth=2` declaration's own comment).
+                      # tte_write depth=2` declaration's own comment). Still
+                      # genuinely HAND_VERIFIED: no header, not a parser limitation.
 }
 
 
@@ -982,6 +1278,10 @@ CMP_MNEM_RE = re.compile(r'^(cmp|cmn|tst|teq)\b')
 # so those are unaffected and untouched).
 REG_TOK = r'r\d+|sl|fp|ip'
 MOV_REG_RE = re.compile(rf'^movs?\s+({REG_TOK})\s*,\s*({REG_TOK})\s*$')
+# Thumb-1 has no `mov rX, rY` that sets flags, so GCC copies-and-tests with `subs rX, rY, #0`
+# (or `adds`): a register COPY, not a clobber. The literal `, #0` and the three-operand form are
+# required -- a bare `adds rX, rY` is rX += rY (b106 re-verify: rgm1_header's dispatch).
+_COPY_FLAGS_RE = re.compile(rf'^(?:add|sub)s\s+({REG_TOK})\s*,\s*({REG_TOK})\s*,\s*#0$')
 DEST_REG_RE = re.compile(rf'^[a-z][a-z0-9]*\s+({REG_TOK})\b')
 LDR_FIELD_RE = re.compile(
     rf'^ldr\w*\s+({REG_TOK})\s*,\s*\[\s*({REG_TOK}|sp|pc)\s*,\s*#(-?\d+)\s*\]')
@@ -1171,55 +1471,276 @@ def _base_is_section_anchor(fn_insn_seq, ldr_idx, base_reg):
     return False                            # never (re)defined earlier in this function: a parameter
 
 
-def resolve_indirect_site(fn_insn_seq, site_addr, reg):
-    """Scan `fn`'s instructions backward from just before `site_addr` for the origin
-    of the value dispatched through `reg`. Returns ('field', offset) if it traces to
-    `ldr rN, [rY, #offset]` with rY not pc/lr/sp AND rY itself not a fresh literal
-    load (a struct-field load through a genuine instance pointer, chasing plain
-    `mov rX, rY` register-to-register copies on the way -- the compiler routinely
-    loads a struct field into one register and copies it before the call); otherwise
-    ('nonfield', None) -- set by anything else, never reassigned in this function (a
-    parameter/register argument, e.g. AppCommitFn's `commit`), a section-anchor/global
-    access (see _base_is_section_anchor), or CLOBBERED by an intervening `bl`/`blx`
-    while held in a caller-saved register (r0-r3/ip survive a call only by accident,
-    never by the ABI -- attributing a post-call value to a pre-call load would be a
-    genuine lie, not a conservative guess). Erring toward 'nonfield' is the safe
-    direction: an unmatched nonfield site with no argsites declaration is a blind spot
-    and FAILS the build, so a misclassified field load costs a loud failure, never a
-    silent pass."""
-    idx = bisect.bisect_left(fn_insn_seq, (site_addr, ''))
-    for i in range(idx - 1, -1, -1):
-        _addr, ins = fn_insn_seq[i]
-        ins_clean = ins.split('@')[0].strip()
-        if CALL_MNEM_RE.match(ins_clean):
-            if reg in CALLER_SAVED_REGS:
-                return ('nonfield', None)              # clobbered by the call
-            continue                                    # callee-saved reg survives a call
-        if BRANCH_MNEM_RE.match(ins_clean):
-            continue
-        m = LDR_FIELD_RE.match(ins_clean)
-        if m:
-            if m.group(1) != reg:
-                continue
-            if m.group(2) in ('pc', 'lr', 'sp'):
-                return ('nonfield', None)              # literal/stack-spilled param, not a field
-            if _base_is_section_anchor(fn_insn_seq, i, m.group(2)):
-                return ('nonfield', None)              # global/section-anchor access, not a field
-            return ('field', int(m.group(3)))
-        if _ldm_defines(ins_clean, reg):                # trap #7: ldm redefines it, not a spilled field
-            return ('nonfield', None)
-        if LDM_RE.match(ins_clean):
-            continue                                    # ldm, but doesn't touch `reg`
-        if STORE_MNEM_RE.match(ins_clean) or CMP_MNEM_RE.match(ins_clean):
-            continue
-        mv = MOV_REG_RE.match(ins_clean)
-        if mv and mv.group(1) == reg:
-            reg = mv.group(2)                           # chase the copy, keep scanning
-            continue
-        dm = DEST_REG_RE.match(ins_clean)
-        if dm and dm.group(1) == reg:
-            return ('nonfield', None)                  # set by something not ldr-offset/mov
+def _field_origin_step(fn_insn_seq, i, reg):
+    """The effect of ONE instruction, fn_insn_seq[i], on `reg`'s traced origin --
+    the single-instruction unit both _chase_field_origin() (a whole straight-line
+    run at once) and resolve_indirect_site_all_predecessors() (G5, BACKLOG #106:
+    one instruction at a time, so a join found PARTWAY through a run is never
+    silently skipped) are built from. Returns one of:
+      ('resolved', ('field', offset))   -- `ldr rN, [rY, #offset]` with rY not
+                                            pc/lr/sp and not itself a fresh
+                                            literal load (see _base_is_section_
+                                            anchor) -- a genuine struct-field load
+      ('resolved', ('nonfield', None))  -- CLOBBERED by a `bl`/`blx` while
+                                            caller-saved, a literal/stack-spilled
+                                            load, an `ldm` redefinition (trap #7),
+                                            a section-anchor/global access, or
+                                            set by anything else not ldr-field/mov
+      ('rename', new_reg)               -- `mov rX, rY` copies `reg` (was rY,
+                                            now the caller should keep chasing rX)
+      ('pass', None)                    -- doesn't touch `reg` at all; keep
+                                            walking backward past this instruction
+    Erring toward 'nonfield' is the safe direction: an unmatched nonfield site
+    with no argsites declaration is a blind spot and FAILS the build, so a
+    misclassified field load costs a loud failure, never a silent pass."""
+    _addr, ins = fn_insn_seq[i]
+    ins_clean = ins.split('@')[0].strip()
+    if CALL_MNEM_RE.match(ins_clean):
+        if reg in CALLER_SAVED_REGS:
+            return ('resolved', ('nonfield', None))    # clobbered by the call
+        return ('pass', None)                          # callee-saved reg survives a call
+    if BRANCH_MNEM_RE.match(ins_clean):
+        return ('pass', None)
+    m = LDR_FIELD_RE.match(ins_clean)
+    if m:
+        if m.group(1) != reg:
+            return ('pass', None)
+        if m.group(2) in ('pc', 'lr', 'sp'):
+            return ('resolved', ('nonfield', None))    # literal/stack-spilled param, not a field
+        if _base_is_section_anchor(fn_insn_seq, i, m.group(2)):
+            return ('resolved', ('nonfield', None))    # global/section-anchor access, not a field
+        return ('resolved', ('field', int(m.group(3))))
+    if _ldm_defines(ins_clean, reg):                    # trap #7: ldm redefines it, not a spilled field
+        return ('resolved', ('nonfield', None))
+    if LDM_RE.match(ins_clean):
+        return ('pass', None)                           # ldm, but doesn't touch `reg`
+    if STORE_MNEM_RE.match(ins_clean) or CMP_MNEM_RE.match(ins_clean):
+        return ('pass', None)
+    mv = MOV_REG_RE.match(ins_clean)
+    if mv and mv.group(1) == reg:
+        return ('rename', mv.group(2))                  # chase the copy, keep scanning
+    cp = _COPY_FLAGS_RE.match(ins_clean)
+    if cp and cp.group(1) == reg:
+        return ('rename', cp.group(2))                  # Thumb-1 `subs rX, rY, #0` = copy + test
+    dm = DEST_REG_RE.match(ins_clean)
+    if dm and dm.group(1) == reg:
+        return ('resolved', ('nonfield', None))         # set by something not ldr-offset/mov
+    return ('pass', None)
+
+
+def _chase_field_origin(fn_insn_seq, start_i, reg, stop_i=-1):
+    """Walk `fn_insn_seq` backward from index `start_i` (inclusive) down to (but
+    NOT including) index `stop_i`, applying _field_origin_step() at each
+    position, for the origin of `reg`. Returns ('field', offset) or ('nonfield',
+    None) the moment some instruction resolves it; or -- only reachable when the
+    caller passes a non-default `stop_i` -- ('boundary', reg) if the walk reaches
+    `stop_i` with `reg` (possibly renamed by a `mov` along the way) still
+    unresolved. `resolve_indirect_site()` (single linear predecessor, no join-
+    awareness) and `resolve_indirect_site_all_predecessors()` (G5, BACKLOG #106:
+    checks for a real join at EVERY instruction, not just once per straight-line
+    run) are built from the same per-instruction step; only how far each is
+    willing to walk in one uninterrupted run -- and what it does when it can't
+    resolve -- differs."""
+    for i in range(start_i, stop_i, -1):
+        kind, val = _field_origin_step(fn_insn_seq, i, reg)
+        if kind == 'resolved':
+            return val
+        if kind == 'rename':
+            reg = val
+    if stop_i >= 0:
+        return ('boundary', reg)                        # hit the join point, still unresolved
     return ('nonfield', None)                           # never reassigned: a parameter
+
+
+def resolve_indirect_site(fn_insn_seq, site_addr, reg):
+    """Scan `fn`'s instructions backward from just before `site_addr`, LINEARLY
+    through the disassembly's own address order (transparently passing through
+    any branch instruction it meets), for the origin of the value dispatched
+    through `reg`. See _chase_field_origin() for the full field/nonfield
+    discipline this shares with resolve_indirect_site_all_predecessors(). Correct
+    whenever the code immediately above the site really is its only way in;
+    resolve_indirect_site_all_predecessors() is the G5 fix for when it isn't."""
+    idx = bisect.bisect_left(fn_insn_seq, (site_addr, ''))
+    kind, val = _chase_field_origin(fn_insn_seq, idx - 1, reg)
+    return (kind, val)
+
+
+_UNCONDITIONAL_EXIT_RE = re.compile(
+    r'^(b|b\.n|b\.w)\s|^bx\b|^pop\s+\{[^}]*pc[^}]*\}'
+    # D4 (BACKLOG #106): the two ARM-mode (not just Thumb `pop {..,pc}`) return
+    # shapes this regex used to miss entirely -- `ldm...{...,pc}` (a register-list
+    # restore ending in pc, ARM's general-purpose "epilogue" form, of which
+    # `pop {..,pc}` is only the Thumb ldmfd-sp! special case) and the plain
+    # `mov pc, lr` leaf-function return. Either one really does unconditionally
+    # exit the function, so the instruction just above it does NOT fall through
+    # into whatever comes next -- treating it as if it did (the pre-fix
+    # behaviour) would resume _real_predecessors()'s backward walk past a real
+    # function boundary.
+    r'|^ldm\w*\s+\w+!?\s*,\s*\{[^}]*\bpc\b[^}]*\}'
+    r'|^mov\s+pc\s*,\s*lr\b')
+
+
+def _intra_function_branch_targets(fn_insn_seq):
+    """{target_addr: [source_index, ...]} for every `b`/`bXX` (never `bl`/`blx`,
+    which return to their caller rather than jump, and never `bx`, whose operand
+    is a register objdump prints as a name, not a resolvable hex target -- TGT_RE
+    simply never matches either shape) branch found anywhere in `fn_insn_seq`
+    whose target lands on one of this SAME function's own instructions -- the
+    raw material G5's predecessor search needs."""
+    addr_index = {addr: i for i, (addr, _ins) in enumerate(fn_insn_seq)}
+    targets = collections.defaultdict(list)
+    for i, (_addr, ins) in enumerate(fn_insn_seq):
+        ins_clean = ins.split('@')[0].strip()
+        if not BRANCH_MNEM_RE.match(ins_clean):
+            continue
+        m = TGT_RE.match(ins_clean)
+        if not m:
+            continue
+        t = int(m.group(3), 16)
+        if t in addr_index:
+            targets[t].append(i)
+    return dict(targets)
+
+
+def _real_predecessors(fn_insn_seq, i, branch_targets):
+    """Every REAL inbound edge reaching fn_insn_seq[i]'s own address: each
+    `b`/`bXX` elsewhere targeting it (the branch instruction's own index --
+    taking the branch doesn't itself touch any register, so the register's
+    value flowing in along that edge is exactly whatever it was just before the
+    branch instruction ran), PLUS the fall-through edge from i-1 when i-1 exists
+    and doesn't itself unconditionally exit (a `b`/`bx`/`pop {..,pc}` there
+    means nothing actually falls through into i). Returns a plain list of
+    indices to resume scanning FROM (not i-1 pre-subtracted for the branch
+    case -- see resolve_indirect_site_all_predecessors() for why each is
+    already "the last instruction that ran on this edge")."""
+    addr = fn_insn_seq[i][0]
+    preds = list(branch_targets.get(addr, []))
+    if i > 0:
+        above_clean = fn_insn_seq[i - 1][1].split('@')[0].strip()
+        if _UNCONDITIONAL_EXIT_RE.match(above_clean) is None:
+            preds.append(i - 1)
+    return preds
+
+
+def resolve_indirect_site_all_predecessors(fn_insn_seq, site_addr, reg):
+    """G5 (BACKLOG #106): resolve_indirect_site() walks backward LINEARLY through
+    the disassembly's own address order, transparently passing through any branch
+    instruction it meets -- correct when the block above the site really is its
+    ONLY predecessor, silently wrong (only ever caught by a human before this fix)
+    when the compiler tail-merged SEVERAL differently-sourced blocks into one
+    shared dispatch, each feeding a DIFFERENT struct-field offset into the same
+    register before falling into it (confirmed live: app_mon_menu_readonly's -O2
+    four-way merge at offset 8/4/16/32, previously correct only for three of the
+    four offsets because a human listed them by hand after reading the
+    disassembly -- the fourth, offset 4, had gone unnoticed).
+
+    Walks backward ONE INSTRUCTION AT A TIME (via _field_origin_step()), and
+    -- critically, unlike a plain linear scan or a "find the nearest join, walk
+    the shared span, THEN fan out once" version (an earlier, insufficient draft
+    of this same fix) -- checks whether EACH instruction it is about to move
+    into is a REAL join (more than one inbound edge, per _real_predecessors())
+    BEFORE moving there. The instant it finds one, it stops the straight-line
+    walk and pushes every inbound edge onto a worklist as its own independent
+    continuation, each carrying whatever register name the walk had traced
+    `reg` to by that point (a `mov` along the way may have renamed it).
+
+    Checking at EVERY instruction, not just once at the site's own nearest
+    join, matters because a predecessor block can ITSELF be reached only via
+    some OTHER, unrelated forward branch (an out-of-line/cold tail -- a clamp,
+    an error path) whose own physical predecessor in the listing is dead code,
+    typically the function's own epilogue laid out right after the hot path
+    that cold tail jumps back into. Confirmed live: rom_gbui.c's all_blank()'s
+    out-of-line `if (chunk > 64) chunk = 64;` clamp is reached only by a forward
+    `bhi.n`; an earlier draft of this fix that only re-checked joins once per
+    predecessor FRONTIER (not once per instruction within a frontier's own scan)
+    still walked straight through that clamp block's single instruction into
+    the function's `pop {r4-r7}` epilogue beyond it, which redefines r7 and
+    manufactured a FALSE 'nonfield' verdict no real predecessor ever produces.
+    Checking before every single step removes that whole class of mistake.
+
+    Returns ('field', frozenset_of_offsets): a one-member frozenset in the
+    ordinary case (a single predecessor, or several that all resolve the exact
+    same offset), more than one member when different predecessors genuinely
+    feed different offsets -- the caller MUST require a declaration to cover
+    EVERY member, never just one. Returns ('nonfield', None) if there is no real
+    predecessor to trace (function entry) or if ANY predecessor traces to
+    something other than a field load -- same conservative discipline as
+    resolve_indirect_site() itself: one unresolved predecessor makes the WHOLE
+    site unresolved, never a silent partial pass."""
+    idx = bisect.bisect_left(fn_insn_seq, (site_addr, ''))
+    if idx == 0:
+        return ('nonfield', None)
+    branch_targets = _intra_function_branch_targets(fn_insn_seq)
+
+    # Each worklist entry is (i, cur_reg): "resume scanning AT index i" (i's own
+    # instruction has not been examined yet). The visited-set guards against a
+    # genuine loop (a back-edge reaching its own frontier again) never
+    # terminating.
+    #
+    # The site's OWN address can itself be a branch target (a case/switch's
+    # OTHER arms `bne`-ing directly to the shared `bl`/`blx` instruction, no
+    # intervening shared tail at all) -- seeding the worklist with a bare
+    # `idx - 1` would silently miss that predecessor edge exactly the way the
+    # site's own call instruction is never examined for `reg`'s definition
+    # (see below): the first real join check has to happen for `idx` itself,
+    # through the SAME _real_predecessors() every later frontier uses, not a
+    # hard-coded "the physically preceding instruction is the only way in".
+    # `idx == len(fn_insn_seq)` (the site's own address isn't present in the
+    # sequence at all -- every real caller's disassembly always includes its
+    # own call instruction, but a hand-built fixture may not) has nothing to
+    # introspect there, so it falls back to the plain `idx - 1` start.
+    if idx < len(fn_insn_seq):
+        site_preds = _real_predecessors(fn_insn_seq, idx, branch_targets)
+    else:
+        site_preds = [idx - 1]
+    if len(site_preds) == 1 and site_preds[0] == idx - 1:
+        worklist = [(idx - 1, reg)]
+    elif not site_preds:
+        return ('nonfield', None)
+    else:
+        worklist = [(p, reg) for p in site_preds]
+    visited = set()
+    offsets = set()
+    saw_any_predecessor = False
+
+    while worklist:
+        i, cur_reg = worklist.pop()
+        if (i, cur_reg) in visited:
+            continue
+        visited.add((i, cur_reg))
+
+        while True:
+            kind, val = _field_origin_step(fn_insn_seq, i, cur_reg)
+            if kind == 'resolved':
+                field_kind, field_val = val
+                if field_kind == 'field':
+                    offsets.add(field_val)
+                    saw_any_predecessor = True
+                else:
+                    return ('nonfield', None)      # clobbered/parameter on this path --
+                                                    # whole site unresolved (one bad path
+                                                    # is enough)
+                break
+            if kind == 'rename':
+                cur_reg = val
+
+            if i == 0:
+                return ('nonfield', None)          # ran off the function's own entry
+                                                    # with `reg` still unresolved
+            preds = _real_predecessors(fn_insn_seq, i, branch_targets)
+            if len(preds) == 1 and preds[0] == i - 1:
+                i -= 1                             # the ordinary, single-predecessor
+                continue                           # case: keep walking in this same frontier
+            if not preds:
+                return ('nonfield', None)          # an unreachable/veneer-only join this
+                                                    # scan can't vouch for
+            for p in preds:
+                worklist.append((p, cur_reg))
+            break
+
+    if not saw_any_predecessor:
+        return ('nonfield', None)
+    return ('field', frozenset(offsets))
 
 
 def estimate_frames(fn_lines):
@@ -1379,17 +1900,40 @@ def resolve_all_sites(analysis, field_offset_index, argsite_decls, whole_func_de
                 continue      # every site (there's at most one) is exempted
         nonfield_sites = []
         for addr, ins, reg in sites:
-            kind, off = resolve_indirect_site(fn_insn_seq.get(fn, []), int(addr, 16), reg)
+            # G5 (BACKLOG #106): a `bl`/`blx` whose basic block has more than one
+            # inbound predecessor (an -O2 tail merge of several differently-sourced
+            # blocks, each feeding a DIFFERENT struct-field offset into the same
+            # register before falling into the shared dispatch) must have EVERY
+            # resulting offset declared, not just whichever one a linear backward
+            # scan happens to land on by code-layout luck.
+            kind, offs = resolve_indirect_site_all_predecessors(
+                fn_insn_seq.get(fn, []), int(addr, 16), reg)
             if kind == 'field':
-                impls = qualified_offset_impls.get((off, fn))
-                if impls is None:
-                    impls = unqualified_offset_impls.get(off)
-                if impls:
-                    edges_to_add[fn] |= impls
+                declared_offsets, undeclared_offsets, site_impls = set(), set(), set()
+                for off in sorted(offs):
+                    impls = qualified_offset_impls.get((off, fn))
+                    if impls is None:
+                        impls = unqualified_offset_impls.get(off)
+                    if impls:
+                        declared_offsets.add(off)
+                        site_impls |= impls
+                    else:
+                        undeclared_offsets.add(off)
+                if undeclared_offsets:
+                    if len(offs) > 1:
+                        blind[fn].append((addr, ins,
+                            f"multi-predecessor struct-field load: offsets "
+                            f"{sorted(offs)} via {len(offs)} predecessors; declared "
+                            f"{sorted(declared_offsets)} -- missing a field "
+                            f"declaration covering {sorted(undeclared_offsets)} for "
+                            f"caller {fn!r}"))
+                    else:
+                        off = next(iter(offs))
+                        blind[fn].append((addr, ins, f"struct-field load @{off}, no "
+                                           f"declared field at that offset for caller {fn!r} "
+                                           "(and no unqualified owner of that offset)"))
                 else:
-                    blind[fn].append((addr, ins, f"struct-field load @{off}, no "
-                                       f"declared field at that offset for caller {fn!r} "
-                                       "(and no unqualified owner of that offset)"))
+                    edges_to_add[fn] |= site_impls
             else:
                 nonfield_sites.append((addr, ins))
         if fn in argsite_decls:
@@ -1423,18 +1967,21 @@ def dump_sites(analysis, field_offset_index, argsite_decls, whole_func_decls):
             continue
         nonfield_i = 0
         for addr, ins, reg in sites:
-            kind, off = resolve_indirect_site(fn_insn_seq.get(fn, []), int(addr, 16), reg)
+            kind, offs = resolve_indirect_site_all_predecessors(
+                fn_insn_seq.get(fn, []), int(addr, 16), reg)
             if kind == 'field':
-                impls = qualified_offset_impls.get((off, fn))
-                src = "qualified"
-                if impls is None:
-                    impls = unqualified_offset_impls.get(off)
-                    src = "unqualified"
-                if impls:
-                    print(f"{fn}  {addr}  field @{off} ({src}) -> "
-                          f"{' '.join(sorted(impls))}")
-                else:
-                    print(f"{fn}  {addr}  field @{off} -> BLIND")
+                for off in sorted(offs):
+                    impls = qualified_offset_impls.get((off, fn))
+                    src = "qualified"
+                    if impls is None:
+                        impls = unqualified_offset_impls.get(off)
+                        src = "unqualified"
+                    via = f" via {len(offs)} predecessors" if len(offs) > 1 else ""
+                    if impls:
+                        print(f"{fn}  {addr}  field @{off} ({src}){via} -> "
+                              f"{' '.join(sorted(impls))}")
+                    else:
+                        print(f"{fn}  {addr}  field @{off}{via} -> BLIND")
             else:
                 nonfield_i += 1
                 if fn in argsite_decls:
@@ -1763,13 +2310,30 @@ def _cache_path(elf):
     return elf + ".stackcache.json"
 
 
-def _elf_fingerprint(elf, builddir):
+def _elf_fingerprint(elf, builddir, edges_file=None):
+    """N3 (m1 re-verify, BACKLOG #106): `edges_file` -- the SAME path the tool
+    actually reads its declarations from (args.edges_file, whatever that resolves
+    to; None/"" is a legitimate "edges disabled" run and folds in nothing) -- is
+    now part of the fingerprint. The cache only ever stores the ELF's own
+    disassembly/symbol-table dump (see main()'s use of it), which truly doesn't
+    depend on stack_edges.txt at all; this hardening exists so that stays true by
+    construction rather than by "nothing downstream happens to read the cached
+    blob for edges-derived data today" -- a future change that DID cache
+    something edges-derived would otherwise silently reuse a stale verdict the
+    moment a maintainer touched a declaration or exemption with a cache present
+    (a real trap a reviewer's mutation attempt hit once, per the m1 re-verify)."""
     st = os.stat(elf)
     su_files = sorted(glob.glob(os.path.join(builddir, "*.su")))
     su_stat = [(f, os.path.getsize(f)) for f in su_files]
     h = hashlib.sha1()
     h.update(f"{st.st_mtime_ns}:{st.st_size}".encode())
     h.update(repr(su_stat).encode())
+    if edges_file:
+        try:
+            with open(edges_file, "rb") as f:
+                h.update(f.read())
+        except OSError:
+            pass   # matches load_extra_edges()'s own "missing edges-file is legal" handling
     return h.hexdigest()
 
 
@@ -1882,29 +2446,386 @@ def dump_alloc_load_sections(elf, sections):
     return result
 
 
-def scan_address_taken(elf, name_at, sections, section_dumps=None):
-    """Every function in `name_at` (address -> name, from analyze()) whose address
-    appears as a 4-byte-aligned little-endian word anywhere in `sections`' on-disk
-    bytes. A Thumb function's address always carries bit 0 set wherever it's stored
-    as a callable pointer (the interworking bit BX/BLX read) -- masked off before
-    the name_at lookup, exactly like the veneer-literal and trap-#5 literal-call
-    resolvers above already do. `section_dumps` (F7), when given, is the
-    dump_alloc_load_sections() result -- avoids re-running objdump per section when
-    the caller (main()) already fetched it once for read_build_dir_stamp() too; falls
-    back to one objdump call per section (the old behaviour) when omitted, so a direct
-    caller/test doesn't have to know about the new shared-dump plumbing."""
-    if section_dumps is None:
-        section_dumps = dump_alloc_load_sections(elf, sections)
+# === G2 (BACKLOG #106): the address-taken sweep, restricted to PROVEN pointer holders ==
+#
+# The original scan_address_taken() (kept in git history) treated every 4-byte-aligned
+# word in every ALLOC+LOAD section -- including .text, where it double-counts as two
+# adjacent 16-bit Thumb opcodes -- as a candidate function-pointer store, purely
+# because its VALUE happened to equal some function's entry address. A data table
+# entry, a hash constant, or a ROM-span constant is exactly as likely to collide with
+# a small, densely-populated 0x08xxxxxx address space as a genuine pointer is -- seven
+# `addrtaken-ok` lines were added across 2026-09-10 alone to paper over exactly that
+# (tte_cmd_skip, __aeabi_d2iz, encode_checked, em_get_ribbon_flag, the _EZFO pair, ...),
+# each one an unverified escape hatch a reviewer has to trust on faith.
+#
+# The fix asks a different, checkable question per section class:
+#   - DATA sections (.rodata/.data/.iwram/...): does the COMPILER'S OWN OBJECT FILE
+#     say, via a relocation record, "this word is that function's address"? A
+#     relocation is the compiler's own proof, not a coincidence -- scan_relocated_
+#     addresses() below reads it straight from `objdump -r`/`-t` on the *.o files
+#     (pre-link; ARM ELF relocations are REL, not RELA, so a LOCAL/static target's
+#     addend has to be read back out of the referencing bytes themselves, exactly
+#     like read_build_dir_stamp() already does for one known symbol).
+#   - .text literal pools: objdump's OWN disassembler already tells us, unambiguously,
+#     which trailing bytes of a function are a `.word` literal rather than a decoded
+#     instruction (the veneer/trap-#5 resolvers above already trust this same
+#     distinction) -- scan_text_literal_pool() below reuses it, so two adjacent
+#     Thumb opcodes that happen to spell a function's address are never mistaken for
+#     a pointer store the way a raw byte-value scan of the whole section would.
+
+_OBJDUMP_RELOC_HDR_RE = re.compile(r'^RELOCATION RECORDS FOR \[([^\]]+)\]:$')
+_OBJDUMP_RELOC_LINE_RE = re.compile(r'^([0-9a-f]+)\s+(\S+)\s+(\S+)')
+_WORD_RELOC_TYPES = {"R_ARM_ABS32", "R_ARM_TARGET1"}
+# Relocation-bearing sections this sweep has no business reading as "data that might
+# hold a function pointer" -- debug info/unwind tables/string tables carry symbol
+# references for entirely different reasons and would only add noise (or, for
+# .debug_*, potentially a huge amount of it on a -g build).
+_RELOC_SECTION_SKIP_PREFIXES = (".debug", ".ARM.exidx", ".ARM.extab", ".comment",
+                                 ".note", ".symtab", ".strtab", ".shstrtab", ".group")
+
+
+def dump_object_relocations(obj):
+    """`objdump -r <obj>`'s raw text for one pre-link object file. Returns "" (not an
+    exception) when the tool fails on a malformed/missing object -- the caller then
+    simply finds no relocations there, the same fail-open-to-"no evidence" shape
+    dump_alloc_load_sections() already uses for a missing section."""
+    try:
+        return subprocess.run([OBJDUMP, "-r", obj], capture_output=True, text=True,
+                               check=True).stdout
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def parse_object_relocations(text):
+    """{section_name: [(offset:int, reloc_type:str, value:str), ...]} from one
+    `objdump -r` dump's 'RELOCATION RECORDS FOR [section]:' blocks (see
+    dump_object_relocations()). `value` is either a real global symbol's name
+    (globals keep their name in a relocatable object's relocation record) or the
+    bare name of the SECTION the word targets (a local/static symbol collapses to
+    its containing section -- see scan_relocated_addresses() for how the actual
+    target address is then recovered)."""
+    out = {}
+    cur = None
+    for line in text.splitlines():
+        m = _OBJDUMP_RELOC_HDR_RE.match(line)
+        if m:
+            cur = m.group(1)
+            out.setdefault(cur, [])
+            continue
+        if cur is None:
+            continue
+        m = _OBJDUMP_RELOC_LINE_RE.match(line)
+        if not m or m.group(2) == "TYPE":
+            continue
+        try:
+            off = int(m.group(1), 16)
+        except ValueError:
+            continue
+        out[cur].append((off, m.group(2), m.group(3)))
+    return out
+
+
+def dump_object_symbols(obj):
+    """`objdump -t <obj>`'s raw text for one pre-link object file (see
+    dump_object_relocations() for the fail-open rationale)."""
+    try:
+        return subprocess.run([OBJDUMP, "-t", obj], capture_output=True, text=True,
+                               check=True).stdout
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def parse_object_symbol_table(text):
+    """{section_name: [(addr, size, name, kind), ...]} sorted by addr, kind in {'F'
+    function, 'O' data object} -- from ONE object file's own `objdump -t` (pre-link,
+    section-relative addresses, not final-image addresses). The 'd' rows objdump
+    emits for a section's OWN definition (name identical to the section, e.g. a row
+    literally named '.rodata') are skipped -- those exist so a relocation can target
+    "the section itself" (see parse_object_relocations()), not as something a real
+    pointer word could be "inside". Same tolerant flag-column parsing as
+    parse_symbol_census() (the flag field's width varies; only the SET of flag
+    tokens between the address and the section name is ever tested)."""
+    by_section = collections.defaultdict(list)
+    for line in text.splitlines():
+        if "\t" not in line:
+            continue
+        left, right = line.split("\t", 1)
+        lparts = left.split()
+        rparts = right.split(None, 1)
+        if len(lparts) < 4 or len(rparts) < 2:
+            continue
+        try:
+            addr = int(lparts[0], 16)
+        except ValueError:
+            continue
+        try:
+            size = int(rparts[0], 16)
+        except ValueError:
+            continue
+        section = lparts[-1]
+        name = re.sub(r'^\.(hidden|internal|protected)\s+', '', rparts[1].strip())
+        if name == section:
+            continue                                # the section's own definition row
+        flags = lparts[2:-1]
+        kind = 'F' if 'F' in flags else ('O' if 'O' in flags else None)
+        if kind is None:
+            continue
+        by_section[section].append((addr, size, name, kind))
+    for sec in by_section:
+        by_section[sec].sort()
+    return dict(by_section)
+
+
+def _containing_symbol(symbols_in_section, offset):
+    """(name, delta) for the last (addr,size,name,kind) entry whose addr <= offset --
+    same bisect-on-sorted-starts discipline as analyze()'s owner() -- or (None, 0)
+    when the list is empty or offset precedes every entry."""
+    if not symbols_in_section:
+        return None, 0
+    addrs = [s[0] for s in symbols_in_section]
+    i = bisect.bisect_right(addrs, offset) - 1
+    if i < 0:
+        return None, 0
+    addr, _size, name, _kind = symbols_in_section[i]
+    return name, offset - addr
+
+
+def scan_relocated_addresses(builddir, name_at):
+    """G2: every function in `name_at` whose address is taken via a genuine
+    R_ARM_ABS32/R_ARM_TARGET1 relocation in some *.o's DATA section (anything that
+    isn't .text and isn't one of the debug/metadata sections _RELOC_SECTION_SKIP_
+    PREFIXES excludes). Returns (taken: set, detail: {fn: [location strings]}) --
+    detail is the human-readable "<obj>:<section>+<off> inside <symbol>+<delta>"
+    trail a FATAL orphan report names, per BACKLOG #106 G2 item 2.
+
+    A LOCAL/static relocation target collapses to its containing SECTION name
+    (e.g. value == ".text"): ARM's REL (not RELA) relocations carry no addend field
+    of their own, so the actual target offset has to be read back out of the
+    referencing word's own bytes (`objdump -s`) -- identical in spirit to
+    read_build_dir_stamp()'s single-symbol byte read, generalized to any (obj,
+    section, offset). A GLOBAL target keeps its own name in the relocation record
+    directly and needs no byte read. Either way, the resolved name only counts as
+    "taken" once it is confirmed to be one of THIS OBJECT's own .text FUNCTIONS
+    (Thumb bit masked off) that also appears in `name_at` -- a data-to-data
+    relocation (an array pointing at another array) never becomes a false hit."""
+    func_names = set(name_at.values())
+    taken = set()
+    detail = collections.defaultdict(list)
+    word_cache = {}   # (obj, section) -> {byte_addr: value}, avoid re-dumping per reloc
+
+    def word_at(obj, section, offset):
+        key = (obj, section)
+        if key not in word_cache:
+            data = {}
+            out = subprocess.run([OBJDUMP, "-s", "-j", section, obj],
+                                  capture_output=True, text=True).stdout
+            for line in out.splitlines():
+                m = _OBJDUMP_S_LINE_RE.match(line)
+                if not m:
+                    continue
+                base = int(m.group(1), 16)
+                raw = bytes.fromhex(m.group(2).replace(" ", ""))
+                for i, b in enumerate(raw):
+                    data[base + i] = b
+            word_cache[key] = data
+        data = word_cache[key]
+        if any((offset + i) not in data for i in range(4)):
+            return None
+        return int.from_bytes(bytes(data[offset + i] for i in range(4)), "little")
+
+    for obj in sorted(glob.glob(os.path.join(builddir, "*.o"))):
+        relocs = parse_object_relocations(dump_object_relocations(obj))
+        if not relocs:
+            continue
+        symbols = parse_object_symbol_table(dump_object_symbols(obj))
+        # EXACT starts only, not "which function's range contains this address" --
+        # a switch-statement jump table (GCC's `ldr pc, [pc, rN, lsl #2]`/computed-
+        # goto codegen on this ARMv4T target, no Thumb-2 tbb/tbh available) is ALSO
+        # a section+addend relocation into .text, with every entry an address
+        # *inside* some function's body (a case label) but essentially never
+        # exactly at its first instruction -- confirmed live: gen1_write.o's char-
+        # encode table put 80+ such entries inside gen1_encode_char's own range,
+        # none matching its start, a real false-positive class a containment
+        # lookup would have (mis)confirmed as "gen1_encode_char's address is
+        # taken". Masking bit 0 before the lookup normalizes both conventions this
+        # target's relocations use for a genuine function-pointer's target value
+        # (with the Thumb interworking bit, e.g. readelf's raw 0x2e5 for a symbol
+        # objdump -t itself always PRINTS stripped, e.g. 0x2e4 -- so the map below
+        # is already bit0-stripped) to the SAME key a case-label addend (always
+        # even, mid-function, never a function start either way) still correctly
+        # misses.
+        text_starts = {addr: name for addr, _size, name, _kind in symbols.get(".text", [])}
+        for sec, entries in relocs.items():
+            if sec == ".text" or sec.startswith(_RELOC_SECTION_SKIP_PREFIXES):
+                continue
+            for off, typ, value in entries:
+                if typ not in _WORD_RELOC_TYPES:
+                    continue
+                fn_name = None
+                if value == ".text":
+                    addend = word_at(obj, sec, off)
+                    if addend is None:
+                        continue
+                    fn_name = text_starts.get(addend & ~1)
+                elif not value.startswith("."):
+                    fn_name = value               # a global symbol names itself
+                if fn_name is None or fn_name not in func_names:
+                    continue
+                taken.add(fn_name)
+                sym_name, delta = _containing_symbol(symbols.get(sec, []), off)
+                loc = f"{os.path.basename(obj)}:{sec}+{off:#x}"
+                if sym_name is not None:
+                    loc += f" inside {sym_name}+{delta:#x}"
+                detail[fn_name].append(loc)
+    return taken, dict(detail)
+
+
+_TEXT_WORD_RE = re.compile(r'^\.word\s+0x([0-9a-f]+)$')
+
+
+def scan_text_literal_pool(dump_text, name_at):
+    """G2: every function in `name_at` whose address is taken via a `.word` literal-
+    pool entry somewhere in .text -- found through objdump's OWN disassembly
+    annotation (an INSN_RE-shaped line whose mnemonic half is exactly
+    `.word 0xNNNNNNNN`), the same trusted distinction the veneer resolver (:531) and
+    the trap-#5 literal-call resolver (:1076) already rely on. Deliberately NOT a
+    raw byte scan of .text: two adjacent 16-bit Thumb opcodes read as one 32-bit
+    word can coincidentally equal a function's address far more easily than a real
+    literal pool entry can (.text is far denser than .rodata), and unlike a literal
+    pool a decoded instruction was never a pointer store to begin with."""
+    taken = set()
+    for raw in dump_text.splitlines():
+        m = INSN_RE.match(raw.rstrip("\n"))
+        if not m:
+            continue
+        wm = _TEXT_WORD_RE.match(m.group(2).strip())
+        if not wm:
+            continue
+        fn = name_at.get(int(wm.group(1), 16) & ~1)
+        if fn:
+            taken.add(fn)
+    return taken
+
+
+def own_function_names(builddir):
+    """Every FUNCTION symbol name defined in one of THIS PROJECT'S OWN *.o files
+    under `builddir` -- i.e. everything scan_relocated_addresses() can actually
+    read a relocation for. crt0/libgcc/newlib/libtonc code is linked in from
+    prebuilt *.a archives whose member objects never land in `builddir` at all, so
+    a name in `name_at` but NOT in this set is third-party: see scan_address_taken()
+    for why that distinction matters."""
+    names = set()
+    for obj in sorted(glob.glob(os.path.join(builddir, "*.o"))):
+        for entries in parse_object_symbol_table(dump_object_symbols(obj)).values():
+            for _addr, _size, name, kind in entries:
+                if kind == 'F':
+                    names.add(name)
+    return names
+
+
+def scan_third_party_words_raw(sections, section_dumps, name_at, restrict_to):
+    """The OLD (pre-G2) whole-section raw-word scan, DELIBERATELY restricted to
+    `restrict_to` (a name set) rather than every function in the image. See
+    scan_address_taken()'s docstring for why this fallback exists and why
+    restricting it closes the coincidence risk it would otherwise reopen."""
+    restrict_addrs = {addr: name for addr, name in name_at.items() if name in restrict_to}
+    if not restrict_addrs:
+        return set()
     taken = set()
     for sec in sections:
         out = section_dumps.get(sec)
         if out is None:
             continue
         for w in _words_from_objdump_s_text(out):
-            fn = name_at.get(w & ~1)
+            fn = restrict_addrs.get(w & ~1)
             if fn:
                 taken.add(fn)
     return taken
+
+
+def scan_address_taken(builddir, dump_text, name_at, sections, section_dumps):
+    """The whole G2 address-taken sweep: scan_relocated_addresses() (DATA sections,
+    relocation-proven, covers everything THIS PROJECT compiles) union
+    scan_text_literal_pool() (.text literal pools, disassembly-proven) union a
+    THIRD, NARROW fallback for the one real class those two provably cannot see:
+    crt0/libgcc/newlib/libtonc functions, whose *.o member objects are extracted
+    from prebuilt archives at link time and never appear under `--builddir` for
+    scan_relocated_addresses() to read a relocation from at all.
+
+    Diffing this sweep's output against the pre-G2 whole-image word scan (run over
+    both shipped ELFs, per the BACKLOG #106 G2 stop-licence: "compare the
+    implementation sets before/after") found exactly that gap: __do_global_dtors_
+    aux/frame_dummy/_fini (.init_array/.fini_array, crtstuff), __utf8_mbtowc/
+    __utf8_wctomb (a newlib locale table), and the 9 sbmp16_* tonc surface-drawg
+    entries -- all genuinely address-taken, all invisible to a relocation read
+    because their .o's are inside libgcc.a/libc.a/libtonc.a, not `builddir`. (The
+    diff's OTHER two "misses", art_icons_read_rows_fp and g2w_set_otname, are this
+    project's OWN functions, called directly by name everywhere they appear in
+    source/ -- the old scan's coincidental match on them is exactly the false-
+    positive class G2 exists to remove, not a real miss.)
+
+    D6 (BACKLOG #106): "relocation-proven" in the opening paragraph above overstates
+    how much of a real image's `taken` set is actually proof rather than trust. On
+    this project's own built images (both variants, measured live): only 31 of 135
+    hits are 'reloc' (an object-file relocation record, the one class that is truly
+    proof); 90 are 'lit' (the .text literal-pool class, next paragraph) and 14 are
+    'raw' (the third-party coincidence-scan fallback, bounded by D2 above). The
+    'lit' class is NOT proof the way 'reloc' is -- it trusts objdump's OWN `.word`
+    annotation as "this is a pointer", which is exactly the same kind of coincidence
+    a raw scan can hit: a LIVE false positive on this build is crt0's EWRAM-base
+    relocation constant, `.word 0x02000000` (source/crt0.s-equivalent startup code,
+    used to compute .data's runtime address), which happens to equal
+    _EZFO_startUp's own entry point -- scan_text_literal_pool() reports
+    _EZFO_startUp as address-taken via that word, and it escapes the orphan check
+    only because it is ALSO genuinely reachable through the ordinary call graph, not
+    because the 'lit' hit was ever real proof. There is also a genuine BLIND SPOT
+    neither 'reloc' nor 'lit' can see at all: a compiler that computes a function's
+    address with `adr Rd, label` or `add Rd, pc, #imm` (PC-relative arithmetic, not
+    a `.word` literal load) never gets flagged by either path -- this codebase's
+    -O2 build has not been observed to do that for a function pointer, but nothing
+    here would catch it if it started.
+
+    own_function_names(builddir) draws the line precisely: a name this project's
+    OWN *.o's define gets ONLY the relocation-proven treatment (no raw-scan
+    fallback -- that's where the coincidence risk this fix closes actually lived);
+    a name that is NOT one of this project's own functions (crt/libgcc/newlib/
+    tonc) falls back to the raw scan, restricted to just that small, already-
+    enumerated, human-reviewable set (every one of them already has, or needs, its
+    own `addrtaken-ok` line) -- never re-widened to the whole image. `sections`/
+    `section_dumps` are the alloc_load_sections()/dump_alloc_load_sections()
+    result -- REQUIRED, not computed here, so main() can pass the ones it already
+    fetched for read_build_dir_stamp() (no extra objdump invocations) and a direct
+    caller/test is never surprised by a hidden shell-out.
+
+    Returns (taken: set, detail: {fn: [locations]}, provenance: {fn: 'reloc'|'lit'|
+    'raw'}) -- `detail` only ever names DATA-section relocation hits; the
+    literal-pool and third-party-fallback classes have no single "containing
+    symbol" worth naming (a literal pool is already "somewhere in this function's
+    own pool"; a crt/tonc table's location is a coincidence-scan hit by
+    construction, not a proven relocation site). `provenance` is D2's (BACKLOG
+    #106) per-name answer to "which of the three classes found this" -- a name
+    can only ever be reached by 'raw' if own_function_names() ALREADY placed it
+    outside this project's own object files (scan_third_party_words_raw() is
+    restricted to exactly that set), so 'reloc' and 'lit' take priority whenever
+    a name happens to be provable more than one way."""
+    reloc_taken, detail = scan_relocated_addresses(builddir, name_at)
+    lit_taken = scan_text_literal_pool(dump_text, name_at)
+
+    own = own_function_names(builddir)
+    third_party = {name for name in name_at.values() if name not in own}
+    raw_taken = set()
+    if third_party:
+        raw_taken = scan_third_party_words_raw(sections, section_dumps, name_at, third_party)
+
+    taken = reloc_taken | lit_taken | raw_taken
+    provenance = {}
+    for fn in raw_taken:
+        provenance[fn] = 'raw'
+    for fn in lit_taken:
+        provenance[fn] = 'lit'
+    for fn in reloc_taken:
+        provenance[fn] = 'reloc'          # highest priority: a real relocation record
+    return taken, detail, provenance
 
 
 # === D2 (BACKLOG #84b fifth pass): the ELF names the build dir it was linked from =====
@@ -2032,7 +2953,7 @@ def main(argv):
               "fresh, with -fstack-usage, under today's CFLAGS.", file=sys.stderr)
         return 1
 
-    fp = _elf_fingerprint(args.elf, args.builddir)
+    fp = _elf_fingerprint(args.elf, args.builddir, args.edges_file)
     cache_file = _cache_path(args.elf)
     cached = None
     if os.path.exists(cache_file):
@@ -2420,14 +3341,47 @@ def main(argv):
     # sweep already accounts for it. The sweep is a property of the whole image, not of
     # whichever root a re-measurement happens to pass, so it only runs for --root main.
     if args.root == "main":
-        taken = scan_address_taken(args.elf, analysis["name_at"], sections, section_dumps)
+        taken, taken_detail, taken_provenance = scan_address_taken(
+            args.builddir, dump_text, analysis["name_at"], sections, section_dumps)
         declared_or_reachable = all_impls | reachable | isr_decls | addrtaken_ok
-        orphans = sorted(taken - declared_or_reachable)
+        candidates = sorted(taken - declared_or_reachable)
+
+        # D2 (BACKLOG #106): scan_third_party_words_raw() is still a coincidence
+        # scanner (a data word happening to equal a function's address, restricted
+        # to the small third-party name set -- see scan_address_taken()'s
+        # docstring) and it cannot be deleted (it is the only path that finds
+        # isr_master, the m4/m5_surface tables, .init_array entries, sbmp16_* and
+        # the rest of the crt/libgcc/tonc set a relocation read can never see). A
+        # name found ONLY that way is bounded the SAME way an addrtaken-ok
+        # exemption is bounded below (G1): if its own worst chain, AS IF IT WERE
+        # --root, is <= EXEMPT_MAX_DEEPEST, a coincidental hit on it cannot hide
+        # an arbitrarily heavy chain, so it is a NOTE, not a build-breaking FATAL.
+        # A reloc/lit hit is never downgraded -- those are proof, not coincidence.
+        orphans = []
+        bounded_notes = []
+        for fn in candidates:
+            if taken_provenance.get(fn) == 'raw' and fn in analysis["funcs"]:
+                own_total, _own_path, _own_cycles = deepest_from(
+                    fn, analysis["edges"], su_sizes, estimated,
+                    overrides=frame_overrides, scc_of=scc_of)
+                if own_total <= EXEMPT_MAX_DEEPEST:
+                    bounded_notes.append((fn, own_total))
+                    continue
+            orphans.append(fn)
+
+        if bounded_notes:
+            print("\n*** STACK_BUDGET NOTE: third-party raw hit, bounded (own worst chain "
+                  f"<= {EXEMPT_MAX_DEEPEST} B, no addrtaken-ok line needed):")
+            for fn, own_total in bounded_notes:
+                print(f"***   {fn}: own worst chain {format_num(own_total)} B")
+
         if orphans:
             print("\n*** STACK_BUDGET ADDRESS-TAKEN, UNREACHED, UNDECLARED:")
             for fn in orphans:
                 b, _src = frame_of(fn, su_sizes, estimated, frame_overrides)
                 print(f"***   {fn} frame {b}")
+                for loc in taken_detail.get(fn, []):
+                    print(f"***     {loc}")
             print("*** This function's address is stored somewhere in the linked image (a "
                   "struct field, a dispatch table, a literal pool) but it is named by no "
                   "declaration in stack_edges.txt, not reachable through the ordinary call "
@@ -2437,6 +3391,27 @@ def main(argv):
                   "declaration's implementation list, or (if it is a genuine false positive) "
                   "an `addrtaken-ok fn  (reason)` line.")
             return 1
+
+        # D3 (BACKLOG #106): nothing ever retired a stale `addrtaken-ok` line -- one
+        # that used to be genuinely address-taken (in SOME earlier build, or on the
+        # OTHER image variant) but isn't in THIS one. A WARNING, not a FATAL: a line
+        # only one image variant needs is legitimately unneeded on the other, so this
+        # is "delete it if it truly serves nothing on either build", never a gate.
+        stale = sorted(addrtaken_ok - taken)
+        if stale:
+            print(f"\n*** STACK_BUDGET WARNING: {len(stale)} addrtaken-ok line(s) are no "
+                  "longer address-taken in this image (delete if unneeded on BOTH images): "
+                  + ", ".join(stale))
+
+        # P1 (b90 re-verify, BACKLOG #106): a strictly worse sign than "stale" above --
+        # an `addrtaken-ok` name that isn't even a symbol IN this image at all (a typo,
+        # or a line carried over from a lane whose function was renamed/deleted, e.g.
+        # `____aeabi_dmul_from_thumb`, present in neither build). Non-fatal, same as D3.
+        absent_from_image = sorted(addrtaken_ok - analysis["funcs"])
+        if absent_from_image:
+            print(f"\n*** STACK_BUDGET WARNING: {len(absent_from_image)} addrtaken-ok "
+                  "line(s) name a symbol not found in this image (stale? typo?): "
+                  + ", ".join(absent_from_image))
 
     # G1 (BACKLOG #84b eighth pass, merge-blocker): an `addrtaken-ok` claim is never
     # re-verified above -- it just removes `fn` from the orphans check. That is fine
