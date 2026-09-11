@@ -171,6 +171,25 @@ BoxSource.can_rename @68 -> gbsrc_can_rename
 # stored name, no "GB " decoration to strip).
 BoxSource.get_raw_name @72 in box_options_menu,pdna_box -> gbsrc_get_raw_name
 
+# BACKLOG #120 S1: BoxSource.scope@76 (uint8_t) and BoxSource.bank_edge@77 (bool) are
+# appended right after get_raw_name@72 -- neither is a function pointer, so neither is a
+# dispatch site; not declared here on purpose (nothing in this file's format applies to a
+# plain data field). BoxSource.can_lift, the struct's new LAST-but-one pointer field,
+# lands at @80 (76/77 pack into the same word as the two-byte pad ARM EABI natural layout
+# inserts before the next 4-byte-aligned pointer member; can_edit@44/commit@48 above show
+# the same struct has no other unaligned run). Dispatched from pdna_box.c's new
+# `src_can_lift(src, box, slot)` helper: `src->can_lift ? src->can_lift(box, slot) :
+# src->can_edit()`. S1 is a PURE REFACTOR -- every BoxSource filler (pcsrc/banksrc/gbsrc)
+# leaves `can_lift` NULL (memset default), so this `bl` never actually fires yet; the
+# guard cannot know that statically, though, so it still needs a bounded implementation
+# to charge against. Forward-declared to the name the design (docs/BANK-CROSSGEN-DESIGN.md
+# §4) gives S3's Game Boy cell-lift gate, `gb_can_lift_hook` -- not yet linked in this
+# build, which this file's own posture (see the "WHY A NAMED IMPLEMENTATION MISSING..."
+# note above) treats as a non-fatal shrink of the reachable graph, not an under-count.
+# `xfer@84` has no declaration: nothing dereferences it anywhere in this build (no `bl`
+# site exists to require one) -- it is wired starting S3.
+BoxSource.can_lift @80 in src_can_lift -> gb_can_lift_hook
+
 # The commit parameter threaded through app_mon_menu (party call sites) and
 # app_paste_gb_merge -> app_paste_gb_commit -> app_commit_with_dex (inlined) -> `commit ?
 # commit() : 0` (source/pdna_app.h:52, source/pdna_main.c:1931/3132-3148/3243/3256/3275-3285/
