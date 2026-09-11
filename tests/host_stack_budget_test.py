@@ -922,6 +922,106 @@ def test_g4_all_six_reregistered_structs_parse_against_their_real_headers():
               got == expected, got)
 
 
+# === BACKLOG #106 G5: a `bl` with several inbound branches, each feeding a DIFFERENT =====
+# === offset into the dispatch register, must have EVERY offset declared, not just one ===
+
+def test_g5_two_branch_predecessors_feed_different_offsets():
+    """The brief's own fixture: a synthetic Thumb sequence with two `b` predecessors
+    (one taken via `beq`, one via an unconditional `b`) loading DIFFERENT offsets
+    into the same register before a shared `blx` -- the -O2 tail-merge shape
+    app_mon_menu_readonly hit for real (BACKLOG #106 G5). Both offsets must be
+    found; resolve_indirect_site() (the old, single-predecessor linear scan) must
+    find only ONE of them, proving the fix's value."""
+    fn_insn_seq = [
+        (0x1000, "cmp\tr0, #0"),
+        (0x1002, "beq.n\t1010 <fn+0x10>"),
+        (0x1004, "ldr\tr3, [r4, #8]"),
+        (0x1006, "b.n\t1020 <fn+0x20>"),
+        (0x1010, "ldr\tr3, [r4, #16]"),
+        (0x1020, "blx\tr3"),
+    ]
+    kind, offs = sb.resolve_indirect_site_all_predecessors(fn_insn_seq, 0x1020, "r3")
+    check("(G5) both predecessors' offsets are found", kind == 'field' and offs == frozenset({8, 16}),
+          (kind, offs))
+
+
+def test_g5_mutation_chase_only_the_fall_through():
+    """Mutation named directly in the brief: chasing ONLY the fall-through
+    predecessor (resolve_indirect_site(), which transparently passes through the
+    `b.n`/`beq.n` it meets instead of treating them as real alternate edges) finds
+    just the fall-through path's offset (16) and silently MISSES the branch
+    predecessor's offset (8) -- exactly the false pass a caller trusting only one
+    offset would ship."""
+    fn_insn_seq = [
+        (0x1000, "cmp\tr0, #0"),
+        (0x1002, "beq.n\t1010 <fn+0x10>"),
+        (0x1004, "ldr\tr3, [r4, #8]"),
+        (0x1006, "b.n\t1020 <fn+0x20>"),
+        (0x1010, "ldr\tr3, [r4, #16]"),
+        (0x1020, "blx\tr3"),
+    ]
+    kind, off = sb.resolve_indirect_site(fn_insn_seq, 0x1020, "r3")
+    check("(G5 mutation) the fall-through-only scan finds ONLY offset 16, missing 8",
+          kind == 'field' and off == 16, (kind, off))
+
+
+def test_g5_cold_block_reached_only_via_a_forward_branch_still_resolves():
+    """A predecessor block that is ITSELF reached only by some OTHER forward
+    branch (an out-of-line clamp/cold tail, e.g. rom_gbui.c's all_blank() `if
+    (chunk > 64) chunk = 64;`) must still resolve correctly -- its own physical
+    predecessor in the listing (laid out right after the function's real
+    epilogue, since cold tails are placed at the end) is UNRELATED dead code
+    that must never be walked into. The chased register (r7) is loaded once at
+    the loop top and never touched by the cold clamp block itself (which sets
+    an UNRELATED register, r4, exactly like all_blank()'s `chunk = 64` never
+    touches the Scan* the dispatch actually comes from) -- but that cold
+    block's own physical predecessor in the listing is a `pop {r4, r5, r6, r7}`
+    epilogue that WOULD (wrongly) redefine r7 if the walker ever fell through
+    into it instead of following the real `bhi.n` edge back into the hot path."""
+    fn_insn_seq = [
+        (0x2000, "ldr\tr7, [r6, #0]"),           # loop-top / real field load, r7 = field@0
+        (0x2002, "cmp\tr4, #64"),
+        (0x2004, "bhi.n\t2020 <fn+0x20>"),        # cold path: some unrelated clamp condition
+        (0x2006, "subs\tr3, r3, r1"),             # hot-path continuation (join point)
+        (0x2008, "blx\tr7"),                      # SITE: dispatch through r7
+        (0x200a, "pop\t{r4, r5, r6, r7}"),        # epilogue -- would redefine r7 if ever
+        (0x200c, "pop\t{r1}"),                    #   mistakenly walked into
+        (0x200e, "bx\tr1"),
+        (0x2020, "movs\tr4, #64"),                # cold clamp block: touches r4, NOT r7 --
+                                                   #   a pass-through for the register that matters
+        (0x2022, "b.n\t2006 <fn+0x6>"),           # jumps back into the hot path's join
+    ]
+    kind, offs = sb.resolve_indirect_site_all_predecessors(fn_insn_seq, 0x2008, "r7")
+    check("(G5) the cold-block predecessor resolves through the REAL chain, not the epilogue",
+          kind == 'field' and offs == frozenset({0}), (kind, offs))
+
+
+def test_g5_app_mon_menu_readonly_four_way_merge_against_the_real_elf():
+    """Not a fixture -- reads the REAL PokeDNA-artless.elf/build-artless this repo
+    was just built with (skips cleanly if absent) and confirms the live defect
+    this fix found: app_mon_menu_readonly's -O2 tail merge is FOUR offsets wide
+    (4, 8, 16, 32 -- AppSrcOps.move/release/paste/item), not the three a human
+    listed by hand before this fix existed. If this ever reports fewer than
+    four, either the codegen changed (re-verify by hand) or G5 regressed."""
+    elf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "PokeDNA-artless.elf")
+    builddir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build-artless")
+    if not (os.path.exists(elf) and os.path.isdir(builddir)):
+        print("  (skip) PokeDNA-artless.elf/build-artless not found from this working directory")
+        return
+    dump_text = sb.disassemble(elf)
+    analysis = sb.analyze(dump_text)
+    fn = analysis["fn_insn_seq"].get("app_mon_menu_readonly", [])
+    sites = analysis["indirect_sites"].get("app_mon_menu_readonly", [])
+    found = None
+    for addr, _ins, reg in sites:
+        kind, offs = sb.resolve_indirect_site_all_predecessors(fn, int(addr, 16), reg)
+        if kind == 'field' and len(offs) > 1:
+            found = offs
+            break
+    check("(G5) app_mon_menu_readonly's tail merge resolves to all four offsets",
+          found == frozenset({4, 8, 16, 32}), found)
+
+
 # === (D4) blind spots over the WHOLE reachable graph, not just the deepest chain =======
 
 def _d4_graph():
@@ -1607,6 +1707,10 @@ def main():
     test_g4_mutation_inserted_field_shifts_a_declared_offset()
     test_g4_array_count_resolved_from_a_same_file_macro()
     test_g4_all_six_reregistered_structs_parse_against_their_real_headers()
+    test_g5_two_branch_predecessors_feed_different_offsets()
+    test_g5_mutation_chase_only_the_fall_through()
+    test_g5_cold_block_reached_only_via_a_forward_branch_still_resolves()
+    test_g5_app_mon_menu_readonly_four_way_merge_against_the_real_elf()
     test_d5a_shared_offset_two_structs_two_callers()
     test_d5a_two_structs_same_caller_both_credited()
     test_d5a_unqualified_on_a_shared_offset_is_a_parse_error()

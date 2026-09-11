@@ -1337,55 +1337,261 @@ def _base_is_section_anchor(fn_insn_seq, ldr_idx, base_reg):
     return False                            # never (re)defined earlier in this function: a parameter
 
 
-def resolve_indirect_site(fn_insn_seq, site_addr, reg):
-    """Scan `fn`'s instructions backward from just before `site_addr` for the origin
-    of the value dispatched through `reg`. Returns ('field', offset) if it traces to
-    `ldr rN, [rY, #offset]` with rY not pc/lr/sp AND rY itself not a fresh literal
-    load (a struct-field load through a genuine instance pointer, chasing plain
-    `mov rX, rY` register-to-register copies on the way -- the compiler routinely
-    loads a struct field into one register and copies it before the call); otherwise
-    ('nonfield', None) -- set by anything else, never reassigned in this function (a
-    parameter/register argument, e.g. AppCommitFn's `commit`), a section-anchor/global
-    access (see _base_is_section_anchor), or CLOBBERED by an intervening `bl`/`blx`
-    while held in a caller-saved register (r0-r3/ip survive a call only by accident,
-    never by the ABI -- attributing a post-call value to a pre-call load would be a
-    genuine lie, not a conservative guess). Erring toward 'nonfield' is the safe
-    direction: an unmatched nonfield site with no argsites declaration is a blind spot
-    and FAILS the build, so a misclassified field load costs a loud failure, never a
-    silent pass."""
-    idx = bisect.bisect_left(fn_insn_seq, (site_addr, ''))
-    for i in range(idx - 1, -1, -1):
-        _addr, ins = fn_insn_seq[i]
-        ins_clean = ins.split('@')[0].strip()
-        if CALL_MNEM_RE.match(ins_clean):
-            if reg in CALLER_SAVED_REGS:
-                return ('nonfield', None)              # clobbered by the call
-            continue                                    # callee-saved reg survives a call
-        if BRANCH_MNEM_RE.match(ins_clean):
-            continue
-        m = LDR_FIELD_RE.match(ins_clean)
-        if m:
-            if m.group(1) != reg:
-                continue
-            if m.group(2) in ('pc', 'lr', 'sp'):
-                return ('nonfield', None)              # literal/stack-spilled param, not a field
-            if _base_is_section_anchor(fn_insn_seq, i, m.group(2)):
-                return ('nonfield', None)              # global/section-anchor access, not a field
-            return ('field', int(m.group(3)))
-        if _ldm_defines(ins_clean, reg):                # trap #7: ldm redefines it, not a spilled field
-            return ('nonfield', None)
-        if LDM_RE.match(ins_clean):
-            continue                                    # ldm, but doesn't touch `reg`
-        if STORE_MNEM_RE.match(ins_clean) or CMP_MNEM_RE.match(ins_clean):
-            continue
-        mv = MOV_REG_RE.match(ins_clean)
-        if mv and mv.group(1) == reg:
-            reg = mv.group(2)                           # chase the copy, keep scanning
-            continue
-        dm = DEST_REG_RE.match(ins_clean)
-        if dm and dm.group(1) == reg:
-            return ('nonfield', None)                  # set by something not ldr-offset/mov
+def _field_origin_step(fn_insn_seq, i, reg):
+    """The effect of ONE instruction, fn_insn_seq[i], on `reg`'s traced origin --
+    the single-instruction unit both _chase_field_origin() (a whole straight-line
+    run at once) and resolve_indirect_site_all_predecessors() (G5, BACKLOG #106:
+    one instruction at a time, so a join found PARTWAY through a run is never
+    silently skipped) are built from. Returns one of:
+      ('resolved', ('field', offset))   -- `ldr rN, [rY, #offset]` with rY not
+                                            pc/lr/sp and not itself a fresh
+                                            literal load (see _base_is_section_
+                                            anchor) -- a genuine struct-field load
+      ('resolved', ('nonfield', None))  -- CLOBBERED by a `bl`/`blx` while
+                                            caller-saved, a literal/stack-spilled
+                                            load, an `ldm` redefinition (trap #7),
+                                            a section-anchor/global access, or
+                                            set by anything else not ldr-field/mov
+      ('rename', new_reg)               -- `mov rX, rY` copies `reg` (was rY,
+                                            now the caller should keep chasing rX)
+      ('pass', None)                    -- doesn't touch `reg` at all; keep
+                                            walking backward past this instruction
+    Erring toward 'nonfield' is the safe direction: an unmatched nonfield site
+    with no argsites declaration is a blind spot and FAILS the build, so a
+    misclassified field load costs a loud failure, never a silent pass."""
+    _addr, ins = fn_insn_seq[i]
+    ins_clean = ins.split('@')[0].strip()
+    if CALL_MNEM_RE.match(ins_clean):
+        if reg in CALLER_SAVED_REGS:
+            return ('resolved', ('nonfield', None))    # clobbered by the call
+        return ('pass', None)                          # callee-saved reg survives a call
+    if BRANCH_MNEM_RE.match(ins_clean):
+        return ('pass', None)
+    m = LDR_FIELD_RE.match(ins_clean)
+    if m:
+        if m.group(1) != reg:
+            return ('pass', None)
+        if m.group(2) in ('pc', 'lr', 'sp'):
+            return ('resolved', ('nonfield', None))    # literal/stack-spilled param, not a field
+        if _base_is_section_anchor(fn_insn_seq, i, m.group(2)):
+            return ('resolved', ('nonfield', None))    # global/section-anchor access, not a field
+        return ('resolved', ('field', int(m.group(3))))
+    if _ldm_defines(ins_clean, reg):                    # trap #7: ldm redefines it, not a spilled field
+        return ('resolved', ('nonfield', None))
+    if LDM_RE.match(ins_clean):
+        return ('pass', None)                           # ldm, but doesn't touch `reg`
+    if STORE_MNEM_RE.match(ins_clean) or CMP_MNEM_RE.match(ins_clean):
+        return ('pass', None)
+    mv = MOV_REG_RE.match(ins_clean)
+    if mv and mv.group(1) == reg:
+        return ('rename', mv.group(2))                  # chase the copy, keep scanning
+    dm = DEST_REG_RE.match(ins_clean)
+    if dm and dm.group(1) == reg:
+        return ('resolved', ('nonfield', None))         # set by something not ldr-offset/mov
+    return ('pass', None)
+
+
+def _chase_field_origin(fn_insn_seq, start_i, reg, stop_i=-1):
+    """Walk `fn_insn_seq` backward from index `start_i` (inclusive) down to (but
+    NOT including) index `stop_i`, applying _field_origin_step() at each
+    position, for the origin of `reg`. Returns ('field', offset) or ('nonfield',
+    None) the moment some instruction resolves it; or -- only reachable when the
+    caller passes a non-default `stop_i` -- ('boundary', reg) if the walk reaches
+    `stop_i` with `reg` (possibly renamed by a `mov` along the way) still
+    unresolved. `resolve_indirect_site()` (single linear predecessor, no join-
+    awareness) and `resolve_indirect_site_all_predecessors()` (G5, BACKLOG #106:
+    checks for a real join at EVERY instruction, not just once per straight-line
+    run) are built from the same per-instruction step; only how far each is
+    willing to walk in one uninterrupted run -- and what it does when it can't
+    resolve -- differs."""
+    for i in range(start_i, stop_i, -1):
+        kind, val = _field_origin_step(fn_insn_seq, i, reg)
+        if kind == 'resolved':
+            return val
+        if kind == 'rename':
+            reg = val
+    if stop_i >= 0:
+        return ('boundary', reg)                        # hit the join point, still unresolved
     return ('nonfield', None)                           # never reassigned: a parameter
+
+
+def resolve_indirect_site(fn_insn_seq, site_addr, reg):
+    """Scan `fn`'s instructions backward from just before `site_addr`, LINEARLY
+    through the disassembly's own address order (transparently passing through
+    any branch instruction it meets), for the origin of the value dispatched
+    through `reg`. See _chase_field_origin() for the full field/nonfield
+    discipline this shares with resolve_indirect_site_all_predecessors(). Correct
+    whenever the code immediately above the site really is its only way in;
+    resolve_indirect_site_all_predecessors() is the G5 fix for when it isn't."""
+    idx = bisect.bisect_left(fn_insn_seq, (site_addr, ''))
+    kind, val = _chase_field_origin(fn_insn_seq, idx - 1, reg)
+    return (kind, val)
+
+
+_UNCONDITIONAL_EXIT_RE = re.compile(r'^(b|b\.n|b\.w)\s|^bx\b|^pop\s+\{[^}]*pc[^}]*\}')
+
+
+def _intra_function_branch_targets(fn_insn_seq):
+    """{target_addr: [source_index, ...]} for every `b`/`bXX` (never `bl`/`blx`,
+    which return to their caller rather than jump, and never `bx`, whose operand
+    is a register objdump prints as a name, not a resolvable hex target -- TGT_RE
+    simply never matches either shape) branch found anywhere in `fn_insn_seq`
+    whose target lands on one of this SAME function's own instructions -- the
+    raw material G5's predecessor search needs."""
+    addr_index = {addr: i for i, (addr, _ins) in enumerate(fn_insn_seq)}
+    targets = collections.defaultdict(list)
+    for i, (_addr, ins) in enumerate(fn_insn_seq):
+        ins_clean = ins.split('@')[0].strip()
+        if not BRANCH_MNEM_RE.match(ins_clean):
+            continue
+        m = TGT_RE.match(ins_clean)
+        if not m:
+            continue
+        t = int(m.group(3), 16)
+        if t in addr_index:
+            targets[t].append(i)
+    return dict(targets)
+
+
+def _real_predecessors(fn_insn_seq, i, branch_targets):
+    """Every REAL inbound edge reaching fn_insn_seq[i]'s own address: each
+    `b`/`bXX` elsewhere targeting it (the branch instruction's own index --
+    taking the branch doesn't itself touch any register, so the register's
+    value flowing in along that edge is exactly whatever it was just before the
+    branch instruction ran), PLUS the fall-through edge from i-1 when i-1 exists
+    and doesn't itself unconditionally exit (a `b`/`bx`/`pop {..,pc}` there
+    means nothing actually falls through into i). Returns a plain list of
+    indices to resume scanning FROM (not i-1 pre-subtracted for the branch
+    case -- see resolve_indirect_site_all_predecessors() for why each is
+    already "the last instruction that ran on this edge")."""
+    addr = fn_insn_seq[i][0]
+    preds = list(branch_targets.get(addr, []))
+    if i > 0:
+        above_clean = fn_insn_seq[i - 1][1].split('@')[0].strip()
+        if _UNCONDITIONAL_EXIT_RE.match(above_clean) is None:
+            preds.append(i - 1)
+    return preds
+
+
+def resolve_indirect_site_all_predecessors(fn_insn_seq, site_addr, reg):
+    """G5 (BACKLOG #106): resolve_indirect_site() walks backward LINEARLY through
+    the disassembly's own address order, transparently passing through any branch
+    instruction it meets -- correct when the block above the site really is its
+    ONLY predecessor, silently wrong (only ever caught by a human before this fix)
+    when the compiler tail-merged SEVERAL differently-sourced blocks into one
+    shared dispatch, each feeding a DIFFERENT struct-field offset into the same
+    register before falling into it (confirmed live: app_mon_menu_readonly's -O2
+    four-way merge at offset 8/4/16/32, previously correct only for three of the
+    four offsets because a human listed them by hand after reading the
+    disassembly -- the fourth, offset 4, had gone unnoticed).
+
+    Walks backward ONE INSTRUCTION AT A TIME (via _field_origin_step()), and
+    -- critically, unlike a plain linear scan or a "find the nearest join, walk
+    the shared span, THEN fan out once" version (an earlier, insufficient draft
+    of this same fix) -- checks whether EACH instruction it is about to move
+    into is a REAL join (more than one inbound edge, per _real_predecessors())
+    BEFORE moving there. The instant it finds one, it stops the straight-line
+    walk and pushes every inbound edge onto a worklist as its own independent
+    continuation, each carrying whatever register name the walk had traced
+    `reg` to by that point (a `mov` along the way may have renamed it).
+
+    Checking at EVERY instruction, not just once at the site's own nearest
+    join, matters because a predecessor block can ITSELF be reached only via
+    some OTHER, unrelated forward branch (an out-of-line/cold tail -- a clamp,
+    an error path) whose own physical predecessor in the listing is dead code,
+    typically the function's own epilogue laid out right after the hot path
+    that cold tail jumps back into. Confirmed live: rom_gbui.c's all_blank()'s
+    out-of-line `if (chunk > 64) chunk = 64;` clamp is reached only by a forward
+    `bhi.n`; an earlier draft of this fix that only re-checked joins once per
+    predecessor FRONTIER (not once per instruction within a frontier's own scan)
+    still walked straight through that clamp block's single instruction into
+    the function's `pop {r4-r7}` epilogue beyond it, which redefines r7 and
+    manufactured a FALSE 'nonfield' verdict no real predecessor ever produces.
+    Checking before every single step removes that whole class of mistake.
+
+    Returns ('field', frozenset_of_offsets): a one-member frozenset in the
+    ordinary case (a single predecessor, or several that all resolve the exact
+    same offset), more than one member when different predecessors genuinely
+    feed different offsets -- the caller MUST require a declaration to cover
+    EVERY member, never just one. Returns ('nonfield', None) if there is no real
+    predecessor to trace (function entry) or if ANY predecessor traces to
+    something other than a field load -- same conservative discipline as
+    resolve_indirect_site() itself: one unresolved predecessor makes the WHOLE
+    site unresolved, never a silent partial pass."""
+    idx = bisect.bisect_left(fn_insn_seq, (site_addr, ''))
+    if idx == 0:
+        return ('nonfield', None)
+    branch_targets = _intra_function_branch_targets(fn_insn_seq)
+
+    # Each worklist entry is (i, cur_reg): "resume scanning AT index i" (i's own
+    # instruction has not been examined yet). The visited-set guards against a
+    # genuine loop (a back-edge reaching its own frontier again) never
+    # terminating.
+    #
+    # The site's OWN address can itself be a branch target (a case/switch's
+    # OTHER arms `bne`-ing directly to the shared `bl`/`blx` instruction, no
+    # intervening shared tail at all) -- seeding the worklist with a bare
+    # `idx - 1` would silently miss that predecessor edge exactly the way the
+    # site's own call instruction is never examined for `reg`'s definition
+    # (see below): the first real join check has to happen for `idx` itself,
+    # through the SAME _real_predecessors() every later frontier uses, not a
+    # hard-coded "the physically preceding instruction is the only way in".
+    # `idx == len(fn_insn_seq)` (the site's own address isn't present in the
+    # sequence at all -- every real caller's disassembly always includes its
+    # own call instruction, but a hand-built fixture may not) has nothing to
+    # introspect there, so it falls back to the plain `idx - 1` start.
+    if idx < len(fn_insn_seq):
+        site_preds = _real_predecessors(fn_insn_seq, idx, branch_targets)
+    else:
+        site_preds = [idx - 1]
+    if len(site_preds) == 1 and site_preds[0] == idx - 1:
+        worklist = [(idx - 1, reg)]
+    elif not site_preds:
+        return ('nonfield', None)
+    else:
+        worklist = [(p, reg) for p in site_preds]
+    visited = set()
+    offsets = set()
+    saw_any_predecessor = False
+
+    while worklist:
+        i, cur_reg = worklist.pop()
+        if (i, cur_reg) in visited:
+            continue
+        visited.add((i, cur_reg))
+
+        while True:
+            kind, val = _field_origin_step(fn_insn_seq, i, cur_reg)
+            if kind == 'resolved':
+                field_kind, field_val = val
+                if field_kind == 'field':
+                    offsets.add(field_val)
+                    saw_any_predecessor = True
+                else:
+                    return ('nonfield', None)      # clobbered/parameter on this path --
+                                                    # whole site unresolved (one bad path
+                                                    # is enough)
+                break
+            if kind == 'rename':
+                cur_reg = val
+
+            if i == 0:
+                return ('nonfield', None)          # ran off the function's own entry
+                                                    # with `reg` still unresolved
+            preds = _real_predecessors(fn_insn_seq, i, branch_targets)
+            if len(preds) == 1 and preds[0] == i - 1:
+                i -= 1                             # the ordinary, single-predecessor
+                continue                           # case: keep walking in this same frontier
+            if not preds:
+                return ('nonfield', None)          # an unreachable/veneer-only join this
+                                                    # scan can't vouch for
+            for p in preds:
+                worklist.append((p, cur_reg))
+            break
+
+    if not saw_any_predecessor:
+        return ('nonfield', None)
+    return ('field', frozenset(offsets))
 
 
 def estimate_frames(fn_lines):
@@ -1545,17 +1751,40 @@ def resolve_all_sites(analysis, field_offset_index, argsite_decls, whole_func_de
                 continue      # every site (there's at most one) is exempted
         nonfield_sites = []
         for addr, ins, reg in sites:
-            kind, off = resolve_indirect_site(fn_insn_seq.get(fn, []), int(addr, 16), reg)
+            # G5 (BACKLOG #106): a `bl`/`blx` whose basic block has more than one
+            # inbound predecessor (an -O2 tail merge of several differently-sourced
+            # blocks, each feeding a DIFFERENT struct-field offset into the same
+            # register before falling into the shared dispatch) must have EVERY
+            # resulting offset declared, not just whichever one a linear backward
+            # scan happens to land on by code-layout luck.
+            kind, offs = resolve_indirect_site_all_predecessors(
+                fn_insn_seq.get(fn, []), int(addr, 16), reg)
             if kind == 'field':
-                impls = qualified_offset_impls.get((off, fn))
-                if impls is None:
-                    impls = unqualified_offset_impls.get(off)
-                if impls:
-                    edges_to_add[fn] |= impls
+                declared_offsets, undeclared_offsets, site_impls = set(), set(), set()
+                for off in sorted(offs):
+                    impls = qualified_offset_impls.get((off, fn))
+                    if impls is None:
+                        impls = unqualified_offset_impls.get(off)
+                    if impls:
+                        declared_offsets.add(off)
+                        site_impls |= impls
+                    else:
+                        undeclared_offsets.add(off)
+                if undeclared_offsets:
+                    if len(offs) > 1:
+                        blind[fn].append((addr, ins,
+                            f"multi-predecessor struct-field load: offsets "
+                            f"{sorted(offs)} via {len(offs)} predecessors; declared "
+                            f"{sorted(declared_offsets)} -- missing a field "
+                            f"declaration covering {sorted(undeclared_offsets)} for "
+                            f"caller {fn!r}"))
+                    else:
+                        off = next(iter(offs))
+                        blind[fn].append((addr, ins, f"struct-field load @{off}, no "
+                                           f"declared field at that offset for caller {fn!r} "
+                                           "(and no unqualified owner of that offset)"))
                 else:
-                    blind[fn].append((addr, ins, f"struct-field load @{off}, no "
-                                       f"declared field at that offset for caller {fn!r} "
-                                       "(and no unqualified owner of that offset)"))
+                    edges_to_add[fn] |= site_impls
             else:
                 nonfield_sites.append((addr, ins))
         if fn in argsite_decls:
@@ -1589,18 +1818,21 @@ def dump_sites(analysis, field_offset_index, argsite_decls, whole_func_decls):
             continue
         nonfield_i = 0
         for addr, ins, reg in sites:
-            kind, off = resolve_indirect_site(fn_insn_seq.get(fn, []), int(addr, 16), reg)
+            kind, offs = resolve_indirect_site_all_predecessors(
+                fn_insn_seq.get(fn, []), int(addr, 16), reg)
             if kind == 'field':
-                impls = qualified_offset_impls.get((off, fn))
-                src = "qualified"
-                if impls is None:
-                    impls = unqualified_offset_impls.get(off)
-                    src = "unqualified"
-                if impls:
-                    print(f"{fn}  {addr}  field @{off} ({src}) -> "
-                          f"{' '.join(sorted(impls))}")
-                else:
-                    print(f"{fn}  {addr}  field @{off} -> BLIND")
+                for off in sorted(offs):
+                    impls = qualified_offset_impls.get((off, fn))
+                    src = "qualified"
+                    if impls is None:
+                        impls = unqualified_offset_impls.get(off)
+                        src = "unqualified"
+                    via = f" via {len(offs)} predecessors" if len(offs) > 1 else ""
+                    if impls:
+                        print(f"{fn}  {addr}  field @{off} ({src}){via} -> "
+                              f"{' '.join(sorted(impls))}")
+                    else:
+                        print(f"{fn}  {addr}  field @{off}{via} -> BLIND")
             else:
                 nonfield_i += 1
                 if fn in argsite_decls:
