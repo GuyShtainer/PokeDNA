@@ -121,8 +121,23 @@ static void hof_detail_render(const GbHofTeam* t, uint8_t gen, int team_no) {
     if (m >= t->n) continue;
     const GbHofMon* mn = &t->mon[m];
     const char* nm = (mn->dex >= 1 && mn->dex <= 251) ? pk_species_name(mn->dex) : "?";
-    char line[32];
-    if (gen == GB_GEN2)
+    /* NICK: gb_hof.c decodes mn->nick on both gens but nothing drew it -- show it
+     * only when it differs from the species name (a lot of teams never get
+     * nicknamed, so "PIKACHU "PIKACHU" Lv100" would just be noise). Measured to
+     * sys8Font's fixed 8 px cell (ui.c) so a 10-char species (TYPHLOSION) plus a
+     * full 10-char nickname can never run past the 240 px screen: the suffix
+     * (" Lv.NNN" + an optional shiny " *") is built first, then the nickname gets
+     * whatever's left of a 29-char (232 px, x=6..238) budget -- dropped to a
+     * shortened %.*s rather than overflowing off-screen. */
+    bool has_nick = mn->nick[0] != '\0' && strcmp(mn->nick, nm) != 0;
+    char line[40];
+    if (has_nick) {
+      char suffix[8];
+      siprintf(suffix, " Lv.%d%s", mn->level, (gen == GB_GEN2 && mn->shiny) ? " *" : "");
+      int budget = 29 - (int)strlen(nm) - 3 /* space + two quotes */ - (int)strlen(suffix);
+      if (budget < 1) budget = 1;
+      siprintf(line, "%s \"%.*s\"%s", nm, budget, mn->nick, suffix);
+    } else if (gen == GB_GEN2)
       siprintf(line, "%-10s Lv%-3d%s", nm, mn->level, mn->shiny ? " *" : "");
     else
       siprintf(line, "%-10s Lv%-3d", nm, mn->level);
@@ -130,7 +145,16 @@ static void hof_detail_render(const GbHofTeam* t, uint8_t gen, int team_no) {
     if (gen == GB_GEN2) {
       char ot[16];
       siprintf(ot, "OT %u", (unsigned)mn->otid);
-      ui_text(168, y, UI_DIM, ot);
+      /* sys8Font is a fixed 8x8 face (ui.c) -- strlen*8 is the line's real drawn
+       * width. When a nicknamed line runs past the OT column (x=168), drop OT to a
+       * second sub-line instead of overlapping it: each row already has a full
+       * 16 px of vertical room (ROW_DY) for one 8 px line of text, so y+8 fits
+       * without touching any other row's layout. */
+      int line_w = (int)strlen(line) * 8;
+      if (6 + line_w > 168)
+        ui_text(6, y + 8, UI_DIM, ot);
+      else
+        ui_text(168, y, UI_DIM, ot);
     }
   }
   ui_hline(0, 151, UI_SCR_W, UI_BORDER);

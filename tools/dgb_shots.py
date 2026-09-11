@@ -1445,9 +1445,12 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                        "team newest-first, cursor on row 1")
 
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # row 1 -> the team detail
+    # D6: this corpus save's own HoF teams carry no shiny DV quad and no custom
+    # nickname (real, unedited saves) -- do not claim either in THIS shot's own
+    # caption. Both are proven on dedicated poked-.sav shots kept alongside this
+    # set (b89_{red,crystal}_08_nick.png, b89_crystal_09_shiny.png), not implied here.
     s.shot("02_detail", "BACKLOG #89: the team detail page -- 6 mon rows"
-                        + (" (species/level, OT id, a shiny mark via g2_dv_shiny)"
-                           if which == "crystal" else " (species/level)"))
+                        + (" (species/level, OT id)" if which == "crystal" else " (species/level)"))
     s.tap("B", settle=gb_shots.BIG_SETTLE)                  # detail -> back to the list
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # the Hall of Fame's own START menu
@@ -1482,11 +1485,43 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.tap("DOWN", settle=gb_shots.SETTLE)                   # SET COUNT row
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> the stepper, starts at 0 (never confirmed,
                                                               # so gb_persist()'s own dialog never fires here)
-    s.press_n("UP", 3, settle=gb_shots.SETTLE)              # 0 -> 3
-    cap = 255 if which in ("red", "yellow") else 200
-    s.shot("07_setcount", f"BACKLOG #89: SET COUNT's stepper, moved to 3 "
-                          f"('Lifetime wins: 3 / {cap}')")
+    s.press_n("UP", 3, settle=gb_shots.SETTLE)              # 0 -> 3, or pinned at 0 under D1 (see below)
+    # D1: on Gen 1 the cap is the teams present, not a flat 255 -- and this screen
+    # was reached AFTER CLEAR ALL (06_empty), so present=0 here and every UP press
+    # clamps right back to 0. Gen 2's own cap stays a flat 200 regardless (its own
+    # viewer re-derives the count from the slots).
+    if which == "crystal":
+        cap, want = 200, 3
+    else:
+        cap, want = 0, 0
+    s.shot("07_setcount", f"BACKLOG #89: SET COUNT's stepper after CLEAR ALL -- "
+                          f"D1's clamp is the teams present (0 here, this list is "
+                          f"empty), not a flat 255, so 3 UP presses land at "
+                          f"{want} ('Lifetime wins: {want} / {cap}')")
 
+    return s
+
+
+def run_b89_hof_detail_only(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
+                            shot_name: str, caption: str) -> gb_shots.Session:
+    """BACKLOG #89 D6/NICK proof shots: navigate straight to the team detail page
+    and shoot it once, nothing else. `rom` must be the SAME kind of ONE-ROM fused
+    image run_b89_hof() takes, except its embedded .sav has been byte-poked first
+    (a nicknamed mon, or a shiny-DV quad via g2_dv_shiny's own formula) -- see this
+    slice's own commit message for the exact offsets poked and why re-fusing the
+    poked .sav (not poking the already-fused .gba's SAV payload directly) is
+    required: fuse_gb.py's directory records a CRC32 per payload, and poking the
+    fused output invalidates it, which reads back as 'not a valid save' at boot."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b89_{which}_")
+    print(f"== BACKLOG #89 D6/NICK: {which}'s Hall of Fame detail, poked-.sav proof shot ==")
+    s.run(700)
+    s.tap("A", settle=60)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 12)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Records -> pdna_gbhof()
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # row 1 -> the team detail
+    s.shot(shot_name, caption)
     return s
 
 
@@ -2561,6 +2596,12 @@ def main(argv=None) -> int:
                           "-- --image MUST be a ONE-ROM fused image matching this "
                           "choice, same BACKLOG #98 harness-gap reasoning as "
                           "--u4-bag/--u5-pack/--b90-fly")
+    ap.add_argument("--b89-hof-extra", choices=("red-nick", "crystal-nick", "crystal-shiny"),
+                     help="BACKLOG #89 D6/NICK: only run_b89_hof_detail_only() -- "
+                          "--image MUST be a ONE-ROM fused image whose .sav was "
+                          "byte-poked first (a nicknamed mon for *-nick, a shiny DV "
+                          "quad for crystal-shiny) -- see run_b89_hof_detail_only()'s "
+                          "own docstring")
     ap.add_argument("--b90-fly", choices=("red", "crystal"),
                      help="BACKLOG #90: only run_b90_fly() against --image for the "
                           "named game (Red's or Crystal's own Fly-destination "
@@ -2678,6 +2719,32 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b89_hof_extra:
+        which, kind = a.b89_hof_extra.rsplit("-", 1)
+        if kind == "nick":
+            name, cap = "08_nick", (
+                f"BACKLOG #89 D6/NICK: {which}'s team detail with mon 0 nicknamed "
+                "via a byte-poked .sav (gb_name_encode) -- proves hof_detail_render "
+                "draws GbHofMon.nick and fits it (measured, sys8Font 8px cells) "
+                "without overflowing the 240px screen or the OT-id column")
+        else:
+            name, cap = "09_shiny", (
+                "BACKLOG #89 D6: crystal's team detail with mon 0's DVs set to a "
+                "shiny-capable quad (Atk&2, Def/Spe/Spc=10, g2_dv_shiny's own "
+                "formula) via a byte-poked .sav -- proves the shiny mark actually "
+                "renders, not just claimed")
+        try:
+            sess = run_b89_hof_detail_only(core_mod, image_mod, a.image, a.out, which, name, cap)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b89 hof extra ({a.b89_hof_extra}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name2, reason in skipped:
+            print(f"  [skip] {name2}: {reason}")
         return 0
 
     if a.b90_fly:
