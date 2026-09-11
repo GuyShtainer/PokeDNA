@@ -1462,6 +1462,105 @@ def run_b85_daycare(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
     return s
 
 
+def run_b114_yard(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #114: the Day-Care YARD on the Gen-1/2 screen (source/pdna_gbdaycare.c,
+    pdna_yard.h) -- dc_scene()/dc_icon_over_bg()/dc_pointer() now draw underneath the
+    SAME status panel BACKLOG #85's own shots already covered mechanically (Put in /
+    Take out / the confirm prompts); this run is about the SCENE, not the mechanics.
+
+    `rom` must be a ONE-ROM fused image, same requirement as run_b85_daycare (no Gen-3
+    ROM is ever registered in a PDNA_DELTA build -- app_register_rom(), the browse-for-
+    ROM flow, is `#ifndef PDNA_DELTA` entirely, since there is no SD to browse in the
+    emulator; confirmed by direct probe, not assumed). app_yard_visitors_ok() is
+    therefore ALWAYS false here (g_yard_visitors also defaults off), so every shot
+    below shows the "No visitors: register a Gen-3 ROM" panel row and NO invented
+    visitor icons -- the brief's own sanctioned fallback ("visitors present ... else
+    the 'no visitors' line"). The Gen-1 visitor cap (<=151, vs Gen 2/3's 251) is
+    proven on the host instead (tests/host_yard_test.c), the same posture every other
+    "cannot fabricate this state in the emulator" case in this file already takes.
+
+    Real boarder icons ALSO do not render here (mon_icon_for_form_frame's Gen-3-keyed
+    icon cache has no source without a registered Gen-3 ROM -- a DIFFERENT lookup path
+    than the GB-native rom_gbicon one the box grid already proves works in this same
+    fused image, BACKLOG #85's own 00_box_before shot) -- the yard degrades to its
+    plain background with no icon, never a blank screen, exactly BACKLOG #114's own
+    acceptance line for the artless/no-ROM case.
+
+    Same box-index-to-reach-a-free-slot setup as run_b85_daycare (box 4/HITMONLEE for
+    Red, box 12/MILTANK for Gold)."""
+    box_index = 4 if which == "red" else 12
+    box_label = "BOX5" if which == "red" else "BOX13"
+
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b114yard_{which}_")
+    print(f"== BACKLOG #114: {which}'s own Day-Care YARD ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid
+    s.run(GB_ART_COLD_SETTLE)
+    s.press_n("R", box_index, settle=300)                   # -> the box with a free slot (see run_b85_daycare)
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 2)                                     # Party -> Bank -> Daycare (index 2)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Daycare -> pdna_gbdaycare()
+    s.shot("01_yard_empty", f"#114: {which}'s own Day-Care yard on entry, both slots "
+                             "empty -- dc_scene()'s background (the procedural scene "
+                             "in this artless image) fills the screen where the two "
+                             "text rows used to be; the panel's third row already "
+                             "reads 'No visitors: register a Gen-3 ROM' (no ROM is "
+                             "ever registered in this emulator build); the footer "
+                             f"names the selected empty slot ('{'Boarder' if which == 'red' else 'Man'} "
+                             "(empty)') since there is no icon in the yard to point at")
+
+    # NOTE (brief's step 6 asked for a "SELECT scale both ways" shot): checked and
+    # dropped -- gb_scale_mode's SELECT toggle (source/pdna_gbscreen.c:157) belongs
+    # to the gbscr_run_demo SHELL (the font/card/pack tile-blit viewers reached via
+    # Settings' hidden SELECT key, see run_gbscreen_shell() above), which pdna_gbdaycare
+    # never routes through -- it draws with ui_*/Mode-3 calls directly and its own key
+    # mask has never included KEY_SELECT, before or after this backlog item. Pressing
+    # SEL here produced a pixel-IDENTICAL frame (verified: this script's own
+    # consecutive-differ check caught it), confirming there is no scale toggle on this
+    # screen to demonstrate -- adding one would be a new feature outside BACKLOG #114's
+    # six described steps, not a screenshot of existing behaviour.
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the selected empty slot -> the popup
+    s.shot("02_popup_over_yard", "#114: the per-slot action popup (gbdc_menu) drawn "
+                                  "OVER the yard scene -- the popup geometry is "
+                                  "unchanged (PDNA_DCPOP_*), it now sits on top of "
+                                  "background art instead of a blank fill")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Put in -> gbdc_pick over cur_box
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick the top row -> the confirm
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ACCEPT -> deposit + delete -> gb_persist()
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the emulator-build notice
+    s.shot("03_one_boarder", f"#114: {box_label}'s own mon deposited -- 'Boarding "
+                              f"1/{'1' if which == 'red' else '2'}' up top and the "
+                              "footer drops '(empty)' now that the selected slot is "
+                              "occupied, even though the icon itself does not render "
+                              "here (no registered Gen-3 ROM -- see this function's "
+                              "own header comment); the yard degrades gracefully, "
+                              "it does not go blank")
+
+    if which != "red":
+        s.tap("B", settle=120)                              # back to the box grid (same settle
+                                                              # note as run_b85_daycare's own re-entries)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)
+        s.press_n("DOWN", 2)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # back into the Day Care
+        s.tap("DOWN", settle=gb_shots.SETTLE)               # Man's slot -> Lady's slot
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # A on the Lady's empty slot -> popup
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # Put in -> gbdc_pick over cur_box
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # pick the top row -> the confirm
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # ACCEPT -> deposit + gb_persist()
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # dismiss the emulator-build notice
+        s.shot("04_two_boarders", "#114 Gen 2 only: both slots now occupied -- "
+                                   "'Boarding 2/2', the panel reads the game's own "
+                                   "compatibility flag instead of the single-boarder "
+                                   "text, and the footer names whichever slot is "
+                                   "currently selected as occupied (no more "
+                                   "'(empty)')")
+
+    return s
+
+
 def run_d7_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """N6(f): Gold's own START > BAG refusal, from a COMMITTED driver (`rom` must
     be a Gold-only fused image, tools/fuse_gb.py fed Gold.gbc+Gold.sav -- the
@@ -1993,6 +2092,12 @@ def main(argv=None) -> int:
                           "two-slot Day Care + compatibility) -- --image MUST be a "
                           "ONE-ROM fused image matching this choice (same "
                           "single-ROM harness gap as --u4-bag/--u5-pack)")
+    ap.add_argument("--b114-yard", choices=("red", "gold"),
+                     help="BACKLOG #114: only run_b114_yard() against --image for the "
+                          "named game (the Day-Care YARD scene, not the D1/D6 "
+                          "mechanics --b85-daycare already covers) -- --image MUST be "
+                          "a ONE-ROM fused image matching this choice (same "
+                          "single-ROM harness gap as --b85-daycare)")
     ap.add_argument("--r1-xfer", action="store_true",
                      help="BACKLOG #104 R1: only run_r1_xfer() against --image -- "
                           "--image MUST be pokedna-delta-artless.gba fused with an "
@@ -2143,6 +2248,18 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b85 daycare ({a.b85_daycare}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+    if a.b114_yard:
+        try:
+            sess = run_b114_yard(core_mod, image_mod, a.image, a.out, a.b114_yard)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b114 yard ({a.b114_yard}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
