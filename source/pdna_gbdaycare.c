@@ -11,7 +11,10 @@
 #include "data_tables.h"     /* pk_species_name */
 #include "ui.h"
 #include "snd.h"
-#include "pdna_app.h"        /* msg_wait / app_confirm */
+#include "pdna_app.h"        /* msg_wait / app_confirm / app_yard_visitors_ok / app_icons_* */
+#include "pdna_yard.h"       /* BACKLOG #114: the shared yard scene (dc_scene/dc_pointer/
+                              * dc_icon_over_bg/pdna_yard_roll/pdna_yard_place) */
+#include "mon_icons.h"       /* mon_icon_for_form_frame / mon_icon_anim_cheap */
 
 /* See pdna_gbdaycare.h for the shape this mirrors and the two documented scope
  * reductions (no yard art; deposit/withdraw touch `cur_box` only, never the party). */
@@ -344,7 +347,7 @@ static void gbdc_view_edit(GbSession* s, GbDaycare* dc, int start_slot, bool can
  * pdna_layout.h), Gen 1/2's own flag-based read swapped in for Gen 3's on-the-fly
  * pk_daycare_compat() calculation (gb_daycare.h's `compatible`/`egg_ready` are what
  * the game itself already computed, not this tree's guess). */
-static void gbdc_panel(const GbDaycare* dc, int n) {
+static void gbdc_panel(const GbDaycare* dc, int n, bool visitors_ok, int n_visitors) {
   const int dcy0 = PDNA_DCY_ROW0_Y, dcyp = PDNA_DCY_ROW_PITCH, dcx = PDNA_DCY_TEXT_X;
   ui_panel(PDNA_DCY_PANEL_X, PDNA_DCY_PANEL_Y, PDNA_DCY_PANEL_W, PDNA_DCY_PANEL_H, UI_PANEL, UI_BORDER);
   if (dc->gen1) {
@@ -368,9 +371,36 @@ static void gbdc_panel(const GbDaycare* dc, int n) {
     ui_ptext(dcx, dcy0, dc->has_egg ? UI_OK : UI_DIM,
              dc->has_egg ? "An EGG is ready to collect!" : "No Pokemon are boarding.");
   }
+  /* Third row -- unconditional, same shape as Gen 3's own pk_daycare_yard_note()
+   * row (pdna_main.c's pdna_daycare()): says whether the mons walking the yard
+   * are real boarders or invented scenery, or WHY there are none (BACKLOG #114
+   * step 3's own measured wording -- a GB-only setup with no registered Gen-3
+   * ROM has no icon art to draw visitors with, same gate as Gen 3's own
+   * app_yard_visitors_ok(), so it says so instead of silently showing none). */
+  if (!visitors_ok) ui_ptext(dcx, dcy0 + 2 * dcyp, UI_DIM, "No visitors: register a Gen-3 ROM");
+  else if (n_visitors > 0) ui_ptext(dcx, dcy0 + 2 * dcyp, UI_DIM, "Others are just visiting.");
+  else ui_ptext(dcx, dcy0 + 2 * dcyp, UI_DIM, "No extra visitors this time.");
 }
 
-static void gbdc_paint(const GbDaycare* dc, int sel) {
+/* Where a real boarder icon was placed by pdna_yard_place(): up to 2 entries,
+ * `phys[i]` names WHICH physical slot (0 = Man/Gen-1 Boarder, 1 = Lady) `x[i]`/
+ * `y[i]`/`sp[i]` belong to -- the same shape dc_rescan's own dcx/dcy/phys triple
+ * has for Gen 3, needed here because a GB slot can be EMPTY (no icon at all,
+ * unlike Gen 3 where dc[]/dcx[]/dcy[] only ever hold occupied entries). */
+typedef struct {
+  uint16_t sp[2];
+  int      x[2], y[2], phys[2];
+  int      n;
+} GbdcBoard;
+
+/* BACKLOG #114: the yard scene (dc_scene/dc_icon_over_bg/dc_pointer, pdna_yard.h)
+ * replaces the old two/three text rows -- same shape pdna_daycare() uses on
+ * Gen 3 (source/pdna_main.c), same PDNA_DCY_* geometry underneath the panel.
+ * A SELECTED slot that is EMPTY has no icon to point at (a GB-only concept:
+ * Gen 3's own dc[]/recs[] never hold an empty entry to begin with, so it never
+ * needs this case) -- named in the footer instead of a yard pointer. */
+static void gbdc_paint(const GbDaycare* dc, int sel, const GbdcBoard* board,
+                       bool visitors_ok, int frame) {
   ui_clear();
   ui_fill_rect(0, 0, UI_SCR_W, 11, UI_BG);
   ui_text(4, 2, UI_TITLE, "DAY CARE");
@@ -379,36 +409,91 @@ static void gbdc_paint(const GbDaycare* dc, int sel) {
   ui_ptext_right(236, 2, UI_DIM, sl);
   ui_hline(0, 11, UI_SCR_W, UI_BORDER);
 
-  int y = 18;
-  int nslots = dc->gen1 ? 1 : 2;
-  for (int i = 0; i < nslots; i++) {
-    bool sh = (sel == i);
-    if (sh) ui_panel(2, y - 2, 236, 16, UI_SEL, UI_TITLE);
-    const char* label = dc->gen1 ? "Boarder:" : (i == 0 ? "Man:" : "Lady:");
-    ui_text(6, y, sh ? UI_SELTEXT : UI_DIM, label);
-    const GbDaycareSlot* s = &dc->slot[i];
-    if (s->occupied) {
-      uint16_t dex = gb_get_species_dex(&s->mon);
-      const char* spn = (dex >= 1 && dex <= 251) ? pk_species_name(dex) : "?";
-      const char* nm = s->nick[0] ? s->nick : spn;
-      char lvl[12]; siprintf(lvl, "Lv.%u", (unsigned)gb_get_level(&s->mon));
-      ui_ptext_fit(70, y, 120, sh ? UI_SELTEXT : UI_TEXT, nm);
-      ui_ptext_right(230, y, sh ? UI_SELTEXT : UI_DIM, lvl);
-    } else {
-      ui_text(70, y, sh ? UI_SELTEXT : UI_DIM, "-- empty --");
+  dc_scene();   /* the yard background, screen y 12..PDNA_DCY_PANEL_Y (122) */
+
+  /* visitors first + hazed, so a piece of scenery never paints over a real
+   * boarder -- same order pdna_daycare() uses. */
+  for (int i = 0; i < s_ndeco; i++)
+    dc_icon_over_bg(s_deco_x[i], s_deco_y[i],
+                    mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)), 6, false);
+  for (int i = 0; i < board->n; i++)
+    dc_icon_over_bg(board->x[i], board->y[i],
+                    mon_icon_for_form_frame(board->sp[i], 0, (uint8_t)(frame & 1)), 8, false);
+
+  bool sel_has_icon = false;
+  for (int i = 0; i < board->n; i++) {
+    if (board->phys[i] == sel) {
+      int py = board->y[i] - 7; if (py < 12) py = 12;
+      dc_pointer(board->x[i] + 16, py);
+      sel_has_icon = true;
+      break;
     }
-    y += 18;
-  }
-  if (!dc->gen1 && dc->has_egg) {
-    bool sh = (sel == 2);
-    if (sh) ui_panel(2, y - 2, 236, 16, UI_SEL, UI_TITLE);
-    ui_text(6, y, sh ? UI_SELTEXT : UI_OK, "Egg:");
-    ui_text(70, y, sh ? UI_SELTEXT : UI_OK, "An Egg is ready!");
   }
 
-  gbdc_panel(dc, n);
+  gbdc_panel(dc, n, visitors_ok, s_ndeco);
   ui_fill_rect(0, PDNA_DCY_FOOTER_Y, UI_SCR_W, 8, UI_BG);
-  ui_ptext(4, PDNA_DCY_FOOTER_Y, UI_DIM, "A menu  U/D move  B back");
+  int nslots = dc->gen1 ? 1 : 2;
+  if (!sel_has_icon && sel < nslots) {
+    /* selected slot is empty -- no icon to point at; name it instead */
+    char line[40];
+    siprintf(line, "%s (empty)  A menu  B back", dc->gen1 ? "Boarder" : (sel == 0 ? "Man" : "Lady"));
+    ui_ptext(4, PDNA_DCY_FOOTER_Y, UI_DIM, line);
+  } else if (!dc->gen1 && dc->has_egg && sel == 2) {
+    ui_ptext(4, PDNA_DCY_FOOTER_Y, UI_OK, "Egg ready  A take  B back");
+  } else {
+    ui_ptext(4, PDNA_DCY_FOOTER_Y, UI_DIM, "A menu  U/D move  B back");
+  }
+}
+
+/* Idle-bob tick: re-composite every icon (visitors + boarders) + the pointer at
+ * the NEW frame, CPU-copy transport (tick=true) -- fd205bb's fix, never DMA on a
+ * per-vblank tick. Same shape as pdna_daycare()'s own inline bob block. */
+static void gbdc_bob(const GbdcBoard* board, int sel, int frame) {
+  for (int i = 0; i < s_ndeco; i++)
+    dc_icon_over_bg(s_deco_x[i], s_deco_y[i],
+                    mon_icon_for_form_frame(s_deco_sp[i], 0, (uint8_t)(frame & 1)), 6, true);
+  for (int i = 0; i < board->n; i++)
+    dc_icon_over_bg(board->x[i], board->y[i],
+                    mon_icon_for_form_frame(board->sp[i], 0, (uint8_t)(frame & 1)), 8, true);
+  for (int i = 0; i < board->n; i++) {
+    if (board->phys[i] == sel) {
+      int py = board->y[i] - 7; if (py < 12) py = 12;
+      dc_pointer(board->x[i] + 16, py);
+      break;
+    }
+  }
+}
+
+/* Roll (once per screen entry) + place (every repaint, since a put/take/edit can
+ * change occupancy) the yard's boarders + visitors. `rolled`/`visit_rng` are the
+ * caller's own locals, persisted across loop iterations within ONE call to
+ * pdna_gbdaycare() -- this screen has no long-lived visit state of its own
+ * (unlike Gen 3's s_dc_visit_rng), it re-derives everything fresh on entry, same
+ * as every other value this screen reads on each gbd_read(). */
+static void gbdc_roll_and_place(const GbDaycare* dc, bool* rolled, uint32_t* visit_rng,
+                                bool visitors_ok, GbdcBoard* board) {
+  if (!*rolled) {
+    *rolled = true;
+    uint16_t max_dex = dc->gen1 ? 151 : 251;   /* BACKLOG #114: Gen 1 = Kanto only, Gen 2 = both */
+    if (visitors_ok) pdna_yard_roll(max_dex); else dc_visitors_off();
+    *visit_rng = app_session_seed();
+  }
+  board->n = 0;
+  int nslots = dc->gen1 ? 1 : 2;
+  uint16_t board_sp[2]; int board_phys[2];
+  for (int i = 0; i < nslots; i++) {
+    if (!dc->slot[i].occupied) continue;
+    uint16_t dex = gb_get_species_dex(&dc->slot[i].mon);
+    board_sp[board->n] = (dex >= 1 && dex <= 251) ? dex : 1;   /* clamp: a bad dex never indexes an icon out of range */
+    board_phys[board->n] = i;
+    board->n++;
+  }
+  int bx[2], by[2];
+  pdna_yard_place(*visit_rng, board_sp, board->n, bx, by);
+  for (int i = 0; i < board->n; i++) {
+    board->sp[i] = board_sp[i]; board->phys[i] = board_phys[i];
+    board->x[i] = bx[i]; board->y[i] = by[i];
+  }
 }
 
 void pdna_gbdaycare(GbSession* s, int cur_box, bool can_edit) {
@@ -430,6 +515,12 @@ void pdna_gbdaycare(GbSession* s, int cur_box, bool can_edit) {
   uint8_t* list  = tail + GBDC_A4(sizeof(GbDaycare));
   uint8_t* list2 = list + GBS_LIST_BYTES;
 
+  bool visitors_ok = app_yard_visitors_ok();   /* checked once per visit, same as pdna_daycare() */
+  bool rolled = false;
+  uint32_t visit_rng = 1;
+  GbdcBoard board; memset(&board, 0, sizeof board);
+  int frame = 0, ctr = 0;
+
   int sel = 0;
   bool redraw = true;
   for (;;) {
@@ -440,9 +531,40 @@ void pdna_gbdaycare(GbSession* s, int cur_box, bool can_edit) {
     int nrows = dc->gen1 ? 1 : (dc->has_egg ? 3 : 2);
     if (sel >= nrows) sel = nrows - 1;
 
-    if (redraw) { redraw = false; gbdc_paint(dc, sel); }
+    /* Roll (once) + place (every iteration -- a put/take/edit can change which
+     * physical slots are occupied) the yard's boarders + visitors. */
+    gbdc_roll_and_place(dc, &rolled, &visit_rng, visitors_ok, &board);
 
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);   /* plays its own move/ok/back sound */
+    if (redraw) { redraw = false; gbdc_paint(dc, sel, &board, visitors_ok, frame); }
+
+    /* Icon-rent bracket (BACKLOG #114 step 3, same shape as pdna_daycare()'s own
+     * comment): declared + rented before the idle-bob wait begins, given back the
+     * INSTANT a key is detected, before dispatching an action that might reach a
+     * persist (gbdc_take/gbdc_deposit/gbdc_view_edit/gbdc_take_egg all can). */
+    {
+      uint16_t irows[7]; int nr = 0;
+      for (int i = 0; i < s_ndeco && nr < 7; i++) irows[nr++] = app_icon_row_of(s_deco_sp[i], 0, false);
+      for (int i = 0; i < board.n && nr < 7; i++)  irows[nr++] = app_icon_row_of(board.sp[i], 0, false);
+      app_icons_hold(irows, nr);
+    }
+
+    u16 k, fresh;
+    do {
+      s_vsync();
+      bool anim_any = (board.n > 0) || (s_ndeco > 0);
+      if (app_anim_enabled(ANIM_DAYCARE) && anim_any && mon_icon_anim_cheap() && ++ctr >= 30) {
+        ctr = 0; frame ^= 1;
+        gbdc_bob(&board, sel, frame);
+      }
+      fresh = key_hit(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
+      k = fresh;
+    } while (!k);
+    app_icons_drop();   /* idle loop over -- see the comment above app_icons_hold() */
+
+    if      (fresh & (KEY_UP | KEY_DOWN)) snd_move();
+    else if (fresh & KEY_A) snd_ok();
+    else if (fresh & KEY_B) snd_back();
+
     if (k & KEY_B) break;
     else if (k & KEY_UP)   { sel = (sel > 0) ? sel - 1 : nrows - 1; redraw = true; }
     else if (k & KEY_DOWN) { sel = (sel + 1) % nrows; redraw = true; }

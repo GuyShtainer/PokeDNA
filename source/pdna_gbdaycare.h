@@ -9,25 +9,33 @@
  * flow"), over the pure-C core in gb_daycare.h (gbd_read/gbd_deposit/gbd_withdraw/
  * gbd_withdraw_egg — already merged on main).
  *
- * SHAPE, mirrored from pdna_daycare():
+ * SHAPE, mirrored from pdna_daycare() (BACKLOG #114 ports the yard scene too, now
+ * that it lives in source/pdna_yard.{c,h} and not pdna_main.c-private statics):
  *   - a header line + "Boarding N/1" (Gen 1) or "N/2" (Gen 2) count, top right;
- *   - one row per slot (Gen 1: one, the "Boarder"; Gen 2: two, "Man"/"Lady"), U/D
- *     moves a cursor between them (Gen 3 uses L/R over two icons; this screen has no
- *     icons, so U/D over two text rows is the shape adaptation, not a shortcut);
- *   - a third row for the Egg (Gen 2 only, only while `has_egg`) below the two slots;
+ *   - the SAME animated yard scene pdna_daycare() draws (dc_scene/dc_icon_over_bg/
+ *     dc_pointer, pdna_yard.h): each OCCUPIED slot's real boarder icon, placed
+ *     into the six type-grouped areas (DC_SPOT) via pdna_yard_place(), plus this
+ *     visit's gen-correct random visitors (pdna_yard_roll(): 151 species (Kanto
+ *     only) on a Gen-1 save, 251 (Kanto+Johto) on Gen 2 — Guy's own wording,
+ *     BACKLOG #114 — vs Gen 3's fixed 251); U/D moves the cursor between the
+ *     FIXED slots (Gen 1: one, the "Boarder"; Gen 2: two, "Man"/"Lady") — Gen 3
+ *     uses L/R because its recs[]/dc[] only ever hold OCCUPIED entries, so it has
+ *     no "select an empty slot" concept; this screen does (Put a mon into a named
+ *     empty slot), so U/D over fixed indices is the shape adaptation, not a
+ *     shortcut. A selected EMPTY slot has no icon to point at — named in the
+ *     footer instead (a GB-only case Gen 3 never reaches);
+ *   - a third row for the Egg (Gen 2 only, only while `has_egg`) selectable the
+ *     same way, still no in-yard representation (an egg is not on the boarder
+ *     list gb_daycare.h tracks a species for);
  *   - the SAME three-row status panel geometry pdna_daycare() uses (PDNA_DCY_* in
- *     pdna_layout.h), showing the game's own compatibility read (gb_daycare.h's
- *     `compatible`/`egg_ready` — a flag, not the on-the-fly gen3 calculation, since
- *     Gen 2 already computed it) or the level-up-only note on Gen 1.
+ *     pdna_layout.h): row 0/1 the game's own compatibility read (gb_daycare.h's
+ *     `compatible`/`egg_ready` — a flag, not the on-the-fly gen3 calculation,
+ *     since Gen 2 already computed it) or the level-up-only note on Gen 1; row 2
+ *     the SAME yard-note row Gen 3's own pk_daycare_yard_note() row is, GB-worded
+ *     ("No visitors: register a Gen-3 ROM" when app_yard_visitors_ok() is false —
+ *     no ROM registered, or the icon art is off — measured, not silently blank).
  *
- * DELIBERATELY NOT PORTED, and why: pdna_daycare()'s animated yard scene
- * (dc_scene/dc_icon_over_bg/dc_house/dc_fence, PDNA_NO_DAYCARE_BG) is private to
- * pdna_main.c (static, no exported entry point) and is Gen-3 icon-cache
- * infrastructure this slice's file list (source/pdna_gbdaycare.{c,h} only) cannot
- * reach without editing pdna_main.c, which is out of scope for this UI slice. The
- * PANEL/menu shape is mirrored exactly; the bobbing-icon yard art is not wired up —
- * flagged, not silently skipped.
- *
+
  * DEPOSIT'S SOURCE: gb_daycare.h's own gbd_deposit() REQUIRES a box-shaped record
  * (`mon->is_party` must be false — "the caller converts party -> box itself first...
  * before calling this", and no such converter is exposed). So — unlike Gen 3's

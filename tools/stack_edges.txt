@@ -425,6 +425,17 @@ dc_icon_over_bg.part.0 argsites=1 -> memcpy32
 # The same site when source/daycare_bg_data.h (gitignored art) is ABSENT: gcc emits the
 # .constprop.0 clone instead -- every fresh worktree builds this shape (r1 review, 2026-09-10).
 dc_icon_over_bg.part.0.constprop.0 argsites=1 -> memcpy32
+# BACKLOG #114 (2026-09-11): dc_icon_over_bg moved out of pdna_main.c into its own TU
+# (source/pdna_yard.c) -- same call, same spilled-literal-then-bx-rN thunk shape (r3
+# loaded from the PC-relative literal at dc_icon_over_bg+0x164 = memcpy32's real
+# IWRAM address 0x03000380, unchanged across the intervening bl), but gcc no longer
+# needs to partial-inline a `.part.0`/`.part.0.constprop.0` clone now that the whole
+# function is its own TU -- the artless build links it as the plain, unsuffixed
+# `dc_icon_over_bg` symbol (pinned via objdump on this worktree's PokeDNA-artless.elf:
+# 0805cfb0 <dc_icon_over_bg>, bl @0x805d0ee -> 0x805d39c, which disassembles as
+# `bx r3` immediately before the next symbol, perf_ticks.part.0 -- literal-pool tail
+# of dc_rescan, not real code reached any other way). Site count verified (1).
+dc_icon_over_bg argsites=1 -> memcpy32
 
 # gen2_save.c's g2_detect_ranged(G2ReadFn rd, ...): three forwarding paths in the
 # codebase (grepped) -- gen2_write.c:951 (g2w_begin's own `rd` parameter, = img_rd,
