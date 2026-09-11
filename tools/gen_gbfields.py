@@ -582,6 +582,24 @@ FIELDS = [
   ("DAYCARE_EGG_OT", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("pokemon_data", "wEggMonOT", 0x2B23),
       "CRYSTAL": D("pokemon_data", "wEggMonOT", 0x2AFE)}),
+
+  # ---- BACKLOG #87 D4: Unown-dex gate flag + first-seen letter -----------------------
+  # wStatusFlags (bit 1, STATUSFLAGS_UNOWN_DEX_F) is the SAME wPlayerData3/wPlayerData
+  # region byte GBF_BIKE_FLAGS' own region uses, sitting at the region's own start
+  # (wStatusFlags == wPlayerData3 on GS: both bank 1 0xD571, so the derived offset is
+  # exactly the region's file_base, 0x23D9; on Crystal wStatusFlags 0xD84C is
+  # wPlayerData 0xD47B + 0x3D1 = 0x23DA). wFirstUnownSeen sits immediately after
+  # wUnlockedUnowns (GBF_UNLOCKED_UNOWN, one byte above) in both games' own .sym --
+  # GS 0xDC3F = wPokemonData 0xDA22 + 0x21D = 0x2AA7; Crystal 0xDEF4 = wPokemonData
+  # 0xDCD7 + 0x21D = 0x2A82. Both offsets verified against pokegold.sym/pokecrystal.sym
+  # by hand before this row was written (region-arithmetic cross-check below is the
+  # SAME re-verification, at build time, every other D() row in this table gets).
+  ("STATUS_FLAGS", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wStatusFlags", 0x23D9),
+      "CRYSTAL": D("player_data", "wStatusFlags", 0x23DA)}),
+  ("FIRST_UNOWN_SEEN", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wFirstUnownSeen", 0x2AA7),
+      "CRYSTAL": D("pokemon_data", "wFirstUnownSeen", 0x2A82)}),
 ]
 
 

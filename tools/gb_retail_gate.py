@@ -815,6 +815,15 @@ DEX_OWNED_WRAM = {"red": 0xD2F7, "yellow": 0xD2F6, "gold": 0xDBE4, "crystal": 0x
 DEX_SEEN_WRAM  = {"red": 0xD30A, "yellow": 0xD309, "gold": 0xDC04, "crystal": 0xDEB9}
 DEX_FIELD_LEN  = {"red": 19, "yellow": 19, "gold": 32, "crystal": 32}
 
+# BACKLOG #87 D4 -- the Unown-dex GATE, Gen 2 only: wStatusFlags (bit 1 =
+# STATUSFLAGS_UNOWN_DEX_F) and wFirstUnownSeen, straight from pokegold.sym/
+# pokecrystal.sym (wStatusFlags 01:d571/01:d84c, wFirstUnownSeen 01:dc3f/01:def4 --
+# the same two symbols tools/gen_gbfields.py's GBF_STATUS_FLAGS/GBF_FIRST_UNOWN_SEEN
+# rows derive their SAV-file offsets from, this dict is the LIVE WRAM side of the
+# same two facts).
+STATUS_FLAGS_WRAM = {"gold": 0xD571, "crystal": 0xD84C}
+FIRST_UNOWN_SEEN_WRAM = {"gold": 0xDC3F, "crystal": 0xDEF4}
+
 
 def run_daycare_case(name, info, rom, sav, work, binary, python, vendor, tally):
     """BACKLOG #85, via gb_daycare.h's gbd_deposit -- --op daycare 0 <dex> deposits a
@@ -1165,6 +1174,65 @@ def run_dexset_case(name, info, rom, sav, work, binary, python, vendor, tally):
                 f"seen_count {ac['seen_count']}->{aset['seen_count']}")
 
 
+def run_unown_gate_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #87 D4 retail-gate case: the Unown-dex GATE (wStatusFlags bit 1 /
+    wFirstUnownSeen) stays in sync with a DIRECT edit of dex #201 (Unown), the same
+    way the real game's own UpdateUnownDex/DebugRoomMenu_PokedexDex keep it in sync
+    on an actual encounter. Gen 2 only (Gen 1 has no Unown dex entry at all).
+
+    Setup: --op unownreset forces the "never met an Unown" starting state (gate bit
+    clear, wFirstUnownSeen 0, wUnownDex emptied) -- a state a real cartridge that has
+    simply never visited the Ruins of Alph could genuinely be in. Then --op dexset
+    201 2 (mark Unown caught) is the brief's own exact worked example: boot and read
+    live WRAM, expecting the gate bit SET and wFirstUnownSeen NON-ZERO.
+    """
+    status_addr = STATUS_FLAGS_WRAM.get(name)
+    fus_addr = FIRST_UNOWN_SEEN_WRAM.get(name)
+    if status_addr is None or fus_addr is None:
+        tally.skip_case("unown gate (BACKLOG #87 D4)", "Gen 1 has no Unown dex entry")
+        return
+
+    def read_state(sav_path, label):
+        rc, rep, out, err = boot(python, rom, sav_path, work / label, vendor,
+                                 work / f"{label}.json",
+                                 extra_args=["--expect", "accept",
+                                             "--read-mem", f"{status_addr:#06x}:1",
+                                             "--read-mem", f"{fus_addr:#06x}:1"])
+        mem = rep.get("mem") or {}
+        svbk_ok = bool(mem.get("svbk_ok", True))
+        status_byte = mem.get(f"{status_addr:#06x}")
+        fus_byte = mem.get(f"{fus_addr:#06x}")
+        status_val = int(status_byte, 16) if status_byte else None
+        fus_val = int(fus_byte, 16) if fus_byte else None
+        return dict(rc=rc, err=err, svbk_ok=svbk_ok, status=status_val, fus=fus_val)
+
+    reset_sav = work / "unown_gate_reset.sav"
+    rc, out, err = run_surgery(binary, sav, reset_sav, [["unownreset"]])
+    if rc != 0:
+        tally.record("unown gate reset (BACKLOG #87 D4)", False, f"surgery refused: {err.strip()}")
+        return
+    base = read_state(reset_sav, "unown_gate_reset")
+    reset_ok = (base["rc"] == 0 and base["svbk_ok"] and base["status"] is not None
+               and (base["status"] & 0x02) == 0 and base["fus"] == 0)
+    tally.record("unown gate reset (BACKLOG #87 D4)", reset_ok,
+                f"after unownreset: status={base['status']:#04x} fus={base['fus']}"
+                if base["status"] is not None else f"read failed: {base}")
+    if not reset_ok:
+        return
+
+    dexset_sav = work / "unown_gate_dexset.sav"
+    rc, out, err = run_surgery(binary, reset_sav, dexset_sav, [["dexset", "201", "2"]])
+    if rc != 0:
+        tally.record("unown gate dexset (BACKLOG #87 D4)", False, f"surgery refused: {err.strip()}")
+        return
+    after = read_state(dexset_sav, "unown_gate_dexset")
+    gate_ok = (after["rc"] == 0 and after["svbk_ok"] and after["status"] is not None
+              and (after["status"] & 0x02) != 0 and after["fus"] not in (None, 0))
+    tally.record("unown gate dexset (BACKLOG #87 D4)", gate_ok,
+                f"dexset 201 2: status {base['status']:#04x}->{after['status']:#04x} "
+                f"fus {base['fus']}->{after['fus']} (want bit1 set, fus != 0)")
+
+
 def run_boxname_case(name, info, rom, sav, work, binary, python, vendor, tally):
     """BACKLOG #94, via gb_boxnames.h's gbbn_rename -- Gen 2 only (gbbn_rename refuses
     Gen 1, and this function is never called for a Gen-1 GAMES entry). Renames box 0
@@ -1454,6 +1522,11 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
 
     # ---- 2i2. BACKLOG #87 item 6 — the Pokedex owned/seen core, both directions ----
     run_dexset_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2i3. BACKLOG #87 D4 — the Unown-dex gate (wStatusFlags bit 1 /
+    # wFirstUnownSeen) stays in sync with a direct dex-201 edit. Gen 1 has no Unown
+    # dex entry -- run_unown_gate_case itself skips with an honest reason. ----
+    run_unown_gate_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
     # ---- 2j. BACKLOG #94 — the Gen-2 box-name core (Gen 1 has no box names: no case) ----
     if gen == 2:

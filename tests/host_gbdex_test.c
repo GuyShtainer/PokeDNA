@@ -282,6 +282,103 @@ static void decline_discards_edits(const char* file, uint8_t expect_gen) {
           "post-rollback caught-state matches a fresh read of the untouched save");
 }
 
+/* ---- 5 (D4, b87 fix pass, DO-NOT-SHIP review): the Unown-dex GATE stays in sync --
+ *
+ * STATUSFLAGS_UNOWN_DEX_F (wStatusFlags bit 1, GBF_STATUS_FLAGS) and wFirstUnownSeen
+ * (GBF_FIRST_UNOWN_SEEN) are a SEPARATE gate from gbdex's own owned/seen bitfields and
+ * from wUnownDex's own order-of-first-seen list -- neither offset is exercised by any
+ * earlier test in this file. Gen 2 only (GS/Crystal); Gen 1 has no Unown dex entry
+ * (gb_max_species(GB_GEN1)=151 < 201) so every one of these calls is a no-op there,
+ * exercised as its own explicit assertion below rather than skipped silently. */
+static uint8_t status_flags_raw(GbSession* s, GbGame g) {
+  uint32_t off = gbf_off(g, GBF_STATUS_FLAGS);
+  uint8_t v = 0xFF;
+  if (off) (void)gbs_read_field(s, off, &v, 1);
+  return v;
+}
+static uint8_t first_unown_seen_raw(GbSession* s, GbGame g) {
+  uint32_t off = gbf_off(g, GBF_FIRST_UNOWN_SEEN);
+  uint8_t v = 0xFF;
+  if (off) (void)gbs_read_field(s, off, &v, 1);
+  return v;
+}
+static void unown_gate_sync(const char* file, uint8_t expect_gen) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+  GbSession s;
+  CHECK(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "gbs_open");
+  CHECK(s.gen == expect_gen, "right generation detected");
+  GbGame g = (s.gen == GB_GEN1) ? GBF_G_RED
+           : (s.g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL : GBF_G_GS;
+
+  if (expect_gen == GB_GEN1) {
+    /* Gen 1 has no Unown dex entry at all -- the special-case branch in gbdex_set
+     * (dex==201) is unreachable (dex 201 > gb_max_species(GB_GEN1)==151 is refused
+     * before it), and gbdex_unown_set always fails via unown_read's own off==0 gate. */
+    CHECK(gbdex_set(&s, 201, false, true) == GBS_ERR_ARG, "Gen 1: dex 201 is out of range, refused before D4's branch runs");
+    CHECK(gbdex_unown_set(&s, 0, true) == GBS_ERR_ARG, "Gen 1: gbdex_unown_set refuses (no Unown-dex field at all)");
+    return;
+  }
+
+  uint32_t status_off = gbf_off(g, GBF_STATUS_FLAGS);
+  uint32_t fus_off = gbf_off(g, GBF_FIRST_UNOWN_SEEN);
+  CHECK(status_off != 0 && fus_off != 0, "Gen 2: both D4 fields are present");
+
+  /* Force a clean slate: bit 1 clear, wFirstUnownSeen == 0, and (via the repeated
+   * gbdex_unown_set(letter,false) removal loop) wUnownDex fully emptied -- Guy's
+   * corpus saves already have every letter recorded, so start from there. */
+  for (int L = 0; L < 26; L++) (void)gbdex_unown_set(&s, L, false);
+  { uint8_t zero = 0; CHECK(gbs_write_field(&s, fus_off, &zero, 1) == GBS_OK, "reset wFirstUnownSeen to 0"); }
+  { uint8_t cur; CHECK(gbs_read_field(&s, status_off, &cur, 1) == GBS_OK, "read wStatusFlags");
+    cur &= (uint8_t)~(1u << 1);
+    CHECK(gbs_write_field(&s, status_off, &cur, 1) == GBS_OK, "clear bit 1 of wStatusFlags"); }
+  for (int L = 0; L < 26; L++) CHECK(!gbdex_unown_seen(&s, L), "clean slate: no Unown letter recorded");
+  CHECK((status_flags_raw(&s, g) & 0x02) == 0, "clean slate: gate bit clear");
+  CHECK(first_unown_seen_raw(&s, g) == 0, "clean slate: wFirstUnownSeen == 0");
+
+  /* Case A: gbdex_unown_set(letter, true) on an append sets the gate bit and, since
+   * wFirstUnownSeen reads 0, records this letter (F, 1-based value 6). */
+  CHECK(gbdex_unown_set(&s, 5, true) == GBS_OK, "append letter F");
+  CHECK((status_flags_raw(&s, g) & 0x02) != 0, "A: append sets the gate bit");
+  CHECK(first_unown_seen_raw(&s, g) == 6, "A: wFirstUnownSeen records letter F (1-based: 6)");
+
+  /* A second, later append must NOT overwrite the already-recorded first letter. */
+  CHECK(gbdex_unown_set(&s, 10, true) == GBS_OK, "append a second letter (K)");
+  CHECK(first_unown_seen_raw(&s, g) == 6, "A2: a later append never overwrites the first-seen letter");
+
+  /* Case D: emptying the list all the way back out clears the gate bit again. */
+  CHECK(gbdex_unown_set(&s, 5, false) == GBS_OK, "remove letter F");
+  CHECK((status_flags_raw(&s, g) & 0x02) != 0, "D-partial: gate stays set while K is still recorded");
+  CHECK(gbdex_unown_set(&s, 10, false) == GBS_OK, "remove letter K too -- list now empty");
+  CHECK((status_flags_raw(&s, g) & 0x02) == 0, "D: emptying the list clears the gate bit");
+  /* wFirstUnownSeen is NOT reset by emptying the list (matches the brief's own scope:
+   * only the gate bit moves here; a manual reset back to 0 is what the next test uses). */
+  CHECK(first_unown_seen_raw(&s, g) == 6, "D: wFirstUnownSeen is left as-is by the empty-list path");
+
+  /* Case B: gbdex_set(201, seen=true) on a save with wFirstUnownSeen==0 (RESET it back
+   * to 0 first -- case D left it at 6) seeds UNOWN A (letter 0), matching
+   * DebugRoomMenu_PokedexDex's own behaviour, per the brief. */
+  { uint8_t zero = 0; CHECK(gbs_write_field(&s, fus_off, &zero, 1) == GBS_OK, "reset wFirstUnownSeen to 0 for case B"); }
+  CHECK(gbdex_set(&s, 201, false, true) == GBS_OK, "mark dex 201 (Unown) seen");
+  CHECK((status_flags_raw(&s, g) & 0x02) != 0, "B: marking #201 seen sets the gate bit");
+  CHECK(first_unown_seen_raw(&s, g) == 1, "B: wFirstUnownSeen seeded to 1 (UNOWN A)");
+  CHECK(gbdex_unown_seen(&s, 0), "B: letter A is now present in wUnownDex too");
+  CHECK(gbdex_get(&s, 201, false), "B: dex 201 itself reads seen");
+
+  /* Case C: clearing #201's seen bit clears ONLY the gate bit (brief's own scope --
+   * wFirstUnownSeen/wUnownDex are left alone, matching DebugRoomMenu_PokedexClr). */
+  CHECK(gbdex_set(&s, 201, false, false) == GBS_OK, "clear dex 201 (Unown) seen");
+  CHECK((status_flags_raw(&s, g) & 0x02) == 0, "C: clearing #201's seen bit clears the gate bit");
+  CHECK(first_unown_seen_raw(&s, g) == 1, "C: wFirstUnownSeen is untouched by the clear path");
+  CHECK(gbdex_unown_seen(&s, 0), "C: letter A is still present in wUnownDex (only the gate cleared)");
+
+  /* A save that already has a recorded letter is left alone by case B's seed path
+   * (the "if wFirstUnownSeen reads 0" guard) -- verified directly, not just implied. */
+  CHECK(gbdex_set(&s, 201, false, true) == GBS_OK, "mark #201 seen again (wFirstUnownSeen already 1)");
+  CHECK(first_unown_seen_raw(&s, g) == 1, "B-repeat: wFirstUnownSeen stays 1, never reseeded to a different letter");
+}
+
 int main(void) {
   one_dex_popcount("Red.sav", GB_GEN1);
   one_dex_popcount("Gold.sav", GB_GEN2);
@@ -300,6 +397,10 @@ int main(void) {
   decline_discards_edits("Red.sav", GB_GEN1);
   decline_discards_edits("Gold.sav", GB_GEN2);
   decline_discards_edits("Crystal.sav", GB_GEN2);
+
+  unown_gate_sync("Red.sav", GB_GEN1);
+  unown_gate_sync("Gold.sav", GB_GEN2);
+  unown_gate_sync("Crystal.sav", GB_GEN2);
 
   printf("\n%s: %d check(s), %d failure(s), %d file(s) exercised\n",
          g_fail ? "FAIL" : "OK", g_check, g_fail, g_ran);

@@ -47,6 +47,51 @@ static GbsStatus dex_set_bit(GbSession* s, GbGame g, GbField f, uint16_t dex, bo
   return gbs_write_field(s, off + (uint32_t)byte, &next, 1);
 }
 
+/* ---- D4 (BACKLOG #87 fix pass, DO-NOT-SHIP review): the Unown-dex GATE ------------
+ *
+ * STATUSFLAGS_UNOWN_DEX_F (bit 1 of wStatusFlags, GBF_STATUS_FLAGS) gates whether the
+ * Pokedex screen even offers Unown's special multi-form display at all, and
+ * wFirstUnownSeen (GBF_FIRST_UNOWN_SEEN) is the 1-based letter (1=A..26=Z, 0 = never
+ * met one) Pokedex_LoadSelectedMonTiles uses to pick which Unown sprite tile to draw
+ * for national dex #201 -- 0 there `dec a`'s to 255 and indexes an out-of-range
+ * frontpic pointer. Neither byte is touched by gbdex_get/gbdex_set's own owned/seen
+ * bitfields or by gbdex_unown_set's own wUnownDex list -- they are a SEPARATE gate the
+ * real game keeps in sync itself (UpdateUnownDex sets the bit + first-seen letter the
+ * moment a wild Unown is caught/seen). An editor that can mark dex #201 seen or record
+ * an Unown letter WITHOUT going through an actual in-game encounter must keep this
+ * gate in sync by hand, the same way DebugRoomMenu_PokedexDex (seed) and
+ * DebugRoomMenu_PokedexClr (clear) do. */
+#define STATUSFLAGS_UNOWN_DEX_BIT 1
+
+static GbsStatus status_flags_set_unown_bit(GbSession* s, GbGame g, bool on) {
+  uint32_t off = gbf_off(g, GBF_STATUS_FLAGS);
+  if (!off) return GBS_ERR_ARG;
+  uint8_t cur;
+  if (gbs_read_field(s, off, &cur, 1) != GBS_OK) return GBS_ERR_ARG;
+  uint8_t next = on ? (uint8_t)(cur | (1u << STATUSFLAGS_UNOWN_DEX_BIT))
+                    : (uint8_t)(cur & (uint8_t)~(1u << STATUSFLAGS_UNOWN_DEX_BIT));
+  if (next == cur) return GBS_OK;
+  return gbs_write_field(s, off, &next, 1);
+}
+
+static bool first_unown_seen_is_zero(const GbSession* s, GbGame g) {
+  uint32_t off = gbf_off(g, GBF_FIRST_UNOWN_SEEN);
+  if (!off) return false;
+  uint8_t cur;
+  GbSession* ncs = (GbSession*)(const void*)s;
+  if (gbs_read_field(ncs, off, &cur, 1) != GBS_OK) return false;
+  return cur == 0;
+}
+
+static GbsStatus first_unown_seen_write_if_zero(GbSession* s, GbGame g, uint8_t val) {
+  uint32_t off = gbf_off(g, GBF_FIRST_UNOWN_SEEN);
+  if (!off) return GBS_ERR_ARG;
+  uint8_t cur;
+  if (gbs_read_field(s, off, &cur, 1) != GBS_OK) return GBS_ERR_ARG;
+  if (cur != 0) return GBS_OK;   /* already recorded -- the FIRST seen letter never changes */
+  return gbs_write_field(s, off, &val, 1);
+}
+
 /* Does NOT call gbs_finish() -- BATCHED like gb_bag.c's own multi-field set does, one
  * level up: this call alone may touch up to 2 bytes (its own bit + the invariant's
  * companion bit); a caller doing MANY gbdex_set/gbdex_unown_set calls in one user
@@ -71,8 +116,36 @@ GbsStatus gbdex_set(GbSession* s, uint16_t dex, bool owned, bool on) {
    * clearing seen (owned=false, on=false) also forces owned off. Only one of these two
    * conditions can ever be true for a given call (owned's two values are mutually
    * exclusive), so at most one extra byte moves. */
-  if (owned && on)        return dex_set_bit(s, g, GBF_DEX_SEEN,  dex, true);
-  else if (!owned && !on) return dex_set_bit(s, g, GBF_DEX_OWNED, dex, false);
+  if (owned && on)        st = dex_set_bit(s, g, GBF_DEX_SEEN,  dex, true);
+  else if (!owned && !on) st = dex_set_bit(s, g, GBF_DEX_OWNED, dex, false);
+  if (st != GBS_OK) return st;
+
+  /* D4 (BACKLOG #87 fix pass, DO-NOT-SHIP review): national dex #201 is Unown on
+   * Gen 2 -- marking it seen/unseen directly (bypassing an actual in-game
+   * encounter) must keep the SEPARATE Unown-dex gate (wStatusFlags bit 1 /
+   * wFirstUnownSeen, see the header comment above unown_read) in sync, or the
+   * game itself renders an out-of-range frontpic the next time dex entry #201 is
+   * opened. Gen 1 never reaches here: dex 201 > gb_max_species(GB_GEN1)=151
+   * already refused at the top of this function. */
+  if (dex == 201 && !owned) {
+    if (on) {
+      /* Marking Unown seen: DebugRoomMenu_PokedexDex's own behaviour -- a save
+       * that has never recorded ANY Unown letter gets seeded with UNOWN A
+       * (letter 0), the same append+gate path a real encounter takes. A save
+       * that already has a recorded letter is left alone (the letter/gate stay
+       * whatever the player's actual encounters already set). */
+      if (first_unown_seen_is_zero(s, g)) {
+        GbsStatus ust = gbdex_unown_set(s, 0, true);   /* UNOWN A */
+        if (ust != GBS_OK && ust != GBS_ERR_FULL) return ust;
+      }
+    } else {
+      /* Clearing Unown seen: DebugRoomMenu_PokedexClr's own behaviour -- just the
+       * gate bit, per the brief's own scope (wUnownDex/wFirstUnownSeen are left
+       * as-is, matching what the debug tool itself does). */
+      GbsStatus cst = status_flags_set_unown_bit(s, g, false);
+      if (cst != GBS_OK) return cst;
+    }
+  }
   return GBS_OK;
 }
 
@@ -113,6 +186,7 @@ GbsStatus gbdex_unown_set(GbSession* s, int letter, bool on) {
   int found = -1;
   for (int i = 0; i < UNOWN_SLOTS; i++) if (slots[i] == want) { found = i; break; }
 
+  bool will_be_empty = false;
   if (on) {
     if (found >= 0) return GBS_OK;   /* already present, no-op */
     int empty = -1;
@@ -124,9 +198,26 @@ GbsStatus gbdex_unown_set(GbSession* s, int letter, bool on) {
     /* compact: shift everything after `found` left by one, zero the freed tail slot */
     for (int i = found; i < UNOWN_SLOTS - 1; i++) slots[i] = slots[i + 1];
     slots[UNOWN_SLOTS - 1] = 0;
+    will_be_empty = true;
+    for (int i = 0; i < UNOWN_SLOTS; i++) if (slots[i] != 0) { will_be_empty = false; break; }
   }
 
   /* Does NOT call gbs_finish() -- same batching contract as gbdex_set above; the
    * caller finishes once after its own last gbdex-family call. */
-  return gbs_write_field(s, off, slots, UNOWN_SLOTS);
+  GbsStatus wst = gbs_write_field(s, off, slots, UNOWN_SLOTS);
+  if (wst != GBS_OK) return wst;
+
+  /* D4: a successful append records the Unown-dex GATE too -- exactly what
+   * UpdateUnownDex does itself the moment a wild Unown is caught/seen (bit 1 of
+   * wStatusFlags always ends up set; wFirstUnownSeen is written only the very
+   * first time, never overwritten by a later letter). Emptying the list all the
+   * way back out (the last letter removed) clears the gate bit again -- the
+   * editor-only mirror of DebugRoomMenu_PokedexClr's own behaviour. */
+  if (on) {
+    (void)first_unown_seen_write_if_zero(s, g, want);
+    (void)status_flags_set_unown_bit(s, g, true);
+  } else if (will_be_empty) {
+    (void)status_flags_set_unown_bit(s, g, false);
+  }
+  return GBS_OK;
 }

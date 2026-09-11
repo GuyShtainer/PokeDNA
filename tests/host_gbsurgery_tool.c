@@ -224,6 +224,12 @@ static void usage(const char* prog) {
     "                               2=caught) via gb_dex.h's gbdex_set, same two-call\n"
     "                               shim shape pdna_gbdex.c uses. DEX is 1..gb_max_\n"
     "                               species(gen) (151 Gen 1, 251 Gen 2).\n"
+    "  --op unownreset               BACKLOG #87 D4 retail-gate setup: clears wStatusFlags\n"
+    "                               bit 1 (STATUSFLAGS_UNOWN_DEX_F), zeroes\n"
+    "                               wFirstUnownSeen, and empties wUnownDex -- forcing the\n"
+    "                               \"never met an Unown\" starting state a dexset 201 2\n"
+    "                               case needs to prove the seed path. Gen 2 only,\n"
+    "                               refused on Gen 1.\n"
     "  --op warp MAP X Y            m1 (BACKLOG #91) shot-retake gate: pokes the\n"
     "                               player's own current map/position (gb_fields.c's\n"
     "                               GBF_MAP_ID/GBF_POS_X/GBF_POS_Y + the two block-half\n"
@@ -251,6 +257,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"clockclear", 0}, /* BACKLOG #86/#108: dismiss the clock-error banner */
     {"warp", 3},       /* m1 (BACKLOG #91) shot-retake gate: MAP X Y, Gen 1 only */
     {"dexset", 2},     /* BACKLOG #87 item 6 retail-gate case: DEX STATE (0/1/2) */
+    {"unownreset", 0}, /* BACKLOG #87 D4 retail-gate setup: force the Unown-dex gate clear */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -521,6 +528,43 @@ static int do_dexset(GbSession* s, const char* dex_tok, const char* state_tok) {
   GbsStatus st = gbdex_set(s, (uint16_t)dex, true, state >= 2);
   if (st != GBS_OK) return refuse(gbs_status_text(st));
   st = gbdex_set(s, (uint16_t)dex, false, state >= 1);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  st = gbs_finish(s);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* D4 (BACKLOG #87 fix pass, DO-NOT-SHIP review) retail-gate setup case: force the
+ * "never met an Unown" starting state directly -- wStatusFlags bit 1
+ * (STATUSFLAGS_UNOWN_DEX_F) clear, wFirstUnownSeen 0, AND wUnownDex fully emptied.
+ * The real game's UpdateUnownDex always sets all three atomically together, so
+ * "wUnownDex already has a letter but wFirstUnownSeen reads 0" is a combination the
+ * retail ROM never actually produces -- clearing the list too keeps this a state a
+ * real cartridge could genuinely be in (a save that has simply never gone to the
+ * Ruins of Alph), not a synthetic impossible one, before `dexset 201 2` proves the
+ * seed path on real hardware/an emulated CPU. Gen 2 only; refuses on Gen 1 (none of
+ * the three fields exist there). */
+static int do_unownreset(GbSession* s) {
+  GbGame g = (s->gen == GB_GEN1) ? GBF_G_RED
+           : (s->g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL : GBF_G_GS;
+  uint32_t status_off = gbf_off(g, GBF_STATUS_FLAGS);
+  uint32_t fus_off = gbf_off(g, GBF_FIRST_UNOWN_SEEN);
+  uint32_t dex_off = gbf_off(g, GBF_UNOWN_DEX);
+  uint16_t dex_len = gbf_len(g, GBF_UNOWN_DEX);
+  if (!status_off || !fus_off || !dex_off) { fprintf(stderr, "unownreset: not available on this save's generation\n"); return 2; }
+  uint8_t cur;
+  if (gbs_read_field(s, status_off, &cur, 1) != GBS_OK) return refuse("unownreset: read wStatusFlags");
+  uint8_t next = (uint8_t)(cur & (uint8_t)~(1u << 1));
+  if (next != cur) {
+    GbsStatus st = gbs_write_field(s, status_off, &next, 1);
+    if (st != GBS_OK) return refuse(gbs_status_text(st));
+  }
+  uint8_t zero = 0;
+  GbsStatus st = gbs_write_field(s, fus_off, &zero, 1);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  uint8_t zeros[32] = {0};
+  if (dex_len > sizeof zeros) { fprintf(stderr, "unownreset: GBF_UNOWN_DEX unexpectedly wide\n"); return 2; }
+  st = gbs_write_field(s, dex_off, zeros, dex_len);
   if (st != GBS_OK) return refuse(gbs_status_text(st));
   st = gbs_finish(s);
   if (st != GBS_OK) return refuse(gbs_status_text(st));
@@ -1001,6 +1045,9 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "dexset")) {
     return do_dexset(s, o->a[0], o->a[1]);
+  }
+  if (!strcmp(o->kind, "unownreset")) {
+    return do_unownreset(s);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;

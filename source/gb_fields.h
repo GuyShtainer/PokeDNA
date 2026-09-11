@@ -106,6 +106,14 @@ typedef enum {
    * in both games' .sym, same as GBF_DAYCARE_OT does for the boarded mon. */
   GBF_DAYCARE_EGG_OT,
 
+  /* BACKLOG #87 D4, appended (same API-id rule as the others above): wStatusFlags
+   * (bit 1, STATUSFLAGS_UNOWN_DEX_F) gates whether the Pokedex screen shows Unown
+   * in its special multi-form mode at all, and wFirstUnownSeen holds the 1-based
+   * letter (1=A..26=Z, 0 = never met one) of the first Unown form the player ever
+   * saw -- Pokedex_LoadSelectedMonTiles uses it to pick which Unown sprite tile to
+   * show for dex entry #201. GS/Crystal only; Gen 1 has no Unown dex entry at all. */
+  GBF_STATUS_FLAGS, GBF_FIRST_UNOWN_SEEN,
+
   GBF_FIELD_COUNT
 } GbField;
 
