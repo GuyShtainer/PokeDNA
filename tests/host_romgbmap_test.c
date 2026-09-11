@@ -261,10 +261,111 @@ static void test_negative_controls(void) {
   free(buf);
 }
 
+/* m1 review D1: wXCoord/wYCoord -> block is ONE halving (coord >> 1), not
+ * two -- a second /2 put the player marker on the Pokemon Center counter
+ * instead of the floor on every map. gbmap_block_of() (rom_gbmap.h) is the
+ * pure helper pdna_gbmap.c itself calls; this asserts it directly against
+ * Red.sav's own real SRAM bytes, plus the shell's own viewport clamp
+ * (VBW=5, pdna_gbmap.c) so a regression in EITHER the halving or the clamp
+ * shows up here, not just on a screenshot.
+ *
+ * MUTATION EVIDENCE (not shipped): reverting gbmap_block_of() to
+ * `coord >> 1 >> 1` (the old double-halving bug) turns Red.sav's block_px
+ * from 3 into 1, so the "block_px == 3" check below fails -- confirmed by
+ * hand before this commit, then reverted back to `>> 1`. */
+static void test_block_conversion(void) {
+  char spath[512];
+  snprintf(spath, sizeof spath, "%s/Red.sav", ROMS);
+  FILE* sf = fopen(spath, "rb");
+  if (!sf) { printf("SKIP block conversion: corpus not present\n"); return; }
+  g_ran++;
+
+  uint8_t x = 0, y = 0;
+  fseek(sf, 0x260D, SEEK_SET); (void)!fread(&y, 1, 1, sf);
+  fseek(sf, 0x260E, SEEK_SET); (void)!fread(&x, 1, 1, sf);
+  fclose(sf);
+
+  int block_px = gbmap_block_of(x);
+  int block_py = gbmap_block_of(y);
+  chk("Red.sav", "block_px == 3 (D1: one halving, not two)", block_px == 3);
+  chk("Red.sav", "block_py == 2 (D1: one halving, not two)", block_py == 2);
+
+  /* Red's own current map (VIRIDIAN_POKECENTER, id 41) is 7x4 blocks
+   * (test_player_map() above prints this live); the shell's own viewport is
+   * VBW=5 blocks wide (pdna_gbmap.c), centred on the player and clamped to
+   * [0, width-VBW]. block_px=3 - VBW/2=2 = 1, within [0, 7-5=2] -- no
+   * clamping needed, so the initial vbx is exactly 1. */
+  const int VBW = 5;
+  char rpath[512];
+  snprintf(rpath, sizeof rpath, "%s/Red.gb", ROMS);
+  long rn = file_size(rpath);
+  if (rn > 0) {
+    FileCtx fc; fc.f = fopen(rpath, "rb");
+    if (fc.f) {
+      RomGbMap1 g;
+      if (rgm1_open(&g, file_read, &fc, (uint32_t)rn, g_scratch, sizeof g_scratch)) {
+        GbMap1Header h;
+        if (rgm1_header(&g, 41, &h)) {
+          int vbx = block_px - VBW / 2;
+          if (vbx < 0) vbx = 0;
+          int max_vbx = (int)h.width > VBW ? (int)h.width - VBW : 0;
+          if (vbx > max_vbx) vbx = max_vbx;
+          chk("Red.sav", "initial vbx == 1", vbx == 1);
+        }
+      }
+      fclose(fc.f);
+    }
+  }
+}
+
+/* m1 review D2: the Gen-1 map header height/width bound was 64, refusing
+ * Route 17 and Route 23 (Red map id 28/34, Yellow same ids) -- both are
+ * 10x72 blocks, taller than the old bound. The corrected bound is 128
+ * (rom_gbmap.c's own `height > 128`/`width > 128` check).
+ *
+ * MUTATION EVIDENCE (not shipped): reverting rom_gbmap.c's bound back to
+ * `height > 64 || ... || width > 64` makes BOTH checks below fail on BOTH
+ * ROMs (rgm1_header returns false for id 28/34: height 72 > 64) --
+ * confirmed by hand before this commit, then reverted back to 128. */
+static void test_route_headers(const char* rom_file) {
+  char rpath[512];
+  snprintf(rpath, sizeof rpath, "%s/%s", ROMS, rom_file);
+  long rn = file_size(rpath);
+  if (rn <= 0) { printf("SKIP route headers %s: corpus not present\n", rom_file); return; }
+  g_ran++;
+
+  FileCtx fc; fc.f = fopen(rpath, "rb");
+  chk(rom_file, "fopen rom", fc.f != NULL);
+  if (!fc.f) return;
+  RomGbMap1 g;
+  bool ok = rgm1_open(&g, file_read, &fc, (uint32_t)rn, g_scratch, sizeof g_scratch);
+  chk(rom_file, "rgm1_open ok", ok);
+  if (ok) {
+    GbMap1Header h28;
+    bool ok28 = rgm1_header(&g, 28, &h28);
+    chk(rom_file, "map id 28 (Route 17) parses (D2: 10x72 > old 64 bound)", ok28);
+    if (ok28) {
+      chk(rom_file, "Route 17 height == 72", h28.height == 72);
+      chk(rom_file, "Route 17 width == 10", h28.width == 10);
+    }
+    GbMap1Header h34;
+    bool ok34 = rgm1_header(&g, 34, &h34);
+    chk(rom_file, "map id 34 (Route 23) parses (D2: 10x72 > old 64 bound)", ok34);
+    if (ok34) {
+      chk(rom_file, "Route 23 height == 72", h34.height == 72);
+      chk(rom_file, "Route 23 width == 10", h34.width == 10);
+    }
+  }
+  fclose(fc.f);
+}
+
 int main(void) {
   for (int i = 0; i < NWANT; i++) test_locate_and_pallet(&WANT[i]);
   test_player_map("Red.gb", "Red.sav");
   test_player_map("Yellow.gb", "Yellow.sav");
+  test_block_conversion();
+  test_route_headers("Red.gb");
+  test_route_headers("Yellow.gb");
   test_negative_controls();
 
   printf("host_romgbmap_test: %d checks, %d failed, %d ROM(s)/pair(s) exercised\n",

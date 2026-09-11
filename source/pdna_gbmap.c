@@ -231,13 +231,10 @@ void pdna_gbmap_gen1(GbSession* s) {
   gs.cache.maptiles = maptiles;
   gs.cache.maptiles_n = MAPTILE_CACHE_TILES;
 
-  int block_px = px / 2, block_py = py / 2;   /* wXCoord/wYCoord are 2 TILES per
-                                                * unit = HALF a block: block = coord >> 1
-                                                * (pokered home/overworld.asm:567 `srl c`;
-                                                * engine/overworld/tilesets.asm:49
-                                                * `wYBlockCoord = wYCoord & 1`). A second
-                                                * /2 here put the marker on the counter
-                                                * instead of the floor (m1 review D1). */
+  int block_px = gbmap_block_of(px), block_py = gbmap_block_of(py);   /* see
+                                                * rom_gbmap.h's own gbmap_block_of()
+                                                * doc comment for why this is ONE
+                                                * halving, not two (m1 review D1). */
   st.vbx = clampi(block_px - VBW / 2, 0, st.hdr.width  > VBW ? st.hdr.width  - VBW : 0);
   st.vby = clampi(block_py - VBH / 2, 0, st.hdr.height > VBH ? st.hdr.height - VBH : 0);
 

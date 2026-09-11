@@ -79,6 +79,15 @@
 
 #define ROM_GBMAP_SCRATCH_MIN 2048u   /* same generous margin rom_gbui.c keeps */
 
+/* wXCoord/wYCoord -> block coordinate: one coord unit is HALF a block
+ * (pokered home/overworld.asm:567 `srl c`; engine/overworld/tilesets.asm:49
+ * `wYBlockCoord = wYCoord & 1`) -- ONE halving, not two (m1 review D1: a
+ * second /2 put the player marker on the Pokemon Center counter instead of
+ * the floor on every map). Exposed as a pure function so
+ * tests/host_romgbmap_test.c can assert the conversion directly instead of
+ * re-deriving pdna_gbmap.c's own inline arithmetic. */
+static inline int gbmap_block_of(uint8_t coord) { return (int)(coord >> 1); }
+
 typedef struct {
   GbReadFn read;
   void*    ctx;
