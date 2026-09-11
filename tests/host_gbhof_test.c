@@ -394,6 +394,75 @@ static void present_clamped_to_count_on_noise(const char* file) {
         file, present);
 }
 
+/* ---- L: R1, the D1<->D2 ratchet -- SET COUNT's own ceiling must be the raw,
+ * unclamped slot scan (hof_raw_slots/gbh_slots_in_blob), never
+ * gbh_team_count_present() (which D2 clamps to gbh_count() on Gen 1): deriving a
+ * WRITE ceiling from a READ that clamps to the very value being written makes
+ * SET COUNT a one-way ratchet -- lower the count once, and it can never go back
+ * up, even though every team is still sitting untouched in the blob. Also proves
+ * Gen 2 is NOT clamped the same way (pokecrystal's LoadHOFTeam bails on each
+ * record's own win-count byte, not wHallOfFameCount) -- lowering the Gen-2 count
+ * must not make gbh_team_count_present() under-report the teams LoadHOFTeam would
+ * still show on the real PC. ---- */
+
+static void ratchet_gen1(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  GbSession s;
+  if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK || s.gen != GB_GEN1) {
+    printf("  SKIP %s (not a Gen-1 save)\n", file);
+    return;
+  }
+  g_ran++;
+  int raw = gbh_slots_in_blob(&s);   /* Guy's real Red.sav corpus: 9; Yellow's: 1 */
+  /* A "lower than raw" midpoint that exists on every corpus save, not just Red's 9
+   * (Yellow's own corpus save has only 1 team present, so a hardcoded 3 would
+   * itself get clamped to 1 by D1 before this test ever reaches the ratchet it's
+   * trying to prove -- same trap count_clamp()/F hit and fixed the same way). */
+  int mid = (raw > 3) ? 3 : ((raw > 0) ? raw - 1 : 0);
+
+  /* Down to mid, then back up to raw: must land on raw, not stay stuck at mid. */
+  CHECKF(gbh_set_count(&s, mid) == GBS_OK, "%s: set %d", file, mid);
+  CHECKF(gbh_count(&s) == mid, "%s: readback %d after set %d, got %d",
+        file, mid, mid, gbh_count(&s));
+  CHECKF(gbh_set_count(&s, raw) == GBS_OK, "%s: set %d (back up)", file, raw);
+  CHECKF(gbh_count(&s) == raw, "%s: set_count(%d) after a lower set must land on "
+        "%d (not ratcheted down to %d), got %d", file, raw, raw, mid, gbh_count(&s));
+
+  /* Down to 0 (D4's "nothing to clear" trigger on the COUNT alone must not also
+   * strand the real teams from ever being set back), then back up to raw. */
+  CHECKF(gbh_set_count(&s, 0) == GBS_OK, "%s: set 0", file);
+  CHECKF(gbh_count(&s) == 0, "%s: readback 0 after set 0, got %d", file, gbh_count(&s));
+  CHECKF(gbh_slots_in_blob(&s) == raw, "%s: set_count(0) must not erase the blob -- "
+        "%d team(s) still physically present, gbh_slots_in_blob() says %d",
+        file, raw, gbh_slots_in_blob(&s));
+  CHECKF(gbh_set_count(&s, raw) == GBS_OK, "%s: set %d (recover from 0)", file, raw);
+  CHECKF(gbh_count(&s) == raw, "%s: set_count(%d) after set 0 must land on %d (not "
+        "ratcheted to 0), got %d", file, raw, raw, gbh_count(&s));
+}
+
+static void gen2_not_clamped_by_count(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  GbSession s;
+  if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK || s.gen != GB_GEN2) {
+    printf("  SKIP %s (not a Gen-2 save)\n", file);
+    return;
+  }
+  g_ran++;
+  int raw = gbh_slots_in_blob(&s);   /* Guy's real Crystal.sav corpus: 6 */
+
+  CHECKF(gbh_set_count(&s, 2) == GBS_OK, "%s: set count to 2", file);
+  CHECKF(gbh_count(&s) == 2, "%s: readback 2, got %d", file, gbh_count(&s));
+  /* R1: the real HoF PC (pokecrystal's LoadHOFTeam) bails on each record's own
+   * win-count byte, not wHallOfFameCount -- a lowered count must not make
+   * gbh_team_count_present() under-report the teams the real game would still
+   * show. This is what D2's Gen-1-only guard (b89 re-verify) exists to preserve. */
+  CHECKF(gbh_team_count_present(&s) == raw, "%s: gbh_team_count_present() after "
+        "set_count(2) must stay at the real slot count %d (not clamp to 2 like "
+        "Gen 1 would), got %d", file, raw, gbh_team_count_present(&s));
+}
+
 int main(void) {
   const char* saves[] = { "Red.sav", "Yellow.sav", "Gold.sav", "Crystal.sav" };
   printf("== A: decode real corpus teams ==\n");
@@ -425,6 +494,13 @@ int main(void) {
   printf("== K: D2 present clamps to count on noise SRAM ==\n");
   for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++)
     present_clamped_to_count_on_noise(saves[i]);
+
+  printf("== L: R1 the D1<->D2 ratchet (Gen 1 SET COUNT can move back up; Gen 2 "
+        "gbh_team_count_present() is not clamped by the count) ==\n");
+  for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++)
+    ratchet_gen1(saves[i]);
+  for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++)
+    gen2_not_clamped_by_count(saves[i]);
 
   if (g_ran == 0) printf("  (no corpus present -- structural checks only, none ran)\n");
   printf("\n%d checks, %d failed (%d save(s) loaded)\n", g_check, g_fail, g_ran);

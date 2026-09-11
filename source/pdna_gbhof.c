@@ -170,8 +170,12 @@ static void hof_detail_render(const GbHofTeam* t, uint8_t gen, int team_no) {
 static void hof_do_clear(GbSession* s) {
   /* D4: an already-empty HoF has nothing to clear -- skip the confirm dialog, the
    * SD write, and the backup slot it would burn, same as the SET COUNT editor's own
-   * no-op-skips-the-write rule just above. */
-  if (gbh_count(s) == 0 && gbh_team_count_present(s) == 0) { snd_deny(); return; }
+   * no-op-skips-the-write rule just above. b89 re-verify R1: ask gbh_slots_in_blob()
+   * (the raw, unclamped scan), not gbh_team_count_present() -- on Gen 2 the clamped
+   * view can read 0 while real teams still sit in the blob (LoadHOFTeam bails on
+   * each record's own win-count byte, not the count field), which would silently
+   * strand them uncleared. */
+  if (gbh_count(s) == 0 && gbh_slots_in_blob(s) == 0) { snd_deny(); return; }
   if (!app_confirm("CLEAR ALL",
                    "The PC's HALL OF FAME option disappears until you win again."))
     return;
@@ -192,10 +196,15 @@ static void hof_do_clear(GbSession* s) {
  * write entirely, hard rule 3. */
 __attribute__((noinline))
 static void hof_set_count_editor(GbSession* s, uint8_t gen) {
-  /* Mirrors gbh_set_count's own clamp exactly (D1): Gen 1's real League PC decodes
-   * every slot up to the stored count with no independent bounds check, so the
-   * displayed cap must never promise more than the teams actually present. */
-  int cap = (gen == GB_GEN2) ? 200 : ((gbh_team_count_present(s) < GBH_G1_CAPACITY) ? gbh_team_count_present(s) : 255);
+  /* Mirrors gbh_set_count's own clamp exactly (D1, R1): Gen 1's real League PC
+   * decodes every slot up to the stored count with no independent bounds check, so
+   * the displayed cap must never promise more than the teams actually present --
+   * and that ceiling has to be gbh_slots_in_blob() (the raw, unclamped scan), never
+   * gbh_team_count_present() (which clamps to the CURRENT count on Gen 1, D2): using
+   * the clamped view here would make the displayed cap ratchet down with every
+   * commit and never recover. */
+  int raw = gbh_slots_in_blob(s);
+  int cap = (gen == GB_GEN2) ? 200 : ((raw < GBH_G1_CAPACITY) ? raw : 255);
   int start = gbh_count(s);
   int v = start;
   bool valid = false; int pv = -1; uint32_t g = 0;

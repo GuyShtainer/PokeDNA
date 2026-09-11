@@ -79,14 +79,29 @@ typedef struct {
 int gbh_count(const GbSession* s);
 
 /* How many of the capacity's team slots hold real data, via an INDEPENDENT SCAN of
- * the blob itself (not derived from gbh_count) -- the same "two independent
- * derivations, cross-checked" posture the rest of this family uses. Storage order is
- * scanned from slot 0 upward and stops at the first ABSENT slot (a team's first mon's
- * species byte is 0 or, Gen 1 only, 0xFF) -- both generations write contiguously, so
- * this is exact, not a heuristic, UNLESS something outside PokeDNA left a hole, which
- * this will then under-report (a defensive miss, never an over-report). Capped at
- * GBH_G1_CAPACITY / GBH_G2_CAPACITY. 0 on a closed/malformed session. */
+ * the blob itself. Storage order is scanned from slot 0 upward and stops at the
+ * first ABSENT slot (a team's first mon's species byte is 0 or, Gen 1 only, 0xFF) --
+ * both generations write contiguously, so this is exact, not a heuristic, UNLESS
+ * something outside PokeDNA left a hole, which this will then under-report (a
+ * defensive miss, never an over-report). Capped at GBH_G1_CAPACITY / GBH_G2_CAPACITY.
+ * 0 on a closed/malformed session.
+ *
+ * b89 re-verify R1: on GEN 1 ONLY, this result is ALSO clamped to gbh_count() (the
+ * D2 defence against virgin/noise SRAM -- see gb_hof.c). Gen 2 is NOT clamped this
+ * way: pokecrystal's LoadHOFTeam bails on each record's own win-count byte, not on
+ * wHallOfFameCount, so a Gen-2 cart can genuinely show more teams than the count
+ * byte says. Callers that need the real, UNCLAMPED slot count on both gens (a
+ * ceiling for gbh_set_count(), or "is there anything to clear") want
+ * gbh_slots_in_blob() below instead. */
 int gbh_team_count_present(const GbSession* s);
+
+/* The raw slot scan with NO count clamp -- the real ceiling for gbh_set_count() and
+ * the real "is there anything to clear" question (b89 re-verify R1). Unlike
+ * gbh_team_count_present(), this is never influenced by gbh_count() on either gen,
+ * so it cannot ratchet: deriving a WRITE ceiling from a value that read itself
+ * clamps to the count would make SET COUNT only ever move down. 0 on a
+ * closed/malformed session. */
+int gbh_slots_in_blob(const GbSession* s);
 
 /* Decode team `i` (0 = NEWEST, matching the screen's list order on both gens even
  * though their on-card storage order differs -- see the big comment above) into

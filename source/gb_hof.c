@@ -47,6 +47,33 @@ static bool hof_slot_present(const GbSession* s, uint32_t team_off) {
   return species != 0x00u && species != 0xFFu;
 }
 
+/* The UNCLAMPED blob scan: how many team slots actually look occupied, with no
+ * reference to the count byte at all. A CEILING on what may be written to the
+ * count must not be derived from the count itself, or SET COUNT becomes a one-way
+ * ratchet (b89 re-verify R1): D2 clamps gbh_team_count_present()'s RESULT to
+ * gbh_count() on Gen 1, so if gbh_set_count()'s own cap were gbh_team_count_present()
+ * (as the first fix pass had it), every set_count() below the current count would
+ * permanently lower the cap for every set_count() after it -- 9 real teams, set to 3,
+ * then trying to set back to 9 clamps to 3 forever. This function is the real,
+ * count-independent answer to "how many teams does the blob actually hold". */
+static int hof_raw_slots(const GbSession* s) {
+  GbGame g = hof_game(s);
+  uint32_t base = gbf_off(g, GBF_HOF_TEAMS);
+  if (!base) return 0;
+  uint32_t stride = hof_team_bytes(s);
+  int cap = hof_capacity(s);
+  int n = 0;
+  for (int i = 0; i < cap; i++) {
+    if (!hof_slot_present(s, base + (uint32_t)i * stride)) break;
+    n++;
+  }
+  return n;
+}
+
+int gbh_slots_in_blob(const GbSession* s) {
+  return (s && s->open) ? hof_raw_slots(s) : 0;
+}
+
 int gbh_count(const GbSession* s) {
   if (!s || !s->open) return 0;
   GbGame g = hof_game(s);
@@ -59,21 +86,21 @@ int gbh_count(const GbSession* s) {
 
 int gbh_team_count_present(const GbSession* s) {
   if (!s || !s->open) return 0;
-  GbGame g = hof_game(s);
-  uint32_t base = gbf_off(g, GBF_HOF_TEAMS);
-  if (!base) return 0;
-  uint32_t stride = hof_team_bytes(s);
-  int cap = hof_capacity(s);
-  int n = 0;
-  for (int i = 0; i < cap; i++) {
-    if (!hof_slot_present(s, base + (uint32_t)i * stride)) break;
-    n++;
+  int n = hof_raw_slots(s);
+  /* D2 is a GEN-1-ONLY defence (b89 re-verify R1): pokered never initialises
+   * sHallOfFame (no Gen-1 EraseHallOfFame), so virgin Gen-1 SRAM can hold power-on
+   * noise that happens to look like occupied slots (neither $00 nor $FF) while the
+   * real win-count byte still reads 0 -- the real League PC bounds its own decode
+   * on that count, so clamping here matches retail. Gen 2 must NOT be clamped the
+   * same way: pokecrystal's LoadHOFTeam (engine/events/halloffame.asm:408-431)
+   * bails on each RECORD's OWN win-count byte, not on wHallOfFameCount (which only
+   * gates the PC menu row, pokecenter_pc.asm:104-109) -- so a Gen-2 cart can show
+   * (and this screen must show) more teams than the count byte says. */
+  if (s->gen == GB_GEN1) {
+    int c = gbh_count(s);
+    int cap = hof_capacity(s);
+    if (n > c) n = (c < cap) ? c : cap;
   }
-  /* D2: pokered never initialises sHallOfFame (no Gen-1 EraseHallOfFame), so virgin
-   * SRAM can hold power-on noise that happens to look like occupied slots (neither
-   * $00 nor $FF) while the real win-count byte still reads 0. Trust the count byte
-   * as the ceiling on what's genuinely present, same as the retail League PC does. */
-  { int c = gbh_count(s); if (n > c) n = (c < cap) ? c : cap; }
   return n;
 }
 
@@ -195,8 +222,14 @@ GbsStatus gbh_set_count(GbSession* s, int n) {
    * cart actually has drawn from BaseStats out of bounds. Clamp to the teams present
    * (never past GBH_G1_CAPACITY) so the count this writes can never exceed what's
    * really stored. Gen 2's own HOF viewer re-derives its own count from the slots,
-   * so 200 (the byte's natural ceiling) stays safe there. */
-  int cap = (s->gen == GB_GEN2) ? 200 : ((gbh_team_count_present(s) < GBH_G1_CAPACITY) ? gbh_team_count_present(s) : 255);
+   * so 200 (the byte's natural ceiling) stays safe there.
+   *
+   * b89 re-verify R1: the ceiling MUST be hof_raw_slots(), not
+   * gbh_team_count_present() -- that function clamps to gbh_count() on Gen 1 (D2),
+   * so using it here made the cap ratchet down with every set_count() below the
+   * real slot count and never recover (9 real teams -> set 3 -> set 9 stuck at 3). */
+  int raw = hof_raw_slots(s);
+  int cap = (s->gen == GB_GEN2) ? 200 : ((raw < GBH_G1_CAPACITY) ? raw : 255);
   if (n > cap) n = cap;
 
   GbGame g = hof_game(s);
