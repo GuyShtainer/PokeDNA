@@ -409,6 +409,40 @@ static void test_colour(const char* rom_file, const char* name,
       chk(name, "D1 regression guard: bg_idx==6 never occurs under TOWN (confirms the old gate was dead)",
           !any_bg_idx_6);
     }
+
+    /* review-opus D3: the whole-PalMap bulk read must agree with the
+     * existing per-nibble reader on every raw tile id New Bark's own
+     * tileset actually defines, and must fail closed (zero-filled) on a
+     * bad pal_off. */
+    {
+      RomGbMap2 g2; GbMap2Map map2; GbMap2Tileset ts2;
+      bool g2ok = rgm2_open(&g2, rd_mem, &m, m.len, scratch, sizeof scratch) &&
+                  rgm2_map(&g2, 24, 4, &map2) && rgm2_tileset(&g2, map2.tileset_id, &ts2);
+      chk(name, "D3 setup: New Bark map+tileset resolve", g2ok);
+      if (g2ok) {
+        uint8_t bulk[128];
+        bool bok = rgm2_colour_palmap(&c, rd_mem, &m, m.len, ts2.pal_off, bulk);
+        chk(name, "D3 whole-PalMap bulk read succeeds", bok);
+        if (bok) {
+          int mismatch = 0;
+          for (int raw = 0; raw < 32; raw++) {
+            uint8_t nib_single = 0;
+            rgm2_colour_nibble(&c, rd_mem, &m, m.len, ts2.pal_off, (uint8_t)raw, &nib_single);
+            uint8_t b = bulk[raw >> 1];
+            uint8_t nib_bulk = (raw & 1) ? (uint8_t)((b >> 4) & 0x0F) : (uint8_t)(b & 0x0F);
+            if (nib_bulk != nib_single) mismatch = 1;
+          }
+          chk(name, "D3 bulk PalMap agrees with the per-nibble reader (raw ids 0-31)", !mismatch);
+        }
+        RomGbMap2Colour unopened;
+        memset(&unopened, 0, sizeof unopened);
+        uint8_t bad[128];
+        chk(name, "D3 bulk PalMap fails closed on an unopened colour struct (ok=0)",
+            !rgm2_colour_palmap(&unopened, rd_mem, &m, m.len, ts2.pal_off, bad));
+        chk(name, "D3 bulk PalMap zero-fills its output on that failure",
+            bad[0] == 0 && bad[64] == 0 && bad[127] == 0);
+      }
+    }
   }
 
   /* Mutate the PalMap-consumer anchor's own first concrete byte (its own

@@ -471,6 +471,15 @@ bool rgm2_colour_nibble(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint
   return true;
 }
 
+bool rgm2_colour_palmap(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
+                         uint32_t pal_off, uint8_t out128[128]) {
+  memset(out128, 0, 128);
+  if (!c->ok || !read) return false;
+  uint32_t byte_off = fileoff(c->palmap_bank, (uint16_t)pal_off);
+  if (byte_off >= size || size - byte_off < 128u) return false;
+  return read(ctx, byte_off, out128, 128) ? true : false;
+}
+
 bool rgm2_colour_palette(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
                           uint8_t environment, uint8_t palette_index,
                           uint16_t out4[4], uint8_t* out_bg_idx) {

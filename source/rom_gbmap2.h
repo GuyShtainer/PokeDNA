@@ -139,6 +139,13 @@ bool rgm2_colour_open(RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t siz
 bool rgm2_colour_nibble(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
                          uint32_t pal_off, uint8_t raw_tile_id, uint8_t* out_nibble);
 
+/* review-opus D3: the WHOLE PalMap for ALL 256 raw tile ids -- 128 B (one
+ * nibble per id, 2 ids/byte) -- in a single read, so a caller can cache it
+ * once at open instead of one SD read per painted cell. `out128` must be
+ * >= 128 B. Same bank/offset rule as rgm2_colour_nibble(). */
+bool rgm2_colour_palmap(const RomGbMap2Colour* c, GbReadFn read, void* ctx, uint32_t size,
+                         uint32_t pal_off, uint8_t out128[128]);
+
 /* Resolve `palette_index` (0-7, a PalMap nibble already masked with & 0x07)
  * under `environment` (a Map record's own byte 0x02) into 4 RGB15 colours,
  * DAY only (design §7.1/§7.5/§7.8) -- already GBA-native, no conversion

@@ -724,6 +724,10 @@ rgm2_open argsites=8 -> gbmap2_sd_read fused_gb_slice_read
 rgm2_colour_open argsites=3 -> gbmap2_sd_read fused_gb_slice_read
 rgm2_colour_palette argsites=3 -> gbmap2_sd_read fused_gb_slice_read
 rgm2_colour_nibble argsites=1 -> gbmap2_sd_read fused_gb_slice_read
+# review-opus D3: rgm2_colour_palmap() (the whole-PalMap bulk read, added to
+# stop gbmap2_paint()'s own per-cell rgm2_colour_nibble() calls) has the
+# same "GbReadFn read PARAMETER" shape as its siblings above.
+rgm2_colour_palmap argsites=1 -> gbmap2_sd_read fused_gb_slice_read
 rgm2_colour_roof argsites=1 -> gbmap2_sd_read fused_gb_slice_read
 
 Br.rd @0 in br_byte -> gb_art_read fused_gb_slice_read gb_read

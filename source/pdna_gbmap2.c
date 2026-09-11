@@ -102,6 +102,13 @@ typedef struct {
   int             colour_ok;
   uint16_t        colour_pal[8 * 4];                    /* up to 8 palettes x 4 RGB15 */
   uint8_t         colour_palidx[GBSCR_COLS * GBSCR_ROWS]; /* one palette slot per cell  */
+  /* review-opus D3: PalMap is one nibble per RAW tile id, 2 ids/byte -- ALL
+   * 256 raw ids fit in 128 B. Cached ONCE at open (gbmap2_colour_setup())
+   * so panning never re-reads it (was 360 single-byte reads per repaint --
+   * one per painted CELL, not per unique tile -- on top of the viewport's
+   * own 25; the brief's "panning costs zero ROM reads" promise was being
+   * violated by colour alone). */
+  uint8_t         palmap[128];
 } GbMap2State;
 
 /* Locate the 2 colour anchors and precompute up to 8 DAY palettes for
@@ -143,6 +150,17 @@ static bool gbmap2_colour_setup(GbMap2State* st, uint8_t* scratch, uint32_t scra
       }
     }
   }
+  /* review-opus D3: cache the WHOLE PalMap (128 B, all 256 raw ids) here,
+   * ONCE, so gbmap2_paint() never issues another SD read for it -- this
+   * used to be one single-byte read PER PAINTED CELL (360/repaint), not
+   * per unique tile, violating "panning costs zero ROM reads" the moment
+   * colour was added. Failure here fails the whole colour setup (never a
+   * partial/guessed palette). */
+  if (!rgm2_colour_palmap(&st->colour, st->g.read, st->g.ctx, st->g.size,
+                           st->ts.pal_off, st->palmap)) {
+    memset(&st->colour, 0, sizeof st->colour);
+    return false;
+  }
   return true;
 }
 
@@ -180,17 +198,17 @@ static void gbmap2_paint(GbScreen* gs, GbMap2State* st, const uint8_t* meta_cach
       if (block_off + 16u > meta_len) { gbscr_cell(gs, sx, sy, GBSCR_SRC_BLANK, 0); continue; }
       uint8_t raw_id = meta_cache[block_off + (uint32_t)(ty * 4 + tx)];
       uint16_t blob_tile = gbmap2_blob_tile(raw_id);
-      /* M1-G2 colour (design §7.8): one PalMap read per painted cell to
-       * resolve which of the up to 8 precomputed palettes this cell uses
-       * (design §7.2: palette_index = palmap_nibble(RAW tile id) & 7 --
-       * the raw id, NOT the §6-remapped blob index, since bit 3 of the
-       * nibble is the same VRAM-bank selector the remap already encodes).
+      /* M1-G2 colour (design §7.8): resolve which of the up to 8
+       * precomputed palettes this cell uses (design §7.2: palette_index =
+       * palmap_nibble(RAW tile id) & 7 -- the raw id, NOT the §6-remapped
+       * blob index, since bit 3 of the nibble is the same VRAM-bank
+       * selector the remap already encodes) from the CACHED st->palmap
+       * (review-opus D3) -- no ROM read here at all, paint or repaint.
        * Only runs when colour located; otherwise the shell's own grey-ramp
        * fallback is unaffected. */
       if (st->colour_ok) {
-        uint8_t nib = 0;
-        rgm2_colour_nibble(&st->colour, st->g.read, st->g.ctx, st->g.size,
-                            st->ts.pal_off, raw_id, &nib);
+        uint8_t b = st->palmap[raw_id >> 1];
+        uint8_t nib = (raw_id & 1u) ? (uint8_t)((b >> 4) & 0x0Fu) : (uint8_t)(b & 0x0Fu);
         st->colour_palidx[cell] = (uint8_t)(nib & 0x07u);
       }
       gbscr_cell(gs, sx, sy, GBSCR_SRC_MAPTILES, (uint8_t)(blob_tile & 0xFFu));
