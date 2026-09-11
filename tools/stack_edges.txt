@@ -1002,3 +1002,21 @@ addrtaken-ok g2w_set_otname
 # bound. Retire with #106.
 addrtaken-ok tte_set_color
 
+# lib/everdrivegbax5/everdrive.c's ed_rtc_off (frame 0 B): one prototype, one definition,
+# ZERO call sites anywhere in source/ or lib/ (grepped on the b90 merge pass) -- never even
+# reached, let alone dispatched. Merging main's b86 (Gen-2 Clock) into b90 (Fly) shifted the
+# NORMAL image's link until ed_rtc_off (0x08070300) landed with its ARM-form bytes
+# (00 03 07 08 LE) sitting 4-byte-aligned at source/mon_anim.c's own s_fam[413] species-family
+# byte table (.rodata @0x08092830, offset +0xc = 0x0809290c) -- a plain lookup table, not a
+# function-pointer field or dispatch table. Same data-word-vs-pointer coincidence as
+# encode_checked/g2w_set_otname/tte_set_color above (#106 G2 class, retire with #106).
+addrtaken-ok ed_rtc_off
+
+# libgcc's ____aeabi_dmul_from_thumb (frame 0 B): the Thumb-mode double-multiply runtime
+# helper, taken by the div/mul runtime itself the same way __aeabi_idiv0/__udivmoddi4 above
+# are -- but on the b90-merge NORMAL image its address (0x08077500, Thumb form 0x08077501)
+# also lands 4-byte-aligned inside source/mon_back.c's compiled mon_back_blob pixel data
+# (.rodata @0x084e4a14, offset +0x5cbf8 = 0x0854160c), a compressed sprite blob, not a
+# dispatch table (#106 G2 class). Zero frame; nothing to bound.
+addrtaken-ok ____aeabi_dmul_from_thumb
+
