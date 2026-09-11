@@ -295,7 +295,7 @@ static const char* kind_suffix(uint8_t kind) {
 static uint32_t s_gbfl_folded = 0xFFFFFFFFu;
 
 static void nf_draw_row(GbSession* s, GbGame g, int r, int y, bool sel) {
-  char row[40];
+  char row[64];
   if (r == s_nc) {
     if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
     ui_text(8, y, sel ? UI_SELTEXT : UI_DIM, "Raw flag browser (#N)...");
