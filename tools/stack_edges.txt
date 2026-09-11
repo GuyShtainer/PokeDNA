@@ -1097,6 +1097,32 @@ addrtaken-ok rumble_bus_probe_bracketed  # pdna_main.c:438 flashcartio_bus_probe
 addrtaken-ok flashcartio_activate # RV_ANCHOR'd into pdna_romver_data.c's ROM self-check
                                    # window table -- a real relocation against this
                                    # function's own symbol name, pdna_romver_data.c:75/106.
+
+# G7 (BACKLOG #89, b89 lane, 2026-09-11): `make delta-artless` FATALs on
+# `_EZFO_reboot`/`_EZFO_startUp` ADDRESS-TAKEN/UNREACHED -- the SAME shape G6 right
+# above already found and restored for flashcartio_activate: the 2026-09-10 G2 pass
+# that deleted these two lines (see the paragraph above, "re-run on both gate ELFs
+# with the line removed and no orphan reappeared") checked `make artless`/`make`
+# only, never `make delta`/`make delta-artless` -- and both are called ONLY from
+# inside flashcartio_activate() (lib/flashcartio.c:333/393), whose own real callers
+# (source/pdna_main.c:9642/9658) sit in the SAME `#ifdef PDNA_DELTA`-excluded SD
+# code path G6 already documents. On delta, flashcartio_activate is unreached except
+# through the RV_ANCHOR literal G6 restored it for -- so its own callees are
+# unreached the identical way, and the stack guard's relocation-proven scanner still
+# finds SOME address-taken reference to them (lib/flashcartio.c compiles into every
+# variant unconditionally, unlike the call sites that would reach them). Confirmed
+# on MAIN itself, not just this worktree (`make delta-artless` in the main checkout
+# at e8ee2d9, zero uncommitted changes, FATALs the exact same way) -- a pre-existing
+# gap in the b106 lane's own re-verification, unrelated to BACKLOG #89's own code.
+# Restored rather than improvised around, per the stop-licence --
+# flagged in the session report instead of silently carried. Original wording
+# (2026-09-10, before the G2 pass deleted it) kept verbatim below.
+addrtaken-ok _EZFO_startUp        # linked at EWRAM 0x02000000, which COINCIDES with the
+                                   # unrelated CART_SPAN=0x02000000u constant (fused_gb.c/
+                                   # fused_rom.c/fused_sav.c) -- a literal-pool false match,
+                                   # not a real function-pointer dispatch; _EZFO_startUp is
+                                   # called directly (lib/flashcartio.c:333 `_EZFO_startUp()`)
+addrtaken-ok _EZFO_reboot         # same false-match class, called directly (flashcartio.c:393)
                                    # Reachable directly (source/pdna_main.c:9642/9658) ONLY on
                                    # the non-delta builds; #ifdef PDNA_DELTA compiles those
                                    # call sites out, so the exemption is load-bearing there.
