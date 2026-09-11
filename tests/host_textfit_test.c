@@ -2169,8 +2169,26 @@ int main(void) {
   T(PDNA_GBFLY_BADGE_OK, 4);
   T(PDNA_GBFLY_NO_THUNDER, 4);
   T(PDNA_GBFLY_NO_STORM, 4);
-  T("A toggle  B save+back", 4);
   T("read-only (Omega)  B back", 4);
+  /* D4: START's mark-all footer hint. PDNA_GBFLY_HINT_EDIT is the compile-time pick
+   * between the two forms below (its own sizeof check in pdna_gbfly.h) -- assert the
+   * SHORT form is what actually gets drawn (32 > 29 cols, over budget) and that the
+   * LONG form genuinely fails T()'s own check, so a future edit that shrinks it back
+   * under budget is a visible test change, not a silent flip. */
+  T(PDNA_GBFLY_HINT_EDIT, 4);
+  T(PDNA_GBFLY_HINT_EDIT_SHORT, 4);
+  checks++;
+  { int w = (int)strlen(PDNA_GBFLY_HINT_EDIT_LONG) * SYS8_W;
+    int ok = (w > SCR_W - 4);   /* expected to be OVER budget */
+    if (!ok) fails++;
+    printf("  %-4s %-46.46s          w=%-4d budget=%-4d %s\n",
+           ok ? "ok" : "FAIL", PDNA_GBFLY_HINT_EDIT_LONG, w, SCR_W - 4,
+           "(long form expected over-budget)"); }
+  /* D4: the mark-all confirm + result panel text -- app_confirm's own fit rules
+   * (same ptext_fit/ptext_wrap split documented below for the Gen-2 Clock screen). */
+  T("Mark all destinations?", 4);
+  T("Skips story order.", 4);
+  T("Spawn-only rows untouched.", 4);
 
   printf("\n== BACKLOG #86/#108: the Gen-2 Clock screen (source/pdna_gbclock.c) ==\n");
   /* Confirm titles go through app_confirm's own ui_ptext_fit(28, 54, 184, ...) (one

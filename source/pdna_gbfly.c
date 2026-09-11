@@ -149,7 +149,7 @@ void pdna_gb_fly(GbSession* s, bool can_edit) {
         ui_text(4, 144, UI_OK, PDNA_GBFLY_BADGE_OK);
       else
         ui_text(4, 144, UI_WARN, gen1 ? PDNA_GBFLY_NO_THUNDER : PDNA_GBFLY_NO_STORM);
-      ui_text(4, 152, UI_DIM, can_edit ? "A toggle  B save+back" : "read-only (Omega)  B back");
+      ui_text(4, 152, UI_DIM, can_edit ? PDNA_GBFLY_HINT_EDIT : "read-only (Omega)  B back");
     } else {
       if (sel != pv.sel) {
         gbfly_row_paint(s, gen1, pv.sel, 18 + (pv.sel - top) * 10, false);
@@ -166,20 +166,44 @@ void pdna_gb_fly(GbSession* s, bool can_edit) {
     pv.top = top; pv.sel = sel; pv.gen = ui_clear_gen(); pv.valid = true;
     toggled = false;
 
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B);
+    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_A | KEY_B | KEY_START);
     if (k & KEY_B) break;
     if (k & KEY_UP)    sel = sel ? sel - 1 : n - 1;
     if (k & KEY_DOWN)  sel = (sel + 1) % n;
     if (k & KEY_LEFT)  { sel -= vis; if (sel < 0) sel = 0; }
     if (k & KEY_RIGHT) { sel += vis; if (sel >= n) sel = n - 1; }
 
-    if (k & KEY_A) {
+    if (k & (KEY_A | KEY_START)) {
       if (!can_edit) {
         snd_deny();
         s_msg("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0);
         pv.valid = false;
         continue;
       }
+    }
+
+    if (k & KEY_START) {
+      if (!app_confirm("Mark all destinations?", "Skips story order.")) continue;
+      /* Skip the spawn-only rows via the same "spn" predicate the row/legend paint
+       * uses (fly_tag): Gen 1 never tags a row, so nothing is skipped there; Gen 2's
+       * four respawn-only spots (Home/Debug/Union Cave/Fast Ship) are never a real
+       * Fly-menu destination (see pdna_gbfly.h's header note), so mark-all leaves
+       * them exactly as found instead of silently flagging a spot the cartridge's
+       * own Fly menu never offers. */
+      int ch = 0;
+      for (int i = 0; i < n; i++) {
+        if (fly_tag(gen1, i)[0] != '\0') continue;   /* spn: spawn-only, never offered */
+        if (!gbfy_get(s, i) && gbfy_set(s, i, true) == GBS_OK) ch++;
+      }
+      if (ch) { dirty = true; rmbl_fire(RCUE_EDIT); }
+      char l[48];
+      siprintf(l, "%d newly marked.", ch);
+      s_msg("MARKED", UI_OK, l, gen1 ? 0 : "Spawn-only rows untouched.");
+      pv.valid = false;               /* s_msg painted over us without ui_clear() */
+      continue;
+    }
+
+    if (k & KEY_A) {
       bool set = gbfy_get(s, sel);
       GbsStatus st = gbfy_set(s, sel, !set);
       if (st == GBS_OK) {

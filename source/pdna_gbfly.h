@@ -13,6 +13,16 @@
 #define PDNA_GBFLY_NO_THUNDER     "No Thunder Badge - can't fly"
 #define PDNA_GBFLY_NO_STORM       "No Storm Badge - can't fly"
 
+/* D4: the can_edit footer hint, now with START's mark-all. The row draws at x=4 in
+ * sys8 (8 px/glyph) inside a 232 px-wide screen -- a 29-column budget. The fuller
+ * form measures 32 columns (over budget); the compile-time sizeof check below picks
+ * the short form instead so the row can never silently run off-screen if either
+ * literal is edited later. Both are measured by tests/host_textfit_test.c. */
+#define PDNA_GBFLY_HINT_EDIT_LONG  "A toggle  START all  B save+back"
+#define PDNA_GBFLY_HINT_EDIT_SHORT "A tog  START all  B save"
+#define PDNA_GBFLY_HINT_EDIT \
+  (sizeof(PDNA_GBFLY_HINT_EDIT_LONG) - 1 <= 29 ? PDNA_GBFLY_HINT_EDIT_LONG : PDNA_GBFLY_HINT_EDIT_SHORT)
+
 /* Gen-1/2 Fly-destination screen (BACKLOG #90) -- mirrors source/pdna_fly.c's shape
  * (a scrolling list, A toggles, B asks to save) over gb_fly.h's pure-C bitfield core
  * (gbfy_get/gbfy_set/gbfy_count/gbfy_game) instead of gen3_fly.h.
@@ -37,7 +47,12 @@
  * opened for editing -- gb_nav_from_start passes &g_ed->s, true, same convention as
  * pdna_gbtrainer.h); the false path (U/D still scrolls, A does nothing) is kept for a
  * future view-only caller and is currently unreached (b90 review D8). Commits via
- * gb_persist() (pdna_gen12.h) on B, only when at least one bit actually changed. */
+ * gb_persist() (pdna_gen12.h) on B, only when at least one bit actually changed.
+ *
+ * D4: START asks "Mark all destinations?" then sets every NON-spawn-only row not
+ * already ON (never a story-order confirm per-row, same one-shot shape as
+ * pdna_fly.c's own START); the four Gen-2 spawn-only rows (spn tag) are always left
+ * untouched, matching the fact the real Fly menu never lists them either. */
 void pdna_gb_fly(GbSession* s, bool can_edit);
 
 #endif /* PDNA_GBFLY_H */
