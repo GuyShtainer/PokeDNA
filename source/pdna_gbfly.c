@@ -9,6 +9,7 @@
 
 #include "pdna_gbfly.h"
 #include "gb_fly.h"
+#include "gb_trainer.h"    /* gbt_read / GbTrainer -- the badge line                */
 #include "pdna_gen12.h"    /* gb_persist                                            */
 #include "ui.h"
 #include "snd.h"
@@ -65,6 +66,19 @@ static const char* fly_name(bool gen1, int idx) {
 static const char* fly_tag(bool gen1, int idx) {
   if (gen1) return "";
   return gen2_is_flypoint(idx) ? "" : "spn";
+}
+
+/* The badge line -- parity with pdna_fly.c's g3fly_badge_ok/its paint block. Gen 1's
+ * Fly gate is start_sub_menus.asm:132-134 (`bit BIT_THUNDERBADGE, a`, BIT_THUNDERBADGE
+ * == 2, pokered constants/ram_constants.asm:58); Gen 2's is
+ * pokecrystal/engine/events/overworld.asm:559-561 (`ld de, ENGINE_STORMBADGE` /
+ * CheckBadge), STORMBADGE == bit 5 of wJohtoBadges (ram_constants.asm's const_def:
+ * ZEPHYR=0, HIVE=1, PLAIN=2, FOG=3, MINERAL=4, STORM=5). An unreadable trainer block
+ * (gbt_read returns false) answers false -- never claim OK on a read failure. */
+static bool gbfly_badge_ok(const GbSession* s, bool gen1) {
+  GbTrainer t;
+  if (!gbt_read(s, &t)) return false;
+  return gen1 ? (t.badges & (1u << 2)) != 0 : (t.badges_johto & (1u << 5)) != 0;
 }
 
 /* Same paint-diff shape as pdna_fly.c's FlyPaint -- stack-local, not a static (a
@@ -128,7 +142,13 @@ void pdna_gb_fly(GbSession* s, bool can_edit) {
 
       ui_hline(0, 140, UI_SCR_W, UI_BORDER);
       if (!gen1)
-        ui_text(4, 144, UI_DIM, "spn = no effect in game");
+        ui_text(4, 134, UI_DIM, PDNA_GBFLY_SPN_LEGEND);
+      /* The badge line is the difference between "this feature is broken" and "I
+       * understand what this does" (pdna_fly.c's own comment, same shape here). */
+      if (gbfly_badge_ok(s, gen1))
+        ui_text(4, 144, UI_OK, PDNA_GBFLY_BADGE_OK);
+      else
+        ui_text(4, 144, UI_WARN, gen1 ? PDNA_GBFLY_NO_THUNDER : PDNA_GBFLY_NO_STORM);
       ui_text(4, 152, UI_DIM, can_edit ? "A toggle  B save+back" : "read-only (Omega)  B back");
     } else {
       if (sel != pv.sel) {

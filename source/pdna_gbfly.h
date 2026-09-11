@@ -5,6 +5,14 @@
 
 #include "gb_session.h"   /* GbSession */
 
+/* Fixed on-screen strings, shared with tests/host_textfit_test.c's measured block
+ * (D3, b90 review) so the <=29-column sys8 budget is checked against the SAME text
+ * the screen actually draws, never a re-typed copy. */
+#define PDNA_GBFLY_SPN_LEGEND     "spn = no effect in game"
+#define PDNA_GBFLY_BADGE_OK       "Badge OK - need a mon w/ Fly"
+#define PDNA_GBFLY_NO_THUNDER     "No Thunder Badge - can't fly"
+#define PDNA_GBFLY_NO_STORM       "No Storm Badge - can't fly"
+
 /* Gen-1/2 Fly-destination screen (BACKLOG #90) -- mirrors source/pdna_fly.c's shape
  * (a scrolling list, A toggles, B asks to save) over gb_fly.h's pure-C bitfield core
  * (gbfy_get/gbfy_set/gbfy_count/gbfy_game) instead of gen3_fly.h.

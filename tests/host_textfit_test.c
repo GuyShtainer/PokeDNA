@@ -57,6 +57,8 @@
 #include "pdna_gbscreen.h" /* GBSCR_ORIGIN_X/GBSCR_COLS — D1 fix (U2c 2nd re-verify):
                             * the two-column side-bar legend's real budget, not a
                             * re-typed "36" */
+#include "pdna_gbfly.h"    /* BACKLOG #90 D3: the Fly screen's own badge/spn strings,
+                            * not a re-typed copy */
 
 #define SCR_W   UI_SCR_W
 #define SYS8_W  UI_SYS8_W   /* tonc sys8 advance: fixed 8 px per glyph */
@@ -2158,6 +2160,17 @@ int main(void) {
 #undef TYPE_CHIP_MAXW
 #undef PWT
   }
+
+  printf("\n== Gen-1/2 Fly destinations (#90, source/pdna_gbfly.c) ==\n");
+  /* Both footer lines + the spn legend + all three badge-line variants, all drawn at
+   * x=4 with ui_text (sys8, 8 px/glyph) -- the SAME macros pdna_gbfly.c draws, from
+   * pdna_gbfly.h, so a re-typed literal here can never drift from the real string. */
+  T(PDNA_GBFLY_SPN_LEGEND, 4);
+  T(PDNA_GBFLY_BADGE_OK, 4);
+  T(PDNA_GBFLY_NO_THUNDER, 4);
+  T(PDNA_GBFLY_NO_STORM, 4);
+  T("A toggle  B save+back", 4);
+  T("read-only (Omega)  B back", 4);
 
   printf("\n%d checks, %d FAILED\n", checks, fails);
   return fails ? 1 : 0;
