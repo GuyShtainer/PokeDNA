@@ -2051,8 +2051,24 @@ def frame_of(name, su_sizes, estimated, overrides=None):
     return 0, "unknown"
 
 
+class GatedSubtreeExceeded(Exception):
+    """BACKLOG #102: raised by deepest_from() when `enforce_gates=True` and a
+    `gated fn need=N` subtree's real, ungated measured size exceeds its declared N
+    -- the declaration is supposed to be a provably conservative bound on what the
+    runtime `pdna_origin_art_stack_room(N)` gate actually lets through, and it just
+    failed to be one. Carries (fn, measured, need) so callers can print the FATAL
+    without re-deriving the numbers."""
+    def __init__(self, fn, measured, need):
+        self.fn = fn
+        self.measured = measured
+        self.need = need
+        super().__init__(
+            f"gated subtree {fn} measures {measured} > declared need {need}: "
+            "the runtime gate would not protect it")
+
+
 def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None,
-                  scc_of=None):
+                  scc_of=None, gated=None, enforce_gates=False, gate_report=None):
     """Heaviest root..leaf chain by DFS with memoization; returns (total, path, cycles).
     path is a list of (name, frame_bytes, source).
 
@@ -2069,16 +2085,61 @@ def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None,
     which made the printed total secretly depend on DFS visitation order (the very
     defect D4 exists to fix) -- with `scc_of=None` (every existing caller that never
     passes it, and every test fixture without a real cycle) this function's behaviour
-    is untouched, onstack/cycles included, for backward compatibility."""
+    is untouched, onstack/cycles included, for backward compatibility.
+
+    BACKLOG #102: `gated` is {fn: need} from stack_edges.txt's `gated fn need=N`
+    lines. `enforce_gates=False` (the default, and what every whole-program --root
+    main walk passes) makes `gated` a no-op -- the subtree is walked exactly as if
+    it were never declared, so the guard's own worst-case number can never shrink
+    just because some unrelated re-derivation declared a gate here. With
+    `enforce_gates=True` (what a re-derivation --root OTHER than main passes), the
+    first time go() reaches a node in `gated`, it measures that node's TRUE, ungated
+    subtree total via a nested deepest_from() call (with `fn` itself excluded from
+    that nested call's own gated dict, so it measures fn's real cost rather than
+    immediately re-triggering its own cap) with the SAME enforce_gates=True, so any
+    OTHER gated node further down still gets its own cap honoured, matching what the
+    runtime actually does layer by layer. If the measured total exceeds the declared
+    need, raises GatedSubtreeExceeded -- the declaration failed to be the provably
+    conservative bound it claims to be. Otherwise -- proven safe -- the node
+    contributes ZERO additional bytes to THIS chain (memoizes to 0, walked as an
+    atomic leaf for path-printing, best_child[fn] = None): the whole reason a
+    re-derivation is allowed to stop counting here is that `fn` is independently,
+    freshly re-guarded at the moment it actually runs by its OWN runtime call to
+    `pdna_origin_art_stack_room(need)`, checked against the REAL live stack pointer
+    at that instant -- not against whatever headroom an ANCESTOR gate (e.g.
+    PDNA_PARTY_STRIP_NEED's own outer check) happened to promise minutes/frames
+    earlier. That inner gate is what actually keeps `fn`'s real execution safe, so
+    the ancestor's own budget does not have to additively reserve room for it on
+    top of its own chain -- double-reserving the same protection twice is exactly
+    the "inflated in the safe direction" defect BACKLOG #102 exists to remove.
+    `gate_report`, when given a dict, is filled with {fn: (measured, need)} for
+    every gated node this run actually verified-and-excluded, so a caller can print
+    the proof without re-deriving it."""
     memo = {}
     best_child = {}
     onstack = set()
     cycles = []
     scc_of = scc_of or {}
+    gated = gated or {}
 
     def go(fn):
         if fn in memo:
             return memo[fn]
+        if enforce_gates and fn in gated:
+            need = gated[fn]
+            sub_gated = dict(gated)
+            del sub_gated[fn]
+            measured, _sub_path, sub_cycles = deepest_from(
+                fn, edges, su_sizes, estimated, blacklist, overrides, scc_of,
+                sub_gated, enforce_gates)
+            cycles.extend(sub_cycles)
+            if measured > need:
+                raise GatedSubtreeExceeded(fn, measured, need)
+            if gate_report is not None:
+                gate_report[fn] = (measured, need)
+            memo[fn] = 0
+            best_child[fn] = None
+            return 0
         comp = scc_of.get(fn)
         if comp is not None:
             charge, members = comp
@@ -2124,6 +2185,13 @@ def deepest_from(root, edges, su_sizes, estimated, blacklist=(), overrides=None,
     cur = root
     printed_scc = set()
     while cur is not None:
+        if enforce_gates and cur in gated:
+            # The gated branch in go() always memoizes cur to the declared need and
+            # leaves best_child[cur] = None (an atomic leaf for printing purposes) --
+            # true unconditionally for any cur reaching this point, since that branch
+            # runs before scc_of/onstack are even consulted.
+            path.append((cur, memo[cur], "gated"))
+            break
         comp = scc_of.get(cur)
         if comp is not None:
             charge, members = comp
@@ -2309,18 +2377,31 @@ def whole_graph_blind_spots(reachable, blind):
     return out
 
 
-def top_n_chains(root, edges, su_sizes, estimated, n=5, overrides=None, scc_of=None):
+def top_n_chains(root, edges, su_sizes, estimated, n=5, overrides=None, scc_of=None,
+                  gated=None, enforce_gates=False, gate_report=None):
     """Top-N distinct chains from root, ranked by root's direct callees' subtree
-    weight (each callee's own heaviest chain, prefixed with root's frame)."""
+    weight (each callee's own heaviest chain, prefixed with root's frame).
+
+    BACKLOG #102: `gated`/`enforce_gates`/`gate_report` thread straight through to
+    every deepest_from() call this function makes -- see that function's own
+    docstring. main() passes enforce_gates=False for --root main (gated subtrees
+    stay fully included, unchanged whole-program worst case) and enforce_gates=True
+    for any other --root (a re-derivation, where a verified gated subtree is
+    excluded -- charged 0 -- instead of its real size, or FATALs if the declared
+    need doesn't actually bound it)."""
     root_frame, root_src = frame_of(root, su_sizes, estimated, overrides)
     children = sorted(edges.get(root, ()),
                        key=lambda c: deepest_from(c, edges, su_sizes, estimated,
-                                                   overrides=overrides, scc_of=scc_of)[0],
+                                                   overrides=overrides, scc_of=scc_of,
+                                                   gated=gated, enforce_gates=enforce_gates,
+                                                   gate_report=gate_report)[0],
                        reverse=True)
     chains = []
     for c in children[:n]:
         tot, path, cycles = deepest_from(c, edges, su_sizes, estimated,
-                                          overrides=overrides, scc_of=scc_of)
+                                          overrides=overrides, scc_of=scc_of,
+                                          gated=gated, enforce_gates=enforce_gates,
+                                          gate_report=gate_report)
         chains.append((root_frame + tot, [(root, root_frame, root_src)] + path, cycles))
     if not chains:
         chains = [(root_frame, [(root, root_frame, root_src)], [])]
@@ -3202,9 +3283,32 @@ def main(argv):
             print(f"***   {p}", file=sys.stderr)
         return 1
 
-    chains = top_n_chains(args.root, analysis["edges"], su_sizes, estimated,
-                           n=args.top, overrides=frame_overrides, scc_of=scc_of)
+    # BACKLOG #102: gated subtrees are only ever capped/enforced when re-deriving a
+    # number from a --root OTHER than the real entry point -- --root main (the
+    # whole-program guard) always walks them fully, ungated, so no OTHER re-
+    # derivation's declared need can shrink the guard's own worst-case number.
+    enforce_gates = (args.root != "main")
+    gate_report = {}
+    try:
+        chains = top_n_chains(args.root, analysis["edges"], su_sizes, estimated,
+                               n=args.top, overrides=frame_overrides, scc_of=scc_of,
+                               gated=gated_decls, enforce_gates=enforce_gates,
+                               gate_report=gate_report)
+    except GatedSubtreeExceeded as e:
+        print(f"\n*** STACK_BUDGET GATED SUBTREE EXCEEDED: {e}", file=sys.stderr)
+        print(f"*** Fix: raise 'gated {e.fn} need={e.need}' in {args.edges_file} to at "
+              f"least {e.measured} (and re-check the runtime PDNA_* constant it "
+              "mirrors, source/pdna_origin_art.c's pdna_origin_art_stack_room() call "
+              "sites), or shrink the subtree.", file=sys.stderr)
+        return 1
     deepest_total, deepest_path, cycles = chains[0][0], chains[0][1], chains[0][2]
+    if gate_report:
+        print("\nGATED SUBTREES EXCLUDED THIS RUN (measured <= declared need, so the "
+              "declaration is a valid bound -- each contributes 0 B to this chain, "
+              "protected instead by its own independent runtime gate):")
+        for fn, (measured, need) in sorted(gate_report.items()):
+            print(f"  {fn}: measured {format_num(measured)} B <= declared need "
+                  f"{format_num(need)} B -- excluded")
 
     # STOP-LICENCE check (D4, BACKLOG #84b fourth pass): any indirect-call site inside
     # a function REACHABLE FROM --root that resolve_all_sites() could not tie to a
@@ -3293,7 +3397,10 @@ def main(argv):
         for name, b, src in path:
             tag = {"su": "", "estimated": " (estimated)", "unknown": " (UNKNOWN, counted 0)",
                    "override": " (frame override, hand-measured)",
-                   "recursion": " (declared recursion, charged once)"}[src]
+                   "recursion": " (declared recursion, charged once)",
+                   "gated": " (declared gate: measured <= need, excluded -- protected by "
+                            "its own independent runtime gate)",
+                   }[src]
             print(f"      {b:6,d}  {name}{tag}")
         if cyc:
             print(f"      WARNING: recursion excluded at: {cyc}")
