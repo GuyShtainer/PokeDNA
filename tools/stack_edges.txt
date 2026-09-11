@@ -991,3 +991,12 @@ addrtaken-ok encode_checked
 # merge (the #106 G2 coincidence class). Bounded by the 256-B cap; delete the function or
 # declare its site when a caller appears.
 addrtaken-ok em_get_ribbon_flag
+
+# tonc_bios.h's CpuFastFill (frame 4 B, an 8-byte SVC wrapper: push r0; svc 12; bx lr) is named
+# nowhere in source/ lib/ tools/ (grep empty) -- it links only as libtonc object-file baggage. The
+# b105 edit shifted the NORMAL image's link layout so mon_front_blob (source/mon_front_data.s, the
+# embedded front-sprite pixel bytes) holds a coincidental word 0x080701a9 at blob+0x19E04
+# (0x0820a76c); the neighbouring words are not addresses at all (pinned by the b105 re-verify).
+# #106 G2 class (the sweep does not distinguish data words from pointers); retire with #106.
+addrtaken-ok CpuFastFill
+
