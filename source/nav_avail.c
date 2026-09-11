@@ -82,8 +82,13 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Blocks." } },
   [NV_EVENTS]    = { { NAV_NOT_IN_GAME, "Gen 1 games have no tickets." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no tickets." } },
-  [NV_BATTLEREC] = { { NAV_NOT_IN_GAME, "Gen 1 games have no Records." },
-                     { NAV_NOT_IN_GAME, "Gen 2 games have no Records." } },
+  /* BACKLOG #89: the "Records" row hosts a NEW screen on a Game Boy save -- the Hall
+   * of Fame (source/pdna_gbhof.c, source/gb_hof.h) -- not the Gen-3 Frontier battle
+   * record this row opens on RS/EM/FRLG (pdna_battle_record(), which never runs on a
+   * Game Boy save at all: gb_nav_from_start dispatches its OWN NV_BATTLEREC branch).
+   * Both generations record a Hall of Fame, so this is NAV_OK on both kinds now,
+   * unlike every other Hoenn/Frontier-shaped row in this table. */
+  [NV_BATTLEREC] = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   [NV_FRONTIER]  = { { NAV_NOT_IN_GAME, "Gen 1 games have no Frontier." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Frontier." } },
   /* BACKLOG #90: gb_fly.h's bitfield core + pdna_gbfly.c's screen are wired for
