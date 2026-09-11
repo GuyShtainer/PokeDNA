@@ -382,6 +382,18 @@ FIELDS = [
   ("UNLOCKED_UNOWN", BITFIELD, 1, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("pokemon_data", "wUnlockedUnowns", 0x2AA6),
       "CRYSTAL": D("pokemon_data", "wUnlockedUnowns", 0x2A81)}),
+  # UNOWN_DEX (BACKLOG #87 item 2): wUnownDex, 26 B, ORDER-of-first-seen letter list
+  # (0 = empty slot), immediately BEFORE wUnlockedUnowns in both games' own .sym
+  # (Crystal $DED9..$DEF2, wUnlockedUnowns at $DEF3; GS $DC24..$DC3D, wUnlockedUnowns
+  # at $DC3E) -- derived the same "pokemon_data" region every other Gen-2 dex/unown
+  # field in this table uses, NOT a "+0x25 GS-to-Crystal delta" the way some other
+  # fields in this design happen to share (explicitly not assumed here per the #87
+  # brief -- GS and Crystal's wUnownDex are two independent D() derivations from their
+  # own .sym files, cross-checked against the design's own citation below only after
+  # being computed, never against each other).
+  ("UNOWN_DEX", BITFIELD, 26, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wUnownDex", 0x2A8C),
+      "CRYSTAL": D("pokemon_data", "wUnownDex", 0x2A67)}),
   ("GS_BALL_FLAG", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": ABSENT,
       "CRYSTAL": S("sGSBallFlag", 0x3E3C)}),   # outside every checksummed span, §1.3
   ("MYSTERY_GIFT_ITEM", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
