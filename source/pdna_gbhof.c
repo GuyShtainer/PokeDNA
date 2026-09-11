@@ -82,9 +82,12 @@ static void hof_list_render(const GbSession* s, int present, int count, bool can
         hof_list_row_paint(s, top + i, ROW_Y0 + i * ROW_DY, (top + i) == sel);
     }
     if (!can_edit) {
-      /* Same two-line shape/column pdna_gbclock.c's own read-only branch uses. */
-      ui_text(6, 112, UI_DIM, "Read-only cart - editing");
-      ui_text(6, 122, UI_DIM, "needs an EZ-Flash Omega.");
+      /* D3: rows 0..7 fill Y0..Y0+7*DY = 34..125 (each row's text runs to ~132) --
+       * the old y=112/122 pair painted straight over rows 7-8. Sit below the last
+       * row and above the hline at 151 instead. Same two-line shape/column
+       * pdna_gbclock.c's own read-only branch uses otherwise. */
+      ui_text(6, 134, UI_DIM, "Read-only cart - editing");
+      ui_text(6, 143, UI_DIM, "needs an EZ-Flash Omega.");
     }
     ui_hline(0, 151, UI_SCR_W, UI_BORDER);
     trainer_key_legend(can_edit ? "U/D sel A view L/R pg ST menu"
