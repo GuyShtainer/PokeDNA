@@ -1029,3 +1029,9 @@ addrtaken-ok ed_reg_wr
 # class (the sweep masks bit 0 and does not distinguish data words from pointers); retire with #106.
 addrtaken-ok MultiBoot
 
+# libtonc's key_wait_till_hit (frame 16 B, a key-polling helper) has no non-call reference in source/ or lib/
+# (grepped). On main's NORMAL image after the b85 merge it links at 0x08070500, and the word
+# 0x08070500 sits inside s_egg_cnt (+0x70, .rodata 0x0808d374; pinned by objdump) -- data, not a
+# pointer. #106 G2 class (the sweep does not distinguish data words from pointers); retire with #106.
+addrtaken-ok key_wait_till_hit
+
