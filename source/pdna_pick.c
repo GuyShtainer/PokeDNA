@@ -1285,7 +1285,18 @@ static int pr_build(u16* idx, int n, const char* (*search_key)(int, void*), void
   if (sort && search_key) {                          /* insertion sort by search_key() */
     for (int i = 1; i < m; i++) {
       u16 v = idx[i]; int j = i - 1;
-      while (j >= 0 && strcmp(search_key(idx[j], ctx), search_key(v, ctx)) > 0) { idx[j + 1] = idx[j]; j--; }
+      /* Copy v's key OUT to a stable local buffer before comparing -- search_key()
+       * is allowed to return a pointer into a SHARED mutable buffer (pdna_contest.c's
+       * mon_key does exactly this, via its ctx's keybuf), so calling it twice inside
+       * one strcmp() -- once for idx[j], once for v -- would have both calls return
+       * THE SAME address, and by the time strcmp reads them both operands hold
+       * whichever call ran last: a buffer compared against itself, always 0. Caught
+       * live in the b107-contest search+sort shot: the sort toggle visibly did
+       * nothing (BACKLOG #107's own review attack list named "sort stability" --
+       * this is the sharper failure a stability check alone would have missed). */
+      char vkey[32];
+      strncpy(vkey, search_key(v, ctx), sizeof vkey - 1); vkey[sizeof vkey - 1] = 0;
+      while (j >= 0 && strcmp(search_key(idx[j], ctx), vkey) > 0) { idx[j + 1] = idx[j]; j--; }
       idx[j + 1] = v;
     }
   }
