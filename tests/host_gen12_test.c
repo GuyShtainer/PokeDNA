@@ -876,11 +876,19 @@ static void part4_boxsource(GbfGame game, uint32_t rtc_tail) {
     CHECK(!s.commit(), "commit() still false after mark_dirty()");
   }
 
-  /* box names: prefixed so the banner can never be mistaken for a Gen-3 box */
+  /* box names: Gen-2 echoes stored names without prefix (BACKLOG #61 parity);
+   * Gen 1 and Gen-2 without stored names keep the "GB " prefix */
   {
     char nm[12];
     s.get_name(0, nm);
-    CHECK(strncmp(nm, "GB ", 3) == 0, "box 0 name is GB-prefixed (got \"%s\")", nm);
+    if (m.kind == GB12_SAVE_RBY) {
+      /* Gen 1 always has "GB " prefix */
+      CHECK(strncmp(nm, "GB ", 3) == 0, "Gen 1 box 0 is GB-prefixed (got \"%s\")", nm);
+    } else {
+      /* Gen 2 with stored name shows name verbatim without "GB " prefix */
+      CHECK(strncmp(nm, "GB ", 3) != 0, "Gen 2 box 0 name echoed verbatim without prefix (got \"%s\")", nm);
+      CHECK_STR(nm, "MAIN", "Gen 2 box 0 default name is MAIN");
+    }
     s.get_name(m.party_box, nm);
     CHECK_STR(nm, "GB PARTY", "the party pseudo-box names itself");
     s.get_name(nb_real - 1, nm);

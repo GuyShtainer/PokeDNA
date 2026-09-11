@@ -36,6 +36,7 @@ static u16  s_wait(u16 mask) {
 
 /* Panel is 216 px with text at x=20 -> body lines must stay <= 25 columns. */
 static void s_msg(const char* title, u16 ink, const char* l1, const char* l2) {
+  ui_clear();
   ui_panel(12, 50, 216, l2 ? 60 : 50, UI_PANEL, UI_BORDER);
   ui_text(20, 58, ink, title);
   ui_hline(16, 70, 208, UI_BORDER);
@@ -180,7 +181,7 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
       if (!app_can_edit()) {
         snd_deny();
         s_msg("READ-ONLY", UI_WARN, "Needs EZ-Flash Omega.", 0);
-        pv.valid = false;             /* s_msg painted over us without ui_clear() */
+        pv.valid = false;             /* s_msg clears the screen before drawing its panel */
         continue;
       }
     }
@@ -212,7 +213,7 @@ void pdna_fly(uint8_t* sb1, PkGame game) {
        * surprising if it just happens. */
       if (!set && g3fly_extra_effect(game, sel)) {
         s_msg("ALSO UNLOCKED", UI_TITLE, "Mauville also opens the", "Record Corner.");
-        pv.valid = false;             /* s_msg painted over us without ui_clear() */
+        pv.valid = false;             /* s_msg clears the screen before drawing its panel */
       }
     }
   }

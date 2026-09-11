@@ -55,9 +55,6 @@ if [ "$missing_sym" = 1 ]; then
       echo "***       gb_flags_fallback.c: every Gen-1/2 field reports \"the game lacks it\"."
     } 1>&2
   fi
-  # A stale table left from an earlier checkout that DID have the .sym files is not
-  # touched here -- there is nothing safe to regenerate it FROM without the .sym files,
-  # and it is no worse than what was already linked before. Never fatal for this case.
   exit 0
 fi
 

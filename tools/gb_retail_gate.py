@@ -99,6 +99,12 @@ SURGERY_SRCS = [
     "source/gb_bag.c",
     # BACKLOG #85/#86/#90/#94: --op daycare/clock/fly/boxname's own dependencies.
     "source/gb_daycare.c", "source/gb_clock.c", "source/gb_fly.c", "source/gb_boxnames.c",
+    # BACKLOG #88: --op flagset/counter's own dependencies.
+    "source/gb_flags.c", "source/gb_flags_rw.c",
+    # BACKLOG #89: --op hofclear/hofcount's own dependency.
+    "source/gb_hof.c",
+    # BACKLOG #87 item 6: --op dexset's own dependency (gb_dex.h's owned/seen core).
+    "source/gb_dex.c",
 ]
 
 # gen: 1 = Gen-1 numbering (no primary/backup mirror split in gb_roundtrip's classifier,
@@ -896,6 +902,100 @@ def run_gender_case(name, info, rom, sav, work, binary, python, vendor, tally):
     tally.record("gender (field write, BACKLOG #126c)", ok, detail)
 
 
+# BACKLOG #89 — the Hall of Fame gate: gbh_clear()/gbh_set_count() proven the same way
+# money is above (a real edit through --op hofclear/hofcount, booted, read straight off
+# WRAM). wNumHoFTeams/wHallOfFameCount's WRAM addresses are the SAME symbol addresses
+# gen_gbfields.py's own D() derivation resolved GBF_HOF_COUNT's FILE offset from (RED
+# bank00:d5a2, YELLOW bank00:d5a1, GS bank01:d683, CRYSTAL bank01:d95e) — the save-file
+# offset and this WRAM address are two different numbers for the same field (file =
+# region_base + (wram - region_start)), so this case is checking the count the BOOTED
+# GAME itself holds, not just re-reading the .sav this tool wrote.
+HOF_COUNT_WRAM = {"red": 0xD5A2, "yellow": 0xD5A1, "gold": 0xD683, "crystal": 0xD95E}
+HOF_COUNT_LEN = 1
+HOF_SET_COUNT_VALUE = 3
+
+
+def run_hofclear_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """gbh_clear(): erases every recorded team + the lifetime counter. The count is
+    what actually gates bills_pc.asm/main_menu.asm's own "HALL OF FAME" PC option
+    (source/gb_hof.h's header, re-derived from the pinned pokered decomp) — reading it
+    back at 0 off the BOOTED game's WRAM is the strongest proof available without
+    OCR'ing the PC's own menu text (which this harness's screen-scrape does not cover)."""
+    edited = work / "hofclear.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["hofclear"]])
+    if rc != 0:
+        tally.record("hofclear (BACKLOG #89)", False, f"surgery refused: {err.strip()}")
+        return
+
+    addr = HOF_COUNT_WRAM[name]
+    rc, rep, out, err = boot(python, rom, edited, work / "hofclear", vendor,
+                             work / "hofclear.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:{HOF_COUNT_LEN}"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == "00"
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"{addr:#06x}={got!r} want='00'")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("hofclear (BACKLOG #89)", ok, detail)
+
+
+def run_hofcount_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """gbh_set_count(3): the SET COUNT screen action, read back off the same WRAM
+    address the clear case above uses.
+
+    BACKLOG #89 D1: on Gen 1, gbh_set_count() now clamps to the teams actually
+    present in THIS .sav (never past GBH_G1_CAPACITY), not a flat 255 -- and the
+    real corpus varies (Red: 9 teams, so 3 lands untouched; Yellow: 1 team, so 3
+    clamps to 1). --op hofcount prints the real post-clamp count on its own stdout
+    (do_hofcount, tests/host_gbsurgery_tool.c) specifically so this case can check
+    against what the write ACTUALLY did, not the token handed to it."""
+    edited = work / "hofcount.sav"
+    rc, out, err = run_surgery(binary, sav, edited,
+                               [["hofcount", str(HOF_SET_COUNT_VALUE)]])
+    if rc != 0:
+        tally.record("hofcount (BACKLOG #89)", False, f"surgery refused: {err.strip()}")
+        return
+
+    m = re.search(r"hofcount result: (\d+)", out)
+    if not m:
+        tally.record("hofcount (BACKLOG #89)", False,
+                     f"surgery gave no 'hofcount result: N' line to check against "
+                     f"-- stdout: {out.strip()!r}")
+        return
+    actual_count = int(m.group(1))
+
+    addr = HOF_COUNT_WRAM[name]
+    want = f"{actual_count:02x}"
+    rc, rep, out, err = boot(python, rom, edited, work / "hofcount", vendor,
+                             work / "hofcount.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:{HOF_COUNT_LEN}"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == want
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"{addr:#06x}={got!r} want={want!r} "
+             f"(requested {HOF_SET_COUNT_VALUE}, real post-clamp {actual_count})")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("hofcount (BACKLOG #89)", ok, detail)
+
+
 # BACKLOG #85/#86/#90/#94 — WRAM anchors, one .sym lookup each, same posture as
 # MONEY_WRAM above (a live symbol address, not a save-file offset): the save-file
 # offsets these four cores already use (source/gb_fields.c) live in SRAM/the file;
@@ -905,7 +1005,56 @@ def run_gender_case(name, info, rom, sav, work, binary, python, vendor, tally):
 DAYCARE_FLAG_WRAM = {"red": 0xDA48, "yellow": 0xDA47, "gold": 0xDC40, "crystal": 0xDEF5}
 FLY_FLAGS_WRAM = {"red": 0xD70B, "yellow": 0xD70A, "gold": 0xD9EE, "crystal": 0xDCA5}
 FLY_FLAGS_LEN = {"red": 2, "yellow": 2, "gold": 4, "crystal": 4}
+
+# BACKLOG #88 -- wEventFlags' own WRAM address per game (pokered.sym:19395 $D747,
+# pokegold.sym:42451 $D7B7, pokecrystal.sym:57227 $DA72; Yellow shares Red's own
+# main_data layout, §1.10, so its wEventFlags sits one byte earlier the same way
+# wMainDataStart does, $D746) -- a DIFFERENT address space from the save-FILE offset
+# gb_fields.c's GBF_EVENT_FLAGS_BASE(_G2) already resolves (same split as every other
+# WRAM anchor above). SAV_FLAGS_FILE_BASE is that save-file offset, used ONLY to read
+# the CURRENT bit straight out of the .sav bytes before editing (so this case never
+# repeats the fly-case D6 bug of "editing a bit that was already set" -- 0 bytes
+# written, a false accept).
+EVENT_FLAGS_WRAM = {"red": 0xD747, "yellow": 0xD746, "gold": 0xD7B7, "crystal": 0xDA72}
+SAV_FLAGS_FILE_BASE = {"red": 0x29F3, "yellow": 0x29F3, "gold": 0x261F, "crystal": 0x2600}
+# EVENT_MADE_UNOWN_APPEAR_IN_RUINS (Gen 2, event_flags.asm:55) -- index 46 on BOTH
+# Gold/Silver and Crystal (re-derived independently by tools/gen_gbfields.py's own
+# self-test, not copied from the research doc). EVENT_GOT_TOWN_MAP (Gen 1,
+# event_constants.asm) -- index 24 on Red/Yellow, "a harmless Gen-1 flag the research
+# names" (docs/briefs/88-gb-flags-brief.md's own gate-case instruction, §15's Key
+# events row) -- toggling it does not gate any NPC position or map state.
+FLAGS_CASE_INDEX = {"red": 24, "yellow": 24, "gold": 46, "crystal": 46}
+FLAGS_CASE_NAME = {"red": "EVENT_GOT_TOWN_MAP", "yellow": "EVENT_GOT_TOWN_MAP",
+                   "gold": "EVENT_MADE_UNOWN_APPEAR_IN_RUINS",
+                   "crystal": "EVENT_MADE_UNOWN_APPEAR_IN_RUINS"}
 BOXNAMES_WRAM = {"gold": 0xD8BF, "crystal": 0xDB75}          # Gen 1: no box names, no case
+# D6 (BACKLOG #88 review): the COUNTERS tab's Gen-2 "lucky number already shown today"
+# flag (GBF_LUCKY_NUMBER_SHOW_FLAG, --op counter lucky) as a clean boot-verifiable
+# WRAM byte -- wLuckyNumberShowFlag, bank 01, verified against each game's own .sym
+# (assets/upstream/pokegold/symbols/pokegold.sym:42501 "01:d9e7 wLuckyNumberShowFlag",
+# assets/upstream/pokecrystal/symbols/pokecrystal.sym:57291 "01:dc9d
+# wLuckyNumberShowFlag"). Gen 1 has no lucky-number system at all (--op counter lucky
+# refuses outright, GBF_LUCKY_NUMBER_SHOW_FLAG's Gen-1 gbf_off() is 0) -- Gold/Crystal
+# only, same posture as clock/boxname.
+LUCKY_WRAM = {"gold": 0xD9E7, "crystal": 0xDC9D}
+
+# BACKLOG #87 item 6 — the Pokedex owned/seen WRAM anchors, one .sym lookup each per
+# game (wPokedexOwned/wPokedexSeen Gen 1; wPokedexCaught/wPokedexSeen Gen 2 -- Gen 2's
+# decomps name the "owned" field "Caught", not "Owned"; same field gb_fields.c's
+# GBF_DEX_OWNED tracks). Lengths match gb_fields.c's own per-generation field width
+# (19 B Gen 1, 32 B Gen 2).
+DEX_OWNED_WRAM = {"red": 0xD2F7, "yellow": 0xD2F6, "gold": 0xDBE4, "crystal": 0xDE99}
+DEX_SEEN_WRAM  = {"red": 0xD30A, "yellow": 0xD309, "gold": 0xDC04, "crystal": 0xDEB9}
+DEX_FIELD_LEN  = {"red": 19, "yellow": 19, "gold": 32, "crystal": 32}
+
+# BACKLOG #87 D4 -- the Unown-dex GATE, Gen 2 only: wStatusFlags (bit 1 =
+# STATUSFLAGS_UNOWN_DEX_F) and wFirstUnownSeen, straight from pokegold.sym/
+# pokecrystal.sym (wStatusFlags 01:d571/01:d84c, wFirstUnownSeen 01:dc3f/01:def4 --
+# the same two symbols tools/gen_gbfields.py's GBF_STATUS_FLAGS/GBF_FIRST_UNOWN_SEEN
+# rows derive their SAV-file offsets from, this dict is the LIVE WRAM side of the
+# same two facts).
+STATUS_FLAGS_WRAM = {"gold": 0xD571, "crystal": 0xD84C}
+FIRST_UNOWN_SEEN_WRAM = {"gold": 0xDC3F, "crystal": 0xDEF4}
 
 
 def run_daycare_case(name, info, rom, sav, work, binary, python, vendor, tally):
@@ -1163,6 +1312,204 @@ def run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally):
     tally.record("fly (BACKLOG #90)", ok, detail)
 
 
+def _dex_popcount(hexstr):
+    return bin(int(hexstr, 16)).count("1") if hexstr else 0
+
+
+def run_dexset_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #87 item 6 retail-gate case: gb_dex.h's gbdex_set (via the surgery
+    tool's `--op dexset DEX STATE`), proven against the real WRAM dex bytes
+    (wPokedexOwned/wPokedexCaught + wPokedexSeen, from each game's own .sym) -- both
+    the game's own per-species bit AND the popcount the trainer card would show.
+
+    Guy's corpus saves are fully-completed dexes (every one of the 151/251 real
+    species already owned+seen, confirmed by tests/host_gbdex_test.c's own popcount
+    proof) -- there is no naturally-unseen species to catch, the same problem
+    run_fly_case's own Gen-1 skip note hit. Rather than skip (the brief wants both
+    directions proven on all three games), this manufactures the "not seen" state
+    itself: CLEAR dex #100 first (a real, provable byte change off the corpus's own
+    caught+seen baseline -- gate D6), then SET it back to caught from that genuinely-
+    unseen state, which is the brief's own "not seen -> caught" narrative for the
+    direction that actually matters; the clear half is "the other way" it also asks
+    for.
+    """
+    dex = 100   # <= 151, valid on every game's own cap (Gen 1's is the tightest)
+    i = dex - 1
+    byte_off, bit = i // 8, i % 8
+    owned_addr = DEX_OWNED_WRAM[name] + byte_off
+    seen_addr = DEX_SEEN_WRAM[name] + byte_off
+    owned_base, seen_base, flen = DEX_OWNED_WRAM[name], DEX_SEEN_WRAM[name], DEX_FIELD_LEN[name]
+
+    def read_state(sav_path, label):
+        rc, rep, out, err = boot(python, rom, sav_path, work / label, vendor,
+                                 work / f"{label}.json",
+                                 extra_args=["--expect", "accept",
+                                             "--read-mem", f"{owned_addr:#06x}:1",
+                                             "--read-mem", f"{seen_addr:#06x}:1",
+                                             "--read-mem", f"{owned_base:#06x}:{flen}",
+                                             "--read-mem", f"{seen_base:#06x}:{flen}"])
+        mem = rep.get("mem") or {}
+        svbk_ok = bool(mem.get("svbk_ok", True))
+        owned_byte = mem.get(f"{owned_addr:#06x}")
+        seen_byte = mem.get(f"{seen_addr:#06x}")
+        owned_field = mem.get(f"{owned_base:#06x}")
+        seen_field = mem.get(f"{seen_base:#06x}")
+        st = dict(rc=rc, err=err, svbk_ok=svbk_ok,
+                 owned_bit=bool(owned_byte and (int(owned_byte, 16) & (1 << bit))),
+                 seen_bit=bool(seen_byte and (int(seen_byte, 16) & (1 << bit))),
+                 owned_count=_dex_popcount(owned_field), seen_count=_dex_popcount(seen_field))
+        return st
+
+    base = read_state(sav, "dexset_base")
+    if not (base["rc"] == 0 and base["svbk_ok"] and base["owned_bit"] and base["seen_bit"]):
+        tally.record("dexset (BACKLOG #87)", False,
+                    f"baseline dex #{dex} is not owned+seen on this corpus save -- "
+                    f"the clear/set narrative assumes it is: {base}")
+        return
+
+    # ---- clear sub-case: dex #100 owned+seen -> both off ----
+    clear_sav = work / "dexset_clear.sav"
+    rc, out, err = run_surgery(binary, sav, clear_sav, [["dexset", str(dex), "0"]])
+    if rc != 0:
+        tally.record("dexset clear (BACKLOG #87)", False, f"surgery refused: {err.strip()}")
+        return
+    if clear_sav.read_bytes() == sav.read_bytes():
+        tally.record("dexset clear (BACKLOG #87)", False,
+                    "gate D6: surgery wrote 0 bytes clearing an owned+seen species")
+        return
+    ac = read_state(clear_sav, "dexset_clear")
+    clear_ok = (ac["rc"] == 0 and ac["svbk_ok"] and not ac["owned_bit"] and not ac["seen_bit"]
+               and ac["owned_count"] == base["owned_count"] - 1
+               and ac["seen_count"] == base["seen_count"] - 1)
+    tally.record("dexset clear (BACKLOG #87)", clear_ok,
+                f"dex #{dex} owned={ac['owned_bit']} seen={ac['seen_bit']} "
+                f"owned_count {base['owned_count']}->{ac['owned_count']} "
+                f"seen_count {base['seen_count']}->{ac['seen_count']}")
+
+    # ---- set sub-case: from the now-genuinely-unseen state, catch it ----
+    set_sav = work / "dexset_set.sav"
+    rc, out, err = run_surgery(binary, clear_sav, set_sav, [["dexset", str(dex), "2"]])
+    if rc != 0:
+        tally.record("dexset set (BACKLOG #87)", False, f"surgery refused: {err.strip()}")
+        return
+    if set_sav.read_bytes() == clear_sav.read_bytes():
+        tally.record("dexset set (BACKLOG #87)", False,
+                    "gate D6: surgery wrote 0 bytes catching a not-seen species")
+        return
+    aset = read_state(set_sav, "dexset_set")
+    set_ok = (aset["rc"] == 0 and aset["svbk_ok"] and aset["owned_bit"] and aset["seen_bit"]
+             and aset["owned_count"] == ac["owned_count"] + 1
+             and aset["seen_count"] == ac["seen_count"] + 1)
+    tally.record("dexset set (BACKLOG #87)", set_ok,
+                f"dex #{dex} owned={aset['owned_bit']} seen={aset['seen_bit']} "
+                f"owned_count {ac['owned_count']}->{aset['owned_count']} "
+                f"seen_count {ac['seen_count']}->{aset['seen_count']}")
+
+
+def run_unown_gate_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #87 D4 retail-gate case: the Unown-dex GATE (wStatusFlags bit 1 /
+    wFirstUnownSeen) stays in sync with a DIRECT edit of dex #201 (Unown), the same
+    way the real game's own UpdateUnownDex/DebugRoomMenu_PokedexDex keep it in sync
+    on an actual encounter. Gen 2 only (Gen 1 has no Unown dex entry at all).
+
+    Setup: --op unownreset forces the "never met an Unown" starting state (gate bit
+    clear, wFirstUnownSeen 0, wUnownDex emptied) -- a state a real cartridge that has
+    simply never visited the Ruins of Alph could genuinely be in. Then --op dexset
+    201 2 (mark Unown caught) is the brief's own exact worked example: boot and read
+    live WRAM, expecting the gate bit SET and wFirstUnownSeen NON-ZERO.
+    """
+    status_addr = STATUS_FLAGS_WRAM.get(name)
+    fus_addr = FIRST_UNOWN_SEEN_WRAM.get(name)
+    if status_addr is None or fus_addr is None:
+        tally.skip_case("unown gate (BACKLOG #87 D4)", "Gen 1 has no Unown dex entry")
+        return
+
+    def read_state(sav_path, label):
+        rc, rep, out, err = boot(python, rom, sav_path, work / label, vendor,
+                                 work / f"{label}.json",
+                                 extra_args=["--expect", "accept",
+                                             "--read-mem", f"{status_addr:#06x}:1",
+                                             "--read-mem", f"{fus_addr:#06x}:1"])
+        mem = rep.get("mem") or {}
+        svbk_ok = bool(mem.get("svbk_ok", True))
+        status_byte = mem.get(f"{status_addr:#06x}")
+        fus_byte = mem.get(f"{fus_addr:#06x}")
+        status_val = int(status_byte, 16) if status_byte else None
+        fus_val = int(fus_byte, 16) if fus_byte else None
+        return dict(rc=rc, err=err, svbk_ok=svbk_ok, status=status_val, fus=fus_val)
+
+    reset_sav = work / "unown_gate_reset.sav"
+    rc, out, err = run_surgery(binary, sav, reset_sav, [["unownreset"]])
+    if rc != 0:
+        tally.record("unown gate reset (BACKLOG #87 D4)", False, f"surgery refused: {err.strip()}")
+        return
+    base = read_state(reset_sav, "unown_gate_reset")
+    reset_ok = (base["rc"] == 0 and base["svbk_ok"] and base["status"] is not None
+               and (base["status"] & 0x02) == 0 and base["fus"] == 0)
+    tally.record("unown gate reset (BACKLOG #87 D4)", reset_ok,
+                f"after unownreset: status={base['status']:#04x} fus={base['fus']}"
+                if base["status"] is not None else f"read failed: {base}")
+    if not reset_ok:
+        return
+
+    dexset_sav = work / "unown_gate_dexset.sav"
+    rc, out, err = run_surgery(binary, reset_sav, dexset_sav, [["dexset", "201", "2"]])
+    if rc != 0:
+        tally.record("unown gate dexset (BACKLOG #87 D4)", False, f"surgery refused: {err.strip()}")
+        return
+    after = read_state(dexset_sav, "unown_gate_dexset")
+    gate_ok = (after["rc"] == 0 and after["svbk_ok"] and after["status"] is not None
+              and (after["status"] & 0x02) != 0 and after["fus"] not in (None, 0))
+    tally.record("unown gate dexset (BACKLOG #87 D4)", gate_ok,
+                f"dexset 201 2: status {base['status']:#04x}->{after['status']:#04x} "
+                f"fus {base['fus']}->{after['fus']} (want bit1 set, fus != 0)")
+
+    # ---- R1 (b87 fix pass 2, mutation-proven DO-NOT-SHIP finding) ----
+    # No --op unownreset here on purpose: Guy's own corpus saves already have an
+    # Unown letter recorded (wFirstUnownSeen != 0), the exact "already has a
+    # letter" state the original D4 fix's `on` branch skipped re-arming the gate
+    # for. `dexset 201 0` (Wipe/none, the same shape a bulk Wipe ALL + the dex-201
+    # cell takes) clears the gate; `dexset 201 2` (Catch/caught again, the same
+    # shape an Undo restoring it takes) must put the gate bit back to its exact
+    # pre-wipe baseline -- pre-fix it stayed OFF permanently on a save that had
+    # ever met an Unown.
+    baseline = read_state(sav, "unown_gate_baseline")
+    baseline_ok = (baseline["rc"] == 0 and baseline["svbk_ok"] and baseline["status"] is not None
+                  and (baseline["status"] & 0x02) != 0)
+    tally.record("unown gate R1 baseline (BACKLOG #87 D4)", baseline_ok,
+                f"corpus save as-is: status={baseline['status']:#04x} fus={baseline['fus']} "
+                f"(want bit1 already set -- this save has met an Unown)"
+                if baseline["status"] is not None else f"read failed: {baseline}")
+    if not baseline_ok:
+        return
+
+    wipe_sav = work / "unown_gate_r1_wipe.sav"
+    rc, out, err = run_surgery(binary, sav, wipe_sav, [["dexset", "201", "0"]])
+    if rc != 0:
+        tally.record("unown gate R1 wipe (BACKLOG #87 D4)", False, f"surgery refused: {err.strip()}")
+        return
+    wiped = read_state(wipe_sav, "unown_gate_r1_wipe")
+    wipe_ok = (wiped["rc"] == 0 and wiped["svbk_ok"] and wiped["status"] is not None
+              and (wiped["status"] & 0x02) == 0)
+    tally.record("unown gate R1 wipe (BACKLOG #87 D4)", wipe_ok,
+                f"dexset 201 0: status {baseline['status']:#04x}->{wiped['status']:#04x} (want bit1 clear)")
+    if not wipe_ok:
+        return
+
+    recatch_sav = work / "unown_gate_r1_recatch.sav"
+    rc, out, err = run_surgery(binary, wipe_sav, recatch_sav, [["dexset", "201", "2"]])
+    if rc != 0:
+        tally.record("unown gate R1 restore (BACKLOG #87 D4)", False, f"surgery refused: {err.strip()}")
+        return
+    restored = read_state(recatch_sav, "unown_gate_r1_recatch")
+    restore_ok = (restored["rc"] == 0 and restored["svbk_ok"]
+                 and restored["status"] == baseline["status"])
+    tally.record("unown gate R1 restore (BACKLOG #87 D4)", restore_ok,
+                f"dexset 201 2 (no unownreset first): status {wiped['status']:#04x}->"
+                f"{restored['status']:#04x}, want back to baseline {baseline['status']:#04x} "
+                f"({'MATCH' if restore_ok else 'MISMATCH -- gate stuck off, R1 regression'})")
+
+
 def run_boxname_case(name, info, rom, sav, work, binary, python, vendor, tally):
     """BACKLOG #94, via gb_boxnames.h's gbbn_rename -- Gen 2 only (gbbn_rename refuses
     Gen 1, and this function is never called for a Gen-1 GAMES entry). Renames box 0
@@ -1193,6 +1540,119 @@ def run_boxname_case(name, info, rom, sav, work, binary, python, vendor, tally):
         if tail:
             detail += " | stderr: " + tail
     tally.record("boxname (BACKLOG #94)", ok, detail)
+
+
+def run_flags_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #88 -- proves --op flagset's write (gbfl_set, source/gb_flags_rw.c)
+    reaches the BOOTED game's own wEventFlags, not just the .sav bytes on disk. Reads
+    the CURRENT bit straight out of the corpus .sav first (the fly-case D6 lesson: an
+    already-set bit makes surgery write 0 bytes and the gate would pass vacuously) and
+    flips it the OTHER way -- so this case is correct regardless of which way the
+    corpus save happens to have it, unlike a hardcoded "set to 1" assumption."""
+    idx = FLAGS_CASE_INDEX[name]
+    file_base = SAV_FLAGS_FILE_BASE[name]
+    byte_off = file_base + (idx // 8)
+    bit = idx % 8
+
+    raw = sav.read_bytes()
+    cur = (raw[byte_off] >> bit) & 1
+    want_val = 0 if cur else 1
+
+    edited = work / "flags.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["flagset", str(idx), str(want_val)]])
+    if rc != 0:
+        tally.record(f"flags (BACKLOG #88, {FLAGS_CASE_NAME[name]})", False,
+                    f"surgery refused: {err.strip()}")
+        return
+
+    identical = edited.read_bytes() == raw
+    if identical:
+        tally.record(f"flags (BACKLOG #88, {FLAGS_CASE_NAME[name]})", False,
+                    f"gate D6 class: surgery wrote 0 bytes for index {idx} (cur={cur} "
+                    f"want={want_val}) -- flagset is a no-op")
+        return
+
+    addr = EVENT_FLAGS_WRAM[name] + (idx // 8)
+    rc, rep, out, err = boot(python, rom, edited, work / "flags", vendor,
+                             work / "flags.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:1"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    got_val = int(got, 16) if isinstance(got, str) else None
+    got_bit = got_val is not None and ((got_val >> bit) & 1) == want_val
+    ok = (rc == 0) and svbk_ok and got_bit
+    detail = (f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} {addr:#06x}={got!r} "
+             f"index={idx} bit_in_byte={bit} cur={cur} want={want_val} matched={got_bit}")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record(f"flags (BACKLOG #88, {FLAGS_CASE_NAME[name]})", ok, detail)
+
+
+LUCKY_FILE_OFF = {"gold": 0x284F, "crystal": 0x282B}   # source/gb_fields.c's own
+                                                        # GBF_LUCKY_NUMBER_SHOW_FLAG cells
+
+
+def run_counter_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """D6 (BACKLOG #88 review): --op counter lucky <0|1> writes
+    GBF_LUCKY_NUMBER_SHOW_FLAG (gb_fields.c) through gbs_write_field + gbs_finish, the
+    COUNTERS tab's own write path for the "already shown today" byte -- proves it
+    reaches the BOOTED game's own wLuckyNumberShowFlag (LUCKY_WRAM), not just the .sav
+    bytes on disk. Same read-current-flip discipline as run_flags_case (the fly-case
+    D6 lesson): reads the CURRENT byte straight out of the corpus .sav first and flips
+    it, so a corpus that already has the flag set does not make surgery write 0 bytes
+    and pass vacuously. Gold/Crystal only -- Gen 1 has no lucky-number system at all
+    (GBF_LUCKY_NUMBER_SHOW_FLAG's Gen-1 gbf_off() is 0, do_counter's own gbf_off
+    check refuses it outright)."""
+    if info["gen"] != 2:
+        tally.skip_case("counter (BACKLOG #88 D6, lucky)", "Gen 1 has no lucky-number system")
+        return
+
+    file_off = LUCKY_FILE_OFF[name]
+    raw = sav.read_bytes()
+    cur = raw[file_off]
+    want_val = 0 if cur else 1
+
+    edited = work / "counter.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["counter", "lucky", str(want_val)]])
+    if rc != 0:
+        tally.record("counter (BACKLOG #88 D6, lucky)", False,
+                    f"surgery refused: {err.strip()}")
+        return
+
+    identical = edited.read_bytes() == raw
+    if identical:
+        tally.record("counter (BACKLOG #88 D6, lucky)", False,
+                    f"gate D6 class: surgery wrote 0 bytes (cur={cur} want={want_val}) "
+                    f"-- counter lucky is a no-op")
+        return
+
+    addr = LUCKY_WRAM[name]
+    want = f"{want_val:02x}"
+    rc, rep, out, err = boot(python, rom, edited, work / "counter", vendor,
+                             work / "counter.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:1"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == want
+    detail = (f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} {addr:#06x}={got!r} "
+             f"want={want!r} cur={cur}")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("counter (BACKLOG #88 D6, lucky)", ok, detail)
 
 
 def run_helditem_case(name, info, rom, sav, work, binary, python, vendor, tally,
@@ -1417,6 +1877,10 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     run_statusflags_case(name, info, rom, sav, work, binary, python, vendor, tally)
     run_gender_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
+    # ---- 2c1b. BACKLOG #89 — the Hall of Fame: clear then a plain count set ----
+    run_hofclear_case(name, info, rom, sav, work, binary, python, vendor, tally)
+    run_hofcount_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
     # ---- 2c2. BACKLOG #95 review gate case — the held-item Pokemon-setter write ----
     run_helditem_case(name, info, rom, sav, work, binary, python, vendor, tally,
                       party_count0)
@@ -1454,11 +1918,28 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
     # skips Gen 1 -- every real destination is already visited in the corpus, D6) ----
     run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
+    # ---- 2i2. BACKLOG #87 item 6 — the Pokedex owned/seen core, both directions ----
+    run_dexset_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2i3. BACKLOG #87 D4 — the Unown-dex gate (wStatusFlags bit 1 /
+    # wFirstUnownSeen) stays in sync with a direct dex-201 edit. Gen 1 has no Unown
+    # dex entry -- run_unown_gate_case itself skips with an honest reason. ----
+    run_unown_gate_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
     # ---- 2j. BACKLOG #94 — the Gen-2 box-name core (Gen 1 has no box names: no case) ----
     if gen == 2:
         run_boxname_case(name, info, rom, sav, work, binary, python, vendor, tally)
     else:
         tally.skip_case("boxname (BACKLOG #94)", "Gen 1 has no box names")
+
+    # ---- 2k. BACKLOG #88 — the Flags & counters screen's raw event-flag write
+    # (gbfl_set) on all four games (run_flags_case itself picks the flag index and
+    # WRAM anchor per game, Table FLAGS_CASE_INDEX/EVENT_FLAGS_WRAM above) ----
+    run_flags_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2l. D6 (BACKLOG #88 review) — the COUNTERS tab's lucky-number show flag,
+    # Gen 2 only (run_counter_case itself skips Gen 1) ----
+    run_counter_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
     if party_count0 < 2:
         tally.skip_case("nickname/level/delete/move",

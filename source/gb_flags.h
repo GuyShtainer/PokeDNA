@@ -39,4 +39,42 @@ const char* gbfl_name(GbGame g, uint16_t flag);
  * out of range. Lets a UI page the list without knowing the bit numbers up front. */
 bool gbfl_at(GbGame g, int i, uint16_t* flag_out, const char** label_out);
 
+/* ---- BACKLOG #88: the FLAGS tab's own foldable-section row list ------------------
+ *
+ * gbfl_count/gbfl_name/gbfl_at above are UNCHANGED (flags only, sorted by bit index --
+ * the old contract host_gbfields_test.c already exercises). The UI needs section
+ * HEADER rows interleaved in a curated SCREEN order (not sorted by bit) plus a
+ * per-row edit posture (plain toggle / bag-item-grant read-only / story read-only /
+ * extra-warning toggle) the research doc (docs/GB-FLAGS-RESEARCH.md) assigned per
+ * flag -- gbfl_row_at() is the one new accessor that carries all of that, generated
+ * into a SEPARATE table (k_rows_<game>) alongside the existing k_flags_<game>. */
+#define GBFL_HEADER 0xFFFFu   /* mirrors NAMED_FLAG_HEADER (gen3_flags.h) -- same value,
+                                * so a GbFlagRow can be reinterpreted as flags_fold.h's
+                                * NamedFlag (identical {uint16_t, const char*} prefix). */
+typedef enum {
+  GBFL_KIND_HEADER = 0,   /* a section header row; `kind` is otherwise meaningless    */
+  GBFL_KIND_TOGGLE,       /* plain A-to-toggle, gated by the screen's one-time CAUTION */
+  GBFL_KIND_BAG_GRANT,    /* read-only: "(grant it in the Bag)" -- HM/Bicycle/GS Ball  */
+  GBFL_KIND_READONLY,     /* read-only: story/Champion display, no toggle offered      */
+  GBFL_KIND_WARN          /* toggle behind an EXTRA confirm naming the consequence     */
+} GbFlagKind;
+
+typedef struct {
+  uint16_t index;    /* the flag's bit number, or GBFL_HEADER for a section header row */
+  const char* label; /* our own text -- a flag's name, or the section header's title   */
+  uint8_t kind;       /* GbFlagKind; GBFL_KIND_HEADER for a header row                  */
+} GbFlagRow;
+
+/* How many rows (headers + flags) this game's FLAGS-tab screen shows. */
+int gbfl_row_count(GbGame g);
+/* Row `i` (0..gbfl_row_count(g)-1), in curated SCREEN order (never sorted by bit).
+ * False if `i` is out of range. */
+bool gbfl_row_at(GbGame g, int i, GbFlagRow* out);
+
+/* EVENT_IN_SAFARI_ZONE's own bit index on `g` (Gen 1 only), or -1 if this game has no
+ * such flag (Gen 2). BACKLOG #88: gates whether the Safari Zone step counter
+ * (GBF_SAFARI_STEPS) is editable -- this tool never SETS this flag itself (entering
+ * the Safari Zone is a map-placement operation, out of scope for a counter edit). */
+int gbfl_safari_zone_flag(GbGame g);
+
 #endif /* GB_FLAGS_H */

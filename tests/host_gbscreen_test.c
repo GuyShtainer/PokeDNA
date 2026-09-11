@@ -469,6 +469,54 @@ int main(void) {
     CHECK(gbscr_unpack_pic_px(packed2, 7, 7, 8, 0) == 0, "tile (1,0) beyond 1x1 -> 0");
   }
 
+  /* 10) gbnames review A3 (CONFIRMED, live on docs/shots/gb/
+   * gbnames_crystal_02_balls_real_names.png -- "POKe BALLE"): gbscr_text_cols()
+   * must return the number of CELLS gbscr_text() actually paints -- one per
+   * GLYPH, not one per byte of the C string. Every name here that carries a
+   * multi-byte glyph (the UTF-8 e-acute pair, or a two-ASCII-byte apostrophe
+   * contraction) must come back ONE LESS than strlen() -- a caller that used
+   * strlen() instead (the bug this fix replaces) would start its blank-sweep
+   * one column too far right, exactly the stray glyph the shot showed. */
+  {
+    static const struct { const char* name; uint8_t gen; } kCases[] = {
+      { "POK\xC3\xA9 BALL",  GB_GEN2 },   /* "POKe BALL", e-acute -- 1 glyph for the 2-byte pair */
+      { "POK\xC3\xA9 DOLL",  GB_GEN1 },
+      { "POK\xC3\xA9""DEX",  GB_GEN1 },   /* string-literal split: avoid "\xC3\xA9DEX" hex-escape overrun */
+      { "POK\xC3\xA9 FLUTE", GB_GEN1 },
+      { "OAK's PARCEL",      GB_GEN1 },   /* "'s" -- 1 glyph for 2 ASCII bytes (gb_edit.c 0xBDu) */
+    };
+    for (size_t i = 0; i < sizeof kCases / sizeof kCases[0]; i++) {
+      int cols = gbscr_text_cols(kCases[i].gen, kCases[i].name);
+      int bytes = (int)strlen(kCases[i].name);
+      CHECK(cols == bytes - 1, "%s: gbscr_text_cols=%d, want strlen-1=%d",
+            kCases[i].name, cols, bytes - 1);
+    }
+
+    /* An all-ASCII name (no multi-byte glyph) has cols == strlen -- the two
+     * must NOT differ when there is nothing to overcount. */
+    CHECK(gbscr_text_cols(GB_GEN1, "MASTER BALL") == (int)strlen("MASTER BALL"),
+          "plain-ASCII name: cols must equal strlen when there is no multi-byte glyph");
+
+    /* gbscr_text_cols() must count exactly what gbscr_text() itself paints --
+     * cross-check against the LAST cell gbscr_text() actually touches on a
+     * row that is otherwise all sentinel bytes it would never itself write
+     * (0xFF, past FONT (0x80-0xFF... wait FONT bytes ARE up to 0xFF) -- use
+     * the TILE value instead, which gbscr_text() only ever sets to a real GB
+     * charmap byte (<0x80 is never a FONT tile) or 0 (BLANK) -- pre-fill
+     * every map[] cell with 0xEE first (not a value gbscr_text can produce
+     * for this string), then confirm map[cols-1] changed off the sentinel
+     * and map[cols] (one past the last real glyph) did NOT. */
+    GbScreen gs = mk();
+    memset(gs.map, 0xEE, sizeof gs.map);
+    memset(gs.src, 0xEE, sizeof gs.src);
+    int cols = gbscr_text_cols(GB_GEN2, "POK\xC3\xA9 BALL");
+    gbscr_text(&gs, 0, 0, "POK\xC3\xA9 BALL");
+    CHECK(cols > 0 && cols < GBSCR_COLS, "sanity: cols=%d in range", cols);
+    CHECK(gs.src[cols - 1] != 0xEE, "cell %d (the last real glyph) must have been painted", cols - 1);
+    CHECK(gs.src[cols] == 0xEE, "cell %d (one past the last real glyph) must be UNTOUCHED "
+                                 "-- gbscr_text_cols overcounted if this fires", cols);
+  }
+
   if (g_fail) { printf("%d FAILED\n", g_fail); return 1; }
   printf("ALL PASSED (host_gbscreen_test)\n");
   return 0;

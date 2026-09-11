@@ -1419,6 +1419,119 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     return s
 
 
+def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #89: the Gen-1/2 Hall of Fame screen (source/pdna_gbhof.c) over
+    gb_hof.h's core -- the same single-ROM-image / nav-menu-DOWN shape run_b90_fly()
+    above uses, reused for a plain list->detail screen. `rom` must be a ONE-ROM
+    fused image (Red-only for `which == "red"`, Crystal-only for `which ==
+    "crystal"`, same BACKLOG #98 harness-gap reasoning as U4/U5/b90's own images).
+
+    Nav: A (S1 info) -> box grid -> START -> nav menu -> DOWN x12 (Party=0, Bank=1,
+    Daycare=2, Trainer=3, Clock fix=4, Mirage=5, Pokedex=6, Bag=7, Flags&counters=8,
+    Bases=9, Blocks=10, Tickets=11, Records=12 -- PDNA_NAV_ITEMS order,
+    source/pdna_layout.h) -> A -> pdna_gbhof()."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b89_{which}_")
+    print(f"== BACKLOG #89: {which}'s own Hall of Fame (single-ROM image -> "
+          "standalone -> Records) ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 12)                                    # Party -> ... -> Records (index 12)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Records -> pdna_gbhof()
+    s.shot("01_list", f"BACKLOG #89: {which}'s own Hall of Fame list -- the "
+                       "'N teams (lifetime count C)' header, one row per recorded "
+                       "team newest-first, cursor on row 1")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # row 1 -> the team detail
+    # D6: this corpus save's own HoF teams carry no shiny DV quad and no custom
+    # nickname (real, unedited saves) -- do not claim either in THIS shot's own
+    # caption. Both are proven on dedicated poked-.sav shots kept alongside this
+    # set (b89_{red,crystal}_08_nick.png, b89_crystal_09_shiny.png), not implied here.
+    s.shot("02_detail", "BACKLOG #89: the team detail page -- 6 mon rows"
+                        + (" (species/level, OT id)" if which == "crystal" else " (species/level)"))
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # detail -> back to the list
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # the Hall of Fame's own START menu
+    s.shot("03_menu", "BACKLOG #89: START -> CLEAR ALL / SET COUNT")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CLEAR ALL -> app_confirm
+    s.shot("04_clear_confirm", "BACKLOG #89: CLEAR ALL -> the real consequence -- "
+                                "\"The PC's HALL OF FAME option disappears until "
+                                "you win again.\" (app_confirm)")
+    # gbh_clear() on Gen 1 chunks its write over up to 50 gen1_write_outside_sum
+    # calls (one per team slot), each re-opening/re-parsing the whole 32 KiB image
+    # to verify -- genuinely more CPU work than any other GB screen's single-field
+    # commit, so BIG_SETTLE (40 frames, sized for a plain screen repaint) is not
+    # enough to reach gb_persist()'s own dialog: caught live by gb_shots.Session's
+    # identical-frame guard (the confirm's "yes" tap registers, but the shot landed
+    # before gbh_clear()+gb_persist() had finished computing and drawing anything
+    # new -- computation still running, not a stuck input). A longer settle first.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # confirm -> gbh_clear() -> gb_persist()
+    s.run(600)                                               # ride out the 50-chunk clear
+    s.shot("05_emu_refusal", "BACKLOG #89: gb_persist()'s PDNA_DELTA branch "
+                             "refuses ('Edits are in-session only in the emulator "
+                             "build.') -- same #62 D2/D5 branch every other GB "
+                             "screen's own commit hits here; the real write path is "
+                             "proved by the retail gate's hofclear/hofcount cases "
+                             "(tools/gb_retail_gate.py), not this shot. The edit "
+                             "already landed in-session, shown by the NEXT shot.")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss gb_persist's own dialog -> back to the list
+    s.shot("06_empty", "BACKLOG #89: after CLEAR ALL -- '0 teams (lifetime count "
+                        "0)', 'No teams recorded yet.'")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # menu again, on the now-empty list
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # SET COUNT row
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> the stepper, starts at 0 (never confirmed,
+                                                              # so gb_persist()'s own dialog never fires here)
+    s.press_n("UP", 3, settle=gb_shots.SETTLE)              # 0 -> 3, or pinned at 0 under D1 (see below)
+    # D1: on Gen 1 the cap is the teams present, not a flat 255 -- and this screen
+    # was reached AFTER CLEAR ALL (06_empty), so present=0 here and every UP press
+    # clamps right back to 0. Gen 2's own cap stays a flat 200 regardless (its own
+    # viewer re-derives the count from the slots).
+    if which == "crystal":
+        cap, want = 200, 3
+    else:
+        cap, want = 0, 0
+    s.shot("07_setcount", f"BACKLOG #89: SET COUNT's stepper after CLEAR ALL -- "
+                          f"the ceiling is gbh_slots_in_blob() (0 here, this list "
+                          f"is empty, R1), not a flat 255, so 3 UP presses land at "
+                          f"{want} ('Lifetime wins: {want} / {cap}')")
+
+    return s
+
+
+def run_b89_hof_detail_only(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
+                            shot_name: str, caption: str) -> gb_shots.Session:
+    """BACKLOG #89 D6/NICK proof shots: navigate straight to the team detail page
+    and shoot it once, nothing else. `rom` must be the SAME kind of ONE-ROM fused
+    image run_b89_hof() takes, except its embedded .sav has been byte-poked first
+    -- see this slice's own commit message for the exact offsets poked and why
+    re-fusing the poked .sav (not poking the already-fused .gba's SAV payload
+    directly) is required: fuse_gb.py's directory records a CRC32 per payload, and
+    poking the fused output invalidates it, which reads back as 'not a valid save'
+    at boot.
+
+    which=red/crystal + kind=nick: mon 0 nicknamed (gb_name_encode).
+    which=crystal + kind=shiny (R2 re-verify): mon 0 poked BOTH nicknamed AND
+    shiny-capable (g2_dv_shiny's Atk&2/Def=Spe=Spc=10 quad) at Lv 100 -- the exact
+    worst-case suffix (" Lv.100 *", 9 chars + NUL) that overflowed the old
+    char[8] (R2); a shiny-only fixture with no nickname, as the first fix pass
+    shipped, never exercised that branch at all."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b89_{which}_")
+    print(f"== BACKLOG #89 D6/NICK: {which}'s Hall of Fame detail, poked-.sav proof shot ==")
+    s.run(700)
+    s.tap("A", settle=60)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 12)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Records -> pdna_gbhof()
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # row 1 -> the team detail
+    s.shot(shot_name, caption)
+    return s
+
+
 def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
     """BACKLOG #90: the Gen-1/2 Fly-destination screen (source/pdna_gbfly.c) over
     gb_fly.h's bitfield core -- the same shape as run_u4_bag()/run_u5_pack() above,
@@ -1469,9 +1582,8 @@ def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                   "four spn-tagged rows are never a real Fly-menu "
                                   "destination, so mark-all leaves them exactly as "
                                   "found)" if which == "crystal" else "")
-                               + " (the dialog residue behind the panel is the known "
-                                 "s_msg-over-app_confirm ghosting, BACKLOG #119 -- present "
-                                 "on Gen 3's pdna_fly.c too)")
+                               + " (the s_msg-over-app_confirm ghosting fix, BACKLOG #119, "
+                                 "verified: no dialog residue behind the panel)")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the result panel -> back to the grid
 
     if which == "crystal":
@@ -1628,7 +1740,7 @@ def run_b90_boxname(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
                                   "gb_retail_gate.py), not this shot")
 
     s.tap("A", settle=200)                                    # dismiss msg_wait -> box grid repaints
-    s.shot("05_renamed_banner", "BACKLOG #94: back at the box grid -- the banner now reads 'GB TEST': gbsrc_get_name() re-reads g_m->g2names (refreshed by gbsrc_set_name_impl() right after the write) and pdna_gen12_box_name() adds the 'GB ' DISPLAY prefix on top; the SAVE holds the undecorated 'TEST' (proved by the retail gate's boxname case and gbbn_read on the corpus). The prefix on renamed Gen-2 boxes is BACKLOG #122.")
+    s.shot("05_renamed_banner", "BACKLOG #122: back at the box grid -- the banner now reads 'TEST' (verbatim, no 'GB ' prefix on Gen-2 renamed boxes); gbsrc_get_name() re-reads g_m->g2names and pdna_gen12_box_name() echoes it as-is for Gen-3 parity; the SAVE holds the undecorated 'TEST'.")
 
     return s
 
@@ -2061,6 +2173,341 @@ def run_b86_clock_gen1_fallback(core_mod, image_mod, rom: Path, out_dir: Path) -
     return s
 
 
+def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #88: pdna_gbflags.c's own Flags & counters screen -- reached via the
+    standalone mount's nav menu, NV_DATA (index 8, column 0: Party->Bank->Daycare->
+    Trainer->Clock fix->Mirage->Pokedex->Bag->Flags & counters, DOWN x8 from a fresh
+    menu -- same col=i/PDNA_NAV_ROWS, row=i%PDNA_NAV_ROWS arithmetic run_b86_clock's
+    own DOWN x4 uses for NV_CLOCK, index 4).
+
+    `rom` MUST be a ONE-ROM fused image matching `which` ("red" -> Red.gb+Red.sav,
+    "crystal" -> Crystal.gbc+Crystal.sav), same single-ROM posture as run_b86_clock/
+    run_d7_gold/run_u4_bag.
+
+    Both games share the COUNTERS tab + a toggle + CAUTION + the raw browser + B's
+    confirm; they differ in which FLAGS-tab HEADER sits first (Red's own group order,
+    tools/gen_gbfields.py's GROUPS_GEN1, starts with "Key events" -- an ordinary
+    GBFL_KIND_TOGGLE section, so Red's own toggle/CAUTION shots come from there;
+    Crystal's GROUPS_GEN2 starts with "Key items (grant in Bag)" -- a
+    GBFL_KIND_BAG_GRANT section, so Crystal's own run captures the read-only bag-grant
+    row instead of toggling anything in it (SELECT jumps to "Key events", the next
+    section, TOGGLE-kind, for Crystal's own toggle/CAUTION shots)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b88_flags_{which}_")
+    print(f"== BACKLOG #88: the Flags & counters screen ({which}) ==")
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box screen -> nav menu
+    s.press_n("DOWN", 8)                                       # Party -> ... -> Flags & counters (col 0, row 8)
+    s.shot("01_nav_menu", "BACKLOG #88: the nav menu with 'Flags & counters' selected "
+                           "-- NAV_OK on both kinds now (nav_avail.c's ok_both row)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> pdna_gbflags(), COUNTERS tab
+    s.shot("02_counters_tab", "BACKLOG #88: the COUNTERS tab -- Money/Coins/Rival"
+                               + ("/Safari steps" if which == "red" else "/Lucky#")
+                               + ", row 0 (Money) selected")
+
+    # A counter edit: Money's own num_entry overlay, then cancel (SELECT) so the
+    # underlying value is untouched for the rest of this run.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("03_counter_edit", "BACKLOG #88: row 0 (Money)'s own num_entry overlay -- the on-screen "
+                               "keyboard/number pad, current value pre-filled")
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)              # osk_search: SELECT cancels
+
+    # L/R swap to the FLAGS tab -- every session starts fully collapsed.
+    s.tap("R", settle=gb_shots.BIG_SETTLE)
+    s.shot("04_flags_tab_folded", "BACKLOG #88: the FLAGS tab, freshly entered -- every section "
+                                   "FOLDED (s_gbfl_folded's own 0xFFFFFFFF starting "
+                                   "state, mirrors pdna_main.c's own data editor)")
+
+    # Unfold the first header (A on a header row folds/unfolds it).
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("05_section_opened", "BACKLOG #88: header row 0 unfolded ('+' -> '-') -- its member "
+                                 "rows are now visible")
+
+    if which == "red":
+        # Red's header 0 is "Key events" (GBFL_KIND_TOGGLE) -- step onto its first
+        # member row and toggle it: the one-time CAUTION, then the toggled result.
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+        s.shot("06_flag_selected", "BACKLOG #88: the first member row of 'Key events' selected -- "
+                                    "a plain GBFL_KIND_TOGGLE row")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)
+        s.shot("07_caution", "BACKLOG #88: the one-time CAUTION ('Toggling story flags can / "
+                              "soft-lock the save.') -- shown once per screen visit, "
+                              "shared between the named list and the raw browser")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # dismiss -> the toggle itself lands
+        s.shot("08_toggled", "BACKLOG #88: the flag toggled ON/off -- gbfl_set wrote the bit "
+                              "straight into the session's own RAM image")
+        jump_presses = 6   # from inside header 0's group: h1,h2,h3,h4,h5,raw
+    else:
+        # Crystal's header 0 IS "Key items (grant in Bag)" -- show its read-only
+        # row, then SELECT-jump to the next (TOGGLE-kind) section for the toggle/
+        # CAUTION shots.
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+        s.shot("06_bag_grant_row", "BACKLOG #88: the first member row of 'Key items (grant "
+                                    "in Bag)' selected -- GBFL_KIND_BAG_GRANT, the "
+                                    "'(bag)' suffix; unselected bag rows below are dim")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)
+        s.shot("07_bag_grant_message", "BACKLOG #88: A on a bag-grant row -- 'Grant this from the "
+                                        "Bag screen, not here.' (no flag is ever "
+                                        "toggled by this row)")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # dismiss
+        s.tap("SEL", settle=gb_shots.BIG_SETTLE)          # jump to the next header ('Key events'), still FOLDED
+        s.tap("A", settle=gb_shots.BIG_SETTLE)            # unfold it (A on a header row folds/unfolds)
+        s.tap("DOWN", settle=gb_shots.SETTLE)             # onto its first member row
+        s.tap("A", settle=gb_shots.BIG_SETTLE)
+        s.shot("08_caution", "BACKLOG #88: 'Key events' (GBFL_KIND_TOGGLE): the one-time CAUTION "
+                              "on its first real toggle")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # dismiss -> the toggle lands
+        s.shot("08b_toggled", "BACKLOG #88: the flag toggled -- gbfl_set wrote the bit; the "
+                               "row's ON/off state is now visible (D3's "
+                               "'%-16s %-3s %s' row format -- the old "
+                               "'%-18s %s %s' shape truncated it off-screen)")
+        jump_presses = 5   # from inside header 1's group: h2,h3,h4,h5,raw
+
+    # SELECT-jump around to the trailing raw-browser row, then open it. The jump
+    # walks forward through ROW INDICES (not folded-visible positions) to the next
+    # header or the raw row.
+    for _ in range(jump_presses):
+        s.tap("SEL", settle=gb_shots.SETTLE)
+    s.shot("09_raw_row_selected", "BACKLOG #88: SELECT-jumped to the trailing 'Raw flag browser "
+                                   "(#N)...' row -- mirrors Gen 3's own flags_raw_view "
+                                   "entry point")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("10_raw_browser", "BACKLOG #88: the raw flag browser -- every bit of the whole event-"
+                              "flags region (2560 Gen 1 / 2048 Gen 2 bits), #N "
+                              "centred, ON/off per row")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # back to the FLAGS tab
+
+    # B out of the screen entirely -> the commit confirm (dirty from the toggle above).
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    s.shot("11_save_confirm", "BACKLOG #88: B with unsaved edits -- 'Save data changes?' / 'Edits "
+                               "write immediately.' (app_confirm, before the one "
+                               "gbs_finish()+gb_persist('gbflags') commit)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # decline: this run never actually commits
+    return s
+
+
+def run_b88_flags_d6(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #88 D3/D4 review, D6 evidence: the two row KINDS run_b88_flags() never
+    reaches on Crystal -- GBFL_KIND_WARN's own confirm (the Kanto section, D4's fixed
+    wording) and GBFL_KIND_READONLY's own message ("STORY FLAG"). `rom` MUST be a
+    Crystal-only fused image (Crystal.gbc+Crystal.sav), same single-ROM posture as
+    run_b88_flags's own "crystal" branch.
+
+    GROUPS_GEN2 header order (tools/gen_gbfields.py): 0 Key items (grant in Bag),
+    1 Key events, 2 Gym Leaders, 3 Elite Four, 4 Story (READONLY), 5 Kanto
+    (post-game) (WARN) -- SELECT from header 0 steps forward one header per press."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b88_flags_d6_")
+    print("== BACKLOG #88 D6: WARN confirm + READONLY message (crystal) ==")
+    s.run(700)
+    s.tap("A", settle=60)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 8)                                     # -> Flags & counters row
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> pdna_gbflags(), COUNTERS tab
+    s.tap("R", settle=gb_shots.BIG_SETTLE)                   # -> FLAGS tab, all folded, header 0 selected
+
+    # SELECT x4 -> header 4 "Story" (READONLY), unfold it, step onto its first member row.
+    for _ in range(4):
+        s.tap("SEL", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # unfold "Story"
+    s.tap("DOWN", settle=gb_shots.SETTLE)                    # onto its first member row
+    s.shot("01_story_row_selected", "BACKLOG #88: D6 -- 'Story' section unfolded, its first "
+                                     "GBFL_KIND_READONLY row selected -- the '(sty)' "
+                                     "suffix (D3's shortened kind_suffix)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("02_story_flag_message", "BACKLOG #88: D6 -- A on a READONLY row -- 'STORY FLAG' / "
+                                     "'This is a display-only / progress flag.' "
+                                     "(msg_wait, no flag touched)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # dismiss
+
+    # SELECT x1 more -> header 5 "Kanto (post-game)" (WARN), unfold, step onto its one row.
+    # NOTE: Guy's own Crystal.sav corpus already has EVENT_RESTORED_POWER_TO_KANTO ON
+    # (a progressed save, not fresh) -- the first toggle attempted below is therefore
+    # the ON->OFF direction, not OFF->ON; captions below describe what the emulator
+    # actually showed, not the direction originally assumed when this flow was written.
+    s.tap("SEL", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # unfold "Kanto (post-game)"
+    s.tap("DOWN", settle=gb_shots.SETTLE)                    # onto EVENT_RESTORED_POWER_TO_KANTO
+    s.shot("03_kanto_row_selected", "BACKLOG #88: D6 -- 'Kanto (post-game)' unfolded, its one "
+                                     "GBFL_KIND_WARN row selected -- ON on this corpus "
+                                     "save (already progressed past this event)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # CAUTION fires first (D4: reordered ahead of the WARN confirm)
+    s.shot("04_caution_before_warn", "BACKLOG #88: D6 (D4 fix) -- the generic CAUTION now fires "
+                                      "BEFORE the WARN-specific confirm on the very "
+                                      "first toggle of a WARN row")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # dismiss CAUTION -> the WARN confirm itself
+    s.shot("05_warn_confirm_remove", "BACKLOG #88: D6 (D4 fix) -- the WARN confirm's ON->OFF "
+                                      "direction (row starts ON here) -- 'Remove Kanto "
+                                      "power?' / 'Kanto becomes unreachable.' (used to "
+                                      "show the SAME 'Restore power' text on this path "
+                                      "before D4)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # confirm removal -> flag now OFF
+    s.shot("06_kanto_off", "BACKLOG #88: D6 -- confirmed -- the row now reads off")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # toggle again: now OFF, going ON
+    s.shot("07_warn_confirm_restore", "BACKLOG #88: D6 (D4 fix) -- the WARN confirm's OTHER "
+                                       "direction, OFF->ON -- 'Restore power to Kanto?' "
+                                       "/ 'Lets Kanto be reached early.' (the ORIGINAL, "
+                                       "still-correct wording for this direction)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # decline: leave Kanto off (as toggled above), don't commit
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # back out to the commit confirm
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # decline: this run never actually commits
+    return s
+
+
+# ---------------------------------------------------------------------------------
+# BACKLOG #87: the shared Pokedex screen on Gen 1/2.
+# ---------------------------------------------------------------------------------
+
+def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #87: pdna_gbdex()'s Pokedex screen (item 3) -- reached via the standalone
+    mount's nav menu, NV_DEX (index 6, column 0: Party->Bank->Daycare->Trainer->Clock
+    fix->Mirage->Pokedex, DOWN x6 from a fresh menu, same PDNA_NAV_ROWS==10 arithmetic
+    run_b86_clock's own docstring explains -- index 6 stays in column 0, no RIGHT).
+
+    `rom` MUST be a ONE-ROM fused image (tools/fuse_gb.py, same posture as every other
+    single-ROM shot function here): Red.gb + a Red.sav that has had `--op dexset 100
+    0` applied first for `which="red"`, or Crystal.gbc + a Crystal.sav that has had
+    the SAME `--op dexset 100 0` applied first for `which="crystal"` (this file's own
+    corpus is a fully-completed dex -- host_gbdex_test.c's own popcount proof already
+    established that -- so dex #100 is pre-cleared on BOTH games here purely so the
+    'A cycles one cell through seen/caught/none' shot has a real none->seen->caught
+    transition to show, not a caught->none->seen one; item 6's own retail-gate proves
+    the write path against real WRAM, this is only a visual demo). N4 (b87 fix pass,
+    DO-NOT-SHIP review): the cycle demo below moves the cursor to dex #100 itself
+    (99x DOWN from the list top) so the pre-clear actually applies to the cell being
+    cycled -- an earlier pass pre-cleared #100 but cycled whatever cell the cursor
+    started on (species #1, Bulbasaur, list top), so the pre-clear never showed up on
+    screen.
+
+    Red (Gen 1, no Unown): pdna_gbdex() opens the shared pdna_dex_screen() directly,
+    no chooser. Crystal (Gen 2): pdna_gbdex() shows its own entry chooser first
+    ("Pokedex" / "Unown forms") -- BOTH sub-screens get their own shots here.
+
+    Captures (per item 7): the grid at 1:1 (species cap visible -- Red stops at #151,
+    Crystal at #251, no row past it), the list view (L), A cycling dex #100 through
+    none/seen/caught, the START menu (dex_menu -- filter/sort/status/"Mark all..."),
+    Catch ALL + Undo (dex_bulk, the "Mark all..." row), B -> the shared screen's own
+    exit, on Crystal only: the Unown forms 26-row toggle list from the chooser's
+    second row, B -> confirm ("Save Pokedex changes?")."""
+    tag = f"b87_dex_{which}_"
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, tag)
+    print(f"== BACKLOG #87: the Pokedex screen ({which}) ==")
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box screen -> nav menu
+    s.press_n("DOWN", 6)                                       # Party -> ... -> Pokedex (col 0, row 6)
+    s.shot("01_nav_menu", "#87: the nav menu with 'Pokedex' selected -- "
+                           "NAV_OK on both generations now (nav_avail.c's GB_TABLE), "
+                           "column 0 row 6, no RIGHT press needed")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> pdna_gbdex()
+
+    if which == "crystal":
+        s.shot("02_chooser", "#87: Gen 2's own entry chooser -- "
+                              "'Pokedex' / 'Unown forms', Pokedex row selected")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # chooser row 0 -> pdna_dex_screen()
+
+    # ARTLESS DEFAULT IS LIST, not grid: pdna_dex_screen's own `view = mon_icon_for(1)
+    # ? DV_GRID : DV_LIST` (pdna_pick.c) -- mon_icon_for(1) is NULL in this (art-free,
+    # delta-artless) shot vehicle, so the FIRST screen this session sees is DV_LIST.
+    s.shot("03_list_default", "#87: The shared pdna_dex_screen(), DV_LIST (this artless "
+                               "shot vehicle's own default when no icon art is "
+                               "compiled -- pdna_pick.c's `view = mon_icon_for(1) ? "
+                               "DV_GRID : DV_LIST`), item 1's species cap applied "
+                               f"({'151' if which == 'red' else '251'} species, no "
+                               "row past it, S/C counts in the header) -- "
+                               "pdna_pick.c UNCHANGED, same screen Gen 3 uses")
+
+    s.tap("L", settle=gb_shots.BIG_SETTLE)                   # DV_LIST(1) -> DV_GRID(0)
+    s.shot("04_grid", "#87: L once -> DV_GRID -- the icon grid (art-free build: name "
+                       "chips, per dex_cell_grid's own art-free fallback), same cap")
+
+    s.tap("R", settle=gb_shots.BIG_SETTLE)                   # DV_GRID(0) -> DV_LIST(1), back where item 5/6's cursor math below assumes
+
+    # N4 (b87 fix pass, DO-NOT-SHIP review): move the cursor to dex #100 itself (99x
+    # DOWN from the list top, filter=All/sort=dex-number so the list is in plain
+    # national-dex order with no gaps -- row i == dex i+1) so the pre-clear this
+    # function's own caller applied (`--op dexset 100 0`) is the cell actually being
+    # cycled below, not species #1 (Bulbasaur, list top) as an earlier pass did.
+    s.press_n("DOWN", 99)
+    s.shot("04b_cursor_at_100", "#87 N4: cursor moved to dex #100 (99x DOWN, list "
+                                 "order == national-dex order) -- 'none' (pre-cleared "
+                                 "by --op dexset 100 0) before the cycle demo below")
+
+    # A cycles the selected cell through none/seen/caught (dex_state's own state
+    # 0/1/2 = none/seen/caught cycle, pdna_pick.c's `(s_dget(nat)+1) % 3`). Dex #100
+    # was pre-cleared to 'none' by the caller's `--op dexset 100 0`, so this cell
+    # (not species #1) is the one that genuinely shows none->seen->caught.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("05_cycle_a", "#87: A pressed once on dex #100 -- state advanced one step "
+                          "(dex_state's own 0/1/2 -> +1 mod 3 cycle; starts 'none' "
+                          "per the pre-clear, so this step lands on 'seen')")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("06_cycle_b", "#87: A pressed a second time -- one more step around the "
+                          "cycle ('seen' -> 'caught')")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # back to 'none' -- leave the cell as the pre-clear found it
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # -> dex_menu()
+    s.shot("07_start_menu", "#87: KEY_START -> dex_menu() -- sort/status toggles + "
+                             "'Mark all...' (can_edit) + the filter list. Same screen "
+                             "as Gen 3, but D5's cap gate hides the rows that would "
+                             "page to nothing here: no 'Gen 2'/'Gen 3' on a Gen-1 "
+                             "session, no 'Gen 3' on a Gen-2 one")
+
+    s.press_n("DOWN", 2)                                        # row 0 sort, row 1 status, row 2 "Mark all..."
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> dex_bulk() overlay ("stay open": dex_menu itself does not close)
+    s.shot("08_bulk_menu", "#87: dex_bulk()'s own overlay, opened from dex_menu's "
+                            "'Mark all...' row -- Catch/See/Wipe ALL, the "
+                            "National-Dex toggle row HIDDEN (setnat is NULL on GB, "
+                            "item 3's own contract), Undo not yet available")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # Catch ALL -> its own app_confirm
+    s.shot("09_catch_all_confirm", "#87: Catch ALL's own app_confirm -- the bulk-confirm "
+                                    "text now reads the LIVE cap ('All 151.'/'All "
+                                    "251.'), item 1's siprintf fix, not a hardcoded "
+                                    "386")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # confirm -> every species caught, snapshot taken -- dex_menu's own loop is still open (dex_bulk's "stay open" contract)
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # dex_menu -> B closes it, back to pdna_dex_screen's own grid/list
+    s.shot("10_after_catch_all", "#87: back at the list after Catch ALL -- every cell "
+                                  "now shows CAUGHT")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # dex_menu reopens fresh, cursor back at row 0
+    s.press_n("DOWN", 2)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> dex_bulk() again
+    s.shot("11_undo_available", "#87: dex_bulk() reopened -- 'Undo last' now offered "
+                                 "(s_dex_snap_valid from the Catch ALL above), no "
+                                 "National-Dex row (Catch/See/Wipe ALL, Undo last, "
+                                 "Cancel -- 5 rows, not 6: setnat is NULL on GB)")
+
+    # Undo is row index 3 (Catch=0, See=1, Wipe=2, Undo=3, Cancel=4 -- no National-Dex
+    # row on GB, setnat NULL) -- 3 DOWN presses from the overlay's own default sel=0.
+    s.press_n("DOWN", 3)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # Undo -> restores the pre-Catch-ALL snapshot; dex_menu's own loop is STILL open
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # dex_menu -> B closes it, back to the list
+    s.shot("12_after_undo", "#87: back at the list after Undo -- restored to exactly the "
+                             "pre-Catch-ALL state (dex_bulk's s_dex_snap[386], "
+                             "byte-exact per the acceptance gate) -- compare against "
+                             "03_list_default")
+
+    if which == "crystal":
+        s.tap("B", settle=gb_shots.BIG_SETTLE)               # dex screen -> back to the chooser
+        s.tap("DOWN", settle=gb_shots.SETTLE)                # chooser row 1: Unown forms
+        s.shot("13_chooser_unown_row", "#87: the chooser with 'Unown forms' selected")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # -> unown_forms_screen()
+        s.shot("14_unown_list", "#87: the 26-row Unown A..Z toggle list -- item 3's own "
+                                 "plain-list idiom over gb_dex.h's wUnownDex core")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # toggle letter A
+        s.shot("15_unown_toggled", "#87: letter A toggled -- trainer_flag_row_paint's own "
+                                    "ON/off text flips")
+        s.tap("B", settle=gb_shots.BIG_SETTLE)               # Unown list -> back to the chooser
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # chooser (or dex screen, Red) -> pdna_gbdex()'s own confirm
+    s.shot("16_save_confirm", "#87: 'Save Pokedex changes?' -- item 3's own end-of-visit "
+                               "confirm (gbs_finish + gb_persist('dex') on A)")
+    return s
+
+
 # ---------------------------------------------------------------------------------
 # BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL on a Gen 3 -> Game Boy paste.
 # ---------------------------------------------------------------------------------
@@ -2450,12 +2897,29 @@ def main(argv=None) -> int:
                           "matching this choice (Crystal.gbc+Crystal.sav, or "
                           "Red.gb+Red.sav for the Gen-1 fallback shot), same "
                           "single-ROM posture as --d7-gold")
+    ap.add_argument("--b87-dex", choices=("red", "crystal"),
+                     help="BACKLOG #87: only run_b87_dex() against --image for the "
+                          "named game -- --image MUST be a ONE-ROM fused image "
+                          "matching this choice (Red.gb, or Crystal.gbc -- either "
+                          "way, the .sav must have had `--op dexset 100 0` applied "
+                          "first -- see run_b87_dex()'s own docstring for why)")
     ap.add_argument("--b85-daycare", choices=("red", "gold"),
                      help="BACKLOG #85: only run_b85_daycare() against --image for "
                           "the named game (Red's one-slot Day Care, or Gold's "
                           "two-slot Day Care + compatibility) -- --image MUST be a "
                           "ONE-ROM fused image matching this choice (same "
                           "single-ROM harness gap as --u4-bag/--u5-pack)")
+    ap.add_argument("--b88-flags", choices=("red", "crystal"),
+                     help="BACKLOG #88: only run_b88_flags() against --image for the "
+                          "named game (pdna_gbflags.c's own Flags & counters screen) "
+                          "-- --image MUST be a ONE-ROM fused image matching this "
+                          "choice, same single-ROM posture as --b86-clock")
+    ap.add_argument("--b88-flags-d6", action="store_true",
+                     help="BACKLOG #88 D6 review: only run_b88_flags_d6() against "
+                          "--image -- the WARN confirm (both directions) and the "
+                          "READONLY 'STORY FLAG' message, neither reached by "
+                          "--b88-flags crystal's own flow -- --image MUST be a "
+                          "Crystal-only fused image (Crystal.gbc+Crystal.sav)")
     ap.add_argument("--b114-yard", choices=("red", "gold"),
                      help="BACKLOG #114: only run_b114_yard() against --image for the "
                           "named game (the Day-Care YARD scene, not the D1/D6 "
@@ -2484,6 +2948,26 @@ def main(argv=None) -> int:
                           "Gen-2-only fused image (Gold.gbc+Gold.sav or "
                           "Crystal.gbc+Crystal.sav, tools/fuse_gb.py, one ROM per "
                           "image -- BACKLOG #98)")
+    ap.add_argument("--b89-hof", choices=("red", "crystal"),
+                     help="BACKLOG #89: only run_b89_hof() against --image for the "
+                          "named game (Red's or Crystal's own Hall of Fame screen) "
+                          "-- --image MUST be a ONE-ROM fused image matching this "
+                          "choice, same BACKLOG #98 harness-gap reasoning as "
+                          "--u4-bag/--u5-pack/--b90-fly")
+    ap.add_argument("--b89-hof-extra", choices=("red-nick", "crystal-nick", "crystal-shiny"),
+                     help="BACKLOG #89 D6/NICK: only run_b89_hof_detail_only() -- "
+                          "--image MUST be a ONE-ROM fused image whose .sav was "
+                          "byte-poked first (a nicknamed mon for *-nick, a shiny DV "
+                          "quad for crystal-shiny) -- see run_b89_hof_detail_only()'s "
+                          "own docstring")
+    ap.add_argument("--gbnames", choices=("red", "crystal"),
+                     help="gbnames brief: only run_gbnames() against --image for the "
+                          "named game -- real Gen-1/Gen-2 item names now shown by "
+                          "pdna_gbbag.c/pdna_gbpack_body.inc (source/gb_item_names.c, "
+                          "an embedded identifier table). --image MUST be a ONE-ROM "
+                          "fused image matching this choice (Red.gb+Red.sav or "
+                          "Crystal.gbc+Crystal.sav, same BACKLOG #98 harness-gap "
+                          "reasoning as --u4-bag/--u5-pack)")
     ap.add_argument("--b90-fly", choices=("red", "crystal"),
                      help="BACKLOG #90: only run_b90_fly() against --image for the "
                           "named game (Red's or Crystal's own Fly-destination "
@@ -2508,6 +2992,11 @@ def main(argv=None) -> int:
 
     core_mod, image_mod = gb_shots.load_mgba()
 
+    # the dispatch chain below: every new flag's block sets `ran = True` and
+    # ends with `return 0` -- a `ran = False` latch before this chain (lane
+    # tiny2, BACKLOG #117) plus `if ran: return 0` right after it is what
+    # stops an un-returned flag falling through into the combined boot-picker
+    # flow at the bottom of this function.
     if a.cold_start_compare:
         loc_image, noloc_image = a.cold_start_compare
         if not loc_image.is_file():
@@ -2525,6 +3014,7 @@ def main(argv=None) -> int:
         sys.exit(f"--image: {a.image}: not a file")
 
     ok, skipped = [], []
+    ran = False  # latch: every early-exit flag block sets ran = True; latch returns for all
     if a.shell_only:
         try:
             sess = run_gbscreen_shell(core_mod, image_mod, a.image, a.out)
@@ -2536,7 +3026,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.u2c_trainer:
         try:
@@ -2549,7 +3039,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.u3_trainer:
         try:
@@ -2562,7 +3052,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.u4_bag:
         try:
@@ -2575,7 +3065,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.u5_pack:
         try:
@@ -2588,6 +3078,52 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
+        ran = True
+
+    if a.b89_hof:
+        try:
+            sess = run_b89_hof(core_mod, image_mod, a.image, a.out, a.b89_hof)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b89 hof ({a.b89_hof}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b89_hof_extra:
+        which, kind = a.b89_hof_extra.rsplit("-", 1)
+        if kind == "nick":
+            name, cap = "08_nick", (
+                f"BACKLOG #89: (D6/NICK, R4) {which}'s team detail with mon 0 "
+                "nicknamed via a byte-poked .sav (gb_name_encode) -- proves "
+                "hof_detail_render draws GbHofMon.nick, measured against "
+                "sys8Font's 8px cells so it NEVER overflows the 240px screen or "
+                "the OT-id column. A 10-char species + a full 10-char nickname + "
+                "a non-shiny suffix fits WHOLE (29-10-1-7=11 >= 10, see crystal's "
+                "own TYPHLOSION \"FLAMETHROW\" shot); the shiny-worst-case honest "
+                "trim (9 of 10 chars) is proven on b89_crystal_09_shiny instead")
+        else:
+            name, cap = "09_shiny", (
+                "BACKLOG #89: (D6, R2) crystal's team detail with mon 0 BOTH "
+                "shiny-capable (Atk&2, Def/Spe/Spc=10, g2_dv_shiny's own formula) "
+                "AND nicknamed at Lv 100 via a byte-poked .sav -- the exact worst "
+                "case for the suffix buffer (\" Lv.100 *\" is 9 chars + NUL; the "
+                "old char[8] overflowed here, R2); no crash, the shiny mark "
+                "renders, and the nickname is trimmed to fit (R4) rather than "
+                "running off-screen")
+        try:
+            sess = run_b89_hof_detail_only(core_mod, image_mod, a.image, a.out, which, name, cap)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b89 hof extra ({a.b89_hof_extra}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name2, reason in skipped:
+            print(f"  [skip] {name2}: {reason}")
         return 0
 
     if a.b90_fly:
@@ -2601,7 +3137,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.b94_boxname:
         try:
@@ -2614,7 +3150,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.u4_empty:
         try:
@@ -2627,7 +3163,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.d7_gold:
         try:
@@ -2640,7 +3176,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.b86_clock:
         try:
@@ -2652,6 +3188,19 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b86 clock ({a.b86_clock}): {e}")
+        ran = True
+    if a.b87_dex:
+        try:
+            sess = run_b87_dex(core_mod, image_mod, a.image, a.out, a.b87_dex)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b87 dex ({a.b87_dex}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
     if a.b85_daycare:
         try:
             sess = run_b85_daycare(core_mod, image_mod, a.image, a.out, a.b85_daycare)
@@ -2663,7 +3212,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
     if a.b114_yard:
         try:
             sess = run_b114_yard(core_mod, image_mod, a.image, a.out, a.b114_yard)
@@ -2671,6 +3220,32 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b114 yard ({a.b114_yard}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
+    if a.b88_flags:
+        try:
+            sess = run_b88_flags(core_mod, image_mod, a.image, a.out, a.b88_flags)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b88 flags ({a.b88_flags}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b88_flags_d6:
+        try:
+            sess = run_b88_flags_d6(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b88 flags d6: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -2684,6 +3259,11 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] r1 xfer: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
     if a.m1_map:
         try:
             sess = run_m1_map(core_mod, image_mod, a.image, a.out)
@@ -2695,7 +3275,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.m1_map_vclamp:
         try:
@@ -2708,7 +3288,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.gbmon:
         try:
@@ -2717,6 +3297,27 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] gbmon: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+
+    if ran:
+        return 0
+
+    if a.gbnames:
+        # every new flag block sets `ran = True`; lane tiny2's own `ran = False`
+        # latch (added right before `if ran: return 0` after this whole chain)
+        # returns for all of them -- this block already carries the statement so
+        # that merge is trivial (gbnames brief).
+        ran = True
+        try:
+            sess = run_gbnames(core_mod, image_mod, a.image, a.out, a.gbnames)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] gbnames ({a.gbnames}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -3034,6 +3635,142 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
                                      "after Egg on a Gold session) -- proof the row "
                                      "list genuinely reflows around the absent Met "
                                      "rows rather than leaving a gap or a stale cursor")
+    return s
+
+
+def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """gbnames brief: real Gen-1/Gen-2 item names, now shown by the shipped GB-shell
+    screens (pdna_gbbag.c's g1bag_paint_list, pdna_gbpack_body.inc's g2pack_paint_list)
+    via gb_item_label() (source/gb_item_names.c, an embedded identifier table --
+    GREEN per docs/kb/licensing.md, no ROM read, no locator). `which` picks the
+    generation, same shape as run_u4_bag()/run_u5_pack() above:
+
+      which="red":     `rom` MUST be a ONE-Gen-1-ROM fused image WITH Emerald.sav also
+                        fused (tools/fuse_sav.py then tools/fuse_gb.py Red.gb+Red.sav --
+                        BACKLOG #98's fused-image-by-generation harness gap, same
+                        constraint run_u4_bag() documents; run_u4_bag()'s own fixture
+                        convention, Emerald present). Nav is IDENTICAL to run_u4_bag()'s
+                        own red path: boot picker DOWN -> A (S1 info) -> A (box grid) ->
+                        START -> nav menu -> DOWN x7 (Party->Bank->Daycare->Trainer->
+                        Clock fix->Mirage->Pokedex->Bag, PDNA_NAV_ITEMS index 7) -> A ->
+                        pdna_gbbag_gen1_screen().
+      which="crystal":  `rom` MUST be a ONE-Gen-2-ROM fused image WITHOUT Emerald.sav
+                        (tools/fuse_gb.py straight off the base delta build, Crystal.gbc+
+                        Crystal.sav ONLY -- run_u5_pack()'s own fixture convention, no
+                        Emerald). Fusing Emerald.sav into this leg is a real footgun: the
+                        boot picker then has 2 rows (Emerald first) and a single A lands
+                        IN THE FUSED EMERALD SAVE'S OWN BAG (real Hoenn item names like
+                        'WAILMER PAIL'/'DEVON SCOPE') instead of the Gen-2 Pack screen --
+                        caught live capturing this slice's own shots, not a hypothetical.
+                        A single-ROM-only image skips the boot picker (gb_delta_pick_
+                        save()'s own `if (n == 1) return 0`, same as run_u5_pack()'s own
+                        doc comment) -- nav is IDENTICAL to run_u5_pack()'s own crystal
+                        path: A (S1 info) -> box grid -> START -> nav menu -> DOWN x7 ->
+                        A -> pdna_gbpack_gen2_screen().
+
+    Shots: the Items pocket (both gens show real names there by default -- id
+    lookups, no ROM decode), Balls pocket on the Gen-2 leg only (the brief's own
+    "Items + Balls pockets" ask), and one TM row per generation (both gens'
+    TM/HM synthesis, HM/TM%02u, exercised live). The Gen-1 leg also scrolls one
+    row past a long-vs-short name boundary (review-sonnet ask: prove the wider
+    blank sweep leaves no stale glyph) -- this corpus's Red.sav Items pocket
+    happens to open on its TMs (real save data, pickup order, not sorted by
+    this core), so shot 01 already doubles as the "one TM row" ask; no
+    ADD ITEM detour needed."""
+    if which == "red":
+        s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbnames_red_")
+        print("== gbnames: Red's own Item bag, real names ==")
+        s.run(700)
+        s.tap("DOWN", settle=gb_shots.SETTLE)               # Emerald (row 0) -> the GB row (row 1)
+        s.tap("A", settle=60)                               # pick it -> S1 info
+        s.tap("A", settle=60)                               # -> box grid (rom_gbsprite cold fetch)
+        s.run(GB_ART_COLD_SETTLE)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)          # box grid -> nav menu
+        s.press_n("DOWN", 7)                                 # Party -> ... -> Bag (index 7)
+        s.tap("A", settle=GB_ART_COLD_SETTLE)               # Bag -> pdna_gbbag_gen1_screen()
+        s.shot("01_items_top_tm_rows", "gbnames: Red's Item bag, ITEMS pocket, top of "
+                                        "the list -- this corpus save's Items pocket "
+                                        "opens on TM05/TM06/TM27/TM29 (real save data, "
+                                        "pickup order), all via gb1_tmhm_label() -- the "
+                                        "brief's own 'one TM row' ask, not 'ITEM-n'")
+
+        # Scroll to the real (tabled, non-TM/HM) names further down this same pocket --
+        # DOWN x10 lands on TOWN MAP/BICYCLE/GOOD ROD/SUPER ROD* (8/7/8/9 chars, a real
+        # mix of widths), one more DOWN scrolls the whole window by one row.
+        s.press_n("DOWN", 10, settle=gb_shots.SETTLE)
+        s.shot("02_scroll_before", "gbnames: DOWN x10 -- real (tabled) Gen-1 names "
+                                    "now, not synthesized ones: TOWN MAP / BICYCLE / "
+                                    "GOOD ROD / SUPER ROD* (8/7/8/9 chars) -- the "
+                                    "'before' half of the no-stale-glyph scroll pair")
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+        s.shot("03_scroll_after", "gbnames: one more DOWN -- the window shifts one "
+                                   "row (TOWN MAP scrolls off, ITEMFINDER (10 chars) "
+                                   "scrolls in at the bottom): BICYCLE / GOOD ROD / "
+                                   "SUPER ROD* / ITEMFINDER -- every row shows exactly "
+                                   "its own name with no leftover glyph from the row "
+                                   "that used to be there (the widened NAME-row blank "
+                                   "sweep, pdna_gbbag.c `cx < BOX_X1`)")
+
+        # gbnames review A3 (CONFIRMED, fixed): a scroll pair over the SAME screen
+        # row that specifically exercises the byte-vs-glyph fix -- POKe FLUTE (10
+        # BYTES, but 9 GLYPHS: the e-acute's UTF-8 pair is one glyph) scrolling off,
+        # replaced by REVIVE (6 chars, no multi-byte glyph at all) in that exact
+        # row. Pre-fix, the sweep started at strlen("POKe FLUTE")=10 (one column
+        # PAST where the name's own 9th glyph actually painted), leaving whatever
+        # sat past column NAME_COL+10 unblanked -- the SAME defect class the
+        # 'POKe BALLE' shot showed on the Gen-2 leg (gbnames_crystal_02).
+        s.press_n("DOWN", 7, settle=gb_shots.SETTLE)        # total DOWN x18 from bag entry
+        s.shot("04_poke_flute_before", "gbnames: DOWN x18 from bag entry -- POKe "
+                                        "FLUTE / REVIVE / FULL RESTORE* / CANCEL "
+                                        "(POKe FLUTE: 10 bytes, 9 glyphs) -- the "
+                                        "'before' half of the glyph-specific scroll "
+                                        "pair (A3)")
+        s.tap("DOWN", settle=gb_shots.SETTLE)               # total DOWN x19 -- POKe FLUTE scrolls off
+        s.shot("05_poke_flute_after", "gbnames: one more DOWN -- POKe FLUTE has "
+                                       "scrolled off the top; REVIVE (6 chars, no "
+                                       "multi-byte glyph) now sits in the EXACT "
+                                       "screen row POKe FLUTE used to occupy, with "
+                                       "no stray glyph left over (the fix: "
+                                       "gbscr_text_cols(), glyph-accurate via "
+                                       "gb_char_encode(), not strlen())")
+        return s
+
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbnames_crystal_")
+    print("== gbnames: Crystal's own Pack, real names ==")
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image,
+                                                               # no boot picker)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 7)                                     # Party -> ... -> Bag (index 7)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbpack_gen2_screen()
+    s.shot("01_items_real_names", "gbnames: Crystal's Pack, ITEMS pocket -- real "
+                                   "names from the embedded Gen-2 table, NOT "
+                                   "'ITEM-n'; the NAME-row blank sweep now covers "
+                                   "the full screen width (cols 8-19), not just "
+                                   "the old QTY_COL=17 bound")
+
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls
+    s.shot("02_balls_real_names", "gbnames: RIGHT -> BALLS pocket -- 'POKe BALL' "
+                                   "reads clean (review A3 fix: the NAME-row blank "
+                                   "sweep now starts from gbscr_text_cols(), which "
+                                   "counts GLYPHS via gb_char_encode(), not "
+                                   "strlen()'s BYTE count -- the pre-fix version of "
+                                   "this exact shot read 'POKe BALLE', a stray "
+                                   "trailing 'E' left over from ULTRA BALL because "
+                                   "strlen('POKe BALL')=10 overcounts the e-acute's "
+                                   "2-byte UTF-8 pair as 2 glyphs instead of 1, "
+                                   "starting the sweep one column short) -- the "
+                                   "brief's own 'Items + Balls' ask")
+
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Balls -> Key items
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Key items -> TM/HM
+    s.shot("03_tm_row", "gbnames: RIGHT x2 -> TM/HM -- the two-digit TM/HM number "
+                         "prefix (cols 5-6) plus the SAME 'TM%02u'/'HM%02u' label "
+                         "shape as the Gen-1 leg, this time driven by the flag-index "
+                         "arithmetic g2pack_row_label()'s own TM/HM branch already "
+                         "had (unaffected by this slice's id-based table -- that "
+                         "branch never used a raw item id to begin with)")
     return s
 
 

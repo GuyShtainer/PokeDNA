@@ -222,6 +222,21 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # start "#95:".
     ("gb-mon-summary-parity", "#95 — summary-field parity audit: Shiny, Egg, Met "
      "Time/Level/Loc/OT Gender rows closed for Gen 2", ("#95",)),
+    # BACKLOG #88 (append-only, same rule as every row above): the Flags & counters
+    # screen (source/pdna_gbflags.c) -- two tabs (COUNTERS | FLAGS), a foldable
+    # named-flags list with section headers, a one-time CAUTION, the trailing raw
+    # flag browser, and B's own commit confirm. Shots come from
+    # tools/dgb_shots.py's run_b88_flags() (Red + Crystal); captions all start
+    # "BACKLOG #88:".
+    ("gb-flags", "BACKLOG #88 — Flags & counters (source/pdna_gbflags.c): two tabs, "
+     "foldable named-flags list, bag-grant/story/warn row kinds, raw flag browser",
+     ("BACKLOG #88",)),
+    # BACKLOG #87 (append-only, same rule as every row above): the Pokedex (seen/
+    # caught) for Gen 1/2 on the SHARED dex screen (pdna_pick.c's pdna_dex_screen,
+    # reused unchanged under a species cap) + Gen 2's own Unown-forms toggle list.
+    # Shots come from tools/dgb_shots.py's run_b87_dex(); captions all start "#87:".
+    ("gb-dex", "#87 — the Pokedex (seen/caught) for Gen 1/2 on the shared dex "
+     "screen, + Gen 2 Unown forms", ("#87",)),
     # BACKLOG #114 (append-only, same rule as every row above): the Day-Care YARD
     # scene (dc_scene/dc_icon_over_bg/dc_pointer, source/pdna_yard.h) now draws on
     # the Gen-1/2 screen instead of the two/three text rows BACKLOG #85's own
@@ -245,6 +260,19 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # own append-only rule.
     ("gb-boxname", "BACKLOG #94 — the Gen-2 box-rename banner (osk_input, "
      "gbbn_rename)", ("BACKLOG #94",)),
+    # BACKLOG #89 (this slice): the Gen-1/2 Hall of Fame screen (source/pdna_gbhof.c)
+    # over gb_hof.h's core -- the "Records" nav row's new home on a Game Boy save
+    # (there is no Gen-3 twin to mirror, see gb_hof.h's own header). Shots come from
+    # tools/dgb_shots.py's run_b89_hof() (--b89-hof), captions all start
+    # "BACKLOG #89:". Appended after "gb-boxname" per this list's own append-only rule.
+    ("gb-hof", "BACKLOG #89 — the Gen-1/2 Hall of Fame screen (list, detail, "
+     "CLEAR ALL, SET COUNT)", ("BACKLOG #89",)),
+    # gbnames brief: real Gen-1/Gen-2 item names (source/gb_item_names.c, an
+    # embedded identifier table) on both real GB-shell screens. Shots come from
+    # tools/dgb_shots.py's run_gbnames(), captions all start "gbnames:".
+    # Appended after "gb-boxname" per this list's own append-only rule.
+    ("gb-item-names", "gbnames — real Gen-1/Gen-2 item names on the Bag/Pack "
+     "shells (embedded identifier table, TM/HM synthesized)", ("gbnames",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

@@ -820,3 +820,57 @@ Gen1WStatus gen1_write_range(uint8_t* img, uint32_t len, Gen1Save* s,
    * here to avoid a second copy of that comparison drifting out of step with it. */
   return gen1_write_range_ex(img, len, s, off, buf, n, snap, sizeof snap);
 }
+
+/* ------------------------------------------------------------------------- */
+/* The Hall-of-Fame allowlist (BACKLOG #89) -- see gen1_write.h for the contract   */
+/* ------------------------------------------------------------------------- */
+
+Gen1WStatus gen1_write_outside_sum(uint8_t* img, uint32_t len, Gen1Save* s,
+                                   uint32_t off, const uint8_t* buf, uint32_t n,
+                                   uint8_t* snap, uint32_t snap_len) {
+  Gen1Save cur;
+  uint32_t last, done;
+
+  if (!img || !s || !buf || !n || !snap || !snap_len) return GEN1W_ERR_ARG;
+  if (len < GEN1_SAVE_SIZE) return GEN1W_ERR_SIZE;
+  if (off + n < off) return GEN1W_ERR_RANGE;             /* unsigned wraparound guard */
+  last = off + n - 1u;
+
+  /* The allowlist: exactly the HoF blob, nothing wider -- see the "NAMED ALLOWLIST,
+   * not a widened bound" note in gen1_write.h. */
+  if (off < GEN1_OFF_HOF || last >= GEN1_OFF_HOF + GEN1_HOF_BYTES) return GEN1W_ERR_RANGE;
+
+  if (gen1_open(img, len, &cur) != GEN1_OK) return GEN1W_ERR_SAVE;
+
+  for (done = 0; done < n; ) {
+    uint32_t chunk = n - done;
+    uint32_t coff  = off + done;
+    Gen1Save after;
+
+    if (chunk > snap_len) chunk = snap_len;
+
+    /* A no-op chunk writes nothing at all, same rule as gen1_write_range_ex. */
+    if (memcmp(img + coff, buf + done, chunk) == 0) {
+      *s = cur;
+      done += chunk;
+      continue;
+    }
+
+    memcpy(snap, img + coff, chunk);          /* THIS chunk's rollback copy only */
+    memcpy(img + coff, buf + done, chunk);
+
+    if (gen1_open(img, len, &after) == GEN1_OK) {
+      cur = after;
+      *s = after;
+      done += chunk;
+      continue;
+    }
+
+    /* Restore just this chunk; chunks 0..done-1 already committed to `img` are the
+     * caller's problem -- see the big comment in gen1_write.h. */
+    memcpy(img + coff, snap, chunk);
+    return GEN1W_ERR_VERIFY;
+  }
+
+  return GEN1W_OK;
+}

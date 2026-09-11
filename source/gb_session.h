@@ -298,6 +298,20 @@ GbsStatus gbs_read_field(GbSession* s, uint32_t off, void* buf, uint32_t n);
  * engine. */
 GbsStatus gbs_write_field(GbSession* s, uint32_t off, const void* buf, uint32_t n);
 
+/* Write `n` bytes at file offset `off`, ALLOWING a span OUTSIDE either generation's
+ * checksummed window -- BACKLOG #89, the Hall-of-Fame allowlist. Only ever needed on
+ * Gen 1: sHallOfFame sits entirely below GEN1_SUM_FIRST, so gbs_write_field's Gen-1
+ * path (gen1_write_range_ex) refuses it outright. Dispatches to
+ * gen1_write_outside_sum (chunked over the session's own scratch, GBS_SCRATCH_BYTES —
+ * see gen1_write.h for the chunk-rollback contract and its multi-chunk-atomicity
+ * caveat: on a mid-clear failure the CALLER must discard the whole image via its own
+ * pristine copy, same as every other gb_session edit) on Gen 1. On Gen 2 this is
+ * IDENTICAL to gbs_write_field — g2w_write_range is already capped only by s->len, and
+ * Gen 2's sHallOfFame sits inside the checksummed+mirrored span, so there is no
+ * separate restriction to route around; kept as one call so gb_hof.c never branches
+ * on generation itself. */
+GbsStatus gbs_write_outside_sum(GbSession* s, uint32_t off, const void* buf, uint32_t n);
+
 /* Close out a batch of gbs_write_field() calls.
  *   Gen 2 — g2w_finish(): recompute and store BOTH checksums, then re-read and re-parse
  *           the whole file, refusing (image restored to whatever g2w_write_range already

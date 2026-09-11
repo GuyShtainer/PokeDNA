@@ -29,7 +29,17 @@
  *      source/gb_clock.c \
  *      source/gb_fly.c \
  *      source/gb_boxnames.c \
+ *      source/gb_flags.c \
+ *      source/gb_flags_rw.c \
+ *      source/gb_hof.c \
+ *      source/gb_dex.c \
  *      -o /tmp/hgbsurg
+ *
+ * (gb_fields.c is also required -- gb_trainer.c already needs it -- but was already
+ * missing from this comment before this change; tools/gb_retail_gate.py's own
+ * SURGERY_SRCS list, the actual source of truth this comment claims to mirror, has
+ * always carried it. Left as pre-existing drift, not introduced here; only gb_dex.c
+ * is this commit's own addition to both places.)
  *
  * Usage
  * -----
@@ -139,6 +149,10 @@
 #include "gb_clock.h"
 #include "gb_fly.h"
 #include "gb_boxnames.h"
+#include "gb_flags.h"      /* BACKLOG #88: --op flagset/counter */
+#include "gb_flags_rw.h"
+#include "gb_hof.h"
+#include "gb_dex.h"
 
 #define MAX_FILE_BYTES 65536u
 #define MAX_OPS        64
@@ -219,6 +233,17 @@ static void usage(const char* prog) {
     "                               colon-separated) through the SAME Crystal-only gate\n"
     "                               the live editor uses (gb_session_is_crystal). Gen 1\n"
     "                               and Gold/Silver both refused.\n"
+    "  --op dexset DEX STATE        BACKLOG #87 item 6 retail-gate case: sets National\n"
+    "                               dex no. DEX's owned/seen state (0=none/1=seen/\n"
+    "                               2=caught) via gb_dex.h's gbdex_set, same two-call\n"
+    "                               shim shape pdna_gbdex.c uses. DEX is 1..gb_max_\n"
+    "                               species(gen) (151 Gen 1, 251 Gen 2).\n"
+    "  --op unownreset               BACKLOG #87 D4 retail-gate setup: clears wStatusFlags\n"
+    "                               bit 1 (STATUSFLAGS_UNOWN_DEX_F), zeroes\n"
+    "                               wFirstUnownSeen, and empties wUnownDex -- forcing the\n"
+    "                               \"never met an Unown\" starting state a dexset 201 2\n"
+    "                               case needs to prove the seed path. Gen 2 only,\n"
+    "                               refused on Gen 1.\n"
     "  --op warp MAP X Y            m1 (BACKLOG #91) shot-retake gate: pokes the\n"
     "                               player's own current map/position (gb_fields.c's\n"
     "                               GBF_MAP_ID/GBF_POS_X/GBF_POS_Y + the two block-half\n"
@@ -228,7 +253,19 @@ static void usage(const char* prog) {
     "                               only -- bit 0 is STATUSFLAGS_POKEDEX_F.\n"
     "  --op gender 0|1              BACKLOG #96 Kris: GBF_GENDER, Crystal only (0 M,\n"
     "                               1 F).\n"
-    "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
+    "  --op flagset INDEX 0|1       BACKLOG #88 gate case: gbfl_set over an ABSOLUTE\n"
+    "                               event-flag bit index (0..2559 Gen 1 / 0..2047 Gen\n"
+    "                               2) -- the same primitive pdna_gbflags.c's named\n"
+    "                               toggles and raw browser both call.\n"
+    "  --op counter FIELD VALUE     BACKLOG #88 gate case: FIELD is \"safari\" (Gen 1\n"
+    "                               only, GBF_SAFARI_STEPS, 0..255) or \"lucky\" (Gen 2\n"
+    "                               only, GBF_LUCKY_NUMBER_SHOW_FLAG, 0 or 1).\n"
+    "  --op hofclear                BACKLOG #89: gbh_clear() -- erase every recorded\n"
+    "                               Hall of Fame team + the lifetime win counter.\n"
+    "  --op hofcount N               BACKLOG #89: gbh_set_count(N) -- the lifetime\n"
+    "                               win counter (Gen 1 clamped to the teams present,\n"
+    "                               <= 50; Gen 2 <= 200).\n"
+"BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
 /* Parse argv into (in, out, list_mode, ops[]). Returns 2 on any usage problem (already
@@ -251,6 +288,12 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"warp", 3},       /* m1 (BACKLOG #91) shot-retake gate: MAP X Y, Gen 1 only */
     {"statusflags", 1},/* BACKLOG #96 D10: GBF_STATUS_FLAGS byte, Gen 2 only */
     {"gender", 1},     /* BACKLOG #96 Kris: GBF_GENDER 0|1, Crystal only */
+    {"flagset", 2},    /* BACKLOG #88: INDEX 0|1, via gbfl_set (gb_flags_rw.h) */
+    {"counter", 2},    /* BACKLOG #88: FIELD(safari|lucky) VALUE */
+    {"hofclear", 0},   /* BACKLOG #89: gbh_clear() -- erase every Hall of Fame team + count */
+    {"hofcount", 1},   /* BACKLOG #89: gbh_set_count() N -- the lifetime win counter */
+    {"dexset", 2},     /* BACKLOG #87 item 6 retail-gate case: DEX STATE (0/1/2) */
+    {"unownreset", 0}, /* BACKLOG #87 D4 retail-gate setup: force the Unown-dex gate clear */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -527,6 +570,38 @@ static int do_gender(GbSession* s, const char* vtok) {
   return 0;
 }
 
+/* BACKLOG #89 retail gate: gbh_clear() through source/gb_hof.h -- the case that
+ * proves gen1_write_outside_sum's allowlist reaches a REAL booted Red/Gold/Crystal,
+ * not just the host test's in-memory image. On a booted Red/Gold, the gate reads
+ * wNumHoFTeams/wHallOfFameCount back out of WRAM (the game's own load already copied
+ * the SRAM byte there) and the SRAM record itself, proving both "the count reads 0"
+ * and "the PC's HALL OF FAME option is gone" (bills_pc.asm/main_menu.asm gate purely
+ * on the count, per gb_hof.h's own header) without needing a screenshot of the PC
+ * menu specifically. */
+static int do_hofclear(GbSession* s) {
+  GbsStatus st = gbh_clear(s);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* BACKLOG #89 retail gate: gbh_set_count() -- the SET COUNT screen action, gated the
+ * same clamp gbh_set_count() itself enforces (Gen 1 clamped to the teams present,
+ * <= 50; Gen 2 <= 200); this tool does not re-clamp the token itself so an
+ * over-range value still exercises the core's own clamp end to end, rather than
+ * being rejected here before it ever reaches gbh_set_count(). */
+static int do_hofcount(GbSession* s, const char* n_tok) {
+  int n = resolve_uint(n_tok, "hof count");
+  if (n < 0) return 2;
+  GbsStatus st = gbh_set_count(s, n);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  /* BACKLOG #89 D1: the requested N and what actually lands can now differ on
+   * Gen 1 (clamped to the teams present, not a flat 255) -- print the real
+   * post-clamp count so tools/gb_retail_gate.py's own hofcount case can check
+   * against what this call ACTUALLY wrote, not the token it was handed. */
+  printf("hofcount result: %d\n", gbh_count(s));
+  return 0;
+}
+
 static int do_money(GbSession* s, const char* vtok) {
   int v = resolve_uint(vtok, "money");
   if (v < 0) return 2;
@@ -546,6 +621,67 @@ static int do_money(GbSession* s, const char* vtok) {
   if (ws != GBS_OK) return refuse(gbs_status_text(ws));
   GbsStatus fs = gbs_finish(s);
   if (fs != GBS_OK) return refuse(gbs_status_text(fs));
+  return 0;
+}
+
+/* BACKLOG #87 item 6 retail-gate case: sets National dex no. `dex`'s owned/seen state
+ * via gb_dex.h's gbdex_set -- same two-call shim shape pdna_gbdex.c's gbdex_shim_set
+ * uses (state 0/1/2 = none/seen/caught), then ONE gbs_finish (gb_dex.h's own batching
+ * contract: gbdex_set does not finish internally). */
+static int do_dexset(GbSession* s, const char* dex_tok, const char* state_tok) {
+  int dex = resolve_uint(dex_tok, "dexset dex");
+  int state = resolve_uint(state_tok, "dexset state");
+  if (dex < 0 || state < 0) return 2;
+  int max = (int)gb_max_species(s->gen);
+  if (dex < 1 || dex > max) {
+    fprintf(stderr, "dexset DEX must be 1..%d for this save's generation\n", max);
+    return 2;
+  }
+  if (state < 0 || state > 2) { fprintf(stderr, "dexset STATE must be 0, 1, or 2\n"); return 2; }
+
+  GbsStatus st = gbdex_set(s, (uint16_t)dex, true, state >= 2);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  st = gbdex_set(s, (uint16_t)dex, false, state >= 1);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  st = gbs_finish(s);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* D4 (BACKLOG #87 fix pass, DO-NOT-SHIP review) retail-gate setup case: force the
+ * "never met an Unown" starting state directly -- wStatusFlags bit 1
+ * (STATUSFLAGS_UNOWN_DEX_F) clear, wFirstUnownSeen 0, AND wUnownDex fully emptied.
+ * The real game's UpdateUnownDex always sets all three atomically together, so
+ * "wUnownDex already has a letter but wFirstUnownSeen reads 0" is a combination the
+ * retail ROM never actually produces -- clearing the list too keeps this a state a
+ * real cartridge could genuinely be in (a save that has simply never gone to the
+ * Ruins of Alph), not a synthetic impossible one, before `dexset 201 2` proves the
+ * seed path on real hardware/an emulated CPU. Gen 2 only; refuses on Gen 1 (none of
+ * the three fields exist there). */
+static int do_unownreset(GbSession* s) {
+  GbGame g = (s->gen == GB_GEN1) ? GBF_G_RED
+           : (s->g2w.sv.version == G2_VER_CRYSTAL) ? GBF_G_CRYSTAL : GBF_G_GS;
+  uint32_t status_off = gbf_off(g, GBF_STATUS_FLAGS);
+  uint32_t fus_off = gbf_off(g, GBF_FIRST_UNOWN_SEEN);
+  uint32_t dex_off = gbf_off(g, GBF_UNOWN_DEX);
+  uint16_t dex_len = gbf_len(g, GBF_UNOWN_DEX);
+  if (!status_off || !fus_off || !dex_off) { fprintf(stderr, "unownreset: not available on this save's generation\n"); return 2; }
+  uint8_t cur;
+  if (gbs_read_field(s, status_off, &cur, 1) != GBS_OK) return refuse("unownreset: read wStatusFlags");
+  uint8_t next = (uint8_t)(cur & (uint8_t)~(1u << 1));
+  if (next != cur) {
+    GbsStatus st = gbs_write_field(s, status_off, &next, 1);
+    if (st != GBS_OK) return refuse(gbs_status_text(st));
+  }
+  uint8_t zero = 0;
+  GbsStatus st = gbs_write_field(s, fus_off, &zero, 1);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  uint8_t zeros[32] = {0};
+  if (dex_len > sizeof zeros) { fprintf(stderr, "unownreset: GBF_UNOWN_DEX unexpectedly wide\n"); return 2; }
+  st = gbs_write_field(s, dex_off, zeros, dex_len);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  st = gbs_finish(s);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
   return 0;
 }
 
@@ -865,6 +1001,58 @@ static int do_fly(GbSession* s, const char* idx_tok) {
   return 0;
 }
 
+/* BACKLOG #88 retail-gate case: gbfl_set (source/gb_flags_rw.h) over an ABSOLUTE
+ * event-flag bit index -- the same primitive pdna_gbflags.c's own named-shortlist
+ * toggle and raw browser both call. `idx_tok` is the bit number (not a shortlist
+ * ROW -- there is no row-order dependency here, matching pk_flag equivalent gate
+ * shapes elsewhere in this file), `val_tok` is "0" or "1". */
+static int do_flagset(GbSession* s, const char* idx_tok, const char* val_tok) {
+  int idx = resolve_uint(idx_tok, "flag index");
+  if (idx < 0) return 2;
+  int val = resolve_uint(val_tok, "flag value");
+  if (val != 0 && val != 1) { fprintf(stderr, "bad flag value %s (want 0 or 1)\n", val_tok); return 2; }
+  GbGame g = gbt_game(s);
+  GbsStatus st = gbfl_set(s, g, (uint16_t)idx, val != 0);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  /* gbfl_set only calls gbs_write_field (gb_flags_rw.h's own contract: pdna_gbflags.c
+   * batches many toggles behind ONE gbs_finish() on B) -- this CLI issues exactly one
+   * op per invocation, so it must close the batch itself, same as do_money/do_counter
+   * above. Missing this left Gen 2's stored checksums stale: the edited .sav failed to
+   * even gbs_open() back, and the real cartridge's own CONTINUE screen reported "The
+   * save file is / corrupted!" (caught live against Gold.sav, BACKLOG #88 gate case). */
+  GbsStatus fs = gbs_finish(s);
+  if (fs != GBS_OK) return refuse(gbs_status_text(fs));
+  return 0;
+}
+
+/* BACKLOG #88 retail-gate case: the two counters pdna_gbflags.c's COUNTERS tab adds
+ * that no EXISTING --op already covers (money/coins/badges/name all have their own
+ * ops above) -- both are plain U8 fields through gb_fields.h's gbf_off/len, written
+ * via gbs_write_field + gbs_finish, the exact primitive BACKLOG #49 P0 established.
+ * FIELD is "safari" (GBF_SAFARI_STEPS, Gen 1 only, 0..255) or "lucky"
+ * (GBF_LUCKY_NUMBER_SHOW_FLAG, Gen 2 only, 0 or 1 -- the "already shown today" flag,
+ * never the derived lucky NUMBER itself, per docs/GB-FLAGS-RESEARCH.md). */
+static int do_counter(GbSession* s, const char* field_tok, const char* value_tok) {
+  GbGame g = gbt_game(s);
+  GbField f;
+  int maxv;
+  if (!strcmp(field_tok, "safari")) { f = GBF_SAFARI_STEPS; maxv = 255; }
+  else if (!strcmp(field_tok, "lucky")) { f = GBF_LUCKY_NUMBER_SHOW_FLAG; maxv = 1; }
+  else { fprintf(stderr, "unknown counter field %s (want safari|lucky)\n", field_tok); return 2; }
+
+  uint32_t off = gbf_off(g, f);
+  if (!off) { fprintf(stderr, "counter %s does not exist on this game\n", field_tok); return 2; }
+  int v = resolve_uint(value_tok, "counter value");
+  if (v < 0 || v > maxv) { fprintf(stderr, "bad counter value %s (want 0..%d)\n", value_tok, maxv); return 2; }
+
+  uint8_t b = (uint8_t)v;
+  GbsStatus ws = gbs_write_field(s, off, &b, 1);
+  if (ws != GBS_OK) return refuse(gbs_status_text(ws));
+  GbsStatus fs = gbs_finish(s);
+  if (fs != GBS_OK) return refuse(gbs_status_text(fs));
+  return 0;
+}
+
 /* BACKLOG #94 -- via gb_boxnames.h. Gen 1 refused (gbbn_rename's own GBS_ERR_ARG, no
  * box names at all). */
 static int do_boxname(GbSession* s, const char* box_tok, const char* text) {
@@ -1018,6 +1206,12 @@ static int apply_op(GbSession* s, const Op* o) {
     if (box < 0 || slot < 0) return 2;
     return do_caught(s, box, slot, o->a[2]);
   }
+  if (!strcmp(o->kind, "flagset")) {
+    return do_flagset(s, o->a[0], o->a[1]);
+  }
+  if (!strcmp(o->kind, "counter")) {
+    return do_counter(s, o->a[0], o->a[1]);
+  }
   if (!strcmp(o->kind, "warp")) {
     return do_warp(s, o->a[0], o->a[1], o->a[2]);
   }
@@ -1026,6 +1220,18 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "gender")) {
     return do_gender(s, o->a[0]);
+  }
+  if (!strcmp(o->kind, "hofclear")) {
+    return do_hofclear(s);
+  }
+  if (!strcmp(o->kind, "hofcount")) {
+    return do_hofcount(s, o->a[0]);
+  }
+  if (!strcmp(o->kind, "dexset")) {
+    return do_dexset(s, o->a[0], o->a[1]);
+  }
+  if (!strcmp(o->kind, "unownreset")) {
+    return do_unownreset(s);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;

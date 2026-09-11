@@ -11,6 +11,8 @@
  * convention every other GB-screen-adjacent host test already uses).
  */
 
+#include "gb_item_names.h"  /* gb_item_label -- real Gen-2 item names (BACKLOG #111 superseded); pure C, no tonc */
+
 /* D4 fix (review-opus ac9ffc0): tmhm.asm's own TMHM_DisplayPocketItems skips any
  * TM/HM whose stored count is 0 -- the real TM/HM pocket lists ONLY OWNED
  * entries, not a fixed 57-row list (a save with TM01 zeroed opens the pocket
@@ -49,13 +51,17 @@ static bool g2pack_is_hm(int tmhm_index) { return tmhm_index >= 50; }
  * entry index for every other pocket -- callers must have just called
  * g2pack_row_total() for the same pocket so g2_tm_owned/g2_tm_n are fresh. */
 static void g2pack_row_label(const GbBag* bag, char* buf, int bufsz, GbBagPocket pocket, int idx) {
-  (void)bufsz;
   if (pocket == GBB_POCKET_TMHM) {
     int real = (idx >= 0 && idx < g2_tm_n) ? g2_tm_owned[idx] : 0;
     int num = g2pack_is_hm(real) ? real - 50 + 1 : real + 1;
     siprintf(buf, "%s%02u", g2pack_is_hm(real) ? "HM" : "TM", (unsigned)num);
   } else {
-    siprintf(buf, "ITEM-%u", (unsigned)bag->pockets[pocket].entries[idx].id);
+    /* gbnames: real name from the embedded Gen-2 identifier table
+     * (gb_item_names.c, GREEN per licensing); "ITEM-n" only for a
+     * documented hole (an id with no real name in this generation). */
+    uint8_t id = bag->pockets[pocket].entries[idx].id;
+    if (!gb_item_label(GBIN_GEN2, id, buf, bufsz))
+      siprintf(buf, "ITEM-%u", (unsigned)id);
   }
 }
 
@@ -227,7 +233,22 @@ static void g2pack_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket
       buf[0] = 0;
     }
     gbscr_text(gs, NAME_COL, ny, buf);
-    for (int cx = NAME_COL + (int)strlen(buf); cx < QTY_COL; cx++)
+    /* gbnames (review-sonnet ruling): the qty sits on the ROW BELOW the name
+     * (qty_row() == name_row()+1), so the name field's true right edge is
+     * the screen's own last column (GBSCR_COLS-1 == 19, no border cell
+     * reserved there for the item list -- only the description box below
+     * it, rows 12-17, has one), not QTY_COL. A real name up to
+     * GB2_SHELL_NAME_CAP (12) chars can run past the old QTY_COL=17 bound;
+     * the sweep must still cover every column a longer name could have
+     * reached so a shorter one never leaks a stale glyph next to it.
+     * gbnames review A3 (CONFIRMED, live on docs/shots/gb/
+     * gbnames_crystal_02_balls_real_names.png -- "POKé BALLE"): strlen(buf)
+     * counts UTF-8 BYTES, but gbscr_text() painted `buf` one COLUMN per
+     * GLYPH -- "POKé BALL" is 9 glyphs (the e-acute's UTF-8 pair is ONE
+     * glyph) but 10 bytes, so the sweep used to start one column short of
+     * where the name actually ends. gbscr_text_cols() (source/pdna_gbscreen.c)
+     * walks the SAME gb_char_encode() loop gbscr_text() does. */
+    for (int cx = NAME_COL + gbscr_text_cols(gs->gen, buf); cx < GBSCR_COLS; cx++)
       gbscr_cell(gs, cx, ny, GBSCR_SRC_BLANK, 0);
 
     /* D5: HM rows have no count column at all (tmhm.asm never prints one). */

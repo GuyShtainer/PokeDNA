@@ -133,6 +133,33 @@ void gbscr_text(GbScreen* gs, int x, int y, const char* ascii) {
   }
 }
 
+/* gbnames review A3: gbscr_text() advances one COLUMN per GLYPH (gb_char_encode()'s
+ * unit), not one per byte -- "POKé BALL" is 9 glyphs (the UTF-8 0xC3 0xA9 "e" pair
+ * decodes to ONE glyph, gb_edit.c's own 0xA9u case) but strlen() of that same C
+ * string is 10 bytes. A caller that used strlen(buf) to compute where a repaint's
+ * blank-sweep should START (pdna_gbbag.c/pdna_gbpack_body.inc's own NAME-row
+ * sweeps) therefore starts one column too far right for any name containing an
+ * accented glyph or an apostrophe-contraction ("'d"/"'s"/"'t"/... are also ONE
+ * glyph, two ASCII bytes) -- the previous, longer name's last glyph survives at
+ * that column. Caught live: docs/shots/gb/gbnames_crystal_02_balls_real_names.png
+ * showed "POKé BALLE" -- the stray 'E' is ULTRA BALL's own trailing glyph, never
+ * overwritten because the old strlen-based sweep for "POKé BALL" (10) stopped one
+ * column short of where the 9-glyph name actually ends on screen. This walks the
+ * SAME gb_char_encode() loop gbscr_text() itself runs, counting glyphs instead of
+ * painting them, so the two can never disagree again. */
+int gbscr_text_cols(uint8_t gen, const char* ascii) {
+  if (!ascii) return 0;
+  int cx = 0;
+  while (*ascii && cx < GBSCR_COLS) {
+    uint8_t b;
+    int used = gb_char_encode(gen, ascii, &b);
+    if (used <= 0) break;
+    ascii += used;
+    cx++;
+  }
+  return cx;
+}
+
 /* D2 (review): 0x50 is the GB text terminator (PlaceString stops there) --
  * this shell used to blit every byte in `bytes` regardless, so a shorter new
  * name left old tail bytes from a longer previous name on screen ("ASH" +

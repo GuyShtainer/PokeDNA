@@ -462,15 +462,15 @@ void pdna_gen12_box_name(const Gb12Mount* m, int box, char out[12]) {
   int pos = 0;
   out[0] = 0;
   if (!m || box < 0 || box > m->party_box) { put_str(out, 12, &pos, "GB BOX"); return; }
-  put_str(out, 12, &pos, "GB ");
-  if (box == m->party_box) { put_str(out, 12, &pos, "PARTY"); return; }
+  if (box == m->party_box) { put_str(out, 12, &pos, "GB PARTY"); return; }
   if (m->kind != GB12_SAVE_RBY) {
-    /* Gen 2 stores real box names; showing the player's own is worth more than a
-     * number. The "GB " prefix stays so the banner never reads like a Gen-3 box. */
+    /* Gen 2 stores real box names; echo the player's own name verbatim (no "GB " prefix)
+     * for Gen-3 parity (BACKLOG #61). Gen 1's synthesized names keep the prefix since
+     * there is no stored name to echo. */
     char nm[G2_NAME_BYTES];
     if (g2_box_name(m->g2names, box, nm, (int)sizeof nm) && nm[0]) {
       char cut[12];
-      copy_utf8(cut, 12 - pos, nm);
+      copy_utf8(cut, 12, nm);
       put_str(out, 12, &pos, cut);
       return;
     }
@@ -480,7 +480,7 @@ void pdna_gen12_box_name(const Gb12Mount* m, int box, char out[12]) {
    * when the save's own box name is empty. Before this fix Gen 1 read "GB BOX 1"
    * (a space) while a REAL Gen-2 box name of "BOX1" (Crystal's own default, above)
    * read "GB BOX1" — two spellings for what is meant to look like the same thing. */
-  put_str(out, 12, &pos, "BOX");
+  put_str(out, 12, &pos, "GB BOX");
   put_uint(out, 12, &pos, (unsigned)(box + 1));
 }
 
@@ -655,9 +655,12 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbpack.h"      /* U5, BACKLOG #67: Gold/Silver/Crystal's own Pack */
 #include "pdna_gbfly.h"       /* BACKLOG #90: Fly destinations, both generations */
 #include "pdna_gbclock.h"     /* BACKLOG #86/#108: Gen-2's own Clock fix screen */
+#include "pdna_gbflags.h"     /* BACKLOG #88: the Flags & counters screen */
 #include "gb_boxnames.h"      /* BACKLOG #94: gbbn_rename/gbbn_supported -- the box banner's rename */
 #include "pdna_gbdaycare.h"   /* BACKLOG #85: the Gen-1/2 Day-Care screen */
+#include "pdna_gbdex.h"       /* BACKLOG #87: the Gen-1/2 Pokedex screen */
 #include "pdna_gbmap.h"       /* M1, BACKLOG #91: Gen 1's read-only current-map view */
+#include "pdna_gbhof.h"       /* BACKLOG #89: the Hall of Fame, both generations */
 #include "pdna_pick.h"        /* BACKLOG #92: pick_item / pick_item_set_gen1_2_max */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
@@ -2781,6 +2784,19 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * one-hour budget; flagged for a follow-up slice, not silently worked around. */
     if (g_ed) pdna_gbtrainer(&g_ed->s, true);
     else      (void)gb_info_page(m);   /* A and B both just return to the grid */
+  } else if (nv == NV_DEX) {
+    /* BACKLOG #87: the shared Pokedex screen (pdna_pick.c's pdna_dex_screen, reused
+     * UNCHANGED under item 1's species cap), over source/gb_dex.h's owned/seen core
+     * -- same "needs a live GbSession to write through" gate as NV_TRAINER/NV_BAG/
+     * NV_CLOCK/NV_DAYCARE above. Offered on BOTH kinds (nav_avail's own GB_TABLE
+     * says NAV_OK for both) -- pdna_gbdex() itself branches internally on s->gen to
+     * add the Gen-2-only Unown-forms chooser, so this call site does not need to.
+     *
+     * app_can_edit() here, not a bare `true`: this is a NEW call site (same
+     * reasoning NV_DAYCARE's own comment gives for why it does not just copy the
+     * NV_TRAINER/NV_BAG/NV_CLOCK sibling literal). */
+    if (g_ed) pdna_gbdex(&g_ed->s, app_can_edit());
+    else      (void)gb_info_page(m);
   } else if (nv == NV_BAG && kind == SE_KIND_GEN1) {
     /* U4 (BACKLOG #67): Red/Yellow's own Item bag + PC store, same "needs a
      * live GbSession to write through" gate as NV_TRAINER above. D7 (U4
@@ -2858,6 +2874,14 @@ static void gb_nav_from_start(Gb12Mount* m) {
     } else {
       (void)gb_info_page(m);
     }
+  } else if (nv == NV_DATA) {
+    /* BACKLOG #88: the Flags & counters screen, same "needs a live GbSession to
+     * write through" gate every other real-art Gen-1/2 screen on this menu uses
+     * (Trainer/Bag/Pack/Clock/Daycare above) -- pdna_gbflags() itself trusts its
+     * caller (no internal app_can_edit() call, mirroring every sibling above),
+     * so pass the real cart state, not a bare `true`. */
+    if (g_ed) pdna_gbflags(&g_ed->s, app_can_edit());
+    else      (void)gb_info_page(m);
   } else if (nv == NV_MAP && kind == SE_KIND_GEN1) {
     /* M1 (BACKLOG #91): read-only current-map view, same "needs a live
      * GbSession to read the ROM's own tile bank through" gate every other
@@ -2866,6 +2890,16 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * through gb12_arena_tail(). The plain FIL-streaming mount (no g_ed)
      * falls back to the read-only info page, same as Trainer/Bag/Pack. */
     if (g_ed) pdna_gbmap_gen1(&g_ed->s);
+    else      (void)gb_info_page(m);
+  } else if (nv == NV_BATTLEREC) {
+    /* BACKLOG #89: the "Records" row hosts the Hall of Fame on a Game Boy save --
+     * nav_avail's own GB_TABLE keeps this row NAV_OK on BOTH kinds (unlike every
+     * other Hoenn/Frontier-shaped row), so this branch is reachable from either a
+     * Gen-1 or a Gen-2 nav menu, not gated on `kind` the way NV_BAG/NV_CLOCK/NV_MAP
+     * above are gated to their one supported generation. Same "needs a live
+     * GbSession to write through" fallback as every sibling branch: the plain
+     * FIL-streaming mount (no g_ed) falls back to the read-only info page. */
+    if (g_ed) pdna_gbhof(&g_ed->s, app_can_edit());
     else      (void)gb_info_page(m);
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */

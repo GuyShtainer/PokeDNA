@@ -2163,8 +2163,9 @@ static void box_options_menu(BoxSource* src, int box) {
       snd_ok();
       if (sel == 0) {                              /* rename */
         /* F1b: seed with the RAW stored name, not get_name()'s display string --
-         * the Game Boy source's get_name() prefixes "GB " for on-screen display,
-         * which must never be typed back into the save. */
+         * get_name() prefixes "GB " only for Gen-1's synthesized names; Gen-2 names
+         * are echoed as-is (BACKLOG #122). The raw name must never be typed back
+         * with a prefix into the save. */
         char cur[12];
         if (src->get_raw_name) src->get_raw_name(box, cur); else src->get_name(box, cur);
         char buf[12];
@@ -3370,8 +3371,9 @@ int pdna_box(BoxSource* src) {
         if (src->can_rename ? src->can_rename() : src_can_lift(src, box, -1)) {
           boxoam_suspend();                                              /* full-screen sub-view — own bracket, see box_oam.h */
           /* F1b: seed with the RAW stored name, not get_name()'s display string --
-           * the Game Boy source's get_name() prefixes "GB " for on-screen display,
-           * which must never be typed back into the save. */
+           * get_name() prefixes "GB " only for Gen-1's synthesized names; Gen-2 names
+           * are echoed as-is (BACKLOG #122). The raw name must never be typed back
+           * with a prefix into the save. */
           char bxname[12];
           if (src->get_raw_name) src->get_raw_name(box, bxname); else src->get_name(box, bxname);
           char bxnew[12];

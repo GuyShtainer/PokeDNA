@@ -67,23 +67,34 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
                      { NAV_OK, "OK" } },
   [NV_MIRAGE]    = { { NAV_NOT_IN_GAME, "Gen 1 games have no Mirage." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Mirage." } },
-  [NV_DEX]       = { { NAV_COMING_SOON, "The Pokedex is coming soon." },
-                     { NAV_COMING_SOON, "The Pokedex is coming soon." } },
+  /* BACKLOG #87: gb_dex.c (the pure core) + pdna_gbdex.c (the screen) are wired on
+   * gb_nav_from_start's own NV_DEX branch -- both generations get the shared
+   * pdna_dex_screen() UNCHANGED under a species cap (151 Gen 1, 251 Gen 2), Gen 2
+   * additionally offers the Unown-forms toggle list from its own entry chooser. */
+  [NV_DEX]       = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   /* U4 (BACKLOG #67): Red/Yellow's own Item bag + PC store are wired
    * (pdna_gbbag.c) -- Gen 1. U5: Gold/Silver/Crystal's own Pack + PC store
    * are wired too (pdna_gbpack.c, design sec 1.4) -- Gen 2. */
   [NV_BAG]       = { { NAV_OK, "OK" },
                      { NAV_OK, "OK" } },
-  [NV_DATA]      = { { NAV_COMING_SOON, "Flags/counters coming soon." },
-                     { NAV_COMING_SOON, "Flags/counters coming soon." } },
+  /* BACKLOG #88: the Flags & counters screen (pdna_gbflags.c) is wired on BOTH
+   * kinds -- gb_nav_from_start's own NV_DATA branch, same "needs a live GbSession
+   * to write through" gate every other real screen on this menu uses. */
+  [NV_DATA]      = { { NAV_OK, "OK" },
+                     { NAV_OK, "OK" } },
   [NV_SECRET]    = { { NAV_NOT_IN_GAME, "Gen 1 games have no Bases." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Bases." } },
   [NV_POKEBLOCK] = { { NAV_NOT_IN_GAME, "Gen 1 games have no Blocks." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Blocks." } },
   [NV_EVENTS]    = { { NAV_NOT_IN_GAME, "Gen 1 games have no tickets." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no tickets." } },
-  [NV_BATTLEREC] = { { NAV_NOT_IN_GAME, "Gen 1 games have no Records." },
-                     { NAV_NOT_IN_GAME, "Gen 2 games have no Records." } },
+  /* BACKLOG #89: the "Records" row hosts a NEW screen on a Game Boy save -- the Hall
+   * of Fame (source/pdna_gbhof.c, source/gb_hof.h) -- not the Gen-3 Frontier battle
+   * record this row opens on RS/EM/FRLG (pdna_battle_record(), which never runs on a
+   * Game Boy save at all: gb_nav_from_start dispatches its OWN NV_BATTLEREC branch).
+   * Both generations record a Hall of Fame, so this is NAV_OK on both kinds now,
+   * unlike every other Hoenn/Frontier-shaped row in this table. */
+  [NV_BATTLEREC] = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   [NV_FRONTIER]  = { { NAV_NOT_IN_GAME, "Gen 1 games have no Frontier." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Frontier." } },
   /* BACKLOG #90: gb_fly.h's bitfield core + pdna_gbfly.c's screen are wired for

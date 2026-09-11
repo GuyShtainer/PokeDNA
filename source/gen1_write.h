@@ -493,4 +493,63 @@ Gen1WStatus gen1_write_range_ex(uint8_t* img, uint32_t len, Gen1Save* s,
 Gen1WStatus gen1_write_range(uint8_t* img, uint32_t len, Gen1Save* s,
                              uint32_t off, const uint8_t* buf, uint32_t n);
 
+/* ---- gen1_write_outside_sum: the Hall-of-Fame allowlist (BACKLOG #89) -----------
+ *
+ * gen1_write_range_ex above refuses ANYTHING outside [GEN1_SUM_FIRST, GEN1_SUM_LAST]
+ * -- by design, since that window is the only span its main-checksum refresh covers.
+ * sHallOfFame (GEN1_OFF_HOF, GEN1_HOF_BYTES = 4800 B) sits entirely BELOW that window,
+ * so it needs its own primitive rather than a widened bound on the checksummed one --
+ * widening gen1_write_range_ex's bound would let an unrelated caller reach bytes the
+ * checksum has never covered and never will, for reasons that have nothing to do with
+ * the Hall of Fame. This is a NAMED ALLOWLIST of exactly the one blob, not a general
+ * "anything outside the sum window" door.
+ *
+ * `n` may be LARGER than `snap_len` (unlike gen1_write_range_ex, which refuses that
+ * outright): this function chunks the write into pieces of at most `snap_len` bytes,
+ * reusing the caller's rollback buffer chunk-by-chunk -- the same GBS_SCRATCH_BYTES
+ * (1152 B) buffer gb_session.c already hands gen1_write_range_ex through
+ * gbs_write_field, since a session never runs a field write and a Hall-of-Fame clear
+ * in the same call. Each chunk gets the SAME verified-write shape as
+ * gen1_write_range_ex: snapshot the chunk into `snap`, write it, re-open the image
+ * (gen1_open) to confirm it still parses, and on failure restore JUST THAT CHUNK from
+ * `snap` before returning GEN1W_ERR_VERIFY.
+ *
+ * WHAT THIS FUNCTION DOES NOT DO: restore chunks written by EARLIER, already-succeeded
+ * calls to this loop. If chunk 3 of 5 fails, chunks 1-2 stay written in `img` -- this
+ * function returns the error and stops there. Multi-chunk atomicity is NOT reinvented
+ * here; it is the caller's existing responsibility, exactly like every other
+ * multi-step gb_session edit (gb_session.h:152's own convention: "the caller keeps
+ * its own pristine copy of the image and rolls back to it itself on any non-GBS_OK
+ * status"). gb_hof.c's gbh_clear() calls this in a loop and returns failure on the
+ * first bad chunk; the screen (pdna_gbhof.c), like every other GB edit screen, calls
+ * gb_rollback() on any non-GBS_OK, which restores the WHOLE image from the pristine
+ * copy it already keeps -- discarding every chunk this call wrote, good or bad. That
+ * is where "restore every chunk written so far" actually happens.
+ *
+ * Refuses (GEN1W_ERR_RANGE) unless [off, off+n) lies FULLY inside
+ * [GEN1_OFF_HOF, GEN1_OFF_HOF + GEN1_HOF_BYTES) -- the allowlist. Also refuses
+ * GEN1W_ERR_SIZE/GEN1W_ERR_SAVE/GEN1W_ERR_ARG exactly like gen1_write_range_ex. Does
+ * NOT touch the main checksum (GEN1_SUM_FIRST..LAST never overlaps the HoF blob, so
+ * gen1_write_fix_main_checksum would recompute the same byte) -- callers that also
+ * change GEN1_OFF_HOF_COUNT (inside the checksummed span) do that through the normal
+ * gen1_write_range/gbs_write_field path, separately. A no-op chunk (bytes already
+ * read back as `buf`) writes nothing, per chunk, same as gen1_write_range_ex. `s` is
+ * refreshed after every chunk that changes the image.
+ *
+ * HONESTY NOTE (D5): gen1_open never reads a single byte of [GEN1_OFF_HOF,
+ * GEN1_OFF_HOF + GEN1_HOF_BYTES) -- the blob sits entirely outside every span
+ * gen1_open's own parse touches (GEN1_SUM_FIRST..LAST, the party blob, both box
+ * blobs). That means the GEN1W_ERR_VERIFY branch above is structurally unreachable
+ * from a write this function makes: there is no legal `buf` content a caller could
+ * pass that would make gen1_open start failing as a RESULT of writing into this
+ * blob. The real guarantees this function actually provides are: the allowlist
+ * bound (GEN1W_ERR_RANGE, proven above), the byte-for-byte re-read compare
+ * sf_write_verified already performs on every SD write this image goes through, and
+ * the pristine in-RAM copy every caller keeps for a whole-image rollback on any
+ * other failure. Do not read GEN1W_ERR_VERIFY firing here as evidence this function
+ * is catching a real HoF-write failure mode -- it isn't one that exists. */
+Gen1WStatus gen1_write_outside_sum(uint8_t* img, uint32_t len, Gen1Save* s,
+                                   uint32_t off, const uint8_t* buf, uint32_t n,
+                                   uint8_t* snap, uint32_t snap_len);
+
 #endif /* GEN1_WRITE_H */

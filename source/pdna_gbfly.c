@@ -26,6 +26,7 @@ static u16  s_wait(u16 mask) {
 }
 
 static void s_msg(const char* title, u16 ink, const char* l1, const char* l2) {
+  ui_clear();
   ui_panel(12, 50, 216, l2 ? 60 : 50, UI_PANEL, UI_BORDER);
   ui_text(20, 58, ink, title);
   ui_hline(16, 70, 208, UI_BORDER);
@@ -202,7 +203,7 @@ void pdna_gb_fly(GbSession* s, bool can_edit) {
       char l[48];
       siprintf(l, "%d newly marked.", ch);
       s_msg("MARKED", UI_OK, l, gen1 ? 0 : "Spawn-only rows untouched.");
-      pv.valid = false;               /* s_msg painted over us without ui_clear() */
+      pv.valid = false;               /* s_msg clears the screen before drawing its panel */
       continue;
     }
 
