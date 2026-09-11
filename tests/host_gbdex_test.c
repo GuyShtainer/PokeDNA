@@ -218,6 +218,70 @@ static void unown_synthetic(void) {
   for (int L = 1; L < 26; L++) CHECK(gbdex_unown_seen(&s, L), "B..Z still all read seen after A's removal");
 }
 
+/* ---- 4 (D2, b87 fix pass, DO-NOT-SHIP review): decline must discard the edit -----
+ *
+ * gbdex_shim_set/gbdex_unown_set (source/pdna_gbdex.c) write straight into the GB
+ * session's own image via gbdex_set/gbdex_unown_set below -- there is no staging
+ * buffer. pdna_gbdex()'s original decline path (`if (!app_confirm(...)) return
+ * false;`) left those bytes sitting in the image uncommitted; the fix adds
+ * `gb_rollback()` on decline. gb_rollback() itself (pdna_gen12.c) is GBA-only
+ * (guarded behind PDNA_GEN12_HOST, needs the arena-resident Gb12Edit/tonc.h), so
+ * this mirrors gb_rollback's own two-line body EXACTLY (pdna_gen12.c:1046-1049:
+ * `memcpy(g_ed->img, g_ed->pristine, g_ed->len); gbs_open(&g_ed->s, g_ed->img,
+ * g_ed->len, g_ed->scratch, sizeof g_ed->scratch);`) against g_img/g_orig here,
+ * using the REAL gbdex_set/gbdex_unown_set (not a mock) to make the edit -- the
+ * same round-trip the fixed decline path performs, byte for byte. */
+static uint8_t g_orig[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+
+static void decline_discards_edits(const char* file, uint8_t expect_gen) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  memcpy(g_orig, g_img, len);   /* the pristine snapshot the mirrored gb_rollback() restores to */
+  g_ran++;
+  GbSession s;
+  CHECK(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "gbs_open");
+  CHECK(s.gen == expect_gen, "right generation detected");
+
+  /* Simulate a visit: TOGGLE species 1..5's caught state (the Pokedex screen half)
+   * -- Guy's corpus saves are fully-completed dexes (every species already owned),
+   * so "mark caught" alone would be a no-op; toggling off is the edit that's
+   * guaranteed to actually change bytes on a completed save, same as the real
+   * Wipe-ALL / per-species un-catch path through gbdex_shim_set. On Gen 2, also
+   * touch the Unown-forms list (the same visit gbdex_chooser lets a player do
+   * BOTH sub-screens in, per pdna_gbdex.c's own header). */
+  int max = gb_max_species(s.gen);
+  for (int nat = 1; nat <= 5 && nat <= max; nat++) {
+    bool was_owned = gbdex_get(&s, (uint16_t)nat, true);
+    CHECK(gbdex_set(&s, (uint16_t)nat, true, !was_owned) == GBS_OK, "edit: toggle a species' caught state");
+  }
+  if (expect_gen == GB_GEN2) {
+    bool z_owned = gbdex_unown_seen(&s, 25);
+    GbsStatus st = gbdex_unown_set(&s, 25, !z_owned);   /* toggle letter Z */
+    CHECK(st == GBS_OK, "edit: touch the Unown list too");
+  }
+
+  CHECK(memcmp(g_img, g_orig, len) != 0, "sanity: the edit actually changed the in-RAM image");
+
+  /* The fixed decline path: gb_rollback()'s own two lines, mirrored. */
+  memcpy(g_img, g_orig, len);
+  CHECK(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "re-open over the restored bytes");
+
+  CHECK(memcmp(g_img, g_orig, len) == 0, "decline: whole-image compare to pristine is 0 bytes");
+
+  /* Re-read species 1..5 through the reopened session and confirm each one's
+   * caught state matches a FRESH session opened directly over the untouched
+   * g_orig bytes (not just "the bytes matched" -- the session's own field reads
+   * agree with the pristine save too, not some stale cached state). */
+  uint8_t ref_img[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  uint8_t ref_scratch[GBS_SCRATCH_BYTES];
+  memcpy(ref_img, g_orig, len);
+  GbSession ref;
+  CHECK(gbs_open(&ref, ref_img, len, ref_scratch, sizeof ref_scratch) == GBS_OK, "open a reference session over pristine g_orig");
+  for (int nat = 1; nat <= 5 && nat <= max; nat++)
+    CHECK(gbdex_get(&s, (uint16_t)nat, true) == gbdex_get(&ref, (uint16_t)nat, true),
+          "post-rollback caught-state matches a fresh read of the untouched save");
+}
+
 int main(void) {
   one_dex_popcount("Red.sav", GB_GEN1);
   one_dex_popcount("Gold.sav", GB_GEN2);
@@ -232,6 +296,10 @@ int main(void) {
   unown_semantics("Crystal.sav", GB_GEN2);
 
   unown_synthetic();
+
+  decline_discards_edits("Red.sav", GB_GEN1);
+  decline_discards_edits("Gold.sav", GB_GEN2);
+  decline_discards_edits("Crystal.sav", GB_GEN2);
 
   printf("\n%s: %d check(s), %d failure(s), %d file(s) exercised\n",
          g_fail ? "FAIL" : "OK", g_check, g_fail, g_ran);

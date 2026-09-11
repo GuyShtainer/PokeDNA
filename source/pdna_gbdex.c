@@ -169,7 +169,14 @@ bool pdna_gbdex(GbSession* s, bool can_edit) {
   s_gbdex_session = NULL;
 
   if (!dirty) return false;
-  if (!app_confirm("Save Pokedex changes?", "Writes the dex now.")) return false;
+  /* D2 (b87 fix pass, DO-NOT-SHIP review): gbdex_shim_set/gbdex_unown_set write
+   * straight into the session's image (g_ed->img via gbdex_set/gbdex_unown_set,
+   * not a staging buffer) -- a decline here must DISCARD those bytes or a later,
+   * unrelated persist (e.g. a different screen's own confirm-and-commit later in
+   * the same session) would silently carry this screen's declined dex edits out
+   * to the .sav too. gb_rollback() restores g_ed->img from g_ed->pristine, same
+   * pattern every other decline path in pdna_gen12.c already uses. */
+  if (!app_confirm("Save Pokedex changes?", "Writes the dex now.")) { gb_rollback(); return false; }
 
   GbsStatus st = gbs_finish(s);
   if (st != GBS_OK) { gb_rollback(); return false; }
