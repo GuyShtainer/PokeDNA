@@ -74,8 +74,11 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
    * are wired too (pdna_gbpack.c, design sec 1.4) -- Gen 2. */
   [NV_BAG]       = { { NAV_OK, "OK" },
                      { NAV_OK, "OK" } },
-  [NV_DATA]      = { { NAV_COMING_SOON, "Flags/counters coming soon." },
-                     { NAV_COMING_SOON, "Flags/counters coming soon." } },
+  /* BACKLOG #88: the Flags & counters screen (pdna_gbflags.c) is wired on BOTH
+   * kinds -- gb_nav_from_start's own NV_DATA branch, same "needs a live GbSession
+   * to write through" gate every other real screen on this menu uses. */
+  [NV_DATA]      = { { NAV_OK, "OK" },
+                     { NAV_OK, "OK" } },
   [NV_SECRET]    = { { NAV_NOT_IN_GAME, "Gen 1 games have no Bases." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Bases." } },
   [NV_POKEBLOCK] = { { NAV_NOT_IN_GAME, "Gen 1 games have no Blocks." },

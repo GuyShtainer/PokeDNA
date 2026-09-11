@@ -139,7 +139,9 @@ static void test_every_row_covered(void) {
    * NV_MAP moved OUT of this list entirely -- it now splits per-gen like
    * NV_CLOCK does (its own assertions below), not COMING_SOON on both. */
   static const int coming_soon_both[] = {
-    NV_PARTY, NV_BANK, NV_DEX, NV_DATA, NV_GB   /* 5: Map left for its own per-gen split (M1) */
+    NV_PARTY, NV_BANK, NV_DEX, NV_GB   /* 4: Map left for its own per-gen split (M1);
+                                         * NV_FLY (BACKLOG #90) and NV_DATA (BACKLOG #88)
+                                         * moved to ok_both below */
   };
   for (int i = 0; i < (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]); i++) {
     CHECK(nav_avail(coming_soon_both[i], SE_KIND_GEN1) == NAV_COMING_SOON,
@@ -151,11 +153,12 @@ static void test_every_row_covered(void) {
   /* BACKLOG #85: NV_DAYCARE moved from coming-soon to OK-both -- gb_daycare.c's core
    * is wired up on both Gen 1 (one slot, level-up only) and Gen 2 (two slots +
    * compatibility + egg). BACKLOG #90: NV_FLY joins the same bucket -- wired for
-   * both generations too. */
-  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE, NV_FLY };
+   * both generations too. BACKLOG #88: NV_DATA (Flags & counters, pdna_gbflags.c)
+   * joins it as well. */
+  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE, NV_FLY, NV_DATA };
   for (int i = 0; i < (int)(sizeof ok_both / sizeof ok_both[0]); i++) {
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare/Fly are NAV_OK");
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare/Fly are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare/Fly/Data are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare/Fly/Data are NAV_OK");
   }
 
   /* NV_MAP: OK on Gen 1, COMING_SOON on Gen 2 -- the same per-gen-split shape as

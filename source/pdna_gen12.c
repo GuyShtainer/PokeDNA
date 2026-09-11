@@ -655,6 +655,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbpack.h"      /* U5, BACKLOG #67: Gold/Silver/Crystal's own Pack */
 #include "pdna_gbfly.h"       /* BACKLOG #90: Fly destinations, both generations */
 #include "pdna_gbclock.h"     /* BACKLOG #86/#108: Gen-2's own Clock fix screen */
+#include "pdna_gbflags.h"     /* BACKLOG #88: the Flags & counters screen */
 #include "gb_boxnames.h"      /* BACKLOG #94: gbbn_rename/gbbn_supported -- the box banner's rename */
 #include "pdna_gbdaycare.h"   /* BACKLOG #85: the Gen-1/2 Day-Care screen */
 #include "pdna_gbmap.h"       /* M1, BACKLOG #91: Gen 1's read-only current-map view */
@@ -2858,6 +2859,14 @@ static void gb_nav_from_start(Gb12Mount* m) {
     } else {
       (void)gb_info_page(m);
     }
+  } else if (nv == NV_DATA) {
+    /* BACKLOG #88: the Flags & counters screen, same "needs a live GbSession to
+     * write through" gate every other real-art Gen-1/2 screen on this menu uses
+     * (Trainer/Bag/Pack/Clock/Daycare above) -- pdna_gbflags() itself trusts its
+     * caller (no internal app_can_edit() call, mirroring every sibling above),
+     * so pass the real cart state, not a bare `true`. */
+    if (g_ed) pdna_gbflags(&g_ed->s, app_can_edit());
+    else      (void)gb_info_page(m);
   } else if (nv == NV_MAP && kind == SE_KIND_GEN1) {
     /* M1 (BACKLOG #91): read-only current-map view, same "needs a live
      * GbSession to read the ROM's own tile bank through" gate every other
