@@ -26,6 +26,7 @@ static u16  s_wait(u16 mask) {
 }
 
 static void s_msg(const char* title, u16 ink, const char* l1, const char* l2) {
+  ui_clear();
   ui_panel(12, 50, 216, l2 ? 60 : 50, UI_PANEL, UI_BORDER);
   ui_text(20, 58, ink, title);
   ui_hline(16, 70, 208, UI_BORDER);
