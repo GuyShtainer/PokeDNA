@@ -135,7 +135,8 @@ static void test_every_row_covered(void) {
    * like NV_CLOCK does (checked in its own assertion below), not COMING_SOON
    * on both any more. */
   static const int coming_soon_both[] = {
-    NV_PARTY, NV_BANK, NV_DEX, NV_DATA, NV_FLY, NV_GB   /* 6: Map left for its own per-gen split (M1) */
+    NV_PARTY, NV_BANK, NV_DEX, NV_FLY, NV_GB   /* 5: Map left for its own per-gen split (M1);
+                                                 * NV_DATA moved to ok_both below (BACKLOG #88) */
   };
   for (int i = 0; i < (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]); i++) {
     CHECK(nav_avail(coming_soon_both[i], SE_KIND_GEN1) == NAV_COMING_SOON,
@@ -147,10 +148,11 @@ static void test_every_row_covered(void) {
   /* BACKLOG #85: NV_DAYCARE moved from coming-soon to OK-both -- gb_daycare.c's core
    * is wired up on both Gen 1 (one slot, level-up only) and Gen 2 (two slots +
    * compatibility + egg). */
-  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE };
+  /* BACKLOG #88: NV_DATA (Flags & counters, pdna_gbflags.c) moved here too. */
+  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE, NV_DATA };
   for (int i = 0; i < (int)(sizeof ok_both / sizeof ok_both[0]); i++) {
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare are NAV_OK");
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare/Data are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare/Data are NAV_OK");
   }
 
   /* NV_MAP: OK on Gen 1, COMING_SOON on Gen 2 -- the same per-gen-split shape as
@@ -170,7 +172,7 @@ static void test_every_row_covered(void) {
    * cannot hide: test (A) requires every (item, kind) pair to answer one of the three
    * defined states with a real reason, and NV_COUNT itself is asserted against the row
    * count. */
-  CHECK(8 + 6 + 5 + 1 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
+  CHECK(8 + 5 + 6 + 1 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
 
   /* D6 review (b86): assert the Gen-2 cells of the other 7 not_in_game_gen1 rows for real
    * (only Clock, via test (E), and ok_both, via the loop above, were ever asked with
@@ -180,8 +182,8 @@ static void test_every_row_covered(void) {
     CHECK(nav_avail(not_in_game_gen1[i], SE_KIND_GEN2) == NAV_NOT_IN_GAME,
           "Gen 2: every Hoenn/Frontier-shaped row except Clock stays NOT_IN_GAME");
   }
-  CHECK(7 + 6 + 6 + 1 == NV_COUNT,
-        "Gen 2's row classification (7 NOT_IN_GAME + 6 COMING_SOON-both + 6 OK + Map's split) accounts for all rows too");
+  CHECK(7 + 5 + 7 + 1 == NV_COUNT,
+        "Gen 2's row classification (7 NOT_IN_GAME + 5 COMING_SOON-both + 7 OK + Map's split) accounts for all rows too");
 
   printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 6 COMING_SOON-both + "
          "5 OK-both + 1 Map-split == %d; Gen 2 differs at Clock and Map, checked here + test E)\n", NV_COUNT);
