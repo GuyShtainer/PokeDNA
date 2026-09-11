@@ -1131,3 +1131,19 @@ addrtaken-ok ____aeabi_dmul_from_thumb
 # blob, not a dispatch table (#106 G2 class). Bounded by the 256-B cap.
 addrtaken-ok g2w_put
 
+# lib/everdrivegbax5/everdrive.c's ed_set_rom_mask (frame 0 B): one prototype, one
+# definition, ZERO call sites anywhere in source/ or lib/ (grepped on the F1b pass --
+# it's dead code the same way ed_rtc_off above is). F1b's own two new functions
+# (gbsrc_get_raw_name/gbsrc_get_raw_name_impl in source/pdna_gen12.c) shifted the
+# DELTA-ARTLESS image's link (a variant not otherwise rebuilt by this lane's earlier
+# items) until ed_set_rom_mask's address (0x08070000, ARM form, bytes 00 00 07 08 LE)
+# landed 4-byte-aligned inside source/mon_anim.c's own s_fam[413] species-family byte
+# table (.rodata @0x0808c0b0, offset +0x64 = 0x0808c114) -- the SAME plain lookup
+# table ed_rtc_off's own pin above documents, just a different offset into it this
+# time. Verified: `nm -n` on pokedna-delta-artless.elf (built with
+# PDNA_STACK_CHECK=0) confirms s_fam@0x0808c0b0 is the sole symbol bracketing
+# 0x0808c114 below GB_TABLE@0x0808c250; `objdump -s` finds exactly one occurrence of
+# the byte pattern in the whole image. Not a dispatch table (#106 G2 class, retire
+# with #106). Zero frame; nothing to bound.
+addrtaken-ok ed_set_rom_mask
+
