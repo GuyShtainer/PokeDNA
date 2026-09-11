@@ -19,11 +19,23 @@
 #include "pdna_app.h"      /* msg_wait / app_confirm                                  */
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
+/* D3 (b86 review): the stepper (gbclock_shift_editor) sets key_repeat_mask(KEY_UP |
+ * KEY_DOWN) expecting a held D-pad to auto-repeat, but the old body below only ever
+ * asked key_hit(mask) -- key_repeat()'s output never entered the loop, so the mask
+ * was inert and a +-99 day shift cost 99 taps. Gen 3's own stepper ORs key_repeat()
+ * into the wait (pdna_main.c's wait_keys_bob_p); mirror that here. Sound stays gated
+ * on `fresh` (the newly-pressed edge), never on `k` (which now also carries repeats),
+ * so a held D-pad does not machine-gun snd_move(). */
 static u16  s_wait(u16 mask) {
-  u16 k; do { s_vsync(); k = key_hit(mask); } while (!k);
-  if      (k & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) snd_move();
-  else if (k & KEY_A) snd_ok();
-  else if (k & KEY_B) snd_back();
+  u16 k, fresh;
+  do {
+    s_vsync();
+    fresh = key_hit(mask);
+    k = fresh | key_repeat(mask & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT));
+  } while (!k);
+  if      (fresh & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) snd_move();
+  else if (fresh & KEY_A) snd_ok();
+  else if (fresh & KEY_B) snd_back();
   return k;
 }
 
