@@ -41,16 +41,18 @@
  * at (Gb12Mount.current_box in pdna_gen12.c) — passed as a plain int so this header
  * stays decoupled from pdna_gen12.h.
  *
- * WITHDRAW'S DESTINATION, same reasoning in reverse: gbs_insert() (the only public
- * primitive for landing an already-built GbEditMon) REFUSES the party pseudo-box
- * outright (gb_session.h's own doc: "a caller that wants the party target still has
- * to go through gbs_move() with mon inserted into a scratch box first"). Composing
- * that (gbs_insert then gbs_move, with its own Mail-shift/party-floor rules and a
- * second RAM commit to roll back on failure) is real extra risk for a UI slice, so
- * "Take out" lands the mon back in `cur_box` only — the same box the picker draws
- * from — never the party. This is a narrower menu than pdna_daycare()'s own
- * "To Party / To PC" (it offers only the PC-shaped half), flagged as a scope
- * reduction rather than silently built to look complete.
+ * WITHDRAW'S DESTINATION, retail's own order (BACKLOG #85 D6 review fix): the PARTY
+ * if it has room, else the FIRST storage box with a free slot, else refuse — named in
+ * the success message ("Sent to the party." / "Sent to Box N."). gbs_insert() (the
+ * only public primitive for landing an already-built GbEditMon) REFUSES the party
+ * pseudo-box outright (gb_session.h's own doc: "a caller that wants the party target
+ * still has to go through gbs_move() with mon inserted into a scratch box first"), so
+ * the party leg is composed exactly that way: gbs_insert() into whichever storage box
+ * has room, then gbs_move() from there into the party. Every step is a RAM-only
+ * commit; the caller rolls the WHOLE image back (gb_rollback(), restores from
+ * pristine unconditionally) on any failure before gb_persist() ever runs, so the extra
+ * RAM commit this composition needs is exactly as safe to unwind as the single-commit
+ * version was. See gbdc_land() in pdna_gbdaycare.c.
  *
  * `s` must be an OPEN session over the SAME resident image gb_persist()/gb_rollback()
  * (pdna_gen12.h) act on — i.e. `&g_ed->s`, exactly like pdna_gbbag()/pdna_gbtrainer().

@@ -44,7 +44,7 @@ static u16  s_wait(u16 mask) {
  * yet). `list` is the caller's GBS_LIST_BYTES staging buffer (arena-carved, not a
  * stack local -- see pdna_gbdaycare() below). Returns true with `out` filled on A,
  * false on B or when the box has nothing pickable. */
-static bool gbdc_pick(GbSession* s, int cur_box, uint8_t* list, GbEditMon* out) {
+static bool gbdc_pick(GbSession* s, int cur_box, uint8_t* list, GbEditMon* out, int* picked_slot) {
   GbsStatus lst = gbs_load_list(s, cur_box, list);
   if (lst != GBS_OK) { snd_deny(); msg_wait("PUT IN", UI_WARN, gbs_status_text(lst), 0); return false; }
   int count = gb_list_count(s->gen, list, cur_box);
@@ -104,6 +104,7 @@ static bool gbdc_pick(GbSession* s, int cur_box, uint8_t* list, GbEditMon* out) 
         snd_error(); msg_wait("PUT IN", UI_WARN, "Could not read that slot.", 0);
         return false;
       }
+      *picked_slot = idx[sel];
       return true;
     }
   }
@@ -143,28 +144,95 @@ static int gbdc_menu(bool occupied, bool can_put_here, bool can_take) {
   }
 }
 
-/* Take `slot` out, landing it in `cur_box` (see the header's own note on why the
- * party is never the destination here). gbd_withdraw() commits to RAM first; if the
- * landing gbs_insert() then refuses (box full/unwritable), gb_rollback() restores the
- * whole image from pristine -- the withdraw and the insert are never left half-done
- * on the card, only (briefly) in RAM, exactly the atomicity contract gb_session.h's
- * own gbs_move() documents for the same two-commit shape. */
-static void gbdc_take(GbSession* s, int slot, int cur_box, uint8_t* list) {
+/* Land `mon` (already withdrawn, box-shaped) the same way retail's own counter does:
+ * the PARTY if it has room, else the FIRST storage box with a free slot, else refuse.
+ * gbs_insert() itself refuses the party pseudo-box outright (gb_session.h), so the
+ * party leg is composed as gbs_insert into a scratch storage box, then gbs_move() from
+ * that box into the party -- gbs_move's own Mail-shift/party-floor rules apply exactly
+ * as they would for a manual box->party move. Every step here only touches RAM; the
+ * caller (gbdc_take) is the one that either calls gb_persist() once everything below
+ * returns GBS_OK, or gb_rollback()s the WHOLE image on any failure -- so a party leg
+ * that needs its own extra RAM commit (insert, then move) is exactly as safe to unwind
+ * as gbd_withdraw()+gbs_insert() already was: gb_rollback() restores from pristine
+ * unconditionally, regardless of how many intermediate gbs_* calls ran.
+ * `list`/`list2` are the caller's two GBS_LIST_BYTES staging buffers (gbs_move needs
+ * two, src+dst, loaded independently). On success, `*landed_box` is the box index the
+ * mon ended up in, or -1 for the party (so the caller can name the landing in its own
+ * message); on failure, `*out_status` explains why and nothing has changed. */
+static bool gbdc_land(GbSession* s, const GbEditMon* mon, uint8_t* list, uint8_t* list2,
+                      int* landed_box, GbsStatus* out_status) {
+  int nb = gbs_nboxes(s);
+  int party = gbs_party_box(s);
+
+  GbsStatus pld = gbs_load_list(s, party, list);
+  int pcount = (pld == GBS_OK) ? gb_list_count(s->gen, list, party) : -1;
+  bool party_room = (pld == GBS_OK && pcount >= 0 && pcount < gb_list_capacity(s->gen, party));
+
+  if (party_room) {
+    /* Find a storage box with a free slot to stage the insert -- try `cur_box`-agnostic,
+     * first box first, since any box works equally well as a scratch landing spot. */
+    for (int b = 0; b < nb; b++) {
+      GbsStatus bld = gbs_load_list(s, b, list);
+      if (bld != GBS_OK) continue;
+      int bc = gb_list_count(s->gen, list, b);
+      if (bc < 0 || bc >= gb_list_capacity(s->gen, b)) continue;
+
+      int slot_out = -1;
+      GbsStatus ist = gbs_insert(s, b, mon, &slot_out, list);
+      if (ist != GBS_OK) continue;   /* unwritable/full after all -- try the next box */
+
+      int to_slot = -1;
+      GbsStatus mst = gbs_move(s, b, slot_out, party, &to_slot, list, list2);
+      if (mst == GBS_OK) { *landed_box = -1; return true; }
+      *out_status = mst;
+      return false;   /* the insert already landed in RAM -- caller must gb_rollback() */
+    }
+    /* No box had room to stage the insert (every box full while the party is not) --
+     * fall through to the "first free box" leg, which will also find nothing and
+     * report GBS_ERR_FULL, the honest answer either way. */
+  }
+
+  for (int b = 0; b < nb; b++) {
+    GbsStatus bld = gbs_load_list(s, b, list);
+    if (bld != GBS_OK) continue;
+    int bc = gb_list_count(s->gen, list, b);
+    if (bc < 0 || bc >= gb_list_capacity(s->gen, b)) continue;
+
+    int slot_out = -1;
+    GbsStatus ist = gbs_insert(s, b, mon, &slot_out, list);
+    if (ist == GBS_OK) { *landed_box = b; return true; }
+    *out_status = ist;
+    return false;
+  }
+
+  *out_status = GBS_ERR_FULL;
+  return false;
+}
+
+/* Take `slot` out, landing it retail's own way: party-first, else the first box with
+ * room, else refuse -- named in the success message so the player knows where it went.
+ * gbd_withdraw() commits to RAM first; any landing failure below rolls the WHOLE image
+ * back from pristine, so the withdraw and the landing are never left half-done on the
+ * card, only (briefly) in RAM. */
+static void gbdc_take(GbSession* s, int slot, uint8_t* list, uint8_t* list2) {
   GbEditMon mon;
   GbsStatus wst = gbd_withdraw(s, slot, &mon);
   if (wst != GBS_OK) { snd_error(); msg_wait("TAKE OUT", UI_WARN, gbs_status_text(wst), 0); return; }
 
-  int slot_out = -1;
-  GbsStatus ist = gbs_insert(s, cur_box, &mon, &slot_out, list);
-  if (ist != GBS_OK) {
+  int landed_box = -2;
+  GbsStatus lst = GBS_OK;
+  if (!gbdc_land(s, &mon, list, list2, &landed_box, &lst)) {
     gb_rollback();
     snd_deny();
-    msg_wait("TAKE OUT", UI_WARN, gbs_status_text(ist), "Nothing was changed.");
+    msg_wait("TAKE OUT", UI_WARN, gbs_status_text(lst), "Nothing was changed.");
     return;
   }
   if (!gb_persist("daycare-take")) return;   /* gb_persist already reported any refusal */
   snd_ok();
-  msg_wait("TAKEN OUT", UI_OK, "Placed in the box you came from.", "Saved.");
+  char line[32];
+  if (landed_box < 0) siprintf(line, "Sent to the party.");
+  else                siprintf(line, "Sent to Box %d.", landed_box + 1);
+  msg_wait("TAKEN OUT", UI_OK, line, "Saved.");
 }
 
 /* Take the Egg out (Gen 2 only), landing it in `cur_box` -- same shape as gbdc_take().
@@ -190,19 +258,37 @@ static void gbdc_take_egg(GbSession* s, int cur_box, uint8_t* list) {
   msg_wait("EGG TAKEN", UI_OK, "Placed in the box you came from.", "Saved.");
 }
 
-/* Put a box-picked mon into `slot`. gbd_deposit() itself refuses an occupied slot,
- * an Egg, or a party-shaped record -- all three are already impossible to reach here
- * (the caller only offers this action on an empty slot; gbdc_pick already filters
- * Eggs and only ever reads box-shaped storage), so any refusal here is a genuine,
- * user-visible surprise worth reporting rather than a dead branch. */
+/* Put a box-picked mon into `slot` -- a MOVE, not a paste (review D1): the picked
+ * source slot is deleted from `cur_box` once the deposit itself has landed, the same
+ * two-commit shape gbdc_take() already uses (commit #1, then a second commit that
+ * either lands too or rolls the WHOLE image back). gbd_deposit() itself refuses an
+ * occupied slot, an Egg, or a party-shaped record -- all three are already impossible
+ * to reach here (the caller only offers this action on an empty slot; gbdc_pick
+ * already filters Eggs and only ever reads box-shaped storage), so any refusal here is
+ * a genuine, user-visible surprise worth reporting rather than a dead branch. */
 static void gbdc_deposit(GbSession* s, int slot, int cur_box, uint8_t* list) {
   GbEditMon mon;
-  if (!gbdc_pick(s, cur_box, list, &mon)) return;
+  int picked_slot = -1;
+  if (!gbdc_pick(s, cur_box, list, &mon, &picked_slot)) return;
+  if (!app_confirm("Send to Day-Care?", "Moves this Pokemon there.")) return;
+
   GbsStatus st = gbd_deposit(s, slot, &mon);
   if (st != GBS_OK) { snd_deny(); msg_wait("PUT IN", UI_WARN, gbs_status_text(st), 0); return; }
-  if (!gb_persist("daycare-put")) return;
+
+  /* The deposit already landed in RAM (gbd_deposit calls gbs_finish() itself); now
+   * remove the source from `cur_box` before anything is written to the card. gbs_delete
+   * reloads `cur_box`'s list itself, so the stale copy gbdc_pick left in `list` is not
+   * reused here. */
+  GbsStatus dst = gbs_delete(s, cur_box, picked_slot, list);
+  if (dst != GBS_OK) {
+    gb_rollback();
+    snd_deny();
+    msg_wait("PUT IN", UI_WARN, gbs_status_text(dst), "Nothing was changed.");
+    return;
+  }
+  if (!gb_persist("daycare-put")) return;   /* gb_persist already reported any refusal */
   snd_ok();
-  msg_wait("LEFT AT DAY CARE", UI_OK, "Saved.", 0);
+  msg_wait("LEFT AT DAY CARE", UI_OK, "Moved from the box. Saved.", 0);
 }
 
 /* View/Edit `start_slot`, Gen-3-parity shape (pdna_daycare()'s own card-editor loop):
@@ -323,18 +409,21 @@ static void gbdc_paint(const GbDaycare* dc, int sel) {
 void pdna_gbdaycare(GbSession* s, int cur_box, bool can_edit) {
   if (!s || !s->open) { snd_deny(); msg_wait("DAY CARE", UI_WARN, "No save is open.", 0); return; }
 
-  /* GbDaycare (616 B) and the GBS_LIST_BYTES (1152 B) staging buffer the deposit/
-   * withdraw picker needs both live in the GB12 arena tail -- never a static (this
-   * screen may be entered on an emulator/hardware run where the same struct would
-   * otherwise sit in EWRAM for the rest of the app's life) and never a stack local
-   * (this call chain is already several frames deep off gb_nav_from_start). One
-   * slice, one call, carved into two sub-regions -- same idiom pdna_gbbag.c's own
-   * `bag`/`t0` pair uses. */
-  uint32_t need = GBDC_A4(sizeof(GbDaycare)) + GBS_LIST_BYTES;
+  /* GbDaycare (616 B) and TWO GBS_LIST_BYTES (1152 B) staging buffers all live in the
+   * GB12 arena tail -- never a static (this screen may be entered on an emulator/
+   * hardware run where the same struct would otherwise sit in EWRAM for the rest of
+   * the app's life) and never a stack local (this call chain is already several frames
+   * deep off gb_nav_from_start). One slice, one call, carved into three sub-regions --
+   * same idiom pdna_gbbag.c's own `bag`/`t0` pair uses. The second list buffer is
+   * D6's own need: gbdc_take()'s party-landing leg composes gbs_insert() + gbs_move(),
+   * and gbs_move() takes two INDEPENDENT staging buffers (src_list/dst_list,
+   * gb_session.h), never the same one twice. */
+  uint32_t need = GBDC_A4(sizeof(GbDaycare)) + GBS_LIST_BYTES + GBS_LIST_BYTES;
   uint8_t* tail = gb12_arena_tail(need);
   if (!tail) { snd_deny(); msg_wait("DAY CARE", UI_WARN, "Not enough memory right now.", 0); return; }
   GbDaycare* dc = (GbDaycare*)tail;
-  uint8_t* list = tail + GBDC_A4(sizeof(GbDaycare));
+  uint8_t* list  = tail + GBDC_A4(sizeof(GbDaycare));
+  uint8_t* list2 = list + GBS_LIST_BYTES;
 
   int sel = 0;
   bool redraw = true;
@@ -369,7 +458,7 @@ void pdna_gbdaycare(GbSession* s, int cur_box, bool can_edit) {
         } else {
           int act = gbdc_menu(occ, can_put_here, can_take_here);
           if (act == 0)      gbdc_view_edit(s, dc, slot, can_edit);
-          else if (act == 1) gbdc_take(s, slot, cur_box, list);
+          else if (act == 1) gbdc_take(s, slot, list, list2);
           else if (act == 2) gbdc_deposit(s, slot, cur_box, list);
         }
       }
