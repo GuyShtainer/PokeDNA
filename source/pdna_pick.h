@@ -2,6 +2,7 @@
 #define PDNA_PICK_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* Rich pickers for the editor. Each returns the chosen id, or 0xFFFF if the user
  * cancelled (B). `current` pre-selects the starting entry.
@@ -74,5 +75,33 @@ typedef void (*DexSetNat)(bool on);
  * the caller can offer to save). */
 bool pdna_dex_screen(DexGetState get, DexSetState set,
                      DexGetNat getnat, DexSetNat setnat, bool can_edit);
+
+/* ---- pick_rows: the generic searchable/sortable row-list engine (BACKLOG #107) ---
+ * list_pick's own loop (source/pdna_pick.c), extracted so any leaf picker screen can
+ * get the same chrome (dirty-row repaint, L/R paging, SELECT search, START A-Z sort)
+ * without a second copy of it. Full contract in pdna_pick.c's header comment on
+ * pick_rows -- read it before calling this from a new screen, especially the ROW
+ * REPAINT RULE (`row` owns its whole rect) and the ctx-not-statics convention.
+ *
+ * `n`      -- how many underlying items (0..n-1) exist; `row`/`search_key` are keyed
+ *   (when PR_SORTABLE is set, search_key's return must fit pr_build's 32-B stable-copy buffer in
+ *   pdna_pick.c -- a longer key still sorts, just on a truncated prefix; b107 review A3)
+ *             by that same index, never by a filtered display position.
+ * `current`-- which underlying id to preselect (its list POSITION after any default
+ *             filter/sort, same as list_pick's `current`).
+ * `row`    -- draws item `i` at screen y, `sel` = currently highlighted.
+ * `ctx`    -- opaque, handed back to `row`/`search_key` unchanged; hold per-call
+ *             state here (a local struct's address), not a new file-static.
+ * `search_key` -- NULL disables search AND sort; else the ci_contains() search
+ *             target and (PR_SORTABLE) the A-Z sort key.
+ * `opts`   -- PR_SORTABLE, and exactly one of PR_ROWH9 (FILT: 9 px pitch, 15 vis,
+ *             full-page L/R) / PR_ROWH26 (24x24-icon rows: 26 px pitch, 5 vis, 5
+ *             page) / neither (plain 8 px pitch, 16 vis, 10 page -- list_pick's own
+ *             non-icon default).
+ * Returns the chosen id (0..n-1), or -1 on B. */
+enum { PR_SORTABLE = 1, PR_ROWH9 = 2, PR_ROWH26 = 4 };
+int pick_rows(const char* title, int n, int current,
+             void (*row)(int i, int y, bool sel, void* ctx), void* ctx,
+             const char* (*search_key)(int i, void* ctx), int opts);
 
 #endif /* PDNA_PICK_H */

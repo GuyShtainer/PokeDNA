@@ -1244,6 +1244,7 @@ STRUCT_HEADERS = {
     "G2Writer": "gen2_write.h",
     "RomCtx": "rom_map.h",
     "ArtIconsGen": "art_icons_extract.h",
+    "LpCtx": "pdna_pick.c",   # BACKLOG #107: list_pick's ctx struct for pick_rows()
     "TTC": None,     # libtonc's tte_write dispatch table -- no .c/.h source shipped
                       # in this devkitPro install to grep (see the `recursion
                       # tte_write depth=2` declaration's own comment). Still

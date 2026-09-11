@@ -252,6 +252,81 @@ def run_contests(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
     return s
 
 
+def run_b107_contest_picker(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
+    """BACKLOG #107: the Contests donor picker on pdna_pick.c's shared pick_rows()
+    engine -- source list, a box's mon list with the icon column, a live search
+    (osk_search, typed through the real OSK grid) and a sort toggle (START).
+
+    Nav: box screen -> START -> DOWN x15 (Contests, same PDNA_NAV_ITEMS order
+    run_contests() uses) -> A (museum, sel=0 Cool) -> A (donor picker, source
+    list) -> DOWN (Party(0) -> Box 1(1)) -> A (mon list, box 1).
+
+    The search types a single lowercase 'a' through the real on-screen keyboard
+    (source/osk.c's KB grid: row 0 col 0 is '1', so DOWN x2 lands on row 2 ("asdfghjkl"),
+    col 0 = 'a') -- ci_contains() is case-insensitive (pdna_pick.c's up1()), so this
+    matches any species/nickname containing an "a", virtually guaranteed in a full
+    box; the point is proving the search widget is wired to pick_rows, not exercising
+    every match (that is tests/host_*'s job). Exits via B all the way out (no A on a
+    donor, no museum write -- this script only proves the picker's OWN chrome, unlike
+    run_contests() above which also exercises the write path)."""
+    s = Session(core_mod, image_mod, rom, out_dir, "b107_")
+    print("== BACKLOG #107: donor picker gets pick_rows' chrome ==")
+
+    s.tap("START", settle=BIG_SETTLE)      # box screen -> nav menu
+    s.press_n("DOWN", 15)                  # Party(0) .. Fly(14) -> Contests(15)
+    s.tap("A", settle=BIG_SETTLE)          # -> pdna_contest, museum page, sel=0 (Cool)
+    s.tap("A", settle=BIG_SETTLE)          # A on Cool -> donor picker, source list (pick_rows, PR_ROWH9)
+    s.shot("01_source", "#107: donor picker, source list -- Party then the 14 PC boxes, "
+                         "now on pick_rows' plain FILT geometry (source_row)")
+
+    s.tap("DOWN", settle=BIG_SETTLE)       # Party(sel=0) -> Box 1(sel=1)
+    s.tap("A", settle=BIG_SETTLE)          # A on Box 1 -> mon list (pick_rows, PR_ROWH26 if real art)
+    s.shot("02_box_icons", "#107: donor picker, mon list -- Box 1's occupied slots, "
+                            "species + level, 24x24 icon column (mon_row, "
+                            "mon_icon_for_form_frame) when real art is linked")
+
+    s.tap("SEL", settle=BIG_SETTLE)     # -> osk_search("SEARCH", ...)
+    s.press_n("DOWN", 2)                   # row 0 ('1234567890') -> row 2 ('asdfghjkl'), col 0
+    s.tap("A", settle=SETTLE)              # insert 'a' (osk_core: KEY_A inserts KB[cr][cc])
+    s.tap("START", settle=BIG_SETTLE)      # confirm -> osk_search returns "a"; the list re-filters
+    s.shot("03_search", "#107: donor picker, mon list filtered by the live OSK search "
+                         "(typed 'a' -- ci_contains is case-insensitive, matches any "
+                         "species/nickname containing an A)")
+
+    s.tap("START", settle=BIG_SETTLE)      # pick_rows: START -> sort toggle (No. -> A-Z)
+    s.shot("04_sort", "#107: the same filtered list, START-sorted A-Z by species name "
+                       "(mon_key doubles as pick_rows' search key and sort key)")
+
+    s.tap("B", settle=BIG_SETTLE)          # mon list -> source list (no pick made)
+    s.tap("B", settle=BIG_SETTLE)          # source list -> museum page (no pick made)
+    s.tap("B", settle=BIG_SETTLE)          # leave Contests -> box screen (no write at all)
+    return s
+
+
+def run_b107_contest_picker_artless(core_mod, image_mod, rom: Path, out_dir: Path) -> Session:
+    """BACKLOG #107, the artless half: the SAME box mon list with no icon capability
+    linked (mon_icon_for(1) == 0) -- mon_row's plain-FILT fallback (PR_ROWH9, no icon
+    slot), not a placeholder graphic. Run against an ARTLESS-flavoured fused build."""
+    s = Session(core_mod, image_mod, rom, out_dir, "b107a_")
+    print("== BACKLOG #107 (artless): donor picker mon list, no icon column ==")
+
+    s.tap("START", settle=BIG_SETTLE)
+    s.press_n("DOWN", 15)
+    s.tap("A", settle=BIG_SETTLE)
+    s.tap("A", settle=BIG_SETTLE)          # museum -> donor picker source list
+    s.tap("DOWN", settle=BIG_SETTLE)       # Party -> Box 1
+    s.tap("A", settle=BIG_SETTLE)          # -> mon list, artless fallback (PR_ROWH9)
+    s.shot("05_artless_fallback", "#107: the artless build's donor picker mon list -- "
+                                   "mon_icon_for(1) == 0, so mon_row falls back to the "
+                                   "same plain FILT row source_row uses, no icon slot "
+                                   "(pick_species' own `lst` idiom, not a placeholder)")
+
+    s.tap("B", settle=BIG_SETTLE)
+    s.tap("B", settle=BIG_SETTLE)
+    s.tap("B", settle=BIG_SETTLE)
+    return s
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -262,10 +337,15 @@ def main(argv=None) -> int:
                      help="SAME dir tools/gb_shots.py writes to, so the shared "
                           "manifest.json / tools/gb_contact_sheet.py --per-feature "
                           "(default --shots) picks these up with no extra flags")
-    ap.add_argument("--only", choices=("osk", "flags", "contests", "daycare"), default=None,
+    ap.add_argument("--only",
+                     choices=("osk", "flags", "contests", "daycare",
+                              "b107-contest", "b107-contest-artless"),
+                     default=None,
                      help="run just ONE of this script's shot functions (BACKLOG #114's "
                           "pixel-parity proof uses --only daycare against a private --out "
-                          "so the before/after cmp never touches the shared manifest.json)")
+                          "so the before/after cmp never touches the shared manifest.json; "
+                          "BACKLOG #107's b107-contest/-artless need TWO different fused "
+                          "builds -- real art vs artless -- so run each separately)")
     a = ap.parse_args(argv)
 
     if not a.emerald.is_file():
@@ -275,7 +355,9 @@ def main(argv=None) -> int:
     core_mod, image_mod = load_mgba()
 
     fn_by_name = {"osk": run_osk_rename, "flags": run_flags_sections,
-                  "contests": run_contests, "daycare": run_daycare}
+                  "contests": run_contests, "daycare": run_daycare,
+                  "b107-contest": run_b107_contest_picker,
+                  "b107-contest-artless": run_b107_contest_picker_artless}
     fns = (fn_by_name[a.only],) if a.only else (run_osk_rename, run_flags_sections, run_contests)
 
     ok, skipped = [], []

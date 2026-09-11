@@ -19,12 +19,15 @@
 #include "gen3_contest.h"
 #include "gen3_save.h"     /* SB1_OFF_PARTY(_COUNT) */
 #include "gen3_mon.h"
-#include "gen3_box.h"      /* pk_box_name, G3_TOTAL_BOXES/G3_IN_BOX */
+#include "gen3_box.h"      /* pk_box_name, G3_TOTAL_BOXES/G3_IN_BOX, pk_resolve */
 #include "data_tables.h"   /* pk_species_name */
 #include "ui.h"
 #include "snd.h"
 #include "rmbl.h"
 #include "pdna_app.h"
+#include "pdna_pick.h"     /* pick_rows, PR_SORTABLE/PR_ROWH9/PR_ROWH26 (BACKLOG #107) */
+#include "pdna_layout.h"   /* PDNA_FILT_*, PDNA_PR_ICON_* -- shared with the host textfit test */
+#include "mon_icons.h"     /* mon_icon_for, mon_icon_for_form_frame */
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
 static u16  s_wait(u16 mask) {
@@ -47,10 +50,13 @@ static const char* const RANK_NAME[5] = { "Normal", "Super", "Hyper", "Master", 
  * species+nickname per row (14 B) put rows[30] at 420 B, the whole -424 B this slice
  * took EWRAM below the artless bar; there is no arena buffer available here to grow
  * into (app_arena_acquire hands out g_pc, the very buffer this picker walks). Every
- * row's label re-decodes its record from sb1/pc via redecode() on each keypress
- * (<=12 on-screen rows redrawn per frame, pick_list blocks in s_wait between them --
- * cheap, not a hot loop). */
+ * visible row's content re-decodes its record from sb1/pc via redecode() on each
+ * repaint (mon_row for drawing, mon_key for search/sort -- at most 5-15 on-screen
+ * rows per pick_rows() page, blocking in s_wait between them -- cheap, not a hot
+ * loop; BACKLOG #107 moved this picker onto pdna_pick.c's shared pick_rows() engine,
+ * PickRow's 1-byte shape is unchanged). */
 typedef struct { uint8_t slot; } PickRow;
+_Static_assert(sizeof(PickRow) == 1, "PickRow must stay 1 byte -- see the header comment above");
 
 /* List up to G3_IN_BOX (30) occupied slots of `source` (-1 = party, 0..13 = box) into
  * `rows`; returns how many. Bounded loop — party is <=6, a box is exactly G3_IN_BOX. */
@@ -76,76 +82,113 @@ static int list_source(const uint8_t* sb1, const uint8_t* pc, int source, PickRo
 }
 
 /* Re-decode the record a PickRow points at — called for every visible row's label,
- * and once more for the chosen row on A. */
+ * and once more for the chosen row on A. pk_resolve() fills level (box records store
+ * only experience; party carries plaintext level and pk_resolve() no-ops on it) and
+ * gender -- BACKLOG #107's mon_row wants level to show "Lv.NN". */
 static bool redecode(const uint8_t* sb1, const uint8_t* pc, int source, const PickRow* row,
                      PkMon* out) {
-  if (source < 0) return pk_decode_mon(sb1 + SB1_OFF_PARTY + (uint32_t)row->slot * 100, true, out);
-  const uint8_t* recs = pc + 0x0004 + (uint32_t)source * G3_IN_BOX * 80;
-  return pk_decode_mon(recs + (uint32_t)row->slot * 80, false, out);
+  bool ok;
+  if (source < 0) ok = pk_decode_mon(sb1 + SB1_OFF_PARTY + (uint32_t)row->slot * 100, true, out);
+  else { const uint8_t* recs = pc + 0x0004 + (uint32_t)source * G3_IN_BOX * 80;
+         ok = pk_decode_mon(recs + (uint32_t)row->slot * 80, false, out); }
+  if (ok) pk_resolve(out);
+  return ok;
 }
 
-/* A short scrolling text list: `n` rows, `label(i)` fills up to 27 chars. Returns the
- * chosen index, or -1 on B. VIS caps the on-screen rows; a bounded loop (n <= 30 here,
- * the widest caller is a full PC box). */
+/* page_hall (view-only Contest Hall list, below) keeps its own plain scrolling loop --
+ * it is a read-only list of AT MOST GC_HALL_MAX records (well under a screenful), not
+ * a picker, so it has no use for pick_rows' search/sort/paging chrome. PICK_VIS caps
+ * its on-screen rows. */
 #define PICK_VIS 12
-static int pick_list(const char* title, int n, void (*label)(int i, char* out, int cap),
-                     void* ctx) {
-  (void)ctx;
-  int sel = 0, top = 0;
-  for (;;) {
-    if (sel < top) top = sel;
-    if (sel >= top + PICK_VIS) top = sel - PICK_VIS + 1;
-    ui_clear();
-    ui_text(4, 2, UI_TITLE, title);
-    ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-    if (n == 0) ui_text(8, 24, UI_DIM, "(nothing here)");
-    for (int i = 0; i < PICK_VIS && top + i < n; i++) {
-      char b[32];
-      label(top + i, b, sizeof b);
-      ui_text_sel(4, 14 + i * UI_ROW_H, 232, top + i == sel, UI_TEXT, b);
-    }
-    ui_hline(0, UI_SCR_H - 10, UI_SCR_W, UI_BORDER);
-    ui_text(4, UI_SCR_H - 8, UI_DIM, "A pick  B back");
-    u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return -1;
-    if (k & KEY_A) return n ? sel : -1;
-    if (k & KEY_UP)   sel = (sel == 0) ? (n ? n - 1 : 0) : sel - 1;
-    if (k & KEY_DOWN) sel = (n == 0) ? 0 : (sel + 1) % n;
-  }
+
+/* ---- the donor picker's two levels, now on pick_rows (BACKLOG #107) -------------
+ * SourceCtx/MonCtx carry state through pick_rows' opaque `ctx` -- no file-statics,
+ * same convention pdna_pick.c's own list_pick wrapper uses. The icon column (mon_row,
+ * below) reads mon_icon_for_form_frame() directly -- Tier A only, NEVER
+ * icon_store_borrow(): `pc` here is g_pc itself (pdna_main.c's NV_CONTEST case passes
+ * g_pc straight through, not an app_arena_acquire() copy -- see this file's own top-of-
+ * file comment: "never mutates g_pc", and pdna_pick.c's icon_store.h documents that
+ * Tier B's borrow literally reuses g_pc's memory for icon rows), so borrowing while
+ * this screen's redecode() calls are still reading `pc` would overwrite the very
+ * records being displayed. */
+typedef struct { const uint8_t* pc; } SourceCtx;
+
+static void source_row(int i, int y, bool sel, void* vctx) {
+  SourceCtx* c = (SourceCtx*)vctx;
+  char b[16];
+  if (i == 0) siprintf(b, "Party");
+  else { char nm[12]; pk_box_name(c->pc, i - 1, nm); siprintf(b, "%.*s", (int)sizeof(nm) - 1, nm[0] ? nm : "Box"); }
+  if (sel) ui_fill_rect(PDNA_FILT_BAR_X, y + PDNA_FILT_BAR_DY, PDNA_FILT_BAR_W, PDNA_FILT_BAR_H, UI_SEL);
+  else     ui_fill_rect(PDNA_FILT_BAR_X, y + PDNA_FILT_BAR_DY, PDNA_FILT_BAR_W, PDNA_FILT_BAR_H, UI_BG);
+  ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_TEXT, b);
 }
 
-static const uint8_t* g_pick_pc;
-static void source_label(int i, char* out, int cap) {
-  if (i == 0) { siprintf(out, "Party"); return; }
-  char nm[12];
-  pk_box_name(g_pick_pc, i - 1, nm);
-  siprintf(out, "%.*s", cap - 1, nm[0] ? nm : "Box");
-}
+typedef struct {
+  const uint8_t* sb1;
+  const uint8_t* pc;
+  int source;             /* -1 = party, else box index */
+  const PickRow* rows;
+  bool icon_ok;            /* mon_icon_for(1) != 0 -- real art linked, not the artless build */
+  char keybuf[24];         /* mon_key()'s returned string lives HERE, not a file static */
+} MonCtx;
 
-static PickRow*      g_pick_rows;
-static const uint8_t* g_pick_sb1;
-static int            g_pick_source;
-static void mon_label(int i, char* out, int cap) {
+/* Species + nickname, for search (nickname or species name) and, doubling as the sort
+ * key (pick_rows' own contract), A-Z order. */
+static const char* mon_key(int i, void* vctx) {
+  MonCtx* c = (MonCtx*)vctx;
   PkMon m;
-  if (!redecode(g_pick_sb1, g_pick_pc, g_pick_source, &g_pick_rows[i], &m)) {
-    siprintf(out, "?"); return;
+  if (!redecode(c->sb1, c->pc, c->source, &c->rows[i], &m)) { c->keybuf[0] = 0; return c->keybuf; }
+  siprintf(c->keybuf, "%s %s", pk_species_name(m.species), m.nickname);
+  return c->keybuf;
+}
+
+/* Species + level, with a 24x24 icon column when real art is linked (mon_icon_for(1)
+ * != 0); the artless build falls back to the same plain FILT row geometry source_row
+ * above uses -- no icon slot to fill, so no chip either, just the text (pick_species'
+ * own `lst` fallback, pdna_pick.c:430, is the same idiom: no icon capability -> plain
+ * list, not a placeholder graphic). */
+static void mon_row(int i, int y, bool sel, void* vctx) {
+  MonCtx* c = (MonCtx*)vctx;
+  PkMon m;
+  bool ok = redecode(c->sb1, c->pc, c->source, &c->rows[i], &m);
+  char row[40], rt[40];
+  if (!ok) siprintf(row, "?");
+  else if (m.nickname[0] && strcmp(m.nickname, pk_species_name(m.species)) != 0)
+    siprintf(row, "%s Lv.%u (%s)", pk_species_name(m.species), (unsigned)m.level, m.nickname);
+  else
+    siprintf(row, "%s Lv.%u", pk_species_name(m.species), (unsigned)m.level);
+
+  if (c->icon_ok) {
+    if (sel) ui_panel(PDNA_FILT_BAR_X, y - 1, PDNA_FILT_BAR_W, PDNA_PR_ICON_PANEL, UI_SEL, UI_TITLE);
+    else     ui_fill_rect(PDNA_FILT_BAR_X, y - 1, PDNA_FILT_BAR_W, PDNA_PR_ICON_PANEL, UI_BG);
+    if (ok) {
+      const uint16_t* ic = mon_icon_for_form_frame(m.species, m.form, 0);
+      if (ic) ui_icon_scaled(PDNA_PR_ICON_X, y, PDNA_PR_ICON_W, PDNA_PR_ICON_W, ic);
+    }
+    ui_truncate(rt, row, PDNA_PR_ICON_MAXCOLS);
+    ui_text(PDNA_PR_ICON_TEXT_X, y + PDNA_PR_ICON_TEXT_DY, sel ? UI_SELTEXT : UI_TEXT, rt);
+  } else {
+    if (sel) ui_fill_rect(PDNA_FILT_BAR_X, y + PDNA_FILT_BAR_DY, PDNA_FILT_BAR_W, PDNA_FILT_BAR_H, UI_SEL);
+    else     ui_fill_rect(PDNA_FILT_BAR_X, y + PDNA_FILT_BAR_DY, PDNA_FILT_BAR_W, PDNA_FILT_BAR_H, UI_BG);
+    ui_truncate(rt, row, 28);
+    ui_text(PDNA_FILT_TEXT_X, y, sel ? UI_SELTEXT : UI_TEXT, rt);
   }
-  siprintf(out, "%-11s%.*s", pk_species_name(m.species), cap - 12,
-          m.nickname[0] ? m.nickname : "");
 }
 
 /* Returns true and fills *out on a real pick; false on B at either level. */
 static bool pick_donor(const uint8_t* sb1, const uint8_t* pc, PkMon* out) {
   for (;;) {
-    g_pick_pc = pc;
-    int src = pick_list("PICK A POKEMON - SOURCE", 1 + G3_TOTAL_BOXES, source_label, 0);
+    SourceCtx sc = { pc };
+    int src = pick_rows("PICK A POKEMON - SOURCE", 1 + G3_TOTAL_BOXES, 0,
+                        source_row, &sc, 0, PR_ROWH9);
     if (src < 0) return false;
     int source = src - 1;                        /* -1 = party */
     static EWRAM_BSS PickRow rows[30];            /* 30 B: EWRAM, not the IWRAM stack */
     int n = list_source(sb1, pc, source, rows);
-    g_pick_rows = rows; g_pick_sb1 = sb1; g_pick_source = source;
-    int m = pick_list(source < 0 ? "PICK A POKEMON - PARTY" : "PICK A POKEMON - BOX",
-                      n, mon_label, 0);
+    MonCtx mc = { sb1, pc, source, rows, mon_icon_for(1) != 0, "" };
+    int opts = PR_SORTABLE | (mc.icon_ok ? PR_ROWH26 : PR_ROWH9);
+    int m = pick_rows(source < 0 ? "PICK A POKEMON - PARTY" : "PICK A POKEMON - BOX",
+                      n, 0, mon_row, &mc, mon_key, opts);
     if (m < 0) continue;                          /* B here: back to source list */
     if (!redecode(sb1, pc, source, &rows[m], out)) continue;   /* should not happen: it was just listed */
     return true;

@@ -1190,25 +1190,12 @@ uint16_t pick_move(uint16_t current) {
 }
 
 /* ===================== generic searchable list (item / nature) ========= */
+/* BACKLOG #107: list_build's own filter+sort loop is now pr_build() (below, inside
+ * pick_rows' own section) -- list_pick calls through pick_rows now, so nothing here
+ * builds its own idx[] any more. */
 
-/* filter by `search` then optionally sort A-Z by name; returns the count. */
-static int list_build(u16* idx, int count, const char* (*name_fn)(uint16_t),
-                      const char* search, int sort) {
-  int n = 0;
-  for (int i = 0; i < count; i++)
-    if (!search[0] || ci_contains(name_fn((uint16_t)i), search)) idx[n++] = (u16)i;
-  if (sort) {                                       /* insertion sort by name (No. = id order) */
-    for (int i = 1; i < n; i++) {
-      u16 v = idx[i]; int j = i - 1;
-      while (j >= 0 && strcmp(name_fn(idx[j]), name_fn(v)) > 0) { idx[j + 1] = idx[j]; j--; }
-      idx[j + 1] = v;
-    }
-  }
-  return n;
-}
-
-/* One row of the generic list picker. NOTE ON THE NON-ICON HEIGHT: it is a literal 9
- * (not `rowh - 1` = 7) on an 8 px pitch (rowh=8) -- one pixel taller than its own pitch,
+/* One row of the generic list picker. NOTE ON THE HEIGHT: it is a literal 9 (not
+ * `rowh - 1` = 7) on an 8 px pitch (rowh=8) -- one pixel taller than its own pitch,
  * so neighbouring rows' rects share the boundary scanline y+7 and invariant (2) of the
  * ROW REPAINT RULE applies: the caller paints the selected row LAST in BOTH the pair
  * diff and the full paint, so the selected row's whole 9-row panel survives either way.
@@ -1219,76 +1206,155 @@ static int list_build(u16* idx, int count, const char* (*name_fn)(uint16_t),
  * unselected row's wipe clips the descenders of the row above. Every name list_pick can
  * be handed today is upper-case, but this helper is generic on name_fn; a mixed-case one
  * wants the pitch widened to 9 (as the FILT_* lists did) or the panel dropped for a
- * borderless bar (sp_row's idiom) first. The icon row (rowh=26, panel height rowh-1=25)
- * has no overlap at all (25 < 26) and is exact under any order. */
-static void lp_row(const char* (*name_fn)(uint16_t), const uint16_t* (*icon_fn)(uint16_t),
-                   int rowh, int id, int y, bool sel) {
+ * borderless bar (sp_row's idiom) first.
+ *
+ * BACKLOG #107: the icon-column branch this used to have (rowh=26, an ITEM_ICON_W/H
+ * sprite via a second function-pointer parameter) is REMOVED, not preserved as dead
+ * capability -- it had exactly zero real callers anywhere in the tree (list_pick's
+ * only caller, pick_nature, always passed icon_fn=0; grepped, not assumed) and,
+ * post-extraction, keeping it would have meant a genuinely-unresolvable indirect
+ * call site: lp_row_cb would dereference LpCtx.icon_fn through pick_rows' opaque
+ * `ctx`, and the static stack-budget walker cannot prove a struct-field load is
+ * always NULL the way GCC's own constant-propagation could when icon_fn was a
+ * literal-0 argument at list_pick's one call site (pre-extraction, the whole `if
+ * (icon_fn)` branch was compiled away; post-extraction it would have been a real,
+ * never-taken `bl` the walker has no way to rule out). The contest donor picker's
+ * OWN icon column (pdna_contest.c, mon_row) exercises pick_rows' PR_ROWH26 preset
+ * for real instead, with a real, live species-icon call -- so the preset itself
+ * stays fully justified; only list_pick's dead second consumer of it is gone. */
+static void lp_row(const char* (*name_fn)(uint16_t), int id, int y, bool sel) {
   char row[40], rt[40];
   siprintf(row, "%3d %s", id, name_fn((uint16_t)id));
-  if (icon_fn) {
-    if (sel) ui_panel(2, y - 1, 236, rowh - 1, UI_SEL, UI_TITLE);
-    else     ui_fill_rect(2, y - 1, 236, rowh - 1, UI_BG);
-    const uint16_t* ic = icon_fn((uint16_t)id);
-    if (ic) ui_sprite(4, y, ITEM_ICON_W, ITEM_ICON_H, ic);
-    ui_truncate(rt, row, 24);
-    ui_text(32, y + 8, sel ? UI_SELTEXT : UI_TEXT, rt);
-  } else {
-    if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-    else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
-    ui_truncate(rt, row, 28);
-    ui_text(6, y, sel ? UI_SELTEXT : UI_TEXT, rt);
-  }
+  if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
+  else     ui_fill_rect(2, y - 1, 236, 9, UI_BG);
+  ui_truncate(rt, row, 28);
+  ui_text(6, y, sel ? UI_SELTEXT : UI_TEXT, rt);
 }
 
-static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(uint16_t),
-                          const uint16_t* (*icon_fn)(uint16_t), int current,
-                          bool searchable, bool sortable) {
+/* ===================== pick_rows: the generic searchable/sortable engine ===========
+ * BACKLOG #107: list_pick's own loop, extracted so a second caller (pdna_contest.c's
+ * donor picker) gets the SAME chrome -- dirty-row repaint via ui_clear_gen(), L/R
+ * paging, SELECT -> osk_search when search_key != NULL, START -> A-Z resort when
+ * PR_SORTABLE is set (search_key doubles as the sort key, exactly list_build's own
+ * idiom above) -- without a second copy of the loop. list_pick (below) becomes a
+ * thin caller over this; its rendering (lp_row) and geometry (rowh 26 with icons / 8
+ * without) are UNCHANGED, so its one live caller's (pick_nature) screen is pixel-
+ * identical to before the extraction.
+ *
+ * `row(i, y, sel, ctx)` draws underlying item `i` (0..n-1, the CALLER's own
+ * numbering -- a filtered/sorted display position is translated back to this before
+ * the callback is invoked, so `row` never has to know filtering happened) at screen
+ * y; it owns its whole rect start to finish (the ROW REPAINT RULE above) and must
+ * draw identically whether invoked from the full-paint branch or the row-pair diff.
+ * `ctx` is opaque to this engine -- handed back to `row`/`search_key` unchanged, and
+ * it exists precisely so callers hold their per-call state (which name/icon
+ * functions, which save buffer, ...) WITHOUT a new file-static (BACKLOG #107's own
+ * "no new statics" bar): pass the address of a local struct built for that one call.
+ *
+ * `search_key(i, ctx)` returns the string osk_search's live filter matches
+ * (ci_contains) against and, when PR_SORTABLE is set, the A-Z sort key too -- NULL
+ * disables BOTH search and sort (a caller wanting sort with no search has no use
+ * case in this file today, so the two are not split further).
+ *
+ * Geometry is one of three fixed presets chosen by `opts`, not a 5th/6th parameter:
+ * every screen in this file before this extraction already used one of exactly
+ * three shapes. Default (neither bit set): rowh 8, vis 16, page 10 -- list_pick's
+ * own non-icon numbers. PR_ROWH26: rowh 26, vis 5, page 5 -- list_pick's own icon
+ * numbers (a 24x24 icon column fits the 25 px panel). PR_ROWH9: rowh
+ * PDNA_FILT_ROW_H, vis PDNA_FILT_VIS, page = vis (a full-page jump) -- the FILT
+ * geometry pdna_contest.c's donor picker uses for its plain (no-icon) rows.
+ *
+ * Returns the chosen underlying id (0..n-1), or -1 on B. (Not list_pick's own
+ * CANCEL/0xFFFF: a plain `int` return has no natural sentinel shared by every
+ * future caller's id space, so every caller here already narrows its own result --
+ * list_pick casts back to uint16_t/CANCEL right below.)
+ *
+ * `idx` scratch is g_idx (shared -- see its header comment above for the
+ * exclusivity proof: every user is a leaf screen that calls no OTHER g_idx user
+ * while its own list is open. pdna_contest.c's donor picker joins that same set --
+ * it opens no other g_idx-backed picker while pick_rows() is live).
+ *
+ * PR_SORTABLE/PR_ROWH9/PR_ROWH26 (the `opts` bits) are declared in pdna_pick.h --
+ * this is a public entry point now, not a file-local helper. */
+
+static int pr_build(u16* idx, int n, const char* (*search_key)(int, void*), void* ctx,
+                    const char* search, int sort) {
+  int m = 0;
+  for (int i = 0; i < n; i++)
+    if (!search[0] || !search_key || ci_contains(search_key(i, ctx), search)) idx[m++] = (u16)i;
+  if (sort && search_key) {                          /* insertion sort by search_key() */
+    for (int i = 1; i < m; i++) {
+      u16 v = idx[i]; int j = i - 1;
+      /* Copy v's key OUT to a stable local buffer before comparing -- search_key()
+       * is allowed to return a pointer into a SHARED mutable buffer (pdna_contest.c's
+       * mon_key does exactly this, via its ctx's keybuf), so calling it twice inside
+       * one strcmp() -- once for idx[j], once for v -- would have both calls return
+       * THE SAME address, and by the time strcmp reads them both operands hold
+       * whichever call ran last: a buffer compared against itself, always 0. Caught
+       * live in the b107-contest search+sort shot: the sort toggle visibly did
+       * nothing (BACKLOG #107's own review attack list named "sort stability" --
+       * this is the sharper failure a stability check alone would have missed). */
+      char vkey[32];
+      strncpy(vkey, search_key(v, ctx), sizeof vkey - 1); vkey[sizeof vkey - 1] = 0;
+      while (j >= 0 && strcmp(search_key(idx[j], ctx), vkey) > 0) { idx[j + 1] = idx[j]; j--; }
+      idx[j + 1] = v;
+    }
+  }
+  return m;
+}
+
+int pick_rows(const char* title, int n, int current,
+             void (*row)(int i, int y, bool sel, void* ctx), void* ctx,
+             const char* (*search_key)(int i, void* ctx), int opts) {
   u16* idx = g_idx;
+  bool searchable = search_key != 0;
+  bool sortable   = ((opts & PR_SORTABLE) != 0) && searchable;
   char search[16] = "";
   int sort = 0;
-  int n = list_build(idx, count, name_fn, search, sort);
+  int m = pr_build(idx, n, search_key, ctx, search, sort);
   int sel = 0;
-  for (int i = 0; i < n; i++) if (idx[i] == current) { sel = i; break; }
+  for (int i = 0; i < m; i++) if (idx[i] == current) { sel = i; break; }
 
-  const int rowh = icon_fn ? 26 : 8;                /* taller rows when showing 24x24 icons */
-  const int vis  = icon_fn ? 5 : 16;
-  const int page = icon_fn ? 5 : 10;
+  int rowh = 8, vis = 16, page = 10;
+  if (opts & PR_ROWH26)      { rowh = 26; vis = 5; page = 5; }
+  else if (opts & PR_ROWH9)  { rowh = PDNA_FILT_ROW_H; vis = PDNA_FILT_VIS; page = PDNA_FILT_VIS; }
+
   int top = 0;
   int prev_top = -1, prev_sel = -1;
   bool relist = false;
   uint32_t gen = 0; bool valid = false;
 
   for (;;) {
-    if (sel >= n) sel = n ? n - 1 : 0;
+    if (sel >= m) sel = m ? m - 1 : 0;
     if (sel < top) top = sel;                       /* edge scroll: cursor roams, list moves only at edges */
     if (sel >= top + vis) top = sel - vis + 1;
     if (top < 0) top = 0;
 
     /* full: first paint, an overlay (the OSK, if searchable) wiped us, the search/sort
      * list was rebuilt, or the visible window scrolled. Otherwise a cursor move touches
-     * just the two affected rows -- name_fn/icon_fn are pure id -> content lookups, so
-     * an unmoved id's row text never goes stale. */
+     * just the two affected rows -- row()/search_key() are pure id -> content lookups,
+     * so an unmoved id's row never goes stale. */
     bool full = relist || !valid || gen != ui_clear_gen() || top != prev_top;
     relist = false;
 
     if (full) {
       ui_clear();
-      char h[40]; siprintf(h, "%s  %s  %d", title, sortable ? (sort ? "A-Z" : "No.") : "", n);
+      char h[40]; siprintf(h, "%s  %s  %d", title, sortable ? (sort ? "A-Z" : "No.") : "", m);
       ui_text(4, 2, UI_TITLE, h);
       ui_hline(0, 11, UI_SCR_W, UI_BORDER);
-      for (int i = 0; i < vis && top + i < n; i++)          /* selected row LAST: rule (2) */
-        if (top + i != sel) lp_row(name_fn, icon_fn, rowh, idx[top + i], 14 + i * rowh, false);
-      if (n && sel >= top && sel < top + vis)
-        lp_row(name_fn, icon_fn, rowh, idx[sel], 14 + (sel - top) * rowh, true);
+      for (int i = 0; i < vis && top + i < m; i++)          /* selected row LAST: rule (2) */
+        if (top + i != sel) row(idx[top + i], 14 + i * rowh, false, ctx);
+      if (m && sel >= top && sel < top + vis)
+        row(idx[sel], 14 + (sel - top) * rowh, true, ctx);
       char foot[48];
       siprintf(foot, "A pick  L/R +-%d  %s%sB", page,
                searchable ? "SEL find  " : "", sortable ? "ST sort  " : "");
       ui_text(4, 152, UI_DIM, foot);
     } else if (sel != prev_sel) {
       if (prev_sel >= top && prev_sel < top + vis)
-        lp_row(name_fn, icon_fn, rowh, idx[prev_sel], 14 + (prev_sel - top) * rowh, false);
+        row(idx[prev_sel], 14 + (prev_sel - top) * rowh, false, ctx);
       if (sel >= top && sel < top + vis)
-        lp_row(name_fn, icon_fn, rowh, idx[sel], 14 + (sel - top) * rowh, true);
+        row(idx[sel], 14 + (sel - top) * rowh, true, ctx);
     }
 
     prev_sel = sel; prev_top = top; valid = true; gen = ui_clear_gen();
@@ -1297,18 +1363,48 @@ static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(u
     if (searchable) mask |= KEY_SELECT;
     if (sortable)   mask |= KEY_START;
     u16 k = s_wait(mask);
-    if (k & KEY_B) return CANCEL;
-    else if (k & KEY_A) return n ? idx[sel] : CANCEL;
-    else if (k & KEY_UP)   sel = clampi(sel - 1, 0, n ? n - 1 : 0);
-    else if (k & KEY_DOWN) sel = clampi(sel + 1, 0, n ? n - 1 : 0);
-    else if (k & KEY_L)    sel = clampi(sel - page, 0, n ? n - 1 : 0);
-    else if (k & KEY_R)    sel = clampi(sel + page, 0, n ? n - 1 : 0);
-    else if (sortable && (k & KEY_START)) { sort ^= 1; n = list_build(idx, count, name_fn, search, sort); sel = 0; relist = true; }
+    if (k & KEY_B) return -1;
+    else if (k & KEY_A) return m ? idx[sel] : -1;
+    else if (k & KEY_UP)   sel = clampi(sel - 1, 0, m ? m - 1 : 0);
+    else if (k & KEY_DOWN) sel = clampi(sel + 1, 0, m ? m - 1 : 0);
+    else if (k & KEY_L)    sel = clampi(sel - page, 0, m ? m - 1 : 0);
+    else if (k & KEY_R)    sel = clampi(sel + page, 0, m ? m - 1 : 0);
+    else if (sortable && (k & KEY_START)) { sort ^= 1; m = pr_build(idx, n, search_key, ctx, search, sort); sel = 0; relist = true; }
     else if (searchable && (k & KEY_SELECT)) {
       char q[16];
-      if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); n = list_build(idx, count, name_fn, search, sort); sel = 0; relist = true; }
+      if (osk_search("SEARCH", search, q, sizeof(q))) { strcpy(search, q); m = pr_build(idx, n, search_key, ctx, search, sort); sel = 0; relist = true; }
     }
   }
+}
+
+/* ---- list_pick: a thin caller over pick_rows (BACKLOG #107) ----------------------
+ * `LpCtx` carries name_fn through pick_rows' opaque `ctx` instead of a file-static,
+ * so this extraction adds zero new statics. Geometry and lp_row's own rendering are
+ * byte-for-byte what they were before the extraction (plain 8 px rows; the icon
+ * branch is gone -- see lp_row's own header comment on why). */
+typedef struct { const char* (*name_fn)(uint16_t); } LpCtx;
+
+static void lp_row_cb(int i, int y, bool sel, void* vctx) {
+  LpCtx* c = (LpCtx*)vctx;
+  lp_row(c->name_fn, i, y, sel);
+}
+static const char* lp_key_cb(int i, void* vctx) {
+  LpCtx* c = (LpCtx*)vctx;
+  return c->name_fn((uint16_t)i);
+}
+
+static uint16_t list_pick(const char* title, int count, const char* (*name_fn)(uint16_t),
+                          int current, bool searchable, bool sortable) {
+  LpCtx c = { name_fn };
+  int opts = sortable ? PR_SORTABLE : 0;
+  /* searchable/sortable are coupled through pick_rows' single search_key slot (its
+   * own documented contract: search_key != NULL enables SELECT, unconditionally) --
+   * a caller wanting sortable=true, searchable=false would ALSO get SELECT offered.
+   * No such caller exists (grep: list_pick's only live caller, pick_nature, passes
+   * both false), so this is not further split. */
+  int r = pick_rows(title, count, current, lp_row_cb, &c,
+                    (searchable || sortable) ? lp_key_cb : 0, opts);
+  return r < 0 ? CANCEL : (uint16_t)r;
 }
 
 /* Gen-1/2 restriction (UX-parity audit, Guy 2026-09-07: "the item row -- Gen 3
@@ -1619,7 +1715,7 @@ uint16_t pick_item(uint16_t current) {
   }
 }
 static const char* nature16(uint16_t n) { return pk_nature_name((uint8_t)n); }
-uint8_t  pick_nature(uint8_t current)  { uint16_t r = list_pick("NATURE", 25, nature16, 0, current, false, false); return r == CANCEL ? current : (uint8_t)r; }
+uint8_t  pick_nature(uint8_t current)  { uint16_t r = list_pick("NATURE", 25, nature16, current, false, false); return r == CANCEL ? current : (uint8_t)r; }
 
 /* One of the (at most 2) ability panels. `desc` is the CACHED string (see pick_ability's
  * own comment) -- never a fresh app_ability_desc() call, so this never touches the SD. */
