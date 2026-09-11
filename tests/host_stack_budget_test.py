@@ -1254,6 +1254,198 @@ def test_g110_missing_su_is_named():
               missing == [], missing)
 
 
+# === BACKLOG #106 G2: the address-taken sweep only trusts a PROVEN pointer holder ======
+#
+# The old scan_address_taken() treated any 4-byte-aligned word in any ALLOC+LOAD
+# section as "this function's address is taken" purely because its VALUE happened to
+# equal a function's entry address -- a table entry, a hash constant, a sprite offset
+# planted at the right spot minted a FATAL false positive, papered over with seven
+# unverified `addrtaken-ok` lines added in one day (2026-09-10). The fix asks the
+# compiler's OWN object file whether a relocation record backs the word (a data
+# section) or trusts objdump's own `.word` literal-pool annotation (.text) instead of
+# a raw byte scan of the whole section -- these fixtures exercise both halves plus the
+# "exact function start, not merely inside its range" distinction a real switch jump
+# table (gen1_write.o's char-encode table, found live) needed.
+
+def _g2_patch_run(monkeypatch_map):
+    """Install a subprocess.run stub that answers `objdump -r`/`-t`/`-s -j SEC` calls
+    from `monkeypatch_map` (keyed "r"/"t"/"s:<section>") with a canned _FakeCompleted,
+    and returns the real subprocess.run for anything else. Returns the restore
+    function; the caller MUST call it in a `finally:` block."""
+    import subprocess as _subprocess
+    real_run = _subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == sb.OBJDUMP:
+            if "-r" in cmd and "r" in monkeypatch_map:
+                return _FakeCompleted(monkeypatch_map["r"])
+            if "-t" in cmd and "t" in monkeypatch_map:
+                return _FakeCompleted(monkeypatch_map["t"])
+            if "-s" in cmd and "-j" in cmd:
+                sec = cmd[cmd.index("-j") + 1]
+                key = f"s:{sec}"
+                if key in monkeypatch_map:
+                    return _FakeCompleted(monkeypatch_map[key])
+        return real_run(cmd, **kwargs)
+
+    _subprocess.run = fake_run
+    return lambda: setattr(_subprocess, "run", real_run)
+
+
+def test_g2_word_with_no_relocation_is_not_taken():
+    """A `.rodata` word whose VALUE happens to equal a function's address, with NO
+    relocation record behind it at all -- the exact layout-coincidence class
+    (a table entry, a hash constant, a ROM-span constant) that minted seven
+    `addrtaken-ok` lines. Must NOT be reported as address-taken."""
+    import tempfile
+    name_at = {0x08010000: "real_target"}
+    reloc_text = "RELOCATION RECORDS FOR [.rodata]:\nOFFSET   TYPE              VALUE\n"
+    symtab_text = "00000000 g     F .text\t00000010 real_target\n"
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "plant.o"), "w").close()
+        restore = _g2_patch_run({"r": reloc_text, "t": symtab_text})
+        try:
+            taken, detail = sb.scan_relocated_addresses(d, name_at)
+        finally:
+            restore()
+        check("(G2) a coincidental word with NO relocation is not taken",
+              taken == set(), taken)
+        check("(G2) ... and gets no detail entry either", detail == {}, detail)
+
+
+def test_g2_mutation_a_raw_value_scan_would_have_flagged_the_same_word():
+    """Mutation for the fixture above: this is exactly what the PRE-G2 raw
+    byte-value scan (_words_from_objdump_s_text(), still used by the narrow
+    third-party fallback) does with no relocation gate at all -- feed it the
+    SAME section bytes as the no-relocation fixture and it DOES report the
+    coincidental word, proving the relocation check in scan_relocated_addresses()
+    is load-bearing, not decorative."""
+    section_dump = " 0000 00000108 00000000 00000000 00000000  ........\n"
+    words = list(sb._words_from_objdump_s_text(section_dump))
+    check("(G2 mutation) the raw scan sees the same coincidental word",
+          0x08010000 in {w & ~1 for w in words}, words)
+
+
+def test_g2_global_symbol_relocation_is_taken():
+    """The common case: a global function's address stored as a genuine pointer
+    keeps ITS OWN NAME directly in the relocation record (no byte read needed) --
+    e.g. `RV_ANCHOR`'d flashcartio_activate in pdna_romver_data.c's own table,
+    confirmed live against the real .o. Must be reported taken, with a location
+    naming the containing data symbol."""
+    import tempfile
+    name_at = {0x08010000: "real_target", 0x08020000: "unrelated_fn"}
+    reloc_text = ("RELOCATION RECORDS FOR [.rodata]:\n"
+                  "OFFSET   TYPE              VALUE\n"
+                  "00000004 R_ARM_ABS32       real_target\n")
+    symtab_text = ("00000000 g     F .text\t00000010 real_target\n"
+                   "00000000 l     O .rodata\t00000020 some_table\n")
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "plant.o"), "w").close()
+        restore = _g2_patch_run({"r": reloc_text, "t": symtab_text})
+        try:
+            taken, detail = sb.scan_relocated_addresses(d, name_at)
+        finally:
+            restore()
+        check("(G2) a genuinely relocated global symbol IS taken",
+              taken == {"real_target"}, taken)
+        check("(G2) its location names the containing data symbol",
+              detail.get("real_target") == ["plant.o:.rodata+0x4 inside some_table+0x4"],
+              detail)
+
+
+def test_g2_local_symbol_exact_start_vs_mid_function_jump_table_entry():
+    """A LOCAL/static function's address, stored genuinely as a pointer, collapses
+    to a section-relative relocation (VALUE == '.text') with NO addend field of
+    its own (ARM ELF relocations are REL) -- the true target is read back out of
+    the referencing word's own bytes. This is ALSO the exact shape a switch-
+    statement jump table uses on this ARMv4T target (no Thumb-2 tbb/tbh): every
+    entry is an address INSIDE some function's body (a case label), essentially
+    never at its first instruction -- confirmed live in gen1_write.o's char-encode
+    table (80+ entries, all inside gen1_encode_char, none at its start). Offset 0
+    here holds static_target's EXACT entry (0x0) -- taken. Offset 4 holds 0x8,
+    which is INSIDE static_target's own [0,0x10) range but not its start -- a
+    'contains' lookup would (wrongly) call this taken too; an exact-start lookup
+    correctly does not."""
+    import tempfile
+    name_at = {0x08010000: "static_target", 0x08010010: "other_fn"}
+    reloc_text = ("RELOCATION RECORDS FOR [.rodata]:\n"
+                  "OFFSET   TYPE              VALUE\n"
+                  "00000000 R_ARM_ABS32       .text\n"
+                  "00000004 R_ARM_ABS32       .text\n")
+    symtab_text = ("00000000 l     F .text\t00000010 static_target\n"
+                   "00000010 l     F .text\t00000020 other_fn\n"
+                   "00000000 l     O .rodata\t00000008 jump_table\n")
+    rodata_dump = " 0000 00000000 08000000  ........\n"   # word@0 = 0x0, word@4 = 0x8
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "plant.o"), "w").close()
+        restore = _g2_patch_run({"r": reloc_text, "t": symtab_text,
+                                  "s:.rodata": rodata_dump})
+        try:
+            taken, detail = sb.scan_relocated_addresses(d, name_at)
+        finally:
+            restore()
+        check("(G2) the exact-start entry (offset 0 -> 0x0) is taken",
+              "static_target" in taken, taken)
+        check("(G2) ... and ONLY that one -- the mid-function entry is not",
+              taken == {"static_target"}, taken)
+
+    # Mutation: a CONTAINMENT lookup (bisect onto the nearest symbol at-or-before
+    # the address, exactly what _containing_symbol() gives report() for the DATA
+    # side) would call offset 4's target (0x8) "inside static_target" too --
+    # proving the fix is the EXACT-match requirement, not merely having a symbol
+    # table at all.
+    text_syms = [(0x08010000, 0x10, "static_target", "F"), (0x08010010, 0x20, "other_fn", "F")]
+    contained_name, _delta = sb._containing_symbol(text_syms, 0x08010008)
+    check("(G2 mutation) a containment lookup WOULD call the mid-function entry taken too",
+          contained_name == "static_target", contained_name)
+
+
+def test_g2_text_literal_pool_still_detected_via_objdump_annotation():
+    """The (b) half of the fix: .text literal pools remain visible through
+    objdump's OWN `.word` disassembly annotation (never a raw byte scan, which
+    would also match ordinary Thumb instruction pairs) -- proves the .rodata/
+    .data coincidence fix didn't cost real .text-held function pointers."""
+    dump_text = (
+        "08010000 <holder>:\n"
+        " 8010000:\t4770      \tbx\tlr\n"
+        " 8010002:\t0000      \tmovs\tr0, r0\n"
+        " 8010004:\t0100 0108 \t.word\t0x08010001\n"
+    )
+    name_at = {0x08010000: "holder"}
+    taken = sb.scan_text_literal_pool(dump_text, name_at)
+    check("(G2) a .text literal pool entry is still found as address-taken",
+          taken == {"holder"}, taken)
+
+
+def test_g2_third_party_fallback_scoped_to_non_project_functions():
+    """own_function_names()/the fallback in scan_address_taken() must ONLY ever
+    raw-scan for names this project's OWN *.o's do NOT define (crt0/libgcc/
+    newlib/libtonc -- their member objects never land under --builddir at all, so
+    scan_relocated_addresses() has no relocation to read for them). A name that
+    IS one of this project's own functions must get ONLY the relocation-proven
+    treatment, even if scan_third_party_words_raw() is handed it by mistake --
+    modeled directly against own_function_names() and the restrict_to filter."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "app.o"), "w").close()
+        symtab_text = ("00000000 g     F .text\t00000010 project_fn\n"
+                       "00000010 g     F .text\t00000010 project_helper\n")
+        restore = _g2_patch_run({"t": symtab_text})
+        try:
+            own = sb.own_function_names(d)
+        finally:
+            restore()
+        check("(G2) own_function_names() finds every function this project compiled",
+              own == {"project_fn", "project_helper"}, own)
+
+    name_at = {0x08010000: "project_fn", 0x08020000: "crt_symbol"}
+    restrict_to = {"crt_symbol"}   # project_fn deliberately NOT in the restrict set
+    section_dumps = {".rodata": " 0000 00000108 00000208  ........\n"}
+    taken = sb.scan_third_party_words_raw([".rodata"], section_dumps, name_at, restrict_to)
+    check("(G2) the fallback only ever reports names IN restrict_to",
+          taken == {"crt_symbol"}, taken)
+
+
 def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
@@ -1291,6 +1483,12 @@ def main():
     test_f5_tarjan_sccs_iterative_3000_node_chain()
     test_f5_tarjan_sccs_small_graph_matches_known_components()
     test_g110_missing_su_is_named()
+    test_g2_word_with_no_relocation_is_not_taken()
+    test_g2_mutation_a_raw_value_scan_would_have_flagged_the_same_word()
+    test_g2_global_symbol_relocation_is_taken()
+    test_g2_local_symbol_exact_start_vs_mid_function_jump_table_entry()
+    test_g2_text_literal_pool_still_detected_via_objdump_annotation()
+    test_g2_third_party_fallback_scoped_to_non_project_functions()
     print()
     if FAILURES:
         print(f"host_stack_budget_test: {len(FAILURES)} FAILED: {', '.join(FAILURES)}")

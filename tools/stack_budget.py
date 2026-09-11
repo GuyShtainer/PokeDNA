@@ -1869,29 +1869,349 @@ def dump_alloc_load_sections(elf, sections):
     return result
 
 
-def scan_address_taken(elf, name_at, sections, section_dumps=None):
-    """Every function in `name_at` (address -> name, from analyze()) whose address
-    appears as a 4-byte-aligned little-endian word anywhere in `sections`' on-disk
-    bytes. A Thumb function's address always carries bit 0 set wherever it's stored
-    as a callable pointer (the interworking bit BX/BLX read) -- masked off before
-    the name_at lookup, exactly like the veneer-literal and trap-#5 literal-call
-    resolvers above already do. `section_dumps` (F7), when given, is the
-    dump_alloc_load_sections() result -- avoids re-running objdump per section when
-    the caller (main()) already fetched it once for read_build_dir_stamp() too; falls
-    back to one objdump call per section (the old behaviour) when omitted, so a direct
-    caller/test doesn't have to know about the new shared-dump plumbing."""
-    if section_dumps is None:
-        section_dumps = dump_alloc_load_sections(elf, sections)
+# === G2 (BACKLOG #106): the address-taken sweep, restricted to PROVEN pointer holders ==
+#
+# The original scan_address_taken() (kept in git history) treated every 4-byte-aligned
+# word in every ALLOC+LOAD section -- including .text, where it double-counts as two
+# adjacent 16-bit Thumb opcodes -- as a candidate function-pointer store, purely
+# because its VALUE happened to equal some function's entry address. A data table
+# entry, a hash constant, or a ROM-span constant is exactly as likely to collide with
+# a small, densely-populated 0x08xxxxxx address space as a genuine pointer is -- seven
+# `addrtaken-ok` lines were added across 2026-09-10 alone to paper over exactly that
+# (tte_cmd_skip, __aeabi_d2iz, encode_checked, em_get_ribbon_flag, the _EZFO pair, ...),
+# each one an unverified escape hatch a reviewer has to trust on faith.
+#
+# The fix asks a different, checkable question per section class:
+#   - DATA sections (.rodata/.data/.iwram/...): does the COMPILER'S OWN OBJECT FILE
+#     say, via a relocation record, "this word is that function's address"? A
+#     relocation is the compiler's own proof, not a coincidence -- scan_relocated_
+#     addresses() below reads it straight from `objdump -r`/`-t` on the *.o files
+#     (pre-link; ARM ELF relocations are REL, not RELA, so a LOCAL/static target's
+#     addend has to be read back out of the referencing bytes themselves, exactly
+#     like read_build_dir_stamp() already does for one known symbol).
+#   - .text literal pools: objdump's OWN disassembler already tells us, unambiguously,
+#     which trailing bytes of a function are a `.word` literal rather than a decoded
+#     instruction (the veneer/trap-#5 resolvers above already trust this same
+#     distinction) -- scan_text_literal_pool() below reuses it, so two adjacent
+#     Thumb opcodes that happen to spell a function's address are never mistaken for
+#     a pointer store the way a raw byte-value scan of the whole section would.
+
+_OBJDUMP_RELOC_HDR_RE = re.compile(r'^RELOCATION RECORDS FOR \[([^\]]+)\]:$')
+_OBJDUMP_RELOC_LINE_RE = re.compile(r'^([0-9a-f]+)\s+(\S+)\s+(\S+)')
+_WORD_RELOC_TYPES = {"R_ARM_ABS32", "R_ARM_TARGET1"}
+# Relocation-bearing sections this sweep has no business reading as "data that might
+# hold a function pointer" -- debug info/unwind tables/string tables carry symbol
+# references for entirely different reasons and would only add noise (or, for
+# .debug_*, potentially a huge amount of it on a -g build).
+_RELOC_SECTION_SKIP_PREFIXES = (".debug", ".ARM.exidx", ".ARM.extab", ".comment",
+                                 ".note", ".symtab", ".strtab", ".shstrtab", ".group")
+
+
+def dump_object_relocations(obj):
+    """`objdump -r <obj>`'s raw text for one pre-link object file. Returns "" (not an
+    exception) when the tool fails on a malformed/missing object -- the caller then
+    simply finds no relocations there, the same fail-open-to-"no evidence" shape
+    dump_alloc_load_sections() already uses for a missing section."""
+    try:
+        return subprocess.run([OBJDUMP, "-r", obj], capture_output=True, text=True,
+                               check=True).stdout
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def parse_object_relocations(text):
+    """{section_name: [(offset:int, reloc_type:str, value:str), ...]} from one
+    `objdump -r` dump's 'RELOCATION RECORDS FOR [section]:' blocks (see
+    dump_object_relocations()). `value` is either a real global symbol's name
+    (globals keep their name in a relocatable object's relocation record) or the
+    bare name of the SECTION the word targets (a local/static symbol collapses to
+    its containing section -- see scan_relocated_addresses() for how the actual
+    target address is then recovered)."""
+    out = {}
+    cur = None
+    for line in text.splitlines():
+        m = _OBJDUMP_RELOC_HDR_RE.match(line)
+        if m:
+            cur = m.group(1)
+            out.setdefault(cur, [])
+            continue
+        if cur is None:
+            continue
+        m = _OBJDUMP_RELOC_LINE_RE.match(line)
+        if not m or m.group(2) == "TYPE":
+            continue
+        try:
+            off = int(m.group(1), 16)
+        except ValueError:
+            continue
+        out[cur].append((off, m.group(2), m.group(3)))
+    return out
+
+
+def dump_object_symbols(obj):
+    """`objdump -t <obj>`'s raw text for one pre-link object file (see
+    dump_object_relocations() for the fail-open rationale)."""
+    try:
+        return subprocess.run([OBJDUMP, "-t", obj], capture_output=True, text=True,
+                               check=True).stdout
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def parse_object_symbol_table(text):
+    """{section_name: [(addr, size, name, kind), ...]} sorted by addr, kind in {'F'
+    function, 'O' data object} -- from ONE object file's own `objdump -t` (pre-link,
+    section-relative addresses, not final-image addresses). The 'd' rows objdump
+    emits for a section's OWN definition (name identical to the section, e.g. a row
+    literally named '.rodata') are skipped -- those exist so a relocation can target
+    "the section itself" (see parse_object_relocations()), not as something a real
+    pointer word could be "inside". Same tolerant flag-column parsing as
+    parse_symbol_census() (the flag field's width varies; only the SET of flag
+    tokens between the address and the section name is ever tested)."""
+    by_section = collections.defaultdict(list)
+    for line in text.splitlines():
+        if "\t" not in line:
+            continue
+        left, right = line.split("\t", 1)
+        lparts = left.split()
+        rparts = right.split(None, 1)
+        if len(lparts) < 4 or len(rparts) < 2:
+            continue
+        try:
+            addr = int(lparts[0], 16)
+        except ValueError:
+            continue
+        try:
+            size = int(rparts[0], 16)
+        except ValueError:
+            continue
+        section = lparts[-1]
+        name = re.sub(r'^\.(hidden|internal|protected)\s+', '', rparts[1].strip())
+        if name == section:
+            continue                                # the section's own definition row
+        flags = lparts[2:-1]
+        kind = 'F' if 'F' in flags else ('O' if 'O' in flags else None)
+        if kind is None:
+            continue
+        by_section[section].append((addr, size, name, kind))
+    for sec in by_section:
+        by_section[sec].sort()
+    return dict(by_section)
+
+
+def _containing_symbol(symbols_in_section, offset):
+    """(name, delta) for the last (addr,size,name,kind) entry whose addr <= offset --
+    same bisect-on-sorted-starts discipline as analyze()'s owner() -- or (None, 0)
+    when the list is empty or offset precedes every entry."""
+    if not symbols_in_section:
+        return None, 0
+    addrs = [s[0] for s in symbols_in_section]
+    i = bisect.bisect_right(addrs, offset) - 1
+    if i < 0:
+        return None, 0
+    addr, _size, name, _kind = symbols_in_section[i]
+    return name, offset - addr
+
+
+def scan_relocated_addresses(builddir, name_at):
+    """G2: every function in `name_at` whose address is taken via a genuine
+    R_ARM_ABS32/R_ARM_TARGET1 relocation in some *.o's DATA section (anything that
+    isn't .text and isn't one of the debug/metadata sections _RELOC_SECTION_SKIP_
+    PREFIXES excludes). Returns (taken: set, detail: {fn: [location strings]}) --
+    detail is the human-readable "<obj>:<section>+<off> inside <symbol>+<delta>"
+    trail a FATAL orphan report names, per BACKLOG #106 G2 item 2.
+
+    A LOCAL/static relocation target collapses to its containing SECTION name
+    (e.g. value == ".text"): ARM's REL (not RELA) relocations carry no addend field
+    of their own, so the actual target offset has to be read back out of the
+    referencing word's own bytes (`objdump -s`) -- identical in spirit to
+    read_build_dir_stamp()'s single-symbol byte read, generalized to any (obj,
+    section, offset). A GLOBAL target keeps its own name in the relocation record
+    directly and needs no byte read. Either way, the resolved name only counts as
+    "taken" once it is confirmed to be one of THIS OBJECT's own .text FUNCTIONS
+    (Thumb bit masked off) that also appears in `name_at` -- a data-to-data
+    relocation (an array pointing at another array) never becomes a false hit."""
+    func_names = set(name_at.values())
+    taken = set()
+    detail = collections.defaultdict(list)
+    word_cache = {}   # (obj, section) -> {byte_addr: value}, avoid re-dumping per reloc
+
+    def word_at(obj, section, offset):
+        key = (obj, section)
+        if key not in word_cache:
+            data = {}
+            out = subprocess.run([OBJDUMP, "-s", "-j", section, obj],
+                                  capture_output=True, text=True).stdout
+            for line in out.splitlines():
+                m = _OBJDUMP_S_LINE_RE.match(line)
+                if not m:
+                    continue
+                base = int(m.group(1), 16)
+                raw = bytes.fromhex(m.group(2).replace(" ", ""))
+                for i, b in enumerate(raw):
+                    data[base + i] = b
+            word_cache[key] = data
+        data = word_cache[key]
+        if any((offset + i) not in data for i in range(4)):
+            return None
+        return int.from_bytes(bytes(data[offset + i] for i in range(4)), "little")
+
+    for obj in sorted(glob.glob(os.path.join(builddir, "*.o"))):
+        relocs = parse_object_relocations(dump_object_relocations(obj))
+        if not relocs:
+            continue
+        symbols = parse_object_symbol_table(dump_object_symbols(obj))
+        # EXACT starts only, not "which function's range contains this address" --
+        # a switch-statement jump table (GCC's `ldr pc, [pc, rN, lsl #2]`/computed-
+        # goto codegen on this ARMv4T target, no Thumb-2 tbb/tbh available) is ALSO
+        # a section+addend relocation into .text, with every entry an address
+        # *inside* some function's body (a case label) but essentially never
+        # exactly at its first instruction -- confirmed live: gen1_write.o's char-
+        # encode table put 80+ such entries inside gen1_encode_char's own range,
+        # none matching its start, a real false-positive class a containment
+        # lookup would have (mis)confirmed as "gen1_encode_char's address is
+        # taken". Masking bit 0 before the lookup normalizes both conventions this
+        # target's relocations use for a genuine function-pointer's target value
+        # (with the Thumb interworking bit, e.g. readelf's raw 0x2e5 for a symbol
+        # objdump -t itself always PRINTS stripped, e.g. 0x2e4 -- so the map below
+        # is already bit0-stripped) to the SAME key a case-label addend (always
+        # even, mid-function, never a function start either way) still correctly
+        # misses.
+        text_starts = {addr: name for addr, _size, name, _kind in symbols.get(".text", [])}
+        for sec, entries in relocs.items():
+            if sec == ".text" or sec.startswith(_RELOC_SECTION_SKIP_PREFIXES):
+                continue
+            for off, typ, value in entries:
+                if typ not in _WORD_RELOC_TYPES:
+                    continue
+                fn_name = None
+                if value == ".text":
+                    addend = word_at(obj, sec, off)
+                    if addend is None:
+                        continue
+                    fn_name = text_starts.get(addend & ~1)
+                elif not value.startswith("."):
+                    fn_name = value               # a global symbol names itself
+                if fn_name is None or fn_name not in func_names:
+                    continue
+                taken.add(fn_name)
+                sym_name, delta = _containing_symbol(symbols.get(sec, []), off)
+                loc = f"{os.path.basename(obj)}:{sec}+{off:#x}"
+                if sym_name is not None:
+                    loc += f" inside {sym_name}+{delta:#x}"
+                detail[fn_name].append(loc)
+    return taken, dict(detail)
+
+
+_TEXT_WORD_RE = re.compile(r'^\.word\s+0x([0-9a-f]+)$')
+
+
+def scan_text_literal_pool(dump_text, name_at):
+    """G2: every function in `name_at` whose address is taken via a `.word` literal-
+    pool entry somewhere in .text -- found through objdump's OWN disassembly
+    annotation (an INSN_RE-shaped line whose mnemonic half is exactly
+    `.word 0xNNNNNNNN`), the same trusted distinction the veneer resolver (:531) and
+    the trap-#5 literal-call resolver (:1076) already rely on. Deliberately NOT a
+    raw byte scan of .text: two adjacent 16-bit Thumb opcodes read as one 32-bit
+    word can coincidentally equal a function's address far more easily than a real
+    literal pool entry can (.text is far denser than .rodata), and unlike a literal
+    pool a decoded instruction was never a pointer store to begin with."""
+    taken = set()
+    for raw in dump_text.splitlines():
+        m = INSN_RE.match(raw.rstrip("\n"))
+        if not m:
+            continue
+        wm = _TEXT_WORD_RE.match(m.group(2).strip())
+        if not wm:
+            continue
+        fn = name_at.get(int(wm.group(1), 16) & ~1)
+        if fn:
+            taken.add(fn)
+    return taken
+
+
+def own_function_names(builddir):
+    """Every FUNCTION symbol name defined in one of THIS PROJECT'S OWN *.o files
+    under `builddir` -- i.e. everything scan_relocated_addresses() can actually
+    read a relocation for. crt0/libgcc/newlib/libtonc code is linked in from
+    prebuilt *.a archives whose member objects never land in `builddir` at all, so
+    a name in `name_at` but NOT in this set is third-party: see scan_address_taken()
+    for why that distinction matters."""
+    names = set()
+    for obj in sorted(glob.glob(os.path.join(builddir, "*.o"))):
+        for entries in parse_object_symbol_table(dump_object_symbols(obj)).values():
+            for _addr, _size, name, kind in entries:
+                if kind == 'F':
+                    names.add(name)
+    return names
+
+
+def scan_third_party_words_raw(sections, section_dumps, name_at, restrict_to):
+    """The OLD (pre-G2) whole-section raw-word scan, DELIBERATELY restricted to
+    `restrict_to` (a name set) rather than every function in the image. See
+    scan_address_taken()'s docstring for why this fallback exists and why
+    restricting it closes the coincidence risk it would otherwise reopen."""
+    restrict_addrs = {addr: name for addr, name in name_at.items() if name in restrict_to}
+    if not restrict_addrs:
+        return set()
     taken = set()
     for sec in sections:
         out = section_dumps.get(sec)
         if out is None:
             continue
         for w in _words_from_objdump_s_text(out):
-            fn = name_at.get(w & ~1)
+            fn = restrict_addrs.get(w & ~1)
             if fn:
                 taken.add(fn)
     return taken
+
+
+def scan_address_taken(builddir, dump_text, name_at, sections, section_dumps):
+    """The whole G2 address-taken sweep: scan_relocated_addresses() (DATA sections,
+    relocation-proven, covers everything THIS PROJECT compiles) union
+    scan_text_literal_pool() (.text literal pools, disassembly-proven) union a
+    THIRD, NARROW fallback for the one real class those two provably cannot see:
+    crt0/libgcc/newlib/libtonc functions, whose *.o member objects are extracted
+    from prebuilt archives at link time and never appear under `--builddir` for
+    scan_relocated_addresses() to read a relocation from at all.
+
+    Diffing this sweep's output against the pre-G2 whole-image word scan (run over
+    both shipped ELFs, per the BACKLOG #106 G2 stop-licence: "compare the
+    implementation sets before/after") found exactly that gap: __do_global_dtors_
+    aux/frame_dummy/_fini (.init_array/.fini_array, crtstuff), __utf8_mbtowc/
+    __utf8_wctomb (a newlib locale table), and the 9 sbmp16_* tonc surface-drawg
+    entries -- all genuinely address-taken, all invisible to a relocation read
+    because their .o's are inside libgcc.a/libc.a/libtonc.a, not `builddir`. (The
+    diff's OTHER two "misses", art_icons_read_rows_fp and g2w_insert, are this
+    project's OWN functions, called directly by name everywhere they appear in
+    source/ -- the old scan's coincidental match on them is exactly the false-
+    positive class G2 exists to remove, not a real miss.)
+
+    own_function_names(builddir) draws the line precisely: a name this project's
+    OWN *.o's define gets ONLY the relocation-proven treatment (no raw-scan
+    fallback -- that's where the coincidence risk this fix closes actually lived);
+    a name that is NOT one of this project's own functions (crt/libgcc/newlib/
+    tonc) falls back to the raw scan, restricted to just that small, already-
+    enumerated, human-reviewable set (every one of them already has, or needs, its
+    own `addrtaken-ok` line) -- never re-widened to the whole image. `sections`/
+    `section_dumps` are the alloc_load_sections()/dump_alloc_load_sections()
+    result -- REQUIRED, not computed here, so main() can pass the ones it already
+    fetched for read_build_dir_stamp() (no extra objdump invocations) and a direct
+    caller/test is never surprised by a hidden shell-out.
+
+    Returns (taken: set, detail: {fn: [locations]}) -- `detail` only ever names
+    DATA-section relocation hits; the literal-pool and third-party-fallback classes
+    have no single "containing symbol" worth naming (a literal pool is already
+    "somewhere in this function's own pool"; a crt/tonc table's location is a
+    coincidence-scan hit by construction, not a proven relocation site)."""
+    taken, detail = scan_relocated_addresses(builddir, name_at)
+    taken |= scan_text_literal_pool(dump_text, name_at)
+
+    own = own_function_names(builddir)
+    third_party = {name for name in name_at.values() if name not in own}
+    if third_party:
+        taken |= scan_third_party_words_raw(sections, section_dumps, name_at, third_party)
+    return taken, detail
 
 
 # === D2 (BACKLOG #84b fifth pass): the ELF names the build dir it was linked from =====
@@ -2407,7 +2727,8 @@ def main(argv):
     # sweep already accounts for it. The sweep is a property of the whole image, not of
     # whichever root a re-measurement happens to pass, so it only runs for --root main.
     if args.root == "main":
-        taken = scan_address_taken(args.elf, analysis["name_at"], sections, section_dumps)
+        taken, taken_detail = scan_address_taken(args.builddir, dump_text, analysis["name_at"],
+                                                  sections, section_dumps)
         declared_or_reachable = all_impls | reachable | isr_decls | addrtaken_ok
         orphans = sorted(taken - declared_or_reachable)
         if orphans:
@@ -2415,6 +2736,8 @@ def main(argv):
             for fn in orphans:
                 b, _src = frame_of(fn, su_sizes, estimated, frame_overrides)
                 print(f"***   {fn} frame {b}")
+                for loc in taken_detail.get(fn, []):
+                    print(f"***     {loc}")
             print("*** This function's address is stored somewhere in the linked image (a "
                   "struct field, a dispatch table, a literal pool) but it is named by no "
                   "declaration in stack_edges.txt, not reachable through the ordinary call "

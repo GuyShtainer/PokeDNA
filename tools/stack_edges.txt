@@ -909,15 +909,30 @@ addrtaken-ok rumble_bus_probe_bracketed  # pdna_main.c:438 flashcartio_bus_probe
 # name) graph keying D5 introduces. Deferred rather than guessed at.
 # F1 (BACKLOG #84b seventh pass): all 17 ScanCb job-table callbacks REMOVED from this file's addrtaken-ok lists -- every one is now dispatched (rom_gbui_open/rom_gbui_open_loc/locate@rom_gbsprite/RomGbIcon.read's widened declarations above).
 
-# D1 (BACKLOG #84b fifth pass) address-taken sweep triage, batch 5: delta-build-only
-# orphans (this variant links Gold/Silver/Crystal-era ROM scanner code the artless/
-# normal builds' reachable set doesn't exercise the same way).
-addrtaken-ok _EZFO_startUp        # linked at EWRAM 0x02000000, which COINCIDES with the
-                                   # unrelated CART_SPAN=0x02000000u constant (fused_gb.c/
-                                   # fused_rom.c/fused_sav.c) -- a literal-pool false match,
-                                   # not a real function-pointer dispatch; _EZFO_startUp is
-                                   # called directly (lib/flashcartio.c:333 `_EZFO_startUp()`)
-addrtaken-ok _EZFO_reboot         # same false-match class, called directly (flashcartio.c:393)
+# BACKLOG #106 G2: the address-taken sweep is now relocation-proven for every function
+# this project's own *.o's define (scan_relocated_addresses() reads `objdump -r`/`-t`
+# against the *.o's under --builddir, not a raw byte-value scan of the final ELF), so a
+# data word that merely COINCIDES with a function's address in this link's layout no
+# longer counts as "taken" at all. Six of the seven 2026-09-10 exemptions below were
+# exactly that coincidence class (their own comments already said so) -- re-run on both
+# gate ELFs with the line removed and no orphan reappeared, so they are deleted rather
+# than kept as now-decorative escape hatches: `addrtaken-ok _EZFO_startUp`,
+# `addrtaken-ok _EZFO_reboot` (a literal-pool match on the unrelated CART_SPAN=
+# 0x02000000u constant), `addrtaken-ok g2_box_mon_at` (no call site anywhere, and no
+# longer even a coincidental hit), `addrtaken-ok tte_cmd_skip` (libtonc.a's own table
+# entry -- third-party, only reachable through the narrow fallback scan below, and this
+# specific link doesn't put its address anywhere the fallback can see), `addrtaken-ok
+# __aeabi_d2iz` and `addrtaken-ok encode_checked` (both explicitly documented as literal-
+# pool ROM-span/constant coincidences in the full-art build). `addrtaken-ok
+# em_get_ribbon_flag` is not re-added either: same coincidence class, same re-run proof.
+#
+# `addrtaken-ok flashcartio_activate` is KEPT: RV_ANCHOR'd into pdna_romver_data.c's own
+# g_pdna_romver table via `(uint32_t)(flashcartio_activate)` (pdna_romver_data.c:75/106)
+# -- a REAL R_ARM_ABS32 relocation against the function's own global symbol name, proven
+# live in pdna_romver_data.o's own `objdump -r` output, not a coincidence. Reachable
+# directly on artless/normal (source/pdna_main.c:9642/9658, outside `#ifdef PDNA_DELTA`)
+# but NOT on `make delta` (those call sites are compiled out there) -- load-bearing on
+# that variant, per the G6 note this replaces (kept verbatim below).
 # G6 (BACKLOG #84b eighth pass) CONTRADICTION FOUND, kept as-is: the brief for this
 # item said to delete `addrtaken-ok flashcartio_activate` because it is "called
 # directly and reachable" (true on the artless/normal builds: source/pdna_main.c:
@@ -930,50 +945,13 @@ addrtaken-ok _EZFO_reboot         # same false-match class, called directly (fla
 # RV_ANCHOR literal (pdna_romver_data.c:75/106) the ORIGINAL reason described.
 # Restored rather than improvised around, per the stop-licence -- flagged in the
 # session report instead.
-# DELTA-ONLY load-bearing: on artless/normal this function is called directly and reachable
-# (the line is redundant there); on the delta build those call sites are compiled out and the
-# only taker is the ROM self-check window table g_pdna_romver (RV_ANCHOR) -- deleting this line
-# FATALs `make delta`. Own deepest chain 120 B (<= the 256-B cap).
 addrtaken-ok flashcartio_activate # RV_ANCHOR'd into pdna_romver_data.c's ROM self-check
-                                   # window table (symbol address used to LOCATE a CRC
-                                   # window, not to call through) -- pdna_romver_data.c:75/106.
+                                   # window table -- a real relocation against this
+                                   # function's own symbol name, pdna_romver_data.c:75/106.
                                    # Reachable directly (source/pdna_main.c:9642/9658) ONLY on
                                    # the non-delta builds; #ifdef PDNA_DELTA compiles those
                                    # call sites out, so the exemption is load-bearing there.
-addrtaken-ok g2_box_mon_at        # gen2_save.c:603/gen2_save.h:233 -- grepped: no call site
-                                   # or function-pointer assignment found anywhere in source/;
-                                   # either a genuinely unused public function or another
-                                   # literal-pool coincidence (see _EZFO_startUp above) --
-                                   # flagged here rather than silently trusted; worth a
-                                   # follow-up look, not a stack-budget risk either way
-                                   # (its own frame is 16 B and it calls nothing declared).
 
 # b60 (Contests): the donor picker's label callback (source_label / mon_label) --
 # resolved as one argsite (verified with --dump-sites by the b60 reviewer).
 pick_list.constprop.0 argsites=1 -> source_label mon_label
-
-# libtonc's TTE command parser keeps tte_cmd_skip in its own dispatch table (a literal-pool
-# entry, address-taken, frame 0 B); it entered the image with the Gen-2 Pack screen's text
-# and is reached only through tte_cmd_default's declared recursion class. Own chain 0 B
-# (<= the 256-B cap). Merged 2026-09-10 (u5).
-addrtaken-ok tte_cmd_skip
-
-# libgcc's double->int runtime helper (frame 0 B): its address matched a word in the FULL-ART
-# image only (compiled art data -- a literal coincidence, the #106 G2 class), no dispatch table
-# holds it and nothing in PokeDNA calls it indirectly. Own chain 0 B (<= the 256-B cap).
-# Merged 2026-09-10 (u5, normal build).
-addrtaken-ok __aeabi_d2iz
-
-# gen2_write.c's static encode_checked (frame 72 B) is called DIRECTLY by g2w_set_nickname /
-# g2w_set_otname / g2w_set_box_name (4 bl sites) and is never dispatched. On some links it lands
-# at exactly 0x08010000, which pdna_romfull_screen's literal pool and s_fam (.rodata) hold as a
-# ROM-span constant, so the address-taken sweep sees a coincidence (BACKLOG #106 G2: the sweep
-# does not distinguish data words from pointers). Bounded by the 256-B cap. Found on the r1 lane
-# 2026-09-10 (main's link places it at 0x0800ffa0, no match).
-addrtaken-ok encode_checked
-
-# gen3_edit.c's em_get_ribbon_flag (frame 0 B) has NO callers today (b60 added it as API beside
-# em_get_ribbon_rank); its address matched a data word in the full-art image after the gbmon
-# merge (the #106 G2 coincidence class). Bounded by the 256-B cap; delete the function or
-# declare its site when a caller appears.
-addrtaken-ok em_get_ribbon_flag
