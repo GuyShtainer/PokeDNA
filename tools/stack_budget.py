@@ -3322,6 +3322,17 @@ def main(argv):
                   "an `addrtaken-ok fn  (reason)` line.")
             return 1
 
+        # D3 (BACKLOG #106): nothing ever retired a stale `addrtaken-ok` line -- one
+        # that used to be genuinely address-taken (in SOME earlier build, or on the
+        # OTHER image variant) but isn't in THIS one. A WARNING, not a FATAL: a line
+        # only one image variant needs is legitimately unneeded on the other, so this
+        # is "delete it if it truly serves nothing on either build", never a gate.
+        stale = sorted(addrtaken_ok - taken)
+        if stale:
+            print(f"\n*** STACK_BUDGET WARNING: {len(stale)} addrtaken-ok line(s) are no "
+                  "longer address-taken in this image (delete if unneeded on BOTH images): "
+                  + ", ".join(stale))
+
     # G1 (BACKLOG #84b eighth pass, merge-blocker): an `addrtaken-ok` claim is never
     # re-verified above -- it just removes `fn` from the orphans check. That is fine
     # for a genuinely tiny dispatch shim, but nothing stops a heavy function from being

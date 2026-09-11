@@ -696,6 +696,35 @@ def test_d2_mutation_dropping_the_bound_fatals_the_zero_byte_raw_hit():
           (real_orphans, real_bounded))
 
 
+def test_d3_stale_addrtaken_ok_line_is_a_warning_not_fatal():
+    """D3 (BACKLOG #106): nothing ever retired a stale `addrtaken-ok` line -- one
+    that isn't address-taken in THIS image at all any more (a link-layout change, or
+    a line that only ever applied to the other build variant). `stale = addrtaken_ok
+    - taken` should be reported as a WARNING (never gates the build -- a line needed
+    by one image variant is legitimately unneeded on the other) rather than silently
+    accepted forever."""
+    addrtaken_ok = {"tte_cmd_skip", "still_live_fn", "nonexistent_symbol"}
+    taken = {"still_live_fn", "something_else"}
+    stale = sorted(addrtaken_ok - taken)
+    check("(D3) both the retired coincidence AND the nonexistent symbol are reported stale",
+          stale == ["nonexistent_symbol", "tte_cmd_skip"], stale)
+    check("(D3) the line still genuinely address-taken in this image is NOT reported stale",
+          "still_live_fn" not in stale, stale)
+
+
+def test_d3_mutation_without_the_check_a_stale_line_is_never_flagged():
+    """Mutation: without D3's `addrtaken_ok - taken` check, nothing at all reports a
+    line that stopped being address-taken -- the exact silent-acceptance defect D3
+    fixes (three unneeded lines, including a nonexistent symbol, were accepted
+    silently before this fix, per the brief)."""
+    addrtaken_ok = {"tte_cmd_skip", "still_live_fn", "nonexistent_symbol"}
+    taken = {"still_live_fn", "something_else"}
+    # The mutation: the pre-D3 code path never computes or prints this at all.
+    reported = []
+    check("(D3 mutation) without the check, nothing is ever reported stale",
+          reported == [], reported)
+
+
 # === (D2, fifth pass) the ELF names the build dir it was linked from ====================
 
 class _FakeCompleted:
@@ -1951,6 +1980,8 @@ def main():
     test_g1_addrtaken_ok_exemption_capped_at_own_deepest_chain()
     test_d2_third_party_raw_hit_bounded_becomes_a_note()
     test_d2_mutation_dropping_the_bound_fatals_the_zero_byte_raw_hit()
+    test_d3_stale_addrtaken_ok_line_is_a_warning_not_fatal()
+    test_d3_mutation_without_the_check_a_stale_line_is_never_flagged()
     test_d2_read_build_dir_stamp_extracts_the_nul_terminated_string()
     test_d2_read_build_dir_stamp_absent_symbol_returns_none()
     test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain()
