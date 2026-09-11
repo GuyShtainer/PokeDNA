@@ -2725,14 +2725,15 @@ def main(argv=None) -> int:
         which, kind = a.b89_hof_extra.rsplit("-", 1)
         if kind == "nick":
             name, cap = "08_nick", (
-                f"BACKLOG #89 D6/NICK: {which}'s team detail with mon 0 nicknamed "
-                "via a byte-poked .sav (gb_name_encode) -- proves hof_detail_render "
-                "draws GbHofMon.nick and fits it (measured, sys8Font 8px cells) "
-                "without overflowing the 240px screen or the OT-id column")
+                f"BACKLOG #89: (D6/NICK) {which}'s team detail with mon 0 "
+                "nicknamed via a byte-poked .sav (gb_name_encode) -- proves "
+                "hof_detail_render draws GbHofMon.nick and fits it (measured, "
+                "sys8Font 8px cells) without overflowing the 240px screen or the "
+                "OT-id column")
         else:
             name, cap = "09_shiny", (
-                "BACKLOG #89 D6: crystal's team detail with mon 0's DVs set to a "
-                "shiny-capable quad (Atk&2, Def/Spe/Spc=10, g2_dv_shiny's own "
+                "BACKLOG #89: (D6) crystal's team detail with mon 0's DVs set to "
+                "a shiny-capable quad (Atk&2, Def/Spe/Spc=10, g2_dv_shiny's own "
                 "formula) via a byte-poked .sav -- proves the shiny mark actually "
                 "renders, not just claimed")
         try:
