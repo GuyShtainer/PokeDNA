@@ -58,6 +58,29 @@ static bool g2pack_is_female(const GbSession* s) {
   return (s->img[o.player_gender] & 1u) != 0;
 }
 
+/* N3 (BACKLOG #111): the description box was always drawn with frame 0, ignoring
+ * the player's own text-box-frame choice from the OPTIONS menu. wTextboxFrame is
+ * wOptions + 2 on BOTH Gold/Silver and Crystal -- verified against the .sym files
+ * (pokegold.sym: wOptions d199, wTextboxFrame d19b; pokecrystal.sym: wOptions cfcc,
+ * wTextboxFrame cfce -- both +2) -- and gb_fields.c's own GBF_OPTIONS entry for
+ * GBF_G_GS/GBF_G_CRYSTAL is `{0x2000, 8, GBFK_BYTES}`, so the frame byte is file
+ * offset 0x2002 on both. engine/gfx/load_font.asm's LoadFrame does
+ * `ld a, [wTextboxFrame] / maskbits NUM_FRAMES` (NUM_FRAMES = 8, so `and $07`) --
+ * low 3 bits, values 0..7. The frames block itself is 9 frames x 6 tiles
+ * (rom_gbui.h:73), so a masked value can never reach the block's own end, but the
+ * clamp is kept anyway (frame > 8 -> 0) per the brief's own instruction, in case a
+ * corrupt/foreign save has bits above the mask this reader is not applying. */
+static int g2pack_frame(const GbSession* s, GbGame game) {
+  uint32_t off = gbf_off(game, GBF_OPTIONS);
+  if (!off) return 0;
+  uint8_t byte = 0;
+  GbSession* ncs = (GbSession*)(const void*)s;
+  if (gbs_read_field(ncs, off + 2, &byte, 1) != GBS_OK) return 0;
+  int frame = (int)(byte & 0x07u);
+  if (frame > 8) frame = 0;
+  return frame;
+}
+
 /* ============================================================================
  * ---- the plain row-list fallback (BACKLOG #67's own "no dead end" rule) --
  * same shape as pdna_gbbag.c's own pdna_gbbag_plain(), over the four real
@@ -253,18 +276,20 @@ static int  g2_pack_swap_src;
  * pointer table was not located this slice, per the brief's own permission --
  * a documented, honest blank) -- but see g2pack_desc_label() just below for the
  * ONE piece of prose this slice does own: the PC-store disambiguation line. */
-static void g2pack_desc_box(GbScreen* gs) {
-  gbscr_cell(gs, 0, 12, GBSCR_SRC_TEXTBOX, G2I_UL);
-  gbscr_cell(gs, 19, 12, GBSCR_SRC_TEXTBOX, G2I_UR);
-  for (int x = 1; x < 19; x++) gbscr_cell(gs, x, 12, GBSCR_SRC_TEXTBOX, G2I_H);
+static void g2pack_desc_box(GbScreen* gs, int frame) {
+  int ul = G2I_UL + 6 * frame, ur = G2I_UR + 6 * frame, dl = G2I_DL + 6 * frame,
+      dr = G2I_DR + 6 * frame, h = G2I_H + 6 * frame, v = G2I_V + 6 * frame;
+  gbscr_cell(gs, 0, 12, GBSCR_SRC_TEXTBOX, ul);
+  gbscr_cell(gs, 19, 12, GBSCR_SRC_TEXTBOX, ur);
+  for (int x = 1; x < 19; x++) gbscr_cell(gs, x, 12, GBSCR_SRC_TEXTBOX, h);
   for (int y = 13; y <= 16; y++) {
-    gbscr_cell(gs, 0, y, GBSCR_SRC_TEXTBOX, G2I_V);
-    gbscr_cell(gs, 19, y, GBSCR_SRC_TEXTBOX, G2I_V);
+    gbscr_cell(gs, 0, y, GBSCR_SRC_TEXTBOX, v);
+    gbscr_cell(gs, 19, y, GBSCR_SRC_TEXTBOX, v);
     for (int x = 1; x < 19; x++) gbscr_cell(gs, x, y, GBSCR_SRC_BLANK, 0);
   }
-  gbscr_cell(gs, 0, 17, GBSCR_SRC_TEXTBOX, G2I_DL);
-  gbscr_cell(gs, 19, 17, GBSCR_SRC_TEXTBOX, G2I_DR);
-  for (int x = 1; x < 19; x++) gbscr_cell(gs, x, 17, GBSCR_SRC_TEXTBOX, G2I_H);
+  gbscr_cell(gs, 0, 17, GBSCR_SRC_TEXTBOX, dl);
+  gbscr_cell(gs, 19, 17, GBSCR_SRC_TEXTBOX, dr);
+  for (int x = 1; x < 19; x++) gbscr_cell(gs, x, 17, GBSCR_SRC_TEXTBOX, h);
 }
 
 /* D6 fix (review-opus ac9ffc0): the PC item store paints the EXACT same picture
@@ -503,7 +528,7 @@ static int gbpack_start_menu(GbBag* bag, GbBagPocket pocket, GbGame game, int* s
 
 __attribute__((noinline))
 static bool pdna_gbpack_gen2_screen(GbScreen* gs, GbBag* bag, GbGame game, bool can_edit,
-                                    bool female) {
+                                    bool female, int frame) {
   static const char* const kLegendEdit[4] = {
     PDNA_GBTR_ACT_EDIT, PDNA_GBTR_ACT_SAVE, PDNA_GBSCR_ACT_SIZE, PDNA_GBTR_ACT_MORE
   };
@@ -520,7 +545,7 @@ static bool pdna_gbpack_gen2_screen(GbScreen* gs, GbBag* bag, GbGame game, bool 
 
   GbBagPocket pocket = in_pc ? GBB_POCKET_PC : kUiPocket[cyc];
   g2pack_pic_column(gs, cyc, in_pc, female);
-  g2pack_desc_box(gs);
+  g2pack_desc_box(gs, frame);
   g2pack_desc_label(gs, in_pc);
   g2pack_paint_list(gs, bag, pocket, top, sel);
   for (;;) {
@@ -663,6 +688,7 @@ void pdna_gbpack(GbSession* s, bool can_edit) {
 
   GbGame game = g2pack_game(s);
   bool female = g2pack_is_female(s);
+  int frame = g2pack_frame(s, game);
   uint16_t pic_need = female ? GBSCR_NEED_PACK_F : GBSCR_NEED_PACK;
   uint16_t need_mask = GBSCR_NEED_TEXTBOX | GBSCR_NEED_PACKMENU | pic_need;
   GbScreen gs;
@@ -679,7 +705,7 @@ void pdna_gbpack(GbSession* s, bool can_edit) {
   }
   bool want_commit;
   if (ok) {
-    want_commit = pdna_gbpack_gen2_screen(&gs, bag, game, can_edit, female);
+    want_commit = pdna_gbpack_gen2_screen(&gs, bag, game, can_edit, female, frame);
     gbscr_close(&gs);
   } else {
     want_commit = pdna_gbpack_plain(bag, game, can_edit, PDNA_GBTR_FALLBACK_TITLE,
