@@ -1082,9 +1082,11 @@ addrtaken-ok flashcartio_activate # RV_ANCHOR'd into pdna_romver_data.c's ROM se
                                    # the non-delta builds; #ifdef PDNA_DELTA compiles those
                                    # call sites out, so the exemption is load-bearing there.
 
-# b60 (Contests): the donor picker's label callback (source_label / mon_label) --
-# resolved as one argsite (verified with --dump-sites by the b60 reviewer).
-pick_list.constprop.0 argsites=1 -> source_label mon_label
+# b60's `pick_list.constprop.0 argsites=1 -> source_label mon_label` (the donor
+# picker's old bespoke label callback) is GONE, not stale-but-harmless: BACKLOG #107
+# deleted pick_list/source_label/mon_label outright -- the donor picker moved onto
+# pdna_pick.c's shared pick_rows() (declared below) -- so this line would have named
+# implementations that no longer exist in the binary.
 
 # b107 (BACKLOG #107): pick_rows()'s own two indirect params -- `row` (4 call sites:
 # the full-paint branch draws the unselected rows then the selected one, the row-pair
@@ -1093,8 +1095,8 @@ pick_list.constprop.0 argsites=1 -> source_label mon_label
 # because pick_rows is reached from TWO independent chains (list_pick's nature-picker
 # call and pdna_contest.c's donor picker) and the b107 reviewer must be able to tell
 # which impl set belongs to which without re-deriving it.
-pick_rows argsites=4 -> lp_row_cb
-pr_build.constprop.0 argsites=3 -> lp_key_cb
+pick_rows argsites=4 -> lp_row_cb source_row mon_row
+pr_build.constprop.0 argsites=3 -> lp_key_cb mon_key
 
 # list_pick's LpCtx (source/pdna_pick.c) carries name_fn through pick_rows' opaque
 # ctx instead of a file-static -- lp_row_cb/lp_key_cb dereference it as a struct-

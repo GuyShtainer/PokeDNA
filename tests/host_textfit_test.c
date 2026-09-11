@@ -1325,6 +1325,21 @@ int main(void) {
   /* both lists' footers, drawn at x=4 on PDNA_FILT_FOOTER_Y */
   T(PDNA_FILT_FOOT, 4);
   T(PDNA_IFILT_FOOT, 4);
+
+  printf("\n== pick_rows PR_ROWH26 icon row (BACKLOG #107, pdna_contest.c mon_row) ==\n");
+  /* The 24x24 icon sits at PDNA_PR_ICON_X, the text starts PDNA_PR_ICON_TEXT_X along --
+   * the text must clear the icon, not overlap it. */
+  chkv_min("icon row: text clears the 24px icon",
+           PDNA_PR_ICON_TEXT_X, PDNA_PR_ICON_X + PDNA_PR_ICON_W);
+  /* The panel (25) must be shorter than the pitch (26), or neighbouring rows' rects
+   * would overlap and the ROW REPAINT RULE's paint-order arbitration would apply here
+   * too (it doesn't -- 25 < 26 is exact, same as list_pick's old icon geometry was). */
+  chkv("icon row: panel shorter than its own pitch (no shared scanline)",
+       PDNA_PR_ICON_PANEL, PDNA_PR_ICON_ROWH - 1);
+  /* Row text (species name + level, ui_truncate'd to PDNA_PR_ICON_MAXCOLS columns on
+   * the fixed sys8 grid) must fit from PDNA_PR_ICON_TEXT_X to the screen edge. */
+  chkv("icon row: truncated text budget fits the screen",
+       PDNA_PR_ICON_TEXT_X + PDNA_PR_ICON_MAXCOLS * SYS8_W, UI_SCR_W);
   /* UX-parity audit (Guy 2026-09-07): pick_item()'s restricted-mode footer,
    * fixed sys8 at x=4 like the two above. PDNA_ITEM_NO_DESC_YET is drawn only
    * through proportional ui_ptext_fit/ui_ptext_wrap (clips safely, same as

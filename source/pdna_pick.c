@@ -1190,22 +1190,9 @@ uint16_t pick_move(uint16_t current) {
 }
 
 /* ===================== generic searchable list (item / nature) ========= */
-
-/* filter by `search` then optionally sort A-Z by name; returns the count. */
-static int list_build(u16* idx, int count, const char* (*name_fn)(uint16_t),
-                      const char* search, int sort) {
-  int n = 0;
-  for (int i = 0; i < count; i++)
-    if (!search[0] || ci_contains(name_fn((uint16_t)i), search)) idx[n++] = (u16)i;
-  if (sort) {                                       /* insertion sort by name (No. = id order) */
-    for (int i = 1; i < n; i++) {
-      u16 v = idx[i]; int j = i - 1;
-      while (j >= 0 && strcmp(name_fn(idx[j]), name_fn(v)) > 0) { idx[j + 1] = idx[j]; j--; }
-      idx[j + 1] = v;
-    }
-  }
-  return n;
-}
+/* BACKLOG #107: list_build's own filter+sort loop is now pr_build() (below, inside
+ * pick_rows' own section) -- list_pick calls through pick_rows now, so nothing here
+ * builds its own idx[] any more. */
 
 /* One row of the generic list picker. NOTE ON THE HEIGHT: it is a literal 9 (not
  * `rowh - 1` = 7) on an 8 px pitch (rowh=8) -- one pixel taller than its own pitch,

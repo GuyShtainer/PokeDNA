@@ -381,6 +381,24 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
   X(PDNA_FILT_SORT_DEX) X(PDNA_FILT_SORT_ID) X(PDNA_FILT_SORT_NAME) X(PDNA_FILT_SORT_REGION)
 #define PDNA_FILT_MARKALL    "Mark all..."    /* dex_menu's bulk-edit row             */
 
+/* PICK_ROWS 24x24-icon row preset (BACKLOG #107, pick_rows' PR_ROWH26 option, source/
+ * pdna_pick.c): 26 px pitch, panel height 25 -- no shared-scanline overlap with the
+ * next row (25 < 26, unlike the 9-on-8 FILT geometry above), so invariant (2) of the
+ * ROW REPAINT RULE does not apply here. Named for pdna_contest.c's donor picker (the
+ * mon list's icon column, mon_row) -- the first REAL caller of pick_rows' icon-row
+ * preset (list_pick's own icon path had zero live callers and was removed rather than
+ * kept as an unresolvable stack-guard blind spot; see pdna_pick.c's lp_row comment). */
+#define PDNA_PR_ICON_ROWH     26
+#define PDNA_PR_ICON_PANEL    (PDNA_PR_ICON_ROWH - 1)   /* 25 */
+#define PDNA_PR_ICON_X         4
+#define PDNA_PR_ICON_W        24                         /* == ITEM_ICON_W/H, item_icons.h --
+                                                            * ui_icon_scaled() downscales the
+                                                            * native 32x32 mon icon to fit    */
+#define PDNA_PR_ICON_TEXT_X   32
+#define PDNA_PR_ICON_TEXT_DY   8
+#define PDNA_PR_ICON_MAXCOLS  24                         /* ui_truncate() column budget --
+                                                            * 32 + 24*8 = 224 <= UI_SCR_W(240) */
+
 /* The ITEM filter list keeps a BORDERED box, which is why its numbers differ: ui_panel's
  * bottom rule sits at y+h-2, so height 12 from y-2 puts it at y+8, one pixel clear of
  * the 8-row text, and an 11 px pitch keeps the next row's ascenders out of the fill. */
