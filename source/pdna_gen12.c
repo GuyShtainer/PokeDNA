@@ -1790,6 +1790,35 @@ static void gb_rom_base_path(void) {
  * origin-art's "ROM beside the save" fallback -- if the extension-derivation rule
  * ever changes, it has to change in both places. */
 static Gb1BaseStatus __attribute__((noinline)) gb_gen1_locate_rom(void) {
+#ifdef PDNA_DELTA
+  /* BACKLOG #112: no SD under PDNA_DELTA -- the beside-the-save f_open() below can
+   * never succeed (there is no card to open a file on), so PASTE (GB)'s Gen-1 base-
+   * stats lookup ALWAYS refused ("NO GEN-1 ROM") on this build, before the loss
+   * screen ever rendered. Fall back to the already-fused ROM's own table instead of
+   * a second SD open -- same fused_gb_slice_read GbReadFn + FusedGbSlice shape
+   * gb_create_locate_rom (~:2303-2314, CREATE's own precedent for exactly this) and
+   * gb_art_source.c's rom_gbsprite_open_loc() callers already use; s_gb_create_slice
+   * is reused rather than a new static (the fused ROM's bytes are the same table
+   * regardless of which caller asks: fused_gb_rom() answers off fused_gb_set_active_
+   * save()'s current pick, not anything CREATE-specific). SD path (below, #else) is
+   * untouched -- this guard changes nothing there. */
+  const uint8_t* base; uint32_t size;
+  if (!fused_gb_rom(GB_GEN1, &base, &size)) {
+    log_line("gen12: gen-1 rom: no fused gen-1 rom");
+    return GB1BASE_NO_ROM;
+  }
+  s_gb_create_slice.base = base;
+  s_gb_create_slice.size = size;
+  int ok = rom_gbsprite_open(&g_ed->romgs, fused_gb_slice_read, &s_gb_create_slice, size,
+                             g_ed->romscan, sizeof g_ed->romscan);
+  if (!ok || g_ed->romgs.gen != GB_ROM_GEN1) {
+    log_line("gen12: gen-1 rom: fused rom did not open as a Gen-1 rom");
+    return GB1BASE_BAD_ROM;
+  }
+  g_ed->romgs_ready = true;
+  g_ed->romgs_path = g_ed->path;
+  return GB1BASE_OK;
+#else
   gb_rom_base_path();
   int baselen = 0; while (g_ed->romspath[baselen]) baselen++;
 
@@ -1824,6 +1853,7 @@ static Gb1BaseStatus __attribute__((noinline)) gb_gen1_locate_rom(void) {
   g_ed->romgs_ready = true;
   g_ed->romgs_path = g_ed->path;
   return GB1BASE_OK;
+#endif /* PDNA_DELTA */
 }
 
 /* Read dex's 28-byte BaseStats row out of the ROM g_ed->romgs already located --
@@ -1843,7 +1873,14 @@ gb_gen1_base_from_rom(uint16_t dex, GbGen1Base* out) {
   /* rom_gbbase_gen1() needs the file open again for its own reads (through the SAME
    * gb_read() shim) -- reopened by the already-resolved g_ed->romspath rather than
    * held open across pastes, so a later paste never finds a FIL left in a state it
-   * did not itself create. */
+   * did not itself create. BACKLOG #112: under PDNA_DELTA there is no FIL to reopen
+   * (gb_gen1_locate_rom's own PDNA_DELTA branch above never opened one) -- read
+   * straight back out of s_gb_create_slice through the same fused_gb_slice_read
+   * shim it used to locate the ROM. */
+#ifdef PDNA_DELTA
+  RomGb1Species sp;
+  bool got = rom_gbbase_gen1(&g_ed->romgs, fused_gb_slice_read, &s_gb_create_slice, dex, &sp);
+#else
   memset(&g_ed->romfil, 0, sizeof g_ed->romfil);
   if (f_open(&g_ed->romfil, g_ed->romspath, FA_READ) != FR_OK) {
     log_line("gen12: gen-1 rom: %s could not be reopened", g_ed->romspath);
@@ -1853,6 +1890,7 @@ gb_gen1_base_from_rom(uint16_t dex, GbGen1Base* out) {
   RomGb1Species sp;
   bool got = rom_gbbase_gen1(&g_ed->romgs, gb_read, &g_ed->romfil, dex, &sp);
   f_close(&g_ed->romfil);
+#endif /* PDNA_DELTA */
   if (!got) {
     log_line("gen12: gen-1 rom: %s has no readable row for dex %u", g_ed->romspath, dex);
     return GB1BASE_BAD_ROM;
