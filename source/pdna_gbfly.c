@@ -203,7 +203,7 @@ void pdna_gb_fly(GbSession* s, bool can_edit) {
       char l[48];
       siprintf(l, "%d newly marked.", ch);
       s_msg("MARKED", UI_OK, l, gen1 ? 0 : "Spawn-only rows untouched.");
-      pv.valid = false;               /* s_msg painted over us without ui_clear() */
+      pv.valid = false;               /* s_msg clears the screen before drawing its panel */
       continue;
     }
 

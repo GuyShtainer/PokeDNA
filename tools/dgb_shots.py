@@ -1469,9 +1469,8 @@ def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                   "four spn-tagged rows are never a real Fly-menu "
                                   "destination, so mark-all leaves them exactly as "
                                   "found)" if which == "crystal" else "")
-                               + " (the dialog residue behind the panel is the known "
-                                 "s_msg-over-app_confirm ghosting, BACKLOG #119 -- present "
-                                 "on Gen 3's pdna_fly.c too)")
+                               + " (the s_msg-over-app_confirm ghosting fix, BACKLOG #119, "
+                                 "verified: no dialog residue behind the panel)")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the result panel -> back to the grid
 
     if which == "crystal":
@@ -1628,7 +1627,7 @@ def run_b90_boxname(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
                                   "gb_retail_gate.py), not this shot")
 
     s.tap("A", settle=200)                                    # dismiss msg_wait -> box grid repaints
-    s.shot("05_renamed_banner", "BACKLOG #94: back at the box grid -- the banner now reads 'GB TEST': gbsrc_get_name() re-reads g_m->g2names (refreshed by gbsrc_set_name_impl() right after the write) and pdna_gen12_box_name() adds the 'GB ' DISPLAY prefix on top; the SAVE holds the undecorated 'TEST' (proved by the retail gate's boxname case and gbbn_read on the corpus). The prefix on renamed Gen-2 boxes is BACKLOG #122.")
+    s.shot("05_renamed_banner", "BACKLOG #122: back at the box grid -- the banner now reads 'TEST' (verbatim, no 'GB ' prefix on Gen-2 renamed boxes); gbsrc_get_name() re-reads g_m->g2names and pdna_gen12_box_name() echoes it as-is for Gen-3 parity; the SAVE holds the undecorated 'TEST'.")
 
     return s
 
