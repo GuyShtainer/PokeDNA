@@ -22,3 +22,18 @@ __attribute__((weak)) bool gbfl_at(GbGame g, int i, uint16_t* flag_out, const ch
   (void)g; (void)i; (void)flag_out; (void)label_out;
   return false;
 }
+
+__attribute__((weak)) int gbfl_row_count(GbGame g) {
+  (void)g;
+  return 0;
+}
+
+__attribute__((weak)) bool gbfl_row_at(GbGame g, int i, GbFlagRow* out) {
+  (void)g; (void)i; (void)out;
+  return false;
+}
+
+__attribute__((weak)) int gbfl_safari_zone_flag(GbGame g) {
+  (void)g;
+  return -1;
+}

@@ -570,6 +570,22 @@ FIELDS = [
   ("DAYCARE_EGG_OT", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("pokemon_data", "wEggMonOT", 0x2B23),
       "CRYSTAL": D("pokemon_data", "wEggMonOT", 0x2AFE)}),
+
+  # ---- BACKLOG #88: Safari Zone steps (Gen 1 only) + the lucky-number "already
+  # shown today" flag (Gen 2 only) -- docs/briefs/88-gb-flags-brief.md's data section.
+  # wSafariSteps sits inside main_data on both Gen-1 releases (RED 0xd2f7+0x416=0xd70d,
+  # YELLOW 0xd2f6+0x416=0xd70c -- SAME relative offset, confirming this is one field,
+  # not two coincidentally-placed bytes); check_off below is this script's own
+  # cross-check of that arithmetic against the live .sym lookup, not a doc citation.
+  ("SAFARI_STEPS", U8, 1, {
+      "RED": D("main_data", "wSafariSteps", 0x29B9), "YELLOW": D("main_data", "wSafariSteps", 0x29B9),
+      "GS": ABSENT, "CRYSTAL": ABSENT}),
+  # wLuckyNumberShowFlag: GS bank 01:d9e7 sits inside player_data_3 (starts d571, 1149
+  # B long -- 0xd9e7-0xd571=0x476 < 0x47D); Crystal bank 01:dc9d sits inside the single
+  # player_data region (starts d47b, 2090 B long -- 0xdc9d-0xd47b=0x822 < 0x82A).
+  ("LUCKY_NUMBER_SHOW_FLAG", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wLuckyNumberShowFlag", 0x284F),
+      "CRYSTAL": D("player_data", "wLuckyNumberShowFlag", 0x282B)}),
 ]
 
 
@@ -723,36 +739,93 @@ def parse_const_file(path):
 # §1.3's own ~40-flag shortlist, by symbol name. OUR OWN label text lives in LABELS
 # below (a separate dict, deliberately: the symbol name is a decomp FACT used to look
 # up the per-game bit index; the label a player sees is this app's own writing).
-SHORTLIST_GEN1 = [
-    "EVENT_GOT_STARTER", "EVENT_GOT_POKEDEX", "EVENT_GOT_TOWN_MAP", "EVENT_GOT_BICYCLE",
-    "EVENT_GOT_SS_TICKET", "EVENT_GOT_HM01", "EVENT_GOT_HM02", "EVENT_GOT_HM03",
-    "EVENT_GOT_HM04", "EVENT_GOT_HM05", "EVENT_GOT_OLD_AMBER", "EVENT_GOT_DOME_FOSSIL",
-    "EVENT_GOT_HELIX_FOSSIL", "EVENT_GOT_MASTER_BALL", "EVENT_GOT_POKE_FLUTE",
-    "EVENT_GOT_HITMONLEE", "EVENT_GOT_HITMONCHAN", "EVENT_MET_BILL",
-    "EVENT_RESCUED_MR_FUJI", "EVENT_GAVE_GOLD_TEETH", "EVENT_FOUND_ROCKET_HIDEOUT",
-    "EVENT_BEAT_BROCK", "EVENT_BEAT_MISTY", "EVENT_BEAT_LT_SURGE", "EVENT_BEAT_ERIKA",
-    "EVENT_BEAT_KOGA", "EVENT_BEAT_SABRINA", "EVENT_BEAT_BLAINE",
-    "EVENT_BEAT_VIRIDIAN_GYM_GIOVANNI", "EVENT_BEAT_ROCKET_HIDEOUT_GIOVANNI",
-    "EVENT_BEAT_SILPH_CO_GIOVANNI", "EVENT_BEAT_ARTICUNO", "EVENT_BEAT_ZAPDOS",
-    "EVENT_BEAT_MOLTRES", "EVENT_BEAT_MEWTWO",
-    "EVENT_BEAT_LORELEIS_ROOM_TRAINER_0", "EVENT_BEAT_BRUNOS_ROOM_TRAINER_0",
-    "EVENT_BEAT_AGATHAS_ROOM_TRAINER_0", "EVENT_BEAT_LANCES_ROOM_TRAINER_0",
-    "EVENT_BEAT_LANCE", "EVENT_BEAT_CHAMPION_RIVAL", "EVENT_HALL_OF_FAME_DEX_RATING",
+#
+# BACKLOG #88: restructured into GROUPS (header title -> [(symbol, kind), ...]) so the
+# generator can also emit a curated, foldable SCREEN order (k_rows_<game>, gbfl_row_at)
+# alongside the flat, bit-sorted table the old gbfl_count/gbfl_name/gbfl_at API already
+# promised (k_flags_<game>, unchanged -- flattening GROUPS and dropping the kind tag
+# reproduces the exact same rows the old flat SHORTLIST_GEN1/GEN2 lists produced).
+# `kind` is one of the KIND_* tags below, matching GbFlagKind (gb_flags.h) 1:1 (HEADER
+# rows are synthesized separately, never listed as a member here). Per
+# docs/GB-FLAGS-RESEARCH.md (research, all citations held) + docs/briefs/88-gb-flags-
+# brief.md's own data section: HM01..05/Bicycle/GS-Ball are bag-item grants (read-only
+# here, "(grant it in the Bag)"); the Champion/Elite-Four flags are read-only story
+# display; the Kanto-power-restore flag gets an extra warning confirm; everything else
+# on the shortlist is a plain toggle.
+KIND_TOGGLE, KIND_BAG, KIND_RO, KIND_WARN = "TOGGLE", "BAG_GRANT", "READONLY", "WARN"
+
+
+def T(sym): return (sym, KIND_TOGGLE)
+def B(sym): return (sym, KIND_BAG)
+def R(sym): return (sym, KIND_RO)
+def W(sym): return (sym, KIND_WARN)
+
+
+GROUPS_GEN1 = [
+    ("Key events", [T(s) for s in [
+        "EVENT_GOT_STARTER", "EVENT_GOT_POKEDEX", "EVENT_GOT_TOWN_MAP",
+        "EVENT_GOT_OLD_AMBER", "EVENT_GOT_DOME_FOSSIL", "EVENT_GOT_HELIX_FOSSIL",
+        "EVENT_GOT_MASTER_BALL", "EVENT_GOT_POKE_FLUTE", "EVENT_GOT_HITMONLEE",
+        "EVENT_GOT_HITMONCHAN", "EVENT_MET_BILL", "EVENT_RESCUED_MR_FUJI",
+        "EVENT_GAVE_GOLD_TEETH", "EVENT_FOUND_ROCKET_HIDEOUT",
+    ]]),
+    ("Key items (grant via the Bag)", [B(s) for s in [
+        "EVENT_GOT_BICYCLE", "EVENT_GOT_SS_TICKET", "EVENT_GOT_HM01", "EVENT_GOT_HM02",
+        "EVENT_GOT_HM03", "EVENT_GOT_HM04", "EVENT_GOT_HM05",
+    ]]),
+    ("Gym Leaders", [T(s) for s in [
+        "EVENT_BEAT_BROCK", "EVENT_BEAT_MISTY", "EVENT_BEAT_LT_SURGE", "EVENT_BEAT_ERIKA",
+        "EVENT_BEAT_KOGA", "EVENT_BEAT_SABRINA", "EVENT_BEAT_BLAINE",
+        "EVENT_BEAT_VIRIDIAN_GYM_GIOVANNI",
+    ]]),
+    ("Elite Four", [T(s) for s in [
+        "EVENT_BEAT_ROCKET_HIDEOUT_GIOVANNI", "EVENT_BEAT_SILPH_CO_GIOVANNI",
+        "EVENT_BEAT_LORELEIS_ROOM_TRAINER_0", "EVENT_BEAT_BRUNOS_ROOM_TRAINER_0",
+        "EVENT_BEAT_AGATHAS_ROOM_TRAINER_0", "EVENT_BEAT_LANCES_ROOM_TRAINER_0",
+        "EVENT_BEAT_LANCE",
+    ]]),
+    ("Legendary birds & Mewtwo", [T(s) for s in [
+        "EVENT_BEAT_ARTICUNO", "EVENT_BEAT_ZAPDOS", "EVENT_BEAT_MOLTRES", "EVENT_BEAT_MEWTWO",
+    ]]),
+    ("Story", [R(s) for s in [
+        "EVENT_BEAT_CHAMPION_RIVAL", "EVENT_HALL_OF_FAME_DEX_RATING",
+    ]]),
 ]
-SHORTLIST_GEN2 = [
-    "EVENT_GOT_HM01_CUT", "EVENT_GOT_HM02_FLY", "EVENT_GOT_HM03_SURF",
-    "EVENT_GOT_HM04_STRENGTH", "EVENT_GOT_HM05_FLASH", "EVENT_GOT_HM06_WHIRLPOOL",
-    "EVENT_GOT_HM07_WATERFALL", "EVENT_GOT_A_POKEMON_FROM_ELM", "EVENT_GOT_BICYCLE",
-    "EVENT_GOT_OLD_ROD", "EVENT_GOT_GOOD_ROD", "EVENT_GOT_SUPER_ROD",
-    "EVENT_GOT_MASTER_BALL_FROM_ELM", "EVENT_GOT_SQUIRTBOTTLE", "EVENT_GOT_RAINBOW_WING",
-    "EVENT_GOT_SILVER_WING", "EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON",
-    "EVENT_BEAT_FALKNER", "EVENT_BEAT_BUGSY", "EVENT_BEAT_WHITNEY", "EVENT_BEAT_MORTY",
-    "EVENT_BEAT_CHUCK", "EVENT_BEAT_JASMINE", "EVENT_BEAT_PRYCE", "EVENT_BEAT_CLAIR",
-    "EVENT_BEAT_BROCK", "EVENT_BEAT_MISTY", "EVENT_BEAT_LTSURGE", "EVENT_BEAT_ERIKA",
-    "EVENT_BEAT_JANINE", "EVENT_BEAT_SABRINA", "EVENT_BEAT_BLAINE", "EVENT_BEAT_BLUE",
-    "EVENT_BEAT_ELITE_4_WILL", "EVENT_BEAT_ELITE_4_KOGA", "EVENT_BEAT_ELITE_4_BRUNO",
-    "EVENT_BEAT_ELITE_4_KAREN", "EVENT_BEAT_CHAMPION_LANCE",
+GROUPS_GEN2 = [
+    ("Key items (grant via the Bag)", [B(s) for s in [
+        "EVENT_GOT_HM01_CUT", "EVENT_GOT_HM02_FLY", "EVENT_GOT_HM03_SURF",
+        "EVENT_GOT_HM04_STRENGTH", "EVENT_GOT_HM05_FLASH", "EVENT_GOT_HM06_WHIRLPOOL",
+        "EVENT_GOT_HM07_WATERFALL", "EVENT_GOT_BICYCLE",
+        "EVENT_GOT_GS_BALL_FROM_GOLDENROD_POKEMON_CENTER",
+    ]]),
+    ("Key events", [T(s) for s in [
+        "EVENT_GOT_A_POKEMON_FROM_ELM", "EVENT_GOT_OLD_ROD", "EVENT_GOT_GOOD_ROD",
+        "EVENT_GOT_SUPER_ROD", "EVENT_GOT_MASTER_BALL_FROM_ELM", "EVENT_GOT_SQUIRTBOTTLE",
+        "EVENT_GOT_RAINBOW_WING", "EVENT_GOT_SILVER_WING",
+        "EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON", "EVENT_MADE_UNOWN_APPEAR_IN_RUINS",
+        "EVENT_GOT_SUNNY_DAY_FROM_RADIO_TOWER",
+    ]]),
+    ("Gym Leaders", [T(s) for s in [
+        "EVENT_BEAT_FALKNER", "EVENT_BEAT_BUGSY", "EVENT_BEAT_WHITNEY", "EVENT_BEAT_MORTY",
+        "EVENT_BEAT_CHUCK", "EVENT_BEAT_JASMINE", "EVENT_BEAT_PRYCE", "EVENT_BEAT_CLAIR",
+        "EVENT_BEAT_BROCK", "EVENT_BEAT_MISTY", "EVENT_BEAT_LTSURGE", "EVENT_BEAT_ERIKA",
+        "EVENT_BEAT_JANINE", "EVENT_BEAT_SABRINA", "EVENT_BEAT_BLAINE", "EVENT_BEAT_BLUE",
+    ]]),
+    ("Elite Four", [T(s) for s in [
+        "EVENT_BEAT_ELITE_4_WILL", "EVENT_BEAT_ELITE_4_KOGA", "EVENT_BEAT_ELITE_4_BRUNO",
+        "EVENT_BEAT_ELITE_4_KAREN",
+    ]]),
+    ("Story", [R(s) for s in [
+        "EVENT_BEAT_ELITE_FOUR", "EVENT_BEAT_CHAMPION_LANCE",
+    ]]),
+    ("Kanto (post-game)", [W("EVENT_RESTORED_POWER_TO_KANTO")]),
 ]
+
+# Flattened, kind-tag-dropped view -- EXACTLY what the old flat SHORTLIST_GEN1/GEN2
+# lists were (same symbols, same set); emit_flags_c's k_flags_<game> (old API) sorts
+# this by bit index, same as before the GROUPS restructure.
+SHORTLIST_GEN1 = [sym for _, members in GROUPS_GEN1 for sym, _ in members]
+SHORTLIST_GEN2 = [sym for _, members in GROUPS_GEN2 for sym, _ in members]
 
 # Our own label text (never the decomp's identifier/comment) -- shown in the UI.
 LABELS = {
@@ -803,6 +876,12 @@ LABELS = {
     "EVENT_BEAT_ELITE_4_BRUNO": "Defeated Elite Four Bruno",
     "EVENT_BEAT_ELITE_4_KAREN": "Defeated Elite Four Karen",
     "EVENT_BEAT_CHAMPION_LANCE": "Defeated Champion Lance",
+    # BACKLOG #88 additions.
+    "EVENT_BEAT_ELITE_FOUR": "Defeated the Elite Four",
+    "EVENT_RESTORED_POWER_TO_KANTO": "Restored power to Kanto",
+    "EVENT_MADE_UNOWN_APPEAR_IN_RUINS": "Unown appear in the Ruins of Alph",
+    "EVENT_GOT_SUNNY_DAY_FROM_RADIO_TOWER": "Got Sunny Day from the Radio Tower",
+    "EVENT_GOT_GS_BALL_FROM_GOLDENROD_POKEMON_CENTER": "Got the GS Ball",
 }
 
 
@@ -845,6 +924,19 @@ def _selftest_flag_indices(tables):
         ("GS", "EVENT_GOT_SILVER_WING", 121),
         ("GS", "EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON", 30),
         ("CRYSTAL", "EVENT_GOT_RAINBOW_WING", 822),
+        # BACKLOG #88 additions -- re-derived independently against event_flags.asm's own
+        # const_def/const_skip lines (docs/GB-FLAGS-RESEARCH.md's grilling pass confirmed
+        # the file:line citations; these values are this script's own replay, not copied
+        # from the doc, catching a parser regression the doc's citation check cannot).
+        ("GS", "EVENT_BEAT_ELITE_FOUR", 68), ("CRYSTAL", "EVENT_BEAT_ELITE_FOUR", 68),
+        ("GS", "EVENT_MADE_UNOWN_APPEAR_IN_RUINS", 46),
+        ("CRYSTAL", "EVENT_MADE_UNOWN_APPEAR_IN_RUINS", 46),
+        ("GS", "EVENT_GOT_SUNNY_DAY_FROM_RADIO_TOWER", 71),
+        ("CRYSTAL", "EVENT_GOT_SUNNY_DAY_FROM_RADIO_TOWER", 71),
+        ("GS", "EVENT_RESTORED_POWER_TO_KANTO", 205),
+        ("CRYSTAL", "EVENT_RESTORED_POWER_TO_KANTO", 205),
+        ("CRYSTAL", "EVENT_GOT_GS_BALL_FROM_GOLDENROD_POKEMON_CENTER", 832),
+        ("GS", "EVENT_BEAT_CHAMPION_LANCE", 1468), ("CRYSTAL", "EVENT_BEAT_CHAMPION_LANCE", 1468),
     ]
     bad = []
     for game, name, want in checks:
@@ -923,10 +1015,18 @@ def emit_fields_c(symtabs, cells_out):
         f.write("\n".join(lines) + "\n")
 
 
+KIND_TO_ENUM = {
+    KIND_TOGGLE: "GBFL_KIND_TOGGLE", KIND_BAG: "GBFL_KIND_BAG_GRANT",
+    KIND_RO: "GBFL_KIND_READONLY", KIND_WARN: "GBFL_KIND_WARN",
+}
+
+
 def emit_flags_c(tables):
     lines = [HEADER, '#include "gb_flags.h"', ""]
     shortlists = {"RED": SHORTLIST_GEN1, "YELLOW": SHORTLIST_GEN1,
                   "GS": SHORTLIST_GEN2, "CRYSTAL": SHORTLIST_GEN2}
+    groups = {"RED": GROUPS_GEN1, "YELLOW": GROUPS_GEN1,
+              "GS": GROUPS_GEN2, "CRYSTAL": GROUPS_GEN2}
     for game in GAMES:
         rows = []
         for sym in shortlists[game]:
@@ -944,6 +1044,30 @@ def emit_flags_c(tables):
         lines.append(f"#define GBFL_{game}_COUNT "
                      f"((int)(sizeof k_flags_{game.lower()} / sizeof k_flags_{game.lower()}[0]))")
         lines.append("")
+
+    # k_rows_<game>: the FLAGS-tab screen's own curated order, headers interleaved,
+    # each real flag carrying its GbFlagKind -- a symbol absent on this game (a
+    # Yellow/Red-only or Gold/Crystal-only name) drops that ONE member row silently
+    # (same "not on this game" posture as k_flags above), never the whole group; an
+    # empty group (every member absent) is skipped so no dangling header prints.
+    for game in GAMES:
+        lines.append(f"static const GbFlagRow k_rows_{game.lower()}[] = {{")
+        for header, members in groups[game]:
+            present = [(sym, kind) for sym, kind in members if tables[game].get(sym) is not None]
+            if not present:
+                continue
+            hesc = header.replace('"', '\\"')
+            lines.append(f'  {{ GBFL_HEADER, "{hesc}", GBFL_KIND_HEADER }},')
+            for sym, kind in present:
+                idx = tables[game][sym]
+                label = LABELS.get(sym, sym)
+                esc = label.replace('"', '\\"')
+                lines.append(f'  {{ {idx}, "{esc}", {KIND_TO_ENUM[kind]} }},')
+        lines.append("};")
+        lines.append(f"#define GBFL_ROWS_{game}_COUNT "
+                     f"((int)(sizeof k_rows_{game.lower()} / sizeof k_rows_{game.lower()}[0]))")
+        lines.append("")
+
     lines.append("static const GbFlagEntry* k_tables[GBF_G_COUNT] = {")
     for game in GAMES:
         lines.append(f"  [GBF_G_{game}] = k_flags_{game.lower()},")
@@ -951,6 +1075,14 @@ def emit_flags_c(tables):
     lines.append("static const int k_counts[GBF_G_COUNT] = {")
     for game in GAMES:
         lines.append(f"  [GBF_G_{game}] = GBFL_{game}_COUNT,")
+    lines.append("};")
+    lines.append("static const GbFlagRow* k_row_tables[GBF_G_COUNT] = {")
+    for game in GAMES:
+        lines.append(f"  [GBF_G_{game}] = k_rows_{game.lower()},")
+    lines.append("};")
+    lines.append("static const int k_row_counts[GBF_G_COUNT] = {")
+    for game in GAMES:
+        lines.append(f"  [GBF_G_{game}] = GBFL_ROWS_{game}_COUNT,")
     lines.append("};")
     lines.append("")
     lines.append("int gbfl_count(GbGame g) {")
@@ -967,6 +1099,26 @@ def emit_flags_c(tables):
     lines.append("  if (flag_out) *flag_out = k_tables[g][i].index;")
     lines.append("  if (label_out) *label_out = k_tables[g][i].label;")
     lines.append("  return true;")
+    lines.append("}")
+    lines.append("int gbfl_row_count(GbGame g) {")
+    lines.append("  return (g >= 0 && g < GBF_G_COUNT) ? k_row_counts[g] : 0;")
+    lines.append("}")
+    lines.append("bool gbfl_row_at(GbGame g, int i, GbFlagRow* out) {")
+    lines.append("  if (g < 0 || g >= GBF_G_COUNT || i < 0 || i >= k_row_counts[g]) return false;")
+    lines.append("  if (out) *out = k_row_tables[g][i];")
+    lines.append("  return true;")
+    lines.append("}")
+    lines.append("")
+    safari_sym = {"RED": "EVENT_IN_SAFARI_ZONE", "YELLOW": "EVENT_IN_SAFARI_ZONE",
+                  "GS": None, "CRYSTAL": None}
+    lines.append("static const int k_safari_zone_flag[GBF_G_COUNT] = {")
+    for game in GAMES:
+        sym = safari_sym[game]
+        val = tables[game].get(sym) if sym else None
+        lines.append(f"  [GBF_G_{game}] = {val if val is not None else -1},")
+    lines.append("};")
+    lines.append("int gbfl_safari_zone_flag(GbGame g) {")
+    lines.append("  return (g >= 0 && g < GBF_G_COUNT) ? k_safari_zone_flag[g] : -1;")
     lines.append("}")
     lines.append("")
     with open(FLAGS_OUT, "w", encoding="utf-8") as f:

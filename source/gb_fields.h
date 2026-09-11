@@ -106,6 +106,13 @@ typedef enum {
    * in both games' .sym, same as GBF_DAYCARE_OT does for the boarded mon. */
   GBF_DAYCARE_EGG_OT,
 
+  /* BACKLOG #88, appended (same API-id rule as the fields above): wSafariSteps
+   * (Gen 1 only -- Gen 2 has no Safari-Zone step counter) and wLuckyNumberShowFlag
+   * (Gen 2 only -- Gold/Silver + Crystal's "today's lucky-number radio segment
+   * already heard" byte). See docs/briefs/88-gb-flags-brief.md's data section. */
+  GBF_SAFARI_STEPS,
+  GBF_LUCKY_NUMBER_SHOW_FLAG,
+
   GBF_FIELD_COUNT
 } GbField;
 
