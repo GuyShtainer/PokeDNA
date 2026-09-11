@@ -1098,20 +1098,21 @@ addrtaken-ok flashcartio_activate # RV_ANCHOR'd into pdna_romver_data.c's ROM se
 # resolved as one argsite (verified with --dump-sites by the b60 reviewer).
 pick_list.constprop.0 argsites=1 -> source_label mon_label
 
-# BACKLOG #87 items 3/4 (the GB Pokedex screen + nav wiring) added source/gb_dex.c and
-# source/pdna_gbdex.c, shifting the NORMAL (full-art) image's link layout enough that a
-# BRAND-NEW coincidental hit appeared for lib/everdrivegbax5/everdrive.c's
-# ed_set_rom_mask (never called anywhere in this tree, never had its address taken in
-# source -- grep confirms zero call sites and zero `&ed_set_rom_mask`). Pinned on this
-# build (`make PDNA_STACK_CHECK=0`, arm-none-eabi-nm PokeDNA.elf): ed_set_rom_mask
-# links at 0x080717a8 (frame 0, a leaf function -- well under EXEMPT_MAX_DEEPEST's 256
-# B). Its thumb-bit-set value 0x080717a9, as a 4-byte little-endian word, occurs once
-# at VMA 0x0869db30 inside `mon_front_shiny_blob` (.rodata, offset 0x316f8 -- confirmed
-# by nm -n's nearest-preceding-symbol lookup; objdump -s at that address shows the
-# literal word "a9 17 07 08"). mon_front_shiny_blob is a multi-megabyte raw sprite
-# pixel/compressed-art blob (the full-art shiny front-sprite sheet) -- a coincidental 4
-# -byte pixel/compression-stream pattern, not a pointer. #106 G2 class (same as
-# key_wait_till_hit above: the sweep does not distinguish data words from pointers);
-# retire with #106.
-addrtaken-ok ed_set_rom_mask
+# BACKLOG #87 items 3/4 (the GB Pokedex screen + nav wiring, source/gb_dex.c +
+# source/pdna_gbdex.c) shifted the pre-merge b87-lane link enough that a
+# coincidental hit appeared against lib/everdrivegbax5/everdrive.c's
+# ed_set_rom_mask (never called anywhere in this tree, never had its address
+# taken in source) -- `addrtaken-ok ed_set_rom_mask` was carried on that lane
+# for the NORMAL (full-art) image, pinned there at 0x080717a8 against a word
+# inside mon_front_shiny_blob's pixel/compression stream (#106 G2 class).
+# After merging main (5c59be6..4c98ba4, which shifted both link layouts
+# further with its own edits) `make` and `make artless` both re-ran this
+# build's own STACK_BUDGET guard and printed "1 addrtaken-ok line(s) are no
+# longer address-taken in this image ... ed_set_rom_mask" on BOTH images
+# (ed_set_rom_mask now links at 0x08072910 normal / 0x08073a2c artless --
+# arm-none-eabi-nm on this merge's ELFs) -- the guard's own live re-scan, not
+# a manual re-derivation. Retired rather than kept as a decorative escape
+# hatch, matching main's own #106 G2 retirement policy just above -- re-add
+# it (with a freshly pinned address) only if a future link reintroduces the
+# coincidence and the guard flags it again.
 
