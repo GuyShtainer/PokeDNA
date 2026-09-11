@@ -1495,8 +1495,8 @@ def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     else:
         cap, want = 0, 0
     s.shot("07_setcount", f"BACKLOG #89: SET COUNT's stepper after CLEAR ALL -- "
-                          f"D1's clamp is the teams present (0 here, this list is "
-                          f"empty), not a flat 255, so 3 UP presses land at "
+                          f"the ceiling is gbh_slots_in_blob() (0 here, this list "
+                          f"is empty, R1), not a flat 255, so 3 UP presses land at "
                           f"{want} ('Lifetime wins: {want} / {cap}')")
 
     return s
