@@ -1014,3 +1014,11 @@ addrtaken-ok tte_set_color
 # #106 G2 class (the sweep does not distinguish data words from pointers); retire with #106.
 addrtaken-ok CpuFastFill
 
+# lib/everdrivegbax5/everdrive.c's ed_reg_wr (frame 0 B, a register-write leaf): 28 references in
+# lib/ and source/, every one a direct call -- its address is stored nowhere. After the b105 merge
+# the ARTLESS image links it at 0x08070300, and mon_anim.c's s_fam[] species-family table holds
+# that exact word at s_fam+0xdc (.rodata 0x0808d85c; pinned by objdump on main 128f85b) -- the same
+# table that produced the bmp16_plot coincidence. #106 G2 class (the sweep masks bit 0 and does not
+# distinguish data words from pointers); retire with #106.
+addrtaken-ok ed_reg_wr
+
