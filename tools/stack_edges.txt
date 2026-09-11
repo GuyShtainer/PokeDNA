@@ -1085,3 +1085,25 @@ addrtaken-ok flashcartio_activate # RV_ANCHOR'd into pdna_romver_data.c's ROM se
 # b60 (Contests): the donor picker's label callback (source_label / mon_label) --
 # resolved as one argsite (verified with --dump-sites by the b60 reviewer).
 pick_list.constprop.0 argsites=1 -> source_label mon_label
+
+# b107 (BACKLOG #107): pick_rows()'s own two indirect params -- `row` (4 call sites:
+# the full-paint branch draws the unselected rows then the selected one, the row-pair
+# diff repaints old-then-new) and `search_key`, threaded through pr_build() (3 sites:
+# the filter test plus both operands of the sort comparison). Declared per-caller
+# because pick_rows is reached from TWO independent chains (list_pick's nature-picker
+# call and pdna_contest.c's donor picker) and the b107 reviewer must be able to tell
+# which impl set belongs to which without re-deriving it.
+pick_rows argsites=4 -> lp_row_cb
+pr_build.constprop.0 argsites=3 -> lp_key_cb
+
+# list_pick's LpCtx (source/pdna_pick.c) carries name_fn through pick_rows' opaque
+# ctx instead of a file-static -- lp_row_cb/lp_key_cb dereference it as a struct-
+# field load, not a parameter-threaded dispatch, so this uses the Struct.field form
+# (registered in STRUCT_HEADERS -> pdna_pick.c). LpCtx used to also carry icon_fn;
+# that field is GONE (lp_row's own header comment explains why: it was dead in
+# every real caller, and the walker has no way to prove a struct-field load through
+# pick_rows' ctx indirection is always-NULL the way GCC's own constant propagation
+# could when icon_fn was a literal-0 PARAMETER at list_pick's one call site,
+# pre-extraction -- an empty declared impl set does NOT mean "provably dead" to
+# this walker, it is treated identically to no declaration at all).
+LpCtx.name_fn @0 in lp_row_cb,lp_key_cb -> nature16
