@@ -5854,7 +5854,7 @@ static void pdna_daycare(void) {
    * file-scope statics that survive the previous visit (dc_rescan places from
    * s_ndeco_roll, the draw loops read s_ndeco), so zeroing one would leave ghosts
    * from last time. Unconditional in both builds now — see dc_roll_decos' note. */
-  if (app_yard_visitors_ok()) dc_roll_decos();
+  if (app_yard_visitors_ok()) pdna_yard_roll(251);   /* Gen 3: national-dex-ordered species 1..251 */
   else dc_visitors_off();   /* BACKLOG #114: s_ndeco_roll/s_dc_visit_rng are now private to pdna_yard.c */
   int n = dc_rescan(g_sb1, g_game, base, stride, recs, dc, phys, dcx, dcy, &off, &to_check);
   int sel = 0, frame = 0, ctr = 0;

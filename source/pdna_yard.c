@@ -226,15 +226,8 @@ static int dc_take_slot(int used[DR_COUNT][2], int rg, uint32_t* rng) {
  * and app_yard_visitors_ok() already separately gates on a ROM being registered
  * (so there is real icon art to draw them with) — that gate, not the compiled-art
  * ifdef, is the right reason for them to stay off. */
-void dc_roll_decos(void) {
-  uint32_t rng = dc_seed();
-  rng = rng * 1103515245u + 12345u;
-  s_ndeco_roll = 2 + (int)((rng >> 16) % 4);            /* 2..5 */
-  for (int i = 0; i < s_ndeco_roll; i++) {
-    rng = rng * 1103515245u + 12345u;
-    s_deco_roll[i] = (uint16_t)(1 + (rng >> 9) % 251);   /* internal species 1..251 */
-  }
-  s_dc_visit_rng = rng | 1u;                              /* seed the area-pick stream for this visit */
+void pdna_yard_roll(uint16_t max_dex) {
+  s_dc_visit_rng = pdna_yard_roll_core(dc_seed(), max_dex, s_deco_roll, &s_ndeco_roll);
 }
 
 void dc_visitors_off(void) {

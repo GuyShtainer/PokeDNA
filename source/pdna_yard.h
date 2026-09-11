@@ -45,11 +45,37 @@
  * the bound the drawing loops and the deco arrays share. */
 #define PDNA_YARD_MAXDECO 5
 
-/* Roll THIS visit's yard visitors into the file-scope deco state below. Body
- * unchanged from the old static dc_roll_decos(void) (BACKLOG #114 renames/caps
- * this in the next commit; this header ships the pre-rename signature so the
- * extraction commit changes nothing but which file owns the code). */
-void dc_roll_decos(void);
+/* ---- pure math core (host-testable, no tonc/GBA headers) --------------------
+ * Rolls this visit's 2..5 yard-visitor species in [1, max_dex] from an explicit
+ * RNG seed (same LCG dc_roll_decos always used: rng = rng*1103515245+12345).
+ * Returns the final RNG state, OR'd with 1 (the area-pick stream seed the caller
+ * feeds into dc_region_pick/dc_take_slot) — identical postcondition to the old
+ * `s_dc_visit_rng = rng | 1u` assignment. `out_sp` must hold >= PDNA_YARD_MAXDECO
+ * entries; `*out_n` is written 2..PDNA_YARD_MAXDECO.
+ * BACKLOG #114: `max_dex` replaces the old hard-coded 251 so Gen 1 (no Gen-2 mon
+ * has ever been born there) can cap the roll at 151 while Gen 2/Gen 3 keep 251 —
+ * tests/host_yard_test.c exercises this directly. */
+static inline uint32_t pdna_yard_roll_core(uint32_t seed, uint16_t max_dex,
+                                            uint16_t out_sp[PDNA_YARD_MAXDECO],
+                                            int* out_n) {
+  uint32_t rng = seed;
+  rng = rng * 1103515245u + 12345u;
+  *out_n = 2 + (int)((rng >> 16) % 4);                    /* 2..5 */
+  for (int i = 0; i < *out_n; i++) {
+    rng = rng * 1103515245u + 12345u;
+    out_sp[i] = (uint16_t)(1 + (rng >> 9) % max_dex);      /* internal species 1..max_dex */
+  }
+  return rng | 1u;
+}
+
+/* Roll THIS visit's yard visitors into the file-scope deco state below (replaces
+ * the old dc_roll_decos(void), which hard-coded max_dex = 251). Gen 3 callers
+ * (pdna_main.c's pdna_daycare) pass 251; the Gen-1/2 screen (a later commit)
+ * passes 151 on a Gen-1 save, 251 on Gen 2 (BACKLOG #114: "gen 1 should have
+ * gen 1 only and gen 2 should have both gen 1 and gen 2" — Guy's own wording;
+ * Gen 1/2 share one national-dex-ordered species table 1..251, so a straight
+ * modulo cap is exact, no species table needed). */
+void pdna_yard_roll(uint16_t max_dex);
 
 /* Turn OFF this visit's yard visitors (app_yard_visitors_ok() said no) without
  * rolling any: zeroes the pending-roll count and s_ndeco, and reseeds the area-
