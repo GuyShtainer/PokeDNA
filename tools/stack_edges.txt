@@ -204,15 +204,18 @@ wp_fold_region argsites=1 -> banksrc_records gbsrc_records pcsrc_records banksrc
 # DexGetState/DexSetState/DexGetNat/DexSetNat globals set once by pdna_dex_screen,
 # pdna_pick.c:546-547) -- global function-pointer dispatch, not a struct field
 # (matches g_src_why's shape below: a section-anchor global load, not an instance
-# field). Exactly ONE call site registers all four (pdna_main.c:5197):
-# pdna_dex_screen(dex_state, dex_set_state, dex_get_national, dex_set_national, ...).
-# Declared as the union of all four per site rather than trying to disambiguate which
-# specific one each site dispatches (all four are small leaf-ish functions in
-# pdna_main.c -- the extra conservatism costs nothing). Site counts verified against
-# this build's disassembly.
-dex_build argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national
-dex_cell_grid argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national
-dex_cell_list argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national
+# field). TWO call sites now register (dex_get_national/dex_set_national are Gen-3
+# only -- BACKLOG #87 item 3's GB caller passes NULL for both, hiding the National-Dex
+# row, per pdna_gbdex.h/pdna_dex_screen's own NULL contract):
+#   pdna_main.c:5197 pdna_dex_screen(dex_state, dex_set_state, dex_get_national, dex_set_national, ...)
+#   pdna_gbdex.c      pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, ...) -- twice
+#                      (the Gen-2 chooser's ROW_DEX branch and pdna_gbdex()'s own Gen-1 direct call)
+# Declared as the union of all SIX per site rather than trying to disambiguate which
+# specific one each site dispatches (all six are small leaf-ish functions -- the extra
+# conservatism costs nothing). Site counts verified against this build's disassembly.
+dex_build argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
+dex_cell_grid argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
+dex_cell_list argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
 # pdna_dex_screen: BACKLOG #87 item 1 (the species cap, pdna_pick.c's s_dex_max /
 # pdna_dex_set_max()) rewrote dex_counts()'s and dex_bulk()'s three ALL-loops from a
 # fixed DEX_NAT_MAX bound to the runtime s_dex_max variable and replaced the literal
@@ -227,7 +230,7 @@ dex_cell_list argsites=1 -> dex_state dex_set_state dex_get_national dex_set_nat
 # only which bucket 3 sites fall in moved. Verified against THIS build's disassembly
 # (both artless and normal) after the #87 item-1 edit -- re-verify if pdna_pick.c's
 # dex_counts/dex_bulk/dex_build shapes change again.
-pdna_dex_screen argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national
+pdna_dex_screen argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
 
 # pdna_origin_art.c's PdnaGbArtSource (source/pdna_origin_art.h:215-251, s_gb --
 # pic/have/icon function-pointer fields, accessed through fetch_pic_ex()'s s_gb.pic/
@@ -1076,4 +1079,21 @@ addrtaken-ok MultiBoot
 # 0x08070500 sits inside s_egg_cnt (+0x70, .rodata 0x0808d374; pinned by objdump) -- data, not a
 # pointer. #106 G2 class (the sweep does not distinguish data words from pointers); retire with #106.
 addrtaken-ok key_wait_till_hit
+
+# BACKLOG #87 items 3/4 (the GB Pokedex screen + nav wiring) added source/gb_dex.c and
+# source/pdna_gbdex.c, shifting the NORMAL (full-art) image's link layout enough that a
+# BRAND-NEW coincidental hit appeared for lib/everdrivegbax5/everdrive.c's
+# ed_set_rom_mask (never called anywhere in this tree, never had its address taken in
+# source -- grep confirms zero call sites and zero `&ed_set_rom_mask`). Pinned on this
+# build (`make PDNA_STACK_CHECK=0`, arm-none-eabi-nm PokeDNA.elf): ed_set_rom_mask
+# links at 0x080717a8 (frame 0, a leaf function -- well under EXEMPT_MAX_DEEPEST's 256
+# B). Its thumb-bit-set value 0x080717a9, as a 4-byte little-endian word, occurs once
+# at VMA 0x0869db30 inside `mon_front_shiny_blob` (.rodata, offset 0x316f8 -- confirmed
+# by nm -n's nearest-preceding-symbol lookup; objdump -s at that address shows the
+# literal word "a9 17 07 08"). mon_front_shiny_blob is a multi-megabyte raw sprite
+# pixel/compressed-art blob (the full-art shiny front-sprite sheet) -- a coincidental 4
+# -byte pixel/compression-stream pattern, not a pointer. #106 G2 class (same as
+# key_wait_till_hit above: the sweep does not distinguish data words from pointers);
+# retire with #106.
+addrtaken-ok ed_set_rom_mask
 

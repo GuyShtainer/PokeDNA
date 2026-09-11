@@ -602,6 +602,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbpack.h"      /* U5, BACKLOG #67: Gold/Silver/Crystal's own Pack */
 #include "pdna_gbclock.h"     /* BACKLOG #86/#108: Gen-2's own Clock fix screen */
 #include "pdna_gbdaycare.h"   /* BACKLOG #85: the Gen-1/2 Day-Care screen */
+#include "pdna_gbdex.h"       /* BACKLOG #87: the Gen-1/2 Pokedex screen */
 #include "pdna_gbmap.h"       /* M1, BACKLOG #91: Gen 1's read-only current-map view */
 #include "pdna_pick.h"        /* BACKLOG #92: pick_item / pick_item_set_gen1_2_max */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
@@ -2646,6 +2647,19 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * one-hour budget; flagged for a follow-up slice, not silently worked around. */
     if (g_ed) pdna_gbtrainer(&g_ed->s, true);
     else      (void)gb_info_page(m);   /* A and B both just return to the grid */
+  } else if (nv == NV_DEX) {
+    /* BACKLOG #87: the shared Pokedex screen (pdna_pick.c's pdna_dex_screen, reused
+     * UNCHANGED under item 1's species cap), over source/gb_dex.h's owned/seen core
+     * -- same "needs a live GbSession to write through" gate as NV_TRAINER/NV_BAG/
+     * NV_CLOCK/NV_DAYCARE above. Offered on BOTH kinds (nav_avail's own GB_TABLE
+     * says NAV_OK for both) -- pdna_gbdex() itself branches internally on s->gen to
+     * add the Gen-2-only Unown-forms chooser, so this call site does not need to.
+     *
+     * app_can_edit() here, not a bare `true`: this is a NEW call site (same
+     * reasoning NV_DAYCARE's own comment gives for why it does not just copy the
+     * NV_TRAINER/NV_BAG/NV_CLOCK sibling literal). */
+    if (g_ed) pdna_gbdex(&g_ed->s, app_can_edit());
+    else      (void)gb_info_page(m);
   } else if (nv == NV_BAG && kind == SE_KIND_GEN1) {
     /* U4 (BACKLOG #67): Red/Yellow's own Item bag + PC store, same "needs a
      * live GbSession to write through" gate as NV_TRAINER above. D7 (U4

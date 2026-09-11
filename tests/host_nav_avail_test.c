@@ -133,9 +133,10 @@ static void test_every_row_covered(void) {
    * own Pack, U5) -- checked separately below, alongside the OK-on-both rows.
    * BACKLOG #91 M1: NV_MAP moved OUT of this list -- it now splits per-gen
    * like NV_CLOCK does (checked in its own assertion below), not COMING_SOON
-   * on both any more. */
+   * on both any more. BACKLOG #87: NV_DEX moved OUT too -- gb_dex.c + pdna_gbdex.c
+   * wire the shared Pokedex screen on both kinds, checked in ok_both below. */
   static const int coming_soon_both[] = {
-    NV_PARTY, NV_BANK, NV_DEX, NV_DATA, NV_FLY, NV_GB   /* 6: Map left for its own per-gen split (M1) */
+    NV_PARTY, NV_BANK, NV_DATA, NV_FLY, NV_GB   /* 5: Map (M1) and Dex (#87) split out */
   };
   for (int i = 0; i < (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]); i++) {
     CHECK(nav_avail(coming_soon_both[i], SE_KIND_GEN1) == NAV_COMING_SOON,
@@ -146,11 +147,12 @@ static void test_every_row_covered(void) {
 
   /* BACKLOG #85: NV_DAYCARE moved from coming-soon to OK-both -- gb_daycare.c's core
    * is wired up on both Gen 1 (one slot, level-up only) and Gen 2 (two slots +
-   * compatibility + egg). */
-  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE };
+   * compatibility + egg). BACKLOG #87: NV_DEX joins it -- the shared pdna_dex_screen
+   * (species-capped, item 1) is wired on both kinds via pdna_gbdex.c. */
+  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE, NV_DEX };
   for (int i = 0; i < (int)(sizeof ok_both / sizeof ok_both[0]); i++) {
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare are NAV_OK");
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare/Dex are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare/Dex are NAV_OK");
   }
 
   /* NV_MAP: OK on Gen 1, COMING_SOON on Gen 2 -- the same per-gen-split shape as
@@ -160,17 +162,17 @@ static void test_every_row_covered(void) {
   CHECK(nav_avail(NV_MAP, SE_KIND_GEN2) == NAV_COMING_SOON, "Gen 2: Map is still COMING_SOON");
 
   /* Gen 1's own 20-row classification is exhaustive: 8 NOT_IN_GAME (not_in_game_gen1,
-   * Clock included -- Gen 1 never gets a clock) + 6 COMING_SOON-both + 5 OK-both
-   * (Trainer/Settings/Back/Bag/Daycare) + Map's own split (OK on Gen 1) == 20. Gen 2
+   * Clock included -- Gen 1 never gets a clock) + 5 COMING_SOON-both + 6 OK-both
+   * (Trainer/Settings/Back/Bag/Daycare/Dex) + Map's own split (OK on Gen 1) == 20. Gen 2
    * differs from Gen 1 in exactly two cells (Clock: NAV_OK, test (E); Map: COMING_SOON,
-   * above) -- so Gen 2's own count is 7 NOT_IN_GAME + 6 COMING_SOON-both + 6 OK (the 5
-   * ok_both rows + Clock) + Map's split == 20 too. NOTE (b85 re-verify): every split of 20
-   * sums to 20, so these CHECKs are documentation -- the per-row loops above are the real
-   * gate. A row silently added to PDNA_NAV_ITEMS without a matching GB_TABLE entry still
-   * cannot hide: test (A) requires every (item, kind) pair to answer one of the three
-   * defined states with a real reason, and NV_COUNT itself is asserted against the row
-   * count. */
-  CHECK(8 + 6 + 5 + 1 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
+   * above) -- so Gen 2's own count is 7 NOT_IN_GAME + 5 COMING_SOON-both + 7 OK (the 6
+   * ok_both rows + Clock) + Map's split == 20 too. NOTE (b85/#87 re-verify): every split of
+   * 20 sums to 20, so these CHECKs are documentation -- the per-row loops above are the
+   * real gate. A row silently added to PDNA_NAV_ITEMS without a matching GB_TABLE entry
+   * still cannot hide: test (A) requires every (item, kind) pair to answer one of the
+   * three defined states with a real reason, and NV_COUNT itself is asserted against the
+   * row count. */
+  CHECK(8 + 5 + 6 + 1 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
 
   /* D6 review (b86): assert the Gen-2 cells of the other 7 not_in_game_gen1 rows for real
    * (only Clock, via test (E), and ok_both, via the loop above, were ever asked with
@@ -180,11 +182,11 @@ static void test_every_row_covered(void) {
     CHECK(nav_avail(not_in_game_gen1[i], SE_KIND_GEN2) == NAV_NOT_IN_GAME,
           "Gen 2: every Hoenn/Frontier-shaped row except Clock stays NOT_IN_GAME");
   }
-  CHECK(7 + 6 + 6 + 1 == NV_COUNT,
-        "Gen 2's row classification (7 NOT_IN_GAME + 6 COMING_SOON-both + 6 OK + Map's split) accounts for all rows too");
+  CHECK(7 + 5 + 7 + 1 == NV_COUNT,
+        "Gen 2's row classification (7 NOT_IN_GAME + 5 COMING_SOON-both + 7 OK + Map's split) accounts for all rows too");
 
-  printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 6 COMING_SOON-both + "
-         "5 OK-both + 1 Map-split == %d; Gen 2 differs at Clock and Map, checked here + test E)\n", NV_COUNT);
+  printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 5 COMING_SOON-both + "
+         "6 OK-both + 1 Map-split == %d; Gen 2 differs at Clock and Map, checked here + test E)\n", NV_COUNT);
 }
 
 /* ---- (H) defensive: out-of-range nv_item / save_kind never misbehaves -------------- */

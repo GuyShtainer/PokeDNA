@@ -67,8 +67,11 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
                      { NAV_OK, "OK" } },
   [NV_MIRAGE]    = { { NAV_NOT_IN_GAME, "Gen 1 games have no Mirage." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Mirage." } },
-  [NV_DEX]       = { { NAV_COMING_SOON, "The Pokedex is coming soon." },
-                     { NAV_COMING_SOON, "The Pokedex is coming soon." } },
+  /* BACKLOG #87: gb_dex.c (the pure core) + pdna_gbdex.c (the screen) are wired on
+   * gb_nav_from_start's own NV_DEX branch -- both generations get the shared
+   * pdna_dex_screen() UNCHANGED under a species cap (151 Gen 1, 251 Gen 2), Gen 2
+   * additionally offers the Unown-forms toggle list from its own entry chooser. */
+  [NV_DEX]       = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   /* U4 (BACKLOG #67): Red/Yellow's own Item bag + PC store are wired
    * (pdna_gbbag.c) -- Gen 1. U5: Gold/Silver/Crystal's own Pack + PC store
    * are wired too (pdna_gbpack.c, design sec 1.4) -- Gen 2. */
