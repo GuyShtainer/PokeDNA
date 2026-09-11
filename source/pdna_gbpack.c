@@ -138,7 +138,8 @@ static void gbpack_row_paint(const GbBag* bag, GbBagPocket pocket, int row, int 
 }
 
 __attribute__((noinline))
-static bool pdna_gbpack_plain(GbBag* bag, bool can_edit, const char* header, const char* header2) {
+static bool pdna_gbpack_plain(GbBag* bag, GbGame game, bool can_edit, const char* header,
+                              const char* header2) {
   int pcyc = 0;         /* 0..3 = kUiPocket cycle position; PC is a 5th state */
   bool in_pc = false;
   int sel = 0, top = 0;
@@ -184,12 +185,12 @@ static bool pdna_gbpack_plain(GbBag* bag, bool can_edit, const char* header, con
         if (!g2pack_is_hm(real)) {
           uint8_t cur = 0; gbb_tmhm_get(bag, real, &cur);
           uint32_t q = num_entry("COUNT", cur, GBB_TMHM_CAP);
-          gbb_tmhm_set(GBF_G_CRYSTAL, bag, real, (uint8_t)q);
+          gbb_tmhm_set(game, bag, real, (uint8_t)q);
         }
       } else {
         uint32_t q = num_entry("QUANTITY", bag->pockets[pocket].entries[sel].qty, GBB_QTY_CAP);
         if (q < 1) q = 1;
-        gbb_set_qty(GBF_G_CRYSTAL, bag, pocket, sel, (uint8_t)q);
+        gbb_set_qty(game, bag, pocket, sel, (uint8_t)q);
       }
     }
   }
@@ -681,7 +682,7 @@ void pdna_gbpack(GbSession* s, bool can_edit) {
     want_commit = pdna_gbpack_gen2_screen(&gs, bag, game, can_edit, female);
     gbscr_close(&gs);
   } else {
-    want_commit = pdna_gbpack_plain(bag, can_edit, PDNA_GBTR_FALLBACK_TITLE,
+    want_commit = pdna_gbpack_plain(bag, game, can_edit, PDNA_GBTR_FALLBACK_TITLE,
                                     reason ? reason : PDNA_GBSCR_REASON_UNAVAILABLE);
   }
 
