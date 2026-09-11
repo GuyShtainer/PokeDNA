@@ -947,7 +947,12 @@ static void g2card_edit_sel(GbTrainer* t, int page, int sel) {
 __attribute__((noinline))
 static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
   uint16_t pic_need = female ? GBSCR_NEED_CARDPIC_F : GBSCR_NEED_CARDPIC_M;
-  uint16_t need_mask = GBSCR_NEED_CARDGFX | GBSCR_NEED_STATUSWORD |
+  /* BACKLOG #125 review: uint32_t, not uint16_t -- GBSCR_NEED_CARDCORNER is
+   * 1u<<16, which silently truncated to 0 in a uint16_t need_mask (the actual
+   * bug: the retry below never added the bit, the block was never cached,
+   * and the corner cells painted whatever stale pixels were already there
+   * instead of the chamfer). See pdna_gbscreen.h's GBSCR_SRC_COUNT assert. */
+  uint32_t need_mask = GBSCR_NEED_CARDGFX | GBSCR_NEED_STATUSWORD |
                        GBSCR_NEED_LEADERS | GBSCR_NEED_BADGES | pic_need;
   uint32_t shell_need = gbscr_tail_need(PDNA_GEN2, need_mask);
   uint8_t* tail = gb12_arena_tail(shell_need);

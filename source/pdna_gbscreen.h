@@ -239,8 +239,23 @@ typedef enum {
    * cardcorner (0 on Gold, where storage tile 4 IS the corner already).
    * Single-tile block (index always 0), same plain rom_gbui_tile() shape as
    * every other src here. */
-  GBSCR_SRC_CARDCORNER
+  GBSCR_SRC_CARDCORNER,
+  /* Sentinel, always last (append-only enum) -- NOT a real src, never used as a
+   * cell's own GbScrSrc. Exists only so the _Static_assert below has something
+   * to check: every real GBSCR_SRC_* value's ordinal is used as a `1u <<`
+   * shift into `need_mask`, so the highest one must stay < 32 for a uint32_t
+   * mask (BACKLOG #125 review: GBSCR_SRC_CARDCORNER was ordinal 16, 1u<<16
+   * silently truncated to 0 in the uint16_t need_mask that used to be here --
+   * fixed by widening need_mask/gbscr_tail_need/gbscr_cache_plan/gbscr_open to
+   * uint32_t everywhere, this assert is the guard against it recurring). */
+  GBSCR_SRC_COUNT
 } GbScrSrc;
+
+_Static_assert(GBSCR_SRC_COUNT <= 32,
+              "GbScrSrc has grown past 32 values -- a GBSCR_NEED_* bit would "
+              "silently truncate to 0 in a uint32_t need_mask; either shrink "
+              "the enum or widen need_mask (and every gbscr_tail_need/"
+              "gbscr_cache_plan/gbscr_open signature) again");
 
 /* U2b item 1: which extra located ROM blocks (beyond FONT, always cached) a screen
  * wants copied into the tail's RAM tile bank at open -- a bitwise-OR of these,
@@ -348,8 +363,8 @@ bool     gbscr_mem_read(void* ctx, uint32_t off, void* buf, uint32_t len);
  * tests/host_gbscreen_test.c needs to catch a shifted-glyph layout bug the shot
  * harness cannot see. Returns false (fail closed) if a needed block has no
  * located offset/size, or the plan would overrun GBSCR_MAX_BLOCKS. */
-uint32_t gbscr_tail_need(uint8_t gen, uint16_t need_mask);
-bool     gbscr_cache_plan(uint8_t gen, uint16_t need_mask, const RomGbUi* gu,
+uint32_t gbscr_tail_need(uint8_t gen, uint32_t need_mask);
+bool     gbscr_cache_plan(uint8_t gen, uint32_t need_mask, const RomGbUi* gu,
                           uint32_t tail_len, GbscrCache* out);
 
 /* U2c: the Gen-1 player pic pack/unpack pair -- pure arithmetic (no tonc/
@@ -447,7 +462,7 @@ extern const uint8_t gbscr_y_dst_count[144];
  * "not an English release" / "not a Game Boy ROM" / "no tile-bank memory"),
  * `gs->ok` is false, and every other gbscr_* call on `gs` is a safe no-op. */
 bool gbscr_open(uint8_t gen, GbScreen* gs, uint8_t* tail, uint32_t tail_len,
-                uint16_t need_mask, const char** reason);
+                uint32_t need_mask, const char** reason);
 
 /* Release any resources gbscr_open() took (the SD build's FIL is already closed
  * by the time gbscr_open() returns -- this exists for symmetry/future-proofing

@@ -380,6 +380,53 @@ int main(void) {
       CHECK(plan.nblocks == 6, "gen=%d: the real Gen-2 card's combo planned %d blocks, want 6",
             gen, plan.nblocks);
     }
+
+    /* BACKLOG #125 review (blocking defect): GBSCR_SRC_CARDCORNER is ordinal 16
+     * in GbScrSrc, so GBSCR_NEED_CARDCORNER = 1u<<16 = 0x10000 -- that bit is
+     * ALREADY GONE the moment it is stored in anything narrower than 32 bits.
+     * This is a regression guard against exactly that class of bug recurring
+     * for CARDCORNER or any future GbScrSrc >= 16: prove the bit survives a
+     * uint32_t (the mask type every gbscr_tail_need/gbscr_cache_plan/
+     * gbscr_open signature now uses) and is deliberately LOST by a uint16_t
+     * (documenting the shape of the bug that shipped, not just asserting the
+     * fix). */
+    {
+      uint32_t as_u32 = GBSCR_NEED_CARDCORNER;
+      CHECK(as_u32 != 0, "GBSCR_NEED_CARDCORNER must be nonzero in a uint32_t mask");
+      uint16_t as_u16 = (uint16_t)GBSCR_NEED_CARDCORNER;
+      CHECK(as_u16 == 0, "GBSCR_NEED_CARDCORNER truncated to a uint16_t is 0 by "
+                         "construction (1u<<16) -- if this ever becomes nonzero the "
+                         "enum shrank back under 16, which is fine, but this comment "
+                         "and the _Static_assert in pdna_gbscreen.h should be revisited");
+
+      /* And the functional proof, not just the numeric one: a Crystal-shaped
+       * gu (cardcorner set) with GBSCR_NEED_CARDCORNER actually in the mask
+       * must plan an 8th block (FONT + the real card's 6 + CARDCORNER), 16 B,
+       * at the correct cumulative ram_off -- the exact path pdna_gbtrainer.c's
+       * retry exercises on real hardware. */
+      RomGbUi gu_c = gu;
+      gu_c.cardcorner = gu_c.badges + 88u * 16u;
+      uint32_t corner_mask = (GBSCR_NEED_TEXTBOX | GBSCR_NEED_STATUSWORD |
+                              GBSCR_NEED_LEADERS | GBSCR_NEED_BADGES |
+                              GBSCR_NEED_CARDPIC_M | GBSCR_NEED_CARDCORNER);
+      GbscrCache cplan;
+      bool cok = gbscr_cache_plan(GB_GEN2, corner_mask, &gu_c, 65536u, &cplan);
+      CHECK(cok, "Crystal corner mask (6 real-card bits + CARDCORNER) was refused");
+      if (cok) {
+        CHECK(cplan.nblocks == 7, "Crystal corner mask planned %d blocks, want 7 "
+                                  "(FONT + 5 real-card bits + CARDCORNER)", cplan.nblocks);
+        bool found_corner = false;
+        for (int i = 0; i < cplan.nblocks; i++) {
+          if (cplan.blocks[i].rom_off == gu_c.cardcorner) {
+            found_corner = true;
+            CHECK(cplan.blocks[i].len == 16u, "CARDCORNER block len=%u, want 16",
+                  cplan.blocks[i].len);
+          }
+        }
+        CHECK(found_corner, "no planned block has rom_off == gu.cardcorner -- "
+                            "GBSCR_NEED_CARDCORNER never made it into the mask");
+      }
+    }
   }
 
   /* Minor (U2c review): gbscr_pack_pic()/gbscr_unpack_pic_px() round trip --

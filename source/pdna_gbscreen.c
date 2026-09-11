@@ -309,7 +309,7 @@ static const GbScrSrc kCacheOptOrder[13] = {
  * arena-tail request (e.g. the Gen-1 card, on top of its own player-pic bytes)
  * can call the SAME arithmetic gbscr_open_inner() gates on, rather than
  * re-deriving it and risking the two falling out of sync. */
-uint32_t gbscr_tail_need(uint8_t gen, uint16_t need_mask) {
+uint32_t gbscr_tail_need(uint8_t gen, uint32_t need_mask) {
   uint32_t need = ROM_GBUI_SCRATCH_MIN + gbscr_block_bytes(gen, GBSCR_SRC_FONT);
   for (int i = 0; i < GBSCR_CACHE_OPT_N; i++)
     if (need_mask & (1u << kCacheOptOrder[i])) need += gbscr_block_bytes(gen, kCacheOptOrder[i]);
@@ -330,7 +330,7 @@ uint32_t gbscr_tail_need(uint8_t gen, uint16_t need_mask) {
  * if a needed block has no located offset (off==0) or size (len==0), or the
  * plan would overrun GBSCR_MAX_BLOCKS -- the same "fail closed" contract the
  * old gbscr_cache_block() loop had, just without the read. */
-bool gbscr_cache_plan(uint8_t gen, uint16_t need_mask, const RomGbUi* gu,
+bool gbscr_cache_plan(uint8_t gen, uint32_t need_mask, const RomGbUi* gu,
                       uint32_t tail_len, GbscrCache* out) {
   if (!gu || !out) return false;
   memset(out, 0, sizeof *out);
@@ -543,7 +543,7 @@ static bool gbscr_cache_fill(RomGbUi* gu, const GbscrCache* plan, uint8_t* tail,
  * gbscr_flush()'s own note), leaving FIL + RomGbUiLoc + a couple of locals. */
 static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs,
                                                         uint8_t* tail, uint32_t tail_len,
-                                                        uint16_t need_mask, const char** reason) {
+                                                        uint32_t need_mask, const char** reason) {
   memset(gs, 0, sizeof *gs);
   gs->gen = gen;
 
@@ -632,7 +632,7 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
  * Both refusal branches leave `gs` zeroed with `gs->gen` set, same observable
  * state gbscr_open_inner() used to leave on the same refusals. */
 bool __attribute__((noinline)) gbscr_open(uint8_t gen, GbScreen* gs, uint8_t* tail,
-                                          uint32_t tail_len, uint16_t need_mask,
+                                          uint32_t tail_len, uint32_t need_mask,
                                           const char** reason) {
   if (reason) *reason = 0;
   if (!gs) return false;
