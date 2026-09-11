@@ -695,6 +695,21 @@ rgm1_open argsites=4 -> gbmap_sd_read fused_gb_slice_read
 Scan.read @0 in scan_one.constprop.0@rom_gbmap -> gbmap_sd_read fused_gb_slice_read
 scan_one.constprop.0@rom_gbmap argsites=1 -> cb_banks cb_hdr cb_ts
 
+# BACKLOG #91 M1-G2: source/rom_gbmap2.h's `GbReadFn read;` is RomGbMap2's first
+# member too (offset 0), same shape as RomGbMap1 above. Callers below dereference it
+# through rd()/rdg() (rom_gbmap2.c, inlined) and gbmap2_load_viewport_blocks
+# (source/pdna_gbmap2.c) calls `st->g.read(...)` directly on its own GbMap2State.g
+# field (a RomGbMap2, embedded at GbMap2State offset 0 -- same struct, same field
+# offset 0). Implementations, from every rgm2_open() call site (grepped
+# pdna_gbmap2.c): gbmap2_sd_read (SD/artless build) and fused_gb_slice_read (delta).
+RomGbMap2.read @0 in rgm2_map,rgm2_tileset,gbmap2_load_viewport_blocks -> gbmap2_sd_read fused_gb_slice_read
+# rom_gbmap2.c's OWN file-local `scan_one()` (called 3 times inside rgm2_open, for the
+# 3 code anchors) is NOT inlined/constprop'd per callback here (unlike rom_gbmap.c's
+# 3 constprop clones) -- one shared `scan_one` symbol dispatches through its own
+# Scan.read@0 field AND the `cb(w + i)` ScanCb callback parameter (cb_a1/cb_a2/cb_a3).
+Scan.read @0 in scan_one -> gbmap2_sd_read fused_gb_slice_read
+scan_one argsites=1 -> cb_a1 cb_a2 cb_a3
+
 Br.rd @0 in br_byte -> gb_art_read fused_gb_slice_read gb_read
 # gb_sprite_codec.c's own file-local `Br` bit-reader (line ~28): `GbReadFn rd;` is its
 # first member, filled in by br_init() from whichever GbReadFn its own caller (rom_

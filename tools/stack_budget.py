@@ -1229,6 +1229,7 @@ STRUCT_HEADERS = {
                                   # header (RomReadFn's own typedef, a function pointer,
                                   # not a struct), so struct_field_offsets()'s lazy
                                   # `typedef struct {...} NAME;` match lands on the right body.
+    "RomGbMap2": "rom_gbmap2.h",   # BACKLOG #91 M1-G2 -- same shape/reason as RomGbMap1 above.
     "Br": "gb_sprite_codec.c",
     # BACKLOG #106 G4: these six used to be HAND_VERIFIED (None) escapes -- the OLD
     # lazy forward regex anchored on the FIRST `typedef struct {` in the file and

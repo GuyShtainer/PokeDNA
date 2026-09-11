@@ -111,10 +111,10 @@ static void test_representative_rows(void) {
    * both generations now -- Fly moves from "coming soon" to genuinely OK. */
   CHECK(nav_avail(NV_FLY, SE_KIND_GEN1) == NAV_OK, "Fly: wired up on Gen 1 (BACKLOG #90)");
   CHECK(nav_avail(NV_FLY, SE_KIND_GEN2) == NAV_OK, "Fly: wired up on Gen 2 too (BACKLOG #90)");
-  /* BACKLOG #91 M1: Map splits like Bag once did -- Gen 1's read-only current-map
-   * view is wired (NAV_OK); Gen 2's own map is a later slice (COMING_SOON). */
+  /* BACKLOG #91 M1/M1-G2: Map is wired on both generations now -- Gen 1's
+   * (M1) and Gen 2's (M1-G2) own read-only current-map views. */
   CHECK(nav_avail(NV_MAP, SE_KIND_GEN1) == NAV_OK, "Map: wired up on Gen 1 (M1, BACKLOG #91)");
-  CHECK(nav_avail(NV_MAP, SE_KIND_GEN2) == NAV_COMING_SOON, "Map: Gen 2's own map is a later slice");
+  CHECK(nav_avail(NV_MAP, SE_KIND_GEN2) == NAV_OK, "Map: wired up on Gen 2 too (M1-G2, BACKLOG #91)");
   printf("(F) representative COMING_SOON / NOT_IN_GAME rows match the brief\n");
 }
 
@@ -135,13 +135,12 @@ static void test_every_row_covered(void) {
 
   /* U5: NV_BAG is now NAV_OK on BOTH kinds (Gen 1's own Item bag, U4; Gen 2's
    * own Pack, U5) -- checked separately below, alongside the OK-on-both rows.
-   * BACKLOG #90/#91 M1: NV_FLY moved out of this bucket into ok_both, and
-   * NV_MAP moved OUT of this list entirely -- it now splits per-gen like
-   * NV_CLOCK does (its own assertions below), not COMING_SOON on both. */
+   * BACKLOG #90/#91: NV_FLY and NV_MAP (M1 + M1-G2, both generations wired)
+   * moved out of this bucket into ok_both. */
   static const int coming_soon_both[] = {
-    NV_PARTY, NV_BANK, NV_DEX, NV_GB   /* 4: Map left for its own per-gen split (M1);
-                                         * NV_FLY (BACKLOG #90) and NV_DATA (BACKLOG #88)
-                                         * moved to ok_both below */
+    NV_PARTY, NV_BANK, NV_DEX, NV_GB   /* NV_FLY (BACKLOG #90), NV_DATA
+                                         * (BACKLOG #88) and NV_MAP (BACKLOG
+                                         * #91) moved to ok_both below */
   };
   for (int i = 0; i < (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]); i++) {
     CHECK(nav_avail(coming_soon_both[i], SE_KIND_GEN1) == NAV_COMING_SOON,
@@ -154,45 +153,42 @@ static void test_every_row_covered(void) {
    * is wired up on both Gen 1 (one slot, level-up only) and Gen 2 (two slots +
    * compatibility + egg). BACKLOG #90: NV_FLY joins the same bucket -- wired for
    * both generations too. BACKLOG #88: NV_DATA (Flags & counters, pdna_gbflags.c)
-   * joins it as well. */
-  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE, NV_FLY, NV_DATA };
+   * joins it as well. BACKLOG #91 (M1 + M1-G2): NV_MAP joins it too -- both
+   * generations' own read-only current-map views are wired now. */
+  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE, NV_FLY, NV_DATA, NV_MAP };
   for (int i = 0; i < (int)(sizeof ok_both / sizeof ok_both[0]); i++) {
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare/Fly/Data are NAV_OK");
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare/Fly/Data are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare/Fly/Data/Map are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare/Fly/Data/Map are NAV_OK");
   }
 
-  /* NV_MAP: OK on Gen 1, COMING_SOON on Gen 2 -- the same per-gen-split shape as
-   * NV_CLOCK (test (E)), counted below as its own single row rather than folded into
-   * either all-COMING_SOON or all-OK list (M1, BACKLOG #91). */
-  CHECK(nav_avail(NV_MAP, SE_KIND_GEN1) == NAV_OK, "Gen 1: Map is NAV_OK (M1, BACKLOG #91)");
-  CHECK(nav_avail(NV_MAP, SE_KIND_GEN2) == NAV_COMING_SOON, "Gen 2: Map is still COMING_SOON");
-
   /* 8 NOT_IN_GAME (gen1-list, Clock counted once, + BACKLOG #60's NV_CONTEST) + the
-   * COMING_SOON-both and OK-both arrays' own sizes + Map's own split (OK on Gen 1),
-   * derived instead of hand-tallied so a row silently added to PDNA_NAV_ITEMS without
-   * a matching GB_TABLE entry cannot hide behind a stale literal count. This tracks
-   * the arrays, not a frozen number. */
+   * COMING_SOON-both and OK-both arrays' own sizes, derived instead of hand-tallied
+   * so a row silently added to PDNA_NAV_ITEMS without a matching GB_TABLE entry
+   * cannot hide behind a stale literal count. This tracks the arrays, not a frozen
+   * number. NV_MAP is now inside ok_both (BACKLOG #91 M1-G2), so there is no more
+   * separate per-gen "split" row to add. */
   const int n_coming = (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]);
   const int n_ok = (int)(sizeof ok_both / sizeof ok_both[0]);
-  CHECK(8 + n_coming + n_ok + 1 == NV_COUNT,
-        "row classification accounts for all PDNA_NAV_ITEMS (8 NOT_IN_GAME + COMING_SOON-both + OK-both + Map-split)");
+  CHECK(8 + n_coming + n_ok == NV_COUNT,
+        "row classification accounts for all PDNA_NAV_ITEMS (8 NOT_IN_GAME + COMING_SOON-both + OK-both)");
   printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + %d COMING_SOON-both + "
-        "%d OK-both + 1 Map-split == %d)\n", n_coming, n_ok, NV_COUNT);
+        "%d OK-both == %d)\n", n_coming, n_ok, NV_COUNT);
 
-  /* Gen 2 differs from Gen 1 in EXACTLY two cells: Clock (Gen 1's NOT_IN_GAME to Gen
-   * 2's own NAV_OK, test (E) above) and Map (Gen 1's NAV_OK to Gen 2's own
-   * COMING_SOON, checked above) -- so Gen 2's own count is 7 NOT_IN_GAME + the same
-   * derived COMING_SOON-both and OK-both sizes + Clock + Map's split == NV_COUNT too.
-   * D6 review (b86): don't just narrate it -- actually check the Gen-2 cells for the
-   * other 7 not_in_game_gen1 rows (only Clock, via test (E), and ok_both, via the loop
-   * above, were ever asked with SE_KIND_GEN2). */
+  /* Gen 2 differs from Gen 1 in EXACTLY one remaining cell: Clock (Gen 1's
+   * NOT_IN_GAME to Gen 2's own NAV_OK, test (E) above) -- Map is now
+   * symmetric on both generations (BACKLOG #91 M1-G2), so Gen 2's own count
+   * is 7 NOT_IN_GAME + the same derived COMING_SOON-both and OK-both sizes +
+   * Clock == NV_COUNT too. D6 review (b86): don't just narrate it -- actually
+   * check the Gen-2 cells for the other 7 not_in_game_gen1 rows (only Clock,
+   * via test (E), and ok_both, via the loop above, were ever asked with
+   * SE_KIND_GEN2). */
   for (int i = 0; i < (int)(sizeof not_in_game_gen1 / sizeof not_in_game_gen1[0]); i++) {
     if (not_in_game_gen1[i] == NV_CLOCK) continue;   /* Gen 2's one differing NOT_IN_GAME cell, test (E) */
     CHECK(nav_avail(not_in_game_gen1[i], SE_KIND_GEN2) == NAV_NOT_IN_GAME,
           "Gen 2: every Hoenn/Frontier-shaped row except Clock stays NOT_IN_GAME");
   }
-  CHECK(7 + n_coming + n_ok + 1 + 1 == NV_COUNT,
-        "Gen 2's row classification (7 NOT_IN_GAME + COMING_SOON-both + OK-both + Clock + Map's split) accounts for all rows too");
+  CHECK(7 + n_coming + n_ok + 1 == NV_COUNT,
+        "Gen 2's row classification (7 NOT_IN_GAME + COMING_SOON-both + OK-both + Clock) accounts for all rows too");
 }
 
 /* ---- (H) defensive: out-of-range nv_item / save_kind never misbehaves -------------- */

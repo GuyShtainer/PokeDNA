@@ -94,13 +94,11 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
   [NV_FLY]       = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   [NV_CONTEST]   = { { NAV_NOT_IN_GAME, "Gen 1 games have no Contests." },
                      { NAV_NOT_IN_GAME, "Gen 2 games have no Contests." } },
-  /* BACKLOG #91 M1: Gen 1's read-only current-map view is wired
-   * (pdna_gbmap_gen1(), gb_nav_from_start's NV_MAP branch). Gen 2's own map
-   * (a later M-slice, different SRAM offsets/table shapes) stays
-   * COMING_SOON -- the design doc's own phased plan never promised both
-   * generations land together. */
+  /* BACKLOG #91 M1/M1-G2: both generations' read-only current-map views are
+   * wired now (pdna_gbmap_gen1()/pdna_gbmap_gen2(), gb_nav_from_start's
+   * NV_MAP branches). */
   [NV_MAP]       = { { NAV_OK, "OK" },
-                     { NAV_COMING_SOON, "Needs a Game Boy map viewer." } },
+                     { NAV_OK, "OK" } },
   [NV_GB]        = { { NAV_COMING_SOON, "Comes with the Bank feature." },
                      { NAV_COMING_SOON, "Comes with the Bank feature." } },
   [NV_SETTINGS]  = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
