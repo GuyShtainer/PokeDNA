@@ -451,12 +451,14 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
           } else if (kind == GBFL_KIND_READONLY) {
             msg_wait("STORY FLAG", UI_DIM, "This is a display-only", "progress flag.");
           } else {
+            if (!flag_warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); flag_warned = true; }
             bool proceed = true;
             if (kind == GBFL_KIND_WARN) {
-              proceed = app_confirm("Restore power to Kanto?", "Lets Kanto be reached early.");
+              bool now_on = gbfl_get(s, g, s_nf[sel].num);
+              proceed = now_on ? app_confirm("Remove Kanto power?", "Kanto becomes unreachable.")
+                                : app_confirm("Restore power to Kanto?", "Lets Kanto be reached early.");
             }
             if (proceed) {
-              if (!flag_warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); flag_warned = true; }
               GbsStatus st = gbfl_set(s, g, s_nf[sel].num, !gbfl_get(s, g, s_nf[sel].num));
               if (st == GBS_OK) dirty = true;
               else msg_wait("EDIT REFUSED", UI_WARN, gbs_status_text(st), 0);
