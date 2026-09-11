@@ -222,6 +222,59 @@ bool rgm2_open(RomGbMap2* g, GbReadFn read, void* ctx, uint32_t size,
   return true;
 }
 
+/* review-opus non-blocking (a): rgm2_map() had no upper bound on `number`
+ * -- a garbage/out-of-range number would happily read whatever 9-byte
+ * record sat past the real per-group array, in the worst case an entry
+ * that still coincidentally passes the MapAttributes plausibility checks
+ * below. Derived, never compiled in, same "derive from ROM structure"
+ * posture as the group/tileset table lengths in rgm2_open(): for all but
+ * the group whose own pointer is the LARGEST (in address terms), the
+ * count is the address gap to the next group's own pointer divided by the
+ * 9-byte Map record size. The highest-address group has no next-pointer
+ * boundary, so it is walked sequentially until a record fails the same
+ * plausibility test rgm2_map() itself applies below (capped at 200, well
+ * past the largest retail group). */
+static uint32_t group_map_count(const RomGbMap2* g, uint8_t group) {
+  if (group < 1 || group > g->n_groups) return 0;
+  uint16_t this_ptr;
+  {
+    uint8_t p2[2];
+    if (!rdg(g, g->groups_off + (uint32_t)(group - 1) * 2u, p2, 2)) return 0;
+    this_ptr = rd16(p2);
+  }
+
+  uint32_t best_gap = 0xFFFFFFFFu;
+  for (uint32_t i = 0; i < g->n_groups; i++) {
+    if (i == (uint32_t)(group - 1)) continue;
+    uint8_t p2[2];
+    if (!rdg(g, g->groups_off + i * 2u, p2, 2)) continue;
+    uint16_t other_ptr = rd16(p2);
+    if (other_ptr > this_ptr) {
+      uint32_t gap = (uint32_t)(other_ptr - this_ptr) / 9u;
+      if (gap < best_gap) best_gap = gap;
+    }
+  }
+  if (best_gap != 0xFFFFFFFFu) return best_gap;
+
+  uint32_t group_base = fileoff(g->groups_bank, this_ptr);
+  uint32_t count = 0;
+  for (; count < 200u; count++) {
+    uint32_t map_off = group_base + count * 9u;
+    uint8_t rec[9];
+    if (!rdg(g, map_off, rec, sizeof rec)) break;
+    uint16_t attr_ptr = rd16(rec + 3);
+    uint32_t attr_off = fileoff(rec[0], attr_ptr);
+    uint8_t attr[6];
+    if (!rdg(g, attr_off, attr, sizeof attr)) break;
+    uint8_t height = attr[1], width = attr[2];
+    if (height < 1 || height > 64 || width < 1 || width > 64) break;
+    uint32_t blocks_off = fileoff(attr[3], rd16(attr + 4));
+    uint32_t need = (uint32_t)height * (uint32_t)width;
+    if (blocks_off >= g->size || need > g->size - blocks_off) break;
+  }
+  return count;
+}
+
 bool rgm2_map(const RomGbMap2* g, uint8_t group, uint8_t number, GbMap2Map* out) {
   memset(out, 0, sizeof *out);
   if (!g->ok) return false;
@@ -235,6 +288,7 @@ bool rgm2_map(const RomGbMap2* g, uint8_t group, uint8_t number, GbMap2Map* out)
   uint32_t group_base = fileoff(g->groups_bank, group_ptr);
 
   if (number < 1) return false;
+  if ((uint32_t)number > group_map_count(g, group)) return false;   /* review-opus (a) */
   uint32_t map_off = group_base + (uint32_t)(number - 1) * 9u;
   uint8_t rec[9];
   if (!rdg(g, map_off, rec, sizeof rec)) return false;

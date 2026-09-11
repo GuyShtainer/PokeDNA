@@ -728,6 +728,11 @@ rgm2_colour_nibble argsites=1 -> gbmap2_sd_read fused_gb_slice_read
 # stop gbmap2_paint()'s own per-cell rgm2_colour_nibble() calls) has the
 # same "GbReadFn read PARAMETER" shape as its siblings above.
 rgm2_colour_palmap argsites=1 -> gbmap2_sd_read fused_gb_slice_read
+# review-opus non-blocking (a): group_map_count() (the derived per-group map
+# count bound) is a static helper the compiler inlines into rgm2_map(),
+# introducing register-dispatch read() calls beyond the ones the
+# RomGbMap2.read@0 declaration above already covers for rgm2_map's OWN body.
+rgm2_map argsites=1 -> gbmap2_sd_read fused_gb_slice_read
 rgm2_colour_roof argsites=1 -> gbmap2_sd_read fused_gb_slice_read
 
 Br.rd @0 in br_byte -> gb_art_read fused_gb_slice_read gb_read

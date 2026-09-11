@@ -319,6 +319,27 @@ static void test_bank_boundary_mutation(void) {
   free(m.buf);
 }
 
+/* review-opus non-blocking (a): rgm2_map() had no upper bound on `number`.
+ * Group 24 (New Bark) has exactly 13 real maps on BOTH ROMs -- assert 13
+ * resolves and 14/255 both refuse. */
+static void test_number_bound(const char* rom_file, const char* name) {
+  char path[512]; snprintf(path, sizeof path, "%s/%s", ROMS, rom_file);
+  Mem m = load_file(path);
+  if (!m.buf) { printf("  [%s] SKIP number-bound (corpus absent)\n", name); return; }
+  g_ran = 1;
+  static uint8_t scratch[4096];
+  RomGbMap2 g;
+  bool ok = rgm2_open(&g, rd_mem, &m, m.len, scratch, sizeof scratch);
+  chk(name, "number-bound: locates", ok);
+  if (ok) {
+    GbMap2Map mm;
+    chk(name, "group 24 number 13 (last real map) resolves", rgm2_map(&g, 24, 13, &mm));
+    chk(name, "group 24 number 14 (one past the real count) refuses", !rgm2_map(&g, 24, 14, &mm));
+    chk(name, "group 24 number 255 refuses", !rgm2_map(&g, 24, 255, &mm));
+  }
+  free(m.buf);
+}
+
 /* Step 7 (BACKLOG #91) colour: both anchors hit their expected counts on
  * both ROMs and recover the expected addresses; the PalMap bank comes out
  * $02 on Gold and $13 on Crystal; palette $00 decodes identically in both
@@ -476,6 +497,8 @@ int main(void) {
   test_negative_controls("Crystal.gbc", "Crystal", 0x2bed, 0x2d27);
   test_offgame_refusal();
   test_bank_boundary_mutation();
+  test_number_bound("Gold.gbc", "Gold");
+  test_number_bound("Crystal.gbc", "Crystal");
   test_colour("Gold.gbc", "Gold", 0x0b6ce, 0x0b75e, 0x02, 0x8010);
   test_colour("Crystal.gbc", "Crystal", 0x0b279, 0x0b319, 0x13, 0x4c011);
 
