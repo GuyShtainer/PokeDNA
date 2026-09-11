@@ -94,21 +94,35 @@ static void unown_render(GbSession* s, int sel, int top, bool can_edit) {
   trainer_key_legend(can_edit ? "U/D select  A toggle  B back" : "U/D select  B back");
 }
 
-/* Returns true iff at least one letter's seen state actually changed. Does NOT call
- * gbs_finish() -- same batching contract as the dex shims above; pdna_gbdex() finishes
- * once after BOTH this screen and the Pokedex screen have had their turn.
+/* Returns true iff the letter-seen state at exit differs from the state at entry.
+ * Does NOT call gbs_finish() -- same batching contract as the dex shims above;
+ * pdna_gbdex() finishes once after BOTH this screen and the Pokedex screen have had
+ * their turn.
  * D3 (b87 fix pass, DO-NOT-SHIP review): this screen used to ignore can_edit entirely
  * -- a read-only cart (Everdrive, or any cart pdna_app.h's app_can_edit() refuses)
  * could still flip Unown letters. Gated the same way pdna_dex_screen (the sibling
- * screen this file also drives) already gates its own edits. */
+ * screen this file also drives) already gates its own edits.
+ * N2 (b87 fix pass, DO-NOT-SHIP review): dirty used to be an OR of every individual
+ * toggle's own before/after change -- cycling a letter on then off again in the same
+ * visit left dirty stuck true even though the net state matched what the session
+ * started with, forcing an unnecessary "Save Pokedex changes?" prompt and write.
+ * Snapshotting entry state and comparing at exit (same memcmp-no-op shape
+ * pdna_gbtrainer.c's own card-commit path uses, `if (!memcmp(&t, &t0, sizeof t))
+ * ... return`) fixes it: only a GENUINE net change is reported dirty. */
 static bool unown_forms_screen(GbSession* s, bool can_edit) {
+  bool snap[26];   /* A..Z, same count unown_clamp_scroll's own 0..25 range covers */
+  for (int i = 0; i < 26; i++) snap[i] = gbdex_unown_seen(s, i);
+
   int sel = 0, top = 0;
-  bool dirty = false;
   unown_clamp_scroll(&sel, &top);
   unown_render(s, sel, top, can_edit);
   for (;;) {
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
-    if (k & KEY_B) return dirty;
+    if (k & KEY_B) {
+      bool changed = false;
+      for (int i = 0; i < 26; i++) if (gbdex_unown_seen(s, i) != snap[i]) { changed = true; break; }
+      return changed;
+    }
     if (k & KEY_UP)   sel--;
     if (k & KEY_DOWN) sel++;
     if (k & KEY_A) {
@@ -116,8 +130,7 @@ static bool unown_forms_screen(GbSession* s, bool can_edit) {
         snd_deny();
       } else {
         bool now = gbdex_unown_seen(s, sel);
-        GbsStatus st = gbdex_unown_set(s, sel, !now);
-        if (st == GBS_OK && gbdex_unown_seen(s, sel) != now) dirty = true;
+        (void)gbdex_unown_set(s, sel, !now);
       }
     }
     unown_clamp_scroll(&sel, &top);
