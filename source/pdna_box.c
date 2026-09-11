@@ -105,7 +105,12 @@ static void box_occupancy(BoxSource* src, int box, uint8_t occ[G3_BOX_SLOTS]) {
 static bool s_holding = false;
 static uint8_t s_held[80];
 static int  s_orig_box = -1, s_orig_slot = -1;
-static bool s_orig_bank = false;
+/* BACKLOG #120 S1: was `s_orig_bank` (bool bank/PC). Renamed + widened to the three-way
+ * BOXSCOPE_* discriminator — the real Bank and a raw Game Boy save's own box both set
+ * `is_bank` true (a LAYOUT flag, see pdna_box.h), so a plain bool can no longer tell
+ * "came from the Bank" from "came from a GB save". Every site that used to compare
+ * `s_orig_bank` against `src->is_bank` compares `s_orig_scope` against `src->scope` now. */
+static uint8_t s_orig_scope = BOXSCOPE_PC;
 static bool s_held_dup = false;   /* the held mon is a fresh, discardable duplicate */
 static bool s_orig_party = false; /* the held mon was carried OUT of the party (origin = a party slot,
                                    * s_orig_slot = party index): on a within-PC drop, clear_origin()
@@ -121,7 +126,35 @@ static bool s_ch_hold = false;
 static uint8_t EWRAM_BSS s_ch_rec[G3_BOX_SLOTS][80];   /* held records (2400 B) */
 static Chunk s_ch;                                      /* footprint + per-mon src slots */
 static int  s_ch_box  = -1;                             /* source box index */
-static bool s_ch_bank = false;                          /* source scope (bank vs PC) */
+static uint8_t s_ch_scope = BOXSCOPE_PC;                /* source scope (was `s_ch_bank`, see s_orig_scope) */
+/* BACKLOG #120 S1: the xfer peer a Bank visit reached from a Game Boy session installs
+ * around itself (§4 gb_bank_visit) — pdna_box_xfer_set()'s stored pointer. Always NULL in
+ * S1 (no caller installs a real peer yet); read by the chunk DOWN edge (§2.3) and by
+ * pdna_box_carry_is_gb() so a GB-scope carry never crosses into a foreign grid. */
+static const BoxXferOps* s_xfer_peer = 0;
+
+void pdna_box_xfer_set(const BoxXferOps* ops) { s_xfer_peer = ops; }
+
+bool pdna_box_carry_is_gb(void) {
+  if (s_holding)  return s_orig_scope == BOXSCOPE_GB;
+  if (s_ch_hold)  return s_ch_scope == BOXSCOPE_GB;
+  return false;
+}
+
+/* One-shot "is this carry still inside the scope it started in" test — every site that
+ * used to compare `s_orig_bank`/`s_ch_bank` against a source's `is_bank` now compares
+ * scopes instead (§3.1: is_bank stays layout-only, scope is the real discriminator). */
+static bool same_scope(const BoxSource* src) { return src->scope == s_orig_scope; }
+
+/* BACKLOG #120 S1: every site that used to gate on `src->can_edit()` directly now goes
+ * through this — `can_lift` NULL (every source today: PC, Bank, and the Game Boy source
+ * in S1) falls back to can_edit() exactly, so this is a no-op wrapper until a later slice
+ * gives the Game Boy source a real `can_lift` (a narrower refusal than the save-wide
+ * can_edit(), e.g. one unreadable cell). `slot` is -1 for box-level actions (the title-row
+ * menu, the box rename) that have no single cell to name. */
+static bool src_can_lift(const BoxSource* src, int box, int slot) {
+  return src->can_lift ? src->can_lift(box, slot) : src->can_edit();
+}
 static int  s_ch_tr = 0, s_ch_tc = 0;                   /* current carry anchor (top-left) */
 static int  s_ch_fr = 0, s_ch_fc = 0;                   /* grab fist's footprint-relative cell
                                                          * (where A was released, Emerald-style) */
@@ -131,8 +164,8 @@ static BoxOamChunkMon EWRAM_BSS s_ch_cells[G3_BOX_SLOTS]; /* per-mon display inf
                                                            * grab so anchor moves don't re-decode */
 
 void pdna_box_clear_carry(void) {
-  s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
-  s_ch_hold = false; s_ch_box = -1; s_ch_bank = false;
+  s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_scope = BOXSCOPE_PC; s_held_dup = false; s_orig_party = false;
+  s_ch_hold = false; s_ch_box = -1; s_ch_scope = BOXSCOPE_PC;
 }
 
 static void s_vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
@@ -933,7 +966,7 @@ static int cursor_look(void) {
 /* ---- mon-in-hand carry helpers (data-safety notes on the s_held declaration) ---- */
 static void start_carry(BoxSource* src, const uint8_t* recs, int box, int slot) {
   memcpy(s_held, recs + (uint32_t)slot * 80, 80);            /* lift-don't-clear: copy, origin stays */
-  s_holding = true; s_orig_box = box; s_orig_slot = slot; s_orig_bank = src->is_bank;
+  s_holding = true; s_orig_box = box; s_orig_slot = slot; s_orig_scope = src->scope;
   s_held_dup = false;                                         /* a real mon (origin keeps it) */
   s_orig_party = false;                                       /* a box/bank origin, not the party */
 }
@@ -946,7 +979,7 @@ static uint8_t* clear_origin(BoxSource* src, int box) {
     app_party_remove_at(s_orig_slot);                         /* deferred (staged SB1); fail-toward-dup */
     s_orig_party = false; s_orig_slot = -1; return src->records(box);
   }
-  if (s_orig_slot < 0 || s_orig_bank != src->is_bank) { s_orig_slot = -1; return src->records(box); }
+  if (s_orig_slot < 0 || !same_scope(src)) { s_orig_slot = -1; return src->records(box); }
   uint8_t* o = src->records(s_orig_box);                     /* bank: flushes the current (dest) box first */
   memset(o + (uint32_t)s_orig_slot * 80, 0, 80);
   src->mark_dirty(); s_orig_slot = -1;
@@ -959,13 +992,13 @@ static uint8_t* clear_origin(BoxSource* src, int box) {
  * hand is empty afterwards. Returns the (maybe reloaded) recs. */
 static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool* done) {
   *done = false;
-  if (s_orig_slot >= 0 && s_orig_bank == src->is_bank && s_orig_box == box && cur == s_orig_slot) {
+  if (s_orig_slot >= 0 && same_scope(src) && s_orig_box == box && cur == s_orig_slot) {
     s_holding = false; *done = true; return recs;            /* dropped back on its own cell */
   }
   /* A bank slot whose mon is moving out to the PC looks empty but still holds that mon's only
    * on-card copy until the PC is saved — treat it as OCCUPIED so nothing overwrites it. */
   bool occupied = g_box[cur].species != 0 || (src->is_bank && app_bank_slot_pending(box, cur));
-  if (s_orig_bank != src->is_bank) {                         /* cross-scope drop */
+  if (!same_scope(src)) {                                    /* cross-scope drop */
     if (occupied) { snd_deny(); return recs; }
     if (s_held_dup && s_orig_slot < 0) {                     /* a fresh DUPLICATE: placing it is loss-proof
                                                                  in either direction -> no confirm needed
@@ -975,7 +1008,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
       memcpy(recs + (uint32_t)cur * 80, s_held, 80); src->mark_dirty();
       s_holding = false; s_held_dup = false; *done = true; return recs;
     }
-    if (!src->is_bank && s_orig_bank && s_orig_slot >= 0) {  /* BANK -> PC: a true MOVE, no prompt */
+    if (src->scope == BOXSCOPE_PC && s_orig_scope == BOXSCOPE_BANK && s_orig_slot >= 0) {  /* BANK -> PC: a true MOVE, no prompt */
       /* place in the PC now (deferred); the bank original is deleted at the save phase,
        * AFTER the PC is written, so it can't be lost (worst case a duplicate). The defer
        * queue holds 64: when FULL, refuse the drop (a silent un-queued move would leave a
@@ -1087,7 +1120,7 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
      * NOT for a cell wearing era art: its icon is hidden on purpose and un-hiding it
      * would stack a Gen-3 icon on the Gen-1 sprite for the length of the dip. */
     if (s_orig_slot >= 0 && s_orig_slot < G3_BOX_SLOTS &&
-        s_orig_bank == is_bank && s_orig_box == box &&
+        (s_orig_scope == BOXSCOPE_BANK) == is_bank && s_orig_box == box &&
         !(s_era_drawn & (1u << s_orig_slot)))
       boxoam_show_slot(s_orig_slot);
     boxoam_item_markers(g_box, false);
@@ -1098,7 +1131,7 @@ static void oam_sync(int cur, bool on_title, int box, bool is_bank) {
     PkMon hm; pk_decode_mon(s_held, false, &hm);
     int tr = cursor_title_row(on_title);
     boxoam_carry_held(cur, tr, cursor_label_cx(tr), hm.species, hm.form, hm.isEgg && !hm.isBadEgg);   /* held mon (or Egg) front-most + orange fist */
-    if (s_orig_slot >= 0 && s_orig_bank == is_bank && s_orig_box == box)
+    if (s_orig_slot >= 0 && (s_orig_scope == BOXSCOPE_BANK) == is_bank && s_orig_box == box)
       boxoam_hide_slot(s_orig_slot);                         /* lift-hide the origin cell */
     boxoam_item_markers(g_box, false);
     boxoam_carry_item(cur, 0, false);
@@ -1557,19 +1590,19 @@ static void carry_move(BoxSource* src, int box, int old_cur, int cur) {
  * item_markers/carry_item hide OAM entries 34..63/CITEM, so they run BEFORE the block. */
 static void chunk_oam_sync(int box, bool is_bank, bool fit) {
   if (s_oam_reload) { boxoam_load_box(g_box); s_oam_reload = false; }
-  s_ch_on_src = (box == s_ch_box && is_bank == s_ch_bank);   /* §12b: source cells vacate, no understudy */
+  s_ch_on_src = (box == s_ch_box && is_bank == (s_ch_scope == BOXSCOPE_BANK));   /* §12b: source cells vacate, no understudy */
   boxoam_item_markers(g_box, false);
   boxoam_carry_item(g3_slot(s_ch_tr, s_ch_tc), 0, false);
   boxoam_chunk_carry(s_ch_tr, s_ch_tc, s_ch_tr + s_ch_fr, s_ch_tc + s_ch_fc,
                      s_ch_cells, s_ch.n, fit, s_ch_lift);
-  if (box == s_ch_box && is_bank == s_ch_bank)
+  if (box == s_ch_box && is_bank == (s_ch_scope == BOXSCOPE_BANK))
     for (int i = 0; i < s_ch.n; i++) boxoam_hide_slot(s_ch.src[i]);   /* lift-hide the sources */
 }
 
 /* Footprint fit test vs the CURRENT box (own sources count as vacating on the source box). */
 static bool chunk_fit(BoxSource* src, int box) {
   uint8_t dest[G3_BOX_SLOTS], vac[G3_BOX_SLOTS], tgt[G3_BOX_SLOTS];
-  bool same = (box == s_ch_box && src->is_bank == s_ch_bank);
+  bool same = (box == s_ch_box && src->is_bank == (s_ch_scope == BOXSCOPE_BANK));
   box_occupancy(src, box, dest);                /* moving-out bank mons still count as occupied */
   if (same) { memset(vac, 0, sizeof vac); for (int i = 0; i < s_ch.n; i++) vac[s_ch.src[i]] = 1; }
   return chunk_can_drop(&s_ch, s_ch_tr, s_ch_tc, dest, same ? vac : 0, tgt);
@@ -1734,10 +1767,18 @@ static bool footprint_hits_pending(BoxSource* src, int box) {
 /* Drop the carried chunk into the current box with its top-left at (s_ch_tr,s_ch_tc). Picks the
  * right semantics by scope. *pfull is always set (a redraw is due). Returns (maybe reloaded) recs. */
 static uint8_t* drop_chunk(BoxSource* src, int box, uint8_t* recs, bool* pfull) {
+  /* §2.3 belt-and-braces: no chunk ever crosses a scope pair involving BOXSCOPE_GB (v1).
+   * The chunk edges above already keep a GB-origin chunk from reaching a foreign grid and
+   * a Bank chunk from reaching the GB grid, so this is unreachable today (S1: `can_lift`
+   * is NULL everywhere, so a GB source's can_edit()==false already blocks any chunk grab)
+   * — but drop_chunk is the one place that would actually memcpy converted-looking bytes
+   * into a foreign records buffer, so it denies on its own, before any memcpy, rather than
+   * trusting the edges alone. */
+  if (src->scope == BOXSCOPE_GB || s_ch_scope == BOXSCOPE_GB) { snd_deny(); *pfull = false; return recs; }
   *pfull = true;
 
   uint8_t dest[G3_BOX_SLOTS], vac[G3_BOX_SLOTS], tgt[G3_BOX_SLOTS];
-  bool same = (box == s_ch_box && src->is_bank == s_ch_bank);
+  bool same = (box == s_ch_box && src->is_bank == (s_ch_scope == BOXSCOPE_BANK));
   box_occupancy(src, box, dest);                 /* moving-out bank mons still count as occupied */
   if (same) { memset(vac, 0, sizeof vac); for (int i = 0; i < s_ch.n; i++) vac[s_ch.src[i]] = 1; }
   if (!chunk_can_drop(&s_ch, s_ch_tr, s_ch_tc, dest, same ? vac : 0, tgt)) {
@@ -1777,11 +1818,11 @@ static uint8_t* drop_chunk(BoxSource* src, int box, uint8_t* recs, bool* pfull) 
   s_ch_lift = 8;                                        /* carry height again for whoever keeps holding */
 
   /* ---- Bank -> Bank, different box: immediate paging-aware move (commit dest, then clear source) ---- */
-  if (src->is_bank && s_ch_bank && box != s_ch_box)
+  if (src->is_bank && s_ch_scope == BOXSCOPE_BANK && box != s_ch_box)
     return drop_chunk_bank_cross(src, box, tgt);
 
   /* ---- same scope, same box (bank rearrange) OR PC<->PC (any box): a plain deferred move ---- */
-  if (src->is_bank == s_ch_bank) {
+  if (src->is_bank == (s_ch_scope == BOXSCOPE_BANK)) {
     uint8_t* srcp = (box == s_ch_box) ? recs : src->records(s_ch_box);   /* PC: g_pc box (no paging); bank is same-box here */
     for (int i = 0; i < s_ch.n; i++) memset(srcp + (uint32_t)s_ch.src[i] * 80, 0, 80);   /* clear sources first */
     for (int i = 0; i < s_ch.n; i++) {
@@ -1794,7 +1835,7 @@ static uint8_t* drop_chunk(BoxSource* src, int box, uint8_t* recs, bool* pfull) 
   }
 
   /* ---- PC -> Bank: always-release batch (verified bank write, then release the PC sources) ---- */
-  if (src->is_bank && !s_ch_bank)
+  if (src->is_bank && s_ch_scope != BOXSCOPE_BANK)
     return drop_chunk_pc_to_bank(src, box, recs, tgt);
 
   /* ---- Bank -> PC: a DEFERRED move that LOOKS immediate. No disk write here — the user has a SAVE
@@ -1885,7 +1926,7 @@ static uint8_t* begin_select(BoxSource* src, int box, uint8_t* recs, int cur, bo
     s_ch_cells[i].species = m.species;  s_ch_cells[i].form = m.form;
     s_ch_cells[i].egg = (m.isEgg && !m.isBadEgg) ? 1 : 0;
   }
-  s_ch_hold = true; s_ch_box = box; s_ch_bank = src->is_bank;
+  s_ch_hold = true; s_ch_box = box; s_ch_scope = src->scope;
   s_ch_tr = g3_row(s_ch.src[0]) - s_ch.rr[0];           /* footprint top-left in the source box */
   s_ch_tc = g3_col(s_ch.src[0]) - s_ch.cc[0];
   s_ch_fr = g3_row(corner) - s_ch_tr;                   /* fist rides the cell A was released on */
@@ -2727,7 +2768,7 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
                                                                 * into a LATER, unrelated
                                                                 * app_mon_menu call         */
             memcpy(s_held, recs + (uint32_t)gcur * 80, 80);
-            s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_bank = src->is_bank;
+            s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_scope = src->scope;
             s_held_dup = true; s_orig_party = false;
             play_grab_anim(src, box, gcur);
           }
@@ -2772,7 +2813,7 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
                                                         * from the GRID is placeable here
                                                         * too, without ever leaving this
                                                         * popup. */
-        bool can_swap_now = (!s_orig_bank && s_orig_slot >= 0);
+        bool can_swap_now = (s_orig_scope == BOXSCOPE_PC && s_orig_slot >= 0);
         /* MUST-FIX (found by pixel-diffing the capture, not trusted from the trace):
          * a box-origin carry's ADD clears its origin cell, and SWAP overwrites the
          * target's origin cell, BOTH by writing g_pc directly (party_place_held /
@@ -2786,8 +2827,8 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
          * unconditionally, so this function is self-sufficient regardless of which
          * call site is running (matches the same principle the s_holding clear below
          * already follows). */
-        bool placed = app_party_place_held(s_held, sel, s_orig_box, s_orig_slot, s_orig_bank, can_swap_now);
-        if (placed && !s_orig_bank && s_orig_slot >= 0) {
+        bool placed = app_party_place_held(s_held, sel, s_orig_box, s_orig_slot, (s_orig_scope == BOXSCOPE_BANK), can_swap_now);
+        if (placed && s_orig_scope == BOXSCOPE_PC && s_orig_slot >= 0) {
           recs = src->records(box); box_decode(src, recs, box); s_oam_reload = true;
         }
         if (placed) {
@@ -2796,7 +2837,7 @@ static int party_strip_overlay(BoxSource* src, int box, int* cur,
            * mon grabbed via GRID focus can close a BROWSE-entered session this way,
            * a caller that only ever expected PLACE-entry's rr==1 didn't used to have
            * to clear this itself) */
-          s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false;
+          s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_scope = BOXSCOPE_PC;
           s_held_dup = false; s_orig_party = false;
           result = 1; goto out;
         }
@@ -2893,7 +2934,7 @@ static void __attribute__((noinline)) pcp_open_party_strip_inner(BoxSource* src,
   if (rr == 2 && gslot >= 0) {                  /* grabbed a party mon -> carry it (party origin) */
     memcpy(s_held, grab, 80);
     s_holding = true; s_orig_party = true; s_orig_slot = gslot;
-    s_orig_box = -1; s_orig_bank = false; s_held_dup = false;
+    s_orig_box = -1; s_orig_scope = BOXSCOPE_PC; s_held_dup = false;
     s_tab_focus = -1; s_oam_reload = true;
     render_full(src, box, *cur, false, false, true);                  /* repaint box over the popup */
     play_grab_anim(src, box, *cur); carry_move(src, box, *cur, *cur);
@@ -3122,10 +3163,18 @@ int pdna_box(BoxSource* src) {
       else if (k & KEY_LEFT)  { if (s_ch_tc > 0) s_ch_tc--; else if (nb > 1) SWITCH_BOX((box + nb - 1) % nb); }
       else if (k & KEY_RIGHT) { if (s_ch_tc < chunk_anchor_cmax(&s_ch)) s_ch_tc++; else if (nb > 1) SWITCH_BOX((box + 1) % nb); }
       else if (k & KEY_UP)    { if (s_ch_tr > 0) s_ch_tr--;
+                                /* §2.3: this edge does NOT gain `bank_edge` -- a GB chunk
+                                 * (post-can_lift, a future slice) still cannot hop UP into
+                                 * the Bank; only the single-carry UP edge is wired for that. */
                                 else if (!src->is_bank) { boxoam_exit(); return 4; }    /* up past PC top -> Bank */
                                 else snd_deny(); }
       else if (k & KEY_DOWN)  { if (s_ch_tr < chunk_anchor_rmax(&s_ch)) s_ch_tr++;
-                                else if (src->is_bank) { boxoam_exit(); return 5; }     /* off Bank bottom -> PC */
+                                /* §2.3: denied whenever an xfer peer is installed (always
+                                 * NULL in S1 -- pdna_box_xfer_set() has no caller yet) so a
+                                 * Bank chunk can never cross DOWN into the GB grid it opens
+                                 * onto once a later slice installs the peer around a Bank
+                                 * visit reached from a Game Boy session. */
+                                else if (src->is_bank && !s_xfer_peer) { boxoam_exit(); return 5; }     /* off Bank bottom -> PC */
                                 else snd_deny(); }
       if (!s_ch_hold) boxoam_chunk_end();            /* B-cancel / successful drop: restore the
                                                       * borrowed regions before the full repaint */
@@ -3155,7 +3204,7 @@ int pdna_box(BoxSource* src) {
             if (rr == 1) {                            /* placed -> end the carry (party_strip_overlay
                                                         * already cleared s_holding/s_orig_* itself,
                                                         * CHANGE 2 -- this is belt-and-braces) */
-              s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
+              s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_scope = BOXSCOPE_PC; s_held_dup = false; s_orig_party = false;
               s_tab_focus = -1; recs = src->records(box); box_decode(src, recs, box);
             }
             /* rr==0: closed without placing -- either the untouched original carry (B) or
@@ -3171,10 +3220,10 @@ int pdna_box(BoxSource* src) {
           int fs = -1; for (int s = 0; s < COLS * ROWS; s++) if (!g_box[s].species) { fs = s; break; }
           if (fs < 0) { snd_deny(); }                /* box full: keep holding */
           else { memcpy(recs + (uint32_t)fs * 80, s_held, 80); src->mark_dirty();
-                 snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
+                 snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_scope = BOXSCOPE_PC; s_held_dup = false; s_orig_party = false;
                  box_decode(src, recs, box); s_oam_reload = true; need_full = true; }
         } else {                                     /* origin keeps it (party / box / dup) -> nothing to place */
-          snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_bank = false; s_held_dup = false; s_orig_party = false;
+          snd_back(); s_holding = false; s_orig_slot = -1; s_orig_box = -1; s_orig_scope = BOXSCOPE_PC; s_held_dup = false; s_orig_party = false;
           s_oam_reload = true; need_full = true;
         }
       }
@@ -3289,12 +3338,12 @@ int pdna_box(BoxSource* src) {
                                                         * box_options_menu, unchanged; rename
                                                         * there is now a second path to the
                                                         * same osk_input as the direct-A one) */
-        if (src->can_edit()) { boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
+        if (src_can_lift(src, box, -1)) { boxoam_suspend(); box_options_menu(src, box); boxoam_resume();
                                recs = src->records(box); box_decode(src, recs, box);  /* Release all mutates records */
                                s_oam_reload = true; need_full = true; }
         else snd_deny();
       }
-      else if (src->can_edit()) { s_cur_mode = (s_cur_mode + 1) % 3; need_full = true; }  /* cycle cursor mode (Omega-only edit modes) */
+      else if (src_can_lift(src, box, cur)) { s_cur_mode = (s_cur_mode + 1) % 3; need_full = true; }  /* cycle cursor mode (Omega-only edit modes) */
       else snd_deny();
     }
     else if (on_title) {                           /* TITLE row: limited controls */
@@ -3318,7 +3367,7 @@ int pdna_box(BoxSource* src) {
          * parameter for no real gain. `cur`/`buf` are LOCAL to this block only: this
          * function's outer `cur` is the int grid cursor, so a same-named `char cur[12]`
          * here would shadow it -- named `bxname`/`bxnew` instead to keep that impossible. */
-        if (src->can_rename ? src->can_rename() : src->can_edit()) {
+        if (src->can_rename ? src->can_rename() : src_can_lift(src, box, -1)) {
           boxoam_suspend();                                              /* full-screen sub-view — own bracket, see box_oam.h */
           /* F1b: seed with the RAW stored name, not get_name()'s display string --
            * the Game Boy source's get_name() prefixes "GB " for on-screen display,
@@ -3343,11 +3392,11 @@ int pdna_box(BoxSource* src) {
     else if (k & KEY_DOWN)  { if (src->is_bank && cur >= COLS * (ROWS - 1)) { boxoam_exit(); return 5; }   /* off the bank bottom -> PC tabs */
                               else cur = (cur >= COLS * (ROWS - 1)) ? cur - COLS * (ROWS - 1) : cur + COLS; }
     else if ((k & KEY_A) && s_cur_mode == CM_MOVE) {     /* orange hand: TAP = grab one; HOLD+DPAD = rubber-band multi-select */
-      if (!src->can_edit()) snd_deny();
+      if (!src_can_lift(src, box, cur)) snd_deny();
       else recs = begin_select(src, box, recs, cur, &need_full);
     }
     else if ((k & KEY_A) && s_cur_mode == CM_ITEM) {     /* transparent hand: pick up the held item */
-      if (!src->can_edit()) snd_deny();
+      if (!src_can_lift(src, box, cur)) snd_deny();
       else if (g_box[cur].species && g_box[cur].heldItem) {
         s_item_held = g_box[cur].heldItem; s_item_from = cur; s_item_from_box = box;
         box_set_held(recs, cur, 0);
@@ -3380,7 +3429,7 @@ int pdna_box(BoxSource* src) {
           draw_footer(src->is_bank, false, true);                        /* move-mode footer */
         } else if (app_take_dup_request()) {                            /* picked DUPLICATE -> a fresh COPY in the glove */
           memcpy(s_held, recs + (uint32_t)cur * 80, 80);                /* copy floats in-hand; no origin (cancel discards it) */
-          s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_bank = src->is_bank; s_held_dup = true; s_orig_party = false;
+          s_holding = true; s_orig_box = box; s_orig_slot = -1; s_orig_scope = src->scope; s_held_dup = true; s_orig_party = false;
           render_full(src, box, cur, false, false, false);
           play_grab_anim(src, box, cur);
           carry_move(src, box, cur, cur);
