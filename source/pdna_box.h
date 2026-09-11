@@ -70,6 +70,10 @@ typedef struct {
    * a purely cosmetic adjacency win. Tacking a new field on the end changes nothing
    * for any existing field's offset. */
   bool (*can_rename)(void);
+  /* F1b: the name to SEED the rename editor with: get_name() is a DISPLAY string
+   * and may carry decoration (the Game Boy source prefixes "GB "). NULL =>
+   * get_name() is already the raw stored name (the Gen-3 PC and the Bank). */
+  void (*get_raw_name)(int box, char out[12]);
 } BoxSource;
 
 /* Game-faithful box screen over `src`: a left PKMN DATA panel + a 6x5 icon grid on

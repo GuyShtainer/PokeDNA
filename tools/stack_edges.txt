@@ -161,6 +161,16 @@ BoxSource.capacity   @64 -> gbsrc_capacity
 # can_edit() for them, unchanged from before this field existed).
 BoxSource.can_rename @68 -> gbsrc_can_rename
 
+# F1b (BACKLOG #94 DO-NOT-SHIP fix): BoxSource.get_raw_name, appended as the
+# struct's NEW LAST field (right after can_rename@68) so it never shifts any of
+# the offsets hand-declared above -- @72. Dispatched from pdna_box.c's own two
+# rename-seed call sites (box_options_menu's rename case and the direct-A-on-
+# banner path): `if (src->get_raw_name) src->get_raw_name(box, ...); else
+# src->get_name(box, ...);`. gbsrc_get_raw_name is the only assigner today
+# (banksrc/pcsrc leave the field NULL -- their own get_name() is already the raw
+# stored name, no "GB " decoration to strip).
+BoxSource.get_raw_name @72 in box_options_menu,pdna_box -> gbsrc_get_raw_name
+
 # The commit parameter threaded through app_mon_menu (party call sites) and
 # app_paste_gb_merge -> app_paste_gb_commit -> app_commit_with_dex (inlined) -> `commit ?
 # commit() : 0` (source/pdna_app.h:52, source/pdna_main.c:1931/3132-3148/3243/3256/3275-3285/

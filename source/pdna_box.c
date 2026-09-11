@@ -2121,7 +2121,11 @@ static void box_options_menu(BoxSource* src, int box) {
     else if (k & KEY_A) {
       snd_ok();
       if (sel == 0) {                              /* rename */
-        char cur[12]; src->get_name(box, cur);
+        /* F1b: seed with the RAW stored name, not get_name()'s display string --
+         * the Game Boy source's get_name() prefixes "GB " for on-screen display,
+         * which must never be typed back into the save. */
+        char cur[12];
+        if (src->get_raw_name) src->get_raw_name(box, cur); else src->get_name(box, cur);
         char buf[12];
         if (osk_input("BOX NAME", cur[0] ? cur : "BOX", buf, 9)) {
           src->set_name(box, buf);
@@ -3316,7 +3320,11 @@ int pdna_box(BoxSource* src) {
          * here would shadow it -- named `bxname`/`bxnew` instead to keep that impossible. */
         if (src->can_rename ? src->can_rename() : src->can_edit()) {
           boxoam_suspend();                                              /* full-screen sub-view — own bracket, see box_oam.h */
-          char bxname[12]; src->get_name(box, bxname);
+          /* F1b: seed with the RAW stored name, not get_name()'s display string --
+           * the Game Boy source's get_name() prefixes "GB " for on-screen display,
+           * which must never be typed back into the save. */
+          char bxname[12];
+          if (src->get_raw_name) src->get_raw_name(box, bxname); else src->get_name(box, bxname);
           char bxnew[12];
           if (osk_input("BOX NAME", bxname[0] ? bxname : "BOX", bxnew, 9)) {
             src->set_name(box, bxnew);

@@ -507,6 +507,23 @@ static uint8_t* gbsrc_records(int box) {
 }
 static void gbsrc_get_name(int box, char out[12]) { pdna_gen12_box_name(g_m, box, out); }
 
+/* F1b: get_name() above is a DISPLAY formatter -- it prefixes "GB " (and, for Gen 1
+ * or an empty Gen-2 name, synthesizes "BOXn") -- so it must never be used to seed the
+ * rename editor: an unedited confirm would write the decoration itself into the save
+ * ("GB BOX1" instead of "BOX1"). get_raw_name() reads the session's own stored bytes
+ * via gbbn_read() (below the guard, host-side no-op here) -- the same shim/_impl split
+ * gbsrc_set_name/gbsrc_can_rename use, for the same PDNA_GEN12_HOST reason. */
+#ifndef PDNA_GEN12_HOST
+static void gbsrc_get_raw_name_impl(int box, char out[12]);
+#endif
+static void gbsrc_get_raw_name(int box, char out[12]) {
+#ifndef PDNA_GEN12_HOST
+  gbsrc_get_raw_name_impl(box, out);
+#else
+  out[0] = 0;
+#endif
+}
+
 /* F1 (BACKLOG #94): the real rename/can_rename bodies need g_ed, app_can_edit,
  * gbbn_rename/gbbn_supported and gb_persist, all of which live below the
  * PDNA_GEN12_HOST guard (this fill function does not) -- tests/host_gen12_test.c
@@ -596,6 +613,9 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
                                       * comment; the box banner's own commit()-return path
                                       * never actually inspects the boolean either way, see
                                       * the _impl pair's header note below the guard) */
+  s.get_raw_name = gbsrc_get_raw_name;  /* F1b: seed the rename editor with the raw stored
+                                         * name, not get_name()'s "GB "-decorated display
+                                         * string (BACKLOG #94 DO-NOT-SHIP fix) */
   s.get_wp     = gbsrc_get_wp;
   s.set_wp     = gbsrc_set_wp;
   s.can_edit   = gbsrc_can_edit;
@@ -934,6 +954,18 @@ static bool gbsrc_can_rename_impl(void) {
   return g_ed && app_can_edit() && gbbn_supported(&g_ed->s);
 }
 
+/* F1b: the RAW seed for the rename editor -- gbbn_read() decodes the session's own
+ * stored bytes with gb_name_decode (the same sequence-safe decoder gbbn_rename()
+ * itself compares against for its "unchanged is untouched" guard), never through
+ * pdna_gen12_box_name()'s "GB "-prefixed display formatter. out[0] left 0 (empty
+ * seed, same as a blank Gen-2 box name) when there is no live session or the read
+ * refuses (a Gen-1 save, an out-of-range box, or the party pseudo-box -- gbbn_read
+ * itself already zeroes `out` on every false return). */
+static void gbsrc_get_raw_name_impl(int box, char out[12]) {
+  out[0] = 0;
+  if (g_ed) (void)gbbn_read(&g_ed->s, box, out, 12);
+}
+
 /* Writes through gbbn_rename() (the verified field write + checksum fix-up gb_boxnames.c
  * itself does), then persists via gb_persist("boxname") -- the same commit path every
  * other Gen-1/2 write in this file uses. Two notes tie this to pdna_box.c's own call
@@ -962,6 +994,27 @@ static bool gbsrc_can_rename_impl(void) {
  * data. */
 static void gbsrc_set_name_impl(int box, const char* s) {
   if (!g_ed || !s) return;
+  /* The party pseudo-box (BACKLOG #56's extra "GB PARTY" row, g_m->party_box) is not
+   * a real box -- it has no slot in the save's box-name table, so gbbn_rename()
+   * below would refuse it as an out-of-range box index (GBS_ERR_ARG) with only a
+   * silent snd_error() to show for it. can_rename() itself has no box parameter (it
+   * gates the whole session, not a specific box -- see its own header note), so this
+   * is the one place that CAN tell the party row apart from a real box; name it. */
+  if (g_m && box == g_m->party_box) {
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN,
+             "The party row isn't a box --", "there's nothing to rename.");
+    return;
+  }
+  /* Defense-in-depth, not a reachable path from pdna_box.c's own two call sites
+   * today: both seed osk_input() with cap=9 (GB_BOXNAME_BYTES), which already caps
+   * what the player can type at 8 glyphs. Named here so a future caller that skips
+   * that cap (or a longer paste-style input path) gets an honest reason instead of
+   * gbbn_rename()'s generic snd_error() for the SAME over-length refusal. */
+  if ((int)strlen(s) > GB_BOXNAME_GLYPHS) {
+    msg_wait(PDNA_GBEDIT_REFUSED_TITLE, UI_WARN,
+             "Box names are up to 8", "characters.");
+    return;
+  }
   if (gbbn_rename(&g_ed->s, box, s) != GBS_OK) { snd_error(); return; }
   if (g_m) (void)g_m->rd(g_m->ctx, g_m->g2o.box_names, g_m->g2names, sizeof g_m->g2names);
   gb_persist("boxname");
