@@ -1,5 +1,6 @@
-/* U5 fix pass (BACKLOG #67, review-opus ac9ffc0) -- pins the pure-logic half of
- * source/pdna_gbpack.c's Gen-2 Pack painter on the host.
+/* U5 fix pass (BACKLOG #67, review-opus ac9ffc0) + N5 re-verify (BACKLOG #111) --
+ * pins the pure-logic half of source/pdna_gbpack.c's Gen-2 Pack painter on the
+ * host.
  *
  *   cc -std=c11 -Wall -Wextra -I source -I tests tests/host_gbpack_test.c \
  *      source/gb_bag.c source/gb_fields.c source/gb_session.c source/gb_edit.c \
@@ -8,28 +9,32 @@
  *      source/gen3_mon.c source/gen3_box.c source/gen3_save.c source/gen3_daycare.c \
  *      -o /tmp/hgbpack && /tmp/hgbpack
  *
- * WHY A COPY, NOT A LINK. pdna_gbpack.c is NOT one of this codebase's pure-C cores --
- * it is a tonc/ui/snd/pdna_app GB-screen SHELL SCREEN (`#include <tonc.h>`, `ui.h`,
- * `snd.h`, `pdna_app.h`, `pdna_trainer.h`, `pdna_gen12.h` -- the last of which alone
- * pulls pdna_box.h -> pdna_app.h -> sprite_era.h/gen3_trainer.h, a transitive web with
- * no host-buildable leaf). tools/gb_oracle/README.md's own convention for testing a
- * screen like this is to extract the target static functions into a `body.inc` behind
- * minimal GbScreen/gbscr_cell()/gbscr_text() stand-ins rather than link the shipped
- * file. This test follows that shape but keeps the extract INLINE (no separate
- * generated file to go stale unnoticed): the five functions below (g2_tm_rebuild,
- * g2pack_row_total, g2pack_is_hm, g2pack_row_label, g2pack_paint_list,
- * gbpack_clamp_scroll) plus the constants/enum they need are a VERBATIM COPY of
- * source/pdna_gbpack.c as committed by this same slice (commit
- * "test(gen2-pack): the painter is pinned on the host; the swap harness runs on
- * Gold") -- kept in sync BY HAND, the same posture host_gbeditor_test.c/
- * host_gbreal_test.c/host_daycare_slot_test.c/host_dexicons_test.c already use
- * elsewhere in this suite for logic embedded in a tonc-dependent file. A silent drift
- * between this copy and the shipped file is a real gap this test cannot catch by
- * itself -- but pdna_gbpack.c's own line numbers are cited below so a future diff is
- * a straight `diff` command, not a re-read of the whole 500+-line file.
+ * WHY AN #include OF THE SHIPPED FILE, NOT A LINK TO IT. pdna_gbpack.c is NOT one
+ * of this codebase's pure-C cores -- it is a tonc/ui/snd/pdna_app GB-screen SHELL
+ * SCREEN (`#include <tonc.h>`, `ui.h`, `snd.h`, `pdna_app.h`, `pdna_trainer.h`,
+ * `pdna_gen12.h` -- the last of which alone pulls pdna_box.h -> pdna_app.h ->
+ * sprite_era.h/gen3_trainer.h, a transitive web with no host-buildable leaf).
+ * tools/gb_oracle/README.md's own convention for testing a screen like this is to
+ * extract the target static functions into a `body.inc` behind minimal
+ * GbScreen/gbscr_cell()/gbscr_text() stand-ins rather than link the shipped file.
  *
- * `siprintf` (tonc's own printf-family fill-in) is `snprintf` on the host, matching
- * every other GB-screen-adjacent host test's own convention.
+ * N5 (BACKLOG #111): this test USED TO keep its own hand-typed copy of the
+ * painter, "kept in sync BY HAND" -- and it had already drifted (g2pack_row_label's
+ * HM branch was missing the "H"-prefix real cartridges print, and the D8
+ * out-of-range-qty fallback printed "**" here vs the shipped file's own "??" --
+ * '*' is not in the GB charmap). source/pdna_gbpack_body.inc is now the ONE
+ * copy of every pure painter function (g2_tm_rebuild..gbpack_clamp_scroll, the
+ * desc-box/pic-column/list painters), #include-d verbatim by BOTH this test and
+ * the shipped screen -- so a future edit to the painter cannot drift here again,
+ * it can only fail to compile or fail a CHECK.
+ *
+ * `siprintf` is newlib's own 2-arg (no size) sprintf-family function on the real
+ * target (arm-none-eabi's siprintf == "integer sprintf", same call shape as
+ * sprintf) -- pdna_gbpack_body.inc's own calls use that 2-arg shape, so the host
+ * side maps it to plain `sprintf`, not `snprintf`, to keep the shared body
+ * unmodified in both environments (every buffer the body writes into is a local
+ * array sized generously above the format's real output, matching the target's
+ * own unbounded-siprintf posture).
  */
 #include <stdio.h>
 #include <string.h>
@@ -40,136 +45,16 @@
 #include "gb_bag.h"
 #include "pdna_gbscreen.h"   /* GbScreen, GbScrSrc, gbscr_cell()/gbscr_text() decls -- pure */
 
-#define siprintf snprintf
-
-/* ============================================================================
- * VERBATIM COPY of source/pdna_gbpack.c (this slice's own commit) -- see the
- * file header above for why this is a copy, not a link.
- * ============================================================================ */
-
-/* pdna_gbpack.c:147-151 */
-#define ROWS_VISIBLE 5
-#define CURSOR_COL   7
-#define NAME_COL     8
-#define QTY_COL      17
-#define TMNUM_COL    5
-
-/* pdna_gbpack.c:153-154 */
-static int name_row(int slot) { return 2 + 2 * slot; }
-static int qty_row(int slot)  { return name_row(slot) + 1; }
-
-/* pdna_gbpack.c:166-178 (D1 fix) */
-enum { G2I_UL = 0, G2I_H = 1, G2I_UR = 2, G2I_V = 3, G2I_DL = 4, G2I_DR = 5 };
-
-/* pdna_gbpack.c:67-102 (D4 fix) */
-static uint8_t g2_tm_owned[GBB_TMHM_COUNT];
-static int     g2_tm_n;
-
-static void g2_tm_rebuild(const GbBag* bag) {
-  g2_tm_n = 0;
-  for (int i = 0; i < GBB_TMHM_COUNT; i++) {
-    uint8_t c = 0;
-    gbb_tmhm_get(bag, i, &c);
-    if (c > 0) g2_tm_owned[g2_tm_n++] = (uint8_t)i;
-  }
-}
-
-static int g2pack_row_total(const GbBag* bag, GbBagPocket pocket) {
-  if (pocket == GBB_POCKET_TMHM) { g2_tm_rebuild(bag); return g2_tm_n + 1; }
-  return bag->pockets[pocket].count + 1;
-}
-
-static bool g2pack_is_hm(int tmhm_index) { return tmhm_index >= 50; }
-
-static void g2pack_row_label(const GbBag* bag, char* buf, int bufsz, GbBagPocket pocket, int idx) {
-  (void)bufsz;
-  if (pocket == GBB_POCKET_TMHM) {
-    int real = (idx >= 0 && idx < g2_tm_n) ? g2_tm_owned[idx] : 0;
-    int num = g2pack_is_hm(real) ? real - 50 + 1 : real + 1;
-    siprintf(buf, bufsz, "%s%02u", g2pack_is_hm(real) ? "HM" : "TM", (unsigned)num);
-  } else {
-    siprintf(buf, bufsz, "ITEM-%u", (unsigned)bag->pockets[pocket].entries[idx].id);
-  }
-}
-
-/* pdna_gbpack.c:246-247 */
-static bool g2_pack_swap_active;
-static int  g2_pack_swap_src;
-
-/* pdna_gbpack.c:319-388 (D4/D5/D8 fix + the swap-mark glyph fix) */
-static void g2pack_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket,
-                              int top, int sel) {
-  int total = g2pack_row_total(bag, pocket);
-  bool tmhm = (pocket == GBB_POCKET_TMHM);
-  bool key  = (pocket == GBB_POCKET_KEY);
-  char buf[16];
-  for (int slot = 0; slot < ROWS_VISIBLE; slot++) {
-    int idx = top + slot;
-    int ny = name_row(slot), qy = qty_row(slot);
-    bool has = idx < total;
-    bool is_cancel = has && idx == total - 1;
-    bool is_sel = has && idx == sel;
-    bool is_swap_src = g2_pack_swap_active && has && !is_cancel &&
-                       idx == g2_pack_swap_src && !is_sel;
-
-    GbScrSrc mark_src = is_sel ? GBSCR_SRC_FONT : (is_swap_src ? GBSCR_SRC_FONT : GBSCR_SRC_BLANK);
-    uint8_t  mark_tile = is_sel ? 0xED : (is_swap_src ? 0xEC : 0);
-    gbscr_cell(gs, CURSOR_COL, ny, mark_src, mark_tile);
-
-    int real = (tmhm && has && !is_cancel) ? g2_tm_owned[idx] : 0;
-
-    if (tmhm && has && !is_cancel) {
-      int num = g2pack_is_hm(real) ? real - 50 + 1 : real + 1;
-      siprintf(buf, sizeof buf, "%02u", (unsigned)num);
-      gbscr_text(gs, TMNUM_COL, ny, buf);
-    } else {
-      gbscr_cell(gs, TMNUM_COL, ny, GBSCR_SRC_BLANK, 0);
-      gbscr_cell(gs, TMNUM_COL + 1, ny, GBSCR_SRC_BLANK, 0);
-    }
-
-    if (is_cancel) {
-      siprintf(buf, sizeof buf, "CANCEL");
-    } else if (has) {
-      g2pack_row_label(bag, buf, sizeof buf, pocket, idx);
-    } else {
-      buf[0] = 0;
-    }
-    gbscr_text(gs, NAME_COL, ny, buf);
-    for (int cx = NAME_COL + (int)strlen(buf); cx < QTY_COL; cx++)
-      gbscr_cell(gs, cx, ny, GBSCR_SRC_BLANK, 0);
-
-    bool has_qty = has && !is_cancel && !key && !(tmhm && g2pack_is_hm(real));
-    if (has_qty) {
-      gbscr_text(gs, QTY_COL, qy, "\xC3\x97");
-      unsigned q = 0;
-      if (tmhm) { uint8_t c = 0; gbb_tmhm_get(bag, real, &c); q = c; }
-      else      q = bag->pockets[pocket].entries[idx].qty;
-      if (q > 99u) siprintf(buf, sizeof buf, "**");
-      else         siprintf(buf, sizeof buf, "%2u", q);
-      gbscr_text(gs, QTY_COL + 1, qy, buf);
-    } else {
-      for (int cx = QTY_COL; cx <= QTY_COL + 2; cx++)
-        gbscr_cell(gs, cx, qy, GBSCR_SRC_BLANK, 0);
-    }
-  }
-}
-
-/* pdna_gbpack.c:398-405 (D3 fix) */
-static void gbpack_clamp_scroll(int total, int* sel, int* top) {
-  if (total <= 0) { *sel = 0; *top = 0; return; }
-  if (*sel >= total) *sel = total - 1;
-  if (*sel < 0) *sel = 0;
-  if (*sel < *top) *top = *sel;
-  if (*sel >= *top + ROWS_VISIBLE) *top = *sel - (ROWS_VISIBLE - 1);
-  if (*top < 0) *top = 0;
-}
+#define siprintf sprintf
 
 /* ============================================================================
  * Minimal GbScreen/gbscr_cell()/gbscr_text() RECORDING stand-ins (gb_oracle/
  * README.md's own harness shape) -- a 20x18 grid of (src, tile) pairs, plus a
  * raw-string overlay per gbscr_text() call so a test can just strcmp() a row.
  * `GbScreen` itself is the REAL struct (pdna_gbscreen.h, pure C, unused fields
- * left zeroed) -- only the two paint primitives are faked.
+ * left zeroed) -- only the two paint primitives are faked. Declared BEFORE the
+ * shared body (which calls them) rather than after, matching the body's own
+ * calling order.
  * ============================================================================ */
 #define GRID_W 20
 #define GRID_H 18
@@ -200,6 +85,15 @@ void gbscr_text(GbScreen* gs, int x, int y, const char* s) {
     g_text[y][x + i] = s[i];
   }
 }
+
+/* ============================================================================
+ * THE SHARED BODY (source/pdna_gbpack_body.inc) -- see this file's own header
+ * for why an #include, not a copy. Comes after the gbscr_cell()/gbscr_text()
+ * stand-ins above since the body's g2pack_desc_box/g2pack_pic_column/
+ * g2pack_paint_list call them (C needs the callee declared, not necessarily
+ * defined, but the stand-ins are defined here for one-TU simplicity).
+ * ============================================================================ */
+#include "pdna_gbpack_body.inc"
 
 /* ============================================================================
  * tests
@@ -306,15 +200,121 @@ static void test_has_qty_and_qty_paint(void) {
   CHECK(g_src[3][QTY_COL] == GBSCR_SRC_BLANK, "KEY row: qty column is blank");
 
   /* D8: a stored qty > 99 (a foreign/corrupt save, not reachable through this
-   * core's own gbb_set_qty) renders as "**", not a wrong truncated number. */
+   * core's own gbb_set_qty) renders as "??" -- '*' is not in the GB charmap
+   * (encodes to a blank), '?' is 0xE6 (U5 re-verify N2; this is also the exact
+   * drift N5's own commit message caught: the old hand-copy still said "**"). */
   memset(&bag, 0, sizeof bag);
   bag.pockets[GBB_POCKET_ITEMS].count = 1;
   bag.pockets[GBB_POCKET_ITEMS].entries[0].id = 5;
   bag.pockets[GBB_POCKET_ITEMS].entries[0].qty = 150;
   grid_reset();
   g2pack_paint_list(&gs, &bag, GBB_POCKET_ITEMS, 0, 0);
-  CHECK(g_text[3][QTY_COL + 1] == '*' && g_text[3][QTY_COL + 2] == '*',
-        "D8: an out-of-range stored qty renders as ** not a truncated digit pair");
+  CHECK(g_text[3][QTY_COL + 1] == '?' && g_text[3][QTY_COL + 2] == '?',
+        "D8: an out-of-range stored qty renders as ?? not a truncated digit pair");
+}
+
+/* N1 (real-cartridge re-verify, carried into N5's own coverage ask): an HM row
+ * prints a literal 'H' + left-aligned digit ("H3"), a TM row its two-digit
+ * number ("02") -- tmhm.asm's own asymmetry, easy to lose in a hand-copy (this
+ * is exactly the branch the pre-N5 test copy was missing). */
+static void test_tmhm_hm_h_prefix(void) {
+  printf("test_tmhm_hm_h_prefix\n");
+  GbBag bag; memset(&bag, 0, sizeof bag);
+  bag.tmhm_counts[1] = 1;    /* TM02 (index 1) */
+  bag.tmhm_counts[52] = 1;   /* HM03 (index 52 = 50 + 3 - 1) */
+  GbScreen gs; memset(&gs, 0, sizeof gs);
+  grid_reset();
+  g2pack_paint_list(&gs, &bag, GBB_POCKET_TMHM, 0, 0);
+  /* row 0 (TM02): TMNUM_COL prints "02" */
+  CHECK(g_text[name_row(0)][TMNUM_COL] == '0' && g_text[name_row(0)][TMNUM_COL + 1] == '2',
+        "TM row prints its two-digit number");
+  /* row 1 (HM03): TMNUM_COL prints "H3" */
+  CHECK(g_text[name_row(1)][TMNUM_COL] == 'H' && g_text[name_row(1)][TMNUM_COL + 1] == '3',
+        "HM row prints the H-prefix + left-aligned digit (N1)");
+}
+
+/* N3 (BACKLOG #111): g2pack_desc_box must offset EVERY frame tile id by
+ * 6*frame (the frames block is 9 frames x 6 tiles, G2I_UL..G2I_DR = 0..5 within
+ * one frame) -- pin frame 0 (unchanged corners) and frame 3 (the brief's own
+ * worked example: G2I_UL + 18 at cell (0,12)) by reading gbscr_cell's raw tile
+ * id back out of the recording grid. This is the host-side half of N3's own
+ * pixel proof (the brief's fallback when the oracle cannot drive the Pack
+ * screen directly, which docs/briefs/U5-gen2-pack-brief.md's own oracle
+ * plumbing does not yet do for a description-box-only repaint) -- an actual
+ * on-hardware/mGBA VRAM comparison of a frame-3 OPTIONS save was NOT captured
+ * this slice; that gap is reported, not silently closed. */
+static void test_n3_desc_box_frame(void) {
+  printf("test_n3_desc_box_frame\n");
+  GbScreen gs; memset(&gs, 0, sizeof gs);
+
+  grid_reset();
+  g2pack_desc_box(&gs, 0);
+  CHECK(g_tile[12][0] == G2I_UL, "frame 0: top-left corner is G2I_UL unshifted");
+  CHECK(g_tile[12][19] == G2I_UR, "frame 0: top-right corner is G2I_UR unshifted");
+  CHECK(g_tile[17][0] == G2I_DL, "frame 0: bottom-left corner is G2I_DL unshifted");
+  CHECK(g_tile[17][19] == G2I_DR, "frame 0: bottom-right corner is G2I_DR unshifted");
+  CHECK(g_tile[12][10] == G2I_H, "frame 0: top edge is G2I_H unshifted");
+  CHECK(g_tile[14][0] == G2I_V, "frame 0: left edge is G2I_V unshifted");
+
+  grid_reset();
+  g2pack_desc_box(&gs, 3);
+  CHECK(g_tile[12][0] == G2I_UL + 6 * 3, "frame 3: top-left corner is G2I_UL + 18 (the brief's own worked example)");
+  CHECK(g_tile[12][19] == G2I_UR + 6 * 3, "frame 3: top-right corner is G2I_UR + 18");
+  CHECK(g_tile[17][0] == G2I_DL + 6 * 3, "frame 3: bottom-left corner is G2I_DL + 18");
+  CHECK(g_tile[17][19] == G2I_DR + 6 * 3, "frame 3: bottom-right corner is G2I_DR + 18");
+  CHECK(g_tile[12][10] == G2I_H + 6 * 3, "frame 3: top edge is G2I_H + 18");
+  CHECK(g_tile[14][0] == G2I_V + 6 * 3, "frame 3: left edge is G2I_V + 18");
+  CHECK(g_src[12][0] == GBSCR_SRC_TEXTBOX, "the box still reads the frames block, not some other source");
+}
+
+/* g2pack_desc_label: the PC-store disambiguation line (D6) -- present only in
+ * the PC store, cleared to blank the moment the screen is NOT in the PC store. */
+static void test_desc_label(void) {
+  printf("test_desc_label\n");
+  GbScreen gs; memset(&gs, 0, sizeof gs);
+
+  grid_reset();
+  g2pack_desc_label(&gs, true);
+  CHECK(g_text[14][1] == 'P' && g_text[14][2] == 'C', "in_pc=true prints the PC ITEM STORE label");
+
+  grid_reset();
+  g2pack_desc_label(&gs, false);
+  CHECK(g_text[14][1] == 0, "in_pc=false clears row 14 (no stale label)");
+  CHECK(g_src[14][1] == GBSCR_SRC_BLANK, "in_pc=false: row 14 is GBSCR_SRC_BLANK");
+}
+
+/* N5 coverage ask: g2pack_pic_column -- the header strip (row 0, 20 PACKMENU
+ * tiles 0x28..0x3B), the picture block (rows 3-5, PACK_M vs PACK_F by gender,
+ * rom_idx*15 + r*5 + c per D-Kris), and the per-pocket nameplate label ids
+ * (kLabelIds, row 8). */
+static void test_n5_pic_column(void) {
+  printf("test_n5_pic_column\n");
+  GbScreen gs; memset(&gs, 0, sizeof gs);
+
+  grid_reset();
+  g2pack_pic_column(&gs, 0 /* ITEMS */, false, false);
+  CHECK(g_src[0][0] == GBSCR_SRC_PACKMENU && g_tile[0][0] == 0x28, "header strip col 0 = 0x28");
+  CHECK(g_tile[0][19] == 0x28 + 19, "header strip col 19 = 0x28+19 (0x3B)");
+  int rom_idx_items = kPackRomIdx[0];   /* cyc=0 (ITEMS) -> ROM order index 1 */
+  CHECK(g_src[3][0] == GBSCR_SRC_PACK_M, "male picture source when female=false");
+  CHECK(g_tile[3][0] == (uint8_t)(rom_idx_items * 15 + 0), "picture tile (0,0) = rom_idx*15");
+  CHECK(g_tile[5][4] == (uint8_t)(rom_idx_items * 15 + 2 * 5 + 4), "picture tile (4,2) = rom_idx*15+14");
+  const uint8_t* lbl_items = kLabelIds[0];
+  CHECK(g_tile[8][0] == lbl_items[0] && g_tile[8][4] == lbl_items[4], "ITEMS nameplate label row");
+
+  /* female=true switches the picture source (D-Kris) without touching the
+   * header strip or the label row. */
+  grid_reset();
+  g2pack_pic_column(&gs, 0, false, true);
+  CHECK(g_src[3][0] == GBSCR_SRC_PACK_F, "female picture source (D-Kris fix)");
+  CHECK(g_tile[8][0] == lbl_items[0], "label row unaffected by gender");
+
+  /* in_pc reuses cyc 0's (ITEMS') art regardless of the real cyc value (D6). */
+  grid_reset();
+  g2pack_pic_column(&gs, 2 /* KEY */, true, false);
+  int rom_idx_pc = kPackRomIdx[0];
+  CHECK(g_tile[3][0] == (uint8_t)(rom_idx_pc * 15 + 0), "PC store reuses ITEMS' picture, not KEY's (D6)");
+  CHECK(g_tile[8][0] == lbl_items[0], "PC store reuses ITEMS' nameplate label, not KEY's (D6)");
 }
 
 int main(void) {
@@ -322,6 +322,10 @@ int main(void) {
   test_d3_clamp_table();
   test_d4_owned_only_row_total();
   test_has_qty_and_qty_paint();
+  test_tmhm_hm_h_prefix();
+  test_n3_desc_box_frame();
+  test_desc_label();
+  test_n5_pic_column();
   if (g_fail) { printf("%d check(s) FAILED\n", g_fail); return 1; }
   printf("all host_gbpack_test checks passed\n");
   return 0;

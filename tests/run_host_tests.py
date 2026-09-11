@@ -27,8 +27,10 @@ from __future__ import annotations
 import glob
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -76,50 +78,54 @@ def main() -> int:
     npass = nfail = nskip = 0
     failed: list[str] = []
 
-    for s in srcs:
-        src = Path(s)
-        name = src.stem
-        cmd = cc_line_for(src)
-        if not cmd:
-            print(f"  {name:<26} SKIP (no cc line in its header)")
-            nskip += 1
-            continue
+    tmpdir = tempfile.mkdtemp(prefix="pdna_host-")
+    try:
+        for s in srcs:
+            src = Path(s)
+            name = src.stem
+            cmd = cc_line_for(src)
+            if not cmd:
+                print(f"  {name:<26} SKIP (no cc line in its header)")
+                nskip += 1
+                continue
 
-        binpath = f"/tmp/pdna_{name}"
-        cmd = re.sub(r"-o\s+\S+", f"-o {binpath}", cmd)
-        if f"-o {binpath}" not in cmd:
-            cmd += f" -o {binpath}"
+            binpath = os.path.join(tmpdir, f"pdna_{name}")
+            cmd = re.sub(r"-o\s+\S+", f"-o {binpath}", cmd)
+            if f"-o {binpath}" not in cmd:
+                cmd += f" -o {binpath}"
 
-        b = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        if b.returncode != 0:
-            print(f"  {name:<26} BUILD FAILED")
-            for ln in b.stderr.strip().split("\n")[:6]:
-                print(f"      {ln}")
-            nfail += 1
-            failed.append(name + " (build)")
-            continue
+            b = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if b.returncode != 0:
+                print(f"  {name:<26} BUILD FAILED")
+                for ln in b.stderr.strip().split("\n")[:6]:
+                    print(f"      {ln}")
+                nfail += 1
+                failed.append(name + " (build)")
+                continue
 
-        # Any indexing of argv means "this test takes saves". It used to look for the
-        # literal `argv[1]`, which host_legality_hooks_test.c does not contain (it loops
-        # `argv[i]`), so that test ran with an EMPTY corpus and failed four checks whose
-        # whole point is that the corpus is non-empty — a red line in every run that had
-        # nothing to do with the code under test.
-        args = saves if re.search(r"argv\[\w+\]", src.read_text(errors="replace")) else []
-        r = subprocess.run([binpath, *args], capture_output=True, text=True)
-        out = (r.stdout + r.stderr).strip()
+            # Any indexing of argv means "this test takes saves". It used to look for the
+            # literal `argv[1]`, which host_legality_hooks_test.c does not contain (it loops
+            # `argv[i]`), so that test ran with an EMPTY corpus and failed four checks whose
+            # whole point is that the corpus is non-empty — a red line in every run that had
+            # nothing to do with the code under test.
+            args = saves if re.search(r"argv\[\w+\]", src.read_text(errors="replace")) else []
+            r = subprocess.run([binpath, *args], capture_output=True, text=True)
+            out = (r.stdout + r.stderr).strip()
 
-        if r.returncode == 0:
-            print(f"  {name:<26} ok")
-            npass += 1
-        else:
-            print(f"  {name:<26} FAILED (exit {r.returncode})")
-            for ln in [l for l in out.split("\n") if "fail" in l.lower()][:8]:
-                print(f"      {ln}")
-            nfail += 1
-            failed.append(name)
-        if VERBOSE and out:
-            for ln in out.split("\n"):
-                print(f"      {ln}")
+            if r.returncode == 0:
+                print(f"  {name:<26} ok")
+                npass += 1
+            else:
+                print(f"  {name:<26} FAILED (exit {r.returncode})")
+                for ln in [l for l in out.split("\n") if "fail" in l.lower()][:8]:
+                    print(f"      {ln}")
+                nfail += 1
+                failed.append(name)
+            if VERBOSE and out:
+                for ln in out.split("\n"):
+                    print(f"      {ln}")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
     print()
     print(f"host tests: {npass} passed, {nfail} failed, {nskip} skipped "

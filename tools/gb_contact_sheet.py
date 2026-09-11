@@ -172,6 +172,22 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # rule.
     ("gb-pack-gen2", "U5 — Gold/Silver/Crystal's own Pack + PC store on the shell "
      "(Gen-2 saves)", ("U5",)),
+    # BACKLOG #86/#108 (append-only, same rule as U4/U5 above): Gen-2's own Clock
+    # screen (source/pdna_gbclock.c) over gb_clock.h's honest ask/shift/clear core.
+    # Shots come from tools/dgb_shots.py's run_b86_clock()/
+    # run_b86_clock_gen1_fallback(), captions all start "BACKLOG #86/#108:" (exact
+    # match, not startswith -- see the "#49-P1"/"#49-P1c" note above). Appended after
+    # "gb-pack-gen2" per this list's own append-only rule.
+    ("gb-clock-gen2", "BACKLOG #86/#108 — the Gen-2 Clock screen (ask / shift / "
+     "clear, never an absolute time)", ("BACKLOG #86/#108",)),
+    # BACKLOG #85: the Gen-1/2 Day-Care screen (source/pdna_gbdaycare.c) over
+    # gb_daycare.h's core -- the Gen-1/2 twin of pdna_main.c's pdna_daycare().
+    # Shots come from tools/dgb_shots.py's run_b85_daycare(), captions all start
+    # "BACKLOG #85:". Appended after "gb-pack-gen2" per this list's own
+    # append-only rule.
+    ("gb-daycare-gen12", "BACKLOG #85 — the Day-Care screen over gb_daycare "
+     "(Gen 1: one boarder, level-up only; Gen 2: two boarders + compatibility "
+     "+ Egg)", ("BACKLOG #85",)),
     # BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4, append-only,
     # same rule as every row above): the KEEP AS IS / MAKE LEGAL choice
     # gb_paste_hook now offers on a Gen 3 -> Game Boy paste whose species is

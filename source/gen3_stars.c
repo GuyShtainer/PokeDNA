@@ -1,15 +1,13 @@
 #include "gen3_stars.h"
 #include "gen3_flags.h"    /* frontier symbol flags */
 #include "gen3_dex.h"      /* seen/owned setters (all mirrors) */
-#include "gen3_edit.h"     /* gen3_encode_char (museum plaque strings) */
 #include "gen3_frontier.h" /* RS Battle Tower record pair (0x572 is a derived cache) */
+#include "gen3_contest.h"  /* gc_museum_set: the one writer of a museum-slot record */
+#include "gen3_save.h"     /* pk_game_stat/pk_set_game_stat, PK_STAT_* */
 #include <string.h>
 
 static uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | ((uint16_t)p[1] << 8)); }
 static void     wr16(uint8_t* p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
-static void     wr32(uint8_t* p, uint32_t v) {
-  p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
-}
 
 /* Per-game achievement kinds, in display order (== star order on the card). */
 enum { ACH_HOF, ACH_DEX, ACH_MUSEUM, ACH_FRONTIER, ACH_TOWER,
@@ -124,20 +122,26 @@ bool pk_star_ach_can_set(PkGame g, int i, const uint16_t* hoenn200) {
 
 /* Fill one empty museum slot with a plausible master-rank winner: the player's
  * own identity as the artist and PIKACHU (internal id 25 == national) as the
- * subject, category = the slot's contest type. Layout is shared by RS and
- * Emerald (Emerald appends contestRank @ +30). */
-static void museum_fill(uint8_t* w, const uint8_t* sb2, PkGame g, int cat) {
-  static const char* MON = "PIKACHU";
+ * subject, category = the slot's contest type. gc_museum_set (gen3_contest.c)
+ * is the one writer of a museum-slot record — it already knows the record
+ * layout (personality/otId/species/name encoding, Emerald's contestRank byte)
+ * AND the painting-caption-id quirk: a museum slot's byte +10 is not the plain
+ * 0..4 category but 3*category+variant (gc_museum_get/set's own comment,
+ * cross-derived from pokeemerald src/contest.c and pokeruby src/contest_2.c).
+ * gc_museum_set picks variant 0 for a synthetic fill, which is a real value
+ * the retail game itself can roll (Random() % 3 == 0), not an invented one —
+ * this fill reuses that same choice rather than re-deciding it. sb2's first 8
+ * bytes ARE the player's OT name, already Gen-3 encoded — hand them to
+ * gc_museum_set_raw verbatim (memcpy) instead of decoding to ASCII and letting
+ * gc_museum_set re-encode: that round trip is lossy for any byte outside the
+ * plain-text subset (MALE_SYMBOL 0xB5, ligatures, ...) which gc_encode_char has
+ * no case for and silently maps to 0x00 (space), while gen3_decode_char maps
+ * unmapped bytes to '?' — either way the player's real name would come back
+ * wrong (BACKLOG #105 review A1). */
+static void museum_fill(uint8_t* sb1, const uint8_t* sb2, PkGame g, int cat) {
   uint32_t id = (uint32_t)rd16(sb2 + 0x0A) | ((uint32_t)rd16(sb2 + 0x0C) << 16);
-  memset(w, 0, 0x20);
-  wr32(w + 0, id);                           /* personality (only palettes the art) */
-  wr32(w + 4, id);                           /* OT id = the player                  */
-  wr16(w + 8, 25);                           /* species                             */
-  w[10] = (uint8_t)cat;
-  memset(w + 11, 0xFF, 11);                  /* mon nickname (0xFF = EOS + pad)     */
-  for (int k = 0; MON[k]; k++) w[11 + k] = gen3_encode_char(MON[k]);
-  memcpy(w + 22, sb2, 8);                    /* trainer name, already Gen-3 encoded */
-  if (g == PK_EMERALD) w[30] = 3;            /* CONTEST_RANK_MASTER                 */
+  gc_museum_set_raw(sb1, g, cat, 25 /* PIKACHU, internal id == national dex id */,
+                    id, id, "PIKACHU", sb2);
 }
 
 int pk_star_ach_set(uint8_t* sb1, uint8_t* sb2, PkGame g, int i, bool on,
@@ -164,7 +168,7 @@ int pk_star_ach_set(uint8_t* sb1, uint8_t* sb2, PkGame g, int i, bool on,
       for (int k = 0; k < 5; k++) {
         uint8_t* w = sb1 + museum_off(g) + k * 0x20;
         if (!on)                  memset(w, 0, 0x20);
-        else if (rd16(w + 8) == 0) museum_fill(w, sb2, g, k);      /* keep real wins */
+        else if (rd16(w + 8) == 0) museum_fill(sb1, sb2, g, k);    /* keep real wins */
       }
       return 1;
     case ACH_FRONTIER:

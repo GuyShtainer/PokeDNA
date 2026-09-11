@@ -20,6 +20,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 #include "ff.h"
 #include "log.h"
@@ -33,9 +36,16 @@ int hostff_opens = 0;
 static int fails = 0;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } } while (0)
 
-#define P  "/tmp/pdna_hostlog.txt"
-#define P1 "/tmp/pdna_hostlog.prev1.txt"
-#define P2 "/tmp/pdna_hostlog.prev2.txt"
+static char g_dir[64];
+static char g_p[96];
+static char g_p1[96];
+static char g_p2[96];
+static char g_p3[96];
+static char g_dat[96];
+
+#define P  g_p
+#define P1 g_p1
+#define P2 g_p2
 
 static char* slurp(const char* path, long* len) {
   FILE* f = fopen(path, "rb");
@@ -68,6 +78,17 @@ static void reset_all(void) {
 int main(void) {
   char* txt;
   long n;
+
+  /* Initialize per-process temp paths */
+  snprintf(g_dir, sizeof g_dir, "/tmp/pdna_hostlog-%ld", (long)getpid());
+  mkdir(g_dir, 0700);
+  /* mkdir() succeeds or fails with EEXIST; either way we can use the dir */
+
+  snprintf(g_p, sizeof g_p, "%s/pdna_hostlog.txt", g_dir);
+  snprintf(g_p1, sizeof g_p1, "%s/pdna_hostlog.prev1.txt", g_dir);
+  snprintf(g_p2, sizeof g_p2, "%s/pdna_hostlog.prev2.txt", g_dir);
+  snprintf(g_p3, sizeof g_p3, "%s/pdna_hostlog.prev3.txt", g_dir);
+  snprintf(g_dat, sizeof g_dat, "%s/pdna_hostlog.dat", g_dir);
 
   /* ---- T1: two flushes, each line lands exactly once --------------------- */
   reset_all();
@@ -202,21 +223,21 @@ int main(void) {
   txt = slurp(P,  &n); CHECK(txt && strstr(txt, "run-C") != 0, "T7 log.txt is not run C"); free(txt);
   txt = slurp(P1, &n); CHECK(txt && strstr(txt, "run-B") != 0, "T7 prev1 is not run B"); free(txt);
   txt = slurp(P2, &n); CHECK(txt && strstr(txt, "run-A") != 0, "T7 prev2 is not run A"); free(txt);
-  txt = slurp("/tmp/pdna_hostlog.prev3.txt", &n);
+  txt = slurp(g_p3, &n);
   CHECK(n == -1, "T7 a prev3 file exists — rotation depth is not 2");
   free(txt);
 
   /* ---- T8: an unrecognised path is refused, loudly, not guessed at -------- */
   reset_all();
-  remove("/tmp/pdna_hostlog.dat");
-  log_begin_run("/tmp/pdna_hostlog.dat");
+  remove(g_dat);
+  log_begin_run(g_dat);
   log_line("x");
-  log_flush_to_sd("/tmp/pdna_hostlog.dat");
-  txt = slurp("/tmp/pdna_hostlog.dat", &n);
+  log_flush_to_sd(g_dat);
+  txt = slurp(g_dat, &n);
   CHECK(txt && strstr(txt, "no rotation for this path") != 0,
         "T8 a skipped rotation left no trace");
   free(txt);
-  remove("/tmp/pdna_hostlog.dat");
+  remove(g_dat);
 
   /* ---- T9: three failures latch logging off; urgent still gets through ---- */
   reset_all();
@@ -261,7 +282,9 @@ int main(void) {
   }
   hostff_fail_stat = 0;
 
-  remove(P); remove(P1); remove(P2);
+  /* Cleanup: remove all test files and the temp directory */
+  remove(P); remove(P1); remove(P2); remove(g_p3); remove(g_dat);
+  rmdir(g_dir);
   printf(fails ? "FAILED (%d)\n" : "all pass\n", fails);
   return fails ? 1 : 0;
 }
