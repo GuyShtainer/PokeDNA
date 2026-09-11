@@ -76,6 +76,14 @@
  *                                   test driver can tell them apart — --op badges sets
  *                                   both Gen-2 bytes to the SAME mask, which makes a
  *                                   byte swap between them invisible (P1a review D8).
+ *     --op statusflags BYTE        BACKLOG #96 D10: GBF_STATUS_FLAGS raw byte write
+ *                                   (gbs_write_field + gbs_finish), Gen 2 only —
+ *                                   Gold/Silver 0x23D9, Crystal 0x23DA. Bit 0 is
+ *                                   STATUSFLAGS_POKEDEX_F, gating the Gen-2 card's
+ *                                   own POKeDEX row.
+ *     --op gender 0|1              BACKLOG #96 Kris: GBF_GENDER raw byte write,
+ *                                   Crystal only (0 male, 1 female) — Gold/Silver
+ *                                   have no gender concept, refused.
  *   host_gbsurgery_tool --in SAVE --list
  *     print every box: count, and per slot species dex / level / nickname
  *
@@ -216,6 +224,10 @@ static void usage(const char* prog) {
     "                               GBF_MAP_ID/GBF_POS_X/GBF_POS_Y + the two block-half\n"
     "                               bytes, X&1/Y&1) and refreshes the checksum. Gen 1\n"
     "                               only.\n"
+    "  --op statusflags BYTE        BACKLOG #96 D10: GBF_STATUS_FLAGS (0..255), Gen 2\n"
+    "                               only -- bit 0 is STATUSFLAGS_POKEDEX_F.\n"
+    "  --op gender 0|1              BACKLOG #96 Kris: GBF_GENDER, Crystal only (0 M,\n"
+    "                               1 F).\n"
     "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -237,6 +249,8 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"caught", 3},     /* BACKLOG #95 review gate case: BOX SLOT time:level:loc:gender */
     {"clockclear", 0}, /* BACKLOG #86/#108: dismiss the clock-error banner */
     {"warp", 3},       /* m1 (BACKLOG #91) shot-retake gate: MAP X Y, Gen 1 only */
+    {"statusflags", 1},/* BACKLOG #96 D10: GBF_STATUS_FLAGS byte, Gen 2 only */
+    {"gender", 1},     /* BACKLOG #96 Kris: GBF_GENDER 0|1, Crystal only */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -464,6 +478,52 @@ static int do_warp(GbSession* s, const char* map_tok, const char* x_tok, const c
   if ((st = gbs_write_field(s, 0x2610u, &xblock_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_write_field(s, 0x260fu, &yblock_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_finish(s)) != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* BACKLOG #96 D10/Kris — two more raw field writes, same "gbs_write_field + one
+ * gbs_finish" shape do_money()/do_warp() use.
+ *
+ * do_statusflags: GBF_STATUS_FLAGS (gb_fields.c, docs/GEN12-PARITY-DESIGN.md §1.1
+ * row "status flags") -- Gold/Silver 0x23D9, Crystal 0x23DA; Gen 1 refused (no
+ * equivalent field this backlog item's card gate reads). Bit 0 is
+ * STATUSFLAGS_POKEDEX_F (constants/ram_constants.asm) -- the D10 gate case clears
+ * it to prove the Gen-2 card's own POKeDEX row disappears.
+ *
+ * do_gender: GBF_GENDER (gb_trainer.h has_gender's own field, gb_fields.c's
+ * S("sCrystalData", 0x3E3D)) -- Crystal ONLY (Gold/Silver's card has no gender
+ * concept at all, per docs/GEN12-PARITY-DESIGN.md §1.1 row "gender": "(always
+ * male)"); Gen 1 refused too. Outside every checksummed span (same row, "in
+ * sCrystalData, outside the checksummed span") -- gbs_write_field()'s own checksum
+ * refresh is therefore a no-op for this byte, but still runs (gbs_finish is not
+ * optional) so a caller cannot forget it on a FUTURE field this tool reuses this
+ * function's shape for. */
+static int do_statusflags(GbSession* s, const char* vtok) {
+  if (s->gen == GB_GEN1) return refuse("statusflags is Gen 2 only");
+  int v = resolve_uint(vtok, "statusflags");
+  if (v < 0) return 2;
+  if (v > 255) { fprintf(stderr, "bad statusflags %s (want 0..255)\n", vtok); return 2; }
+
+  uint32_t off = (s->g2w.sv.version == G2_VER_CRYSTAL) ? 0x23DAu : 0x23D9u;
+  uint8_t b = (uint8_t)v;
+  GbsStatus ws = gbs_write_field(s, off, &b, 1);
+  if (ws != GBS_OK) return refuse(gbs_status_text(ws));
+  GbsStatus fs = gbs_finish(s);
+  if (fs != GBS_OK) return refuse(gbs_status_text(fs));
+  return 0;
+}
+
+static int do_gender(GbSession* s, const char* vtok) {
+  if (s->gen != GB_GEN2 || s->g2w.sv.version != G2_VER_CRYSTAL)
+    return refuse("gender is Crystal only");
+  int v = resolve_uint(vtok, "gender");
+  if (v != 0 && v != 1) { fprintf(stderr, "bad gender %s (want 0 or 1)\n", vtok); return 2; }
+
+  uint8_t b = (uint8_t)v;
+  GbsStatus ws = gbs_write_field(s, 0x3E3Du, &b, 1);
+  if (ws != GBS_OK) return refuse(gbs_status_text(ws));
+  GbsStatus fs = gbs_finish(s);
+  if (fs != GBS_OK) return refuse(gbs_status_text(fs));
   return 0;
 }
 
@@ -960,6 +1020,12 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "warp")) {
     return do_warp(s, o->a[0], o->a[1], o->a[2]);
+  }
+  if (!strcmp(o->kind, "statusflags")) {
+    return do_statusflags(s, o->a[0]);
+  }
+  if (!strcmp(o->kind, "gender")) {
+    return do_gender(s, o->a[0]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;

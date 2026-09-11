@@ -330,6 +330,17 @@ FIELDS = [
   ("OPTIONS", BYTES, 8, {
       "RED": D("main_data", "wOptions", 0x2601, size=1), "YELLOW": D("main_data", "wOptions", 0x2601, size=1),
       "GS": D("options", "sOptions", 0x2000), "CRYSTAL": D("options", "sOptions", 0x2000)}),
+  # STATUS_FLAGS: BACKLOG #96 D10 -- the Gen-2 trainer card clears its POKeDEX
+  # row (rows 9-10) when STATUSFLAGS_POKEDEX_F (bit 0, constants/ram_constants.asm)
+  # is unset. §1.1 row "status flags" (docs/GEN12-PARITY-DESIGN.md:155): Gold
+  # 0x23D9 (wStatusFlags1, region player_data_3's own first byte), Crystal
+  # 0x23DA (wStatusFlags, region player_data's own byte at wPlayerData+0x3D1).
+  # Gen 1 has no equivalent card gate this backlog item touches (Red/Yellow's
+  # own wStatusFlags1, 0x29D4, is a different field never wired to the Gen-1
+  # card painter) -- ABSENT here on purpose, not an oversight.
+  ("STATUS_FLAGS", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("player_data_3", "wStatusFlags", 0x23D9),
+      "CRYSTAL": D("player_data", "wStatusFlags", 0x23DA)}),
 
   # ---- 1.2 bag / PC ------------------------------------------------------------------
   ("BAG_COUNT", U8, 1, {
