@@ -29,7 +29,14 @@
  *      source/gb_clock.c \
  *      source/gb_fly.c \
  *      source/gb_boxnames.c \
+ *      source/gb_dex.c \
  *      -o /tmp/hgbsurg
+ *
+ * (gb_fields.c is also required -- gb_trainer.c already needs it -- but was already
+ * missing from this comment before this change; tools/gb_retail_gate.py's own
+ * SURGERY_SRCS list, the actual source of truth this comment claims to mirror, has
+ * always carried it. Left as pre-existing drift, not introduced here; only gb_dex.c
+ * is this commit's own addition to both places.)
  *
  * Usage
  * -----
@@ -131,6 +138,7 @@
 #include "gb_clock.h"
 #include "gb_fly.h"
 #include "gb_boxnames.h"
+#include "gb_dex.h"
 
 #define MAX_FILE_BYTES 65536u
 #define MAX_OPS        64
@@ -211,6 +219,11 @@ static void usage(const char* prog) {
     "                               colon-separated) through the SAME Crystal-only gate\n"
     "                               the live editor uses (gb_session_is_crystal). Gen 1\n"
     "                               and Gold/Silver both refused.\n"
+    "  --op dexset DEX STATE        BACKLOG #87 item 6 retail-gate case: sets National\n"
+    "                               dex no. DEX's owned/seen state (0=none/1=seen/\n"
+    "                               2=caught) via gb_dex.h's gbdex_set, same two-call\n"
+    "                               shim shape pdna_gbdex.c uses. DEX is 1..gb_max_\n"
+    "                               species(gen) (151 Gen 1, 251 Gen 2).\n"
     "  --op warp MAP X Y            m1 (BACKLOG #91) shot-retake gate: pokes the\n"
     "                               player's own current map/position (gb_fields.c's\n"
     "                               GBF_MAP_ID/GBF_POS_X/GBF_POS_Y + the two block-half\n"
@@ -237,6 +250,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"caught", 3},     /* BACKLOG #95 review gate case: BOX SLOT time:level:loc:gender */
     {"clockclear", 0}, /* BACKLOG #86/#108: dismiss the clock-error banner */
     {"warp", 3},       /* m1 (BACKLOG #91) shot-retake gate: MAP X Y, Gen 1 only */
+    {"dexset", 2},     /* BACKLOG #87 item 6 retail-gate case: DEX STATE (0/1/2) */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -486,6 +500,30 @@ static int do_money(GbSession* s, const char* vtok) {
   if (ws != GBS_OK) return refuse(gbs_status_text(ws));
   GbsStatus fs = gbs_finish(s);
   if (fs != GBS_OK) return refuse(gbs_status_text(fs));
+  return 0;
+}
+
+/* BACKLOG #87 item 6 retail-gate case: sets National dex no. `dex`'s owned/seen state
+ * via gb_dex.h's gbdex_set -- same two-call shim shape pdna_gbdex.c's gbdex_shim_set
+ * uses (state 0/1/2 = none/seen/caught), then ONE gbs_finish (gb_dex.h's own batching
+ * contract: gbdex_set does not finish internally). */
+static int do_dexset(GbSession* s, const char* dex_tok, const char* state_tok) {
+  int dex = resolve_uint(dex_tok, "dexset dex");
+  int state = resolve_uint(state_tok, "dexset state");
+  if (dex < 0 || state < 0) return 2;
+  int max = (int)gb_max_species(s->gen);
+  if (dex < 1 || dex > max) {
+    fprintf(stderr, "dexset DEX must be 1..%d for this save's generation\n", max);
+    return 2;
+  }
+  if (state < 0 || state > 2) { fprintf(stderr, "dexset STATE must be 0, 1, or 2\n"); return 2; }
+
+  GbsStatus st = gbdex_set(s, (uint16_t)dex, true, state >= 2);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  st = gbdex_set(s, (uint16_t)dex, false, state >= 1);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  st = gbs_finish(s);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
   return 0;
 }
 
@@ -960,6 +998,9 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "warp")) {
     return do_warp(s, o->a[0], o->a[1], o->a[2]);
+  }
+  if (!strcmp(o->kind, "dexset")) {
+    return do_dexset(s, o->a[0], o->a[1]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;
