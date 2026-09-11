@@ -104,10 +104,37 @@ static void run_cap(int cap, const char* label) {
   chk("Undo restores the blank pre-bulk state", all_blank);
 }
 
+/* D1 (b87 fix pass, DO-NOT-SHIP review): dex_bulk()'s Catch/See/Wipe-ALL confirm
+ * prompt (pdna_pick.c:~743) formats `siprintf(amsg, "All %d. (Undo available.)",
+ * s_dex_max)` into a stack buffer -- "All 386. (Undo available.)" is 27 bytes
+ * including the NUL, which overflowed the original `char amsg[24]` on EVERY bulk
+ * confirm on a Gen-3 save (the shipped path, not a corner case). Fixed to
+ * `char amsg[28]`. Mirrored here with a canary byte immediately after the buffer
+ * (pdna_pick.c itself can't host-compile, same reason the rest of this file mocks
+ * its shape instead of linking it) -- a regression that shrinks the buffer back
+ * below the formatted length would either truncate the string short of its NUL
+ * (caught by the strlen check) or, on a real stack layout, smash the canary. */
+static void run_amsg_canary(int cap, const char* label) {
+  struct { char amsg[28]; unsigned char canary; } buf;
+  buf.canary = 0xA5;
+  int n = snprintf(buf.amsg, sizeof buf.amsg, "All %d. (Undo available.)", cap);
+  printf("[%s] amsg=\"%s\" (%d chars + NUL = %d bytes, buffer %zu)\n",
+         label, buf.amsg, n, n + 1, sizeof buf.amsg);
+  chk("amsg: siprintf's return value fits inside the buffer (no truncation)",
+      n >= 0 && (size_t)n < sizeof buf.amsg);
+  chk("amsg: the formatted string is NUL-terminated inside the buffer",
+      strlen(buf.amsg) < sizeof buf.amsg);
+  chk("amsg: the canary byte right after the buffer is untouched", buf.canary == 0xA5);
+}
+
 int main(void) {
   run_cap(151, "Gen1 cap=151");
   run_cap(251, "Gen2 cap=251");
   run_cap(386, "Gen3 cap=386 (default)");
+
+  run_amsg_canary(151, "amsg cap=151");
+  run_amsg_canary(251, "amsg cap=251");
+  run_amsg_canary(386, "amsg cap=386 (the shipped Gen-3 case -- 27 bytes, D1)");
 
   /* MUTATION CHECK: prove this test would actually catch a regression -- if the
    * loop bound were hardcoded back to DEX_NAT_MAX (386) instead of s_dex_max,

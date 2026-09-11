@@ -740,7 +740,7 @@ static bool dex_bulk(void) {
         s_dex_snap_valid = false;
         return true;
       }
-      { char amsg[24]; siprintf(amsg, "All %d. (Undo available.)", s_dex_max);
+      { char amsg[28]; siprintf(amsg, "All %d. (Undo available.)", s_dex_max);
         if (!app_confirm(a == 2 ? "Catch every species?" : a == 1 ? "See every species?" : "Wipe the whole dex?",
                          amsg)) return false; }
       for (int nat = 1; nat <= s_dex_max; nat++) s_dex_snap[nat - 1] = (int8_t)s_dget(nat);   /* snapshot first */
