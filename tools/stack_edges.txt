@@ -260,6 +260,21 @@ wp_fold_region argsites=1 -> banksrc_records gbsrc_records pcsrc_records banksrc
 dex_build argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
 dex_cell_grid argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
 dex_cell_list argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
+# BACKLOG #124: dex_cell_grid()'s NEW call (the GB-session cell-art override) does not
+# dispatch through s_cell_art.fn directly -- review ruling: it goes through ONE
+# noinline wrapper, dex_cell_art_call() (pdna_pick.c), so this dispatch compiles to
+# exactly ONE indirect-call site regardless of how dex_cell_grid's own surrounding code
+# shape differs between the artless and normal builds (an EARLIER version of this fix
+# called s_cell_art.fn straight from dex_cell_grid and got 2 sites in artless / 1 in
+# normal -- an unverifiable, build-varying count; this wrapper removes the variance by
+# construction). s_cell_art is an EWRAM_BSS struct (review ruling: keeps this dispatch
+# OFF the IWRAM section-anchor family above entirely, so none of ITS offsets shift).
+# The only function ever assigned to s_cell_art.fn is pdna_gbdex.c's gbdex_cell_art
+# (pdna_dex_set_cell_art()'s two call sites; NULL is the default and never dispatches).
+# Verify by address on BOTH ELFs before trusting this count on a future rebuild.
+# Compiled name carries a clone suffix (matches fetch_pic_ex.constprop.0's own
+# precedent above) -- re-check the exact suffix with --dump-sites if this ever drifts.
+dex_cell_art_call.constprop.0 argsites=1 -> gbdex_cell_art
 # pdna_dex_screen: BACKLOG #87 item 1 (the species cap, pdna_pick.c's s_dex_max /
 # pdna_dex_set_max()) rewrote dex_counts()'s and dex_bulk()'s three ALL-loops from a
 # fixed DEX_NAT_MAX bound to the runtime s_dex_max variable and replaced the literal
@@ -333,6 +348,14 @@ pdna_origin_box_art argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 pdna_origin_box_art_wanted argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 pdna_origin_box_note argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 fetch_pic_ex.constprop.0 argsites=1 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
+# BACKLOG #124: fetch_icon() is the new static helper factored out of
+# pdna_origin_box_art()'s ERA_GEN2 branch (pdna_origin_art.c), shared by that branch
+# AND the new public pdna_origin_art_icon() -- it calls fetch_pic_ex() directly, which
+# -O2 inlines into fetch_icon's own compiled body (two clones/call sites -- one per
+# caller shape, same s_gb.icon dispatch either way; --dump-sites confirms both are
+# "parameter/register dispatch" with no field offset, i.e. the argsite bucket).
+# Verify by address before trusting this count on a future rebuild.
+fetch_icon argsites=2 -> gb_art_pic_cb gb_art_have_cb gb_art_icon_cb
 
 # gen1_save.c's Gen1ReadFn `rd` parameter (gen1_open_ranged) and rom_gblearn.c's
 # GbReadFn `read` parameter (rom_gblearn_open -> gbl_verify -> walk_entry), both
