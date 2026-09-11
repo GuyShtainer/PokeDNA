@@ -343,6 +343,19 @@ static void gbdc_view_edit(GbSession* s, GbDaycare* dc, int start_slot, bool can
   } while (nav != 0 && nrows > 1);
 }
 
+/* Build the boarder name line: "<NICK> (<SPECIES>) Lv.N is boarding." or shortened variant.
+ * Used by both Gen-1 and Gen-2 n==1 branches for consistency (BACKLOG #121). */
+static void gbdc_boarder_name(char out[48], const GbEditMon* mon, const GbDaycareSlot* slot) {
+  const char* nick = slot->nick[0] ? slot->nick : pk_species_name(gb_get_species_dex(mon));
+  const char* species = pk_species_name(gb_get_species_dex(mon));
+  uint8_t level = gb_get_level(mon);
+
+  siprintf(out, "%s (%s) Lv.%u is boarding.", nick, species, (unsigned)level);
+  if (ui_ptext_w(out) > PDNA_DCY_NAME_W) {
+    siprintf(out, "%s Lv.%u is boarding.", nick, (unsigned)level);
+  }
+}
+
 /* The status/compatibility panel -- SAME geometry pdna_daycare() uses (PDNA_DCY_*,
  * pdna_layout.h), Gen 1/2's own flag-based read swapped in for Gen 3's on-the-fly
  * pk_daycare_compat() calculation (gb_daycare.h's `compatible`/`egg_ready` are what
@@ -351,7 +364,13 @@ static void gbdc_panel(const GbDaycare* dc, int n, bool visitors_ok, int n_visit
   const int dcy0 = PDNA_DCY_ROW0_Y, dcyp = PDNA_DCY_ROW_PITCH, dcx = PDNA_DCY_TEXT_X;
   ui_panel(PDNA_DCY_PANEL_X, PDNA_DCY_PANEL_Y, PDNA_DCY_PANEL_W, PDNA_DCY_PANEL_H, UI_PANEL, UI_BORDER);
   if (dc->gen1) {
-    ui_ptext(dcx, dcy0, UI_DIM, n ? "Leveling up your Pokemon." : "No Pokemon are boarding.");
+    if (n) {
+      char l[48];
+      gbdc_boarder_name(l, &dc->slot[0].mon, &dc->slot[0]);
+      ui_ptext(dcx, dcy0, UI_DIM, l);
+    } else {
+      ui_ptext(dcx, dcy0, UI_DIM, "No Pokemon are boarding.");
+    }
     ui_ptext(dcx, dcy0 + dcyp, UI_DIM, "Gen 1 Day Care has no breeding.");
   } else if (n == 2) {
     ui_ptext(dcx, dcy0, dc->compatible ? UI_OK : UI_DIM,
@@ -365,7 +384,9 @@ static void gbdc_panel(const GbDaycare* dc, int n, bool visitors_ok, int n_visit
       ui_ptext(dcx, dcy0 + dcyp, UI_DIM, l);
     }
   } else if (n == 1) {
-    ui_ptext(dcx, dcy0, UI_DIM, "One Pokemon is boarding.");
+    char l[48];
+    gbdc_boarder_name(l, &dc->slot[0].mon, &dc->slot[0]);
+    ui_ptext(dcx, dcy0, UI_DIM, l);
     if (dc->has_egg) ui_ptext(dcx, dcy0 + dcyp, UI_OK, "An EGG is ready to collect!");
   } else {
     ui_ptext(dcx, dcy0, dc->has_egg ? UI_OK : UI_DIM,

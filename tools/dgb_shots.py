@@ -1582,9 +1582,8 @@ def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                   "four spn-tagged rows are never a real Fly-menu "
                                   "destination, so mark-all leaves them exactly as "
                                   "found)" if which == "crystal" else "")
-                               + " (the dialog residue behind the panel is the known "
-                                 "s_msg-over-app_confirm ghosting, BACKLOG #119 -- present "
-                                 "on Gen 3's pdna_fly.c too)")
+                               + " (the s_msg-over-app_confirm ghosting fix, BACKLOG #119, "
+                                 "verified: no dialog residue behind the panel)")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the result panel -> back to the grid
 
     if which == "crystal":
@@ -1741,7 +1740,7 @@ def run_b90_boxname(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
                                   "gb_retail_gate.py), not this shot")
 
     s.tap("A", settle=200)                                    # dismiss msg_wait -> box grid repaints
-    s.shot("05_renamed_banner", "BACKLOG #94: back at the box grid -- the banner now reads 'GB TEST': gbsrc_get_name() re-reads g_m->g2names (refreshed by gbsrc_set_name_impl() right after the write) and pdna_gen12_box_name() adds the 'GB ' DISPLAY prefix on top; the SAVE holds the undecorated 'TEST' (proved by the retail gate's boxname case and gbbn_read on the corpus). The prefix on renamed Gen-2 boxes is BACKLOG #122.")
+    s.shot("05_renamed_banner", "BACKLOG #122: back at the box grid -- the banner now reads 'TEST' (verbatim, no 'GB ' prefix on Gen-2 renamed boxes); gbsrc_get_name() re-reads g_m->g2names and pdna_gen12_box_name() echoes it as-is for Gen-3 parity; the SAVE holds the undecorated 'TEST'.")
 
     return s
 
@@ -3002,6 +3001,7 @@ def main(argv=None) -> int:
         sys.exit(f"--image: {a.image}: not a file")
 
     ok, skipped = [], []
+    ran = False  # latch: every early-exit flag block sets ran = True; latch returns for all
     if a.shell_only:
         try:
             sess = run_gbscreen_shell(core_mod, image_mod, a.image, a.out)
@@ -3013,7 +3013,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.u2c_trainer:
         try:
@@ -3026,7 +3026,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.u3_trainer:
         try:
@@ -3039,7 +3039,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.u4_bag:
         try:
@@ -3052,7 +3052,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.u5_pack:
         try:
@@ -3065,7 +3065,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.b89_hof:
         try:
@@ -3124,7 +3124,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.b94_boxname:
         try:
@@ -3137,7 +3137,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.u4_empty:
         try:
@@ -3150,7 +3150,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.d7_gold:
         try:
@@ -3163,7 +3163,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.b86_clock:
         try:
@@ -3175,6 +3175,7 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b86 clock ({a.b86_clock}): {e}")
+        ran = True
     if a.b87_dex:
         try:
             sess = run_b87_dex(core_mod, image_mod, a.image, a.out, a.b87_dex)
@@ -3186,7 +3187,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
     if a.b85_daycare:
         try:
             sess = run_b85_daycare(core_mod, image_mod, a.image, a.out, a.b85_daycare)
@@ -3198,7 +3199,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
     if a.b114_yard:
         try:
             sess = run_b114_yard(core_mod, image_mod, a.image, a.out, a.b114_yard)
@@ -3210,7 +3211,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.b88_flags:
         try:
@@ -3245,6 +3246,11 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] r1 xfer: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
     if a.m1_map:
         try:
             sess = run_m1_map(core_mod, image_mod, a.image, a.out)
@@ -3256,7 +3262,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.m1_map_vclamp:
         try:
@@ -3269,7 +3275,7 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
-        return 0
+        ran = True
 
     if a.gbmon:
         try:
@@ -3282,6 +3288,9 @@ def main(argv=None) -> int:
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
+        ran = True
+
+    if ran:
         return 0
 
     try:

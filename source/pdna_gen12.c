@@ -462,15 +462,15 @@ void pdna_gen12_box_name(const Gb12Mount* m, int box, char out[12]) {
   int pos = 0;
   out[0] = 0;
   if (!m || box < 0 || box > m->party_box) { put_str(out, 12, &pos, "GB BOX"); return; }
-  put_str(out, 12, &pos, "GB ");
-  if (box == m->party_box) { put_str(out, 12, &pos, "PARTY"); return; }
+  if (box == m->party_box) { put_str(out, 12, &pos, "GB PARTY"); return; }
   if (m->kind != GB12_SAVE_RBY) {
-    /* Gen 2 stores real box names; showing the player's own is worth more than a
-     * number. The "GB " prefix stays so the banner never reads like a Gen-3 box. */
+    /* Gen 2 stores real box names; echo the player's own name verbatim (no "GB " prefix)
+     * for Gen-3 parity (BACKLOG #61). Gen 1's synthesized names keep the prefix since
+     * there is no stored name to echo. */
     char nm[G2_NAME_BYTES];
     if (g2_box_name(m->g2names, box, nm, (int)sizeof nm) && nm[0]) {
       char cut[12];
-      copy_utf8(cut, 12 - pos, nm);
+      copy_utf8(cut, 12, nm);
       put_str(out, 12, &pos, cut);
       return;
     }
@@ -480,7 +480,7 @@ void pdna_gen12_box_name(const Gb12Mount* m, int box, char out[12]) {
    * when the save's own box name is empty. Before this fix Gen 1 read "GB BOX 1"
    * (a space) while a REAL Gen-2 box name of "BOX1" (Crystal's own default, above)
    * read "GB BOX1" — two spellings for what is meant to look like the same thing. */
-  put_str(out, 12, &pos, "BOX");
+  put_str(out, 12, &pos, "GB BOX");
   put_uint(out, 12, &pos, (unsigned)(box + 1));
 }
 
