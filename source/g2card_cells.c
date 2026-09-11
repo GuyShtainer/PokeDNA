@@ -16,7 +16,14 @@ int g2card_build_upper_cells(bool female, G2CardCell out[G2CARD_UPPER_CELLS]) {
       out[n].x = (uint8_t)(14 + tx); out[n].y = (uint8_t)(1 + ty);
       out[n].src = pic_src; out[n].index = (uint8_t)(ty * 5 + tx); n++;
     }
-  /* the repeat cell -- see pdna_gbtrainer.c's file comment */
+  /* (18,9) and (18,1) are the card's RIGHT-CORNER chamfer, NOT a repeat of the
+   * photo: TrainerCard_InitBorder writes it one row under each box's top row
+   * (Gold $04, Crystal $1c). On GOLD (row-major) display index 4 IS that tile
+   * and this is pixel-exact; on CRYSTAL the game copies CardRightCornerGFX
+   * (pokecrystal.sym 09:65c3 = badges + 88 tiles) over vTiles2 tile $1c after
+   * GetCardPic, so index 4 resolves to the photo's own blank storage tile 28
+   * and BOTH cells are WRONG on Crystal (38/64 px Chris, 36/64 px Kris) --
+   * BACKLOG #125. */
   out[n].x = 18; out[n].y = 9; out[n].src = pic_src; out[n].index = 4; n++;
 
   for (int x = 1; x <= 12; x++) {

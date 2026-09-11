@@ -3,7 +3,7 @@
  * table can emit resolves inside its located block's byte length (the same
  * bound gbscr_flush()'s VRAM blit relies on to never read past the cached
  * tail buffer), and pins the three facts the brief names as having survived
- * mutation before: the pic repeat cell (18,9) is display index 4;
+ * mutation before: the (18,9) corner cell is display index 4 (Gold-correct; wrong on Crystal, BACKLOG #125);
  * GBSCR_SRC_STATUSWORD is located at gu->leaders - 96; G2L_BADGES_WORD is 80.
  *
  *   cc -std=c11 -Wall -Wextra -I source -DPDNA_GBSCREEN_HOST_TEST \
@@ -146,16 +146,17 @@ int main(void) {
 
   /* -- the three pinned facts -- */
 
-  /* fact 1: the pic repeat cell (18,9) is display index 4. */
+  /* fact 1: the (18,9) corner cell is display index 4 (Gold-correct; Crystal needs CardRightCornerGFX, BACKLOG #125). */
   {
     bool found = false;
     for (int i = 0; i < nu_m; i++)
       if (upper_m[i].x == 18 && upper_m[i].y == 9) {
         found = true;
-        expect_int("repeat cell (18,9) src", upper_m[i].src, GBSCR_SRC_CARDPIC_M);
-        expect_int("repeat cell (18,9) index", upper_m[i].index, 4);
+        expect_int("corner cell (18,9) src", upper_m[i].src, GBSCR_SRC_CARDPIC_M);
+        expect_int("(18,9) corner cell index -- GOLD-correct, WRONG on Crystal (BACKLOG #125)",
+                   upper_m[i].index, 4);
       }
-    expect_true("repeat cell (18,9) present", found);
+    expect_true("corner cell (18,9) present", found);
   }
 
   /* fact 2: STATUSWORD == leaders - 96. */

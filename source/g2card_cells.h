@@ -24,7 +24,7 @@
  * tests/host_gbcard_cells_test.c asserts every cell this file can emit
  * resolves inside its located block's byte length (pdna_gbscreen.c's
  * gbscr_block_off()/gbscr_block_bytes()) and pins the three facts BACKLOG
- * #96 names: the pic repeat cell (18,9) is display index 4; STATUSWORD is
+ * #96 names: the (18,9) corner cell is display index 4 (Gold-correct, Crystal BACKLOG #125); STATUSWORD is
  * located at leaders-96 (gbscr_block_off()'s own derivation); and
  * G2L_BADGES_WORD (pdna_gbtrainer.c:770) is 80.
  */
@@ -52,7 +52,7 @@ extern const uint8_t kG2BadgeBit[8];
 enum { G2L_BADGES_WORD = 80 };
 
 /* g2card_build_upper_cells(): CARDGFX "ID"/"No" glyphs, the 5x7 pic grid
- * (35 cells) + the (18,9) repeat cell, and the divider fill (12) + cap (1).
+ * (35 cells) + the (18,9) corner cell, and the divider fill (12) + cap (1).
  * `female` picks CARDPIC_F vs CARDPIC_M, same parameter g2card_paint_upper()
  * takes. Always emits exactly G2CARD_UPPER_CELLS cells; `out` must hold that
  * many. Returns the count (always G2CARD_UPPER_CELLS) for call-site symmetry

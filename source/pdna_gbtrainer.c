@@ -721,9 +721,9 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
  * faces (10 tiles each: 4 across the top row then 3+3 below, column stride
  * 4), 0x79-0x7D (5 more of LEADERS) = the "BADGES" word graphic -- LEADERS'
  * declared 86-tile size is exactly 80 faces + 6 word tiles, confirming this
- * is ONE block, not two. The repeat cell at screen (18,9) is literally the
- * pic's own display index 4 (top-right corner) painted a second time, one
- * row below the picture -- not a separate tile.
+ * is ONE block, not two. Screen (18,1)/(18,9) are the card's right-corner
+ * chamfer, written by the game's own TrainerCard_InitBorder; on Crystal its
+ * pixels come from CardRightCornerGFX, not from the pic (BACKLOG #125).
  *
  * The real game draws the OWNED-badge overlay as an animated OAM sprite over
  * the gym leader's face, never as a BG tile -- the BG-tilemap oracle above
@@ -823,7 +823,7 @@ static void g2card_paint_upper(GbScreen* gs, const GbTrainer* t, bool female) {
   gbscr_text(gs, 14 - mlen, 6, buf);
 
   /* BACKLOG #96 D11: the CARDGFX ID/No glyphs, the 5x7 pic grid + the
-   * (18,9) repeat cell, and the divider fill+cap all come from the pure,
+   * (18,9) corner cell, and the divider fill+cap all come from the pure,
    * host-tested cell table (g2card_cells.c) instead of being inlined here --
    * host_gbcard_cells_test.c bounds-checks every one of these 51 cells
    * against the located block it reads from. */
