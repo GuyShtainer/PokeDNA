@@ -214,7 +214,7 @@ bool rgm1_header(const RomGbMap1* g, uint8_t map_id, GbMap1Header* out) {
   if (!rdg(g, hdr_off, h, sizeof h)) return false;
   uint8_t tileset_id = h[0], height = h[1], width = h[2];
   uint8_t conn_mask = h[9];
-  if (height == 0 || height > 64 || width == 0 || width > 64) return false;
+  if (height == 0 || height > 128 || width == 0 || width > 128) return false;   /* Route 17/23 are 10x72 (m1 review D2) */
 
   uint8_t nconn = 0;
   for (int b = 0; b < 4; b++) if (conn_mask & (1u << b)) nconn++;

@@ -120,6 +120,7 @@ static void gbmap_paint(GbScreen* gs, GbMapState* st, uint8_t* maptiles) {
       }
       uint8_t tile_id = tiles16[ty * 4 + tx];
       gbmap_ensure_tile(st, maptiles, tile_id);
+      if (!st->tile_seen[tile_id]) { gbscr_cell(gs, sx, sy, GBSCR_SRC_BLANK, 0); continue; }   /* read failed: blank, never scratch bytes (m1 review D9) */
       gbscr_cell(gs, sx, sy, GBSCR_SRC_MAPTILES, tile_id);
     }
   }
@@ -230,12 +231,13 @@ void pdna_gbmap_gen1(GbSession* s) {
   gs.cache.maptiles = maptiles;
   gs.cache.maptiles_n = MAPTILE_CACHE_TILES;
 
-  int block_px = px / 2, block_py = py / 2;   /* wXCoord/wYCoord are 2 tiles
-                                                * per unit (IsPlayerJustOutsideMap's
-                                                * own `height*2` compare, see
-                                                * rom_gbmap.h's design citation) --
-                                                * /2 more to block units (4 tiles) */
-  block_px /= 2; block_py /= 2;
+  int block_px = px / 2, block_py = py / 2;   /* wXCoord/wYCoord are 2 TILES per
+                                                * unit = HALF a block: block = coord >> 1
+                                                * (pokered home/overworld.asm:567 `srl c`;
+                                                * engine/overworld/tilesets.asm:49
+                                                * `wYBlockCoord = wYCoord & 1`). A second
+                                                * /2 here put the marker on the counter
+                                                * instead of the floor (m1 review D1). */
   st.vbx = clampi(block_px - VBW / 2, 0, st.hdr.width  > VBW ? st.hdr.width  - VBW : 0);
   st.vby = clampi(block_py - VBH / 2, 0, st.hdr.height > VBH ? st.hdr.height - VBH : 0);
 

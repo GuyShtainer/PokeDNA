@@ -102,7 +102,8 @@ typedef struct {
   uint8_t  tileset_id;
   uint8_t  height, width;   /* in BLOCKS (4x4-tile units)                    */
   uint32_t blocks_off;      /* file offset of the Blocks array, height*width */
-  uint8_t  conn_mask;       /* bit0 N, bit1 S, bit2 W, bit3 E (source order) */
+  uint8_t  conn_mask;       /* bit0 E, bit1 W, bit2 S, bit3 N (map_data_constants.asm);
+                             * the RECORDS are still written N,S,W,E (source order) */
   uint8_t  nconn;           /* popcount(conn_mask), <= ROM_GBMAP1_MAX_CONN   */
   struct {
     uint8_t  map_id;
