@@ -119,4 +119,22 @@ int dc_rescan(uint8_t* sb1, PkGame game, uint32_t base, uint32_t stride,
               uint8_t* recs[2], PkMon dc[2], int phys[2],
               int dcx[2], int dcy[2], bool* egg, int* to_check);
 
+/* Place up to 2 REAL boarders (by species, no SaveBlock1 decode -- the Gen-1/2
+ * screen has no PkMon/SB1 to read) AND this visit's already-rolled yard visitors
+ * (s_ndeco/s_deco_sp, from pdna_yard_roll()) into the six type-grouped yard areas
+ * (DC_SPOT), using the SAME dc_region_pick/dc_take_slot bookkeeping dc_rescan
+ * uses for Gen 3 -- boarders placed FIRST, then visitors continue into whatever
+ * areas remain, exactly like dc_rescan's own two loops, so a boarder and a
+ * visitor never land in the same slot. Overwrites s_deco_x/s_deco_y in place
+ * (s_ndeco/s_deco_sp are read-only here). Call pdna_yard_roll(max_dex) or
+ * dc_visitors_off() FIRST so those are populated -- this function only PLACES,
+ * it never rolls. `board_sp`/`board_x`/`board_y` sized `n_board` (0..2).
+ * `rng` seeds a fresh area-pick stream (this screen has no long-lived
+ * s_dc_visit_rng of its own, unlike Gen 3 -- it re-derives everything on entry,
+ * same as every other Gen-1/2 screen). NOT reachable from Gen 3's own code path
+ * (pdna_daycare() keeps using dc_rescan), so it can never regress the Gen-3
+ * placement this header's own extraction proof already pinned. */
+void pdna_yard_place(uint32_t rng, const uint16_t* board_sp, int n_board,
+                     int board_x[2], int board_y[2]);
+
 #endif /* PDNA_YARD_H */

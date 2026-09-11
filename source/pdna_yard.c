@@ -382,3 +382,35 @@ int dc_rescan(uint8_t* sb1, PkGame game, uint32_t base, uint32_t stride,
   }
   return n;
 }
+
+/* BACKLOG #114: the Gen-1/2 twin of dc_rescan's own two placement loops,
+ * decoupled from SaveBlock1 (species in, screen coords out) -- see pdna_yard.h's
+ * own comment on why boarders and visitors share ONE `used` matrix here too.
+ * Reads from s_ndeco_roll/s_deco_roll (this visit's ROLL, from pdna_yard_roll())
+ * and REBUILDS s_ndeco/s_deco_sp/s_deco_x/s_deco_y from scratch -- exactly
+ * dc_rescan's own shape, so a visitor dropped for want of a free slot (every
+ * area full, the same rare edge case dc_rescan already has) is dropped here
+ * too, not left at a stale/garbage coordinate. */
+void pdna_yard_place(uint32_t rng, const uint16_t* board_sp, int n_board,
+                     int board_x[2], int board_y[2]) {
+  int used[DR_COUNT][2] = {{0}};
+  uint32_t arng = rng | 1u;
+  for (int i = 0; i < n_board && i < 2; i++) {
+    int slot = dc_take_slot(used, dc_region_pick(board_sp[i], &arng), &arng);
+    int rg = (slot < 0) ? DR_EMPTY : slot / 2, sp = (slot < 0) ? 0 : slot % 2;
+    int cx = DC_SPOT[rg][sp].cx - 16, cy = DC_SPOT[rg][sp].cy - 16;
+    cx &= ~1; if (cx < 2) cx = 2; else if (cx > UI_SCR_W - 34) cx = UI_SCR_W - 34;
+    if (cy < 12) cy = 12; else if (cy > DC_SCENE_BOT - MON_ICON_H) cy = DC_SCENE_BOT - MON_ICON_H;
+    board_x[i] = cx; board_y[i] = cy;
+  }
+  s_ndeco = 0;
+  for (int d = 0; d < s_ndeco_roll && s_ndeco < PDNA_YARD_MAXDECO; d++) {
+    int slot = dc_take_slot(used, dc_region_pick(s_deco_roll[d], &arng), &arng);
+    if (slot < 0) continue;                      /* every slot full -> drop this visitor */
+    int rg = slot / 2, sp = slot % 2;
+    int cx = DC_SPOT[rg][sp].cx - 16, cy = DC_SPOT[rg][sp].cy - 16;
+    cx &= ~1; if (cx < 2) cx = 2; else if (cx > UI_SCR_W - 34) cx = UI_SCR_W - 34;
+    if (cy < 12) cy = 12; else if (cy > DC_SCENE_BOT - MON_ICON_H) cy = DC_SCENE_BOT - MON_ICON_H;
+    s_deco_sp[s_ndeco] = s_deco_roll[d]; s_deco_x[s_ndeco] = cx; s_deco_y[s_ndeco] = cy; s_ndeco++;
+  }
+}
