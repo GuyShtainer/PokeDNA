@@ -847,10 +847,17 @@ static void g2card_paint_page1(GbScreen* gs, const GbTrainer* t, bool female) {
       gbscr_cell(gs, cells[i].x, cells[i].y, cells[i].src, cells[i].index);
   }
 
-  gbscr_text(gs, 2, 10, "POK\xC3\xA9""DEX");
   char buf[16];
-  siprintf(buf, "%3u", (unsigned)t->dex_owned);
-  gbscr_text(gs, 15, 10, buf);
+  /* BACKLOG #96 D10: the real card clears rows 9-10 (the POKeDEX label +
+   * count) when STATUSFLAGS_POKEDEX_F is off (GbTrainer.has_pokedex) --
+   * g2card_border()'s row 9-16 blank sweep above already ran first, so
+   * skipping both gbscr_text() calls here leaves the row genuinely blank,
+   * not stale content from a previous page/save. */
+  if (t->has_pokedex) {
+    gbscr_text(gs, 2, 10, "POK\xC3\xA9""DEX");
+    siprintf(buf, "%3u", (unsigned)t->dex_owned);
+    gbscr_text(gs, 15, 10, buf);
+  }
 
   gbscr_text(gs, 2, 12, "PLAY TIME");
   /* D7: hours are RIGHT-aligned in a 4-wide field (cols 11-14), the colon

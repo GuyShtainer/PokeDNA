@@ -97,6 +97,12 @@ typedef struct {
 
   uint16_t dex_owned;                 /* popcount; VIEW-ONLY                         */
   uint16_t dex_seen;                  /* popcount; VIEW-ONLY                         */
+
+  /* BACKLOG #96 D10: STATUSFLAGS_POKEDEX_F (GBF_STATUS_FLAGS bit 0, Gen 2 only --
+   * Gen 1 has no equivalent gate on its own card). false on a Gen-1 read (the field
+   * is ABSENT there, same posture as has_gender/has_mother) so the Gen-2 card's own
+   * gate never has to special-case Gen 1 separately. */
+  bool     has_pokedex;               /* Gen 2 only                                  */
 } GbTrainer;
 
 /* Which of the four field-table games (GBF_G_RED/YELLOW/GS/CRYSTAL) this open

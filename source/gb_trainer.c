@@ -316,6 +316,12 @@ bool gbt_read(const GbSession* s, GbTrainer* out) {
   get_dex_count(s, g, GBF_DEX_OWNED, &out->dex_owned);
   get_dex_count(s, g, GBF_DEX_SEEN,  &out->dex_seen);
 
+  /* BACKLOG #96 D10: STATUSFLAGS_POKEDEX_F is bit 0 of GBF_STATUS_FLAGS
+   * (constants/ram_constants.asm) -- Gen 2 only, ABSENT (and so false) on
+   * Gen 1, same posture as has_gender above. */
+  if (gbt_field_present(g, GBF_STATUS_FLAGS) && get_u(s, g, GBF_STATUS_FLAGS, &v))
+    out->has_pokedex = (v & 1u) != 0;
+
   return true;
 }
 
