@@ -87,6 +87,22 @@ void gbscr_text(GbScreen* gs, int x, int y, const char* s) {
   }
 }
 
+/* gbnames review A3: pdna_gbpack_body.inc's own NAME-row blank sweep now calls
+ * gbscr_text_cols(gs->gen, buf) instead of strlen(buf) (the real fix -- source/
+ * pdna_gbscreen.c, glyph-accurate via gb_char_encode()). This stand-in matches
+ * THIS test file's own simplified gbscr_text() above (one BYTE per cell, no
+ * real GB encoding -- see that function just above), so the two agree here by
+ * construction; the byte-vs-glyph coverage itself lives in
+ * tests/host_gbscreen_test.c, which links the REAL gbscr_text()/gbscr_text_cols()
+ * pair against gb_edit.c's actual gb_char_encode(). */
+int gbscr_text_cols(uint8_t gen, const char* s) {
+  (void)gen;
+  if (!s) return 0;
+  int n = 0;
+  while (s[n] && n < GRID_W) n++;
+  return n;
+}
+
 /* ============================================================================
  * THE SHARED BODY (source/pdna_gbpack_body.inc) -- see this file's own header
  * for why an #include, not a copy. Comes after the gbscr_cell()/gbscr_text()

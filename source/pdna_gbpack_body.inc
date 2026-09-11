@@ -240,8 +240,15 @@ static void g2pack_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket
      * it, rows 12-17, has one), not QTY_COL. A real name up to
      * GB2_SHELL_NAME_CAP (12) chars can run past the old QTY_COL=17 bound;
      * the sweep must still cover every column a longer name could have
-     * reached so a shorter one never leaks a stale glyph next to it. */
-    for (int cx = NAME_COL + (int)strlen(buf); cx < GBSCR_COLS; cx++)
+     * reached so a shorter one never leaks a stale glyph next to it.
+     * gbnames review A3 (CONFIRMED, live on docs/shots/gb/
+     * gbnames_crystal_02_balls_real_names.png -- "POKé BALLE"): strlen(buf)
+     * counts UTF-8 BYTES, but gbscr_text() painted `buf` one COLUMN per
+     * GLYPH -- "POKé BALL" is 9 glyphs (the e-acute's UTF-8 pair is ONE
+     * glyph) but 10 bytes, so the sweep used to start one column short of
+     * where the name actually ends. gbscr_text_cols() (source/pdna_gbscreen.c)
+     * walks the SAME gb_char_encode() loop gbscr_text() does. */
+    for (int cx = NAME_COL + gbscr_text_cols(gs->gen, buf); cx < GBSCR_COLS; cx++)
       gbscr_cell(gs, cx, ny, GBSCR_SRC_BLANK, 0);
 
     /* D5: HM rows have no count column at all (tmhm.asm never prints one). */

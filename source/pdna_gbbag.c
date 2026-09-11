@@ -291,8 +291,16 @@ static void g1bag_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket,
      * can run past the old QTY_COL=14 bound, and a SHORTER name after a
      * longer one must still blank every column the longer one could have
      * reached, all the way to 18, or it leaks a stale glyph the same way
-     * the original D1 fix (above) describes. */
-    for (int cx = NAME_COL + (int)strlen(buf); cx < BOX_X1; cx++)
+     * the original D1 fix (above) describes.
+     * gbnames review A3 (CONFIRMED, live on docs/shots/gb/
+     * gbnames_crystal_02_balls_real_names.png -- "POKé BALLE"): strlen(buf)
+     * counts UTF-8 BYTES, but gbscr_text() painted `buf` one COLUMN per
+     * GLYPH -- "POKé BALL" is 9 glyphs (the e-acute's UTF-8 pair is ONE
+     * glyph) but 10 bytes, so the sweep used to start one column short of
+     * where the name actually ends, leaving the previous (longer) name's
+     * last glyph on screen. gbscr_text_cols() walks the SAME gb_char_encode()
+     * loop gbscr_text() does, so the two can never disagree again. */
+    for (int cx = NAME_COL + gbscr_text_cols(gs->gen, buf); cx < BOX_X1; cx++)
       gbscr_cell(gs, cx, ny, GBSCR_SRC_TEXTBOX, G1I_BLANK);
 
     /* D1 (review): a Gen-1 key item prints NO quantity on the real cartridge,

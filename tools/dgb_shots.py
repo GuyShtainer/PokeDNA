@@ -3140,6 +3140,29 @@ def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                    "its own name with no leftover glyph from the row "
                                    "that used to be there (the widened NAME-row blank "
                                    "sweep, pdna_gbbag.c `cx < BOX_X1`)")
+
+        # gbnames review A3 (CONFIRMED, fixed): a scroll pair over the SAME screen
+        # row that specifically exercises the byte-vs-glyph fix -- POKe FLUTE (10
+        # BYTES, but 9 GLYPHS: the e-acute's UTF-8 pair is one glyph) scrolling off,
+        # replaced by REVIVE (6 chars, no multi-byte glyph at all) in that exact
+        # row. Pre-fix, the sweep started at strlen("POKe FLUTE")=10 (one column
+        # PAST where the name's own 9th glyph actually painted), leaving whatever
+        # sat past column NAME_COL+10 unblanked -- the SAME defect class the
+        # 'POKe BALLE' shot showed on the Gen-2 leg (gbnames_crystal_02).
+        s.press_n("DOWN", 7, settle=gb_shots.SETTLE)        # total DOWN x18 from bag entry
+        s.shot("04_poke_flute_before", "gbnames: DOWN x18 from bag entry -- POKe "
+                                        "FLUTE / REVIVE / FULL RESTORE* / CANCEL "
+                                        "(POKe FLUTE: 10 bytes, 9 glyphs) -- the "
+                                        "'before' half of the glyph-specific scroll "
+                                        "pair (A3)")
+        s.tap("DOWN", settle=gb_shots.SETTLE)               # total DOWN x19 -- POKe FLUTE scrolls off
+        s.shot("05_poke_flute_after", "gbnames: one more DOWN -- POKe FLUTE has "
+                                       "scrolled off the top; REVIVE (6 chars, no "
+                                       "multi-byte glyph) now sits in the EXACT "
+                                       "screen row POKe FLUTE used to occupy, with "
+                                       "no stray glyph left over (the fix: "
+                                       "gbscr_text_cols(), glyph-accurate via "
+                                       "gb_char_encode(), not strlen())")
         return s
 
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbnames_crystal_")
@@ -3158,8 +3181,16 @@ def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                    "the old QTY_COL=17 bound")
 
     s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls
-    s.shot("02_balls_real_names", "gbnames: RIGHT -> BALLS pocket, also real names "
-                                   "(e.g. 'GREAT BALL', 'ULTRA BALL') -- the "
+    s.shot("02_balls_real_names", "gbnames: RIGHT -> BALLS pocket -- 'POKe BALL' "
+                                   "reads clean (review A3 fix: the NAME-row blank "
+                                   "sweep now starts from gbscr_text_cols(), which "
+                                   "counts GLYPHS via gb_char_encode(), not "
+                                   "strlen()'s BYTE count -- the pre-fix version of "
+                                   "this exact shot read 'POKe BALLE', a stray "
+                                   "trailing 'E' left over from ULTRA BALL because "
+                                   "strlen('POKe BALL')=10 overcounts the e-acute's "
+                                   "2-byte UTF-8 pair as 2 glyphs instead of 1, "
+                                   "starting the sweep one column short) -- the "
                                    "brief's own 'Items + Balls' ask")
 
     s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Balls -> Key items
