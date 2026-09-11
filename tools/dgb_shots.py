@@ -1304,8 +1304,12 @@ def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
         # Gen 2 only: scroll to a spawn-only row (index 0/1/17/27 -- HOME/DEBUG/
         # UNION_CAVE/FAST_SHIP, see pdna_gbfly.h's own header note) and show its
         # "spn" tag plus the footer legend explaining it.
-        s.press_n("UP", 2, settle=gb_shots.SETTLE)          # row 2 -> row 0 (Spawn: Home)
-        s.shot("04_spawn_only_tag", "BACKLOG #90: row 0 (Spawn: Home) carries the "
+        # sel is cyclic (`sel = sel ? sel - 1 : n - 1`): row 2 (idx1) -> UP -> row 0
+        # (idx0) -> UP -> WRAPS to the LAST row (idx27, Fast Ship), not back to row 0
+        # -- Fast Ship and Union Cave (idx17) are both spawn-only ("spn"-tagged), same
+        # as row 0 (Spawn: Home) and row 1 (Spawn: Debug) would have been.
+        s.press_n("UP", 2, settle=gb_shots.SETTLE)          # row 2 -> row 0 -> wraps to row 27 (Fast Ship)
+        s.shot("04_spawn_only_tag", "BACKLOG #90: row 27 (Fast Ship) carries the "
                                      "'spn' tag and the footer legend 'spn = not a "
                                      "Town Map stop' -- flypoints.asm's own Fly menu "
                                      "never offers this bit as a destination even "
@@ -1316,9 +1320,14 @@ def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.shot("05_commit_prompt", "BACKLOG #90: B with a real pending edit -> 'Save "
                                 "fly destinations?' (app_confirm), the same dialog "
                                 "every other GB screen's own commit uses")
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # confirm -> gb_persist("fly")
-    s.shot("06_confirmed", "BACKLOG #90: A confirms -- gb_persist writes the "
-                            "fused image's SAV payload, back at the box grid")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A = yes -> gb_persist() -> PDNA_DELTA refusal
+    s.shot("06_confirmed", "BACKLOG #90: A confirms -- gb_persist()'s PDNA_DELTA "
+                            "branch refuses ('Edits are in-session only in the "
+                            "emulator build.') because this build has no SD card "
+                            "for a GB image at all (same #62 D2/D5 branch every "
+                            "other GB screen's own commit hits here); the write "
+                            "path itself is proved by the retail gate's fly case "
+                            "(tools/gb_retail_gate.py), not this shot")
 
     return s
 
