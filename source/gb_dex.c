@@ -55,12 +55,18 @@ static GbsStatus dex_set_bit(GbSession* s, GbGame g, GbField f, uint16_t dex, bo
  * met one) Pokedex_LoadSelectedMonTiles uses to pick which Unown sprite tile to draw
  * for national dex #201 -- 0 there `dec a`'s to 255 and indexes an out-of-range
  * frontpic pointer. Neither byte is touched by gbdex_get/gbdex_set's own owned/seen
- * bitfields or by gbdex_unown_set's own wUnownDex list -- they are a SEPARATE gate the
- * real game keeps in sync itself (UpdateUnownDex sets the bit + first-seen letter the
- * moment a wild Unown is caught/seen). An editor that can mark dex #201 seen or record
- * an Unown letter WITHOUT going through an actual in-game encounter must keep this
- * gate in sync by hand, the same way DebugRoomMenu_PokedexDex (seed) and
- * DebugRoomMenu_PokedexClr (clear) do. */
+ * bitfields or by gbdex_unown_set's own wUnownDex list -- they are a SEPARATE gate.
+ * R3 (b87 fix pass 2, correction): UpdateUnownDex (engine/pokedex/unown_dex.asm:1-19)
+ * touches NEITHER byte -- it only maintains wUnownDex itself. The battle code writes
+ * wFirstUnownSeen (engine/battle/core.asm:3444-3453 and :8199-8205, both guarded
+ * "only while still 0", the exact rule first_unown_seen_write_if_zero below copies),
+ * and wStatusFlags bit 1 is an ENGINE FLAG (data/events/engine_flags.asm:29,
+ * ENGINE_UNOWN_DEX) set by a map script, not by any dex/battle routine. The only
+ * direct set/res of that bit in the decomp are DebugRoomMenu_PokedexDex (seed) and
+ * DebugRoomMenu_PokedexClr (clear) (engine/debug/debug_room.asm:336/:356), which this
+ * code mirrors. An editor that can mark dex #201 seen or record an Unown letter
+ * WITHOUT going through an actual in-game encounter must keep this gate in sync by
+ * hand, the same way those two debug-room routines do. */
 #define STATUSFLAGS_UNOWN_DEX_BIT 1
 
 static GbsStatus status_flags_set_unown_bit(GbSession* s, GbGame g, bool on) {
