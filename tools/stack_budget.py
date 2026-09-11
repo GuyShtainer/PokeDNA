@@ -3383,6 +3383,16 @@ def main(argv):
                   "longer address-taken in this image (delete if unneeded on BOTH images): "
                   + ", ".join(stale))
 
+        # P1 (b90 re-verify, BACKLOG #106): a strictly worse sign than "stale" above --
+        # an `addrtaken-ok` name that isn't even a symbol IN this image at all (a typo,
+        # or a line carried over from a lane whose function was renamed/deleted, e.g.
+        # `____aeabi_dmul_from_thumb`, present in neither build). Non-fatal, same as D3.
+        absent_from_image = sorted(addrtaken_ok - analysis["funcs"])
+        if absent_from_image:
+            print(f"\n*** STACK_BUDGET WARNING: {len(absent_from_image)} addrtaken-ok "
+                  "line(s) name a symbol not found in this image (stale? typo?): "
+                  + ", ".join(absent_from_image))
+
     # G1 (BACKLOG #84b eighth pass, merge-blocker): an `addrtaken-ok` claim is never
     # re-verified above -- it just removes `fn` from the orphans check. That is fine
     # for a genuinely tiny dispatch shim, but nothing stops a heavy function from being

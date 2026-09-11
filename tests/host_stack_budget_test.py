@@ -1886,6 +1886,39 @@ def test_n3_mutation_without_the_edges_hash_the_fingerprint_is_blind_to_the_edit
               fp_a == fp_b, (fp_a, fp_b))
 
 
+# === P1 (b90 re-verify, BACKLOG #106): warn on an addrtaken-ok naming no real symbol ====
+
+def test_p1_addrtaken_ok_naming_a_symbol_absent_from_the_image_is_warned():
+    """P1: an `addrtaken-ok` line whose name is not even a symbol IN this ELF at all
+    (a typo, or a line carried over from a lane whose function was renamed/deleted)
+    is silent today -- D3's stale check (`addrtaken_ok - taken`) already catches it
+    as "not currently address-taken", but nothing distinguishes "a real function
+    that just isn't taken this build" from "this name doesn't exist in the image at
+    all", which is a strictly worse sign (stale OR typo, never a legitimate
+    per-variant difference). `analysis["funcs"]` (every function symbol name(s)
+    is disassembly found) is the same set G1's exemption-cap check already uses to
+    test symbol presence."""
+    addrtaken_ok = {"tte_cmd_skip", "____totally_bogus_symbol_xyz", "still_live_fn"}
+    funcs = {"tte_cmd_skip", "still_live_fn", "something_else"}
+    absent = sorted(addrtaken_ok - funcs)
+    check("(P1) the nonexistent symbol is named", absent == ["____totally_bogus_symbol_xyz"],
+          absent)
+    check("(P1) a real function that's merely not address-taken this build is NOT "
+          "reported by this check (that's D3's job)", "tte_cmd_skip" not in absent, absent)
+
+
+def test_p1_mutation_without_the_check_a_nonexistent_symbol_is_never_flagged():
+    """Mutation: without P1's `addrtaken_ok - funcs` check, a nonexistent symbol
+    name in stack_edges.txt is never distinguished from a real, merely-not-taken
+    one -- the exact silent gap P1 closes (`____aeabi_dmul_from_thumb`, present in
+    NEITHER image, carried on a lane's edges list undetected, per the brief)."""
+    addrtaken_ok = {"tte_cmd_skip", "____totally_bogus_symbol_xyz", "still_live_fn"}
+    funcs = {"tte_cmd_skip", "still_live_fn", "something_else"}
+    reported = []
+    check("(P1 mutation) without the check, nothing is ever reported absent-from-image",
+          reported == [], reported)
+
+
 # === BACKLOG #106 G2: the address-taken sweep only trusts a PROVEN pointer holder ======
 #
 # The old scan_address_taken() treated any 4-byte-aligned word in any ALLOC+LOAD
@@ -2139,6 +2172,8 @@ def main():
     test_g110_missing_su_is_named()
     test_n3_elf_fingerprint_changes_when_the_edges_file_content_changes()
     test_n3_mutation_without_the_edges_hash_the_fingerprint_is_blind_to_the_edit()
+    test_p1_addrtaken_ok_naming_a_symbol_absent_from_the_image_is_warned()
+    test_p1_mutation_without_the_check_a_nonexistent_symbol_is_never_flagged()
     test_g2_word_with_no_relocation_is_not_taken()
     test_g2_mutation_a_raw_value_scan_would_have_flagged_the_same_word()
     test_g2_global_symbol_relocation_is_taken()
