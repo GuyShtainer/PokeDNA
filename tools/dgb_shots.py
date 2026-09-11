@@ -2156,8 +2156,10 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)               # -> dex_menu()
     s.shot("07_start_menu", "#87: KEY_START -> dex_menu() -- sort/status toggles + "
-                             "'Mark all...' (can_edit) + the filter list, UNCHANGED "
-                             "from Gen 3's own screen")
+                             "'Mark all...' (can_edit) + the filter list. Same screen "
+                             "as Gen 3, but D5's cap gate hides the rows that would "
+                             "page to nothing here: no 'Gen 2'/'Gen 3' on a Gen-1 "
+                             "session, no 'Gen 3' on a Gen-2 one")
 
     s.press_n("DOWN", 2)                                        # row 0 sort, row 1 status, row 2 "Mark all..."
     s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> dex_bulk() overlay ("stay open": dex_menu itself does not close)
