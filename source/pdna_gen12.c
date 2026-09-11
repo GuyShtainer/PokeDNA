@@ -600,6 +600,7 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbtrainer.h"   /* BACKLOG #49 P1b: the Gen-1/2 trainer card */
 #include "pdna_gbbag.h"       /* U4, BACKLOG #67: Red/Yellow's own Item bag */
 #include "pdna_gbpack.h"      /* U5, BACKLOG #67: Gold/Silver/Crystal's own Pack */
+#include "pdna_gbclock.h"     /* BACKLOG #86/#108: Gen-2's own Clock fix screen */
 #include "pdna_pick.h"        /* BACKLOG #92: pick_item / pick_item_set_gen1_2_max */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
@@ -2667,6 +2668,16 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * plain FIL-streaming entry falls back to the read-only info page, same
      * reasoning as NV_TRAINER above). */
     if (g_ed) pdna_gbpack(&g_ed->s, true);
+    else      (void)gb_info_page(m);
+  } else if (nv == NV_CLOCK && kind == SE_KIND_GEN2) {
+    /* BACKLOG #86/#108: Gen-2's own Clock fix screen, over gb_clock.h -- same
+     * "needs a live GbSession to write through" gate as NV_TRAINER/NV_BAG above.
+     * nav_avail's own GB_TABLE keeps this row NAV_NOT_IN_GAME for SE_KIND_GEN1 (no
+     * clock at all), so this branch is never reached from the plain-Gen-1 nav menu;
+     * gated on `kind` anyway, the same defensive posture NV_BAG's own two branches
+     * take, so a stray Gen-1 press falls through to app_nav_refuse()'s honest
+     * message instead of silently opening a Gen-2-shaped screen. */
+    if (g_ed) pdna_gbclock(&g_ed->s, true);
     else      (void)gb_info_page(m);
   } else if (nv != NV_BACK) {
     app_nav_refuse(nv, kind);   /* COMING SOON or NOT IN GEN 1/2, per nav_avail.h */

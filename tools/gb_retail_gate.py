@@ -864,15 +864,19 @@ def run_clock_case(name, info, rom, sav, work, binary, python, vendor, tally):
     (engine/menus/main_menu.asm) once sRTCStatusFlags reads RTC_RESET, which
     gb_roundtrip.py's main-menu scrape (rep["main_menu"]) already captures."""
     addr = CLOCK_HHOURS_HRAM[name]
+    min_addr = addr + 2   # hMinutes sits two bytes past hHours in FixTime's own HRAM layout
 
     # ---- sub-case A: +2h shift moves the GAME's own computed hour by exactly 2 -------
     rc, rep_before, out, err = boot(python, rom, sav, work / "clock_before", vendor,
                                     work / "clock_before.json",
                                     extra_args=["--expect", "accept", "--rtc", CLOCK_RTC_PIN,
-                                                "--read-mem", f"{addr:#06x}:1"])
+                                                "--read-mem", f"{addr:#06x}:1",
+                                                "--read-mem", f"{min_addr:#06x}:1"])
     before_mem = rep_before.get("mem") or {}
     before = before_mem.get(f"{addr:#06x}")
     before_val = int(before, 16) if isinstance(before, str) else None
+    before_min = before_mem.get(f"{min_addr:#06x}")
+    before_min_val = int(before_min, 16) if isinstance(before_min, str) else None
 
     shifted = work / "clock_shift.sav"
     rc2, out2, err2 = run_surgery(binary, sav, shifted, [["clockshift", "0", "2", "0", "0"]])
@@ -901,6 +905,51 @@ def run_clock_case(name, info, rom, sav, work, binary, python, vendor, tally):
                 detail += " | stderr: " + tail
         tally.record("clock shift (BACKLOG #86)", ok, detail)
 
+    # ---- sub-case A2: a BACKWARD shift that actually BORROWS, the other direction from
+    # sub-case A (P1a review D1's own "the carry chain both ways" requirement). A plain
+    # -2h shift never exercised the borrow: both the Gold and Crystal test saves store
+    # wStartHour == 23, so -2h lands on 21 without going negative anywhere in wrap_add's
+    # own arithmetic -- the b86 review (D4) mutated wrap_add's negative branch to
+    # positive-only (int32_t c = v / mod;) and this sub-case still passed. A -30 MINUTE
+    # shift borrows through hMinutes into hHours instead (minutes go negative, wrap_add
+    # must actually add `mod` back), so it is the case that catches that mutation.
+    # Reuses `before_val`/`before_min_val` from sub-case A's own "clock_before" boot (the
+    # same untouched baseline, no need to re-boot it) -- independent of whether the
+    # forward shift above succeeded. */
+    shifted_back = work / "clock_shift_back.sav"
+    rc2b, out2b, err2b = run_surgery(binary, sav, shifted_back, [["clockshift", "0", "0", "-30", "0"]])
+    if rc2b != 0:
+        tally.record("clock shift backward (BACKLOG #86/#108)", False,
+                     f"surgery refused: {err2b.strip()}")
+    else:
+        rc3b, rep_after_b, out3b, err3b = boot(python, rom, shifted_back, work / "clock_after_back",
+                                               vendor, work / "clock_after_back.json",
+                                               extra_args=["--expect", "accept", "--rtc", CLOCK_RTC_PIN,
+                                                           "--read-mem", f"{addr:#06x}:1",
+                                                           "--read-mem", f"{min_addr:#06x}:1"])
+        after_mem_b = rep_after_b.get("mem") or {}
+        after_b = after_mem_b.get(f"{addr:#06x}")
+        after_val_b = int(after_b, 16) if isinstance(after_b, str) else None
+        after_min_b = after_mem_b.get(f"{min_addr:#06x}")
+        after_min_val_b = int(after_min_b, 16) if isinstance(after_min_b, str) else None
+        have_both_b = (before_val is not None and after_val_b is not None and
+                       before_min_val is not None and after_min_val_b is not None)
+        delta_min_b = (((before_val * 60 + before_min_val) -
+                        (after_val_b * 60 + after_min_val_b)) % 1440) if have_both_b else None
+        delta_ok_b = have_both_b and delta_min_b == 30
+        ok_b = (rc == 0) and (rc3b == 0) and delta_ok_b
+        detail_b = (f"before hHours@{addr:#06x}={before!r} hMinutes@{min_addr:#06x}={before_min!r} "
+                   f"after hHours={after_b!r} hMinutes={after_min_b!r} "
+                   f"delta_min={delta_min_b} (want 30, i.e. -30m borrowing into hHours)")
+        if not ok_b:
+            fails = [f.strip() for f in out3b.splitlines() if f.strip().startswith("FAIL:")]
+            if fails:
+                detail_b += " | " + "; ".join(fails)
+            tail = stderr_tail(err3b)
+            if tail:
+                detail_b += " | stderr: " + tail
+        tally.record("clock shift backward (BACKLOG #86/#108)", ok_b, detail_b)
+
     # ---- sub-case B: clockreset makes the main menu show "TIME NOT SET" -------------
     reset = work / "clock_reset.sav"
     rc4, out4, err4 = run_surgery(binary, sav, reset, [["clockreset"]])
@@ -923,6 +972,36 @@ def run_clock_case(name, info, rom, sav, work, binary, python, vendor, tally):
         if tail:
             detail5 += " | stderr: " + tail
     tally.record("clock reset (BACKLOG #86)", ok5, detail5)
+
+    # ---- sub-case C: clockclear on an already-flagged save makes "TIME NOT SET"
+    # disappear again (BACKLOG #86/#108) -- runs clockclear on `reset` (sub-case B's own
+    # flagged save, confirmed to show the banner above) and re-boots to confirm the main
+    # menu no longer prints it. gbc_clear_status_flags() only dismisses the banner (it
+    # does not fix a dead battery, gb_clock.h's own header note) -- this case proves
+    # exactly that dismissal, on a save this gate itself flagged, not a claim about any
+    # underlying hardware RTC state. */
+    cleared = work / "clock_clear.sav"
+    rc6, out6, err6 = run_surgery(binary, reset, cleared, [["clockclear"]])
+    if rc6 != 0:
+        tally.record("clock clear (BACKLOG #86/#108)", False, f"surgery refused: {err6.strip()}")
+        return
+
+    rc7, rep7, out7, err7 = boot(python, rom, cleared, work / "clock_clear", vendor,
+                                 work / "clock_clear.json",
+                                 extra_args=["--expect", "accept", "--rtc", CLOCK_RTC_PIN])
+    menu_rows7 = rep7.get("main_menu") or []
+    still_flagged = any("TIME NOT SET" in row for row in menu_rows7)
+    ok7 = (rc7 == 0) and not still_flagged
+    detail7 = (f"verdict={rep7.get('verdict')} main_menu={menu_rows7!r} "
+              f"still_flagged={still_flagged} (want False)")
+    if not ok7:
+        fails = [f.strip() for f in out7.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail7 += " | " + "; ".join(fails)
+        tail = stderr_tail(err7)
+        if tail:
+            detail7 += " | stderr: " + tail
+    tally.record("clock clear (BACKLOG #86/#108)", ok7, detail7)
 
 
 def run_fly_case(name, info, rom, sav, work, binary, python, vendor, tally):

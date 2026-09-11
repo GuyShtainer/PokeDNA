@@ -262,6 +262,54 @@ static void clear_flags(const char* file) {
         g_img[0x0C60]);
 }
 
+/* ---- G: the carry chain BOTH ways -- a backward shift across midnight AND a day
+ * boundary, in one call, exercising every `d_X += carry` propagation line and the
+ * negative branch of wrap_add()'s ternary at all four levels (BACKLOG #86/#108,
+ * P1a review D1's own "the carry chain both ways" requirement -- test D above only
+ * ever proved the forward, no-borrow case). Plants a known 00:00:00 on day 5, then
+ * shifts by exactly -1 second: seconds borrow from minutes, minutes borrow from
+ * hours, hours borrow from days -- 59:59:23 on day 4, the same wrap a real clock
+ * ticking backward across midnight would show. */
+static void shift_minus_1s_cascades(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+
+  GbSession ps;
+  CHECKF(gbs_open(&ps, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: plant open", file);
+  GbGame pg = gbc_game(&ps);
+  uint8_t zero = 0, day5 = 5;
+  CHECKF(gbs_write_field(&ps, gbf_off(pg, GBF_RTC_START_DAY), &day5, 1) == GBS_OK, "%s: plant day", file);
+  CHECKF(gbs_write_field(&ps, gbf_off(pg, GBF_RTC_START_HOUR), &zero, 1) == GBS_OK, "%s: plant hour", file);
+  CHECKF(gbs_write_field(&ps, gbf_off(pg, GBF_RTC_START_MINUTE), &zero, 1) == GBS_OK, "%s: plant minute", file);
+  CHECKF(gbs_write_field(&ps, gbf_off(pg, GBF_RTC_START_SECOND), &zero, 1) == GBS_OK, "%s: plant second", file);
+  CHECKF(gbs_finish(&ps) == GBS_OK, "%s: finish after planting", file);
+  memcpy(g_orig, g_img, len);   /* the planted, checksummed 5d 00:00:00 is the baseline */
+
+  GbSession s;
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
+  GbGame g = gbc_game(&s);
+
+  GbsStatus st = gbc_shift(&s, 0, 0, 0, -1);
+  CHECKF(st == GBS_OK, "%s: gbc_shift(-1s) status %s", file, gbs_status_text(st));
+
+  uint8_t d, h, m, sec;
+  CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_DAY), &d, 1) == GBS_OK, "%s: read day", file);
+  CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_HOUR), &h, 1) == GBS_OK, "%s: read hour", file);
+  CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_MINUTE), &m, 1) == GBS_OK, "%s: read minute", file);
+  CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_SECOND), &sec, 1) == GBS_OK, "%s: read second", file);
+  CHECKF(d == 4, "%s: day borrows 5 -> 4 (got %u)", file, d);
+  CHECKF(h == 23, "%s: hour wraps 0 -> 23 (got %u)", file, h);
+  CHECKF(m == 59, "%s: minute wraps 0 -> 59 (got %u)", file, m);
+  CHECKF(sec == 59, "%s: second wraps 0 -> 59 (got %u)", file, sec);
+  /* Not an exact byte-diff count here (unlike test E/F's single-byte flag writes): all
+   * four offset bytes move PLUS whichever checksum bytes gbs_finish() recomputes over
+   * them, so an exact count would just re-encode the checksum span's own width. The
+   * four field values above are the real assertion -- get any one of them wrong (a
+   * dropped `+= carry`, or wrap_add()'s negative branch never taken) and this test
+   * fails on that value, not on a byte-count proxy for it. */
+}
+
 int main(void) {
   printf("== A: Gen 1 has no clock ==\n");
   gen1_not_applicable("Red.sav");
@@ -286,6 +334,10 @@ int main(void) {
   printf("== F: clear_status_flags zeroes exactly the one byte ==\n");
   clear_flags("Gold.sav");
   clear_flags("Crystal.sav");
+
+  printf("== G: the carry chain both ways (backward, cascading through all 4 bytes) ==\n");
+  shift_minus_1s_cascades("Gold.sav");
+  shift_minus_1s_cascades("Crystal.sav");
 
   printf("\n%d checks, %d failed, %d file(s) exercised\n", g_check, g_fail, g_ran);
   if (g_ran == 0) { printf("NOTE: corpus not found at %s -- every case skipped\n", ROMS); }

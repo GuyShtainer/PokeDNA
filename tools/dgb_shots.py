@@ -1299,6 +1299,107 @@ def run_d7_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
     return s
 
 
+def run_b86_clock(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #86/#108: pdna_gbclock.c's own Clock screen -- reached via the standalone
+    mount's nav menu, NV_CLOCK (index 4, column 0: Party->Bank->Daycare->Trainer->Clock
+    fix, DOWN x4 from a fresh menu, same arithmetic as run_d7_gold's own NV_BAG DOWN x7
+    -- see source/pdna_main.c nav_menu(): col = i / PDNA_NAV_ROWS, row = i % PDNA_NAV_ROWS,
+    PDNA_NAV_ROWS == 10, so index 4 stays in column 0 and needs no RIGHT press at all).
+
+    `rom` MUST be a Crystal-ONLY fused image (tools/fuse_gb.py fed Crystal.gbc+
+    Crystal.sav onto the plain PDNA_TARGET=delta base, same one-ROM-image posture as
+    run_d7_gold's own Gold-only image) -- gb_delta_pick_save()'s `if (n == 1) return 0`
+    (source/pdna_main.c ~8913) means a single-ROM image skips the boot picker entirely
+    and lands straight on the GB save's S1 info page, so this needs exactly ONE tap
+    (A: S1 info -> box grid), not DOWN+A+A the way the combined multi-ROM image does.
+
+    Captures: the Clock screen itself (offsets/day-count/weekday/flag readout + the
+    three rows), each row's own app_confirm (Ask/Shift/Clear), the shift row's signed
+    +-days/hours/minutes editor, and the shift confirm's own dynamic delta line -- B
+    declines every confirm except the shift row's (which is driven through to
+    gb_persist()'s PDNA_DELTA in-session-only refusal, the same honest outcome every
+    other delta-build write ends at, so the shots prove the write PATH runs, not that
+    it lands on a card that does not exist in this build)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b86_clock_")
+    print("== BACKLOG #86/#108: the Gen-2 Clock screen (Crystal) ==")
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box screen -> nav menu
+    s.press_n("DOWN", 4)                                       # Party -> ... -> Clock fix (col 0, row 4)
+    s.shot("01_nav_menu", "BACKLOG #86/#108: the nav menu with 'Clock fix' selected -- "
+                           "NAV_OK on a Gen-2 session now (nav_avail.c's Gen-2 cell), "
+                           "column 0 row 4, no RIGHT press needed")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> pdna_gbclock()
+    s.shot("02_screen", "BACKLOG #86/#108: pdna_gbclock() itself -- the view-only "
+                         "offset/day-count/weekday/flag readout at the top, then the "
+                         "three rows (Ask for the time at next load / Shift the clock "
+                         "/ Clear the clock-error flag), row 0 selected")
+
+    # Row 0: "Ask for the time at next load" -> its own confirm, declined (B).
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("03_reset_confirm", "Row 1's own app_confirm -- 'Ask for the time at next "
+                                "load?' / 'Asks for the time on the next CONTINUE, "
+                                "like a dead battery would.'")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # decline -> back at the screen
+
+    # Row 1: "Shift the clock" -> the signed +-days/hours/minutes editor.
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("04_shift_editor", "Row 2's own editor -- Days/Hours/Minutes steppers, all "
+                               "0 on entry, L/R switches field, U/D changes it (BACKLOG "
+                               "#86/#108's own signed-delta shape, never an absolute "
+                               "time)")
+    s.tap("UP", settle=gb_shots.SETTLE)
+    s.tap("UP", settle=gb_shots.SETTLE)                       # Days field: 0 -> +2 (nonzero, so A reaches a confirm)
+    s.shot("05_shift_editor_dialed", "Row 2's editor with Days dialed to +2 -- the "
+                                      "field the confirm below will quote")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # a nonzero delta -> app_confirm
+    s.shot("06_shift_confirm", "Row 2's own app_confirm -- 'Shift the clock by this "
+                                "much?' / the exact signed delta ('+2d +0h +0m')")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # A = yes -> gbc_shift() -> gb_persist()
+    s.shot("07_shift_refusal", "BACKLOG #62 D2/D5's own in-session-only refusal -- "
+                                "this delta build has no SD card for gb_persist() to "
+                                "write to; the shift itself already landed in RAM "
+                                "(pristine re-baselined), only the write-to-card step "
+                                "is refused, the same honest outcome every other "
+                                "delta-build write in this tree ends at")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # dismiss -> back at the screen
+
+    # Row 2: "Clear the clock-error flag" -> its own confirm, declined (B).
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("08_clear_confirm", "Row 3's own app_confirm -- 'Clear the clock-error "
+                                "flag?' / 'Dismisses the banner; a dead battery raises "
+                                "it again next boot.'")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                    # decline -> back at the screen
+    return s
+
+
+def run_b86_clock_gen1_fallback(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #86/#108's own Gen-1 fallback: nav_avail.c keeps NV_CLOCK's Gen-1 cell
+    NAV_NOT_IN_GAME (Red/Blue/Yellow never had an RTC at all) -- gb_nav_from_start's
+    generic `else if (nv != NV_BACK) app_nav_refuse(nv, kind)` branch handles it, the
+    SAME "the row says not in this game" shape run_d7_gold's own NAV_COMING_SOON shot
+    already proves for a different row/state. `rom` MUST be a Red-ONLY fused image
+    (same single-ROM posture as run_b86_clock's own Crystal-only image, and run_d7_gold's
+    Gold-only one) -- ONE tap (A) reaches the box grid, no boot picker."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "b86_clock_gen1_")
+    print("== BACKLOG #86/#108: the Gen-1 fallback (Red, NAV_NOT_IN_GAME) ==")
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 4)                                       # same column-0 row 4 as the Gen-2 shot
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                    # -> app_nav_refuse(NV_CLOCK, SE_KIND_GEN1)
+    s.shot("01_not_in_game", "BACKLOG #86/#108: Gen 1 has no clock -- app_nav_refuse() "
+                              "shows nav_avail.c's own honest reason ('Gen 1 games have "
+                              "no clock.'), never a dead end and never pdna_gbclock() "
+                              "itself (gb_nav_from_start's NV_CLOCK branch is gated on "
+                              "SE_KIND_GEN2 only)")
+    return s
+
+
 # ---------------------------------------------------------------------------------
 # BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL on a Gen 3 -> Game Boy paste.
 # ---------------------------------------------------------------------------------
@@ -1681,6 +1782,13 @@ def main(argv=None) -> int:
     ap.add_argument("--d7-gold", action="store_true",
                      help="N6(f): only run_d7_gold() against --image -- --image "
                           "MUST be a Gold-only fused image (Gold.gbc+Gold.sav)")
+    ap.add_argument("--b86-clock", choices=("crystal", "red"),
+                     help="BACKLOG #86/#108: only run_b86_clock()/"
+                          "run_b86_clock_gen1_fallback() against --image for the "
+                          "named game -- --image MUST be a ONE-ROM fused image "
+                          "matching this choice (Crystal.gbc+Crystal.sav, or "
+                          "Red.gb+Red.sav for the Gen-1 fallback shot), same "
+                          "single-ROM posture as --d7-gold")
     ap.add_argument("--r1-xfer", action="store_true",
                      help="BACKLOG #104 R1: only run_r1_xfer() against --image -- "
                           "--image MUST be pokedna-delta-artless.gba fused with an "
@@ -1814,6 +1922,16 @@ def main(argv=None) -> int:
             print(f"  [skip] {name}: {reason}")
         return 0
 
+    if a.b86_clock:
+        try:
+            if a.b86_clock == "crystal":
+                sess = run_b86_clock(core_mod, image_mod, a.image, a.out)
+            else:
+                sess = run_b86_clock_gen1_fallback(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b86 clock ({a.b86_clock}): {e}")
     if a.r1_xfer:
         try:
             sess = run_r1_xfer(core_mod, image_mod, a.image, a.out)
