@@ -231,6 +231,12 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     ("gb-flags", "BACKLOG #88 — Flags & counters (source/pdna_gbflags.c): two tabs, "
      "foldable named-flags list, bag-grant/story/warn row kinds, raw flag browser",
      ("BACKLOG #88",)),
+    # BACKLOG #87 (append-only, same rule as every row above): the Pokedex (seen/
+    # caught) for Gen 1/2 on the SHARED dex screen (pdna_pick.c's pdna_dex_screen,
+    # reused unchanged under a species cap) + Gen 2's own Unown-forms toggle list.
+    # Shots come from tools/dgb_shots.py's run_b87_dex(); captions all start "#87:".
+    ("gb-dex", "#87 — the Pokedex (seen/caught) for Gen 1/2 on the shared dex "
+     "screen, + Gen 2 Unown forms", ("#87",)),
     # BACKLOG #114 (append-only, same rule as every row above): the Day-Care YARD
     # scene (dc_scene/dc_icon_over_bg/dc_pointer, source/pdna_yard.h) now draws on
     # the Gen-1/2 screen instead of the two/three text rows BACKLOG #85's own

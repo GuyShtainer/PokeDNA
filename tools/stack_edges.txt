@@ -248,21 +248,33 @@ wp_fold_region argsites=1 -> banksrc_records gbsrc_records pcsrc_records banksrc
 # DexGetState/DexSetState/DexGetNat/DexSetNat globals set once by pdna_dex_screen,
 # pdna_pick.c:546-547) -- global function-pointer dispatch, not a struct field
 # (matches g_src_why's shape below: a section-anchor global load, not an instance
-# field). Exactly ONE call site registers all four (pdna_main.c:5197):
-# pdna_dex_screen(dex_state, dex_set_state, dex_get_national, dex_set_national, ...).
-# Declared as the union of all four per site rather than trying to disambiguate which
-# specific one each site dispatches (all four are small leaf-ish functions in
-# pdna_main.c -- the extra conservatism costs nothing). Site counts verified against
-# this build's disassembly.
-dex_build argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national
-dex_cell_grid argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national
-dex_cell_list argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national
-# pdna_dex_screen itself has 4 nonfield sites (not 1 -- corrected after trap #8, the
-# hi-register-alias fix below, revealed the true shape: 11 MORE sites in this same
-# function are 'field' hits at offsets 8/20/24/28, declared as part of the AppSrcOps
-# collision note further down, not here -- those are a SEPARATE declaration class).
-# Verified identical (4) on both artless and normal builds.
-pdna_dex_screen argsites=4 -> dex_state dex_set_state dex_get_national dex_set_national
+# field). TWO call sites now register (dex_get_national/dex_set_national are Gen-3
+# only -- BACKLOG #87 item 3's GB caller passes NULL for both, hiding the National-Dex
+# row, per pdna_gbdex.h/pdna_dex_screen's own NULL contract):
+#   pdna_main.c:5197 pdna_dex_screen(dex_state, dex_set_state, dex_get_national, dex_set_national, ...)
+#   pdna_gbdex.c      pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, ...) -- twice
+#                      (the Gen-2 chooser's ROW_DEX branch and pdna_gbdex()'s own Gen-1 direct call)
+# Declared as the union of all SIX per site rather than trying to disambiguate which
+# specific one each site dispatches (all six are small leaf-ish functions -- the extra
+# conservatism costs nothing). Site counts verified against this build's disassembly.
+dex_build argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
+dex_cell_grid argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
+dex_cell_list argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
+# pdna_dex_screen: BACKLOG #87 item 1 (the species cap, pdna_pick.c's s_dex_max /
+# pdna_dex_set_max()) rewrote dex_counts()'s and dex_bulk()'s three ALL-loops from a
+# fixed DEX_NAT_MAX bound to the runtime s_dex_max variable and replaced the literal
+# "All 386." string with a siprintf -- register pressure/scheduling in those callees
+# shifted enough that -O2 now classifies 3 of the previously-bare dispatch
+# instructions as 'field @N' hits (the AppSrcOps.records/view/editable/create classes
+# declared just below) instead of bare argsites. The TOTAL nonfield+field indirect-
+# call count through dex_state/dex_set_state/dex_get_national/dex_set_national inside
+# this function is unchanged (15: was 4 bare + 11 field, now 1 bare + 14 field --
+# `--dump-sites` on this build confirms 14 field hits at offsets 8/20/24/28), so the
+# set of exempted implementations and the guard's worst-case bound are unaffected;
+# only which bucket 3 sites fall in moved. Verified against THIS build's disassembly
+# (both artless and normal) after the #87 item-1 edit -- re-verify if pdna_pick.c's
+# dex_counts/dex_bulk/dex_build shapes change again.
+pdna_dex_screen argsites=1 -> dex_state dex_set_state dex_get_national dex_set_national gbdex_shim_get gbdex_shim_set
 
 # pdna_origin_art.c's PdnaGbArtSource (source/pdna_origin_art.h:215-251, s_gb --
 # pic/have/icon function-pointer fields, accessed through fetch_pic_ex()'s s_gb.pic/

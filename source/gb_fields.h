@@ -61,7 +61,7 @@ typedef enum {
   /* -- 1.3 event flags / counters base offsets -- */
   GBF_EVENT_FLAGS_BASE, GBF_EVENT_FLAGS_BASE_G2, GBF_HIDDEN_ITEM_FLAGS,
   GBF_HIDDEN_COIN_FLAGS, GBF_TOGGLE_OBJ_FLAGS, GBF_BIKE_FLAGS, GBF_UNLOCKED_UNOWN,
-  GBF_GS_BALL_FLAG, GBF_MYSTERY_GIFT_ITEM, GBF_MYSTERY_GIFT_UNLOCKED,
+  GBF_UNOWN_DEX, GBF_GS_BALL_FLAG, GBF_MYSTERY_GIFT_ITEM, GBF_MYSTERY_GIFT_UNLOCKED,
   /* -- 1.4 fly destinations -- */
   GBF_FLY_FLAGS, GBF_FLY_FLAGS_G2,
   /* -- 1.5 map position / warp -- */
@@ -122,6 +122,13 @@ typedef enum {
    * checksummed-range path. The count, on both gens, IS inside the checksummed/mirrored
    * span and goes through the normal field-write path. */
   GBF_HOF_TEAMS, GBF_HOF_COUNT,
+  /* BACKLOG #87 D4, appended (same API-id rule as the others above): wStatusFlags
+   * (bit 1, STATUSFLAGS_UNOWN_DEX_F) gates whether the Pokedex screen shows Unown
+   * in its special multi-form mode at all, and wFirstUnownSeen holds the 1-based
+   * letter (1=A..26=Z, 0 = never met one) of the first Unown form the player ever
+   * saw -- Pokedex_LoadSelectedMonTiles uses it to pick which Unown sprite tile to
+   * show for dex entry #201. GS/Crystal only; Gen 1 has no Unown dex entry at all. */
+  GBF_FIRST_UNOWN_SEEN,   /* GBF_STATUS_FLAGS itself was appended by BACKLOG #96 above */
 
   GBF_FIELD_COUNT
 } GbField;

@@ -245,10 +245,26 @@ static void build_species(int filter, int sort, const char* search) {
  * is a data question this file has no cheap way to answer, so a type filter
  * can still page to an empty list under a ceiling; that residual is left as
  * a known, minor rough edge rather than in scope here. */
+/* DEX_NAT_MAX/s_dex_max moved up here from their original spot below (D5, b87 fix
+ * pass, DO-NOT-SHIP review) so filter_usable() can see s_dex_max too -- see its own
+ * header comment just below the -300-line gap for the full species-cap story
+ * (BACKLOG #87 item 1: Gen 1 (151) / Gen 2 (251) GB sessions reuse the shared dex
+ * screen under this cap; 386 is the unrestricted Gen-3 default). */
+#define DEX_NAT_MAX 386
+static int s_dex_max = DEX_NAT_MAX;
+
+/* D5 (b87 fix pass, DO-NOT-SHIP review): the GB dex screen's own species cap
+ * (s_dex_max, BACKLOG #87 item 1) was invisible to filter_usable() -- only
+ * g_species_max_dex (the CREATE picker's OWN, separate ceiling) was consulted, so a
+ * Gen-1 GB session (s_dex_max==151) still offered "Gen 2"/"Gen 3+" filter rows that
+ * paged to an empty list once dex_build()'s own post-filter (source line ~575) threw
+ * every species past the cap away. Both ceilings gate both filters now -- whichever
+ * one is active (a session is never under both at once, but the OR costs nothing and
+ * stays correct if that ever changes). */
 static bool filter_usable(int f) {
   if (f == 5 + 9) return false;                                              /* MYSTERY: unused, always */
-  if (g_species_max_dex && g_species_max_dex <= 151u && f == 2) return false; /* Gen 2: empty under a Gen-1 ceiling */
-  if (g_species_max_dex && g_species_max_dex <= 251u && f == 3) return false; /* Gen 3+: empty under either ceiling */
+  if ((g_species_max_dex && g_species_max_dex <= 151u) || s_dex_max <= 151) { if (f == 2) return false; } /* Gen 2: empty under a Gen-1 ceiling */
+  if ((g_species_max_dex && g_species_max_dex <= 251u) || s_dex_max <= 251) { if (f == 3) return false; } /* Gen 3+: empty under either ceiling */
   return true;
 }
 
@@ -527,7 +543,6 @@ uint16_t pick_species(uint16_t current) {
  * views (L/R), the gen/type/legendary filter + caught-status filter + name search
  * (START / SELECT). Reuses g_list + build_species: no new EWRAM. */
 
-#define DEX_NAT_MAX     386
 #define DEX_ANIM_PERIOD 30          /* vblanks per bob frame (~0.5s, the Gen-3 cadence) */
 
 #define DV_GRID 0
@@ -548,6 +563,19 @@ static DexSetState s_dset;
 static DexGetNat   s_getnat;   /* national-dex live? (may be NULL) */
 static DexSetNat   s_setnat;   /* enable/disable national dex (may be NULL) */
 
+/* Species cap for the shared screen (BACKLOG #87): the Gen-3 dex is a fixed 386,
+ * but Gen 1 (151) / Gen 2 (251) sessions reuse this same screen and must not see or
+ * bulk-touch species past their generation's dex. Reset to 386 by every caller on
+ * entry (pdna_dex_edit in pdna_main.c) so a prior GB visit can never leak into the
+ * next Gen-3 one — this file never assumes the previous session cleaned up after
+ * itself. 0 is never a valid value (see the clamp below); default is the full 386.
+ * (D5, b87 fix pass: DEX_NAT_MAX/s_dex_max themselves now live up near
+ * filter_usable() -- this comment stays here, where the reader first meets the
+ * cap's own story.) */
+void pdna_dex_set_max(int max_dex) {
+  s_dex_max = (max_dex > 0 && max_dex <= DEX_NAT_MAX) ? max_dex : DEX_NAT_MAX;
+}
+
 /* Snapshot of every species' dex state before the last bulk op, so a mistaken
  * "Catch/See/Wipe ALL" can be undone in one step (the changes aren't written to the
  * SD until the user confirms the dex save, so this RAM revert fully restores it). */
@@ -561,6 +589,12 @@ static int dstate(uint16_t internal) { return s_dget((int)pk_national_no(interna
  * -> (Type view only) a stable sort by primary type. */
 static void dex_build(int filter, int sort, const char* search, int status, int view) {
   build_species(filter, sort, search);                 /* g_list/g_n by No. or A-Z */
+  if (s_dex_max < DEX_NAT_MAX) {                        /* GB session: hide species past the cap */
+    int w = 0;
+    for (int i = 0; i < g_n; i++)
+      if (pk_national_no(g_list[i]) <= (uint16_t)s_dex_max) g_list[w++] = g_list[i];
+    g_n = w;
+  }
   if (status != DS_ALL) {                              /* keep only the matching states */
     int w = 0;
     for (int i = 0; i < g_n; i++) {
@@ -583,7 +617,7 @@ static void dex_build(int filter, int sort, const char* search, int status, int 
 
 static void dex_counts(int* seen, int* caught) {
   int s = 0, c = 0;
-  for (int nat = 1; nat <= DEX_NAT_MAX; nat++) { int st = s_dget(nat); if (st >= 1) s++; if (st >= 2) c++; }
+  for (int nat = 1; nat <= s_dex_max; nat++) { int st = s_dget(nat); if (st >= 1) s++; if (st >= 2) c++; }
   *seen = s; *caught = c;
 }
 
@@ -717,18 +751,19 @@ static bool dex_bulk(void) {
         return true;
       }
       if (a == -1) {                                              /* Undo the last bulk op */
-        for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dset(nat, s_dex_snap[nat - 1]);
+        for (int nat = 1; nat <= s_dex_max; nat++) s_dset(nat, s_dex_snap[nat - 1]);
         if (s_setnat && s_getnat && s_getnat() != s_dex_snap_natl)
           s_setnat(s_dex_snap_natl);                              /* Catch ALL auto-unlocked natl -> revert too */
         s_dex_snap_valid = false;
         return true;
       }
-      if (!app_confirm(a == 2 ? "Catch every species?" : a == 1 ? "See every species?" : "Wipe the whole dex?",
-                       "All 386. (Undo available.)")) return false;
-      for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dex_snap[nat - 1] = (int8_t)s_dget(nat);   /* snapshot first */
+      { char amsg[28]; siprintf(amsg, "All %d. (Undo available.)", s_dex_max);
+        if (!app_confirm(a == 2 ? "Catch every species?" : a == 1 ? "See every species?" : "Wipe the whole dex?",
+                         amsg)) return false; }
+      for (int nat = 1; nat <= s_dex_max; nat++) s_dex_snap[nat - 1] = (int8_t)s_dget(nat);   /* snapshot first */
       s_dex_snap_natl = (s_getnat && s_getnat());                 /* incl. the National-Dex state */
       s_dex_snap_valid = true;
-      for (int nat = 1; nat <= DEX_NAT_MAX; nat++) s_dset(nat, a);
+      for (int nat = 1; nat <= s_dex_max; nat++) s_dset(nat, a);
       /* Catching every species is meaningless without National mode (the dex caps at the
        * regional list otherwise), so unlock it too — matches the user's expectation. */
       if (a == 2 && s_setnat) s_setnat(true);

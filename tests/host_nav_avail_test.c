@@ -140,11 +140,13 @@ static void test_every_row_covered(void) {
    * own Pack, U5) -- checked separately below, alongside the OK-on-both rows.
    * BACKLOG #90/#91 M1: NV_FLY moved out of this bucket into ok_both, and
    * NV_MAP moved OUT of this list entirely -- it now splits per-gen like
-   * NV_CLOCK does (its own assertions below), not COMING_SOON on both. */
+   * NV_CLOCK does (its own assertions below), not COMING_SOON on both.
+   * BACKLOG #87: NV_DEX moved OUT too -- gb_dex.c + pdna_gbdex.c wire the
+   * shared Pokedex screen on both kinds, checked in ok_both below. */
   static const int coming_soon_both[] = {
-    NV_PARTY, NV_BANK, NV_DEX, NV_GB   /* 4: Map left for its own per-gen split (M1);
-                                         * NV_FLY (BACKLOG #90) and NV_DATA (BACKLOG #88)
-                                         * moved to ok_both below */
+    NV_PARTY, NV_BANK, NV_GB   /* 3: Map left for its own per-gen split (M1); NV_FLY (#90),
+                               * NV_DATA (#88), NV_BATTLEREC (#89) and NV_DEX (#87) moved to
+                               * ok_both below */
   };
   for (int i = 0; i < (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]); i++) {
     CHECK(nav_avail(coming_soon_both[i], SE_KIND_GEN1) == NAV_COMING_SOON,
@@ -157,12 +159,14 @@ static void test_every_row_covered(void) {
    * is wired up on both Gen 1 (one slot, level-up only) and Gen 2 (two slots +
    * compatibility + egg). BACKLOG #90: NV_FLY joins the same bucket -- wired for
    * both generations too. BACKLOG #88: NV_DATA (Flags & counters, pdna_gbflags.c)
-   * joins it as well; BACKLOG #89: NV_BATTLEREC hosts the Hall of Fame. */
+   * joins it as well; BACKLOG #89: NV_BATTLEREC hosts the Hall of Fame; BACKLOG #87:
+   * NV_DEX -- the shared pdna_dex_screen (species-capped) is wired on both kinds via
+   * pdna_gbdex.c. */
   static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE, NV_FLY, NV_DATA,
-                                 NV_BATTLEREC /* BACKLOG #89: the Hall of Fame */ };
+                                 NV_BATTLEREC /* BACKLOG #89: the Hall of Fame */, NV_DEX /* BACKLOG #87 */ };
   for (int i = 0; i < (int)(sizeof ok_both / sizeof ok_both[0]); i++) {
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare/Fly/Data/Records are NAV_OK");
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare/Fly/Data/Records are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare/Fly/Data/Records/Dex are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare/Fly/Data/Records/Dex are NAV_OK");
   }
 
   /* NV_MAP: OK on Gen 1, COMING_SOON on Gen 2 -- the same per-gen-split shape as

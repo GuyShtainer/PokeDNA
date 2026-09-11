@@ -393,6 +393,18 @@ FIELDS = [
   ("UNLOCKED_UNOWN", BITFIELD, 1, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("pokemon_data", "wUnlockedUnowns", 0x2AA6),
       "CRYSTAL": D("pokemon_data", "wUnlockedUnowns", 0x2A81)}),
+  # UNOWN_DEX (BACKLOG #87 item 2): wUnownDex, 26 B, ORDER-of-first-seen letter list
+  # (0 = empty slot), immediately BEFORE wUnlockedUnowns in both games' own .sym
+  # (Crystal $DED9..$DEF2, wUnlockedUnowns at $DEF3; GS $DC24..$DC3D, wUnlockedUnowns
+  # at $DC3E) -- derived the same "pokemon_data" region every other Gen-2 dex/unown
+  # field in this table uses, NOT a "+0x25 GS-to-Crystal delta" the way some other
+  # fields in this design happen to share (explicitly not assumed here per the #87
+  # brief -- GS and Crystal's wUnownDex are two independent D() derivations from their
+  # own .sym files, cross-checked against the design's own citation below only after
+  # being computed, never against each other).
+  ("UNOWN_DEX", BITFIELD, 26, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wUnownDex", 0x2A8C),
+      "CRYSTAL": D("pokemon_data", "wUnownDex", 0x2A67)}),
   ("GS_BALL_FLAG", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT, "GS": ABSENT,
       "CRYSTAL": S("sGSBallFlag", 0x3E3C)}),   # outside every checksummed span, §1.3
   ("MYSTERY_GIFT_ITEM", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
@@ -618,6 +630,20 @@ FIELDS = [
       "RED": D("main_data", "wNumHoFTeams", 0x284E), "YELLOW": D("main_data", "wNumHoFTeams", 0x284E),
       "GS": D("player_data_3", "wHallOfFameCount", 0x24EB),
       "CRYSTAL": D("player_data", "wHallOfFameCount", 0x24EC)}),
+  # ---- BACKLOG #87 D4: Unown-dex gate flag + first-seen letter -----------------------
+  # wStatusFlags (bit 1, STATUSFLAGS_UNOWN_DEX_F) is the SAME wPlayerData3/wPlayerData
+  # region byte GBF_BIKE_FLAGS' own region uses, sitting at the region's own start
+  # (wStatusFlags == wPlayerData3 on GS: both bank 1 0xD571, so the derived offset is
+  # exactly the region's file_base, 0x23D9; on Crystal wStatusFlags 0xD84C is
+  # wPlayerData 0xD47B + 0x3D1 = 0x23DA). wFirstUnownSeen sits immediately after
+  # wUnlockedUnowns (GBF_UNLOCKED_UNOWN, one byte above) in both games' own .sym --
+  # GS 0xDC3F = wPokemonData 0xDA22 + 0x21D = 0x2AA7; Crystal 0xDEF4 = wPokemonData
+  # 0xDCD7 + 0x21D = 0x2A82. Both offsets verified against pokegold.sym/pokecrystal.sym
+  # by hand before this row was written (region-arithmetic cross-check below is the
+  # SAME re-verification, at build time, every other D() row in this table gets).
+  ("FIRST_UNOWN_SEEN", U8, 1, {"RED": ABSENT, "YELLOW": ABSENT,
+      "GS": D("pokemon_data", "wFirstUnownSeen", 0x2AA7),
+      "CRYSTAL": D("pokemon_data", "wFirstUnownSeen", 0x2A82)}),
 ]
 
 
