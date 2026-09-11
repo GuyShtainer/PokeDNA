@@ -931,16 +931,15 @@ addrtaken-ok sbmp16_vline
 # declaration bmp16_drawg_b1cts/bmp16_erase already use, not a separate exemption.
 # dummy_drawg/dummy_erase/sbmp16_* stay -- dummy_*/sbmp16_* are not in that pool.
 
-# D1 (BACKLOG #84b fifth pass) address-taken sweep triage, batch 3: genuine, verified,
-# pre-existing single-registration callback hooks whose CALLING side is not yet
-# threaded through this file's declaration grammar (each one's setter stores the
-# function pointer into a file-static global, not a struct field this walker's
-# offset-based classes can key on, and the eventual dispatch site is buried behind
-# further inlining this pass did not fully unwind -- deferred to a future pass rather
-# than guessed at). Each is confirmed by grep to have exactly ONE registration site in
-# the whole codebase, so there is no ambiguity about which implementation is real; the
-# gap is in modeling the CALL path, not in identifying the callee.
-addrtaken-ok gb_edit_hook          # AppSrcOps.edit -- assigned but never dispatched, see the AppSrcOps note above
+# (BACKLOG #106: the "D1 (BACKLOG #84b fifth pass) batch 3" header that used to
+# introduce this paragraph, and its one remaining member `addrtaken-ok gb_edit_hook`,
+# are both retired here -- gb_edit_hook (the AppSrcOps.edit hook) and its
+# `.edit = gb_edit_hook` assignment were deleted from source/pdna_gen12.c by BACKLOG
+# #48's Gen-3-parity change (see pdna_gen12.c:1168's own comment); this build's stack
+# guard confirmed it live, reporting the exemption BOTH stale (D3: no longer
+# address-taken) AND absent from the image entirely (P1: not a symbol in this ELF at
+# all) on both variants. Nothing takes gb_edit_hook's address any more, so no
+# exemption is needed -- `grep -rn gb_edit_hook source/` finds only comments.)
 # F1 (BACKLOG #84b seventh pass): mem_read/art_extract_progress/era_resolver_cb/
 # era_resolver_cell_cb/g3cross_pic_cb REMOVED from this list -- all five ARE
 # dispatched (RomCtx.read@0 in tileset_to_vram / ArtIconsGen.progress@4 in
