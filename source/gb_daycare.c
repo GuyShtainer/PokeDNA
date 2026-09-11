@@ -193,7 +193,7 @@ GbsStatus gbd_withdraw(GbSession* s, int slot, GbEditMon* out) {
 
   uint8_t next_flag = (gen == GB_GEN1) ? 0u
                      : (uint8_t)(flag_cur & ~((1u << DC_HAS_MON_BIT) |
-                                              (slot == 0 ? (1u << DC_COMPAT_BIT) : 0u)));
+                                              (1u << DC_COMPAT_BIT)));
   if (next_flag == flag_cur) return GBS_OK;   /* already clear (defensive; occupied
                                                * already refused this above) */
   GbsStatus st = gbs_write_field(s, gbf_off(g, flag_f), &next_flag, 1);

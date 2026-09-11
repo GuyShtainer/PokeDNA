@@ -91,7 +91,7 @@ static bool gbdc_pick(GbSession* s, int cur_box, uint8_t* list, GbEditMon* out) 
       if (sh) ui_panel(2, y - 1, UI_SCR_W - 4, 12, UI_SEL, UI_TITLE);
       char row[12]; siprintf(row, "Lv.%-3u", (unsigned)lvl);
       ui_text(6, y, sh ? UI_SELTEXT : UI_DIM, row);
-      ui_ptext_fit(56, y, 176, sh ? UI_SELTEXT : UI_TEXT, nm);
+      ui_ptext_fit(62, y, 170, sh ? UI_SELTEXT : UI_TEXT, nm);
     }
     ui_text(4, 152, UI_DIM, "A pick  B cancel");
 
@@ -257,13 +257,15 @@ static void gbdc_panel(const GbDaycare* dc, int n) {
   const int dcy0 = PDNA_DCY_ROW0_Y, dcyp = PDNA_DCY_ROW_PITCH, dcx = PDNA_DCY_TEXT_X;
   ui_panel(PDNA_DCY_PANEL_X, PDNA_DCY_PANEL_Y, PDNA_DCY_PANEL_W, PDNA_DCY_PANEL_H, UI_PANEL, UI_BORDER);
   if (dc->gen1) {
-    ui_ptext(dcx, dcy0, UI_DIM, n ? "Leveling up your Pokemon." : "No Pokemon is boarding.");
+    ui_ptext(dcx, dcy0, UI_DIM, n ? "Leveling up your Pokemon." : "No Pokemon are boarding.");
     ui_ptext(dcx, dcy0 + dcyp, UI_DIM, "Gen 1 Day Care has no breeding.");
   } else if (n == 2) {
     ui_ptext(dcx, dcy0, dc->compatible ? UI_OK : UI_DIM,
              dc->compatible ? "They get along very well!" : "They'd rather be elsewhere.");
     if (dc->has_egg) {
       ui_ptext(dcx, dcy0 + dcyp, UI_OK, "An EGG is ready to collect!");
+    } else if (!dc->compatible) {
+      ui_ptext(dcx, dcy0 + dcyp, UI_DIM, "(no Egg: incompatible pair)");   /* the game only counts down while compatible */
     } else {
       char l[48]; siprintf(l, "Steps to next egg check: %u", (unsigned)dc->steps_to_egg);
       ui_ptext(dcx, dcy0 + dcyp, UI_DIM, l);
@@ -352,7 +354,8 @@ void pdna_gbdaycare(GbSession* s, int cur_box, bool can_edit) {
     else if (k & KEY_DOWN) { sel = (sel + 1) % nrows; redraw = true; }
     else if (k & KEY_A) {
       if (!dc->gen1 && dc->has_egg && sel == 2) {
-        gbdc_take_egg(s, cur_box, list);
+        if (!can_edit) { snd_deny(); msg_wait("EGG", UI_WARN, "Read-only cart.", "Writes need an Omega."); }
+        else gbdc_take_egg(s, cur_box, list);
       } else {
         int slot = sel;   /* 0 or 1 */
         bool occ = dc->slot[slot].occupied;
