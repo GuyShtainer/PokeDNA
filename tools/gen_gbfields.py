@@ -570,6 +570,28 @@ FIELDS = [
   ("DAYCARE_EGG_OT", TEXT, 11, {"RED": ABSENT, "YELLOW": ABSENT,
       "GS": D("pokemon_data", "wEggMonOT", 0x2B23),
       "CRYSTAL": D("pokemon_data", "wEggMonOT", 0x2AFE)}),
+
+  # ---- BACKLOG #89: the Hall of Fame (recorded teams + lifetime win counter) --------
+  # sHallOfFame is an SRAM-bank-0/1 symbol with no WRAM working copy PokeDNA tracks
+  # (the game reads/writes it in SRAM directly) -- S(), not D(), on every game, same
+  # shape as sOptions/sRTCStatusFlags above. Gen 1: bank 0, 0xA598 -> file 0x0598,
+  # 50 teams x 96 B = 4800 B, ENTIRELY BELOW GEN1_SUM_FIRST (0x2598) -- outside the
+  # main checksum window, so gen1_write_outside_sum's allowlist owns writes here, not
+  # gbs_write_field. GS: bank 1, 0xB21A -> 0x321A, 30 x 98 B = 2940 B; the backup-
+  # checksum run starts at sHallOfFameEnd (bank1 0xBD96 -> 0x3D96) -- a clear must stop
+  # at 0x3D95 inclusive. Crystal: bank 1, 0xB2C0 -> 0x32C0, same 2940 B width.
+  ("HOF_TEAMS", BYTES, 4800, {
+      "RED": S("sHallOfFame", 0x0598), "YELLOW": S("sHallOfFame", 0x0598),
+      "GS": S("sHallOfFame", 0x321A, size=2940), "CRYSTAL": S("sHallOfFame", 0x32C0, size=2940)}),
+  # wNumHoFTeams (Gen 1, main_data region) / wHallOfFameCount (Gen 2, in the primary
+  # checksummed+mirrored player-data region on both GS and Crystal) -- INSIDE the
+  # checksum window on every game, so this one field-write goes through the normal
+  # gbs_write_field path (gen1_write_range for Gen 1, g2w_write_range for Gen 2), never
+  # the allowlist above.
+  ("HOF_COUNT", U8, 1, {
+      "RED": D("main_data", "wNumHoFTeams", 0x284E), "YELLOW": D("main_data", "wNumHoFTeams", 0x284E),
+      "GS": D("player_data_3", "wHallOfFameCount", 0x24EB),
+      "CRYSTAL": D("player_data", "wHallOfFameCount", 0x24EC)}),
 ]
 
 

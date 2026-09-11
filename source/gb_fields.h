@@ -106,6 +106,14 @@ typedef enum {
    * in both games' .sym, same as GBF_DAYCARE_OT does for the boarded mon. */
   GBF_DAYCARE_EGG_OT,
 
+  /* BACKLOG #89, appended (same API-id rule as every prior append above): sHallOfFame
+   * (the whole recorded-teams blob, BYTES) and its lifetime win counter (U8). Gen 1's
+   * blob sits entirely BELOW GEN1_SUM_FIRST -- outside the main checksum window -- so
+   * writing it needs gen1_write_outside_sum's allowlist, never gbs_write_field's
+   * checksummed-range path. The count, on both gens, IS inside the checksummed/mirrored
+   * span and goes through the normal field-write path. */
+  GBF_HOF_TEAMS, GBF_HOF_COUNT,
+
   GBF_FIELD_COUNT
 } GbField;
 
