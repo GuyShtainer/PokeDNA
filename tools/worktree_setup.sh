@@ -51,11 +51,25 @@ git ls-files -o -i --exclude-standard source/ tests/fixtures/ | while read -r FI
 done
 
 # Copy the generator's .sym and .asm input directories (never symlink — copy via cp -R)
-# assets/upstream/*/symbols/, assets/upstream/*/constants/, assets/upstream/*/data/
-if [[ -d "$MAIN_REPO/assets/upstream" ]]; then
-  mkdir -p "$DEST/assets"
-  cp -R "$MAIN_REPO/assets/upstream" "$DEST/assets/upstream"
-fi
+# Only symbols/ and constants/ directories; data/ is not needed by gen_gbfields.py
+for game in pokered pokeyellow pokegold pokecrystal; do
+  if [[ -d "$MAIN_REPO/assets/upstream/$game/symbols" ]]; then
+    mkdir -p "$DEST/assets/upstream/$game"
+    cp -R "$MAIN_REPO/assets/upstream/$game/symbols" "$DEST/assets/upstream/$game/"
+    cp -R "$MAIN_REPO/assets/upstream/$game/constants" "$DEST/assets/upstream/$game/" || true
+  fi
+done
+
+# Verify all .sym files exist
+for sym in assets/upstream/pokered/symbols/pokered.sym \
+           assets/upstream/pokeyellow/symbols/pokeyellow.sym \
+           assets/upstream/pokegold/symbols/pokegold.sym \
+           assets/upstream/pokecrystal/symbols/pokecrystal.sym; do
+  if [[ ! -f "$DEST/$sym" ]]; then
+    echo "worktree_setup: MISSING $sym" >&2
+    exit 1
+  fi
+done
 
 # Run ensure_gbfields.sh to generate fresh tables in the worktree
 cd "$DEST"

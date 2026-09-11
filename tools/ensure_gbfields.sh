@@ -41,20 +41,21 @@ mtime() {
 }
 
 missing_sym=0
-missing_sym_path=""
 for s in $SYMS; do
-  if [ ! -f "$s" ]; then
-    missing_sym=1
-    missing_sym_path="$s"
-    break
-  fi
+  [ -f "$s" ] || missing_sym=1
 done
 
 if [ "$missing_sym" = 1 ]; then
-  {
-    echo "ensure_gbfields: MISSING $missing_sym_path"
-  } 1>&2
-  exit 1
+  if [ ! -f "$OUT1" ] || [ ! -f "$OUT2" ]; then
+    {
+      echo "*** NOTE: source/gb_fields.c / gb_flags.c NOT generated -- assets/upstream/*/symbols/*.sym"
+      echo "***       is absent (a fresh clone: that reference decomp checkout is git-ignored,"
+      echo "***       local-only material -- see README.md's Graphics assets section). The build"
+      echo "***       proceeds on the COMMITTED weak fallback in source/gb_fields_fallback.c /"
+      echo "***       gb_flags_fallback.c: every Gen-1/2 field reports \"the game lacks it\"."
+    } 1>&2
+  fi
+  exit 0
 fi
 
 newest=0
