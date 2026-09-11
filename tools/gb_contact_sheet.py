@@ -172,11 +172,34 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # rule.
     ("gb-pack-gen2", "U5 — Gold/Silver/Crystal's own Pack + PC store on the shell "
      "(Gen-2 saves)", ("U5",)),
+    # BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4, append-only,
+    # same rule as every row above): the KEEP AS IS / MAKE LEGAL choice
+    # gb_paste_hook now offers on a Gen 3 -> Game Boy paste whose species is
+    # standing below its legality floor (pk_evo_floor). Shots come from
+    # tools/dgb_shots.py's run_r1_xfer() (--r1-xfer), run against a Gold-fused
+    # image (NOT Red -- see that function's own docstring for why: Red/Gen-1's
+    # base-stats-ROM lookup is SD-card-only and always refuses in this harness,
+    # independent of R1); captions all start "BACKLOG #104 R1:". Appended after
+    # "gb-pack-gen2" per this list's own append-only rule.
+    ("xfer-r1-make-legal", "BACKLOG #104 R1 — KEEP AS IS / MAKE LEGAL on a Gen 3 -> "
+     "Game Boy paste (an underlevelled evolved species)", ("BACKLOG #104 R1",)),
+    # BACKLOG #92 (append-only, same rule as every row above): a held ITEM row on
+    # the Gen-2 mon-menu popup (app_mon_menu_readonly, pdna_main.c), Gen 1 omitted.
+    # Shots come from tools/dgb_shots.py's run_gbmon(); captions all start "#92:".
+    ("gb-mon-item", "#92 — held ITEM row on the Gen-2 mon menu (Gen 1: NOT IN GEN 1)",
+     ("#92",)),
+    # BACKLOG #95 (append-only, same rule as every row above): the summary-field
+    # parity audit's closed gaps -- Shiny, Egg, and Met Time/Level/Loc/OT Gender,
+    # Gen 2 only. Shots come from tools/dgb_shots.py's run_gbmon() (the SAME
+    # function as the #92 row above, continuing past its shot 08); captions all
+    # start "#95:".
+    ("gb-mon-summary-parity", "#95 — summary-field parity audit: Shiny, Egg, Met "
+     "Time/Level/Loc/OT Gender rows closed for Gen 2", ("#95",)),
     # BACKLOG #90 (docs/kb/pokemon/, this slice): the Gen-1/2 Fly-destination screen
     # (source/pdna_gbfly.c) over gb_fly.h's bitfield core -- a plain list screen, not
     # the gbscreen shell U2a-U5 above ride on. Shots come from tools/dgb_shots.py's
-    # run_b90_fly(), captions all start "BACKLOG #90:". Appended after "gb-pack-gen2"
-    # per this list's own append-only rule.
+    # run_b90_fly(), captions all start "BACKLOG #90:". Appended after
+    # "gb-mon-summary-parity" per this list's own append-only rule.
     ("gb-fly", "BACKLOG #90 — the Gen-1/2 Fly-destination screen (list, toggle, "
      "save prompt)", ("BACKLOG #90",)),
 ]

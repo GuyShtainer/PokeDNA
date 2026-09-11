@@ -912,7 +912,7 @@ static void s8_roundtrip(const char* file, uint8_t expect_gen) {
 
   GbEditMon mon;
   Gen3ToGbLoss loss;
-  G3GbStatus cst = gen3_to_gb(rec80, GB_GEN2, NULL, &mon, &loss);
+  G3GbStatus cst = gen3_to_gb(rec80, GB_GEN2, true, NULL, &mon, &loss);
   CHECK(cst == G3GB_OK, "S8: gen3_to_gb accepts the synthetic mon");
   if (cst != G3GB_OK) return;
 

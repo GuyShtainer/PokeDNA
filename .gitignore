@@ -32,7 +32,7 @@ build*/
 /source/item_icons.c
 /source/item_icons_data.s
 # Sparse clones of pret/pokeruby + pret/pokefirered (reference/art staging only)
-/assets/upstream/
+/assets/upstream
 # Ripped Emerald bag-screen art (regenerate with: python3 tools/gen_bag_bg.py)
 /assets/bag/
 /source/bag_bg.c

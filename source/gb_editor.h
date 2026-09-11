@@ -33,6 +33,28 @@ enum {
   GBE_DVH,                                       /* HP DV: DERIVED, shown, not editable */
   GBE_GENDER,                                    /* Gen 2 only, gender-having species only;
                                                    * DERIVED from the Atk DV -- see gbe_adjust */
+  GBE_SHINY,                                      /* Gen 2 only, every species (shininess has
+                                                   * no gender_ratio gate); DERIVED from all
+                                                   * four DVs -- see gbe_adjust's DV search,
+                                                   * the same "toggle -> nearest DV combo"
+                                                   * shape gbe_flip_gender already uses for
+                                                   * GENDER (BACKLOG #95 parity: mirrors Gen
+                                                   * 3's F_SHINY quick toggle, pdna_edit.c) */
+  GBE_EGG,                                        /* Gen 2 only: the species-LIST byte, not a
+                                                   * record field -- see gb_set_egg (BACKLOG
+                                                   * #95 parity: Gen 3 has no discrete egg
+                                                   * toggle of its own; this one exists because
+                                                   * gb_set_egg already did, unlike Gen 3 where
+                                                   * eggs are the CREATE flow's own species
+                                                   * choice, not a later toggle) */
+  GBE_METTIME, GBE_METLEVEL, GBE_METLOC, GBE_METOTGENDER,  /* Gen 2 only: the capture record
+                                                   * gb_set_caught() packs into 0x1D/0x1E --
+                                                   * BACKLOG #95 parity with Gen 3's own
+                                                   * F_METGAME/F_METREGION/F_METLOC/F_METLEVEL
+                                                   * rows (pdna_edit.c). No location NAME
+                                                   * table for Gen 2 exists in this tree yet
+                                                   * (same "#n" gap GBE_ITEM already has) --
+                                                   * METLOC shows the raw id. */
   GBE_SE0, GBE_SE1, GBE_SE2, GBE_SE3, GBE_SE4,   /* stat exp HP/Atk/Def/Spe/Spc        */
   GBE_NUM
 };
@@ -103,6 +125,16 @@ void gbe_header(const GbEditMon* e, char* out, int cap);
  * recalculated here (gb_recalc_stats, base stats identical to Gen 3's); Gen 1 cannot
  * (no base-stat table in this tree), and the sentence says so. */
 const char* gbe_stale_note(const GbEditMon* e);
+
+/* -1 == the last gbe_adjust/gbe_press(GBE_SHINY) did not have to move gender to turn
+ * shininess ON; 0/1 == it did, and this is the gender (male/female) the Pokemon ended
+ * up as (some gender ratios have no shiny combination for one of the two sexes, so
+ * turning shiny ON can force the other one). The underlying flag is
+ * GbEditMon.shiny_gender_forced (gb_edit.h) — this reads the record's CURRENT
+ * gender rather than remembering which way the search went. Meant for an immediate
+ * message right after the toggle (pdna_gbedit.c), not the write confirm screen: see
+ * pdna_layout.h's PDNA_GBEDIT_SHINY_FORCED_* comment for why (BACKLOG #95 review C2). */
+int gbe_shiny_forced_gender(const GbEditMon* e);
 
 /* Recompute party stats where this tree can (Gen 2). Returns true iff the record is
  * now not stale — also true when there was nothing to do. */

@@ -148,15 +148,17 @@ static void test_every_row_covered(void) {
     CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Fly are NAV_OK");
   }
 
-  /* 8 NOT_IN_GAME (gen1-list, Clock counted once, + BACKLOG #60's NV_CONTEST) + 7
-   * COMING_SOON-both + 5 OK-both (Trainer/Settings/Back/Bag/Fly -- BACKLOG #90 moved
-   * Fly here) + Clock's own Gen-2 COMING_SOON (already counted above via a separate
-   * assertion) == 20 rows -- the classification is EXHAUSTIVE, not a sample, so a row
-   * silently added to PDNA_NAV_ITEMS without a matching GB_TABLE entry cannot hide
-   * behind rows this test never asked about. */
-  CHECK(8 + 7 + 5 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
-  printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 7 COMING_SOON-both + "
-        "5 OK-both == %d)\n", NV_COUNT);
+  /* 8 NOT_IN_GAME (gen1-list, Clock counted once, + BACKLOG #60's NV_CONTEST) + the
+   * COMING_SOON-both and OK-both arrays' own sizes, derived instead of hand-tallied so
+   * a row silently added to PDNA_NAV_ITEMS without a matching GB_TABLE entry cannot
+   * hide behind a stale literal count. b85/b86 will move DAYCARE/CLOCK's Gen-2 half
+   * out of coming_soon_both when they land -- this check tracks the arrays, not a
+   * frozen number. */
+  const int n_coming = (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]);
+  const int n_ok = (int)(sizeof ok_both / sizeof ok_both[0]);
+  CHECK(8 + n_coming + n_ok == NV_COUNT, "row classification accounts for all PDNA_NAV_ITEMS");
+  printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + %d COMING_SOON-both + "
+        "%d OK-both == %d)\n", n_coming, n_ok, NV_COUNT);
 }
 
 /* ---- (H) defensive: out-of-range nv_item / save_kind never misbehaves -------------- */

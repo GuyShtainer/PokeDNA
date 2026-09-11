@@ -170,10 +170,11 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 
 /* Read-only source popup: the header grows by one line per explanatory line above the
  * rows (the source's note, and the per-record "why this one is locked"). */
-#define PDNA_ROMENU_MAX       6               /* VIEW/EDIT, MOVE TO?, RELEASE?, LEGALITY, COPY?, CANCEL --
-                                                * one row dropped 2026-09-05 (BACKLOG #41 follow-up): VIEW
-                                                * and EDIT merged into one row, matching the Gen-3 menu's
-                                                * own PDNA_LBL_VIEW_EDIT row. */
+#define PDNA_ROMENU_MAX       7               /* VIEW/EDIT, ITEM?, LEGALITY, MOVE TO?, COPY?, RELEASE?,
+                                                * CANCEL -- one row dropped 2026-09-05 (BACKLOG #41
+                                                * follow-up): VIEW and EDIT merged into one row, matching
+                                                * the Gen-3 menu's own PDNA_LBL_VIEW_EDIT row. ITEM added
+                                                * 2026-09-10 (BACKLOG #92, Gen 2 only). */
 #define PDNA_ROMENU_HDR       15              /* title only                           */
 #define PDNA_ROMENU_LINE      10              /* each optional prose line             */
 #define PDNA_ROMENU_HEAD_PAD   3              /* divider -> first row                 */
@@ -553,6 +554,55 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * female" specifically), since either can be the one that is unreachable. */
 #define PDNA_GBEDIT_GENDER_LOCKED_TITLE "CAN'T FLIP GENDER"
 #define PDNA_GBEDIT_GENDER_LOCKED_L1    "A shiny here can't flip gender."
+
+/* BACKLOG #95 review C2: gbe_flip_shiny's ON path (gb_editor.c) can be forced to move
+ * gender when NO Atk DV both turns shiny on and keeps today's gender (some gender
+ * ratios have no shiny combination for one of the two sexes). Reported through
+ * msg_wait the moment it happens (gbedit_press/gbedit_adjust_checked, pdna_gbedit.c) --
+ * NOT stacked into the write confirm screen's own issue/stale prose block, which the
+ * textfit worst-case arithmetic above already leaves only 2 px of slack in (any third
+ * wrapped block overflows into PDNA_GBEDIT_BAK_Y1). msg_wait's l1/l2 are each a single
+ * ui_ptext_fit CLAMP, not a wrap, so the sentence is pre-split across two lines rather
+ * than handed to msg_wait whole (which would silently truncate it, the exact failure
+ * textfit exists to catch). Two pairs, not one template, because there is no on-device
+ * sprintf for "was %s, now %s" and either direction can be the one that is unreachable
+ * (same reasoning as GENDER_LOCKED_L1 above). */
+/* gbmon C12: with the gender-ratio table this tree actually ships (Gen-3's five ratio
+ * bytes read through pk_species_gender_ratio -> g2_gender_from_dv), the shiny Atk-DV
+ * search in gb_editor.c's gbe_flip_shiny only ever picks from the 8 candidates with
+ * bit 1 set {2,3,6,7,10,11,14,15} -- the minimum is 2, so a species whose FEMALE
+ * threshold is dv<=1 (ratio 31, "7:1 male") has NO female candidate and is always
+ * forced to male; every other real ratio (63/127/191/225) keeps a male candidate at
+ * dv 14/15 even at its most female-skewed, so "forced to female" (the FEMALE_L1/L2
+ * pair below) cannot fire against today's data -- confirmed by exhaustive check over
+ * all five ratio bytes. Kept anyway, defensively, per the ORIGINAL author's own
+ * comment above ("either direction can be the one that is unreachable"): a species
+ * table for a different generation/ratio scheme could reintroduce the reverse case,
+ * and there is no second call site to keep in sync if that ever happens -- the two
+ * pairs are cheap (four short strings) next to the cost of a silently wrong message
+ * if the unreachable direction ever becomes reachable again. */
+#define PDNA_GBEDIT_SHINY_FORCED_TITLE   "GENDER FORCED"
+#define PDNA_GBEDIT_SHINY_FORCED_MALE_L1   "No shiny female exists for"
+#define PDNA_GBEDIT_SHINY_FORCED_MALE_L2   "this species; it is now male."
+#define PDNA_GBEDIT_SHINY_FORCED_FEMALE_L1 "No shiny male exists for"   /* unreachable today, kept defensively -- see comment above */
+#define PDNA_GBEDIT_SHINY_FORCED_FEMALE_L2 "this species; it is now female."
+
+/* BACKLOG #95 review C4: this tree tracks no mailbox, so a Mail item set through the
+ * ITEM row/picker (gb_editor.c's GBE_ITEM, pdna_gen12.c's gb_item_hook) leaves nothing
+ * gbs_is_mail_item()'s own callers (gbs_delete/gbs_move, gb_session.h) can find --
+ * they refuse the WHOLE PARTY rather than risk shifting SRAM bank 0's mail array
+ * blind. Shown via app_confirm() before the item write commits; app_confirm draws its
+ * own "A = yes / B = no" footer, same as every other use (pdna_layout.h's own header
+ * note on app_confirm callers). */
+#define PDNA_GBEDIT_MAIL_TITLE "SET THIS MAIL ITEM?"
+#define PDNA_GBEDIT_MAIL_L1    "No mailbox: locks Move/Release."
+
+/* BACKLOG #95 review C5: an Egg cannot hold an item (pack.asm
+ * AnEggCantHoldAnItemText) -- refused both directions: a non-zero item on an Egg
+ * (gb_set_held_item, gb_item_hook, pdna_gbedit.c's GBE_K_ITEM branch) and turning EGG
+ * on while an item is already held (gb_set_egg, gb_editor.c's GBE_EGG row). */
+#define PDNA_GBEDIT_EGG_ITEM_TITLE "EGG CAN'T HOLD ITEMS"
+#define PDNA_GBEDIT_EGG_ITEM_L1    "Remove the held item first."
 
 /* gb_edit_persist's SF_ERR_RENAME switch (source/pdna_gen12.c): same shape as the
  * Gen-3 path (pdna_main.c app_commit), but the SF_WHERE_TARGET line is SHORTER —
@@ -943,6 +993,38 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_SIDECAR_LOSS_STAYS      "The copy in your Gen-3 save stays."
 #define PDNA_SIDECAR_LOSS_A_TRANSFER "A = transfer"
 #define PDNA_SIDECAR_LOSS_B_CANCEL   "B = cancel"
+
+/* BACKLOG #104 R1: the KEEP AS IS / MAKE LEGAL choice, gb_paste_legal_screen
+ * (pdna_gen12.c) -- a SEPARATE, additive screen shown only when
+ * gen3_to_gb_evo_needs_fix() finds a correction to offer (most transfers never see
+ * it). Not folded into gb_paste_loss_screen's own rows: that screen's worst-case
+ * height (all 10 loss flags + the fixed lines) already lands exactly on the last
+ * pixel the display has (host_textfit_test.c's own "loss screen worst-case height"
+ * check) -- there is no room left to add a row there. This screen gets its own full
+ * ui_clear() budget instead, reusing the SAME primitives (ui_text/ui_ptext_fit/
+ * s_wait) and the SAME "A = .../B = cancel" hint convention gb_paste_loss_screen
+ * already ships -- not a new screen kind, one more instance of the same shape. The
+ * third choice reuses this codebase's own established third-action key (KEY_SELECT,
+ * e.g. pdna_gen12.c:798) rather than "X", which does not exist on a GBA pad. */
+#define PDNA_SIDECAR_LEGAL_TITLE      "SEND TO GAME BOY"
+/* D3 (UX parity with gb_paste_loss_screen, its Gen-3 twin -- that screen names every
+ * loss and reassures the copy comes back unchanged; this screen owed the same two
+ * things: WHY it is asking, and the same promise). Two WHY wordings, not one:
+ * gen3_to_gb_evo_needs_fix() always corrects to pk_evo_floor()'s answer, and that
+ * floor is sometimes the true evolution level (pk_evo_floor == pk_evo_min_level) and
+ * sometimes the lower wild-caught floor for one of the 23 species evolutions.h lists
+ * that are catchable below their own evolution level (Sootopolis' Super Rod Gyarados
+ * at L5). "Evolves at L20" would be a false claim for a species whose real evolution
+ * level is higher than the floor being offered -- gb_paste_legal_screen picks between
+ * the two at runtime by comparing the two floors, never says "evolves at" unless that
+ * is literally true. WHY_FMT's wording mirrors the checker's own phrasing (the
+ * SUSPECT text in gen3_legality_hooks.c pk2_hook_evolution, "Evolves at L36, this one
+ * is L5" -- dictionary discipline, one phrase for one fact everywhere it appears). */
+#define PDNA_SIDECAR_LEGAL_WHY_FMT       "%s evolves at L%u; this one is L%u."
+#define PDNA_SIDECAR_LEGAL_WHY_FLOOR_FMT "%s legal from L%u; this one is L%u."
+#define PDNA_SIDECAR_LEGAL_BACK       "Either way it comes back unchanged."
+#define PDNA_SIDECAR_LEGAL_KEEP_ROW   "A = KEEP AS IS"
+#define PDNA_SIDECAR_LEGAL_FIX_FMT    "SELECT = MAKE LEGAL (%u -> %u)"
 /* Full-screen list (gb_pick_box's own geometry: title y=3, rule y=13), not a scrolling
  * picker -- rows are drawn only for flags actually set, so the common case is much
  * shorter than the worst case the host test pins: 10 conditional Gen3ToGbLoss lines +

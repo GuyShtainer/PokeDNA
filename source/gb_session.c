@@ -91,6 +91,11 @@ int gbs_party_box(const GbSession* s) {
   return (s->gen == GB_GEN1) ? GEN1_PARTY_BOX : G2_BOX_PARTY;
 }
 
+bool gb_session_is_crystal(const GbSession* s) {
+  if (!s || !s->open || s->gen != GB_GEN2) return false;
+  return s->g2w.sv.version == G2_VER_CRYSTAL;
+}
+
 /* ---- may this box be written? --------------------------------------------- */
 
 GbsStatus gbs_box_writable(GbSession* s, int box) {
