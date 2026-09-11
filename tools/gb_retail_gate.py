@@ -843,7 +843,14 @@ def run_hofclear_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
 def run_hofcount_case(name, info, rom, sav, work, binary, python, vendor, tally):
     """gbh_set_count(3): the SET COUNT screen action, read back off the same WRAM
-    address the clear case above uses."""
+    address the clear case above uses.
+
+    BACKLOG #89 D1: on Gen 1, gbh_set_count() now clamps to the teams actually
+    present in THIS .sav (never past GBH_G1_CAPACITY), not a flat 255 -- and the
+    real corpus varies (Red: 9 teams, so 3 lands untouched; Yellow: 1 team, so 3
+    clamps to 1). --op hofcount prints the real post-clamp count on its own stdout
+    (do_hofcount, tests/host_gbsurgery_tool.c) specifically so this case can check
+    against what the write ACTUALLY did, not the token handed to it."""
     edited = work / "hofcount.sav"
     rc, out, err = run_surgery(binary, sav, edited,
                                [["hofcount", str(HOF_SET_COUNT_VALUE)]])
@@ -851,8 +858,16 @@ def run_hofcount_case(name, info, rom, sav, work, binary, python, vendor, tally)
         tally.record("hofcount (BACKLOG #89)", False, f"surgery refused: {err.strip()}")
         return
 
+    m = re.search(r"hofcount result: (\d+)", out)
+    if not m:
+        tally.record("hofcount (BACKLOG #89)", False,
+                     f"surgery gave no 'hofcount result: N' line to check against "
+                     f"-- stdout: {out.strip()!r}")
+        return
+    actual_count = int(m.group(1))
+
     addr = HOF_COUNT_WRAM[name]
-    want = f"{HOF_SET_COUNT_VALUE:02x}"
+    want = f"{actual_count:02x}"
     rc, rep, out, err = boot(python, rom, edited, work / "hofcount", vendor,
                              work / "hofcount.json",
                              extra_args=["--expect", "accept",
@@ -862,7 +877,8 @@ def run_hofcount_case(name, info, rom, sav, work, binary, python, vendor, tally)
     got = mem.get(f"{addr:#06x}")
     ok = (rc == 0) and svbk_ok and got == want
     detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
-             f"{addr:#06x}={got!r} want={want!r}")
+             f"{addr:#06x}={got!r} want={want!r} "
+             f"(requested {HOF_SET_COUNT_VALUE}, real post-clamp {actual_count})")
     if not ok:
         fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
         if fails:

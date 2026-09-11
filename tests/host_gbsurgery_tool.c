@@ -499,6 +499,11 @@ static int do_hofcount(GbSession* s, const char* n_tok) {
   if (n < 0) return 2;
   GbsStatus st = gbh_set_count(s, n);
   if (st != GBS_OK) return refuse(gbs_status_text(st));
+  /* BACKLOG #89 D1: the requested N and what actually lands can now differ on
+   * Gen 1 (clamped to the teams present, not a flat 255) -- print the real
+   * post-clamp count so tools/gb_retail_gate.py's own hofcount case can check
+   * against what this call ACTUALLY wrote, not the token it was handed. */
+  printf("hofcount result: %d\n", gbh_count(s));
   return 0;
 }
 
