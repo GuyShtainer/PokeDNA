@@ -367,6 +367,33 @@ static void count_clamp_to_present_g1(const char* file) {
         file, present, gbh_count(&s));
 }
 
+/* ---- K: D2, present count clamped to gbh_count on virgin/noise SRAM ---- */
+
+static void present_clamped_to_count_on_noise(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  GbSession s;
+  if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK || s.gen != GB_GEN1) {
+    printf("  SKIP %s (not a Gen-1 save)\n", file);
+    return;
+  }
+  g_ran++;
+
+  /* D2: pokered never initialises sHallOfFame, so virgin SRAM can hold noise that
+   * looks like occupied slots while gbh_count() (the real byte) still reads 0 --
+   * simulate that directly: force count=0, then splat non-$00/$FF noise across the
+   * whole HoF blob so hof_slot_present() would read every slot as "occupied" if the
+   * count-based clamp were missing. */
+  CHECKF(gbh_set_count(&s, 0) == GBS_OK, "%s: force count 0", file);
+  for (uint32_t i = GEN1_OFF_HOF; i < GEN1_OFF_HOF + GEN1_HOF_BYTES; i++)
+    g_img[i] = 0x42;   /* neither $00 nor $FF -- every slot LOOKS occupied */
+
+  CHECKF(gbh_count(&s) == 0, "%s: forced count reads back 0", file);
+  int present = gbh_team_count_present(&s);
+  CHECKF(present == 0, "%s: present clamps to count=0 on noise SRAM, got %d",
+        file, present);
+}
+
 int main(void) {
   const char* saves[] = { "Red.sav", "Yellow.sav", "Gold.sav", "Crystal.sav" };
   printf("== A: decode real corpus teams ==\n");
@@ -394,6 +421,10 @@ int main(void) {
   printf("== J: D1 set-count clamps to teams present (Gen 1) ==\n");
   for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++)
     count_clamp_to_present_g1(saves[i]);
+
+  printf("== K: D2 present clamps to count on noise SRAM ==\n");
+  for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++)
+    present_clamped_to_count_on_noise(saves[i]);
 
   if (g_ran == 0) printf("  (no corpus present -- structural checks only, none ran)\n");
   printf("\n%d checks, %d failed (%d save(s) loaded)\n", g_check, g_fail, g_ran);

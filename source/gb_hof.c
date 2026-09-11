@@ -69,6 +69,11 @@ int gbh_team_count_present(const GbSession* s) {
     if (!hof_slot_present(s, base + (uint32_t)i * stride)) break;
     n++;
   }
+  /* D2: pokered never initialises sHallOfFame (no Gen-1 EraseHallOfFame), so virgin
+   * SRAM can hold power-on noise that happens to look like occupied slots (neither
+   * $00 nor $FF) while the real win-count byte still reads 0. Trust the count byte
+   * as the ceiling on what's genuinely present, same as the retail League PC does. */
+  { int c = gbh_count(s); if (n > c) n = (c < cap) ? c : cap; }
   return n;
 }
 
