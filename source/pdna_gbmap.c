@@ -181,8 +181,9 @@ void pdna_gbmap_gen1(GbSession* s) {
 #ifndef PDNA_DELTA
   char path[GB_ROM_PATH_MAX];
   FIL fil; memset(&fil, 0, sizeof fil);
-  bool rom_ok = gbmap_resolve_path(path, (int)sizeof path) &&
-                f_open(&fil, path, FA_READ) == FR_OK;
+  bool fil_open = gbmap_resolve_path(path, (int)sizeof path) &&
+                  f_open(&fil, path, FA_READ) == FR_OK;
+  bool rom_ok = fil_open;
   uint32_t romsz = 0;
   if (rom_ok) { FSIZE_t fsz = f_size(&fil); romsz = (fsz > 0xFFFFFFFFull) ? 0xFFFFFFFFu : (uint32_t)fsz; }
   if (rom_ok) rom_ok = rgm1_open(&st.g, gbmap_sd_read, &fil, romsz, scratch_or_cache, ROM_GBMAP_SCRATCH_MIN);
@@ -197,7 +198,7 @@ void pdna_gbmap_gen1(GbSession* s) {
                 rgm1_tileset(&st.g, st.hdr.tileset_id, &st.ts);
 
 #ifndef PDNA_DELTA
-  if (rom_ok) f_close(&fil);   /* rgm1_open's own reads are all done by now -- the
+  if (fil_open) f_close(&fil); /* even when rgm1_open failed (m1 re-verify N4); rgm1_open's own reads are all done by now -- the
                                  * viewport/tile decode below re-opens per read via
                                  * st.g.ctx, which now dangles: reopen before use  */
 #endif

@@ -1010,20 +1010,3 @@ addrtaken-ok encode_checked
 # merge (the #106 G2 coincidence class). Bounded by the 256-B cap; delete the function or
 # declare its site when a caller appears.
 addrtaken-ok em_get_ribbon_flag
-
-# rom_gbsprite.c's rom_gbsprite_to_rgb15 (frame 24 B) has NO callers in shipped source (only
-# tests/host_romgbsprite_test.c exercises it -- rom_gbsprite_to_rgb15_inplace is the one real
-# callers use, per gb_art_source.c). On this build (m1 lane, after the D6 control-parity edit
-# in pdna_gbmap.c shifted .text layout) it links at exactly 0x08060000 -- a 64 KiB grid
-# boundary -- which the ROM full-image self-check's own window table (pdna_romver_data.c,
-# "120 regions x 64 KiB") stores THREE TIMES in .rodata as a plain region-start ADDRESS, not a
-# function pointer: the same #106 G2 coincidence class as encode_checked/em_get_ribbon_flag
-# above (the sweep cannot distinguish a data word from a pointer). Bounded by the 256-B cap.
-addrtaken-ok rom_gbsprite_to_rgb15
-
-# libtonc's irq_enable (frame 16 B) has no `bl` site anywhere in this image -- PokeDNA never
-# calls it (source/*.c grepped: no hits). After the D8 num_maps bound (rom_gbmap.c/.h) shifted
-# .text layout again, its address (0x080701a8) matched exactly ONE data word in .rodata, no
-# repeating stride this time -- a single coincidental collision with whatever table happens to
-# live there, same #106 G2 class as the two entries above. Bounded by the 256-B cap.
-addrtaken-ok irq_enable
