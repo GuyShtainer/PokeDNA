@@ -816,7 +816,12 @@ typedef struct {
 } Foo;
 
 typedef struct {
-  FooKind  kind;      /* local enum member -- must size as 4 (AAPCS, no -fshort-enums) */
+  FooKind  kind;      /* local enum member -- sizes to 1 B (AAPCS short-enum, this
+                       * project's actual arm-eabi default -- see D1); the following
+                       * `handler` pointer needs 4-byte alignment regardless, so this
+                       * fixture's own offsets (kind@0, handler@4) can't tell 1 B
+                       * from 4 B apart -- see test_d1_the_four_false_accepts_... for
+                       * a case where the size DOES matter. */
   void*    handler;
   Foo      nested;    /* local nested struct member -- must recurse to its real size */
   uint8_t  table[BAR_TABLE_LEN];
@@ -830,7 +835,9 @@ def test_g4_multiple_anonymous_typedefs_in_one_file_parse_correctly():
     """The core G4 fixture: TWO anonymous typedef structs in one file (Foo, then
     Bar) -- Bar's own fields must be found, not a misparse spanning across Foo's
     body (the live bug RomGbSprite/Gb12Mount/G2Writer/RomCtx/ArtIconsGen all hit).
-    Bar's second member also exercises a local ENUM member (FooKind, sized 4) and
+    Bar's second member also exercises a local ENUM member (FooKind, sized 1 B
+    under AAPCS short-enums -- see D1; padding to `handler`'s 4-byte alignment
+    happens to make this fixture's own offsets insensitive to 1 B vs 4 B) and
     third a local NESTED STRUCT member (Foo, sized 12 -- recursed, not guessed),
     proving both parts of the fix together."""
     offsets = sb.struct_field_offsets(_G4_TWO_TYPEDEFS_HEADER, "Bar")
@@ -920,6 +927,190 @@ def test_g4_all_six_reregistered_structs_parse_against_their_real_headers():
         got = {k: offsets.get(k) for k in expected}
         check(f"(G4) {struct_name} matches its real header ({header_name})",
               got == expected, got)
+
+
+def test_d1_the_four_false_accepts_are_now_the_real_gcc_offsets():
+    """D1's own headline regression, checked against the REAL headers shipped in
+    this repo. Before the fix (enum always sized 4 B, an external type's -- or an
+    unresolvable enum's -- 4-byte guess trusted just like a real size), these
+    four fields verified clean at the WRONG offset:
+
+        RomCtx.version        old-guessed @16   real (gcc offsetof) @13
+        RomGbSprite.id_hash   old-guessed @48   real (gcc offsetof) @44
+        G2Writer.ready        old-guessed @36   real (gcc offsetof) @44 (not reached --
+                                                 sv's break_here stops the walk at sv
+                                                 itself; see the next check)
+        Gb12Mount.nboxes      old-guessed @48   real (gcc offsetof) @296 (also not
+                                                 reached -- g1's break_here stops first)
+
+    Confirmed against arm-none-eabi-gcc with an offsetof() probe compiled with this
+    project's actual CFLAGS (-mcpu=arm7tdmi, no -f(no-)short-enums): every value in
+    the `expected` dicts below is the real gcc-computed offset, not a re-derivation
+    of this walker's own arithmetic."""
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "source")
+
+    def offsets_for(struct_name, header_name):
+        path = os.path.join(base, header_name)
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return sb.struct_field_offsets(f.read(), struct_name)
+
+    romctx = offsets_for("RomCtx", "rom_map.h")
+    if romctx is not None:
+        expected = {"read": 0, "ctx": 4, "size": 8, "kind": 12, "version": 13}
+        got = {k: romctx.get(k) for k in expected}
+        check("(D1) RomCtx.kind is 1 B (AAPCS short-enum, not the old 4 B guess) "
+              "so version lands @13, not the old false-accept @16",
+              got == expected, got)
+
+    rgs = offsets_for("RomGbSprite", "rom_gbsprite.h")
+    if rgs is not None:
+        expected = {"gen": 20, "title": 21, "id_hash": 44, "banks": 48}
+        got = {k: rgs.get(k) for k in expected}
+        check("(D1) RomGbSprite.gen is 1 B so id_hash lands @44, not the old "
+              "false-accept @48", got == expected, got)
+
+    g2w = offsets_for("G2Writer", "gen2_write.h")
+    if g2w is not None:
+        # sv (G2Save) is an EXTERNAL type -- inexact. Its own offset (24) is still
+        # trustworthy (everything before it was exact) but break_here stops the
+        # walk there: `ready` (declared nowhere in stack_edges.txt today) is
+        # correctly ABSENT rather than reported at the old false-accept @36.
+        expected_present = {"rd": 0, "wr": 4, "ctx": 8, "scratch": 12,
+                             "scratch_len": 16, "file_len": 20, "sv": 24}
+        got = {k: g2w.get(k) for k in expected_present}
+        check("(D1) G2Writer offsets up to and including sv (the break point) "
+              "match gcc", got == expected_present, got)
+        check("(D1) G2Writer.ready is NOT reported (break_here past sv) instead "
+              "of the old false-accept @36", "ready" not in g2w, g2w)
+
+    g12 = offsets_for("Gb12Mount", "pdna_gen12.h")
+    if g12 is not None:
+        # tgt (Gb12Target) is also external/inexact; g1 (right after it) is where
+        # the walk stops, so nboxes is correctly ABSENT rather than @48.
+        expected_present = {"kind": 0, "rd": 4, "ctx": 8, "len": 12, "tgt": 16}
+        got = {k: g12.get(k) for k in expected_present}
+        check("(D1) Gb12Mount offsets up to and including tgt (the break point) "
+              "match gcc", got == expected_present, got)
+        check("(D1) Gb12Mount.nboxes is NOT reported (break_here past tgt) "
+              "instead of the old false-accept @48", "nboxes" not in g12, g12)
+
+
+def test_d1_mutation_reverting_enum_sizing_reproduces_the_false_accept():
+    """Mutation: replay the OLD 'enum is always 4 B' sizing against the same
+    RomCtx-shaped header and show it reproduces exactly the cited false-accept
+    (version @16, not the real @13) -- the live defect D1 fixes, not a
+    hypothetical one."""
+    header = """
+typedef enum { KIND_A, KIND_B, KIND_C } SmallKind;
+typedef struct {
+  void* read;
+  void* ctx;
+  uint32_t size;
+  SmallKind kind;
+  uint8_t version;
+} Probe;
+"""
+    fixed = sb.struct_field_offsets(header, "Probe")
+    check("(D1) fixed: SmallKind sizes to 1 B, version lands @13",
+          fixed.get("version") == 13, fixed)
+
+    old_enum_layout = sb._enum_layout
+    sb._enum_layout = lambda body, macros: (4, 4, True)   # the OLD (wrong, but
+                                                            # confidently "exact")
+                                                            # 4-byte-always guess
+    try:
+        mutated = sb.struct_field_offsets(header, "Probe")
+    finally:
+        sb._enum_layout = old_enum_layout
+    check("(D1 mutation) the old always-4-B enum guess reproduces the cited "
+          "false-accept: version @16, not @13",
+          mutated.get("version") == 16, mutated)
+
+
+def test_d1_break_here_does_not_disturb_a_field_declared_before_the_break():
+    """Stop-licence guard: a field on file TODAY (e.g. Gb12Mount.rd@4, G2Writer.
+    rd@0/wr@4) sits BEFORE the first inexact member in its struct, so break_here
+    must never touch it. This is the synthetic version of that shape: an
+    external-type member (unresolvable, like Gen1Save/G2Save/G2Offsets) placed
+    AFTER two exact pointer fields must leave those two fields' offsets exactly
+    as gcc would give them."""
+    header = """
+typedef struct {
+  void* rd;
+  void* wr;
+  ExternalNotDefinedHere blob;
+  uint32_t trailing;
+} Mixed;
+"""
+    offsets = sb.struct_field_offsets(header, "Mixed")
+    check("(D1) rd/wr before the external member are untouched by break_here",
+          offsets.get("rd") == 0 and offsets.get("wr") == 4, offsets)
+    check("(D1) blob's own offset (8) is still recorded -- everything before it was exact",
+          offsets.get("blob") == 8, offsets)
+    check("(D1) trailing (declared AFTER the inexact member) is correctly ABSENT, "
+          "not guessed", "trailing" not in offsets, offsets)
+
+
+def test_d1_array_count_expression_with_internal_spaces_does_not_mis_split():
+    """The "9]" trap, reproduced directly: an array member whose size is an
+    EXPRESSION with an internal space (`G2_NUM_BOXES * 9`, the exact shape of
+    pdna_gen12.h's real g2names field) used to be split on the LAST space in the
+    whole normalized statement -- landing inside the expression -- and name the
+    member "9]" instead of "g2names"."""
+    header = """
+#define G2_NUM_BOXES 14
+typedef struct {
+  uint32_t lead;
+  uint8_t g2names[G2_NUM_BOXES * 9];
+  uint8_t trailer;
+} SpacedArray;
+"""
+    offsets = sb.struct_field_offsets(header, "SpacedArray")
+    check("(D1) g2names is parsed as its real name, not '9]'",
+          "g2names" in offsets and "9]" not in offsets, offsets)
+    check("(D1) g2names lands at the right offset (4)", offsets.get("g2names") == 4, offsets)
+    # `G2_NUM_BOXES * 9` is an ARITHMETIC EXPRESSION, not a plain literal or a
+    # same-file macro -- _resolve_int_literal_or_macro() is documented to leave
+    # that out of scope (see _parse_int_macros()'s own docstring), so the count
+    # is unresolved and g2names falls back to the documented 4-byte guess
+    # (inexact); break_here then correctly drops `trailer` (declared after it)
+    # rather than reporting it at a guessed offset. The FIX here is that the
+    # member is named "g2names" at all, not the size of an expression this
+    # walker was never asked to evaluate.
+    check("(D1) trailer (declared after the unresolved-count array) is correctly "
+          "ABSENT, not guessed", "trailer" not in offsets, offsets)
+
+
+def test_d1_mutation_the_old_rsplit_would_have_named_the_member_9():
+    """Mutation: replay the OLD rsplit(None, 1)-on-the-whole-statement split
+    (no array-suffix carve-out) against the exact same statement and show it
+    really does produce a member named '9]' -- the live bug, not a hypothetical
+    one."""
+    stmt = ' '.join("uint8_t g2names[G2_NUM_BOXES * 9]".split())
+    old_first = stmt.rsplit(None, 1)
+    check("(D1 mutation) the old whole-statement rsplit names the member '9]'",
+          old_first[-1] == "9]", old_first)
+
+
+def test_d1_invalid_declarator_raises_instead_of_guessing():
+    """The review's one-liner: a struct-member declarator that doesn't match
+    `^[A-Za-z_]\\w*(\\[[^\\]]*\\])?$` must raise, not silently misparse. A
+    declarator with a stray trailing character (the shape a real parse failure
+    would leave behind) is the fixture."""
+    header = """
+typedef struct {
+  uint32_t weird)name;
+} Busted;
+"""
+    try:
+        sb.struct_field_offsets(header, "Busted")
+        raised = False
+    except ValueError:
+        raised = True
+    check("(D1) an unparseable declarator raises ValueError instead of guessing",
+          raised, None)
 
 
 # === BACKLOG #106 G5: a `bl` with several inbound branches, each feeding a DIFFERENT =====
@@ -1707,6 +1898,12 @@ def main():
     test_g4_mutation_inserted_field_shifts_a_declared_offset()
     test_g4_array_count_resolved_from_a_same_file_macro()
     test_g4_all_six_reregistered_structs_parse_against_their_real_headers()
+    test_d1_the_four_false_accepts_are_now_the_real_gcc_offsets()
+    test_d1_mutation_reverting_enum_sizing_reproduces_the_false_accept()
+    test_d1_break_here_does_not_disturb_a_field_declared_before_the_break()
+    test_d1_array_count_expression_with_internal_spaces_does_not_mis_split()
+    test_d1_mutation_the_old_rsplit_would_have_named_the_member_9()
+    test_d1_invalid_declarator_raises_instead_of_guessing()
     test_g5_two_branch_predecessors_feed_different_offsets()
     test_g5_mutation_chase_only_the_fall_through()
     test_g5_cold_block_reached_only_via_a_forward_branch_still_resolves()

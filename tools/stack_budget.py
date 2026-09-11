@@ -906,6 +906,21 @@ def _split_top_level_commas(s):
 
 _ARRAY_SUFFIX_RE = re.compile(r'^(\w+)\s*\[\s*([^\]]*?)\s*\]$')
 
+# D1 (BACKLOG #106 G4 fix pass): a struct-member declarator, with or without an array
+# suffix -- anything a member name can legally be. _classify_member() raises ValueError
+# for a declarator that doesn't match this instead of silently mis-splitting it (the
+# live bug: `uint8_t g2names[G2_NUM_BOXES * 9];` rsplit(None, 1) on the LAST space in
+# the whole normalized statement landed INSIDE the array-size expression and produced a
+# member literally named "9]" -- see the array-suffix carve-out in _classify_member).
+_DECLARATOR_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z_0-9]*(\[[^\]]*\])?$')
+
+# D1: the leading "type ... name[expr]" split, done BEFORE any whitespace-based
+# type/name split runs -- so an array-size expression containing internal spaces
+# (`[G2_NUM_BOXES * 9]`) never lands inside the split. Non-greedy on the prefix so a
+# trailing array suffix (if any) is isolated first; declarators with no array suffix
+# don't match and fall through to the plain rsplit(None, 1) unaffected.
+_FIRST_DECL_ARRAY_RE = re.compile(r'^(.*?)\s*\[\s*([^\]]*)\s*\]\s*$')
+
 
 def _resolve_int_literal_or_macro(expr, macros):
     """int for `expr` if it is a plain literal or a macro this header defines,
@@ -921,13 +936,17 @@ def _resolve_int_literal_or_macro(expr, macros):
 
 
 def _sized_local_type(text, type_name, macros, size_cache):
-    """(size, align) for `type_name` if it is ALSO a struct/enum this SAME header
-    defines (recurses into _layout_members() for a real, computed size -- not a
-    guess), memoized in `size_cache` for the duration of one top-level
+    """(size, align, exact) for `type_name` if it is ALSO a struct/enum this SAME
+    header defines (recurses into _layout_members() for a real, computed size --
+    not a guess), memoized in `size_cache` for the duration of one top-level
     struct_field_offsets() call (a member type can recur, e.g. an array of
-    records). Returns None if `type_name` is not locally defined at all (an
-    external type from another header/TU) -- the caller's documented 4-byte
-    fallback applies then."""
+    records). `exact` is False when the size is only a best-effort guess (an
+    enum whose enumerator values this walker couldn't resolve, or a nested
+    struct that itself bottomed out on an inexact member) -- see
+    _classify_member()'s break_here handling of the exact flag. Returns None if
+    `type_name` is not locally defined at all (an external type from another
+    header/TU) -- the caller's documented 4-byte fallback applies then, marked
+    NOT exact."""
     if type_name in size_cache:
         return size_cache[type_name]
     found = _struct_or_enum_body(text, type_name)
@@ -935,37 +954,110 @@ def _sized_local_type(text, type_name, macros, size_cache):
         return None
     kind, body = found
     if kind == 'enum':
-        # ARM EABI/AAPCS: an enum is int-sized unless the compiler is told
-        # -fshort-enums (verified absent from this project's CFLAGS, Makefile:260-296).
-        size_cache[type_name] = (4, 4)
+        size_cache[type_name] = _enum_layout(body, macros)
     else:
-        _offsets, total, align = _layout_members(text, body, macros, size_cache)
-        size_cache[type_name] = (total, align)
+        _offsets, total, align, all_exact = _layout_members(text, body, macros, size_cache)
+        size_cache[type_name] = (total, align, all_exact)
     return size_cache[type_name]
 
 
+_ENUM_ITEM_RE = re.compile(r'^\s*([A-Za-z_]\w*)\s*(?:=\s*(.+))?$')
+
+
+def _enum_layout(body, macros):
+    """(size, align, exact) for a LOCAL enum's body text, sized the way this
+    project's actual toolchain sizes it -- NOT "int-sized unless -fshort-enums"
+    (that claim was backwards and cost BACKLOG #106 G4 four silent false-PASSes:
+    RomCtx.version, RomGbSprite.id_hash, G2Writer.ready, Gb12Mount.nboxes were all
+    declared at the wrong offset because every enum member before them was sized
+    4 B). Verified with an offsetof() probe against arm-none-eabi-gcc (this
+    project's actual CFLAGS, Makefile:260-296, pass neither -fshort-enums nor
+    -fno-short-enums): `-fshort-enums` IS the arm-eabi target's default --
+    __ARM_SIZEOF_MINIMAL_ENUM is predefined, and a plain `typedef enum {A,B,C} E;`
+    measured sizeof(E)==1. The flag whose ABSENCE would matter here is
+    -fno-short-enums, not -fshort-enums. Per AAPCS short-enum packing, GCC picks
+    the smallest of {1,2,4} bytes that represents every enumerator value.
+    `exact` is False when an enumerator's value can't be resolved from this
+    file alone (an expression, or a macro this header doesn't define) -- the
+    4-byte fallback then matches the OLD (wrong-reasoning, but at least
+    conservative) behaviour, and _layout_members()'s break_here stops trusting
+    anything after it."""
+    items = _split_top_level_commas(body)
+    values = []
+    cur = -1
+    resolvable = True
+    saw_any = False
+    for item in items:
+        item = item.strip()
+        if not item:
+            continue
+        saw_any = True
+        m = _ENUM_ITEM_RE.match(item)
+        if not m:
+            resolvable = False
+            continue
+        expr = m.group(2)
+        if expr is None:
+            cur += 1
+        else:
+            v = _resolve_int_literal_or_macro(expr.strip(), macros)
+            if v is None:
+                resolvable = False
+                continue
+            cur = v
+        values.append(cur)
+    if not saw_any or not resolvable or not values:
+        return (4, 4, False)          # can't resolve every enumerator -- documented fallback
+    lo, hi = min(values), max(values)
+    if lo >= 0:
+        size = 1 if hi <= 0xFF else 2 if hi <= 0xFFFF else 4
+    else:
+        size = 1 if (lo >= -128 and hi <= 127) else 2 if (lo >= -32768 and hi <= 32767) else 4
+    return (size, size, True)
+
+
 def _classify_member(stmt, macros, text, size_cache):
-    """[(name, size, align), ...] for one struct-member declaration -- a list
-    because a multi-declarator member (`uint32_t a, b, c;`) names several fields
-    at once. Raises ValueError for a shape this walker refuses to guess at (a
-    bitfield -- none appear in the six structs this fix registers, and silently
-    sizing one wrong is worse than failing loudly). An array/nested-struct/
-    external-type member that cannot be sized exactly falls back to 4 B
-    (documented, BACKLOG #106 G4's scope limit) rather than raising, so a field
-    the walker DOES need (always earlier in these six structs, verified in the
-    fix's own report) is never blocked by one it doesn't."""
+    """[(name, size, align, exact), ...] for one struct-member declaration -- a
+    list because a multi-declarator member (`uint32_t a, b, c;`) names several
+    fields at once. `exact` is False for a size this walker had to GUESS at
+    (an external type's or an unresolvable array count's 4-byte fallback, or an
+    enum whose enumerator values it couldn't resolve) -- see _layout_members()'s
+    break_here, which stops trusting any offset after the first inexact member
+    (D1, BACKLOG #106 G4's false-PASS fix: the old code sized every guess as if
+    it were certain, which is how RomCtx.version/RomGbSprite.id_hash/
+    G2Writer.ready/Gb12Mount.nboxes all got declared at the wrong offset and
+    still verified clean). Raises ValueError for a shape this walker refuses to
+    guess at (a bitfield -- none appear in the six structs this fix registers,
+    and silently sizing one wrong is worse than failing loudly), or for a
+    declarator that doesn't match _DECLARATOR_NAME_RE (the "9]" trap: an array
+    member whose size is an EXPRESSION with internal spaces, e.g.
+    `uint8_t g2names[G2_NUM_BOXES * 9];`, used to be split on the last space in
+    the whole normalized statement -- landing inside the expression and naming
+    the member "9]" -- rather than between the type and the name)."""
     stmt = ' '.join(stmt.split())
     if re.search(r':\s*\d+$', stmt) and '(' not in stmt:
         raise ValueError(f"bitfield member not supported: {stmt!r}")
     m = _STRUCT_FIELD_RE.search(stmt)
     if m:
-        return [(m.group(1), 4, 4)]                  # function pointer field
+        return [(m.group(1), 4, 4, True)]             # function pointer field
+
     parts = _split_top_level_commas(stmt)
-    first = parts[0].rsplit(None, 1)
+    # D1: carve any trailing array suffix off the FIRST declarator BEFORE the
+    # type/name whitespace split runs, so an array-size expression with internal
+    # spaces never lands inside the split (the "9]" trap).
+    first_raw = parts[0]
+    first_arr_m = _FIRST_DECL_ARRAY_RE.match(first_raw)
+    if first_arr_m:
+        first_pre, first_arr_expr = first_arr_m.group(1), first_arr_m.group(2)
+    else:
+        first_pre, first_arr_expr = first_raw, None
+    first = first_pre.rsplit(None, 1)
     if len(first) != 2:
         raise ValueError(f"can't parse struct member: {stmt!r}")
     base_type = first[0].strip()
-    declarators = [first[1].strip()] + [p.strip() for p in parts[1:]]
+    first_name = first[1].strip()
+    first_declarator = f"{first_name}[{first_arr_expr}]" if first_arr_expr is not None else first_name
+    declarators = [first_declarator] + [p.strip() for p in parts[1:]]
 
     out = []
     for decl in declarators:
@@ -974,6 +1066,8 @@ def _classify_member(stmt, macros, text, size_cache):
         while decl.startswith('*'):
             is_ptr = True
             decl = decl[1:].strip()
+        if not _DECLARATOR_NAME_RE.match(decl):
+            raise ValueError(f"can't parse struct member declarator: {decl!r} in {stmt!r}")
         name = decl
         has_array = False
         arr_count = None
@@ -984,43 +1078,62 @@ def _classify_member(stmt, macros, text, size_cache):
             arr_count = _resolve_int_literal_or_macro(am.group(2), macros)
 
         if is_ptr or base_type.endswith('*') or base_type in _KNOWN_PTR_TYPEDEFS:
-            out.append((name, 4, 4))
+            out.append((name, 4, 4, True))
             continue
         if base_type in _KNOWN_VALUE_TYPES:
             elem_size = elem_align = _KNOWN_VALUE_TYPES[base_type]
+            elem_exact = True
         else:
             sized = _sized_local_type(text, base_type, macros, size_cache)
             if sized is None:
-                out.append((name, 4, 4))              # external type -- documented fallback
+                out.append((name, 4, 4, False))       # external type -- documented fallback, NOT exact
                 continue
-            elem_size, elem_align = sized
+            elem_size, elem_align, elem_exact = sized
         if has_array:
             if arr_count is None:
-                out.append((name, 4, 4))              # unresolvable count -- documented fallback
+                out.append((name, 4, 4, False))       # unresolvable count -- documented fallback, NOT exact
             else:
-                out.append((name, elem_size * arr_count, elem_align))
+                out.append((name, elem_size * arr_count, elem_align, elem_exact))
         else:
-            out.append((name, elem_size, elem_align))
+            out.append((name, elem_size, elem_align, elem_exact))
     return out
 
 
 def _layout_members(text, body, macros, size_cache):
-    """(offsets: {name: off}, total_size, max_align) for a struct's own `body`
-    text (between its braces), with natural ARM EABI alignment (no #pragma pack
-    anywhere in this codebase) -- the same layout arm-none-eabi-gcc gives the
-    real struct."""
+    """(offsets: {name: off}, total_size, max_align, all_exact) for a struct's
+    own `body` text (between its braces), with natural ARM EABI alignment (no
+    #pragma pack anywhere in this codebase) -- the same layout arm-none-eabi-gcc
+    gives the real struct, UP TO the first member this walker can't size for
+    certain. D1 (BACKLOG #106 G4's false-PASS fix): once a member comes back
+    inexact (an external type, an unresolvable array count, or an unresolvable
+    enum -- see _classify_member()), its OWN offset is still recorded (every
+    member before it was exact, so the running `off` up to and including this
+    one is trustworthy) but nothing AFTER it is -- the walk stops there
+    (`all_exact=False`). struct_field_offsets() surfaces this as a normal
+    'no such field' FATAL for any declaration below the break, instead of the
+    old behaviour of silently keeping every field 'found' at a guessed offset."""
     stmts = [s.strip() for s in body.split(';') if s.strip()]
     offsets = {}
     off = 0
     max_align = 1
+    all_exact = True
+    stop = False
     for s in stmts:
-        for name, size, align in _classify_member(s, macros, text, size_cache):
+        if stop:
+            break
+        for name, size, align, exact in _classify_member(s, macros, text, size_cache):
             off = (off + align - 1) // align * align
             offsets[name] = off
             off += size
             max_align = max(max_align, align)
+            if not exact:
+                all_exact = False
+                stop = True
+                break              # break_here -- nothing declared below an
+                                    # imprecise member's own (trustworthy) offset
+                                    # can be trusted; see the docstring above.
     total = (off + max_align - 1) // max_align * max_align
-    return offsets, total, max_align
+    return offsets, total, max_align, all_exact
 
 
 def struct_field_offsets(header_text, struct_name):
@@ -1031,13 +1144,17 @@ def struct_field_offsets(header_text, struct_name):
     walker doesn't understand FAILS the build instead of silently keeping a
     stale offset (D1, the header-drift half of the fix; G4 extends it to
     multi-typedef headers, arrays, multi-declarators, and locally-nested
-    struct/enum members)."""
+    struct/enum members). A field below the first inexact member (see
+    _layout_members()) is simply ABSENT from the returned dict -- the caller
+    (verify_field_declarations()) already FATALs on a declared field that
+    isn't in this dict, so an imprecise header region fails loudly instead of
+    verifying a guessed offset."""
     t = _strip_c_comments(header_text)
     found = _struct_or_enum_body(t, struct_name)
     if found is None or found[0] != 'struct':
         raise ValueError(f"struct {struct_name!r} not found")
     macros = _parse_int_macros(t)
-    offsets, _total, _align = _layout_members(t, found[1], macros, {})
+    offsets, _total, _align, _all_exact = _layout_members(t, found[1], macros, {})
     return offsets
 
 
