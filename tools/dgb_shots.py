@@ -1080,9 +1080,10 @@ def run_m1_map(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     s.shot("01_map_1to1", "M1: the player's own current map at 1:1, centred on a "
                            "5x5-block viewport clamped to the map's own bounds "
                            "(no connections/stitching -- that is M2); the red frame "
-                           "marks the player's own block (3,2), the open floor tile "
-                           "one step from the west edge, NOT the PC counter (D1: "
-                           "block = coord >> 1, one halving, not two)")
+                           "marks the player's own block (3,2) -- the open floor "
+                           "block, roughly centred on the 7-wide map -- NOT the PC "
+                           "counter two rows up (D1: block = coord >> 1, one "
+                           "halving, not two)")
 
     s.tap("SEL", settle=60)                                  # shell-wide toggle -> stretched
     s.shot("01b_stretched", "M1: SELECT stretches the same view to 240x160 -- the "
@@ -1112,22 +1113,26 @@ def run_m1_map(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessio
     s.shot("02_panned_right_to_east_clamp", "M1: RIGHT once reaches the east clamp "
                                              "(vbx=1 -> 2, width 7 - the 5-block "
                                              "viewport = 2) -- the marker is no "
-                                             "longer centred, one block from the "
-                                             "viewport's own right edge")
+                                             "longer centred, now one block from "
+                                             "the viewport's own LEFT edge (its "
+                                             "fixed map block stayed put; the "
+                                             "viewport panned right past it)")
     s.tap("RIGHT", settle=gb_shots.SETTLE)
     s.shot("03_east_clamp_no_op", "M1: a second RIGHT from the east clamp is a "
                                    "true no-op -- pixel-identical to the previous "
                                    "shot (vby also never moves off 0 this whole "
-                                   "visit: height 4 <= the 5-block viewport)")
+                                   "visit: height 4 <= the 5-block viewport)",
+           allow_same=True)
     s.tap("LEFT", settle=gb_shots.SETTLE)
     s.shot("04_panned_left_via_dpad", "M1 D6: the D-PAD's own LEFT pans the "
                                        "viewport one block left (vbx=2 -> 1) -- L "
                                        "no longer does this (it is the SIZE "
                                        "toggle, shot 01d above)")
     s.tap("LEFT", settle=gb_shots.SETTLE)
-    s.shot("05_west_clamp", "M1: LEFT again reaches the west clamp (vbx=0) -- one "
-                             "step past the marker's own block (3), which is NOT "
-                             "at the edge, matching the corrected initial vbx=1")
+    s.shot("05_west_clamp", "M1: LEFT again reaches the west clamp (vbx=0) -- the "
+                             "marker is now near the viewport's own RIGHT edge "
+                             "(three blocks from the left), the mirror image of "
+                             "shot 02's east-clamp position")
 
     s.tap("B", settle=gb_shots.BIG_SETTLE)                   # close -> back to the box grid
     s.shot("06_closed_back_to_grid", "M1: B closes the map screen -- back to the "
@@ -1173,7 +1178,7 @@ def run_m1_map_vclamp(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots
     s.tap("UP", settle=gb_shots.SETTLE)
     s.shot("03_north_clamp_no_op", "M1 vclamp: one more UP is a true no-op at the "
                                     "north clamp -- pixel-identical to the previous "
-                                    "shot")
+                                    "shot", allow_same=True)
 
     s.press_n("DOWN", 67, settle=gb_shots.SETTLE)
     s.shot("04_south_clamp", "M1 vclamp: 67 DOWNs from the north clamp reach the "
@@ -1181,7 +1186,7 @@ def run_m1_map_vclamp(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots
                               "viewport)")
     s.tap("DOWN", settle=gb_shots.SETTLE)
     s.shot("05_south_clamp_no_op", "M1 vclamp: one more DOWN is a true no-op at "
-                                    "the south clamp")
+                                    "the south clamp", allow_same=True)
 
     s.tap("B", settle=gb_shots.BIG_SETTLE)
     s.shot("06_closed", "M1 vclamp: B closes the map screen, same as run_m1_map()")
