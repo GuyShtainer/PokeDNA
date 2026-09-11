@@ -1693,6 +1693,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBSCR_REASON_NO_ROM      "no ROM registered"
 #define PDNA_GBSCR_REASON_NO_STACK    "not enough stack"
 #define PDNA_GBSCR_REASON_OPEN        "ROM art unavailable"
+#define PDNA_GBSCR_REASON_OPEN_DETAIL "(bad ROM or non-English)"
 #define PDNA_GBSCR_REASON_BAD_GEN     "not a Gen-1/Gen-2 request"
 #define PDNA_GBSCR_REASON_NO_TAIL     "no tile-bank memory"
 /* BACKLOG #98 D2 (review-sonnet ab81b56): the delta-gb fused-ROM lookup

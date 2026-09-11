@@ -439,6 +439,7 @@ static const char* const kReasonNoStack = PDNA_GBSCR_REASON_NO_STACK;
  * re-verify): now lives on its OWN second line (`header2`), not appended to
  * the title -- see PDNA_GBTR_FALLBACK_TITLE/GBTR_HEADER2_MAXW (pdna_layout.h). */
 static const char* const kReasonOpen    = PDNA_GBSCR_REASON_OPEN;
+static const char* const kReasonOpenDetail = PDNA_GBSCR_REASON_OPEN_DETAIL;
 static const char* const kReasonBadGen  = PDNA_GBSCR_REASON_BAD_GEN;
 static const char* const kReasonNoTail  = PDNA_GBSCR_REASON_NO_TAIL;
 #ifdef PDNA_DELTA
@@ -1061,7 +1062,10 @@ void __attribute__((noinline)) gbscr_run_demo(uint8_t gen) {
   }
   if (!gbscr_open(gen, &gs, tail, need, GBSCR_NEED_TEXTBOX, &reason)) {
     app_arena_release();
-    msg_wait("GB SCREEN SHELL", UI_WARN, reason ? reason : "unavailable", 0);
+    if (reason == kReasonOpen)   /* the ROM-art case gets its detail line; other reasons keep their own headline (tiny1 review A3) */
+      msg_wait("GB SCREEN SHELL", UI_WARN, kReasonOpen, kReasonOpenDetail);
+    else
+      msg_wait("GB SCREEN SHELL", UI_WARN, reason ? reason : "unavailable", 0);
     return;
   }
 
