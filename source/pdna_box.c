@@ -2911,11 +2911,23 @@ out:
  * the "safe-direction inflation" BACKLOG #102 exists to remove. tools/stack_edges.txt
  * now declares `gated gb_art_fetch need=6144` and `gated gb_art_fetch_icon.constprop.0
  * need=6144` (the literal PDNA_GB_FETCH_NEED/PDNA_GB_ICON_NEED values, source/
- * gb_art_source.h:19,44) -- the walker mechanically re-verifies EVERY run that each
- * subtree's true measured size stays <= its declared need (FATAL if not: "gated
- * subtree <fn> measures <M> > declared need <N>: the runtime gate would not protect
- * it") before excluding it from a `--root` re-derivation other than main; --root main
- * (the whole-program guard) always walks both subtrees fully, ungated.
+ * gb_art_source.h:19,44). D2 (review-opus fix pass, 2026-09-12) corrects an
+ * overclaim this comment used to make here: this re-verification is NOT part of
+ * any build -- `make`/`make artless` run stack_budget.py with `--root main`
+ * (Makefile), where enforce_gates=False and a gated declaration is a deliberate
+ * no-op (see deepest_from()'s own BACKLOG #102 docstring for why). Re-run
+ * `--root pcp_open_party_strip_inner` BY HAND on both gate ELFs after any change
+ * under pdna_origin_art_portrait / gb_art_source.c, and separately re-check
+ * `--root fetch_pic_ex.constprop.0` (5,864 B on the artless ELF, 2026-09-12)
+ * against PDNA_GB_FETCH_NEED (6,144) -- that whole chain, not gb_art_fetch's own
+ * 5,752 B alone, is what the runtime gate must cover (fetch_pic_ex.constprop.0
+ * and gb_art_pic_cb's own frames sit BETWEEN the gate check in
+ * pdna_origin_art_portrait and gb_art_fetch), with 280 B of margin today. (A
+ * `--root fetch_pic_ex.constprop.0` run against a build tree where gb_art_fetch
+ * is STILL declared `gated` under-reports this number, since that declaration's
+ * own exclusion would apply recursively to the very subtree being re-checked --
+ * temporarily comment the `gated gb_art_fetch` line out of tools/stack_edges.txt
+ * for this one measurement, exactly how the 5,864 figure above was obtained.)
  *
  * With both descents excluded, the new heaviest chain for this root is the OLD
  * SD-write branch BACKLOG #84b's own comment already named as the runner-up:
