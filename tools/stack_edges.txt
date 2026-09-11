@@ -311,7 +311,7 @@ rom_gbbase_gen1 argsites=1 -> fused_gb_slice_read gb_read
 g1_bs_verify argsites=1 -> gb_art_read fused_gb_slice_read gb_read
 g2_bd_verify argsites=1 -> gb_art_read fused_gb_slice_read gb_read
 g2_pp_verify argsites=1 -> gb_art_read fused_gb_slice_read gb_read
-scan_one.constprop.0 argsites=1 -> gb_art_read fused_gb_slice_read icon_ptrs_cb
+scan_one.constprop.0@rom_gbicon argsites=1 -> gb_art_read fused_gb_slice_read icon_ptrs_cb
 # widened (BACKLOG #84b seventh pass) to include icon_ptrs_cb -- can't cheaply tell
 # whether THIS nonfield site or the RomGbIcon.read@0 field site (declared above) is
 # the real `cb(...)` dispatch; unioned into both for safety, same as the RomGbIcon.
@@ -557,7 +557,7 @@ load_g1_keyitems_bits argsites=1 -> gbscr_sd_read fused_gb_slice_read gb_art_rea
 # same way while filling it in.
 
 RomGbIcon.read @0 in parse_header@rom_gbicon,rom_gbicon_kind,rom_gbicon_open_loc,rom_gbicon_tiles -> gb_art_read fused_gb_slice_read gb_read
-RomGbIcon.read @0 in locate@rom_gbicon,scan_one.constprop.0 -> gb_art_read fused_gb_slice_read gb_read icon_ptrs_cb
+RomGbIcon.read @0 in locate@rom_gbicon,scan_one.constprop.0@rom_gbicon -> gb_art_read fused_gb_slice_read gb_read icon_ptrs_cb
 # locate@rom_gbicon/scan_one.constprop.0 widened to include icon_ptrs_cb (rom_gbicon.c:
 # 187, `scan_one(gi, icon_ptrs_cb, ...)`, previously `addrtaken-ok` below) -- rom_
 # gbicon.c's scan_one() takes the callback as a PARAMETER (not a struct field) but its
@@ -578,6 +578,39 @@ RomGbSprite.read @0 in locate@rom_gbsprite -> gb_art_read fused_gb_slice_read gb
 # can't-cheaply-split-the-merge reasoning as rom_gbui_open/RomGbIcon.read above.
 # source/rom_gbsprite.h:173-174: `GbReadFn read;` is RomGbSprite's first member. Every
 # caller above takes `RomGbSprite*`/`const RomGbSprite*` (grepped rom_gbsprite.c).
+
+# BACKLOG #91 M1: source/rom_gbmap.h's `GbReadFn read;` is RomGbMap1's first member
+# (rom_gbmap.h: "GbReadFn read;" at offset 0). Every caller below takes a
+# `const RomGbMap1*`/`RomGbMap1*` and dereferences it through `rdg()` (rom_gbmap.c),
+# which the compiler inlines into each -- same "no separate accessor symbol in this
+# ELF" shape rom_gbui.c's own `rd()` already has (RomGbUi.read@0 above).
+# gbmap_load_viewport_blocks (source/pdna_gbmap.c) calls `st->g.read(...)` directly on
+# its own GbMapState.g field (a RomGbMap1, embedded at GbMapState offset 0 -- same
+# struct, same field offset 0). Implementations, from every rgm1_open() call site
+# (grepped pdna_gbmap.c): gbmap_sd_read (SD/artless build) and fused_gb_slice_read
+# (delta build, #ifdef PDNA_DELTA).
+RomGbMap1.read @0 in rgm1_header,rgm1_tileset,rgm1_block,rgm1_tile2bpp,gbmap_load_viewport_blocks -> gbmap_sd_read fused_gb_slice_read
+# rgm1_open's OWN scan (rom_gbmap.c's file-local `rd()`/`scan_one()`, both inlined into
+# rgm1_open -- no separate symbol) dispatches through a LOCAL `Scan.read` struct built
+# on rgm1_open's own stack frame, not a heap/argument struct field the walker can key an
+# offset on this deep into the inlined chain -- same "falls to register dispatch" shape
+# noted for rom_gbui.c's Scan.read@0 entry above, but rgm1_open's OWN 3 call sites (the
+# MapHeaderBanks/MapHeaderPointers/Tilesets scans, one each) show up unqualified rather
+# than under a Scan.read@0 class. Site count verified against this build's disassembly
+# (4: the MapHeaderBanks/MapHeaderPointers/Tilesets scans, one `rd()` each, PLUS the
+# Yellow-shaped indirect branch's own follow-up `rd()` into GetMapHeaderPointer's
+# function body -- all inlined into rgm1_open, no separate symbols).
+rgm1_open argsites=4 -> gbmap_sd_read fused_gb_slice_read
+# rom_gbmap.c's OWN file-local `scan_one()` (called 3 times inside rgm1_open, for the
+# MapHeaderBanks/MapHeaderPointers/Tilesets anchors -- 3+ call sites is why GCC keeps
+# it as its own symbol rather than inlining, same "stays separate" rule rom_gbui.c's
+# own anchor_pack/try_badgeleader_hit note documents above). Two indirect sites inside
+# it: `s->read(...)` (Scan.read@0, the SAME field-0 shape rom_gbui.c's own Scan struct
+# already has -- a different translation unit's struct of the same name/shape, offset
+# still 0) and `cb(w + i)` (the ScanCb callback PARAMETER, one call site -- rom_gbmap.c's
+# 3 ScanCb implementations: cb_banks/cb_hdr/cb_ts).
+Scan.read @0 in scan_one.constprop.0@rom_gbmap -> gbmap_sd_read fused_gb_slice_read
+scan_one.constprop.0@rom_gbmap argsites=1 -> cb_banks cb_hdr cb_ts
 
 Br.rd @0 in br_byte -> gb_art_read fused_gb_slice_read gb_read
 # gb_sprite_codec.c's own file-local `Br` bit-reader (line ~28): `GbReadFn rd;` is its
