@@ -302,6 +302,15 @@ static uint8_t first_unown_seen_raw(GbSession* s, GbGame g) {
   if (off) (void)gbs_read_field(s, off, &v, 1);
   return v;
 }
+/* R1 (b87 fix pass 2): mirrors tests/host_gbsurgery_tool.c's do_dexset() two-call
+ * shape for national dex 201's state 0/1/2 = none/seen/caught -- the exact real
+ * caller shape `--op dexset 201 N` drives (gbdex_set(owned=true) first, then
+ * gbdex_set(owned=false)). */
+static GbsStatus shim201(GbSession* s, int state) {
+  GbsStatus st = gbdex_set(s, 201, true, state >= 2);
+  if (st != GBS_OK) return st;
+  return gbdex_set(s, 201, false, state >= 1);
+}
 static void unown_gate_sync(const char* file, uint8_t expect_gen) {
   uint32_t len = load(file);
   if (!len) { printf("  SKIP %s (not present)\n", file); return; }
@@ -377,6 +386,84 @@ static void unown_gate_sync(const char* file, uint8_t expect_gen) {
    * (the "if wFirstUnownSeen reads 0" guard) -- verified directly, not just implied. */
   CHECK(gbdex_set(&s, 201, false, true) == GBS_OK, "mark #201 seen again (wFirstUnownSeen already 1)");
   CHECK(first_unown_seen_raw(&s, g) == 1, "B-repeat: wFirstUnownSeen stays 1, never reseeded to a different letter");
+  /* R1 (b87 fix pass 2): B-repeat is also the "already has a letter" case R1's own
+   * else branch targets -- the gate bit must come back here too, not just when
+   * seeding a brand-new letter. */
+  CHECK((status_flags_raw(&s, g) & 0x02) != 0, "B-repeat: the gate bit is ALSO restored (R1's else branch)");
+
+  /* R1 (b87 fix pass 2, mutation-proven DO-NOT-SHIP finding): on a save that
+   * ALREADY has a letter recorded (wFirstUnownSeen != 0, the exact state this
+   * test is in right now), a Wipe-ALL-then-Undo-shaped round trip -- clear #201's
+   * seen bit (clears the gate, case C's own path), then set it again -- used to
+   * leave the gate PERMANENTLY OFF (the `on` branch's `if (first_unown_seen_is_
+   * zero(...))` guard skipped the re-arm entirely once a letter already existed).
+   * shim201() mirrors host_gbsurgery_tool.c's do_dexset() two-call shape
+   * (owned=true first, then owned=false) for dex 201's state 0/1/2 = none/seen/
+   * caught, the exact real caller shape `--op dexset 201 N` drives. */
+  uint8_t baseline_status = status_flags_raw(&s, g);
+  CHECK((baseline_status & 0x02) != 0, "R1 setup: baseline gate bit is set before the off-then-on round trip");
+  CHECK(shim201(&s, 0) == GBS_OK, "R1: dexset 201 0 (Wipe/none)");
+  CHECK((status_flags_raw(&s, g) & 0x02) == 0, "R1: gate bit cleared by the wipe half, as expected");
+  CHECK(shim201(&s, 2) == GBS_OK, "R1: dexset 201 2 (Catch/caught again)");
+  CHECK(status_flags_raw(&s, g) == baseline_status,
+        "R1: #201 off-then-on restores the gate bit to its exact baseline (was stuck OFF pre-fix)");
+}
+
+/* R1 (b87 fix pass 2): a whole-save byte-exact proof that dex_bulk()'s own Wipe
+ * ALL + Undo (pdna_pick.c, GBA-only -- not host-compilable) is not broken by the
+ * R1 fix. Mirrors gbdex_shim_get/gbdex_shim_set's own shape (pdna_gbdex.c, static
+ * there): state 0/1/2 = none/seen/caught via gbdex_get/gbdex_set(owned=true)+
+ * (owned=false), the SAME two real functions the shims call through -- snapshot
+ * every species 1..cap, wipe every species to 0 (state==none), then restore every
+ * species from the snapshot (Undo), exactly dex_bulk's own Catch/See/Wipe-ALL +
+ * Undo sequence. gbs_finish() is called once at the very end (gbdex_set's own
+ * documented batching contract), so the Gen-2 checksums are recomputed exactly
+ * once, matching how pdna_gbdex() itself only finishes after a whole visit.
+ * Expects the restored image to be byte-IDENTICAL to the pristine one except
+ * Gold's own checksum-2 (GBF2_GS_CKSUM2, 0x7E6D-0x7E6E, tests/gen12_fixture.h) --
+ * a real, expected recompute (the byte sum algorithm does not commute with a
+ * wipe-then-restore round trip bit-for-bit the way a no-op would), not a
+ * regression. Crystal carries no such artifact -- 0 bytes must differ there. */
+static void wipe_all_undo_byte_exact(const char* file, uint8_t expect_gen) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  if (expect_gen != GB_GEN2) { printf("  SKIP %s (R1's byte-exact proof is Gen 2 only)\n", file); return; }
+  g_ran++;
+  uint8_t pristine[G2_SAVE_SIZE + G2_MAX_RTC_TAIL];
+  memcpy(pristine, g_img, len);
+
+  GbSession s;
+  CHECK(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "gbs_open");
+  int max = gb_max_species(s.gen);
+
+  static int8_t snap[251];   /* DEX_NAT_MAX would pull pdna_pick.c's own macro -- 251 covers every Gen-2 cap */
+  for (int nat = 1; nat <= max; nat++) {
+    int state = gbdex_get(&s, (uint16_t)nat, true) ? 2 : gbdex_get(&s, (uint16_t)nat, false) ? 1 : 0;
+    snap[nat - 1] = (int8_t)state;
+  }
+  for (int nat = 1; nat <= max; nat++) {
+    CHECK(gbdex_set(&s, (uint16_t)nat, true, false) == GBS_OK, "wipe: owned=false");
+    CHECK(gbdex_set(&s, (uint16_t)nat, false, false) == GBS_OK, "wipe: seen=false");
+  }
+  for (int nat = 1; nat <= max; nat++) {
+    int want = snap[nat - 1];
+    CHECK(gbdex_set(&s, (uint16_t)nat, true, want >= 2) == GBS_OK, "undo: restore owned");
+    CHECK(gbdex_set(&s, (uint16_t)nat, false, want >= 1) == GBS_OK, "undo: restore seen");
+  }
+  CHECK(gbs_finish(&s) == GBS_OK, "gbs_finish after the whole Wipe-ALL + Undo batch");
+
+  int ndiff = 0; uint32_t first_diff = 0;
+  for (uint32_t i = 0; i < len; i++) if (g_img[i] != pristine[i]) { if (!ndiff) first_diff = i; ndiff++; }
+  bool is_gold = (s.g2w.sv.version != G2_VER_CRYSTAL);
+  if (is_gold) {
+    CHECK(ndiff == 2 && (first_diff == 0x7E6D || first_diff == 0x7E6E),
+          "Gold: Wipe ALL + Undo is byte-exact except the known 2-byte checksum-2 repair (0x7E6D-0x7E6E)");
+    printf("  -- %s: %d byte(s) differ after Wipe-ALL+Undo (first @%#06x) -- want 2 @ 0x7e6d/0x7e6e\n",
+           file, ndiff, first_diff);
+  } else {
+    CHECK(ndiff == 0, "Crystal: Wipe ALL + Undo is byte-exact, 0 bytes differ");
+    printf("  -- %s: %d byte(s) differ after Wipe-ALL+Undo (want 0)\n", file, ndiff);
+  }
 }
 
 int main(void) {
@@ -401,6 +488,9 @@ int main(void) {
   unown_gate_sync("Red.sav", GB_GEN1);
   unown_gate_sync("Gold.sav", GB_GEN2);
   unown_gate_sync("Crystal.sav", GB_GEN2);
+
+  wipe_all_undo_byte_exact("Gold.sav", GB_GEN2);
+  wipe_all_undo_byte_exact("Crystal.sav", GB_GEN2);
 
   printf("\n%s: %d check(s), %d failure(s), %d file(s) exercised\n",
          g_fail ? "FAIL" : "OK", g_check, g_fail, g_ran);

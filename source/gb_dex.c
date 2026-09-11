@@ -132,11 +132,22 @@ GbsStatus gbdex_set(GbSession* s, uint16_t dex, bool owned, bool on) {
       /* Marking Unown seen: DebugRoomMenu_PokedexDex's own behaviour -- a save
        * that has never recorded ANY Unown letter gets seeded with UNOWN A
        * (letter 0), the same append+gate path a real encounter takes. A save
-       * that already has a recorded letter is left alone (the letter/gate stay
-       * whatever the player's actual encounters already set). */
+       * that already has a recorded letter keeps its letter/wUnownDex as-is,
+       * but the gate bit itself must still come back: without this else, a
+       * Wipe-ALL-then-Undo round trip (clear #201's seen bit, which clears the
+       * gate via the branch below, then set it again) left the gate
+       * permanently OFF on any save that had ever met an Unown -- R1 (b87 fix
+       * pass 2, mutation-proven: Gold 0x43->0x41->0x41, Crystal 0xc3->0xc1-
+       * >0xc1, should have returned to 0x43/0xc3). */
       if (first_unown_seen_is_zero(s, g)) {
-        GbsStatus ust = gbdex_unown_set(s, 0, true);   /* UNOWN A */
+        GbsStatus ust = gbdex_unown_set(s, 0, true);   /* UNOWN A -- also re-arms the gate */
         if (ust != GBS_OK && ust != GBS_ERR_FULL) return ust;
+      } else {
+        /* A letter is already on record: re-marking #201 seen must put the gate bit
+         * back, or the clear half below is a one-way door (Wipe ALL + Undo would
+         * silently disable the player's own Unown Pokedex page). */
+        GbsStatus gst = status_flags_set_unown_bit(s, g, true);
+        if (gst != GBS_OK) return gst;
       }
     } else {
       /* Clearing Unown seen: DebugRoomMenu_PokedexClr's own behaviour -- just the

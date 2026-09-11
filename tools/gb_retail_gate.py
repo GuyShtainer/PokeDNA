@@ -1232,6 +1232,51 @@ def run_unown_gate_case(name, info, rom, sav, work, binary, python, vendor, tall
                 f"dexset 201 2: status {base['status']:#04x}->{after['status']:#04x} "
                 f"fus {base['fus']}->{after['fus']} (want bit1 set, fus != 0)")
 
+    # ---- R1 (b87 fix pass 2, mutation-proven DO-NOT-SHIP finding) ----
+    # No --op unownreset here on purpose: Guy's own corpus saves already have an
+    # Unown letter recorded (wFirstUnownSeen != 0), the exact "already has a
+    # letter" state the original D4 fix's `on` branch skipped re-arming the gate
+    # for. `dexset 201 0` (Wipe/none, the same shape a bulk Wipe ALL + the dex-201
+    # cell takes) clears the gate; `dexset 201 2` (Catch/caught again, the same
+    # shape an Undo restoring it takes) must put the gate bit back to its exact
+    # pre-wipe baseline -- pre-fix it stayed OFF permanently on a save that had
+    # ever met an Unown.
+    baseline = read_state(sav, "unown_gate_baseline")
+    baseline_ok = (baseline["rc"] == 0 and baseline["svbk_ok"] and baseline["status"] is not None
+                  and (baseline["status"] & 0x02) != 0)
+    tally.record("unown gate R1 baseline (BACKLOG #87 D4)", baseline_ok,
+                f"corpus save as-is: status={baseline['status']:#04x} fus={baseline['fus']} "
+                f"(want bit1 already set -- this save has met an Unown)"
+                if baseline["status"] is not None else f"read failed: {baseline}")
+    if not baseline_ok:
+        return
+
+    wipe_sav = work / "unown_gate_r1_wipe.sav"
+    rc, out, err = run_surgery(binary, sav, wipe_sav, [["dexset", "201", "0"]])
+    if rc != 0:
+        tally.record("unown gate R1 wipe (BACKLOG #87 D4)", False, f"surgery refused: {err.strip()}")
+        return
+    wiped = read_state(wipe_sav, "unown_gate_r1_wipe")
+    wipe_ok = (wiped["rc"] == 0 and wiped["svbk_ok"] and wiped["status"] is not None
+              and (wiped["status"] & 0x02) == 0)
+    tally.record("unown gate R1 wipe (BACKLOG #87 D4)", wipe_ok,
+                f"dexset 201 0: status {baseline['status']:#04x}->{wiped['status']:#04x} (want bit1 clear)")
+    if not wipe_ok:
+        return
+
+    recatch_sav = work / "unown_gate_r1_recatch.sav"
+    rc, out, err = run_surgery(binary, wipe_sav, recatch_sav, [["dexset", "201", "2"]])
+    if rc != 0:
+        tally.record("unown gate R1 restore (BACKLOG #87 D4)", False, f"surgery refused: {err.strip()}")
+        return
+    restored = read_state(recatch_sav, "unown_gate_r1_recatch")
+    restore_ok = (restored["rc"] == 0 and restored["svbk_ok"]
+                 and restored["status"] == baseline["status"])
+    tally.record("unown gate R1 restore (BACKLOG #87 D4)", restore_ok,
+                f"dexset 201 2 (no unownreset first): status {wiped['status']:#04x}->"
+                f"{restored['status']:#04x}, want back to baseline {baseline['status']:#04x} "
+                f"({'MATCH' if restore_ok else 'MISMATCH -- gate stuck off, R1 regression'})")
+
 
 def run_boxname_case(name, info, rom, sav, work, binary, python, vendor, tally):
     """BACKLOG #94, via gb_boxnames.h's gbbn_rename -- Gen 2 only (gbbn_rename refuses
