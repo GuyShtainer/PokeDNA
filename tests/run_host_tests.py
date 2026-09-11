@@ -113,7 +113,7 @@ def main() -> int:
             out = (r.stdout + r.stderr).strip()
 
             if r.returncode == 0 and out.startswith("SKIP ("):
-                print(f"  {name:<26} SKIP ({out.splitlines()[0]})")   # a test that found its fixture absent (BACKLOG #115)
+                print(f"  {name:<26} {out.splitlines()[0]}")   # a test that found its fixture absent (BACKLOG #115)
                 nskip += 1
             elif r.returncode == 0:
                 print(f"  {name:<26} ok")
