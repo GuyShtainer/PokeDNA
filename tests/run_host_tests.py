@@ -112,8 +112,9 @@ def main() -> int:
             r = subprocess.run([binpath, *args], capture_output=True, text=True)
             out = (r.stdout + r.stderr).strip()
 
-            if r.returncode == 0 and out.startswith("SKIP ("):
-                print(f"  {name:<26} {out.splitlines()[0]}")   # a test that found its fixture absent (BACKLOG #115)
+            skip_line = next((ln for ln in out.splitlines() if ln.startswith("SKIP (")), None)
+            if r.returncode == 0 and skip_line:
+                print(f"  {name:<26} {skip_line}")   # a test that found a fixture absent, on ANY line (BACKLOG #115)
                 nskip += 1
             elif r.returncode == 0:
                 print(f"  {name:<26} ok")
