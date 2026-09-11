@@ -2727,19 +2727,35 @@ def scan_address_taken(builddir, dump_text, name_at, sections, section_dumps):
     fetched for read_build_dir_stamp() (no extra objdump invocations) and a direct
     caller/test is never surprised by a hidden shell-out.
 
-    Returns (taken: set, detail: {fn: [locations]}) -- `detail` only ever names
-    DATA-section relocation hits; the literal-pool and third-party-fallback classes
-    have no single "containing symbol" worth naming (a literal pool is already
-    "somewhere in this function's own pool"; a crt/tonc table's location is a
-    coincidence-scan hit by construction, not a proven relocation site)."""
-    taken, detail = scan_relocated_addresses(builddir, name_at)
-    taken |= scan_text_literal_pool(dump_text, name_at)
+    Returns (taken: set, detail: {fn: [locations]}, provenance: {fn: 'reloc'|'lit'|
+    'raw'}) -- `detail` only ever names DATA-section relocation hits; the
+    literal-pool and third-party-fallback classes have no single "containing
+    symbol" worth naming (a literal pool is already "somewhere in this function's
+    own pool"; a crt/tonc table's location is a coincidence-scan hit by
+    construction, not a proven relocation site). `provenance` is D2's (BACKLOG
+    #106) per-name answer to "which of the three classes found this" -- a name
+    can only ever be reached by 'raw' if own_function_names() ALREADY placed it
+    outside this project's own object files (scan_third_party_words_raw() is
+    restricted to exactly that set), so 'reloc' and 'lit' take priority whenever
+    a name happens to be provable more than one way."""
+    reloc_taken, detail = scan_relocated_addresses(builddir, name_at)
+    lit_taken = scan_text_literal_pool(dump_text, name_at)
 
     own = own_function_names(builddir)
     third_party = {name for name in name_at.values() if name not in own}
+    raw_taken = set()
     if third_party:
-        taken |= scan_third_party_words_raw(sections, section_dumps, name_at, third_party)
-    return taken, detail
+        raw_taken = scan_third_party_words_raw(sections, section_dumps, name_at, third_party)
+
+    taken = reloc_taken | lit_taken | raw_taken
+    provenance = {}
+    for fn in raw_taken:
+        provenance[fn] = 'raw'
+    for fn in lit_taken:
+        provenance[fn] = 'lit'
+    for fn in reloc_taken:
+        provenance[fn] = 'reloc'          # highest priority: a real relocation record
+    return taken, detail, provenance
 
 
 # === D2 (BACKLOG #84b fifth pass): the ELF names the build dir it was linked from =====
@@ -3255,10 +3271,40 @@ def main(argv):
     # sweep already accounts for it. The sweep is a property of the whole image, not of
     # whichever root a re-measurement happens to pass, so it only runs for --root main.
     if args.root == "main":
-        taken, taken_detail = scan_address_taken(args.builddir, dump_text, analysis["name_at"],
-                                                  sections, section_dumps)
+        taken, taken_detail, taken_provenance = scan_address_taken(
+            args.builddir, dump_text, analysis["name_at"], sections, section_dumps)
         declared_or_reachable = all_impls | reachable | isr_decls | addrtaken_ok
-        orphans = sorted(taken - declared_or_reachable)
+        candidates = sorted(taken - declared_or_reachable)
+
+        # D2 (BACKLOG #106): scan_third_party_words_raw() is still a coincidence
+        # scanner (a data word happening to equal a function's address, restricted
+        # to the small third-party name set -- see scan_address_taken()'s
+        # docstring) and it cannot be deleted (it is the only path that finds
+        # isr_master, the m4/m5_surface tables, .init_array entries, sbmp16_* and
+        # the rest of the crt/libgcc/tonc set a relocation read can never see). A
+        # name found ONLY that way is bounded the SAME way an addrtaken-ok
+        # exemption is bounded below (G1): if its own worst chain, AS IF IT WERE
+        # --root, is <= EXEMPT_MAX_DEEPEST, a coincidental hit on it cannot hide
+        # an arbitrarily heavy chain, so it is a NOTE, not a build-breaking FATAL.
+        # A reloc/lit hit is never downgraded -- those are proof, not coincidence.
+        orphans = []
+        bounded_notes = []
+        for fn in candidates:
+            if taken_provenance.get(fn) == 'raw' and fn in analysis["funcs"]:
+                own_total, _own_path, _own_cycles = deepest_from(
+                    fn, analysis["edges"], su_sizes, estimated,
+                    overrides=frame_overrides, scc_of=scc_of)
+                if own_total <= EXEMPT_MAX_DEEPEST:
+                    bounded_notes.append((fn, own_total))
+                    continue
+            orphans.append(fn)
+
+        if bounded_notes:
+            print("\n*** STACK_BUDGET NOTE: third-party raw hit, bounded (own worst chain "
+                  f"<= {EXEMPT_MAX_DEEPEST} B, no addrtaken-ok line needed):")
+            for fn, own_total in bounded_notes:
+                print(f"***   {fn}: own worst chain {format_num(own_total)} B")
+
         if orphans:
             print("\n*** STACK_BUDGET ADDRESS-TAKEN, UNREACHED, UNDECLARED:")
             for fn in orphans:

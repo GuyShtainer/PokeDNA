@@ -630,6 +630,72 @@ def test_g1_addrtaken_ok_exemption_capped_at_own_deepest_chain():
           "short_shim" not in [fn for fn, _t in heavy], heavy)
 
 
+def _d2_split_orphans(candidates, provenance, edges, su_sizes, funcs):
+    """Model of main()'s D2 orphan-vs-bounded-note split (BACKLOG #106), at the same
+    set-arithmetic/deepest_from() level test_d1_orphan_detection_catches_the_
+    planted_function and test_g1_... already use for the surrounding checks --
+    main() itself is not decomposed into a directly-callable function, so the
+    fixtures below replay its logic exactly rather than invoking the CLI."""
+    orphans, bounded = [], []
+    for fn in sorted(candidates):
+        if provenance.get(fn) == 'raw' and fn in funcs:
+            total, _path, _cycles = sb.deepest_from(fn, edges, su_sizes, {})
+            if total <= sb.EXEMPT_MAX_DEEPEST:
+                bounded.append((fn, total))
+                continue
+        orphans.append(fn)
+    return orphans, bounded
+
+
+def test_d2_third_party_raw_hit_bounded_becomes_a_note():
+    """D2 (BACKLOG #106): scan_third_party_words_raw() is a coincidence scanner that
+    can't be deleted (it's the only path that finds isr_master/m4_surface/m5_surface/
+    .init_array/sbmp16_* -- see scan_address_taken()'s docstring), so a raw-only hit
+    whose own worst chain is small enough to be harmless (<= EXEMPT_MAX_DEEPEST, the
+    SAME cap G1 already uses to bound an addrtaken-ok claim) is a NOTE, not a FATAL.
+    A HEAVIER raw-only hit still FATALs -- the bound only forgives small chains."""
+    edges = {
+        "raw_light": set(),
+        "raw_heavy": {"raw_heavy_child"},
+        "raw_heavy_child": set(),
+        "reloc_hit": set(),
+    }
+    su_sizes = {"raw_light": 0, "raw_heavy": 200, "raw_heavy_child": 100, "reloc_hit": 300}
+    funcs = set(edges) | {"reloc_hit"}
+    candidates = {"raw_light", "raw_heavy", "reloc_hit"}
+    provenance = {"raw_light": "raw", "raw_heavy": "raw", "reloc_hit": "reloc"}
+
+    orphans, bounded = _d2_split_orphans(candidates, provenance, edges, su_sizes, funcs)
+    check("(D2) a 0-B raw-only chain is a bounded NOTE, not an orphan",
+          ("raw_light", 0) in bounded and "raw_light" not in orphans, (orphans, bounded))
+    check("(D2) a 300-B raw-only chain (over the 256 B cap) still FATALs",
+          "raw_heavy" in orphans and "raw_heavy" not in [f for f, _ in bounded],
+          (orphans, bounded))
+    check("(D2) a reloc-provenance hit is NEVER downgraded to a note, even at 300 B "
+          "(reloc/lit hits are proof, not coincidence)",
+          "reloc_hit" in orphans, (orphans, bounded))
+
+
+def test_d2_mutation_dropping_the_bound_fatals_the_zero_byte_raw_hit():
+    """Mutation named in the brief: drop the bound (treat every raw-only hit as a
+    plain orphan, the pre-D2 behaviour) and the 0-B fixture above -- which should
+    be a harmless NOTE -- reproduces the old FATAL instead."""
+    edges = {"raw_light": set()}
+    su_sizes = {"raw_light": 0}
+    funcs = set(edges)
+    candidates = {"raw_light"}
+    provenance = {"raw_light": "raw"}
+    # The mutation: skip the bound entirely (as if EXEMPT_MAX_DEEPEST didn't exist).
+    orphans = sorted(candidates)   # pre-D2: every candidate is a plain orphan
+    check("(D2 mutation) without the bound, even a 0-B raw-only hit FATALs",
+          orphans == ["raw_light"], orphans)
+    # Sanity: WITH the bound (the real fix), the same fixture is a note, not an orphan.
+    real_orphans, real_bounded = _d2_split_orphans(candidates, provenance, edges, su_sizes, funcs)
+    check("(D2) ... but the real fix downgrades it to a note",
+          real_orphans == [] and real_bounded == [("raw_light", 0)],
+          (real_orphans, real_bounded))
+
+
 # === (D2, fifth pass) the ELF names the build dir it was linked from ====================
 
 class _FakeCompleted:
@@ -1883,6 +1949,8 @@ def main():
     test_d1_words_from_objdump_s_text_byte_order()
     test_d1_orphan_detection_catches_the_planted_function()
     test_g1_addrtaken_ok_exemption_capped_at_own_deepest_chain()
+    test_d2_third_party_raw_hit_bounded_becomes_a_note()
+    test_d2_mutation_dropping_the_bound_fatals_the_zero_byte_raw_hit()
     test_d2_read_build_dir_stamp_extracts_the_nul_terminated_string()
     test_d2_read_build_dir_stamp_absent_symbol_returns_none()
     test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain()
