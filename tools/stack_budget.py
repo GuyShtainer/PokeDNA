@@ -2290,13 +2290,30 @@ def _cache_path(elf):
     return elf + ".stackcache.json"
 
 
-def _elf_fingerprint(elf, builddir):
+def _elf_fingerprint(elf, builddir, edges_file=None):
+    """N3 (m1 re-verify, BACKLOG #106): `edges_file` -- the SAME path the tool
+    actually reads its declarations from (args.edges_file, whatever that resolves
+    to; None/"" is a legitimate "edges disabled" run and folds in nothing) -- is
+    now part of the fingerprint. The cache only ever stores the ELF's own
+    disassembly/symbol-table dump (see main()'s use of it), which truly doesn't
+    depend on stack_edges.txt at all; this hardening exists so that stays true by
+    construction rather than by "nothing downstream happens to read the cached
+    blob for edges-derived data today" -- a future change that DID cache
+    something edges-derived would otherwise silently reuse a stale verdict the
+    moment a maintainer touched a declaration or exemption with a cache present
+    (a real trap a reviewer's mutation attempt hit once, per the m1 re-verify)."""
     st = os.stat(elf)
     su_files = sorted(glob.glob(os.path.join(builddir, "*.su")))
     su_stat = [(f, os.path.getsize(f)) for f in su_files]
     h = hashlib.sha1()
     h.update(f"{st.st_mtime_ns}:{st.st_size}".encode())
     h.update(repr(su_stat).encode())
+    if edges_file:
+        try:
+            with open(edges_file, "rb") as f:
+                h.update(f.read())
+        except OSError:
+            pass   # matches load_extra_edges()'s own "missing edges-file is legal" handling
     return h.hexdigest()
 
 
@@ -2916,7 +2933,7 @@ def main(argv):
               "fresh, with -fstack-usage, under today's CFLAGS.", file=sys.stderr)
         return 1
 
-    fp = _elf_fingerprint(args.elf, args.builddir)
+    fp = _elf_fingerprint(args.elf, args.builddir, args.edges_file)
     cache_file = _cache_path(args.elf)
     cached = None
     if os.path.exists(cache_file):

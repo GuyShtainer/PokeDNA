@@ -1809,6 +1809,83 @@ def test_g110_missing_su_is_named():
               missing == [], missing)
 
 
+# === N3 (m1 re-verify, BACKLOG #106): the result cache keys on stack_edges.txt too =====
+
+def test_n3_elf_fingerprint_changes_when_the_edges_file_content_changes():
+    """N3: _elf_fingerprint() must fold the edges file's own bytes in -- editing a
+    declaration or an exemption (same ELF, same .su files, so the OLD fingerprint
+    was unchanged) must still produce a DIFFERENT fingerprint, so a cached
+    dump_text/sym_text blob is never reused across an edges-file edit by
+    coincidence of the ELF/.su side alone staying put."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        elf = os.path.join(d, "fake.elf")
+        with open(elf, "wb") as f:
+            f.write(b"\x00" * 16)
+        edges_a = os.path.join(d, "edges_a.txt")
+        edges_b = os.path.join(d, "edges_b.txt")
+        with open(edges_a, "w") as f:
+            f.write("addrtaken-ok some_fn\n")
+        with open(edges_b, "w") as f:
+            f.write("addrtaken-ok some_fn\naddrtaken-ok another_fn\n")
+
+        fp_a = sb._elf_fingerprint(elf, d, edges_a)
+        fp_b = sb._elf_fingerprint(elf, d, edges_b)
+        check("(N3) two different edges-file contents (same ELF, same builddir) "
+              "fingerprint DIFFERENTLY", fp_a != fp_b, (fp_a, fp_b))
+
+        fp_a_again = sb._elf_fingerprint(elf, d, edges_a)
+        check("(N3) the SAME edges-file content reproduces the SAME fingerprint "
+              "(not a nonce -- a real cache key)", fp_a == fp_a_again, (fp_a, fp_a_again))
+
+        fp_none = sb._elf_fingerprint(elf, d, None)
+        fp_empty = sb._elf_fingerprint(elf, d, "")
+        check("(N3) edges_file=None and edges_file='' (edges disabled) fingerprint "
+              "the same (both fold in nothing)", fp_none == fp_empty, (fp_none, fp_empty))
+
+        fp_missing = sb._elf_fingerprint(elf, d, os.path.join(d, "does_not_exist.txt"))
+        check("(N3) a missing edges-file path doesn't crash -- folds in nothing, "
+              "same as None (mirrors load_extra_edges()'s own 'missing is legal')",
+              fp_missing == fp_none, (fp_missing, fp_none))
+
+
+def test_n3_mutation_without_the_edges_hash_the_fingerprint_is_blind_to_the_edit():
+    """Mutation: replay the OLD _elf_fingerprint() (ELF mtime/size + .su stat list
+    only, no edges bytes) against the SAME two edges files above and show it
+    produces the IDENTICAL fingerprint for both -- exactly the masked-mutation
+    defect N3 fixes: a cache present across the edit would silently reuse the
+    previous verdict."""
+    import glob
+    import hashlib
+    import tempfile
+
+    def old_fingerprint(elf, builddir):
+        st = os.stat(elf)
+        su_files = sorted(glob.glob(os.path.join(builddir, "*.su")))
+        su_stat = [(f, os.path.getsize(f)) for f in su_files]
+        h = hashlib.sha1()
+        h.update(f"{st.st_mtime_ns}:{st.st_size}".encode())
+        h.update(repr(su_stat).encode())
+        return h.hexdigest()
+
+    with tempfile.TemporaryDirectory() as d:
+        elf = os.path.join(d, "fake.elf")
+        with open(elf, "wb") as f:
+            f.write(b"\x00" * 16)
+        edges_a = os.path.join(d, "edges_a.txt")
+        edges_b = os.path.join(d, "edges_b.txt")
+        with open(edges_a, "w") as f:
+            f.write("addrtaken-ok some_fn\n")
+        with open(edges_b, "w") as f:
+            f.write("addrtaken-ok some_fn\naddrtaken-ok another_fn\n")
+
+        fp_a = old_fingerprint(elf, d)
+        fp_b = old_fingerprint(elf, d)
+        check("(N3 mutation) without hashing the edges file, editing it produces the "
+              "SAME (stale) fingerprint -- a cache present would reuse the old verdict",
+              fp_a == fp_b, (fp_a, fp_b))
+
+
 # === BACKLOG #106 G2: the address-taken sweep only trusts a PROVEN pointer holder ======
 #
 # The old scan_address_taken() treated any 4-byte-aligned word in any ALLOC+LOAD
@@ -2060,6 +2137,8 @@ def main():
     test_f5_tarjan_sccs_iterative_3000_node_chain()
     test_f5_tarjan_sccs_small_graph_matches_known_components()
     test_g110_missing_su_is_named()
+    test_n3_elf_fingerprint_changes_when_the_edges_file_content_changes()
+    test_n3_mutation_without_the_edges_hash_the_fingerprint_is_blind_to_the_edit()
     test_g2_word_with_no_relocation_is_not_taken()
     test_g2_mutation_a_raw_value_scan_would_have_flagged_the_same_word()
     test_g2_global_symbol_relocation_is_taken()
