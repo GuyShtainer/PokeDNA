@@ -1117,12 +1117,13 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                                               # csel starts on PC STORE, no DOWN needed)
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # toggle -> PC store
     s.shot("05_pc_store", "U5: START > PC STORE toggles to the PC item store -- "
-                           "reuses the Items pocket's own art column (not "
-                           "independently pixel-dumped this slice, see "
-                           "pdna_gbpack.h). D6 fix: the description box now "
-                           "prints 'PC ITEM STORE' -- the earlier draft's "
-                           "empty box left the store visually identical to "
-                           "the Items pocket")
+                           "the nameplate label under the picture still reads "
+                           "'Items' (reused, not overridden; not independently "
+                           "pixel-dumped this slice, see pdna_gbpack.h). D6 "
+                           "fix: the description box is the ONE thing that "
+                           "changes, now printing 'PC ITEM STORE' -- the "
+                           "earlier draft's empty box left the store visually "
+                           "identical to the Items pocket")
 
     # D7 fix (review-opus ac9ffc0): ADD ITEM from the PC store is no longer
     # refused -- it is its own undifferentiated list, not one of the four
@@ -1170,11 +1171,13 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.shot("09_wrong_pocket_refusal", "U5: START > ADD ITEM from the BALLS "
                                        "pocket refuses outright -- 'WRONG "
                                        "POCKET' / 'Add items from the Items "
-                                       "pocket.' (per-item pocket membership "
-                                       "was not located this slice; the "
-                                       "brief's own sanctioned fallback is "
-                                       "Items-only ADD ITEM, not a silent "
-                                       "wrong-pocket accept)")
+                                       "pocket.' / 'No per-item pocket table "
+                                       "yet.' (the dim third line; per-item "
+                                       "pocket membership was not located "
+                                       "this slice; the brief's own "
+                                       "sanctioned fallback is Items-only "
+                                       "ADD ITEM, not a silent wrong-pocket "
+                                       "accept)")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> back in the PACK MENU (msg_wait's
                                                               # own `continue` loops the menu, does NOT
                                                               # close it -- gbpack_start_menu's own ADD ITEM
@@ -1251,7 +1254,9 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B drops the mark, nothing moves
     s.shot("11c_swap_dropped", "U5: B drops an armed SWAP mark without leaving "
                                 "the screen or moving anything -- the row's own "
-                                "0xED marker is gone, no entries changed")
+                                "0xEC armed-swap marker is gone (0xED is the "
+                                "plain cursor, a different glyph), no entries "
+                                "changed")
 
     s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B with a real pending edit -> commit prompt
     s.shot("12_commit_prompt", "U5: B with a real pending edit -> 'Save pack "
