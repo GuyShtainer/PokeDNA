@@ -2484,6 +2484,14 @@ def main(argv=None) -> int:
                           "Gen-2-only fused image (Gold.gbc+Gold.sav or "
                           "Crystal.gbc+Crystal.sav, tools/fuse_gb.py, one ROM per "
                           "image -- BACKLOG #98)")
+    ap.add_argument("--gbnames", choices=("red", "crystal"),
+                     help="gbnames brief: only run_gbnames() against --image for the "
+                          "named game -- real Gen-1/Gen-2 item names now shown by "
+                          "pdna_gbbag.c/pdna_gbpack_body.inc (source/gb_item_names.c, "
+                          "an embedded identifier table). --image MUST be a ONE-ROM "
+                          "fused image matching this choice (Red.gb+Red.sav or "
+                          "Crystal.gbc+Crystal.sav, same BACKLOG #98 harness-gap "
+                          "reasoning as --u4-bag/--u5-pack)")
     ap.add_argument("--b90-fly", choices=("red", "crystal"),
                      help="BACKLOG #90: only run_b90_fly() against --image for the "
                           "named game (Red's or Crystal's own Fly-destination "
@@ -2508,6 +2516,11 @@ def main(argv=None) -> int:
 
     core_mod, image_mod = gb_shots.load_mgba()
 
+    # the dispatch chain below: every new flag's block sets `ran = True` and
+    # ends with `return 0` -- a `ran = False` latch before this chain (lane
+    # tiny2, BACKLOG #117) plus `if ran: return 0` right after it is what
+    # stops an un-returned flag falling through into the combined boot-picker
+    # flow at the bottom of this function.
     if a.cold_start_compare:
         loc_image, noloc_image = a.cold_start_compare
         if not loc_image.is_file():
@@ -2717,6 +2730,24 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] gbmon: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.gbnames:
+        # every new flag block sets `ran = True`; lane tiny2's own `ran = False`
+        # latch (added right before `if ran: return 0` after this whole chain)
+        # returns for all of them -- this block already carries the statement so
+        # that merge is trivial (gbnames brief).
+        ran = True
+        try:
+            sess = run_gbnames(core_mod, image_mod, a.image, a.out, a.gbnames)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] gbnames ({a.gbnames}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
@@ -3034,6 +3065,98 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
                                      "after Egg on a Gold session) -- proof the row "
                                      "list genuinely reflows around the absent Met "
                                      "rows rather than leaving a gap or a stale cursor")
+    return s
+
+
+def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """gbnames brief: real Gen-1/Gen-2 item names, now shown by the shipped GB-shell
+    screens (pdna_gbbag.c's g1bag_paint_list, pdna_gbpack_body.inc's g2pack_paint_list)
+    via gb_item_label() (source/gb_item_names.c, an embedded identifier table --
+    GREEN per docs/kb/licensing.md, no ROM read, no locator). `which` picks the
+    generation, same shape as run_u4_bag()/run_u5_pack() above:
+
+      which="red":     `rom` MUST be a ONE-Gen-1-ROM fused image (Red.gb+Red.sav,
+                        tools/fuse_gb.py -- BACKLOG #98's fused-image-by-generation
+                        harness gap, same constraint run_u4_bag() documents). Nav is
+                        IDENTICAL to run_u4_bag()'s own red path: boot picker DOWN ->
+                        A (S1 info) -> A (box grid) -> START -> nav menu -> DOWN x7
+                        (Party->Bank->Daycare->Trainer->Clock fix->Mirage->Pokedex->
+                        Bag, PDNA_NAV_ITEMS index 7) -> A -> pdna_gbbag_gen1_screen().
+      which="crystal":  `rom` MUST be a ONE-Gen-2-ROM fused image (Crystal.gbc+
+                        Crystal.sav). A single-ROM image skips the boot picker
+                        (gb_delta_pick_save()'s own `if (n == 1) return 0`, same as
+                        run_u5_pack()'s own doc comment) -- nav is IDENTICAL to
+                        run_u5_pack()'s own crystal path: A (S1 info) -> box grid ->
+                        START -> nav menu -> DOWN x7 -> A -> pdna_gbpack_gen2_screen().
+
+    Shots: the Items pocket (both gens show real names there by default -- id
+    lookups, no ROM decode), Balls pocket on the Gen-2 leg only (the brief's own
+    "Items + Balls pockets" ask), and one TM row per generation (both gens'
+    TM/HM synthesis, HM/TM%02u, exercised live)."""
+    if which == "red":
+        s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbnames_red_")
+        print("== gbnames: Red's own Item bag, real names ==")
+        s.run(700)
+        s.tap("DOWN", settle=gb_shots.SETTLE)               # Emerald (row 0) -> the GB row (row 1)
+        s.tap("A", settle=60)                               # pick it -> S1 info
+        s.tap("A", settle=60)                               # -> box grid (rom_gbsprite cold fetch)
+        s.run(GB_ART_COLD_SETTLE)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)          # box grid -> nav menu
+        s.press_n("DOWN", 7)                                 # Party -> ... -> Bag (index 7)
+        s.tap("A", settle=GB_ART_COLD_SETTLE)               # Bag -> pdna_gbbag_gen1_screen()
+        s.shot("01_items_real_names", "gbnames: Red's Item bag, ITEMS pocket -- real "
+                                       "names from the embedded Gen-1 table (e.g. "
+                                       "'POTION', 'ESCAPE ROPE'), NOT 'ITEM-n'; the "
+                                       "NAME-row blank sweep now covers the box's "
+                                       "full interior width (cols 6-18), not just "
+                                       "the old 'ITEM-255'-sized QTY_COL bound")
+
+        s.tap("START", settle=gb_shots.BIG_SETTLE)          # -> the ITEM MENU (ADD/REMOVE/SWAP)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # ADD ITEM -> id entry (osk_search)
+        # osk_search: B backspaces the seeded "1"; type "201" (0xC9 = TM01) via the
+        # digit row (same keyboard-cursor shape run_u4_bag()'s own ADD ITEM demo uses).
+        s.tap("B", settle=gb_shots.SETTLE)
+        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)       # col0 '1' -> col1 '2'
+        s.tap("A", settle=gb_shots.SETTLE)                  # type '2'
+        s.press_n("LEFT", 1, settle=gb_shots.SETTLE)        # col1 '2' -> col0 '1'
+        s.tap("A", settle=gb_shots.SETTLE)                  # type '1' -> field "21"
+        s.press_n("RIGHT", 9, settle=gb_shots.SETTLE)       # col0 '1' -> col9 '0' (no B: keep "21")
+        s.tap("A", settle=gb_shots.SETTLE)                  # type '0' -> field "210"
+        s.tap("START", settle=gb_shots.BIG_SETTLE)          # confirm id 210 (0xD2 = TM19, DOUBLE-EDGE)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # confirm the qty prompt at its default
+        s.shot("02_tm_row", "gbnames: ADD ITEM id 210 (0xD2) synthesizes 'TM19' "
+                             "(gb1_tmhm_label, 0xC9+18) -- the TM/HM label path, not "
+                             "the table lookup")
+        return s
+
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbnames_crystal_")
+    print("== gbnames: Crystal's own Pack, real names ==")
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image,
+                                                               # no boot picker)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 7)                                     # Party -> ... -> Bag (index 7)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbpack_gen2_screen()
+    s.shot("01_items_real_names", "gbnames: Crystal's Pack, ITEMS pocket -- real "
+                                   "names from the embedded Gen-2 table, NOT "
+                                   "'ITEM-n'; the NAME-row blank sweep now covers "
+                                   "the full screen width (cols 8-19), not just "
+                                   "the old QTY_COL=17 bound")
+
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls
+    s.shot("02_balls_real_names", "gbnames: RIGHT -> BALLS pocket, also real names "
+                                   "(e.g. 'GREAT BALL', 'ULTRA BALL') -- the "
+                                   "brief's own 'Items + Balls' ask")
+
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Balls -> Key items
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Key items -> TM/HM
+    s.shot("03_tm_row", "gbnames: RIGHT x2 -> TM/HM -- the two-digit TM/HM number "
+                         "prefix (cols 5-6) plus the SAME 'TM%02u'/'HM%02u' label "
+                         "shape as the Gen-1 leg, this time driven by the flag-index "
+                         "arithmetic g2pack_row_label()'s own TM/HM branch already "
+                         "had (unaffected by this slice's id-based table -- that "
+                         "branch never used a raw item id to begin with)")
     return s
 
 

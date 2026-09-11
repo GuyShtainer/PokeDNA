@@ -245,6 +245,12 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # own append-only rule.
     ("gb-boxname", "BACKLOG #94 — the Gen-2 box-rename banner (osk_input, "
      "gbbn_rename)", ("BACKLOG #94",)),
+    # gbnames brief: real Gen-1/Gen-2 item names (source/gb_item_names.c, an
+    # embedded identifier table) on both real GB-shell screens. Shots come from
+    # tools/dgb_shots.py's run_gbnames(), captions all start "gbnames:".
+    # Appended after "gb-boxname" per this list's own append-only rule.
+    ("gb-item-names", "gbnames — real Gen-1/Gen-2 item names on the Bag/Pack "
+     "shells (embedded identifier table, TM/HM synthesized)", ("gbnames",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
