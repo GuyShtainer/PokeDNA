@@ -2237,7 +2237,24 @@ def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
         s.tap("A", settle=gb_shots.BIG_SETTLE)               # dismiss -> the toggle itself lands
         s.shot("08_toggled", "BACKLOG #88: the flag toggled ON/off -- gbfl_set wrote the bit "
                               "straight into the session's own RAM image")
-        jump_presses = 6   # from inside header 0's group: h1,h2,h3,h4,h5,raw
+
+        # BACKLOG #127 F3: "Hall of Fame rating" (the 33-char label that smashed 6
+        # bytes past row[40] before D1's fix) lives in the LAST group, "Story"
+        # (GROUPS_GEN1's 6th entry, GBFL_KIND_READONLY) -- it stays folded in every
+        # other Gen-1 shot in this run. SELECT jumps by row INDEX to the next header
+        # regardless of fold state (same mechanic the raw-row jump below already
+        # relies on): h1,h2,h3,h4 -> h5 (Story).
+        for _ in range(5):
+            s.tap("SEL", settle=gb_shots.SETTLE)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # unfold "Story"
+        s.tap("DOWN", settle=gb_shots.SETTLE)                # -> "Beat Champion Rival"
+        s.tap("DOWN", settle=gb_shots.SETTLE)                # -> "Hall of Fame rating"
+        s.shot("08c_story_hof_rating", "BACKLOG #127 F3: the Story section unfolded, 'Hall "
+                                        "of Fame rating' selected -- the exact 33-char label "
+                                        "that smashed row[40] before D1's fix; under "
+                                        "GBFL_ROW_FMT/row[64] the row reads whole, no '~'")
+
+        jump_presses = 1   # already past h1..h5 (Story) -- one more SELECT reaches the raw row
     else:
         # Crystal's header 0 IS "Key items (grant in Bag)" -- show its read-only
         # row, then SELECT-jump to the next (TOGGLE-kind) section for the toggle/
@@ -2679,6 +2696,84 @@ def run_r1_xfer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Sessi
     return s
 
 
+def run_r1_xfer_red(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """BACKLOG #112: run_r1_xfer() above was shot on GOLD, not Red, because
+    gb_gen1_locate_rom's Gen-1 branch was an f_open() over a nonexistent SD card under
+    PDNA_DELTA -- every Gen-1 paste target refused with 'NO GEN-1 ROM' before the loss
+    screen even rendered (see that function's own docstring for the full story). Now
+    that gb_gen1_locate_rom/gb_gen1_base_from_rom fall back to the fused ROM's own
+    table under PDNA_DELTA (source/pdna_gen12.c), Red is reachable too -- this is that
+    proof: the SAME loss screen + KEEP AS IS / MAKE LEGAL choice run_r1_xfer() shows
+    for Gold, now also reached on Red. Trimmed to the reachability proof alone (steps
+    01-04 of run_r1_xfer's own sequence) -- the B-cancel round trip, the sidecar
+    refusal (pre-existing under PDNA_DELTA, unrelated to #112) and the "cell still
+    empty" re-check are run_r1_xfer's own R1 feature coverage, not this fix's.
+
+    `rom` must be `pokedna-delta-artless.gba` fused the same way as run_r1_xfer's own
+    image (fuse_sav.py with the SAME --clip charizard_l20.bin), but with
+    Red.gb+Red.sav (fuse_gb.py) instead of Gold.
+
+    Nav: boot picker (row 0 Emerald, row 1 the fused Red save) -> R x5 (0-based box
+    index 5) to reach BOX6 (17/20 -- box 5, count=16, on Guy's own Red.sav --
+    confirmed directly against the save's own bytes, tests/host_gbsurgery_tool.c
+    --list: "box 5: count=16", slots 0..15 occupied, slots 16..19 the empty ones) ->
+    DOWN x2, RIGHT x4 (same 6-column grid arithmetic run_r1_xfer's own DOWN x2/RIGHT
+    x5 uses for slot 17 -- here landing on slot 16, box5's first empty cell) -> A ->
+    the empty-cell action menu -> DOWN x1 -> A -> gen3_to_gb() runs against the SAME
+    clip-seeded Charizard L20 -> the loss screen -> A -> the R1 screen (KEEP AS IS /
+    MAKE LEGAL), reached on Red instead of 'NO GEN-1 ROM'."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "r1_red_")
+    print("== BACKLOG #112: Gen-1 (Red) transfer-down now reaches the R1 screen ==")
+
+    s.run(700)
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # Emerald (row 0) -> Red (row 1)
+    s.tap("A", settle=60)                                   # pick it -> S1 info
+    s.tap("A", settle=60)                                   # -> box grid (rom_gbsprite cold fetch)
+    s.run(GB_ART_COLD_SETTLE)
+    s.shot("01_box_grid", "BACKLOG #112: Red's box grid, boot-picker -> standalone "
+                           "(g_clip pre-seeded with the SAME Charizard L20 run_r1_xfer "
+                           "uses for Gold). BOX1, 20/20 -- no room here, see the R x5 "
+                           "below.")
+
+    # BOX1..BOX5 (0-based box index 0..4) are all 20/20 on Guy's own Red.sav; BOX6
+    # (0-based index 5) is the first with room -- count=16, slots 16..19 genuinely
+    # empty within its own 20-slot capacity. Same generous 200-frame settle as
+    # run_r1_xfer's own R x13 -- confirmed there that shorter settles intermittently
+    # drop presses with no visible sign anything was wrong.
+    s.press_n("R", 5, settle=200)
+    s.press_n("DOWN", 2, settle=80)
+    s.press_n("RIGHT", 4, settle=80)                        # slot 16 -- empty (count=16 here)
+    s.shot("02_cursor_on_empty_cell", "BACKLOG #112: BOX6 (R x5 from BOX1, 16/20 -- "
+                                       "the first box with room), cursor parked on an "
+                                       "empty cell before pressing A")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # empty-cell action menu
+    s.press_n("DOWN", 1, settle=80)                         # CREATE (default) -> PASTE HERE
+    # PASTE HERE -> gen3_to_gb() -> G3GB_ERR_NEEDS_BASE -> gb_gen1_base_from_rom() ->
+    # THIS fix's PDNA_DELTA fallback -> rom_gbsprite_open() streams the WHOLE 1 MB
+    # fused Red ROM once (gb_gen1_locate_rom's own docstring: "romscan ... in ONE
+    # pass") -- confirmed by direct probe (host + on-device log_line instrumentation,
+    # since removed) to need ~13,000-16,000 frames on real ARM7TDMI-speed emulation,
+    # well past BIG_SETTLE (40) -- unsurprising, this is the exact same "cold, slow
+    # the first time" ROM scan GB_ART_COLD_SETTLE elsewhere in this file already
+    # rides out; only ONE reader (Session.tap) needs it, not a repeat visit (romgs_
+    # ready caches the result for the rest of this session).
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # PASTE HERE -> gen3_to_gb() -> loss screen
+    s.shot("03_loss_screen", "BACKLOG #112: the loss screen renders on Red -- NOT "
+                              "'NO GEN-1 ROM / Put Red.gb here...', which is what "
+                              "this exact flow produced before the fix (the ONLY "
+                              "thing #112 changes: the ROM lookup that gates this "
+                              "screen, not the screen itself)")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # proceed -> the R1 screen
+    s.shot("04_legal_choice", "BACKLOG #112: the KEEP AS IS / MAKE LEGAL choice, now "
+                               "reached on Red -- proof the fused-ROM fallback in "
+                               "gb_gen1_locate_rom/gb_gen1_base_from_rom (source/"
+                               "pdna_gen12.c, PDNA_DELTA-only) supplies real base "
+                               "stats for a Gen-1 target with no SD card at all")
+    return s
+
+
 # ---------------------------------------------------------------------------------
 # BACKLOG #68b: cold-start timing, WITH vs WITHOUT the fused LOC payloads.
 # ---------------------------------------------------------------------------------
@@ -2933,6 +3028,13 @@ def main(argv=None) -> int:
                           "underlevelled evolved species (fuse_sav.py --clip), and "
                           "Gold.gbc+Gold.sav (fuse_gb.py, ONE Game Boy ROM -- GOLD, "
                           "not Red: see run_r1_xfer()'s own docstring for why)")
+    ap.add_argument("--r1-xfer-red", action="store_true",
+                     help="BACKLOG #112: only run_r1_xfer_red() against --image -- "
+                          "--image MUST be pokedna-delta-artless.gba fused the SAME "
+                          "way as --r1-xfer but with Red.gb+Red.sav (fuse_gb.py) "
+                          "instead of Gold -- proves the PDNA_DELTA-only fused-ROM "
+                          "fallback (source/pdna_gen12.c) reaches the R1 screen on "
+                          "Red instead of 'NO GEN-1 ROM'")
     ap.add_argument("--m1-map", action="store_true",
                      help="M1 (BACKLOG #91): only run_m1_map() against --image -- "
                           "--image MUST be a Red-only fused image (Red.gb+Red.sav)")
@@ -3259,6 +3361,18 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] r1 xfer: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+    if a.r1_xfer_red:
+        try:
+            sess = run_r1_xfer_red(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] r1 xfer red: {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
