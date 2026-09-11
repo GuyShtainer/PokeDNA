@@ -1068,13 +1068,15 @@ addrtaken-ok MultiBoot
 # pointer. #106 G2 class (the sweep does not distinguish data words from pointers); retire with #106.
 addrtaken-ok key_wait_till_hit
 
-# tonc_bios.h's Halt (frame 0 B, an SWI-02h wrapper: swi 0x02; bx lr) is named nowhere in source/
+# tonc_bios.h's RegisterRamReset (frame 0 B, an SWI-01h wrapper) is named nowhere in source/
 # lib/ tools/ (grep empty) -- it links only as libtonc object-file baggage, never called
 # indirectly. On the b88 lane's NORMAL image (Gen-1/2 Flags & counters screen,
-# source/pdna_gbflags.c) it links at 0x080735d0, and its Thumb address 0x080735d1 turns up as a
-# plain data word 16 B into mon_back_blob (source/embed/mon_back_data.s' embedded back-sprite
-# pixel bytes, 0x08588dc4 base; pinned by nm -Sn + objdump -s on this lane's PokeDNA.elf,
-# PDNA_STACK_CHECK=0 build) -- compiled sprite data, not a dispatch table. #106 G2 class (the
-# sweep masks bit 0 and does not distinguish data words from pointers); retire with #106.
-addrtaken-ok Halt
+# source/pdna_gbflags.c, after moving its NamedFlag/kind/ord tables off a second module-level
+# static and onto the gb12_arena_tail slice) it links at 0x080735d0 -- the EXACT SAME address
+# tonc_bios.h's Halt occupied on an earlier build of this same lane (see that now-removed line's
+# own evidence: same objdump -s hit, same mon_back_blob+16 offset, 0x08588dc4 base) -- whatever
+# leaf the linker happens to place at 0x080735d0 on this lane trips the sweep, whichever function
+# that leaf is this build. #106 G2 class (the sweep masks bit 0 and does not distinguish data
+# words from pointers); retire with #106.
+addrtaken-ok RegisterRamReset
 

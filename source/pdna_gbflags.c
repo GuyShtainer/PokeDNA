@@ -225,12 +225,42 @@ static void ctr_edit_row(GbSession* s, GbGame g, int kind, bool* dirty) {
  * ============================================================================ */
 
 #define GBFL_ROW_CAP 64   /* >= the largest real table (Crystal: 49 rows, gbfl_row_count) */
+/* NF_ORD_MAX's own size-rule note (pdna_main.c) applies here too: GBFL_ROW_CAP must
+ * stay >= the largest per-game gbfl_row_count(); a row past the cap silently clamps
+ * out (flg_cache's own `if (n > GBFL_ROW_CAP) n = GBFL_ROW_CAP`), never an overflow. */
+#define GBFL_TAIL_NEED ((uint32_t)(GBFL_ROW_CAP * sizeof(NamedFlag) \
+                        + GBFL_ROW_CAP /* kind[] */ + GBFL_ROW_CAP /* ord[] */))
 
-static NamedFlag  s_nf[GBFL_ROW_CAP];
-static uint8_t    s_kind[GBFL_ROW_CAP];
-static int        s_nc;
-static GbGame      s_nf_for = (GbGame)-1;
-static uint8_t     s_ord[GBFL_ROW_CAP];
+/* Carved from the GB12 arena tail (gb12_arena_tail), NOT a second module-level
+ * static array -- pdna_main.c's own NF_ORD_MAX/s_nf_for comment is explicit that a
+ * second static of this shape is the thing to avoid. These are just POINTERS
+ * (trivial IWRAM .data, not the ~640 B the arrays themselves would cost); the bytes
+ * they point at live in EWRAM, lent for exactly this screen's visit and released on
+ * every exit path (flg_tail_acquire/flg_tail_release below). Only reachable when
+ * g_ed is non-NULL (pdna_gen12.c's own gate on this screen), which is exactly
+ * gb12_arena_tail()'s own precondition. */
+static NamedFlag*  s_nf;
+static uint8_t*    s_kind;
+static uint8_t*    s_ord;
+static int         s_nc;
+static GbGame       s_nf_for = (GbGame)-1;
+
+/* Acquire the tail slice for this visit; MUST be paired with flg_tail_release() on
+ * every exit path. Returns false (nothing carved, s_nf left NULL) if the arena has
+ * no room right now -- callers must refuse rather than dereference a NULL s_nf. */
+static bool flg_tail_acquire(void) {
+  uint8_t* tail = gb12_arena_tail(GBFL_TAIL_NEED);
+  if (!tail) { s_nf = 0; s_kind = 0; s_ord = 0; return false; }
+  s_nf   = (NamedFlag*)(void*)tail;
+  s_kind = tail + GBFL_ROW_CAP * sizeof(NamedFlag);
+  s_ord  = s_kind + GBFL_ROW_CAP;
+  s_nf_for = (GbGame)-1;   /* force flg_cache to repopulate: fresh/reused bytes */
+  return true;
+}
+static void flg_tail_release(void) {
+  gb12_arena_tail_release();
+  s_nf = 0; s_kind = 0; s_ord = 0; s_nf_for = (GbGame)-1;
+}
 
 static void flg_cache(GbGame g) {
   if (s_nf_for == g) return;
@@ -337,6 +367,14 @@ static void raw_flag_browser(GbSession* s, GbGame g, bool* dirty, bool* warned, 
 
 void pdna_gbflags(GbSession* s, bool can_edit) {
   if (!s || !s->open) { msg_wait("FLAGS", UI_WARN, "Could not read this save.", 0); return; }
+  if (!flg_tail_acquire()) {
+    /* g_ed is guaranteed non-NULL here (the only caller, gb_nav_from_start, gates on
+     * it) -- a refusal means the arena tail is genuinely full, not a missing
+     * precondition. Honest refusal, no dead end, same posture as gbscr_open()'s own
+     * `reason` fallback path on the art-shell screens. */
+    msg_wait("FLAGS", UI_WARN, "Not enough memory right now.", "Try again after a fresh boot.");
+    return;
+  }
   GbGame g = gbt_game(s);
   s_gbfl_folded = 0xFFFFFFFFu;   /* fresh visit: fully collapsed, same as pdna_main.c's own screen */
 
@@ -432,14 +470,19 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
     }
   }
 
-  if (!dirty) return;
-  if (!app_confirm("Save data changes?", "Edits write immediately.")) return;
+  /* Every path from here on releases the tail slice exactly once (gb12_arena_tail's
+   * own "lent one slice at a time" contract) before returning -- no naked `return`
+   * past this point. */
+  if (!dirty) { flg_tail_release(); return; }
+  if (!app_confirm("Save data changes?", "Edits write immediately.")) { flg_tail_release(); return; }
   GbsStatus fst = gbs_finish(s);
   if (fst != GBS_OK) {
     gb_rollback();
     snd_error();
     msg_wait("EDIT REFUSED", UI_WARN, gbs_status_text(fst), "Nothing was changed.");
+    flg_tail_release();
     return;
   }
   gb_persist("gbflags");
+  flg_tail_release();
 }
