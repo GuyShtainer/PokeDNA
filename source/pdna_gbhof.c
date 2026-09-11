@@ -123,20 +123,26 @@ static void hof_detail_render(const GbHofTeam* t, uint8_t gen, int team_no) {
     const char* nm = (mn->dex >= 1 && mn->dex <= 251) ? pk_species_name(mn->dex) : "?";
     /* NICK: gb_hof.c decodes mn->nick on both gens but nothing drew it -- show it
      * only when it differs from the species name (a lot of teams never get
-     * nicknamed, so "PIKACHU "PIKACHU" Lv100" would just be noise). Measured to
-     * sys8Font's fixed 8 px cell (ui.c) so a 10-char species (TYPHLOSION) plus a
-     * full 10-char nickname can never run past the 240 px screen: the suffix
-     * (" Lv.NNN" + an optional shiny " *") is built first, then the nickname gets
-     * whatever's left of a 29-char (232 px, x=6..238) budget -- dropped to a
-     * shortened %.*s rather than overflowing off-screen. */
+     * nicknamed, so "PIKACHU PIKACHU Lv100" would just be noise). Measured to
+     * sys8Font's fixed 8 px cell (ui.c) against a 29-char (232 px, x=6..238)
+     * budget, dropped to a shortened %.*s rather than overflowing off-screen. R4
+     * (b89 re-verify): no quotes around the nickname and no padding on the species
+     * -- a bare "SPECIES NICK Lv.N" separated by one space, not "SPECIES \"NICK\"
+     * Lv.N" -- buys the nickname 2 extra characters of budget (the two quote
+     * glyphs) versus the quoted form; a 10-char species (TYPHLOSION) plus a full
+     * 10-char nickname WITHOUT a shiny mark now fits whole (29-10-1-7=11 >= 10),
+     * though the worst case (shiny too, suffix=" Lv.100 *") still trims the last
+     * character or so (29-10-1-9=9 of 10) -- see this caption's own honesty about
+     * that in tools/dgb_shots.py's b89_*_08_nick shot. */
     bool has_nick = mn->nick[0] != '\0' && strcmp(mn->nick, nm) != 0;
     char line[40];
     if (has_nick) {
-      char suffix[8];
+      char suffix[12];  /* " Lv.100 *" is 9 chars + NUL; [8] overflowed at Lv >= 10 (R2) */
       siprintf(suffix, " Lv.%d%s", mn->level, (gen == GB_GEN2 && mn->shiny) ? " *" : "");
-      int budget = 29 - (int)strlen(nm) - 3 /* space + two quotes */ - (int)strlen(suffix);
+      int budget = 29 - (int)strlen(nm) - 1 /* one separating space, no quotes/padding */
+                   - (int)strlen(suffix);
       if (budget < 1) budget = 1;
-      siprintf(line, "%s \"%.*s\"%s", nm, budget, mn->nick, suffix);
+      siprintf(line, "%s %.*s%s", nm, budget, mn->nick, suffix);
     } else if (gen == GB_GEN2)
       siprintf(line, "%-10s Lv%-3d%s", nm, mn->level, mn->shiny ? " *" : "");
     else
