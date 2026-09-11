@@ -522,6 +522,10 @@ typedef struct {
   uint32_t off[ROM_GBUI_OFF_COUNT];
   uint32_t anchor[ROM_GBUI_ANCH_COUNT];
   uint8_t  gen, playerpic_bank, cardpic_colmajor;
+  /* BACKLOG #125: derived, never persisted in RomGbUiLoc (recomputed from
+   * badges + cardpic_colmajor on every path, same as cardpic_colmajor
+   * itself is recomputed rather than cached). */
+  uint32_t cardcorner;
 } LocResult;
 
 static int locate(const Scan* s, LocResult* r) {
@@ -674,6 +678,10 @@ static int locate(const Scan* s, LocResult* r) {
   r->off[ROM_GBUI_OFF_PACK_M] = pack_m;
   r->off[ROM_GBUI_OFF_PACK_F] = pack_f;
   r->cardpic_colmajor = (uint8_t)is_crystal_shaped;
+  /* BACKLOG #125: CardRightCornerGFX = BadgeGFX + 88 tiles (constant across
+   * all six pokecrystal.sym revisions). Gold has no such block (badges'
+   * storage tile 4 IS the corner there), so 0 by construction. */
+  r->cardcorner = (r->cardpic_colmajor && h0.badges) ? h0.badges + 88u * 16u : 0u;
   r->anchor[ROM_GBUI_ANCH_FRAMES] = jobs[J_G2_FRAME].off[0];
   r->anchor[ROM_GBUI_ANCH_BADGELEADER] = jobs[J_G2_BADGELEADER].off[0];
   r->anchor[ROM_GBUI_ANCH_CARDPIC] = cardpic_anchor;
@@ -703,6 +711,7 @@ static void fill_from_result(RomGbUi* gu, const LocResult* r) {
   gu->g1_keyitems = r->off[ROM_GBUI_OFF_G1_KEYITEMS];
   gu->playerpic_bank = r->playerpic_bank;
   gu->cardpic_colmajor = r->cardpic_colmajor;
+  gu->cardcorner = r->cardcorner;
   memcpy(gu->anchor, r->anchor, sizeof gu->anchor);
 }
 
@@ -1033,6 +1042,12 @@ static int revalidate_loc(const Scan* s, const RomGbUiLoc* loc) {
     if (pack_m == 0 || pack_m + 60 * 16 > s->size) return 0;
     if (pack_f != 0 && pack_f + 60 * 16 > s->size) return 0;
     if (crystal && pack_f == 0) return 0;   /* Crystal-shaped needs both */
+
+    /* BACKLOG #125: derived, not a persisted off[]/anchor slot -- recompute
+     * from the already-revalidated badges/crystal, then bound-check it so a
+     * truncated ROM refuses instead of letting a later read run OOB. */
+    uint32_t cardcorner = (crystal && badges) ? badges + 88u * 16u : 0u;
+    if (cardcorner && cardcorner + 16 > s->size) return 0;
     return 1;
   }
   return 0;
@@ -1080,6 +1095,8 @@ int rom_gbui_open_loc(RomGbUi* gu, GbReadFn read, void* ctx, uint32_t size,
     gu->g1_keyitems = loc->off[ROM_GBUI_OFF_G1_KEYITEMS];
     if (gu->gen == ROM_GBUI_GEN1) gu->playerpic_bank = (uint8_t)(gu->playerpic / GB_BANK);
     gu->cardpic_colmajor = (gu->cardpic_f != 0);   /* Crystal-shaped iff cardpic_f present */
+    /* BACKLOG #125: same recompute-not-cache treatment as cardpic_colmajor above. */
+    gu->cardcorner = (gu->cardpic_colmajor && gu->badges) ? gu->badges + 88u * 16u : 0u;
     memcpy(gu->anchor, loc->anchor, sizeof gu->anchor);
     load_g1_keyitems_bits(&s, gu);
     gu->ok = 1;
