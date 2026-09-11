@@ -769,7 +769,7 @@ GROUPS_GEN1 = [
         "EVENT_GOT_HITMONCHAN", "EVENT_MET_BILL", "EVENT_RESCUED_MR_FUJI",
         "EVENT_GAVE_GOLD_TEETH", "EVENT_FOUND_ROCKET_HIDEOUT",
     ]]),
-    ("Key items (grant via the Bag)", [B(s) for s in [
+    ("Key items (grant in Bag)", [B(s) for s in [
         "EVENT_GOT_BICYCLE", "EVENT_GOT_SS_TICKET", "EVENT_GOT_HM01", "EVENT_GOT_HM02",
         "EVENT_GOT_HM03", "EVENT_GOT_HM04", "EVENT_GOT_HM05",
     ]]),
@@ -792,7 +792,7 @@ GROUPS_GEN1 = [
     ]]),
 ]
 GROUPS_GEN2 = [
-    ("Key items (grant via the Bag)", [B(s) for s in [
+    ("Key items (grant in Bag)", [B(s) for s in [
         "EVENT_GOT_HM01_CUT", "EVENT_GOT_HM02_FLY", "EVENT_GOT_HM03_SURF",
         "EVENT_GOT_HM04_STRENGTH", "EVENT_GOT_HM05_FLASH", "EVENT_GOT_HM06_WHIRLPOOL",
         "EVENT_GOT_HM07_WATERFALL", "EVENT_GOT_BICYCLE",

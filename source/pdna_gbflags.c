@@ -302,9 +302,11 @@ static void nf_draw_row(GbSession* s, GbGame g, int r, int y, bool sel) {
     return;
   }
   if (s_nf[r].num == NAMED_FLAG_HEADER) {
-    siprintf(row, "%c %s", ((s_gbfl_folded >> ff_hdr_ord(s_ord, GBFL_ROW_CAP, r)) & 1u) ? '+' : '-', s_nf[r].name);
+    char fold_glyph = ((s_gbfl_folded >> ff_hdr_ord(s_ord, GBFL_ROW_CAP, r)) & 1u) ? '+' : '-';
+    siprintf(row, "%c %s", fold_glyph, s_nf[r].name);
+    char ht[40]; ui_truncate(ht, row, 29);
     if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
-    ui_text(4, y, sel ? UI_SELTEXT : UI_DIRCLR, row);
+    ui_text(4, y, sel ? UI_SELTEXT : UI_DIRCLR, ht);
     return;
   }
   bool ro = (s_kind[r] == GBFL_KIND_BAG_GRANT || s_kind[r] == GBFL_KIND_READONLY);
