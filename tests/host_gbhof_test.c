@@ -203,7 +203,8 @@ static void clear_noop(const char* file) {
   CHECKF(d == 0, "%s: no-op clear changed %u byte(s), first at 0x%04X", file, d, first);
 }
 
-/* ---- F: count set + clamp (Gen 1 <=255, Gen 2 <=200) ---- */
+/* ---- F: count set + clamp (Gen 1 <= teams present up to GBH_G1_CAPACITY, D1;
+ * Gen 2 <=200) ---- */
 
 static void count_clamp(const char* file) {
   uint32_t len = load(file);
@@ -212,15 +213,24 @@ static void count_clamp(const char* file) {
   GbSession s;
   CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: open", file);
 
-  CHECKF(gbh_set_count(&s, 3) == GBS_OK, "%s: set 3", file);
-  CHECKF(gbh_count(&s) == 3, "%s: readback 3", file);
+  /* Gen 1's real cap under D1 is the teams present on this corpus save (can be < 3
+   * on a lightly-played save like Yellow's 1 team); pick a target already within
+   * that cap so "set 3" stays a meaningful mid-range check on every save. */
+  int present = gbh_team_count_present(&s);
+  int want3 = (s.gen == GB_GEN1 && present < 3) ? present : 3;
 
-  CHECKF(gbh_set_count(&s, 3) == GBS_OK, "%s: no-op set 3", file);
-  CHECKF(gbh_count(&s) == 3, "%s: still 3", file);
+  CHECKF(gbh_set_count(&s, want3) == GBS_OK, "%s: set %d", file, want3);
+  CHECKF(gbh_count(&s) == want3, "%s: readback %d, got %d", file, want3, gbh_count(&s));
 
-  int over = (s.gen == GB_GEN1) ? 9000 : 9000;
+  CHECKF(gbh_set_count(&s, want3) == GBS_OK, "%s: no-op set %d", file, want3);
+  CHECKF(gbh_count(&s) == want3, "%s: still %d, got %d", file, want3, gbh_count(&s));
+
+  int over = 9000;
   CHECKF(gbh_set_count(&s, over) == GBS_OK, "%s: set overflow", file);
-  int want = (s.gen == GB_GEN1) ? 255 : 200;
+  /* D1: Gen 1's cap is the teams actually present (never past GBH_G1_CAPACITY), NOT
+   * a flat 255 -- a count past the stored teams would make the real League PC decode
+   * empty slots. Gen 2 keeps the flat 200 (its own viewer re-derives the count). */
+  int want = (s.gen == GB_GEN1) ? gbh_team_count_present(&s) : 200;
   CHECKF(gbh_count(&s) == want, "%s: clamp to %d, got %d", file, want, gbh_count(&s));
 
   CHECKF(gbh_set_count(&s, -5) == GBS_OK, "%s: set negative", file);
@@ -328,6 +338,35 @@ static void pristine_rollback_after_real_clear(const char* file) {
         "diff)", file, d);
 }
 
+/* ---- J: D1, set-count clamped to teams present on Gen 1 ---- */
+
+static void count_clamp_to_present_g1(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  GbSession s;
+  if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK || s.gen != GB_GEN1) {
+    printf("  SKIP %s (not a Gen-1 save)\n", file);
+    return;
+  }
+  g_ran++;
+
+  /* D1, cleared: gbh_clear -> gbh_set_count(5) must stay at 0 (0 teams present). */
+  CHECKF(gbh_clear(&s) == GBS_OK, "%s: clear", file);
+  CHECKF(gbh_set_count(&s, 5) == GBS_OK, "%s: set 5 on a cleared HoF", file);
+  CHECKF(gbh_count(&s) == 0, "%s: cleared HoF clamps set_count(5) to 0, got %d",
+        file, gbh_count(&s));
+
+  /* D1, un-cleared: reload, then gbh_set_count(40) must clamp to the teams present
+   * (Guy's real Red.sav corpus: 9), not 40 and not a flat 255. */
+  len = load(file);
+  CHECKF(len != 0, "%s: reload after clear", file);
+  CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "%s: reopen", file);
+  int present = gbh_team_count_present(&s);
+  CHECKF(gbh_set_count(&s, 40) == GBS_OK, "%s: set 40", file);
+  CHECKF(gbh_count(&s) == present, "%s: set_count(40) clamps to present=%d, got %d",
+        file, present, gbh_count(&s));
+}
+
 int main(void) {
   const char* saves[] = { "Red.sav", "Yellow.sav", "Gold.sav", "Crystal.sav" };
   printf("== A: decode real corpus teams ==\n");
@@ -351,6 +390,10 @@ int main(void) {
   printf("== I: pristine-copy restore round-trips after a real multi-chunk clear ==\n");
   for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++)
     pristine_rollback_after_real_clear(saves[i]);
+
+  printf("== J: D1 set-count clamps to teams present (Gen 1) ==\n");
+  for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++)
+    count_clamp_to_present_g1(saves[i]);
 
   if (g_ran == 0) printf("  (no corpus present -- structural checks only, none ran)\n");
   printf("\n%d checks, %d failed (%d save(s) loaded)\n", g_check, g_fail, g_ran);

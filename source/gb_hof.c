@@ -184,7 +184,14 @@ GbsStatus gbh_clear(GbSession* s) {
 GbsStatus gbh_set_count(GbSession* s, int n) {
   if (!s || !s->open) return GBS_ERR_ARG;
   if (n < 0) n = 0;
-  int cap = (s->gen == GB_GEN1) ? 255 : 200;
+  /* Gen 1's real League PC decodes every team slot up to the stored count without
+   * an independent bounds check (AnimateHallOfFame walks mon 0 of each of `count`
+   * slots before ever looking at the $FF terminator) -- a count past the teams this
+   * cart actually has drawn from BaseStats out of bounds. Clamp to the teams present
+   * (never past GBH_G1_CAPACITY) so the count this writes can never exceed what's
+   * really stored. Gen 2's own HOF viewer re-derives its own count from the slots,
+   * so 200 (the byte's natural ceiling) stays safe there. */
+  int cap = (s->gen == GB_GEN2) ? 200 : ((gbh_team_count_present(s) < GBH_G1_CAPACITY) ? gbh_team_count_present(s) : 255);
   if (n > cap) n = cap;
 
   GbGame g = hof_game(s);

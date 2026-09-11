@@ -154,13 +154,17 @@ static void hof_do_clear(GbSession* s) {
 }
 
 /* SET COUNT: a plain stepper, same shape as pdna_gbclock.c's shift editor but a
- * single non-negative, clamped value (Gen 1 <=255, Gen 2 <=200 -- gbh_set_count's own
- * clamp; this editor mirrors it so the displayed cap never lies about what a press
- * past it will actually do). A no-op (value unchanged) skips app_confirm AND the
+ * single non-negative, clamped value (Gen 1 <= teams present, up to GBH_G1_CAPACITY;
+ * Gen 2 <=200 -- gbh_set_count's own clamp, D1; this editor mirrors it so the
+ * displayed cap never lies about what a press past it will actually do). A no-op
+ * (value unchanged) skips app_confirm AND the
  * write entirely, hard rule 3. */
 __attribute__((noinline))
 static void hof_set_count_editor(GbSession* s, uint8_t gen) {
-  int cap = (gen == GB_GEN1) ? 255 : 200;
+  /* Mirrors gbh_set_count's own clamp exactly (D1): Gen 1's real League PC decodes
+   * every slot up to the stored count with no independent bounds check, so the
+   * displayed cap must never promise more than the teams actually present. */
+  int cap = (gen == GB_GEN2) ? 200 : ((gbh_team_count_present(s) < GBH_G1_CAPACITY) ? gbh_team_count_present(s) : 255);
   int start = gbh_count(s);
   int v = start;
   bool valid = false; int pv = -1; uint32_t g = 0;
