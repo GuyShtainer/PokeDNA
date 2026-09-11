@@ -178,6 +178,51 @@ static void unown_semantics(const char* file, uint8_t expect_gen) {
   CHECK(after_remove == baseline_present, "count back to baseline after remove");
 }
 
+/* R2 (b87 fix pass 2, DO-NOT-SHIP review, MUTATION-PROVEN): gbdex_unown_list()'s
+ * whole reason to exist -- prove the exact scenario that broke N2's earlier
+ * membership-only compare. Toggling a letter off then back on REMOVES it from its
+ * old slot and RE-APPENDS it at the first empty slot (gbdex_unown_set's own
+ * compact-then-append shape), so the raw 26-byte order changes even though every
+ * letter's own gbdex_unown_seen() membership ends up identical to where it
+ * started. A caller (pdna_gbdex.c's unown_forms_screen) that only compared
+ * membership would have called this "clean" -- neither committed nor rolled back,
+ * with the reordered bytes left staged for whatever unrelated persist came next. */
+static void unown_list_reorder_byte_diff(const char* file, uint8_t expect_gen) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  g_ran++;
+  GbSession s;
+  CHECK(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK, "gbs_open");
+  CHECK(s.gen == expect_gen, "right generation detected");
+  if (s.gen == GB_GEN1) {
+    uint8_t dummy[26];
+    CHECK(!gbdex_unown_list(&s, dummy), "Gen 1: gbdex_unown_list refuses (no Unown-dex field)");
+    return;
+  }
+
+  uint8_t before[26], membership_before[26];
+  CHECK(gbdex_unown_list(&s, before) == true, "gbdex_unown_list: entry snapshot");
+  for (int L = 0; L < 26; L++) membership_before[L] = gbdex_unown_seen(&s, L) ? 1 : 0;
+
+  /* Same "toggle off then on" gesture the review's own scenario names -- letter A,
+   * present on this corpus save (baseline_present==26 per unown_semantics above). */
+  CHECK(gbdex_unown_seen(&s, 0), "setup: letter A is present before the toggle");
+  CHECK(gbdex_unown_set(&s, 0, false) == GBS_OK, "toggle A off");
+  CHECK(gbdex_unown_set(&s, 0, true) == GBS_OK, "toggle A back on");
+
+  uint8_t after[26], membership_after[26];
+  CHECK(gbdex_unown_list(&s, after) == true, "gbdex_unown_list: exit snapshot");
+  for (int L = 0; L < 26; L++) membership_after[L] = gbdex_unown_seen(&s, L) ? 1 : 0;
+
+  CHECK(memcmp(membership_before, membership_after, sizeof membership_before) == 0,
+        "R2: per-letter MEMBERSHIP is unchanged after off-then-on (the N2-era bug's blind spot)");
+  CHECK(memcmp(before, after, sizeof before) != 0,
+        "R2: the raw 26-byte ORDER DOES differ after off-then-on (what gbdex_unown_list catches)");
+  /* the mirrored pdna_gbdex.c dirty check itself, over the real API: */
+  bool screen_would_report_dirty = (memcmp(after, before, sizeof before) != 0);
+  CHECK(screen_would_report_dirty, "R2: unown_forms_screen's own memcmp shape reports dirty on this edit");
+}
+
 /* ---- Unown FULL-LIST semantics on a synthetic in-memory image -------------- */
 /* No real save is known to have every one of the 26 slots populated, so the "list is
  * full" (GBS_ERR_FULL) and the exact compaction shape are proven on a synthetic
@@ -491,6 +536,10 @@ int main(void) {
 
   wipe_all_undo_byte_exact("Gold.sav", GB_GEN2);
   wipe_all_undo_byte_exact("Crystal.sav", GB_GEN2);
+
+  unown_list_reorder_byte_diff("Red.sav", GB_GEN1);
+  unown_list_reorder_byte_diff("Gold.sav", GB_GEN2);
+  unown_list_reorder_byte_diff("Crystal.sav", GB_GEN2);
 
   printf("\n%s: %d check(s), %d failure(s), %d file(s) exercised\n",
          g_fail ? "FAIL" : "OK", g_check, g_fail, g_ran);

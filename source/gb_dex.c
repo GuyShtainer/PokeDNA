@@ -186,6 +186,13 @@ bool gbdex_unown_seen(const GbSession* s, int letter) {
   return false;
 }
 
+/* R2 (b87 fix pass 2, DO-NOT-SHIP review): see gb_dex.h's own header comment on
+ * why a caller needs the raw, ORDERED list (not just per-letter membership) to
+ * detect a genuine change. unown_read already does exactly this read. */
+bool gbdex_unown_list(const GbSession* s, uint8_t out[UNOWN_SLOTS]) {
+  return out && unown_read(s, NULL, out);
+}
+
 GbsStatus gbdex_unown_set(GbSession* s, int letter, bool on) {
   if (letter < 0 || letter > 25) return GBS_ERR_ARG;
   GbGame g;

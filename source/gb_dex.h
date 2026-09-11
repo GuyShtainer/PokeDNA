@@ -87,4 +87,14 @@ bool gbdex_unown_seen(const GbSession* s, int letter);
  * contract as gbdex_set above. */
 GbsStatus gbdex_unown_set(GbSession* s, int letter, bool on);
 
+/* R2 (b87 fix pass 2, DO-NOT-SHIP review): the raw 26-byte wUnownDex list, in
+ * on-save ORDER (1-based letter per slot, 0 = empty). The ORDER is user-visible in
+ * the real game (which Unown form the Pokedex page shows first), so "did anything
+ * change" has to compare these bytes, not just gbdex_unown_seen()'s per-letter
+ * membership -- removing letter A and re-appending it changes the order (it moves
+ * from slot 0 to wherever the first empty slot now is) without changing which 26
+ * bools gbdex_unown_seen() would report. False (out untouched) on a bad session/
+ * field (Gen 1, or a malformed Gen 2 session) -- same posture as gbdex_unown_seen. */
+bool gbdex_unown_list(const GbSession* s, uint8_t out[26]);
+
 #endif /* GB_DEX_H */

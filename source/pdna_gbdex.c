@@ -94,7 +94,7 @@ static void unown_render(GbSession* s, int sel, int top, bool can_edit) {
   trainer_key_legend(can_edit ? "U/D select  A toggle  B back" : "U/D select  B back");
 }
 
-/* Returns true iff the letter-seen state at exit differs from the state at entry.
+/* Returns true iff the raw wUnownDex bytes at exit differ from the bytes at entry.
  * Does NOT call gbs_finish() -- same batching contract as the dex shims above;
  * pdna_gbdex() finishes once after BOTH this screen and the Pokedex screen have had
  * their turn.
@@ -106,12 +106,20 @@ static void unown_render(GbSession* s, int sel, int top, bool can_edit) {
  * toggle's own before/after change -- cycling a letter on then off again in the same
  * visit left dirty stuck true even though the net state matched what the session
  * started with, forcing an unnecessary "Save Pokedex changes?" prompt and write.
- * Snapshotting entry state and comparing at exit (same memcmp-no-op shape
- * pdna_gbtrainer.c's own card-commit path uses, `if (!memcmp(&t, &t0, sizeof t))
- * ... return`) fixes it: only a GENUINE net change is reported dirty. */
+ * R2 (b87 fix pass 2, DO-NOT-SHIP review, MUTATION-PROVEN): N2's own fix compared
+ * gbdex_unown_seen()'s per-letter MEMBERSHIP (26 bools), but wUnownDex is an ORDERED
+ * list -- toggling a letter off then back on REMOVES then RE-APPENDS it (it moves
+ * from its old slot to whatever the first empty slot now is), which changes the raw
+ * bytes and the in-game Unown-page order without changing which 26 letters read
+ * "seen". That left a genuine edit reporting clean -- neither committed (no confirm
+ * prompt fired) nor rolled back (the reordered bytes stayed staged in the session
+ * image for whatever LATER, unrelated persist came next). Fixed: gbdex_unown_list()
+ * snapshots/compares the raw 26 bytes (same memcmp-no-op shape pdna_gbtrainer.c's
+ * own card-commit path uses, `if (!memcmp(&t, &t0, sizeof t)) ... return`), not
+ * membership. */
 static bool unown_forms_screen(GbSession* s, bool can_edit) {
-  bool snap[26];   /* A..Z, same count unown_clamp_scroll's own 0..25 range covers */
-  for (int i = 0; i < 26; i++) snap[i] = gbdex_unown_seen(s, i);
+  uint8_t snap[26];
+  bool have_snap = gbdex_unown_list(s, snap);
 
   int sel = 0, top = 0;
   unown_clamp_scroll(&sel, &top);
@@ -119,9 +127,9 @@ static bool unown_forms_screen(GbSession* s, bool can_edit) {
   for (;;) {
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) {
-      bool changed = false;
-      for (int i = 0; i < 26; i++) if (gbdex_unown_seen(s, i) != snap[i]) { changed = true; break; }
-      return changed;
+      uint8_t now[26];
+      if (!have_snap || !gbdex_unown_list(s, now)) return false;
+      return memcmp(now, snap, sizeof now) != 0;
     }
     if (k & KEY_UP)   sel--;
     if (k & KEY_DOWN) sel++;
