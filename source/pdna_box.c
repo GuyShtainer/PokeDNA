@@ -2886,43 +2886,65 @@ out:
  * below is the thin wrapper that gates first, then tail-calls into it.
  *
  * PDNA_PARTY_STRIP_NEED is the tail BELOW this wrapper's own (tiny, is_bank-check-only)
- * frame, as measured by tools/stack_budget.py on the artless build (BACKLOG #84b,
- * FOURTH pass, 2026-09-10, after D4's whole-graph blind-spot sweep + the walker fixes
- * that made it usable -- traps #1/#5/#6/#7/#8 in tools/stack_budget.py's own docstring):
+ * frame, as measured by tools/stack_budget.py (BACKLOG #102, 2026-09-11), re-derived
+ * from BOTH gate ELFs after the two GB-rung art descents (gb_art_fetch/gb_art_fetch_
+ * icon.constprop.0) were declared `gated` in tools/stack_edges.txt:
  *
  *   python3 tools/stack_budget.py --elf PokeDNA-artless.elf \
  *       --builddir "$(pwd)/build-artless" --root pcp_open_party_strip_inner --top 3
+ *   python3 tools/stack_budget.py --elf PokeDNA.elf \
+ *       --builddir "$(pwd)/build" --root pcp_open_party_strip_inner --top 3
  *
- * deepest chain is now a DIFFERENT, DEEPER branch than the one the THIRD pass measured
- * (party_strip_overlay -> app_party_mon_menu -> app_mon_menu -> pdna_daycare ->
- * pdna_inspect -> summary_run_inner -> draw_left_ex -> pdna_origin_art_portrait ->
- * fetch_pic_ex.constprop.0 -> gb_art_pic_cb -> gb_art_fetch -> gb_art_save_loc ->
- * log_line -> vsniprintf -> ... -> newlib's malloc/free chain) = 9,720 B AS MEASURED --
- * NOT a code change, a VISIBILITY change: pdna_origin_art_portrait's dispatch through
- * PdnaGbArtSource (source/pdna_origin_art.h's s_gb.pic/have/icon) was an undeclared
- * indirect-call BLIND SPOT until this pass declared it (tools/stack_edges.txt), so
- * every prior measurement of this gate -- including the THIRD pass's 6,784 -- was
- * silently unable to see this branch at all and reported the room the OLD SD-write
- * branch (app_commit_sb1 -> app_save_finalize -> ... -> ed_sd_dma_to_rom) needed
- * instead, because that was the only branch the walker could see a path down. The
- * true worst case for this call site has been ~9,784 B all along; the number just
- * caught up to reality. +64 B for the ISR reentry onto the same stack (libtonc's
- * isr_master runs handlers on __sp_usr too) = 9,784. Taken exactly, not rounded up,
- * matching this file's own established convention (rounding here only ever makes the
- * gate MORE conservative, and inflating a tripwire that should never fire on a
- * healthy build just hides how much room a future regression actually has left).
+ * BACKLOG #84b's fourth pass (2026-09-10) correctly found this call site's deepest
+ * chain descending through pdna_origin_art_portrait -> fetch_pic_ex.constprop.0 ->
+ * gb_art_pic_cb -> gb_art_fetch -> gb_art_save_loc -> log_line -> vsniprintf -> ...
+ * -> newlib's malloc/free chain (9,720-9,744 B depending on exact tree state), once a
+ * PdnaGbArtSource dispatch blind spot was declared and the walker could finally see
+ * that branch at all. What it did NOT yet account for: gb_art_fetch is only ever
+ * entered after pdna_origin_art_portrait's OWN runtime pdna_origin_art_stack_room(
+ * PDNA_GB_FETCH_NEED) check has already passed (source/pdna_origin_art.c:530,559) --
+ * a SEPARATE, independent gate, freshly re-verified against the LIVE stack pointer at
+ * the exact moment gb_art_fetch actually runs. Because that inner gate is what keeps
+ * gb_art_fetch's execution safe, PDNA_PARTY_STRIP_NEED does not have to additively
+ * reserve room for it on top of its own chain -- doing so was inflating this
+ * constant by the whole subtree's real size (~5,750 B) for no safety benefit, exactly
+ * the "safe-direction inflation" BACKLOG #102 exists to remove. tools/stack_edges.txt
+ * now declares `gated gb_art_fetch need=6144` and `gated gb_art_fetch_icon.constprop.0
+ * need=6144` (the literal PDNA_GB_FETCH_NEED/PDNA_GB_ICON_NEED values, source/
+ * gb_art_source.h:19,44) -- the walker mechanically re-verifies EVERY run that each
+ * subtree's true measured size stays <= its declared need (FATAL if not: "gated
+ * subtree <fn> measures <M> > declared need <N>: the runtime gate would not protect
+ * it") before excluding it from a `--root` re-derivation other than main; --root main
+ * (the whole-program guard) always walks both subtrees fully, ungated.
  *
- * With #84a's stack room at ~15,200-15,752 B (tools/stack_budget.py's own "STACK ok" line,
- * all three build variants) this gate should NEVER fire on today's tree -- margin 5,416 B
- * at 9,784, comfortably above the 1,024 B floor the static per-build guard itself
- * requires -- it is a tripwire against a future regression eating most of that margin,
- * not a live constraint. Proved by: (a) shooting the party strip once in mGBA
- * (tools/g3_shots.py/n1_shots.py) and confirming it still opens; (b) a scratch build
- * with PDNA_PARTY_STRIP_NEED raised above the measured room, confirming the refusal
- * appears instead of a silent overrun -- NOT re-run this pass (hardware/emulator
- * sign-off is outside a tooling-only change; flag for hardware-testing-protocol if
- * this constant is ever load-bearing on a build closer to its ceiling). */
-#define PDNA_PARTY_STRIP_NEED 9792   /* re-measured on the merged tree 2026-09-10: 9728 + 64 ISR (was 9784) */
+ * With both descents excluded, the new heaviest chain for this root is the OLD
+ * SD-write branch BACKLOG #84b's own comment already named as the runner-up:
+ * party_strip_overlay -> app_party_mon_menu -> app_mon_menu -> app_paste_gb_merge ->
+ * app_commit_sb1 -> app_save_finalize -> sf_where_are_the_bytes -> file_matches ->
+ * f_open -> ... -> ed_sd_dma_to_rom. MEASURED (2026-09-11): 6,552 B on the artless
+ * ELF, 6,536 B on the normal ELF -- the WORSE (artless) of the two is taken, +64 B
+ * for the ISR reentry onto the same stack (libtonc's isr_master runs handlers on
+ * __sp_usr too) = 6,616. The prior pass's own report had estimated ~6,608 for this
+ * re-derivation; the 8 B difference here is ordinary code drift between that estimate
+ * and this actual re-measurement, not a defect (see tools/stack_budget.py's own
+ * BACKLOG #102 commit for the two alternate charging strategies tried and why
+ * "exclude, charge 0" -- not "charge the declared need" -- is the one that is both
+ * correct and actually shrinks this constant).
+ *
+ * With #84a's stack room at ~15,080-15,616 B (tools/stack_budget.py's own "STACK ok"
+ * line, both non-delta build variants) this gate should NEVER fire on today's tree --
+ * margin 8,464-9,016 B at 6,616, comfortably above the 1,024 B floor the static
+ * per-build guard itself requires -- it is a tripwire against a future regression
+ * eating most of that margin, not a live constraint. Proved by: (a) shooting the
+ * party strip once in mGBA at the re-derived constant, confirming it still opens
+ * (BACKLOG #102, tools/dgb_shots.py); (b) a scratch delta-artless build with
+ * PDNA_PARTY_STRIP_NEED temporarily raised to 20,000, confirming the refusal message
+ * appears instead of a silent overrun, then reverted back to the real derived
+ * constant (same pass) -- real-hardware sign-off is a SEPARATE, still-pending gate
+ * (hardware-testing-protocol; the emulator cannot prove a stack-overflow refusal is
+ * correct on real silicon, only that the code path the refusal message takes is
+ * reachable and renders). */
+#define PDNA_PARTY_STRIP_NEED 6616   /* re-derived 2026-09-11 (BACKLOG #102): 6,552 + 64 ISR (was 9,792) */
 
 static void __attribute__((noinline)) pcp_open_party_strip_inner(BoxSource* src, int box,
                                                                   int* cur, bool* need_full) {
