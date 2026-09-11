@@ -1278,6 +1278,10 @@ CMP_MNEM_RE = re.compile(r'^(cmp|cmn|tst|teq)\b')
 # so those are unaffected and untouched).
 REG_TOK = r'r\d+|sl|fp|ip'
 MOV_REG_RE = re.compile(rf'^movs?\s+({REG_TOK})\s*,\s*({REG_TOK})\s*$')
+# Thumb-1 has no `mov rX, rY` that sets flags, so GCC copies-and-tests with `subs rX, rY, #0`
+# (or `adds`): a register COPY, not a clobber. The literal `, #0` and the three-operand form are
+# required -- a bare `adds rX, rY` is rX += rY (b106 re-verify: rgm1_header's dispatch).
+_COPY_FLAGS_RE = re.compile(rf'^(?:add|sub)s\s+({REG_TOK})\s*,\s*({REG_TOK})\s*,\s*#0$')
 DEST_REG_RE = re.compile(rf'^[a-z][a-z0-9]*\s+({REG_TOK})\b')
 LDR_FIELD_RE = re.compile(
     rf'^ldr\w*\s+({REG_TOK})\s*,\s*\[\s*({REG_TOK}|sp|pc)\s*,\s*#(-?\d+)\s*\]')
@@ -1515,6 +1519,9 @@ def _field_origin_step(fn_insn_seq, i, reg):
     mv = MOV_REG_RE.match(ins_clean)
     if mv and mv.group(1) == reg:
         return ('rename', mv.group(2))                  # chase the copy, keep scanning
+    cp = _COPY_FLAGS_RE.match(ins_clean)
+    if cp and cp.group(1) == reg:
+        return ('rename', cp.group(2))                  # Thumb-1 `subs rX, rY, #0` = copy + test
     dm = DEST_REG_RE.match(ins_clean)
     if dm and dm.group(1) == reg:
         return ('resolved', ('nonfield', None))         # set by something not ldr-offset/mov
