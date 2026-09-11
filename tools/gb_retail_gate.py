@@ -101,6 +101,8 @@ SURGERY_SRCS = [
     "source/gb_daycare.c", "source/gb_clock.c", "source/gb_fly.c", "source/gb_boxnames.c",
     # BACKLOG #88: --op flagset/counter's own dependencies.
     "source/gb_flags.c", "source/gb_flags_rw.c",
+    # BACKLOG #89: --op hofclear/hofcount's own dependency.
+    "source/gb_hof.c",
 ]
 
 # gen: 1 = Gen-1 numbering (no primary/backup mirror split in gb_roundtrip's classifier,
@@ -795,6 +797,100 @@ def run_money_case(name, info, rom, sav, work, binary, python, vendor, tally):
     tally.record("money (field write, BACKLOG #49 P0)", ok, detail)
 
 
+# BACKLOG #89 — the Hall of Fame gate: gbh_clear()/gbh_set_count() proven the same way
+# money is above (a real edit through --op hofclear/hofcount, booted, read straight off
+# WRAM). wNumHoFTeams/wHallOfFameCount's WRAM addresses are the SAME symbol addresses
+# gen_gbfields.py's own D() derivation resolved GBF_HOF_COUNT's FILE offset from (RED
+# bank00:d5a2, YELLOW bank00:d5a1, GS bank01:d683, CRYSTAL bank01:d95e) — the save-file
+# offset and this WRAM address are two different numbers for the same field (file =
+# region_base + (wram - region_start)), so this case is checking the count the BOOTED
+# GAME itself holds, not just re-reading the .sav this tool wrote.
+HOF_COUNT_WRAM = {"red": 0xD5A2, "yellow": 0xD5A1, "gold": 0xD683, "crystal": 0xD95E}
+HOF_COUNT_LEN = 1
+HOF_SET_COUNT_VALUE = 3
+
+
+def run_hofclear_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """gbh_clear(): erases every recorded team + the lifetime counter. The count is
+    what actually gates bills_pc.asm/main_menu.asm's own "HALL OF FAME" PC option
+    (source/gb_hof.h's header, re-derived from the pinned pokered decomp) — reading it
+    back at 0 off the BOOTED game's WRAM is the strongest proof available without
+    OCR'ing the PC's own menu text (which this harness's screen-scrape does not cover)."""
+    edited = work / "hofclear.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["hofclear"]])
+    if rc != 0:
+        tally.record("hofclear (BACKLOG #89)", False, f"surgery refused: {err.strip()}")
+        return
+
+    addr = HOF_COUNT_WRAM[name]
+    rc, rep, out, err = boot(python, rom, edited, work / "hofclear", vendor,
+                             work / "hofclear.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:{HOF_COUNT_LEN}"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == "00"
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"{addr:#06x}={got!r} want='00'")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("hofclear (BACKLOG #89)", ok, detail)
+
+
+def run_hofcount_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """gbh_set_count(3): the SET COUNT screen action, read back off the same WRAM
+    address the clear case above uses.
+
+    BACKLOG #89 D1: on Gen 1, gbh_set_count() now clamps to the teams actually
+    present in THIS .sav (never past GBH_G1_CAPACITY), not a flat 255 -- and the
+    real corpus varies (Red: 9 teams, so 3 lands untouched; Yellow: 1 team, so 3
+    clamps to 1). --op hofcount prints the real post-clamp count on its own stdout
+    (do_hofcount, tests/host_gbsurgery_tool.c) specifically so this case can check
+    against what the write ACTUALLY did, not the token handed to it."""
+    edited = work / "hofcount.sav"
+    rc, out, err = run_surgery(binary, sav, edited,
+                               [["hofcount", str(HOF_SET_COUNT_VALUE)]])
+    if rc != 0:
+        tally.record("hofcount (BACKLOG #89)", False, f"surgery refused: {err.strip()}")
+        return
+
+    m = re.search(r"hofcount result: (\d+)", out)
+    if not m:
+        tally.record("hofcount (BACKLOG #89)", False,
+                     f"surgery gave no 'hofcount result: N' line to check against "
+                     f"-- stdout: {out.strip()!r}")
+        return
+    actual_count = int(m.group(1))
+
+    addr = HOF_COUNT_WRAM[name]
+    want = f"{actual_count:02x}"
+    rc, rep, out, err = boot(python, rom, edited, work / "hofcount", vendor,
+                             work / "hofcount.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:{HOF_COUNT_LEN}"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    ok = (rc == 0) and svbk_ok and got == want
+    detail = (f"verdict={rep.get('verdict')} svbk={mem.get('svbk')} svbk_ok={svbk_ok} "
+             f"{addr:#06x}={got!r} want={want!r} "
+             f"(requested {HOF_SET_COUNT_VALUE}, real post-clamp {actual_count})")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record("hofcount (BACKLOG #89)", ok, detail)
+
+
 # BACKLOG #85/#86/#90/#94 — WRAM anchors, one .sym lookup each, same posture as
 # MONEY_WRAM above (a live symbol address, not a save-file offset): the save-file
 # offsets these four cores already use (source/gb_fields.c) live in SRAM/the file;
@@ -1455,6 +1551,10 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
 
     # ---- 2c. BACKLOG #49 P0 — the field-write primitive, proven with money ----
     run_money_case(name, info, rom, sav, work, binary, python, vendor, tally)
+
+    # ---- 2c1. BACKLOG #89 — the Hall of Fame: clear then a plain count set ----
+    run_hofclear_case(name, info, rom, sav, work, binary, python, vendor, tally)
+    run_hofcount_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
     # ---- 2c2. BACKLOG #95 review gate case — the held-item Pokemon-setter write ----
     run_helditem_case(name, info, rom, sav, work, binary, python, vendor, tally,

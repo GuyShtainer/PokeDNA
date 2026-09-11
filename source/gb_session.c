@@ -523,6 +523,15 @@ GbsStatus gbs_write_field(GbSession* s, uint32_t off, const void* buf, uint32_t 
   return map_g2w(g2w_write_range(&s->g2w, off, (const uint8_t*)buf, n));
 }
 
+GbsStatus gbs_write_outside_sum(GbSession* s, uint32_t off, const void* buf, uint32_t n) {
+  if (!s || !s->open || !buf || !n) return GBS_ERR_ARG;
+  if (s->gen == GB_GEN1)
+    return map_gen1w(gen1_write_outside_sum(s->img, s->len, &s->g1, off,
+                                           (const uint8_t*)buf, n,
+                                           s->scratch, s->scratch_len));
+  return map_g2w(g2w_write_range(&s->g2w, off, (const uint8_t*)buf, n));
+}
+
 GbsStatus gbs_finish(GbSession* s) {
   if (!s || !s->open) return GBS_ERR_ARG;
   /* Gen 1 has no backup mirror and no deferred checksum: gen1_write_range_ex already

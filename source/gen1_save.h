@@ -57,6 +57,17 @@
 #define GEN1_SUM_FIRST       0x2598u   /* checksum covers [FIRST, LAST] inclusive */
 #define GEN1_SUM_LAST        0x3522u
 
+/* sHallOfFame (SRAM bank 0, BACKLOG #89) -- 50 teams x 96 B, ENTIRELY BELOW
+ * GEN1_SUM_FIRST: outside the main checksum window, so a write here goes through
+ * gen1_write_outside_sum's explicit allowlist (gen1_write.h), never gen1_write_range_ex. */
+#define GEN1_OFF_HOF         0x0598u
+#define GEN1_HOF_TEAM_BYTES  96u
+#define GEN1_HOF_NUM_TEAMS   50
+#define GEN1_HOF_BYTES       (GEN1_HOF_TEAM_BYTES * GEN1_HOF_NUM_TEAMS)  /* 4800 */
+/* wNumHoFTeams -- 1-based lifetime total, INSIDE the checksummed span, so this one
+ * goes through the normal gen1_write_range(_ex)/gbs_write_field path. */
+#define GEN1_OFF_HOF_COUNT   0x284Eu
+
 /* Stored boxes: 1-6 in SRAM bank 2, 7-12 in bank 3, packed back to back. */
 #define GEN1_OFF_BANK2       0x4000u
 #define GEN1_OFF_BANK3       0x6000u

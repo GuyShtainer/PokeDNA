@@ -125,9 +125,12 @@ static void test_every_row_covered(void) {
    * built row by return value alone, so cross-check against the brief's own 19-item
    * classification instead: every row is EITHER coming-soon-or-ok (never refused as
    * NOT_IN_GAME) except the six Hoenn/Frontier-shaped features and half of Clock fix. */
+  /* BACKLOG #89: NV_BATTLEREC moved OUT of this bucket into ok_both below -- the
+   * "Records" row now hosts the Hall of Fame on a Game Boy save (both generations
+   * record one), unlike every other row still in this list. */
   static const int not_in_game_gen1[] = {
-    NV_CLOCK, NV_MIRAGE, NV_SECRET, NV_POKEBLOCK, NV_EVENTS, NV_BATTLEREC, NV_FRONTIER,
-    NV_CONTEST   /* BACKLOG #60: RSE-only, same shape as the other 7 */
+    NV_CLOCK, NV_MIRAGE, NV_SECRET, NV_POKEBLOCK, NV_EVENTS, NV_FRONTIER,
+    NV_CONTEST   /* BACKLOG #60: RSE-only, same shape as the other 6 */
   };
   for (int i = 0; i < (int)(sizeof not_in_game_gen1 / sizeof not_in_game_gen1[0]); i++)
     CHECK(nav_avail(not_in_game_gen1[i], SE_KIND_GEN1) == NAV_NOT_IN_GAME,
@@ -154,11 +157,12 @@ static void test_every_row_covered(void) {
    * is wired up on both Gen 1 (one slot, level-up only) and Gen 2 (two slots +
    * compatibility + egg). BACKLOG #90: NV_FLY joins the same bucket -- wired for
    * both generations too. BACKLOG #88: NV_DATA (Flags & counters, pdna_gbflags.c)
-   * joins it as well. */
-  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE, NV_FLY, NV_DATA };
+   * joins it as well; BACKLOG #89: NV_BATTLEREC hosts the Hall of Fame. */
+  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE, NV_FLY, NV_DATA,
+                                 NV_BATTLEREC /* BACKLOG #89: the Hall of Fame */ };
   for (int i = 0; i < (int)(sizeof ok_both / sizeof ok_both[0]); i++) {
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare/Fly/Data are NAV_OK");
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare/Fly/Data are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare/Fly/Data/Records are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare/Fly/Data/Records are NAV_OK");
   }
 
   /* NV_MAP: OK on Gen 1, COMING_SOON on Gen 2 -- the same per-gen-split shape as
@@ -167,32 +171,34 @@ static void test_every_row_covered(void) {
   CHECK(nav_avail(NV_MAP, SE_KIND_GEN1) == NAV_OK, "Gen 1: Map is NAV_OK (M1, BACKLOG #91)");
   CHECK(nav_avail(NV_MAP, SE_KIND_GEN2) == NAV_COMING_SOON, "Gen 2: Map is still COMING_SOON");
 
-  /* 8 NOT_IN_GAME (gen1-list, Clock counted once, + BACKLOG #60's NV_CONTEST) + the
+  /* 7 NOT_IN_GAME (gen1-list, Clock counted once, + BACKLOG #60's NV_CONTEST --
+   * BACKLOG #89 dropped this from 8 to 7 when NV_BATTLEREC moved to ok_both) + the
    * COMING_SOON-both and OK-both arrays' own sizes + Map's own split (OK on Gen 1),
    * derived instead of hand-tallied so a row silently added to PDNA_NAV_ITEMS without
    * a matching GB_TABLE entry cannot hide behind a stale literal count. This tracks
    * the arrays, not a frozen number. */
   const int n_coming = (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]);
   const int n_ok = (int)(sizeof ok_both / sizeof ok_both[0]);
-  CHECK(8 + n_coming + n_ok + 1 == NV_COUNT,
-        "row classification accounts for all PDNA_NAV_ITEMS (8 NOT_IN_GAME + COMING_SOON-both + OK-both + Map-split)");
-  printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + %d COMING_SOON-both + "
+  CHECK(7 + n_coming + n_ok + 1 == NV_COUNT,
+        "row classification accounts for all PDNA_NAV_ITEMS (7 NOT_IN_GAME + COMING_SOON-both + OK-both + Map-split)");
+  printf("(G) every PDNA_NAV_ITEMS row is classified (7 NOT_IN_GAME + %d COMING_SOON-both + "
         "%d OK-both + 1 Map-split == %d)\n", n_coming, n_ok, NV_COUNT);
 
   /* Gen 2 differs from Gen 1 in EXACTLY two cells: Clock (Gen 1's NOT_IN_GAME to Gen
    * 2's own NAV_OK, test (E) above) and Map (Gen 1's NAV_OK to Gen 2's own
-   * COMING_SOON, checked above) -- so Gen 2's own count is 7 NOT_IN_GAME + the same
-   * derived COMING_SOON-both and OK-both sizes + Clock + Map's split == NV_COUNT too.
-   * D6 review (b86): don't just narrate it -- actually check the Gen-2 cells for the
-   * other 7 not_in_game_gen1 rows (only Clock, via test (E), and ok_both, via the loop
-   * above, were ever asked with SE_KIND_GEN2). */
+   * COMING_SOON, checked above) -- so Gen 2's own count is 6 NOT_IN_GAME + the same
+   * derived COMING_SOON-both and OK-both sizes + Clock + Map's split == NV_COUNT too
+   * (BACKLOG #89: 7 -> 6 alongside not_in_game_gen1's own 8 -> 7 above). D6 review
+   * (b86): don't just narrate it -- actually check the Gen-2 cells for the other 6
+   * not_in_game_gen1 rows (only Clock, via test (E), and ok_both, via the loop above,
+   * were ever asked with SE_KIND_GEN2). */
   for (int i = 0; i < (int)(sizeof not_in_game_gen1 / sizeof not_in_game_gen1[0]); i++) {
     if (not_in_game_gen1[i] == NV_CLOCK) continue;   /* Gen 2's one differing NOT_IN_GAME cell, test (E) */
     CHECK(nav_avail(not_in_game_gen1[i], SE_KIND_GEN2) == NAV_NOT_IN_GAME,
           "Gen 2: every Hoenn/Frontier-shaped row except Clock stays NOT_IN_GAME");
   }
-  CHECK(7 + n_coming + n_ok + 1 + 1 == NV_COUNT,
-        "Gen 2's row classification (7 NOT_IN_GAME + COMING_SOON-both + OK-both + Clock + Map's split) accounts for all rows too");
+  CHECK(6 + n_coming + n_ok + 1 + 1 == NV_COUNT,
+        "Gen 2's row classification (6 NOT_IN_GAME + COMING_SOON-both + OK-both + Clock + Map's split) accounts for all rows too");
 }
 
 /* ---- (H) defensive: out-of-range nv_item / save_kind never misbehaves -------------- */

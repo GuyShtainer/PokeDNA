@@ -31,6 +31,7 @@
  *      source/gb_boxnames.c \
  *      source/gb_flags.c \
  *      source/gb_flags_rw.c \
+ *      source/gb_hof.c \
  *      -o /tmp/hgbsurg
  *
  * Usage
@@ -143,6 +144,7 @@
 #include "gb_boxnames.h"
 #include "gb_flags.h"      /* BACKLOG #88: --op flagset/counter */
 #include "gb_flags_rw.h"
+#include "gb_hof.h"
 
 #define MAX_FILE_BYTES 65536u
 #define MAX_OPS        64
@@ -239,7 +241,12 @@ static void usage(const char* prog) {
     "  --op counter FIELD VALUE     BACKLOG #88 gate case: FIELD is \"safari\" (Gen 1\n"
     "                               only, GBF_SAFARI_STEPS, 0..255) or \"lucky\" (Gen 2\n"
     "                               only, GBF_LUCKY_NUMBER_SHOW_FLAG, 0 or 1).\n"
-    "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
+    "  --op hofclear                BACKLOG #89: gbh_clear() -- erase every recorded\n"
+    "                               Hall of Fame team + the lifetime win counter.\n"
+    "  --op hofcount N               BACKLOG #89: gbh_set_count(N) -- the lifetime\n"
+    "                               win counter (Gen 1 clamped to the teams present,\n"
+    "                               <= 50; Gen 2 <= 200).\n"
+"BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
 /* Parse argv into (in, out, list_mode, ops[]). Returns 2 on any usage problem (already
@@ -264,6 +271,8 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"gender", 1},     /* BACKLOG #96 Kris: GBF_GENDER 0|1, Crystal only */
     {"flagset", 2},    /* BACKLOG #88: INDEX 0|1, via gbfl_set (gb_flags_rw.h) */
     {"counter", 2},    /* BACKLOG #88: FIELD(safari|lucky) VALUE */
+    {"hofclear", 0},   /* BACKLOG #89: gbh_clear() -- erase every Hall of Fame team + count */
+    {"hofcount", 1},   /* BACKLOG #89: gbh_set_count() N -- the lifetime win counter */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -537,6 +546,38 @@ static int do_gender(GbSession* s, const char* vtok) {
   if (ws != GBS_OK) return refuse(gbs_status_text(ws));
   GbsStatus fs = gbs_finish(s);
   if (fs != GBS_OK) return refuse(gbs_status_text(fs));
+  return 0;
+}
+
+/* BACKLOG #89 retail gate: gbh_clear() through source/gb_hof.h -- the case that
+ * proves gen1_write_outside_sum's allowlist reaches a REAL booted Red/Gold/Crystal,
+ * not just the host test's in-memory image. On a booted Red/Gold, the gate reads
+ * wNumHoFTeams/wHallOfFameCount back out of WRAM (the game's own load already copied
+ * the SRAM byte there) and the SRAM record itself, proving both "the count reads 0"
+ * and "the PC's HALL OF FAME option is gone" (bills_pc.asm/main_menu.asm gate purely
+ * on the count, per gb_hof.h's own header) without needing a screenshot of the PC
+ * menu specifically. */
+static int do_hofclear(GbSession* s) {
+  GbsStatus st = gbh_clear(s);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* BACKLOG #89 retail gate: gbh_set_count() -- the SET COUNT screen action, gated the
+ * same clamp gbh_set_count() itself enforces (Gen 1 clamped to the teams present,
+ * <= 50; Gen 2 <= 200); this tool does not re-clamp the token itself so an
+ * over-range value still exercises the core's own clamp end to end, rather than
+ * being rejected here before it ever reaches gbh_set_count(). */
+static int do_hofcount(GbSession* s, const char* n_tok) {
+  int n = resolve_uint(n_tok, "hof count");
+  if (n < 0) return 2;
+  GbsStatus st = gbh_set_count(s, n);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  /* BACKLOG #89 D1: the requested N and what actually lands can now differ on
+   * Gen 1 (clamped to the teams present, not a flat 255) -- print the real
+   * post-clamp count so tools/gb_retail_gate.py's own hofcount case can check
+   * against what this call ACTUALLY wrote, not the token it was handed. */
+  printf("hofcount result: %d\n", gbh_count(s));
   return 0;
 }
 
@@ -1097,6 +1138,12 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "gender")) {
     return do_gender(s, o->a[0]);
+  }
+  if (!strcmp(o->kind, "hofclear")) {
+    return do_hofclear(s);
+  }
+  if (!strcmp(o->kind, "hofcount")) {
+    return do_hofcount(s, o->a[0]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;

@@ -254,6 +254,13 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # own append-only rule.
     ("gb-boxname", "BACKLOG #94 — the Gen-2 box-rename banner (osk_input, "
      "gbbn_rename)", ("BACKLOG #94",)),
+    # BACKLOG #89 (this slice): the Gen-1/2 Hall of Fame screen (source/pdna_gbhof.c)
+    # over gb_hof.h's core -- the "Records" nav row's new home on a Game Boy save
+    # (there is no Gen-3 twin to mirror, see gb_hof.h's own header). Shots come from
+    # tools/dgb_shots.py's run_b89_hof() (--b89-hof), captions all start
+    # "BACKLOG #89:". Appended after "gb-boxname" per this list's own append-only rule.
+    ("gb-hof", "BACKLOG #89 — the Gen-1/2 Hall of Fame screen (list, detail, "
+     "CLEAR ALL, SET COUNT)", ("BACKLOG #89",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
