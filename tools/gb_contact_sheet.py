@@ -186,10 +186,14 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # M1 (BACKLOG #91, docs/GB-MAP-DESIGN.md): Red/Yellow's own current-map view,
     # read-only, on the shared shell -- the first slice of the Gen-1/2 Map screen
     # (M2 all-maps browser and M3 teleport are later slices). Shots come from
-    # tools/dgb_shots.py's run_m1_map(), captions all start "M1:". Appended after
-    # "gb-pack-gen2" per this list's own append-only rule.
+    # tools/dgb_shots.py's run_m1_map() (captions start "M1:") and, for the
+    # vertical-clamp coverage VIRIDIAN_POKECENTER's own 4-block height can't reach,
+    # run_m1_map_vclamp() (captions start "M1 vclamp:" -- a SEPARATE prefix, since
+    # feature_for_caption() matches the text before the first colon exactly, not a
+    # startswith). Appended after "gb-pack-gen2" per this list's own append-only
+    # rule.
     ("gb-map-gen1", "M1 — Red's own current-map view on the shell, read-only "
-     "(Gen-1 saves)", ("M1",)),
+     "(Gen-1 saves)", ("M1", "M1 vclamp")),
     # BACKLOG #92 (append-only, same rule as every row above): a held ITEM row on
     # the Gen-2 mon-menu popup (app_mon_menu_readonly, pdna_main.c), Gen 1 omitted.
     # Shots come from tools/dgb_shots.py's run_gbmon(); captions all start "#92:".
