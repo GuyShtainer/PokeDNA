@@ -534,7 +534,20 @@ Gen1WStatus gen1_write_range(uint8_t* img, uint32_t len, Gen1Save* s,
  * change GEN1_OFF_HOF_COUNT (inside the checksummed span) do that through the normal
  * gen1_write_range/gbs_write_field path, separately. A no-op chunk (bytes already
  * read back as `buf`) writes nothing, per chunk, same as gen1_write_range_ex. `s` is
- * refreshed after every chunk that changes the image. */
+ * refreshed after every chunk that changes the image.
+ *
+ * HONESTY NOTE (D5): gen1_open never reads a single byte of [GEN1_OFF_HOF,
+ * GEN1_OFF_HOF + GEN1_HOF_BYTES) -- the blob sits entirely outside every span
+ * gen1_open's own parse touches (GEN1_SUM_FIRST..LAST, the party blob, both box
+ * blobs). That means the GEN1W_ERR_VERIFY branch above is structurally unreachable
+ * from a write this function makes: there is no legal `buf` content a caller could
+ * pass that would make gen1_open start failing as a RESULT of writing into this
+ * blob. The real guarantees this function actually provides are: the allowlist
+ * bound (GEN1W_ERR_RANGE, proven above), the byte-for-byte re-read compare
+ * sf_write_verified already performs on every SD write this image goes through, and
+ * the pristine in-RAM copy every caller keeps for a whole-image rollback on any
+ * other failure. Do not read GEN1W_ERR_VERIFY firing here as evidence this function
+ * is catching a real HoF-write failure mode -- it isn't one that exists. */
 Gen1WStatus gen1_write_outside_sum(uint8_t* img, uint32_t len, Gen1Save* s,
                                    uint32_t off, const uint8_t* buf, uint32_t n,
                                    uint8_t* snap, uint32_t snap_len);
