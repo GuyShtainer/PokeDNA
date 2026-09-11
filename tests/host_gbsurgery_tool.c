@@ -228,6 +228,10 @@ static void usage(const char* prog) {
     "                               GBF_MAP_ID/GBF_POS_X/GBF_POS_Y + the two block-half\n"
     "                               bytes, X&1/Y&1) and refreshes the checksum. Gen 1\n"
     "                               only.\n"
+    "  --op warp2 GROUP NUMBER X Y  M1-G2 fix-pass shot-retake gate: the Gen-2 twin of\n"
+    "                               warp above (gb_fields.c's GBF_MAP_GROUP/NUMBER/\n"
+    "                               POS_X/POS_Y, Gold/Silver vs Crystal columns picked\n"
+    "                               via gb_session_is_crystal). Gen 2 only.\n"
     "  --op statusflags BYTE        BACKLOG #96 D10: GBF_STATUS_FLAGS (0..255), Gen 2\n"
     "                               only -- bit 0 is STATUSFLAGS_POKEDEX_F.\n"
     "  --op gender 0|1              BACKLOG #96 Kris: GBF_GENDER, Crystal only (0 M,\n"
@@ -264,6 +268,7 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"gender", 1},     /* BACKLOG #96 Kris: GBF_GENDER 0|1, Crystal only */
     {"flagset", 2},    /* BACKLOG #88: INDEX 0|1, via gbfl_set (gb_flags_rw.h) */
     {"counter", 2},    /* BACKLOG #88: FIELD(safari|lucky) VALUE */
+    {"warp2", 4},      /* M1-G2 fix-pass shot-retake gate: GROUP NUMBER X Y, Gen 2 only */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -490,6 +495,47 @@ static int do_warp(GbSession* s, const char* map_tok, const char* x_tok, const c
   if ((st = gbs_write_field(s, 0x260du, &y_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_write_field(s, 0x2610u, &xblock_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_write_field(s, 0x260fu, &yblock_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_finish(s)) != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* M1-G2 (BACKLOG #91) fix-pass shot-retake gate: the Gen-2 twin of do_warp()
+ * above, for the review-opus D1/D2/D3 re-shots (New Bark's own roof colour,
+ * Olivine's, and Ice Path B2F Mahogany Side's -- the STOP-LICENCE remap shot
+ * the brief required). Offsets are gb_fields.c's own GBF_MAP_GROUP/
+ * GBF_MAP_NUMBER/GBF_POS_X/GBF_POS_Y table, Gold/Silver vs Crystal columns
+ * (0x2868/0x2869/0x286b/0x286a vs 0x2843/0x2844/0x2846/0x2845 -- the exact
+ * literals docs/GB-MAP-DESIGN-G2.md §8 and tests/host_romgbmap2_test.c's own
+ * test_live_saves() already cite), not re-derived here, same "hardcode the
+ * cited literal, cite gb_fields.c" precedent do_warp() sets for Gen 1. Gen 2
+ * only -- Gen 1 already has its own do_warp(). */
+static int do_warp2(GbSession* s, const char* group_tok, const char* number_tok,
+                     const char* x_tok, const char* y_tok) {
+  if (s->gen != GB_GEN2) return refuse("warp2 is Gen 2 only");
+  int group = resolve_uint(group_tok, "warp2 group");
+  int number = resolve_uint(number_tok, "warp2 number");
+  int x = resolve_uint(x_tok, "warp2 x");
+  int y = resolve_uint(y_tok, "warp2 y");
+  if (group < 0 || number < 0 || x < 0 || y < 0) return 2;
+  if (group > 255 || number > 255 || x > 255 || y > 255) {
+    fprintf(stderr, "warp2 GROUP/NUMBER/X/Y must each be 0..255\n");
+    return 2;
+  }
+
+  bool crystal = (s->g2w.sv.version == G2_VER_CRYSTAL);
+  uint32_t group_off  = crystal ? 0x2843u : 0x2868u;
+  uint32_t number_off = crystal ? 0x2844u : 0x2869u;
+  uint32_t y_off       = crystal ? 0x2845u : 0x286au;
+  uint32_t x_off       = crystal ? 0x2846u : 0x286bu;
+
+  uint8_t group_b = (uint8_t)group, number_b = (uint8_t)number;
+  uint8_t x_b = (uint8_t)x, y_b = (uint8_t)y;
+
+  GbsStatus st;
+  if ((st = gbs_write_field(s, group_off, &group_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, number_off, &number_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, x_off, &x_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
+  if ((st = gbs_write_field(s, y_off, &y_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_finish(s)) != GBS_OK) return refuse(gbs_status_text(st));
   return 0;
 }
@@ -1091,6 +1137,9 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "warp")) {
     return do_warp(s, o->a[0], o->a[1], o->a[2]);
+  }
+  if (!strcmp(o->kind, "warp2")) {
+    return do_warp2(s, o->a[0], o->a[1], o->a[2], o->a[3]);
   }
   if (!strcmp(o->kind, "statusflags")) {
     return do_statusflags(s, o->a[0]);
