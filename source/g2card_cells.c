@@ -4,27 +4,41 @@
 
 const uint8_t kG2BadgeBit[8] = { 0, 1, 2, 3, 5, 4, 6, 7 };
 
-int g2card_build_upper_cells(bool female, G2CardCell out[G2CARD_UPPER_CELLS]) {
+int g2card_build_upper_cells(bool female, bool has_corner, G2CardCell out[G2CARD_UPPER_CELLS]) {
   int n = 0;
   GbScrSrc pic_src = female ? GBSCR_SRC_CARDPIC_F : GBSCR_SRC_CARDPIC_M;
 
   out[n].x = 2; out[n].y = 4; out[n].src = GBSCR_SRC_CARDGFX; out[n].index = G2G_ID; n++;
   out[n].x = 3; out[n].y = 4; out[n].src = GBSCR_SRC_CARDGFX; out[n].index = G2G_NO; n++;
 
-  for (int ty = 0; ty < 7; ty++)
-    for (int tx = 0; tx < 5; tx++) {
-      out[n].x = (uint8_t)(14 + tx); out[n].y = (uint8_t)(1 + ty);
-      out[n].src = pic_src; out[n].index = (uint8_t)(ty * 5 + tx); n++;
-    }
   /* (18,9) and (18,1) are the card's RIGHT-CORNER chamfer, NOT a repeat of the
    * photo: TrainerCard_InitBorder writes it one row under each box's top row
    * (Gold $04, Crystal $1c). On GOLD (row-major) display index 4 IS that tile
-   * and this is pixel-exact; on CRYSTAL the game copies CardRightCornerGFX
-   * (pokecrystal.sym 09:65c3 = badges + 88 tiles) over vTiles2 tile $1c after
-   * GetCardPic, so index 4 resolves to the photo's own blank storage tile 28
-   * and BOTH cells are WRONG on Crystal (38/64 px Chris, 36/64 px Kris) --
-   * BACKLOG #125. */
-  out[n].x = 18; out[n].y = 9; out[n].src = pic_src; out[n].index = 4; n++;
+   * and this is pixel-exact -- `has_corner` is false there (RomGbUi.cardcorner
+   * == 0 by construction), so both cells keep the plain pic_src/index-4 form.
+   * On CRYSTAL the game copies CardRightCornerGFX (pokecrystal.sym 09:65c3 =
+   * badges + 88 tiles, gu->cardcorner) over vTiles2 tile $1c after GetCardPic,
+   * so `has_corner` is true and BOTH cells resolve through GBSCR_SRC_CARDCORNER
+   * (a single 16-B block, index always 0) instead -- BACKLOG #125, fixed. The
+   * (18,1) override happens IN the grid loop below (tx==4, ty==0 is exactly
+   * that cell): overwriting that one iteration's src/index is what "override,
+   * don't add" means here -- the emitted cell count stays G2CARD_UPPER_CELLS
+   * either way, no append+dedupe needed. */
+  for (int ty = 0; ty < 7; ty++)
+    for (int tx = 0; tx < 5; tx++) {
+      out[n].x = (uint8_t)(14 + tx); out[n].y = (uint8_t)(1 + ty);
+      if (has_corner && tx == 4 && ty == 0) {
+        out[n].src = GBSCR_SRC_CARDCORNER; out[n].index = 0;
+      } else {
+        out[n].src = pic_src; out[n].index = (uint8_t)(ty * 5 + tx);
+      }
+      n++;
+    }
+  if (has_corner) {
+    out[n].x = 18; out[n].y = 9; out[n].src = GBSCR_SRC_CARDCORNER; out[n].index = 0; n++;
+  } else {
+    out[n].x = 18; out[n].y = 9; out[n].src = pic_src; out[n].index = 4; n++;
+  }
 
   for (int x = 1; x <= 12; x++) {
     out[n].x = (uint8_t)x; out[n].y = 3; out[n].src = GBSCR_SRC_CARDGFX; out[n].index = G2G_DIVFILL; n++;
