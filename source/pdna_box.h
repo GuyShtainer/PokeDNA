@@ -16,6 +16,36 @@
  *    and mark_dirty (deferred path — PC defers moves to save-file exit; the bank
  *    persists quietly there and then).
  * All function pointers act on module-singleton state, so they take no `self`. */
+
+/* BACKLOG #120 S1: the carry's cross-generation discriminator. `is_bank` (below) stays a
+ * pure LAYOUT flag (suppresses the PARTY tab + PC hand-off edges 1/4, same as always) —
+ * BOTH the real Bank and a raw Game Boy save's own box set it true, so it can no longer
+ * tell those two apart. `scope` is the new, three-way identity a carry actually checks:
+ * PC and BANK behave exactly as they always have (S1 is a pure refactor, no filler here
+ * changes its `can_lift`/`xfer`, which stay NULL); GB is wired starting S2/S3. */
+#define BOXSCOPE_PC   0
+#define BOXSCOPE_BANK 1
+#define BOXSCOPE_GB   2
+
+/* Carried-mon cross-generation transfer state; the full definition lands with S3 (the UP
+ * mechanics). S1 only needs the incomplete type so BoxXferOps's function pointers can
+ * name it — a pointer to an incomplete struct type is legal in a prototype. */
+typedef struct XferCarry XferCarry;
+
+/* BACKLOG #120 S1: the opt-in cross-generation transfer vtable (§3.1 of
+ * docs/BANK-CROSSGEN-DESIGN.md). NULL on every Gen-3 source (PC, Bank) forever; the Game
+ * Boy source installs it starting S3 (write session) or a read-only twin missing every
+ * member but `lift_up` (read-only mount, §3.1 `k_gb_xfer_ro`). Every member is a real
+ * implementation added by a later slice — S1 wires no GB body, only the shape. */
+typedef struct {
+  uint8_t gen;                                     /* PDNA_GEN1 / PDNA_GEN2, for the wording */
+  bool (*lift_up)(const uint8_t* rec80, uint8_t* out80, XferCarry* xc);       /* GB -> Gen-3 native */
+  bool (*preview_down)(const uint8_t* rec80, XferCarry* xc);                 /* pure Gen-3 -> GB conversion, no write */
+  bool (*accept_down)(int box, const uint8_t* original80, XferCarry* xc);    /* commits the DOWN drop */
+  bool (*release_up)(int box, int slot, const XferCarry* xc);                /* consumes the GB origin after UP lands */
+  bool (*move_within)(int box, int slot, int dst_box);                      /* (GB,GB) different-box drop = a within-save move */
+} BoxXferOps;
+
 typedef struct {
   int  nboxes;
   bool last_box_is_party;    /* GB sources expose the party as one extra pseudo-box at
@@ -74,6 +104,21 @@ typedef struct {
    * and may carry decoration (the Game Boy source prefixes "GB "). NULL =>
    * get_name() is already the raw stored name (the Gen-3 PC and the Bank). */
   void (*get_raw_name)(int box, char out[12]);
+  /* BACKLOG #120 S1: appended at the END for the same reason `can_rename` above was —
+   * tools/stack_edges.txt's hand-verified BoxSource field-offset table is keyed by byte
+   * offset, so a field inserted mid-struct would shift every offset after it. `scope`
+   * (BOXSCOPE_PC/BANK/GB) is the carry discriminator described at the top of this file.
+   * `bank_edge`: true makes the single-carry UP-past-the-tabs edge return 4 (open the
+   * Bank) even though `is_bank` is already true (only the Game Boy source sets this —
+   * the real Bank has nothing above it to hop to, so it stays false there). `can_lift`:
+   * NULL => can_edit() (PC/Bank behave exactly as today); a source can narrow this to
+   * refuse individual cells (e.g. a GB cell whose native record cannot be read cleanly)
+   * without touching can_edit()'s save-wide meaning. `xfer`: NULL on every Gen-3 source,
+   * forever; the opt-in BoxXferOps capability described above. */
+  uint8_t scope;
+  bool bank_edge;
+  bool (*can_lift)(int box, int slot);
+  const BoxXferOps* xfer;
 } BoxSource;
 
 /* Game-faithful box screen over `src`: a left PKMN DATA panel + a 6x5 icon grid on
@@ -86,5 +131,18 @@ int pdna_box(BoxSource* src);
 /* Reset the mon-in-hand carry state — call once when a save is (re)opened, since the
  * carry persists across pdna_box runs to survive the PC<->Bank hand-off. */
 void pdna_box_clear_carry(void);
+
+/* BACKLOG #120 S1: install (or, passed NULL, uninstall) the xfer peer a Bank visit reached
+ * from a Game Boy session brackets around it (§4 gb_bank_visit). S1 wires only the setter
+ * and the stored pointer, always called with NULL — no caller installs a real peer until
+ * S2. Passing NULL also clears any xfer carry in progress (S3's `s_xfer`, not yet added). */
+void pdna_box_xfer_set(const BoxXferOps* ops);
+
+/* True iff the mon (or chunk) currently in hand originated from a BOXSCOPE_GB source —
+ * the §2.3 exit-clear rule a GB session's exit hook needs (a Gen-3 carry, including a
+ * fresh DUPLICATE, must survive a START > GB import visit exactly as it does today; a
+ * GB-origin carry must never outlive the arena). S1 adds the query; no caller uses it
+ * yet (S2 wires `gb_session_core`'s exit hook). */
+bool pdna_box_carry_is_gb(void);
 
 #endif /* PDNA_BOX_H */
