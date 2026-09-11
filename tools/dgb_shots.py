@@ -1269,6 +1269,199 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     return s
 
 
+def run_b85_daycare(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #85 (source/pdna_gbdaycare.c): the Gen-1/2 Day-Care screen over
+    gb_daycare.h's core -- the Gen-1/2 twin of pdna_main.c's pdna_daycare(). `rom`
+    must be a ONE-ROM fused image (tools/fuse_gb.py fed only Red.gb+Red.sav for
+    `which="red"`, or only Gold.gbc+Gold.sav for `which="gold"` -- same single-ROM
+    requirement run_u4_bag()/run_u5_pack() document, BACKLOG #98's known harness gap).
+
+    RE-SHOT for the DO-NOT-SHIP review's D1 (Put-in moves, not pastes) and D6
+    (Take-out lands party-first, else the first box with room, else refuses). The
+    original shots entered on BOX1 (index 0, 20/20 on BOTH corpus saves), so every
+    Take-out landed straight into GBS_ERR_FULL -- a refusal this file's own caption
+    mis-described as the intended behaviour. This run instead enters on the FIRST
+    box with a free slot on each corpus save (verified directly with
+    tests/host_gbsurgery_tool.c's own --list, matching the review's own measured
+    boxes):
+      Red.sav   box index 4  (in-game BOX5,  19/20, HITMONLEE at slot 0)
+      Gold.sav  box index 12 (in-game BOX13, 17/20, MILTANK   at slot 0)
+    so the Take-out SUCCESS path is reachable. R press count == the target box
+    index exactly on this fixture (R x4 for Red, R x13 for Gold -- confirmed by
+    direct probe, matching this file's own pre-existing "drop-prone input" note
+    for R/DOWN/RIGHT: a shorter settle silently swallowed a press once already).
+    Both corpus parties are FULL (6/6), so the landing search falls through to
+    "first box with room" for both games -- the mon lands back in the SAME box it
+    came from (which is exactly right: that box is still the first one with a free
+    slot after the Put-in reduced its count by one).
+
+    Nav: S1 info -> A -> box grid (rom_gbsprite cold scan) -> R x(box index) ->
+    START -> nav menu -> DOWN x2 (Party->Bank->Daycare, PDNA_NAV_ITEMS index 2) ->
+    A -> pdna_gbdaycare(cur_box = the box just selected). The screen itself draws
+    no icons (this slice's own header note: the animated yard art is Gen-3-only,
+    private to pdna_main.c, out of this file list's reach), so BIG_SETTLE covers
+    every transition inside it -- no GB_ART_COLD_SETTLE needed past the box-grid
+    entry.
+
+    The egg case is NOT attempted here: producing an `egg_ready` state means
+    actually breeding two compatible Pokemon in-game (steps of overworld movement),
+    which neither this script nor host_gbsurgery_tool.c's `--op daycare` (deposit
+    only) can fabricate without new surgery-tool support outside this slice's file
+    list -- flagged as hardware/gameplay-only rather than faked with an edited
+    fixture this script cannot itself produce. A genuine "everything is full"
+    Take-out refusal is ALSO not reproducible from this real corpus (some box
+    always has room once the party is full) -- the refusal shown instead is the
+    new D1 confirm-decline path (pressing B at "Send to Day-Care?"), a real,
+    reachable, zero-byte-diff refusal this screen did not have before the review."""
+    box_index = 4 if which == "red" else 12
+    box_label = "BOX5" if which == "red" else "BOX13"
+    src_mon = "HITMONLEE" if which == "red" else "MILTANK"
+    landed_label = "Box 5" if which == "red" else "Box 13"
+
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b85_{which}_")
+    print(f"== BACKLOG #85: {which}'s own Day Care (D1/D6 re-shoot) ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid
+    s.run(GB_ART_COLD_SETTLE)
+    s.shot("00_box_before", f"BACKLOG #85: {which}.sav's own BOX1 on entry, before "
+                             "switching to the box this run enters the Day Care from")
+
+    # R press count == the target box index EXACTLY on this fixture (confirmed by
+    # direct probe on BOTH corpus saves). settle=300, not the default BIG_SETTLE=40
+    # and not the 250 an earlier revision of this same function used: this exact
+    # input (R, held rapid-fire) is the one this codebase has already found
+    # drop-prone once (tools/dgb_shots.py's own R1-xfer comment) -- a probe at 250
+    # on Gold.sav's own image silently dropped one of the 12 presses needed to
+    # reach index 12 (landing on BOX12/20/20, one short and already full), while
+    # the SAME 12 presses at 300 landed correctly on BOX13/17/20 every time this
+    # was re-checked. 300 also re-confirmed correct on Red.sav.
+    s.press_n("R", box_index, settle=300)
+    s.shot("01_box_selected", f"BACKLOG #85: {which}.sav's own {box_label} selected -- "
+                              f"the first box with a free slot ({src_mon} at slot 0), "
+                              "so `cur_box` (what the Day-Care's own Put-in/Take-out "
+                              "picker and landing search will use) is this box")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 2)                                     # Party -> Bank -> Daycare (index 2)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Daycare -> pdna_gbdaycare()
+    s.shot("02_screen", f"BACKLOG #85: {which}'s own Day Care on entry, cur_box = "
+                        f"{box_label} -- the panel/menu shape mirrored from "
+                        "pdna_daycare(), no yard art")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on slot 0 -> the action popup
+    s.shot("03_menu_slot0", "BACKLOG #85: the per-slot action popup on slot 0 (View/Edit + "
+                             "Take out if occupied, or Put in if empty, Cancel)")
+
+    # Slot 0 starts empty on both fixtures' own Day Care, so the popup's first row
+    # is "Put in" -- A opens cur_box's picker (gbdc_pick).
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Put in -> gbdc_pick over cur_box
+    s.shot("04_pick_list", f"BACKLOG #85: the deposit picker -- {box_label}'s own occupied, "
+                            "non-Egg slots (gbdc_pick, the smallest 'pick one "
+                            "owned mon' list this slice could build, since "
+                            "gb_daycare's own gbd_deposit() requires a "
+                            "box-shaped record -- see pdna_gbdaycare.h)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick the top row -> D1's new confirm prompt
+    s.shot("05_confirm", "BACKLOG #85 D1: the new confirm prompt (app_confirm, "
+                          "'Send to Day-Care? / Moves this Pokemon there.') -- "
+                          "gbdc_deposit() did not ask before this review; this is "
+                          "the same review fix as pdna_main.c's own app_to_daycare()")
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # DECLINE -> the D1 refusal/cancel path
+    s.shot("06_confirm_declined", "BACKLOG #85 D1: B at the confirm backs out -- gbd_deposit() "
+                                   "never ran, gbs_delete() never ran, nothing changed. "
+                                   "The only reachable 'refusal' shot in this run: a genuine "
+                                   "full-boxes-and-full-party Take-out refusal cannot be "
+                                   "built from this real corpus (some box always has room "
+                                   "once the party's own 6/6 is accounted for)")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on slot 0 again -> Put in again
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # gbdc_pick over cur_box again
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick the top row -> the confirm again
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ACCEPT -> gbd_deposit() + gbs_delete() + gb_persist()
+    s.shot("07_persist_notice", "BACKLOG #85: gb_persist()'s own PDNA_DELTA branch: 'Edits "
+                                 "are in-session only in the emulator build' -- "
+                                 "this build has no SD card, so every write shows "
+                                 "this notice and RETURNS FALSE, which is why "
+                                 "gbdc_deposit()'s own 'LEFT AT DAY CARE / Moved from "
+                                 "the box. Saved.' message (real, shipped text) is "
+                                 "never reachable in this build -- not specific to "
+                                 "this screen, same gate every other GB write path "
+                                 "in this app hits")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the notice -> back at the Day Care screen
+    s.shot("08_deposited", f"BACKLOG #85 D1: back at the Day Care screen -- slot 0 now shows "
+                            f"{src_mon} (moved, not copied)")
+
+    # settle=120, not BIG_SETTLE=40: a direct probe found the box-count banner still
+    # blank at 40 frames after this specific transition (Day-Care -> B -> box grid,
+    # a re-entry path no earlier shot list in this file exercised) -- the grid's own
+    # mon tiles redraw in time but the "N:GB BOXN cc/20" banner text needs longer.
+    s.tap("B", settle=120)                                  # back out to the box grid
+    s.shot("09_source_emptied", f"BACKLOG #85 D1: back at {box_label} -- its own count "
+                                 "dropped by exactly one and slot 0 no longer shows "
+                                 f"{src_mon} (D1's own repro: a Put-in that PASTES "
+                                 "instead of MOVES would leave this box unchanged)")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu again
+    s.press_n("DOWN", 2)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # back into the Day Care
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the now-occupied slot 0
+    s.shot("10_menu_occupied", "BACKLOG #85: the action popup on an OCCUPIED slot -- now "
+                                "View/Edit + Take out, no Put in row")
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # View/Edit -> Take out
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Take out -> gbdc_take: withdraw + land + gb_persist()
+    s.shot("11_take_out_success", "BACKLOG #85 D6: the SUCCESS case underneath this same "
+                                  "generic PDNA_DELTA notice -- both corpus parties are "
+                                  "full (6/6), so gbdc_land()'s own search falls through "
+                                  f"to the first box with room, which is {box_label} "
+                                  "itself (still has a free slot after the Put-in above). "
+                                  f"gbdc_take()'s own success text ('Sent to {landed_label}.') "
+                                  "is real and shipped but, like the deposit case above, "
+                                  "unreachable in this SD-less emulator build -- the STATE "
+                                  "change it names is verified by slot 0 emptying (12) and "
+                                  f"is hardware-only to see spelled out on screen")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss -> back at the Day Care screen
+    s.shot("12_slot0_empty_again", "BACKLOG #85 D6: back at the Day Care screen -- slot 0 is "
+                                    "empty again (the Take-out landed the mon back in the "
+                                    "box, not a phantom copy left behind)")
+
+    s.tap("B", settle=120)                                  # back out to the box grid (same
+                                                              # settle note as 09 above)
+    s.shot("12b_box_restored", f"BACKLOG #85 D6: back at {box_label} -- its count is back "
+                                f"up to what it was before the Put-in (one more than 09's "
+                                f"own shot); gbs_insert() appends at the box's own next "
+                                f"free slot, not necessarily slot 0, so {src_mon} is "
+                                "back in this box but not necessarily in the same cell -- "
+                                "the count is gbdc_land()'s own visual proof, not the "
+                                "grid position")
+
+    if which != "red":
+        s.tap("START", settle=gb_shots.BIG_SETTLE)          # re-enter for the Gen-2-only leg below
+        s.press_n("DOWN", 2)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)
+        # Back at the main screen, no popup open.
+        s.tap("DOWN", settle=gb_shots.SETTLE)               # slot 0 -> slot 1 (the Lady's)
+        s.shot("13_slot1_cursor", "BACKLOG #85: Gen 2 only: DOWN moves the row cursor to the "
+                                   "second slot -- Gen 1 has no second slot to move to")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # A on slot 1 -> its own popup
+        s.shot("14_menu_slot1", "BACKLOG #85: the same action popup, now targeting slot 1 -- "
+                                 "still empty, so Put in only")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # Put in -> gbdc_pick over cur_box again
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # pick the top row -> the confirm
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # ACCEPT -> deposit + delete -> gb_persist()
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # dismiss the emulator-build notice
+        s.shot("15_slot1_deposited", "BACKLOG #85: slot 1 (the Lady's) deposited too -- "
+                                      "Man's slot is empty here (it was put in AND taken "
+                                      "back out in the D6 demo above), so this shows the "
+                                      "one-Pokemon-boarding status text rather than the "
+                                      "two-slot compatibility read; that panel wording is "
+                                      "unrelated to this pass's D1/D6/D8 fixes and was "
+                                      "already exercised by BOTH slots occupied in this "
+                                      "same file's earlier BACKLOG #85 shot list")
+
+    return s
+
+
 def run_d7_gold(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
     """N6(f): Gold's own START > BAG refusal, from a COMMITTED driver (`rom` must
     be a Gold-only fused image, tools/fuse_gb.py fed Gold.gbc+Gold.sav -- the
@@ -1794,6 +1987,12 @@ def main(argv=None) -> int:
                           "matching this choice (Crystal.gbc+Crystal.sav, or "
                           "Red.gb+Red.sav for the Gen-1 fallback shot), same "
                           "single-ROM posture as --d7-gold")
+    ap.add_argument("--b85-daycare", choices=("red", "gold"),
+                     help="BACKLOG #85: only run_b85_daycare() against --image for "
+                          "the named game (Red's one-slot Day Care, or Gold's "
+                          "two-slot Day Care + compatibility) -- --image MUST be a "
+                          "ONE-ROM fused image matching this choice (same "
+                          "single-ROM harness gap as --u4-bag/--u5-pack)")
     ap.add_argument("--r1-xfer", action="store_true",
                      help="BACKLOG #104 R1: only run_r1_xfer() against --image -- "
                           "--image MUST be pokedna-delta-artless.gba fused with an "
@@ -1937,6 +2136,19 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b86 clock ({a.b86_clock}): {e}")
+    if a.b85_daycare:
+        try:
+            sess = run_b85_daycare(core_mod, image_mod, a.image, a.out, a.b85_daycare)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b85 daycare ({a.b85_daycare}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
     if a.r1_xfer:
         try:
             sess = run_r1_xfer(core_mod, image_mod, a.image, a.out)

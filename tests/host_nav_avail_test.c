@@ -128,7 +128,7 @@ static void test_every_row_covered(void) {
   /* U5: NV_BAG is now NAV_OK on BOTH kinds (Gen 1's own Item bag, U4; Gen 2's
    * own Pack, U5) -- checked separately below, alongside the OK-on-both rows. */
   static const int coming_soon_both[] = {
-    NV_PARTY, NV_BANK, NV_DAYCARE, NV_DEX, NV_DATA, NV_FLY, NV_MAP, NV_GB
+    NV_PARTY, NV_BANK, NV_DEX, NV_DATA, NV_FLY, NV_MAP, NV_GB
   };
   for (int i = 0; i < (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]); i++) {
     CHECK(nav_avail(coming_soon_both[i], SE_KIND_GEN1) == NAV_COMING_SOON,
@@ -137,38 +137,41 @@ static void test_every_row_covered(void) {
           "Gen 2: every not-yet-wired row is COMING_SOON");
   }
 
-  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG };
+  /* BACKLOG #85: NV_DAYCARE moved from coming-soon to OK-both -- gb_daycare.c's core
+   * is wired up on both Gen 1 (one slot, level-up only) and Gen 2 (two slots +
+   * compatibility + egg). */
+  static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE };
   for (int i = 0; i < (int)(sizeof ok_both / sizeof ok_both[0]); i++) {
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag are NAV_OK");
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare are NAV_OK");
   }
 
   /* Gen 1's own 20-row classification is exhaustive: 8 NOT_IN_GAME (not_in_game_gen1,
-   * Clock included -- Gen 1 never gets a clock) + 8 COMING_SOON-both + 4 OK-both
-   * (Trainer/Settings/Back/Bag) == 20. Gen 2 differs from Gen 1 in EXACTLY one cell
-   * (BACKLOG #86/#108: Clock moved from Gen 1's NOT_IN_GAME to Gen 2's own NAV_OK,
-   * checked explicitly by test (E) above) -- so Gen 2's own count is 7 NOT_IN_GAME +
-   * 8 COMING_SOON-both + 5 OK (the 4 ok_both rows + Clock) == 20 too, without needing
-   * a second full row-by-row list here. A row silently added to PDNA_NAV_ITEMS
-   * without a matching GB_TABLE entry still cannot hide: test (A) requires every
-   * (item, kind) pair to answer one of the three defined states with a real reason,
-   * and NV_COUNT itself is asserted against the row count below. */
-  CHECK(8 + 8 + 4 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
+   * Clock included -- Gen 1 never gets a clock) + 7 COMING_SOON-both + 5 OK-both
+   * (Trainer/Settings/Back/Bag/Daycare: U5 made the Bag OK on Gen 2 too, #85 made Daycare
+   * OK on both) == 20. Gen 2 differs from Gen 1 in EXACTLY one cell (BACKLOG #86/#108:
+   * Clock moved from Gen 1's NOT_IN_GAME to Gen 2's own NAV_OK, checked explicitly by
+   * test (E) above) -- so Gen 2's own count is 7 NOT_IN_GAME + 7 COMING_SOON-both + 6 OK
+   * (the 5 ok_both rows + Clock) == 20 too. NOTE (b85 re-verify): every split of 20 sums
+   * to 20, so these CHECKs are documentation -- the per-row loops above are the real gate.
+   * A row silently added to PDNA_NAV_ITEMS without a matching GB_TABLE entry still cannot
+   * hide: test (A) requires every (item, kind) pair to answer one of the three defined
+   * states with a real reason, and NV_COUNT itself is asserted against the row count. */
+  CHECK(8 + 7 + 5 == NV_COUNT, "row classification accounts for all 20 PDNA_NAV_ITEMS");
 
-  /* D6 review (b86): the comment above NARRATED "Gen 2's own count is 7 NOT_IN_GAME +
-   * 8 + 5" but nothing actually checked the Gen-2 cells for the other 7
-   * not_in_game_gen1 rows (only Clock, via test (E), and ok_both, via the loop above,
-   * were ever asked with SE_KIND_GEN2). Assert it for real. */
+  /* D6 review (b86): assert the Gen-2 cells of the other 7 not_in_game_gen1 rows for real
+   * (only Clock, via test (E), and ok_both, via the loop above, were ever asked with
+   * SE_KIND_GEN2 before). */
   for (int i = 0; i < (int)(sizeof not_in_game_gen1 / sizeof not_in_game_gen1[0]); i++) {
     if (not_in_game_gen1[i] == NV_CLOCK) continue;   /* Gen 2's one differing cell, test (E) */
     CHECK(nav_avail(not_in_game_gen1[i], SE_KIND_GEN2) == NAV_NOT_IN_GAME,
           "Gen 2: every Hoenn/Frontier-shaped row except Clock stays NOT_IN_GAME");
   }
-  CHECK(7 + 8 + 5 == NV_COUNT,
-        "Gen 2's row classification (7 NOT_IN_GAME + 8 COMING_SOON-both + 5 OK) accounts for all rows too");
+  CHECK(7 + 7 + 6 == NV_COUNT,
+        "Gen 2's row classification (7 NOT_IN_GAME + 7 COMING_SOON-both + 6 OK) accounts for all rows too");
 
-  printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 8 COMING_SOON-both + "
-        "4 OK-both == %d; Gen 2 differs only at Clock, checked here + test E)\n", NV_COUNT);
+  printf("(G) every PDNA_NAV_ITEMS row is classified (8 NOT_IN_GAME + 7 COMING_SOON-both + "
+         "5 OK-both == %d; Gen 2 differs only at Clock, checked here + test E)\n", NV_COUNT);
 }
 
 /* ---- (H) defensive: out-of-range nv_item / save_kind never misbehaves -------------- */
