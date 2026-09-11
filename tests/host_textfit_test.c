@@ -57,6 +57,8 @@
 #include "pdna_gbscreen.h" /* GBSCR_ORIGIN_X/GBSCR_COLS — D1 fix (U2c 2nd re-verify):
                             * the two-column side-bar legend's real budget, not a
                             * re-typed "36" */
+#include "pdna_gbfly.h"    /* BACKLOG #90 D3: the Fly screen's own badge/spn strings,
+                            * not a re-typed copy */
 
 #define SCR_W   UI_SCR_W
 #define SYS8_W  UI_SYS8_W   /* tonc sys8 advance: fixed 8 px per glyph */
@@ -593,6 +595,9 @@ int main(void) {
   PF(PDNA_GBSCR_REASON_NO_ROM,      4, GBTR_HEADER2_MAXW);
   PF(PDNA_GBSCR_REASON_NO_STACK,    4, GBTR_HEADER2_MAXW);
   PF(PDNA_GBSCR_REASON_OPEN,        4, GBTR_HEADER2_MAXW);
+  /* BACKLOG #79: split into two lines for msg_wait (184px each) */
+  PF(PDNA_GBSCR_REASON_OPEN,        4, 184);  /* line 1 */
+  PF(PDNA_GBSCR_REASON_OPEN_DETAIL, 4, 184);  /* line 2 detail */
   PF(PDNA_GBSCR_REASON_BAD_GEN,     4, GBTR_HEADER2_MAXW);
   PF(PDNA_GBSCR_REASON_NO_TAIL,     4, GBTR_HEADER2_MAXW);
   PF(PDNA_GBSCR_REASON_UNAVAILABLE, 4, GBTR_HEADER2_MAXW);
@@ -2158,6 +2163,35 @@ int main(void) {
 #undef TYPE_CHIP_MAXW
 #undef PWT
   }
+
+  printf("\n== Gen-1/2 Fly destinations (#90, source/pdna_gbfly.c) ==\n");
+  /* Both footer lines + the spn legend + all three badge-line variants, all drawn at
+   * x=4 with ui_text (sys8, 8 px/glyph) -- the SAME macros pdna_gbfly.c draws, from
+   * pdna_gbfly.h, so a re-typed literal here can never drift from the real string. */
+  T(PDNA_GBFLY_SPN_LEGEND, 4);
+  T(PDNA_GBFLY_BADGE_OK, 4);
+  T(PDNA_GBFLY_NO_THUNDER, 4);
+  T(PDNA_GBFLY_NO_STORM, 4);
+  T("read-only (Omega)  B back", 4);
+  /* D4: START's mark-all footer hint. PDNA_GBFLY_HINT_EDIT is the compile-time pick
+   * between the two forms below (its own sizeof check in pdna_gbfly.h) -- assert the
+   * SHORT form is what actually gets drawn (32 > 29 cols, over budget) and that the
+   * LONG form genuinely fails T()'s own check, so a future edit that shrinks it back
+   * under budget is a visible test change, not a silent flip. */
+  T(PDNA_GBFLY_HINT_EDIT, 4);
+  T(PDNA_GBFLY_HINT_EDIT_SHORT, 4);
+  checks++;
+  { int w = (int)strlen(PDNA_GBFLY_HINT_EDIT_LONG) * SYS8_W;
+    int ok = (w > SCR_W - 4);   /* expected to be OVER budget */
+    if (!ok) fails++;
+    printf("  %-4s %-46.46s          w=%-4d budget=%-4d %s\n",
+           ok ? "ok" : "FAIL", PDNA_GBFLY_HINT_EDIT_LONG, w, SCR_W - 4,
+           "(long form expected over-budget)"); }
+  /* D4: the mark-all confirm + result panel text -- app_confirm's own fit rules
+   * (same ptext_fit/ptext_wrap split documented below for the Gen-2 Clock screen). */
+  T("Mark all destinations?", 4);
+  T("Skips story order.", 4);
+  T("Spawn-only rows untouched.", 4);
 
   printf("\n== BACKLOG #86/#108: the Gen-2 Clock screen (source/pdna_gbclock.c) ==\n");
   /* Confirm titles go through app_confirm's own ui_ptext_fit(28, 54, 184, ...) (one
