@@ -1308,6 +1308,49 @@ def test_g5_app_mon_menu_readonly_four_way_merge_against_the_real_elf():
           found == frozenset({4, 8, 16, 32}), found)
 
 
+# === D4 (BACKLOG #106): _UNCONDITIONAL_EXIT_RE misses ARM-mode returns ==================
+
+def test_d1_106_d4_ldm_pc_return_stops_the_fall_through_walk():
+    """D4 (BACKLOG #106): `ldm...{...,pc}` is ARM's general-purpose register-list
+    epilogue (of which the Thumb `pop {..,pc}` this regex already caught is only
+    the ldmfd-sp! special case) -- an unconditional return, so nothing after it
+    could ever be reached by falling through FROM it. _real_predecessors() must
+    NOT offer i-1 (the ldm return) as a fall-through predecessor of i."""
+    fn_insn_seq = [
+        (0x1000, "ldmfd\tsp!, {r4, pc}"),
+        (0x1004, "movs\tr3, #5"),
+    ]
+    branch_targets = sb._intra_function_branch_targets(fn_insn_seq)
+    preds = sb._real_predecessors(fn_insn_seq, 1, branch_targets)
+    check("(D4, #106) an ldm{...,pc} return is not offered as a fall-through predecessor",
+          preds == [], preds)
+
+
+def test_d1_106_d4_mov_pc_lr_return_stops_the_fall_through_walk():
+    """D4 (BACKLOG #106): `mov pc, lr` is the plain leaf-function return (no
+    register-list restore at all) -- also unconditional, also missed by the old
+    regex."""
+    fn_insn_seq = [
+        (0x1000, "mov\tpc, lr"),
+        (0x1004, "movs\tr3, #5"),
+    ]
+    branch_targets = sb._intra_function_branch_targets(fn_insn_seq)
+    preds = sb._real_predecessors(fn_insn_seq, 1, branch_targets)
+    check("(D4, #106) a mov pc, lr return is not offered as a fall-through predecessor",
+          preds == [], preds)
+
+
+def test_d1_106_d4_mutation_old_regex_wrongly_falls_through_arm_returns():
+    """Mutation: replay the OLD regex (Thumb `pop {..,pc}` only, no ldm/mov-pc-lr
+    coverage) against the SAME two fixtures above and show it wrongly treats
+    both ARM-mode returns as fall-through -- the live gap D4 closes."""
+    old_re = re.compile(r'^(b|b\.n|b\.w)\s|^bx\b|^pop\s+\{[^}]*pc[^}]*\}')
+    for exit_ins in ("ldmfd\tsp!, {r4, pc}", "mov\tpc, lr"):
+        clean = exit_ins.split('@')[0].strip()
+        check(f"(D4, #106 mutation) the old regex does NOT recognize {exit_ins!r} as an exit",
+              old_re.match(clean) is None, clean)
+
+
 # === (D4) blind spots over the WHOLE reachable graph, not just the deepest chain =======
 
 def _d4_graph():
@@ -2007,6 +2050,9 @@ def main():
     test_g5_mutation_chase_only_the_fall_through()
     test_g5_cold_block_reached_only_via_a_forward_branch_still_resolves()
     test_g5_app_mon_menu_readonly_four_way_merge_against_the_real_elf()
+    test_d1_106_d4_ldm_pc_return_stops_the_fall_through_walk()
+    test_d1_106_d4_mov_pc_lr_return_stops_the_fall_through_walk()
+    test_d1_106_d4_mutation_old_regex_wrongly_falls_through_arm_returns()
     test_d5a_shared_offset_two_structs_two_callers()
     test_d5a_two_structs_same_caller_both_credited()
     test_d5a_unqualified_on_a_shared_offset_is_a_parse_error()

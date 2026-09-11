@@ -1545,7 +1545,19 @@ def resolve_indirect_site(fn_insn_seq, site_addr, reg):
     return (kind, val)
 
 
-_UNCONDITIONAL_EXIT_RE = re.compile(r'^(b|b\.n|b\.w)\s|^bx\b|^pop\s+\{[^}]*pc[^}]*\}')
+_UNCONDITIONAL_EXIT_RE = re.compile(
+    r'^(b|b\.n|b\.w)\s|^bx\b|^pop\s+\{[^}]*pc[^}]*\}'
+    # D4 (BACKLOG #106): the two ARM-mode (not just Thumb `pop {..,pc}`) return
+    # shapes this regex used to miss entirely -- `ldm...{...,pc}` (a register-list
+    # restore ending in pc, ARM's general-purpose "epilogue" form, of which
+    # `pop {..,pc}` is only the Thumb ldmfd-sp! special case) and the plain
+    # `mov pc, lr` leaf-function return. Either one really does unconditionally
+    # exit the function, so the instruction just above it does NOT fall through
+    # into whatever comes next -- treating it as if it did (the pre-fix
+    # behaviour) would resume _real_predecessors()'s backward walk past a real
+    # function boundary.
+    r'|^ldm\w*\s+\w+!?\s*,\s*\{[^}]*\bpc\b[^}]*\}'
+    r'|^mov\s+pc\s*,\s*lr\b')
 
 
 def _intra_function_branch_targets(fn_insn_seq):
