@@ -1419,6 +1419,77 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     return s
 
 
+def run_b89_hof(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #89: the Gen-1/2 Hall of Fame screen (source/pdna_gbhof.c) over
+    gb_hof.h's core -- the same single-ROM-image / nav-menu-DOWN shape run_b90_fly()
+    above uses, reused for a plain list->detail screen. `rom` must be a ONE-ROM
+    fused image (Red-only for `which == "red"`, Crystal-only for `which ==
+    "crystal"`, same BACKLOG #98 harness-gap reasoning as U4/U5/b90's own images).
+
+    Nav: A (S1 info) -> box grid -> START -> nav menu -> DOWN x12 (Party=0, Bank=1,
+    Daycare=2, Trainer=3, Clock fix=4, Mirage=5, Pokedex=6, Bag=7, Flags&counters=8,
+    Bases=9, Blocks=10, Tickets=11, Records=12 -- PDNA_NAV_ITEMS order,
+    source/pdna_layout.h) -> A -> pdna_gbhof()."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b89_{which}_")
+    print(f"== BACKLOG #89: {which}'s own Hall of Fame (single-ROM image -> "
+          "standalone -> Records) ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 12)                                    # Party -> ... -> Records (index 12)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Records -> pdna_gbhof()
+    s.shot("01_list", f"BACKLOG #89: {which}'s own Hall of Fame list -- the "
+                       "'N teams (lifetime count C)' header, one row per recorded "
+                       "team newest-first, cursor on row 1")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # row 1 -> the team detail
+    s.shot("02_detail", "BACKLOG #89: the team detail page -- 6 mon rows"
+                        + (" (species/level, OT id, a shiny mark via g2_dv_shiny)"
+                           if which == "crystal" else " (species/level)"))
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # detail -> back to the list
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # the Hall of Fame's own START menu
+    s.shot("03_menu", "BACKLOG #89: START -> CLEAR ALL / SET COUNT")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # CLEAR ALL -> app_confirm
+    s.shot("04_clear_confirm", "BACKLOG #89: CLEAR ALL -> the real consequence -- "
+                                "\"The PC's HALL OF FAME option disappears until "
+                                "you win again.\" (app_confirm)")
+    # gbh_clear() on Gen 1 chunks its write over up to 50 gen1_write_outside_sum
+    # calls (one per team slot), each re-opening/re-parsing the whole 32 KiB image
+    # to verify -- genuinely more CPU work than any other GB screen's single-field
+    # commit, so BIG_SETTLE (40 frames, sized for a plain screen repaint) is not
+    # enough to reach gb_persist()'s own dialog: caught live by gb_shots.Session's
+    # identical-frame guard (the confirm's "yes" tap registers, but the shot landed
+    # before gbh_clear()+gb_persist() had finished computing and drawing anything
+    # new -- computation still running, not a stuck input). A longer settle first.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # confirm -> gbh_clear() -> gb_persist()
+    s.run(600)                                               # ride out the 50-chunk clear
+    s.shot("05_emu_refusal", "BACKLOG #89: gb_persist()'s PDNA_DELTA branch "
+                             "refuses ('Edits are in-session only in the emulator "
+                             "build.') -- same #62 D2/D5 branch every other GB "
+                             "screen's own commit hits here; the real write path is "
+                             "proved by the retail gate's hofclear/hofcount cases "
+                             "(tools/gb_retail_gate.py), not this shot. The edit "
+                             "already landed in-session, shown by the NEXT shot.")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss gb_persist's own dialog -> back to the list
+    s.shot("06_empty", "BACKLOG #89: after CLEAR ALL -- '0 teams (lifetime count "
+                        "0)', 'No teams recorded yet.'")
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # menu again, on the now-empty list
+    s.tap("DOWN", settle=gb_shots.SETTLE)                   # SET COUNT row
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # -> the stepper, starts at 0 (never confirmed,
+                                                              # so gb_persist()'s own dialog never fires here)
+    s.press_n("UP", 3, settle=gb_shots.SETTLE)              # 0 -> 3
+    cap = 255 if which in ("red", "yellow") else 200
+    s.shot("07_setcount", f"BACKLOG #89: SET COUNT's stepper, moved to 3 "
+                          f"('Lifetime wins: 3 / {cap}')")
+
+    return s
+
+
 def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
     """BACKLOG #90: the Gen-1/2 Fly-destination screen (source/pdna_gbfly.c) over
     gb_fly.h's bitfield core -- the same shape as run_u4_bag()/run_u5_pack() above,
@@ -2484,6 +2555,12 @@ def main(argv=None) -> int:
                           "Gen-2-only fused image (Gold.gbc+Gold.sav or "
                           "Crystal.gbc+Crystal.sav, tools/fuse_gb.py, one ROM per "
                           "image -- BACKLOG #98)")
+    ap.add_argument("--b89-hof", choices=("red", "crystal"),
+                     help="BACKLOG #89: only run_b89_hof() against --image for the "
+                          "named game (Red's or Crystal's own Hall of Fame screen) "
+                          "-- --image MUST be a ONE-ROM fused image matching this "
+                          "choice, same BACKLOG #98 harness-gap reasoning as "
+                          "--u4-bag/--u5-pack/--b90-fly")
     ap.add_argument("--b90-fly", choices=("red", "crystal"),
                      help="BACKLOG #90: only run_b90_fly() against --image for the "
                           "named game (Red's or Crystal's own Fly-destination "
@@ -2584,6 +2661,19 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] u5 pack ({a.u5_pack}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b89_hof:
+        try:
+            sess = run_b89_hof(core_mod, image_mod, a.image, a.out, a.b89_hof)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b89 hof ({a.b89_hof}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

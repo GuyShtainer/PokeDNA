@@ -29,6 +29,7 @@
  *      source/gb_clock.c \
  *      source/gb_fly.c \
  *      source/gb_boxnames.c \
+ *      source/gb_hof.c \
  *      -o /tmp/hgbsurg
  *
  * Usage
@@ -131,6 +132,7 @@
 #include "gb_clock.h"
 #include "gb_fly.h"
 #include "gb_boxnames.h"
+#include "gb_hof.h"
 
 #define MAX_FILE_BYTES 65536u
 #define MAX_OPS        64
@@ -216,7 +218,11 @@ static void usage(const char* prog) {
     "                               GBF_MAP_ID/GBF_POS_X/GBF_POS_Y + the two block-half\n"
     "                               bytes, X&1/Y&1) and refreshes the checksum. Gen 1\n"
     "                               only.\n"
-    "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
+    "  --op hofclear                BACKLOG #89: gbh_clear() -- erase every recorded\n"
+    "                               Hall of Fame team + the lifetime win counter.\n"
+    "  --op hofcount N               BACKLOG #89: gbh_set_count(N) -- the lifetime\n"
+    "                               win counter (clamped Gen 1 <=255, Gen 2 <=200).\n"
+"BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
 /* Parse argv into (in, out, list_mode, ops[]). Returns 2 on any usage problem (already
@@ -237,6 +243,8 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"caught", 3},     /* BACKLOG #95 review gate case: BOX SLOT time:level:loc:gender */
     {"clockclear", 0}, /* BACKLOG #86/#108: dismiss the clock-error banner */
     {"warp", 3},       /* m1 (BACKLOG #91) shot-retake gate: MAP X Y, Gen 1 only */
+    {"hofclear", 0},   /* BACKLOG #89: gbh_clear() -- erase every Hall of Fame team + count */
+    {"hofcount", 1},   /* BACKLOG #89: gbh_set_count() N -- the lifetime win counter */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -464,6 +472,33 @@ static int do_warp(GbSession* s, const char* map_tok, const char* x_tok, const c
   if ((st = gbs_write_field(s, 0x2610u, &xblock_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_write_field(s, 0x260fu, &yblock_b, 1)) != GBS_OK) return refuse(gbs_status_text(st));
   if ((st = gbs_finish(s)) != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* BACKLOG #89 retail gate: gbh_clear() through source/gb_hof.h -- the case that
+ * proves gen1_write_outside_sum's allowlist reaches a REAL booted Red/Gold/Crystal,
+ * not just the host test's in-memory image. On a booted Red/Gold, the gate reads
+ * wNumHoFTeams/wHallOfFameCount back out of WRAM (the game's own load already copied
+ * the SRAM byte there) and the SRAM record itself, proving both "the count reads 0"
+ * and "the PC's HALL OF FAME option is gone" (bills_pc.asm/main_menu.asm gate purely
+ * on the count, per gb_hof.h's own header) without needing a screenshot of the PC
+ * menu specifically. */
+static int do_hofclear(GbSession* s) {
+  GbsStatus st = gbh_clear(s);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  return 0;
+}
+
+/* BACKLOG #89 retail gate: gbh_set_count() -- the SET COUNT screen action, gated the
+ * same clamp gbh_set_count() itself enforces (Gen 1 <=255, Gen 2 <=200); this tool
+ * does not re-clamp the token itself so an over-range value still exercises the
+ * core's own clamp end to end, rather than being rejected here before it ever
+ * reaches gbh_set_count(). */
+static int do_hofcount(GbSession* s, const char* n_tok) {
+  int n = resolve_uint(n_tok, "hof count");
+  if (n < 0) return 2;
+  GbsStatus st = gbh_set_count(s, n);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
   return 0;
 }
 
@@ -960,6 +995,12 @@ static int apply_op(GbSession* s, const Op* o) {
   }
   if (!strcmp(o->kind, "warp")) {
     return do_warp(s, o->a[0], o->a[1], o->a[2]);
+  }
+  if (!strcmp(o->kind, "hofclear")) {
+    return do_hofclear(s);
+  }
+  if (!strcmp(o->kind, "hofcount")) {
+    return do_hofcount(s, o->a[0]);
   }
   fprintf(stderr, "unknown op %s\n", o->kind);   /* unreachable: parse_args validated */
   return 2;
