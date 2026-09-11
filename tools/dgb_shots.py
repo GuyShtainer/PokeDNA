@@ -1628,13 +1628,7 @@ def run_b90_boxname(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
                                   "gb_retail_gate.py), not this shot")
 
     s.tap("A", settle=200)                                    # dismiss msg_wait -> box grid repaints
-    s.shot("05_renamed_banner", "BACKLOG #94: A dismisses the refusal dialog -- "
-                                 "the box grid repaints and the banner now reads "
-                                 "'TEST' (gbsrc_get_name() re-reads g_m->g2names, "
-                                 "which gbsrc_set_name_impl() refreshed right after "
-                                 "the write -- without that refresh this would "
-                                 "still show the pre-rename name until a full "
-                                 "remount)")
+    s.shot("05_renamed_banner", "BACKLOG #94: back at the box grid -- the banner now reads 'GB TEST': gbsrc_get_name() re-reads g_m->g2names (refreshed by gbsrc_set_name_impl() right after the write) and pdna_gen12_box_name() adds the 'GB ' DISPLAY prefix on top; the SAVE holds the undecorated 'TEST' (proved by the retail gate's boxname case and gbbn_read on the corpus). The prefix on renamed Gen-2 boxes is BACKLOG #122.")
 
     return s
 
