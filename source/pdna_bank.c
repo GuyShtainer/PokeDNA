@@ -291,6 +291,7 @@ int pdna_bank_show(void) {
   s.nboxes     = BANK_BOXES;
   s.start_box  = 0;
   s.is_bank    = true;
+  s.scope      = BOXSCOPE_BANK;  /* BACKLOG #120 S1: can_lift/xfer stay NULL (memset above) */
   s.wp_count   = G3_BOX_WALLPAPER_COUNT;          /* bank has no Walda */
   s.records    = banksrc_records;
   s.menu_block = g_bankbuf;                        /* records at +0x0004; menu box index = 0 */

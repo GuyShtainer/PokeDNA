@@ -8157,6 +8157,7 @@ static BoxSource pc_box_source(void) {
   if (g_pc_last_box < 0 || g_pc_last_box >= G3_TOTAL_BOXES) g_pc_last_box = 0;
   s.start_box  = g_pc_last_box;
   s.is_bank    = false;
+  s.scope      = BOXSCOPE_PC;    /* BACKLOG #120 S1: can_lift/xfer stay NULL (memset above) */
   s.wp_count   = (app_walda_pattern() >= 0) ? 32 : G3_BOX_WALLPAPER_COUNT;  /* Emerald = +Walda */
   s.records    = pcsrc_records;
   s.menu_block = g_pc;

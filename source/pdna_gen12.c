@@ -597,6 +597,10 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
                                               * PARTY tab and the PC hand-off edges (codes
                                               * 1/4) -- neither applies to a raw GB save's
                                               * own box */
+  s.scope      = BOXSCOPE_GB;    /* BACKLOG #120 S1: can_lift/xfer stay NULL -- no GB body
+                                  * wired yet (this is the pure-refactor slice); `bank_edge`
+                                  * also stays false (memset above) until S2 wires the UP hop
+                                  * into the Bank */
   s.has_start  = true;                       /* BACKLOG #48: is_bank also suppresses START
                                               * by default (see pdna_box.h's has_start
                                               * comment) -- opt back in: this box IS the
