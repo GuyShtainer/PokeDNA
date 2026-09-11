@@ -1490,6 +1490,151 @@ def test_d4_undeclared_scc_is_fatal_declared_disagreement_is_fatal():
           depths3 == {2}, depths3)
 
 
+# === BACKLOG #102: `gated fn need=N` (runtime-gated subtree) ===========================
+
+def test_b102_gated_line_round_trips_through_the_parser():
+    """The new `gated fn need=N` declaration line parses into gated_decls exactly
+    like `recursion fn depth=N` parses into recursion_decls -- same style, same
+    duplicate-value handling. Also covers a GCC `.constprop.0` clone-suffixed name
+    (gb_art_fetch_icon.constprop.0, this backlog item's own real second
+    declaration) to prove GATED_LINE_RE's `\\S+` doesn't repeat ARGSITE_LINE_RE's
+    old `\\w+`-only mistake (D6's own note) that silently dropped dotted names."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("gated leaf_fn need=1234\n")
+        f.write("gated gb_art_fetch_icon.constprop.0 need=6144\n")
+        f.write("gated leaf_fn need=1234\n")   # repeated, same value -- must accumulate cleanly
+        path = f.name
+    try:
+        _fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, gated_decls = sb.load_extra_edges(path)
+        check("(B102) a plain gated line parses fn -> N",
+              gated_decls.get("leaf_fn") == 1234, gated_decls)
+        check("(B102) a dotted GCC clone-suffix name parses whole, not truncated",
+              gated_decls.get("gb_art_fetch_icon.constprop.0") == 6144, gated_decls)
+        check("(B102) exactly the two distinct declared names, no phantom keys",
+              set(gated_decls) == {"leaf_fn", "gb_art_fetch_icon.constprop.0"}, gated_decls)
+    finally:
+        os.unlink(path)
+
+
+def test_b102_gated_line_conflicting_need_is_a_parse_error():
+    """Two `gated fn need=N` lines for the same fn with DIFFERENT N must be a FATAL
+    parse error -- same posture as `recursion fn depth=N`'s own conflict check
+    (test_d4 area above): a real disagreement is a question for a human, never a
+    silent pick of either value."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("gated leaf_fn need=1234\n")
+        f.write("gated leaf_fn need=5678\n")
+        path = f.name
+    raised = False
+    msg = ""
+    try:
+        sb.load_extra_edges(path)
+    except ValueError as e:
+        raised = True
+        msg = str(e)
+    finally:
+        os.unlink(path)
+    check("(B102) conflicting gated need= values for the same fn raise ValueError",
+          raised, msg)
+    check("(B102) the error names both conflicting values",
+          raised and "1234" in msg and "5678" in msg, msg)
+
+
+def _b102_fixture():
+    """A tiny synthetic call graph shared by the semantics tests below:
+    root -> gated_fn -> child (leaf). root's own frame is 10 B, gated_fn's own
+    frame is 50 B, child's own frame is 40 B -- gated_fn's real, ungated subtree
+    (gated_fn's own frame + child's) is 90 B."""
+    edges = {"root": {"gated_fn"}, "gated_fn": {"child"}, "child": set()}
+    su_sizes = {"root": 10, "gated_fn": 50, "child": 40}
+    estimated = {}
+    return edges, su_sizes, estimated
+
+
+def test_b102_semantics_b_measured_over_need_fatals():
+    """BACKLOG #102 step 2(b): enforce_gates=True (what any --root OTHER than main
+    passes) and a declared need SMALLER than the real measured subtree (80 < the
+    fixture's real 90) must raise GatedSubtreeExceeded, carrying the exact
+    fn/measured/need this walker would need to print the required FATAL message
+    shape verbatim ('gated subtree <fn> measures <M> > declared need <N>: the
+    runtime gate would not protect it') -- this is the automated, repeatable form
+    of the manual mutation test run against the real ELF during development
+    (temporarily declaring `gated gb_art_fetch need=1000` and reverting)."""
+    edges, su_sizes, estimated = _b102_fixture()
+    gated = {"gated_fn": 80}
+    raised = False
+    exc = None
+    try:
+        sb.deepest_from("root", edges, su_sizes, estimated, gated=gated, enforce_gates=True)
+    except sb.GatedSubtreeExceeded as e:
+        raised = True
+        exc = e
+    check("(B102 b) measured (90) > declared need (80) raises GatedSubtreeExceeded",
+          raised, exc)
+    check("(B102 b) the exception carries the real fn/measured/need",
+          raised and exc.fn == "gated_fn" and exc.measured == 90 and exc.need == 80,
+          exc)
+    check("(B102 b) str(exc) matches the exact required FATAL message shape",
+          raised and str(exc) == "gated subtree gated_fn measures 90 > declared "
+                                  "need 80: the runtime gate would not protect it",
+          str(exc) if raised else None)
+
+
+def test_b102_semantics_b_measured_at_or_under_need_excludes_the_subtree():
+    """The PASS side of the same property: a declared need >= the real measured
+    subtree (200 >= 90) does not raise, and the gated subtree contributes ZERO
+    additional bytes to the chain -- it is independently protected by its own
+    runtime gate, so an outer --root re-derivation must not additively charge it
+    (the whole point of BACKLOG #102: double-charging is exactly the "inflated in
+    the safe direction" defect being removed). total must be root's own frame
+    ALONE (10), not root+gated_fn+child (100, what an ungated walk would give)."""
+    edges, su_sizes, estimated = _b102_fixture()
+    gate_report = {}
+    total, path, _cyc = sb.deepest_from("root", edges, su_sizes, estimated,
+                                         gated={"gated_fn": 200}, enforce_gates=True,
+                                         gate_report=gate_report)
+    check("(B102 b) an accepted gate excludes the subtree entirely (root's own frame only)",
+          total == 10, total)
+    check("(B102 b) gate_report records the real measured size against the declared need",
+          gate_report.get("gated_fn") == (90, 200), gate_report)
+    gated_entries = [(name, b, src) for name, b, src in path if src == "gated"]
+    check("(B102 b) the printed path shows the gated node as a 0-B atomic leaf",
+          gated_entries == [("gated_fn", 0, "gated")], (gated_entries, path))
+    # Sanity: without any gating at all, the same graph's real total IS 100 --
+    # proves the 10-vs-100 gap above is the gating mechanism doing something, not
+    # an unrelated fixture mistake.
+    ungated_total, _p, _c = sb.deepest_from("root", edges, su_sizes, estimated)
+    check("(B102 b) the ungated baseline for this fixture really is 100",
+          ungated_total == 100, ungated_total)
+
+
+def test_b102_semantics_a_whole_program_root_is_unaffected_by_gating():
+    """BACKLOG #102 step 2(a): enforce_gates=False (what --root main, the whole-
+    program guard, always passes) must make a `gated` declaration a complete
+    no-op -- the deepest-chain total is IDENTICAL whether or not a gated
+    declaration exists for a reachable node, even one whose declared need is
+    absurdly small (1, far under the real 90 B this subtree needs) and would
+    FATAL immediately if enforce_gates were True. This is the property that
+    guarantees an unrelated re-derivation's `gated` line can never quietly shrink
+    the real whole-program worst-case number."""
+    edges, su_sizes, estimated = _b102_fixture()
+    total_no_decl, path_no_decl, _c1 = sb.deepest_from("root", edges, su_sizes, estimated)
+    total_with_decl, path_with_decl, _c2 = sb.deepest_from(
+        "root", edges, su_sizes, estimated, gated={"gated_fn": 1}, enforce_gates=False)
+    check("(B102 a) the whole-program total is unchanged by a present-but-unenforced "
+          "gated declaration", total_no_decl == total_with_decl == 100,
+          (total_no_decl, total_with_decl))
+    check("(B102 a) the printed path is unchanged too (no synthetic 'gated' entry "
+          "appears when enforce_gates=False)",
+          [n for n, _b, _s in path_no_decl] == [n for n, _b, _s in path_with_decl],
+          (path_no_decl, path_with_decl))
+    no_gated_tag = all(src != "gated" for _n, _b, src in path_with_decl)
+    check("(B102 a) no path entry is tagged 'gated' when the gate isn't enforced",
+          no_gated_tag, path_with_decl)
+
+
 # === F5 (BACKLOG #84b seventh pass): tarjan_sccs() is iterative ========================
 
 def test_f5_tarjan_sccs_iterative_3000_node_chain():
@@ -2141,6 +2286,11 @@ def main():
     test_d4_declaring_the_site_clears_it_and_deepest_number_is_unchanged()
     test_d4_scc_declared_depth_multiplies_and_is_entry_independent()
     test_d4_undeclared_scc_is_fatal_declared_disagreement_is_fatal()
+    test_b102_gated_line_round_trips_through_the_parser()
+    test_b102_gated_line_conflicting_need_is_a_parse_error()
+    test_b102_semantics_b_measured_over_need_fatals()
+    test_b102_semantics_b_measured_at_or_under_need_excludes_the_subtree()
+    test_b102_semantics_a_whole_program_root_is_unaffected_by_gating()
     test_d10_trap1_bl_to_own_pop_bx_tail_is_zero_indirect_sites()
     test_d10_trap5_literal_call_target_resolved_vs_table_index_blind_spot()
     test_d10_trap6_base_literal_loaded_far_before_its_use()
