@@ -256,7 +256,7 @@ static void vsync(void) { VBlankIntrWait(); snd_vblank(); key_poll(); }
  * species+form. Identical to the mapping box_oam.c's icon_tiles and art_fallbacks.c's
  * icon_from_cache use, and it has to stay identical or a plan would declare rows the
  * paint never asks for. */
-static uint16_t app_icon_row_of(uint16_t species, uint8_t form, bool egg) {
+uint16_t app_icon_row_of(uint16_t species, uint8_t form, bool egg) {
   return art_icons_row_for(egg ? 412 : species, egg ? 0 : form);
 }
 
@@ -265,15 +265,15 @@ static uint16_t app_icon_row_of(uint16_t species, uint8_t form, bool egg) {
  * store is never consulted for these screens and a plan would stream 6-7 KiB off the
  * card that nothing reads -- a regression, not a no-op. Same reasoning, same gate, as
  * pdna_pick.c's dex_declare_page. */
-static void app_icons_hold(const uint16_t* rows, int n) { (void)rows; (void)n; }
-static void app_icons_drop(void) { }
+void app_icons_hold(const uint16_t* rows, int n) { (void)rows; (void)n; }
+void app_icons_drop(void) { }
 #else
-static void app_icons_hold(const uint16_t* rows, int n) {
+void app_icons_hold(const uint16_t* rows, int n) {
   icon_store_borrow(true);      /* FIRST: the sweep must see the big pool, or it fills
                                  * Tier A, comes up short, and the gate stays false */
   icon_store_plan(rows, n);
 }
-static void app_icons_drop(void) { icon_store_borrow(false); }
+void app_icons_drop(void) { icon_store_borrow(false); }
 #endif
 
 /* wait_keys, plus a 2-frame idle bob. `kind` is an ANIM_* place; while nothing is
@@ -1882,7 +1882,7 @@ static void pdna_era_boot_register(void) {
 /* Draw the invented yard visitors? Only when the user asked for them AND owns a ROM.
  * Both halves matter: the setting is the user's choice, the ROM is what makes the
  * choice meaningful. See g_yard_visitors for why they are no longer on by default. */
-static bool app_yard_visitors_ok(void) {
+bool app_yard_visitors_ok(void) {
   /* #47: the gate exists so there is real icon art to draw the visitors with; with
    * the switch on there is none (the cache is dropped too), so they stay home. */
   return g_yard_visitors && app_any_rom_registered() && !g_rom_art_off;

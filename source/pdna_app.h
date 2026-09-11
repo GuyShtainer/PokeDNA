@@ -390,6 +390,35 @@ enum { ANIM_BOX,        /* PC + bank box-icon 2-frame bob   */
        ANIM_COUNT };
 bool app_anim_enabled(int kind);   /* true iff animations are on for ANIM_<kind> */
 
+/* ---- yard visitors + the icon-rent trio (BACKLOG #114) -----------------------
+ * Exported so the Gen-1/2 Day-Care screen (pdna_gbdaycare.c) can draw the SAME
+ * invented yard visitors + real-boarder icons pdna_main.c's own pdna_daycare()
+ * does, instead of two bare text rows. All four were pdna_main.c-static before
+ * this; bodies are unchanged. */
+
+/* Draw the invented yard visitors? Only when the user asked for them (Settings >
+ * Yard visitors) AND owns a registered ROM (so there is real icon art to draw
+ * them with) AND that ROM's art is not switched off. A caller with this false
+ * should say so on screen ("No visitors: register a Gen-3 ROM") rather than
+ * silently show none. */
+bool app_yard_visitors_ok(void);
+
+/* The icon-store row a mon draws from (species+form, or the shared egg row 412).
+ * Feed app_icons_hold()'s `rows` array with this. */
+uint16_t app_icon_row_of(uint16_t species, uint8_t form, bool egg);
+
+/* Rent/release the icon-store rows a screen's idle-bob paint needs (up to N
+ * declared with app_icons_hold(), given back the instant the idle loop ends —
+ * see pdna_main.c's own long comment on why the window is exactly "paint to
+ * first key", never wider). MUST bracket every paint that calls
+ * mon_icon_for_form_frame/mon_icon_egg_frame inside an idle-bob loop; a paint
+ * that never persists anything (a pure VIEW) does not strictly need the
+ * bracket, but every existing caller uses it uniformly rather than special-
+ * casing "this one path never persists" — see pdna_gbdaycare.c's own use for
+ * the shape to copy. */
+void app_icons_hold(const uint16_t* rows, int n);
+void app_icons_drop(void);
+
 /* ---- borrowed EWRAM arena (the map screen) ---------------------------------
  * EWRAM has only ~6 KB genuinely free, and the map viewer needs ~33 KB for a
  * decompressed tileset. Rather than adding a buffer that would not link, the map
