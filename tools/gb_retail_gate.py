@@ -99,6 +99,8 @@ SURGERY_SRCS = [
     "source/gb_bag.c",
     # BACKLOG #85/#86/#90/#94: --op daycare/clock/fly/boxname's own dependencies.
     "source/gb_daycare.c", "source/gb_clock.c", "source/gb_fly.c", "source/gb_boxnames.c",
+    # BACKLOG #88: --op flagset/counter's own dependencies.
+    "source/gb_flags.c", "source/gb_flags_rw.c",
 ]
 
 # gen: 1 = Gen-1 numbering (no primary/backup mirror split in gb_roundtrip's classifier,
@@ -802,6 +804,28 @@ def run_money_case(name, info, rom, sav, work, binary, python, vendor, tally):
 DAYCARE_FLAG_WRAM = {"red": 0xDA48, "yellow": 0xDA47, "gold": 0xDC40, "crystal": 0xDEF5}
 FLY_FLAGS_WRAM = {"red": 0xD70B, "yellow": 0xD70A, "gold": 0xD9EE, "crystal": 0xDCA5}
 FLY_FLAGS_LEN = {"red": 2, "yellow": 2, "gold": 4, "crystal": 4}
+
+# BACKLOG #88 -- wEventFlags' own WRAM address per game (pokered.sym:19395 $D747,
+# pokegold.sym:42451 $D7B7, pokecrystal.sym:57227 $DA72; Yellow shares Red's own
+# main_data layout, §1.10, so its wEventFlags sits one byte earlier the same way
+# wMainDataStart does, $D746) -- a DIFFERENT address space from the save-FILE offset
+# gb_fields.c's GBF_EVENT_FLAGS_BASE(_G2) already resolves (same split as every other
+# WRAM anchor above). SAV_FLAGS_FILE_BASE is that save-file offset, used ONLY to read
+# the CURRENT bit straight out of the .sav bytes before editing (so this case never
+# repeats the fly-case D6 bug of "editing a bit that was already set" -- 0 bytes
+# written, a false accept).
+EVENT_FLAGS_WRAM = {"red": 0xD747, "yellow": 0xD746, "gold": 0xD7B7, "crystal": 0xDA72}
+SAV_FLAGS_FILE_BASE = {"red": 0x29F3, "yellow": 0x29F3, "gold": 0x261F, "crystal": 0x2600}
+# EVENT_MADE_UNOWN_APPEAR_IN_RUINS (Gen 2, event_flags.asm:55) -- index 46 on BOTH
+# Gold/Silver and Crystal (re-derived independently by tools/gen_gbfields.py's own
+# self-test, not copied from the research doc). EVENT_GOT_TOWN_MAP (Gen 1,
+# event_constants.asm) -- index 24 on Red/Yellow, "a harmless Gen-1 flag the research
+# names" (docs/briefs/88-gb-flags-brief.md's own gate-case instruction, §15's Key
+# events row) -- toggling it does not gate any NPC position or map state.
+FLAGS_CASE_INDEX = {"red": 24, "yellow": 24, "gold": 46, "crystal": 46}
+FLAGS_CASE_NAME = {"red": "EVENT_GOT_TOWN_MAP", "yellow": "EVENT_GOT_TOWN_MAP",
+                   "gold": "EVENT_MADE_UNOWN_APPEAR_IN_RUINS",
+                   "crystal": "EVENT_MADE_UNOWN_APPEAR_IN_RUINS"}
 BOXNAMES_WRAM = {"gold": 0xD8BF, "crystal": 0xDB75}          # Gen 1: no box names, no case
 
 
@@ -1092,6 +1116,59 @@ def run_boxname_case(name, info, rom, sav, work, binary, python, vendor, tally):
     tally.record("boxname (BACKLOG #94)", ok, detail)
 
 
+def run_flags_case(name, info, rom, sav, work, binary, python, vendor, tally):
+    """BACKLOG #88 -- proves --op flagset's write (gbfl_set, source/gb_flags_rw.c)
+    reaches the BOOTED game's own wEventFlags, not just the .sav bytes on disk. Reads
+    the CURRENT bit straight out of the corpus .sav first (the fly-case D6 lesson: an
+    already-set bit makes surgery write 0 bytes and the gate would pass vacuously) and
+    flips it the OTHER way -- so this case is correct regardless of which way the
+    corpus save happens to have it, unlike a hardcoded "set to 1" assumption."""
+    idx = FLAGS_CASE_INDEX[name]
+    file_base = SAV_FLAGS_FILE_BASE[name]
+    byte_off = file_base + (idx // 8)
+    bit = idx % 8
+
+    raw = sav.read_bytes()
+    cur = (raw[byte_off] >> bit) & 1
+    want_val = 0 if cur else 1
+
+    edited = work / "flags.sav"
+    rc, out, err = run_surgery(binary, sav, edited, [["flagset", str(idx), str(want_val)]])
+    if rc != 0:
+        tally.record(f"flags (BACKLOG #88, {FLAGS_CASE_NAME[name]})", False,
+                    f"surgery refused: {err.strip()}")
+        return
+
+    identical = edited.read_bytes() == raw
+    if identical:
+        tally.record(f"flags (BACKLOG #88, {FLAGS_CASE_NAME[name]})", False,
+                    f"gate D6 class: surgery wrote 0 bytes for index {idx} (cur={cur} "
+                    f"want={want_val}) -- flagset is a no-op")
+        return
+
+    addr = EVENT_FLAGS_WRAM[name] + (idx // 8)
+    rc, rep, out, err = boot(python, rom, edited, work / "flags", vendor,
+                             work / "flags.json",
+                             extra_args=["--expect", "accept",
+                                         "--read-mem", f"{addr:#06x}:1"])
+    mem = rep.get("mem") or {}
+    svbk_ok = bool(mem.get("svbk_ok", True))
+    got = mem.get(f"{addr:#06x}")
+    got_val = int(got, 16) if isinstance(got, str) else None
+    got_bit = got_val is not None and ((got_val >> bit) & 1) == want_val
+    ok = (rc == 0) and svbk_ok and got_bit
+    detail = (f"verdict={rep.get('verdict')} svbk_ok={svbk_ok} {addr:#06x}={got!r} "
+             f"index={idx} bit_in_byte={bit} cur={cur} want={want_val} matched={got_bit}")
+    if not ok:
+        fails = [f.strip() for f in out.splitlines() if f.strip().startswith("FAIL:")]
+        if fails:
+            detail += " | " + "; ".join(fails)
+        tail = stderr_tail(err)
+        if tail:
+            detail += " | stderr: " + tail
+    tally.record(f"flags (BACKLOG #88, {FLAGS_CASE_NAME[name]})", ok, detail)
+
+
 def run_helditem_case(name, info, rom, sav, work, binary, python, vendor, tally,
                       party_count0):
     """BACKLOG #95 review gate case: proves --op helditem's write (gb_set_held_item)
@@ -1352,6 +1429,11 @@ def run_game(name, info, rom, sav, scratch, binary, python, vendor):
         run_boxname_case(name, info, rom, sav, work, binary, python, vendor, tally)
     else:
         tally.skip_case("boxname (BACKLOG #94)", "Gen 1 has no box names")
+
+    # ---- 2k. BACKLOG #88 — the Flags & counters screen's raw event-flag write
+    # (gbfl_set) on all four games (run_flags_case itself picks the flag index and
+    # WRAM anchor per game, Table FLAGS_CASE_INDEX/EVENT_FLAGS_WRAM above) ----
+    run_flags_case(name, info, rom, sav, work, binary, python, vendor, tally)
 
     if party_count0 < 2:
         tally.skip_case("nickname/level/delete/move",

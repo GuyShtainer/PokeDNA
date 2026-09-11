@@ -29,6 +29,8 @@
  *      source/gb_clock.c \
  *      source/gb_fly.c \
  *      source/gb_boxnames.c \
+ *      source/gb_flags.c \
+ *      source/gb_flags_rw.c \
  *      -o /tmp/hgbsurg
  *
  * Usage
@@ -131,6 +133,8 @@
 #include "gb_clock.h"
 #include "gb_fly.h"
 #include "gb_boxnames.h"
+#include "gb_flags.h"      /* BACKLOG #88: --op flagset/counter */
+#include "gb_flags_rw.h"
 
 #define MAX_FILE_BYTES 65536u
 #define MAX_OPS        64
@@ -216,6 +220,13 @@ static void usage(const char* prog) {
     "                               GBF_MAP_ID/GBF_POS_X/GBF_POS_Y + the two block-half\n"
     "                               bytes, X&1/Y&1) and refreshes the checksum. Gen 1\n"
     "                               only.\n"
+    "  --op flagset INDEX 0|1       BACKLOG #88 gate case: gbfl_set over an ABSOLUTE\n"
+    "                               event-flag bit index (0..2559 Gen 1 / 0..2047 Gen\n"
+    "                               2) -- the same primitive pdna_gbflags.c's named\n"
+    "                               toggles and raw browser both call.\n"
+    "  --op counter FIELD VALUE     BACKLOG #88 gate case: FIELD is \"safari\" (Gen 1\n"
+    "                               only, GBF_SAFARI_STEPS, 0..255) or \"lucky\" (Gen 2\n"
+    "                               only, GBF_LUCKY_NUMBER_SHOW_FLAG, 0 or 1).\n"
     "BOX is 0..n-1 or the literal \"party\".\n", prog, prog);
 }
 
@@ -237,6 +248,8 @@ static int parse_args(int argc, char** argv, const char** in, const char** out,
     {"caught", 3},     /* BACKLOG #95 review gate case: BOX SLOT time:level:loc:gender */
     {"clockclear", 0}, /* BACKLOG #86/#108: dismiss the clock-error banner */
     {"warp", 3},       /* m1 (BACKLOG #91) shot-retake gate: MAP X Y, Gen 1 only */
+    {"flagset", 2},    /* BACKLOG #88: INDEX 0|1, via gbfl_set (gb_flags_rw.h) */
+    {"counter", 2},    /* BACKLOG #88: FIELD(safari|lucky) VALUE */
   };
   *in = NULL; *out = NULL; *list_mode = false; *nops = 0;
   for (int i = 1; i < argc; i++) {
@@ -805,6 +818,58 @@ static int do_fly(GbSession* s, const char* idx_tok) {
   return 0;
 }
 
+/* BACKLOG #88 retail-gate case: gbfl_set (source/gb_flags_rw.h) over an ABSOLUTE
+ * event-flag bit index -- the same primitive pdna_gbflags.c's own named-shortlist
+ * toggle and raw browser both call. `idx_tok` is the bit number (not a shortlist
+ * ROW -- there is no row-order dependency here, matching pk_flag equivalent gate
+ * shapes elsewhere in this file), `val_tok` is "0" or "1". */
+static int do_flagset(GbSession* s, const char* idx_tok, const char* val_tok) {
+  int idx = resolve_uint(idx_tok, "flag index");
+  if (idx < 0) return 2;
+  int val = resolve_uint(val_tok, "flag value");
+  if (val != 0 && val != 1) { fprintf(stderr, "bad flag value %s (want 0 or 1)\n", val_tok); return 2; }
+  GbGame g = gbt_game(s);
+  GbsStatus st = gbfl_set(s, g, (uint16_t)idx, val != 0);
+  if (st != GBS_OK) return refuse(gbs_status_text(st));
+  /* gbfl_set only calls gbs_write_field (gb_flags_rw.h's own contract: pdna_gbflags.c
+   * batches many toggles behind ONE gbs_finish() on B) -- this CLI issues exactly one
+   * op per invocation, so it must close the batch itself, same as do_money/do_counter
+   * above. Missing this left Gen 2's stored checksums stale: the edited .sav failed to
+   * even gbs_open() back, and the real cartridge's own CONTINUE screen reported "The
+   * save file is / corrupted!" (caught live against Gold.sav, BACKLOG #88 gate case). */
+  GbsStatus fs = gbs_finish(s);
+  if (fs != GBS_OK) return refuse(gbs_status_text(fs));
+  return 0;
+}
+
+/* BACKLOG #88 retail-gate case: the two counters pdna_gbflags.c's COUNTERS tab adds
+ * that no EXISTING --op already covers (money/coins/badges/name all have their own
+ * ops above) -- both are plain U8 fields through gb_fields.h's gbf_off/len, written
+ * via gbs_write_field + gbs_finish, the exact primitive BACKLOG #49 P0 established.
+ * FIELD is "safari" (GBF_SAFARI_STEPS, Gen 1 only, 0..255) or "lucky"
+ * (GBF_LUCKY_NUMBER_SHOW_FLAG, Gen 2 only, 0 or 1 -- the "already shown today" flag,
+ * never the derived lucky NUMBER itself, per docs/GB-FLAGS-RESEARCH.md). */
+static int do_counter(GbSession* s, const char* field_tok, const char* value_tok) {
+  GbGame g = gbt_game(s);
+  GbField f;
+  int maxv;
+  if (!strcmp(field_tok, "safari")) { f = GBF_SAFARI_STEPS; maxv = 255; }
+  else if (!strcmp(field_tok, "lucky")) { f = GBF_LUCKY_NUMBER_SHOW_FLAG; maxv = 1; }
+  else { fprintf(stderr, "unknown counter field %s (want safari|lucky)\n", field_tok); return 2; }
+
+  uint32_t off = gbf_off(g, f);
+  if (!off) { fprintf(stderr, "counter %s does not exist on this game\n", field_tok); return 2; }
+  int v = resolve_uint(value_tok, "counter value");
+  if (v < 0 || v > maxv) { fprintf(stderr, "bad counter value %s (want 0..%d)\n", value_tok, maxv); return 2; }
+
+  uint8_t b = (uint8_t)v;
+  GbsStatus ws = gbs_write_field(s, off, &b, 1);
+  if (ws != GBS_OK) return refuse(gbs_status_text(ws));
+  GbsStatus fs = gbs_finish(s);
+  if (fs != GBS_OK) return refuse(gbs_status_text(fs));
+  return 0;
+}
+
 /* BACKLOG #94 -- via gb_boxnames.h. Gen 1 refused (gbbn_rename's own GBS_ERR_ARG, no
  * box names at all). */
 static int do_boxname(GbSession* s, const char* box_tok, const char* text) {
@@ -957,6 +1022,12 @@ static int apply_op(GbSession* s, const Op* o) {
     int slot = resolve_slot(o->a[1]);
     if (box < 0 || slot < 0) return 2;
     return do_caught(s, box, slot, o->a[2]);
+  }
+  if (!strcmp(o->kind, "flagset")) {
+    return do_flagset(s, o->a[0], o->a[1]);
+  }
+  if (!strcmp(o->kind, "counter")) {
+    return do_counter(s, o->a[0], o->a[1]);
   }
   if (!strcmp(o->kind, "warp")) {
     return do_warp(s, o->a[0], o->a[1], o->a[2]);
