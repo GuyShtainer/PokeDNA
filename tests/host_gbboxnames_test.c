@@ -78,6 +78,17 @@ static void default_names(const char* file) {
     char want[16];
     snprintf(want, sizeof want, "BOX%d", b + 1);
     CHECKF(strcmp(out, want) == 0, "%s: box %d name '%s' != '%s'", file, b, out, want);
+    /* F1b (BACKLOG #94 DO-NOT-SHIP fix): gbsrc_get_raw_name_impl (source/
+     * pdna_gen12.c) delegates straight to gbbn_read() -- the box-rename editor's
+     * seed value -- specifically because pdna_gen12_box_name(), the DISPLAY
+     * formatter the banner draws with, prefixes every name with "GB " (source/
+     * pdna_gen12.c's own header note). If gbbn_read() ever started returning that
+     * decoration itself, seeding the editor from it would silently write "GB "
+     * into the save on an unedited confirm again -- assert the raw read never
+     * carries it. */
+    CHECKF(strncmp(out, "GB ", 3) != 0,
+          "%s: box %d gbbn_read returned '%s' -- the RAW read must never carry "
+          "the display formatter's \"GB \" prefix (F1b)", file, b, out);
   }
   char scratch[GB_TEXT_MAX];
   CHECKF(!gbbn_read(&s, -1, scratch, sizeof scratch), "%s: negative box refused", file);

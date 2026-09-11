@@ -43,6 +43,7 @@ Cases, each named after the defect class it guards against regressing:
       (tagged "override") instead.
 """
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
@@ -629,6 +630,101 @@ def test_g1_addrtaken_ok_exemption_capped_at_own_deepest_chain():
           "short_shim" not in [fn for fn, _t in heavy], heavy)
 
 
+def _d2_split_orphans(candidates, provenance, edges, su_sizes, funcs):
+    """Model of main()'s D2 orphan-vs-bounded-note split (BACKLOG #106), at the same
+    set-arithmetic/deepest_from() level test_d1_orphan_detection_catches_the_
+    planted_function and test_g1_... already use for the surrounding checks --
+    main() itself is not decomposed into a directly-callable function, so the
+    fixtures below replay its logic exactly rather than invoking the CLI."""
+    orphans, bounded = [], []
+    for fn in sorted(candidates):
+        if provenance.get(fn) == 'raw' and fn in funcs:
+            total, _path, _cycles = sb.deepest_from(fn, edges, su_sizes, {})
+            if total <= sb.EXEMPT_MAX_DEEPEST:
+                bounded.append((fn, total))
+                continue
+        orphans.append(fn)
+    return orphans, bounded
+
+
+def test_d2_third_party_raw_hit_bounded_becomes_a_note():
+    """D2 (BACKLOG #106): scan_third_party_words_raw() is a coincidence scanner that
+    can't be deleted (it's the only path that finds isr_master/m4_surface/m5_surface/
+    .init_array/sbmp16_* -- see scan_address_taken()'s docstring), so a raw-only hit
+    whose own worst chain is small enough to be harmless (<= EXEMPT_MAX_DEEPEST, the
+    SAME cap G1 already uses to bound an addrtaken-ok claim) is a NOTE, not a FATAL.
+    A HEAVIER raw-only hit still FATALs -- the bound only forgives small chains."""
+    edges = {
+        "raw_light": set(),
+        "raw_heavy": {"raw_heavy_child"},
+        "raw_heavy_child": set(),
+        "reloc_hit": set(),
+    }
+    su_sizes = {"raw_light": 0, "raw_heavy": 200, "raw_heavy_child": 100, "reloc_hit": 300}
+    funcs = set(edges) | {"reloc_hit"}
+    candidates = {"raw_light", "raw_heavy", "reloc_hit"}
+    provenance = {"raw_light": "raw", "raw_heavy": "raw", "reloc_hit": "reloc"}
+
+    orphans, bounded = _d2_split_orphans(candidates, provenance, edges, su_sizes, funcs)
+    check("(D2) a 0-B raw-only chain is a bounded NOTE, not an orphan",
+          ("raw_light", 0) in bounded and "raw_light" not in orphans, (orphans, bounded))
+    check("(D2) a 300-B raw-only chain (over the 256 B cap) still FATALs",
+          "raw_heavy" in orphans and "raw_heavy" not in [f for f, _ in bounded],
+          (orphans, bounded))
+    check("(D2) a reloc-provenance hit is NEVER downgraded to a note, even at 300 B "
+          "(reloc/lit hits are proof, not coincidence)",
+          "reloc_hit" in orphans, (orphans, bounded))
+
+
+def test_d2_mutation_dropping_the_bound_fatals_the_zero_byte_raw_hit():
+    """Mutation named in the brief: drop the bound (treat every raw-only hit as a
+    plain orphan, the pre-D2 behaviour) and the 0-B fixture above -- which should
+    be a harmless NOTE -- reproduces the old FATAL instead."""
+    edges = {"raw_light": set()}
+    su_sizes = {"raw_light": 0}
+    funcs = set(edges)
+    candidates = {"raw_light"}
+    provenance = {"raw_light": "raw"}
+    # The mutation: skip the bound entirely (as if EXEMPT_MAX_DEEPEST didn't exist).
+    orphans = sorted(candidates)   # pre-D2: every candidate is a plain orphan
+    check("(D2 mutation) without the bound, even a 0-B raw-only hit FATALs",
+          orphans == ["raw_light"], orphans)
+    # Sanity: WITH the bound (the real fix), the same fixture is a note, not an orphan.
+    real_orphans, real_bounded = _d2_split_orphans(candidates, provenance, edges, su_sizes, funcs)
+    check("(D2) ... but the real fix downgrades it to a note",
+          real_orphans == [] and real_bounded == [("raw_light", 0)],
+          (real_orphans, real_bounded))
+
+
+def test_d3_stale_addrtaken_ok_line_is_a_warning_not_fatal():
+    """D3 (BACKLOG #106): nothing ever retired a stale `addrtaken-ok` line -- one
+    that isn't address-taken in THIS image at all any more (a link-layout change, or
+    a line that only ever applied to the other build variant). `stale = addrtaken_ok
+    - taken` should be reported as a WARNING (never gates the build -- a line needed
+    by one image variant is legitimately unneeded on the other) rather than silently
+    accepted forever."""
+    addrtaken_ok = {"tte_cmd_skip", "still_live_fn", "nonexistent_symbol"}
+    taken = {"still_live_fn", "something_else"}
+    stale = sorted(addrtaken_ok - taken)
+    check("(D3) both the retired coincidence AND the nonexistent symbol are reported stale",
+          stale == ["nonexistent_symbol", "tte_cmd_skip"], stale)
+    check("(D3) the line still genuinely address-taken in this image is NOT reported stale",
+          "still_live_fn" not in stale, stale)
+
+
+def test_d3_mutation_without_the_check_a_stale_line_is_never_flagged():
+    """Mutation: without D3's `addrtaken_ok - taken` check, nothing at all reports a
+    line that stopped being address-taken -- the exact silent-acceptance defect D3
+    fixes (three unneeded lines, including a nonexistent symbol, were accepted
+    silently before this fix, per the brief)."""
+    addrtaken_ok = {"tte_cmd_skip", "still_live_fn", "nonexistent_symbol"}
+    taken = {"still_live_fn", "something_else"}
+    # The mutation: the pre-D3 code path never computes or prints this at all.
+    reported = []
+    check("(D3 mutation) without the check, nothing is ever reported stale",
+          reported == [], reported)
+
+
 # === (D2, fifth pass) the ELF names the build dir it was linked from ====================
 
 class _FakeCompleted:
@@ -794,6 +890,465 @@ def test_boxsource_offsets_match_real_header():
     check("BoxSource field offsets match the real header (natural ARM EABI layout)",
           offsets == expected,
           {k: v for k, v in offsets.items() if expected.get(k) != v})
+
+
+# === BACKLOG #106 G4: struct_field_offsets() by brace depth, not a lazy forward regex ==
+
+_G4_TWO_TYPEDEFS_HEADER = """
+typedef enum {
+  KIND_A = 0,
+  KIND_B
+} FooKind;
+
+/* An unrelated struct that used to poison the OLD lazy regex: anything searching
+   forward from the FIRST `typedef struct {` in this file and stopping at the FIRST
+   `} NAME;` after it would span from Foo's own opening brace all the way to Bar's
+   closing one whenever Bar is looked up. */
+typedef struct {
+  uint32_t unrelated_a;
+  uint32_t unrelated_b;
+  uint32_t unrelated_c;
+} Foo;
+
+typedef struct {
+  FooKind  kind;      /* local enum member -- sizes to 1 B (AAPCS short-enum, this
+                       * project's actual arm-eabi default -- see D1); the following
+                       * `handler` pointer needs 4-byte alignment regardless, so this
+                       * fixture's own offsets (kind@0, handler@4) can't tell 1 B
+                       * from 4 B apart -- see test_d1_the_four_false_accepts_... for
+                       * a case where the size DOES matter. */
+  void*    handler;
+  Foo      nested;    /* local nested struct member -- must recurse to its real size */
+  uint8_t  table[BAR_TABLE_LEN];
+} Bar;
+
+#define BAR_TABLE_LEN 4
+"""
+
+
+def test_g4_multiple_anonymous_typedefs_in_one_file_parse_correctly():
+    """The core G4 fixture: TWO anonymous typedef structs in one file (Foo, then
+    Bar) -- Bar's own fields must be found, not a misparse spanning across Foo's
+    body (the live bug RomGbSprite/Gb12Mount/G2Writer/RomCtx/ArtIconsGen all hit).
+    Bar's second member also exercises a local ENUM member (FooKind, sized 1 B
+    under AAPCS short-enums -- see D1; padding to `handler`'s 4-byte alignment
+    happens to make this fixture's own offsets insensitive to 1 B vs 4 B) and
+    third a local NESTED STRUCT member (Foo, sized 12 -- recursed, not guessed),
+    proving both parts of the fix together."""
+    offsets = sb.struct_field_offsets(_G4_TWO_TYPEDEFS_HEADER, "Bar")
+    expected = {"kind": 0, "handler": 4, "nested": 8, "table": 20}
+    check("(G4) Bar's own fields, not Foo's, are found (kind/handler/nested/table)",
+          offsets == expected, offsets)
+
+    foo_offsets = sb.struct_field_offsets(_G4_TWO_TYPEDEFS_HEADER, "Foo")
+    check("(G4) Foo (defined BEFORE Bar) still parses correctly on its own",
+          foo_offsets == {"unrelated_a": 0, "unrelated_b": 4, "unrelated_c": 8}, foo_offsets)
+
+
+def test_g4_mutation_old_lazy_regex_would_have_misparsed_bar():
+    """Mutation: replay the OLD (pre-G4) lazy-forward-regex struct finder against
+    the SAME two-typedef header and show it spans across Foo into Bar -- the
+    live defect this fix removes, not a hypothetical one."""
+    t = sb._strip_c_comments(_G4_TWO_TYPEDEFS_HEADER)
+    old_style = re.search(r'typedef\s+struct\s*\{(.*?)\}\s*Bar\s*;', t, re.S)
+    check("(G4 mutation) the old lazy regex's match starts at Foo's brace, not Bar's",
+          old_style is not None and "unrelated_a" in old_style.group(1), old_style)
+
+
+def test_g4_mutation_inserted_field_shifts_a_declared_offset():
+    """Mutation named directly in the brief: inserting a u16 ABOVE a declared field
+    shifts every offset below it -- verify_field_declarations() must report the
+    now-stale declaration as a mismatch (FATAL at build time), not silently keep
+    trusting it."""
+    header = """
+typedef struct {
+  uint32_t a;
+  uint32_t b;
+} Mut;
+"""
+    field_decls = {("Mut", "b"): (4, {"some_caller"})}
+    struct_headers = {"Mut": "mut.h"}
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "mut.h"), "w") as f:
+            f.write(header)
+        problems = sb.verify_field_declarations(field_decls, d, struct_headers)
+        check("(G4 mutation setup) the un-mutated header matches the declared offset",
+              problems == [], problems)
+
+        mutated = header.replace("uint32_t a;", "uint32_t a;\n  uint16_t inserted;")
+        with open(os.path.join(d, "mut.h"), "w") as f:
+            f.write(mutated)
+        problems2 = sb.verify_field_declarations(field_decls, d, struct_headers)
+        check("(G4 mutation) inserting a field above 'b' makes the @4 declaration FATAL",
+              len(problems2) == 1 and "Mut.b" in problems2[0] and "@4" in problems2[0]
+              and "@8" in problems2[0], problems2)
+
+
+def test_g4_array_count_resolved_from_a_same_file_macro():
+    """An array member's element count, when it's a plain integer macro defined in
+    the SAME header, is resolved to its REAL size (not the 4-byte external-type
+    fallback) -- BAR_TABLE_LEN=4 * uint8_t makes Bar's `table` land at offset 20
+    (8 + sizeof(Foo)=12) with a real 4-byte size, already exercised by the main
+    G4 fixture above; this test isolates just the macro-resolution step."""
+    macros = sb._parse_int_macros(sb._strip_c_comments(_G4_TWO_TYPEDEFS_HEADER))
+    check("(G4) BAR_TABLE_LEN resolves to 4 from the header's own #define",
+          macros.get("BAR_TABLE_LEN") == 4, macros)
+    check("(G4) an unresolvable expression/foreign macro resolves to None (documented fallback)",
+          sb._resolve_int_literal_or_macro("SOME_OTHER_FILES_MACRO", macros) is None, None)
+
+
+def test_g4_all_six_reregistered_structs_parse_against_their_real_headers():
+    """Not a fixture -- reads the REAL headers shipped in this repo for the six
+    structs G4 moved off the _HAND_VERIFIED escape, checking every offset this
+    project's own stack_edges.txt actually declares against them. If this ever
+    fails, either a header changed (update stack_edges.txt) or the brace-depth
+    parser regressed."""
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "source")
+    cases = [
+        ("RomGbSprite", "rom_gbsprite.h", {"read": 0}),
+        ("RomCtx", "rom_map.h", {"read": 0}),
+        ("Gb12Mount", "pdna_gen12.h", {"rd": 4}),
+        ("G2Writer", "gen2_write.h", {"rd": 0, "wr": 4}),
+        ("ArtIconsGen", "art_icons_extract.h", {"progress": 4}),
+    ]
+    for struct_name, header_name, expected in cases:
+        path = os.path.join(base, header_name)
+        if not os.path.exists(path):
+            print(f"  (skip) source/{header_name} not found from this working directory")
+            continue
+        with open(path) as f:
+            offsets = sb.struct_field_offsets(f.read(), struct_name)
+        got = {k: offsets.get(k) for k in expected}
+        check(f"(G4) {struct_name} matches its real header ({header_name})",
+              got == expected, got)
+
+
+def test_d1_the_four_false_accepts_are_now_the_real_gcc_offsets():
+    """D1's own headline regression, checked against the REAL headers shipped in
+    this repo. Before the fix (enum always sized 4 B, an external type's -- or an
+    unresolvable enum's -- 4-byte guess trusted just like a real size), these
+    four fields verified clean at the WRONG offset:
+
+        RomCtx.version        old-guessed @16   real (gcc offsetof) @13
+        RomGbSprite.id_hash   old-guessed @48   real (gcc offsetof) @44
+        G2Writer.ready        old-guessed @36   real (gcc offsetof) @44 (not reached --
+                                                 sv's break_here stops the walk at sv
+                                                 itself; see the next check)
+        Gb12Mount.nboxes      old-guessed @48   real (gcc offsetof) @296 (also not
+                                                 reached -- g1's break_here stops first)
+
+    Confirmed against arm-none-eabi-gcc with an offsetof() probe compiled with this
+    project's actual CFLAGS (-mcpu=arm7tdmi, no -f(no-)short-enums): every value in
+    the `expected` dicts below is the real gcc-computed offset, not a re-derivation
+    of this walker's own arithmetic."""
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "source")
+
+    def offsets_for(struct_name, header_name):
+        path = os.path.join(base, header_name)
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return sb.struct_field_offsets(f.read(), struct_name)
+
+    romctx = offsets_for("RomCtx", "rom_map.h")
+    if romctx is not None:
+        expected = {"read": 0, "ctx": 4, "size": 8, "kind": 12, "version": 13}
+        got = {k: romctx.get(k) for k in expected}
+        check("(D1) RomCtx.kind is 1 B (AAPCS short-enum, not the old 4 B guess) "
+              "so version lands @13, not the old false-accept @16",
+              got == expected, got)
+
+    rgs = offsets_for("RomGbSprite", "rom_gbsprite.h")
+    if rgs is not None:
+        expected = {"gen": 20, "title": 21, "id_hash": 44, "banks": 48}
+        got = {k: rgs.get(k) for k in expected}
+        check("(D1) RomGbSprite.gen is 1 B so id_hash lands @44, not the old "
+              "false-accept @48", got == expected, got)
+
+    g2w = offsets_for("G2Writer", "gen2_write.h")
+    if g2w is not None:
+        # sv (G2Save) is an EXTERNAL type -- inexact. Its own offset (24) is still
+        # trustworthy (everything before it was exact) but break_here stops the
+        # walk there: `ready` (declared nowhere in stack_edges.txt today) is
+        # correctly ABSENT rather than reported at the old false-accept @36.
+        expected_present = {"rd": 0, "wr": 4, "ctx": 8, "scratch": 12,
+                             "scratch_len": 16, "file_len": 20, "sv": 24}
+        got = {k: g2w.get(k) for k in expected_present}
+        check("(D1) G2Writer offsets up to and including sv (the break point) "
+              "match gcc", got == expected_present, got)
+        check("(D1) G2Writer.ready is NOT reported (break_here past sv) instead "
+              "of the old false-accept @36", "ready" not in g2w, g2w)
+
+    g12 = offsets_for("Gb12Mount", "pdna_gen12.h")
+    if g12 is not None:
+        # tgt (Gb12Target) is also external/inexact; g1 (right after it) is where
+        # the walk stops, so nboxes is correctly ABSENT rather than @48.
+        expected_present = {"kind": 0, "rd": 4, "ctx": 8, "len": 12, "tgt": 16}
+        got = {k: g12.get(k) for k in expected_present}
+        check("(D1) Gb12Mount offsets up to and including tgt (the break point) "
+              "match gcc", got == expected_present, got)
+        check("(D1) Gb12Mount.nboxes is NOT reported (break_here past tgt) "
+              "instead of the old false-accept @48", "nboxes" not in g12, g12)
+
+
+def test_d1_mutation_reverting_enum_sizing_reproduces_the_false_accept():
+    """Mutation: replay the OLD 'enum is always 4 B' sizing against the same
+    RomCtx-shaped header and show it reproduces exactly the cited false-accept
+    (version @16, not the real @13) -- the live defect D1 fixes, not a
+    hypothetical one."""
+    header = """
+typedef enum { KIND_A, KIND_B, KIND_C } SmallKind;
+typedef struct {
+  void* read;
+  void* ctx;
+  uint32_t size;
+  SmallKind kind;
+  uint8_t version;
+} Probe;
+"""
+    fixed = sb.struct_field_offsets(header, "Probe")
+    check("(D1) fixed: SmallKind sizes to 1 B, version lands @13",
+          fixed.get("version") == 13, fixed)
+
+    old_enum_layout = sb._enum_layout
+    sb._enum_layout = lambda body, macros: (4, 4, True)   # the OLD (wrong, but
+                                                            # confidently "exact")
+                                                            # 4-byte-always guess
+    try:
+        mutated = sb.struct_field_offsets(header, "Probe")
+    finally:
+        sb._enum_layout = old_enum_layout
+    check("(D1 mutation) the old always-4-B enum guess reproduces the cited "
+          "false-accept: version @16, not @13",
+          mutated.get("version") == 16, mutated)
+
+
+def test_d1_break_here_does_not_disturb_a_field_declared_before_the_break():
+    """Stop-licence guard: a field on file TODAY (e.g. Gb12Mount.rd@4, G2Writer.
+    rd@0/wr@4) sits BEFORE the first inexact member in its struct, so break_here
+    must never touch it. This is the synthetic version of that shape: an
+    external-type member (unresolvable, like Gen1Save/G2Save/G2Offsets) placed
+    AFTER two exact pointer fields must leave those two fields' offsets exactly
+    as gcc would give them."""
+    header = """
+typedef struct {
+  void* rd;
+  void* wr;
+  ExternalNotDefinedHere blob;
+  uint32_t trailing;
+} Mixed;
+"""
+    offsets = sb.struct_field_offsets(header, "Mixed")
+    check("(D1) rd/wr before the external member are untouched by break_here",
+          offsets.get("rd") == 0 and offsets.get("wr") == 4, offsets)
+    check("(D1) blob's own offset (8) is still recorded -- everything before it was exact",
+          offsets.get("blob") == 8, offsets)
+    check("(D1) trailing (declared AFTER the inexact member) is correctly ABSENT, "
+          "not guessed", "trailing" not in offsets, offsets)
+
+
+def test_d1_array_count_expression_with_internal_spaces_does_not_mis_split():
+    """The "9]" trap, reproduced directly: an array member whose size is an
+    EXPRESSION with an internal space (`G2_NUM_BOXES * 9`, the exact shape of
+    pdna_gen12.h's real g2names field) used to be split on the LAST space in the
+    whole normalized statement -- landing inside the expression -- and name the
+    member "9]" instead of "g2names"."""
+    header = """
+#define G2_NUM_BOXES 14
+typedef struct {
+  uint32_t lead;
+  uint8_t g2names[G2_NUM_BOXES * 9];
+  uint8_t trailer;
+} SpacedArray;
+"""
+    offsets = sb.struct_field_offsets(header, "SpacedArray")
+    check("(D1) g2names is parsed as its real name, not '9]'",
+          "g2names" in offsets and "9]" not in offsets, offsets)
+    check("(D1) g2names lands at the right offset (4)", offsets.get("g2names") == 4, offsets)
+    # `G2_NUM_BOXES * 9` is an ARITHMETIC EXPRESSION, not a plain literal or a
+    # same-file macro -- _resolve_int_literal_or_macro() is documented to leave
+    # that out of scope (see _parse_int_macros()'s own docstring), so the count
+    # is unresolved and g2names falls back to the documented 4-byte guess
+    # (inexact); break_here then correctly drops `trailer` (declared after it)
+    # rather than reporting it at a guessed offset. The FIX here is that the
+    # member is named "g2names" at all, not the size of an expression this
+    # walker was never asked to evaluate.
+    check("(D1) trailer (declared after the unresolved-count array) is correctly "
+          "ABSENT, not guessed", "trailer" not in offsets, offsets)
+
+
+def test_d1_mutation_the_old_rsplit_would_have_named_the_member_9():
+    """Mutation: replay the OLD rsplit(None, 1)-on-the-whole-statement split
+    (no array-suffix carve-out) against the exact same statement and show it
+    really does produce a member named '9]' -- the live bug, not a hypothetical
+    one."""
+    stmt = ' '.join("uint8_t g2names[G2_NUM_BOXES * 9]".split())
+    old_first = stmt.rsplit(None, 1)
+    check("(D1 mutation) the old whole-statement rsplit names the member '9]'",
+          old_first[-1] == "9]", old_first)
+
+
+def test_d1_invalid_declarator_raises_instead_of_guessing():
+    """The review's one-liner: a struct-member declarator that doesn't match
+    `^[A-Za-z_]\\w*(\\[[^\\]]*\\])?$` must raise, not silently misparse. A
+    declarator with a stray trailing character (the shape a real parse failure
+    would leave behind) is the fixture."""
+    header = """
+typedef struct {
+  uint32_t weird)name;
+} Busted;
+"""
+    try:
+        sb.struct_field_offsets(header, "Busted")
+        raised = False
+    except ValueError:
+        raised = True
+    check("(D1) an unparseable declarator raises ValueError instead of guessing",
+          raised, None)
+
+
+# === BACKLOG #106 G5: a `bl` with several inbound branches, each feeding a DIFFERENT =====
+# === offset into the dispatch register, must have EVERY offset declared, not just one ===
+
+def test_g5_two_branch_predecessors_feed_different_offsets():
+    """The brief's own fixture: a synthetic Thumb sequence with two `b` predecessors
+    (one taken via `beq`, one via an unconditional `b`) loading DIFFERENT offsets
+    into the same register before a shared `blx` -- the -O2 tail-merge shape
+    app_mon_menu_readonly hit for real (BACKLOG #106 G5). Both offsets must be
+    found; resolve_indirect_site() (the old, single-predecessor linear scan) must
+    find only ONE of them, proving the fix's value."""
+    fn_insn_seq = [
+        (0x1000, "cmp\tr0, #0"),
+        (0x1002, "beq.n\t1010 <fn+0x10>"),
+        (0x1004, "ldr\tr3, [r4, #8]"),
+        (0x1006, "b.n\t1020 <fn+0x20>"),
+        (0x1010, "ldr\tr3, [r4, #16]"),
+        (0x1020, "blx\tr3"),
+    ]
+    kind, offs = sb.resolve_indirect_site_all_predecessors(fn_insn_seq, 0x1020, "r3")
+    check("(G5) both predecessors' offsets are found", kind == 'field' and offs == frozenset({8, 16}),
+          (kind, offs))
+
+
+def test_g5_mutation_chase_only_the_fall_through():
+    """Mutation named directly in the brief: chasing ONLY the fall-through
+    predecessor (resolve_indirect_site(), which transparently passes through the
+    `b.n`/`beq.n` it meets instead of treating them as real alternate edges) finds
+    just the fall-through path's offset (16) and silently MISSES the branch
+    predecessor's offset (8) -- exactly the false pass a caller trusting only one
+    offset would ship."""
+    fn_insn_seq = [
+        (0x1000, "cmp\tr0, #0"),
+        (0x1002, "beq.n\t1010 <fn+0x10>"),
+        (0x1004, "ldr\tr3, [r4, #8]"),
+        (0x1006, "b.n\t1020 <fn+0x20>"),
+        (0x1010, "ldr\tr3, [r4, #16]"),
+        (0x1020, "blx\tr3"),
+    ]
+    kind, off = sb.resolve_indirect_site(fn_insn_seq, 0x1020, "r3")
+    check("(G5 mutation) the fall-through-only scan finds ONLY offset 16, missing 8",
+          kind == 'field' and off == 16, (kind, off))
+
+
+def test_g5_cold_block_reached_only_via_a_forward_branch_still_resolves():
+    """A predecessor block that is ITSELF reached only by some OTHER forward
+    branch (an out-of-line clamp/cold tail, e.g. rom_gbui.c's all_blank() `if
+    (chunk > 64) chunk = 64;`) must still resolve correctly -- its own physical
+    predecessor in the listing (laid out right after the function's real
+    epilogue, since cold tails are placed at the end) is UNRELATED dead code
+    that must never be walked into. The chased register (r7) is loaded once at
+    the loop top and never touched by the cold clamp block itself (which sets
+    an UNRELATED register, r4, exactly like all_blank()'s `chunk = 64` never
+    touches the Scan* the dispatch actually comes from) -- but that cold
+    block's own physical predecessor in the listing is a `pop {r4, r5, r6, r7}`
+    epilogue that WOULD (wrongly) redefine r7 if the walker ever fell through
+    into it instead of following the real `bhi.n` edge back into the hot path."""
+    fn_insn_seq = [
+        (0x2000, "ldr\tr7, [r6, #0]"),           # loop-top / real field load, r7 = field@0
+        (0x2002, "cmp\tr4, #64"),
+        (0x2004, "bhi.n\t2020 <fn+0x20>"),        # cold path: some unrelated clamp condition
+        (0x2006, "subs\tr3, r3, r1"),             # hot-path continuation (join point)
+        (0x2008, "blx\tr7"),                      # SITE: dispatch through r7
+        (0x200a, "pop\t{r4, r5, r6, r7}"),        # epilogue -- would redefine r7 if ever
+        (0x200c, "pop\t{r1}"),                    #   mistakenly walked into
+        (0x200e, "bx\tr1"),
+        (0x2020, "movs\tr4, #64"),                # cold clamp block: touches r4, NOT r7 --
+                                                   #   a pass-through for the register that matters
+        (0x2022, "b.n\t2006 <fn+0x6>"),           # jumps back into the hot path's join
+    ]
+    kind, offs = sb.resolve_indirect_site_all_predecessors(fn_insn_seq, 0x2008, "r7")
+    check("(G5) the cold-block predecessor resolves through the REAL chain, not the epilogue",
+          kind == 'field' and offs == frozenset({0}), (kind, offs))
+
+
+def test_g5_app_mon_menu_readonly_four_way_merge_against_the_real_elf():
+    """Not a fixture -- reads the REAL PokeDNA-artless.elf/build-artless this repo
+    was just built with (skips cleanly if absent) and confirms the live defect
+    this fix found: app_mon_menu_readonly's -O2 tail merge is FOUR offsets wide
+    (4, 8, 16, 32 -- AppSrcOps.move/release/paste/item), not the three a human
+    listed by hand before this fix existed. If this ever reports fewer than
+    four, either the codegen changed (re-verify by hand) or G5 regressed."""
+    elf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "PokeDNA-artless.elf")
+    builddir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build-artless")
+    if not (os.path.exists(elf) and os.path.isdir(builddir)):
+        print("  (skip) PokeDNA-artless.elf/build-artless not found from this working directory")
+        return
+    dump_text = sb.disassemble(elf)
+    analysis = sb.analyze(dump_text)
+    fn = analysis["fn_insn_seq"].get("app_mon_menu_readonly", [])
+    sites = analysis["indirect_sites"].get("app_mon_menu_readonly", [])
+    found = None
+    for addr, _ins, reg in sites:
+        kind, offs = sb.resolve_indirect_site_all_predecessors(fn, int(addr, 16), reg)
+        if kind == 'field' and len(offs) > 1:
+            found = offs
+            break
+    check("(G5) app_mon_menu_readonly's tail merge resolves to all four offsets",
+          found == frozenset({4, 8, 16, 32}), found)
+
+
+# === D4 (BACKLOG #106): _UNCONDITIONAL_EXIT_RE misses ARM-mode returns ==================
+
+def test_d1_106_d4_ldm_pc_return_stops_the_fall_through_walk():
+    """D4 (BACKLOG #106): `ldm...{...,pc}` is ARM's general-purpose register-list
+    epilogue (of which the Thumb `pop {..,pc}` this regex already caught is only
+    the ldmfd-sp! special case) -- an unconditional return, so nothing after it
+    could ever be reached by falling through FROM it. _real_predecessors() must
+    NOT offer i-1 (the ldm return) as a fall-through predecessor of i."""
+    fn_insn_seq = [
+        (0x1000, "ldmfd\tsp!, {r4, pc}"),
+        (0x1004, "movs\tr3, #5"),
+    ]
+    branch_targets = sb._intra_function_branch_targets(fn_insn_seq)
+    preds = sb._real_predecessors(fn_insn_seq, 1, branch_targets)
+    check("(D4, #106) an ldm{...,pc} return is not offered as a fall-through predecessor",
+          preds == [], preds)
+
+
+def test_d1_106_d4_mov_pc_lr_return_stops_the_fall_through_walk():
+    """D4 (BACKLOG #106): `mov pc, lr` is the plain leaf-function return (no
+    register-list restore at all) -- also unconditional, also missed by the old
+    regex."""
+    fn_insn_seq = [
+        (0x1000, "mov\tpc, lr"),
+        (0x1004, "movs\tr3, #5"),
+    ]
+    branch_targets = sb._intra_function_branch_targets(fn_insn_seq)
+    preds = sb._real_predecessors(fn_insn_seq, 1, branch_targets)
+    check("(D4, #106) a mov pc, lr return is not offered as a fall-through predecessor",
+          preds == [], preds)
+
+
+def test_d1_106_d4_mutation_old_regex_wrongly_falls_through_arm_returns():
+    """Mutation: replay the OLD regex (Thumb `pop {..,pc}` only, no ldm/mov-pc-lr
+    coverage) against the SAME two fixtures above and show it wrongly treats
+    both ARM-mode returns as fall-through -- the live gap D4 closes."""
+    old_re = re.compile(r'^(b|b\.n|b\.w)\s|^bx\b|^pop\s+\{[^}]*pc[^}]*\}')
+    for exit_ins in ("ldmfd\tsp!, {r4, pc}", "mov\tpc, lr"):
+        clean = exit_ins.split('@')[0].strip()
+        check(f"(D4, #106 mutation) the old regex does NOT recognize {exit_ins!r} as an exit",
+              old_re.match(clean) is None, clean)
 
 
 # === (D4) blind spots over the WHOLE reachable graph, not just the deepest chain =======
@@ -1254,6 +1809,308 @@ def test_g110_missing_su_is_named():
               missing == [], missing)
 
 
+# === N3 (m1 re-verify, BACKLOG #106): the result cache keys on stack_edges.txt too =====
+
+def test_n3_elf_fingerprint_changes_when_the_edges_file_content_changes():
+    """N3: _elf_fingerprint() must fold the edges file's own bytes in -- editing a
+    declaration or an exemption (same ELF, same .su files, so the OLD fingerprint
+    was unchanged) must still produce a DIFFERENT fingerprint, so a cached
+    dump_text/sym_text blob is never reused across an edges-file edit by
+    coincidence of the ELF/.su side alone staying put."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        elf = os.path.join(d, "fake.elf")
+        with open(elf, "wb") as f:
+            f.write(b"\x00" * 16)
+        edges_a = os.path.join(d, "edges_a.txt")
+        edges_b = os.path.join(d, "edges_b.txt")
+        with open(edges_a, "w") as f:
+            f.write("addrtaken-ok some_fn\n")
+        with open(edges_b, "w") as f:
+            f.write("addrtaken-ok some_fn\naddrtaken-ok another_fn\n")
+
+        fp_a = sb._elf_fingerprint(elf, d, edges_a)
+        fp_b = sb._elf_fingerprint(elf, d, edges_b)
+        check("(N3) two different edges-file contents (same ELF, same builddir) "
+              "fingerprint DIFFERENTLY", fp_a != fp_b, (fp_a, fp_b))
+
+        fp_a_again = sb._elf_fingerprint(elf, d, edges_a)
+        check("(N3) the SAME edges-file content reproduces the SAME fingerprint "
+              "(not a nonce -- a real cache key)", fp_a == fp_a_again, (fp_a, fp_a_again))
+
+        fp_none = sb._elf_fingerprint(elf, d, None)
+        fp_empty = sb._elf_fingerprint(elf, d, "")
+        check("(N3) edges_file=None and edges_file='' (edges disabled) fingerprint "
+              "the same (both fold in nothing)", fp_none == fp_empty, (fp_none, fp_empty))
+
+        fp_missing = sb._elf_fingerprint(elf, d, os.path.join(d, "does_not_exist.txt"))
+        check("(N3) a missing edges-file path doesn't crash -- folds in nothing, "
+              "same as None (mirrors load_extra_edges()'s own 'missing is legal')",
+              fp_missing == fp_none, (fp_missing, fp_none))
+
+
+def test_n3_mutation_without_the_edges_hash_the_fingerprint_is_blind_to_the_edit():
+    """Mutation: replay the OLD _elf_fingerprint() (ELF mtime/size + .su stat list
+    only, no edges bytes) against the SAME two edges files above and show it
+    produces the IDENTICAL fingerprint for both -- exactly the masked-mutation
+    defect N3 fixes: a cache present across the edit would silently reuse the
+    previous verdict."""
+    import glob
+    import hashlib
+    import tempfile
+
+    def old_fingerprint(elf, builddir):
+        st = os.stat(elf)
+        su_files = sorted(glob.glob(os.path.join(builddir, "*.su")))
+        su_stat = [(f, os.path.getsize(f)) for f in su_files]
+        h = hashlib.sha1()
+        h.update(f"{st.st_mtime_ns}:{st.st_size}".encode())
+        h.update(repr(su_stat).encode())
+        return h.hexdigest()
+
+    with tempfile.TemporaryDirectory() as d:
+        elf = os.path.join(d, "fake.elf")
+        with open(elf, "wb") as f:
+            f.write(b"\x00" * 16)
+        edges_a = os.path.join(d, "edges_a.txt")
+        edges_b = os.path.join(d, "edges_b.txt")
+        with open(edges_a, "w") as f:
+            f.write("addrtaken-ok some_fn\n")
+        with open(edges_b, "w") as f:
+            f.write("addrtaken-ok some_fn\naddrtaken-ok another_fn\n")
+
+        fp_a = old_fingerprint(elf, d)
+        fp_b = old_fingerprint(elf, d)
+        check("(N3 mutation) without hashing the edges file, editing it produces the "
+              "SAME (stale) fingerprint -- a cache present would reuse the old verdict",
+              fp_a == fp_b, (fp_a, fp_b))
+
+
+# === P1 (b90 re-verify, BACKLOG #106): warn on an addrtaken-ok naming no real symbol ====
+
+def test_p1_addrtaken_ok_naming_a_symbol_absent_from_the_image_is_warned():
+    """P1: an `addrtaken-ok` line whose name is not even a symbol IN this ELF at all
+    (a typo, or a line carried over from a lane whose function was renamed/deleted)
+    is silent today -- D3's stale check (`addrtaken_ok - taken`) already catches it
+    as "not currently address-taken", but nothing distinguishes "a real function
+    that just isn't taken this build" from "this name doesn't exist in the image at
+    all", which is a strictly worse sign (stale OR typo, never a legitimate
+    per-variant difference). `analysis["funcs"]` (every function symbol name(s)
+    is disassembly found) is the same set G1's exemption-cap check already uses to
+    test symbol presence."""
+    addrtaken_ok = {"tte_cmd_skip", "____totally_bogus_symbol_xyz", "still_live_fn"}
+    funcs = {"tte_cmd_skip", "still_live_fn", "something_else"}
+    absent = sorted(addrtaken_ok - funcs)
+    check("(P1) the nonexistent symbol is named", absent == ["____totally_bogus_symbol_xyz"],
+          absent)
+    check("(P1) a real function that's merely not address-taken this build is NOT "
+          "reported by this check (that's D3's job)", "tte_cmd_skip" not in absent, absent)
+
+
+def test_p1_mutation_without_the_check_a_nonexistent_symbol_is_never_flagged():
+    """Mutation: without P1's `addrtaken_ok - funcs` check, a nonexistent symbol
+    name in stack_edges.txt is never distinguished from a real, merely-not-taken
+    one -- the exact silent gap P1 closes (`____aeabi_dmul_from_thumb`, present in
+    NEITHER image, carried on a lane's edges list undetected, per the brief)."""
+    addrtaken_ok = {"tte_cmd_skip", "____totally_bogus_symbol_xyz", "still_live_fn"}
+    funcs = {"tte_cmd_skip", "still_live_fn", "something_else"}
+    reported = []
+    check("(P1 mutation) without the check, nothing is ever reported absent-from-image",
+          reported == [], reported)
+
+
+# === BACKLOG #106 G2: the address-taken sweep only trusts a PROVEN pointer holder ======
+#
+# The old scan_address_taken() treated any 4-byte-aligned word in any ALLOC+LOAD
+# section as "this function's address is taken" purely because its VALUE happened to
+# equal a function's entry address -- a table entry, a hash constant, a sprite offset
+# planted at the right spot minted a FATAL false positive, papered over with seven
+# unverified `addrtaken-ok` lines added in one day (2026-09-10). The fix asks the
+# compiler's OWN object file whether a relocation record backs the word (a data
+# section) or trusts objdump's own `.word` literal-pool annotation (.text) instead of
+# a raw byte scan of the whole section -- these fixtures exercise both halves plus the
+# "exact function start, not merely inside its range" distinction a real switch jump
+# table (gen1_write.o's char-encode table, found live) needed.
+
+def _g2_patch_run(monkeypatch_map):
+    """Install a subprocess.run stub that answers `objdump -r`/`-t`/`-s -j SEC` calls
+    from `monkeypatch_map` (keyed "r"/"t"/"s:<section>") with a canned _FakeCompleted,
+    and returns the real subprocess.run for anything else. Returns the restore
+    function; the caller MUST call it in a `finally:` block."""
+    import subprocess as _subprocess
+    real_run = _subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == sb.OBJDUMP:
+            if "-r" in cmd and "r" in monkeypatch_map:
+                return _FakeCompleted(monkeypatch_map["r"])
+            if "-t" in cmd and "t" in monkeypatch_map:
+                return _FakeCompleted(monkeypatch_map["t"])
+            if "-s" in cmd and "-j" in cmd:
+                sec = cmd[cmd.index("-j") + 1]
+                key = f"s:{sec}"
+                if key in monkeypatch_map:
+                    return _FakeCompleted(monkeypatch_map[key])
+        return real_run(cmd, **kwargs)
+
+    _subprocess.run = fake_run
+    return lambda: setattr(_subprocess, "run", real_run)
+
+
+def test_g2_word_with_no_relocation_is_not_taken():
+    """A `.rodata` word whose VALUE happens to equal a function's address, with NO
+    relocation record behind it at all -- the exact layout-coincidence class
+    (a table entry, a hash constant, a ROM-span constant) that minted seven
+    `addrtaken-ok` lines. Must NOT be reported as address-taken."""
+    import tempfile
+    name_at = {0x08010000: "real_target"}
+    reloc_text = "RELOCATION RECORDS FOR [.rodata]:\nOFFSET   TYPE              VALUE\n"
+    symtab_text = "00000000 g     F .text\t00000010 real_target\n"
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "plant.o"), "w").close()
+        restore = _g2_patch_run({"r": reloc_text, "t": symtab_text})
+        try:
+            taken, detail = sb.scan_relocated_addresses(d, name_at)
+        finally:
+            restore()
+        check("(G2) a coincidental word with NO relocation is not taken",
+              taken == set(), taken)
+        check("(G2) ... and gets no detail entry either", detail == {}, detail)
+
+
+def test_g2_mutation_a_raw_value_scan_would_have_flagged_the_same_word():
+    """Mutation for the fixture above: this is exactly what the PRE-G2 raw
+    byte-value scan (_words_from_objdump_s_text(), still used by the narrow
+    third-party fallback) does with no relocation gate at all -- feed it the
+    SAME section bytes as the no-relocation fixture and it DOES report the
+    coincidental word, proving the relocation check in scan_relocated_addresses()
+    is load-bearing, not decorative."""
+    section_dump = " 0000 00000108 00000000 00000000 00000000  ........\n"
+    words = list(sb._words_from_objdump_s_text(section_dump))
+    check("(G2 mutation) the raw scan sees the same coincidental word",
+          0x08010000 in {w & ~1 for w in words}, words)
+
+
+def test_g2_global_symbol_relocation_is_taken():
+    """The common case: a global function's address stored as a genuine pointer
+    keeps ITS OWN NAME directly in the relocation record (no byte read needed) --
+    e.g. `RV_ANCHOR`'d flashcartio_activate in pdna_romver_data.c's own table,
+    confirmed live against the real .o. Must be reported taken, with a location
+    naming the containing data symbol."""
+    import tempfile
+    name_at = {0x08010000: "real_target", 0x08020000: "unrelated_fn"}
+    reloc_text = ("RELOCATION RECORDS FOR [.rodata]:\n"
+                  "OFFSET   TYPE              VALUE\n"
+                  "00000004 R_ARM_ABS32       real_target\n")
+    symtab_text = ("00000000 g     F .text\t00000010 real_target\n"
+                   "00000000 l     O .rodata\t00000020 some_table\n")
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "plant.o"), "w").close()
+        restore = _g2_patch_run({"r": reloc_text, "t": symtab_text})
+        try:
+            taken, detail = sb.scan_relocated_addresses(d, name_at)
+        finally:
+            restore()
+        check("(G2) a genuinely relocated global symbol IS taken",
+              taken == {"real_target"}, taken)
+        check("(G2) its location names the containing data symbol",
+              detail.get("real_target") == ["plant.o:.rodata+0x4 inside some_table+0x4"],
+              detail)
+
+
+def test_g2_local_symbol_exact_start_vs_mid_function_jump_table_entry():
+    """A LOCAL/static function's address, stored genuinely as a pointer, collapses
+    to a section-relative relocation (VALUE == '.text') with NO addend field of
+    its own (ARM ELF relocations are REL) -- the true target is read back out of
+    the referencing word's own bytes. This is ALSO the exact shape a switch-
+    statement jump table uses on this ARMv4T target (no Thumb-2 tbb/tbh): every
+    entry is an address INSIDE some function's body (a case label), essentially
+    never at its first instruction -- confirmed live in gen1_write.o's char-encode
+    table (80+ entries, all inside gen1_encode_char, none at its start). Offset 0
+    here holds static_target's EXACT entry (0x0) -- taken. Offset 4 holds 0x8,
+    which is INSIDE static_target's own [0,0x10) range but not its start -- a
+    'contains' lookup would (wrongly) call this taken too; an exact-start lookup
+    correctly does not."""
+    import tempfile
+    name_at = {0x08010000: "static_target", 0x08010010: "other_fn"}
+    reloc_text = ("RELOCATION RECORDS FOR [.rodata]:\n"
+                  "OFFSET   TYPE              VALUE\n"
+                  "00000000 R_ARM_ABS32       .text\n"
+                  "00000004 R_ARM_ABS32       .text\n")
+    symtab_text = ("00000000 l     F .text\t00000010 static_target\n"
+                   "00000010 l     F .text\t00000020 other_fn\n"
+                   "00000000 l     O .rodata\t00000008 jump_table\n")
+    rodata_dump = " 0000 00000000 08000000  ........\n"   # word@0 = 0x0, word@4 = 0x8
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "plant.o"), "w").close()
+        restore = _g2_patch_run({"r": reloc_text, "t": symtab_text,
+                                  "s:.rodata": rodata_dump})
+        try:
+            taken, detail = sb.scan_relocated_addresses(d, name_at)
+        finally:
+            restore()
+        check("(G2) the exact-start entry (offset 0 -> 0x0) is taken",
+              "static_target" in taken, taken)
+        check("(G2) ... and ONLY that one -- the mid-function entry is not",
+              taken == {"static_target"}, taken)
+
+    # Mutation: a CONTAINMENT lookup (bisect onto the nearest symbol at-or-before
+    # the address, exactly what _containing_symbol() gives report() for the DATA
+    # side) would call offset 4's target (0x8) "inside static_target" too --
+    # proving the fix is the EXACT-match requirement, not merely having a symbol
+    # table at all.
+    text_syms = [(0x08010000, 0x10, "static_target", "F"), (0x08010010, 0x20, "other_fn", "F")]
+    contained_name, _delta = sb._containing_symbol(text_syms, 0x08010008)
+    check("(G2 mutation) a containment lookup WOULD call the mid-function entry taken too",
+          contained_name == "static_target", contained_name)
+
+
+def test_g2_text_literal_pool_still_detected_via_objdump_annotation():
+    """The (b) half of the fix: .text literal pools remain visible through
+    objdump's OWN `.word` disassembly annotation (never a raw byte scan, which
+    would also match ordinary Thumb instruction pairs) -- proves the .rodata/
+    .data coincidence fix didn't cost real .text-held function pointers."""
+    dump_text = (
+        "08010000 <holder>:\n"
+        " 8010000:\t4770      \tbx\tlr\n"
+        " 8010002:\t0000      \tmovs\tr0, r0\n"
+        " 8010004:\t0100 0108 \t.word\t0x08010001\n"
+    )
+    name_at = {0x08010000: "holder"}
+    taken = sb.scan_text_literal_pool(dump_text, name_at)
+    check("(G2) a .text literal pool entry is still found as address-taken",
+          taken == {"holder"}, taken)
+
+
+def test_g2_third_party_fallback_scoped_to_non_project_functions():
+    """own_function_names()/the fallback in scan_address_taken() must ONLY ever
+    raw-scan for names this project's OWN *.o's do NOT define (crt0/libgcc/
+    newlib/libtonc -- their member objects never land under --builddir at all, so
+    scan_relocated_addresses() has no relocation to read for them). A name that
+    IS one of this project's own functions must get ONLY the relocation-proven
+    treatment, even if scan_third_party_words_raw() is handed it by mistake --
+    modeled directly against own_function_names() and the restrict_to filter."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        open(os.path.join(d, "app.o"), "w").close()
+        symtab_text = ("00000000 g     F .text\t00000010 project_fn\n"
+                       "00000010 g     F .text\t00000010 project_helper\n")
+        restore = _g2_patch_run({"t": symtab_text})
+        try:
+            own = sb.own_function_names(d)
+        finally:
+            restore()
+        check("(G2) own_function_names() finds every function this project compiled",
+              own == {"project_fn", "project_helper"}, own)
+
+    name_at = {0x08010000: "project_fn", 0x08020000: "crt_symbol"}
+    restrict_to = {"crt_symbol"}   # project_fn deliberately NOT in the restrict set
+    section_dumps = {".rodata": " 0000 00000108 00000208  ........\n"}
+    taken = sb.scan_third_party_words_raw([".rodata"], section_dumps, name_at, restrict_to)
+    check("(G2) the fallback only ever reports names IN restrict_to",
+          taken == {"crt_symbol"}, taken)
+
+
 def main():
     print("host_stack_budget_test.py")
     test_a_estimator_no_explosion()
@@ -1274,6 +2131,10 @@ def main():
     test_d1_words_from_objdump_s_text_byte_order()
     test_d1_orphan_detection_catches_the_planted_function()
     test_g1_addrtaken_ok_exemption_capped_at_own_deepest_chain()
+    test_d2_third_party_raw_hit_bounded_becomes_a_note()
+    test_d2_mutation_dropping_the_bound_fatals_the_zero_byte_raw_hit()
+    test_d3_stale_addrtaken_ok_line_is_a_warning_not_fatal()
+    test_d3_mutation_without_the_check_a_stale_line_is_never_flagged()
     test_d2_read_build_dir_stamp_extracts_the_nul_terminated_string()
     test_d2_read_build_dir_stamp_absent_symbol_returns_none()
     test_d4_undeclared_shallow_site_is_a_blind_spot_off_the_deepest_chain()
@@ -1284,6 +2145,24 @@ def main():
     test_d10_trap5_literal_call_target_resolved_vs_table_index_blind_spot()
     test_d10_trap6_base_literal_loaded_far_before_its_use()
     test_boxsource_offsets_match_real_header()
+    test_g4_multiple_anonymous_typedefs_in_one_file_parse_correctly()
+    test_g4_mutation_old_lazy_regex_would_have_misparsed_bar()
+    test_g4_mutation_inserted_field_shifts_a_declared_offset()
+    test_g4_array_count_resolved_from_a_same_file_macro()
+    test_g4_all_six_reregistered_structs_parse_against_their_real_headers()
+    test_d1_the_four_false_accepts_are_now_the_real_gcc_offsets()
+    test_d1_mutation_reverting_enum_sizing_reproduces_the_false_accept()
+    test_d1_break_here_does_not_disturb_a_field_declared_before_the_break()
+    test_d1_array_count_expression_with_internal_spaces_does_not_mis_split()
+    test_d1_mutation_the_old_rsplit_would_have_named_the_member_9()
+    test_d1_invalid_declarator_raises_instead_of_guessing()
+    test_g5_two_branch_predecessors_feed_different_offsets()
+    test_g5_mutation_chase_only_the_fall_through()
+    test_g5_cold_block_reached_only_via_a_forward_branch_still_resolves()
+    test_g5_app_mon_menu_readonly_four_way_merge_against_the_real_elf()
+    test_d1_106_d4_ldm_pc_return_stops_the_fall_through_walk()
+    test_d1_106_d4_mov_pc_lr_return_stops_the_fall_through_walk()
+    test_d1_106_d4_mutation_old_regex_wrongly_falls_through_arm_returns()
     test_d5a_shared_offset_two_structs_two_callers()
     test_d5a_two_structs_same_caller_both_credited()
     test_d5a_unqualified_on_a_shared_offset_is_a_parse_error()
@@ -1291,6 +2170,16 @@ def main():
     test_f5_tarjan_sccs_iterative_3000_node_chain()
     test_f5_tarjan_sccs_small_graph_matches_known_components()
     test_g110_missing_su_is_named()
+    test_n3_elf_fingerprint_changes_when_the_edges_file_content_changes()
+    test_n3_mutation_without_the_edges_hash_the_fingerprint_is_blind_to_the_edit()
+    test_p1_addrtaken_ok_naming_a_symbol_absent_from_the_image_is_warned()
+    test_p1_mutation_without_the_check_a_nonexistent_symbol_is_never_flagged()
+    test_g2_word_with_no_relocation_is_not_taken()
+    test_g2_mutation_a_raw_value_scan_would_have_flagged_the_same_word()
+    test_g2_global_symbol_relocation_is_taken()
+    test_g2_local_symbol_exact_start_vs_mid_function_jump_table_entry()
+    test_g2_text_literal_pool_still_detected_via_objdump_annotation()
+    test_g2_third_party_fallback_scoped_to_non_project_functions()
     print()
     if FAILURES:
         print(f"host_stack_budget_test: {len(FAILURES)} FAILED: {', '.join(FAILURES)}")

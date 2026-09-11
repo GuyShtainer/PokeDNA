@@ -60,6 +60,20 @@ typedef struct {
    * the 30-cell grid it is drawn into; without this the banner read "20/30" for a full
    * Gen-2 box, 10 short of full. */
   int  (*capacity)(int box);
+  /* BACKLOG #94: renaming is NARROWER than can_edit -- it writes a name table, never
+   * a Pokemon record, so a source that must refuse cross-scope drops (the Game Boy
+   * source) can still offer it. NULL => fall back to can_edit(). Appended at the END
+   * of the struct rather than beside set_name on purpose: every field before it has
+   * a hand-verified byte offset recorded in tools/stack_edges.txt's BoxSource table,
+   * and inserting a field in the middle would shift every one of them, forcing a
+   * cascade of offset/qualifier edits to that already-fragile, hand-tuned table for
+   * a purely cosmetic adjacency win. Tacking a new field on the end changes nothing
+   * for any existing field's offset. */
+  bool (*can_rename)(void);
+  /* F1b: the name to SEED the rename editor with: get_name() is a DISPLAY string
+   * and may carry decoration (the Game Boy source prefixes "GB "). NULL =>
+   * get_name() is already the raw stored name (the Gen-3 PC and the Bank). */
+  void (*get_raw_name)(int box, char out[12]);
 } BoxSource;
 
 /* Game-faithful box screen over `src`: a left PKMN DATA panel + a 6x5 icon grid on

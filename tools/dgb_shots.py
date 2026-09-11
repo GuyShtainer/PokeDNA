@@ -1419,6 +1419,220 @@ def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     return s
 
 
+def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #90: the Gen-1/2 Fly-destination screen (source/pdna_gbfly.c) over
+    gb_fly.h's bitfield core -- the same shape as run_u4_bag()/run_u5_pack() above,
+    reused for a plain (non-gbscreen-shell) list screen. `rom` must be a ONE-ROM
+    fused image (Red-only for `which == "red"`, Crystal-only for `which ==
+    "crystal"` -- same BACKLOG #98 harness-gap reasoning as U4/U5's own images), so
+    the boot picker is skipped (gb_delta_pick_save()'s `if (n == 1) return 0`) and
+    one A tap reaches S1 info -> box grid directly.
+
+    Nav: A (S1 info) -> box grid -> START -> nav menu -> DOWN x14 (Party=0, Bank=1,
+    Daycare=2, Trainer=3, Clock fix=4, Mirage=5, Pokedex=6, Bag=7, Flags&counters=8,
+    Bases=9, Blocks=10, Tickets=11, Records=12, Frontier=13, Fly=14 -- PDNA_NAV_ITEMS
+    order, source/pdna_layout.h) -> A -> pdna_gb_fly()."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b90_{which}_")
+    print(f"== BACKLOG #90: {which}'s own Fly destinations (single-ROM image -> "
+          "standalone -> Fly) ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 14)                                    # Party -> ... -> Fly (index 14)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Fly -> pdna_gb_fly()
+    s.shot("01_list", f"BACKLOG #90: {which}'s own Fly destinations -- the "
+                       "ON/x count header, one row per gbfy_count() destination, "
+                       "cursor on row 1")
+
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("02_row2", "BACKLOG #90: DOWN moves the cursor to row 2")
+
+    s.tap("A", settle=gb_shots.SETTLE)                      # toggle the selected row
+    s.shot("03_toggled", "BACKLOG #90: A toggles the selected destination -- the "
+                          "row's ON/off text and the header count both flip; "
+                          "rmbl_fire(RCUE_EDIT) is the same edit haptic every "
+                          "other GB screen's own field edits use")
+
+    # D4 (BACKLOG #90): START's mark-all. Fires from the SAME cursor position
+    # 03_toggled left the toggled row on, still row 2 -- START asks a confirm, then
+    # sets every row not already ON (skipping Gen 2's four spawn-only rows via the
+    # "spn" fly_tag() predicate), same shape as the Gen-3 Fly screen's own START.
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # Fly's own START (not the box grid's)
+    s.shot("04_start_confirm", "BACKLOG #90: START -> 'Mark all destinations? "
+                                "Skips story order.' (app_confirm), the same "
+                                "one-shot gate pdna_fly.c's own START uses")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # confirm -> mark-all loop -> result panel
+    s.shot("05_start_result", "BACKLOG #90: the '%d newly marked.' result panel"
+                               + (" -- 'Spawn-only rows untouched.' on Gen 2 (the "
+                                  "four spn-tagged rows are never a real Fly-menu "
+                                  "destination, so mark-all leaves them exactly as "
+                                  "found)" if which == "crystal" else "")
+                               + " (the dialog residue behind the panel is the known "
+                                 "s_msg-over-app_confirm ghosting, BACKLOG #119 -- present "
+                                 "on Gen 3's pdna_fly.c too)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the result panel -> back to the grid
+
+    if which == "crystal":
+        # Gen 2 only: scroll to a spawn-only row (index 0/1/17/27 -- HOME/DEBUG/
+        # UNION_CAVE/FAST_SHIP, see pdna_gbfly.h's own header note) and show its
+        # "spn" tag plus the footer legend explaining it.
+        # sel is cyclic (`sel = sel ? sel - 1 : n - 1`): row 2 (idx1) -> UP -> row 0
+        # (idx0) -> UP -> WRAPS to the LAST row (idx27, Fast Ship), not back to row 0
+        # -- Fast Ship and Union Cave (idx17) are both spawn-only ("spn"-tagged), same
+        # as row 0 (Spawn: Home) and row 1 (Spawn: Debug) would have been.
+        s.press_n("UP", 2, settle=gb_shots.SETTLE)          # row 2 -> row 0 -> wraps to row 27 (Fast Ship)
+        s.shot("06_spawn_only_tag", "BACKLOG #90: row 27 (Fast Ship) carries the "
+                                     "'spn' tag and the footer legend 'spn = no effect "
+                                     "in game' -- flypoints.asm's own Fly menu "
+                                     "never offers this bit as a destination even "
+                                     "though wVisitedSpawns has a real bit for it -- "
+                                     "still off after D4's mark-all, proving the "
+                                     "skip really held")
+        s.press_n("DOWN", 2, settle=gb_shots.SETTLE)        # back to row 2 (the toggled row)
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B with a real pending edit -> commit prompt
+    s.shot("07_commit_prompt", "BACKLOG #90: B with a real pending edit -> 'Save "
+                                "fly destinations?' (app_confirm), the same dialog "
+                                "every other GB screen's own commit uses")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A = yes -> gb_persist() -> PDNA_DELTA refusal
+    s.shot("08_confirmed", "BACKLOG #90: A confirms -- gb_persist()'s PDNA_DELTA "
+                            "branch refuses ('Edits are in-session only in the "
+                            "emulator build.') because this build has no SD card "
+                            "for a GB image at all (same #62 D2/D5 branch every "
+                            "other GB screen's own commit hits here); the write "
+                            "path itself is proved by the retail gate's fly case "
+                            "(tools/gb_retail_gate.py), not this shot")
+
+    return s
+
+
+# source/osk.c's QWERTY rows (both cases, no shift mode) -- kept as a literal copy
+# for the SAME reason g3_shots.py's own osk shot does not need one (it never types
+# a full name): this one does, so it needs to know which (row, col) cell holds each
+# glyph. Any drift from source/osk.c's own KB[] would only make this driver type
+# the wrong letters, never break the app itself -- osk.c stays the single source of
+# truth for what actually ships.
+_OSK_KB_ROWS = [
+    "1234567890",
+    "qwertyuiop",
+    "asdfghjkl",
+    "zxcvbnm",
+    "QWERTYUIOP",
+    "ASDFGHJKL",
+    "ZXCVBNM",
+    " -.,'!?",
+]
+
+
+def _osk_type_char(s: "gb_shots.Session", pos: list[int], ch: str) -> None:
+    """Drive the on-screen keyboard's cell cursor from `pos` (mutated in place --
+    [row, col], the SAME two ints osk_core's own `cr`/`cc` track) to `ch`'s cell via
+    DOWN/RIGHT only (osk.c's cr/cc both wrap, so any cell is reachable without ever
+    needing UP/LEFT), then A to insert it at the current caret position. Mirrors
+    osk_core's OWN per-loop clamp (`if (cc >= rowlen(cr)) cc = rowlen(cr) - 1;`) when
+    a row change lands on a column past the new row's shorter length."""
+    target = None
+    for r, row in enumerate(_OSK_KB_ROWS):
+        c = row.find(ch)
+        if c >= 0:
+            target = (r, c)
+            break
+    if target is None:
+        raise ValueError(f"_osk_type_char: {ch!r} is not on any osk.c KB row")
+    tr, tc = target
+    cr, cc = pos
+    downs = (tr - cr) % len(_OSK_KB_ROWS)
+    if downs:
+        s.press_n("DOWN", downs, settle=gb_shots.SETTLE)
+    cr = tr
+    if cc >= len(_OSK_KB_ROWS[cr]):
+        cc = len(_OSK_KB_ROWS[cr]) - 1   # osk_core's own clamp, applied before the next move
+    rights = (tc - cc) % len(_OSK_KB_ROWS[cr])
+    if rights:
+        s.press_n("RIGHT", rights, settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.SETTLE)    # KEY_A -> u8w_apply_key(..., U8W_OP_INSERT, KB[cr][tc])
+    pos[0], pos[1] = cr, tc
+
+
+def run_b90_boxname(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """F1 step 3 (BACKLOG #94): the Gen-2 box-rename banner, over gb_boxnames.h's
+    gbbn_rename/gbbn_supported (source/pdna_gen12.c's gbsrc_set_name_impl/
+    gbsrc_can_rename_impl, the guard-split pair this slice wired). `rom` must be a
+    Gen-2-only ONE-ROM fused image (Gold.gbc+Gold.sav or Crystal.gbc+Crystal.sav,
+    same BACKLOG #98 harness-gap reasoning as --b90-fly) -- Gen 1 has no box-name
+    table at all (gbbn_supported refuses it), so this shot is Gen-2 only by design,
+    not a coverage gap.
+
+    Nav: A (S1 info) -> box grid (cur=0, on_title=false) -> UP (on_title=true, the
+    banner) -> A -> gbsrc_can_rename_impl() true (g_ed exists on this resident-image
+    entry, app_can_edit() true even in the emulator -- only the FINAL write is
+    Omega-gated, not the in-RAM edit -- and gbbn_supported() true on a Gen-2 save)
+    -> osk_input("BOX NAME", <current name>, ...) opens, seeded and caret-at-end.
+
+    The real sequence differs from a same-shaped Fly/Bag/Pack commit in ONE way this
+    slice's own design calls for: gbsrc_set_name_impl() calls gb_persist("boxname")
+    itself, directly inside src->set_name() (BEFORE pdna_box.c's own `src->commit()`
+    even runs) -- so the PDNA_DELTA refusal's msg_wait (source/pdna_main.c, "Press
+    A" to dismiss, NOT B) fires the instant osk_input's own START confirms the new
+    name, and the box grid does not repaint with the RENAMED banner until THAT
+    dialog is dismissed. Order on screen is therefore: seeded keyboard -> (backspace
+    the old name, type a new one, START) -> persist-refusal dialog -> A dismisses it
+    -> THEN the renamed banner."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b94_{which}_")
+    print(f"== BACKLOG #94: {which}'s own box-rename banner (single-ROM image -> "
+          "standalone -> box grid -> banner -> A -> osk_input) ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                    # S1 info -> box grid
+    s.run(GB_ART_COLD_SETTLE)
+    s.shot("01_box_grid", f"BACKLOG #94: {which}'s own box grid, freshly opened -- "
+                           "box 0, cursor on the top-left cell")
+
+    # This transition's own repaint (draw_box_banner's selection frame + draw_footer's
+    # on_title hint) lands slower than BIG_SETTLE's 40 frames on this image -- measured
+    # empirically (40 frames: still the pre-UP banner/footer; 200: fully repainted) --
+    # so it gets its own longer settle rather than a shared constant tuned for the
+    # cheaper cursor moves the rest of this file uses BIG_SETTLE for.
+    s.tap("UP", settle=200)                                   # cur < COLS -> on_title = true
+    s.shot("02_banner_selected", "BACKLOG #94: UP from the top row selects the "
+                                  "TITLE row (on_title = true) -- A on the banner "
+                                  "is the rename shortcut (BACKLOG #33), same one "
+                                  "the Gen-3 box screen already has")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # can_rename true -> osk_input opens
+    s.shot("03_osk_seeded", "BACKLOG #94: A on the banner -> gbsrc_can_rename_impl() "
+                             "allows it (a live Gen-2 session, an Omega-writable "
+                             "cart, gbbn_supported() true) -> osk_input('BOX NAME', "
+                             "...) opens seeded with the box's CURRENT name, caret "
+                             "already past the last character")
+
+    pos = [0, 0]                                              # osk_core's own cr=0, cc=0 start
+    for _ in range(8):                                        # box names cap at 8 chars -- always
+        s.tap("B", settle=gb_shots.SETTLE)                    # enough backspaces to clear any seed
+    for ch in "TEST":
+        _osk_type_char(s, pos, ch)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)                # confirm -> set_name() -> gb_persist()
+    s.shot("04_persist_refusal", "BACKLOG #94: START confirms the new name 'TEST' "
+                                  "-- gbsrc_set_name_impl() writes it via "
+                                  "gbbn_rename() THEN calls gb_persist('boxname') "
+                                  "itself, so the PDNA_DELTA refusal (source/"
+                                  "pdna_main.c's msg_wait, 'Edits are in-session "
+                                  "only in the emulator build.', dismissed with A) "
+                                  "fires HERE, before the box grid ever repaints -- "
+                                  "the write already landed in g_ed->img regardless "
+                                  "(same #62 D2 posture every other GB screen's own "
+                                  "commit has); the real write is proved by the "
+                                  "retail gate's boxname case (tools/"
+                                  "gb_retail_gate.py), not this shot")
+
+    s.tap("A", settle=200)                                    # dismiss msg_wait -> box grid repaints
+    s.shot("05_renamed_banner", "BACKLOG #94: back at the box grid -- the banner now reads 'GB TEST': gbsrc_get_name() re-reads g_m->g2names (refreshed by gbsrc_set_name_impl() right after the write) and pdna_gen12_box_name() adds the 'GB ' DISPLAY prefix on top; the SAVE holds the undecorated 'TEST' (proved by the retail gate's boxname case and gbbn_read on the corpus). The prefix on renamed Gen-2 boxes is BACKLOG #122.")
+
+    return s
+
+
 def run_b85_daycare(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
     """BACKLOG #85 (source/pdna_gbdaycare.c): the Gen-1/2 Day-Care screen over
     gb_daycare.h's core -- the Gen-1/2 twin of pdna_main.c's pdna_daycare(). `rom`
@@ -1608,6 +1822,105 @@ def run_b85_daycare(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -
                                       "unrelated to this pass's D1/D6/D8 fixes and was "
                                       "already exercised by BOTH slots occupied in this "
                                       "same file's earlier BACKLOG #85 shot list")
+
+    return s
+
+
+def run_b114_yard(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #114: the Day-Care YARD on the Gen-1/2 screen (source/pdna_gbdaycare.c,
+    pdna_yard.h) -- dc_scene()/dc_icon_over_bg()/dc_pointer() now draw underneath the
+    SAME status panel BACKLOG #85's own shots already covered mechanically (Put in /
+    Take out / the confirm prompts); this run is about the SCENE, not the mechanics.
+
+    `rom` must be a ONE-ROM fused image, same requirement as run_b85_daycare (no Gen-3
+    ROM is ever registered in a PDNA_DELTA build -- app_register_rom(), the browse-for-
+    ROM flow, is `#ifndef PDNA_DELTA` entirely, since there is no SD to browse in the
+    emulator; confirmed by direct probe, not assumed). app_yard_visitors_ok() is
+    therefore ALWAYS false here (g_yard_visitors also defaults off), so every shot
+    below shows the "No visitors: register a Gen-3 ROM" panel row and NO invented
+    visitor icons -- the brief's own sanctioned fallback ("visitors present ... else
+    the 'no visitors' line"). The Gen-1 visitor cap (<=151, vs Gen 2/3's 251) is
+    proven on the host instead (tests/host_yard_test.c), the same posture every other
+    "cannot fabricate this state in the emulator" case in this file already takes.
+
+    Real boarder icons ALSO do not render here (mon_icon_for_form_frame's Gen-3-keyed
+    icon cache has no source without a registered Gen-3 ROM -- a DIFFERENT lookup path
+    than the GB-native rom_gbicon one the box grid already proves works in this same
+    fused image, BACKLOG #85's own 00_box_before shot) -- the yard degrades to its
+    plain background with no icon, never a blank screen, exactly BACKLOG #114's own
+    acceptance line for the artless/no-ROM case.
+
+    Same box-index-to-reach-a-free-slot setup as run_b85_daycare (box 4/HITMONLEE for
+    Red, box 12/MILTANK for Gold)."""
+    box_index = 4 if which == "red" else 12
+    box_label = "BOX5" if which == "red" else "BOX13"
+
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b114yard_{which}_")
+    print(f"== BACKLOG #114: {which}'s own Day-Care YARD ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid
+    s.run(GB_ART_COLD_SETTLE)
+    s.press_n("R", box_index, settle=300)                   # -> the box with a free slot (see run_b85_daycare)
+
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 2)                                     # Party -> Bank -> Daycare (index 2)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Daycare -> pdna_gbdaycare()
+    s.shot("01_yard_empty", f"#114: {which}'s own Day-Care yard on entry, both slots "
+                             "empty -- dc_scene()'s background (the procedural scene "
+                             "in this artless image) fills the screen where the two "
+                             "text rows used to be; the panel's third row already "
+                             "reads 'No visitors: register a Gen-3 ROM' (no ROM is "
+                             "ever registered in this emulator build); the footer "
+                             f"names the selected empty slot ('{'Boarder' if which == 'red' else 'Man'} "
+                             "(empty)') since there is no icon in the yard to point at")
+
+    # NOTE (brief's step 6 asked for a "SELECT scale both ways" shot): checked and
+    # dropped -- gb_scale_mode's SELECT toggle (source/pdna_gbscreen.c:157) belongs
+    # to the gbscr_run_demo SHELL (the font/card/pack tile-blit viewers reached via
+    # Settings' hidden SELECT key, see run_gbscreen_shell() above), which pdna_gbdaycare
+    # never routes through -- it draws with ui_*/Mode-3 calls directly and its own key
+    # mask has never included KEY_SELECT, before or after this backlog item. Pressing
+    # SEL here produced a pixel-IDENTICAL frame (verified: this script's own
+    # consecutive-differ check caught it), confirming there is no scale toggle on this
+    # screen to demonstrate -- adding one would be a new feature outside BACKLOG #114's
+    # six described steps, not a screenshot of existing behaviour.
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A on the selected empty slot -> the popup
+    s.shot("02_popup_over_yard", "#114: the per-slot action popup (gbdc_menu) drawn "
+                                  "OVER the yard scene -- the popup geometry is "
+                                  "unchanged (PDNA_DCPOP_*), it now sits on top of "
+                                  "background art instead of a blank fill")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # Put in -> gbdc_pick over cur_box
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # pick the top row -> the confirm
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # ACCEPT -> deposit + delete -> gb_persist()
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the emulator-build notice
+    s.shot("03_one_boarder", f"#114: {box_label}'s own mon deposited -- 'Boarding "
+                              f"1/{'1' if which == 'red' else '2'}' up top and the "
+                              "footer drops '(empty)' now that the selected slot is "
+                              "occupied, even though the icon itself does not render "
+                              "here (no registered Gen-3 ROM -- see this function's "
+                              "own header comment); the yard degrades gracefully, "
+                              "it does not go blank")
+
+    if which != "red":
+        s.tap("B", settle=120)                              # back to the box grid (same settle
+                                                              # note as run_b85_daycare's own re-entries)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)
+        s.press_n("DOWN", 2)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # back into the Day Care
+        s.tap("DOWN", settle=gb_shots.SETTLE)               # Man's slot -> Lady's slot
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # A on the Lady's empty slot -> popup
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # Put in -> gbdc_pick over cur_box
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # pick the top row -> the confirm
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # ACCEPT -> deposit + gb_persist()
+        s.tap("A", settle=gb_shots.BIG_SETTLE)              # dismiss the emulator-build notice
+        s.shot("04_two_boarders", "#114 Gen 2 only: both slots now occupied -- "
+                                   "'Boarding 2/2', the panel reads the game's own "
+                                   "compatibility flag instead of the single-boarder "
+                                   "text, and the footer names whichever slot is "
+                                   "currently selected as occupied (no more "
+                                   "'(empty)')")
 
     return s
 
@@ -2284,6 +2597,12 @@ def main(argv=None) -> int:
                           "two-slot Day Care + compatibility) -- --image MUST be a "
                           "ONE-ROM fused image matching this choice (same "
                           "single-ROM harness gap as --u4-bag/--u5-pack)")
+    ap.add_argument("--b114-yard", choices=("red", "gold"),
+                     help="BACKLOG #114: only run_b114_yard() against --image for the "
+                          "named game (the Day-Care YARD scene, not the D1/D6 "
+                          "mechanics --b85-daycare already covers) -- --image MUST be "
+                          "a ONE-ROM fused image matching this choice (same "
+                          "single-ROM harness gap as --b85-daycare)")
     ap.add_argument("--r1-xfer", action="store_true",
                      help="BACKLOG #104 R1: only run_r1_xfer() against --image -- "
                           "--image MUST be pokedna-delta-artless.gba fused with an "
@@ -2306,6 +2625,18 @@ def main(argv=None) -> int:
                           "Gen-2-only fused image (Gold.gbc+Gold.sav or "
                           "Crystal.gbc+Crystal.sav, tools/fuse_gb.py, one ROM per "
                           "image -- BACKLOG #98)")
+    ap.add_argument("--b90-fly", choices=("red", "crystal"),
+                     help="BACKLOG #90: only run_b90_fly() against --image for the "
+                          "named game (Red's or Crystal's own Fly-destination "
+                          "screen) -- --image MUST be a ONE-ROM fused image "
+                          "matching this choice (same BACKLOG #98 harness-gap "
+                          "reasoning as --u4-bag/--u5-pack)")
+    ap.add_argument("--b94-boxname", choices=("gold", "crystal"),
+                     help="F1 step 3 (BACKLOG #94): only run_b90_boxname() against "
+                          "--image for the named game (the Gen-2 box-rename banner) "
+                          "-- --image MUST be a ONE-ROM fused image matching this "
+                          "choice (Gold.gbc+Gold.sav or Crystal.gbc+Crystal.sav), "
+                          "same BACKLOG #98 harness-gap reasoning as --b90-fly")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -2400,6 +2731,32 @@ def main(argv=None) -> int:
             print(f"  [skip] {name}: {reason}")
         return 0
 
+    if a.b90_fly:
+        try:
+            sess = run_b90_fly(core_mod, image_mod, a.image, a.out, a.b90_fly)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b90 fly ({a.b90_fly}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b94_boxname:
+        try:
+            sess = run_b90_boxname(core_mod, image_mod, a.image, a.out, a.b94_boxname)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b94 boxname ({a.b94_boxname}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
     if a.u4_empty:
         try:
             sess = run_u4_empty(core_mod, image_mod, a.image, a.out)
@@ -2455,6 +2812,18 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b85 daycare ({a.b85_daycare}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+    if a.b114_yard:
+        try:
+            sess = run_b114_yard(core_mod, image_mod, a.image, a.out, a.b114_yard)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b114 yard ({a.b114_yard}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

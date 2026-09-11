@@ -21,15 +21,19 @@ static uint8_t g_buf[G3_SAVE_FILE_SIZE];
 
 static uint32_t load(const char* path) {
   FILE* f = fopen(path, "rb");
-  if (!f) { printf("cannot open %s\n", path); return 0; }
+  if (!f) { return 0; }
   uint32_t n = (uint32_t)fread(g_buf, 1, sizeof g_buf, f);
   fclose(f);
   return n;
 }
 
 int main(void) {
+  /* Check required fixtures first */
+  const char* emerald_fixture = "tests/fixtures/POKEMON_EMER_BPEE00.sav";
+  uint32_t sz = load(emerald_fixture);
+  if (!sz) { printf("SKIP (fixture absent: %s)\n", emerald_fixture); return 0; }
+
   /* ---- Emerald fixture: has a real record ---- */
-  uint32_t sz = load("tests/fixtures/POKEMON_EMER_BPEE00.sav");
   CHECK(sz == G3_SAVE_FILE_SIZE, "emerald fixture is 128 KiB");
   G3RecordInfo ri;
   bool present = g3_record_scan(g_buf, sz, &ri);
@@ -95,10 +99,13 @@ int main(void) {
   CHECK(!rn.present, "scan_sector: NULL blob leaves *out zeroed");
 
   /* ---- Ruby fixture: must have NO record ---- */
-  sz = load("tests/fixtures/POKEMON_RUBY_AXVE02.sav");
+  const char* ruby_fixture = "tests/fixtures/POKEMON_RUBY_AXVE02.sav";
+  sz = load(ruby_fixture);
   if (sz) {
     G3RecordInfo rr;
     CHECK(!g3_record_scan(g_buf, sz, &rr), "ruby: no record (RS predate the Frontier)");
+  } else {
+    printf("SKIP (fixture absent: POKEMON_RUBY_AXVE02.sav)\n");
   }
 
   /* ---- truncated (64 KiB) save: must refuse before touching 0x1F000 ---- */
