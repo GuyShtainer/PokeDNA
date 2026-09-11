@@ -40,9 +40,22 @@ static const char* kind_suffix(uint8_t kind) {
   }
 }
 
+/* Budget check alone doesn't pin the macro literals -- %-16s->%-18s (2 cols) or
+ * dropping %-3s's width entirely doesn't push any of today's 193 real rows over
+ * the 29-col budget, so either drifts silently (review finding, BACKLOG #127 F2).
+ * Pin the literals so a reformat trips regardless of what the tables contain. */
+static void check_row_fmt_literals(void) {
+  CHECK(strcmp(GBFL_ROW_FMT, "%-16s %-3s %s") == 0, "GBFL_ROW_FMT drifted: '%s'", GBFL_ROW_FMT);
+  CHECK(GBFL_ROW_COLS == 29, "GBFL_ROW_COLS drifted: %d", GBFL_ROW_COLS);
+  CHECK(strcmp(GBFL_SUF_BAG, "(bag)") == 0, "GBFL_SUF_BAG drifted: '%s'", GBFL_SUF_BAG);
+  CHECK(strcmp(GBFL_SUF_STY, "(sty)") == 0, "GBFL_SUF_STY drifted: '%s'", GBFL_SUF_STY);
+  CHECK(strcmp(GBFL_SUF_WARN, "(!)") == 0, "GBFL_SUF_WARN drifted: '%s'", GBFL_SUF_WARN);
+}
+
 static const char* GAME_NAME[GBF_G_COUNT] = { "RED", "YELLOW", "GS", "CRYSTAL" };
 
 int main(void) {
+  check_row_fmt_literals();
   int total_rows = 0;
   size_t longest = 0;
   const char* longest_row_desc = "(none)";
