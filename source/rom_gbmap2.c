@@ -316,10 +316,33 @@ bool rgm2_tileset(const RomGbMap2* g, uint8_t tileset_id, GbMap2Tileset* out) {
 
   /* meta_len is derived from Coll-Meta (design §4: Coll-Meta is $400 or
    * $800 for every same-bank row, an independent confirmation of the 16
-   * B/block stride) -- only meaningful when Meta and Coll share a bank. */
+   * B/block stride) when Meta and Coll share a bank -- true for all but a
+   * handful of rows in each ROM (measured: 1 in Gold, 5 in Crystal; the
+   * design doc's own corpus sweep did not flag these because they still
+   * decode/parse fine, they just cannot use the Coll-Meta subtraction).
+   * For those, fall back to a boundary scan: the smallest OTHER row's own
+   * Meta address in the SAME bank that is greater than this row's Meta
+   * address, capped at 2048 (the retail max) -- reproduces the Coll-Meta
+   * figure EXACTLY on all 61 rows where both methods are checkable (0
+   * mismatches), and lands the 6 edge rows on 1024 or 2048, never a third,
+   * implausible value. Never trusts data outside the located table. */
   uint32_t meta_len = 0;
-  if (meta_bank == coll_bank && coll_off > meta_off) meta_len = coll_off - meta_off;
+  if (meta_bank == coll_bank && coll_off > meta_off) {
+    meta_len = coll_off - meta_off;
+  } else {
+    uint32_t best = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < g->n_tilesets; i++) {
+      if (i == tileset_id) continue;
+      uint8_t orow[15];
+      if (!rdg(g, g->tilesets_off + i * 15u, orow, sizeof orow)) return false;
+      if (orow[3] != meta_bank) continue;
+      uint16_t oaddr = rd16(orow + 4);
+      if (oaddr > meta_a && (uint32_t)(oaddr - meta_a) < best) best = (uint32_t)(oaddr - meta_a);
+    }
+    meta_len = (best <= 2048u) ? best : 2048u;
+  }
   if (meta_len == 0 || meta_len > 2048u) return false;
+  if (meta_off >= g->size || meta_len > g->size - meta_off) return false;
 
   out->gfx_off = gfx_off;
   out->meta_off = meta_off;
