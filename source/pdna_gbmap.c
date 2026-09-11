@@ -216,10 +216,13 @@ void pdna_gbmap_gen1(GbSession* s) {
    * (SD) or the SAME fused slice (delta, still valid -- it is a plain
    * pointer into cartridge space, never closed) backs every read from here
    * on. Same "close after the locate pass, reopen for the decode pass"
-   * shape gbscr_decode_pic_gen1() already uses one level up. */
+   * shape gbscr_decode_pic_gen1() already uses one level up. `fil` (above)
+   * is already closed and its lifetime is over by this point -- reused here
+   * instead of a second FIL (608 B) so only one is ever live on the stack
+   * (m1 review D5). */
 #ifndef PDNA_DELTA
-  FIL fil2; memset(&fil2, 0, sizeof fil2);
-  if (f_open(&fil2, path, FA_READ) != FR_OK) {
+  memset(&fil, 0, sizeof fil);
+  if (f_open(&fil, path, FA_READ) != FR_OK) {
     gbscr_close(&gs);
     gb12_arena_tail_release();
     ui_clear();
@@ -228,7 +231,7 @@ void pdna_gbmap_gen1(GbSession* s) {
     return;
   }
   st.g.read = gbmap_sd_read;
-  st.g.ctx = &fil2;
+  st.g.ctx = &fil;
 #endif
 
   uint8_t* maptiles = scratch_or_cache;   /* scan scratch's job is done; reuse */
@@ -285,7 +288,7 @@ void pdna_gbmap_gen1(GbSession* s) {
   }
 
 #ifndef PDNA_DELTA
-  f_close(&fil2);
+  f_close(&fil);
 #endif
   gbscr_close(&gs);
   gb12_arena_tail_release();
