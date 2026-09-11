@@ -153,6 +153,24 @@ TTC.drawgProc @56 in tte_putc,tte_write -> se_drawg_s bmp16_drawg_b1cts bmp8_dra
 TTC.eraseProc @60 in tte_cmd_default,tte_erase_line,tte_erase_rect,tte_erase_screen -> se_erase bmp16_erase bmp8_erase
 BoxSource.capacity   @64 -> gbsrc_capacity
 
+# F1 (BACKLOG #94): BoxSource.can_rename, appended as the struct's LAST field (right
+# after capacity@64) so it never shifts any of the offsets hand-declared above --
+# @68. Dispatched from pdna_box.c's own `src->can_rename ? src->can_rename() : ...`
+# (the A-on-banner rename gate). gbsrc_can_rename is the only assigner today
+# (banksrc/pcsrc leave the field NULL, so pdna_box.c's own `? :` falls back to
+# can_edit() for them, unchanged from before this field existed).
+BoxSource.can_rename @68 -> gbsrc_can_rename
+
+# F1b (BACKLOG #94 DO-NOT-SHIP fix): BoxSource.get_raw_name, appended as the
+# struct's NEW LAST field (right after can_rename@68) so it never shifts any of
+# the offsets hand-declared above -- @72. Dispatched from pdna_box.c's own two
+# rename-seed call sites (box_options_menu's rename case and the direct-A-on-
+# banner path): `if (src->get_raw_name) src->get_raw_name(box, ...); else
+# src->get_name(box, ...);`. gbsrc_get_raw_name is the only assigner today
+# (banksrc/pcsrc leave the field NULL -- their own get_name() is already the raw
+# stored name, no "GB " decoration to strip).
+BoxSource.get_raw_name @72 in box_options_menu,pdna_box -> gbsrc_get_raw_name
+
 # The commit parameter threaded through app_mon_menu (party call sites) and
 # app_paste_gb_merge -> app_paste_gb_commit -> app_commit_with_dex (inlined) -> `commit ?
 # commit() : 0` (source/pdna_app.h:52, source/pdna_main.c:1931/3132-3148/3243/3256/3275-3285/
@@ -488,6 +506,15 @@ Gb12Mount.rd @4 in pdna_gen12_mount -> gb_read fused_gb_slice_read gb_img_read
 # recursion declaration worked around should be GONE once this offset is qualified
 # per caller -- re-run `--sccs` after this commit and delete the recursion line if so.
 Gb12Mount.rd @4 in gb_list_read.constprop.0 -> gb_read fused_gb_slice_read gb_img_read
+
+# F1 (BACKLOG #94): gbsrc_set_name_impl's own `g_m->rd(g_m->ctx, g_m->g2o.box_names,
+# g_m->g2names, sizeof g_m->g2names)` (pdna_gen12.c, the box-name banner refresh after
+# a successful gbbn_rename -- see that function's own header note) is the SAME
+# Gb12Mount.rd@4 dispatch as the two declarations above. gbsrc_set_name_impl has
+# exactly one call site (the thin gbsrc_set_name shim, above the PDNA_GEN12_HOST
+# guard) so the artless build inlines it wholesale into gbsrc_set_name -- the field
+# load surfaces under THAT caller's name instead of its own.
+Gb12Mount.rd @4 in gbsrc_set_name -> gb_read fused_gb_slice_read gb_img_read
 
 # gen2_write.h's G2Writer.wr (wr@4, img_wr -- the SAME single registration site,
 # gb_session.c:69, as G2Writer.rd@0 above) is what refresh_checksums/write_patch.
