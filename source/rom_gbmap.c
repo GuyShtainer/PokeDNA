@@ -151,6 +151,7 @@ bool rgm1_open(RomGbMap1* g, GbReadFn read, void* ctx, uint32_t size,
       uint16_t addr = rd16(w + 4);
       if (addr >= GB_WIN_LO) return fail_closed(g);   /* must be home bank */
       g->ptrs_off = addr;
+      g->num_maps = 248;   /* Red/Blue-shape (direct): pokered's own NUM_MAPS (D8) */
     } else if (nb == 0xCD) {
       uint16_t target = rd16(w + 4);
       if (target >= GB_WIN_LO) return fail_closed(g); /* call target must be home bank */
@@ -167,6 +168,7 @@ bool rgm1_open(RomGbMap1* g, GbReadFn read, void* ctx, uint32_t size,
       if (!have_bank || !have_addr) return fail_closed(g);
       uint16_t addr = rd16(fn + addr_off + 1);
       g->ptrs_off = fileoff(bank, addr);
+      g->num_maps = 249;   /* Yellow-shape (indirect): Yellow's own NUM_MAPS (D8) */
     } else {
       return fail_closed(g);
     }
@@ -202,6 +204,10 @@ bool rgm1_open(RomGbMap1* g, GbReadFn read, void* ctx, uint32_t size,
 bool rgm1_header(const RomGbMap1* g, uint8_t map_id, GbMap1Header* out) {
   memset(out, 0, sizeof *out);
   if (!g->ok) return false;
+  if (map_id >= g->num_maps) return false;   /* past the real table (m1 review D8) --
+                                               * reading beyond it hits unrelated bytes
+                                               * that can coincidentally still look like
+                                               * a plausible small header */
 
   uint8_t bank;
   if (!rdg(g, g->banks_off + map_id, &bank, 1)) return false;

@@ -383,6 +383,44 @@ static void test_offgame_fails_closed(const char* dir, const char* file) {
   fclose(fc.f);
 }
 
+/* m1 review D8: a map id past the real MapHeaderBanks/MapHeaderPointers table
+ * used to read adjacent, unrelated bytes that could COINCIDENTALLY still
+ * look like a plausible (small height/width) header -- confirmed live on
+ * BOTH ROMs before g->num_maps existed: Red map id 248 parsed as an "OK"
+ * 105x71 header (home-bank garbage), Yellow map id 254 parsed as an "OK"
+ * 8x17 header. rgm1_open()'s own g->num_maps (248 Red-shape / 249
+ * Yellow-shape) now bounds rgm1_header() directly.
+ *
+ * MUTATION EVIDENCE (not shipped): reverting rgm1_header() to skip the
+ * `map_id >= g->num_maps` check reproduces BOTH spurious "OK" parses above
+ * -- confirmed by hand before this commit, then the check restored. */
+static void test_id_past_table(const char* rom_file, uint8_t last_valid_id,
+                                uint8_t first_refused_id) {
+  char rpath[512];
+  snprintf(rpath, sizeof rpath, "%s/%s", ROMS, rom_file);
+  long rn = file_size(rpath);
+  if (rn <= 0) { printf("SKIP id-past-table %s: corpus not present\n", rom_file); return; }
+  g_ran++;
+
+  FileCtx fc; fc.f = fopen(rpath, "rb");
+  chk(rom_file, "fopen rom", fc.f != NULL);
+  if (!fc.f) return;
+  RomGbMap1 g;
+  bool ok = rgm1_open(&g, file_read, &fc, (uint32_t)rn, g_scratch, sizeof g_scratch);
+  chk(rom_file, "rgm1_open ok", ok);
+  if (ok) {
+    GbMap1Header h_last;
+    char what[96];
+    snprintf(what, sizeof what, "last real map id %u still parses", last_valid_id);
+    chk(rom_file, what, rgm1_header(&g, last_valid_id, &h_last));
+
+    GbMap1Header h_bad;
+    snprintf(what, sizeof what, "map id %u (past the table) is refused (D8)", first_refused_id);
+    chk(rom_file, what, !rgm1_header(&g, first_refused_id, &h_bad));
+  }
+  fclose(fc.f);
+}
+
 int main(void) {
   for (int i = 0; i < NWANT; i++) test_locate_and_pallet(&WANT[i]);
   test_player_map("Red.gb", "Red.sav");
@@ -390,6 +428,8 @@ int main(void) {
   test_block_conversion();
   test_route_headers("Red.gb");
   test_route_headers("Yellow.gb");
+  test_id_past_table("Red.gb", 247, 248);
+  test_id_past_table("Yellow.gb", 248, 254);
   test_negative_controls();
   test_offgame_fails_closed(ROMS, "Gold.gbc");
   test_offgame_fails_closed(ROMS, "Crystal.gbc");

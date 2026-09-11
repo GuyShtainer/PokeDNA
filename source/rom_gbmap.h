@@ -97,6 +97,23 @@ typedef struct {
   uint32_t ptrs_off;       /* MapHeaderPointers: 1 dw per map id (address)    */
   uint32_t tilesets_off;   /* Tilesets: 12 B per tileset id                   */
 
+  uint16_t num_maps;       /* MapHeaderBanks/MapHeaderPointers table length
+                             * (m1 review D8): 248 (Red/Blue) or 249 (Yellow),
+                             * the constants.asm NUM_MAPS both decomps assert
+                             * their own table length against
+                             * (assets/upstream/poke{red,yellow}/constants/
+                             * map_constants.asm, "assert_table_length
+                             * NUM_MAPS", REFERENCE ONLY -- a structural table
+                             * SIZE, not game data). Set from the SAME direct-
+                             * vs-indirect MapHeaderPointers branch that
+                             * already distinguishes Red-shape from
+                             * Yellow-shape ROMs below, since a map id past
+                             * the real table reads adjacent unrelated bytes
+                             * that can coincidentally still look like a
+                             * plausible (small height/width) header --
+                             * confirmed live: Red map id 248 and Yellow map
+                             * id 254 both spuriously parsed as "OK" headers
+                             * before this bound was added. */
   int ok;                  /* 1 iff all 3 tables above located + validated    */
 } RomGbMap1;
 
