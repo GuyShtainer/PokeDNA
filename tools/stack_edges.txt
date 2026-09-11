@@ -1197,5 +1197,17 @@ LpCtx.name_fn @0 in lp_row_cb,lp_key_cb -> nature16
 # (which does match the dotted suffix, unlike ARGSITE_LINE_RE's older `\w+`
 # mistake this same file's own D6 note documents -- this line was checked
 # against that exact trap before being added).
-gated gb_art_fetch need=6144
-gated gb_art_fetch_icon.constprop.0 need=6144
+#
+# D1 (review-opus fix pass, 2026-09-12): `from=header:MACRO` ties each N to the
+# real runtime constant it claims to mirror -- checked every run against
+# gb_art_source.h's own #define (verify_gated_macro_declarations(),
+# tools/stack_budget.py), FATAL if they ever disagree. `gate=` names the
+# runtime function believed to enforce the admission check; see
+# verify_gated_dominators()'s own docstring for why that reachability check is
+# implemented and unit-tested but NOT currently wired into this run -- both
+# runtime call sites this gate= name refers to (source/pdna_origin_art.c:530,
+# 559,836, inside pdna_origin_art_portrait/the icon router) are INLINED away
+# by GCC on both gate ELFs, so a disassembly-only dominator check cannot see
+# them and would FATAL these real, legitimate, source-verified declarations.
+gated gb_art_fetch need=6144 from=gb_art_source.h:PDNA_GB_FETCH_NEED gate=pdna_origin_art_stack_room
+gated gb_art_fetch_icon.constprop.0 need=6144 from=gb_art_source.h:PDNA_GB_ICON_NEED gate=pdna_origin_art_stack_room

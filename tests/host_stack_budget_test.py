@@ -1493,39 +1493,47 @@ def test_d4_undeclared_scc_is_fatal_declared_disagreement_is_fatal():
 # === BACKLOG #102: `gated fn need=N` (runtime-gated subtree) ===========================
 
 def test_b102_gated_line_round_trips_through_the_parser():
-    """The new `gated fn need=N` declaration line parses into gated_decls exactly
-    like `recursion fn depth=N` parses into recursion_decls -- same style, same
-    duplicate-value handling. Also covers a GCC `.constprop.0` clone-suffixed name
-    (gb_art_fetch_icon.constprop.0, this backlog item's own real second
-    declaration) to prove GATED_LINE_RE's `\\S+` doesn't repeat ARGSITE_LINE_RE's
-    old `\\w+`-only mistake (D6's own note) that silently dropped dotted names."""
+    """D1 (review-opus fix pass): the `gated fn need=N from=header:MACRO
+    gate=gate_fn` declaration line (widened from the original bare `gated fn
+    need=N`, which let N drift silently from the runtime constant it claims to
+    mirror) parses into gated_decls as a (need, header, macro, gate_fn) tuple.
+    Also covers a GCC `.constprop.0` clone-suffixed name (gb_art_fetch_icon.
+    constprop.0, this backlog item's own real second declaration) to prove
+    GATED_LINE_RE's `\\S+`/`[\\w./-]+` groups don't repeat ARGSITE_LINE_RE's old
+    `\\w+`-only mistake (D6's own note) that silently dropped dotted names."""
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-        f.write("gated leaf_fn need=1234\n")
-        f.write("gated gb_art_fetch_icon.constprop.0 need=6144\n")
-        f.write("gated leaf_fn need=1234\n")   # repeated, same value -- must accumulate cleanly
+        f.write("gated leaf_fn need=1234 from=some_header.h:SOME_MACRO gate=some_gate\n")
+        f.write("gated gb_art_fetch_icon.constprop.0 need=6144 "
+                "from=gb_art_source.h:PDNA_GB_ICON_NEED gate=pdna_origin_art_stack_room\n")
+        # repeated, identical metadata -- must accumulate cleanly, not conflict
+        f.write("gated leaf_fn need=1234 from=some_header.h:SOME_MACRO gate=some_gate\n")
         path = f.name
     try:
         _fd, _fi, _ad, _wd, _fo, _isr, _aok, _rd, gated_decls = sb.load_extra_edges(path)
-        check("(B102) a plain gated line parses fn -> N",
-              gated_decls.get("leaf_fn") == 1234, gated_decls)
-        check("(B102) a dotted GCC clone-suffix name parses whole, not truncated",
-              gated_decls.get("gb_art_fetch_icon.constprop.0") == 6144, gated_decls)
-        check("(B102) exactly the two distinct declared names, no phantom keys",
+        check("(B102/D1) a gated line parses fn -> (need, header, macro, gate_fn)",
+              gated_decls.get("leaf_fn") == (1234, "some_header.h", "SOME_MACRO", "some_gate"),
+              gated_decls)
+        check("(B102/D1) a dotted GCC clone-suffix name parses whole, not truncated",
+              gated_decls.get("gb_art_fetch_icon.constprop.0") ==
+              (6144, "gb_art_source.h", "PDNA_GB_ICON_NEED", "pdna_origin_art_stack_room"),
+              gated_decls)
+        check("(B102/D1) exactly the two distinct declared names, no phantom keys",
               set(gated_decls) == {"leaf_fn", "gb_art_fetch_icon.constprop.0"}, gated_decls)
     finally:
         os.unlink(path)
 
 
-def test_b102_gated_line_conflicting_need_is_a_parse_error():
-    """Two `gated fn need=N` lines for the same fn with DIFFERENT N must be a FATAL
-    parse error -- same posture as `recursion fn depth=N`'s own conflict check
+def test_b102_gated_line_conflicting_metadata_is_a_parse_error():
+    """Two `gated fn need=N from=... gate=...` lines for the same fn with ANY
+    differing field (need, header, macro, or gate_fn) must be a FATAL parse
+    error -- same posture as `recursion fn depth=N`'s own conflict check
     (test_d4 area above): a real disagreement is a question for a human, never a
     silent pick of either value."""
     import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-        f.write("gated leaf_fn need=1234\n")
-        f.write("gated leaf_fn need=5678\n")
+        f.write("gated leaf_fn need=1234 from=h.h:M gate=g\n")
+        f.write("gated leaf_fn need=5678 from=h.h:M gate=g\n")
         path = f.name
     raised = False
     msg = ""
@@ -1540,6 +1548,105 @@ def test_b102_gated_line_conflicting_need_is_a_parse_error():
           raised, msg)
     check("(B102) the error names both conflicting values",
           raised and "1234" in msg and "5678" in msg, msg)
+
+
+# === D1 (review-opus fix pass, BACKLOG #102): the gated declaration's own soundness =====
+
+def test_b102_d1_verify_gated_macro_declarations_passes_when_n_matches_header():
+    """The header-drift check's PASS side: a declared need matching the header's
+    real #define today reports no problems -- same fixture shape as the real
+    `gated gb_art_fetch need=6144 from=gb_art_source.h:PDNA_GB_FETCH_NEED
+    gate=pdna_origin_art_stack_room` declaration, but against a throwaway
+    scratch header so this test never depends on the real tree's constants."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        hdr = os.path.join(d, "scratch_gate.h")
+        with open(hdr, "w") as f:
+            f.write("#define SCRATCH_NEED 4096\n")
+        gated_decls = {"scratch_fn": (4096, "scratch_gate.h", "SCRATCH_NEED", "scratch_gate")}
+        problems = sb.verify_gated_macro_declarations(gated_decls, d)
+        check("(B102/D1b) a declaration matching its header's macro has no problems",
+              problems == [], problems)
+
+
+def test_b102_d1_verify_gated_macro_declarations_fatals_on_stale_macro():
+    """The header-drift check's core property (D1b): a declared need that no
+    longer matches the header's real #define is reported, naming both the
+    declared and the real value -- this is the automated form of the manual
+    mutation run against source/gb_art_source.h during development (temporarily
+    lowering PDNA_GB_FETCH_NEED to 1000 with the stack_edges.txt line left at
+    6144, confirming the FATAL fires, then reverting)."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        hdr = os.path.join(d, "scratch_gate.h")
+        with open(hdr, "w") as f:
+            f.write("#define SCRATCH_NEED 1000\n")   # header LOWERED since the line was written
+        gated_decls = {"scratch_fn": (4096, "scratch_gate.h", "SCRATCH_NEED", "scratch_gate")}
+        problems = sb.verify_gated_macro_declarations(gated_decls, d)
+        check("(B102/D1b) a stale need vs. the header's real macro is reported",
+              len(problems) == 1, problems)
+        check("(B102/D1b) the problem names the declared AND the real value",
+              problems and "4,096" in problems[0] and "1,000" in problems[0], problems)
+
+
+def test_b102_d1_verify_gated_macro_declarations_fatals_on_missing_macro():
+    """A declared MACRO that no longer exists in the header at all (renamed or
+    deleted) is reported too -- not silently treated as 'unknown, so pass'."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        hdr = os.path.join(d, "scratch_gate.h")
+        with open(hdr, "w") as f:
+            f.write("#define A_DIFFERENT_NAME 4096\n")
+        gated_decls = {"scratch_fn": (4096, "scratch_gate.h", "SCRATCH_NEED", "scratch_gate")}
+        problems = sb.verify_gated_macro_declarations(gated_decls, d)
+        check("(B102/D1b) a macro absent from the header today is reported",
+              len(problems) == 1 and "SCRATCH_NEED" in problems[0], problems)
+
+
+def test_b102_d1_verify_gated_dominators_synthetic_bypass_is_flagged():
+    """D1(a): a synthetic call graph where `fn` has TWO predecessors -- one that
+    genuinely calls the gate first (safe), and one that reaches `fn` WITHOUT
+    ever calling the gate on that path (a real bypass) -- must be flagged for
+    the unsafe predecessor specifically, by name, even though a DIFFERENT path
+    into the same `fn` is safe. This is the automated form of the "synthetic
+    bypass graph -> FATAL" proof (review-opus fix pass's own D1(a) test list);
+    verify_gated_dominators() is unit-tested here even though it is NOT
+    currently wired into main()'s gate for the two real declarations (see its
+    own docstring: pdna_origin_art_stack_room's real call sites are inlined
+    away by GCC on both gate ELFs, so a disassembly-only version of this exact
+    check would FATAL the real, legitimate declarations)."""
+    edges = {
+        "safe_caller": {"gate_fn", "fn"},          # calls the gate, then fn -- safe
+        "bypass_caller": {"fn"},                    # reaches fn WITHOUT the gate -- unsafe
+        "fn": {"child"},
+        "child": set(),
+        "gate_fn": set(),
+    }
+    gated_decls = {"fn": (100, "h.h", "M", "gate_fn")}
+    problems = sb.verify_gated_dominators(gated_decls, edges)
+    check("(B102/D1a) exactly the bypass path is flagged, not the safe one",
+          len(problems) == 1, problems)
+    check("(B102/D1a) the problem names the unsafe predecessor and the gate",
+          problems and "bypass_caller" in problems[0] and "gate_fn" in problems[0], problems)
+
+
+def test_b102_d1_verify_gated_dominators_one_hop_path_passes():
+    """The PASS side, exercising the 'one hop up' half of the spec: `fn`'s only
+    predecessor (`mid`) does not itself call the gate, but `mid`'s OWN
+    predecessor (`top`) does -- gate_fn among a predecessor's PREDECESSOR's
+    callees is exactly the one-hop-up case the spec calls out, and must not be
+    flagged."""
+    edges = {
+        "top": {"gate_fn", "mid"},
+        "mid": {"fn"},
+        "fn": {"child"},
+        "child": set(),
+        "gate_fn": set(),
+    }
+    gated_decls = {"fn": (100, "h.h", "M", "gate_fn")}
+    problems = sb.verify_gated_dominators(gated_decls, edges)
+    check("(B102/D1a) a one-hop-up gate call (via the predecessor's own "
+          "predecessor) is NOT flagged", problems == [], problems)
 
 
 def _b102_fixture():
@@ -2287,7 +2394,12 @@ def main():
     test_d4_scc_declared_depth_multiplies_and_is_entry_independent()
     test_d4_undeclared_scc_is_fatal_declared_disagreement_is_fatal()
     test_b102_gated_line_round_trips_through_the_parser()
-    test_b102_gated_line_conflicting_need_is_a_parse_error()
+    test_b102_gated_line_conflicting_metadata_is_a_parse_error()
+    test_b102_d1_verify_gated_macro_declarations_passes_when_n_matches_header()
+    test_b102_d1_verify_gated_macro_declarations_fatals_on_stale_macro()
+    test_b102_d1_verify_gated_macro_declarations_fatals_on_missing_macro()
+    test_b102_d1_verify_gated_dominators_synthetic_bypass_is_flagged()
+    test_b102_d1_verify_gated_dominators_one_hop_path_passes()
     test_b102_semantics_b_measured_over_need_fatals()
     test_b102_semantics_b_measured_at_or_under_need_excludes_the_subtree()
     test_b102_semantics_a_whole_program_root_is_unaffected_by_gating()

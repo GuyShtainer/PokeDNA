@@ -587,7 +587,11 @@ ADDRTAKEN_OK_RE = re.compile(r'^addrtaken-ok\s+(\S+)$')
 # D4 (BACKLOG #84b sixth pass): a declared depth for a real recursive SCC.
 RECURSION_LINE_RE = re.compile(r'^recursion\s+(\S+)\s+depth=(\d+)$')
 # BACKLOG #102: a runtime-gated subtree with its declared conservative bound.
-GATED_LINE_RE = re.compile(r'^gated\s+(\S+)\s+need=(\d+)$')
+# D1 (review-opus fix pass, BACKLOG #102): from=header:MACRO and gate=gate_fn ties N
+# to the real runtime constant and the function that enforces it -- see this file's
+# own docstring above ("gated fn need=N from=header:MACRO gate=gate_fn").
+GATED_LINE_RE = re.compile(
+    r'^gated\s+(\S+)\s+need=(\d+)\s+from=([\w./-]+):(\w+)\s+gate=(\S+)$')
 
 
 def load_extra_edges(path):
@@ -673,14 +677,15 @@ def load_extra_edges(path):
         than one member of the same component must agree on N or that PAIR is
         itself a FATAL (a real question -- which is right? -- not a silent pick).
 
-      gated fn need=N
+      gated fn need=N from=header:MACRO gate=gate_fn
         BACKLOG #102: `fn`'s subtree (fn's own frame plus everything it calls) is
-        entered at runtime ONLY after a call to `pdna_origin_art_stack_room(N)`
-        (or the numerically-identical PDNA_* constant it mirrors) has already
-        succeeded -- e.g. `gated gb_art_fetch need=6144` mirrors
-        `pdna_origin_art_stack_room(PDNA_GB_FETCH_NEED)` guarding every call site
-        that can reach gb_art_fetch (source/pdna_origin_art.c). Two DIFFERENT
-        semantics depending on which --root this run measures (tools/
+        entered at runtime ONLY after a call to `gate_fn(N)` (the runtime function
+        that mirrors this need -- e.g. pdna_origin_art_stack_room) has already
+        succeeded -- e.g. `gated gb_art_fetch need=6144
+        from=gb_art_source.h:PDNA_GB_FETCH_NEED gate=pdna_origin_art_stack_room`
+        mirrors `pdna_origin_art_stack_room(PDNA_GB_FETCH_NEED)` guarding every
+        call site that can reach gb_art_fetch (source/pdna_origin_art.c). Two
+        DIFFERENT semantics depending on which --root this run measures (tools/
         stack_budget.py's deepest_from()/top_n_chains(), BACKLOG #102 design):
           - measuring from --root main (the whole-program guard): a gated
             subtree stays fully, ungated INCLUDED in the worst-case walk --
@@ -702,7 +707,34 @@ def load_extra_edges(path):
             the commit history) because it INCREASES a re-derived number
             instead of shrinking it; "charged 0 B" below is what is actually
             implemented.
-        Example: `gated gb_art_fetch need=6144`.
+
+        D1 (review-opus fix pass, BACKLOG #102): the ORIGINAL `gated fn need=N`
+        shape (no from=/gate=) let N drift silently from the runtime constant it
+        claims to mirror -- if PDNA_GB_FETCH_NEED were later LOWERED in
+        gb_art_source.h, this tool would keep validating a STALE, now-too-large N
+        while PDNA_PARTY_STRIP_NEED silently stopped being conservative. `from=
+        header:MACRO` is now mechanically cross-checked every run (main(), right
+        after the struct-field header-drift check) against a plain `#define
+        MACRO <int>` in `header` (under --source-dir), via the same
+        _strip_c_comments()/_parse_int_macros() helpers verify_field_declarations()
+        already uses for Struct.field @OFFSET -- FATAL if MACRO's value != N today.
+        `gate=gate_fn` additionally names the runtime function this walker
+        believes performs the admission check, so a dominator-style reachability
+        check (verify_gated_dominators()) can attempt to confirm every path into
+        `fn` passes through it first -- see that function's own docstring for why
+        it is IMPLEMENTED AND UNIT-TESTED but NOT currently wired into main()'s
+        gate on either real declaration here: `pdna_origin_art_stack_room`'s own
+        call sites inside pdna_origin_art_portrait (and the Gen-2 icon router) are
+        INLINED away by GCC on both gate ELFs (confirmed by reading the actual
+        disassembly-derived call graph, 2026-09-12) -- the call literally does not
+        exist as an edge in analysis["edges"] from any ancestor within reach of
+        gb_art_pic_cb/gb_art_icon_cb, so a disassembly-only dominator check FATALs
+        on these real, legitimate, source-verified-safe declarations. Wiring the
+        check in as specified would break BOTH `make`/`make artless` gates today;
+        left unwired pending a source-aware (not disassembly-only) version, or an
+        anchor `gate_fn` this compiler build does not inline away.
+        Example: `gated gb_art_fetch need=6144 from=gb_art_source.h:PDNA_GB_FETCH_NEED
+        gate=pdna_origin_art_stack_room`.
 
     Multiple lines per caller/struct ACCUMULATE (pdna_box has eleven field lines).
     Returns (field_decls, field_offset_index, argsite_decls, whole_func_decls,
@@ -723,7 +755,7 @@ def load_extra_edges(path):
       isr_decls         : {fn, ...}
       addrtaken_ok      : {fn, ...}
       recursion_decls    : {fn: depth}
-      gated_decls        : {fn: need}
+      gated_decls        : {fn: (need, header, macro, gate_fn)} (D1: was {fn: need})
     """
     field_decls = {}
     field_site_decls = []   # [(struct, field, offset, callers_frozenset_or_None, {impls})]
@@ -765,12 +797,14 @@ def load_extra_edges(path):
                 continue
             gm = GATED_LINE_RE.match(line)
             if gm:
-                fn, need = gm.group(1), int(gm.group(2))
-                if fn in gated_decls and gated_decls[fn] != need:
+                fn, need, header, macro, gate_fn = (
+                    gm.group(1), int(gm.group(2)), gm.group(3), gm.group(4), gm.group(5))
+                meta = (need, header, macro, gate_fn)
+                if fn in gated_decls and gated_decls[fn] != meta:
                     raise ValueError(f"{path}:{lineno}: gated {fn} declared twice "
-                                      f"with different needs ({gated_decls[fn]} "
-                                      f"and {need})")
-                gated_decls[fn] = need
+                                      f"with different metadata ({gated_decls[fn]} "
+                                      f"and {meta})")
+                gated_decls[fn] = meta
                 continue
             if '->' not in line:
                 raise ValueError(f"{path}:{lineno}: unrecognized line: {raw!r}")
@@ -1254,6 +1288,111 @@ def verify_field_declarations(field_decls, source_dir, struct_headers):
         elif real[field] != decl_off:
             problems.append(f"{struct}.{field}: declared @{decl_off}, header says "
                              f"@{real[field]} today -- header changed, stack_edges.txt did not")
+    return problems
+
+
+def verify_gated_macro_declarations(gated_decls, source_dir):
+    """D1(b) (review-opus fix pass, BACKLOG #102): cross-check every `gated fn
+    need=N from=header:MACRO gate=gate_fn` declaration's N against the header's
+    OWN `#define MACRO <int>` today -- exactly the same pattern
+    verify_field_declarations() already uses for Struct.field @OFFSET, reusing
+    the same _strip_c_comments()/_parse_int_macros() helpers a plain-value
+    header check needs (no C preprocessor here, so only a simple integer
+    `#define` is understood, same limitation _parse_int_macros() already
+    documents).
+
+    Without this check, N is a hand-copied literal with nothing tying it to the
+    real runtime constant it claims to mirror: if MACRO were later LOWERED in
+    `header` (a legitimate future shrink of, say, PDNA_GB_FETCH_NEED), this
+    tool would keep validating a STALE, now-too-large N forever, silently
+    letting PDNA_PARTY_STRIP_NEED (or whatever re-derivation trusts this gated
+    declaration) stop being conservative -- the runtime gate would now admit
+    LESS room than this walker still assumes it does. Returns a list of
+    human-readable mismatch strings (empty = every declaration mirrors its
+    macro today); the caller treats ANY entry as fatal."""
+    problems = []
+    cache = {}
+    for fn, (need, header, macro, _gate_fn) in sorted(gated_decls.items()):
+        if header not in cache:
+            path = os.path.join(source_dir, header)
+            try:
+                with open(path) as f:
+                    cache[header] = _parse_int_macros(_strip_c_comments(f.read()))
+            except OSError as e:
+                problems.append(f"gated {fn}: {e}")
+                cache[header] = None
+                continue
+        macros = cache[header]
+        if macros is None:
+            continue
+        if macro not in macros:
+            problems.append(f"gated {fn}: no `#define {macro} <int>` found in "
+                             f"{header} today -- header changed, stack_edges.txt did not")
+        elif macros[macro] != need:
+            problems.append(
+                f"gated {fn}: declared need={format_num(need)}, but {header}'s "
+                f"{macro} is {format_num(macros[macro])} today -- the declaration "
+                "no longer mirrors the runtime gate. Re-derive both.")
+    return problems
+
+
+def verify_gated_dominators(gated_decls, edges):
+    """D1(a) (review-opus fix pass, BACKLOG #102): for every declared `gated fn
+    need=N ... gate=gate_fn` and every predecessor `pred` of `fn` in `edges`,
+    require `gate_fn` among `pred`'s own callees, OR among the callees of one of
+    `pred`'s own predecessors (one hop further up) -- otherwise `fn` is
+    reachable along a path this walker can see that never runs `gate_fn` first,
+    so excluding `fn`'s subtree (charging it 0 B, what deepest_from() does for
+    every accepted `gated` declaration) would be unsound: nothing on that path
+    proves the runtime admission check ever ran. Returns a list of
+    human-readable strings, one per unprotected path found (empty = every
+    predecessor's reachability to `gate_fn` checks out); the caller treats ANY
+    entry as fatal.
+
+    STATUS (2026-09-12): implemented and unit-tested (a synthetic bypass graph
+    correctly produces a problem string here -- see
+    tests/host_stack_budget_test.py) but DELIBERATELY NOT CALLED from main()'s
+    gate on either of this backlog item's two real declarations. Confirmed by
+    reading the actual disassembly-derived call graph on both gate ELFs
+    (2026-09-12): `pdna_origin_art_stack_room`'s call sites inside
+    pdna_origin_art_portrait (source lines 530, 559) and the Gen-2 icon router
+    (line 836) are INLINED AWAY by GCC -- the compiled image has NO call edge to
+    pdna_origin_art_stack_room from pdna_origin_art_portrait at all (its own
+    listed callees, read via this exact tool: era_resolver_cb,
+    era_resolver_cell_cb, fetch_pic_ex.constprop.0, g3cross_pic_cb,
+    gb_art_have_cb, gb_art_icon_cb, gb_art_pic_cb, memset, mon_back_for_form,
+    mon_front_egg, mon_front_for_form, pdna_origin_art_have, pdna_origin_of,
+    pk_national_no, rom_sprite_pal, rom_sprite_pic, rom_sprite_to_rgb15 -- no
+    pdna_origin_art_stack_room). A one-hop-up (or even a full transitive)
+    disassembly search can never find an edge that was compiled out of
+    existence, so wiring this check into main() as specified FATALs on the
+    real, legitimate, source-code-verified-safe declarations and breaks BOTH
+    `make`/`make artless` gates. This is a genuine limitation of a
+    disassembly-only dominator check against an -O2 build, not a defect in the
+    declarations themselves (this exact inlining is WHY gb_art_fetch/
+    gb_art_fetch_icon.constprop.0's predecessors, as the docstring above's own
+    real numbers show, are gb_art_pic_cb/gb_art_icon_cb respectively -- one hop,
+    not zero -- and why `pdna_origin_art_stack_room` itself IS still a real,
+    unInlined function reachable from gbscr_open/pcp_open_party_strip, just not
+    from the inlined call sites this backlog's two declarations mirror).
+    Left available and tested for a future caller that either works from
+    SOURCE (not disassembly) or names a gate_fn this particular compiler build
+    does not inline -- flagged for a design decision, not silently dropped."""
+    problems = []
+    reverse = collections.defaultdict(set)
+    for caller, callees in edges.items():
+        for callee in callees:
+            reverse[callee].add(caller)
+    for fn, (_need, _header, _macro, gate_fn) in sorted(gated_decls.items()):
+        for pred in sorted(reverse.get(fn, ())):
+            if gate_fn in edges.get(pred, ()):
+                continue
+            grandparents = reverse.get(pred, ())
+            if any(gate_fn in edges.get(gp, ()) for gp in grandparents):
+                continue
+            problems.append(
+                f"gated {fn} is reachable from {pred} without {gate_fn} on that "
+                "path -- charging 0 is unsound")
     return problems
 
 
@@ -3155,6 +3294,19 @@ def main(argv):
             print(f"***   {p}", file=sys.stderr)
         return 1
 
+    # D1(b) (review-opus fix pass, BACKLOG #102): every `gated fn need=N from=
+    # header:MACRO ...` declaration's N is cross-checked against the header's own
+    # #define today, same posture as the Struct.field @OFFSET check right above --
+    # a declaration whose N no longer mirrors the runtime constant it claims to
+    # is not a bound this walker can vouch for.
+    gated_macro_problems = verify_gated_macro_declarations(gated_decls, args.source_dir)
+    if gated_macro_problems:
+        print(f"*** stack_budget: {args.edges_file} has stale `gated` declaration(s):",
+              file=sys.stderr)
+        for p in gated_macro_problems:
+            print(f"***   {p}", file=sys.stderr)
+        return 1
+
     # D5b: every name stack_edges.txt references (as a caller or an implementation)
     # must be unambiguous -- a bare name the census found duplicated across TUs is an
     # ERROR listing the qualified candidates, never a silent pick of "whichever one".
@@ -3300,17 +3452,38 @@ def main(argv):
     # derivation's declared need can shrink the guard's own worst-case number.
     enforce_gates = (args.root != "main")
     gate_report = {}
+    # D1 (review-opus fix pass): gated_decls values are now (need, header, macro,
+    # gate_fn) 4-tuples -- deepest_from()/top_n_chains() only ever need the bare
+    # need, so unpack once here rather than teaching the walker's hot DFS path
+    # about the richer declaration shape.
+    gated_needs = {fn: meta[0] for fn, meta in gated_decls.items()}
     try:
         chains = top_n_chains(args.root, analysis["edges"], su_sizes, estimated,
                                n=args.top, overrides=frame_overrides, scc_of=scc_of,
-                               gated=gated_decls, enforce_gates=enforce_gates,
+                               gated=gated_needs, enforce_gates=enforce_gates,
                                gate_report=gate_report)
     except GatedSubtreeExceeded as e:
         print(f"\n*** STACK_BUDGET GATED SUBTREE EXCEEDED: {e}", file=sys.stderr)
-        print(f"*** Fix: raise 'gated {e.fn} need={e.need}' in {args.edges_file} to at "
-              f"least {e.measured} (and re-check the runtime PDNA_* constant it "
-              "mirrors, source/pdna_origin_art.c's pdna_origin_art_stack_room() call "
-              "sites), or shrink the subtree.", file=sys.stderr)
+        # D1 (review-opus fix pass): the old advice ("raise the need line to M")
+        # was WRONG -- N is not a free dial any more, it must equal the runtime
+        # PDNA_* constant the declaration's own `from=header:MACRO` names (checked
+        # by verify_gated_macro_declarations() elsewhere in this run). Raising
+        # only the stack_edges.txt line without also raising the header macro
+        # would make this tool validate a number the runtime gate does not
+        # actually enforce -- exactly the unsound state D1 exists to prevent.
+        header = macro = None
+        if e.fn in gated_decls:
+            _need, header, macro, _gate_fn = gated_decls[e.fn]
+        print(f"*** Fix: the declared need ({format_num(e.need)} B) must equal the "
+              "runtime constant it mirrors" +
+              (f" ({header}'s {macro})" if header else "") +
+              f" -- it is not a free dial. Either shrink the subtree below "
+              f"{format_num(e.measured)} B, or raise BOTH the header macro and this "
+              f"line to a re-measured, honest bound, then re-verify by re-running "
+              f"`--root fetch_pic_ex.constprop.0` (or the equivalent immediate "
+              f"caller of {e.fn}) -- THAT chain, not {e.fn}'s own "
+              f"{format_num(e.measured)} B in isolation, is what the runtime gate "
+              "must actually cover.", file=sys.stderr)
         return 1
     deepest_total, deepest_path, cycles = chains[0][0], chains[0][1], chains[0][2]
     if gate_report:
