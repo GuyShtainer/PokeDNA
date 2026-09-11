@@ -1635,6 +1635,7 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
 #define PDNA_GBCLOCK_ROW_RESET "Ask for the time at next load"
 #define PDNA_GBCLOCK_ROW_SHIFT "Shift the clock"
 #define PDNA_GBCLOCK_ROW_CLEAR "Clear the clock-error flag"
+#define PDNA_GBCLOCK_SHIFT_KEYS "U/D change  L/R fld  A set  B"   /* 29 ch = 232 px @ x=4 (the 31-ch original clipped at 252) */
 
 #define PDNA_GBCLOCK_CONFIRM_RESET_TITLE "Ask for the time at next load?"
 #define PDNA_GBCLOCK_CONFIRM_RESET_L1 \

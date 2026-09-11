@@ -27,8 +27,6 @@ static u16  s_wait(u16 mask) {
   return k;
 }
 
-static const char* const kWeekday[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
-
 /* ---- the view-only readout at the top -------------------------------------------
  * Every value here is VIEW-ONLY (gb_clock.h's own contract): the offsets, the raw
  * day count + its mod-7 weekday, and the flag state. Nothing on this band is ever
@@ -43,7 +41,7 @@ static void gbclock_header(const GbClock* c) {
           (unsigned)c->rtc_offset_second);
   ui_text(6, 22, UI_TEXT, b);
 
-  siprintf(b, "Day count  %u (%s)", (unsigned)c->day_count, kWeekday[c->day_count % 7]);
+  siprintf(b, "Day count  %u at last save", (unsigned)c->day_count);   /* wCurDay is a snapshot: the game recomputes it from the RTC every UpdateTime, so no weekday here (b86 review D1) */
   ui_text(6, 32, UI_TEXT, b);
 
   if (c->status_flags_ok) {
@@ -150,7 +148,7 @@ static void gbclock_shift_editor(GbSession* s) {
       ui_text(6, 118, UI_DIM, "Adds this to the clock's own");
       ui_text(6, 128, UI_DIM, "offset -- never sets an");
       ui_text(6, 138, UI_DIM, "absolute time.");
-      ui_text(4, 152, UI_DIM, "U/D change  L/R field  A set  B");
+      ui_text(4, 152, UI_DIM, PDNA_GBCLOCK_SHIFT_KEYS);
     } else {
       for (int i = 0; i < SF_N; i++) {
         bool sel = (i == f), osel = (i == pv_f);

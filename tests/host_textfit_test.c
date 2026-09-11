@@ -2104,6 +2104,7 @@ int main(void) {
   /* Confirm titles go through app_confirm's own ui_ptext_fit(28, 54, 184, ...) (one
    * line, clipped); L1 bodies go through ui_ptext_wrap(28, 74, 184, ROW_H+2, 2, ...)
    * (wrapped, up to 2 lines) -- same split as the S5-C reconcile checks above. */
+  T(PDNA_GBCLOCK_SHIFT_KEYS, 4);   /* the stepper legend of both clock screens */
   PF(PDNA_GBCLOCK_CONFIRM_RESET_TITLE, 28, 184);
   PF(PDNA_GBCLOCK_CONFIRM_CLEAR_TITLE, 28, 184);
   PF(PDNA_GBCLOCK_CONFIRM_SHIFT_TITLE, 28, 184);
