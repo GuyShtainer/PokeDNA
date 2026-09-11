@@ -62,7 +62,12 @@ bool gbdex_get(const GbSession* s, uint16_t dex, bool owned);
 /* Set/clear ONE species' owned or seen bit. Writes only the byte(s) that actually
  * change (untouched is untouched). Enforces caught-implies-seen (see above) with at
  * most one extra byte write in the OTHER field. GBS_ERR_ARG on a bad dex/session/field
- * before any byte moves. Calls gbs_finish() once, only when something changed. */
+ * before any byte moves. DOES NOT call gbs_finish() -- a caller making MANY calls in
+ * one user gesture (the dex screen's per-cell edit, or its bulk Catch/See/Wipe-ALL,
+ * up to 386 calls) calls gbs_finish() itself exactly once after the last one, per
+ * gbs_write_field's own documented batching contract (O(1) Gen-2 reparses instead of
+ * O(edits)); Gen 1 is unaffected (already re-verified on every gbs_write_field call,
+ * gbs_finish is a no-op there). */
 GbsStatus gbdex_set(GbSession* s, uint16_t dex, bool owned, bool on);
 
 /* Has Unown letter `letter` (0=A..25=Z) ever been seen (present anywhere in
@@ -78,8 +83,8 @@ bool gbdex_unown_seen(const GbSession* s, int letter);
  * on=false: remove `letter` if present and COMPACT the remaining entries left by one
  * (the game itself never removes; this is an editor-only shift that keeps "0 = end of
  * list" true for UpdateUnownDex's own future scans). GBS_ERR_ARG on a bad letter/
- * session/field before any byte moves. Calls gbs_finish() once, only on a real change.
- */
+ * session/field before any byte moves. DOES NOT call gbs_finish() -- same batching
+ * contract as gbdex_set above. */
 GbsStatus gbdex_unown_set(GbSession* s, int letter, bool on);
 
 #endif /* GB_DEX_H */

@@ -29,10 +29,12 @@ bool gbdex_get(const GbSession* s, uint16_t dex, bool owned) {
 }
 
 /* Set exactly one (field, dex) bit to `val`, writing only if it actually changes.
- * Returns GBS_OK (no-op) / GBS_OK (wrote, caller still owes gbs_finish) / an error --
- * callers batch this with gbdex_set's own second call before finishing once. */
-static GbsStatus dex_set_bit(GbSession* s, GbGame g, GbField f, uint16_t dex, bool val,
-                             bool* wrote) {
+ * Does NOT call gbs_finish() -- see gbdex_set's own header comment on why: the dex
+ * screen's bulk Catch/See/Wipe-ALL op can call this up to 386 times in one user
+ * gesture, and gbs_write_field's own contract is explicit that a caller doing many
+ * field writes calls gbs_finish() ONCE after the last one, not after each ("so N field
+ * edits cost one whole-file reparse instead of N"). */
+static GbsStatus dex_set_bit(GbSession* s, GbGame g, GbField f, uint16_t dex, bool val) {
   uint32_t off = gbf_off(g, f);
   uint16_t len = gbf_len(g, f);
   if (!off || !len) return GBS_ERR_ARG;
@@ -41,13 +43,20 @@ static GbsStatus dex_set_bit(GbSession* s, GbGame g, GbField f, uint16_t dex, bo
   uint8_t cur;
   if (gbs_read_field(s, off + (uint32_t)byte, &cur, 1) != GBS_OK) return GBS_ERR_ARG;
   uint8_t next = val ? (uint8_t)(cur | (1u << bit)) : (uint8_t)(cur & ~(1u << bit));
-  if (next == cur) return GBS_OK;   /* untouched is untouched */
-  GbsStatus st = gbs_write_field(s, off + (uint32_t)byte, &next, 1);
-  if (st != GBS_OK) return st;
-  *wrote = true;
-  return GBS_OK;
+  if (next == cur) return GBS_OK;   /* untouched is untouched, nothing to write */
+  return gbs_write_field(s, off + (uint32_t)byte, &next, 1);
 }
 
+/* Does NOT call gbs_finish() -- BATCHED like gb_bag.c's own multi-field set does, one
+ * level up: this call alone may touch up to 2 bytes (its own bit + the invariant's
+ * companion bit); a caller doing MANY gbdex_set/gbdex_unown_set calls in one user
+ * gesture (the dex screen's per-cell A-press, or its Catch/See/Wipe-ALL bulk op) must
+ * call gbs_finish() itself exactly once after the LAST one (pdna_gbdex.c does this on
+ * screen exit, matching gbs_write_field's own documented batching contract). Gen 1
+ * sessions are unaffected either way: gbs_write_field's Gen-1 path already re-verifies
+ * the whole image on EVERY call regardless (gb_session.h's own doc), and gbs_finish()
+ * is a no-op for Gen 1 -- this only changes Gen 2's cost, from O(edits) whole-file
+ * reparses to O(1). */
 GbsStatus gbdex_set(GbSession* s, uint16_t dex, bool owned, bool on) {
   if (!s || !s->open || dex < 1) return GBS_ERR_ARG;
   if (dex > gb_max_species(s->gen)) return GBS_ERR_ARG;
@@ -55,24 +64,16 @@ GbsStatus gbdex_set(GbSession* s, uint16_t dex, bool owned, bool on) {
   GbField primary = owned ? GBF_DEX_OWNED : GBF_DEX_SEEN;
   if (!gbf_off(g, primary)) return GBS_ERR_ARG;
 
-  bool wrote = false;
-  GbsStatus st = dex_set_bit(s, g, primary, dex, on, &wrote);
+  GbsStatus st = dex_set_bit(s, g, primary, dex, on);
   if (st != GBS_OK) return st;
 
   /* Caught-implies-seen (header comment): setting owned=on=true also forces seen on;
    * clearing seen (owned=false, on=false) also forces owned off. Only one of these two
    * conditions can ever be true for a given call (owned's two values are mutually
    * exclusive), so at most one extra byte moves. */
-  if (owned && on) {
-    st = dex_set_bit(s, g, GBF_DEX_SEEN, dex, true, &wrote);
-    if (st != GBS_OK) return st;
-  } else if (!owned && !on) {
-    st = dex_set_bit(s, g, GBF_DEX_OWNED, dex, false, &wrote);
-    if (st != GBS_OK) return st;
-  }
-
-  if (!wrote) return GBS_OK;
-  return gbs_finish(s);
+  if (owned && on)        return dex_set_bit(s, g, GBF_DEX_SEEN,  dex, true);
+  else if (!owned && !on) return dex_set_bit(s, g, GBF_DEX_OWNED, dex, false);
+  return GBS_OK;
 }
 
 /* ---- Unown forms (Gen 2 only): wUnownDex, an order-of-first-seen list, not a
@@ -125,7 +126,7 @@ GbsStatus gbdex_unown_set(GbSession* s, int letter, bool on) {
     slots[UNOWN_SLOTS - 1] = 0;
   }
 
-  GbsStatus st = gbs_write_field(s, off, slots, UNOWN_SLOTS);
-  if (st != GBS_OK) return st;
-  return gbs_finish(s);
+  /* Does NOT call gbs_finish() -- same batching contract as gbdex_set above; the
+   * caller finishes once after its own last gbdex-family call. */
+  return gbs_write_field(s, off, slots, UNOWN_SLOTS);
 }
