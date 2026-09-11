@@ -22,19 +22,20 @@
 #include <stdbool.h>
 
 #include "gb_flags.h"
+#include "pdna_gbflags.h"
 
 static int g_fail = 0, g_check = 0;
 #define CHECK(c, ...) do { g_check++; if (!(c)) { \
     printf("  !! FAIL: "); printf(__VA_ARGS__); printf("\n"); g_fail++; } } while (0)
 
-#define ROW_BUDGET 29
+#define ROW_BUDGET GBFL_ROW_COLS
 #define ROW_BUF 64   /* mirrors nf_draw_row()'s `char row[64]` (D1) */
 
 static const char* kind_suffix(uint8_t kind) {
   switch (kind) {
-    case GBFL_KIND_BAG_GRANT: return "(bag)";
-    case GBFL_KIND_READONLY:  return "(sty)";
-    case GBFL_KIND_WARN:      return "(!)";
+    case GBFL_KIND_BAG_GRANT: return GBFL_SUF_BAG;
+    case GBFL_KIND_READONLY:  return GBFL_SUF_STY;
+    case GBFL_KIND_WARN:      return GBFL_SUF_WARN;
     default: return "";
   }
 }
@@ -69,7 +70,7 @@ int main(void) {
       } else {
         for (int state = 0; state < 2; state++) {
           const char* onoff = state ? "ON" : "off";
-          int n1 = snprintf(buf, sizeof buf, "%-16s %-3s %s", row.label, onoff, kind_suffix(row.kind));
+          int n1 = snprintf(buf, sizeof buf, GBFL_ROW_FMT, row.label, onoff, kind_suffix(row.kind));
           CHECK(n1 >= 0 && (size_t)n1 < sizeof buf, "%s row %d %s (%s): formatted row does not fit char row[64]", GAME_NAME[g], i, row.label, onoff);
           CHECK((size_t)n1 <= ROW_BUDGET, "%s row %d '%s' (%s): %d chars, over the %d-column budget", GAME_NAME[g], i, row.label, onoff, n1, ROW_BUDGET);
           if ((size_t)n1 > longest) { longest = (size_t)n1; longest_row_desc = row.label; }
