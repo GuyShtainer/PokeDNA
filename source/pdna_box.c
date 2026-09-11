@@ -997,7 +997,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   }
   /* A bank slot whose mon is moving out to the PC looks empty but still holds that mon's only
    * on-card copy until the PC is saved — treat it as OCCUPIED so nothing overwrites it. */
-  bool occupied = g_box[cur].species != 0 || (src->is_bank && app_bank_slot_pending(box, cur));
+  bool occupied = g_box[cur].species != 0 || (src->scope == BOXSCOPE_BANK && app_bank_slot_pending(box, cur));   /* the REAL Bank's deferred-delete queue, never a GB box index (S1 review D1) */
   if (!same_scope(src)) {                                    /* cross-scope drop */
     if (occupied) { snd_deny(); return recs; }
     if (s_held_dup && s_orig_slot < 0) {                     /* a fresh DUPLICATE: placing it is loss-proof
@@ -1042,7 +1042,7 @@ static uint8_t* drop_held(BoxSource* src, int box, int cur, uint8_t* recs, bool*
   /* occupied within scope -> SWAP, then KEEP HOLDING the displaced occupant (place it
    * yourself next; we don't auto-throw it into the held mon's old cell). */
   if (s_orig_slot < 0 && s_held_dup) { snd_deny(); return recs; }          /* a fresh dup can't swap */
-  if (s_orig_slot >= 0 && s_orig_box != box && src->is_bank) { snd_deny(); return recs; }  /* bank cross-box swap unsafe */
+  if (s_orig_slot >= 0 && s_orig_box != box && src->scope == BOXSCOPE_BANK) { snd_deny(); return recs; }  /* the REAL Bank's cross-box swap is unsafe (S1 review D1 companion); GB swaps arrive with S3's move_within */
   if (src->note_add) src->note_add(s_held);                                /* placed mon enters this scope -> dex */
   uint8_t occ[80]; memcpy(occ, recs + (uint32_t)cur * 80, 80);             /* save the occupant */
   memcpy(recs + (uint32_t)cur * 80, s_held, 80);                           /* place the held mon at the cursor */
