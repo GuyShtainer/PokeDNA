@@ -33,6 +33,7 @@
                             * trainer_key_legend                                    */
 #include "pdna_gen12.h"    /* gb_rollback / gb_persist -- the S2 commit primitives;
                             * gb12_arena_tail/gb12_arena_tail_release (U2c)          */
+#include "g2card_cells.h"  /* BACKLOG #96 D11: the Gen-2 card's pure static cell table */
 #include "pdna_gbscreen.h" /* U2c/U3: the shared GB-screen shell -- both generations'
                             * own real cards                                        */
 #include "pdna_origin_art.h" /* PDNA_GEN1/2 -- gbscr_open()'s own `gen` constant      */
@@ -753,21 +754,14 @@ enum { G2C_BADGE0 = 0, G2C_P2_MAX = 8 };
  * card's own small 6-tile block, indices 0..5. Real tiles $29-$2E (the 5
  * "STATUS"-word tiles, then the play-time colon) are a 6-tile run
  * immediately before LEADERS -- GBSCR_SRC_STATUSWORD is anchored there
- * (gbscr_block_off()/gbscr_block_bytes()), indices 0..5. */
-enum { G2G_FILL = 0, G2G_NOTCH = 1, G2G_DIVFILL = 2, G2G_DIVCAP = 3, G2G_ID = 4, G2G_NO = 5 };
-enum { G2X_STATUS0 = 0, G2X_COLON = 5 };
-/* The card lists the 8 leaders in GYM order (row-major k=0..7), but the
- * badge byte's bits are in BADGE order (Zephyr..Rising, which does not match
- * gym order for the last four gyms) -- Storm Badge is bit 5 and lights the
- * 5th face (Chuck, k=4), Mineral Badge is bit 4 and lights the 6th face
- * (Jasmine, k=5). Confirmed against the real cart with Gold_bit4.sav (6th
- * face lit) and Gold_bit5.sav (5th face lit). Index by face k to get the
- * real badge bit. */
-static const uint8_t kG2BadgeBit[8] = { 0, 1, 2, 3, 5, 4, 6, 7 };
-/* LEADERS-block-relative index where the "BADGES" word graphic starts
- * (page 2 row 8) -- 8 faces * 10 tiles = 80, LEADERS' own declared size is
- * 86 (80 + 6 word tiles, 5 used) -- confirmed correct by the same shot. */
-enum { G2L_BADGES_WORD = 80 };
+ * (gbscr_block_off()/gbscr_block_bytes()), indices 0..5.
+ *
+ * BACKLOG #96 D11: the G2G_, G2X_, kG2BadgeBit and G2L_BADGES_WORD constants
+ * moved to g2card_cells.h (shared with the new pure host-tested cell table
+ * below -- one source of truth instead of two copies drifting apart).
+ * G2G_FILL and G2G_NOTCH are still used here by g2card_border(), which
+ * g2card_cells.h does not own (out of D11's scope, see that header's own
+ * note). */
 
 /* One frame counter, this screen's own -- toggles the play-time colon every
  * 32 VBlanks (the real game's own period, captured: 70 sampled frames showed
@@ -812,8 +806,6 @@ static void g2card_paint_upper(GbScreen* gs, const GbTrainer* t, bool female) {
   gbscr_text(gs, 2, 2, "NAME/");
   gbscr_raw(gs, 7, 2, t->name_raw, GB_OT_GLYPHS);
 
-  gbscr_cell(gs, 2, 4, GBSCR_SRC_CARDGFX, G2G_ID);
-  gbscr_cell(gs, 3, 4, GBSCR_SRC_CARDGFX, G2G_NO);
   char buf[16];
   siprintf(buf, "%05u", (unsigned)t->trainer_id);
   gbscr_text(gs, 5, 4, buf);
@@ -830,21 +822,30 @@ static void g2card_paint_upper(GbScreen* gs, const GbTrainer* t, bool female) {
   gbscr_cell(gs, 13 - mlen, 6, GBSCR_SRC_FONT, 0xF0);     /* the currency sign */
   gbscr_text(gs, 14 - mlen, 6, buf);
 
-  GbScrSrc pic_src = female ? GBSCR_SRC_CARDPIC_F : GBSCR_SRC_CARDPIC_M;
-  for (int ty = 0; ty < 7; ty++)
-    for (int tx = 0; tx < 5; tx++)
-      gbscr_cell(gs, 14 + tx, 1 + ty, pic_src, (uint8_t)(ty * 5 + tx));
-  gbscr_cell(gs, 18, 9, pic_src, 4);   /* the repeat cell -- see file comment */
-
-  for (int x = 1; x <= 12; x++) gbscr_cell(gs, x, 3, GBSCR_SRC_CARDGFX, G2G_DIVFILL);
-  gbscr_cell(gs, 13, 3, GBSCR_SRC_CARDGFX, G2G_DIVCAP);
+  /* BACKLOG #96 D11: the CARDGFX ID/No glyphs, the 5x7 pic grid + the
+   * (18,9) repeat cell, and the divider fill+cap all come from the pure,
+   * host-tested cell table (g2card_cells.c) instead of being inlined here --
+   * host_gbcard_cells_test.c bounds-checks every one of these 51 cells
+   * against the located block it reads from. */
+  G2CardCell cells[G2CARD_UPPER_CELLS];
+  int ncells = g2card_build_upper_cells(female, cells);
+  for (int i = 0; i < ncells; i++)
+    gbscr_cell(gs, cells[i].x, cells[i].y, cells[i].src, cells[i].index);
 }
 
 static void g2card_paint_page1(GbScreen* gs, const GbTrainer* t, bool female) {
   g2card_border(gs);
   g2card_paint_upper(gs, t, female);
 
-  for (int i = 0; i < 5; i++) gbscr_cell(gs, 2 + i, 8, GBSCR_SRC_STATUSWORD, (uint8_t)(G2X_STATUS0 + i));
+  /* BACKLOG #96 D11: the 5 STATUSWORD tiles + the FONT hint arrow, from the
+   * same pure cell table (the blinking colon cell below stays inline --
+   * it is time-dependent, not a fixed cell the table can express). */
+  {
+    G2CardCell cells[G2CARD_PAGE1_CELLS];
+    int ncells = g2card_build_page1_cells(cells);
+    for (int i = 0; i < ncells; i++)
+      gbscr_cell(gs, cells[i].x, cells[i].y, cells[i].src, cells[i].index);
+  }
 
   gbscr_text(gs, 2, 10, "POK\xC3\xA9""DEX");
   char buf[16];
@@ -868,7 +869,7 @@ static void g2card_paint_page1(GbScreen* gs, const GbTrainer* t, bool female) {
   gbscr_text(gs, 16, 12, buf);
 
   gbscr_text(gs, 12, 15, "BADGES");
-  gbscr_cell(gs, 18, 15, GBSCR_SRC_FONT, 0xED);   /* the (r) hint arrow */
+  /* the (r) hint arrow at (18,15) is in the page-1 cell table above */
 }
 
 static void g2card_paint_page2(GbScreen* gs, const GbTrainer* t, bool female) {
@@ -885,25 +886,17 @@ static void g2card_paint_page2(GbScreen* gs, const GbTrainer* t, bool female) {
    * literal false. */
   g2card_paint_upper(gs, t, female);
 
-  for (int i = 0; i < 5; i++) gbscr_cell(gs, 2 + i, 8, GBSCR_SRC_LEADERS, (uint8_t)(G2L_BADGES_WORD + i));
+  /* BACKLOG #96 D11: the LEADERS "BADGES" word, the 8-leader diploma grid,
+   * and the per-badge 2x2 overlay (U3 accepted deviation -- a STATIC overlay
+   * over the face's centre when owned; the real game animates this as an OAM
+   * sprite instead) all come from the pure cell table now. */
+  bool badge_owned[8];
+  for (int k = 0; k < 8; k++) badge_owned[k] = gbtr_badge_get(t, false, kG2BadgeBit[k]);
 
-  for (int k = 0; k < 8; k++) {
-    int row = k / 4, col = k % 4;
-    int c0 = 2 + col * 4, y0 = 10 + row * 3;
-    int base = 10 * k;
-    for (int i = 0; i < 4; i++) gbscr_cell(gs, c0 + i, y0, GBSCR_SRC_LEADERS, (uint8_t)(base + i));
-    for (int i = 0; i < 3; i++) gbscr_cell(gs, c0 + 1 + i, y0 + 1, GBSCR_SRC_LEADERS, (uint8_t)(base + 4 + i));
-    for (int i = 0; i < 3; i++) gbscr_cell(gs, c0 + 1 + i, y0 + 2, GBSCR_SRC_LEADERS, (uint8_t)(base + 7 + i));
-    /* U3 accepted deviation (see file comment): a STATIC 2x2 BADGES overlay
-     * over the face's centre when owned -- the real game animates this as an
-     * OAM sprite instead. */
-    if (gbtr_badge_get(t, false, kG2BadgeBit[k])) {
-      int base2 = 4 * kG2BadgeBit[k];
-      for (int dy = 0; dy < 2; dy++)
-        for (int dx = 0; dx < 2; dx++)
-          gbscr_cell(gs, c0 + dx, y0 + 1 + dy, GBSCR_SRC_BADGES, (uint8_t)(base2 + dy * 2 + dx));
-    }
-  }
+  G2CardCell cells[G2CARD_PAGE2_CELLS_MAX];
+  int ncells = g2card_build_page2_cells(badge_owned, cells);
+  for (int i = 0; i < ncells; i++)
+    gbscr_cell(gs, cells[i].x, cells[i].y, cells[i].src, cells[i].index);
 }
 
 static void g2card_sel_rect(int page, int sel, int* x, int* y, int* w, int* h) {
