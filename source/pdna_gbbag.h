@@ -84,13 +84,17 @@
  *    capture exists for the armed source row's own marker glyph in this
  *    slice -- this shell re-uses the cursor tile (0xED) there, a documented
  *    deviation pending a real capture, not a verified fact.
- *  - Item names: NOT located by this slice (time-boxed, brief's own
- *    permission) -- every item prints "ITEM-n" (n = the raw id byte; '-'
- *    because '#' has no Gen-1 glyph and silently rendered as a blank space)
- *    rather than a real name; ships no names table, no decoded pixel/text
- *    data. The dump's own on-screen names ("TM05", "BICYCLE", ...) are
- *    quoted in this comment purely as ground truth for the CELL LAYOUT,
- *    never as shipped data.
+ *  - Item names: SHIPPED (BACKLOG gbnames brief, supersedes BACKLOG #111's
+ *    "locator slice" note above) -- gb_item_label() (source/gb_item_names.c)
+ *    looks a real name up in an EMBEDDED identifier table (GREEN per
+ *    docs/kb/licensing.md: id->name is a fact list, not decoded ROM prose;
+ *    no ROM read, no locator) and falls back to "ITEM-n" ('-' because '#'
+ *    has no Gen-1 glyph) only for a documented hole (an id with no real
+ *    Gen-1 item, e.g. the unused SURFBOARD/ITEM_2C ids). TM/HM labels
+ *    (HM01-HM05, TM01-TM50) are synthesized from the id, not tabled. The
+ *    dump's own on-screen names ("TM05", "BICYCLE", ...) that this comment
+ *    quoted as cell-layout ground truth are now the SAME strings the table
+ *    ships.
  *
  * `s` must already be open (gbs_open, Gen-1 only -- gbb_field_present() gates
  * every pocket this game lacks, but the whole screen itself is Gen-1 ONLY;
