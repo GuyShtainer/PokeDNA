@@ -175,7 +175,7 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # BACKLOG #104 R1 (docs/TRANSFER-ROUNDTRIP-DESIGN.md section 3c/4, append-only,
     # same rule as every row above): the KEEP AS IS / MAKE LEGAL choice
     # gb_paste_hook now offers on a Gen 3 -> Game Boy paste whose species is
-    # standing below its evolution's minimum level. Shots come from
+    # standing below its legality floor (pk_evo_floor). Shots come from
     # tools/dgb_shots.py's run_r1_xfer() (--r1-xfer), run against a Gold-fused
     # image (NOT Red -- see that function's own docstring for why: Red/Gen-1's
     # base-stats-ROM lookup is SD-card-only and always refuses in this harness,

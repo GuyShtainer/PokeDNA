@@ -1418,6 +1418,7 @@ gb_paste_legal_screen(uint16_t dex, uint8_t from_lvl, uint8_t to_lvl) {
            pk_species_name(dex), (unsigned)to_lvl, (unsigned)from_lvl);
   ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, l2);
   y += PDNA_SIDECAR_LOSS_ROW_H;
+  y += PDNA_SIDECAR_LOSS_ROW_H / 2;   /* prose above, the two choices below (r1 re-verify nit) */
 
   ui_ptext_fit(4, y, UI_SCR_W - 8, UI_TEXT, PDNA_SIDECAR_LEGAL_KEEP_ROW);
   y += PDNA_SIDECAR_LOSS_ROW_H;

@@ -966,7 +966,7 @@ int main(void) {
   chk("legal screen worst-case height", 0,
       UI_SCR_H - 1,
       PDNA_SIDECAR_LOSS_ROW_Y0 + 4 * PDNA_SIDECAR_LOSS_ROW_H +
-        (PDNA_SIDECAR_LOSS_ROW_H / 2) + UI_ROW_H - 1,
+        2 * (PDNA_SIDECAR_LOSS_ROW_H / 2) + UI_ROW_H - 1,   /* + the WHY-row gap */
       "legal screen: worst case (WHY + BACK rows) clears the screen");
   /* ==== END S5-B sidecar (Part D) ============================================ */
 

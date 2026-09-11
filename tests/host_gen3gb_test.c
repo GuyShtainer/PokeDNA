@@ -863,7 +863,7 @@ static void test_make_legal(void) {
   gen3_build_mon(6, 20, 0x33334444u, 0xBBBB0003u, "MLTEST", 3, rec);
 
   GbEditMon out; Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, NULL, &out, &loss);
+  G3GbStatus st = gen3_to_gb(rec, GB_GEN2, true, NULL, &out, &loss);
   CHECK(st == G3GB_OK, "Charizard L20 converts (%s)", g3gb_status_text(st));
   if (st != G3GB_OK) return;
 
@@ -971,7 +971,7 @@ static void test_make_legal(void) {
     uint8_t rec2[80];
     gen3_build_mon(133, 5, 0x55556666u, 0xCCCC0004u, "NOFIX", 3, rec2);
     GbEditMon out2; Gen3ToGbLoss loss2;
-    G3GbStatus st2 = gen3_to_gb(rec2, GB_GEN2, NULL, &out2, &loss2);
+    G3GbStatus st2 = gen3_to_gb(rec2, GB_GEN2, true, NULL, &out2, &loss2);
     CHECK(st2 == G3GB_OK, "Eevee L5 converts (%s)", g3gb_status_text(st2));
     if (st2 == G3GB_OK) {
       uint8_t fl = 0, tl = 0;
@@ -995,7 +995,7 @@ static void test_make_legal(void) {
     uint8_t rec3[80];
     gen3_build_mon(130, 5, 0x77778888u, 0xDDDD0005u, "GYAOK", 3, rec3);
     GbEditMon out3; Gen3ToGbLoss loss3;
-    G3GbStatus st3 = gen3_to_gb(rec3, GB_GEN2, NULL, &out3, &loss3);
+    G3GbStatus st3 = gen3_to_gb(rec3, GB_GEN2, true, NULL, &out3, &loss3);
     CHECK(st3 == G3GB_OK, "Gyarados L5 converts (%s)", g3gb_status_text(st3));
     if (st3 == G3GB_OK) {
       uint8_t fl = 0, tl = 0;
@@ -1009,7 +1009,7 @@ static void test_make_legal(void) {
     uint8_t rec4[80];
     gen3_build_mon(119, 30, 0x9999AAAAu, 0xEEEE0006u, "SEAOK", 3, rec4);
     GbEditMon out4; Gen3ToGbLoss loss4;
-    G3GbStatus st4 = gen3_to_gb(rec4, GB_GEN2, NULL, &out4, &loss4);
+    G3GbStatus st4 = gen3_to_gb(rec4, GB_GEN2, true, NULL, &out4, &loss4);
     CHECK(st4 == G3GB_OK, "Seaking L30 converts (%s)", g3gb_status_text(st4));
     if (st4 == G3GB_OK) {
       uint8_t fl = 0, tl = 0;

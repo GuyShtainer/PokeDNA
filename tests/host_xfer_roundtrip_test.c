@@ -407,7 +407,7 @@ static void test_make_legal_edge_case(void) {
 
   GbEditMon down;
   Gen3ToGbLoss loss;
-  G3GbStatus st = gen3_to_gb(sample, GB_GEN2, NULL, &down, &loss);
+  G3GbStatus st = gen3_to_gb(sample, GB_GEN2, true, NULL, &down, &loss);
   CHECK(st == G3GB_OK, "the underlevelled edge case converts (species %u, %s)",
         base.species, g3gb_status_text(st));
   if (st != G3GB_OK) return;
