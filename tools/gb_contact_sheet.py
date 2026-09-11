@@ -210,6 +210,12 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # "gb-mon-summary-parity" per this list's own append-only rule.
     ("gb-fly", "BACKLOG #90 — the Gen-1/2 Fly-destination screen (list, toggle, "
      "save prompt)", ("BACKLOG #90",)),
+    # BACKLOG #94 (F1 step 3, this slice): the Gen-2 box-rename banner over
+    # gb_boxnames.h. Shots come from tools/dgb_shots.py's run_b90_boxname(),
+    # captions all start "BACKLOG #94:". Appended after "gb-fly" per this list's
+    # own append-only rule.
+    ("gb-boxname", "BACKLOG #94 — the Gen-2 box-rename banner (osk_input, "
+     "gbbn_rename)", ("BACKLOG #94",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}

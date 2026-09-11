@@ -1300,6 +1300,22 @@ def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                           "rmbl_fire(RCUE_EDIT) is the same edit haptic every "
                           "other GB screen's own field edits use")
 
+    # D4 (BACKLOG #90): START's mark-all. Fires from the SAME cursor position
+    # 03_toggled left the toggled row on, still row 2 -- START asks a confirm, then
+    # sets every row not already ON (skipping Gen 2's four spawn-only rows via the
+    # "spn" fly_tag() predicate), same shape as the Gen-3 Fly screen's own START.
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # Fly's own START (not the box grid's)
+    s.shot("04_start_confirm", "BACKLOG #90: START -> 'Mark all destinations? "
+                                "Skips story order.' (app_confirm), the same "
+                                "one-shot gate pdna_fly.c's own START uses")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # confirm -> mark-all loop -> result panel
+    s.shot("05_start_result", "BACKLOG #90: the '%d newly marked.' result panel"
+                               + (" -- 'Spawn-only rows untouched.' on Gen 2 (the "
+                                  "four spn-tagged rows are never a real Fly-menu "
+                                  "destination, so mark-all leaves them exactly as "
+                                  "found)" if which == "crystal" else ""))
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the result panel -> back to the grid
+
     if which == "crystal":
         # Gen 2 only: scroll to a spawn-only row (index 0/1/17/27 -- HOME/DEBUG/
         # UNION_CAVE/FAST_SHIP, see pdna_gbfly.h's own header note) and show its
@@ -1309,25 +1325,158 @@ def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
         # -- Fast Ship and Union Cave (idx17) are both spawn-only ("spn"-tagged), same
         # as row 0 (Spawn: Home) and row 1 (Spawn: Debug) would have been.
         s.press_n("UP", 2, settle=gb_shots.SETTLE)          # row 2 -> row 0 -> wraps to row 27 (Fast Ship)
-        s.shot("04_spawn_only_tag", "BACKLOG #90: row 27 (Fast Ship) carries the "
+        s.shot("06_spawn_only_tag", "BACKLOG #90: row 27 (Fast Ship) carries the "
                                      "'spn' tag and the footer legend 'spn = not a "
                                      "Town Map stop' -- flypoints.asm's own Fly menu "
                                      "never offers this bit as a destination even "
-                                     "though wVisitedSpawns has a real bit for it")
+                                     "though wVisitedSpawns has a real bit for it -- "
+                                     "still off after D4's mark-all, proving the "
+                                     "skip really held")
         s.press_n("DOWN", 2, settle=gb_shots.SETTLE)        # back to row 2 (the toggled row)
 
     s.tap("B", settle=gb_shots.BIG_SETTLE)                  # B with a real pending edit -> commit prompt
-    s.shot("05_commit_prompt", "BACKLOG #90: B with a real pending edit -> 'Save "
+    s.shot("07_commit_prompt", "BACKLOG #90: B with a real pending edit -> 'Save "
                                 "fly destinations?' (app_confirm), the same dialog "
                                 "every other GB screen's own commit uses")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # A = yes -> gb_persist() -> PDNA_DELTA refusal
-    s.shot("06_confirmed", "BACKLOG #90: A confirms -- gb_persist()'s PDNA_DELTA "
+    s.shot("08_confirmed", "BACKLOG #90: A confirms -- gb_persist()'s PDNA_DELTA "
                             "branch refuses ('Edits are in-session only in the "
                             "emulator build.') because this build has no SD card "
                             "for a GB image at all (same #62 D2/D5 branch every "
                             "other GB screen's own commit hits here); the write "
                             "path itself is proved by the retail gate's fly case "
                             "(tools/gb_retail_gate.py), not this shot")
+
+    return s
+
+
+# source/osk.c's QWERTY rows (both cases, no shift mode) -- kept as a literal copy
+# for the SAME reason g3_shots.py's own osk shot does not need one (it never types
+# a full name): this one does, so it needs to know which (row, col) cell holds each
+# glyph. Any drift from source/osk.c's own KB[] would only make this driver type
+# the wrong letters, never break the app itself -- osk.c stays the single source of
+# truth for what actually ships.
+_OSK_KB_ROWS = [
+    "1234567890",
+    "qwertyuiop",
+    "asdfghjkl",
+    "zxcvbnm",
+    "QWERTYUIOP",
+    "ASDFGHJKL",
+    "ZXCVBNM",
+    " -.,'!?",
+]
+
+
+def _osk_type_char(s: "gb_shots.Session", pos: list[int], ch: str) -> None:
+    """Drive the on-screen keyboard's cell cursor from `pos` (mutated in place --
+    [row, col], the SAME two ints osk_core's own `cr`/`cc` track) to `ch`'s cell via
+    DOWN/RIGHT only (osk.c's cr/cc both wrap, so any cell is reachable without ever
+    needing UP/LEFT), then A to insert it at the current caret position. Mirrors
+    osk_core's OWN per-loop clamp (`if (cc >= rowlen(cr)) cc = rowlen(cr) - 1;`) when
+    a row change lands on a column past the new row's shorter length."""
+    target = None
+    for r, row in enumerate(_OSK_KB_ROWS):
+        c = row.find(ch)
+        if c >= 0:
+            target = (r, c)
+            break
+    if target is None:
+        raise ValueError(f"_osk_type_char: {ch!r} is not on any osk.c KB row")
+    tr, tc = target
+    cr, cc = pos
+    downs = (tr - cr) % len(_OSK_KB_ROWS)
+    if downs:
+        s.press_n("DOWN", downs, settle=gb_shots.SETTLE)
+    cr = tr
+    if cc >= len(_OSK_KB_ROWS[cr]):
+        cc = len(_OSK_KB_ROWS[cr]) - 1   # osk_core's own clamp, applied before the next move
+    rights = (tc - cc) % len(_OSK_KB_ROWS[cr])
+    if rights:
+        s.press_n("RIGHT", rights, settle=gb_shots.SETTLE)
+    s.tap("A", settle=gb_shots.SETTLE)    # KEY_A -> u8w_apply_key(..., U8W_OP_INSERT, KB[cr][tc])
+    pos[0], pos[1] = cr, tc
+
+
+def run_b90_boxname(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """F1 step 3 (BACKLOG #94): the Gen-2 box-rename banner, over gb_boxnames.h's
+    gbbn_rename/gbbn_supported (source/pdna_gen12.c's gbsrc_set_name_impl/
+    gbsrc_can_rename_impl, the guard-split pair this slice wired). `rom` must be a
+    Gen-2-only ONE-ROM fused image (Gold.gbc+Gold.sav or Crystal.gbc+Crystal.sav,
+    same BACKLOG #98 harness-gap reasoning as --b90-fly) -- Gen 1 has no box-name
+    table at all (gbbn_supported refuses it), so this shot is Gen-2 only by design,
+    not a coverage gap.
+
+    Nav: A (S1 info) -> box grid (cur=0, on_title=false) -> UP (on_title=true, the
+    banner) -> A -> gbsrc_can_rename_impl() true (g_ed exists on this resident-image
+    entry, app_can_edit() true even in the emulator -- only the FINAL write is
+    Omega-gated, not the in-RAM edit -- and gbbn_supported() true on a Gen-2 save)
+    -> osk_input("BOX NAME", <current name>, ...) opens, seeded and caret-at-end.
+
+    The real sequence differs from a same-shaped Fly/Bag/Pack commit in ONE way this
+    slice's own design calls for: gbsrc_set_name_impl() calls gb_persist("boxname")
+    itself, directly inside src->set_name() (BEFORE pdna_box.c's own `src->commit()`
+    even runs) -- so the PDNA_DELTA refusal's msg_wait (source/pdna_main.c, "Press
+    A" to dismiss, NOT B) fires the instant osk_input's own START confirms the new
+    name, and the box grid does not repaint with the RENAMED banner until THAT
+    dialog is dismissed. Order on screen is therefore: seeded keyboard -> (backspace
+    the old name, type a new one, START) -> persist-refusal dialog -> A dismisses it
+    -> THEN the renamed banner."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b94_{which}_")
+    print(f"== BACKLOG #94: {which}'s own box-rename banner (single-ROM image -> "
+          "standalone -> box grid -> banner -> A -> osk_input) ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                    # S1 info -> box grid
+    s.run(GB_ART_COLD_SETTLE)
+    s.shot("01_box_grid", f"BACKLOG #94: {which}'s own box grid, freshly opened -- "
+                           "box 0, cursor on the top-left cell")
+
+    # This transition's own repaint (draw_box_banner's selection frame + draw_footer's
+    # on_title hint) lands slower than BIG_SETTLE's 40 frames on this image -- measured
+    # empirically (40 frames: still the pre-UP banner/footer; 200: fully repainted) --
+    # so it gets its own longer settle rather than a shared constant tuned for the
+    # cheaper cursor moves the rest of this file uses BIG_SETTLE for.
+    s.tap("UP", settle=200)                                   # cur < COLS -> on_title = true
+    s.shot("02_banner_selected", "BACKLOG #94: UP from the top row selects the "
+                                  "TITLE row (on_title = true) -- A on the banner "
+                                  "is the rename shortcut (BACKLOG #33), same one "
+                                  "the Gen-3 box screen already has")
+
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # can_rename true -> osk_input opens
+    s.shot("03_osk_seeded", "BACKLOG #94: A on the banner -> gbsrc_can_rename_impl() "
+                             "allows it (a live Gen-2 session, an Omega-writable "
+                             "cart, gbbn_supported() true) -> osk_input('BOX NAME', "
+                             "...) opens seeded with the box's CURRENT name, caret "
+                             "already past the last character")
+
+    pos = [0, 0]                                              # osk_core's own cr=0, cc=0 start
+    for _ in range(8):                                        # box names cap at 8 chars -- always
+        s.tap("B", settle=gb_shots.SETTLE)                    # enough backspaces to clear any seed
+    for ch in "TEST":
+        _osk_type_char(s, pos, ch)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)                # confirm -> set_name() -> gb_persist()
+    s.shot("04_persist_refusal", "BACKLOG #94: START confirms the new name 'TEST' "
+                                  "-- gbsrc_set_name_impl() writes it via "
+                                  "gbbn_rename() THEN calls gb_persist('boxname') "
+                                  "itself, so the PDNA_DELTA refusal (source/"
+                                  "pdna_main.c's msg_wait, 'Edits are in-session "
+                                  "only in the emulator build.', dismissed with A) "
+                                  "fires HERE, before the box grid ever repaints -- "
+                                  "the write already landed in g_ed->img regardless "
+                                  "(same #62 D2 posture every other GB screen's own "
+                                  "commit has); the real write is proved by the "
+                                  "retail gate's boxname case (tools/"
+                                  "gb_retail_gate.py), not this shot")
+
+    s.tap("A", settle=200)                                    # dismiss msg_wait -> box grid repaints
+    s.shot("05_renamed_banner", "BACKLOG #94: A dismisses the refusal dialog -- "
+                                 "the box grid repaints and the banner now reads "
+                                 "'TEST' (gbsrc_get_name() re-reads g_m->g2names, "
+                                 "which gbsrc_set_name_impl() refreshed right after "
+                                 "the write -- without that refresh this would "
+                                 "still show the pre-rename name until a full "
+                                 "remount)")
 
     return s
 
@@ -1876,6 +2025,12 @@ def main(argv=None) -> int:
                           "screen) -- --image MUST be a ONE-ROM fused image "
                           "matching this choice (same BACKLOG #98 harness-gap "
                           "reasoning as --u4-bag/--u5-pack)")
+    ap.add_argument("--b94-boxname", choices=("gold", "crystal"),
+                     help="F1 step 3 (BACKLOG #94): only run_b90_boxname() against "
+                          "--image for the named game (the Gen-2 box-rename banner) "
+                          "-- --image MUST be a ONE-ROM fused image matching this "
+                          "choice (Gold.gbc+Gold.sav or Crystal.gbc+Crystal.sav), "
+                          "same BACKLOG #98 harness-gap reasoning as --b90-fly")
     ap.add_argument("--out", type=Path, default=ROOT / "docs" / "shots" / "gb")
     ap.add_argument("--cold-start-compare", nargs=2, type=Path, metavar=("LOC_IMAGE", "NOLOC_IMAGE"),
                      help="BACKLOG #68b: measure+report the box-grid cold-start frame cost "
@@ -1977,6 +2132,19 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b90 fly ({a.b90_fly}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b94_boxname:
+        try:
+            sess = run_b90_boxname(core_mod, image_mod, a.image, a.out, a.b94_boxname)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b94 boxname ({a.b94_boxname}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:
