@@ -1748,6 +1748,117 @@ def run_b86_clock_gen1_fallback(core_mod, image_mod, rom: Path, out_dir: Path) -
     return s
 
 
+def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """BACKLOG #88: pdna_gbflags.c's own Flags & counters screen -- reached via the
+    standalone mount's nav menu, NV_DATA (index 8, column 0: Party->Bank->Daycare->
+    Trainer->Clock fix->Mirage->Pokedex->Bag->Flags & counters, DOWN x8 from a fresh
+    menu -- same col=i/PDNA_NAV_ROWS, row=i%PDNA_NAV_ROWS arithmetic run_b86_clock's
+    own DOWN x4 uses for NV_CLOCK, index 4).
+
+    `rom` MUST be a ONE-ROM fused image matching `which` ("red" -> Red.gb+Red.sav,
+    "crystal" -> Crystal.gbc+Crystal.sav), same single-ROM posture as run_b86_clock/
+    run_d7_gold/run_u4_bag.
+
+    Both games share the COUNTERS tab + a toggle + CAUTION + the raw browser + B's
+    confirm; they differ in which FLAGS-tab HEADER sits first (Red's own group order,
+    tools/gen_gbfields.py's GROUPS_GEN1, starts with "Key events" -- an ordinary
+    GBFL_KIND_TOGGLE section, so Red's own toggle/CAUTION shots come from there;
+    Crystal's GROUPS_GEN2 starts with "Key items (grant via the Bag)" -- a
+    GBFL_KIND_BAG_GRANT section, so Crystal's own run captures the read-only bag-grant
+    row instead of toggling anything in it (SELECT jumps to "Key events", the next
+    section, TOGGLE-kind, for Crystal's own toggle/CAUTION shots)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, f"b88_flags_{which}_")
+    print(f"== BACKLOG #88: the Flags & counters screen ({which}) ==")
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box screen -> nav menu
+    s.press_n("DOWN", 8)                                       # Party -> ... -> Flags & counters (col 0, row 8)
+    s.shot("01_nav_menu", "BACKLOG #88: the nav menu with 'Flags & counters' selected "
+                           "-- NAV_OK on both kinds now (nav_avail.c's ok_both row)")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> pdna_gbflags(), COUNTERS tab
+    s.shot("02_counters_tab", "BACKLOG #88: the COUNTERS tab -- Money/Coins/Rival"
+                               + ("/Safari steps" if which == "red" else "/Lucky#")
+                               + ", row 0 (Money) selected")
+
+    # A counter edit: Money's own num_entry overlay, then cancel (SELECT) so the
+    # underlying value is untouched for the rest of this run.
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("03_counter_edit", "BACKLOG #88: row 0 (Money)'s own num_entry overlay -- the on-screen "
+                               "keyboard/number pad, current value pre-filled")
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)              # osk_search: SELECT cancels
+
+    # L/R swap to the FLAGS tab -- every session starts fully collapsed.
+    s.tap("R", settle=gb_shots.BIG_SETTLE)
+    s.shot("04_flags_tab_folded", "BACKLOG #88: the FLAGS tab, freshly entered -- every section "
+                                   "FOLDED (s_gbfl_folded's own 0xFFFFFFFF starting "
+                                   "state, mirrors pdna_main.c's own data editor)")
+
+    # Unfold the first header (A on a header row folds/unfolds it).
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("05_section_opened", "BACKLOG #88: header row 0 unfolded ('+' -> '-') -- its member "
+                                 "rows are now visible")
+
+    if which == "red":
+        # Red's header 0 is "Key events" (GBFL_KIND_TOGGLE) -- step onto its first
+        # member row and toggle it: the one-time CAUTION, then the toggled result.
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+        s.shot("06_flag_selected", "BACKLOG #88: the first member row of 'Key events' selected -- "
+                                    "a plain GBFL_KIND_TOGGLE row")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)
+        s.shot("07_caution", "BACKLOG #88: the one-time CAUTION ('Toggling story flags can / "
+                              "soft-lock the save.') -- shown once per screen visit, "
+                              "shared between the named list and the raw browser")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # dismiss -> the toggle itself lands
+        s.shot("08_toggled", "BACKLOG #88: the flag toggled ON/off -- gbfl_set wrote the bit "
+                              "straight into the session's own RAM image")
+        jump_presses = 6   # from inside header 0's group: h1,h2,h3,h4,h5,raw
+    else:
+        # Crystal's header 0 IS "Key items (grant via the Bag)" -- show its read-only
+        # row, then SELECT-jump to the next (TOGGLE-kind) section for the toggle/
+        # CAUTION shots.
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+        s.shot("06_bag_grant_row", "BACKLOG #88: the first member row of 'Key items (grant via "
+                                    "the Bag)' selected -- GBFL_KIND_BAG_GRANT, drawn "
+                                    "dim with the '(bag)' suffix")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)
+        s.shot("07_bag_grant_message", "BACKLOG #88: A on a bag-grant row -- 'Grant this from the "
+                                        "Bag screen, not here.' (no flag is ever "
+                                        "toggled by this row)")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # dismiss
+        s.tap("SEL", settle=gb_shots.BIG_SETTLE)          # jump to the next header ('Key events'), still FOLDED
+        s.tap("A", settle=gb_shots.BIG_SETTLE)            # unfold it (A on a header row folds/unfolds)
+        s.tap("DOWN", settle=gb_shots.SETTLE)             # onto its first member row
+        s.tap("A", settle=gb_shots.BIG_SETTLE)
+        s.shot("08_caution", "BACKLOG #88: 'Key events' (GBFL_KIND_TOGGLE): the one-time CAUTION "
+                              "on its first real toggle")
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # dismiss -> the toggle lands
+        s.shot("08b_toggled", "BACKLOG #88: the flag toggled -- gbfl_set wrote the bit")
+        jump_presses = 5   # from inside header 1's group: h2,h3,h4,h5,raw
+
+    # SELECT-jump around to the trailing raw-browser row, then open it. The jump
+    # walks forward through ROW INDICES (not folded-visible positions) to the next
+    # header or the raw row.
+    for _ in range(jump_presses):
+        s.tap("SEL", settle=gb_shots.SETTLE)
+    s.shot("09_raw_row_selected", "BACKLOG #88: SELECT-jumped to the trailing 'Raw flag browser "
+                                   "(#N)...' row -- mirrors Gen 3's own flags_raw_view "
+                                   "entry point")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)
+    s.shot("10_raw_browser", "BACKLOG #88: the raw flag browser -- every bit of the whole event-"
+                              "flags region (2560 Gen 1 / 2048 Gen 2 bits), #N "
+                              "centred, ON/off per row")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # back to the FLAGS tab
+
+    # B out of the screen entirely -> the commit confirm (dirty from the toggle above).
+    s.tap("B", settle=gb_shots.BIG_SETTLE)
+    s.shot("11_save_confirm", "BACKLOG #88: B with unsaved edits -- 'Save data changes?' / 'Edits "
+                               "write immediately.' (app_confirm, before the one "
+                               "gbs_finish()+gb_persist('gbflags') commit)")
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # decline: this run never actually commits
+    return s
+
+
 # ---------------------------------------------------------------------------------
 # BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL on a Gen 3 -> Game Boy paste.
 # ---------------------------------------------------------------------------------
@@ -2143,6 +2254,11 @@ def main(argv=None) -> int:
                           "two-slot Day Care + compatibility) -- --image MUST be a "
                           "ONE-ROM fused image matching this choice (same "
                           "single-ROM harness gap as --u4-bag/--u5-pack)")
+    ap.add_argument("--b88-flags", choices=("red", "crystal"),
+                     help="BACKLOG #88: only run_b88_flags() against --image for the "
+                          "named game (pdna_gbflags.c's own Flags & counters screen) "
+                          "-- --image MUST be a ONE-ROM fused image matching this "
+                          "choice, same single-ROM posture as --b86-clock")
     ap.add_argument("--r1-xfer", action="store_true",
                      help="BACKLOG #104 R1: only run_r1_xfer() against --image -- "
                           "--image MUST be pokedna-delta-artless.gba fused with an "
@@ -2302,6 +2418,19 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b85 daycare ({a.b85_daycare}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.b88_flags:
+        try:
+            sess = run_b88_flags(core_mod, image_mod, a.image, a.out, a.b88_flags)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b88 flags ({a.b88_flags}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

@@ -222,6 +222,15 @@ FEATURE_TABLE: list[tuple[str, str, tuple[str, ...]]] = [
     # start "#95:".
     ("gb-mon-summary-parity", "#95 — summary-field parity audit: Shiny, Egg, Met "
      "Time/Level/Loc/OT Gender rows closed for Gen 2", ("#95",)),
+    # BACKLOG #88 (append-only, same rule as every row above): the Flags & counters
+    # screen (source/pdna_gbflags.c) -- two tabs (COUNTERS | FLAGS), a foldable
+    # named-flags list with section headers, a one-time CAUTION, the trailing raw
+    # flag browser, and B's own commit confirm. Shots come from
+    # tools/dgb_shots.py's run_b88_flags() (Red + Crystal); captions all start
+    # "BACKLOG #88:".
+    ("gb-flags", "BACKLOG #88 — Flags & counters (source/pdna_gbflags.c): two tabs, "
+     "foldable named-flags list, bag-grant/story/warn row kinds, raw flag browser",
+     ("BACKLOG #88",)),
 ]
 FEATURE_ORDER = [fid for fid, _title, _prefixes in FEATURE_TABLE]
 FEATURE_TITLE = {fid: title for fid, title, _prefixes in FEATURE_TABLE}
