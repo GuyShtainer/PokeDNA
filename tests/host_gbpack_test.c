@@ -7,6 +7,7 @@
  *      source/gen1_save.c source/gen1_write.c source/gen2_save.c source/gen2_write.c \
  *      source/data_tables.c source/gen3_to_gb.c source/gb_sidecar.c source/gen3_edit.c \
  *      source/gen3_mon.c source/gen3_box.c source/gen3_save.c source/gen3_daycare.c \
+ *      source/gb_item_names.c \
  *      -o /tmp/hgbpack && /tmp/hgbpack
  *
  * WHY AN #include OF THE SHIPPED FILE, NOT A LINK TO IT. pdna_gbpack.c is NOT one
@@ -84,6 +85,22 @@ void gbscr_text(GbScreen* gs, int x, int y, const char* s) {
     g_src[y][x + i] = GBSCR_SRC_FONT;
     g_text[y][x + i] = s[i];
   }
+}
+
+/* gbnames review A3: pdna_gbpack_body.inc's own NAME-row blank sweep now calls
+ * gbscr_text_cols(gs->gen, buf) instead of strlen(buf) (the real fix -- source/
+ * pdna_gbscreen.c, glyph-accurate via gb_char_encode()). This stand-in matches
+ * THIS test file's own simplified gbscr_text() above (one BYTE per cell, no
+ * real GB encoding -- see that function just above), so the two agree here by
+ * construction; the byte-vs-glyph coverage itself lives in
+ * tests/host_gbscreen_test.c, which links the REAL gbscr_text()/gbscr_text_cols()
+ * pair against gb_edit.c's actual gb_char_encode(). */
+int gbscr_text_cols(uint8_t gen, const char* s) {
+  (void)gen;
+  if (!s) return 0;
+  int n = 0;
+  while (s[n] && n < GRID_W) n++;
+  return n;
 }
 
 /* ============================================================================

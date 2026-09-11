@@ -498,6 +498,22 @@ void gbscr_cell(GbScreen* gs, int x, int y, GbScrSrc src, uint8_t tile);
  * closely enough for a shell that never itself decides line width. */
 void gbscr_text(GbScreen* gs, int x, int y, const char* ascii);
 
+/* How many CELLS gbscr_text(gen, ..., ascii) would actually paint -- one per GLYPH
+ * (gb_char_encode()'s unit), NOT one per byte of `ascii`. gbnames review A3: a
+ * caller that advances its own cursor/blank-sweep by strlen(ascii) instead is
+ * counting UTF-8 BYTES, and every multi-byte glyph this codec accepts (the two-
+ * byte "e"+combining-acute -> UTF-8 0xC3 0xA9 for e-acute, and the two-ASCII-char
+ * apostrophe-contractions "'d"/"'s"/...) then overcounts by one cell per glyph --
+ * the sweep starts one column too far right and leaves the previous name's last
+ * glyph on screen (docs/shots/gb/gbnames_crystal_02_balls_real_names.png: "POKé
+ * BALLE" -- the stray 'E' at column 17 is Ultra Ball's trailing L that the
+ * strlen-based sweep never reached because "POKé BALL" is 9 glyphs but strlen()
+ * of its UTF-8 spelling is 10 bytes). Callers doing their own column arithmetic
+ * (a blank-sweep bound, not a straight gbscr_text() paint) must use THIS, not
+ * strlen(), to compute where the text actually ends. Same truncation-at-
+ * GBSCR_COLS behaviour as gbscr_text() itself. */
+int gbscr_text_cols(uint8_t gen, const char* ascii);
+
 /* Names already stored in GB encoding (gb_trainer's name_raw) go straight in, one
  * byte per cell, no ASCII step -- same 0x7F-is-blank rule as gbscr_text(). Paints
  * exactly `n` cells (the caller's own field width) -- but once it sees the 0x50

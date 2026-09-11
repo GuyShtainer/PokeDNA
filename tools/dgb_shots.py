@@ -2960,6 +2960,14 @@ def main(argv=None) -> int:
                           "byte-poked first (a nicknamed mon for *-nick, a shiny DV "
                           "quad for crystal-shiny) -- see run_b89_hof_detail_only()'s "
                           "own docstring")
+    ap.add_argument("--gbnames", choices=("red", "crystal"),
+                     help="gbnames brief: only run_gbnames() against --image for the "
+                          "named game -- real Gen-1/Gen-2 item names now shown by "
+                          "pdna_gbbag.c/pdna_gbpack_body.inc (source/gb_item_names.c, "
+                          "an embedded identifier table). --image MUST be a ONE-ROM "
+                          "fused image matching this choice (Red.gb+Red.sav or "
+                          "Crystal.gbc+Crystal.sav, same BACKLOG #98 harness-gap "
+                          "reasoning as --u4-bag/--u5-pack)")
     ap.add_argument("--b90-fly", choices=("red", "crystal"),
                      help="BACKLOG #90: only run_b90_fly() against --image for the "
                           "named game (Red's or Crystal's own Fly-destination "
@@ -2984,6 +2992,11 @@ def main(argv=None) -> int:
 
     core_mod, image_mod = gb_shots.load_mgba()
 
+    # the dispatch chain below: every new flag's block sets `ran = True` and
+    # ends with `return 0` -- a `ran = False` latch before this chain (lane
+    # tiny2, BACKLOG #117) plus `if ran: return 0` right after it is what
+    # stops an un-returned flag falling through into the combined boot-picker
+    # flow at the bottom of this function.
     if a.cold_start_compare:
         loc_image, noloc_image = a.cold_start_compare
         if not loc_image.is_file():
@@ -3291,6 +3304,24 @@ def main(argv=None) -> int:
         ran = True
 
     if ran:
+        return 0
+
+    if a.gbnames:
+        # every new flag block sets `ran = True`; lane tiny2's own `ran = False`
+        # latch (added right before `if ran: return 0` after this whole chain)
+        # returns for all of them -- this block already carries the statement so
+        # that merge is trivial (gbnames brief).
+        ran = True
+        try:
+            sess = run_gbnames(core_mod, image_mod, a.image, a.out, a.gbnames)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] gbnames ({a.gbnames}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
         return 0
 
     try:
@@ -3604,6 +3635,142 @@ def run_gbmon(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session
                                      "after Egg on a Gold session) -- proof the row "
                                      "list genuinely reflows around the absent Met "
                                      "rows rather than leaving a gap or a stale cursor")
+    return s
+
+
+def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
+    """gbnames brief: real Gen-1/Gen-2 item names, now shown by the shipped GB-shell
+    screens (pdna_gbbag.c's g1bag_paint_list, pdna_gbpack_body.inc's g2pack_paint_list)
+    via gb_item_label() (source/gb_item_names.c, an embedded identifier table --
+    GREEN per docs/kb/licensing.md, no ROM read, no locator). `which` picks the
+    generation, same shape as run_u4_bag()/run_u5_pack() above:
+
+      which="red":     `rom` MUST be a ONE-Gen-1-ROM fused image WITH Emerald.sav also
+                        fused (tools/fuse_sav.py then tools/fuse_gb.py Red.gb+Red.sav --
+                        BACKLOG #98's fused-image-by-generation harness gap, same
+                        constraint run_u4_bag() documents; run_u4_bag()'s own fixture
+                        convention, Emerald present). Nav is IDENTICAL to run_u4_bag()'s
+                        own red path: boot picker DOWN -> A (S1 info) -> A (box grid) ->
+                        START -> nav menu -> DOWN x7 (Party->Bank->Daycare->Trainer->
+                        Clock fix->Mirage->Pokedex->Bag, PDNA_NAV_ITEMS index 7) -> A ->
+                        pdna_gbbag_gen1_screen().
+      which="crystal":  `rom` MUST be a ONE-Gen-2-ROM fused image WITHOUT Emerald.sav
+                        (tools/fuse_gb.py straight off the base delta build, Crystal.gbc+
+                        Crystal.sav ONLY -- run_u5_pack()'s own fixture convention, no
+                        Emerald). Fusing Emerald.sav into this leg is a real footgun: the
+                        boot picker then has 2 rows (Emerald first) and a single A lands
+                        IN THE FUSED EMERALD SAVE'S OWN BAG (real Hoenn item names like
+                        'WAILMER PAIL'/'DEVON SCOPE') instead of the Gen-2 Pack screen --
+                        caught live capturing this slice's own shots, not a hypothetical.
+                        A single-ROM-only image skips the boot picker (gb_delta_pick_
+                        save()'s own `if (n == 1) return 0`, same as run_u5_pack()'s own
+                        doc comment) -- nav is IDENTICAL to run_u5_pack()'s own crystal
+                        path: A (S1 info) -> box grid -> START -> nav menu -> DOWN x7 ->
+                        A -> pdna_gbpack_gen2_screen().
+
+    Shots: the Items pocket (both gens show real names there by default -- id
+    lookups, no ROM decode), Balls pocket on the Gen-2 leg only (the brief's own
+    "Items + Balls pockets" ask), and one TM row per generation (both gens'
+    TM/HM synthesis, HM/TM%02u, exercised live). The Gen-1 leg also scrolls one
+    row past a long-vs-short name boundary (review-sonnet ask: prove the wider
+    blank sweep leaves no stale glyph) -- this corpus's Red.sav Items pocket
+    happens to open on its TMs (real save data, pickup order, not sorted by
+    this core), so shot 01 already doubles as the "one TM row" ask; no
+    ADD ITEM detour needed."""
+    if which == "red":
+        s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbnames_red_")
+        print("== gbnames: Red's own Item bag, real names ==")
+        s.run(700)
+        s.tap("DOWN", settle=gb_shots.SETTLE)               # Emerald (row 0) -> the GB row (row 1)
+        s.tap("A", settle=60)                               # pick it -> S1 info
+        s.tap("A", settle=60)                               # -> box grid (rom_gbsprite cold fetch)
+        s.run(GB_ART_COLD_SETTLE)
+        s.tap("START", settle=gb_shots.BIG_SETTLE)          # box grid -> nav menu
+        s.press_n("DOWN", 7)                                 # Party -> ... -> Bag (index 7)
+        s.tap("A", settle=GB_ART_COLD_SETTLE)               # Bag -> pdna_gbbag_gen1_screen()
+        s.shot("01_items_top_tm_rows", "gbnames: Red's Item bag, ITEMS pocket, top of "
+                                        "the list -- this corpus save's Items pocket "
+                                        "opens on TM05/TM06/TM27/TM29 (real save data, "
+                                        "pickup order), all via gb1_tmhm_label() -- the "
+                                        "brief's own 'one TM row' ask, not 'ITEM-n'")
+
+        # Scroll to the real (tabled, non-TM/HM) names further down this same pocket --
+        # DOWN x10 lands on TOWN MAP/BICYCLE/GOOD ROD/SUPER ROD* (8/7/8/9 chars, a real
+        # mix of widths), one more DOWN scrolls the whole window by one row.
+        s.press_n("DOWN", 10, settle=gb_shots.SETTLE)
+        s.shot("02_scroll_before", "gbnames: DOWN x10 -- real (tabled) Gen-1 names "
+                                    "now, not synthesized ones: TOWN MAP / BICYCLE / "
+                                    "GOOD ROD / SUPER ROD* (8/7/8/9 chars) -- the "
+                                    "'before' half of the no-stale-glyph scroll pair")
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+        s.shot("03_scroll_after", "gbnames: one more DOWN -- the window shifts one "
+                                   "row (TOWN MAP scrolls off, ITEMFINDER (10 chars) "
+                                   "scrolls in at the bottom): BICYCLE / GOOD ROD / "
+                                   "SUPER ROD* / ITEMFINDER -- every row shows exactly "
+                                   "its own name with no leftover glyph from the row "
+                                   "that used to be there (the widened NAME-row blank "
+                                   "sweep, pdna_gbbag.c `cx < BOX_X1`)")
+
+        # gbnames review A3 (CONFIRMED, fixed): a scroll pair over the SAME screen
+        # row that specifically exercises the byte-vs-glyph fix -- POKe FLUTE (10
+        # BYTES, but 9 GLYPHS: the e-acute's UTF-8 pair is one glyph) scrolling off,
+        # replaced by REVIVE (6 chars, no multi-byte glyph at all) in that exact
+        # row. Pre-fix, the sweep started at strlen("POKe FLUTE")=10 (one column
+        # PAST where the name's own 9th glyph actually painted), leaving whatever
+        # sat past column NAME_COL+10 unblanked -- the SAME defect class the
+        # 'POKe BALLE' shot showed on the Gen-2 leg (gbnames_crystal_02).
+        s.press_n("DOWN", 7, settle=gb_shots.SETTLE)        # total DOWN x18 from bag entry
+        s.shot("04_poke_flute_before", "gbnames: DOWN x18 from bag entry -- POKe "
+                                        "FLUTE / REVIVE / FULL RESTORE* / CANCEL "
+                                        "(POKe FLUTE: 10 bytes, 9 glyphs) -- the "
+                                        "'before' half of the glyph-specific scroll "
+                                        "pair (A3)")
+        s.tap("DOWN", settle=gb_shots.SETTLE)               # total DOWN x19 -- POKe FLUTE scrolls off
+        s.shot("05_poke_flute_after", "gbnames: one more DOWN -- POKe FLUTE has "
+                                       "scrolled off the top; REVIVE (6 chars, no "
+                                       "multi-byte glyph) now sits in the EXACT "
+                                       "screen row POKe FLUTE used to occupy, with "
+                                       "no stray glyph left over (the fix: "
+                                       "gbscr_text_cols(), glyph-accurate via "
+                                       "gb_char_encode(), not strlen())")
+        return s
+
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbnames_crystal_")
+    print("== gbnames: Crystal's own Pack, real names ==")
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image,
+                                                               # no boot picker)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)              # box grid -> nav menu
+    s.press_n("DOWN", 7)                                     # Party -> ... -> Bag (index 7)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                   # Bag -> pdna_gbpack_gen2_screen()
+    s.shot("01_items_real_names", "gbnames: Crystal's Pack, ITEMS pocket -- real "
+                                   "names from the embedded Gen-2 table, NOT "
+                                   "'ITEM-n'; the NAME-row blank sweep now covers "
+                                   "the full screen width (cols 8-19), not just "
+                                   "the old QTY_COL=17 bound")
+
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Items -> Balls
+    s.shot("02_balls_real_names", "gbnames: RIGHT -> BALLS pocket -- 'POKe BALL' "
+                                   "reads clean (review A3 fix: the NAME-row blank "
+                                   "sweep now starts from gbscr_text_cols(), which "
+                                   "counts GLYPHS via gb_char_encode(), not "
+                                   "strlen()'s BYTE count -- the pre-fix version of "
+                                   "this exact shot read 'POKe BALLE', a stray "
+                                   "trailing 'E' left over from ULTRA BALL because "
+                                   "strlen('POKe BALL')=10 overcounts the e-acute's "
+                                   "2-byte UTF-8 pair as 2 glyphs instead of 1, "
+                                   "starting the sweep one column short) -- the "
+                                   "brief's own 'Items + Balls' ask")
+
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Balls -> Key items
+    s.tap("RIGHT", settle=gb_shots.BIG_SETTLE)              # Key items -> TM/HM
+    s.shot("03_tm_row", "gbnames: RIGHT x2 -> TM/HM -- the two-digit TM/HM number "
+                         "prefix (cols 5-6) plus the SAME 'TM%02u'/'HM%02u' label "
+                         "shape as the Gen-1 leg, this time driven by the flag-index "
+                         "arithmetic g2pack_row_label()'s own TM/HM branch already "
+                         "had (unaffected by this slice's id-based table -- that "
+                         "branch never used a raw item id to begin with)")
     return s
 
 

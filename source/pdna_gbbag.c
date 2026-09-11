@@ -11,6 +11,7 @@
 
 #include "pdna_gbbag.h"
 #include "gb_bag.h"
+#include "gb_item_names.h" /* gb_item_label -- real Gen-1 item names (BACKLOG #111 superseded) */
 #include "log.h"
 #include "pdna_gen12.h"     /* gb_rollback / gb_persist / gb12_arena_tail(_release)   */
 #include "pdna_gbscreen.h"  /* the shared GB-screen shell                             */
@@ -72,7 +73,8 @@ static void gbbag_row_paint(const GbBag* bag, GbBagPocket pocket, int row, int y
      * for it, so it renders as a blank space on the GB screen) -- this plain
      * PokeDNA-font fallback page uses '-' instead too, purely for the SAME
      * wording everywhere this shell shows a raw item id. */
-    siprintf(lbl, "ITEM-%u", (unsigned)e->id);
+    if (!gb_item_label(GBIN_GEN1, e->id, lbl, sizeof lbl))
+      siprintf(lbl, "ITEM-%u", (unsigned)e->id);
     /* R2 (re-verify 3, decided): the plain page agrees with the GB-shell page
      * -- a Gen-1 key item shows no quantity here either (its stored qty byte
      * is not user-meaningful; the cartridge never prints it). This page never
@@ -258,11 +260,16 @@ static void g1bag_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket,
     if (is_cancel) {
       siprintf(buf, "CANCEL");
     } else if (has) {
-      /* D9 (review): '#' has no Gen-1 glyph -- gb_edit.c's enc_one() (the GB
-       * text encoder this screen's own gbscr_text() calls) has no case for
-       * it, so it silently rendered as a blank space; '-' (0xE3) is a real
-       * Gen-1 glyph and reads unambiguously as "item id N". */
-      siprintf(buf, "ITEM-%u", (unsigned)l->entries[idx].id);
+      /* gbnames: real name from the embedded Gen-1 identifier table
+       * (gb_item_names.c, GREEN per licensing) when this id has one; the
+       * "ITEM-n" fallback (D9, below) only fires for a documented hole.
+       * D9 (review, still true for the fallback): '#' has no Gen-1 glyph --
+       * gb_edit.c's enc_one() (the GB text encoder this screen's own
+       * gbscr_text() calls) has no case for it, so it silently rendered as
+       * a blank space; '-' (0xE3) is a real Gen-1 glyph and reads
+       * unambiguously as "item id N". */
+      if (!gb_item_label(GBIN_GEN1, l->entries[idx].id, buf, sizeof buf))
+        siprintf(buf, "ITEM-%u", (unsigned)l->entries[idx].id);
     } else {
       buf[0] = 0;
     }
@@ -276,8 +283,24 @@ static void g1bag_paint_list(GbScreen* gs, const GbBag* bag, GbBagPocket pocket,
      * followed a 3-digit one on the same row slot (e.g. Items' "ITEM #205"
      * scrolling into a 2-digit PC entry) -- a stale glyph leak, caught by
      * looking at the PC-store shot, not by any diff-count check (leak/scroll
-     * correctness must be shown from the compiled binary, per review). */
-    for (int cx = NAME_COL + (int)strlen(buf); cx <= QTY_COL; cx++)
+     * correctness must be shown from the compiled binary, per review).
+     * gbnames (review-sonnet ruling): a real name shares the NAME row with
+     * the qty row below it (qty_row() == name_row()+1), so the name field's
+     * true right edge is the box's own last interior column (BOX_X1-1 ==
+     * 18), not QTY_COL -- a real name up to GB1_SHELL_NAME_CAP (13) chars
+     * can run past the old QTY_COL=14 bound, and a SHORTER name after a
+     * longer one must still blank every column the longer one could have
+     * reached, all the way to 18, or it leaks a stale glyph the same way
+     * the original D1 fix (above) describes.
+     * gbnames review A3 (CONFIRMED, live on docs/shots/gb/
+     * gbnames_crystal_02_balls_real_names.png -- "POKé BALLE"): strlen(buf)
+     * counts UTF-8 BYTES, but gbscr_text() painted `buf` one COLUMN per
+     * GLYPH -- "POKé BALL" is 9 glyphs (the e-acute's UTF-8 pair is ONE
+     * glyph) but 10 bytes, so the sweep used to start one column short of
+     * where the name actually ends, leaving the previous (longer) name's
+     * last glyph on screen. gbscr_text_cols() walks the SAME gb_char_encode()
+     * loop gbscr_text() does, so the two can never disagree again. */
+    for (int cx = NAME_COL + gbscr_text_cols(gs->gen, buf); cx < BOX_X1; cx++)
       gbscr_cell(gs, cx, ny, GBSCR_SRC_TEXTBOX, G1I_BLANK);
 
     /* D1 (review): a Gen-1 key item prints NO quantity on the real cartridge,

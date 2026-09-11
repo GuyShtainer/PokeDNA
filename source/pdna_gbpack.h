@@ -68,11 +68,14 @@
  *    description-pointer table locator was time-boxed, per the brief's own
  *    permission) -- the box is drawn EMPTY (its frame only), a documented, honest
  *    deviation from the real screen's own two lines of prose, not a crash/dead end.
- *  - Item names: NOT located this slice either (same time-box posture as Gen 1's own
- *    ItemNames table, U4) -- every item prints "ITEM-n" (n = the raw id byte),
- *    exactly Gen 1's own posture; the real names quoted above ("FIRE STONE",
- *    "MASTER BALL", ...) are cited purely as ground truth for the CELL LAYOUT, never
- *    shipped as data.
+ *  - Item names: SHIPPED (BACKLOG gbnames brief, supersedes BACKLOG #111's "locator
+ *    slice" note above, and Gen 1's own matching note in pdna_gbbag.h) -- an EMBEDDED
+ *    identifier table (source/gb_item_names.c, GREEN per docs/kb/licensing.md: a fact
+ *    list, no ROM read, no locator, no decoded prose). TM/HM labels are synthesized
+ *    from the id (see gb_item_names.c's own header for the exact Gen-2 ranges, which
+ *    were RE-DERIVED from item_constants.asm -- two holes inside the TM run, not one).
+ *    "ITEM-n" only fires for a documented hole (an unused id). The real names quoted
+ *    above ("FIRE STONE", "MASTER BALL", ...) are now the SAME strings the table ships.
  *  - Per-item pocket membership (which pocket a given item id legally belongs to) was
  *    NOT located this slice (time-boxed, per the brief's own fallback permission) --
  *    ADD ITEM works ONLY from the Items pocket (the brief's own sanctioned "fall back
