@@ -79,7 +79,7 @@ static void unown_letter_label(int letter, char out[16]) {
   siprintf(out, "Letter %c", (char)('A' + letter));
 }
 
-static void unown_render(GbSession* s, int sel, int top) {
+static void unown_render(GbSession* s, int sel, int top, bool can_edit) {
   ui_clear();
   ui_text(4, 2, UI_TITLE, "UNOWN FORMS");
   ui_hline(0, 11, UI_SCR_W, UI_BORDER);
@@ -89,29 +89,39 @@ static void unown_render(GbSession* s, int sel, int top) {
     trainer_flag_row_paint(lbl, gbdex_unown_seen(s, letter),
                            UNOWN_ROW_Y0 + i * UNOWN_ROW_STEP, letter == sel);
   }
-  trainer_key_legend("U/D select  A toggle  B back");
+  /* D3 (b87 fix pass, DO-NOT-SHIP review): a read-only cart must not advertise an
+   * "A toggle" it will refuse -- the legend itself is the tell. */
+  trainer_key_legend(can_edit ? "U/D select  A toggle  B back" : "U/D select  B back");
 }
 
 /* Returns true iff at least one letter's seen state actually changed. Does NOT call
  * gbs_finish() -- same batching contract as the dex shims above; pdna_gbdex() finishes
- * once after BOTH this screen and the Pokedex screen have had their turn. */
-static bool unown_forms_screen(GbSession* s) {
+ * once after BOTH this screen and the Pokedex screen have had their turn.
+ * D3 (b87 fix pass, DO-NOT-SHIP review): this screen used to ignore can_edit entirely
+ * -- a read-only cart (Everdrive, or any cart pdna_app.h's app_can_edit() refuses)
+ * could still flip Unown letters. Gated the same way pdna_dex_screen (the sibling
+ * screen this file also drives) already gates its own edits. */
+static bool unown_forms_screen(GbSession* s, bool can_edit) {
   int sel = 0, top = 0;
   bool dirty = false;
   unown_clamp_scroll(&sel, &top);
-  unown_render(s, sel, top);
+  unown_render(s, sel, top, can_edit);
   for (;;) {
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_A | KEY_B);
     if (k & KEY_B) return dirty;
     if (k & KEY_UP)   sel--;
     if (k & KEY_DOWN) sel++;
     if (k & KEY_A) {
-      bool now = gbdex_unown_seen(s, sel);
-      GbsStatus st = gbdex_unown_set(s, sel, !now);
-      if (st == GBS_OK && gbdex_unown_seen(s, sel) != now) dirty = true;
+      if (!can_edit) {
+        snd_deny();
+      } else {
+        bool now = gbdex_unown_seen(s, sel);
+        GbsStatus st = gbdex_unown_set(s, sel, !now);
+        if (st == GBS_OK && gbdex_unown_seen(s, sel) != now) dirty = true;
+      }
     }
     unown_clamp_scroll(&sel, &top);
-    unown_render(s, sel, top);
+    unown_render(s, sel, top, can_edit);
   }
 }
 
@@ -146,7 +156,7 @@ static bool gbdex_chooser(GbSession* s, bool can_edit) {
         if (pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, can_edit))
           dirty = true;
       } else {
-        if (unown_forms_screen(s)) dirty = true;
+        if (unown_forms_screen(s, can_edit)) dirty = true;
       }
     }
   }
