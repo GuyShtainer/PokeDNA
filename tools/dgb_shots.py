@@ -3075,24 +3075,38 @@ def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     GREEN per docs/kb/licensing.md, no ROM read, no locator). `which` picks the
     generation, same shape as run_u4_bag()/run_u5_pack() above:
 
-      which="red":     `rom` MUST be a ONE-Gen-1-ROM fused image (Red.gb+Red.sav,
-                        tools/fuse_gb.py -- BACKLOG #98's fused-image-by-generation
-                        harness gap, same constraint run_u4_bag() documents). Nav is
-                        IDENTICAL to run_u4_bag()'s own red path: boot picker DOWN ->
-                        A (S1 info) -> A (box grid) -> START -> nav menu -> DOWN x7
-                        (Party->Bank->Daycare->Trainer->Clock fix->Mirage->Pokedex->
-                        Bag, PDNA_NAV_ITEMS index 7) -> A -> pdna_gbbag_gen1_screen().
-      which="crystal":  `rom` MUST be a ONE-Gen-2-ROM fused image (Crystal.gbc+
-                        Crystal.sav). A single-ROM image skips the boot picker
-                        (gb_delta_pick_save()'s own `if (n == 1) return 0`, same as
-                        run_u5_pack()'s own doc comment) -- nav is IDENTICAL to
-                        run_u5_pack()'s own crystal path: A (S1 info) -> box grid ->
-                        START -> nav menu -> DOWN x7 -> A -> pdna_gbpack_gen2_screen().
+      which="red":     `rom` MUST be a ONE-Gen-1-ROM fused image WITH Emerald.sav also
+                        fused (tools/fuse_sav.py then tools/fuse_gb.py Red.gb+Red.sav --
+                        BACKLOG #98's fused-image-by-generation harness gap, same
+                        constraint run_u4_bag() documents; run_u4_bag()'s own fixture
+                        convention, Emerald present). Nav is IDENTICAL to run_u4_bag()'s
+                        own red path: boot picker DOWN -> A (S1 info) -> A (box grid) ->
+                        START -> nav menu -> DOWN x7 (Party->Bank->Daycare->Trainer->
+                        Clock fix->Mirage->Pokedex->Bag, PDNA_NAV_ITEMS index 7) -> A ->
+                        pdna_gbbag_gen1_screen().
+      which="crystal":  `rom` MUST be a ONE-Gen-2-ROM fused image WITHOUT Emerald.sav
+                        (tools/fuse_gb.py straight off the base delta build, Crystal.gbc+
+                        Crystal.sav ONLY -- run_u5_pack()'s own fixture convention, no
+                        Emerald). Fusing Emerald.sav into this leg is a real footgun: the
+                        boot picker then has 2 rows (Emerald first) and a single A lands
+                        IN THE FUSED EMERALD SAVE'S OWN BAG (real Hoenn item names like
+                        'WAILMER PAIL'/'DEVON SCOPE') instead of the Gen-2 Pack screen --
+                        caught live capturing this slice's own shots, not a hypothetical.
+                        A single-ROM-only image skips the boot picker (gb_delta_pick_
+                        save()'s own `if (n == 1) return 0`, same as run_u5_pack()'s own
+                        doc comment) -- nav is IDENTICAL to run_u5_pack()'s own crystal
+                        path: A (S1 info) -> box grid -> START -> nav menu -> DOWN x7 ->
+                        A -> pdna_gbpack_gen2_screen().
 
     Shots: the Items pocket (both gens show real names there by default -- id
     lookups, no ROM decode), Balls pocket on the Gen-2 leg only (the brief's own
     "Items + Balls pockets" ask), and one TM row per generation (both gens'
-    TM/HM synthesis, HM/TM%02u, exercised live)."""
+    TM/HM synthesis, HM/TM%02u, exercised live). The Gen-1 leg also scrolls one
+    row past a long-vs-short name boundary (review-sonnet ask: prove the wider
+    blank sweep leaves no stale glyph) -- this corpus's Red.sav Items pocket
+    happens to open on its TMs (real save data, pickup order, not sorted by
+    this core), so shot 01 already doubles as the "one TM row" ask; no
+    ADD ITEM detour needed."""
     if which == "red":
         s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbnames_red_")
         print("== gbnames: Red's own Item bag, real names ==")
@@ -3104,29 +3118,28 @@ def run_gbnames(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
         s.tap("START", settle=gb_shots.BIG_SETTLE)          # box grid -> nav menu
         s.press_n("DOWN", 7)                                 # Party -> ... -> Bag (index 7)
         s.tap("A", settle=GB_ART_COLD_SETTLE)               # Bag -> pdna_gbbag_gen1_screen()
-        s.shot("01_items_real_names", "gbnames: Red's Item bag, ITEMS pocket -- real "
-                                       "names from the embedded Gen-1 table (e.g. "
-                                       "'POTION', 'ESCAPE ROPE'), NOT 'ITEM-n'; the "
-                                       "NAME-row blank sweep now covers the box's "
-                                       "full interior width (cols 6-18), not just "
-                                       "the old 'ITEM-255'-sized QTY_COL bound")
+        s.shot("01_items_top_tm_rows", "gbnames: Red's Item bag, ITEMS pocket, top of "
+                                        "the list -- this corpus save's Items pocket "
+                                        "opens on TM05/TM06/TM27/TM29 (real save data, "
+                                        "pickup order), all via gb1_tmhm_label() -- the "
+                                        "brief's own 'one TM row' ask, not 'ITEM-n'")
 
-        s.tap("START", settle=gb_shots.BIG_SETTLE)          # -> the ITEM MENU (ADD/REMOVE/SWAP)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)              # ADD ITEM -> id entry (osk_search)
-        # osk_search: B backspaces the seeded "1"; type "201" (0xC9 = TM01) via the
-        # digit row (same keyboard-cursor shape run_u4_bag()'s own ADD ITEM demo uses).
-        s.tap("B", settle=gb_shots.SETTLE)
-        s.press_n("RIGHT", 1, settle=gb_shots.SETTLE)       # col0 '1' -> col1 '2'
-        s.tap("A", settle=gb_shots.SETTLE)                  # type '2'
-        s.press_n("LEFT", 1, settle=gb_shots.SETTLE)        # col1 '2' -> col0 '1'
-        s.tap("A", settle=gb_shots.SETTLE)                  # type '1' -> field "21"
-        s.press_n("RIGHT", 9, settle=gb_shots.SETTLE)       # col0 '1' -> col9 '0' (no B: keep "21")
-        s.tap("A", settle=gb_shots.SETTLE)                  # type '0' -> field "210"
-        s.tap("START", settle=gb_shots.BIG_SETTLE)          # confirm id 210 (0xD2 = TM19, DOUBLE-EDGE)
-        s.tap("A", settle=gb_shots.BIG_SETTLE)              # confirm the qty prompt at its default
-        s.shot("02_tm_row", "gbnames: ADD ITEM id 210 (0xD2) synthesizes 'TM19' "
-                             "(gb1_tmhm_label, 0xC9+18) -- the TM/HM label path, not "
-                             "the table lookup")
+        # Scroll to the real (tabled, non-TM/HM) names further down this same pocket --
+        # DOWN x10 lands on TOWN MAP/BICYCLE/GOOD ROD/SUPER ROD* (8/7/8/9 chars, a real
+        # mix of widths), one more DOWN scrolls the whole window by one row.
+        s.press_n("DOWN", 10, settle=gb_shots.SETTLE)
+        s.shot("02_scroll_before", "gbnames: DOWN x10 -- real (tabled) Gen-1 names "
+                                    "now, not synthesized ones: TOWN MAP / BICYCLE / "
+                                    "GOOD ROD / SUPER ROD* (8/7/8/9 chars) -- the "
+                                    "'before' half of the no-stale-glyph scroll pair")
+        s.tap("DOWN", settle=gb_shots.SETTLE)
+        s.shot("03_scroll_after", "gbnames: one more DOWN -- the window shifts one "
+                                   "row (TOWN MAP scrolls off, ITEMFINDER (10 chars) "
+                                   "scrolls in at the bottom): BICYCLE / GOOD ROD / "
+                                   "SUPER ROD* / ITEMFINDER -- every row shows exactly "
+                                   "its own name with no leftover glyph from the row "
+                                   "that used to be there (the widened NAME-row blank "
+                                   "sweep, pdna_gbbag.c `cx < BOX_X1`)")
         return s
 
     s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "gbnames_crystal_")
