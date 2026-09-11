@@ -2701,6 +2701,7 @@ static void gb_nav_from_start(Gb12Mount* m) {
       int box = (m->ui_box >= 0 && m->ui_box <= m->party_box) ? m->ui_box
               : (m->current_box >= 0 && m->current_box <= m->party_box) ? m->current_box
               : 0;
+      if (gb_box_is_party(g_ed->s.gen, box)) box = 0;   /* the party is never a Day-Care source or landing (re-verify N1) */
       pdna_gbdaycare(&g_ed->s, box, app_can_edit());
     } else {
       (void)gb_info_page(m);

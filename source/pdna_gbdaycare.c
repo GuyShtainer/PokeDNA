@@ -235,19 +235,21 @@ static void gbdc_take(GbSession* s, int slot, uint8_t* list, uint8_t* list2) {
   msg_wait("TAKEN OUT", UI_OK, line, "Saved.");
 }
 
-/* Take the Egg out (Gen 2 only), landing it in `cur_box` -- same shape as gbdc_take().
+/* Take the Egg out (Gen 2 only), landing it like gbdc_take() (party first, then a box with room).
  * gbd_withdraw_egg()'s own `out` is already Egg-shaped (list_species == G2_LIST_EGG,
  * gb_daycare.h's own header note), so gbs_insert() lands a real Egg, not the species
  * underneath it. */
-static void gbdc_take_egg(GbSession* s, int cur_box, uint8_t* list) {
-  if (!app_confirm("TAKE THE EGG?", "Places it in the box you came from.")) return;
+static void gbdc_take_egg(GbSession* s, uint8_t* list, uint8_t* list2) {
+  if (!app_confirm("TAKE THE EGG?", "Party first, else a box with room.")) return;
   GbEditMon egg;
   GbsStatus wst = gbd_withdraw_egg(s, &egg);
   if (wst != GBS_OK) { snd_error(); msg_wait("EGG", UI_WARN, gbs_status_text(wst), 0); return; }
 
-  int slot_out = -1;
-  GbsStatus ist = gbs_insert(s, cur_box, &egg, &slot_out, list);
-  if (ist != GBS_OK) {
+  /* Retail hands a collected Egg to the PARTY (daycare.asm .GiveEgg: wPartyCount vs
+   * PARTY_LENGTH first) -- the same party-first landing gbdc_take() uses (re-verify N2). */
+  int landed_box = -2;
+  GbsStatus ist = GBS_OK;
+  if (!gbdc_land(s, &egg, list, list2, &landed_box, &ist)) {
     gb_rollback();
     snd_deny();
     msg_wait("EGG", UI_WARN, gbs_status_text(ist), "Nothing was changed.");
@@ -255,7 +257,10 @@ static void gbdc_take_egg(GbSession* s, int cur_box, uint8_t* list) {
   }
   if (!gb_persist("daycare-egg")) return;
   snd_ok();
-  msg_wait("EGG TAKEN", UI_OK, "Placed in the box you came from.", "Saved.");
+  char line[32];
+  if (landed_box < 0) siprintf(line, "Sent to the party.");
+  else                siprintf(line, "Sent to Box %d.", landed_box + 1);
+  msg_wait("EGG TAKEN", UI_OK, line, "Saved.");
 }
 
 /* Put a box-picked mon into `slot` -- a MOVE, not a paste (review D1): the picked
@@ -444,7 +449,7 @@ void pdna_gbdaycare(GbSession* s, int cur_box, bool can_edit) {
     else if (k & KEY_A) {
       if (!dc->gen1 && dc->has_egg && sel == 2) {
         if (!can_edit) { snd_deny(); msg_wait("EGG", UI_WARN, "Read-only cart.", "Writes need an Omega."); }
-        else gbdc_take_egg(s, cur_box, list);
+        else gbdc_take_egg(s, list, list2);
       } else {
         int slot = sel;   /* 0 or 1 */
         bool occ = dc->slot[slot].occupied;
