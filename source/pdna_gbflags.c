@@ -281,7 +281,7 @@ static void flg_cache(GbGame g) {
 static const char* kind_suffix(uint8_t kind) {
   switch (kind) {
     case GBFL_KIND_BAG_GRANT: return "(bag)";
-    case GBFL_KIND_READONLY:  return "(story)";
+    case GBFL_KIND_READONLY:  return "(sty)";
     case GBFL_KIND_WARN:      return "(!)";
     default: return "";
   }
@@ -311,7 +311,7 @@ static void nf_draw_row(GbSession* s, GbGame g, int r, int y, bool sel) {
   }
   bool ro = (s_kind[r] == GBFL_KIND_BAG_GRANT || s_kind[r] == GBFL_KIND_READONLY);
   bool on = gbfl_get(s, g, s_nf[r].num);
-  siprintf(row, "%-18s %s %s", s_nf[r].name, on ? "ON" : "off", kind_suffix(s_kind[r]));
+  siprintf(row, "%-16s %-3s %s", s_nf[r].name, on ? "ON" : "off", kind_suffix(s_kind[r]));
   char rt[40]; ui_truncate(rt, row, 29);
   if (sel) ui_panel(2, y - 1, 236, 9, UI_SEL, UI_TITLE);
   ui_text(8, y, sel ? UI_SELTEXT : (ro ? UI_DIM : (on ? UI_OK : UI_DIM)), rt);

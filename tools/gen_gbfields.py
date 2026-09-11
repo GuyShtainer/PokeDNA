@@ -844,9 +844,9 @@ LABELS = {
     "EVENT_BEAT_LT_SURGE": "Defeated Lt. Surge", "EVENT_BEAT_LTSURGE": "Defeated Lt. Surge",
     "EVENT_BEAT_ERIKA": "Defeated Erika", "EVENT_BEAT_KOGA": "Defeated Koga",
     "EVENT_BEAT_SABRINA": "Defeated Sabrina", "EVENT_BEAT_BLAINE": "Defeated Blaine",
-    "EVENT_BEAT_VIRIDIAN_GYM_GIOVANNI": "Defeated Giovanni (Viridian Gym)",
-    "EVENT_BEAT_ROCKET_HIDEOUT_GIOVANNI": "Defeated Giovanni (Rocket Hideout)",
-    "EVENT_BEAT_SILPH_CO_GIOVANNI": "Defeated Giovanni (Silph Co.)",
+    "EVENT_BEAT_VIRIDIAN_GYM_GIOVANNI": "Beat Giovanni (Gym)",
+    "EVENT_BEAT_ROCKET_HIDEOUT_GIOVANNI": "Beat Giovanni (Hideout)",
+    "EVENT_BEAT_SILPH_CO_GIOVANNI": "Beat Giovanni (Silph)",
     "EVENT_BEAT_ARTICUNO": "Defeated Articuno", "EVENT_BEAT_ZAPDOS": "Defeated Zapdos",
     "EVENT_BEAT_MOLTRES": "Defeated Moltres", "EVENT_BEAT_MEWTWO": "Defeated Mewtwo",
     "EVENT_BEAT_LORELEIS_ROOM_TRAINER_0": "Beat Lorelei's room",
@@ -854,12 +854,12 @@ LABELS = {
     "EVENT_BEAT_AGATHAS_ROOM_TRAINER_0": "Beat Agatha's room",
     "EVENT_BEAT_LANCES_ROOM_TRAINER_0": "Beat Lance's room",
     "EVENT_BEAT_LANCE": "Defeated Lance", "EVENT_BEAT_CHAMPION_RIVAL": "Became Champion",
-    "EVENT_HALL_OF_FAME_DEX_RATING": "Hall of Fame Pokedex rating shown",
+    "EVENT_HALL_OF_FAME_DEX_RATING": "Hall of Fame rating",
     "EVENT_GOT_HM01_CUT": "Got HM01 Cut", "EVENT_GOT_HM02_FLY": "Got HM02 Fly",
     "EVENT_GOT_HM03_SURF": "Got HM03 Surf", "EVENT_GOT_HM04_STRENGTH": "Got HM04 Strength",
     "EVENT_GOT_HM05_FLASH": "Got HM05 Flash", "EVENT_GOT_HM06_WHIRLPOOL": "Got HM06 Whirlpool",
     "EVENT_GOT_HM07_WATERFALL": "Got HM07 Waterfall",
-    "EVENT_GOT_A_POKEMON_FROM_ELM": "Received starter from Elm",
+    "EVENT_GOT_A_POKEMON_FROM_ELM": "Got starter from Elm",
     "EVENT_GOT_OLD_ROD": "Got the Old Rod", "EVENT_GOT_GOOD_ROD": "Got the Good Rod",
     "EVENT_GOT_SUPER_ROD": "Got the Super Rod",
     "EVENT_GOT_MASTER_BALL_FROM_ELM": "Got a Master Ball (Elm)",
@@ -873,16 +873,46 @@ LABELS = {
     "EVENT_BEAT_JANINE": "Defeated Janine", "EVENT_BEAT_BLUE": "Defeated Blue",
     "EVENT_BEAT_ELITE_4_WILL": "Defeated Elite Four Will",
     "EVENT_BEAT_ELITE_4_KOGA": "Defeated Elite Four Koga",
-    "EVENT_BEAT_ELITE_4_BRUNO": "Defeated Elite Four Bruno",
-    "EVENT_BEAT_ELITE_4_KAREN": "Defeated Elite Four Karen",
-    "EVENT_BEAT_CHAMPION_LANCE": "Defeated Champion Lance",
+    "EVENT_BEAT_ELITE_4_BRUNO": "Beat Elite Four Bruno",
+    "EVENT_BEAT_ELITE_4_KAREN": "Beat Elite Four Karen",
+    "EVENT_BEAT_CHAMPION_LANCE": "Beat Champion Lance",
     # BACKLOG #88 additions.
-    "EVENT_BEAT_ELITE_FOUR": "Defeated the Elite Four",
-    "EVENT_RESTORED_POWER_TO_KANTO": "Restored power to Kanto",
-    "EVENT_MADE_UNOWN_APPEAR_IN_RUINS": "Unown appear in the Ruins of Alph",
-    "EVENT_GOT_SUNNY_DAY_FROM_RADIO_TOWER": "Got Sunny Day from the Radio Tower",
+    "EVENT_BEAT_ELITE_FOUR": "Beat the Elite Four",
+    "EVENT_RESTORED_POWER_TO_KANTO": "Kanto power restored",
+    "EVENT_MADE_UNOWN_APPEAR_IN_RUINS": "Unown in the Ruins",
+    "EVENT_GOT_SUNNY_DAY_FROM_RADIO_TOWER": "Sunny Day (radio)",
     "EVENT_GOT_GS_BALL_FROM_GOLDENROD_POKEMON_CENTER": "Got the GS Ball",
 }
+
+# BACKLOG #88 D3 review: a label that's too long for its row kind's format string
+# smashes past the 29-column clamp pdna_gbflags.c's nf_draw_row() truncates to --
+# these per-kind budgets (member label chars) and the shared header-title budget are
+# checked below, BEFORE emission, so a future LABELS/GROUPS_* edit that overruns one
+# fails the generator instead of silently truncating on hardware.
+LABEL_BUDGET = {KIND_TOGGLE: 24, KIND_WARN: 21, KIND_RO: 19, KIND_BAG: 19}
+HEADER_TITLE_BUDGET = 27
+
+
+def _selftest_label_budget():
+    """Every member label in GROUPS_GEN1/GEN2 fits its kind's LABEL_BUDGET, and every
+    group's header title fits HEADER_TITLE_BUDGET -- run before anything is emitted."""
+    problems = []
+    for game, groups in (("GEN1", GROUPS_GEN1), ("GEN2", GROUPS_GEN2)):
+        for title, members in groups:
+            if len(title) > HEADER_TITLE_BUDGET:
+                problems.append(f"{game}: header {title!r} is {len(title)} chars "
+                                 f"(budget {HEADER_TITLE_BUDGET})")
+            for sym, kind in members:
+                label = LABELS[sym]
+                budget = LABEL_BUDGET[kind]
+                if len(label) > budget:
+                    problems.append(f"{game}: {sym} label {label!r} is {len(label)} "
+                                     f"chars (kind {kind} budget {budget})")
+    if problems:
+        print("ERROR: label/header budget overrun(s):", file=sys.stderr)
+        for p in problems:
+            print(f"  {p}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _selftest_flag_indices(tables):
@@ -1135,6 +1165,7 @@ def main():
                 sys.exit(1)
 
     _selftest_overrun_scan(symtabs)
+    _selftest_label_budget()
 
     cells = []
     emit_fields_c(symtabs, cells)
