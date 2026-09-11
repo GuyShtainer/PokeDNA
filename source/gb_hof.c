@@ -33,18 +33,49 @@ static uint32_t hof_team_bytes(const GbSession* s) {
  * species byte is neither the Gen-1 $FF terminator nor $00 (the "never touched" state
  * on both gens -- see gb_hof.h's own note on why Gen 1 checks both). `mon0_off` is
  * team_off itself on Gen 1 (species is byte 0 of the team) and team_off+1 on Gen 2
- * (byte 0 is the win-count). */
+ * (byte 0 is the win-count).
+ *
+ * b89 re-verify A2-LEAK: the species-byte test ALONE is far too weak once
+ * hof_raw_slots() (R1) is gbh_set_count()'s own write ceiling -- on virgin Gen-1
+ * SRAM (pokered never runs an Erase on sHallOfFame) power-on noise across the
+ * whole 16-byte record can easily avoid landing on exactly $00 or $FF in byte 0
+ * while every other byte is garbage, so the species test alone reports up to
+ * GBH_G1_CAPACITY (50) "present" slots on a blob that is really empty (the count
+ * byte reads 0) -- gbh_set_count() would then happily write a count that sends the
+ * real League PC to decode 50 noise records (the exact D1 hazard R1 exists to
+ * avoid re-introducing from a different angle).
+ *
+ * The decomp gives an exact, reference discriminator for GENUINE Gen-1 records:
+ * AnimateHallOfFame zero-fills the whole 96-byte team buffer before writing into
+ * it (pokered/engine/movie/hall_of_fame.asm:17-19) and HoFRecordMonInfo then
+ * writes only species + level + an 11-byte name (NAME_LENGTH) = 13 of each 16-byte
+ * record (hall_of_fame.asm:267-280) -- so on every REAL record, the trailing 3
+ * pad bytes (offsets +13..+15) are left exactly as the zero-fill wrote them, and
+ * the recorded level (offset +1) is never 0 (a Pokemon is always level 1-100,
+ * hacked saves included -- checking rec[1]==0 rather than a 1..100 range
+ * deliberately does not reject a hacked Lv255 team, which is still a real
+ * record). Measured against Guy's own corpus: 9/9 real Red records and Yellow's
+ * own record pass this test; 0/50 SPLAT-noise slots (test K's own 0x42 fixture)
+ * pass it. Gen 2 is deliberately left alone: its 98-byte record has no reserved
+ * pad bytes to check, and LoadHOFTeam bails on each record's own win-count byte
+ * rather than a species/pad heuristic (R1's own design note). */
 static bool hof_slot_present(const GbSession* s, uint32_t team_off) {
   uint32_t mon0_off = (s->gen == GB_GEN1) ? team_off : team_off + 1u;
-  uint8_t species;
-  if (gbs_read_field((GbSession*)(const void*)s, mon0_off, &species, 1) != GBS_OK) return false;
+  uint8_t rec[16];
+  if (gbs_read_field((GbSession*)(const void*)s, mon0_off, rec, sizeof rec) != GBS_OK)
+    return false;
   /* $FF is used as the "fewer than 6 party members" end-of-team marker on BOTH gens
    * (confirmed against Guy's real Crystal.sav corpus: team 4's 5th mon slot holds
    * species=$FF/otid=0/dv=0/level=0, an unmistakable "this team had 4 members"
    * marker -- not a real Pokemon numbered 255 -- so Gen 2 needs the same $FF check
    * Gen 1's own decomp explicitly documents, even though nothing in the pinned Gen-2
    * decomp excerpts spelled it out as plainly as pokered's AnimateHallOfFame does). */
-  return species != 0x00u && species != 0xFFu;
+  if (rec[0] == 0x00u || rec[0] == 0xFFu) return false;
+  if (s->gen == GB_GEN1) {
+    if (rec[13] || rec[14] || rec[15]) return false;   /* pad bytes: zero-filled, never noise, on a real record */
+    if (rec[1] == 0u) return false;                    /* level 0 does not exist on a real Pokemon */
+  }
+  return true;
 }
 
 /* The UNCLAMPED blob scan: how many team slots actually look occupied, with no

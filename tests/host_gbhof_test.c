@@ -381,17 +381,72 @@ static void present_clamped_to_count_on_noise(const char* file) {
 
   /* D2: pokered never initialises sHallOfFame, so virgin SRAM can hold noise that
    * looks like occupied slots while gbh_count() (the real byte) still reads 0 --
-   * simulate that directly: force count=0, then splat non-$00/$FF noise across the
-   * whole HoF blob so hof_slot_present() would read every slot as "occupied" if the
-   * count-based clamp were missing. */
+   * simulate that directly: force count=0, then splat noise ONLY at each record's
+   * species+level bytes (offsets 0/1 of every 16-byte mon-0 record, stride 96 per
+   * team) so hof_slot_present() would read every slot as "occupied" if the
+   * count-based clamp were missing.
+   *
+   * b89 re-verify A2-LEAK caveat: hof_slot_present() now ALSO rejects a slot whose
+   * pad bytes (+13..+15) are non-zero or whose level byte is 0 (test M below) --
+   * splatting the WHOLE blob with 0x42 (as this test did before A2-LEAK) would
+   * make the pad-byte check reject every slot on its own, so gbh_slots_in_blob()
+   * would already read 0 with NO help from D2's count-clamp, and this test would
+   * stop discriminating D2 at all. Keep the pad bytes (+13..+15) explicitly ZERO
+   * here so the RAW scan still reports every slot present (raw = 50, proven
+   * below) and it is ONLY D2's gbh_count()-clamp that brings
+   * gbh_team_count_present() down to 0 -- the thing this test actually exists to
+   * prove. */
   CHECKF(gbh_set_count(&s, 0) == GBS_OK, "%s: force count 0", file);
-  for (uint32_t i = GEN1_OFF_HOF; i < GEN1_OFF_HOF + GEN1_HOF_BYTES; i++)
-    g_img[i] = 0x42;   /* neither $00 nor $FF -- every slot LOOKS occupied */
+  for (int i = 0; i < GBH_G1_CAPACITY; i++) {
+    uint32_t team_off = GEN1_OFF_HOF + (uint32_t)i * GEN1_HOF_TEAM_BYTES;
+    g_img[team_off + 0] = 0x42;   /* species: neither $00 nor $FF -- looks occupied */
+    g_img[team_off + 1] = 0x42;   /* level: non-zero -- passes the new level check */
+    g_img[team_off + 13] = 0;     /* pad bytes stay zero -- passes the new pad check */
+    g_img[team_off + 14] = 0;
+    g_img[team_off + 15] = 0;
+  }
 
   CHECKF(gbh_count(&s) == 0, "%s: forced count reads back 0", file);
+  int raw = gbh_slots_in_blob(&s);
+  CHECKF(raw == GBH_G1_CAPACITY, "%s: raw scan must still see every slot as "
+        "present (species+level noise, pad bytes zero) -- got %d, want %d",
+        file, raw, GBH_G1_CAPACITY);
   int present = gbh_team_count_present(&s);
-  CHECKF(present == 0, "%s: present clamps to count=0 on noise SRAM, got %d",
+  CHECKF(present == 0, "%s: present clamps to count=0 on noise SRAM (D2), got %d",
         file, present);
+}
+
+/* ---- M: A2-LEAK, hof_slot_present()'s pad-byte/level discriminator on
+ * fully-noise Gen-1 SRAM (species AND level AND pad bytes all garbage) -- the
+ * scenario the species-only test could not tell apart from a real record. ---- */
+
+static void raw_scan_rejects_full_noise(const char* file) {
+  uint32_t len = load(file);
+  if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+  GbSession s;
+  if (gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) != GBS_OK || s.gen != GB_GEN1) {
+    printf("  SKIP %s (not a Gen-1 save)\n", file);
+    return;
+  }
+  g_ran++;
+
+  /* Virgin/noise SRAM: force count=0, then splat 0x42 across the WHOLE blob (every
+   * byte of every record, pad bytes included) -- pokered never runs an Erase on
+   * sHallOfFame, so this is what real power-on noise can look like. */
+  CHECKF(gbh_set_count(&s, 0) == GBS_OK, "%s: force count 0", file);
+  for (uint32_t i = GEN1_OFF_HOF; i < GEN1_OFF_HOF + GEN1_HOF_BYTES; i++)
+    g_img[i] = 0x42;
+
+  CHECKF(gbh_count(&s) == 0, "%s: forced count reads back 0", file);
+  int raw = gbh_slots_in_blob(&s);
+  CHECKF(raw == 0, "%s: hof_slot_present()'s pad/level discriminator must reject "
+        "every full-noise slot on its own (no help from D2's count-clamp), got %d",
+        file, raw);
+  GbsStatus st = gbh_set_count(&s, 9000);
+  CHECKF(st == GBS_OK, "%s: set_count(9000) on full-noise SRAM", file);
+  CHECKF(gbh_count(&s) == 0, "%s: set_count(9000) on full-noise SRAM must leave "
+        "the count at 0 (the ceiling is 0, not GBH_G1_CAPACITY), got %d",
+        file, gbh_count(&s));
 }
 
 /* ---- L: R1, the D1<->D2 ratchet -- SET COUNT's own ceiling must be the raw,
@@ -501,6 +556,11 @@ int main(void) {
     ratchet_gen1(saves[i]);
   for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++)
     gen2_not_clamped_by_count(saves[i]);
+
+  printf("== M: A2-LEAK -- full-noise Gen-1 slots are rejected by the pad-byte/"
+        "level discriminator, gbh_set_count(9000) leaves the count at 0 ==\n");
+  for (size_t i = 0; i < sizeof saves / sizeof saves[0]; i++)
+    raw_scan_rejects_full_noise(saves[i]);
 
   if (g_ran == 0) printf("  (no corpus present -- structural checks only, none ran)\n");
   printf("\n%d checks, %d failed (%d save(s) loaded)\n", g_check, g_fail, g_ran);
