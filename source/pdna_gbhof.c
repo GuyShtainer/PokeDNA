@@ -144,6 +144,10 @@ static void hof_detail_render(const GbHofTeam* t, uint8_t gen, int team_no) {
  * pristine copy every GB edit screen already keeps, discarding every chunk this call
  * wrote, good or bad. Same shape gbclock_do_reset/do_clear use for their own refusal. */
 static void hof_do_clear(GbSession* s) {
+  /* D4: an already-empty HoF has nothing to clear -- skip the confirm dialog, the
+   * SD write, and the backup slot it would burn, same as the SET COUNT editor's own
+   * no-op-skips-the-write rule just above. */
+  if (gbh_count(s) == 0 && gbh_team_count_present(s) == 0) { snd_deny(); return; }
   if (!app_confirm("CLEAR ALL",
                    "The PC's HALL OF FAME option disappears until you win again."))
     return;
