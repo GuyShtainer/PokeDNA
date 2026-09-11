@@ -2072,13 +2072,19 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
     run_b86_clock's own docstring explains -- index 6 stays in column 0, no RIGHT).
 
     `rom` MUST be a ONE-ROM fused image (tools/fuse_gb.py, same posture as every other
-    single-ROM shot function here): Red.gb+Red.sav for `which="red"`, or
-    Crystal.gbc+ a Crystal.sav that has had `--op dexset 100 0` applied first (this
-    file's own corpus is a fully-completed dex -- host_gbdex_test.c's own popcount
-    proof already established that -- so dex #100 is pre-cleared here purely so the
+    single-ROM shot function here): Red.gb + a Red.sav that has had `--op dexset 100
+    0` applied first for `which="red"`, or Crystal.gbc + a Crystal.sav that has had
+    the SAME `--op dexset 100 0` applied first for `which="crystal"` (this file's own
+    corpus is a fully-completed dex -- host_gbdex_test.c's own popcount proof already
+    established that -- so dex #100 is pre-cleared on BOTH games here purely so the
     'A cycles one cell through seen/caught/none' shot has a real none->seen->caught
     transition to show, not a caught->none->seen one; item 6's own retail-gate proves
-    the write path against real WRAM, this is only a visual demo) for `which="crystal"`.
+    the write path against real WRAM, this is only a visual demo). N4 (b87 fix pass,
+    DO-NOT-SHIP review): the cycle demo below moves the cursor to dex #100 itself
+    (99x DOWN from the list top) so the pre-clear actually applies to the cell being
+    cycled -- an earlier pass pre-cleared #100 but cycled whatever cell the cursor
+    started on (species #1, Bulbasaur, list top), so the pre-clear never showed up on
+    screen.
 
     Red (Gen 1, no Unown): pdna_gbdex() opens the shared pdna_dex_screen() directly,
     no chooser. Crystal (Gen 2): pdna_gbdex() shows its own entry chooser first
@@ -2125,18 +2131,28 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
 
     s.tap("R", settle=gb_shots.BIG_SETTLE)                   # DV_GRID(0) -> DV_LIST(1), back where item 5/6's cursor math below assumes
 
+    # N4 (b87 fix pass, DO-NOT-SHIP review): move the cursor to dex #100 itself (99x
+    # DOWN from the list top, filter=All/sort=dex-number so the list is in plain
+    # national-dex order with no gaps -- row i == dex i+1) so the pre-clear this
+    # function's own caller applied (`--op dexset 100 0`) is the cell actually being
+    # cycled below, not species #1 (Bulbasaur, list top) as an earlier pass did.
+    s.press_n("DOWN", 99)
+    s.shot("04b_cursor_at_100", "#87 N4: cursor moved to dex #100 (99x DOWN, list "
+                                 "order == national-dex order) -- 'none' (pre-cleared "
+                                 "by --op dexset 100 0) before the cycle demo below")
+
     # A cycles the selected cell through none/seen/caught (dex_state's own state
-    # 0/1/2 = none/seen/caught cycle, pdna_pick.c's `(s_dget(nat)+1) % 3`). Species #1
-    # (Bulbasaur, list top) starts CAUGHT on this fully-completed corpus.
+    # 0/1/2 = none/seen/caught cycle, pdna_pick.c's `(s_dget(nat)+1) % 3`). Dex #100
+    # was pre-cleared to 'none' by the caller's `--op dexset 100 0`, so this cell
+    # (not species #1) is the one that genuinely shows none->seen->caught.
     s.tap("A", settle=gb_shots.BIG_SETTLE)
-    s.shot("05_cycle_a", "#87: A pressed once on the selected cell -- state advanced "
-                          "one step (dex_state's own 0/1/2 -> +1 mod 3 cycle; "
-                          "starts CAUGHT on this fully-completed corpus, so this "
-                          "step lands on 'none')")
+    s.shot("05_cycle_a", "#87: A pressed once on dex #100 -- state advanced one step "
+                          "(dex_state's own 0/1/2 -> +1 mod 3 cycle; starts 'none' "
+                          "per the pre-clear, so this step lands on 'seen')")
     s.tap("A", settle=gb_shots.BIG_SETTLE)
     s.shot("06_cycle_b", "#87: A pressed a second time -- one more step around the "
-                          "cycle ('none' -> 'seen')")
-    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # back to CAUGHT -- leave the cell as the corpus found it
+                          "cycle ('seen' -> 'caught')")
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # back to 'none' -- leave the cell as the pre-clear found it
 
     s.tap("START", settle=gb_shots.BIG_SETTLE)               # -> dex_menu()
     s.shot("07_start_menu", "#87: KEY_START -> dex_menu() -- sort/status toggles + "
@@ -2588,8 +2604,8 @@ def main(argv=None) -> int:
     ap.add_argument("--b87-dex", choices=("red", "crystal"),
                      help="BACKLOG #87: only run_b87_dex() against --image for the "
                           "named game -- --image MUST be a ONE-ROM fused image "
-                          "matching this choice (Red.gb+Red.sav, or Crystal.gbc + a "
-                          "Crystal.sav that has had `--op dexset 100 0` applied "
+                          "matching this choice (Red.gb, or Crystal.gbc -- either "
+                          "way, the .sav must have had `--op dexset 100 0` applied "
                           "first -- see run_b87_dex()'s own docstring for why)")
     ap.add_argument("--b85-daycare", choices=("red", "gold"),
                      help="BACKLOG #85: only run_b85_daycare() against --image for "
