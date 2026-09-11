@@ -2237,7 +2237,24 @@ def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
         s.tap("A", settle=gb_shots.BIG_SETTLE)               # dismiss -> the toggle itself lands
         s.shot("08_toggled", "BACKLOG #88: the flag toggled ON/off -- gbfl_set wrote the bit "
                               "straight into the session's own RAM image")
-        jump_presses = 6   # from inside header 0's group: h1,h2,h3,h4,h5,raw
+
+        # BACKLOG #127 F3: "Hall of Fame rating" (the 33-char label that smashed 6
+        # bytes past row[40] before D1's fix) lives in the LAST group, "Story"
+        # (GROUPS_GEN1's 6th entry, GBFL_KIND_READONLY) -- it stays folded in every
+        # other Gen-1 shot in this run. SELECT jumps by row INDEX to the next header
+        # regardless of fold state (same mechanic the raw-row jump below already
+        # relies on): h1,h2,h3,h4 -> h5 (Story).
+        for _ in range(5):
+            s.tap("SEL", settle=gb_shots.SETTLE)
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # unfold "Story"
+        s.tap("DOWN", settle=gb_shots.SETTLE)                # -> "Beat Champion Rival"
+        s.tap("DOWN", settle=gb_shots.SETTLE)                # -> "Hall of Fame rating"
+        s.shot("08c_story_hof_rating", "BACKLOG #127 F3: the Story section unfolded, 'Hall "
+                                        "of Fame rating' selected -- the exact 33-char label "
+                                        "that smashed row[40] before D1's fix; under "
+                                        "GBFL_ROW_FMT/row[64] the row reads whole, no '~'")
+
+        jump_presses = 1   # already past h1..h5 (Story) -- one more SELECT reaches the raw row
     else:
         # Crystal's header 0 IS "Key items (grant in Bag)" -- show its read-only
         # row, then SELECT-jump to the next (TOGGLE-kind) section for the toggle/
