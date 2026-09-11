@@ -245,10 +245,26 @@ static void build_species(int filter, int sort, const char* search) {
  * is a data question this file has no cheap way to answer, so a type filter
  * can still page to an empty list under a ceiling; that residual is left as
  * a known, minor rough edge rather than in scope here. */
+/* DEX_NAT_MAX/s_dex_max moved up here from their original spot below (D5, b87 fix
+ * pass, DO-NOT-SHIP review) so filter_usable() can see s_dex_max too -- see its own
+ * header comment just below the -300-line gap for the full species-cap story
+ * (BACKLOG #87 item 1: Gen 1 (151) / Gen 2 (251) GB sessions reuse the shared dex
+ * screen under this cap; 386 is the unrestricted Gen-3 default). */
+#define DEX_NAT_MAX 386
+static int s_dex_max = DEX_NAT_MAX;
+
+/* D5 (b87 fix pass, DO-NOT-SHIP review): the GB dex screen's own species cap
+ * (s_dex_max, BACKLOG #87 item 1) was invisible to filter_usable() -- only
+ * g_species_max_dex (the CREATE picker's OWN, separate ceiling) was consulted, so a
+ * Gen-1 GB session (s_dex_max==151) still offered "Gen 2"/"Gen 3+" filter rows that
+ * paged to an empty list once dex_build()'s own post-filter (source line ~575) threw
+ * every species past the cap away. Both ceilings gate both filters now -- whichever
+ * one is active (a session is never under both at once, but the OR costs nothing and
+ * stays correct if that ever changes). */
 static bool filter_usable(int f) {
   if (f == 5 + 9) return false;                                              /* MYSTERY: unused, always */
-  if (g_species_max_dex && g_species_max_dex <= 151u && f == 2) return false; /* Gen 2: empty under a Gen-1 ceiling */
-  if (g_species_max_dex && g_species_max_dex <= 251u && f == 3) return false; /* Gen 3+: empty under either ceiling */
+  if ((g_species_max_dex && g_species_max_dex <= 151u) || s_dex_max <= 151) { if (f == 2) return false; } /* Gen 2: empty under a Gen-1 ceiling */
+  if ((g_species_max_dex && g_species_max_dex <= 251u) || s_dex_max <= 251) { if (f == 3) return false; } /* Gen 3+: empty under either ceiling */
   return true;
 }
 
@@ -527,7 +543,6 @@ uint16_t pick_species(uint16_t current) {
  * views (L/R), the gen/type/legendary filter + caught-status filter + name search
  * (START / SELECT). Reuses g_list + build_species: no new EWRAM. */
 
-#define DEX_NAT_MAX     386
 #define DEX_ANIM_PERIOD 30          /* vblanks per bob frame (~0.5s, the Gen-3 cadence) */
 
 #define DV_GRID 0
@@ -553,8 +568,10 @@ static DexSetNat   s_setnat;   /* enable/disable national dex (may be NULL) */
  * bulk-touch species past their generation's dex. Reset to 386 by every caller on
  * entry (pdna_dex_edit in pdna_main.c) so a prior GB visit can never leak into the
  * next Gen-3 one — this file never assumes the previous session cleaned up after
- * itself. 0 is never a valid value (see the clamp below); default is the full 386. */
-static int s_dex_max = DEX_NAT_MAX;
+ * itself. 0 is never a valid value (see the clamp below); default is the full 386.
+ * (D5, b87 fix pass: DEX_NAT_MAX/s_dex_max themselves now live up near
+ * filter_usable() -- this comment stays here, where the reader first meets the
+ * cap's own story.) */
 void pdna_dex_set_max(int max_dex) {
   s_dex_max = (max_dex > 0 && max_dex <= DEX_NAT_MAX) ? max_dex : DEX_NAT_MAX;
 }
