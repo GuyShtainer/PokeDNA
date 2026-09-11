@@ -3,7 +3,7 @@
 #include "gen3_dex.h"      /* seen/owned setters (all mirrors) */
 #include "gen3_frontier.h" /* RS Battle Tower record pair (0x572 is a derived cache) */
 #include "gen3_contest.h"  /* gc_museum_set: the one writer of a museum-slot record */
-#include "gen3_save.h"     /* gen3_decode_char, to read sb2's already-encoded OT name */
+#include "gen3_save.h"     /* pk_game_stat/pk_set_game_stat, PK_STAT_* */
 #include <string.h>
 
 static uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | ((uint16_t)p[1] << 8)); }
@@ -130,22 +130,18 @@ bool pk_star_ach_can_set(PkGame g, int i, const uint16_t* hoenn200) {
  * cross-derived from pokeemerald src/contest.c and pokeruby src/contest_2.c).
  * gc_museum_set picks variant 0 for a synthetic fill, which is a real value
  * the retail game itself can roll (Random() % 3 == 0), not an invented one —
- * this fill reuses that same choice rather than re-deciding it. sb2's OT name
- * bytes are already Gen-3 encoded (this file never decoded them before), so
- * round-trip them through gen3_decode_char to hand gc_museum_set the ASCII
- * it expects; it re-encodes on write. */
+ * this fill reuses that same choice rather than re-deciding it. sb2's first 8
+ * bytes ARE the player's OT name, already Gen-3 encoded — hand them to
+ * gc_museum_set_raw verbatim (memcpy) instead of decoding to ASCII and letting
+ * gc_museum_set re-encode: that round trip is lossy for any byte outside the
+ * plain-text subset (MALE_SYMBOL 0xB5, ligatures, ...) which gc_encode_char has
+ * no case for and silently maps to 0x00 (space), while gen3_decode_char maps
+ * unmapped bytes to '?' — either way the player's real name would come back
+ * wrong (BACKLOG #105 review A1). */
 static void museum_fill(uint8_t* sb1, const uint8_t* sb2, PkGame g, int cat) {
   uint32_t id = (uint32_t)rd16(sb2 + 0x0A) | ((uint32_t)rd16(sb2 + 0x0C) << 16);
-  char trainerName[8];
-  int k = 0;
-  for (; k < 7; k++) {
-    char ch = gen3_decode_char(sb2[k]);
-    if (ch == 0) break;
-    trainerName[k] = ch;
-  }
-  trainerName[k] = 0;
-  gc_museum_set(sb1, g, cat, 25 /* PIKACHU, internal id == national dex id */,
-               id, id, "PIKACHU", trainerName);
+  gc_museum_set_raw(sb1, g, cat, 25 /* PIKACHU, internal id == national dex id */,
+                    id, id, "PIKACHU", sb2);
 }
 
 int pk_star_ach_set(uint8_t* sb1, uint8_t* sb2, PkGame g, int i, bool on,

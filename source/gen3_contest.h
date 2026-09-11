@@ -133,6 +133,16 @@ bool gc_museum_get(const uint8_t* sb1, PkGame g, int cat, GcWinner* out);
 bool gc_museum_set(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32_t personality,
                    uint32_t otId, const char* monName_ascii, const char* trainerName_ascii);
 
+/* Same as gc_museum_set, but the trainer name is 8 already-Gen-3-encoded bytes
+ * copied verbatim (memcpy) instead of an ASCII string re-encoded here. Use this
+ * when the caller already holds real save-file bytes (e.g. sb2's own OT name) --
+ * decoding them to ASCII and re-encoding through gc_museum_set is lossy for any
+ * byte outside gc_encode_char's plain-text subset (MALE_SYMBOL 0xB5, ligatures,
+ * etc. all collapse to '?'). gc_museum_set itself is now a thin wrapper over this. */
+bool gc_museum_set_raw(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32_t personality,
+                       uint32_t otId, const char* monName_ascii,
+                       const uint8_t trainerName_raw8[8]);
+
 /* SB1 byte offset + length (always GC_STRIDE, 32) of one museum slot's record — so a
  * caller can snapshot just that record before a gc_museum_set() call and memcmp after,
  * instead of copying the whole SaveBlock1 (sections 1-4 carry 15,752 B of data, section

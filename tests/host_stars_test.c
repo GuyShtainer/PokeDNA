@@ -87,9 +87,108 @@ static void run_game(PkGame g, int museum_i, const char* label) {
   }
 }
 
+/* ---- BACKLOG #105 review A1 fix: museum_fill's trainer-name bytes must be a
+ * verbatim copy, not a decode/re-encode round trip -- gen3_decode_char maps any
+ * byte outside the plain-text subset to '?' (0xAC, source/gen3_save.c:52 default
+ * case) and gc_encode_char has no case for '?' either (it falls through to its
+ * own default, 0x00 = space) -- ONE mapping loses two different byte classes.
+ * Proof by construction, no need to hand-revert and re-run: for raw byte 0xB5
+ * (MALE_SYMBOL, source/rom_text.c:104) and 0x1D (a ligature), gen3_decode_char
+ * has no case for either -- both hit the `default: return '?';` branch. The old
+ * museum_fill code then handed that '?' string to gc_museum_set, which encodes
+ * ASCII via gc_encode_char -- '?' hits ITS default case too (0x00, a space),
+ * not even 0xAC. Either way the round trip is provably lossy: the byte written
+ * to the save can never be 0xB5 or 0x1D again once it has passed through
+ * gen3_decode_char. This test seeds sb2's OT-name bytes with exactly those two
+ * raw bytes (plus 6 more non-terminator bytes -- a full 8-byte name with no
+ * 0xFF padding at all) and checks the museum record's trainer-name field is a
+ * byte-for-byte copy of sb2's first 8 bytes -- which only gc_museum_set_raw's
+ * memcpy (not the old decode/gc_museum_set path) can produce. */
+static void test_raw_name_bytes(void) {
+  printf("-- raw trainer-name bytes round-trip (Emerald) --\n");
+  memset(g_sb1, 0, sizeof(g_sb1));
+  memset(g_sb2, 0, sizeof(g_sb2));
+
+  uint8_t raw8[8] = { 0xB5, 0x1D,
+                      gen3_encode_char('C'), gen3_encode_char('D'),
+                      gen3_encode_char('E'), gen3_encode_char('F'),
+                      gen3_encode_char('G'), gen3_encode_char('H') };
+  memcpy(g_sb2, raw8, 8);
+  g_sb2[0x0A] = 0x78; g_sb2[0x0B] = 0x56;   /* trainerId lo16 */
+  g_sb2[0x0C] = 0x34; g_sb2[0x0D] = 0x12;   /* trainerId hi16 */
+
+  /* Sanity-check the proof-by-construction claim above still holds in this
+   * build's tables (would only drift if gen3_decode_char/gc_encode_char's
+   * charmaps changed underneath this test). */
+  CHECK(gen3_decode_char(0xB5) == '?', "0xB5 should be unmapped in gen3_decode_char (proof premise)");
+  CHECK(gen3_decode_char(0x1D) == '?', "0x1D should be unmapped in gen3_decode_char (proof premise)");
+
+  int mask = pk_star_ach_set(g_sb1, g_sb2, PK_EMERALD, 2 /* museum star idx */, true, NULL);
+  CHECK(mask == 1, "ACH_MUSEUM on should dirty SB1 only");
+
+  for (int k = 0; k < GC_MUSEUM_COUNT; k++) {
+    uint32_t off = gc_museum_offset(PK_EMERALD, k);
+    char msg[96];
+    snprintf(msg, sizeof(msg),
+             "slot %d trainer-name bytes should equal sb2's raw 8 bytes exactly", k);
+    CHECK(off != 0 && memcmp(g_sb1 + off + 22, raw8, 8) == 0, msg);
+  }
+}
+
+/* "keep real wins": a slot that already has a species must be left untouched by
+ * a fresh ON pass, sentinel byte included -- pk_star_ach_set's own
+ * `else if (rd16(w + 8) == 0) museum_fill(...)` guard (gen3_stars.c) is what
+ * this pins down. */
+static void test_keep_real_wins(void) {
+  printf("-- keep real wins (slot 0 untouched) --\n");
+  memset(g_sb1, 0, sizeof(g_sb1));
+  memset(g_sb2, 0, sizeof(g_sb2));
+  static const char* NAME = "TESTER";
+  for (int k = 0; NAME[k]; k++) g_sb2[k] = gen3_encode_char(NAME[k]);
+  g_sb2[6] = 0xFF;
+  g_sb2[0x0A] = 0x34; g_sb2[0x0B] = 0x12;
+  g_sb2[0x0C] = 0x00; g_sb2[0x0D] = 0x00;
+
+  uint32_t off0 = gc_museum_offset(PK_EMERALD, 0);
+  uint8_t snapshot[GC_RECORD_BYTES];
+  g_sb1[off0 + 8] = (uint8_t)999;         /* nonzero species lo byte: slot already won */
+  g_sb1[off0 + 9] = (uint8_t)(999 >> 8);
+  g_sb1[off0 + 31] = 0xAA;                /* sentinel byte just past the rank field */
+  memcpy(snapshot, g_sb1 + off0, GC_RECORD_BYTES);
+
+  int mask = pk_star_ach_set(g_sb1, g_sb2, PK_EMERALD, 2, true, NULL);
+  CHECK(mask == 1, "ACH_MUSEUM on should dirty SB1 only");
+  CHECK(memcmp(g_sb1 + off0, snapshot, GC_RECORD_BYTES) == 0,
+       "slot 0's pre-existing real win must be byte-identical after an ON pass");
+}
+
+/* OFF must zero all 5 * 0x20 = 0xA0 museum bytes -- gen3_stars.c's
+ * `if (!on) memset(w, 0, 0x20);` branch, one slot at a time. */
+static void test_off_zeroes(void) {
+  printf("-- OFF zeroes all 5 museum slots --\n");
+  memset(g_sb1, 0, sizeof(g_sb1));
+  memset(g_sb2, 0, sizeof(g_sb2));
+  static const char* NAME = "TESTER";
+  for (int k = 0; NAME[k]; k++) g_sb2[k] = gen3_encode_char(NAME[k]);
+  g_sb2[6] = 0xFF;
+
+  pk_star_ach_set(g_sb1, g_sb2, PK_EMERALD, 2, true, NULL);   /* fill all 5 first */
+  int mask = pk_star_ach_set(g_sb1, g_sb2, PK_EMERALD, 2, false, NULL);
+  CHECK(mask == 1, "ACH_MUSEUM off should dirty SB1 only");
+
+  uint32_t base = gc_museum_offset(PK_EMERALD, 0);
+  uint8_t zeros[GC_MUSEUM_COUNT * GC_RECORD_BYTES];
+  memset(zeros, 0, sizeof(zeros));
+  CHECK(memcmp(g_sb1 + base, zeros, sizeof(zeros)) == 0,
+       "all 5 * 0x20 museum bytes should be zero after OFF");
+}
+
 int main(void) {
   run_game(PK_EMERALD, 2, "Emerald museum_off 0x2F90");
   run_game(PK_RS,       3, "Ruby/Sapphire museum_off 0x2EFC");
+  test_raw_name_bytes();
+  test_keep_real_wins();
+  test_off_zeroes();
 
   if (fails) {
     printf("%d check(s) FAILED\n", fails);

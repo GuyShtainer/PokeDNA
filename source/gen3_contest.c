@@ -132,8 +132,9 @@ bool gc_museum_get(const uint8_t* sb1, PkGame g, int cat, GcWinner* out) {
                      0, out);
 }
 
-bool gc_museum_set(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32_t personality,
-                   uint32_t otId, const char* monName_ascii, const char* trainerName_ascii) {
+bool gc_museum_set_raw(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32_t personality,
+                       uint32_t otId, const char* monName_ascii,
+                       const uint8_t trainerName_raw8[8]) {
   if (!sb1 || !gc_supported(g)) return false;
   if (cat < 0 || cat >= GC_CATEGORY_COUNT) return false;
 
@@ -147,7 +148,12 @@ bool gc_museum_set(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32_t p
    * produces (Random() % 3 can roll 0), not an invented sentinel. */
   rec[10] = (uint8_t)(cat * GC_PAINTING_VARIANTS);
   encode_name(rec + 11, monName_ascii, 11);
-  encode_name(rec + 22, trainerName_ascii, 8);
+  /* Trainer name is copied verbatim (already Gen-3 encoded bytes from the caller,
+   * e.g. sb2's own OT name) — NOT re-encoded. gen3_decode_char/gc_encode_char is a
+   * lossy round trip for any byte outside the plain-text subset (MALE_SYMBOL 0xB5,
+   * the PK/MN ligatures, etc.) collapses to '?' (0xAC) on the way back out. A
+   * verbatim memcpy is the only way to reproduce a real player's OT name exactly. */
+  memcpy(rec + 22, trainerName_raw8, 8);
   if (g == PK_EMERALD) rec[30] = (uint8_t)CONTEST_RANK_MASTER;
 
   uint8_t* w = sb1 + museum_base(g) + (uint32_t)cat * GC_STRIDE;
@@ -156,6 +162,13 @@ bool gc_museum_set(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32_t p
                                   * compare level, and the caller diffs before/after
                                   * to decide whether to commit at all. */
   return true;
+}
+
+bool gc_museum_set(uint8_t* sb1, PkGame g, int cat, uint16_t species, uint32_t personality,
+                   uint32_t otId, const char* monName_ascii, const char* trainerName_ascii) {
+  uint8_t raw[8];
+  encode_name(raw, trainerName_ascii, 8);
+  return gc_museum_set_raw(sb1, g, cat, species, personality, otId, monName_ascii, raw);
 }
 
 uint32_t gc_museum_offset(PkGame g, int cat) {
