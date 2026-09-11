@@ -869,6 +869,20 @@ addrtaken-ok sbmp16_vline
 # declaration bmp16_drawg_b1cts/bmp16_erase already use, not a separate exemption.
 # dummy_drawg/dummy_erase/sbmp16_* stay -- dummy_*/sbmp16_* are not in that pool.
 
+# BACKLOG #105: bmp16_plot (the plain, non-"s" libtonc plotter above, NOT one of the
+# sbmp16_* dispatch members already exempted) flagged only after gen3_stars.c's museum
+# caption-id fix shifted mon_anim.c's s_fam[] species-family table to a new link
+# address. Confirmed a coincidental 4-byte data match, not a real pointer: (1) no file
+# under source/ names bmp16_plot at all (grep -rn across the tree comes up empty --
+# nothing in this codebase can take its address); (2) the matching word's bit 0 is
+# clear, but a genuine Thumb-callable pointer to this function is stored with the
+# interworking bit set, which this word is not; (3) objdump on the built ELF shows the
+# match sits at s_fam+0x64, inside the array's own species-id bytes (00 00 07 08),
+# which is exactly the kind of content this table has been holding all along -- the
+# bytes did not change, only the address they landed at did. A future edit anywhere in
+# the link can just as easily move this table off the collision again.
+addrtaken-ok bmp16_plot
+
 # D1 (BACKLOG #84b fifth pass) address-taken sweep triage, batch 3: genuine, verified,
 # pre-existing single-registration callback hooks whose CALLING side is not yet
 # threaded through this file's declaration grammar (each one's setter stores the
@@ -992,4 +1006,11 @@ addrtaken-ok g2w_set_otname
 # link-order-dependent, i.e. a data-word coincidence (#106 G2 class). Zero frame; nothing to
 # bound. Retire with #106.
 addrtaken-ok tte_set_color
+# tonc_bios.h's CpuFastFill (frame 4 B, an 8-byte SVC wrapper: push r0; svc 12; bx lr) is named
+# nowhere in source/ lib/ tools/ (grep empty) -- it links only as libtonc object-file baggage. The
+# b105 edit shifted the NORMAL image's link layout so mon_front_blob (source/mon_front_data.s, the
+# embedded front-sprite pixel bytes) holds a coincidental word 0x080701a9 at blob+0x19E04
+# (0x0820a76c); the neighbouring words are not addresses at all (pinned by the b105 re-verify).
+# #106 G2 class (the sweep does not distinguish data words from pointers); retire with #106.
+addrtaken-ok CpuFastFill
 
