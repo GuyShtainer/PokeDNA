@@ -1062,7 +1062,10 @@ void __attribute__((noinline)) gbscr_run_demo(uint8_t gen) {
   }
   if (!gbscr_open(gen, &gs, tail, need, GBSCR_NEED_TEXTBOX, &reason)) {
     app_arena_release();
-    msg_wait("GB SCREEN SHELL", UI_WARN, kReasonOpen, reason ? reason : "unavailable");
+    if (reason == kReasonOpen)   /* the ROM-art case gets its detail line; other reasons keep their own headline (tiny1 review A3) */
+      msg_wait("GB SCREEN SHELL", UI_WARN, kReasonOpen, kReasonOpenDetail);
+    else
+      msg_wait("GB SCREEN SHELL", UI_WARN, reason ? reason : "unavailable", 0);
     return;
   }
 

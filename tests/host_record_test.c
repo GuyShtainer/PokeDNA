@@ -105,7 +105,7 @@ int main(void) {
     G3RecordInfo rr;
     CHECK(!g3_record_scan(g_buf, sz, &rr), "ruby: no record (RS predate the Frontier)");
   } else {
-    printf("  SKIP POKEMON_RUBY_AXVE02.sav (fixture absent)\n");
+    printf("SKIP (fixture absent: POKEMON_RUBY_AXVE02.sav)\n");
   }
 
   /* ---- truncated (64 KiB) save: must refuse before touching 0x1F000 ---- */

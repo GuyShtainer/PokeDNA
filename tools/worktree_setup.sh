@@ -19,7 +19,7 @@ if ! git -C "$DEST" rev-parse --git-common-dir > /dev/null 2>&1; then
 fi
 
 DEST_COMMON=$(git -C "$DEST" rev-parse --git-common-dir)
-MAIN_COMMON=$(git rev-parse --git-common-dir)
+MAIN_COMMON=$(git rev-parse --path-format=absolute --git-common-dir)   # absolute: a worktree's .git file stores an absolute gitdir (tiny1 review A1)
 
 if [[ "$DEST_COMMON" != "$MAIN_COMMON" ]]; then
   echo "Error: $DEST uses a different git repository" >&2
