@@ -116,7 +116,10 @@ void pdna_gb_fly(GbSession* s, bool can_edit) {
   int sel = 0, top = 0;
   bool dirty = false;
   bool toggled = false;
-  const int vis = 12;
+  /* Gen 2 needs a THIRD footer line (the spn legend) where Gen 3 has only two, so it
+   * gives up one visible row: with vis == 12 the last row occupies y=128..135 and the
+   * legend at y=134 was clipped by both that row and the y=140 rule (b90 re-verify R1). */
+  const int vis = gen1 ? 12 : 11;
   GbFlyPaint pv;
   memset(&pv, 0, sizeof pv);
 
@@ -142,7 +145,7 @@ void pdna_gb_fly(GbSession* s, bool can_edit) {
 
       ui_hline(0, 140, UI_SCR_W, UI_BORDER);
       if (!gen1)
-        ui_text(4, 134, UI_DIM, PDNA_GBFLY_SPN_LEGEND);
+        ui_text(4, 130, UI_DIM, PDNA_GBFLY_SPN_LEGEND);   /* 130..137: clear of the last row (118..125) and the y=140 rule */
       /* The badge line is the difference between "this feature is broken" and "I
        * understand what this does" (pdna_fly.c's own comment, same shape here). */
       if (gbfly_badge_ok(s, gen1))

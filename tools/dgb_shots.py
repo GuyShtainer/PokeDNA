@@ -1313,7 +1313,10 @@ def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
                                + (" -- 'Spawn-only rows untouched.' on Gen 2 (the "
                                   "four spn-tagged rows are never a real Fly-menu "
                                   "destination, so mark-all leaves them exactly as "
-                                  "found)" if which == "crystal" else ""))
+                                  "found)" if which == "crystal" else "")
+                               + " (the dialog residue behind the panel is the known "
+                                 "s_msg-over-app_confirm ghosting, BACKLOG #119 -- present "
+                                 "on Gen 3's pdna_fly.c too)")
     s.tap("A", settle=gb_shots.BIG_SETTLE)                  # dismiss the result panel -> back to the grid
 
     if which == "crystal":
@@ -1326,8 +1329,8 @@ def run_b90_fly(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
         # as row 0 (Spawn: Home) and row 1 (Spawn: Debug) would have been.
         s.press_n("UP", 2, settle=gb_shots.SETTLE)          # row 2 -> row 0 -> wraps to row 27 (Fast Ship)
         s.shot("06_spawn_only_tag", "BACKLOG #90: row 27 (Fast Ship) carries the "
-                                     "'spn' tag and the footer legend 'spn = not a "
-                                     "Town Map stop' -- flypoints.asm's own Fly menu "
+                                     "'spn' tag and the footer legend 'spn = no effect "
+                                     "in game' -- flypoints.asm's own Fly menu "
                                      "never offers this bit as a destination even "
                                      "though wVisitedSpawns has a real bit for it -- "
                                      "still off after D4's mark-all, proving the "
