@@ -84,6 +84,8 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
  * REPAINT RULE (`row` owns its whole rect) and the ctx-not-statics convention.
  *
  * `n`      -- how many underlying items (0..n-1) exist; `row`/`search_key` are keyed
+ *   (when PR_SORTABLE is set, search_key's return must fit pr_build's 32-B stable-copy buffer in
+ *   pdna_pick.c -- a longer key still sorts, just on a truncated prefix; b107 review A3)
  *             by that same index, never by a filtered display position.
  * `current`-- which underlying id to preselect (its list POSITION after any default
  *             filter/sort, same as list_pick's `current`).
