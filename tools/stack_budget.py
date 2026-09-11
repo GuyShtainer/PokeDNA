@@ -2722,10 +2722,31 @@ def scan_address_taken(builddir, dump_text, name_at, sections, section_dumps):
     __utf8_wctomb (a newlib locale table), and the 9 sbmp16_* tonc surface-drawg
     entries -- all genuinely address-taken, all invisible to a relocation read
     because their .o's are inside libgcc.a/libc.a/libtonc.a, not `builddir`. (The
-    diff's OTHER two "misses", art_icons_read_rows_fp and g2w_insert, are this
+    diff's OTHER two "misses", art_icons_read_rows_fp and g2w_set_otname, are this
     project's OWN functions, called directly by name everywhere they appear in
     source/ -- the old scan's coincidental match on them is exactly the false-
     positive class G2 exists to remove, not a real miss.)
+
+    D6 (BACKLOG #106): "relocation-proven" in the opening paragraph above overstates
+    how much of a real image's `taken` set is actually proof rather than trust. On
+    this project's own built images (both variants, measured live): only 31 of 135
+    hits are 'reloc' (an object-file relocation record, the one class that is truly
+    proof); 90 are 'lit' (the .text literal-pool class, next paragraph) and 14 are
+    'raw' (the third-party coincidence-scan fallback, bounded by D2 above). The
+    'lit' class is NOT proof the way 'reloc' is -- it trusts objdump's OWN `.word`
+    annotation as "this is a pointer", which is exactly the same kind of coincidence
+    a raw scan can hit: a LIVE false positive on this build is crt0's EWRAM-base
+    relocation constant, `.word 0x02000000` (source/crt0.s-equivalent startup code,
+    used to compute .data's runtime address), which happens to equal
+    _EZFO_startUp's own entry point -- scan_text_literal_pool() reports
+    _EZFO_startUp as address-taken via that word, and it escapes the orphan check
+    only because it is ALSO genuinely reachable through the ordinary call graph, not
+    because the 'lit' hit was ever real proof. There is also a genuine BLIND SPOT
+    neither 'reloc' nor 'lit' can see at all: a compiler that computes a function's
+    address with `adr Rd, label` or `add Rd, pc, #imm` (PC-relative arithmetic, not
+    a `.word` literal load) never gets flagged by either path -- this codebase's
+    -O2 build has not been observed to do that for a function pointer, but nothing
+    here would catch it if it started.
 
     own_function_names(builddir) draws the line precisely: a name this project's
     OWN *.o's define gets ONLY the relocation-proven treatment (no raw-scan
