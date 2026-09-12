@@ -858,6 +858,10 @@ int main(void) {
   PF(PDNA_SIDECAR_NOTUPDATED_TITLE,28, 184);
   PF(PDNA_SIDECAR_NOTUPDATED_L1,   28, 184);
   PF(PDNA_SIDECAR_NOTUPDATED_L2,   28, 184);
+  /* BACKLOG #120 S2: the cross-generation drop deny in pdna_box.c's drop_held(). */
+  PF(PDNA_XFER_NOGEN_TITLE, 28, 184);
+  PF(PDNA_XFER_NOGEN_L1,    28, 184);
+  PF(PDNA_XFER_NOGEN_L2,    28, 184);
   /* S5-B review fix #3: a corrupt (CRC-failed) sidecar file is refused loudly, never
    * silently reinitialised over other mons' original records. */
   PF(PDNA_SIDECAR_CORRUPT_TITLE,     28, 184);
