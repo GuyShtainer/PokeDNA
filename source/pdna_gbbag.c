@@ -607,7 +607,7 @@ void pdna_gbbag(GbSession* s, bool can_edit) {
    * (gbscr_tail_need never opens anything), so it is safe to take even on
    * the fallback path -- the plain page needs the SAME `bag` pointer, just
    * not the shell part of the slice. */
-  uint32_t shell_need = gbscr_tail_need(PDNA_GEN1, GBSCR_NEED_TEXTBOX);
+  uint32_t shell_need = gbscr_tail_need(PDNA_GEN1, GBSCR_NEED_TEXTBOX, 0);
   uint32_t need = shell_need + 2u * (uint32_t)sizeof(GbBag);
   uint8_t* tail = gb12_arena_tail(need);
   if (!tail) {
@@ -626,7 +626,7 @@ void pdna_gbbag(GbSession* s, bool can_edit) {
 
   GbScreen gs;
   const char* reason = 0;
-  bool ok = gbscr_open(PDNA_GEN1, &gs, tail, shell_need, GBSCR_NEED_TEXTBOX, &reason);
+  bool ok = gbscr_open(PDNA_GEN1, &gs, tail, shell_need, GBSCR_NEED_TEXTBOX, 0, &reason);
   bool want_commit;
   if (ok) {
     want_commit = pdna_gbbag_gen1_screen(&gs, bag, can_edit);

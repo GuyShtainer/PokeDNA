@@ -336,10 +336,15 @@ static const GbScrSrc kCacheOptOrder[13] = {
  * arena-tail request (e.g. the Gen-1 card, on top of its own player-pic bytes)
  * can call the SAME arithmetic gbscr_open_inner() gates on, rather than
  * re-deriving it and risking the two falling out of sync. */
-uint32_t gbscr_tail_need(uint8_t gen, uint32_t need_mask) {
+uint32_t gbscr_tail_need(uint8_t gen, uint32_t need_mask, uint32_t opt_mask) {
   uint32_t need = ROM_GBUI_SCRATCH_MIN + gbscr_block_bytes(gen, GBSCR_SRC_FONT);
+  /* BACKLOG #128: an opt_mask block's own offset is not knowable here (this
+   * runs BEFORE the ROM is located, see gbscr_open_inner()'s own gate) --
+   * reserve its worst-case bytes exactly like a need_mask block. A bit set in
+   * both masks is counted once (the `|` below), not twice. */
+  uint32_t want = need_mask | opt_mask;
   for (int i = 0; i < GBSCR_CACHE_OPT_N; i++)
-    if (need_mask & (1u << kCacheOptOrder[i])) need += gbscr_block_bytes(gen, kCacheOptOrder[i]);
+    if (want & (1u << kCacheOptOrder[i])) need += gbscr_block_bytes(gen, kCacheOptOrder[i]);
   return need;
 }
 
@@ -357,13 +362,15 @@ uint32_t gbscr_tail_need(uint8_t gen, uint32_t need_mask) {
  * if a needed block has no located offset (off==0) or size (len==0), or the
  * plan would overrun GBSCR_MAX_BLOCKS -- the same "fail closed" contract the
  * old gbscr_cache_block() loop had, just without the read. */
-bool gbscr_cache_plan(uint8_t gen, uint32_t need_mask, const RomGbUi* gu,
-                      uint32_t tail_len, GbscrCache* out) {
+bool gbscr_cache_plan(uint8_t gen, uint32_t need_mask, uint32_t opt_mask,
+                      const RomGbUi* gu, uint32_t tail_len, GbscrCache* out) {
   if (!gu || !out) return false;
   memset(out, 0, sizeof *out);
   uint32_t cursor = 0;
 
-  /* FONT is always cached, first. */
+  /* FONT is always cached, first. Required (not optional) -- a ROM that
+   * cannot even locate its own font has failed the earlier English-release
+   * check already; there is no "skip it" posture for FONT. */
   {
     uint32_t off = gbscr_block_off(gu, gen, GBSCR_SRC_FONT);
     uint32_t len = gbscr_block_bytes(gen, GBSCR_SRC_FONT);
@@ -375,12 +382,25 @@ bool gbscr_cache_plan(uint8_t gen, uint32_t need_mask, const RomGbUi* gu,
     cursor += len;
   }
 
+  /* BACKLOG #128: a bit set in BOTH masks is treated as required (need_mask
+   * wins) -- see gbscr_tail_need()'s own comment on this same rule. */
   for (int i = 0; i < GBSCR_CACHE_OPT_N; i++) {
     GbScrSrc src = kCacheOptOrder[i];
-    if (!(need_mask & (1u << src))) continue;
+    uint32_t bit = 1u << src;
+    bool required = (need_mask & bit) != 0;
+    bool optional = !required && (opt_mask & bit) != 0;
+    if (!required && !optional) continue;
+
     uint32_t off = gbscr_block_off(gu, gen, src);
     uint32_t len = gbscr_block_bytes(gen, src);
-    if (!off || !len || out->nblocks >= GBSCR_MAX_BLOCKS) return false;
+    if (!off || !len) {
+      if (optional) continue;   /* BACKLOG #128: skip, don't fail the plan */
+      return false;
+    }
+    if (out->nblocks >= GBSCR_MAX_BLOCKS) {
+      if (optional) continue;   /* same "best effort" posture on a full table */
+      return false;
+    }
     out->blocks[out->nblocks].rom_off = off;
     out->blocks[out->nblocks].ram_off = cursor;
     out->blocks[out->nblocks].len = len;
@@ -570,11 +590,12 @@ static bool gbscr_cache_fill(RomGbUi* gu, const GbscrCache* plan, uint8_t* tail,
  * gbscr_flush()'s own note), leaving FIL + RomGbUiLoc + a couple of locals. */
 static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs,
                                                         uint8_t* tail, uint32_t tail_len,
-                                                        uint32_t need_mask, const char** reason) {
+                                                        uint32_t need_mask, uint32_t opt_mask,
+                                                        const char** reason) {
   memset(gs, 0, sizeof *gs);
   gs->gen = gen;
 
-  if (!tail || tail_len < gbscr_tail_need(gen, need_mask)) {
+  if (!tail || tail_len < gbscr_tail_need(gen, need_mask, opt_mask)) {
     if (reason) *reason = kReasonNoTail;
     return false;
   }
@@ -611,7 +632,7 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
    * gu->read/gu->ctx are still bound to `fil` here (rom_gbui_open_loc() left
    * them that way on success). */
   GbscrCache plan;
-  bool cok = gbscr_cache_plan(gen, need_mask, &gs->gu, tail_len, &plan) &&
+  bool cok = gbscr_cache_plan(gen, need_mask, opt_mask, &gs->gu, tail_len, &plan) &&
              gbscr_cache_fill(&gs->gu, &plan, tail, &gs->cache);
   f_close(&fil);
   if (!cok) { if (reason) *reason = kReasonOpen; return false; }
@@ -644,7 +665,7 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
   if (!ok || (uint8_t)gs->gu.gen != gen) { if (reason) *reason = kReasonOpen; return false; }
 
   GbscrCache plan;
-  bool cok = gbscr_cache_plan(gen, need_mask, &gs->gu, tail_len, &plan) &&
+  bool cok = gbscr_cache_plan(gen, need_mask, opt_mask, &gs->gu, tail_len, &plan) &&
              gbscr_cache_fill(&gs->gu, &plan, tail, &gs->cache);
   if (!cok) { if (reason) *reason = kReasonOpen; return false; }
 #endif
@@ -660,7 +681,7 @@ static bool __attribute__((noinline)) gbscr_open_inner(uint8_t gen, GbScreen* gs
  * state gbscr_open_inner() used to leave on the same refusals. */
 bool __attribute__((noinline)) gbscr_open(uint8_t gen, GbScreen* gs, uint8_t* tail,
                                           uint32_t tail_len, uint32_t need_mask,
-                                          const char** reason) {
+                                          uint32_t opt_mask, const char** reason) {
   if (reason) *reason = 0;
   if (!gs) return false;
   if (gen != PDNA_GEN1 && gen != PDNA_GEN2) {
@@ -675,7 +696,15 @@ bool __attribute__((noinline)) gbscr_open(uint8_t gen, GbScreen* gs, uint8_t* ta
     if (reason) *reason = kReasonNoStack;
     return false;
   }
-  return gbscr_open_inner(gen, gs, tail, tail_len, need_mask, reason);
+  return gbscr_open_inner(gen, gs, tail, tail_len, need_mask, opt_mask, reason);
+}
+
+/* BACKLOG #128: see the header's own doc comment. Pure lookup (no I/O) --
+ * mirrors gbscr_cache_plan()'s own "offset 0 means the block was skipped"
+ * rule via gbscr_block_off() rather than re-scanning gs->cache.blocks[]. */
+bool gbscr_has_block(const GbScreen* gs, GbScrSrc src) {
+  if (!gs || !gs->ok) return false;
+  return gbscr_block_off(&gs->gu, gs->gen, src) != 0;
 }
 
 /* U2b item 3: config.cfg NOW, iff gb_scale_mode changed during this `gs`'s
@@ -1108,14 +1137,14 @@ void __attribute__((noinline)) gbscr_run_demo(uint8_t gen) {
    * gb12_arena_tail() (which only ever returns non-NULL inside a resident-image
    * GB session) -- released before returning either way. TEXTBOX is the only
    * extra block this demo's own border needs; FONT is always cached. */
-  uint32_t need = gbscr_tail_need(gen, GBSCR_NEED_TEXTBOX);
+  uint32_t need = gbscr_tail_need(gen, GBSCR_NEED_TEXTBOX, 0);
   uint8_t* tail = app_arena_acquire(need);
   if (!tail) {
     snd_deny();   /* the same refusal shape as pdna_gen12.c's arena-busy panel */
     msg_wait("NOT NOW", UI_WARN, "Save the Pokemon you moved,", "then open the GB screen.");
     return;
   }
-  if (!gbscr_open(gen, &gs, tail, need, GBSCR_NEED_TEXTBOX, &reason)) {
+  if (!gbscr_open(gen, &gs, tail, need, GBSCR_NEED_TEXTBOX, 0, &reason)) {
     app_arena_release();
     if (reason == kReasonOpen)   /* the ROM-art case gets its detail line; other reasons keep their own headline (tiny1 review A3) */
       msg_wait("GB SCREEN SHELL", UI_WARN, kReasonOpen, kReasonOpenDetail);

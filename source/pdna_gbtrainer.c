@@ -561,7 +561,7 @@ static void g1card_edit_sel(GbTrainer* t, int sel) {
 __attribute__((noinline))
 static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
   uint32_t shell_need = gbscr_tail_need(PDNA_GEN1,
-      GBSCR_NEED_CARDFRAME | GBSCR_NEED_BADGES | GBSCR_NEED_TEXTBOX);
+      GBSCR_NEED_CARDFRAME | GBSCR_NEED_BADGES | GBSCR_NEED_TEXTBOX, 0);
   /* U2b review 0b: ONE slice -- the shell's own tile cache AND this screen's
    * player-pic decode share it; the pic's bytes are carved out past what the
    * shell itself uses (gbscr_tail_need()'s own result), never a second
@@ -577,7 +577,7 @@ static bool pdna_gbtrainer_gen1_card(GbTrainer* t, bool can_edit) {
   GbScreen gs;
   const char* reason = 0;
   bool ok = gbscr_open(PDNA_GEN1, &gs, tail, shell_need,
-                       GBSCR_NEED_CARDFRAME | GBSCR_NEED_BADGES | GBSCR_NEED_TEXTBOX, &reason);
+                       GBSCR_NEED_CARDFRAME | GBSCR_NEED_BADGES | GBSCR_NEED_TEXTBOX, 0, &reason);
 #ifdef PDNA_U2C_FORCE_FALLBACK
   /* D10 (review): the fallback branch below (no ROM registered / bad ROM /
    * non-English release / no tile-bank memory) is this function's only
@@ -946,51 +946,38 @@ static void g2card_edit_sel(GbTrainer* t, int page, int sel) {
  * caller passes, same fail-safe cardpic_colmajor already gives rom_gbui.c). */
 __attribute__((noinline))
 static bool pdna_gbtrainer_gen2_card(GbTrainer* t, bool can_edit, bool female) {
-  uint16_t pic_need = female ? GBSCR_NEED_CARDPIC_F : GBSCR_NEED_CARDPIC_M;
-  /* BACKLOG #125 review: uint32_t, not uint16_t -- GBSCR_NEED_CARDCORNER is
-   * 1u<<16, which silently truncated to 0 in a uint16_t need_mask (the actual
-   * bug: the retry below never added the bit, the block was never cached,
-   * and the corner cells painted whatever stale pixels were already there
-   * instead of the chamfer). See pdna_gbscreen.h's GBSCR_SRC_COUNT assert. */
+  /* BACKLOG #128: ONE open instead of two (was: open for the requested
+   * gender's pic, fail-safe-retry as Chris if that pic's block failed to
+   * locate; then a SEPARATE retry adding CARDCORNER once gu.cardcorner was
+   * known) -- that cost a second f_open/f_close of the ROM, a second .loc
+   * cache-file read, ~10-15 anchor-revalidation reads, and a full refill of
+   * every cache block, every single Gen-2 card visit.
+   *
+   * CARDPIC_M is in need_mask (required, ALWAYS) so a female visit whose
+   * cardpic_f block cannot be located still has Chris's own pic cached to
+   * fall back to -- the exact outcome the old two-open fail-safe produced,
+   * without a second open. CARDPIC_F (only requested when female) and
+   * CARDCORNER (always requested -- 0 on Gold, so it is simply absent there)
+   * are opt_mask: gbscr_cache_plan() skips either one silently when its own
+   * located offset is 0, rather than failing the whole open the way the SAME
+   * bit in need_mask would (BACKLOG #128, pdna_gbscreen.c). */
   uint32_t need_mask = GBSCR_NEED_CARDGFX | GBSCR_NEED_STATUSWORD |
-                       GBSCR_NEED_LEADERS | GBSCR_NEED_BADGES | pic_need;
-  uint32_t shell_need = gbscr_tail_need(PDNA_GEN2, need_mask);
+                       GBSCR_NEED_LEADERS | GBSCR_NEED_BADGES | GBSCR_NEED_CARDPIC_M;
+  uint32_t opt_mask = GBSCR_OPT_CARDCORNER | (female ? GBSCR_OPT_CARDPIC_F : 0u);
+  uint32_t shell_need = gbscr_tail_need(PDNA_GEN2, need_mask, opt_mask);
   uint8_t* tail = gb12_arena_tail(shell_need);
 
   GbScreen gs;
   const char* reason = 0;
-  bool ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, &reason);
-  if (!ok && female) {
-    /* A save claims female on a ROM whose cardpic_f rom_gbui somehow failed
-     * to locate (should not happen once cardpic_f is non-zero -- rom_gbui.c's
-     * own cross-check ties it to the SAME anchor as cardpic_m -- but this is
-     * the fail-safe: retry once as Chris rather than refuse the whole card
-     * over a photo). */
-    female = false;
-    need_mask = (need_mask & ~(uint16_t)GBSCR_NEED_CARDPIC_F) | GBSCR_NEED_CARDPIC_M;
-    shell_need = gbscr_tail_need(PDNA_GEN2, need_mask);
-    ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, &reason);
-  }
-  /* BACKLOG #125: gbscr_open() locates gu (rom_gbui_open[_loc]()) BEFORE it
-   * plans the tail cache, so gs.gu.cardcorner is only known once the open
-   * above has already succeeded -- need_mask could not ask for the corner
-   * block up front. Retry once more (same "screen entry, not a per-frame
-   * cost" posture as the female fail-safe just above; gbscr_open() just
-   * wrote a fresh loc, so this retry takes the CHEAP cached-loc revalidate
-   * path, not a full rescan) with GBSCR_NEED_CARDCORNER added whenever the
-   * located ROM is Crystal-shaped. Without this the block is never cached
-   * and both right-corner cells paint BLANK -- gbscr_mem_read() bounds every
-   * read to the cached tail, and GBSCR_SRC_BADGES index 88 does NOT
-   * substitute (BADGES' block_bytes is 704, not a separate 16-B block). */
-  bool has_corner = ok && gs.gu.cardcorner != 0;
-  if (has_corner) {
-    need_mask |= GBSCR_NEED_CARDCORNER;
-    shell_need = gbscr_tail_need(PDNA_GEN2, need_mask);
-    gb12_arena_tail_release();
-    tail = gb12_arena_tail(shell_need);
-    ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, &reason);
-    has_corner = ok && gs.gu.cardcorner != 0;
-  }
+  bool ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, opt_mask, &reason);
+  /* Same fail-safe outcome as the old two-open code: a save claims female on
+   * a ROM whose cardpic_f block did not get cached (should not happen once
+   * cardpic_f is non-zero -- rom_gbui.c's own cross-check ties it to the
+   * SAME anchor as cardpic_m -- but CARDPIC_F is opt_mask now, so `ok` can
+   * still be true even when it is absent) -- paint Chris instead, no retry,
+   * no second open; CARDPIC_M's block is already cached either way. */
+  female = female && ok && gbscr_has_block(&gs, GBSCR_SRC_CARDPIC_F);
+  bool has_corner = ok && gbscr_has_block(&gs, GBSCR_SRC_CARDCORNER);
   if (!ok) {
     gb12_arena_tail_release();
     return pdna_gbtrainer_plain(t, false, can_edit, PDNA_GBTR_FALLBACK_TITLE,
