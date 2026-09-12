@@ -76,6 +76,46 @@ static void test_real_caller_shape(void) {
   printf("(B) real-caller shape ok\n");
 }
 
+/* (D) Review A5 cross-review finding: the PAGE-level rule (dex_cell_art_serves_page,
+ * what dex_declare_page()'s icon-store-plan skip and the bob-animation loop gate on)
+ * pinned side by side with the per-cell rule above, over the same {gb_session,
+ * gb_have} space -- must always agree with dex_cell_art_source()'s own GB/not-GB
+ * split when store_ok is held true (the real caller's shape), and in particular:
+ * a Gen-1 session (gb_session=false) with a Gen-2 ROM ALSO registered (gb_have=true)
+ * -- the exact bug this rule exists to prevent a repeat of -- must answer
+ * serves_page=false, matching dex_cell_art_source(false, true, true) == STORE, never
+ * GB. */
+static void test_page_rule(void) {
+  struct { int gb_session, gb_have; bool want_serves; } cases[] = {
+    /* gb_session gb_have -> want_serves_page */
+    { 0, 0, false },
+    { 0, 1, false },   /* THE bug case: a Gen-1 session, a Gen-2 ROM registered too */
+    { 1, 0, false },
+    { 1, 1, true  },
+  };
+  for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+    bool got = dex_cell_art_serves_page((bool)cases[i].gb_session, (bool)cases[i].gb_have);
+    char msg[96];
+    snprintf(msg, sizeof msg, "page case %u: gb_session=%d gb_have=%d -> want serves_page=%d got %d",
+             i, cases[i].gb_session, cases[i].gb_have, cases[i].want_serves, got);
+    CHECK(got == cases[i].want_serves, msg);
+
+    /* Consistency with the per-cell rule (store_ok held true, the real caller's own
+     * shape): serves_page must be true iff dex_cell_art_source() picks GB. */
+    DexCellArtSource cell = dex_cell_art_source((bool)cases[i].gb_session,
+                                                (bool)cases[i].gb_have, true);
+    char msg2[128];
+    snprintf(msg2, sizeof msg2,
+             "page case %u: serves_page=%d must agree with per-cell source=%s (store_ok=true)",
+             i, got, name_of(cell));
+    CHECK((cell == DEX_CELL_ART_GB) == got, msg2);
+  }
+  /* The named bug case, spelled out once more, unmissably: */
+  CHECK(dex_cell_art_serves_page(false, true) == false,
+        "Gen-1 session + Gen-2 ROM registered -> serves_page FALSE (review A5's own bug)");
+  printf("(D) page rule ok\n");
+}
+
 /* (C) Pure function: same inputs, same answer, called twice, no state carried between
  * calls (a stray file-static in a future edit would still pass this by luck, but a
  * genuinely impure implementation that e.g. alternated answers would not). */
@@ -93,6 +133,7 @@ static void test_pure_repeatable(void) {
 int main(void) {
   test_truth_table();
   test_real_caller_shape();
+  test_page_rule();
   test_pure_repeatable();
 
   printf("\n%d checks, %d FAILED\n", checks, fails);

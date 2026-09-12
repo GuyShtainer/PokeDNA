@@ -10,3 +10,7 @@ DexCellArtSource dex_cell_art_source(bool gb_session, bool gb_have, bool store_o
   if (store_ok) return DEX_CELL_ART_STORE;
   return DEX_CELL_ART_NONE;
 }
+
+bool dex_cell_art_serves_page(bool gb_session, bool gb_have) {
+  return gb_session && gb_have;
+}

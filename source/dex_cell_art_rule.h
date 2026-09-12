@@ -39,4 +39,21 @@ typedef enum {
  */
 DexCellArtSource dex_cell_art_source(bool gb_session, bool gb_have, bool store_ok);
 
+/*
+ * Review A5 cross-review finding: the PAGE-level question dex_declare_page()'s
+ * icon-store-plan skip and the bob-animation loop both need ("will the override
+ * serve ANY cell on this visit") collapses to exactly the same two inputs
+ * gbdex_cell_art()'s own per-cell gate uses (species is per-cell, not per-page, so
+ * it drops out) -- `gb_session && gb_have`. Pinned here, next to dex_cell_art_source(),
+ * so the per-cell and per-page rules are provably consistent (tests/host_dexcellart_
+ * test.c exercises both against the same table) instead of two hand-written copies
+ * of "gen == GB_GEN2 && have(GEN2)" that could quietly re-diverge. pdna_gbdex.c's
+ * gbdex_serves_dex() calls this directly; pdna_pick.h's pdna_dex_set_cell_art()
+ * stores the ANSWER (computed once, at install time), never this function itself --
+ * pdna_pick.c must not re-derive it from a live pdna_origin_art_have() read (that
+ * global is boot-sticky and independent per era, which is the whole bug this rule
+ * exists to prevent a repeat of).
+ */
+bool dex_cell_art_serves_page(bool gb_session, bool gb_have);
+
 #endif /* DEX_CELL_ART_RULE_H */

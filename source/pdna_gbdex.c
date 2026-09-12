@@ -63,6 +63,18 @@ gbdex_cell_blit(const PdnaArt* a, int x, int y, int w, int h) {
   return true;
 }
 
+/* The ONE place `gb_session && gb_have` is computed -- gbdex_cell_art()'s own per-cell
+ * gate below AND pdna_gbdex()'s two install sites (which need the SAME answer at the
+ * PAGE level, for pdna_dex_set_cell_art()'s `serves_page` -- see that function's own
+ * header comment in pdna_pick.h for why it must not be re-derived from
+ * pdna_origin_art_have(PDNA_GEN2) alone: that global is boot-sticky and independent
+ * per era, so a Gen-1 session with a Gen-2 ROM ALSO registered would wrongly answer
+ * "yes" from have(GEN2) alone). One implementation, never two definitions of the same
+ * question that could quietly re-diverge. */
+static bool gbdex_serves_dex(const GbSession* s) {
+  return s && dex_cell_art_serves_page(s->gen == GB_GEN2, pdna_origin_art_have(PDNA_GEN2));
+}
+
 /* The PdnaDexCellArtFn itself: `ctx` is the GbSession* the caller is visiting (never
  * NULL -- pdna_gbdex() below only installs this while `s` is in scope). No fetch is
  * attempted for a Gen-1 session (see the file header comment above for why this check
@@ -80,7 +92,7 @@ gbdex_cell_blit(const PdnaArt* a, int x, int y, int w, int h) {
 static bool gbdex_cell_art(uint16_t dex, int x, int y, int w, int h, void* ctx) {
   const GbSession* s = (const GbSession*)ctx;
   bool gb_session = s && s->gen == GB_GEN2;
-  bool gb_have = gb_session && pdna_origin_art_have(PDNA_GEN2);
+  bool gb_have = gbdex_serves_dex(s);
   if (dex_cell_art_source(gb_session, gb_have, /*store_ok=*/true) != DEX_CELL_ART_GB)
     return false;
   if (dex < 1 || dex > 251) return false;
@@ -251,9 +263,9 @@ static bool gbdex_chooser(GbSession* s, bool can_edit) {
          * a bracket that outlived this call would still be live (with `s`, a stack
          * pointer this function received, as ctx) after gbdex_chooser() itself
          * returns. */
-        pdna_dex_set_cell_art(gbdex_cell_art, s);
+        pdna_dex_set_cell_art(gbdex_cell_art, s, gbdex_serves_dex(s));
         bool dex_dirty = pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, can_edit);
-        pdna_dex_set_cell_art(NULL, NULL);
+        pdna_dex_set_cell_art(NULL, NULL, false);
         if (dex_dirty) dirty = true;
       } else {
         if (unown_forms_screen(s, can_edit)) dirty = true;
@@ -278,9 +290,9 @@ bool pdna_gbdex(GbSession* s, bool can_edit) {
      * icons -- see this file's header comment for why that must not be "just don't
      * install it here" (a separately-registered Gen-2 ROM must not leak into a Gen-1
      * dex's Kanto-range cells). */
-    pdna_dex_set_cell_art(gbdex_cell_art, s);
+    pdna_dex_set_cell_art(gbdex_cell_art, s, gbdex_serves_dex(s));
     dirty = pdna_dex_screen(gbdex_shim_get, gbdex_shim_set, NULL, NULL, can_edit);
-    pdna_dex_set_cell_art(NULL, NULL);
+    pdna_dex_set_cell_art(NULL, NULL, false);
   }
 
   s_gbdex_session = NULL;

@@ -574,26 +574,29 @@ static DexSetNat   s_setnat;   /* enable/disable national dex (may be NULL) */
  * "no new statics" line means) -- pushing the stack margin from 2,080 to 2,072,
  * a STOP-worthy shrink caught by tools/stack_budget.py. EWRAM has 1,172 B free and
  * does not feed the stack ceiling at all, so the SAME 8 bytes cost nothing there. */
-typedef struct { PdnaDexCellArtFn fn; void* ctx; } DexCellArtOverride;
+typedef struct { PdnaDexCellArtFn fn; void* ctx; bool serves_page; } DexCellArtOverride;
 static EWRAM_BSS DexCellArtOverride s_cell_art;
 
-void pdna_dex_set_cell_art(PdnaDexCellArtFn fn, void* ctx) {
-  s_cell_art.fn = fn; s_cell_art.ctx = ctx;
+void pdna_dex_set_cell_art(PdnaDexCellArtFn fn, void* ctx, bool serves_page) {
+  s_cell_art.fn = fn; s_cell_art.ctx = ctx; s_cell_art.serves_page = serves_page;
 }
 
-/* "Is the override installed at all" -- noinline on purpose (not just for the reason
- * dex_cell_art_call() below states): a plain `s_cell_art.fn != NULL` inline in the
- * bob-animation loop's own condition measurably perturbed -O2's register allocation
- * in the REST of pdna_dex_screen (an unrelated pre-existing dex_state-family dispatch
- * duplicated into a second compiled call site, artless build only). Routing it through
- * this noinline query did NOT clear that on its own -- pdna_dex_screen() calls it
- * exactly ONCE, at entry, into a local (`cell_art_active`), instead of every idle
- * frame inside the bob loop; that hoist is what actually removed the churn (verified:
- * both builds' disassembly show pdna_dex_screen back at its original 1 argsite). Kept
- * noinline anyway -- an out-of-line query stays cheaper to reason about than an inline
- * field read if this function's callers ever change again. */
-static bool __attribute__((noinline)) dex_cell_art_installed(void) {
-  return s_cell_art.fn != 0;
+/* Review A5 cross-review finding: "does the override serve THIS PAGE at all" (used to
+ * skip the icon-store plan and the bob-animation refresh) must NOT be re-derived here
+ * from pdna_origin_art_have(PDNA_GEN2) -- that global is boot-sticky and independent
+ * per era (Settings can register a Gen-1 AND a Gen-2 ROM at once), so a Gen-1 (Red)
+ * dex visit with a Gen-2 ROM also registered would answer "yes" from have(GEN2) alone
+ * even though gbdex_cell_art() refuses every cell of a Gen-1 session (its own gate
+ * also checks the session's gen). The installer (pdna_gbdex.c) already computes the
+ * exact same expression gbdex_cell_art() gates on, ONCE, at install time -- this just
+ * reads the answer it stored, so the two questions can never re-diverge. noinline for
+ * the same reason dex_cell_art_call() below is: an out-of-line query stays cheaper to
+ * reason about than an inline field read if this function's callers ever change
+ * again (a previous version of this function DID measurably perturb -O2's register
+ * allocation elsewhere in this TU when read inline -- see this file's own git
+ * history for the churn that cost). */
+static bool __attribute__((noinline)) dex_cell_art_page_served(void) {
+  return s_cell_art.fn && s_cell_art.serves_page;
 }
 
 /* Review ruling (BACKLOG #124, STOP 2): the ONLY place in this file that actually
@@ -705,7 +708,7 @@ static void dex_declare_page(bool grid, int top, int vis) {
   uint16_t rows[ICON_STORE_PLAN_MAX];
   int n = 0;
   if (!grid) { icon_store_plan(0, 0); return; }
-  if (dex_cell_art_installed() && pdna_origin_art_have(PDNA_GEN2)) { icon_store_plan(0, 0); return; }  /* BACKLOG #124 review A5: a page the GB override serves must not also plan+read icon-store rows */
+  if (dex_cell_art_page_served()) { icon_store_plan(0, 0); return; }  /* BACKLOG #124 review A5: a page the GB override serves must not also plan+read icon-store rows */
   for (int i = 0; i < vis && top + i < g_n && n < (int)ICON_STORE_PLAN_MAX; i++)
     rows[n++] = art_icons_row_for(g_list[top + i], 0);
   icon_store_plan(rows, n);
@@ -1048,29 +1051,30 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
        * not fit) caught cells keep their first frame: a static Pokemon beats a hole and
        * costs nothing per tick, and the log says which case it was.
        *
-       * BACKLOG #124: the per-cell `s_cell_art.fn` guard below -- deliberately a raw
-       * field re-read at its ONE use site, not a named local computed once at
-       * function entry: a persistent local here (even read-only, even a plain
-       * bool) measurably perturbed -O2's register allocation across an unrelated
-       * pre-existing dispatch elsewhere in this function on the artless build only
-       * (stack_edges.txt's own note on this exact function documents the SAME class
-       * of cross-build register-pressure fragility already, independent of this
-       * lane). The field itself is EWRAM (a single load, no SD/no I/O), read at most
-       * `vis` times (<=21) once per 30-frame tick -- negligible cost either way, and
-       * this function's only remaining foothold once the local was removed. Not
-       * added to THIS outer condition either, for the same reason. A page the
-       * GB-session override served
-       * has no icon-store rows declared for it at all (dex_declare_page() skips the
-       * plan while the override is installed and a GB ROM is located, see its own
-       * comment), so mon_icon_for_frame() below would either serve the WRONG rung's
-       * picture or nothing for a GB-served cell; worse, re-driving the override here
-       * would put a GB ROM SD fetch on this per-tick path, which pdna_box.c's
-       * era_cell_draw() comment names as the one thing this class of fetch must
-       * never do. The per-cell `continue` below leaves those cells exactly as the
-       * full repaint drew them -- "static beats a hole" -- while every OTHER
-       * (non-GB-served) caught cell on the SAME page still bobs normally; `anim_ctr`/
-       * `bob` themselves keep ticking either way (harmless -- no I/O, just a counter
-       * and a page with zero animating cells doing one extra no-op pass). */
+       * BACKLOG #124: the per-cell dex_cell_art_page_served() guard below --
+       * deliberately called at its ONE use site inside this loop, not hoisted to a
+       * named local at function entry: a persistent local here (even read-only, even
+       * a plain bool) measurably perturbed -O2's register allocation across an
+       * unrelated pre-existing dispatch elsewhere in this function on the artless
+       * build only (this file's own git history has the churn that cost). The
+       * function itself is a single EWRAM struct read (no SD/no I/O), called at most
+       * `vis` times (<=21) once per 30-frame tick -- negligible either way. Not
+       * added to THIS outer condition either, for the same register-pressure reason.
+       *
+       * A page the override serves has no icon-store rows declared for it at all
+       * (dex_declare_page() skips the plan for the SAME `serves_page` answer, see its
+       * own comment), so mon_icon_for_frame() below would either serve the WRONG
+       * rung's picture or nothing for a GB-served cell; worse, re-driving the
+       * override here would put a GB ROM SD fetch on this per-tick path, which
+       * pdna_box.c's era_cell_draw() comment names as the one thing this class of
+       * fetch must never do. The per-cell `continue` below leaves those cells exactly
+       * as the full repaint drew them -- "static beats a hole" -- while every OTHER
+       * (non-GB-served) caught cell on the SAME page still bobs normally, INCLUDING
+       * every caught cell on a page `serves_page` is false for (a Gen-1 session, or
+       * no ROM registered right now) even if some unrelated era's ROM happens to be
+       * registered -- review A5's whole point. `anim_ctr`/`bob` themselves keep
+       * ticking either way (harmless -- no I/O, just a counter and a page with zero
+       * animating cells doing one extra no-op pass). */
       if (!k && grid && app_anim_enabled(ANIM_DEX) && mon_icon_anim_cheap() &&
           ++anim_ctr >= DEX_ANIM_PERIOD) {
         anim_ctr = 0; bob ^= 1;
@@ -1081,7 +1085,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
         for (int i = 0; i < vis && top + i < g_n; i++) {
           uint16_t in = g_list[top + i];
           if (dstate(in) != 2) continue;
-          if (dex_cell_art_installed() && pdna_origin_art_have(PDNA_GEN2)) continue;  /* BACKLOG #124: only a page the override can actually serve skips bob */
+          if (dex_cell_art_page_served()) continue;  /* BACKLOG #124: only a page the override can actually serve skips bob */
           int x = x0 + (i % cols) * cw, y = y0 + (i / cols) * ch;
           { const uint16_t* ic = mon_icon_for_frame(in, (uint8_t)bob);
             if (ic) ui_blit_over(x, y, 32, 32, ic, UI_BG); }   /* art-free: static cell stays */
