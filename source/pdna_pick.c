@@ -705,6 +705,7 @@ static void dex_declare_page(bool grid, int top, int vis) {
   uint16_t rows[ICON_STORE_PLAN_MAX];
   int n = 0;
   if (!grid) { icon_store_plan(0, 0); return; }
+  if (dex_cell_art_installed() && pdna_origin_art_have(PDNA_GEN2)) { icon_store_plan(0, 0); return; }  /* BACKLOG #124 review A5: a page the GB override serves must not also plan+read icon-store rows */
   for (int i = 0; i < vis && top + i < g_n && n < (int)ICON_STORE_PLAN_MAX; i++)
     rows[n++] = art_icons_row_for(g_list[top + i], 0);
   icon_store_plan(rows, n);
@@ -1080,7 +1081,7 @@ bool pdna_dex_screen(DexGetState get, DexSetState set,
         for (int i = 0; i < vis && top + i < g_n; i++) {
           uint16_t in = g_list[top + i];
           if (dstate(in) != 2) continue;
-          if (s_cell_art.fn) continue;    /* BACKLOG #124 test */
+          if (dex_cell_art_installed() && pdna_origin_art_have(PDNA_GEN2)) continue;  /* BACKLOG #124: only a page the override can actually serve skips bob */
           int x = x0 + (i % cols) * cw, y = y0 + (i / cols) * ch;
           { const uint16_t* ic = mon_icon_for_frame(in, (uint8_t)bob);
             if (ic) ui_blit_over(x, y, 32, 32, ic, UI_BG); }   /* art-free: static cell stays */
