@@ -8804,6 +8804,7 @@ static void view_save(const char* path) {
       memset(&g_vinfo, 0, sizeof g_vinfo);
       g_save_size = fsz;
       pdna_box_clear_carry();
+      pdna_bank_clear_deletions();   /* BACKLOG #120 S2: drop any PREVIOUS save's queued Bank->PC deletions -- illegitimate once this fork's save/session is gone */
       hb_off();
       /* Optional clipboard seed (fuse_sav.py --clip): a real 80-byte Gen-3 box record
        * so an empty GB cell's mon-menu offers PASTE (GB) -- app_mon_menu's own gate is
@@ -8866,6 +8867,7 @@ static void view_save(const char* path) {
         memset(&g_vinfo, 0, sizeof g_vinfo);
         g_save_size = psz;
         pdna_box_clear_carry();
+        pdna_bank_clear_deletions();   /* BACKLOG #120 S2: drop any PREVIOUS save's queued Bank->PC deletions -- illegitimate once this fork's save/session is gone */
         hb_off();
         { uint8_t rec80[80]; uint32_t csz = 0;
           if (fused_clip_present(&csz) && csz == sizeof rec80 && fused_clip_read(rec80, csz) &&
@@ -8920,6 +8922,7 @@ static void view_save(const char* path) {
         memset(&g_vinfo, 0, sizeof g_vinfo);
         g_save_size = psz;
         pdna_box_clear_carry();
+        pdna_bank_clear_deletions();   /* BACKLOG #120 S2: drop any PREVIOUS save's queued Bank->PC deletions -- illegitimate once this fork's save/session is gone */
         hb_off();
         { uint8_t rec80[80]; uint32_t csz = 0;
           if (fused_clip_present(&csz) && csz == sizeof rec80 && fused_clip_read(rec80, csz) &&
@@ -8983,6 +8986,7 @@ static void view_save(const char* path) {
      * hygiene, not a data path, but a Pokemon from another save hovering over someone's
      * Game Boy boxes is exactly the kind of thing that reads as corruption. */
     pdna_box_clear_carry();
+    pdna_bank_clear_deletions();   /* BACKLOG #120 S2: drop any PREVIOUS save's queued Bank->PC deletions -- illegitimate once this fork's save/session is gone */
     hb_off();
     /* met_game 3 = Emerald: with no Gen-3 save open there is no destination cartridge
      * to claim, and Emerald is the same default pdna_gen12_show() uses for 0. */
