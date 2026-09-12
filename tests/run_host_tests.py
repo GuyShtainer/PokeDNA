@@ -38,6 +38,14 @@ ROMS = Path(os.environ.get(
     "ROMS", "/Users/guyshtainer/VSCodeProjects/gba-toolkit/roms"))
 FIXTURES = ROOT / "tests" / "fixtures"
 
+# BACKLOG #130: host_stack_budget_test.py is a pure-Python unit test of a pure-Python
+# tool (tools/stack_budget.py) — nothing to compile, so it doesn't fit the `cc -std=c11`
+# extraction below. It used to be reachable only via `make stack-check`, which nothing
+# else runs by default, so a real regression (the BoxSource offset drift, BACKLOG #130)
+# sat failing on main unnoticed. Named explicitly rather than globbed: tests/host_fusegb_test.py
+# is also pure-Python and deliberately stays off this list (own ticket, out of scope here).
+PY_TESTS = ["tests/host_stack_budget_test.py"]
+
 VERBOSE = "-v" in sys.argv
 
 
@@ -66,6 +74,41 @@ def cc_line_for(src: Path) -> str | None:
     cmd = " ".join(buf)
     cmd = cmd.split("&&")[0].strip()
     return cmd or None
+
+
+def classify(r: subprocess.CompletedProcess) -> tuple[str, str]:
+    """Shared verdict for a finished test process (compiled binary or `python3 <file>`):
+    ("ok"|"skip"|"fail", detail-to-print). A SKIP line anywhere in stdout/stderr wins
+    over a zero exit (BACKLOG #115 — a test that found a fixture absent still exits 0)."""
+    out = (r.stdout + r.stderr).strip()
+    skip_line = next((ln for ln in out.splitlines() if ln.startswith("SKIP (")), None)
+    if r.returncode == 0 and skip_line:
+        return "skip", skip_line
+    if r.returncode == 0:
+        return "ok", out
+    fail_lines = [ln for ln in out.split("\n") if "fail" in ln.lower()][:8]
+    header = f"FAILED (exit {r.returncode})"
+    return "fail", "\n".join([header] + [f"      {ln}" for ln in fail_lines])
+
+
+def tally(name, outcome, detail, npass, nfail, nskip, failed):
+    if outcome == "skip":
+        print(f"  {name:<26} {detail}")
+        nskip += 1
+    elif outcome == "ok":
+        print(f"  {name:<26} ok")
+        npass += 1
+        if VERBOSE and detail:
+            for ln in detail.split("\n"):
+                print(f"      {ln}")
+    else:
+        lines = detail.split("\n")
+        print(f"  {name:<26} {lines[0]}")
+        for ln in lines[1:]:
+            print(ln)
+        nfail += 1
+        failed.append(name)
+    return npass, nfail, nskip
 
 
 def main() -> int:
@@ -110,24 +153,14 @@ def main() -> int:
             # nothing to do with the code under test.
             args = saves if re.search(r"argv\[\w+\]", src.read_text(errors="replace")) else []
             r = subprocess.run([binpath, *args], capture_output=True, text=True)
-            out = (r.stdout + r.stderr).strip()
+            outcome, detail = classify(r)
+            npass, nfail, nskip = tally(name, outcome, detail, npass, nfail, nskip, failed)
 
-            skip_line = next((ln for ln in out.splitlines() if ln.startswith("SKIP (")), None)
-            if r.returncode == 0 and skip_line:
-                print(f"  {name:<26} {skip_line}")   # a test that found a fixture absent, on ANY line (BACKLOG #115)
-                nskip += 1
-            elif r.returncode == 0:
-                print(f"  {name:<26} ok")
-                npass += 1
-            else:
-                print(f"  {name:<26} FAILED (exit {r.returncode})")
-                for ln in [l for l in out.split("\n") if "fail" in l.lower()][:8]:
-                    print(f"      {ln}")
-                nfail += 1
-                failed.append(name)
-            if VERBOSE and out:
-                for ln in out.split("\n"):
-                    print(f"      {ln}")
+        for pysrc in PY_TESTS:
+            name = Path(pysrc).stem
+            r = subprocess.run([sys.executable, pysrc], capture_output=True, text=True)
+            outcome, detail = classify(r)
+            npass, nfail, nskip = tally(name, outcome, detail, npass, nfail, nskip, failed)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

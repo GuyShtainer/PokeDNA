@@ -869,27 +869,157 @@ def test_d3_su_frame_takes_max_not_bare_base_first():
 
 # === struct_field_offsets(): the D1 header-drift check, against the real header =========
 
+def _gcc_ground_truth_struct_layout(header_path, struct_name, field_names):
+    """BACKLOG #130: the ARM-EABI ground truth for `struct_name`'s field byte offsets
+    and total size, computed by the REAL target compiler (arm-none-eabi-gcc, this
+    project's actual -mcpu=arm7tdmi -mthumb ABI) rather than typed by hand into a
+    dict that then silently drifts out of sync with the header (exactly what
+    happened here: BACKLOG #120 S1 moved every offset from can_rename onward and
+    nobody re-derived the old hardcoded `expected` dict — the check kept comparing
+    stack_budget.py's parser against ITSELF, so it could never catch a real header
+    change, and it wasn't even in run_host_tests.py's loop to be seen failing).
+
+    Generates a throwaway .c file that #includes the header and takes offsetof()/
+    sizeof() of every field, compiles it to an object with -g -O0 -c (never linked,
+    never run -- this host has no way to execute an ARM binary), then reads the
+    struct's layout back out of the object's DWARF debug info via `readelf
+    --debug-dump=info`. Returns (offsets_dict, sizeof_int), or (None, None) if the
+    devkitARM toolchain isn't available here (same posture as the other absent-
+    fixture skips in this file: skip, don't fail).
+    """
+    gcc = os.path.join(sb.DEVKITARM, "bin", "arm-none-eabi-gcc")
+    readelf = os.path.join(sb.DEVKITARM, "bin", "arm-none-eabi-readelf")
+    if not (os.path.exists(gcc) and os.path.exists(readelf)):
+        return None, None
+
+    import subprocess
+    import tempfile
+
+    src_dir = os.path.dirname(header_path)
+    header_name = os.path.basename(header_path)
+    probe_lines = ["#include <stddef.h>", f'#include "{header_name}"', "",
+                   f"{struct_name} g_probe_anchor;",  # keeps the type's DWARF alive under -g
+                   "int main(void) {", "  return 0;", "}"]
+    with tempfile.TemporaryDirectory(prefix="pdna_boxsource_probe_") as tmp:
+        c_path = os.path.join(tmp, "probe.c")
+        o_path = os.path.join(tmp, "probe.o")
+        with open(c_path, "w") as f:
+            f.write("\n".join(probe_lines) + "\n")
+        cmd = [gcc, "-mthumb-interwork", "-mthumb", "-mcpu=arm7tdmi", "-mtune=arm7tdmi",
+               "-O0", "-g", "-I", src_dir, "-c", c_path, "-o", o_path]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"arm-none-eabi-gcc probe failed:\n{r.stderr}")
+
+        r = subprocess.run([readelf, "--debug-dump=info", o_path],
+                            capture_output=True, text=True)
+        dump = r.stdout
+
+    # --- minimal DWARF walk: find the typedef named `struct_name`, follow its
+    # DW_AT_type to the structure_type DIE, then read that DIE's DW_TAG_member
+    # children (depth = parent_depth + 1, terminated when depth drops back down).
+    die_re = re.compile(r"^\s*<(\d+)><([0-9a-f]+)>: Abbrev Number: \d+ \((\w+)\)")
+    attr_re = re.compile(r"^\s*<[0-9a-f]+>\s+(DW_AT_\w+)\s*:\s*(.*)$")
+
+    dies = []  # list of dicts: depth, addr(int), tag, attrs
+    cur = None
+    for line in dump.splitlines():
+        m = die_re.match(line)
+        if m:
+            if cur is not None:
+                dies.append(cur)
+            cur = {"depth": int(m.group(1)), "addr": int(m.group(2), 16),
+                   "tag": m.group(3), "attrs": {}}
+            continue
+        m = attr_re.match(line)
+        if m and cur is not None:
+            cur["attrs"][m.group(1)] = m.group(2).strip()
+    if cur is not None:
+        dies.append(cur)
+
+    def attr_str(die, name):
+        v = die["attrs"].get(name)
+        if v is None:
+            return None
+        return v.rsplit(": ", 1)[-1] if v.startswith("(indirect string") else v
+
+    def attr_ref(die, name):
+        v = die["attrs"].get(name)
+        if v is None:
+            return None
+        m = re.search(r"<0x([0-9a-f]+)>", v)
+        return int(m.group(1), 16) if m else None
+
+    def attr_int(die, name):
+        v = die["attrs"].get(name)
+        return int(v) if v is not None else None
+
+    typedef_die = next((d for d in dies
+                         if d["tag"] == "DW_TAG_typedef"
+                         and attr_str(d, "DW_AT_name") == struct_name), None)
+    if typedef_die is None:
+        raise RuntimeError(f"{struct_name}: no DW_TAG_typedef in the probe's DWARF "
+                            f"(readelf output shape changed, or the struct isn't a "
+                            f"typedef anymore)")
+    struct_addr = attr_ref(typedef_die, "DW_AT_type")
+    struct_die = next((d for d in dies
+                        if d["tag"] == "DW_TAG_structure_type" and d["addr"] == struct_addr),
+                       None)
+    if struct_die is None:
+        raise RuntimeError(f"{struct_name}: typedef's DW_AT_type <0x{struct_addr:x}> "
+                            f"did not resolve to a DW_TAG_structure_type DIE")
+
+    idx = dies.index(struct_die)
+    parent_depth = struct_die["depth"]
+    offsets = {}
+    for d in dies[idx + 1:]:
+        if d["depth"] <= parent_depth:
+            break
+        if d["depth"] == parent_depth + 1 and d["tag"] == "DW_TAG_member":
+            name = attr_str(d, "DW_AT_name")
+            loc = attr_int(d, "DW_AT_data_member_location")
+            if name is not None and loc is not None:
+                offsets[name] = loc
+
+    missing = [f for f in field_names if f not in offsets]
+    if missing:
+        raise RuntimeError(f"{struct_name}: probe DWARF is missing field(s) {missing} "
+                            f"-- readelf output shape may have changed")
+    sizeof_val = attr_int(struct_die, "DW_AT_byte_size")
+    return {f: offsets[f] for f in field_names}, sizeof_val
+
+
 def test_boxsource_offsets_match_real_header():
     """Not a fixture -- this reads the REAL source/pdna_box.h shipped in this repo,
     so it doubles as a regression test for the header-offset computation the guard
-    trusts at build time. If this ever fails, either the header changed (update
-    tools/stack_edges.txt) or struct_field_offsets() has a bug."""
+    trusts at build time. The expected layout is no longer a hand-typed dict (that's
+    exactly what went stale in BACKLOG #130 -- BACKLOG #120 S1 moved every offset
+    from can_rename onward and nobody updated it): it is derived fresh, every run,
+    from arm-none-eabi-gcc's own offsetof()/sizeof() on the real header, so a future
+    header change can never silently outrun this check again."""
     header_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "source", "pdna_box.h")
     if not os.path.exists(header_path):
         print("  (skip) source/pdna_box.h not found from this working directory")
         return
     with open(header_path) as f:
-        offsets = sb.struct_field_offsets(f.read(), "BoxSource")
-    expected = {
-        "nboxes": 0, "last_box_is_party": 4, "start_box": 8, "is_bank": 12,
-        "has_start": 13, "wp_count": 16, "records": 20, "menu_block": 24,
-        "get_name": 28, "set_name": 32, "get_wp": 36, "set_wp": 40, "can_edit": 44,
-        "commit": 48, "mark_dirty": 52, "note_add": 56, "note_box": 60, "capacity": 64,
-    }
+        header_text = f.read()
+    offsets = sb.struct_field_offsets(header_text, "BoxSource")
+    expected, expected_sizeof = _gcc_ground_truth_struct_layout(
+        header_path, "BoxSource", list(offsets.keys()))
+    if expected is None:
+        print("  (skip) arm-none-eabi-gcc/readelf not found under DEVKITARM "
+              f"({sb.DEVKITARM}) -- can't derive ground truth offsets")
+        return
     check("BoxSource field offsets match the real header (natural ARM EABI layout)",
           offsets == expected,
           {k: v for k, v in offsets.items() if expected.get(k) != v})
+    # Belt-and-braces: every declared field offset must fit inside the compiler's own
+    # reported struct size (catches a member appended after the parser's last known
+    # field going unnoticed rather than a specific hand-picked sizeof constant).
+    check("BoxSource field offsets all fit within the real header's sizeof(BoxSource)",
+          not offsets or max(offsets.values()) < expected_sizeof,
+          {"max_offset": max(offsets.values(), default=None), "sizeof": expected_sizeof})
 
 
 # === BACKLOG #106 G4: struct_field_offsets() by brace depth, not a lazy forward regex ==
