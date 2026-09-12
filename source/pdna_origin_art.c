@@ -803,6 +803,35 @@ int pdna_origin_box_art_wanted(int slot) {
  * asking the collapsed resolver here would report a Gen-2 SAVE'S OWN GBGRID as
  * NATIVE (D1's original bug), which E5b did not change.
  */
+/* BACKLOG #124: the have()/stack-room/fetch/pack sequence for the Gen-2 16x16
+ * menu-icon rung, factored out of the ERA_GEN2 branch below so it has exactly ONE
+ * caller chain (fetch_icon -> fetch_pic_ex -> s_gb.icon -> gb_art_icon_cb ->
+ * gb_art_fetch_icon) no matter which of the two public entry points reaches it:
+ * pdna_origin_box_art()'s ERA_GEN2 branch (its own cell-era question decides WHETHER
+ * to call this) and pdna_origin_art_icon() below (a caller with no PkMon / cell-era
+ * question of its own -- it already knows it wants Gen 2's icon for a given national
+ * dex number, e.g. the Gen-1/2 dex screen wiring a GB ROM into pdna_pick.c's cell-art
+ * override). `dex` 0 is gb_art_fetch_icon's own EGG sentinel; every other value is a
+ * national dex number 1..251. `out` must already be zeroed by the caller -- this only
+ * ever SETS fields on success, never clears them on failure, so a caller's own
+ * memset(out,0,...) stays authoritative either way. */
+static int fetch_icon(uint16_t dex, PdnaArt* out) {
+  if (!s_gb_on || !s_gb.icon) return 0;
+  if (!pdna_origin_art_have(PDNA_GEN2)) return 0;
+  if (!pdna_origin_art_stack_room(PDNA_GB_ICON_NEED)) return 0;
+  uint8_t w = 0, h = 0;
+  const uint16_t* px = fetch_pic_ex(PDNA_GEN2, dex, 0, 0, 0, 1, &w, &h);
+  if (!px || !w || !h) return 0;
+  out->px = px; out->w = w; out->h = h; out->gen = PDNA_GEN2;
+  return 1;
+}
+
+int pdna_origin_art_icon(uint16_t dex, PdnaArt* out) {
+  if (out) memset(out, 0, sizeof *out);
+  if (!out) return 0;
+  return fetch_icon(dex, out);
+}
+
 int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out) {
   (void)slot;   /* the cache decides the MARKER; the art is always recomputed from the
                  * record, so a stale cache can never put the wrong picture on screen */
@@ -830,15 +859,9 @@ int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out) {
    * se_species_exists(GEN2, hidden_dex), so such an egg keeps its Gen-3 OBJ icon. */
   int is_egg = m->isEgg && !m->isBadEgg;
 
-  if (era == ERA_GEN2 && s_gb_on && s_gb.icon &&
-      (is_egg || (m->species >= 1 && m->species <= GEN2_MAX_DEX)) &&
-      pdna_origin_art_have(PDNA_GEN2) &&
-      pdna_origin_art_stack_room(PDNA_GB_ICON_NEED)) {
-    uint8_t w = 0, h = 0;
+  if (era == ERA_GEN2 && (is_egg || (m->species >= 1 && m->species <= GEN2_MAX_DEX))) {
     uint16_t icon_dex = is_egg ? 0u : nat_dex;
-    const uint16_t* px = fetch_pic_ex(PDNA_GEN2, icon_dex, 0, 0, 0, 1, &w, &h);
-    if (px && w && h) {
-      out->px = px; out->w = w; out->h = h; out->gen = PDNA_GEN2;
+    if (fetch_icon(icon_dex, out)) {
       out->era = o.gen; out->era_certain = o.gen_certain;
       out->egg = is_egg ? 1 : 0;
       return 1;

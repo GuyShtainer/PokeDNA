@@ -2836,6 +2836,133 @@ def run_b87_dex(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb
 
 
 # ---------------------------------------------------------------------------------
+# BACKLOG #124: the Gen-1/2 Pokedex grid draws GB ROM icons, like the GB box grid.
+# ---------------------------------------------------------------------------------
+def run_b124_dexicons(core_mod, image_mod, rom: Path, out_dir: Path, which: str,
+                      fallback: bool = False) -> gb_shots.Session:
+    """BACKLOG #124: pdna_pick.c's dex_cell_grid() now calls through pdna_gbdex.c's
+    gbdex_cell_art() override for a Gen-2 GB session, drawing the SAME GB ROM icon
+    rendition pdna_box.c's box grid already shows for a Gen-2-resolved cell (both
+    reach pdna_origin_art.c's fetch_icon() -- see pdna_origin_art_icon()'s own
+    header comment).
+
+    `rom` must be a single-ROM fused image (tools/fuse_gb.py, same posture as
+    run_b87_dex): Crystal.gbc + Crystal.sav for `which="crystal"` (Gen 1 has no menu
+    icons at all -- gb_art_source.c's own rule -- so `which="red"` is box-grid-only,
+    no dex-icon claim to make; this function still opens Red's dex screen once, to
+    show the UNCHANGED icon-store list/grid a Gen-1 session keeps).
+
+    `fallback=True` expects `rom` to carry the save but NO Crystal.gbc (fuse_gb.py
+    with just the .sav) -- gbdex_cell_art()'s pdna_origin_art_have(PDNA_GEN2) refuses,
+    so dex_cell_grid() falls straight back to the icon-store/mon_icon_for ladder
+    exactly as before this backlog, same shot sequence, different expected pixels.
+
+    Captures: the box grid (pdna_box.c's existing GB-icon cell, for a same-species
+    side-by-side comparison), the dex grid page 1 (this backlog's new render, or the
+    icon-store fallback when `fallback`), and (crystal, non-fallback only) the SAME
+    dex page's `perf dex:` log line so step 2's SD-read count can be read back off
+    it (see measure_dex_sd_reads() below, which reuses this exact navigation)."""
+    tag = f"b124_dexicons_{which}{'_fallback' if fallback else ''}_"
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, tag)
+    print(f"== BACKLOG #124: dex-grid GB icons ({which}{' fallback' if fallback else ''}) ==")
+    s.run(700)
+    s.tap("A", settle=60)                                   # S1 info -> box grid (single-ROM image)
+    s.run(GB_ART_COLD_SETTLE)
+    s.shot("01_box_grid", "#124: the box grid BEFORE the dex visit -- pdna_box.c's "
+                           "own GB-icon cell (pdna_origin_box_art(), unrelated to "
+                           "this backlog), for a same-species side-by-side against "
+                           "the dex grid shot below")
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box screen -> nav menu
+    s.press_n("DOWN", 6)                                       # Party -> ... -> Pokedex (col 0, row 6)
+    s.tap("A", settle=gb_shots.BIG_SETTLE)                   # -> pdna_gbdex()
+
+    if which == "crystal":
+        s.tap("A", settle=gb_shots.BIG_SETTLE)               # chooser row 0 (Pokedex) -> pdna_dex_screen()
+
+    # ARTLESS DEFAULT IS LIST (mon_icon_for(1) is NULL in this shot vehicle) --
+    # L once -> DV_GRID, the view dex_cell_grid()'s override actually paints.
+    s.tap("L", settle=gb_shots.BIG_SETTLE)
+    s.shot("02_dex_grid", "#124: DV_GRID page 1 -- " +
+           ("GB ROM icons via gbdex_cell_art() for every seen/caught species (this "
+            "backlog's own render)" if (which == "crystal" and not fallback) else
+            "Gen 1: unchanged icon-store/mon_icon_for grid (gb_art_source.c's own "
+            "rule -- Gen 1 has no menu icons, gbdex_cell_art() self-gates on "
+            "s->gen != GB_GEN2)" if which == "red" else
+            "no GB ROM registered (fallback image) -- pdna_origin_art_have(PDNA_GEN2) "
+            "refuses, dex_cell_grid() falls straight back to the unchanged icon-store "
+            "ladder, byte-identical to a pre-#124 build"))
+    return s
+
+
+def run_b124_bobcheck(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> None:
+    """BACKLOG #124 review A5 follow-up: proves the caught-cell bob-animation flip
+    still runs on a session dex_cell_art_serves_page() answers false for (a Gen-1
+    session, even with a Gen-2 ROM ALSO registered in the same fused image -- the
+    exact bug this fix targets), while a session it answers true for (Crystal, same
+    image) keeps showing GB icons. Reuses run_b124_dexicons()'s own navigation to
+    reach the dex grid, then takes two shots DEX_ANIM_PERIOD (30) frames apart --
+    straddling one bob toggle -- and diffs them with PIL. Prints the byte-diff count
+    for a caught cell's own pixel rect; a genuinely bobbing page has a NON-ZERO diff
+    there (two different frames of the same species' icon), a static page (pre-fix
+    behaviour on the Gen-1+Gen-2-ROM image) has ZERO."""
+    from PIL import Image, ImageChops
+    s = run_b124_dexicons(core_mod, image_mod, rom, out_dir, which, fallback=False)
+    # s is now sitting on the dex grid (DV_GRID, page 1) right after run_b124_dexicons's
+    # own "02_dex_grid" shot -- no further navigation needed.
+    p1 = s.shot("03_bob_a", "#124 review A5: bob-check frame A", allow_same=True)
+    s.run(30)   # DEX_ANIM_PERIOD -- one bob toggle
+    p2 = s.shot("03_bob_b", "#124 review A5: bob-check frame B (30 frames later)", allow_same=True)
+    im1, im2 = Image.open(p1).convert("RGB"), Image.open(p2).convert("RGB")
+    diff = ImageChops.difference(im1, im2)
+    # A caught cell in the grid's top-left region (GX=8,GY=24, 33x34 pitch per
+    # dex_geom() -- pdna_pick.c); crop generously around the first two rows so this
+    # does not depend on knowing exactly which cell is caught.
+    box = (0, 20, 240, 100)
+    region_diff = diff.crop(box)
+    nonzero = sum(1 for px in region_diff.getdata() if px != (0, 0, 0))
+    print(f"== BACKLOG #124 review A5 bob-check ({which}) ==")
+    print(f"  frame A: {p1}")
+    print(f"  frame B: {p2}")
+    print(f"  non-zero pixels in the top grid rows' diff: {nonzero} "
+          f"({'BOBBING (differs)' if nonzero else 'STATIC (identical) -- would be the bug if this session should serve GB'})")
+
+
+def measure_dex_sd_reads(core_mod, image_mod, rom: Path, out_dir: Path) -> None:
+    """BACKLOG #124 step 2: the 'perf dex:' log line's own `sd Xr/...` field for ONE
+    Crystal dex-grid page (run_b124_dexicons's exact navigation, GB ROM registered,
+    no fallback) against the SAME image's box-grid 'perf box:'/'perf bank:' line for
+    a comparable single-page paint -- both spans already exist in this tree
+    (pdna_pick.c's pdna_dex_screen() and pdna_box.c's own span), so this reuses them
+    rather than adding new instrumentation. Installs a capturing logger (same
+    mechanism as tools/perf_parity.py's load_mgba_capturing) instead of taking
+    screenshots, and just prints every 'perf ' line captured during the run -- read
+    the LAST 'perf dex: ... sd Nr/...' and 'perf box:'/'perf bank: ... sd Nr/...'
+    lines by hand off stdout (no parser here: this is a one-off measurement, not a
+    gate this tool enforces)."""
+    lines: list[str] = []
+    log_mod = getattr(core_mod, "log", None)
+    if log_mod is None:
+        import mgba.log as log_mod  # noqa: E402 (matches perf_parity.py's own import shape)
+
+    class Capture(log_mod.Logger):
+        def log(self, category, level, message):  # noqa: A002
+            try:
+                m = log_mod.ffi.string(message).decode("utf-8", "replace")
+            except TypeError:
+                m = str(message)
+            lines.append(m)
+
+    log_mod.install_default(Capture())
+    s = run_b124_dexicons(core_mod, image_mod, rom, out_dir, "crystal", fallback=False)
+    s.run(150)   # let perf's rate-limited flush land (perf_parity.py's own FLUSH_SETTLE)
+    print("== BACKLOG #124 step 2: captured perf lines (read 'perf dex:'/'perf box:'"
+          "/'perf bank:' sd Nr by hand) ==")
+    for l in lines:
+        if l.startswith("perf "):
+            print(f"  {l}")
+
+
+# ---------------------------------------------------------------------------------
 # BACKLOG #104 R1: KEEP AS IS / MAKE LEGAL on a Gen 3 -> Game Boy paste.
 # ---------------------------------------------------------------------------------
 
@@ -3300,6 +3427,26 @@ def main(argv=None) -> int:
                           "matching this choice (Red.gb, or Crystal.gbc -- either "
                           "way, the .sav must have had `--op dexset 100 0` applied "
                           "first -- see run_b87_dex()'s own docstring for why)")
+    ap.add_argument("--b124-dexicons", choices=("red", "crystal"),
+                     help="BACKLOG #124: only run_b124_dexicons() against --image for "
+                          "the named game -- --image MUST be a ONE-ROM fused image "
+                          "matching this choice. Pair with --b124-fallback to expect "
+                          "a .sav-only image (no .gbc/.gb ROM) and the icon-store "
+                          "fallback shot instead of GB ROM icons.")
+    ap.add_argument("--b124-fallback", action="store_true",
+                     help="BACKLOG #124: with --b124-dexicons, expect --image to carry "
+                          "no GB ROM (fuse_gb.py with just the .sav) -- the no-GB-ROM "
+                          "fallback shot.")
+    ap.add_argument("--b124-bobcheck", choices=("red", "crystal"),
+                     help="BACKLOG #124 review A5: run_b124_bobcheck() against "
+                          "--image -- two frames 30 apart on the dex grid, diffed, "
+                          "to prove the caught-cell bob animation runs (or does not) "
+                          "on the named session.")
+    ap.add_argument("--b124-sdcount", action="store_true",
+                     help="BACKLOG #124 step 2: run measure_dex_sd_reads() against "
+                          "--image (a Crystal single-ROM fused image, GB ROM present) "
+                          "and print every captured 'perf ' log line instead of taking "
+                          "screenshots.")
     ap.add_argument("--b85-daycare", choices=("red", "gold"),
                      help="BACKLOG #85: only run_b85_daycare() against --image for "
                           "the named game (Red's one-slot Day Care, or Gold's "
@@ -3613,6 +3760,25 @@ def main(argv=None) -> int:
             skipped += sess.skipped
         except RuntimeError as e:
             print(f"  [STOPPED] b87 dex ({a.b87_dex}): {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        ran = True
+    if a.b124_sdcount:
+        measure_dex_sd_reads(core_mod, image_mod, a.image, a.out)
+        ran = True
+    if a.b124_bobcheck:
+        run_b124_bobcheck(core_mod, image_mod, a.image, a.out, a.b124_bobcheck)
+        ran = True
+    if a.b124_dexicons:
+        try:
+            sess = run_b124_dexicons(core_mod, image_mod, a.image, a.out,
+                                     a.b124_dexicons, fallback=a.b124_fallback)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] b124 dexicons ({a.b124_dexicons}): {e}")
         _write_manifest(a.out, ok, skipped)
         print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
         for name, reason in skipped:

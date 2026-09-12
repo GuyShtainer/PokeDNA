@@ -600,6 +600,21 @@ int pdna_origin_box_art_wanted(int slot);
  * should keep drawing the cell the ordinary way. */
 int pdna_origin_box_art(int slot, const PkMon* m, PdnaArt* out);
 
+/* BACKLOG #124: the Gen-2 16x16 menu-icon rung directly, for a caller with no PkMon
+ * cell to ask a cell-era question about -- it already knows it wants Gen 2's own icon
+ * for national dex `dex` (1..251, or 0 for the Egg icon, same sentinel
+ * gb_art_fetch_icon() reads). Gen-2 ONLY, no `gen` parameter -- Gen 1 has no per-
+ * species menu icons at all (gb_art_source.c's own rule; there is nothing this could
+ * ask for on Gen 1's behalf). This is pdna_origin_box_art()'s ERA_GEN2 branch's OWN
+ * fetch sequence (have -> stack-room -> fetch -> pack), factored out so both entry
+ * points share one implementation -- see fetch_icon()'s comment in the .c file.
+ * `out->era`/`era_certain`/`egg` are left 0 (this entry point has no PkMon origin to
+ * report; a caller that cares sets them itself -- pdna_pick.c's dex-cell override does
+ * not need to, the dex marks provenance a different way). Same refusal semantics as
+ * every other rung: 0 and `out` left zeroed when no ROM is registered, there is not
+ * enough stack room right now, or the ROM cannot serve this species. */
+int pdna_origin_art_icon(uint16_t dex, PdnaArt* out);
+
 /*
  * Scale one era picture into a CELL-SIZED image the UI can blit, in exactly the format
  * ui_sprite() takes: dw*dh RGB15 pixels, row-major, 0 = transparent and 0x8000|RGB15
