@@ -2343,6 +2343,23 @@ def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
                                    "FOLDED (s_gbfl_folded's own 0xFFFFFFFF starting "
                                    "state, mirrors pdna_main.c's own data editor)")
 
+    # BACKLOG #127 P2: prove the cursor-move partial redraw runs. Every section is
+    # still folded here (6 GROUPS_GEN1/GEN2 headers + the trailing raw row, all 7
+    # fit in the 14-visible window with no scroll), so two plain DOWN presses move
+    # the cursor across header rows 0->1->2 with `top`/the fold word both unchanged
+    # -- exactly pdna_gbflags.c's `part` condition -- and touch nothing else on
+    # screen. tools/gb_oracle/celldiff.py on 04_flags_tab_folded -> 04a_cursor_a and
+    # 04a_cursor_a -> 04b_cursor_b must show changed cells confined to the two rows'
+    # 9-px bands; the tab strip, hline and "Named flags" caption must be identical.
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("04a_cursor_a", f"BACKLOG #127 P2 ({which}): cursor moved onto header row 1 -- "
+                            "partial repaint: only rows 0/1 changed")
+    s.tap("DOWN", settle=gb_shots.SETTLE)
+    s.shot("04b_cursor_b", f"BACKLOG #127 P2 ({which}): cursor moved onto header row 2 -- "
+                            "partial repaint: only rows 1/2 changed")
+    s.tap("UP", settle=gb_shots.SETTLE)
+    s.tap("UP", settle=gb_shots.SETTLE)               # back to header 0 -- resumes the existing flow below
+
     # Unfold the first header (A on a header row folds/unfolds it).
     s.tap("A", settle=gb_shots.BIG_SETTLE)
     s.shot("05_section_opened", "BACKLOG #88: header row 0 unfolded ('+' -> '-') -- its member "

@@ -320,6 +320,32 @@ static void nf_draw_row(GbSession* s, GbGame g, int r, int y, bool sel) {
 static bool nf_visible(int r) { return ff_row_visible(s_nf, s_nc, s_ord, GBFL_ROW_CAP, s_gbfl_folded, r); }
 static int  nf_step(int total, int r, int dir) { return ff_step(s_nf, s_nc, s_ord, GBFL_ROW_CAP, s_gbfl_folded, total, r, dir); }
 
+/* Repaint just row r of the COUNTERS list in place. ctr_row_paint() (via
+ * trainer_row_paint) already wipes its own 236x9 band on EVERY call, selected or
+ * not, so unlike the flags painter below this needs no separate erase -- calling it
+ * again for the same y is exactly what the full redraw loop already does per row. */
+static void ctr_row_repaint(GbSession* s, GbGame g, const int* ctr_rows, int ctr_n,
+                            int top, int r, int sel) {
+  if (r < 0 || r >= ctr_n) return;
+  int i = r - top; if (i < 0 || i >= 14) return;
+  ctr_row_paint(s, g, ctr_rows[r], 16 + i * 9, r == sel);
+}
+
+/* Repaint just row r of the FLAGS list in place -- the pick_species partial-redraw
+ * idea (pdna_main.c:4917-4927), so a cursor move no longer flashes the whole list.
+ * nf_draw_row() does NOT self-wipe on the unselected path (only the `sel` branch
+ * paints a panel), so this erases the 9-px band first: proportional text means a
+ * shorter new string would otherwise leave the old one's tail on screen. */
+static void nf_row_repaint(GbSession* s, GbGame g, int top, int r, int sel) {
+  if (r < top || !nf_visible(r)) return;
+  int drawn = 0;
+  for (int i = top; i < r; i++) if (nf_visible(i)) drawn++;
+  if (drawn >= 14) return;                              /* below the window */
+  int y = 26 + drawn * 9;
+  ui_fill_rect(0, y - 1, UI_SCR_W, 9, UI_BG);
+  nf_draw_row(s, g, r, y, r == sel);
+}
+
 /* Raw flag browser: mirrors pdna_main.c's flags_raw_view() over the WHOLE
  * bitfield (2560 Gen 1 / 2048 Gen 2 bits) -- same one-time CAUTION, shared with
  * the named list above (`warned` is the SAME bool both paths take by reference). */
@@ -385,10 +411,19 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
   int sel = 0, top = 0;
   bool dirty = false, flag_warned = false;
 
+  /* Cursor-move partial-redraw shadow, same idiom as pdna_main.c's data_editor_tab()
+   * (c_top/c_sel/c_valid/c_gen and f_top/f_sel/f_valid/f_fold there). Two tabs are
+   * BOTH reachable in this one call (L/R toggles between them), so each tab keeps its
+   * own shadow and the L/R handler below invalidates both on a switch -- a stale
+   * match on the just-switched-to tab's shadow would skip repainting the tab strip. */
+  int c_top = -1, c_sel = -1; bool c_valid = false; uint32_t c_gen = 0;   /* tab 0 */
+  int f_top = -1, f_sel = -1; bool f_valid = false; uint32_t f_fold = 0; /* tab 1 */
+
   flg_cache(g);
 
   for (;;) {
     int total = (tab == 0) ? ctr_n : (s_nc + 1);
+    bool part;
     if (tab == 1) {
       if (sel >= total) sel = total - 1; if (sel < 0) sel = 0;
       while (sel > 0 && !nf_visible(sel)) sel--;
@@ -396,36 +431,56 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
       else { int cnt = 0; for (int r = top; r <= sel; r++) if (nf_visible(r)) cnt++;
              while (cnt > 14) { int nt = nf_step(total, top, +1); if (nt == top) break; top = nt; cnt--; } }
       if (!nf_visible(top)) top = nf_step(total, top, +1);
+      part = f_valid && top == f_top && s_gbfl_folded == f_fold;
     } else {
       if (sel >= ctr_n) sel = ctr_n > 0 ? ctr_n - 1 : 0;
       if (sel < top) top = sel; if (sel >= top + 14) top = sel - 13;
+      part = c_valid && top == c_top && c_gen == ui_clear_gen();
     }
 
-    ui_clear();
-    static const char* const TAB[2] = { "COUNTERS", "FLAGS" };
-    for (int t = 0; t < 2; t++) {
-      int x = 4 + t * 80; bool ts = (t == tab);
-      if (ts) ui_panel(x, 0, 76, 12, UI_SEL, UI_TITLE);
-      ui_text(x + 6, 2, ts ? UI_SELTEXT : UI_DIM, TAB[t]);
+    if (!part) {
+      ui_clear();
+      static const char* const TAB[2] = { "COUNTERS", "FLAGS" };
+      for (int t = 0; t < 2; t++) {
+        int x = 4 + t * 80; bool ts = (t == tab);
+        if (ts) ui_panel(x, 0, 76, 12, UI_SEL, UI_TITLE);
+        ui_text(x + 6, 2, ts ? UI_SELTEXT : UI_DIM, TAB[t]);
+      }
+      ui_hline(0, 13, UI_SCR_W, UI_BORDER);
     }
-    ui_hline(0, 13, UI_SCR_W, UI_BORDER);
 
     if (tab == 0) {
-      for (int i = 0; i < 14 && top + i < ctr_n; i++)
-        ctr_row_paint(s, g, ctr_rows[top + i], 16 + i * 9, top + i == sel);
-      ui_text(4, 152, UI_DIM, "A edit  U/D  L/R tab  B done");
-    } else {
-      ui_text(6, 15, UI_DIRCLR, "Named flags");
-      for (int drawn = 0, r = top; drawn < 14 && r < total; r++) {
-        if (!nf_visible(r)) continue;
-        nf_draw_row(s, g, r, 26 + drawn * 9, r == sel); drawn++;
+      if (!part) {
+        for (int i = 0; i < 14 && top + i < ctr_n; i++)
+          ctr_row_paint(s, g, ctr_rows[top + i], 16 + i * 9, top + i == sel);
+        ui_text(4, 152, UI_DIM, "A edit  U/D  L/R tab  B done");
+      } else if (sel != c_sel) {                  /* cursor-only change: swap the highlight */
+        ctr_row_repaint(s, g, ctr_rows, ctr_n, top, c_sel, sel);
+        ctr_row_repaint(s, g, ctr_rows, ctr_n, top, sel, sel);
       }
-      ui_text(4, 152, UI_DIM, "A toggle/fold  SEL jump  L/R");
+      c_top = top; c_sel = sel; c_valid = true; c_gen = ui_clear_gen();
+    } else {
+      if (part) {                                 /* cursor-only change: repaint two rows,
+                                                     * always the current one too (a toggle
+                                                     * writes straight to the save with no
+                                                     * overlay, so ON/off can change with
+                                                     * `sel` unmoved) */
+        if (f_sel != sel) nf_row_repaint(s, g, top, f_sel, sel);
+        nf_row_repaint(s, g, top, sel, sel);
+      } else {
+        ui_text(6, 15, UI_DIRCLR, "Named flags");
+        for (int drawn = 0, r = top; drawn < 14 && r < total; r++) {
+          if (!nf_visible(r)) continue;
+          nf_draw_row(s, g, r, 26 + drawn * 9, r == sel); drawn++;
+        }
+        ui_text(4, 152, UI_DIM, "A toggle/fold  SEL jump  L/R");
+      }
+      f_valid = true; f_top = top; f_fold = s_gbfl_folded; f_sel = sel;
     }
 
     u16 k = s_wait(KEY_UP | KEY_DOWN | KEY_L | KEY_R | KEY_A | KEY_B | KEY_SELECT);
     if (k & KEY_B) break;
-    else if (k & (KEY_L | KEY_R)) { tab = tab ? 0 : 1; sel = 0; top = 0; }
+    else if (k & (KEY_L | KEY_R)) { tab = tab ? 0 : 1; sel = 0; top = 0; c_valid = false; f_valid = false; }
     else if (tab == 1) {
       if (k & KEY_UP)        sel = nf_step(total, sel, -1);
       else if (k & KEY_DOWN) sel = nf_step(total, sel, +1);
@@ -438,7 +493,14 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
         }
         top = 0;
       } else if (k & KEY_A) {
-        if (sel == s_nc) { raw_flag_browser(s, g, &dirty, &flag_warned, can_edit); }
+        /* Every branch below that pops a full-screen panel (msg_wait/app_confirm/
+         * raw_flag_browser) sets f_valid = false: those panels ui_clear() over the
+         * whole list, so the partial path above must not trust a stale top/fold
+         * match on the next iteration and repaint only 1-2 rows -- the #119 class
+         * of ghosting the review is briefed to attack. The fold/unfold branch needs
+         * no explicit invalidation: it mutates s_gbfl_folded, which `part`'s own
+         * fold-equality check already catches. */
+        if (sel == s_nc) { raw_flag_browser(s, g, &dirty, &flag_warned, can_edit); f_valid = false; }
         else if (s_nf[sel].num == NAMED_FLAG_HEADER) {
           snd_tab();
           s_gbfl_folded ^= 1u << ff_hdr_ord(s_ord, GBFL_ROW_CAP, sel);
@@ -447,21 +509,22 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
         } else {
           uint8_t kind = s_kind[sel];
           if (kind == GBFL_KIND_BAG_GRANT) {
-            msg_wait("BAG ITEM", UI_OK, "Grant this from the Bag", "screen, not here.");
+            msg_wait("BAG ITEM", UI_OK, "Grant this from the Bag", "screen, not here."); f_valid = false;
           } else if (kind == GBFL_KIND_READONLY) {
-            msg_wait("STORY FLAG", UI_DIM, "This is a display-only", "progress flag.");
+            msg_wait("STORY FLAG", UI_DIM, "This is a display-only", "progress flag."); f_valid = false;
           } else {
-            if (!flag_warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); flag_warned = true; }
+            if (!flag_warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); flag_warned = true; f_valid = false; }
             bool proceed = true;
             if (kind == GBFL_KIND_WARN) {
               bool now_on = gbfl_get(s, g, s_nf[sel].num);
               proceed = now_on ? app_confirm("Remove Kanto power?", "Kanto becomes unreachable.")
                                 : app_confirm("Restore power to Kanto?", "Lets Kanto be reached early.");
+              f_valid = false;
             }
             if (proceed) {
               GbsStatus st = gbfl_set(s, g, s_nf[sel].num, !gbfl_get(s, g, s_nf[sel].num));
               if (st == GBS_OK) dirty = true;
-              else msg_wait("EDIT REFUSED", UI_WARN, gbs_status_text(st), 0);
+              else { msg_wait("EDIT REFUSED", UI_WARN, gbs_status_text(st), 0); f_valid = false; }
             }
           }
         }
