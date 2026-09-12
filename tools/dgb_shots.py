@@ -119,13 +119,16 @@ _NAV_LAYOUT_H = ROOT / "source" / "pdna_layout.h"
 def _nav_item_order() -> list[str]:
     """PDNA_NAV_ITEMS(X)'s own item order, parsed from source/pdna_layout.h --
     never hand-copied. Returns the NV_* identifiers in on-screen index order
-    (index 0 == NV_PARTY, the menu's own top-left row)."""
+    (index 0 == NV_PARTY, the menu's own top-left row). NOTE (h118 review): the screen refs are
+    save-independent by design, so a miscount that lands on an ADJACENT VALID row of the same kind
+    (e.g. Crystal's info page instead of Gold's) is NOT caught here -- only a wrong-screen landing is."""
     text = _NAV_LAYOUT_H.read_text(encoding="utf-8")
     m = re.search(r"#define PDNA_NAV_ITEMS\(X\)(.*?)\n\n", text, re.S)
     if not m:
         raise RuntimeError(f"{_NAV_LAYOUT_H}: PDNA_NAV_ITEMS(X) macro body not found "
                             f"-- pdna_layout.h's own shape changed, fix this parser")
-    items = re.findall(r"X\((NV_\w+),", m.group(1))
+    body = re.sub(r"/\*.*?\*/", "", m.group(1), flags=re.S)   # h118 review: a commented-out X(NV_…) must not count
+    items = re.findall(r"X\((NV_\w+),", body)
     if not items:
         raise RuntimeError(f"{_NAV_LAYOUT_H}: parsed ZERO X(NV_*, ...) entries out of "
                             f"PDNA_NAV_ITEMS -- the regex above no longer matches")
@@ -157,7 +160,7 @@ def nav_to_gb_import(s: gb_shots.Session) -> None:
     own row, derived from source every run) -> A -> asserts the landing is really
     the "PICK A SAVE" picker (gb_delta_pick_save(), the SAME screen boot_to_gb_
     session() lands on at the top-level boot fork) before returning -- a stale/wrong
-    DOWN count now raises here, with a screenshot, instead of silently shooting
+    DOWN count that lands on a DIFFERENT SCREEN now raises here, with a screenshot, instead of silently shooting
     whatever screen it actually lands on (BACKLOG #118 coordinator addition)."""
     s.tap("START", settle=gb_shots.BIG_SETTLE)              # box screen -> nav menu
     s.tap("RIGHT")                                            # column 0 (Party) -> column 1 (Blocks)
@@ -241,7 +244,7 @@ def assert_screen(s: gb_shots.Session, name: str) -> None:
     s.screen.to_pil().convert("RGB").save(full_path)
     _current_crop(s, name).save(crop_path)
     raise AssertionError(
-        f"boot_to_gb_session: expected screen '{name}' but the current frame's "
+        f"assert_screen: expected screen '{name}' but the current frame's "
         f"{_crop_for(name)} crop does not match tools/gb_oracle/refs/{name}.png "
         f"-- see {full_path} and {crop_path}")
 
@@ -299,7 +302,7 @@ def boot_to_gb_session(s: gb_shots.Session, rom: Path, which: str | None = None)
     single-ROM image has nothing to pick). Either way this ends on the box
     grid, ASSERTING each landing against a fixed-crop pixel reference
     (screen_is()/assert_screen(), tools/gb_oracle/refs/*.png) rather than
-    trusting the tap count blindly -- a wrong DOWN count raises here, with a
+    trusting the tap count blindly -- a DOWN count that lands on a different screen raises here, with a
     screenshot, instead of silently shooting the wrong save's screens."""
     s.run(700)
     if screen_is(s, "pick_a_save"):
