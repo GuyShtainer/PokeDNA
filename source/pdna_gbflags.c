@@ -493,7 +493,14 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
         }
         top = 0;
       } else if (k & KEY_A) {
-        if (sel == s_nc) { raw_flag_browser(s, g, &dirty, &flag_warned, can_edit); }
+        /* Every branch below that pops a full-screen panel (msg_wait/app_confirm/
+         * raw_flag_browser) sets f_valid = false: those panels ui_clear() over the
+         * whole list, so the partial path above must not trust a stale top/fold
+         * match on the next iteration and repaint only 1-2 rows -- the #119 class
+         * of ghosting the review is briefed to attack. The fold/unfold branch needs
+         * no explicit invalidation: it mutates s_gbfl_folded, which `part`'s own
+         * fold-equality check already catches. */
+        if (sel == s_nc) { raw_flag_browser(s, g, &dirty, &flag_warned, can_edit); f_valid = false; }
         else if (s_nf[sel].num == NAMED_FLAG_HEADER) {
           snd_tab();
           s_gbfl_folded ^= 1u << ff_hdr_ord(s_ord, GBFL_ROW_CAP, sel);
@@ -502,21 +509,22 @@ void pdna_gbflags(GbSession* s, bool can_edit) {
         } else {
           uint8_t kind = s_kind[sel];
           if (kind == GBFL_KIND_BAG_GRANT) {
-            msg_wait("BAG ITEM", UI_OK, "Grant this from the Bag", "screen, not here.");
+            msg_wait("BAG ITEM", UI_OK, "Grant this from the Bag", "screen, not here."); f_valid = false;
           } else if (kind == GBFL_KIND_READONLY) {
-            msg_wait("STORY FLAG", UI_DIM, "This is a display-only", "progress flag.");
+            msg_wait("STORY FLAG", UI_DIM, "This is a display-only", "progress flag."); f_valid = false;
           } else {
-            if (!flag_warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); flag_warned = true; }
+            if (!flag_warned) { msg_wait("CAUTION", UI_WARN, "Toggling story flags can", "soft-lock the save."); flag_warned = true; f_valid = false; }
             bool proceed = true;
             if (kind == GBFL_KIND_WARN) {
               bool now_on = gbfl_get(s, g, s_nf[sel].num);
               proceed = now_on ? app_confirm("Remove Kanto power?", "Kanto becomes unreachable.")
                                 : app_confirm("Restore power to Kanto?", "Lets Kanto be reached early.");
+              f_valid = false;
             }
             if (proceed) {
               GbsStatus st = gbfl_set(s, g, s_nf[sel].num, !gbfl_get(s, g, s_nf[sel].num));
               if (st == GBS_OK) dirty = true;
-              else msg_wait("EDIT REFUSED", UI_WARN, gbs_status_text(st), 0);
+              else { msg_wait("EDIT REFUSED", UI_WARN, gbs_status_text(st), 0); f_valid = false; }
             }
           }
         }
