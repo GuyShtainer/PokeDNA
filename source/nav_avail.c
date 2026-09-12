@@ -51,8 +51,8 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
    * capability is missing; it points at where it lives instead. */
   [NV_PARTY]     = { { NAV_COMING_SOON, "The party is the last box." },
                      { NAV_COMING_SOON, "The party is the last box." } },
-  [NV_BANK]      = { { NAV_COMING_SOON, "The Bank is coming soon." },
-                     { NAV_COMING_SOON, "The Bank is coming soon." } },
+  [NV_BANK]      = { { NAV_OK, "OK" },
+                     { NAV_OK, "OK" } },
   /* BACKLOG #85: gb_daycare.c (the pure core) is merged on main; this UI slice wires
    * it up on BOTH kinds -- Gen 1 gets the one-slot, level-up-only version (no
    * breeding, no compatibility line -- the format's own limit, not a missing
@@ -109,8 +109,8 @@ static const NavCell GB_TABLE[NV_COUNT][2] = {
    * generations land together. */
   [NV_MAP]       = { { NAV_OK, "OK" },
                      { NAV_COMING_SOON, "Needs a Game Boy map viewer." } },
-  [NV_GB]        = { { NAV_COMING_SOON, "Comes with the Bank feature." },
-                     { NAV_COMING_SOON, "Comes with the Bank feature." } },
+  [NV_GB]        = { { NAV_COMING_SOON, "Open the Bank instead." },
+                     { NAV_COMING_SOON, "Open the Bank instead." } },
   [NV_SETTINGS]  = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
   [NV_BACK]      = { { NAV_OK, "OK" }, { NAV_OK, "OK" } },
 };

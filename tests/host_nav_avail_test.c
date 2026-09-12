@@ -107,6 +107,10 @@ static void test_representative_rows(void) {
   CHECK(strcmp(nav_avail_why(NV_POKEBLOCK, SE_KIND_GEN1), nav_avail_why(NV_POKEBLOCK, SE_KIND_GEN2)) != 0,
         "Blocks: Gen 1 and Gen 2 reasons name their own generation");
   CHECK(nav_avail(NV_GB, SE_KIND_GEN1) == NAV_COMING_SOON, "GB import row on a Gen 1 save: coming with the Bank");
+  /* BACKLOG #120 S2: the Bank is now reachable from a GB session, so the GB-import
+   * row's why-text points there instead of promising a still-missing feature. */
+  CHECK(strcmp(nav_avail_why(NV_GB, SE_KIND_GEN1), "Open the Bank instead.") == 0,
+        "GB import row: why-text now points at the Bank (BACKLOG #120 S2)");
   /* BACKLOG #90: gb_fly.h's bitfield core + pdna_gbfly.c's screen are wired for
    * both generations now -- Fly moves from "coming soon" to genuinely OK. */
   CHECK(nav_avail(NV_FLY, SE_KIND_GEN1) == NAV_OK, "Fly: wired up on Gen 1 (BACKLOG #90)");
@@ -144,9 +148,9 @@ static void test_every_row_covered(void) {
    * BACKLOG #87: NV_DEX moved OUT too -- gb_dex.c + pdna_gbdex.c wire the
    * shared Pokedex screen on both kinds, checked in ok_both below. */
   static const int coming_soon_both[] = {
-    NV_PARTY, NV_BANK, NV_GB   /* 3: Map left for its own per-gen split (M1); NV_FLY (#90),
-                               * NV_DATA (#88), NV_BATTLEREC (#89) and NV_DEX (#87) moved to
-                               * ok_both below */
+    NV_PARTY, NV_GB   /* 2: Map left for its own per-gen split (M1); NV_FLY (#90),
+                               * NV_DATA (#88), NV_BATTLEREC (#89), NV_DEX (#87) and
+                               * NV_BANK (#120 S2) moved to ok_both below */
   };
   for (int i = 0; i < (int)(sizeof coming_soon_both / sizeof coming_soon_both[0]); i++) {
     CHECK(nav_avail(coming_soon_both[i], SE_KIND_GEN1) == NAV_COMING_SOON,
@@ -161,13 +165,19 @@ static void test_every_row_covered(void) {
    * both generations too. BACKLOG #88: NV_DATA (Flags & counters, pdna_gbflags.c)
    * joins it as well; BACKLOG #89: NV_BATTLEREC hosts the Hall of Fame; BACKLOG #87:
    * NV_DEX -- the shared pdna_dex_screen (species-capped) is wired on both kinds via
-   * pdna_gbdex.c. */
+   * pdna_gbdex.c. BACKLOG #120 S2: NV_BANK joins too -- the Bank is now reachable
+   * from a GB session (UP past the tabs). */
   static const int ok_both[] = { NV_TRAINER, NV_SETTINGS, NV_BACK, NV_BAG, NV_DAYCARE, NV_FLY, NV_DATA,
-                                 NV_BATTLEREC /* BACKLOG #89: the Hall of Fame */, NV_DEX /* BACKLOG #87 */ };
+                                 NV_BATTLEREC /* BACKLOG #89: the Hall of Fame */, NV_DEX /* BACKLOG #87 */,
+                                 NV_BANK /* BACKLOG #120 S2 */ };
   for (int i = 0; i < (int)(sizeof ok_both / sizeof ok_both[0]); i++) {
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare/Fly/Data/Records/Dex are NAV_OK");
-    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare/Fly/Data/Records/Dex are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN1) == NAV_OK, "Gen 1: Trainer/Settings/Back/Bag/Daycare/Fly/Data/Records/Dex/Bank are NAV_OK");
+    CHECK(nav_avail(ok_both[i], SE_KIND_GEN2) == NAV_OK, "Gen 2: Trainer/Settings/Back/Pack/Daycare/Fly/Data/Records/Dex/Bank are NAV_OK");
   }
+  /* Explicit BACKLOG #120 S2 pair, per the brief -- redundant with the loop above
+   * but names the row directly rather than only via the shared array. */
+  CHECK(nav_avail(NV_BANK, SE_KIND_GEN1) == NAV_OK, "Bank: reachable from a GB session (BACKLOG #120 S2)");
+  CHECK(nav_avail(NV_BANK, SE_KIND_GEN2) == NAV_OK, "Bank: reachable from a GB session (BACKLOG #120 S2)");
 
   /* NV_MAP: OK on Gen 1, COMING_SOON on Gen 2 -- the same per-gen-split shape as
    * NV_CLOCK (test (E)), counted below as its own single row rather than folded into
