@@ -52,6 +52,7 @@ typedef struct {
   uint32_t high;         /* highest off+len actually requested      */
   uint32_t over;         /* reads that ran past `limit`             */
   long     calls;
+  unsigned long bytes;   /* step 1 (BACKLOG #103): total bytes requested */
   /* the swap trick (test 6): redirect a window of the file elsewhere, flipping on
    * every LZ77 pass, so consecutive decodes see DIFFERENT but individually valid
    * payloads — exactly what an EZ-Flash read that "succeeds" with stale sector
@@ -69,6 +70,7 @@ typedef struct {
 static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   FileCtx* fc = (FileCtx*)ctx;
   fc->calls++;
+  fc->bytes += len;
   if (off + len > fc->high) fc->high = off + len;
   if (off > fc->limit || len > fc->limit - off) { fc->over++; return false; }
   if (fc->flip_armed && off == fc->flip_off) {
@@ -144,6 +146,17 @@ static void run_rom(const char* path, const char* name, int expect_header) {
     fclose(f); return;
   }
   chk(name, "verification defaults ON", rs.verify == 1);
+
+  /* Step 1 (BACKLOG #103): baseline read-callback counts for exactly ONE
+   * front decode (Bulbasaur), measured only on Emerald. */
+  if (strcmp(name, "Emerald") == 0) {
+    static uint8_t mpic[ROM_SPRITE_BUF_BYTES];
+    RomSpritePic minfo;
+    long calls0 = fc.calls; unsigned long bytes0 = fc.bytes;
+    int mok = rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 0, mpic, sizeof mpic, &minfo);
+    printf("counts Emerald sprite front: %ld reads / %lu bytes (ok=%d)\n",
+           fc.calls - calls0, fc.bytes - bytes0, mok);
+  }
 
   static uint8_t pic[ROM_SPRITE_BUF_BYTES];
   RomSpritePic info;
