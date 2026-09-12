@@ -119,12 +119,26 @@ static int read_verified(const RomItemArt* ra, uint32_t addr, uint8_t* dst, uint
 static int decode_verified(const RomItemArt* ra, uint32_t addr, uint8_t* dst,
                            uint32_t cap, uint32_t want) {
   if (want > cap) return 0;
-  uint32_t n = mr_lz77(ra->rc, addr, dst, cap);
+  /* Borrow the caller's own unused tail dst[want,cap) as the LZ77 input window
+   * when it is comfortably large (BACKLOG #103 step 3), same argument as
+   * rom_chrome.c's decode_verified: mr_lz77_w only ever writes dst[0,size)
+   * (size == `want`) and only ever reads dst[0,out) with out < size for
+   * back-references, so dst[want,cap) is provably untouched by this decode.
+   * Every call site here either passes cap == want (px[ROM_ITEM_ICON_BYTES],
+   * pr[ROM_ITEM_PAL_BYTES], :213-215/:320-323 -- window falls back to 0,0
+   * automatically) or, for rom_type_sheet_load()'s RSE scratch buffer
+   * (:360), leaves scratch[ROM_TYPE_SHEET_BYTES, scratch_cap) untouched by
+   * every later step of that same function (the RSE palette table decodes
+   * into its OWN separate local array, :361, never into the scratch tail). */
+  uint8_t* win = 0; uint32_t win_bytes = 0;
+  if (cap - want >= 256u) { win = dst + want; win_bytes = cap - want; }
+
+  uint32_t n = mr_lz77_w(ra->rc, addr, dst, cap, win, win_bytes);
   if (n != want) return 0;
   if (!ra->verify) return 1;
   uint32_t prev = hash32(dst, n);
   for (int attempt = 0; attempt < 2; attempt++) {
-    n = mr_lz77(ra->rc, addr, dst, cap);
+    n = mr_lz77_w(ra->rc, addr, dst, cap, win, win_bytes);
     if (n != want) return 0;
     uint32_t h = hash32(dst, n);
     if (h == prev) return 1;

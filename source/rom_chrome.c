@@ -198,12 +198,27 @@ static int read_verified(const RomCtx* rc, int verify, uint32_t addr, uint8_t* d
 static int decode_verified(const RomCtx* rc, int verify, uint32_t addr, uint8_t* dst,
                            uint32_t cap, uint32_t want) {
   if (want > cap) return 0;
-  uint32_t n = mr_lz77(rc, addr, dst, cap);
+  /* Use the caller's own unused tail dst[want,cap) as the LZ77 input window when
+   * it is comfortably large (BACKLOG #103 step 3), instead of the decoder's
+   * default 64 B stack window. Correctness: mr_lz77_w only ever WRITES
+   * dst[0,size) (size == `want`, checked above) and only ever READS dst[0,out)
+   * for back-references with out < size -- see map_render.c's mr_lz77_w body --
+   * so dst[want,cap) is provably untouched by the decode this window feeds,
+   * and safe to borrow as scratch input space. Every rom_chrome caller of
+   * fetch() below fills its blobs at strictly increasing scratch offsets
+   * (rom_chrome_card_load: tileset then map then bg then pal, :238-241;
+   * rom_chrome_pokeblock_load: tiles then pal, :370-371; rom_chrome_bag_load:
+   * tileset then tilemap then pal_m [then pal_f], :487-488), so nothing live
+   * occupies that tail region yet at decode time either. */
+  uint8_t* win = 0; uint32_t win_bytes = 0;
+  if (cap - want >= 256u) { win = dst + want; win_bytes = cap - want; }
+
+  uint32_t n = mr_lz77_w(rc, addr, dst, cap, win, win_bytes);
   if (n != want) return 0;
   if (!verify) return 1;
   uint32_t prev = hash32(dst, n);
   for (int attempt = 0; attempt < 2; attempt++) {
-    n = mr_lz77(rc, addr, dst, cap);
+    n = mr_lz77_w(rc, addr, dst, cap, win, win_bytes);
     if (n != want) return 0;
     uint32_t h = hash32(dst, n);
     if (h == prev) return 1;
