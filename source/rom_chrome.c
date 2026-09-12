@@ -213,16 +213,29 @@ static int decode_verified(const RomCtx* rc, int verify, uint32_t addr, uint8_t*
   uint8_t* win = 0; uint32_t win_bytes = 0;
   if (cap - want >= 256u) { win = dst + want; win_bytes = cap - want; }
 
-  uint32_t n = mr_lz77_w(rc, addr, dst, cap, win, win_bytes);
-  if (n != want) return 0;
-  if (!verify) return 1;
-  uint32_t prev = hash32(dst, n);
-  for (int attempt = 0; attempt < 2; attempt++) {
-    n = mr_lz77_w(rc, addr, dst, cap, win, win_bytes);
+  /* BACKLOG #103 step 4: verify by hashing the CONSUMED COMPRESSED INPUT,
+   * never by decoding twice. The old code re-ran the full LZ77 decode 1-2
+   * more times and hashed the two DECODED-OUTPUT passes against each other --
+   * the pass whose bytes actually became pixels (the first one) was never
+   * itself checked, so a garbled first decode that happened to be internally
+   * reproducible (unlikely but not impossible for a stuck-bit EZ read) could
+   * have been accepted. This decodes ONCE, learns the exact compressed span
+   * mr_lz77_x() consumed, and re-reads exactly those raw bytes (cheap: no
+   * CPU-side LZ77 re-run) to hash-compare against the decode's own input.
+   * On a mismatch the decode itself is redone (up to 2 retries, matching the
+   * old retry budget of 3 total attempts) so the pass that is checked is
+   * always the pass whose output is kept. `icon_store.h`'s "PAYLOAD VERIFY
+   * STAYS" rule (an EZ read can return success holding garbage) still holds:
+   * this only makes the check cheaper, never removes it. */
+  for (int attempt = 0; attempt < 3; attempt++) {
+    uint32_t consumed = 0, in_hash = 0;
+    uint32_t n = mr_lz77_x(rc, addr, dst, cap, win, win_bytes, &consumed, &in_hash);
     if (n != want) return 0;
-    uint32_t h = hash32(dst, n);
-    if (h == prev) return 1;
-    prev = h;
+    if (!verify) return 1;
+    uint32_t reread_hash = 0;
+    if (mr_hash_span(rc, addr, consumed, win, win_bytes, &reread_hash) && reread_hash == in_hash)
+      return 1;
+    /* mismatch (or the re-read itself failed): re-decode from scratch. */
   }
   return 0;
 }

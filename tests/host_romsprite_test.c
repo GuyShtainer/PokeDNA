@@ -53,12 +53,23 @@ typedef struct {
   uint32_t over;         /* reads that ran past `limit`             */
   long     calls;
   unsigned long bytes;   /* step 1 (BACKLOG #103): total bytes requested */
-  /* the swap trick (test 6): redirect a window of the file elsewhere, flipping on
-   * every LZ77 pass, so consecutive decodes see DIFFERENT but individually valid
-   * payloads — exactly what an EZ-Flash read that "succeeds" with stale sector
-   * data looks like. */
-  uint32_t swap_from, swap_to, swap_len;
-  int      swap_on, swap_armed;
+  /* BACKLOG #103 step 4: corrupt exactly ONE physical read call, by its 1-based
+   * call index, XOR-ing one byte of ITS OWN returned buffer. This models the
+   * realistic EZ-Flash failure mode ("this ONE read succeeded but the bytes
+   * are garbage", icon_store.h's "PAYLOAD VERIFY STAYS") at the granularity
+   * the new verify-by-consumed-input-hash design actually operates at: each
+   * read() invocation is its own independent opportunity for corruption,
+   * whether it happens during the decode or during the raw re-read that
+   * verifies it. (The old per-decode-attempt address-redirect trick this
+   * replaced relied on every attempt starting with its own fresh 4-byte
+   * header peek to "re-roll" a toggle -- true for the old double-full-decode
+   * verify, no longer true now that the re-read is a single raw byte fetch,
+   * not a second full decode; see the step-4 commit for the analysis. This
+   * mock does NOT key on len == 4, i.e. it does not care what shape a call
+   * has -- only which ordinal call it is, exactly as review-opus's own
+   * attack list demands.) Fires exactly once (hit_call == 0 disarms it). */
+  long     hit_call;
+  uint32_t hit_pos;
   /* the same trick one level up: make a TABLE ENTRY read return a different (but
    * perfectly valid) neighbouring row on alternate reads. A garbled pointer that
    * still lands on a real sprite decodes identically every time, so only a
@@ -77,13 +88,13 @@ static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
     fc->flip_on ^= 1;
     if (fc->flip_on) off = fc->flip_alt;
   }
-  if (fc->swap_armed) {
-    if (off == fc->swap_from && len == 4) fc->swap_on ^= 1;      /* new LZ77 pass */
-    if (fc->swap_on && off >= fc->swap_from && off < fc->swap_from + fc->swap_len)
-      off = fc->swap_to + (off - fc->swap_from);
-  }
   if (fseek(fc->f, (long)off, SEEK_SET) != 0) return false;
-  return fread(dst, 1, len, fc->f) == len;
+  if (fread(dst, 1, len, fc->f) != len) return false;
+  if (fc->hit_call && fc->calls == fc->hit_call && fc->hit_pos < len) {
+    ((uint8_t*)dst)[fc->hit_pos] ^= 0xFF;
+    fc->hit_call = 0;      /* fires exactly once */
+  }
+  return true;
 }
 
 /* an in-memory image, for the synthesised bad-header cases */
@@ -323,27 +334,66 @@ static void run_rom(const char* path, const char* name, int expect_header) {
     }
   }
 
-  /* 6b) reads that SUCCEED holding valid-but-wrong bytes.
-   * Redirect species 1's front blob to species 2's, flipping on every LZ77 pass,
-   * so consecutive decodes disagree while each one is perfectly decodable. */
+  /* 6b) reads that SUCCEED holding valid-but-wrong bytes -- BACKLOG #103 step 4's
+   * new verify-by-consumed-input-hash design, attacked at the granularity it
+   * actually operates at: corrupt exactly ONE physical read call, by its
+   * ordinal position, and prove decode+reread still catches it. (The old
+   * mechanism this replaced redirected an address range and flipped on every
+   * read matching `len == 4` at that address, modelling "every FULL DECODE
+   * gets its own fresh header peek" -- true for the old double-full-decode
+   * verify, no longer true now that the verify pass is a single raw re-read,
+   * not a second decode. This mock keys on nothing but ordinal call count,
+   * exactly what review-opus's attack list demands: "the mock must NOT key
+   * on len == 4".) Traced once with a plain debug counter for this exact
+   * call shape (Emerald, species 1 front, verify ON): table-entry read x2
+   * (verified) = calls 1-2, mr_lz77_size's window-sizing peek = call 3,
+   * decode_verified's own header read = call 4, the body window chunk =
+   * call 5, the verify re-read = call 6. With verify OFF the table entry is
+   * read once (not twice), so the body chunk lands on call 4 instead. */
   {
-    uint8_t e[8];
-    uint32_t tbl = rs.front;
-    uint32_t p1 = 0, p2 = 0;
-    file_read(&fc, tbl + 1 * 8, e, 8); p1 = (uint32_t)e[0] | (e[1]<<8) | (e[2]<<16) | ((uint32_t)e[3]<<24);
-    file_read(&fc, tbl + 2 * 8, e, 8); p2 = (uint32_t)e[0] | (e[1]<<8) | (e[2]<<16) | ((uint32_t)e[3]<<24);
-    fc.swap_from = p1 - ROM_BASE; fc.swap_to = p2 - ROM_BASE; fc.swap_len = 0x4000;
-    fc.swap_on = 0; fc.swap_armed = 1;
+    uint8_t clean[ROM_SPRITE_BUF_BYTES]; RomSpritePic ic;
+    int okc = rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 0, clean, sizeof clean, &ic);
+    chk(name, "clean reference decode for the corruption cases below succeeds", okc);
 
-    chk(name, "verification REJECTS a read that succeeds with the wrong payload",
-        !rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 0, a, sizeof a, &ia));
+    /* (a) corrupt the DECODE's own compressed-input read (call base+5).
+     * A retry must recover the exact clean pixels. */
+    long base = fc.calls;
+    fc.hit_call = base + 5; fc.hit_pos = 1;
+    uint8_t dirty_dec[ROM_SPRITE_BUF_BYTES]; RomSpritePic id;
+    int ok_dec = rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 0, dirty_dec, sizeof dirty_dec, &id);
+    chk(name, "a decode-phase read corruption still yields the clean pixels (a retry recovers)",
+        okc && ok_dec && id.bytes == ic.bytes && memcmp(dirty_dec, clean, ic.bytes) == 0);
+    chk(name, "a decode-phase read corruption cost more than one attempt (it was not free)",
+        (fc.calls - base) > 6);
 
+    /* Same corruption point, verification OFF: with no reread to catch it,
+     * the corrupted decode must sail through UNFIXED -- proving it is
+     * verification, not luck, doing the catching above. Verify OFF reads
+     * the table entry once (not twice), so the body chunk is call base+4. */
     RomSprite nv = rs; rom_sprite_set_verify(&nv, 0);
-    fc.swap_on = 0;
-    chk(name, "with verification OFF the same wrong payload sails through "
-              "(so it is the verification doing the catching)",
-        rom_sprite_pic(&nv, ROM_SPRITE_FRONT, 1, 0, a, sizeof a, &ia));
-    fc.swap_armed = 0;
+    base = fc.calls;
+    fc.hit_call = base + 4; fc.hit_pos = 1;
+    uint8_t dirty_nv[ROM_SPRITE_BUF_BYTES]; RomSpritePic idn;
+    int ok_nv = rom_sprite_pic(&nv, ROM_SPRITE_FRONT, 1, 0, dirty_nv, sizeof dirty_nv, &idn);
+    chk(name, "with verification OFF the same corrupted decode sails through unfixed "
+              "(so it is verification doing the catching)",
+        okc && ok_nv && (idn.bytes != ic.bytes || memcmp(dirty_nv, clean, ic.bytes) != 0));
+
+    /* (b) corrupt ONLY the verify RE-READ (call base+6); the decode itself is
+     * clean, so its consumed-input hash is correct -- only the confirmation
+     * read sees garbage. This must NOT be silently accepted on the first
+     * attempt: prove a retry happened (more calls than one clean attempt
+     * costs), and that the final, accepted pixels are still the clean ones. */
+    base = fc.calls;
+    fc.hit_call = base + 6; fc.hit_pos = 1;
+    uint8_t dirty_rr[ROM_SPRITE_BUF_BYTES]; RomSpritePic ir;
+    int ok_rr = rom_sprite_pic(&rs, ROM_SPRITE_FRONT, 1, 0, dirty_rr, sizeof dirty_rr, &ir);
+    chk(name, "a re-read-phase corruption is not silently accepted (a retry happened)",
+        (fc.calls - base) > 6);
+    chk(name, "a re-read-phase corruption still yields the clean pixels after the retry",
+        okc && ok_rr && ir.bytes == ic.bytes && memcmp(dirty_rr, clean, ic.bytes) == 0);
+
+    fc.hit_call = 0;
   }
 
   /* 6c) the same hazard one level up: the 8-byte TABLE ENTRY read itself. */

@@ -133,16 +133,21 @@ static int decode_verified(const RomItemArt* ra, uint32_t addr, uint8_t* dst,
   uint8_t* win = 0; uint32_t win_bytes = 0;
   if (cap - want >= 256u) { win = dst + want; win_bytes = cap - want; }
 
-  uint32_t n = mr_lz77_w(ra->rc, addr, dst, cap, win, win_bytes);
-  if (n != want) return 0;
-  if (!ra->verify) return 1;
-  uint32_t prev = hash32(dst, n);
-  for (int attempt = 0; attempt < 2; attempt++) {
-    n = mr_lz77_w(ra->rc, addr, dst, cap, win, win_bytes);
+  /* BACKLOG #103 step 4: verify by hashing the CONSUMED COMPRESSED INPUT,
+   * never by decoding twice -- same rationale as rom_chrome.c's
+   * decode_verified (see that comment for the full argument). Decode once,
+   * learn the exact compressed span mr_lz77_x() consumed, re-read exactly
+   * those raw bytes with the ONE shared mr_hash_span() and compare hashes;
+   * on a mismatch re-decode (up to 2 retries, matching the old 3-attempt
+   * budget) so the checked pass is always the pass whose output is kept. */
+  for (int attempt = 0; attempt < 3; attempt++) {
+    uint32_t consumed = 0, in_hash = 0;
+    uint32_t n = mr_lz77_x(ra->rc, addr, dst, cap, win, win_bytes, &consumed, &in_hash);
     if (n != want) return 0;
-    uint32_t h = hash32(dst, n);
-    if (h == prev) return 1;
-    prev = h;
+    if (!ra->verify) return 1;
+    uint32_t reread_hash = 0;
+    if (mr_hash_span(ra->rc, addr, consumed, win, win_bytes, &reread_hash) && reread_hash == in_hash)
+      return 1;
   }
   return 0;
 }

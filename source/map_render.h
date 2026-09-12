@@ -87,6 +87,24 @@ uint32_t mr_lz77(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_ca
 uint32_t mr_lz77_w(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap,
                    uint8_t* win, uint32_t win_bytes);
 
+/* Same decoder + window as mr_lz77_w(), but ALSO reports the exact compressed
+ * span this decode consumed (`*consumed`, header included) and an FNV-1a hash
+ * of exactly those consumed bytes (`*in_hash`) -- BACKLOG #103 step 4's cheap
+ * verify: a caller re-reads exactly `*consumed` raw bytes with mr_hash_span()
+ * below and compares hashes, instead of running the CPU-heavy decode a second
+ * time to "verify" it. `consumed`/`in_hash` may each be NULL if not wanted. */
+uint32_t mr_lz77_x(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap,
+                   uint8_t* win, uint32_t win_bytes,
+                   uint32_t* consumed, uint32_t* in_hash);
+
+/* FNV-1a hash of `len` raw ROM bytes starting at `addr`, read through the same
+ * window (`win`/`win_bytes`, or 0,0 for the default 64 B stack window) a prior
+ * mr_lz77_x() call used -- the ONE shared re-read+hash helper every verify
+ * path folds through, so there is exactly one hashing implementation to trust.
+ * Returns false (leaving *out_hash unset) if any underlying read fails. */
+bool mr_hash_span(const RomCtx* rom, uint32_t addr, uint32_t len,
+                  uint8_t* win, uint32_t win_bytes, uint32_t* out_hash);
+
 /* Decompressed size from an LZ77 header without decompressing. 0 if not LZ77. */
 uint32_t mr_lz77_size(const RomCtx* rom, uint32_t addr);
 

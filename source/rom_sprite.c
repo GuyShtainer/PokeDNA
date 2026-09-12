@@ -118,14 +118,6 @@ static int form_ok(uint16_t species, uint8_t form) {
   return form == 0;
 }
 
-/* FNV-1a over the decoded bytes. Two independent decodes of the same blob must
- * agree on this AND on the length; a silently-garbled SD read does not. */
-static uint32_t hash32(const uint8_t* p, uint32_t n) {
-  uint32_t h = 2166136261u;
-  while (n--) { h ^= *p++; h *= 16777619u; }
-  return h;
-}
-
 /* Read one small table entry, twice-and-compare when verification is on. The
  * payload check below cannot cover this: a garbled POINTER that still lands on a
  * valid LZ77 blob decodes identically every time, so both decodes would agree on
@@ -144,19 +136,36 @@ static int read_entry(const RomSprite* rs, uint32_t off, uint8_t* e, uint32_t n)
 }
 
 /* Decompress `addr` into dst, verifying by repetition when rs->verify is set.
- * Returns the decompressed length, or 0. On 0 the buffer holds garbage. */
+ * Returns the decompressed length, or 0. On 0 the buffer holds garbage.
+ *
+ * BACKLOG #103 steps 3+4: the decompressed length is not known ahead of time
+ * here (unlike rom_chrome/rom_itemart's fixed `want`), so the window is sized
+ * off mr_lz77_size()'s own peek: dst + size, cap - size, used only when that
+ * tail is comfortably large (>=256 B) -- e.g. a 1-frame 2,048 B portrait in
+ * the shared 8,192 B buffer gets a 6,144 B window; a 4-frame 8,192 B sheet
+ * has no spare tail and falls back to the default 64 B window. Correctness:
+ * mr_lz77_x only writes dst[0,size) and only reads dst[0,out) with out<size
+ * for back-references, so dst[size,cap) is provably dead at decode time.
+ * Verify is by re-reading the exact CONSUMED compressed span and hashing it
+ * (mr_hash_span, the one shared helper) against the decode's own FNV-1a of
+ * its input -- never by re-running the CPU-heavy decode a second time. On a
+ * mismatch the decode itself is redone (up to 2 retries, matching the old
+ * 3-attempt budget), so the pass that is checked is always the pass whose
+ * output is kept. */
 static uint32_t decode_verified(const RomSprite* rs, uint32_t addr,
                                 uint8_t* dst, uint32_t cap) {
-  uint32_t n = mr_lz77(rs->rc, addr, dst, cap);
-  if (!n || !rs->verify) return n;
+  uint32_t size = mr_lz77_size(rs->rc, addr);
+  uint8_t* win = 0; uint32_t win_bytes = 0;
+  if (size && size <= cap && cap - size >= 256u) { win = dst + size; win_bytes = cap - size; }
 
-  uint32_t prev_n = n, prev_h = hash32(dst, n);
-  for (int attempt = 0; attempt < 2; attempt++) {
-    n = mr_lz77(rs->rc, addr, dst, cap);
+  for (int attempt = 0; attempt < 3; attempt++) {
+    uint32_t consumed = 0, in_hash = 0;
+    uint32_t n = mr_lz77_x(rs->rc, addr, dst, cap, win, win_bytes, &consumed, &in_hash);
     if (!n) return 0;
-    uint32_t h = hash32(dst, n);
-    if (n == prev_n && h == prev_h) return n;   /* two decodes agreed */
-    prev_n = n; prev_h = h;
+    if (!rs->verify) return n;
+    uint32_t reread_hash = 0;
+    if (mr_hash_span(rs->rc, addr, consumed, win, win_bytes, &reread_hash) && reread_hash == in_hash)
+      return n;
   }
   return 0;                                     /* three tries, never twice the same */
 }
