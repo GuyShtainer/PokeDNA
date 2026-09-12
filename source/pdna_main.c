@@ -34,6 +34,7 @@
 #include "perf.h"          /* SD/icon telemetry + the session clock (see perf.h) */
 #include "pdna_summary.h"
 #include "pdna_box.h"
+#include "xfer_gate.h"      /* BACKLOG #120 S2: xg_pc_live/xg_togame_row/xg_paste_row/xg_inject_refuse */
 #include "gen3_trainer.h"
 #include "gen3_record.h"    /* Emerald Battle Record (save sector 31) info + export */
 #include "gen3_frontier.h"  /* g3f_streak_get/g3f_modes/g3f_mode_name for the record screen's streaks page */
@@ -1585,6 +1586,15 @@ static bool app_commit_block(int sect_lo, int sect_hi, uint8_t* block) {
  * which spans SB1+SB2; the single whole-file write costs the same as committing one
  * section, so this just folds the dex sections in. */
 static bool app_commit_all(void) {
+  /* BACKLOG #120 S2: with no parsed Gen-3 save, gen3_write_full_section(g_save, ...)
+   * below would write Gen-3 sections into whatever bytes g_save actually holds -- a
+   * GB session's own battery image. Refuse ABOVE the arena-held release-and-continue
+   * below, which stays unchanged: flipping the arena posture too, on top of refusing
+   * outright, would risk a silent no-save on a legitimate Gen-3 path ([decided here]). */
+  if (!g_vinfo.valid) {
+    log_line("BUG: commit-all with no parsed Gen-3 save - refused");
+    return false;
+  }
   /* g_pc is Tier B's donor (icon_store_borrow). Reaching a PC-writing commit with the
    * arena still lent out would write icon tiles into every box the user owns, so this
    * is the one place worth a belt-and-braces check: every screen releases before it
@@ -1625,6 +1635,13 @@ bool app_pc_dirty(void)      { return g_pc_dirty; }
 /* ---- borrowed EWRAM arena (see pdna_app.h for why g_pc is the donor) -------- */
 static bool g_arena_held = false;
 bool app_arena_held(void) { return g_arena_held; }
+
+/* BACKLOG #120 S2: is there a live Gen-3 PC in g_pc right now? `!app_arena_held()`
+ * alone is not enough -- the delta fused-GB path clears g_vinfo too, so using both
+ * makes the gate observable in mGBA as well as on hardware (§8, [decided here]). Every
+ * Gen-3 write path a Bank visit from a GB session exposes (TO GAME / PASTE / inject /
+ * commit) checks this, via xg_pc_live/xg_inject_refuse (source/xfer_gate.h). */
+static bool app_gen3_pc_live(void) { return xg_pc_live(g_vinfo.valid, app_arena_held()); }
 
 uint8_t* app_arena_acquire(uint32_t need) {
   if (g_arena_held || need > (uint32_t)G3_PC_BYTES) return NULL;
@@ -1916,6 +1933,14 @@ static bool app_stage_sb1(void) {
 }
 
 bool app_commit_pc(void)  {
+  /* BACKLOG #120 S2: same "no live Gen-3 PC" refusal app_inject_to_game() uses --
+   * g_pc may be on loan to a GB session's mount arena, or there may be no parsed
+   * Gen-3 save at all, in which case app_commit_block() below would write Gen-3
+   * sections into a GB battery image. */
+  if (xg_inject_refuse(app_arena_held(), g_vinfo.valid)) {
+    log_line("BUG: app_commit_pc with no live Gen-3 PC - refused");
+    return false;
+  }
   bool ok = app_commit_block(G3_SID_PKMN_STORAGE_START, G3_SID_PKMN_STORAGE_END, g_pc);
   if (ok) g_pc_dirty = false;                       /* the write persisted everything */
   return ok;
@@ -2959,6 +2984,15 @@ static int box_free_slot(const uint8_t* pc, int box) {
  * first free PC box slot and commit. The bank keeps its copy (it's a copy, not a
  * move). Returns true iff written. */
 bool app_inject_to_game(const uint8_t* rec80) {
+  /* BACKLOG #120 S2: refuse before touching g_pc at all when it is on loan to a GB
+   * session's mount arena, or when there is no parsed Gen-3 save to receive the
+   * write -- the row above should already have hidden this action, but this is the
+   * actual write-time gate (defence in depth, same posture as app_can_edit() below). */
+  if (xg_inject_refuse(app_arena_held(), g_vinfo.valid)) {
+    snd_deny();
+    msg_wait("NO GEN-3 SAVE", UI_WARN, "Open a Gen-3 save first,", "then use the Bank.");
+    return false;
+  }
   if (!app_can_edit()) return false;
   for (int b = 0; b < G3_TOTAL_BOXES; b++) {
     int s = box_free_slot(g_pc, b);
@@ -2978,6 +3012,12 @@ bool app_inject_to_game(const uint8_t* rec80) {
  * false (+ PC FULL) if there's no room. Dex registration is skipped (a deferred PC
  * commit doesn't write the dex sections; the species is in the player's hands anyway). */
 static bool app_inject_to_game_deferred(const uint8_t* rec80, int* out_box, int* out_slot) {
+  /* BACKLOG #120 S2: same refusal as app_inject_to_game() above -- see its comment. */
+  if (xg_inject_refuse(app_arena_held(), g_vinfo.valid)) {
+    snd_deny();
+    msg_wait("NO GEN-3 SAVE", UI_WARN, "Open a Gen-3 save first,", "then use the Bank.");
+    return false;
+  }
   if (!app_can_edit()) return false;
   for (int b = 0; b < G3_TOTAL_BOXES; b++) {
     int s = box_free_slot(g_pc, b);
@@ -4379,17 +4419,52 @@ bool app_mon_menu(uint8_t* rec, bool is_party, bool is_bank, AppCommitFn commit,
     if (!is_party) { lab[n]=PDNA_LBL_MOVE; act[n++]=A_MOVE; }                    /* box: pick up + reposition */
     else if (g_party_tobox_allowed) { lab[n]=PDNA_LBL_MOVE_TO_BOX; act[n++]=A_TOBOX; }  /* party popup: carry out to a box */
     lab[n]=PDNA_LBL_COPY;    act[n++]=A_COPY;
-    if (g_clip.occupied) { lab[n]=PDNA_LBL_PASTE; act[n++]=A_PASTE; }
+    /* BACKLOG #120 S2: gated on xg_paste_row (clip occupied AND a live Gen-3 PC to
+     * paste into) -- during a GB session's Bank visit g_vinfo.valid is false, so this
+     * row is hidden regardless of clip content. :4208's RO_PASTE (the GB grid's own
+     * PASTE (GB) row, app_mon_menu_readonly) is untouched -- different function,
+     * different gate. */
+    if (xg_paste_row(g_clip.occupied, app_gen3_pc_live())) { lab[n]=PDNA_LBL_PASTE; act[n++]=A_PASTE; }
     lab[n]=PDNA_LBL_DUPLICATE; act[n++]=A_DUP;
+    /* A_DAYCARE is already scoped OUT of every is_bank source by `!is_bank` above --
+     * a real Bank cell (is_bank always true, GB session or not) never offers it, so
+     * BACKLOG #120 S2's Bank-from-GB-session exposure never reaches this row; no new
+     * gate needed here (orchestrator-requested audit, BACKLOG #120 S2 review). */
     if (!is_bank) { lab[n]=PDNA_LBL_TO_DAYCARE; act[n++]=A_DAYCARE; }  /* deposit into the daycare (all games incl. FR/LG) */
-    if (is_bank) { lab[n]=PDNA_LBL_TO_GAME; act[n++]=A_TOGAME; }   /* bank: inject into the loaded save */
+    /* BACKLOG #120 S2: TO GAME is gated on xg_togame_row (Bank cell AND a live Gen-3
+     * PC to receive it AND something already in that PC, g_have_pc) -- during a GB
+     * session's Bank visit g_vinfo.valid is false (no parsed Gen-3 save), so this row
+     * is hidden even though is_bank is true. The outer branch stays `is_bank` itself
+     * (not the gated predicate): EXPORT_PK is a PC/party-only row and must not leak
+     * in on a Bank cell just because TO GAME's own gate happens to be false -- a Bank
+     * cell must NEVER gain EXPORT_PK, gated or not, so the nesting below (not a flat
+     * substitution of the outer condition) is load-bearing, not stylistic.
+     *
+     * Orchestrator-requested audit (BACKLOG #120 S2 review): TO GAME and PASTE are
+     * the ONLY two rows on this occupied-cell branch that write toward the live
+     * Gen-3 save/PC. Every other row here (SUMMARY/ITEM/LEGALITY/HATCH/MOVE/COPY/
+     * DUPLICATE/TAKE-GIVE ITEM/RELEASE) commits back into the SOURCE's own storage
+     * (src->commit — the Bank's own SD write), never g_save/g_party, so none of them
+     * needs a gate. TO DAY-CARE (one line up) is already excluded from every is_bank
+     * source by its own `!is_bank` guard -- a real Bank cell never offers it, GB
+     * session or not, so BACKLOG #120 S2's exposure never reaches that row. There is
+     * no "MOVE TO PARTY" row: the closest effect (A_MOVE's pick-up, then carrying to
+     * the PARTY tab) is refused independently by pdna_box.c's pre-existing
+     * `if (s_tab_focus == 1 && !src->is_bank && !s_orig_party)` gate (is_bank true on
+     * a Bank cell -> `else snd_deny()`), unrelated to this slice. No xg_gen3_dest_row
+     * predicate exists because no third row needs one. */
+    if (is_bank) { if (xg_togame_row(is_bank, app_gen3_pc_live(), g_have_pc)) { lab[n]=PDNA_LBL_TO_GAME; act[n++]=A_TOGAME; } }   /* bank: inject into the loaded save */
     else         { lab[n]=PDNA_LBL_EXPORT_PK; act[n++]=A_EXPORT; }/* PC/party: write a .pk3 to the bank dir */
     if (m0.heldItem && !g_item_held) { lab[n]=PDNA_LBL_TAKE_ITEM; act[n++]=A_TAKEITEM; }
     if (g_item_held)                 { lab[n]=PDNA_LBL_GIVE_ITEM; act[n++]=A_GIVEITEM; }
     lab[n]=PDNA_LBL_RELEASE;   act[n++]=A_RELEASE;
   } else {                                              /* empty slot */
     if (!is_party) { lab[n]=PDNA_LBL_CREATE; act[n++]=A_CREATE; }   /* build a mon from nothing (box/bank) */
-    if (g_clip.occupied) { lab[n]=PDNA_LBL_PASTE_HERE; act[n++]=A_PASTE; }
+    /* BACKLOG #120 S2: same xg_paste_row gate as the occupied-cell PASTE row above --
+     * an empty Bank cell during a GB session's visit has no live Gen-3 PC to paste
+     * FROM, so this is hidden; an ordinary Gen-3 session (app_gen3_pc_live() true)
+     * sees no change. */
+    if (xg_paste_row(g_clip.occupied, app_gen3_pc_live())) { lab[n]=PDNA_LBL_PASTE_HERE; act[n++]=A_PASTE; }
     if (n == 0) return false;                            /* empty party slot, nothing to paste */
   }
   lab[n]=PDNA_LBL_CANCEL; act[n++]=A_CANCEL;

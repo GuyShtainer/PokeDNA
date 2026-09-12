@@ -862,6 +862,11 @@ int main(void) {
   PF(PDNA_XFER_NOGEN_TITLE, 28, 184);
   PF(PDNA_XFER_NOGEN_L1,    28, 184);
   PF(PDNA_XFER_NOGEN_L2,    28, 184);
+  /* BACKLOG #120 S2: app_inject_to_game()/_deferred()'s "no live Gen-3 PC" refusal
+   * (pdna_main.c). Literal, like the msg_wait call sites that pass it directly. */
+  PF("NO GEN-3 SAVE",              28, 184);
+  PF("Open a Gen-3 save first,",   28, 184);
+  PF("then use the Bank.",         28, 184);
   /* S5-B review fix #3: a corrupt (CRC-failed) sidecar file is refused loudly, never
    * silently reinitialised over other mons' original records. */
   PF(PDNA_SIDECAR_CORRUPT_TITLE,     28, 184);
