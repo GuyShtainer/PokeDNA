@@ -707,6 +707,46 @@ rgm1_open argsites=4 -> gbmap_sd_read fused_gb_slice_read
 Scan.read @0 in scan_one.constprop.0@rom_gbmap -> gbmap_sd_read fused_gb_slice_read
 scan_one.constprop.0@rom_gbmap argsites=1 -> cb_banks cb_hdr cb_ts
 
+# BACKLOG #91 M1-G2: source/rom_gbmap2.h's `GbReadFn read;` is RomGbMap2's first
+# member too (offset 0), same shape as RomGbMap1 above. Callers below dereference it
+# through rd()/rdg() (rom_gbmap2.c, inlined) and gbmap2_load_viewport_blocks
+# (source/pdna_gbmap2.c) calls `st->g.read(...)` directly on its own GbMap2State.g
+# field (a RomGbMap2, embedded at GbMap2State offset 0 -- same struct, same field
+# offset 0). Implementations, from every rgm2_open() call site (grepped
+# pdna_gbmap2.c): gbmap2_sd_read (SD/artless build) and fused_gb_slice_read (delta).
+RomGbMap2.read @0 in rgm2_map,rgm2_tileset,gbmap2_load_viewport_blocks -> gbmap2_sd_read fused_gb_slice_read
+# rom_gbmap2.c's OWN file-local `scan_one()` (called 3 times inside rgm2_open, for the
+# 3 code anchors) is NOT inlined/constprop'd per callback here (unlike rom_gbmap.c's
+# 3 constprop clones) -- one shared `scan_one` symbol dispatches through its own
+# Scan.read@0 field AND the `cb(w + i)` ScanCb callback parameter (cb_a1/cb_a2/cb_a3).
+Scan.read @0 in scan_one -> gbmap2_sd_read fused_gb_slice_read
+scan_one argsites=1 -> cb_a1 cb_a2 cb_a3 cb_palmap cb_env1 cb_env2
+
+# BACKLOG #91 M1-G2 colour (Step 7): rom_gbmap2.c's colour anchors/resolve
+# functions dispatch through their own GbReadFn `read` PARAMETER (not a
+# struct field -- rgm2_colour_palette()/rgm2_colour_nibble()/rgm2_colour_
+# roof() take `GbReadFn read` directly, and at -O2 the compiler fully
+# register-allocates rgm2_open()'s/rgm2_colour_open()'s own inlined rd()
+# calls too, past the point where the walker still sees a struct-field
+# load -- same posture rom_gbmap.c's own `rgm1_open argsites=4` line
+# already documents for Gen 1. Counts match the exact blind-spot addresses
+# reported at this landing (one line per DISTINCT call site inside each
+# caller, not a guess).
+rgm2_open argsites=8 -> gbmap2_sd_read fused_gb_slice_read
+rgm2_colour_open argsites=3 -> gbmap2_sd_read fused_gb_slice_read
+rgm2_colour_palette argsites=3 -> gbmap2_sd_read fused_gb_slice_read
+rgm2_colour_nibble argsites=1 -> gbmap2_sd_read fused_gb_slice_read
+# review-opus D3: rgm2_colour_palmap() (the whole-PalMap bulk read, added to
+# stop gbmap2_paint()'s own per-cell rgm2_colour_nibble() calls) has the
+# same "GbReadFn read PARAMETER" shape as its siblings above.
+rgm2_colour_palmap argsites=1 -> gbmap2_sd_read fused_gb_slice_read
+# review-opus non-blocking (a): group_map_count() (the derived per-group map
+# count bound) is a static helper the compiler inlines into rgm2_map(),
+# introducing register-dispatch read() calls beyond the ones the
+# RomGbMap2.read@0 declaration above already covers for rgm2_map's OWN body.
+rgm2_map argsites=1 -> gbmap2_sd_read fused_gb_slice_read
+rgm2_colour_roof argsites=1 -> gbmap2_sd_read fused_gb_slice_read
+
 Br.rd @0 in br_byte -> gb_art_read fused_gb_slice_read gb_read
 # gb_sprite_codec.c's own file-local `Br` bit-reader (line ~28): `GbReadFn rd;` is its
 # first member, filled in by br_init() from whichever GbReadFn its own caller (rom_

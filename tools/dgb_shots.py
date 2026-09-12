@@ -1194,6 +1194,130 @@ def run_m1_map_vclamp(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots
     return s
 
 
+def run_m1_map_gen2(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """M1-G2 (BACKLOG #91, docs/GB-MAP-DESIGN-G2.md): Crystal's OWN current-map
+    view, read-only, on the shared GB-screen shell -- the Gen-2 twin of
+    run_m1_map() above. `rom` MUST be a Crystal-ONLY fused image (Crystal.gbc+
+    Crystal.sav, tools/fuse_gb.py, one ROM per image -- must NOT also carry an
+    Emerald.sav, or a bare A on the boot picker opens Emerald's own screen
+    instead of skipping straight to the GB save's S1 info page).
+
+    Nav: single-ROM image, so `gb_delta_pick_save()`'s `if (n == 1) return 0`
+    skips the boot picker entirely -- ONE tap (A: S1 info -> box grid), not
+    DOWN+A+A the way run_m1_map()'s combined multi-ROM image needs. From the
+    box grid: START -> nav menu -> DOWN x16 (same PDNA_NAV_ITEMS index as
+    Gen 1's Map row -- the list order does not change per generation) -> A ->
+    pdna_gbmap_gen2().
+
+    Crystal.sav's real player position (group 24 / number 4 = NEW_BARK_TOWN,
+    y=6/x=13 -> block (6,3) via gbmap_block_of()'s coord>>1) sits on a 10x9-
+    block map: vbx starts at clampi(6-5//2, 0, 10-5=5) = 4, vby at
+    clampi(3-5//2, 0, 9-5=4) = 1 -- the marker lands exactly centred on open
+    ground (design doc §2.4/§8's own cross-checked New Bark Town dump)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_g2_")
+    print("== M1-G2: Crystal's own current-map view (single-ROM -> Map) ==")
+
+    s.run(700)
+    s.tap("A", settle=60)                                    # S1 info -> box grid (single-ROM image)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)               # box grid -> nav menu
+    s.press_n("DOWN", 16)                                     # Party -> ... -> Map (index 16, same as Gen 1)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)                    # Map -> pdna_gbmap_gen2()
+    s.shot("01_map_1to1", "M1-G2: New Bark Town at 1:1, 10x9 blocks, a 5x5-block "
+                           "viewport starting exactly centred (vbx=4, vby=1) -- "
+                           "the red frame marks the player's own block (6,3); "
+                           "the VRAM tile-id remap (design doc §6) must resolve "
+                           "every cell here, not just the trap maps (Ice Path/"
+                           "Celadon Mansion Roof) -- a blank grid anywhere in "
+                           "this shot is the remap failing")
+
+    s.tap("SEL", settle=60)                                  # shell-wide toggle -> stretched
+    s.shot("01b_stretched", "M1-G2: SELECT stretches the same view to 240x160, "
+                             "same shell-wide scale toggle every other GB screen "
+                             "uses")
+    s.tap("SEL", settle=60)                                  # back to 1:1
+    s.shot("01c_1to1_again", "M1-G2: SELECT again returns to 1:1")
+
+    # width 10 - VBW 5 = 5 (east clamp); vbx starts at 4, one step of slack east,
+    # four steps west down to 0 (west clamp).
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.shot("02_east_clamp", "M1-G2: RIGHT once reaches the east clamp (vbx=4 -> "
+                             "5, width 10 - the 5-block viewport)")
+    s.tap("RIGHT", settle=gb_shots.SETTLE)
+    s.shot("03_east_clamp_no_op", "M1-G2: a second RIGHT from the east clamp is "
+                                   "a true no-op -- pixel-identical to the "
+                                   "previous shot", allow_same=True)
+
+    s.press_n("LEFT", 5, settle=gb_shots.SETTLE)
+    s.shot("04_west_clamp", "M1-G2: five LEFTs from the east clamp reach the "
+                             "west clamp (vbx=0) -- the marker is now near the "
+                             "viewport's own RIGHT edge, the mirror image of "
+                             "shot 02's east-clamp position")
+    s.tap("LEFT", settle=gb_shots.SETTLE)
+    s.shot("05_west_clamp_no_op", "M1-G2: one more LEFT at the west clamp is a "
+                                   "true no-op", allow_same=True)
+
+    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # close -> back to the box grid
+    s.shot("06_closed_back_to_grid", "M1-G2: B closes the map screen -- back to "
+                                      "the box grid. No save byte is ever "
+                                      "written by this read-only screen")
+
+    return s
+
+
+def run_m1_map_gen2_wrong_game(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """M1-G2 (BACKLOG #91) wrong-game refusal (design doc §10 risk 1): `rom`
+    MUST be a fused image carrying Crystal.gbc but a GOLD save (Gold.sav paired
+    to Crystal.gbc by fuse_gb.py's own generation-only pairing -- the exact
+    real-world footgun this guard exists for: a user's SD card has one Gen-2
+    ROM and it happens to be the wrong one for the loaded save). Nav identical
+    to run_m1_map_gen2() up to the Map row; pdna_gbmap_gen2() must refuse with
+    PDNA_GBMAP2_WRONG_GAME instead of drawing Crystal's own New Bark Town under
+    a Gold save."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_g2_wronggame_")
+    print("== M1-G2: wrong-game refusal (Gold save, Crystal-only ROM) ==")
+
+    s.run(700)
+    s.tap("A", settle=60)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 16)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)
+    s.shot("01_wrong_game_refusal", "M1-G2 design §10 risk 1: a Gold save with "
+                                     "only a Crystal ROM registered -- the "
+                                     "cartridge header title check refuses "
+                                     "(PDNA_GBMAP2_WRONG_GAME) instead of "
+                                     "drawing a plausible but WRONG map")
+    return s
+
+
+def run_m1_map_gen2_no_rom(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.Session:
+    """M1-G2 (BACKLOG #91) no-ROM refusal: `rom` MUST be a fused image carrying
+    a Gen-2 save (Gold.sav) with NO Gen-2 ROM fused at all -- app_gb_rom_path()/
+    gb_rom_path_beside() both fail. The shell's own gbscr_open() catches this
+    BEFORE pdna_gbmap2.c's own "Could not open the ROM." fallback path is ever
+    reached (that fallback covers a narrower case gbscr_open() itself does not
+    catch) -- the real caption on this build is gbscr_open()'s own
+    PDNA_GBSCR_REASON_ORPHANED_ROM message, "this save's ROM is not fused"
+    (confirmed by the actual screenshot, not assumed)."""
+    s = gb_shots.Session(core_mod, image_mod, rom, out_dir, "m1_map_g2_norom_")
+    print("== M1-G2: no-ROM refusal (Gold save, no Gen-2 ROM fused) ==")
+
+    s.run(700)
+    s.tap("A", settle=60)
+    s.run(GB_ART_COLD_SETTLE)
+    s.tap("START", settle=gb_shots.BIG_SETTLE)
+    s.press_n("DOWN", 16)
+    s.tap("A", settle=GB_ART_COLD_SETTLE)
+    s.shot("01_no_rom_refusal", "M1-G2: no Gen-2 ROM fused at all -- a clean "
+                                 "'this save's ROM is not fused' refusal "
+                                 "(gbscr_open()'s own PDNA_GBSCR_REASON_"
+                                 "ORPHANED_ROM, fired before pdna_gbmap2.c's "
+                                 "own narrower fallback is ever reached), not "
+                                 "a crash or hang")
+    return s
+
+
 def run_u5_pack(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> gb_shots.Session:
     """U5 (BACKLOG #67, docs/GB-GAME-SCREENS-DESIGN.md sec 1.4): Gold/Silver/
     Crystal's OWN Pack + PC store on the shared GB-screen shell -- the Gen-2
@@ -3044,6 +3168,19 @@ def main(argv=None) -> int:
                           "Red-only fused image built from a save WARPED onto Route 17 "
                           "(tests/host_gbsurgery_tool.c's --op warp 28 8 68, see that "
                           "function's own docstring for why)")
+    ap.add_argument("--m1-map-g2", action="store_true",
+                     help="M1-G2 (BACKLOG #91): only run_m1_map_gen2() against --image "
+                          "-- --image MUST be a Crystal-only fused image (Crystal.gbc+"
+                          "Crystal.sav, no Emerald.sav)")
+    ap.add_argument("--m1-map-g2-wrong-game", action="store_true",
+                     help="M1-G2 (BACKLOG #91) wrong-game refusal: only "
+                          "run_m1_map_gen2_wrong_game() against --image -- --image MUST "
+                          "carry Crystal.gbc paired to a GOLD save (Gold.sav, no "
+                          "Gold.gbc)")
+    ap.add_argument("--m1-map-g2-no-rom", action="store_true",
+                     help="M1-G2 (BACKLOG #91) no-ROM refusal: only "
+                          "run_m1_map_gen2_no_rom() against --image -- --image MUST "
+                          "carry a Gen-2 save (Gold.sav) with NO Gen-2 ROM fused")
     ap.add_argument("--gbmon", action="store_true",
                      help="BACKLOG #92: only run_gbmon() against --image -- the new "
                           "ITEM row on the Gen-2 mon menu. --image MUST be a "
@@ -3403,6 +3540,49 @@ def main(argv=None) -> int:
         for name, reason in skipped:
             print(f"  [skip] {name}: {reason}")
         ran = True
+
+    # BACKLOG #91 M1-G2: the tiny2 lane's `ran = True` latch (its Item 1, #117)
+    # is not present in this dispatch chain as of this landing (grepped for it
+    # first) -- added in the existing per-flag `return 0` style below rather
+    # than restructuring the chain (that restructuring is tiny2's own commit).
+    if a.m1_map_g2:
+        try:
+            sess = run_m1_map_gen2(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] m1 map g2: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.m1_map_g2_wrong_game:
+        try:
+            sess = run_m1_map_gen2_wrong_game(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] m1 map g2 wrong game: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
+
+    if a.m1_map_g2_no_rom:
+        try:
+            sess = run_m1_map_gen2_no_rom(core_mod, image_mod, a.image, a.out)
+            ok += sess.taken
+            skipped += sess.skipped
+        except RuntimeError as e:
+            print(f"  [STOPPED] m1 map g2 no rom: {e}")
+        _write_manifest(a.out, ok, skipped)
+        print(f"\n{len(ok)} shot(s), {len(skipped)} skip(s)")
+        for name, reason in skipped:
+            print(f"  [skip] {name}: {reason}")
+        return 0
 
     if a.gbmon:
         try:

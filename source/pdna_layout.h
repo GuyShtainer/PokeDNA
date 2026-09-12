@@ -1691,6 +1691,14 @@ enum { PDNA_NAV_ITEMS(PDNA_NAV_ENUM_ONE) NV_COUNT };
  * text, just a different pixel scale -- see tests/host_textfit_test.c). */
 #define PDNA_GBMAP_HINT      "D-PAD PAN"
 
+/* M1-G2 (BACKLOG #91) Gen-2 Map screen: the one genuinely new silent-
+ * corruption risk in this slice (design doc §10 risk 1) -- a Gold save
+ * with a registered CRYSTAL ROM (or vice-versa) would otherwise locate
+ * that ROM's tables successfully and draw a PLAUSIBLE BUT WRONG map. The
+ * screen reads the cartridge header title at 0x134 and refuses when it
+ * disagrees with gb_session_is_crystal(). */
+#define PDNA_GBMAP2_WRONG_GAME "That ROM is not this save's game."
+
 #define PDNA_GBTR_ACT_EDIT   "EDIT"
 #define PDNA_GBTR_ACT_SAVE   "SAVE"
 #define PDNA_GBTR_ACT_MORE   "MORE"

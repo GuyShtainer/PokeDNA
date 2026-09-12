@@ -835,12 +835,26 @@ static bool gbscr_tile_pixels(const GbScreen* gs, RomGbUi* local, int idx, uint1
        * falls through to flat BLANK, same posture as GBSCR_SRC_PIC above. */
       if (gs->cache.maptiles && v < gs->cache.maptiles_n) {
         const uint8_t* td = gs->cache.maptiles + (uint32_t)v * 16u;
+        /* M1-G2 (BACKLOG #91) colour, design §7.8: `idx` (the function
+         * parameter, this cell's own GBSCR_COLS*GBSCR_ROWS index) selects
+         * which caller-supplied palette this MAPTILES cell paints with, iff
+         * BOTH maptiles_pal and maptiles_palidx are set; otherwise fall back
+         * to the fixed grey ramp, exactly as before -- the ONLY change this
+         * slice makes to any GbScrSrc case. `cell_pal` is captured here
+         * (outside the pixel loop, where the inner `idx` below is the PIXEL
+         * colour index 0-3, a different, intentionally shadowing name that
+         * predates this change) so the two never get confused. */
+        const uint16_t* cell_pal = 0;
+        if (gs->cache.maptiles_pal && gs->cache.maptiles_palidx) {
+          uint8_t slot = gs->cache.maptiles_palidx[idx];
+          cell_pal = gs->cache.maptiles_pal + (uint32_t)slot * 4u;
+        }
         for (int ry = 0; ry < 8; ry++) {
           uint8_t lo = td[ry * 2], hi = td[ry * 2 + 1];
           for (int cx = 0; cx < 8; cx++) {
             int b = 7 - cx;
-            uint8_t idx = (uint8_t)(((lo >> b) & 1u) | (((hi >> b) & 1u) << 1));
-            out[ry * 8 + cx] = kGbscrPicShade[idx];
+            uint8_t pidx = (uint8_t)(((lo >> b) & 1u) | (((hi >> b) & 1u) << 1));
+            out[ry * 8 + cx] = cell_pal ? cell_pal[pidx] : kGbscrPicShade[pidx];
           }
         }
         return true;
