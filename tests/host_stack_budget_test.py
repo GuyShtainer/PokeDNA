@@ -1603,52 +1603,6 @@ def test_b102_d1_verify_gated_macro_declarations_fatals_on_missing_macro():
               len(problems) == 1 and "SCRATCH_NEED" in problems[0], problems)
 
 
-def test_b102_d1_verify_gated_dominators_synthetic_bypass_is_flagged():
-    """D1(a): a synthetic call graph where `fn` has TWO predecessors -- one that
-    genuinely calls the gate first (safe), and one that reaches `fn` WITHOUT
-    ever calling the gate on that path (a real bypass) -- must be flagged for
-    the unsafe predecessor specifically, by name, even though a DIFFERENT path
-    into the same `fn` is safe. This is the automated form of the "synthetic
-    bypass graph -> FATAL" proof (review-opus fix pass's own D1(a) test list);
-    verify_gated_dominators() is unit-tested here even though it is NOT
-    currently wired into main()'s gate for the two real declarations (see its
-    own docstring: pdna_origin_art_stack_room's real call sites are inlined
-    away by GCC on both gate ELFs, so a disassembly-only version of this exact
-    check would FATAL the real, legitimate declarations)."""
-    edges = {
-        "safe_caller": {"gate_fn", "fn"},          # calls the gate, then fn -- safe
-        "bypass_caller": {"fn"},                    # reaches fn WITHOUT the gate -- unsafe
-        "fn": {"child"},
-        "child": set(),
-        "gate_fn": set(),
-    }
-    gated_decls = {"fn": (100, "h.h", "M", "gate_fn")}
-    problems = sb.verify_gated_dominators(gated_decls, edges)
-    check("(B102/D1a) exactly the bypass path is flagged, not the safe one",
-          len(problems) == 1, problems)
-    check("(B102/D1a) the problem names the unsafe predecessor and the gate",
-          problems and "bypass_caller" in problems[0] and "gate_fn" in problems[0], problems)
-
-
-def test_b102_d1_verify_gated_dominators_one_hop_path_passes():
-    """The PASS side, exercising the 'one hop up' half of the spec: `fn`'s only
-    predecessor (`mid`) does not itself call the gate, but `mid`'s OWN
-    predecessor (`top`) does -- gate_fn among a predecessor's PREDECESSOR's
-    callees is exactly the one-hop-up case the spec calls out, and must not be
-    flagged."""
-    edges = {
-        "top": {"gate_fn", "mid"},
-        "mid": {"fn"},
-        "fn": {"child"},
-        "child": set(),
-        "gate_fn": set(),
-    }
-    gated_decls = {"fn": (100, "h.h", "M", "gate_fn")}
-    problems = sb.verify_gated_dominators(gated_decls, edges)
-    check("(B102/D1a) a one-hop-up gate call (via the predecessor's own "
-          "predecessor) is NOT flagged", problems == [], problems)
-
-
 def _b102_fixture():
     """A tiny synthetic call graph shared by the semantics tests below:
     root -> gated_fn -> child (leaf). root's own frame is 10 B, gated_fn's own
@@ -2398,8 +2352,6 @@ def main():
     test_b102_d1_verify_gated_macro_declarations_passes_when_n_matches_header()
     test_b102_d1_verify_gated_macro_declarations_fatals_on_stale_macro()
     test_b102_d1_verify_gated_macro_declarations_fatals_on_missing_macro()
-    test_b102_d1_verify_gated_dominators_synthetic_bypass_is_flagged()
-    test_b102_d1_verify_gated_dominators_one_hop_path_passes()
     test_b102_semantics_b_measured_over_need_fatals()
     test_b102_semantics_b_measured_at_or_under_need_excludes_the_subtree()
     test_b102_semantics_a_whole_program_root_is_unaffected_by_gating()

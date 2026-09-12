@@ -718,21 +718,14 @@ def load_extra_edges(path):
         MACRO <int>` in `header` (under --source-dir), via the same
         _strip_c_comments()/_parse_int_macros() helpers verify_field_declarations()
         already uses for Struct.field @OFFSET -- FATAL if MACRO's value != N today.
-        `gate=gate_fn` additionally names the runtime function this walker
-        believes performs the admission check, so a dominator-style reachability
-        check (verify_gated_dominators()) can attempt to confirm every path into
-        `fn` passes through it first -- see that function's own docstring for why
-        it is IMPLEMENTED AND UNIT-TESTED but NOT currently wired into main()'s
-        gate on either real declaration here: `pdna_origin_art_stack_room`'s own
-        call sites inside pdna_origin_art_portrait (and the Gen-2 icon router) are
-        INLINED away by GCC on both gate ELFs (confirmed by reading the actual
-        disassembly-derived call graph, 2026-09-12) -- the call literally does not
-        exist as an edge in analysis["edges"] from any ancestor within reach of
-        gb_art_pic_cb/gb_art_icon_cb, so a disassembly-only dominator check FATALs
-        on these real, legitimate, source-verified-safe declarations. Wiring the
-        check in as specified would break BOTH `make`/`make artless` gates today;
-        left unwired pending a source-aware (not disassembly-only) version, or an
-        anchor `gate_fn` this compiler build does not inline away.
+        `gate=gate_fn` names the runtime function that performs the admission
+        check. It is DOCUMENTATION FOR A HUMAN, not a mechanical check: GCC
+        inlines this project's own gate call sites into anonymous `bx rN`
+        thunks (source/pdna_origin_art.c:530,559,836 -- verified in the
+        disassembly 2026-09-12), so `gate_fn` is not an edge in
+        analysis["edges"] from any ancestor and no disassembly-only dominator
+        check can confirm it. Re-audit by hand (BACKLOG #131 proposes a
+        `via=<predecessor set>` check, which IS mechanically enforceable).
         Example: `gated gb_art_fetch need=6144 from=gb_art_source.h:PDNA_GB_FETCH_NEED
         gate=pdna_origin_art_stack_room`.
 
@@ -1333,66 +1326,6 @@ def verify_gated_macro_declarations(gated_decls, source_dir):
                 f"gated {fn}: declared need={format_num(need)}, but {header}'s "
                 f"{macro} is {format_num(macros[macro])} today -- the declaration "
                 "no longer mirrors the runtime gate. Re-derive both.")
-    return problems
-
-
-def verify_gated_dominators(gated_decls, edges):
-    """D1(a) (review-opus fix pass, BACKLOG #102): for every declared `gated fn
-    need=N ... gate=gate_fn` and every predecessor `pred` of `fn` in `edges`,
-    require `gate_fn` among `pred`'s own callees, OR among the callees of one of
-    `pred`'s own predecessors (one hop further up) -- otherwise `fn` is
-    reachable along a path this walker can see that never runs `gate_fn` first,
-    so excluding `fn`'s subtree (charging it 0 B, what deepest_from() does for
-    every accepted `gated` declaration) would be unsound: nothing on that path
-    proves the runtime admission check ever ran. Returns a list of
-    human-readable strings, one per unprotected path found (empty = every
-    predecessor's reachability to `gate_fn` checks out); the caller treats ANY
-    entry as fatal.
-
-    STATUS (2026-09-12): implemented and unit-tested (a synthetic bypass graph
-    correctly produces a problem string here -- see
-    tests/host_stack_budget_test.py) but DELIBERATELY NOT CALLED from main()'s
-    gate on either of this backlog item's two real declarations. Confirmed by
-    reading the actual disassembly-derived call graph on both gate ELFs
-    (2026-09-12): `pdna_origin_art_stack_room`'s call sites inside
-    pdna_origin_art_portrait (source lines 530, 559) and the Gen-2 icon router
-    (line 836) are INLINED AWAY by GCC -- the compiled image has NO call edge to
-    pdna_origin_art_stack_room from pdna_origin_art_portrait at all (its own
-    listed callees, read via this exact tool: era_resolver_cb,
-    era_resolver_cell_cb, fetch_pic_ex.constprop.0, g3cross_pic_cb,
-    gb_art_have_cb, gb_art_icon_cb, gb_art_pic_cb, memset, mon_back_for_form,
-    mon_front_egg, mon_front_for_form, pdna_origin_art_have, pdna_origin_of,
-    pk_national_no, rom_sprite_pal, rom_sprite_pic, rom_sprite_to_rgb15 -- no
-    pdna_origin_art_stack_room). A one-hop-up (or even a full transitive)
-    disassembly search can never find an edge that was compiled out of
-    existence, so wiring this check into main() as specified FATALs on the
-    real, legitimate, source-code-verified-safe declarations and breaks BOTH
-    `make`/`make artless` gates. This is a genuine limitation of a
-    disassembly-only dominator check against an -O2 build, not a defect in the
-    declarations themselves (this exact inlining is WHY gb_art_fetch/
-    gb_art_fetch_icon.constprop.0's predecessors, as the docstring above's own
-    real numbers show, are gb_art_pic_cb/gb_art_icon_cb respectively -- one hop,
-    not zero -- and why `pdna_origin_art_stack_room` itself IS still a real,
-    unInlined function reachable from gbscr_open/pcp_open_party_strip, just not
-    from the inlined call sites this backlog's two declarations mirror).
-    Left available and tested for a future caller that either works from
-    SOURCE (not disassembly) or names a gate_fn this particular compiler build
-    does not inline -- flagged for a design decision, not silently dropped."""
-    problems = []
-    reverse = collections.defaultdict(set)
-    for caller, callees in edges.items():
-        for callee in callees:
-            reverse[callee].add(caller)
-    for fn, (_need, _header, _macro, gate_fn) in sorted(gated_decls.items()):
-        for pred in sorted(reverse.get(fn, ())):
-            if gate_fn in edges.get(pred, ()):
-                continue
-            grandparents = reverse.get(pred, ())
-            if any(gate_fn in edges.get(gp, ()) for gp in grandparents):
-                continue
-            problems.append(
-                f"gated {fn} is reachable from {pred} without {gate_fn} on that "
-                "path -- charging 0 is unsound")
     return problems
 
 
