@@ -213,6 +213,10 @@ def _crop_for(name: str) -> tuple[int, int, int, int]:
         # data, so this crop is game/save-independent for Red/Yellow the same
         # way the other refs are.
         "gbflags_story_header": (0, 138, 240, 149),
+        # BACKLOG #135: pdna_gbtrainer_gen1_card()'s title row (1:1 card view) --
+        # a fixed header band with no save-specific content, used to validate
+        # landing on the trainer card screen before shooting (run_u2c_trainer shots 10-11).
+        "gen1_trainer_card": (0, 0, 240, 14),
     }[name]
 
 
@@ -661,8 +665,10 @@ def run_u2c_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
                                         "PokeDNA's own on-screen keyboard, not a "
                                         "game-art dialogue")
 
-    s.tap("B", settle=gb_shots.BIG_SETTLE)                   # cancel -> back on the card, NAME selected
-    s.shot("10_back_on_card", "U2c: B cancels the name editor, back on the card")
+    s.tap("SEL", settle=gb_shots.BIG_SETTLE)                 # SELECT cancels osk_core (NOT B -- B is backspace in name editor)
+    assert_screen(s, "gen1_trainer_card")
+    s.shot("10_back_on_card", "U2c: SELECT cancels the name editor (osk_core's own cancel "
+                              "key), back on the card, NAME selected, unchanged")
 
     # A REAL edit (badge0 toggled, LEFT changed) so B's commit prompt actually fires
     # -- stays in this SAME visit (never exits the card) rather than re-entering the
@@ -673,6 +679,7 @@ def run_u2c_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
     # harness's own pixel-diff check, which only flags an IDENTICAL pair).
     s.press_n("DOWN", 3, settle=gb_shots.SETTLE)               # NAME -> MONEY -> TIME -> badge0
     s.tap("A", settle=gb_shots.BIG_SETTLE)                     # toggle badge0 -- a REAL change
+    assert_screen(s, "gen1_trainer_card")
     s.shot("11_real_edit", "U2c: badge0 toggled and LEFT changed (unlike shots "
                             "06-08's toggle-and-back, this one stays changed)")
     s.tap("B", settle=gb_shots.BIG_SETTLE)                     # B -> the actual commit prompt
@@ -683,6 +690,7 @@ def run_u2c_trainer(core_mod, image_mod, rom: Path, out_dir: Path) -> gb_shots.S
                                 "silent memcmp no-op path straight back to the "
                                 "card, which is why this shot needed a real edit")
     s.tap("B", settle=gb_shots.BIG_SETTLE)                     # decline -- discard the real edit too
+    assert_screen(s, "gb_box_grid")
     s.shot("13_declined", "U2c: declining a REAL edit also discards it -- the "
                            "save was never written (gbt_write never ran), back "
                            "at the box grid")
