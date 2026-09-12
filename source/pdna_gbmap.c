@@ -152,7 +152,7 @@ void pdna_gbmap_gen1(GbSession* s) {
     return;
   }
 
-  uint32_t shell_need = gbscr_tail_need(PDNA_GEN1, 0);
+  uint32_t shell_need = gbscr_tail_need(PDNA_GEN1, 0, 0);
   uint32_t extra = ROM_GBMAP_SCRATCH_MIN > MAPTILE_CACHE_BYTES
                     ? ROM_GBMAP_SCRATCH_MIN : MAPTILE_CACHE_BYTES;
   /* Scratch (locate scan) and the final tile cache are used SEQUENTIALLY
@@ -164,7 +164,7 @@ void pdna_gbmap_gen1(GbSession* s) {
 
   GbScreen gs;
   const char* reason = 0;
-  bool ok = gbscr_open(PDNA_GEN1, &gs, tail, shell_need, 0, &reason);
+  bool ok = gbscr_open(PDNA_GEN1, &gs, tail, shell_need, 0, 0, &reason);
   if (!ok) {
     gb12_arena_tail_release();
     ui_clear();

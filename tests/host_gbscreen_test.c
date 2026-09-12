@@ -277,7 +277,7 @@ int main(void) {
       uint8_t gen = gens[gi];
       for (uint16_t mask = 0; mask <= (GBSCR_NEED_TEXTBOX | GBSCR_NEED_CARDFRAME | GBSCR_NEED_BADGES); mask++) {
         GbscrCache plan;
-        bool ok = gbscr_cache_plan(gen, mask, &gu, 65536u, &plan);
+        bool ok = gbscr_cache_plan(gen, mask, 0, &gu, 65536u, &plan);
         CHECK(ok, "gen=%d mask=0x%x: cache_plan refused", gen, mask);
         if (!ok) continue;
 
@@ -289,7 +289,7 @@ int main(void) {
           sum += plan.blocks[i].len;
           cursor += plan.blocks[i].len;
         }
-        uint32_t need = gbscr_tail_need(gen, mask);
+        uint32_t need = gbscr_tail_need(gen, mask, 0);
         CHECK(sum + ROM_GBUI_SCRATCH_MIN == need,
               "gen=%d mask=0x%x: sum(len)=%u + SCRATCH_MIN=%u != gbscr_tail_need()=%u",
               gen, mask, sum, ROM_GBUI_SCRATCH_MIN, need);
@@ -353,7 +353,7 @@ int main(void) {
         uint16_t mask = 0;
         for (int b = 0; b < 6; b++) if (sub & (1 << b)) mask |= kNewBits[b];
         GbscrCache plan;
-        bool ok = gbscr_cache_plan(gen, mask, &gu, 65536u, &plan);
+        bool ok = gbscr_cache_plan(gen, mask, 0, &gu, 65536u, &plan);
         CHECK(ok, "gen=%d mask=0x%x (new bits): cache_plan refused", gen, mask);
         if (!ok) continue;
         uint32_t sum = 0, cursor = 0;
@@ -364,7 +364,7 @@ int main(void) {
           sum += plan.blocks[i].len;
           cursor += plan.blocks[i].len;
         }
-        uint32_t need = gbscr_tail_need(gen, mask);
+        uint32_t need = gbscr_tail_need(gen, mask, 0);
         CHECK(sum + ROM_GBUI_SCRATCH_MIN == need,
               "gen=%d mask=0x%x (new bits): sum(len)=%u + SCRATCH_MIN=%u != gbscr_tail_need()=%u",
               gen, mask, sum, ROM_GBUI_SCRATCH_MIN, need);
@@ -375,7 +375,7 @@ int main(void) {
       uint16_t card_mask = GBSCR_NEED_TEXTBOX | GBSCR_NEED_STATUSWORD |
                            GBSCR_NEED_LEADERS | GBSCR_NEED_BADGES | GBSCR_NEED_CARDPIC_M;
       GbscrCache plan;
-      bool ok = gbscr_cache_plan(gen, card_mask, &gu, 65536u, &plan);
+      bool ok = gbscr_cache_plan(gen, card_mask, 0, &gu, 65536u, &plan);
       CHECK(ok, "gen=%d: the real Gen-2 card's own 6-block combo was refused", gen);
       CHECK(plan.nblocks == 6, "gen=%d: the real Gen-2 card's combo planned %d blocks, want 6",
             gen, plan.nblocks);
@@ -410,7 +410,7 @@ int main(void) {
                               GBSCR_NEED_LEADERS | GBSCR_NEED_BADGES |
                               GBSCR_NEED_CARDPIC_M | GBSCR_NEED_CARDCORNER);
       GbscrCache cplan;
-      bool cok = gbscr_cache_plan(GB_GEN2, corner_mask, &gu_c, 65536u, &cplan);
+      bool cok = gbscr_cache_plan(GB_GEN2, corner_mask, 0, &gu_c, 65536u, &cplan);
       CHECK(cok, "Crystal corner mask (6 real-card bits + CARDCORNER) was refused");
       if (cok) {
         CHECK(cplan.nblocks == 7, "Crystal corner mask planned %d blocks, want 7 "

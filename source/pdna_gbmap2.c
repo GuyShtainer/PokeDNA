@@ -240,7 +240,7 @@ void pdna_gbmap_gen2(GbSession* s) {
     return;
   }
 
-  uint32_t shell_need = gbscr_tail_need(PDNA_GEN2, 0);
+  uint32_t shell_need = gbscr_tail_need(PDNA_GEN2, 0, 0);
   uint32_t scratch_len = ROM_GBMAP2_SCRATCH_MIN > GBMAP2_META_CACHE_BYTES
                           ? ROM_GBMAP2_SCRATCH_MIN : GBMAP2_META_CACHE_BYTES;
   /* Locate-scan scratch and the blockset cache are used SEQUENTIALLY
@@ -255,7 +255,7 @@ void pdna_gbmap_gen2(GbSession* s) {
 
   GbScreen gs;
   const char* reason = 0;
-  bool ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, 0, &reason);
+  bool ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, 0, 0, &reason);
   if (!ok) {
     gb12_arena_tail_release();
     ui_clear();

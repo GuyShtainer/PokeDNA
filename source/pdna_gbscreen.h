@@ -298,6 +298,25 @@ _Static_assert(GBSCR_SRC_COUNT <= 32,
  * that, not on gen alone. */
 #define GBSCR_NEED_CARDCORNER (1u << GBSCR_SRC_CARDCORNER)
 
+/* BACKLOG #128: "optional" companions to two of the bits above -- passed via
+ * gbscr_open()'s/gbscr_tail_need()'s/gbscr_cache_plan()'s NEW `opt_mask`
+ * parameter (a SEPARATE mask from `need_mask`, same GbScrSrc bit values).
+ * Exactly the two sources that can legitimately resolve to offset 0 on one
+ * real game: CARDCORNER (0 on Gold -- see the GBSCR_SRC_CARDCORNER enum
+ * comment) and CARDPIC_F (0 on Gold -- no female trainer card exists at all).
+ * A bit set in `opt_mask` whose block cannot be located (offset 0) is SKIPPED
+ * by gbscr_cache_plan() -- the slot simply stays unused -- instead of failing
+ * the whole plan the way the SAME bit set in `need_mask` still does. This is
+ * what lets a caller ask for a block "if it's there" in the SAME gbscr_open()
+ * that also asks for blocks it truly cannot do without, instead of opening
+ * once, inspecting what got located, and retrying with a wider need_mask
+ * (the shape BACKLOG #128 removes from pdna_gbtrainer_gen2_card()). No new
+ * GbScrSrc values -- only CARDCORNER/CARDPIC_F are ever legitimately optional
+ * today; do not add more without re-checking every other src's own "always
+ * present on a validated English ROM" assumption first. */
+#define GBSCR_OPT_CARDCORNER GBSCR_NEED_CARDCORNER
+#define GBSCR_OPT_CARDPIC_F  GBSCR_NEED_CARDPIC_F
+
 /* One located ROM block, bulk-copied into the tail buffer at open: `rom_off` is
  * where rom_gbui found it in the ROM/fused image, `ram_off` is its offset inside
  * the SAME tail buffer gbscr_open() was given, `len` is the block's exact byte
@@ -309,14 +328,24 @@ typedef struct { uint32_t rom_off, ram_off, len; } GbscrBlock;
  * CARDPIC_F simultaneously (both card pages share ONE gbscr_open(), L/R just
  * flips which cells are painted) -- 6 blocks, the new high-water mark
  * (Gen 1's own card only ever needs 4: FONT + TEXTBOX + CARDFRAME + BADGES).
- * GBSCR_MAX_BLOCKS is 7, one more than the real card needs, so
- * tests/host_gbscreen_test.c's own subset-enumeration check (every
+ * BACKLOG #128: the Gen-2 card's SINGLE open now requests CARDPIC_M (always,
+ * required) AND CARDPIC_F (optional, only for a female save) TOGETHER, so a
+ * female-locate failure can fall back to painting Chris without a second
+ * open -- for a Crystal female save with its own corner block also present
+ * (need_mask: CARDGFX/STATUSWORD/LEADERS/BADGES/CARDPIC_M, opt_mask:
+ * CARDPIC_F+CARDCORNER, both located) that is FONT + 5 + CARDPIC_F +
+ * CARDCORNER = 8 blocks -- one more than the old two-open design ever needed
+ * at once (it cached only ONE of CARDPIC_M/CARDPIC_F per open). GBSCR_MAX_BLOCKS
+ * is raised to 8 for exactly this combination (measured: does NOT move either
+ * build's own `STACK ok` deepest-chain total -- neither build's reported
+ * deepest chain passes through gbscr_open/GbScreen at all, see BACKLOG #128's
+ * own report). tests/host_gbscreen_test.c's own subset-enumeration check (every
  * combination of the 6 Gen-2-card-era bits) can exercise all 6 set at once
  * (7 blocks with FONT) without hitting a cap the real card never reaches --
  * an earlier revision left this at 6 exactly and the real card's own combo
  * (7 blocks then, before STATUSWORD replaced two separate blocks) silently
  * failed closed, falling every card back to the plain page. */
-#define GBSCR_MAX_BLOCKS 7
+#define GBSCR_MAX_BLOCKS 8
 
 /* U2b item 1: repaints are SD-free. `gbscr_mem_read()` (pdna_gbscreen.c) is a
  * GbReadFn that serves rom_gbui_tile()/rom_gbui_glyph()'s reads out of `tail`
@@ -366,19 +395,33 @@ uint32_t gbscr_block_off(const RomGbUi* gu, uint8_t gen, GbScrSrc src);
 bool     gbscr_mem_read(void* ctx, uint32_t off, void* buf, uint32_t len);
 
 /* U2b/U2c review item 0c: gbscr_tail_need()'s own byte arithmetic (SCRATCH_MIN +
- * FONT + every need_mask block), exported so a caller sizing its OWN arena-tail
- * request (on top of gbscr_open()'s own needs) uses the identical formula
- * gbscr_open_inner() gates on, rather than re-deriving it. gbscr_cache_plan() is
- * the pure (no I/O) half of what used to be gbscr_cache_block()'s loop: given an
+ * FONT + every need_mask/opt_mask block), exported so a caller sizing its OWN
+ * arena-tail request (on top of gbscr_open()'s own needs) uses the identical
+ * formula gbscr_open_inner() gates on, rather than re-deriving it. gbscr_cache_plan()
+ * is the pure (no I/O) half of what used to be gbscr_cache_block()'s loop: given an
  * already-LOCATED RomGbUi (offsets set; .ok/.read/.ctx unused), it decides the
- * byte layout (rom_off/ram_off/len, in the fixed FONT-then-need_mask order) a
- * real open() would use, with no ROM read at all -- exactly what
+ * byte layout (rom_off/ram_off/len, in the fixed FONT-then-need_mask-then-opt_mask
+ * order) a real open() would use, with no ROM read at all -- exactly what
  * tests/host_gbscreen_test.c needs to catch a shifted-glyph layout bug the shot
- * harness cannot see. Returns false (fail closed) if a needed block has no
- * located offset/size, or the plan would overrun GBSCR_MAX_BLOCKS. */
-uint32_t gbscr_tail_need(uint8_t gen, uint32_t need_mask);
-bool     gbscr_cache_plan(uint8_t gen, uint32_t need_mask, const RomGbUi* gu,
-                          uint32_t tail_len, GbscrCache* out);
+ * harness cannot see. Returns false (fail closed) if a NEED_MASK block has no
+ * located offset/size, or the plan would overrun GBSCR_MAX_BLOCKS.
+ *
+ * BACKLOG #128: `opt_mask` (a bitwise-OR of GBSCR_OPT_* -- disjoint in PURPOSE
+ * from `need_mask`, though the underlying GbScrSrc bit values are shared) is a
+ * SECOND set of blocks the caller wants IF they are there. A block in opt_mask
+ * whose located offset is 0 is SKIPPED (its slot simply is not planned) rather
+ * than failing the whole plan -- the caller checks whether it got what it
+ * asked for afterward, e.g. via gbscr_has_block(). gbscr_tail_need() reserves
+ * bytes for an opt_mask block the SAME worst-case way it reserves a need_mask
+ * block (the RomGbUi is not located yet at gbscr_tail_need()'s own call site --
+ * before the ROM scan -- so whether the block will actually resolve to a
+ * nonzero offset is not yet knowable; reserving less and hoping is not an
+ * option gbscr_open_inner()'s single caller-owned tail buffer affords). A bit
+ * set in BOTH masks is treated as need_mask (required) -- callers should not
+ * do this, but it fails safe rather than silently downgrading a requirement. */
+uint32_t gbscr_tail_need(uint8_t gen, uint32_t need_mask, uint32_t opt_mask);
+bool     gbscr_cache_plan(uint8_t gen, uint32_t need_mask, uint32_t opt_mask,
+                          const RomGbUi* gu, uint32_t tail_len, GbscrCache* out);
 
 /* U2c: the Gen-1 player pic pack/unpack pair -- pure arithmetic (no tonc/
  * FatFs), exported (moved above this module's own tonc/FatFs boundary,
@@ -463,11 +506,19 @@ extern const uint8_t gbscr_y_dst_count[144];
  * scratch (first, during the ROM scan/re-validate) and the RAM tile bank the scan
  * result is then copied into (same bytes, reused after the scan is done with
  * them) -- required size is 2,048 + FONT(1,024) + the byte length of every block
- * `need_mask` requests (TEXTBOX 512/432, CARDFRAME 640, BADGES 1,024/704,
+ * `need_mask`/`opt_mask` requests (TEXTBOX 512/432, CARDFRAME 640, BADGES 1,024/704,
  * Gen1/Gen2 respectively). A `tail_len` too small for that, or a NULL `tail`, is
  * a clean refusal (kReasonNoTail) -- there is no smaller/slower fallback path
  * inside gbscr_flush() any more (U2b item 1 deleted the per-tile FIL read): the
  * screen is expected to fall back to its own plain page instead, per design 3.5.
+ *
+ * BACKLOG #128: `opt_mask` (a bitwise-OR of GBSCR_OPT_*, see that macro's own
+ * comment) names blocks the caller wants CACHED IF THE ROM HAS THEM -- a bit's
+ * block resolving to offset 0 (Gold's cardcorner, or any ROM's cardpic_f on a
+ * non-female visit) does not fail this open the way the same bit in `need_mask`
+ * would. Check gbscr_has_block() afterward to learn whether a requested
+ * optional block actually got cached. A caller that needs nothing optional
+ * passes 0.
  *
  * On success: zeroes the tilemap (every cell BLANK), returns true.
  * On refusal: `*reason` (may be NULL) is set to a short, static, user-facing
@@ -475,7 +526,18 @@ extern const uint8_t gbscr_y_dst_count[144];
  * "not an English release" / "not a Game Boy ROM" / "no tile-bank memory"),
  * `gs->ok` is false, and every other gbscr_* call on `gs` is a safe no-op. */
 bool gbscr_open(uint8_t gen, GbScreen* gs, uint8_t* tail, uint32_t tail_len,
-                uint32_t need_mask, const char** reason);
+                uint32_t need_mask, uint32_t opt_mask, const char** reason);
+
+/* BACKLOG #128: did `gs`'s open actually cache `src` (whether requested via
+ * need_mask -- always true after a successful open -- or opt_mask, where it
+ * depends on whether the ROM has the block)? Pure lookup, no I/O: a src is
+ * cached iff its RomGbUi offset is nonzero (gbscr_cache_plan()'s own "skip an
+ * opt_mask block at offset 0" rule, mirrored here rather than re-scanning
+ * gs->cache.blocks[]). False on a `gs` that never opened successfully. The
+ * caller that asked for GBSCR_OPT_CARDPIC_F/GBSCR_OPT_CARDCORNER uses this
+ * instead of re-deriving the same check from gs->gu's raw fields, so the one
+ * place that knows "offset 0 means absent" stays gbscr_block_off(). */
+bool gbscr_has_block(const GbScreen* gs, GbScrSrc src);
 
 /* Release any resources gbscr_open() took (the SD build's FIL is already closed
  * by the time gbscr_open() returns -- this exists for symmetry/future-proofing

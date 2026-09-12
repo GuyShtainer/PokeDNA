@@ -420,7 +420,7 @@ void pdna_gbpack(GbSession* s, bool can_edit) {
   }
 
   uint32_t shell_need = gbscr_tail_need(PDNA_GEN2,
-      GBSCR_NEED_TEXTBOX | GBSCR_NEED_PACKMENU | GBSCR_NEED_PACK);
+      GBSCR_NEED_TEXTBOX | GBSCR_NEED_PACKMENU | GBSCR_NEED_PACK, 0);
   uint32_t need = shell_need + 2u * (uint32_t)sizeof(GbBag);
   uint8_t* tail = gb12_arena_tail(need);
   if (!tail) {
@@ -448,15 +448,19 @@ void pdna_gbpack(GbSession* s, bool can_edit) {
   uint32_t need_mask = GBSCR_NEED_TEXTBOX | GBSCR_NEED_PACKMENU | pic_need;
   GbScreen gs;
   const char* reason = 0;
-  bool ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, &reason);
+  bool ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, 0, &reason);
   if (!ok && female) {
     /* Same fail-safe pdna_gbtrainer.c's own gen2 card uses: a save claims
      * female on a ROM whose pack_f rom_gbui somehow failed to locate should
      * not happen (rom_gbui.c ties it to the same anchor as pack_m) -- retry
-     * once as Chris rather than refuse the whole screen over one picture. */
+     * once as Chris rather than refuse the whole screen over one picture.
+     * BACKLOG #128 note: pdna_gbtrainer_gen2_card() folded its own equivalent
+     * retry into a single opt_mask open; this screen's own retry is left
+     * as-is here (out of #128's scope, argument-list-only touch) -- a future
+     * lane may fold this one the same way. */
     female = false;
     need_mask = (need_mask & ~(uint16_t)GBSCR_NEED_PACK_F) | GBSCR_NEED_PACK;
-    ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, &reason);
+    ok = gbscr_open(PDNA_GEN2, &gs, tail, shell_need, need_mask, 0, &reason);
   }
   bool want_commit;
   if (ok) {
