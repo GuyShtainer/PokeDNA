@@ -17,23 +17,39 @@ uint32_t mr_lz77_size(const RomCtx* rom, uint32_t addr) {
   return (uint32_t)h[1] | ((uint32_t)h[2] << 8) | ((uint32_t)h[3] << 16);
 }
 
-/* Streaming LZ77 (LZ10). Pulls the compressed bytes through a small window so a 16 MiB
- * ROM on the SD is never fully resident, and hard-caps every write to dst. */
-uint32_t mr_lz77(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap) {
+/* Streaming LZ77 (LZ10). Pulls the compressed bytes through a window so a 16 MiB
+ * ROM on the SD is never fully resident, and hard-caps every write to dst. See
+ * map_render.h for `win`/`win_bytes`: 0,0 gets the original fixed-64-B stack
+ * window (that is exactly what mr_lz77() below passes). */
+uint32_t mr_lz77_w(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap,
+                   uint8_t* win, uint32_t win_bytes) {
   uint32_t size = mr_lz77_size(rom, addr);
   if (!size || !dst || size > dst_cap) return 0;
+  if (win_bytes && !win) return 0;
 
-  uint8_t buf[64];
+  uint8_t stack_buf[64];
+  uint8_t* buf = win_bytes ? win : stack_buf;
+  uint32_t buf_cap = win_bytes ? win_bytes : (uint32_t)sizeof stack_buf;
   uint32_t buf_at = 0, buf_len = 0;               /* buf covers [buf_at, buf_at+buf_len) */
   uint32_t src = addr + 4;
   uint32_t out = 0;
+  /* LZ10 all-literal upper bound on the compressed span: 4 header bytes + `size`
+   * literal bytes + one flag byte per (up to) 8 literals. An over-read past this
+   * can never be needed to decode a well-formed stream. */
+  uint32_t span_end = addr + 4 + size + (size + 7u) / 8u;
+  uint32_t img_end = ROM_BASE + rom->size;
 
   /* one byte of compressed input, buffered */
   #define NEXT(v) do {                                                        \
       if (buf_at >= buf_len) {                                                \
-        buf_len = sizeof buf;                                                 \
-        if (!rom_read_at(rom, src, buf, buf_len)) return 0;                   \
-        src += buf_len; buf_at = 0;                                           \
+        uint32_t remain_span = (src < span_end) ? (span_end - src) : 0u;      \
+        uint32_t remain_img  = (src < img_end)  ? (img_end - src)  : 0u;      \
+        uint32_t want = buf_cap;                                              \
+        if (remain_span < want) want = remain_span;                           \
+        if (remain_img  < want) want = remain_img;                            \
+        if (!want) return 0;                                                  \
+        if (!rom_read_at(rom, src, buf, want)) return 0;                      \
+        buf_len = want; src += want; buf_at = 0;                              \
       }                                                                       \
       (v) = buf[buf_at++];                                                    \
     } while (0)
@@ -62,6 +78,10 @@ uint32_t mr_lz77(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_ca
   }
   #undef NEXT
   return out;
+}
+
+uint32_t mr_lz77(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap) {
+  return mr_lz77_w(rom, addr, dst, dst_cap, 0, 0);
 }
 
 uint32_t mr_metatile_table_bytes(const RomCtx* rom, uint32_t tileset_addr) {

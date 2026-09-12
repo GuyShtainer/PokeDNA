@@ -34,6 +34,16 @@ static bool file_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
   return fread(dst, 1, len, f) == len;
 }
 
+/* a tiny synthetic in-memory image, for the EOF edge case below -- no ROM dump
+ * needed, so this check runs even on a machine with no corpus. */
+typedef struct { const uint8_t* p; uint32_t n; } MemBuf;
+static bool mem_read(void* ctx, uint32_t off, void* dst, uint32_t len) {
+  MemBuf* m = (MemBuf*)ctx;
+  if (off > m->n || len > m->n - off) return false;
+  memcpy(dst, m->p + off, len);
+  return true;
+}
+
 /* generous static buffers — this is a host test, not the GBA */
 static uint8_t  s_prim_tiles[512 * 32], s_sec_tiles[512 * 32];
 static uint8_t  s_prim_mt[1024 * 16],   s_sec_mt[1024 * 16];
@@ -183,6 +193,35 @@ int main(int argc, char** argv) {
       CHECK(mr_lz77(&rc, p.tiles, s_prim_tiles, want - 1) == 0,
             "a cap below the declared size is refused (no overrun)");
     }
+  }
+
+  /* BACKLOG #103 step 2: a compressed span ending EXACTLY at end of image must
+   * still decode. The old fixed-64-B fill unconditionally requests 64 bytes per
+   * chunk regardless of how much of the image remains, so it fails
+   * rom_read_at's bounds check (and thus the whole decode) for any blob within
+   * 63 B of EOF -- even though its actual compressed span fits comfortably.
+   * Synthetic image: an all-literal LZ10 stream (flag 0x00 + 5 literal bytes),
+   * compressed span = 4 header + 1 flag + 5 literals = 10 bytes, placed so its
+   * last byte is the image's very last byte. This fails before the mr_lz77_w
+   * fix and must pass after it. */
+  {
+    static uint8_t img[32];
+    memset(img, 0xEE, sizeof img);
+    uint32_t blob_off = (uint32_t)sizeof img - 10u;
+    img[blob_off + 0] = 0x10;                      /* LZ10 */
+    img[blob_off + 1] = 5; img[blob_off + 2] = 0; img[blob_off + 3] = 0;  /* size=5 */
+    img[blob_off + 4] = 0x00;                      /* flag byte: all literals */
+    img[blob_off + 5] = 'A'; img[blob_off + 6] = 'B'; img[blob_off + 7] = 'C';
+    img[blob_off + 8] = 'D'; img[blob_off + 9] = 'E';
+
+    MemBuf mb; mb.p = img; mb.n = sizeof img;
+    RomCtx erc; memset(&erc, 0, sizeof erc);
+    erc.read = mem_read; erc.ctx = &mb; erc.size = (uint32_t)sizeof img;
+
+    uint8_t out[8];
+    uint32_t n = mr_lz77(&erc, ROM_BASE + blob_off, out, sizeof out);
+    CHECK(n == 5 && memcmp(out, "ABCDE", 5) == 0,
+          "a compressed span ending exactly at image EOF still decodes (BACKLOG #103)");
   }
 
   test_map(&rc, "littleroot", "docs/analysis-2026-07-29/render-littleroot.raw");

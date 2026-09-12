@@ -72,6 +72,21 @@ typedef struct {
  * separately when the destination is VRAM. */
 uint32_t mr_lz77(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap);
 
+/* Same decoder, but pulls its compressed INPUT through a caller-supplied window
+ * (`win`/`win_bytes`) instead of a fixed 64 B stack buffer -- for a caller that owns
+ * spare space at the tail of `dst` past what this decode needs (BACKLOG #103), so a
+ * multi-KB blob costs O(1) read-callback calls instead of O(span/64). Pass
+ * win = 0, win_bytes = 0 for the original fixed-64-B-window behaviour; mr_lz77()
+ * is exactly that call. The window is filled at most `min(win_bytes, remaining
+ * compressed span, remaining ROM bytes)` at a time, so it can never read past the
+ * LZ10 all-literal upper bound on the compressed span nor past end of ROM (this
+ * also fixes a latent bug in the old fixed-64-B fill: an unconditional 64 B read
+ * fails `rom_read_at`'s bounds check for any blob within 63 B of EOF, even though
+ * the actual compressed span needs fewer bytes). Returns 0 (decode fails) if the
+ * computed fill would be zero-length. */
+uint32_t mr_lz77_w(const RomCtx* rom, uint32_t addr, uint8_t* dst, uint32_t dst_cap,
+                   uint8_t* win, uint32_t win_bytes);
+
 /* Decompressed size from an LZ77 header without decompressing. 0 if not LZ77. */
 uint32_t mr_lz77_size(const RomCtx* rom, uint32_t addr);
 
