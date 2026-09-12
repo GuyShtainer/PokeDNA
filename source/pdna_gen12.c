@@ -661,6 +661,8 @@ BoxSource pdna_gen12_source(Gb12Mount* m) {
 #include "pdna_gbdex.h"       /* BACKLOG #87: the Gen-1/2 Pokedex screen */
 #include "pdna_gbmap.h"       /* M1, BACKLOG #91: Gen 1's read-only current-map view */
 #include "pdna_gbhof.h"       /* BACKLOG #89: the Hall of Fame, both generations */
+#include "pdna_bank.h"        /* BACKLOG #120 S2: the Bank, reachable from a GB session now */
+#include "xfer_gate.h"        /* BACKLOG #120 S2: xg_clear_carry_on_gb_exit */
 #include "pdna_pick.h"        /* BACKLOG #92: pick_item / pick_item_set_gen1_2_max */
 #include "pdna_layout.h"   /* PDNA_GBEDIT_* / PDNA_SIDECAR_* -- fixed strings         */
 #include "gb_sidecar.h"    /* S5-B: the sidecar format + gbsc_path/gbsc_key            */
@@ -2766,6 +2768,17 @@ static const AppSrcOps k_gb_ops_ro = {
   .paste = 0, .view = gb_view_hook, .editable = 0,
 };
 
+/* BACKLOG #120 S2 [decided here]: a MARKER-only xfer peer, installed session-wide (not
+ * just inside a Bank visit -- see gb_session_core below) so the chunk-DOWN deny at
+ * pdna_box.c:3178 (which keys on `s_xfer_peer` alone) does not depend on whether the
+ * user has visited the Bank yet this session. Every function pointer is NULL -- S2
+ * never dereferences one, so this has no stack_edges.txt row; S3 replaces this with a
+ * real vtable once the UP mechanics land. `.gen` is set even though nothing reads it
+ * yet, so a later slice does not have to remember to add it. */
+static const BoxXferOps k_gb_xfer_s2 = {
+  .gen = 0, .lift_up = 0, .preview_down = 0, .accept_down = 0, .release_up = 0, .move_within = 0,
+};
+
 /* BACKLOG #48 (Guy's hardware test, 2026-09-06): "the start button doesn't work, I
  * don't have the same menu" / "I can't enter settings". Root cause was NOT the box
  * screen returning a code this loop mishandled -- pdna_gen12_source() sets
@@ -2784,6 +2797,57 @@ static const AppSrcOps k_gb_ops_ro = {
  * besides Settings/Trainer/Back goes through app_nav_refuse (pdna_main.c), which
  * consults source/nav_avail.h's rule table for an honest per-row COMING SOON / NOT IN
  * GEN 1 / NOT IN GEN 2 answer instead of one blanket message. */
+/* BACKLOG #120 S2: the three GB-session gates (readonly / ops / hint), extracted so a
+ * Bank visit can re-install all three when it hands the grid back, exactly like
+ * gb_session_core's own initial install below. ORDER IS LOAD-BEARING: readonly_set
+ * (pdna_main.c) ALSO nulls g_src_ops, exactly like readonly_clear -- so ops_set must
+ * run AFTER readonly_set, never before, or the ops table it just installed is wiped
+ * out again. hint goes last (it depends on neither of the other two). */
+static void gb_session_ops_install(Gb12Mount* m) {
+  app_src_readonly_set(pdna_gen12_why_locked, "Converted copy");
+  app_src_ops_set(!g_ed ? &k_gb_ops_ro
+                        : (g_ed->s.gen == GB_GEN2 ? &k_gb_ops_gen2 : &k_gb_ops_gen1));
+  pdna_origin_box_set_hint(m->kind == GB12_SAVE_RBY ? PDNA_GEN1 : PDNA_GEN2);
+}
+
+/* BACKLOG #120 S2: the Bank, opened from a Game Boy session's box grid (bank_edge's UP
+ * hop, r == 4). Mirrors pdna_main.c's own r==4 hop (:9089-9092) verbatim. BROKEN #2
+ * (docs/briefs/s2-bank-gb-session-brief.md): pdna_bank_show() ends with
+ * pdna_origin_box_clear(), so the GB grid's era-cache hint is gone the moment this
+ * function returns -- gb_session_ops_install's hint re-install below is what actually
+ * fixes that (box_decode's pdna_origin_box_note refills the cache on re-entry); the
+ * cache itself does NOT survive the visit.
+ *
+ * STACK BUDGET (orchestrator ruling, BACKLOG #120 S2 review): nesting the Bank visit
+ * inside gb_session_core's own frame adds gb_session_core (208 B) + this function
+ * (8 B) under main -> pdna_gen12_show_image -> gb_session_core -> gb_bank_visit ->
+ * pdna_bank_show -> pdna_box -> ... -> gb_art_fetch, tools/stack_budget.py's new
+ * deepest whole-program chain (was 13,000/12,992, now 13,296/13,288 -- margins
+ * 1,784/2,328, both still positive). That chain is RUNTIME-UNREACHABLE from here,
+ * twice over: (a) pdna_box.c's pcp_open_party_strip refuses immediately when
+ * `src->is_bank` (pdna_box.c:2964, `if (src->is_bank) { snd_deny(); return; }`) --
+ * pdna_gen12_source()/the Bank's own BoxSource both set is_bank true, so the PARTY
+ * strip that walks into app_mon_menu/pdna_daycare/gb_art_fetch never opens from a
+ * Bank visit; (b) even setting (a) aside, pcp_open_party_strip's own tripwire
+ * (PDNA_PARTY_STRIP_NEED, pdna_box.c ~2966) refuses again when the room is short.
+ * The walker is context-free -- it cannot see the is_bank DATA deny, only the STATIC
+ * call edge -- so its whole-program figure is conservative by construction; the real
+ * gate is `STACK ok` with a positive margin (confirmed: `python3 tools/stack_budget.py
+ * --root pdna_bank_show` finds the same chain only 10,624/10,616 B deep, margin
+ * 4,456/5,000, because rooting there drops main+pdna_gen12_show_image+gb_session_core+
+ * this function's own frames). The structural fix -- routing the party-strip opener
+ * through a BoxSource capability the Bank leaves NULL so the walker itself can scope
+ * it out -- is BACKLOG #134, not this slice. */
+static void gb_bank_visit(Gb12Mount* m) {
+  app_src_readonly_clear();                  /* also nulls g_src_ops, same as readonly_set */
+  pdna_origin_box_set_hint(0);
+  rmbl_fire(RCUE_ROOM);
+  app_box_start_set(2);                      /* bank opens at the bottom row (unless carrying) */
+  int br = pdna_bank_show();
+  if (br == 5) app_box_start_set(1);         /* bank dropped off the bottom -> PC tabs */
+  gb_session_ops_install(m);                 /* re-install readonly -> ops -> hint, in order */
+}
+
 static void gb_nav_from_start(Gb12Mount* m) {
   int kind = (m->kind == GB12_SAVE_RBY) ? SE_KIND_GEN1 : SE_KIND_GEN2;
   int nv = app_nav_menu(NAV_ALL_AVAILABLE);
@@ -2835,6 +2899,12 @@ static void gb_nav_from_start(Gb12Mount* m) {
      * NV_TRAINER/NV_BAG/NV_CLOCK sibling literal). */
     if (g_ed) pdna_gbdex(&g_ed->s, app_can_edit());
     else      (void)gb_info_page(m);
+  } else if (nv == NV_BANK) {
+    /* BACKLOG #120 S2: the Bank is reachable from the START menu too, not only the
+     * bank_edge UP hop -- no g_ed needed (unlike every real-art screen above, the
+     * Bank never touches the GB session's own bytes; it is the Gen-3 PC storage,
+     * gated entirely on the readonly/ops gates around the visit). */
+    gb_bank_visit(m);
   } else if (nv == NV_BAG && kind == SE_KIND_GEN1) {
     /* U4 (BACKLOG #67): Red/Yellow's own Item bag + PC store, same "needs a
      * live GbSession to write through" gate as NV_TRAINER above. D7 (U4
@@ -2968,30 +3038,19 @@ static void gb_session_core(Gb12Mount* m) {
    * actions (PASTE / DUPLICATE / CREATE) are not offered on a source that cannot
    * accept them. This also suppresses the bank's deferred-delete bookkeeping for these
    * boxes — see pdna_main.c. Cleared unconditionally below; every exit from the box
-   * screen passes through it. */
-  app_src_readonly_set(pdna_gen12_why_locked, "Converted copy");
-  /* Bag/menu review fix: the nav-menu path (no edit session, g_ed NULL) used to skip
-   * app_src_ops_set() entirely, leaving g_src_ops NULL -- so COPY there never reached
-   * copy_native and silently pasted the lossy converted bytes. Register the read-only
-   * twin so VIEW and (lossless) COPY still work with no GbSession to write through. */
-  /* BACKLOG #92: the live-session table also picks Gen1-vs-Gen2 now, so ITEM
-   * (gb_item_hook) is only ever installed for a Gen-2 mount. */
-  app_src_ops_set(!g_ed ? &k_gb_ops_ro
-                        : (g_ed->s.gen == GB_GEN2 ? &k_gb_ops_gen2 : &k_gb_ops_gen1));
+   * screen passes through it. BACKLOG #120 S2: the three-gate install (readonly ->
+   * ops -> hint, order load-bearing -- see gb_session_ops_install's own comment) is
+   * now the same helper a Bank visit re-runs on its way back out. */
+  gb_session_ops_install(m);
   BoxSource s = pdna_gen12_source(m);
   /* #77 (review, 2026-09-09): AFTER pdna_gen12_source() sets g_m, so app_save_kind()
    * reports GEN1/GEN2 when app_icon_rom_open()'s kind check runs. */
   app_gb_wallpaper_rom_open();
-  /* BACKLOG #53a: this session's box grid is a RAW Game Boy save's OWN box -- unlike a
-   * Gen-3 save's PC/BANK, every occupied, non-egg cell here genuinely IS m->kind's
-   * generation, no signature needed. Tell the cell cache so (era_cell_mark/box_gb/
-   * art_wanted all key off pdna_origin_of_hint() through cell_pack()) instead of
-   * leaving it to guess from the record's bytes alone, which is what produced Guy's
-   * hardware finding: every cell on a Yellow save read uncertain ('?', red box, the
-   * ordinary Gen-3 OBJ icon) instead of a certain '1' with the Gen-1 picture. Cleared
-   * unconditionally below so a LATER Gen-3 PC/BANK visit this same run is never left
-   * thinking it is still inside a GB session. */
-  pdna_origin_box_set_hint(m->kind == GB12_SAVE_RBY ? PDNA_GEN1 : PDNA_GEN2);
+  /* BACKLOG #120 S2 [decided here]: the xfer peer is installed session-wide, not just
+   * inside gb_bank_visit, so the chunk-DOWN deny at pdna_box.c:3178 (keyed on
+   * `s_xfer_peer` alone) does not depend on whether the Bank has been visited yet --
+   * one uniform behaviour for the whole session, cleared in the exit block below. */
+  pdna_box_xfer_set(&k_gb_xfer_s2);
   /* Returns 0 on B / the SAVE tab (leave); 2 on START, now reachable (BACKLOG #48,
    * BoxSource.has_start) -- handled by gb_nav_from_start above; 5 when the cursor
    * drops off the bottom row (the PC<->Bank hand-off, which has no PC to hand off to
@@ -3016,9 +3075,15 @@ static void gb_session_core(Gb12Mount* m) {
    * this exact cell" mechanism to mirror, so this does not invent one either. */
   for (int r; (r = pdna_box(&s)) != 0; ) {
     if (r == 2) gb_nav_from_start(m);
+    else if (r == 4) gb_bank_visit(m);       /* BACKLOG #120 S2: bank_edge's UP hop */
     else app_box_start_set(1);
     s = pdna_gen12_source(m);
   }
+  /* BACKLOG #120 S2 (§8 H16): a GB-scope carry must not outlive this session -- a
+   * Gen-3 carry (including a fresh DUPLICATE, s_orig_slot < 0) is untouched here and
+   * survives back out, exactly as it did before this session existed. */
+  if (xg_clear_carry_on_gb_exit(pdna_box_carry_is_gb())) pdna_box_clear_carry();
+  pdna_box_xfer_set(0);
   pdna_origin_box_set_hint(0);
   app_src_readonly_clear();
   pdna_gen12_source(0);                      /* unmount: no dangling arena pointers */
