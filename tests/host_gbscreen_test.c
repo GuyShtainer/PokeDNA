@@ -429,6 +429,79 @@ int main(void) {
     }
   }
 
+  /* 10) BACKLOG #128: opt_mask -- a block whose located offset is 0 is SKIPPED
+   * by gbscr_cache_plan() when it is optional, but the SAME bit still fails
+   * the plan closed when it is required (need_mask). Also proves the exact
+   * combination pdna_gbtrainer_gen2_card() now opens with in ONE call for a
+   * Crystal female save whose corner block is also present: FONT + the 5
+   * required Gen-2-card bits + CARDPIC_F + CARDCORNER = 8 blocks, right at
+   * GBSCR_MAX_BLOCKS' own cap. */
+  {
+    RomGbUi gu; memset(&gu, 0, sizeof gu);
+    gu.font = 0x1000;
+    /* gu.cardcorner and gu.cardpic_f are left 0 -- Gold-shaped: neither the
+     * corner block nor a female pic exists on this ROM. */
+
+    GbscrCache plan;
+    bool ok = gbscr_cache_plan(GB_GEN2, 0, GBSCR_OPT_CARDCORNER, &gu, 65536u, &plan);
+    CHECK(ok, "an optional block at offset 0 must still let the plan succeed");
+    CHECK(plan.nblocks == 1, "an optional block at offset 0 must be excluded "
+                             "(FONT only, got %d blocks)", plan.nblocks);
+
+    bool ok_f = gbscr_cache_plan(GB_GEN2, 0, GBSCR_OPT_CARDPIC_F, &gu, 65536u, &plan);
+    CHECK(ok_f, "GBSCR_OPT_CARDPIC_F at offset 0 must still let the plan succeed");
+    CHECK(plan.nblocks == 1, "GBSCR_OPT_CARDPIC_F at offset 0 must be excluded "
+                             "(FONT only, got %d blocks)", plan.nblocks);
+
+    bool refused = gbscr_cache_plan(GB_GEN2, GBSCR_NEED_CARDCORNER, 0, &gu, 65536u, &plan);
+    CHECK(!refused, "the SAME bit in need_mask (required) must still fail "
+                    "closed at offset 0, not skip");
+
+    bool refused_f = gbscr_cache_plan(GB_GEN2, GBSCR_NEED_CARDPIC_F, 0, &gu, 65536u, &plan);
+    CHECK(!refused_f, "GBSCR_NEED_CARDPIC_F (required) must still fail closed "
+                      "at offset 0, not skip");
+
+    /* gbscr_tail_need() reserves opt_mask's worst-case bytes the same way it
+     * reserves need_mask's -- the offset is not known yet at that call site
+     * (before the ROM locate), so there is no cheaper option. A CARDCORNER
+     * opt_mask request costs exactly its own 16-B block on top of FONT. */
+    uint32_t need_font_only = gbscr_tail_need(GB_GEN2, 0, 0);
+    uint32_t need_opt_corner = gbscr_tail_need(GB_GEN2, 0, GBSCR_OPT_CARDCORNER);
+    CHECK(need_opt_corner == need_font_only + gbscr_block_bytes(GB_GEN2, GBSCR_SRC_CARDCORNER),
+          "gbscr_tail_need() must reserve CARDCORNER's worst-case bytes "
+          "up front (font_only=%u, opt_corner=%u)", need_font_only, need_opt_corner);
+
+    /* The real card's own worst-case combination (BACKLOG #128): a Crystal
+     * female save whose corner block is ALSO present -- 8 blocks, at
+     * GBSCR_MAX_BLOCKS' own cap. */
+    RomGbUi gu_fc; memset(&gu_fc, 0, sizeof gu_fc);
+    gu_fc.font = 0x1000; gu_fc.cardgfx = 0x8800; gu_fc.leaders = 0x9000;
+    gu_fc.badges = 0xA000; gu_fc.cardpic_m = 0xB000; gu_fc.cardpic_f = 0xC000;
+    gu_fc.cardcorner = gu_fc.badges + 88u * 16u;
+    uint32_t real_need = (GBSCR_NEED_CARDGFX | GBSCR_NEED_STATUSWORD |
+                          GBSCR_NEED_LEADERS | GBSCR_NEED_BADGES | GBSCR_NEED_CARDPIC_M);
+    uint32_t real_opt = GBSCR_OPT_CARDCORNER | GBSCR_OPT_CARDPIC_F;
+    GbscrCache fc_plan;
+    bool fc_ok = gbscr_cache_plan(GB_GEN2, real_need, real_opt, &gu_fc, 65536u, &fc_plan);
+    CHECK(fc_ok, "the real card's female+corner combo (need+opt) was refused");
+    CHECK(fc_plan.nblocks == 8, "the real card's female+corner combo planned "
+                                "%d blocks, want 8 (FONT + 5 required + "
+                                "CARDPIC_F + CARDCORNER)", fc_plan.nblocks);
+    bool found_f = false, found_c = false;
+    for (int i = 0; i < fc_plan.nblocks; i++) {
+      if (fc_plan.blocks[i].rom_off == gu_fc.cardpic_f) found_f = true;
+      if (fc_plan.blocks[i].rom_off == gu_fc.cardcorner) found_c = true;
+    }
+    CHECK(found_f, "the female+corner combo's plan is missing the CARDPIC_F block");
+    CHECK(found_c, "the female+corner combo's plan is missing the CARDCORNER block");
+    uint32_t fc_need = gbscr_tail_need(GB_GEN2, real_need, real_opt);
+    uint32_t fc_sum = 0;
+    for (int i = 0; i < fc_plan.nblocks; i++) fc_sum += fc_plan.blocks[i].len;
+    CHECK(fc_sum + ROM_GBUI_SCRATCH_MIN == fc_need,
+          "female+corner combo: sum(len)=%u + SCRATCH_MIN=%u != gbscr_tail_need()=%u",
+          fc_sum, ROM_GBUI_SCRATCH_MIN, fc_need);
+  }
+
   /* Minor (U2c review): gbscr_pack_pic()/gbscr_unpack_pic_px() round trip --
    * both moved above this module's own tonc/FatFs boundary specifically so
    * this test can call them directly. A synthetic 4x3-tile (32x24 px) grid,
