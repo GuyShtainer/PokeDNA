@@ -310,6 +310,75 @@ static void shift_minus_1s_cascades(const char* file) {
    * fails on that value, not on a byte-count proxy for it. */
 }
 
+/* ---- H: nine hand-derived deltas off Crystal's OWN corpus baseline (06 17 12 0a),
+ * BACKLOG #108 R2 -- the reviewer's own table. Test G above only ever starts from a
+ * planted, all-zero 00:00:00 baseline, so a second->minute or minute->hour carry
+ * always lands on the same boundary value (59) regardless of which modulus the code
+ * actually used; several of these nine deltas exercise a NON-boundary minute/hour
+ * result (case 2 lands on minute=59 via a genuine -19 delta, not a lucky -1; case 9
+ * cancels three fields to exactly zero without ever going negative) so a transcribed
+ * modulus (e.g. minutes wrapping at 24 instead of 60) or an off-by-one in the
+ * exact-zero path can no longer hide behind the boundary coincidence test G's own
+ * single case has. Each row reloads the corpus file fresh (load() re-reads from disk)
+ * so the nine cases are independent, not cumulative. */
+static void nine_deltas_table(const char* file, uint8_t base_day, uint8_t base_hour,
+                              uint8_t base_min, uint8_t base_sec) {
+  static const struct {
+    int32_t dd, dh, dm, ds;
+    uint8_t want_day, want_hour, want_min, want_sec;
+  } kCase[] = {
+    /* dd   dh   dm   ds  | day hour min sec */
+    {  0,   0,   0, -11,    6,  23,  17,  59 },  /* second->minute borrow, non-boundary */
+    {  0,   0, -19,   0,    6,  22,  59,  10 },  /* minute->hour borrow, non-boundary   */
+    {  0, -24,   0,   0,    5,  23,  18,  10 },  /* exact -24h: whole negative branch   */
+    { -1,   0,   0,   0,    5,  23,  18,  10 },  /* plain day decrement (cross-check)   */
+    {  0,   0,   0,  -1,    6,  23,  18,   9 },  /* second-only, no borrow              */
+    {  0,   1,   0,   0,    7,   0,  18,  10 },  /* hour->day carry, forward            */
+    {  0,   0,   0,  50,    6,  23,  19,   0 },  /* second->minute carry, forward       */
+    {  1,   0,   0,   0,    7,  23,  18,  10 },  /* plain day increment                 */
+    {  0, -23, -18, -10,    6,   0,   0,   0 },  /* cancels to exact 0:00:00, no borrow */
+  };
+
+  for (size_t i = 0; i < sizeof kCase / sizeof kCase[0]; i++) {
+    uint32_t len = load(file);
+    if (!len) { printf("  SKIP %s (not present)\n", file); return; }
+    g_ran++;
+    GbSession s;
+    CHECKF(gbs_open(&s, g_img, len, g_scratch, sizeof g_scratch) == GBS_OK,
+          "%s: case %zu open", file, i);
+    GbGame g = gbc_game(&s);
+
+    /* Sanity: every row's own hand-derived expectation assumes this exact baseline. */
+    uint8_t bd, bh, bm, bs;
+    CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_DAY), &bd, 1) == GBS_OK &&
+          bd == base_day, "%s: case %zu baseline day", file, i);
+    CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_HOUR), &bh, 1) == GBS_OK &&
+          bh == base_hour, "%s: case %zu baseline hour", file, i);
+    CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_MINUTE), &bm, 1) == GBS_OK &&
+          bm == base_min, "%s: case %zu baseline minute", file, i);
+    CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_SECOND), &bs, 1) == GBS_OK &&
+          bs == base_sec, "%s: case %zu baseline second", file, i);
+
+    GbsStatus st = gbc_shift(&s, kCase[i].dd, kCase[i].dh, kCase[i].dm, kCase[i].ds);
+    CHECKF(st == GBS_OK, "%s: case %zu gbc_shift(%d,%d,%d,%d) status %s", file, i,
+          kCase[i].dd, kCase[i].dh, kCase[i].dm, kCase[i].ds, gbs_status_text(st));
+
+    uint8_t d, h, m, sec;
+    CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_DAY), &d, 1) == GBS_OK, "%s: case %zu read day", file, i);
+    CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_HOUR), &h, 1) == GBS_OK, "%s: case %zu read hour", file, i);
+    CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_MINUTE), &m, 1) == GBS_OK, "%s: case %zu read minute", file, i);
+    CHECKF(gbs_read_field(&s, gbf_off(g, GBF_RTC_START_SECOND), &sec, 1) == GBS_OK, "%s: case %zu read second", file, i);
+    CHECKF(d == kCase[i].want_day, "%s: case %zu (%d,%d,%d,%d) day %u != %u", file, i,
+          kCase[i].dd, kCase[i].dh, kCase[i].dm, kCase[i].ds, d, kCase[i].want_day);
+    CHECKF(h == kCase[i].want_hour, "%s: case %zu (%d,%d,%d,%d) hour %u != %u", file, i,
+          kCase[i].dd, kCase[i].dh, kCase[i].dm, kCase[i].ds, h, kCase[i].want_hour);
+    CHECKF(m == kCase[i].want_min, "%s: case %zu (%d,%d,%d,%d) minute %u != %u", file, i,
+          kCase[i].dd, kCase[i].dh, kCase[i].dm, kCase[i].ds, m, kCase[i].want_min);
+    CHECKF(sec == kCase[i].want_sec, "%s: case %zu (%d,%d,%d,%d) second %u != %u", file, i,
+          kCase[i].dd, kCase[i].dh, kCase[i].dm, kCase[i].ds, sec, kCase[i].want_sec);
+  }
+}
+
 int main(void) {
   printf("== A: Gen 1 has no clock ==\n");
   gen1_not_applicable("Red.sav");
@@ -338,6 +407,9 @@ int main(void) {
   printf("== G: the carry chain both ways (backward, cascading through all 4 bytes) ==\n");
   shift_minus_1s_cascades("Gold.sav");
   shift_minus_1s_cascades("Crystal.sav");
+
+  printf("== H: nine hand-derived deltas off Crystal's own baseline (BACKLOG #108 R2) ==\n");
+  nine_deltas_table("Crystal.sav", 0x06, 0x17, 0x12, 0x0a);
 
   printf("\n%d checks, %d failed, %d file(s) exercised\n", g_check, g_fail, g_ran);
   if (g_ran == 0) { printf("NOTE: corpus not found at %s -- every case skipped\n", ROMS); }
