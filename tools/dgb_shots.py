@@ -56,6 +56,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import gb_shots  # noqa: E402 -- Session, load_mgba, KEY, HOLD/SETTLE/BIG_SETTLE
+import gen_gbfields  # noqa: E402 -- BACKLOG #129: GROUPS_GEN1's own header order,
+                     # imported directly rather than a second hand-copied list
 import fuse_gb   # noqa: E402 -- BACKLOG #98 D3: reads the fused image's OWN directory
                  # (locate_record_permissive/read_record/parse_directory, the same
                  # code path `fuse_gb.py --check` uses) instead of assuming a fixed
@@ -199,6 +201,15 @@ def _crop_for(name: str) -> tuple[int, int, int, int]:
         # loaded. The box name + occupancy count draw_box_banner() paints is at
         # y=13+, below this crop -- that IS save-specific and deliberately excluded.
         "gb_box_grid": (0, 0, 240, 12),
+        # BACKLOG #129: pdna_gbflags.c nf_draw_row()'s own selected-header row --
+        # "+ Story" (fold_glyph + name), the SEL panel spanning the full row
+        # (source: `ui_panel(2, y - 1, 236, 9, ...)`, y determined empirically for
+        # THIS deterministic tap sequence: fresh FLAGS-tab entry, header 0
+        # unfolded, then SELECT xN to "Story" -- the row text itself comes from
+        # GROUPS_GEN1's own header name (tools/gen_gbfields.py), not per-save
+        # data, so this crop is game/save-independent for Red/Yellow the same
+        # way the other refs are.
+        "gbflags_story_header": (0, 138, 240, 149),
     }[name]
 
 
@@ -246,6 +257,19 @@ def row_index(rom: Path, which: str | None) -> int:
     if which is None:
         return 0
     return gb_save_pick_index(rom)[which] + 1
+
+
+def select_jumps_to(groups: list[tuple[str, list]], from_title: str, to_title: str) -> int:
+    """BACKLOG #129: SELECT count to jump from `from_title`'s own header to
+    `to_title`'s, on pdna_gbflags.c's FLAGS tab -- SELECT jumps by header INDEX
+    regardless of fold state (nf_draw_row's own header rows), so the count is
+    just the difference of the two titles' positions in the generator's OWN
+    group list (`groups`, e.g. tools/gen_gbfields.py's GROUPS_GEN1/GROUPS_GEN2)
+    -- never a second, hand-copied header list that can drift out of sync with
+    the generator's real one (the exact class of bug BACKLOG #118's coordinator
+    addition found for NV_GB's own DOWN count)."""
+    titles = [title for title, _members in groups]
+    return titles.index(to_title) - titles.index(from_title)
 
 
 def boot_to_gb_session(s: gb_shots.Session, rom: Path, which: str | None = None) -> None:
@@ -2376,12 +2400,22 @@ def run_b88_flags(core_mod, image_mod, rom: Path, out_dir: Path, which: str) -> 
 
         # BACKLOG #127 F3: "Hall of Fame rating" (the 33-char label that smashed 6
         # bytes past row[40] before D1's fix) lives in the LAST group, "Story"
-        # (GROUPS_GEN1's 6th entry, GBFL_KIND_READONLY) -- it stays folded in every
-        # other Gen-1 shot in this run. SELECT jumps by row INDEX to the next header
-        # regardless of fold state (same mechanic the raw-row jump below already
-        # relies on): h1,h2,h3,h4 -> h5 (Story).
-        for _ in range(5):
-            s.tap("SEL", settle=gb_shots.SETTLE)
+        # (GROUPS_GEN1's own last entry, GBFL_KIND_READONLY) -- it stays folded in
+        # every other Gen-1 shot in this run. SELECT jumps by row INDEX to the next
+        # header regardless of fold state (same mechanic the raw-row jump below
+        # already relies on). BACKLOG #129: the jump count is now DERIVED from
+        # GROUPS_GEN1's own header order (tools/gen_gbfields.py, imported directly)
+        # instead of a hand-copied "5" that a future group insertion could drift
+        # stale -- the exact bug class BACKLOG #118's NV_GB fix already caught once.
+        story_jumps = select_jumps_to(gen_gbfields.GROUPS_GEN1, "Key events", "Story")
+        s.press_n("SEL", story_jumps, settle=gb_shots.SETTLE)
+        # Assert the landing is REALLY "Story", not a neighbouring header a wrong
+        # jump count would silently land on instead (fixed-crop pixel signature,
+        # tools/gb_oracle/refs/gbflags_story_header.png -- the same technique
+        # boot_to_gb_session() uses, since tools/gb_oracle/oracle.py's own tilemap
+        # reader cannot attach to this GBA-hosted harness, see that helper's
+        # docstring for the full reasoning).
+        assert_screen(s, "gbflags_story_header")
         s.tap("A", settle=gb_shots.BIG_SETTLE)               # unfold "Story"
         s.tap("DOWN", settle=gb_shots.SETTLE)                # -> "Beat Champion Rival"
         s.tap("DOWN", settle=gb_shots.SETTLE)                # -> "Hall of Fame rating"
